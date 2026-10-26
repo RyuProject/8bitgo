@@ -114,6 +114,7 @@ export function AppRoutes() {
         <Route path="/play/ps2/:slug" element={<RouteChunk><EmbedPage standalonePlatform="ps2" /></RouteChunk>} />
         <Route path="/play/gamecube/:slug" element={<RouteChunk><EmbedPage standalonePlatform="gamecube" /></RouteChunk>} />
         <Route path="/play/wii/:slug" element={<RouteChunk><EmbedPage standalonePlatform="wii" /></RouteChunk>} />
+        <Route path="/play/arcade/:slug" element={<RouteChunk><EmbedPage standalonePlatform="arcade" /></RouteChunk>} />
 
         {/* 后台：独立外壳，不带前台侧边栏 */}
         <Route

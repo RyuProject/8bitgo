@@ -191,6 +191,13 @@ export const WEBRETRO_PATH: string = asDir(import.meta.env.VITE_WEBRETRO_PATH)
  * 缺失时应让 PS2 明确显示未部署，而不是让玩家点进去才遇到 404。
  */
 export const PLAY_PATH: string = asDir(import.meta.env.VITE_PLAY_PATH)
+/** Play! JS/WASM 不带文件哈希；换核心时必须换 URL，避免边缘节点把新旧两件套拼起来。 */
+export const PLAY_RUNTIME_GENERATION = '20261026-system2x6-v1'
+
+export function playRuntimeAsset(file: 'Play.js' | 'Play.wasm'): string {
+  // Cloudflare 可按配置忽略 query string，所以代次必须落在实际路径而不只是 ?v 参数里。
+  return `${PLAY_PATH}${PLAY_RUNTIME_GENERATION}/${file}`
+}
 
 /**
  * PPSSPP 浏览器核心必须使用本站打过 Range 补丁的构建，不能退回上游网页壳：

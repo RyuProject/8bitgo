@@ -215,7 +215,15 @@ export function GameDetailPage() {
    * 正常详情页加 COOP/COEP，因此播放器、标题、资料与侧栏都可以和其它平台保持一致。
    * PS2 / Dolphin 暂时仍用精简隔离页；它们的兼容性提示和启动形态另行保留。
    */
-  const requiresIsolation = Boolean(isolatedEmbed) || isIsolatedRuntimePlatform(game?.platform)
+  // 街机平台默认仍走 EmulatorJS，不应因为 Play! 的例外把所有街机页都改成整页启动。
+  // 只有后台明确给这款街机选择 Play! System 2x6 时，才需要独立 COOP/COEP 文档。
+  const requiresIsolatedRuntime = game?.platform === 'arcade'
+    ? game.runtime === 'play'
+    : isIsolatedRuntimePlatform(game?.platform)
+  const isolatedRuntimePlatform = game?.platform === 'arcade' && game.runtime === 'play'
+    ? 'arcade'
+    : game && isIsolatedRuntimePlatform(game.platform) ? game.platform : undefined
+  const requiresIsolation = Boolean(isolatedEmbed) || requiresIsolatedRuntime
   const usesIsolatedLaunchCard = requiresIsolation && game?.platform !== 'psp'
   /**
    * 从游戏列表经 React Router 进入 PSP 页时，浏览器沿用原文档，不会重新请求 SSR 的隔离头。
@@ -462,7 +470,7 @@ export function GameDetailPage() {
                     frameClassName={stageCap}
                     slug={game.slug}
                     gameName={game.title}
-                    isolatedPlatform={isIsolatedRuntimePlatform(game.platform) ? game.platform : undefined}
+                    isolatedPlatform={isolatedRuntimePlatform}
                     startupVisitId={startupVisitId}
                     icon={game.icon}
                     // 背景那张是糊到底再压一层黑底的，96×96 完全够用，没必要下 300×300

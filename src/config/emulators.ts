@@ -70,10 +70,10 @@ export const CORE_OPTIONS: Record<string, Array<{ id: string; label: string }>> 
     { id: 'fbalpha2012_cps2', label: 'FB Alpha CPS2' },
     { id: 'mame2003_plus', label: 'MAME 2003-Plus（兼容面最广，较慢）' },
     { id: 'mame2003', label: 'MAME 2003' },
-    // 当前版 MAME（libretro mame_current）：IGS027A（m027 驱动）这类 IGS 新版驱动（明星三缺一 / mxsqy102tw）
-    // FBNeo 与 mame2016 都不带，只能用它。核心二进制由 scripts/build-mame-current-core.mjs
+    // 当前版 MAME（libretro mame_current）：System 11/12、IGS027A 等 FBNeo / 旧 MAME 不覆盖的驱动。
+    // 核心二进制由 scripts/build-mame-current-core.mjs
     // 在构建机上现编，产物 mame-current-wasm.data 丢进 public/emulatorjs/cores/ 即可。
-    { id: 'mame-current', label: 'MAME 当前版（IGS027A / 明星三缺一这类新版驱动）' },
+    { id: 'mame-current', label: 'MAME 当前版（System 11/12、IGS027A；兼容面广但较慢）' },
   ],
   psx: [
     { id: 'psx', label: 'PCSX-ReARMed（默认，快、省内存，手机首选）' },

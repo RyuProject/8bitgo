@@ -151,8 +151,8 @@ export const playMeta: Runtime = {
   get description() {
     return getT().runtime.playDesc
   },
-  // PS2 的容器格式。.bin 也在里面，但 supports 只放 ps2，抢不到别人的地盘
-  extensions: ['iso', 'chd', 'cso', 'zso', 'isz', 'bin', 'elf'],
+  // PS2 单盘格式 + 8BitGo 的打包街机 ZIP。普通街机自动选择由 registry 显式排除 Play!。
+  extensions: ['iso', 'chd', 'cso', 'zso', 'isz', 'bin', 'elf', 'zip'],
   // 高于 EmulatorJS 的 5 没意义 —— supports 只认 ps2，而 ps2 平台 EmulatorJS 根本不支持。
   // 给 15 只是和 webretro 对齐，表示「专精引擎优先于通用兜底」
   priority: 15,
@@ -163,7 +163,7 @@ export const playMeta: Runtime = {
    * 自动启用。available() 返回 false 后给出明确提示，避免玩家点进去才遇到 404。
    */
   available: () => Boolean(PLAY_PATH),
-  supports: (platform) => platform === 'ps2',
+  supports: (platform) => platform === 'ps2' || platform === 'arcade',
   engineLabel: () => 'Play!',
 }
 

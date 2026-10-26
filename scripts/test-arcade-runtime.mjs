@@ -20,6 +20,7 @@ import { EJS_WEBGL2_DEFAULT_CORES, emulatorJsCoreDataFile } from '../src/emulato
 import { ejsCachedUrls, warmEmulatorJsStart } from '../src/emulator/ejsStartWarm.ts'
 import { dipNameOf } from '../src/emulator/dipPlan.ts'
 import { matchRomset } from '../src/lib/arcadeRomset.ts'
+import { canonicalMameRomset } from '../src/emulator/mameRomset.ts'
 
 let failed = 0
 const check = async (name, fn) => {
@@ -272,6 +273,21 @@ await check('同 CRC 的双份 ROM 不会把完整包的覆盖率算成 200%', (
   assert.equal(result.candidates[0].name, 'dupset')
   assert.equal(result.candidates[0].coverage, 1)
   assert.equal(result.confident?.name, 'dupset')
+})
+
+await check('mame-current 内容名：不可能是驱动名的上传名要纠正成合法短名', () => {
+  // 线上《铁拳》：对象存储里是 tekken-root-flat.zip，MAME 找不到驱动只剩 RetroArch 空菜单
+  assert.equal(canonicalMameRomset('tekken-root-flat.zip'), 'tekken.zip')
+  assert.equal(canonicalMameRomset('Tekken (World).zip'), 'tekken.zip')
+  assert.equal(canonicalMameRomset('TEKKEN.ZIP'), 'tekken.zip')
+  // 合法短名（含克隆集、带数字和下划线）原样保留，别被「纠正」成父集
+  assert.equal(canonicalMameRomset('tekkenac.zip'), 'tekkenac.zip')
+  assert.equal(canonicalMameRomset('sf2_ce.zip'), 'sf2_ce.zip')
+  assert.equal(canonicalMameRomset('mxsqy102tw.zip'), 'mxsqy102tw.zip')
+  // 别名表优先
+  assert.equal(canonicalMameRomset('mxsqy.zip'), 'mxsqy102tw.zip')
+  // 实在拆不出合法片段时保持原样，交给核心报错，不瞎猜
+  assert.equal(canonicalMameRomset('铁拳.zip'), '铁拳.zip')
 })
 
 console.log(failed === 0 ? '\n街机启动链体检通过\n' : `\n街机启动链体检失败：${failed} 项\n`)

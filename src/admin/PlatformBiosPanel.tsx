@@ -14,6 +14,8 @@ import {
   type PlatformBiosMap,
 } from '@/services/platformBios'
 import { biosNameOfUrl } from '@/emulator/biosPlan'
+import { assertValidZipBlob } from '@/lib/unzip'
+import { namcoC76BiosProblem } from '@/lib/namcoSystem11'
 import { Card, btnClass, inputClass } from './ui'
 
 /**
@@ -68,7 +70,16 @@ const ARCADE_BIOS_SETS: Array<{ name: string; hint: string }> = [
     name: 'pgm',
     hint: 'IGS PGM 板子：三国战纪（orlegend / kov）、西游释厄传（drgw2）等 173 款。文件必须是 pgm.zip',
   },
+  {
+    name: 'namcoc76',
+    hint: 'Namco System 11（如 Tekken）；上传前会校验 ZIP 根目录中的 c76.bin（16 KiB / CRC 399faac7），对象会固定保存为 namcoc76.zip。',
+  },
 ]
+
+function arcadeBiosFileNameForBinding(id: string): string | undefined {
+  const name = id.startsWith('bios:') ? id.slice('bios:'.length) : ''
+  return ARCADE_BIOS_SETS.some((set) => set.name === name) ? `${name}.zip` : undefined
+}
 
 /** Beetle PSX 按地区寻找固定文件名；上传文件原名可以不同，存储 key 不能变。 */
 const PSX_BIOS_REGIONS: Array<{ name: string; label: string; fileName: string; hint: string }> = [
@@ -295,10 +306,15 @@ export function PlatformBiosPanel() {
     setBusy(id)
     setMsg(null)
     try {
+      if (id === 'bios:namcoc76') {
+        const entries = await assertValidZipBlob(file, 'Namco C76 BIOS')
+        const problem = namcoC76BiosProblem(entries)
+        if (problem) throw new Error(problem)
+      }
       // 已经绑过 BIOS 就复用同一个 key —— 原来无条件按文件名重算，
       // 传完 bios.bin 再传 bios.zip 会在 R2 里留下两份，旧的那份永远没人引用
       const oldKey = (map as Record<string, string | undefined>)[id]?.trim() ?? ''
-      const requiredFileName = psxBiosFileNameForBinding(id)
+      const requiredFileName = psxBiosFileNameForBinding(id) ?? arcadeBiosFileNameForBinding(id)
       const suggested = defaultBiosKey(id, requiredFileName ?? file.name)
       const oldKeyHasExpectedName = !requiredFileName || keyFileName(oldKey) === requiredFileName
       let key = oldKey && !/^https?:/i.test(oldKey) && oldKeyHasExpectedName ? oldKey : suggested
@@ -344,9 +360,10 @@ export function PlatformBiosPanel() {
     setBusy(id)
     setMsg(null)
     try {
-      const requiredFileName = psxBiosFileNameForBinding(id)
+      const requiredFileName = psxBiosFileNameForBinding(id) ?? arcadeBiosFileNameForBinding(id)
       if (key.trim() && requiredFileName && keyFileName(key.trim()) !== requiredFileName) {
-        throw new Error(`这个区域 BIOS 的地址末尾必须是 ${requiredFileName}，否则 Beetle PSX 无法按区域找到它。`)
+        const reason = id.startsWith('bios:') ? '街机核心按 BIOS set 文件名查找它' : 'Beetle PSX 按区域查找它'
+        throw new Error(`这个 BIOS 的地址末尾必须是 ${requiredFileName}，否则${reason}。`)
       }
       await bind(id, key.trim())
       void checkKey(id, key.trim())
@@ -511,7 +528,7 @@ export function PlatformBiosPanel() {
             {section === 'arcade' && (
               <>
                 <p className="text-[11px] leading-relaxed text-dim">
-                  每款街机 ROM 会标注自己需要的硬件系统；请按系统各绑一份，而不是把 PGM、Neo Geo 等都塞到“街机平台默认”里。系统名和文件名必须与核心使用的 romset 一致。
+                  每款街机 ROM 会标注自己需要的硬件系统；请按系统各绑一份，而不是把 PGM、Neo Geo、Namco C76 等都塞到“街机平台默认”里。系统名和 ZIP 文件名必须与核心使用的 romset 一致。
                 </p>
                 {setNames.map((name) => (
                   <BiosRow

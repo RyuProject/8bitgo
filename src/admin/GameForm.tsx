@@ -24,7 +24,11 @@ import {
 } from '@/services/roms'
 import { bundleBytes, bundleWarnings, pickMainSwf, planSwfBundleFromZip, type SwfBundleFile, type SwfBundlePlan } from '@/lib/swfBundle'
 import { assertValidZip, assertValidZipBlob, extractZipEntry, isZip } from '@/lib/unzip'
+import { inspectPlayArcadeBundle } from '@/lib/playArcadeBundle'
 import { arcadeArchiveLayoutProblem } from '@/lib/arcadeArchive'
+import { arcadeArchiveUnsafePathProblem, identifyNamcoSystem11Tekken, type NamcoSystem11Match } from '@/lib/namcoSystem11'
+import { flattenArcadeZipBlob } from '@/lib/flattenArcadeZip'
+import { detectArcadeCore, type ArcadeCoreId } from '@/lib/arcadeCoreDetection'
 import { assertRomArchiveRef, impliedRomName, romArchiveRef } from '@/lib/romArchiveUrl'
 import {
   extraObjectName,
@@ -143,6 +147,7 @@ export function slugify(text: string): string {
 const KNOWN_ARCADE_BIOS = [
   'neogeo',
   'pgm',
+  'namcoc76',
   'ngp_ngp',
   'skns',
   'decocass',
@@ -181,7 +186,7 @@ const EMPTY: Game = {
   hidden: false,
   rom: '',
   roms: {},
-  // 逐游戏运行时覆盖；目前只有 NES 能在 jsnes 与 emulatorjs 之间切换，其余平台留空走默认引擎
+  // 逐游戏运行时覆盖；NES 与 Play! System 2x6 街机包会用到，其余平台留空走默认引擎
   runtime: null,
 }
 
@@ -216,6 +221,8 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
   const [form, setForm] = useState<Game>(initialForm)
   const [tagsText, setTagsText] = useState(initialTagsText)
   const [slugTouched, setSlugTouched] = useState(Boolean(initial))
+  // 历史值先视作管理员手选；本次表单自动识别出的核心仍可被下一次 ROM 识别更新。
+  const manualCoreChoice = useRef(Boolean(initial?.core?.trim()))
   const [error, setError] = useState<string | null>(null)
   const initialSnapshot = useRef(JSON.stringify({ form: initialForm, tagsText: initialTagsText }))
   /**
@@ -633,8 +640,10 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
       homeRank: Number(form.homeRank) > 0 ? Math.round(Number(form.homeRank)) : undefined,
       // 空字符串要写成 undefined，否则会当成「核心名叫空串」存进去
       core: form.core?.trim() || undefined,
-      // 逐游戏运行时覆盖：仅 NES 适用。非 NES 一律下发 null，清掉可能残留的覆盖值
-      runtime: form.platform === 'nes' ? (form.runtime ?? undefined) : null,
+      // Play! 只允许在街机上作为 System 2x6 包的显式运行时，不影响普通 FBNeo / MAME ROM。
+      runtime: form.platform === 'nes' || (form.platform === 'arcade' && form.runtime === 'play')
+        ? (form.runtime ?? undefined)
+        : null,
       // 普通 DOS 用它生成 autoexec；共享 Windows 3.x 直接运行它，95/98 则写进启动批处理。
       // 旧式“系统和游戏揉在一个 .jsdos”没有共享系统字段，仍按原 bundle 的 conf 启动。
       dosExecutable: form.platform === 'dos' && !pc98 ? form.dosExecutable?.trim() || undefined : undefined,
@@ -699,7 +708,10 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
           />
         </Field>
         <Field label="平台 *">
-          <select className={inputClass} value={form.platform} onChange={(e) => set('platform', e.target.value as PlatformId)}>
+          <select className={inputClass} value={form.platform} onChange={(e) => {
+            set('platform', e.target.value as PlatformId)
+            set('runtime', undefined)
+          }}>
             {platforms.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.icon} {p.name}
@@ -992,7 +1004,7 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
               value={form.arcadeBios ?? ''}
               onChange={(e) => set('arcadeBios', e.target.value || undefined)}
               spellCheck={false}
-              placeholder="neogeo / pgm"
+              placeholder="neogeo / pgm / namcoc76"
             />
             <datalist id="known-arcade-bios">
               {KNOWN_ARCADE_BIOS.map((n) => (
@@ -1000,7 +1012,7 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
               ))}
             </datalist>
             <p className="mt-1 text-[11px] text-dim">
-              核心按 <b>set 名</b>找 BIOS 包：Neo Geo 是 <code>neogeo</code>，IGS 的 PGM 板子是 <code>pgm</code>。
+              核心按 <b>set 名</b>找 BIOS 包：Neo Geo 是 <code>neogeo</code>，IGS PGM 是 <code>pgm</code>，Namco System 11 是 <code>namcoc76</code>。
               上传 ROM 时识别出来的会自动填上；识别不出来（汉化版、驱动表里没有的板子）就在这里手填。
               留空 = 用平台默认那一份。地址在「ROM 存储 → 街机 BIOS 包」里按系统名绑。
             </p>
@@ -1064,7 +1076,15 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
         )}
         {coreOptions.length > 0 && (
           <Field label="模拟器核心">
-            <select className={inputClass} value={form.core ?? ''} onChange={(e) => set('core', e.target.value || undefined)}>
+            <select
+              className={inputClass}
+              value={form.core ?? ''}
+              onChange={(e) => {
+                const value = e.target.value || undefined
+                manualCoreChoice.current = Boolean(value)
+                set('core', value)
+              }}
+            >
               <option value="">平台默认</option>
               {coreOptions.map((c) => (
                 <option key={c.id} value={c.id}>
@@ -1079,10 +1099,8 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
             */}
             {form.platform === 'arcade' ? (
               <p className="mt-1 text-[11px] text-dim">
-                街机这一个平台底下其实是好几套硬件：拳皇是 Neo Geo（fbneo），街霸 2 是 CPS2。
-                报「缺文件 / CRC 不匹配」时先换核心试试——<strong className="text-muted">每个核心认的 romset 版本不一样</strong>，
-                往往比换 ROM 有用。MAME 2003-Plus 兼容面最广，但也最慢。
-                更老的驱动（如 IGS027A（m027 驱动）的《明星三缺一》mxsqy102tw）只有「MAME 当前版」才带，那种情况就选它。
+                上传时会按 ROM CRC 自动选核心：完整命中 FBNeo 支持集时选 FBNeo，精确命中已验证的 MAME 专属指纹时选 MAME 当前版；
+                不完整或无法确认的包不会猜，已有手动选择也不会被覆盖。MAME 当前版兼容面广，但启动较慢、占用更高。
               </p>
             ) : form.platform === 'nds' ? (
               <p className="mt-1 text-[11px] text-dim">
@@ -1104,21 +1122,30 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
             )}
           </Field>
         )}
-        {form.platform === 'nes' && (
+        {(form.platform === 'nes' || form.platform === 'arcade') && (
           <Field label="模拟器引擎">
             <select
               className={inputClass}
               value={form.runtime ?? ''}
               onChange={(e) => set('runtime', (e.target.value || undefined) as typeof form.runtime)}
             >
-              <option value="">自动（按格式 / mapper 选择）</option>
-              <option value="jsnes">jsnes（明确指定，轻量、启动快）</option>
-              <option value="emulatorjs">EmulatorJS（兼容性更好，需下载核心）</option>
+              {form.platform === 'nes' ? (
+                <>
+                  <option value="">自动（按格式 / mapper 选择）</option>
+                  <option value="jsnes">jsnes（明确指定，轻量、启动快）</option>
+                  <option value="emulatorjs">EmulatorJS（兼容性更好，需下载核心）</option>
+                </>
+              ) : (
+                <>
+                  <option value="">自动（FBNeo / MAME）</option>
+                  <option value="play">Play! System 2x6（仅 8BitGo Play! 街机包）</option>
+                </>
+              )}
             </select>
             <p className="mt-1 text-[11px] text-dim">
-              自动模式只在直链 iNES 的 mapper 已确认受支持时用 <b>jsnes</b>；8BG / ZIP、未知格式或
-              不支持的 mapper 走 <b>EmulatorJS</b>。已人工验收的容器 ROM 可在这里明确固定 jsnes，
-              避免同一游戏因为探测条件变化而切换引擎和存档命名空间。
+              {form.platform === 'nes'
+                ? <>自动模式只在直链 iNES 的 mapper 已确认受支持时用 <b>jsnes</b>；8BG / ZIP、未知格式或不支持的 mapper 走 <b>EmulatorJS</b>。已人工验收的容器 ROM 可在这里明确固定 jsnes，避免同一游戏因为探测条件变化而切换引擎和存档命名空间。</>
+                : <>只有按 <code>8bitgo-play-arcade-v1</code> 目录结构制作的 System 2x6 包才能选 Play!；普通街机 romset 保持自动模式。该包会整包下载到浏览器，至少需要约 1GB 可用内存，不属于按扇区流式启动。</>}
             </p>
           </Field>
         )}
@@ -1214,6 +1241,7 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
               value={form.roms?.[lang] ?? ''}
               backupValue={form.romBackups?.[lang] ?? ''}
               platform={form.platform}
+              runtime={form.runtime}
               slug={slugify(form.slug || form.title)}
               persistedSlug={initial?.slug}
               autoSockdrive={sockdriveConfigSaved(lang) && initial?.slug ? {
@@ -1231,6 +1259,9 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
               onApplyHack={(hack) => applyHack(hack)}
               // 只填空的：管理员手填过就听他的（汉化版借用别的驱动时人比表准）
               onBiosFound={(name) => setForm((f) => (f.arcadeBios?.trim() ? f : { ...f, arcadeBios: name }))}
+              onCoreFound={(core) => {
+                if (!manualCoreChoice.current) setForm((f) => ({ ...f, core }))
+              }}
               allowStorage={!personalLibrary}
             />
             {dosboxXSockdriveForm && form.roms?.[lang]?.trim() && (
@@ -2232,6 +2263,7 @@ function RomField({
   value,
   backupValue,
   platform,
+  runtime,
   slug,
   persistedSlug,
   autoSockdrive,
@@ -2244,11 +2276,13 @@ function RomField({
   onHackFound,
   onApplyHack,
   onBiosFound,
+  onCoreFound,
   allowStorage,
 }: {
   value: string
   backupValue: string
   platform: PlatformId
+  runtime?: Game['runtime']
   slug: string
   /** 只有编辑已有游戏才有值；新建表单不能仅凭一个尚未保存的 slug 去改数据库里的同名游戏。 */
   persistedSlug?: string
@@ -2278,6 +2312,8 @@ function RomField({
    * 和 onHackFound 同理：字段在父组件手里，这里只报告，由父组件决定填不填。
    */
   onBiosFound?: (name: string) => void
+  /** 上传证据充分时自动选核心；父表单只填空值，不覆盖管理员已有的手动选择。 */
+  onCoreFound?: (core: ArcadeCoreId) => void
   /** 管理员点「套用」时明确要求写入，覆盖也无所谓 */
   onApplyHack?: (hack: ArcadeHack) => void
   /** 志愿者库只保存资料引用，不能借这里改对象存储。 */
@@ -2292,6 +2328,8 @@ function RomField({
   const [bundleAt, setBundleAt] = useState<BundleUploadProgress | null>(null)
   /** 街机 ROM 的自动识别结果，上传后显示在下面 */
   const [romset, setRomset] = useState<RomsetIdentification | null>(null)
+  /** FBNeo 索引没有覆盖的、按 MAME 源码 CRC 精确识别的街机 set */
+  const [mameRomset, setMameRomset] = useState<NamcoSystem11Match | null>(null)
   /** 同一个语言槽只恢复一次；父表单每次 setForm 都会重绘，不能因此启动第二条轮询。 */
   const resumedPspJob = useRef('')
   const resumedPsxJob = useRef('')
@@ -2308,8 +2346,9 @@ function RomField({
   const isFlash = platform === 'flash'
   const isHtml5 = platform === 'html5'
   const isStreamingDisc = isStreamingDiscPlatform(platform)
+  const isPlayArcadeBundle = platform === 'arcade' && runtime === 'play'
   /** PS1 的 CHD 也必须保持裸文件才能按 Range 读盘；旧 8BG 仍允许上传作兼容回退。 */
-  const shouldPack = !isStreamingDisc && !isHtml5 && platform !== 'psx'
+  const shouldPack = !isStreamingDisc && !isHtml5 && platform !== 'psx' && !isPlayArcadeBundle
   const oneClickSockdrive = platform === 'dos' && Boolean(lang && autoSockdrive && !autoSockdrive.hasExtras)
   /** 街机的 ROM key 保留原文件名 —— FBNeo 靠压缩包名认 romset，见 roms.ts 的 FILENAME_IS_IDENTITY */
   const isArcade = keepsOriginalFileName(platform)
@@ -2449,7 +2488,7 @@ function RomField({
   }
 
   /**
-   * 街机包的自动识别：读 zip 中央目录里的 CRC，比对 FBNeo 驱动表认出 romset。
+   * 街机包的自动识别：先检查已核实的 MAME 专用指纹，再比对 FBNeo 驱动表认出 romset。
    *
    * 只在**完全命中**（该 romset 的成员一个不缺、且没有第二个同样满分的候选）时
    * 才改名 —— 差一个 ROM 就套上父集的名字，换来的是「missing files」，比不改还糟。
@@ -2464,12 +2503,25 @@ function RomField({
    */
   const sniffArcade = async (file: File): Promise<string | null> => {
     setRomset(null)
+    setMameRomset(null)
     if (!isArcade) return null
     if (!/\.zip$/i.test(file.name)) throw new Error('街机 ROM 必须是 .zip：FBNeo / MAME 靠 ZIP 文件名和根目录成员识别 romset')
 
     const entries = await assertValidZipBlob(file, '街机 ROM')
+    const unsafePathProblem = arcadeArchiveUnsafePathProblem(entries)
+    if (unsafePathProblem) throw new Error(unsafePathProblem)
+    const mameMatch = identifyNamcoSystem11Tekken(entries)
     const layoutProblem = arcadeArchiveLayoutProblem(entries)
-    if (layoutProblem) throw new Error(layoutProblem)
+    // 该包根目录完整包含 tekken 父集；额外克隆 ROM 在其它子目录中，MAME 不会读它们。
+    // 仅对 CRC 完全匹配的这个已知集合放行，不把通用的子目录包风险降级成警告。
+    if (layoutProblem && !mameMatch) throw new Error(layoutProblem)
+    if (mameMatch) {
+      setMameRomset(mameMatch)
+      onBiosFound?.(mameMatch.bios)
+      const recommendation = detectArcadeCore({ exactMameBoard: true })
+      if (recommendation) onCoreFound?.(recommendation.core)
+      return `${mameMatch.romset}.zip`
+    }
 
     try {
       const found = await identifyArcadeRomset(entries)
@@ -2483,8 +2535,15 @@ function RomField({
       */
       if (found.hack) {
         onHackFound?.(found.hack)
+        const recommendation = detectArcadeCore({ supportedFbneoRomData: Boolean(found.hack.romData) })
+        if (recommendation) onCoreFound?.(recommendation.core)
         return `${found.hack.zipName}.zip`
       }
+
+      // 覆盖率满分足以证明核心家族兼容；即使多个 FBNeo 克隆集无法区分，也只选核心、不猜包名。
+      const fbneoHasExactSet = found.candidates.some((candidate) => candidate.coverage === 1)
+      const recommendation = detectArcadeCore({ indexedFbneoSet: fbneoHasExactSet })
+      if (recommendation) onCoreFound?.(recommendation.core)
 
       const hit = found.confident
       if (!hit) return null
@@ -2631,6 +2690,17 @@ function RomField({
       if (inputRef.current) inputRef.current.value = ''
       return
     }
+    if (isPlayArcadeBundle) {
+      setMsg({ ok: true, text: '正在校验 Play! System 2x6 包（目录、游戏定义、dongle 与镜像）…' })
+      try {
+        await inspectPlayArcadeBundle(file)
+      } catch (err) {
+        setMsg({ ok: false, text: err instanceof Error ? err.message : 'Play! 街机包校验失败；文件未上传' })
+        setProgress(null)
+        if (inputRef.current) inputRef.current.value = ''
+        return
+      }
+    }
     // CLI 生成的 8BG 可以直接上传；再包一层会让播放器只拆掉外层，最终把 8BG 密文交给模拟器。
     // 但四字节魔数不够：普通 ROM 可能碰巧以 8BG1 开头，半截包也照样有魔数。现成包在上传前
     // 要把每一块解密、解压和校验一遍，同时确认它使用的是当前服务端仍保留的密钥。
@@ -2658,11 +2728,35 @@ function RomField({
     }
     // 上面的 0–49% 只是本地校验；真正上传还没开始，确认弹窗期间不能留一条假进度。
     setProgress(null)
-    // 街机：先认 romset。现成 8BG 已经在上面完整验证过，不再把整份密文误当 ZIP 读第二遍；
-    // 真正交给核心的包名来自容器头的 originalName。
+    // 街机：遇到子目录成员时在本地安全拍平；压缩数据只切片复用，不做整包解压/重压缩。
+    // 现成 8BG 已在上面完整验证过，不把密文误当 ZIP；其包名来自容器头的 originalName。
+    let uploadSourceFile = file
+    let flattenedArcadeFiles = 0
+    if (isArcade && !alreadyPacked && !isPlayArcadeBundle) {
+      setMsg({ ok: true, text: '正在检查街机 ZIP 目录；如有子目录成员，会自动拍平后再上传…' })
+      try {
+        const flattened = await flattenArcadeZipBlob(file)
+        if (flattened.flattenedCount) {
+          flattenedArcadeFiles = flattened.flattenedCount
+          uploadSourceFile = new File([flattened.blob], file.name, {
+            type: file.type || 'application/zip',
+            lastModified: file.lastModified,
+          })
+          setMsg({ ok: true, text: `已检测到 ${flattenedArcadeFiles} 个街机 ROM 成员在子目录中，已自动拍平；正在识别 romset…` })
+        }
+      } catch (err) {
+        setMsg({ ok: false, text: err instanceof Error ? err.message : '无法安全拍平街机 ZIP；文件未上传' })
+        if (inputRef.current) inputRef.current.value = ''
+        return
+      }
+    }
     let sniffed: string | null
     try {
-      sniffed = alreadyPacked ? (platform === 'arcade' ? packedOriginalName : null) : await sniffArcade(file)
+      sniffed = alreadyPacked
+        ? (platform === 'arcade' ? packedOriginalName : null)
+        : isPlayArcadeBundle
+          ? uploadSourceFile.name
+          : await sniffArcade(uploadSourceFile)
     } catch (err) {
       setMsg({ ok: false, text: err instanceof Error ? err.message : '街机 ROM 校验失败' })
       if (inputRef.current) inputRef.current.value = ''
@@ -2678,11 +2772,11 @@ function RomField({
     // 共用 ZIP 时，本槽重传必须另存为自己的语言 key；复用旧 key 会把其他语言一起覆盖。
     // 光盘核心靠扩展名选容器。旧槽是 .cso/.chd、这次选的是 .iso 时绝不能“原地复用”旧名字，
     // 否则能力降级路径会把 ISO 字节写进 .chd/.cso，播放器只会得到一份看似存在的坏文件。
-    const sameStoredFormat = canReuseRomObjectKey(oldKey, alreadyPacked ? packedOriginalName : file.name, shouldPack)
+    const sameStoredFormat = canReuseRomObjectKey(oldKey, alreadyPacked ? packedOriginalName : uploadSourceFile.name, shouldPack)
     const reusable = oldKey && sameStoredFormat && allBoundKeys.filter((bound) => bound === oldKey).length <= 1 && !/^https?:/i.test(oldKey) && !oldKey.startsWith('/') && !isBundleKey(oldKey)
     // 现成容器的外层文件名可能只是 output.8bg；对象 key 必须按头里的 game.nds / game.zip
     // 生成，运行时选择在下载文件头之前就要靠这层扩展名判断，不能等解密后才知道。
-    const plainKey = sniffed ? defKey(sniffed) : reusable ? oldKey : defKey(alreadyPacked ? packedOriginalName : file.name)
+    const plainKey = sniffed ? defKey(sniffed) : reusable ? oldKey : defKey(alreadyPacked ? packedOriginalName : uploadSourceFile.name)
     const key = shouldPack || alreadyPacked ? romPackKey(plainKey) : plainKey
     let pspIsoToChd = false
     let psxIsoToChd = false
@@ -2750,7 +2844,7 @@ function RomField({
         if (inputRef.current) inputRef.current.value = ''
         return
       }
-    } else if (!(await confirmUpload(finalKey, file))) {
+    } else if (!(await confirmUpload(finalKey, uploadSourceFile))) {
       if (inputRef.current) inputRef.current.value = ''
       return
     }
@@ -2802,11 +2896,11 @@ function RomField({
         })
         return
       }
-      let uploadFile: Blob = file
+      let uploadFile: Blob = uploadSourceFile
       let packedBlob: Blob | null = null
       let packCodecLabel = ''
       if (needsPacking) {
-        const originalName = sniffed || file.name
+        const originalName = sniffed || uploadSourceFile.name
         const codec = recommendedRomPackCodec(originalName)
         packCodecLabel = codec === 'store' ? '仅 AES-256-GCM（已压缩容器不重复压缩）' : 'Zstd 19 + AES-256-GCM'
         setMsg({
@@ -2815,14 +2909,14 @@ function RomField({
             ? `正在分块加密 ${originalName}；ZIP/CHD 已压缩，不再重复跑 Zstd…`
             : `正在用 Zstd 19 压缩并加密 ${originalName}…`,
         })
-        const packed = await packRomForUpload(file, sniffed || file.name, ({ loaded, total }) => {
+        const packed = await packRomForUpload(uploadSourceFile, sniffed || uploadSourceFile.name, ({ loaded, total }) => {
           // 打包与上传各占一半；AES/Zstd 的单块内部没有细进度，按已完成的 8MB 块推进。
           setProgress(Math.min(49, Math.round((loaded / Math.max(1, total)) * 50)))
         }, codec)
         packedBlob = packed.blob
-        uploadFile = new File([packed.blob], key.split('/').pop() || `${file.name}.8bg`, {
+        uploadFile = new File([packed.blob], key.split('/').pop() || `${uploadSourceFile.name}.8bg`, {
           type: packed.blob.type,
-          lastModified: file.lastModified,
+          lastModified: uploadSourceFile.lastModified,
         })
         if (packed.reused) {
           setMsg({ ok: true, text: '源 ROM 校验一致，已复用上次生成的加密包，正在从已完成分片继续上传…' })
@@ -2859,6 +2953,7 @@ function RomField({
           `已上传到 R2：${result.key}（${human(result.size)}）` +
           (needsPacking ? `；${packCodecLabel}` : alreadyPacked ? '；沿用已有 8BG 容器' : '') +
           (sniffed ? `；已按识别结果命名为 ${sniffed}` : '') +
+          (flattenedArcadeFiles ? `；已自动拍平 ${flattenedArcadeFiles} 个子目录 ROM 文件` : '') +
           (migrationBackup ? `；旧文件 ${oldKey} 已保留${backupValue.trim() ? '' : '为备用地址'}` : '') +
           (removed ? `；旧文件 ${removed} 已删除` : '') +
           streamSuffix +
@@ -2939,7 +3034,7 @@ function RomField({
               : oneClickSockdrive
                 ? `选择一次原始 ZIP：先生成并上传同语言 8BG 完整回退包，再上传私有源文件，由服务器制作版本化 Sockdrive 并原子绑定`
               : isArcade
-              ? `街机 ROM 会**自动识别 romset**：读包里每个文件的 CRC 比对 FBNeo 驱动表，认出来就按 romset 短名存（如 ${defKey('kof97.zip')}）。核心只认这个名字，认不出时保留原名并给出候选`
+              ? `街机 ROM 会**自动识别 romset**：按 ZIP 中央目录的文件名和 CRC 核验。已支持的 MAME 专用包会自动选核心/BIOS；FBNeo 命中后按 romset 短名存（如 ${defKey('kof97.zip')}）。未知或不完整包不会猜名`
               : isFlash
                 ? `单个 .swf 存成 ${defKey('x.swf')}；多 SWF 的游戏直接选 .zip，整包会传到 ${bundleDirFor(platform, slug, lang)}/ 下`
                 : isHtml5
@@ -3104,6 +3199,17 @@ function RomField({
             found={romset}
             onApplyHack={onApplyHack}
           />
+        )}
+        {mameRomset && (
+          <div className="rounded-md border border-online/30 bg-online/5 p-2 text-xs text-muted">
+            <p className="font-semibold text-online">✓ 已精确识别：{mameRomset.board} · {mameRomset.romset}.zip（{mameRomset.matchedFiles}/12 个父集 ROM CRC 匹配）</p>
+            <p className="mt-1">
+              建议使用 MAME 当前版；所需 BIOS set 是 <code>namcoc76</code>（空字段会自动填写，已有手动值不会覆盖）。{mameRomset.nestedExtras > 0
+                ? ` 另外 ${mameRomset.nestedExtras} 个子目录 ROM 文件会在上传前自动移到 ZIP 根目录，ROM 数据本身不改写。`
+                : ''}
+              {' '}请在“ROM 存储 → 街机 BIOS 包”上传并绑定 <code>namcoc76.zip</code>，然后保存游戏资料；若你手动选了其它核心，系统会尊重手动设置。
+            </p>
+          </div>
         )}
         {!canUpload && allowStorage && (
           <p className="mt-1 text-[11px] text-dim">
@@ -3432,6 +3538,7 @@ function RomsetHint({
   const top = found.candidates[0]
   const hit = found.confident
   const hack = found.hack
+  const fbneoCoreKnown = found.candidates.some((candidate) => candidate.coverage === 1)
   return (
     <div className="mt-2 space-y-1 text-xs">
       {hack ? (
@@ -3477,8 +3584,9 @@ function RomsetHint({
       ) : (
         <div className="text-live">
           <p>
-            ⚠️ 没能确定 romset。最接近的是 <span className="font-mono">{top.name}</span>，
-            但只匹配上 {top.matched}/{top.total} 个 ROM —— 包可能残缺、或者是另一个版本。
+            ⚠️ {fbneoCoreKnown
+              ? '已确认这组 ROM 属于 FBNeo 支持范围，但克隆版本的 romset 名有歧义，不能安全地自动改包名。'
+              : `没能确定 romset。最接近的是 ${top.name}，但只匹配上 ${top.matched}/${top.total} 个 ROM —— 包可能残缺、或者是另一个版本。`}
           </p>
           {found.candidates.length > 1 && (
             <p className="mt-0.5 text-dim">
@@ -3491,7 +3599,9 @@ function RomsetHint({
             </p>
           )}
           <p className="mt-0.5 text-dim">
-            文件名保持原样上传了。核心只认 romset 短名，名字不对会报 Romset is unknown —— 确认是哪个版本后，手动把上面的 key 改成 &lt;romset&gt;.zip。
+            {fbneoCoreKnown
+              ? '核心已自动选择 FBNeo；文件名保持原样以避免误认。请确认正确的 romset 短名后再改上方 key。'
+              : '文件名保持原样上传了。核心只认 romset 短名，名字不对会报 Romset is unknown —— 确认是哪个版本后，手动把上面的 key 改成 <romset>.zip。'}
           </p>
         </div>
       )}

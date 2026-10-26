@@ -44,6 +44,7 @@ import { matchArcadeHack, type ArcadeHack } from '@/data/arcadeHacks'
 import { deriveArcadeHackBytes } from '../arcadeHack'
 import { biosNameOfUrl, planBiosFiles } from '../biosPlan'
 import { ensureParentDir } from '../fsWrite'
+import { canonicalMameRomset } from '../mameRomset'
 import { chdCompressors, psxCoreForPreparedName, psxCoreForTransfer, PSX_CHD_AUDIO_LATENCY_MS, PSX_CHD_CORE } from '../psxChd'
 import { canStreamPsxChd, preparePsxRangeDisc, type PsxRangeDisc, type PsxRangeFs } from '../psxRangeDisc'
 import { warmEmulatorJsStart } from '../ejsStartWarm'
@@ -1663,23 +1664,7 @@ export async function prepareRemoteDiscRom(
   return prepared
 }
 
-/**
- * MAME（mame-current）和 FBNeo 一样「文件名即身份」：核心按 romset 文件名挑驱动。
- * 但上传时文件名常常不标准——明星三缺一（IGS027A 的 mxsqy102tw 驱动）被存成了 mxsqy.zip，
- * MAME 按名字找 `mxsqy` 驱动压根不存在，于是落到主菜单。这里在交给引擎前把内层文件名
- * 纠正成 MAME 认得的 romset 名（只改 EJS_gameName，即引擎写进虚拟文件系统的文件名），
- * 不影响 RomData（mame-current 不认 FBNeo .dat，能力边界见 arcadeCore.ts）。
- * 键是上传文件名剥扩展名后的短名，值是 MAME 真实 romset 短名；以后再有这类错名游戏往里加即可。
- */
-const MAME_ROMSET_ALIASES: Record<string, string> = {
-  mxsqy: 'mxsqy102tw',
-}
 const isMameCurrentCore = (core: string | undefined): boolean => core === 'mame-current'
-function canonicalMameRomset(name: string): string {
-  const short = name.replace(/\.[^.]*$/, '')
-  const canonical = MAME_ROMSET_ALIASES[short]
-  return canonical ? `${canonical}.zip` : name
-}
 
 export function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const rt = getT().runtime

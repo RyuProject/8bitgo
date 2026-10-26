@@ -46,17 +46,24 @@ for (const [name, expected] of Object.entries(manifest.files ?? {})) {
   }
 }
 
-const js = readFileSync(join(dir, 'Play.js'), 'utf8')
-const wasm = readFileSync(join(dir, 'Play.wasm'))
+const runtimePath = manifest.runtimePath ? join(dir, manifest.runtimePath) : dir
+const js = readFileSync(join(runtimePath, 'Play.js'), 'utf8')
+const wasm = readFileSync(join(runtimePath, 'Play.wasm'))
+const paths = readFileSync(join(root, 'src', 'emulator', 'paths.ts'), 'utf8')
+const adapter = readFileSync(join(root, 'src', 'emulator', 'adapters', 'play.ts'), 'utf8')
 if (!js.includes('export default Play')) fail('Play.js 不是当前适配器需要的 ES module 构建')
 if (!js.includes('mainScriptUrlOrBlob') || !js.includes('new Worker')) {
   fail('Play.js 缺 pthread Worker 特征；跨源隔离和加载方式可能已经变化')
 }
 if (!js.includes('discImageDevice')) fail('Play.js 缺 DiscImageDevice 接口，ISO 分段读取无法工作')
 if (!wasm.subarray(0, 4).equals(Buffer.from([0x00, 0x61, 0x73, 0x6d]))) fail('Play.wasm 文件头无效')
-for (const marker of ['#outputCanvas', 'bootDiscImage', 'getFrames', 'KeyZ']) {
+for (const marker of ['#outputCanvas', 'bootDiscImage', 'bootArcade', 'setArcadeRomsPath', 'getFrames', 'KeyZ']) {
   if (!wasm.includes(Buffer.from(marker))) fail(`Play.wasm 缺关键特征 ${marker}，上游接口可能已经变化`)
+}
+const generation = /PLAY_RUNTIME_GENERATION\s*=\s*'([^']+)'/.exec(paths)?.[1]
+if (!generation || manifest.runtimePath !== generation || !adapter.includes("playRuntimeAsset('Play.js')")) {
+  fail('Play! 核心更新后必须将 JS/WASM 放入同名代次目录，防止 CDN 混用旧产物')
 }
 
 const targetLabel = checkDist ? 'dist/client/play/ 产物' : 'Play! Web 运行时'
-console.log(`✔ ${targetLabel}完整（JS / WASM / 许可证哈希一致，ISO 流式接口与 pthread 特征在位）`)
+console.log(`✔ ${targetLabel}完整（JS / WASM / 许可证哈希一致，PS2 流式接口、System 2x6 启动 API 与 pthread 特征在位）`)

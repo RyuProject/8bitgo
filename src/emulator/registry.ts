@@ -92,7 +92,8 @@ export function resolveRuntime(target: PlatformId | ResolveContext): Runtime | u
 
     // 2. 声明支持该扩展名的引擎里挑 priority 最高的
     const candidates = localRuntimes()
-      .filter((r) => r.available() && r.extensions.includes(ext) && r.supports(platform))
+      // Play! 的 arcade 支持必须由后台逐游戏显式启用；普通 ZIP romset 不能被它抢走。
+      .filter((r) => !(r.id === 'play' && platform === 'arcade') && r.available() && r.extensions.includes(ext) && r.supports(platform))
       .sort((a, b) => b.priority - a.priority)
     if (candidates[0]) return candidates[0]
   }

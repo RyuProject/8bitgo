@@ -1,0 +1,13 @@
+diff --git a/build_cmake/sqlite-3.20.1/CMakeLists.txt b/build_cmake/sqlite-3.20.1/CMakeLists.txt
+index a0308a5..94495f7 100644
+--- a/build_cmake/sqlite-3.20.1/CMakeLists.txt
++++ b/build_cmake/sqlite-3.20.1/CMakeLists.txt
+@@ -6,3 +6,8 @@ set(sqlite3_srcs
+ 
+ add_library(sqlite3static ${sqlite3_srcs})
+ target_link_libraries(sqlite3static ${CMAKE_DL_LIBS})
++# Browser pthread builds link shared-memory wasm; this bundled SQLite target otherwise
++# lacks the atomics/bulk-memory features required by the final wasm-ld link.
++if(EMSCRIPTEN)
++	target_compile_options(sqlite3static PRIVATE -pthread)
++endif()

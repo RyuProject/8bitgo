@@ -589,8 +589,10 @@ export function romCandidates(game: Pick<Game, 'rom' | 'roms' | 'romBackups'>, l
  * 玩家就会优先命中新包；没生成、损坏或密钥错则继续用原对象。完整外链不擅自改 URL，
  * 流式光盘 / HTML5 也明确不走浏览器解包。
  */
-export function playbackRomCandidates(game: Pick<Game, 'platform' | 'rom' | 'roms' | 'romBackups'>, lang: Lang, prefer?: RomLang | null): RomCandidate[] {
+export function playbackRomCandidates(game: Pick<Game, 'platform' | 'rom' | 'roms' | 'romBackups' | 'runtime'>, lang: Lang, prefer?: RomLang | null): RomCandidate[] {
   const raw = romCandidates(game, lang, prefer)
+  // Play! 的 System 2x6 包必须保持普通 ZIP；加密成 8BG 后 libchdr 无法按随机访问读取 CHD。
+  if (game.platform === 'arcade' && game.runtime === 'play') return raw
   // PS1 后台允许显式绑定旧 8BG，但不能从裸 CHD/ISO 再派生 `.8bg` 地址：
   // 新上传的原始 CHD 必须直接命中，否则会先请求不存在的 `.chd.8bg`，还会绕过 Range 流式读取。
   if (isStreamingDiscPlatform(game.platform) || game.platform === 'psx' || game.platform === 'html5') return raw
@@ -620,7 +622,7 @@ export function playbackRomCandidates(game: Pick<Game, 'platform' | 'rom' | 'rom
  * 播放器却提示“已换成日本語版本”—— 对 PSP 这种地区版状态不兼容的平台尤其危险。
  */
 export function playbackRomCandidatesForSelection(
-  game: Pick<Game, 'platform' | 'rom' | 'roms' | 'romBackups'>,
+  game: Pick<Game, 'platform' | 'rom' | 'roms' | 'romBackups' | 'runtime'>,
   lang: Lang,
   prefer?: RomLang | null,
 ): RomCandidate[] {
