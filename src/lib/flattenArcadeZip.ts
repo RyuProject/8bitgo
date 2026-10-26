@@ -1,5 +1,5 @@
 import { arcadeArchiveUnsafePathProblem, identifyNamcoSystem11Tekken } from './namcoSystem11'
-import { assertValidZipBlob } from './unzip'
+import { assertValidZipBlob, type ZipFileEntry } from './unzip'
 
 export interface FlattenArcadeZipResult {
   blob: Blob
@@ -11,8 +11,14 @@ export interface FlattenArcadeZipResult {
  * 街机 ROM 必须在 ZIP 根目录。只重写 ZIP 头和文件名，压缩数据直接引用原 Blob 的切片，
  * 避免先解压再压缩造成大内存峰值和额外 CPU；有重名时拒绝自动处理，防止覆盖 ROM。
  */
-export async function flattenArcadeZipBlob(blob: Blob): Promise<FlattenArcadeZipResult> {
-  const entries = await assertValidZipBlob(blob, '街机 ROM')
+export async function flattenArcadeZipBlob(blob: Blob, knownEntries?: readonly ZipFileEntry[]): Promise<FlattenArcadeZipResult> {
+  /*
+   * 上传器在拍平前还要用同一份中央目录做 romset 识别。普通包本来就没有子目录，
+   * 如果这里再读一次尾部和每个本地头，会把“选文件后立刻开始上传”的等待翻倍。
+   * 调用方传入的条目仍必须来自 assertValidZipBlob；这个默认分支留给独立调用，
+   * 不能因为优化而把 ZIP 完整性检查变成可选。
+   */
+  const entries = knownEntries ?? await assertValidZipBlob(blob, '街机 ROM')
   const unsafe = arcadeArchiveUnsafePathProblem(entries)
   if (unsafe) throw new Error(unsafe)
 

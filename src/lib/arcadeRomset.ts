@@ -199,7 +199,7 @@ export function matchRomset(index: RomsetIndex, crcs: number[]): RomsetIdentific
  * @param entries lib/unzip.ts 的 listZipEntries() 结果，只用到 crc32
  * @returns 索引加载不出来或包里一个 CRC 都对不上时返回 null
  */
-export async function identifyArcadeRomset(entries: { crc32: number }[]): Promise<RomsetIdentification | null> {
+export async function identifyArcadeRomset(entries: readonly { crc32: number }[]): Promise<RomsetIdentification | null> {
   const crcs = entries.map((e) => e.crc32).filter((c) => c > 0)
   if (!crcs.length) return null
 

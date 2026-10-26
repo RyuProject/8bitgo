@@ -23,7 +23,7 @@ import {
   type UploadStage,
 } from '@/services/roms'
 import { bundleBytes, bundleWarnings, pickMainSwf, planSwfBundleFromZip, type SwfBundleFile, type SwfBundlePlan } from '@/lib/swfBundle'
-import { assertValidZip, assertValidZipBlob, extractZipEntry, isZip } from '@/lib/unzip'
+import { assertValidZip, assertValidZipBlob, extractZipEntry, isZip, type ZipFileEntry } from '@/lib/unzip'
 import { inspectPlayArcadeBundle } from '@/lib/playArcadeBundle'
 import { arcadeArchiveLayoutProblem } from '@/lib/arcadeArchive'
 import { arcadeArchiveUnsafePathProblem, identifyNamcoSystem11Tekken, type NamcoSystem11Match } from '@/lib/namcoSystem11'
@@ -46,7 +46,7 @@ import {
   skipExtraEntry,
   type DosExtraRef,
 } from '@/lib/dosExtras'
-import { identifyArcadeRomset, type RomsetIdentification } from '@/lib/arcadeRomset'
+import { identifyArcadeRomset, loadRomsetIndex, type RomsetIdentification } from '@/lib/arcadeRomset'
 import type { ArcadeHack } from '@/data/arcadeHacks'
 import { biosSetUrlSync, platformBiosUrlSync, fetchPlatformBios, loadedPlatformBios } from '@/services/platformBios'
 // 「平台级那份是不是正好要的这个系统」这条规则和播放器共用一份实现，别各写一份
@@ -227,6 +227,10 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
   const [form, setForm] = useState<Game>(initialForm)
   /** 上传 ROM 得出的“这包还缺哪张盘”只在当前编辑会话提示；真正的绑定要等 CHD 上传成功才入表单。 */
   const [mameMediaProfile, setMameMediaProfile] = useState<MameArcadeDiskProfile | null>(null)
+  /** 街机通常只有一个可启动 ROM；地区变体按需展开，避免新建条目先看到八份空上传位。 */
+  const [showArcadeVariants, setShowArcadeVariants] = useState(() =>
+    Object.keys(initial?.roms ?? {}).some((lang) => lang !== 'en'),
+  )
   const [tagsText, setTagsText] = useState(initialTagsText)
   const [slugTouched, setSlugTouched] = useState(Boolean(initial))
   // 历史值先视作管理员手选；本次表单自动识别出的核心仍可被下一次 ROM 识别更新。
@@ -264,6 +268,10 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
   )
   /** 该平台可选的核心。没配置的平台不显示这一栏 */
   const coreOptions = coreOptionsFor(form.platform)
+  const arcadePrimaryLang = ROM_LANGS.find((lang) => Boolean(form.roms?.[lang]?.trim())) ?? 'en'
+  const displayedRomLangs: readonly RomLang[] = form.platform === 'arcade' && !showArcadeVariants
+    ? [arcadePrimaryLang]
+    : ROM_LANGS
 
   const hasUnsavedChanges = () => JSON.stringify({ form, tagsText }) !== initialSnapshot.current
 
@@ -317,6 +325,18 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
   useEffect(() => {
     void fetchPlatformBios()
   }, [])
+
+  /*
+   * 街机索引约 600KB，只供后台使用。切到街机时趁管理员仍在填写标题等资料预热它，
+   * 选 ZIP 后就不必把“读取中央目录”和“下载索引”串行等待；省流量模式仍尊重用户选择。
+   */
+  useEffect(() => {
+    if (form.platform !== 'arcade') return
+    const connection = (navigator as Navigator & { connection?: { saveData?: boolean } }).connection
+    if (connection?.saveData) return
+    const timer = window.setTimeout(() => { void loadRomsetIndex() }, 120)
+    return () => window.clearTimeout(timer)
+  }, [form.platform])
 
   /**
    * 「这个游戏要的 BIOS 还没绑地址」——值是系统名，没有就是 null。
@@ -1045,39 +1065,40 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
               </p>
             )}
           </Field>
-          <Field label="DIP 开关" className="col-span-2">
-            <input
-              className={cx(inputClass, 'font-mono')}
-              value={form.arcadeDip ?? ''}
-              onChange={(e) => set('arcadeDip', e.target.value || undefined)}
-              spellCheck={false}
-              placeholder="mahjong"
-            />
+          <details className="col-span-2 rounded-lg border border-line bg-surface-2 px-3 py-2 sm:col-span-4">
+            <summary className="cursor-pointer select-none text-xs font-medium text-fg">
+              高级兼容设置（仅麻将 DIP、汉化 / 改版 RomData 需要）
+            </summary>
             <p className="mt-1 text-[11px] text-dim">
-              实机主板上那组拨码。目前只有一处用得上：<b>麻将类游戏</b>出厂是「摇杆」档，
-              不拨到麻将面板，方向键和碰吃杠全对不上 —— 而屏幕上不会报任何错，玩家只会觉得游戏坏了。
-              填 <code>mahjong</code> 会自动认出「摇杆 / 麻将」那一项并拨过去；
-              认不出来时浏览器控制台会把它看到的那几项和取值列出来，照着改写成
-              <code>组名=值</code>（例如 <code>Controls=Mahjong</code>，多条用逗号分隔）即可。
-              留空 = 不干预。只对走 <b>FBNeo 系核心</b>（fbneo / fbalpha2012）的街机有效 ——
-              MAME 2003 系没把 DIP 做成核心选项，填了不会生效（控制台会点名这件事）。
+              普通官方 romset 不需要填写这里。把低频且高风险的设置收起，避免新建条目时误改启动配置。
             </p>
-          </Field>
-          <Field label="RomData（改版包）" className="col-span-2 sm:col-span-4">
-            <textarea
-              className={cx(inputClass, 'h-44 resize-y py-2 font-mono text-xs leading-5')}
-              value={form.arcadeRomData ?? ''}
-              onChange={(e) => set('arcadeRomData', e.target.value || undefined)}
-              spellCheck={false}
-              placeholder={'// 三国志2 中文版\nZipName   wofcn\nDrvName   wofj\nFullName  Warriors of Fate (Chinese)\n\ntk2j_23c.8f  0x080000  0x9b215a68  BRF_ESS BRF_PRG CPS1_68K_PROGRAM_NO_BYTESWAP'}
-            />
-            <p className="mt-1 text-[11px] text-dim">
-              只给<b>不在 FBNeo 驱动表里</b>的包用（汉化版、修改版）。ROM 仍按包名上传（如 wofcn.zip），
-              播放器会在它旁边放一份同名 .dat，核心据此把 DrvName 指定的驱动「寄生」成这个包名，
-              并整个改用 dat 里的 ROM 清单 —— 和原版对不上的 GFX ROM 就是靠这个加载的。
-              必须同时写 ZipName 和 DrvName。骨架可以用 <code>npm run romdata -- &lt;包.zip&gt;</code> 从 zip 直接生成。
-            </p>
-          </Field>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <Field label="DIP 开关">
+                <input
+                  className={cx(inputClass, 'font-mono')}
+                  value={form.arcadeDip ?? ''}
+                  onChange={(e) => set('arcadeDip', e.target.value || undefined)}
+                  spellCheck={false}
+                  placeholder="mahjong"
+                />
+                <p className="mt-1 text-[11px] text-dim">
+                  仅在麻将类游戏需要切换为麻将面板时填写 <code>mahjong</code>；也可填 <code>组名=值</code>，多条用逗号分隔。只对 FBNeo 系核心有效。
+                </p>
+              </Field>
+              <Field label="RomData（汉化 / 改版包）">
+                <textarea
+                  className={cx(inputClass, 'h-44 resize-y py-2 font-mono text-xs leading-5')}
+                  value={form.arcadeRomData ?? ''}
+                  onChange={(e) => set('arcadeRomData', e.target.value || undefined)}
+                  spellCheck={false}
+                  placeholder={'// 三国志2 中文版\nZipName   wofcn\nDrvName   wofj\nFullName  Warriors of Fate (Chinese)\n\ntk2j_23c.8f  0x080000  0x9b215a68  BRF_ESS BRF_PRG CPS1_68K_PROGRAM_NO_BYTESWAP'}
+                />
+                <p className="mt-1 text-[11px] text-dim">
+                  仅给不在 FBNeo 驱动表里的包用。必须同时写 <code>ZipName</code> 和 <code>DrvName</code>；已识别的改版包会在上传结果中提供一键填入。
+                </p>
+              </Field>
+            </div>
+          </details>
           </>
         )}
         {form.platform === 'flash' && (
@@ -1181,10 +1202,33 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
 
       <div className="space-y-3 rounded-xl border border-line p-3">
         <div>
-          <p className="text-sm font-semibold">ROM 文件（按语言）</p>
-          <p className="mt-0.5 text-xs text-muted">
-            每个语言先探主地址、再探同语言备用地址；两者都失败才依次回退到 <span className="font-medium text-fg">English → 日本語 → 简体中文 → 繁體中文</span>，全部没有时提示“游戏没有当前语言版本”。
-          </p>
+          <p className="text-sm font-semibold">{form.platform === 'arcade' ? '街机 ROM 与启动配置' : 'ROM 文件（按语言）'}</p>
+          {form.platform === 'arcade' ? (
+            <>
+              <p className="mt-0.5 text-xs text-muted">
+                一份 ZIP 对应一个可启动 romset。选择文件后会在浏览器只读取 ZIP 目录与 CRC，自动校验结构、识别 FBNeo / MAME、推荐核心并补齐可确定的 BIOS；不会解压整包或猜测不完整 ROM 的名字。
+              </p>
+              <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                <div className="rounded-lg border border-line bg-surface-2 p-2 text-xs"><b className="text-fg">1. 选择 ZIP</b><p className="mt-1 text-dim">原始 romset ZIP；嵌套目录会安全拍平或明确阻止。</p></div>
+                <div className="rounded-lg border border-line bg-surface-2 p-2 text-xs"><b className="text-fg">2. 自动识别</b><p className="mt-1 text-dim">只在 CRC 完整命中时改为正确 set 名，避免上传后才出现缺文件。</p></div>
+                <div className="rounded-lg border border-line bg-surface-2 p-2 text-xs"><b className="text-fg">3. 保存条目</b><p className="mt-1 text-dim">按识别结果检查核心、BIOS 与必需 CHD，再保存即可。</p></div>
+              </div>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <span className="text-xs text-muted">默认只显示一个主版本，减少新建条目的无效操作。</span>
+                <button
+                  type="button"
+                  className={cx(btnClass.small, 'border border-line bg-surface-2 text-fg hover:border-line-strong')}
+                  onClick={() => setShowArcadeVariants((shown) => !shown)}
+                >
+                  {showArcadeVariants ? '收起地区 / 语言变体' : '添加地区 / 语言变体'}
+                </button>
+              </div>
+            </>
+          ) : (
+            <p className="mt-0.5 text-xs text-muted">
+              每个语言先探主地址、再探同语言备用地址；两者都失败才依次回退到 <span className="font-medium text-fg">English → 日本語 → 简体中文 → 繁體中文</span>，全部没有时提示“游戏没有当前语言版本”。
+            </p>
+          )}
           {form.platform === 'dos' && (
             <p className="mt-1 text-xs text-muted">
               {pc98Form
@@ -1202,7 +1246,7 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
             </p>
           )}
         </div>
-        {ROM_LANGS.map((lang) => (
+        {displayedRomLangs.map((lang) => (
           <div key={lang} className="space-y-2">
             {form.platform === 'dos' && !pc98Form && (
               <>
@@ -1249,7 +1293,11 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
             <RomField
               lang={lang}
               dosEntry={form.platform === 'dos' ? form.dosExecutables?.[lang] : undefined}
-              label={lang === 'en' ? 'English ROM（第一回退）' : lang === 'ja' ? '日本語 ROM（第二回退）' : `${ROM_LANG_LABEL[lang]} ROM`}
+              label={form.platform === 'arcade'
+                ? lang === arcadePrimaryLang
+                  ? `街机 ROM（${ROM_LANG_LABEL[lang]} · 主版本）`
+                  : `${ROM_LANG_LABEL[lang]} 街机 ROM（地区 / 语言变体）`
+                : lang === 'en' ? 'English ROM（第一回退）' : lang === 'ja' ? '日本語 ROM（第二回退）' : `${ROM_LANG_LABEL[lang]} ROM`}
               value={form.roms?.[lang] ?? ''}
               backupValue={form.romBackups?.[lang] ?? ''}
               platform={form.platform}
@@ -2440,6 +2488,8 @@ function RomField({
   const [romset, setRomset] = useState<RomsetIdentification | null>(null)
   /** FBNeo 索引没有覆盖的、按 MAME 源码 CRC 精确识别的街机 set */
   const [mameRomset, setMameRomset] = useState<NamcoSystem11Match | null>(null)
+  /** 需要额外 CHD 的 MAME 识别结果留在上传位旁边，管理员不必滚到表单底部才知道下一步。 */
+  const [mameMedia, setMameMedia] = useState<MameArcadeDiskProfile | null>(null)
   /** 同一个语言槽只恢复一次；父表单每次 setForm 都会重绘，不能因此启动第二条轮询。 */
   const resumedPspJob = useRef('')
   const resumedPsxJob = useRef('')
@@ -2611,15 +2661,17 @@ function RomField({
    * 只读 Blob 尾部的中央目录和每个本地头，避免 200MB 大包再申请一块同大的
    * ArrayBuffer；这个峰值在手机后台页会直接把标签页杀掉。
    */
-  const sniffArcade = async (file: File): Promise<string | null> => {
+  const sniffArcade = async (file: File, knownEntries?: readonly ZipFileEntry[]): Promise<string | null> => {
     setRomset(null)
     setMameRomset(null)
+    setMameMedia(null)
     // 同一张表单可能重新上传另一款街机；不清掉上一次的识别结果会把旧 CHD 误绑定到新 ROM。
     onMameMediaFound?.(null)
     if (!isArcade) return null
     if (!/\.zip$/i.test(file.name)) throw new Error('街机 ROM 必须是 .zip：FBNeo / MAME 靠 ZIP 文件名和根目录成员识别 romset')
 
-    const entries = await assertValidZipBlob(file, '街机 ROM')
+    // 目录拍平器刚刚验证过的普通 ZIP 可以把条目复用；拍平后文件名已变则必须重验新包。
+    const entries = knownEntries ?? await assertValidZipBlob(file, '街机 ROM')
     const unsafePathProblem = arcadeArchiveUnsafePathProblem(entries)
     if (unsafePathProblem) throw new Error(unsafePathProblem)
     const mameMatch = identifyNamcoSystem11Tekken(entries)
@@ -2636,6 +2688,7 @@ function RomField({
       return `${mameMatch.romset}.zip`
     }
     if (mameMedia) {
+      setMameMedia(mameMedia)
       onMameMediaFound?.(mameMedia)
       const recommendation = detectArcadeCore({ exactMameBoard: true })
       if (recommendation) onCoreFound?.(recommendation.core)
@@ -2851,10 +2904,12 @@ function RomField({
     // 现成 8BG 已在上面完整验证过，不把密文误当 ZIP；其包名来自容器头的 originalName。
     let uploadSourceFile = file
     let flattenedArcadeFiles = 0
+    let arcadeEntries: ZipFileEntry[] | undefined
     if (isArcade && !alreadyPacked && !isPlayArcadeBundle) {
-      setMsg({ ok: true, text: '正在检查街机 ZIP 目录；如有子目录成员，会自动拍平后再上传…' })
+      setMsg({ ok: true, text: '正在读取街机 ZIP 目录与 CRC；不会解压整包…' })
       try {
-        const flattened = await flattenArcadeZipBlob(file)
+        arcadeEntries = await assertValidZipBlob(file, '街机 ROM')
+        const flattened = await flattenArcadeZipBlob(file, arcadeEntries)
         if (flattened.flattenedCount) {
           flattenedArcadeFiles = flattened.flattenedCount
           uploadSourceFile = new File([flattened.blob], file.name, {
@@ -2875,7 +2930,7 @@ function RomField({
         ? (platform === 'arcade' ? packedOriginalName : null)
         : isPlayArcadeBundle
           ? uploadSourceFile.name
-          : await sniffArcade(uploadSourceFile)
+          : await sniffArcade(uploadSourceFile, uploadSourceFile === file ? arcadeEntries : undefined)
     } catch (err) {
       setMsg({ ok: false, text: err instanceof Error ? err.message : '街机 ROM 校验失败' })
       if (inputRef.current) inputRef.current.value = ''
@@ -3327,6 +3382,18 @@ function RomField({
                 ? ` 原始 ZIP 会保持不变；另外 ${mameRomset.nestedExtras} 个子目录成员仍留在原处，MAME 以 tekken.zip 只读取根目录的父集 ROM。`
                 : ''}
               {' '}请在“ROM 存储 → 街机 BIOS 包”上传并绑定 <code>namcoc76.zip</code>，然后保存游戏资料；若你手动选了其它核心，系统会尊重手动设置。
+            </p>
+          </div>
+        )}
+        {mameMedia && (
+          <div className="rounded-md border border-online/30 bg-online/5 p-2 text-xs text-muted">
+            <p className="font-semibold text-online">
+              ✓ 已精确识别：{mameMedia.board} · {mameMedia.romset}.zip（需要额外媒体盘）
+            </p>
+            <p className="mt-1">
+              已推荐 <code>mame-current</code>。这份 ZIP 本身不是完整游戏，保存前还要在下方上传并绑定
+              {' '}<code>{mameMedia.disks.map((disk) => `${disk.romset}/${disk.name}.chd`).join('、')}</code>；
+              CHD 是游戏专属媒体，不是 BIOS，系统会先核对文件头和 SHA-1。
             </p>
           </div>
         )}

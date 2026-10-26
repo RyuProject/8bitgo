@@ -162,7 +162,7 @@ assert.match(gameForm, /found\.candidates\.some\(\(candidate\) => candidate\.cov
 assert.match(gameForm, /detectArcadeCore\(\{ indexedFbneoSet: fbneoHasExactSet \}\)/, 'CRC 完整命中 FBNeo set 必须选择 FBNeo')
 assert.match(gameForm, /onBiosFound\?\.\(mameMatch\.bios\)/, '精确识别后必须填入对应 BIOS 系统名')
 assert.match(gameForm, /layoutProblem && !mameMatch/, '仅已核验的 MAME set 可豁免子目录拦截')
-assert.match(gameForm, /if \(isArcade && !alreadyPacked && !isPlayArcadeBundle\)[\s\S]*?flattenArcadeZipBlob\(file\)/, '普通街机 ZIP 上传必须自动检查并拍平子目录成员；Play! 专用包保留其内部清单结构')
+assert.match(gameForm, /if \(isArcade && !alreadyPacked && !isPlayArcadeBundle\)[\s\S]*?assertValidZipBlob\(file, '街机 ROM'\)[\s\S]*?flattenArcadeZipBlob\(file, arcadeEntries\)/, '普通街机 ZIP 上传必须自动检查并拍平子目录成员，并复用已验证的目录；Play! 专用包保留其内部清单结构')
 assert.match(gameForm, /自动拍平 \$\{flattenedArcadeFiles\} 个子目录 ROM 文件/, '上传完成后应说明自动拍平结果')
 assert.match(biosPanel, /namcoC76BiosProblem\(entries\)/, 'C76 BIOS 必须在上传前校验内容')
 assert.match(biosPanel, /arcadeBiosFileNameForBinding\(id\)/, '固定 BIOS 文件名必须用于上传和手工绑定校验')
