@@ -144,10 +144,13 @@ function ext(name: string): string {
  *
  * 以前是 2048。PSX 的 .bin/.iso 镜像里那句 PLAYSTATION 在第 16 扇区 ——
  * 2048 字节/扇区的 iso 在 0x8000，2352 字节/扇区的 raw bin 在 0x9300，
- * 两个都远超 2KB，所以那条判断实际上一次都没命中过。64KB 能把两种都覆盖住，
- * 而且只是从 File 上切一片，不会把整个 ROM 读进内存。
+ * 两个都远超 2KB，所以那条判断实际上一次都没命中过。约 64.5KB 能把两种覆盖住，
+ * 同时多留 512 字节给带 copier 头的 SNES HiROM；只从 File 切片，不会读整份 ROM。
  */
-const HEAD_BYTES = 65536
+// 64 KiB 足以读到普通 HiROM 头，却差 480 字节读不到「512 字节 copier 头 + HiROM 头」。
+// 取整到 0x10200 后四种 LoROM / HiROM、有无 copier 头的内部头都完整落在读取窗口内。
+// 多出的 512 字节只在本地识别时读取，不会把整份 ROM 放进内存。
+const HEAD_BYTES = 0x10200
 
 function ascii(bytes: Uint8Array, start: number, len: number): string {
   const end = Math.min(start + len, bytes.length)

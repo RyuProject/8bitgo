@@ -1,4 +1,4 @@
-import { arcadeArchiveUnsafePathProblem } from './namcoSystem11'
+import { arcadeArchiveUnsafePathProblem, identifyNamcoSystem11Tekken } from './namcoSystem11'
 import { assertValidZipBlob } from './unzip'
 
 export interface FlattenArcadeZipResult {
@@ -15,6 +15,14 @@ export async function flattenArcadeZipBlob(blob: Blob): Promise<FlattenArcadeZip
   const entries = await assertValidZipBlob(blob, '街机 ROM')
   const unsafe = arcadeArchiveUnsafePathProblem(entries)
   if (unsafe) throw new Error(unsafe)
+
+  /*
+   * 这个已核实的 Tekken/System 11 包把父集放在根目录、克隆集放在子目录。
+   * MAME 会按 tekken.zip 只读取父集成员；重写整个 ZIP 虽然不改 ROM 字节，却会改变
+   * 原始归档结构，而且容易把克隆 ROM 一并摊进目标 set。命中完整 CRC 指纹时保留原 Blob，
+   * 后续识别会把游戏名纠正为 tekken.zip；其它包仍走常规拍平/重名保护。
+   */
+  if (identifyNamcoSystem11Tekken(entries)) return { blob, flattenedCount: 0 }
 
   const nestedCount = entries.reduce((count, entry) => count + Number(entry.name.includes('/')), 0)
   if (!nestedCount) return { blob, flattenedCount: 0 }
@@ -37,6 +45,7 @@ export async function flattenArcadeZipBlob(blob: Blob): Promise<FlattenArcadeZip
   for (const entry of entries) {
     const baseName = entry.name.split('/').pop() ?? ''
     // DOS/街机虚拟文件系统不接受路径字符；非 ASCII 仍以 UTF-8 保存。
+    // eslint-disable-next-line no-control-regex -- ZIP 文件名中的控制字节不能进入模拟器虚拟文件系统。
     if (!baseName || baseName === '.' || baseName === '..' || /[\\/:\u0000-\u001f]/.test(baseName)) {
       throw new Error(`无法安全拍平 ZIP 成员“${entry.name}”；请先手动整理压缩包。`)
     }

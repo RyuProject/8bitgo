@@ -24,17 +24,18 @@ function makeStoredZip(files) {
   const localParts = []
   const centralParts = []
   let localOffset = 0
-  for (const { name: path, text } of files) {
+  for (const { name: path, text, crcOverride } of files) {
     const name = encoder.encode(path)
     const content = encoder.encode(text)
-    const crc = crc32(content)
+    // 可覆写中央目录指纹，以验证“只保留完整已知 set”的分支；ROM 负载本身仍是测试字节。
+    const checksum = crcOverride ?? crc32(content)
     const local = new Uint8Array(30 + name.length + content.length)
     const localView = new DataView(local.buffer)
     localView.setUint32(0, 0x04034b50, true)
     localView.setUint16(4, 20, true)
     localView.setUint16(8, 0, true)
     localView.setUint16(12, 0x0021, true)
-    localView.setUint32(14, crc, true)
+    localView.setUint32(14, checksum, true)
     localView.setUint32(18, content.length, true)
     localView.setUint32(22, content.length, true)
     localView.setUint16(26, name.length, true)
@@ -49,7 +50,7 @@ function makeStoredZip(files) {
     centralView.setUint16(6, 20, true)
     centralView.setUint16(12, 0, true)
     centralView.setUint16(14, 0x0021, true)
-    centralView.setUint32(16, crc, true)
+    centralView.setUint32(16, checksum, true)
     centralView.setUint32(20, content.length, true)
     centralView.setUint32(24, content.length, true)
     centralView.setUint16(28, name.length, true)
@@ -95,6 +96,19 @@ assert.equal(identifyNamcoSystem11Tekken([...parent, parent[0]]), null, '根目�
 assert.equal(identifyNamcoSystem11Tekken([...parent, { name: '../outside.bin', crc32: 1 }]), null, '路径穿越不能取得例外')
 assert.match(arcadeArchiveUnsafePathProblem([{ name: 'folder/../tekken.zip' }]), /不安全路径/)
 
+const completeNamcoParentZip = makeStoredZip([
+  ...parent.map((entry) => ({ name: entry.name, text: `test:${entry.name}`, crcOverride: entry.crc32 })),
+  ...withCloneExtras.slice(parent.length).map((entry) => ({ name: entry.name, text: `test:${entry.name}` })),
+])
+const preservedNamcoParent = await flattenArcadeZipBlob(completeNamcoParentZip)
+assert.equal(preservedNamcoParent.blob, completeNamcoParentZip, '完整 Tekken/System 11 父集必须原样上传，不重写父集+克隆包')
+assert.equal(preservedNamcoParent.flattenedCount, 0, '保留原始归档时不能谎报已拍平')
+assert.deepEqual(
+  (await assertValidZipBlob(preservedNamcoParent.blob, 'Namco 保留回归')).filter((entry) => entry.name.includes('/')).map((entry) => entry.name),
+  withCloneExtras.slice(parent.length).map((entry) => entry.name),
+  '例外包中的克隆目录必须保持原结构',
+)
+
 assert.equal(detectArcadeCore({ exactMameBoard: true })?.core, 'mame-current')
 assert.equal(detectArcadeCore({ indexedFbneoSet: true })?.core, 'fbneo')
 assert.equal(detectArcadeCore({ supportedFbneoRomData: true })?.core, 'fbneo')
@@ -139,6 +153,7 @@ assert.match(namcoC76BiosProblem([...validBios, { name: 'readme.txt', crc32: 1 }
 
 const gameForm = readFileSync(new URL('../src/admin/GameForm.tsx', import.meta.url), 'utf8')
 const biosPanel = readFileSync(new URL('../src/admin/PlatformBiosPanel.tsx', import.meta.url), 'utf8')
+assert.match(gameForm, /原始 ZIP 会保持不变；另外 \$\{mameRomset\.nestedExtras\} 个子目录成员仍留在原处/, '可信父集命中后应向管理员说明保留归档结构')
 assert.match(gameForm, /manualCoreChoice = useRef\(Boolean\(initial\?\.core\?\.trim\(\)\)\)/, '历史上明确保存的核心按手工选择保护')
 assert.match(gameForm, /if \(!manualCoreChoice\.current\) setForm\(\(f\) => \(\{ \.\.\.f, core \}\)\)/, '自动选核心不得覆盖管理员手工选择')
 assert.match(gameForm, /manualCoreChoice\.current = Boolean\(value\)/, '选择平台默认后恢复 ROM 自动识别')
