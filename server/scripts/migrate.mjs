@@ -257,6 +257,12 @@ const patches = [
     run: () => conn.query('ALTER TABLE `games` ADD COLUMN `arcade_dip` VARCHAR(200) NULL AFTER `arcade_bios`'),
   },
   {
+    name: 'games.arcade_mame_disks（MAME 游戏专属 CHD 媒体盘，不是 BIOS）',
+    table: 'games',
+    needed: async () => !(await hasColumn('games', 'arcade_mame_disks')),
+    run: () => conn.query('ALTER TABLE `games` ADD COLUMN `arcade_mame_disks` JSON NULL AFTER `arcade_bios`'),
+  },
+  {
     name: 'games.flash_controls（逐游戏 Flash 键位）',
     table: 'games',
     needed: async () => !(await hasColumn('games', 'flash_controls')),

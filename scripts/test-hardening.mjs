@@ -324,6 +324,15 @@ check('⚠️ 路由切换会取消上一页取数，不让废请求继续占带
   assert.match(pageData, /controller\.abort\(\)/, 'effect 清理时没有真正掐断网络请求')
 })
 
+check('⚠️ 首屏数据在渲染期间只能 peek，提交后才清（否则并发水合重来时报 React #418）', () => {
+  const pageData = strip(read('src/services/pageData.ts'))
+  const hook = pageData.slice(pageData.indexOf('export function usePageData'))
+  // useState 初始化函数可能因渲染被丢弃而重跑：读完即清会让第二遍拿到 loading，文字和服务端 HTML 对不上
+  assert.match(hook, /useState<PageState<T>>\(\(\) => \{\s*const boot = peekBootstrap\(\)/, 'usePageData 首帧必须 peekBootstrap')
+  assert.doesNotMatch(hook, /takeBootstrap\(\)/, 'usePageData 渲染期间不能 takeBootstrap（读完即清）')
+  assert.match(hook, /useEffect\(releaseBootstrap, \[\]\)/, '首屏数据要在提交后的 effect 里释放')
+})
+
 check('⚠️ jsnes 房间上限的环境变量填错时不能变成无上限', () => {
   const jsnes = strip(read('server/src/jsnes-netplay.js'))
   assert.match(jsnes, /envNumber\('JSNES_NETPLAY_MAX_ROOMS',\s*500,\s*\{\s*max:\s*5000\s*\}\)/)

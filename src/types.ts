@@ -60,6 +60,29 @@ export interface FlashControls {
 /** 街机屏幕面板只画游戏真正用到的动作键，避免两键游戏铺满六个无效按钮。 */
 export type ArcadeButtonCount = 2 | 4 | 6
 
+/**
+ * MAME 街机套件随 ROM 一起需要挂载的只读 CHD。
+ *
+ * 它不是 BIOS：BIOS 是一块硬件平台上的公共固件，而 CHD 是某个具体游戏的光盘/硬盘媒体。
+ * 把两者分开保存，才不会让别的游戏误把《太鼓之达人》的 nm-002 光盘当成主板 ROM 下载。
+ */
+export interface ArcadeMameDisk {
+  /** MAME 驱动名；播放器只会把盘挂到 `/roms/<romset>/`，不接受任意目录。 */
+  romset: string
+  /** CHD 内核查找的基础文件名，不带 `.chd`。 */
+  name: string
+  /** R2 对象 key；URL 在播放器侧按当前存储配置解析。 */
+  key: string
+  /** CHD v5 头中的 MAME SHA-1，用于确认它属于正确的逻辑镜像。 */
+  chdSha1: string
+  /** CHD v5 头中的原始数据 SHA-1，防止只有同名盘却不是同一版数据。 */
+  dataSha1: string
+  /** 压缩后的对象字节数；下载前后都用它挡住绑错的大文件和截断文件。 */
+  storedBytes: number
+  /** CHD 解压后的逻辑容量；用于识别同名但不同版本的媒体。 */
+  logicalBytes: number
+}
+
 export type GenreId =
   | 'action'
   | 'fighting'
@@ -211,6 +234,11 @@ export interface Game {
    * 空 = 不需要或还没填，播放器会回落到平台级 BIOS —— 也就是加这个字段之前的行为。
    */
   arcadeBios?: string
+  /**
+   * MAME 专属的游戏媒体盘（CHD）。仅 mame-current 使用；它绝不是 platform_bios。
+   * 游戏 ROM 仍是 ZIP，这个字段只描述额外挂载到同一个 rompath 下的只读盘。
+   */
+  arcadeMameDisks?: ArcadeMameDisk[]
   /**
    * 服务端推导（不入库、后台不可编辑）：官方 ROM 的文件名都是 FBNeo 驱动表里的已知 romset，
    * 且这些 romset 都不需要 BIOS 包。播放器据此跳过平台级 BIOS（neogeo.zip）的下载。

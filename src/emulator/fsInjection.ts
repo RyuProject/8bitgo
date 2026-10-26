@@ -3,8 +3,19 @@ import { ensureParentDir, type WritableFs } from './fsWrite'
 /** 要写进 Emscripten 虚拟文件系统的一份附加文件。 */
 export interface FsInjection {
   path: string
-  /** null 表示资源没拿到；跳过后让核心自己报告缺的是哪一份。 */
+  /** null 表示资源没拿到；可选资源跳过后仍让核心按原配置尝试。 */
   bytes: string | Promise<Uint8Array | null>
+  /**
+   * RomData/BIOS 是尽力注入；游戏专属 CHD 缺失则继续开局只会落进 MAME 菜单，
+   * 所以它必须显式标为 required，由调用方在 callMain 前阻止错误启动。
+   */
+  required?: boolean
+}
+
+export interface FsInjectionFailure {
+  path: string
+  required: boolean
+  message: string
 }
 
 /**
@@ -19,15 +30,24 @@ export async function writeFsInjections(
   fs: WritableFs,
   injections: readonly FsInjection[],
   onFail: (path: string, message: string) => void,
-): Promise<void> {
+): Promise<FsInjectionFailure[]> {
+  const failures: FsInjectionFailure[] = []
   for (const item of injections) {
     try {
       const bytes = typeof item.bytes === 'string' ? item.bytes : await item.bytes
-      if (bytes == null) continue
+      if (bytes == null) {
+        const message = '资源未下载完成'
+        failures.push({ path: item.path, required: Boolean(item.required), message })
+        onFail(item.path, message)
+        continue
+      }
       ensureParentDir(fs, item.path)
       fs.writeFile(item.path, bytes)
     } catch (error) {
-      onFail(item.path, error instanceof Error ? error.message : String(error))
+      const message = error instanceof Error ? error.message : String(error)
+      failures.push({ path: item.path, required: Boolean(item.required), message })
+      onFail(item.path, message)
     }
   }
+  return failures
 }

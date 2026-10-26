@@ -257,7 +257,11 @@ Emscripten 的 `FS.writeFile` **不会**创建中间目录 —— 2026-09-20 在
 末段同时就是核心认定的驱动名，所以这样取是等价的，且天然幂等（不会叠成 `roms/roms/`）。
 
 ⚠️ 文件名照样是身份（§2.8 那条对 MAME 同样成立）：错名游戏用
-`emulatorjs.ts` 里的 `MAME_ROMSET_ALIASES`（mxsqy → mxsqy102tw）纠偏。
+`src/emulator/mameRomset.ts` 里的 `MAME_ROMSET_ALIASES`（mxsqy → mxsqy102tw）纠偏。
+`canonicalMameRomset()` 还会把**不可能是 MAME 短名**的上传名（含连字符、空格、括号、大写，
+或超过 16 个字符）收成第一段合法片段：2026-10-26《铁拳》存成 `tekken-root-flat.zip`，
+核心 stderr 一个字都不打，直接停在 RetroArch「Quick Menu / No Items」；同一个包叫
+`tekken.zip` 实测 60fps。合法短名（克隆集 `tekkenac` 等）原样保留，不许「纠正」成父集。
 ⚠️ mame-current 必须 **non-merged** 单包自洽；缺一个成员就是一行
 `v-102tw.u39 NOT FOUND (tried in mxsqy102tw mxsqy)` 然后照样回菜单，别只盯着路径查。
 
@@ -267,6 +271,12 @@ zip 顶层条目，于是照旧报 `v-102tw.u39 NOT FOUND` 回菜单。拍平（
 7 个成员全在顶层，本地与线上都直接进游戏。**踩坑点：8BG 只做外层包装（zstd + AES），
 内层 zip 的文件名与嵌套结构原样保留**，所以后台看 `originalName` / 文件大小都对，
 问题却在内层清单里——验收要列出 zip 成员看，别只看外层。
+
+**窄例外（2026-10-25）：** 有些下载包会把多个克隆版放在子目录，但目标父集本身的必需 ROM
+仍全部在根目录。只有 `src/lib/namcoSystem11.ts` 里按 MAME 官方文件名 + CRC **逐项完整命中**的
+Tekken/System 11 父集才允许保留原 ZIP 上传；MAME 使用 `tekken.zip` 时只读取根目录对应成员，
+子目录中的其它克隆成员不会参与启动。缺项、错 CRC、重复成员或不安全路径仍要拦截；未知游戏仍遵守
+“所有成员必须在顶层”，也绝不自动拍平/删除用户包内容。回归：`npm run test:namco-system11-upload`。
 
 该 romset 的成员与 CRC（对照 MAME 0.289）：
 `a8_027a.u41=f9ada8c4`、`igs_l2404.u23=dc8ff7ae`、`igs_l2405.u38=2f20eade`、
@@ -2407,7 +2417,7 @@ CHD 固定用自建 `mednafen_psx` 软件核心；该包关闭了上游 Emscript
 - **回归**：`test:disc-upload` 会解包两个核心，取证两边各自有哪些解码器。以后给 Beetle 重编进 FLAC，就要同步放宽 `BEETLE_CHD_CODECS`。
 - **数据侧备选**：`chdman extractcd` 后用 `createcd -c cdzl` 重压，可以让这张盘回到 Beetle。
 
-🔴 **自建核心的即时存档胶水：melonDS DS 必须是 v3（`scripts/patch-ejs-state-glue.mjs`），Beetle PS1 保持 v2（`scripts/patch-psx-save-state.mjs`）**（2026-10-25）。
+🔴 **自建核心的即时存档胶水：melonDS DS 与 mame-current 必须是 v3（`scripts/patch-ejs-state-glue.mjs`），Beetle PS1 保持 v2（`scripts/patch-psx-save-state.mjs`）**（2026-10-25；mame-current 2026-10-26 补上，胶水是未压缩排版，脚本用空白不敏感正则替换）。
 
 两个核心链接的 EJS RetroArch 1eb5edf 在 `save_state_info()`（tasks/task_save.c）里，把说明写进**栈上的** `char state_data[300]` 再返回其地址。旧胶水因此有三处问题：
 

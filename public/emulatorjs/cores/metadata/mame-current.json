@@ -1,1 +1,1 @@
-{ "core": "mame-current", "buildStart": "2026-09-19T14:10:00+08:00", "buildEnd": "2026-09-19T14:11:00+08:00", "options": { "defaultWebGL2": true } }
+{"core":"mame-current","buildStart":"2026-09-19T14:10:00+08:00","buildEnd":"2026-09-19T14:11:00+08:00","options":{"defaultWebGL2":true},"saveStateGlue":"v3","patch":"emulatorjs-save-state-glue-v3"}

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
-import type { FlashControlButton, Game, GenreId, PlatformId } from '@/types'
+import type { ArcadeMameDisk, FlashControlButton, Game, GenreId, PlatformId } from '@/types'
 import { ROM_LANGS, ROM_LANG_LABEL, type RomLang } from '@/config/languages'
 import { platforms, platformMap } from '@/data/platforms'
 import { genres } from '@/data/genres'
@@ -27,6 +27,12 @@ import { assertValidZip, assertValidZipBlob, extractZipEntry, isZip } from '@/li
 import { inspectPlayArcadeBundle } from '@/lib/playArcadeBundle'
 import { arcadeArchiveLayoutProblem } from '@/lib/arcadeArchive'
 import { arcadeArchiveUnsafePathProblem, identifyNamcoSystem11Tekken, type NamcoSystem11Match } from '@/lib/namcoSystem11'
+import {
+  identifyKnownMameArcadeMedia,
+  mameDiskHeaderProblem,
+  mameDiskObjectKey,
+  type MameArcadeDiskProfile,
+} from '@/lib/mameArcadeMedia'
 import { flattenArcadeZipBlob } from '@/lib/flattenArcadeZip'
 import { detectArcadeCore, type ArcadeCoreId } from '@/lib/arcadeCoreDetection'
 import { assertRomArchiveRef, impliedRomName, romArchiveRef } from '@/lib/romArchiveUrl'
@@ -219,6 +225,8 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
   const initialForm = initial ?? { ...EMPTY, addedAt: today() }
   const initialTagsText = (initial?.tags ?? []).join(', ')
   const [form, setForm] = useState<Game>(initialForm)
+  /** 上传 ROM 得出的“这包还缺哪张盘”只在当前编辑会话提示；真正的绑定要等 CHD 上传成功才入表单。 */
+  const [mameMediaProfile, setMameMediaProfile] = useState<MameArcadeDiskProfile | null>(null)
   const [tagsText, setTagsText] = useState(initialTagsText)
   const [slugTouched, setSlugTouched] = useState(Boolean(initial))
   // 历史值先视作管理员手选；本次表单自动识别出的核心仍可被下一次 ROM 识别更新。
@@ -290,6 +298,7 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
     form.rom ?? '',
     ...Object.values(form.roms ?? {}),
     ...Object.values(form.romBackups ?? {}),
+    ...(form.arcadeMameDisks ?? []).map((disk) => disk.key),
     form.cover ?? '',
     form.video ?? '',
   ]
@@ -666,6 +675,9 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
       // 非街机平台一律不带这个字段：留着的话换平台后旧的 BIOS 名会跟着走，
       // 而 mappers 那边只做形状校验，它不知道这款游戏已经不该要 BIOS 了
       arcadeBios: form.platform === 'arcade' ? form.arcadeBios?.trim().toLowerCase() || undefined : undefined,
+      // CHD 是某款 MAME 游戏的内容媒体而不是 BIOS；换平台时必须一并清掉，
+      // 否则以后又切回街机会带着一张不属于当前 ROM 的盘。
+      arcadeMameDisks: form.platform === 'arcade' ? form.arcadeMameDisks : undefined,
       /*
         DIP 开关同理：非街机要清掉，否则换完平台还挂着一句没人读的话。
 
@@ -1259,6 +1271,7 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
               onApplyHack={(hack) => applyHack(hack)}
               // 只填空的：管理员手填过就听他的（汉化版借用别的驱动时人比表准）
               onBiosFound={(name) => setForm((f) => (f.arcadeBios?.trim() ? f : { ...f, arcadeBios: name }))}
+              onMameMediaFound={setMameMediaProfile}
               onCoreFound={(core) => {
                 if (!manualCoreChoice.current) setForm((f) => ({ ...f, core }))
               }}
@@ -1284,6 +1297,15 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
           </div>
         ))}
       </div>
+
+      {form.platform === 'arcade' && (mameMediaProfile || form.arcadeMameDisks?.length) && (
+        <MameDiskField
+          profile={mameMediaProfile}
+          value={form.arcadeMameDisks ?? []}
+          onChange={(arcadeMameDisks) => set('arcadeMameDisks', arcadeMameDisks.length ? arcadeMameDisks : undefined)}
+          allowStorage={!personalLibrary}
+        />
+      )}
 
       <div className="grid gap-3 sm:grid-cols-[6rem_1fr]">
         <Field label="封面 emoji" hint="无封面图 / 视频时的兜底">
@@ -2252,6 +2274,91 @@ function SockdriveAutoField({
 }
 
 /**
+ * MAME 额外 CHD 的上传位。
+ *
+ * 普通街机 ZIP 按 romset 名加载；CHD 必须在 `/roms/<set>/<disk>.chd`。因此只接受由
+ * ROM CRC 识别出的档案，或数据库中已有的受校验描述，避免手输路径把任意大文件塞进核心。
+ */
+function MameDiskField({
+  profile,
+  value,
+  onChange,
+  allowStorage,
+}: {
+  profile: MameArcadeDiskProfile | null
+  value: ArcadeMameDisk[]
+  onChange: (value: ArcadeMameDisk[]) => void
+  allowStorage: boolean
+}) {
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [progress, setProgress] = useState<number | null>(null)
+  const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null)
+  const cfg = getRomConfig()
+  const canUpload = allowStorage && Boolean(cfg.api && cfg.token)
+  const existing = value[0]
+  const expected = profile?.disks[0] ?? (existing ? {
+    romset: existing.romset,
+    name: existing.name,
+    chdSha1: existing.chdSha1,
+    dataSha1: existing.dataSha1,
+    storedBytes: existing.storedBytes,
+    logicalBytes: existing.logicalBytes,
+  } : null)
+
+  const onFile = async (file: File | undefined) => {
+    if (!file || !expected) return
+    setMessage(null)
+    try {
+      if (!/\.chd$/i.test(file.name)) throw new Error('必需媒体盘必须是 .chd 文件')
+      const problem = await mameDiskHeaderProblem(file, expected)
+      if (problem) throw new Error(problem)
+      const key = mameDiskObjectKey(expected)
+      if (!(await confirmUpload(key, file))) return
+      setProgress(0)
+      const result = await uploadRom(file, key, setProgress)
+      onChange([{ ...expected, key: result.key }])
+      setMessage({ ok: true, text: `已绑定 ${expected.name}.chd（${human(result.size)}）。保存游戏后，播放器会把它挂到 /roms/${expected.romset}/。` })
+    } catch (error) {
+      setMessage({ ok: false, text: error instanceof Error ? error.message : 'CHD 上传失败' })
+    } finally {
+      setProgress(null)
+      if (inputRef.current) inputRef.current.value = ''
+    }
+  }
+
+  if (!expected) return null
+  const bound = value.find((disk) => disk.romset === expected.romset && disk.name === expected.name)
+  return (
+    <Field
+      label="MAME 必需媒体盘"
+      className="col-span-2"
+      hint="游戏专属 CHD，不是 BIOS；本期播放器会完整下载后挂载，不能假装它已支持扇区流式读取"
+    >
+      <div className="rounded-lg border border-line bg-card/40 p-3 text-sm">
+        <p className="font-semibold text-fg">
+          {profile?.board ?? '已配置 MAME 媒体'} · <code>{expected.romset}/{expected.name}.chd</code>
+        </p>
+        <p className="mt-1 text-xs text-muted">
+          要求 CHD v5，压缩文件 {human(expected.storedBytes)}，逻辑容量 {human(expected.logicalBytes)}。上传前核对文件头、逻辑容量和两组 CHD SHA-1；完整扇区校验仍由 MAME 在运行时执行。
+        </p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <input ref={inputRef} type="file" accept=".chd,application/octet-stream" className="hidden" onChange={(event) => void onFile(event.target.files?.[0])} />
+          <button type="button" className={btnClass.primary} disabled={!canUpload || progress !== null} onClick={() => inputRef.current?.click()}>
+            {progress === null ? (bound ? '☁️ 重新上传并校验' : '☁️ 上传必需 CHD') : `上传中 ${progress}%`}
+          </button>
+          {bound?.key && <a href={romUrlForKey(bound.key)} target="_blank" rel="noreferrer" className={btnClass.secondary}>检查</a>}
+          {bound && progress === null && <button type="button" className={btnClass.secondary} onClick={() => onChange(value.filter((disk) => disk !== bound))}>解绑</button>}
+        </div>
+        {bound ? <p className="mt-2 font-mono text-[11px] text-online">✓ 已绑定 {bound.key}</p> : <p className="mt-2 text-xs text-live">缺少这张 CHD 时，taiko2 不会启动；播放器会在开局前停止并说明原因。</p>}
+        {progress !== null && <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-black/10"><div className="h-full bg-brand transition-[width]" style={{ width: `${progress}%` }} /></div>}
+        {message && <p className={cx('mt-2 text-xs', message.ok ? 'text-online' : 'text-live')}>{message.text}</p>}
+        {!canUpload && allowStorage && <p className="mt-2 text-[11px] text-dim">请先在“ROM 存储”页配置 Worker 地址与口令。</p>}
+      </div>
+    </Field>
+  )
+}
+
+/**
  * ROM 字段：可手填 key，也可以选文件直接上传到 R2（通过 Worker），成功后自动填入 key。
  *
  * Flash 还多一条路：选 .zip 时不当成 ROM 传上去，而是在浏览器里解开，
@@ -2276,6 +2383,7 @@ function RomField({
   onHackFound,
   onApplyHack,
   onBiosFound,
+  onMameMediaFound,
   onCoreFound,
   allowStorage,
 }: {
@@ -2312,6 +2420,8 @@ function RomField({
    * 和 onHackFound 同理：字段在父组件手里，这里只报告，由父组件决定填不填。
    */
   onBiosFound?: (name: string) => void
+  /** ROM CRC 完整命中一个需要 CHD 的 MAME 游戏时，通知父表单显示对应媒体盘上传位。 */
+  onMameMediaFound?: (profile: MameArcadeDiskProfile | null) => void
   /** 上传证据充分时自动选核心；父表单只填空值，不覆盖管理员已有的手动选择。 */
   onCoreFound?: (core: ArcadeCoreId) => void
   /** 管理员点「套用」时明确要求写入，覆盖也无所谓 */
@@ -2504,6 +2614,8 @@ function RomField({
   const sniffArcade = async (file: File): Promise<string | null> => {
     setRomset(null)
     setMameRomset(null)
+    // 同一张表单可能重新上传另一款街机；不清掉上一次的识别结果会把旧 CHD 误绑定到新 ROM。
+    onMameMediaFound?.(null)
     if (!isArcade) return null
     if (!/\.zip$/i.test(file.name)) throw new Error('街机 ROM 必须是 .zip：FBNeo / MAME 靠 ZIP 文件名和根目录成员识别 romset')
 
@@ -2511,6 +2623,7 @@ function RomField({
     const unsafePathProblem = arcadeArchiveUnsafePathProblem(entries)
     if (unsafePathProblem) throw new Error(unsafePathProblem)
     const mameMatch = identifyNamcoSystem11Tekken(entries)
+    const mameMedia = identifyKnownMameArcadeMedia(entries)
     const layoutProblem = arcadeArchiveLayoutProblem(entries)
     // 该包根目录完整包含 tekken 父集；额外克隆 ROM 在其它子目录中，MAME 不会读它们。
     // 仅对 CRC 完全匹配的这个已知集合放行，不把通用的子目录包风险降级成警告。
@@ -2521,6 +2634,12 @@ function RomField({
       const recommendation = detectArcadeCore({ exactMameBoard: true })
       if (recommendation) onCoreFound?.(recommendation.core)
       return `${mameMatch.romset}.zip`
+    }
+    if (mameMedia) {
+      onMameMediaFound?.(mameMedia)
+      const recommendation = detectArcadeCore({ exactMameBoard: true })
+      if (recommendation) onCoreFound?.(recommendation.core)
+      return `${mameMedia.romset}.zip`
     }
 
     try {

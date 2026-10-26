@@ -138,6 +138,8 @@ CREATE TABLE IF NOT EXISTS games (
   -- 街机 DIP 开关：实机那组拨码。麻将类游戏出厂是「摇杆」档，不拨到麻将面板就收不到键。
   -- 写法是 `mahjong` 或 `组名=值`（多条逗号分隔），见 src/emulator/dipPlan.ts。
   arcade_dip VARCHAR(200) NULL,
+  -- MAME 游戏专属的 CHD 媒体盘；不是平台 BIOS，运行时要挂在 ROM 同目录下。
+  arcade_mame_disks JSON NULL,
   -- Flash 每款游戏自己决定监听什么键，不能拿一套通用手柄蒙；纯鼠标游戏留空。
   flash_controls JSON NULL,
   -- 首页「精选」位的排序号。NULL = 不上首页，数字小的排前面。

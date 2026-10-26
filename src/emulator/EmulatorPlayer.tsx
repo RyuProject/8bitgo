@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react'
-import type { ArcadeButtonCount, DosBackend, DosWindowsVersion, FlashControls, GenreId, Platform, PlatformId } from '@/types'
+import type { ArcadeButtonCount, DosBackend, DosWindowsVersion, FlashControls, Game, GenreId, Platform, PlatformId } from '@/types'
 import { platformMap } from '@/data/platforms'
 import { formatBytes, formatSpeed, isRomFileAccepted } from '@/lib/emulator'
 import { detectRom, describeDetection, type RomDetection } from './detect'
@@ -7,6 +7,7 @@ import { isPc98FdiFileName } from './pc98'
 import { jsnesCanRun } from './nesMapper'
 import { resolveRuntime, runtimesFor, extOf } from './registry'
 import { romArchiveRef } from '@/lib/romArchiveUrl'
+import { romUrlForKey } from '@/services/roms'
 import { isRomPackBytes, unpackRomPackBlob } from '@/services/romPack'
 import { isRomPackUrl } from '../../shared/rom-pack-format.js'
 import type { Capability, LoadPhase, LoadProgress, Runtime, RuntimeHandle, RuntimeId, ScreenLayoutState, StageMode } from './types'
@@ -324,6 +325,8 @@ interface Props {
   genres?: readonly GenreId[]
   /** FBNeo RomData（.dat 文本）；街机改版包靠它挂到现成驱动上运行。 */
   arcadeRomData?: string
+  /** MAME 游戏专属 CHD（不是 BIOS）；对象 key 到这里才按当前 R2 配置解析成 URL。 */
+  arcadeMameDisks?: Game['arcadeMameDisks']
   /**
    * 这款街机游戏需要哪个 BIOS **系统包**（neogeo / pgm / …，见 Game.arcadeBios）。
    * 地址由播放器按名字查绑定表，父组件不用管。
@@ -565,6 +568,7 @@ export function EmulatorPlayer({
   runtime,
   genres,
   arcadeRomData,
+  arcadeMameDisks,
   arcadeBios,
   arcadeNoBios,
   arcadeDip,
@@ -1502,6 +1506,8 @@ export function EmulatorPlayer({
   const arcadeRomDataRef = useRef(arcadeRomData)
   // 后台配的那份最权威（管理员可能手工调过），识别出来的只作兜底
   arcadeRomDataRef.current = arcadeRomData || localRomData
+  const arcadeMameDisksRef = useRef(arcadeMameDisks)
+  arcadeMameDisksRef.current = arcadeMameDisks
   /**
    * 要哪个 BIOS 系统包。和 arcadeRomData 一样只在挂载那一刻读一次 ——
    * 让它进 effect 依赖的话，「绑定表异步到货」会把正在玩的那一局重启一遍。
@@ -1740,6 +1746,7 @@ export function EmulatorPlayer({
       platform: targetPlatform,
       windowsGuest: runtime.id === 'jsdos' && Boolean(dosSystemUrlRef.current),
       streaming: runtime.id === 'jsdos' && Boolean(dosSockdriveUrlRef.current),
+      mameMedia: runtime.id === 'emulatorjs' && targetPlatform === 'arcade' && Boolean(arcadeMameDisksRef.current?.length),
     })
     progressPlan.current = plan
     sessionCounter.current += 1
@@ -1979,6 +1986,10 @@ export function EmulatorPlayer({
       core: session.coreOverride ?? coreRef.current,
       mouseCapture: shouldCaptureMouse(session.platform, genresRef.current),
       arcadeRomData: arcadeRomDataRef.current,
+      arcadeMameDisks: arcadeMameDisksRef.current?.map((disk) => ({
+        ...disk,
+        url: romUrlForKey(disk.key),
+      })).filter((disk) => Boolean(disk.url)),
       /*
         这个 ROM 要哪个 BIOS 系统包，以及它绑在哪。
 

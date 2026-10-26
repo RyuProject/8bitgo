@@ -847,6 +847,8 @@ export interface LoadProgressPlanContext {
   windowsGuest?: boolean
   /** 游戏盘是否是按扇区读取的静态 Sockdrive。 */
   streaming?: boolean
+  /** MAME 需要完整挂载一份游戏专属 CHD；ROM 阶段会明显长于普通街机 ZIP。 */
+  mameMedia?: boolean
 }
 
 type PhaseShare = readonly [LoadPhase, number]
@@ -992,6 +994,16 @@ export function loadProgressPlan(ctx: LoadProgressPlanContext): LoadProgressPlan
   }
   if (ctx.runtime === 'emulatorjs') {
     if (ctx.platform === 'arcade') {
+      if (ctx.mameMedia) {
+        // CHD 会与 ROM/核心并行下载，但真正开局必须等它完整写进虚拟文件系统。
+        // 给 ROM 段更多真实空间，避免 150MB 以上媒体在 30% 的普通街机区间里视觉抢跑。
+        return makeLoadProgressPlan('emulatorjs-arcade-mame-media', [['engine', 25], ['assets', 10], ['rom', 50], ['starting', 15]], {
+          engine: 90_000,
+          assets: 45_000,
+          rom: 240_000,
+          starting: 60_000,
+        })
+      }
       return makeLoadProgressPlan('emulatorjs-arcade', [['engine', 35], ['assets', 15], ['rom', 30], ['starting', 20]], {
         engine: 90_000,
         assets: 45_000,

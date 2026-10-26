@@ -343,9 +343,11 @@ export function ensureImStarted(options: { auto?: boolean } = {}): Promise<boole
       TC = ((mod as { default?: ChatNS }).default ?? (mod as unknown as ChatNS)) as ChatNS
       created = TC.create({ SDKAppID: sig.sdkAppId })
       if (!created) throw new Error('TencentCloudChat.create 返回空 —— SDKAppID 不合法？')
-      // 日志等级 1 = 只留 release 级别。默认 0 会往控制台刷大量 SDK 内部日志，
-      // 而这个站的控制台本来就有模拟器的输出，叠一层就没法看了。排查时临时改 0。
-      created.setLogLevel(1)
+      // 日志等级：默认 0 会往控制台刷大量 SDK 内部日志，而这个站的控制台本来就有模拟器的输出。
+      // 1（release）也还会打「SDK is ready」「No upload plugin is detected」这类提示 ——
+      // 本站 IM 只发文字，不需要上传插件，这条每次登录都刷是噪音。生产只留告警和错误（2），
+      // 开发环境保留 1 便于排查；要看 SDK 全量日志时临时改 0。
+      created.setLogLevel(import.meta.env.DEV ? 1 : 2)
       chat = created
       boundUserId = sig.userId
       wireEvents(created, epoch)
@@ -463,6 +465,9 @@ function wireEvents(c: Chat, epoch: number) {
   const T = TC!
   const E = T.EVENT
   const on = (event: string, fn: (...args: never[]) => void) => {
+    // SDK 会检查 handler.name：箭头函数当参数传进来是匿名的，每个事件都会刷一条
+    // 「Non-anonymous Function recommended」。函数的 name 可以重定义，给它补一个就行
+    Object.defineProperty(fn, 'name', { value: `im_${event}`, configurable: true })
     handlers.push([event, fn])
     c.on(event, fn)
   }

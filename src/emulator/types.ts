@@ -23,6 +23,17 @@
  *   3.（可选）在 src/config/emulators.ts 里把某个扩展名指过去
  */
 import type { ArcadeButtonCount, DosBackend, DosWindowsVersion, FlashControls, PlatformId } from '@/types'
+
+/** 已解析成 URL 的 MAME 游戏专属 CHD；对象 key 只该停在页面层，适配器不直接理解 R2 存储规则。 */
+export interface MameArcadeDiskSource {
+  romset: string
+  name: string
+  url: string
+  chdSha1: string
+  dataSha1: string
+  storedBytes: number
+  logicalBytes: number
+}
 import type { CloudSession } from './adapters/cloudgame'
 import type { NetplaySession } from './adapters/emulatorjs'
 import type { LiveSession } from './adapters/liveview'
@@ -83,6 +94,8 @@ export interface MountOptions {
    * 仅 emulatorjs 运行时的 FBNeo 系核心会用到。
    */
   arcadeRomData?: string
+  /** MAME 游戏专属 CHD；适配器会验证头信息后写到 `/roms/<romset>/<name>.chd`。 */
+  arcadeMameDisks?: readonly MameArcadeDiskSource[]
   /**
    * 街机 DIP 开关 —— 实机主板上那组拨码，麻将类游戏靠它决定「按摇杆还是按麻将面板收键」。
    *

@@ -222,7 +222,8 @@ export function dosSockdriveProgramCommand(program: string, drive: string): stri
     !/\.(?:exe|com|bat)$/i.test(path) ||
     /^[a-z]:/i.test(path) ||
     parts.some((part) => {
-      if (!part || part === '.' || part === '..' || /[\x00-\x1f"<>|?*:+,;=\[\] ]/.test(part)) return true
+      // eslint-disable-next-line no-control-regex -- 这些字符会被 DOS 批处理解释成语法。
+      if (!part || part === '.' || part === '..' || /[\x00-\x1f"<>|?*:+,;=\u005b\] ]/.test(part)) return true
       const dot = part.lastIndexOf('.')
       const stem = dot >= 0 ? part.slice(0, dot) : part
       const ext = dot >= 0 ? part.slice(dot + 1) : ''

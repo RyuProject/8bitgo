@@ -13,6 +13,7 @@ import { normalizeDosboxConfigOverride } from '../../shared/dosbox-config.js'
 import { normalizeDosStartupCommands } from '../../shared/dos-startup-commands.js'
 import { isAdultByBirthDate } from '../../shared/age.js'
 import { gameSupportsNetplay, normalizeGamePlayers } from '../../shared/netplay-players.js'
+import { knownMameArcadeDisk, mameArcadeDiskObjectKey } from '../../shared/mame-arcade-media.js'
 import { romsetsNeedNoBios } from './arcade-bios-index.js'
 
 /**
@@ -398,6 +399,10 @@ export function arcadeBiosOf(v) {
   if (v == null) return null
   const s = String(v).trim().toLowerCase()
   if (!s) return null
+  // 先于通用字符集校验：nm-002 虽然带连字符本来就会被拒，但这里要给出真正的修复方向。
+  if (/^nm-\d+$/.test(s)) {
+    return badGameField('nm-xxx 是 MAME 游戏 CHD 媒体，不是 BIOS；请在“街机必需媒体盘”中绑定')
+  }
   if (!/^[a-z0-9_]{1,32}$/.test(s)) {
     return badGameField('BIOS 系统名只能是字母、数字和下划线（例如 neogeo、pgm），长度不超过 32')
   }
@@ -514,6 +519,72 @@ export function flashControlsOf(v) {
   return controls ? JSON.stringify(controls) : null
 }
 
+const MAME_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/
+const SHA1 = /^[a-f0-9]{40}$/
+const MAME_DISK_MAX_BYTES = 1024 * 1024 * 1024
+
+/**
+ * MAME 专属 CHD 清单。这里收得比普通对象 key 更紧：虚拟路径由 romset/name 拼出来，
+ * 若允许斜杠或随意的文件名，后台配置就可能越过 `/roms/<set>/` 写入其它核心目录。
+ */
+export function arcadeMameDisksOf(v, strict = true) {
+  if (v == null || v === '') return null
+  let raw = v
+  if (typeof raw === 'string') {
+    try { raw = JSON.parse(raw) } catch { return strict ? badGameField('街机必需媒体盘不是合法 JSON') : null }
+  }
+  if (!Array.isArray(raw)) return strict ? badGameField('街机必需媒体盘必须是数组') : null
+  if (!raw.length) return null
+  if (raw.length > 4) return strict ? badGameField('一款游戏最多绑定 4 份 MAME CHD 媒体盘') : null
+
+  const names = new Set()
+  const out = []
+  for (const item of raw) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return strict ? badGameField('街机必需媒体盘条目必须是对象') : null
+    const romset = String(item.romset ?? '').trim().toLowerCase()
+    const name = String(item.name ?? '').trim().toLowerCase()
+    const key = String(item.key ?? '').trim().replace(/^\/+/, '')
+    const chdSha1 = String(item.chdSha1 ?? '').trim().toLowerCase()
+    const dataSha1 = String(item.dataSha1 ?? '').trim().toLowerCase()
+    const storedBytes = Number(item.storedBytes)
+    const logicalBytes = Number(item.logicalBytes)
+    if (!MAME_ID.test(romset) || !MAME_ID.test(name)) {
+      return strict ? badGameField('MAME 媒体盘的 romset 和文件名只能是小写字母、数字、连字符或下划线') : null
+    }
+    if (!key || key.length > 500 || key.includes('..') || /[\x00-\x1f]/.test(key)) {
+      return strict ? badGameField('MAME 媒体盘对象 key 不合法') : null
+    }
+    if (!SHA1.test(chdSha1) || !SHA1.test(dataSha1)) {
+      return strict ? badGameField('MAME 媒体盘必须带 40 位小写 SHA-1') : null
+    }
+    const known = knownMameArcadeDisk({ romset, name, chdSha1, dataSha1, storedBytes, logicalBytes })
+    if (!known) {
+      return strict ? badGameField('MAME 媒体盘不在已验证目录中；请先为该游戏补充 CHD 核验档案，不能手工绑定未知文件') : null
+    }
+    // 对象路径也是身份的一部分：用 CHD 内部 SHA-1 分目录，才能让同一张盘被多个游戏复用，
+    // 同时杜绝管理员/API 调用方把任意对象挂成核心要读的游戏媒体。
+    const expectedKey = mameArcadeDiskObjectKey(known)
+    if (key !== expectedKey) {
+      return strict ? badGameField(`MAME 媒体盘必须存放在受管理的对象 key：${expectedKey}`) : null
+    }
+    if (!Number.isSafeInteger(storedBytes) || storedBytes < 124 || storedBytes > MAME_DISK_MAX_BYTES ||
+      !Number.isSafeInteger(logicalBytes) || logicalBytes < storedBytes || logicalBytes > MAME_DISK_MAX_BYTES * 8) {
+      return strict ? badGameField('MAME 媒体盘容量不合法') : null
+    }
+    const id = `${romset}/${name}`
+    if (names.has(id)) return strict ? badGameField(`MAME 媒体盘重复：${id}`) : null
+    names.add(id)
+    out.push({ romset, name, key, chdSha1, dataSha1, storedBytes, logicalBytes })
+  }
+  return JSON.stringify(out)
+}
+
+/** 读取时同样做形状过滤，历史脏 JSON 不能直接流到播放器的文件系统挂载路径。 */
+function arcadeMameDisksFromRow(v) {
+  const encoded = arcadeMameDisksOf(v, false)
+  try { return encoded ? JSON.parse(encoded) : undefined } catch { return undefined }
+}
+
 export function arcadeButtonsOf(v) {
   if (v == null || v === '') return null
   const n = Number(v)
@@ -581,6 +652,8 @@ export function gameRowToApi(r, rel = {}) {
   // 这款游戏要哪个 BIOS 系统包（neogeo / pgm）。没填就不带这个字段，
   // 播放器据此回落到「平台级 BIOS 那一份」——也就是加这个字段之前的行为。
   if (r.arcade_bios) g.arcadeBios = r.arcade_bios
+  const arcadeMameDisks = arcadeMameDisksFromRow(r.arcade_mame_disks)
+  if (arcadeMameDisks) g.arcadeMameDisks = arcadeMameDisks
   // DIP 开关（麻将类游戏要拨的那一档）。没填就不带这个字段 —— 播放器那边留空 = 完全不干预
   if (r.arcade_dip) g.arcadeDip = r.arcade_dip
   const flashControls = flashControlsObject(r.flash_controls, false)
@@ -670,6 +743,7 @@ export function gameApiToRow(g) {
     dos_save_hint: dosSaveHintOf(g.dosSaveHint),
     arcade_romdata: arcadeRomDataOf(g.arcadeRomData),
     arcade_bios: arcadeBiosOf(g.arcadeBios),
+    arcade_mame_disks: arcadeMameDisksOf(g.arcadeMameDisks),
     arcade_dip: arcadeDipOf(g.arcadeDip),
     arcade_buttons: arcadeButtonsOf(g.arcadeButtons),
     flash_controls: flashControlsOf(g.flashControls),
@@ -715,6 +789,7 @@ const FIELD_TO_COLUMN = {
   dosSaveHint: ['dos_save_hint', dosSaveHintOf],
   arcadeRomData: ['arcade_romdata', arcadeRomDataOf],
   arcadeBios: ['arcade_bios', arcadeBiosOf],
+  arcadeMameDisks: ['arcade_mame_disks', arcadeMameDisksOf],
   arcadeDip: ['arcade_dip', arcadeDipOf],
   arcadeButtons: ['arcade_buttons', arcadeButtonsOf],
   flashControls: ['flash_controls', flashControlsOf],

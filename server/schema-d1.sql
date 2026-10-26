@@ -86,6 +86,8 @@ CREATE TABLE IF NOT EXISTS games (
   arcade_bios    TEXT,
   -- 街机 DIP 开关（麻将类游戏要拨到麻将面板那一档），见 src/emulator/dipPlan.ts。
   arcade_dip     TEXT,
+  -- MAME 游戏专属 CHD 媒体盘 JSON；与平台 BIOS 分开，避免 nm-xxx 被错误复用。
+  arcade_mame_disks TEXT,
   home_rank      INTEGER,
   added_at       TEXT,
   created_at     TEXT    NOT NULL DEFAULT (CURRENT_TIMESTAMP),

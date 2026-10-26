@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * 修补自建核心 melonDS DS（`melondsds`）的 EmulatorJS 即时存档胶水（Beetle PS1 同病，见下）。
+ * 修补自建核心 melonDS DS（`melondsds`）与当前版 MAME（`mame-current`）的 EmulatorJS 即时存档胶水
+ * （Beetle PS1 同病，见下）。
  *
  * 两个核心都链接了 EmulatorJS RetroArch 1eb5edf，它的 `save_state_info()`（tasks/task_save.c）
  * 把说明写进**栈上的局部数组** `char state_data[300]` 再返回其地址，而胶水 EmulatorJSGetState
@@ -21,6 +22,11 @@
  * Range 实玩验收过的 sha256 锁定，这里**不再改它**；PS1 开局也已不调用 getState。
  * 要给 PS1 上 v3，必须先重做浏览器实玩验收，再同步 check-emulatorjs 的锁定值。
  *
+ * mame-current（2026-10-26，《铁拳》）：同一个 RetroArch，胶水是**未压缩排版**的 Emscripten 输出
+ *（带空格换行），整句匹配不上，所以用空白不敏感的正则替换成同样的修正语句。线上实测开局探测
+ * 打出「Failed to save state! invalid core option save-save-interval. This is not an error.\n\nt an error.」
+ * —— 正是栈上说明被覆盖后的残片。
+ *
  * melonDS DS 的包字节变了，还要同步：核心报告 sha256、NDS_MODERN_CORE_BUILD、
  * EJS_CACHE_GENERATION、EJS_RUNTIME_GENERATION（与 build-melondsds-core.mjs 的换代规则一致），
  * 最后运行 `npm run ejsmeta` 同步 metadata。需要本机有 7z / 7zz。
@@ -33,10 +39,22 @@ import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 
 const root = join(fileURLToPath(new URL('..', import.meta.url)))
-const cores = join(root, 'public/emulatorjs/cores')
+/*
+  --archives-only [--cores-dir <dir>]：只改核心包、不碰报告和换代常量。
+  给「本机 7z 压不动 242MB 的 MAME wasm、换到大机器上重打包」用：那边改完包拷回来，
+  再在仓库里不带参数跑一次 —— 包已是新胶水会跳过，但报告还没标 v3，照样补报告 + 换代。
+*/
+const argv = process.argv.slice(2)
+const archivesOnly = argv.includes('--archives-only')
+const coresDirArg = argv.indexOf('--cores-dir')
+const cores = coresDirArg >= 0 ? argv[coresDirArg + 1] : join(root, 'public/emulatorjs/cores')
 const GLUE_VERSION = 'v3'
 
-const TARGETS = [{ archive: 'melondsds-wasm.data', core: 'melondsds' }]
+const TARGETS = [
+  { archive: 'melondsds-wasm.data', core: 'melondsds' },
+  { archive: 'mame-current-wasm.data', core: 'mame-current' },
+  { archive: 'mame-current-legacy-wasm.data', core: 'mame-current' },
+]
 
 export const OLD_FREE =
   'const data=HEAPU8.subarray(dataStart,dataStart+size);_free(info);_free(data);return new Uint8Array(data)'
@@ -45,6 +63,9 @@ export const FIXED_FREE =
 export const OLD_FAIL =
   'if(state[2]!=="1"){console.error("Failed to save state!",state[0]);throw new Error(state[0])}'
 export const FIXED_FAIL = String.raw`if(state[2]!=="1"){const reason=/^[\x20-\x7e]{1,120}$/.test(state[0]||"")?state[0]:"State is not available yet";console.warn("Failed to save state!",reason);throw new Error(reason)}`
+/** 未压缩排版的同一段（mame-current）：空白不敏感，替换成上面同样的修正语句 */
+const OLD_FREE_PRETTY = /const data = HEAPU8\.subarray\(dataStart, dataStart \+ size\);\s*_free\(info\);\s*_free\(data\);\s*return new Uint8Array\(data\);/
+const OLD_FAIL_PRETTY = /if \(state\[2\] !== "1"\) \{\s*console\.error\("Failed to save state!", state\[0\]\);\s*throw new Error\(state\[0\]\);\s*\}/
 
 const sevenZip = existsSync('/opt/homebrew/bin/7zz') || existsSync('/usr/local/bin/7zz') ? '7zz' : '7z'
 
@@ -59,7 +80,10 @@ function sha256(file) {
 /** 返回 null 表示已是最新胶水、未改包 */
 function patchArchive({ archive: name, core }) {
   const archive = join(cores, name)
-  if (!existsSync(archive)) throw new Error(`缺少核心包：${archive}`)
+  if (!existsSync(archive)) {
+    if (archivesOnly) return null
+    throw new Error(`缺少核心包：${archive}`)
+  }
   const temp = mkdtempSync(join(tmpdir(), '8bitgo-state-glue-'))
   try {
     run(['x', '-bd', '-y', `-o${temp}`, archive], temp)
@@ -67,23 +91,26 @@ function patchArchive({ archive: name, core }) {
     const gluePath = join(temp, glueName)
     let glue = readFileSync(gluePath, 'utf8')
     const start = glue.indexOf('function EmulatorJSGetState(){')
-    const end = glue.indexOf('function EmulatorJSGetMemoryData', start)
-    if (start < 0 || end < 0) throw new Error(`${name} 找不到 EmulatorJSGetState 胶水`)
-    let state = glue.slice(start, end)
+    const pretty = start < 0
+    const begin = pretty ? glue.indexOf('function EmulatorJSGetState() {') : start
+    const end = glue.indexOf('function EmulatorJSGetMemoryData', begin)
+    if (begin < 0 || end < 0) throw new Error(`${name} 找不到 EmulatorJSGetState 胶水`)
+    let state = glue.slice(begin, end)
     const before = state
-    if (!state.includes(FIXED_FREE)) {
-      if (state.split(OLD_FREE).length !== 2) throw new Error(`${name} 的存档释放胶水形态变了，拒绝盲改`)
-      state = state.replace(OLD_FREE, FIXED_FREE)
+    const swap = (fixed, old, oldPretty, what) => {
+      if (state.includes(fixed)) return
+      const hits = pretty ? (state.match(new RegExp(oldPretty.source, 'g')) ?? []).length : state.split(old).length - 1
+      if (hits !== 1) throw new Error(`${name} 的存档${what}胶水形态变了，拒绝盲改`)
+      // 替换串用函数给出，避免 FIXED_FAIL 里的 $ 被当成替换模式
+      state = state.replace(pretty ? oldPretty : old, () => (pretty ? `${fixed};` : fixed))
     }
-    if (!state.includes(FIXED_FAIL)) {
-      if (state.split(OLD_FAIL).length !== 2) throw new Error(`${name} 的存档失败分支形态变了，拒绝盲改`)
-      state = state.replace(OLD_FAIL, FIXED_FAIL)
-    }
+    swap(FIXED_FREE, OLD_FREE, OLD_FREE_PRETTY, '释放')
+    swap(FIXED_FAIL, OLD_FAIL, OLD_FAIL_PRETTY, '失败分支')
     if (state === before) {
       console.log(`[skip] ${name} 已是 ${GLUE_VERSION} 胶水`)
       return null
     }
-    glue = glue.slice(0, start) + state + glue.slice(end)
+    glue = glue.slice(0, begin) + state + glue.slice(end)
     writeFileSync(gluePath, glue)
     const members = ['build.json', 'core.json', 'license.txt', glueName, `${core}_libretro.wasm`]
     for (const member of members) {
@@ -125,15 +152,16 @@ function replaceConst(file, re, next, label) {
 }
 
 /** 换代规则与 build-melondsds-core.mjs 一致：带上新 SHA 前缀，并把胶水代次写进尾缀 */
-function bumpGenerations(melondsSha) {
-  const glueTag = (value) => value.replace(/[-.]psxstate\d+|[-.]stateglue\d+/g, '')
+function bumpGenerations(melondsSha, mameChanged) {
+  const glueTag = (value) => value.replace(/[-.]psxstate\d+|[-.]stateglue\d+|[-.]mameglue\d+/g, '')
+  const mameTag = (sep) => (mameChanged ? `${sep}mameglue3` : '')
   replaceConst('src/emulator/paths.ts', /export const EJS_RUNTIME_GENERATION = '([^']*)'/, (current) => {
     const base = melondsSha ? current.replace(/-melondsds-[a-f0-9]{8}/, `-melondsds-${melondsSha.slice(0, 8)}`) : current
-    return `${glueTag(base)}-stateglue3`
+    return `${glueTag(base)}-stateglue3${mameTag('-')}`
   }, 'EJS_RUNTIME_GENERATION')
   replaceConst('src/emulator/adapters/emulatorjs.ts', /const EJS_CACHE_GENERATION = '([^']*)'/, (current) => {
     const base = melondsSha ? current.replace(/\.melondsds-core-[a-f0-9]{8}/, `.melondsds-core-${melondsSha.slice(0, 8)}`) : current
-    return `${glueTag(base)}.stateglue3`
+    return `${glueTag(base)}.stateglue3${mameTag('.')}`
   }, 'EJS_CACHE_GENERATION')
   if (melondsSha) {
     replaceConst('src/emulator/ndsCorePreference.ts', /export const NDS_MODERN_CORE_BUILD = '([^']*)'/, melondsSha.slice(0, 16), 'NDS_MODERN_CORE_BUILD')
@@ -141,14 +169,27 @@ function bumpGenerations(melondsSha) {
 }
 
 const results = new Map(TARGETS.map((target) => [target.archive, patchArchive(target)]))
+if (archivesOnly) {
+  console.log('只改了核心包；回到仓库里不带参数再跑一次，补报告与换代常量')
+  process.exit(0)
+}
+const report = (core) => JSON.parse(readFileSync(join(cores, `reports/${core}.json`), 'utf8'))
 let changed = false
-const melondsSha = results.get('melondsds-wasm.data')
+// 包可能是在别处改好再拷回来的（--archives-only）：以报告是否已标 v3 为准，而不只看这次改没改包
+const mameChanged = Boolean(results.get('mame-current-wasm.data') || results.get('mame-current-legacy-wasm.data')) ||
+  report('mame-current').saveStateGlue !== GLUE_VERSION
+if (mameChanged) {
+  updateReport('mame-current')
+  changed = true
+}
+const melondsActual = sha256(join(cores, 'melondsds-wasm.data'))
+const melondsSha = results.get('melondsds-wasm.data') ?? (report('melondsds').sha256 !== melondsActual ? melondsActual : null)
 if (melondsSha) {
   updateReport('melondsds', { sha256: melondsSha })
   changed = true
 }
 if (changed) {
-  bumpGenerations(melondsSha ?? null)
+  bumpGenerations(melondsSha ?? null, mameChanged)
   execFileSync('node', [join(root, 'scripts/sync-emulatorjs-core-metadata.mjs')], { stdio: 'inherit' })
 }
 console.log(changed ? '核心胶水已更新：记得一起提交 .data、reports/metadata 与换代常量' : '无需修改')

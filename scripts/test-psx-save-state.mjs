@@ -12,15 +12,16 @@ const cores = join(root, 'public/emulatorjs/cores')
 
 // Beetle PS1 两个包被 check-emulatorjs 按 Range 实玩验收过的 sha256 锁定，只带 v2（修内存泄漏）；
 // melonDS DS 额外带 v3（失败说明过滤乱码、降为 warn）。PS1 开局已不再调用 getState，乱码不会在开局出现。
-const GLUE = { mednafen_psx: 'v2', melondsds: 'v3' }
-for (const [name, core] of [['mednafen_psx-wasm.data', 'mednafen_psx'], ['mednafen_psx-legacy-wasm.data', 'mednafen_psx'], ['melondsds-wasm.data', 'melondsds']]) {
+const GLUE = { mednafen_psx: 'v2', melondsds: 'v3', 'mame-current': 'v3' }
+for (const [name, core] of [['mednafen_psx-wasm.data', 'mednafen_psx'], ['mednafen_psx-legacy-wasm.data', 'mednafen_psx'], ['melondsds-wasm.data', 'melondsds'], ['mame-current-wasm.data', 'mame-current'], ['mame-current-legacy-wasm.data', 'mame-current']]) {
   const archive = join(cores, name)
   assert.ok(existsSync(archive), `缺少自建核心：${name}`)
   const temp = mkdtempSync(join(tmpdir(), '8bitgo-psx-state-test-'))
   try {
     execFileSync('7z', ['x', '-bd', '-y', `-o${temp}`, archive], { stdio: 'ignore' })
     const glue = readFileSync(join(temp, `${core}_libretro.js`), 'utf8')
-    const start = glue.indexOf('function EmulatorJSGetState(){')
+    // mame-current 的胶水是未压缩排版（`function EmulatorJSGetState() {`）
+    const start = glue.search(/function EmulatorJSGetState\(\) ?\{/)
     const end = glue.indexOf('function EmulatorJSGetMemoryData', start)
     assert.ok(start >= 0 && end > start, `${name} 缺少 EmulatorJSGetState`)
     const state = glue.slice(start, end)
@@ -50,7 +51,7 @@ assert.equal(ndsReport.sha256, createHash('sha256').update(readFileSync(join(cor
 const adapterSource = readFileSync(join(root, 'src/emulator/adapters/emulatorjs.ts'), 'utf8')
 assert.match(
   adapterSource,
-  /const skipEagerStateProbe = \(options\.platform === 'psx' && core === PSX_CHD_CORE\) \|\| core === 'melondsds'\s*\n\s*\/\*[\s\S]*?\*\/\s*\n\s*if \(!skipEagerStateProbe\) probeSaveState\(\)\s*\n\s*else probeSaveState\(false, true\)/,
+  /const skipEagerStateProbe = \(options\.platform === 'psx' && core === PSX_CHD_CORE\) \|\| core === 'melondsds' \|\| isMameCurrentCore\(core\)\s*\n\s*\/\*[\s\S]*?\*\/\s*\n\s*if \(!skipEagerStateProbe\) probeSaveState\(\)\s*\n\s*else probeSaveState\(false, true\)/,
   'Beetle PS1 / melonDS DS 的开机流程不应为探测能力而主动调用 getState()（整机快照 + 乱码失败日志），只问 supportsStates()',
 )
 

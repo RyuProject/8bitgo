@@ -163,6 +163,8 @@ function install(output, buildDir) {
   }
   console.log(`\n[done] 已放入 ${output}（${n} 个文件）。`)
   console.log('接下来：')
+  console.log('  0) node scripts/patch-ejs-state-glue.mjs —— 新编的胶水仍是 EJS RetroArch 那份「释放栈地址、漏整份快照」')
+  console.log('     的即时存档实现，必须打 v3 补丁（npm run test:psx-state 会拦），并同步报告与换代常量。')
   console.log('  1) npm run test:ejs-cores —— 它认得 SELF_BUILT_CORES，会确认核心就位。')
   console.log('  2) 部署后到 Cloudflare 控制台 Purge Everything（/emulatorjs/ 边缘缓存 30 天）。')
   console.log('  3) 后台把该游戏的 core 填 mame-current（下拉里已经有这一项）。')

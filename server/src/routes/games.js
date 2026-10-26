@@ -66,6 +66,20 @@ export function netplayGameConfigError(game) {
 }
 
 /**
+ * CHD 是 mame-current 的内容目录约定，不能让它被填到 FBNeo 或其它平台后静默失效。
+ * 这道业务校验放在路由：mappers 只负责防御性地收紧 JSON 形状，不应猜游戏意图。
+ */
+export function arcadeMameDiskConfigError(game) {
+  const disks = game?.arcadeMameDisks
+  if (!Array.isArray(disks) || !disks.length) return null
+  if (game?.platform !== 'arcade') return 'MAME CHD 媒体盘只能绑定到街机游戏'
+  if (String(game?.core ?? '').trim().toLowerCase() !== 'mame-current') {
+    return '绑定 MAME CHD 媒体盘时，模拟器核心必须选择 mame-current'
+  }
+  return null
+}
+
+/**
  * 游戏列表。
  *
  * 所有筛选、排序、分页都在数据库里做，返回的是**一页**数据：
@@ -529,6 +543,8 @@ gamesRouter.put('/:slug', requireAbility('games:edit'), async (req, res, next) =
     if (netplayError) return res.status(400).json({ error: netplayError })
     const dosError = dosGameConfigError(req.body)
     if (dosError) return res.status(400).json({ error: dosError })
+    const mameDiskError = arcadeMameDiskConfigError(req.body)
+    if (mameDiskError) return res.status(400).json({ error: mameDiskError })
     if (req.staffRole === 'volunteer') {
       const ownerId = String(req.user?.id ?? '')
       if (!ownerId) return res.status(403).json({ error: '志愿者独立库必须使用账号登录' })
@@ -579,6 +595,8 @@ gamesRouter.patch('/:slug', requireAbility('games:edit'), async (req, res, next)
       if (netplayError) return res.status(400).json({ error: netplayError })
       const dosError = dosGameConfigError(candidate)
       if (dosError) return res.status(400).json({ error: dosError })
+      const mameDiskError = arcadeMameDiskConfigError(candidate)
+      if (mameDiskError) return res.status(400).json({ error: mameDiskError })
       return res.json(await patchVolunteerGame(ownerId, slug, req.body))
     }
     const current = await getGameBySlug(slug)
@@ -588,6 +606,8 @@ gamesRouter.patch('/:slug', requireAbility('games:edit'), async (req, res, next)
     if (netplayError) return res.status(400).json({ error: netplayError })
     const dosError = dosGameConfigError(candidate)
     if (dosError) return res.status(400).json({ error: dosError })
+    const mameDiskError = arcadeMameDiskConfigError(candidate)
+    if (mameDiskError) return res.status(400).json({ error: mameDiskError })
     const patchRow = gameApiToPartialRow(req.body)
     const relations = relationsInPatch(req.body)
     if (!Object.keys(patchRow).length && !relations.genres && !relations.tags && !relations.roms) {
