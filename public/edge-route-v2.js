@@ -17,7 +17,7 @@
   var HOSTS = [PRIMARY_HOST, ASIA_HOST]
   var COOKIE_NAME = '8bitgo.edge'
   var COOKIE_TTL_MS = 2 * 60 * 60 * 1000
-  // 首次探测只允许占用很短的首屏窗口；失败就留在当前已成功打开的站点。
+  // 首次探测只占用有限窗口；失败就留在当前已经成功打开的站点。
   var PROBE_TIMEOUT_MS = 450
   var MIN_WIN_MS = 80
   var MIN_WIN_RATIO = 0.15

@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url'
 import { createContext, runInContext } from 'node:vm'
 
 const root = new URL('..', import.meta.url)
-const source = readFileSync(fileURLToPath(new URL('public/edge-route-v1.js', root)), 'utf8')
+const source = readFileSync(fileURLToPath(new URL('public/edge-route-v2.js', root)), 'utf8')
 const HOST_MAIN = '8bitgo.com'
 const HOST_ASIA = 'cn.8bitgo.com'
 
