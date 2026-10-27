@@ -3,6 +3,9 @@
  *
  * 这不是 BIOS 目录：每条盘只属于具体 romset，前后端共用它是为了让后台不能靠手工 JSON
  * 把任意 R2 对象挂进模拟器。新增游戏前应先补充真实文件的核验记录和回归，再往这里加条目。
+ *
+ * 不要在这里固定 CHD 的压缩后字节数。同一份扇区数据可以由不同 chdman 版本或压缩器组合
+ * 生成不同大小的有效 CHD；MAME 认的是 CHD SHA-1，Data SHA-1 和逻辑容量只用来额外防错。
  */
 export const KNOWN_MAME_ARCADE_MEDIA = Object.freeze([
   Object.freeze({
@@ -14,7 +17,6 @@ export const KNOWN_MAME_ARCADE_MEDIA = Object.freeze([
         name: 'nm-002',
         chdSha1: 'cede127f3d87f894ccaa1d77c8b279f209f6a8e4',
         dataSha1: '56912053bcdf7545ecd09f879bb7ed87bc366c55',
-        storedBytes: 159949410,
         logicalBytes: 249774336,
       }),
     ]),
@@ -33,7 +35,6 @@ export const KNOWN_MAME_ARCADE_MEDIA = Object.freeze([
         name: '753jaa11',
         chdSha1: '2e70cf31a853322f29f99b6f292c187a2cf33015',
         dataSha1: '71d200d1bd3f1f3a01f4daa78dc9abcca8b8a1fb',
-        storedBytes: 177560308,
         logicalBytes: 1443004416,
       }),
     ]),
@@ -53,7 +54,6 @@ export function knownMameArcadeDisk(disk) {
     candidate.name === String(disk.name ?? '').trim().toLowerCase() &&
     candidate.chdSha1 === String(disk.chdSha1 ?? '').trim().toLowerCase() &&
     candidate.dataSha1 === String(disk.dataSha1 ?? '').trim().toLowerCase() &&
-    candidate.storedBytes === Number(disk.storedBytes) &&
     candidate.logicalBytes === Number(disk.logicalBytes),
   ) ?? null
 }

@@ -23,7 +23,10 @@ export interface MameChdHeader {
 }
 
 export interface MameArcadeDiskExpectation extends MameChdDiskExpectation {
-  /** 已实盘核验过的条目才在目录中固定这三项；通用 MAME 目录在选文件时从头部补齐。 */
+  /**
+   * 已实盘核验的条目会固定 Data SHA-1 与逻辑容量；通用 MAME 目录在选文件时从头部补齐。
+   * `storedBytes` 只用于已保存历史记录，不能作为目录条件：无损重压同一 CHD 时它会变化。
+   */
   dataSha1?: string
   storedBytes?: number
   logicalBytes?: number
@@ -154,9 +157,6 @@ export function identifyKnownMameArcadeMedia(
 async function validatedMameDisk(file: Pick<Blob, 'size' | 'slice'>, expected: MameArcadeDiskExpectation): Promise<Omit<ArcadeMameDisk, 'key'>> {
   if (!Number.isSafeInteger(file.size) || file.size < MAME_CHD_V5_HEADER_BYTES || file.size > 1024 * 1024 * 1024) {
     throw new Error('CHD 文件容量不合法（本站当前上限为 1 GiB）')
-  }
-  if (expected.storedBytes !== undefined && file.size !== expected.storedBytes) {
-    throw new Error(`CHD 文件大小不符：应为 ${expected.storedBytes.toLocaleString()} 字节，实际为 ${file.size.toLocaleString()} 字节`)
   }
   const header = readMameChdHeader(await file.slice(0, MAME_CHD_V5_HEADER_BYTES).arrayBuffer())
   if (header.chdSha1 !== expected.chdSha1) {

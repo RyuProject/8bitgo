@@ -560,9 +560,9 @@ export function arcadeMameDisksOf(v, strict = true) {
     }
     const known = knownMameArcadeDisk({ romset, name, chdSha1, dataSha1, storedBytes, logicalBytes })
     /*
-      已实盘核验过的条目要求五项都相等；通用目录来自同版 MAME 源码，锁住的则是
-      romset + 文件名 + MAME 所需的 CHD SHA-1。后者的 Data SHA-1 / 压缩大小只能由
-      实际 chdman 产物决定，前端已从 v5 头读取后带来，不可再要求人工先写白名单。
+      已实盘核验条目锁住 romset、文件名、两组 SHA-1 与逻辑容量；通用目录来自同版
+      MAME 源码，锁住的则是 romset + 文件名 + MAME 所需的 CHD SHA-1。压缩后大小不是
+      内容身份：不同 chdman 版本可把相同 CHD SHA-1 压成不同字节数，必须采用实际文件值。
     */
     const catalog = known ? null : knownMameChdDiskExpectation({ romset, name, chdSha1 })
     if (!known && !catalog) {

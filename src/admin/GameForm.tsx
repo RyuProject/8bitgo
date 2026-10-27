@@ -2462,11 +2462,21 @@ function MameDiskUploadRow({
       */
       const head = await headRom(key).catch(() => null)
       if (head?.exists) {
-        if (head.size !== undefined && head.size !== resolved.storedBytes) {
-          throw new Error(`桶里已有 ${key}，但大小（${human(head.size)}）与当前 CHD 头不符；请先在“ROM 存储”排查该对象。`)
-        }
-        merge({ ...resolved, key })
-        setMessage({ ok: true, text: `桶里已有 ${expected.name}.chd，已直接绑定。` })
+        /*
+          对象 key 是 CHD SHA-1 的内容地址。相同扇区数据可以被不同 chdman 压缩成不同
+          大小，不能因为这次选中的压缩版本与桶内版本体积不同而拒绝；播放器会使用桶内
+          那份已验证内容，记录也必须反映实际被绑定对象的大小。
+        */
+        const storedBytes = typeof head.size === 'number' && Number.isSafeInteger(head.size)
+          ? head.size
+          : resolved.storedBytes
+        merge({ ...resolved, storedBytes, key })
+        setMessage({
+          ok: true,
+          text: head.size !== undefined && head.size !== resolved.storedBytes
+            ? `桶里已有相同内容的 ${expected.name}.chd（${human(head.size)}；本次文件采用不同压缩体积），已直接绑定，不会覆盖正在使用的版本。`
+            : `桶里已有 ${expected.name}.chd，已直接绑定。`,
+        })
         return
       }
       setProgress(0)
@@ -2487,8 +2497,8 @@ function MameDiskUploadRow({
         {profile?.board ?? 'MAME 已识别 CHD 媒体'} · <code>{expected.romset}/{expected.name}.chd</code>
       </p>
       <p className="mt-1 text-xs text-muted">
-        {expected.storedBytes !== undefined && expected.logicalBytes !== undefined
-          ? <>已核验：压缩文件 {human(expected.storedBytes)}，逻辑容量 {human(expected.logicalBytes)}。上传前核对 v5 文件头、两组 SHA-1 和逻辑容量。</>
+        {expected.dataSha1 !== undefined && expected.logicalBytes !== undefined
+          ? <>已核验内容：逻辑容量 {human(expected.logicalBytes)}。上传前核对 v5 文件头、两组 SHA-1 和逻辑容量；同一内容可因 CHD 压缩方式不同而有不同文件大小。</>
           : <>MAME 官方目录已锁定文件名和 CHD SHA-1；选中后会读取 v5 文件头，自动记录实际大小、Data SHA-1 与逻辑容量。</>}
       </p>
       <div className="mt-3 flex flex-wrap gap-2">
@@ -3262,6 +3272,7 @@ function RomField({
           `已上传到 R2：${result.key}（${human(result.size)}）` +
           (needsPacking ? `；${packCodecLabel}` : alreadyPacked ? '；沿用已有 8BG 容器' : '') +
           (sniffed ? `；已按识别结果命名为 ${sniffed}` : '') +
+          (isArcade && sniffed && oldKey !== result.key ? '；当前语言已改绑到标准 romset 对象，请保存游戏条目' : '') +
           (flattenedArcadeFiles ? `；已自动拍平 ${flattenedArcadeFiles} 个子目录 ROM 文件` : '') +
           (migrationBackup ? `；旧文件 ${oldKey} 已保留${backupValue.trim() ? '' : '为备用地址'}` : '') +
           (removed ? `；旧文件 ${removed} 已删除` : '') +
@@ -3335,7 +3346,9 @@ function RomField({
         hint={
           canUpload
             ? value.trim() && !/^https?:/i.test(value)
-              ? allBoundKeys.filter((bound) => bound === value.trim()).length > 1
+              ? isArcade
+                ? '街机 ZIP 会先按成员 CRC 认 romset。识别到标准包名时会绑定到正确的 romset 对象（而非把新内容写进当前可能错误的文件名）；只有当前 key 本来就是该标准名时才原地覆盖。上传成功后请保存游戏条目。'
+                : allBoundKeys.filter((bound) => bound === value.trim()).length > 1
                 ? `这个文件还被其他语言槽使用；重新上传会改存 ${defKey(exampleName)}，不会覆盖共用文件`
                 : isBundleKey(value.trim())
                 ? `这一槽绑的是多 SWF 包里的 ${value.trim().split('/').pop()}；再传一个 zip 会原地更新 ${dirOfKey(value.trim())}/`
@@ -3538,6 +3551,11 @@ function RomField({
               已推荐 <code>mame-current</code>。这份 ZIP 本身不是完整游戏，保存前还要在下方上传并绑定
               {' '}<code>{mameMedia.disks.map((disk) => `${disk.romset}/${disk.name}.chd`).join('、')}</code>；
               CHD 是游戏专属媒体，不是 BIOS，系统会先核对文件头和 SHA-1。
+            </p>
+            <p className="mt-1">
+              这份 ROM 会存为 <code>{romPackKey(defKey(`${mameMedia.romset}.zip`))}</code>。
+              MAME 用 ZIP 文件名识别驱动，所以不会把已识别的 <code>{mameMedia.romset}.zip</code> 误覆盖到当前任意名称；
+              上传成功后会更新当前语言的绑定，最后点击保存即可生效。
             </p>
           </div>
         )}

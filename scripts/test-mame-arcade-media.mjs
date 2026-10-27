@@ -60,6 +60,8 @@ assert.equal(identifyKnownMameArcadeMedia([{ ...bm1stmixEntries[0], crc32: 0 }, 
 
 const bm1stmixDisk = {
   ...BM1STMIX_MAME_MEDIA.disks[0],
+  // 实盘由另一种无损压缩组合生成；内容 SHA-1 不变，压缩体积不能成为上传门槛。
+  storedBytes: 134647845,
   key: 'roms/arcade-media/mame/2e70cf31a853322f29f99b6f292c187a2cf33015/753jaa11.chd',
 }
 assert.deepEqual(JSON.parse(arcadeMameDisksOf([bm1stmixDisk])), [bm1stmixDisk], 'bm1stmix 已核验媒体盘必须能通过后台接口保存')
@@ -102,7 +104,30 @@ assert.deepEqual(readMameChdHeader(header), {
 assert.equal(await mameDiskHeaderProblem(new Blob([header]), { ...expected, storedBytes: header.byteLength }), null, '正确 v5 头应通过上传前检查')
 assert.match(await mameDiskHeaderProblem(new Blob([header]), { ...expected, dataSha1: '0'.repeat(40), storedBytes: header.byteLength }), /SHA-1/, '同名错误 CHD 必须在上传前挡住')
 
-const disk = { ...expected, key: 'roms/arcade-media/mame/cede127f3d87f894ccaa1d77c8b279f209f6a8e4/nm-002.chd' }
+// CHD 的压缩流可以重建，文件字节数不是 MAME 的内容身份。回归要锁住真实 bm1stmix
+// 文件的大小差异：只要两组 SHA-1 与逻辑容量匹配，就应记录管理员实际选中的体积。
+const bm1stmixExpected = BM1STMIX_MAME_MEDIA.disks[0]
+assert.equal(bm1stmixExpected.storedBytes, undefined, '静态目录不能把某一份 chdman 的压缩体积写死')
+const bm1stmixHeader = fakeChdHeader(bm1stmixExpected)
+const differentlyCompressedBm1stmix = {
+  size: 134647845,
+  slice: (start, end) => new Blob([bm1stmixHeader]).slice(start, end),
+}
+assert.deepEqual(await mameDiskFromFile(differentlyCompressedBm1stmix, bm1stmixExpected), {
+  romset: 'bm1stmix',
+  name: '753jaa11',
+  chdSha1: bm1stmixExpected.chdSha1,
+  dataSha1: bm1stmixExpected.dataSha1,
+  storedBytes: 134647845,
+  logicalBytes: bm1stmixExpected.logicalBytes,
+}, '同内容但不同压缩体积的 bm1stmix CHD 必须可上传')
+
+const disk = {
+  ...expected,
+  // 持久化记录的大小来自实际上传文件，而不是静态 MAME 媒体目录。
+  storedBytes: 159949410,
+  key: 'roms/arcade-media/mame/cede127f3d87f894ccaa1d77c8b279f209f6a8e4/nm-002.chd',
+}
 assert.deepEqual(JSON.parse(arcadeMameDisksOf([disk])), [disk], '后台只保存规范化媒体盘描述')
 assert.throws(() => arcadeMameDisksOf([{ ...disk, name: '../nm-002' }]), /romset|文件名/, '媒体盘名不能越过 MAME 目录')
 assert.throws(() => arcadeMameDisksOf([{ ...disk, chdSha1: '0'.repeat(40), key: 'roms/arcade-media/mame/0000000000000000000000000000000000000000/nm-002.chd' }]), /当前 MAME CHD 目录|已验证目录/, '接口不能靠手工 JSON 绑定未知 CHD')
