@@ -35,6 +35,8 @@ const {
   EJS_PLATFORM_BUTTONS,
   ARCADE_GENERIC_BUTTONS,
   ARCADE_FIGHTER_BUTTONS,
+  ARCADE_MAME_CURRENT_BUTTONS,
+  arcadeButtonIdsFor,
   QUICK_SAVE_RUNTIMES,
 } = await import('../src/lib/keymapData.ts')
 
@@ -240,6 +242,16 @@ ok(
   new Set([...ARCADE_GENERIC_BUTTONS, ...fighterIds]).size === 6,
   '两套街机映射用的是同六颗键，只是分工不同（FBNeo 的 FIRE01..06 和 COL_TOP/BOTTOM 都落在这六颗上）',
 )
+/*
+  mame-current（libretro/mame input_retro.cpp 的默认 button_mapping）：按键 1..6 = B A Y X L R。
+  2026-10-27《狂热节拍》实测：按 FBNeo 那套把「按键 5」标成 E（R），五号键一点反应都没有。
+*/
+ok(JSON.stringify(ARCADE_MAME_CURRENT_BUTTONS) === JSON.stringify([0, 8, 1, 9, 10, 11]), 'mame-current 按键 1..6 = libretro B A Y X L R')
+ok(arcadeButtonIdsFor('mame-current') === ARCADE_MAME_CURRENT_BUTTONS, 'mame-current 取 MAME 那张表')
+for (const core of [undefined, 'fbneo', 'fbalpha2012', 'mame2003_plus']) {
+  ok(arcadeButtonIdsFor(core) === ARCADE_GENERIC_BUTTONS, `${core ?? '平台默认'} 仍是 FBNeo 那张表`)
+}
+ok(new Set([...ARCADE_GENERIC_BUTTONS, ...ARCADE_MAME_CURRENT_BUTTONS]).size === 6, '两张表只是 5 / 6 对调，仍是同六颗键')
 ok(schemes.__generic__['2'] !== undefined, '投币用的下标 2 在通用方案里（引擎会把它的标签换成 INSERT COIN）')
 ok(EJS_ARCADE_KEY_BY_ID[2] === 'V', '街机开始页显示 V 投币，与 EmulatorJS / libretro 原生 SELECT 键一致')
 ok(EJS_ARCADE_DEFAULT_CONTROLS[0][2] === undefined, '街机不再用全站 Shift 覆盖 SELECT，FBNeo / MAME 会沿用原生 V')
@@ -312,7 +324,7 @@ for (const key of [...needed].sort()) {
   const code = adapter.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '')
 
   ok(
-    /EJS_VirtualGamepadSettings:\s*arcadeVirtualPad\(effectiveArcadeButtons\(options\.arcadeButtons(?: \?\? namcoSet\?\.buttons)?, options\.biosSet\?\.name\)\)/.test(code),
+    /EJS_VirtualGamepadSettings:\s*arcadeVirtualPad\(effectiveArcadeButtons\(options\.arcadeButtons(?: \?\? namcoSet\?\.buttons)?, options\.biosSet\?\.name\), core\)/.test(code),
     '街机注入了按游戏裁剪、并能从 Neo Geo BIOS 补全旧数据的屏幕手柄布局',
   )
   ok(/options\.platform === 'arcade'[\s\S]{0,80}\? \{ EJS_VirtualGamepadSettings/.test(code), '只给街机注入，别的平台仍用引擎默认')
@@ -320,7 +332,17 @@ for (const key of [...needed].sort()) {
   const from = code.indexOf('function arcadeVirtualPad')
   const body = code.slice(from, code.indexOf('\n}\n', from) + 2)
 
-  const inputs = [...body.matchAll(/input_value:\s*(\d+)/g)].map((m) => Number(m[1]))
+  /*
+    动作键写成 `input_value: id(n)`，n 是屏幕上印的「按键 n」，下标由 arcadeButtonIdsFor(core) 决定
+    （mame-current 的 5 / 6 与 FBNeo 对调）。这里按 FBNeo 那张表把 id(n) 解析回下标再核。
+  */
+  ok(/const ids = arcadeButtonIdsFor\(core\)/.test(body), '屏幕手柄按核心取按键下标')
+  const resolve = (src, table) => src.replace(/input_value: id\((\d)\)/g, (_, n) => `input_value: ${table[Number(n) - 1]}`)
+  const fbBody = resolve(body, ARCADE_GENERIC_BUTTONS)
+  const inputs = [...fbBody.matchAll(/input_value:\s*(\d+)/g)].map((m) => Number(m[1]))
+  for (const m of body.matchAll(/text: '(\d)', id: 'arc_(\d)'[^}]*input_value: id\((\d)\)/g)) {
+    ok(m[1] === m[2] && m[2] === m[3], `屏幕上印的「${m[1]}」就是按键 ${m[3]}`)
+  }
   const want = [...ARCADE_GENERIC_BUTTONS, EJS_INDEX.select, EJS_INDEX.start]
   const sorted = (a) => JSON.stringify([...a].sort((x, y) => x - y))
   ok(sorted(new Set(inputs)) === sorted(want), `2/4/6 键布局合起来仍只使用六颗动作键 + 投币 + Start（${[...new Set(inputs)].join(',')}）`)
@@ -339,7 +361,7 @@ for (const key of [...needed].sort()) {
     ['arc_1', 145, 70, f.kickL], ['arc_2', 75, 70, f.kickM], ['arc_5', 5, 70, f.kickH],
   ]
   ok(
-    sixRows.every(([id, right, top, input]) => new RegExp(`id: '${id}'[^}]*right: ${right}[^}]*top: ${top}[^}]*input_value: ${input}`).test(body)),
+    sixRows.every(([id, right, top, input]) => new RegExp(`id: '${id}'[^}]*right: ${right}[^}]*top: ${top}[^}]*input_value: ${input}`).test(fbBody)),
     '六键档仍按上排三拳、下排三脚排列',
   )
 }

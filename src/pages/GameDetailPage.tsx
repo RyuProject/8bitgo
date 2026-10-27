@@ -727,6 +727,7 @@ export function GameDetailPage() {
                 gameSlug={game.slug}
                 arcadeButtons={game.arcadeButtons}
                 arcadeBios={game.arcadeBios}
+                core={game.core}
               />
             </section>
           </div>

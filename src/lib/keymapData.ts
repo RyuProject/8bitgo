@@ -295,6 +295,20 @@ export const EJS_PLATFORM_BUTTONS: Readonly<Record<string, readonly EjsButton[]>
  *    （它的 "P1 Fire 1" 绑的是 Y 不是 B）；三拳三脚那一套两边一样。
  */
 export const ARCADE_GENERIC_BUTTONS: readonly number[] = [0, 8, 1, 9, 11, 10]
+/**
+ * 当前版 MAME（mame-current）的按键 1..6 → libretro B A Y X **L R**。
+ *
+ * 出处：libretro/mame `src/osd/modules/input/input_retro.cpp` 的 button_mapping 默认表
+ * （`mame_buttons_profiles` 关着时不会按游戏改写）。和 FBNeo 的 R / L 正好对调：
+ * 2026-10-27《狂热节拍》实测，键位表写着「按键 5 = E」，按下去五号键一点反应都没有，
+ * 真正的五号键是表上的「按键 6（Q）」。
+ */
+export const ARCADE_MAME_CURRENT_BUTTONS: readonly number[] = [0, 8, 1, 9, 10, 11]
+
+/** 按核心挑「按键 1..6」的 libretro 下标。只有 mame-current 和 FBNeo 系的顺序不同 */
+export function arcadeButtonIdsFor(core?: string | null): readonly number[] {
+  return core === 'mame-current' ? ARCADE_MAME_CURRENT_BUTTONS : ARCADE_GENERIC_BUTTONS
+}
 export const ARCADE_FIGHTER_BUTTONS: Readonly<Record<string, number>> = {
   punchL: 1,
   punchM: 9,

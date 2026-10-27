@@ -23,7 +23,7 @@
  *    要用联机必须自建 EmulatorJS 构建，见 docs 或 README。
  */
 import type { ArcadeButtonCount, PlatformId } from '@/types'
-import { EJS_ARCADE_DEFAULT_CONTROLS, EJS_DEFAULT_CONTROLS } from '@/lib/keymapData'
+import { arcadeButtonIdsFor, EJS_ARCADE_DEFAULT_CONTROLS, EJS_DEFAULT_CONTROLS } from '@/lib/keymapData'
 import type { Capability, CaptureSources, LoadPhase, LoadProgress, MameArcadeDiskSource, MountOptions, RuntimeHandle, StageMode } from '../types'
 import { fetchBlobWithProgress, fetchWithProgress, throttleProgress } from '../loadProgress'
 import { emulatorJsDownloadPhase, isCriticalEmulatorJsDownload } from '../emulatorjsDownload'
@@ -45,9 +45,9 @@ import { deriveArcadeHackBytes } from '../arcadeHack'
 import { biosNameOfUrl, planBiosFiles } from '../biosPlan'
 import { ensureParentDir } from '../fsWrite'
 import { canonicalMameRomset } from '../mameRomset'
-import { identifyKnownMameArcadeMedia, readMameChdHeader, type MameArcadeDiskProfile } from '@/lib/mameArcadeMedia'
+import { identifyKnownMameArcadeMedia, mameDiskSatisfies, readMameChdHeader, type MameArcadeDiskProfile } from '@/lib/mameArcadeMedia'
 import { identifyNamcoMameSet, type NamcoMameMatch } from '@/lib/namcoMameSets'
-import { combinedRomProgress } from '../romProgress'
+import { combinedRomProgress, gateProgressUntilRomComplete } from '../romProgress'
 import { chdCompressors, psxCoreForPreparedName, psxCoreForTransfer, PSX_CHD_AUDIO_LATENCY_MS, PSX_CHD_CORE } from '../psxChd'
 import { canStreamPsxChd, preparePsxRangeDisc, type PsxRangeDisc, type PsxRangeFs } from '../psxRangeDisc'
 import { MAME_CHD_MAX_BYTES, mameChdCacheKey } from '../mameChdWarm'
@@ -754,28 +754,31 @@ const LOG_LIMIT = 60
  * 落成左边一个干净的 2×2 方块（1 2 在下、3 4 在上），也是 KOF 在手柄上的通行摆法。
  * 按数字顺序 1 2 3 / 4 5 6 摆反而会把拳和脚打散（实测：拳会落到左上、右下、右中）。
  */
-function arcadeVirtualPad(count: ArcadeButtonCount = 6): readonly Record<string, unknown>[] {
+function arcadeVirtualPad(count: ArcadeButtonCount = 6, core?: string): readonly Record<string, unknown>[] {
+  // 按键 n 落到哪个 libretro 下标由核心决定：mame-current 的 5 / 6 是 L / R，FBNeo 是 R / L
+  const ids = arcadeButtonIdsFor(core)
+  const id = (n: number) => ids[n - 1]
   const actionButtons = count === 2
     ? [
-        { type: 'button', text: '1', id: 'arc_1', location: 'right', right: 75, top: 35, bold: true, input_value: 0 },
-        { type: 'button', text: '2', id: 'arc_2', location: 'right', right: 5, top: 35, bold: true, input_value: 8 },
+        { type: 'button', text: '1', id: 'arc_1', location: 'right', right: 75, top: 35, bold: true, input_value: id(1) },
+        { type: 'button', text: '2', id: 'arc_2', location: 'right', right: 5, top: 35, bold: true, input_value: id(2) },
       ]
     : count === 4
       ? [
-          { type: 'button', text: '3', id: 'arc_3', location: 'right', right: 75, top: 0, bold: true, input_value: 1 },
-          { type: 'button', text: '4', id: 'arc_4', location: 'right', right: 5, top: 0, bold: true, input_value: 9 },
-          { type: 'button', text: '1', id: 'arc_1', location: 'right', right: 75, top: 70, bold: true, input_value: 0 },
-          { type: 'button', text: '2', id: 'arc_2', location: 'right', right: 5, top: 70, bold: true, input_value: 8 },
+          { type: 'button', text: '3', id: 'arc_3', location: 'right', right: 75, top: 0, bold: true, input_value: id(3) },
+          { type: 'button', text: '4', id: 'arc_4', location: 'right', right: 5, top: 0, bold: true, input_value: id(4) },
+          { type: 'button', text: '1', id: 'arc_1', location: 'right', right: 75, top: 70, bold: true, input_value: id(1) },
+          { type: 'button', text: '2', id: 'arc_2', location: 'right', right: 5, top: 70, bold: true, input_value: id(2) },
         ]
       : [
           // 上排：轻拳 中拳 重拳
-          { type: 'button', text: '3', id: 'arc_3', location: 'right', right: 145, top: 0, bold: true, input_value: 1 },
-          { type: 'button', text: '4', id: 'arc_4', location: 'right', right: 75, top: 0, bold: true, input_value: 9 },
-          { type: 'button', text: '6', id: 'arc_6', location: 'right', right: 5, top: 0, bold: true, input_value: 10 },
+          { type: 'button', text: '3', id: 'arc_3', location: 'right', right: 145, top: 0, bold: true, input_value: id(3) },
+          { type: 'button', text: '4', id: 'arc_4', location: 'right', right: 75, top: 0, bold: true, input_value: id(4) },
+          { type: 'button', text: '6', id: 'arc_6', location: 'right', right: 5, top: 0, bold: true, input_value: id(6) },
           // 下排：轻脚 中脚 重脚
-          { type: 'button', text: '1', id: 'arc_1', location: 'right', right: 145, top: 70, bold: true, input_value: 0 },
-          { type: 'button', text: '2', id: 'arc_2', location: 'right', right: 75, top: 70, bold: true, input_value: 8 },
-          { type: 'button', text: '5', id: 'arc_5', location: 'right', right: 5, top: 70, bold: true, input_value: 11 },
+          { type: 'button', text: '1', id: 'arc_1', location: 'right', right: 145, top: 70, bold: true, input_value: id(1) },
+          { type: 'button', text: '2', id: 'arc_2', location: 'right', right: 75, top: 70, bold: true, input_value: id(2) },
+          { type: 'button', text: '5', id: 'arc_5', location: 'right', right: 5, top: 70, bold: true, input_value: id(5) },
         ]
   return [
     ...actionButtons,
@@ -3408,12 +3411,16 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         const mameDisksToFetch = options.platform === 'arcade' && isMameCurrentCore(core) && !isFile
           ? (options.arcadeMameDisks ?? [])
           : []
+        // CHD 期间把其它阶段的进度先压住，别让进度条在 CHD 才下一半时就停在 99%（见 romProgress.ts）
+        const progressGate = mameDisksToFetch.length ? gateProgressUntilRomComplete(options.onProgress) : null
+        if (progressGate && options.onProgress) options.onProgress = progressGate.other
         const romProgressFor = mameDisksToFetch.length
-          ? combinedRomProgress(options.onProgress, {
+          ? combinedRomProgress(progressGate?.rom, {
               rom: 0,
               ...Object.fromEntries(mameDisksToFetch.map((disk) => [`chd:${disk.name}`, disk.storedBytes])),
             })
           : () => options.onProgress
+        const romProgress = romProgressFor('rom')
         const mameRomProgress = (disk: MameArcadeDiskSource) => romProgressFor(`chd:${disk.name}`)
         /** 媒体盘单独一只 AbortController：核心后来被纠正成 FBNeo 时，160MB 的 CHD 不该继续白下 */
         const mameDiskAbort = new AbortController()
@@ -3422,7 +3429,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           for (const disk of options.arcadeMameDisks ?? []) {
             try {
               mameDiskPath(disk)
-              mameDiskDownloads.set(disk, fetchMameDiskBytes(disk, beat, mameRomProgress(disk), mameDiskAbort.signal).catch((error) => {
+              const diskProgress = mameRomProgress(disk)
+              mameDiskDownloads.set(disk, fetchMameDiskBytes(disk, beat, diskProgress, mameDiskAbort.signal).then((blob) => {
+                // 节流可能吞掉最后一帧；校验通过就明确记满，CHD 期间压住的进度才会放出来
+                diskProgress?.({ phase: 'rom', ratio: 1 })
+                return blob
+              }).catch((error) => {
                 if (!mameDiskAbort.signal.aborted) {
                   console.warn(`[emulatorjs] MAME 必需媒体盘下载失败：${disk.name}.chd`, error)
                   /*
@@ -3585,6 +3597,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             URL.revokeObjectURL(prepared.url)
             return
           }
+          // 同理：ROM 已完整到手，合成进度里的这一路记满（节流不保证最后一帧发出）
+          romProgress?.({ phase: 'rom', ratio: 1 })
           preparedArcadeBlobUrl = prepared.url
           gameUrl = prepared.url
           engineGameName = prepared.name || discNameFor(remoteGameUrl.replace(/\.8bg(?=\?|$)/i, ''), options.gameName)
@@ -3654,6 +3668,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             URL.revokeObjectURL(prepared.url)
             return
           }
+          // 同理：ROM 已完整到手，合成进度里的这一路记满（节流不保证最后一帧发出）
+          romProgress?.({ phase: 'rom', ratio: 1 })
           preparedArcadeBlobUrl = prepared.url
           gameUrl = prepared.url
           /**
@@ -3665,7 +3681,6 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           engineGameName = prepared.name || discNameFor(remoteGameUrl, options.gameName)
           discRomPrepared = true
         } else if (!isFile && options.platform === 'arcade') {
-          const romProgress = romProgressFor('rom')
           const prepared = await prepareRemoteArcadeRom(
             remoteGameUrl,
             (p) => {
@@ -3678,6 +3693,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             URL.revokeObjectURL(prepared.url)
             return
           }
+          // 同理：ROM 已完整到手，合成进度里的这一路记满（节流不保证最后一帧发出）
+          romProgress?.({ phase: 'rom', ratio: 1 })
           preparedArcadeBlobUrl = prepared.url
           gameUrl = prepared.url
           engineGameName = prepared.name
@@ -3808,11 +3825,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           return
         }
         if (detectedMameMedia) {
-          const missing = detectedMameMedia.disks.find((expected) => !activeMameDisks.some((disk) =>
-            disk.romset === expected.romset && disk.name === expected.name &&
-            disk.chdSha1 === expected.chdSha1 && disk.dataSha1 === expected.dataSha1 &&
-            disk.logicalBytes === expected.logicalBytes && disk.storedBytes === expected.storedBytes,
-          ))
+          const missing = detectedMameMedia.disks.find((expected) =>
+            !activeMameDisks.some((disk) => mameDiskSatisfies(disk, expected)))
           if (missing) {
             failLoad(fmt(rt.ejsMameDiskMissing, { board: detectedMameMedia.board, disk: missing.name }), 'config')
             return
@@ -3861,7 +3875,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           // 街机：引擎没有 arcade 分支，不给这份布局手机上就只有 4 颗动作键、
           // 摇杆还会把对角线松掉、投币键写着「选择」。见 ARCADE_VIRTUAL_PAD 的注释
           ...(options.platform === 'arcade'
-            ? { EJS_VirtualGamepadSettings: arcadeVirtualPad(effectiveArcadeButtons(options.arcadeButtons ?? namcoSet?.buttons, options.biosSet?.name)) }
+            ? { EJS_VirtualGamepadSettings: arcadeVirtualPad(effectiveArcadeButtons(options.arcadeButtons ?? namcoSet?.buttons, options.biosSet?.name), core) }
             : {}),
           /*
             默认键位：左手 WASD、右手 UIJK、Enter 开始。主机的 Select 是 Shift；街机投币

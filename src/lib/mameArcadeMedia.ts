@@ -39,6 +39,25 @@ export interface MameArcadeDiskProfile {
   source?: string
 }
 
+/**
+ * 后台绑定的媒体盘是否满足驱动要求。
+ *
+ * MAME 认的是 CHD SHA-1；Data SHA-1 和逻辑容量只在目录里写了的时候才比（通用目录只有 CHD SHA-1）。
+ * ⚠️ `storedBytes` **不参与**：无损重压同一张盘时它会变（见 MameArcadeDiskExpectation 的注释）。
+ * 2026-10-27 线上《狂热节拍》：目录早已去掉 storedBytes，播放器这里却还在逐字段 `===`，
+ * `134647845 === undefined` 恒为假 —— 盘明明绑好了，每次开局都报「缺少必需的媒体盘」。
+ */
+export function mameDiskSatisfies(
+  disk: Pick<MameArcadeDiskExpectation, 'romset' | 'name' | 'chdSha1' | 'dataSha1' | 'logicalBytes'>,
+  expected: MameArcadeDiskExpectation,
+): boolean {
+  return disk.romset === expected.romset &&
+    disk.name === expected.name &&
+    disk.chdSha1 === expected.chdSha1 &&
+    (expected.dataSha1 === undefined || disk.dataSha1 === expected.dataSha1) &&
+    (expected.logicalBytes === undefined || disk.logicalBytes === expected.logicalBytes)
+}
+
 const hex = (bytes: Uint8Array) => Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
 
 function u64(view: DataView, offset: number): number {

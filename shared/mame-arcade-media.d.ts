@@ -4,7 +4,8 @@ export interface KnownMameArcadeDisk {
   name: string
   chdSha1: string
   dataSha1: string
-  storedBytes: number
+  /** 目录不固定压缩后大小（无损重压会变）；只有已保存的绑定记录才带它。 */
+  storedBytes?: number
   logicalBytes: number
 }
 

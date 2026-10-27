@@ -5,7 +5,7 @@ import { getT, fmt } from '@/services/i18n'
 import type { ArcadeButtonCount, PlatformId } from '@/types'
 import {
   ARCADE_FIGHTER_BUTTONS,
-  ARCADE_GENERIC_BUTTONS,
+  arcadeButtonIdsFor,
   EJS_ARCADE_KEY_BY_ID,
   EJS_INDEX,
   EJS_DPAD,
@@ -173,6 +173,8 @@ export function getDefaultKeymap(
   effectiveEjsKeys?: Readonly<Record<number, string>> | null,
   /** 街机按板子裁掉不存在的动作键；旧数据由调用方按 BIOS 推断。 */
   arcadeButtons?: ArcadeButtonCount,
+  /** 街机核心：mame-current 的按键 5 / 6 和 FBNeo 对调（见 keymapData 的 ARCADE_MAME_CURRENT_BUTTONS） */
+  arcadeCore?: string | null,
 ): KeymapInfo {
   const t = getT()
   const quickSave = Boolean(runtimeId && QUICK_SAVE.has(runtimeId))
@@ -378,14 +380,15 @@ export function getDefaultKeymap(
         },
         // 「按键 1~N」在手柄上没有固定位置（不同板子按键数都不一样），所以不给槽位 ——
         // 多行没槽位会让 PadDiagram 整张图退回键帽列，那正是街机该有的样子
-        ...ARCADE_GENERIC_BUTTONS.slice(0, arcadeButtons ?? 6).map((id, i) => ({
+        ...arcadeButtonIdsFor(arcadeCore).slice(0, arcadeButtons ?? 6).map((id, i) => ({
           button: fmt(t.keymap.arcadeBtn, { n: String(i + 1) }),
           key: arcadeKeysOf(id, currentArcadeKeys),
         })),
         { button: t.keymap.coin, key: arcadeKeysOf(EJS_INDEX.select, currentArcadeKeys), slot: 'select' as const },
         { button: 'Start', key: arcadeKeysOf(EJS_INDEX.start, currentArcadeKeys), slot: 'start' as const },
       ],
-      note: `${t.keymap.arcadeNote} ${fmt(t.keymap.arcadeFighter, {
+      // 「三拳三脚自动换布局」是 FBNeo 的 bStreetFighterLayout；mame-current 没有这回事，六键就是 1..6
+      note: arcadeCore === 'mame-current' ? t.keymap.arcadeNote : `${t.keymap.arcadeNote} ${fmt(t.keymap.arcadeFighter, {
         pl: arcadeKeysOf(f.punchL, currentArcadeKeys),
         pm: arcadeKeysOf(f.punchM, currentArcadeKeys),
         ph: arcadeKeysOf(f.punchH, currentArcadeKeys),

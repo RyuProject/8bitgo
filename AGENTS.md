@@ -262,6 +262,16 @@ Emscripten 的 `FS.writeFile` **不会**创建中间目录 —— 2026-09-20 在
 或超过 16 个字符）收成第一段合法片段：2026-10-26《铁拳》存成 `tekken-root-flat.zip`，
 核心 stderr 一个字都不打，直接停在 RetroArch「Quick Menu / No Items」；同一个包叫
 `tekken.zip` 实测 60fps。合法短名（克隆集 `tekkenac` 等）原样保留，不许「纠正」成父集。
+⚠️ **mame-current 的按键 5 / 6 与 FBNeo 对调**：libretro/mame `input_retro.cpp` 的默认 button_mapping 是
+B A Y X **L R**（FBNeo 是 B A Y X R L）。键位表、屏幕手柄都走 `arcadeButtonIdsFor(core)`
+（`src/lib/keymapData.ts`），别再直接用 `ARCADE_GENERIC_BUTTONS`。2026-10-27《狂热节拍》实测：
+表上「按键 5 = E」按了没反应，真正的五号键是「按键 6（Q）」。DJ Main 的转盘是 IPT_DIAL，
+方向键左 / 右（A / D）或鼠标横移都能搓。
+
+⚠️ **CHD 绑定不比 storedBytes**：`mameDiskSatisfies()`（`src/lib/mameArcadeMedia.ts`）只认
+romset / 文件名 / CHD SHA-1，目录写了才比 Data SHA-1 与逻辑容量。无损重压会改变压缩后大小；
+c5d6431 改了目录却漏了播放器那处 `===`，绑好的盘恒被判「缺少必需的媒体盘」。
+
 ⚠️ mame-current 必须 **non-merged** 单包自洽；缺一个成员就是一行
 `v-102tw.u39 NOT FOUND (tried in mxsqy102tw mxsqy)` 然后照样回菜单，别只盯着路径查。
 

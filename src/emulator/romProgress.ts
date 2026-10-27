@@ -34,3 +34,32 @@ export function combinedRomProgress(
     })
   }
 }
+
+/**
+ * 媒体盘没下完之前压住其它阶段的进度（2026-10-27《狂热节拍》）。
+ *
+ * ROM 只有几 MB、核心又常从缓存里秒解开：单调进度条会被 engine / starting 事件当场推到 99%，
+ * 文案变成「正在启动游戏」，可 130MB 的 CHD 才下到一半 —— 玩家对着 99% 干等几分钟，以为卡死了。
+ * mameMedia 的进度计划本来就是 rom 在前，所以 rom 没满之前只放行 rom 事件；其它阶段只记住
+ * 最后一条，rom 一满立刻补发。
+ *
+ * 返回两个口子：`other` 替换掉适配器里其它地方用的 onProgress，`rom` 交给 combinedRomProgress。
+ */
+export function gateProgressUntilRomComplete(sink: ProgressFn | undefined): { other: ProgressFn; rom: ProgressFn } {
+  let complete = false
+  let held: LoadProgress | null = null
+  return {
+    other: (progress) => {
+      if (complete || progress.phase === 'rom') return sink?.(progress)
+      held = progress
+    },
+    rom: (progress) => {
+      sink?.(progress)
+      if (complete || progress.phase !== 'rom' || (progress.ratio ?? 0) < 1) return
+      complete = true
+      const last = held
+      held = null
+      if (last) sink?.(last)
+    },
+  }
+}

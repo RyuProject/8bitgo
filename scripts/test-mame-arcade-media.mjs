@@ -12,10 +12,12 @@ import {
   identifyKnownMameArcadeMedia,
   mameDiskFromFile,
   mameDiskHeaderProblem,
+  mameDiskSatisfies,
   readMameChdHeader,
 } from '../src/lib/mameArcadeMedia.ts'
 import { arcadeBiosOf, arcadeMameDisksOf } from '../server/src/mappers.js'
 import { writeFsInjections } from '../src/emulator/fsInjection.ts'
+import { combinedRomProgress, gateProgressUntilRomComplete } from '../src/emulator/romProgress.ts'
 
 const hexBytes = (value) => Uint8Array.from(value.match(/../g).map((part) => Number.parseInt(part, 16)))
 const expected = TAIKO2_MAME_MEDIA.disks[0]
@@ -150,5 +152,43 @@ assert.match(adapter, /`\/roms\/\$\{disk\.romset\}\/\$\{disk\.name\}\.chd`/, 'CH
 assert.match(adapter, /required: true/, 'CHD 挂载失败必须阻止 startGame，不能静默进入 MAME 菜单')
 assert.match(adapter, /ejsMameDiskMissing|还缺必需媒体盘/, '已知 taiko2 缺盘必须在核心启动前给出明确错误')
 assert.match(progress, /emulatorjs-arcade-mame-media/, 'CHD 街机应使用独立的长 ROM 进度预算')
+
+// 2026-10-27 线上《狂热节拍》：目录不再固定 storedBytes，播放器却还逐字段 === 比较，绑好的盘恒被判「缺失」。
+{
+  const bound = {
+    ...BM1STMIX_MAME_MEDIA.disks[0],
+    key: 'roms/arcade-media/mame/x/753jaa11.chd',
+    storedBytes: 134647845,
+  }
+  assert.equal(mameDiskSatisfies(bound, BM1STMIX_MAME_MEDIA.disks[0]), true, '已绑定的 bm1stmix 盘必须满足驱动要求，压缩后大小不参与比较')
+  assert.equal(mameDiskSatisfies({ ...bound, storedBytes: 1 }, BM1STMIX_MAME_MEDIA.disks[0]), true, '无损重压后大小变了也照样算同一张盘')
+  assert.equal(mameDiskSatisfies({ ...bound, chdSha1: '0'.repeat(40) }, BM1STMIX_MAME_MEDIA.disks[0]), false, 'CHD SHA-1 不符必须拦下')
+  assert.equal(mameDiskSatisfies({ ...bound, dataSha1: '0'.repeat(40) }, BM1STMIX_MAME_MEDIA.disks[0]), false, '目录写了 Data SHA-1 就要比')
+  assert.equal(mameDiskSatisfies({ ...bound, name: 'other' }, BM1STMIX_MAME_MEDIA.disks[0]), false)
+  // 通用目录只有 CHD SHA-1：其余字段缺省时不能因此判失败
+  const generic = { romset: 'bm1stmix', name: '753jaa11', chdSha1: BM1STMIX_MAME_MEDIA.disks[0].chdSha1 }
+  assert.equal(mameDiskSatisfies(bound, generic), true)
+  assert.doesNotMatch(adapter, /disk\.storedBytes === expected\.storedBytes/, '播放器不能再拿压缩后大小判缺盘')
+  assert.match(adapter, /activeMameDisks\.some\(\(disk\) => mameDiskSatisfies\(disk, expected\)\)/)
+}
+
+// CHD 没下完之前，引擎 / 启动阶段的进度不能把单调进度条推到 99%
+{
+  const seen = []
+  const gate = gateProgressUntilRomComplete((p) => seen.push(`${p.phase}:${p.ratio ?? p.startup ?? ''}`))
+  const romOf = combinedRomProgress(gate.rom, { rom: 4, 'chd:753jaa11': 100 })
+  romOf('rom')({ phase: 'rom', loaded: 4, total: 4, ratio: 1 })
+  gate.other({ phase: 'engine', ratio: 0.5 })
+  gate.other({ phase: 'starting', startup: 0.3 })
+  romOf('chd:753jaa11')({ phase: 'rom', loaded: 50, total: 100 })
+  assert.deepEqual(seen.filter((x) => !x.startsWith('rom:')), [], 'CHD 下到一半时不该放出 engine / starting 进度')
+  romOf('chd:753jaa11')({ phase: 'rom', ratio: 1 })
+  assert.equal(seen.at(-1), 'starting:0.3', 'CHD 一满就补发压住的最后一条进度')
+  gate.other({ phase: 'starting', startup: 0.6 })
+  assert.equal(seen.at(-1), 'starting:0.6', '之后的进度照常直通')
+  assert.match(adapter, /gateProgressUntilRomComplete\(options\.onProgress\)/)
+  assert.match(adapter, /combinedRomProgress\(progressGate\?\.rom/)
+  assert.match(adapter, /const romProgress = romProgressFor\('rom'\)/, '所有被接管的 ROM 下载路径共用正确的进度回调')
+}
 
 console.log('✅ MAME CHD 媒体盘回归通过')

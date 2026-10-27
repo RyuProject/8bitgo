@@ -4120,6 +4120,7 @@ export function EmulatorPlayer({
                       gameSlug={gameSlug}
                       arcadeButtons={arcadeButtons}
                       arcadeBios={arcadeBios}
+                      core={session?.coreOverride ?? core}
                       className="mb-1 max-sm:hidden"
                     />
                   )}

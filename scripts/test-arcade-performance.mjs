@@ -120,9 +120,9 @@ test('适配器、开局键位图和操作说明共用四键推断', () => {
   assert.match(src, /effectiveArcadeButtons\(options\.arcadeButtons(?: \?\? namcoSet\?\.buttons)?, options\.biosSet\?\.name\)/)
   assert.match(src, /repairLegacyArcadeKeyCollisions\(emu\.controls\?\.\[0\]/)
   assert.match(src, /FBNEO_ARCADE_AUDIO_LATENCY_MS/)
-  assert.match(keymap, /ARCADE_GENERIC_BUTTONS\.slice\(0, arcadeButtons \?\? 6\)/)
-  assert.match(cards, /effectiveArcadeButtons\(arcadeButtons, arcadeBios\)/)
-  assert.match(diagram, /effectiveArcadeButtons\(arcadeButtons, arcadeBios\)/)
+  assert.match(keymap, /arcadeButtonIdsFor\(arcadeCore\)\.slice\(0, arcadeButtons \?\? 6\)/)
+  assert.match(cards, /effectiveArcadeButtons\(arcadeButtons, arcadeBios\) : undefined,\s*\n\s*core,/)
+  assert.match(diagram, /effectiveArcadeButtons\(arcadeButtons, arcadeBios\) : undefined,\s*\n\s*core,/)
 })
 
 console.log(`\n街机性能与输入体检通过：${passed} 项`)
