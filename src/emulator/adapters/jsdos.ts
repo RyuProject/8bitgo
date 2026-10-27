@@ -53,6 +53,7 @@ import {
 } from '../systemSource'
 import { armJspi } from '../jspiFlag'
 import { warmJsdosCore } from '../prewarm'
+import { win3xPatchedSystemLayer } from '../win3xSystemIni'
 import { parseEmulatorVariantSaveSlug } from '../romLanguage'
 import {
   DOS_PAD_BUTTONS,
@@ -1586,9 +1587,26 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           当天下午给系统镜像补上 ETag 缓存（见 systemSource.ts 的 systemCacheUrl）之后，
           前提重新成立，所以又加了回来。缓存命中的那份是 IndexedDB 新给的副本，不用再复制。
         */
-        const systemLayer = hideJsdosConfigForLayer(
+        const hiddenSystemLayer = hideJsdosConfigForLayer(
           loadedSystem.fromCache ? loadedSystem.data : loadedSystem.data.slice(0),
         )
+        /*
+          Win3.x：开机前给 SYSTEM.INI 补 `[mciseq.drv] disablewarning=true`（理由见 win3xSystemIni.ts）。
+          没有它，《经典食人花》这类一启动就播 MIDI 的游戏会被压在主窗口下面的 MCI 警告框卡住，
+          玩家只看到一扇纯白窗口。改好的 qcow2 直接替换系统包里那一项（系统包在 wc-run 时才由
+          worker 解开，DOS 开机时已是新内容）。线上镜像实测解压 + 改写约 50ms；任何意外都放行。
+        */
+        const win3xSystemLayer = !dosSystemGuest && (options.dosWindowsVersion ?? '9x') === '3x'
+          ? await win3xPatchedSystemLayer(hiddenSystemLayer).catch((e: unknown) => {
+              console.warn('[jsdos] Win3.x SYSTEM.INI 预处理已跳过，按原镜像启动：', e)
+              return null
+            })
+          : null
+        if (destroyed) {
+          for (const url of objectUrls.splice(0)) URL.revokeObjectURL(url)
+          return
+        }
+        const systemLayer = win3xSystemLayer ?? hiddenSystemLayer
         // 最终配置再放一次到最后，未来 js-dos 即使调整直接配置与 initFs 的合并顺序也不会倒退。
         initFs = [
           systemLayer,

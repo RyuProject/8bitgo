@@ -1406,6 +1406,28 @@ Win3.11 约 21MB），**别提交进仓库**；小游戏层 `public/__win95game.
 
 回归：`npm run test:dos-bundle` 的「桌面到底画完了没有」/「开机黑屏」/「壁纸静止」三节。
 
+### 2.26.1 Win3.x 客体的「白窗口」：被压住的 MIDI 警告框，不是 16 色问题
+
+2026-10-27《经典食人花》（zeek-the-geek）：片头过后只剩一扇纯白的「Zeek Part 1」窗口，没菜单、
+没棋盘、无报错。真因是游戏一启动就用 MCI 播 MIDI，Win3.1 的 MCISEQ.DRV 弹
+「This file may not play correctly with the default MIDI setup」，**这个对话框被游戏主窗口压在下面**，
+游戏的 MCI 调用要等它关掉才返回。把游戏窗口最小化才看得到它；勾「不再提示」后 Windows 往
+SYSTEM.INI 写的是 `[mciseq.drv] disablewarning=true`。
+
+修法在 `src/emulator/win3xSystemIni.ts`：所有 Win3.x 客体开机前，在主线程解出系统包里的 qcow2，
+按 qcow2 → MBR → FAT16 找到 `WINDOWS\SYSTEM.INI` 补上这一行（只在现有簇链里写，不分配新簇），
+再把系统包里那一项**换成**改好的 qcow2（stored）。线上镜像实测约 50～100ms。任何结构意外都放行，
+退回原镜像启动。
+
+⚠️ 不能用 initFs 的 `{ path, contents }` 单独覆盖：js-dos 先把 file 层写进 worker，bundle 层到
+wc-run 才解，系统包里的原版 qcow2 会反过来盖掉它（实测）。也不能在 ci-ready 后再改：那时 DOS
+已在开机，和 SMARTDRV 的缓存赛跑。
+
+⚠️ 2026-09-11 把这个白窗口误判为「16 色游戏在真彩桌面画不出来」，换了 system-win311-vga-v1。
+VGA 镜像保留（640x480 下游戏窗口正好铺满画布），但它从来不是白窗口的解药。
+
+回归：`npm run test:win3x-ini`（现场合成 qcow2 + FAT16 小盘；本机有 sysimg.local 时顺带验真镜像）。
+
 ### 2.27 「按语言切换 ROM」的槽里可能是**同一份 ROM** —— 切换器在骗人
 
 玩家反馈（2026-09-21，英文）：「Pokémon 几乎只有日文，虽然有切换语言的选项，但选了也没变化」。

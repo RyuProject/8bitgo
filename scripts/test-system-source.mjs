@@ -173,8 +173,8 @@ await check('46.5MB 的旧 DirectX 镜像仍可代理，方便超精简版回退
 await check('⚠️⚠️ 我们自己改出来的 VGA 镜像绝不能回落到官方那份', () => {
   /*
     system-win311-vga-v1 是把官方 win311 的 SYSTEM.INI 显示驱动换成标准 VGA 之后的产物。
-    登记成官方那份的镜像 = 主源一抖就把 800x600 真彩的系统发下去，
-    Zeek 这类 16 色游戏又变回空白窗口，而且不报任何错。
+    登记成官方那份的镜像 = 主源一抖就把 800x600 真彩、另一套显示驱动的系统发下去，
+    而且不报任何错。（Zeek 的白窗口真因是 MIDI 警告框，见 src/emulator/win3xSystemIni.ts。）
   */
   const s = systemSourcesFor('https://assets.8bitgo.com/systems/dos/system-win311-vga-v1.jsdos')
   assert.equal(s.length, 1, '给它配了备用源 —— 那不是同一个系统')

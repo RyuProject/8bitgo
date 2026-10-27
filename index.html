@@ -26,7 +26,7 @@
       顺带把后面的字体和 CSS 请求一起取消掉。
 
       规则：
-        1. URL 已经带语言前缀（/ja/games）-> 不动。用户或来源已经指定了语言。
+        1. URL 已经带语言前缀（/ja/games）-> 保留，不擅自改语言。
         2. /admin -> 不动。后台不做多语言。
         3. 爬虫 -> 不动。八种语言各有自己的可收录 URL，把蜘蛛也跳走会让默认语言那份
            收不进去；hreflang 已经在 seo.ts 里输出，让搜索引擎自己按 hreflang 分发。
@@ -43,6 +43,12 @@
          这里因为要内联，不可避免抄了一份 —— scripts/test-lang-detect.mjs 会把两边
          逐个语言标记对一遍，改了一处忘了另一处会红。
     -->
+    <!--
+      先选离访客更快的完整站点镜像，再让语言脚本决定目标路径。它只写一个两小时的
+      非认证 Cookie；已有登录态、后台、OAuth、爬虫和测速工具会留在当前域名。
+      文件名带版本号，发版改变规则时必须同时换文件名，避免边缘拿到旧逻辑。
+    -->
+    <script src="/edge-route-v1.js"></script>
     <script>
       (function () {
         try {
@@ -53,7 +59,6 @@
 
           var path = location.pathname
           var seg = path.split('/')[1] || ''
-          if (CODES.indexOf(seg) >= 0) return
           if (seg === 'admin') return
           var ua = navigator.userAgent || ''
           // google-|googleother：Search Console「网址检查」的实时测试是 Google-InspectionTool，
@@ -72,37 +77,47 @@
           //    跳转，也不能把真人当机器扣掉他的语言。
           if (/lighthouse|pagespeed|page speed|ptst|gtmetrix/i.test(ua)) return
 
-          var pick = null
+          var target = path + location.search + location.hash
+          if (CODES.indexOf(seg) < 0) {
+            var pick = null
 
-          // 用户显式选过的语言最优先
-          try {
-            var saved = localStorage.getItem('8bitgo.lang')
-            if (CODES.indexOf(saved) >= 0) pick = saved
-          } catch (e) {
-            /* 隐私模式下读不了，当作没选过 */
-          }
-
-          if (!pick) {
-            var tags = navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language || '']
-            for (var i = 0; i < tags.length && !pick; i++) {
-              var tag = String(tags[i] || '').toLowerCase()
-              if (!tag) continue
-              if (tag.indexOf('zh') === 0) {
-                // hans 先判：zh-Hans-HK 这种既有 hans 又有 hk，简繁标注比地区码更权威
-                pick = tag.indexOf('hans') >= 0 ? 'zh-Hans' : tag.indexOf('hant') >= 0 || /-(tw|hk|mo)\b/.test(tag) ? 'zh-Hant' : 'zh-Hans'
-              } else {
-                var base = tag.split('-')[0]
-                if (SIMPLE.indexOf(base) >= 0) pick = base
-              }
+            // 用户显式选过的语言最优先
+            try {
+              var saved = localStorage.getItem('8bitgo.lang')
+              if (CODES.indexOf(saved) >= 0) pick = saved
+            } catch (e) {
+              /* 隐私模式下读不了，当作没选过 */
             }
-            if (!pick) pick = FALLBACK_LANG
+
+            if (!pick) {
+              var tags = navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language || '']
+              for (var i = 0; i < tags.length && !pick; i++) {
+                var tag = String(tags[i] || '').toLowerCase()
+                if (!tag) continue
+                if (tag.indexOf('zh') === 0) {
+                  // hans 先判：zh-Hans-HK 这种既有 hans 又有 hk，简繁标注比地区码更权威
+                  pick = tag.indexOf('hans') >= 0 ? 'zh-Hans' : tag.indexOf('hant') >= 0 || /-(tw|hk|mo)\b/.test(tag) ? 'zh-Hant' : 'zh-Hans'
+                } else {
+                  var base = tag.split('-')[0]
+                  if (SIMPLE.indexOf(base) >= 0) pick = base
+                }
+              }
+              if (!pick) pick = FALLBACK_LANG
+            }
+
+            // 默认语言就是裸路径本身，不用跳
+            if (pick !== DEFAULT_LANG) target = '/' + pick + (path === '/' ? '' : path) + location.search + location.hash
           }
 
-          // 默认语言就是裸路径本身，不用跳
-          if (pick === DEFAULT_LANG) return
+          // CDN 选择脚本异步测速；它会在同域和跨域两种情况都保留 target。
+          // 外部脚本加载失败时保留旧行为，语言切换不能依赖这项性能优化。
+          if (typeof __8bitgoEdgeRoute === 'function') {
+            __8bitgoEdgeRoute(target)
+            return
+          }
 
           // replace 而不是 assign：不往历史里塞一条，用户按返回键不会被弹回来又跳走
-          location.replace('/' + pick + (path === '/' ? '' : path) + location.search + location.hash)
+          if (target !== path + location.search + location.hash) location.replace(target)
         } catch (e) {
           /* 这段出任何问题都当没发生过 —— 语言选错了是小事，白屏是大事 */
         }

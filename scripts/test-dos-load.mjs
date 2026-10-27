@@ -132,7 +132,8 @@ check('自动重试和读档共用同一份会话判断，没有第二份手写�
   assert.equal(hits.length, 4, `canRestartInPlace(session) 用了 ${hits.length} 处，应该是重开 + 自动重试 + ROM 故障切换 + NDS 崩溃换核心四处`)
   assert.match(player, /ndsCrashFallbackCore\(crashedCore, canRestartInPlace\(session\)/)
   assert.match(player, /typeof session\.game === 'string'[\s\S]{0,160}?canRestartInPlace\(session\)/)
-  assert.match(player, /if \(!ready && canRestartInPlace\(session\) && attempt < AUTO_RETRY_LIMIT\)/)
+  // 2026-10 起中间多了一道「重试也没用」的判断（配置错误、确定性错误），会话判断仍须走 canRestartInPlace
+  assert.match(player, /if \(!ready && (?:!retryUseless && )?canRestartInPlace\(session\) && attempt < AUTO_RETRY_LIMIT\)/)
   assert.doesNotMatch(
     player,
     /!session\.netplay && !session\.cloud && !session\.live/,
