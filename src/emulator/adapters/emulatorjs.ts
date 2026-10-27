@@ -45,6 +45,7 @@ import { deriveArcadeHackBytes } from '../arcadeHack'
 import { biosNameOfUrl, planBiosFiles } from '../biosPlan'
 import { ensureParentDir } from '../fsWrite'
 import { canonicalMameRomset } from '../mameRomset'
+import { fastForwardBoot, mameBootFastForwardFrames } from '../mameBootSkip'
 import { identifyKnownMameArcadeMedia, mameDiskSatisfies, readMameChdHeader, type MameArcadeDiskProfile } from '@/lib/mameArcadeMedia'
 import { identifyNamcoMameSet, type NamcoMameMatch } from '@/lib/namcoMameSets'
 import { combinedRomProgress, gateProgressUntilRomComplete } from '../romProgress'
@@ -538,6 +539,10 @@ interface EjsNetplay {
 }
 interface EjsGameManager {
   getState: () => Uint8Array
+  /** RetroArch 帧计数（cwrap get_current_frame_count） */
+  getFrameNum?: () => number
+  toggleFastForward?: (on: number) => void
+  setFastForwardRatio?: (ratio: number) => void
   loadState: (state: Uint8Array) => void
   /** 新版本才有；没有就退回读画布 */
   screenshot?: () => Uint8Array
@@ -1920,6 +1925,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   /** 开局标志：EJS_onGameStart 与兜底轮询谁先到都行，但只放行一次 */
   let started = false
   let startWatch = 0
+  /** mame-current 实际加载的 romset（开机自检快进按它查表，见 mameBootSkip.ts） */
+  let mameBootRomset = ''
+  let cancelBootFastForward: (() => void) | null = null
   /** 最近一次「引擎还在动」的时刻，卡死检测用 */
   let lastBeat = Date.now()
   /** 引擎自己那行状态文字上次的内容，变了就算有动静 */
@@ -2358,6 +2366,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     // netplay 是可变的（中途开房会后补），闭包里收窄不了 —— 先钉在局部常量上
     const cfg = netplay
     if (destroyed || !cfg) return
+    // 自检还在快进时有人开房：先恢复原速，否则两边帧数对不上
+    cancelBootFastForward?.()
     // 上一个房间的令牌对新房间没用，别让它冒充「已经拿到令牌」
     stateToken = ''
     stateUploadWarned = false
@@ -3292,6 +3302,17 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       if (emuForDip) applyArcadeDipDefault(emuForDip)
     }
     /*
+      《狂热节拍》这类开机自检要跑一分多钟（S RAM / HDD 迟迟不出 OK，见 mameBootSkip.ts）：
+      单人开局时快进跑过去。联机不行 —— 两边帧必须同步，房主快进会直接失步。
+    */
+    const bootFrames = options.platform === 'arcade' && !netplay ? mameBootFastForwardFrames(mameBootRomset) : 0
+    const bootEmu = bootFrames ? emuOf() : undefined
+    if (bootEmu?.gameManager) {
+      cancelBootFastForward = fastForwardBoot(bootEmu.gameManager, bootFrames, {
+        restoreRatio: Number(bootEmu.getSettingValue?.('ff-ratio')) || 3,
+      })
+    }
+    /*
       指针优先的平台（画布本身就是触摸屏）绝不能让引擎锁鼠标指针，见 releaseMouseLock。
 
       ⚠️ 这一句**不能挪进 applyTouchInput** —— 那个函数一开头就 `if (!isMobile &&
@@ -3819,6 +3840,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         const mameRomset = mameContentDir
           ? (engineGameName.split('/').pop() ?? '').replace(/\.zip$/i, '').toLowerCase()
           : ''
+        mameBootRomset = mameRomset
         const mismatchedDisk = activeMameDisks.find((disk) => disk.romset !== mameRomset)
         if (mismatchedDisk) {
           failLoad(fmt(rt.ejsMameDiskMismatch, { disk: mismatchedDisk.name, expected: mismatchedDisk.romset, actual: mameRomset || '?' }), 'config')
@@ -4438,6 +4460,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
   const destroy = () => {
     destroyed = true
+    cancelBootFastForward?.()
     padObserver?.disconnect()
     padObserver = null
     prepareAbort.abort()

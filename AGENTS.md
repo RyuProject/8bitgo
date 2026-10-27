@@ -272,6 +272,12 @@ B A Y X **L R**（FBNeo 是 B A Y X R L）。键位表、屏幕手柄都走 `arc
 romset / 文件名 / CHD SHA-1，目录写了才比 Data SHA-1 与逻辑容量。无损重压会改变压缩后大小；
 c5d6431 改了目录却漏了播放器那处 `===`，绑好的盘恒被判「缺少必需的媒体盘」。
 
+⚠️ **《狂热节拍》开机自检慢是实机行为，不是坏了**：DJ Main 自检要整块读写 16MB 音源 DRAM，
+画面上「S RAM」「HDD」两行原速要 ~69 秒才出 OK、~77 秒才到 KONAMI 标志；真出错显示
+E114 / E710 并停住。`src/emulator/mameBootSkip.ts` 对实测过的 romset（目前只有 bm1stmix，
+4300 帧）开局不限倍率快进，~5 秒跑完，片头前恢复原速；联机不快进，销毁 / 进联机立刻取消。
+加新 romset 前先实测帧数，别把需要玩家看的画面一起跳过。
+
 ⚠️ mame-current 必须 **non-merged** 单包自洽；缺一个成员就是一行
 `v-102tw.u39 NOT FOUND (tried in mxsqy102tw mxsqy)` 然后照样回菜单，别只盯着路径查。
 
