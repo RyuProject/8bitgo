@@ -47,6 +47,8 @@ interface Props {
    * 只是报给服务器让大厅能把两张卡认成一回事，不影响推流本身。
    */
   netplayRoomId?: string | null
+  /** 我在那间联机房里的玩家令牌。服务端凭它确认房号是我的，没有就绑不上 */
+  netplayToken?: string
   /**
    * 玩家点「开播」走标签页分享时，把画面裁到这个元素（播放器那一块），不带旁边的站点 UI。
    * Region Capture 目前只有 Chrome 系有；没有就整个标签页一起推，能用。
@@ -253,7 +255,7 @@ const AUDIO_WAIT_MAX = 8
 /** 「有人想上场」这条请求挂多久就算过期（房主没看见 / 那人已经走了） */
 const SEAT_WANT_TTL_MS = SEAT_TTL_MS
 
-export function LiveControls({ handle, gameName, gameSlug, platform, active = true, netplayRoomId = null, captureRef, className,
+export function LiveControls({ handle, gameName, gameSlug, platform, active = true, netplayRoomId = null, netplayToken = '', captureRef, className,
   nativeGeometry = null,
   chromeless = false,
   onControls,
@@ -354,8 +356,8 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
    * broadcast 内部记着最后一次报的值，重连 / 重开房之后会自己再报（见 relink）。
    */
   useEffect(() => {
-    liveRef.current?.linkNetplay(netplayRoomId)
-  }, [netplayRoomId, live])
+    liveRef.current?.linkNetplay(netplayRoomId, netplayToken)
+  }, [netplayRoomId, netplayToken, live])
   /** 分享标签页拿到的流：停播时要把轨停掉，否则浏览器角上那条「正在分享」一直亮着 */
   const tabStreamRef = useRef<MediaStream | null>(null)
   /**
@@ -487,7 +489,8 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
             ⚠️ 下面「分享标签页」那一路**故意不传** —— 那条流是整个标签页，
             没有「游戏原生尺寸」可言，按它去缩就是把站点 UI 一起缩成马赛克。
           */
-          native: () => nativeRef.current,
+          // 运行时能报核心真实输出尺寸就用它（EmulatorJS 的画布是容器 × dpr，几何≠原生）
+          native: () => handleRef.current?.nativeVideoSize?.() ?? nativeRef.current,
           ...sharedLiveOptions(),
           onState: (state) => {
             if (state === 'reconnecting') setReconnecting(true)

@@ -72,6 +72,28 @@ check('中性或缺失样本不会凭空升档', () => {
   assert.equal(s.tier, 'low')
 })
 
+check('跨洋高延迟但不丢包的链路保持高清，不因 RTT 绝对值降档', () => {
+  // 大陆主播 → 美西 TURN → 观众：空载 RTT 700ms 是常态（2026-10-27 线上实测 726ms）
+  const far = { loss: 0.002, rttMs: 700, fps: 30, kbps: 1400 }
+  let s = initialLiveQualityState(0)
+  for (let i = 1; i <= 10; i++) s = observeLiveQuality(s, { bandwidthLimited: false, expectedFps: 30, sample: far }, i * 5_000)
+  assert.equal(s.tier, 'high')
+})
+
+check('高延迟链路降档后网络恢复能升回来（以前 RTT ≥ 250ms 永远升不回）', () => {
+  const far = { loss: 0.002, rttMs: 700, fps: 18, kbps: 900 }
+  let s = { ...initialLiveQualityState(0), tier: 'low', lastChangeAt: 0 }
+  for (let i = 1; i <= 7; i++) s = observeLiveQuality(s, { bandwidthLimited: false, expectedFps: 18, sample: far }, i * 5_000)
+  assert.equal(s.tier, 'balanced')
+})
+
+check('RTT 比链路自己的基线涨上去（码率塞满队列）照样降档', () => {
+  let s = initialLiveQualityState(0)
+  s = observeLiveQuality(s, { bandwidthLimited: false, expectedFps: 30, sample: { loss: 0, rttMs: 300, fps: 30, kbps: 1400 } }, 5_000)
+  s = observeLiveQuality(s, { bandwidthLimited: false, expectedFps: 30, sample: { loss: 0, rttMs: 900, fps: 30, kbps: 1400 } }, 10_000)
+  assert.equal(s.tier, 'balanced', '排队 600ms 是严重拥塞，一轮就该降')
+})
+
 const retro = {
   maxBitrate: 1_000_000,
   maxFramerate: 30,

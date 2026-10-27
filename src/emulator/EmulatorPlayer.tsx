@@ -4657,6 +4657,7 @@ export function EmulatorPlayer({
             */
             active={!session?.netplay && !session?.cloud}
             netplayRoomId={hosting ? roomId : null}
+            netplayToken={hosting ? roomChatToken : ''}
             captureRef={hostRef}
             /*
               原生几何 → 推流前缩回原生分辨率（见 videoTuning 的 encodeScaleFor）。

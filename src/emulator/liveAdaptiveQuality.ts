@@ -28,6 +28,16 @@ export interface LiveQualityState {
   badStreak: number
   goodStreak: number
   lastChangeAt: number
+  /**
+   * 这条链路自己的「空载」RTT 基线（毫秒，0 = 还没量到）。
+   *
+   * 降档看的是**排队延迟**（当前 RTT 减基线），不是 RTT 绝对值：本站四成观众在大陆、
+   * 主播和观众常隔着太平洋走 TURN，空载 RTT 本来就是 400~800ms。以前拿绝对值 450 判坏、
+   * 250 以下才算好 —— 这些观众一进来就被降到最低档（18 帧 / 42% 码率），而且**永远升不回来**，
+   * 其实一个包都没丢。延迟高不等于带宽不够：码率降了 RTT 一毫秒也不会少。
+   * 真正该让位的是「码率把队列塞满了」，它的特征是 RTT 比这条链路自己的基线涨上去。
+   */
+  baseRttMs?: number
 }
 
 export interface LiveQualityObservation {
@@ -42,9 +52,16 @@ export interface LiveQualityObservation {
 const BAD_LOSS = 0.03
 const SEVERE_LOSS = 0.10
 const GOOD_LOSS = 0.01
-const BAD_RTT_MS = 450
-const SEVERE_RTT_MS = 900
-const GOOD_RTT_MS = 250
+/** 排队延迟（当前 RTT − 链路基线）阈值，见 LiveQualityState.baseRttMs */
+const BAD_QUEUE_MS = 200
+const SEVERE_QUEUE_MS = 500
+const GOOD_QUEUE_MS = 100
+/**
+ * 基线每轮向当前 RTT 回升的比例。只取历史最小值的话，换了一条更远的路由（ICE 重选、
+ * 移动网络切基站）之后基线永远停在旧的低值，新路由的正常 RTT 会被一直当成排队。
+ * 5 秒一轮 × 3% ≈ 两分钟追上一半差距：远慢于真正的拥塞（几秒内就涨满），不会把拥塞吸收进基线。
+ */
+const BASE_RTT_DRIFT = 0.03
 const BAD_FPS_RATIO = 0.65
 const GOOD_FPS_RATIO = 0.85
 /** 恢复比降级慢：宁可多稳一会儿，也不能在两个档位之间来回闪。 */
@@ -80,11 +97,17 @@ export function observeLiveQuality(
   const loss = sample?.loss ?? 0
   const rtt = sample?.rttMs ?? 0
   const fps = sample?.fps ?? 0
+  const prevBase = state.baseRttMs ?? 0
+  const baseRttMs = rtt > 0
+    ? (prevBase > 0 ? Math.min(rtt, prevBase + (rtt - prevBase) * BASE_RTT_DRIFT) : rtt)
+    : prevBase
+  // 第一轮没有基线可比，排队延迟按 0 算：宁可晚一轮发现，也不把高延迟链路误判成拥塞
+  const queue = rtt > 0 && prevBase > 0 ? Math.max(0, rtt - Math.min(prevBase, rtt)) : 0
   const slowDecoder = Boolean(sample && fps > 0 && fps < expected * BAD_FPS_RATIO)
-  const severe = Boolean(sample && (loss >= SEVERE_LOSS || rtt >= SEVERE_RTT_MS))
-  const bad = observation.bandwidthLimited || severe || Boolean(sample && (loss >= BAD_LOSS || rtt >= BAD_RTT_MS || slowDecoder))
+  const severe = Boolean(sample && (loss >= SEVERE_LOSS || queue >= SEVERE_QUEUE_MS))
+  const bad = observation.bandwidthLimited || severe || Boolean(sample && (loss >= BAD_LOSS || queue >= BAD_QUEUE_MS || slowDecoder))
   const good = !observation.bandwidthLimited && Boolean(sample) &&
-    loss < GOOD_LOSS && (rtt === 0 || rtt < GOOD_RTT_MS) &&
+    loss < GOOD_LOSS && queue < GOOD_QUEUE_MS &&
     (fps === 0 || fps >= expected * GOOD_FPS_RATIO)
 
   let badStreak = bad ? state.badStreak + (severe ? 2 : 1) : 0
@@ -104,7 +127,7 @@ export function observeLiveQuality(
     lastChangeAt = now
   }
 
-  return { tier, badStreak, goodStreak, lastChangeAt }
+  return { tier, badStreak, goodStreak, lastChangeAt, baseRttMs }
 }
 
 /**

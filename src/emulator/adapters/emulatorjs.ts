@@ -524,6 +524,8 @@ interface EjsGameManager {
   loadState: (state: Uint8Array) => void
   /** 新版本才有；没有就退回读画布 */
   screenshot?: () => Uint8Array
+  /** 核心当前输出的几何（cwrap get_video_dimensions）：'width' / 'height' / 'aspect'，取不到是 -1 */
+  getVideoDimensions?: (what: string) => number
   /** 核心自报支不支持快照存档（cwrap supports_states）；街机的一些驱动就是不支持 */
   supportsStates?: () => boolean
   /** 把电池存档（SRAM）从核心刷进 /data/saves（cwrap cmd_savefiles）*/
@@ -4467,6 +4469,24 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       const canvas = canvasOf()
       if (!canvas) return null
       return { canvas, audioNode: audioTap?.node ?? null, audioContext: audioTap?.ctx ?? null }
+    },
+    /**
+     * 核心真正输出的画面尺寸，给直播编码缩回原生分辨率用（见 videoTuning 的 encodeScaleFor）。
+     *
+     * ⚠️ 不能拿 `geometry`（= 画布尺寸）充当原生：EmulatorJS 的画布是「容器 × dpr」，
+     * 2026-10-27 实测拳皇 2003 画布 1436×808，核心输出只有 304×224。拿画布当原生，
+     * 缩放倍数恒为 1、街机被当成大画面（不走像素画那一档），每位观众最高 6Mbps 去编码
+     * 插值出来的像素；弱网降档时还会再按大画面砍半分辨率 —— 线上观众看到的就是 302×150。
+     * 旋转过的竖版游戏画布是竖的、核心几何可能还是横的，按画布方向摆正，宁可少缩不多缩。
+     */
+    nativeVideoSize() {
+      const gm = emuOf()?.gameManager
+      const width = Number(gm?.getVideoDimensions?.('width')) || 0
+      const height = Number(gm?.getVideoDimensions?.('height')) || 0
+      if (!usableVideoSize(width, height)) return null
+      const canvas = canvasOf()
+      const portraitCanvas = Boolean(canvas && canvas.height > canvas.width)
+      return portraitCanvas !== height > width ? { width: height, height: width } : { width, height }
     },
     /**
      * 在**正在跑的这一局**上开房，不重开游戏。

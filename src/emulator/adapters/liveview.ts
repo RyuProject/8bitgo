@@ -125,6 +125,8 @@ type WatchAck = {
 const FIRST_OFFER_MS = 8_000
 /** 重新 watch 之后等 offer 的时间；到点还没通就再要一次，要过几次都没用才算断 */
 const REWATCH_TIMEOUT_MS = 20_000
+/** 带心跳的房主连续这么多轮采样（每轮 LINK_STATS_INTERVAL_MS）零解码帧，就当画面卡死重连 */
+const STALL_SAMPLES = 2
 const REWATCH_MAX = 3
 /**
  * ICE 的 disconnected 是“可能恢复”，不是“必然恢复”。Chromium 在网络切换后有时会永久
@@ -481,7 +483,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   /** 第一次读到累计计数只建立基线，不把握手阶段的数据误算成观看期网络质量。 */
   let linkBaselineReady = false
   /** 上一轮的累计值，用来算这一段区间的增量（getStats 给的是从头累计的） */
-  let lastPkts = { received: 0, lost: 0, bytes: 0, at: 0 }
+  let lastPkts = { received: 0, lost: 0, bytes: 0, decoded: 0, at: 0 }
+  /** 房主在输入通道的 hello 里说了「我的视频轨带心跳」（见 coopSeat 的 ka） */
+  let hostKeepAlive = false
+  /** 连续几轮一帧都没解出来。到 STALL_SAMPLES 就当画面卡死 */
+  let stallStreak = 0
 
   /**
    * 读一轮 inbound-rtp，判断「卡是谁的问题」。
@@ -500,14 +506,16 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       let received = 0
       let lost = 0
       let bytes = 0
+      let decoded = 0
       const stats: unknown[] = []
       report.forEach((stat) => {
         stats.push(stat)
         if (!isVideoRtpStat(stat, 'inbound-rtp')) return
         // isVideoRtpStat 只承诺跨浏览器都能读到的兼容字段；这里的 stat 实际来自
         // getStats()，标准 RTCStats 字段由浏览器保证，显式过 unknown 才不会把兼容类型误当完整接口。
-        const t = stat as unknown as RTCStats & { framesPerSecond?: number; packetsReceived?: number; packetsLost?: number; bytesReceived?: number }
+        const t = stat as unknown as RTCStats & { framesPerSecond?: number; packetsReceived?: number; packetsLost?: number; bytesReceived?: number; framesDecoded?: number }
         if (typeof t.framesPerSecond === 'number') fps = t.framesPerSecond
+        if (typeof t.framesDecoded === 'number') decoded += t.framesDecoded
         if (typeof t.packetsReceived === 'number') received += t.packetsReceived
         if (typeof t.bytesReceived === 'number') bytes += t.bytesReceived
         // packetsLost 可以是负数（重排序被算回来），夹到 0
@@ -517,7 +525,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       const now = performance.now()
       const rttMs = selectedCandidateRttMs(stats)
       if (!linkBaselineReady) {
-        lastPkts = { received, lost, bytes, at: now }
+        lastPkts = { received, lost, bytes, decoded, at: now }
         linkBaselineReady = true
         return
       }
@@ -525,7 +533,27 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       const dLost = Math.max(0, lost - lastPkts.lost)
       const elapsed = Math.max(1, now - lastPkts.at)
       const dBytes = Math.max(0, bytes - lastPkts.bytes)
-      lastPkts = { received, lost, bytes, at: now }
+      const dDecoded = Math.max(0, decoded - lastPkts.decoded)
+      lastPkts = { received, lost, bytes, decoded, at: now }
+      /*
+        ⚠️ 首帧之后画面卡死，以前没有任何一条路能发现。
+        ICE 一直 connected、轨也没 ended，只是解码器再也拿不到帧（2026-10-27 线上实测：
+        一路解了 5 帧就停住，状态栏照写「在看」，要等观众自己刷新）。下面那条「包太少不下结论」
+        的早退恰好把这种情形整个吞掉。带心跳的房主静止画面也每 500ms 补一帧，所以连续两轮
+        （10 秒）零帧就是真卡死：当作断线重新要一轮 offer。没有心跳的房主（Safari / Firefox）
+        画面一静止就合法地不出帧，不能这么判，否则暂停一下游戏观众就被反复重连到报错。
+      */
+      if (dDecoded === 0 && hostKeepAlive && !hostFrozen && !hostAway && socket?.connected) {
+        stallStreak += 1
+        if (stallStreak >= STALL_SAMPLES) {
+          stallStreak = 0
+          gotFrame = false
+          window.clearInterval(linkTimer)
+          linkTimer = 0
+          void rewatch()
+          return
+        }
+      } else stallStreak = 0
       // 这一段区间里几乎没收到包就别下结论 —— 样本太小，判什么都是噪声
       if (dRecv + dLost < 50) return
       const loss = dLost / (dRecv + dLost)
@@ -557,7 +585,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
     // 有画面了才开始采样：没画面时读出来的全是握手期的噪声
     if (!linkTimer) {
-      lastPkts = { received: 0, lost: 0, bytes: 0, at: 0 }
+      stallStreak = 0
+      lastPkts = { received: 0, lost: 0, bytes: 0, decoded: 0, at: 0 }
       linkBaselineReady = false
       linkTimer = window.setInterval(() => void sampleLink(), LINK_STATS_INTERVAL_MS)
     }
@@ -625,6 +654,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       // 房主发来的只有 hello / seat 两种；k / want 是访客往房主发的，收到只能是乱发
       if (!msg) return
       if (msg.t === 'hello') {
+        hostKeepAlive = msg.ka === true
         coopButtons = msg.buttons ? [...msg.buttons] : []
         live?.onCoop?.(msg.coop)
       } else if (msg.t === 'seat') {
@@ -745,7 +775,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     gotFrame = false
     tinyFrame = false
     // 新 PeerConnection 的累计计数从零开始，不能拿上条连接的包数做差。
-    lastPkts = { received: 0, lost: 0, bytes: 0, at: 0 }
+    lastPkts = { received: 0, lost: 0, bytes: 0, decoded: 0, at: 0 }
+    stallStreak = 0
     linkBaselineReady = false
     const next = new RTCPeerConnection({ iceServers })
     pc = next
@@ -1046,6 +1077,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           const cur: RTCPeerConnection = stale ? freshPc(gen) : (pc as RTCPeerConnection)
           pcGen = gen
           pcOffered = true
+          /*
+            offer 到了，说明主播那边在建连：首连的 8 秒闹钟是给「offer 丢了」用的，
+            不是给 ICE + DTLS + 首个关键帧的。跨洋 TURN（RTT 700ms 级）光 ICE 就要 6 秒，
+            以前闹钟照响 → 重新 watch → 主播把快通的连接拆掉重来，首帧被拖到 20 秒以上。
+          */
+          if (!gotFrame) armRewatch(REWATCH_TIMEOUT_MS)
           void (async () => {
             await cur.setRemoteDescription(new RTCSessionDescription(sdp))
             for (const c of pendingIce.splice(0)) await cur.addIceCandidate(new RTCIceCandidate(c)).catch(() => {})

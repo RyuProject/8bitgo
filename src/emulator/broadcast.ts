@@ -164,8 +164,11 @@ export interface Broadcast {
    * 主播点「联机」之后直播**不停**：观众正看着的那一路画面一帧都不该掉。
    * 报上去只是为了让**别人的大厅**知道这两个房间是一回事，好把两张卡合成一张、
    * 手柄位还空着就挂个 👋（见 services/allRooms.ts）。
+   *
+   * token 是我在那间联机房里的玩家令牌：服务端要它证明房号是我自己的，
+   * 否则谁都能把别人公开的联机房号绑到自己名下（见 server/src/live.js 的 link-netplay）。
    */
-  linkNetplay: (roomId: string | null) => void
+  linkNetplay: (roomId: string | null, token?: string) => void
   /**
    * 发一条弹幕。服务端会广播给房间里所有人（包括房主自己）——
    * 所以这里**不**做本地回显：每个人看到的顺序都是服务端定的那一个，
@@ -345,6 +348,14 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
                 .then(() => tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, built?.videoSize(), dualScreenSource, options.native?.() ?? null, peer.quality.tier))
                 .catch(() => { if (!stopped && peers.get(peer.id) === peer) void addViewer(peer.id, true) })
             }
+            // 换成原始轨 = 心跳没了：重报 hello，免得观众把静止画面当成卡死去反复重连
+            if (peer.dc?.readyState === 'open') {
+              try {
+                peer.dc.send(encodeCoop(coopHello()))
+              } catch {
+                /* 通道刚好关了：新连接建立时会重新打招呼 */
+              }
+            }
           }
         }
       }
@@ -496,6 +507,17 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
   /** viewerId → 显示名。只增不减也没关系，一场直播的观众数量级很小；dropPeer 时顺手删 */
   const viewerNames = new Map<string, string>()
   let coopReported = ''
+  /** 输入通道打招呼的内容：有没有 2P 位、读哪几颗键、视频轨带不带心跳（见 coopSeat 的 hello） */
+  const coopHello = () => {
+    const buttons = [...(options.coopButtons?.() ?? [])]
+    return {
+      t: 'hello' as const,
+      coop: buttons.length > 0,
+      ...(buttons.length ? { buttons } : {}),
+      ...(built?.keepAlive ? { ka: true } : {}),
+    }
+  }
+
   const reportCoop = () => {
     if (stopped || dormant) return
     const open = (options.coopButtons?.().length ?? 0) > 0
@@ -541,9 +563,8 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     entry.dc = dc
     dc.onopen = () => {
       // 能力发现：这一局有没有 2P 位，由房主说。老版本的观众收不到也无所谓（他不会有那个按钮）
-      const buttons = [...(options.coopButtons?.() ?? [])]
       try {
-        dc.send(encodeCoop({ t: 'hello', coop: buttons.length > 0, ...(buttons.length ? { buttons } : {}) }))
+        dc.send(encodeCoop(coopHello()))
       } catch {
         /* ignore */
       }
@@ -798,6 +819,9 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
   const retuneFps = () => applyFpsCap(Math.min(statsCap, fpsForViewers(viewers, captureFps)))
 
   /** 只重调一位观众；不重建 PeerConnection、不换轨，因此不会黑屏或打断声音。 */
+  /** 带宽估计爬坡期，见统计循环里 bandwidthLimited 那条 */
+  const BWE_SETTLE_MS = 20_000
+
   const retunePeer = (peer: Peer) => {
     if (peers.get(peer.id) !== peer) return
     for (const sender of peer.pc.getSenders()) {
@@ -886,7 +910,13 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
         if (fresh) peer.feedbackConsumedAt = fresh.at
         const previousTier = peer.quality.tier
         peer.quality = observeLiveQuality(peer.quality, {
-          bandwidthLimited: peerBandwidthLimited,
+          /*
+            刚建连 / 刚换档的头 BWE_SETTLE_MS 里不认「带宽受限」：那是带宽估计还在爬坡，
+            浏览器在高 RTT 链路上爬得尤其慢，qualityLimitationReason 必然是 bandwidth。
+            以前这段时间里连着两轮就降一档，跨洋观众进房十秒画质就先被砍掉一截。
+            真丢包 / 真排队仍由观众回传的样本判断，不受这条影响。
+          */
+          bandwidthLimited: peerBandwidthLimited && now - peer.quality.lastChangeAt >= BWE_SETTLE_MS,
           expectedFps: Math.min(cappedFps, previousTier === 'low' ? 18 : previousTier === 'balanced' ? 24 : cappedFps),
           sample: fresh,
         }, now)
@@ -1023,12 +1053,13 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
    * 留着陈旧房号会让大厅挂一个点进去进不去的「联机中」），重开出来的新房间更是从零开始。
    */
   let linkedNetplayRoom: string | null = null
+  let linkedNetplayToken = ''
 
   /** 把配对房号补报给服务器。开房 / 续播成功之后各叫一次 */
   const relink = () => {
     if (!linkedNetplayRoom) return
     try {
-      if (socket.connected) socket.emit('link-netplay', { roomId: linkedNetplayRoom })
+      if (socket.connected) socket.emit('link-netplay', { roomId: linkedNetplayRoom, token: linkedNetplayToken })
     } catch {
       /* ignore */
     }
@@ -1236,6 +1267,12 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
           if (peers.get(p.id) !== p) return
           p.remoteReady = true
           for (const c of p.pending.splice(0)) void pc.addIceCandidate(new RTCIceCandidate(c)).catch(() => {})
+          /*
+            协商完成后再写一遍编码参数。addViewer 里那一次发生在 createOffer 之前，
+            有的浏览器那时 setParameters 会直接拒绝（drainTuning 只能吞掉），首轮的缩放 /
+            码率 / 降级偏好就此丢失，直到下一次换档才补上 —— 而大多数连接根本不会换档。
+          */
+          retunePeer(p)
         })
         .catch(() => {})
     } else if (candidate) {
@@ -1289,11 +1326,12 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     },
     viewers: () => viewers,
     /** 见接口注释。socket 没连上就悄悄跳过 —— 重连之后 LiveControls 会再报一次 */
-    linkNetplay(roomId: string | null) {
+    linkNetplay(roomId: string | null, token = '') {
       if (stopped) return
       linkedNetplayRoom = roomId
+      linkedNetplayToken = roomId ? token : ''
       try {
-        if (socket.connected) socket.emit('link-netplay', { roomId: roomId ?? '' })
+        if (socket.connected) socket.emit('link-netplay', { roomId: roomId ?? '', token: linkedNetplayToken })
       } catch {
         /* ignore */
       }

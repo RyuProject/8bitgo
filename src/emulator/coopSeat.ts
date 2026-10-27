@@ -71,7 +71,11 @@ const BUTTON_SET = new Set<string>(BUTTONS)
  *   q      访客 → 房主   最近 5 秒的收流质量；只允许影响这位观众自己的编码档位
  */
 export type CoopMsg =
-  | { t: 'hello'; coop: boolean; buttons?: PadButton[] }
+  /**
+   * ka：房主这条视频轨带不带心跳（captureFeed 的 keepAlive，静止画面也每 500ms 补一帧）。
+   * 观众靠它判断「连续几秒一帧都没解出来」是不是卡死 —— 没有心跳的房主画面一静止就合法地不出帧。
+   */
+  | { t: 'hello'; coop: boolean; buttons?: PadButton[]; ka?: boolean }
   | { t: 'want' }
   | { t: 'leave' }
   | { t: 'seat'; on: boolean; buttons?: PadButton[] }
@@ -115,7 +119,12 @@ export function parse(raw: unknown): CoopMsg | null {
     }
     case 'hello':
       if (typeof m.coop !== 'boolean') return null
-      return { t: 'hello', coop: m.coop, ...(buttonList(m.buttons) ? { buttons: buttonList(m.buttons) } : {}) }
+      return {
+        t: 'hello',
+        coop: m.coop,
+        ...(buttonList(m.buttons) ? { buttons: buttonList(m.buttons) } : {}),
+        ...(m.ka === true ? { ka: true } : {}),
+      }
     case 'seat': {
       if (typeof m.on !== 'boolean') return null
       const buttons = buttonList(m.buttons)

@@ -220,7 +220,9 @@ export async function connectLive(): Promise<LiveSocket> {
      * 把登录令牌带进握手：普通直播仍允许游客，服务端也会据此给弹幕署名；
      * 成人游戏直播则把它作为真正的权限凭证，开播、续播和观看都会核对账号出生日期。
      */
-    auth: { token: getToken() || undefined },
+    // 传函数不传对象：socket.io 每次（重）连都会重新取。传死对象的话中途登录 / 退出后，
+    // 自动重连带的还是旧令牌 —— 成人直播续播会按旧身份判权限，弹幕署名也是旧的。
+    auth: (cb: (data: { token?: string }) => void) => cb({ token: getToken() || undefined }),
   })
   await new Promise<void>((resolve, reject) => {
     /**
@@ -347,6 +349,8 @@ export async function canAutoStartLive(signal?: AbortSignal): Promise<boolean> {
  * EventSource 自带断线重连；浏览器不支持、或者后端还是老版本没有这个端点时，退回轮询。
  */
 const LIST_POLL_MS = 15_000
+/** 轮询连续失败时的退避上限：后端挂着的那几分钟，每个登录用户别再按 15 秒一次去撞它 */
+const LIST_POLL_MAX_MS = 120_000
 /** 空数组用固定引用：useSyncExternalStore 要求快照引用稳定，否则会无限重渲染 */
 const NO_LIVE_ROOMS: LiveRoomInfo[] = []
 
@@ -364,6 +368,10 @@ const liveStore = (() => {
   let es: EventSource | null = null
   let stopFallback: (() => void) | null = null
   let timer = 0
+  /** 轮询这一轮还在飞：慢响应 + 下一跳会叠成并发请求 */
+  let polling = false
+  /** 连续失败次数，决定下一轮隔多久（指数退避，见 LIST_POLL_MAX_MS） */
+  let pollFailures = 0
   /** 当前连接按哪一张 JWT 建立；登录 / 退出后必须换通道，否则会沿用旧权限。 */
   let connectedToken = ''
   /** 让旧连接 / 旧 JWT 发起的迟到响应失效，避免登出后短暂显示成人房或陈旧房间。 */
@@ -376,22 +384,51 @@ const liveStore = (() => {
     emit()
   }
 
-  const refresh = async () => {
+  /** 返回这一轮成没成功；轮询靠它决定退避 */
+  const refresh = async (): Promise<boolean> => {
     const mine = generation
     const token = getToken()
     try {
       const next = await loadLiveRooms()
       if (mine === generation && token === getToken()) apply(next)
+      return true
     } catch {
       /* 后端暂时不可达时保留上次结果，别闪一下空列表 */
+      return false
     }
   }
 
-  /** 退回轮询（SSE 不可用、或后端还没有这个端点时） */
+  /**
+   * 退回轮询（SSE 不可用、或后端还没有这个端点时；登录用户一律走这里）。
+   *
+   * ⚠️ 不能是一个固定 15 秒的 setInterval：侧边栏挂在每个页面上，登录用户全走这条路 ——
+   * 后台标签页照打不误、后端故障时所有人按全速去撞、慢响应还会和下一跳叠成并发。
+   * 现在：标签页藏着就不打（切回来立刻补一次）；一次只飞一个；失败按指数退避到 2 分钟。
+   */
+  const pollOnce = async () => {
+    timer = 0
+    if (polling) return
+    if (typeof document !== 'undefined' && document.hidden) return // visibilitychange 会补上
+    const mine = generation
+    polling = true
+    const ok = await refresh()
+    polling = false
+    if (mine !== generation) return
+    pollFailures = ok ? 0 : pollFailures + 1
+    const delay = Math.min(LIST_POLL_MAX_MS, LIST_POLL_MS * 2 ** pollFailures)
+    timer = window.setTimeout(() => void pollOnce(), delay)
+  }
+  const onVisible = () => {
+    if (document.hidden || timer || polling || !pollingOn) return
+    void pollOnce()
+  }
+  let pollingOn = false
   const startPolling = () => {
-    if (timer) return
-    void refresh()
-    timer = window.setInterval(() => void refresh(), LIST_POLL_MS)
+    if (pollingOn) return
+    pollingOn = true
+    pollFailures = 0
+    document.addEventListener('visibilitychange', onVisible)
+    void pollOnce()
   }
 
   const connect = () => {
@@ -443,9 +480,14 @@ const liveStore = (() => {
     es?.close()
     es = null
     if (timer) {
-      window.clearInterval(timer)
+      window.clearTimeout(timer)
       timer = 0
     }
+    if (pollingOn) {
+      pollingOn = false
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+    polling = false
   }
 
   const reconnectForToken = () => {
