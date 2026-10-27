@@ -231,9 +231,34 @@ check('播放器代码块加载时有可见、可读屏的状态，不再只剩�
   assert.match(src, /t\.player\.statusLoading/, '加载占位仍只有一个难以察觉的小圆圈')
 })
 
-check('侧边栏有独立直播入口', () => {
-  const src = code('src/components/layout/nav.ts')
-  assert.match(src, /to: '\/rooms\?live=1'/, '直播大厅仍然只能靠猜网址进入')
+/*
+  2026-10-25 站长把侧边栏的独立直播入口撤了（nav.ts 注释：「直播入口不在这里单独占位」）。
+  这里不再强求侧边栏有它，只守住直播大厅这个页面本身还在：/rooms?live=1 仍要能筛出观看列表。
+*/
+check('直播大厅（/rooms?live=1）仍可用', () => {
+  const src = code('src/pages/RoomsPage.tsx')
+  assert.match(src, /searchParams\.get\('live'\) === '1'/, '直播大厅的 ?live=1 筛选没了')
+})
+
+check('offer 到了就把首连闹钟放宽到整轮预算（跨洋 ICE 要 6 秒，8 秒闹钟会拆掉快通的连接）', () => {
+  const src = code('src/emulator/adapters/liveview.ts')
+  assert.match(src, /pcOffered = true[\s\S]{0,600}if \(!gotFrame\) armRewatch\(REWATCH_TIMEOUT_MS\)/, 'offer 到达后没有重新上闹钟')
+})
+
+check('首帧之后画面卡死能被发现（只对带心跳的房主）', () => {
+  const src = code('src/emulator/adapters/liveview.ts')
+  assert.match(src, /dDecoded === 0 && hostKeepAlive && !hostFrozen && !hostAway/, '卡死判定缺了心跳 / 冻结 / 主播离开的守卫')
+  assert.match(src, /stallStreak >= STALL_SAMPLES[\s\S]{0,200}void rewatch\(\)/, '卡死之后没有重新要 offer')
+  assert.match(src, /hostKeepAlive = msg\.ka === true/, '没从 hello 读心跳标记')
+})
+
+check('主播编码按核心真实输出尺寸缩放，不拿画布尺寸冒充原生', () => {
+  const ejs = code('src/emulator/adapters/emulatorjs.ts')
+  assert.match(ejs, /nativeVideoSize\(\)[\s\S]{0,800}getVideoDimensions\?\.\('width'\)/, 'EmulatorJS 没有报核心几何')
+  const controls = code('src/emulator/LiveControls.tsx')
+  assert.match(controls, /native: \(\) => handleRef\.current\?\.nativeVideoSize\?\.\(\) \?\? nativeRef\.current/, '开播没优先用核心几何')
+  const broadcast = code('src/emulator/broadcast.ts')
+  assert.match(broadcast, /p\.remoteReady = true[\s\S]{0,600}retunePeer\(p\)/, '协商完成后没有重写编码参数')
 })
 
 console.log(failed ? `\n${failed} 项未通过` : '\n全部通过 ✅')

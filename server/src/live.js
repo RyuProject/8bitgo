@@ -759,6 +759,43 @@ export function ghostRooms(roomList, hostAlive) {
 }
 
 /**
+ * 名单里 socket 已经不在线的观众 / 联机弹幕成员（判据同 ghostRooms：只认 nsp.sockets 这个事实）。
+ *
+ * 正常断线由 leave() 清掉；漏网的来源是「await 期间断线又被加回名单」这一类竞态。
+ * 幽灵观众占着席位、虚报人数，还会让「主播后台 + 零观众」的收房闹钟永远不响 ——
+ * 而以前的扫描只看主播，它们能挂到房间散场为止。
+ */
+export function ghostViewers(room, alive) {
+  const dead = []
+  for (const id of room.viewers) if (!alive(id)) dead.push(id)
+  return dead
+}
+
+function sweepGhostViewers(nsp, room) {
+  const alive = (id) => nsp.sockets.has(id)
+  for (const id of [...room.matchPlayers]) {
+    if (alive(id)) continue
+    room.matchPlayers.delete(id)
+    if (membership.get(id)?.roomId === room.id) membership.delete(id)
+  }
+  const dead = ghostViewers(room, alive)
+  if (!dead.length) return
+  for (const id of dead) {
+    room.viewers.delete(id)
+    room.viewerKeys.delete(id)
+    room.viewerNames.delete(id)
+    if (membership.get(id)?.roomId === room.id) membership.delete(id)
+    if (room.hostSocketId) nsp.to(room.hostSocketId).emit('viewer-left', { viewerId: id })
+  }
+  if (!room.hostSocketId && room.viewers.size === 0) {
+    closeRoom(nsp, room, 'host-left')
+    return
+  }
+  if (room.hostFrozen) scheduleFrozenClose(nsp, room)
+  notifyViewers(nsp, room)
+}
+
+/**
  * 收掉这个 socket 名下的房间：**没人看直接散、有人看走宽限期**（和断线同一条规则）。
  * 只按 `hostSocketId` 找，不看 membership —— 理由同 ghostRooms。
  */
@@ -875,6 +912,8 @@ function leave(nsp, socket) {
 export function attachLive(io, options = {}) {
   const findUser = options.findUser || queryOne
   const findGame = options.findGame || ((slug) => queryOne('SELECT adult FROM games WHERE slug = ? LIMIT 1', [slug]))
+  // 和 findUser / findGame 同理：测试可以不起整套联机服务，只替换「是不是那间联机房的玩家」这一问
+  const netplayPlayer = options.isNetplayPlayer || isNetplayPlayer
   const nsp = io.of('/live')
 
   /**
@@ -939,6 +978,13 @@ export function attachLive(io, options = {}) {
           if (accessError) return ack?.(accessError)
         }
 
+        /*
+          ⚠️ await 期间这条连接可能已经断了（关标签页 / 网络切换）。disconnect 那一刻 leave()
+          什么都没找到，这里再 rooms.set + bindHost 就是给一个死 socket 开房：大厅挂着一张
+          hostAway:false 的空卡，socket.join 还会把死 id 写进 adapter 永远不删（closeRoom 只能
+          通过 nsp.sockets 找到活连接去 leave）。反复「连上 → go-live → 断开」能让内存无界增长。
+        */
+        if (!socket.connected) return ack?.('disconnected')
         // 查用户期间同一条连接可能被别的事件放进房间；await 后必须再确认一次。
         const opened = boundHostRoom()
         if (opened) return ack?.(null, { roomId: opened.id, token: opened.token })
@@ -1062,6 +1108,8 @@ export function attachLive(io, options = {}) {
           if (accessError) return ack?.(accessError)
         }
 
+        // 查账号期间连接断了：绑回去就是把房间交给一个死 socket（理由同 go-live）
+        if (!socket.connected) return ack?.('disconnected')
         // 查账号期间房间可能已经到期散场；不能把一个已删除的对象重新绑回 socket。
         if (rooms.get(room.id) !== room) return ack?.('not found')
         const resumed = boundHostRoom()
@@ -1100,6 +1148,11 @@ export function attachLive(io, options = {}) {
           const accessError = adultLiveAccessError(await liveAccount(socket, findUser))
           if (accessError) return ack?.(accessError)
         }
+        /*
+          查账号期间观众断了：再往 room.viewers 里加就是一个永远不会走的幽灵观众 ——
+          占着席位、虚报人数，还让「后台 + 零观众」的收房闹钟永远不响（幽灵扫描只看主播）。
+        */
+        if (!socket.connected) return ack?.('disconnected')
         // 查账号期间主播可能已经下播；后面的 join 不能把人放进一个不存在的 socket.io 房。
         if (rooms.get(room.id) !== room) return ack?.('not found')
         const info = membership.get(socket.id)
@@ -1191,6 +1244,7 @@ export function attachLive(io, options = {}) {
           const accessError = adultLiveAccessError(await liveAccount(socket, findUser))
           if (accessError) return ack?.(accessError)
         }
+        if (!socket.connected) return ack?.('disconnected')
         if (!isNetplayPlayer(netplayRoomId, token)) return ack?.('not a player')
         if (live && rooms.get(live.id) !== live) return ack?.('not found')
         const prior = membership.get(socket.id)
@@ -1255,6 +1309,13 @@ export function attachLive(io, options = {}) {
       const room = rooms.get(info.roomId)
       if (!room || room.hostSocketId !== socket.id) return
       const next = str(payload?.roomId, 64) || null
+      /*
+        ⚠️ 绑定必须证明「我就是那间联机房的玩家」，和 join-match-chat 同一道闸。
+        联机房号是公开列在大厅里的；以前只认「发消息的是主播」，于是任何人开个匿名直播就能
+        把别人的联机房号绑到自己名下：删掉对方的弹幕历史、把对方玩家搬进自己的弹幕流、
+        大厅里把自己的直播卡并到对方的联机卡上。解绑（next 为空）不涉及别人，不用令牌。
+      */
+      if (next && !netplayPlayer(resolveRoomId(next), str(payload?.token, 64))) return
       // 大厅是轮询 /api/live/rooms 的（不像 netplay 那边有 SSE），改完等下一轮就看得到
       const previous = room.netplayRoomId
       room.netplayRoomId = next
@@ -1405,6 +1466,8 @@ export function attachLive(io, options = {}) {
   */
   if (ghostTimer) clearInterval(ghostTimer)
   ghostTimer = setInterval(() => {
+    // 先清幽灵观众：主播那条判据要看 viewers.size，幽灵观众会让本该散掉的房走宽限期
+    for (const room of [...rooms.values()]) sweepGhostViewers(nsp, room)
     for (const room of ghostRooms(rooms.values(), (id) => nsp.sockets.has(id))) {
       if (room.viewers.size === 0) closeRoom(nsp, room, 'ghost-host')
       else hostAway(nsp, room)

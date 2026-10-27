@@ -38,9 +38,19 @@ const { list: lst } = attachLive(server, {
     if (params?.[0] === 'u_adult') return { nickname: '成年玩家', status: 'active', birth_date: '1990-01-01', token_version: 0 }
     if (params?.[0] === 'u_child') return { nickname: '未成年玩家', status: 'active', birth_date: '2015-01-01', token_version: 0 }
     if (params?.[0] === 'u_banned') return { nickname: '封禁玩家', status: 'banned' }
+    if (params?.[0] === 'u_slow') {
+      await new Promise((r) => setTimeout(r, 200))
+      return { nickname: '慢查询玩家', status: 'active', birth_date: '1990-01-01', token_version: 0 }
+    }
     return null
   },
-  findGame: async (slug) => ({ adult: slug === 'adult-game' ? 1 : 0 }),
+  findGame: async (slug) => {
+    // slow-*：模拟数据库慢查询，给「await 期间断线」那组用例留出窗口
+    if (slug.startsWith('slow-')) await new Promise((r) => setTimeout(r, 200))
+    return { adult: slug === 'adult-game' || slug === 'slow-adult' ? 1 : 0 }
+  },
+  // 联机房玩家令牌：令牌就是「房号:player」才算该房玩家（真实校验见 netplay.js 的 isNetplayPlayer）
+  isNetplayPlayer: (roomId, token) => Boolean(roomId) && token === `${roomId}:player`,
 })
 await new Promise((r) => http.listen(0, r))
 const url = `http://127.0.0.1:${http.address().port}/live`
@@ -438,14 +448,19 @@ const lh = conn(); await once(lh, 'connect')
 const lr = await call(lh, 'go-live', { gameName: 'Link', gameSlug: 'link' })
 const linkRoom = lr.data.roomId
 check('挂号前是 null', liveRoom(linkRoom).netplayRoomId === null)
+// 联机房号是公开的：不带该房玩家令牌（或令牌是别的房的）都不能绑，否则谁都能劫持别人的联机房
 lh.emit('link-netplay', { roomId: 'NP-1' })
+lh.emit('link-netplay', { roomId: 'NP-1', token: 'NP-7:player' })
+await new Promise((r) => setTimeout(r, 80))
+check('主播没有那间联机房的玩家令牌就挂不上号', liveRoom(linkRoom).netplayRoomId === null)
+lh.emit('link-netplay', { roomId: 'NP-1', token: 'NP-1:player' })
 await new Promise((r) => setTimeout(r, 80))
 check('主播能挂上联机房号', liveRoom(linkRoom).netplayRoomId === 'NP-1')
 
 // 观众冒充主播挂号 —— 不然谁都能把别人的直播间标成「联机中」，把人骗进不存在的房间
 const lv = conn(); await once(lv, 'connect')
 await call(lv, 'watch', { roomId: linkRoom })
-lv.emit('link-netplay', { roomId: 'EVIL' })
+lv.emit('link-netplay', { roomId: 'EVIL', token: 'EVIL:player' })
 await new Promise((r) => setTimeout(r, 80))
 check('观众挂不了号', liveRoom(linkRoom).netplayRoomId === 'NP-1')
 
@@ -454,7 +469,7 @@ check('观众挂不了号', liveRoom(linkRoom).netplayRoomId === 'NP-1')
 const pushed = await new Promise((r) => {
   const timer = setTimeout(() => r('超时'), 1500)
   lv.once('netplay-linked', (d) => { clearTimeout(timer); r(d?.roomId) })
-  lh.emit('link-netplay', { roomId: 'NP-9' })
+  lh.emit('link-netplay', { roomId: 'NP-9', token: 'NP-9:player' })
 })
 check('挂号会立刻推给正在看的观众', pushed === 'NP-9', `实际 ${pushed}`)
 
@@ -512,7 +527,7 @@ namedViewer.close()
  * **而且要告诉正在看的人**。不然他手里那个「加入联机」按钮还亮着，
  * 点下去是离开还活着的直播、去连一个已经不存在的房间：直播也没了，联机也没进去。
  */
-lh.emit('link-netplay', { roomId: 'NP-2' })
+lh.emit('link-netplay', { roomId: 'NP-2', token: 'NP-2:player' })
 await new Promise((r) => setTimeout(r, 80))
 const awayLink = once(lv, 'host-away')
 const unlinked = new Promise((r) => {
@@ -1027,6 +1042,34 @@ lv.close()
 }
 
 for (const s of [host, host2, host3, host4, host5, v1, v2, v3, v4, v5, v6, solo, late, stranger]) s.close()
+/* ─────────── await 期间断线：不能把死 socket 登记成主播 / 观众 ─────────── */
+{
+  const before = liveRooms().length
+  const ghostHost = conn(); await once(ghostHost, 'connect')
+  const ghostId = ghostHost.id
+  ghostHost.emit('go-live', { gameSlug: 'slow-zelda', gameName: 'Slow' })
+  await new Promise((r) => setTimeout(r, 40))
+  ghostHost.close()
+  await new Promise((r) => setTimeout(r, 350))
+  check('go-live 查库期间断线：不留幽灵房', liveRooms().length === before, `实际 ${liveRooms().length} vs ${before}`)
+  check('go-live 查库期间断线：死 socket 不进 adapter', !server.of('/live').adapter.sids.has(ghostId))
+
+  const adultHost = conn(signToken('u_adult', 0)); await once(adultHost, 'connect')
+  const adultLive = await call(adultHost, 'go-live', { gameSlug: 'slow-adult', gameName: 'Slow adult' })
+  check('慢查询的成人房能开', !adultLive.err, adultLive.err || '')
+  const ghostViewer = conn(signToken('u_slow', 0)); await once(ghostViewer, 'connect')
+  const ghostViewerId = ghostViewer.id
+  ghostViewer.emit('watch', { roomId: adultLive.data.roomId })
+  await new Promise((r) => setTimeout(r, 40)) // 让 watch 真的发出去（同一 tick 就 close 会把它丢在客户端缓冲里）
+  ghostViewer.close() // 账号查询（await liveAccount）还没回来就断了
+  await new Promise((r) => setTimeout(r, 250))
+  const room = liveRoom(adultLive.data.roomId, { includeAdult: true })
+  check('watch 查账号期间断线：不算观众人数', room && room.viewers === 0, `实际 ${room?.viewers}`)
+  check('watch 查账号期间断线：死 socket 不进 adapter', !server.of('/live').adapter.sids.has(ghostViewerId))
+  adultHost.emit('stop-live')
+  adultHost.close()
+}
+
 server.close(); http.close()
 console.log('通过 %d 项：\n  %s', ok.length, ok.join('\n  '))
 if (bad.length) { console.log('\n失败 %d 项：\n  %s', bad.length, bad.join('\n  ')); process.exit(1) }

@@ -47,6 +47,13 @@ check('认得控制与质量消息', () => {
   })
 })
 
+check('hello 带心跳标记（ka）：只认真正的 true', () => {
+  assert.deepEqual(parse('{"t":"hello","coop":false,"ka":true}'), { t: 'hello', coop: false, ka: true })
+  // 老房主不发 ka、或者发了奇怪的值：一律当没有心跳，观众就不做卡死判定（安全的那一边）
+  assert.deepEqual(parse('{"t":"hello","coop":false,"ka":"yes"}'), { t: 'hello', coop: false })
+  assert.deepEqual(parse('{"t":"hello","coop":false}'), { t: 'hello', coop: false })
+})
+
 check('⚠️ 脏输入一个都不许放过', () => {
   const bad = [
     null, undefined, 0, 1, {}, [], true,
