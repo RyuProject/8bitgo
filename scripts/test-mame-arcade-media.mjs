@@ -18,6 +18,7 @@ import {
 import { arcadeBiosOf, arcadeMameDisksOf } from '../server/src/mappers.js'
 import { writeFsInjections } from '../src/emulator/fsInjection.ts'
 import { combinedRomProgress, gateProgressUntilRomComplete } from '../src/emulator/romProgress.ts'
+import { fastForwardBoot, mameBootFastForwardFrames } from '../src/emulator/mameBootSkip.ts'
 
 const hexBytes = (value) => Uint8Array.from(value.match(/../g).map((part) => Number.parseInt(part, 16)))
 const expected = TAIKO2_MAME_MEDIA.disks[0]
@@ -189,6 +190,58 @@ assert.match(progress, /emulatorjs-arcade-mame-media/, 'CHD 街机应使用独�
   assert.match(adapter, /gateProgressUntilRomComplete\(options\.onProgress\)/)
   assert.match(adapter, /combinedRomProgress\(progressGate\?\.rom/)
   assert.match(adapter, /const romProgress = romProgressFor\('rom'\)/, '所有被接管的 ROM 下载路径共用正确的进度回调')
+}
+
+// 《狂热节拍》开机自检（S RAM 16MB DRAM 实测 ~69 秒）要快进跑过去，到片头前恢复原速
+{
+  assert.equal(mameBootFastForwardFrames('bm1stmix'), 4300)
+  assert.equal(mameBootFastForwardFrames('BM1STMIX'), 4300)
+  assert.equal(mameBootFastForwardFrames('tekken'), 0, '没实测过的 romset 不快进')
+  assert.equal(mameBootFastForwardFrames(null), 0)
+
+  const fakeGm = (start = 0) => {
+    const log = []
+    let frame = start
+    return {
+      log,
+      step: (n) => { frame += n },
+      gm: {
+        getFrameNum: () => frame,
+        toggleFastForward: (on) => log.push(`ff:${on}`),
+        setFastForwardRatio: (r) => log.push(`ratio:${r}`),
+      },
+    }
+  }
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+  const a = fakeGm()
+  fastForwardBoot(a.gm, 100, { restoreRatio: 3, pollMs: 5 })
+  assert.deepEqual(a.log, ['ratio:0', 'ff:1'], '开局立刻不限倍率快进')
+  await sleep(20)
+  assert.deepEqual(a.log, ['ratio:0', 'ff:1'], '没到目标帧不停')
+  a.step(100)
+  await sleep(20)
+  assert.deepEqual(a.log, ['ratio:0', 'ff:1', 'ff:0', 'ratio:3'], '到目标帧关快进并恢复用户的倍率')
+
+  const b = fakeGm()
+  const cancel = fastForwardBoot(b.gm, 100, { pollMs: 5 })
+  cancel()
+  cancel()
+  assert.deepEqual(b.log, ['ratio:0', 'ff:1', 'ff:0', 'ratio:3'], '取消（销毁 / 进联机）立刻恢复原速，且只恢复一次')
+
+  const c = fakeGm()
+  fastForwardBoot(c.gm, 100, { pollMs: 5, timeoutMs: 15 })
+  await sleep(40)
+  assert.deepEqual(c.log.slice(-2), ['ff:0', 'ratio:3'], '帧计数不涨也会超时停下')
+
+  const d = fakeGm(500)
+  fastForwardBoot(d.gm, 100)
+  assert.deepEqual(d.log, [], '已经过了自检（读档 / 重开）不快进')
+  assert.doesNotThrow(() => fastForwardBoot({}, 100)(), '没有快进接口时什么都不做')
+
+  assert.match(adapter, /options\.platform === 'arcade' && !netplay \? mameBootFastForwardFrames\(mameBootRomset\)/, '联机不快进（双方帧要对齐）')
+  assert.match(adapter, /cancelBootFastForward = fastForwardBoot\(/)
+  assert.ok((adapter.match(/cancelBootFastForward\?\.\(\)/g) ?? []).length >= 2, '销毁和进联机都要取消快进')
 }
 
 console.log('✅ MAME CHD 媒体盘回归通过')
