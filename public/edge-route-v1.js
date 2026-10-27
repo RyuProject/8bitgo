@@ -17,7 +17,8 @@
   var HOSTS = [PRIMARY_HOST, ASIA_HOST]
   var COOKIE_NAME = '8bitgo.edge'
   var COOKIE_TTL_MS = 2 * 60 * 60 * 1000
-  var PROBE_TIMEOUT_MS = 1200
+  // 首次探测只允许占用很短的首屏窗口；失败就留在当前已成功打开的站点。
+  var PROBE_TIMEOUT_MS = 450
   var MIN_WIN_MS = 80
   var MIN_WIN_RATIO = 0.15
 
@@ -126,12 +127,9 @@
       var timer = global.setTimeout(function () {
         finish(null, true)
       }, PROBE_TIMEOUT_MS)
-      var url =
-        'https://' +
-        host +
-        '/favicon.svg?__8bg_edge_probe=' +
-        Date.now().toString(36) +
-        Math.random().toString(36).slice(2)
+      // 固定 URL + no-store 只绕过浏览器缓存，不给每次请求制造新的 CDN 缓存键。
+      // 随机查询串会让边缘反复回源，测到的是源站冷请求，还会增加源站负载。
+      var url = 'https://' + host + '/favicon.svg'
 
       function finish(milliseconds, abort) {
         if (finished) return
@@ -188,7 +186,21 @@
 
     var remembered = readChoice()
     if (remembered) {
-      navigate(remembered.host, target)
+      if (remembered.host === host) {
+        navigate(host, target)
+        return
+      }
+
+      // Cookie 只记上次较快的边缘，不代表它现在仍可用。当前 HTML 已经成功打开，
+      // 跳去另一域前先轻量验证；目标失联时保留当前页面并更新选择，避免把整站送进坏节点。
+      probe(remembered.host).then(function (milliseconds) {
+        if (milliseconds != null) {
+          navigate(remembered.host, target)
+          return
+        }
+        storeChoice(host)
+        navigate(host, target)
+      })
       return
     }
 

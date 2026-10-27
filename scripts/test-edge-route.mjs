@@ -38,6 +38,7 @@ async function run({
   let pendingTimeouts = 0
   const requests = []
   const scheduled = []
+  const timers = []
   const clock = { value: nowMs }
   const document = { cookie }
   const location = {
@@ -57,12 +58,17 @@ async function run({
     sessionStorage: makeStorage(session),
     navigator: { userAgent: ua },
     performance: { now: () => clock.value },
-    setTimeout(fn) {
+    setTimeout(fn, delay) {
       pendingTimeouts++
-      return { fn }
+      const timer = { fn, delay, active: true }
+      timers.push(timer)
+      return timer
     },
-    clearTimeout() {
-      pendingTimeouts--
+    clearTimeout(timer) {
+      if (timer?.active) {
+        timer.active = false
+        pendingTimeouts--
+      }
     },
     fetch(url, options) {
       requests.push({ url, options })
@@ -82,6 +88,7 @@ async function run({
 
   // 两个探针现实中并行，按最短完成时间依次让回调观察到对应的 performance.now()。
   for (const item of scheduled.sort((a, b) => (a.delay ?? Infinity) - (b.delay ?? Infinity))) {
+    if (item.delay === 'hang') continue
     if (item.delay == null) item.reject(new Error('network failed'))
     else {
       clock.value = nowMs + item.delay
@@ -89,9 +96,17 @@ async function run({
     }
     await Promise.resolve()
   }
+  for (const timer of timers) {
+    if (!timer.active) continue
+    clock.value = nowMs + timer.delay
+    timer.active = false
+    pendingTimeouts--
+    timer.fn()
+    await Promise.resolve()
+  }
   await Promise.resolve()
   await Promise.resolve()
-  return { redirected, requests, document, pendingTimeouts }
+  return { redirected, requests, document, pendingTimeouts, probeTimeouts: timers.map((timer) => timer.delay) }
 }
 
 let failed = 0
@@ -116,6 +131,8 @@ await check('亚洲边缘明显更快时，保留完整路径、查询串和锚�
   assert.equal(result.redirected, 'https://cn.8bitgo.com/en/games/mario?from=share#play')
   assert.equal(result.requests.length, 2)
   assert.deepEqual(result.requests.map((request) => request.options.credentials), ['omit', 'omit'])
+  assert.ok(result.requests.every((request) => request.url === `https://${new URL(request.url).hostname}/favicon.svg`))
+  assert.ok(result.requests.every((request) => request.options.cache === 'no-store'))
 })
 
 await check('只有几十毫秒差异时留在主站，避免网络抖动来回切域', async () => {
@@ -126,6 +143,14 @@ await check('只有几十毫秒差异时留在主站，避免网络抖动来回�
 await check('亚洲边缘不可达时保持主站可用', async () => {
   const result = await run({ timings: { [HOST_MAIN]: 80, [HOST_ASIA]: null } })
   assert.equal(result.redirected, null)
+})
+
+await check('两个节点都不返回时，探测按 450ms 上限收敛且释放计时器', async () => {
+  const result = await run({ timings: { [HOST_MAIN]: 'hang', [HOST_ASIA]: 'hang' } })
+  assert.equal(result.redirected, null)
+  assert.equal(result.pendingTimeouts, 0)
+  assert.deepEqual(result.probeTimeouts, [450, 450])
+  assert.equal(result.document.cookie, `8bitgo.edge=${HOST_MAIN}:1000000; Domain=.8bitgo.com; Path=/; Max-Age=7200; SameSite=Lax; Secure`)
 })
 
 console.log('\n二、跨域会话与缓存选择')
@@ -141,10 +166,32 @@ await check('登录页不测速、不跨域', async () => {
   assert.equal(result.requests.length, 0)
 })
 
-await check('两小时内的共享选择不重复测速，并直接去记住的亚洲边缘', async () => {
+await check('记住的节点仍可用时，先验证再去亚洲边缘', async () => {
   const timestamp = 1_000_000 - 60 * 1000
-  const result = await run({ cookie: `8bitgo.edge=cn.8bitgo.com:${timestamp}`, target: '/ja/games/x?x=1#start' })
+  const result = await run({
+    cookie: `8bitgo.edge=cn.8bitgo.com:${timestamp}`,
+    target: '/ja/games/x?x=1#start',
+    timings: { [HOST_ASIA]: 60 },
+  })
   assert.equal(result.redirected, 'https://cn.8bitgo.com/ja/games/x?x=1#start')
+  assert.equal(result.requests.length, 1)
+})
+
+await check('记住的节点失联时留在已打开的站点并更新选择', async () => {
+  const timestamp = 1_000_000 - 60 * 1000
+  const result = await run({
+    cookie: `8bitgo.edge=cn.8bitgo.com:${timestamp}`,
+    timings: { [HOST_ASIA]: null },
+  })
+  assert.equal(result.redirected, null)
+  assert.equal(result.requests.length, 1)
+  assert.match(result.document.cookie, /8bitgo\.edge=8bitgo\.com:1000000/)
+})
+
+await check('同一节点的有效选择无需探测', async () => {
+  const timestamp = 1_000_000 - 60 * 1000
+  const result = await run({ cookie: `8bitgo.edge=8bitgo.com:${timestamp}` })
+  assert.equal(result.redirected, null)
   assert.equal(result.requests.length, 0)
 })
 
