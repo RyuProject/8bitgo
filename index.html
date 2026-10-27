@@ -202,9 +202,14 @@
       crossorigin
     />
     <!--
-      中文像素字体有 550KB，不放进首屏 preload。弱网先用系统中文字体，避免它和 LCP 封面
-      抢带宽；缓存命中或浏览器判断来得及时再由 @font-face 使用。
+      中文像素字体（方舟像素）按 unicode-range 拆成 15 份，@font-face 列表单独一个文件，
+      只有桌面（hover + 精确指针）才是阻塞样式；手机不用这个字体，media 不匹配就只在空闲时低优先级取回。
+      不放进首屏 preload：弱网先用系统中文字体，避免它和 LCP 封面抢带宽。
+      下面那条由 scripts/fonts/split-ark-pixel.py 自动改写，不要手改。
     -->
+    <!-- ark-pixel-faces:start -->
+    <link rel="stylesheet" href="/fonts/ark-pixel/split/ark-pixel-faces-4e7b9df104.css" media="(hover: hover) and (pointer: fine)" />
+    <!-- ark-pixel-faces:end -->
   </head>
   <body>
     <div id="root"></div>

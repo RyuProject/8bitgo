@@ -38,14 +38,10 @@
   unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
 }
 
-@font-face {
-  font-family: 'Ark Pixel';
-  src: url('/fonts/ark-pixel/ark-pixel-12px-proportional-zh_cn.otf.woff2') format('woff2');
-  font-weight: 400;
-  font-style: normal;
-  /* 536KB 的中文字体不能挡住首屏：慢网直接保留系统字体，避免加载完再整页换字造成 CLS。 */
-  font-display: optional;
-}
+/* Ark Pixel 的 @font-face 不在这里：它按 unicode-range 拆成 15 份，声明列表由
+ * scripts/fonts/split-ark-pixel.py 生成到 public/fonts/ark-pixel/split/，index.html 只在桌面
+ * 媒体条件下引入。整份 549KB 时桌面首屏要整包下载；拆开后首页只用到界面文案那一份（约 78KB）。
+ * 改字体或界面大批新增文案后重新跑一次脚本。 */
 
 /* ---------- TV / 车机那一屏：深色 ---------- */
 /*
@@ -206,7 +202,7 @@
 }
 
 /*
- * 537KB 的 Ark Pixel 只服务有鼠标悬停能力的桌面端。移动端首屏本来就受带宽和 CPU 限制，
+ * Ark Pixel（拆分后首屏约 78KB）只服务有鼠标悬停能力的桌面端。移动端首屏本来就受带宽和 CPU 限制，
  * 为装饰字体付这笔下载会直接推迟封面 LCP；系统中文字体在小屏上也更清楚。
  * 用能力查询而不是屏宽：横屏手机仍是触摸设备，窄窗口的桌面仍然值得保留品牌字体。
  */
