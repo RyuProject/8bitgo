@@ -3,8 +3,14 @@ import { ensureParentDir, type WritableFs } from './fsWrite'
 /** 要写进 Emscripten 虚拟文件系统的一份附加文件。 */
 export interface FsInjection {
   path: string
-  /** null 表示资源没拿到；可选资源跳过后仍让核心按原配置尝试。 */
-  bytes: string | Promise<Uint8Array | null>
+  /** null 表示资源没拿到；可选资源跳过后仍让核心按原配置尝试。Blob 到写入时才物化。 */
+  bytes: string | Promise<Uint8Array | Blob | null>
+  /**
+   * 这份字节只属于这一次写入（例如 160MB 的 MAME CHD）：写进 MEMFS 时交出所有权（canOwn），
+   * 不再复制第二份；写完立刻放掉引用，不让 startGame 的闭包把它钉在内存里一整局。
+   * 按 URL 去重共享的 BIOS 不能标这个。
+   */
+  exclusive?: boolean
   /**
    * RomData/BIOS 是尽力注入；游戏专属 CHD 缺失则继续开局只会落进 MAME 菜单，
    * 所以它必须显式标为 required，由调用方在 callMain 前阻止错误启动。
@@ -34,7 +40,9 @@ export async function writeFsInjections(
   const failures: FsInjectionFailure[] = []
   for (const item of injections) {
     try {
-      const bytes = typeof item.bytes === 'string' ? item.bytes : await item.bytes
+      const raw = typeof item.bytes === 'string' ? item.bytes : await item.bytes
+      const fromBlob = typeof Blob !== 'undefined' && raw instanceof Blob
+      const bytes = fromBlob ? new Uint8Array(await (raw as Blob).arrayBuffer()) : raw as string | Uint8Array | null
       if (bytes == null) {
         const message = '资源未下载完成'
         failures.push({ path: item.path, required: Boolean(item.required), message })
@@ -42,7 +50,10 @@ export async function writeFsInjections(
         continue
       }
       ensureParentDir(fs, item.path)
-      fs.writeFile(item.path, bytes)
+      // 只有我们自己刚物化出来、没有别人引用的缓冲区才能交给 MEMFS 直接持有
+      if (item.exclusive && fromBlob && typeof bytes !== 'string') fs.writeFile(item.path, bytes, { canOwn: true })
+      else fs.writeFile(item.path, bytes)
+      if (item.exclusive) (item as { bytes: FsInjection['bytes'] }).bytes = Promise.resolve(null)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       failures.push({ path: item.path, required: Boolean(item.required), message })

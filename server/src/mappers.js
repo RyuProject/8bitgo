@@ -14,6 +14,7 @@ import { normalizeDosStartupCommands } from '../../shared/dos-startup-commands.j
 import { isAdultByBirthDate } from '../../shared/age.js'
 import { gameSupportsNetplay, normalizeGamePlayers } from '../../shared/netplay-players.js'
 import { knownMameArcadeDisk, mameArcadeDiskObjectKey } from '../../shared/mame-arcade-media.js'
+import { knownMameChdDiskExpectation } from '../../shared/mame-chd-catalog.js'
 import { romsetsNeedNoBios } from './arcade-bios-index.js'
 
 /**
@@ -558,12 +559,18 @@ export function arcadeMameDisksOf(v, strict = true) {
       return strict ? badGameField('MAME 媒体盘必须带 40 位小写 SHA-1') : null
     }
     const known = knownMameArcadeDisk({ romset, name, chdSha1, dataSha1, storedBytes, logicalBytes })
-    if (!known) {
-      return strict ? badGameField('MAME 媒体盘不在已验证目录中；请先为该游戏补充 CHD 核验档案，不能手工绑定未知文件') : null
+    /*
+      已实盘核验过的条目要求五项都相等；通用目录来自同版 MAME 源码，锁住的则是
+      romset + 文件名 + MAME 所需的 CHD SHA-1。后者的 Data SHA-1 / 压缩大小只能由
+      实际 chdman 产物决定，前端已从 v5 头读取后带来，不可再要求人工先写白名单。
+    */
+    const catalog = known ? null : knownMameChdDiskExpectation({ romset, name, chdSha1 })
+    if (!known && !catalog) {
+      return strict ? badGameField('MAME 媒体盘不在当前 MAME CHD 目录中；请重新选择已识别的 ROM ZIP 后再上传对应 CHD') : null
     }
     // 对象路径也是身份的一部分：用 CHD 内部 SHA-1 分目录，才能让同一张盘被多个游戏复用，
     // 同时杜绝管理员/API 调用方把任意对象挂成核心要读的游戏媒体。
-    const expectedKey = mameArcadeDiskObjectKey(known)
+    const expectedKey = mameArcadeDiskObjectKey(known ?? { chdSha1, name })
     if (key !== expectedKey) {
       return strict ? badGameField(`MAME 媒体盘必须存放在受管理的对象 key：${expectedKey}`) : null
     }

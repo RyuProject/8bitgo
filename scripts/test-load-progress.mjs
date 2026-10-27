@@ -183,7 +183,11 @@ console.log('── 全平台按真实启动链分配区域 ──')
   const cases = [
     [{ runtime: 'emulatorjs', platform: 'nes' }, 'emulatorjs-cartridge', ['engine', 'assets', 'rom', 'starting']],
     [{ runtime: 'emulatorjs', platform: 'psx' }, 'emulatorjs-large-media', ['engine', 'assets', 'rom', 'starting']],
-    [{ runtime: 'emulatorjs', platform: 'arcade' }, 'emulatorjs-arcade', ['engine', 'assets', 'rom', 'starting']],
+    // 远端街机 ROM 先于 loader.js 下载完成（prepareRemoteArcadeRom），rom 必须排在 engine 之前
+    [{ runtime: 'emulatorjs', platform: 'arcade' }, 'emulatorjs-arcade', ['rom', 'engine', 'assets', 'starting']],
+    [{ runtime: 'emulatorjs', platform: 'arcade', core: 'mame-current' }, 'emulatorjs-arcade-mame', ['rom', 'engine', 'assets', 'starting']],
+    [{ runtime: 'emulatorjs', platform: 'arcade', mameMedia: true, core: 'mame-current' }, 'emulatorjs-arcade-mame-media', ['rom', 'engine', 'assets', 'starting']],
+    [{ runtime: 'emulatorjs', platform: 'arcade', localFile: true }, 'emulatorjs-arcade-local', ['engine', 'assets', 'rom', 'starting']],
     [{ runtime: 'ruffle', platform: 'flash' }, 'flash', ['rom', 'starting']],
     [{ runtime: 'html5', platform: 'html5' }, 'html5-surface', ['starting']],
     [{ runtime: 'jsnes', platform: 'nes' }, 'jsnes', ['engine', 'rom', 'starting']],

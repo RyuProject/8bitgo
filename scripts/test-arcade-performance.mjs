@@ -57,6 +57,9 @@ test('MAME 2003 系只启用安全的宿主加速，不伪造全局 CPU 超频',
     mame2003_sample_rate: '44100',
   })
   assert.deepEqual(arcadePerformanceDefaultOptions('arcade', 'mame-current', 'mk', 8), {})
+  // 触屏设备：线程数不可信（千元机也报 8 线程），只给轻微超频余量
+  assert.equal(arcadePerformanceDefaultOptions('arcade', 'fbneo', 'kof97', 8, true)['fbneo-cpu-speed-adjust'], '100%')
+  assert.equal(arcadePerformanceDefaultOptions('arcade', 'fbneo', 'metal-slug-x-super-vehicle-001', 8, true)['fbneo-cpu-speed-adjust'], '110%')
   assert.deepEqual(arcadePerformanceDefaultOptions('gba', 'fbneo', 'kof97', 8), {})
 })
 
@@ -114,7 +117,7 @@ test('适配器、开局键位图和操作说明共用四键推断', () => {
   assert.match(src, /EJS_defaultOptions: defaults/)
   // 改版包指纹会把核心纠正成 fbneo：默认值必须按最终核心重算，不能沿用挂载时旧核心那份
   assert.match(src, /core === coreDefaultOptionsCore \? coreDefaultOptions : coreDefaultOptionsFor\(core\)/)
-  assert.match(src, /effectiveArcadeButtons\(options\.arcadeButtons, options\.biosSet\?\.name\)/)
+  assert.match(src, /effectiveArcadeButtons\(options\.arcadeButtons(?: \?\? namcoSet\?\.buttons)?, options\.biosSet\?\.name\)/)
   assert.match(src, /repairLegacyArcadeKeyCollisions\(emu\.controls\?\.\[0\]/)
   assert.match(src, /FBNEO_ARCADE_AUDIO_LATENCY_MS/)
   assert.match(keymap, /ARCADE_GENERIC_BUTTONS\.slice\(0, arcadeButtons \?\? 6\)/)

@@ -115,6 +115,14 @@ export function mobileScreenAspect(platform: PlatformId, geometry?: { width: num
   if (isDualScreen(platform) && geometry && geometry.width > 0 && geometry.height > 0) {
     return aspectClass(geometry.width / geometry.height)
   }
+  /*
+    竖版街机（1942、怒首领蜂、雷电……）：CRT 是竖着装的，显示比例是 3:4。核心报的几何高大于宽
+    （FBNeo / MAME 都会按 ROT90/270 旋转后上报）。以前一律 4:3 的横框，竖版画面只用到约 56% 的宽度。
+    只认「竖」这一个事实，不拿像素比例去顶显示比例（理由见上面的注释）。
+  */
+  if (platform === 'arcade' && geometry && geometry.width > 0 && geometry.height > geometry.width) {
+    return 'aspect-[3/4]'
+  }
   return MOBILE_ASPECT[platform] ?? 'aspect-video'
 }
 

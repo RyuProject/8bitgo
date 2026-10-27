@@ -160,11 +160,57 @@ assert.match(gameForm, /manualCoreChoice\.current = Boolean\(value\)/, '选择�
 assert.match(gameForm, /detectArcadeCore\(\{ exactMameBoard: true \}\)/, '精确 MAME 板卡指纹必须选择 MAME 当前版')
 assert.match(gameForm, /found\.candidates\.some\(\(candidate\) => candidate\.coverage === 1\)/, '核心识别可以依据完整 FBNeo set，但不要求克隆包名也无歧义')
 assert.match(gameForm, /detectArcadeCore\(\{ indexedFbneoSet: fbneoHasExactSet \}\)/, 'CRC 完整命中 FBNeo set 必须选择 FBNeo')
-assert.match(gameForm, /onBiosFound\?\.\(mameMatch\.bios\)/, '精确识别后必须填入对应 BIOS 系统名')
+assert.match(gameForm, /onBiosFound\?\.\(mameMatch\.bios \?\? ''\)/, '精确识别后必须填入对应 BIOS 系统名（System 12 传空串撤掉旧的自动值）')
+assert.match(gameForm, /identifyNamcoMameSet\(entries, file\.name\)/, '上传识别必须覆盖全部 Namco System 11/12 set，而不只是 Tekken')
 assert.match(gameForm, /layoutProblem && !mameMatch/, '仅已核验的 MAME set 可豁免子目录拦截')
 assert.match(gameForm, /if \(isArcade && !alreadyPacked && !isPlayArcadeBundle\)[\s\S]*?assertValidZipBlob\(file, '街机 ROM'\)[\s\S]*?flattenArcadeZipBlob\(file, arcadeEntries\)/, '普通街机 ZIP 上传必须自动检查并拍平子目录成员，并复用已验证的目录；Play! 专用包保留其内部清单结构')
 assert.match(gameForm, /自动拍平 \$\{flattenedArcadeFiles\} 个子目录 ROM 文件/, '上传完成后应说明自动拍平结果')
 assert.match(biosPanel, /namcoC76BiosProblem\(entries\)/, 'C76 BIOS 必须在上传前校验内容')
 assert.match(biosPanel, /arcadeBiosFileNameForBinding\(id\)/, '固定 BIOS 文件名必须用于上传和手工绑定校验')
 
-console.log('Namco System 11 上传识别 / BIOS 防呆回归通过。')
+// ── 推广到全部 Namco System 11 / 12（数据来自 MAME 源码，scripts/gen-namco-mame-sets.mjs）──
+const { identifyNamcoMameSet, namcoMameSetByName } = await import('../src/lib/namcoMameSets.ts')
+const { NAMCO_MAME_SETS } = await import('../src/lib/namcoMameSetsData.ts')
+const rowEntries = (romset) => {
+  const row = NAMCO_MAME_SETS.find((r) => r.r === romset)
+  assert.ok(row, `生成表里没有 ${romset}`)
+  return row.f.split(' ').map((pair) => {
+    const at = pair.lastIndexOf(':')
+    return { name: pair.slice(0, at), crc32: Number.parseInt(pair.slice(at + 1), 16) >>> 0 }
+  })
+}
+assert.ok(NAMCO_MAME_SETS.length >= 90, '生成表应覆盖 System 11 + 12 的全部 set')
+// 生成表里的 Tekken 父集必须与手工核验过的那份逐项一致（同一来源的两次独立核对）
+assert.deepEqual(
+  rowEntries('tekken').map((e) => `${e.name}:${e.crc32}`).sort(),
+  parent.map((e) => `${e.name}:${e.crc32}`).sort(),
+)
+const t3 = identifyNamcoMameSet(rowEntries('tekken3'), 'Tekken 3 (Japan).zip')
+assert.equal(t3?.romset, 'tekken3', '铁拳 3 必须按 CRC 认出，而不是被文件名启发式收成 System 11 的 tekken')
+assert.equal(t3?.board, 'Namco System 12')
+assert.equal(t3?.bios, undefined, 'System 12 不需要 BIOS 集')
+assert.equal(t3?.buttons, 4)
+const soul = identifyNamcoMameSet(rowEntries('soulclbr'), 'Soul Calibur.zip')
+assert.equal(soul?.romset, 'soulclbr')
+const t2 = identifyNamcoMameSet(rowEntries('tekken2'))
+assert.equal(t2?.romset, 'tekken2')
+assert.equal(t2?.bios, 'namcoc76', 'System 11 一律需要 C76 BIOS')
+// 克隆集自洽包认成克隆本身
+const clone = identifyNamcoMameSet(rowEntries('tekken3ja'))
+assert.equal(clone?.romset, 'tekken3ja')
+assert.equal(clone?.parent, 'tekken3')
+// merged 包（父集 + 克隆的 ROM 都在根目录）：先认文件名，否则认唯一父集
+const merged = [...new Map([...rowEntries('tekken3'), ...rowEntries('tekken3ja')].map((e) => [e.name, e])).values()]
+assert.equal(identifyNamcoMameSet(merged, 'tekken3ja.zip')?.romset, 'tekken3ja')
+assert.equal(identifyNamcoMameSet(merged, 'whatever.zip')?.romset, 'tekken3')
+// 缺一颗 / CRC 错 / 不安全路径 → 不猜
+assert.equal(identifyNamcoMameSet(rowEntries('tekken3').slice(1)), null)
+assert.equal(identifyNamcoMameSet(rowEntries('tekken3').map((e, i) => (i ? e : { ...e, crc32: 1 }))), null)
+assert.equal(identifyNamcoMameSet([...rowEntries('tekken3'), { name: '../x.bin', crc32: 1 }]), null)
+assert.equal(namcoMameSetByName('roms/tekken3.zip')?.board, 'Namco System 12')
+// 播放器：CRC 命中时用识别出的短名，并把非 MAME 核心纠正为 mame-current
+const adapter = readFileSync(new URL('../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8')
+assert.match(adapter, /engineGameName = `\$\{namcoSet\.romset\}\.zip`/, '播放器必须用 CRC 认出的 romset 名')
+assert.match(adapter, /core = 'mame-current'/, 'Namco System 11/12 只能跑 MAME，FBNeo 默认必须纠正')
+
+console.log('Namco System 11 / 12 上传识别 / BIOS 防呆回归通过。')

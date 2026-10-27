@@ -312,7 +312,7 @@ for (const key of [...needed].sort()) {
   const code = adapter.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '')
 
   ok(
-    /EJS_VirtualGamepadSettings:\s*arcadeVirtualPad\(effectiveArcadeButtons\(options\.arcadeButtons, options\.biosSet\?\.name\)\)/.test(code),
+    /EJS_VirtualGamepadSettings:\s*arcadeVirtualPad\(effectiveArcadeButtons\(options\.arcadeButtons(?: \?\? namcoSet\?\.buttons)?, options\.biosSet\?\.name\)\)/.test(code),
     '街机注入了按游戏裁剪、并能从 Neo Geo BIOS 补全旧数据的屏幕手柄布局',
   )
   ok(/options\.platform === 'arcade'[\s\S]{0,80}\? \{ EJS_VirtualGamepadSettings/.test(code), '只给街机注入，别的平台仍用引擎默认')

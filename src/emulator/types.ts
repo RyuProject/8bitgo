@@ -245,7 +245,12 @@ export interface MountOptions {
    * scope = runtime 表示播放器外壳 / 引擎本身没起来，不是 ROM 内容坏了。
    * 父层据此禁止切换语言或备用 ROM；换多少份内容都修不好同一个运行时故障。
    */
-  onError?: (message: string, scope?: 'runtime' | 'content') => void
+  /**
+   * scope：'runtime' = 运行时设施故障（可原地重试一次，但不许判坏 ROM）；'content' = ROM 本身的问题；
+   * 'config' = 后台配置错误（重试 / 换 ROM 都没用，直接报）；'deterministic' = 这份 ROM 必然起不来
+   * （如包名不是任何驱动），跳过原地重试、直接试备用 ROM。
+   */
+  onError?: (message: string, scope?: 'runtime' | 'content' | 'config' | 'deterministic') => void
   /** NDS 核心的 WASM 主循环已经崩溃；和普通加载失败分开，允许一次有界的换核心重开。 */
   onCoreCrash?: (core: string, message: string) => void
   /**

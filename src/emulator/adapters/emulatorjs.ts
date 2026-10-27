@@ -27,7 +27,7 @@ import { EJS_ARCADE_DEFAULT_CONTROLS, EJS_DEFAULT_CONTROLS } from '@/lib/keymapD
 import type { Capability, CaptureSources, LoadPhase, LoadProgress, MameArcadeDiskSource, MountOptions, RuntimeHandle, StageMode } from '../types'
 import { fetchBlobWithProgress, fetchWithProgress, throttleProgress } from '../loadProgress'
 import { emulatorJsDownloadPhase, isCriticalEmulatorJsDownload } from '../emulatorjsDownload'
-import { downloadResumeStore } from '../downloadResume'
+import { downloadResumeStore, mameChdResumeStore } from '../downloadResume'
 import { romCacheDelete, romCacheGetBlob, romCacheKey, romCachePutBlob } from '../romCache'
 import { focusFrame, frameGamepads } from '../frameFocus'
 import { installAudioTap, type AudioTap } from '../audioTap'
@@ -46,8 +46,11 @@ import { biosNameOfUrl, planBiosFiles } from '../biosPlan'
 import { ensureParentDir } from '../fsWrite'
 import { canonicalMameRomset } from '../mameRomset'
 import { identifyKnownMameArcadeMedia, readMameChdHeader, type MameArcadeDiskProfile } from '@/lib/mameArcadeMedia'
+import { identifyNamcoMameSet, type NamcoMameMatch } from '@/lib/namcoMameSets'
+import { combinedRomProgress } from '../romProgress'
 import { chdCompressors, psxCoreForPreparedName, psxCoreForTransfer, PSX_CHD_AUDIO_LATENCY_MS, PSX_CHD_CORE } from '../psxChd'
 import { canStreamPsxChd, preparePsxRangeDisc, type PsxRangeDisc, type PsxRangeFs } from '../psxRangeDisc'
+import { MAME_CHD_MAX_BYTES, mameChdCacheKey } from '../mameChdWarm'
 import { warmEmulatorJsStart } from '../ejsStartWarm'
 import { writeFsInjections, type FsInjection } from '../fsInjection'
 import { arcadeCoreForRomData, supportsFbneoRomData } from '../arcadeCore'
@@ -114,7 +117,7 @@ import {
  * 玩家看到的就是「Error loading EmulatorJS runtime」。本地有核心，这条路不会走。
  */
 export { EJS_PATH } from '../paths'
-import { EJS_PATH, EJS_RUNTIME_GENERATION, ejsRuntimeAsset, emulatorJsCoreDataFile, emulatorJsCoreFileFor, emulatorJsCoreForGame, emulatorJsRuntimePaths, isDiscPlatform, isLargeDirectEjsRom, isSelfDownloadPlatform } from '../paths'
+import { EJS_PATH, EJS_RUNTIME_GENERATION, ejsCoreAsset, ejsRuntimeAsset, emulatorJsCoreDataFile, emulatorJsCoreFileFor, emulatorJsCoreForGame, emulatorJsRuntimePaths, isDiscPlatform, isLargeDirectEjsRom, isSelfDownloadPlatform } from '../paths'
 import { applyTuning, sizeOfTrack, tuningFor, usableVideoSize } from '../videoTuning'
 import {
   findLayoutOption,
@@ -195,6 +198,15 @@ const EJS_CACHE_GENERATION = '2026-10-25.melondsds-wfc-sourceport.touch-dpr.psx-
 // 浏览器实测已能按片读取，但现有 Beetle WASM 在该样本的完整下载路径也会崩溃；未确认可玩前不能让生产自动进入实验链路。
 const PSX_RANGE_ENABLED = import.meta.env.VITE_PSX_RANGE_ENABLED === '1'
 const EJS_CACHE_PURGED_KEY = '8bitgo.ejs.cachePurged'
+
+/** 这一局开局前会不会清掉引擎缓存（预热据此决定要不要信库里的「已缓存」） */
+function engineCachePurgePending(): boolean {
+  try {
+    return localStorage.getItem(EJS_CACHE_PURGED_KEY) !== EJS_CACHE_GENERATION
+  } catch {
+    return true
+  }
+}
 
 async function purgePoisonedEngineCache(): Promise<void> {
   try {
@@ -417,6 +429,11 @@ const SAVE_FLUSH_MS = 30_000
  * 也不更新文案，实测能安静十几秒。
  */
 const STALL_MS = 30_000
+/**
+ * mame-current 的 wasm 解压后约 242MB：7z 解压、写 IndexedDB、编译这三步都没有网络进度，
+ * 那行状态文字也常常不变；低端手机上一步就能超过 30 秒，误报「卡住」后还会触发一次整局重来。
+ */
+const MAME_CURRENT_STALL_MS = 120_000
 
 const FRAME_HTML = `<!doctype html>
 <html lang="zh-CN">
@@ -789,6 +806,12 @@ function arcadeVirtualPad(count: ArcadeButtonCount = 6): readonly Record<string,
 const FATAL_PHRASES = [
   // FBNeo：认不出这个 romset，必然起不来
   'romset is unknown',
+  // FBNeo 缺 ROM：retro_load_game 走 goto end（libretro.cpp），画面里只剩一段英文错误；
+  // 以前只认 romset is unknown，这两句被当成「已开始」，不重试、也不切备用 ROM
+  '[fbneo] rom at index',
+  'none of those archives was found',
+  // mame-current：包名不是任何驱动（libretro-mame retro_init.cpp），随后只剩 RetroArch 空菜单
+  'driver not found:',
   // Beetle PS1：CHD / CUE 打不开（常见是 CHD 用了核心没编进来的压缩器），随后只剩 RetroArch 的空菜单
   'track numbers bad',
   // MAME：缺件已经到了跑不了的程度（区别于它那些 NOT FOUND 警告）
@@ -807,6 +830,22 @@ const FATAL_PHRASES = [
   'error parsing parent path',
   'no driver loaded',
 ]
+
+/** 开局失败的性质：决定播放器要不要原地重试、要不要换备用 ROM（见 EmulatorPlayer 的 onError） */
+type LoadErrorScope = 'runtime' | 'content' | 'config' | 'deterministic'
+
+/**
+ * 街机致命行的分类。`unknown-set` 是包名 / 驱动对不上 —— 同一个文件重下一万遍也一样；
+ * `missing-files` 可能是 BIOS 那一趟网络失败，保留一次重试。
+ */
+export function arcadeFatalKind(line: string): 'unknown-set' | 'missing-files' | null {
+  const low = line.toLowerCase()
+  if (low.includes('romset is unknown') || low.includes('driver not found:') || low.includes('no driver loaded')) return 'unknown-set'
+  if (low.includes('[fbneo] rom at index') || low.includes('none of those archives was found') || low.includes('required files are missing')) {
+    return 'missing-files'
+  }
+  return null
+}
 
 /*
   写文件前的建目录逻辑在 fsWrite.ts —— 那段是独立的纯工具，有单测
@@ -997,9 +1036,6 @@ function fetchBiosBytes(
     })
 }
 
-/** MAME CHD 的上限：它会完整写进 Emscripten FS，不能像 PS1 Range 那样假装按需读取。 */
-const MAME_CHD_MAX_BYTES = 1024 * 1024 * 1024
-
 function mameDiskPath(disk: Pick<MameArcadeDiskSource, 'romset' | 'name'>): string {
   // 服务端已经做过形状校验；运行时再收一次，避免本地调用/旧缓存绕过后台时出现路径穿越。
   if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(disk.romset) || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(disk.name)) {
@@ -1020,14 +1056,19 @@ function fetchMameDiskBytes(
   onBeat: () => void,
   onProgress: MountOptions['onProgress'],
   signal: AbortSignal,
-): Promise<Uint8Array> {
+): Promise<Blob> {
   if (!disk.url) return Promise.reject(new Error('媒体盘没有可访问的下载地址'))
   if (!Number.isSafeInteger(disk.storedBytes) || disk.storedBytes < 124 || disk.storedBytes > MAME_CHD_MAX_BYTES) {
     return Promise.reject(new Error('媒体盘声明的压缩容量不合法'))
   }
   const emit = throttleProgress(onProgress)
-  const cacheKey = `mame-chd:${disk.chdSha1}:${disk.dataSha1}:${disk.storedBytes}`
-  const verify = async (blob: Blob): Promise<Uint8Array> => {
+  const cacheKey = mameChdCacheKey(disk)
+  /*
+    校验后**仍返回 Blob**：以前这里立刻 blob.arrayBuffer() 变成 160MB 的 JS 内存，而此刻正是
+    mame-current 解压 / 编译 242MB wasm 的内存峰值；这份字节还被 startGame 的闭包一直引用到关页。
+    Blob 可以留在磁盘侧，到真正写进 MEMFS 时才物化一次，并把所有权交给 MEMFS（canOwn）。
+  */
+  const verify = async (blob: Blob): Promise<Blob> => {
     if (blob.size !== disk.storedBytes) {
       throw new Error(`媒体盘下载不完整：应为 ${disk.storedBytes} 字节，实际为 ${blob.size} 字节`)
     }
@@ -1035,7 +1076,7 @@ function fetchMameDiskBytes(
     if (header.chdSha1 !== disk.chdSha1 || header.dataSha1 !== disk.dataSha1 || header.logicalBytes !== disk.logicalBytes) {
       throw new Error('媒体盘 CHD 身份不符（SHA-1 或逻辑容量不匹配）')
     }
-    return new Uint8Array(await blob.arrayBuffer())
+    return blob
   }
   return romCacheGetBlob(cacheKey).then(async (cached) => {
     if (cached) {
@@ -1053,6 +1094,12 @@ function fetchMameDiskBytes(
       phase: 'rom',
       maxBytes: Math.min(MAME_CHD_MAX_BYTES, disk.storedBytes),
       signal,
+      // 内容寻址（两组 SHA-1 + 字节数），是全站最安全的断点续传键：断网 / 卡死后只补缺片，不再从 0 重下 160MB
+      resumeKey: cacheKey,
+      // CHD 分片优先放 OPFS（避免 IDB 大 Blob 克隆）；不支持的浏览器自动沿用 IndexedDB。
+      resumeStore: mameChdResumeStore,
+      // ROM 要先到（loader / 核心都在等它），CHD 到 startGame 才用得上：少开几路，别和 ROM 抢带宽
+      maxConcurrency: 2,
       onProgress: (progress) => {
         onBeat()
         emit(progress)
@@ -1234,6 +1281,12 @@ function installNetTap(
       }
       // 没有 body（HEAD、204、opaque）就没什么可数的
       if (!res.body) return res
+      /*
+        核心 wasm（引擎从 IndexedDB / 7z 解出后包成 blob: 再交给 Emscripten 流式编译）不经过计数管道：
+        mame-current 有 242MB，套一层 TransformStream 就是主线程上几千次回调，还让编译拿到的
+        不再是原生 Response。它没有任何可报的网络进度（字节早就在本地了）。
+      */
+      if (/^application\/wasm\b/i.test(res.headers.get('content-type') || '') && /^blob:/i.test(url)) return res
 
       const phase = phaseOf(url)
       const len = Number(res.headers.get('content-length') || 0)
@@ -1516,9 +1569,11 @@ async function arcadeBlobFrom(
   blob: Blob,
   name: string,
   entries: readonly ZipFileEntry[],
-): Promise<{ url: string; name: string; hack: ArcadeHack | null; mameMedia: MameArcadeDiskProfile | null }> {
+): Promise<PreparedArcadeRom> {
   const hack = hackOfEntries(entries)
-  const mameMedia = identifyKnownMameArcadeMedia(entries)
+  const mameMedia = identifyKnownMameArcadeMedia(entries, name)
+  // FBNeo 索引没有的 Namco System 11/12：按 MAME 源码 CRC 精确认出来，播放器据此纠正核心与包名
+  const namcoSet = hack ? null : identifyNamcoMameSet(entries, name)
   let output = blob
   if (hack?.derive) {
     // 只有确实需要现场合成的少数改版包才申请整块内存；普通 romset 全程保持 Blob。
@@ -1530,14 +1585,22 @@ async function arcadeBlobFrom(
       console.info(`[arcade] ${hack.title}：已现场合成 ${hack.derive.outputs.join(' / ')} 并补进包里`)
     }
   }
-  return { url: URL.createObjectURL(output), name, hack, mameMedia }
+  return { url: URL.createObjectURL(output), name, hack, mameMedia, namcoSet }
+}
+
+interface PreparedArcadeRom {
+  url: string
+  name: string
+  hack: ArcadeHack | null
+  mameMedia: MameArcadeDiskProfile | null
+  namcoSet: NamcoMameMatch | null
 }
 
 export async function prepareRemoteArcadeRom(
   url: string,
   onProgress: MountOptions['onProgress'],
   signal: AbortSignal,
-): Promise<{ url: string; name: string; hack: ArcadeHack | null; mameMedia: MameArcadeDiskProfile | null }> {
+): Promise<PreparedArcadeRom> {
   if (romArchiveRef(url)) {
     const extracted = await loadRemoteArchiveRom(url, onProgress, signal)
     if (signal.aborted) throw new DOMException('已取消', 'AbortError')
@@ -1813,6 +1876,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       forCore,
       options.gameSlug,
       typeof navigator === 'undefined' ? undefined : navigator.hardwareConcurrency,
+      typeof window !== 'undefined' && typeof navigator !== 'undefined' &&
+        (navigator.maxTouchPoints ?? 0) > 0 && Boolean(window.matchMedia?.('(pointer: coarse)').matches),
     ),
     ...(options.platform === 'gba' ? { shader: gbaShaderForMode(gbaVideoMode) } : {}),
   })
@@ -2207,13 +2272,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let loadFailed = false
   let crashReported = false
   /** 开局前的致命错误：报上去并停掉轮询（播放器收到 onError 会把这局拆掉） */
-  const failLoad = (message: string) => {
+  const failLoad = (message: string, scope?: LoadErrorScope) => {
     // 核心陷阱已经走 onCoreCrash（换兼容核心）时，紧随其后的 FATAL 文本（Failed to start game）不能再报
     // onError，否则播放器会对同一次崩溃再做一轮重试 + 换语言 ROM。
     if (destroyed || started || loadFailed || crashReported) return
     loadFailed = true
     window.clearInterval(startWatch)
-    options.onError?.(message)
+    options.onError?.(message, scope)
   }
   /**
    * 同一句话可能被核心打好几遍，只报第一次，免得把界面刷成一片红。
@@ -2230,6 +2295,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       logEngine(`[engine] ${line}`)
       return
     }
+    // 街机的两类根因给玩家能看懂的话；同一个包重下一遍不会变好，跳过原地重试，直接让播放器试备用 ROM
+    const arcadeFatal = options.platform === 'arcade' ? arcadeFatalKind(line) : null
+    if (arcadeFatal === 'unknown-set') return failLoad(fmt(rt.ejsArcadeUnknownSet, { msg: line }), 'deterministic')
+    if (arcadeFatal === 'missing-files') return failLoad(fmt(rt.ejsArcadeMissingFiles, { msg: line }))
     failLoad(fmt(rt.ejsEngineError, { msg: line }))
   }
   const reportCoreCrash = (line: string) => {
@@ -2248,6 +2317,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let engineGameName = isFile ? (options.game as File).name : options.gameName
   /** 远端 ZIP 的 CRC 指纹识别结果；用于在真正交给 MAME 前确认后台是否绑定了必需 CHD。 */
   let detectedMameMedia: MameArcadeDiskProfile | null = null
+  /** 远端街机包按 CRC 认出的 Namco System 11/12 set（决定核心、包名、平台 BIOS 与按键数） */
+  let namcoSet: NamcoMameMatch | null = null
   /** NDS ZIP 内唯一的 ROM；开局前强制使用，绕过引擎“扩展名不认识就取第一个文件”的兜底。 */
   let ndsArchiveEntry = ''
   let ndsRomValidated = options.platform !== 'nds'
@@ -3282,7 +3353,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         lastStage = stage
         beat()
       }
-      if (Date.now() - lastBeat > STALL_MS) failLoad(fmt(rt.ejsStalled, { stage: lastStage || core }))
+      if (Date.now() - lastBeat > (isMameCurrentCore(core) ? MAME_CURRENT_STALL_MS : STALL_MS)) failLoad(fmt(rt.ejsStalled, { stage: lastStage || core }))
     }, 400)
   }
 
@@ -3331,13 +3402,34 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           MAME 的 CHD 也趁 ROM 下载时并行拉取，但不塞进 BIOS 下载表：它是具体游戏的媒体盘，
           体积可以是 BIOS 的上百倍，且失败必须阻止开局，不能沿用 BIOS “让核心自己再试”的降级。
         */
-        const mameDiskDownloads = new Map<MameArcadeDiskSource, Promise<Uint8Array | null>>()
+        const mameDiskDownloads = new Map<MameArcadeDiskSource, Promise<Blob | null>>()
+        const mameDisksToFetch = options.platform === 'arcade' && isMameCurrentCore(core) && !isFile
+          ? (options.arcadeMameDisks ?? [])
+          : []
+        const romProgressFor = mameDisksToFetch.length
+          ? combinedRomProgress(options.onProgress, {
+              rom: 0,
+              ...Object.fromEntries(mameDisksToFetch.map((disk) => [`chd:${disk.name}`, disk.storedBytes])),
+            })
+          : () => options.onProgress
+        const mameRomProgress = (disk: MameArcadeDiskSource) => romProgressFor(`chd:${disk.name}`)
+        /** 媒体盘单独一只 AbortController：核心后来被纠正成 FBNeo 时，160MB 的 CHD 不该继续白下 */
+        const mameDiskAbort = new AbortController()
+        prepareAbort.signal.addEventListener('abort', () => mameDiskAbort.abort(), { once: true })
         if (options.platform === 'arcade' && isMameCurrentCore(core)) {
           for (const disk of options.arcadeMameDisks ?? []) {
             try {
               mameDiskPath(disk)
-              mameDiskDownloads.set(disk, fetchMameDiskBytes(disk, beat, options.onProgress, prepareAbort.signal).catch((error) => {
-                if (!prepareAbort.signal.aborted) console.warn(`[emulatorjs] MAME 必需媒体盘下载失败：${disk.name}.chd`, error)
+              mameDiskDownloads.set(disk, fetchMameDiskBytes(disk, beat, mameRomProgress(disk), mameDiskAbort.signal).catch((error) => {
+                if (!mameDiskAbort.signal.aborted) {
+                  console.warn(`[emulatorjs] MAME 必需媒体盘下载失败：${disk.name}.chd`, error)
+                  /*
+                    以前这里只返回 null，真正原因（404 / SHA 不符 / 断网）丢掉，要等 37MB 核心下载、
+                    242MB wasm 编译完到 startGame 才报一句「资源未下载完成」，接着自动重试从 0 再下 160MB，
+                    还把好好的 ROM 判坏去切备用源。现在立刻带着原因报出来，且按 runtime 处理（不判坏 ROM）。
+                  */
+                  failLoad(fmt(rt.ejsMameDiskFailed, { disk: disk.name, msg: error instanceof Error ? error.message : String(error) }), 'runtime')
+                }
                 return null
               }))
             } catch (error) {
@@ -3381,7 +3473,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             !options.arcadeRomData?.trim() && !gameBiosName,
         )
         /** 这次真正交给引擎去下载的平台级 BIOS（空串 = 标不设 EJS_biosUrl）。进度探针也用这个值 */
-        const engineBiosUrl = skipPlatformBios || noBiosNeeded ? '' : (options.biosUrl ?? '')
+        let engineBiosUrl = skipPlatformBios || noBiosNeeded ? '' : (options.biosUrl ?? '')
         if (noBiosNeeded && options.biosUrl) {
           console.info(`[emulatorjs] 跳过平台级 BIOS（${platformBiosName || options.biosUrl}）：这个 romset 不需要 BIOS`)
         }
@@ -3403,13 +3495,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           always: [
             ejsRuntimeAsset('emulator.min.js'),
             ejsRuntimeAsset('emulator.min.css'),
-            ejsRuntimeAsset(`cores/metadata/${encodeURIComponent(emulatorJsCoreFileFor(warmCore))}.json`),
+            ejsCoreAsset(`cores/metadata/${encodeURIComponent(emulatorJsCoreFileFor(warmCore))}.json`),
           ],
           large: [
-            ejsRuntimeAsset(`cores/${encodeURIComponent(emulatorJsCoreDataFile(warmCore))}`),
+            ejsCoreAsset(`cores/${encodeURIComponent(emulatorJsCoreDataFile(warmCore))}`),
             ...(/^https?:|^\//.test(engineBiosUrl) ? [engineBiosUrl] : []),
           ],
-        }).catch(() => {})
+        }, { assumeUncached: engineCachePurgePending() }).catch(() => {})
         const cachePurgeTask = purgePoisonedEngineCache()
         const socketIoTask: Promise<unknown | null> = NETPLAY_URL
           ? injectScript(doc, socketIoScriptUrl(), 8_000).then(() => null, (error: unknown) => error)
@@ -3571,11 +3663,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           engineGameName = prepared.name || discNameFor(remoteGameUrl, options.gameName)
           discRomPrepared = true
         } else if (!isFile && options.platform === 'arcade') {
+          const romProgress = romProgressFor('rom')
           const prepared = await prepareRemoteArcadeRom(
             remoteGameUrl,
             (p) => {
               beat() // 下载在动就不算卡
-              options.onProgress?.(p)
+              romProgress?.(p)
             },
             prepareAbort.signal,
           )
@@ -3612,6 +3705,31 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
               core = corrected
             }
             console.info(`[arcade] 按指纹认出改版包：${prepared.hack.title}（借 ${prepared.hack.driver} 驱动），已套用内置 RomData`)
+          }
+          /*
+            Namco System 11 / 12 只有 MAME 能跑（FBNeo 没有这两块板子的驱动）。后台没选核心时默认是 FBNeo，
+            开局必然 Romset is unknown —— CRC 精确命中就直接纠正成 mame-current，并用 CRC 认出的
+            真实短名，不再靠文件名启发式（canonicalMameRomset 会把 `Tekken 3 (Japan).zip` 收成
+            System 11 的 `tekken`、`Soul Calibur.zip` 收成 `soul`，MAME 随即静默回菜单）。
+          */
+          if (prepared.namcoSet) {
+            namcoSet = prepared.namcoSet
+            if (!isMameCurrentCore(core)) {
+              console.warn(`[arcade] ${namcoSet.board} 只能用 MAME 运行，${core} 没有这块板子的驱动，已自动切换为 mame-current`)
+              core = 'mame-current'
+            }
+            engineGameName = `${namcoSet.romset}.zip`
+            /*
+              平台级 BIOS（通常是 neogeo.zip）对这两块板子毫无用处：System 12 不需要 BIOS，
+              System 11 只要 namcoc76。照下的话白占一份下载、还要被 relocateMameBios 镜像进 /roms。
+            */
+            if (engineBiosUrl && platformBiosName !== (namcoSet.bios ?? '')) {
+              console.info(`[emulatorjs] 跳过平台级 BIOS（${platformBiosName || engineBiosUrl}）：${namcoSet.board} ${namcoSet.bios ? `只需要 ${namcoSet.bios}.zip` : '不需要 BIOS'}`)
+              engineBiosUrl = ''
+            }
+            if (namcoSet.bios && gameBiosName !== namcoSet.bios) {
+              console.warn(`[arcade] ${namcoSet.romset} 需要 BIOS 包 ${namcoSet.bios}.zip，但后台「BIOS 包（系统名）」${gameBiosName ? `填的是 ${gameBiosName}` : '是空的'}；缺它 MAME 会报 required files are missing`)
+            }
           }
           // MAME（mame-current）按 romset 文件名认驱动：上传文件名不标准时纠正成真实 romset 名。
           // 路径前缀（roms/）不在这里加 —— 统一在下面 Object.assign 之前做一次，覆盖所有来源。
@@ -3684,7 +3802,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           : ''
         const mismatchedDisk = activeMameDisks.find((disk) => disk.romset !== mameRomset)
         if (mismatchedDisk) {
-          failLoad(`MAME 媒体盘配置错误：${mismatchedDisk.name}.chd 属于 ${mismatchedDisk.romset}，当前 ROM 是 ${mameRomset || '未知'}。请在后台重新绑定。`)
+          failLoad(fmt(rt.ejsMameDiskMismatch, { disk: mismatchedDisk.name, expected: mismatchedDisk.romset, actual: mameRomset || '?' }), 'config')
           return
         }
         if (detectedMameMedia) {
@@ -3694,7 +3812,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             disk.logicalBytes === expected.logicalBytes && disk.storedBytes === expected.storedBytes,
           ))
           if (missing) {
-            failLoad(`这款 ${detectedMameMedia.board} 游戏还缺必需媒体盘 ${missing.name}.chd；请在后台上传并绑定后再启动。`)
+            failLoad(fmt(rt.ejsMameDiskMissing, { board: detectedMameMedia.board, disk: missing.name }), 'config')
             return
           }
         }
@@ -3718,6 +3836,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           EJS_gameUrl: gameUrl,
           EJS_gameName: engineGameName,
           EJS_pathtodata: EJS_PATH,
+          /*
+            引擎缓存（EmulatorJS-Cache，存的是**解压后**的核心）默认 5 天没用就清：每周来一次的玩家每次都
+            重走 mame-current 的 37MB 下载 + 242MB 解压（冷启动约 57 秒，热启动约 20 秒）。
+            核心 URL 带内容版本号，换版本时旧条目自然不再命中，放宽到 30 天没有串版本的风险。
+          */
+          EJS_cacheConfig: { enabled: true, cacheMaxSizeMB: 4096, cacheMaxAgeMins: 60 * 24 * 30 },
           // 固定文件名会被 CDN 缓存一个月；显式版本化，避免旧引擎继续索取已删除的 NDS 核心。
           // 核心、样式与构建报告共用一份版本化映射。报告改走 metadata 别名，避免浏览器
           // 把 `/reports/` 当追踪接口拦掉后，EmulatorJS 静默禁用核心缓存。
@@ -3735,7 +3859,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           // 街机：引擎没有 arcade 分支，不给这份布局手机上就只有 4 颗动作键、
           // 摇杆还会把对角线松掉、投币键写着「选择」。见 ARCADE_VIRTUAL_PAD 的注释
           ...(options.platform === 'arcade'
-            ? { EJS_VirtualGamepadSettings: arcadeVirtualPad(effectiveArcadeButtons(options.arcadeButtons, options.biosSet?.name)) }
+            ? { EJS_VirtualGamepadSettings: arcadeVirtualPad(effectiveArcadeButtons(options.arcadeButtons ?? namcoSet?.buttons, options.biosSet?.name)) }
             : {}),
           /*
             默认键位：左手 WASD、右手 UIJK、Enter 开始。主机的 Select 是 Shift；街机投币
@@ -3847,9 +3971,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           injections.push({
             path,
             required: true,
+            // CHD 是本局独占的一份：写进 MEMFS 时直接交出所有权，不再复制第二份 160MB
+            exclusive: true,
             bytes: mameDiskDownloads.get(disk) ?? Promise.resolve(null),
           })
         }
+        if (!activeMameDisks.length && mameDiskDownloads.size) mameDiskAbort.abort()
 
         /**
          * ── 兜底：把 ROM / 平台级 BIOS 挪到 mame-current 该在的目录 ──
@@ -4099,6 +4226,29 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             }
           : undefined
 
+        /**
+         * 街机核心开局强制带 `-v`（只在 callMain 那一刻加参数，不动引擎的 debug 开关）。
+         *
+         * 引擎只在 debug 时才给 RetroArch 传 `-v`，而 RetroArch 关掉 verbose 后**核心的 log_cb 一行都不转发**：
+         *   - mame-current 名字不对时的 `Driver not found: xxx`、缺件时的 `NOT FOUND` /
+         *     `Required files are missing` 全被吞掉，玩家只看到 RetroArch「Quick Menu / No Items」，
+         *     遮罩却按「已开始」撤掉（2026-10-26《铁拳》事故：stderr 一个字都没有）；
+         *   - FBNeo 缺 ROM 时 `[FBNeo] ROM at index … is required` 同样看不见，它还会在画面里画一段英文
+         *     错误并让 retro_load_game 返回成功 —— 不重试、不切备用源。
+         * 这些行都在 callMain 内同步打印、早于 started，正好落进 FATAL_PHRASES 的开局前判定。
+         * 只给 FBNeo / mame-current：verbose 只多出开局几十行，运行时没有逐帧日志。
+         */
+        const forceArcadeCoreLog = options.platform === 'arcade' && (core === 'fbneo' || isMameCurrentCore(core))
+          ? (emu: EjsEmulator) => {
+              const mod = (emu as { Module?: { callMain?: (args: string[]) => unknown } }).Module
+              const call = mod?.callMain
+              if (!mod || typeof call !== 'function' || (call as { __verbose8bg?: true }).__verbose8bg) return
+              const wrapped = (args: string[]) => call.call(mod, Array.isArray(args) && !args.includes('-v') ? ['-v', ...args] : args)
+              ;(wrapped as { __verbose8bg?: true }).__verbose8bg = true
+              mod.callMain = wrapped
+            }
+          : undefined
+
         let ndsWfcSession = core === 'melondsds' && ndsWfcTask ? await ndsWfcTask : null
         if (ndsWfcSession && !wfcMacForCore) {
           console.warn('[emulatorjs] 无法为 WFC 生成独立 DS 网卡地址，禁用本局在线中继')
@@ -4109,7 +4259,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             ? '[emulatorjs] NDS WFC 会话已建立，网络连接将走同源中继'
             : '[emulatorjs] NDS WFC 未启用或服务不可用，游戏仍可离线游玩')
         }
-        if (injections.length || relocateMameRom || relocateMameBios || configureGbaScaling || raiseCoreAudioLatency || configureNdsStartup || selectNdsArchiveRom || selectPsxChd || ndsWfcSession || preparedPsxRange) {
+        if (injections.length || forceArcadeCoreLog || relocateMameRom || relocateMameBios || configureGbaScaling || raiseCoreAudioLatency || configureNdsStartup || selectNdsArchiveRom || selectPsxChd || ndsWfcSession || preparedPsxRange) {
           installFsInjector(win, injections, (path, msg) => {
             /*
               写失败**不拦着开局**（和 installFsInjector 的注释一致）：没了改版 dat，
@@ -4118,9 +4268,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
               真缺文件的话核心自己会报「缺 xxx」，那条走 errorTap，比这里更准。
             */
             if (!destroyed) console.warn(`[emulatorjs] ${path || '待注入文件'} 没写进虚拟文件系统，按原始配置继续：`, fmt(rt.ejsFsInjectFailed, { msg }))
-          }, relocateMameRom || relocateMameBios || configureGbaScaling || raiseCoreAudioLatency || configureNdsStartup || selectNdsArchiveRom || selectPsxChd
+          }, forceArcadeCoreLog || relocateMameRom || relocateMameBios || configureGbaScaling || raiseCoreAudioLatency || configureNdsStartup || selectNdsArchiveRom || selectPsxChd
             ? (emu) => {
                 // 顺序有讲究：先处理内容/BIOS，再准备核心专属目录与选项，最后调音频窗口。
+                forceArcadeCoreLog?.(emu)
                 relocateMameRom?.(emu)
                 relocateMameBios?.(emu)
                 selectNdsArchiveRom?.(emu)
@@ -4141,7 +4292,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           preparedPsxRange ?? undefined,
           (path, message) => {
             // 这条只给标为 required 的 MAME CHD 调用；可选 RomData / BIOS 仍按原策略降级。
-            failLoad(`必需的 MAME 媒体盘无法挂载（${path || '未知路径'}）：${message}`)
+            // runtime：与 ROM 无关，不能把好好的 ROM 判坏、去切备用源（真正的下载原因已在下面提前报过）
+            const disk = (path?.split('/').pop() ?? '').replace(/\.chd$/i, '') || '?'
+            failLoad(fmt(rt.ejsMameDiskFailed, { disk, msg: message }), 'runtime')
           })
         }
 

@@ -33,6 +33,7 @@ import { platforms } from '../src/data/platforms.ts'
 import {
   EJS_PATH,
   EJS_RUNTIME_GENERATION,
+  ejsCoreAsset,
   ejsRuntimeAsset,
   emulatorJsCoreFileFor,
   emulatorJsCoreForGame,
@@ -196,14 +197,21 @@ check('最高 / 高 / 中优先级平台固定到已发布的核心', () => {
 })
 
 check('固定名核心与悬停预热共用版本化 URL，不会把两代核心拼进同一缓存', () => {
-  const expected = `${EJS_PATH}cores/melondsds-wasm.data?v=${encodeURIComponent(EJS_RUNTIME_GENERATION)}`
-  assert.equal(ejsRuntimeAsset('cores/melondsds-wasm.data'), expected)
+  // 核心按内容取版本（ejsCoreVersionsData.ts）：URL 一定带 ?v=，且与文件当前内容一一对应
+  const melon = ejsCoreAsset('cores/melondsds-wasm.data')
+  assert.ok(melon.startsWith(`${EJS_PATH}cores/melondsds-wasm.data?v=`), melon)
+  const file = join(coresDir, 'melondsds-wasm.data')
+  if (existsSync(file)) {
+    const hash = createHash('sha256').update(readFileSync(file)).digest('hex').slice(0, 16)
+    assert.ok(melon.endsWith(`?v=${hash}`) || melon.endsWith(`?v=${encodeURIComponent(EJS_RUNTIME_GENERATION)}`), '核心版本必须是内容哈希（或未生成表时的全局代号）')
+  }
   const fbneoPaths = emulatorJsRuntimePaths('fbneo')
   assert.equal(
     fbneoPaths['fbneo-legacy-wasm.data'],
-    ejsRuntimeAsset('cores/fbneo-legacy-wasm.data'),
+    ejsCoreAsset('cores/fbneo-legacy-wasm.data'),
     'KOF97 实际选到 legacy 核心时也必须走版本化 URL',
   )
+  assert.equal(fbneoPaths['emulator.min.js'], ejsRuntimeAsset('emulator.min.js'), '引擎入口仍跟全局代号走')
   const adapter = readFileSync(join(root, 'src/emulator/adapters/emulatorjs.ts'), 'utf8')
   const prewarm = readFileSync(join(root, 'src/emulator/prewarm.ts'), 'utf8')
   assert.match(adapter, /EJS_paths: emulatorJsRuntimePaths\(core\)/)
@@ -215,7 +223,7 @@ check('核心构建报告改走 metadata 别名，浏览器拦截 /reports/ 时�
   // 同时盯住轻核心和 KOF97 实际使用的街机核心，避免修复只在单个平台上成立。
   for (const core of ['fceumm', 'fbneo']) {
     const paths = emulatorJsRuntimePaths(core)
-    assert.equal(paths[`${core}.json`], ejsRuntimeAsset(`cores/metadata/${core}.json`))
+    assert.equal(paths[`${core}.json`], ejsCoreAsset(`cores/metadata/${core}.json`))
     assert.doesNotMatch(paths[`${core}.json`], /\/reports\//)
     const source = readFileSync(join(coresDir, 'reports', `${core}.json`))
     const alias = readFileSync(join(coresDir, 'metadata', `${core}.json`))

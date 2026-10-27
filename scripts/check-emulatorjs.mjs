@@ -100,11 +100,29 @@ if (
   )
 }
 
+for (const [needle, what, why] of [
+  ['1===t.data.t&&(a.terminate(),s(l))', '7z 解压 Worker 用完即关', 'mame-current 解压后的 242MB 会一直挂在那只 Worker 的堆里到关页'],
+  ['n<=3*s?o(0,n):(o(0,s),o((n>>1)-(s>>1),(n>>1)+(s>>1)),o(n-s,n))', '缓存键抽样哈希', '主线程会逐字节哈希 242MB 的 wasm（实测 1.3 秒卡顿），街机 blob ROM 每局也算一遍'],
+  ['Could not load previous settings",t)}if(this.config.defaultOptions){', '首次开局带核心默认选项', '只在 retro_load_game 读取的核心选项（FBNeo 采样率 / 色深）对没保存过设置的玩家永不生效'],
+]) {
+  if (!js.includes(needle)) fail(`emulator.min.js 缺「${what}」补丁 —— ${why}`, 'npm run ejspatch，然后换 EJS_RUNTIME_GENERATION')
+}
+
 if (!existsSync(join(dir, 'cores', 'fbneo-wasm.data'))) {
   fail(
     'public/emulatorjs/cores/ 里没有核心（至少 fbneo-wasm.data 该在）',
     'npm install && npm run ejscores（核心来自 npm 的 @emulatorjs/core-*，prebuild 会自动复制，走到这里说明 npm install 没装上）',
   )
+}
+
+// 核心 URL 的 ?v= 取文件内容哈希（src/emulator/ejsCoreVersionsData.ts）。表过期 = 新字节躲在旧 URL 后面，
+// 浏览器和边缘会把它当一年不变的旧缓存继续发 —— 必须拦在构建里。
+{
+  const { spawnSync } = await import('node:child_process')
+  const r = spawnSync(process.execPath, [join(root, 'scripts', 'gen-ejs-core-versions.mjs'), '--check'], { encoding: 'utf8' })
+  if (r.status !== 0) {
+    fail('核心内容版本表与 public/emulatorjs/cores 不一致', 'node scripts/gen-ejs-core-versions.mjs 重新生成后一起提交')
+  }
 }
 
 // PS1 Range 依赖 Beetle 不再整盘预缓存；同名核心若被上游覆盖，网页分片层会退化成整盘读取。

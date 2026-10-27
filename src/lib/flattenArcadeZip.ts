@@ -1,4 +1,5 @@
-import { arcadeArchiveUnsafePathProblem, identifyNamcoSystem11Tekken } from './namcoSystem11'
+import { arcadeArchiveUnsafePathProblem } from './namcoSystem11'
+import { identifyNamcoMameSet } from './namcoMameSets'
 import { assertValidZipBlob, type ZipFileEntry } from './unzip'
 
 export interface FlattenArcadeZipResult {
@@ -23,12 +24,12 @@ export async function flattenArcadeZipBlob(blob: Blob, knownEntries?: readonly Z
   if (unsafe) throw new Error(unsafe)
 
   /*
-   * 这个已核实的 Tekken/System 11 包把父集放在根目录、克隆集放在子目录。
+   * 已核实的 Namco System 11/12 包（如 Tekken）把父集放在根目录、克隆集放在子目录。
    * MAME 会按 tekken.zip 只读取父集成员；重写整个 ZIP 虽然不改 ROM 字节，却会改变
    * 原始归档结构，而且容易把克隆 ROM 一并摊进目标 set。命中完整 CRC 指纹时保留原 Blob，
    * 后续识别会把游戏名纠正为 tekken.zip；其它包仍走常规拍平/重名保护。
    */
-  if (identifyNamcoSystem11Tekken(entries)) return { blob, flattenedCount: 0 }
+  if (identifyNamcoMameSet(entries)) return { blob, flattenedCount: 0 }
 
   const nestedCount = entries.reduce((count, entry) => count + Number(entry.name.includes('/')), 0)
   if (!nestedCount) return { blob, flattenedCount: 0 }

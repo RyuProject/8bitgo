@@ -53,7 +53,7 @@ import { p2pPlayable, cloudPlayable, emulatorJsCoreFileFor, NDS_COMPAT_CORE } fr
 import { ndsCrashFallbackCore } from './ndsCrash'
 import { rememberNdsCoreFailure, rememberedNdsCore } from './ndsCorePreference'
 import { psxChdSaveSlug, psxCoreForTransfer } from './psxChd'
-import { prewarmRuntime } from './prewarm'
+import { prewarmMameChdMediaOnHover, prewarmRuntime } from './prewarm'
 import { defaultDos71SystemUrl, prewarmSystemCache } from './systemSource'
 import { prewarmSockdriveCache } from './adapters/jsdos'
 import { canRestartInPlace } from './sessionRestart'
@@ -1747,6 +1747,8 @@ export function EmulatorPlayer({
       windowsGuest: runtime.id === 'jsdos' && Boolean(dosSystemUrlRef.current),
       streaming: runtime.id === 'jsdos' && Boolean(dosSockdriveUrlRef.current),
       mameMedia: runtime.id === 'emulatorjs' && targetPlatform === 'arcade' && Boolean(arcadeMameDisksRef.current?.length),
+      core: coreOverride ?? coreRef.current,
+      localFile: typeof game !== 'string',
     })
     progressPlan.current = plan
     sessionCounter.current += 1
@@ -2239,7 +2241,7 @@ export function EmulatorPlayer({
         setError(fmt(t.player.ndsCoreFailed, { reason }))
         setStatus('error')
       },
-      onError: (message: string, errorScope?: 'runtime' | 'content') => {
+      onError: (message: string, errorScope?: 'runtime' | 'content' | 'config' | 'deterministic') => {
         if (!isCurrent()) return
         // 信令层偶尔只给空错误；直播又不会自动重挂，空串会让错误状态只剩黑框。
         // 同时把具体原因留在本机控制台，光有 failedMs 无法区分「房间已散」和「网络没通」。
@@ -2264,6 +2266,7 @@ export function EmulatorPlayer({
         const canFailoverRom = () =>
           !ready &&
           errorScope !== 'runtime' &&
+          errorScope !== 'config' &&
           typeof session.game === 'string' &&
           canRestartInPlace(session) &&
           Boolean(onRomLoadFailed?.(message))
@@ -2277,7 +2280,7 @@ export function EmulatorPlayer({
 
         // 完整性/密钥/codec 错误是确定性的，同一个包再下载一次不会变好。直接切数据库里保留的
         // 旧 ROM 备用地址，避免迁移期玩家先白等一轮自动重试。
-        const deterministicPackFailure = /(?:8BG|ROM 包|Flash 站点锁)/i.test(message)
+        const deterministicPackFailure = errorScope === 'deterministic' || /(?:8BG|ROM 包|Flash 站点锁)/i.test(message)
         if (deterministicPackFailure && canFailoverRom()) {
           restartAfterRomFailureRef.current = true
           endSession()
@@ -2285,7 +2288,9 @@ export function EmulatorPlayer({
           setStatus('idle')
           return
         }
-        if (!ready && canRestartInPlace(session) && attempt < AUTO_RETRY_LIMIT) {
+        // 后台配置错误 / 必然失败的包：原地重来一遍只会让玩家再等一轮（mame-current 还要重新解压编译 242MB）
+        const retryUseless = errorScope === 'config' || errorScope === 'deterministic'
+        if (!ready && !retryUseless && canRestartInPlace(session) && attempt < AUTO_RETRY_LIMIT) {
           setError(null)
           begin(session.game, session.platform, session.runtime, {
             retryAttempt: attempt + 1,
@@ -3788,6 +3793,13 @@ export function EmulatorPlayer({
       ? psxCoreForTransfer(platform.id, selectedCore, romUrl)
       : selectedCore
     prewarmRuntime(pageRuntime?.id, warmCore, aggressive)
+    if (aggressive && platform.id === 'arcade' && pageRuntime?.id === 'emulatorjs') {
+      // 只在已经走到“开始游戏”这个明确意图点才碰媒体盘；列表浏览、触屏 focus 和成人门之前
+      // 都不会提前下载。URL 来自已绑定的内容寻址对象，热区片可由正式开局安全续传。
+      prewarmMameChdMediaOnHover((arcadeMameDisksRef.current ?? [])
+        .map((disk) => ({ ...disk, url: romUrlForKey(disk.key) }))
+        .filter((disk) => Boolean(disk.url)))
+    }
     if (pageRuntime?.id === 'jsdos' && effectiveDosSystemUrl) prewarmSystemCache(effectiveDosSystemUrl)
     if (pageRuntime?.id === 'jsdos' && dosSockdriveUrl) {
       prewarmSockdriveCache(dosSockdriveUrl, Boolean(effectiveDosSystemUrl))

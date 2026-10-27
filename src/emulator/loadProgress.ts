@@ -313,6 +313,125 @@ export const CHUNK_BYTES = 8 * 1024 * 1024
 /** 先限制分片表长度：错误的 Content-Range / 本地续传记录不能让 Array.from 直接耗尽标签页。 */
 const MAX_BLOB_PARTS = 16_384
 
+export interface BlobChunkWarmOptions {
+  /** 必须是内容寻址的键；热区片和正式下载会按这个键安全接续。 */
+  resumeKey: string
+  /** 已由后台元数据核实的对象大小；预热不信服务器自报的另一个总长。 */
+  expectedBytes: number
+  /** 预热前几个顺序分片；仅用于首读热点，绝不在悬停时偷下整张盘。 */
+  chunks?: number
+  chunkBytes?: number
+  fetchImpl?: typeof fetch
+  resumeStore?: DownloadResumeStore
+  cache?: RequestCache
+  /** 第一片可额外核验格式头；失败时整组临时片作废。 */
+  checkPart?: (blob: Blob, index: number) => Promise<void> | void
+}
+
+/** 同一块 CHD 被快速进出 / 多个按钮事件触发时只保留一组热区请求。 */
+const blobChunkWarmTasks = new Map<string, Promise<void>>()
+
+/**
+ * 把大文件最先会读到的少量 Range 片提前落进续传仓库。
+ *
+ * 这不是“边下边玩”：调用方仍须完整下载才能把媒体塞进 EmulatorJS 的 MEMFS。它的作用是
+ * 把桌面端悬停开始按钮的几百毫秒至数秒空档，变成下一次正式下载可复用的首段字节；首片同时
+ * 验证 Range 能力，服务端若忽略 Range（200）立即取消，绝不偷偷把整张 CHD 当预热下完。
+ */
+export function prewarmBlobChunks(url: string, opts: BlobChunkWarmOptions): Promise<void> {
+  const chunkBytes = opts.chunkBytes ?? CHUNK_BYTES
+  const chunks = opts.chunks ?? 1
+  const key = opts.resumeKey
+  if (!url || !key || !Number.isSafeInteger(opts.expectedBytes) || opts.expectedBytes <= 0 ||
+      !Number.isSafeInteger(chunkBytes) || chunkBytes <= 0 || !Number.isInteger(chunks) || chunks <= 0) {
+    return Promise.resolve()
+  }
+  const existing = blobChunkWarmTasks.get(key)
+  if (existing) return existing
+
+  const task = (async () => {
+    const store = opts.resumeStore ?? downloadResumeStore
+    let snapshot: DownloadResumeSnapshot | null = null
+    try {
+      snapshot = await store.load(key, chunkBytes)
+      if (snapshot && snapshot.total !== opts.expectedBytes) {
+        await store.clear(key)
+        snapshot = null
+      }
+    } catch {
+      // 预热只是加速。储存层坏了时不要再发 Range，免得白下又无处复用。
+      return
+    }
+
+    const count = Math.ceil(opts.expectedBytes / chunkBytes)
+    if (count > MAX_BLOB_PARTS) return
+    const wanted = Math.min(chunks, count)
+    const fetcher = opts.fetchImpl ?? fetch
+    for (let index = 0; index < wanted; index += 1) {
+      if (snapshot?.parts.has(index)) continue
+      const start = index * chunkBytes
+      const end = Math.min(opts.expectedBytes, start + chunkBytes) - 1
+      let response: Response
+      try {
+        response = await fetcher(url, {
+          headers: { Range: `bytes=${start}-${end}` },
+          ...(opts.cache ? { cache: opts.cache } : {}),
+        })
+      } catch {
+        return
+      }
+      // 不支持 Range 的 CDN 可能已经开始返回整份 CHD；取消正文，绝不能让悬停变成全盘下载。
+      if (!response.ok || response.status !== 206) {
+        await response.body?.cancel().catch(() => {})
+        return
+      }
+      const range = /^bytes\s+(\d+)-(\d+)\/(\d+)$/i.exec(response.headers.get('content-range') ?? '')
+      if (!range || Number(range[1]) !== start || Number(range[2]) !== end || Number(range[3]) !== opts.expectedBytes) {
+        await response.body?.cancel().catch(() => {})
+        return
+      }
+      const declared = response.headers.get('content-length')
+      if (declared !== null && Number(declared) !== end - start + 1) {
+        await response.body?.cancel().catch(() => {})
+        return
+      }
+      if (!response.body) return
+      const reader = response.body.getReader()
+      const pieces: Uint8Array[] = []
+      let received = 0
+      try {
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) break
+          if (!value || received + value.byteLength > end - start + 1) throw new Error('热区分片长度异常')
+          pieces.push(value)
+          received += value.byteLength
+        }
+      } catch {
+        await reader.cancel().catch(() => {})
+        return
+      } finally {
+        reader.releaseLock()
+      }
+      if (received !== end - start + 1) return
+      const part = new Blob(pieces as BlobPart[])
+      try {
+        await opts.checkPart?.(part, index)
+        const saved = await store.put(key, opts.expectedBytes, chunkBytes, index, part)
+        if (saved === false) return
+      } catch {
+        // 第一片格式不符时不能留给正式下载拼接；其余失败只是本轮预热无收益。
+        await store.clear(key).catch(() => {})
+        return
+      }
+    }
+  })().finally(() => {
+    if (blobChunkWarmTasks.get(key) === task) blobChunkWarmTasks.delete(key)
+  })
+  blobChunkWarmTasks.set(key, task)
+  return task
+}
+
 /**
  * ⚠️ 小文件不需要特判：第一个 Range 请求要的就是 `bytes=0-<片长-1>`，
  * 比这短的文件一次就回全了，循环一次都不进。所以这里没有「多大以上才分片」的阈值。
@@ -849,6 +968,10 @@ export interface LoadProgressPlanContext {
   streaming?: boolean
   /** MAME 需要完整挂载一份游戏专属 CHD；ROM 阶段会明显长于普通街机 ZIP。 */
   mameMedia?: boolean
+  /** 本局计划用的核心（街机：mame-current 的核心下载 + 242MB wasm 编译远比 FBNeo 重） */
+  core?: string
+  /** 本地文件（「玩本地 ROM」）：ROM 已经在手，不会先于引擎下载 */
+  localFile?: boolean
 }
 
 type PhaseShare = readonly [LoadPhase, number]
@@ -994,21 +1117,38 @@ export function loadProgressPlan(ctx: LoadProgressPlanContext): LoadProgressPlan
   }
   if (ctx.runtime === 'emulatorjs') {
     if (ctx.platform === 'arcade') {
-      if (ctx.mameMedia) {
-        // CHD 会与 ROM/核心并行下载，但真正开局必须等它完整写进虚拟文件系统。
-        // 给 ROM 段更多真实空间，避免 150MB 以上媒体在 30% 的普通街机区间里视觉抢跑。
-        return makeLoadProgressPlan('emulatorjs-arcade-mame-media', [['engine', 25], ['assets', 10], ['rom', 50], ['starting', 15]], {
-          engine: 90_000,
+      /*
+        远端街机 ROM 由站点先完整下载 + 解密 + 校验，**之后**才注入 loader.js（emulatorjs.ts 的
+        prepareRemoteArcadeRom）。以前计划写的是 engine → assets → rom，于是 rom 事件先到、条子从 1%
+        跳到 50%；之后核心下载（engine）和 BIOS（assets）的事件因为「阶段不倒退」全部被丢掉，
+        mame-current 下 37MB 核心、解压编译 242MB 时条子停在 80% 写着「启动中」，45 秒预算一过卡在 99%。
+        现在按真实顺序：rom → engine → assets → starting；本地文件仍是引擎在前。
+      */
+      const heavy = ctx.core === 'mame-current'
+      if (ctx.localFile) {
+        return makeLoadProgressPlan('emulatorjs-arcade-local', [['engine', heavy ? 45 : 35], ['assets', 10], ['rom', 20], ['starting', heavy ? 25 : 35]], {
+          engine: heavy ? 180_000 : 90_000,
           assets: 45_000,
-          rom: 240_000,
-          starting: 60_000,
+          rom: 60_000,
+          starting: heavy ? 90_000 : 45_000,
         })
       }
-      return makeLoadProgressPlan('emulatorjs-arcade', [['engine', 35], ['assets', 15], ['rom', 30], ['starting', 20]], {
-        engine: 90_000,
-        assets: 45_000,
+      if (ctx.mameMedia) {
+        // CHD 与 ROM 合成同一条 rom 进度（combinedRomProgress），真正开局必须等它完整写进虚拟文件系统。
+        return makeLoadProgressPlan('emulatorjs-arcade-mame-media', [['rom', 50], ['engine', 25], ['assets', 5], ['starting', 20]], {
+          rom: 240_000,
+          engine: 180_000,
+          assets: 45_000,
+          starting: 90_000,
+        })
+      }
+      return makeLoadProgressPlan(heavy ? 'emulatorjs-arcade-mame' : 'emulatorjs-arcade', heavy
+        ? [['rom', 25], ['engine', 45], ['assets', 5], ['starting', 25]]
+        : [['rom', 35], ['engine', 35], ['assets', 10], ['starting', 20]], {
         rom: 90_000,
-        starting: 45_000,
+        engine: heavy ? 180_000 : 90_000,
+        assets: 45_000,
+        starting: heavy ? 90_000 : 45_000,
       })
     }
     if (LARGE_EMULATORJS_MEDIA.has(ctx.platform)) {

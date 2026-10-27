@@ -154,7 +154,7 @@ export function loadRomsetIndex(): Promise<RomsetIndex | null> {
 }
 
 /** 拿一组 CRC 去比对索引，返回排好序的候选 */
-export function matchRomset(index: RomsetIndex, crcs: number[]): RomsetIdentification {
+export function matchRomset(index: RomsetIndex, crcs: number[], fileName?: string): RomsetIdentification {
   /**
    * 先查已知改版包。
    *
@@ -189,7 +189,27 @@ export function matchRomset(index: RomsetIndex, crcs: number[]): RomsetIdentific
   const ambiguous = candidates.some((c, i) => i > 0 && c.matched === top?.matched && c.coverage === 1)
   // 命中改版包时不给 confident：那条路的「自动改名」是按 romset 短名来的，
   // 而改版包要改成 hack.zipName，两回事，交给上层按 hack 处理
-  const confident = !hack && top && top.coverage === 1 && !ambiguous ? top : null
+  let confident = !hack && top && top.coverage === 1 && !ambiguous ? top : null
+
+  /*
+    merged 包：FBNeo 克隆集的 RomDesc 列的是完整清单，父集 + 所有克隆的 ROM 都在一个 zip 里时，
+    父集和每个克隆的覆盖率都是 100%。旧规则只看「命中数最多且唯一」：
+      - 命中数并列 → 判歧义，不改名、也不填 BIOS；
+      - 某个克隆比父集多几颗 → 它单独胜出，管理员本来正确的 kof97.zip 被改名成那个克隆。
+    满分候选里先认上传文件名，其次认唯一的父集；都分不出才维持原来的保守结论。
+  */
+  if (!hack) {
+    const full = [...tally]
+      .filter(([id, matched]) => matched === (index.totals[id] || 1))
+      .map(([id, matched]) => ({ ...index.sets[id], matched, total: index.totals[id] || 1, coverage: 1 }))
+    if (full.length > 1) {
+      const base = (fileName?.split(/[\\/]/).pop() ?? '').replace(/\.8bg$/i, '').replace(/\.zip$/i, '').trim().toLowerCase()
+      const byName = base ? full.find((candidate) => candidate.name === base) : undefined
+      const parents = full.filter((candidate) => !candidate.parent)
+      const pick = byName ?? (parents.length === 1 ? parents[0] : undefined)
+      if (pick) confident = pick
+    }
+  }
   return { hack, candidates, confident }
 }
 
@@ -199,7 +219,7 @@ export function matchRomset(index: RomsetIndex, crcs: number[]): RomsetIdentific
  * @param entries lib/unzip.ts 的 listZipEntries() 结果，只用到 crc32
  * @returns 索引加载不出来或包里一个 CRC 都对不上时返回 null
  */
-export async function identifyArcadeRomset(entries: readonly { crc32: number }[]): Promise<RomsetIdentification | null> {
+export async function identifyArcadeRomset(entries: readonly { crc32: number }[], fileName?: string): Promise<RomsetIdentification | null> {
   const crcs = entries.map((e) => e.crc32).filter((c) => c > 0)
   if (!crcs.length) return null
 
@@ -213,6 +233,6 @@ export async function identifyArcadeRomset(entries: readonly { crc32: number }[]
 
   const index = await loadRomsetIndex()
   if (!index) return hack ? { hack, candidates: [], confident: null } : null
-  const result = matchRomset(index, crcs)
+  const result = matchRomset(index, crcs, fileName)
   return result.hack || result.candidates.length ? result : null
 }

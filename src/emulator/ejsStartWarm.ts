@@ -101,7 +101,16 @@ export interface EjsStartWarmPlan {
  */
 export async function warmEmulatorJsStart(
   plan: EjsStartWarmPlan,
-  { idb, warm = warmHttpCache }: { idb?: IdbFactoryLike; warm?: (url: string) => void } = {},
+  { idb, warm = warmHttpCache, assumeUncached = false }: {
+    idb?: IdbFactoryLike
+    warm?: (url: string) => void
+    /**
+     * 引擎缓存这一局马上要被清掉（EJS_CACHE_GENERATION 换代，见 purgePoisonedEngineCache）：
+     * 库里「有」的核心几百毫秒后就没了。以前照查不误 → 判定已缓存 → 不预热 → 清库 →
+     * 每次换代后所有回访玩家都串行冷下核心。
+     */
+    assumeUncached?: boolean
+  } = {},
 ): Promise<string[]> {
   const started: string[] = []
   for (const url of plan.always) {
@@ -113,7 +122,7 @@ export async function warmEmulatorJsStart(
   if (!large.length) return started
   let cached: Set<string>
   try {
-    cached = await ejsCachedUrls(large, idb ?? globalThis.indexedDB)
+    cached = assumeUncached ? new Set() : await ejsCachedUrls(large, idb ?? globalThis.indexedDB)
   } catch {
     cached = new Set()
   }

@@ -388,6 +388,39 @@ test('version-pinned NDS 8 MiB and PS1 CHD 2 MiB ranges each reuse edge cache', 
     else globalThis.caches = previous
   }
 })
+test('content-addressed MAME CHD ranges reuse edge cache and get immutable caching without romv', async () => {
+  const previous = globalThis.caches
+  const stored = new Map(); const waits = []
+  globalThis.caches = { default: {
+    async match(request) { return stored.get(request.url)?.clone() },
+    async put(request, response) { stored.set(request.url, response.clone()); await response.arrayBuffer() },
+  } }
+  const context = { waitUntil(promise) { waits.push(promise) } }
+  try {
+    const e = environment()
+    const key = 'roms/arcade-media/mame/cede127f3d87f894ccaa1d77c8b279f209f6a8e4/nm-002.chd'
+    e.ROMS.seed(key, 'MComprHD-bytes')
+    const range = { Range: `bytes=0-${8 * 1024 * 1024 - 1}` }
+    const first = await worker.fetch(req(`/${key}`, 'GET', undefined, range), e, context)
+    assert.equal(first.status, 206)
+    assert.equal(first.headers.get('X-8BitGo-Edge-Cache'), 'MISS')
+    assert.match(first.headers.get('Cache-Control') || '', /immutable/)
+    await first.arrayBuffer()
+    await Promise.all(waits.splice(0))
+    const second = await worker.fetch(req(`/${key}`, 'GET', undefined, range), e, context)
+    assert.equal(second.headers.get('X-8BitGo-Edge-Cache'), 'HIT')
+    assert.equal(await second.text(), 'MComprHD-bytes')
+    assert.equal(count(e.ROMS, 'get'), 1, '第二位玩家不应再穿透 R2')
+    // 路径不像内容寻址（大写 / 短哈希）就仍走旧规则：不缓存
+    e.ROMS.seed('roms/arcade-media/mame/ABC/nm-002.chd', 'x')
+    const plain = await worker.fetch(req('/roms/arcade-media/mame/ABC/nm-002.chd', 'GET', undefined, range), e, context)
+    assert.notEqual(plain.headers.get('X-8BitGo-Edge-Cache'), 'HIT')
+    assert.doesNotMatch(plain.headers.get('Cache-Control') || '', /immutable/)
+  } finally {
+    if (previous === undefined) delete globalThis.caches
+    else globalThis.caches = previous
+  }
+})
 test('version-pinned PSP chunks reuse an independent 2 MiB edge-cache entry with matching If-Match', async () => {
   const previous = globalThis.caches
   const stored = new Map(); const waits = []

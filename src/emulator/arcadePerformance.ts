@@ -17,7 +17,9 @@ export function isFbneoArcadeCore(platform: PlatformId, core: string): boolean {
 
 /** 较轻的街机核心共用 80ms 音频窗口；mame-current 单独走 128ms。 */
 export function isLightArcadeCore(platform: PlatformId, core: string): boolean {
-  return platform === 'arcade' && (core === 'fbneo' || core === 'mame2003' || core === 'mame2003_plus')
+  // fbalpha2012_cps1/cps2 是同一族更轻的核心，以前漏了它们，CPS 游戏改用轻核心后反而回到 64ms 窗口
+  return platform === 'arcade' && (core === 'fbneo' || core === 'mame2003' || core === 'mame2003_plus' ||
+    core === 'fbalpha2012_cps1' || core === 'fbalpha2012_cps2')
 }
 
 /**
@@ -53,6 +55,11 @@ export function arcadePerformanceDefaultOptions(
   core: string,
   gameSlug: string | undefined,
   hardwareConcurrency: number | undefined,
+  /**
+   * 触屏设备（手机 / 平板）。线程数说明不了单核快慢：千元安卓机照样报 8 线程，按桌面档拿到 130%~150%
+   * 的超频，再加上 frameskip 关着，宿主一跟不上就是爆音和掉帧。触屏一律只保留轻微余量。
+   */
+  touchDevice = false,
 ): Readonly<Record<string, string>> {
   if (platform !== 'arcade') return {}
 
@@ -70,9 +77,11 @@ export function arcadePerformanceDefaultOptions(
   const threads = Number.isFinite(hardwareConcurrency) ? Math.max(1, Number(hardwareConcurrency)) : 4
   const slug = gameSlug?.trim().toLowerCase() ?? ''
   const hasHeavyNativeSlowdown = METAL_SLUG_SLUG.test(slug)
-  const cpuClock = hasHeavyNativeSlowdown
-    ? threads >= 8 ? '150%' : threads >= 4 ? '130%' : '110%'
-    : threads >= 8 ? '130%' : threads >= 4 ? '120%' : '110%'
+  const cpuClock = touchDevice
+    ? hasHeavyNativeSlowdown ? '110%' : '100%'
+    : hasHeavyNativeSlowdown
+      ? threads >= 8 ? '150%' : threads >= 4 ? '130%' : '110%'
+      : threads >= 8 ? '130%' : threads >= 4 ? '120%' : '110%'
   const defaults: Record<string, string> = {
     'fbneo-cpu-speed-adjust': cpuClock,
     'fbneo-frameskip-type': 'disabled',

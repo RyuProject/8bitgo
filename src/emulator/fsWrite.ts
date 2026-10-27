@@ -31,7 +31,8 @@ export interface MutableDirFs {
 
 /** 文件注入只用到这两个 FS 能力，不把整套 Emscripten 类型拖进纯函数测试。 */
 export interface WritableFs extends MutableDirFs {
-  writeFile: (path: string, bytes: string | Uint8Array) => void
+  /** canOwn：Emscripten FS.writeFile 的选项，MEMFS 直接持有这块缓冲区而不复制 */
+  writeFile: (path: string, bytes: string | Uint8Array, opts?: { canOwn?: boolean }) => void
 }
 
 /**

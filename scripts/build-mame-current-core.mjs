@@ -55,6 +55,15 @@ function parseArgs(argv) {
     // 默认 2：MAME 单个编译单元就能吃掉 1~2G，-j$(nproc) 在 8G 机器上必 OOM。
     jobs: 2,
     skipBuild: false,
+    /**
+     * 只编进这些驱动源文件（MAME 的 SUBTARGET + SOURCES 机制）。全量 MAME 的 wasm 解压后约 242MB：
+     * 冷启动 ~57s（37MB 下载 + 7z 解压 + 编译）、回访 ~20s（每次都要重新编译），手机上内存也吃紧。
+     * 本站实际只用到 Namco System 10/11/12 与 IGS011（taiko2 / 铁拳 / 灵魂能力 / 明星三缺一），
+     * 裁剪后预计只剩几十 MB。⚠️ ptblank2 的克隆集横跨 namcos11 与 namcos12，两者必须一起编。
+     * 例：--sources src/mame/namco/namcos10.cpp,src/mame/namco/namcos11.cpp,src/mame/namco/namcos12.cpp,src/mame/igs/igs011.cpp
+     * 裁剪版上线前必须逐款实玩验收（见 AGENTS §4），并重跑 patch-ejs-state-glue 与 gen-ejs-core-versions。
+     */
+    sources: '',
   }
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i]
@@ -63,6 +72,7 @@ function parseArgs(argv) {
     else if (a === '--emsdk') args.emsdk = argv[++i]
     else if (a === '--jobs') args.jobs = Number(argv[++i])
     else if (a === '--skip-build') args.skipBuild = true
+    else if (a === '--sources') args.sources = String(argv[++i] || '').trim()
     else throw new Error(`未知参数：${a}`)
   }
   return args
@@ -82,11 +92,24 @@ function needTool(name) {
 }
 
 /** 往 cores.json 里注入 mame-current；已存在就复用 */
-function injectCore(buildDir) {
+function makeArguments(sources) {
+  if (!sources) return []
+  const list = sources.split(',').map((x) => x.trim()).filter(Boolean)
+  for (const item of list) {
+    if (!/^src\/mame\/[\w/]+\.cpp$/.test(item)) throw new Error(`--sources 里有不像驱动源文件的项：${item}`)
+  }
+  return ['SUBTARGET=8bitgo', `SOURCES=${list.join(',')}`, 'REGENIE=1']
+}
+
+function injectCore(buildDir, sources) {
   const coresPath = join(buildDir, 'cores.json')
   const list = JSON.parse(readFileSync(coresPath, 'utf8'))
-  if (list.some((c) => c.name === 'mame-current')) {
-    console.log('[skip] cores.json 里已有 mame-current，复用。')
+  const existing = list.find((c) => c.name === 'mame-current')
+  if (existing) {
+    // 复用条目时也要同步裁剪参数，否则换了 --sources 还是编出上一次的那一版
+    existing.makeoptions = { ...existing.makeoptions, arguments: makeArguments(sources) }
+    writeFileSync(coresPath, `${JSON.stringify(list, null, 4)}\n`)
+    console.log(`[skip] cores.json 里已有 mame-current，复用（arguments=${JSON.stringify(existing.makeoptions.arguments)}）。`)
     return
   }
   list.push({
@@ -95,7 +118,7 @@ function injectCore(buildDir) {
     // build.sh 的编译命令是：
     //   emmake make -j$(nproc) -f <makescript> platform=emscripten <arguments…>
     // libretro-mame 用 Makefile.libretro（不是 Makefile），不带目标时默认就是 current。
-    makeoptions: { buildpath: './', makescript: 'Makefile.libretro', arguments: [] },
+    makeoptions: { buildpath: './', makescript: 'Makefile.libretro', arguments: makeArguments(sources) },
     options: {},
     save: false,
     license: 'LICENSE.md',
@@ -135,6 +158,31 @@ function findArtifacts(buildDir) {
   }
   walk(buildDir, 0)
   return wanted
+}
+
+/** 构建工具把 libretro/mame clone 在自己的工作目录里；从这份同源源码重建 CHD 目录，避免核心升级后后台还拿旧 CRC 猜。 */
+function findMameSource(buildDir) {
+  const skip = new Set(['.git', 'node_modules', 'emsdk', '.emsdk'])
+  const walk = (dir, depth) => {
+    if (depth > 7) return null
+    if (existsSync(join(dir, 'src/mame'))) return dir
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isDirectory() || skip.has(entry.name)) continue
+      const found = walk(join(dir, entry.name), depth + 1)
+      if (found) return found
+    }
+    return null
+  }
+  return walk(buildDir, 0)
+}
+
+function syncMameChdCatalog(buildDir, sources) {
+  const source = findMameSource(buildDir)
+  if (!source) {
+    throw new Error('构建完成后找不到 libretro/mame 源码，无法同步 MAME CHD 目录；不要发布可能已过期的识别索引')
+  }
+  const sourceArg = sources ? ` --sources ${sources}` : ''
+  run(`${process.execPath} ${join(repoRoot, 'scripts/gen-mame-chd-catalog.mjs')} ${source}${sourceArg}`, repoRoot)
 }
 
 function install(output, buildDir) {
@@ -199,7 +247,7 @@ function main() {
   }
 
   // 3) 注入核心配置 + 收束并行度
-  injectCore(buildDir)
+  injectCore(buildDir, args.sources)
   pinJobs(buildDir, args.jobs)
 
   // 4) 编译。必须 source 过 emsdk_env.sh，否则 emmake 不在 PATH 上
@@ -208,6 +256,11 @@ function main() {
   } else {
     run(`source ${emsdkDir}/emsdk_env.sh && bash build.sh --core=mame-current`, buildDir)
   }
+
+  // MAME 版本与 ROM/CHD 哈希不可分割；核心刷新时把后台识别目录一起刷新，不能靠人工记得补游戏。
+  // --skip-build 的约定只是准备构建目录：此时上游源码通常还不存在，不能因为目录尚未 clone
+  // 就错误地把“预检”报成构建失败，更不能拿不完整的目录重写现有的识别清单。
+  if (!args.skipBuild) syncMameChdCatalog(buildDir, args.sources)
 
   // 5) 收产物
   install(args.output, buildDir)

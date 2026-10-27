@@ -89,5 +89,39 @@ check('重复的斜杠不会建出怪目录', () => {
   assert.deepEqual(calls, ['/roms'])
 })
 
+// MAME CHD：Blob 到写入时才物化，独占缓冲区交给 MEMFS（canOwn），写完立刻放掉引用
+{
+  const { writeFsInjections } = await import('../src/emulator/fsInjection.ts')
+  const writes = []
+  const fs = { mkdir() {}, writeFile(path, bytes, opts) { writes.push({ path, size: bytes.length, canOwn: Boolean(opts?.canOwn) }) } }
+  const chd = { path: '/roms/taiko2/nm-002.chd', required: true, exclusive: true, bytes: Promise.resolve(new Blob([new Uint8Array(1234)])) }
+  const bios = { path: '/roms/namcoc76.zip', bytes: Promise.resolve(new Uint8Array(16)) }
+  const failures = await writeFsInjections(fs, [bios, chd], () => {})
+  check('CHD 以 Blob 注入：写入时物化一次并交出所有权', () => {
+    assert.deepEqual(failures, [])
+    assert.deepEqual(writes, [
+      { path: '/roms/namcoc76.zip', size: 16, canOwn: false },
+      { path: '/roms/taiko2/nm-002.chd', size: 1234, canOwn: true },
+    ])
+  })
+  check('独占注入写完后不再持有 160MB 字节', async () => {
+    assert.equal(await chd.bytes, null)
+  })
+}
+
+{
+  const { combinedRomProgress } = await import('../src/emulator/romProgress.ts')
+  if (combinedRomProgress) {
+    const seen = []
+    const of = combinedRomProgress((p) => seen.push(p), { rom: 0, 'chd:nm-002': 1000 })
+    of('rom')({ phase: 'rom', loaded: 100, total: 100, ratio: 1 })
+    check('ROM 先下完时合并进度不能满格（CHD 还在下）', () => {
+      assert.equal(seen.at(-1).ratio, 100 / 1100)
+    })
+    of('chd:nm-002')({ phase: 'rom', loaded: 1000, total: 1000, ratio: 1 })
+    check('两条流都完成才满格', () => assert.equal(seen.at(-1).ratio, 1))
+  }
+}
+
 console.log(failed === 0 ? '\n虚拟文件系统写入辅助测试通过\n' : `\n虚拟文件系统写入辅助测试失败：${failed} 项\n`)
 process.exit(failed === 0 ? 0 : 1)

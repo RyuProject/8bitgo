@@ -16,6 +16,7 @@ import {
 import { biosNameOfUrl } from '@/emulator/biosPlan'
 import { assertValidZipBlob } from '@/lib/unzip'
 import { namcoC76BiosProblem } from '@/lib/namcoSystem11'
+import { arcadeArchiveLayoutProblem } from '@/lib/arcadeArchive'
 import { Card, btnClass, inputClass } from './ui'
 
 /**
@@ -309,6 +310,14 @@ export function PlatformBiosPanel() {
       if (id === 'bios:namcoc76') {
         const entries = await assertValidZipBlob(file, 'Namco C76 BIOS')
         const problem = namcoC76BiosProblem(entries)
+        if (problem) throw new Error(problem)
+      } else if ((id === 'arcade' || id.startsWith('bios:')) && /\.zip$/i.test(file.name)) {
+        /*
+          其它街机 BIOS 包（neogeo / pgm …）以前不做任何检查：成员套一层目录的 neogeo.zip 能传上去，
+          之后**每一款** Neo Geo 游戏都报 sp-s3.sp1 缺失 —— 核心只读 ZIP 根目录。
+        */
+        const entries = await assertValidZipBlob(file, '街机 BIOS')
+        const problem = arcadeArchiveLayoutProblem(entries)
         if (problem) throw new Error(problem)
       }
       // 已经绑过 BIOS 就复用同一个 key —— 原来无条件按文件名重算，

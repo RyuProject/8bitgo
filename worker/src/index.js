@@ -108,6 +108,16 @@ export function edgeCacheEligible(request, url, cors) {
  * 所以命中仍是同一代不可变字节；若旧版本只有部分块留在 PoP，未命中的块会从 R2 得到 412，
  * 而不是悄悄拼进新镜像。
  */
+/**
+ * 已核验的 MAME 媒体盘（shared/mame-arcade-media.js 的 mameArcadeDiskObjectKey）：路径里就是 CHD 头的
+ * SHA-1，内容寻址、后台禁止原地覆盖。以前它没有 romv，于是既不进分片边缘缓存、也只拿 5 分钟短缓存 ——
+ * 每位新玩家都要从 R2 源站拉约 20 片 8MB（160MB），国内访客还要绕洛杉矶。
+ */
+const MAME_MEDIA_PATH = /^\/roms\/arcade-media\/mame\/([a-f0-9]{40})\/[a-z0-9][a-z0-9_-]{0,63}\.chd$/
+export function contentAddressedMediaVersion(pathname) {
+  return MAME_MEDIA_PATH.exec(pathname || '')?.[1] || ''
+}
+
 function romRangeCachePlan(request, url, cors) {
   if (request.method !== 'GET' || cors['Access-Control-Allow-Origin'] !== '*') return null
   /*
@@ -123,22 +133,25 @@ function romRangeCachePlan(request, url, cors) {
   if (!blockBytes || url.searchParams.has(RANGE_CACHE_PARAM)) return null
   if (request.headers.has('Authorization') || ['If-Range', 'If-None-Match', 'If-Modified-Since', 'If-Unmodified-Since'].some(name => request.headers.has(name))) return null
   if (/\b(?:no-cache|no-store)\b/i.test(request.headers.get('Cache-Control') || '')) return null
-  const version = url.searchParams.get('romv') || ''
-  if (!/^[a-f0-9]{32}(?:-\d+)?$/i.test(version)) return null
+  const contentVersion = contentAddressedMediaVersion(url.pathname)
+  const version = url.searchParams.get('romv') || contentVersion
+  const contentAddressed = Boolean(contentVersion) && !url.searchParams.get('romv')
+  if (!contentAddressed && !/^[a-f0-9]{32}(?:-\d+)?$/i.test(version)) return null
   const ifMatch = request.headers.get('If-Match')
-  if (ifMatch && ifMatch !== `"${version}"`) return null
+  if (ifMatch && !contentAddressed && ifMatch !== `"${version}"`) return null
   const match = /^bytes=(\d+)-(\d+)$/.exec(request.headers.get('Range') || '')
   if (!match) return null
   const start = Number(match[1]); const end = Number(match[2])
   if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start % blockBytes !== 0 || end < start || end - start + 1 > blockBytes) return null
   const cacheUrl = new URL(url)
   cacheUrl.searchParams.set(RANGE_CACHE_PARAM, `${start}-${end}`)
-  return { key: new Request(cacheUrl, { method: 'GET' }), version, start, end, blockBytes }
+  return { key: new Request(cacheUrl, { method: 'GET' }), version, start, end, blockBytes, contentAddressed }
 }
 
 function verifiedRangeHeaders(response, plan, stored = false) {
   if (response.status !== (stored ? 200 : 206) || response.headers.get('Content-Encoding')) return null
-  if (response.headers.get('ETag') !== `"${plan.version}"`) return null
+  // 内容寻址的媒体盘：身份是路径里的 SHA-1，不靠 R2 ETag（它们没有 romv 可比）
+  if (!plan.contentAddressed && response.headers.get('ETag') !== `"${plan.version}"`) return null
   const value = response.headers.get(stored ? RANGE_CACHE_HEADER : 'Content-Range') || ''
   const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(value)
   if (!match) return null
@@ -181,7 +194,8 @@ export function cachePolicy(env, url) {
   // CS16 分片的路径本身就是压缩字节 SHA-256；它不会被原地替换，可以安全缓存一年。
   if (
     /^\/web\/cs16\/zstd-v1\/chunks\/[a-f0-9]{64}\.zst$/.test(url?.pathname || '') ||
-    immutableSockdrivePath(url?.pathname || '')
+    immutableSockdrivePath(url?.pathname || '') ||
+    contentAddressedMediaVersion(url?.pathname || '')
   ) {
     return cacheValue(env, 'IMMUTABLE_CACHE_CONTROL', IMMUTABLE_CACHE_CONTROL)
   }

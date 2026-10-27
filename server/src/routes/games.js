@@ -70,7 +70,16 @@ export function netplayGameConfigError(game) {
  * 这道业务校验放在路由：mappers 只负责防御性地收紧 JSON 形状，不应猜游戏意图。
  */
 export function arcadeMameDiskConfigError(game) {
-  const disks = game?.arcadeMameDisks
+  let disks = game?.arcadeMameDisks
+  // mappers 也接受 JSON 字符串形式；不先解析，`"[…]"` 就能绕过下面的平台 / 核心校验照样入库
+  if (typeof disks === 'string') {
+    if (!disks.trim() || disks.trim() === 'null') return null
+    try {
+      disks = JSON.parse(disks)
+    } catch {
+      return 'MAME CHD 媒体盘配置不是合法 JSON'
+    }
+  }
   if (!Array.isArray(disks) || !disks.length) return null
   if (game?.platform !== 'arcade') return 'MAME CHD 媒体盘只能绑定到街机游戏'
   if (String(game?.core ?? '').trim().toLowerCase() !== 'mame-current') {

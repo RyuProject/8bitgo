@@ -3,22 +3,25 @@
  * 这里绝不碰 ROM：成人内容门、语言选择和备用源都还没有作出最终决定，提前拉游戏文件
  * 既浪费流量也可能绕过访问时机。fetch 只填 HTTP 缓存，引擎稍后照常走自己的初始化。
  */
-import type { RuntimeId } from './types'
+import type { MameArcadeDiskSource, RuntimeId } from './types'
 import {
   J2ME_PATH,
   JSDOS_PATH,
   PPSSPP_RUNTIME_PATH,
   ppssppFrameUrl,
   RUFFLE_PATH,
+  ejsCoreAsset,
   ejsRuntimeAsset,
   emulatorJsCoreDataFile,
   emulatorJsCoreFileFor,
 } from './paths'
 import { CHEERPJ_ORIGIN, j2meWarmTargets } from './j2meUrl'
 import { preconnectOrigin, warmHttpCache } from './httpWarm'
+import { ejsCachedUrls } from './ejsStartWarm'
 import { supportsRuffleWasmExtensions } from './rufflePerformance'
 import { jspiEnabled } from './jspiFlag'
 import { PSX_CHD_ARCHIVE, PSX_CHD_CORE } from './psxChd'
+import { prewarmMameChdMedia } from './mameChdWarm'
 
 /**
  * 这台设备上「指针停在按钮上」和「点击」之间是否真的有提前量。
@@ -173,6 +176,23 @@ export function prewarmRuntime(runtime: RuntimeId | undefined, core?: string | n
     // 与播放器 EJS_paths 使用完全相同的版本化 URL，避免预热旧核心、正式启动又下载新核心。
     // 文件名必须是引擎真会选的那个变体（多数核心是 legacy 版），见 emulatorJsCoreDataFile。
     const file = emulatorJsCoreFileFor(core)
-    warmHttpCache(ejsRuntimeAsset(`cores/${file === PSX_CHD_CORE ? PSX_CHD_ARCHIVE : encodeURIComponent(emulatorJsCoreDataFile(file))}`))
+    const url = ejsCoreAsset(`cores/${file === PSX_CHD_CORE ? PSX_CHD_ARCHIVE : encodeURIComponent(emulatorJsCoreDataFile(file))}`)
+    /*
+      预热现在会把响应体真正读完（httpWarm.ts），不再是「只拉 1~2MB 就停」的假预热；
+      回访玩家的核心早就在引擎 IndexedDB 里，悬停一下就重下 37MB 是纯浪费 —— 和开局预热一样先查库。
+    */
+    void ejsCachedUrls([url]).then((cached) => {
+      if (!cached.has(url)) warmHttpCache(url)
+    }).catch(() => warmHttpCache(url))
   }
+}
+
+/**
+ * 街机 CHD 只在真实桌面悬停时预读：触屏的 focus 与点击是同一刻，额外 Range 请求会和
+ * 正式下载抢带宽；省流量 / 2G 也不为一次犹豫预取 8~16 MiB。媒体实际由完整下载挂进
+ * MAME，所以这里仅填持久化热区，失败不会改变点击后的启动路径。
+ */
+export function prewarmMameChdMediaOnHover(disks: readonly MameArcadeDiskSource[]): void {
+  if (!disks.length || !hasHoverIntent() || !allowsLargeHoverPrewarm()) return
+  prewarmMameChdMedia(disks)
 }

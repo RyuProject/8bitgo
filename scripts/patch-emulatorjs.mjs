@@ -182,6 +182,40 @@ const REPORT_PARSE_TO =
   '"! Core caching will be disabled!"),i.buildStart=100*Math.random())'
 
 /**
+ * ── 七、7z 解压 Worker 用完即关（2026-10-27）─────────────────────
+ * 引擎每解一次核心就 `new Worker(blob:extract7z)`，收到完成消息 `t===1` 后从不 terminate：
+ * 那只 Worker 的堆（输入 7z + 解出的全部文件，mame-current 是 37MB + 242MB）一直活到关页。
+ * 手机上这几百 MB 正好压在游戏运行时，GC 与内存压力都更大。完成后立刻关掉。
+ */
+const EXTRACT_DONE_FROM = '1===t.data.t&&s(l)}},a.postMessage(e)'
+const EXTRACT_DONE_TO = '1===t.data.t&&(a.terminate(),s(l))}},a.postMessage(e)'
+
+/**
+ * ── 八、缓存键只抽样哈希（2026-10-27）───────────────────────────
+ * `generateCacheKey` 在主线程上逐字节跑一遍 JS 循环：核心存库时是解出的第一个文件（mame-current 的
+ * wasm 242MB），街机 blob ROM 每次开局也要整包算一遍（这个键之后根本不用）。键只需在库里唯一 ——
+ * 查找走 URL 索引 —— 首尾各 1MB + 中间 1MB + 长度足够区分，把几百毫秒到一秒多的卡顿去掉。
+ */
+const CACHE_KEY_FROM =
+  'generateCacheKey(t){let e=function(t){let e=0;for(let i=0;i<t.length;i++)e=(e<<5)-e+t[i]&4294967295;return e}(t);return"Obj-"+e+"-"+t.length}'
+const CACHE_KEY_TO =
+  'generateCacheKey(t){let e=function(t){let e=0;const n=t.length,s=1048576,o=(o,a)=>{for(let i=Math.max(0,o);i<Math.min(n,a);i++)e=(e<<5)-e+t[i]&4294967295};' +
+  'n<=3*s?o(0,n):(o(0,s),o((n>>1)-(s>>1),(n>>1)+(s>>1)),o(n-s,n));return e}(t);return"Obj-"+e+"-"+t.length}'
+
+/**
+ * ── 九、首次开局也要带上核心默认选项（2026-10-27）────────────────
+ * `getCoreSettings()` 写的是核心**加载前**读的那份选项文件。浏览器有 localStorage 时，它只在
+ * `localStorage[<gameId>-<core>-<gameName>]` **已经存在**才把 `EJS_defaultOptions` 拼进去，否则返回空串；
+ * 而这条记录要等玩家动过设置 / 音量 / 按键才会写。默认值于是只能在 callMain 之后经菜单 setVariable 补上 ——
+ * 只在 retro_load_game 读一次的选项（FBNeo 的 fbneo-samplerate、fbneo-allow-depth-32 等）对绝大多数玩家
+ * 从来没生效过。没有记录时改成和「禁用 localStorage」那条分支一样输出默认值。
+ */
+const DEFAULT_OPTIONS_FROM = 'catch(t){console.warn("Could not load previous settings",t)}return""}loadSettings(){'
+const DEFAULT_OPTIONS_TO =
+  'catch(t){console.warn("Could not load previous settings",t)}if(this.config.defaultOptions){let t="";for(const e in this.config.defaultOptions){' +
+  't+=`${e} = ${isNaN(this.config.defaultOptions[e])?`"${this.config.defaultOptions[e]}"`:this.config.defaultOptions[e]}\\n`}return t}return""}loadSettings(){'
+
+/**
  * 每组：name 显示用；patches 是 [要找的原文, 替换后]；
  * legacy 可选，把「替换后」映射成更早一版补丁的样子，用来在引擎升级后接管旧补丁；
  * hint 是位置对不上时打给人看的排查思路。
@@ -261,6 +295,30 @@ const GROUPS = [
     hint: [
       '在核心别名表后找 requiresWebGL2 使用的数组（当前含 ppsspp / azahar）；',
       '把 melondsds 加进去，避免核心报告暂时 404 时误选不存在的 legacy 文件。',
+    ],
+  },
+  {
+    name: '7z 解压 Worker 用完即关',
+    patches: [[EXTRACT_DONE_FROM, EXTRACT_DONE_TO]],
+    hint: [
+      '在 decompressFile / extract7z 那段找 new Worker(URL.createObjectURL(...)) 的 onmessage；',
+      '完成消息（t===1）里先 terminate 这只 Worker 再 resolve。',
+    ],
+  },
+  {
+    name: '缓存键抽样哈希',
+    patches: [[CACHE_KEY_FROM, CACHE_KEY_TO]],
+    hint: [
+      '在 EJS 的缓存类里找 generateCacheKey(t)：逐字节 (e<<5)-e+t[i] 的那段；',
+      '改成首 / 中 / 尾各 1MB 抽样，返回格式保持 "Obj-<hash>-<length>"。',
+    ],
+  },
+  {
+    name: '首次开局带核心默认选项',
+    patches: [[DEFAULT_OPTIONS_FROM, DEFAULT_OPTIONS_TO]],
+    hint: [
+      '在 getCoreSettings() 末尾找「Could not load previous settings」那个 catch 后面的 return ""；',
+      '没有已保存设置时也输出 config.defaultOptions（与 disableLocalStorage 分支同一格式）。',
     ],
   },
   {

@@ -18,6 +18,7 @@
 import type { PlatformId } from '@/types'
 import { platformMap } from '@/data/platforms'
 import { NETPLAY_URL } from '@/services/roomFlags'
+import { EJS_CORE_VERSIONS } from './ejsCoreVersionsData'
 
 /** 末尾补上斜杠；空值原样返回（空 = 没配置 = 该引擎不可用） */
 const asDir = (raw: string | undefined, fallback = ''): string => {
@@ -39,9 +40,25 @@ export const EJS_PATH: string = asDir(import.meta.env.VITE_EJS_PATH, '/emulatorj
  * EmulatorJS 的文件名没有内容哈希，而 CDN 会缓存一个月。每次改自托管引擎或 loader
  * 都要加一代，让浏览器和边缘不再把旧 JS 与新核心拼在一起。
  */
-export const EJS_RUNTIME_GENERATION = '20261025-melondsds-ff33abb1-psxrange1-corecompat1-stateglue3-mameglue3'
+/*
+  2026-10-27：引擎打了「7z Worker 用完即关」「缓存键抽样哈希」两组补丁（patch-emulatorjs.mjs），引擎入口必须换代。
+  核心从这一版起按内容版本（ejsCoreVersionsData.ts），这次换代不会再让玩家重下核心。
+*/
+export const EJS_RUNTIME_GENERATION = '20261027-melondsds-ff33abb1-psxrange1-corecompat1-stateglue3-mameglue3-ejsperf1'
 export const ejsRuntimeAsset = (name: string): string =>
   `${EJS_PATH}${name}?v=${encodeURIComponent(EJS_RUNTIME_GENERATION)}`
+
+/**
+ * 核心文件（`cores/*.data`、`cores/metadata/*.json`）按**内容**取版本（ejsCoreVersionsData.ts）。
+ *
+ * 引擎（emulator.min.js / css / loader）一改就要换 EJS_RUNTIME_GENERATION；以前核心也跟着这个全局代号，
+ * 结果每次换代所有玩家都重下、重解压全部核心（mame-current 37MB → 242MB）。内容版本下只有真变了的核心换 URL。
+ * 表里没有的文件（新加核心还没跑生成脚本）退回全局代号，行为与旧版一致；check-emulatorjs 会拦住过期的表。
+ */
+export const ejsCoreAsset = (relativePath: string): string => {
+  const version = EJS_CORE_VERSIONS[decodeURIComponent(relativePath)] ?? EJS_RUNTIME_GENERATION
+  return `${EJS_PATH}${relativePath}?v=${encodeURIComponent(version)}`
+}
 
 /**
  * 交给 EmulatorJS 的固定资源映射。
@@ -57,11 +74,11 @@ export function emulatorJsRuntimePaths(core: string): Record<string, string> {
   return {
     'emulator.min.js': ejsRuntimeAsset('emulator.min.js'),
     'emulator.min.css': ejsRuntimeAsset('emulator.min.css'),
-    [`${core}-wasm.data`]: ejsRuntimeAsset(`cores/${encodeURIComponent(core)}-wasm.data`),
+    [`${core}-wasm.data`]: ejsCoreAsset(`cores/${encodeURIComponent(core)}-wasm.data`),
     // FBNeo 在不满足 SIMD / WebGL 条件的浏览器会选 legacy；线上 KOF97 实际走的就是这一支。
     // 两个变体必须一起换代，否则边缘仍可能把新引擎和缓存一个月的旧 legacy 核心拼在一起。
-    [`${core}-legacy-wasm.data`]: ejsRuntimeAsset(`cores/${encodeURIComponent(core)}-legacy-wasm.data`),
-    [`${core}.json`]: ejsRuntimeAsset(`cores/metadata/${encodeURIComponent(core)}.json`),
+    [`${core}-legacy-wasm.data`]: ejsCoreAsset(`cores/${encodeURIComponent(core)}-legacy-wasm.data`),
+    [`${core}.json`]: ejsCoreAsset(`cores/metadata/${encodeURIComponent(core)}.json`),
   }
 }
 

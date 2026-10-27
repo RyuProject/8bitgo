@@ -27,10 +27,29 @@ const warmed = new Set<string>()
 export function warmHttpCache(url: string): void {
   if (!url || warmed.has(url)) return
   warmed.add(url)
-  void fetch(url, { cache: 'force-cache', credentials: 'same-origin' }).catch(() => {
+  void drainIntoHttpCache(url).catch(() => {
     // 预热失败不能惊动玩家，也不该占着 warmed 不放 —— 允许下一次再试
     warmed.delete(url)
   })
+}
+
+/**
+ * ⚠️ 响应体必须读完，HTTP 缓存才会写成一条完整条目。
+ *
+ * 以前是 `void fetch(url)` 然后不管：Chromium / Firefox 对没人读的响应体只缓冲 0.5~2MB 就施加背压
+ * 暂停下载，Response 被回收时请求直接取消 —— BIOS、css 这些小文件预热得到，8MB 的 FBNeo、37MB 的
+ * mame-current、38MB 的 PPSSPP 核心**从来没真正预热过**，正式请求照样从头下载，2026-10-25 拆开的
+ * 「ROM 与核心并行」实际上仍是串行。这里逐块读完丢弃，字节只落进浏览器缓存，不占 JS 内存。
+ */
+async function drainIntoHttpCache(url: string): Promise<void> {
+  const res = await fetch(url, { cache: 'force-cache', credentials: 'same-origin' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  const reader = res.body?.getReader()
+  if (!reader) return
+  for (;;) {
+    const { done } = await reader.read()
+    if (done) return
+  }
 }
 
 /**
