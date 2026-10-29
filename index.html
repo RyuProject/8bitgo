@@ -156,13 +156,37 @@
           首屏这一次就会把它送出去（SPA 内部跳转那一半在 services/autoInclude.ts）。
         */
         if (location.search) return
+        // 爬虫无需再被浏览器脚本提交一次；后台、登录、内嵌页也不属于公开落地页。
+        var ua = navigator.userAgent || ''
+        if (/bot|crawl|spider|slurp|google-|googleother|mediapartners|facebookexternalhit|embedly|preview/i.test(ua)) return
+        var path = location.pathname.replace(/^\/(?:zh-Hans|zh-Hant|en|es|fr|it|de|ja)(?=\/|$)/, '') || '/'
+        if (/^\/(?:admin|embed|play|auth|login|me)(?:\/|$)/.test(path)) return
         // 隔离播放器和内嵌 PSP 详情页启用了 require-corp；第三方脚本一定会被拦，主动跳过。
-        if (window.crossOriginIsolated || /^\/(?:(?:zh-Hans|zh-Hant|en|es|fr|it|de|ja)\/)?play\//.test(location.pathname)) return
-        var el = document.createElement('script')
-        el.src = 'https://lf1-cdn-tos.bytegoofy.com/goofy/ttzz/push.js?553648437e35e84f3b28cee0b9ed7edd7991cc1ed11bf34132b851984d3f927c3871f0d6a9220c04b06cd03d5ba8e733fe66d20303562cd119c1d6f449af6378'
-        el.id = 'ttzz'
-        var s = document.getElementsByTagName('script')[0]
-        s.parentNode.insertBefore(el, s)
+        if (window.crossOriginIsolated) return
+
+        function inject() {
+          if (document.getElementById('ttzz')) return
+          var el = document.createElement('script')
+          el.src = 'https://lf1-cdn-tos.bytegoofy.com/goofy/ttzz/push.js?553648437e35e84f3b28cee0b9ed7edd7991cc1ed11bf34132b851984d3f927c3871f0d6a9220c04b06cd03d5ba8e733fe66d20303562cd119c1d6f449af6378'
+          el.id = 'ttzz'
+          var s = document.getElementsByTagName('script')[0]
+          if (s && s.parentNode) s.parentNode.insertBefore(el, s)
+        }
+
+        // 收录提交不是首屏依赖；等文档与关键渲染完成后再借用空闲时间，避免第三方 JS
+        // 和入口脚本、字体、首屏封面抢连接。旧浏览器在 load 后稍等片刻再执行。
+        function scheduleIdle() {
+          if (typeof window.requestIdleCallback === 'function') {
+            window.requestIdleCallback(inject, { timeout: 5000 })
+          } else {
+            window.setTimeout(inject, 1000)
+          }
+        }
+        function afterLoad() {
+          window.setTimeout(scheduleIdle, 500)
+        }
+        if (document.readyState === 'complete') afterLoad()
+        else window.addEventListener('load', afterLoad, { once: true })
       })()
     </script>
 

@@ -90,7 +90,7 @@ const engine = readFileSync(new URL('../public/emulatorjs/emulator.min.js', impo
 
 check('适配器只在 GBA 注入默认 shader、自定义 LCD 与整数缩放', () => {
   assert.match(adapter, /options\.platform === 'gba' \? \{ shader: gbaShaderForMode\(gbaVideoMode\) \} : \{\}/)
-  assert.match(adapter, /EJS_defaultOptions: coreDefaultOptions/)
+  assert.match(adapter, /const defaults = core === coreDefaultOptionsCore \? coreDefaultOptions : coreDefaultOptionsFor\(core\)/)
   assert.match(adapter, /EJS_shaders: GBA_ADDITIONAL_SHADERS/)
   assert.match(adapter, /configureGbaScaling[\s\S]{0,2000}configureGbaVideo\(before\)/)
   assert.match(adapter, /configureGbaScaling\?\.\(emu\)/)

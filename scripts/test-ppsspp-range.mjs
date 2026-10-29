@@ -106,7 +106,7 @@ assert.match(workerHttp, /'Cross-Origin-Resource-Policy', 'cross-origin'/, '隔�
 assert.match(workerIndex, /PSP_RANGE_BYTES = 2 \* 1024 \* 1024/, 'PSP 边缘缓存必须与核心的 2 MiB Range 对齐')
 assert.match(workerIndex, /\^\\\/roms\\\/\(\?:psx\|psp\|ps2\|gamecube\|wii\)\\\//, 'PSP 按需读盘必须进入 2 MiB 分片缓存计划')
 assert.match(workerIndex, /\^\\\/roms\\\/\[\^\/\]\+\\\/\.\+/, '完整下载型 ROM 必须进入 8 MiB 分片缓存计划')
-assert.match(workerIndex, /ifMatch && ifMatch !== `"\$\{version\}"`/, 'PSP 分片缓存必须拒绝与 romv 不一致的 If-Match')
+assert.match(workerIndex, /ifMatch && !contentAddressed && ifMatch !== `"\$\{version\}"`/, 'romv 分片必须拒绝不匹配的 If-Match；只有路径含内容哈希且无 romv 的 CHD 可免于 R2 ETag 比对')
 assert.match(workerConfig, /image\.8bitgo\.com\/\*/, '封面域名必须经过会添加 CORP 的 R2 Worker')
 assert.match(adapter, /remoteProbe = probeRange\(game, probeController\.signal\)/, '远程镜像探测必须复用同一次 Range 请求')
 assert.match(adapter, /void remoteProbe\.catch\(\(\) => \{\}\)/, '提前探测失败不能在 host-ready 前产生未处理拒绝')

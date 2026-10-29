@@ -27,7 +27,7 @@ const profile = readFileSync(new URL('../src/components/profile/CloudSaves.tsx',
 const adapter = readFileSync(new URL('../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8')
 const archive = readFileSync(new URL('../src/emulator/remoteArchive.ts', import.meta.url), 'utf8')
 assert.match(player, /targetPlatform === 'nds'[\s\S]{0,140}ndsVariantSaveSlug\(gameSlugRef\.current, romLangRef\.current, romLangsRef\.current \?\? \[\]\)/)
-assert.match(profile, /s\.runtime === 'emulatorjs'\) return parseNdsVariantSaveSlug\(parsePsxChdSaveSlug\(s\.gameSlug\)\)/)
+assert.match(profile, /if \(s\.runtime === 'emulatorjs'\) \{\s*const nds = parseNdsVariantSaveSlug\(parsePsxChdSaveSlug\(s\.gameSlug\)\)\s*return nds\.romLang \? nds : parseEmulatorVariantSaveSlug\(nds\.gameSlug\)/)
 assert.match(adapter, /maxBytes: options\.platform === 'nds' \? MAX_NDS_ROM_BYTES \+ 32 \* 1024 \* 1024 : undefined/)
 assert.match(adapter, /maxBytes: options\.platform === 'nds' \? MAX_NDS_ROM_BYTES \+ 64 \* 1024 \* 1024 : undefined/)
 assert.match(adapter, /const \{ header \} = await inspectRomPackBlob\(stored\)[\s\S]{0,140}header\.originalSize > options\.maxUnpackedBytes/, '8BG 声称巨大解包量时必须在解密前拒绝')

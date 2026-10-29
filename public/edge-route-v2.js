@@ -18,7 +18,9 @@
   var COOKIE_NAME = '8bitgo.edge'
   var COOKIE_TTL_MS = 2 * 60 * 60 * 1000
   // 首次探测只占用有限窗口；失败就留在当前已经成功打开的站点。
-  var PROBE_TIMEOUT_MS = 450
+  // 首次访问的测速发生在应用启动前；450ms 的超时会变成用户看得到的空白等待。
+  // 180ms 足以识别明显的区域差异，测不准就留在当前已经打开的站点，不让测速拖慢开局。
+  var PROBE_TIMEOUT_MS = 180
   var MIN_WIN_MS = 80
   var MIN_WIN_RATIO = 0.15
 
@@ -154,7 +156,9 @@
     })
   }
 
-  function choose(primaryMs, asiaMs) {
+  function choose(primaryMs, asiaMs, currentHost) {
+    // 两边都没测出结果时不做跨域迁移：当前页面至少已成功打开，保留它比猜一个节点安全。
+    if (primaryMs == null && asiaMs == null) return isKnownHost(currentHost) ? currentHost : PRIMARY_HOST
     if (asiaMs == null) return PRIMARY_HOST
     if (primaryMs == null) return ASIA_HOST
     // 轻微抖动不切域：一次测速刚好快几十毫秒，不值得让用户承担跨域重载。
@@ -206,7 +210,7 @@
 
     // 两个小请求同时发出；任一失败只当该边缘本次不可用，绝不阻断当前页面。
     Promise.all([probe(PRIMARY_HOST), probe(ASIA_HOST)]).then(function (times) {
-      var selected = choose(times[0], times[1])
+      var selected = choose(times[0], times[1], host)
       storeChoice(selected)
       navigate(selected, target)
     })

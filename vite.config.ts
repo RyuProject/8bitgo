@@ -6,18 +6,20 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { defineConfig, loadEnv } from 'vite'
 import { builtinWebGameFor } from './shared/builtin-web-games.js'
+import { HUGE_STATIC_DIRS } from './scripts/lib/vite-static-exclusions.mjs'
 
 /**
  * 把几个「又大又不需要加工」的静态目录排除在产物复制之外。
  *
- * `public/` 现在有 994MB，其中两个目录是纯数据、一个字节都不需要 Vite 碰：
- *   · web/cs15/packs、web/cs16/packs —— 游戏数据包（Valve 的资产，不进 git）
- *   · qemu-wasm  140MB —— /linux 那个页面的 QEMU 运行时（上游产物）
- * 而 Vite 会把 `public/` **整个**复制到 `dist/client/` —— 每次构建先拷 690MB，
- * 产物目录一度有 998MB。既占盘，也把构建时间从几秒拖到几十秒。
+ * `public/` 里既有本机数据包，也有数百 MB 的模拟器运行时。Vite 会把 `public/` **整个**
+ * 复制到 `dist/client/`；对已经按版本目录发布、后续不会原地覆盖的运行时，再复制一份既占盘
+ * 又拖慢构建。目录清单集中在 `scripts/lib/vite-static-exclusions.mjs`：
+ *   · cs15/cs16 游戏数据包、QEMU 和部分离线 .NET 文件：无需构建期处理；
+ *   · Dolphin、PPSSPP：生成器只新增带版本号的目录，不会原地覆盖旧 URL。
+ * js-dos / Ruffle 虽也有版本目录，但其生成脚本允许重写同版本产物，故仍保留 dist 快照。
  *
  * Vite 没有「public 里排除某个子目录」的选项（`copyPublicDir` 只能全开或全关，
- * 全关就得自己把剩下的 300MB 也拷一遍）。所以做法是**构建期间把目录挪出去**：
+ * 全关就得自己把剩下的资源也拷一遍）。所以做法是**构建期间把目录挪出去**：
  * buildStart 移走 → Vite 看不见 → closeBundle 移回来，并在产物里放一根软链，
  * 这样 Express（`/web/:name` 那条路由和 express.static）和本地预览照样读得到
  * —— 两者都会跟随软链。
@@ -26,19 +28,19 @@ import { builtinWebGameFor } from './shared/builtin-web-games.js'
  * rollup 的钩子顺序是 buildStart → buildEnd → renderStart → writeBundle → closeBundle，
  * 而 Vite 复制 `public/` 就是在 renderStart 那一带（构建日志里 `vite:prepare-out-dir
  * renderStart` 那一行）—— 在 buildEnd 里移回来的话，目录刚好赶在复制之前回到 public，
- * 白忙一场，`dist` 照样 998MB。
+ * 白忙一场，构建仍会复制这些大目录。
  *
  * ⚠️ 于是失败时的自愈改为两条：下一次 buildStart 先把暂存区里的东西放回去（幂等），
  * 外加一个 `process.on('exit')` 兜底。前者挡「上次崩了」，后者挡「这次崩了」；
  * 只靠 closeBundle 的话，一次语法错误就会让目录凭空消失。
  */
-// 只能挪数据包子目录，不能再挪整个游戏目录：否则 Vite 不会把已跟踪的 index.html /
-// 加载器复制进构建产物，生产环境会一直服务上一次构建留下的旧代码。
+// 可变网页游戏目录和 EmulatorJS 仍不能挪：部署时它们的固定 URL 可能被更新，保留 dist
+// 快照才能避免旧 HTML 与新运行时代码在 git pull / build 窗口里混用。
 //
 // `web/terraria/_framework` 同理（134.9MiB 的 .NET 运行时，不进 git、线上走 R2）：
 // 它只会在「本机想离线跑」时出现在 public/ 里，那种时候不该让一次 npm run build
 // 顺手把它拷进 dist（慢，而且 dist 会白白胖一圈）。
-const HUGE_STATIC = ['web/cs15/packs', 'web/cs16/packs', 'qemu-wasm', 'web/terraria/_framework', 'web/celeste/_framework']
+const HUGE_STATIC = HUGE_STATIC_DIRS
 
 const PUBLIC_DIR = path.resolve(import.meta.dirname, 'public')
 const DIST_DIR = path.resolve(import.meta.dirname, 'dist/client')

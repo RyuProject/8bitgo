@@ -117,6 +117,7 @@ export function TvPlay({ slug, onExit }: { slug: string; onExit: () => void }) {
               platform={platform}
               gameName={game.title}
               gameSlug={game.slug}
+              runtime={game.runtime}
               maxPlayers={game.players}
               /* 回车进来的就直接开一局 —— 遥控器上再要求按一次「开始游戏」是多余的一步 */
               autoStart
@@ -130,7 +131,9 @@ export function TvPlay({ slug, onExit }: { slug: string; onExit: () => void }) {
               core={game.core}
               genres={game.genres}
               arcadeRomData={game.arcadeRomData}
+              arcadeMameDisks={game.arcadeMameDisks}
               arcadeBios={game.arcadeBios}
+              arcadeNoBios={game.arcadeNoBios}
               arcadeDip={game.arcadeDip}
               dosExecutable={dosExecutableForRom(game, rom)}
               dosStartupCommands={dosStartupCommandsForRom(game, rom)}

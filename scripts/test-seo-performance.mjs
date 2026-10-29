@@ -72,6 +72,18 @@ check('SSR HTML 允许边缘改压缩（Email Obfuscation 已在区域关闭，�
   assert.doesNotMatch(CACHE.page, /no-transform/)
 })
 
+check('头条收录脚本不抢首屏资源，且跳过爬虫、后台、登录和隔离播放器', () => {
+  const html = read('index.html')
+  const pushScript = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)]
+    .map((match) => match[1])
+    .find((script) => script.includes("el.id = 'ttzz'"))
+  assert.ok(pushScript, '找不到头条收录脚本')
+  assert.match(pushScript, /addEventListener\('load', afterLoad/, '首屏加载前就安排了第三方脚本')
+  assert.match(pushScript, /requestIdleCallback\(inject, \{ timeout: 5000 \}\)/, '未优先使用空闲时间提交')
+  assert.match(pushScript, /bot\|crawl\|spider/, '搜索爬虫仍会下载不需要的收录脚本')
+  assert.match(pushScript, /admin\|embed\|play\|auth\|login\|me/, '非公开落地页仍会触发提交')
+})
+
 check('Early Hints：从构建模板提取入口 JS / CSS / 首屏字体 / 封面域预连接', () => {
   const template = `<html><head>
 <link rel="preconnect" href="https://image.8bitgo.com">

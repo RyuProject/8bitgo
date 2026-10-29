@@ -1380,6 +1380,13 @@ WebRTC 的 `disconnected` 不保证后面一定会进 `failed`。网络切换时
 短暂读不到时要继续用内存里已有的完整模板。回归：`npm run test:watch-panel` +
 `npm run test:capture-worker` + `npm run test:capture-feed` + `npm run test:broadcast-signal`。
 
+Vite 的静态目录排除清单在 `scripts/lib/vite-static-exclusions.mjs`。除了大数据包，Dolphin 与
+PPSSPP 的目录也是软链：它们的发布器只新增版本目录、不覆盖旧 URL，所以能避免每次构建
+重复复制约 480 MB。js-dos / Ruffle 的脚本允许重写同版本产物，必须保留 dist 快照。
+**不能把固定 URL 的 EmulatorJS 或可变网页游戏目录加进来**；
+否则 git pull / build 的切换窗口会让仍在运行的旧页面拿到半更新代码。调整清单后跑
+`npm run test:vite-static-exclusions`，再跑对应运行时的 `--dist` 发布检查。
+
 ### 2.26 Windows 客体（Win3.x / 95 / 98）的自动启动：**「亮 + 静止」不等于桌面**
 
 `src/emulator/windowsLaunch.ts` 负责那条链：系统镜像（qcow2 → `boot c: -convertfat`）起来之后，

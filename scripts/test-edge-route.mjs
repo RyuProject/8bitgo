@@ -145,12 +145,18 @@ await check('亚洲边缘不可达时保持主站可用', async () => {
   assert.equal(result.redirected, null)
 })
 
-await check('两个节点都不返回时，探测按 450ms 上限收敛且释放计时器', async () => {
+await check('两个节点都不返回时，探测按 180ms 上限收敛且释放计时器', async () => {
   const result = await run({ timings: { [HOST_MAIN]: 'hang', [HOST_ASIA]: 'hang' } })
   assert.equal(result.redirected, null)
   assert.equal(result.pendingTimeouts, 0)
-  assert.deepEqual(result.probeTimeouts, [450, 450])
+  assert.deepEqual(result.probeTimeouts, [180, 180])
   assert.equal(result.document.cookie, `8bitgo.edge=${HOST_MAIN}:1000000; Domain=.8bitgo.com; Path=/; Max-Age=7200; SameSite=Lax; Secure`)
+})
+
+await check('从亚洲边缘首访且两边都测不出时，不猜主站、不跨域重载', async () => {
+  const result = await run({ host: HOST_ASIA, timings: { [HOST_MAIN]: 'hang', [HOST_ASIA]: 'hang' } })
+  assert.equal(result.redirected, null)
+  assert.equal(result.document.cookie, `8bitgo.edge=${HOST_ASIA}:1000000; Domain=.8bitgo.com; Path=/; Max-Age=7200; SameSite=Lax; Secure`)
 })
 
 console.log('\n二、跨域会话与缓存选择')

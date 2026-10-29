@@ -348,7 +348,7 @@ check('⚠️ 只有主播会挂 LiveControls —— 这是复用 geometry 的�
 
 check('⚠️ LiveControls 把 native 交给 startBroadcast，而且是**函数**', () => {
   const src = code('src/emulator/LiveControls.tsx')
-  assert.match(src, /native:\s*\(\)\s*=>\s*nativeRef\.current/, 'native 没传，或者传成了值')
+  assert.match(src, /native:\s*\(\)\s*=>\s*handleRef\.current\?\.nativeVideoSize\?\.\(\)\s*\?\?\s*nativeRef\.current/, 'native 没优先读核心几何，或者没有回退到播放器几何')
   // 传值的话：几何比开播晚到（核心起来才有），闭包捕到的是开播瞬间的 null，之后永不更新
   assert.ok(!/native:\s*nativeGeometry\b/.test(src), '传成了死值，换游戏 / 晚到的几何都收不到')
 })

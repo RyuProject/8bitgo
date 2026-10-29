@@ -155,6 +155,8 @@
     "test:netplay-game-config": "node scripts/test-netplay-game-config.mjs",
     "test:netplay-sync": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-netplay-sync-guard.mjs",
     "test:bundle-split": "node scripts/test-bundle-split.mjs",
+    "test:edge-route": "node scripts/test-edge-route.mjs",
+    "test:vite-static-exclusions": "node scripts/test-vite-static-exclusions.mjs",
     "test:video-tuning": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-video-tuning.mjs",
     "test:chunked-fetch": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-chunked-fetch.mjs",
     "test:remote-disc": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-remote-disc.mjs",
