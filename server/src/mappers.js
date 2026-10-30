@@ -942,7 +942,7 @@ export function userRowToPublic(r, favorites = [], recent = []) {
  *
  * 三件事必须由这一层统一决定，不能让各个接口自己拼：
  *
- * 1. **被隐藏 / 被删除的评论不回正文**。前台只需要知道「这里曾经有一条评论」，
+ * 1. **待审 / 被隐藏 / 被删除的评论不回正文**。前台只需要知道「这里曾经有一条评论」，
  *    好让引用它的回复不至于指向虚空；把原文照发出去，等于隐藏了个没隐藏。
  *    后台要看原文，走 admin: true。
  * 2. **不回邮箱**。评论区是公开的，userRowToPublic 那套是给后台和本人用的。
@@ -953,10 +953,11 @@ export function userRowToPublic(r, favorites = [], recent = []) {
  */
 export function commentRowToApi(r, { admin = false } = {}) {
   const hidden = dbFlag(r.hidden)
+  const pendingReview = dbFlag(r.pending_review)
   const deleted = Boolean(r.deleted_at)
-  // 前台看不到内容的两种情形。注意别写成 `hidden || deleted ? '' : content` 之后
+  // 前台看不到内容的三种情形。注意别写成 `pendingReview || hidden || deleted ? '' : content` 之后
   // 又在别处判空——调用方要能区分「没内容」和「有内容但不给你看」，所以额外回状态位。
-  const readable = admin || (!hidden && !deleted)
+  const readable = admin || (!pendingReview && !hidden && !deleted)
   return {
     id: String(r.id),
     // 后台列表才有：这条评论挂在哪款游戏 / 哪篇文章下（前台按宿主直接查，不需要回带）
@@ -967,6 +968,7 @@ export function commentRowToApi(r, { admin = false } = {}) {
     content: readable ? String(r.content ?? '') : '',
     country: countryOf(r.country),
     hidden,
+    pendingReview,
     deleted,
     editedAt: dateTimeIso(r.edited_at) || undefined,
     createdAt: dateTimeIso(r.created_at),
@@ -978,7 +980,7 @@ export function commentRowToApi(r, { admin = false } = {}) {
      */
     score: r.rating_score != null ? Number(r.rating_score) : undefined,
     author: {
-      id: r.user_id,
+      id: r.user_id == null ? null : String(r.user_id),
       nickname: r.nickname ?? '',
       avatar: r.avatar || '🕹️',
       // 只把「需要让别人认出来」的角色带出去；普通玩家 / 脏数据就不发这一格
@@ -998,8 +1000,8 @@ export function commentRowToApi(r, { admin = false } = {}) {
           avatar: r.parent_avatar || '🕹️',
           role: r.parent_role === 'admin' || r.parent_role === 'volunteer' ? r.parent_role : undefined,
           content:
-            dbFlag(r.parent_hidden) || r.parent_deleted_at ? '' : String(r.parent_content ?? ''),
-          deleted: dbFlag(r.parent_hidden) || Boolean(r.parent_deleted_at),
+            dbFlag(r.parent_hidden) || dbFlag(r.parent_pending_review) || r.parent_deleted_at ? '' : String(r.parent_content ?? ''),
+          deleted: dbFlag(r.parent_hidden) || dbFlag(r.parent_pending_review) || Boolean(r.parent_deleted_at),
         }
       : undefined,
   }

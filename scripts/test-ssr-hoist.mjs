@@ -130,13 +130,7 @@ console.log('四、useState 的初始化不许读浏览器状态')
 const BROWSER_GLOBAL = /\b(localStorage|sessionStorage|matchMedia|navigator|document|window)\b/
 
 /** 例外：必须写明为什么安全，不能只写「没事」 */
-const ALLOWED = new Map([
-  [
-    'src/emulator/LiveControls.tsx:readPrivate',
-    '只有 status === "running" 之后才挂载（EmulatorPlayer 里那个条件渲染），SSR 的 HTML 里没有它；'
-      + '而且这个值管的是「不公开直播」，改成 effect 补读会让私密局先推出去一帧',
-  ],
-])
+const ALLOWED = new Map()
 
 function tsFiles(dir) {
   const out = []

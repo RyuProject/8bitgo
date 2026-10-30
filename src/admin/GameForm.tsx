@@ -60,6 +60,9 @@ import { uploadSwfBundle, type BundleUploadProgress } from './swfUpload'
 import { compressCoverToWebp } from '@/lib/imageResize'
 import { canReuseRomObjectKey, confirmUpload, confirmConvertedUpload, confirmDiscImage, cleanupSuperseded, deleteRomObjects, human, isDeletableKey } from './uploadGuards'
 import { psxIsoValidationProblem } from './psxIso'
+import { chdCompressors } from '@/emulator/psxChd'
+import { PSX_RANGE_BYTES } from '@/emulator/psxRangeDisc'
+import { buildPsxM3u, PSX_M3U_MAX_DISCS } from '@/emulator/psxM3u'
 import { coreOptionsFor } from '@/config/emulators'
 import { FEATURES } from '@/config/features'
 import { isPlayable } from '@/emulator'
@@ -2595,6 +2598,7 @@ function RomField({
   allowStorage: boolean
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
+  const multiDiscInputRef = useRef<HTMLInputElement>(null)
   const [progress, setProgress] = useState<number | null>(null)
   /** 分片上传的进度明细（单发 PUT 时一直是 null） */
   const [stage, setStage] = useState<UploadStage | null>(null)
@@ -2928,6 +2932,78 @@ function RomField({
         throw new Error(`完整回退包已发布，流式源 ZIP 也已保留，无需重传；创建任务失败：${error instanceof Error ? error.message : String(error)}`)
       }
       throw error
+    }
+  }
+
+  /**
+   * 多盘组先上传不可变盘片对象，最后才发布 M3U 指针并改绑语言槽。
+   * 中途失败最多留下未引用的 CHD，不会让线上玩家读到半套或新旧混合的盘组。
+   */
+  const onMultiDiscFiles = async (files: File[] | undefined) => {
+    if (!files?.length) return
+    if (!lang) {
+      setMsg({ ok: false, text: '请先选择 ROM 语言槽，再上传 PS1 多盘组' })
+      if (multiDiscInputRef.current) multiDiscInputRef.current.value = ''
+      return
+    }
+    if (files.length < 2 || files.length > PSX_M3U_MAX_DISCS) {
+      setMsg({ ok: false, text: `请选择 2–${PSX_M3U_MAX_DISCS} 张 CHD，并按游戏要求的盘片顺序选择` })
+      if (multiDiscInputRef.current) multiDiscInputRef.current.value = ''
+      return
+    }
+    setProgress(0)
+    setStage(null)
+    setMsg({ ok: true, text: '正在检查盘片顺序、CHD v5 格式与容量…' })
+    try {
+      const entries: { filename: string; label: string }[] = []
+      const uploadFiles: File[] = []
+      for (const [index, source] of files.entries()) {
+        if (!/\.chd$/i.test(source.name)) throw new Error(`${source.name} 不是 CHD；多盘流式组只接受裸 CHD 文件`)
+        if (source.size < PSX_RANGE_BYTES || source.size > 1024 * 1024 * 1024) {
+          throw new Error(`${source.name} 大小不在 2MB–1GB 的 PS1 Range 支持范围内`)
+        }
+        if (!chdCompressors(new Uint8Array(await source.slice(0, 32).arrayBuffer()))) {
+          throw new Error(`${source.name} 不是受支持的 CHD v5；请先用 chdman 转换`)
+        }
+        const stem = source.name.replace(/\.chd$/i, '').replace(/[\\/:?#|\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 90)
+        const filename = `Disc ${index + 1}${stem ? ` - ${stem}` : ''}.chd`
+        entries.push({ filename, label: `Disc ${index + 1}` })
+        uploadFiles.push(new File([source], filename, { type: 'application/octet-stream', lastModified: source.lastModified }))
+      }
+      const playlist = buildPsxM3u(entries)
+      const parent = dirOfKey(defKey('discs.m3u'))
+      if (!parent) throw new Error('无法生成 PS1 多盘对象目录；请先配置 ROM 前缀')
+      const random = new Uint8Array(8)
+      crypto.getRandomValues(random)
+      const setId = [...random].map(byte => byte.toString(16).padStart(2, '0')).join('')
+      const safeSlug = slug.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '') || 'game'
+      const setDir = `${parent}/${safeSlug}.${lang}.set-${setId}`
+      const totalBytes = uploadFiles.reduce((sum, file) => sum + file.size, 0)
+      for (const [index, file] of uploadFiles.entries()) {
+        const key = `${setDir}/${entries[index].filename}`
+        setMsg({ ok: true, text: `正在上传第 ${index + 1}/${uploadFiles.length} 张盘；完成后才会发布多盘清单…` })
+        await uploadRom(file, key, (pct, at) => {
+          setProgress(Math.min(94, Math.round(((index + pct / 100) / uploadFiles.length) * 94)))
+          if (at) setStage(at)
+        })
+        setStage(null)
+      }
+      const playlistKey = `${setDir}/discs.m3u`
+      setProgress(95)
+      setMsg({ ok: true, text: '盘片已上传，正在发布多盘清单并绑定当前语言…' })
+      const playlistFile = new File([playlist], 'discs.m3u', { type: 'audio/x-mpegurl' })
+      await uploadRom(playlistFile, playlistKey, (pct, at) => {
+        setProgress(95 + Math.floor(pct / 20))
+        if (at) setStage(at)
+      })
+      onChange(playlistKey)
+      setMsg({ ok: true, text: `已发布 ${uploadFiles.length} 张 PS1 光盘（${human(totalBytes)}）和 M3U 清单；当前语言已改绑，请保存游戏条目` })
+    } catch (error) {
+      setMsg({ ok: false, text: `${error instanceof Error ? error.message : 'PS1 多盘组上传失败'}；未发布清单，现有绑定不变` })
+    } finally {
+      setProgress(null)
+      setStage(null)
+      if (multiDiscInputRef.current) multiDiscInputRef.current.value = ''
     }
   }
 
@@ -3364,7 +3440,7 @@ function RomField({
                 : isStreamingDisc
                   ? `直接上传镜像会存到 ${defKey(exampleName)} 这样的位置并自动绑定；不要套 ZIP。也可手填支持 HTTP Range 的完整 URL`
                 : platform === 'psx'
-                  ? `单数据轨 ISO 优先在服务器转成可 Range 流式游玩的 CD CHD；转换不可用时可确认直接上传 ISO（完整下载后由 PCSX 游玩）。现成 CHD 直存 ${defKey(exampleName)}，按需读盘并自动选择 Beetle PSX 软件版；旧 8BG 包仍可上传，但只能完整下载。带 CD 音轨的原盘请先从 BIN/CUE 转 CHD，单独 ISO 无法保留音乐`
+                  ? `单数据轨 ISO 优先在服务器转成可 Range 流式游玩的 CD CHD；现成 CHD 可按需读盘。双盘 / 多盘请选择下方入口，按盘片顺序选择 2–${PSX_M3U_MAX_DISCS} 张 CHD，系统会生成 M3U 并在全部盘上传后才绑定。带 CD 音轨的原盘请先从 BIN/CUE 转 CHD，单独 ISO 无法保留音乐`
                 : `新上传会先做 Zstd 19 + AES-256-GCM，再存到 ${romPackKey(defKey(exampleName))} 并自动绑定；旧 ZIP/ROM 仍可直接填写和运行`
             : isHtml5
               ? '填写你有权嵌入的 HTTPS 游戏网址；目标站点必须允许 iframe 嵌入。单文件上传需先配置 Worker'
@@ -3404,6 +3480,28 @@ function RomField({
             </button>
           )}
         </div>
+        {platform === 'psx' && (
+          <div className="flex flex-wrap items-center gap-2 rounded-md border border-line p-2">
+            <input
+              ref={multiDiscInputRef}
+              type="file"
+              accept=".chd,application/octet-stream"
+              multiple
+              className="hidden"
+              onChange={(event) => void onMultiDiscFiles(event.target.files ? Array.from(event.target.files) : undefined)}
+            />
+            <button
+              type="button"
+              className={cx(btnClass.secondary, 'shrink-0 whitespace-nowrap')}
+              disabled={!canUpload || !lang || progress !== null || bundleAt !== null}
+              onClick={() => multiDiscInputRef.current?.click()}
+              title={!lang ? '先选择 ROM 语言槽' : canUpload ? `按顺序选择 2–${PSX_M3U_MAX_DISCS} 张裸 CHD；自动创建多盘清单并绑定当前语言` : '需要先配置 Worker'}
+            >
+              ☁️ 上传双盘 / 多盘组
+            </button>
+            <span className="text-[11px] text-dim">仅限裸 CHD；先上传全部盘，再发布清单，失败不改现有绑定。</span>
+          </div>
+        )}
         {!isHtml5 && value.trim() && (
           <details className="rounded-md border border-line p-2 text-xs text-muted">
             <summary className="cursor-pointer select-none font-medium text-fg">

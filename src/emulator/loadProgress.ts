@@ -27,6 +27,20 @@ export interface ProgressSink {
   (p: LoadProgress): void
 }
 
+/** 错误响应必须及时取消正文：R2/代理的 HTML 错误页或坏 Range 可能很大，不能在切备用源时继续占连接。 */
+function validateResponse(res: Response, check?: (res: Response) => void): void {
+  if (!res.ok) {
+    void res.body?.cancel().catch(() => {})
+    throw new Error(`HTTP ${res.status}`)
+  }
+  try {
+    check?.(res)
+  } catch (error) {
+    void res.body?.cancel().catch(() => {})
+    throw error
+  }
+}
+
 /**
  * 包一层节流。同时保证两件事：
  *   - 第一帧立刻发出去，进度条不会先空着一段时间
@@ -160,8 +174,7 @@ export async function fetchWithProgress(
 
   try {
     const res = await fetch(url, { signal: guard.signal, ...(opts.cache ? { cache: opts.cache } : {}) })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    opts.check?.(res)
+    validateResponse(res, opts.check)
 
     const encoded = Boolean(res.headers.get('content-encoding'))
     const len = Number(res.headers.get('content-length'))
@@ -769,8 +782,7 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
           headers: { Range: `bytes=0-${chunkBytes - 1}` }, signal: guard.signal,
           ...(opts.cache ? { cache: opts.cache } : {}),
         })
-        if (!first.ok) throw new Error(`HTTP ${first.status}`)
-        opts.check?.(first)
+        validateResponse(first, opts.check)
         if (first.status !== 206) return takeWhole(first)
 
         const match = /^bytes\s+(\d+)-(\d+)\/(\d+)$/i.exec(first.headers.get('content-range') ?? '')
@@ -857,8 +869,7 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
           headers: { Range: `bytes=${start}-${end}` }, signal: controller.signal,
           ...(opts.cache ? { cache: opts.cache } : {}),
         })
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        opts.check?.(res)
+        validateResponse(res, opts.check)
         if (res.status !== 206) {
           /*
             CDN 若在下载途中突然不认 Range，只能采用一份完整 200，绝不能让其它并发请求的局部字节

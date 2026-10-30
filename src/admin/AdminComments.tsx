@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { GameComment } from '@/types'
 import {
   countryName,
+  approveComment,
   fetchAdminComments,
   purgeComment,
   setCommentHidden,
@@ -18,6 +19,7 @@ const PAGE_SIZE = 30
 
 const TABS: Array<{ id: CommentStatusFilter; label: string }> = [
   { id: 'all', label: '全部' },
+  { id: 'pending', label: '待审核' },
   { id: 'visible', label: '正常' },
   { id: 'hidden', label: '已隐藏' },
   { id: 'deleted', label: '已删除' },
@@ -48,28 +50,44 @@ export function AdminComments() {
   const [target, setTarget] = useState<CommentTargetFilter>('all')
   const [q, setQ] = useState('')
   const [search, setSearch] = useState('')
+  const [reloadVersion, setReloadVersion] = useState(0)
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading')
   const [error, setError] = useState('')
   const [toast, setToast] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
+  const requestSeq = useRef(0)
+  const toastTimer = useRef<number | null>(null)
 
-  const flash = (msg: string) => {
+  const flash = useCallback((msg: string) => {
+    if (toastTimer.current !== null) window.clearTimeout(toastTimer.current)
     setToast(msg)
-    window.setTimeout(() => setToast(null), 2000)
-  }
+    toastTimer.current = window.setTimeout(() => {
+      toastTimer.current = null
+      setToast(null)
+    }, 2000)
+  }, [])
 
   const load = useCallback(async () => {
+    const seq = ++requestSeq.current
     if (!apiEnabled()) {
+      setItems([])
+      setTotal(0)
+      setError('')
       setState('ready')
       return
     }
     setState('loading')
+    setError('')
     try {
       const r = await fetchAdminComments({ status, target, q: search, page, pageSize: PAGE_SIZE })
+      // 筛选 / 页码切换可能先后返回；只允许最后一次请求更新界面，旧结果不能盖新筛选。
+      if (seq !== requestSeq.current) return
       setItems(r.items)
       setTotal(r.total)
+      setPage(r.page)
       setState('ready')
     } catch (e) {
+      if (seq !== requestSeq.current) return
       setError(e instanceof Error ? e.message : '读取失败')
       setState('error')
     }
@@ -77,18 +95,21 @@ export function AdminComments() {
 
   useEffect(() => {
     void load()
-  }, [load])
+    return () => {
+      requestSeq.current++
+    }
+  }, [load, reloadVersion])
 
-  // 换筛选条件时回到第一页：停在第 5 页会看到一个空列表，很容易误判成「没有数据」
-  useEffect(() => {
-    setPage(1)
-  }, [status, target, search])
+  useEffect(() => () => {
+    if (toastTimer.current !== null) window.clearTimeout(toastTimer.current)
+  }, [])
 
   const toggleHidden = async (item: GameComment) => {
     setBusyId(item.id)
     try {
       await setCommentHidden(item.id, !item.hidden)
-      setItems((prev) => prev.map((x) => (x.id === item.id ? { ...x, hidden: !item.hidden } : x)))
+      // 状态改变会影响筛选归属与总数；重取当前页，避免并发审核和筛选切换造成旧列表残留。
+      setReloadVersion((n) => n + 1)
       flash(item.hidden ? '已恢复显示' : '已隐藏')
     } catch (e) {
       flash(e instanceof Error ? e.message : '操作失败')
@@ -97,13 +118,26 @@ export function AdminComments() {
     }
   }
 
+  const approve = async (item: GameComment) => {
+    setBusyId(item.id)
+    try {
+      await approveComment(item.id)
+      setReloadVersion((n) => n + 1)
+      flash('审核通过，已公开显示')
+    } catch (e) {
+      flash(e instanceof Error ? e.message : '审核失败')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
   const purge = async (item: GameComment) => {
-    if (!window.confirm(`彻底删除这条评论？此操作不可恢复。\n\n${item.author.nickname}：${item.content.slice(0, 80)}`)) return
+    if (!window.confirm(`彻底删除这条评论？此操作不可恢复。\n\n${item.author.nickname || '游客'}：${item.content.slice(0, 80)}`)) return
     setBusyId(item.id)
     try {
       await purgeComment(item.id)
-      setItems((prev) => prev.filter((x) => x.id !== item.id))
-      setTotal((n) => Math.max(0, n - 1))
+      // 重新取数由服务端夹正末页；删除最后一条时不会停在不存在的页码。
+      setReloadVersion((n) => n + 1)
       flash('已彻底删除')
     } catch (e) {
       flash(e instanceof Error ? e.message : '删除失败')
@@ -122,7 +156,7 @@ export function AdminComments() {
           <p className="mt-1 text-sm text-muted">
             共 {total} 条。
             {apiEnabled()
-              ? '「隐藏」前台立即不再显示、随时可恢复；「已删除」是用户自己删的，原文仍保留在这里。'
+              ? '游客评论需审核通过后才公开；登录用户评论立即显示。「隐藏」可恢复，「彻底删除」不可恢复。'
               : '未配置 VITE_API_URL，评论数据全部来自后端，这里读不到任何内容。'}
           </p>
         </div>
@@ -132,9 +166,13 @@ export function AdminComments() {
               <button
                 key={tab.id}
                 type="button"
-                onClick={() => setStatus(tab.id)}
+                aria-pressed={status === tab.id}
+                onClick={() => {
+                  setStatus(tab.id)
+                  setPage(1)
+                }}
                 className={cx(
-                  'rounded-md px-2.5 py-1 text-xs transition',
+                  'min-h-9 rounded-md px-2.5 py-1 text-xs transition',
                   status === tab.id ? 'bg-brand-soft font-semibold text-fg' : 'text-muted hover:text-fg',
                 )}
               >
@@ -147,9 +185,13 @@ export function AdminComments() {
               <button
                 key={item.id}
                 type="button"
-                onClick={() => setTarget(item.id)}
+                aria-pressed={target === item.id}
+                onClick={() => {
+                  setTarget(item.id)
+                  setPage(1)
+                }}
                 className={cx(
-                  'rounded-md px-2.5 py-1 text-xs transition',
+                  'min-h-9 rounded-md px-2.5 py-1 text-xs transition',
                   target === item.id ? 'bg-brand-soft font-semibold text-fg' : 'text-muted hover:text-fg',
                 )}
               >
@@ -160,15 +202,18 @@ export function AdminComments() {
           <form
             onSubmit={(e) => {
               e.preventDefault()
-              setSearch(q)
+              setSearch(q.trim())
+              setPage(1)
             }}
           >
             <input
               type="search"
               value={q}
               onChange={(e) => setQ(e.target.value)}
+              maxLength={120}
               placeholder="搜正文 / 昵称 / 邮箱 / 游戏名 / 文章标题…"
-              className={cx(inputClass, 'w-64')}
+              aria-label="搜正文、昵称、邮箱、游戏名或文章标题"
+              className={cx(inputClass, 'min-h-10 w-64')}
             />
           </form>
         </div>
@@ -205,7 +250,7 @@ export function AdminComments() {
                       {item.author.avatar}
                     </span>
                     <div className="min-w-0">
-                      <p className="truncate font-medium">{item.author.nickname}</p>
+                      <p className="truncate font-medium">{item.author.nickname || '游客'}</p>
                       <p className="truncate text-xs text-dim">{item.author.email}</p>
                     </div>
                   </div>
@@ -241,6 +286,8 @@ export function AdminComments() {
                 <td className="whitespace-nowrap px-3 py-2">
                   {item.deleted ? (
                     <span className="rounded bg-black/10 px-1.5 py-0.5 text-xs text-muted">用户已删</span>
+                  ) : item.pendingReview ? (
+                    <span className="rounded bg-yellow-500/15 px-1.5 py-0.5 text-xs text-yellow-700">待审核</span>
                   ) : item.hidden ? (
                     <span className="rounded bg-live/15 px-1.5 py-0.5 text-xs text-live">已隐藏</span>
                   ) : (
@@ -249,12 +296,22 @@ export function AdminComments() {
                 </td>
                 <td className="px-3 py-2">
                   <div className="flex justify-end gap-1">
+                    {!item.deleted && item.pendingReview && (
+                      <button
+                        type="button"
+                        className={cx(btnClass.small, 'min-h-10 px-2 text-sm text-online hover:bg-online/10')}
+                        onClick={() => void approve(item)}
+                        disabled={busyId === item.id}
+                      >
+                        通过
+                      </button>
+                    )}
                     {/* 用户自己删掉的评论不提供「隐藏 / 恢复」：它已经不在前台了，
                         再给一个「恢复」按钮会让人以为能把它放回去 */}
                     {!item.deleted && (
                       <button
                         type="button"
-                        className={cx(btnClass.small, 'text-muted hover:bg-black/5 hover:text-fg')}
+                        className={cx(btnClass.small, 'min-h-10 px-2 text-sm text-muted hover:bg-black/5 hover:text-fg')}
                         onClick={() => void toggleHidden(item)}
                         disabled={busyId === item.id}
                       >
@@ -263,7 +320,7 @@ export function AdminComments() {
                     )}
                     <button
                       type="button"
-                      className={cx(btnClass.small, 'text-live hover:bg-live/15')}
+                      className={cx(btnClass.small, 'min-h-10 px-2 text-sm text-live hover:bg-live/15')}
                       onClick={() => void purge(item)}
                       disabled={busyId === item.id}
                       title="从数据库彻底删除，不可恢复"
@@ -317,7 +374,7 @@ export function AdminComments() {
       )}
 
       {toast && (
-        <div className="fixed bottom-5 left-1/2 z-50 -translate-x-1/2 rounded-lg border border-line bg-surface-3 px-4 py-2 text-sm shadow-xl">
+        <div role="status" aria-live="polite" className="fixed bottom-5 left-1/2 z-50 -translate-x-1/2 rounded-lg border border-line bg-surface-3 px-4 py-2 text-sm shadow-xl">
           {toast}
         </div>
       )}

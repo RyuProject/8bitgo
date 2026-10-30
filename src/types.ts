@@ -505,7 +505,8 @@ export interface Post {
 
 /** 评论作者。前台拿不到邮箱（评论区是公开的），只有后台那条接口会带上。 */
 export interface CommentAuthor {
-  id: string
+  /** 游客没有站内账号；空 ID 同时确保头像不会伪装成私信入口 */
+  id: string | null
   nickname: string
   /** 头像 emoji，和 users.avatar 同一个字段 */
   avatar: string
@@ -529,7 +530,7 @@ export interface CommentQuote {
 
 export interface GameComment {
   id: string
-  /** 正文。被隐藏或删除时后端不下发内容（只有后台视角能拿到） */
+  /** 正文。待审、隐藏或删除时后端不向公开接口下发内容（只有后台视角能拿到） */
   content: string
   /**
    * 发表那一刻的国家（ISO 3166-1 alpha-2，大写）。'XX' = 未知。
@@ -538,6 +539,8 @@ export interface GameComment {
   country: string
   /** 被管理员隐藏 */
   hidden: boolean
+  /** 游客评论等待后台审核；审核前不会进入公开列表 */
+  pendingReview: boolean
   /** 已删除（作者自己删或管理员清理，都是软删除） */
   deleted: boolean
   /** 编辑过的时间；没编辑过就没有这个字段 */

@@ -2451,6 +2451,10 @@ CHD 固定用自建 `mednafen_psx` 软件核心；该包关闭了上游 Emscript
 部署前需迁移新增的 `disc_platform` 列；回归：
 `npm run test:psx-conversion && npm run test:psx-range && npm run test:disc-upload && npm run test:ejs-cores`。
 
+**PS1 双盘 / 多盘（2026-10-30）**：后台在语言槽 ROM 区提供「上传双盘 / 多盘组」，只收 2–8 张裸 CHD，选择顺序就是盘片顺序。先为每张盘上传到随机、不可变的同目录 key，最后才发布 `discs.m3u` 并改绑当前语言；失败不覆盖旧绑定，成功后仍需保存游戏条目。M3U 每行必须是**相对文件名**（不带 pipe 标签；PCSX 核心会把整行当作文件路径），当前只允许同目录 CHD，不接收 URL / 子目录 / ZIP。玩家侧先校验小于 16KB 的版本化 M3U，再逐盘 HEAD 强 ETag、检查 2MB–1GB 大小，并为每张 CHD 绑定自己的 `romv`；任一盘未发布或 Range 不匹配就明确报错，不能退回“下载 M3U 当单盘”。M3U 固定走 `pcsx_rearmed`（Beetle 不一定认识各盘压缩器）；核心、引擎的磁盘菜单和扩展盘控制接口都必须存在。多盘存档继续用游戏基础 slug，切盘不新建另一份游戏存档。启动只预热每张盘首块与当前盘尾块，非当前盘按需读；32 个 2MB 缓存块按盘数分摊，避免每盘各留 64MB。流式进度必须报真实总盘容量并设 `streaming: true`，不可把已预热块伪报成整盘 100%。
+
+⚠️ EmulatorJS / libretro 的文件读取接口是同步的：Range 缓存未命中时现有同步 XHR 仍可能短暂阻塞主线程；顺序预读与内存上限只能降低概率，不能声称完全消除。要做真正非阻塞随机读，需核心提供异步文件 IO，不能把 `stream_ops.read` 改成返回 Promise。多盘回归：`npm run test:psx-multidisc`，并连跑 `npm run test:psx-range && npm run test:disc-upload && npm run test:psx-conversion`。
+
 🔴 **CHD 不能一律交给 Beetle：自建 `mednafen_psx` 没有 FLAC 解码器（2026-10-25 线上确认）。**
 - **现象**：线上全部 5 款 PS1 CHD（含 Range 流式的《实况胜利十一人 2000》）开局都停在 RetroArch「Quick Menu / No Items」，没有报错。
 - **原因**：该 wasm 的 libchdr 只编进了 `cdzl` / `cdlz`。chdman createcd 的默认压缩是 cdlz + cdzl + **cdfl**，而 chd_open 要给头里的每个压缩器建解码器，缺一个就整盘打不开。核心日志只有一句 `TOC first(99)/last(0) track numbers bad.`。

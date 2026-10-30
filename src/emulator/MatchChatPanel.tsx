@@ -2,14 +2,14 @@ import { useT, fmt } from '@/services/i18n'
 import type { NetplayRoom } from '@/services/netplay'
 import type { LiveChatMessage } from '@/services/live'
 import type { ChatSendResult } from './chatSend'
-import { LiveChatBar, LiveChatHistory, type ChatBarToggle } from './LiveChat'
+import { LiveChatBar, LiveChatHistory, type ChatBarQualityControl, type ChatBarToggle } from './LiveChat'
 
 /** 联机玩家的右栏。只复用弹幕控件，不改变直播观众的 LiveWatchPanel。 */
 export function MatchChatPanel({ room, messages, onSend, live, match }: {
   room?: NetplayRoom
   messages: LiveChatMessage[]
   onSend: ((text: string) => Promise<ChatSendResult>) | null
-  live?: ChatBarToggle | null
+  live?: (ChatBarToggle & { quality?: ChatBarQualityControl }) | null
   match?: ChatBarToggle | null
 }) {
   const t = useT()

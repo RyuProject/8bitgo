@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { GameComment } from '@/types'
-import { useCurrentUser } from '@/services/auth'
+import { useAuthReady, useCurrentUser } from '@/services/auth'
 import { openAuthModal } from '@/services/authModal'
 import { fmt, useT } from '@/services/i18n'
 import {
@@ -36,8 +36,8 @@ import { SkeletonBlock } from '@/components/ui/PageSkeleton'
  *    边缘要缓存几分钟（见 server/src/cache.js 的 CACHE.page）——
  *    烘进 HTML 的评论会是几分钟前的，用户发完刷新反而看不到自己那条。
  *    代价是评论内容不参与 SEO；要拿这块内容做收录得先解决边缘缓存那一层。
- * 3. **未登录不隐藏评论区**，只把输入框换成一句提示加登录按钮。
- *    整块藏起来的话，没登录的人根本不知道这里有讨论。
+ * 3. **游客可以发言，但不直接公开**。游客评论先进入后台审核队列；登录用户发表后立即显示。
+ *    这样既不挡住访客参与，也不会让匿名内容绕过审核出现在公开页面。
  *
  * 宿主（游戏 / 文章）用 target 表达；后端同一张表、同一套路由（见 services/comments.ts）。
  * 文章没有评分，所以文章评论上不会出现星星 —— 那是 score 字段为空时自然的结果，
@@ -61,18 +61,21 @@ function CommentsPanel({ target }: { target: CommentTarget }) {
   const t = useT()
   const c = t.comments
   const user = useCurrentUser()
+  const authReady = useAuthReady()
 
   const [items, setItems] = useState<GameComment[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading')
   const [loadError, setLoadError] = useState('')
+  const [loadMoreError, setLoadMoreError] = useState('')
   const [more, setMore] = useState(false)
 
   const [text, setText] = useState('')
   const [replyTo, setReplyTo] = useState<GameComment | null>(null)
   const [sending, setSending] = useState(false)
   const [formError, setFormError] = useState('')
+  const [formNotice, setFormNotice] = useState('')
   const boxRef = useRef<HTMLTextAreaElement>(null)
   /**
    * 当前宿主。面板在 A → B 之间是复用的，A 的请求（翻页、首屏、发表）在跳走之后才返回时，
@@ -87,8 +90,13 @@ function CommentsPanel({ target }: { target: CommentTarget }) {
       const host = `${kind}:${slug}`
       const seq = ++loadSeq.current
       const stale = () => hostRef.current !== host || loadSeq.current !== seq
-      if (append) setMore(true)
-      else setStatus('loading')
+      if (append) {
+        setMore(true)
+        setLoadMoreError('')
+      } else {
+        setStatus('loading')
+        setLoadError('')
+      }
       try {
         const r = await fetchComments({ kind, slug }, nextPage)
         if (stale()) return
@@ -104,8 +112,8 @@ function CommentsPanel({ target }: { target: CommentTarget }) {
       } catch (e) {
         if (stale()) return
         if (append) {
-          // 加载更多失败不该把已经看到的评论清掉
-          setFormError(e instanceof Error ? e.message : c.loadFailed)
+          // 加载更多失败不该伪装成「发言失败」；列表保留原样，并在分页按钮旁给出重试。
+          setLoadMoreError(e instanceof Error ? e.message : c.loadFailed)
         } else {
           setLoadError(e instanceof Error ? e.message : c.loadFailed)
           setStatus('error')
@@ -129,15 +137,17 @@ function CommentsPanel({ target }: { target: CommentTarget }) {
     setTotal(0)
     setPage(1)
     setMore(false)
+    setLoadMoreError('')
     setReplyTo(null)
     setText('')
     setFormError('')
+    setFormNotice('')
     void load(1, false)
   }, [kind, slug, load])
 
   const submit = async () => {
     const content = text.trim()
-    if (!content || sending) return
+    if (!content || sending || !authReady) return
     if (content.length > COMMENT_MAX_LENGTH) {
       setFormError(fmt(c.tooLong, { n: COMMENT_MAX_LENGTH }))
       return
@@ -145,13 +155,19 @@ function CommentsPanel({ target }: { target: CommentTarget }) {
     const host = `${kind}:${slug}`
     setSending(true)
     setFormError('')
+    setFormNotice('')
     try {
       const created = await postComment({ kind, slug }, content, replyTo?.id)
       // 发表期间已经换到别的游戏 / 文章：评论已经存上了，但不能插进新宿主的列表
       if (hostRef.current !== host) return
-      // 列表是最新在前，所以新评论插在最前面
-      setItems((prev) => [created, ...prev])
-      setTotal((n) => n + 1)
+      if (created.pendingReview) {
+        // 待审核内容不能乐观插入公开列表，也不能计入公开评论数。
+        setFormNotice(c.pendingNotice)
+      } else {
+        // 列表是最新在前，所以新评论插在最前面
+        setItems((prev) => [created, ...prev])
+        setTotal((n) => n + 1)
+      }
       setText('')
       setReplyTo(null)
     } catch (e) {
@@ -164,6 +180,7 @@ function CommentsPanel({ target }: { target: CommentTarget }) {
   const startReply = (target: GameComment) => {
     setReplyTo(target)
     setFormError('')
+    setFormNotice('')
     boxRef.current?.focus()
   }
 
@@ -192,15 +209,14 @@ function CommentsPanel({ target }: { target: CommentTarget }) {
       ) : (
         <>
           {/* ---- 发表 ---- */}
-          {user ? (
-            <div className="mt-4">
+          <div className="mt-4">
               {replyTo && (
                 <div className="mb-2 flex items-center justify-between gap-2 rounded-lg bg-surface-2 px-2.5 py-1.5 text-xs">
-                  <span className="truncate text-muted">{fmt(c.replyingTo, { name: replyTo.author.nickname })}</span>
+                  <span className="truncate text-muted">{fmt(c.replyingTo, { name: replyTo.author.nickname || c.guestAuthor })}</span>
                   <button
                     type="button"
                     onClick={() => setReplyTo(null)}
-                    className="shrink-0 text-dim transition hover:text-fg"
+                    className="inline-flex min-h-10 shrink-0 items-center px-2 text-dim transition hover:text-fg"
                   >
                     {c.cancel}
                   </button>
@@ -209,12 +225,19 @@ function CommentsPanel({ target }: { target: CommentTarget }) {
               <textarea
                 ref={boxRef}
                 value={text}
-                onChange={(e) => setText(e.target.value)}
+                onChange={(e) => {
+                  setText(e.target.value)
+                  if (formError) setFormError('')
+                  if (formNotice) setFormNotice('')
+                }}
                 rows={3}
                 maxLength={COMMENT_MAX_LENGTH}
-                placeholder={replyTo ? fmt(c.replyPlaceholder, { name: replyTo.author.nickname }) : c.placeholder}
+                aria-label={replyTo ? fmt(c.replyPlaceholder, { name: replyTo.author.nickname || c.guestAuthor }) : c.placeholder}
+                placeholder={replyTo ? fmt(c.replyPlaceholder, { name: replyTo.author.nickname || c.guestAuthor }) : c.placeholder}
                 className="w-full resize-y rounded-xl border border-line bg-surface-2 px-3 py-2 text-sm text-fg placeholder:text-dim focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/30"
               />
+              {!authReady && <p className="mt-1.5 text-[11px] text-dim">{c.authChecking}</p>}
+              {authReady && !user && <p className="mt-1.5 text-[11px] text-dim">{c.guestHint}</p>}
               {/*
                 游戏评论这里**没有**打分控件，是有意的：全站给一款游戏打分只有一个入口 ——
                 侧栏那张评分卡（GameRating）。理由是打分和评论是两件事：分是给游戏的、
@@ -226,25 +249,23 @@ function CommentsPanel({ target }: { target: CommentTarget }) {
                 <span className={cx('text-[11px]', remaining < 50 ? 'text-live' : 'text-dim')}>
                   {remaining < 200 ? fmt(c.remaining, { n: remaining }) : ''}
                 </span>
-                <Button size="sm" onClick={() => void submit()} disabled={!text.trim() || sending}>
+                <Button size="md" onClick={() => void submit()} disabled={!text.trim() || sending || !authReady}>
                   {sending ? c.submitting : c.submit}
                 </Button>
               </div>
-            </div>
-          ) : (
-            <div className="mt-4 rounded-xl border border-line bg-surface-2 px-3 py-3">
-              <p className="text-xs text-muted">{c.loginHint}</p>
-              <Button variant="secondary" size="sm" className="mt-2" onClick={openAuthModal}>
-                {c.loginCta}
-              </Button>
-            </div>
-          )}
+              {authReady && !user && (
+                <div className="mt-2 flex justify-end">
+                  <Button variant="secondary" size="sm" onClick={openAuthModal}>{c.loginCta}</Button>
+                </div>
+              )}
+          </div>
 
           {formError && (
             <p className="mt-2 text-xs text-live" role="alert">
               {formError}
             </p>
           )}
+          {formNotice && <p className="mt-2 text-xs text-online" role="status">{formNotice}</p>}
 
           {/* ---- 列表 ---- */}
           <div className="mt-5">
@@ -286,7 +307,7 @@ function CommentsPanel({ target }: { target: CommentTarget }) {
                     comment={item}
                     mine={Boolean(user && user.id === item.author.id)}
                     showScore={showScore}
-                    onReply={user ? startReply : () => openAuthModal()}
+                    onReply={startReply}
                     onDeleted={onDeleted}
                     onEdited={onEdited}
                   />
@@ -295,14 +316,19 @@ function CommentsPanel({ target }: { target: CommentTarget }) {
             )}
 
             {status === 'ready' && hasMore && (
-              <button
-                type="button"
-                onClick={() => void load(page + 1, true)}
-                disabled={more}
-                className="mt-3 w-full rounded-lg border border-line py-2 text-xs text-muted transition hover:border-brand hover:text-fg disabled:opacity-60"
-              >
-                {more ? c.loading : c.loadMore}
-              </button>
+              <>
+                {loadMoreError && (
+                  <p className="mt-3 text-xs text-live" role="alert">{loadMoreError}</p>
+                )}
+                <button
+                  type="button"
+                  onClick={() => void load(page + 1, true)}
+                  disabled={more}
+                  className="mt-3 min-h-10 w-full rounded-lg border border-line py-2 text-xs text-muted transition hover:border-brand hover:text-fg disabled:opacity-60"
+                >
+                  {more ? c.loading : loadMoreError ? c.retry : c.loadMore}
+                </button>
+              </>
             )}
           </div>
         </>
@@ -329,6 +355,7 @@ function CommentItem({
 }) {
   const t = useT()
   const c = t.comments
+  const authorName = comment.author.nickname || c.guestAuthor
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(comment.content)
   const [busy, setBusy] = useState(false)
@@ -382,8 +409,8 @@ function CommentItem({
         {/* 头像同时是私信入口（见 components/im/DmButton.tsx）。
             没登录、或者点的是自己时，它会退回成一个和原来一模一样的 span。 */}
         <DmAvatar
-          peerId={comment.author.id}
-          nick={comment.author.nickname}
+          peerId={comment.author.id || ''}
+          nick={authorName}
           avatar={comment.author.avatar}
           role={comment.author.role}
           className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-brand-soft text-base"
@@ -391,7 +418,7 @@ function CommentItem({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px]">
             <span className="inline-flex max-w-[8rem] items-center gap-1 truncate text-xs font-semibold">
-              {comment.author.nickname}
+              {authorName}
               <UserRoleDot
                 role={comment.author.role}
                 title={comment.author.role === 'admin' ? t.common.roleAdmin : comment.author.role === 'volunteer' ? t.common.roleVolunteer : undefined}
@@ -419,7 +446,7 @@ function CommentItem({
               <p className="truncate text-muted">
                 <span aria-hidden>{comment.quote.avatar} </span>
                 <span className="inline-flex items-center gap-1 font-semibold">
-                  {comment.quote.nickname}
+                  {comment.quote.nickname || c.guestAuthor}
                   <UserRoleDot
                     role={comment.quote.role}
                     title={comment.quote.role === 'admin' ? t.common.roleAdmin : comment.quote.role === 'volunteer' ? t.common.roleVolunteer : undefined}
@@ -439,6 +466,7 @@ function CommentItem({
                 onChange={(e) => setDraft(e.target.value)}
                 rows={3}
                 maxLength={COMMENT_MAX_LENGTH}
+                aria-label={c.edit}
                 className="w-full resize-y rounded-lg border border-line bg-surface-2 px-2.5 py-1.5 text-sm text-fg focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/30"
               />
               <div className="mt-1.5 flex gap-2 text-[11px]">
@@ -446,7 +474,7 @@ function CommentItem({
                   type="button"
                   onClick={() => void save()}
                   disabled={busy || !draft.trim()}
-                  className="font-semibold text-brand-hover disabled:opacity-50"
+                  className="inline-flex min-h-10 items-center px-2 font-semibold text-brand-hover disabled:opacity-50"
                 >
                   {busy ? c.saving : c.save}
                 </button>
@@ -457,7 +485,7 @@ function CommentItem({
                     setDraft(comment.content)
                     setError('')
                   }}
-                  className="text-dim transition hover:text-fg"
+                  className="inline-flex min-h-10 items-center px-2 text-dim transition hover:text-fg"
                 >
                   {c.cancel}
                 </button>
@@ -469,9 +497,9 @@ function CommentItem({
           )}
 
           {!editing && (
-            // 每颗按钮至少 32px 高：原来只有 11px 字的高度（约 16px），手机上回复 / 编辑 / 删除很容易点错
+            // 操作命中区保持 40px：窄侧栏里文字虽小，手机拇指也能稳定点中回复 / 编辑 / 删除。
             <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[11px] text-dim">
-              <button type="button" onClick={() => onReply(comment)} className="inline-flex min-h-8 items-center px-1.5 first:-ml-1.5 transition hover:text-fg">
+              <button type="button" onClick={() => onReply(comment)} className="inline-flex min-h-10 items-center px-2 first:-ml-2 transition hover:text-fg">
                 {c.reply}
               </button>
               {editable && (
@@ -481,7 +509,7 @@ function CommentItem({
                     setDraft(comment.content)
                     setEditing(true)
                   }}
-                  className="inline-flex min-h-8 items-center px-1.5 first:-ml-1.5 transition hover:text-fg"
+                  className="inline-flex min-h-10 items-center px-2 first:-ml-2 transition hover:text-fg"
                 >
                   {c.edit}
                 </button>
@@ -491,7 +519,7 @@ function CommentItem({
                   type="button"
                   onClick={() => void remove()}
                   disabled={busy}
-                  className="inline-flex min-h-8 items-center px-1.5 first:-ml-1.5 transition hover:text-live disabled:opacity-50"
+                  className="inline-flex min-h-10 items-center px-2 first:-ml-2 transition hover:text-live disabled:opacity-50"
                 >
                   {c.remove}
                 </button>

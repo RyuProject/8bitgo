@@ -63,6 +63,8 @@ export function psxChdCoreForCodecs(codecs: readonly string[] | null | undefined
  * （带 cdfl），实际会落到 PCSX，所以预拉它；服务端转出的纯 cdzl 盘会多拉约 1MB 的 PCSX。
  */
 export function psxCoreForTransfer(platform: string, core: string | null | undefined, url: string): string | null | undefined {
+  // 多盘 M3U 会在虚拟文件系统里同时挂载多张 CHD；PCSX 的 CD 解码器覆盖全部本站支持的压缩格式。
+  if (platform === 'psx' && /\.m3u(?:[?#]|$)/i.test(url)) return PSX_CHD_COMPAT_CORE
   return platform === 'psx' && isPsxChdTransfer(url) ? PSX_CHD_COMPAT_CORE : core
 }
 

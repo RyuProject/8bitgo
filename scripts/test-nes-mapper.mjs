@@ -10,6 +10,7 @@
  * 跑：npm run test:nes-mapper
  */
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 const { analyzeJsnesCompatibility, readNesMapper, jsnesCanRun, JSNES_MAPPERS } = await import(
@@ -17,6 +18,9 @@ const { analyzeJsnesCompatibility, readNesMapper, jsnesCanRun, JSNES_MAPPERS } =
 )
 const { preferredNesRuntime } = await import(
   fileURLToPath(new URL('../src/emulator/nesRuntimePolicy.ts', import.meta.url))
+)
+const { probeNesRomHeader } = await import(
+  fileURLToPath(new URL('../src/emulator/nesRomProbe.ts', import.meta.url))
 )
 
 /**
@@ -240,6 +244,56 @@ for (const m of [0, 25, 256, 555, 4095]) {
     'emulatorjs',
     '已知不兼容时不能为邀请链接强制一个必败引擎',
   )
+}
+
+/* ---------- 9. 在线头探测必须有界且失败时不挡开局 ---------- */
+{
+  const playerSource = readFileSync(fileURLToPath(new URL('../src/emulator/EmulatorPlayer.tsx', import.meta.url)), 'utf8')
+  const response = ({ status = 206, contentRange = 'bytes 0-15/1000', bytes = header(25), contentLength, close = true } = {}) => {
+    let canceled = false
+    const body = new ReadableStream({
+      start(controller) {
+        controller.enqueue(bytes)
+        if (close) controller.close()
+      },
+      cancel() { canceled = true },
+    })
+    const headers = new Headers({ 'content-range': contentRange })
+    if (contentLength !== undefined) headers.set('content-length', String(contentLength))
+    return {
+      value: { ok: status >= 200 && status < 300, status, headers, body },
+      wasCanceled: () => canceled,
+    }
+  }
+
+  const valid = response()
+  const validProbe = await probeNesRomHeader('https://example.test/game.nes', {
+    fetchImpl: async (_url, init) => {
+      assert.equal(init.headers.Range, 'bytes=0-15')
+      return valid.value
+    },
+  })
+  assert.equal(validProbe?.totalBytes, 1000)
+  assert.equal(jsnesCanRun(validProbe?.header ?? new Uint8Array()), false, 'mapper 25 必须仍交给 EmulatorJS')
+
+  const ignoredRange = response({ status: 200 })
+  assert.equal(await probeNesRomHeader('https://example.test/game.nes', { fetchImpl: async () => ignoredRange.value }), null)
+  assert.equal(ignoredRange.wasCanceled(), true, '服务器忽略 Range 后立即取消，不能拉完整 ROM')
+
+  const oversized = response({ bytes: new Uint8Array(1024), close: false })
+  assert.equal(await probeNesRomHeader('https://example.test/game.nes', { fetchImpl: async () => oversized.value }), null)
+  assert.equal(oversized.wasCanceled(), true, '206 正文超过 16 字节时必须停止读取')
+
+  const timed = await probeNesRomHeader('https://example.test/game.nes', {
+    timeoutMs: 10,
+    fetchImpl: async (_url, init) => new Promise((_resolve, reject) => {
+      init.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })
+    }),
+  })
+  assert.equal(timed, null, '卡住的探测必须在短超时后退回默认核心')
+  assert.match(playerSource, /probeNesRomHeader\(probeUrl, \{ signal: controller\.signal \}\)/)
+  assert.doesNotMatch(playerSource, /fetch\(probeUrl, \{ headers: \{ Range: 'bytes=0-15'/)
+  console.log('✅ 在线 NES 头探测有超时、限 16 字节并且失败不再阻止开始游戏')
 }
 
 console.log('✅ NES 运行时测试通过：iNES / mapper / 未知格式 / 稳定选择 / jsnes 清单对齐')

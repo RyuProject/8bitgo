@@ -90,6 +90,21 @@ check('分界线本身（384×224，CPS 街机板）算像素画', () => {
   assert.equal(t.contentHint, 'detail')
 })
 
+check('Ruffle 矢量舞台按 SWF 逻辑尺寸编码，并归入保细节档', () => {
+  const t = tuningFor({
+    width: 1440,
+    height: 1080,
+    fps: 30,
+    native: { width: 800, height: 600 },
+    preserveResolution: true,
+  })
+  assert.equal(t.retro, false, 'Flash 舞台不是像素画分类')
+  assert.equal(t.scaleResolutionDownBy, 1.8, '采集 canvas 应按逻辑舞台缩回有效分辨率')
+  assert.equal(t.preserveResolution, true)
+  assert.equal(t.degradationPreference, 'maintain-resolution', '矢量/文字画面弱网时应先减帧')
+  assert.equal(t.contentHint, 'detail')
+})
+
 check('刚过界一格就换档', () => {
   assert.equal(tuningFor({ width: 385, height: 224, fps: 30 }).retro, false)
 })

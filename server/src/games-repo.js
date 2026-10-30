@@ -463,7 +463,8 @@ export async function listHomePicks(limit) {
  * 两个标签永远一模一样，等于把「有没有人回复、最后一条什么时候」谎报了一遍。
  *
  * 可见的定义必须和前台评论列表完全一致（routes/comments.js 的 visible）：
- * `hidden = 0 AND deleted_at IS NULL` —— 管理员隐藏的和作者自己删的都不算数，
+ * `pending_review = 0 AND hidden = 0 AND deleted_at IS NULL` —— 游客待审、管理员隐藏的
+ * 和作者自己删的都不算数，
  * 否则会出现「页面上一条回复都看不到，头条那边却显示昨天有新回复」。
  * 走 idx_cmt_game_time (game_id, created_at DESC) 这个索引，是笔很便宜的查询。
  *
@@ -473,7 +474,7 @@ export async function listHomePicks(limit) {
 async function latestVisibleCommentIso(gameId) {
   try {
     const row = await queryOne(
-      'SELECT MAX(created_at) AS latest FROM game_comments WHERE game_id = ? AND hidden = 0 AND deleted_at IS NULL',
+      'SELECT MAX(created_at) AS latest FROM game_comments WHERE game_id = ? AND pending_review = 0 AND hidden = 0 AND deleted_at IS NULL',
       [gameId],
     )
     return dateTimeIso(row?.latest)

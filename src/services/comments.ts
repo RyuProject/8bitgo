@@ -137,7 +137,7 @@ export function timeAgo(iso: string): string {
 
 /* ---------------- 后台 ---------------- */
 
-export type CommentStatusFilter = 'all' | 'visible' | 'hidden' | 'deleted'
+export type CommentStatusFilter = 'all' | 'visible' | 'hidden' | 'deleted' | 'pending'
 /** 后台按宿主筛：全部 / 只看游戏评论 / 只看文章评论 */
 export type CommentTargetFilter = 'all' | 'game' | 'post'
 
@@ -169,6 +169,11 @@ export async function fetchAdminComments(query: AdminCommentQuery = {}): Promise
 /** 隐藏 / 恢复。恢复不会把作者自己删掉的评论捞回来（那是另一件事） */
 export async function setCommentHidden(id: string, hidden: boolean): Promise<void> {
   await api.patch(`/api/comments/admin/${encodeURIComponent(id)}`, { hidden }, true)
+}
+
+/** 通过游客评论后立即公开；待审核位与管理员隐藏位彼此独立。 */
+export async function approveComment(id: string): Promise<void> {
+  await api.patch(`/api/comments/admin/${encodeURIComponent(id)}`, { pendingReview: false }, true)
 }
 
 /** 后台彻底删除：数据库里真删掉，引用它的回复只会失去引用关系，不会被连坐 */

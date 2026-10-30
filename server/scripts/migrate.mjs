@@ -665,7 +665,7 @@ const patches = [
     ),
   },
   {
-    name: 'game_comments（游戏评论：登录用户发表、后台可隐藏、支持引用回复）',
+    name: 'game_comments（游戏评论：登录用户直显、游客审核、后台可隐藏、支持引用回复）',
     // table: null —— 这条补丁自己就是建表，不能拿「表不存在」当跳过理由
     table: null,
     needed: async () => !(await hasTable('game_comments')),
@@ -678,11 +678,12 @@ const patches = [
       conn.query(`CREATE TABLE IF NOT EXISTS game_comments (
         id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
         game_id    BIGINT UNSIGNED NOT NULL,
-        user_id    VARCHAR(40)     NOT NULL,
+        user_id    VARCHAR(40)     NULL,
         parent_id  BIGINT UNSIGNED NULL,
         content    VARCHAR(2000)   NOT NULL,
         country    CHAR(2)         NOT NULL DEFAULT 'XX',
         hidden     TINYINT(1)      NOT NULL DEFAULT 0,
+        pending_review TINYINT(1)  NOT NULL DEFAULT 0,
         edited_at  TIMESTAMP(3)    NULL DEFAULT NULL,
         deleted_at TIMESTAMP(3)    NULL DEFAULT NULL,
         created_at TIMESTAMP(3)    NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -690,6 +691,7 @@ const patches = [
         KEY idx_cmt_user_time (user_id, created_at DESC),
         KEY idx_cmt_parent (parent_id),
         KEY idx_cmt_hidden_time (hidden, created_at DESC),
+        KEY idx_cmt_review_time (pending_review, created_at DESC),
         CONSTRAINT fk_cmt_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE,
         CONSTRAINT fk_cmt_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
         CONSTRAINT fk_cmt_parent FOREIGN KEY (parent_id) REFERENCES game_comments(id) ON DELETE SET NULL
@@ -1214,6 +1216,33 @@ const patches = [
     table: 'games',
     needed: async () => !(await hasColumn('games', 'dos_pc98')),
     run: () => conn.query('ALTER TABLE `games` ADD COLUMN `dos_pc98` TINYINT(1) NOT NULL DEFAULT 0 AFTER `dos_backend`'),
+  },
+  {
+    name: 'game_comments（游客评论待审核 + 可空作者）',
+    table: 'game_comments',
+    needed: async () => {
+      const column = await one(
+        'SELECT IS_NULLABLE AS nullable FROM information_schema.COLUMNS WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?',
+        ['game_comments', 'user_id'],
+      )
+      return !(await hasColumn('game_comments', 'pending_review')) || column?.nullable !== 'YES' || !(await hasIndex('game_comments', 'idx_cmt_review_time'))
+    },
+    run: async () => {
+      if (!(await hasColumn('game_comments', 'pending_review'))) {
+        // 旧评论默认 0：不改变现有登录评论的公开状态。
+        await conn.query('ALTER TABLE `game_comments` ADD COLUMN `pending_review` TINYINT(1) NOT NULL DEFAULT 0 AFTER `hidden`')
+      }
+      const column = await one(
+        'SELECT IS_NULLABLE AS nullable FROM information_schema.COLUMNS WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?',
+        ['game_comments', 'user_id'],
+      )
+      if (column?.nullable !== 'YES') {
+        await conn.query('ALTER TABLE `game_comments` MODIFY `user_id` VARCHAR(40) NULL')
+      }
+      if (!(await hasIndex('game_comments', 'idx_cmt_review_time'))) {
+        await conn.query('ALTER TABLE `game_comments` ADD INDEX `idx_cmt_review_time` (`pending_review`, `created_at` DESC)')
+      }
+    },
   },
 ]
 

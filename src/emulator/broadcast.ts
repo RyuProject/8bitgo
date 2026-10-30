@@ -39,6 +39,7 @@ import {
   observeLiveQuality,
   tuningForLiveTier,
   type LiveQualityState,
+  type LiveQualityPreference,
   type LiveQualityTier,
   type ViewerNetworkSample,
 } from './liveAdaptiveQuality'
@@ -113,6 +114,10 @@ export interface BroadcastOptions {
    * 之后再也不会更新 —— 缩放就永远是 1，等于这个优化没接上，而且没人会发现。
    */
   native?: () => { width: number; height: number } | null
+  /** 细节型运行时（如 Ruffle）在自适应降档时优先减帧，不额外缩小有效舞台 */
+  preserveResolution?: () => boolean
+  /** 主播偏好的推流画质；网络自适应仍然有效 */
+  qualityPreference?: LiveQualityPreference
   onState?: (state: BroadcastState) => void
   onViewers?: (count: number) => void
   /**
@@ -158,6 +163,8 @@ export interface Broadcast {
   /** 当前房间号。重连后可能换（见文件头「断线」一节），UI 别缓存它，用 onRoom */
   readonly roomId: string
   viewers: () => number
+  /** 不重连即可调整主播画质偏好，并立即重调当前观众的编码参数 */
+  setQualityPreference: (preference: LiveQualityPreference) => void
   /**
    * 告诉服务器「这个直播间同时也是那个联机房」（传 null 解绑）。
    *
@@ -198,6 +205,11 @@ export interface QualityInfo {
   /** 我们主动把帧率压到了多少；等于采集帧率就是没压 */
   cappedFps: number
   viewers: number
+  /** 所有观众里最低的编码档位，便于主播定位单个弱网观众是否触发了降档 */
+  tier: LiveQualityTier
+  /** 所有观众里最低的实际编码分辨率；浏览器未提供时为 0 */
+  width: number
+  height: number
 }
 
 /**
@@ -254,11 +266,13 @@ function tuneSender(
   native: { width: number; height: number } | null = null,
   /** 每位观众自己的网络档位；不能拿最差那位去降低全房画质。 */
   quality: LiveQualityTier = 'high',
+  qualityPreference: LiveQualityPreference = 'auto',
+  preserveResolution = false,
 ) {
   // ⚠️ 尺寸要调用方从采集源上拿（feed.videoSize()）。走 Insertable Streams 时 sender.track 是
   // generator 轨，getSettings() 多半是空的 —— 空就会被当成大源去缩分辨率，Game Boy 直接成马赛克
-  const base = tuningFor({ width: size.width, height: size.height, fps: maxFramerate, maxBitrate, dualScreen, native })
-  applyTuning(sender, tuningForLiveTier(base, quality))
+  const base = tuningFor({ width: size.width, height: size.height, fps: maxFramerate, maxBitrate, dualScreen, native, preserveResolution })
+  applyTuning(sender, tuningForLiveTier(base, quality, qualityPreference))
 }
 
 /** 这条连接还值得留着吗（还在握手、或者已经通了） */
@@ -282,6 +296,7 @@ function call<T>(socket: LiveSocket, event: string, payload: unknown, ms = 10_00
 
 export async function startBroadcast(options: BroadcastOptions): Promise<Broadcast> {
   const captureFps = options.fps ?? DEFAULT_FPS
+  let qualityPreference: LiveQualityPreference = options.qualityPreference ?? 'auto'
   /** 每次都重新向运行时要源（见 BroadcastOptions.sources 的注释） */
   const resolveSources: SourceResolver = typeof options.sources === 'function' ? options.sources : () => options.sources as CaptureSources
 
@@ -345,7 +360,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
             for (const sender of pc.getSenders()) {
               if (sender.track?.kind !== 'video') continue
               void sender.replaceTrack(track)
-                .then(() => tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, built?.videoSize(), dualScreenSource, options.native?.() ?? null, peer.quality.tier))
+                .then(() => tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, built?.videoSize(), dualScreenSource, options.native?.() ?? null, peer.quality.tier, qualityPreference, options.preserveResolution?.() ?? false))
                 .catch(() => { if (!stopped && peers.get(peer.id) === peer) void addViewer(peer.id, true) })
             }
             // 换成原始轨 = 心跳没了：重报 hello，免得观众把静止画面当成卡死去反复重连
@@ -723,7 +738,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
       }
       for (const track of media.stream.getTracks()) {
         const sender = pc.addTrack(track, media.stream)
-        if (track.kind === 'video') tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, media.videoSize(), dualScreenSource, options.native?.() ?? null, entry.quality.tier)
+        if (track.kind === 'video') tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, media.videoSize(), dualScreenSource, options.native?.() ?? null, entry.quality.tier, qualityPreference, options.preserveResolution?.() ?? false)
       }
 
       // ⚠️ 必须在 createOffer 之前：通道要进 SDP，否则得多走一轮重新协商
@@ -792,7 +807,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     for (const peer of peers.values()) {
       const { pc } = peer
       for (const sender of pc.getSenders()) {
-        if (sender.track?.kind === 'video') tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, built?.videoSize(), dualScreenSource, options.native?.() ?? null, peer.quality.tier)
+        if (sender.track?.kind === 'video') tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, built?.videoSize(), dualScreenSource, options.native?.() ?? null, peer.quality.tier, qualityPreference, options.preserveResolution?.() ?? false)
       }
     }
     /**
@@ -826,7 +841,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     if (peers.get(peer.id) !== peer) return
     for (const sender of peer.pc.getSenders()) {
       if (sender.track?.kind !== 'video') continue
-      tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, built?.videoSize(), dualScreenSource, options.native?.() ?? null, peer.quality.tier)
+      tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, built?.videoSize(), dualScreenSource, options.native?.() ?? null, peer.quality.tier, qualityPreference, options.preserveResolution?.() ?? false)
     }
   }
 
@@ -861,6 +876,10 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
       let minFps = Number.POSITIVE_INFINITY
       let totalKbps = 0
       let sawVideo = false
+      let encodedWidth = 0
+      let encodedHeight = 0
+      let lowestEncodedArea = Number.POSITIVE_INFINITY
+      let lowestTier: LiveQualityTier = 'high'
 
       const reports = await Promise.all(Array.from(peers.values(), async (peer) => {
         try {
@@ -883,6 +902,8 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
             qualityLimitationReason?: string
             framesPerSecond?: number
             bytesSent?: number
+            frameWidth?: number
+            frameHeight?: number
           }
           if (!isVideoRtpStat(s, 'outbound-rtp')) return
           sawVideo = true
@@ -890,6 +911,14 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
           if (s.qualityLimitationReason === 'bandwidth') peerBandwidthLimited = true
           if (s.qualityLimitationReason) reasons.push(s.qualityLimitationReason)
           if (typeof s.framesPerSecond === 'number') minFps = Math.min(minFps, s.framesPerSecond)
+          const frameWidth = Number(s.frameWidth) || 0
+          const frameHeight = Number(s.frameHeight) || 0
+          const frameArea = frameWidth * frameHeight
+          if (frameWidth > 0 && frameHeight > 0 && frameArea < lowestEncodedArea) {
+            lowestEncodedArea = frameArea
+            encodedWidth = frameWidth
+            encodedHeight = frameHeight
+          }
           if (typeof s.bytesSent === 'number') {
             peerVideoBytes += s.bytesSent
             peerHasByteCounter = true
@@ -920,6 +949,9 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
           expectedFps: Math.min(cappedFps, previousTier === 'low' ? 18 : previousTier === 'balanced' ? 24 : cappedFps),
           sample: fresh,
         }, now)
+        if (peer.quality.tier === 'low' || (peer.quality.tier === 'balanced' && lowestTier === 'high')) {
+          lowestTier = peer.quality.tier
+        }
         if (peer.quality.tier !== previousTier) retunePeer(peer)
       }
       if (stopped || !sawVideo) return
@@ -965,6 +997,9 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
         kbps: totalKbps,
         cappedFps,
         viewers,
+        tier: lowestTier,
+        width: encodedWidth,
+        height: encodedHeight,
       })
     } finally {
       statsInFlight = false
@@ -1325,6 +1360,11 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
       return roomId
     },
     viewers: () => viewers,
+    setQualityPreference(preference: LiveQualityPreference) {
+      if (stopped || qualityPreference === preference) return
+      qualityPreference = preference
+      for (const peer of peers.values()) retunePeer(peer)
+    },
     /** 见接口注释。socket 没连上就悄悄跳过 —— 重连之后 LiveControls 会再报一次 */
     linkNetplay(roomId: string | null, token = '') {
       if (stopped) return

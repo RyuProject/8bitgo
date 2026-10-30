@@ -13,6 +13,7 @@ import { onTvHost } from '@/services/tvHost'
 import { stripLang } from '@/config/languages'
 import { TV_ROUTE } from '../../../shared/tv-host.js'
 import { ClarityConsentBanner } from '@/components/privacy/ClarityConsentBanner'
+import { MobileBottomNav } from './MobileBottomNav'
 
 /** 路由切换时回到顶部；带 hash 时滚动到对应锚点；同时退出沉浸模式、关闭抽屉 */
 function RouteEffects() {
@@ -95,7 +96,10 @@ function DeferredImPanel() {
 function Shell() {
   const { immersive, setImmersive, mobileOpen, desktop } = useShell()
   const t = useT()
-  const isTvRoute = stripLang(useLocation().pathname) === TV_ROUTE
+  const routePath = stripLang(useLocation().pathname)
+  const isTvRoute = routePath === TV_ROUTE
+  // 后台有自己的移动端导航；不要再叠加面向玩家的五项底栏，避免挤占表单和上传区域。
+  const isAdminRoute = routePath === '/admin' || routePath.startsWith('/admin/')
 
   /*
     走空壳的两种情况：
@@ -120,6 +124,7 @@ function Shell() {
         className={cx(
           'flex min-h-dvh flex-col transition-[padding] duration-300 ease-out',
           immersive ? 'lg:pl-0' : 'lg:pl-60',
+          !immersive && !isTvRoute && !isAdminRoute && 'pb-[calc(4rem+env(safe-area-inset-bottom))] lg:pb-0',
         )}
       >
         <Topbar />
@@ -129,6 +134,8 @@ function Shell() {
         </main>
         {!immersive && <Footer />}
       </div>
+
+      {!immersive && !isAdminRoute && !mobileNavigationOpen && <MobileBottomNav />}
 
       {/* 沉浸模式退出按钮 */}
       {immersive && (

@@ -704,7 +704,7 @@ CREATE TABLE IF NOT EXISTS login_codes (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ---------- 评论（游戏 + 博客文章共用一张表） ----------
--- 只有登录用户能发（服务端 requireUser），所以 user_id 是硬外键：账号注销时评论跟着走。
+-- 登录评论关联用户；游客评论 user_id 为空且必须先经后台审核，账号注销时只级联删除登录评论。
 --
 -- 宿主是**游戏或文章二选一**，所以 game_id / post_id 都可空，恰好有一个非空：
 --   game_id 非空 = 挂在某款游戏下（游戏详情页侧栏）
@@ -715,8 +715,9 @@ CREATE TABLE IF NOT EXISTS login_codes (
 --
 -- 三种「不可见」是三件不同的事，不能合成一个状态位：
 --   hidden     后台隐藏 —— 管理员判断内容不合适，前台不再显示，随时能恢复
+--   pending_review 游客评论待审核 —— 后台通过后才公开
 --   deleted_at 作者自己删的（或管理员清理）—— 软删除，后台仍看得到原文，方便处理纠纷
---   两者都没有 = 正常可见
+--   三个状态都没有 = 正常可见
 -- 真删除只在「删游戏 / 删文章 / 删账号」时由外键级联发生。
 --
 -- country 是**发表那一刻的快照**，不是用户资料的一部分：
@@ -730,11 +731,12 @@ CREATE TABLE IF NOT EXISTS game_comments (
   -- 宿主二选一：游戏评论填 game_id，文章评论填 post_id，另一个为 NULL
   game_id    BIGINT UNSIGNED NULL,
   post_id    BIGINT UNSIGNED NULL,
-  user_id    VARCHAR(40)     NOT NULL,
+  user_id    VARCHAR(40)     NULL,
   parent_id  BIGINT UNSIGNED NULL,
   content    VARCHAR(2000)   NOT NULL,
   country    CHAR(2)         NOT NULL DEFAULT 'XX',
   hidden     TINYINT(1)      NOT NULL DEFAULT 0,
+  pending_review TINYINT(1)  NOT NULL DEFAULT 0,
   -- 编辑过的时间；NULL = 从没编辑过（前台据此显示「已编辑」）
   edited_at  TIMESTAMP(3)    NULL DEFAULT NULL,
   deleted_at TIMESTAMP(3)    NULL DEFAULT NULL,
@@ -748,6 +750,7 @@ CREATE TABLE IF NOT EXISTS game_comments (
   KEY idx_cmt_parent (parent_id),
   -- 后台审核：先按状态过滤再按时间排
   KEY idx_cmt_hidden_time (hidden, created_at DESC),
+  KEY idx_cmt_review_time (pending_review, created_at DESC),
   CONSTRAINT fk_cmt_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE,
   CONSTRAINT fk_cmt_post FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
   CONSTRAINT fk_cmt_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,

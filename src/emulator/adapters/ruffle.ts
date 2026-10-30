@@ -10,7 +10,7 @@
 import type { CaptureSources, Capability, MountOptions, PadButton, RuntimeHandle } from '../types'
 import { flashKeysFor, keyDesc, type KeyDesc } from '../flashKeys'
 import { loadGameBytes } from '../romLoader'
-import { assertSwf } from '@/lib/romValidation'
+import { assertSwf, MAX_SWF_BYTES } from '@/lib/romValidation'
 import { captureCanvasScreenshot } from '../recorder'
 import { usableVideoSize } from '../videoTuning'
 import { focusFrame } from '../frameFocus'
@@ -392,7 +392,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    * 这里在挂载一开始就拉字节，和 iframe、454 KB loader、14 MB WASM 并行；先失败也先挂一个
    * 空 catch，防止脚本尚未 onload 时浏览器把拒绝记成未处理，真正错误仍由后面的 await 上报。
    */
-  const gameBytes = loadGameBytes(options.game, options.onProgress, aborter.signal).then((loaded) => {
+  // 8BG 文件头约占很小一部分；额外预留 16 MiB，避免合法 256 MiB SWF 被容器头/认证标签挤掉。
+  const gameBytes = loadGameBytes(options.game, options.onProgress, aborter.signal, {
+    maxBytes: MAX_SWF_BYTES + 16 * 1024 * 1024,
+    maxUnpackedBytes: MAX_SWF_BYTES,
+  }).then((loaded) => {
     assertSwf(loaded.data)
     return loaded
   })
@@ -786,6 +790,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           cancelStageFit()
           cancelStageFit = installRuffleStageFit(win, host, stage, player.metadata)
         }
+        // Ruffle 元数据给的是 SWF 逻辑舞台尺寸，不是随窗口和 DPR 放大的 canvas 尺寸。
+        // 直播编码按这个尺寸缩回有效画面，避免把插值像素当成细节白白塞满码率。
+        const stageSize = ruffleStageSize(player.metadata)
+        if (stageSize) options.onGeometry?.(stageSize)
         syncVisibility()
         // onReady 必须在 load 完成之后 —— 以前放在 load 之前，播放器会在 SWF 还没解析完
         // 就把加载遮罩撤掉，玩家对着空白舞台点半天
@@ -888,6 +896,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   return {
     caps,
     volume,
+    preserveVideoResolution: true,
+    nativeVideoSize() {
+      return ruffleStageSize(player?.metadata)
+    },
     saveMetadata: { core: 'ruffle', build: RUFFLE_VERSION, format: 'ruffle-shared-object' },
     // Flash 游戏也在 iframe 里，键盘操作的那些（横版过关、打字游戏）不交焦点就是死的。
     // 注意是 focusPlayer 不是 focusFrame —— 只把焦点给到 iframe，Ruffle 照样不收键盘

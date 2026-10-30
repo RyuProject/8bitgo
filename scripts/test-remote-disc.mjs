@@ -246,6 +246,15 @@ await check('网络错误 -> 不支持，不抛异常', async () => {
   assert.deepEqual(r, { rangeSupported: false, size: 0 })
 })
 
+await check('探测请求悬住时会在超时后解除，不永久挡住开局', async () => {
+  const started = Date.now()
+  const r = await withFetch(async (_url, init) => new Promise((_resolve, reject) => {
+    init.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })
+  }), () => probeRange('https://example.test/disc.iso', undefined, 10))
+  assert.deepEqual(r, { rangeSupported: false, size: 0 })
+  assert.ok(Date.now() - started < 1000, '10ms 探测超时不应拖成秒级')
+})
+
 await check('404 -> 不支持', async () => {
   const r = await withFetch(async () => res(404, {}), () => probeRange('https://example.com/game.iso'))
   assert.equal(r.rangeSupported, false)
@@ -256,6 +265,20 @@ await check('206 却只给了错误偏移，不能把这张盘判成可流式读
   assert.equal(r.rangeSupported, false)
 })
 
+await check('压缩过的 206 不能用于光盘偏移读取', async () => {
+  const r = await withFetch(async () => new Response(new Uint8Array([1, 2]), {
+    status: 206,
+    headers: { 'content-range': 'bytes 0-1/1000', 'content-encoding': 'gzip' },
+  }), () => probeRange('https://example.test/disc.iso'))
+  assert.equal(r.rangeSupported, false)
+  await withFetch(async () => new Response(new Uint8Array([1, 2]), {
+    status: 206,
+    headers: { 'content-range': 'bytes 0-1/1000', 'content-encoding': 'gzip' },
+  }), async () => {
+    await assert.rejects(() => httpRangeFetcher('https://example.test/disc.iso')(0, 1), /启用了压缩/)
+  })
+})
+
 await check('无视 Range 回 200 时立即取消响应体，避免整盘下载', async () => {
   let canceled = false
   await withFetch(async () => ({ ...res(200, { 'content-length': '4700372992' }), body: { cancel: async () => { canceled = true } } }), () => probeRange('https://example.test/disc.iso'))
@@ -263,14 +286,33 @@ await check('无视 Range 回 200 时立即取消响应体，避免整盘下载'
 })
 
 await check('后续读盘必须核对实际 Content-Range 和字节数', async () => {
-  await withFetch(async () => ({ ...res(206, { 'content-range': 'bytes 2-3/1000' }), body: { cancel: async () => {} } }), async () => {
+  await withFetch(async () => new Response(new Uint8Array([2, 3]), {
+    status: 206, headers: { 'content-range': 'bytes 2-3/1000' },
+  }), async () => {
     await assert.rejects(() => httpRangeFetcher('https://example.test/disc.iso')(0, 1), /偏移不一致/)
   })
-  await withFetch(async () => ({ ...res(206, { 'content-range': 'bytes 0-1/1000' }), arrayBuffer: async () => new Uint8Array([1]).buffer }), async () => {
+  await withFetch(async () => new Response(new Uint8Array([1]), {
+    status: 206, headers: { 'content-range': 'bytes 0-1/1000', 'content-length': '2' },
+  }), async () => {
     await assert.rejects(() => httpRangeFetcher('https://example.test/disc.iso')(0, 1), /分段长度/)
   })
-  await withFetch(async () => ({ ...res(206, { 'content-range': 'bytes 0-1/1000' }), arrayBuffer: async () => new Uint8Array([1, 2]).buffer }), async () => {
+  await withFetch(async () => new Response(new Uint8Array([1, 2]), {
+    status: 206, headers: { 'content-range': 'bytes 0-1/1000' },
+  }), async () => {
     assert.deepEqual(new Uint8Array(await httpRangeFetcher('https://example.test/disc.iso')(0, 1)), new Uint8Array([1, 2]))
+  })
+})
+
+await check('读盘 Range 停滞有看门狗，且超长 206 正文不能扩张内存', async () => {
+  await withFetch(async (_url, init) => new Promise((_resolve, reject) => {
+    init.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })
+  }), async () => {
+    await assert.rejects(() => httpRangeFetcher('https://example.test/disc.iso', undefined, 10)(0, 1), /卡住/)
+  })
+  await withFetch(async () => new Response(new Uint8Array(1024), {
+    status: 206, headers: { 'content-range': 'bytes 0-1/1000' },
+  }), async () => {
+    await assert.rejects(() => httpRangeFetcher('https://example.test/disc.iso')(0, 1), /超过 2 字节/)
   })
 })
 

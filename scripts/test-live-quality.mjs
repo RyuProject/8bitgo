@@ -100,15 +100,16 @@ const retro = {
   degradationPreference: 'maintain-resolution',
   contentHint: 'detail',
   retro: true,
+  preserveResolution: true,
   scaleResolutionDownBy: 4,
 }
-const large = { ...retro, retro: false, maxBitrate: 6_000_000, scaleResolutionDownBy: 2, contentHint: 'motion' }
+const large = { ...retro, retro: false, preserveResolution: false, maxBitrate: 6_000_000, scaleResolutionDownBy: 2, contentHint: 'motion' }
 
 check('像素画弱网时保分辨率，优先降码率和帧率', () => {
   const q = tuningForLiveTier(retro, 'low')
   assert.equal(q.scaleResolutionDownBy, 4)
   assert.equal(q.maxFramerate, 18)
-  assert.equal(q.maxBitrate, 420_000)
+  assert.equal(q.maxBitrate, 650_000)
 })
 
 check('大画面弱网时按观众独立缩分辨率，降低主播编码负担', () => {
@@ -116,6 +117,58 @@ check('大画面弱网时按观众独立缩分辨率，降低主播编码负担'
   assert.equal(q.scaleResolutionDownBy, 4)
   assert.equal(q.maxFramerate, 18)
   assert.equal(q.maxBitrate, 2_520_000)
+})
+
+const flash = {
+  maxBitrate: 3_600_000,
+  maxFramerate: 30,
+  degradationPreference: 'maintain-resolution',
+  contentHint: 'detail',
+  retro: false,
+  preserveResolution: true,
+  scaleResolutionDownBy: 1.8,
+}
+
+check('Flash 自动档弱网先降帧，不会把 Ruffle 舞台再缩一半', () => {
+  const q = tuningForLiveTier(flash, 'low', 'auto')
+  assert.equal(q.scaleResolutionDownBy, 1.8)
+  assert.equal(q.maxFramerate, 18)
+  assert.equal(q.maxBitrate, 2_340_000)
+  assert.equal(q.contentHint, 'detail')
+})
+
+check('清晰档优先保分辨率并保留更多码率', () => {
+  const q = tuningForLiveTier(flash, 'low', 'clear')
+  assert.equal(q.scaleResolutionDownBy, 1.8)
+  assert.equal(q.maxFramerate, 18)
+  assert.equal(q.maxBitrate, 2_808_000)
+  assert.equal(q.degradationPreference, 'maintain-resolution')
+})
+
+check('清晰档在好网络下仍显式保分辨率', () => {
+  const q = tuningForLiveTier(flash, 'high', 'clear')
+  assert.equal(q.scaleResolutionDownBy, flash.scaleResolutionDownBy)
+  assert.equal(q.maxFramerate, flash.maxFramerate)
+  assert.equal(q.maxBitrate, flash.maxBitrate)
+  assert.equal(q.degradationPreference, 'maintain-resolution')
+  assert.equal(q.contentHint, 'detail')
+})
+
+check('流畅档允许把矢量舞台缩小来换弱网连续性', () => {
+  const q = tuningForLiveTier(flash, 'low', 'smooth')
+  assert.equal(q.scaleResolutionDownBy, 3.6)
+  assert.equal(q.maxFramerate, 18)
+  assert.equal(q.maxBitrate, 1_512_000)
+  assert.equal(q.degradationPreference, 'maintain-framerate')
+})
+
+check('流畅档在好网络下也偏向保持帧率', () => {
+  const q = tuningForLiveTier(flash, 'high', 'smooth')
+  assert.equal(q.scaleResolutionDownBy, flash.scaleResolutionDownBy)
+  assert.equal(q.maxFramerate, flash.maxFramerate)
+  assert.equal(q.maxBitrate, flash.maxBitrate)
+  assert.equal(q.degradationPreference, 'maintain-framerate')
+  assert.equal(q.contentHint, 'motion')
 })
 
 check('高清档完全保持基础参数，避免无端损伤画质', () => {

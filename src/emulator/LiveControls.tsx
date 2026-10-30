@@ -14,10 +14,11 @@
  * 「不公开」两种情况下有文字，其余时候界面上只剩一个 📡 —— 玩家分不清自己是正在连、
  * 已经在播、还是压根没推出去。现在五种状态各有一个圆点加一句话（见下面的 Phase）。
  */
-import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import type { RuntimeHandle } from './types'
-import type { ChatBarToggle } from './LiveChat'
-import { canBroadcast, startBroadcast, type Broadcast, type BroadcastOptions } from './broadcast'
+import type { ChatBarQualityControl, ChatBarToggle } from './LiveChat'
+import { canBroadcast, startBroadcast, type Broadcast, type BroadcastOptions, type QualityInfo } from './broadcast'
+import type { LiveQualityPreference } from './liveAdaptiveQuality'
 import { SEAT_TTL_MS } from './coopSeat'
 import { canAutoStartLive, liveEnabled, liveLink, refreshLiveRooms, type LiveChatMessage } from '@/services/live'
 import { playerName } from '@/services/netplay'
@@ -120,6 +121,8 @@ export interface LiveControlsHandle {
   /** 按钮说明（title） */
   hint: string
   toggle: () => void
+  /** 主播可在自动、清晰、流畅三档间选择，不重连、不影响本机游戏 */
+  quality: ChatBarQualityControl
   /**
    * 「让观众上场当 2P」（见 coopSeat.ts）。null = 这一局给不了：
    * 要么运行时没有 2P 键位（`handle.coopButtons` 空 —— 绝大多数游戏），要么现在没在播。
@@ -267,6 +270,10 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
    * 而游戏主循环和它们抢的是同一颗 CPU。
    */
   const [quality, setQuality] = useState<'none' | 'cpu' | 'bandwidth' | 'other'>('none')
+  const [qualityInfo, setQualityInfo] = useState<QualityInfo | null>(null)
+  const [qualityPreference, setQualityPreference] = useState<LiveQualityPreference>('auto')
+  const qualityPreferenceRef = useRef(qualityPreference)
+  qualityPreferenceRef.current = qualityPreference
   const [viewers, setViewersRaw] = useState(0)
   /**
    * 人数归零时把「受限」的标记一起清掉。getStats 没有观众就不采样（broadcast.ts 的 statsTick 早退），
@@ -275,7 +282,10 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
    */
   const setViewers = useCallback((n: number) => {
     setViewersRaw(n)
-    if (n === 0) setQuality('none')
+    if (n === 0) {
+      setQuality('none')
+      setQualityInfo(null)
+    }
   }, [])
   useEffect(() => {
     // Ruffle 等运行时在无人观看且页面隐藏时会自动暂停；真正有观众后必须继续出帧。
@@ -389,8 +399,9 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
    *   · `sources` / `maxBitrate` / `native` —— 一个是画布+音频节点，一个是整个标签页的流
    *   · `onState` —— 自动那路是「重连失败才收摊」，手动那路是「结束就停」
    */
-  const sharedLiveOptions = (): Omit<BroadcastOptions, 'sources' | 'maxBitrate' | 'native' | 'onState'> => ({
+  const sharedLiveOptions = (): Omit<BroadcastOptions, 'sources' | 'maxBitrate' | 'native' | 'preserveResolution' | 'onState'> => ({
     meta: { gameSlug, gameName, platform: platform ?? '', title: gameName, hostName: playerName() },
+    qualityPreference: qualityPreferenceRef.current,
     /* ---------------- 「让观众上场当 2P」（见 coopSeat.ts） ---------------- */
     // 传函数：句柄可能比开播晚到，换游戏时这一项也会变
     coopButtons: () => handleRef.current?.coopButtons ?? [],
@@ -413,7 +424,10 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
     onViewers: setViewers,
     // 弹幕直接转给播放器：LiveControls 只是工具条，不该拿着消息列表
     onChat: (msg) => onChatRef.current?.(msg),
-    onQuality: (q) => setQuality(q.reason),
+    onQuality: (q) => {
+      setQuality(q.reason)
+      setQualityInfo(q)
+    },
     onRoom: setRoomId,
   })
 
@@ -471,6 +485,7 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
           */
           // 运行时能报核心真实输出尺寸就用它（EmulatorJS 的画布是容器 × dpr，几何≠原生）
           native: () => handleRef.current?.nativeVideoSize?.() ?? nativeRef.current,
+          preserveResolution: () => handleRef.current?.preserveVideoResolution === true,
           ...sharedLiveOptions(),
           onState: (state) => {
             if (state === 'reconnecting') setReconnecting(true)
@@ -529,6 +544,11 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
       stop()
     }
   }, [on, handle, gameSlug, gameName, platform, stop, setViewers])
+
+  // 画质选择只修改现有 sender 参数，不重连房间；开播握手期间的选择也会在连接落地后补应用。
+  useEffect(() => {
+    liveRef.current?.setQualityPreference(qualityPreference)
+  }, [qualityPreference, live])
 
   /** 玩家点了「开播」：选本标签页，画面带声音一起推 */
   const startManual = async () => {
@@ -664,6 +684,20 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
       ? ''
       : ` · ${quality === 'cpu' ? t.runtime.liveLimitedCpu : t.runtime.liveLimitedBandwidth}`
 
+  const tierLabel = qualityInfo?.tier === 'low'
+    ? t.runtime.liveQualityTierLow
+    : qualityInfo?.tier === 'balanced'
+      ? t.runtime.liveQualityTierBalanced
+      : t.runtime.liveQualityTierHigh
+  const qualityStats = phase === 'live' && qualityInfo?.viewers
+    ? ` · ${fmt(t.runtime.liveQualityStats, {
+        resolution: qualityInfo.width > 0 && qualityInfo.height > 0 ? `${qualityInfo.width}×${qualityInfo.height}` : '—',
+        fps: String(qualityInfo.fps || '—'),
+        kbps: String(qualityInfo.kbps),
+        tier: tierLabel,
+      })}`
+    : ''
+
   const hint: Record<Phase, string> = {
     live: tt.liveHideTitle,
     reconnecting: tt.liveReconnectingTitle,
@@ -685,7 +719,18 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
   const stableToggle = useCallback(() => toggleRef.current(), [])
 
   const btnLabel = label[phase]
-  const btnHint = hint[phase] + qualityNote
+  const btnHint = hint[phase] + qualityNote + qualityStats
+
+  const qualityControl = useMemo<ChatBarQualityControl>(() => ({
+    value: qualityPreference,
+    hint: t.runtime.liveQualityHint,
+    options: [
+      { value: 'auto', label: t.runtime.liveQualityAuto },
+      { value: 'clear', label: t.runtime.liveQualityClear },
+      { value: 'smooth', label: t.runtime.liveQualitySmooth },
+    ],
+    change: setQualityPreference,
+  }), [qualityPreference, t.runtime.liveQualityAuto, t.runtime.liveQualityClear, t.runtime.liveQualityHint, t.runtime.liveQualitySmooth])
 
   /*
     「让观众上场当 2P」那颗按钮的文案与动作。
@@ -751,12 +796,12 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
     if (!onControls) return
     onControls(
       available
-        ? { phase, on: phase === 'live' || phase === 'reconnecting', viewers, label: btnLabel, hint: btnHint, toggle: stableToggle, coop: coopCtl }
+        ? { phase, on: phase === 'live' || phase === 'reconnecting', viewers, label: btnLabel, hint: btnHint, toggle: stableToggle, quality: qualityControl, coop: coopCtl }
         : null,
     )
     // 卸载时收回：播放器换局、或者这一局不该开播了，按钮不能还留在弹幕框上
     return () => onControls(null)
-  }, [onControls, available, phase, viewers, btnLabel, btnHint, stableToggle, coopCtl])
+  }, [onControls, available, phase, viewers, btnLabel, btnHint, stableToggle, qualityControl, coopCtl])
 
   if (!available) return null
   // 开关已经交给弹幕框了，这边就不画第二份（推流该干的活在上面的 effect 里照跑）

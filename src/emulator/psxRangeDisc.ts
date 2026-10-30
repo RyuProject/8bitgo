@@ -1,7 +1,10 @@
+import { isPsxM3uUrl, parsePsxM3u, PSX_M3U_MAX_BYTES } from './psxM3u'
+
 /** Beetle PSX 直接读 CHD：只有对象版本被 R2 锁住时，跨请求拼接才不会混入另一版镜像。 */
 export const PSX_RANGE_BYTES = 2 * 1024 * 1024
 const MAX_CHD_BYTES = 1024 * 1024 * 1024
 const MAX_CACHED_BLOCKS = 32
+const MAX_M3U_BYTES = PSX_M3U_MAX_BYTES
 const MAX_CORE_READ_BYTES = 16 * 1024 * 1024
 const CHD_MAGIC = 'MComprHD'
 
@@ -16,6 +19,7 @@ export interface PsxRangeFs {
 }
 
 export interface PsxRangeDisc {
+  readonly multiDisc: false
   readonly url: string
   readonly name: string
   readonly size: number
@@ -23,15 +27,29 @@ export interface PsxRangeDisc {
   readonly startupBytes: number
   /** CHD 头的前 32 字节（含压缩器清单）；开局前据此挑核心，见 psxChd.ts 的 psxChdCoreForCodecs。 */
   readonly head: Uint8Array
+  readonly heads: readonly Uint8Array[]
   install(fs: PsxRangeFs, xhrFactory: typeof XMLHttpRequest): void
   dispose(): void
 }
 
-function rangeVersion(url: string): string | null {
+/** 单盘与 M3U 共用的流式媒体契约，安装时由一个 EmulatorJS 下载钩子挂入虚拟文件系统。 */
+export interface PsxRangeMedia {
+  readonly multiDisc: boolean
+  readonly url: string
+  readonly name: string
+  readonly size: number
+  readonly startupBytes: number
+  readonly head: Uint8Array
+  readonly heads: readonly Uint8Array[]
+  install(fs: PsxRangeFs, xhrFactory: typeof XMLHttpRequest): void
+  dispose(): void
+}
+
+function rangeVersion(url: string, extension: 'chd' | 'm3u' = 'chd'): string | null {
   try {
     const parsed = new URL(url, typeof window === 'undefined' ? 'https://8bitgo.com/' : window.location.href)
     const version = parsed.searchParams.get('romv')
-    return /^https?:$/.test(parsed.protocol) && /\.chd$/i.test(parsed.pathname) &&
+    return /^https?:$/.test(parsed.protocol) && new RegExp(`\\.${extension}$`, 'i').test(parsed.pathname) &&
       version && /^[a-f\d]{32}(?:-\d+)?$/i.test(version) ? version : null
   } catch {
     return null
@@ -40,6 +58,10 @@ function rangeVersion(url: string): string | null {
 
 export function canStreamPsxChd(platform: string, url: string): boolean {
   return platform === 'psx' && rangeVersion(url) !== null
+}
+
+export function canStreamPsxM3u(platform: string, url: string): boolean {
+  return platform === 'psx' && isPsxM3uUrl(url) && rangeVersion(url, 'm3u') !== null
 }
 
 function contentRange(value: string | null): { start: number; end: number; total: number } | null {
@@ -111,7 +133,8 @@ async function fetchBlock(url: string, version: string, start: number, end: numb
 
 /** 不满足 Range / CORS / CHD 格式时抛错，由调用方回退到现有完整下载路径。 */
 export async function preparePsxRangeDisc(url: string, name: string, signal: AbortSignal,
-  fetcher: typeof fetch = fetch, onFatal?: (message: string) => void): Promise<PsxRangeDisc> {
+  fetcher: typeof fetch = fetch, onFatal?: (message: string) => void,
+  options: { includeTail?: boolean; prefetch?: boolean; maxCachedBlocks?: number } = {}): Promise<PsxRangeDisc> {
   const version = rangeVersion(url)
   if (!version) throw new Error('PS1 CHD 缺少固定对象版本')
   const controller = new AbortController()
@@ -122,6 +145,7 @@ export async function preparePsxRangeDisc(url: string, name: string, signal: Abo
   const loading = new Map<number, AbortController>()
   let size = 0
   let failed = false
+  const maxCachedBlocks = Math.max(2, Math.min(MAX_CACHED_BLOCKS, Math.floor(options.maxCachedBlocks ?? MAX_CACHED_BLOCKS)))
   const checkAlive = () => {
     if (controller.signal.aborted || failed) throw new Error('PS1 CHD Range 会话已结束')
   }
@@ -135,7 +159,7 @@ export async function preparePsxRangeDisc(url: string, name: string, signal: Abo
     }
     cache.set(0, first.bytes)
     const lastIndex = Math.floor((size - 1) / PSX_RANGE_BYTES)
-    if (lastIndex > 0) {
+    if (lastIndex > 0 && options.includeTail !== false) {
       const start = lastIndex * PSX_RANGE_BYTES
       const last = await fetchBlock(url, version, start, size - 1, size, controller.signal, fetcher)
       cache.set(lastIndex, last.bytes)
@@ -144,7 +168,7 @@ export async function preparePsxRangeDisc(url: string, name: string, signal: Abo
     const remember = (index: number, bytes: Uint8Array) => {
       cache.delete(index)
       cache.set(index, bytes)
-      while (cache.size > MAX_CACHED_BLOCKS) {
+      while (cache.size > maxCachedBlocks) {
         const victim = [...cache.keys()].find(key => key !== 0 && key !== lastIndex)
         if (victim === undefined) break
         cache.delete(victim)
@@ -168,14 +192,17 @@ export async function preparePsxRangeDisc(url: string, name: string, signal: Abo
         })
     }
     // 趁核心与 BIOS 还在下载，先把顺序开局常读的几块铺好。
-    background(1)
-    background(2)
-    background(3)
+    if (options.prefetch !== false) {
+      background(1)
+      background(2)
+      background(3)
+    }
 
     return {
-      url, name, size,
+      multiDisc: false, url, name, size,
       head: first.bytes.slice(0, 32),
-      startupBytes: Math.min(size, PSX_RANGE_BYTES) + (lastIndex > 0 ? size - lastIndex * PSX_RANGE_BYTES : 0),
+      heads: [first.bytes.slice(0, 32)],
+      startupBytes: Math.min(size, PSX_RANGE_BYTES) + (lastIndex > 0 && options.includeTail !== false ? size - lastIndex * PSX_RANGE_BYTES : 0),
       install(fs, xhrFactory) {
         checkAlive()
         const path = `/${name.split('/').pop()}`
@@ -267,6 +294,147 @@ export async function preparePsxRangeDisc(url: string, name: string, signal: Abo
   } catch (error) {
     controller.abort()
     signal.removeEventListener('abort', abort)
+    throw error
+  }
+}
+
+function manifestVersion(url: string): string {
+  const version = rangeVersion(url, 'm3u')
+  if (!version) throw new Error('PS1 多盘清单缺少固定对象版本；请从已绑定的 R2 ROM 地址启动')
+  return version
+}
+
+async function boundedManifestText(response: Response, version: string): Promise<{ text: string; bytes: number }> {
+  if (response.status !== 200) throw new Error(`PS1 多盘清单读取失败（HTTP ${response.status}）`)
+  if (response.headers.get('ETag') !== `"${version}"`) throw new Error('PS1 多盘清单在读取期间已换版')
+  const encoding = response.headers.get('Content-Encoding')
+  if (encoding && encoding.toLowerCase() !== 'identity') throw new Error('PS1 多盘清单不能压缩传输')
+  if (/text\/html|application\/(?:json|problem\+json)/i.test(response.headers.get('Content-Type') || '')) {
+    throw new Error('PS1 多盘地址返回了网页或错误信息，不是 M3U 清单')
+  }
+  const declared = Number(response.headers.get('Content-Length'))
+  if (Number.isFinite(declared) && declared > MAX_M3U_BYTES) {
+    await response.body?.cancel().catch(() => {})
+    throw new Error('PS1 多盘清单超过 16KB 上限')
+  }
+  if (!response.body) throw new Error('PS1 多盘清单没有可读取的数据')
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      total += value.byteLength
+      if (total > MAX_M3U_BYTES) throw new Error('PS1 多盘清单超过 16KB 上限')
+      chunks.push(value)
+    }
+  } catch (error) {
+    await reader.cancel().catch(() => {})
+    throw error
+  } finally {
+    reader.releaseLock()
+  }
+  if (Number.isFinite(declared) && declared > 0 && total !== declared) throw new Error('PS1 多盘清单长度不符')
+  const bytes = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength }
+  try { return { text: new TextDecoder('utf-8', { fatal: true }).decode(bytes), bytes: total } }
+  catch { throw new Error('PS1 多盘清单不是有效的 UTF-8 文本') }
+}
+
+async function probeDiscObject(url: string, signal: AbortSignal, fetcher: typeof fetch): Promise<{ url: string; size: number }> {
+  const response = await fetcher(url, { method: 'HEAD', cache: 'no-store', signal })
+  if (!response.ok) throw new Error(`PS1 光盘 ${new URL(url).pathname.split('/').pop()} 不可用（HTTP ${response.status}）`)
+  const etag = response.headers.get('ETag')
+  const version = etag?.replace(/^W\//, '').replace(/^"|"$/g, '') || ''
+  if (!/^[a-f\d]{32}(?:-\d+)?$/i.test(version) || etag !== `"${version}"`) {
+    throw new Error('PS1 多盘组中的 CHD 缺少可验证的强 ETag，无法安全按 Range 拼盘')
+  }
+  const size = Number(response.headers.get('Content-Length'))
+  if (!Number.isSafeInteger(size) || size < PSX_RANGE_BYTES || size > MAX_CHD_BYTES) {
+    throw new Error('PS1 多盘组中的 CHD 大小无效（支持范围为 2MB–1GB）')
+  }
+  const parsed = new URL(url)
+  parsed.searchParams.set('romv', version)
+  return { url: parsed.href, size }
+}
+
+/**
+ * 下载并验证小型 M3U，然后逐盘只取 CHD 开头；只有第一盘预读尾块与顺序热区。
+ * M3U 只允许同目录 CHD，逐盘绑定强 ETag，切盘不会读到上传了一半的新旧混合镜像。
+ */
+export async function preparePsxRangePlaylist(url: string, signal: AbortSignal,
+  fetcher: typeof fetch = fetch, onFatal?: (message: string) => void): Promise<PsxRangeMedia> {
+  const version = manifestVersion(url)
+  const controller = new AbortController()
+  const abort = () => controller.abort()
+  signal.addEventListener('abort', abort, { once: true })
+  if (signal.aborted) controller.abort()
+  const discs: PsxRangeDisc[] = []
+  try {
+    const response = await fetcher(url, { headers: { 'If-Match': `"${version}"` }, cache: 'no-store', signal: controller.signal })
+    const manifest = await boundedManifestText(response, version)
+    const entries = parsePsxM3u(manifest.text)
+    const manifestUrl = new URL(url)
+    const directory = manifestUrl.pathname.slice(0, manifestUrl.pathname.lastIndexOf('/') + 1)
+    const maxPerDisc = Math.max(2, Math.floor(MAX_CACHED_BLOCKS / entries.length))
+    let startupBytes = manifest.bytes
+    let totalSize = 0
+    // 最多并发两张盘的头部探测，避免 8 盘组开局时占满连接和瞬时内存。
+    let cursor = 0
+    const prepareWorker = async () => {
+      while (cursor < entries.length) {
+        const index = cursor++
+        const entry = entries[index]
+        const discUrl = new URL(entry.filename, manifestUrl)
+        let resolvedName = ''
+        try { resolvedName = decodeURIComponent(discUrl.pathname.slice(directory.length)) } catch { /* 下面按路径不匹配拒绝 */ }
+        if (discUrl.origin !== manifestUrl.origin || !discUrl.pathname.startsWith(directory) || resolvedName !== entry.filename) {
+          throw new Error('PS1 多盘清单中的光盘必须和清单位于同一目录')
+        }
+        const probed = await probeDiscObject(discUrl.href, controller.signal, fetcher)
+        const disc = await preparePsxRangeDisc(probed.url, entry.filename, controller.signal, fetcher, onFatal, {
+          includeTail: index === 0,
+          prefetch: index === 0,
+          maxCachedBlocks: maxPerDisc,
+        })
+        if (disc.size !== probed.size) {
+          disc.dispose()
+          throw new Error(`PS1 光盘 ${entry.filename} 在探测期间大小发生变化`)
+        }
+        discs[index] = disc
+        startupBytes += disc.startupBytes
+        totalSize += disc.size
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(2, entries.length) }, () => prepareWorker()))
+    const name = manifestUrl.pathname.slice(manifestUrl.pathname.lastIndexOf('/') + 1)
+    let decodedName = name
+    try { decodedName = decodeURIComponent(name) } catch { /* 后面的安全检查会拒绝不合法路径 */ }
+    if (!/^[^\\/:?#|\u0000-\u001f\u007f]{1,156}\.m3u$/i.test(decodedName)) {
+      throw new Error('PS1 多盘清单文件名无效')
+    }
+    const encoder = new TextEncoder()
+    const playlistBytes = encoder.encode(manifest.text.replace(/^\uFEFF/, ''))
+    return {
+      multiDisc: true, url, name: decodedName, size: totalSize, startupBytes,
+      head: discs[0].head,
+      heads: discs.map(disc => disc.head),
+      install(fs, xhrFactory) {
+        for (const disc of discs) disc.install(fs, xhrFactory)
+        fs.writeFile(`/${decodedName}`, playlistBytes)
+      },
+      dispose() {
+        for (const disc of discs) disc.dispose()
+        controller.abort()
+        signal.removeEventListener('abort', abort)
+      },
+    }
+  } catch (error) {
+    controller.abort()
+    signal.removeEventListener('abort', abort)
+    for (const disc of discs) disc?.dispose()
     throw error
   }
 }

@@ -6,6 +6,9 @@
  */
 import { assertValidZip, assertValidZipBlob, extractRomFromZip, isZip, type ZipFileEntry } from './unzip'
 
+/** Flash 单文件太大时，Ruffle 的 JS/WASM 解码会同时持有输入和解压数据；先设浏览器安全线。 */
+export const MAX_SWF_BYTES = 256 * 1024 * 1024
+
 function ascii(bytes: Uint8Array, start: number, length: number): string {
   return String.fromCharCode(...bytes.subarray(start, Math.min(bytes.length, start + length)))
 }
@@ -56,6 +59,9 @@ export function assertSwf(buf: ArrayBuffer): void {
   }
   const declared = new DataView(buf).getUint32(4, true)
   if (declared < 8) throw new Error('SWF 文件头中的长度无效')
+  if (b.length > MAX_SWF_BYTES || declared > MAX_SWF_BYTES) {
+    throw new Error('Flash 文件超过 256 MiB 浏览器安全上限，已停止加载以避免内存耗尽')
+  }
   // 只有 FWS 是未压缩文件，声明长度应当能在当前字节里完整兑现；CWS/ZWS 声明的是解压后大小。
   if (magic === 'FWS' && declared > b.length) throw new Error('SWF 文件下载不完整')
 }

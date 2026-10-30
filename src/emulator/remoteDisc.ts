@@ -183,6 +183,15 @@ export interface ProbeResult {
   size: number
 }
 
+/** 两字节 Range 探测不应让启动界面永远等响应头。 */
+export const RANGE_PROBE_TIMEOUT_MS = 15_000
+/** 读盘单块通常只有 2MB；连续 30 秒一个字节都没有就结束这一局的读取请求。 */
+const RANGE_STALL_TIMEOUT_MS = 30_000
+
+function cancelResponse(res: Response): void {
+  if (res.body) void res.body.cancel().catch(() => {})
+}
+
 /**
  * 这个地址能不能流式读。
  *
@@ -193,17 +202,35 @@ export interface ProbeResult {
  * ⚠️ 探不到就返回 rangeSupported: false，调用方要有整份下载那条退路 ——
  * 对 PS1 那种几百 MB 的盘退回去还能用，PS2 则只能报错（几 GB 下不下来）。
  */
-export async function probeRange(url: string, signal?: AbortSignal): Promise<ProbeResult> {
+export async function probeRange(
+  url: string,
+  signal?: AbortSignal,
+  timeoutMs = RANGE_PROBE_TIMEOUT_MS,
+): Promise<ProbeResult> {
+  if (signal?.aborted) return { rangeSupported: false, size: 0 }
+  const controller = new AbortController()
+  const abortFromParent = () => controller.abort()
+  signal?.addEventListener('abort', abortFromParent, { once: true })
+  const timer = setTimeout(() => controller.abort(), Math.max(1, timeoutMs))
+  let res: Response | null = null
   try {
-    const res = await fetch(url, { headers: { Range: 'bytes=0-1' }, signal })
-    if (!res.ok) return { rangeSupported: false, size: 0 }
+    res = await fetch(url, { headers: { Range: 'bytes=0-1' }, signal: controller.signal })
+    if (!res.ok) {
+      cancelResponse(res)
+      return { rangeSupported: false, size: 0 }
+    }
+    // Range 偏移必须对应磁盘原始字节；代理若 gzip/br 后再回 206，浏览器解码会让偏移失真。
+    if (res.headers.get('content-encoding')) {
+      cancelResponse(res)
+      return { rangeSupported: false, size: 0 }
+    }
     // Content-Range: bytes 0-1/4700372992 —— 斜杠后面才是整盘大小，
     // 这一条比 Content-Length 可靠：206 的 Content-Length 说的是这一片的长度（2），不是整盘
+    // 探测只要两个字节；看完响应头就关掉流，尤其不能把忽略 Range 的 200 整盘下载下来。
     const cr = res.headers.get('content-range') ?? ''
     const match = /^bytes 0-1\/(\d+)$/i.exec(cr)
-    // 探测只要两个字节；看完响应头就关掉流，尤其不能把忽略 Range 的 200 整盘下载下来。
-    void res.body?.cancel().catch(() => {})
     const size = match ? Number(match[1]) : 0
+    cancelResponse(res)
     if (res.status === 206 && Number.isSafeInteger(size) && size > 1) {
       return { rangeSupported: true, size }
     }
@@ -211,26 +238,106 @@ export async function probeRange(url: string, signal?: AbortSignal): Promise<Pro
     return { rangeSupported: false, size: Number.isFinite(len) && len > 0 ? len : 0 }
   } catch {
     return { rangeSupported: false, size: 0 }
+  } finally {
+    clearTimeout(timer)
+    signal?.removeEventListener('abort', abortFromParent)
   }
 }
 
 /** 真实的 Range 取字节。206 之外一律当失败 —— 拿到整份 200 会把内存吃光 */
-export function httpRangeFetcher(url: string, signal?: AbortSignal): RangeFetcher {
+export function httpRangeFetcher(
+  url: string,
+  signal?: AbortSignal,
+  stallMs = RANGE_STALL_TIMEOUT_MS,
+): RangeFetcher {
   return async (start, endInclusive) => {
-    const res = await fetch(url, { headers: { Range: `bytes=${start}-${endInclusive}` }, signal })
-    if (res.status !== 206) {
-      void res.body?.cancel().catch(() => {})
-      throw new Error(`读盘失败：期望 206，实际 ${res.status}`)
+    const expected = endInclusive - start + 1
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(endInclusive) || start < 0 || expected <= 0) {
+      throw new RangeError('读盘失败：Range 偏移无效')
     }
-    const match = /^bytes (\d+)-(\d+)\/(\d+)$/i.exec(res.headers.get('content-range') ?? '')
-    if (!match || Number(match[1]) !== start || Number(match[2]) !== endInclusive || Number(match[3]) <= endInclusive) {
-      void res.body?.cancel().catch(() => {})
-      throw new Error('读盘失败：服务器返回的 Content-Range 与请求偏移不一致')
+
+    const controller = new AbortController()
+    const abortFromParent = () => controller.abort()
+    if (signal?.aborted) controller.abort()
+    else signal?.addEventListener('abort', abortFromParent, { once: true })
+    let timedOut = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const touch = () => {
+      if (timer !== undefined) clearTimeout(timer)
+      timer = setTimeout(() => {
+        timedOut = true
+        controller.abort()
+      }, Math.max(1, stallMs))
     }
-    const bytes = await res.arrayBuffer()
-    if (bytes.byteLength !== endInclusive - start + 1) {
-      throw new Error(`读盘失败：分段长度应为 ${endInclusive - start + 1}，实际 ${bytes.byteLength}`)
+
+    try {
+      touch()
+      const res = await fetch(url, {
+        headers: { Range: `bytes=${start}-${endInclusive}` },
+        signal: controller.signal,
+      })
+      if (res.status !== 206) {
+        cancelResponse(res)
+        throw new Error(`读盘失败：期望 206，实际 ${res.status}`)
+      }
+      if (res.headers.get('content-encoding')) {
+        cancelResponse(res)
+        throw new Error('读盘失败：服务器对 Range 正文启用了压缩，磁盘偏移不可靠')
+      }
+      const match = /^bytes (\d+)-(\d+)\/(\d+)$/i.exec(res.headers.get('content-range') ?? '')
+      if (
+        !match
+        || Number(match[1]) !== start
+        || Number(match[2]) !== endInclusive
+        || !Number.isSafeInteger(Number(match[3]))
+        || Number(match[3]) <= endInclusive
+      ) {
+        cancelResponse(res)
+        throw new Error('读盘失败：服务器返回的 Content-Range 与请求偏移不一致')
+      }
+      const contentLength = res.headers.get('content-length')
+      if (contentLength !== null && Number(contentLength) !== expected) {
+        cancelResponse(res)
+        throw new Error(`读盘失败：分段长度应为 ${expected}，服务器声明 ${contentLength}`)
+      }
+      if (!res.body) {
+        const bytes = await res.arrayBuffer()
+        if (bytes.byteLength !== expected) {
+          throw new Error(`读盘失败：分段长度应为 ${expected}，实际 ${bytes.byteLength}`)
+        }
+        return bytes
+      }
+
+      // 直接写进定长缓冲，不用无界 chunks；错回一整张盘的代理响应也不会把内存吃光。
+      const reader = res.body.getReader()
+      const bytes = new Uint8Array(expected)
+      let loaded = 0
+      try {
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) break
+          if (!value) continue
+          touch()
+          if (loaded + value.byteLength > expected) {
+            await reader.cancel().catch(() => {})
+            throw new Error(`读盘失败：Range 正文超过 ${expected} 字节`)
+          }
+          bytes.set(value, loaded)
+          loaded += value.byteLength
+        }
+      } finally {
+        reader.releaseLock()
+      }
+      if (loaded !== expected) {
+        throw new Error(`读盘失败：分段长度应为 ${expected}，实际 ${loaded}`)
+      }
+      return bytes.buffer
+    } catch (error) {
+      if (timedOut) throw new Error(`读盘卡住：${Math.round(Math.max(1, stallMs) / 1000)} 秒没有收到数据`)
+      throw error
+    } finally {
+      if (timer !== undefined) clearTimeout(timer)
+      signal?.removeEventListener('abort', abortFromParent)
     }
-    return bytes
   }
 }

@@ -156,6 +156,8 @@ export interface VideoTuning {
   contentHint: 'detail' | 'motion'
   /** true = 走的像素画那一档。调试和文案用 */
   retro: boolean
+  /** true = 矢量 / 文字等细节型内容；网络降档时优先减帧，不额外压低分辨率 */
+  preserveResolution: boolean
   /**
    * 编码前把分辨率缩几倍（见 encodeScaleFor）。1 = 原样编码。
    * ⚠️ 上面的 maxBitrate / retro / degradationPreference 已经是按**缩完之后**的尺寸算的，
@@ -191,6 +193,8 @@ export interface TuningInput {
    * 分享标签页那条路推的是整个标签页，没有「原生尺寸」可言，不传。
    */
   native?: { width?: number; height?: number } | null
+  /** 细节型源（如 Ruffle 的矢量舞台）在弱网时优先降帧，避免整幅画面缩成一团 */
+  preserveResolution?: boolean
 }
 
 /**
@@ -200,7 +204,7 @@ export interface TuningInput {
  * 猜错的代价不对称 —— 把大源当小源，等于让 640×480 保着分辨率掉到个位数帧率，
  * 那是没法玩的；反过来只是像素画糊一点。
  */
-export function tuningFor({ width, height, fps, maxBitrate, minBitrate = MIN_BITRATE, dualScreen, native }: TuningInput): VideoTuning {
+export function tuningFor({ width, height, fps, maxBitrate, minBitrate = MIN_BITRATE, dualScreen, native, preserveResolution = false }: TuningInput): VideoTuning {
   const w = Number(width) || 0
   const h = Number(height) || 0
   /*
@@ -224,6 +228,7 @@ export function tuningFor({ width, height, fps, maxBitrate, minBitrate = MIN_BIT
   // 判「是不是像素画」看**单块屏**：双屏机型的画布是两块屏拼的，见文件头那段
   const perScreen = dualScreen ? judged / 2 : judged
   const retro = perScreen > 0 && perScreen <= RETRO_MAX_PIXELS
+  const keepDetail = retro || preserveResolution
 
   const computed = encoded > 0
     ? Math.round(Math.max(minBitrate, Math.min(MAX_BITRATE, encoded * fps * BITS_PER_PIXEL_FRAME)))
@@ -232,9 +237,10 @@ export function tuningFor({ width, height, fps, maxBitrate, minBitrate = MIN_BIT
     maxBitrate: maxBitrate ?? computed,
     maxFramerate: fps,
     // 小源：分辨率一格都不能少，宁可掉帧；大源：保流畅，缩一点没人在意
-    degradationPreference: retro ? 'maintain-resolution' : 'maintain-framerate',
-    contentHint: retro ? 'detail' : 'motion',
+    degradationPreference: keepDetail ? 'maintain-resolution' : 'maintain-framerate',
+    contentHint: keepDetail ? 'detail' : 'motion',
     retro,
+    preserveResolution: keepDetail,
     scaleResolutionDownBy,
   }
 }

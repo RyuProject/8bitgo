@@ -49,8 +49,9 @@ import { fastForwardBoot, mameBootFastForwardFrames } from '../mameBootSkip'
 import { identifyKnownMameArcadeMedia, mameDiskSatisfies, readMameChdHeader, type MameArcadeDiskProfile } from '@/lib/mameArcadeMedia'
 import { identifyNamcoMameSet, type NamcoMameMatch } from '@/lib/namcoMameSets'
 import { combinedRomProgress, gateProgressUntilRomComplete } from '../romProgress'
-import { chdCompressors, psxCoreForPreparedName, psxCoreForTransfer, PSX_CHD_AUDIO_LATENCY_MS, PSX_CHD_CORE } from '../psxChd'
-import { canStreamPsxChd, preparePsxRangeDisc, type PsxRangeDisc, type PsxRangeFs } from '../psxRangeDisc'
+import { chdCompressors, psxCoreForPreparedName, psxCoreForTransfer, PSX_CHD_AUDIO_LATENCY_MS, PSX_CHD_COMPAT_CORE, PSX_CHD_CORE } from '../psxChd'
+import { canStreamPsxChd, preparePsxRangeDisc, preparePsxRangePlaylist, type PsxRangeMedia, type PsxRangeFs } from '../psxRangeDisc'
+import { isPsxM3uUrl } from '../psxM3u'
 import { MAME_CHD_MAX_BYTES, mameChdCacheKey } from '../mameChdWarm'
 import { warmEmulatorJsStart } from '../ejsStartWarm'
 import { writeFsInjections, type FsInjection } from '../fsInjection'
@@ -916,8 +917,9 @@ function installFsInjector(
   beforeStart?: (emu: EjsEmulator) => void,
   shouldContinue: () => boolean = () => true,
   beforeInit?: (emu: EjsEmulator) => void,
-  psxRange?: PsxRangeDisc,
+  psxRange?: PsxRangeMedia,
   onRequiredFailure?: (path: string, message: string) => void,
+  onPsxRangeFailure?: (message: string) => void,
 ): void {
   let emu: EjsEmulator | undefined
   let wrapped = false
@@ -936,9 +938,14 @@ function installFsInjector(
           if (!fs?.lookupPath) throw new Error('虚拟文件系统尚未准备好')
           // 用主页面的 XHR：iframe 是 sandbox srcdoc 的不透明源，Origin: null 不一定被 R2 CORS 放行。
           psxRange.install(fs, window.XMLHttpRequest)
-          console.info(`[emulatorjs] PS1 CHD Range 已挂载：${psxRange.name}（${psxRange.size} 字节）`)
+          console.info(`[emulatorjs] PS1 ${psxRange.multiDisc ? '多盘 Range' : 'CHD Range'} 已挂载：${psxRange.name}（${psxRange.size} 字节）`)
           return Promise.resolve({ files: [{ filename: psxRange.name.split('/').pop() }] })
         } catch (error) {
+          if (psxRange.multiDisc) {
+            const message = `PS1 多盘组挂载失败：${error instanceof Error ? error.message : String(error)}`
+            onPsxRangeFailure?.(message)
+            return Promise.reject(new Error(message))
+          }
           // 挂载失败时交回引擎完整下载，不能让一张已绑定的光盘直接变成黑屏。
           console.warn('[emulatorjs] PS1 CHD Range 挂载失败，回退完整下载：', error)
           return originalDownload.call(this, url, type)
@@ -2346,7 +2353,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   /** 预下载生成的 blob:。引擎通常会自行回收，销毁时再兜一次是幂等的。 */
   let preparedArcadeBlobUrl = ''
   /** 只给带固定 romv 的裸 CHD 挂按需文件；其它光盘仍走完整下载。 */
-  let preparedPsxRange: PsxRangeDisc | null = null
+  let preparedPsxRange: PsxRangeMedia | null = null
   /** 区分「ROM 预下载失败」与后续 loader.js / 核心加载失败，避免错误提示张冠李戴。 */
   let arcadeRomPrepared = false
   /** 同上，光盘那条路的。两条路的失败提示不一样，不能合成一个标志 */
@@ -3543,7 +3550,34 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           : Promise.resolve(null)
         const iceTask = NETPLAY_URL ? optionalWithin(fetchIceConfig(), 6_000) : Promise.resolve(null)
 
-        if (PSX_RANGE_ENABLED && !isFile && canStreamPsxChd(options.platform, remoteGameUrl)) {
+        if (!isFile && options.platform === 'psx' && isPsxM3uUrl(remoteGameUrl)) {
+          try {
+            if (!PSX_RANGE_ENABLED) throw new Error('本站尚未启用 PS1 多盘流式读取')
+            preparedPsxRange = await preparePsxRangePlaylist(
+              remoteGameUrl,
+              prepareAbort.signal,
+              fetch,
+              (message) => {
+                if (destroyed) return
+                logEngine(`[psx-range] ${message}`)
+                options.onError?.(message, 'runtime')
+              },
+            )
+            options.onProgress?.({
+              phase: 'rom',
+              loaded: Math.min(preparedPsxRange.startupBytes, preparedPsxRange.size),
+              total: preparedPsxRange.size,
+              streaming: true,
+            })
+            console.info(`[emulatorjs] PS1 多盘 Range 可用：${preparedPsxRange.heads.length} 张盘，${preparedPsxRange.size} 字节`)
+          } catch (error) {
+            if (destroyed || prepareAbort.signal.aborted) return
+            const message = `PS1 多盘组暂时无法流式读取：${error instanceof Error ? error.message : String(error)}。请检查 M3U 与同目录 CHD 是否都已发布，且对象支持 Range。`
+            console.error('[emulatorjs] PS1 多盘组准备失败：', error)
+            options.onError?.(message, 'runtime')
+            return
+          }
+        } else if (PSX_RANGE_ENABLED && !isFile && canStreamPsxChd(options.platform, remoteGameUrl)) {
           try {
             preparedPsxRange = await preparePsxRangeDisc(
               remoteGameUrl,
@@ -3558,9 +3592,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             )
             options.onProgress?.({
               phase: 'rom',
-              loaded: preparedPsxRange.startupBytes,
-              total: preparedPsxRange.startupBytes,
-              ratio: 1,
+              loaded: Math.min(preparedPsxRange.startupBytes, preparedPsxRange.size),
+              total: preparedPsxRange.size,
+              streaming: true,
             })
             console.info(`[emulatorjs] PS1 CHD Range 可用，首尾区间已预热：${preparedPsxRange.size} 字节`)
           } catch (error) {
@@ -3579,7 +3613,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
          * 光盘平台（PS1）：接管下载，为的是能缓存、能提前告诉玩家要下多少
          * （见 prepareRemoteDiscRom 的说明）。和街机那条互斥 —— 一个平台不会同时是两者。
          */
-        if (!isFile && romArchiveRef(remoteGameUrl) && options.platform !== 'arcade') {
+        if (preparedPsxRange?.multiDisc) {
+          engineGameName = preparedPsxRange.name
+          discRomPrepared = true
+        } else if (!isFile && romArchiveRef(remoteGameUrl) && options.platform !== 'arcade') {
           const extracted = await loadRemoteArchiveRom(remoteGameUrl, (p) => {
             beat()
             options.onProgress?.(p)
@@ -3783,7 +3820,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         const chdHead = options.platform === 'psx' && /\.chd$/i.test(engineGameName)
           ? preparedPsxRange?.head ?? await readDiscHead(isFile ? options.game as File : gameUrl)
           : null
-        const discCore = psxCoreForPreparedName(options.platform, core, engineGameName, chdHead)
+        const discCore = preparedPsxRange?.multiDisc
+          ? PSX_CHD_COMPAT_CORE
+          : psxCoreForPreparedName(options.platform, core, engineGameName, chdHead)
         if (discCore !== core) {
           console.info(`[emulatorjs] CHD 光盘切换核心：${core} → ${discCore}（压缩器 ${chdCompressors(chdHead)?.join('/') || '未知'}）`)
           core = discCore
@@ -4333,7 +4372,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             // runtime：与 ROM 无关，不能把好好的 ROM 判坏、去切备用源（真正的下载原因已在下面提前报过）
             const disk = (path?.split('/').pop() ?? '').replace(/\.chd$/i, '') || '?'
             failLoad(fmt(rt.ejsMameDiskFailed, { disk, msg: message }), 'runtime')
-          })
+          },
+          (message) => failLoad(message, 'runtime'))
         }
 
         // 网络探针也要赶在 loader.js 之前包好，否则核心那一趟就漏过去了

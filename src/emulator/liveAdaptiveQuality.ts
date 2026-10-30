@@ -11,6 +11,7 @@
 import { MAX_ENCODE_SCALE_DOWN, type VideoTuning } from './videoTuning'
 
 export type LiveQualityTier = 'high' | 'balanced' | 'low'
+export type LiveQualityPreference = 'auto' | 'clear' | 'smooth'
 
 export interface ViewerNetworkSample {
   /** 最近一个采样窗口的丢包率（0~1） */
@@ -136,9 +137,49 @@ export function observeLiveQuality(
  * 像素画不做二次缩放：GBA / NES 的字本来就只有几像素，缩半比掉几帧更伤。
  * 大画面则同时缩分辨率和码率，能明显减少主播这一路编码器的工作量。
  */
-export function tuningForLiveTier(base: VideoTuning, tier: LiveQualityTier): VideoTuning {
-  if (tier === 'high') return { ...base }
+export function tuningForLiveTier(
+  base: VideoTuning,
+  tier: LiveQualityTier,
+  preference: LiveQualityPreference = 'auto',
+): VideoTuning {
   const low = tier === 'low'
+
+  // 清晰档宁可少几帧，也不把有效舞台再次缩小；浏览器的带宽估计仍可继续保护连接。
+  if (preference === 'clear') {
+    const bitrateRatio = tier === 'high' ? 1 : low ? 0.78 : 0.9
+    return {
+      ...base,
+      maxBitrate: Math.max(250_000, Math.round(base.maxBitrate * bitrateRatio)),
+      maxFramerate: tier === 'high' ? base.maxFramerate : Math.min(base.maxFramerate, low ? 18 : 24),
+      scaleResolutionDownBy: base.scaleResolutionDownBy,
+      degradationPreference: 'maintain-resolution',
+      contentHint: 'detail',
+    }
+  }
+
+  if (tier === 'high') {
+    if (preference !== 'smooth') return { ...base }
+    // 流畅偏好在网络正常时也要告诉编码器：发生自适应时，优先保帧而非保分辨率。
+    return {
+      ...base,
+      degradationPreference: base.retro ? 'maintain-resolution' : 'maintain-framerate',
+      contentHint: base.retro ? 'detail' : 'motion',
+    }
+  }
+
+  // 自动档对矢量舞台与像素画一样先保住分辨率；掉帧比把整幅 Flash 画面缩小更不伤观感。
+  if (preference === 'auto' && base.preserveResolution) {
+    return {
+      ...base,
+      maxBitrate: Math.max(250_000, Math.round(base.maxBitrate * (low ? 0.65 : 0.8))),
+      maxFramerate: Math.min(base.maxFramerate, low ? 18 : 24),
+      scaleResolutionDownBy: base.scaleResolutionDownBy,
+      degradationPreference: 'maintain-resolution',
+      contentHint: 'detail',
+    }
+  }
+
+  // 流畅档放宽分辨率自适应，换取弱网下更连续的动作；原生像素画仍不缩，避免文字和像素直接糊掉。
   const bitrateRatio = low ? 0.42 : 0.70
   const fpsCap = low ? 18 : 24
   const scale = base.retro
@@ -150,7 +191,8 @@ export function tuningForLiveTier(base: VideoTuning, tier: LiveQualityTier): Vid
     maxBitrate: Math.max(250_000, Math.round(base.maxBitrate * bitrateRatio)),
     maxFramerate: Math.min(base.maxFramerate, fpsCap),
     scaleResolutionDownBy: scale,
-    // 像素画继续保字形；大画面允许降清晰度来换连续播放。
+    // 像素画继续保字形；流畅档的大画面允许降清晰度来换连续播放。
     degradationPreference: base.retro ? 'maintain-resolution' : 'maintain-framerate',
+    contentHint: base.retro ? 'detail' : 'motion',
   }
 }

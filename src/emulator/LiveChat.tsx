@@ -6,6 +6,7 @@ import { useT } from '@/services/i18n'
 import { UserRoleDot } from '@/components/UserRole'
 import { CHAT_MAX_LENGTH, chatTextLength, sanitizeChatText } from '../../shared/live-chat.js'
 import type { ChatSendResult } from './chatSend'
+import type { LiveQualityPreference } from './liveAdaptiveQuality'
 import { appendChat } from './liveChatStore'
 
 /**
@@ -269,6 +270,14 @@ export interface ChatBarToggle {
   toggle: () => void
 }
 
+/** 主播选择直播画质；选项文案由 LiveControls 按当前语言提供。 */
+export interface ChatBarQualityControl {
+  value: LiveQualityPreference
+  hint: string
+  options: Array<{ value: LiveQualityPreference; label: string }>
+  change: (value: LiveQualityPreference) => void
+}
+
 export function LiveChatBar({
   onSend,
   live,
@@ -292,7 +301,7 @@ export function LiveChatBar({
    * 为什么放在这一行而不是工具栏：工具栏那排图标在 360pt 上已经要折行了，而这两个
    * 是**主播才用**的东西，跟观众无关；弹幕框本来就是主播的手停留的地方。
    */
-  live?: ChatBarToggle | null
+  live?: (ChatBarToggle & { quality?: ChatBarQualityControl }) | null
   match?: ChatBarToggle | null
   /**
    * 「上场当 2P」（见 coopSeat.ts）。**这一颗两边都有**，只是语义相反：
@@ -406,6 +415,19 @@ export function LiveChatBar({
           位置固定，不会因为开关出现 / 消失而左右横跳。
           窄屏只留符号，文字进 title —— 和工具栏那排按钮同一套处理。
         */}
+        {live?.quality && (
+          <select
+            aria-label={live.quality.hint}
+            title={live.quality.hint}
+            value={live.quality.value}
+            onChange={(event) => live.quality?.change(event.currentTarget.value as LiveQualityPreference)}
+            className="h-7 max-w-24 shrink rounded-lg border border-line bg-surface px-1.5 text-[11px] text-muted focus:border-brand focus:outline-none"
+          >
+            {live.quality.options.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+        )}
         {live && <ToggleButton icon="📡" t={live} />}
         {match && <ToggleButton icon="🎮" t={match} />}
         {/* 「上场当 2P」。👥 两边都可能出现，见上面 coop 的注释 */}

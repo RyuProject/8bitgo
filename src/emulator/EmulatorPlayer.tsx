@@ -5,6 +5,7 @@ import { formatBytes, formatSpeed, isRomFileAccepted } from '@/lib/emulator'
 import { detectRom, describeDetection, type RomDetection } from './detect'
 import { isPc98FdiFileName } from './pc98'
 import { jsnesCanRun } from './nesMapper'
+import { probeNesRomHeader } from './nesRomProbe'
 import { resolveRuntime, runtimesFor, extOf } from './registry'
 import { romArchiveRef } from '@/lib/romArchiveUrl'
 import { romUrlForKey } from '@/services/roms'
@@ -1640,18 +1641,7 @@ export function EmulatorPlayer({
     const probeUrl = romUrl
     const controller = new AbortController()
     setNesProbe({ url: probeUrl, ready: false })
-    fetch(probeUrl, { headers: { Range: 'bytes=0-15' }, signal: controller.signal })
-      .then(async (response) => {
-        // 不支持 Range 时若调用 arrayBuffer()，浏览器会继续下载整份 ROM，只为读 16 字节。
-        // 主动取消响应体，默认走 EmulatorJS；真正开局时再由正常下载链获取完整内容。
-        if (response.status !== 206) {
-          await response.body?.cancel().catch(() => undefined)
-          return undefined
-        }
-        const totalMatch = /\/(\d+)$/.exec(response.headers.get('content-range') ?? '')
-        const totalBytes = totalMatch ? Number(totalMatch[1]) : undefined
-        return { header: await response.arrayBuffer(), totalBytes }
-      })
+    void probeNesRomHeader(probeUrl, { signal: controller.signal })
       .then((probe) => {
         if (controller.signal.aborted) return
         setNesProbe({
@@ -4851,7 +4841,7 @@ export function EmulatorPlayer({
         */
         onSend={chatSend}
         /* 这两个只有主播有；观众那一路 liveCtl / matchCtl 都是 null，按钮不画 */
-        live={liveCtl && { on: liveCtl.on, label: liveCtl.label, hint: liveCtl.hint, toggle: liveCtl.toggle }}
+        live={liveCtl && { on: liveCtl.on, label: liveCtl.label, hint: liveCtl.hint, toggle: liveCtl.toggle, quality: liveCtl.quality }}
         match={matchCtl}
         /* 主播那一颗从 LiveControls 上来，观众那一颗是本地算的；一个人只可能占一边 */
         coop={liveCtl?.coop ?? coopCtl}
@@ -4902,7 +4892,7 @@ export function EmulatorPlayer({
             room={myNetRoom}
             messages={chat.messages}
             onSend={chatSend}
-            live={liveCtl && { on: liveCtl.on, label: liveCtl.label, hint: liveCtl.hint, toggle: liveCtl.toggle }}
+            live={liveCtl && { on: liveCtl.on, label: liveCtl.label, hint: liveCtl.hint, toggle: liveCtl.toggle, quality: liveCtl.quality }}
             match={matchCtl}
           />,
           matchPanelSlot,

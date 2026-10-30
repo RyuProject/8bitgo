@@ -101,7 +101,13 @@ await assert.rejects(loadRemoteArchiveRom(`${base.replace('game.nes', 'missing.n
 body = zip('folder/game.nes', rom, 8, true)
 await assert.rejects(loadRemoteArchiveRom(`${base}&v=4`), /校验失败/)
 body = zip('folder/game.nes', rom, 8, false, 513 * 1024 * 1024)
-await assert.rejects(loadRemoteArchiveRom(`${base}&v=5`), /过大/)
+await assert.rejects(loadRemoteArchiveRom(`${base}&v=5`), /过大|超过/)
+body = zip('folder/movie.swf', Buffer.from([1]), 8, false, 3 * 1024 * 1024)
+await assert.rejects(
+  loadRemoteArchiveRom('https://files.example.com/outer.zip#rom=folder%2Fmovie.swf', undefined, undefined, undefined, 2 * 1024 * 1024),
+  /超过 2 MiB/,
+  'Flash ZIP 成员的中央目录大小必须在 inflate 分配前按运行时预算拒绝',
+)
 await assert.rejects(loadRemoteArchiveRom('https://files.example.com/outer.zip#rom=../bad.nes'), /路径无效/)
 body = zip('folder/actual.nds', rom)
 const auto = 'https://files.example.com/hash.nds.zip#rom=auto&v=1'

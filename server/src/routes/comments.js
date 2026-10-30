@@ -3,8 +3,8 @@
  * （game_comments，宿主是 game_id 或 post_id 二选一，见 schema-v2.sql）。
  *
  * 规矩就三条，都在这一层落实，不指望前端自觉：
- *   - **发表必须登录**（requireUser）。匿名评论区在一个能被搜索引擎抓到的站点上
- *     等于免费的外链农场，上线第一周就会被灌满。
+ *   - 游客也能发表，但写入待审核队列；登录用户正常发表后立即可见。
+ *     这样不抬高参与门槛，同时避免匿名内容绕过审核出现在公开页面。
  *   - **删除是软删除**（deleted_at），后台仍然看得到原文。真删除只发生在
  *     删游戏 / 删文章 / 注销账号时，由外键级联完成。
  *   - **隐藏是管理员的动作**（hidden），和作者自己删的分开记 —— 处理举报纠纷时
@@ -23,14 +23,16 @@
  */
 import { Router } from 'express'
 import { query, queryOne } from '../db.js'
-import { requireUser, requireAbility, hasAbility } from '../auth.js'
+import { optionalUser, requireUser, requireAbility, hasAbility } from '../auth.js'
 import { commentRowToApi, countryOf } from '../mappers.js'
-import { take, clientKey, isMeaningfulIp } from '../rateLimit.js'
+import { take, takeAnonymous, clientKey, isMeaningfulIp } from '../rateLimit.js'
 
 export const commentsRouter = Router()
 
 /** 正文长度上限，和 game_comments.content 的 VARCHAR(2000) 对齐 */
 const MAX_LEN = 2000
+/** 后台 LIKE 查询有五个候选列，限制输入长度避免管理员误粘超长文本拖慢数据库 */
+const MAX_SEARCH_LEN = 120
 /**
  * 发表后多久内还能编辑。
  *
@@ -104,12 +106,13 @@ function pageParams(req) {
  */
 const SELECT_COLS = `
   c.*, u.nickname, u.avatar, u.role, u.email, r.score AS rating_score,
-  p.content AS parent_content, p.hidden AS parent_hidden, p.deleted_at AS parent_deleted_at,
+  p.content AS parent_content, p.hidden AS parent_hidden, p.pending_review AS parent_pending_review,
+  p.deleted_at AS parent_deleted_at,
   pu.nickname AS parent_nickname, pu.avatar AS parent_avatar, pu.role AS parent_role`
 
 const FROM_JOINS = `
   FROM game_comments c
-  JOIN users u ON u.id = c.user_id
+  LEFT JOIN users u ON u.id = c.user_id
   LEFT JOIN game_comments p ON p.id = c.parent_id
   LEFT JOIN users pu ON pu.id = p.user_id
   LEFT JOIN game_ratings r ON r.game_id = c.game_id AND r.user_id = c.user_id`
@@ -124,7 +127,7 @@ const FROM_JOINS = `
 
 /**
  * 后台评论列表。
- *   ?status=all | visible | hidden | deleted
+ *   ?status=all | visible | hidden | deleted | pending
  *   ?target=game | post        只看某一种宿主
  *   ?q=      在正文 / 昵称 / 邮箱 / 游戏名 / 文章标题里搜
  *   ?game=   只看某款游戏（slug）
@@ -134,30 +137,44 @@ const FROM_JOINS = `
  */
 commentsRouter.get('/admin/list', requireAbility('comments:review'), async (req, res, next) => {
   try {
-    const { page, size, offset } = pageParams(req)
+    const { page: requestedPage, size } = pageParams(req)
     const where = []
     const params = []
 
     const status = String(req.query.status || 'all')
-    if (status === 'visible') where.push('c.hidden = 0 AND c.deleted_at IS NULL')
-    else if (status === 'hidden') where.push('c.hidden = 1')
+    if (!['all', 'visible', 'hidden', 'deleted', 'pending'].includes(status)) {
+      return res.status(400).json({ error: '评论状态筛选值不合法' })
+    }
+    if (status === 'visible') where.push('c.pending_review = 0 AND c.hidden = 0 AND c.deleted_at IS NULL')
+    else if (status === 'hidden') where.push('c.pending_review = 0 AND c.hidden = 1 AND c.deleted_at IS NULL')
     else if (status === 'deleted') where.push('c.deleted_at IS NOT NULL')
+    else if (status === 'pending') where.push('c.pending_review = 1 AND c.deleted_at IS NULL')
 
     // 宿主筛选：只看游戏评论 / 只看文章评论
     const target = String(req.query.target || '')
+    if (!['', 'all', 'game', 'post'].includes(target)) {
+      return res.status(400).json({ error: '评论归属筛选值不合法' })
+    }
     if (target === 'game') where.push('c.game_id IS NOT NULL')
     else if (target === 'post') where.push('c.post_id IS NOT NULL')
 
-    if (typeof req.query.game === 'string' && req.query.game.trim()) {
+    const gameSlug = typeof req.query.game === 'string' ? req.query.game.trim() : ''
+    if (gameSlug.length > 120) return res.status(400).json({ error: '游戏标识不能超过 120 个字符' })
+    if (gameSlug) {
       where.push('g.slug = ?')
-      params.push(req.query.game.trim())
+      params.push(gameSlug)
     }
-    if (typeof req.query.post === 'string' && req.query.post.trim()) {
+    const postSlug = typeof req.query.post === 'string' ? req.query.post.trim() : ''
+    if (postSlug.length > 120) return res.status(400).json({ error: '文章标识不能超过 120 个字符' })
+    if (postSlug) {
       where.push('po.slug = ?')
-      params.push(req.query.post.trim())
+      params.push(postSlug)
     }
 
     const q = typeof req.query.q === 'string' ? req.query.q.trim() : ''
+    if (q.length > MAX_SEARCH_LEN) {
+      return res.status(400).json({ error: `搜索内容不能超过 ${MAX_SEARCH_LEN} 个字符` })
+    }
     if (q) {
       where.push('(c.content LIKE ? OR u.nickname LIKE ? OR u.email LIKE ? OR g.title LIKE ? OR po.title LIKE ?)')
       // LIKE 的通配符要转义，否则搜「100%」会退化成「100 开头的一切」
@@ -178,6 +195,9 @@ commentsRouter.get('/admin/list', requireAbility('comments:review'), async (req,
     const total = Number(
       (await queryOne(`SELECT COUNT(*) AS n ${joins} ${clause}`, params))?.n ?? 0,
     )
+    // 当前页最后一条刚好被永久删除时，夹到真实末页，避免管理后台显示空白的「第 2/2 页」。
+    const page = Math.min(requestedPage, Math.max(1, Math.ceil(total / size)))
+    const offset = (page - 1) * size
     const rows = await query(
       `SELECT ${SELECT_COLS}, g.slug AS game_slug, g.title AS game_title,
               po.slug AS post_slug, po.title AS post_title ${joins} ${clause}
@@ -192,7 +212,7 @@ commentsRouter.get('/admin/list', requireAbility('comments:review'), async (req,
 })
 
 /**
- * 隐藏 / 恢复一条评论：PATCH /api/comments/admin/:id { hidden: true|false }
+ * 隐藏 / 恢复或审核通过一条评论。审核通过会清除待审内容此前设置的隐藏状态。
  *
  * 隐藏不动 deleted_at，恢复也不会把作者自己删掉的评论捞回来 ——
  * 那两件事的主体不同，不能互相覆盖。
@@ -201,10 +221,21 @@ commentsRouter.patch('/admin/:id', requireAbility('comments:review'), async (req
   try {
     const id = Number(req.params.id)
     if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: '评论 ID 不合法' })
-    if (typeof req.body?.hidden !== 'boolean') return res.status(400).json({ error: 'hidden 必须是布尔值' })
-    const r = await query('UPDATE game_comments SET hidden = ? WHERE id = ?', [req.body.hidden ? 1 : 0, id])
-    if (!r.affectedRows) return res.status(404).json({ error: '评论不存在' })
-    res.json({ ok: true, hidden: req.body.hidden })
+    const hasHidden = typeof req.body?.hidden === 'boolean'
+    const hasReview = typeof req.body?.pendingReview === 'boolean'
+    if (hasHidden === hasReview) {
+      return res.status(400).json({ error: '必须且只能提供 hidden 或 pendingReview 布尔值' })
+    }
+    const column = hasHidden ? 'hidden' : 'pending_review'
+    const value = hasHidden ? req.body.hidden : req.body.pendingReview
+    const r = hasReview && value === false
+      ? await query('UPDATE game_comments SET hidden = IF(pending_review = 1, 0, hidden), pending_review = 0 WHERE id = ?', [id])
+      : await query(`UPDATE game_comments SET ${column} = ? WHERE id = ?`, [value ? 1 : 0, id])
+    // MySQL 对「重复设成同一状态」可能报告 0 changed rows；先确认存在，保持管理操作幂等。
+    if (!r.affectedRows && !(await queryOne('SELECT id FROM game_comments WHERE id = ?', [id]))) {
+      return res.status(404).json({ error: '评论不存在' })
+    }
+    res.json({ ok: true, ...(hasHidden ? { hidden: value } : { pendingReview: value }) })
   } catch (e) {
     next(e)
   }
@@ -237,6 +268,8 @@ commentsRouter.delete('/admin/:id', requireAbility('comments:review'), async (re
  */
 async function resolveTarget(gameSlug, postSlug) {
   if (gameSlug && postSlug) return { status: 400, error: 'game 和 post 只能给一个' }
+  if (gameSlug && gameSlug.length > 120) return { status: 400, error: '游戏标识不能超过 120 个字符' }
+  if (postSlug && postSlug.length > 120) return { status: 400, error: '文章标识不能超过 120 个字符' }
   if (gameSlug) {
     const row = await queryOne('SELECT id FROM games WHERE slug = ?', [gameSlug])
     if (!row) return { status: 404, error: '游戏不存在' }
@@ -261,6 +294,10 @@ async function resolveTarget(gameSlug, postSlug) {
  */
 commentsRouter.get('/', async (req, res, next) => {
   try {
+    // 评论列表每次会触发宿主查询、总数查询和带引用信息的列表查询；公开读接口也必须限速。
+    const gate = takeAnonymous(req, 'comments-list', { perIp: 120, global: 3000 })
+    if (!gate.ok) return res.status(429).json({ error: '评论读取太频繁，请稍后再试', retryAfter: gate.retryAfter })
+
     const target = await resolveTarget(
       typeof req.query.game === 'string' ? req.query.game.trim() : '',
       typeof req.query.post === 'string' ? req.query.post.trim() : '',
@@ -268,7 +305,7 @@ commentsRouter.get('/', async (req, res, next) => {
     if (target.error) return res.status(target.status).json({ error: target.error })
 
     const { page, size, offset } = pageParams(req)
-    const visible = `WHERE c.${target.col} = ? AND c.hidden = 0 AND c.deleted_at IS NULL`
+    const visible = `WHERE c.${target.col} = ? AND c.pending_review = 0 AND c.hidden = 0 AND c.deleted_at IS NULL`
     // 总数只需要主表，不必带上那两个为了引用卡片而做的 JOIN
     const total = Number(
       (await queryOne(`SELECT COUNT(*) AS n FROM game_comments c ${visible}`, [target.id]))?.n ?? 0,
@@ -301,13 +338,14 @@ async function loadOne(id, opts) {
  * 「发表」这一下到底改没改我的分说不清。作者的分仍然会显示在他每条评论上，
  * 那是下面 SELECT 里 LEFT JOIN game_ratings 现查的当前值，和发评论这个动作无关。
  *
- * 限流是必须的 —— 这是个登录用户就能往数据库里写文本的接口。
- * 两道：按用户（挡住一个号刷屏）和按 IP（挡住批量注册的小号）。
+ * 登录用户按用户和 IP 限流并立即公开；游客按 IP 和全站总量限流，写入待审核队列。
  * IP 那道只在拿得到真实 IP 时才算 —— 反代没透传时所有人都塌缩成同一个值，
  * 按 IP 限流会退化成「整站每分钟只能有 10 条评论」（见 rateLimit.js 的 isMeaningfulIp）。
  */
-commentsRouter.post('/', requireUser, async (req, res, next) => {
+commentsRouter.post('/', optionalUser, async (req, res, next) => {
   try {
+    // optionalUser 不查封禁状态；封禁中的旧令牌不能借游客入口发布，更不能拿到免审核直显。
+    if (req.user?.status === 'banned') return res.status(403).json({ error: '账号已被封禁' })
     const gameSlug = String(req.body?.gameSlug ?? '').trim()
     const postSlug = String(req.body?.postSlug ?? '').trim()
     const content = cleanContent(req.body?.content)
@@ -317,14 +355,20 @@ commentsRouter.post('/', requireUser, async (req, res, next) => {
     if (!content) return res.status(400).json({ error: '评论内容不能为空' })
     if (content.length > MAX_LEN) return res.status(400).json({ error: `评论不能超过 ${MAX_LEN} 字` })
 
-    const perUser = take(`comment:user:${req.user.id}`, 5, 60_000)
-    if (!perUser.ok) return res.status(429).json({ error: '发言太频繁，请稍后再试', retryAfter: perUser.retryAfter })
-    const perHour = take(`comment:user:hour:${req.user.id}`, 60, 3_600_000)
-    if (!perHour.ok) return res.status(429).json({ error: '今天发得有点多，请稍后再试', retryAfter: perHour.retryAfter })
-    const ip = clientKey(req)
-    if (isMeaningfulIp(ip)) {
-      const perIp = take(`comment:ip:${ip}`, 20, 60_000)
-      if (!perIp.ok) return res.status(429).json({ error: '发言太频繁，请稍后再试', retryAfter: perIp.retryAfter })
+    if (req.user) {
+      const perUser = take(`comment:user:${req.user.id}`, 5, 60_000)
+      if (!perUser.ok) return res.status(429).json({ error: '发言太频繁，请稍后再试', retryAfter: perUser.retryAfter })
+      const perHour = take(`comment:user:hour:${req.user.id}`, 60, 3_600_000)
+      if (!perHour.ok) return res.status(429).json({ error: '今天发得有点多，请稍后再试', retryAfter: perHour.retryAfter })
+      const ip = clientKey(req)
+      if (isMeaningfulIp(ip)) {
+        const perIp = take(`comment:ip:${ip}`, 20, 60_000)
+        if (!perIp.ok) return res.status(429).json({ error: '发言太频繁，请稍后再试', retryAfter: perIp.retryAfter })
+      }
+    } else {
+      // 游客只进入审核队列，但写请求仍会占用数据库；按 IP 和全站双限流，避免匿名刷库。
+      const gate = takeAnonymous(req, 'comment:guest', { perIp: 3, global: 600 })
+      if (!gate.ok) return res.status(429).json({ error: '游客发言太频繁，请稍后再试', retryAfter: gate.retryAfter })
     }
 
     const target = await resolveTarget(gameSlug, postSlug)
@@ -340,7 +384,7 @@ commentsRouter.post('/', requireUser, async (req, res, next) => {
       const pid = Number(req.body.parentId)
       if (!Number.isInteger(pid) || pid <= 0) return res.status(400).json({ error: 'parentId 不合法' })
       const parent = await queryOne(
-        `SELECT id FROM game_comments WHERE id = ? AND ${target.col} = ? AND hidden = 0 AND deleted_at IS NULL`,
+        `SELECT id FROM game_comments WHERE id = ? AND ${target.col} = ? AND pending_review = 0 AND hidden = 0 AND deleted_at IS NULL`,
         [pid, target.id],
       )
       if (!parent) return res.status(400).json({ error: '被回复的评论不存在或已被删除' })
@@ -350,11 +394,15 @@ commentsRouter.post('/', requireUser, async (req, res, next) => {
     const country = countryFromRequest(req)
 
     // target.col 只可能是 'game_id' / 'post_id'，另一个宿主列留 NULL
+    const pendingReview = !req.user
     const r = await query(
-      `INSERT INTO game_comments (${target.col}, user_id, parent_id, content, country) VALUES (?, ?, ?, ?, ?)`,
-      [target.id, req.user.id, parentId, content, country],
+      `INSERT INTO game_comments (${target.col}, user_id, parent_id, content, country, pending_review) VALUES (?, ?, ?, ?, ?, ?)`,
+      [target.id, req.user?.id ?? null, parentId, content, country, pendingReview ? 1 : 0],
     )
-    res.status(201).json(await loadOne(r.insertId))
+    const created = await loadOne(r.insertId)
+    // 管理员可能在 INSERT 与回读之间彻底清理该评论；不能返回 201 + null 让前端误判成功。
+    if (!created) return res.status(409).json({ error: '评论状态已变化，请刷新后重试' })
+    res.status(201).json(created)
   } catch (e) {
     next(e)
   }
@@ -385,8 +433,30 @@ commentsRouter.patch('/:id', requireUser, async (req, res, next) => {
       return res.status(403).json({ error: `发表超过 ${Math.round(EDIT_WINDOW_MS / 60000)} 分钟的评论不能再编辑` })
     }
 
-    await query('UPDATE game_comments SET content = ?, edited_at = CURRENT_TIMESTAMP(3) WHERE id = ?', [content, id])
-    res.json(await loadOne(id))
+    const updated = await query(
+      `UPDATE game_comments
+       SET content = ?, edited_at = CURRENT_TIMESTAMP(3)
+       WHERE id = ? AND user_id = ? AND hidden = 0 AND deleted_at IS NULL
+         AND created_at >= CURRENT_TIMESTAMP(3) - INTERVAL 5 MINUTE`,
+      [content, id, req.user.id],
+    )
+    if (!updated.affectedRows) {
+      // 隐藏 / 删除 / 编辑窗口到期可能发生在上面的权限检查之后，重新读状态后给出准确反馈。
+      const current = await queryOne('SELECT id, user_id, hidden, deleted_at, created_at, content FROM game_comments WHERE id = ?', [id])
+      if (!current) return res.status(404).json({ error: '评论不存在' })
+      if (current.user_id !== req.user.id) return res.status(403).json({ error: '只能编辑自己的评论' })
+      if (current.deleted_at) return res.status(410).json({ error: '这条评论已删除' })
+      if (current.hidden) return res.status(403).json({ error: '这条评论已被管理员隐藏，不能编辑' })
+      if (current.content === content && Date.now() - new Date(current.created_at).getTime() <= EDIT_WINDOW_MS) {
+        // 内容相同且同一毫秒重复保存时，MySQL 可能报告 0 个 changed rows；仍按幂等成功处理。
+        const unchanged = await loadOne(id)
+        if (unchanged) return res.json(unchanged)
+      }
+      return res.status(403).json({ error: `发表超过 ${Math.round(EDIT_WINDOW_MS / 60000)} 分钟的评论不能再编辑` })
+    }
+    const next = await loadOne(id)
+    if (!next) return res.status(409).json({ error: '评论状态已变化，请刷新后重试' })
+    res.json(next)
   } catch (e) {
     next(e)
   }

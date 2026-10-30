@@ -15,6 +15,7 @@ export async function loadRemoteArchiveRom(
   onProgress?: (progress: LoadProgress) => void,
   signal?: AbortSignal,
   validate?: (blob: Blob) => Promise<void>,
+  maxRomBytes = MAX_ROM_BYTES,
 ): Promise<{ name: string; blob: Blob; bytes: number; fromCache: boolean }> {
   const ref = romArchiveRef(url)
   if (!ref) throw new Error('ROM 地址缺少 ZIP 内文件标记')
@@ -71,7 +72,13 @@ export async function loadRemoteArchiveRom(
     throw new Error(matches.length ? `ZIP 内有重复文件：${ref.entry}` : `ZIP 内找不到 ROM：${ref.entry}`)
   }
   const entry = matches[0]
-  const data = await extractZipEntry(archive, entry, MAX_ROM_BYTES)
+  // ZIP 中央目录的解压长度必须在 inflate 分配之前检查；Flash 等小运行时可传更紧的预算。
+  const romLimit = Math.min(MAX_ROM_BYTES, maxRomBytes)
+  if (!Number.isSafeInteger(romLimit) || romLimit <= 0) throw new RangeError('远程 ROM 解压上限无效')
+  if (entry.uncompressedSize > romLimit) {
+    throw new RangeError(`ZIP 内 ROM 超过 ${Math.floor(romLimit / 1024 / 1024)} MiB 浏览器安全上限`)
+  }
+  const data = await extractZipEntry(archive, entry, romLimit)
   if (signal?.aborted) throw new DOMException('已取消', 'AbortError')
   if (data.byteLength !== entry.uncompressedSize || crc32(data) !== entry.crc32) {
     throw new Error(`ZIP 内 ROM 校验失败：${entry.name}`)

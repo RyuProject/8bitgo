@@ -496,10 +496,12 @@ export interface RuntimeHandle {
   /** 暂停 / 继续 */
   setPaused?: (paused: boolean) => void
   /**
-   * 核心真正输出的画面尺寸（不是画布尺寸）。直播靠它把编码分辨率缩回原生；
-   * 画布按「容器 × dpr」建的运行时（EmulatorJS）必须实现，否则缩放永远不生效。
+   * 游戏真正输出的逻辑画面尺寸（不是画布尺寸）。直播靠它把编码分辨率缩回有效舞台；
+   * 画布按「容器 × dpr」建的运行时（EmulatorJS / Ruffle）必须实现，否则缩放永远不生效。
    */
   nativeVideoSize?: () => { width: number; height: number } | null
+  /** 源为矢量 / 文字等细节型内容；弱网时应先减帧，不能把有效舞台继续缩小 */
+  preserveVideoResolution?: boolean
   /**
    * 有直播观众时后台标签页也必须继续出帧；最后一个观众离开后恢复自动暂停。
    * 这比让每个运行时自行读取直播模块可靠，因为直播是在游戏启动之后才可能开启。

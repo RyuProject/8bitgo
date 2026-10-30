@@ -34,7 +34,7 @@ import { getT, fmt } from '@/services/i18n'
 import { RemoteDisc, httpRangeFetcher, probeRange, type DiscSource } from '../remoteDisc'
 import { GP, hasGamepadApi, startGamepadBridge, type GamepadBridge } from '../gamepad'
 import { canvasToBlob } from '../recorder'
-import { fetchBlobWithProgress } from '../loadProgress'
+import { fetchBlobWithProgress, fetchWithProgress } from '../loadProgress'
 import { romCacheKey } from '../romCache'
 import { inspectPlayArcadeBundle, PLAY_ARCADE_BUNDLE_MAX_BYTES, type PlayArcadeBundle } from '@/lib/playArcadeBundle'
 
@@ -139,7 +139,15 @@ function discNameOf(game: File | string, fallback: string): string {
 }
 
 const ELF_RE = /\.elf$/i
+/** ELF 必须整份进入 Play! 的 MEMFS；设上限避免错误地址/巨型文件瞬间耗尽浏览器内存。 */
+export const PLAY_ELF_MAX_BYTES = 256 * 1024 * 1024
 const ZIP_CHUNK_BYTES = 8 * 1024 * 1024
+
+function assertPlayElf(bytes: Uint8Array): void {
+  if (bytes.byteLength < 4 || bytes[0] !== 0x7f || bytes[1] !== 0x45 || bytes[2] !== 0x4c || bytes[3] !== 0x46) {
+    throw new Error('文件扩展名是 ELF，但内容不是有效的 ELF 可执行文件')
+  }
+}
 
 const CRC32_TABLE = (() => {
   const table = new Uint32Array(256)
@@ -295,6 +303,7 @@ function normalizeNumberKey(event: KeyboardEvent): void {
 export function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const rt = getT().runtime
   let destroyed = false
+  const requestController = new AbortController()
   let module: PlayModule | null = null
   let disc: RemoteDisc | null = null
   let arcadeBundleBlob: Blob | null = null
@@ -320,13 +329,14 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   /**
    * 引擎自己那条线上的失败。
    *
-   * onReady 之后再报错**不能**拆会话 —— 那时候玩家正在玩，一次读盘超时把整局掀掉
-   * 比让他自己退出更糟（见 项目记忆「模拟器适配器体检」的第一条）。
+   * onReady 后的一般 stderr 不能直接拆会话，避免把无关警告当成崩溃；但 Range 读盘失败会让
+   * wasm 永久轮询未完成状态，fatalRuntime 必须通知播放器停掉这局，不能把「不打断玩家」变成死锁。
    */
-  const fail = (message: string) => {
+  const fail = (message: string, fatalRuntime = false) => {
     if (destroyed) return
     if (readyFired) {
-      console.warn('[play] 运行中出错：', message)
+      if (fatalRuntime) options.onError?.(message, 'runtime')
+      else console.warn('[play] 运行中出错：', message)
       return
     }
     window.clearInterval(readyPoll)
@@ -369,6 +379,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         arcadeBundleBlob = await fetchBlobWithProgress(options.game, {
           phase: 'rom',
           onProgress: options.onProgress,
+          signal: requestController.signal,
           maxBytes: PLAY_ARCADE_BUNDLE_MAX_BYTES,
           resumeKey: romCacheKey(options.game) || undefined,
           check: (res) => {
@@ -384,12 +395,21 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     } else if (typeof options.game === 'string') {
       options.onProgress?.({ phase: 'rom', loaded: 0 })
       if (isElf) {
-        const res = await fetch(options.game)
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        elfBytes = new Uint8Array(await res.arrayBuffer())
-        options.onProgress?.({ phase: 'rom', loaded: elfBytes.byteLength, total: elfBytes.byteLength, ratio: 1 })
+        const bytes = await fetchWithProgress(options.game, {
+          phase: 'rom',
+          onProgress: options.onProgress,
+          signal: requestController.signal,
+          maxBytes: PLAY_ELF_MAX_BYTES,
+          check: (res) => {
+            if (/text\/html|application\/xhtml/i.test(res.headers.get('content-type') ?? '')) {
+              throw new Error('Play! ELF 地址返回了网页，不是可执行文件')
+            }
+          },
+        })
+        elfBytes = new Uint8Array(bytes)
+        assertPlayElf(elfBytes)
       } else {
-        const probe = await probeRange(options.game)
+        const probe = await probeRange(options.game, requestController.signal)
         if (destroyed) return
         if (!probe.rangeSupported || !probe.size) {
           // 整份下载不是退路：PS2 一张盘几 GB，下不下来也存不下。
@@ -397,14 +417,18 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           options.onError?.(rt.playNoRange)
           return
         }
-        disc = new RemoteDisc({ size: probe.size, fetchRange: httpRangeFetcher(options.game) })
+        disc = new RemoteDisc({ size: probe.size, fetchRange: httpRangeFetcher(options.game, requestController.signal) })
         source = disc
         // 盘是按需读的，没有「下载完成」这一说 —— 直接把 rom 阶段推满，
         // 后面的时间都花在引擎启动上，进度条不该卡在 40% 装死
         options.onProgress?.({ phase: 'rom', loaded: probe.size, total: probe.size, ratio: 1, cached: true })
       }
     } else {
-      if (isElf) elfBytes = new Uint8Array(await options.game.arrayBuffer())
+      if (isElf) {
+        if (options.game.size > PLAY_ELF_MAX_BYTES) throw new RangeError('Play! ELF 文件超过 256 MiB 浏览器安全上限')
+        elfBytes = new Uint8Array(await options.game.arrayBuffer())
+        assertPlayElf(elfBytes)
+      }
       else source = options.game
       // 玩家自己选的本地光盘：File 本来就支持 slice，直接当盘用，零拷贝
       options.onProgress?.({ phase: 'rom', loaded: options.game.size, total: options.game.size, ratio: 1, cached: true })
@@ -451,7 +475,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         instance.discImageDevice = new StreamingDiscDevice(
           () => module,
           source,
-          (e) => fail(fmt(rt.playDiscFailed, { msg: e.message })),
+          // 读盘失败后核心会一直轮询 isDone；必须结束会话并展示错误，不能只留一条控制台警告。
+          (e) => fail(fmt(rt.playDiscFailed, { msg: e.message }), true),
         )
       }
       instance.ccall('initVm', null, [], [])
@@ -528,6 +553,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   return {
     destroy: () => {
       destroyed = true
+      requestController.abort()
       window.clearInterval(readyPoll)
       window.clearTimeout(readyTimeout)
       pad?.stop()
