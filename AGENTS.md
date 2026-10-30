@@ -1182,6 +1182,11 @@ cd .. && npm run test:flash-online-save
 从这里点进去也必须带 `watch=1`，否则「观看」会静默变成加入对局。回归：`npm run test:watch-panel`；
 法律文案与存储键对账：`npm run test:legal`。
 
+房间大厅最多分批挂载 24 张卡片，剩余房间由玩家点「加载更多」；列表接口仍保留完整快照，不能因此改坏
+房间合并或自动刷新。P2P SSE 降级轮询必须单请求、8 秒超时、隐藏标签页暂停、失败退避（最多 120 秒），
+回到前台立即补拉；请求代次和 SSE 快照修订号共同拦住断开后的迟到响应覆盖新状态。静态游戏 slug 索引
+在模块级只建一次。回归：`npm run test:rooms-page && npm run test:sse && npm run test:room-merge`。
+
 ### 2.24 Ruffle 运行时必须带版本目录，Flash / 街机按键由后台配置
 
 Ruffle 从 npm 复制到 `public/ruffle/v<version>/`，`runtime.json` 保存每个文件的长度和 SHA-256。

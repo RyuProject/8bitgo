@@ -22,8 +22,8 @@ import { useRooms } from './rooms'
 import { useLiveRooms } from './live'
 import { mergeLiveIntoP2p, type LiveEntry } from './roomMerge'
 
-/** 信令服务器只知道 gameId（slug 的散列），这里反查回 slug */
-const allSlugs = () => games.map((g) => g.slug)
+/** 信令服务器只知道 gameId（slug 的散列），这里反查回 slug。游戏表是静态模块数据，只建一次。 */
+const ALL_GAME_SLUGS = games.map((g) => g.slug)
 
 export function useAllRooms(): RoomView[] {
   const p2p = useNetplayRooms()
@@ -33,14 +33,8 @@ export function useAllRooms(): RoomView[] {
   return useMemo(() => {
     const list: RoomView[] = []
 
-    /*
-      slugForGameId 内部有一个按 allSlugs.length 命中的模块级缓存，只看长度不保存引用。
-      原来写在循环里 `slugForGameId(r.gameId, allSlugs())` —— 每次都 `games.map(...)` 重新
-      建一个全量 slug 数组（房间数 × 游戏数 次分配），纯属浪费。提出来只建一次。
-    */
-    const slugs = allSlugs()
     for (const r of p2p) {
-      const slug = slugForGameId(r.gameId, slugs)
+      const slug = slugForGameId(r.gameId, ALL_GAME_SLUGS)
       if (!slug) continue // 认不出来的游戏（别的站点用了同一个信令服务器）就不展示
       list.push({
         roomId: r.roomId,

@@ -386,6 +386,8 @@ export function inviteLink(gameSlug: string, roomId: string): string {
  * EventSource 自带断线重连；浏览器不支持或连不上时退回轮询。
  */
 const POLL_MS = 15_000
+const POLL_MAX_MS = 120_000
+const LIST_REQUEST_TIMEOUT_MS = 8_000
 /** 空数组用固定引用：useSyncExternalStore 要求快照引用稳定，否则会无限重渲染 */
 const NO_ROOMS: NetplayRoom[] = []
 
@@ -395,27 +397,88 @@ const store = (() => {
   let es: EventSource | null = null
   let stopFallback: (() => void) | null = null
   let timer = 0
+  let generation = 0
+  let listRevision = 0
+  let pollingOn = false
+  let polling = false
+  let pollRun = 0
+  let pollFailures = 0
+  let activeRequest: AbortController | null = null
+  let inFlight: { generation: number; promise: Promise<boolean> } | null = null
   const emit = () => listeners.forEach((l) => l())
 
-  const refresh = async () => {
-    try {
-      const res = await fetch(`${apiBase()}/api/netplay/rooms`)
-      if (!res.ok) return
-      rooms = (await res.json()) as NetplayRoom[]
-      emit()
-    } catch {
-      /* 信令服务器暂时不可达时保留上次结果 */
-    }
+  const refresh = (): Promise<boolean> => {
+    if (!netplayEnabled()) return Promise.resolve(false)
+    if (inFlight?.generation === generation) return inFlight.promise
+
+    const mine = generation
+    // 请求期间若已经收到较新的 SSE 快照，迟到的 HTTP 响应不能把列表倒退回旧状态。
+    const revision = listRevision
+    const controller = new AbortController()
+    activeRequest = controller
+    let promise!: Promise<boolean>
+    promise = (async () => {
+      const timeout = window.setTimeout(() => controller.abort(), LIST_REQUEST_TIMEOUT_MS)
+      try {
+        const res = await fetch(`${apiBase()}/api/netplay/rooms`, { signal: controller.signal })
+        if (!res.ok) return false
+        const next: unknown = await res.json()
+        if (!Array.isArray(next)) return false
+        if (mine !== generation || revision !== listRevision) return true
+        rooms = next.length ? (next as NetplayRoom[]) : NO_ROOMS
+        listRevision++
+        emit()
+        return true
+      } catch {
+        /* 信令服务器暂时不可达时保留上次结果 */
+        return false
+      } finally {
+        window.clearTimeout(timeout)
+        if (activeRequest === controller) activeRequest = null
+        if (inFlight?.promise === promise) inFlight = null
+      }
+    })()
+    inFlight = { generation: mine, promise }
+    return promise
   }
 
-  /** 退回轮询（SSE 不可用时） */
+  /** SSE 不可用时退回单请求轮询；隐藏标签页暂停，故障时逐步退避。 */
+  const pollOnce = async () => {
+    timer = 0
+    if (!pollingOn || document.visibilityState === 'hidden' || polling) return
+    const mine = generation
+    const run = ++pollRun
+    polling = true
+    const ok = await refresh()
+    if (run === pollRun) polling = false
+    if (run !== pollRun || mine !== generation || !pollingOn) return
+    pollFailures = ok ? 0 : pollFailures + 1
+    const delay = Math.min(POLL_MAX_MS, POLL_MS * 2 ** pollFailures)
+    timer = window.setTimeout(() => void pollOnce(), delay)
+  }
+
+  const onVisible = () => {
+    if (document.visibilityState === 'hidden' || polling || !pollingOn) return
+    if (timer) {
+      window.clearTimeout(timer)
+      timer = 0
+    }
+    void pollOnce()
+  }
+
   const startPolling = () => {
-    if (timer) return
-    void refresh()
-    timer = window.setInterval(() => void refresh(), POLL_MS)
+    if (pollingOn) return
+    pollingOn = true
+    pollFailures = 0
+    document.addEventListener('visibilitychange', onVisible)
+    void pollOnce()
   }
 
   const connect = () => {
+    const mine = ++generation
+    // 重订阅时废弃上一代的手动刷新，避免它白跑完再与新 SSE 快照竞争。
+    activeRequest?.abort()
+    activeRequest = null
     if (typeof EventSource !== 'function') {
       startPolling()
       return
@@ -427,26 +490,40 @@ const store = (() => {
       return
     }
     es.addEventListener('rooms', (e) => {
+      if (mine !== generation) return
       try {
-        rooms = JSON.parse((e as MessageEvent<string>).data) as NetplayRoom[]
+        const next: unknown = JSON.parse((e as MessageEvent<string>).data)
+        if (!Array.isArray(next)) return
+        rooms = next.length ? (next as NetplayRoom[]) : NO_ROOMS
+        listRevision++
         emit()
       } catch {
         /* 坏包忽略，等下一条 */
       }
     })
     // 连续失败就退回轮询。判据为什么不能只看 CLOSED，见 sseFallback.ts
-    stopFallback = fallbackAfterErrors(es, startPolling)
+    stopFallback = fallbackAfterErrors(es, () => {
+      if (mine === generation) startPolling()
+    })
   }
 
   const disconnect = () => {
+    generation++
     stopFallback?.()
     stopFallback = null
     es?.close()
     es = null
     if (timer) {
-      window.clearInterval(timer)
+      window.clearTimeout(timer)
       timer = 0
     }
+    if (pollingOn) document.removeEventListener('visibilitychange', onVisible)
+    pollingOn = false
+    pollFailures = 0
+    pollRun++
+    polling = false
+    activeRequest?.abort()
+    activeRequest = null
   }
 
   return {

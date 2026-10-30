@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { usePageData, type GamesData } from '@/services/pageData'
 import { useSeo } from '@/services/seo'
@@ -8,6 +9,9 @@ import { GameCard } from '@/components/game/GameCard'
 import { RoomCard } from '@/components/game/RoomCard'
 import { SectionHeader } from '@/components/ui/SectionHeader'
 import { GameGridSkeleton } from '@/components/ui/PageSkeleton'
+
+/** 最多同时挂载 24 张卡片；房间服务有总量上限，但把上千张封面一次塞进 DOM 会拖慢列表。 */
+const ROOM_PAGE_SIZE = 24
 
 /**
  * 联机玩：正在进行中的房间列表。
@@ -20,6 +24,10 @@ export function RoomsPage() {
   // 云端房没有观众席；把它混进来会让「观看」按钮实际变成加入对局。
   const [searchParams] = useSearchParams()
   const live = searchParams.get('live') === '1'
+  const [visibleRoomCount, setVisibleRoomCount] = useState(ROOM_PAGE_SIZE)
+  useEffect(() => {
+    setVisibleRoomCount(ROOM_PAGE_SIZE)
+  }, [live])
   useSeo({
     title: live ? t.rooms.liveH1 : t.rooms.title,
     description: live ? t.rooms.liveSeo : t.rooms.seo,
@@ -29,6 +37,7 @@ export function RoomsPage() {
   const rooms = live
     ? all.filter((room) => room.kind !== 'cloud').sort((a, b) => (b.spectators ?? 0) - (a.spectators ?? 0))
     : all
+  const visibleRooms = rooms.slice(0, visibleRoomCount)
   const enabled = anyRoomsEnabled()
   // 联机页推荐能远程联机的游戏；直播页则推荐热门游戏——单人游戏开始游玩也会自动开播。
   // 两种意图不能共用 multiplayer=1，否则空直播大厅会错误暗示「只有联机游戏能播」。
@@ -75,12 +84,24 @@ export function RoomsPage() {
           </div>
         ) : (
           <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            {rooms.map((room) => (
+            {visibleRooms.map((room) => (
               <li key={room.roomId}>
                 <RoomCard room={room} watchOnly={live} />
               </li>
             ))}
           </ul>
+        )}
+        {rooms.length > visibleRooms.length && (
+          <div className="mt-5 flex flex-wrap items-center justify-center gap-3 text-sm text-muted">
+            <span>{fmt(t.rooms.loadedOf, { n: String(visibleRooms.length), total: String(rooms.length) })}</span>
+            <button
+              type="button"
+              onClick={() => setVisibleRoomCount((count) => Math.min(count + ROOM_PAGE_SIZE, rooms.length))}
+              className="rounded-lg border border-line px-4 py-2 font-semibold text-fg transition hover:border-brand hover:text-brand-hover"
+            >
+              {t.common.loadMore}
+            </button>
+          </div>
         )}
       </section>
 
