@@ -29,12 +29,19 @@ export function j2meFileName(url: string): string {
  *   ?jar=<文件名>   → <J2ME_PATH>jar/<文件名>
  *   ?app=<app_id>   → <J2ME_PATH>apps/<app_id>.zip     ← 所以要把 .zip 后缀去掉
  */
-export function buildJ2meUrl(base: string, name: string): string {
+export function buildJ2meUrl(
+  base: string,
+  name: string,
+  options: { mobile?: boolean; fractionScale?: boolean } = {},
+): string {
   const runHtml = `${base}run.html`
-  if (name.toLowerCase().endsWith('.zip')) {
-    return `${runHtml}?app=${encodeURIComponent(name.replace(/\.zip$/i, ''))}`
-  }
-  return `${runHtml}?jar=${encodeURIComponent(name)}`
+  const app = name.toLowerCase().endsWith('.zip')
+  const key = app ? 'app' : 'jar'
+  const value = app ? name.replace(/\.zip$/i, '') : name
+  const query = [`${key}=${encodeURIComponent(value)}`]
+  if (options.fractionScale) query.push('fractionScale=1')
+  if (options.mobile) query.push('mobile=1')
+  return `${runHtml}?${query.join('&')}`
 }
 
 /**

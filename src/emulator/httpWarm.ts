@@ -15,8 +15,8 @@
  * 浏览器在忙的时候会一直往后排；而我们要的恰恰是「趁启动那几十秒把带宽用起来」。
  */
 
-/** 已经预热过的 URL。同一个页面里重复调用只发一次请求。 */
-const warmed = new Set<string>()
+/** 正在预热或已预热的 URL。同一个页面里重复调用只发一次请求。 */
+const warmed = new Map<string, Promise<void>>()
 
 /**
  * 预热一个同源（或带 CORS 的跨源）资源。
@@ -24,13 +24,16 @@ const warmed = new Set<string>()
  * `cache: 'force-cache'` 的语义是「有缓存就直接用，没有就正常请求」——
  * 对我们来说两种情况都对：没请求过就下载进缓存，已经新鲜就什么都不做。
  */
-export function warmHttpCache(url: string): void {
-  if (!url || warmed.has(url)) return
-  warmed.add(url)
-  void drainIntoHttpCache(url).catch(() => {
+export function warmHttpCache(url: string): Promise<void> {
+  if (!url) return Promise.resolve()
+  const existing = warmed.get(url)
+  if (existing) return existing
+  const pending = drainIntoHttpCache(url).catch(() => {
     // 预热失败不能惊动玩家，也不该占着 warmed 不放 —— 允许下一次再试
     warmed.delete(url)
   })
+  warmed.set(url, pending)
+  return pending
 }
 
 /**

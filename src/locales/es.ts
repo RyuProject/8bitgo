@@ -1524,7 +1524,7 @@ const es: Translation = {
     j2meNum: 'Teclas numéricas',
     j2meSoftL: 'Tecla contextual izquierda',
     j2meSoftR: 'Tecla contextual derecha',
-    j2meNote: 'Estas teclas las fija FreeJ2ME; lo que hace cada una dentro del juego depende del juego. En el teléfono no hay botones en pantalla: hace falta teclado o mando.',
+    j2meNote: 'FreeJ2ME fija estas teclas; cada juego decide su función. En dispositivos táctiles aparece un teclado virtual; en ordenador puedes usar teclado o mando.',
     playNote: 'Play! usa controles fijos. Se admiten mandos estándar y controles táctiles básicos, pero aún no se pueden reasignar.',
     retroarchNote: 'Los controles, los guardados rápidos y el remapeo están en el menú de RetroArch: pulsa F1 en la pantalla del juego para abrirlo.',
     rebindOurs: 'Puedes cambiarlas con el icono de mando 🎮 de la barra inferior del reproductor.',

@@ -175,7 +175,7 @@ export { J2ME_PATH } from '../paths'
 import { J2ME_PATH } from '../paths'
 // URL 那几条规则搬到了 ../j2meUrl（纯函数，有单测）—— 尤其是跨源判定那一条，
 // 原来靠「读 contentDocument 会不会抛」判，而它跨源时返回 null 不抛，那条退路是死代码
-import { buildJ2meUrl, isCrossOriginBase, j2meFileName } from '../j2meUrl'
+import { buildJ2meUrl, isCrossOriginBase, j2meFileName, j2meWarmTargets } from '../j2meUrl'
 
 
 /* ---------------- 玩家上传的临时 jar ---------------- */
@@ -237,6 +237,17 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     options.onError?.(rt.j2meLocalUnsupported)
     return deadHandle()
   }
+
+  // 8BG / 本地 JAR 后面还要解包并上传临时盘，这段等待可以与 FreeJ2ME 的大资源下载并行。
+  // 先建好可复用的 Promise，悬停预热若已启动同一 URL，这里就等待那一份而不会重复下载。
+  const runtimeWarmup = Promise.all(j2meWarmTargets(J2ME_PATH).map((url) => warmHttpCache(url)))
+  const directName = !needsTempJar && typeof options.game === 'string' ? j2meFileName(options.game) : null
+  const directJarWarmup = directName
+    ? warmHttpCache(`${J2ME_PATH}jar/${directName}`)
+    : Promise.resolve()
+  const touchControls = Boolean(
+    (navigator.maxTouchPoints ?? 0) > 0 || window.matchMedia?.('(pointer: coarse)').matches,
+  )
 
   // FreeJ2ME 没有暂停和存档：Java 那边是阻塞在 evtQueue.waitForEvent() 上跑的，
   // 没有对外的暂停接口，存档也归 MIDlet 自己（RMS）管，外面碰不到。
@@ -451,7 +462,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           if (tempName) keepaliveTempJar(tempName)
         }, 120_000)
       } else {
-        name = j2meFileName(options.game as string)
+        name = directName ?? j2meFileName(options.game as string)
       }
       /*
         正式 ROM（对象存储里那份）在 CheerpJ 把 JVM 起来之前根本不会被取 ——
@@ -468,9 +479,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         绝不能碰 ROM（成人门、语言槽都还没定）。走到这一行时播放器已经挂载、
         年龄门已经过了，预取的是玩家这一局真的要玩的文件。
       */
-      if (!needsTempJar) warmHttpCache(`${J2ME_PATH}jar/${name}`)
-      srcSet = true
       options.onProgress?.({ phase: 'engine' })
+      await Promise.all([runtimeWarmup, directJarWarmup])
+      if (destroyed) return
+      srcSet = true
       /*
         启动看门狗挂在这里 —— **不是**在 iframe 的 load 回调里。
         以前它只在「同源」那一支里武装，于是两种故障都能把玩家钉在遮罩后面：
@@ -485,7 +497,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         stopPoll()
         options.onError?.(rt.j2meStartTimeout)
       }, J2ME_READY_TIMEOUT_MS)
-      iframe.src = buildJ2meUrl(J2ME_PATH, name)
+      iframe.src = buildJ2meUrl(J2ME_PATH, name, { fractionScale: true, mobile: touchControls })
     } catch (e) {
       if (destroyed) return
       const msg = e instanceof Error ? e.message : String(e)

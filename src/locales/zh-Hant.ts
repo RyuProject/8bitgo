@@ -1471,7 +1471,7 @@ const zhHant: Translation = {
     j2meNum: '數字鍵',
     j2meSoftL: '左軟鍵',
     j2meSoftR: '右軟鍵',
-    j2meNote: '這是 FreeJ2ME 固定的鍵位，每顆鍵在遊戲裡實際是什麼功能由遊戲自己定。手機版沒有虛擬按鍵，需要外接鍵盤或手把。',
+    j2meNote: '這是 FreeJ2ME 固定的鍵位，每顆鍵在遊戲裡實際是什麼功能由遊戲自己定。觸控裝置會顯示虛擬手機按鍵；電腦可用鍵盤或手把。',
     playNote: 'Play! 使用固定鍵位；本站已接入標準手把和基本觸控按鍵，但暫不支援改鍵。',
     retroarchNote: '鍵位、存讀檔和改鍵都在 RetroArch 自己那套裡：在遊戲畫面上按 F1 打開它的選單。',
     rebindOurs: '點播放器底部工具列上的手把圖示 🎮 可以改鍵。',

@@ -1524,7 +1524,7 @@ const en: Translation = {
     j2meNum: 'Number keys',
     j2meSoftL: 'Left soft key',
     j2meSoftR: 'Right soft key',
-    j2meNote: 'These keys are fixed by FreeJ2ME; what each one does inside a game is up to the game. There are no on-screen buttons on phones, so you will need a keyboard or a gamepad.',
+    j2meNote: 'FreeJ2ME fixes these keys; each game decides what they do. Touch devices show an on-screen phone keypad; computers can use a keyboard or gamepad.',
     playNote: 'Play! uses fixed controls. Standard gamepads and basic touch controls are supported, but remapping is not yet available.',
     retroarchNote: 'Controls, save states and rebinding all live in RetroArch’s own menu: press F1 on the game screen to open it.',
     rebindOurs: 'Click the gamepad icon 🎮 in the player’s bottom toolbar to rebind them.',

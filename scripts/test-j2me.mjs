@@ -49,6 +49,17 @@ check('jar 模式与 app 模式分流（.zip 走 app 且要去后缀）', () => 
   assert.equal(buildJ2meUrl('/j2me/', 'zipzap.jar'), '/j2me/run.html?jar=zipzap.jar')
 })
 
+check('⭐ 竖屏游戏按比例放大；触屏设备获得内建数字键盘', () => {
+  assert.equal(
+    buildJ2meUrl('/j2me/', 'rally.jar', { fractionScale: true, mobile: true }),
+    '/j2me/run.html?jar=rally.jar&fractionScale=1&mobile=1',
+  )
+  assert.equal(
+    buildJ2meUrl('/j2me/', 'bundle.zip', { fractionScale: true }),
+    '/j2me/run.html?app=bundle&fractionScale=1',
+  )
+})
+
 check('名字要 encode —— 空格和中文不 encode 会把 query 拼坏', () => {
   assert.equal(buildJ2meUrl('/j2me/', 'my game.jar'), '/j2me/run.html?jar=my%20game.jar')
   assert.equal(buildJ2meUrl('/j2me/', '贪吃蛇.jar'), `/j2me/run.html?jar=${encodeURIComponent('贪吃蛇.jar')}`)
@@ -176,7 +187,7 @@ console.log('\n五、限流真的接在上传路径上了（源码断言，不�
  * 而那正是解释这次改动**为什么**要做的那句话。同理 `max-age=86400`。
  *
  * 也就是说：越是把病因写清楚的代码，这种裸文本断言越容易误报。剥掉注释再看。
- * 剥法保守（只去 /* *​/ 块和整行 //），不去行尾注释 —— 够用，且不会误伤
+ * 剥法保守（只去块注释和整行 //），不去行尾注释 —— 够用，且不会误伤
  * 字符串里的 `https://`。
  */
 const codeOnly = (src) =>
@@ -346,12 +357,22 @@ check('⭐ 正式 ROM 可以预取，但**临时上传的那份不行**', () => 
     而代理对临时文件发的是 no-store，预取下来也留不住。
     这条断言用源码形状钉住那个判断不能被顺手删掉。
   */
-  const at = adapterCode.indexOf('warmHttpCache(')
-  assert.ok(at > 0, '适配器里没有预热调用 —— 游戏 jar 又回到「CheerpJ 起完才开始下」了')
-  const before = adapterCode.slice(Math.max(0, at - 300), at)
-  assert.match(before, /needsTempJar/, '预热前面必须有 !needsTempJar 的岔路')
+  const at = adapterCode.indexOf('const directJarWarmup')
+  assert.ok(at > 0, '适配器里没有正式 JAR 预热 —— 游戏 jar 又回到「CheerpJ 起完才开始下」了')
+  const before = adapterCode.slice(Math.max(0, at - 220), at + 180)
+  assert.match(before, /!needsTempJar/, '只有官方直链 JAR 能预热；临时 JAR 已在内存里')
   const src = adapterCode.indexOf('iframe.src = buildJ2meUrl')
   assert.ok(at < src, '预热要排在设 iframe.src 之前，越早开始越好')
+})
+
+check('⭐ 临时 JAR 上传期间并行预热运行时，启动前等待同一批资源完成', () => {
+  const warm = adapterCode.indexOf('const runtimeWarmup = Promise.all')
+  const upload = adapterCode.indexOf('const loaded = await loadGameBytes')
+  const wait = adapterCode.indexOf('await Promise.all([runtimeWarmup, directJarWarmup])')
+  const src = adapterCode.indexOf('iframe.src = buildJ2meUrl')
+  assert.ok(warm >= 0 && warm < upload, '运行时预热必须先于 ROM 解密/上传开始')
+  assert.ok(wait > upload && wait < src, '上传期间预热的资源要在启动 iframe 前复用，不能重复下载')
+  assert.match(adapterCode, /if \(destroyed\) return\s+srcSet = true/, '等待期间若取消游戏，不能再启动隐藏 iframe')
 })
 
 check('⚠️ 没有 hover 提前量的设备不预拉那几个大文件', () => {
@@ -367,6 +388,18 @@ check('⚠️ 没有 hover 提前量的设备不预拉那几个大文件', () =>
   const guard = fn.indexOf('hasHoverIntent')
   const warm = fn.indexOf('warmHttpCache')
   assert.ok(guard > 0 && warm > guard, '预拉引擎文件必须排在 hasHoverIntent 之后')
+})
+
+check('⭐ 构建时补掉上游高频按键日志，且运行时重新安装后仍会生效', () => {
+  const patcher = readFileSync(new URL('../scripts/patch-j2me-runtime.mjs', import.meta.url), 'utf8')
+  assert.match(patcher, /console\.log\('queuin event'\)/, '缺少按键重复日志补丁')
+  assert.match(patcher, /console\.log\('refocus'\)/, '缺少焦点抖动日志补丁')
+  assert.match(patcher, /console\.log\('duration', duration\)/, '缺少 MIDI 调试输出补丁')
+  assert.match(patcher, /includes\(marker\)/, '补丁必须幂等，不能每次构建重复改文件')
+
+  const setup = readFileSync(new URL('../scripts/setup-j2me.mjs', import.meta.url), 'utf8')
+  assert.equal((setup.match(/applyLocalRuntimePatches\(\)/g) ?? []).length, 3,
+    '已安装跳过分支和全新安装分支都必须应用补丁')
 })
 
 console.log(failed ? `\n${failed} 项失败` : `\nJ2ME 测试全部通过 ✅`)

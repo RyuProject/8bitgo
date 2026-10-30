@@ -1551,7 +1551,7 @@ export const zhHans = {
     j2meNum: '数字键',
     j2meSoftL: '左软键',
     j2meSoftR: '右软键',
-    j2meNote: '这是 FreeJ2ME 固定的键位，每颗键在游戏里具体是什么功能由游戏自己定。手机端没有虚拟按键，需要外接键盘或手柄。',
+    j2meNote: '这是 FreeJ2ME 固定的键位，每颗键在游戏里具体是什么功能由游戏自己定。触屏设备会显示虚拟手机按键；电脑可用键盘或手柄。',
     playNote: 'Play! 使用固定键位；本站已接入标准手柄和基础触屏按键，但暂不支持改键。',
     retroarchNote: '键位、存读档和改键都在 RetroArch 自己那套里：在游戏画面上按 F1 打开它的菜单。',
     rebindOurs: '点播放器底部工具条上的手柄图标 🎮 可以改键。',

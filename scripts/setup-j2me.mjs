@@ -26,11 +26,20 @@ const dest = path.join(root, 'public/j2me')
 const REPO = 'https://github.com/zb3/freej2me-web.git'
 const REQUIRED = ['run.html', 'freej2me-web.jar', 'src/main.js']
 
+function applyLocalRuntimePatches() {
+  execFileSync(process.execPath, [path.join(root, 'scripts/patch-j2me-runtime.mjs')], {
+    cwd: root,
+    stdio: 'inherit',
+  })
+}
+
 const ifMissing = process.argv.includes('--if-missing')
 
 const missing = REQUIRED.filter((file) => !existsSync(path.join(dest, file)))
 if (missing.length === 0) {
   if (ifMissing) {
+    // 运行时目录被忽略提交，构建机已有缓存时也必须重复确认本地性能补丁。
+    applyLocalRuntimePatches()
     console.log('✅ public/j2me/ 运行时完整，跳过')
     process.exit(0)
   }
@@ -87,6 +96,8 @@ try {
     '把预打包的 <app_id>.zip 放在这个目录，然后用 run.html?app=<app_id> 加载。\n',
     'utf8',
   )
+
+  applyLocalRuntimePatches()
 
   console.log('✅ 已安装到 public/j2me/')
   console.log('   下一步：.env 里设置 VITE_J2ME_PATH=/j2me/')

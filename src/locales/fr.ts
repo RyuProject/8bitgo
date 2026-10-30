@@ -1530,7 +1530,7 @@ const fr: Translation = {
     j2meNum: 'Touches numériques',
     j2meSoftL: 'Touche contextuelle gauche',
     j2meSoftR: 'Touche contextuelle droite',
-    j2meNote: 'Ces touches sont fixées par FreeJ2ME ; ce que chacune fait dans un jeu dépend du jeu. Il n’y a pas de boutons à l’écran sur téléphone : il faut un clavier ou une manette.',
+    j2meNote: 'FreeJ2ME fixe ces touches ; leur fonction dépend du jeu. Un pavé virtuel apparaît sur les appareils tactiles ; sur ordinateur, utilisez un clavier ou une manette.',
     playNote: 'Play! utilise des commandes fixes. Les manettes standard et les commandes tactiles de base sont prises en charge, sans remappage pour le moment.',
     retroarchNote: 'Les touches, les sauvegardes rapides et le remappage se trouvent dans le menu de RetroArch : appuyez sur F1 sur l’écran de jeu pour l’ouvrir.',
     rebindOurs: 'Modifiable via l’icône manette 🎮 dans la barre du bas du lecteur.',

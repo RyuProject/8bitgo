@@ -1525,7 +1525,7 @@ const de: Translation = {
     j2meNum: 'Zifferntasten',
     j2meSoftL: 'Linke Softtaste',
     j2meSoftR: 'Rechte Softtaste',
-    j2meNote: 'Diese Belegung gibt FreeJ2ME fest vor; was eine Taste im Spiel tut, entscheidet das Spiel. Auf dem Handy gibt es keine Bildschirmtasten — du brauchst Tastatur oder Gamepad.',
+    j2meNote: 'Diese Belegung gibt FreeJ2ME fest vor; was eine Taste im Spiel tut, entscheidet das Spiel. Auf Touch-Geräten erscheint ein Bildschirm-Tastenfeld; am Computer kannst du Tastatur oder Gamepad nutzen.',
     playNote: 'Play! verwendet feste Tasten. Standard-Gamepads und einfache Touch-Steuerung werden unterstützt; eine Neubelegung ist derzeit nicht möglich.',
     retroarchNote: 'Belegung, Speicherstände und Umbelegen stecken alle im Menü von RetroArch: Im Spielbild F1 drücken, um es zu öffnen.',
     rebindOurs: 'Über das Gamepad-Symbol 🎮 in der unteren Leiste des Players neu belegbar.',

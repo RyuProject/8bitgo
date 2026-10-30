@@ -1525,7 +1525,7 @@ const it: Translation = {
     j2meNum: 'Tasti numerici',
     j2meSoftL: 'Tasto funzione sinistro',
     j2meSoftR: 'Tasto funzione destro',
-    j2meNote: 'Questi tasti sono fissati da FreeJ2ME; cosa faccia ciascuno dentro al gioco dipende dal gioco. Sullo smartphone non ci sono pulsanti a schermo: servono tastiera o gamepad.',
+    j2meNote: 'FreeJ2ME fissa questi tasti; la loro funzione dipende dal gioco. Sui dispositivi touch appare un tastierino virtuale; sul computer puoi usare tastiera o gamepad.',
     playNote: 'Play! usa comandi fissi. Sono supportati gamepad standard e comandi touch di base, ma non è ancora possibile rimapparli.',
     retroarchNote: 'Comandi, salvataggi rapidi e rimappatura stanno tutti nel menu di RetroArch: premi F1 sullo schermo di gioco per aprirlo.',
     rebindOurs: 'Puoi rimapparli dall’icona del gamepad 🎮 nella barra in basso del player.',
