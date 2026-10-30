@@ -1409,14 +1409,14 @@ export function explainRomStatus(status: number, what: string): Error {
   return new Error(`${what}失败：HTTP ${status}`)
 }
 
-export async function pingRomApi(api = getRomApi()): Promise<{ isWorker: boolean; writable: boolean }> {
-  const res = await fetch(`${api}/ping`, { cache: 'no-store' })
+export async function pingRomApi(api = getRomApi(), signal?: AbortSignal): Promise<{ isWorker: boolean; writable: boolean }> {
+  const res = await fetch(`${api}/ping`, { cache: 'no-store', signal })
   if (!res.ok) return { isWorker: false, writable: false }
   const data = (await res.json().catch(() => null)) as { service?: string; writable?: boolean } | null
   return { isWorker: data?.service === '8bitgo-roms', writable: Boolean(data?.writable) }
 }
 
-export async function listRomObjects(prefix = getRomPrefix()): Promise<RomObject[]> {
+export async function listRomObjects(prefix = getRomPrefix(), signal?: AbortSignal): Promise<RomObject[]> {
   const api = getRomApi()
   if (!api) throw new Error('尚未配置 Worker 地址')
   const out: RomObject[] = []
@@ -1426,7 +1426,7 @@ export async function listRomObjects(prefix = getRomPrefix()): Promise<RomObject
     const url = new URL(`${api}/list`)
     if (prefix) url.searchParams.set('prefix', prefix.endsWith('/') ? prefix : `${prefix}/`)
     if (cursor) url.searchParams.set('cursor', cursor)
-    const res = await fetch(url.toString(), { headers: authHeaders() })
+    const res = await fetch(url.toString(), { headers: authHeaders(), signal })
     if (!res.ok) throw explainRomStatus(res.status, '列表')
     const data = (await res.json()) as { objects?: RomObject[]; cursor?: string; truncated?: boolean }
     out.push(...(data.objects ?? []))

@@ -44,13 +44,13 @@ const GAMES_PAGE_SIZE = 100
 const AUTO_PAGES = 3
 
 /** 连着翻最多 maxPages 页，拼成一份游戏列表 */
-async function fetchGamePages(maxPages: number): Promise<{ items: Game[]; total: number; totalPages: number; loadedPages: number }> {
-  const first = await fetchAdminGames({ page: 1, pageSize: GAMES_PAGE_SIZE })
+async function fetchGamePages(maxPages: number, signal?: AbortSignal): Promise<{ items: Game[]; total: number; totalPages: number; loadedPages: number }> {
+  const first = await fetchAdminGames({ page: 1, pageSize: GAMES_PAGE_SIZE }, signal)
   const items = [...first.items]
   const last = Math.min(first.totalPages, Math.max(1, maxPages))
   // 串行翻页：十几页一起并发打过去，后端连接池会被这一个页面吃满
   for (let p = 2; p <= last; p++) {
-    const r = await fetchAdminGames({ page: p, pageSize: GAMES_PAGE_SIZE })
+    const r = await fetchAdminGames({ page: p, pageSize: GAMES_PAGE_SIZE }, signal)
     items.push(...r.items)
   }
   return { items, total: first.total, totalPages: first.totalPages, loadedPages: last }
@@ -62,11 +62,31 @@ function formatBytes(n: number) {
   return `${(n / 1024 / 1024).toFixed(1)} MB`
 }
 
-/** 给一个对象 key 找最匹配的游戏：文件名 == slug / 标题 slug，同平台目录优先 */
-function matchGame(key: string, games: Game[]): Game | undefined {
+/** 给一个对象 key 找最匹配的游戏：文件名 == slug / 标题 slug，同平台目录优先。 */
+function buildGameMatchIndex(games: Game[]): Map<string, Game[]> {
+  const index = new Map<string, Game[]>()
+  for (const game of games) {
+    const keys = new Set([game.slug, slugify(game.title), slugify(game.titleZh ?? '')].filter(Boolean))
+    for (const key of keys) {
+      const matches = index.get(key)
+      if (matches) matches.push(game)
+      else index.set(key, [game])
+    }
+  }
+  return index
+}
+
+function gameOptionLabel(game: Game): string {
+  return `${platformMap[game.platform]?.shortName ?? game.platform} · ${game.titleZh ?? game.title} [${game.slug}]`
+}
+
+const ROM_GAME_DATALIST_ID = 'admin-rom-game-options'
+
+/** 把全库候选项只渲染一次；为每一行重复建完整游戏下拉会产生数十万 DOM 节点。 */
+function matchGame(key: string, index: Map<string, Game[]>): Game | undefined {
   const guess = slugFromKey(key)
   const folder = platformFromKey(key)
-  const candidates = games.filter((g) => g.slug === guess || slugify(g.title) === guess || slugify(g.titleZh ?? '') === guess)
+  const candidates = index.get(guess) ?? []
   if (candidates.length === 0) return undefined
   if (candidates.length === 1) return candidates[0]
   return candidates.find((g) => g.platform === folder) ?? candidates[0]
@@ -160,29 +180,55 @@ export function AdminRoms() {
   const [showCors, setShowCors] = useState(false)
   const [busy, setBusy] = useState(false)
   const busyRef = useRef(false)
+  const gamesRequestId = useRef(0)
+  const listRequestId = useRef(0)
+  const gamesAbortController = useRef<AbortController | null>(null)
+  const listAbortController = useRef<AbortController | null>(null)
+  const toastTimer = useRef<number | null>(null)
 
   useEffect(() => subscribeRomConfig(() => setCfg(getRomConfig())), [])
 
   const loadGames = useCallback(async (maxPages: number) => {
     if (!apiEnabled()) return
+    gamesAbortController.current?.abort()
+    const controller = new AbortController()
+    gamesAbortController.current = controller
+    const requestId = ++gamesRequestId.current
     setGamesLoading(true)
     setGamesError(null)
     try {
-      const r = await fetchGamePages(maxPages)
+      const r = await fetchGamePages(maxPages, controller.signal)
+      if (requestId !== gamesRequestId.current) return
       setGames(r.items)
       setGamesTotal(r.total)
       setGamesPages(r.totalPages)
       setLoadedPages(r.loadedPages)
     } catch (err) {
+      if (requestId !== gamesRequestId.current) return
       setGamesError(err instanceof Error ? err.message : '读取游戏列表失败')
     } finally {
-      setGamesLoading(false)
+      if (requestId === gamesRequestId.current) {
+        setGamesLoading(false)
+        gamesAbortController.current = null
+      }
     }
   }, [])
 
   useEffect(() => {
     void loadGames(AUTO_PAGES)
+    return () => {
+      gamesRequestId.current++
+      gamesAbortController.current?.abort()
+      gamesAbortController.current = null
+    }
   }, [loadGames])
+
+  useEffect(() => () => {
+    listRequestId.current++
+    listAbortController.current?.abort()
+    listAbortController.current = null
+    if (toastTimer.current !== null) window.clearTimeout(toastTimer.current)
+  }, [])
 
   const allGamesLoaded = loadedPages >= gamesPages
 
@@ -217,10 +263,16 @@ export function AdminRoms() {
     }
     return m
   }, [games])
+  const gameMatchIndex = useMemo(() => buildGameMatchIndex(games), [games])
+  const gameOptionSlugs = useMemo(() => new Map(games.map((game) => [gameOptionLabel(game), game.slug])), [games])
 
   const flash = (t: string) => {
     setSavedMsg(t)
-    window.setTimeout(() => setSavedMsg(null), 3000)
+    if (toastTimer.current !== null) window.clearTimeout(toastTimer.current)
+    toastTimer.current = window.setTimeout(() => {
+      toastTimer.current = null
+      setSavedMsg(null)
+    }, 3000)
   }
 
   const save = () => {
@@ -229,54 +281,82 @@ export function AdminRoms() {
   }
 
   const runTest = async () => {
-    saveRomConfig(cfg)
+    if (testing) return
     setTesting(true)
-    const results: Array<{ ok: boolean; text: string }> = []
-    const base = cfg.base.trim().replace(/\/+$/, '')
-    const api = (cfg.api.trim() || base).replace(/\/+$/, '')
-
-    if (!base) results.push({ ok: false, text: '公开根地址未填写' })
-    else if (isS3ApiUrl(base)) results.push({ ok: false, text: '公开根地址填的是 S3 API（*.r2.cloudflarestorage.com），浏览器无法直接访问，请改成自定义域名或 Worker 地址' })
-    else {
-      const sample = bound[0]?.rom ?? (games[0] ? conventionalKeys(games[0])[0] : '')
-      try {
-        const r = await fetch(romUrlForKey(sample, base), { method: 'HEAD', cache: 'no-store' })
-        if (r.ok) results.push({ ok: true, text: `公开读取正常：${sample} → ${r.status}` })
-        else if (r.status === 404) results.push({ ok: true, text: `公开根地址可达（示例对象 ${sample} 不存在，返回 404，这很正常）` })
-        else results.push({ ok: false, text: `公开根地址返回 ${r.status}` })
-      } catch {
-        results.push({ ok: false, text: `无法从浏览器访问公开根地址。最常见原因是桶没有配置 CORS，或自定义域名还在初始化。点下方「查看 CORS 配置示例」。` })
+    try {
+      saveRomConfig(cfg)
+      const base = cfg.base.trim().replace(/\/+$/, '')
+      const api = (cfg.api.trim() || base).replace(/\/+$/, '')
+      const checkPublic = async (): Promise<{ ok: boolean; text: string }> => {
+        if (!base) return { ok: false, text: '公开根地址未填写' }
+        if (isS3ApiUrl(base)) return { ok: false, text: '公开根地址填的是 S3 API（*.r2.cloudflarestorage.com），浏览器无法直接访问，请改成自定义域名或 Worker 地址' }
+        const sample = bound[0]?.rom ?? (games[0] ? conventionalKeys(games[0])[0] : '__8bitgo_probe__.rom')
+        const controller = new AbortController()
+        const timer = window.setTimeout(() => controller.abort(), 6000)
+        try {
+          const r = await fetch(romUrlForKey(sample, base), { method: 'HEAD', cache: 'no-store', signal: controller.signal })
+          if (r.ok) return { ok: true, text: `公开读取正常：${sample} → ${r.status}` }
+          if (r.status === 404) return { ok: true, text: `公开根地址可达（示例对象 ${sample} 不存在，返回 404，这很正常）` }
+          return { ok: false, text: `公开根地址返回 ${r.status}` }
+        } catch {
+          return { ok: false, text: controller.signal.aborted
+            ? '公开根地址检测超时（6 秒）；请检查网络或域名状态。'
+            : '无法从浏览器访问公开根地址。最常见原因是桶没有配置 CORS，或自定义域名还在初始化。点下方「查看 CORS 配置示例」。' }
+        } finally {
+          window.clearTimeout(timer)
+        }
       }
-    }
 
-    if (!api) results.push({ ok: false, text: 'Worker 地址未填写：无法上传 / 列表，只能按约定路径读取' })
-    else {
-      try {
-        const p = await pingRomApi(api)
-        if (!p.isWorker) results.push({ ok: false, text: `Worker 地址不是本项目的 Worker（/ping 无响应或格式不对）。上传与列表功能不可用` })
-        else if (!p.writable) results.push({ ok: false, text: 'Worker 在线，但尚未设置 ADMIN_TOKEN（npx wrangler secret put ADMIN_TOKEN），上传 / 列表会被拒绝' })
-        else results.push({ ok: true, text: 'Worker 在线，已启用上传 / 删除 / 列表' })
-      } catch {
-        results.push({ ok: false, text: '无法连接 Worker 地址' })
+      const checkWorker = async (): Promise<{ ok: boolean; text: string }> => {
+        if (!api) return { ok: false, text: 'Worker 地址未填写：无法上传 / 列表，只能按约定路径读取' }
+        const controller = new AbortController()
+        const timer = window.setTimeout(() => controller.abort(), 6000)
+        try {
+          const p = await pingRomApi(api, controller.signal)
+          if (!p.isWorker) return { ok: false, text: 'Worker 地址不是本项目的 Worker（/ping 无响应或格式不对）。上传与列表功能不可用' }
+          if (!p.writable) return { ok: false, text: 'Worker 在线，但尚未设置 ADMIN_TOKEN（npx wrangler secret put ADMIN_TOKEN），上传 / 列表会被拒绝' }
+          return { ok: true, text: 'Worker 在线，已启用上传 / 删除 / 列表' }
+        } catch {
+          return { ok: false, text: controller.signal.aborted ? 'Worker 检测超时（6 秒）；请检查网络或地址。' : '无法连接 Worker 地址' }
+        } finally {
+          window.clearTimeout(timer)
+        }
       }
+
+      // 公开域名和上传 Worker 互相独立，并行检测；任何一个慢响应都有 6 秒硬超时。
+      const [publicResult, workerResult] = await Promise.all([checkPublic(), checkWorker()])
+      setTest([publicResult, workerResult])
+    } catch (err) {
+      setTest([{ ok: false, text: err instanceof Error ? err.message : '连接检查失败' }])
+    } finally {
+      setTesting(false)
     }
-    setTest(results)
-    setTesting(false)
   }
 
   const loadList = async () => {
+    if (loading) return
+    listAbortController.current?.abort()
+    const controller = new AbortController()
+    listAbortController.current = controller
+    const requestId = ++listRequestId.current
     saveRomConfig(cfg)
     setLoading(true)
     setListError(null)
     setObjects(null)
     try {
       const prefix = listPrefix.trim().replace(/^\/+|\/+$/g, '')
-      setObjects(await listRomObjects(prefix))
+      const listed = await listRomObjects(prefix, controller.signal)
+      if (requestId !== listRequestId.current) return
+      setObjects(listed)
       setLoadedPrefix(prefix)
     } catch (err) {
+      if (requestId !== listRequestId.current) return
       setListError(err instanceof Error ? err.message : '列表失败')
     } finally {
-      setLoading(false)
+      if (requestId === listRequestId.current) {
+        setLoading(false)
+        listAbortController.current = null
+      }
     }
   }
 
@@ -287,8 +367,11 @@ export function AdminRoms() {
    * 界面上立刻显示「已绑定」，刷新一下全部回到未绑定 —— 库里从头到尾没写过。
    */
   const bind = async (slug: string, key: string | undefined) => {
+    if (busyRef.current) return
     const game = games.find((g) => g.slug === slug)
     if (!game) return
+    busyRef.current = true
+    setBusy(true)
     try {
       // 解绑时把通用 rom 和所有指向这个 key 的语言槽一起清掉
       const patch = key ? { rom: key } : unbindKeyPatch(game, game.rom ?? '')
@@ -296,6 +379,9 @@ export function AdminRoms() {
       flash(key ? '已绑定' : '已解绑')
     } catch (err) {
       setListError(err instanceof Error ? err.message : '保存失败')
+    } finally {
+      busyRef.current = false
+      setBusy(false)
     }
   }
 
@@ -336,11 +422,17 @@ export function AdminRoms() {
 
   /** 行内「解绑」：只摘掉这一行对应的 key，不影响这款游戏的其它语言版本 */
   const unbindRow = async (key: string) => {
+    if (busyRef.current) return
+    busyRef.current = true
+    setBusy(true)
     try {
       await unbindKey(key)
       flash('已解绑')
     } catch (err) {
       setListError(err instanceof Error ? err.message : '解绑失败')
+    } finally {
+      busyRef.current = false
+      setBusy(false)
     }
   }
 
@@ -360,7 +452,7 @@ export function AdminRoms() {
         const key = rowKey(row)
         const keys = row.kind === 'file' ? [key] : row.bundle.files.map((f) => f.key)
         if (keys.some((k) => byRom.has(k))) continue
-        const g = matchGame(key, games)
+        const g = matchGame(key, gameMatchIndex)
         if (!g || romKeysOf(g).length > 0) continue
         try {
           // 逐条串行写库：一次几十条并发打过去，后端连接池会被打满
@@ -382,12 +474,12 @@ export function AdminRoms() {
 
   const removeObject = async (o: RomObject) => {
     if (!requireCompleteReferences()) return
+    if (busyRef.current) return
     const references = bindingsByRom.get(o.key) ?? []
     const note = references.length
       ? `\n\n会先从 ${references.length} 款游戏解除全部引用：${references.slice(0, 5).map((g) => g.titleZh ?? g.title).join('、')}${references.length > 5 ? '…' : ''}`
       : ''
     if (!window.confirm(`确定从 R2 删除 ${o.key}？此操作不可恢复。${note}`)) return
-    if (busyRef.current) return
     busyRef.current = true
     setBusy(true)
     try {
@@ -408,11 +500,11 @@ export function AdminRoms() {
   /** 整组删：包目录下的文件一个个删没意义，还容易删一半留一半 */
   const removeBundle = async (b: BundleGroup) => {
     if (!requireCompleteReferences()) return
+    if (busyRef.current) return
     const keys = b.files.map((file) => file.key)
     const referenceSlugs = new Set(keys.flatMap((key) => (bindingsByRom.get(key) ?? []).map((game) => game.slug)))
     const note = referenceSlugs.size ? `\n\n会先从 ${referenceSlugs.size} 款游戏解除这个包的全部引用。` : ''
     if (!window.confirm(`确定从 R2 删除整个包目录 ${b.dir}/（${b.files.length} 个文件，${formatBytes(b.size)}）？此操作不可恢复。${note}`)) return
-    if (busyRef.current) return
     busyRef.current = true
     setBusy(true)
     try {
@@ -457,6 +549,9 @@ export function AdminRoms() {
 
   return (
     <div className="space-y-4">
+      <datalist id={ROM_GAME_DATALIST_ID}>
+        {games.map((game) => <option key={game.slug} value={gameOptionLabel(game)} />)}
+      </datalist>
       <div>
         <h1 className="text-xl font-bold">ROM 存储</h1>
         <p className="mt-1 text-sm text-muted">
@@ -469,7 +564,7 @@ export function AdminRoms() {
             {gamesError ? '读取失败' : gamesLoading || loadedPages === 0 ? '读取中…' : `${games.length} / ${gamesTotal} 款`}
             {loadedPages > 0 && !allGamesLoaded && !gamesLoading && (
               <>
-                {' · 没加载的不会出现在下拉框里，也不会被自动匹配 · '}
+                {' · 没加载的游戏不会出现在搜索候选或自动匹配里 · '}
                 <button type="button" className="font-semibold text-brand-hover underline" onClick={() => void loadGames(gamesPages)}>
                   加载全部
                 </button>
@@ -577,7 +672,7 @@ export function AdminRoms() {
                 onClick={() => void autoMatch()}
                 disabled={busy}
               >
-                {busy ? '匹配中…' : '自动匹配未绑定的'}
+                {busy ? '正在处理…' : '自动匹配未绑定的'}
               </button>
             </div>
           }
@@ -595,14 +690,15 @@ export function AdminRoms() {
               <tbody className="divide-y divide-line">
                 {visibleRows.map((row) => {
                   const boundGame = boundOfRow(row)
-                  const suggestion = boundGame ? undefined : matchGame(rowKey(row), games)
+                  const suggestion = boundGame ? undefined : matchGame(rowKey(row), gameMatchIndex)
                   return row.kind === 'file' ? (
                     <ObjectRow
                       key={row.object.key}
                       object={row.object}
-                      games={games}
                       boundGame={boundGame}
                       suggestion={suggestion}
+                      gameOptionSlugs={gameOptionSlugs}
+                      busy={busy}
                       onBind={bind}
                       onUnbind={unbindRow}
                       onDelete={removeObject}
@@ -611,10 +707,11 @@ export function AdminRoms() {
                     <BundleRow
                       key={row.bundle.dir}
                       bundle={row.bundle}
-                      games={games}
                       boundGame={boundGame}
                       boundKey={row.bundle.files.map((f) => f.key).find((k) => byRom.has(k))}
                       suggestion={suggestion}
+                      gameOptionSlugs={gameOptionSlugs}
+                      busy={busy}
                       onBind={bind}
                       onUnbind={unbindRow}
                       onDelete={removeBundle}
@@ -673,6 +770,7 @@ export function AdminRoms() {
                     type="button"
                     className={cx(btnClass.small, 'text-live hover:bg-live/15')}
                     onClick={() => void bind(g.slug, undefined)}
+                    disabled={busy}
                     title={keys.length > 1 ? '只解绑通用 ROM；语言版本请到「游戏」页的编辑弹窗里改' : undefined}
                   >
                     解绑
@@ -707,22 +805,25 @@ export function AdminRoms() {
 
 function ObjectRow({
   object,
-  games,
   boundGame,
   suggestion,
+  gameOptionSlugs,
+  busy,
   onBind,
   onUnbind,
   onDelete,
 }: {
   object: RomObject
-  games: Game[]
   boundGame?: Game
   suggestion?: Game
+  gameOptionSlugs: Map<string, string>
+  busy: boolean
   onBind: (slug: string, key: string | undefined) => void | Promise<void>
   onUnbind: (key: string) => void | Promise<void>
   onDelete: (o: RomObject) => void
 }) {
-  const [selected, setSelected] = useState(suggestion?.slug ?? '')
+  const [selected, setSelected] = useState(suggestion ? gameOptionLabel(suggestion) : '')
+  const selectedSlug = selected ? gameOptionSlugs.get(selected) : suggestion?.slug
   return (
     <tr className="hover:bg-black/[0.03]">
       <td className="py-2 pr-3 font-mono text-xs">{object.key}</td>
@@ -733,33 +834,33 @@ function ObjectRow({
             {boundGame.icon} {boundGame.titleZh ?? boundGame.title}
           </span>
         ) : (
-          <select className={cx(inputClass, 'h-8 w-64 text-xs')} value={selected} onChange={(e) => setSelected(e.target.value)}>
-            <option value="">{suggestion ? `— 建议：${suggestion.titleZh ?? suggestion.title} —` : '— 选择游戏 —'}</option>
-            {games.map((g) => (
-              <option key={g.slug} value={g.slug}>
-                {platformMap[g.platform]?.shortName} · {g.titleZh ?? g.title}
-              </option>
-            ))}
-          </select>
+          <input
+            className={cx(inputClass, 'h-8 w-64 text-xs')}
+            list={ROM_GAME_DATALIST_ID}
+            value={selected}
+            onChange={(event) => setSelected(event.target.value)}
+            placeholder={suggestion ? `建议：${suggestion.titleZh ?? suggestion.title}` : '搜索游戏或 slug…'}
+            aria-label={`为 ${object.key} 搜索要绑定的游戏`}
+          />
         )}
       </td>
       <td className="py-2 text-right">
         <div className="flex justify-end gap-1">
           {boundGame ? (
-            <button type="button" className={cx(btnClass.small, 'text-muted hover:bg-black/5 hover:text-fg')} onClick={() => void onUnbind(object.key)}>
+            <button type="button" className={cx(btnClass.small, 'text-muted hover:bg-black/5 hover:text-fg')} onClick={() => void onUnbind(object.key)} disabled={busy}>
               解绑
             </button>
           ) : (
             <button
               type="button"
               className={cx(btnClass.small, 'text-brand-hover hover:bg-brand-soft')}
-              disabled={!selected && !suggestion}
-              onClick={() => void onBind(selected || suggestion!.slug, object.key)}
+              disabled={busy || !selectedSlug}
+              onClick={() => selectedSlug && void onBind(selectedSlug, object.key)}
             >
               绑定
             </button>
           )}
-          <button type="button" className={cx(btnClass.small, 'text-live hover:bg-live/15')} onClick={() => onDelete(object)}>
+          <button type="button" className={cx(btnClass.small, 'text-live hover:bg-live/15')} onClick={() => onDelete(object)} disabled={busy}>
             删除文件
           </button>
         </div>
@@ -773,25 +874,28 @@ function ObjectRow({
  */
 function BundleRow({
   bundle,
-  games,
   boundGame,
   boundKey,
   suggestion,
+  gameOptionSlugs,
+  busy,
   onBind,
   onUnbind,
   onDelete,
 }: {
   bundle: BundleGroup
-  games: Game[]
   boundGame?: Game
   /** 包里真正被绑上的那个 key（管理员可能绑的不是猜出来的主 SWF） */
   boundKey?: string
   suggestion?: Game
+  gameOptionSlugs: Map<string, string>
+  busy: boolean
   onBind: (slug: string, key: string | undefined) => void | Promise<void>
   onUnbind: (key: string) => void | Promise<void>
   onDelete: (b: BundleGroup) => void
 }) {
-  const [selected, setSelected] = useState(suggestion?.slug ?? '')
+  const [selected, setSelected] = useState(suggestion ? gameOptionLabel(suggestion) : '')
+  const selectedSlug = selected ? gameOptionSlugs.get(selected) : suggestion?.slug
   const [open, setOpen] = useState(false)
   const rel = (k: string) => k.slice(bundle.dir.length + 1)
   const mainRel = rel(boundKey ?? bundle.main)
@@ -814,15 +918,15 @@ function BundleRow({
             <span className="rounded bg-online/15 px-1.5 py-0.5 text-xs text-online">
               {boundGame.icon} {boundGame.titleZh ?? boundGame.title}
             </span>
-          ) : (
-            <select className={cx(inputClass, 'h-8 w-64 text-xs')} value={selected} onChange={(e) => setSelected(e.target.value)}>
-              <option value="">{suggestion ? `— 建议：${suggestion.titleZh ?? suggestion.title} —` : '— 选择游戏 —'}</option>
-              {games.map((g) => (
-                <option key={g.slug} value={g.slug}>
-                  {platformMap[g.platform]?.shortName} · {g.titleZh ?? g.title}
-                </option>
-              ))}
-            </select>
+        ) : (
+            <input
+              className={cx(inputClass, 'h-8 w-64 text-xs')}
+              list={ROM_GAME_DATALIST_ID}
+              value={selected}
+              onChange={(event) => setSelected(event.target.value)}
+              placeholder={suggestion ? `建议：${suggestion.titleZh ?? suggestion.title}` : '搜索游戏或 slug…'}
+              aria-label={`为 ${bundle.dir} 搜索要绑定的游戏`}
+            />
           )}
         </td>
         <td className="py-2 text-right">
@@ -832,6 +936,7 @@ function BundleRow({
                 type="button"
                 className={cx(btnClass.small, 'text-muted hover:bg-black/5 hover:text-fg')}
                 onClick={() => void onUnbind(boundKey ?? bundle.main)}
+                disabled={busy}
               >
                 解绑
               </button>
@@ -839,14 +944,14 @@ function BundleRow({
               <button
                 type="button"
                 className={cx(btnClass.small, 'text-brand-hover hover:bg-brand-soft')}
-                disabled={!selected && !suggestion}
-                onClick={() => void onBind(selected || suggestion!.slug, bundle.main)}
+                disabled={busy || !selectedSlug}
+                onClick={() => selectedSlug && void onBind(selectedSlug, bundle.main)}
                 title={`绑定主 SWF ${bundle.main}`}
               >
                 绑定主 SWF
               </button>
             )}
-            <button type="button" className={cx(btnClass.small, 'text-live hover:bg-live/15')} onClick={() => onDelete(bundle)}>
+            <button type="button" className={cx(btnClass.small, 'text-live hover:bg-live/15')} onClick={() => onDelete(bundle)} disabled={busy}>
               删除整包
             </button>
           </div>

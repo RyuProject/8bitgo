@@ -33,7 +33,7 @@ export interface AdminGameQuery {
  * 关键字、平台、上下架状态、排序全部由服务端处理 —— 在前端过滤会让
  * total 和翻页失去意义（「只看下架」变成在当前页的 24 条里挑）。
  */
-export async function fetchAdminGames(q: AdminGameQuery = {}): Promise<Paged<Game>> {
+export async function fetchAdminGames(q: AdminGameQuery = {}, signal?: AbortSignal): Promise<Paged<Game>> {
   if (!apiEnabled()) {
     return { items: [], total: 0, page: 1, pageSize: 24, totalPages: 1 }
   }
@@ -46,7 +46,7 @@ export async function fetchAdminGames(q: AdminGameQuery = {}): Promise<Paged<Gam
   else if (q.home === 'unpicked') sp.set('home', '0')
   if (q.page) sp.set('page', String(q.page))
   if (q.pageSize) sp.set('pageSize', String(q.pageSize))
-  return api.get<Paged<Game>>(`/api/games?${sp.toString()}`, true)
+  return api.get<Paged<Game>>(`/api/games?${sp.toString()}`, true, signal)
 }
 
 /**
