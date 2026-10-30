@@ -4,7 +4,7 @@
  * 为什么是自动的：以前这里是一个「开播」按钮，等玩家自己想起来点。结果是几乎没人点 ——
  * 大厅永远空着，观众看不到任何人在玩，主播也不知道有人想看。推流本来就是画面的副本
  * （和录像用的是同一份 CaptureSources），不影响本机这一局，那就没有理由让玩家先做决定。
- * 想安静玩的人点一下「不公开」即可，这个选择记在本地，下次沿用。
+ * 想安静玩的人点一下「不公开」即可；这个选择只对当前这局生效，下一局重新默认开播。
  *
  * 为什么单独一个组件而不是塞进 EmulatorTools：那边是「操作正在跑的模拟器」，
  * 这边是「把画面推出去 / 把别人放进来」，生命周期和失败模式都不一样，混在一起不好收拾。
@@ -220,27 +220,6 @@ async function shareTab(cropTo: HTMLElement | null): Promise<MediaStream> {
   return stream
 }
 
-/** 「不公开」是玩家的长期选择，不是这一局的临时状态，所以记在本地 */
-const PRIVATE_KEY = '8bit.live.private'
-
-function readPrivate(): boolean {
-  try {
-    return localStorage.getItem(PRIVATE_KEY) === '1'
-  } catch {
-    // 隐私模式 / 存储被禁：当作没关过，行为退回默认的自动开播
-    return false
-  }
-}
-
-function writePrivate(next: boolean) {
-  try {
-    if (next) localStorage.setItem(PRIVATE_KEY, '1')
-    else localStorage.removeItem(PRIVATE_KEY)
-  } catch {
-    /* 存不进去也不影响这一局 */
-  }
-}
-
 /** 画布要等引擎把第一帧挂上来才有，开局那一下取不到是正常的 */
 const RETRY_MS = 600
 const RETRY_MAX = 15
@@ -304,7 +283,8 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
     handle?.setBackgroundPlaybackRequired?.(active && viewers > 0)
     return () => handle?.setBackgroundPlaybackRequired?.(false)
   }, [handle, active, viewers])
-  const [hidden, setHidden] = useState(readPrivate)
+  // 不公开只暂停当前这局；新开游戏必须重新默认开播，不能沿用旧浏览器里的隐私标记。
+  const [hidden, setHidden] = useState(false)
   /**
    * 自动开播还在尝试。落定后无论成没成都置 false —— 界面靠它把「连接中…」和
    * 「未开播」分开。初值是 true：组件挂上来的那一刻尝试就已经开始了，
@@ -617,8 +597,8 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
   const available = Boolean(handle && gameSlug && liveEnabled() && active)
 
   const toggleHidden = () => {
-    // 走标签页分享的这一路，点一下就是开 / 停，不碰「不公开」那个长期选择：
-    // 这类游戏的开播本来就是每局手动一次，没有「默认公开」可关
+    // 走标签页分享的这一路，点一下就是开 / 停，不切换自动开播的隐私状态：
+    // 这类游戏每局都必须由玩家手动授权分享。
     if (needsManual && !hidden) {
       if (liveRef.current) stop()
       else void startManual()
@@ -626,7 +606,6 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
     }
     const next = !hidden
     setHidden(next)
-    writePrivate(next)
     if (next) stop()
   }
 

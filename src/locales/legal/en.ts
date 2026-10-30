@@ -184,7 +184,7 @@ Capture relies on the browser's screen-sharing capability. On browsers that supp
 
 ### How to turn it off
 
-The player has a "Private" switch. With it on, no public room is created. The setting lives in your browser's local storage — **clearing browser data returns it to the streaming default.**
+The player has a "Private" switch. With it on, no public room is created for the current game. This choice applies only to the current game; the next game starts streaming by default.
 
 ### Multiplayer and peer-to-peer connections
 
@@ -455,7 +455,7 @@ Capture relies on the browser's screen-sharing capability. Browsers that support
 
 The player has a "Private" switch. With it on, no public room is created.
 
-The switch is stored in your browser's local storage (key 8bit.live.private). So: **clearing browser data, changing browser or changing device returns it to the streaming default.**
+This choice applies only to the current game; the next game starts streaming by default.
 
 ### The other side can see your IP address
 

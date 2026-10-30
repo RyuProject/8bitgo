@@ -4653,11 +4653,12 @@ export function EmulatorPlayer({
 
         {/*
           自动开播。玩就是播 —— 不用玩家点，画面推出去的是录像用的那份副本，
-          本机这一局不受影响。想安静玩的人在按钮上点一下「不公开」，选择记在本地。
+          本机这一局不受影响。想安静玩的人在按钮上点一下「不公开」，只影响当前这局。
           联机房里的房主不重复推：房间本身就带观众席，再推一路是白占上行。
         */}
         {status === 'running' && !session?.live && (
           <LiveControls
+            key={gameSlug}
             handle={handle}
             gameName={gameName}
             gameSlug={gameSlug}

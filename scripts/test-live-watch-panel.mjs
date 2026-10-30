@@ -149,12 +149,17 @@ check('⚠️ 面板只对观众开（主播端一个像素都不动）', () => 
 
 console.log('五、公开边界与直播大厅意图')
 
-check('⚠️ 默认开播，但玩家的不公开选择必须长期保存', () => {
+check('⚠️ 新游戏总是默认开播，不公开只作用于当前游戏', () => {
   const src = code('src/emulator/LiveControls.tsx')
-  assert.match(src, /const PRIVATE_KEY = '8bit\.live\.private'/, '没有保存玩家的不公开选择')
-  assert.match(src, /useState\(readPrivate\)/, '没在开播前读取玩家的不公开选择')
-  assert.match(src, /function readPrivate[\s\S]*?catch\s*{\s*return false/, '本地存储不可用时没有回到默认开播')
-  assert.match(src, /writePrivate\(next\)/, '点「不公开」后没有记住选择')
+  assert.match(src, /const \[hidden, setHidden\] = useState\(false\)/, '新会话没有以公开直播作为默认状态')
+  assert.doesNotMatch(src, /8bit\.live\.private|readPrivate|writePrivate/, '旧的持久化隐私偏好仍会让后续游戏默认不公开')
+  const player = code('src/emulator/EmulatorPlayer.tsx')
+  assert.match(player, /<LiveControls\s+key=\{gameSlug\}/, '切换到另一款游戏时没有重置本局隐私状态')
+  const toggleAt = src.indexOf('const toggleHidden = () =>')
+  const phaseAt = src.indexOf('const phase: Phase', toggleAt)
+  const toggle = src.slice(toggleAt, phaseAt)
+  assert.match(toggle, /setHidden\(next\)/, '玩家不能在本局手动切换公开状态')
+  assert.match(toggle, /if \(next\) stop\(\)/, '切为不公开时没有立即停止本局直播')
 })
 
 check('⚠️ 直播大厅不能混入没有观众席的云端房', () => {

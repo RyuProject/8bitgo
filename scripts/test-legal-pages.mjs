@@ -347,9 +347,9 @@ const FACTS = [
     id: 'auto-broadcast',
     where: 'broadcast',
     doc: 'privacy',
-    what: '「玩就是播」：游玩会话默认创建公开直播房间，退出只能靠 localStorage 里那个开关',
-    probe: ['src/emulator/LiveControls.tsx', '8bit.live.private'],
-    say: { zh: ['8bit.live.private', '默认开启|預設開啟'], en: ['8bit.live.private', 'on by default'] },
+    what: '「玩就是播」：新游戏默认创建公开直播房间；不公开开关只对当前游戏生效',
+    probe: ['src/emulator/LiveControls.tsx', 'const [hidden, setHidden] = useState(false)'],
+    say: { zh: ['默认开启|預設開啟', '当前这局|當前這局|目前這一局'], en: ['on by default', 'current game'] },
   },
   {
     id: 'whole-tab-capture',
