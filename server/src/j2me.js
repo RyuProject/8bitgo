@@ -20,6 +20,7 @@
  *    才做任何 IO，猜不到就是一句 204 空转，没有可放大的成本（那个随机名本身就是凭据）。
  */
 import { createReadStream } from 'node:fs'
+import { stat as statFile } from 'node:fs/promises'
 import { TemporaryJarStore } from './temporary-jar-store.js'
 import { readResponseBuffer } from './bounded-response.js'
 import { envNumber } from './resource-limits.js'
@@ -67,6 +68,27 @@ let warnedNoRealIp = false
 const SAFE_NAME = /^[A-Za-z0-9._-]+\.(jar|jad)$/i
 /** 临时文件用固定格式的随机名，便于和正式 ROM 区分 */
 const TMP_NAME = /^tmp-[a-f0-9]{32}\.jar$/i
+
+/** 解析单段 HTTP 字节范围；CheerpJ 通过 Range 分段读取 JAR，整包 200 会让它直接拒绝启动。 */
+function parseJarRange(header, size) {
+  const match = /^bytes=(\d*)-(\d*)$/i.exec(String(header || '').trim())
+  if (!match || (!match[1] && !match[2])) return null
+
+  let start
+  let end
+  if (!match[1]) {
+    const suffix = Number(match[2])
+    if (!Number.isSafeInteger(suffix) || suffix <= 0 || size <= 0) return null
+    start = Math.max(0, size - suffix)
+    end = size - 1
+  } else {
+    start = Number(match[1])
+    end = match[2] ? Number(match[2]) : size - 1
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || start >= size) return null
+    end = Math.min(end, size - 1)
+  }
+  return { start, end }
+}
 
 const store = new TemporaryJarStore({ directory: TMP_DIR, maxBytes: MAX_TOTAL_MB * 1024 * 1024, ttlMs: TTL_MS })
 const MAX_UPLOADS = envNumber('J2ME_UPLOAD_CONCURRENCY', 4, { max: 64 })
@@ -241,10 +263,37 @@ export async function j2meJarProxy(req, res) {
       res.setHeader('Content-Type', 'application/java-archive')
       res.setHeader('X-Content-Type-Options', 'nosniff')
       res.setHeader('Cache-Control', 'no-store')
-      // 这里刻意不再声明 Accept-Ranges：本分支根本没实现 Range，
-      // 声明了会让客户端发 Range 请求然后每次都拿到整包。
-      if (req.method === 'HEAD') return res.status(200).end()
-      const stream = createReadStream(p)
+      // CheerpJ 的文件系统只用 HTTP Range 取 JAR 的局部字节；不给 206 会让 JVM 判定
+      // 「服务器不支持 Range」并终止启动。临时文件也要遵守和 R2 正式 ROM 一样的协议。
+      let info
+      try { info = await statFile(p) }
+      catch (e) {
+        if (e.code === 'ENOENT') return res.status(404).send('临时文件已过期')
+        throw e
+      }
+      const size = info.size
+      res.setHeader('Accept-Ranges', 'bytes')
+      res.setHeader('Last-Modified', info.mtime.toUTCString())
+
+      let start = 0
+      let end = size - 1
+      let status = 200
+      if (req.headers.range) {
+        const range = parseJarRange(req.headers.range, size)
+        if (!range) {
+          res.setHeader('Content-Range', `bytes */${size}`)
+          res.setHeader('Content-Length', '0')
+          return res.status(416).end()
+        }
+        ;({ start, end } = range)
+        status = 206
+        res.setHeader('Content-Range', `bytes ${start}-${end}/${size}`)
+      }
+      const length = size === 0 ? 0 : end - start + 1
+      res.setHeader('Content-Length', String(length))
+      if (req.method === 'HEAD' || length === 0) return res.status(status).end()
+
+      const stream = createReadStream(p, { start, end })
       const onClose = () => stream.destroy()
       res.once('close', onClose)
       stream.once('close', () => res.off('close', onClose))
@@ -252,9 +301,14 @@ export async function j2meJarProxy(req, res) {
       // release / TTL 清扫删掉 —— 没有这个监听，ENOENT 会变成未捕获异常直接杀掉进程。
       stream.on('error', (err) => {
         console.error('[j2me] 读取临时 jar 失败：', err.message)
-        if (!res.headersSent) res.status(404).send('临时文件已过期')
+        if (!res.headersSent) {
+          res.removeHeader('Content-Length')
+          res.removeHeader('Content-Range')
+          res.status(404).send('临时文件已过期')
+        }
         else res.destroy()
       })
+      res.status(status)
       return stream.pipe(res)
     }
     return res.status(404).send('临时文件已过期')
