@@ -83,7 +83,7 @@ export function RoomsPage() {
             <p className="mt-1 text-sm text-muted">{live ? t.rooms.liveEmptyBody : t.rooms.emptyBody}</p>
           </div>
         ) : (
-          <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          <ul className="adaptive-room-grid">
             {visibleRooms.map((room) => (
               <li key={room.roomId}>
                 <RoomCard room={room} watchOnly={live} />
@@ -116,10 +116,10 @@ export function RoomsPage() {
           {suggestState.status === 'loading' && !suggestState.data ? (
             <GameGridSkeleton
               count={6}
-              className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6"
+              className="adaptive-game-grid"
             />
           ) : (
-            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
+            <div className="adaptive-game-grid">
               {suggestions.map((g) => (
                 <GameCard key={g.slug} game={g} showCoin={false} />
               ))}

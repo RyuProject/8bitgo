@@ -23,7 +23,7 @@ import { isStaff } from '../../shared/roles.js'
 // 各写一份就会出现「界面上能选、存进去被 400 拒掉」
 import { AVATARS, normalizeAvatar } from '../../shared/avatar.js'
 
-const GRID = 'grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6'
+const GRID = 'adaptive-game-grid'
 
 type Tab = 'games' | 'collections' | 'saves' | 'account'
 

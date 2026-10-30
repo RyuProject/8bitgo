@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react'
 import type { ArcadeButtonCount, DosBackend, DosWindowsVersion, FlashControls, Game, GenreId, Platform, PlatformId } from '@/types'
 import { platformMap } from '@/data/platforms'
 import { formatBytes, formatSpeed, isRomFileAccepted } from '@/lib/emulator'
@@ -33,7 +33,6 @@ import { installScrollGuard } from './scrollGuard'
 import { shouldCaptureMouse } from './mouseCapture'
 import { biosSetUrlSync, platformBiosUrlSync } from '@/services/platformBios'
 import { EmulatorTools } from './EmulatorTools'
-import { TouchPad } from './TouchPad'
 import { PadDiagram } from './PadDiagram'
 import { LiveControls, type LiveControlsHandle } from './LiveControls'
 import { createPortal } from 'react-dom'
@@ -115,6 +114,13 @@ type Status = 'idle' | 'loading' | 'running' | 'error'
 type Mode = 'local' | 'online'
 /** 联机走哪条路：p2p = 房主浏览器直推（默认）；cloud = 游戏跑在服务器上（付费） */
 type Channel = 'p2p' | 'cloud'
+
+/**
+ * 触屏手柄只给少数「触屏设备 + 运行时声明 touchpad」的会话使用。
+ * 桌面端以及 EmulatorJS 自带触控的游戏不应为它下载一整套按键/改键 UI。
+ */
+const loadTouchPad = () => import('./TouchPad')
+const LazyTouchPad = lazy(() => loadTouchPad().then(({ TouchPad }) => ({ default: TouchPad })))
 
 const LOAD_PROGRESS_CEILING = 0.99
 
@@ -1014,6 +1020,13 @@ export function EmulatorPlayer({
     if (typeof window.matchMedia !== 'function') return
     setTouchDevice(window.matchMedia(COARSE_MQ).matches)
   }, [])
+  useEffect(() => {
+    // 在核心确认能力后、首帧可交互之前并行加载；桌面端和使用引擎内置手柄的游戏不下这块代码。
+    if (!touchDevice || !caps.has('touchpad')) return
+    void loadTouchPad().catch(() => {
+      // 预载失败不阻断游戏启动；实际显示手柄时懒加载器会再请求一次。
+    })
+  }, [touchDevice, caps])
   /**
    * 窄屏（手机竖屏那一档）。布局要用它决定虚拟手柄摆哪儿，所以必须**订阅**而不是只算一次 ——
    * 玩家横过屏幕、或者在平板上分屏，这个值会变，手柄得跟着从「画面下面一条」换成「浮层」。
@@ -3934,7 +3947,11 @@ export function EmulatorPlayer({
             手机竖屏时不走这里，改成画面下面单独一条（见下面 padInline 那块）：
             画面框只有 291pt 高，浮层的十字键要压掉四成。
           */}
-          {showPad && !padInline && <TouchPad handle={handle} onInput={dismissPadHint} highlight={padHint} />}
+          {showPad && !padInline && (
+            <Suspense fallback={null}>
+              <LazyTouchPad handle={handle} onInput={dismissPadHint} highlight={padHint} />
+            </Suspense>
+          )}
 
           {/*
             开局提示气泡。玩家的视线在画面里，所以提示画在画面里，然后把他引到按键那儿去。
@@ -4424,7 +4441,11 @@ export function EmulatorPlayer({
           触屏手柄（行内那一路）。手机竖屏专用：排在画面框和工具栏之间，谁也不压谁。
           整条的边框、底色和收起状态都在 TouchPad 里，收起来只剩一颗 🎮 的高度。
         */}
-        {showPad && padInline && <TouchPad handle={handle} layout="inline" onInput={dismissPadHint} highlight={padHint} />}
+        {showPad && padInline && (
+          <Suspense fallback={null}>
+            <LazyTouchPad handle={handle} layout="inline" onInput={dismissPadHint} highlight={padHint} />
+          </Suspense>
+        )}
 
         {/* 工具栏放进播放器框体底部，而不是作为详情页里的下一块内容 */}
         <div

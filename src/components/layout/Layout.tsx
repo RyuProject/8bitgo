@@ -128,7 +128,7 @@ function Shell() {
         )}
       >
         <Topbar />
-        <main className="flex-1">
+        <main className="site-main flex-1">
           {/* 只让正文在站内首次进入某页时等待 chunk；顶栏与侧栏不跟着闪退。SSR 同一边界留住水合中的 HTML。 */}
           <Suspense fallback={<PageSkeleton />}><Outlet /></Suspense>
         </main>

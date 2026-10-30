@@ -258,6 +258,119 @@ body {
   @apply mx-auto w-full max-w-[1600px] px-4 sm:px-6 lg:px-8;
 }
 
+/*
+ * 网格按正文真正拿到的宽度排版，而不是按整块视口猜列数。
+ * 桌面侧栏、窄窗口和内嵌视图都会减少可用宽度；容器查询让真实卡片与骨架共用同一断点，
+ * 避免「骨架一行很多列、数据回来又挤成几列」造成跳版，也避免侧栏旁的封面缩得过小。
+ */
+.site-main {
+  min-width: 0;
+  container-name: page-content;
+  container-type: inline-size;
+}
+
+.adaptive-game-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.adaptive-room-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+}
+
+.adaptive-entity-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.adaptive-platform-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.adaptive-developer-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.75rem;
+}
+
+.adaptive-app-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+}
+
+.adaptive-blog-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+}
+
+.adaptive-featured-blog {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@container page-content (min-width: 36rem) {
+  .adaptive-game-grid,
+  .adaptive-entity-grid,
+  .adaptive-platform-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .adaptive-room-grid,
+  .adaptive-developer-grid,
+  .adaptive-app-grid,
+  .adaptive-blog-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@container page-content (min-width: 56rem) {
+  .adaptive-game-grid,
+  .adaptive-entity-grid,
+  .adaptive-platform-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .adaptive-room-grid,
+  .adaptive-developer-grid,
+  .adaptive-app-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .adaptive-featured-blog {
+    grid-template-columns: 2fr 3fr;
+  }
+}
+
+@container page-content (min-width: 72rem) {
+  .adaptive-blog-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@container page-content (min-width: 72rem) {
+  .adaptive-game-grid {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+
+  .adaptive-room-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@container page-content (min-width: 90rem) {
+  .adaptive-game-grid {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+}
+
 @utility card-hover {
   @apply transition duration-300 ease-out hover:-translate-y-1 hover:shadow-[0_16px_32px_-14px_rgba(0,0,0,0.18)];
 }

@@ -84,7 +84,7 @@ export function CollectionsPage() {
 
       {/* 骨架用和真卡片同样的格子，数据回来时不会整页跳动 */}
       {loading ? (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+        <div className="adaptive-entity-grid">
           {Array.from({ length: 8 }, (_, i) => (
             <div key={i} className="overflow-hidden rounded-card border border-line bg-surface">
               <div className="aspect-square w-full animate-pulse bg-surface-2" />
@@ -100,9 +100,9 @@ export function CollectionsPage() {
           {t.collections.empty}
         </p>
       ) : (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+        <div className="adaptive-entity-grid">
           {items.map((c, i) => (
-            <CollectionCard key={c.id} collection={c} priority={i < 4} />
+            <CollectionCard key={c.id} collection={c} eager={i < 4} priority={i === 0} />
           ))}
         </div>
       )}

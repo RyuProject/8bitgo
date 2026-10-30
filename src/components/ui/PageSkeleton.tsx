@@ -35,8 +35,8 @@ interface GameGridSkeletonProps {
   coverRatio?: GameCardSkeletonProps['coverRatio']
 }
 
-/** 列表页通用占位；网格列数由页面传入，卡片视觉保持一致。 */
-export function GameGridSkeleton({ count = 10, className, coverRatio = 'square' }: GameGridSkeletonProps) {
+/** 列表页通用占位；默认网格和真实卡片共用自适应列数，页面也可覆盖间距等细节。 */
+export function GameGridSkeleton({ count = 10, className = 'adaptive-game-grid', coverRatio = 'square' }: GameGridSkeletonProps) {
   return (
     <div className={className} aria-hidden>
       {Array.from({ length: count }, (_, i) => (
@@ -77,7 +77,7 @@ export function PageSkeleton() {
 
       <GameGridSkeleton
         count={10}
-        className="mt-8 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"
+        className="mt-8 adaptive-game-grid"
       />
     </div>
   )

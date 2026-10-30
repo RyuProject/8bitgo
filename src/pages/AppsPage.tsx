@@ -118,7 +118,7 @@ function Section({
 
 function Grid({ items, showSubmitter }: { items: AppItem[]; showSubmitter?: boolean }) {
   return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+    <div className="adaptive-app-grid">
       {items.map((item) => (
         <AppCard key={item.id} item={item} showSubmitter={showSubmitter} />
       ))}
@@ -225,7 +225,7 @@ function Empty({ text }: { text: string }) {
 
 function SkeletonGrid() {
   return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+    <div className="adaptive-app-grid">
       {Array.from({ length: 6 }).map((_, i) => (
         <div key={i} className="flex flex-col gap-3 rounded-2xl border border-line bg-surface p-4">
           <div className="flex items-start gap-3">

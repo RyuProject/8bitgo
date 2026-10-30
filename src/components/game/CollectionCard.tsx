@@ -17,7 +17,9 @@ const SHOWN = 4
 interface Props {
   collection: Collection
   className?: string
-  /** 首屏可见的那几张给 true，封面会 eager 加载（同 GameCover 的 priority） */
+  /** 首屏范围内的小图立即加载，但不因此把每格都提升成最高网络优先级。 */
+  eager?: boolean
+  /** 只给首屏最主要的那一格最高下载优先级。 */
   priority?: boolean
 }
 
@@ -31,7 +33,7 @@ interface Props {
  * 不足四款时不留空格子 —— 一张就铺满、两张就左右各半、三张是「左边一大 + 右边两小」。
  * 留空格子会让新建的合集看起来像坏了。
  */
-export function CollectionCard({ collection, className, priority }: Props) {
+export function CollectionCard({ collection, className, eager, priority }: Props) {
   const t = useT()
   const pool = collection.covers
 
@@ -48,7 +50,7 @@ export function CollectionCard({ collection, className, priority }: Props) {
         两行两列各占一半是 grid 一句话的事，而 flex 要靠百分比高度层层传下去。
       */}
       <div className="relative aspect-square w-full overflow-hidden bg-surface-2">
-        <CoverGrid pool={pool} priority={priority} emptyLabel={t.collections.emptyCover} />
+        <CoverGrid pool={pool} eager={eager} priority={priority} emptyLabel={t.collections.emptyCover} />
         <div className="absolute inset-0 bg-black/0 transition duration-300 group-hover:bg-black/15" />
       </div>
 
@@ -103,7 +105,7 @@ export function CollectionCard({ collection, className, priority }: Props) {
  * 只在卡片进入视口、页面在前台、用户没开「减少动态效果」时才转 —— 首页一栏十几张卡，
  * 全在后台空转是白烧电。
  */
-function CoverGrid({ pool, priority, emptyLabel }: { pool: CoverGame[]; priority?: boolean; emptyLabel: string }) {
+function CoverGrid({ pool, eager, priority, emptyLabel }: { pool: CoverGame[]; eager?: boolean; priority?: boolean; emptyLabel: string }) {
   const rootRef = useRef<HTMLDivElement>(null)
   const shown = useCoverRotation(pool, rootRef)
   const rotating = pool.length > SHOWN
@@ -117,7 +119,7 @@ function CoverGrid({ pool, priority, emptyLabel }: { pool: CoverGame[]; priority
   // key 用格子的序号而不是游戏：轮播换图时格子不动、里面的图淡入淡出（见 Tile）
   const cell = (i: number, cls?: string) => (
     <div key={i} className={cx('relative overflow-hidden', cls)}>
-      <Tile game={pool[shown[i]] ?? pool[i]} priority={priority} still={rotating} />
+      <Tile game={pool[shown[i]] ?? pool[i]} eager={eager} priority={priority && i === 0} still={rotating} />
     </div>
   )
   const n = Math.min(pool.length, SHOWN)
@@ -160,7 +162,7 @@ function CoverGrid({ pool, priority, emptyLabel }: { pool: CoverGame[]; priority
  * Safari 不下载（要等下一次滚动），200ms 定时一到透明层撤掉，底下是 #000。
  * 轮播只在卡片进了视口才跑，所以换过图的格子 eager 不会多花一个字节。
  */
-function Tile({ game, priority, still }: { game: CoverGame; priority?: boolean; still: boolean }) {
+function Tile({ game, eager, priority, still }: { game: CoverGame; eager?: boolean; priority?: boolean; still: boolean }) {
   const [cur, setCur] = useState(game)
   /** 正在换进来的那一款，以及它走到哪一步了 */
   const [incoming, setIncoming] = useState<{ game: CoverGame; phase: 'loading' | 'fading' | 'settling' } | null>(null)
@@ -207,7 +209,8 @@ function Tile({ game, priority, still }: { game: CoverGame; priority?: boolean; 
         showBadge={false}
         still={still}
         priority={priority && !incoming}
-        eager={swapped}
+        eager={(eager && !incoming) || swapped}
+        sizes="120px"
         onImageLoad={onCurLoaded}
         className="h-full w-full"
       />

@@ -824,7 +824,7 @@ export function GameDetailPage() {
       {related.length > 0 && (
         <section className="mt-14">
           <SectionHeader title={t.game.relatedTitle} subtitle={t.game.relatedSubtitle} icon="💡" />
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-8">
+          <div className="adaptive-game-grid">
             {related.map((g) => (
               <GameCard key={g.slug} game={g} />
             ))}

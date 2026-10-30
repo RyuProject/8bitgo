@@ -148,7 +148,7 @@ export function SortableGameGrid({ games, sortable, disabled, onReorder, renderA
   const canSort = sortable && games.length > 1
 
   return (
-    <div ref={rootRef} className={cx('grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5', className)}>
+    <div ref={rootRef} className={cx('adaptive-game-grid', className)}>
       {games.map((g) => {
         const isDragging = dragging === g.slug
         return (

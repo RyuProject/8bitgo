@@ -118,7 +118,7 @@ export function MostPlayedSection({ games }: { games: Game[] }) {
         ⚠️ 列数直接决定封面能有多大（卡片内宽 = 列宽 − 2×p-3）。要再加列之前先想清楚
         封面会缩到多少 —— 「看不见 cover 上是什么」就是这么来的。
       */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+      <div className="adaptive-game-grid">
         {games.map((g, i) => (
           <GameRankCard
             key={g.slug}
@@ -212,7 +212,7 @@ export function CollectionsSection({ collections }: { collections: Collection[] 
         icon="📚"
         moreTo="/collections"
       />
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+      <div className="adaptive-entity-grid">
         {collections.slice(0, 4).map((c) => (
           <CollectionCard key={c.id} collection={c} />
         ))}

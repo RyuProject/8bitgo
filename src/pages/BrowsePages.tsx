@@ -75,10 +75,9 @@ function countsOf(rows: Array<{ id: string; count: number }> | undefined): Map<s
   return new Map(rows?.map((r) => [r.id, r.count]))
 }
 
-const PLATFORM_GRID = 'grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4'
-const GENRE_GRID = 'mt-8 grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4'
-// grid-cols-1 = minmax(0,1fr)：不写的话手机上是隐式 auto 列，会被卡片里 truncate 的长名字撑到 max-content，整页横向溢出
-const DEVELOPER_GRID = 'mt-8 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3'
+const PLATFORM_GRID = 'adaptive-platform-grid'
+const GENRE_GRID = 'mt-8 adaptive-platform-grid'
+const DEVELOPER_GRID = 'mt-8 adaptive-developer-grid'
 
 /* ---------------- 平台 ---------------- */
 

@@ -13,7 +13,7 @@ import { useSeo, breadcrumbSchema, itemListSchema } from '@/services/seo'
 import { useT, fmt } from '@/services/i18n'
 import { gameTitle, genreDesc, genreLabel, platformDesc, platformLabel } from '@/services/i18nData'
 import { useLang } from '@/services/lang'
-import { ABOVE_FOLD_CARDS, GameCard } from '@/components/game/GameCard'
+import { ABOVE_FOLD_CARDS, GAME_CARD_IMAGE_SIZES, GameCard } from '@/components/game/GameCard'
 import { Pagination } from '@/components/ui/Pagination'
 import { Button, chipClasses } from '@/components/ui/Button'
 import { GameGridSkeleton } from '@/components/ui/PageSkeleton'
@@ -352,7 +352,7 @@ export function GamesPage() {
       ) : !list ? (
         <GameGridSkeleton
           count={10}
-          className="mt-10 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"
+          className="mt-10 adaptive-game-grid"
         />
       ) : (
         <>
@@ -363,10 +363,10 @@ export function GamesPage() {
           </p>
 
           {inf.items.length > 0 ? (
-            <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5" aria-busy={state.status === 'loading'}>
+            <div className="mt-4 adaptive-game-grid" aria-busy={state.status === 'loading'}>
               {inf.items.map((g, i) => (
                 // 首屏这几张的封面立即加载，避免一进页面先看到一屏占位格
-                <GameCard key={g.slug} game={g} coverRatio="square" eager={i < ABOVE_FOLD_CARDS} />
+                <GameCard key={g.slug} game={g} coverRatio="square" eager={i < ABOVE_FOLD_CARDS} coverSizes={GAME_CARD_IMAGE_SIZES} />
               ))}
             </div>
           ) : (

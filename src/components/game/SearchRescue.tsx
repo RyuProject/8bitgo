@@ -63,7 +63,7 @@ export function SearchRescue({ q, onPick }: { q: string; onPick?: (q: string) =>
       {data.related.length > 0 && (
         <div>
           <h2 className="text-sm font-semibold text-fg">{fmt(t.games.relatedTitle, { q })}</h2>
-          <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
+          <div className="mt-3 adaptive-entity-grid">
             {data.related.map((g) => (
               <Link
                 key={g.slug}

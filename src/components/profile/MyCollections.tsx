@@ -47,7 +47,7 @@ export function MyCollections() {
       {error && <p className="text-sm text-live">{error}</p>}
 
       {items === null ? (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+        <div className="adaptive-entity-grid">
           {Array.from({ length: 4 }, (_, i) => (
             <div key={i} className="aspect-square animate-pulse rounded-card bg-surface-2" />
           ))}
@@ -57,7 +57,7 @@ export function MyCollections() {
           {t.collections.mineEmpty}
         </p>
       ) : (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+        <div className="adaptive-entity-grid">
           {items.map((c) => (
             <div key={c.id} className="space-y-1.5">
               <CollectionCard collection={c} />

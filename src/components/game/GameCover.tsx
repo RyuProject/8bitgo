@@ -54,6 +54,8 @@ interface Props {
    * 09-07 线上 KOF 合集「十款游戏只出一张封面、其余三格全黑」就是这么来的。
    */
   eager?: boolean
+  /** 图片展示宽度提示，避免窄卡片按整屏宽度下载过大的封面档位。 */
+  sizes?: string
   /**
    * 用 96×96 缩略图代替 300×300 主图。
    * 只给**显示尺寸很小**的位置开（搜索联想、首页类型样例那种 40~44px，以及详情页
@@ -197,6 +199,7 @@ export function GameCover({
   priority = false,
   still = false,
   eager = false,
+  sizes,
   thumb = false,
   onImageLoad,
 }: Props) {
@@ -249,9 +252,9 @@ export function GameCover({
           srcSet={srcSet || undefined}
           /*
             懒加载图用 sizes="auto" 让浏览器按真实布局宽度挑档；不认 auto 的浏览器和首屏 eager 图
-            退回 100vw，最多就是取 480 档（scale-down 后等于原图分辨率），不会比改之前更糊。
+            默认退回 100vw。已知尺寸的卡片由调用方显式传 sizes，避免窄图误取 480 档。
           */
-          sizes={srcSet ? (priority || eager ? '100vw' : 'auto, 100vw') : undefined}
+          sizes={srcSet ? sizes || (priority || eager ? '100vw' : 'auto, 100vw') : undefined}
           alt={title}
           // 首屏那几张必须 eager：对着 LCP 图片加 loading="lazy"，
           // 等于让浏览器先跳过它、发现完别的资源再回头下，LCP 反而更慢
