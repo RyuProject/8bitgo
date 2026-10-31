@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { CACHE } from '../server/src/cache.js'
-import { earlyHintLinks } from '../server/src/early-hints.js'
+import { earlyHintLinks, retargetCoverHints } from '../server/src/early-hints.js'
 
 const read = (relative) => readFileSync(new URL(`../${relative}`, import.meta.url), 'utf8')
 let failed = 0
@@ -114,6 +114,26 @@ check('Early Hints：从构建模板提取入口 JS / CSS / 首屏字体 / 封�
   assert.equal(earlyHintLinks('<html><head></head></html>'), '')
   const src = read('server/src/ssr.js')
   assert.match(src, /Link: earlyHints/, 'SSR 200 响应没有带 Early Hints 的 Link 头')
+})
+
+check('大陆入口：封面 preconnect / dns-prefetch 换成 EdgeOne 封面域，其余不动', () => {
+  const tpl = [
+    '<link rel="dns-prefetch" href="https://image.8bitgo.com">',
+    '<link rel="preconnect" href="https://image.8bitgo.com">',
+    '<link rel="preconnect" href="https://fonts.example.com">',
+    '<meta content="https://image.8bitgo.com">',
+  ].join('\n')
+  const out = retargetCoverHints(tpl, 'https://image.8bitgo.com', 'https://image-cn.8bitgo.com')
+  assert.match(out, /rel="dns-prefetch" href="https:\/\/image-cn\.8bitgo\.com"/)
+  assert.match(out, /rel="preconnect" href="https:\/\/image-cn\.8bitgo\.com"/)
+  assert.match(out, /fonts\.example\.com/)
+  assert.match(out, /<meta content="https:\/\/image\.8bitgo\.com">/, '非 link 标签不该被改')
+  // 主站：两边相同或任一为空都原样返回
+  assert.equal(retargetCoverHints(tpl, 'https://image.8bitgo.com', 'https://image.8bitgo.com'), tpl)
+  assert.equal(retargetCoverHints(tpl, 'https://image.8bitgo.com', ''), tpl)
+  const src = read('server/src/ssr.js')
+  assert.match(src, /retargetCoverHints\(getTemplate\(\)/, 'SSR 没有按本次封面域改写模板')
+  assert.match(src, /render\(\{ url, data, tvHost, cnSite \}\)/, 'SSR 没把大陆入口标记传给 render')
 })
 
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过 ✅')

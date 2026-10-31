@@ -2313,8 +2313,12 @@ ROM 存储和其它站级入口全部是管理员权限。后台列表统一带 
   `/api/netplay/events` 两个精确路径设成 Bypass，并排在 Cache Everything **之后**（冲突设置最后
   一条匹配规则生效）；`audit-migration.mjs` 会把
   `cf-cache-status: HIT/MISS/EXPIRED/...` 判为部署失败。
-- **防火墙 ufw 已启用：22 对外，80/443 只对 Cloudflare IP 段** —— 这不是可选项，
-  是采用 `$http_cf_connecting_ip` 换来的代价（否则该头可被直连源站伪造，见 §2.16）。
+- **来源闸门在 nginx，不在 ufw（2026-10-27 起）**：大陆入口 cn.8bitgo.com 走 EdgeOne，而 EdgeOne
+  不再公布回源 IP 段，ufw 只好对 80/443 全开。`/etc/nginx/conf.d/edge-gate.conf`（模板
+  `deploy/nginx/edge-gate.conf`）只放行 Cloudflare IP 段、带正确 `X-8bitgo-Edge` 回源密钥的 EdgeOne
+  和本机看门狗，其余 403；XFF 改用 `$client_ip`（CF 取 `CF-Connecting-IP`，EdgeOne 取
+  `EO-Connecting-IP`）。这仍是采用这两个头换来的代价（否则可被直连源站伪造，见 §2.16）。
+  ⚠️ 生效的站点文件是 `sites-enabled/8bitgo.com`，它是**独立副本、不是软链**，改 `sites-available` 没用。
 - **备份：`8bitgo-backup.timer` 每 6 小时 → R2**。rclone 的 remote 名是 **`r2-8bitgo:`**，
   unit 里用 `Environment=R2_REMOTE=r2-8bitgo` 覆盖脚本的默认值 `r2`。换机前旧机连定时器
   都没装，备份全靠手动 —— 新机别再退回那个状态。
@@ -2733,6 +2737,26 @@ WRANGLER_LOG_PATH=/tmp/8bitgo-wrangler-dry-run.log npx wrangler deploy --dry-run
 页面不能嵌入。双源路径测速只给大文件，样本保持 128 KiB、3 秒上限；测速失败保守走主源。
 
 回归：`npm run test:rom-probe`。它锁住确定性缓存、播放器单层重试和页面取消会传到真实 fetch。
+
+### 2.36 大陆入口 cn.8bitgo.com：腾讯 EdgeOne，封面跟着站点域名换
+
+Cloudflare 免费版把大陆访客送到 LAX（实测 `loc=CN → colo=LAX`），所以另开 `cn.8bitgo.com`：
+Cloudflare DNS 里只做灰云 CNAME 到 EdgeOne，EdgeOne 回源 `38.76.186.225:443`。8bitgo.com 没有 ICP 备案，
+EdgeOne 只能用境外（香港）节点。主站、ROM、Pages 子域都不受影响。
+
+- **回源 Host 必须是 `8bitgo.com`**：应用对不认识的子域一律 404（`server/src/url-normalize.js` 的未知子域规则）。
+  代价是源站看不到 cn 这个 Host，于是 nginx 在 EdgeOne 回源密钥校验通过时补 `X-8bitgo-Site: cn`，
+  SSR 只认这个头（`shared/cn-host.js`）。canonical 仍指 8bitgo.com。
+- **EdgeOne 规则引擎**：「修改 HTTP **回源**请求头」加 `X-8bitgo-Edge`（选成「节点响应头」会把密钥发给每个访客，
+  源站也收不到）；WebSocket 要单独开，否则 socket.io 升级在 EdgeOne 边缘就是 400。
+- **封面**：页面开在 cn 上时 `getCoverBase()` 换成 `VITE_CN_COVER_URL`（`image-cn.8bitgo.com`，EdgeOne 回源
+  `image.8bitgo.com`），SSR 与 hydrate 判同一个答案，模板里的封面 preconnect 也由 `retargetCoverHints` 换掉。
+  `/cdn-cgi/image/` 缩放照样回源给 Cloudflare 做，但这条路固定 `format=webp`：EdgeOne 缓存键不看 Accept，
+  `format=auto` 会把第一个访客拿到的 AVIF 发给不认 AVIF 的浏览器。
+- ⚠️ 加速域名**不能带下划线**（`image_cn` 这种）：公共 CA 不为含 `_` 的主机名签证书，HTTPS 永远起不来。
+- 两个域名的本地存档、IndexedDB 和登录态互不相通（按 origin 隔离），云存档不受影响。
+
+回归：`npm run test:game-media && npm run test:seo-performance && npm run test:tv-host`。
 
 ## 3. 常用命令
 

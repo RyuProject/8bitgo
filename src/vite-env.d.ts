@@ -27,6 +27,8 @@ interface ImportMetaEnv {
   readonly VITE_CLARITY_PROJECT_ID?: string
   readonly VITE_ROM_BASE_URL?: string
   readonly VITE_COVER_URL?: string
+  /** 页面开在 cn.8bitgo.com 时改用的封面域（EdgeOne，见 shared/cn-host.js） */
+  readonly VITE_CN_COVER_URL?: string
   /** `1` 时卡片封面走 Cloudflare Image Transformations（见 services/roms.ts coverSrcSet） */
   readonly VITE_COVER_TRANSFORM?: string
   readonly VITE_ROM_API_URL?: string

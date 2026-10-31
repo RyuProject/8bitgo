@@ -11,10 +11,11 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { loadForRoute } from './content.js'
 import { CACHE } from './cache.js'
-import { earlyHintLinks } from './early-hints.js'
-import { publicSiteUrl } from './site-urls.js'
+import { earlyHintLinks, retargetCoverHints } from './early-hints.js'
+import { coverBaseUrl, publicSiteUrl } from './site-urls.js'
 import { requestHostname } from './url-normalize.js'
 import { tvRenderPath } from '../../shared/tv-host.js'
+import { CN_SITE_HEADER, isCnRequest } from '../../shared/cn-host.js'
 import { isolatedRuntimeRoute } from '../../shared/isolated-runtime-platforms.js'
 
 const root = path.resolve(fileURLToPath(new URL('../..', import.meta.url)))
@@ -97,6 +98,15 @@ function earlyHintsFor(page) {
     linkHeader = earlyHintLinks(page)
   }
   return linkHeader
+}
+
+/** 地址 → origin；配错的环境变量返回空串，不能让一次 new URL 失败把整页降级成 503 */
+function originOf(value) {
+  try {
+    return value ? new URL(value).origin : ''
+  } catch {
+    return ''
+  }
 }
 
 /** 防止数据里的 </script> 提前结束脚本块 */
@@ -252,9 +262,21 @@ export async function renderPage(req, res, next) {
       tvRenderPath({ hostname: requestHostname(req), pathname, siteOrigin: publicSiteUrl() }),
     )
 
-    const { html, head, lang, notFound } = await render({ url, data, tvHost })
+    /*
+      大陆入口 cn.8bitgo.com 走 EdgeOne，回源 Host 是 8bitgo.com，这里看不到 cn 这个域名；
+      只能认源站 nginx 在 EdgeOne 回源密钥校验通过后补的 X-8bitgo-Site 头（见 shared/cn-host.js）。
+      它决定封面用哪个域。边缘缓存不会串：Cloudflare 那边的请求永远不带这个头，
+      EdgeOne 缓存的又只有 cn 的页面。
+    */
+    const cnSite = isCnRequest({
+      hostname: requestHostname(req),
+      siteHostname: originOf(publicSiteUrl()).replace(/^https?:\/\//, ''),
+      siteHeader: req.headers?.[CN_SITE_HEADER],
+    })
 
-    let page = getTemplate()
+    const { html, head, lang, notFound, coverBase } = await render({ url, data, tvHost, cnSite })
+
+    let page = retargetCoverHints(getTemplate(), originOf(coverBaseUrl()), originOf(coverBase))
     // 只给 200 页面发：Cloudflare 只从 200 HTML 学 Link，404 页带着也白带
     const earlyHints = notFound ? '' : earlyHintsFor(page)
 

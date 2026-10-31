@@ -67,3 +67,24 @@ export function earlyHintLinks(html) {
   // 只有 preconnect 说明模板里没有任何构建产物，这时整条头都不发
   return links.some((link) => link.includes('rel=preload')) ? links.join(', ') : ''
 }
+
+/**
+ * 把模板里封面域的 preconnect / dns-prefetch 换成这次渲染真正用的封面域。
+ *
+ * 模板由 vite 的 cover-preconnect 插件按构建期的 VITE_COVER_URL 写死；大陆入口
+ * cn.8bitgo.com 的封面走另一个域（见 shared/cn-host.js），不换的话浏览器会白连一次
+ * 根本不会用的 image.8bitgo.com，真正要用的封面域反而没提前握手。
+ * 只改这两种 rel 的 `<link>`，正文里同名字符串不碰。
+ *
+ * @param {string} html 模板
+ * @param {string} from 模板里的封面 origin
+ * @param {string} to 这次渲染用的封面 origin
+ */
+export function retargetCoverHints(html, from, to) {
+  if (!from || !to || from === to) return html
+  return String(html).replace(/<link\b[^>]*>/gi, (tag) =>
+    /\brel\s*=\s*"(?:preconnect|dns-prefetch)"/i.test(tag) && attr(tag, 'href') === from
+      ? tag.replace(`"${from}"`, `"${to}"`)
+      : tag,
+  )
+}

@@ -187,7 +187,7 @@ const read = (rel) => readFileSync(new URL('../' + rel, import.meta.url), 'utf8'
 check('⚠️ SSR 算出 tvHost 并传给 render（客户端读 location，服务端只能靠它）', () => {
   const ssr = read('server/src/ssr.js')
   assert.match(ssr, /tvRenderPath\(\{[\s\S]{0,120}hostname: requestHostname\(req\)/, 'ssr.js 没按请求 host 算')
-  assert.match(ssr, /render\(\{ url, data, tvHost \}\)/, 'tvHost 没传进 render')
+  assert.match(ssr, /render\(\{ url, data, tvHost[ ,}]/, 'tvHost 没传进 render')
 })
 
 check('⚠️ entry-server 在 renderToString 之前同步设好（之后不能有 await）', () => {

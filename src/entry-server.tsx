@@ -4,6 +4,8 @@ import { StaticRouter } from 'react-router'
 import { AppRoutes } from './AppRoutes'
 import { setSsrData, type PageData } from '@/services/pageData'
 import { setSsrTvHost } from '@/services/tvHost'
+import { setSsrCnSite } from '@/services/cnHost'
+import { getCoverBase } from '@/services/roms'
 import { setLangForRender } from '@/services/lang'
 import { beginHeadCollection, endHeadCollection, setSsrPath, splitHoistedHead, takeSsrNotFound, type CollectedHead } from '@/services/seo'
 import { langFromPath, langPrefix, stripLang } from '@/config/languages'
@@ -20,6 +22,11 @@ export interface RenderInput {
    * 两边算出来的必须一致，否则 `/` 会出现「服务端渲 TV 页、客户端 hydrate 成首页」。
    */
   tvHost?: boolean
+  /**
+   * 这次请求是不是经 EdgeOne 打到大陆入口 cn.8bitgo.com（见 shared/cn-host.js）。
+   * 决定封面用哪个域名；和 tvHost 一样，客户端自己看 location.hostname。
+   */
+  cnSite?: boolean
 }
 
 export interface RenderResult {
@@ -28,6 +35,8 @@ export interface RenderResult {
   lang: string
   /** 是否渲染出了「页面不存在」，服务端据此回 404 而不是 200 */
   notFound: boolean
+  /** 这次渲染实际用的封面根地址，ssr.js 拿它改模板里的封面 preconnect */
+  coverBase: string
 }
 
 /**
@@ -43,7 +52,7 @@ export interface RenderResult {
  * 结果是偶发地「英文页面吐出日文内容」，而且只在有并发时出现，极难复现。
  * 所以顺序是：算出语言 → await → 之后一路同步到 renderToString。
  */
-export async function render({ url, data, tvHost = false }: RenderInput): Promise<RenderResult> {
+export async function render({ url, data, tvHost = false, cnSite = false }: RenderInput): Promise<RenderResult> {
   // 先把查询串剥掉再判语言。以前直接把 req.originalUrl 传进去，
   // /en?utm_source=x 的首段会被解析成 'en?utm_source=x'，认不出语言 →
   // 按默认中文渲染、basename 为空 → 路由全不匹配 → 服务端吐一个中文 404 页，
@@ -58,6 +67,8 @@ export async function render({ url, data, tvHost = false }: RenderInput): Promis
   setSsrPath(stripLang(pathname))
   // 必须在 renderToString 之前、且这条线以下不能有 await（理由同上）
   setSsrTvHost(tvHost)
+  setSsrCnSite(cnSite)
+  const coverBase = getCoverBase()
 
   // 本页的数据。v1 是把整个游戏库灌进 store，v2 只给这一页要用的那部分。
   setSsrData(data)
@@ -81,5 +92,5 @@ export async function render({ url, data, tvHost = false }: RenderInput): Promis
   const { hoisted, body } = splitHoistedHead(rendered)
   if (hoisted.length) head.tags.push(...hoisted)
   setSsrData(null)
-  return { html: body, head, lang, notFound: takeSsrNotFound() }
+  return { html: body, head, lang, notFound: takeSsrNotFound(), coverBase }
 }

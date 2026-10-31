@@ -23,6 +23,7 @@ import { isRomPackUrl, romPackKey } from '../../shared/rom-pack-format.js'
 import { isStreamingDiscPlatform } from '../../shared/streaming-disc-platforms.js'
 import { builtinWebGameFor } from '../../shared/builtin-web-games.js'
 import { chooseFasterRomRoute, ROM_ROUTE_RACE_MIN_BYTES } from './romRoute'
+import { onCnSite } from './cnHost'
 
 export const ROM_BASE_KEY = '8bitgo.rom.base'
 export const ROM_API_KEY = '8bitgo.rom.api'
@@ -106,9 +107,22 @@ export function getRomBase(): string {
   return withScheme(trimSlash(readLocal(ROM_BASE_KEY) || import.meta.env.VITE_ROM_BASE_URL || ''))
 }
 
-/** 封面公开读取根地址（独立 image 桶 image.8bitgo.com）；未配置时退回 ROM 根地址 */
+/**
+ * 大陆入口专用的封面根地址（EdgeOne 加速域，回源 image.8bitgo.com）。
+ * 没配时为空串，大陆入口也照旧用主封面域。
+ */
+export function getCnCoverBase(): string {
+  return withScheme(trimSlash(import.meta.env.VITE_CN_COVER_URL || ''))
+}
+
+/**
+ * 封面公开读取根地址（独立 image 桶 image.8bitgo.com）；未配置时退回 ROM 根地址。
+ * 页面开在 cn.8bitgo.com 时改用 EdgeOne 的封面域：看的是当前站点域名，不是访客所在地，
+ * 所以 SSR 与 hydrate 能算出同一个答案（见 shared/cn-host.js）。
+ */
 export function getCoverBase(): string {
-  return withScheme(trimSlash(import.meta.env.VITE_COVER_URL || '')) || getRomBase()
+  const cn = onCnSite() ? getCnCoverBase() : ''
+  return cn || withScheme(trimSlash(import.meta.env.VITE_COVER_URL || '')) || getRomBase()
 }
 
 /** 管理接口（Worker）地址，留空时退回公开根地址 */
@@ -268,16 +282,21 @@ const COVER_WIDTHS = [240, 480] as const
  * fit=scale-down 保证 480 档不会把 300 像素的老封面放大糊掉。
  *
  * 构建期开关 VITE_COVER_TRANSFORM=1：本地开发的封面根地址没有 /cdn-cgi/，开了只会全部 404。
+ *
+ * 大陆入口的封面域是 EdgeOne，它把 `/cdn-cgi/image/...` 原样回源给 image.8bitgo.com，
+ * 变换仍由 Cloudflare 做。但 EdgeOne 的缓存键不看 Accept：format=auto 时第一个访客
+ * 拿到 AVIF，就会把 AVIF 发给不认 AVIF 的浏览器。所以那条路固定 format=webp。
  */
 export function coverSrcSet(
   src: string,
   base = import.meta.env.VITE_COVER_TRANSFORM === '1' ? getCoverBase() : '',
+  format: 'auto' | 'webp' = base && base === getCnCoverBase() ? 'webp' : 'auto',
 ): string {
   const prefix = `${base}/covers/`
   if (!base || !/^https:\/\//i.test(base) || !src.startsWith(prefix)) return ''
   const path = src.slice(base.length + 1)
   return COVER_WIDTHS.map(
-    (width) => `${base}/cdn-cgi/image/width=${width},quality=80,format=auto,fit=scale-down/${path} ${width}w`,
+    (width) => `${base}/cdn-cgi/image/width=${width},quality=80,format=${format},fit=scale-down/${path} ${width}w`,
   ).join(', ')
 }
 
