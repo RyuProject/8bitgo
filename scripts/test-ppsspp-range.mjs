@@ -21,6 +21,49 @@ const fakeFile = (name, bytes) => ({
   },
 })
 
+function writeIsoEntry(bytes, offset, name, extent, size, directory = false) {
+  const nameBytes = name === '.' ? new Uint8Array([0]) : name === '..' ? new Uint8Array([1]) : new TextEncoder().encode(name)
+  const length = 33 + nameBytes.length + (nameBytes.length % 2 === 0 ? 1 : 0)
+  bytes[offset] = length
+  const view = new DataView(bytes.buffer)
+  view.setUint32(offset + 2, extent, true)
+  view.setUint32(offset + 10, size, true)
+  bytes[offset + 25] = directory ? 2 : 0
+  bytes[offset + 32] = nameBytes.length
+  bytes.set(nameBytes, offset + 33)
+  return offset + length
+}
+
+function validPspIso() {
+  const bytes = new Uint8Array(32 * 2048)
+  const pvd = 16 * 2048
+  bytes[pvd] = 1
+  bytes.set(new TextEncoder().encode('CD001'), pvd + 1)
+  bytes[pvd + 6] = 1
+  bytes.set(new TextEncoder().encode('VcdromX By HJH98'), pvd + 8)
+  bytes[pvd + 156] = 34
+  new DataView(bytes.buffer).setUint32(pvd + 158, 20, true)
+  new DataView(bytes.buffer).setUint32(pvd + 166, 2048, true)
+  bytes[pvd + 181] = 2
+  bytes[pvd + 188] = 1
+  let at = 20 * 2048
+  at = writeIsoEntry(bytes, at, '.', 20, 2048, true)
+  at = writeIsoEntry(bytes, at, '..', 20, 2048, true)
+  writeIsoEntry(bytes, at, 'PSP_GAME', 21, 2048, true)
+  at = 21 * 2048
+  at = writeIsoEntry(bytes, at, '.', 21, 2048, true)
+  at = writeIsoEntry(bytes, at, '..', 20, 2048, true)
+  at = writeIsoEntry(bytes, at, 'PARAM.SFO;1', 23, 32)
+  writeIsoEntry(bytes, at, 'SYSDIR', 22, 2048, true)
+  at = 22 * 2048
+  at = writeIsoEntry(bytes, at, '.', 22, 2048, true)
+  at = writeIsoEntry(bytes, at, '..', 21, 2048, true)
+  writeIsoEntry(bytes, at, 'EBOOT.BIN;1', 24, 128)
+  bytes.set(new Uint8Array([0, 0x50, 0x53, 0x46]), 23 * 2048)
+  bytes.set(new TextEncoder().encode('~PSP'), 24 * 2048)
+  return bytes
+}
+
 assert.equal(isStreamingDiscPlatform('psp'), true, 'PSP 上传必须保留裸镜像，不能进入 8BG/ZIP')
 assert.equal(isIsolatedRuntimePlatform('psp'), true, 'PPSSPP pthread 必须运行在带 COOP/COEP 的顶层文档')
 assert.deepEqual(isolatedRuntimeRoute('/play/psp/monster-hunter'), {
@@ -28,8 +71,7 @@ assert.deepEqual(isolatedRuntimeRoute('/play/psp/monster-hunter'), {
   slug: 'monster-hunter',
 })
 
-const iso = new Uint8Array(65536)
-iso.set(new TextEncoder().encode('PSP GAME'), 0x8008)
+const iso = validPspIso()
 assert.equal((await detectRom(fakeFile('game.iso', iso))).platform, 'psp', 'PSP ISO 不能被通用 .iso 规则误判成 PS1')
 
 const cso = new Uint8Array(64)

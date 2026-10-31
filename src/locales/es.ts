@@ -1369,7 +1369,7 @@ const es: Translation = {
     dosExe: 'Ejecutable de DOS',
     psxImage: 'Firma PLAYSTATION dentro de la imagen',
     ps2Image: 'SYSTEM.CNF apunta a PlayStation 2 (BOOT2)',
-    pspImage: 'Firma PSP GAME dentro de la imagen',
+    pspImage: 'Directorio de arranque PSP_GAME encontrado en la ISO',
     sevenZip: 'El emulador del navegador no puede leer 7z directamente; extráelo primero como ROM, ISO o CHD',
     cueNeedsCompanion: 'Un CUE solo no incluye sus pistas BIN/audio; usa CHD o comprime el conjunto completo en ZIP',
     zipContains: 'El comprimido contiene un archivo .{ext}',

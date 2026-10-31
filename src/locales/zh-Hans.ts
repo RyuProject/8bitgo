@@ -1395,7 +1395,7 @@ export const zhHans = {
     dosExe: 'DOS 可执行文件',
     psxImage: '镜像内含 PLAYSTATION 标识',
     ps2Image: '镜像内 SYSTEM.CNF 指向 PlayStation 2（BOOT2）',
-    pspImage: '镜像内含 PSP GAME 标识',
+    pspImage: 'ISO 内找到 PSP_GAME 启动目录',
     sevenZip: '7z 无法由浏览器模拟器直接读取；请先解压为 ROM、ISO 或 CHD',
     cueNeedsCompanion: '单独的 CUE 缺少同目录 BIN/音轨；请改用 CHD 或把整套文件打成 ZIP',
     zipContains: '压缩包内含 .{ext} 文件',

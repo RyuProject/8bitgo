@@ -1310,7 +1310,7 @@ const ja: Translation = {
     dosExe: 'DOS の実行ファイル',
     psxImage: 'イメージ内に PLAYSTATION の識別子あり',
     ps2Image: 'SYSTEM.CNF が PlayStation 2（BOOT2）を指しています',
-    pspImage: 'イメージ内に PSP GAME の識別子あり',
+    pspImage: 'ISO 内に PSP_GAME の起動ディレクトリを確認',
     sevenZip: 'ブラウザのエミュレーターは 7z を直接読めません。ROM、ISO、または CHD に展開してください',
     cueNeedsCompanion: '単体の CUE には BIN/音声トラックがありません。CHD または一式を含む ZIP を使ってください',
     zipContains: '圧縮ファイル内に .{ext} ファイルあり',

@@ -1318,7 +1318,7 @@ const zhHant: Translation = {
     dosExe: 'DOS 可執行檔',
     psxImage: '映像檔內含 PLAYSTATION 標記',
     ps2Image: '映像檔內 SYSTEM.CNF 指向 PlayStation 2（BOOT2）',
-    pspImage: '映像檔內含 PSP GAME 標記',
+    pspImage: 'ISO 內找到 PSP_GAME 啟動目錄',
     sevenZip: '7z 無法由瀏覽器模擬器直接讀取；請先解壓為 ROM、ISO 或 CHD',
     cueNeedsCompanion: '單獨的 CUE 缺少同目錄 BIN/音軌；請改用 CHD 或把整套檔案打成 ZIP',
     zipContains: '壓縮檔內含 .{ext} 檔案',

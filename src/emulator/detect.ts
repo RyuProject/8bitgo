@@ -216,11 +216,6 @@ function sniffHeader(bytes: Uint8Array): RomDetection | null {
   ) {
     return { platform: 'gamecube', confidence: 'high', reason: d.gamecubeDisc }
   }
-  // ISO9660 的主卷描述符在第 16 扇区，system identifier 从扇区内偏移 8 开始。
-  // PSP 正版盘固定写 `PSP GAME`；必须排在通用 PSX 文本判断之前，同为 .iso 才不会串台。
-  if (bytes.length >= 0x8028 && ascii(bytes, 0x8008, 32).trimEnd().startsWith('PSP GAME')) {
-    return { platform: 'psp', confidence: 'high', reason: d.pspImage }
-  }
   if (b[0] === 0x80 && b[1] === 0x37 && b[2] === 0x12 && b[3] === 0x40) return { platform: 'n64', confidence: 'high', reason: d.n64z64 }
   if (b[0] === 0x37 && b[1] === 0x80 && b[2] === 0x40 && b[3] === 0x12) return { platform: 'n64', confidence: 'high', reason: d.n64v64 }
   if (b[0] === 0x40 && b[1] === 0x12 && b[2] === 0x37 && b[3] === 0x80) return { platform: 'n64', confidence: 'high', reason: d.n64n64 }
@@ -261,22 +256,79 @@ function sniffHeader(bytes: Uint8Array): RomDetection | null {
   return null
 }
 
-/** ISO9660 目录记录。只保留找 SYSTEM.CNF 所需的两个字段。 */
-function isoDirectoryEntry(bytes: Uint8Array, offset: number): { extent: number; size: number; name: string } | null {
+type IsoDirectoryEntry = { extent: number; size: number; name: string; directory: boolean }
+
+/** ISO9660 目录记录。保留有限的字段来识别 PSP 启动树与 PS1/PS2 启动配置。 */
+function isoDirectoryEntry(bytes: Uint8Array, offset: number): IsoDirectoryEntry | null {
   const length = bytes[offset]
   if (!length || offset + length > bytes.length || length < 34) return null
   const view = new DataView(bytes.buffer, bytes.byteOffset + offset, length)
   const nameLength = bytes[offset + 32]
-  if (33 + nameLength > length) return null
-  const name = ascii(bytes, offset + 33, nameLength).replace(/;\d+$/, '').toUpperCase()
-  return { extent: view.getUint32(2, true), size: view.getUint32(10, true), name }
+  if (nameLength < 1 || 33 + nameLength > length) return null
+  const rawName = ascii(bytes, offset + 33, nameLength)
+  const name = rawName === '\x00' ? '.' : rawName === '\x01' ? '..' : rawName.replace(/;\d+$/, '').replace(/\.$/, '').toUpperCase()
+  return {
+    extent: view.getUint32(2, true),
+    size: view.getUint32(10, true),
+    name,
+    directory: (bytes[offset + 25] & 0x02) !== 0,
+  }
+}
+
+function isoDirectoryEntries(bytes: Uint8Array): IsoDirectoryEntry[] | null {
+  const entries: IsoDirectoryEntry[] = []
+  for (let offset = 0; offset < bytes.length;) {
+    const length = bytes[offset]
+    if (!length) {
+      // ISO 目录以扇区对齐的 0 填充结束；跳过填充才能读到下一扇区中的后续记录。
+      offset = Math.ceil((offset + 1) / ISO_SECTOR_BYTES) * ISO_SECTOR_BYTES
+      continue
+    }
+    const entry = isoDirectoryEntry(bytes, offset)
+    if (!entry || offset + length > bytes.length) return null
+    entries.push(entry)
+    offset += length
+  }
+  return entries
+}
+
+async function readIsoDirectory(file: File, entry: IsoDirectoryEntry): Promise<IsoDirectoryEntry[] | null> {
+  if (!entry.directory || !Number.isSafeInteger(entry.extent) || !Number.isSafeInteger(entry.size) ||
+      entry.extent <= 0 || entry.size <= 0 || entry.size > ISO_PROBE_MAX_BYTES) return null
+  const offset = entry.extent * ISO_SECTOR_BYTES
+  if (!Number.isSafeInteger(offset) || offset + entry.size > file.size) return null
+  const bytes = new Uint8Array(await file.slice(offset, offset + entry.size).arrayBuffer())
+  return bytes.length === entry.size ? isoDirectoryEntries(bytes) : null
+}
+
+async function sniffPspGameTree(file: File, rootEntries: IsoDirectoryEntry[]): Promise<boolean> {
+  const gameDir = rootEntries.find((entry) => entry.name === 'PSP_GAME' && entry.directory)
+  if (!gameDir) return false
+  const gameEntries = await readIsoDirectory(file, gameDir)
+  const param = gameEntries?.find((entry) => entry.name === 'PARAM.SFO' && !entry.directory)
+  const sysDir = gameEntries?.find((entry) => entry.name === 'SYSDIR' && entry.directory)
+  if (!param || param.size < 4 || !sysDir) return false
+
+  const paramOffset = param.extent * ISO_SECTOR_BYTES
+  if (!Number.isSafeInteger(paramOffset) || paramOffset + 4 > file.size) return false
+  const paramMagic = new Uint8Array(await file.slice(paramOffset, paramOffset + 4).arrayBuffer())
+  if (paramMagic.length !== 4 || paramMagic[0] !== 0 || ascii(paramMagic, 1, 3) !== 'PSF') return false
+
+  const systemEntries = await readIsoDirectory(file, sysDir)
+  const eboot = systemEntries?.find((entry) => entry.name === 'EBOOT.BIN' && !entry.directory)
+  if (!eboot || eboot.size < 4) return false
+  const ebootOffset = eboot.extent * ISO_SECTOR_BYTES
+  if (!Number.isSafeInteger(ebootOffset) || ebootOffset + eboot.size > file.size) return false
+  const executableHeader = new Uint8Array(await file.slice(ebootOffset, ebootOffset + 4).arrayBuffer())
+  return (ascii(executableHeader, 0, 4) === '~PSP') ||
+    (executableHeader[0] === 0x7f && ascii(executableHeader, 1, 3) === 'ELF')
 }
 
 /**
- * 从 ISO9660 的根目录找 SYSTEM.CNF，区分 PS1 的 BOOT 与 PS2 的 BOOT2。
+ * 从 ISO9660 的目录树识别 PSP 启动文件，或读取 SYSTEM.CNF 区分 PS1 / PS2。
  *
- * 不扫描整张盘：只读 PVD、根目录和最多 64KiB 的配置文件。这样几十 GB 的本地光盘
- * 也不会因为「识别格式」多占内存或长时间卡住。没有标准 ISO 目录时返回 null，
+ * 不扫描整张盘：只读 PVD、少数目录（每份最多 64KiB）、SFO 魔数和很小的启动配置。
+ * 这样几十 GB 的本地光盘也不会因为「识别格式」多占内存或长时间卡住。没有标准 ISO 目录时返回 null，
  * 后面会改走安全的人工确认，而不是凭 .iso 硬猜 PS1。
  */
 async function sniffIsoSystemConfig(file: File): Promise<RomDetection | null> {
@@ -285,30 +337,22 @@ async function sniffIsoSystemConfig(file: File): Promise<RomDetection | null> {
   if (pvd.length < ISO_SECTOR_BYTES || pvd[0] !== 1 || ascii(pvd, 1, 5) !== 'CD001') return null
   const root = isoDirectoryEntry(pvd, 156)
   if (!root || !Number.isSafeInteger(root.extent) || !Number.isSafeInteger(root.size)) return null
-  const rootOffset = root.extent * ISO_SECTOR_BYTES
-  if (rootOffset < 0 || rootOffset >= file.size || root.size <= 0) return null
-  const rootBytes = Math.min(root.size, ISO_PROBE_MAX_BYTES, file.size - rootOffset)
-  const directory = new Uint8Array(await file.slice(rootOffset, rootOffset + rootBytes).arrayBuffer())
-  for (let offset = 0; offset < directory.length;) {
-    const length = directory[offset]
-    // ISO 目录以扇区对齐的 0 填充结束；跳到下一扇区而不是误把后续数据当记录。
-    if (!length) {
-      offset = Math.ceil((offset + 1) / ISO_SECTOR_BYTES) * ISO_SECTOR_BYTES
-      continue
-    }
-    const entry = isoDirectoryEntry(directory, offset)
-    if (!entry || length < 34) return null
-    if (entry.name === 'SYSTEM.CNF') {
+  const rootEntries = await readIsoDirectory(file, root)
+  if (!rootEntries) return null
+  const d = getT().detect
+  if (await sniffPspGameTree(file, rootEntries)) {
+    return { platform: 'psp', confidence: 'high', reason: d.pspImage }
+  }
+  for (const entry of rootEntries) {
+    if (entry.name === 'SYSTEM.CNF' && !entry.directory) {
       const configOffset = entry.extent * ISO_SECTOR_BYTES
-      if (configOffset < 0 || configOffset >= file.size || entry.size <= 0) return null
+      if (!Number.isSafeInteger(configOffset) || configOffset < 0 || configOffset >= file.size || entry.size <= 0) return null
       const configBytes = Math.min(entry.size, 8192, file.size - configOffset)
       const config = ascii(new Uint8Array(await file.slice(configOffset, configOffset + configBytes).arrayBuffer()), 0, configBytes)
-      const d = getT().detect
       if (/\bBOOT2\b/i.test(config)) return { platform: 'ps2', confidence: 'high', reason: d.ps2Image }
       if (/\bBOOT\b/i.test(config)) return { platform: 'psx', confidence: 'high', reason: d.psxImage }
       return null
     }
-    offset += length
   }
   return null
 }
@@ -489,7 +533,7 @@ export async function detectRom(file: File): Promise<RomDetection> {
 
   // ISO 的 PVD 里只写了笼统的 PLAYSTATION 字样时，sniffHeader 会先给出 PS1。
   // 但真正决定 PS1/PS2 的是 SYSTEM.CNF 里的 BOOT / BOOT2，必须优先读这一小块。
-  // PSP / Dolphin 的盘头则无歧义，直接结束，避免无谓的目录 I/O。
+  // Wii / GameCube 的硬件魔数无歧义，直接结束；PSP 必须沿 ISO 目录找到真实启动文件。
   if (byHeader && byHeader.confidence === 'high' && byHeader.platform !== 'psx') return byHeader
   if (e === 'iso' || e === 'img') {
     const disc = await sniffIsoSystemConfig(file)

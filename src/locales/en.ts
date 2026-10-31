@@ -1369,7 +1369,7 @@ const en: Translation = {
     dosExe: 'DOS executable',
     psxImage: 'PLAYSTATION signature inside the image',
     ps2Image: 'SYSTEM.CNF points to PlayStation 2 (BOOT2)',
-    pspImage: 'PSP GAME signature inside the image',
+    pspImage: 'PSP_GAME boot directory found in the ISO',
     sevenZip: '7z cannot be read directly by the browser emulator; extract it as a ROM, ISO, or CHD first',
     cueNeedsCompanion: 'A CUE alone is missing its BIN/audio tracks; use CHD or put the complete set in a ZIP',
     zipContains: 'Archive contains a .{ext} file',

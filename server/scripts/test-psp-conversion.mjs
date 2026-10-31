@@ -1,13 +1,17 @@
 /** PSP ISO → CHD 队列的离线回归；不连数据库、不访问 R2、不要求本机安装 chdman。 */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 const {
   chdmanCreateArgs,
   chdmanProgress,
   concurrentMapOrdered,
   conversionScratchBytes,
-  isPspIsoHeader,
+  isPspIsoFile,
+  isIso9660Pvd,
   objectVersionMatches,
   pspConversionConfig,
   readExactlyAt,
@@ -83,12 +87,98 @@ assert.equal(chdmanProgress('Compressing, 18.5% complete'), 18.5)
 assert.equal(chdmanProgress('10%\r20%\r100%'), 100)
 assert.equal(chdmanProgress('no progress'), null)
 
-const header = new Uint8Array(0x9000)
-header.set(Buffer.from('CD001'), 0x8001)
-header.set(Buffer.from('PSP GAME'), 0x8008)
-assert.equal(isPspIsoHeader(header), true)
-header[0x8008] = 0
-assert.equal(isPspIsoHeader(header), false)
+function writeBothEndian32(bytes, offset, value) {
+  bytes.writeUInt32LE(value, offset)
+  bytes.writeUInt32BE(value, offset + 4)
+}
+
+function writeBothEndian16(bytes, offset, value) {
+  bytes.writeUInt16LE(value, offset)
+  bytes.writeUInt16BE(value, offset + 2)
+}
+
+function isoRecord(name, extent, size, directory = false) {
+  const nameBytes = name === '.' ? Buffer.from([0]) : name === '..' ? Buffer.from([1]) : Buffer.from(name, 'ascii')
+  const length = 33 + nameBytes.length + (nameBytes.length % 2 === 0 ? 1 : 0)
+  const record = Buffer.alloc(length)
+  record[0] = length
+  writeBothEndian32(record, 2, extent)
+  writeBothEndian32(record, 10, size)
+  record[25] = directory ? 0x02 : 0
+  writeBothEndian16(record, 28, 1)
+  record[32] = nameBytes.length
+  nameBytes.copy(record, 33)
+  return record
+}
+
+function isoDirectory(entries) {
+  const bytes = Buffer.alloc(2048)
+  let offset = 0
+  for (const entry of entries) {
+    const record = isoRecord(...entry)
+    record.copy(bytes, offset)
+    offset += record.length
+  }
+  return bytes
+}
+
+function pspIsoFixture({ includeEboot = true, ebootMagic = '~PSP' } = {}) {
+  const sectors = 32
+  const iso = Buffer.alloc(sectors * 2048)
+  const pvdOffset = 16 * 2048
+  iso[pvdOffset] = 1
+  iso.write('CD001', pvdOffset + 1, 'ascii')
+  iso[pvdOffset + 6] = 1
+  // 使用真实用户镜像中的第三方卷标，避免再次把自由文本误当作 PSP 身份标记。
+  iso.write('VcdromX By HJH98', pvdOffset + 40, 'ascii')
+  writeBothEndian32(iso, pvdOffset + 80, sectors)
+  writeBothEndian16(iso, pvdOffset + 128, 2048)
+  isoRecord('.', 20, 2048, true).copy(iso, pvdOffset + 156)
+  const terminator = 17 * 2048
+  iso[terminator] = 255
+  iso.write('CD001', terminator + 1, 'ascii')
+  iso[terminator + 6] = 1
+
+  isoDirectory([
+    ['.', 20, 2048, true], ['..', 20, 2048, true], ['PSP_GAME', 21, 2048, true],
+    ['UMD_DATA.BIN;1', 25, 48, false],
+  ]).copy(iso, 20 * 2048)
+  isoDirectory([
+    ['.', 21, 2048, true], ['..', 20, 2048, true], ['PARAM.SFO;1', 23, 32, false], ['SYSDIR', 22, 2048, true],
+  ]).copy(iso, 21 * 2048)
+  isoDirectory([
+    ['.', 22, 2048, true], ['..', 21, 2048, true],
+    ...(includeEboot ? [['EBOOT.BIN;1', 24, 128, false]] : []),
+  ]).copy(iso, 22 * 2048)
+  iso.set(Buffer.from([0x00, 0x50, 0x53, 0x46]), 23 * 2048)
+  if (includeEboot) iso.set(Buffer.from(ebootMagic), 24 * 2048)
+  return iso
+}
+
+const fixtureDir = await mkdtemp(join(tmpdir(), '8bitgo-psp-iso-'))
+try {
+  const validIso = pspIsoFixture()
+  const validPath = join(fixtureDir, 'valid.iso')
+  await writeFile(validPath, validIso)
+  assert.equal(isIso9660Pvd(validIso.subarray(0, 0x9000)), true, 'PVD 卷标可以是非标准文本，只要 ISO9660 描述符有效')
+  assert.equal(await isPspIsoFile(validPath, validIso.byteLength), true, '必须沿目录树找到 PSP_GAME、PARAM.SFO 与 SYSDIR/EBOOT.BIN')
+
+  const missingBootIso = pspIsoFixture({ includeEboot: false })
+  const missingBootPath = join(fixtureDir, 'missing-eboot.iso')
+  await writeFile(missingBootPath, missingBootIso)
+  assert.equal(await isPspIsoFile(missingBootPath, missingBootIso.byteLength), false, '只有卷标或 PSP_GAME 目录、没有启动文件不能通过')
+
+  const invalidBootIso = pspIsoFixture({ ebootMagic: 'NOPE' })
+  const invalidBootPath = join(fixtureDir, 'invalid-eboot.iso')
+  await writeFile(invalidBootPath, invalidBootIso)
+  assert.equal(await isPspIsoFile(invalidBootPath, invalidBootIso.byteLength), false, '目录存在但 EBOOT 不是 PSP PRX/ELF 时不能通过')
+
+  const htmlPath = join(fixtureDir, 'not-iso.iso')
+  await writeFile(htmlPath, Buffer.from('<html>not an ISO</html>'))
+  assert.equal(await isPspIsoFile(htmlPath, 0x9000), false, 'Worker 错误页不能因扩展名 .iso 通过校验')
+} finally {
+  await rm(fixtureDir, { recursive: true, force: true })
+}
 
 assert.equal(
   conversionScratchBytes(1024 * 1024, 256 * 1024, 512 * 1024),

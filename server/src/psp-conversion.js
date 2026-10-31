@@ -26,6 +26,8 @@ const INTERRUPTED = ['downloading', 'converting', 'verifying', 'uploading']
 const ROM_LANGS = new Set(['zh-Hans', 'zh-Hant', 'en', 'ja'])
 const PART_BYTES = 8 * 1024 * 1024
 const STREAM_BUFFER_BYTES = 4 * 1024 * 1024
+const ISO_SECTOR_BYTES = 2048
+const MAX_ISO_DIRECTORY_BYTES = 1024 * 1024
 const FETCH_ATTEMPTS = 4
 const SOURCE_IDLE_MS = 60_000
 const WORKER_REQUEST_TIMEOUT_MS = 60_000
@@ -146,12 +148,103 @@ export function chdmanProgress(text) {
   return Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : null
 }
 
-/** 只认真正的 PSP ISO9660 标识，避免把 Worker 的 200 + HTML 错误页压成一份“合法 CHD”。 */
-export function isPspIsoHeader(bytes) {
-  const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || 0)
-  if (data.length < 0x8010) return false
-  const ascii = (at, len) => String.fromCharCode(...data.subarray(at, at + len))
-  return ascii(0x8001, 5) === 'CD001' && ascii(0x8008, 8) === 'PSP GAME'
+/** 检查 ISO9660 主卷描述符；卷标是自由文本，不能拿它冒充 PSP 游戏标识。 */
+export function isIso9660Pvd(bytes) {
+  const data = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes || [])
+  const pvd = 16 * ISO_SECTOR_BYTES
+  if (data.length < pvd + ISO_SECTOR_BYTES) return false
+  return data[pvd] === 1 &&
+    Buffer.from(data.subarray(pvd + 1, pvd + 6)).toString('ascii') === 'CD001' &&
+    data[pvd + 6] === 1 &&
+    data.readUInt16LE(pvd + 128) === ISO_SECTOR_BYTES &&
+    data.readUInt16BE(pvd + 130) === ISO_SECTOR_BYTES
+}
+
+function isoDirectoryEntries(bytes) {
+  const entries = []
+  for (let at = 0; at < bytes.length;) {
+    const recordBytes = bytes[at]
+    if (recordBytes === 0) {
+      at = (Math.floor(at / ISO_SECTOR_BYTES) + 1) * ISO_SECTOR_BYTES
+      continue
+    }
+    if (recordBytes < 34 || at + recordBytes > bytes.length) return null
+    const nameBytes = bytes[at + 32]
+    if (nameBytes < 1 || 33 + nameBytes > recordBytes) return null
+    const extent = bytes.readUInt32LE(at + 2)
+    const extentBe = bytes.readUInt32BE(at + 6)
+    const size = bytes.readUInt32LE(at + 10)
+    const sizeBe = bytes.readUInt32BE(at + 14)
+    if (extent !== extentBe || size !== sizeBe) return null
+    const rawName = bytes.toString('ascii', at + 33, at + 33 + nameBytes)
+    const name = rawName === '\u0000' ? '.' : rawName === '\u0001' ? '..' : rawName
+      .replace(/;\d+$/, '')
+      .replace(/\.$/, '')
+      .toUpperCase()
+    entries.push({
+      name,
+      extent,
+      size,
+      directory: (bytes[at + 25] & 0x02) !== 0,
+    })
+    at += recordBytes
+  }
+  return entries
+}
+
+function isoDirectoryRecord(bytes, offset, totalSize) {
+  if (offset + 2048 > bytes.length) return null
+  const record = offset + 156
+  if (bytes[record] < 34 || bytes[record + 32] !== 1 || bytes[record + 33] !== 0 ||
+      (bytes[record + 25] & 0x02) === 0) return null
+  const extent = bytes.readUInt32LE(record + 2)
+  const extentBe = bytes.readUInt32BE(record + 6)
+  const size = bytes.readUInt32LE(record + 10)
+  const sizeBe = bytes.readUInt32BE(record + 14)
+  const byteOffset = extent * ISO_SECTOR_BYTES
+  if (extent !== extentBe || size !== sizeBe || !extent || !size ||
+      size > MAX_ISO_DIRECTORY_BYTES || byteOffset + size > totalSize) return null
+  return { extent, size, byteOffset, directory: true }
+}
+
+function findIsoEntry(entries, name, directory) {
+  return entries?.find((entry) => entry.name === name && entry.directory === directory) || null
+}
+
+function isInIsoBounds(entry, totalSize) {
+  const offset = entry.extent * ISO_SECTOR_BYTES
+  return Number.isSafeInteger(offset) && entry.extent > 0 && entry.size > 0 && offset + entry.size <= totalSize
+}
+
+/** 读取 ISO9660 目录树，只接受含真实 PSP_GAME 启动目录的 UMD 镜像。 */
+export async function isPspIsoFile(path, expectedSize) {
+  if (!Number.isSafeInteger(Number(expectedSize)) || expectedSize % ISO_SECTOR_BYTES !== 0 || expectedSize < 0x9000) return false
+  const pvd = await readFilePrefix(path, 0x9000)
+  if (!isIso9660Pvd(pvd)) return false
+  const root = isoDirectoryRecord(pvd, 16 * ISO_SECTOR_BYTES, expectedSize)
+  if (!root) return false
+
+  const readDirectory = async (entry) => {
+    if (!entry?.directory || !isInIsoBounds(entry, expectedSize) || entry.size > MAX_ISO_DIRECTORY_BYTES) return null
+    const bytes = await readFilePrefix(path, entry.size, entry.extent * ISO_SECTOR_BYTES)
+    return bytes.length === entry.size ? isoDirectoryEntries(bytes) : null
+  }
+
+  const rootEntries = await readDirectory(root)
+  const gameDir = findIsoEntry(rootEntries, 'PSP_GAME', true)
+  if (!gameDir) return false
+  const gameEntries = await readDirectory(gameDir)
+  const param = findIsoEntry(gameEntries, 'PARAM.SFO', false)
+  const sysDir = findIsoEntry(gameEntries, 'SYSDIR', true)
+  if (!param || param.size < 4 || !isInIsoBounds(param, expectedSize) || !sysDir) return false
+
+  const paramHeader = await readFilePrefix(path, 4, param.extent * ISO_SECTOR_BYTES)
+  if (paramHeader.length !== 4 || !paramHeader.equals(Buffer.from([0x00, 0x50, 0x53, 0x46]))) return false
+  const systemEntries = await readDirectory(sysDir)
+  const eboot = findIsoEntry(systemEntries, 'EBOOT.BIN', false)
+  if (!eboot || eboot.size < 4 || !isInIsoBounds(eboot, expectedSize)) return false
+  const executableHeader = await readFilePrefix(path, 4, eboot.extent * ISO_SECTOR_BYTES)
+  return executableHeader.equals(Buffer.from('~PSP')) || executableHeader.equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46]))
 }
 
 export function isPsxIsoHeader(bytes) {
@@ -480,7 +573,7 @@ export async function isPsxIsoFile(path, expectedSize) {
 
 async function reusableIso(path, expectedSize, platform = 'psp') {
   if (await fileSize(path) !== Number(expectedSize)) return false
-  return platform === 'psx' ? isPsxIsoFile(path, expectedSize) : isPspIsoHeader(await readFilePrefix(path, 0x9000))
+  return platform === 'psx' ? isPsxIsoFile(path, expectedSize) : isPspIsoFile(path, expectedSize)
 }
 
 async function reusableVerifiedChd(path, expectedSize) {
@@ -574,7 +667,7 @@ async function downloadSource(job, config, destination) {
   if (!(await reusableIso(destination, sourceSize, platform))) {
     throw new Error(platform === 'psx'
       ? '不是可直接启动的 PS1 单数据轨 2048-byte ISO（需要 ISO9660 与根目录 SYSTEM.CNF）；多音轨请提供 BIN/CUE 原盘，单独 ISO 无法还原 CD 音乐'
-      : '上传内容不是有效的 PSP ISO（缺少 CD001 / PSP GAME 标识）')
+      : '上传内容不是有效的 PSP UMD ISO（需要 ISO9660 主卷描述符、PSP_GAME/PARAM.SFO 和 SYSDIR/EBOOT.BIN）')
   }
 }
 

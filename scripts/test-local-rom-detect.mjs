@@ -84,6 +84,7 @@ function isoWithSystemConfig(config) {
   bytes[pvd + 156] = 34
   put32(bytes, pvd + 158, 20)
   put32(bytes, pvd + 166, 2048)
+  bytes[pvd + 181] = 2
   bytes[pvd + 188] = 1
 
   const root = 20 * 2048
@@ -97,8 +98,64 @@ function isoWithSystemConfig(config) {
   return bytes
 }
 
+function writeIsoDirRecord(bytes, offset, name, extent, size, directory = false) {
+  const nameBytes = name === '.' ? new Uint8Array([0]) : name === '..' ? new Uint8Array([1]) : encoder.encode(name)
+  const recordLength = 33 + nameBytes.length + (nameBytes.length % 2 === 0 ? 1 : 0)
+  bytes[offset] = recordLength
+  put32(bytes, offset + 2, extent)
+  put32(bytes, offset + 10, size)
+  bytes[offset + 25] = directory ? 2 : 0
+  bytes[offset + 32] = nameBytes.length
+  bytes.set(nameBytes, offset + 33)
+  return offset + recordLength
+}
+
+/** PSP 的标识在目录树中，不要求 PVD 的自由文本 system identifier 固定为 PSP GAME。 */
+function isoWithPspGame({ includeEboot = true, systemIdentifier = 'VcdromX By HJH98', ebootMagic = '~PSP' } = {}) {
+  const sectors = 32
+  const bytes = new Uint8Array(sectors * 2048)
+  const pvd = 16 * 2048
+  bytes[pvd] = 1
+  bytes.set(encoder.encode('CD001'), pvd + 1)
+  bytes[pvd + 6] = 1
+  bytes.set(encoder.encode(systemIdentifier), pvd + 8)
+  bytes[pvd + 156] = 34
+  put32(bytes, pvd + 158, 20)
+  put32(bytes, pvd + 166, 2048)
+  bytes[pvd + 181] = 2
+  bytes[pvd + 188] = 1
+
+  let offset = 20 * 2048
+  offset = writeIsoDirRecord(bytes, offset, '.', 20, 2048, true)
+  offset = writeIsoDirRecord(bytes, offset, '..', 20, 2048, true)
+  writeIsoDirRecord(bytes, offset, 'PSP_GAME', 21, 2048, true)
+
+  offset = 21 * 2048
+  offset = writeIsoDirRecord(bytes, offset, '.', 21, 2048, true)
+  offset = writeIsoDirRecord(bytes, offset, '..', 20, 2048, true)
+  offset = writeIsoDirRecord(bytes, offset, 'PARAM.SFO;1', 23, 32, false)
+  writeIsoDirRecord(bytes, offset, 'SYSDIR', 22, 2048, true)
+
+  offset = 22 * 2048
+  offset = writeIsoDirRecord(bytes, offset, '.', 22, 2048, true)
+  offset = writeIsoDirRecord(bytes, offset, '..', 21, 2048, true)
+  if (includeEboot) writeIsoDirRecord(bytes, offset, 'EBOOT.BIN;1', 24, 128, false)
+  bytes.set(new Uint8Array([0, 0x50, 0x53, 0x46]), 23 * 2048)
+  if (includeEboot) bytes.set(encoder.encode(ebootMagic), 24 * 2048)
+  return bytes
+}
+
 assert.equal((await detectRom(fakeFile('ps1.iso', isoWithSystemConfig('BOOT = cdrom:\\SLUS_000.00;1')))).platform, 'psx')
 assert.equal((await detectRom(fakeFile('ps2.iso', isoWithSystemConfig('BOOT2 = cdrom0:\\SLUS_000.00;1')))).platform, 'ps2')
+assert.equal((await detectRom(fakeFile('Patapon.iso', isoWithPspGame()))).platform, 'psp',
+  '非标准 PVD 卷标不能阻止按 PSP_GAME/PARAM.SFO/SYSDIR/EBOOT.BIN 识别')
+const pspIsoWithoutBoot = await detectRom(fakeFile('broken-psp.iso', isoWithPspGame({ includeEboot: false })))
+assert.equal(pspIsoWithoutBoot.platform, undefined, '缺少 EBOOT.BIN 的盘不能伪装成可启动 PSP 游戏')
+assert.ok(pspIsoWithoutBoot.candidates?.includes('psp'), '结构不完整时保留安全的手动平台候选')
+assert.equal((await detectRom(fakeFile('not-a-game.iso', isoWithPspGame({ ebootMagic: 'NOPE' })))).platform, undefined,
+  'EBOOT.BIN 不是 PSP PRX/ELF 时不能自动识别成可启动游戏')
+const labelOnlyIso = await detectRom(fakeFile('label-only.iso', isoWithPspGame({ includeEboot: false, systemIdentifier: 'PSP GAME' })))
+assert.equal(labelOnlyIso.platform, undefined, '只有 PSP GAME 卷标、没有 PSP 启动树不能被误识别')
 
 for (const [name, expected] of [
   ['unknown.chd', ['psx', 'psp', 'ps2', 'segaCD', 'pce']],
