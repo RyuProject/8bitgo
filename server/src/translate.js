@@ -52,6 +52,22 @@ const MYMEMORY_DEFAULT_URL = 'https://api.mymemory.translated.net/get'
 const MYMEMORY_DEFAULT_EMAIL = 'yeahcore@yeah.net'
 const MYMEMORY_MAX_QUERY_BYTES = 450
 const LINGVA_DEFAULT_BASE_URL = 'https://lingva.ml'
+const TRANSLATION_TIMEOUT_DEFAULT_MS = 15_000
+const TRANSLATION_TIMEOUT_MIN_MS = 5_000
+const TRANSLATION_TIMEOUT_MAX_MS = 30_000
+
+/**
+ * 给运维配置设安全边界：公共翻译服务偶尔会超过几百毫秒，过短会让 MyMemory、Lingva
+ * 和火山依次被主动中止；过长则可能让后台请求一直占住连接。
+ */
+export function translationTimeoutMs(value = process.env.TRANSLATE_TIMEOUT_MS) {
+  const configured = Number(value)
+  if (!Number.isFinite(configured) || configured <= 0) return TRANSLATION_TIMEOUT_DEFAULT_MS
+  return Math.min(
+    TRANSLATION_TIMEOUT_MAX_MS,
+    Math.max(TRANSLATION_TIMEOUT_MIN_MS, Math.floor(configured)),
+  )
+}
 
 /** AK/SK 缺一个都视为没配；两个公共服务仍可单独完成翻译。 */
 export function isTranslateConfigured() {
@@ -330,7 +346,8 @@ async function translateBatchVolc(texts, source, target) {
   // 用全局 fetch（Node 18+ 自带）。timeout 用 AbortController：火山那边卡住的话，
   // 这条 HTTP 请求也跟着挂住，整条路由就跟着挂住，所以必须有上限
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), Number(process.env.TRANSLATE_TIMEOUT_MS) || 15000)
+  const timeoutMs = translationTimeoutMs()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
 
   let json
   try {
@@ -343,6 +360,12 @@ async function translateBatchVolc(texts, source, target) {
       e.code = 'BAD_RESPONSE'
       throw e
     }
+  } catch (error) {
+    if (error?.code === 'BAD_RESPONSE') throw error
+    if (controller.signal.aborted || error?.name === 'AbortError' || error?.name === 'TimeoutError') {
+      throw providerError('VOLC_TIMEOUT', `火山翻译请求超时（${timeoutMs} 毫秒）`)
+    }
+    throw providerError('VOLC_NETWORK_ERROR', `火山翻译网络请求失败：${error?.message || '连接错误'}`)
   } finally {
     clearTimeout(timer)
   }
@@ -401,6 +424,13 @@ function providerError(code, message) {
   return error
 }
 
+function publicProviderRequestError(provider, error, signal) {
+  if (signal?.aborted || error?.name === 'AbortError' || error?.name === 'TimeoutError' || error?.code === 'ABORT_ERR') {
+    return providerError(`${provider}_TIMEOUT`, `${provider} 翻译请求超时（${translationTimeoutMs()} 毫秒）`)
+  }
+  return providerError(`${provider}_NETWORK_ERROR`, `${provider} 网络请求失败：${error?.message || '连接错误'}`)
+}
+
 /** 按 MyMemory 的 500-byte 单段上限切分；边界偏向句末或空白，不切开 UTF-8 字符。 */
 export function splitMyMemoryText(text, maxBytes = MYMEMORY_MAX_QUERY_BYTES) {
   const input = String(text ?? '')
@@ -435,7 +465,7 @@ export function splitMyMemoryText(text, maxBytes = MYMEMORY_MAX_QUERY_BYTES) {
 
 function withTranslationTimeout() {
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), Number(process.env.TRANSLATE_TIMEOUT_MS) || 15000)
+  const timer = setTimeout(() => controller.abort(), translationTimeoutMs())
   return { signal: controller.signal, clear: () => clearTimeout(timer) }
 }
 
@@ -463,8 +493,7 @@ async function myMemorySegment(text, source, target, signal) {
     response = await fetch(endpoint, { headers: { Accept: 'application/json' }, signal })
     json = await response.json()
   } catch (error) {
-    if (!error?.code) error.code = 'MYMEMORY_NETWORK_ERROR'
-    throw error
+    throw publicProviderRequestError('MYMEMORY', error, signal)
   }
   if (!response.ok) throw providerError(`MYMEMORY_HTTP_${response.status}`, `HTTP ${response.status}`)
   if (Number(json?.responseStatus) !== 200 || json?.quotaFinished) {
@@ -521,8 +550,7 @@ async function lingvaSegment(text, source, target, signal) {
     })
     json = await response.json()
   } catch (error) {
-    if (!error?.code) error.code = 'LINGVA_NETWORK_ERROR'
-    throw error
+    throw publicProviderRequestError('LINGVA', error, signal)
   }
   if (!response.ok || json?.error) {
     throw providerError(`LINGVA_HTTP_${response.status}`, String(json?.error || `HTTP ${response.status}`))

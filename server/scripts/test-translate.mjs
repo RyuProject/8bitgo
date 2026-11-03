@@ -29,6 +29,7 @@ const {
   splitOversized,
   splitMyMemoryText,
   planBatches,
+  translationTimeoutMs,
 } =
   await import('../src/translate.js')
 const { countTranslationCharacters, setTranslationUsageAdapterForTests } =
@@ -69,6 +70,17 @@ async function assertError(fn, { code, message } = {}) {
   if (code !== undefined) assert.equal(err.code, code, `error.code`)
   if (message) assert.match(err.message, message)
   return err
+}
+
+/* ---------------- 超时配置与 Abort 错误回退 ---------------- */
+try {
+  assert.equal(translationTimeoutMs('500'), 5_000, '生产误配的 500ms 必须被安全下限纠正')
+  assert.equal(translationTimeoutMs('15000'), 15_000)
+  assert.equal(translationTimeoutMs('90000'), 30_000, '异常长超时要有上限')
+  assert.equal(translationTimeoutMs('invalid'), 15_000, '无效配置回到默认值')
+  ok('翻译超时配置安全下限 / 默认值 / 上限')
+} catch (e) {
+  bad('翻译超时配置安全下限 / 默认值 / 上限', e)
 }
 
 /* ---------------- translatePlan：繁体的两条路 ---------------- */
@@ -298,6 +310,74 @@ try {
   ok('MyMemory 失败后用 Lingva，且不调用火山')
 } catch (e) {
   bad('MyMemory 失败后用 Lingva，且不调用火山', e)
+}
+
+/* —— 用例 1c-1：Node 的 AbortError 不得原样泄漏，也不能截断 Lingva 回退 —— */
+const originalFetch = globalThis.fetch
+const originalTimeout = process.env.TRANSLATE_TIMEOUT_MS
+try {
+  const provider = []
+  process.env.TRANSLATE_TIMEOUT_MS = '500'
+  globalThis.fetch = async (input) => {
+    if (String(input).startsWith('http://127.0.0.1:')) {
+      const path = new URL(String(input)).pathname
+      if (path === '/get') throw new DOMException('This operation was aborted', 'AbortError')
+      if (path === '/api/v1/en/es') {
+        return new Response(JSON.stringify({ translation: 'Lingva after timeout' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+    }
+    throw new Error(`unexpected fetch: ${input}`)
+  }
+
+  const out = await translateText('Abort fallback test', 'en', 'es', (name) => provider.push(name))
+  assert.equal(out, 'Lingva after timeout')
+  assert.deepEqual(provider, ['lingva'])
+  ok('MyMemory AbortError 会显示为超时诊断并继续 Lingva 回退')
+} catch (e) {
+  bad('MyMemory AbortError 会显示为超时诊断并继续 Lingva 回退', e)
+} finally {
+  globalThis.fetch = originalFetch
+  if (originalTimeout === undefined) delete process.env.TRANSLATE_TIMEOUT_MS
+  else process.env.TRANSLATE_TIMEOUT_MS = originalTimeout
+}
+
+/* —— 用例 1c-2：火山超时也转换成可读错误，而非裸 Abort 文案 —— */
+try {
+  const provider = []
+  process.env.TRANSLATE_TIMEOUT_MS = '500'
+  globalThis.fetch = async (input) => {
+    const path = new URL(String(input)).pathname
+    if (path === '/get') {
+      return new Response(JSON.stringify({ responseStatus: 429, responseDetails: 'test unavailable' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+    if (path === '/api/v1/en/es') {
+      return new Response(JSON.stringify({ error: 'test unavailable' }), {
+        status: 503,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+    throw new DOMException('This operation was aborted', 'AbortError')
+  }
+
+  const err = await assertError(
+    () => translateText('Volcano abort test', 'en', 'es', (name) => provider.push(name)),
+    { code: 'VOLC_TIMEOUT', message: /火山翻译请求超时/ },
+  )
+  assert.match(err.message, /5000 毫秒/)
+  assert.deepEqual(provider, ['volc'])
+  ok('火山 AbortError 返回明确的超时诊断')
+} catch (e) {
+  bad('火山 AbortError 返回明确的超时诊断', e)
+} finally {
+  globalThis.fetch = originalFetch
+  if (originalTimeout === undefined) delete process.env.TRANSLATE_TIMEOUT_MS
+  else process.env.TRANSLATE_TIMEOUT_MS = originalTimeout
 }
 
 /* —— 用例 1d：MyMemory 按 UTF-8 字节切分且不破坏 emoji —— */

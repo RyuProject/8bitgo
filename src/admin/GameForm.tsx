@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import type { ArcadeMameDisk, FlashControlButton, Game, GenreId, PlatformId } from '@/types'
 import { normalizeRomLanguageCode, romLanguageLabel, ROM_LANGS, type RomSlotLang } from '@/config/languages'
@@ -75,7 +75,7 @@ import { api, apiEnabled } from '@/services/api'
 import { objectReferenceMatches, planRomObjectDeletion, unbindRomObjectKeys } from './romDeletePlan'
 import { mergeDosboxConfigOverride, normalizeDosboxConfigOverride, parseDosboxConfigOverride } from '../../shared/dosbox-config.js'
 import { romPackInnerName } from '../../shared/rom-pack-format.js'
-import { extractGameKeywords } from './gameKeywords'
+import { extractGameKeywordsFromDescriptions } from './gameKeywords'
 import { normalizeDosStartupCommands } from '../../shared/dos-startup-commands.js'
 import { isVersionedSockdriveDirectory } from '../../shared/sockdrive-url.js'
 import { probeRange } from '@/emulator/remoteDisc'
@@ -255,6 +255,14 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
   )
   const [tagsText, setTagsText] = useState(initialTagsText)
   const formRef = useRef(form)
+  const keywordDescriptions = useMemo(() => ({
+    'zh-Hans': form.description ?? '',
+    ...(form.descriptionI18n ?? {}),
+    ...(form.descriptionLocalized ?? {}),
+    // 英文页同样优先已保存的人工/机器译文；没有时才用固定英文简介。
+    en: form.descriptionLocalized?.en || form.descriptionI18n?.en || form.descriptionEn || '',
+  }), [form.description, form.descriptionEn, form.descriptionI18n, form.descriptionLocalized])
+  const hasKeywordDescriptions = Object.values(keywordDescriptions).some((text) => Boolean(text?.trim()))
   // 请求期间若管理员继续改简介，译文回包不能覆盖更新后的手工内容。
   formRef.current = form
   const autoTagsValue = useRef('')
@@ -365,11 +373,11 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
 
   useEffect(() => {
     if (tagsManuallyEdited.current && (!autoTagsValue.current || tagsText !== autoTagsValue.current)) return
-    const generated = extractGameKeywords(form.descriptionEn ?? '').join(', ')
+    const generated = extractGameKeywordsFromDescriptions(keywordDescriptions).join(', ')
     if (generated === tagsText) return
     autoTagsValue.current = generated
     setTagsText(generated)
-  }, [form.descriptionEn, tagsText])
+  }, [keywordDescriptions, tagsText])
 
 
   /**
@@ -740,8 +748,8 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
   }
 
   const regenerateKeywords = () => {
-    const generated = extractGameKeywords(form.descriptionEn ?? '').join(', ')
-    if (!generated) return setError('请先填写英文简介，再提取关键词')
+    const generated = extractGameKeywordsFromDescriptions(keywordDescriptions).join(', ')
+    if (!generated) return setError('请至少填写一段简介，再提取关键词')
     autoTagsValue.current = generated
     tagsManuallyEdited.current = false
     setTagsText(generated)
@@ -1791,7 +1799,7 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
         )
       })}
 
-      <Field label="关键词 / 标签" hint="英文简介会自动提取高频主题词；手动编辑后不再覆盖。用逗号分隔，例如：classic, co-op">
+      <Field label="关键词 / 标签" hint="从中文、英文及已填写的其他语言简介中分别提取主题词和短语；新建条目自动更新，手动编辑后不再覆盖。用逗号分隔。">
         <div className="flex gap-2">
           <input
             className={inputClass}
@@ -1802,8 +1810,8 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
               setTagsText(e.target.value)
             }}
           />
-          <button type="button" className={btnClass.secondary} onClick={regenerateKeywords} disabled={!form.descriptionEn?.trim()}>
-            从英文简介提取
+          <button type="button" className={btnClass.secondary} onClick={regenerateKeywords} disabled={!hasKeywordDescriptions}>
+            从所有语言简介提取
           </button>
         </div>
       </Field>
