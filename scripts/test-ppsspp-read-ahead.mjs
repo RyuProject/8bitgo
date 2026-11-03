@@ -5,7 +5,7 @@ import vm from 'node:vm'
 const source = readFileSync(new URL('../vendor/ppsspp/range-read-ahead.js', import.meta.url), 'utf8')
 const BLOCK = 2 * 1024 * 1024
 
-function makeRuntime(effectiveType = '4g', saveData = false, deviceMemory = 8, hardwareConcurrency = 8, sharedWorker = false, totalBlocks = 6) {
+function makeRuntime(effectiveType = '4g', saveData = false, deviceMemory = 8, hardwareConcurrency = 8, sharedWorker = false, totalBlocks = 6, discUrl = 'https://assets.test/game.chd') {
   const total = BLOCK * totalBlocks
   const requests = []
   const pending = []
@@ -76,7 +76,7 @@ function makeRuntime(effectiveType = '4g', saveData = false, deviceMemory = 8, h
       assert.ok(match, '测试请求必须是 Range')
       const start = Number(match[1])
       const end = Number(match[2])
-      requests.push({ start, end, async: this.async })
+      requests.push({ start, end, async: this.async, headers: new Map(this.headers) })
       const finish = () => {
         if (this.aborted) return
         if (this.asyncActive) {
@@ -148,7 +148,7 @@ function makeRuntime(effectiveType = '4g', saveData = false, deviceMemory = 8, h
 
   const demand = (start, end, validator = '"disc-v1"') => {
     const xhr = context.__8bitgoCreatePspRangeXhr()
-    xhr.open('GET', 'https://assets.test/game.chd', false)
+    xhr.open('GET', discUrl, false)
     xhr.responseType = 'arraybuffer'
     xhr.setRequestHeader('Range', `bytes=${start}-${end}`)
     xhr.setRequestHeader('Accept', 'application/octet-stream')
@@ -360,6 +360,36 @@ function makeRuntime(effectiveType = '4g', saveData = false, deviceMemory = 8, h
     before + 1,
     '资源校验器变化后必须丢弃旧预读，不能把两版游戏镜像拼在一起',
   )
+}
+
+{
+  // 钉了 romv 的地址：条件头只记不发，好让浏览器 HTTP 缓存接住重复读取（Chromium 对带
+  // If-Match / If-Unmodified-Since 的请求一律绕过缓存）。外链仍照常发。
+  const pinned = makeRuntime('4g', false, 8, 8, false, 6, 'https://assets.test/game.chd?romv=abc-1')
+  pinned.demand(0, BLOCK - 1)
+  const demandReq = pinned.requests.find((request) => !request.async)
+  assert.equal(demandReq.headers.get('if-match'), undefined, '钉了代次的正式读盘不能再带 If-Match')
+  assert.equal(demandReq.headers.get('range'), `bytes=0-${BLOCK - 1}`)
+  pinned.flushOne()
+  const prefetchReq = pinned.requests.find((request) => request.async)
+  assert.ok(prefetchReq, '仍会发预读')
+  assert.equal(prefetchReq.headers.get('if-match'), undefined, '同线程预读同样不带条件头')
+  // 不带条件头的预读结果仍要按 ETag 认：同一个校验器命中，换了校验器作废
+  const hits = pinned.context.__8bitgoPspRangeWarmStats().prefetchHits
+  pinned.demand(BLOCK, BLOCK * 2 - 1)
+  assert.equal(pinned.context.__8bitgoPspRangeWarmStats().prefetchHits, hits + 1, '同一校验器的预读照常命中')
+
+  const external = makeRuntime()
+  external.demand(0, BLOCK - 1)
+  assert.equal(external.requests.find((request) => !request.async).headers.get('if-match'), '"disc-v1"', '没有 romv 的外链必须继续带 If-Match')
+
+  const shared = makeRuntime('4g', false, 8, 8, true, 6, 'https://assets.test/game.chd?romv=abc-1')
+  shared.readyWorker()
+  shared.demand(0, BLOCK - 1)
+  const job = shared.sharedJob(BLOCK)
+  assert.ok(job, '共享 Worker 预读已排上')
+  assert.equal(job.sendValidators, false, '共享 Worker 的钉代次预读也不发条件头')
+  assert.equal(job.ifMatch, '"disc-v1"', '但校验器仍随任务带过去，用来核对响应')
 }
 
 console.log('✔ PSP 自适应滚动预读：共享 Worker 命中、同步等待、四路填充、追尾扩窗与版本隔离均通过')

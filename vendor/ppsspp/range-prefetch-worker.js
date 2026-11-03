@@ -17,8 +17,11 @@ async function prefetch(job) {
   const timeout = setTimeout(() => controller.abort(), 20_000)
   try {
     const headers = { Range: `bytes=${job.start}-${job.end}`, Accept: 'application/octet-stream' }
-    if (job.ifMatch) headers['If-Match'] = job.ifMatch
-    if (job.ifUnmodifiedSince) headers['If-Unmodified-Since'] = job.ifUnmodifiedSince
+    // 钉了 romv 的地址只核对响应、不发条件头：带 If-Match 的请求会绕过浏览器 HTTP 缓存
+    if (job.sendValidators !== false) {
+      if (job.ifMatch) headers['If-Match'] = job.ifMatch
+      if (job.ifUnmodifiedSince) headers['If-Unmodified-Since'] = job.ifUnmodifiedSince
+    }
     const response = await fetch(job.url, { headers, signal: controller.signal, mode: 'cors' })
     if (
       response.status !== 206 ||

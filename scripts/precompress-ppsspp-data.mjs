@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url'
 import { brotliCompressSync, brotliDecompressSync, constants } from 'node:zlib'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
-const dir = resolve(process.argv[2] || join(root, 'public', 'ppsspp', 'v0dbfaca', 'v15'))
+const dir = resolve(process.argv[2] || join(root, 'public', 'ppsspp', 'v0dbfaca', 'v16'))
 const dataPath = join(dir, 'PPSSPPSDL.data')
 const outPath = `${dataPath}.br`
 

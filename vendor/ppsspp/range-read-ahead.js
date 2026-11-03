@@ -113,6 +113,21 @@
     return ''
   }
   const cacheKey = (url, start, end) => `${url}\n${start}-${end}`
+  /*
+   * 带 `romv=<ETag>` 的播放地址已经把镜像代次钉死在 URL 里：R2 Worker 每次 Range 都拿它比对
+   * 当前 ETag，不一致回 412；浏览器 HTTP 缓存也按完整 URL 存，换版就是另一个缓存键。
+   *
+   * 这种地址**不能再发 If-Match / If-Unmodified-Since**：Chromium 的 HTTP 缓存对带这两个头的
+   * 请求直接绕过缓存（kPassThroughHeaders）。2026-11-04《GT 赛车》实测同一个已缓存的 2MB 分片，
+   * 带 If-Match 每次 2.4 秒走网络，去掉后 15 毫秒从磁盘缓存返回 —— 以前每次进游戏、每次进选车
+   * 都要把读过的块重新下载一遍。响应里的 ETag 仍照常交给 C++ 校验（缓存里存的也是同一个 ETag），
+   * 校验语义不变；没有 romv 的外链继续带条件头。
+   */
+  const versionPinned = (url) => /[?&]romv=[^&#]+/.test(String(url || ''))
+  const validatorHeader = (name) => {
+    const lower = String(name).toLowerCase()
+    return lower === 'if-match' || lower === 'if-unmodified-since'
+  }
 
   const readAheadPolicy = () => {
     const connection = globalThis.navigator?.connection
@@ -230,6 +245,8 @@
         type: 'fetch', id, key, url: job.url, start: job.start, end: job.end, total: job.total,
         ifMatch: header(job.headers, 'if-match'),
         ifUnmodifiedSince: header(job.headers, 'if-unmodified-since'),
+        // 校验器仍用来核对响应头；只是不放进请求，免得绕过浏览器 HTTP 缓存
+        sendValidators: !versionPinned(job.url),
         bytes, state: state.buffer,
       })
       return true
@@ -277,8 +294,11 @@
     xhr.setRequestHeader('Accept', 'application/octet-stream')
     const ifMatch = header(job.headers, 'if-match')
     const ifUnmodifiedSince = header(job.headers, 'if-unmodified-since')
-    if (ifMatch) xhr.setRequestHeader('If-Match', ifMatch)
-    if (ifUnmodifiedSince) xhr.setRequestHeader('If-Unmodified-Since', ifUnmodifiedSince)
+    // 钉了代次的地址不发条件头，好让浏览器 HTTP 缓存接住（见 versionPinned）
+    if (!versionPinned(job.url)) {
+      if (ifMatch) xhr.setRequestHeader('If-Match', ifMatch)
+      if (ifUnmodifiedSince) xhr.setRequestHeader('If-Unmodified-Since', ifUnmodifiedSince)
+    }
     xhr.onload = () => {
       try {
         const rawHeaders = xhr.getAllResponseHeaders()
@@ -439,6 +459,8 @@
 
     setRequestHeader(name, value) {
       this.__8bitgoHeaders.set(String(name).toLowerCase(), String(value))
+      // 记下来给预读比对用，但钉了代次的地址不真的发出去（见 versionPinned）
+      if (validatorHeader(name) && versionPinned(this.url_)) return
       this._inner.setRequestHeader(name, value)
     }
 

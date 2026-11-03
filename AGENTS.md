@@ -2409,7 +2409,7 @@ R2 multipart 发布到最终 `roms/psp/*.chd`。`.cso` / `.chd` 保持直传。
   同时发生；`source_deleted` 的 0 / 1 / 2 分别是保留 / 已删 / 正在清理。
 - 前端创建任务把随机 `source_key` 当幂等键：响应途中断线可以重试，服务端只返回原任务。旧槽是
   `.chd` / `.cso` 而新文件是 `.iso` 时绝不复用旧 key，否则转换服务降级时会把 ISO 字节写进错误扩展名。
-- 仓库当前待发布 PPSSPP 是实体目录 v15、Range loader v4：ISO/CSO/CHD 都用 2MB 分块，共用 96MB 内存 LRU，
+- 仓库当前待发布 PPSSPP 是实体目录 v16、Range loader v4：ISO/CSO/CHD 都用 2MB 分块，共用 96MB 内存 LRU，
   并主动带 `If-Match` / `If-Unmodified-Since`
   钉住同一代镜像。播放 URL 同时带 `romv=<ETag>`，Worker 必须在每次 Range 前把它与 R2 当前 ETag 比较；
   不一致返回 412。Range 必须绕过整包 Cache API；Worker 只把 `romv` 锁定、2MB 对齐且校验过 ETag 的
@@ -2437,6 +2437,11 @@ R2 multipart 发布到最终 `roms/psp/*.chd`。`.cso` / `.chd` 保持直传。
   v15 修正低命中率永久锁住单路小窗口的反馈陷阱：确认持续顺序读取后只恢复到双路，
   一旦随机寻道立即收回；省流量和 2G 仍禁预读。由 `scripts/refresh-ppsspp-range-v15.mjs`
   从已校验的 v14 生成新实体目录，发布前必须让检查脚本核对源码与产物一致。
+  v16（2026-11-04《GT 赛车》）只换 JS 读盘层：带 `romv` 的地址**不再发 If-Match / If-Unmodified-Since**。
+  Chromium 的 HTTP 缓存对带这两个头的请求一律直通网络（kPassThroughHeaders），实测同一个已缓存的
+  2MB 分片带 If-Match 每次 2.4 秒、不带 15 毫秒 —— 以前每局、每次进选车都把读过的块重下一遍。
+  romv 已把代次钉进 URL（Worker 不一致回 412、缓存键也随之换），响应 ETag 仍由 C++ 逐块核对，
+  外链（无 romv）照旧带条件头。由 `scripts/refresh-ppsspp-range-v16.mjs` 从 v15 生成（Wasm / data 不变）。
   播放器的「流式传输 / 整包下载」默认流式；整包用 8MB 有界 Range 分片写入 OPFS，
   下载完成后经现有本地光盘 SW 按需读，不把 1GB 镜像合成 JS Blob。只有带 `romv` 的
   完整镜像可复用本地副本；没有版本校验器的外链不得把多个 Range 拼成整盘。
@@ -2525,9 +2530,8 @@ melonDS DS 的包换了，要同步四处：报告 sha256、`NDS_MODERN_CORE_BUI
   `server/src/precompressed-static.js` 在 express.static 前面接手：白名单路径 + 接受 br + 非 Range + `.br` 存在
   才吐 `PPSSPPSDL.data.br`（Brotli 11，9.2MB，-53%），两条路都带 `Vary: Accept-Encoding`。已实测
   Cloudflare 会把源站的 `Content-Encoding: br` 原样交给浏览器（Terraria 的 `.dat` 同理）。
-- 新实体目录（v16 …）发布后跑 `npm run ppsspp:precompress`；`check-ppsspp` 会把 `.br` 解开对 runtime.json 的
-  sha256，缺失或过期直接失败。**部署后要在 Cloudflare（及 EdgeOne）清掉这一个 URL 的缓存**，否则边缘
-  还会按 immutable 继续给旧的明文副本。回归：`cd server && npm run test:precompressed-static`。
+- 新实体目录（v17 …）发布后跑 `npm run ppsspp:precompress -- <目录>`（v16 已带 `.br`）；`check-ppsspp` 会把 `.br` 解开对 runtime.json 的
+  sha256，缺失或过期直接失败。v16 是新 URL，边缘没有旧的明文副本；以后若给**已发布**目录补 `.br`，要在 Cloudflare / EdgeOne 清掉那个 URL。回归：`cd server && npm run test:precompressed-static`。
 - 远程流式启动时桥是在 `mount-remote` **之后**才下 36MB 核心。适配器以前 host-ready 一到就报 rom
   （还带探测那 2 字节，速度栏显示「1 B/s」），engine 段一秒走完、核心下载挤在 10% 的 rom 段里，条子停在
   50% 二十秒。现在同源观察桥的 `#status`：「正在下载 PSP 核心资源… NN%」→ engine ratio，换成「正在流式读取
@@ -2647,12 +2651,12 @@ ATRAC3+ 和 MP3 解码。构建/发布检查必须同时看到 `USE_FFMPEG:BOOL=
 Cloudflare 对这组静态文件的缓存键**忽略查询串**：请求 `PPSSPPSDL.data?r=17` 仍命中旧的 r16
 （22,417,304B，`CF-Cache-Status: HIT`），而新清单需要 19,434,861B。查询参数不能再承担版本隔离，
 否则新 JS、旧 data 和旧 Wasm 会被拼在同一局里。当前整套资源发布在
-`public/ppsspp/v0dbfaca/v15/`（上一版为 v14）；下次桥、JS、Wasm、data、Range 胶水或 AudioWorklet 任一项改变就
-复制/构建到 `v16/`，并同步 `PPSSPP_RUNTIME_GENERATION` 和服务端旧地址 302。旧目录保留给旧页面，
+`public/ppsspp/v0dbfaca/v16/`（上一版为 v15）；下次桥、JS、Wasm、data、Range 胶水或 AudioWorklet 任一项改变就
+复制/构建到 `v17/`，并同步 `PPSSPP_RUNTIME_GENERATION` 和服务端旧地址 302。旧目录保留给旧页面，
 不原地覆盖。
-v13 只修桥和新增本地光盘 Service Worker；v14/v15 只修预读胶水，Wasm/data 与 v13 的 SHA-256 相同。
-`scripts/refresh-ppsspp-js-runtime.mjs` 仍是生成 v12 的历史入口，不要用它覆盖 v13～v15。
-下一次重新构建核心前，先把 `scripts/build-ppsspp.mjs` 的目标代次和相应模板一起升到 v16。
+v13 只修桥和新增本地光盘 Service Worker；v14/v15/v16 只修预读胶水，Wasm/data 与 v13 的 SHA-256 相同。
+`scripts/refresh-ppsspp-js-runtime.mjs` 仍是生成 v12 的历史入口，不要用它覆盖 v13～v16。
+下一次重新构建核心前，先把 `scripts/build-ppsspp.mjs` 的目标代次和相应模板一起升到 v17。
 
 Emscripten
 自带的 preload fetch 没有重试，`host.js` 用 `getPreloadedPackage` 接管：优先读浏览器缓存，连续

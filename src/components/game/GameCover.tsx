@@ -3,7 +3,14 @@ import type { ReactNode } from 'react'
 import type { CoverGame } from '@/types'
 import { platformMap } from '@/data/platforms'
 import { gradientFor } from '@/lib/gradients'
-import { coverSrcSet, coverThumbKey, gameMediaUrl, romUrlForKey } from '@/services/roms'
+import {
+  coverSrcSet,
+  coverThumbKey,
+  gameMediaUrl,
+  romUrlForKey,
+  startCoverCdnSelection,
+  subscribeCoverCdnSelection,
+} from '@/services/roms'
 import { cx } from '@/lib/format'
 import { useT, fmt } from '@/services/i18n'
 import { useLang } from '@/services/lang'
@@ -208,8 +215,17 @@ export function GameCover({
   // 封面上的字、alt、aria-label 都得跟界面同一种语言
   const title = gameTitle(game, lang)
   const platform = platformMap[game.platform]
+  // 测速结果变更后重算 URL；其它封面组件共享同一轮探测，不各自重复下载探针图。
+  const [, setCoverCdnRevision] = useState(0)
   const coverSrc = gameMediaUrl(game, 'cover')
   const videoSrc = still ? '' : gameMediaUrl(game, 'video')
+  useEffect(() => {
+    const unsubscribe = subscribeCoverCdnSelection(() => {
+      setCoverCdnRevision((revision) => revision + 1)
+    })
+    startCoverCdnSelection(game.cover || '')
+    return unsubscribe
+  }, [game.cover])
   // 外链没有本站生成的 -96 缩略图，直接用原图；空 key 不能被当作资源桶根地址。
   const thumbKey = thumb && game.cover ? coverThumbKey(game.cover) : ''
   const thumbSrc = thumbKey ? romUrlForKey(thumbKey) : ''

@@ -4,7 +4,8 @@ import vm from 'node:vm'
 
 const source = readFileSync(new URL('../vendor/ppsspp/range-prefetch-worker.js', import.meta.url), 'utf8')
 
-async function run(response) {
+async function run(response, extra = {}) {
+  const seen = []
   const bytes = new SharedArrayBuffer(4)
   const state = new SharedArrayBuffer(4)
   let finish
@@ -19,7 +20,10 @@ async function run(response) {
     AbortController,
     setTimeout,
     clearTimeout,
-    fetch: async () => response,
+    fetch: async (url, init) => {
+      seen.push(init.headers)
+      return response
+    },
     postMessage(message) {
       if (message.type === 'done') finish(message)
     },
@@ -28,12 +32,12 @@ async function run(response) {
   vm.runInNewContext(source, context, { filename: 'range-prefetch-worker.js' })
   context.self.onmessage({ data: {
     type: 'fetch', id: 7, key: 'disc\n0-3', url: 'https://assets.test/disc.chd',
-    start: 0, end: 3, total: 8, ifMatch: '"disc-v1"', bytes, state,
+    start: 0, end: 3, total: 8, ifMatch: '"disc-v1"', bytes, state, ...extra,
   } })
   const message = await done
   assert.equal(message.id, 7)
   assert.equal(message.key, 'disc\n0-3')
-  return { state: Atomics.load(new Int32Array(state), 0), bytes: [...new Uint8Array(bytes)] }
+  return { state: Atomics.load(new Int32Array(state), 0), bytes: [...new Uint8Array(bytes)], headers: seen[0] }
 }
 
 function response(chunks, { status = 206, contentRange = 'bytes 0-3/8', etag = '"disc-v1"' } = {}) {
@@ -55,7 +59,16 @@ function response(chunks, { status = 206, contentRange = 'bytes 0-3/8', etag = '
   }
 }
 
-assert.deepEqual(await run(response([[1, 2], [3, 4]])), { state: 1, bytes: [1, 2, 3, 4] })
+{
+  const ok = await run(response([[1, 2], [3, 4]]))
+  assert.deepEqual({ state: ok.state, bytes: ok.bytes }, { state: 1, bytes: [1, 2, 3, 4] })
+  assert.equal(ok.headers['If-Match'], '"disc-v1"', '外链预读照常带 If-Match')
+  const pinned = await run(response([[1, 2], [3, 4]]), { sendValidators: false })
+  assert.equal(pinned.state, 1)
+  assert.equal(pinned.headers['If-Match'], undefined, '钉了 romv 的预读不能带 If-Match（会绕过浏览器 HTTP 缓存）')
+  assert.equal((await run(response([[1, 2, 3, 4]], { etag: '"disc-v2"' }), { sendValidators: false })).state, 2,
+    '不发条件头时仍必须核对响应 ETag')
+}
 assert.equal((await run(response([[1, 2, 3, 4]], { contentRange: 'bytes 4-7/8' }))).state, 2,
   '错误的 Content-Range 不能进入共享缓存')
 assert.equal((await run(response([[1, 2, 3, 4]], { etag: '"disc-v2"' }))).state, 2,

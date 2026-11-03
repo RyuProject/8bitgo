@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const VERSION = '0dbfaca'
-const RUNTIME_GENERATION = 'v15'
+const RUNTIME_GENERATION = 'v16'
 const useDist = process.argv.includes('--dist')
 const sourceOnly = process.argv.includes('--source-only')
 const publicDir = join(root, 'public', 'ppsspp', `v${VERSION}`, RUNTIME_GENERATION)
@@ -55,10 +55,10 @@ if (!runtimeInit || /respond\s*\(/.test(runtimeInit)) {
   fail('host.js 在 onRuntimeInitialized 阶段就回复成功；此时 PPSSPP 还没有执行 main 或读取镜像')
 }
 if (!/<script src="host\.js"><\/script>/.test(need(join(runtimeDir, 'index.html')).toString('utf8'))) {
-  fail('v15 index.html 没有引用同一实体目录里的 host.js')
+  fail('v16 index.html 没有引用同一实体目录里的 host.js')
 }
-if (!/PPSSPP_RUNTIME_GENERATION = 'v15'/.test(paths) || !/PPSSPP_FRAME_REVISION = '2'/.test(paths) || !/ppssppFrameUrl/.test(adapter)) {
-  fail('PPSSPP iframe 没有使用 v15 实体目录；查询串不能穿透当前 Cloudflare 缓存键')
+if (!/PPSSPP_RUNTIME_GENERATION = 'v16'/.test(paths) || !/PPSSPP_FRAME_REVISION = '2'/.test(paths) || !/ppssppFrameUrl/.test(adapter)) {
+  fail('PPSSPP iframe 没有使用 v16 实体目录；查询串不能穿透当前 Cloudflare 缓存键')
 }
 if (/fetch\s*\(\s*(?:remote(?:\?\.)?\.url|gamePath)/.test(host)) {
   fail('host.js 出现整盘下载代码；远程镜像只能把 URL 交给 C++ Range loader')
@@ -91,13 +91,13 @@ if (!/FS\.stat\(path\)[\s\S]*?FS\.writeFile\(path, new Uint8Array\(\)\)/.test(ho
   fail('host.js 没有保留已有控制器配置并只在首次启动补空 controls.ini')
 }
 if (host.includes('核心没有 Range 遥测回调，使用首帧兼容判据')) {
-  fail('v15 仍会在没有真实读盘时把空画布误报成游戏已启动')
+  fail('v16 仍会在没有真实读盘时把空画布误报成游戏已启动')
 }
 if (!/gameBootConfirmed/.test(host) || !/BOOTED_LOG_PATTERN = \/\\bBooted\\s\+\.\+\\\.\\\.\\\.\//.test(host)) {
-  fail('v15 没有等待 PPSSPP 的 Booted 日志；Range 遥测跨线程丢失时会再次超时')
+  fail('v16 没有等待 PPSSPP 的 Booted 日志；Range 遥测跨线程丢失时会再次超时')
 }
 if (!/print\(text\)[\s\S]*?observeCoreLog\(message\)[\s\S]*?printErr\(text\)[\s\S]*?observeCoreLog\(message\)/.test(host)) {
-  fail('v15 没有同时观察 stdout/stderr；不同 Emscripten 日志路由下会漏掉 Booted')
+  fail('v16 没有同时观察 stdout/stderr；不同 Emscripten 日志路由下会漏掉 Booted')
 }
 if (/FS\.mount\([^\n]*WORKERFS|FS\.createLazyFile\(/.test(host)) {
   fail('本地 PSP 镜像不能在主线程挂 WORKERFS 或用同步 XHR 的 LazyFile')
@@ -222,7 +222,8 @@ if (loaderRevision === 4 && (manifest.chdBlockBytes !== 2097152 || manifest.prel
   fail('Range v4 清单没有声明实测 2 MiB CHD 分片或精简的 Web data 包')
 }
 if (
-  manifest.rangeReadAheadProfile !== 'adaptive-rolling-buffer-shared-worker-recovery-v7' ||
+  manifest.rangeReadAheadProfile !== 'adaptive-rolling-buffer-shared-worker-recovery-v8' ||
+  manifest.browserHttpCache !== 'romv-pinned-no-conditional-v1' ||
   manifest.rangeReadAheadBlocks !== 10 ||
   manifest.rangeReadAheadConcurrency !== 4 ||
   manifest.rangeReadAheadCacheBytes !== 25165824
@@ -284,7 +285,7 @@ if (installed) {
   const runtimeScript = need(join(runtimeDir, 'PPSSPPSDL.js')).toString('utf8')
   const readAheadSource = need(join(root, 'vendor', 'ppsspp', 'range-read-ahead.js')).toString('utf8').trimEnd()
   if (!runtimeScript.includes(readAheadSource)) {
-    fail('v15 发布脚本与预读源码不一致；改源码后必须生成新实体运行时')
+    fail('v16 发布脚本与预读源码不一致；改源码后必须生成新实体运行时')
   }
   if (!runtimeScript.includes('if(fetched?.then){fetched=await fetched}else if(!fetched){fetched=await fetchPromise}')) {
     fail('PPSSPPSDL.js 没有等待异步核心资源重试 Promise，真机解包会报 bad input')
@@ -298,10 +299,14 @@ if (installed) {
     'demandTakeovers',
     'sharedPrefetchWaits',
     'otherKey !== key',
+    // v16：romv 钉代次的 Range 不发条件头，浏览器 HTTP 缓存才接得住重复读取
+    'const versionPinned = ',
+    'validatorHeader(name) && versionPinned(this.url_)',
+    'sendValidators: !versionPinned(job.url)',
   ]) {
     if (!runtimeScript.includes(marker)) fail(`PPSSPPSDL.js 缺少 PSP 顺序预读标记 ${marker}`)
   }
-  for (const marker of ['postMessage({ type: \'ready\' })', 'Atomics.notify(state, 0)', 'response.status !== 206', 'offset !== bytes.byteLength']) {
+  for (const marker of ['postMessage({ type: \'ready\' })', 'Atomics.notify(state, 0)', 'response.status !== 206', 'offset !== bytes.byteLength', 'job.sendValidators !== false']) {
     if (!prefetchWorker.includes(marker)) fail(`range-prefetch-worker.js 缺少共享预读校验标记 ${marker}`)
   }
   if (!runtimeScript.includes('pthreadMainJs=_scriptName') || !runtimeScript.includes('new Worker(pthreadMainJs')) {

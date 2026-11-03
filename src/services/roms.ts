@@ -24,6 +24,7 @@ import { isStreamingDiscPlatform } from '../../shared/streaming-disc-platforms.j
 import { builtinWebGameFor } from '../../shared/builtin-web-games.js'
 import { chooseFasterRomRoute, ROM_ROUTE_RACE_MIN_BYTES } from './romRoute'
 import { onCnSite } from './cnHost'
+import { selectedCoverCdn, startCoverCdnProbe, subscribeCoverCdn } from './coverCdn'
 
 export const ROM_BASE_KEY = '8bitgo.rom.base'
 export const ROM_API_KEY = '8bitgo.rom.api'
@@ -115,14 +116,39 @@ export function getCnCoverBase(): string {
   return withScheme(trimSlash(import.meta.env.VITE_CN_COVER_URL || ''))
 }
 
+/** 供首屏测速使用；当前站点对应的域仍作为首次测速失败时的安全默认值。 */
+export function coverCdnProbeConfig() {
+  const primary = withScheme(trimSlash(import.meta.env.VITE_COVER_URL || '')) || getRomBase()
+  const cn = getCnCoverBase()
+  const candidates = [...new Set([primary, cn].filter(Boolean))]
+  return {
+    candidates,
+    preferred: (onCnSite() ? cn || primary : primary || cn) || getRomBase(),
+    cnBase: cn,
+    transformEnabled: import.meta.env.VITE_COVER_TRANSFORM === '1',
+  }
+}
+
+/**
+ * 封面组件挂载后才启动测速，避免 SSR/hydrate 两侧看到不同地址。
+ * 页面只传真实 covers/ key，测速器不会为外链或站内静态图片发请求。
+ */
+export function startCoverCdnSelection(key: string): void {
+  startCoverCdnProbe(key, coverCdnProbeConfig())
+}
+
+export function subscribeCoverCdnSelection(listener: () => void): () => void {
+  return subscribeCoverCdn(listener)
+}
+
 /**
  * 封面公开读取根地址（独立 image 桶 image.8bitgo.com）；未配置时退回 ROM 根地址。
  * 页面开在 cn.8bitgo.com 时改用 EdgeOne 的封面域：看的是当前站点域名，不是访客所在地，
  * 所以 SSR 与 hydrate 能算出同一个答案（见 shared/cn-host.js）。
  */
 export function getCoverBase(): string {
-  const cn = onCnSite() ? getCnCoverBase() : ''
-  return cn || withScheme(trimSlash(import.meta.env.VITE_COVER_URL || '')) || getRomBase()
+  const config = coverCdnProbeConfig()
+  return selectedCoverCdn(config.candidates) || config.preferred
 }
 
 /** 管理接口（Worker）地址，留空时退回公开根地址 */
