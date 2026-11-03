@@ -36,7 +36,7 @@ const script = (...steps) => {
   methods = []
 }
 
-const { probeRomUrl, probeRom, clearRomProbeCache, conventionalKeys, romCandidates, playbackRomCandidates, playbackRomCandidatesForSelection, romProbeExpected, dosExecutableForRom, dosSockdriveForRom, dosStartupCommandsForRom, streamedRomCandidateForSelection, versionedRomUrl, romKeysOf, unbindKeyPatch, shouldTryRomCandidateAfterUncertain, nextRomCandidateKey, slugFromKey, romUrlForKey, coverThumbKey } = await import(
+const { probeRomUrl, probeRom, clearRomProbeCache, conventionalKeys, romCandidates, playbackRomCandidates, playbackRomCandidatesForSelection, romProbeExpected, dosExecutableForRom, dosSockdriveForRom, dosStartupCommandsForRom, streamedRomCandidateForSelection, versionedRomUrl, romKeysOf, unbindKeyPatch, shouldTryRomCandidateAfterUncertain, nextRomCandidateKey, slugFromKey, romUrlForKey, coverThumbKey, romMirrorUrl, getRomMirrorBase } = await import(
   fileURLToPath(new URL('../src/services/roms.ts', import.meta.url))
 )
 // 红宝石封面是外链：没有 -96 缩略图时必须回原图，不能把空 key 拼成资源域名根目录。
@@ -650,6 +650,29 @@ assert.equal(isolatedEmbedFor('diablo'), undefined, 'Diablo 不需要 COOP/COEP�
   )
   delete globalThis.localStorage
 
+  globalThis.__viteEnv = saved
+}
+
+{
+  // 加速镜像：只换主 ROM 域上的同一个对象，路径和 romv 原样保留；其余地址一律不碰
+  const saved = globalThis.__viteEnv
+  globalThis.__viteEnv = { VITE_ROM_BASE_URL: 'https://assets.8bitgo.com', VITE_ROM_MIRROR_URL: 'https://cn-assets.8bitgo.com/' }
+  assert.equal(getRomMirrorBase(), 'https://cn-assets.8bitgo.com')
+  assert.equal(
+    romMirrorUrl('https://assets.8bitgo.com/roms/psp/gt.zh-Hans.chd?romv=abc-115'),
+    'https://cn-assets.8bitgo.com/roms/psp/gt.zh-Hans.chd?romv=abc-115',
+  )
+  assert.equal(romMirrorUrl('https://image.8bitgo.com/covers/gt.webp'), '', '封面域不是 ROM 主域')
+  assert.equal(romMirrorUrl('https://example.com/roms/x.chd'), '', '外链不走镜像')
+  assert.equal(romMirrorUrl('/web/PvZ'), '', '站内路径不走镜像')
+  assert.equal(romMirrorUrl('https://assets.8bitgo.com.evil.com/x'), '', '只认主域加路径分隔符，不认同前缀的别的域')
+  // 管理员覆盖了根地址时，镜像回源的是另一个桶：不启用
+  globalThis.localStorage = { getItem: (k) => (k === '8bitgo.rom.base' ? 'https://mine.example.com' : null) }
+  assert.equal(getRomMirrorBase(), '')
+  assert.equal(romMirrorUrl('https://mine.example.com/roms/x.chd'), '')
+  delete globalThis.localStorage
+  globalThis.__viteEnv = { VITE_ROM_BASE_URL: 'https://assets.8bitgo.com' }
+  assert.equal(romMirrorUrl('https://assets.8bitgo.com/roms/x.chd'), '', '没配镜像就不测速')
   globalThis.__viteEnv = saved
 }
 

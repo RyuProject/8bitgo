@@ -109,6 +109,26 @@ export function getRomBase(): string {
 }
 
 /**
+ * ROM 加速镜像（腾讯 EdgeOne 的 cn-assets.8bitgo.com，回源 assets.8bitgo.com）。
+ *
+ * 管理员在后台「ROM 存储」覆盖过根地址时不启用：镜像只回源构建期那个 assets 域，
+ * 拿它去顶替别的根地址，下到的就是另一个桶里的同名对象。
+ */
+export function getRomMirrorBase(): string {
+  if (readLocal(ROM_BASE_KEY)) return ''
+  return withScheme(trimSlash(import.meta.env.VITE_ROM_MIRROR_URL || ''))
+}
+
+/**
+ * 把主 ROM 域上的地址换成镜像域上的同一个对象（路径和 romv 原样保留）。
+ * 外链、站内路径、封面域都不在主域上，返回空串 —— 调用方照旧用原地址。
+ */
+export function romMirrorUrl(url: string, base = getRomBase(), mirror = getRomMirrorBase()): string {
+  if (!url || !base || !mirror || base === mirror || !url.startsWith(`${base}/`)) return ''
+  return `${mirror}${url.slice(base.length)}`
+}
+
+/**
  * 大陆入口专用的封面根地址（EdgeOne 加速域，回源 image.8bitgo.com）。
  * 没配时为空串，大陆入口也照旧用主封面域。
  */
@@ -1185,6 +1205,8 @@ export function useRomUrl(game: Game | undefined, prefer?: RomSlotLang | null): 
   const autoRetries = useRef(0)
   /** HEAD 成功但实际内容坏掉的 key。只在本次游戏/语言选择内跳过；手动重试会清空。 */
   const runtimeFailures = useRef(new Set<string>())
+  /** 加速镜像在真实加载里失败过：本次游戏/语言选择内不再测速，直接回主域。 */
+  const mirrorFailed = useRef(false)
 
   /**
    * 重试。先清掉这款游戏所有候选地址的探测结论 —— 否则「服务器明确说没有」那一类
@@ -1197,12 +1219,26 @@ export function useRomUrl(game: Game | undefined, prefer?: RomSlotLang | null): 
       clearRomProbeCache(keys.map((key) => romUrlForKey(key)).filter(Boolean))
     }
     runtimeFailures.current.clear()
+    mirrorFailed.current = false
     autoRetries.current = 0
     setAttempt((n) => n + 1)
   }, [game, lang, prefer])
 
   const failover = useCallback((reason?: string): boolean => {
     if (!game || state.status !== 'found' || !state.key) return false
+    /*
+      镜像坏了不等于这个 ROM 坏了：同一个对象回主域再来一次，不能把 key 记进失败集，
+      否则会跳去备用源 / 别的语言，甚至报「没有这个版本」。
+    */
+    const mirror = getRomMirrorBase()
+    if (mirror && state.url.startsWith(`${mirror}/`) && !mirrorFailed.current) {
+      mirrorFailed.current = true
+      console.warn(`[8bitgo/rom] ${game.slug} 走加速镜像加载失败，改回主域重试` + (reason ? `：${reason}` : ''))
+      autoRetries.current = 0
+      setState({ status: 'checking', url: '' })
+      setAttempt((n) => n + 1)
+      return true
+    }
     const bound = playbackRomCandidatesForSelection(game, lang, prefer)
     const chain = bound.length ? bound.map((candidate) => candidate.key) : conventionalKeys(game)
     runtimeFailures.current.add(state.key)
@@ -1233,6 +1269,7 @@ export function useRomUrl(game: Game | undefined, prefer?: RomSlotLang | null): 
   */
   useEffect(() => {
     runtimeFailures.current.clear()
+    mirrorFailed.current = false
     autoRetries.current = 0
   }, [game, lang, prefer])
 
@@ -1250,6 +1287,22 @@ export function useRomUrl(game: Game | undefined, prefer?: RomSlotLang | null): 
     const probeController = new AbortController()
     const routeController = new AbortController()
     setState({ status: 'checking', url: '' })
+
+    /*
+      大文件开局前，同一个对象在主域（Cloudflare）与加速镜像（EdgeOne）各取 128 KiB 测速，
+      整局只用更快的那个域。两边回源同一个桶、同一个 romv，所以换域不换内容；
+      但分片绝不跨域混用，Range 断点续传也只认这一个地址。测速失败或镜像不可用一律留在主域。
+    */
+    const preferFasterHost = async (url: string, size: number | undefined): Promise<string> => {
+      if (mirrorFailed.current || (size ?? 0) < ROM_ROUTE_RACE_MIN_BYTES) return url
+      const mirror = romMirrorUrl(url)
+      if (!mirror) return url
+      const route = await chooseFasterRomRoute({ url, size }, { url: mirror, size }, { signal: routeController.signal })
+      if (route !== 'backup') return url
+      console.info(`[8bitgo/rom] ${game.slug} 测速后整局改走加速镜像：${new URL(mirror).origin}`)
+      return mirror
+    }
+
     ;(async () => {
       const candidates = playbackRomCandidatesForSelection(game, lang, prefer)
       /** 有没有哪个候选是「没问出来」，而不是服务器明确说没有。决定要不要自动重试 */
@@ -1342,9 +1395,10 @@ export function useRomUrl(game: Game | undefined, prefer?: RomSlotLang | null): 
               console.warn(`[8bitgo/rom] ${game.slug} 的 ${candidate.lang ?? '通用'} 主地址不可用，已切换到同语言备用地址：${candidate.key}`)
             }
             probeController.abort()
+            const playUrl = await preferFasterHost(selectedOutcome.url, selectedOutcome.size)
             if (!cancelled) setState({
               status: 'found',
-              url: selectedOutcome.url,
+              url: playUrl,
               key: selectedCandidate.key,
               lang: selectedCandidate.lang,
               size: selectedOutcome.size,
@@ -1414,7 +1468,8 @@ export function useRomUrl(game: Game | undefined, prefer?: RomSlotLang | null): 
         const found = results.find((result) => Boolean(result.outcome.url))
         if (found) {
           probeController.abort()
-          setState({ status: 'found', url: found.outcome.url, key: found.key, size: found.outcome.size })
+          const playUrl = await preferFasterHost(found.outcome.url, found.outcome.size)
+          if (!cancelled) setState({ status: 'found', url: playUrl, key: found.key, size: found.outcome.size })
           return
         }
         for (const result of results) traces.push({ key: result.key, url: result.url, outcome: result.outcome })
