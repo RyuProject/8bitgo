@@ -26,6 +26,8 @@ interface ImportMetaEnv {
   readonly VITE_TWITTER_SITE?: string
   readonly VITE_CLARITY_PROJECT_ID?: string
   readonly VITE_ROM_BASE_URL?: string
+  /** ROM 加速镜像（EdgeOne），大文件开局前与主域测速择优（见 services/roms.ts romMirrorUrl） */
+  readonly VITE_ROM_MIRROR_URL?: string
   readonly VITE_COVER_URL?: string
   /** 页面开在 cn.8bitgo.com 时改用的封面域（EdgeOne，见 shared/cn-host.js） */
   readonly VITE_CN_COVER_URL?: string
