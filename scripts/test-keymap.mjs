@@ -38,6 +38,10 @@ const {
   ARCADE_MAME_CURRENT_BUTTONS,
   arcadeButtonIdsFor,
   QUICK_SAVE_RUNTIMES,
+  EJS_DEFAULT_CONTROLS,
+  EJS_P2_KEY_OVERRIDE,
+  EJS_STOCK_PAD_BY_ID,
+  EJS_RESTORED_BUTTONS,
 } = await import('../src/lib/keymapData.ts')
 
 let n = 0
@@ -395,6 +399,58 @@ for (const key of [...needed].sort()) {
     /button: t\.keymap\.coin, key: arcadeKeysOf\(EJS_INDEX\.select, currentArcadeKeys\)/.test(lib),
     '街机投币提示从街机键位表现算，不会又退回全站 Shift',
   )
+}
+
+/* ---------------- 2P~4P 与方案外按钮（2026-11-03《魂斗罗》） ---------------- */
+{
+  console.log('\n── 2P 小键盘 / 2P~4P 手柄 / 红白机连发 ──')
+  // 引擎出厂只有 1P：这条一旦不成立（引擎自己给了 2P），ejsSeats 的补法要重新评估
+  ok(/,1:\{\},2:\{\},3:\{\}\},this\.analogAxes/.test(ejsSrc), '引擎出厂的 2P~4P 映射确实是空对象（所以才要补）')
+
+  // 出厂手柄映射：value2 逐条对引擎
+  const pads = {}
+  for (const m of ejsSrc.slice(at, at + 1800).matchAll(/(\d+):\{value:"[^"]*",value2:"([^"]*)"/g)) {
+    if (!(m[1] in pads)) pads[m[1]] = m[2]
+  }
+  for (const [id, pad] of Object.entries(EJS_STOCK_PAD_BY_ID)) {
+    ok(pads[id] === pad, `出厂手柄 libretro ${id} = ${pad}${pads[id] === pad ? '' : `，引擎里其实是 ${pads[id]}`}`)
+  }
+
+  // 2P 小键盘：键名引擎认得、不和 1P（主机 / 街机两套最终表）撞、和 jsnes 的 2P 是同一套
+  const p1Keys = new Set([...Object.values(EJS_KEY_BY_ID), ...Object.values(EJS_ARCADE_KEY_BY_ID)].map(norm))
+  const { DEFAULT_PAD_KEYS } = await import('../src/services/padKeys.ts')
+  const ACTION_ID = { up: 4, down: 5, left: 6, right: 7, a: 8, b: 0, select: 2, start: 3 }
+  const jsnesP2 = Object.fromEntries(
+    Object.entries(DEFAULT_PAD_KEYS)
+      .filter(([, b]) => b.startsWith('1:') && ACTION_ID[b.slice(2)] !== undefined)
+      .map(([code, b]) => [ACTION_ID[b.slice(2)], code.replace(/^Numpad/, 'numpad ')]),
+  )
+  for (const [id, [engine, label]] of Object.entries(EJS_P2_KEY_OVERRIDE)) {
+    ok(engineKeyNames.has(engine), `2P libretro ${id} = ${JSON.stringify(engine)}，引擎认得`)
+    ok(!p1Keys.has(norm(label)) && !p1Keys.has(norm(engine)), `2P libretro ${id}（${label}）不和 1P 任何一颗撞`)
+    ok(jsnesP2[id] === engine, `2P libretro ${id} 和红白机 jsnes 的 2P 是同一颗（${jsnesP2[id]}）`)
+    ok(EJS_DEFAULT_CONTROLS[1]?.[id]?.value === engine, `2P libretro ${id} 交给引擎的默认键里有`)
+    ok(EJS_ARCADE_DEFAULT_CONTROLS[1]?.[id]?.value === engine, `街机 2P libretro ${id} 交给引擎的默认键里也有`)
+  }
+  ok(Object.keys(EJS_P2_KEY_OVERRIDE).length === Object.keys(jsnesP2).length, 'jsnes 2P 的每一颗 EmulatorJS 都有对应')
+
+  // 方案外按钮：必须真的在方案外（否则不用补）、有默认键和出厂手柄键
+  for (const [platform, { core, rows }] of Object.entries(EJS_RESTORED_BUTTONS)) {
+    const scheme = schemes[EJS_SCHEME[platform]]
+    for (const [label, id] of rows) {
+      ok(scheme && scheme[String(id)] === undefined, `${platform} 的「${label}」（下标 ${id}）确实不在引擎 ${EJS_SCHEME[platform]} 方案里`)
+      ok(EJS_KEY_BY_ID[id] !== undefined && EJS_STOCK_PAD_BY_ID[id] !== undefined, `${platform} 的「${label}」有默认键 ${EJS_KEY_BY_ID[id]} / 手柄 ${EJS_STOCK_PAD_BY_ID[id]}`)
+    }
+    ok(core === 'fceumm', `${platform} 的连发只认 ${core}`)
+  }
+  // fceumm_turbo_enable 的取值（None / Player 1 / Player 2 / Both）是 2026-11-03 线上
+  // getCoreOptions() 实测的；核心包是 7z 压缩，这里核不到，升级 fceumm 时手动复核。
+
+  const adapterSrc2 = readFileSync(new URL('../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8')
+  ok(/const seats = repairEjsSeats\(emu, options\.platform, core\)/.test(adapterSrc2), '⭐ 开局后补座位（hookControlPersistence）')
+  ok(/ejsInputDefaultOptions\(options\.platform, forCore\)/.test(adapterSrc2), '红白机核心默认打开连发')
+  ok(/EJS_VirtualGamepadSettings: nesVirtualPad\(\)/.test(adapterSrc2), '红白机屏幕手柄带连发键')
+  ok(/out\[EJS_P2_KEY_OFFSET \+ id\]/.test(adapterSrc2), '2P 键位同步回详情页')
 }
 
 /* ---------------- 开局前那张按键图 ---------------- */

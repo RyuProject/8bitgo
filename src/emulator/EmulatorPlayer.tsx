@@ -76,8 +76,9 @@ import { Button, buttonClasses } from '@/components/ui/Button'
 import { JsnesNetplayPanel } from './JsnesNetplayPanel'
 import { useShell } from '@/components/layout/ShellContext'
 import { useT, fmt } from '@/services/i18n'
+import { useLang } from '@/services/lang'
 import { platformLabel } from '@/services/i18nData'
-import { ROM_LANG_LABEL, type RomLang } from '@/config/languages'
+import { romLanguageLabel, type RomSlotLang } from '@/config/languages'
 import {
   canResumeRomLanguageSwitch,
   emulatorVariantSaveSlug,
@@ -408,13 +409,13 @@ interface Props {
    * 这款游戏绑了哪几种语言的 ROM。少于两种时不显示切换入口 ——
    * 只有一份 ROM 的话「切换语言」是个假选项。
    */
-  romLangs?: RomLang[]
+  romLangs?: RomSlotLang[]
   /** 当前用的是哪一种（由 useRomUrl 反查出来） */
-  romLang?: RomLang
+  romLang?: RomSlotLang
   /** 玩家最后一次明确选择；探测失败时仍保留，不能让下拉框假装切回了别的版本。 */
-  romLangSelection?: RomLang | null
+  romLangSelection?: RomSlotLang | null
   /** 玩家选了别的语言。父组件据此换 romUrl，换完这边会自动重开这一局 */
-  onRomLangChange?: (lang: RomLang) => void
+  onRomLangChange?: (lang: RomSlotLang) => void
   /**
    * 本地文件识别出的平台与页面平台不一致时如何处理：
    *   'switch' —— 用识别出的平台运行（玩本地 ROM 页）
@@ -612,6 +613,7 @@ export function EmulatorPlayer({
   autoStart,
   debug = false,
 }: Props) {
+  const currentLang = useLang()
   // 静态 Sockdrive 是 BIOS 硬盘；纯 DOS 游戏也要先启动真实 DOS 7.1，才能把游戏盘读成 D:。
   const effectiveDosSystemUrl = dosSystemUrl || (dosSockdriveUrl ? defaultDos71SystemUrl() : undefined)
   const [status, setStatus] = useState<Status>('idle')
@@ -624,7 +626,7 @@ export function EmulatorPlayer({
   const pspLoadModeRef = useRef(pspLoadMode)
   pspLoadModeRef.current = pspLoadMode
   /** 切语言时旧会话已拆掉，仍要记住新地址到货后自动重开的意图。 */
-  const restartWithLangRef = useRef<RomLang | null>(null)
+  const restartWithLangRef = useRef<RomSlotLang | null>(null)
   /** 当前 ROM 实际加载失败后，父层切到备用地址时保持“继续开这一局”的用户意图。 */
   const restartAfterRomFailureRef = useRef(false)
   /**
@@ -3275,7 +3277,7 @@ export function EmulatorPlayer({
    * 解析出 romUrl 传下来，下面那个 effect 再自动开起来 —— 玩家看到的就是
    * 「黑一下，然后是另一个语言的同一款游戏」，不用自己再点一次开始。
    */
-  const switchRomLang = (next: RomLang) => {
+  const switchRomLang = (next: RomSlotLang) => {
     if (!next || next === (romLangSelection ?? romLang)) return
     const restartTarget = nextRomLanguageRestart(restartWithLangRef.current, Boolean(session), next)
     // 有会话在跑才需要重开；空闲状态直接换地址就行，玩家还没开始
@@ -3303,7 +3305,7 @@ export function EmulatorPlayer({
     restartWithLangRef.current = null
     void start(null)
     // start() 里会先清掉提示，所以这句要放它后面
-    setNotice(fmt(t.player.romLangSwitched, { lang: ROM_LANG_LABEL[pending] }))
+    setNotice(fmt(t.player.romLangSwitched, { lang: romLanguageLabel(pending, currentLang) }))
     // 同 key 切换只变 romLang / checking；直链 NES 还要在 pageRuntime 定下来时再检查一次。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [romUrl, romLang, romLangSelection, romChecking, engineReady, pageRuntime])
@@ -4719,7 +4721,7 @@ export function EmulatorPlayer({
               <span className="sr-only">{t.player.romLang}</span>
               <select
                 value={romLangSelection ?? romLang ?? ''}
-                onChange={(e) => switchRomLang(e.target.value as RomLang)}
+                onChange={(e) => switchRomLang(e.target.value)}
                 className={cx(buttonClasses('secondary', 'sm'), 'cursor-pointer appearance-none pr-7')}
               >
                 {/* 当前用的是通用 rom（不属于任何语言槽）时，给个占位项，
@@ -4727,7 +4729,7 @@ export function EmulatorPlayer({
                 {!romLang && <option value="">{t.player.romLang}</option>}
                 {romLangs.map((l) => (
                   <option key={l} value={l}>
-                    {ROM_LANG_LABEL[l]}
+                    {romLanguageLabel(l, currentLang)}
                   </option>
                 ))}
               </select>

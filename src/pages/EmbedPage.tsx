@@ -26,7 +26,7 @@ import { useParams, useSearchParams } from 'react-router-dom'
 import { usePageData, type GameData } from '@/services/pageData'
 import { platformMap } from '@/data/platforms'
 import { isPlatformEnabled } from '@/config/platforms'
-import { langPrefix, type RomLang } from '@/config/languages'
+import { langPrefix, type RomSlotLang } from '@/config/languages'
 import { dosExecutableForRom, dosSockdriveForRom, dosStartupCommandsForRom, romLangsOf, romUrlForKey, useRomUrl } from '@/services/roms'
 import { usePlatformBiosUrl } from '@/services/platformBios'
 import { useSeo } from '@/services/seo'
@@ -69,7 +69,7 @@ export function EmbedPage({ standalonePlatform }: Props) {
   const game = state.data?.game ?? undefined
   const platform = game ? platformMap[game.platform] : undefined
   const biosUrl = usePlatformBiosUrl(platform?.id)
-  const [romLang, setRomLang] = useState<RomLang | null>(null)
+  const [romLang, setRomLang] = useState<RomSlotLang | null>(null)
   const rom = useRomUrl(game, romLang)
   const isolated = isolatedEmbedFor(slug)
   const funnelVisitId = /^[A-Za-z0-9_-]{8,64}$/.test(searchParams.get('fv') ?? '') ? searchParams.get('fv') ?? undefined : undefined

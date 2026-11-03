@@ -1553,6 +1553,8 @@ const fr: Translation = {
     touchButtons: 'Sur téléphone, des boutons virtuels s’affichent.',
     touchButtonsSome: 'Certains jeux affichent des boutons virtuels sur téléphone.',
     player2Note: 'La NES a toujours été à deux joueurs — le 2P utilise le pavé numérique, et NumLock n’a aucune importance. Pas de pavé numérique ? Réattribuez le 2P dans le panneau 🎮.',
+    /** EmulatorJS 的 2P：按 keyCode 认键，NumLock 必须开着（jsnes 那句说的是不用管） */
+    player2NoteEjs: 'Le 2P utilise le pavé numérique avec NumLock activé ; une deuxième manette devient le 2P automatiquement. Pas de pavé numérique ? Dans 🎮 → Redéfinir les touches, passez au Joueur 2 et choisissez d’autres touches.',
     quickSave: 'Sauvegarde rapide',
     quickLoad: 'Chargement rapide',
   },

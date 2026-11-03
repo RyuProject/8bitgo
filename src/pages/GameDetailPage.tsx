@@ -3,8 +3,8 @@ import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { InternalLink } from '@/components/ui/InternalLink'
 import { recordRecent, toggleFavorite, useCurrentUser } from '@/services/auth'
 import { openAuthModal } from '@/services/authModal'
-import type { RomLang } from '@/config/languages'
-import { ROM_LANG_LABEL } from '@/config/languages'
+import type { RomSlotLang } from '@/config/languages'
+import { romLanguageLabel } from '@/config/languages'
 import { dosExecutableForRom, dosSockdriveForRom, dosStartupCommandsForRom, romLangsOf, romUrlForKey, useRomUrl } from '@/services/roms'
 import { parseDosExtras, type DosExtraSource } from '@/lib/dosExtras'
 import { extOf, resolveRuntime, runtimesFor, type Runtime } from '@/emulator'
@@ -170,7 +170,7 @@ export function GameDetailPage() {
    * 玩家手动选的 ROM 语言（null = 跟着站点语言走）。
    * 换游戏时要清掉，否则上一款选的「日本語」会带到下一款上。
    */
-  const [romLang, setRomLang] = useState<RomLang | null>(null)
+  const [romLang, setRomLang] = useState<RomSlotLang | null>(null)
   /**
    * 玩家点过翻译按钮之后，覆盖在简介上的译文。
    * - null = 还没翻，按 gameDescription() 三层回退
@@ -381,7 +381,7 @@ export function GameDetailPage() {
   // 「支持语言」格：从 game.roms 里读出真正绑了哪些语言槽，直接显示语言名。
   // 这既让玩家不用猜 CN / JP，也让 SSR 的正文明确说出哪些语言 ROM 真正可选。
   const supportedLangs = Array.from(
-    new Set(romLangs.map((l) => ROM_LANG_LABEL[l])),
+    new Set(romLangs.map((l) => romLanguageLabel(l, lang))),
   ).join(' · ')
 
   return (

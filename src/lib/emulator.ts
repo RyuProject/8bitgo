@@ -10,12 +10,16 @@ import {
   EJS_INDEX,
   EJS_DPAD,
   EJS_KEY_BY_ID,
+  EJS_P2_KEY_OVERRIDE,
   EJS_PLATFORM_BUTTONS,
+  EJS_RESTORED_BUTTONS,
   PASSTHROUGH_RUNTIMES,
   QUICK_SAVE_RUNTIMES,
   type EjsButton,
 } from './keymapData'
 import { bindingOf, getPadKeys, padKeyFor, padKeyLabel, type PadAction, type Seat } from '@/services/padKeys'
+import { EJS_P2_KEY_OFFSET } from '@/services/emulatorjsKeymap'
+import { emulatorJsCoreForGame } from '@/emulator/paths'
 export { EJS_PATH, RUFFLE_PATH } from '@/emulator'
 
 
@@ -192,6 +196,35 @@ export function getDefaultKeymap(
       slot: SLOT_OF_LABEL[name],
       parts: Array.isArray(id) ? (id as readonly number[]).map((i) => currentEjsKeys[i] ?? '—') : undefined,
     }))
+
+  /**
+   * EmulatorJS 的 2P：小键盘（EJS_P2_KEY_OVERRIDE）。同步回来的真实键位存在 100 + 下标上，
+   * 没同步过就显示站点默认。只摆每颗下标都有 2P 键的行 —— SFC 的 X / Y / L / R 2P 没给键盘，
+   * 不摆，免得写一颗按不动的键。
+   */
+  const ejsPlayer2 = (buttons: readonly (readonly [string, number | readonly number[]])[]): Pick<KeymapInfo, 'player2' | 'player2Note'> => {
+    const p2Key = (id: number): string | undefined => {
+      const label = effectiveEjsKeys?.[EJS_P2_KEY_OFFSET + id] ?? EJS_P2_KEY_OVERRIDE[id]?.[1]
+      return label && label !== '—' ? label : undefined
+    }
+    const numpadOf = (labels: string[]): string =>
+      labels.every((l) => /^Num \d$/.test(l))
+        ? `${t.keymap.numpad} ${labels.map((l) => l.slice(4)).join(' ')}`
+        : labels.join(' ')
+    const rows: KeymapRow[] = []
+    for (const [name, id] of buttons) {
+      const ids = Array.isArray(id) ? [...(id as readonly number[])] : [id as number]
+      const labels = ids.map(p2Key)
+      if (labels.some((l) => !l)) continue
+      rows.push({
+        button: label(name),
+        key: numpadOf(labels as string[]),
+        slot: SLOT_OF_LABEL[name],
+        parts: Array.isArray(id) ? (labels as string[]) : undefined,
+      })
+    }
+    return rows.length ? { player2: rows, player2Note: t.keymap.player2NoteEjs } : {}
+  }
 
   // 红白机实际跑的是 jsnes（见 config/emulators.ts 的扩展名覆盖表），它的键位和 EmulatorJS 不一样
   if (runtimeId === 'jsnes') {
@@ -400,6 +433,14 @@ export function getDefaultKeymap(
       quickSave,
       pad: true,
       touch: 'all',
+      ...ejsPlayer2(
+        [
+          ['#dpad', EJS_DPAD],
+          ...arcadeButtonIdsFor(arcadeCore).slice(0, arcadeButtons ?? 6).map((id, i) => [fmt(t.keymap.arcadeBtn, { n: String(i + 1) }), id] as const),
+          [t.keymap.coin, EJS_INDEX.select],
+          ['Start', EJS_INDEX.start],
+        ],
+      ),
     }
   }
 
@@ -413,12 +454,17 @@ export function getDefaultKeymap(
     ['L', EJS_INDEX.l], ['R', EJS_INDEX.r],
     ['Start', EJS_INDEX.start], ['Select', EJS_INDEX.select],
   ]
+  const buttons = (platform && EJS_PLATFORM_BUTTONS[platform]) ?? fallback
+  // 引擎方案里没有、开局后由适配器补回的按钮（红白机 FCEUmm 的连发 I / U）。核心不对就不摆：死键比不画更糟
+  const restored = platform ? EJS_RESTORED_BUTTONS[platform] : undefined
+  const extra = restored && restored.core === emulatorJsCoreForGame(platform!, arcadeCore) ? restored.rows : []
   return {
-    rows: rowsOf((platform && EJS_PLATFORM_BUTTONS[platform]) ?? fallback),
+    rows: rowsOf([...buttons, ...extra]),
     note: '',
     rebind: 'engine',
     quickSave,
     pad: true,
     touch: 'all',
+    ...ejsPlayer2(buttons),
   }
 }

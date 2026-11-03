@@ -44,8 +44,8 @@ export const ENGLISH_FALLBACK_LONGFORM_LANGUAGES = [
 ] as const satisfies readonly Lang[]
 
 /**
- * ROM 语言槽：游戏可为这几种语言分别上传 ROM。
- * 站点支持的八种语言现在都有专属槽 —— 某款游戏没上传某个语言的 ROM 时，
+ * ROM 语言槽：游戏默认可为这几种站点语言分别上传 ROM，也可在单款游戏上增加自定义 BCP-47 槽。
+ * 站点支持的八种语言都有默认槽 —— 某款游戏没上传某个语言的 ROM 时，
  * 按语言选 ROM 会依次回退到英语、日语、中文（见 romCandidates），所以「有槽」不等于「必须填」。
  *
  * 用 Extract 而不是直接写字面量联合：这样打错一个语言代码会在编译期就报错，
@@ -56,6 +56,8 @@ export const ENGLISH_FALLBACK_LONGFORM_LANGUAGES = [
  * 已有游戏的 roms 里没有新语言的键，romCandidates 会照常走完整回退链。
  */
 export type RomLang = Extract<Lang, 'zh-Hans' | 'zh-Hant' | 'en' | 'ja' | 'fr' | 'de' | 'es' | 'it'>
+/** 除站点内置语言外，单款游戏还可额外绑定任意有效 BCP-47 语言代码。 */
+export type RomSlotLang = string
 export const ROM_LANGS: RomLang[] = ['zh-Hans', 'zh-Hant', 'en', 'ja', 'fr', 'de', 'es', 'it']
 
 /**
@@ -83,6 +85,39 @@ export const ROM_LANG_ABBR: Record<RomLang, string> = {
   de: 'DE',
   es: 'ES',
   it: 'IT',
+}
+
+/** `game_roms.lang` 是 VARCHAR(10)，同时也是后台允许自定义语言槽的存储边界。 */
+export function normalizeRomLanguageCode(value: string): RomSlotLang | null {
+  const input = value.trim()
+  if (!input || input.length > 10 || !/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(input)) return null
+  try {
+    const canonical = Intl.getCanonicalLocales(input)[0]
+    return canonical && canonical.length <= 10 ? canonical : null
+  } catch {
+    return null
+  }
+}
+
+export function isValidRomLanguageCode(value: string): boolean {
+  return normalizeRomLanguageCode(value) === value
+}
+
+/** 标准槽沿用站点本地名称；自定义槽显示浏览器识别的语言名及代码，避免相近语言混淆。 */
+export function romLanguageLabel(code: string, locale = 'zh-Hans'): string {
+  const builtin = Object.prototype.hasOwnProperty.call(ROM_LANG_LABEL, code)
+    ? ROM_LANG_LABEL[code as RomLang]
+    : undefined
+  if (builtin) return builtin
+  const normalized = normalizeRomLanguageCode(code)
+  if (!normalized) return code
+  try {
+    const displayName = new Intl.DisplayNames([locale], { type: 'language' }).of(normalized)
+    if (displayName && displayName.toLowerCase() !== normalized.toLowerCase()) return `${displayName} (${normalized})`
+  } catch {
+    // 某些精简浏览器未带完整 Intl 数据；代码仍可作为稳定、可辨认的兜底名称。
+  }
+  return normalized
 }
 
 /** 站点语言 → ROM 语言槽；没有专属槽的语言回退到英语 */

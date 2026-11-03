@@ -95,11 +95,75 @@ export const EJS_KEY_BY_ID: Readonly<Record<number, string>> = {
 }
 
 /**
- * 交给引擎的 `EJS_defaultControls`。只动玩家 0，且只给 `value`（键盘）——
+ * 2P 键盘：小键盘。**和红白机 jsnes 那份（services/padKeys.ts 的 DEFAULT_PAD_KEYS 2P 组）同一套**，
+ * test:keymap 会把两边对着核。
+ *
+ * 为什么要给（2026-11-03《魂斗罗》）：引擎出厂的 `defaultControllers[1..3]` 是**空对象**，
+ * 2P 既没有键盘也没有手柄映射。`.8bg` 的红白机默认走 EmulatorJS 之后，原来 jsnes 那套
+ * 小键盘 2P 跟着没了 —— 双人游戏点了，2P 一颗键都按不动。
+ *
+ * 小键盘的 keyCode（97~105）和 1P 的任何一颗都不撞（1P 的 1 / 2 / 3 是主键盘那排，49~51）。
+ * ⚠️ 引擎按 keyCode 认键：NumLock 关着时小键盘 8 报的是 ↑ 的 keyCode —— 必须开着 NumLock。
+ * jsnes 认的是 event.code，不受 NumLock 影响，所以两边的说明文案不一样（player2NoteEjs）。
+ */
+export const EJS_P2_KEY_OVERRIDE: Readonly<Record<number, readonly [engine: string, label: string]>> = {
+  4: ['numpad 8', 'Num 8'],
+  5: ['numpad 2', 'Num 2'],
+  6: ['numpad 4', 'Num 4'],
+  7: ['numpad 6', 'Num 6'],
+  8: ['numpad 7', 'Num 7'],
+  0: ['numpad 9', 'Num 9'],
+  2: ['numpad 3', 'Num 3'],
+  3: ['numpad 1', 'Num 1'],
+}
+
+function p2Controls(): Record<number, { value: string }> {
+  return Object.fromEntries(Object.entries(EJS_P2_KEY_OVERRIDE).map(([id, [engine]]) => [Number(id), { value: engine }]))
+}
+
+/**
+ * 交给引擎的 `EJS_defaultControls`。玩家 0 盖站点键位，玩家 1 给小键盘 2P；只给 `value`（键盘）——
  * 引擎是**逐颗按钮浅合并**的（`{...原有, ...给的}`），不给 value2 就保留它原来的手柄映射。
+ * 2P~4P 的手柄映射引擎没有，由适配器开局时按 EJS_STOCK_PAD_BY_ID 补（ejsSeats.ts）。
  */
 export const EJS_DEFAULT_CONTROLS: Readonly<Record<number, Readonly<Record<number, { value: string }>>>> = {
   0: Object.fromEntries(Object.entries(EJS_KEY_OVERRIDE).map(([id, [engine]]) => [Number(id), { value: engine }])),
+  1: p2Controls(),
+}
+
+/**
+ * 引擎出厂的手柄映射（`defaultControllers[0][id].value2`）。2P~4P 引擎一条都没给，
+ * 第二个手柄插上去被分到 2P 后按什么都没反应 —— 适配器开局时照这张表补（只补缺的）。
+ * test:keymap 拿引擎源码逐条核。
+ */
+export const EJS_STOCK_PAD_BY_ID: Readonly<Record<number, string>> = {
+  0: 'BUTTON_2',
+  1: 'BUTTON_4',
+  2: 'SELECT',
+  3: 'START',
+  4: 'DPAD_UP',
+  5: 'DPAD_DOWN',
+  6: 'DPAD_LEFT',
+  7: 'DPAD_RIGHT',
+  8: 'BUTTON_1',
+  9: 'BUTTON_3',
+  10: 'LEFT_TOP_SHOULDER',
+  11: 'RIGHT_TOP_SHOULDER',
+  12: 'LEFT_BOTTOM_SHOULDER',
+  13: 'RIGHT_BOTTOM_SHOULDER',
+}
+
+/**
+ * 引擎控制方案里**没有**、但核心真的会用的按钮。引擎建改键面板时会把方案外的下标
+ * 从 controls / defaultControllers 里整个删掉，适配器开局后再补回来（见 ejsSeats.ts）。
+ *
+ * 红白机 FCEUmm：RetroPad X / Y 是**连发 A / 连发 B**（libretro-fceumm 的 turbomap），
+ * 前提是核心选项 `fceumm_turbo_enable` 打开。引擎的 nes 方案只有 A B Select Start 和方向，
+ * 于是 I / U 两颗键和手柄的 X / Y 被删得干干净净 —— 原来 jsnes 有的连发也跟着没了。
+ * 魂斗罗的默认枪不按住连射，全靠连发。键盘沿用 jsnes 的 I = 连发 A、U = 连发 B。
+ */
+export const EJS_RESTORED_BUTTONS: Readonly<Record<string, { core: string; rows: readonly EjsButton[] }>> = {
+  nes: { core: 'fceumm', rows: [['#turboA', 9], ['#turboB', 1]] },
 }
 
 /**
@@ -124,6 +188,8 @@ export const EJS_ARCADE_DEFAULT_CONTROLS: Readonly<Record<number, Readonly<Recor
       .filter(([id]) => Number(id) !== 2)
       .map(([id, [engine]]) => [Number(id), { value: engine }]),
   ),
+  // 2P 小键盘：3 投币、1 开始，和 jsnes 的 2P Select / Start 是同一颗
+  1: p2Controls(),
 }
 
 /** 十字键的四个下标，顺序是**上 下 左 右**。各处都引这一份，别再手抄 [4,5,6,7] */

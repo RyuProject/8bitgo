@@ -15,7 +15,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Game } from '@/types'
 import { platformMap } from '@/data/platforms'
 import { isPlayable } from '@/emulator'
-import type { Lang, RomLang } from '@/config/languages'
+import type { Lang, RomSlotLang } from '@/config/languages'
 import { ROM_LANGS, romLangFor } from '@/config/languages'
 import { useLang } from '@/services/lang'
 import { romArchiveRef } from '@/lib/romArchiveUrl'
@@ -373,7 +373,7 @@ const selfContainedKey = (key: string) => /^https?:\/\//i.test(key) || key.start
  * 算出同一个值，而那份覆盖只存在于管理员自己那台浏览器里。少数派多闪一下，
  * 换来所有人都不会 hydration mismatch。
  */
-export function romProbeExpected(game: Game | undefined, lang: Lang, prefer?: RomLang | null): boolean {
+export function romProbeExpected(game: Game | undefined, lang: Lang, prefer?: RomSlotLang | null): boolean {
   if (!game) return false
   const explicit = romCandidates(game, lang, prefer).map((c) => c.key)
   const conventional = conventionalKeys(game)
@@ -392,7 +392,7 @@ export function romProbeExpected(game: Game | undefined, lang: Lang, prefer?: Ro
  * 和单文件 ROM 是同一套约定，只是把「<slug>.swf 这个对象」换成「<slug>/ 这个目录」；
  * 按语言分槽时同样带语言后缀，各语言各一个目录，互不覆盖。
  */
-export function bundleDirFor(platform: string, slug: string, lang?: RomLang): string {
+export function bundleDirFor(platform: string, slug: string, lang?: RomSlotLang): string {
   const prefix = getRomPrefix()
   const name = lang ? `${slug}.${lang}` : slug
   return `${prefix ? `${prefix}/` : ''}${platform}/${name}`
@@ -459,6 +459,44 @@ export async function deleteRomDir(dir: string, keep: string[] = []): Promise<st
   return removed
 }
 
+/**
+ * 只删除调用方已经逐项核验过的 key，不因其中有一个包内文件就重新扫描并删除整个目录。
+ * 「解绑并删除」会先把全目录对象纳入全库引用检查；这里若再扩大范围，检查后新上传的兄弟文件
+ * 就可能绕过引用保护。批量接口只接收这份精确清单，旧 Worker 则逐个删除。
+ */
+export async function deleteRomObjectsExactly(keys: string[]): Promise<{ removed: string[]; failed: string[] }> {
+  const cfg = getRomConfig()
+  if (!cfg.api || !cfg.token) throw new Error('未配置 Worker 地址或口令，无法删除 R2 上的文件')
+
+  const uniqueKeys = [...new Set(keys.map((key) => key.trim()).filter((key) => key && !/^https?:/i.test(key) && !key.startsWith('/')))]
+  const removed: string[] = []
+  const failed: string[] = []
+  for (let i = 0; i < uniqueKeys.length; i += 1000) {
+    const batch = uniqueKeys.slice(i, i + 1000)
+    if (batch.length > 1) {
+      try {
+        if (await deleteRomBatch(batch)) {
+          removed.push(...batch)
+          continue
+        }
+      } catch {
+        // 批量删除失败可能是权限或网络问题，不能改用逐项重试掩盖失败原因。
+        failed.push(...batch)
+        continue
+      }
+    }
+    for (const key of batch) {
+      try {
+        await deleteRom(key)
+        removed.push(key)
+      } catch {
+        failed.push(key)
+      }
+    }
+  }
+  return { removed, failed }
+}
+
 /** 上传到对象存储的媒体类别。目录名就是 key 的第一段。 */
 export type MediaKind = 'covers' | 'videos' | 'logos' | 'friend-links'
 
@@ -496,7 +534,7 @@ export function unbindKeyPatch(game: Pick<Game, 'rom' | 'roms' | 'romBackups'>, 
   let touched = false
   for (const [lang, value] of Object.entries(roms)) {
     if (value === key) {
-      delete roms[lang as RomLang]
+      delete roms[lang]
       touched = true
     }
   }
@@ -505,7 +543,7 @@ export function unbindKeyPatch(game: Pick<Game, 'rom' | 'roms' | 'romBackups'>, 
   let backupTouched = false
   for (const [lang, value] of Object.entries(romBackups)) {
     if (value === key) {
-      delete romBackups[lang as RomLang]
+      delete romBackups[lang]
       backupTouched = true
     }
   }
@@ -514,24 +552,26 @@ export function unbindKeyPatch(game: Pick<Game, 'rom' | 'roms' | 'romBackups'>, 
 }
 
 /**
- * 这款游戏到底绑了哪几种语言的 ROM（按 ROM_LANGS 的顺序，只算真的填了 key 的）。
+ * 这款游戏到底绑了哪几种语言的 ROM（内置槽按固定顺序，自定义槽随后按代码排序）。
  * 播放器用它决定要不要显示「切换 ROM 语言」——只有一种语言时没什么可切的。
  */
-export function romLangsOf(game: Pick<Game, 'roms'>): RomLang[] {
+export function romLangsOf(game: Pick<Game, 'roms'>): RomSlotLang[] {
   const roms = game.roms ?? {}
-  return ROM_LANGS.filter((l) => typeof roms[l] === 'string' && roms[l].trim() !== '')
+  const present = new Set(Object.entries(roms).filter(([, value]) => typeof value === 'string' && value.trim()).map(([code]) => code))
+  const builtinCodes = new Set<string>(ROM_LANGS)
+  return [...ROM_LANGS.filter((code) => present.has(code)), ...[...present].filter((code) => !builtinCodes.has(code)).sort()]
 }
 
 /** 某个 key 属于哪个语言槽；不属于任何语言槽（通用 rom / 约定 key）时返回 undefined */
-export function romLangOfKey(game: Pick<Game, 'roms'>, key: string): RomLang | undefined {
+export function romLangOfKey(game: Pick<Game, 'roms'>, key: string): RomSlotLang | undefined {
   if (!key) return undefined
-  return ROM_LANGS.find((l) => game.roms?.[l] === key)
+  return Object.entries(game.roms ?? {}).find(([, value]) => value === key)?.[0]
 }
 
 export interface RomCandidate {
   key: string
   /** 通用 rom 没有语言槽，所以这里可能为空 */
-  lang?: RomLang
+  lang?: RomSlotLang
   /** true 表示同一语言槽的备用地址；启动入口等设置仍跟随 lang。 */
   backup?: boolean
   /** 数据库仍绑旧 key，但播放器先尝试旁边的 `<key>.8bg`；便于整库原地渐进迁移。 */
@@ -555,13 +595,13 @@ export function nextRomCandidateKey(keys: readonly string[], current: string, fa
 /**
  * 回退链靠前的那几个：英语和日语多半就是原版，简繁互为对方最好的替代。
  *
- * 只是**优先级**，不是全集 —— 真正的全集是 ROM_LANGS，由下面 romCandidates 兜底接上。
+ * 只是**优先级**，不是全集 —— ROM_LANGS 与游戏自身的自定义槽由下面 romCandidates 一起兜底。
  */
-const FALLBACK_PRIORITY: RomLang[] = ['en', 'ja', 'zh-Hans', 'zh-Hant']
+const FALLBACK_PRIORITY: RomSlotLang[] = ['en', 'ja', 'zh-Hans', 'zh-Hant']
 
 /**
  * 按语言列出 ROM 候选：每个语言的主地址 → 同语言备用地址，然后才到下一种语言；
- * 语言顺序是当前语言 → 英语 → 日语 → 简体 → 繁体 → **其余所有语言槽** → 旧版通用 rom。
+ * 语言顺序是当前语言 → 英语 → 日语 → 简体 → 繁体 → 其余内置和自定义槽 → 旧版通用 rom。
  *
  * 两个中文槽都在回退里，是因为后台允许分别上传简繁版本；不能因为简体槽为空，
  * 就在繁体槽明明有文件时误报「没有当前语言版本」。同一个 key 只保留第一次出现，
@@ -570,16 +610,16 @@ const FALLBACK_PRIORITY: RomLang[] = ['en', 'ja', 'zh-Hans', 'zh-Hant']
  * prefer 是玩家在播放器里手动选的语言，优先级最高；后面的回退仍保留，防止所选槽
  * 对应的 R2 对象后来被删掉时，播放器直接变成不可用。
  *
- * ⚠️ 结尾那个 `...ROM_LANGS` 不能省。这里原本是手写的五项
+ * ⚠️ 内置槽和游戏已有的自定义槽都要接到回退链。这里原本是手写的五项
  * `[requested, 'en', 'ja', 'zh-Hans', 'zh-Hant']`，而 ROM_LANGS 有八项 ——
  * fr / de / es / it 四个槽**永远不会被当作回退**。后果是：一款游戏只传了西语版
  * （超级玛丽兄弟的 es 槽就是这么来的），站点语言又不是西语时，界面报
  * 「游戏没有当前语言版本」，而那个 ROM 明明就躺在 R2 上。
- * 所以现在从 ROM_LANGS 派生，以后往里加语言槽不用再记得改这儿。
+ * 所以从 ROM_LANGS 和游戏实际绑定的槽派生，后台自定义语言也会自然进入回退链。
  */
-export function romCandidates(game: Pick<Game, 'rom' | 'roms' | 'romBackups'>, lang: Lang, prefer?: RomLang | null): RomCandidate[] {
+export function romCandidates(game: Pick<Game, 'rom' | 'roms' | 'romBackups'>, lang: Lang, prefer?: RomSlotLang | null): RomCandidate[] {
   const requested = prefer ?? romLangFor(lang)
-  const order: RomLang[] = [requested, ...FALLBACK_PRIORITY, ...ROM_LANGS]
+  const order: RomSlotLang[] = [requested, ...FALLBACK_PRIORITY, ...ROM_LANGS, ...Object.keys(game.roms ?? {}).sort()]
   const candidates: RomCandidate[] = []
   const seen = new Set<string>()
 
@@ -608,7 +648,7 @@ export function romCandidates(game: Pick<Game, 'rom' | 'roms' | 'romBackups'>, l
  * 玩家就会优先命中新包；没生成、损坏或密钥错则继续用原对象。完整外链不擅自改 URL，
  * 流式光盘 / HTML5 也明确不走浏览器解包。
  */
-export function playbackRomCandidates(game: Pick<Game, 'platform' | 'rom' | 'roms' | 'romBackups' | 'runtime'>, lang: Lang, prefer?: RomLang | null): RomCandidate[] {
+export function playbackRomCandidates(game: Pick<Game, 'platform' | 'rom' | 'roms' | 'romBackups' | 'runtime'>, lang: Lang, prefer?: RomSlotLang | null): RomCandidate[] {
   const raw = romCandidates(game, lang, prefer)
   // Play! 的 System 2x6 包必须保持普通 ZIP；加密成 8BG 后 libchdr 无法按随机访问读取 CHD。
   if (game.platform === 'arcade' && game.runtime === 'play') return raw
@@ -643,14 +683,14 @@ export function playbackRomCandidates(game: Pick<Game, 'platform' | 'rom' | 'rom
 export function playbackRomCandidatesForSelection(
   game: Pick<Game, 'platform' | 'rom' | 'roms' | 'romBackups' | 'runtime'>,
   lang: Lang,
-  prefer?: RomLang | null,
+  prefer?: RomSlotLang | null,
 ): RomCandidate[] {
   const candidates = playbackRomCandidates(game, lang, prefer)
   return prefer ? candidates.filter((candidate) => candidate.lang === prefer) : candidates
 }
 
 /** 返回语言回退链里的第一个候选；实际播放会继续探测后续候选是否存在。 */
-export function effectiveRomKey(game: Game, lang: Lang, prefer?: RomLang | null): string {
+export function effectiveRomKey(game: Game, lang: Lang, prefer?: RomSlotLang | null): string {
   return romCandidates(game, lang, prefer)[0]?.key ?? ''
 }
 
@@ -688,7 +728,7 @@ export function safeFileName(fileName: string): string {
  * 街机例外：保留原文件名、也不加语言后缀 —— Neo Geo 的地区版本本来就是不同的
  * romset（kof97 / kof97h / kof97k…），各自有各自的名字，语言后缀反而会把名字弄坏。
  */
-export function defaultRomKeyForLang(platform: string, slug: string, lang: RomLang, fileName: string): string {
+export function defaultRomKeyForLang(platform: string, slug: string, lang: RomSlotLang, fileName: string): string {
   const prefix = getRomPrefix()
   const at = (name: string) => `${prefix ? `${prefix}/` : ''}${platform}/${name}`
   if (keepsOriginalFileName(platform)) return at(safeFileName(fileName))
@@ -954,7 +994,7 @@ export interface RomResolution {
   size?: number
   key?: string
   /** 用的是哪个语言槽。通用 rom 和约定 key 探测出来的没有语言，为 undefined */
-  lang?: RomLang
+  lang?: RomSlotLang
   /**
    * missing 的原因是「**没问出来**」（超时 / 断网 / CORS / 5xx），不是服务器说没有。
    *
@@ -1015,7 +1055,7 @@ export function dosSockdriveForRom(
 export function streamedRomCandidateForSelection(
   game: Pick<Game, 'platform' | 'dosBackend' | 'dosSockdrive' | 'dosSockdrives' | 'rom' | 'roms' | 'romBackups'>,
   lang: Lang,
-  prefer?: RomLang | null,
+  prefer?: RomSlotLang | null,
 ): RomCandidate | undefined {
   if (game.platform !== 'dos' || game.dosBackend !== 'dosboxX') return undefined
   return playbackRomCandidatesForSelection(game, lang, prefer)
@@ -1026,7 +1066,7 @@ export function streamedRomCandidateForSelection(
 function configuredStreamedRom(
   game: Game | undefined,
   lang: Lang,
-  prefer?: RomLang | null,
+  prefer?: RomSlotLang | null,
 ): Omit<RomResolution, 'retry' | 'failover'> | null {
   if (!game) return null
   const candidate = streamedRomCandidateForSelection(game, lang, prefer)
@@ -1056,7 +1096,7 @@ interface ProbeTrace {
   key: string
   url: string
   outcome: ProbeOutcome
-  lang?: RomLang
+  lang?: RomSlotLang
   backup?: boolean
 }
 
@@ -1101,7 +1141,7 @@ function reportProbeFailure(game: Pick<Game, 'slug' | 'platform'>, traces: Probe
  *
  * prefer：玩家在播放器工具栏里手动选的 ROM 语言，不传就跟着站点语言走。
  */
-export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomResolution {
+export function useRomUrl(game: Game | undefined, prefer?: RomSlotLang | null): RomResolution {
   const lang = useLang()
   /*
     SSR 阶段不会运行 effect，但只要待会儿会去探（显式绑定 **或**约定 key，见

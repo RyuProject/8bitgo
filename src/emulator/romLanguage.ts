@@ -1,4 +1,4 @@
-import { ROM_LANGS, type RomLang } from '@/config/languages'
+import { isValidRomLanguageCode, type RomSlotLang } from '@/config/languages'
 
 /**
  * PSP 即时状态和 ROM 二进制严格绑定；地区版 / 汉化版之间通常不能互读。
@@ -14,7 +14,7 @@ const MAX_SAVE_SLUG_LENGTH = 160
  * 服务端把 game_slug 限为 160 个字符。语言变体不能因为一份很长的本地 ROM 名而让
  * 云端写入直接 400；同时不能只截断前缀，否则同前缀的两份本地 ROM 会重新撞在一起。
  */
-function appendSaveVariant(gameSlug: string, marker: string, romLang: RomLang): string {
+function appendSaveVariant(gameSlug: string, marker: string, romLang: RomSlotLang): string {
   const suffix = `${marker}${romLang}`
   if (gameSlug.length + suffix.length <= MAX_SAVE_SLUG_LENGTH) return `${gameSlug}${suffix}`
   let hash = 0x811c9dc5
@@ -26,33 +26,33 @@ function appendSaveVariant(gameSlug: string, marker: string, romLang: RomLang): 
   return `${gameSlug.slice(0, Math.max(1, MAX_SAVE_SLUG_LENGTH - suffix.length - fingerprint.length))}${fingerprint}${suffix}`
 }
 
-export function pspVariantSaveSlug(gameSlug: string, romLang: RomLang | undefined, romLangCount: number): string {
+export function pspVariantSaveSlug(gameSlug: string, romLang: RomSlotLang | undefined, romLangCount: number): string {
   if (!romLang || romLangCount < 2 || gameSlug.startsWith('local:')) return gameSlug
   return appendSaveVariant(gameSlug, PSP_SAVE_LANG_MARKER, romLang)
 }
 
 /** 个人页展示多语言 PSP 存档时，要拿基础 slug 查游戏并链接回正确详情页。 */
-export function parsePspVariantSaveSlug(value: string): { gameSlug: string; romLang?: RomLang } {
+export function parsePspVariantSaveSlug(value: string): { gameSlug: string; romLang?: RomSlotLang } {
   // 本地文件名完全由玩家决定；即使恰好以标记结尾，也不是本站生成的语言变体键。
   if (value.startsWith('local:')) return { gameSlug: value }
   const markerAt = value.lastIndexOf(PSP_SAVE_LANG_MARKER)
   if (markerAt <= 0) return { gameSlug: value }
   const romLang = value.slice(markerAt + PSP_SAVE_LANG_MARKER.length)
-  if (!(ROM_LANGS as readonly string[]).includes(romLang)) return { gameSlug: value }
-  return { gameSlug: value.slice(0, markerAt), romLang: romLang as RomLang }
+  if (!isValidRomLanguageCode(romLang)) return { gameSlug: value }
+  return { gameSlug: value.slice(0, markerAt), romLang }
 }
 
 /**
  * NDS 即时快照和具体 ROM 二进制绑定。第一种语言沿用旧键，避免把已有进度整个搬走；
- * 其它语言独立归档，不能把中文版快照直接喂给英文版。语言列表按 ROM_LANGS 固定排序。
+ * 其它语言独立归档，不能把不同 ROM 的快照互相覆盖；语言列表按内置顺序和自定义槽顺序排列。
  */
-export function ndsVariantSaveSlug(gameSlug: string, romLang: RomLang | undefined, romLangs: readonly RomLang[]): string {
+export function ndsVariantSaveSlug(gameSlug: string, romLang: RomSlotLang | undefined, romLangs: readonly RomSlotLang[]): string {
   if (!romLang || romLangs.length < 2 || romLang === romLangs[0] || gameSlug.startsWith('local:')) return gameSlug
   return appendSaveVariant(gameSlug, NDS_SAVE_LANG_MARKER, romLang)
 }
 
 /** 个人页要能从 NDS 语言档和兼容核心档位回到原游戏，而不是链接到不存在的变体 slug。 */
-export function parseNdsVariantSaveSlug(value: string): { gameSlug: string; romLang?: RomLang } {
+export function parseNdsVariantSaveSlug(value: string): { gameSlug: string; romLang?: RomSlotLang } {
   if (value.startsWith('local:')) return { gameSlug: value }
   const base = value.endsWith(NDS_COMPAT_SAVE_SUFFIX)
     ? value.slice(0, -NDS_COMPAT_SAVE_SUFFIX.length)
@@ -60,8 +60,8 @@ export function parseNdsVariantSaveSlug(value: string): { gameSlug: string; romL
   const markerAt = base.lastIndexOf(NDS_SAVE_LANG_MARKER)
   if (markerAt <= 0) return { gameSlug: base }
   const romLang = base.slice(markerAt + NDS_SAVE_LANG_MARKER.length)
-  if (!(ROM_LANGS as readonly string[]).includes(romLang)) return { gameSlug: base }
-  return { gameSlug: base.slice(0, markerAt), romLang: romLang as RomLang }
+  if (!isValidRomLanguageCode(romLang)) return { gameSlug: base }
+  return { gameSlug: base.slice(0, markerAt), romLang }
 }
 
 /**
@@ -71,23 +71,23 @@ export function parseNdsVariantSaveSlug(value: string): { gameSlug: string; romL
  */
 export function emulatorVariantSaveSlug(
   gameSlug: string,
-  romLang: RomLang | undefined,
-  romLangs: readonly RomLang[],
+  romLang: RomSlotLang | undefined,
+  romLangs: readonly RomSlotLang[],
 ): string {
   if (!romLang || romLangs.length < 2 || romLang === romLangs[0] || gameSlug.startsWith('local:')) return gameSlug
   return appendSaveVariant(gameSlug, EMULATOR_SAVE_LANG_MARKER, romLang)
 }
 
 /** 个人页展示通用 EmulatorJS / jsnes 语言档时，仍要能返回游戏详情页。 */
-export function parseEmulatorVariantSaveSlug(value: string): { gameSlug: string; romLang?: RomLang } {
+export function parseEmulatorVariantSaveSlug(value: string): { gameSlug: string; romLang?: RomSlotLang } {
   // 整包 Windows 游戏盘在语言 / 核心变体键后追加包指纹；个人页先剥掉它才能链接回游戏详情。
   const base = value.replace(/:wg:[0-9a-f]{16}$/i, '')
   if (base.startsWith('local:')) return { gameSlug: base }
   const markerAt = base.lastIndexOf(EMULATOR_SAVE_LANG_MARKER)
   if (markerAt <= 0) return { gameSlug: base }
   const romLang = base.slice(markerAt + EMULATOR_SAVE_LANG_MARKER.length)
-  if (!(ROM_LANGS as readonly string[]).includes(romLang)) return { gameSlug: base }
-  return { gameSlug: base.slice(0, markerAt), romLang: romLang as RomLang }
+  if (!isValidRomLanguageCode(romLang)) return { gameSlug: base }
+  return { gameSlug: base.slice(0, markerAt), romLang }
 }
 
 /**
@@ -95,10 +95,10 @@ export function parseEmulatorVariantSaveSlug(value: string): { gameSlug: string;
  * 空闲页第一次选语言则只换地址，不擅自替玩家开机。
  */
 export function nextRomLanguageRestart(
-  pending: RomLang | null,
+  pending: RomSlotLang | null,
   hasSession: boolean,
-  next: RomLang,
-): RomLang | null {
+  next: RomSlotLang,
+): RomSlotLang | null {
   return hasSession || pending ? next : null
 }
 
@@ -113,9 +113,9 @@ export function canResumeRomLanguageSwitch({
   romUrl,
   checking,
 }: {
-  pending: RomLang | null
-  selected: RomLang | null | undefined
-  resolved: RomLang | undefined
+  pending: RomSlotLang | null
+  selected: RomSlotLang | null | undefined
+  resolved: RomSlotLang | undefined
   romUrl: string | undefined
   checking: boolean | undefined
 }): boolean {

@@ -1548,6 +1548,8 @@ const it: Translation = {
     touchButtons: 'Su smartphone compaiono i pulsanti a schermo.',
     touchButtonsSome: 'Alcuni giochi mostrano i pulsanti a schermo su smartphone.',
     player2Note: 'Il NES è sempre stato a due giocatori: il 2P usa il tastierino numerico e NumLock non conta. Niente tastierino? Rimappa il 2P nel pannello 🎮.',
+    /** EmulatorJS 的 2P：按 keyCode 认键，NumLock 必须开着（jsnes 那句说的是不用管） */
+    player2NoteEjs: 'Il 2P usa il tastierino numerico con NumLock attivo; un secondo controller diventa il 2P in automatico. Niente tastierino? In 🎮 → Rimappa i tasti passa al Giocatore 2 e scegli altri tasti.',
     quickSave: 'Salvataggio rapido',
     quickLoad: 'Caricamento rapido',
   },

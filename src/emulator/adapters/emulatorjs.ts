@@ -23,7 +23,7 @@
  *    要用联机必须自建 EmulatorJS 构建，见 docs 或 README。
  */
 import type { ArcadeButtonCount, PlatformId } from '@/types'
-import { arcadeButtonIdsFor, EJS_ARCADE_DEFAULT_CONTROLS, EJS_DEFAULT_CONTROLS } from '@/lib/keymapData'
+import { arcadeButtonIdsFor, EJS_ARCADE_DEFAULT_CONTROLS, EJS_DEFAULT_CONTROLS, EJS_P2_KEY_OVERRIDE } from '@/lib/keymapData'
 import type { Capability, CaptureSources, LoadPhase, LoadProgress, MameArcadeDiskSource, MountOptions, RuntimeHandle, StageMode } from '../types'
 import { fetchBlobWithProgress, fetchWithProgress, throttleProgress } from '../loadProgress'
 import { emulatorJsDownloadPhase, isCriticalEmulatorJsDownload } from '../emulatorjsDownload'
@@ -46,6 +46,7 @@ import { biosNameOfUrl, planBiosFiles } from '../biosPlan'
 import { ensureParentDir } from '../fsWrite'
 import { canonicalMameRomset } from '../mameRomset'
 import { fastForwardBoot, mameBootFastForwardFrames } from '../mameBootSkip'
+import { ejsInputDefaultOptions, nesVirtualPad, repairEjsSeats, restoredButtonIds } from '../ejsSeats'
 import { identifyKnownMameArcadeMedia, mameDiskSatisfies, readMameChdHeader, type MameArcadeDiskProfile } from '@/lib/mameArcadeMedia'
 import { identifyNamcoMameSet, type NamcoMameMatch } from '@/lib/namcoMameSets'
 import { combinedRomProgress, gateProgressUntilRomComplete } from '../romProgress'
@@ -90,6 +91,7 @@ import {
 import { inspectRomPackBlob, isRomPackBytes, isRomPackUrl, unpackRomPackBlob } from '@/services/romPack'
 import { assertNdsRomBlob, MAX_NDS_ROM_BYTES } from '@/lib/romValidation'
 import {
+  EJS_P2_KEY_OFFSET,
   emulatorJsKeyLabel,
   emulatorJsRelevantKeyIds,
   publishEmulatorJsKeymap,
@@ -657,6 +659,8 @@ interface EjsEmulator {
   controls?: Record<number, Record<number, { value?: number | string; value2?: unknown; [key: string]: unknown }>>
   defaultControllers?: Record<number, Record<number, { value?: number | string; value2?: unknown; [key: string]: unknown }>>
   keyMap?: Record<number, string>
+  /** 引擎的键名 → keyCode（认不得返回 -1）。ejsSeats 拿它判断补的键会不会和已绑的撞 */
+  keyLookup?: (key: string | number) => string | number
   setupKeys?: () => void
   checkGamepadInputs?: () => void
   saveSettings?: () => unknown
@@ -1897,6 +1901,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         (navigator.maxTouchPoints ?? 0) > 0 && Boolean(window.matchMedia?.('(pointer: coarse)').matches),
     ),
     ...(options.platform === 'gba' ? { shader: gbaShaderForMode(gbaVideoMode) } : {}),
+    // 红白机 FCEUmm 的连发（X / Y）。引擎方案里没有这两颗，开局后由 repairEjsSeats 补回键位
+    ...ejsInputDefaultOptions(options.platform, forCore),
   })
   const coreDefaultOptionsCore = core
   const coreDefaultOptions = coreDefaultOptionsFor(core)
@@ -1983,14 +1989,21 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     const controls = emu.controls?.[0]
     if (!controls) return {}
     const out: Record<number, string> = {}
-    for (const id of emulatorJsRelevantKeyIds(options.platform)) {
-      const value = controls[id]?.value
-      if (value === undefined || value === null || value === 0 || value === '') {
-        out[id] = '—'
-        continue
-      }
+    const labelOf = (value: number | string | undefined): string => {
+      if (value === undefined || value === null || value === 0 || value === '') return '—'
       const engineName = typeof value === 'number' ? emu.keyMap?.[value] : String(value)
-      out[id] = engineName ? emulatorJsKeyLabel(engineName) : `Key ${value}`
+      return engineName ? emulatorJsKeyLabel(engineName) : `Key ${value}`
+    }
+    const relevant = emulatorJsRelevantKeyIds(options.platform)
+    for (const id of relevant) out[id] = labelOf(controls[id]?.value)
+    // 方案外补回来的按钮（红白机连发）：也同步，详情页才写得出 I / U
+    for (const id of restoredButtonIds(options.platform, core)) out[id] = labelOf(controls[id]?.value)
+    // 2P 的键存在 100 + 下标上（见 EJS_P2_KEY_OFFSET），只同步站点给了 2P 默认键的那几颗
+    const p2 = emu.controls?.[1]
+    if (p2) {
+      for (const id of Object.keys(EJS_P2_KEY_OVERRIDE).map(Number)) {
+        if (relevant.includes(id)) out[EJS_P2_KEY_OFFSET + id] = labelOf(p2[id]?.value)
+      }
     }
     return out
   }
@@ -2052,6 +2065,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         return result
       }
     }
+    /*
+      先补座位：2P~4P 的手柄映射、2P 小键盘、红白机连发（见 ejsSeats.ts）。引擎此刻已经读完
+      存档里的控制设置，补的只是缺的；玩家配过的座位不动。补完下面的迁移 / 保存会一并落盘。
+    */
+    const seats = repairEjsSeats(emu, options.platform, core)
+    const seatsChanged = seats.restored.length + seats.seatPads.length + seats.p2Keys > 0
+    if (seatsChanged) {
+      console.info(`[emulatorjs] 补齐输入：连发 ${seats.restored.join(',') || '—'}，手柄座位 ${seats.seatPads.join(',') || '—'}，2P 键盘 ${seats.p2Keys} 颗`)
+    }
     // 必须先判迁移再首次 publish；publish 会把记录升级到当前代次。
     const migrated = migrateDefaultKeyboard(emu)
     const repaired = options.platform === 'arcade'
@@ -2059,6 +2081,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       : []
     if (repaired.length) {
       console.info(`[emulatorjs] 已修复旧街机重复键位：libretro ${repaired.join(', ')}，避免 J/K/I 一次触发两路输入`)
+      saveControls(emu)
+    } else if (seatsChanged && !migrated) {
       saveControls(emu)
     } else if (!migrated) {
       syncKeyboardMap()
@@ -3937,7 +3961,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           // 摇杆还会把对角线松掉、投币键写着「选择」。见 ARCADE_VIRTUAL_PAD 的注释
           ...(options.platform === 'arcade'
             ? { EJS_VirtualGamepadSettings: arcadeVirtualPad(effectiveArcadeButtons(options.arcadeButtons ?? namcoSet?.buttons, options.biosSet?.name), core) }
-            : {}),
+            // 红白机：引擎布局 + 连发 TB / TA（只有 FCEUmm 认 X / Y 是连发）
+            : options.platform === 'nes' && restoredButtonIds(options.platform, core).length > 0
+              ? { EJS_VirtualGamepadSettings: nesVirtualPad() }
+              : {}),
           /*
             默认键位：左手 WASD、右手 UIJK、Enter 开始。主机的 Select 是 Shift；街机投币
             沿用 EmulatorJS / libretro 原生的 V，和 FBNeo、MAME 及旧控制记录保持一致。

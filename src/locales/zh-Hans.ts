@@ -1574,6 +1574,8 @@ export const zhHans = {
     touchButtons: '手机端显示虚拟按键。',
     touchButtonsSome: '部分游戏在手机端显示虚拟按键。',
     player2Note: '红白机本来就支持两个人一起玩，2P 走小键盘（不用管 NumLock）。没有小键盘的键盘，在 🎮 面板里把 2P 改到别的键上就行。',
+    /** EmulatorJS 的 2P：按 keyCode 认键，NumLock 必须开着（jsnes 那句说的是不用管） */
+    player2NoteEjs: '2P 走小键盘，要先打开 NumLock；第二个手柄插上会自动当 2P。没有小键盘的话，在 🎮 →「改键」里切到玩家 2，改到别的键上。',
     quickSave: '快速存档',
     quickLoad: '快速读档',
   },

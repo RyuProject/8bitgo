@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import type { ArcadeMameDisk, FlashControlButton, Game, GenreId, PlatformId } from '@/types'
-import { ROM_LANGS, ROM_LANG_LABEL, type RomLang } from '@/config/languages'
+import { normalizeRomLanguageCode, romLanguageLabel, ROM_LANGS, type RomSlotLang } from '@/config/languages'
 import { platforms, platformMap } from '@/data/platforms'
 import { genres } from '@/data/genres'
 import { cx } from '@/lib/format'
@@ -10,6 +10,7 @@ import {
   defaultKeyFor,
   defaultMediaKey,
   defaultRomKeyForLang,
+  deleteRomObjectsExactly,
   dirOfKey,
   getRomConfig,
   isBundleKey,
@@ -69,8 +70,12 @@ import { isPlayable } from '@/emulator'
 import { NETPLAY_MAX_PLAYERS } from '../../shared/netplay-players.js'
 import { normalizeDevelopers } from '@/lib/developers'
 import { Field, btnClass, inputClass } from './ui'
+import { fetchAdminGames, patchGame } from '@/services/store'
+import { apiEnabled } from '@/services/api'
+import { objectReferenceMatches, planRomObjectDeletion, unbindRomObjectKeys } from './romDeletePlan'
 import { mergeDosboxConfigOverride, normalizeDosboxConfigOverride, parseDosboxConfigOverride } from '../../shared/dosbox-config.js'
 import { romPackInnerName } from '../../shared/rom-pack-format.js'
+import { extractGameKeywords } from './gameKeywords'
 import { normalizeDosStartupCommands } from '../../shared/dos-startup-commands.js'
 import { isVersionedSockdriveDirectory } from '../../shared/sockdrive-url.js'
 import { probeRange } from '@/emulator/remoteDisc'
@@ -240,10 +245,15 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
     Object.keys(initial?.roms ?? {}).some((lang) => lang !== 'en'),
   )
   const [tagsText, setTagsText] = useState(initialTagsText)
+  const autoTagsValue = useRef('')
+  const tagsManuallyEdited = useRef(Boolean(initialTagsText))
+  const [newRomLanguageCode, setNewRomLanguageCode] = useState('')
   const [slugTouched, setSlugTouched] = useState(Boolean(initial))
   // 历史值先视作管理员手选；本次表单自动识别出的核心仍可被下一次 ROM 识别更新。
   const manualCoreChoice = useRef(Boolean(initial?.core?.trim()))
   const [error, setError] = useState<string | null>(null)
+  const [romDeleteBusy, setRomDeleteBusy] = useState(false)
+  const romDeleteBusyRef = useRef(false)
   const initialSnapshot = useRef(JSON.stringify({ form: initialForm, tagsText: initialTagsText }))
   /**
    * Sockdrive 后台任务会直接在服务端原子绑定语言槽，父页面手里的 initial 不会因此自动刷新。
@@ -264,7 +274,7 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
    * 转换任务要用数据库里的旧值做 CAS。先把运行环境、EXE 与当前流式盘保存好，才能避免
    * 管理员上传完几个 GB 后才收到“数据库配置不一致”；ROM 本身允许由一键上传原子换新。
    */
-  const sockdriveConfigSaved = (lang: RomLang) => Boolean(
+  const sockdriveConfigSaved = (lang: RomSlotLang) => Boolean(
     dosboxXSockdriveForm && initial?.slug &&
     initial.slug === slugify(form.slug || form.title) &&
     initial.platform === form.platform &&
@@ -276,7 +286,15 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
   )
   /** 该平台可选的核心。没配置的平台不显示这一栏 */
   const coreOptions = coreOptionsFor(form.platform)
-  const arcadePrimaryLang = ROM_LANGS.find((lang) => Boolean(form.roms?.[lang]?.trim())) ?? 'en'
+  const customRomLangs = [...new Set([
+    ...Object.keys(form.roms ?? {}),
+    ...Object.keys(form.romBackups ?? {}),
+    ...Object.keys(form.dosExecutables ?? {}),
+    ...Object.keys(form.dosStartupCommands ?? {}),
+    ...Object.keys(form.dosSockdrives ?? {}),
+  ])].filter((code) => !(ROM_LANGS as readonly string[]).includes(code)).sort()
+  const allRomLangs: RomSlotLang[] = [...ROM_LANGS, ...customRomLangs]
+  const arcadePrimaryLang = allRomLangs.find((lang) => Boolean(form.roms?.[lang]?.trim())) ?? 'en'
   /*
     刷新编辑页后浏览器已没有刚刚选择的 File，无法再读 ZIP 中央目录；对象 key 仍保留 MAME
     短名时先恢复 CHD 面板。真正保存前 CHD 会核验 MAME SHA-1，玩家开局还会重验 ZIP CRC，
@@ -286,9 +304,9 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
     ? mameChdProfileForRomFileName(form.roms?.[arcadePrimaryLang])
     : null
   const activeMameMediaProfile = mameMediaProfile ?? restoredMameMediaProfile
-  const displayedRomLangs: readonly RomLang[] = form.platform === 'arcade' && !showArcadeVariants
+  const displayedRomLangs: readonly RomSlotLang[] = form.platform === 'arcade' && !showArcadeVariants
     ? [arcadePrimaryLang]
-    : ROM_LANGS
+    : allRomLangs
 
   const hasUnsavedChanges = () => JSON.stringify({ form, tagsText }) !== initialSnapshot.current
 
@@ -304,7 +322,7 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
   }, [form, tagsText, submitting])
 
   const requestCancel = () => {
-    if (submitting) return
+    if (submitting || romDeleteBusy) return
     if (hasUnsavedChanges() && !window.confirm('还有未保存的修改，确定放弃吗？')) return
     onCancel()
   }
@@ -312,6 +330,14 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
   useEffect(() => {
     if (!isEdit && !slugTouched) setForm((f) => ({ ...f, slug: slugify(f.title) }))
   }, [form.title, isEdit, slugTouched])
+
+  useEffect(() => {
+    if (tagsManuallyEdited.current && (!autoTagsValue.current || tagsText !== autoTagsValue.current)) return
+    const generated = extractGameKeywords(form.descriptionEn ?? '').join(', ')
+    if (generated === tagsText) return
+    autoTagsValue.current = generated
+    setTagsText(generated)
+  }, [form.descriptionEn, tagsText])
 
 
   /**
@@ -331,6 +357,99 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
     .filter(Boolean)
 
   const set = <K extends keyof Game>(key: K, value: Game[K]) => setForm((f) => ({ ...f, [key]: value }))
+
+  /**
+   * 编辑弹窗里的“解绑并删除”必须先从全库解除引用，再删 R2 对象。
+   * 不能只查当前游戏：ROM 可能被其它游戏 / 语言槽共用；漏查会把别人的游戏变成 404。
+   */
+  const deleteBoundRom = async (rawKey: string): Promise<{ removed: number; unboundGames: number } | null> => {
+    const key = rawKey.trim()
+    if (!key || personalLibrary) throw new Error('当前账号不能删除 R2 ROM')
+    if (!isDeletableKey(key)) throw new Error('这个地址不属于可由本站删除的 R2 对象；请使用普通“解绑”')
+    if (romDeleteBusyRef.current) throw new Error('另一个 ROM 删除操作正在进行，请稍后')
+
+    const romConfig = getRomConfig()
+    if (!romConfig.api || !romConfig.token) throw new Error('请先在“ROM 存储”页配置 Worker 地址和口令，才能删除 R2 文件')
+    if (!apiEnabled()) throw new Error('游戏数据库 API 未启用，无法检查全库引用；已阻止删除')
+
+    romDeleteBusyRef.current = true
+    setRomDeleteBusy(true)
+    let unboundGames = 0
+    try {
+      // 多文件包里的任意成员都代表整目录；先列出全目录，才能准确检查兄弟文件有没有被别的游戏引用。
+      const bundleObjects = isBundleKey(key) ? await listRomObjects(dirOfKey(key)) : []
+      const objectKeys = isBundleKey(key) ? [...new Set(bundleObjects.map((object) => object.key))] : [key]
+      if (!objectKeys.includes(key)) throw new Error(`R2 目录清单中找不到 ${key}，为避免误删已停止操作`)
+
+      // 分页扫描全部游戏；只拿当前页就无法证明对象没有被其它游戏复用。
+      const first = await fetchAdminGames({ page: 1, pageSize: 100 })
+      const games = [...first.items]
+      for (let page = 2; page <= first.totalPages; page++) {
+        const next = await fetchAdminGames({ page, pageSize: 100 })
+        games.push(...next.items)
+      }
+      if (games.length !== first.total) {
+        throw new Error(`全库引用检查不完整（读取 ${games.length} / ${first.total} 款游戏），为避免误删没有执行`)
+      }
+
+      const plan = planRomObjectDeletion(games, objectKeys)
+      // 未保存的表单也可能把同一 key 用作封面 / 系统盘；这类引用不能由 ROM 按钮顺手清除。
+      const targets = new Set(objectKeys)
+      const draftReferences: Array<[string, string | undefined]> = [
+        ['封面', form.cover],
+        ['视频', form.video],
+        ['DOS 系统镜像', form.dosSystem],
+        ['DOS 流式盘', form.dosSockdrive],
+        ...Object.values(form.dosSockdrives ?? {}).map((value) => ['DOS 流式盘', value] as [string, string | undefined]),
+        ...parseDosExtras(form.dosExtras).map(({ key: extraKey }) => ['DOS 附加文件', extraKey] as [string, string | undefined]),
+        ...(form.arcadeMameDisks ?? []).map((disk) => ['MAME 媒体盘', disk.key] as [string, string | undefined]),
+      ]
+      const draftOtherReferences = draftReferences.flatMap(([field, value]) => {
+        if (typeof value !== 'string') return []
+        return objectReferenceMatches(field, value, targets) ? [field] : []
+      })
+      const blocked = [...plan.otherReferences, ...draftOtherReferences.map((field) => ({ slug: form.slug, title: form.titleZh || form.title || form.slug, field }))]
+      if (blocked.length) {
+        const refs = [...new Set(blocked.map((reference) => `${reference.title}（${reference.field}）`))].slice(0, 6).join('、')
+        throw new Error(`该对象还被非 ROM 字段使用：${refs}${blocked.length > 6 ? '…' : ''}。请先在对应字段解除引用，再删除。`)
+      }
+
+      const referencedGames = [...new Map(plan.romGames.map((game) => [game.slug, game])).values()]
+      const affected = referencedGames.length
+        ? `\n\n会先从 ${referencedGames.length} 款游戏的所有主 ROM、语言 ROM 和备用地址中解除引用：${referencedGames.slice(0, 6).map((game) => game.titleZh || game.title || game.slug).join('、')}${referencedGames.length > 6 ? '…' : ''}`
+        : '\n\n当前游戏库没有已保存的 ROM 引用。'
+      const bundleNote = isBundleKey(key)
+        ? `\n\n这是多文件包成员，会连同目录下 ${objectKeys.length} 个对象一起删除。`
+        : ''
+      if (!window.confirm(`确定解绑并从 R2 永久删除 ${key}？此操作不可恢复。${affected}${bundleNote}\n\n继续吗？`)) return null
+
+      // 表单草稿也同步清理整组 key；否则之后保存其它字段时会把已删除的旧 key 写回数据库。
+      setForm((current) => {
+        let next = current
+        for (const objectKey of objectKeys) next = { ...next, ...unbindRomObjectKeys(next, [objectKey]) }
+        return next
+      })
+
+      // 逐游戏写回，每一步失败都立即停下；此时对象仍在 R2，宁可留下孤儿也不能制造死链。
+      for (const game of referencedGames) {
+        const patch = unbindRomObjectKeys(game, objectKeys)
+        if (Object.keys(patch).length) {
+          await patchGame(game.slug, patch)
+          unboundGames++
+        }
+      }
+
+      const deletion = await deleteRomObjectsExactly(objectKeys)
+      if (deletion.failed.length) {
+        throw new Error(`已解除 ${unboundGames} 款游戏的引用，但 R2 有 ${deletion.failed.length} 个对象删除失败；请稍后在 ROM 存储页重试`)
+      }
+      if (!deletion.removed.length) throw new Error('Worker 没有确认删除任何对象；引用已解除，请在 ROM 存储页核查文件')
+      return { removed: deletion.removed.length, unboundGames }
+    } finally {
+      romDeleteBusyRef.current = false
+      setRomDeleteBusy(false)
+    }
+  }
 
   /*
     打开表单就把 BIOS 绑定表拉下来。
@@ -427,7 +546,18 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
       genres: f.genres.includes(id) ? f.genres.filter((g) => g !== id) : [...f.genres, id],
     }))
 
-  const setRomLang = (lang: RomLang, key: string) =>
+  const addRomLanguage = () => {
+    const code = normalizeRomLanguageCode(newRomLanguageCode)
+    if (!code) return setError('请输入有效的语言代码，例如 ko、pt-BR（最多 10 个字符）')
+    const existing = allRomLangs.find((candidate) => normalizeRomLanguageCode(candidate) === code)
+    if (existing) return setError(`${romLanguageLabel(existing)} 已存在，无需重复添加`)
+    setForm((f) => ({ ...f, roms: { ...f.roms, [code]: f.roms?.[code] ?? '' } }))
+    setNewRomLanguageCode('')
+    setShowArcadeVariants(true)
+    setError(null)
+  }
+
+  const setRomLang = (lang: RomSlotLang, key: string) =>
     setForm((f) => {
       const roms = { ...f.roms }
       if (key.trim()) roms[lang] = key.trim()
@@ -435,7 +565,7 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
       return { ...f, roms }
     })
 
-  const setDosEntryLang = (lang: RomLang, path: string) =>
+  const setDosEntryLang = (lang: RomSlotLang, path: string) =>
     setForm((f) => {
       const dosExecutables = { ...f.dosExecutables }
       if (path) dosExecutables[lang] = path
@@ -443,7 +573,7 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
       return { ...f, dosExecutables }
     })
 
-  const setDosStartupCommandsLang = (lang: RomLang, commands: string) =>
+  const setDosStartupCommandsLang = (lang: RomSlotLang, commands: string) =>
     setForm((f) => {
       const dosStartupCommands = { ...f.dosStartupCommands }
       if (commands) dosStartupCommands[lang] = commands
@@ -451,7 +581,7 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
       return { ...f, dosStartupCommands }
     })
 
-  const setDosSockdriveLang = (lang: RomLang, value: string) =>
+  const setDosSockdriveLang = (lang: RomSlotLang, value: string) =>
     setForm((f) => {
       const dosSockdrives = { ...f.dosSockdrives }
       if (value.trim()) dosSockdrives[lang] = value.trim()
@@ -463,7 +593,7 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
    * 后台明确回报 bound=true 时，数据库已经保存了 ROM、EXE 与 Sockdrive。
    * 只把这三项合入“已保存基线”，其它标题、简介等本地修改仍保持未保存，不能顺手洗白。
    */
-  const acceptCompletedSockdrive = (lang: RomLang, job: SockdriveConversionJob) => {
+  const acceptCompletedSockdrive = (lang: RomSlotLang, job: SockdriveConversionJob) => {
     const apply = (game: Game): Game => {
       const roms = { ...game.roms }
       if (job.targetRomKey?.trim()) roms[lang] = job.targetRomKey.trim()
@@ -488,13 +618,26 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
     setForm(apply)
   }
 
-  const setRomBackupLang = (lang: RomLang, key: string) =>
+  const setRomBackupLang = (lang: RomSlotLang, key: string) =>
     setForm((f) => {
       const romBackups = { ...f.romBackups }
       if (key.trim()) romBackups[lang] = key.trim()
       else delete romBackups[lang]
       return { ...f, romBackups }
     })
+
+  const updateEnglishDescription = (description: string) => {
+    set('descriptionEn', description || undefined)
+  }
+
+  const regenerateKeywords = () => {
+    const generated = extractGameKeywords(form.descriptionEn ?? '').join(', ')
+    if (!generated) return setError('请先填写英文简介，再提取关键词')
+    autoTagsValue.current = generated
+    tagsManuallyEdited.current = false
+    setTagsText(generated)
+    setError(null)
+  }
 
   const submit = (e: FormEvent) => {
     e.preventDefault()
@@ -534,6 +677,11 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
     if (windowsGuest && !/\.jsdos(?:[?#].*)?$/i.test(form.dosSystem!.trim())) {
       return setError('Windows 系统镜像必须是 .jsdos 文件、对象 key 或 URL')
     }
+    for (const code of customRomLangs) {
+      if (normalizeRomLanguageCode(code) !== code) {
+        return setError(`自定义语言代码“${code}”无效；请使用 ko、pt-BR 等最多 10 个字符的标准语言代码`)
+      }
+    }
     const dosSockdrive = dosboxXSockdrive ? form.dosSockdrive?.trim().replace(/\/+$/, '') : undefined
     if (dosSockdrive) {
       // 这个值会进 DOSBox-X 的 autoexec；不能把换行、引号或空格留到玩家开局后才暴露。
@@ -567,13 +715,13 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
         return setError('流式游戏盘不能现场合并 DOS 附加文件；请先把补丁写入磁盘再重新生成 Sockdrive')
       }
     }
-    const cleanedDosEntries: Partial<Record<RomLang, string>> = {}
-    const cleanedDosStartupCommands: Partial<Record<RomLang, string>> = {}
-    const cleanedDosSockdrives: Partial<Record<RomLang, string>> = {}
-    for (const l of ROM_LANGS) {
+    const cleanedDosEntries: Record<string, string> = {}
+    const cleanedDosStartupCommands: Record<string, string> = {}
+    const cleanedDosSockdrives: Record<string, string> = {}
+    for (const l of allRomLangs) {
       const rawLanguageSockdrive = form.dosSockdrives?.[l]?.trim().replace(/\/+$/, '')
       if (rawLanguageSockdrive) {
-        const prefix = `${ROM_LANG_LABEL[l]} Sockdrive：`
+        const prefix = `${romLanguageLabel(l)} Sockdrive：`
         if (!dosboxXSockdrive) return setError(`${prefix}需要 DOSBox-X；普通 DOSBox 不支持远程磁盘按需读取`)
         if (!form.roms?.[l]?.trim()) return setError(`${prefix}请先绑定同语言 ROM 完整回退包`)
         if (rawLanguageSockdrive.length > 500 || /[^\x21-\x7e]|["'%&|<>^()]/.test(rawLanguageSockdrive)) {
@@ -606,31 +754,31 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
       try {
         const commands = normalizeDosStartupCommands(form.dosStartupCommands?.[l])
         if (commands) {
-          if (!form.roms?.[l]?.trim()) return setError(`${ROM_LANG_LABEL[l]} 填了启动前命令，但还没有绑定 ROM ZIP`)
+          if (!form.roms?.[l]?.trim()) return setError(`${romLanguageLabel(l)} 填了启动前命令，但还没有绑定 ROM ZIP`)
           if (windowsGuest) return setError('共享 Windows 系统模式不能使用 DOS 启动前命令')
           if (/^\s*imgmount\b.*\.cue\b/im.test(commands) && form.dosBackend !== 'dosboxX') {
-            return setError(`${ROM_LANG_LABEL[l]} 使用 CUE 光盘镜像，请先在“运行环境”选择 DOSBox-X`)
+            return setError(`${romLanguageLabel(l)} 使用 CUE 光盘镜像，请先在“运行环境”选择 DOSBox-X`)
           }
           cleanedDosStartupCommands[l] = commands
         }
       } catch (err) {
-        return setError(`${ROM_LANG_LABEL[l]}：${err instanceof Error ? err.message : '启动前命令无效'}`)
+        return setError(`${romLanguageLabel(l)}：${err instanceof Error ? err.message : '启动前命令无效'}`)
       }
       const raw = form.dosExecutables?.[l]?.trim()
       if (!raw) continue
-      if (!form.roms?.[l]?.trim()) return setError(`${ROM_LANG_LABEL[l]} 填了启动文件，但还没有绑定 ROM ZIP`)
+      if (!form.roms?.[l]?.trim()) return setError(`${romLanguageLabel(l)} 填了启动文件，但还没有绑定 ROM ZIP`)
       const path = raw.replace(/\\/g, '/').replace(/^\/+/, '')
       // 与服务端 dosExecutableOf 一致；在提交前指出错误，避免后端丢掉无效路径却返回成功。
       // eslint-disable-next-line no-control-regex
       if (path.length > 200 || /[\x00-\x1f]/.test(path) || path.split('/').some((part) => !part || part === '.' || part === '..')) {
-        return setError(`${ROM_LANG_LABEL[l]} 的启动文件路径无效，请填写 ZIP 内的相对路径`)
+        return setError(`${romLanguageLabel(l)} 的启动文件路径无效，请填写 ZIP 内的相对路径`)
       }
       cleanedDosEntries[l] = path
     }
     if (Object.keys(cleanedDosSockdrives).length && form.dosExtras?.length) {
       return setError('流式游戏盘不能现场合并 DOS 附加文件；请先把补丁写入磁盘再重新生成 Sockdrive')
     }
-    if (windowsGuest && !form.dosExecutable?.trim() && (!Object.keys(form.roms ?? {}).length || ROM_LANGS.some((l) => form.roms?.[l]?.trim() && !cleanedDosEntries[l]))) {
+    if (windowsGuest && !form.dosExecutable?.trim() && (!Object.keys(form.roms ?? {}).length || allRomLangs.some((l) => form.roms?.[l]?.trim() && !cleanedDosEntries[l]))) {
       return setError('共享 Windows 系统模式需要默认自启动 EXE，或为每个已绑定语言填写启动文件')
     }
     let dosboxConfig: string | undefined
@@ -647,15 +795,15 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
       .map((t) => t.trim())
       .filter(Boolean)
 
-    const cleanedRoms: Partial<Record<RomLang, string>> = {}
-    const cleanedRomBackups: Partial<Record<RomLang, string>> = {}
-    for (const l of ROM_LANGS) {
+    const cleanedRoms: Record<string, string> = {}
+    const cleanedRomBackups: Record<string, string> = {}
+    for (const l of allRomLangs) {
       const v = form.roms?.[l]?.trim()
       if (v) cleanedRoms[l] = v
       const backup = form.romBackups?.[l]?.trim()
       if (!backup) continue
-      if (!v) return setError(`${ROM_LANG_LABEL[l]} 填了备用地址，但还没有主地址`)
-      if (backup === v) return setError(`${ROM_LANG_LABEL[l]} 的备用地址不能和主地址相同`)
+      if (!v) return setError(`${romLanguageLabel(l)} 填了备用地址，但还没有主地址`)
+      if (backup === v) return setError(`${romLanguageLabel(l)} 的备用地址不能和主地址相同`)
       cleanedRomBackups[l] = backup
     }
     for (const value of [form.rom?.trim(), ...Object.values(cleanedRoms), ...Object.values(cleanedRomBackups)]) {
@@ -761,8 +909,8 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
   }
 
   return (
-    <form onSubmit={submit} className="space-y-4" aria-busy={submitting}>
-      <fieldset disabled={submitting} className="contents">
+    <form onSubmit={submit} className="space-y-4" aria-busy={submitting || romDeleteBusy}>
+      <fieldset disabled={submitting || romDeleteBusy} className="contents">
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="英文标题 *">
           <input className={inputClass} value={form.title} onChange={(e) => set('title', e.target.value)} placeholder="Super Mario Bros." required />
@@ -1271,7 +1419,7 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
             </>
           ) : (
             <p className="mt-0.5 text-xs text-muted">
-              每个语言先探主地址、再探同语言备用地址；两者都失败才依次回退到 <span className="font-medium text-fg">English → 日本語 → 简体中文 → 繁體中文</span>，全部没有时提示“游戏没有当前语言版本”。
+              每个语言先探主地址、再探同语言备用地址；两者都失败才依次回退到 <span className="font-medium text-fg">English → 日本語 → 简体中文 → 繁體中文 → 其他已绑定语言</span>，全部没有时提示“游戏没有当前语言版本”。
             </p>
           )}
           {form.platform === 'dos' && (
@@ -1290,12 +1438,27 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
                   : 'GameCube / Wii 直接上传 .rvz 或 .iso（也支持平台列表里的其它 Dolphin 单文件格式），不要套 ZIP。推荐用桌面 Dolphin 转成 RVZ，播放器会按需分段读盘。'}
             </p>
           )}
+          <div className="mt-3 flex flex-wrap items-end gap-2 rounded-lg border border-line bg-surface-2 p-3">
+            <label className="min-w-40 flex-1 text-xs text-muted">
+              自定义语言代码
+              <input
+                className={cx(inputClass, 'mt-1')}
+                value={newRomLanguageCode}
+                onChange={(e) => setNewRomLanguageCode(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addRomLanguage() } }}
+                placeholder="例如 ko、pt-BR"
+                maxLength={10}
+              />
+            </label>
+            <button type="button" className={btnClass.secondary} onClick={addRomLanguage}>添加语言 ROM 槽</button>
+            <p className="basis-full text-[11px] text-dim">保留现有语言槽，可按 ISO / BCP-47 代码添加单款游戏专用语言；例如 ko（韩语）、pt-BR（巴西葡萄牙语）。</p>
+          </div>
         </div>
         {displayedRomLangs.map((lang) => (
           <div key={lang} className="space-y-2">
             {form.platform === 'dos' && !pc98Form && (
               <>
-                <Field label={`${ROM_LANG_LABEL[lang]} 启动文件（${form.dosSockdrives?.[lang]?.trim() || form.dosSockdrive?.trim() ? '流式游戏盘内' : 'ZIP 内'}）`}>
+                <Field label={`${romLanguageLabel(lang)} 启动文件（${form.dosSockdrives?.[lang]?.trim() || form.dosSockdrive?.trim() ? '流式游戏盘内' : 'ZIP 内'}）`}>
                   <input
                     className={cx(inputClass, 'font-mono')}
                     value={form.dosExecutables?.[lang] ?? ''}
@@ -1308,7 +1471,7 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
                       : '留空则用上面的默认启动程序；默认也留空时由播放器自动猜测。'}
                   </p>
                 </Field>
-                <Field label={`${ROM_LANG_LABEL[lang]} 启动前命令（ZIP 内）`}>
+                <Field label={`${romLanguageLabel(lang)} 启动前命令（ZIP 内）`}>
                   <textarea
                     className={cx(inputClass, 'min-h-24 font-mono text-sm')}
                     value={form.dosStartupCommands?.[lang] ?? ''}
@@ -1320,16 +1483,16 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
                     播放器已经挂载 ZIP 为 C 盘，命令会在上面的 BAT / EXE 启动前执行。光盘镜像必须在同一个 ZIP 内；中文版可挂载 ./CD/HEROES2_fixed.cue，免 CD 的英文版留空。CUE 光盘请选 DOSBox-X 核心，且不要再写 mount c、c: 或 heroes2.exe。
                   </p>
                 </Field>
-                {ROM_LANGS.some((other) => other !== lang && form.roms?.[other]?.trim()) && (
+                {allRomLangs.some((other) => other !== lang && form.roms?.[other]?.trim()) && (
                   <select
                     className={cx(inputClass, 'text-xs')}
                     value=""
                     onChange={(e) => e.target.value && setRomLang(lang, e.target.value)}
-                    aria-label={`给 ${ROM_LANG_LABEL[lang]} 复用已上传的 DOS ZIP`}
+                    aria-label={`给 ${romLanguageLabel(lang)} 复用已上传的 DOS ZIP`}
                   >
                     <option value="">复用其他语言已绑定的 ZIP（只绑定，不重复上传）</option>
-                    {ROM_LANGS.filter((other) => other !== lang && form.roms?.[other]?.trim()).map((other) => (
-                      <option key={other} value={form.roms![other]}>{ROM_LANG_LABEL[other]} · {form.roms![other]}</option>
+                    {allRomLangs.filter((other) => other !== lang && form.roms?.[other]?.trim()).map((other) => (
+                      <option key={other} value={form.roms![other]}>{romLanguageLabel(other)} · {form.roms![other]}</option>
                     ))}
                   </select>
                 )}
@@ -1340,9 +1503,9 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
               dosEntry={form.platform === 'dos' ? form.dosExecutables?.[lang] : undefined}
               label={form.platform === 'arcade'
                 ? lang === arcadePrimaryLang
-                  ? `街机 ROM（${ROM_LANG_LABEL[lang]} · 主版本）`
-                  : `${ROM_LANG_LABEL[lang]} 街机 ROM（地区 / 语言变体）`
-                : lang === 'en' ? 'English ROM（第一回退）' : lang === 'ja' ? '日本語 ROM（第二回退）' : `${ROM_LANG_LABEL[lang]} ROM`}
+                  ? `街机 ROM（${romLanguageLabel(lang)} · 主版本）`
+                  : `${romLanguageLabel(lang)} 街机 ROM（地区 / 语言变体）`
+                : lang === 'en' ? 'English ROM（第一回退）' : lang === 'ja' ? '日本語 ROM（第二回退）' : `${romLanguageLabel(lang)} ROM`}
               value={form.roms?.[lang] ?? ''}
               backupValue={form.romBackups?.[lang] ?? ''}
               platform={form.platform}
@@ -1360,6 +1523,8 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
               onChange={(key) => setRomLang(lang, key)}
               onBackupChange={(key) => setRomBackupLang(lang, key)}
               allBoundKeys={allBoundKeys}
+              onDeleteRom={deleteBoundRom}
+              deletingRom={romDeleteBusy}
               onHackFound={(hack) => applyHack(hack, true)}
               onApplyHack={(hack) => applyHack(hack)}
               onArcadeIdentityReset={resetAutoArcadeFields}
@@ -1452,7 +1617,7 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
         <textarea
           className={cx(inputClass, 'h-24 resize-y py-2')}
           value={form.descriptionEn ?? ''}
-          onChange={(e) => set('descriptionEn', e.target.value || undefined)}
+          onChange={(e) => updateEnglishDescription(e.target.value)}
           placeholder="One or two sentences about this game"
         />
         <p className="mt-1 text-[11px] text-dim">
@@ -1462,8 +1627,21 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
         </p>
       </Field>
 
-      <Field label="标签" hint="用逗号分隔，例如：经典, 双人合作">
-        <input className={inputClass} value={tagsText} onChange={(e) => setTagsText(e.target.value)} />
+      <Field label="关键词 / 标签" hint="英文简介会自动提取高频主题词；手动编辑后不再覆盖。用逗号分隔，例如：classic, co-op">
+        <div className="flex gap-2">
+          <input
+            className={inputClass}
+            value={tagsText}
+            onChange={(e) => {
+              tagsManuallyEdited.current = true
+              autoTagsValue.current = ''
+              setTagsText(e.target.value)
+            }}
+          />
+          <button type="button" className={btnClass.secondary} onClick={regenerateKeywords} disabled={!form.descriptionEn?.trim()}>
+            从英文简介提取
+          </button>
+        </div>
       </Field>
 
       <div className="flex flex-wrap gap-4 text-sm">
@@ -1489,7 +1667,7 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
       )}
 
       <div className="flex justify-end gap-2 border-t border-line pt-4">
-        <button type="button" className={btnClass.secondary} onClick={requestCancel}>
+        <button type="button" className={btnClass.secondary} onClick={requestCancel} disabled={submitting || romDeleteBusy}>
           取消
         </button>
         <button type="submit" className={btnClass.primary}>
@@ -2111,7 +2289,7 @@ function SockdriveAutoField({
   onCompleted,
 }: {
   slug: string
-  lang?: RomLang
+  lang?: RomSlotLang
   romKey?: string
   executable: string
   value: string
@@ -2244,7 +2422,7 @@ function SockdriveAutoField({
       const prefix = `sockdrives/${slug}${lang ? `-${lang.toLowerCase()}` : ''}-${version}`
       if (!window.confirm(
         `${file.name}（${human(file.size)}）\n\n` +
-        `${lang ? `${ROM_LANG_LABEL[lang]}：` : ''}上传后服务器会自动制作、校验并发布到 ${prefix}，关闭页面也会继续。开始吗？`,
+        `${lang ? `${romLanguageLabel(lang)}：` : ''}上传后服务器会自动制作、校验并发布到 ${prefix}，关闭页面也会继续。开始吗？`,
       )) return
 
       stagingKey = sockdriveStagingKey()
@@ -2327,7 +2505,7 @@ function SockdriveAutoField({
 
   return (
     <Field
-      label={lang ? `${ROM_LANG_LABEL[lang]}流式游戏盘` : '原始大 ZIP 自动转 Sockdrive'}
+      label={lang ? `${romLanguageLabel(lang)}流式游戏盘` : '原始大 ZIP 自动转 Sockdrive'}
       className="col-span-2"
       hint={lang
         ? '选择这个语言的原始 ZIP；上传、转换、发布、校验和语言槽绑定全部自动完成'
@@ -2542,6 +2720,8 @@ function RomField({
   dosEntry,
   label,
   allBoundKeys,
+  onDeleteRom,
+  deletingRom,
   onHackFound,
   onApplyHack,
   onBiosFound,
@@ -2569,11 +2749,14 @@ function RomField({
   }
   onChange: (key: string) => void
   onBackupChange: (key: string) => void
-  lang?: RomLang
+  lang?: RomSlotLang
   dosEntry?: string
   label?: string
   /** 这款游戏当前绑定的全部对象 key（不去重）—— 判断旧文件是不是还被别的槽位共用 */
   allBoundKeys: string[]
+  /** 主库编辑窗的全库安全删除流程；志愿者个人库不开放 R2 删除。 */
+  onDeleteRom?: (key: string) => Promise<{ removed: number; unboundGames: number } | null>
+  deletingRom?: boolean
   /**
    * 上传时认出是已知改版包。RomData 字段在父组件手里，所以这里只报告，
    * 由父组件决定要不要自动填（现在的规则：字段是空的才自动填，不覆盖人写好的）。
@@ -2890,7 +3073,7 @@ function RomField({
     try {
       setProgress(0)
       setStage(null)
-      setMsg({ ok: true, text: `完整回退包已上传；正在上传 ${ROM_LANG_LABEL[lang]}流式盘源文件…` })
+      setMsg({ ok: true, text: `完整回退包已上传；正在上传 ${romLanguageLabel(lang)}流式盘源文件…` })
       await uploadRom(file, stagingKey, (pct, at) => {
         setProgress(Math.round(pct * 0.45))
         if (at) setStage(at)
@@ -2921,7 +3104,7 @@ function RomField({
       })
       rememberSockdriveConversion(autoSockdrive.gameSlug, null, lang)
       autoSockdrive.onCompleted(completed)
-      return `；${ROM_LANG_LABEL[lang]}流式盘已发布并${completed.bound ? '自动绑定' : '等待保存'}：${completed.targetPrefix}`
+      return `；${romLanguageLabel(lang)}流式盘已发布并${completed.bound ? '自动绑定' : '等待保存'}：${completed.targetPrefix}`
     } catch (error) {
       const keepUploadedSource = sourceUploaded && !taskCreated && preserveSockdriveSourceAfterCreateError(error)
       if (sourceUploaded && !taskCreated && !keepUploadedSource) {
@@ -3400,19 +3583,35 @@ function RomField({
     }
   }
 
-  /**
-   * 解除这一槽的绑定，但不在单款游戏表单里删除 R2 对象。
-   * 表单不知道别的游戏是否共用同一个 key；真正删除统一去 ROM 存储页做全库引用检查。
-   */
+  /** 删除 R2 ROM 时经父表单先解除全库引用；外部地址 / 站内静态文件只允许解绑。 */
   const removeRom = async () => {
     const key = value.trim()
     if (!key) return
     setMsg(null)
+
+    if (allowStorage && isDeletableKey(key)) {
+      if (!canUpload) {
+        setMsg({ ok: false, text: '请先在“ROM 存储”页配置 Worker 地址和口令，才能解绑并删除 R2 文件' })
+        return
+      }
+      if (!onDeleteRom) {
+        setMsg({ ok: false, text: '当前窗口无法安全检查全库引用，已阻止删除' })
+        return
+      }
+      try {
+        const result = await onDeleteRom(key)
+        if (result) setMsg({ ok: true, text: `已解绑并删除 ${result.removed} 个 R2 对象（影响 ${result.unboundGames} 款游戏）` })
+      } catch (err) {
+        setMsg({ ok: false, text: err instanceof Error ? err.message : '解绑并删除失败' })
+      }
+      return
+    }
+
     const sharedBy = allBoundKeys.filter((k) => k === key).length
     const shared = sharedBy > 1 ? `当前游戏还有 ${sharedBy - 1} 个槽位在使用它；` : ''
-    if (!window.confirm(`${key}\n\n只解除当前槽位的绑定，R2 文件会保留。${shared}如确认不再被任何游戏使用，可到“ROM 存储”加载全库引用后删除。\n\n继续吗？`)) return
+    if (!window.confirm(`${key}\n\n这个地址不是可由本站删除的 R2 ROM，只解除当前槽位的绑定，原文件会保留。${shared}\n\n继续吗？`)) return
     onChange('')
-    setMsg({ ok: true, text: '已解除绑定，R2 文件安全保留' })
+    setMsg({ ok: true, text: '已解除绑定，原文件未删除' })
   }
 
   return (
@@ -3474,9 +3673,12 @@ function RomField({
               type="button"
               className={cx(btnClass.danger, 'shrink-0')}
               onClick={() => void removeRom()}
-              title="解除当前绑定；R2 文件会保留"
+              disabled={deletingRom || (allowStorage && isDeletableKey(value) && !canUpload)}
+              title={allowStorage && isDeletableKey(value)
+                ? canUpload ? '检查全库引用后解除绑定并永久删除 R2 文件' : '请先配置 Worker 地址和口令，才能删除 R2 文件'
+                : '只解除当前槽位绑定；外部文件不会被删除'}
             >
-              解绑
+              {allowStorage && isDeletableKey(value) ? deletingRom ? '删除中…' : '解绑并删除' : '解绑'}
             </button>
           )}
         </div>

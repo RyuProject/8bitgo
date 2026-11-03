@@ -1155,6 +1155,20 @@ cd .. && npm run test:flash-online-save
 
 自测：`cd server && npm run test:netplay:all`。这一项不改数据库结构，不需要迁移。
 
+### 2.22.1 EmulatorJS 的 2P~4P 出厂是空的；红白机连发被控制方案删掉（2026-11-03《魂斗罗》）
+
+- 引擎 `defaultControllers[1..3]` 是 `{}`：2P~4P **既没有键盘也没有手柄映射**。第二个手柄被分到
+  2P 槽后 `gamepadEvent` 只认 `controls[1][i].value2`，按什么都不动；`.8bg` 红白机改走 EmulatorJS
+  之后，jsnes 原来的小键盘 2P 也跟着没了。
+- nes 控制方案只有 A / B / Select / Start / 方向，引擎建改键面板时把下标 1 / 9（RetroPad Y / X）
+  从 controls 里删光；而 FCEUmm 正是拿 X / Y 当**连发 A / B**（核心选项 `fceumm_turbo_enable`，默认 None）。
+- 修法在 `src/emulator/ejsSeats.ts`：开局（引擎已读完存档）后 `repairEjsSeats` **只补缺的** ——
+  2P~4P 没有任何手柄映射的座位照 1P 出厂那份补；2P 一颗键盘都没绑才补小键盘（`EJS_P2_KEY_OVERRIDE`，
+  和 jsnes 2P 同一套，撞上已绑的键就跳过）；FCEUmm 补回 I / U（手柄 X / Y）并默认 `fceumm_turbo_enable=Both`。
+  手机屏幕手柄给 nes 自带布局 + TB / TA。defaultControllers 一起补，引擎「重置」不会再删光。
+- 引擎按 **keyCode** 认键：小键盘 2P 必须开 NumLock（jsnes 认 event.code，不用管）。文案分开：`player2NoteEjs`。
+- 回归：`npm run test:ejs-seats`、`npm run test:keymap`（出厂手柄映射 / 2P 键与 jsnes 对齐 / 连发确实在方案外）。
+
 ### 2.23 成人游戏直播的年龄门必须守在服务端
 
 后台标为 `games.adult = 1` 的游戏，直播和游戏本体执行同一条规则：有效注册账号、已填写出生日期、

@@ -44,7 +44,7 @@ const externalCover = 'https://mms1.baidu.com/example.jpg'
 assert.equal(coverThumbKey(externalCover), '')
 assert.equal(romUrlForKey(coverThumbKey(externalCover), 'https://assets.8bitgo.com'), '')
 assert.equal(romUrlForKey(externalCover, 'https://assets.8bitgo.com'), externalCover)
-const { ROM_LANGS } = await import(fileURLToPath(new URL('../src/config/languages.ts', import.meta.url)))
+const { ROM_LANGS, normalizeRomLanguageCode, romLanguageLabel } = await import(fileURLToPath(new URL('../src/config/languages.ts', import.meta.url)))
 const { romCacheKey } = await import(fileURLToPath(new URL('../src/emulator/romCache.ts', import.meta.url)))
 const { chooseFasterRomRoute } = await import(fileURLToPath(new URL('../src/services/romRoute.ts', import.meta.url)))
 const { isolatedEmbedFor } = await import(fileURLToPath(new URL('../shared/isolated-embeds.js', import.meta.url)))
@@ -351,6 +351,30 @@ assert.equal(isolatedEmbedFor('diablo'), undefined, 'Diablo 不需要 COOP/COEP�
   在非西语站点下报「游戏没有当前语言版本」，而那个 ROM 就躺在 R2 上。
   下面第一条是逐个语言槽的普查：以后往 ROM_LANGS 里加语言却忘了管回退链，这里会红。
 */
+{
+  const { romLangsOf } = await import(fileURLToPath(new URL('../src/services/roms.ts', import.meta.url)))
+  assert.equal(normalizeRomLanguageCode('ko'), 'ko', '允许自定义韩语语言槽')
+  assert.equal(normalizeRomLanguageCode('pt-br'), 'pt-BR', '自定义语言码按 BCP-47 规范大小写归一')
+  assert.equal(normalizeRomLanguageCode('this-is-too-long'), null, '拒绝超过数据库 VARCHAR(10) 上限的语言码')
+  assert.equal(normalizeRomLanguageCode('not a code'), null, '拒绝无效语言码')
+  assert.match(romLanguageLabel('pt-BR'), /pt-BR/, '自定义槽显示可辨认语言名及代码')
+
+  const game = { roms: { en: 'g.en.zip', 'zh-Hans': 'g.zh.zip', ko: 'g.ko.zip', 'pt-BR': 'g.pt.zip' } }
+  assert.deepEqual(romLangsOf(game), ['zh-Hans', 'en', 'ko', 'pt-BR'], '内置语言保留顺序，自定义槽稳定追加')
+  assert.deepEqual(romCandidates(game, 'zh-Hans', 'ko').map((candidate) => candidate.lang), ['ko', 'en', 'zh-Hans', 'pt-BR'], '玩家可选自定义槽，未显式切换时自定义 ROM 仍在回退链')
+  assert.deepEqual(playbackRomCandidatesForSelection({ platform: 'psx', ...game }, 'zh-Hans', 'pt-BR').map((candidate) => candidate.lang), ['pt-BR'], '手选自定义语言不会静默回退到其它版本')
+
+  const mapped = romRelationRows({
+    roms: { ko: 'roms/nes/game.ko.zip' },
+    romBackups: { ko: 'https://backup.example/game.ko.zip' },
+    dosExecutables: { ko: 'KO/START.EXE' },
+    dosStartupCommands: { ko: 'set LANG=KO' },
+    dosSockdrives: { ko: 'sockdrive/game/ko-v1' },
+  })[0]
+  assert.equal(mapped.lang, 'ko', '服务端关联映射保存自定义语言键')
+  assert.equal(mapped.dosExecutable, 'KO/START.EXE', 'DOS 启动配置随自定义语言槽持久化')
+  assert.equal(mapped.dosSockdrive, 'sockdrive/game/ko-v1', 'Sockdrive 随自定义语言槽持久化')
+}
 {
   for (const slot of ROM_LANGS) {
     const game = { roms: { [slot]: `roms/nes/only-${slot}.nes` } }

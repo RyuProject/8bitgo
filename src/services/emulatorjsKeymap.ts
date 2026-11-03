@@ -10,6 +10,12 @@ import {
 
 export type EmulatorJsKeyboardMap = Readonly<Record<number, string>>
 
+/**
+ * 同步回来的键位表里，2P 的键存在 `100 + libretro 下标` 上（1P 仍是 0~29）。
+ * 这样旧记录形状不用变；isCustomized 只看 1P 的那几颗，2P 不影响默认键位迁移。
+ */
+export const EJS_P2_KEY_OFFSET = 100
+
 export interface EmulatorJsControlEntry {
   value?: number | string
   [key: string]: unknown
@@ -145,7 +151,7 @@ function cleanKeys(keys: EmulatorJsKeyboardMap): Record<string, string> {
   for (const [id, label] of Object.entries(keys)) {
     const n = Number(id)
     const value = String(label).trim().slice(0, 32)
-    if (Number.isInteger(n) && n >= 0 && n < 30 && value) out[String(n)] = value
+    if (Number.isInteger(n) && ((n >= 0 && n < 30) || (n >= EJS_P2_KEY_OFFSET && n < EJS_P2_KEY_OFFSET + 30)) && value) out[String(n)] = value
   }
   return out
 }

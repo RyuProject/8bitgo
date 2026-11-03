@@ -18,9 +18,13 @@ assert.deepEqual(parseNdsVariantSaveSlug('pokemon-white-2:melonds-compat'), {
 assert.deepEqual(parseNdsVariantSaveSlug('local:demo~nds-en:melonds-compat'), {
   gameSlug: 'local:demo~nds-en:melonds-compat',
 }, '玩家自己命名的文件不能被误拆')
-assert.deepEqual(parseNdsVariantSaveSlug('pokemon-white-2~nds-xx'), {
-  gameSlug: 'pokemon-white-2~nds-xx',
-}, '未知语言标记不能被猜成站内变体')
+assert.deepEqual(parseNdsVariantSaveSlug('pokemon-white-2~nds-xx-!!!'), {
+  gameSlug: 'pokemon-white-2~nds-xx-!!!',
+}, '无效语言代码不能被猜成存档变体')
+assert.equal(ndsVariantSaveSlug('pokemon-white-2', 'ko', ['zh-Hans', 'ko']), 'pokemon-white-2~nds-ko', '自定义语言 ROM 使用独立存档键')
+assert.deepEqual(parseNdsVariantSaveSlug('pokemon-white-2~nds-pt-BR'), {
+  gameSlug: 'pokemon-white-2', romLang: 'pt-BR',
+}, '个人页可识别带区域子标签的自定义语言存档')
 
 const player = readFileSync(new URL('../src/emulator/EmulatorPlayer.tsx', import.meta.url), 'utf8')
 const profile = readFileSync(new URL('../src/components/profile/CloudSaves.tsx', import.meta.url), 'utf8')

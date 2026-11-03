@@ -1548,6 +1548,8 @@ const de: Translation = {
     touchButtons: 'Auf dem Handy bekommst du Bildschirmtasten.',
     touchButtonsSome: 'Manche Spiele zeigen auf dem Handy Bildschirmtasten.',
     player2Note: 'Das NES war immer für zwei Spieler — 2P liegt auf dem Ziffernblock, NumLock spielt keine Rolle. Kein Ziffernblock? Leg 2P im 🎮-Panel auf andere Tasten.',
+    /** EmulatorJS 的 2P：按 keyCode 认键，NumLock 必须开着（jsnes 那句说的是不用管） */
+    player2NoteEjs: '2P liegt auf dem Ziffernblock (NumLock muss an sein); ein zweites Gamepad wird automatisch 2P. Kein Ziffernblock? Unter 🎮 → Tasten belegen zu Spieler 2 wechseln und andere Tasten wählen.',
     quickSave: 'Schnellspeichern',
     quickLoad: 'Schnellladen',
   },

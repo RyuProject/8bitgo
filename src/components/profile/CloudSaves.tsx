@@ -25,7 +25,7 @@ import { useLang } from '@/services/lang'
 import { gameTitle, platformLabel } from '@/services/i18nData'
 import { useGamesBySlugs } from '@/services/gameCache'
 import { deleteCloudSave, fetchCloudSave, listCloudSaves, type SaveMeta } from '@/services/saves'
-import { ROM_LANG_LABEL, type RomLang } from '@/config/languages'
+import { romLanguageLabel, type RomSlotLang } from '@/config/languages'
 import {
   parseEmulatorVariantSaveSlug,
   parseNdsVariantSaveSlug,
@@ -41,7 +41,7 @@ function keyOf(s: SaveMeta) {
 }
 
 /** 只按对应运行时拆后缀；NDS 兼容核心也必须链接回基础游戏。 */
-function identityOf(s: SaveMeta): { gameSlug: string; romLang?: RomLang } {
+function identityOf(s: SaveMeta): { gameSlug: string; romLang?: RomSlotLang } {
   if (s.runtime === 'ppsspp') return parsePspVariantSaveSlug(s.gameSlug)
   if (s.runtime === 'emulatorjs') {
     const nds = parseNdsVariantSaveSlug(parsePsxChdSaveSlug(s.gameSlug))
@@ -172,7 +172,7 @@ export function CloudSaves() {
                     {isLocal ? t.account.savesLocalGame : platform ? platformLabel(t, platform, platform) : s.runtime}
                     {' · '}
                     {fmt(t.account.savesSlot, { n: s.slot })}
-                    {identity.romLang ? ` · ${ROM_LANG_LABEL[identity.romLang]}` : ''}
+                    {identity.romLang ? ` · ${romLanguageLabel(identity.romLang)}` : ''}
                     {' · '}
                     {formatBytes(s.size)}
                     {' · '}

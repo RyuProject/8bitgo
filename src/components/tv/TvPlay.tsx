@@ -5,7 +5,7 @@ import { GameCover } from '@/components/game/GameCover'
 import { EmulatorPlayer } from '@/emulator/PlayerChunk'
 import { usePlatformBiosUrl } from '@/services/platformBios'
 import { dosExecutableForRom, dosSockdriveForRom, dosStartupCommandsForRom, romLangsOf, romUrlForKey, useRomUrl } from '@/services/roms'
-import type { RomLang } from '@/config/languages'
+import type { RomSlotLang } from '@/config/languages'
 import { isPlatformEnabled } from '@/config/platforms'
 import { usePageData, type GameData } from '@/services/pageData'
 import { gameTitle } from '@/services/i18nData'
@@ -41,7 +41,7 @@ export function TvPlay({ slug, onExit }: { slug: string; onExit: () => void }) {
   const game = state.data?.game ?? undefined
   const platform = game ? platformMap[game.platform] : undefined
   const biosUrl = usePlatformBiosUrl(platform?.id)
-  const [romLang, setRomLang] = useState<RomLang | null>(null)
+  const [romLang, setRomLang] = useState<RomSlotLang | null>(null)
   const rom = useRomUrl(game, romLang)
 
   /*

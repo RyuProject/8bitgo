@@ -1494,6 +1494,8 @@ const zhHant: Translation = {
     touchButtons: '手機版顯示虛擬按鍵。',
     touchButtonsSome: '部分遊戲在手機版顯示虛擬按鍵。',
     player2Note: '紅白機本來就支援兩個人一起玩，2P 走數字鍵盤（不用管 NumLock）。沒有數字鍵盤的鍵盤，在 🎮 面板裡把 2P 改到別的鍵上就行。',
+    /** EmulatorJS 的 2P：按 keyCode 认键，NumLock 必须开着（jsnes 那句说的是不用管） */
+    player2NoteEjs: '2P 走數字鍵盤，要先打開 NumLock；第二個手把插上會自動當 2P。沒有數字鍵盤的話，在 🎮 →「改鍵」裡切到玩家 2，改到別的鍵上。',
     quickSave: '快速存檔',
     quickLoad: '快速讀檔',
   },

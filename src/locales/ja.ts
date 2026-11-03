@@ -1488,6 +1488,8 @@ const ja: Translation = {
     touchButtons: 'スマートフォンでは画面上にボタンが表示されます。',
     touchButtonsSome: '一部のゲームではスマートフォンで画面上にボタンが表示されます。',
     player2Note: 'ファミコンはもともと 2 人プレイ対応です。2P はテンキーを使います（NumLock は関係ありません）。テンキーがない場合は 🎮 パネルで 2P を別のキーに割り当ててください。',
+    /** EmulatorJS 的 2P：按 keyCode 认键，NumLock 必须开着（jsnes 那句说的是不用管） */
+    player2NoteEjs: '2P はテンキーを使います（NumLock をオンにしてください）。2 台目のゲームパッドは自動で 2P になります。テンキーがない場合は 🎮 →「キー設定」でプレイヤー 2 に切り替えて別のキーを割り当ててください。',
     quickSave: 'クイックセーブ',
     quickLoad: 'クイックロード',
   },

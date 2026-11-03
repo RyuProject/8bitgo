@@ -4,7 +4,7 @@
  */
 import type { UserRole } from '../shared/roles.js'
 
-import type { RomLang } from '@/config/languages'
+import type { RomSlotLang } from '@/config/languages'
 
 /** 平台（主机）标识；EmulatorJS 平台还会把其中一部分 id 用作核心映射键。 */
 export type PlatformId =
@@ -269,14 +269,14 @@ export interface Game {
    */
   dosExecutable?: string
   /** 各语言 ROM 在 ZIP 内的启动路径；未填写的槽继续使用 dosExecutable 或自动猜测。 */
-  dosExecutables?: Partial<Record<RomLang, string>>
+  dosExecutables?: Partial<Record<RomSlotLang, string>>
   /** 各语言 ROM 的启动前命令；播放器先挂 C 盘，再执行这些命令与对应启动文件。 */
-  dosStartupCommands?: Partial<Record<RomLang, string>>
+  dosStartupCommands?: Partial<Record<RomSlotLang, string>>
   /**
    * 各语言 ROM 的同语言备用地址。播放器只在该语言的主地址失效或暂时不可达时使用，
    * 所以切换后仍沿用同一个语言槽的 DOS 启动入口、存档键和界面语言。
    */
-  romBackups?: Partial<Record<RomLang, string>>
+  romBackups?: Partial<Record<RomSlotLang, string>>
   /**
    * DOS 运行核心。留空等同 dosbox；dosboxX 可启动 Windows 3.x / 9x 系统镜像，也支持
    * 纯 DOS 静态 Sockdrive。这里只切换 CPU/虚拟机核心；是否启动 Windows 由 dosSystem 决定。
@@ -310,7 +310,7 @@ export interface Game {
    * dosSockdrive 保留给旧的单语言数据与确实共用同一块游戏盘的内容；同一语言同时存在两者时，
    * 这里的逐语言值优先。
    */
-  dosSockdrives?: Partial<Record<RomLang, string>>
+  dosSockdrives?: Partial<Record<RomSlotLang, string>>
   /**
    * DOS 附加文件（资料片 / 补丁 / 配置）清单，一行一个。
    *
@@ -398,7 +398,7 @@ export interface Game {
   /** ROM 对象 key 或完整 URL；外站 ZIP 可用 #rom=包内文件名 指定单个成员。留空则按约定路径探测。 */
   rom?: string
   /** 各语言 ROM：按玩家语言自动选用，缺失依次回退英语、日语、中文，再兼容旧版 rom */
-  roms?: Partial<Record<RomLang, string>>
+  roms?: Partial<Record<RomSlotLang, string>>
 }
 
 export interface FaqItem {

@@ -1547,6 +1547,8 @@ const es: Translation = {
     touchButtons: 'En el teléfono aparecen botones en pantalla.',
     touchButtonsSome: 'Algunos juegos muestran botones en pantalla en el teléfono.',
     player2Note: 'La NES siempre fue de dos jugadores: el 2P usa el teclado numérico y NumLock da igual. ¿Sin teclado numérico? Reasigna el 2P en el panel 🎮.',
+    /** EmulatorJS 的 2P：按 keyCode 认键，NumLock 必须开着（jsnes 那句说的是不用管） */
+    player2NoteEjs: 'El 2P usa el teclado numérico con NumLock activado; un segundo mando pasa a ser el 2P automáticamente. ¿Sin teclado numérico? En 🎮 → Reasignar teclas, cambia a Jugador 2 y elige otras teclas.',
     quickSave: 'Guardado rápido',
     quickLoad: 'Carga rápida',
   },

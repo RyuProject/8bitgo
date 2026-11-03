@@ -1547,6 +1547,8 @@ const en: Translation = {
     touchButtons: 'On phones you get on-screen buttons.',
     touchButtonsSome: 'Some games show on-screen buttons on phones.',
     player2Note: 'The NES was always two-player — 2P uses the numeric keypad, and NumLock does not matter. No numpad? Rebind 2P to other keys in the 🎮 panel.',
+    /** EmulatorJS 的 2P：按 keyCode 认键，NumLock 必须开着（jsnes 那句说的是不用管） */
+    player2NoteEjs: '2P uses the numeric keypad with NumLock on; a second gamepad becomes 2P automatically. No numpad? Open 🎮 → Remap keys, switch to Player 2 and pick other keys.',
     quickSave: 'Quick save',
     quickLoad: 'Quick load',
   },
