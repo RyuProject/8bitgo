@@ -42,6 +42,7 @@
     "test:j2me-store": "node --test scripts/test-j2me-store.mjs",
     "test:ratelimit": "node scripts/test-rate-limit.mjs",
     "test:ipx": "node scripts/test-ipx.mjs",
+    "test:precompressed-static": "node scripts/test-precompressed-static.mjs",
     "test:sfs": "node scripts/test-sfs.mjs",
     "test:cs16-relay": "node scripts/test-cs16-relay.mjs && node scripts/test-cs16-rooms.mjs",
     "test:nds-wfc": "node scripts/test-nds-wfc.mjs",

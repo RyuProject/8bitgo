@@ -2518,6 +2518,23 @@ Beetle PS1 的两个包已是 v2（泄漏已修），且 `check-emulatorjs` 按 
 
 melonDS DS 的包换了，要同步四处：报告 sha256、`NDS_MODERN_CORE_BUILD`、`EJS_CACHE_GENERATION`、`EJS_RUNTIME_GENERATION`。脚本会一并改好，`test:psx-state` 负责核对。
 
+### 2.32.0.1 PPSSPPSDL.data 必须预压缩；核心下载要算进 engine 进度（2026-11-04《GT 赛车》）
+
+- `PPSSPPSDL.data`（19.4MB，字体 / 图集 / 着色器）是 `application/octet-stream`，**Cloudflare 不压这个类型**，
+  线上一直明文传：同一次冷启动 wasm 走 zstd 传 5.6MB，data 实打实 19.4MB、约 20 秒。现在由
+  `server/src/precompressed-static.js` 在 express.static 前面接手：白名单路径 + 接受 br + 非 Range + `.br` 存在
+  才吐 `PPSSPPSDL.data.br`（Brotli 11，9.2MB，-53%），两条路都带 `Vary: Accept-Encoding`。已实测
+  Cloudflare 会把源站的 `Content-Encoding: br` 原样交给浏览器（Terraria 的 `.dat` 同理）。
+- 新实体目录（v16 …）发布后跑 `npm run ppsspp:precompress`；`check-ppsspp` 会把 `.br` 解开对 runtime.json 的
+  sha256，缺失或过期直接失败。**部署后要在 Cloudflare（及 EdgeOne）清掉这一个 URL 的缓存**，否则边缘
+  还会按 immutable 继续给旧的明文副本。回归：`cd server && npm run test:precompressed-static`。
+- 远程流式启动时桥是在 `mount-remote` **之后**才下 36MB 核心。适配器以前 host-ready 一到就报 rom
+  （还带探测那 2 字节，速度栏显示「1 B/s」），engine 段一秒走完、核心下载挤在 10% 的 rom 段里，条子停在
+  50% 二十秒。现在同源观察桥的 `#status`：「正在下载 PSP 核心资源… NN%」→ engine ratio，换成「正在流式读取
+  游戏」或收到第一条 stream-progress 才进 rom。桥文案变了 `test-ppsspp-range` 会报。
+- PSP 现在有音量（核心总输出 GainNode `__ppssppAudio.node`，读档 / 重开音频后 1 秒内压回）、截图（captureStream，
+  占位 canvas 不能 getContext）和录像（captureSources 早就给直播用）。暂停仍没有：桥没有暂停命令，要改原生补丁。
+
 ### 2.32.1 PSP 必须留在普通详情页内启动，不能再复用 PS2 的独立播放器外壳
 
 PPSSPP 的 pthread 仍然需要 `Cross-Origin-Opener-Policy: same-origin` 与

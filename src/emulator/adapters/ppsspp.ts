@@ -23,6 +23,9 @@ const HOST_TIMEOUT_MS = 120_000
 // 真正卡死的会话，不能再让一个与镜像大小无关的短计时器误杀仍在正常 Range 读盘的游戏。
 const MOUNT_TIMEOUT_MS = 300_000
 const RANGE_PROBE_TIMEOUT_MS = 20_000
+/** 桥（host.js）写进 #status 的两句文案。改桥文案时 check-ppsspp 会提醒同步这里 */
+const CORE_PROGRESS_TEXT = /正在下载 PSP 核心资源…\s*(\d{1,3})%/
+const STREAM_READ_TEXT = /正在流式读取游戏/
 
 interface BridgeMessage {
   source?: string
@@ -77,6 +80,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const probeController = new AbortController()
   let remoteProbe: ReturnType<typeof probeRange> | null = null
   let speculativeProbe = false
+  /** 远程流式：探测到的镜像总字节。核心资源下载完、开始读盘时才把它作为 rom 阶段报出去 */
+  let streamDiscSize = 0
+  let romPhaseReported = false
+  let coreWatch: MutationObserver | null = null
   /** 工具栏音量（0~1，静音时为 0）。核心可能重建 AudioContext，定时把新 GainNode 也拉到这个值 */
   let volume = 1
   let volumeTimer = 0
@@ -159,7 +166,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       return options.game
     }
 
-    options.onProgress?.({ phase: 'rom', loaded: 0 })
+    // 流式读盘时 rom 阶段要等核心资源下完才开始（见 watchCoreDownload），这里不能先报 rom
+    if (options.pspLoadMode === 'download') options.onProgress?.({ phase: 'rom', loaded: 0 })
     // host-ready 只说明 iframe 的桥已经加载，不能拿它当网络超时。旧实现会在一个永不返回的
     // Range 探测上无限挂住，而且 destroy 后请求仍继续占连接；这里给探测独立的截止时间。
     const probeTimer = window.setTimeout(() => probeController.abort(), RANGE_PROBE_TIMEOUT_MS)
@@ -186,7 +194,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         options.onProgress,
       )
     }
-    options.onProgress?.({ phase: 'rom', loaded: 2, total: probe.size, streaming: true })
+    streamDiscSize = probe.size
     return {
       url: options.game,
       name: discNameOf(options.game, options.gameName),
@@ -230,6 +238,57 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     return true
   }
 
+  /** 进入 rom 阶段（只一次）：核心资源下完、PPSSPP 开始读盘。loaded 是本局累计网络字节 */
+  const reportRomPhase = (loaded = 0, total = streamDiscSize) => {
+    stopCoreWatch()
+    romPhaseReported = true
+    options.onProgress?.({ phase: 'rom', loaded, total, streaming: true })
+  }
+
+  function stopCoreWatch() {
+    coreWatch?.disconnect()
+    coreWatch = null
+  }
+
+  /**
+   * 远程流式启动时，mount-remote 之后桥才去下 36MB 核心（JS / WASM / data），这一段以前
+   * 完全没有进度：host-ready 一到就报了 rom，进度条 engine 那一半一秒就走完，真正最长的
+   * 核心下载却挤在只占 10% 的 rom 段里，条子停在 50% 二十秒，速度栏还显示探测那 2 字节
+   * 算出来的「1 B/s」（2026-11-04《GT 赛车》实测）。
+   *
+   * 桥（不可变的 v15 实体目录）只把核心进度写进自己的 #status，这里同源观察那行字：
+   * 「正在下载 PSP 核心资源… NN%」→ engine 阶段的 ratio；换成读盘文案或收到第一条
+   * stream-progress 就进 rom 阶段。文案的出处由 check-ppsspp 守着，变了只是退回计时推进。
+   */
+  const watchCoreDownload = () => {
+    let status: HTMLElement | null = null
+    try {
+      status = iframe.contentDocument?.getElementById('status') ?? null
+    } catch {
+      status = null
+    }
+    if (!status || typeof MutationObserver === 'undefined') return
+    let lastRatio = -1
+    const read = () => {
+      if (destroyed || romPhaseReported) return stopCoreWatch()
+      const text = status?.textContent ?? ''
+      const core = CORE_PROGRESS_TEXT.exec(text)
+      if (core) {
+        // 留 5% 给 WASM 编译和解包：data 收完到核心真正起来之间还有几秒
+        const ratio = Math.min(0.95, Number(core[1]) / 100 * 0.95)
+        if (ratio > lastRatio) {
+          lastRatio = ratio
+          options.onProgress?.({ phase: 'engine', ratio })
+        }
+        return
+      }
+      if (STREAM_READ_TEXT.test(text)) reportRomPhase()
+    }
+    coreWatch = new MutationObserver(read)
+    coreWatch.observe(status, { childList: true, characterData: true, subtree: true })
+    read()
+  }
+
   async function boot(): Promise<void> {
     // iframe 恢复缓存或脚本被重复执行时可能再次发 host-ready；第二次 boot 会同时挂两张盘，
     // 而 host 只允许 start 一次，外层就会把真实成功误报成失败。
@@ -245,7 +304,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       // 可能共享标题，读错状态的结果通常不是明确报错，而是几分钟后随机崩溃。
       const stateId = options.gameSlug || `local:${discNameOf(options.game, options.gameName)}`
       if (game instanceof File) await request('mount-local', { file: game, stateId })
-      else await request('mount-remote', { remote: game, stateId })
+      else {
+        const mounted = request('mount-remote', { remote: game, stateId })
+        if (streamDiscSize) watchCoreDownload()
+        await mounted
+      }
+      stopCoreWatch()
       if (destroyed || fatalReported) return
 
       ready = true
@@ -296,7 +360,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       const total = Math.max(0, Number(message.total))
       // loaded 是本局累计网络字节，不是光盘顺序位置；随机寻道会重复取块，甚至可能超过 total。
       // 把它除以镜像容量当完成度，会谎称玩家必须下载完整 1.45GB，也会让进度条忽快忽慢。
-      options.onProgress?.({ phase: 'rom', loaded, total, streaming: true })
+      if (!romPhaseReported) reportRomPhase(loaded, total)
+      else options.onProgress?.({ phase: 'rom', loaded, total, streaming: true })
       return
     }
     if (message.type === 'runtime-error') {
@@ -421,6 +486,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       probeController.abort()
       window.clearTimeout(hostTimer)
       window.clearInterval(volumeTimer)
+      stopCoreWatch()
       window.removeEventListener('message', onMessage)
       rejectPending('PPSSPP 会话已经关闭')
       iframe.remove()

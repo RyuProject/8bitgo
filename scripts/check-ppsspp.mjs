@@ -3,6 +3,7 @@
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { brotliDecompressSync } from 'node:zlib'
 import { fileURLToPath } from 'node:url'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
@@ -350,6 +351,24 @@ if (installed) {
     const expected = manifest.artifacts[name]
     const hash = createHash('sha256').update(bytes).digest('hex')
     if (!expected || expected.bytes !== bytes.byteLength || expected.sha256 !== hash) fail(`${name} 与 runtime.json 校验值不符`)
+  }
+}
+
+if (installed) {
+  /*
+    源站对接受 br 的浏览器直接吐 PPSSPPSDL.data.br（server/src/precompressed-static.js）。
+    它解开必须就是清单里的那份 data —— 过期的 .br 会让核心拿到错的资源包，解包直接失败。
+  */
+  const brPath = join(runtimeDir, 'PPSSPPSDL.data.br')
+  if (!existsSync(brPath)) fail('缺少 PPSSPPSDL.data.br；运行 npm run ppsspp:precompress（data 明文 19MB，Cloudflare 不压 octet-stream）')
+  let decoded
+  try {
+    decoded = brotliDecompressSync(readFileSync(brPath))
+  } catch {
+    fail('PPSSPPSDL.data.br 不是合法的 Brotli 流')
+  }
+  if (createHash('sha256').update(decoded).digest('hex') !== manifest.artifacts['PPSSPPSDL.data'].sha256) {
+    fail('PPSSPPSDL.data.br 解开后与 runtime.json 的 data 哈希不符；重跑 npm run ppsspp:precompress')
   }
 }
 
