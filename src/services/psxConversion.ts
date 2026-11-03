@@ -1,5 +1,6 @@
 /** PS1 ISO → CD CHD：只传任务元数据，大文件仍由浏览器分片直传 R2。 */
 import { api, ApiError } from './api'
+import { waitForConversionJob } from './conversionPoll.js'
 import type { PspConversionCapability, PspConversionJob } from './pspConversion'
 import { pspConversionLabel } from './pspConversion'
 
@@ -67,33 +68,25 @@ export async function createPsxConversion(request: CreatePsxConversion): Promise
   throw last
 }
 
-export const getPsxConversion = (id: string) =>
-  api.get<PspConversionJob>(`/api/admin/disc-conversions/${encodeURIComponent(id)}`, true)
+export const getPsxConversion = (id: string, signal?: AbortSignal) =>
+  api.get<PspConversionJob>(`/api/admin/disc-conversions/${encodeURIComponent(id)}`, true, signal)
 
 export async function waitForPsxConversion(
   id: string,
   onUpdate?: (job: PspConversionJob) => void,
   signal?: AbortSignal,
 ): Promise<PspConversionJob> {
-  for (;;) {
-    if (signal?.aborted) throw new DOMException('页面已离开，后台转换仍会继续', 'AbortError')
-    const job = await getPsxConversion(id)
+  return waitForConversionJob(async () => {
+    const job = await getPsxConversion(id, signal)
     if (job.platform !== 'psx') throw new Error('恢复的任务不是 PS1 转换任务')
-    onUpdate?.(job)
-    if (job.status === 'completed') return job
-    if (job.status === 'failed') throw new Error(job.error || 'PS1 ISO 转换失败')
-    await new Promise<void>((resolve, reject) => {
-      const onAbort = () => {
-        window.clearTimeout(timer)
-        reject(new DOMException('页面已离开，后台转换仍会继续', 'AbortError'))
-      }
-      const timer = window.setTimeout(() => {
-        signal?.removeEventListener('abort', onAbort)
-        resolve()
-      }, 1500)
-      signal?.addEventListener('abort', onAbort, { once: true })
-    })
-  }
+    return job
+  }, {
+    signal,
+    onUpdate,
+    isCompleted: (job) => job.status === 'completed',
+    isFailed: (job) => job.status === 'failed',
+    failureMessage: (job) => job.error || 'PS1 ISO 转换失败',
+  })
 }
 
 export const psxConversionLabel = pspConversionLabel

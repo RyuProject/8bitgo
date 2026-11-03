@@ -33,6 +33,7 @@ const RUFFLE_TEMPLATE_URL =
 
 const BRIDGES = [
   {
+    id: 'agi1',
     label: 'AGI（AGI1：Infectonator 2）',
     source: 'flash-api/armor-games/src',
     sourceFile: 'test_fla/MainTimeline.as',
@@ -42,6 +43,7 @@ const BRIDGES = [
     manifest: 'public/flash-api/armor-games/runtime.json',
   },
   {
+    id: 'agi2',
     label: 'AGI2（Kingdom Rush Frontiers）',
     source: 'flash-api/armor-games/src-agi2',
     sourceFile: 'KrfAgiBridge.as',
@@ -51,6 +53,7 @@ const BRIDGES = [
     manifest: 'public/flash-api/armor-games/runtime-agi2.json',
   },
   {
+    id: 'banana',
     label: 'Banana（SAS Zombie Assault 3）',
     // SAS3 只按 Loader.content 动态调用方法，不要求文档类名；Ruffle 的空壳模板足够。
     source: 'flash-api/ninjakiwi/src',
@@ -81,7 +84,14 @@ function resolveTemplate(bridge) {
 }
 
 let built = 0
-for (const bridge of BRIDGES) {
+const onlyArg = process.argv.find((arg) => arg.startsWith('--only='))
+const only = onlyArg ? onlyArg.slice('--only='.length).toLowerCase() : ''
+const selectedBridges = only ? BRIDGES.filter((bridge) => bridge.id === only) : BRIDGES
+if (only && selectedBridges.length === 0) {
+  throw new Error(`未知桥接目标：${only}（可用值：${BRIDGES.map((bridge) => bridge.id).join(', ')}）`)
+}
+
+for (const bridge of selectedBridges) {
   const sourceDir = join(ROOT, bridge.source)
   const sourceFile = join(sourceDir, bridge.sourceFile)
   /*

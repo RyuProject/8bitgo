@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "bytes": 6139,
-  "swfSha256": "7191506111c536f987eecc2ee6a323153ab992bd57378109cc1e9d5d2f2404f1",
-  "sourceSha256": "0381419497148554b09cbb8613255030486c3ebc87e5309abc12fcc4345853e3",
+  "bytes": 6266,
+  "swfSha256": "eabb42a23db102d2f8bc314e06a2f0de2534a76daffc6e16dbab8a4031846b81",
+  "sourceSha256": "c9f9a608e7bac3b130a242e740022c21f9dd3a69e78e9bb5d740f299b7fe0f75",
   "template": {
     "seed": "flash-api/armor-games/template-agi2.swf"
   }

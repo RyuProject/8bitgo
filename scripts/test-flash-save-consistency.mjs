@@ -199,6 +199,10 @@ check('AGI2 具备幂等重试、条件更新和给新游戏的简化接口', ()
   ]) {
     assert.ok(source.includes(fragment), `AGI2 缺少关键链路：${fragment}`)
   }
+  const rootParamsMerge = source.indexOf('for(var rootName:String in rootParams) params[rootName] = rootParams[rootName]')
+  const bridgeParamsMerge = source.indexOf('for(var bridgeName:String in bridgeParams) params[bridgeName] = bridgeParams[bridgeName]')
+  assert.ok(rootParamsMerge >= 0 && bridgeParamsMerge > rootParamsMerge,
+    'AGI2 必须先继承主影片 FlashVars，再让桥 URL query 覆盖同名旧值')
   assert.ok(!source.includes('waitForQueue('), 'AGI2 仍有 3 秒后绕过队列读旧档的路径')
 })
 

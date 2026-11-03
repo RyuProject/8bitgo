@@ -324,26 +324,42 @@ package
       }
 
       /**
-       * 从最外层游戏的 LoaderInfo 读 FlashVars。
-       * 桥是子 Loader，所以参数挂在 stage.root 上；拿不到就退回自己的 loaderInfo。
+       * 合并最外层游戏与桥自身的 LoaderInfo 参数。
+       * Ruffle 的 parameters 在部分加载链路只到主 SWF；桥 URL 上的 query 则只在子桥自身可见。
+       * 两边都读，并让桥 URL 参数优先，才能兼容旧游戏并确保会话参数确实到达 AGI2。
        */
       private function readParameters() : void
       {
          var params:Object = {};
+         var rootParams:Object = null;
+         var bridgeParams:Object = null;
          try
          {
             if(Boolean(stage) && Boolean(stage.root) && Boolean(stage.root.loaderInfo))
             {
-               params = stage.root.loaderInfo.parameters;
-            }
-            else if(loaderInfo)
-            {
-               params = loaderInfo.parameters;
+               rootParams = stage.root.loaderInfo.parameters;
             }
          }
          catch(error:Error)
          {
-            params = {};
+            rootParams = null;
+         }
+         try
+         {
+            if(loaderInfo) bridgeParams = loaderInfo.parameters;
+         }
+         catch(error:Error)
+         {
+            bridgeParams = null;
+         }
+         if(rootParams != null)
+         {
+            for(var rootName:String in rootParams) params[rootName] = rootParams[rootName];
+         }
+         if(bridgeParams != null)
+         {
+            // 子桥 URL 的 query 是专门给 AGI2 的参数副本，优先于主影片里同名的旧值。
+            for(var bridgeName:String in bridgeParams) params[bridgeName] = bridgeParams[bridgeName];
          }
          this.endpoint = this.stringValue(params.eightbitgo_save_endpoint);
          this.sessionToken = this.stringValue(params.eightbitgo_save_token);

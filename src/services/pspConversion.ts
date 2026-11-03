@@ -1,5 +1,6 @@
 /** PSP ISO → CHD 后台任务客户端。文件上传仍复用 romMultipart，这里只管理任务状态。 */
 import { api, ApiError } from './api'
+import { waitForConversionJob } from './conversionPoll.js'
 
 export type PspConversionStatus =
   | 'queued'
@@ -105,8 +106,8 @@ export async function createPspConversion(request: CreatePspConversion): Promise
   throw last
 }
 
-export const getPspConversion = (id: string) =>
-  api.get<PspConversionJob>(`/api/admin/psp-conversions/${encodeURIComponent(id)}`, true)
+export const getPspConversion = (id: string, signal?: AbortSignal) =>
+  api.get<PspConversionJob>(`/api/admin/psp-conversions/${encodeURIComponent(id)}`, true, signal)
 
 export const retryPspConversion = (id: string) =>
   api.post<PspConversionJob>(`/api/admin/psp-conversions/${encodeURIComponent(id)}/retry`, undefined, true)
@@ -132,22 +133,11 @@ export async function waitForPspConversion(
   onUpdate?: (job: PspConversionJob) => void,
   signal?: AbortSignal,
 ): Promise<PspConversionJob> {
-  for (;;) {
-    if (signal?.aborted) throw new DOMException('页面已离开，后台转换仍会继续', 'AbortError')
-    const job = await getPspConversion(id)
-    onUpdate?.(job)
-    if (job.status === 'completed') return job
-    if (job.status === 'failed') throw new Error(job.error || 'PSP ISO 转换失败')
-    await new Promise<void>((resolve, reject) => {
-      const onAbort = () => {
-        window.clearTimeout(timer)
-        reject(new DOMException('页面已离开，后台转换仍会继续', 'AbortError'))
-      }
-      const timer = window.setTimeout(() => {
-        signal?.removeEventListener('abort', onAbort)
-        resolve()
-      }, 1500)
-      signal?.addEventListener('abort', onAbort, { once: true })
-    })
-  }
+  return waitForConversionJob(() => getPspConversion(id, signal), {
+    signal,
+    onUpdate,
+    isCompleted: (job) => job.status === 'completed',
+    isFailed: (job) => job.status === 'failed',
+    failureMessage: (job) => job.error || 'PSP ISO 转换失败',
+  })
 }

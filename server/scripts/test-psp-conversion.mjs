@@ -19,6 +19,7 @@ const {
   validObjectKey,
   writeAllAt,
 } = await import('../src/psp-conversion.js')
+const { isTransientConversionPollError, waitForConversionJob } = await import('../../src/services/conversionPoll.js')
 
 const env = { PSP_CONVERT_MAX_ISO_MB: '2560' }
 const valid = {
@@ -238,4 +239,23 @@ assert.match(conversionSource, /Range: `bytes=\$\{received\}-`/, 'R2 下载失�
 assert.match(conversionSource, /Readable\.fromWeb\(response\.body\)/, '下载必须使用带背压的流式磁盘管线')
 assert.match(conversionSource, /复用上次已完整校验的 CHD/, '发布失败后不能重新下载和压缩')
 
-console.log('✅ PSP ISO → CHD：格式守卫、命令参数、断点任务与后台接线通过')
+assert.equal(isTransientConversionPollError(Object.assign(new Error('Bad Gateway'), { status: 502 })), true)
+assert.equal(isTransientConversionPollError(new TypeError('Failed to fetch')), true)
+assert.equal(isTransientConversionPollError(Object.assign(new Error('Unauthorized'), { status: 401 })), false)
+const delays = []
+let reads = 0
+const recovered = await waitForConversionJob(async () => {
+  reads += 1
+  if (reads === 1) throw Object.assign(new Error('Bad Gateway'), { status: 502 })
+  if (reads === 2) throw new TypeError('DNS lookup temporarily failed')
+  return { status: 'completed', targetKey: 'roms/psp/game.chd' }
+}, {
+  isCompleted: (job) => job.status === 'completed',
+  isFailed: (job) => job.status === 'failed',
+  sleep: async (ms) => { delays.push(ms) },
+})
+assert.equal(recovered.status, 'completed', '502 / DNS 抖动后应继续查询到服务器最终状态')
+assert.deepEqual(delays, [1000, 2000], '连续查询失败使用有上限的指数退避')
+assert.equal(reads, 3)
+
+console.log('✅ PSP ISO → CHD：格式守卫、后台队列、上传发布与 502 / 网络抖动恢复通过')
