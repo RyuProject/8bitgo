@@ -67,6 +67,18 @@ check('繁体也一样：回退到简体的不算翻译过', () => {
   )
 })
 
+check('人工简介能产生语言页，但仍必须有对应语言 ROM', () => {
+  const row = {
+    slug: 'localized-description',
+    description: '中文介绍',
+    description_localized: JSON.stringify({ fr: 'Description française' }),
+    rom_languages: 'fr',
+  }
+  assert.equal(hasIndexableGameLanguage(row, 'fr'), true)
+  assert.equal(hasIndexableGameLanguage({ ...row, rom_languages: 'en' }, 'fr'), false)
+  assert.deepEqual(locs(buildGameSitemap([row], 'fr', SITE)), [`${SITE}/fr/games/localized-description`])
+})
+
 check('英文认独立的 description_en 列（游戏的英文简介不在 description_i18n 里）', () => {
   assert.equal(hasLocalizedBody(withEn, 'en', { i18n: 'description_i18n', en: 'description_en' }), true)
   assert.equal(hasLocalizedBody(bare, 'en', { i18n: 'description_i18n', en: 'description_en' }), false)
@@ -143,6 +155,7 @@ check('⚠️ 游戏那句 SQL 必须把门控要读的列查出来（漏一列 
   assert.ok(rich, 'games 的主查询必须 SELECT description_i18n，否则每一行都判成没翻译')
   assert.match(rich, /\bdescription\b/, 'zh-Hans 那一档靠 description，也必须查出来')
   assert.ok(rich.includes('description_en'), 'en 那一档靠 description_en，也必须查出来')
+  assert.ok(rich.includes('description_localized'), '人工多语言简介必须由主查询读取')
   assert.ok(rich.includes('rom_languages') && rich.includes('game_roms'), '主查询必须带已绑定 ROM 语言，否则无法拦住跨语言回退页')
   const posts = src.match(/SELECT[^']*FROM posts WHERE published = 1[^']*/g) || []
   assert.ok(
@@ -155,6 +168,7 @@ check('JSON 列是字符串形状也认（驱动版本 / 列被存成 TEXT）', 
   const row = { description_i18n: JSON.stringify({ de: 'Doom ist…' }) }
   assert.equal(hasLocalizedBody(row, 'de', { i18n: 'description_i18n' }), true)
   assert.equal(hasLocalizedBody(row, 'fr', { i18n: 'description_i18n' }), false)
+  assert.equal(hasLocalizedBody({ description_localized: JSON.stringify({ fr: 'Description' }) }, 'fr', { localized: 'description_localized' }), true)
 })
 
 check('空串 / 全空白的译文当没翻译（被删过的译文不该把 URL 带进来）', () => {

@@ -2,7 +2,7 @@
  * 把游戏简介 / 游戏中文译名 / 博客文章批量预生成成各语言版本。
  *
  * 用法（在 server/ 下跑，或 `node server/scripts/pretranslate.mjs`）：
- *   npm run pretranslate -- --dry-run              先看要做多少、花多少次 API
+ *   npm run pretranslate -- --dry-run              先看要生成多少、最大可能回退到火山的字符数
  *   npm run pretranslate -- --langs=zh-Hant        只补繁体（中文源文走本地 OpenCC，不花钱；
  *                                                  只填了 description_en 的游戏，繁体仍要上游翻）
  *   npm run pretranslate -- --yes                  全部语言，真的写库
@@ -17,15 +17,15 @@
  *
  * 预生成一遍之后，每个语言前缀下的页面才有各自的正文，hreflang 那一簇才立得住。
  *
- * ── 成本 ────────────────────────────────────────────────
- *   zh-Hant  —— OpenCC 本地转换，**零成本**，随便跑
- *   其余语言 —— 走火山 TranslateText，**按字符计费**（不是按请求次数）
- * 所以默认**不动手**：先打印「计费字符数」，看清楚了再加 `--yes`。
+ * ── 上游与成本 ──────────────────────────────────────────
+ *   zh-Hant  —— 中文源文走 OpenCC 本地转换，**零成本**，随便跑
+ *   其余语言 —— 先走 MyMemory / Lingva 公共服务；两者失败时才可能使用按字符计费的火山兜底
+ * 所以 dry-run 打印的是「最大可能回退到火山的字符数」，不是预估必然消费的金额。
  * 已经有译文的字段一律跳过（想重做加 `--force`），重复跑是安全的。
  *
  * 报两个数字，别混：
- *   计费字符数 —— 成本。分批、切段都不改变它
- *   预计请求数 —— 耗时和撞 -429 的概率。按官方 16 条 / 4800 字符编批算出来的
+ *   潜在火山兜底字符数 —— 所有公共服务都失败时的最大计量字符数
+ *   预计火山兜底批次数 —— 仅为火山批次估算；免费接口请求数会因 MyMemory 的 450-byte 分段而更多
  *
  * ⚠️ 跑完要让前台看见，得清两层缓存：
  *   1. 服务端进程内的内容缓存 —— 重启 node，或在后台随便改存一次内容（会调 invalidateContent）
@@ -33,7 +33,8 @@
  */
 import 'dotenv/config'
 import { pool, query } from '../src/db.js'
-import { translatePlan, isTranslateConfigured, volcCode, planBatches, splitOversized } from '../src/translate.js'
+import { translatePlan, isTranslateConfigured, isTranslationProviderConfigured, volcCode, planBatches, splitOversized } from '../src/translate.js'
+import { countTranslationCharacters } from '../src/translation-usage.js'
 import { renderField, renderMarkdownField, gameDescriptionSource } from '../src/i18n-generate.js'
 import { isZhConvertAvailable } from '../src/zh-convert.js'
 import { writeDescriptionTranslation, writeTitleTranslation } from '../src/games-repo.js'
@@ -81,11 +82,10 @@ for (const l of LANGS) {
 /* ---------------- 计数 ---------------- */
 
 /**
- * 计数。**`chars` 才是花钱的那个数** —— 火山文本翻译按字符计费，不按请求次数。
- * 原来这里只报「调用次数」，那个口径既不等于成本，批量化之后连次数本身都不准了。
- * `requests` 仍然留着，它决定的是耗时和撞 -429 的概率。
+ * 字符数是最坏情况：公共服务都失败时，火山最多会收到这么多字符；它不是预估必然消费。
+ * 批次数只估算火山兜底，不包含 MyMemory 的小段请求数或 Lingva 请求数。
  */
-const stat = { chars: 0, requests: 0, opencc: 0, skipped: 0, awaitingVolc: 0, failed: 0, wrote: 0 }
+const stat = { fallbackChars: 0, fallbackBatches: 0, opencc: 0, skipped: 0, awaitingVolc: 0, failed: 0, wrote: 0 }
 /** 逐条打印会淹掉输出，失败的单独攒起来最后一起报 */
 const failures = []
 
@@ -109,14 +109,13 @@ async function doField({ what, source, plan, cached, markdown = false, write }) 
   if (plan.convert) {
     stat.opencc += 1
   } else {
-    // 计费口径：字符数。段落切分和分批都不改变总字符数，所以直接数源文。
-    stat.chars += source.length
-    // 请求数：按 translate.js 那两个官方限额（16 条 / 4800 字符）真编一遍批，
-    // 别再拿「段数」当次数 —— 批量化之后那个数字会高估好几倍。
+    // 用作火山兜底的最坏情况估算：段落切分和分批都不改变原文总字符数。
+    stat.fallbackChars += countTranslationCharacters([source])
+    // 仅估算火山兜底批次；MyMemory 还会按每段 450-byte 切分，公共服务请求数并不等于此数。
     const segs = markdown
       ? source.split(/\n\n+/).filter((x) => x.trim()).flatMap((x) => splitOversized(x))
       : splitOversized(source)
-    stat.requests += planBatches(segs).length
+    stat.fallbackBatches += planBatches(segs).length
   }
 
   if (DRY) return
@@ -261,12 +260,14 @@ try {
   console.log(`目标语言：${LANGS.join(', ')}`)
   console.log(`简繁转换（OpenCC）：${openccOk ? '可用' : '⚠️ 不可用 —— npm i opencc-js'}`)
   console.log(`火山翻译：${isTranslateConfigured() ? '已配置' : '⚠️ 未配置（缺 VOLC_AK / VOLC_SK）'}`)
+  console.log(`公共翻译接口：${isTranslationProviderConfigured() ? 'MyMemory → Lingva' : '未配置'}`)
+  console.log(`火山翻译兜底：${isTranslateConfigured() ? '已配置（两家公共接口失败后使用，受字符上限保护）' : '未配置（公共接口都失败时将报错）'}`)
   if (LANGS.includes('zh-Hant') && !openccOk) {
     console.error('\n繁体是这次的目标之一，但 opencc-js 没装 —— 先 npm i opencc-js')
     process.exit(1)
   }
-  if (needVolc && !isTranslateConfigured() && !DRY) {
-    console.error('\n目标里有需要翻译的语言，但火山未配置。只想补繁体的话：--langs=zh-Hant')
+  if (needVolc && !isTranslationProviderConfigured() && !DRY) {
+    console.error('\n目标里有需要翻译的语言，但公共翻译接口和火山兜底均不可用。只想补繁体的话：--langs=zh-Hant')
     process.exit(1)
   }
 
@@ -276,8 +277,8 @@ try {
   console.log(
     `\n${DRY ? '【试运行，什么都没写】' : '完成'}` +
       `\n  OpenCC 转换   ${stat.opencc} 项（免费，不走网络）` +
-      `\n  计费字符数    ${stat.chars.toLocaleString('en-US')} 字符  ← 火山按字符计费，这个才是成本` +
-      `\n  预计请求数    ${stat.requests} 次（按 16 条 / 4800 字符编批）` +
+      `\n  潜在火山兜底字符数 ${stat.fallbackChars.toLocaleString('en-US')}（仅两家公共服务均失败时可能计入）` +
+      `\n  预计火山兜底批次数 ${stat.fallbackBatches} 次（按 16 条 / 4800 字符编批；不含公共接口请求）` +
       `\n  已有跳过      ${stat.skipped} 项` +
       (stat.awaitingVolc
         ? `\n  待上游翻译    ${stat.awaitingVolc} 项（源文不是中文，OpenCC 转不了；配上 VOLC_AK / VOLC_SK 再跑）`

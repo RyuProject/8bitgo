@@ -171,6 +171,17 @@ export async function upsertGame(game: Game, options: { createOnly?: boolean } =
       '服务端没有保存 DOSBox-X 配置。请在服务器运行数据库迁移并重启 8bitgo-api，然后重新保存。',
     )
   }
+  const descriptionMap = (value: Game['descriptionLocalized']) => Object.fromEntries(
+    Object.entries(value ?? {})
+      .map(([language, description]) => [language, description.trim()] as const)
+      .filter(([, description]) => Boolean(description))
+      .sort(([a], [b]) => a.localeCompare(b)),
+  )
+  if (JSON.stringify(descriptionMap(game.descriptionLocalized)) !== JSON.stringify(descriptionMap(saved.descriptionLocalized))) {
+    throw new Error(
+      '服务端没有保存各语言简介。请在服务器运行数据库迁移（cd server && npm run migrate）并重启 8bitgo-api，然后重新保存。',
+    )
+  }
   return saved
 }
 

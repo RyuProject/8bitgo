@@ -87,6 +87,17 @@ await check('自动推送只提交默认就能启动对应语言 ROM 的详情�
   assert.ok(urls.includes('https://8bitgo.com/de/games'), '聚合页不依赖某款游戏的 ROM 槽，仍要通知')
 })
 
+await check('人工多语言简介会随对应 ROM 进入主动索引推送', async () => {
+  const urls = gameChangeUrls({
+    slug: 'curated-language',
+    description: '中文介绍',
+    description_localized: JSON.stringify({ fr: 'Description française' }),
+    roms: { fr: 'roms/fr.zip' },
+  }, 'https://8bitgo.com')
+  assert.ok(urls.includes('https://8bitgo.com/fr/games/curated-language'))
+  assert.ok(!urls.includes('https://8bitgo.com/de/games/curated-language'))
+})
+
 await check('缺少基准正文时不主动推默认语言薄页，有真实正文的其它语言不受影响', async () => {
   const urls = gameChangeUrls({
     slug: 'thin-game',

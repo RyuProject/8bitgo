@@ -94,7 +94,7 @@ export const FORBIDDEN_OUT_KEYS = Object.freeze([
   'home_rank', 'homeRank',     // 首页运营位
   'body_control',
   'video',
-  'title_zh', 'title_i18n', 'description_en', 'description_i18n', // 内部多语言列，对外已折成单语言
+  'title_zh', 'title_i18n', 'description_en', 'description_i18n', 'description_localized', // 内部多语言列，对外已折成单语言
   'id',              // 自增主键，对外只认 slug
 ])
 

@@ -38,12 +38,50 @@ const bool = dbFlag
  * - 形状：{ 'zh-Hant': '...', 'es': '...', ... } -> 同形状的去空版本或 undefined。
  */
 export function readI18nMap(raw) {
+  // 志愿者库把归一化后的 API 对象序列化进 JSON payload，回读时仍需支持字符串形态。
+  if (typeof raw === 'string') {
+    try { raw = JSON.parse(raw) } catch { return undefined }
+  }
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
   const out = {}
   for (const [k, v] of Object.entries(raw)) {
     if (typeof v === 'string' && v.trim()) out[k] = v
   }
   return Object.keys(out).length ? out : undefined
+}
+
+/** 人工简介用独立 JSON 列，避免改基准文案时把可复用的机器翻译和人工校对混为一谈。 */
+function localizedDescriptionsOf(value) {
+  if (value == null || value === '') return null
+  let raw = value
+  if (typeof raw === 'string') {
+    try { raw = JSON.parse(raw) } catch { return badGameField('各语言简介不是合法 JSON') }
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return badGameField('各语言简介必须是语言码到文本的对象')
+  }
+  const entries = Object.entries(raw)
+  if (entries.length > 16) return badGameField('各语言简介最多支持 16 个语言槽')
+  const out = {}
+  for (const [language, value] of entries) {
+    if (!/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(language) || language.length > 10) {
+      return badGameField(`各语言简介的语言码无效：${language}`)
+    }
+    let canonicalLanguage
+    try { canonicalLanguage = Intl.getCanonicalLocales(language)[0] } catch { /* 下面统一返回字段校验错误 */ }
+    if (!canonicalLanguage || canonicalLanguage.length > 10 || canonicalLanguage === 'zh-Hans' || canonicalLanguage === 'en') {
+      return badGameField(`各语言简介的语言码无效：${language}`)
+    }
+    if (value == null || value === '') continue
+    if (typeof value !== 'string') return badGameField(`${language} 简介必须是文本`)
+    const text = value.trim()
+    if (text.length > 4000) return badGameField(`${language} 简介不能超过 4000 个字符`)
+    if (text) {
+      if (Object.hasOwn(out, canonicalLanguage)) return badGameField(`各语言简介存在重复语言码：${canonicalLanguage}`)
+      out[canonicalLanguage] = text
+    }
+  }
+  return Object.keys(out).length ? JSON.stringify(out) : null
 }
 
 /** 入库时统一逗号和空格，否则同一家公司会在开发商统计里被拆成多个名字。 */
@@ -674,6 +712,8 @@ export function gameRowToApi(r, rel = {}) {
   g.titleI18n = readI18nMap(r.title_i18n)
   // 没写英文简介的游戏不带这个字段，前台自己回落到基准简介
   if (r.description_en) g.descriptionEn = r.description_en
+  const descriptionLocalized = readI18nMap(r.description_localized)
+  if (descriptionLocalized) g.descriptionLocalized = descriptionLocalized
   // 按需缓存的其它语种译文。形状：{ zh-Hant: '...', es: '...', ... }。
   // 没翻译过则不挂这个字段，前端的 gameDescription() 会自然回退到 descriptionEn / description。
   g.descriptionI18n = readI18nMap(r.description_i18n)
@@ -727,6 +767,11 @@ export function gameApiToRow(g) {
     video: g.video || null,
     description: String(g.description ?? ''),
     description_en: g.descriptionEn ? String(g.descriptionEn) : null,
+    // 省略字段表示“旧客户端 / 种子脚本不知道这项配置”，不要因此抹掉已人工校对的简介；
+    // 后台编辑表单会显式提交空对象，所以管理员仍可有意清空。
+    ...(Object.prototype.hasOwnProperty.call(g ?? {}, 'descriptionLocalized')
+      ? { description_localized: localizedDescriptionsOf(g.descriptionLocalized) }
+      : {}),
     body_control: g.bodyControl ? 1 : 0,
     adult: g.adult ? 1 : 0,
     hidden: g.hidden ? 1 : 0,
@@ -775,6 +820,7 @@ const FIELD_TO_COLUMN = {
   video: ['video', (v) => (v == null || v === '' ? null : String(v))],
   description: ['description', (v) => String(v ?? '')],
   descriptionEn: ['description_en', (v) => (v == null || v === '' ? null : String(v))],
+  descriptionLocalized: ['description_localized', localizedDescriptionsOf],
   bodyControl: ['body_control', (v) => (v ? 1 : 0)],
   adult: ['adult', (v) => (v ? 1 : 0)],
   hidden: ['hidden', (v) => (v ? 1 : 0)],

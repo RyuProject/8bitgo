@@ -19,8 +19,35 @@ import assert from 'node:assert/strict'
 process.env.VOLC_AK = 'AK_TEST'
 process.env.VOLC_SK = 'SK_TEST'
 
-const { isTranslateConfigured, translatePlan, translateText, volcCode, isLocalConversion, splitOversized, planBatches } =
+const {
+  isTranslateConfigured,
+  isTranslationProviderConfigured,
+  translatePlan,
+  translateText,
+  volcCode,
+  isLocalConversion,
+  splitOversized,
+  splitMyMemoryText,
+  planBatches,
+} =
   await import('../src/translate.js')
+const { countTranslationCharacters, setTranslationUsageAdapterForTests } =
+  await import('../src/translation-usage.js')
+
+let mockUsageChars = 0
+setTranslationUsageAdapterForTests({
+  reserve: async (chars, limit) => {
+    if (mockUsageChars + chars > limit) return false
+    mockUsageChars += chars
+    return true
+  },
+  getUsage: async (limit) => ({
+    usedChars: mockUsageChars,
+    limitChars: limit,
+    remainingChars: Math.max(0, limit - mockUsageChars),
+    exhausted: mockUsageChars >= limit,
+  }),
+})
 
 let failed = 0
 const ok = (name) => console.log(`  ✅ ${name}`)
@@ -72,7 +99,10 @@ try {
   assert.equal(volcCode('zh-Hans'), 'zh')
 
   // 源文是英文 → 让上游翻，目标必须是 zh-Hant 而不是 zh
+  // 后台“翻译并填写”固定从英文简介出发，简体、繁体都必须走火山的对应目标语种。
+  assert.deepEqual(translatePlan('zh-Hans', 'en'), { source: 'en', target: 'zh', effective: 'zh-Hans' })
   assert.deepEqual(translatePlan('zh-Hant', 'en'), { source: 'en', target: 'zh-Hant', effective: 'zh-Hant' })
+  assert.equal(countTranslationCharacters(['A😀', '中']), 3, '字符用量按 Unicode 码点计数')
   // 简繁不能被当成同一种语言而 passthrough 掉
   assert.notEqual(volcCode('zh-Hans'), volcCode('zh-Hant'))
   ok('繁体：简体源文走 OpenCC，英文源文走 API 且目标是 zh-Hant')
@@ -116,8 +146,10 @@ try {
 /* ---------------- isTranslateConfigured ---------------- */
 try {
   assert.equal(isTranslateConfigured(), true)
+  assert.equal(isTranslationProviderConfigured(), true, '默认公共接口无需火山密钥也可用')
   delete process.env.VOLC_AK
   assert.equal(isTranslateConfigured(), false)
+  assert.equal(isTranslationProviderConfigured(), true, '缺火山密钥不应关闭公共接口')
   process.env.VOLC_AK = 'AK_TEST'
   ok('isTranslateConfigured 在缺 AK / SK 时返回 false')
 } catch (e) {
@@ -133,12 +165,35 @@ try {
  * raw=true: 用例 4 故意测「不是 JSON 响应」，body 原样发回，不再 JSON.stringify 包一层。
  */
 let nextMock = null
+let nextMyMemory = null
+let nextLingva = null
 let lastMock = null
+let lastMyMemory = null
+let lastLingva = null
 
 const mockServer = createServer((req, res) => {
   let raw = ''
   req.on('data', (c) => (raw += c))
   req.on('end', () => {
+    const requestUrl = new URL(req.url || '/', 'http://localhost')
+    if (requestUrl.pathname === '/get') {
+      lastMyMemory = { method: req.method, url: requestUrl, headers: req.headers }
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(nextMyMemory || {
+        responseStatus: 429,
+        quotaFinished: true,
+        responseDetails: 'test MyMemory unavailable',
+      }))
+      nextMyMemory = null
+      return
+    }
+    if (requestUrl.pathname.startsWith('/api/v1/')) {
+      lastLingva = { method: req.method, url: requestUrl, headers: req.headers, body: raw }
+      res.writeHead(nextLingva?.status || 503, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(nextLingva?.body || { error: 'test Lingva unavailable' }))
+      nextLingva = null
+      return
+    }
     lastMock = {
       url: req.url,
       method: req.method,
@@ -162,16 +217,20 @@ const mockServer = createServer((req, res) => {
 })
 await new Promise((r) => mockServer.listen(0, '127.0.0.1', r))
 const PORT = mockServer.address().port
-// 翻译模块每次调用重读这个环境变量。这里设一次就够。
+// 翻译模块每次调用重读这些地址。这里统一指向本地 mock，不会发真实外网请求。
 process.env.VOLC_TRANSLATE_BASE_URL = `http://127.0.0.1:${PORT}`
+process.env.MYMEMORY_API_URL = `http://127.0.0.1:${PORT}/get`
+process.env.MYMEMORY_EMAIL = 'yeahcore@yeah.net'
+process.env.LINGVA_BASE_URL = `http://127.0.0.1:${PORT}`
 
-async function mockCall(handler) {
+async function mockCall(handler, onProvider) {
   nextMock = handler()
-  return translateText('Hello world', 'en', 'es')
+  return translateText('Hello world', 'en', 'es', onProvider)
 }
 
 /* —— 用例 1：成功路径 —— */
 try {
+  const provider = []
   const out = await mockCall(() => ({
     status: 200,
     body: {
@@ -179,8 +238,9 @@ try {
       // ⚠️ 官方形状是**顶层** TranslationList，不是 Result.TextList（见 translateBatch 的注释）
       TranslationList: [{ Translation: 'Hola mundo', DetectedSourceLanguage: 'en' }],
     },
-  }))
+  }), (name) => provider.push(name))
   assert.equal(out, 'Hola mundo')
+  assert.deepEqual(provider, ['volc'], '两个公共服务失败后应使用火山兜底')
 
   // 请求体形状：Method = POST, Action + Version 在 query, body 是合法 JSON
   assert.equal(lastMock.method, 'POST')
@@ -195,6 +255,78 @@ try {
   ok('V4 签名头 + 请求体形状')
 } catch (e) {
   bad('V4 签名头 + 请求体形状', e)
+}
+
+/* —— 用例 1b：先用 MyMemory；验证联系邮箱和语言对 —— */
+try {
+  const provider = []
+  const previousVolcRequest = lastMock
+  const previousUsage = mockUsageChars
+  nextMyMemory = { responseStatus: 200, responseData: { translatedText: 'Hola mundo', match: 1 } }
+  const out = await translateText('Hello world', 'en', 'es', (name) => provider.push(name))
+  assert.equal(out, 'Hola mundo')
+  assert.deepEqual(provider, ['mymemory'])
+  assert.equal(lastMyMemory.method, 'GET')
+  assert.equal(lastMyMemory.url.searchParams.get('q'), 'Hello world')
+  assert.equal(lastMyMemory.url.searchParams.get('langpair'), 'en|es')
+  assert.equal(lastMyMemory.url.searchParams.get('de'), 'yeahcore@yeah.net')
+  assert.equal(lastMock, previousVolcRequest, 'MyMemory 成功后不应请求火山')
+  assert.equal(mockUsageChars, previousUsage, 'MyMemory 成功后不应增加火山用量')
+
+  nextMyMemory = { responseStatus: 200, responseData: { translatedText: 'Traditioneller Test', match: 1 } }
+  await translateText('Traditional test', 'en', 'zh-Hant')
+  assert.equal(lastMyMemory.url.searchParams.get('langpair'), 'en|zh-TW')
+  ok('MyMemory 优先、de 邮箱和繁体语言码正确')
+} catch (e) {
+  bad('MyMemory 优先、de 邮箱和繁体语言码正确', e)
+}
+
+/* —— 用例 1c：MyMemory 失败后才调用 Lingva —— */
+try {
+  const provider = []
+  const previousVolcRequest = lastMock
+  const previousUsage = mockUsageChars
+  nextLingva = { status: 200, body: { translation: 'Hola Lingva' } }
+  const out = await translateText('Fallback test', 'en', 'es', (name) => provider.push(name))
+  assert.equal(out, 'Hola Lingva')
+  assert.deepEqual(provider, ['lingva'])
+  assert.equal(lastLingva.method, 'POST')
+  assert.equal(lastLingva.url.pathname, '/api/v1/en/es')
+  assert.deepEqual(JSON.parse(lastLingva.body), { query: 'Fallback test' })
+  assert.equal(lastMock, previousVolcRequest, 'Lingva 成功后不应请求火山')
+  assert.equal(mockUsageChars, previousUsage, 'Lingva 成功后不应增加火山用量')
+  ok('MyMemory 失败后用 Lingva，且不调用火山')
+} catch (e) {
+  bad('MyMemory 失败后用 Lingva，且不调用火山', e)
+}
+
+/* —— 用例 1d：MyMemory 按 UTF-8 字节切分且不破坏 emoji —— */
+try {
+  const text = '😀'.repeat(200)
+  const chunks = splitMyMemoryText(text)
+  assert.ok(chunks.length > 1)
+  assert.ok(chunks.every((chunk) => Buffer.byteLength(chunk, 'utf8') <= 450))
+  assert.equal(chunks.join(''), text)
+  ok('MyMemory 长文本按字节切分且保留 UTF-8 字符')
+} catch (e) {
+  bad('MyMemory 长文本按字节切分且保留 UTF-8 字符', e)
+}
+
+/* —— 用例 1e：两个公共服务失败后受 200 万字符上限保护 —— */
+try {
+  const previousVolcRequest = lastMock
+  const previousUsage = mockUsageChars
+  process.env.VOLC_TRANSLATE_CHAR_LIMIT = String(mockUsageChars)
+  await assertError(() => translateText('Fallback test', 'en', 'es'), { code: 'VOLC_QUOTA_EXCEEDED' })
+  assert.equal(lastMock, previousVolcRequest, '额度已满时不能向火山发送请求')
+  assert.equal(mockUsageChars, previousUsage, '额度已满时用量不能增加')
+  assert.equal(lastMyMemory.url.searchParams.get('q'), 'Fallback test', '先尝试 MyMemory')
+  assert.equal(lastLingva.url.pathname, '/api/v1/en/es', 'MyMemory 失败后再尝试 Lingva')
+  ok('双公共接口失败后火山额度达到上限即停止')
+} catch (e) {
+  bad('双公共接口失败后火山额度达到上限即停止', e)
+} finally {
+  delete process.env.VOLC_TRANSLATE_CHAR_LIMIT
 }
 
 /* —— 用例 2：火山的 AuthFailure —— */
@@ -265,15 +397,28 @@ try {
 }
 
 /* —— 用例 5d：-429 自动退避重试 —— */
+let retryMockHandler
+const retryPreviousHandler = mockServer.listeners('request')[0]
 try {
   let hits = 0
   nextMock = { status: 200, body: { ResponseMetadata: {}, TranslationList: [{ Translation: 'ok' }] } }
-  // 用一个自增的 mock：第一次回 -429，第二次成功
-  const prev = mockServer.listeners('request')[0]
-  mockServer.removeListener('request', prev)
-  mockServer.on('request', (req, res) => {
-    req.on('data', () => {})
+  // 公共接口保持失败；只对真正到达火山的请求计数，第一次回 -429，第二次成功。
+  retryMockHandler = (req, res) => {
+    let raw = ''
+    req.on('data', (chunk) => (raw += chunk))
     req.on('end', () => {
+      const requestUrl = new URL(req.url || '/', 'http://localhost')
+      if (requestUrl.pathname === '/get') {
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ responseStatus: 429, quotaFinished: true, responseDetails: 'test unavailable' }))
+        return
+      }
+      if (requestUrl.pathname.startsWith('/api/v1/')) {
+        res.writeHead(503, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'test unavailable' }))
+        return
+      }
+      lastMock = { url: req.url, method: req.method, headers: req.headers, body: raw }
       hits += 1
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(
@@ -282,15 +427,18 @@ try {
           : JSON.stringify({ ResponseMetadata: {}, TranslationList: [{ Translation: '重试成功' }] }),
       )
     })
-  })
+  }
+  mockServer.removeListener('request', retryPreviousHandler)
+  mockServer.on('request', retryMockHandler)
   const out = await translateText('Hi', 'en', 'es')
   assert.equal(out, '重试成功')
   assert.equal(hits, 2, '应该正好重试一次')
-  mockServer.removeAllListeners('request')
-  mockServer.on('request', prev)
   ok('-429 退避重试（错误码是数字也认）')
 } catch (e) {
   bad('-429 退避重试（错误码是数字也认）', e)
+} finally {
+  if (retryMockHandler) mockServer.removeListener('request', retryMockHandler)
+  mockServer.on('request', retryPreviousHandler)
 }
 
 /* —— 用例 5e：官方限额的分批与切分 —— */
@@ -324,12 +472,12 @@ try {
   bad('16 条 / 4800 字符的分批与超长切分', e)
 }
 
-/* —— 用例 6：缺 AK / SK 时不去真打火山 —— */
+/* —— 用例 6：无火山密钥时公共接口失败会返回可诊断错误 —— */
 try {
-  // 关掉配置，立刻调用应该直接抛 NOT_CONFIGURED，根本不该动 mock
+  // 两个公共接口会正常尝试；但缺密钥时绝不能触碰火山 mock。
   const beforeBody = lastMock ? lastMock.body : null
   delete process.env.VOLC_AK
-  await assertError(() => translateText('Hi', 'en', 'es'), { code: 'NOT_CONFIGURED' })
+  await assertError(() => translateText('Hi', 'en', 'es'), { code: 'TRANSLATION_PROVIDERS_FAILED', message: /MyMemory 和 Lingva 均不可用/ })
   process.env.VOLC_AK = 'AK_TEST'
   // mock 没被动过 —— 防止有人改了入口逻辑顺路发了请求
   const afterBody = lastMock ? lastMock.body : null
@@ -354,6 +502,17 @@ const mdMock = createServer((req, res) => {
   let raw = ''
   req.on('data', (c) => (raw += c))
   req.on('end', () => {
+    const requestUrl = new URL(req.url || '/', 'http://localhost')
+    if (requestUrl.pathname === '/get') {
+      res.writeHead(429, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ responseStatus: 429, quotaFinished: true, responseDetails: 'test MyMemory unavailable' }))
+      return
+    }
+    if (requestUrl.pathname.startsWith('/api/v1/')) {
+      res.writeHead(503, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'test Lingva unavailable' }))
+      return
+    }
     mockCalls++
     let body = {}
     try {

@@ -25,6 +25,8 @@ import { SITE_LANGUAGES, SITE_DEFAULT_LANGUAGE } from '../shared/site-languages.
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const {
   gameSeoLanguagePlan,
+  gameDescription,
+  needsTranslation,
   gameTitle,
   postSeoLanguagePlan,
   postTitle,
@@ -146,6 +148,36 @@ try {
   })
   assert.equal(gameSeoLanguagePlan(game, 'de').canonicalLanguage, 'en', '德文缺失时页面实际回退英文')
   assert.equal(gameSeoLanguagePlan(game, 'zh-Hant').canonicalLanguage, 'zh-Hans', '繁体缺失时页面实际回退简体')
+
+  const manuallyLocalized = {
+    description: '中文正文',
+    descriptionEn: 'English body',
+    descriptionI18n: { fr: 'Texte automatique' },
+    descriptionLocalized: { fr: 'Texte relu par un humain', 'zh-Hant': '繁體人工簡介' },
+  }
+  assert.equal(gameDescription(manuallyLocalized, 'fr'), 'Texte relu par un humain', '人工简介必须优先于自动译文')
+  assert.equal(gameDescription(manuallyLocalized, 'zh-Hant'), '繁體人工簡介')
+  assert.equal(needsTranslation(manuallyLocalized, 'fr'), false, '已有人工简介时不再显示自动翻译入口')
+  assert.deepEqual(gameSeoLanguagePlan(manuallyLocalized, 'fr').contentLanguages, ['zh-Hans', 'zh-Hant', 'en', 'fr'])
+
+  const { gameApiToRow, gameApiToPartialRow, gameRowToApi } = await import('../server/src/mappers.js')
+  const localizedRow = gameApiToRow({ slug: 'multi', descriptionLocalized: { fr: '  Description française  ' } })
+  assert.deepEqual(JSON.parse(localizedRow.description_localized), { fr: 'Description française' })
+  assert.deepEqual(JSON.parse(gameApiToRow({ slug: 'multi', descriptionLocalized: { 'pt-br': 'Descrição' } }).description_localized), { 'pt-BR': 'Descrição' }, '保存时统一 BCP-47 大小写')
+  assert.equal(Object.hasOwn(gameApiToRow({ slug: 'multi' }), 'description_localized'), false, '旧客户端全量保存不得清掉人工简介')
+  assert.deepEqual(gameApiToPartialRow({ descriptionLocalized: {} }), { description_localized: null })
+  assert.throws(() => gameApiToRow({ slug: 'multi', descriptionLocalized: { 'zh-Hans': 'duplicate base' } }), /语言码无效/)
+  assert.deepEqual(gameRowToApi({ slug: 'multi', description_localized: localizedRow.description_localized }).descriptionLocalized, { fr: 'Description française' })
+  const { pickDescription } = await import('../server/src/open/i18n.js')
+  assert.deepEqual(pickDescription({ description: '中文', description_en: 'English', description_i18n: { fr: 'Auto' }, description_localized: { fr: 'Manuel' } }, 'fr'), { text: 'Manuel', lang: 'fr' })
+  const gameForm = readFileSync(new URL('../src/admin/GameForm.tsx', import.meta.url), 'utf8')
+  assert.match(gameForm, /Field label="简介（中文）"/)
+  assert.match(gameForm, /Field label="简介（English）"/)
+  assert.match(gameForm, /localizedRomLanguages\.map/)
+  assert.match(gameForm, /Boolean\(form\.roms\?\.\[lang\]\?\.trim\(\)\)/, '语言输入框必须跟随实际绑定的 ROM 显示')
+  for (const schema of ['../server/schema-v2.sql', '../server/schema-d1.sql', '../server/8bitgo-v2-install.sql']) {
+    assert.match(readFileSync(new URL(schema, import.meta.url), 'utf8'), /description_localized/, `${schema} 必须声明新列`)
+  }
 
   const post = {
     titleI18n: { en: 'Title', fr: 'Titre' },

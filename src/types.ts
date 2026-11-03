@@ -372,6 +372,8 @@ export interface Game {
    * 一个基准 + 一个译文，而不是给八种语言各开一个字段。
    */
   descriptionEn?: string
+  /** 人工校对的逐语言简介。与自动翻译缓存分列，改中文 / 英文基准时不会误删人工 SEO 文案。 */
+  descriptionLocalized?: Record<string, string>
   /**
    * 其余六种语言的按需翻译缓存。键是站点语言代码（zh-Hant / es / fr / it / de / ja），
    * 值是已经翻译好的简介。zh-Hans 走 description，en 走 descriptionEn —— 这两个 key 不会

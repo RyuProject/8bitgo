@@ -8,6 +8,8 @@ import { invalidateContent } from '../content.js'
 import { queueGameSearchPush, queuePostSearchPush } from '../search-push.js'
 import { startupStats } from '../startup-metrics.js'
 import { validateAdminImportPayload } from '../admin-import.js'
+import { getVolcTranslationUsage } from '../translation-usage.js'
+import { isTranslateConfigured } from '../translate.js'
 
 export const adminRouter = Router()
 
@@ -24,6 +26,19 @@ adminRouter.get('/verify', async (req, res, next) => {
     if (!isStaff(role)) return res.status(403).json({ error: '需要后台权限（后台口令、管理员或志愿者账号）' })
     res.setHeader('Cache-Control', 'no-store')
     res.json({ ok: true, role, abilities: ROLE_ABILITIES[role] })
+  } catch (e) {
+    next(e)
+  }
+})
+
+/** 管理员可查看已持久化的火山字符用量；不暴露任何翻译密钥。 */
+adminRouter.get('/translation-usage', requireAbility('games:edit'), async (_req, res, next) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store')
+    res.json({
+      ...await getVolcTranslationUsage(),
+      volcConfigured: isTranslateConfigured(),
+    })
   } catch (e) {
     next(e)
   }

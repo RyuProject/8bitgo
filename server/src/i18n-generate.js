@@ -5,7 +5,7 @@
  *   - 路由（玩家点「翻译」按钮）：`routes/games.js`、`routes/posts.js`
  *   - 批量预生成（`server/scripts/pretranslate.mjs`、文章发布钩子）
  *
- * 为什么要抽出来：繁体走 OpenCC、其余走火山，这个**分支**如果在两处各写一遍，
+ * 为什么要抽出来：繁体走 OpenCC、其余走统一的上游翻译链，这个**分支**如果在两处各写一遍，
  * 迟早会漂 —— 比如脚本改成了 OpenCC、路由还在拿英文版翻 zh，同一个字段两条路
  * 生成出两种东西，而且谁都不会报错。分支只有一处，是这个文件存在的全部理由。
  *
@@ -21,11 +21,11 @@ import { toTraditional } from './zh-convert.js'
  * @param {{ convert?: boolean, source?: string, target?: string }} plan `translatePlan()` 的结果
  * @returns {Promise<string>} 目标语言的文本
  */
-export async function renderField(text, plan) {
+export async function renderField(text, plan, options = {}) {
   const src = String(text ?? '').trim()
   if (!src) return ''
   if (plan?.convert) return toTraditional(src)
-  return translateText(src, plan.source, plan.target)
+  return translateText(src, plan.source, plan.target, options.onProvider)
 }
 
 /**
@@ -57,11 +57,11 @@ export async function renderMarkdownField(text, plan) {
  * 目标是 `zh-Hant` 时，**有中文基准就一定用中文基准**，哪怕这款游戏也填了英文简介。
  * 三个理由，每一个单独都够：
  *   1. 中文 → 繁体走本地 OpenCC，**零成本、不需要 VOLC_AK/SK**；
- *      英文 → 繁体必须上游翻，按字符计费。
+ *      英文 → 繁体必须上游翻（优先免费公共服务，失败后才消耗火山额度）。
  *   2. 中文基准就是**原文**，英文那份本身已经是转写/意译，从它再翻一道是二手信息。
  *   3. 实际后果不是「贵一点」而是「一条都没有」：2026-09-08 线上实测，
  *      /zh-Hant/games/1942 的简介仍是简体 —— 因为 1942 两份简介都有，源文挑了英文，
- *      于是繁体落进 NOT_CONFIGURED（缺火山密钥）被跳过。填了英文简介的游戏
+ *      于是繁体需要走上游接口，旧版因缺火山密钥而被跳过。填了英文简介的游戏
  *      **全都**卡在这一条上，而这类游戏正是站上占比最大的一批。
  *
  * 别把这个例外推广到 zh-Hans：它是基准语言，`translatePlan` 会判成 passthrough，

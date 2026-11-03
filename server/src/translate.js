@@ -1,12 +1,12 @@
 /**
- * 火山引擎机器翻译（文本翻译）的轻量客户端。
+ * 文本翻译客户端：MyMemory → Lingva 免费公共服务，二者失败后再用火山兜底。
  *
- * 只翻译游戏简介（小段文本、单词量固定、低频），不上批量、不异步派发：
+ * 按需翻译游戏简介与文章（只有两个公共服务都失败时，才预留火山字符用量）：
  *   - 玩家在详情页点「翻译」按钮，前端调 /api/games/:slug/translate-description
- *   - 这边读 description_en（没有就退到 description），调一次火山，写回 JSON 列
+ *   - 这边读 description_en（没有就退到 description），调翻译服务，写回 JSON 列
  *   - 同一款游戏同一语言永不再调 —— 重复点击命中缓存直接返回
  *
- * 鉴权走火山 Signature V4（HMAC-SHA256，链式派生密钥）—— 类似 AWS SigV4。
+ * 最后兜底的火山服务鉴权走 Signature V4（HMAC-SHA256，链式派生密钥）—— 类似 AWS SigV4。
  * 手写签名而不是用 @volcengine/openapi：依赖项只多一个 crypto（Node 自带），
  * 签名算法稳定，一次写完就维护，跟 Mail.js（自管 Resend / SMTP）一个风格。
  *
@@ -26,15 +26,21 @@
  *    只有**源文不是中文**时（游戏填了 description_en）才让上游翻，目标是 zh-Hant。
  *    在这之前那一路的目标写的是 `zh`，也就是给繁体读者发**简体**译文。
  *
- *    加语种只改 VOLC_LANG 一张表。
+ *    新增站点语言时要同步维护 `VOLC_LANG`、`LANGUAGE_TO_MYMEMORY` 与 `LANGUAGE_TO_LINGVA`。
  *
  * 验收：
- *   npm run test:translate   —— 不联网纯单元测试（语言映射 / 缓存读写 / 入参形状）
+ *   npm run test:translate   —— 本地 mock 回归（语言映射 / 服务优先级 / 火山签名）
  *   curl POST /api/games/<slug>/translate-description -d '{"lang":"es"}'
- *                         —— 端到端，第一次会真打火山并落库，第二次直接返回缓存。
+ *                         —— 端到端，第一次调可用上游并落库，第二次直接返回缓存。
  */
 
 import { createHash, createHmac } from 'node:crypto'
+import {
+  countTranslationCharacters,
+  getVolcTranslationUsage,
+  reserveVolcTranslationCharacters,
+  volcTranslationCharacterLimit,
+} from './translation-usage.js'
 
 /** 火山翻译的 base。默认官方；测试时可指向本地 mock（scripts/test-translate.mjs） */
 const HOST = 'translate.volcengineapi.com'
@@ -42,10 +48,23 @@ const REGION = 'cn-north-1'
 const SERVICE = 'translate'
 const ACTION = 'TranslateText'
 const VERSION = '2020-06-01'
+const MYMEMORY_DEFAULT_URL = 'https://api.mymemory.translated.net/get'
+const MYMEMORY_DEFAULT_EMAIL = 'yeahcore@yeah.net'
+const MYMEMORY_MAX_QUERY_BYTES = 450
+const LINGVA_DEFAULT_BASE_URL = 'https://lingva.ml'
 
-/** AK/SK 缺一个都视为没配：路由直接 503，别让签名算到一半再失败 */
+/** AK/SK 缺一个都视为没配；两个公共服务仍可单独完成翻译。 */
 export function isTranslateConfigured() {
   return Boolean(process.env.VOLC_AK && process.env.VOLC_SK)
+}
+
+/** 公共 MyMemory / Lingva 接口默认可用；Volc 是二者失败后的受额度保护兜底。 */
+export function isTranslationProviderConfigured() {
+  return Boolean(
+    (process.env.MYMEMORY_API_URL || MYMEMORY_DEFAULT_URL) ||
+    (process.env.LINGVA_BASE_URL || LINGVA_DEFAULT_BASE_URL) ||
+    isTranslateConfigured(),
+  )
 }
 
 const sha256Hex = (s) => createHash('sha256').update(s).digest('hex')
@@ -272,7 +291,7 @@ function signRequest(bodyObj) {
 }
 
 /**
- * 翻译一批文本（**一次 HTTP 请求**）。调用方必须保证已经满足 16 条 / 5000 字符。
+ * 火山翻译一批文本（**一次 HTTP 请求**）。调用方必须保证已经满足 16 条 / 5000 字符。
  *
  * ── 响应形状（2026-09-07 修，这是个真 bug）────────────────────
  * 官方文档写的是**顶层** `TranslationList`：
@@ -288,11 +307,11 @@ function signRequest(bodyObj) {
  * 「`Result.TextList` 那种旧形状必须被判为无译文」。
  *
  * @param {string[]} texts
- * @param {string|undefined} source 火山语言码；**留空 = 让上游自动识别**（官方支持）
- * @param {string} target 火山语言码
+ * @param {string|undefined} source 源语言代码；当前调用方始终按原文实际语言传入
+ * @param {string} target 目标语言代码
  * @returns {Promise<string[]>} 与入参同序同长的译文数组
  */
-export async function translateBatch(texts, source, target) {
+async function translateBatchVolc(texts, source, target) {
   if (!isTranslateConfigured()) {
     const e = new Error('翻译服务未配置（缺 VOLC_AK / VOLC_SK）')
     e.code = 'NOT_CONFIGURED'
@@ -352,6 +371,235 @@ export async function translateBatch(texts, source, target) {
   return texts2
 }
 
+const LANGUAGE_TO_MYMEMORY = Object.freeze({
+  zh: 'zh-CN',
+  'zh-Hans': 'zh-CN',
+  'zh-Hant': 'zh-TW',
+  en: 'en',
+  es: 'es',
+  fr: 'fr',
+  it: 'it',
+  de: 'de',
+  ja: 'ja',
+})
+
+const LANGUAGE_TO_LINGVA = Object.freeze({
+  zh: 'zh',
+  'zh-Hans': 'zh',
+  'zh-Hant': 'zh-TW',
+  en: 'en',
+  es: 'es',
+  fr: 'fr',
+  it: 'it',
+  de: 'de',
+  ja: 'ja',
+})
+
+function providerError(code, message) {
+  const error = new Error(message)
+  error.code = code
+  return error
+}
+
+/** 按 MyMemory 的 500-byte 单段上限切分；边界偏向句末或空白，不切开 UTF-8 字符。 */
+export function splitMyMemoryText(text, maxBytes = MYMEMORY_MAX_QUERY_BYTES) {
+  const input = String(text ?? '')
+  if (!input) return []
+  const limit = Math.max(4, Math.floor(Number(maxBytes) || MYMEMORY_MAX_QUERY_BYTES))
+  const chunks = []
+  let start = 0
+
+  while (start < input.length) {
+    let cursor = start
+    let bytes = 0
+    let preferredBoundary = -1
+    while (cursor < input.length) {
+      const codePoint = String.fromCodePoint(input.codePointAt(cursor))
+      const nextBytes = Buffer.byteLength(codePoint, 'utf8')
+      if (bytes + nextBytes > limit) break
+      bytes += nextBytes
+      cursor += codePoint.length
+      if (/[\s.!?;:。！？；：]/u.test(codePoint)) preferredBoundary = cursor
+    }
+    if (cursor >= input.length) {
+      chunks.push(input.slice(start))
+      break
+    }
+    const minimumPreferred = start + Math.floor((cursor - start) * 0.55)
+    const end = preferredBoundary >= minimumPreferred ? preferredBoundary : cursor
+    chunks.push(input.slice(start, end))
+    start = end
+  }
+  return chunks
+}
+
+function withTranslationTimeout() {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), Number(process.env.TRANSLATE_TIMEOUT_MS) || 15000)
+  return { signal: controller.signal, clear: () => clearTimeout(timer) }
+}
+
+function preserveEdgeWhitespace(source, translated) {
+  const leading = source.match(/^\s*/u)?.[0] ?? ''
+  const trailing = source.match(/\s*$/u)?.[0] ?? ''
+  const translatedCore = String(translated ?? '').trim()
+  return `${leading}${translatedCore}${trailing}`
+}
+
+async function myMemorySegment(text, source, target, signal) {
+  const from = LANGUAGE_TO_MYMEMORY[source]
+  const to = LANGUAGE_TO_MYMEMORY[target]
+  if (!from || !to) throw providerError('MYMEMORY_UNSUPPORTED_LANGUAGE', `MyMemory 不支持语言对：${source} → ${target}`)
+
+  const endpoint = new URL(String(process.env.MYMEMORY_API_URL || MYMEMORY_DEFAULT_URL).trim())
+  endpoint.searchParams.set('q', text)
+  endpoint.searchParams.set('langpair', `${from}|${to}`)
+  endpoint.searchParams.set('mt', '1')
+  endpoint.searchParams.set('de', String(process.env.MYMEMORY_EMAIL || MYMEMORY_DEFAULT_EMAIL).trim())
+
+  let response
+  let json
+  try {
+    response = await fetch(endpoint, { headers: { Accept: 'application/json' }, signal })
+    json = await response.json()
+  } catch (error) {
+    if (!error?.code) error.code = 'MYMEMORY_NETWORK_ERROR'
+    throw error
+  }
+  if (!response.ok) throw providerError(`MYMEMORY_HTTP_${response.status}`, `HTTP ${response.status}`)
+  if (Number(json?.responseStatus) !== 200 || json?.quotaFinished) {
+    throw providerError('MYMEMORY_API_ERROR', String(json?.responseDetails || 'MyMemory 翻译请求失败'))
+  }
+
+  const translated = String(json?.responseData?.translatedText ?? '')
+  const match = Number(json?.responseData?.match)
+  if (!translated.trim() || (Number.isFinite(match) && match <= 0 && translated.trim() === text.trim())) {
+    throw providerError('MYMEMORY_EMPTY_TRANSLATION', 'MyMemory 没有返回有效译文')
+  }
+  return preserveEdgeWhitespace(text, translated)
+}
+
+async function translateBatchMyMemory(texts, source, target) {
+  const timeout = withTranslationTimeout()
+  try {
+    const output = []
+    for (const text of texts) {
+      const chunks = splitMyMemoryText(text)
+      const translatedChunks = []
+      for (const chunk of chunks) {
+        const core = chunk.trim()
+        if (!core) {
+          translatedChunks.push(chunk)
+          continue
+        }
+        const translated = await myMemorySegment(core, source, target, timeout.signal)
+        translatedChunks.push(preserveEdgeWhitespace(chunk, translated))
+      }
+      output.push(translatedChunks.join(''))
+    }
+    return output
+  } finally {
+    timeout.clear()
+  }
+}
+
+async function lingvaSegment(text, source, target, signal) {
+  const from = LANGUAGE_TO_LINGVA[source]
+  const to = LANGUAGE_TO_LINGVA[target]
+  if (!from || !to) throw providerError('LINGVA_UNSUPPORTED_LANGUAGE', `Lingva 不支持语言对：${source} → ${target}`)
+
+  const base = String(process.env.LINGVA_BASE_URL || LINGVA_DEFAULT_BASE_URL).trim().replace(/\/+$/, '')
+  const endpoint = `${base}/api/v1/${encodeURIComponent(from)}/${encodeURIComponent(to)}`
+  let response
+  let json
+  try {
+    response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ query: text }),
+      signal,
+    })
+    json = await response.json()
+  } catch (error) {
+    if (!error?.code) error.code = 'LINGVA_NETWORK_ERROR'
+    throw error
+  }
+  if (!response.ok || json?.error) {
+    throw providerError(`LINGVA_HTTP_${response.status}`, String(json?.error || `HTTP ${response.status}`))
+  }
+  if (typeof json?.translation !== 'string' || !json.translation.trim()) {
+    throw providerError('LINGVA_EMPTY_TRANSLATION', 'Lingva 没有返回有效译文')
+  }
+  return preserveEdgeWhitespace(text, json.translation)
+}
+
+async function translateBatchLingva(texts, source, target) {
+  const timeout = withTranslationTimeout()
+  try {
+    const output = []
+    // 公共实例不承诺高并发；串行请求避免一批内容瞬间打出多条并发连接。
+    for (const text of texts) output.push(await lingvaSegment(text, source, target, timeout.signal))
+    return output
+  } finally {
+    timeout.clear()
+  }
+}
+
+function summarizeProviderFailure(provider, error) {
+  return `${provider}: ${error?.code || 'ERROR'} ${error?.message || '请求失败'}`
+}
+
+/** 公共服务依次尝试 MyMemory、Lingva；都失败才预留火山额度并调用火山兜底。 */
+export async function translateBatch(texts, source, target, onProvider) {
+  const list = (texts ?? []).map((text) => String(text ?? ''))
+  if (!list.length) return []
+
+  let myMemoryError
+  try {
+    const output = await translateBatchMyMemory(list, source, target)
+    onProvider?.('mymemory')
+    return output
+  } catch (error) {
+    myMemoryError = error
+    console.warn('[translate] MyMemory 不可用，尝试 Lingva：', error?.code, error?.message)
+  }
+
+  let lingvaError
+  try {
+    const output = await translateBatchLingva(list, source, target)
+    onProvider?.('lingva')
+    return output
+  } catch (error) {
+    lingvaError = error
+    console.warn('[translate] Lingva 不可用，尝试火山兜底：', error?.code, error?.message)
+  }
+
+  if (!isTranslateConfigured()) {
+    throw providerError(
+      'TRANSLATION_PROVIDERS_FAILED',
+      `MyMemory 和 Lingva 均不可用，且未配置火山兜底（VOLC_AK / VOLC_SK）。${summarizeProviderFailure('MyMemory', myMemoryError)}；${summarizeProviderFailure('Lingva', lingvaError)}`,
+    )
+  }
+
+  return withRetry(async () => {
+    let reserved = false
+    try {
+      reserved = await reserveVolcTranslationCharacters(countTranslationCharacters(list))
+    } catch (error) {
+      console.error('[translate] 读取/预留火山字符额度失败，停止火山兜底：', error?.message)
+      throw providerError('VOLC_USAGE_UNAVAILABLE', '火山用量计数不可用；为避免超额已停止调用火山。')
+    }
+    if (!reserved) {
+      throw providerError(
+        'VOLC_QUOTA_EXCEEDED',
+        `MyMemory 和 Lingva 均不可用；火山翻译额度已达上限（${volcTranslationCharacterLimit().toLocaleString()} 字符）。`,
+      )
+    }
+    onProvider?.('volc')
+    return translateBatchVolc(list, source, target)
+  })
+}
+
 /** 带退避的重试 —— 只对 -429 这类「过一会儿就好」的错误重试 */
 async function withRetry(fn, attempts = 3) {
   let last
@@ -399,12 +647,12 @@ async function runWithLimit(items, mapper, limit) {
  *   3. 批之间并发 `concurrency` 个，-429 自动退避重试
  *
  * @param {string[]} texts
- * @param {string|undefined} source 留空 = 自动识别
+ * @param {string|undefined} source 源语言代码（由调用方按实际源文传入）
  * @param {string} target
  * @param {number} [concurrency=3] 免费版火山大约 5 QPS，留 2 个余量给别的请求
  * @returns {Promise<string[]>}
  */
-export async function translateTexts(texts, source, target, concurrency = 3) {
+export async function translateTexts(texts, source, target, concurrency = 3, onProvider) {
   const inputs = (texts ?? []).map((t) => String(t ?? ''))
   if (!inputs.length) return []
 
@@ -423,7 +671,7 @@ export async function translateTexts(texts, source, target, concurrency = 3) {
   const batches = planBatches(segments)
   const results = await runWithLimit(
     batches,
-    (idxs) => withRetry(() => translateBatch(idxs.map((i) => segments[i]), source, target)),
+    (idxs) => translateBatch(idxs.map((i) => segments[i]), source, target, onProvider),
     concurrency,
   )
 
@@ -441,14 +689,14 @@ export async function translateTexts(texts, source, target, concurrency = 3) {
  * 翻译单条文本。保留这个名字是因为调用点很多（游戏简介、文章标题 / 摘要）。
  *
  * @param {string} text
- * @param {string|undefined} source 火山语言码，留空则自动识别
+ * @param {string|undefined} source 源语言代码（由调用方按实际源文传入）
  * @param {string} target
  * @returns {Promise<string>} 译文
  */
-export async function translateText(text, source, target) {
-  const [out] = await translateTexts([text], source, target)
+export async function translateText(text, source, target, onProvider) {
+  const [out] = await translateTexts([text], source, target, 3, onProvider)
   if (typeof out !== 'string' || !out) {
-    const e = new Error('火山返回的结果里没有译文')
+    const e = new Error('翻译服务没有返回译文')
     e.code = 'EMPTY_TRANSLATION'
     throw e
   }
@@ -473,7 +721,7 @@ export async function translateText(text, source, target) {
  * （要识别代码块边界、链接语法、转义）再拼接便宜多了。
  *
  * @param {string} text            Markdown 原文
- * @param {string|undefined} source 火山语言码，留空则自动识别
+ * @param {string|undefined} source 源语言代码（由调用方按实际源文传入）
  * @param {string} target
  * @param {number} [concurrency=3]
  */
@@ -519,7 +767,8 @@ let warnedNoRealIp = false
  * `POST /api/posts/:slug/translate` 和 `POST /api/games/:slug/translate-description`
  * 的准入闸。挡住了就自己把 429 写出去并返回 false，调用方 `if (!translateGateOk(req, res)) return`。
  *
- * ⚠️ 为什么非要有：这两条路由**不需要登录**，而下游是按字符计费的火山翻译。
+ * ⚠️ 为什么非要有：这两条路由**不需要登录**，会占用公共翻译服务的共享额度；
+ * 两家公共服务失败时还可能消耗按字符计量的火山兜底额度。
  * 原来的防刷理由是「缓存命中之后每款每语言只调一次」，但冷缓存对成千上万个
  * (slug, lang) 组合天然存在 —— 游戏简介又没有发布时预翻，于是每一款游戏 × 每个计费语言
  * 都是一次可以被外人白嫖的付费调用。一条 for 循环就能把账单刷上去，

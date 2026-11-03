@@ -173,7 +173,7 @@ export function GameDetailPage() {
   const [romLang, setRomLang] = useState<RomSlotLang | null>(null)
   /**
    * 玩家点过翻译按钮之后，覆盖在简介上的译文。
-   * - null = 还没翻，按 gameDescription() 三层回退
+   * - null = 还没翻，按人工简介 / 自动译文 / 中英文基准依次回退
    * - string = 翻译后的文本（已经写到 description_i18n，但前端 state 也保留一份，
    *           这样母语描述改了描述前页面闪一下不奇怪）
    * 不持久化到 localStorage —— 跨页签持久化反而引入「后台改了简介但用户看不到」的隐性 bug，

@@ -62,6 +62,8 @@ CREATE TABLE IF NOT EXISTS games (
   -- 后台改写 description / description_en 时清空（mappers.js 的游戏改名回写），
   -- 否则旧译文会和新的基准对不上。来自火山引擎 TranslateText，见 server/src/translate.js
   description_i18n JSON         NULL,
+  -- 后台人工校对的逐语言简介，与自动翻译缓存分离；只在该语言 ROM 已绑定时用于独立 SEO 页面。
+  description_localized JSON    NULL,
   body_control  TINYINT(1)    NOT NULL DEFAULT 0,
   -- 成人内容标记。前台据此在挂载模拟器之前要求输入出生日期并验证年满 18 岁。
   adult         TINYINT(1)    NOT NULL DEFAULT 0,
@@ -156,11 +158,8 @@ CREATE TABLE IF NOT EXISTS platform_bios (
   PRIMARY KEY (platform)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- ---------- 站点设置（后台能热改的少量站点级配置） ----------
--- 单向覆盖：env 提供默认、库只做覆盖（理由见 server/src/config-manifest.js 的文件头，
--- 那一页只读是刻意的，能热改的东西放这张表里）。
--- 值统一是 JSON 文本，形状由 shared/site-notice.js 那份纯函数校验 —— 表只知道「一格文本」。
--- 目前只有一格：notice（首页搜索框与横幅之间的公告条）。
+-- ---------- 站点设置（按 name 保存少量站点级数据库状态） ----------
+-- notice 是 JSON 文本；翻译额度计数等键按各自消费者约定保存，不把表级 schema 绑到单一格式。
 CREATE TABLE IF NOT EXISTS site_settings (
   name       VARCHAR(64) NOT NULL,
   value      TEXT        NOT NULL,

@@ -939,7 +939,7 @@ Content-Range 全部吻合的公开请求才可入边缘缓存；任意短 Range
 后台上传游戏时只填英文和中文，西班牙语访客看到的是英文（见 `services/i18nData.ts` 的
 `gameDescription`：英文优先于中文，因为「看英文也好过看中文」）。想看母语就点详情页
 「游戏简介」右上角那个「翻译」按钮 → `POST /api/games/:slug/translate-description` →
-调火山引擎 `TranslateText` 翻一次 → 写进 `description_i18n[lang]` → **之后所有人都是读库，
+按 MyMemory → Lingva → 火山的顺序翻一次 → 写进 `description_i18n[lang]` → **之后所有人都是读库，
 不再调接口**。
 
 ⚠️ **为什么是 JSON 列而不是 `description_es` / `description_fr` 各一列**：八列里有六列
@@ -950,22 +950,29 @@ Content-Range 全部吻合的公开请求才可入边缘缓存；任意短 Range
 否则玩家看到的是「后台改过简介、但翻译缓存里还是旧的」。`upsertGame` 无条件清、`patchGame`
 在请求里带了这两个字段时清（见 `server/src/games-repo.js`）。**新增写路径时别忘了这一条。**
 
-⚠️ **火山 API 的语言码是 ISO 639-1 短码，不是 BCP-47**。它**没有** `zh-Hans` / `zh-Hant`，
-只有 `zh`。映射表在 `server/src/translate.js` 的 `LANG_MAP` 里，加语种改那一处。
-`zh-Hant` 是唯一不完美的一个：后台填了英文版就把英翻成 `zh` 存进 `i18n['zh-Hant']`
-（简繁偶尔差几个字），没填英文版就不翻译、退回中文原文 —— 繁体用户看简体中文没问题，
-但别指望它是真·繁体。
+⚠️ 火山语言映射在 `server/src/translate.js` 的 `VOLC_LANG`：官方支持 `zh-Hant`；简体中文源文
+到繁体仍优先走本地 OpenCC，英文源文则按目标语言调用翻译服务。
 
-⚠️ **AK/SK 放 `server/.env`，永远不进 git**（§2.1）。不配也能跑：按钮会变成「翻译失败
-[503] 翻译服务未配置（缺 VOLC_AK / VOLC_SK）」，所有游戏照旧走原文回退。
-机器翻译**按量计费、会欠费**，上线前去火山控制台开「用量预警」。
+⚠️ **AK/SK 放 `server/.env`，永远不进 git**（§2.1）。火山翻译默认有 2,000,000 字符额度；
+`server/src/translation-usage.js` 在 `site_settings.translation.volc.used_chars` 持久化累计预留量，
+每次发火山请求前用原子更新预留，避免多实例并发超额。请求失败也保留预留量，按源文 Unicode 码点
+计数，采取保守口径；计数行损坏或数据库不可用时也停止调用火山。
 
-自测：`cd server && npm run test:translate`（13 项，起本地 mock，不真打火山）。
+实际请求顺序固定为 **MyMemory → Lingva → 火山**：先把整批文本交给 MyMemory，单段按 UTF-8 字节
+切在 450 bytes 以内，并用 `MYMEMORY_EMAIL=yeahcore@yeah.net` 作为 `de` 联系邮箱；MyMemory
+不可用、限额或返回空译文时，整批改试 Lingva REST v1（默认 `https://lingva.ml`），不是把同一批
+部分结果混在一起。两个公共接口都失败后才调用火山；没有 AK/SK 时返回包含两边错误的诊断信息。
+公共 API 地址可用 `MYMEMORY_API_URL` / `LINGVA_BASE_URL` 覆盖；源文会发送给对应的外部公共翻译服务。
+繁体语言码分别映射到 MyMemory `zh-TW` 与 Lingva `zh-TW`。
+首次用量基线可用 `VOLC_TRANSLATE_INITIAL_USED_CHARS` 导入火山控制台已有用量，**需在首次真实翻译前**
+设置；后台只读用量不会提前创建计数行。额度由 `VOLC_TRANSLATE_CHAR_LIMIT` 配置，默认 2000000。
+
+自测：`cd server && npm run test:translate`（含字符计数、MyMemory / Lingva 优先级、火山额度保护与本地 mock）。
 端到端：
 ```bash
 curl -X POST http://127.0.0.1:8788/api/games/<slug>/translate-description \
      -H 'Content-Type: application/json' -d '{"lang":"es"}'
-# 第一次 cached:false（真调火山并落库），第二次 cached:true（读库，不再调）
+# 第一次 cached:false（调到可用的上游并落库），第二次 cached:true（读库，不再调）
 ```
 
 ### 2.17.1 文章（post）的按需翻译：和游戏同一个套路，但正文是 Markdown
@@ -2252,6 +2259,8 @@ npm run pages:web-games:check -- undertale
 它回的是基础设施信息和密钥指纹，不该跟着一张会被运营改的表一起演化。
 那张文件的注释里给的出路就是这张表 —— **env 提供默认、库只做覆盖**。
 第一个住户是首页公告条（`name = 'notice'`，值是 JSON 文本）。
+另有火山翻译额度计数 `translation.volc.used_chars`（数字文本，不是公告配置），复用这张已有表；
+它不需要数据库迁移，首次真实翻译前用 `VOLC_TRANSLATE_INITIAL_USED_CHARS` 导入历史用量。
 
 **公告条**（2026-09-21）：显示在首页**搜索框与横幅之间**，两种语气，文案后台写。
 
@@ -2838,7 +2847,7 @@ Worker 的 MIME 更新也要部署。无需数据库迁移。
 ### 本轮改动：游戏简介 + 文章的按需翻译（**尚未部署，需要跑迁移**）
 
 游戏详情页「游戏简介」和文章详情页正文右上角都加了「翻译」按钮：非中文界面的访客点一下，
-后端调火山引擎 `TranslateText` 翻成他的本地语言，结果写进新的 `*_i18n` JSON 列，
+后端依次调用 MyMemory、Lingva；两者失败后才用火山 `TranslateText` 兜底，结果写进新的 `*_i18n` JSON 列，
 **同一篇内容同一语言永不再调接口**（§2.17 / §2.17.1）。文章因为**没有英文基准列**，连 `en`
 界面也显示按钮（把中文翻成英文）；游戏有 `description_en`，`en` 界面不需要。
 
@@ -2847,7 +2856,7 @@ Worker 的 MIME 更新也要部署。无需数据库迁移。
 | 位置 | 内容 |
 | --- | --- |
 | `server/schema-v2.sql`、`8bitgo-v2-install.sql`、`scripts/migrate.mjs` | 新列 `games.description_i18n` + `posts.excerpt_i18n` + `posts.content_i18n`（都是 JSON NULL） |
-| `server/src/translate.js` | 火山 V4 签名 + `TranslateText` + 语言映射；新增 `translateMarkdown()` 按段落分块并发翻译 |
+| `server/src/translate.js` | MyMemory → Lingva → 火山兜底；火山 V4 签名 + `TranslateText` + 语言映射；新增 `translateMarkdown()` 按段落分块并发翻译 |
 | `server/src/games-repo.js` | `writeDescriptionTranslation()`；`upsertGame` / `patchGame` 改基准时清缓存 |
 | `server/src/routes/games.js` | `POST /api/games/:slug/translate-description`（不需登录） |
 | `server/src/mappers.js` | `gameRowToApi` 读 `descriptionI18n`；`postRowToApi` 读 `excerptI18n` / `contentI18n`（都不开放写入） |

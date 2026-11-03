@@ -16,6 +16,7 @@ import { dosGameConfigError } from './dos-game-config.js'
 const EXPECTED_COLUMNS = [
   { table: 'games', column: 'home_rank', why: '首页精选位' },
   { table: 'games', column: 'core', why: '按游戏覆盖模拟器核心' },
+  { table: 'games', column: 'description_localized', why: '逐语言人工简介；缺列会导致后台 SEO 文案保存失败' },
   { table: 'games', column: 'dos_executable', why: 'DOS 启动程序覆盖' },
   { table: 'game_roms', column: 'dos_executable', why: '同一 DOS ZIP 按语言选择启动文件；缺列会让后台保存 500' },
   { table: 'game_roms', column: 'dos_startup_commands', why: '各语言 DOS 光盘挂载命令；缺列会让后台保存 500' },

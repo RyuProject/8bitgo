@@ -96,30 +96,31 @@ export function dosExtrasName(
  * 三层回退（每层都是「有就用、没有就走下一层」）：
  *
  *   zh-Hans → description（基准就是中文）
- *   zh-Hant → descriptionI18n?.['zh-Hant']   ← 玩家点过翻译的话就有
+ *   zh-Hant → descriptionLocalized?.['zh-Hant']（人工）→ descriptionI18n?.['zh-Hant']（自动）
  *            → description                    ← 没点过就退回到中文（繁体用户看简体中文）
  *   en      → descriptionEn
  *   es/fr/it/de/ja
- *           → descriptionI18n?.[lang]
+ *           → descriptionLocalized?.[lang]（人工）→ descriptionI18n?.[lang]（自动）
  *           → descriptionEn                  ← 没点过翻译就看英文
  *           → description                    ← 没英文就再退到中文（中文用户帮缺英文版的兜底）
  *
- * 优先级里 i18n 永远最高 —— 玩家点过翻译的版本就是他看过的版本，哪怕是后台后来又改了也没关系。
+ * 人工校对稿高于按需机器翻译；两种译文都独立于基准文案保存，后台编辑基准时只清机器缓存，
+ * 人工稿保留以免丢失 SEO 编辑成果。
  * 后台改 description / description_en 时后端会把整张 descriptionI18n 清空，所以「改了基准后旧的点过
  * 的译文」这种漂移根本不会发生。
  */
 export function gameDescription(
-  game: { description?: string; descriptionEn?: string; descriptionI18n?: Record<string, string> },
+  game: { description?: string; descriptionEn?: string; descriptionI18n?: Record<string, string>; descriptionLocalized?: Record<string, string> },
   lang: Lang,
 ): string {
   // 中文界面没有「翻译」按钮（基准就是中文，没什么好翻的），没用过 descriptionI18n
   if (lang === 'zh-Hans') return game.description ?? ''
   // 繁体：点过翻译就是首选；繁体界面也支持「翻译」按钮，所以可能存在 i18n['zh-Hant']
   if (lang === 'zh-Hant') {
-    return game.descriptionI18n?.['zh-Hant'] || game.description || ''
+    return game.descriptionLocalized?.['zh-Hant'] || game.descriptionI18n?.['zh-Hant'] || game.description || ''
   }
-  // 其它：i18n[lang] → 英文 → 中文（依此回退，每一步的注释见上方）
-  return game.descriptionI18n?.[lang] || game.descriptionEn || game.description || ''
+  // 人工校对的 ROM 语言简介优先于机器翻译；缺失时仍按原有缓存 → 英文 → 中文回退。
+  return game.descriptionLocalized?.[lang] || game.descriptionI18n?.[lang] || game.descriptionEn || game.description || ''
 }
 
 /**
@@ -130,16 +131,17 @@ export function gameDescription(
  * 交给搜索引擎，canonical 又各指自己，正是 Search Console 判重复页的那种组合。
  */
 export function gameSeoLanguagePlan(
-  game: { description?: string; descriptionEn?: string; descriptionI18n?: Record<string, string> },
+  game: { description?: string; descriptionEn?: string; descriptionI18n?: Record<string, string>; descriptionLocalized?: Record<string, string> },
   current: Lang,
 ): { contentLanguages: Lang[]; canonicalLanguage: Lang } {
   const translated = game.descriptionI18n ?? {}
+  const curated = game.descriptionLocalized ?? {}
   const contentLanguages = LANGUAGES
     .map(({ code }) => code)
     .filter((code) => {
       if (code === 'zh-Hans') return true
       if (code === 'en') return Boolean(String(translated.en || game.descriptionEn || '').trim())
-      return Boolean(String(translated[code] || '').trim())
+      return Boolean(String(curated[code] || translated[code] || '').trim())
     })
 
   if (contentLanguages.includes(current)) return { contentLanguages, canonicalLanguage: current }
@@ -157,9 +159,9 @@ export function gameSeoLanguagePlan(
  *
  * 状态用「需要翻译」描述，符合按钮的语义；前端别去反推 disable / hidden。
  */
-export function needsTranslation(game: { descriptionI18n?: Record<string, string> }, lang: Lang): boolean {
+export function needsTranslation(game: { descriptionI18n?: Record<string, string>; descriptionLocalized?: Record<string, string> }, lang: Lang): boolean {
   if (lang === 'zh-Hans' || lang === 'en') return false
-  return !game.descriptionI18n?.[lang]
+  return !game.descriptionLocalized?.[lang] && !game.descriptionI18n?.[lang]
 }
 
 /* ---------------- 文章按需翻译 ---------------- */

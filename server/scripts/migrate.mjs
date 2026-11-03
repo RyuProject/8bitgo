@@ -136,6 +136,13 @@ const patches = [
     run: () => conn.query('ALTER TABLE `games` ADD COLUMN `description_i18n` JSON NULL AFTER `description_en`'),
   },
   {
+    name: 'games.description_localized（人工校对的逐语言简介）',
+    table: 'games',
+    needed: async () => !(await hasColumn('games', 'description_localized')),
+    // 单独存放，避免改中英文基准时清空人工 SEO 文案；SQLite 用 TEXT 保存同一 JSON 形状。
+    run: () => conn.query('ALTER TABLE `games` ADD COLUMN `description_localized` JSON NULL AFTER `description_i18n`'),
+  },
+  {
     name: 'games.title_i18n（游戏中文译名的繁体版）',
     /**
      * 形状：`{ "zh-Hant": "合金彈頭 3" }` —— **只有繁体这一个键**，而且只有 title_zh

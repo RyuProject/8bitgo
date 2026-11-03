@@ -92,6 +92,8 @@ CREATE TABLE IF NOT EXISTS games (
   -- 按需缓存的其余六种语言的译文（zh-Hans 走 description，en 走 description_en）。
   -- 形状：{"zh-Hant":"…","es":"…","fr":"…","it":"…","de":"…","ja":"…"}。
   description_i18n JSON         NULL,
+  -- 后台人工校对的逐语言简介，与自动翻译缓存分离。
+  description_localized JSON    NULL,
   body_control  TINYINT(1)    NOT NULL DEFAULT 0,
   adult         TINYINT(1)    NOT NULL DEFAULT 0,
   -- 评分聚合（见 game_ratings）。冗余在这里是为了让游戏库能直接按评分排序、
@@ -176,9 +178,8 @@ CREATE TABLE IF NOT EXISTS platform_bios (
   PRIMARY KEY (platform)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- ---------- 站点设置（后台能热改的少量站点级配置） ----------
--- 单向覆盖：env 提供默认、库只做覆盖（理由见 config-manifest.js 的文件头）。
--- 值统一是 JSON 文本，形状由 shared/site-notice.js 校验。目前只有一格：notice（首页公告条）。
+-- ---------- 站点设置（按 name 保存少量站点级数据库状态） ----------
+-- notice 是 JSON 文本；翻译额度计数等键按各自消费者约定保存。
 CREATE TABLE IF NOT EXISTS site_settings (
   name       VARCHAR(64) NOT NULL,
   value      TEXT        NOT NULL,

@@ -71,7 +71,7 @@ import { NETPLAY_MAX_PLAYERS } from '../../shared/netplay-players.js'
 import { normalizeDevelopers } from '@/lib/developers'
 import { Field, btnClass, inputClass } from './ui'
 import { fetchAdminGames, patchGame } from '@/services/store'
-import { apiEnabled } from '@/services/api'
+import { api, apiEnabled } from '@/services/api'
 import { objectReferenceMatches, planRomObjectDeletion, unbindRomObjectKeys } from './romDeletePlan'
 import { mergeDosboxConfigOverride, normalizeDosboxConfigOverride, parseDosboxConfigOverride } from '../../shared/dosbox-config.js'
 import { romPackInnerName } from '../../shared/rom-pack-format.js'
@@ -179,6 +179,15 @@ const KNOWN_ARCADE_BIOS = [
 
 const today = () => new Date().toISOString().slice(0, 10)
 
+type VolcTranslationUsage = {
+  usedChars: number
+  limitChars: number
+  remainingChars: number
+  exhausted: boolean
+  trackingError?: boolean
+  volcConfigured?: boolean
+}
+
 const EMPTY: Game = {
   slug: '',
   title: '',
@@ -245,6 +254,9 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
     Object.keys(initial?.roms ?? {}).some((lang) => lang !== 'en'),
   )
   const [tagsText, setTagsText] = useState(initialTagsText)
+  const formRef = useRef(form)
+  // 请求期间若管理员继续改简介，译文回包不能覆盖更新后的手工内容。
+  formRef.current = form
   const autoTagsValue = useRef('')
   const tagsManuallyEdited = useRef(Boolean(initialTagsText))
   const [newRomLanguageCode, setNewRomLanguageCode] = useState('')
@@ -252,6 +264,13 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
   // 历史值先视作管理员手选；本次表单自动识别出的核心仍可被下一次 ROM 识别更新。
   const manualCoreChoice = useRef(Boolean(initial?.core?.trim()))
   const [error, setError] = useState<string | null>(null)
+  const [translatingLanguage, setTranslatingLanguage] = useState<string | null>(null)
+  const [translationFeedback, setTranslationFeedback] = useState<{
+    language: string
+    kind: 'success' | 'error'
+    text: string
+  } | null>(null)
+  const [volcTranslationUsage, setVolcTranslationUsage] = useState<VolcTranslationUsage | null>(null)
   const [romDeleteBusy, setRomDeleteBusy] = useState(false)
   const romDeleteBusyRef = useRef(false)
   const initialSnapshot = useRef(JSON.stringify({ form: initialForm, tagsText: initialTagsText }))
@@ -294,6 +313,10 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
     ...Object.keys(form.dosSockdrives ?? {}),
   ])].filter((code) => !(ROM_LANGS as readonly string[]).includes(code)).sort()
   const allRomLangs: RomSlotLang[] = [...ROM_LANGS, ...customRomLangs]
+  // SEO 简介只给实际绑定了 ROM 的语言开输入框；zh-Hans / en 继续使用上面的固定简介字段。
+  const localizedRomLanguages = allRomLangs.filter((lang) =>
+    lang !== 'zh-Hans' && lang !== 'en' && Boolean(form.roms?.[lang]?.trim()),
+  )
   const arcadePrimaryLang = allRomLangs.find((lang) => Boolean(form.roms?.[lang]?.trim())) ?? 'en'
   /*
     刷新编辑页后浏览器已没有刚刚选择的 File，无法再读 ZIP 中央目录；对象 key 仍保留 MAME
@@ -320,6 +343,15 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
     window.addEventListener('beforeunload', warn)
     return () => window.removeEventListener('beforeunload', warn)
   }, [form, tagsText, submitting])
+
+  useEffect(() => {
+    if (personalLibrary || !apiEnabled()) return
+    let active = true
+    void api.get<VolcTranslationUsage>('/api/admin/translation-usage', true)
+      .then((usage) => { if (active) setVolcTranslationUsage(usage) })
+      .catch(() => { if (active) setVolcTranslationUsage(null) })
+    return () => { active = false }
+  }, [personalLibrary])
 
   const requestCancel = () => {
     if (submitting || romDeleteBusy) return
@@ -630,6 +662,83 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
     set('descriptionEn', description || undefined)
   }
 
+  const updateLocalizedDescription = (language: string, description: string) => {
+    setTranslationFeedback((current) => current?.language === language ? null : current)
+    setForm((current) => {
+      const descriptions = { ...current.descriptionLocalized }
+      if (description.trim()) descriptions[language] = description
+      else delete descriptions[language]
+      return { ...current, descriptionLocalized: Object.keys(descriptions).length ? descriptions : undefined }
+    })
+  }
+
+  const translateLocalizedDescription = async (language: string) => {
+    if (translatingLanguage) return
+    if (!apiEnabled()) {
+      setTranslationFeedback({ language, kind: 'error', text: '项目 API 未连接，无法调用翻译服务。' })
+      return
+    }
+    const currentForm = formRef.current
+    const sourceText = String(currentForm.descriptionEn ?? '').trim()
+    if (!sourceText) {
+      setTranslationFeedback({ language, kind: 'error', text: '请先填写英文简介，再点击翻译。' })
+      return
+    }
+    const originalTarget = String(currentForm.descriptionLocalized?.[language] ?? '')
+    if (originalTarget.trim() && !window.confirm(`“${romLanguageLabel(language)}”已有简介；翻译结果会替换当前输入内容。继续吗？`)) return
+
+    setTranslatingLanguage(language)
+    setTranslationFeedback(null)
+    try {
+      const slug = slugify(currentForm.slug || currentForm.title)
+      const result = await api.post<{
+        lang: string
+        text: string
+        provider?: 'mymemory' | 'lingva' | 'volc' | 'mixed' | 'unknown'
+        volcUsage?: VolcTranslationUsage
+      }>(
+        `/api/games/${encodeURIComponent(slug)}/translate-description-preview`,
+        { lang: language, sourceText },
+        true,
+      )
+      if (result.volcUsage) setVolcTranslationUsage(result.volcUsage)
+      const latest = formRef.current
+      const latestTarget = String(latest.descriptionLocalized?.[language] ?? '')
+      if (String(latest.descriptionEn ?? '').trim() !== sourceText || latestTarget !== originalTarget) {
+        setTranslationFeedback({
+          language,
+          kind: 'error',
+          text: '翻译期间简介内容有变化，未填入过期译文；请确认英文简介后重新点击。',
+        })
+        return
+      }
+      updateLocalizedDescription(language, result.text)
+      const providerLabel = result.provider === 'mymemory'
+        ? 'MyMemory'
+        : result.provider === 'lingva'
+          ? 'Lingva'
+          : result.provider === 'mixed'
+            ? 'MyMemory / Lingva / 火山混合服务'
+            : '火山兜底'
+      const usageLabel = result.volcUsage
+        ? `火山用量 ${result.volcUsage.usedChars.toLocaleString()} / ${result.volcUsage.limitChars.toLocaleString()} 字符。`
+        : ''
+      setTranslationFeedback({
+        language,
+        kind: 'success',
+        text: `已填入输入框（${providerLabel}）。${usageLabel}译文尚未保存，提交游戏表单后才会生效。`,
+      })
+    } catch (err) {
+      setTranslationFeedback({
+        language,
+        kind: 'error',
+        text: err instanceof Error ? err.message : '翻译失败，请稍后重试。',
+      })
+    } finally {
+      setTranslatingLanguage(null)
+    }
+  }
+
   const regenerateKeywords = () => {
     const generated = extractGameKeywords(form.descriptionEn ?? '').join(', ')
     if (!generated) return setError('请先填写英文简介，再提取关键词')
@@ -645,6 +754,9 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
     const slug = slugify(form.slug || form.title)
     if (!form.title.trim()) return setError('请填写英文标题')
     if (!slug) return setError('slug 不能为空')
+    if (Object.values(form.descriptionLocalized ?? {}).some((value) => value.length > 4000)) {
+      return setError('各语言简介不能超过 4000 个字符')
+    }
     if (!isEdit && existingSlugs.includes(slug)) return setError(`slug「${slug}」已存在，请换一个`)
     if (form.genres.length === 0) return setError('至少选择一个类型')
     const pc98 = form.platform === 'dos' && Boolean(form.dosPc98)
@@ -905,6 +1017,12 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
       // 空字符串写成 undefined，否则会存一条空的英文简介，
       // 前台判「有没有英文版」时就会误判成有
       descriptionEn: form.descriptionEn?.trim() || undefined,
+      // 暂时移除 ROM 槽时保留旧文案，避免换包流程误删已校对的 SEO 内容。
+      descriptionLocalized: Object.fromEntries(
+        Object.entries(form.descriptionLocalized ?? {})
+          .map(([language, description]) => [language, description.trim()] as const)
+          .filter(([, description]) => Boolean(description)),
+      ),
     })
   }
 
@@ -1621,11 +1739,57 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
           placeholder="One or two sentences about this game"
         />
         <p className="mt-1 text-[11px] text-dim">
-          留空的话，<strong className="text-muted">所有非中文语种</strong>都会看到上面那段中文。
-          填了之后英语、西语、法语、德语、意语、日语访客一律看这一段 ——
-          西语访客读英文，也远好过读中文。
+          这是固定的英文简介；其他语言没有单独简介或自动译文时会回退到这里，再回退到中文。
+          已上传 ROM 的语言可在下方填写更准确的独立简介。
         </p>
+        {volcTranslationUsage && !personalLibrary && (
+          <p className={cx('mt-1 text-[11px]', volcTranslationUsage.trackingError ? 'text-live' : 'text-dim')} role="status">
+            {volcTranslationUsage.trackingError
+              ? '火山字符用量记录异常；系统已停止调用火山兜底。'
+              : `火山兜底用量：${volcTranslationUsage.usedChars.toLocaleString()} / ${volcTranslationUsage.limitChars.toLocaleString()} 字符；翻译顺序为 MyMemory → Lingva → 火山。${volcTranslationUsage.volcConfigured ? '' : '当前未配置火山密钥；两个公共服务都失败时无法继续翻译。'}`}
+          </p>
+        )}
       </Field>
+
+      {localizedRomLanguages.map((language) => {
+        const hasLocalizedRoute = (ROM_LANGS as readonly string[]).includes(language)
+        const isTranslating = translatingLanguage === language
+        const canUseVolc = hasLocalizedRoute && language !== 'en' && language !== 'zh-Hans'
+        return (
+          <Field key={language} label={`简介（${romLanguageLabel(language)}）`}>
+            <div className="mb-1 flex justify-end">
+              {canUseVolc && (
+                <button
+                  type="button"
+                  className={btnClass.secondary}
+                  onClick={() => void translateLocalizedDescription(language)}
+                  disabled={submitting || Boolean(translatingLanguage) || !form.descriptionEn?.trim() || !slugify(form.slug || form.title) || !apiEnabled()}
+                  title={!apiEnabled() ? '项目 API 未连接' : !form.descriptionEn?.trim() ? '请先填写英文简介' : !slugify(form.slug || form.title) ? '请先填写游戏标题或 slug' : '调用火山翻译并填入此输入框，不会自动保存'}
+                >
+                  {isTranslating ? '翻译中…' : '翻译并填写'}
+                </button>
+              )}
+            </div>
+            <textarea
+              className={cx(inputClass, 'h-24 resize-y py-2')}
+              value={form.descriptionLocalized?.[language] ?? ''}
+              onChange={(e) => updateLocalizedDescription(language, e.target.value)}
+              maxLength={4000}
+              placeholder={form.descriptionI18n?.[language]?.trim() || `为 ${romLanguageLabel(language)} ROM 填写独立简介`}
+            />
+            <p className="mt-1 text-[11px] text-dim">
+              {hasLocalizedRoute
+                ? '用于对应语言的游戏详情与 SEO；留空时使用英文简介，没有英文简介时回退中文。灰色占位文字仅供参考，不会保存。'
+                : '此语言码目前没有独立站点语言页面；简介会保存，待站点开放对应语言路由后用于 SEO。'}
+            </p>
+            {translationFeedback?.language === language && (
+              <p className={cx('mt-1 text-[11px]', translationFeedback.kind === 'success' ? 'text-emerald-500' : 'text-live')} role="status" aria-live="polite">
+                {translationFeedback.text}
+              </p>
+            )}
+          </Field>
+        )
+      })}
 
       <Field label="关键词 / 标签" hint="英文简介会自动提取高频主题词；手动编辑后不再覆盖。用逗号分隔，例如：classic, co-op">
         <div className="flex gap-2">

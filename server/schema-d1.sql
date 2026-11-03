@@ -61,6 +61,8 @@ CREATE TABLE IF NOT EXISTS games (
   video          TEXT,
   description    TEXT,
   description_en TEXT,
+  -- SQLite 部署将逐语言人工简介以 JSON 文本保存，与自动翻译缓存分离。
+  description_localized TEXT,
   body_control   INTEGER NOT NULL DEFAULT 0,
   adult          INTEGER NOT NULL DEFAULT 0,
   hidden         INTEGER NOT NULL DEFAULT 0,
@@ -175,9 +177,8 @@ CREATE TABLE IF NOT EXISTS platform_bios (
   updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
 
--- ---------- 站点设置（后台能热改的少量站点级配置） ----------
--- 单向覆盖：env 提供默认、库只做覆盖（理由见 config-manifest.js 的文件头）。
--- 值统一是 JSON 文本，形状由 shared/site-notice.js 校验。目前只有一格：notice（首页公告条）。
+-- ---------- 站点设置（按 name 保存少量站点级数据库状态） ----------
+-- notice 是 JSON 文本；其它键可按各自消费者约定保存。
 CREATE TABLE IF NOT EXISTS site_settings (
   name       TEXT PRIMARY KEY,
   value      TEXT NOT NULL,

@@ -5,7 +5,7 @@ import { invalidateContent } from '../content.js'
 import { publicApi } from '../cache.js'
 import { postRowToApi, postApiToRow, dbFlag } from '../mappers.js'
 import { queuePostSearchPush } from '../search-push.js'
-import { isTranslateConfigured, translateGateOk, translatePlan } from '../translate.js'
+import { isTranslationProviderConfigured, translateGateOk, translatePlan } from '../translate.js'
 import { renderField, renderMarkdownField } from '../i18n-generate.js'
 import {
   createVolunteerPost,
@@ -106,7 +106,7 @@ function queuePostTranslations(slug) {
       const plan = translatePlan(lang, 'zh-Hans')
       if (!plan || plan.passthrough) continue
       // 繁体只要 OpenCC，火山没配也能做；其余语言没配就跳过，别在这里抛错
-      if (!plan.convert && !isTranslateConfigured()) continue
+      if (!plan.convert && !isTranslationProviderConfigured()) continue
       const jobs = [
         ['title_i18n', row.title, row.title_i18n, false],
         ['excerpt_i18n', row.excerpt, row.excerpt_i18n, false],
@@ -143,7 +143,7 @@ function queuePostTranslations(slug) {
  *   { "lang": "es" }
  *   → 200  { lang, title, excerpt, content, cached, partial }
  *         title / excerpt / content：译文；该字段翻译失败时为空字符串
- *         cached: true 表示三个字段都已经在库里、根本没调火山
+ *         cached: true 表示三个字段都已经在库里、根本没调上游翻译
  *         partial: true 表示只有一部分字段翻译成功
  *   → 400  语言不合法 / 帖子没有内容可翻译
  *   → 404  文章不存在
@@ -167,7 +167,7 @@ postsRouter.post('/:slug/translate', async (req, res, next) => {
      * 无条件返回 passthrough，这条路由对英文一律 400，于是 `/en/blog` 永远显示中文。
      */
     /*
-      ⚠️ 这条路由不需要登录，而它下游是**按字符计费**的火山翻译。
+      ⚠️ 这条路由不需要登录，会调用公共翻译服务；失败时还可能消耗按字符计量的火山兜底额度。
       文件头原来的防刷理由是「缓存命中后每款每语言只调一次」，但冷缓存对成千上万个
       (slug, lang) 组合天然存在，一条 for 循环就能把账单刷上去、顺带耗尽配额
       让正常翻译全部失败。照 codes.js 的三层写法补上。
@@ -179,8 +179,8 @@ postsRouter.post('/:slug/translate', async (req, res, next) => {
     if (!plan) return res.status(400).json({ error: `不支持的目标语言：${lang}` })
     if (plan.passthrough) return res.status(400).json({ error: `语言 ${lang} 不需要翻译` })
     // 繁体走本地 OpenCC，不需要 AK/SK
-    if (!plan.convert && !isTranslateConfigured()) {
-      return res.status(503).json({ error: '翻译服务未配置（缺 VOLC_AK / VOLC_SK）' })
+    if (!plan.convert && !isTranslationProviderConfigured()) {
+      return res.status(503).json({ error: '翻译服务未配置（请检查 MyMemory / Lingva 服务地址）' })
     }
 
     // 直接读原始行而不是 postRowToApi —— 看 excerpt_i18n / content_i18n 是裸 JSON 列，

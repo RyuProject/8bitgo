@@ -51,6 +51,20 @@ assert.match(adminGames, /R2 文件已安全保留/)
 assert.match(store, /options\.createOnly \? '\?create=1'/)
 assert.match(gamesRoute, /if \(createOnly\) await createGame/)
 assert.match(gamesRoute, /error\?\.code === 'ER_DUP_ENTRY'/)
+const adminTranslationRoute = gamesRoute.slice(
+  gamesRoute.indexOf("gamesRouter.post('/:slug/translate-description-preview'"),
+  gamesRoute.indexOf('/** 新增 / 整体覆盖一款游戏', gamesRoute.indexOf("gamesRouter.post('/:slug/translate-description-preview'")),
+)
+assert.match(adminTranslationRoute, /requireAbility\('games:edit'\)/)
+assert.match(adminTranslationRoute, /translatePlan\(lang, 'en'\)/)
+assert.match(adminTranslationRoute, /renderField\(sourceText, plan,/)
+assert.doesNotMatch(adminTranslationRoute, /writeDescriptionTranslation|invalidateContent/)
+assert.match(gameForm, /翻译并填写/)
+assert.match(gameForm, /translate-description-preview/)
+assert.match(gameForm, /尚未保存/)
+assert.match(adminRoute, /adminRouter\.get\('\/translation-usage', requireAbility\('games:edit'\)/)
+assert.match(adminRoute, /getVolcTranslationUsage\(\)/)
+assert.match(adminRoute, /volcConfigured: isTranslateConfigured\(\)/)
 assert.match(repo, /if \(createOnly\) \{\s*await run\(insert/)
 assert.match(postsService, /options\.createOnly \? '\?create=1'/)
 assert.match(postsRoute, /createOnly \? insert/)
@@ -62,7 +76,7 @@ assert.doesNotMatch(adminOverview, /useAllUsers|fetchAllPosts/)
 assert.match(adminGames, /if \(savingRef\.current\) return/)
 assert.match(adminGames, /if \(rowActionRef\.current\) return/)
 assert.match(gameForm, /window\.addEventListener\('beforeunload'/)
-assert.match(gameForm, /<fieldset disabled=\{submitting\}/)
+assert.match(gameForm, /<fieldset disabled=\{submitting \|\| romDeleteBusy\}/)
 
 // ROM 存储页的对象绑定、删除必须共用单飞锁，避免绑定请求和删除请求交错后留下悬空 key。
 const romBindBlock = adminRoms.slice(adminRoms.indexOf('const bind = async'), adminRoms.indexOf('const requireCompleteReferences'))
@@ -87,7 +101,7 @@ assert.doesNotMatch(objectRow, /games\.map\(\(g\) => \(/, '不能在每一行重
 assert.match(adminRoms, /const bindingsByRom = useMemo/)
 assert.match(adminRoms, /if \(allGamesLoaded\) return true/)
 assert.match(adminRoms, /await unbindKeys\(keys\)/)
-assert.match(gameForm, /R2 文件安全保留/)
+assert.match(gameForm, /原文件会保留/)
 
 // 用户页只取收藏 / 最近数量，不能把上百万条关联明细拖进 Node；搜索在数据库里完成。
 assert.match(usersRoute, /COUNT\(\*\) AS n FROM favorites/)

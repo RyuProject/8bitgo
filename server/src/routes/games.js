@@ -26,8 +26,9 @@ import {
   searchFallback,
 } from '../games-repo.js'
 import { createGameMediaProxy } from '../game-media.js'
-import { isTranslateConfigured, translateGateOk, translatePlan } from '../translate.js'
+import { isTranslationProviderConfigured, translateGateOk, translatePlan } from '../translate.js'
 import { gameDescriptionSource, renderField } from '../i18n-generate.js'
+import { getVolcTranslationUsage } from '../translation-usage.js'
 import { takeAnonymous } from '../rateLimit.js'
 import { clientIpFrom, resolveCountry } from '../presence.js'
 import { isSlowStartup, normalizeStartupEvent, recordStartupEvent } from '../startup-metrics.js'
@@ -469,7 +470,7 @@ gamesRouter.get('/:slug', async (req, res, next) => {
  */
 gamesRouter.post('/:slug/translate-description', async (req, res, next) => {
   try {
-    // 同 posts 的 translate：不需要登录 + 下游按字符计费，必须限流。见 rateLimit.js
+    // 同 posts 的 translate：不需要登录 + 使用共享翻译上游，必须限流。见 rateLimit.js
     if (!translateGateOk(req, res)) return
     const lang = String(req.body?.lang ?? '').trim()
 
@@ -496,11 +497,11 @@ gamesRouter.post('/:slug/translate-description', async (req, res, next) => {
     if (plan.passthrough) return res.status(400).json({ error: `语言 ${lang} 不需要翻译` })
     // 繁体走本地 OpenCC，不需要 AK/SK —— 这道闸只拦真的要出网的那一路，
     // 否则没配火山密钥的部署连简繁转换都做不了。
-    if (!plan.convert && !isTranslateConfigured()) {
-      return res.status(503).json({ error: '翻译服务未配置（缺 VOLC_AK / VOLC_SK）' })
+    if (!plan.convert && !isTranslationProviderConfigured()) {
+      return res.status(503).json({ error: '翻译服务未配置（请检查 MyMemory / Lingva 服务地址）' })
     }
 
-    // 已经缓存就直返回 —— 同款游戏同语言第二次之后都不再调火山，
+      // 已经缓存就直返回 —— 同款游戏同语言第二次之后都不再请求上游翻译，
     // 这是这套设计的核心防刷：成本 = N 种语言各一次。
     if (game.descriptionI18n?.[lang]) {
       return res.json({ lang, text: game.descriptionI18n[lang], cached: true })
@@ -512,7 +513,7 @@ gamesRouter.post('/:slug/translate-description', async (req, res, next) => {
     } catch (e) {
       // 火山那边的错误码透传：AuthFailure / SignatureDoesNotMatch 是 AK/SK 错，
       // LimitExceeded 是 QPS 超限，QuotaExceeded 是欠费。
-      // 这些都是运营问题，给 502（"翻译服务暂时不可用"）而不是 500，
+      // 这些都是上游服务问题，给 502（"翻译服务暂时不可用"）而不是 500，
       // 客户端的视图是「点完显示失败提示」，不该看到内部错误码
       // OPENCC_MISSING（繁体那一路没装 opencc-js）也落在这里 —— 对访客来说
       // 「这个功能现在用不了」是同一件事，错误文案已经把原因写在 message 里了。
@@ -520,7 +521,7 @@ gamesRouter.post('/:slug/translate-description', async (req, res, next) => {
       return res.status(502).json({ error: `翻译失败：${e?.message || '未知错误'}` })
     }
 
-    // 写库失败也得先把译文回给前端：UI 已经更新了，DB 写失败只是下次还得再调一次火山。
+    // 写库失败也得先把译文回给前端：UI 已经更新了，DB 写失败只是下次还得再请求上游。
     // 不能让用户点完了界面上不变还得翻个网络错误。
     try {
       await writeDescriptionTranslation(req.params.slug, lang, translated)
@@ -532,6 +533,49 @@ gamesRouter.post('/:slug/translate-description', async (req, res, next) => {
     invalidateContent()
 
     res.json({ lang, text: translated, cached: false })
+  } catch (e) {
+    next(e)
+  }
+})
+
+/**
+ * 后台按需把英文简介翻成某个 ROM 语言，只把译文返回给表单，不写入自动翻译缓存。
+ * 单独设管理员权限，避免匿名玩家借此消耗火山额度；slug 可以是尚未保存的新游戏。
+ */
+gamesRouter.post('/:slug/translate-description-preview', requireAbility('games:edit'), async (req, res, next) => {
+  try {
+    if (!translateGateOk(req, res)) return
+    const lang = String(req.body?.lang ?? '').trim()
+    const sourceText = String(req.body?.sourceText ?? '').trim()
+    if (!sourceText) return res.status(400).json({ error: '请先填写英文简介' })
+    if (sourceText.length > 4000) return res.status(400).json({ error: '英文简介不能超过 4000 个字符' })
+
+    // 后台这条路径明确固定英文为源文；不能复用玩家端“繁体优先取中文”的自动翻译逻辑。
+    const plan = translatePlan(lang, 'en')
+    if (!plan) return res.status(400).json({ error: `暂不支持翻译成：${lang || '（空语言）'}` })
+    if (plan.passthrough) return res.status(400).json({ error: `语言 ${lang} 与英文源文相同，无需翻译` })
+    if (!isTranslationProviderConfigured()) {
+      return res.status(503).json({ error: '翻译服务未配置（请检查 MyMemory / Lingva 服务地址）' })
+    }
+
+    let translated
+    const providers = new Set()
+    try {
+      translated = await renderField(sourceText, plan, { onProvider: (provider) => providers.add(provider) })
+    } catch (e) {
+      console.error('[translate] 后台生成简介译文失败：', e?.code, e?.message)
+      return res.status(502).json({ error: `翻译失败：${e?.message || '火山翻译暂时不可用'}` })
+    }
+    if (!translated.trim()) return res.status(502).json({ error: '翻译服务没有返回有效译文' })
+    // 刻意不写 description_i18n、不刷新公开页缓存：管理员确认并保存游戏后才成为正式简介。
+    let volcUsage = null
+    try {
+      volcUsage = await getVolcTranslationUsage()
+    } catch (e) {
+      console.error('[translate] 读取火山字符用量失败：', e?.message)
+    }
+    const provider = providers.size > 1 ? 'mixed' : [...providers][0] || 'unknown'
+    return res.json({ lang, text: translated, provider, volcUsage })
   } catch (e) {
     next(e)
   }

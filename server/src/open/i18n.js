@@ -93,9 +93,9 @@ export function pickTitle(row, lang) {
  * 简介。回退链（和 i18nData.ts 的 gameDescription 同构）：
  *
  *   zh-Hans → description
- *   zh-Hant → description_i18n['zh-Hant'] → description
+ *   zh-Hant → description_localized['zh-Hant'] → description_i18n['zh-Hant'] → description
  *   en      → description_en → description
- *   其它     → description_i18n[lang] → description_en → description
+ *   其它     → description_localized[lang] → description_i18n[lang] → description_en → description
  *
  * ⚠️ 最后一档退到中文看着别扭，但它是**有意**的：填了中文没填英文的游戏，
  * 给一段中文也比给一片空白强（接入方拿 lang_actual 就知道该不该显示「暂无译文」）。
@@ -103,14 +103,17 @@ export function pickTitle(row, lang) {
 export function pickDescription(row, lang) {
   const want = normalizeLang(lang)
   const i18n = readMap(row?.description_i18n)
+  const curated = readMap(row?.description_localized)
   const base = text(row?.description)
   const en = text(row?.description_en)
 
   if (want === 'zh-Hans') return { text: base, lang: base ? 'zh-Hans' : 'und' }
   if (want === 'zh-Hant') {
+    if (text(curated['zh-Hant'])) return { text: text(curated['zh-Hant']), lang: 'zh-Hant' }
     if (text(i18n['zh-Hant'])) return { text: text(i18n['zh-Hant']), lang: 'zh-Hant' }
     return { text: base, lang: base ? 'zh-Hans' : 'und' }
   }
+  if (want !== SITE_FALLBACK_LANGUAGE && text(curated[want])) return { text: text(curated[want]), lang: want }
   if (want !== SITE_FALLBACK_LANGUAGE && text(i18n[want])) return { text: text(i18n[want]), lang: want }
   if (en) return { text: en, lang: 'en' }
   return { text: base, lang: base ? 'zh-Hans' : 'und' }

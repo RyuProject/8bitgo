@@ -273,6 +273,9 @@ export const ENV_MANIFEST = [
   { name: 'TERRARIA_ASSET_PREFIX', group: '服务与地址', kind: 'config', file: 'terraria.js', note: 'Terraria WASM 运行时在对象存储里的目录前缀' },
   { name: 'TERRARIA_PROXY_MAX', group: '服务与地址', kind: 'config', file: 'terraria.js', note: 'Terraria 大文件同源代理并发上限，按响应真正结束计数' },
   { name: 'TERRARIA_PROXY_TIMEOUT_MS', group: '服务与地址', kind: 'config', file: 'terraria.js' },
+  { name: 'LINGVA_BASE_URL', group: '翻译 / 站内消息', kind: 'config', file: 'translate.js', note: 'Lingva REST v1 公共实例或兼容自托管实例地址' },
+  { name: 'MYMEMORY_API_URL', group: '翻译 / 站内消息', kind: 'config', file: 'translate.js', note: 'MyMemory /get 接口地址' },
+  { name: 'MYMEMORY_EMAIL', group: '翻译 / 站内消息', kind: 'secret', file: 'translate.js', note: '发送给 MyMemory 的 de 联系邮箱，仅服务端使用' },
   { name: 'TRANSLATE_TIMEOUT_MS', group: '翻译 / 站内消息', kind: 'config', file: 'translate.js' },
   { name: 'TRUST_PROXY', group: '服务与地址', kind: 'config', file: 'index.js', note: '配错时所有访客塌缩成同一个 IP，全站按 IP 的限流一起退化' },
   { name: 'TURN_BACKUP_CREDENTIAL', group: 'STUN / TURN', kind: 'secret', file: 'routes/ice.js' },
@@ -294,6 +297,8 @@ export const ENV_MANIFEST = [
   { name: 'VITE_SITE_URL', group: '服务与地址', kind: 'config', file: 'auth.js', note: 'PUBLIC_SITE_URL 的回退别名，配了前者就不用' },
   { name: 'VOLC_AK', group: '翻译 / 站内消息', kind: 'secret', file: 'translate.js' },
   { name: 'VOLC_SK', group: '翻译 / 站内消息', kind: 'secret', file: 'translate.js' },
+  { name: 'VOLC_TRANSLATE_CHAR_LIMIT', group: '翻译 / 站内消息', kind: 'config', file: 'translation-usage.js', note: '火山最后兜底字符上限，默认 2000000；到限后停止调用火山' },
+  { name: 'VOLC_TRANSLATE_INITIAL_USED_CHARS', group: '翻译 / 站内消息', kind: 'config', file: 'translation-usage.js', note: '首次创建用量计数时导入已有火山字符用量；默认 0，只初始化一次' },
   { name: 'VOLC_TRANSLATE_BASE_URL', group: '翻译 / 站内消息', kind: 'config', file: 'translate.js', note: '测试用来指向本地 mock，线上不该配' },
 ]
 

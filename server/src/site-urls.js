@@ -142,13 +142,14 @@ const present = (value) => Boolean(String(value ?? '').trim())
  */
 export function gameContentLanguages(game) {
   const translated = i18nMap(field(game, 'descriptionI18n', 'description_i18n'))
+  const curated = i18nMap(field(game, 'descriptionLocalized', 'description_localized'))
   const base = field(game, 'description', 'description')
   const english = field(game, 'descriptionEn', 'description_en')
   return ALL_LANGUAGE_CODES.filter((code) => {
     const hasLocalizedDescription = (() => {
       if (code === SITE_DEFAULT_LANGUAGE) return present(base)
       if (code === 'en') return present(translated.en) || present(english)
-      return present(translated[code])
+      return present(curated[code]) || present(translated[code])
     })()
     return hasLocalizedDescription && gameHasRomForLanguage(game, code)
   })
@@ -168,6 +169,7 @@ function gameHasLanguageFields(game) {
   return hasOwn(game, 'description')
     || hasOwn(game, 'descriptionEn') || hasOwn(game, 'description_en')
     || hasOwn(game, 'descriptionI18n') || hasOwn(game, 'description_i18n')
+    || hasOwn(game, 'descriptionLocalized') || hasOwn(game, 'description_localized')
 }
 
 function postHasLanguageFields(post) {

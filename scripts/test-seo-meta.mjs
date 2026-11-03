@@ -259,7 +259,7 @@ check('VideoGame 结构化数据分别声明页面 canonical 语言与可直接�
   assert.match(seo, /inLanguage\?: readonly string\[\]/, 'VideoGame 输入缺少 ROM 语言字段')
   assert.match(seo, /schema\.inLanguage = \[\.\.\.new Set\(g\.inLanguage/, 'ROM 语言没有写入 VideoGame JSON-LD')
   assert.match(detail, /inLanguage: romLangs/, '详情页没有把真实绑定的语言槽传给 JSON-LD')
-  assert.match(detail, /ROM_LANG_LABEL/, '页面没有显示完整的 ROM 语言名')
+  assert.match(detail, /romLanguageLabel/, '页面没有显示完整的 ROM 语言名')
 })
 
 check('关于页与法律页只声明简中、繁中、英文三份真实长正文', () => {

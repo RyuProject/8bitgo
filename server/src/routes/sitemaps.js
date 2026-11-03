@@ -124,7 +124,7 @@ function i18nText(raw, language) {
  *
  * @param row 数据库行
  * @param language 站点语言码（已经过 languageCodes 校验）
- * @param cols `{ base: 'description', i18n: 'description_i18n', en: 'description_en' }` —— 正文列名，
+ * @param cols `{ base: 'description', i18n: 'description_i18n', localized: 'description_localized', en: 'description_en' }` —— 正文列名，
  *             `en` 是「这门语言有独立基准列」的特例（游戏的英文简介是单独一列，文章没有）
  */
 export function hasLocalizedBody(row, language, cols = {}) {
@@ -132,6 +132,7 @@ export function hasLocalizedBody(row, language, cols = {}) {
   if (language === SITE_DEFAULT_LANGUAGE) {
     return !cols.base || Boolean(String(row?.[cols.base] ?? '').trim())
   }
+  if (cols.localized && i18nText(row?.[cols.localized], language)) return true
   if (cols.i18n && i18nText(row?.[cols.i18n], language)) return true
   // 英文简介在 games 里是独立的一列，不在 description_i18n 里
   if (language === 'en' && cols.en && String(row?.[cols.en] ?? '').trim()) return true
@@ -149,6 +150,7 @@ export function hasIndexableGameLanguage(row, language) {
   return hasLocalizedBody(row, language, {
     base: 'description',
     i18n: 'description_i18n',
+    localized: 'description_localized',
     en: 'description_en',
   }) && gameHasRomForLanguage(row, language)
 }
@@ -163,13 +165,15 @@ export function hasLocalizedPostBody(row, language) {
     .every((column) => Boolean(i18nText(row?.[column], language)))
 }
 
-/** 这一类的译文列在数据库里不存在（migrate 还没跑），已经退回过一次 */
+/** 多语言简介列在数据库里不存在（migrate 还没跑），已经退回过一次 */
 const missingI18nColumns = new Set()
+const missingLocalizedDescriptionColumns = new Set()
 const isUnknownColumn = (error) =>
   error?.code === 'ER_BAD_FIELD_ERROR' || /unknown column/i.test(String(error?.message || ''))
 
 /**
- * 取 sitemap 的数据行：先按「带译文列」查，列不存在就退回原来那句，
+ * 取 sitemap 的数据行：先按最新的「人工简介 + 译文列」查；新列缺失时退回旧版译文查询，
+ * 两类多语言列都缺失才退回原查询，
  * 并**回报这一份数据到底带不带译文列**（`gate`）。
  *
  * 为什么要退回：译文列是靠 `npm run migrate` 加的，而这个仓库的常态是
@@ -179,19 +183,33 @@ const isUnknownColumn = (error) =>
  * migrate 跑完之后进程重启一次就自然恢复。
  *
  * ⚠️ `gate` 这个返回值不是可选的讲究，是这段的**要害**：退回来的行里根本没有
- * `description_i18n` 这一列，此时若照旧按 hasLocalizedBody 过滤，
+ * 多语言简介列，此时若照旧按 hasLocalizedBody 过滤，
  * 每一行都会被判成「没有译文」—— 7 种语言的 sitemap 会**全部变成空的**，
  * 比不做这个功能糟糕一百倍，而且看不出来（XML 合法、HTTP 200、日志安静）。
  * 所以列不在时必须整个关掉过滤，退回「展开全部语言」的旧行为。
  */
-async function sitemapRows(key, sqlWithI18n, sqlPlain) {
-  if (!missingI18nColumns.has(key)) {
+async function sitemapRows(key, sqlWithI18n, sqlPlain, sqlWithLegacyI18n) {
+  if (!missingI18nColumns.has(key) && !missingLocalizedDescriptionColumns.has(key)) {
     try {
       return { rows: await query(sqlWithI18n), gate: true }
     } catch (error) {
       if (!isUnknownColumn(error)) throw error
+      if (sqlWithLegacyI18n) {
+        missingLocalizedDescriptionColumns.add(key)
+        console.warn(`[sitemap] ${key}：数据库还没有逐语言人工简介列，暂用自动译文继续精确门控（跑 npm run migrate 再重启即可）`)
+      } else {
+        missingI18nColumns.add(key)
+        console.warn(`[sitemap] ${key}：数据库还没有多语言简介列，这一份退回「展开全部语言」（跑 npm run migrate 再重启即可）：`, error.message)
+      }
+    }
+  }
+  if (!missingI18nColumns.has(key) && sqlWithLegacyI18n) {
+    try {
+      return { rows: await query(sqlWithLegacyI18n), gate: true }
+    } catch (error) {
+      if (!isUnknownColumn(error)) throw error
       missingI18nColumns.add(key)
-      console.warn(`[sitemap] ${key}：数据库还没有译文列，这一份退回「展开全部语言」（跑 npm run migrate 再重启即可）：`, error.message)
+      console.warn(`[sitemap] ${key}：数据库还没有自动译文列，这一份退回「展开全部语言」（跑 npm run migrate 再重启即可）：`, error.message)
     }
   }
   return { rows: await query(sqlPlain), gate: false }
@@ -227,8 +245,9 @@ export async function gameSitemap(req, res, next) {
     }
     const { rows, gate } = await sitemapRows(
       'games',
-      `SELECT slug, cover, added_at, created_at, updated_at, description, description_en, description_i18n, COALESCE((SELECT GROUP_CONCAT(DISTINCT gr.lang ORDER BY gr.lang) FROM game_roms gr WHERE gr.game_id = games.id AND CHAR_LENGTH(TRIM(gr.object_key)) > 0), '') AS rom_languages FROM games WHERE hidden = 0${ENABLED_PLATFORM_SQL} ORDER BY id ASC`,
+      `SELECT slug, cover, added_at, created_at, updated_at, description, description_en, description_i18n, description_localized, COALESCE((SELECT GROUP_CONCAT(DISTINCT gr.lang ORDER BY gr.lang) FROM game_roms gr WHERE gr.game_id = games.id AND CHAR_LENGTH(TRIM(gr.object_key)) > 0), '') AS rom_languages FROM games WHERE hidden = 0${ENABLED_PLATFORM_SQL} ORDER BY id ASC`,
       `SELECT slug, cover, added_at, created_at, updated_at, description, COALESCE((SELECT GROUP_CONCAT(DISTINCT gr.lang ORDER BY gr.lang) FROM game_roms gr WHERE gr.game_id = games.id AND CHAR_LENGTH(TRIM(gr.object_key)) > 0), '') AS rom_languages FROM games WHERE hidden = 0${ENABLED_PLATFORM_SQL} ORDER BY id ASC`,
+      `SELECT slug, cover, added_at, created_at, updated_at, description, description_en, description_i18n, COALESCE((SELECT GROUP_CONCAT(DISTINCT gr.lang ORDER BY gr.lang) FROM game_roms gr WHERE gr.game_id = games.id AND CHAR_LENGTH(TRIM(gr.object_key)) > 0), '') AS rom_languages FROM games WHERE hidden = 0${ENABLED_PLATFORM_SQL} ORDER BY id ASC`,
     )
     res.setHeader('Cache-Control', CACHE.meta)
     res.setHeader('Vary', 'Accept-Encoding')
@@ -484,8 +503,9 @@ async function langsWithContent() {
     const [g, p] = await Promise.all([
       sitemapRows(
         'index-games',
+        `SELECT description, description_en, description_i18n, description_localized, COALESCE((SELECT GROUP_CONCAT(DISTINCT gr.lang ORDER BY gr.lang) FROM game_roms gr WHERE gr.game_id = games.id AND CHAR_LENGTH(TRIM(gr.object_key)) > 0), '') AS rom_languages FROM games WHERE hidden = 0${ENABLED_PLATFORM_SQL}`,
+        `SELECT description, COALESCE((SELECT GROUP_CONCAT(DISTINCT gr.lang ORDER BY gr.lang) FROM game_roms gr WHERE gr.game_id = games.id AND CHAR_LENGTH(TRIM(gr.object_key)) > 0), '') AS rom_languages FROM games WHERE hidden = 0${ENABLED_PLATFORM_SQL}`,
         `SELECT description, description_en, description_i18n, COALESCE((SELECT GROUP_CONCAT(DISTINCT gr.lang ORDER BY gr.lang) FROM game_roms gr WHERE gr.game_id = games.id AND CHAR_LENGTH(TRIM(gr.object_key)) > 0), '') AS rom_languages FROM games WHERE hidden = 0${ENABLED_PLATFORM_SQL}`,
-        `SELECT slug, description, COALESCE((SELECT GROUP_CONCAT(DISTINCT gr.lang ORDER BY gr.lang) FROM game_roms gr WHERE gr.game_id = games.id AND CHAR_LENGTH(TRIM(gr.object_key)) > 0), '') AS rom_languages FROM games WHERE hidden = 0${ENABLED_PLATFORM_SQL}`,
       ),
       sitemapRows(
         'index-posts',
