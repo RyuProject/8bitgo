@@ -33,13 +33,12 @@ package test_fla
       private var pendingPairs:Object = {};
       private var queues:Object = {};
       private var busy:Object = {};
+      /** 所有已接收但尚未完成的写/删任务；读档屏障不能只看正在发出的 HTTP 请求。 */
+      private var pendingMutations:int = 0;
+      private var drainWaiters:Array = [];
+      private static const MAX_PENDING_MUTATIONS:int = 12;
       /** 这个槽已经排着一个删除任务，用来合并游戏连发的那两次 deleteUserData */
       private var deleteQueued:Object = {};
-      /**
-       * 正在飞的写入请求数。读之前要等它归零 —— 玩家刚过关触发了一次保存、紧接着打开存档页时，
-       * 不等就会读到写之前那一份，看起来像「刚存的档没生效」。见 waitForWrites。
-       */
-      private var writesInFlight:int = 0;
       private var scoreboardClose:Function = null;
       /**
        * 每个槽「服务端当前的写入版本号」，读档时和每次写成功后同步。
@@ -183,7 +182,7 @@ package test_fla
             callOnce(callback,{"success":false,"data":null,"error":"invalid_key"});
             return;
          }
-         // 先等在飞的写落库，避免读到写之前那一份（见 waitForWrites）
+         // 先等完整队列和未配对的 profile/data 都结束；超时就明确失败，绝不把旧档伪装成成功。
          waitForWrites(function():void {
             var body:Object = {"sessionToken":sessionToken};
             if(key != null) body.key = key;
@@ -192,6 +191,8 @@ package test_fla
                mergeRevisions(result);
                callOnce(callback,result);
             });
+         },function():void {
+            callOnce(callback,{"success":false,"data":null,"error":"timeout"});
          });
       }
 
@@ -214,8 +215,9 @@ package test_fla
          var slot:int = int(parsed.slot);
          if(deleteQueued[slot] === true) return;
          deleteQueued[slot] = true;
+         if(!enqueue(slot,{"kind":"delete"})) return;
+         // 先把删除计入屏障，再通知未配对保存失败；回调若立即读档，也必须排在删除之后。
          if(pendingPairs[slot]) failPair(slot,pendingPairs[slot],"deleted");
-         enqueue(slot,{"kind":"delete"});
       }
 
       public function initAGUI(options:Object = null) : void
@@ -349,16 +351,56 @@ package test_fla
          {
             callOnce(callback,{"success":false,"error":reason});
          }
+         notifyDrainWaiters();
       }
 
-      private function enqueue(slot:int, task:Object) : void
+      private function enqueue(slot:int, task:Object) : Boolean
       {
-         // 排进一个新的写入 = 这个槽又有内容了，之前那次删除的「已排队」标记必须清掉，
-         // 否则玩家「删档 → 重新存 → 再删」时第二次删除会被当成重复请求吞掉
-         if(task.kind == "write") deleteQueued[slot] = false;
          if(!queues[slot]) queues[slot] = [];
-         (queues[slot] as Array).push(task);
+         var queue:Array = queues[slot] as Array;
+         var i:int = 0;
+         var pending:Object = null;
+         var callbacks:Array = null;
+         if(task.kind == "write")
+         {
+            // 同槽待发送写入是完整快照；合并为最新状态，避免游戏高频自动保存堆出大块 JSON。
+            // 删除是顺序边界，不能把删除前的保存合并到删除之后。
+            for(i = queue.length - 1; i >= 0; i--)
+            {
+               pending = queue[i];
+               if(pending.kind == "delete") break;
+               if(pending.kind == "write")
+               {
+                  pending.profile = task.profile;
+                  pending.data = task.data;
+                  pending.opId = task.opId;
+                  pending.callbacks = pending.callbacks.concat(task.callbacks);
+                  // 有效的新快照打断「删除去重」区间，后续再次删除仍须真的发请求。
+                  deleteQueued[slot] = false;
+                  return true;
+               }
+            }
+         }
+         if(pendingMutations >= MAX_PENDING_MUTATIONS)
+         {
+            callbacks = task.callbacks as Array;
+            if(callbacks)
+            {
+               for each(var rejected:Function in callbacks)
+               {
+                  callOnce(rejected,{"success":false,"error":"queue_full"});
+               }
+            }
+            if(task.kind == "delete") deleteQueued[slot] = false;
+            trace("[8bitgo-flash-save] 在线存档待发送任务已满，拒绝新增槽 " + slot + " 的任务");
+            return false;
+         }
+         // 只有任务确实进入队列后才推进删除去重状态；被保护拒绝的写入不能抹掉删除标记。
+         if(task.kind == "write") deleteQueued[slot] = false;
+         queue.push(task);
+         pendingMutations++;
          pump(slot);
+         return true;
       }
 
       private function pump(slot:int) : void
@@ -395,23 +437,66 @@ package test_fla
          }
       }
 
-      /**
-       * 轮询等在飞的写入归零再放行。
-       * 最多等 3 秒：宁可给一份可能略旧的档，也不能把游戏卡在读档界面 ——
-       * 那个界面上的「等待」和「坏了」长得一模一样。
-       */
-      private function waitForWrites(proceed:Function, waited:int = 0) : void
+      /** 读档必须经过写入/删除屏障；30 秒仍未排空就失败关闭，不返回可能过期的快照。 */
+      private function waitForWrites(proceed:Function, fail:Function) : void
       {
-         if(writesInFlight <= 0 || waited >= 3000)
+         if(mutationsDrained())
          {
             proceed();
             return;
          }
-         var timer:Timer = new Timer(60,1);
-         timer.addEventListener(TimerEvent.TIMER_COMPLETE,function(event:TimerEvent):void {
-            waitForWrites(proceed,waited + 60);
-         });
-         timer.start();
+         var waiter:Object = {"proceed":proceed,"fail":fail};
+         var timer:Timer = new Timer(30000,1);
+         waiter.timer = timer;
+         waiter.onTimeout = function(event:TimerEvent):void {
+            removeDrainWaiter(waiter);
+            callOnce(fail,{"success":false,"data":null,"error":"timeout"});
+         };
+         timer.addEventListener(TimerEvent.TIMER_COMPLETE,waiter.onTimeout);
+         drainWaiters.push(waiter);
+         if(mutationsDrained())
+         {
+            removeDrainWaiter(waiter);
+            callOnce(proceed,null,false);
+         }
+         else
+         {
+            timer.start();
+         }
+      }
+
+      private function mutationsDrained() : Boolean
+      {
+         if(pendingMutations > 0) return false;
+         for(var slot:String in pendingPairs)
+         {
+            if(pendingPairs[slot] != null) return false;
+         }
+         return true;
+      }
+
+      private function removeDrainWaiter(waiter:Object) : void
+      {
+         if(waiter == null) return;
+         if(waiter.timer != null)
+         {
+            waiter.timer.stop();
+            waiter.timer.removeEventListener(TimerEvent.TIMER_COMPLETE,waiter.onTimeout);
+         }
+         var index:int = drainWaiters.indexOf(waiter);
+         if(index >= 0) drainWaiters.splice(index,1);
+      }
+
+      private function notifyDrainWaiters() : void
+      {
+         if(!mutationsDrained() || drainWaiters.length == 0) return;
+         var waiters:Array = drainWaiters.concat();
+         drainWaiters = [];
+         for each(var waiter:Object in waiters)
+         {
+            removeDrainWaiter(waiter);
+            callOnce(waiter.proceed,null,false);
+         }
       }
 
       /**
@@ -424,7 +509,6 @@ package test_fla
        */
       private function submitWrite(slot:int, task:Object, attempt:int) : void
       {
-         if(attempt == 0) writesInFlight++;
          var body:Object = {
             "sessionToken":sessionToken,
             "slot":slot,
@@ -474,11 +558,8 @@ package test_fla
                   submitWrite(slot,task,attempt + 1);
                });
                timer.start();
-               // 计数先不还：这次逻辑写入还在飞，读要继续等它（见 waitForWrites）
                return;
             }
-            // 走到这里这次写入就结束了（成功或彻底失败）。计数只在第一次尝试时加过，这里还一次
-            if(writesInFlight > 0) writesInFlight--;
             for each(var callback:Function in task.callbacks)
             {
                callOnce(callback, ok ? {"success":true} : {
@@ -499,8 +580,10 @@ package test_fla
 
       private function finishTask(slot:int) : void
       {
+         if(pendingMutations > 0) pendingMutations--;
          busy[slot] = false;
          pump(slot);
+         notifyDrainWaiters();
       }
 
       private function errorCode(result:Object) : String

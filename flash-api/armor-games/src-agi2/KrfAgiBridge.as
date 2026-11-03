@@ -34,6 +34,9 @@ package
     */
    public dynamic class KrfAgiBridge extends Sprite
    {
+      /** 避免游戏异常连发存档时把大块 JSON 无限堆在内存里；常规同槽快照会先合并。 */
+      private static const MAX_QUEUED_TASKS:int = 12;
+
       /** 四个旧 AGI2 命名空间。游戏在 connect() 之后直接读它们，必须是公开属性 */
       public var user:Object;
       public var storage:Object;
@@ -135,6 +138,7 @@ package
          this.sessionId = this.newSessionId();
          this.opCounter = 0;
          this.revisions = {};
+         this.loginPromptSent = false;
          this.callOnce(options == null ? null : options.callback, {"success":true});
       }
 
@@ -225,20 +229,8 @@ package
             });
             return;
          }
-         this.waitForQueue(function():void
-         {
-            post("/read",{"sessionToken":sessionToken},function(result:Object):void
-            {
-               // 一个槽都没有时服务端回的是 { success:true, keys:{} }；这里再兜一层，
-               // 免得游戏拿到 keys == null 就去 for-in 报错
-               if(Boolean(result.success) && result.keys == null)
-               {
-                  result.keys = {};
-               }
-               mergeRevisions(result);
-               callOnce(callback,result);
-            });
-         });
+         // 读也进同一条 FIFO；排队超过 30 秒会明确失败，不能越过未完成写入交一份旧档。
+         this.enqueue({"kind":"read","callback":callback});
       }
 
       public function submitFn(options:Object) : void
@@ -408,25 +400,6 @@ package
          }
       }
 
-      /**
-       * 读档前等排队中的写 / 删结束，避免玩家刚存完就看到旧档。
-       * 最多等 3 秒，极端弱网下宁可回旧档，也不能让读档界面无限转圈。
-       */
-      private function waitForQueue(proceed:Function, waited:int = 0) : void
-      {
-         if((!this.busy && this.queue.length == 0) || waited >= 3000)
-         {
-            proceed();
-            return;
-         }
-         var timer:Timer = new Timer(60,1);
-         timer.addEventListener(TimerEvent.TIMER_COMPLETE,function(event:TimerEvent):void
-         {
-            waitForQueue(proceed,waited + 60);
-         });
-         timer.start();
-      }
-
       /** 只在真游客主动用在线槽时通知页面；会话服务故障不弹登录。 */
       private function notifyLoginRequired() : void
       {
@@ -448,7 +421,62 @@ package
 
       private function enqueue(task:Object) : void
       {
+         var i:int = 0;
+         var pending:Object = null;
+         var failure:Object = null;
+         // 相邻的读可以共用一次全量读取；它本身是全局顺序边界，不能跨读合并写入。
+         if(task.kind == "read" && this.queue.length > 0 &&
+            this.queue[this.queue.length - 1].kind == "read" &&
+            this.queue[this.queue.length - 1].completed !== true)
+         {
+            this.appendTaskCallback(this.queue[this.queue.length - 1],task.callback);
+            return;
+         }
+         if(task.kind == "write")
+         {
+            // 同一键的待发送值是完整快照，只保留最新一份；旧回调随最新快照一起完成。
+            // 读 / 删是顺序边界，跨过去合并会改写玩家实际操作顺序。
+            for(i = this.queue.length - 1; i >= 0; i--)
+            {
+               pending = this.queue[i];
+               if(pending.kind == "read") break;
+               if(pending.key != task.key) continue;
+               if(pending.kind == "delete") break;
+               if(pending.kind == "write")
+               {
+                  pending.value = task.value;
+                  pending.opId = task.opId;
+                  this.appendTaskCallback(pending,task.callback);
+                  return;
+               }
+            }
+         }
+         else if(task.kind == "delete")
+         {
+            // 同一键连续删除是幂等操作，合成一条请求并保留全部调用回调。
+            for(i = this.queue.length - 1; i >= 0; i--)
+            {
+               pending = this.queue[i];
+               if(pending.kind == "read") break;
+               if(pending.key != task.key) continue;
+               if(pending.kind == "delete")
+               {
+                  this.appendTaskCallback(pending,task.callback);
+                  return;
+               }
+               break;
+            }
+         }
+         if(this.queue.length >= MAX_QUEUED_TASKS)
+         {
+            // 存档 JSON 可能很大；极端异常连发时明确拒绝，不让未发送快照无限占内存。
+            failure = {"success":false,"error":{"code":"queue_full"}};
+            if(task.kind == "read") failure.keys = {};
+            this.callTaskCallback(task,failure);
+            return;
+         }
          this.queue.push(task);
+         if(task.kind == "read") this.armReadTimeout(task);
          this.pump();
       }
 
@@ -465,7 +493,23 @@ package
          }
          this.busy = true;
          task = this.queue.shift();
-         if(task.kind == "write")
+         if(task.completed === true)
+         {
+            this.busy = false;
+            this.pump();
+            return;
+         }
+         if(!this.loggedIn)
+         {
+            this.callTaskCallback(task,{"success":false,"keys":{},"error":{"code":"not_logged_in"}});
+            this.busy = false;
+            this.pump();
+         }
+         else if(task.kind == "read")
+         {
+            this.readTask(task);
+         }
+         else if(task.kind == "write")
          {
             this.submitWrite(task,0);
          }
@@ -484,13 +528,84 @@ package
                {
                   delete revisions[task.key];
                }
-               callOnce(task.callback,Boolean(result) && Boolean(result.success) ? {"success":true} : {
+               callTaskCallback(task,Boolean(result) && Boolean(result.success) ? {"success":true} : {
                   "success":false,
                   "error":errorCode(result)
                });
                busy = false;
                pump();
             });
+         }
+      }
+
+      private function readTask(task:Object) : void
+      {
+         this.post("/read",{"sessionToken":this.sessionToken},function(result:Object):void
+         {
+            // 空账号由服务端回 keys:{}；再兜底一次，避免旧游戏对 null 做 for-in。
+            if(result == null) result = {"success":false,"error":{"code":"network_error"}};
+            if(result.keys == null) result.keys = {};
+            mergeRevisions(result);
+            callTaskCallback(task,result);
+            busy = false;
+            pump();
+         });
+      }
+
+      /** 排队等待过久时明确失败，而不是让游戏无限转圈或后来误收到一份过期读取。 */
+      private function armReadTimeout(task:Object) : void
+      {
+         var owner:KrfAgiBridge = this;
+         var timer:Timer = new Timer(30000,1);
+         task.timeoutTimer = timer;
+         task.timeoutHandler = function(event:TimerEvent):void
+         {
+            var index:int = owner.queue.indexOf(task);
+            if(index >= 0) owner.queue.splice(index,1);
+            owner.callTaskCallback(task,{
+               "success":false,
+               "keys":{},
+               "error":{"code":"timeout"}
+            });
+            owner.pump();
+         };
+         timer.addEventListener(TimerEvent.TIMER_COMPLETE,task.timeoutHandler);
+         timer.start();
+      }
+
+      private function appendTaskCallback(task:Object, callback:Function) : void
+      {
+         if(!(task.callbacks is Array))
+         {
+            task.callbacks = [];
+            if(task.callback != null) task.callbacks.push(task.callback);
+            task.callback = null;
+         }
+         task.callbacks.push(callback);
+      }
+
+      private function callTaskCallback(task:Object, result:Object) : void
+      {
+         if(task.completed === true) return;
+         task.completed = true;
+         if(task.timeoutTimer != null)
+         {
+            task.timeoutTimer.stop();
+            task.timeoutTimer.removeEventListener(TimerEvent.TIMER_COMPLETE,task.timeoutHandler);
+            task.timeoutTimer = null;
+            task.timeoutHandler = null;
+         }
+         var callbacks:Array = task.callbacks as Array;
+         var callback:Function = task.callback as Function;
+         task.callbacks = null;
+         task.callback = null;
+         if(callbacks)
+         {
+            for each(var groupedCallback:Function in callbacks) this.callOnce(groupedCallback,result);
+         }
+         else
+         {
+            this.callOnce(callback,result);
          }
       }
 
@@ -544,7 +659,7 @@ package
                timer.start();
                return;
             }
-            callOnce(task.callback, ok ? {"success":true} : {
+            callTaskCallback(task, ok ? {"success":true} : {
                "success":false,
                "error":errorCode(result)
             });

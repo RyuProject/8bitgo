@@ -1,0 +1,157 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "8BitGo 游戏多语言简介推送 API",
+    "version": "1.0.0",
+    "description": "将外部已翻译的游戏简介写入指定语言槽。本站不负责翻译。"
+  },
+  "servers": [
+    { "url": "https://8bitgo.com", "description": "8BitGo 生产站" }
+  ],
+  "paths": {
+    "/api/integrations/game-descriptions": {
+      "get": {
+        "operationId": "listGameLocalizedDescriptions",
+        "summary": "列出游戏简介的语言填写状态",
+        "description": "默认只列出已绑定该语言 ROM、但还没有人工本地化简介的项目；支持按状态和语言筛选并使用不透明游标分页。",
+        "security": [{ "descriptionPushBearer": [] }],
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "description": "missing 默认只列缺少简介的项目；filled 列已有译文；all 列出全部",
+            "schema": { "type": "string", "enum": ["missing", "filled", "all"], "default": "missing" }
+          },
+          {
+            "name": "lang",
+            "in": "query",
+            "description": "可选的目标语言筛选",
+            "schema": { "type": "string", "enum": ["zh-Hant", "es", "fr", "it", "de", "ja"] }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": { "type": "integer", "minimum": 1, "maximum": 200, "default": 100 }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "上页返回的 nextCursor；须沿用相同 status / lang",
+            "schema": { "type": "string", "maxLength": 512 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "本页游戏与语言简介状态",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["items", "status", "lang", "limit", "hasMore", "nextCursor"],
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["slug", "lang", "text", "missing", "sourceText", "sourceLang", "translatable"],
+                        "properties": {
+                          "slug": { "type": "string" },
+                          "lang": { "type": "string" },
+                          "text": { "type": ["string", "null"] },
+                          "missing": { "type": "boolean" },
+                          "sourceText": { "type": ["string", "null"], "description": "英文简介；没有英文时回退中文" },
+                          "sourceLang": { "type": ["string", "null"], "enum": ["en", "zh-Hans", null] },
+                          "translatable": { "type": "boolean" }
+                        }
+                      }
+                    },
+                    "status": { "type": "string" },
+                    "lang": { "type": ["string", "null"] },
+                    "limit": { "type": "integer" },
+                    "hasMore": { "type": "boolean" },
+                    "nextCursor": { "type": ["string", "null"] }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "筛选参数或游标无效" },
+          "401": { "description": "Bearer 密钥无效" },
+          "429": { "description": "请求频率受限" },
+          "503": { "description": "服务端没有配置有效密钥，接口保持关闭" }
+        }
+      },
+      "put": {
+        "operationId": "pushGameLocalizedDescription",
+        "summary": "写入游戏指定语言的简介",
+        "description": "仅覆盖单个游戏的单个已绑定 ROM 语言简介。语言仅允许 zh-Hant、es、fr、it、de、ja。简体中文和英文使用其他字段。",
+        "security": [{ "descriptionPushBearer": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["slug", "lang", "text"],
+                "properties": {
+                  "slug": {
+                    "type": "string",
+                    "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+                    "maxLength": 120,
+                    "description": "游戏详情页 slug"
+                  },
+                  "lang": {
+                    "type": "string",
+                    "enum": ["zh-Hant", "es", "fr", "it", "de", "ja"],
+                    "description": "目标语言；该游戏必须已绑定此语言 ROM"
+                  },
+                  "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4000,
+                    "description": "调用方已翻译完成的简介文本"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "简介已写入；SSR 缓存已失效并触发已配置的搜索引擎推送",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["ok", "slug", "lang", "characters"],
+                  "properties": {
+                    "ok": { "const": true },
+                    "slug": { "type": "string" },
+                    "lang": { "type": "string" },
+                    "characters": { "type": "integer", "minimum": 1, "maximum": 4000 }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "请求字段、语言或简介不合法" },
+          "401": { "description": "Bearer 密钥无效" },
+          "404": { "description": "游戏不存在" },
+          "409": { "description": "游戏没有绑定请求语言的 ROM" },
+          "429": { "description": "请求频率受限" },
+          "503": { "description": "服务端没有配置有效密钥，接口保持关闭" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "descriptionPushBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "服务器环境变量 GAME_DESCRIPTION_PUSH_TOKEN。只允许推送游戏本地化简介。"
+      }
+    }
+  }
+}

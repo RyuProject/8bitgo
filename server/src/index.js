@@ -19,6 +19,7 @@ import { gzipResponse } from './compress.js'
 import { take, clientKey } from './rateLimit.js'
 import { authRouter } from './routes/auth.js'
 import { gamesRouter } from './routes/games.js'
+import { gameDescriptionPushRouter } from './routes/game-description-push.js'
 import { postsRouter } from './routes/posts.js'
 import { commentsRouter } from './routes/comments.js'
 import { ratingsRouter } from './routes/ratings.js'
@@ -224,6 +225,7 @@ app.use('/api/admin/sockdrive-conversions', sockdriveConversionsRouter)
 
 app.use('/api/auth', authRouter)
 app.use('/api/rom-pack', romPackRouter)
+app.use('/api/integrations/game-descriptions', gameDescriptionPushRouter)
 app.use('/api/games', gamesRouter)
 app.use('/api/posts', postsRouter)
 // 游戏评论：读公开、发表必须登录、后台可隐藏（见 routes/comments.js）

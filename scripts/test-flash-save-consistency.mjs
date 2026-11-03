@@ -29,6 +29,7 @@ import {
   flashSaveGameEnabled,
   flashSaveProtocol,
 } from '../server/src/flash-save-contract.js'
+import { flashSaveBridgeRewriteRules } from '../src/services/flashBridgeUrl.js'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PROTOCOLS = ['agi1', 'agi2']
@@ -63,6 +64,44 @@ check('SAS3 的旧 Banana 地址与网页登录地址都从注册表读取', () 
   ])
   assert.ok(flashSaveLoginUrlsOf('sas-zombie-assault-3').includes('https://ninjakiwi.com/login'))
   assert.deepEqual(flashSaveRewriteSourcesOf('infectonator-2'), [])
+})
+
+check('在线存档 FlashVars 同时进入子桥 URL，且直连桥地址也会自映射', () => {
+  const service = readFileSync(join(root, 'src/services/flashOnlineSave.ts'), 'utf8')
+  assert.ok(service.includes('flashSaveBridgeRewriteRules(launch.bridgeUrl, launch.rewriteFrom, launch.parameters)'),
+    'Ruffle 配置没有接入带 FlashVars 的桥 URL 规则')
+  const bridgeUrl = 'https://8bitgo.com/flash-api/armor-games/20261104-r01/AGI2.swf?v=1'
+  const parameters = {
+    eightbitgo_save_token: 'token+/=value',
+    eightbitgo_save_endpoint: 'https://8bitgo.com/api/flash-saves/v1/kingdom-rushfrontiers',
+    eightbitgo_username: 'Player One',
+    eightbitgo_save_mode: 'authenticated',
+  }
+  const rules = flashSaveBridgeRewriteRules(bridgeUrl, [], parameters)
+  const selfRule = rules.find(([source]) => source === bridgeUrl)
+  assert.ok(selfRule, '直接加载本站桥时缺少 bridgeUrl 自映射')
+  const target = new URL(selfRule[1])
+  assert.equal(target.searchParams.get('v'), '1', '原桥 URL 的版本参数必须保留')
+  for (const [key, value] of Object.entries(parameters)) {
+    assert.equal(target.searchParams.get(key), value, `${key} 没有被正确序列化到桥 URL`)
+  }
+  assert.ok(rules.some(([source]) => source === 'https://agi.armorgames.com/assets/agi/AGI2.swf'),
+    '旧游戏请求 AGI2.swf 时仍需改写到本站桥')
+  assert.ok(rules.some(([source]) => source === 'https://8bitgo.com/flash-api/armor-games/20260925-r03/AGI2.swf'),
+    '已打补丁的旧版本 AGI2 地址必须继续可用')
+  assert.ok(rules.some(([source]) => source === 'https://8bitgo.com/flash-api/armor-games/AGI2.swf'),
+    '未版本化的 AGI2 地址必须继续可用')
+  assert.ok(rules.every(([, destination]) => destination === selfRule[1]),
+    'Armor Games、旧版本、未版本化和直连地址必须进入同一个带 FlashVars 的目标 URL')
+  const agi1Rules = flashSaveBridgeRewriteRules(
+    'https://8bitgo.com/flash-api/armor-games/20261104-r01/AGI.swf',
+    [],
+    parameters,
+  )
+  assert.ok(agi1Rules.some(([source]) => source === 'https://8bitgo.com/flash-api/armor-games/20260925-r03/AGI.swf'),
+    '已打补丁的旧版本 AGI1 地址必须继续可用')
+  assert.ok(agi1Rules.some(([source]) => source === 'https://8bitgo.com/flash-api/armor-games/AGI.swf'),
+    '未版本化的 AGI1 地址必须继续可用')
 })
 
 check('服务端契约读到的方言 / 桥地址和注册表一致', () => {
@@ -146,7 +185,13 @@ check('AGI2 具备幂等重试、条件更新和给新游戏的简化接口', ()
     '"opId":this.nextOpId()',
     'body.expectedRevision',
     'mergeRevisions(result)',
-    'waitForQueue(function()',
+    'this.enqueue({"kind":"read","callback":callback})',
+    'else if(task.kind == "read")',
+    'MAX_QUEUED_TASKS:int = 12',
+    'pending.value = task.value',
+    'private function armReadTimeout(task:Object) : void',
+    'new Timer(30000,1)',
+    '"code":"timeout"',
     '"showLogin": this.simpleShowLogin',
     '"read": this.simpleRead',
     '"write": this.simpleWrite',
@@ -154,6 +199,26 @@ check('AGI2 具备幂等重试、条件更新和给新游戏的简化接口', ()
   ]) {
     assert.ok(source.includes(fragment), `AGI2 缺少关键链路：${fragment}`)
   }
+  assert.ok(!source.includes('waitForQueue('), 'AGI2 仍有 3 秒后绕过队列读旧档的路径')
+})
+
+check('AGI1 读档屏障覆盖排队写入、删除与未配对快照，超时失败关闭', () => {
+  const source = readFileSync(join(root, 'flash-api/armor-games/src/test_fla/MainTimeline.as'), 'utf8')
+  for (const fragment of [
+    'private var pendingMutations:int = 0',
+    'private var drainWaiters:Array = []',
+    'private function mutationsDrained() : Boolean',
+    'for(var slot:String in pendingPairs)',
+    'new Timer(30000,1)',
+    '"error":"timeout"',
+    'pendingMutations++',
+    'if(pendingMutations > 0) pendingMutations--',
+    'private static const MAX_PENDING_MUTATIONS:int = 12',
+  ]) {
+    assert.ok(source.includes(fragment), `AGI1 缺少一致性保护：${fragment}`)
+  }
+  assert.ok(!source.includes('writesInFlight'), 'AGI1 仍只等待正在飞的写，漏掉队列和删除')
+  assert.ok(!source.includes('waited >= 3000'), 'AGI1 仍会超时后放行可能过期的读取')
 })
 
 check('两代桥遇到写入冲突后仍保留条件更新保护', () => {

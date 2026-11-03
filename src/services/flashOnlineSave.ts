@@ -1,4 +1,5 @@
 import { ApiError, api, apiBase, apiEnabled, getToken } from './api'
+import { flashSaveBridgeRewriteRules } from './flashBridgeUrl.js'
 // 「哪款游戏用哪套方言、加载哪个桥」只有一份，前后端共用（见该文件顶部说明）
 import {
   flashSaveBridgeOf,
@@ -198,17 +199,11 @@ export function flashOnlineSaveRuffleConfig(launch: FlashOnlineSaveLaunch | null
   /*
     只改写这款游戏真正会加载的那个桥文件名（AGI.swf / AGI2.swf）。
     不能把两代的地址都指过来：两套接口不兼容，指错了另一代会拿到错误的实现。
-    被补丁过的游戏直接请求本站地址，这些规则是给仍指向 agi.armorgames.com 的副本兜底。
+    旧补丁里写死的 Armor Games、旧版本目录和未版本化本站地址都保留为来源，
+    再统一转到新版目标 URL；这样桥升级不需要重新打包游戏 SWF。
   */
-  const file = launch.bridgeUrl.split('/').pop() || 'AGI.swf'
-  const sources = launch.rewriteFrom.length
-    ? launch.rewriteFrom
-    : [
-        `http://agi.armorgames.com/assets/agi/${file}`,
-        `https://agi.armorgames.com/assets/agi/${file}`,
-      ]
   return {
     parameters: launch.parameters,
-    urlRewriteRules: sources.map((source) => [source, launch.bridgeUrl]),
+    urlRewriteRules: flashSaveBridgeRewriteRules(launch.bridgeUrl, launch.rewriteFrom, launch.parameters),
   }
 }

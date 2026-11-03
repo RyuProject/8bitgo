@@ -137,6 +137,14 @@ console.log('\n── 路由层：这几道闸必须真的挂上去（源码守�
     ok(/translateGateOk\(/.test(games.slice(at, at + 1200)), '⭐ games translate-description 有限流闸')
   }
 
+  const descriptionPush = read('../src/routes/game-description-push.js')
+  {
+    ok(descriptionPush.includes("router.get('/', async") && descriptionPush.includes("router.put('/', async"), '找得到简介状态查询与推送 API')
+    ok(/takeAnonymous\(req, limiterName/.test(descriptionPush), '⭐ 简介查询与推送共用有限流闸')
+    ok(/requirePushToken\(req, res, env, 'game-description-list'\)/.test(descriptionPush)
+      && /requirePushToken\(req, res, env, 'game-description-push'\)/.test(descriptionPush), '⭐⭐ 两个接口都验证独立 Bearer 密钥')
+  }
+
   const ratings = read('../src/routes/ratings.js')
   {
     const at = ratings.indexOf('rating:anon:')

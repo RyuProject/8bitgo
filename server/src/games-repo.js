@@ -11,6 +11,7 @@ import { jsonMemberPath, query, queryOne, withTransaction } from './db.js'
 import { gameRowToApi, gameApiToRow, dateTimeIso, romRelationRows, GENERIC_ROM_LANG } from './mappers.js'
 import { boundedSearchLimit, buildGameTokens, queryTerms, tokenMatchSql, normalize, tokenize, escapeLike } from './search.js'
 import { BAYES_SCORE_SQL } from './ratings-repo.js'
+import { SITE_LANGUAGES } from '../../shared/site-languages.js'
 
 /** 列表页每页最多给多少条，挡住 ?pageSize=100000 这种请求 */
 const MAX_PAGE_SIZE = 100
@@ -827,6 +828,78 @@ export async function writeDescriptionTranslation(slug, lang, text) {
     [jsonMemberPath(lang), JSON.stringify(safeText), slug],
   )
   return r.affectedRows > 0
+}
+
+/**
+ * 写入一款游戏的人工本地化简介；只合并目标语言，避免并发推送覆盖其它语言。
+ * 与 description_i18n（玩家端机器翻译缓存）分列存储，供后台表单和 SEO 页面使用。
+ */
+export async function writeLocalizedGameDescription(slug, lang, text) {
+  if (!/^[a-zA-Z]{2,3}(?:-[a-zA-Z0-9]{2,8})?$/.test(lang)) {
+    throw new Error('lang 必须是合法的站点语言代码')
+  }
+  const safeText = String(text ?? '').trim()
+  if (!safeText || safeText.length > 4000) throw new Error('简介必须为 1～4000 个字符')
+  const result = await query(
+    `UPDATE games SET description_localized = JSON_SET(
+       COALESCE(description_localized, JSON_OBJECT()),
+       ?,
+       CAST(? AS JSON)
+     ) WHERE slug = ?`,
+    [jsonMemberPath(lang), JSON.stringify(safeText), slug],
+  )
+  return result.affectedRows > 0
+}
+
+/**
+ * 分页列出已绑定站点 ROM 语言的简介状态。JSON 读取路径只由站点语言常量生成，
+ * 查询不先拉整张游戏表到 Node；状态筛选、游标和 limit 都在 MySQL 里执行。
+ */
+export async function listLocalizedGameDescriptions({ status, lang, after, limit }) {
+  const languages = SITE_LANGUAGES.map(({ code }) => code).filter((code) => code !== 'zh-Hans' && code !== 'en')
+  const textExpr = `CASE gr.lang ${languages.map((code) =>
+    `WHEN '${code}' THEN JSON_UNQUOTE(JSON_EXTRACT(g.description_localized, '${jsonMemberPath(code)}'))`,
+  ).join(' ')} ELSE NULL END`
+  const where = [
+    `gr.lang IN (${languages.map(() => '?').join(', ')})`,
+    'CHAR_LENGTH(TRIM(gr.object_key)) > 0',
+  ]
+  const params = [...languages]
+
+  if (lang) {
+    where.push('gr.lang = ?')
+    params.push(lang)
+  }
+  if (status === 'missing') where.push(`NULLIF(TRIM(${textExpr}), '') IS NULL`)
+  else if (status === 'filled') where.push(`NULLIF(TRIM(${textExpr}), '') IS NOT NULL`)
+  if (after) {
+    where.push('(g.id > ? OR (g.id = ? AND gr.lang > ?))')
+    params.push(after.id, after.id, after.lang)
+  }
+
+  params.push(limit + 1)
+  const rows = await query(
+    `SELECT CAST(g.id AS CHAR) AS cursor_id, g.slug, gr.lang,
+            ${textExpr} AS localized_text,
+            COALESCE(NULLIF(TRIM(g.description_en), ''), NULLIF(TRIM(g.description), '')) AS source_text,
+            CASE WHEN NULLIF(TRIM(g.description_en), '') IS NOT NULL THEN 'en'
+                 WHEN NULLIF(TRIM(g.description), '') IS NOT NULL THEN 'zh-Hans'
+                 ELSE NULL END AS source_lang
+       FROM games g
+       JOIN game_roms gr ON gr.game_id = g.id
+      WHERE ${where.join(' AND ')}
+      ORDER BY g.id ASC, gr.lang ASC
+      LIMIT ?`,
+    params,
+  )
+  return rows.map((row) => ({
+    cursorId: String(row.cursor_id),
+    slug: String(row.slug),
+    lang: String(row.lang),
+    text: typeof row.localized_text === 'string' && row.localized_text.trim() ? row.localized_text.trim() : null,
+    sourceText: typeof row.source_text === 'string' && row.source_text.trim() ? row.source_text.trim() : null,
+    sourceLang: row.source_lang ? String(row.source_lang) : null,
+  }))
 }
 
 /**

@@ -25,7 +25,13 @@
  * 游戏请求的原始文件名仍是 AGI.swf / AGI2.swf，前端只取目标 URL 的末段做匹配，
  * 所以在中间加发布目录既能穿透旧缓存，也不改变旧游戏的加载地址。
  */
-export const FLASH_SAVE_BRIDGE_RELEASE = '20260925-r03'
+export const FLASH_SAVE_BRIDGE_RELEASE = '20261104-r01'
+
+/**
+ * 老游戏补丁里可能已经写入这个版本化地址；保留它作为 Ruffle 重写入口，
+ * 但实际加载转到新版本，避免要求重新打包游戏或覆盖长期缓存的 SWF。
+ */
+export const FLASH_SAVE_BRIDGE_COMPAT_RELEASE = '20260925-r03'
 
 /**
  * SAS3 使用独立发布号：它与 Armor Games 两代桥没有发布耦合，修 Banana 兼容层时不该让

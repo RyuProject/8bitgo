@@ -37,7 +37,7 @@
 | | AGI1 | AGI2 |
 | --- | --- | --- |
 | 接入的游戏 | Infectonator 2（`infectonator-2`） | Kingdom Rush Frontiers（`kingdom-rushfrontiers`） |
-| 桥文件 | `/flash-api/armor-games/20260925-r03/AGI.swf` | `/flash-api/armor-games/20260925-r03/AGI2.swf` |
+| 桥文件 | `/flash-api/armor-games/20261104-r01/AGI.swf` | `/flash-api/armor-games/20261104-r01/AGI2.swf` |
 | 文档类（**不能改**） | `test_fla.MainTimeline` | `KrfAgiBridge`（包外顶层类） |
 | 源码 | `src/test_fla/MainTimeline.as` | `src-agi2/KrfAgiBridge.as` |
 | 模板 | 借 Ruffle 的开源回归测试 SWF 空壳 | 仓库里的 `template-agi2.swf`（名字的载体） |
@@ -104,7 +104,7 @@ Content-Type: application/json
   "expiresAt": 1789545600000,
   "endpoint": "/api/flash-saves/v1/infectonator-2",
   "protocol": "agi1",
-  "bridgeUrl": "/flash-api/armor-games/20260925-r03/AGI.swf",
+  "bridgeUrl": "/flash-api/armor-games/20261104-r01/AGI.swf",
   "username": "玩家昵称",
   "avatar_url": "/ui/logo-mark.png"
 } }
@@ -276,14 +276,14 @@ showScoreboardList(columns:Array, board:String):void
 时间窗会把「删档 → 重新存 → 再删」里的第二次删除一起吞掉，玩家删完看到槽空了、其实档还在。
 写入入队时会清掉这个标记（`enqueue` 里 `deleteQueued[slot] = false`），删除任务结束也清。
 
-**读之前等在飞的写**（`waitForWrites`）：轮询（60ms）到 `writesInFlight` 归零再发读请求，
-**上限 3 秒**。玩家刚过关触发保存、紧接着打开存档页时，不等就会读到写之前那一份，
-看起来像「刚存的档没生效」。超过 3 秒放行：宁可给一份可能略旧的档，
-也不能把游戏卡在读档界面（那个界面上的「等待」和「坏了」长得一模一样）。
+**读之前等所有变更排空**（`waitForWrites`）：AGI1 等待已排队/正在执行的写入、删除，
+以及尚未配齐的 profile/data 对；AGI2 则把读请求放进同一条全局 FIFO。
+弱网下最多等 30 秒，仍未排空就返回明确的 `timeout`，不再把旧快照伪装成成功。
+相邻的待读会合并，同槽待发送的完整快照只保留最新值并合并回调；队列上限 12 项，
+避免游戏异常连发时无限占用内存。
 
 **写入重试**：失败（仅可重试错误码）等 800ms 重试一次，重试期间该槽 `busy` 不清，
-不会和下一次保存交叉；`writesInFlight` 只在第一次尝试时加、结束时还一次，
-所以读继续等它。
+不会和下一次保存交叉；队列屏障会一直等到最终成功或明确失败。
 
 **版本对齐**：读档响应里的顶层 `revisions` 会并进本地表（`mergeRevisions`），
 写入带 `expectedRevision`，成功后回写新版本；`stale_write` 响应会带
@@ -345,7 +345,7 @@ POST /api/flash-saves/v1/infectonator-2/delete-slot
 | --- | --- |
 | 在线槽一直是灰的 | 控制台有没有 `[8bitgo-flash-save] gameKey 不匹配（收到 xxx）`；再看 FlashVars 里 token/endpoint 是不是空 |
 | 存档像没生效 | 桥在控制台 trace「保存基于旧版本，已丢弃」= 撞了 `stale_write`；查是不是多标签页在写同一槽 |
-| 刚存的档读不到 | 看是不是走了 `waitForWrites` 的 3 秒上限（后台标签页被节流时可能发生） |
+| 刚存的档读不到 | 查看队列回调是否返回 `timeout` / `queue_full`；桥不会再把旧快照当成成功 |
 | 提交按钮消失 | `initAGUI` 的 `onClose` 没被调到 |
 
 ---
@@ -404,13 +404,13 @@ quests.submit(options)                       // { progress?, callback } → {suc
 
 ### 5.2 桥内部语义
 
-- **全局一条串行队列**（`queue` + `busy`），不是每槽一条：AGI2 一次提交就是一份完整档，
-  串行化保证「后点的保存」在「先点的保存」之后落库。
+- **全局一条串行队列**（`queue` + `busy`），读、写、删都进入队列：串行化保证读取不会越过
+  尚未完成的变更；相邻重复读取和同键待发送的完整快照会合并，队列最多 12 项。
 - 写入失败等 800ms **重试一次**（同一套可重试错误码），重试期间 `busy` 不清。
 - 会话失效（`invalid_session`）摘登录态，同 AGI1。
 - 每次逻辑写入生成 `opId`，超时重试复用它；读响应合并 `revisions`，
   后续写带 `expectedRevision`。迟到的旧请求因此不会覆盖新档。
-- 读前等全局变更队列清空（上限 3 秒），避免「刚存完立刻读」拿到旧档。
+- 读前等全局变更队列清空；AGI2 的读取本身也是队列任务，避免「刚存完立刻读」拿到旧档。
 
 ### 5.3 服务端接口（AGI2）
 
@@ -561,7 +561,8 @@ npm run flashbridge
 - **会话到期只能重进一局**：FlashVars 只读一次，SWF 换不掉令牌。
   播放器会在到期前 10 分钟提示一次（`player.flashSaveExpiringSoon`），
   但根治需要 `ExternalInterface` 一类的续期通道。
-- **读档等写的 3 秒上限**：两代在极端情况下（后台标签页被节流）仍可能读到旧档。
+- **读档等待有上限**：AGI1 等待最多 30 秒后明确失败，不返回旧档；AGI2 的排队读也最多等 30 秒，
+  超时后会从队列移除且只回调一次。单个服务请求另受 12 秒网络超时约束。
 - **桥升级必须发布新代次**：修改 `FLASH_SAVE_BRIDGE_RELEASE`，同时提交版本目录里的
   `AGI.swf` / `AGI2.swf`。不要只覆盖固定地址；固定 URL 可能仍被 Cloudflare 长时间缓存。
 - **游戏忽略回调里的错误**：AGI1 的 `submitUserData`、AGI2 的 `submit` 都可能在玩家毫无察觉时

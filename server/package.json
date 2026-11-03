@@ -16,6 +16,7 @@
     "test:mail:parse": "node scripts/test-mail-parsing.mjs",
     "test:mail:resend": "node scripts/test-mail-resend.mjs",
     "test:translate": "node scripts/test-translate.mjs",
+    "test:game-description-push": "node --test scripts/test-game-description-push.mjs",
     "check:flash-keys": "node scripts/check-flash-keys.mjs",
     "test:zh-convert": "node scripts/test-zh-convert.mjs",
     "pretranslate": "node scripts/pretranslate.mjs",
