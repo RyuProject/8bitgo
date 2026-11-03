@@ -10,6 +10,7 @@
  */
 import type { Capability, CaptureSources, MountOptions, RuntimeHandle } from '../types'
 import { focusFrame, frameGamepads } from '../frameFocus'
+import { captureCanvasScreenshot } from '../recorder'
 import { PPSSPP_VERSION, ppssppFrameUrl } from '../paths'
 import { probeRange } from '../remoteDisc'
 import { downloadPspDisc, PspDiscStorageError } from '../pspFullDownload'
@@ -45,6 +46,7 @@ interface PPSSPPFrameWindow extends Window {
   Module?: {
     __ppssppAudio?: {
       context?: AudioContext
+      /** 核心建的总输出 GainNode（source → output → destination），音量直接调它的 gain */
       node?: AudioNode
     }
     __ppssppBridgePopupOpen?: () => boolean
@@ -75,6 +77,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const probeController = new AbortController()
   let remoteProbe: ReturnType<typeof probeRange> | null = null
   let speculativeProbe = false
+  /** 工具栏音量（0~1，静音时为 0）。核心可能重建 AudioContext，定时把新 GainNode 也拉到这个值 */
+  let volume = 1
+  let volumeTimer = 0
   const pending = new Map<number, {
     resolve: (value: unknown) => void
     reject: (error: Error) => void
@@ -189,6 +194,42 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
   }
 
+  const frameWindow = () => {
+    try {
+      return iframe.contentWindow as PPSSPPFrameWindow | null
+    } catch {
+      return null
+    }
+  }
+
+  const frameCanvas = (): HTMLCanvasElement | null => {
+    try {
+      const canvas = iframe.contentDocument?.getElementById('canvas') as HTMLCanvasElement | null
+      return canvas && canvas.tagName === 'CANVAS' ? canvas : null
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * 音量走核心自己的总输出 GainNode（PPSSPPSDL.js 里 `output=context.createGain()`）。
+   * 返回是否真的调到了：Booted 前核心还没建音频，调用方据此决定要不要继续盯。
+   */
+  const applyVolume = (): boolean => {
+    const audio = frameWindow()?.Module?.__ppssppAudio
+    const gain = (audio?.node as GainNode | undefined)?.gain
+    if (!gain || typeof gain.value !== 'number') return false
+    if (Math.abs(gain.value - volume) > 0.001) {
+      try {
+        // 短斜坡，拖滑块时不出拉链声
+        gain.setTargetAtTime(volume, audio?.context?.currentTime ?? 0, 0.015)
+      } catch {
+        gain.value = volume
+      }
+    }
+    return true
+  }
+
   async function boot(): Promise<void> {
     // iframe 恢复缓存或脚本被重复执行时可能再次发 host-ready；第二次 boot 会同时挂两张盘，
     // 而 host 只允许 start 一次，外层就会把真实成功误报成失败。
@@ -214,6 +255,17 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       caps.add('enginePad')
       caps.add('saveState')
       caps.add('remapKeys')
+      /*
+        2026-11-04《GT 赛车》：PSP 以前只给存读档和改键，工具栏没有音量、截图、录像。
+        画面是 transferControlToOffscreen 之后的占位 canvas：getContext 会抛，但 captureStream
+        照常出帧（直播一直靠它），截图也走 captureStream，不碰 toBlob。
+      */
+      caps.add('volume')
+      if (frameCanvas() && typeof HTMLCanvasElement.prototype.captureStream === 'function') {
+        caps.add('screenshot')
+        if (typeof MediaRecorder !== 'undefined') caps.add('record')
+      }
+      applyVolume()
       options.onCaps?.(caps)
       options.onReady?.()
       options.onStart?.()
@@ -308,6 +360,23 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       if (!(data instanceof ArrayBuffer) || data.byteLength === 0) return null
       return new Blob([data], { type: 'application/octet-stream' })
     },
+    get volume() {
+      return volume
+    },
+    setVolume(next: number) {
+      volume = Math.max(0, Math.min(1, Number.isFinite(next) ? next : 1))
+      // 核心读档 / 音频重开时会新建 AudioContext 和 GainNode；不是满音量就盯着，
+      // 发现新节点仍是 1 时再压回来。满音量时新节点默认就是 1，不用开计时器。
+      window.clearInterval(volumeTimer)
+      volumeTimer = 0
+      applyVolume()
+      if (volume !== 1 && !destroyed) volumeTimer = window.setInterval(applyVolume, 1000)
+    },
+    async screenshot() {
+      const canvas = frameCanvas()
+      // directFallback:false —— 占位 canvas 的 toBlob 在 Safari 上是黑图，宁可报失败
+      return canvas ? captureCanvasScreenshot(canvas, { directFallback: false }) : null
+    },
     async loadState(data: ArrayBuffer) {
       if (!data.byteLength) throw new Error('PSP 存档文件是空的')
       await request('load-state', { data })
@@ -328,11 +397,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         const frame = iframe.contentWindow as PPSSPPFrameWindow | null
         // iframe 有自己的 Window 构造器；拿子文档的 canvas 去做父窗口 instanceof 会得到 false。
         // 按元素类型和 captureStream 能力判断，Safari/Chromium 的同源 frame 都能正确通过。
-        const frameCanvas = iframe.contentDocument?.getElementById('canvas') as HTMLCanvasElement | null
-        if (!frameCanvas || frameCanvas.tagName !== 'CANVAS' || typeof frameCanvas.captureStream !== 'function') return null
+        const canvas = frameCanvas()
+        if (!canvas || typeof canvas.captureStream !== 'function') return null
         const audio = frame?.Module?.__ppssppAudio
         return {
-          canvas: frameCanvas,
+          canvas,
           audioNode: audio?.node ?? null,
           audioContext: audio?.context ?? null,
         }
@@ -351,6 +420,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       destroyed = true
       probeController.abort()
       window.clearTimeout(hostTimer)
+      window.clearInterval(volumeTimer)
       window.removeEventListener('message', onMessage)
       rejectPending('PPSSPP 会话已经关闭')
       iframe.remove()
