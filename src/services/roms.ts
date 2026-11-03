@@ -143,8 +143,7 @@ export function subscribeCoverCdnSelection(listener: () => void): () => void {
 
 /**
  * 封面公开读取根地址（独立 image 桶 image.8bitgo.com）；未配置时退回 ROM 根地址。
- * 页面开在 cn.8bitgo.com 时改用 EdgeOne 的封面域：看的是当前站点域名，不是访客所在地，
- * 所以 SSR 与 hydrate 能算出同一个答案（见 shared/cn-host.js）。
+ * SSR 和客户端首次渲染都按站点域名给出同一默认值；浏览器完成 hydration 后，测速结果可覆盖默认值。
  */
 export function getCoverBase(): string {
   const config = coverCdnProbeConfig()

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { CoverGame } from '@/types'
 import { platformMap } from '@/data/platforms'
@@ -216,16 +216,26 @@ export function GameCover({
   const title = gameTitle(game, lang)
   const platform = platformMap[game.platform]
   // 测速结果变更后重算 URL；其它封面组件共享同一轮探测，不各自重复下载探针图。
-  const [, setCoverCdnRevision] = useState(0)
-  const coverSrc = gameMediaUrl(game, 'cover')
-  const videoSrc = still ? '' : gameMediaUrl(game, 'video')
+  const [coverCdnRevision, setCoverCdnRevision] = useState(0)
+  const coverImageRef = useRef<HTMLImageElement>(null)
+  const coverSrc = useMemo(
+    () => gameMediaUrl(game, 'cover'),
+    [game.slug, game.cover, coverCdnRevision],
+  )
+  const videoSrc = useMemo(
+    () => (still ? '' : gameMediaUrl(game, 'video')),
+    [still, game.slug, game.video],
+  )
   useEffect(() => {
     const unsubscribe = subscribeCoverCdnSelection(() => {
+      // 已完整加载的封面不再切源，避免首访测速完成时整页重复下载；未完成的图切到胜出域。
+      const image = coverImageRef.current
+      if (videoSrc || (image?.complete && image.naturalWidth > 0)) return
       setCoverCdnRevision((revision) => revision + 1)
     })
     startCoverCdnSelection(game.cover || '')
     return unsubscribe
-  }, [game.cover])
+  }, [game.cover, videoSrc])
   // 外链没有本站生成的 -96 缩略图，直接用原图；空 key 不能被当作资源桶根地址。
   const thumbKey = thumb && game.cover ? coverThumbKey(game.cover) : ''
   const thumbSrc = thumbKey ? romUrlForKey(thumbKey) : ''
@@ -264,6 +274,7 @@ export function GameCover({
         <CoverVideo src={videoSrc} poster={coverSrc || undefined} />
       ) : coverSrc ? (
         <img
+          ref={coverImageRef}
           src={imgSrc}
           srcSet={srcSet || undefined}
           /*

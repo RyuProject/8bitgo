@@ -2793,8 +2793,9 @@ EdgeOne 只能用境外（香港）节点。主站、ROM、Pages 子域都不受
   SSR 只认这个头（`shared/cn-host.js`）。canonical 仍指 8bitgo.com。
 - **EdgeOne 规则引擎**：「修改 HTTP **回源**请求头」加 `X-8bitgo-Edge`（选成「节点响应头」会把密钥发给每个访客，
   源站也收不到）；WebSocket 要单独开，否则 socket.io 升级在 EdgeOne 边缘就是 400。
-- **封面**：页面开在 cn 上时 `getCoverBase()` 换成 `VITE_CN_COVER_URL`（`image-cn.8bitgo.com`，EdgeOne 回源
-  `image.8bitgo.com`），SSR 与 hydrate 判同一个答案，模板里的封面 preconnect 也由 `retargetCoverHints` 换掉。
+- **封面**：SSR 与 hydrate 首次都按站点域名给出默认值；客户端拿当前真实封面并行请求两个域的 16px 变换图，
+  选先成功的 CDN，结果在浏览器缓存 6 小时（`src/services/coverCdn.ts`）。主域是 `image.8bitgo.com`，大陆加速域
+  `image-cn.8bitgo.com`（EdgeOne 回源主域）；模板的默认封面 preconnect 仍由 `retargetCoverHints` 指向站点默认域。
   `/cdn-cgi/image/` 缩放照样回源给 Cloudflare 做，但这条路固定 `format=webp`：EdgeOne 缓存键不看 Accept，
   `format=auto` 会把第一个访客拿到的 AVIF 发给不认 AVIF 的浏览器。
 - ⚠️ 加速域名**不能带下划线**（`image_cn` 这种）：公共 CA 不为含 `_` 的主机名签证书，HTTPS 永远起不来。

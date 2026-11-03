@@ -17,10 +17,7 @@ interface StoredChoice {
   checkedAt: number
 }
 
-interface ProbeResult {
-  base: string
-  duration: number
-}
+interface ProbeResult { base: string }
 
 const STORAGE_KEY = '8bitgo.cover-cdn.v1'
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000
@@ -118,11 +115,25 @@ function probeImage(url: string): Promise<number> {
   })
 }
 
+function probeHead(url: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const startedAt = performance.now()
+    const controller = new AbortController()
+    const timeout = window.setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS)
+    void fetch(url, { method: 'HEAD', mode: 'no-cors', cache: 'no-store', signal: controller.signal })
+      .then(() => resolve(performance.now() - startedAt))
+      .catch(reject)
+      .finally(() => window.clearTimeout(timeout))
+  })
+}
+
 /** 在 GameCover 的 effect 中调用；多个卡片共用一轮并行探测。 */
 export function startCoverCdnProbe(key: string, config: CoverCdnProbeConfig): void {
   if (typeof window === 'undefined' || !key.startsWith('covers/')) return
 
-  const candidates = [...new Set(config.candidates.filter((base) => /^https:\/\//i.test(base))) ]
+  const candidates = [
+    ...new Set(config.candidates.filter((base) => /^https:\/\//i.test(base))),
+  ]
   if (candidates.length < 2 || !candidates.includes(config.preferred)) return
 
   const signature = signatureFor(candidates)
@@ -147,8 +158,11 @@ export function startCoverCdnProbe(key: string, config: CoverCdnProbeConfig): vo
   lastAttempt = { signature, at: now }
 
   const probes = candidates.map((base) =>
-    probeImage(coverCdnProbeUrl(base, key, config.cnBase, config.transformEnabled)).then(
-      (duration): ProbeResult => ({ base, duration }),
+    (config.transformEnabled
+      ? probeImage(coverCdnProbeUrl(base, key, config.cnBase, true))
+      : probeHead(coverCdnProbeUrl(base, key, config.cnBase, false))
+    ).then(
+      (): ProbeResult => ({ base }),
     ),
   )
 
