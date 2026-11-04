@@ -276,12 +276,14 @@ export function endHeadCollection(): CollectedHead {
  *     Uncaught Error: Minified React error #418
  *     （Hydration failed because the server rendered HTML didn't match the client）
  *
- * 2026-09-11 线上实测，`#root` 的前 4 个子节点是：
+ * 2026-09-11 的历史线上实测，`#root` 的前 4 个子节点是：
  *     <link rel="preload" as="image" href="/ui/logo-8bitgo.png">        ← Logo.tsx
  *     <link rel="preload" as="image" href="/ui/random-button/left.svg">  ← Sidebar.tsx
  *     <link rel="preload" as="image" href="/ui/random-button/middle.svg">
  *     <link rel="preload" as="image" href="/ui/random-button/right.svg">
  * 而客户端的 `#root` 只有 2 个子节点 —— 差的正是这 4 条。
+ * 随机游戏按钮现已改为 CSS 外框，不再产生这三条 SVG 图片预加载；保留本逻辑是为了
+ * 正确处理页面上仍由 React 19 提升的图片资源。
  *
  * 所以这里把开头那一串摘下来交给 `<head>`，等于手工补上流式渲染本来会做的那一步。
  * 顺带还是**性能上的正收益**：preload 放在 head 里才是它该在的位置，

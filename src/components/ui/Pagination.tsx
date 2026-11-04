@@ -58,7 +58,7 @@ export function Pagination({ page, totalPages, onChange, hrefFor }: Props) {
   }
 
   const item = (p: number, label: ReactNode, key: string, current = false) => {
-    const cls = cx(btn, current && 'border-brand bg-brand text-white hover:text-white')
+    const cls = cx(btn, current && 'green-action border-brand hover:text-white')
     const aria = current ? ('page' as const) : undefined
     return hrefFor ? (
       <Link key={key} to={hrefFor(p)} aria-current={aria} className={cls} onClick={(e) => go(e, p)}>

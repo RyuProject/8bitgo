@@ -236,7 +236,7 @@ export function ProfilePage() {
             className={cx(
               'h-10 shrink-0 rounded-2xl border-2 px-4 text-sm font-bold transition',
               tab === x.id
-                ? 'border-brand bg-brand text-white'
+                ? 'green-action border-brand'
                 : 'border-line-strong bg-surface text-fg hover:bg-surface-2',
             )}
           >

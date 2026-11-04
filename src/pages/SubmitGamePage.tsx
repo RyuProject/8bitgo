@@ -285,7 +285,7 @@ export function SubmitGamePage() {
           <button
             type="button"
             onClick={() => openAuthModal()}
-            className="mt-6 inline-flex h-11 items-center justify-center rounded-2xl bg-brand px-6 text-sm font-bold text-white shadow-[0_4px_0_0_var(--color-brand-shadow)] transition active:translate-y-[3px] active:shadow-none"
+            className="green-action mt-6 inline-flex h-11 items-center justify-center px-6 text-sm"
           >
             {copy.loginCta}
           </button>
@@ -482,7 +482,7 @@ export function SubmitGamePage() {
         <button
           type="submit"
           disabled={submitting || overLimit}
-          className="inline-flex h-12 items-center justify-center rounded-2xl bg-brand px-8 text-base font-bold text-white shadow-[0_4px_0_0_var(--color-brand-shadow)] transition active:translate-y-[3px] active:shadow-none disabled:opacity-60"
+          className="green-action inline-flex h-12 items-center justify-center px-8 text-base disabled:opacity-60"
         >
           {submitting ? copy.submitting : copy.submit}
         </button>

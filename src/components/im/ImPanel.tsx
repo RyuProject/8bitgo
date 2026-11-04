@@ -473,7 +473,7 @@ export function ImPanel() {
                     type="button"
                     onClick={() => void startByEmail()}
                     disabled={!emailDraft.trim() || lookupBusy}
-                    className="h-9 shrink-0 rounded-lg bg-brand px-3 text-sm font-semibold text-white transition hover:bg-brand-hover disabled:opacity-40"
+                    className="green-action h-9 shrink-0 px-3 text-sm disabled:opacity-40"
                   >
                     {lookupBusy ? t.im.emailSearching : t.im.emailGo}
                   </button>
@@ -966,7 +966,7 @@ function ChatView({
             type="button"
             onClick={send}
             disabled={!draft.trim() || sending}
-            className="h-9 shrink-0 rounded-lg bg-brand px-3 text-sm font-semibold text-white transition hover:bg-brand-hover disabled:opacity-40"
+            className="green-action h-9 shrink-0 px-3 text-sm disabled:opacity-40"
           >
             {t.im.send}
           </button>

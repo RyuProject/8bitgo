@@ -236,7 +236,7 @@ function Banner({ className, games }: { className?: string; games?: Game[] }) {
           <div className="mt-5 flex flex-wrap gap-2">
             <PixelButton to="/games" tone="green">
               <span aria-hidden>▶</span>
-              <span className="text-[#fcfae5]">{t.home.ctaPlay}</span>
+              <span>{t.home.ctaPlay}</span>
             </PixelButton>
             <PixelButton to="/play-local">
               <img src="/ui/run-my-rom.svg" alt="" className="h-5 w-5 object-contain [image-rendering:pixelated]" aria-hidden />

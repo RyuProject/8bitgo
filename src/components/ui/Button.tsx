@@ -12,7 +12,7 @@ const base =
 const press = 'active:translate-y-[3px] active:shadow-none'
 
 const variants: Record<Variant, string> = {
-  primary: `bg-brand text-white shadow-[0_4px_0_0_var(--color-brand-shadow)] hover:brightness-105 ${press}`,
+  primary: 'green-action',
   secondary: `bg-surface text-fg border-2 border-line-strong shadow-[0_4px_0_0_var(--color-line-strong)] hover:bg-surface-2 ${press}`,
   ghost: 'text-muted hover:text-fg hover:bg-black/5',
   coin: `bg-coin text-[#7a4f00] shadow-[0_4px_0_0_#d9a600] hover:brightness-105 ${press}`,
@@ -51,7 +51,7 @@ export function chipClasses(active = false, className?: string) {
     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/60 focus-visible:ring-offset-2 focus-visible:ring-offset-bg',
     press,
     active
-      ? 'border-brand bg-brand text-white shadow-[0_4px_0_0_var(--color-brand-shadow)] hover:brightness-105'
+      ? 'green-action'
       : 'border-line-strong bg-surface text-fg shadow-[0_4px_0_0_var(--color-line-strong)] hover:bg-surface-2',
     className,
   )

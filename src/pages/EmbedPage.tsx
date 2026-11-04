@@ -101,7 +101,7 @@ export function EmbedPage({ standalonePlatform }: Props) {
           <button
             type="button"
             onClick={state.retry}
-            className="inline-flex h-10 items-center rounded-full bg-brand px-5 text-sm font-bold text-white transition hover:bg-brand-hover"
+            className="green-action inline-flex h-10 items-center px-5 text-sm"
           >
             {t.common.retry}
           </button>
@@ -123,7 +123,7 @@ export function EmbedPage({ standalonePlatform }: Props) {
             href={gameNeedsIsolatedRuntime ? isolatedPlayUrl : homeUrl}
             target="_blank"
             rel="noopener"
-            className="inline-flex h-10 items-center rounded-full bg-brand px-5 text-sm font-bold text-white transition hover:bg-brand-hover"
+            className="green-action inline-flex h-10 items-center px-5 text-sm"
           >
             {t.embed.openOnSite}
           </a>
@@ -147,7 +147,7 @@ export function EmbedPage({ standalonePlatform }: Props) {
             href={homeUrl}
             target="_blank"
             rel="noopener"
-            className="inline-flex h-10 w-full items-center justify-center rounded-2xl bg-brand px-5 text-sm font-bold text-white transition hover:bg-brand-hover"
+            className="green-action inline-flex h-10 w-full items-center justify-center px-5 text-sm"
           >
             {t.embed.openOnSite}
           </a>

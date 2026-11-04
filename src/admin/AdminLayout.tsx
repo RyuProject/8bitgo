@@ -368,7 +368,7 @@ function Gate({ checking, onUnlock }: { checking: boolean; onUnlock: (res: Verif
         <button
           type="submit"
           disabled={checking || submitting}
-          className="h-11 w-full rounded-lg bg-brand text-sm font-semibold text-white transition hover:bg-brand-hover disabled:cursor-wait disabled:opacity-60"
+          className="green-action h-11 w-full text-sm disabled:cursor-wait disabled:opacity-60"
         >
           {checking || submitting ? '确认中…' : '确认'}
         </button>

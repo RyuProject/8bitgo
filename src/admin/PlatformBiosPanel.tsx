@@ -481,7 +481,7 @@ export function PlatformBiosPanel() {
               aria-selected={section === item.id}
               className={cx(
                 'rounded-lg px-3 py-2 text-left text-xs transition',
-                section === item.id ? 'bg-brand text-white shadow-sm' : 'bg-surface-2 text-muted hover:text-fg',
+                section === item.id ? 'green-action' : 'bg-surface-2 text-muted hover:text-fg',
               )}
               onClick={() => setSection(item.id)}
             >

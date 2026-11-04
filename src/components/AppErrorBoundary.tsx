@@ -74,7 +74,7 @@ export class AppErrorBoundary extends Component<{ children: ReactNode }, AppErro
             <button
               type="button"
               onClick={() => location.reload()}
-              className="inline-flex h-11 items-center justify-center rounded-2xl bg-brand px-5 text-sm font-bold text-white shadow-[0_4px_0_0_var(--color-brand-shadow)] transition-[transform,box-shadow] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/60 focus-visible:ring-offset-2 active:translate-y-[3px] active:shadow-none"
+              className="green-action inline-flex h-11 items-center justify-center px-5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/60 focus-visible:ring-offset-2"
             >
               {chinese ? '重新载入' : 'Reload'}
             </button>

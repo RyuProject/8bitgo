@@ -59,7 +59,6 @@ The source and implementation states differ because no commercial ROM was used f
 No P3 follow-up is required for this scoped change.
 
 final result: passed
----
 
 # CS1.6 original-style launcher QA
 
@@ -366,5 +365,79 @@ final result: passed
 | 无障碍信息 | 通过 | `progressbar` 同时暴露当前百分比和完整可读状态。 |
 
 参考图第二行只有总量；本次按需求增加真实的“已下载”数值，并把网速放在同一行。这是有意差异，其余布局、间距、颜色和层级保持一致。
+
+final result: passed
+
+---
+
+## 2026-11-04 首页绿色主按钮 Duolingo 风格
+
+- Source visual truth: `/var/folders/hg/rws3swzs2gnc5zs48b6ln5r80000gn/T/TemporaryItems/NSIRD_screencaptureui_CrFI08/截屏2026-11-04 18.07.33.png`（476 × 258 px）
+- Implementation URL: `http://127.0.0.1:4173/`
+- Implementation screenshot: Codex In-app Browser 当前简体中文首页截图，约 735 × 910 CSS px；本轮截图已在对话中展示，浏览器接口未提供本地截图文件路径。
+- State: 首页主 CTA 默认状态；源图按钮写“继续”，实现保留网站已有的“浏览游戏库”文案与播放图标。
+
+**Focused Region Comparison Evidence**
+
+- 参考按钮是亮绿主体、深绿底沿、深色粗体文字和柔和圆角；实现按钮使用 `#8bd32b` 填充、`#58a700` 底部阴影、深色文字，形状和高低层次一致。
+- 实现比参考多一个播放图标，属于已有导航含义；白色次按钮不受改动，仍保留灰边与灰色下沿。
+- 首页视口中按钮宽度由实际文案决定，窄屏不溢出；按下样式将按钮下沉并缩短阴影。键盘焦点环与减少动态效果规则仍保留。
+
+**Full-view Comparison Evidence**
+
+- 本次目标是单个主按钮，整页布局不是参考范围；完整首页截图仅用于确认按钮在横幅中的层级和窄屏排列，没有改动其它区域。
+- 原型截图中的首页主体和按钮均可见；本地游戏类型 API 返回的骨架加载状态不影响按钮样式核对。
+
+**Findings**
+
+- 没有可执行的 P0 / P1 / P2 视觉差异。颜色、深色文字、圆角和底部按压层与参考一致；文案和播放图标保留为产品导航所需内容。
+- 浏览器控制台读取接口不可用，因此未独立核对 console；TypeScript、聚焦 lint 和生产构建/产物校验通过。
+
+**Implementation Checklist**
+
+- [x] 绿色 CTA 采用 Duolingo 风格的亮绿、深绿下沿和深色文案
+- [x] 按压状态下沉并缩短阴影
+- [x] 保持白色按钮、现有图标、导航链接、焦点环及减少动态效果
+- [x] 生产客户端构建与项目产物检查通过
+
+final result: passed
+
+---
+
+## 2026-11-04 白色与绿色按钮按新参考图复核
+
+- Source visual truth 1: `/var/folders/hg/rws3swzs2gnc5zs48b6ln5r80000gn/T/TemporaryItems/NSIRD_screencaptureui_NvarPd/截屏2026-11-04 19.06.36.png`（362 × 164 px，白色按键卡片）
+- Source visual truth 2: `/var/folders/hg/rws3swzs2gnc5zs48b6ln5r80000gn/T/TemporaryItems/NSIRD_screencaptureui_HKPQKi/截屏2026-11-04 19.06.50.png`（728 × 152 px，亮绿主按钮）
+- Implementation URL: `http://127.0.0.1:4173/`
+- Implementation screenshot: Codex In-app Browser 简体中文首页截图，约 735 × 910 CSS px；当前实现截图已在对话中展示，浏览器接口未提供本地截图路径。
+- State: 首页 CTA 默认状态，窄视口；比较对象仅为两颗按钮外观，源图中示例文案与产品文案不同，网站原文案和播放图标保留。
+
+**Comparison History**
+
+- Pass 1（18:07 参考）：首轮采用偏浅的绿色和深色文字。用户反馈观感不佳，并提供新的白色/绿色参考图；该轮结论作废。
+- Pass 2（19:06 两张新参考）：白色样式改成浅灰细边、柔和下沿和圆角矩形；绿色样式改成 `#58cc02` 亮绿、`#46a302` 深绿下沿和白色粗体文案。刷新本地页面后重新检查。
+
+**Focused Region Comparison Evidence**
+
+- 白色参考呈现白底、浅灰外边、约 5 px 的浅灰下沿和圆角矩形；实现 CTA 使用 3 px 浅灰描边、5 px 浅灰阴影与 `0.75rem` 圆角，保留页面原有图标与横向文案布局。
+- 绿色参考是无灰色描边的亮绿圆角矩形，白色文字，底部有约 7 px 深绿层；实现采用无边框、`#58cc02` 填充、`#46a302` 6 px 阴影和白色文字，按下态下沉并缩短阴影。
+- 两张源图是按钮局部裁切，目标是样式而非相同尺寸；实现按首页 CTA 的实际文案宽度自适应，没有拉伸素材或改变 CTA 文案。
+
+**Full-view Comparison Evidence**
+
+- 在首页窄屏横幅内检查，白色与绿色按钮保持并列、按钮间距正常，绿色主次层级清晰；其它页面区域不属于这次重设计范围。
+- 截图中未加载的游戏类型属于本地预览 API 骨架状态，与按钮样式无关。
+
+**Findings**
+
+- 19:06 参考下无可执行的 P0 / P1 / P2 差异；第一轮的颜色/文字不符已在 Pass 2 修正。
+- 浏览器接口未提供 console 读取能力，控制台未独立核验；生产构建、TypeScript 和 oxlint 检查通过。
+
+**Implementation Checklist**
+
+- [x] 白色 CTA 使用浅灰边框、浅灰下沿和圆角矩形
+- [x] 绿色 CTA 使用亮绿主体、深绿下沿和白色文案
+- [x] 保留导航链接、图标、键盘焦点和按压状态
+- [x] 生产客户端构建及产物验证通过
 
 final result: passed

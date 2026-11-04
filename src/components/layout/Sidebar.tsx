@@ -391,39 +391,13 @@ function RandomGameButton({ collapsed }: { collapsed: boolean }) {
       disabled={rolling}
       title={t.sidebar.randomGame}
       className={cx(
-        'group relative mb-3 flex h-11 w-full select-none items-center justify-center bg-transparent px-2 text-[13px] font-bold whitespace-nowrap text-[#fcfae5]',
-        'transition-transform duration-100 hover:-translate-y-px active:translate-y-[2px]',
+        'pixel-button pixel-button--random green-action group relative mb-3 h-11 w-full select-none whitespace-nowrap',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#528b84] focus-visible:ring-offset-2 focus-visible:ring-offset-bg',
         'disabled:pointer-events-none disabled:opacity-55',
         collapsed && 'lg:px-0',
       )}
     >
-      {/*
-       * 三段 SVG 保留两端的像素台阶，中段独自伸缩；整张图直接横向拉伸会把圆角和
-       * 阴影一起拉胖。折叠态换成窄中段，避免仅剩图标时中心纹理被压成一条脏线。
-       */}
-      <span className="pointer-events-none absolute inset-0 z-0 flex" aria-hidden>
-        <img
-          src="/ui/random-button/left.svg"
-          alt=""
-          draggable={false}
-          className="h-full w-[22.76px] shrink-0 transition-[filter] duration-100 group-hover:brightness-105"
-        />
-        <img
-          src={collapsed ? '/ui/random-button/middle-mini.svg' : '/ui/random-button/middle.svg'}
-          alt=""
-          draggable={false}
-          className="h-full min-w-0 flex-1 transition-[filter] duration-100 group-hover:brightness-105"
-          style={{ objectFit: 'fill' }}
-        />
-        <img
-          src="/ui/random-button/right.svg"
-          alt=""
-          draggable={false}
-          className="h-full w-[22.76px] shrink-0 transition-[filter] duration-100 group-hover:brightness-105"
-        />
-      </span>
-      <span className={cx('relative z-10 -translate-y-[4px]', collapsed && 'lg:hidden')}>{t.sidebar.randomGame}</span>
+      <span className={cx(collapsed && 'lg:hidden')}>{t.sidebar.randomGame}</span>
       {collapsed && (
         <span
           role="tooltip"

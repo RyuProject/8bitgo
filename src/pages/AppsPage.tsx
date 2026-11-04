@@ -17,7 +17,7 @@ function downloadHref(item: AppItem): string | null {
 
 const inputCls =
   'w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm shadow-sm focus:outline-none focus:border-brand'
-const btnPrimary = 'inline-flex items-center justify-center rounded-lg bg-brand px-4 py-2 text-sm font-semibold text-white transition hover:bg-brand-hover disabled:cursor-wait disabled:opacity-60'
+const btnPrimary = 'green-action inline-flex items-center justify-center px-4 py-2 text-sm disabled:cursor-wait disabled:opacity-60'
 const btnSecondary = 'inline-flex items-center justify-center rounded-lg border border-line bg-surface-2 px-4 py-2 text-sm font-semibold transition hover:bg-black/5 disabled:opacity-60'
 
 export function AppsPage() {

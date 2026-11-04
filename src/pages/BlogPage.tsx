@@ -115,7 +115,7 @@ function TagChip({ active, onClick, children }: { active: boolean; onClick: () =
       aria-pressed={active}
       className={cx(
         'rounded-lg border px-2.5 py-1 text-xs transition',
-        active ? 'border-brand bg-brand text-white' : 'border-line bg-surface text-muted hover:text-fg',
+        active ? 'green-action border-brand' : 'border-line bg-surface text-muted hover:text-fg',
       )}
     >
       {children}

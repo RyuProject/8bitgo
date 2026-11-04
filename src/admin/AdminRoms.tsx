@@ -668,7 +668,7 @@ export function AdminRoms() {
               <input type="search" value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="筛选 key…" className={cx(inputClass, 'h-8 w-48 text-xs')} />
               <button
                 type="button"
-                className={cx(btnClass.small, 'bg-brand text-white hover:bg-brand-hover')}
+                className={cx(btnClass.small, 'green-action')}
                 onClick={() => void autoMatch()}
                 disabled={busy}
               >

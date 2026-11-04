@@ -514,6 +514,113 @@ body {
 }
 
 /*
+ * 首页 CTA、类型快捷入口和侧栏随机游戏按钮统一用 CSS 圆角外框；描边和底部阴影保留
+ * 轻量 3D 层次，各按钮通过变量保留原配色，不再请求 SVG 按钮边框素材。
+ */
+.pixel-button {
+  display: inline-flex;
+  min-height: 3rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border: 4px solid var(--pixel-button-border, #d4d4d4);
+  border-radius: 9999px;
+  background-color: var(--pixel-button-bg, #fff);
+  padding: 0 1.5rem;
+  color: var(--pixel-button-fg, var(--color-fg));
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1.25;
+  text-decoration: none;
+  white-space: nowrap;
+  user-select: none;
+  box-shadow: 0 5px 0 var(--pixel-button-shadow, #c9c9c9);
+  transition:
+    transform 100ms ease,
+    box-shadow 100ms ease,
+    filter 100ms ease;
+}
+
+.pixel-button--green {
+  border-width: 0;
+}
+
+.pixel-button--white {
+  --pixel-button-bg: #fff;
+  --pixel-button-border: #e3e3e3;
+  --pixel-button-shadow: #e4e4e4;
+  --pixel-button-fg: #555;
+  border-width: 3px;
+  border-radius: 0.75rem;
+  box-shadow: 0 5px 0 var(--pixel-button-shadow);
+}
+
+.pixel-button--random {
+  min-height: 2.75rem;
+  border-width: 0;
+  padding-inline: 0.5rem;
+  font-size: 0.8125rem;
+}
+
+.pixel-button--compact {
+  min-height: 2.25rem;
+  border-width: 3px;
+  padding-inline: 0.875rem;
+  font-size: 0.875rem;
+  box-shadow: 0 4px 0 var(--pixel-button-shadow, #c9c9c9);
+}
+
+.pixel-button:hover:not(.green-action) {
+  filter: brightness(1.025);
+  transform: translateY(-1px);
+}
+
+.pixel-button:active {
+  transform: translateY(3px);
+  box-shadow: 0 2px 0 var(--pixel-button-shadow, #c9c9c9);
+}
+
+.pixel-button:focus-visible {
+  outline: 3px solid var(--color-brand-hover);
+  outline-offset: 4px;
+}
+
+/* 所有绿色主操作共用同一套填充、圆角和按压反馈，避免各页面各自调出不同的绿按钮。 */
+.green-action {
+  border-color: var(--color-brand);
+  border-radius: 1rem;
+  background-color: var(--color-brand);
+  color: #fff;
+  font-weight: 700;
+  box-shadow: 0 4px 0 var(--color-brand-shadow);
+  transition:
+    transform 100ms ease,
+    box-shadow 100ms ease,
+    filter 100ms ease;
+}
+
+.green-action:hover:not(:disabled) {
+  filter: brightness(1.04);
+}
+
+.green-action:active:not(:disabled) {
+  transform: translateY(3px);
+  box-shadow: 0 1px 0 var(--color-brand-shadow);
+}
+
+.green-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pixel-button,
+  .green-action {
+    transition: none;
+  }
+}
+
+/*
   播放器的叠加工具栏（桌面端 / 全屏，见 EmulatorPlayer 的 overlayBar）：压在画面底部的半透明深色条。
 
   不给每颗按钮、每个徽章传一个 tone —— 在这一块里**重定义设计令牌**。Tailwind v4 的

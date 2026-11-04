@@ -309,7 +309,7 @@ function Preview({ games, lang, t }: { games: Game[]; lang: Lang; t: ReturnType<
           {game.year ? ` · ${game.year}` : ''}
         </p>
         <p className="mt-3 line-clamp-3 text-sm leading-relaxed text-dim">{gameDescription(game, lang)}</p>
-        <span className="mt-4 inline-flex items-center gap-2 rounded-full bg-brand px-5 py-2.5 text-sm font-bold text-white">
+        <span className="green-action mt-4 inline-flex items-center gap-2 px-5 py-2.5 text-sm">
           ▶ {t.tv.watchNow}
         </span>
       </div>

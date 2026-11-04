@@ -50,7 +50,7 @@ export const inputClass =
   'h-9 w-full rounded-lg border border-line bg-surface-2 px-3 text-sm text-fg placeholder:text-dim focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/30'
 
 export const btnClass = {
-  primary: 'inline-flex h-9 items-center gap-1.5 rounded-lg bg-brand px-3 text-sm font-semibold text-white transition hover:bg-brand-hover disabled:opacity-50',
+  primary: 'green-action inline-flex h-9 items-center gap-1.5 px-3 text-sm',
   secondary:
     'inline-flex h-9 items-center gap-1.5 rounded-lg border border-line bg-surface-2 px-3 text-sm text-fg transition hover:border-line-strong disabled:opacity-50',
   danger: 'inline-flex h-9 items-center gap-1.5 rounded-lg border border-live/40 px-3 text-sm text-live transition hover:bg-live/15 disabled:opacity-50',

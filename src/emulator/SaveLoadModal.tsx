@@ -252,7 +252,7 @@ export function SaveLoadModal({ cards, onClose, busy, hint, legacyRecovery }: Pr
                     type="button"
                     disabled={c.disabled || busy}
                     onClick={c.onSave}
-                    className="h-9 rounded-full bg-brand px-5 text-sm font-semibold text-white transition-colors hover:bg-brand-hover disabled:cursor-not-allowed disabled:bg-line disabled:text-dim"
+                    className="green-action h-9 px-5 text-sm disabled:cursor-not-allowed disabled:bg-line disabled:text-dim"
                   >
                     {tt.save}
                   </button>

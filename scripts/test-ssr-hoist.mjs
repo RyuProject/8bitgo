@@ -13,7 +13,7 @@
  * `renderToString` 手里没有 document，只能原样吐在返回字符串最前面 → 落进 `#root`。
  * 客户端 hydrate 时 React 又照规矩把它们提到 `<head>`，于是 `#root` 的头几个子节点
  * 服务端有、客户端没有。线上实测：SSR 的 #root 有 6 个子节点，浏览器里只有 2 个，
- * 差的正是 logo 和「随机游戏」按钮那三张 SVG 的 4 条 preload。
+ * 差的正是 logo 和「随机游戏」按钮那三张 SVG 的 4 条 preload（历史复现样本；按钮现已使用 CSS 外框）。
  *
  * ⚠️ 这个 bug**不会让页面看起来坏掉** —— React 把整棵树推倒重建一次，用户只觉得
  * 首屏慢半拍。也就是说没有这组断言，改回去谁都不会发现。
@@ -47,9 +47,9 @@ const REAL = '<link rel="preload" as="image" href="/ui/logo-8bitgo.png"/>'
   + '<link rel="preload" as="image" href="/ui/random-button/right.svg"/>'
   + '<div aria-hidden="true" class="pointer-events-none"></div><div class="min-h-dvh"></div>'
 
-console.log('一、摘出来')
+console.log('一、摘出历史 React 资源提升样本')
 
-check('线上那一份：4 条 preload 全摘走，正文一字不动', () => {
+check('历史样本：4 条 preload 全摘走，正文一字不动', () => {
   const { hoisted, body } = splitHoistedHead(REAL)
   assert.equal(hoisted.length, 4, `摘到 ${hoisted.length} 条`)
   assert.ok(hoisted.every((t) => t.startsWith('<link rel="preload"')), hoisted.join('\n'))
