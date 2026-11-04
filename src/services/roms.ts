@@ -127,8 +127,12 @@ export function getRomMirrorBase(): string {
  * 不论 ROM 大小都在开局前测速主域 / 加速镜像的平台。
  * NES 的 ROM 只有几十 KB 到 1 MB，开局慢主要慢在跨境首字节，大陆访客走 EdgeOne 收益最明显；
  * 测速样本就是整份小文件、结果按域名缓存 5 分钟，代价可以忽略。其它平台仍只给 16 MB 以上的大文件测速。
+ *
+ * Flash 同理（2026-11-05）：SWF 多是几百 KB 到十几 MB，正好落在 16 MB 门槛之下。选中镜像后
+ * Ruffle 的 base 也跟着指向镜像目录，多 SWF 包里同目录的其它 swf 一起走同一个域；
+ * 存档键取自 flash-frame 页面和路径（ruffleSaves.ts），与 ROM 域名无关，换域不丢档。
  */
-export const MIRROR_RACE_ANY_SIZE_PLATFORMS: ReadonlySet<string> = new Set(['nes'])
+export const MIRROR_RACE_ANY_SIZE_PLATFORMS: ReadonlySet<string> = new Set(['nes', 'flash'])
 
 export function romMirrorUrl(url: string, base = getRomBase(), mirror = getRomMirrorBase()): string {
   if (!url || !base || !mirror || base === mirror || !url.startsWith(`${base}/`)) return ''

@@ -219,6 +219,7 @@ assert.equal(isolatedEmbedFor('diablo'), undefined, 'Diablo 不需要 COOP/COEP�
   )
   assert.ok(Date.now() - t0 < 1000, `主域先取完样本就应定局，不等镜像 3 秒超时（实际 ${Date.now() - t0}ms）`)
   assert.ok(MIRROR_RACE_ANY_SIZE_PLATFORMS.has('nes'), 'NES 不论大小都测速')
+  assert.ok(MIRROR_RACE_ANY_SIZE_PLATFORMS.has('flash'), 'Flash 不论大小都测速')
   assert.ok(!MIRROR_RACE_ANY_SIZE_PLATFORMS.has('psp'), '其它平台仍按大文件门槛')
 }
 
