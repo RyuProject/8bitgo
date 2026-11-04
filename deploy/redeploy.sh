@@ -96,6 +96,10 @@ rollback() {
   systemctl restart "$UNIT" || { log "⚠️ 回滚重启失败，需人工介入"; return; }
   if health_ok; then
     log "✅ 已回滚到 ${BEFORE_COMMIT}"
+    # 失败的新版可能已经被边缘缓存了一些页面；旧提交里若有清缓存脚本就清一次
+    if [ -f "$SERVER_DIR/scripts/purge-edge-html.mjs" ]; then
+      ( cd "$SERVER_DIR" && node scripts/purge-edge-html.mjs ) || log "⚠️ 回滚后清 HTML 缓存失败"
+    fi
   else
     log "❌ 回滚后仍不健康"
   fi
@@ -176,6 +180,9 @@ log "── 步骤 6/7  数据库迁移 ──"
 log "── 步骤 7/7  重启 $UNIT + 健康检查 ──"
 systemctl restart "$UNIT" || die "systemctl restart 失败"
 if health_ok && ps2_headers_ok; then
+  # 页面在 Cloudflare 边缘缓存一天（见 server/src/edge-purge.js），新前端要靠这一步立刻生效。
+  # 清失败不回滚：站点是好的，只是旧 HTML 要等过期（旧哈希资源仍保留在 dist，不会白屏）。
+  ( cd "$SERVER_DIR" && npm run --silent purge:edge-html ) || log "⚠️ 清 Cloudflare HTML 缓存失败，新版要等边缘过期才全量生效"
   log "✅ 部署完成：$(git rev-parse --short HEAD)"
   exit 0
 fi

@@ -17,6 +17,7 @@ import { attachPostTags } from './routes/posts.js'
 import { listPublicFriendLinks } from './friend-links.js'
 import { loadVisibleNotice } from './site-notice.js'
 import { isolatedRuntimeRoute } from '../../shared/isolated-runtime-platforms.js'
+import { schedulePurge } from './edge-purge.js'
 
 const TTL = Number(process.env.SSR_CACHE_MS || 60_000)
 /** 缓存最多存多少个路由的结果 */
@@ -37,6 +38,8 @@ export function invalidateContent() {
   cache.clear()
   // 后台写入后，新请求不能复用写入前还在飞的旧查询；否则首个访客仍会看到旧数据。
   inflight.clear()
+  // 进程内缓存清了，边缘上的 HTML 也要清（长缓存靠它才不会一天内都是旧的）
+  schedulePurge()
 }
 
 /**

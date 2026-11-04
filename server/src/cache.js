@@ -14,6 +14,14 @@ const n = (v, d) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : d
 
 /** SSR 页面在边缘的缓存秒数。后台改了内容最多这么久之后前台才会变（也可以手动清缓存） */
 const PAGE_S_MAXAGE = n(process.env.PAGE_S_MAXAGE, 300)
+/**
+ * 只给 Cloudflare 看的页面缓存秒数（Cloudflare-CDN-Cache-Control）。
+ * 只有配置了清缓存令牌时才发（见 edge-purge.js）：后台每次改内容都会按 Cache-Tag 清掉全部 HTML，
+ * 所以可以放心缓存一天，让长尾页面也能命中边缘。设 0 关掉，退回上面的 5 分钟。
+ */
+const PAGE_EDGE_MAXAGE = Number.isFinite(Number(process.env.PAGE_EDGE_MAXAGE)) && process.env.PAGE_EDGE_MAXAGE !== ''
+  ? Math.max(0, Number(process.env.PAGE_EDGE_MAXAGE))
+  : 86400
 /** 公开只读接口在边缘的缓存秒数 */
 const API_S_MAXAGE = n(process.env.API_S_MAXAGE, 300)
 
@@ -61,6 +69,14 @@ export const CACHE = {
   // 内容上架后这段 stale 窗口也算进可见延迟；留 5 分钟扛回源抖动，
   // 避免旧首页/详情页在边缘继续可用整整一天，尤其影响低流量页面的爬虫首访。
   page: `public, max-age=0, s-maxage=${PAGE_S_MAXAGE}, stale-while-revalidate=300`,
+
+  /**
+   * Cloudflare 专用的页面缓存时长。Cloudflare 优先认这个头、其它 CDN 和浏览器不认，
+   * 所以 cn.8bitgo.com（EdgeOne，没有清缓存通道）和浏览器仍按上面 page 那条走。
+   * 由 ssr.js 在 edgePurgeEnabled() 时附上；源站部署后由 deploy/redeploy.sh 清一次，
+   * 否则新版前端要等边缘过期才上线。
+   */
+  pageEdge: PAGE_EDGE_MAXAGE > 0 ? `max-age=${PAGE_EDGE_MAXAGE}, stale-while-revalidate=3600` : '',
 
   /** 404：短暂缓存一下挡住爬虫的反复请求，又不至于长期钉死 */
   notFound: 'public, max-age=0, s-maxage=60',

@@ -10,6 +10,8 @@
     "migrate": "node scripts/migrate.mjs",
     "seed": "node scripts/seed.mjs",
     "reset-fake-data": "node scripts/reset-fake-data.mjs",
+    "purge:edge-html": "node scripts/purge-edge-html.mjs",
+    "test:edge-purge": "node scripts/test-edge-purge.mjs",
     "test:db": "node scripts/test-connection.mjs",
     "test:mail": "node scripts/test-mail.mjs",
     "test:submit": "node scripts/test-submit-game.mjs",

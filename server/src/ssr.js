@@ -11,6 +11,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { loadForRoute } from './content.js'
 import { CACHE } from './cache.js'
+import { HTML_CACHE_TAG, edgePurgeEnabled } from './edge-purge.js'
 import { earlyHintLinks, retargetCoverHints } from './early-hints.js'
 import { coverBaseUrl, publicSiteUrl } from './site-urls.js'
 import { requestHostname } from './url-normalize.js'
@@ -304,12 +305,19 @@ export async function renderPage(req, res, next) {
     // 渲染出「页面不存在」时回 404：一律 200 会让爬虫把不存在的 URL 当正常页面收录
     // 页面是匿名的（登录态在客户端 localStorage 里，SSR 不碰用户数据），
     // 所以可以放心让 Cloudflare 缓存。后台改完内容想立刻生效就清一次 Cloudflare 缓存。
+    const cacheControl = isolatedPlay ? CACHE.none : notFound ? CACHE.notFound : isNoStorePath(req.path) ? CACHE.none : CACHE.page
+    // 只有正常的可缓存页面才在 Cloudflare 上长缓存；404 / 隔离页 / 登录回调保持原样
+    // 大陆入口（EdgeOne）不经过 Cloudflare、也没有清缓存通道，不发这个头，免得哪天 EdgeOne 认了它
+    const longEdgeCache = !cnSite && cacheControl === CACHE.page && Boolean(CACHE.pageEdge) && edgePurgeEnabled()
     res
       .status(notFound ? 404 : 200)
       .set({
         'Content-Type': 'text/html; charset=utf-8',
         // 隔离头是播放器能否启动的条件；边缘沿用旧 HTML 会让新前端配旧响应头。
-        'Cache-Control': isolatedPlay ? CACHE.none : notFound ? CACHE.notFound : isNoStorePath(req.path) ? CACHE.none : CACHE.page,
+        'Cache-Control': cacheControl,
+        // 后台改内容后按这个标签清掉边缘上的全部 HTML（edge-purge.js）；Cloudflare 不会把它发给访客
+        'Cache-Tag': HTML_CACHE_TAG,
+        ...(longEdgeCache ? { 'Cloudflare-CDN-Cache-Control': CACHE.pageEdge } : {}),
         Vary: 'Accept-Encoding',
         ...(earlyHints ? { Link: earlyHints } : {}),
         ...(isolatedDocument

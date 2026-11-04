@@ -2803,6 +2803,21 @@ EdgeOne 只能用境外（香港）节点。主站、ROM、Pages 子域都不受
 
 回归：`npm run test:game-media && npm run test:seo-performance && npm run test:tv-host`。
 
+### 2.37 SSR 页面在 Cloudflare 缓存一天，靠「改内容就清」保证新鲜
+
+源站渲染只要 20～100ms，TTFB 慢在回源：页面原来只在边缘缓存 5 分钟，游戏 × 八语言的长尾页几乎
+次次回源。现在 SSR 响应同时发两套缓存头：
+
+- `Cache-Control: s-maxage=300`：浏览器与 cn.8bitgo.com（EdgeOne）照旧，EdgeOne 没有清缓存通道；
+- `Cloudflare-CDN-Cache-Control: max-age=86400`：只有 Cloudflare 认，**仅在 `server/.env` 配了
+  `CF_ZONE_ID` + `CF_PURGE_API_TOKEN` 时才发**（令牌只有该区域的 Cache Purge 权限）。
+
+所有页面带 `Cache-Tag: html`。`invalidateContent()`（后台所有写路径都调它）延迟 3 秒、合并后按标签
+清全部 HTML（`server/src/edge-purge.js`）；`deploy/redeploy.sh` 发布成功后也清一次，否则新前端
+要等一天。⚠️ 新增「会改变公开页面内容」的写路径必须调 `invalidateContent()`，漏了就是旧页面挂一天。
+游玩次数这类高频写故意不清。`PAGE_EDGE_MAXAGE=0` 可整体退回 5 分钟。回归：
+`cd server && npm run test:edge-purge`。
+
 ## 3. 常用命令
 
 ```bash
