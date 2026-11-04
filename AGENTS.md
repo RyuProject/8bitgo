@@ -2811,7 +2811,8 @@ EdgeOne 只能用境外（香港）节点。主站、ROM、Pages 子域都不受
     我们又清不了 EdgeOne。换前缀等于一组新缓存键，源站对它固定发 `Access-Control-Allow-Origin: https://8bitgo.com`
     和 CORP。同理 CSS 里写死的 `url(/fonts/...)` 由 cn-edge.js 现场改成 `/_cn/fonts/`。
   - ⚠️ `vite.config.ts` 的 `renderBuiltUrl` 让 JS / CSS 里的产物引用相对引用方解析；去掉它，懒加载 chunk 的
-    modulepreload 会解析回 8bitgo.com，同一个 chunk 被下两遍。
+    modulepreload 会解析回 8bitgo.com，同一个 chunk 被下两遍。**Worker 例外**（文件名 `*Worker-<hash>.js`）：
+    浏览器禁止跨源启动 Worker，所以它们固定用 `self.location.origin + /assets/...`；新增 Worker 时文件名要带 `Worker`。
   - 兜底：入口脚本 / 样式表 `onerror` 退回同源；API 网络错误或 502–504 退回同源，网络错误后本次会话不再走加速入口。
     写操作、后台请求、socket.io、SSE、OAuth 跳转都留在同源。
   - 回归：`cd server && npm run test:cn-edge`。

@@ -313,8 +313,13 @@ export default defineConfig(({ mode }) => {
       解析回页面域名 8bitgo.com，同一个 chunk 就被下两遍（预加载走洛杉矶、import 走 EdgeOne）。
       对普通访客结果不变：相对 /assets/x.js 解析出来还是 /assets/。
     */
-    renderBuiltUrl(_filename: string, { hostType }: { hostType: 'js' | 'css' | 'html' }) {
-      return hostType === 'html' ? undefined : { relative: true }
+    renderBuiltUrl(filename: string, { hostType }: { hostType: 'js' | 'css' | 'html' }) {
+      if (hostType === 'html') return undefined
+      // Worker 脚本例外：浏览器不允许从别的源启动 Worker，必须留在页面自己的域名下
+      if (hostType === 'js' && /(^|\/)[^/]*Worker-[\w-]+\.js$/.test(filename)) {
+        return { runtime: `self.location.origin+${JSON.stringify(`/${filename}`)}` }
+      }
+      return { relative: true }
     },
   },
   build: {

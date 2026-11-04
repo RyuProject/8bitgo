@@ -88,7 +88,8 @@ const api = readFileSync(new URL('../../src/services/api.ts', import.meta.url), 
 assert.match(api, /SAME_ORIGIN && method === 'GET' && !admin \? cnEdgeApiBase\(\)/, '只有只读、非后台请求走加速入口')
 assert.match(api, /markCnEdgeApiFailed\(\)/)
 const vite = readFileSync(new URL('../../vite.config.ts', import.meta.url), 'utf8')
-assert.match(vite, /hostType === 'html' \? undefined : \{ relative: true \}/, 'chunk 预加载要相对引用方解析，否则大陆页面会下两遍')
+assert.match(vite, /if \(hostType === 'html'\) return undefined[\s\S]*?return \{ relative: true \}/, 'chunk 预加载要相对引用方解析，否则大陆页面会下两遍')
+assert.match(vite, /Worker-\[\\w-\]\+\\\.js\$\/\.test\(filename\)\) \{\s*return \{ runtime: `self\.location\.origin\+/, 'Worker 必须同源加载：浏览器禁止跨源 Worker')
 ok('SSR / API / 构建配置接线')
 
 console.log(`\n${passed} 项通过`)
