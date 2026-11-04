@@ -41,6 +41,7 @@ import {
 import { ruffleStageRenderPlan, ruffleStageSize } from '../ruffleStageFit'
 import { isRuffleFrameReady } from '../ruffleFrame'
 import { flashCompatibilityIssue } from '../flashCompatibility'
+import { ruffleRendererPreference, type RuffleRendererPreference } from '../flashStage3D'
 import { flashLegacyBundleRules, type FlashUrlRewriteRule } from '../flashLegacyBundle'
 import { installFlashLegacyLoginRedirect } from '../flashLegacyLogin'
 import { installRuffleCrashGuard } from '../ruffleCrash'
@@ -647,11 +648,20 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         const bundleBaseUrl = typeof options.game === 'string'
           ? new URL('.', new URL(options.game, location.href)).href
           : null
-        const legacyRuleSpecs = await flashLegacyBundleRules(
-          loaded.data,
-          options.gameSlug,
-          bundleBaseUrl,
-        )
+        /*
+          Stage3D（Starling 等）游戏要 Ruffle 的 WebGPU 后端：wgpu-webgl 下《传染恐慌：幸存者》
+          菜单每帧 24ms 只有 40 FPS，WebGPU 同场景 0.2～3ms；webgl / canvas 后端更是没有 Context3D
+          直接黑屏。扫描（CWS 要边解边找）和旧 SDK 规则并行算，不多占启动时间。见 flashStage3D.ts。
+        */
+        const [legacyRuleSpecs, renderer] = await Promise.all([
+          flashLegacyBundleRules(
+            loaded.data,
+            options.gameSlug,
+            bundleBaseUrl,
+          ),
+          ruffleRendererPreference(loaded.data, win.navigator).catch((): RuffleRendererPreference => ({ stage3D: false })),
+        ])
+        if (renderer.preferredRenderer) console.info(`[ruffle] Stage3D content: prefer ${renderer.preferredRenderer} renderer`)
         /*
           Ruffle 的配置代码跑在 iframe realm，内部用 `instanceof RegExp` 判断规则类型。
           父页面创建的 RegExp 跨 realm 后会判断成 false，随后被当字符串调用 replace，整局直接
@@ -746,6 +756,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           ...(rewriteRules.length ? { urlRewriteRules: rewriteRules } : {}),
           // 中文 / 日文这类设备字体文本要靠它才画得出来，见文件顶部的说明
           ...fontConfig(),
+          // 只对 Stage3D 内容改；建 WebGPU 失败时 Ruffle 自己退回 wgpu-webgl
+          ...(renderer.preferredRenderer ? { preferredRenderer: renderer.preferredRenderer } : {}),
         }
         /*
           存档路径：Proxy 装上时按 ROM 地址推稳定名，并把旧文件名路径下的槽搬过来；

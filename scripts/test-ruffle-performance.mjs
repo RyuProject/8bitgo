@@ -10,6 +10,7 @@ import {
   installRufflePixelRatioController,
   RUFFLE_ADAPTIVE_PIXEL_RATIOS,
   RUFFLE_RENDER_PIXEL_RATIO,
+  RUFFLE_STALL_CALLBACK_MS,
   selectRufflePerformanceProfile,
   supportsRuffleWasmExtensions,
 } from '../src/emulator/rufflePerformance.ts'
@@ -125,11 +126,16 @@ assert.ok(Math.abs(stable30HzSample.p25IntervalMs - 1000 / 30) < 0.1)
 assert.equal(stable30HzSample.lateFrameRatio, 0, '30 Hz 屏幕的正常节奏不能全被标为迟到帧')
 lowRefreshTelemetry.stop()
 
-let fakeMetric = { frameCount: 60, callbackCount: 60, durationMs: 3000, p25IntervalMs: 16.7, p90IntervalMs: 16.7, p90CallbackMs: 9, lateFrameRatio: 0 }
+// 像素受限的负载（GPU 填充 / 同步）：回调随画布像素数下降，降档才有意义
 let fakePixelRatio = 1.25
+let fakeMetric = null
+const pixelBoundMetric = () => ({
+  frameCount: 60, callbackCount: 60, durationMs: 3000, p25IntervalMs: 16.7, p90IntervalMs: 16.7,
+  p90CallbackMs: 16 * (fakePixelRatio / 1.25) ** 2, lateFrameRatio: 0,
+})
 const changes = []
 const adaptive = createRuffleAdaptiveController({
-  telemetry: { sample: () => fakeMetric, discard() {} },
+  telemetry: { sample: () => fakeMetric ?? pixelBoundMetric(), discard() {} },
   pixelRatio: { supported: true, current: () => fakePixelRatio, setCap: (cap) => { fakePixelRatio = Math.min(2, cap); return fakePixelRatio } },
   initialTier: 'full',
   frameRate: 60,
@@ -141,11 +147,81 @@ adaptive.sample()
 assert.equal(adaptive.currentTier(), 'balanced', '連續兩個過載窗口應即時降一檔')
 assert.equal(fakePixelRatio, 1)
 for (let i = 0; i < 6; i++) adaptive.sample()
-assert.equal(adaptive.currentTier(), 'economy', '持續過載可繼續下調，直到硬件安全底檔')
+assert.equal(adaptive.currentTier(), 'economy', '降档确实减负、但仍过载时可继续下调，直到硬件安全底檔')
 fakeMetric = { frameCount: 60, callbackCount: 60, durationMs: 3000, p25IntervalMs: 16.7, p90IntervalMs: 16.7, p90CallbackMs: 2, lateFrameRatio: 0 }
 for (let i = 0; i < 15; i++) adaptive.sample()
 assert.equal(adaptive.currentTier(), 'balanced', '恢復必須等待長時間穩定余量，不能頻繁抖動')
 assert.deepEqual(changes.map(({ reason }) => reason), ['slow', 'slow', 'recovered'])
+
+// ⚠️ CPU 瓶颈（《传染恐慌：幸存者》wgpu-webgl 菜单：1.25× 与 0.8× 都是每帧 24ms）：降了没用就退回并锁住
+let cpuBoundCap = 1.25
+const cpuBoundChanges = []
+const cpuBound = createRuffleAdaptiveController({
+  telemetry: { sample: () => ({
+    frameCount: 120, callbackCount: 120, durationMs: 3000, p25IntervalMs: 25, p90IntervalMs: 26, p90CallbackMs: 24, lateFrameRatio: 0,
+  }), discard() {} },
+  pixelRatio: { supported: true, current: () => cpuBoundCap, setCap: (cap) => { cpuBoundCap = cap; return cap } },
+  initialTier: 'full',
+  frameRate: 60,
+  onChange: (change) => cpuBoundChanges.push(change),
+})
+cpuBound.sample()
+cpuBound.sample()
+assert.equal(cpuBound.currentTier(), 'balanced', '先试着降一档')
+cpuBound.sample()
+cpuBound.sample()
+assert.equal(cpuBound.currentTier(), 'full', '连续两个窗口没有任何改善必须退回原档，不能白白糊掉画面')
+assert.equal(cpuBoundCap, RUFFLE_RENDER_PIXEL_RATIO)
+for (let i = 0; i < 20; i++) cpuBound.sample()
+assert.equal(cpuBound.currentTier(), 'full', '证明过无效的档位本局不再往下降，避免来回跳')
+assert.deepEqual(cpuBoundChanges.map(({ reason }) => reason), ['slow', 'reverted'])
+cpuBound.stop()
+
+// 加载阶段：过渡帧显慢 → 降档；随后几百毫秒一帧的长任务说明换了阶段，试验作废、退回原档且不锁
+const loadingSequence = [
+  { frameCount: 42, callbackCount: 42, durationMs: 3000, p25IntervalMs: 25, p90IntervalMs: 60, p90CallbackMs: 28, lateFrameRatio: 0.3 },
+  { frameCount: 42, callbackCount: 42, durationMs: 3000, p25IntervalMs: 25, p90IntervalMs: 60, p90CallbackMs: 28, lateFrameRatio: 0.3 },
+  { frameCount: 20, callbackCount: 20, durationMs: 3000, p25IntervalMs: 120, p90IntervalMs: 700, p90CallbackMs: 674, lateFrameRatio: 0.5 },
+  { frameCount: 360, callbackCount: 360, durationMs: 3000, p25IntervalMs: 8.3, p90IntervalMs: 8.5, p90CallbackMs: 3, lateFrameRatio: 0 },
+  { frameCount: 360, callbackCount: 360, durationMs: 3000, p25IntervalMs: 8.3, p90IntervalMs: 8.5, p90CallbackMs: 3, lateFrameRatio: 0 },
+  { frameCount: 60, callbackCount: 60, durationMs: 3000, p25IntervalMs: 16.7, p90IntervalMs: 16.7, p90CallbackMs: 12, lateFrameRatio: 0 },
+  { frameCount: 60, callbackCount: 60, durationMs: 3000, p25IntervalMs: 16.7, p90IntervalMs: 16.7, p90CallbackMs: 12, lateFrameRatio: 0 },
+]
+let loadingCap = 1.25
+const loadingChanges = []
+const loading = createRuffleAdaptiveController({
+  telemetry: { sample: () => loadingSequence.shift(), discard() {} },
+  pixelRatio: { supported: true, current: () => loadingCap, setCap: (cap) => { loadingCap = cap; return cap } },
+  initialTier: 'full',
+  frameRate: 60,
+  onChange: (change) => loadingChanges.push(change),
+})
+loading.sample()
+loading.sample()
+assert.equal(loading.currentTier(), 'balanced')
+loading.sample()
+assert.equal(loading.currentTier(), 'full', '降档试验期间出现加载长任务：前后负载不可比，必须退回原档')
+loading.sample()
+loading.sample()
+assert.equal(loading.currentTier(), 'full', '进游戏后负载很轻，保持最高清晰度')
+loading.sample()
+loading.sample()
+assert.equal(loading.currentTier(), 'balanced', '作废的试验不锁下限：之后真的过载仍可正常降档')
+assert.deepEqual(loadingChanges.map(({ reason }) => reason), ['slow', 'reverted', 'slow'])
+loading.stop()
+
+let stallCap = 1.25
+const stalls = createRuffleAdaptiveController({
+  telemetry: { sample: () => ({
+    frameCount: 30, callbackCount: 30, durationMs: 3000, p25IntervalMs: 100, p90IntervalMs: 700, p90CallbackMs: 674, lateFrameRatio: 0.6,
+  }), discard() {} },
+  pixelRatio: { supported: true, current: () => stallCap, setCap: (cap) => { stallCap = cap; return cap } },
+  initialTier: 'full',
+  frameRate: 60,
+})
+for (let i = 0; i < 10; i++) stalls.sample()
+assert.equal(stalls.currentTier(), 'full', `回调 ≥ ${RUFFLE_STALL_CALLBACK_MS}ms 的加载长任务不是画面负载，不能触发降档`)
+stalls.stop()
 
 const smooth30HzChanges = []
 let smooth30HzCap = 1
@@ -324,7 +400,11 @@ assert.match(adapter, /api\?\.suspended === true/, '新版 Ruffle PlayerV1 暂�
 assert.match(adapter, /adaptivePerformance\.discard\(\)/, '暂停要重置迟滞状态，避免跨暂停累计连续窗口')
 assert.doesNotMatch(adapter, /quality:\s*performanceProfile/, 'Ruffle Stage.quality 在核心中没有画质效果，不应误导为性能开关')
 assert.doesNotMatch(adapter, /frameRate:\s*(?:performanceProfile|options\.|\d)/, '性能策略不能覆写游戏时间轴')
-assert.doesNotMatch(adapter, /preferredRenderer\s*:/, '性能策略不能钉死浏览器渲染后端')
+// 不能为全站钉死后端；唯一例外是 Stage3D 内容（webgl / canvas 没有 Context3D，WebGPU 比 wgpu-webgl 快一个数量级），
+// 而且只能来自 flashStage3D.ts 的检测结果，见 scripts/test-flash-stage3d.mjs
+assert.doesNotMatch(adapter, /preferredRenderer\s*:\s*['"`]/, '性能策略不能钉死浏览器渲染后端')
+assert.equal((adapter.match(/preferredRenderer\s*:/g) || []).length, 1, 'preferredRenderer 只能有 Stage3D 那一处')
+assert.match(adapter, /preferredRenderer: renderer\.preferredRenderer/)
 assert.doesNotMatch(adapter, /options\.performanceProfile/)
 assert.doesNotMatch(player, /performance(Label|Profile|Quality|Balanced|Fast)/, '开始区不应再出现运行档位')
 assert.doesNotMatch(types, /performanceProfile/)

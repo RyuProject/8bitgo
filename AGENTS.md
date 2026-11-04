@@ -1235,8 +1235,16 @@ Ruffle 初始渲染像素比按 iframe 内设备能力分档：极低配置 DPR 
 瓶颈无法仅凭浏览器 RAF 完全辨别，不能宣称所有卡顿都可自动修复。
 Ruffle v0.7.1 的 `Stage.quality` 目前只存值，不改变 renderer，所以不要把它当性能开关，也不要向游戏脚本
 写入 LOW / MEDIUM / HIGH。像素比变化会由 Ruffle 下一次 tick 重建画布，不重载、不改游戏逻辑帧率、输入、
-声音、存档或渲染后端。不要用 `frameRate` 冒充性能优化（会直接改游戏时间轴），也不要钉
+声音、存档或渲染后端。不要用 `frameRate` 冒充性能优化（会直接改游戏时间轴），也不要为全站钉
 `preferredRenderer`（官方只把它当排错项，浏览器 / Ruffle 升级后最优后端会变）。回归：`npm run test:ruffle-runtime`。
+
+⚠️ **唯一例外：Stage3D 内容走 WebGPU**（2026-11-05《传染恐慌：幸存者》，Starling）。Ruffle 0.7.1 默认顺序是
+wgpu-webgl → webgl → canvas，有 `navigator.gpu` 也**不会**自己选 WebGPU。wgpu-webgl 下菜单每帧 24ms 只有 40 FPS，
+WebGPU 0.2～3ms 稳 60；webgl / canvas 没有 Context3D 直接黑屏。`flashStage3D.ts` 在 SWF ≥ v13 里找
+`flash.display3D`（CWS 边解边找，命中即停），命中且有 WebGPU 才给 `preferredRenderer: 'webgpu'`，失败 Ruffle 自己退回。
+回归：`scripts/test-flash-stage3d.mjs`（已并入 `npm run test:ruffle-runtime`）。
+自适应降档是**试验**：两窗没有可测改善就退回并锁下限（Ruffle 主线程耗时基本不随像素变）；回调 ≥ 150ms 的
+加载长任务窗口不参与调档，试验期间遇到也直接退回。
 
 冷启动的三条重资源必须并行：游戏 SWF、短期在线存档会话、Ruffle loader/WASM；不得把
 `loadGameBytes()` 放回 `script.onload` 后面才开始。鼠标悬停会依据 Ruffle 自己的五项 WASM 能力探针，

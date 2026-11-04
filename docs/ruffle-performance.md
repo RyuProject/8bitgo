@@ -14,7 +14,13 @@
 - 连续两个 3 秒采样窗显示明显的高回调耗时 / 帧节奏异常时降一档；持续约 30 秒有余量才恢复一档；
 - Ruffle 检测到 `window.devicePixelRatio` 变化后会在下一次 tick 重建画布 backing store，因此切档不重载 SWF；
 - 不覆写 `frameRate`：它会改变游戏逻辑速度，不是安全的性能开关；
-- 不固定 `preferredRenderer`：让 Ruffle 按浏览器能力在 WebGPU / WebGL / Canvas 间自行选择；
+- 默认不固定 `preferredRenderer`。⚠️ 注意 Ruffle 0.7.1 的默认顺序是 wgpu-webgl → webgl → canvas，
+  **不会自己选 WebGPU**（浏览器有 `navigator.gpu` 也一样，控制台写的是 `Used renderer: wgpu-webgl`）；
+- 唯一例外：SWF 引用了 `flash.display3D`（Starling / Away3D 等 Stage3D 内容）且浏览器有 WebGPU 时，
+  给 `preferredRenderer: 'webgpu'`（`src/emulator/flashStage3D.ts`，CWS 边解边找，命中即停，最坏约 80ms，
+  与旧 SDK 规则并行）。WebGPU 建不起来 Ruffle 会自己退回 wgpu-webgl；
+- 降档是试验：之后两个有效窗口没有可测改善（回调或帧间隔 p90 降 15%，或不再过载）就退回原档，并锁为本局下限；
+  回调 ≥ 150ms 的窗口算加载长任务，不参与判断，降档试验期间遇到它也直接退回（前后负载不可比）；
 - 页面隐藏且无人观看直播时暂停；确实有观众时才允许后台继续出帧。
 
 Ruffle 没有公开 FPS 或 GPU 呈现时间 API；适配器在**专用同源 iframe**内包装 requestAnimationFrame，
@@ -107,3 +113,20 @@ npm run build
 - 切换游戏后旧 SWF 下载停止、旧声音停止；
 - 截图、录制、直播在首局加载后仍能识别 canvas；
 - 在线存档游戏仍能加载 AGI1 / AGI2 桥。
+
+
+## Stage3D 与渲染后端（2026-11-05《传染恐慌：幸存者》）
+
+SWF v25、17.5MB（CWS，解开 28.6MB）、960×640 @ 60 FPS，Starling。Apple M 系 Mac，120Hz 屏，同一局对照：
+
+| 场景 | wgpu-webgl（默认） | webgpu |
+| --- | --- | --- |
+| 主菜单每帧回调 | 24ms → 只有约 40 FPS | 0.2～3ms，满 60 FPS |
+| 关卡内每帧回调 | — | 5～6ms（按 60 FPS 隔帧出现） |
+| 加载「Resurrecting Zombies」 | 670ms / 帧，单帧最长 3.9～5.2s | 相同（是 AVM2 解析，不是渲染） |
+| 画布像素 1.25× vs 0.8× | 菜单都是 24ms，降分辨率没用 | — |
+
+- `webgl` / `canvas` 后端：`createContext3D` 报 "Not yet implemented"，游戏黑屏且每帧刷一条错误。
+- WebGPU 画布的 `captureStream()` 截图 / 录像 / 直播实测有真实像素。
+- 旧的自适应逻辑在加载长任务里把画布降到 0.8×，进游戏后回调 5～6ms 达不到「≤ 预算 20%」的恢复门槛，
+  整局都糊；现在长任务窗口不参与，且降档无效会退回。

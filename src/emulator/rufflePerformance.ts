@@ -40,8 +40,21 @@ export interface RuffleAdaptiveControllerOptions {
   pixelRatio: RufflePixelRatioController
   initialTier: RufflePerformanceProfile['tier']
   frameRate: number
-  onChange?: (state: { tier: RufflePerformanceProfile['tier']; pixelRatio: number; reason: 'slow' | 'recovered' }) => void
+  onChange?: (state: { tier: RufflePerformanceProfile['tier']; pixelRatio: number; reason: RuffleAdaptiveChangeReason }) => void
 }
+
+/**
+ * slow：连续过载降一档；recovered：长时间有余量升一档；
+ * reverted：降档后没有换来任何改善（或采样期间游戏在做加载类长任务），退回原档。
+ */
+export type RuffleAdaptiveChangeReason = 'slow' | 'recovered' | 'reverted'
+
+/**
+ * 单个回调超过这个时长就不是「画得慢」而是脚本 / 解码 / 建纹理之类的长任务
+ * （《传染恐慌：幸存者》读图集时实测 670ms～5s 一帧）。降分辨率对这种帧毫无帮助，
+ * 这类窗口一律不参与调档。
+ */
+export const RUFFLE_STALL_CALLBACK_MS = 150
 
 export interface RuffleAdaptiveController {
   sample: () => void
@@ -286,21 +299,48 @@ export function installRuffleFrameTelemetry(target: {
   }
 }
 
-/** 两个慢窗口降一档，持续 30 秒余量才恢复，避免复杂场景中画质来回跳。 */
+/**
+ * 两个慢窗口降一档，持续 30 秒余量才恢复，避免复杂场景中画质来回跳。
+ *
+ * ⚠️ 降档是一次**试验**，不是结论（2026-11-05《传染恐慌：幸存者》实测）：
+ * Ruffle 的主线程耗时绝大部分是 AVM2 和渲染命令编码，几乎不随画布像素变；
+ * wgpu-webgl 下菜单每帧 24ms，在 1.25× 和 0.8× 下一模一样。旧逻辑看到「还是慢」就继续降，
+ * 一路降到 0.8× 糊掉，帧率一点没涨；而且加载阶段的长任务也会被当成过载，进入游戏后
+ * 恢复条件（回调 ≤ 预算 20%）又很严，画面就一直卡在最低档。
+ *
+ * 所以：
+ *   1. 回调 ≥ RUFFLE_STALL_CALLBACK_MS 的窗口视为加载长任务，不参与判断；
+ *   2. 降档后接下来的有效窗口必须比降档前有可测的改善（回调或帧间隔 p90 降 15%，或不再过载），
+ *      连续 2 个窗口都没有改善就退回原档，并把它记为本局下限（CPU 瓶颈，降了也没用）；
+ *   3. 试验期间若出现长任务 / 无效窗口，说明游戏换了阶段，结论不成立，直接退回原档重新观察。
+ */
 export function createRuffleAdaptiveController(options: RuffleAdaptiveControllerOptions): RuffleAdaptiveController {
   const initialLevel = tierLevel(options.initialTier)
   const maxLevel = initialLevel
   let level = initialLevel
+  /** 证明过「降了也没用」的档位：本局不再往下降 */
+  let floorLevel = 0
   let slowWindows = 0
   let goodWindows = 0
   let cooldown = 0
   let stopped = false
+  let probe: { fromLevel: number; callbackMs: number; intervalMs: number; windows: number } | null = null
   const budgetMs = Math.max(1000 / 60, 1000 / clamp(options.frameRate, 1, 120, 60))
-  const apply = (next: number, reason: 'slow' | 'recovered') => {
+  const apply = (next: number, reason: RuffleAdaptiveChangeReason) => {
     level = clamp(next, 0, maxLevel, 0)
     const pixelRatio = options.pixelRatio.setCap(RUFFLE_ADAPTIVE_PIXEL_RATIOS[level]!)
     const tier = levelTier(level)
     options.onChange?.({ tier, pixelRatio, reason })
+  }
+  const revertProbe = (lockFloor: boolean) => {
+    if (!probe) return
+    const fromLevel = probe.fromLevel
+    probe = null
+    if (lockFloor) floorLevel = Math.max(floorLevel, fromLevel)
+    slowWindows = 0
+    goodWindows = 0
+    cooldown = 0
+    if (level !== fromLevel) apply(fromLevel, 'reverted')
   }
 
   return {
@@ -309,10 +349,12 @@ export function createRuffleAdaptiveController(options: RuffleAdaptiveController
       if (stopped) return
       const sample = options.telemetry.sample()
       // 低帧率 SWF 也要能进入判断；12 个样本约等于每秒 4 帧，低于此值数据不足以稳健调档。
-      if (sample.frameCount < 12 || sample.durationMs < 1500) {
+      if (sample.frameCount < 12 || sample.durationMs < 1500 || sample.p90CallbackMs >= RUFFLE_STALL_CALLBACK_MS) {
         slowWindows = 0
         goodWindows = 0
         cooldown = 0
+        // 降档试验期间换了阶段（加载 / 切场景），前后两段负载不可比，不能把「变快了」记在降档头上
+        revertProbe(false)
         return
       }
       if (cooldown > 0) cooldown--
@@ -328,10 +370,23 @@ export function createRuffleAdaptiveController(options: RuffleAdaptiveController
         && sample.p90IntervalMs <= frameBudgetMs * 1.1
         && sample.lateFrameRatio <= 0.03
 
+      if (probe) {
+        const improved = !isSlow
+          || sample.p90CallbackMs <= probe.callbackMs * 0.85
+          || sample.p90IntervalMs <= probe.intervalMs * 0.85
+        if (improved) {
+          probe = null
+        } else if (++probe.windows >= 2) {
+          revertProbe(true)
+          return
+        }
+      }
+
       if (isSlow) {
         slowWindows++
         goodWindows = 0
-        if (slowWindows >= 2 && level > 0 && cooldown === 0) {
+        if (slowWindows >= 2 && level > floorLevel && cooldown === 0 && !probe) {
+          probe = { fromLevel: level, callbackMs: sample.p90CallbackMs, intervalMs: sample.p90IntervalMs, windows: 0 }
           apply(level - 1, 'slow')
           slowWindows = 0
           cooldown = 5
@@ -355,11 +410,14 @@ export function createRuffleAdaptiveController(options: RuffleAdaptiveController
       slowWindows = 0
       goodWindows = 0
       cooldown = 0
+      // 暂停 / 切后台前后的负载同样不可比；试验作废但不锁下限
+      revertProbe(false)
     },
     stop() {
       stopped = true
       slowWindows = 0
       goodWindows = 0
+      probe = null
     },
   }
 }
