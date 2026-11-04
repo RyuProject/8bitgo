@@ -22,7 +22,7 @@ import { romArchiveRef } from '@/lib/romArchiveUrl'
 import { isRomPackUrl, romPackKey } from '../../shared/rom-pack-format.js'
 import { isStreamingDiscPlatform } from '../../shared/streaming-disc-platforms.js'
 import { builtinWebGameFor } from '../../shared/builtin-web-games.js'
-import { chooseFasterRomRoute, ROM_ROUTE_RACE_MIN_BYTES } from './romRoute'
+import { chooseFasterRomRoute, ROM_ROUTE_RACE_MIN_BYTES, type RouteRaceOptions } from './romRoute'
 import { coverCdnHint } from './cnHost'
 import { reportCoverCdnFailure, selectedCoverCdn, startCoverCdnProbe, subscribeCoverCdn } from './coverCdn'
 
@@ -133,6 +133,19 @@ export function getRomMirrorBase(): string {
  * 存档键取自 flash-frame 页面和路径（ruffleSaves.ts），与 ROM 域名无关，换域不丢档。
  */
 export const MIRROR_RACE_ANY_SIZE_PLATFORMS: ReadonlySet<string> = new Set(['nes', 'flash'])
+
+/**
+ * Flash 必须先把 SWF 完整交给 Ruffle 才会开始游戏，双域测速只影响启动前等待，不会改善运行中帧率。
+ * 因此用较小样本并限制最坏等待：弱网测速拿不到结论时直接保留主源，不能让路由优化卡住开局。
+ */
+const FLASH_ROM_ROUTE_RACE_OPTIONS: Pick<RouteRaceOptions, 'sampleBytes' | 'timeoutMs'> = {
+  sampleBytes: 64 * 1024,
+  timeoutMs: 1500,
+}
+
+export function romRouteRaceOptionsFor(platform: string): Partial<RouteRaceOptions> {
+  return platform === 'flash' ? FLASH_ROM_ROUTE_RACE_OPTIONS : {}
+}
 
 export function romMirrorUrl(url: string, base = getRomBase(), mirror = getRomMirrorBase()): string {
   if (!url || !base || !mirror || base === mirror || !url.startsWith(`${base}/`)) return ''
@@ -1320,7 +1333,11 @@ export function useRomUrl(game: Game | undefined, prefer?: RomSlotLang | null): 
       const route = await chooseFasterRomRoute(
         { url, size },
         { url: mirror, size },
-        { signal: routeController.signal, minBytes: raceMinBytes },
+        {
+          signal: routeController.signal,
+          minBytes: raceMinBytes,
+          ...romRouteRaceOptionsFor(game.platform),
+        },
       )
       if (route !== 'backup') return url
       console.info(`[8bitgo/rom] ${game.slug} 测速后整局改走加速镜像：${new URL(mirror).origin}`)

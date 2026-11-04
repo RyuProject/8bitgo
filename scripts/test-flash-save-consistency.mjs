@@ -16,6 +16,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
+  FLASH_SAVE_BRIDGE_RELEASE,
   FLASH_SAVE_GAMES,
   flashSaveBridgeOf,
   flashSaveGameKeyOf,
@@ -70,7 +71,7 @@ check('在线存档 FlashVars 同时进入子桥 URL，且直连桥地址也会�
   const service = readFileSync(join(root, 'src/services/flashOnlineSave.ts'), 'utf8')
   assert.ok(service.includes('flashSaveBridgeRewriteRules(launch.bridgeUrl, launch.rewriteFrom, launch.parameters)'),
     'Ruffle 配置没有接入带 FlashVars 的桥 URL 规则')
-  const bridgeUrl = 'https://8bitgo.com/flash-api/armor-games/20261104-r01/AGI2.swf?v=1'
+  const bridgeUrl = `https://8bitgo.com/flash-api/armor-games/${FLASH_SAVE_BRIDGE_RELEASE}/AGI2.swf?v=1`
   const parameters = {
     eightbitgo_save_token: 'token+/=value',
     eightbitgo_save_endpoint: 'https://8bitgo.com/api/flash-saves/v1/kingdom-rushfrontiers',
@@ -94,7 +95,7 @@ check('在线存档 FlashVars 同时进入子桥 URL，且直连桥地址也会�
   assert.ok(rules.every(([, destination]) => destination === selfRule[1]),
     'Armor Games、旧版本、未版本化和直连地址必须进入同一个带 FlashVars 的目标 URL')
   const agi1Rules = flashSaveBridgeRewriteRules(
-    'https://8bitgo.com/flash-api/armor-games/20261104-r01/AGI.swf',
+    `https://8bitgo.com/flash-api/armor-games/${FLASH_SAVE_BRIDGE_RELEASE}/AGI.swf`,
     [],
     parameters,
   )
@@ -204,6 +205,25 @@ check('AGI2 具备幂等重试、条件更新和给新游戏的简化接口', ()
   assert.ok(rootParamsMerge >= 0 && bridgeParamsMerge > rootParamsMerge,
     'AGI2 必须先继承主影片 FlashVars，再让桥 URL query 覆盖同名旧值')
   assert.ok(!source.includes('waitForQueue('), 'AGI2 仍有 3 秒后绕过队列读旧档的路径')
+})
+
+check('⚠️ AGI2 不用顶层 JSON 类（KRF 是 SWF 10，Ruffle 不给它 JSON），且能从 connect({stage}) 取 FlashVars', () => {
+  const source = readFileSync(join(root, 'flash-api/armor-games/src-agi2/KrfAgiBridge.as'), 'utf8')
+  // 去掉注释再查：类注释里会提到 JSON.stringify 这个名字
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
+  assert.ok(!/\bJSON\s*\./.test(code), 'AGI2 又用了 JSON.parse / JSON.stringify：KRF 里会抛 #1065，游戏弹「CONNECTION LOST」')
+  for (const fragment of [
+    'request.data = this.encodeJson(body,0)',
+    'decodeJson(text) as Object',
+    'private function quoteJson(value:String) : String',
+    'private function jsonString() : String',
+    'this.connectStage = options != null && options.stage != null ? options.stage : null',
+    'rootParams = this.connectStage.getChildAt(0).loaderInfo.parameters',
+  ]) {
+    assert.ok(source.includes(fragment), `AGI2 缺少 SWF 10 兼容链路：${fragment}`)
+  }
+  assert.ok(source.indexOf('this.connectStage = options') < source.indexOf('this.readParameters();'),
+    'connect 必须先记下舞台再读参数')
 })
 
 check('AGI1 读档屏障覆盖排队写入、删除与未配对快照，超时失败关闭', () => {

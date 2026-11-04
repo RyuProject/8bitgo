@@ -36,7 +36,7 @@ const script = (...steps) => {
   methods = []
 }
 
-const { probeRomUrl, probeRom, clearRomProbeCache, conventionalKeys, romCandidates, playbackRomCandidates, playbackRomCandidatesForSelection, romProbeExpected, dosExecutableForRom, dosSockdriveForRom, dosStartupCommandsForRom, streamedRomCandidateForSelection, versionedRomUrl, romKeysOf, unbindKeyPatch, shouldTryRomCandidateAfterUncertain, nextRomCandidateKey, slugFromKey, romUrlForKey, coverThumbKey, romMirrorUrl, getRomMirrorBase, MIRROR_RACE_ANY_SIZE_PLATFORMS } = await import(
+const { probeRomUrl, probeRom, clearRomProbeCache, conventionalKeys, romCandidates, playbackRomCandidates, playbackRomCandidatesForSelection, romProbeExpected, dosExecutableForRom, dosSockdriveForRom, dosStartupCommandsForRom, streamedRomCandidateForSelection, versionedRomUrl, romKeysOf, unbindKeyPatch, shouldTryRomCandidateAfterUncertain, nextRomCandidateKey, slugFromKey, romUrlForKey, coverThumbKey, romMirrorUrl, getRomMirrorBase, MIRROR_RACE_ANY_SIZE_PLATFORMS, romRouteRaceOptionsFor } = await import(
   fileURLToPath(new URL('../src/services/roms.ts', import.meta.url))
 )
 // 红宝石封面是外链：没有 -96 缩略图时必须回原图，不能把空 key 拼成资源域名根目录。
@@ -221,6 +221,26 @@ assert.equal(isolatedEmbedFor('diablo'), undefined, 'Diablo 不需要 COOP/COEP�
   assert.ok(MIRROR_RACE_ANY_SIZE_PLATFORMS.has('nes'), 'NES 不论大小都测速')
   assert.ok(MIRROR_RACE_ANY_SIZE_PLATFORMS.has('flash'), 'Flash 不论大小都测速')
   assert.ok(!MIRROR_RACE_ANY_SIZE_PLATFORMS.has('psp'), '其它平台仍按大文件门槛')
+
+  const flashRaceOptions = romRouteRaceOptionsFor('flash')
+  assert.deepEqual(flashRaceOptions, { sampleBytes: 64 * 1024, timeoutMs: 1500 }, 'Flash 路由测速要少读样本并限制开局等待')
+  assert.deepEqual(romRouteRaceOptionsFor('arcade'), {}, '其它平台继续沿用原测速策略')
+  const neverCompletes = async (_url, init) => await new Promise((_, reject) => {
+    const abort = () => reject(new Error('aborted'))
+    if (init.signal.aborted) abort()
+    else init.signal.addEventListener('abort', abort, { once: true })
+  })
+  const flashRaceStarted = Date.now()
+  assert.equal(
+    await chooseFasterRomRoute(
+      { url: 'https://assets.example.com/roms/flash/demo.swf', size: 1024 * 1024 },
+      { url: 'https://cn-assets.example.com/roms/flash/demo.swf', size: 1024 * 1024 },
+      { ...flashRaceOptions, fetchImpl: neverCompletes, cacheResults: false, minBytes: 0 },
+    ),
+    'primary',
+    '两个测速源都挂住时安全保留主源',
+  )
+  assert.ok(Date.now() - flashRaceStarted < 2000, 'Flash 双源测速不能超过 1.5 秒预算太多')
 }
 
 /* ---------- 8BG 约定地址：新容器优先，旧对象继续回退 ---------- */

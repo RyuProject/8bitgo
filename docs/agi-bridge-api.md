@@ -37,7 +37,7 @@
 | | AGI1 | AGI2 |
 | --- | --- | --- |
 | 接入的游戏 | Infectonator 2（`infectonator-2`） | Kingdom Rush Frontiers（`kingdom-rushfrontiers`） |
-| 桥文件 | `/flash-api/armor-games/20261104-r01/AGI.swf` | `/flash-api/armor-games/20261104-r01/AGI2.swf` |
+| 桥文件 | `/flash-api/armor-games/20261105-r01/AGI.swf` | `/flash-api/armor-games/20261105-r01/AGI2.swf` |
 | 文档类（**不能改**） | `test_fla.MainTimeline` | `KrfAgiBridge`（包外顶层类） |
 | 源码 | `src/test_fla/MainTimeline.as` | `src-agi2/KrfAgiBridge.as` |
 | 模板 | 借 Ruffle 的开源回归测试 SWF 空壳 | 仓库里的 `template-agi2.swf`（名字的载体） |
@@ -104,7 +104,7 @@ Content-Type: application/json
   "expiresAt": 1789545600000,
   "endpoint": "/api/flash-saves/v1/infectonator-2",
   "protocol": "agi1",
-  "bridgeUrl": "/flash-api/armor-games/20261104-r01/AGI.swf",
+  "bridgeUrl": "/flash-api/armor-games/20261105-r01/AGI.swf",
   "username": "玩家昵称",
   "avatar_url": "/ui/logo-mark.png"
 } }
@@ -460,6 +460,7 @@ POST /api/flash-saves/v1/kingdom-rushfrontiers/delete-slot
 | 游戏里读档拿到 `keys == null` | 桥的兜底应该已经补成 `{}`；出现 null 说明有人把兜底删了 |
 | 出现付费内容 | `keys` 里混进了 `kingdomRushPremiumContentEnabled` 一类的键 —— 检查 `agi2SaveMap` |
 | 桥加载了但游戏取不到实例 | 文档类名被改了（必须是 `KrfAgiBridge`），多半是拿 Ruffle 空壳当模板编的 |
+| 已登录，进主菜单弹「CONNECTION LOST TO THE ARMORGAMES SAVE SYSTEM」，Network 里**没有** `/read` 请求 | 桥在发请求前就抛了，回调收到 `request_failed`。2026-11-05 的根因是桥用了顶层 `JSON`，而 KRF 是 SWF 10（Ruffle 只给 11+ 开放 `JSON`），抛 `#1065`。桥里只能用自带的 `encodeJson / decodeJson`，`test-flash-save-consistency` 会拦 |
 
 ---
 

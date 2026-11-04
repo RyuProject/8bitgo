@@ -31,6 +31,12 @@ package
     *   1. user / storage / content / quests 是**公开属性**，游戏从 Loader.content 上直接取
     *   2. 所有方法都收一个 options 对象，回调是 options.callback（不是第二个参数）
     *   3. storage.user.retrieve 的回调拿到的是 `{success, keys}`，keys 缺省时也要给空对象
+    *
+    * ── 不能用顶层 JSON 类（2026-11-05 线上「CONNECTION LOST TO THE ARMORGAMES SAVE SYSTEM」）──
+    * KRF 主影片是 SWF 10；Ruffle 按根影片版本开放 API，`JSON` 只对 SWF 11+ 存在。桥里任何
+    * `JSON.stringify / JSON.parse` 都会抛 `Error #1065: Variable JSON is not defined`，post() 在
+    * 发请求之前就失败，游戏只看到 success:false 并弹「连接丢失」。所以编解码用下面自带的
+    * encodeJson / decodeJson（按 RFC 8259 实现，只处理普通对象 / 数组 / 字符串 / 数字 / 布尔 / null）。
     */
    public dynamic class KrfAgiBridge extends Sprite
    {
@@ -70,6 +76,13 @@ package
        */
       private var queue:Array;
       private var busy:Boolean = false;
+
+      /** KRF 在 connect({stage}) 里把舞台交给桥：桥不在显示列表上，自己的 stage 是 null */
+      private var connectStage:Object = null;
+
+      /** decodeJson 的游标；解析是同步的，不会重入 */
+      private var jsonText:String = "";
+      private var jsonPos:int = 0;
 
       public function KrfAgiBridge()
       {
@@ -134,6 +147,14 @@ package
       /** options 里可以带 callback；游戏拿它判断「桥起来了没有」 */
       public function connect(options:Object = null) : void
       {
+         try
+         {
+            this.connectStage = options != null && options.stage != null ? options.stage : null;
+         }
+         catch(error:Error)
+         {
+            this.connectStage = null;
+         }
          this.readParameters();
          this.sessionId = this.newSessionId();
          this.opCounter = 0;
@@ -325,8 +346,13 @@ package
 
       /**
        * 合并最外层游戏与桥自身的 LoaderInfo 参数。
-       * Ruffle 的 parameters 在部分加载链路只到主 SWF；桥 URL 上的 query 则只在子桥自身可见。
-       * 两边都读，并让桥 URL 参数优先，才能兼容旧游戏并确保会话参数确实到达 AGI2。
+       *
+       * 主影片的 FlashVars 有三条路能拿到，按顺序取第一条可用的：
+       *   1. 桥自己的 stage.root —— 只有桥被 addChild 到显示列表时才有（新游戏可能这么做）；
+       *   2. connect({stage}) 传进来的舞台的第一个子对象（主影片文档类）—— KRF 就是这样调的，
+       *      桥本身不在显示列表上，自己的 stage 恒为 null（2026-11-05 Ruffle 实测）；
+       *   3. 桥 URL 的 query —— 旧页面 / 不传 stage 的新游戏的兜底，优先级最高，可覆盖同名旧值。
+       * 第 2 条让桥不再依赖第 3 条：以后前端若不再把令牌拼进桥 URL（避免进访问日志 / CDN 缓存键），KRF 照样能连上。
        */
       private function readParameters() : void
       {
@@ -343,6 +369,24 @@ package
          catch(error:Error)
          {
             rootParams = null;
+         }
+         try
+         {
+            if(rootParams == null && this.connectStage != null)
+            {
+               if(this.connectStage.numChildren > 0 && this.connectStage.getChildAt(0).loaderInfo != null)
+               {
+                  rootParams = this.connectStage.getChildAt(0).loaderInfo.parameters;
+               }
+               else if(this.connectStage.loaderInfo != null)
+               {
+                  rootParams = this.connectStage.loaderInfo.parameters;
+               }
+            }
+         }
+         catch(error:Error)
+         {
+            // 跨安全域时取不到主影片参数，退回桥 URL query；不能让 connect 本身抛出。
          }
          try
          {
@@ -733,7 +777,7 @@ package
                {
                   return null;
                }
-               var parsed:Object = JSON.parse(text);
+               var parsed:Object = decodeJson(text) as Object;
                return parsed != null && parsed.success !== undefined ? parsed : null;
             }
             catch(error:Error)
@@ -797,7 +841,7 @@ package
             var request:URLRequest = new URLRequest(this.endpoint + path);
             request.method = URLRequestMethod.POST;
             request.contentType = "application/json";
-            request.data = JSON.stringify(body);
+            request.data = this.encodeJson(body,0);
             timer.start();
             loader.load(request);
          }
@@ -805,6 +849,257 @@ package
          {
             done({"success":false,"error":{"code":"request_failed"}});
          }
+      }
+
+      /* ---------------- JSON 编解码（SWF 10 宿主里没有顶层 JSON，见类注释） ---------------- */
+
+      /**
+       * 与 JSON.stringify 对普通数据的输出一致：undefined / 函数的属性跳过、在数组里变 null，
+       * NaN / Infinity 变 null。深度超过 64 直接抛出（循环引用），由 post() 报 request_failed。
+       */
+      private function encodeJson(value:*, depth:int) : String
+      {
+         var parts:Array = null;
+         var i:int = 0;
+         if(depth > 64) throw new Error("JSON 嵌套过深或存在循环引用");
+         if(value === null || value === undefined) return "null";
+         if(value is String) return this.quoteJson(String(value));
+         if(value is Boolean) return value ? "true" : "false";
+         if(value is Number)
+         {
+            var number:Number = Number(value);
+            return isFinite(number) ? String(number) : "null";
+         }
+         if(value is Function) return "null";
+         if(value is Date) return this.quoteJson(String(value));
+         parts = [];
+         if(value is Array)
+         {
+            var list:Array = value as Array;
+            for(i = 0; i < list.length; i++)
+            {
+               var item:* = list[i];
+               parts.push(item === undefined || item is Function ? "null" : this.encodeJson(item,depth + 1));
+            }
+            return "[" + parts.join(",") + "]";
+         }
+         for(var key:String in value)
+         {
+            var field:* = value[key];
+            if(field === undefined || field is Function) continue;
+            parts.push(this.quoteJson(key) + ":" + this.encodeJson(field,depth + 1));
+         }
+         return "{" + parts.join(",") + "}";
+      }
+
+      private function quoteJson(value:String) : String
+      {
+         var out:Array = null;
+         var start:int = 0;
+         var length:int = value.length;
+         for(var i:int = 0; i < length; i++)
+         {
+            var code:Number = value.charCodeAt(i);
+            var escaped:String = null;
+            if(code == 34) escaped = "\\\"";
+            else if(code == 92) escaped = "\\\\";
+            else if(code < 32 || code == 0x2028 || code == 0x2029)
+            {
+               if(code == 10) escaped = "\\n";
+               else if(code == 13) escaped = "\\r";
+               else if(code == 9) escaped = "\\t";
+               else
+               {
+                  var hex:String = code.toString(16);
+                  while(hex.length < 4) hex = "0" + hex;
+                  escaped = "\\u" + hex;
+               }
+            }
+            if(escaped != null)
+            {
+               if(out == null) out = [];
+               if(i > start) out.push(value.substring(start,i));
+               out.push(escaped);
+               start = i + 1;
+            }
+         }
+         if(out == null) return "\"" + value + "\"";
+         if(start < length) out.push(value.substring(start));
+         return "\"" + out.join("") + "\"";
+      }
+
+      /** 严格解析（RFC 8259）；格式不对就抛，parseBody 会把它当成 bad_response。 */
+      private function decodeJson(text:String) : *
+      {
+         this.jsonText = text;
+         this.jsonPos = 0;
+         try
+         {
+            var value:* = this.jsonValue(0);
+            this.jsonSkip();
+            if(this.jsonPos != this.jsonText.length) throw new Error("JSON 末尾有多余内容");
+            return value;
+         }
+         finally
+         {
+            this.jsonText = "";
+            this.jsonPos = 0;
+         }
+         return null;
+      }
+
+      private function jsonSkip() : void
+      {
+         var length:int = this.jsonText.length;
+         while(this.jsonPos < length)
+         {
+            var code:Number = this.jsonText.charCodeAt(this.jsonPos);
+            if(code != 32 && code != 9 && code != 10 && code != 13) return;
+            this.jsonPos++;
+         }
+      }
+
+      private function jsonValue(depth:int) : *
+      {
+         if(depth > 64) throw new Error("JSON 嵌套过深");
+         this.jsonSkip();
+         if(this.jsonPos >= this.jsonText.length) throw new Error("JSON 提前结束");
+         var code:Number = this.jsonText.charCodeAt(this.jsonPos);
+         if(code == 123) return this.jsonObject(depth);
+         if(code == 91) return this.jsonArray(depth);
+         if(code == 34) return this.jsonString();
+         if(this.jsonText.substr(this.jsonPos,4) == "true")
+         {
+            this.jsonPos += 4;
+            return true;
+         }
+         if(this.jsonText.substr(this.jsonPos,5) == "false")
+         {
+            this.jsonPos += 5;
+            return false;
+         }
+         if(this.jsonText.substr(this.jsonPos,4) == "null")
+         {
+            this.jsonPos += 4;
+            return null;
+         }
+         return this.jsonNumber();
+      }
+
+      private function jsonObject(depth:int) : Object
+      {
+         var result:Object = {};
+         this.jsonPos++;
+         this.jsonSkip();
+         if(this.jsonText.charCodeAt(this.jsonPos) == 125)
+         {
+            this.jsonPos++;
+            return result;
+         }
+         while(true)
+         {
+            this.jsonSkip();
+            if(this.jsonText.charCodeAt(this.jsonPos) != 34) throw new Error("JSON 对象键必须是字符串");
+            var key:String = this.jsonString();
+            this.jsonSkip();
+            if(this.jsonText.charCodeAt(this.jsonPos) != 58) throw new Error("JSON 缺少冒号");
+            this.jsonPos++;
+            result[key] = this.jsonValue(depth + 1);
+            this.jsonSkip();
+            var next:Number = this.jsonText.charCodeAt(this.jsonPos);
+            this.jsonPos++;
+            if(next == 125) return result;
+            if(next != 44) throw new Error("JSON 对象分隔符错误");
+         }
+         return result;
+      }
+
+      private function jsonArray(depth:int) : Array
+      {
+         var result:Array = [];
+         this.jsonPos++;
+         this.jsonSkip();
+         if(this.jsonText.charCodeAt(this.jsonPos) == 93)
+         {
+            this.jsonPos++;
+            return result;
+         }
+         while(true)
+         {
+            result.push(this.jsonValue(depth + 1));
+            this.jsonSkip();
+            var next:Number = this.jsonText.charCodeAt(this.jsonPos);
+            this.jsonPos++;
+            if(next == 93) return result;
+            if(next != 44) throw new Error("JSON 数组分隔符错误");
+         }
+         return result;
+      }
+
+      private function jsonString() : String
+      {
+         var text:String = this.jsonText;
+         var length:int = text.length;
+         var out:Array = null;
+         var start:int = ++this.jsonPos;
+         while(true)
+         {
+            if(this.jsonPos >= length) throw new Error("JSON 字符串没有结束");
+            var code:Number = text.charCodeAt(this.jsonPos);
+            if(code == 34)
+            {
+               var tail:String = text.substring(start,this.jsonPos);
+               this.jsonPos++;
+               if(out == null) return tail;
+               out.push(tail);
+               return out.join("");
+            }
+            if(code == 92)
+            {
+               if(out == null) out = [];
+               out.push(text.substring(start,this.jsonPos));
+               var escape:Number = text.charCodeAt(this.jsonPos + 1);
+               this.jsonPos += 2;
+               if(escape == 34) out.push("\"");
+               else if(escape == 92) out.push("\\");
+               else if(escape == 47) out.push("/");
+               else if(escape == 98) out.push(String.fromCharCode(8));
+               else if(escape == 102) out.push(String.fromCharCode(12));
+               else if(escape == 110) out.push("\n");
+               else if(escape == 114) out.push("\r");
+               else if(escape == 116) out.push("\t");
+               else if(escape == 117)
+               {
+                  var hex:String = text.substr(this.jsonPos,4);
+                  if(!/^[0-9A-Fa-f]{4}$/.test(hex)) throw new Error("JSON \\u 转义不完整");
+                  out.push(String.fromCharCode(parseInt(hex,16)));
+                  this.jsonPos += 4;
+               }
+               else throw new Error("JSON 未知转义");
+               start = this.jsonPos;
+               continue;
+            }
+            if(code < 32) throw new Error("JSON 字符串里有未转义的控制字符");
+            this.jsonPos++;
+         }
+         return "";
+      }
+
+      private function jsonNumber() : Number
+      {
+         var text:String = this.jsonText;
+         var start:int = this.jsonPos;
+         var length:int = text.length;
+         while(this.jsonPos < length)
+         {
+            var code:Number = text.charCodeAt(this.jsonPos);
+            // - + . 0-9 e E
+            if(code == 45 || code == 43 || code == 46 || (code >= 48 && code <= 57) || code == 101 || code == 69) this.jsonPos++;
+            else break;
+         }
+         var raw:String = text.substring(start,this.jsonPos);
+         if(!/^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$/.test(raw)) throw new Error("JSON 数字格式错误");
+         return Number(raw);
       }
 
       private function callOnce(callback:Function, value:Object) : void

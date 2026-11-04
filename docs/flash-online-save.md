@@ -65,7 +65,7 @@ Content-Type: application/json
     "expiresAt": 1789545600000,
     "endpoint": "/api/flash-saves/v1/infectonator-2",
     "username": "玩家昵称",
-    "bridgeUrl": "/flash-api/armor-games/20261104-r01/AGI.swf",
+    "bridgeUrl": "/flash-api/armor-games/20261105-r01/AGI.swf",
     "avatar_url": "/ui/logo-mark.png"
   }
 }
@@ -114,11 +114,11 @@ Content-Type: application/json
   urlRewriteRules: [
     [
       'http://agi.armorgames.com/assets/agi/AGI.swf',
-      'https://8bitgo.com/flash-api/armor-games/20261104-r01/AGI.swf',
+      'https://8bitgo.com/flash-api/armor-games/20261105-r01/AGI.swf',
     ],
     [
       'https://agi.armorgames.com/assets/agi/AGI.swf',
-      'https://8bitgo.com/flash-api/armor-games/20261104-r01/AGI.swf',
+      'https://8bitgo.com/flash-api/armor-games/20261105-r01/AGI.swf',
     ],
   ],
 }
@@ -470,7 +470,7 @@ Infectonator 2 的 AGI1 是两套完全不同的外部接口，所以桥、存�
   "sessionToken": "eyJ...", "expiresAt": 1789545600000,
   "endpoint": "/api/flash-saves/v1/kingdom-rushfrontiers",
   "protocol": "agi2",
-  "bridgeUrl": "/flash-api/armor-games/20261104-r01/AGI2.swf",
+  "bridgeUrl": "/flash-api/armor-games/20261105-r01/AGI2.swf",
   "username": "玩家昵称", "avatar_url": "/ui/logo-mark.png"
 } }
 ```
@@ -596,7 +596,7 @@ quests.submit(options)                       // { success:true, quest:{ progress
 `src/services/flashOnlineSave.ts` 不再自己维护桥表，改为读 **`shared/flash-save-games.js`**
 （前后端唯一一份「游戏 → 方言 → 桥文件名」映射）：
 
-- `kingdom-rushfrontiers → agi2 → /flash-api/armor-games/20261104-r01/AGI2.swf`；
+- `kingdom-rushfrontiers → agi2 → /flash-api/armor-games/20261105-r01/AGI2.swf`；
 - `urlRewriteRules` 按桥文件名生成，只改写这款游戏真正会加载的那一代
   （保留旧 `20260925-r03` 与未版本化本站路径、以及 `agi.armorgames.com` 原地址作为来源，
   统一改写到当前不可变版本并附带 FlashVars；升级桥不要求重新打包游戏 SWF）。

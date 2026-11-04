@@ -1140,6 +1140,16 @@ AGI1 的 `gameKey` 也配在同一条目的 `agiGameKey`，页面通过 FlashVar
 两代桥都已带 `opId` + `expectedRevision`、读前等写（上限 3 秒）；
 删除也要同步服务端返回的新代次，否则删档后第一次保存会撞 `stale_write`。
 
+⚠️ **桥里禁止用顶层 `JSON` 类**（2026-11-05《王国保卫战：前线》「CONNECTION LOST TO THE ARMORGAMES SAVE SYSTEM」）。
+Ruffle 按**根影片**的 SWF 版本开放 API：KRF 是 SWF 10，`JSON` 只给 SWF 11+，桥里一调
+`JSON.stringify` 就抛 `#1065 Variable JSON is not defined`，请求根本没发出去。AGI2 现在用自带的
+`encodeJson / decodeJson`；以后接新游戏前先看主 SWF 第 4 字节（版本号），< 11 的游戏不能用
+依赖 `JSON` 的桥（当前 AGI1 的 Infectonator 2 是 v11、SAS3 是 v14，暂时安全）。
+另外桥是 Loader 加载的子影片，`stage` 恒为 null：AGI2 从 `connect({stage})` 的
+`stage.getChildAt(0).loaderInfo.parameters` 取主影片 FlashVars，桥 URL query 只是兜底。
+改桥必须提升 `FLASH_SAVE_BRIDGE_RELEASE` 发新目录（旧目录保留，Cloudflare 缓存 SWF），
+只重编一代时把另一代的 SWF 原样复制进新目录。
+
 - **接口参考手册**（两代逐方法、逐字段、错误码、限额、排查线索）：`docs/agi-bridge-api.md`
 - **设计文档**（为什么分两套、令牌模型、R01/R02 并发问题的来龙去脉、验收清单）：`docs/flash-online-save.md`
 
