@@ -17,7 +17,7 @@ import { coverBaseUrl, publicSiteUrl } from './site-urls.js'
 import { requestHostname } from './url-normalize.js'
 import { tvRenderPath } from '../../shared/tv-host.js'
 import { CN_SITE_HEADER, isCnRequest } from '../../shared/cn-host.js'
-import { COVER_CDN_META, coverCdnHint } from '../../shared/cover-cdn-hint.js'
+import { COVER_CDN_META, cnEdgeOrigin, coverCdnHint, retargetStaticToCnEdge } from '../../shared/cover-cdn-hint.js'
 import { isolatedRuntimeRoute } from '../../shared/isolated-runtime-platforms.js'
 
 const root = path.resolve(fileURLToPath(new URL('../..', import.meta.url)))
@@ -286,6 +286,8 @@ export async function renderPage(req, res, next) {
     const { html, head, lang, notFound, coverBase } = await render({ url, data, tvHost, cnSite, coverHint })
 
     let page = retargetCoverHints(getTemplate(), originOf(coverBaseUrl()), originOf(coverBase))
+    // 8bitgo.com 上的大陆访客：JS / CSS / 字体也从 EdgeOne 取（cn-edge.js）；大陆入口本身已经同源
+    if (coverHint === 'cn' && !cnSite) page = retargetStaticToCnEdge(page, cnEdgeOrigin(publicSiteUrl()))
     // 只给 200 页面发：Cloudflare 只从 200 HTML 学 Link，404 页带着也白带
     const earlyHints = notFound ? '' : earlyHintsFor(page)
 

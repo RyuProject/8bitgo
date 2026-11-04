@@ -21,6 +21,7 @@
  *     对应后端 .env 里的 ADMIN_TOKEN；没设时退回用当前用户的 JWT（该用户需为 admin）。
  */
 import { getT, fmt } from './i18n'
+import { cnEdgeApiBase, markCnEdgeApiFailed } from './cnHost'
 
 const RAW_API_URL = (import.meta.env.VITE_API_URL || '').trim()
 /** same-origin / 单个斜杠：走相对路径，同一个域名下的 /api/… */
@@ -123,7 +124,7 @@ async function request<T>(
   { body, admin = false, signal }: ReqOptions = {},
   skipAdminToken = false,
 ): Promise<T> {
-  const res = await fetch(`${API_URL}${path}`, {
+  const init: RequestInit = {
     method,
     headers: {
       // 整个 API 都是 JSON；显式声明让 /api/oauth/authorize 这类按 Accept 分流的端点回 JSON 而不是 HTML
@@ -133,7 +134,27 @@ async function request<T>(
     },
     body: body !== undefined ? JSON.stringify(body) : undefined,
     signal,
-  })
+  }
+  /*
+    8bitgo.com 上的大陆访客：只读请求走 EdgeOne 香港（见 cnHost.ts 的 cnEdgeApiBase）。
+    写操作留在同源 —— 频率低，且不值得让它们多一种失败方式。
+    加速入口网络出错（不是 HTTP 错误码）就本次会话退回同源，并立刻用同源重发这一次。
+  */
+  const edgeBase = SAME_ORIGIN && method === 'GET' && !admin ? cnEdgeApiBase() : ''
+  let res: Response
+  if (edgeBase) {
+    try {
+      res = await fetch(`${edgeBase}${path}`, init)
+      // 加速入口自己的网关错误（回不到源站）：GET 幂等，直接同源再试一次
+      if (res.status >= 502 && res.status <= 504) res = await fetch(`${API_URL}${path}`, init)
+    } catch (err) {
+      if (signal?.aborted) throw err
+      markCnEdgeApiFailed()
+      res = await fetch(`${API_URL}${path}`, init)
+    }
+  } else {
+    res = await fetch(`${API_URL}${path}`, init)
+  }
   const text = await res.text()
   // 网关的 502 页面、被静态服务器兜底成 index.html 的 /api 请求，返回的都是 HTML。
   // 以前在这里直接 JSON.parse，用户看到的报错是「Unexpected token '<'」，

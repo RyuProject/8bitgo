@@ -61,3 +61,53 @@ export function stripCoverCdnQuery(rawUrl) {
   if (kept.length === query.split('&').filter(Boolean).length) return { url, value: '' }
   return { url: url.slice(0, cut) + (kept.length ? `?${kept.join('&')}` : '') + hash, value }
 }
+
+/*
+ * ── 大陆访客在 8bitgo.com 上：整页静态与只读 API 也走 EdgeOne（2026-11-04）──
+ *
+ * 同一份「大陆页面」缓存里，SSR 把 /assets/、/fonts/ 改指 `https://cn.<裸域>/_cn/...`，
+ * 客户端的只读 API 请求也改走 `https://cn.<裸域>/_cn/api/...`。地址栏仍是 8bitgo.com，
+ * 只剩 HTML 本身（已在 Cloudflare 边缘缓存）还要去洛杉矶。
+ *
+ * 为什么多一层 `/_cn` 前缀而不是直接用 cn.<裸域>/assets/：EdgeOne 早就缓存过大陆入口自己
+ * 请求的 /assets/*（同源请求，没有 Access-Control-Allow-Origin），而它的缓存键不看 Origin、
+ * 我们又没有清 EdgeOne 缓存的通道。跨域的模块脚本 / 字体拿到那份就会被浏览器拦下。
+ * 换一个路径前缀就是一组全新的缓存键，源站对这组路径总是带上 CORS 头。
+ */
+export const CN_EDGE_PREFIX = '/_cn'
+
+/** 由站点地址推出大陆加速入口的根（`https://8bitgo.com` → `https://cn.8bitgo.com`） */
+export function cnEdgeOrigin(siteUrl) {
+  try {
+    const { protocol, hostname } = new URL(String(siteUrl || ''))
+    if (!hostname || hostname === 'localhost' || /^[\d.]+$/.test(hostname)) return ''
+    return `${protocol}//cn.${hostname.replace(/^www\./, '')}`
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * 把 HTML 模板里的 /assets/、/fonts/ 引用改指大陆加速入口。
+ * 入口脚本和样式表加 onerror：EdgeOne 出故障时退回同源，页面不至于没有 JS / 样式。
+ */
+export function retargetStaticToCnEdge(html, edgeOrigin) {
+  if (!edgeOrigin) return html
+  const base = `${edgeOrigin}${CN_EDGE_PREFIX}`
+  const back = `this.onerror=null;`
+  let out = html.replace(/(\s(?:src|href|data-src))="\/(assets|fonts)\//g, `$1="${base}/$2/`)
+  out = out.replace(
+    /<script type="module" crossorigin src="([^"]+)"><\/script>/,
+    (tag, src) =>
+      src.startsWith(base)
+        ? `<script type="module" crossorigin src="${src}" onerror="${back}var s=document.createElement('script');s.type='module';s.crossOrigin='';s.src='${src.slice(base.length)}';document.head.appendChild(s)"></script>`
+        : tag,
+  )
+  out = out.replace(/<link rel="stylesheet"([^>]*?) href="([^"]+)"([^>]*)>/g, (tag, pre, href, post) =>
+    href.startsWith(base)
+      ? `<link rel="stylesheet"${pre} href="${href}"${post.replace(/\s*\/$/, '')} onerror="${back}this.href='${href.slice(base.length)}'">`
+      : tag,
+  )
+  // 尽早和加速入口握手（放在 head 最前面，排在 Cloudflare 的 Early Hints 之后也不亏）
+  return out.replace(/<head>/, `<head>\n<link rel="preconnect" href="${edgeOrigin}" crossorigin>`)
+}

@@ -305,6 +305,18 @@ export default defineConfig(({ mode }) => {
       { find: '@', replacement: path.resolve(import.meta.dirname, './src') },
     ],
   },
+  experimental: {
+    /*
+      JS / CSS 里引用的构建产物一律按「相对引用它的文件」解析，HTML 仍用 /assets/ 绝对路径。
+      为的是 8bitgo.com 上的大陆访客（server/src/cn-edge.js）：入口脚本从 cn.<裸域>/_cn/assets/
+      加载后，懒加载 chunk 及其 modulepreload 也跟着从同一处取。默认的 base + dep 会把预加载
+      解析回页面域名 8bitgo.com，同一个 chunk 就被下两遍（预加载走洛杉矶、import 走 EdgeOne）。
+      对普通访客结果不变：相对 /assets/x.js 解析出来还是 /assets/。
+    */
+    renderBuiltUrl(_filename: string, { hostType }: { hostType: 'js' | 'css' | 'html' }) {
+      return hostType === 'html' ? undefined : { relative: true }
+    },
+  },
   build: {
     outDir: 'dist/client',
     cssTarget: LEGACY_CSS_TARGETS,

@@ -1,5 +1,5 @@
 import { isCnHost } from '../../shared/cn-host.js'
-import { COVER_CDN_META } from '../../shared/cover-cdn-hint.js'
+import { CN_EDGE_PREFIX, COVER_CDN_META, cnEdgeOrigin } from '../../shared/cover-cdn-hint.js'
 
 /**
  * 「这次渲染是不是在大陆入口 cn.8bitgo.com 上」的唯一判定入口。
@@ -51,4 +51,20 @@ export function coverCdnHint(): CoverCdnHint {
 export function onCnSite(): boolean {
   if (typeof window === 'undefined') return ssrCnSite
   return SITE_HOST ? isCnHost(window.location.hostname, SITE_HOST) : false
+}
+
+/**
+ * 8bitgo.com 上的大陆访客：只读 API 改走 EdgeOne 的 `https://cn.<裸域>/_cn`（server/src/cn-edge.js）。
+ * 大陆入口本身、非大陆访客、本地开发都返回空串（照旧同源）。
+ * 这次会话里加速入口出过网络错误就不再用它（edgeApiFailed）。
+ */
+let edgeApiFailed = false
+export function cnEdgeApiBase(): string {
+  if (typeof window === 'undefined' || edgeApiFailed) return ''
+  if (onCnSite() || coverCdnHint() !== 'cn') return ''
+  const origin = cnEdgeOrigin(import.meta.env.VITE_SITE_URL ?? '')
+  return origin && origin !== window.location.origin ? `${origin}${CN_EDGE_PREFIX}` : ''
+}
+export function markCnEdgeApiFailed() {
+  edgeApiFailed = true
 }

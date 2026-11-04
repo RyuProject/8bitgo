@@ -2804,6 +2804,17 @@ EdgeOne 只能用境外（香港）节点。主站、ROM、Pages 子域都不受
   主域是 `image.8bitgo.com`，大陆加速域 `image-cn.8bitgo.com`（EdgeOne 回源主域）；`/cdn-cgi/image/` 缩放
   照样回源给 Cloudflare 做，但大陆域固定 `format=webp`：EdgeOne 缓存键不看 Accept，`format=auto` 会把
   第一个访客拿到的 AVIF 发给不认 AVIF 的浏览器。回归：`npm run test:cover-cdn`。
+- **8bitgo.com 上的大陆访客，JS / CSS / 字体 / 只读 API 也走 EdgeOne**（2026-11-04，`server/src/cn-edge.js`）：
+  同一份「大陆页面」缓存里，SSR 把模板的 `/assets/`、`/fonts/` 改指 `https://cn.8bitgo.com/_cn/...`；
+  `api.ts` 的非后台 GET 走 `https://cn.8bitgo.com/_cn/api/...`。地址栏不变，只剩 HTML 本身还去 Cloudflare。
+  - ⚠️ 必须带 `/_cn` 前缀：EdgeOne 已缓存过大陆入口同源请求的 `/assets/*`（**没有** CORS 头），缓存键不看 Origin，
+    我们又清不了 EdgeOne。换前缀等于一组新缓存键，源站对它固定发 `Access-Control-Allow-Origin: https://8bitgo.com`
+    和 CORP。同理 CSS 里写死的 `url(/fonts/...)` 由 cn-edge.js 现场改成 `/_cn/fonts/`。
+  - ⚠️ `vite.config.ts` 的 `renderBuiltUrl` 让 JS / CSS 里的产物引用相对引用方解析；去掉它，懒加载 chunk 的
+    modulepreload 会解析回 8bitgo.com，同一个 chunk 被下两遍。
+  - 兜底：入口脚本 / 样式表 `onerror` 退回同源；API 网络错误或 502–504 退回同源，网络错误后本次会话不再走加速入口。
+    写操作、后台请求、socket.io、SSE、OAuth 跳转都留在同源。
+  - 回归：`cd server && npm run test:cn-edge`。
 - ⚠️ 加速域名**不能带下划线**（`image_cn` 这种）：公共 CA 不为含 `_` 的主机名签证书，HTTPS 永远起不来。
 - 两个域名的本地存档、IndexedDB 和登录态互不相通（按 origin 隔离），云存档不受影响。
 

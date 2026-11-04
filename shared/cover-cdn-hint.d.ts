@@ -6,3 +6,6 @@ export function coverCdnHint(input?: {
   country?: string | string[]
 }): 'cn' | 'main' | ''
 export function stripCoverCdnQuery(rawUrl: string): { url: string; value: string }
+export const CN_EDGE_PREFIX: string
+export function cnEdgeOrigin(siteUrl: string): string
+export function retargetStaticToCnEdge(html: string, edgeOrigin: string): string

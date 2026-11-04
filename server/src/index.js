@@ -8,6 +8,7 @@ import { ping } from './db.js'
 import { ssrAvailable, renderPage, CLIENT_DIR } from './ssr.js'
 import { normalizeUrl } from './url-normalize.js'
 import { stripCoverCdnQuery } from '../../shared/cover-cdn-hint.js'
+import { createCnEdgeMiddleware } from './cn-edge.js'
 import { tvRobots } from './tv-robots.js'
 import { playShell } from './routes/play.js'
 import { j2meJarProxy, uploadGate, uploadJar, releaseJar, keepaliveJar, startSweeper, MAX_BYTES, TTL_MS } from './j2me.js'
@@ -79,6 +80,14 @@ import { createNdsWfcService } from './nds-wfc.js'
 import { systemImageProxy } from './system-images.js'
 
 const app = express()
+
+function originOfSite() {
+  try {
+    return new URL(publicSiteUrl()).origin
+  } catch {
+    return ''
+  }
+}
 app.disable('x-powered-by')
 
 /**
@@ -114,6 +123,8 @@ app.use(
     origin: origins.includes('*') ? true : origins,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
+    // 大陆访客的只读 API 经 cn.<裸域> 跨域（cn-edge.js），带登录令牌的请求每次都要预检；缓存两小时
+    maxAge: 7200,
     /**
      * 跨域时浏览器默认只把七个「安全」响应头交给 JS，自定义头一律读不到 ——
      * res.headers.get('x-save-updated-at') 会返回 null，而且不报任何错。
@@ -135,6 +146,10 @@ app.use((req, res, next) => {
   if (req.url?.startsWith('/socket.io/')) return next()
   return gzipResponse(req, res, next)
 })
+
+// 大陆访客在 8bitgo.com 上从 EdgeOne 取静态与只读 API 的入口（见 cn-edge.js）。
+// 放在所有路由之前：它只剥掉 /_cn 前缀、补 CORS 头，后面照常由静态 / API 路由处理。
+app.use(createCnEdgeMiddleware({ clientDir: CLIENT_DIR, siteOrigin: originOfSite() }))
 
 app.use(express.json({ limit: '4mb' }))
 
