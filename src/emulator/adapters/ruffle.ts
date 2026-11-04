@@ -28,7 +28,16 @@ import {
   prepareFlashOnlineSave,
 } from '@/services/flashOnlineSave'
 import { prepareSfsRuffleConfig } from '@/services/sfs'
-import { installRufflePixelRatioCap, RUFFLE_FIXED_QUALITY } from '../rufflePerformance'
+import {
+  createRuffleAdaptiveController,
+  installRuffleFrameTelemetry,
+  installRufflePixelRatioController,
+  selectRufflePerformanceProfile,
+  type RuffleAdaptiveController,
+  type RuffleFrameTelemetry,
+  type RufflePerformanceProfile,
+  type RufflePixelRatioController,
+} from '../rufflePerformance'
 import { ruffleStageRenderPlan, ruffleStageSize } from '../ruffleStageFit'
 import { isRuffleFrameReady } from '../ruffleFrame'
 import { flashCompatibilityIssue } from '../flashCompatibility'
@@ -111,6 +120,7 @@ interface RufflePlayerApi {
   pause?: () => void
   suspend?: () => void
   isPlaying?: boolean
+  suspended?: boolean
   volume?: number
 }
 /** 新版通过 player.ruffle() 取 API，旧版直接在元素上调用 load() */
@@ -240,6 +250,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   /** 播放器元素与它的 API 门面（两者都可能带 volume / pause） */
   let player: RufflePlayerElement | null = null
   let api: RufflePlayerApi | null = null
+  let performanceProfile: RufflePerformanceProfile | null = null
+  let performanceTelemetry: RuffleFrameTelemetry | null = null
+  let pixelRatioController: RufflePixelRatioController | null = null
+  let adaptivePerformance: RuffleAdaptiveController | null = null
+  let adaptivePerformanceTimer = 0
   let volume = 1
 
   /**
@@ -566,7 +581,19 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       装的是**这个 iframe 自己的 realm**，不碰父页面，销毁时跟着 iframe 一起没。
       拿不到就是拿不到 —— captureSources 那边照旧只给画面，和以前一样是静音，不会更糟。
     */
-    installRufflePixelRatioCap(win)
+    const device = win.navigator as Navigator & { deviceMemory?: number }
+    performanceProfile = selectRufflePerformanceProfile({
+      deviceMemory: device.deviceMemory,
+      hardwareConcurrency: device.hardwareConcurrency,
+      devicePixelRatio: win.devicePixelRatio,
+      maxTouchPoints: device.maxTouchPoints,
+    })
+    pixelRatioController = installRufflePixelRatioController(win, performanceProfile.maxPixelRatio)
+    performanceTelemetry = installRuffleFrameTelemetry(win)
+    console.debug(`[ruffle] ${performanceProfile.tier} performance profile`, {
+      maxPixelRatio: performanceProfile.maxPixelRatio,
+      frameTelemetry: Boolean(performanceTelemetry),
+    })
     audioTap = installAudioTap(win as unknown as Window & Record<string, unknown>)
     // 同样要赶在 ruffle.js 之前：Ruffle 建实例时取一次 window.localStorage。scope 在拿到 SWF 后才填。
     storageScoped = installFlashStorageScope(win, () => storageScope)
@@ -693,9 +720,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           // Ruffle 自己的 none 模式无法在“开播后”动态恢复后台执行，所以由上面的
           // visibilitychange 精确控制：无人观看时暂停，有直播观众时继续出帧。
           backgroundExecutionMode: 'mainThread',
-          // 统一固定为「均衡」，不读取设备或用户旧设置，避免同一游戏在不同入口画质漂移。
-          // 高分屏开销由 DPR 钳制处理；不碰 frameRate / preferredRenderer，避免改变时间轴或兼容性。
-          quality: RUFFLE_FIXED_QUALITY,
+          // Flash Stage.quality 在 Ruffle 中目前只保存数值、不改变渲染；性能档由 iframe 像素比控制。
+          // 不修改游戏逻辑帧率、播放器后端或正在运行的游戏状态。
           /**
            * ⚠️ 千万别在这里填颜色。
            *
@@ -785,6 +811,29 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           waitForRuffleMetadata(player, aborter.signal),
         ])
         if (destroyed) return
+        if (performanceTelemetry && pixelRatioController?.supported && performanceProfile) {
+          // 加载动画、SWF 解码和首屏建纹理不代表稳定游玩负载；从可交互时刻重新开采样窗。
+          performanceTelemetry.discard()
+          adaptivePerformance = createRuffleAdaptiveController({
+            telemetry: performanceTelemetry,
+            pixelRatio: pixelRatioController,
+            initialTier: performanceProfile.tier,
+            frameRate: Number((player.metadata as { frameRate?: unknown } | null)?.frameRate),
+            onChange: ({ tier, pixelRatio, reason }) => {
+              console.info(`[ruffle] automatic render scale ${tier} (${pixelRatio.toFixed(2)}×; ${reason})`)
+            },
+          })
+          // 用播放器所在的主 window 创建定时器，销毁时由同一个全局清理，避免跨 iframe 清理失败。
+          adaptivePerformanceTimer = window.setInterval(() => {
+            if (destroyed) return
+            if (document.hidden || manuallyPaused || visibilityPaused || api?.isPlaying === false || api?.suspended === true) {
+              if (adaptivePerformance) adaptivePerformance.discard()
+              else performanceTelemetry?.discard()
+              return
+            }
+            adaptivePerformance?.sample()
+          }, 3000)
+        }
         // 默认修复固定舞台 SWF 的左上角缩放；少数依赖 Ruffle 原始整框布局的游戏可在后台逐款退回。
         if (host && stage && fitStage) {
           cancelStageFit()
@@ -1056,6 +1105,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       cancelFocusRetry()
       if (canvasCapsTimer) window.clearTimeout(canvasCapsTimer)
       canvasCapsTimer = 0
+      if (adaptivePerformanceTimer) window.clearInterval(adaptivePerformanceTimer)
+      adaptivePerformanceTimer = 0
+      adaptivePerformance?.stop()
+      performanceTelemetry?.stop()
+      adaptivePerformance = null
+      performanceTelemetry = null
+      pixelRatioController = null
       if (frameInitTimer) window.clearTimeout(frameInitTimer)
       frameInitTimer = 0
       aborter.abort()

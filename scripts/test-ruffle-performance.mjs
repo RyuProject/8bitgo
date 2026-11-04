@@ -1,12 +1,16 @@
-/** Ruffle 固定均衡档、启动并行、像素降载和大核心预热回归。 */
+/** Ruffle 设备画质分档、启动并行、像素降载和大核心预热回归。 */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
+  createRuffleAdaptiveController,
+  installRuffleFrameTelemetry,
   installRufflePixelRatioCap,
-  RUFFLE_FIXED_QUALITY,
+  installRufflePixelRatioController,
+  RUFFLE_ADAPTIVE_PIXEL_RATIOS,
   RUFFLE_RENDER_PIXEL_RATIO,
+  selectRufflePerformanceProfile,
   supportsRuffleWasmExtensions,
 } from '../src/emulator/rufflePerformance.ts'
 import { RUFFLE_MAX_RENDER_AREA, ruffleStageRenderPlan, ruffleStageScale, ruffleStageSize } from '../src/emulator/ruffleStageFit.ts'
@@ -21,6 +25,21 @@ const read = (path) => readFileSync(join(root, path), 'utf8')
 const { version: RUFFLE_VERSION } = JSON.parse(read('node_modules/@ruffle-rs/ruffle/package.json'))
 
 console.log('── 高分屏清晰度与抗锯齿平衡 ──')
+assert.deepEqual(selectRufflePerformanceProfile({ deviceMemory: 8, hardwareConcurrency: 8, devicePixelRatio: 2 }), {
+  tier: 'full', maxPixelRatio: 1.25,
+})
+assert.deepEqual(selectRufflePerformanceProfile({ deviceMemory: 4, hardwareConcurrency: 4, devicePixelRatio: 2 }), {
+  tier: 'balanced', maxPixelRatio: 1,
+}, '中低配置应降抗锯齿和渲染像素数')
+assert.deepEqual(selectRufflePerformanceProfile({ deviceMemory: 2, hardwareConcurrency: 8 }), {
+  tier: 'economy', maxPixelRatio: 0.8,
+}, '极低内存设备应优先保证可玩性')
+assert.deepEqual(selectRufflePerformanceProfile({}), {
+  tier: 'balanced', maxPixelRatio: 1,
+}, '浏览器隐藏硬件信息时应保守选择均衡档')
+assert.deepEqual(selectRufflePerformanceProfile({ deviceMemory: 8, hardwareConcurrency: 8, devicePixelRatio: 3, maxTouchPoints: 5 }), {
+  tier: 'balanced', maxPixelRatio: 1,
+}, '高 DPR 触屏设备应降低过量像素填充')
 const retina = { devicePixelRatio: 2 }
 assert.equal(RUFFLE_RENDER_PIXEL_RATIO, 1.25, '画布上限必须给高抗锯齿保留性能余量')
 assert.equal(installRufflePixelRatioCap(retina), 1.25)
@@ -29,11 +48,206 @@ const middle = { devicePixelRatio: 1.2 }
 assert.equal(installRufflePixelRatioCap(middle), 1.2, '低于上限的屏幕必须保留原生像素倍率')
 const regular = { devicePixelRatio: 1 }
 assert.equal(installRufflePixelRatioCap(regular), 1)
+const economy = { devicePixelRatio: 2 }
+assert.equal(installRufflePixelRatioCap(economy, 1), 1, '低配置档必须将 DPR 限在 1×')
 const highDensity = { devicePixelRatio: 3 }
 assert.equal(installRufflePixelRatioCap(highDensity), 1.25, '超高分屏也不能绕过像素上限')
 const locked = {}
 Object.defineProperty(locked, 'devicePixelRatio', { configurable: false, value: 2 })
 assert.equal(installRufflePixelRatioCap(locked), 2, '浏览器拒绝覆盖时必须安全退回原值')
+const unreadableDpr = Object.create({ get devicePixelRatio() { throw new Error('detached iframe') } })
+const unreadableController = installRufflePixelRatioController(unreadableDpr)
+assert.equal(unreadableController.supported, true)
+assert.equal(unreadableController.current(), 1, '卸载边缘的异常 DPR getter 必须安全回退，不能中断播放器')
+const dynamicRetina = { devicePixelRatio: 2 }
+const dynamicRatio = installRufflePixelRatioController(dynamicRetina, 1.25)
+assert.equal(dynamicRatio.supported, true)
+assert.equal(dynamicRatio.current(), 1.25)
+assert.equal(dynamicRatio.setCap(0.8), 0.8, '运行中可在不重载游戏的情况下减少画布像素量')
+assert.equal(dynamicRatio.setCap(1.25), 1.25, '性能持续充足后可平滑恢复像素密度')
+
+console.log('── Ruffle 帧回调负载采样与滞回调档 ──')
+let fakeNow = 0
+let queuedFrame = null
+let callbackCost = 0
+const rafTarget = {
+  performance: { now: () => fakeNow },
+  requestAnimationFrame(callback) { queuedFrame = callback; return 17 },
+}
+const rafDescriptor = Object.getOwnPropertyDescriptor(rafTarget, 'requestAnimationFrame')
+const frameTelemetry = installRuffleFrameTelemetry(rafTarget)
+assert.ok(frameTelemetry, 'Ruffle iframe 应能安装轻量帧采样')
+const stableFrameCallback = () => { fakeNow += callbackCost }
+assert.equal(rafTarget.requestAnimationFrame(stableFrameCallback), 17, '包装不能改变 RAF 返回的取消句柄')
+const firstMeasuredWrapper = queuedFrame
+callbackCost = 2
+fakeNow = 5
+queuedFrame.call(rafTarget, 1000)
+rafTarget.requestAnimationFrame(stableFrameCallback)
+assert.equal(queuedFrame, firstMeasuredWrapper, '稳定 RAF 回调应复用包装器，减少逐帧闭包分配')
+callbackCost = 10
+fakeNow = 21
+queuedFrame.call(rafTarget, 1016)
+callbackCost = 5
+fakeNow = 31
+rafTarget.requestAnimationFrame(stableFrameCallback)
+queuedFrame.call(rafTarget, 1016)
+const frameSample = frameTelemetry.sample()
+assert.equal(frameSample.frameCount, 1)
+assert.equal(frameSample.callbackCount, 3, '同一刷新时刻的多个 RAF 回调都必须计入主线程负载')
+assert.equal(frameSample.durationMs, 36)
+assert.equal(frameSample.p25IntervalMs, 16)
+assert.equal(frameSample.p90IntervalMs, 16)
+assert.equal(frameSample.p90CallbackMs, 10, '慢回调也要计入负载，且异常不能改变原行为')
+assert.equal(frameSample.lateFrameRatio, 0)
+frameTelemetry.discard()
+fakeNow = 50
+rafTarget.requestAnimationFrame(stableFrameCallback)
+queuedFrame.call(rafTarget, 1033)
+assert.equal(frameTelemetry.sample().frameCount, 0, '清空预热 / 暂停样本后不得把前一段时间混入下一窗')
+
+let lowRefreshNow = 0
+let lowRefreshCallback = null
+const lowRefreshTarget = {
+  performance: { now: () => lowRefreshNow },
+  requestAnimationFrame(callback) { lowRefreshCallback = callback; return 1 },
+}
+const lowRefreshTelemetry = installRuffleFrameTelemetry(lowRefreshTarget)
+const stable30HzCallback = () => { lowRefreshNow += 1 }
+for (let index = 0; index < 45; index++) {
+  lowRefreshTarget.requestAnimationFrame(stable30HzCallback)
+  lowRefreshNow += 1000 / 30
+  lowRefreshCallback.call(lowRefreshTarget, index * (1000 / 30))
+}
+const stable30HzSample = lowRefreshTelemetry.sample()
+assert.equal(stable30HzSample.callbackCount, 45)
+assert.ok(Math.abs(stable30HzSample.p25IntervalMs - 1000 / 30) < 0.1)
+assert.equal(stable30HzSample.lateFrameRatio, 0, '30 Hz 屏幕的正常节奏不能全被标为迟到帧')
+lowRefreshTelemetry.stop()
+
+let fakeMetric = { frameCount: 60, callbackCount: 60, durationMs: 3000, p25IntervalMs: 16.7, p90IntervalMs: 16.7, p90CallbackMs: 9, lateFrameRatio: 0 }
+let fakePixelRatio = 1.25
+const changes = []
+const adaptive = createRuffleAdaptiveController({
+  telemetry: { sample: () => fakeMetric, discard() {} },
+  pixelRatio: { supported: true, current: () => fakePixelRatio, setCap: (cap) => { fakePixelRatio = Math.min(2, cap); return fakePixelRatio } },
+  initialTier: 'full',
+  frameRate: 60,
+  onChange: (change) => changes.push(change),
+})
+adaptive.sample()
+assert.equal(adaptive.currentTier(), 'full', '單個慢窗口不能引起畫質跳變')
+adaptive.sample()
+assert.equal(adaptive.currentTier(), 'balanced', '連續兩個過載窗口應即時降一檔')
+assert.equal(fakePixelRatio, 1)
+for (let i = 0; i < 6; i++) adaptive.sample()
+assert.equal(adaptive.currentTier(), 'economy', '持續過載可繼續下調，直到硬件安全底檔')
+fakeMetric = { frameCount: 60, callbackCount: 60, durationMs: 3000, p25IntervalMs: 16.7, p90IntervalMs: 16.7, p90CallbackMs: 2, lateFrameRatio: 0 }
+for (let i = 0; i < 15; i++) adaptive.sample()
+assert.equal(adaptive.currentTier(), 'balanced', '恢復必須等待長時間穩定余量，不能頻繁抖動')
+assert.deepEqual(changes.map(({ reason }) => reason), ['slow', 'slow', 'recovered'])
+
+const smooth30HzChanges = []
+let smooth30HzCap = 1
+const smooth30Hz = createRuffleAdaptiveController({
+  telemetry: { sample: () => ({
+    frameCount: 45, callbackCount: 45, durationMs: 3000, p25IntervalMs: 33.3, p90IntervalMs: 33.3, p90CallbackMs: 5, lateFrameRatio: 0,
+  }), discard() {} },
+  pixelRatio: { supported: true, current: () => smooth30HzCap, setCap: (cap) => { smooth30HzCap = cap; return cap } },
+  initialTier: 'balanced',
+  frameRate: 30,
+  onChange: (change) => smooth30HzChanges.push(change),
+})
+smooth30Hz.sample()
+smooth30Hz.sample()
+assert.equal(smooth30Hz.currentTier(), 'balanced', '穩定 30 Hz 遊戲 / 顯示器不可被當成掉幀而降畫質')
+assert.deepEqual(smooth30HzChanges, [])
+smooth30Hz.stop()
+
+let pausedDiscardCount = 0
+let pausedCap = 1.25
+const pausedWindow = { frameCount: 60, callbackCount: 60, durationMs: 3000, p25IntervalMs: 16.7, p90IntervalMs: 16.7, p90CallbackMs: 9, lateFrameRatio: 0 }
+const pausedAdaptive = createRuffleAdaptiveController({
+  telemetry: { sample: () => pausedWindow, discard: () => { pausedDiscardCount++ } },
+  pixelRatio: { supported: true, current: () => pausedCap, setCap: (cap) => { pausedCap = cap; return cap } },
+  initialTier: 'full',
+  frameRate: 60,
+})
+pausedAdaptive.sample()
+pausedAdaptive.discard()
+pausedAdaptive.sample()
+assert.equal(pausedAdaptive.currentTier(), 'full', '暂停期间必须清除已有的慢窗连续计数')
+pausedAdaptive.sample()
+assert.equal(pausedAdaptive.currentTier(), 'balanced', '恢复后需要重新连续确认负载过高')
+assert.equal(pausedDiscardCount, 1)
+pausedAdaptive.stop()
+
+const slowMetrics = { frameCount: 60, callbackCount: 60, durationMs: 3000, p25IntervalMs: 16.7, p90IntervalMs: 16.7, p90CallbackMs: 9, lateFrameRatio: 0 }
+const invalidMetrics = { frameCount: 11, callbackCount: 11, durationMs: 3000, p25IntervalMs: 16.7, p90IntervalMs: 40, p90CallbackMs: 15, lateFrameRatio: 0.3 }
+const metricSequence = [slowMetrics, invalidMetrics, slowMetrics, slowMetrics]
+let sequenceCap = 1.25
+const sequenceAdaptive = createRuffleAdaptiveController({
+  telemetry: { sample: () => metricSequence.shift(), discard() {} },
+  pixelRatio: { supported: true, current: () => sequenceCap, setCap: (cap) => { sequenceCap = cap; return cap } },
+  initialTier: 'full',
+  frameRate: 60,
+})
+sequenceAdaptive.sample()
+sequenceAdaptive.sample()
+sequenceAdaptive.sample()
+assert.equal(sequenceAdaptive.currentTier(), 'full', '无效 / 样本不足的窗口会打断慢窗连续性')
+sequenceAdaptive.sample()
+assert.equal(sequenceAdaptive.currentTier(), 'balanced')
+sequenceAdaptive.stop()
+
+let insufficientSamplesCap = 1.25
+const insufficientSamples = createRuffleAdaptiveController({
+  telemetry: { sample: () => ({
+    frameCount: 11, callbackCount: 11, durationMs: 3000, p25IntervalMs: 16.7, p90IntervalMs: 40, p90CallbackMs: 15, lateFrameRatio: 0.3,
+  }), discard() {} },
+  pixelRatio: { supported: true, current: () => insufficientSamplesCap, setCap: (cap) => { insufficientSamplesCap = cap; return cap } },
+  initialTier: 'full',
+  frameRate: 60,
+})
+for (let index = 0; index < 3; index++) insufficientSamples.sample()
+assert.equal(insufficientSamples.currentTier(), 'full', '少量抖动样本不能触发降档')
+insufficientSamples.stop()
+
+let pacingCap = 1.25
+const pacingChanges = []
+const pacingPressure = createRuffleAdaptiveController({
+  telemetry: { sample: () => ({
+    frameCount: 60, callbackCount: 60, durationMs: 3000, p25IntervalMs: 16.7, p90IntervalMs: 33.4, p90CallbackMs: 2, lateFrameRatio: 0,
+  }), discard() {} },
+  pixelRatio: { supported: true, current: () => pacingCap, setCap: (cap) => { pacingCap = cap; return cap } },
+  initialTier: 'full',
+  frameRate: 60,
+  onChange: (change) => pacingChanges.push(change),
+})
+pacingPressure.sample()
+pacingPressure.sample()
+assert.equal(pacingPressure.currentTier(), 'balanced', '回調短但幀節奏明顯丟拍時也要能降載')
+assert.deepEqual(pacingChanges.map(({ reason }) => reason), ['slow'])
+pacingPressure.stop()
+
+let lowRateCap = 1.25
+const lowRateAdaptive = createRuffleAdaptiveController({
+  telemetry: { sample: () => ({
+    frameCount: 15, callbackCount: 15, durationMs: 3000, p25IntervalMs: 200, p90IntervalMs: 200, p90CallbackMs: 100, lateFrameRatio: 0,
+  }), discard() {} },
+  pixelRatio: { supported: true, current: () => lowRateCap, setCap: (cap) => { lowRateCap = cap; return cap } },
+  initialTier: 'full',
+  frameRate: 5,
+})
+lowRateAdaptive.sample()
+lowRateAdaptive.sample()
+assert.equal(lowRateAdaptive.currentTier(), 'balanced', '5 FPS 的低帧率 SWF 也必须进入采样判定')
+lowRateAdaptive.stop()
+adaptive.stop()
+frameTelemetry.stop()
+assert.equal(Object.getOwnPropertyDescriptor(rafTarget, 'requestAnimationFrame').value, rafDescriptor.value,
+  '銷毀必須還原 iframe 的 RAF 方法')
+assert.equal(RUFFLE_ADAPTIVE_PIXEL_RATIOS[0], 0.8)
 
 console.log('── 原始舞台等比居中 ──')
 assert.deepEqual(ruffleStageSize({ width: 800, height: 600 }), { width: 800, height: 600 })
@@ -92,15 +306,25 @@ frozenListeners.get('error')({ error: { name: 'RuntimeError', message: 'unreacha
 assert.deepEqual(frozenReports, ['unreachable'], 'console 只读时仍要靠 error 事件接住 WASM 崩溃')
 assert.doesNotThrow(cancelFrozenGuard, '加固 WebView 的只读 console 不能阻断会话销毁')
 
-console.log('── 启动链与固定高抗锯齿档 ──')
+console.log('── 启动链与按实测负载自适应渲染 ──')
 const adapter = read('src/emulator/adapters/ruffle.ts')
 const player = read('src/emulator/EmulatorPlayer.tsx')
 const frame = read('public/flash-frame.html')
 const types = read('src/emulator/types.ts')
 const vite = read('vite.config.ts')
 const serverCache = read('server/src/cache.js')
-assert.equal(RUFFLE_FIXED_QUALITY, 'high', 'Ruffle 默认画质必须固定为高抗锯齿档')
-assert.match(adapter, /quality:\s*RUFFLE_FIXED_QUALITY/, '适配器必须使用唯一的固定画质常量')
+assert.match(adapter, /selectRufflePerformanceProfile\(\{/, '每局必须在 Ruffle iframe 内按设备能力选档')
+assert.match(adapter, /installRufflePixelRatioController\(win, performanceProfile\.maxPixelRatio\)/, 'DPR 上限必须与能力档位同步')
+assert.match(adapter, /installRuffleFrameTelemetry\(win\)/, '实测必须只采样 Ruffle iframe 的动画回调')
+assert.match(adapter, /createRuffleAdaptiveController\(/, '实际负载必须驱动画布像素比的运行中切档')
+assert.match(adapter, /performanceTelemetry\.discard\(\)[\s\S]*?createRuffleAdaptiveController\(/,
+  '启动和解码负载不得污染首个稳定游玩采样窗')
+assert.match(adapter, /adaptivePerformanceTimer = window\.setInterval/, '采样定时器必须使用销毁时对应的全局')
+assert.match(adapter, /api\?\.suspended === true/, '新版 Ruffle PlayerV1 暂停时必须丢弃样本')
+assert.match(adapter, /adaptivePerformance\.discard\(\)/, '暂停要重置迟滞状态，避免跨暂停累计连续窗口')
+assert.doesNotMatch(adapter, /quality:\s*performanceProfile/, 'Ruffle Stage.quality 在核心中没有画质效果，不应误导为性能开关')
+assert.doesNotMatch(adapter, /frameRate:\s*(?:performanceProfile|options\.|\d)/, '性能策略不能覆写游戏时间轴')
+assert.doesNotMatch(adapter, /preferredRenderer\s*:/, '性能策略不能钉死浏览器渲染后端')
 assert.doesNotMatch(adapter, /options\.performanceProfile/)
 assert.doesNotMatch(player, /performance(Label|Profile|Quality|Balanced|Fast)/, '开始区不应再出现运行档位')
 assert.doesNotMatch(types, /performanceProfile/)
@@ -109,7 +333,6 @@ const scriptAt = adapter.indexOf("script.src = `${RUFFLE_PATH}ruffle.js`")
 const awaitAt = adapter.indexOf('Promise.all([gameBytes, flashOnlineSave, sfsRuffleConfig])')
 assert.ok(bytesAt > 0 && bytesAt < scriptAt && scriptAt < awaitAt, 'SWF、桥配置和 Ruffle 必须并行启动')
 assert.match(adapter, /prepareSfsRuffleConfig\(options\.gameSlug\)/)
-assert.match(adapter, /installRufflePixelRatioCap\(win\)/)
 assert.match(adapter, /waitForRuffleMetadata\(player, aborter\.signal\)/)
 assert.match(adapter, /Promise\.resolve\(\)\.then\(\(\) => api!\.load\(loadOptions\)\)/,
   'load 与元数据等待必须由同一个 Promise.all 接管，避免销毁时出现未处理 rejection')
@@ -171,4 +394,4 @@ assert.match(prewarm, /bootstrap\.json/)
 assert.equal(isSfsGame('sas3'), true)
 assert.equal(isSfsGame('infectonator-2'), false)
 
-console.log('✅ Ruffle 等比舞台、高抗锯齿、1.25× 像素上限、启动并行、核心预热与 SFS 门控通过')
+console.log('✅ Ruffle 等比舞台、实测负载自适应像素比、运行稳定性、启动并行、核心预热与 SFS 门控通过')

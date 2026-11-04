@@ -1215,11 +1215,18 @@ Ruffle 从 npm 复制到 `public/ruffle/v<version>/`，`runtime.json` 保存每�
 `src/emulator/paths.ts` 里的 `RUFFLE_VERSION`，否则 `npm run build` 会直接失败。不要把新文件覆盖到
 旧版本目录，否则边缘缓存会把新旧 WASM / JS 混在一起。
 
-Ruffle 固定走「高清抗锯齿」：配置 `quality: high`，并只在它自己的 iframe realm 内把
-`devicePixelRatio` 钳到 1.25（DPR 2 时是 1.5625× CSS 像素，比原生 4× 少约 61%，节省的 GPU
-余量用于更高抗锯齿，又不会像旧 1× 上限那样在大屏发糊）。前台不再给档位下拉；别重新加回
-`performanceProfile`。也不要用 `frameRate` 冒充性能优化（会直接改游戏时间轴），不要钉
-`preferredRenderer`（官方只把它当排错项，浏览器 / Ruffle 升级后最优后端会变）。
+Ruffle 初始渲染像素比按 iframe 内设备能力分档：极低配置 DPR 0.8，中低配置、高 DPR 触屏或硬件信息
+不可见时 DPR 1，其余 DPR 1.25。运行后由 iframe RAF 采样器每 3 秒低频统计回调耗时与帧间隔分布；这是
+主线程 / 帧节奏代理值，不是屏幕呈现 FPS 或 GPU 计时。启动解码与首屏建纹理完成后先清掉预热样本；至少
+12 个有效间隔才判断，稳定 30 Hz 不误判成掉帧。连续 2 个有效慢窗口降一档，持续 30 秒有余量再升档；暂停、
+切后台或样本无效会同时重置连续计数，固定容量环形缓冲、销毁时还原原生 RAF；3 秒采样定时器由播放器父窗口
+创建并由同一窗口清理。
+稳定回调复用包装器，降低逐帧监控分配；节能限帧或纯 GPU
+瓶颈无法仅凭浏览器 RAF 完全辨别，不能宣称所有卡顿都可自动修复。
+Ruffle v0.7.1 的 `Stage.quality` 目前只存值，不改变 renderer，所以不要把它当性能开关，也不要向游戏脚本
+写入 LOW / MEDIUM / HIGH。像素比变化会由 Ruffle 下一次 tick 重建画布，不重载、不改游戏逻辑帧率、输入、
+声音、存档或渲染后端。不要用 `frameRate` 冒充性能优化（会直接改游戏时间轴），也不要钉
+`preferredRenderer`（官方只把它当排错项，浏览器 / Ruffle 升级后最优后端会变）。回归：`npm run test:ruffle-runtime`。
 
 冷启动的三条重资源必须并行：游戏 SWF、短期在线存档会话、Ruffle loader/WASM；不得把
 `loadGameBytes()` 放回 `script.onload` 后面才开始。鼠标悬停会依据 Ruffle 自己的五项 WASM 能力探针，
