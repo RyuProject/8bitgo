@@ -41,6 +41,15 @@ export const SSE_MAX_PER_IP = num(process.env.SSE_MAX_PER_IP, 20)
 export const SSE_MAX_TOTAL = num(process.env.SSE_MAX_TOTAL, 600)
 /** 单条流的最长存活时间。到点主动收，EventSource 自己会重连，玩家无感 */
 export const SSE_MAX_LIFETIME_MS = num(process.env.SSE_MAX_LIFETIME_MS, 30 * 60_000)
+/**
+ * 心跳间隔（注释行 `: ping`）。必须短于沿途所有代理的空闲读超时。
+ *
+ * 2026-11-04 实测：腾讯 EdgeOne（cn.8bitgo.com）约 15 秒收不到字节就把 HTTP/2 流以
+ * INTERNAL_ERROR 重置，浏览器报 `ERR_HTTP2_PROTOCOL_ERROR 200 (OK)` 并每十几秒重连一次；
+ * 原来的 25 秒心跳在 Cloudflare 上没事，在 EdgeOne 上永远赶不上。10 秒两边都留有余量，
+ * 600 条流也就每秒 60 个十来字节的写，可以忽略。
+ */
+export const SSE_HEARTBEAT_MS = num(process.env.SSE_HEARTBEAT_MS, 10_000)
 
 /**
  * 爬虫 UA。命中就不给开流。

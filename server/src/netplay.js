@@ -2,7 +2,7 @@ import express from 'express'
 import { createHash, randomBytes } from 'node:crypto'
 import { Server } from 'socket.io'
 import { watchPresence, clientIpFrom, UNKNOWN_PRESENCE } from './presence.js'
-import { admitSse } from './sseGuard.js'
+import { admitSse, SSE_HEARTBEAT_MS } from './sseGuard.js'
 import { resolveGameRoomPolicy } from './netplay-game-policy.js'
 import { NETPLAY_MAX_PLAYERS, normalizeGamePlayers } from '../../shared/netplay-players.js'
 import { guardSocketArgs } from './socket-guard.js'
@@ -915,7 +915,7 @@ export function attachNetplay(httpServer, app, origins = ['*'], { resolveGamePol
         clearInterval(beat)
         watchers.delete(w)
       }
-    }, 25_000)
+    }, SSE_HEARTBEAT_MS)
     beat.unref?.()
 
     // 请求体完成不代表 EventSource 断开；监听响应侧才能保住长连接订阅。

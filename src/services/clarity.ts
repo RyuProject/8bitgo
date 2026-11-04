@@ -38,7 +38,10 @@ export function initClarity() {
     !PROJECT_ID ||
     typeof window === 'undefined' ||
     typeof document === 'undefined' ||
-    readClarityConsent() !== 'granted'
+    readClarityConsent() !== 'granted' ||
+    // PSP 详情页带 COEP: require-corp，clarity.ms 的脚本不发 CORP，只会被浏览器拦下报错。
+    // 这类页面都是整页加载，离开时会刷新，不会把整个会话的统计关掉。
+    window.crossOriginIsolated
   ) return
 
   started = true

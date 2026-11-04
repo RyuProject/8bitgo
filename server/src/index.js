@@ -45,7 +45,7 @@ import { flashSaveConfigured, flashSaveConfigurationError } from './flash-save-t
 import { attachNetplay } from './netplay.js'
 import { attachJsnesNetplay } from './jsnes-netplay.js'
 import { attachLive, canAccessAdultLive, liveCapacity, liveRoom, liveRooms, subscribeLiveRooms } from './live.js'
-import { admitSse } from './sseGuard.js'
+import { admitSse, SSE_HEARTBEAT_MS } from './sseGuard.js'
 import { iceRouter, registerTurnProbeTargets } from './routes/ice.js'
 import { startTurnHealth } from './turnProbe.js'
 import { imRouter } from './routes/im.js'
@@ -319,7 +319,7 @@ app.get('/api/live/events', optionalUser, (req, res) => {
       clearInterval(beat)
       unsubscribe()
     }
-  }, 25_000)
+  }, SSE_HEARTBEAT_MS)
   beat.unref?.()
 
   // GET 请求体读完也会让 req 发 close；只在响应连接关闭时移除订阅。
