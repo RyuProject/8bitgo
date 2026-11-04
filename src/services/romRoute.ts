@@ -132,12 +132,41 @@ export async function chooseFasterRomRoute(
 ): Promise<'primary' | 'backup'> {
   const hints = options.hints ?? runtimeHints()
   if (!worthRacing(primary, backup, hints, options.minBytes)) return 'primary'
-  const [primarySpeed, backupSpeed] = await Promise.all([
-    measureRoute(primary, options),
-    measureRoute(backup, options),
-  ])
-  if (backupSpeed > 0 && primarySpeed === 0) return 'backup'
-  return backupSpeed > primarySpeed * FASTER_MARGIN ? 'backup' : 'primary'
+  /*
+    先到先得：两边样本一样大，先取完的就是更快的那条路，不必再等另一边跑满 3 秒超时
+    （小 ROM 开局总共才几百毫秒，白等 3 秒得不偿失）。
+    · 主域先完成：镜像要快 15% 才能赢，此时它已不可能赢，立刻取消；
+    · 镜像先完成（用时 t）：主域只要在 t×1.15 内完成就仍算主域，过了这个点就取消、改走镜像。
+  */
+  const now = options.now ?? (() => typeof performance !== 'undefined' ? performance.now() : Date.now())
+  const startedAt = now()
+  const linked = () => {
+    const c = new AbortController()
+    if (options.signal?.aborted) c.abort()
+    else options.signal?.addEventListener('abort', () => c.abort(), { once: true })
+    return c
+  }
+  const primaryCtl = linked()
+  const backupCtl = linked()
+  let graceTimer: ReturnType<typeof setTimeout> | undefined
+  const primaryRun = measureRoute(primary, { ...options, signal: primaryCtl.signal }).then((speed) => {
+    if (speed > 0) backupCtl.abort()
+    return speed
+  })
+  const backupRun = measureRoute(backup, { ...options, signal: backupCtl.signal }).then((speed) => {
+    if (speed > 0) {
+      const grace = Math.max(0, (now() - startedAt) * (FASTER_MARGIN - 1))
+      graceTimer = setTimeout(() => primaryCtl.abort(), grace)
+    }
+    return speed
+  })
+  try {
+    const [primarySpeed, backupSpeed] = await Promise.all([primaryRun, backupRun])
+    if (backupSpeed > 0 && primarySpeed === 0) return 'backup'
+    return backupSpeed > primarySpeed * FASTER_MARGIN ? 'backup' : 'primary'
+  } finally {
+    clearTimeout(graceTimer)
+  }
 }
 
 export function clearRomRouteSpeedCache(): void {

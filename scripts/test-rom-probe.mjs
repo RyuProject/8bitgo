@@ -201,6 +201,23 @@ assert.equal(isolatedEmbedFor('diablo'), undefined, 'Diablo 不需要 COOP/COEP�
     'minBytes: 0 时小 ROM 也测速，镜像更快就整局走镜像',
   )
   assert.equal(calls, 2)
+  // 一边挂住不回：另一边取完样本就立即定局，不能等满超时
+  const hangFetch = async (url, init) => {
+    if (url.includes('mirror')) {
+      return await new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(new Error('aborted'))))
+    }
+    return smallFetch(url)
+  }
+  const t0 = Date.now()
+  assert.equal(
+    await chooseFasterRomRoute(
+      { url: 'https://assets.example.com/roms/nes/b.zip', ...small },
+      { url: 'https://mirror.example.com/roms/nes/b.zip', ...small },
+      { fetchImpl: hangFetch, cacheResults: false, minBytes: 0, timeoutMs: 3000 },
+    ),
+    'primary',
+  )
+  assert.ok(Date.now() - t0 < 1000, `主域先取完样本就应定局，不等镜像 3 秒超时（实际 ${Date.now() - t0}ms）`)
   assert.ok(MIRROR_RACE_ANY_SIZE_PLATFORMS.has('nes'), 'NES 不论大小都测速')
   assert.ok(!MIRROR_RACE_ANY_SIZE_PLATFORMS.has('psp'), '其它平台仍按大文件门槛')
 }
