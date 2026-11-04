@@ -71,10 +71,14 @@ export interface PendingUpload {
 class UploadHttpError extends Error {
   status: number
   fatal: boolean
-  constructor(message: string, status: number, fatal = false) {
+  code: string
+  payload: Record<string, unknown> | null
+  constructor(message: string, status: number, fatal = false, code = '', payload: Record<string, unknown> | null = null) {
     super(message)
     this.status = status
     this.fatal = fatal
+    this.code = code
+    this.payload = payload
   }
 }
 
@@ -356,12 +360,18 @@ async function askJson<T>(ctx: Ctx, url: string, init: RequestInit, what: string
     // 「不可重试」。包成 status 0 的网络错误，上面才知道这次是可以续传的
     throw new UploadHttpError(`${what}失败：无法连接 Worker（网络中断或跨域被拒）`, 0)
   }
-  const data = (await res.json().catch(() => null)) as (T & { error?: string; fatal?: boolean }) | null
+  const data = (await res.json().catch(() => null)) as (T & { error?: string; fatal?: boolean; code?: string }) | null
   if (!res.ok) {
     // 老版本 Worker 上，对着一个 key 发 POST 只会得到 405 / 404 —— 那是「没部署分片接口」，
     // 不是「上传失败」，要能和真失败区分开
     if (res.status === 404 || res.status === 405) throw new MultipartUnsupportedError(what)
-    throw new UploadHttpError(data?.error || explainRomStatus(res.status, what).message, res.status, Boolean(data?.fatal))
+    throw new UploadHttpError(
+      data?.error || explainRomStatus(res.status, what).message,
+      res.status,
+      Boolean(data?.fatal),
+      typeof data?.code === 'string' ? data.code : '',
+      data && typeof data === 'object' ? data as Record<string, unknown> : null,
+    )
   }
   // 地址填成了本站域名时会落到 SSR 兜底路由，回的是 200 + 一个 HTML 页面（roms.ts 里
   // 那个「200 + HTML」的坑）。这里拿不到 JSON 就必须报错，否则后面读 data.uploadId 才炸
@@ -372,16 +382,42 @@ async function askJson<T>(ctx: Ctx, url: string, init: RequestInit, what: string
 }
 
 async function createUpload(ctx: Ctx, key: string, file: Blob, ident: { fileName: string; lastModified: number } | null, partSize: number, fingerprint: string): Promise<PendingUpload> {
-  const data = await askJson<{ uploadId: string; marker: string }>(
-    ctx,
-    `${ctx.api}/${encodeKey(key)}?uploads`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      // contentType 只有开始时能设，complete() 不收 —— 漏了封面图会变成提示下载
-      body: JSON.stringify({ contentType: file.type || guessUploadType(key), size: file.size, name: ident?.fileName ?? '' }),
+  const data = await withRetry(
+    async () => {
+      try {
+        return await askJson<{ uploadId: string; marker: string }>(
+          ctx,
+          `${ctx.api}/${encodeKey(key)}?uploads`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            // contentType 只有开始时能设，complete() 不收 —— 漏了封面图会变成提示下载
+            body: JSON.stringify({ contentType: file.type || guessUploadType(key), size: file.size, name: ident?.fileName ?? '' }),
+          },
+          '开始分片上传',
+        )
+      } catch (error) {
+        // Worker 创建会话后若写续传标记失败且首次 abort 也失败，会把 uploadId 一并返回。
+        // 先尝试清理并确认成功，才允许重试；否则再建一个会话会留下更多无法续传的残片。
+        if (error instanceof UploadHttpError && error.code === 'multipart_marker_write_failed' && error.payload?.cleanupRequired === true) {
+          const uploadId = error.payload.uploadId
+          const marker = error.payload.marker
+          if (typeof uploadId === 'string' && uploadId && typeof marker === 'string' && marker.startsWith('_uploads/')) {
+            try {
+              await abortUpload(ctx, key, uploadId, marker)
+            } catch (cleanupError) {
+              throw new Error(`${error.message}；自动清理仍未确认，请到「ROM 存储」检查残留分片（${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}）`)
+            }
+          } else {
+            throw new Error(`${error.message}；Worker 返回的清理信息无效，请到「ROM 存储」检查残留分片`)
+          }
+        }
+        throw error
+      }
     },
-    '开始分片上传',
+    3,
+    (error) => error instanceof UploadHttpError && !error.fatal && error.status === 503 &&
+      (error.code === 'storage_unavailable' || error.code === 'multipart_marker_write_failed'),
   )
   if (typeof data.uploadId !== 'string' || !data.uploadId || typeof data.marker !== 'string' || !data.marker.startsWith('_uploads/')) {
     throw new Error('Worker 未返回有效的 uploadId 或残留标记；请核查 Worker 地址和版本')
@@ -470,7 +506,7 @@ function retryable(err: unknown): boolean {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 /** 可重试的错误就退避重试，其余立刻抛 */
-async function withRetry<T>(run: () => Promise<T>, attempts: number): Promise<T> {
+async function withRetry<T>(run: () => Promise<T>, attempts: number, shouldRetry: (error: unknown) => boolean = retryable): Promise<T> {
   let last: unknown
   for (let i = 0; i < attempts; i++) {
     if (i > 0) await sleep(600 * 2 ** (i - 1) + Math.random() * 400)
@@ -478,7 +514,7 @@ async function withRetry<T>(run: () => Promise<T>, attempts: number): Promise<T>
       return await run()
     } catch (err) {
       last = err
-      if (!retryable(err)) throw err
+      if (!shouldRetry(err)) throw err
     }
   }
   throw last

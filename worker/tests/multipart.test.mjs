@@ -22,6 +22,12 @@ test('multipart rejects unsupported content encoding before creating a session',
   const e=environment();const r=await worker.fetch(req('/roms/a?uploads','POST',{contentEncoding:'deflate'}, {},true),e)
   assert.equal(r.status,400);assert.equal(count(e.ROMS,'createMultipartUpload'),0)
 })
+test('transient createMultipartUpload failures return an explicitly retryable storage 503',async()=>{
+  const e=environment();e.ROMS.fail.createMultipartUpload=Error('temporary R2 outage')
+  const r=await worker.fetch(req('/roms/a?uploads','POST',{size:10}, {},true),e)
+  assert.equal(r.status,503);const j=await r.json();assert.equal(j.code,'storage_unavailable');assert.equal(j.retryable,true)
+  assert.match(j.error,/开始分片上传/);assert.equal(count(e.ROMS,'createMultipartUpload'),1)
+})
 test('known-length part is streamed; Request.arrayBuffer is never called',async()=>{
   const e=environment();const s=await create(e);const r=req('/roms/a?uploadId='+s.uploadId+'&partNumber=1','PUT','abc',{'Content-Length':'3'},true)
   r.arrayBuffer=()=>{throw Error('must not buffer known-length part')}
@@ -92,11 +98,11 @@ test('legacy scan budget exhaustion returns markerRemoved=false, never false suc
 })
 test('marker write failure aborts newly created session',async()=>{
   const e=environment();e.ROMS.fail.put=Error('temporary');const r=await worker.fetch(req('/a?uploads','POST',{}, {},true),e)
-  assert.equal(r.status,503);assert.equal(e.ROMS.uploads.size,0);assert.equal(count(e.ROMS,'abort'),1)
+  assert.equal(r.status,503);assert.equal((await r.clone().json()).code,'multipart_marker_write_failed');assert.equal(e.ROMS.uploads.size,0);assert.equal(count(e.ROMS,'abort'),1)
 })
 test('marker write AND abort failure returns recoverable upload identity',async()=>{
   const e=environment();e.ROMS.fail.put=Error('temporary');e.ROMS.fail.abort=Error('temporary');const r=await worker.fetch(req('/a?uploads','POST',{}, {},true),e)
-  const j=await r.json();assert.equal(r.status,503);assert(j.cleanupRequired);assert(j.uploadId);assert(j.marker);assert(e.ROMS.uploads.has(j.uploadId))
+  const j=await r.json();assert.equal(r.status,503);assert.equal(j.code,'multipart_marker_write_failed');assert(j.cleanupRequired);assert(j.uploadId);assert(j.marker);assert(e.ROMS.uploads.has(j.uploadId))
 })
 test('multipart listing advances independent cursors in both buckets',async()=>{
   const e=environment(true,2);for(let i=0;i<5;i++)for(const b of [e.ROMS,e.COVERS])b.seed('_uploads/'+i,'',{customMetadata:{key:b.name+'/'+i,uploadId:'u'+i}})

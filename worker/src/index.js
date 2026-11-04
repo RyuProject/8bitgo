@@ -279,9 +279,16 @@ async function createMultipart(request, env, key, cors) {
   if (contentType.length > 256 || /[\r\n]/.test(contentType)) throw new HttpError(400, '无效 contentType')
   if (meta.size !== undefined && (!Number.isSafeInteger(Number(meta.size)) || Number(meta.size) < 0)) throw new HttpError(400, '无效 size')
   const bucket = bucketForWrite(env, key)
-  const upload = await bucket.createMultipartUpload(key, {
-    httpMetadata: { contentType, ...(contentEncoding ? { contentEncoding } : {}), cacheControl: writeCacheControl(env) },
-  })
+  let upload
+  try {
+    upload = await bucket.createMultipartUpload(key, {
+      httpMetadata: { contentType, ...(contentEncoding ? { contentEncoding } : {}), cacheControl: writeCacheControl(env) },
+    })
+  } catch (error) {
+    // 让管理员端能区分“创建会话时的临时 R2 故障”和后续分片失败；只有这个明确的
+    // Worker 可重试响应才允许客户端重试 POST，避免把未知网关响应当成幂等操作。
+    return storageFailure(error, cors, '开始分片上传')
+  }
   const marker = await deterministicMarker(key, upload.uploadId)
   try {
     // Preserve the original list-with-metadata interface without per-marker GETs.
@@ -300,10 +307,10 @@ async function createMultipart(request, env, key, cors) {
     let cleanupFailed = false
     try { await upload.abort() } catch { cleanupFailed = true }
     if (cleanupFailed) {
-      return json({ ok: false, error: '标记写入失败且分片中止失败，请保留返回的 uploadId 进行清理', key, uploadId: upload.uploadId, marker, retryable: true, cleanupRequired: true }, cors, 503)
+      return json({ ok: false, error: '标记写入失败且分片中止失败，请保留返回的 uploadId 进行清理', code: 'multipart_marker_write_failed', key, uploadId: upload.uploadId, marker, retryable: true, cleanupRequired: true }, cors, 503)
     }
     if (error instanceof HttpError) throw error
-    return json({ error: '标记写入失败，已中止新建的分片会话', retryable: true }, cors, 503)
+    return json({ error: '标记写入失败，已中止新建的分片会话', code: 'multipart_marker_write_failed', retryable: true }, cors, 503)
   }
   return json({ ok: true, key, uploadId: upload.uploadId, marker, maxPartBytes: MAX_PART_BYTES }, cors)
 }

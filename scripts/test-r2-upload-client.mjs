@@ -190,6 +190,31 @@ await assert.rejects(uploadRomMultipart(large, 'roms/ps2/demo.iso'), /R2 已完�
 assert.equal(aborts, 0, '完成后的大小不符不能再重试或 abort 已经完成的对象')
 console.log('✅ 分片合并后大小不符会阻止绑定，也不会重试 complete')
 
+// 初始分片会话遇到 Worker 明确标记的临时 R2 503 时，应退避重试；其它未知状态不能重发 POST。
+{
+  const file = new File([new Uint8Array(25 * 1024 * 1024)], 'demo.cso', { lastModified: 456 })
+  let starts = 0
+  let completes = 0
+  globalThis.fetch = async (url, init) => {
+    const target = String(url)
+    if (target.endsWith('/roms/psp/demo.cso?uploads')) {
+      starts++
+      if (starts === 1) return Response.json({ error: '开始分片上传暂时失败，请保留续传信息后重试', code: 'storage_unavailable', retryable: true }, { status: 503 })
+      return Response.json({ uploadId: 'up-cso-retry', marker: '_uploads/cso-retry.marker' })
+    }
+    if (target.includes('uploadId=up-cso-retry') && init?.method === 'POST') {
+      completes++
+      return Response.json({ ok: true, key: 'roms/psp/demo.cso', size: file.size })
+    }
+    throw new Error(`unexpected request: ${target}`)
+  }
+  xhrResponse = (xhr) => ({ status: 200, body: JSON.stringify({ etag: `cso-${new URL(xhr.url).searchParams.get('partNumber')}` }) })
+  assert.equal((await uploadRomMultipart(file, 'roms/psp/demo.cso')).size, file.size)
+  assert.equal(starts, 2, '明确可重试的 503 应只重试创建会话一次')
+  assert.equal(completes, 1, '成功创建后只合并一次')
+}
+console.log('✅ PSP CSO 创建分片会话遇到临时 503 会退避重试并完成上传')
+
 // 两份镜像的文件名、大小、修改时间完全相同，只有内容不同；旧续传条件会把它们拼错。
 const bytes = new Uint8Array(25 * 1024 * 1024)
 const firstFile = new File([bytes], 'same.iso', { lastModified: 123 })
