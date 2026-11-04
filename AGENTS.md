@@ -2793,11 +2793,17 @@ EdgeOne 只能用境外（香港）节点。主站、ROM、Pages 子域都不受
   SSR 只认这个头（`shared/cn-host.js`）。canonical 仍指 8bitgo.com。
 - **EdgeOne 规则引擎**：「修改 HTTP **回源**请求头」加 `X-8bitgo-Edge`（选成「节点响应头」会把密钥发给每个访客，
   源站也收不到）；WebSocket 要单独开，否则 socket.io 升级在 EdgeOne 边缘就是 400。
-- **封面**：SSR 与 hydrate 首次都按站点域名给出默认值；客户端拿当前真实封面并行请求两个域的 16px 变换图，
-  选先成功的 CDN，结果在浏览器缓存 6 小时（`src/services/coverCdn.ts`）。主域是 `image.8bitgo.com`，大陆加速域
-  `image-cn.8bitgo.com`（EdgeOne 回源主域）；模板的默认封面 preconnect 仍由 `retargetCoverHints` 指向站点默认域。
-  `/cdn-cgi/image/` 缩放照样回源给 Cloudflare 做，但这条路固定 `format=webp`：EdgeOne 缓存键不看 Accept，
-  `format=auto` 会把第一个访客拿到的 AVIF 发给不认 AVIF 的浏览器。
+- **封面由边缘按国家决定，不再测速**（2026-11-04，`shared/cover-cdn-hint.js`）：Cloudflare 有一条
+  URL Rewrite 规则（Transform Rules，免费版可用），`8bitgo.com` 上 `ip.src.country eq "CN"` 的页面请求在
+  进缓存前追加 `__cdn=cn` —— 改写后的查询串进缓存键，大陆访客和其他人各一份页面缓存，地址栏不变。
+  源站在 `normalizeUrl` **之前**剥掉这个参数（否则 301 会把它写进 Location），SSR 直接用 `image-cn`，
+  并写 `<meta name="8bitgo-cover-cdn">` 给客户端 hydrate 用；非大陆访客按 `CF-IPCountry` 标成 main。
+  只有边缘没给结论时客户端才退回旧的 16px 测速（`src/services/coverCdn.ts`）。
+  ⚠️ 大陆访客没带参数时**绝不能**按 `CF-IPCountry` 渲染成 cn：那份会进所有人共用的缓存键。
+  任一封面域 15 秒内 3 张不同的图加载失败，本页会话切到另一个域（`reportCoverCdnFailure`）。
+  主域是 `image.8bitgo.com`，大陆加速域 `image-cn.8bitgo.com`（EdgeOne 回源主域）；`/cdn-cgi/image/` 缩放
+  照样回源给 Cloudflare 做，但大陆域固定 `format=webp`：EdgeOne 缓存键不看 Accept，`format=auto` 会把
+  第一个访客拿到的 AVIF 发给不认 AVIF 的浏览器。回归：`npm run test:cover-cdn`。
 - ⚠️ 加速域名**不能带下划线**（`image_cn` 这种）：公共 CA 不为含 `_` 的主机名签证书，HTTPS 永远起不来。
 - 两个域名的本地存档、IndexedDB 和登录态互不相通（按 origin 隔离），云存档不受影响。
 

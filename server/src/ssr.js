@@ -17,6 +17,7 @@ import { coverBaseUrl, publicSiteUrl } from './site-urls.js'
 import { requestHostname } from './url-normalize.js'
 import { tvRenderPath } from '../../shared/tv-host.js'
 import { CN_SITE_HEADER, isCnRequest } from '../../shared/cn-host.js'
+import { COVER_CDN_META, coverCdnHint } from '../../shared/cover-cdn-hint.js'
 import { isolatedRuntimeRoute } from '../../shared/isolated-runtime-platforms.js'
 
 const root = path.resolve(fileURLToPath(new URL('../..', import.meta.url)))
@@ -275,7 +276,14 @@ export async function renderPage(req, res, next) {
       siteHeader: req.headers?.[CN_SITE_HEADER],
     })
 
-    const { html, head, lang, notFound, coverBase } = await render({ url, data, tvHost, cnSite })
+    // 封面走哪个域：边缘按国家改写的参数 > Cloudflare 的国家头 > 不下结论（客户端测速）
+    const coverHint = coverCdnHint({
+      cnSite,
+      queryValue: req.coverCdnQuery,
+      country: cnSite ? '' : req.headers?.['cf-ipcountry'],
+    })
+
+    const { html, head, lang, notFound, coverBase } = await render({ url, data, tvHost, cnSite, coverHint })
 
     let page = retargetCoverHints(getTemplate(), originOf(coverBaseUrl()), originOf(coverBase))
     // 只给 200 页面发：Cloudflare 只从 200 HTML 学 Link，404 页带着也白带
@@ -295,7 +303,8 @@ export async function renderPage(req, res, next) {
       .replace(/<title>[\s\S]*?<\/title>/, '')
       .replace(/<meta\b[^>]*\bdata-ssr-default\b[^>]*>/g, '')
 
-    const headHtml = `<title>${escapeHtml(head.title)}</title>\n${head.tags.join('\n')}`
+    const coverMeta = coverHint ? `\n<meta name="${COVER_CDN_META}" content="${coverHint}">` : ''
+    const headHtml = `<title>${escapeHtml(head.title)}</title>\n${head.tags.join('\n')}${coverMeta}`
     page = injectOnce(page, '</head>', `${headHtml}\n</head>`)
 
     // 首屏 HTML + 给客户端 hydrate 用的数据

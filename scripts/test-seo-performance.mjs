@@ -133,7 +133,7 @@ check('大陆入口：封面 preconnect / dns-prefetch 换成 EdgeOne 封面域�
   assert.equal(retargetCoverHints(tpl, 'https://image.8bitgo.com', ''), tpl)
   const src = read('server/src/ssr.js')
   assert.match(src, /retargetCoverHints\(getTemplate\(\)/, 'SSR 没有按本次封面域改写模板')
-  assert.match(src, /render\(\{ url, data, tvHost, cnSite \}\)/, 'SSR 没把大陆入口标记传给 render')
+  assert.match(src, /render\(\{ url, data, tvHost, cnSite, coverHint \}\)/, 'SSR 没把大陆入口与封面域标记传给 render')
 })
 
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过 ✅')

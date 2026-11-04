@@ -27,6 +27,8 @@ export interface RenderInput {
    * 决定封面用哪个域名；和 tvHost 一样，客户端自己看 location.hostname。
    */
   cnSite?: boolean
+  /** 边缘决定的封面域（shared/cover-cdn-hint.js）；空串 = 不下结论 */
+  coverHint?: 'cn' | 'main' | ''
 }
 
 export interface RenderResult {
@@ -52,7 +54,7 @@ export interface RenderResult {
  * 结果是偶发地「英文页面吐出日文内容」，而且只在有并发时出现，极难复现。
  * 所以顺序是：算出语言 → await → 之后一路同步到 renderToString。
  */
-export async function render({ url, data, tvHost = false, cnSite = false }: RenderInput): Promise<RenderResult> {
+export async function render({ url, data, tvHost = false, cnSite = false, coverHint = '' }: RenderInput): Promise<RenderResult> {
   // 先把查询串剥掉再判语言。以前直接把 req.originalUrl 传进去，
   // /en?utm_source=x 的首段会被解析成 'en?utm_source=x'，认不出语言 →
   // 按默认中文渲染、basename 为空 → 路由全不匹配 → 服务端吐一个中文 404 页，
@@ -67,7 +69,7 @@ export async function render({ url, data, tvHost = false, cnSite = false }: Rend
   setSsrPath(stripLang(pathname))
   // 必须在 renderToString 之前、且这条线以下不能有 await（理由同上）
   setSsrTvHost(tvHost)
-  setSsrCnSite(cnSite)
+  setSsrCnSite(cnSite, coverHint)
   const coverBase = getCoverBase()
 
   // 本页的数据。v1 是把整个游戏库灌进 store，v2 只给这一页要用的那部分。

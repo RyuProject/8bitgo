@@ -10,6 +10,7 @@ import {
   romUrlForKey,
   startCoverCdnSelection,
   subscribeCoverCdnSelection,
+  reportCoverLoadFailure,
 } from '@/services/roms'
 import { cx } from '@/lib/format'
 import { useT, fmt } from '@/services/i18n'
@@ -290,7 +291,8 @@ export function GameCover({
           decoding="async"
           onLoad={onImageLoad}
           // 缩略图没对象（老封面）就换回主图；主图本身就坏了则留给渐变背景兜着
-          onError={() => {
+          onError={(event) => {
+            reportCoverLoadFailure(event.currentTarget.currentSrc || event.currentTarget.src)
             if (thumbSrc && !thumbFailed) setThumbFailed(true)
             else if (srcSet) setTransformFailed(true)
           }}

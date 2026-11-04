@@ -1,12 +1,19 @@
 /**
  * 封面 CDN 选择器。
  *
- * 首次访问没有测速结果时先用页面对应的默认域名；只拿当前真实封面并行请求 16px 缩略图，
+ * 首选由边缘决定（shared/cover-cdn-hint.js）：大陆入口、或 Cloudflare 按访客国家改写过的页面，
+ * SSR 已经用对了域名，`decided` 为真，这里不测速。
+ * 只有边缘没给结论时（规则缺失、本地开发）才退回测速：拿当前真实封面并行请求 16px 缩略图，
  * 不把两份完整封面都下载一遍。胜出的域名短期缓存，避免每次路由切换都额外探测。
+ *
+ * 不论哪种方式选出的域名，短时间内连续加载失败都会切到另一个候选（reportCoverCdnFailure），
+ * EdgeOne 或 Cloudflare 任一边出故障时封面不会整页挂掉。
  */
 export interface CoverCdnProbeConfig {
   candidates: string[]
   preferred: string
+  /** 边缘已经替访客选好了域名，不需要测速 */
+  decided?: boolean
   cnBase: string
   transformEnabled: boolean
 }
@@ -67,9 +74,40 @@ function activate(choice: StoredChoice, preferred: string) {
   if (previousBase !== choice.base) notifySubscribers()
 }
 
-export function selectedCoverCdn(candidates: string[]): string {
-  if (!selection || selection.signature !== signatureFor(candidates) || !candidates.includes(selection.base)) return ''
-  return selection.base
+export function selectedCoverCdn(candidates: string[], preferred = ''): string {
+  const signature = signatureFor(candidates)
+  const chosen =
+    selection && selection.signature === signature && candidates.includes(selection.base) ? selection.base : ''
+  const effective = chosen || preferred
+  // 当前域名被判定故障：换成另一个还没坏的候选；两边都坏了就别再来回切
+  if (effective && failedBases.has(effective)) {
+    const fallback = candidates.find((base) => !failedBases.has(base))
+    if (fallback) return fallback
+  }
+  return chosen
+}
+
+/* ── 故障切换 ─────────────────────────────────────────────
+   单张图失败可能只是这个对象不存在（两边都会 404），不能据此切域名；
+   同一个域名在 FAILURE_WINDOW_MS 内有 FAILURE_THRESHOLD 张**不同**的图失败才算域名故障。
+   只在本次页面会话里生效，不写 localStorage：故障通常是暂时的。 */
+const FAILURE_THRESHOLD = 3
+const FAILURE_WINDOW_MS = 15_000
+const failedBases = new Set<string>()
+const recentFailures = new Map<string, { url: string; at: number }[]>()
+
+export function reportCoverCdnFailure(url: string, candidates: string[]): void {
+  if (!url) return
+  const base = candidates.find((candidate) => url.startsWith(`${candidate}/`))
+  if (!base || failedBases.has(base)) return
+  const now = Date.now()
+  const list = (recentFailures.get(base) || []).filter((entry) => now - entry.at < FAILURE_WINDOW_MS)
+  if (!list.some((entry) => entry.url === url)) list.push({ url, at: now })
+  recentFailures.set(base, list)
+  if (list.length < FAILURE_THRESHOLD) return
+  failedBases.add(base)
+  recentFailures.delete(base)
+  if (candidates.some((candidate) => !failedBases.has(candidate))) notifySubscribers()
 }
 
 export function subscribeCoverCdn(listener: () => void): () => void {
@@ -135,6 +173,9 @@ export function startCoverCdnProbe(key: string, config: CoverCdnProbeConfig): vo
     ...new Set(config.candidates.filter((base) => /^https:\/\//i.test(base))),
   ]
   if (candidates.length < 2 || !candidates.includes(config.preferred)) return
+
+  // 边缘已经定了：测速只会被两边缓存冷热带偏，还多两个请求
+  if (config.decided) return
 
   const signature = signatureFor(candidates)
   const now = Date.now()

@@ -23,8 +23,8 @@ import { isRomPackUrl, romPackKey } from '../../shared/rom-pack-format.js'
 import { isStreamingDiscPlatform } from '../../shared/streaming-disc-platforms.js'
 import { builtinWebGameFor } from '../../shared/builtin-web-games.js'
 import { chooseFasterRomRoute, ROM_ROUTE_RACE_MIN_BYTES } from './romRoute'
-import { onCnSite } from './cnHost'
-import { selectedCoverCdn, startCoverCdnProbe, subscribeCoverCdn } from './coverCdn'
+import { coverCdnHint } from './cnHost'
+import { reportCoverCdnFailure, selectedCoverCdn, startCoverCdnProbe, subscribeCoverCdn } from './coverCdn'
 
 export const ROM_BASE_KEY = '8bitgo.rom.base'
 export const ROM_API_KEY = '8bitgo.rom.api'
@@ -148,9 +148,12 @@ export function coverCdnProbeConfig() {
   const primary = withScheme(trimSlash(import.meta.env.VITE_COVER_URL || '')) || getRomBase()
   const cn = getCnCoverBase()
   const candidates = [...new Set([primary, cn].filter(Boolean))]
+  // 边缘已经按访客所在地定了（大陆入口、或 Cloudflare 按国家改写）就直接用，不再测速
+  const hint = coverCdnHint()
   return {
     candidates,
-    preferred: (onCnSite() ? cn || primary : primary || cn) || getRomBase(),
+    preferred: (hint === 'cn' ? cn || primary : primary || cn) || getRomBase(),
+    decided: hint !== '',
     cnBase: cn,
     transformEnabled: import.meta.env.VITE_COVER_TRANSFORM === '1',
   }
@@ -168,13 +171,18 @@ export function subscribeCoverCdnSelection(listener: () => void): () => void {
   return subscribeCoverCdn(listener)
 }
 
+/** 封面加载失败时上报；同一域名短时间内多张图失败会切到另一个封面域 */
+export function reportCoverLoadFailure(url: string): void {
+  reportCoverCdnFailure(url, coverCdnProbeConfig().candidates)
+}
+
 /**
  * 封面公开读取根地址（独立 image 桶 image.8bitgo.com）；未配置时退回 ROM 根地址。
  * SSR 和客户端首次渲染都按站点域名给出同一默认值；浏览器完成 hydration 后，测速结果可覆盖默认值。
  */
 export function getCoverBase(): string {
   const config = coverCdnProbeConfig()
-  return selectedCoverCdn(config.candidates) || config.preferred
+  return selectedCoverCdn(config.candidates, config.preferred) || config.preferred
 }
 
 /** 管理接口（Worker）地址，留空时退回公开根地址 */

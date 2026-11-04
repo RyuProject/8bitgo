@@ -7,6 +7,7 @@ import cors from 'cors'
 import { ping } from './db.js'
 import { ssrAvailable, renderPage, CLIENT_DIR } from './ssr.js'
 import { normalizeUrl } from './url-normalize.js'
+import { stripCoverCdnQuery } from '../../shared/cover-cdn-hint.js'
 import { tvRobots } from './tv-robots.js'
 import { playShell } from './routes/play.js'
 import { j2meJarProxy, uploadGate, uploadJar, releaseJar, keepaliveJar, startSweeper, MAX_BYTES, TTL_MS } from './j2me.js'
@@ -356,6 +357,20 @@ app.get('/system-images/:file', systemImageProxy)
 /* ---------------- 前端：静态资源 + 服务端渲染 ---------------- */
 
 if (ssrAvailable()) {
+  /*
+    Cloudflare 给大陆访客的页面请求追加了 `__cdn=cn`（见 shared/cover-cdn-hint.js）。
+    必须在 normalizeUrl 之前剥掉：否则任何一次 301（尾斜杠、www）都会把它写进 Location，
+    参数就露到访客的地址栏里，还会让后续页面请求都带着它。
+  */
+  app.use((req, _res, next) => {
+    const { url, value } = stripCoverCdnQuery(req.url)
+    if (url !== req.url) {
+      req.url = url
+      req.originalUrl = stripCoverCdnQuery(req.originalUrl).url
+      req.coverCdnQuery = value
+    }
+    next()
+  })
   // ⚠️ 必须在 express.static 之前 —— 见 url-normalize.js 里 /index.html 那一段
   app.use(normalizeUrl)
 
