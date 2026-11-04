@@ -36,7 +36,7 @@ const script = (...steps) => {
   methods = []
 }
 
-const { probeRomUrl, probeRom, clearRomProbeCache, conventionalKeys, romCandidates, playbackRomCandidates, playbackRomCandidatesForSelection, romProbeExpected, dosExecutableForRom, dosSockdriveForRom, dosStartupCommandsForRom, streamedRomCandidateForSelection, versionedRomUrl, romKeysOf, unbindKeyPatch, shouldTryRomCandidateAfterUncertain, nextRomCandidateKey, slugFromKey, romUrlForKey, coverThumbKey, romMirrorUrl, getRomMirrorBase } = await import(
+const { probeRomUrl, probeRom, clearRomProbeCache, conventionalKeys, romCandidates, playbackRomCandidates, playbackRomCandidatesForSelection, romProbeExpected, dosExecutableForRom, dosSockdriveForRom, dosStartupCommandsForRom, streamedRomCandidateForSelection, versionedRomUrl, romKeysOf, unbindKeyPatch, shouldTryRomCandidateAfterUncertain, nextRomCandidateKey, slugFromKey, romUrlForKey, coverThumbKey, romMirrorUrl, getRomMirrorBase, MIRROR_RACE_ANY_SIZE_PLATFORMS } = await import(
   fileURLToPath(new URL('../src/services/roms.ts', import.meta.url))
 )
 // 红宝石封面是外链：没有 -96 缩略图时必须回原图，不能把空 key 拼成资源域名根目录。
@@ -163,6 +163,46 @@ assert.equal(isolatedEmbedFor('diablo'), undefined, 'Diablo 不需要 COOP/COEP�
     '省流量模式不应为了测速额外下载两个样本',
   )
   assert.equal(routeCalls, 0)
+}
+
+/* ---------- 小 ROM（NES）放开大小门槛后也测速 ---------- */
+{
+  let calls = 0
+  const smallFetch = async (url) => {
+    calls++
+    const fast = url.includes('mirror')
+    const bytes = new Uint8Array(512)
+    return {
+      ok: true,
+      status: 206,
+      body: new ReadableStream({
+        start(c) { setTimeout(() => { c.enqueue(bytes); c.close() }, fast ? 1 : 40) },
+      }),
+    }
+  }
+  const small = { size: 40 * 1024 }
+  assert.equal(
+    await chooseFasterRomRoute(
+      { url: 'https://assets.example.com/roms/nes/a.zip', ...small },
+      { url: 'https://mirror.example.com/roms/nes/a.zip', ...small },
+      { fetchImpl: smallFetch, cacheResults: false },
+    ),
+    'primary',
+    '默认门槛下 40KB 的 ROM 不测速',
+  )
+  assert.equal(calls, 0)
+  assert.equal(
+    await chooseFasterRomRoute(
+      { url: 'https://assets.example.com/roms/nes/a.zip', ...small },
+      { url: 'https://mirror.example.com/roms/nes/a.zip', ...small },
+      { fetchImpl: smallFetch, cacheResults: false, minBytes: 0, timeoutMs: 500 },
+    ),
+    'backup',
+    'minBytes: 0 时小 ROM 也测速，镜像更快就整局走镜像',
+  )
+  assert.equal(calls, 2)
+  assert.ok(MIRROR_RACE_ANY_SIZE_PLATFORMS.has('nes'), 'NES 不论大小都测速')
+  assert.ok(!MIRROR_RACE_ANY_SIZE_PLATFORMS.has('psp'), '其它平台仍按大文件门槛')
 }
 
 /* ---------- 8BG 约定地址：新容器优先，旧对象继续回退 ---------- */

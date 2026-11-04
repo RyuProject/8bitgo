@@ -123,6 +123,13 @@ export function getRomMirrorBase(): string {
  * 把主 ROM 域上的地址换成镜像域上的同一个对象（路径和 romv 原样保留）。
  * 外链、站内路径、封面域都不在主域上，返回空串 —— 调用方照旧用原地址。
  */
+/**
+ * 不论 ROM 大小都在开局前测速主域 / 加速镜像的平台。
+ * NES 的 ROM 只有几十 KB 到 1 MB，开局慢主要慢在跨境首字节，大陆访客走 EdgeOne 收益最明显；
+ * 测速样本就是整份小文件、结果按域名缓存 5 分钟，代价可以忽略。其它平台仍只给 16 MB 以上的大文件测速。
+ */
+export const MIRROR_RACE_ANY_SIZE_PLATFORMS: ReadonlySet<string> = new Set(['nes'])
+
 export function romMirrorUrl(url: string, base = getRomBase(), mirror = getRomMirrorBase()): string {
   if (!url || !base || !mirror || base === mirror || !url.startsWith(`${base}/`)) return ''
   return `${mirror}${url.slice(base.length)}`
@@ -1293,11 +1300,16 @@ export function useRomUrl(game: Game | undefined, prefer?: RomSlotLang | null): 
       整局只用更快的那个域。两边回源同一个桶、同一个 romv，所以换域不换内容；
       但分片绝不跨域混用，Range 断点续传也只认这一个地址。测速失败或镜像不可用一律留在主域。
     */
+    const raceMinBytes = MIRROR_RACE_ANY_SIZE_PLATFORMS.has(game.platform) ? 0 : ROM_ROUTE_RACE_MIN_BYTES
     const preferFasterHost = async (url: string, size: number | undefined): Promise<string> => {
-      if (mirrorFailed.current || (size ?? 0) < ROM_ROUTE_RACE_MIN_BYTES) return url
+      if (mirrorFailed.current || (size ?? 0) < raceMinBytes) return url
       const mirror = romMirrorUrl(url)
       if (!mirror) return url
-      const route = await chooseFasterRomRoute({ url, size }, { url: mirror, size }, { signal: routeController.signal })
+      const route = await chooseFasterRomRoute(
+        { url, size },
+        { url: mirror, size },
+        { signal: routeController.signal, minBytes: raceMinBytes },
+      )
       if (route !== 'backup') return url
       console.info(`[8bitgo/rom] ${game.slug} 测速后整局改走加速镜像：${new URL(mirror).origin}`)
       return mirror

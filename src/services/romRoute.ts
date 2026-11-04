@@ -2,7 +2,7 @@
  * ROM 主、备用源的轻量测速。
  *
  * 这里只在两个地址代表同一语言槽时选路，绝不跨语言比较，更不会把两个来源的 Range 分片混用。
- * 测速读取每个来源开头的一小段并立即取消响应；大文件才值得付这点额外流量，小 ROM 继续直接用主源。
+ * 测速读取每个来源开头的一小段并立即取消响应；默认只有大文件才测，调用方可用 minBytes 放开（见 roms.ts）。
  */
 
 // 128 KiB 已足够把 DNS/TLS/TTFB 和明显带宽差拉开；旧值 256 KiB 会让“检查版本”
@@ -36,6 +36,12 @@ export interface RouteRaceOptions {
   signal?: AbortSignal
   /** 测试注入的 fetch 不应污染真实浏览器会话的域名测速缓存。 */
   cacheResults?: boolean
+  /**
+   * 文件至少多大才测速，默认 ROM_ROUTE_RACE_MIN_BYTES。传 0 = 不论大小都测：
+   * 小 ROM（NES 几十 KB）样本就是整份文件，测出来主要是首字节延迟，正是小文件开局时真正的瓶颈；
+   * 测速结果按域名缓存 5 分钟，同一会话后续开局不再重测。
+   */
+  minBytes?: number
 }
 
 const routeSpeeds = new Map<string, RouteSpeed>()
@@ -56,14 +62,19 @@ const runtimeHints = (): RomRouteHints => {
   return { saveData: connection?.saveData, effectiveType: connection?.effectiveType }
 }
 
-function worthRacing(primary: RomRouteSource, backup: RomRouteSource, hints: RomRouteHints): boolean {
+function worthRacing(
+  primary: RomRouteSource,
+  backup: RomRouteSource,
+  hints: RomRouteHints,
+  minBytes = ROM_ROUTE_RACE_MIN_BYTES,
+): boolean {
   const effectiveType = String(hints.effectiveType ?? '').toLowerCase()
   if (hints.saveData || effectiveType === 'slow-2g' || effectiveType === '2g') return false
   const primaryRoute = routeId(primary.url)
   const backupRoute = routeId(backup.url)
   if (!primaryRoute || !backupRoute || primaryRoute === backupRoute) return false
   const knownLargest = Math.max(primary.size ?? 0, backup.size ?? 0)
-  return knownLargest >= ROM_ROUTE_RACE_MIN_BYTES
+  return knownLargest >= minBytes
 }
 
 async function measureRoute(source: RomRouteSource, options: RouteRaceOptions): Promise<number> {
@@ -120,7 +131,7 @@ export async function chooseFasterRomRoute(
   options: RouteRaceOptions = {},
 ): Promise<'primary' | 'backup'> {
   const hints = options.hints ?? runtimeHints()
-  if (!worthRacing(primary, backup, hints)) return 'primary'
+  if (!worthRacing(primary, backup, hints, options.minBytes)) return 'primary'
   const [primarySpeed, backupSpeed] = await Promise.all([
     measureRoute(primary, options),
     measureRoute(backup, options),
