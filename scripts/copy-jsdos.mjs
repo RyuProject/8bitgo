@@ -332,6 +332,177 @@ function patchSyncSleep(file) {
   writeFileSync(file, code.replace(SYNC_SLEEP_BUSY_WAIT, SYNC_SLEEP_TIMED_WAIT))
 }
 
+/**
+ * DOSBox 核心（wdosbox.wasm）的 INT 33h 事件回调把 SI/DI 改回「累计」mickey 计数。
+ *
+ * ── 为什么（2026-11-05《主题医院》实测）──────────────────────────────────────
+ * 微软鼠标驱动、原版 DOSBox、DOSBox-X 在调用 INT 33h 0Ch 注册的事件回调时，SI/DI 给的都是
+ * **累计**的原始 mickey 计数，游戏自己拿两次回调的差当位移。js-dos 自己的 jsdos-mouse.cpp
+ * 把 INT74_Handler 改成了 `reg_si = getRelMickey(...).mickey_x`：每次只给「上次回调以来」的
+ * 增量。于是只用 0Ch 回调的游戏（《主题医院》：INT 33h 只调用 00/0C/15，从不调 03/0B）算出的
+ * 位移变成「本次增量 − 上次增量」：
+ *   · 同方向连续移动 → 差为 0，光标不动（+10、+10、+10 只动第一下）；
+ *   · 换方向 → 跳两倍，甚至反向（-16 后 -8，光标反而右移 8）；
+ *   · 小幅连续移动几乎全被吃掉，绝对坐标桥送进来的小位移只剩约 5%。
+ * 用 INT 33h 记录 TSR + 帧缓冲定位光标逐项核对过；修好后 ±5～±30 的相对位移、
+ * 0.05 的绝对位移都 1:1 落到光标上，16ms 连发也不丢。
+ *
+ * ── 怎么改 ────────────────────────────────────────────────────────────────
+ * 不重编 DOSBox：新增两个 i32 全局 gx / gy，把 INT74_Handler 里
+ *   reg_si = rel.mickey_x; reg_di = rel.mickey_y
+ * 换成
+ *   gx += rel.mickey_x; reg_si = gx; gy += rel.mickey_y; reg_di = gy
+ * （i32.store16 自动按 16 位回绕，和真驱动一样）。只读 SI/DI 的差值的游戏完全不受回绕影响；
+ * 用 0Bh 轮询、用 CX/DX 位置的游戏走的不是这条路，不受影响。
+ * 字节特征必须在代码段里恰好出现一次，否则直接让同步失败——上游换了构建就得重新核对，不能猜。
+ */
+const INT74_SI_DI_STORE = Uint8Array.from([
+  0x41, 0xa0, 0x89, 0xa6, 0x0a, // i32.const <reg_si>
+  0x20, 0x03, 0x28, 0x02, 0x00, // local.get 3; i32.load (rel.mickey_x)
+  0x3b, 0x01, 0x00, // i32.store16
+  0x41, 0xa4, 0x89, 0xa6, 0x0a, // i32.const <reg_di>
+  0x20, 0x03, 0x28, 0x02, 0x04, // local.get 3; i32.load offset=4 (rel.mickey_y)
+  0x3b, 0x01, 0x00, // i32.store16
+])
+const readLeb = (bytes, at) => {
+  let value = 0
+  let shift = 0
+  let byte
+  do {
+    byte = bytes[at++]
+    value |= (byte & 0x7f) << shift
+    shift += 7
+  } while (byte & 0x80)
+  return [value >>> 0, at]
+}
+const leb = (value) => {
+  const out = []
+  do {
+    let byte = value & 0x7f
+    value >>>= 7
+    if (value) byte |= 0x80
+    out.push(byte)
+  } while (value)
+  return Uint8Array.from(out)
+}
+const joinBytes = (...parts) => {
+  const out = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0))
+  let at = 0
+  for (const part of parts) {
+    out.set(part, at)
+    at += part.length
+  }
+  return out
+}
+const findBytes = (hay, needle, from, to) => {
+  outer: for (let i = from; i <= to - needle.length; i++) {
+    for (let j = 0; j < needle.length; j++) if (hay[i + j] !== needle[j]) continue outer
+    return i
+  }
+  return -1
+}
+function patchInt74CumulativeMickeys(input) {
+  const wasm = input instanceof Uint8Array ? input : new Uint8Array(input)
+  const sections = []
+  for (let at = 8; at < wasm.length;) {
+    const [size, body] = readLeb(wasm, at + 1)
+    sections.push({ id: wasm[at], start: at, body, end: body + size })
+    at = body + size
+  }
+  const imports = sections.find((section) => section.id === 2)
+  const globals = sections.find((section) => section.id === 6)
+  const code = sections.find((section) => section.id === 10)
+  if (!globals || !code) throw new Error('缺少 global / code 段')
+
+  // 全局索引空间先排导入的全局
+  let importedGlobals = 0
+  if (imports) {
+    let at = imports.body
+    let count
+    ;[count, at] = readLeb(wasm, at)
+    for (let i = 0; i < count; i++) {
+      let length
+      ;[length, at] = readLeb(wasm, at)
+      at += length
+      ;[length, at] = readLeb(wasm, at)
+      at += length
+      const kind = wasm[at++]
+      if (kind === 0) [, at] = readLeb(wasm, at)
+      else if (kind === 1) {
+        at++
+        const flags = wasm[at++]
+        ;[, at] = readLeb(wasm, at)
+        if (flags & 1) [, at] = readLeb(wasm, at)
+      } else if (kind === 2) {
+        const flags = wasm[at++]
+        ;[, at] = readLeb(wasm, at)
+        if (flags & 1) [, at] = readLeb(wasm, at)
+      } else if (kind === 3) {
+        importedGlobals++
+        at += 2
+      } else throw new Error(`未知导入类型 ${kind}`)
+    }
+  }
+  const [localGlobals, globalEntries] = readLeb(wasm, globals.body)
+  const gx = leb(importedGlobals + localGlobals)
+  const gy = leb(importedGlobals + localGlobals + 1)
+
+  const hit = findBytes(wasm, INT74_SI_DI_STORE, code.body, code.end)
+  if (hit < 0 || findBytes(wasm, INT74_SI_DI_STORE, hit + 1, code.end) !== -1) {
+    throw new Error('INT74 的 SI/DI 写入特征不是恰好一处')
+  }
+  const replacement = joinBytes(
+    Uint8Array.from([0x20, 0x03, 0x28, 0x02, 0x00, 0x23]), gx, Uint8Array.of(0x6a, 0x24), gx,
+    Uint8Array.from([0x41, 0xa0, 0x89, 0xa6, 0x0a, 0x23]), gx, Uint8Array.of(0x3b, 0x01, 0x00),
+    Uint8Array.from([0x20, 0x03, 0x28, 0x02, 0x04, 0x23]), gy, Uint8Array.of(0x6a, 0x24), gy,
+    Uint8Array.from([0x41, 0xa4, 0x89, 0xa6, 0x0a, 0x23]), gy, Uint8Array.of(0x3b, 0x01, 0x00),
+  )
+
+  let at = code.body
+  let functions
+  ;[functions, at] = readLeb(wasm, at)
+  let sizeAt = -1
+  let bodyStart = -1
+  let bodyEnd = -1
+  for (let i = 0; i < functions; i++) {
+    const thisSizeAt = at
+    let size
+    ;[size, at] = readLeb(wasm, at)
+    if (hit >= at && hit < at + size) {
+      sizeAt = thisSizeAt
+      bodyStart = at
+      bodyEnd = at + size
+      break
+    }
+    at += size
+  }
+  if (sizeAt < 0) throw new Error('特征不在任何函数体内')
+  const body = joinBytes(wasm.subarray(bodyStart, hit), replacement, wasm.subarray(hit + INT74_SI_DI_STORE.length, bodyEnd))
+  const codeContent = joinBytes(wasm.subarray(code.body, sizeAt), leb(body.length), body, wasm.subarray(bodyEnd, code.end))
+  const globalContent = joinBytes(
+    leb(localGlobals + 2),
+    wasm.subarray(globalEntries, globals.end),
+    Uint8Array.from([0x7f, 0x01, 0x41, 0x00, 0x0b, 0x7f, 0x01, 0x41, 0x00, 0x0b]), // (mut i32) = 0 ×2
+  )
+  const parts = [wasm.subarray(0, 8)]
+  for (const section of sections) {
+    if (section === code) parts.push(Uint8Array.of(10), leb(codeContent.length), codeContent)
+    else if (section === globals) parts.push(Uint8Array.of(6), leb(globalContent.length), globalContent)
+    else parts.push(wasm.subarray(section.start, section.end))
+  }
+  return joinBytes(...parts)
+}
+function patchDosboxMouseWasm(file) {
+  let patched
+  try {
+    patched = patchInt74CumulativeMickeys(readFileSync(file))
+  } catch (error) {
+    fail(`${file.split(/[\\/]/).pop()} 的 INT 33h 回调补丁失败：${error instanceof Error ? error.message : String(error)}`)
+  }
+  if (!WebAssembly.validate(patched)) fail('INT 33h 回调补丁后的 wdosbox.wasm 校验不通过')
+  writeFileSync(file, patched)
+}
+
 /** 写死的 1900 端口过不了 Cloudflare；本站中继和主站共用 443 的 /ipx/。 */
 function patchIpxPort(file) {
   if (!patchIpx) return
@@ -354,6 +525,7 @@ patchSockdriveSequentialReadAhead(join(out, 'emulators', 'emulators.js'))
 for (const core of readdirSync(join(out, 'emulators')).filter((name) => /^wdosbox(?:-x)?(?:-jspi|-dbg)?\.js$/.test(name))) {
   patchSyncSleep(join(out, 'emulators', core))
 }
+patchDosboxMouseWasm(join(out, 'emulators', 'wdosbox.wasm'))
 
 const files = listFiles(out)
   .filter((name) => name !== 'runtime.json')
@@ -367,6 +539,7 @@ writeFileSync(
     ipxPatched: patchIpx,
     mouseCaptureChromePatched: true,
     syncSleepTimedWait: true,
+    int74CumulativeMickeys: true,
     sourceFingerprint,
     copyScriptSha256,
     files,

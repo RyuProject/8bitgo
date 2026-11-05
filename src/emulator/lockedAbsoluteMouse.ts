@@ -51,7 +51,7 @@ export function lockedAbsoluteContentRect(container: PointerRect, content: Point
 /**
  * Pointer Lock 只给相对位移；绝对坐标客体则要 0～1 的位置，所以在浏览器这一侧累积。
  *
- * Windows 里的 DOSBox-X 集成驱动只消费绝对位置；《主题医院》这类原生 DOS 图形界面也依赖
+ * Windows 里的 DOSBox-X 集成驱动只消费绝对位置；《大富翁3》这类读 INT 33h 位置的原生 DOS 游戏也依赖
  * 绝对光标。若让 js-dos 因为捕获鼠标而改发相对包，前者会把正负数钳成四角，后者的软件
  * 光标则不会按屏幕位置移动。以画布 CSS 尺寸归一化可以同时保留点击捕获与准确指向，且不会
  * 因为高 DPI 或模拟器内部切换分辨率而突然变速。

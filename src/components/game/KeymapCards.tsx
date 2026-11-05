@@ -22,7 +22,7 @@ interface Props {
   platform?: PlatformId
   /** 有 slug 才能取到这款游戏上次由 EmulatorJS 回传的真实键位。 */
   gameSlug?: string
-  /** 街机旧数据缺按钮数时用 BIOS 系统名推断，和运行中的虚拟手柄保持一致。 */
+  /** 街机旧数据缺按钮数时按游戏/BIOS 系统推断，和运行中的虚拟手柄保持一致。 */
   arcadeButtons?: ArcadeButtonCount
   arcadeBios?: string
   /** 街机核心：mame-current 的按键 5 / 6 与 FBNeo 对调 */
@@ -47,7 +47,7 @@ export function KeymapCards({ runtimeId, platform, gameSlug, arcadeButtons, arca
     runtimeId,
     platform,
     effectiveKeys,
-    platform === 'arcade' ? effectiveArcadeButtons(arcadeButtons, arcadeBios) : undefined,
+    platform === 'arcade' ? effectiveArcadeButtons(arcadeButtons, arcadeBios, gameSlug) : undefined,
     core,
   )
   const hotkeys = getHotkeys()

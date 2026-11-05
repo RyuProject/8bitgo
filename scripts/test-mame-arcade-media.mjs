@@ -19,6 +19,7 @@ import { arcadeBiosOf, arcadeMameDisksOf } from '../server/src/mappers.js'
 import { writeFsInjections } from '../src/emulator/fsInjection.ts'
 import { combinedRomProgress, gateProgressUntilRomComplete } from '../src/emulator/romProgress.ts'
 import { fastForwardBoot, mameBootFastForwardFrames } from '../src/emulator/mameBootSkip.ts'
+import { mameChdProfileForRomset } from '../shared/mame-chd-catalog.js'
 
 const hexBytes = (value) => Uint8Array.from(value.match(/../g).map((part) => Number.parseInt(part, 16)))
 const expected = TAIKO2_MAME_MEDIA.disks[0]
@@ -50,6 +51,18 @@ const taikoEntries = [
 assert.equal(identifyKnownMameArcadeMedia(taikoEntries), TAIKO2_MAME_MEDIA, '三颗 taiko2 NAND 必须精确认出所需 CHD')
 assert.equal(identifyKnownMameArcadeMedia([{ ...taikoEntries[0], crc32: 0 }, ...taikoEntries.slice(1)]), null, 'CRC 不一致不能误认媒体盘')
 assert.equal(identifyKnownMameArcadeMedia([...taikoEntries, { name: 'readme.txt', crc32: 0, uncompressedSize: 1 }]), null, '额外成员不能误认完整 set')
+
+// JoJo 可以由默认 FBNeo 核心直接跑，但同名 MAME set 需要 CPS-3 CD 媒体；核心切为 MAME 时必须挡住缺盘。
+const jojoMameRow = mameChdProfileForRomset('jojobar1')
+assert.ok(jojoMameRow, 'jojobar1 必须保留在 MAME CHD 目录')
+const jojoMameEntries = jojoMameRow.f.split(' ').map((part) => {
+  const splitAt = part.lastIndexOf(':')
+  return { name: part.slice(0, splitAt), crc32: Number.parseInt(part.slice(splitAt + 1), 16) }
+})
+const jojoMameMedia = identifyKnownMameArcadeMedia(jojoMameEntries, 'jojobar1.zip')
+assert.deepEqual(jojoMameMedia?.disks, [{
+  romset: 'jojobar1', name: 'cap-jjm-1', chdSha1: '8628d3fa555fbd5f4121082e925c1834b76c5e65',
+}], 'MAME 的 JoJo 变体必须识别所需 CPS-3 CHD，避免只靠 ZIP 启动后落入菜单')
 
 const bm1stmixEntries = [
   ['753jab01.6a', 0x25bf8629], ['753jab02.8a', 0x6ab951de],

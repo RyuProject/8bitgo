@@ -140,6 +140,18 @@ for (const name of listed.filter((name) => /^emulators\/wdosbox(?:-x)?(?:-jspi|-
 }
 if (manifest.syncSleepTimedWait !== true) fail('runtime.json 没有记录 sync sleep 补丁，请重新运行 npm run jsdos')
 
+// DOSBox 核心的 INT 33h 事件回调必须给累计 mickey（见 copy-jsdos.mjs patchInt74CumulativeMickeys）
+{
+  const core = readFileSync(join(runtimeDir, 'emulators', 'wdosbox.wasm'))
+  const original = Buffer.from('41a089a60a2003280200 3b0100 41a489a60a2003280204 3b0100'.replace(/ /g, ''), 'hex')
+  // 十六进制串里反向引用后面紧跟数字会被当成八进制转义，用 (?:) 隔开
+  const cumulativeSi = /200328020023(?<g>..)6a24\k<g>(?:)41a089a60a23\k<g>(?:)3b0100/
+  if (core.includes(original)) fail('wdosbox.wasm 的 INT 33h 回调仍在传增量 mickey（《主题医院》光标不动 / 反向）')
+  if (!cumulativeSi.test(core.toString('hex'))) fail('wdosbox.wasm 找不到累计 mickey 补丁特征')
+  if (!WebAssembly.validate(core)) fail('wdosbox.wasm 校验不通过')
+  if (manifest.int74CumulativeMickeys !== true) fail('runtime.json 没有记录 INT 33h 累计 mickey 补丁，请重新运行 npm run jsdos')
+}
+
 for (const name of required.filter((name) => name.endsWith('.wasm'))) {
   const wasm = readFileSync(join(runtimeDir, name))
   if (!wasm.subarray(0, 4).equals(Buffer.from([0x00, 0x61, 0x73, 0x6d]))) fail(`${name} 不是有效 WASM`)

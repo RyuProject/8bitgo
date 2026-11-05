@@ -79,7 +79,7 @@ export function PadDiagram({ runtimeId, platform, gameSlug, arcadeButtons, arcad
     runtimeId,
     platform,
     effectiveKeys,
-    platform === 'arcade' ? effectiveArcadeButtons(arcadeButtons, arcadeBios) : undefined,
+    platform === 'arcade' ? effectiveArcadeButtons(arcadeButtons, arcadeBios, gameSlug) : undefined,
     core,
   )
   if (!rows.length) return null

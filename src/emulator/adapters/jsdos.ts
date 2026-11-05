@@ -563,7 +563,7 @@ function hookCapturedAbsoluteMouse(
   window.addEventListener('blur', onBlur)
 
   /*
-    手柄右摇杆和触屏鼠标板的「相对位移」也要换算成绝对坐标。Windows 客体和主题医院只认
+    手柄右摇杆和触屏鼠标板的「相对位移」也要换算成绝对坐标。Windows 客体和大富翁3 这类绝对坐标游戏只认
     绝对位置：原样把相对包送进去，光标只会在四角跳（与 §2.8.5 同一症状）。这里与锁定后的
     真实鼠标共用同一个 pointer，摇杆和鼠标交替使用时光标不会跳回旧位置。
   */
@@ -1156,7 +1156,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   // 槽 0 留给普通 DOS 文件差异；槽 1 是 Sockdrive 扇区差异；槽 2 是整包 Windows 的 GAME/ 差异。
   const saveSlot = streamingGame ? 1 : fullWindowsGuest ? 2 : 0
   /*
-    逐游戏兼容修正（凯撒 3 的 c3.inf、星际的注册表、辐射的 CPU、主题医院 / 天之痕的鼠标、
+    逐游戏兼容修正（凯撒 3 的 c3.inf、星际的注册表、辐射的 CPU、大富翁3 / 天之痕的鼠标、
     DirectDraw 刷新、匕首雨的 EXE……）认的是**目录里的游戏 slug**。播放器传进来的
     `gameSlug` 是存档键：第二个及以后的语言版会带 `~rom-<语言>` 后缀，直接拿去比对的话
     这些修正在换语言后全部静默失效。存档 / 键位仍按原值隔离，只有兼容表用去掉后缀的 slug。
@@ -1720,7 +1720,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         kiosk: !ipx?.showUi,
         autoStart: true,
         /*
-          桌面端 DOS 统一点击画面锁定。Windows 客体与《主题医院》这类绝对坐标游戏把上游开关
+          桌面端 DOS 统一点击画面锁定。Windows 客体与《大富翁3》这类绝对坐标游戏把上游开关
           关掉：捕获由 hookCapturedAbsoluteMouse 完成，避免上游在 Pointer Lock 被拒绝后反复
           吞点击；普通相对鼠标游戏仍由 js-dos 自己处理。《天之痕》的 DirectInput 与绝对驱动
           冲突，配套系统盘已换回标准鼠标，因此它故意和普通相对游戏走同一路。
@@ -1931,7 +1931,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
                    * 右摇杆 → 相对鼠标位移（FPS 瞄准）。DOS 游戏只认键盘 + 鼠标，
                    * 手柄右摇杆没有现成语义，正好用来当「看向」：推多少转多少。
                    * 相对游戏（毁灭战士）直接喂 sendMouseRelativeMotion；绝对坐标游戏
-                   * （主题医院 / Windows 客体）适配器已把这条接口包成「相对→绝对」，
+                   * （大富翁3 / Windows 客体）适配器已把这条接口包成「相对→绝对」，
                    * 这里调的是同一个 ci 方法，所以两类游戏都能动光标。
                    */
                   mouseMove: (dx, dy) => ci?.sendMouseRelativeMotion?.(dx, dy),
@@ -2067,7 +2067,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         /* 引擎已经拆了就忽略 */
       }
     },
-    /** 触屏鼠标模式：设绝对坐标（0~1）。点选类 DOS 游戏（主题医院等）的拖动手柄。 */
+    /** 触屏鼠标模式：设绝对坐标（0~1）。点选类 DOS 游戏的拖动手柄。 */
     sendMouseMove(x, y) {
       try {
         ci?.sendMouseMotion?.(x, y)

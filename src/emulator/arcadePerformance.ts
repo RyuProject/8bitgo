@@ -10,6 +10,7 @@ export const FBNEO_ARCADE_AUDIO_LATENCY_MS = 80
 export const FBNEO_ARCADE_AUDIO_BUFFER_BYTES_48K = FBNEO_ARCADE_AUDIO_LATENCY_MS / 1000 * 48_000 * 2 * 4
 
 const METAL_SLUG_SLUG = /(?:^|-)metal-slug(?:-|$)|^mslug\d*(?:-|$)/
+const FOUR_BUTTON_ARCADE_GAMES = new Set(['jojos-bizarre-adventure'])
 
 export function isFbneoArcadeCore(platform: PlatformId, core: string): boolean {
   return platform === 'arcade' && core === 'fbneo'
@@ -32,8 +33,12 @@ export function isLightArcadeCore(platform: PlatformId, core: string): boolean {
 export function effectiveArcadeButtons(
   explicit: ArcadeButtonCount | undefined,
   biosName: string | undefined,
+  gameSlug?: string,
 ): ArcadeButtonCount {
   if (explicit === 2 || explicit === 4 || explicit === 6) return explicit
+  // 《未来遗产》使用轻拳 / 中拳 / 重拳 / 替身四键；它不是 Neo Geo，旧数据也未必有 BIOS 名，
+  // 只按板卡推断会把不存在的 5、6 键画给玩家。配置过的 arcadeButtons 仍始终优先。
+  if (FOUR_BUTTON_ARCADE_GAMES.has(gameSlug?.trim().toLowerCase() ?? '')) return 4
   return biosName?.trim().toLowerCase() === 'neogeo' ? 4 : 6
 }
 

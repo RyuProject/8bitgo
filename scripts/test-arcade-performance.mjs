@@ -76,6 +76,12 @@ test('Neo Geo 缺少后台按钮数时按四键推断，明确配置仍优先', 
   assert.equal(effectiveArcadeButtons(undefined, 'pgm'), 6)
 })
 
+test('JoJo 未配置 arcadeButtons 时使用四键替身布局，显式配置仍优先', () => {
+  assert.equal(effectiveArcadeButtons(undefined, undefined, 'jojos-bizarre-adventure'), 4)
+  assert.equal(effectiveArcadeButtons(undefined, undefined, ' JOJOS-BIZARRE-ADVENTURE '), 4)
+  assert.equal(effectiveArcadeButtons(6, undefined, 'jojos-bizarre-adventure'), 6)
+})
+
 test('旧 J/K/I 右摇杆撞键会迁移，玩家其它自定义保持不动', () => {
   const controls = {
     0: { value: 74, value2: 'BUTTON_2' },
@@ -117,12 +123,12 @@ test('适配器、开局键位图和操作说明共用四键推断', () => {
   assert.match(src, /EJS_defaultOptions: defaults/)
   // 改版包指纹会把核心纠正成 fbneo：默认值必须按最终核心重算，不能沿用挂载时旧核心那份
   assert.match(src, /core === coreDefaultOptionsCore \? coreDefaultOptions : coreDefaultOptionsFor\(core\)/)
-  assert.match(src, /effectiveArcadeButtons\(options\.arcadeButtons(?: \?\? namcoSet\?\.buttons)?, options\.biosSet\?\.name\)/)
+  assert.match(src, /effectiveArcadeButtons\(options\.arcadeButtons(?: \?\? namcoSet\?\.buttons)?, options\.biosSet\?\.name, options\.gameSlug\)/)
   assert.match(src, /repairLegacyArcadeKeyCollisions\(emu\.controls\?\.\[0\]/)
   assert.match(src, /FBNEO_ARCADE_AUDIO_LATENCY_MS/)
   assert.match(keymap, /arcadeButtonIdsFor\(arcadeCore\)\.slice\(0, arcadeButtons \?\? 6\)/)
-  assert.match(cards, /effectiveArcadeButtons\(arcadeButtons, arcadeBios\) : undefined,\s*\n\s*core,/)
-  assert.match(diagram, /effectiveArcadeButtons\(arcadeButtons, arcadeBios\) : undefined,\s*\n\s*core,/)
+  assert.match(cards, /effectiveArcadeButtons\(arcadeButtons, arcadeBios, gameSlug\) : undefined,\s*\n\s*core,/)
+  assert.match(diagram, /effectiveArcadeButtons\(arcadeButtons, arcadeBios, gameSlug\) : undefined,\s*\n\s*core,/)
 })
 
 console.log(`\n街机性能与输入体检通过：${passed} 项`)

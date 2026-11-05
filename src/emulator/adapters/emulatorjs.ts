@@ -3960,7 +3960,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           // 街机：引擎没有 arcade 分支，不给这份布局手机上就只有 4 颗动作键、
           // 摇杆还会把对角线松掉、投币键写着「选择」。见 ARCADE_VIRTUAL_PAD 的注释
           ...(options.platform === 'arcade'
-            ? { EJS_VirtualGamepadSettings: arcadeVirtualPad(effectiveArcadeButtons(options.arcadeButtons ?? namcoSet?.buttons, options.biosSet?.name), core) }
+            ? {
+                EJS_VirtualGamepadSettings: arcadeVirtualPad(
+                  effectiveArcadeButtons(options.arcadeButtons ?? namcoSet?.buttons, options.biosSet?.name, options.gameSlug),
+                  core,
+                ),
+              }
             // 红白机：引擎布局 + 连发 TB / TA（只有 FCEUmm 认 X / Y 是连发）
             : options.platform === 'nes' && restoredButtonIds(options.platform, core).length > 0
               ? { EJS_VirtualGamepadSettings: nesVirtualPad() }

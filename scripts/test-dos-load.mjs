@@ -226,9 +226,11 @@ check('鼠标覆盖层里的子节点仍归属游戏画面，覆盖层外节点�
   assert.equal(isMouseEventWithinSurface(child, null), false)
 })
 
-check('Windows 客体与《主题医院》都由适配器独占绝对指针，其他 DOS 保留相对鼠标', () => {
-  assert.equal(needsLockedAbsoluteDosMouse('theme-hospital'), true)
-  assert.equal(needsLockedAbsoluteDosMouse(' Theme-Hospital '), true)
+check('Windows 客体与读位置的 DOS 游戏由适配器独占绝对指针，其他 DOS 保留相对鼠标', () => {
+  assert.equal(needsLockedAbsoluteDosMouse('rich-man-3'), true)
+  assert.equal(needsLockedAbsoluteDosMouse(' Rich-Man-3 '), true)
+  // 《主题医院》只用 0Ch 回调的累计 mickey 差值：绝对桥钳住 0～1 会让一块屏幕点不到，必须走相对。
+  assert.equal(needsLockedAbsoluteDosMouse('theme-hospital'), false)
   assert.equal(needsLockedAbsoluteDosMouse('doom'), false)
   assert.equal(needsLockedAbsoluteDosMouse(), false)
   assert.equal(needsRelativeWindowsGuestMouse('xuan-yuan-sword-scar-of-sky', 'Swd3e/swd3e.exe'), true)
@@ -265,6 +267,16 @@ check('Windows 客体与《主题医院》都由适配器独占绝对指针，�
   assert.match(jsdos, /if \(activeLockedSurface\(\)\) clearCaptureAttempt\(attempt\)/)
   assert.match(jsdos, /\.catch\(\(\) => finishFailedCapture\(attempt\)\)/)
   assert.match(jsdos, /document\.addEventListener\('fullscreenchange', onFullscreenChange\)/)
+})
+
+check('DOSBox 核心的 INT 33h 回调补丁（SI/DI 累计 mickey）接在同步脚本里', () => {
+  const copy = read('scripts/copy-jsdos.mjs')
+  const check = read('scripts/check-jsdos.mjs')
+  assert.match(copy, /function patchInt74CumulativeMickeys\(/)
+  assert.match(copy, /patchDosboxMouseWasm\(join\(out, 'emulators', 'wdosbox\.wasm'\)\)/)
+  assert.match(copy, /int74CumulativeMickeys: true/)
+  assert.match(copy, /不是恰好一处/)
+  assert.match(check, /int74CumulativeMickeys !== true/)
 })
 
 check('DOS 画面按 4:3 显示（CRT 比例），绝对坐标与截图同步换算', () => {

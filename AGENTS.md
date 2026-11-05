@@ -326,6 +326,18 @@ Tekken/System 11 父集才允许保留原 ZIP 上传；MAME 使用 `tekken.zip` 
 引擎升级后它红了就重新取证，别直接改数字）。**注意它是延迟换稳定**：想调到别的值，
 改 `MAME_AUDIO_LATENCY_MS` 并同步上面那条「Buffer size」断言。
 
+### 2.8.3.1 JoJo CPS-3：默认走 FBNeo 四键；切 MAME 必须有 CHD
+
+线上《JOJO 的奇妙冒险：未来遗产》当前 ROM 名是 `jojobar1.zip`，完整 CRC 集在本站 FBNeo
+索引内，所以没有显式核心覆盖时按街机默认 `fbneo` 启动是正确的。MAME 当前目录对同名 set
+另要求 `cap-jjm-1.chd`；不要因简介提到 MAME 就把它自动改成 `mame-current`，MAME 缺盘会在
+启动前报错。若管理员确实把核心改为 MAME，必须沿 `mameChdProfileForRomset` / `detectedMameMedia`
+校验并绑定该 CHD，不能静默落到 MAME 菜单。
+
+该游戏按轻拳 / 中拳 / 重拳 / 替身四键操作。旧游戏记录未设置 `arcadeButtons` 时，
+`effectiveArcadeButtons` 需要按 slug 推断四键，并同时用于键位说明、手柄图和触屏虚拟手柄；
+后台明确配置仍优先。否则页面会误画按键 5 / 6，手机上也会多出无效按键。
+
 ### 2.8.4 NDS：默认 melonDS DS 1.4.0，WASM 崩溃时旧核心兜底
 
 本站 NDS 默认核心是自构建 `melondsds-wasm.data`（上游 melonDS DS v1.4.0），
@@ -548,10 +560,13 @@ socket 重查，TCP connect 也只等约 2 秒；而浏览器每个 SOCKFS socke
 
 - Windows 3.x / 9x 客体镜像装的是 DOSBox-X 集成鼠标驱动，要 `sendMouseMotion(0~1, 0~1)`；
   把正负位移喂给这条链会被钳成四个角，《凯撒大帝 3》就是这个症状。
-- 个别原生 DOS 图形界面对绝对位置更稳定；《主题医院》已经在真实页面复现，按 slug 收进
-  `src/emulator/dosMouse.ts` 的兼容清单。不要按 `strategy` 标签一刀切，标签不能证明输入协议。
+- 个别原生 DOS 游戏读 INT 33h 的绝对位置（《大富翁3》），按 slug 收进 `src/emulator/dosMouse.ts`
+  的兼容清单。不要按 `strategy` 标签一刀切，标签不能证明输入协议。
+  ⚠️ 只读位移的游戏**不能**进这张清单：绝对桥把指针钳在 0～1，游戏光标与指针一错位（换场景时游戏
+  把光标放回中央）就有一侧送不出位移、一块屏幕点不到。《主题医院》曾因 js-dos 的 SI/DI 增量 bug
+  （§2.24.1 第 5 项）被误放进来，2026-11-05 修掉根因后已移回原生相对 + Pointer Lock。
 
-修复在 `src/emulator/adapters/jsdos.ts`。Windows 客体和《主题医院》都把传给 js-dos 的
+修复在 `src/emulator/adapters/jsdos.ts`。Windows 客体和绝对坐标 DOS 游戏都把传给 js-dos 的
 `mouseCapture` 关掉，由适配器独占 pointerdown / move / up、自己请求 Pointer Lock，并把相对位移
 累积成 0～1 后送 `sendMouseMotion()`。不能再只靠“替换 ci 上的一个方法”：js-dos 的 React
 effect / 输入层一改挂载时序，就可能继续从旧闭包发相对包，表面看兼容分支已命中，游戏里仍只在
@@ -609,9 +624,10 @@ DOSBox-X 帧缓冲是 800×600。原版 DirectDraw 把画面缩进客体桌面�
 设置档必须是原版 560 字节且编号在 1～3，格式不对就明确报错，不猜。回归：
 `npm run test:dos-bundle`。
 
-《主题医院》不是这条：它是原生 DOS，局内 640×480，问题在 Pointer Lock 把相对位移送给软件
-光标，走 `needsLockedAbsoluteDosMouse()` 那条桥修，不套 Win95 或 Caesar 的分辨率补丁。注意它的
-**主菜单（教授 + 骷髅图）是 320×200**，不是 640×480（见 §2.8.6.0）。
+《主题医院》不是这条：它是原生 DOS，局内 640×480，鼠标问题的根因是 js-dos 回调给错 SI/DI
+（§2.24.1 第 5 项），不套 Win95 或 Caesar 的分辨率补丁。注意它的**主菜单（教授 + 骷髅图）是
+320×200**，不是 640×480（见 §2.8.6.0）。主菜单图标（悬停提示实测）：手形 =「开始新游戏」，
+右侧靶心 =「读入进度」，下方 =「开始网络游戏」；主菜单按 Esc 直接退出到 DOS。
 
 ### 2.8.6.0 DOS 画面按 4:3 显示（js-dos `renderAspect`）
 
@@ -1340,6 +1356,16 @@ js-dos 运行时从 npm 复制到 `public/jsdos/v<version>/`，版本同时写�
    剩余时间用 worker 的 `setTimeout` 等，消息降到约 600～1000 条/秒；同画面声音包速率 92.5/s 与原版一致，
    游戏速度不变。主线程直跑模式（隐藏页定时器会被节流到 1 秒）保留原轮询。四个 `wdosbox*.js` 都要命中，
    `check-jsdos` 会逐个验 `__8bitgoWakeWhenDue`。
+5. **INT 33h 事件回调的 SI/DI 必须是累计 mickey**（2026-11-05《主题医院》，资源代次 `8.5.3-8bitgo.4`）。
+   真驱动 / 原版 DOSBox / DOSBox-X 调 0Ch 注册的回调时，SI/DI 是累计原始 mickey，游戏拿两次的差当位移；
+   js-dos 自己的 `jsdos-mouse.cpp` 却给「上次回调以来的增量」。只用回调的游戏（主题医院只调 INT 33h 的
+   00/0C/15）算出「本次增量 − 上次增量」：同向连续移动光标不动、换向跳两倍或反向、小幅移动全丢。
+   `copy-jsdos.mjs` 的 `patchInt74CumulativeMickeys()` 直接改 `wdosbox.wasm`：加两个 i32 全局，把
+   INT74_Handler 里 `reg_si/di = rel.mickey_x/y` 换成累加后再写。字节特征（含 reg_si/reg_di 的线性地址）
+   必须在代码段恰好一处，否则同步失败——升级 js-dos 时要重新定位（wasm2wat 找调用 getRelMickey 的
+   两个函数，结果 i32 的那个就是 INT74）。`check-jsdos` 验旧特征已消失、新特征在位、`WebAssembly.validate`
+   通过。排查手段：往虚拟盘写一个 INT 33h 记录 TSR（`wc-send-data-chunk` 可直接写文件），再从
+   `ws-update-lines` 维护帧缓冲按形状找光标，能把「游戏读哪个接口、位移是否线性」量化出来。
 
 普通 DOS 的 EXE / COM / BAT 若不是 8.3 文件名，不能直接在 autoexec 里加引号：DOSBox 那条命令
 不会可靠剥掉，引擎照样报 ready，实际只停在 `C:\>`。`makeJsdosBundle()` 会保留原文件，再在同目录
@@ -1367,7 +1393,7 @@ Sockdrive 的启动超时也改成与 Windows 客体相同的“建盘 / 自启�
 
 逐游戏兼容表（`windowsGameCompatibility*` / `dosGameCompatibility*` / 鼠标模式 / DirectDraw 刷新）
 一律用 `compatSlug`：播放器传入的 `gameSlug` 是存档键，第二语言版带 `~rom-<语言>` 后缀，直接比对会让
-这些修正在换语言后静默失效。绝对坐标会话（Windows 客体、主题医院）里 `ci.sendMouseRelativeMotion`
+这些修正在换语言后静默失效。绝对坐标会话（Windows 客体、大富翁3）里 `ci.sendMouseRelativeMotion`
 也被换算成绝对坐标，手柄右摇杆 / 触屏鼠标板不再把光标甩到四角。
 
 ⚠️ **启动 BAT 要过一遍 DOSBox 兼容**（`src/lib/dosBatchCompat.ts`，2026-11-05《大富翁3》）。原版
