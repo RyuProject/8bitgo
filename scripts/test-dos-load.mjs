@@ -37,6 +37,7 @@ import {
   lockedAbsoluteContentRect,
   lockedAbsolutePointerAtClientPosition,
 } from '@/emulator/lockedAbsoluteMouse'
+import { aspectCorrectedSize } from '@/emulator/recorder'
 import {
   parseSockdrivePreload,
   parseSockdriveWarmPlan,
@@ -227,7 +228,8 @@ check('Windows 客体与《主题医院》都由适配器独占绝对指针，�
   assert.match(jsdos, /adapterOwnsAbsoluteMouse\s*\?\s*hookCapturedAbsoluteMouse/)
   assert.match(jsdos, /:\s*hookMouseInvert\(ci/)
   assert.match(jsdos, /rawAbsolute\.call\(c, pointer\.x, pointer\.y\)/)
-  assert.match(jsdos, /lockedAbsoluteContentRect\(surface\.getBoundingClientRect\(\)/)
+  assert.match(jsdos, /lockedAbsoluteContentRect\(canvas\.getBoundingClientRect\(\), JSDOS_DISPLAY_ASPECT\)/)
+  assert.match(jsdos, /host\.querySelector<HTMLElement>\('canvas'\) \?\? surface/)
   assert.match(jsdos, /classList\.contains\('emulator-mouse-overlay'\)/)
   assert.match(jsdos, /pointerSurface\(event\.target\)/)
   assert.match(jsdos, /event\.target === surface/)
@@ -248,6 +250,31 @@ check('Windows 客体与《主题医院》都由适配器独占绝对指针，�
   assert.match(jsdos, /if \(activeLockedSurface\(\)\) clearCaptureAttempt\(attempt\)/)
   assert.match(jsdos, /\.catch\(\(\) => finishFailedCapture\(attempt\)\)/)
   assert.match(jsdos, /document\.addEventListener\('fullscreenchange', onFullscreenChange\)/)
+})
+
+check('DOS 画面按 4:3 显示（CRT 比例），绝对坐标与截图同步换算', () => {
+  // 2026-11-05《主题医院》：320×200 教授主菜单被 renderAspect=AsIs 放成 1.6:1，横向拉宽 20%。
+  assert.match(jsdos, /const JSDOS_RENDER_ASPECT = '4\/3'/)
+  assert.match(jsdos, /renderAspect: JSDOS_RENDER_ASPECT/)
+  // js-dos 把 canvas 元素本身缩成 4:3、帧缓冲拉伸铺满：坐标以 canvas 为准，整块都可点。
+  const canvas = { left: 130, top: 97, width: 634.5, height: 475.875 }
+  assert.deepEqual(lockedAbsoluteContentRect(canvas, { width: 4, height: 3 }), canvas)
+  assert.deepEqual(lockedAbsolutePointerAtClientPosition(130, 97 + 475.875, canvas), { x: 0, y: 1 })
+  // 首帧前 canvas 还铺满播放器时，同样按 4:3 居中，和之后缩好的结果一致。
+  assert.deepEqual(
+    lockedAbsoluteContentRect({ left: 0, top: 0, width: 1_000, height: 600 }, { width: 4, height: 3 }),
+    { left: 100, top: 0, width: 800, height: 600 },
+  )
+  // 截图：只放大不缩小，4:3 帧原样。
+  assert.deepEqual(aspectCorrectedSize(320, 200, 4 / 3), { width: 320, height: 240 })
+  assert.deepEqual(aspectCorrectedSize(640, 400, 4 / 3), { width: 640, height: 480 })
+  assert.deepEqual(aspectCorrectedSize(720, 400, 4 / 3), { width: 720, height: 540 })
+  assert.deepEqual(aspectCorrectedSize(640, 480, 4 / 3), { width: 640, height: 480 })
+  assert.deepEqual(aspectCorrectedSize(800, 600, 4 / 3), { width: 800, height: 600 })
+  assert.deepEqual(aspectCorrectedSize(256, 240, 4 / 3), { width: 320, height: 240 })
+  assert.deepEqual(aspectCorrectedSize(320, 200), { width: 320, height: 200 })
+  assert.deepEqual(aspectCorrectedSize(0, 200, 4 / 3), { width: 0, height: 200 })
+  assert.match(jsdos, /imageDataToBlob\(\s*await ci\.screenshot\(\),\s*'image\/png',\s*JSDOS_DISPLAY_ASPECT\.width \/ JSDOS_DISPLAY_ASPECT\.height/)
 })
 
 check('竖屏播放器出现上下黑边时，也只按实际游戏画面换算坐标', () => {

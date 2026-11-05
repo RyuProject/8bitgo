@@ -15,6 +15,7 @@
 import { assertValidZipBlob, extractZipEntry, crc32, decodeZipName } from './unzip'
 import { mergeDosboxConfigOverride, parseDosboxConfigOverride } from '../../shared/dosbox-config.js'
 import { isPc98FdiFileName } from '../emulator/pc98'
+import { dosMountedDrives, planDosBatchCompatibility } from './dosBatchCompat'
 
 const te = new TextEncoder()
 
@@ -844,17 +845,7 @@ function dosLaunchTarget(entries: ZipEntry[], buf: ArrayBuffer, executable: stri
 
   const ext = file.slice(file.lastIndexOf('.') + 1).toUpperCase()
   if (!/^(EXE|COM|BAT)$/.test(ext)) throw new Error(`DOS 启动文件扩展名无效：${file}`)
-  const occupied = new Set(entries.map((entry) => entry.name.toLowerCase()))
-  let aliasName = ''
-  for (let i = 0; i < 100; i++) {
-    const stem = i === 0 ? '8BITGO' : `8BITG${String(i).padStart(2, '0')}`
-    const candidate = `${stem}.${ext}`
-    if (!occupied.has(`${dir}${candidate}`.toLowerCase())) {
-      aliasName = candidate
-      break
-    }
-  }
-  if (!aliasName) throw new Error(`DOS 启动目录里没有可用的 8.3 别名：${dir || '/'}`)
+  const aliasName = freeDosAlias(entries, dir, ext)
   return {
     path: `${dir}${aliasName}`,
     alias: {
@@ -865,6 +856,72 @@ function dosLaunchTarget(entries: ZipEntry[], buf: ArrayBuffer, executable: stri
       uncompressedSize: source.uncompressedSize,
       data: rawData(buf, source),
     },
+  }
+}
+
+/** 启动目录里第一个没被占用的 8BITGO / 8BITGnn 别名 */
+function freeDosAlias(entries: readonly ZipEntry[], dir: string, ext: string): string {
+  const occupied = new Set(entries.map((entry) => entry.name.toLowerCase()))
+  for (let i = 0; i < 100; i++) {
+    const stem = i === 0 ? '8BITGO' : `8BITG${String(i).padStart(2, '0')}`
+    const candidate = `${stem}.${ext}`
+    if (!occupied.has(`${dir}${candidate}`.toLowerCase())) return candidate
+  }
+  throw new Error(`DOS 启动目录里没有可用的 8.3 别名：${dir || '/'}`)
+}
+
+interface DosLaunchBatch extends DosLaunchTarget {
+  startupCommands?: string
+  /** 启动 BAT 被修补过（换成了别名，autoexec 必须重建） */
+  patched: boolean
+}
+
+/**
+ * 启动程序是 BAT 时做一次 DOSBox 兼容修补（SUBST → MOUNT、跳过外置鼠标驱动，见 dosBatchCompat.ts）。
+ * 原 BAT 保留不动，修补版写成同目录的 8.3 别名；任何一步读不出来都原样返回，绝不挡启动。
+ */
+async function dosLaunchBatchCompat(
+  entries: ZipEntry[],
+  buf: ArrayBuffer,
+  launch: DosLaunchTarget,
+  executable: string,
+  startupCommands?: string,
+): Promise<DosLaunchBatch> {
+  const unchanged: DosLaunchBatch = { ...launch, startupCommands, patched: false }
+  const wanted = safeArchivePath(executable)?.toLowerCase()
+  const source = wanted ? entries.find((entry) => !entry.name.endsWith('/') && entry.name.toLowerCase() === wanted) : undefined
+  if (!source || !/\.bat$/i.test(source.name) || source.uncompressedSize > 16 * 1024) return unchanged
+  let original: Uint8Array
+  try {
+    original = await extractZipEntry(buf, {
+      name: source.name,
+      method: source.method,
+      compressedSize: source.compressedSize,
+      uncompressedSize: source.uncompressedSize,
+      crc32: source.crc,
+      offset: source.localOffset,
+    })
+  } catch {
+    return unchanged
+  }
+  const slash = source.name.lastIndexOf('/')
+  const dir = slash >= 0 ? source.name.slice(0, slash + 1) : ''
+  const names = new Set(entries.map((entry) => entry.name.toLowerCase()))
+  const plan = planDosBatchCompatibility(original, {
+    dir,
+    fileExists: (path) => names.has(path.toLowerCase()),
+    takenDrives: dosMountedDrives(startupCommands),
+  })
+  if (!plan.bytes) return unchanged
+  const path = launch.alias?.name ?? `${dir}${freeDosAlias(entries, dir, 'BAT')}`
+  const data = plan.bytes
+  return {
+    path,
+    alias: { name: path, method: 0, crc: crc32(data), compressedSize: data.length, uncompressedSize: data.length, data },
+    startupCommands: plan.mounts.length
+      ? [...plan.mounts, startupCommands?.trim() ?? ''].filter(Boolean).join('\n')
+      : startupCommands,
+    patched: true,
   }
 }
 
@@ -1225,15 +1282,18 @@ export async function makeJsdosBundle(
       offset: bundledConf.localOffset,
     })
     const picked = configuredExecutable ?? ((startupCommands?.trim() || launchArguments.length) ? pickExecutable(entries.map((e) => e.name)) : null)
-    const launch = picked ? dosLaunchTarget(entries, buf, picked) : null
+    const launch = picked
+      ? await dosLaunchBatchCompat(entries, buf, dosLaunchTarget(entries, buf, picked), picked, startupCommands)
+      : null
+    const launchStartup = launch ? launch.startupCommands : startupCommands
     // 后台指定了启动程序就以我们生成的那份为基底，否则用包里自带的。
-    // 长文件名必须改用真实写进包里的别名，不能继续沿用调用方提前生成的坏命令。
+    // 长文件名 / 修补过的 BAT 必须改用真实写进包里的别名，不能继续沿用调用方提前生成的坏命令。
     const base = launch?.alias
-      ? buildDosboxConf(launch.path, startupCommands, launchArguments)
+      ? buildDosboxConf(launch.path, launchStartup, launchArguments)
       : conf ?? (configuredExecutable
-          ? buildDosboxConf(launch?.path ?? configuredExecutable, startupCommands, launchArguments)
+          ? buildDosboxConf(launch?.path ?? configuredExecutable, launchStartup, launchArguments)
           : startupCommands?.trim() || launchArguments.length
-            ? buildDosboxConf(launch?.path ?? picked, startupCommands, launchArguments)
+            ? buildDosboxConf(launch?.path ?? picked, launchStartup, launchArguments)
             : new TextDecoder().decode(extracted))
     const merged = te.encode(mergeDosboxConfigOverride(base, configOverride)) as Uint8Array<ArrayBuffer>
     const out: OutEntry[] = []
@@ -1324,8 +1384,9 @@ export async function makeJsdosBundle(
         data: rawData(buf, e), // 压缩数据整段照抄，不解压
       })
     }
-    const launch = dosLaunchTarget(entries, buf, exe)
+    const launch = await dosLaunchBatchCompat(entries, buf, dosLaunchTarget(entries, buf, exe), exe, startupCommands)
     launchExe = launch.path
+    startupCommands = launch.startupCommands
     if (launch.alias) out.push(launch.alias)
     out.push(...extraOutEntries(wantedExtras, out.map((entry) => entry.name)))
   } else {

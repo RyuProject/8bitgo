@@ -381,7 +381,7 @@ export function GameDetailPage() {
   // 「支持语言」格：从 game.roms 里读出真正绑了哪些语言槽，直接显示语言名。
   // 这既让玩家不用猜 CN / JP，也让 SSR 的正文明确说出哪些语言 ROM 真正可选。
   const supportedLangs = Array.from(
-    new Set(romLangs.map((l) => romLanguageLabel(l, lang))),
+    new Set(romLangs.map((l) => romLanguageLabel(l))),
   ).join(' · ')
 
   return (

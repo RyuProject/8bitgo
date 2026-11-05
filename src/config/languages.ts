@@ -103,8 +103,8 @@ export function isValidRomLanguageCode(value: string): boolean {
   return normalizeRomLanguageCode(value) === value
 }
 
-/** 标准槽沿用站点本地名称；自定义槽显示浏览器识别的语言名及代码，避免相近语言混淆。 */
-export function romLanguageLabel(code: string, locale = 'zh-Hans'): string {
+/** 标准槽沿用现有名称；自定义槽使用该语言自己的 locale 显示自称。 */
+export function romLanguageLabel(code: string): string {
   const builtin = Object.prototype.hasOwnProperty.call(ROM_LANG_LABEL, code)
     ? ROM_LANG_LABEL[code as RomLang]
     : undefined
@@ -112,8 +112,9 @@ export function romLanguageLabel(code: string, locale = 'zh-Hans'): string {
   const normalized = normalizeRomLanguageCode(code)
   if (!normalized) return code
   try {
-    const displayName = new Intl.DisplayNames([locale], { type: 'language' }).of(normalized)
-    if (displayName && displayName.toLowerCase() !== normalized.toLowerCase()) return `${displayName} (${normalized})`
+    // 以语言代码本身作为显示 locale，避免界面当前语言把俄语显示成“俄语 (ru)”等外译名称。
+    const displayName = new Intl.DisplayNames([normalized], { type: 'language' }).of(normalized)
+    if (displayName && displayName.toLowerCase() !== normalized.toLowerCase()) return displayName
   } catch {
     // 某些精简浏览器未带完整 Intl 数据；代码仍可作为稳定、可辨认的兜底名称。
   }

@@ -342,6 +342,30 @@ console.log('\n── 新行为：Windows 客体按里程碑推进 ──')
   ok(p.shown <= CEILING + 1e-9, `视觉进度封顶在 ${(p.shown * 100).toFixed(0)}%，100% 只能由 onReady 画`)
 }
 
+console.log('\n── 渐近估计跑在前面后，真实比例要接着往上走（不能冻住）──')
+{
+  /*
+    2026-11-05《主题医院》150MB：第一片 8MB 没带总量，渐近映射把它算成 rom 阶段的 86%（显示 67%），
+    之后真实比例从 5% 涨到 85% 的几分钟里条子一动不动。现在把剩余的真实进度铺进 [已显示, 上界]。
+  */
+  const plan = loadProgressPlan({ runtime: 'jsdos', platform: 'dos' })
+  const overall = createOverallRatio(0, plan)
+  const [romStart, romEnd] = plan.ranges.rom
+  const early = overall({ phase: 'rom', loaded: 8 * 1024 * 1024 })
+  ok(early > romStart + (romEnd - romStart) * 0.8, `渐近估计先跑到 ${(early * 100).toFixed(0)}%`)
+  const a = overall({ phase: 'rom', loaded: 10e6, total: 150e6, ratio: 10 / 150 })
+  const b = overall({ phase: 'rom', loaded: 80e6, total: 150e6, ratio: 80 / 150 })
+  const c = overall({ phase: 'rom', loaded: 140e6, total: 150e6, ratio: 140 / 150 })
+  ok(a >= early - 1e-9, '拿到真实比例的那一刻不倒退')
+  ok(b > a + 0.01 && c > b + 0.01, `⭐ 之后随真实下载继续走：${(a * 100).toFixed(0)}% → ${(b * 100).toFixed(0)}% → ${(c * 100).toFixed(0)}%`)
+  ok(c < romEnd, '没下完之前不到阶段上界')
+  const done = overall({ phase: 'rom', loaded: 150e6, total: 150e6, ratio: 1 })
+  ok(Math.abs(done - romEnd) < 1e-9, '下载完成时正好到 rom 阶段上界，播放器照常进 starting')
+  const fresh = createOverallRatio(0, plan)
+  const plain = fresh({ phase: 'rom', loaded: 75e6, total: 150e6, ratio: 0.5 })
+  ok(Math.abs(plain - (romStart + (romEnd - romStart) * 0.5)) < 1e-9, '没有跑在前面的估计时仍按原比例换算')
+}
+
 console.log('\n── 里程碑只进不退、且封不到顶 ──')
 {
   const overall = createOverallRatio()

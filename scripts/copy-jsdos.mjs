@@ -311,6 +311,27 @@ function __8bitgoPrefetchAfter(range){
   writeFileSync(file, code)
 }
 
+/**
+ * DOSBox 的「不可跳过的 sleep」原版是忙等：worker 发 ws-sync-sleep，主线程原样回 wc-sync-sleep，
+ * 没到 wakeUpAt 就再来一轮。DOSBox 每 1ms 节拍睡 1ms，于是一个空闲的 DOS 游戏每秒要在 worker 与
+ * 主线程之间来回 5～7 万条消息（2026-11-05《大富翁3》实测 56k～70k/s），两边各吃掉一个核心，
+ * 页面主线程还要为每条消息跑一次事件分发。
+ *
+ * 改成：第一轮仍经主线程（worker 必须让出事件循环，才能收到按键 / 鼠标），之后剩余时间用
+ * worker 自己的 setTimeout 等到点。消息量降到约每秒 1000 条；DOSBox 按真实耗时补节拍，
+ * 同一画面下声音包速率与原版一致（92.5/s 对 92.5/s），游戏速度不变。
+ * 只在 worker 里换成定时器：js-dos 的「主线程直跑」模式下，隐藏标签页的 setTimeout 会被节流到 1 秒，
+ * 那里保留原来的消息轮询。四个核心（dosbox / dosbox-x / jspi / dbg）都是同一段 Emscripten 胶水，必须全部命中。
+ */
+const SYNC_SLEEP_BUSY_WAIT = 'if(Module.wakeUpAt!==undefined&&Date.now()<Module.wakeUpAt){postWakeUpMessage();return}var wakeUp=Module.sync_wakeUp;delete Module.sync_wakeUp;delete Module.wakeUpAt;if(Module.alive){wakeUp()}}};'
+const SYNC_SLEEP_TIMED_WAIT = '__8bitgoWakeWhenDue()}};function __8bitgoWakeWhenDue(){if(Module.wakeUpAt!==undefined){var rest=Module.wakeUpAt-Date.now();if(rest>0){if(typeof importScripts==="function"){setTimeout(__8bitgoWakeWhenDue,rest)}else{postWakeUpMessage()}return}}var wakeUp=Module.sync_wakeUp;delete Module.sync_wakeUp;delete Module.wakeUpAt;if(Module.alive&&wakeUp){wakeUp()}}'
+function patchSyncSleep(file) {
+  const code = readFileSync(file, 'utf8')
+  const times = code.split(SYNC_SLEEP_BUSY_WAIT).length - 1
+  if (times !== 1) fail(`${file.split(/[\\/]/).pop()} 的 sync sleep 结构变了（期望 1 处忙等，实际 ${times} 处）`)
+  writeFileSync(file, code.replace(SYNC_SLEEP_BUSY_WAIT, SYNC_SLEEP_TIMED_WAIT))
+}
+
 /** 写死的 1900 端口过不了 Cloudflare；本站中继和主站共用 443 的 /ipx/。 */
 function patchIpxPort(file) {
   if (!patchIpx) return
@@ -330,6 +351,9 @@ patchLifecycle(mainJs)
 wrapCssInLayer(join(out, 'js-dos.css'))
 wrapInIife(mainJs)
 patchSockdriveSequentialReadAhead(join(out, 'emulators', 'emulators.js'))
+for (const core of readdirSync(join(out, 'emulators')).filter((name) => /^wdosbox(?:-x)?(?:-jspi|-dbg)?\.js$/.test(name))) {
+  patchSyncSleep(join(out, 'emulators', core))
+}
 
 const files = listFiles(out)
   .filter((name) => name !== 'runtime.json')
@@ -342,6 +366,7 @@ writeFileSync(
     withDosboxX,
     ipxPatched: patchIpx,
     mouseCaptureChromePatched: true,
+    syncSleepTimedWait: true,
     sourceFingerprint,
     copyScriptSha256,
     files,

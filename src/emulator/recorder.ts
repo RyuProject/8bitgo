@@ -308,13 +308,45 @@ export async function captureCanvasScreenshot(
   return options.directFallback === false ? null : canvasToBlob(canvas)
 }
 
-/** ImageData 转 blob（js-dos 的 ci.screenshot() 给的是 ImageData） */
-export function imageDataToBlob(data: ImageData, type = 'image/png'): Promise<Blob | null> {
+/**
+ * 帧缓冲像素不是方的时（DOS 的 320×200 / 640×400 按 4:3 显示），截图按显示比例输出。
+ * 只放大、不缩小，任何一行一列像素都不丢；比例差 1% 以内视为一致，原样返回。
+ */
+export function aspectCorrectedSize(
+  width: number,
+  height: number,
+  displayAspect?: number,
+): { width: number; height: number } {
+  if (
+    !displayAspect || !Number.isFinite(displayAspect) || displayAspect <= 0
+    || !(width > 0) || !(height > 0)
+  ) return { width, height }
+  const current = width / height
+  if (Math.abs(current / displayAspect - 1) < 0.01) return { width, height }
+  return current > displayAspect
+    ? { width, height: Math.round(width / displayAspect) }
+    : { width: Math.round(height * displayAspect), height }
+}
+
+/**
+ * ImageData 转 blob（js-dos 的 ci.screenshot() 给的是 ImageData）。
+ * `displayAspect` 给了就按显示比例输出（最近邻放大，像素画不糊），和玩家在画面上看到的一致。
+ */
+export function imageDataToBlob(data: ImageData, type = 'image/png', displayAspect?: number): Promise<Blob | null> {
   const canvas = document.createElement('canvas')
   canvas.width = data.width
   canvas.height = data.height
   const ctx = canvas.getContext('2d')
   if (!ctx) return Promise.resolve(null)
   ctx.putImageData(data, 0, 0)
-  return canvasToBlob(canvas, type)
+  const size = aspectCorrectedSize(data.width, data.height, displayAspect)
+  if (size.width === data.width && size.height === data.height) return canvasToBlob(canvas, type)
+  const out = document.createElement('canvas')
+  out.width = size.width
+  out.height = size.height
+  const outCtx = out.getContext('2d')
+  if (!outCtx) return canvasToBlob(canvas, type)
+  outCtx.imageSmoothingEnabled = false
+  outCtx.drawImage(canvas, 0, 0, size.width, size.height)
+  return canvasToBlob(out, type)
 }

@@ -753,9 +753,16 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
     }
   }
 
+  /*
+    第一片的 Content-Range 已经说出了整份大小，但 `total` 要等这一片读完才赋值。
+    旧代码在这 8MB 里一直报 total=0，createOverallRatio 只能走「没有总量」的渐近映射：
+    8MB 被算成 rom 阶段的 86%（《主题医院》150MB：开局 6 秒条子就到 67%），之后真实比例
+    5%→85% 全都输给它，条子在 67% 一动不动好几分钟。第一片期间改用这个已知总量。
+  */
+  let probedTotal = 0
   /** 把分片内的字节换算成“已经完整落盘的分片 + 当前片”的整份进度。 */
   const takePart = async (res: Response, expect: number) => {
-    const relay = (p: LoadProgress) => emitTotal(completed + (p.loaded ?? 0), total)
+    const relay = (p: LoadProgress) => emitTotal(completed + (p.loaded ?? 0), total || probedTotal || undefined)
     if (!res.body) {
       const blob = await res.blob()
       if (blob.size !== expect) throw new Error(`分片不完整：应为 ${expect} 字节，实际 ${blob.size}`)
@@ -797,6 +804,7 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
         const firstEnd = Math.min(chunkBytes, firstTotal) - 1
         if (Number(match[2]) !== firstEnd) throw new Error(`分片范围不匹配：期望 bytes 0-${firstEnd}/${firstTotal}`)
 
+        probedTotal = firstTotal
         const firstPart = await takePart(first, firstEnd + 1)
         sampleBytes = firstPart.size
         sampleElapsedMs = Math.max(1, monotonicNow() - sampleStartedAt)
@@ -1367,9 +1375,30 @@ export const liftRatio = (floor: number, v: number): number => floor + (1 - floo
 export function createOverallRatio(floor = 0, plan: LoadProgressPlan = DEFAULT_LOAD_PROGRESS_PLAN): (p: LoadProgress) => number {
   const base = Math.min(0.99, Math.max(0, floor))
   let shown = base
+  /*
+    同一阶段先报过「没有总量」的渐近估计（或视觉计时）、后来才拿到真实比例时，估计值可能已经跑在
+    真实进度前面。只取 max 的话条子会停住，直到真实比例追上来——大包下载要停好几分钟。
+    第一次拿到真实比例且落后于已显示值时，记下这一刻，把**剩下的**真实进度线性铺到
+    [已显示, 阶段上界] 里：条子继续走，也照样在下载完成时正好到上界。
+  */
+  let anchor: { phase: LoadProgress['phase']; shown: number; inner: number } | null = null
   return (p) => {
     const [start, end] = loadProgressRange(plan, p.phase)
     const span = end - start
+    if (p.phase !== 'starting' && p.ratio !== undefined && Number.isFinite(p.ratio)) {
+      const inner = Math.min(1, Math.max(0, p.ratio))
+      const top = liftRatio(base, end)
+      if (anchor?.phase !== p.phase) {
+        const value = liftRatio(base, start + span * inner)
+        anchor = value < shown && shown < top && inner < 1 ? { phase: p.phase, shown, inner } : null
+      }
+      if (anchor) {
+        const progressed = (inner - anchor.inner) / (1 - anchor.inner)
+        const value = anchor.shown + (top - anchor.shown) * Math.min(1, Math.max(0, progressed))
+        shown = Math.min(1, Math.max(shown, value))
+        return shown
+      }
+    }
 
     /*
       starting 阶段刻意**不吃 ratio**：ruffle / jsnes / webretro 都是资源一读完就报

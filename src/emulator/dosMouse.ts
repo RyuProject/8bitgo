@@ -8,6 +8,11 @@ export const DOS_MOUSE_SENSITIVITY_DEFAULT = 0.5
  */
 const LOCKED_ABSOLUTE_MOUSE_GAMES = new Set([
   'theme-hospital',
+  /*
+    《大富翁3》全程点选菜单与棋盘。PLAY.BAT 里的 MOUSE.COM 已由 dosBatchCompat 跳过、改用 DOSBox
+    内置 INT 33h 驱动后，绝对坐标在 2026-11-05 实测逐像素对齐；相对路径在指针未锁定时光标会漂。
+  */
+  'rich-man-3',
 ])
 
 /**

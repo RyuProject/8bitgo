@@ -604,9 +604,26 @@ DOSBox-X 帧缓冲是 800×600。原版 DirectDraw 把画面缩进客体桌面�
 设置档必须是原版 560 字节且编号在 1～3，格式不对就明确报错，不猜。回归：
 `npm run test:dos-bundle`。
 
-《主题医院》不是这条：它是原生 DOS 640×480，画布和帧缓冲同为 4:3；它的问题在 Pointer Lock
-把相对位移送给只认绝对位置的软件光标，走 `needsLockedAbsoluteDosMouse()` 那条桥修，不套
-Win95 或 Caesar 的分辨率补丁。
+《主题医院》不是这条：它是原生 DOS，局内 640×480，问题在 Pointer Lock 把相对位移送给软件
+光标，走 `needsLockedAbsoluteDosMouse()` 那条桥修，不套 Win95 或 Caesar 的分辨率补丁。注意它的
+**主菜单（教授 + 骷髅图）是 320×200**，不是 640×480（见 §2.8.6.0）。
+
+### 2.8.6.0 DOS 画面按 4:3 显示（js-dos `renderAspect`）
+
+DOS / Win3.x / Win9x 的画面是给 4:3 显像管看的，320×200、640×400、720×400（文本）这些模式的
+像素本来就不是方的。js-dos 默认 `renderAspect: 'AsIs'` 按帧缓冲像素比例显示，于是绝大多数
+VGA 游戏被横向拉宽 20%（文本模式 35%）。2026-11-05《主题医院》实测：320×200 的教授主菜单被放成
+761×476（1.6:1）。现在 `adapters/jsdos.ts` 统一传 `renderAspect: JSDOS_RENDER_ASPECT`（'4/3'）；
+640×480 / 800×600 / 1024×768 本来就是 4:3，不受影响。
+
+js-dos 的 `$a()` 是把 **canvas 元素本身** 缩成该比例、帧缓冲拉伸铺满，所以：
+- 绝对坐标桥的 `contentRect` 以 canvas 的矩形为准、按 4:3 求内容区（覆盖层事件也换算到 canvas），
+  **不能**再用 `ci.width()/height()` 的像素比例扣黑边——那会把 4:3 画布里的 320×200 误算成
+  16:10 内容，上下各丢 10% 可点区域；
+- 截图 `imageDataToBlob(..., displayAspect)` 按 4:3 最近邻放大输出（320×200 → 320×240），
+  与玩家看到的一致；录像仍是 canvas 原始像素（多数播放器会按容器显示，未改）。
+移动端 DOS 的播放器框本来就是 `aspect-[4/3]`（`screenAspect.ts`），两者一致。回归：`test:dos-load`。
+
 
 ### 2.8.6.1 《天之痕》：标题页正常不等于 DirectInput 正常
 
@@ -1305,13 +1322,19 @@ js-dos 运行时从 npm 复制到 `public/jsdos/v<version>/`，版本同时写�
 症状通常只有黑屏。升级 `js-dos` 时必须同步改版本常量并跑 `npm run jsdos`；
 `scripts/check-jsdos.mjs` 会在构建前、复制到 `dist/client` 后各验一次清单、长度和 SHA-256。
 
-`scripts/copy-jsdos.mjs` 还打三项补丁，任何一项对不上都必须让构建失败：
+`scripts/copy-jsdos.mjs` 还打这几项补丁，任何一项对不上都必须让构建失败：
 
 1. IIFE 隔离上游数百个顶层变量，尤其不能再让它的 `io` 覆盖 socket.io；
 2. IPX 地址去掉写死的 1900 端口，联机中继才能走 Cloudflare 后面的主站 443；
 3. 上游每次 `Dos()` 注册的 `fullscreenchange` / `pointerlockchange` / `visibilitychange` 要在
    `stop()` 移除，并释放 `navigator.keyboard` 锁。原版只停核心、不拆这三条监听；多开几局后一次
    切后台会唤醒所有历史 Redux store，完整模拟器对象也无法回收。
+4. **sync sleep 不能忙等**（2026-11-05《大富翁3》，资源代次 `8.5.3-8bitgo.3`）。DOSBox 每 1ms 节拍睡 1ms，
+   原版胶水在 worker 和主线程之间来回 `ws-sync-sleep` / `wc-sync-sleep` 直到到点：空闲的 DOS 游戏每秒
+   5.6～7 万条消息，两个线程各烧一个核心。现在第一轮仍经主线程让出 worker 事件循环（按键 / 鼠标照常进），
+   剩余时间用 worker 的 `setTimeout` 等，消息降到约 600～1000 条/秒；同画面声音包速率 92.5/s 与原版一致，
+   游戏速度不变。主线程直跑模式（隐藏页定时器会被节流到 1 秒）保留原轮询。四个 `wdosbox*.js` 都要命中，
+   `check-jsdos` 会逐个验 `__8bitgoWakeWhenDue`。
 
 普通 DOS 的 EXE / COM / BAT 若不是 8.3 文件名，不能直接在 autoexec 里加引号：DOSBox 那条命令
 不会可靠剥掉，引擎照样报 ready，实际只停在 `C:\>`。`makeJsdosBundle()` 会保留原文件，再在同目录
@@ -1342,6 +1365,14 @@ Sockdrive 的启动超时也改成与 Windows 客体相同的“建盘 / 自启�
 这些修正在换语言后静默失效。绝对坐标会话（Windows 客体、主题医院）里 `ci.sendMouseRelativeMotion`
 也被换算成绝对坐标，手柄右摇杆 / 触屏鼠标板不再把光标甩到四角。
 
+⚠️ **启动 BAT 要过一遍 DOSBox 兼容**（`src/lib/dosBatchCompat.ts`，2026-11-05《大富翁3》）。原版
+`PLAY.BAT` = `subst a: .` / `Mouse.com` / `SS` / `RICH3`：DOSBox 没有 SUBST，游戏从 A: 读的图全缺——
+主菜单还在，进「單人遊戲」选人画面缺背景按钮、点下去整局卡死；`MOUSE.COM` 接管 INT 33h 后内置驱动的
+绝对定位作废，光标与真实鼠标 / 触屏鼠标板对不上。`makeJsdosBundle()` 现在对启动 BAT：`subst X: .`（CD /
+换盘之前、盘符未被占用）翻译成 autoexec 里的 `mount x .`，包里真有的 MOUSE / CTMOUSE / GMOUSE 等驱动行改
+REM；修补版写成同目录 `8BITGO.BAT`（原 BAT 不动），其余字节含 Big5 ECHO 原样。《大富翁3》同时进
+`LOCKED_ABSOLUTE_MOUSE_GAMES`。回归：`scripts/test-dos-batch-compat.mjs`（并入 `npm run test:dos-bundle`）。
+
 Windows 系统镜像、游戏包和资料片从同一刻下载；ROM 进度在系统镜像完成前暂存，避免游戏段先跑满
 再长时间不动。资料片最多三路并发，并走共用的失速中止。回归：
 `npm run test:jsdos-runtime && npm run test:dos-bundle && npm run test:dos-extras && npm run test:system-source`。
@@ -1364,6 +1395,15 @@ Windows 客体及 Sockdrive 也各自分配。不要再把 `engine → assets �
 WASM 编译等静默阶段才允许按预算兜底推进；完成仍只认 `onReady`，最多显示 99%。自动重试会把
 整套策略抬到已显示的 `floor`，阶段上界也必须一起 `liftRatio()`，不能拿抬高后的实际值去比较
 未抬高的原始边界。回归：`npm run test:load-progress`。
+
+⚠️ **分片下载的第一片也要带总量**（2026-11-05《主题医院》，150MB 游戏包）。`fetchBlobWithProgress`
+按 8MB 分片走 Range，第一片的回包里才有 `Content-Range` 给的总大小；如果第一片读的过程中仍报
+`total=0`，`createOverallRatio` 会按 SOFT_SCALE（4MB）做渐近估计，8MB 读完时已经冲到 rom 段
+的 85% 左右（整体约 67%），之后真实比例只有 5%，被「只进不退」吞掉，进度条在 67% 停好几分钟。
+现在 `blobWithProgressGuarded` 拿到第一片响应头就记下 `probedTotal` 并随每帧上报；
+`createOverallRatio` 另外加了锚点重映射：同一阶段里渐近估计已经跑在前面、真实比例才到达时，
+从已显示的位置按剩余真实进度线性走到阶段终点，而不是冻住。回归：`test:chunked-fetch` 第六节、
+`test:load-progress`「渐近估计跑在前面后……」。
 
 ### 2.25 直播间房间的清理只认 `hostSocketId` 这个事实，不认 `membership`
 

@@ -131,6 +131,15 @@ for (const type of ['fullscreenchange', 'pointerlockchange', 'visibilitychange']
 }
 if (!css.startsWith('@layer jsdos{')) fail('js-dos.css 没放进 cascade layer，会覆盖整站样式')
 
+// 每个 DOSBox 核心的胶水都必须换掉 sync sleep 的主线程忙等（见 copy-jsdos.mjs patchSyncSleep）
+for (const name of listed.filter((name) => /^emulators\/wdosbox(?:-x)?(?:-jspi|-dbg)?\.js$/.test(name))) {
+  const core = readFileSync(join(runtimeDir, name), 'utf8')
+  if (!core.includes('function __8bitgoWakeWhenDue(){') || core.includes('Date.now()<Module.wakeUpAt){postWakeUpMessage();return}')) {
+    fail(`${name} 仍在用主线程忙等实现 sleep（每秒数万条消息）`)
+  }
+}
+if (manifest.syncSleepTimedWait !== true) fail('runtime.json 没有记录 sync sleep 补丁，请重新运行 npm run jsdos')
+
 for (const name of required.filter((name) => name.endsWith('.wasm'))) {
   const wasm = readFileSync(join(runtimeDir, name))
   if (!wasm.subarray(0, 4).equals(Buffer.from([0x00, 0x61, 0x73, 0x6d]))) fail(`${name} 不是有效 WASM`)

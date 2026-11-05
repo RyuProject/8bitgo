@@ -663,5 +663,20 @@ await check('有内容版本的通用 ROM 探测 Range；无版本外链仍单�
   }
 })
 
+console.log('六、第一片期间的进度也要带总量')
+
+await check('⚠️ 第一片还没读完时每帧都带 Content-Range 给的总量（《主题医院》150MB 卡在 67%）', async () => {
+  const size = 1024 * 10
+  const { fetchImpl } = server(size)
+  const events = []
+  await fetchBlobWithProgress('u', { fetchImpl, chunkBytes: 1024, onProgress: (p) => events.push(p) })
+  const firstChunk = events.filter((e) => (e.loaded ?? 0) > 0 && (e.loaded ?? 0) <= 1024)
+  assert.ok(firstChunk.length > 0, '第一片期间应有进度帧')
+  for (const e of firstChunk) {
+    assert.equal(e.total, size, `loaded=${e.loaded} 的帧缺总量`)
+    assert.ok(e.ratio !== undefined && e.ratio <= 1024 / size + 1e-9, `第一片的比例只能是 ${(1024 / size).toFixed(2)} 以内`)
+  }
+})
+
 console.log(failed ? `\n${failed} 项未通过` : '\n全部通过 ✅')
 process.exit(failed ? 1 : 0)

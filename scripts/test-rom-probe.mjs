@@ -435,7 +435,8 @@ assert.equal(isolatedEmbedFor('diablo'), undefined, 'Diablo 不需要 COOP/COEP�
   assert.equal(normalizeRomLanguageCode('pt-br'), 'pt-BR', '自定义语言码按 BCP-47 规范大小写归一')
   assert.equal(normalizeRomLanguageCode('this-is-too-long'), null, '拒绝超过数据库 VARCHAR(10) 上限的语言码')
   assert.equal(normalizeRomLanguageCode('not a code'), null, '拒绝无效语言码')
-  assert.match(romLanguageLabel('pt-BR'), /pt-BR/, '自定义槽显示可辨认语言名及代码')
+  assert.equal(romLanguageLabel('ru'), 'русский', '自定义俄语槽使用俄语自身的自称')
+  assert.equal(romLanguageLabel('pt-BR'), 'português (Brasil)', '带地区的自定义槽使用对应地区 locale 的自称')
 
   const game = { roms: { en: 'g.en.zip', 'zh-Hans': 'g.zh.zip', ko: 'g.ko.zip', 'pt-BR': 'g.pt.zip' } }
   assert.deepEqual(romLangsOf(game), ['zh-Hans', 'en', 'ko', 'pt-BR'], '内置语言保留顺序，自定义槽稳定追加')

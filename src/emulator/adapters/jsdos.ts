@@ -316,6 +316,18 @@ function hookMouseInvert(c: DosCi, inverted: () => boolean): () => void {
 }
 
 /**
+ * DOS / Windows 3.x / 9x 的画面都是给 4:3 显像管看的，像素本来就不是方的。js-dos 默认
+ * `renderAspect: 'AsIs'` 按帧缓冲的像素比例显示：320×200（绝大多数 VGA 游戏、《主题医院》
+ * 的教授主菜单）、640×400、720×400 文本模式都会被横向拉宽 20%～35%，圆变椭圆、人物变胖。
+ * 2026-11-05 在《主题医院》实测：320×200 主菜单被放成 761×476（1.6:1）。
+ * 640×480 / 800×600 / 1024×768 本来就是 4:3，不受影响。
+ *
+ * ⚠️ 绝对坐标桥（hookCapturedAbsoluteMouse）必须同步按这个比例换算，见那里的 contentRect。
+ */
+const JSDOS_RENDER_ASPECT = '4/3'
+const JSDOS_DISPLAY_ASPECT = { width: 4, height: 3 }
+
+/**
  * Windows 客体与原生 DOS 的绝对坐标游戏不能只在 ci 上“替换相对位移方法”。js-dos 的桌面
  * kiosk 路径会自己负责 Pointer Lock，而 Layers / 触屏路径又有另一套事件层；上游一旦调整
  * effect 的挂载顺序，我们替换的方法可能被旧闭包绕过，结果就是绝对坐标修复看似启用，
@@ -369,10 +381,14 @@ function hookCapturedAbsoluteMouse(
     if (locked) return locked
     return host.querySelector<HTMLElement>('canvas, .emulator-mouse-overlay')
   }
-  const contentRect = (surface: HTMLElement) => lockedAbsoluteContentRect(surface.getBoundingClientRect(), {
-    width: c.width?.() ?? 0,
-    height: c.height?.() ?? 0,
-  })
+  // js-dos 按 renderAspect 把 canvas 元素本身缩成显示比例（见 JSDOS_RENDER_ASPECT），帧缓冲再被拉伸
+  // 铺满它；所以坐标要以 canvas 的矩形为准，不能再按 ci.width()/height() 的像素比例扣黑边 ——
+  // 320×200 帧在 4:3 画布里会被误算成一块 16:10 的内容，上下各丢 10% 的可点区域。覆盖层事件
+  // 同样换算到 canvas；canvas 尚未被缩放（首帧前）时按 4:3 在其中居中，结果与之后一致。
+  const contentRect = (surface: HTMLElement) => {
+    const canvas = surface.tagName === 'CANVAS' ? surface : host.querySelector<HTMLElement>('canvas') ?? surface
+    return lockedAbsoluteContentRect(canvas.getBoundingClientRect(), JSDOS_DISPLAY_ASPECT)
+  }
   const eventButton = (event: PointerEvent | MouseEvent) => event.button === 0 ? 0 : 1
   const ownsEvent = (event: Event) => {
     const surface = pointerSurface(event.target)
@@ -1717,6 +1733,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           iceServers: fetchIceServers,
         },
         imageRendering: 'pixelated',
+        // 按 CRT 的 4:3 显示，不按帧缓冲像素比例（320×200 会被拉宽 20%）。见 JSDOS_RENDER_ASPECT。
+        renderAspect: JSDOS_RENDER_ASPECT,
         // Windows 开机最耗时；第一次键盘输入会自动退出倍速，所以不会把游戏本体也加速。
         ...(guest ? { fastForwardOnBoot: 5 } : {}),
         /*
@@ -2261,7 +2279,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       // js-dos 走 WebGL，直接读画布是空白的，得用它自己的截图接口
       if (!ci) return null
       try {
-        return await imageDataToBlob(await ci.screenshot())
+        // 与画面同样按 4:3 输出；不然 320×200 的游戏截图会比玩家看到的宽 20%
+        return await imageDataToBlob(
+          await ci.screenshot(),
+          'image/png',
+          JSDOS_DISPLAY_ASPECT.width / JSDOS_DISPLAY_ASPECT.height,
+        )
       } catch {
         return null
       }

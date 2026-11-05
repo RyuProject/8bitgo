@@ -76,7 +76,6 @@ import { Button, buttonClasses } from '@/components/ui/Button'
 import { JsnesNetplayPanel } from './JsnesNetplayPanel'
 import { useShell } from '@/components/layout/ShellContext'
 import { useT, fmt } from '@/services/i18n'
-import { useLang } from '@/services/lang'
 import { platformLabel } from '@/services/i18nData'
 import { romLanguageLabel, type RomSlotLang } from '@/config/languages'
 import {
@@ -613,7 +612,6 @@ export function EmulatorPlayer({
   autoStart,
   debug = false,
 }: Props) {
-  const currentLang = useLang()
   // 静态 Sockdrive 是 BIOS 硬盘；纯 DOS 游戏也要先启动真实 DOS 7.1，才能把游戏盘读成 D:。
   const effectiveDosSystemUrl = dosSystemUrl || (dosSockdriveUrl ? defaultDos71SystemUrl() : undefined)
   const [status, setStatus] = useState<Status>('idle')
@@ -3305,7 +3303,7 @@ export function EmulatorPlayer({
     restartWithLangRef.current = null
     void start(null)
     // start() 里会先清掉提示，所以这句要放它后面
-    setNotice(fmt(t.player.romLangSwitched, { lang: romLanguageLabel(pending, currentLang) }))
+    setNotice(fmt(t.player.romLangSwitched, { lang: romLanguageLabel(pending) }))
     // 同 key 切换只变 romLang / checking；直链 NES 还要在 pageRuntime 定下来时再检查一次。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [romUrl, romLang, romLangSelection, romChecking, engineReady, pageRuntime])
@@ -4729,7 +4727,7 @@ export function EmulatorPlayer({
                 {!romLang && <option value="">{t.player.romLang}</option>}
                 {romLangs.map((l) => (
                   <option key={l} value={l}>
-                    {romLanguageLabel(l, currentLang)}
+                    {romLanguageLabel(l)}
                   </option>
                 ))}
               </select>
