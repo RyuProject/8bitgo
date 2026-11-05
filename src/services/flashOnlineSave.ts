@@ -1,5 +1,5 @@
 import { ApiError, api, apiBase, apiEnabled, getToken } from './api'
-import { flashSaveBridgeRewriteRules } from './flashBridgeUrl.js'
+import { flashSaveBridgeParameters, flashSaveBridgeRewriteRules } from './flashBridgeUrl.js'
 // 「哪款游戏用哪套方言、加载哪个桥」只有一份，前后端共用（见该文件顶部说明）
 import {
   flashSaveBridgeOf,
@@ -48,8 +48,8 @@ export interface FlashOnlineSaveLaunch {
   mode: FlashOnlineSaveMode
   /**
    * 会话到期时间（毫秒）；0 = 游客模式或拿不到会话。
-   * 播放器据此在临期前提示一次 —— 令牌进了 SWF 就换不掉了（FlashVars 只读一次），
-   * 到期后只能靠玩家重新进这一局，不说的话症状是「后半局的存档都没了」。
+   * 登录 / 登出可通过 AGI2 的 ExternalInterface 原地换会话；长时间运行导致会话自然到期时，
+   * 仍提前提示玩家保存并重新进入续期，避免画面正常但后续云存档静默失败。
    */
   expiresAt: number
 }
@@ -202,8 +202,14 @@ export function flashOnlineSaveRuffleConfig(launch: FlashOnlineSaveLaunch | null
     旧补丁里写死的 Armor Games、旧版本目录和未版本化本站地址都保留为来源，
     再统一转到新版目标 URL；这样桥升级不需要重新打包游戏 SWF。
   */
+  /*
+    KRF 的 connect({stage}) 能从主影片 LoaderInfo 读取 Ruffle 的 parameters；AGI2 桥自身也有
+    URL 参数兜底，但短期会话令牌不应进入 SWF 请求 URL（CDN / 反代访问日志和缓存键会留下它）。
+    根影片参数仍由 Ruffle 正常注入，且运行中登录改用 ExternalInterface 更新桥。
+  */
+  const bridgeParameters = flashSaveBridgeParameters(launch.parameters)
   return {
     parameters: launch.parameters,
-    urlRewriteRules: flashSaveBridgeRewriteRules(launch.bridgeUrl, launch.rewriteFrom, launch.parameters),
+    urlRewriteRules: flashSaveBridgeRewriteRules(launch.bridgeUrl, launch.rewriteFrom, bridgeParameters),
   }
 }

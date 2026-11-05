@@ -3,9 +3,17 @@ import {
   FLASH_SAVE_BRIDGE_RELEASE,
 } from '../../shared/flash-save-games.js'
 
+/** 短期会话令牌必须留在主影片 FlashVars，不能进入桥 SWF 的请求 URL。 */
+export function flashSaveBridgeParameters(parameters) {
+  const result = { ...(parameters || {}) }
+  if (result.eightbitgo_save_protocol === 'agi2') delete result.eightbitgo_save_token
+  return result
+}
+
 /**
  * Ruffle 只会把 parameters 交给主影片；旧 AGI SDK 是游戏再用 Loader 单独加载的子影片。
- * 因此还要把同一组 FlashVars 放到桥 SWF 的 URL query，确保子桥能从自己的 LoaderInfo 取到。
+ * 因此还要把可公开参数放到桥 SWF 的 URL query，确保旧桥能从自己的 LoaderInfo 取到。
+ * AGI2 的短期会话令牌由 flashSaveBridgeParameters 过滤，不应出现在 SWF 请求 URL、CDN 缓存键或访问日志中。
  */
 export function flashSaveBridgeRewriteRules(bridgeUrl, rewriteFrom, parameters) {
   const bridge = new URL(bridgeUrl)

@@ -2057,17 +2057,21 @@ export function EmulatorPlayer({
         setScreenLayout(next)
       },
       /**
-       * 旧 Flash 游戏的在线存档会话到期时间。每次挂载都会报（游客态报 0），
-       * 所以换局时这个值总是被刷新，不会留着上一局的到期时间误报一次提示。
+       * Flash 游戏在线存档会话状态。AGI2 登录后可原地启用，不必重启游戏；
+       * 每次挂载都会报一次，所以换局时不会留着上一局的到期时间。
        */
-      onFlashSaveSession: (expiresAt) => {
+      onFlashSaveSession: (expiresAt, mode, refreshed) => {
         if (!isCurrent()) return
         setFlashSaveExpiry(expiresAt)
+        if (mode === 'unavailable') setNotice(t.player.flashSaveSessionUnavailable)
+        else if (mode === 'authenticated' && refreshed === true) setNotice(t.player.flashSaveEnabled)
+        else if (mode === 'authenticated' && refreshed === false) setNotice(t.player.flashSaveLoginRequired)
+        else if (mode === 'guest' && refreshed === true) setNotice(null)
       },
       /**
        * 桥只在游客真正点了「在线存档 / 登录」时上报，不在开局时拦路。
-       * 登录令牌只能在启动 SWF 时通过 FlashVars 注入，所以还要明说「重新进入」；
-       * 原地偷偷重开会丢掉玩家当前本地进度，不能替他做这个决定。
+       * AGI2 会在登录成功后尝试原地更新短期会话；只有兼容路径失败时才提示重新进入，
+       * 绝不偷偷重开游戏，以免丢掉玩家当前进度。
        */
       onFlashSaveLoginRequired: () => {
         if (!isCurrent()) return
@@ -3552,9 +3556,8 @@ export function EmulatorPlayer({
   /*
     Flash 在线存档会话临期提示。
 
-    令牌是启动时经 FlashVars 交给 SWF 的，**换不掉**（游戏已经在跑，参数只读一次），
-    所以到期之后玩家只能重新进这一局。不说的话症状极其隐蔽：游戏照常跑、界面照常显示
-    在线槽可存，只是后半局的档一条都没上去。提前 10 分钟说，让他自己挑空档重进。
+    AGI2 登录时能通过 ExternalInterface 原地更新会话；这个临期提示仍作为桥版本过旧、
+    重新登录失败或网络中断时的兜底，避免玩家看到游戏照常运行，却不知道云端写入已经失效。
   */
   useEffect(() => {
     // 只有 ruffle 会报这个值：从 Flash 局切到别的运行时后没人来清零，

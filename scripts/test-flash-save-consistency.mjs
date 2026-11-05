@@ -30,7 +30,8 @@ import {
   flashSaveGameEnabled,
   flashSaveProtocol,
 } from '../server/src/flash-save-contract.js'
-import { flashSaveBridgeRewriteRules } from '../src/services/flashBridgeUrl.js'
+import { flashSaveBridgeParameters, flashSaveBridgeRewriteRules } from '../src/services/flashBridgeUrl.js'
+import { updateAgi2BridgeSession } from '../src/emulator/flashBridgeSession.js'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PROTOCOLS = ['agi1', 'agi2']
@@ -67,9 +68,9 @@ check('SAS3 的旧 Banana 地址与网页登录地址都从注册表读取', () 
   assert.deepEqual(flashSaveRewriteSourcesOf('infectonator-2'), [])
 })
 
-check('在线存档 FlashVars 同时进入子桥 URL，且直连桥地址也会自映射', () => {
+check('AGI2 会话令牌只进主影片参数，不出现在桥 URL；直连桥仍会自映射', () => {
   const service = readFileSync(join(root, 'src/services/flashOnlineSave.ts'), 'utf8')
-  assert.ok(service.includes('flashSaveBridgeRewriteRules(launch.bridgeUrl, launch.rewriteFrom, launch.parameters)'),
+  assert.ok(service.includes('flashSaveBridgeRewriteRules(launch.bridgeUrl, launch.rewriteFrom, bridgeParameters)'),
     'Ruffle 配置没有接入带 FlashVars 的桥 URL 规则')
   const bridgeUrl = `https://8bitgo.com/flash-api/armor-games/${FLASH_SAVE_BRIDGE_RELEASE}/AGI2.swf?v=1`
   const parameters = {
@@ -77,15 +78,20 @@ check('在线存档 FlashVars 同时进入子桥 URL，且直连桥地址也会�
     eightbitgo_save_endpoint: 'https://8bitgo.com/api/flash-saves/v1/kingdom-rushfrontiers',
     eightbitgo_username: 'Player One',
     eightbitgo_save_mode: 'authenticated',
+    eightbitgo_save_protocol: 'agi2',
   }
-  const rules = flashSaveBridgeRewriteRules(bridgeUrl, [], parameters)
+  const bridgeParameters = flashSaveBridgeParameters(parameters)
+  const rules = flashSaveBridgeRewriteRules(bridgeUrl, [], bridgeParameters)
   const selfRule = rules.find(([source]) => source === bridgeUrl)
   assert.ok(selfRule, '直接加载本站桥时缺少 bridgeUrl 自映射')
   const target = new URL(selfRule[1])
   assert.equal(target.searchParams.get('v'), '1', '原桥 URL 的版本参数必须保留')
-  for (const [key, value] of Object.entries(parameters)) {
+  assert.equal(target.searchParams.has('eightbitgo_save_token'), false, '短期会话令牌不能出现在 CDN 请求 URL')
+  for (const [key, value] of Object.entries(parameters).filter(([key]) => key !== 'eightbitgo_save_token')) {
     assert.equal(target.searchParams.get(key), value, `${key} 没有被正确序列化到桥 URL`)
   }
+  assert.ok(service.includes('parameters: launch.parameters'), '根影片仍需收到包含会话令牌的 FlashVars')
+  assert.ok(service.includes('flashSaveBridgeParameters(launch.parameters)'), 'AGI2 桥 URL 必须剔除短期会话令牌')
   assert.ok(rules.some(([source]) => source === 'https://agi.armorgames.com/assets/agi/AGI2.swf'),
     '旧游戏请求 AGI2.swf 时仍需改写到本站桥')
   assert.ok(rules.some(([source]) => source === 'https://8bitgo.com/flash-api/armor-games/20260925-r03/AGI2.swf'),
@@ -103,6 +109,42 @@ check('在线存档 FlashVars 同时进入子桥 URL，且直连桥地址也会�
     '已打补丁的旧版本 AGI1 地址必须继续可用')
   assert.ok(agi1Rules.some(([source]) => source === 'https://8bitgo.com/flash-api/armor-games/AGI.swf'),
     '未版本化的 AGI1 地址必须继续可用')
+})
+
+check('AGI2 登录后可原地刷新短期会话，不重载游戏', () => {
+  const calls = []
+  const target = {
+    callExternalInterface(...args) {
+      calls.push(args)
+      return true
+    },
+  }
+  const params = {
+    eightbitgo_save_token: 'scoped-session-token',
+    eightbitgo_username: 'Player One',
+    eightbitgo_avatar_url: 'https://8bitgo.com/ui/logo-mark.png',
+    eightbitgo_save_mode: 'authenticated',
+  }
+  assert.equal(updateAgi2BridgeSession(target, params), true)
+  assert.deepEqual(calls, [[
+    'eightbitgoSetSession',
+    'scoped-session-token',
+    'Player One',
+    'https://8bitgo.com/ui/logo-mark.png',
+    'authenticated',
+  ]])
+  assert.equal(updateAgi2BridgeSession({}, params), false, '老播放器没有可调用桥回调时必须安全降级')
+  const adapter = readFileSync(join(root, 'src/emulator/adapters/ruffle.ts'), 'utf8')
+  const bridge = readFileSync(join(root, 'flash-api/armor-games/src-agi2/KrfAgiBridge.as'), 'utf8')
+  assert.ok(adapter.includes('window.addEventListener(TOKEN_CHANGED_EVENT, onTokenChanged)'), '同页登录后必须刷新当前桥')
+  assert.ok(adapter.includes('window.removeEventListener(TOKEN_CHANGED_EVENT, onTokenChanged)'), '销毁播放器时必须解绑登录监听')
+  assert.ok(bridge.includes('ExternalInterface.addCallback("eightbitgoSetSession"'), 'AGI2 没有暴露原地更新会话的安全入口')
+  assert.ok(bridge.includes('this.saveMode = "authenticated"'), '桥更新会话后仍会被当成游客')
+  assert.ok(bridge.includes('this.sessionGeneration++'), '账号切换没有建立异步请求隔离边界')
+  assert.ok(bridge.includes('this.failQueuedTasksForSessionChange()'), '账号切换时旧队列可能被新账号凭证发送')
+  assert.ok(bridge.includes('if(readGeneration != sessionGeneration)'), '旧账号迟到的读档响应可能泄漏到新账号游戏态')
+  assert.ok(bridge.includes('if(writeGeneration != sessionGeneration)'), '旧账号迟到的写档响应可能污染新账号版本号')
+  assert.ok(bridge.includes('requestGeneration == sessionGeneration'), '旧会话的 401 可能把新账号登录态清掉')
 })
 
 check('服务端契约读到的方言 / 桥地址和注册表一致', () => {

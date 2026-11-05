@@ -205,11 +205,15 @@ export interface MountOptions {
   /**
    * 旧 Flash 游戏的在线存档会话到期时间（毫秒）；0 = 游客模式 / 没拿到会话。
    *
-   * 只有接了在线存档的 Flash 游戏会调，而且**每次挂载一定调一次**（拿不到也报 0）——
-   * 播放器据此在临期前提示玩家一次：令牌进了 SWF 就换不掉了（FlashVars 只读一次），
-   * 到期后只能重新进这一局，不说的话症状是「后半局的档都没存上」。
+   * 只有接了在线存档的 Flash 游戏会调，而且**每次挂载一定调一次**（拿不到也报 0）。
+   * AGI2 可在登录 / 登出时通过 ExternalInterface 原地更新会话；第三个参数区分动态刷新结果，
+   * 以便旧版桥或会话服务暂不可用时给玩家明确的恢复提示。
    */
-  onFlashSaveSession?: (expiresAt: number) => void
+  onFlashSaveSession?: (
+    expiresAt: number,
+    mode?: 'authenticated' | 'guest' | 'unavailable',
+    refreshed?: boolean,
+  ) => void
   /**
    * 未登录玩家在游戏内**真的点了**在线存档 / 登录时上报。
    * 只有接了站内桥的 Flash 游戏会调；适配器不能在启动时就弹，

@@ -67,6 +67,8 @@ package
       private var revisions:Object = {};
       /** 页面会话内的操作 ID；同一次写入重试时复用，服务端才能幂等去重。 */
       private var sessionId:String = "";
+      /** 登录账号变化是队列边界；迟到的旧账号回包不能污染新账号的代次或读档结果。 */
+      private var sessionGeneration:int = 0;
       private var opCounter:int = 0;
 
       /**
@@ -142,6 +144,72 @@ package
          this.quests = {
             "submit": this.questSubmitFn
          };
+
+         /*
+            登录弹窗可以在游戏运行中完成。把一个窄接口暴露给本站播放器，收到新会话后只替换
+            在线存档凭证，不重启游戏、不丢当前波次；如果播放器版本不支持回调，仍可退出重进。
+         */
+         try
+         {
+            if(ExternalInterface.available)
+            {
+               ExternalInterface.addCallback("eightbitgoSetSession",this.setSessionFromHost);
+            }
+         }
+         catch(error:Error)
+         {
+            // ExternalInterface 受限时，原有游戏与本地存档仍照常工作。
+         }
+      }
+
+      /** 登录 / 登出后由同源播放器更新短期会话；站点 JWT 从不传入 Flash。 */
+      public function setSessionFromHost(token:String, nextUsername:String = "", nextAvatarUrl:String = "", nextMode:String = "authenticated") : Boolean
+      {
+         var safeToken:String = this.stringValue(token);
+         var changed:Boolean = this.sessionToken != safeToken;
+         if(this.endpoint.length == 0) return false;
+         if(safeToken.length == 0)
+         {
+            if(changed)
+            {
+               this.sessionGeneration++;
+               this.revisions = {};
+            }
+            this.sessionToken = "";
+            this.username = "";
+            this.avatarUrl = "";
+            this.saveMode = nextMode == "unavailable" ? "unavailable" : "guest";
+            this.loggedIn = false;
+            this.loginPromptSent = false;
+            if(changed) this.failQueuedTasksForSessionChange();
+            return true;
+         }
+         if(changed)
+         {
+            this.sessionGeneration++;
+            this.revisions = {};
+         }
+         this.sessionToken = safeToken;
+         this.username = this.stringValue(nextUsername);
+         this.avatarUrl = this.stringValue(nextAvatarUrl);
+         this.saveMode = "authenticated";
+         this.loggedIn = true;
+         this.loginPromptSent = false;
+         // 新会话可能属于另一账号；先失败掉旧队列，不能把旧档用新账号凭证继续发出。
+         if(changed) this.failQueuedTasksForSessionChange();
+         return true;
+      }
+
+      /** 凭证边界改变时，尚未发送的任务不能借用新账号凭证重放。 */
+      private function failQueuedTasksForSessionChange() : void
+      {
+         var pending:Array = this.queue.splice(0,this.queue.length);
+         for each(var task:Object in pending)
+         {
+            var failure:Object = {"success":false,"error":{"code":"session_changed"}};
+            if(task.kind == "read") failure.keys = {};
+            this.callTaskCallback(task,failure);
+         }
       }
 
       /** options 里可以带 callback；游戏拿它判断「桥起来了没有」 */
@@ -484,6 +552,7 @@ package
          var i:int = 0;
          var pending:Object = null;
          var failure:Object = null;
+         task.sessionGeneration = this.sessionGeneration;
          // 相邻的读可以共用一次全量读取；它本身是全局顺序边界，不能跨读合并写入。
          if(task.kind == "read" && this.queue.length > 0 &&
             this.queue[this.queue.length - 1].kind == "read" &&
@@ -499,6 +568,7 @@ package
             for(i = this.queue.length - 1; i >= 0; i--)
             {
                pending = this.queue[i];
+               if(pending.sessionGeneration != task.sessionGeneration) break;
                if(pending.kind == "read") break;
                if(pending.key != task.key) continue;
                if(pending.kind == "delete") break;
@@ -517,6 +587,7 @@ package
             for(i = this.queue.length - 1; i >= 0; i--)
             {
                pending = this.queue[i];
+               if(pending.sessionGeneration != task.sessionGeneration) break;
                if(pending.kind == "read") break;
                if(pending.key != task.key) continue;
                if(pending.kind == "delete")
@@ -559,7 +630,13 @@ package
             this.pump();
             return;
          }
-         if(!this.loggedIn)
+         if(task.sessionGeneration != this.sessionGeneration)
+         {
+            this.callTaskCallback(task,{"success":false,"keys":{},"error":{"code":"session_changed"}});
+            this.busy = false;
+            this.pump();
+         }
+         else if(!this.loggedIn)
          {
             this.callTaskCallback(task,{"success":false,"keys":{},"error":{"code":"not_logged_in"}});
             this.busy = false;
@@ -575,12 +652,17 @@ package
          }
          else
          {
+            var deleteGeneration:int = task.sessionGeneration;
             this.post("/delete-slot",{
                "sessionToken":this.sessionToken,
                "key":task.key
             },function(result:Object):void
             {
-               if(result != null && result.success === true && result.data != null && result.data.revision != null)
+               if(deleteGeneration != sessionGeneration)
+               {
+                  callTaskCallback(task,{"success":false,"error":{"code":"session_changed"}});
+               }
+               else if(result != null && result.success === true && result.data != null && result.data.revision != null)
                {
                   revisions[task.key] = Number(result.data.revision);
                }
@@ -600,8 +682,16 @@ package
 
       private function readTask(task:Object) : void
       {
+         var readGeneration:int = task.sessionGeneration;
          this.post("/read",{"sessionToken":this.sessionToken},function(result:Object):void
          {
+            if(readGeneration != sessionGeneration)
+            {
+               callTaskCallback(task,{"success":false,"keys":{},"error":{"code":"session_changed"}});
+               busy = false;
+               pump();
+               return;
+            }
             // 空账号由服务端回 keys:{}；再兜底一次，避免旧游戏对 null 做 for-in。
             if(result == null) result = {"success":false,"error":{"code":"network_error"}};
             if(result.keys == null) result.keys = {};
@@ -678,6 +768,13 @@ package
        */
       private function submitWrite(task:Object, attempt:int) : void
       {
+         if(task.sessionGeneration != this.sessionGeneration)
+         {
+            this.callTaskCallback(task,{"success":false,"error":{"code":"session_changed"}});
+            this.busy = false;
+            this.pump();
+            return;
+         }
          var body:Object = {
             "sessionToken":this.sessionToken,
             "key":task.key,
@@ -687,8 +784,16 @@ package
          if(task.opId != null) body.opId = task.opId;
          // 只在先读过该槽、知道服务端代次时做条件更新；老响应没代次时保留兼容降级。
          if(this.revisions[task.key] != null) body.expectedRevision = this.revisions[task.key];
+         var writeGeneration:int = task.sessionGeneration;
          this.post("/write-slot",body,function(result:Object):void
          {
+            if(writeGeneration != sessionGeneration)
+            {
+               callTaskCallback(task,{"success":false,"error":{"code":"session_changed"}});
+               busy = false;
+               pump();
+               return;
+            }
             var ok:Boolean = Boolean(result) && Boolean(result.success);
             if(ok && result.data != null && result.data.revision != null)
             {
@@ -755,6 +860,7 @@ package
          var loader:URLLoader = new URLLoader();
          var timer:Timer = new Timer(12000,1);
          var finished:Boolean = false;
+         var requestGeneration:int = this.sessionGeneration;
 
          /**
           * 把响应体解析成服务端对象；不是我们那套形状就返回 null。
@@ -801,7 +907,7 @@ package
                会话过期就把登录态摘掉，游戏据此把在线槽重新标成不可用。
                不摘的话它一直显示「能存」，玩家以为进度在云上，其实每条都被服务端拒掉。
             */
-            if(result != null && result.success === false && String(errorCode(result).code) == "invalid_session")
+            if(requestGeneration == sessionGeneration && result != null && result.success === false && String(errorCode(result).code) == "invalid_session")
             {
                loggedIn = false;
             }

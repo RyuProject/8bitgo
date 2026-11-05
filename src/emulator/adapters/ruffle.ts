@@ -28,6 +28,8 @@ import {
   prepareFlashOnlineSave,
 } from '@/services/flashOnlineSave'
 import { prepareSfsRuffleConfig } from '@/services/sfs'
+import { getToken, TOKEN_CHANGED_EVENT } from '@/services/api'
+import { updateAgi2BridgeSession } from '../flashBridgeSession.js'
 import {
   createRuffleAdaptiveController,
   installRuffleFrameTelemetry,
@@ -115,6 +117,7 @@ function fontConfig(): Record<string, unknown> {
  */
 interface RufflePlayerApi {
   load: (options: Record<string, unknown>) => Promise<void> | void
+  callExternalInterface?: (name: string, ...args: unknown[]) => unknown
   reload?: () => Promise<void>
   play?: () => void
   resume?: () => void
@@ -337,6 +340,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const fitStage = options.flashControls?.displayMode !== 'ruffle'
   let lastLoadOptions: Record<string, unknown> | null = null
   const saveId = options.gameSlug || (typeof options.game === 'string' ? options.game : `local:${options.game.name}`)
+  const initialFlashAuthToken = getToken()
   // 会话申请与 iframe / Ruffle 初始化同时开始；普通 Flash 游戏会立刻得到 null，不增加请求。
   const flashOnlineSave = prepareFlashOnlineSave(options.gameSlug)
   // 只有 SAS3 会请求这份旁路配置，普通 Flash 直接得到空对象，见 services/sfs.ts。
@@ -425,6 +429,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let frameInitialized = false
   let cancelStageFit = () => {}
   let cancelLegacyLoginRedirect = () => {}
+  let cancelFlashSaveAuthRefresh = () => {}
   let cancelCrashGuard = () => {}
 
   const cancelFocusRetry = () => {
@@ -637,7 +642,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           stage?.appendChild(player)
         }
 
-        const [loaded, onlineSave, sfsConfig] = await Promise.all([gameBytes, flashOnlineSave, sfsRuffleConfig])
+        const [loaded, initialOnlineSave, sfsConfig] = await Promise.all([gameBytes, flashOnlineSave, sfsRuffleConfig])
+        let onlineSave = initialOnlineSave
         /*
           这类站点锁不会抛异常：Armor Games 片头播完后只打一行 LOCATION IS VALID: false，
           随即故意停在黑帧。必须在交给 Ruffle 前按取证过的摘要拦住，播放器才能把这次启动
@@ -673,26 +679,29 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           to,
         ])
         // 每次挂载都报一次（游客态报 0）：播放器据此在会话临期前提示玩家重新进这一局
-        options.onFlashSaveSession?.(onlineSave?.expiresAt ?? 0)
+        options.onFlashSaveSession?.(onlineSave?.expiresAt ?? 0, onlineSave?.mode)
         /*
           兼容桥跑在这个同源 iframe 里，ExternalInterface.call() 也只会在这里找函数。
           只给真正的 guest 装回调：「unavailable」是已登录但会话服务故障，
           这时弹登录框会让用户白登一遍，还把真故障藏起来。
         */
         const frameGlobals = win as unknown as Record<string, unknown>
-        if (onlineSave?.mode === 'guest') {
-          frameGlobals[FLASH_SAVE_LOGIN_CALLBACK] = () => {
-            if (!destroyed) options.onFlashSaveLoginRequired?.()
+        const configureFlashLogin = (enabled: boolean) => {
+          if (enabled) {
+            frameGlobals[FLASH_SAVE_LOGIN_CALLBACK] = () => {
+              if (!destroyed) options.onFlashSaveLoginRequired?.()
+            }
+            cancelLegacyLoginRedirect()
+            cancelLegacyLoginRedirect = installFlashLegacyLoginRedirect(win, onlineSave?.loginUrls || [], () => {
+              if (!destroyed) options.onFlashSaveLoginRequired?.()
+            })
+          } else {
+            delete frameGlobals[FLASH_SAVE_LOGIN_CALLBACK]
+            cancelLegacyLoginRedirect()
+            cancelLegacyLoginRedirect = () => {}
           }
-          cancelLegacyLoginRedirect()
-          cancelLegacyLoginRedirect = installFlashLegacyLoginRedirect(win, onlineSave.loginUrls, () => {
-            if (!destroyed) options.onFlashSaveLoginRequired?.()
-          })
-        } else {
-          delete frameGlobals[FLASH_SAVE_LOGIN_CALLBACK]
-          cancelLegacyLoginRedirect()
-          cancelLegacyLoginRedirect = () => {}
         }
+        configureFlashLogin(onlineSave?.mode === 'guest')
         const onlineSaveConfig = flashOnlineSaveRuffleConfig(onlineSave)
         /*
           ⚠️ 旧 SDK 资源、SFS 和在线存档都要往 Ruffle 配置里放 `urlRewriteRules`，而对象展开
@@ -808,6 +817,99 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
         api = typeof player.ruffle === 'function' ? player.ruffle() : typeof player.load === 'function' ? (player as RufflePlayerApi) : null
         if (!api) throw new Error(rt.ruffleNoApi)
+        let syncInitialAgi2Session = () => {}
+        if (onlineSave?.parameters.eightbitgo_save_protocol === 'agi2') {
+          /*
+            站内登录会在同一标签页触发 TOKEN_CHANGED_EVENT。AGI2 桥只在 connect() 时读取 FlashVars，
+            过去会把当时的游客态永久留在当前局里；现在直接更新子 SWF 暴露的窄回调，既保留当前波次，
+            也不必把完整站点 JWT 交给游戏。短期会话申请失败时照常禁用云槽，但不阻断游玩。
+          */
+          let refreshGeneration = 0
+          let activeAuthToken = initialFlashAuthToken
+          const deliverWhenBridgeReady = async (parameters: Record<string, string>, generation: number) => {
+            for (let attempt = 0; attempt < 20; attempt++) {
+              if (destroyed || generation !== refreshGeneration) return false
+              if (updateAgi2BridgeSession(api, parameters)) return true
+              await new Promise((resolve) => window.setTimeout(resolve, 250))
+            }
+            return false
+          }
+          syncInitialAgi2Session = () => {
+            if (onlineSave?.mode !== 'authenticated') return
+            const generation = refreshGeneration
+            void deliverWhenBridgeReady(onlineSave.parameters, generation).then((applied) => {
+              if (!applied && !destroyed && generation === refreshGeneration) {
+                console.warn('[flash-save] AGI2 没有收到已登录会话；主影片 FlashVars 仍保留兼容读取路径')
+              }
+            })
+          }
+          const onTokenChanged = () => {
+            const generation = ++refreshGeneration
+            const currentToken = getToken()
+            const sameAccount = currentToken === activeAuthToken
+            if (!currentToken) {
+              const parameters = {
+                ...(onlineSave?.parameters || {}),
+                eightbitgo_save_token: '',
+                eightbitgo_username: '',
+                eightbitgo_avatar_url: '',
+                eightbitgo_save_mode: 'guest',
+              }
+              void deliverWhenBridgeReady(parameters, generation).then((applied) => {
+                if (!applied || destroyed || generation !== refreshGeneration) return
+                onlineSave = { ...onlineSave!, mode: 'guest', expiresAt: 0, parameters }
+                activeAuthToken = ''
+                configureFlashLogin(true)
+                options.onFlashSaveSession?.(0, 'guest', true)
+              })
+              return
+            }
+            if (!sameAccount) {
+              // 切换账号时先撤掉旧账号的短期凭证；新会话签发失败也不能继续向旧账号写档。
+              updateAgi2BridgeSession(api, {
+                ...(onlineSave?.parameters || {}),
+                eightbitgo_save_token: '',
+                eightbitgo_username: '',
+                eightbitgo_avatar_url: '',
+                eightbitgo_save_mode: 'guest',
+              })
+            }
+            void prepareFlashOnlineSave(options.gameSlug).then(async (refreshed) => {
+              if (!refreshed || destroyed || generation !== refreshGeneration || getToken() !== currentToken) return
+              const oldSessionStillValid = sameAccount && onlineSave?.mode === 'authenticated' && onlineSave.expiresAt > Date.now() + 30_000
+              if (refreshed.mode === 'unavailable' && oldSessionStillValid) {
+                // 同账号仍有未过期会话时，服务短暂故障不能提前中断当前存档。
+                return
+              }
+              const applied = await deliverWhenBridgeReady(refreshed.parameters, generation)
+              if (!applied || destroyed || generation !== refreshGeneration || getToken() !== currentToken) {
+                if (oldSessionStillValid) return
+                console.warn('[flash-save] AGI2 当前局未能刷新存档会话；请重新进入本局后再使用在线存档')
+                options.onFlashSaveSession?.(refreshed.expiresAt, refreshed.mode, false)
+                return
+              }
+              onlineSave = refreshed
+              activeAuthToken = currentToken
+              configureFlashLogin(refreshed.mode === 'guest')
+              options.onFlashSaveSession?.(refreshed.expiresAt, refreshed.mode, true)
+            }).catch((error) => {
+              if (!destroyed && generation === refreshGeneration) {
+                console.warn('[flash-save] 刷新 AGI2 在线存档会话失败：', error)
+                if (!(sameAccount && onlineSave?.mode === 'authenticated' && onlineSave.expiresAt > Date.now() + 30_000)) {
+                  options.onFlashSaveSession?.(0, 'unavailable', true)
+                }
+              }
+            })
+          }
+          window.addEventListener(TOKEN_CHANGED_EVENT, onTokenChanged)
+          cancelFlashSaveAuthRefresh = () => {
+            refreshGeneration++
+            window.removeEventListener(TOKEN_CHANGED_EVENT, onTokenChanged)
+            cancelFlashSaveAuthRefresh = () => {}
+          }
+          // 登录 / 登出可能发生在会话申请与 Ruffle 初始化并行期间；补查一次，避免沿用旧账号会话。
+          if (getToken() !== activeAuthToken || (getToken() && onlineSave.mode !== 'authenticated')) onTokenChanged()
+        }
         // 上面一连串 await（等自定义元素注册、读文件）之间玩家可能已经换了 ROM，
         // 这里要重新确认一次，别把旧会话的结果算到新会话头上
         if (destroyed) return
@@ -823,6 +925,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           waitForRuffleMetadata(player, aborter.signal),
         ])
         if (destroyed) return
+        // 根影片参数负责首轮连接；这里再经 Ruffle API 推一次短期会话，兜住子桥加载先于 FlashVars 的时序差。
+        syncInitialAgi2Session()
         if (performanceTelemetry && pixelRatioController?.supported && performanceProfile) {
           // 加载动画、SWF 解码和首屏建纹理不代表稳定游玩负载；从可交互时刻重新开采样窗。
           performanceTelemetry.discard()
@@ -1113,6 +1217,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       document.removeEventListener('visibilitychange', syncVisibility)
       cancelStageFit()
       cancelLegacyLoginRedirect()
+      cancelFlashSaveAuthRefresh()
       cancelCrashGuard()
       cancelFocusRetry()
       if (canvasCapsTimer) window.clearTimeout(canvasCapsTimer)
