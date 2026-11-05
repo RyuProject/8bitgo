@@ -34,6 +34,7 @@ import { canRestartInPlace } from '@/emulator/sessionRestart'
 import { needsLockedAbsoluteDosMouse, needsRelativeWindowsGuestMouse } from '@/emulator/dosMouse'
 import {
   advanceLockedAbsolutePointer,
+  isMouseEventWithinSurface,
   lockedAbsoluteContentRect,
   lockedAbsolutePointerAtClientPosition,
 } from '@/emulator/lockedAbsoluteMouse'
@@ -212,6 +213,19 @@ check('宽屏播放器按实际 4:3 游戏区换算，左右黑边不占鼠标�
   assert.deepEqual(lockedAbsolutePointerAtClientPosition(900, 300, rect), { x: 1, y: 0.5 })
 })
 
+check('鼠标覆盖层里的子节点仍归属游戏画面，覆盖层外节点不会误收输入', () => {
+  const child = {}
+  const sibling = {}
+  const surface = {
+    contains: (node) => node === child,
+  }
+  assert.equal(isMouseEventWithinSurface(surface, surface), true)
+  assert.equal(isMouseEventWithinSurface(child, surface), true)
+  assert.equal(isMouseEventWithinSurface(sibling, surface), false)
+  assert.equal(isMouseEventWithinSurface(null, surface), false)
+  assert.equal(isMouseEventWithinSurface(child, null), false)
+})
+
 check('Windows 客体与《主题医院》都由适配器独占绝对指针，其他 DOS 保留相对鼠标', () => {
   assert.equal(needsLockedAbsoluteDosMouse('theme-hospital'), true)
   assert.equal(needsLockedAbsoluteDosMouse(' Theme-Hospital '), true)
@@ -230,9 +244,10 @@ check('Windows 客体与《主题医院》都由适配器独占绝对指针，�
   assert.match(jsdos, /rawAbsolute\.call\(c, pointer\.x, pointer\.y\)/)
   assert.match(jsdos, /lockedAbsoluteContentRect\(canvas\.getBoundingClientRect\(\), JSDOS_DISPLAY_ASPECT\)/)
   assert.match(jsdos, /host\.querySelector<HTMLElement>\('canvas'\) \?\? surface/)
-  assert.match(jsdos, /classList\.contains\('emulator-mouse-overlay'\)/)
-  assert.match(jsdos, /pointerSurface\(event\.target\)/)
-  assert.match(jsdos, /event\.target === surface/)
+  assert.match(jsdos, /pointerSurface\(target\)/)
+  assert.match(jsdos, /target\.closest\('canvas, \.emulator-mouse-overlay'\)/)
+  assert.match(jsdos, /isMouseEventWithinSurface\(target, surface\)/)
+  assert.match(jsdos, /if \(target != null\) return null/)
   assert.match(jsdos, /const activeLockedSurface = \(\) =>/)
   assert.match(jsdos, /contentRect\(locked\)/)
   assert.match(jsdos, /captureUnavailable = true/)

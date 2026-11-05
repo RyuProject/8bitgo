@@ -86,6 +86,7 @@ import {
 } from '../dosMouse'
 import {
   advanceLockedAbsolutePointer,
+  isMouseEventWithinSurface,
   lockedAbsoluteContentRect,
   lockedAbsolutePointerAtClientPosition,
 } from '../lockedAbsoluteMouse'
@@ -371,15 +372,18 @@ function hookCapturedAbsoluteMouse(
     return locked instanceof HTMLElement && host.contains(locked) ? locked : null
   }
   const pointerSurface = (target?: EventTarget | null) => {
-    const candidate = target instanceof HTMLElement ? target : null
-    if (
-      candidate
-      && host.contains(candidate)
-      && (candidate.tagName === 'CANVAS' || candidate.classList.contains('emulator-mouse-overlay'))
-    ) return candidate
-    const locked = activeLockedSurface()
-    if (locked) return locked
-    return host.querySelector<HTMLElement>('canvas, .emulator-mouse-overlay')
+    if (target instanceof Element && host.contains(target)) {
+      // 游戏覆盖层偶尔会把提示/光标节点放在自己的子树里；closest 让这些节点继续归属于画面，
+      // 否则用户一碰到提示框，后续移动与点击会被 host 捕获监听器静默丢弃。
+      const candidate = target.closest('canvas, .emulator-mouse-overlay')
+      if (candidate instanceof HTMLElement && host.contains(candidate)) return candidate
+      const locked = activeLockedSurface()
+      return locked && locked.contains(target) ? locked : null
+    }
+    // 只有摇杆等合成相对位移没有 DOM target，才允许回退到当前锁定层/默认画布；不能把 host
+    // 里其它按钮的事件误认成游戏输入。
+    if (target != null) return null
+    return activeLockedSurface() ?? host.querySelector<HTMLElement>('canvas, .emulator-mouse-overlay')
   }
   // js-dos 按 renderAspect 把 canvas 元素本身缩成显示比例（见 JSDOS_RENDER_ASPECT），帧缓冲再被拉伸
   // 铺满它；所以坐标要以 canvas 的矩形为准，不能再按 ci.width()/height() 的像素比例扣黑边 ——
@@ -391,8 +395,10 @@ function hookCapturedAbsoluteMouse(
   }
   const eventButton = (event: PointerEvent | MouseEvent) => event.button === 0 ? 0 : 1
   const ownsEvent = (event: Event) => {
-    const surface = pointerSurface(event.target)
-    return surface && event.target === surface ? surface : null
+    const target = event.target
+    if (!(target instanceof Node)) return null
+    const surface = pointerSurface(target)
+    return isMouseEventWithinSurface(target, surface) ? surface : null
   }
   const takeEvent = (event: Event) => {
     // 监听器在 host 的捕获阶段；拦住 js-dos 自己那套相对/绝对处理，避免同一次移动发出两份包。

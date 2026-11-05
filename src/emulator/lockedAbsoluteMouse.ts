@@ -14,6 +14,11 @@ export interface PointerRect extends PointerViewport {
   top: number
 }
 
+/** 覆盖层里的提示/装饰节点也是游戏画面的一部分，不能因事件目标不是覆盖层本身而丢掉输入。 */
+export function isMouseEventWithinSurface(target: Node | null, surface: Pick<HTMLElement, 'contains'> | null): boolean {
+  return Boolean(target && surface && (target === surface || surface.contains(target)))
+}
+
 const clamp01 = (value: number): number => Math.max(0, Math.min(1, Number.isFinite(value) ? value : 0))
 
 /**
