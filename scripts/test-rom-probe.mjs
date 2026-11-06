@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 /**
  * ROM 探测缓存的回归测试。
  *
@@ -36,7 +37,7 @@ const script = (...steps) => {
   methods = []
 }
 
-const { probeRomUrl, probeRom, clearRomProbeCache, conventionalKeys, romCandidates, playbackRomCandidates, playbackRomCandidatesForSelection, romProbeExpected, dosExecutableForRom, dosSockdriveForRom, dosStartupCommandsForRom, streamedRomCandidateForSelection, versionedRomUrl, romKeysOf, unbindKeyPatch, shouldTryRomCandidateAfterUncertain, nextRomCandidateKey, slugFromKey, romUrlForKey, coverThumbKey, romMirrorUrl, getRomMirrorBase, MIRROR_RACE_ANY_SIZE_PLATFORMS, romRouteRaceOptionsFor } = await import(
+const { probeRomUrl, probeRom, clearRomProbeCache, conventionalKeys, romCandidates, playbackRomCandidates, playbackRomCandidatesForSelection, romProbeExpected, dosExecutableForRom, dosSockdriveForRom, dosStartupCommandsForRom, streamedRomCandidateForSelection, versionedRomUrl, romKeysOf, unbindKeyPatch, shouldTryRomCandidateAfterUncertain, nextRomCandidateKey, slugFromKey, romUrlForKey, coverThumbKey, romMirrorUrl, getRomMirrorBase } = await import(
   fileURLToPath(new URL('../src/services/roms.ts', import.meta.url))
 )
 // 红宝石封面是外链：没有 -96 缩略图时必须回原图，不能把空 key 拼成资源域名根目录。
@@ -46,7 +47,7 @@ assert.equal(romUrlForKey(coverThumbKey(externalCover), 'https://assets.8bitgo.c
 assert.equal(romUrlForKey(externalCover, 'https://assets.8bitgo.com'), externalCover)
 const { ROM_LANGS, normalizeRomLanguageCode, romLanguageLabel } = await import(fileURLToPath(new URL('../src/config/languages.ts', import.meta.url)))
 const { romCacheKey } = await import(fileURLToPath(new URL('../src/emulator/romCache.ts', import.meta.url)))
-const { chooseFasterRomRoute } = await import(fileURLToPath(new URL('../src/services/romRoute.ts', import.meta.url)))
+const { chooseFasterRomRoute, chooseRomHost, ROM_ROUTE_PROBE_PATH } = await import(fileURLToPath(new URL('../src/services/romRoute.ts', import.meta.url)))
 const { isolatedEmbedFor } = await import(fileURLToPath(new URL('../shared/isolated-embeds.js', import.meta.url)))
 const { gameRowToApi, dosExecutableOf, dosStartupCommandsOf, relationsInPatch, romRelationRows } = await import(fileURLToPath(new URL('../server/src/mappers.js', import.meta.url)))
 // ts-loader 为了让 ROM 探测测试保持轻量，会把平台表换成空桩；补齐流式光盘真正用到的格式。
@@ -218,29 +219,56 @@ assert.equal(isolatedEmbedFor('diablo'), undefined, 'Diablo 不需要 COOP/COEP�
     'primary',
   )
   assert.ok(Date.now() - t0 < 1000, `主域先取完样本就应定局，不等镜像 3 秒超时（实际 ${Date.now() - t0}ms）`)
-  assert.ok(MIRROR_RACE_ANY_SIZE_PLATFORMS.has('nes'), 'NES 不论大小都测速')
-  assert.ok(MIRROR_RACE_ANY_SIZE_PLATFORMS.has('flash'), 'Flash 不论大小都测速')
-  assert.ok(!MIRROR_RACE_ANY_SIZE_PLATFORMS.has('psp'), '其它平台仍按大文件门槛')
+}
 
-  const flashRaceOptions = romRouteRaceOptionsFor('flash')
-  assert.deepEqual(flashRaceOptions, { sampleBytes: 64 * 1024, timeoutMs: 1500 }, 'Flash 路由测速要少读样本并限制开局等待')
-  assert.deepEqual(romRouteRaceOptionsFor('arcade'), {}, '其它平台继续沿用原测速策略')
-  const neverCompletes = async (_url, init) => await new Promise((_, reject) => {
-    const abort = () => reject(new Error('aborted'))
-    if (init.signal.aborted) abort()
-    else init.signal.addEventListener('abort', abort, { once: true })
-  })
-  const flashRaceStarted = Date.now()
-  assert.equal(
-    await chooseFasterRomRoute(
-      { url: 'https://assets.example.com/roms/flash/demo.swf', size: 1024 * 1024 },
-      { url: 'https://cn-assets.example.com/roms/flash/demo.swf', size: 1024 * 1024 },
-      { ...flashRaceOptions, fetchImpl: neverCompletes, cacheResults: false, minBytes: 0 },
-    ),
-    'primary',
-    '两个测速源都挂住时安全保留主源',
-  )
-  assert.ok(Date.now() - flashRaceStarted < 2000, 'Flash 双源测速不能超过 1.5 秒预算太多')
+/* ---------- 主域 / 加速镜像的线路选择：固定小探针、有先验、可缓存 ---------- */
+{
+  const primary = 'https://assets.example.com'
+  const mirror = 'https://cn-assets.example.com'
+  const seen = []
+  const timedFetch = (delays) => async (url, init) => {
+    seen.push(url)
+    const delay = url.startsWith(mirror) ? delays.mirror : delays.primary
+    if (delay === Infinity) {
+      return await new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true }))
+    }
+    await new Promise((resolve, reject) => {
+      const t = setTimeout(resolve, delay)
+      init.signal?.addEventListener('abort', () => { clearTimeout(t); reject(new Error('aborted')) }, { once: true })
+    })
+    return new Response(new Uint8Array(1024))
+  }
+  const base = { cacheResults: false, hints: {} }
+
+  assert.equal(await chooseRomHost(primary, mirror, { ...base, fetchImpl: timedFetch({ primary: 80, mirror: 10 }) }), 'mirror', '镜像明显更快就走镜像')
+  assert.ok(seen.every((url) => url.endsWith(ROM_ROUTE_PROBE_PATH)), '测的是固定探针，不是 ROM 本身')
+  assert.equal(await chooseRomHost(primary, mirror, { ...base, fetchImpl: timedFetch({ primary: 50, mirror: 46 }) }), 'primary', '默认主域时镜像要快 15% 才赢')
+  assert.equal(await chooseRomHost(primary, mirror, { ...base, prefer: 'mirror', fetchImpl: timedFetch({ primary: 46, mirror: 50 }) }), 'mirror', '大陆访客默认镜像，主域要快 15% 才赢')
+  assert.equal(await chooseRomHost(primary, mirror, { ...base, prefer: 'mirror', fetchImpl: timedFetch({ primary: Infinity, mirror: Infinity }), timeoutMs: 100 }), 'mirror', '两边都测不出就用默认')
+  assert.equal(await chooseRomHost(primary, mirror, { ...base, fetchImpl: timedFetch({ primary: Infinity, mirror: 20 }), timeoutMs: 300 }), 'mirror', '主域挂住、镜像能到就走镜像')
+
+  const t0 = Date.now()
+  assert.equal(await chooseRomHost(primary, mirror, { ...base, fetchImpl: timedFetch({ primary: 10, mirror: Infinity }) }), 'primary')
+  assert.ok(Date.now() - t0 < 500, '默认方先到就定局，不等另一边超时')
+
+  let fetched = 0
+  const counting = async () => { fetched++; return new Response(new Uint8Array(8)) }
+  assert.equal(await chooseRomHost(primary, mirror, { ...base, prefer: 'mirror', fetchImpl: counting, hints: { saveData: true } }), 'mirror')
+  assert.equal(fetched, 0, '省流量直接用默认，不发探针')
+  assert.equal(await chooseRomHost(primary, primary, { ...base, fetchImpl: counting }), 'primary')
+  assert.equal(fetched, 0, '没有独立镜像时不测')
+
+  const store = new Map()
+  const storage = { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, v) }
+  const cached = { cacheResults: true, storage, hints: {} }
+  assert.equal(await chooseRomHost(primary, mirror, { ...cached, fetchImpl: timedFetch({ primary: 80, mirror: 10 }) }), 'mirror')
+  fetched = 0
+  assert.equal(await chooseRomHost(primary, mirror, { ...cached, fetchImpl: counting }), 'mirror', '30 分钟内复用结论')
+  assert.equal(fetched, 0, '复用结论不再发探针')
+
+  const roms = readFileSync(new URL('../src/services/roms.ts', import.meta.url), 'utf8')
+  assert.match(roms, /chooseRomHost\(getRomBase\(\), getRomMirrorBase\(\), \{ prefer: coverCdnHint\(\) === 'cn' \? 'mirror' : 'primary' \}\)/, '所有平台都选线路，大陆访客默认镜像')
+  assert.doesNotMatch(roms, /MIRROR_RACE_ANY_SIZE_PLATFORMS/, '不再按平台 / 大小决定要不要测')
 }
 
 /* ---------- 8BG 约定地址：新容器优先，旧对象继续回退 ---------- */

@@ -2935,6 +2935,13 @@ EdgeOne 只能用境外（香港）节点。主站、ROM、Pages 子域都不受
   - 兜底：入口脚本 / 样式表 `onerror` 退回同源；API 网络错误或 502–504 退回同源，网络错误后本次会话不再走加速入口。
     写操作、后台请求、socket.io、SSE、OAuth 跳转都留在同源。
   - 回归：`cd server && npm run test:cn-edge`。
+- **ROM 线路：所有平台开局前选一次 assets / cn-assets**（2026-11-07，`romRoute.ts` 的 `chooseRomHost`）：
+  两边取同一个 64KB 固定探针 `roms/_route-probe/v1.bin?v=1`（R2 上的随机字节，两边边缘都长缓存），
+  不再拿 ROM 自己的前 128KB 测——冷门 ROM 在 EdgeOne 上第一次必然 MISS，测到的是回源，会系统性偏向主域。
+  大陆访客（`coverCdnHint() === 'cn'`）默认镜像、其他人默认主域，非默认方要快 15% 才赢；两边都测不出或
+  省流量 / 2G 直接用默认。结论按域名对存 30 分钟（内存 + localStorage `8bitgo.rom-host.v1`）。
+  ROM 本体仍走 8MB 对齐 Range（带 romv 的都是），实测 EdgeOne 免费版按片缓存 98MB 的大包，不会因整包大被拒。
+  ⚠️ 探针对象**不能删、不能原地覆盖**；要换就上传 v2 并改 `ROM_ROUTE_PROBE_PATH`。回归：`npm run test:rom-probe`。
 - ⚠️ 加速域名**不能带下划线**（`image_cn` 这种）：公共 CA 不为含 `_` 的主机名签证书，HTTPS 永远起不来。
 - 两个域名的本地存档、IndexedDB 和登录态互不相通（按 origin 隔离），云存档不受影响。
 

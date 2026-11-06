@@ -172,3 +172,175 @@ export async function chooseFasterRomRoute(
 export function clearRomRouteSpeedCache(): void {
   routeSpeeds.clear()
 }
+
+/* ───────────────────────── 主域 / 加速镜像的线路选择 ─────────────────────────
+ *
+ * 2026-11-07 起所有平台都在开局前选一次 assets.<裸域>（Cloudflare）还是 cn-assets.<裸域>（EdgeOne），
+ * 不再只给 NES / Flash / 16MB 以上的大文件测。
+ *
+ * 为什么不再拿 ROM 自己的前 128KB 测：EdgeOne 上一份没人玩过的 ROM 第一次必然 MISS（实测样本
+ * 先 MISS 后 HIT），测到的是「EdgeOne 回源」而不是「EdgeOne 线路」，冷门游戏会系统性地偏向主域。
+ * 现在两边取同一个 64KB 的固定探针（R2 `roms/_route-probe/v1.bin`，带 `?v=1` 长缓存，两边边缘都常驻），
+ * 量的是纯线路：TLS + 首字节 + 一小段吞吐。结论按「主域 + 镜像」这一对存 30 分钟（内存 + localStorage），
+ * 同一会话、刷新页面、换游戏都不重测。
+ *
+ * 线路定了以后 ROM 本身照旧走 fetchBlobWithProgress 的 8MB 对齐 Range（带 romv 的都是），EdgeOne
+ * 免费版按片缓存（实测 98MB 的 8BG 冷片 12.6s → 再取 3.1s HIT），不会因为整包太大被拒缓存。
+ *
+ * 有先验：边缘已经判定是大陆访客（cn 入口，或 Cloudflare 按国家改写过的页面，见 coverCdnHint）时
+ * 默认镜像，否则默认主域；非默认的一方必须快 15% 才能赢，两边都测不出就用默认。省流量 / 2G 不测，直接用默认。
+ */
+export const ROM_ROUTE_PROBE_PATH = '/roms/_route-probe/v1.bin?v=1'
+const HOST_CHOICE_STORAGE_KEY = '8bitgo.rom-host.v1'
+export const HOST_CHOICE_TTL_MS = 30 * 60 * 1000
+const HOST_PROBE_TIMEOUT_MS = 2500
+
+export type RomHost = 'primary' | 'mirror'
+
+interface StoredHostChoice {
+  pair: string
+  host: RomHost
+  at: number
+}
+
+export interface RomHostOptions {
+  /** 测不出结论时用哪边；也决定「谁需要快 15% 才能赢」 */
+  prefer?: RomHost
+  fetchImpl?: typeof fetch
+  now?: () => number
+  hints?: RomRouteHints
+  timeoutMs?: number
+  /** 测试注入：不读写真实 localStorage / 内存缓存 */
+  cacheResults?: boolean
+  storage?: Pick<Storage, 'getItem' | 'setItem'> | null
+}
+
+const hostChoices = new Map<string, StoredHostChoice>()
+const hostInflight = new Map<string, Promise<RomHost>>()
+
+const browserStorage = (): Pick<Storage, 'getItem' | 'setItem'> | null => {
+  try {
+    return typeof localStorage === 'undefined' ? null : localStorage
+  } catch {
+    return null
+  }
+}
+
+function readHostChoice(pair: string, storage: Pick<Storage, 'getItem' | 'setItem'> | null): RomHost | null {
+  const fresh = (choice: StoredHostChoice | undefined | null) =>
+    choice && choice.pair === pair && (choice.host === 'primary' || choice.host === 'mirror') &&
+    Date.now() - choice.at >= 0 && Date.now() - choice.at < HOST_CHOICE_TTL_MS
+  const memory = hostChoices.get(pair)
+  if (fresh(memory)) return memory!.host
+  try {
+    const parsed = JSON.parse(storage?.getItem(HOST_CHOICE_STORAGE_KEY) || 'null') as StoredHostChoice | null
+    if (fresh(parsed)) {
+      hostChoices.set(pair, parsed!)
+      return parsed!.host
+    }
+  } catch {
+    /* 存储坏了就当没测过 */
+  }
+  return null
+}
+
+function writeHostChoice(pair: string, host: RomHost, storage: Pick<Storage, 'getItem' | 'setItem'> | null) {
+  const choice = { pair, host, at: Date.now() }
+  hostChoices.set(pair, choice)
+  try {
+    storage?.setItem(HOST_CHOICE_STORAGE_KEY, JSON.stringify(choice))
+  } catch {
+    /* 无痕模式写不进去：本页内存里仍有结论 */
+  }
+}
+
+/** 取完整个探针的耗时（毫秒）；失败 / 超时 / 被取消返回 null */
+async function timeProbe(url: string, signal: AbortSignal, options: RomHostOptions): Promise<number | null> {
+  const now = options.now ?? (() => typeof performance !== 'undefined' ? performance.now() : Date.now())
+  const startedAt = now()
+  try {
+    // no-store 只绕开浏览器自己的缓存；两边 CDN 仍从边缘回，测的就是线路
+    const response = await (options.fetchImpl ?? fetch)(url, { cache: 'no-store', signal })
+    if (!response.ok) return null
+    const body = await response.arrayBuffer()
+    if (!body.byteLength) return null
+    return Math.max(1, now() - startedAt)
+  } catch {
+    return null
+  }
+}
+
+async function raceHosts(primaryBase: string, mirrorBase: string, prefer: RomHost, options: RomHostOptions): Promise<RomHost | null> {
+  const other: RomHost = prefer === 'primary' ? 'mirror' : 'primary'
+  const base = (host: RomHost) => (host === 'primary' ? primaryBase : mirrorBase)
+  const controllers = { primary: new AbortController(), mirror: new AbortController() }
+  const deadline = setTimeout(() => {
+    controllers.primary.abort()
+    controllers.mirror.abort()
+  }, options.timeoutMs ?? HOST_PROBE_TIMEOUT_MS)
+  let graceTimer: ReturnType<typeof setTimeout> | undefined
+  const now = options.now ?? (() => typeof performance !== 'undefined' ? performance.now() : Date.now())
+  const startedAt = now()
+  try {
+    const preferredRun = timeProbe(`${base(prefer)}${ROM_ROUTE_PROBE_PATH}`, controllers[prefer].signal, options).then((ms) => {
+      // 默认方先到：另一方不可能再快 15%，立刻停掉，省一个连接
+      if (ms !== null) controllers[other].abort()
+      return ms
+    })
+    const otherRun = timeProbe(`${base(other)}${ROM_ROUTE_PROBE_PATH}`, controllers[other].signal, options).then((ms) => {
+      // 另一方先到（用时 t）：默认方只要在 t×1.15 内到就仍算默认方，过了这个点就不必再等
+      if (ms !== null) graceTimer = setTimeout(() => controllers[prefer].abort(), Math.max(0, (now() - startedAt) * (FASTER_MARGIN - 1)))
+      return ms
+    })
+    const [preferredMs, otherMs] = await Promise.all([preferredRun, otherRun])
+    if (preferredMs === null && otherMs === null) return null
+    if (otherMs !== null && (preferredMs === null || otherMs * FASTER_MARGIN < preferredMs)) return other
+    return prefer
+  } finally {
+    clearTimeout(deadline)
+    clearTimeout(graceTimer)
+  }
+}
+
+/**
+ * 这次开局走主域还是加速镜像。同一对域名同时只测一次，结论缓存 30 分钟；
+ * 调用方被取消时不影响别人在等的同一轮测速（两次 64KB，很便宜）。
+ */
+export async function chooseRomHost(primaryBase: string, mirrorBase: string, options: RomHostOptions = {}): Promise<RomHost> {
+  const prefer = options.prefer ?? 'primary'
+  if (!mirrorBase || !primaryBase || routeId(primaryBase) === routeId(mirrorBase)) return 'primary'
+  const cacheResults = options.cacheResults ?? !options.fetchImpl
+  const storage = cacheResults ? (options.storage === undefined ? browserStorage() : options.storage) : null
+  const pair = `${routeId(primaryBase)}|${routeId(mirrorBase)}`
+  if (cacheResults) {
+    const cached = readHostChoice(pair, storage)
+    if (cached) return cached
+  }
+  const hints = options.hints ?? runtimeHints()
+  const effectiveType = String(hints.effectiveType ?? '').toLowerCase()
+  if (hints.saveData || effectiveType === 'slow-2g' || effectiveType === '2g') return prefer
+
+  const key = `${pair}|${prefer}`
+  const running = cacheResults ? hostInflight.get(key) : undefined
+  if (running) return running
+  const run = raceHosts(primaryBase, mirrorBase, prefer, options).then((winner) => {
+    // 两边都没测出来：这次用默认，不写缓存，下一局再测
+    if (winner && cacheResults) writeHostChoice(pair, winner, storage)
+    return winner ?? prefer
+  })
+  if (cacheResults) {
+    hostInflight.set(key, run)
+    void run.finally(() => hostInflight.delete(key))
+  }
+  return run
+}
+
+export function clearRomHostChoice(): void {
+  hostChoices.clear()
+  hostInflight.clear()
+  try {
+    browserStorage()?.setItem(HOST_CHOICE_STORAGE_KEY, 'null')
+  } catch {
+    /* ignore */
+  }
+}
