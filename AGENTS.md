@@ -2944,6 +2944,16 @@ EdgeOne 只能用境外（香港）节点。主站、ROM、Pages 子域都不受
   再等 `ROM_HOST_WAIT_MS`（1.5 秒），没结论先用默认，测速在后台跑完并缓存给下一局。
   ROM 本体仍走 8MB 对齐 Range（带 romv 的都是），实测 EdgeOne 免费版按片缓存 98MB 的大包，不会因整包大被拒。
   ⚠️ 探针对象**不能删、不能原地覆盖**；要换就上传 v2 并改 `ROM_ROUTE_PROBE_PATH`。回归：`npm run test:rom-probe`。
+- **BIOS / Windows 系统盘 / Sockdrive 也跟着线路走**（2026-11-07，`src/services/romHosts.ts`）：
+  `platformBios.ts` 的地址和播放器收到的 `dosSystemUrl` 经 `routeRomAssetUrl` 换到已测线路（没测完时大陆默认镜像）。
+  - ⚠️ 凡是拿 URL 当身份的地方都要先 `canonicalRomUrl()` 换回主域写法：`romCacheKey`（ROM / 系统盘的 IndexedDB 缓存，
+    否则换一次线路整份重下）、`sockdriveVersionedSaveKey`（否则存档键变了）。
+  - ⚠️ Sockdrive 存档包里**写着盘的 URL**（js-dos `traverseSockdriveChanges`：`[u32 LE 长度][URL][u32 LE 长度][扇区差异]` 重复），
+    开机只认完全相同的地址。读档时 `retargetSockdriveChanges` 把同一块盘的另一种写法改成当前地址；漏了就是换线路后存档静默消失。
+  - Sockdrive 每块盘在每个浏览器里**钉死一条线路**（`pinnedSockdriveUrl`，localStorage `8bitgo.sockdrive-host.v1`，30 天）：
+    js-dos 的 OPFS 扇区缓存按 URL 存，来回切会存两份。播放器 onError 时 `clearSockdrivePin`，下次按新线路重选。
+  - 实测 EdgeOne 原样转发 `.raw` / `sockdrive.metaj` 的 `Content-Encoding: br`，解码后与主域逐字节一致并会 HIT；
+    BIOS、系统盘两边 ETag 相同。回归：`npm run test:rom-hosts`。
 - ⚠️ 加速域名**不能带下划线**（`image_cn` 这种）：公共 CA 不为含 `_` 的主机名签证书，HTTPS 永远起不来。
 - 两个域名的本地存档、IndexedDB 和登录态互不相通（按 origin 隔离），云存档不受影响。
 

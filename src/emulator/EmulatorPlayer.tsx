@@ -9,6 +9,8 @@ import { probeNesRomHeader } from './nesRomProbe'
 import { resolveRuntime, runtimesFor, extOf } from './registry'
 import { romArchiveRef } from '@/lib/romArchiveUrl'
 import { romUrlForKey } from '@/services/roms'
+import { clearSockdrivePin, pinnedSockdriveUrl, routeRomAssetUrl } from '@/services/romHosts'
+import { coverCdnHint } from '@/services/cnHost'
 import { isRomPackBytes, unpackRomPackBlob } from '@/services/romPack'
 import { isRomPackUrl } from '../../shared/rom-pack-format.js'
 import type { Capability, LoadPhase, LoadProgress, Runtime, RuntimeHandle, RuntimeId, ScreenLayoutState, StageMode } from './types'
@@ -585,8 +587,8 @@ export function EmulatorPlayer({
   dosStartupCommands,
   dosBackend,
   dosPc98,
-  dosSystemUrl,
-  dosSockdriveUrl,
+  dosSystemUrl: rawDosSystemUrl,
+  dosSockdriveUrl: rawDosSockdriveUrl,
   dosExtras,
   dosExtrasLabel,
   dosWindowsVersion,
@@ -612,8 +614,22 @@ export function EmulatorPlayer({
   autoStart,
   debug = false,
 }: Props) {
+  /*
+    系统盘和 Sockdrive 也跟 ROM 一样走测好的线路（主域 / EdgeOne 镜像，见 services/romHosts.ts）。
+    系统盘的 IndexedDB 缓存键已按主域写法归一，换线路不会重下；Sockdrive 每块盘在本浏览器里钉死一条线路，
+    免得 js-dos 的 OPFS 扇区缓存按两个 URL 各存一份。还没测出线路时，大陆访客默认镜像、其他人默认主域。
+  */
+  const hostFallback = coverCdnHint() === 'cn' ? 'mirror' : 'primary'
+  const dosSystemUrl = useMemo(
+    () => (rawDosSystemUrl ? routeRomAssetUrl(rawDosSystemUrl, hostFallback) : rawDosSystemUrl),
+    [rawDosSystemUrl, hostFallback],
+  )
+  const dosSockdriveUrl = useMemo(
+    () => (rawDosSockdriveUrl ? pinnedSockdriveUrl(rawDosSockdriveUrl, hostFallback) : rawDosSockdriveUrl),
+    [rawDosSockdriveUrl, hostFallback],
+  )
   // 静态 Sockdrive 是 BIOS 硬盘；纯 DOS 游戏也要先启动真实 DOS 7.1，才能把游戏盘读成 D:。
-  const effectiveDosSystemUrl = dosSystemUrl || (dosSockdriveUrl ? defaultDos71SystemUrl() : undefined)
+  const effectiveDosSystemUrl = dosSystemUrl || (dosSockdriveUrl ? routeRomAssetUrl(defaultDos71SystemUrl(), hostFallback) : undefined)
   const [status, setStatus] = useState<Status>('idle')
   const [file, setFile] = useState<File | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -2250,6 +2266,8 @@ export function EmulatorPlayer({
       },
       onError: (message: string, errorScope?: 'runtime' | 'content' | 'config' | 'deterministic') => {
         if (!isCurrent()) return
+        // Sockdrive 起不来时解除这块盘的线路绑定，下一次按最新测速结果重选（镜像故障时会回到主域）
+        if (session.runtime.id === 'jsdos' && dosSockdriveUrlRef.current) clearSockdrivePin(dosSockdriveUrlRef.current)
         // 信令层偶尔只给空错误；直播又不会自动重挂，空串会让错误状态只剩黑框。
         // 同时把具体原因留在本机控制台，光有 failedMs 无法区分「房间已散」和「网络没通」。
         const failureReason = session.runtime.id === 'liveview' ? message.trim() || t.runtime.liveTimeout : message

@@ -27,6 +27,7 @@
  */
 
 import { romArchiveRef } from '@/lib/romArchiveUrl'
+import { canonicalRomUrl } from '@/services/romHosts'
 
 const DB_NAME = '8bitgo-roms'
 const DB_VERSION = 1
@@ -135,7 +136,8 @@ export function romCacheKey(url: string): string {
   const version = queryAt >= 0 ? new URLSearchParams(source.slice(queryAt + 1)).get('romv')?.trim() : ''
   // 空 romv 不是内容版本；把它当键会让覆盖后的新旧分片在同一地址下混合。
   if (!version && !romArchiveRef(url)?.version.trim()) return ''
-  return url
+  // 主域和 EdgeOne 镜像是同一个对象：键按主域写法存，换线路后照样命中，不再整份重下
+  return canonicalRomUrl(url)
 }
 
 /** 读缓存。命中返回字节，未命中返回 null */

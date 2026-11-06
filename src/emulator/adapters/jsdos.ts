@@ -12,6 +12,7 @@
  * 想换成官方 CDN 就设 VITE_JSDOS_PATH=https://v8.js-dos.com/latest/
  */
 import type { Capability, CaptureSources, LoadProgress, MountOptions, PadButton, RuntimeHandle } from '../types'
+import { canonicalRomUrl, retargetSockdriveChanges } from '@/services/romHosts'
 import { getT, fmt } from '@/services/i18n'
 import {
   hideJsdosConfigForLayer,
@@ -1672,7 +1673,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
        */
       const baseSaveKey = options.gameSlug || `local:${rom?.name ?? options.gameName}`
       if (streamingGame) {
-        saveKey = sockdriveVersionedSaveKey(baseSaveKey, sockdriveUrl)
+        // 键按主域写法算：同一块盘走主域还是 EdgeOne 镜像都是同一份存档（romHosts.ts）
+        saveKey = sockdriveVersionedSaveKey(baseSaveKey, canonicalRomUrl(sockdriveUrl))
       } else if (fullWindowsGuest && rom?.buf) {
         const fingerprint = windowsGuestArchiveFingerprint(rom.buf)
         saveKey = windowsGuestSaveKey(baseSaveKey, fingerprint)
@@ -1775,6 +1777,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
                   try {
                     const saved = await pullSave('jsdos', saveKey, saveSlot)
                     if (!saved?.data) return null
+                    // 扇区差异包里写着存档时那块盘的 URL，js-dos 只认完全相同的地址；换过线路就改成当前地址
+                    if (streamingGame && sockdriveUrl) {
+                      let mounted = sockdriveUrl
+                      try { mounted = normalizeSockdriveUrl(sockdriveUrl) } catch { /* 下面挂盘时会报具体错误 */ }
+                      return retargetSockdriveChanges(new Uint8Array(saved.data), mounted)
+                    }
                     if (!fullWindowsGuest) return saved.data
                     const safe = filterWindowsGuestSaveChanges(saved.data)
                     if (!safe) return null

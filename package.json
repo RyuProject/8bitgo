@@ -42,6 +42,7 @@
     "test:legal": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-legal-pages.mjs",
     "test:age": "node scripts/test-age-gate.mjs",
     "test:cover": "node scripts/test-cover-resize.mjs",
+    "test:rom-hosts": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-rom-hosts.mjs",
     "test:cover-cdn": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-cover-cdn.mjs",
     "test:cover-thumb": "node scripts/test-cover-thumb.mjs",
     "test:cover-priority": "node scripts/test-cover-priority.mjs",

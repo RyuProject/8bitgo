@@ -12,6 +12,8 @@ import { useEffect, useState } from 'react'
 import type { PlatformId } from '@/types'
 import { api, apiEnabled } from './api'
 import { romUrlForKey } from './roms'
+import { routeRomAssetUrl } from './romHosts'
+import { coverCdnHint } from './cnHost'
 import { psxBiosObjectKey, type PsxBiosRegion } from '@/emulator/psxBiosRegion'
 
 /**
@@ -31,6 +33,12 @@ export type PlatformBiosMap = Partial<Record<PlatformId, string>> & Partial<Reco
  * ⚠️ 名字在这里**统一收口**成小写去空格：库里存的、后台填的、页面手输的都从这儿过一遍。
  * 不归一化的话 `' PGM '` 查不到 `bios:pgm`，而失败是静默的（就是"没绑定"）。
  */
+/*
+ * BIOS 也走开局前测好的线路（主域 / EdgeOne 镜像，见 romHosts.ts）。还没测出来时大陆访客默认镜像。
+ * EmulatorJS 按 URL 缓存 BIOS，换线路最多让这一份（几百 KB 到 1.5MB）重下一次。
+ */
+const biosUrlForKey = (key: string) => routeRomAssetUrl(romUrlForKey(key), coverCdnHint() === 'cn' ? 'mirror' : 'primary')
+
 export function biosSetKey(name: string): `bios:${string}` {
   return `bios:${String(name).trim().toLowerCase()}`
 }
@@ -101,7 +109,7 @@ export function loadedPlatformBios(): PlatformBiosMap | null {
  */
 export function platformBiosUrlSync(platform: PlatformId): string {
   const key = cache?.[platform]
-  return key ? romUrlForKey(key) : ''
+  return key ? biosUrlForKey(key) : ''
 }
 
 /** 后台改完 BIOS 之后调，让正在开着的页面重新拉一次 */
@@ -119,7 +127,7 @@ export function invalidatePlatformBios() {
 export function biosSetUrlSync(name: string | undefined): string {
   if (!name) return ''
   const key = cache?.[biosSetKey(name)]
-  return key ? romUrlForKey(key) : ''
+  return key ? biosUrlForKey(key) : ''
 }
 
 /** BIOS 异步到达时通知组件；多个选择器共用同一份缓存和订阅逻辑。 */
@@ -144,7 +152,7 @@ function usePlatformBiosMap(): PlatformBiosMap {
 function useBiosUrlByKey(key: string | undefined): string {
   const map = usePlatformBiosMap()
   const raw = key ? (map as Record<string, string | undefined>)[key] : undefined
-  return raw ? romUrlForKey(raw) : ''
+  return raw ? biosUrlForKey(raw) : ''
 }
 
 /** 某平台的 BIOS 完整 URL。没配就返回空串。 */
@@ -156,7 +164,7 @@ export function usePlatformBiosUrl(platform: PlatformId | undefined): string {
 export function usePsxBiosUrl(region?: PsxBiosRegion): string {
   const map = usePlatformBiosMap()
   const key = psxBiosObjectKey(map, region)
-  return key ? romUrlForKey(key) : ''
+  return key ? biosUrlForKey(key) : ''
 }
 
 

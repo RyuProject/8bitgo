@@ -350,3 +350,9 @@ export function clearRomHostChoice(): void {
     /* ignore */
   }
 }
+
+/** 同步读已测好的线路（BIOS、系统盘、Sockdrive 用）；没测过或已过期返回 null */
+export function readCachedRomHost(primaryBase: string, mirrorBase: string): RomHost | null {
+  if (!primaryBase || !mirrorBase || routeId(primaryBase) === routeId(mirrorBase)) return null
+  return readHostChoice(`${routeId(primaryBase)}|${routeId(mirrorBase)}`, browserStorage())
+}
