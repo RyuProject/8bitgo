@@ -193,7 +193,13 @@ export function clearRomRouteSpeedCache(): void {
 export const ROM_ROUTE_PROBE_PATH = '/roms/_route-probe/v1.bin?v=1'
 const HOST_CHOICE_STORAGE_KEY = '8bitgo.rom-host.v1'
 export const HOST_CHOICE_TTL_MS = 30 * 60 * 1000
-const HOST_PROBE_TIMEOUT_MS = 2500
+/*
+ * 探针自己的上限放宽到 8 秒：详情页刚打开时探针要和封面、脚本、HEAD 抢连接，2026-11-07 实测两边
+ * 都要 2.5 秒以上（单独测只要 210 / 450ms），旧的 2.5 秒上限让两边一起超时、什么结论都没留下。
+ * 开局等不了这么久 —— 调用方只多等一小会儿（roms.ts 的 ROM_HOST_WAIT_MS），等不到就先用默认，
+ * 测速在后台跑完、写进缓存，下一局直接用上。
+ */
+const HOST_PROBE_TIMEOUT_MS = 8000
 
 export type RomHost = 'primary' | 'mirror'
 

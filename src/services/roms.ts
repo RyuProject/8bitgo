@@ -22,7 +22,7 @@ import { romArchiveRef } from '@/lib/romArchiveUrl'
 import { isRomPackUrl, romPackKey } from '../../shared/rom-pack-format.js'
 import { isStreamingDiscPlatform } from '../../shared/streaming-disc-platforms.js'
 import { builtinWebGameFor } from '../../shared/builtin-web-games.js'
-import { chooseFasterRomRoute, chooseRomHost, ROM_ROUTE_RACE_MIN_BYTES } from './romRoute'
+import { chooseFasterRomRoute, chooseRomHost, ROM_ROUTE_RACE_MIN_BYTES, type RomHost } from './romRoute'
 import { coverCdnHint } from './cnHost'
 import { reportCoverCdnFailure, selectedCoverCdn, startCoverCdnProbe, subscribeCoverCdn } from './coverCdn'
 
@@ -123,6 +123,9 @@ export function getRomMirrorBase(): string {
  * 把主 ROM 域上的地址换成镜像域上的同一个对象（路径和 romv 原样保留）。
  * 外链、站内路径、封面域都不在主域上，返回空串 —— 调用方照旧用原地址。
  */
+/** HEAD 探测结束后，最多再为线路测速等这么久（毫秒）；见 romRoute.ts 的 chooseRomHost */
+export const ROM_HOST_WAIT_MS = 1500
+
 export function romMirrorUrl(url: string, base = getRomBase(), mirror = getRomMirrorBase()): string {
   if (!url || !base || !mirror || base === mirror || !url.startsWith(`${base}/`)) return ''
   return `${mirror}${url.slice(base.length)}`
@@ -1310,7 +1313,13 @@ export function useRomUrl(game: Game | undefined, prefer?: RomSlotLang | null): 
       if (mirrorFailed.current || !hostChoice) return url
       const mirror = romMirrorUrl(url)
       if (!mirror) return url
-      if ((await hostChoice) !== 'mirror') return url
+      // 测速只多等一小会儿；没测完就先用默认那边，测速继续在后台跑完并缓存给下一局
+      const fallback: RomHost = coverCdnHint() === 'cn' ? 'mirror' : 'primary'
+      const host = await Promise.race([
+        hostChoice,
+        new Promise<RomHost>((resolve) => window.setTimeout(() => resolve(fallback), ROM_HOST_WAIT_MS)),
+      ])
+      if (host !== 'mirror') return url
       console.info(`[8bitgo/rom] ${game.slug} 走加速镜像：${new URL(mirror).origin}`)
       return mirror
     }

@@ -269,6 +269,9 @@ assert.equal(isolatedEmbedFor('diablo'), undefined, 'Diablo 不需要 COOP/COEP�
   const roms = readFileSync(new URL('../src/services/roms.ts', import.meta.url), 'utf8')
   assert.match(roms, /chooseRomHost\(getRomBase\(\), getRomMirrorBase\(\), \{ prefer: coverCdnHint\(\) === 'cn' \? 'mirror' : 'primary' \}\)/, '所有平台都选线路，大陆访客默认镜像')
   assert.doesNotMatch(roms, /MIRROR_RACE_ANY_SIZE_PLATFORMS/, '不再按平台 / 大小决定要不要测')
+  assert.match(roms, /Promise\.race\(\[\s*hostChoice,[\s\S]*?ROM_HOST_WAIT_MS/, '开局对测速只做有限等待，测速本身在后台跑完')
+  const route = readFileSync(new URL('../src/services/romRoute.ts', import.meta.url), 'utf8')
+  assert.match(route, /const HOST_PROBE_TIMEOUT_MS = 8000/, '探针上限要能熬过详情页刚打开时的连接争抢')
 }
 
 /* ---------- 8BG 约定地址：新容器优先，旧对象继续回退 ---------- */
