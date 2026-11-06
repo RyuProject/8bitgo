@@ -176,7 +176,7 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
 - **引擎下的核心大多是 legacy 版。** 核心报告的 `options.defaultWebGL2` 为空时，引擎下载 `<core>-legacy-wasm.data`。FBNeo、snes9x、mame2003 都属于这种情况。预热必须用 `emulatorJsCoreDataFile()`，名单是 `EJS_WEBGL2_DEFAULT_CORES`，`test:arcade-runtime` 会把它和 metadata、引擎源码逐项核对。以前悬停预热拉的是 `fbneo-wasm.data`，白下 8MB，点开后引擎再下另一份。
 - **点击后与 ROM 并行预热**（`ejsStartWarm.ts`）：入口 / css / 核心报告无条件预热。核心和平台 BIOS 只在引擎库 `EmulatorJS-Cache` 里没有这个 URL 时才预热。⚠️ 查库遇到 `onupgradeneeded` 必须 abort：替引擎建出一个没有 `cache` 表的空 v1 库，会让核心缓存永久失效。
 - **平台 BIOS 只在用得上时才下。** 服务端按 romset 索引推导 `Game.arcadeNoBios`（`arcade-bios-index.js` 的 `romsetsNeedNoBios`），条件是所有官方 ROM（含备用源）都是已知、且不需要 BIOS 的 romset。后台填了系统包或 RomData、或者换了非 FBNeo 核心的游戏不推导。认不出的名字一律保守地照下平台 BIOS。播放器只对官方远端 ROM、FBNeo 核心生效。
-- **带 `?v=` 的 `/emulatorjs/` 请求长期缓存**（`cache.js` 的 `isVersionedRequest`）。引擎自己拼的 `compression/*`、`localization/*` 不带版本，仍然短缓存。前提不变：改引擎或核心必须换 `EJS_RUNTIME_GENERATION`。
+- **带 `?v=` 的 `/emulatorjs/` 请求长期缓存**（`cache.js` 的 `isVersionedRequest`）。引擎自己拼的 `compression/*` 不带版本，仍然短缓存。界面语言包例外：loader.js **等语言包回来才起核心**，所以 `emulatorJsRuntimePaths(core, 语言)` 经 `EJS_paths[语言]` 给它版本化 URL（2026-11-06《铁拳》热启动里这一步回源 0.8 秒）；改 `localization/*.json` 同样要换代。前提不变：改引擎或核心必须换 `EJS_RUNTIME_GENERATION`。
 
 ### 2.8.2 mame-current 的内容必须在子目录里：根路径解析不出 rompath
 
@@ -1185,6 +1185,12 @@ Ruffle 按**根影片**的 SWF 版本开放 API：KRF 是 SWF 10，`JSON` 只给
 依赖 `JSON` 的桥（当前 AGI1 的 Infectonator 2 是 v11、SAS3 是 v14，暂时安全）。
 另外桥是 Loader 加载的子影片，`stage` 恒为 null：AGI2 从 `connect({stage})` 的
 `stage.getChildAt(0).loaderInfo.parameters` 取主影片 FlashVars，桥 URL query 只是兜底。
+⚠️ **KRF「登录了，点 START 还是显示未登录」**（2026-11-06）：站内 KRF 包把面板的 Login 改成
+`navigateToURL("https://8bitgo.com","_blank")`，只会新开首页、这一局收不到会话；面板的登录小部件又只在
+`ADDED_TO_STAGE` 时读一次 `isLoggedIn`。修法三处缺一不可：注册表 KRF `loginUrls: ['https://8bitgo.com/']`
+把跳转接回登录框；桥 `setSessionFromHost` 登录态一变就给带 `tryToLogin` 的显示对象补发 `ADDED_TO_STAGE`
+（它的 `init` 不是 public，直接调抛 #1069）；`showLogin` 回调挂起到登录有结论，登录框没登录就关时
+播放器调 `eightbitgoLoginSettled`。回归：`node scripts/test-flash-save-consistency.mjs`。
 改桥必须提升 `FLASH_SAVE_BRIDGE_RELEASE` 发新目录（旧目录保留，Cloudflare 缓存 SWF），
 只重编一代时把另一代的 SWF 原样复制进新目录。
 
@@ -1223,6 +1229,15 @@ cd .. && npm run test:flash-online-save
   手机屏幕手柄给 nes 自带布局 + TB / TA。defaultControllers 一起补，引擎「重置」不会再删光。
 - 引擎按 **keyCode** 认键：小键盘 2P 必须开 NumLock（jsnes 认 event.code，不用管）。文案分开：`player2NoteEjs`。
 - 回归：`npm run test:ejs-seats`、`npm run test:keymap`（出厂手柄映射 / 2P 键与 jsnes 对齐 / 连发确实在方案外）。
+- **2P 不能只有两颗面键**（2026-11-06《铁拳》）：上面那套照红白机抄的只有 A / B，街机四键格斗（铁拳 LP RP LK RK
+  = mame-current 的 B A Y X）2P 一脚都踢不出来，SFC / PS1 的 2P 也按不出 X Y L R。`EJS_P2_EXTRA_KEY_OVERRIDE`
+  给 Y / X / L / R 绑小键盘 `/ * - +`（keyCode 111 / 106 / 109 / 107，不受 NumLock 影响、不撞 1P）；
+  `EJS_P2_KEYS` = 两张表合并，显示 / 同步 / 补座位都用它。已有 2P 键位的旧存档只补这四颗里**空着**的，
+  玩家绑过的一颗不动。线上已核对引擎把 keyCode 111 / 106 路由成 `(1, 1)` / `(1, 9)`。
+- **详情页的街机键数要和播放器一致**：播放器开局后从 ROM 内容识别出 Namco 四键格斗（`namcoMameSets`
+  的 `buttons: 4`），可详情页 / 开局前按键图只有 slug，以前一律画六键（铁拳页写「按键 5 = Q、按键 6 = E」，
+  按了没反应）。`effectiveArcadeButtons` 现在按 slug 认铁拳 / 灵魂之刃 / 灵魂能力（`NAMCO_FOUR_BUTTON_SLUG`），
+  后台显式配置仍优先。回归：`npm run test:arcade-performance`。
 
 ### 2.23 成人游戏直播的年龄门必须守在服务端
 
@@ -2931,6 +2946,22 @@ EdgeOne 只能用境外（香港）节点。主站、ROM、Pages 子域都不受
 要等一天。⚠️ 新增「会改变公开页面内容」的写路径必须调 `invalidateContent()`，漏了就是旧页面挂一天。
 游玩次数这类高频写故意不清。`PAGE_EDGE_MAXAGE=0` 可整体退回 5 分钟。回归：
 `cd server && npm run test:edge-purge`。
+
+### 2.37.1 Cloudflare Rocket Loader：本站脚本必须带 `data-cfasync="false"`（2026-11-06）
+
+区域里开着 Rocket Loader，它把 HTML 里每个 `<script>`（包括 Vite 的模块入口、`edge-route-v2.js`、
+SSR 的 `window.__8BITGO__` 注水）改写成 `<随机前缀>-module` / `-text/javascript`，等 **window load**
+（所有首屏封面图 + Cloudflare Insights 的 beacon.min.js）之后才补执行。《铁拳》详情页实测：入口 JS
+4.86s 就下完了，React 到 8.1s 才开始跑，`/api/auth/me`、ROM 探测、「开始游戏」按钮全部顺延 3 秒多。
+
+- `shared/rocket-loader-optout.js` 的 `optOutRocketLoader()` 给可执行脚本补 `data-cfasync="false"`
+  （JSON-LD 不碰、幂等）。三处都要有：vite 插件 `rocket-loader-optout`（post 阶段，**排在 legacy() 之后**，
+  才能覆盖它注入的 nomodule 脚本，已用同版本 vite 8.3.5 + plugin-legacy 8.2.3 构建核对）、SSR 读模板时再兜一次、
+  SSR 注水脚本本身。
+- `retargetStaticToCnEdge`（大陆入口改写）和 Early Hints 都按标签文本解析 HTML，新属性不能打断它们的正则。
+- 根治是 Cloudflare 后台关掉 Rocket Loader（Speed → Optimization → Content Optimization）；`/web/*`
+  下独立部署的网页游戏不经过这条模板，开着时仍会被改写（PvZ 的 check 脚本已在拦它的残留）。
+- 回归：`npm run test:rocket-loader`。
 
 ## 3. 常用命令
 

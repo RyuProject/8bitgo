@@ -25,7 +25,7 @@
  * 游戏请求的原始文件名仍是 AGI.swf / AGI2.swf，前端只取目标 URL 的末段做匹配，
  * 所以在中间加发布目录既能穿透旧缓存，也不改变旧游戏的加载地址。
  */
-export const FLASH_SAVE_BRIDGE_RELEASE = '20261105-r01'
+export const FLASH_SAVE_BRIDGE_RELEASE = '20261106-r01'
 
 /**
  * 老游戏补丁里可能已经写入这个版本化地址；保留它作为 Ruffle 重写入口，
@@ -50,6 +50,14 @@ export const FLASH_SAVE_GAMES = Object.freeze({
   'kingdom-rushfrontiers': {
     protocol: 'agi2',
     bridge: `/flash-api/armor-games/${FLASH_SAVE_BRIDGE_RELEASE}/AGI2.swf`,
+    /*
+      站内 KRF 包把在线存档面板的「Login」（含游客点 START 后的登录入口）改成了
+      navigateToURL("https://8bitgo.com", "_blank")，不经过 AGI2 桥：以前只会新开一个首页，
+      玩家在那边登录了，这一局也收不到会话（2026-11-06「点 START 还是显示未登录」）。
+      接回本页登录框后，桥收到会话会让面板自己重画成 Logged in as …。
+      同一个地址也被付费英雄的购买按钮用着；游客点它同样弹登录框，已登录时不拦。
+    */
+    loginUrls: ['https://8bitgo.com/'],
   },
   'sas-zombie-assault-3': {
     // SAS3 只需要一份主进度对象（slot1）；slot2/3 留给旧版 additional-data 扩展。

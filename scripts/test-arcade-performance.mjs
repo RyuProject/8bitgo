@@ -80,6 +80,13 @@ test('JoJo 未配置 arcadeButtons 时使用四键替身布局，显式配置仍
   assert.equal(effectiveArcadeButtons(undefined, undefined, 'jojos-bizarre-adventure'), 4)
   assert.equal(effectiveArcadeButtons(undefined, undefined, ' JOJOS-BIZARRE-ADVENTURE '), 4)
   assert.equal(effectiveArcadeButtons(6, undefined, 'jojos-bizarre-adventure'), 6)
+  // Namco 四键格斗：详情页 / 开局按键图只有 slug，也得是四键（2026-11-06《铁拳》页写着按键 5、6）
+  for (const slug of ['tekken', 'tekken-2', 'tekken2', 'tekken-3', 'tekken-tag-tournament', 'soul-edge', 'soulcalibur', 'soul-calibur', 'tekken~rom-ja']) {
+    assert.equal(effectiveArcadeButtons(undefined, 'namcoc76', slug), 4, slug)
+  }
+  assert.equal(effectiveArcadeButtons(6, 'namcoc76', 'tekken'), 6, '后台明确配置仍优先')
+  assert.equal(effectiveArcadeButtons(undefined, 'namcoc76', 'tekkenball'), 6, '不误伤名字只是以 tekken 开头的别的游戏')
+  assert.equal(effectiveArcadeButtons(undefined, 'namcoc76', 'xevious-3d-g'), 6)
 })
 
 test('旧 J/K/I 右摇杆撞键会迁移，玩家其它自定义保持不动', () => {

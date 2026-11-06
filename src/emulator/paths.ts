@@ -70,8 +70,16 @@ export const ejsCoreAsset = (relativePath: string): string => {
  * 映射到内容相同的 `cores/metadata/` 避开误杀；键仍必须是 basename，因为上游
  * `EJS_paths` 正是用下载目标的末段文件名查覆盖地址。
  */
-export function emulatorJsRuntimePaths(core: string): Record<string, string> {
+export function emulatorJsRuntimePaths(core: string, language?: string): Record<string, string> {
   return {
+    /*
+      界面语言包也给版本化 URL（loader.js 先查 EJS_paths[语言]）。引擎**等语言包回来才继续起核心**：
+      不带 ?v 的 localization/zh.json 只有 5 分钟缓存，隔一会再开游戏就要串行回源一次，
+      2026-11-06《铁拳》实测这一步 0.8 秒，占热启动的六分之一。英文不加载语言包，不用给。
+    */
+    ...(language && /^[a-z]{2}$/.test(language) && language !== 'en'
+      ? { [language]: ejsRuntimeAsset(`localization/${language}.json`) }
+      : {}),
     'emulator.min.js': ejsRuntimeAsset('emulator.min.js'),
     'emulator.min.css': ejsRuntimeAsset('emulator.min.css'),
     [`${core}-wasm.data`]: ejsCoreAsset(`cores/${encodeURIComponent(core)}-wasm.data`),

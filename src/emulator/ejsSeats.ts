@@ -14,13 +14,15 @@
  *
  * 修法：开局（引擎已经读完存档里的控制设置）后，按下面的规则**只补缺的**：
  * - 2P~4P 某个座位一条手柄映射都没有 → 照引擎 1P 的出厂手柄映射补一份；
- * - 2P 一颗键盘键都没绑 → 补小键盘（EJS_P2_KEY_OVERRIDE），撞上任何已绑的键就跳过那颗；
+ * - 2P 一颗键盘键都没绑 → 补小键盘（EJS_P2_KEYS），撞上任何已绑的键就跳过那颗；
+ *   已有 2P 键位的旧记录只补新增的 Y / X / L / R 里空着的几颗（EJS_P2_EXTRA_KEY_OVERRIDE）；
  * - 方案外但核心会用的按钮（EJS_RESTORED_BUTTONS）→ 补回 defaultControllers 和 controls。
  * 玩家自己配过的座位一律不动。defaultControllers 也一起补，引擎的「重置」才不会又删光。
  */
 import {
   EJS_KEY_OVERRIDE,
-  EJS_P2_KEY_OVERRIDE,
+  EJS_P2_EXTRA_KEY_OVERRIDE,
+  EJS_P2_KEYS,
   EJS_RESTORED_BUTTONS,
   EJS_STOCK_PAD_BY_ID,
 } from '@/lib/keymapData'
@@ -116,19 +118,21 @@ export function repairEjsSeats(emu: EjsSeatTarget, platform: string, core: strin
     if (stockPads.length) result.seatPads.push(p)
   }
 
-  // 3. 2P 键盘：一颗都没绑过才补小键盘；方案里没有的下标不补（引擎会删）
+  // 3. 2P 键盘：一颗都没绑过才补全套小键盘；方案里没有的下标不补（引擎会删）。
+  //    已经有 2P 键位的旧记录（存档里是只有两颗面键的老默认）只补那四颗新增键里**空着**的，
+  //    不碰玩家绑过的任何一颗 —— 否则老玩家的铁拳 2P 依旧踢不出脚（2026-11-06）。
   const c1 = seat(controls, 1)
-  if (!Object.values(c1).some(hasKey)) {
-    const d0 = seat(defaults, 0)
-    for (const [idText, [key]] of Object.entries(EJS_P2_KEY_OVERRIDE)) {
-      const id = Number(idText)
-      if (!d0[id]) continue
-      const code = codeOf(key)
-      if (code <= 0 || usedCodes.has(code)) continue
-      c1[id] = { ...c1[id], value: key }
-      usedCodes.add(code)
-      result.p2Keys++
-    }
+  const d0 = seat(defaults, 0)
+  const fresh = !Object.values(c1).some(hasKey)
+  const fill = fresh ? EJS_P2_KEYS : EJS_P2_EXTRA_KEY_OVERRIDE
+  for (const [idText, [key]] of Object.entries(fill)) {
+    const id = Number(idText)
+    if (!d0[id] || hasKey(c1[id])) continue
+    const code = codeOf(key)
+    if (code <= 0 || usedCodes.has(code)) continue
+    c1[id] = { ...c1[id], value: key }
+    usedCodes.add(code)
+    result.p2Keys++
   }
   return result
 }

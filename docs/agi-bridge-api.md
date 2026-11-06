@@ -37,7 +37,7 @@
 | | AGI1 | AGI2 |
 | --- | --- | --- |
 | 接入的游戏 | Infectonator 2（`infectonator-2`） | Kingdom Rush Frontiers（`kingdom-rushfrontiers`） |
-| 桥文件 | `/flash-api/armor-games/20261105-r01/AGI.swf` | `/flash-api/armor-games/20261105-r01/AGI2.swf` |
+| 桥文件 | `/flash-api/armor-games/20261106-r01/AGI.swf` | `/flash-api/armor-games/20261106-r01/AGI2.swf` |
 | 文档类（**不能改**） | `test_fla.MainTimeline` | `KrfAgiBridge`（包外顶层类） |
 | 源码 | `src/test_fla/MainTimeline.as` | `src-agi2/KrfAgiBridge.as` |
 | 模板 | 借 Ruffle 的开源回归测试 SWF 空壳 | 仓库里的 `template-agi2.swf`（名字的载体） |
@@ -104,7 +104,7 @@ Content-Type: application/json
   "expiresAt": 1789545600000,
   "endpoint": "/api/flash-saves/v1/infectonator-2",
   "protocol": "agi1",
-  "bridgeUrl": "/flash-api/armor-games/20261105-r01/AGI.swf",
+  "bridgeUrl": "/flash-api/armor-games/20261106-r01/AGI.swf",
   "username": "玩家昵称",
   "avatar_url": "/ui/logo-mark.png"
 } }
@@ -364,7 +364,7 @@ user.isGuest():Boolean
 user.getUsername():String
 user.getAvatarURL():String
 user.getUID():String                         // 未登录返回 "guest"
-user.showLogin(options:Object):void           // 游客打开站内登录框
+user.showLogin(options:Object):void           // 游客打开站内登录框；options.callback 等登录有结论才回
 
 storage.user.retrieve(options:Object):void   // { key?, callback } → callback({success, keys})
 storage.user.submit(options:Object):void     // { key, value, callback }
@@ -502,6 +502,23 @@ api.connect({ callback: function(result:Object):void {
   // save.remove("slot1", callback);
 }});
 ```
+
+页面 → 桥（`ExternalInterface.addCallback`，同源播放器 `ruffle().callExternalInterface` 调用）：
+
+```as3
+eightbitgoSetSession(token, username, avatarUrl, mode):Boolean  // 登录 / 登出后原地换短期会话
+eightbitgoLoginSettled():Boolean                                 // 登录框没登录就关了：结掉挂起的 showLogin
+```
+
+**登录回调时机（2026-11-06）**：`showLogin` 在游客态先通知页面开登录框，回调**挂起**，
+直到页面推来新会话（登录成功 / 登出）或 `eightbitgoLoginSettled`，再按当时状态回；
+页面过旧都不推时 10 分钟兜底。以前是开框同一刻就回 `loggedIn:false`，按回调重画界面的游戏会永远停在游客态。
+
+**KRF 面板刷新**：站内 KRF 包把在线存档面板的 `tryToLogin` 改成了
+`navigateToURL("https://8bitgo.com", "_blank")`，原来接收结果的私有 `afterLogin` 已无人调用。
+播放器靠注册表的 `loginUrls: ['https://8bitgo.com/']` 把这次跳转接回站内登录框；桥在会话变化时
+给舞台上带 `tryToLogin` 的对象补发一次 `ADDED_TO_STAGE`，触发它的 `init` 重读 `isLoggedIn`，
+面板原地变成「Logged in as …」并读出云槽。`init` / `showLoggedIn` 不是 public，直接调会抛 #1069。
 
 简化接口固定为：
 

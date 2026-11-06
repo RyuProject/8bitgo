@@ -7,6 +7,7 @@ import tailwindcss from '@tailwindcss/vite'
 import { defineConfig, loadEnv } from 'vite'
 import { builtinWebGameFor } from './shared/builtin-web-games.js'
 import { HUGE_STATIC_DIRS } from './scripts/lib/vite-static-exclusions.mjs'
+import { optOutRocketLoader } from './shared/rocket-loader-optout.js'
 
 /**
  * 把几个「又大又不需要加工」的静态目录排除在产物复制之外。
@@ -246,6 +247,19 @@ export default defineConfig(({ mode }) => {
     }),
     tailwindcss(),
     skipHugeStatic(),
+    /*
+      Cloudflare Rocket Loader 会把所有 <script> 推迟到 window load 之后（等完封面图和 beacon）：
+      2026-11-06 实测 React 晚开跑 3 秒多。必须排在 legacy() 之后的 post 阶段，
+      Vite 注入的入口 / modulepreload 和 legacy 的 nomodule 脚本都要带上退出标记。
+      见 shared/rocket-loader-optout.js。
+    */
+    {
+      name: 'rocket-loader-optout',
+      transformIndexHtml: {
+        order: 'post' as const,
+        handler: (html: string) => optOutRocketLoader(html),
+      },
+    },
     // 必须排在 web-game-static 前面：后者会直接 end(index.html)，排在后面就永远加不上隔离头。
     {
       name: 'isolated-pages',

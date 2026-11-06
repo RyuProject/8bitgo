@@ -40,6 +40,8 @@ const {
   QUICK_SAVE_RUNTIMES,
   EJS_DEFAULT_CONTROLS,
   EJS_P2_KEY_OVERRIDE,
+  EJS_P2_EXTRA_KEY_OVERRIDE,
+  EJS_P2_KEYS,
   EJS_STOCK_PAD_BY_ID,
   EJS_RESTORED_BUTTONS,
 } = await import('../src/lib/keymapData.ts')
@@ -328,10 +330,10 @@ for (const key of [...needed].sort()) {
   const code = adapter.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '')
 
   ok(
-    /EJS_VirtualGamepadSettings:\s*arcadeVirtualPad\(effectiveArcadeButtons\(options\.arcadeButtons(?: \?\? namcoSet\?\.buttons)?, options\.biosSet\?\.name\), core\)/.test(code),
+    /EJS_VirtualGamepadSettings:\s*arcadeVirtualPad\(\s*effectiveArcadeButtons\(options\.arcadeButtons(?: \?\? namcoSet\?\.buttons)?, options\.biosSet\?\.name, options\.gameSlug\),\s*core,?\s*\)/.test(code),
     '街机注入了按游戏裁剪、并能从 Neo Geo BIOS 补全旧数据的屏幕手柄布局',
   )
-  ok(/options\.platform === 'arcade'[\s\S]{0,80}\? \{ EJS_VirtualGamepadSettings/.test(code), '只给街机注入，别的平台仍用引擎默认')
+  ok(/options\.platform === 'arcade'[\s\S]{0,80}\? \{\s*EJS_VirtualGamepadSettings/.test(code), '只给街机注入，别的平台仍用引擎默认')
 
   const from = code.indexOf('function arcadeVirtualPad')
   const body = code.slice(from, code.indexOf('\n}\n', from) + 2)
@@ -433,6 +435,19 @@ for (const key of [...needed].sort()) {
     ok(EJS_ARCADE_DEFAULT_CONTROLS[1]?.[id]?.value === engine, `街机 2P libretro ${id} 交给引擎的默认键里也有`)
   }
   ok(Object.keys(EJS_P2_KEY_OVERRIDE).length === Object.keys(jsnesP2).length, 'jsnes 2P 的每一颗 EmulatorJS 都有对应')
+  // 2P 的 Y / X / L / R（2026-11-06《铁拳》：街机四键 2P 只按得出两颗）
+  for (const [id, [engine, label]] of Object.entries(EJS_P2_EXTRA_KEY_OVERRIDE)) {
+    ok(engineKeyNames.has(engine), `2P 扩展键 libretro ${id} = ${JSON.stringify(engine)}，引擎认得`)
+    ok(!p1Keys.has(norm(label)) && !p1Keys.has(norm(engine)), `2P 扩展键 libretro ${id}（${label}）不和 1P 撞`)
+    ok(EJS_P2_KEY_OVERRIDE[id] === undefined, `2P 扩展键 libretro ${id} 不和红白机那套重叠`)
+    ok(EJS_ARCADE_DEFAULT_CONTROLS[1]?.[id]?.value === engine, `街机 2P libretro ${id} 默认键是 ${engine}`)
+    ok(EJS_DEFAULT_CONTROLS[1]?.[id]?.value === engine, `主机 2P libretro ${id} 默认键是 ${engine}`)
+  }
+  {
+    const all = Object.values(EJS_P2_KEYS).map(([engine]) => engine)
+    ok(new Set(all).size === all.length, '2P 小键盘最终表没有重复键')
+    for (const id of [0, 8, 1, 9]) ok(EJS_P2_KEYS[id], `2P 四颗面键（libretro ${id}）都有键盘键`)
+  }
 
   // 方案外按钮：必须真的在方案外（否则不用补）、有默认键和出厂手柄键
   for (const [platform, { core, rows }] of Object.entries(EJS_RESTORED_BUTTONS)) {

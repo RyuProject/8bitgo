@@ -23,6 +23,7 @@ const check = (name, fn) => {
 const KEYS = {
   j: 74, k: 75, i: 73, u: 85, w: 87, s: 83, a: 65, d: 68, shift: 16, enter: 13, q: 81, e: 69,
   'numpad 1': 97, 'numpad 2': 98, 'numpad 3': 99, 'numpad 4': 100, 'numpad 6': 102, 'numpad 7': 103, 'numpad 8': 104, 'numpad 9': 105,
+  multiply: 106, add: 107, subtract: 109, divide: 111,
 }
 const keyLookup = (k) => (typeof k === 'number' ? k : KEYS[String(k).toLowerCase()] ?? -1)
 
@@ -49,7 +50,11 @@ check('⚠️ 旧存档：补回连发 I / U + 手柄 X / Y，2P~4P 补手柄，
   const r = repairEjsSeats(emu, 'nes', 'fceumm')
   assert.deepEqual(r.restored.sort(), [1, 9])
   assert.deepEqual(r.seatPads, [1, 2, 3])
-  assert.equal(r.p2Keys, 8)
+  assert.equal(r.p2Keys, 12, '小键盘 8 颗 + Y / X / L / R 四颗')
+  assert.equal(emu.controls[1][1].value, 'divide', '2P 的 Y = 小键盘 /')
+  assert.equal(emu.controls[1][9].value, 'multiply', '2P 的 X = 小键盘 *')
+  assert.equal(emu.controls[1][10].value, 'subtract', '2P 的 L = 小键盘 -')
+  assert.equal(emu.controls[1][11].value, 'add', '2P 的 R = 小键盘 +')
   assert.deepEqual(emu.controls[0][9], { value: 'i', value2: 'BUTTON_3' }, '连发 A = I / 手柄 X')
   assert.deepEqual(emu.controls[0][1], { value: 'u', value2: 'BUTTON_4' }, '连发 B = U / 手柄 Y')
   assert.equal(emu.controls[1][8].value2, 'BUTTON_1', '2P 手柄 A')
@@ -71,13 +76,32 @@ check('第二次开局什么都不改（幂等）', () => {
   assert.equal(JSON.stringify(emu.controls), before)
 })
 
-check('玩家配过的座位不动：2P 已有手柄 / 键盘就整座不补', () => {
+check('玩家配过的座位不动：2P 已有手柄 / 键盘就不补小键盘那套，只补空着的 Y / X / L / R', () => {
   const emu = nesEngine()
   emu.controls[1] = { 8: { value: 76, value2: 'BUTTON_7' } }
   const r = repairEjsSeats(emu, 'nes', 'fceumm')
   assert.ok(!r.seatPads.includes(1))
-  assert.equal(r.p2Keys, 0)
-  assert.deepEqual(emu.controls[1], { 8: { value: 76, value2: 'BUTTON_7' } })
+  assert.equal(r.p2Keys, 4)
+  assert.deepEqual(emu.controls[1][8], { value: 76, value2: 'BUTTON_7' }, '玩家绑的那颗原样')
+  assert.equal(emu.controls[1][0], undefined, '老的小键盘 9 不硬塞回去')
+  assert.equal(emu.controls[1][9].value, 'multiply')
+})
+
+check('⚠️ 老默认存档（2P 只有两颗面键）：补上 Y / X / L / R，铁拳 2P 才踢得出脚', () => {
+  const emu = nesEngine()
+  const p2 = { 0: 'numpad 9', 2: 'numpad 3', 3: 'numpad 1', 4: 'numpad 8', 5: 'numpad 2', 6: 'numpad 4', 7: 'numpad 6', 8: 'numpad 7' }
+  emu.controls[1] = Object.fromEntries(Object.entries(p2).map(([id, k]) => [id, { value: keyLookup(k) }]))
+  // 街机方案里有 Y / X（nes 的假引擎把它们删了，这里补回来）
+  emu.defaultControllers[0][1] = { value: 'u', value2: 'BUTTON_4' }
+  emu.defaultControllers[0][9] = { value: 'i', value2: 'BUTTON_3' }
+  emu.controls[1][10] = { value: 109 } // 玩家自己把 L 绑成了小键盘 -：不重复绑
+  const r = repairEjsSeats(emu, 'arcade', 'mame-current')
+  assert.equal(r.p2Keys, 3)
+  assert.equal(emu.controls[1][1].value, 'divide')
+  assert.equal(emu.controls[1][9].value, 'multiply')
+  assert.equal(emu.controls[1][10].value, 109, '玩家绑的 L 原样')
+  assert.equal(emu.controls[1][11].value, 'add')
+  assert.equal(repairEjsSeats(emu, 'arcade', 'mame-current').p2Keys, 0, '幂等')
 })
 
 check('⚠️ 不制造撞键：玩家把 I 改给了 A，连发 A 只补手柄；小键盘被占的那颗跳过', () => {
@@ -88,7 +112,7 @@ check('⚠️ 不制造撞键：玩家把 I 改给了 A，连发 A 只补手柄�
   assert.deepEqual(emu.controls[0][9], { value2: 'BUTTON_3' })
   assert.equal(emu.controls[0][1].value, 'u')
   assert.equal(emu.controls[1][0]?.value, undefined, '小键盘 9 已经是 1P 的 B，2P 不能再绑')
-  assert.equal(r.p2Keys, 7)
+  assert.equal(r.p2Keys, 11)
 })
 
 check('后台把红白机钉成 nestopia：不补连发、不开连发选项（那颗核心不认 X / Y 连发）', () => {

@@ -2,6 +2,7 @@ package
 {
    import flash.display.Sprite;
    import flash.events.Event;
+   import flash.events.EventDispatcher;
    import flash.events.IOErrorEvent;
    import flash.events.SecurityErrorEvent;
    import flash.events.TimerEvent;
@@ -63,6 +64,17 @@ package
       private var loggedIn:Boolean = false;
       /** 一局只弹一次，避免一次保存又读又写时叠出多层登录框。 */
       private var loginPromptSent:Boolean = false;
+      /**
+       * user.showLogin / eightbitgo.showLogin 挂起的回调。
+       * 真 Armor Games 的 showLogin 在登录窗**关闭后**才回调；旧实现在通知页面开登录框的同一刻
+       * 就回 `loggedIn:false`，按它重画界面的游戏会永远停在游客态。现在先挂起，页面推来新会话
+       * （登录成功 / 登出）或 eightbitgoLoginSettled（没登录就关了框）时再按当时状态回；
+       * 页面版本过旧不会推的话，LOGIN_WAIT_MS 后兜底回调，游戏不会一直等。
+       * （KRF 本身不走这里，见 refreshGameLoginWidgets。）
+       */
+      private var pendingLoginCallbacks:Array = [];
+      private var loginWaitTimer:Timer = null;
+      private static const LOGIN_WAIT_MS:int = 600000;
       /** 每个槽的服务端代次，用来拒绝弱网下迟到的旧写入。 */
       private var revisions:Object = {};
       /** 页面会话内的操作 ID；同一次写入重试时复用，服务端才能幂等去重。 */
@@ -154,6 +166,8 @@ package
             if(ExternalInterface.available)
             {
                ExternalInterface.addCallback("eightbitgoSetSession",this.setSessionFromHost);
+               // 登录框没登录就关掉 / 会话签发失败时，播放器用它把挂起的 showLogin 回调结掉。
+               ExternalInterface.addCallback("eightbitgoLoginSettled",this.settleLoginFromHost);
             }
          }
          catch(error:Error)
@@ -162,11 +176,20 @@ package
          }
       }
 
+      /** 登录框关闭但没有拿到新会话：按当前状态回调挂起的 showLogin，不改动会话本身。 */
+      public function settleLoginFromHost() : Boolean
+      {
+         this.loginPromptSent = false;
+         this.flushPendingLogin();
+         return true;
+      }
+
       /** 登录 / 登出后由同源播放器更新短期会话；站点 JWT 从不传入 Flash。 */
       public function setSessionFromHost(token:String, nextUsername:String = "", nextAvatarUrl:String = "", nextMode:String = "authenticated") : Boolean
       {
          var safeToken:String = this.stringValue(token);
          var changed:Boolean = this.sessionToken != safeToken;
+         var wasLoggedIn:Boolean = this.loggedIn;
          if(this.endpoint.length == 0) return false;
          if(safeToken.length == 0)
          {
@@ -182,6 +205,9 @@ package
             this.loggedIn = false;
             this.loginPromptSent = false;
             if(changed) this.failQueuedTasksForSessionChange();
+            // 取消登录 / 登出也会推一次游客会话：挂起的 showLogin 按「未登录」回，游戏不再干等。
+            this.flushPendingLogin();
+            if(wasLoggedIn) this.refreshGameLoginWidgets();
             return true;
          }
          if(changed)
@@ -197,7 +223,51 @@ package
          this.loginPromptSent = false;
          // 新会话可能属于另一账号；先失败掉旧队列，不能把旧档用新账号凭证继续发出。
          if(changed) this.failQueuedTasksForSessionChange();
+         // 登录成功：现在才回 showLogin，游戏据此重画在线存档面板并读取云端槽位。
+         this.flushPendingLogin();
+         if(!wasLoggedIn || changed) this.refreshGameLoginWidgets();
          return true;
+      }
+
+      /**
+       * KRF 的登录小部件（混淆类 _-im）只在 ADDED_TO_STAGE 时读一次 isLoggedIn。
+       * 站内 KRF 包把它的 tryToLogin 改成了 navigateToURL("https://8bitgo.com")，原本登录窗关闭后
+       * 回调的私有 afterLogin 从此没人调，所以「点 START → 登录 → 面板仍显示 Login to use the
+       * AG Save System」。它的 init / showLoggedIn 都不是 public（2026-11-06 Ruffle 实测直接调抛
+       * #1069），但 init 仍挂在 ADDED_TO_STAGE 上：会话一变就给舞台上带 tryToLogin 的对象补发一次
+       * addedToStage，让它按新状态重画并拉取已购英雄。按鸭子类型找，不依赖混淆类名；
+       * 找不到（换了游戏 / 面板没开）就什么都不做。
+       */
+      private function refreshGameLoginWidgets() : void
+      {
+         var root:Object = this.connectStage;
+         if(root == null) return;
+         var pending:Array = [root];
+         var visited:int = 0;
+         while(pending.length > 0 && visited < 5000)
+         {
+            var node:Object = pending.pop();
+            visited++;
+            try
+            {
+               if(node !== root && ("tryToLogin" in node) && (node is EventDispatcher))
+               {
+                  EventDispatcher(node).dispatchEvent(new Event(Event.ADDED_TO_STAGE));
+                  continue;
+               }
+               if(!("numChildren" in node)) continue;
+               var count:int = int(node.numChildren);
+               for(var i:int = 0; i < count; i++)
+               {
+                  var child:Object = node.getChildAt(i);
+                  if(child != null) pending.push(child);
+               }
+            }
+            catch(error:Error)
+            {
+               // 单个对象不可访问（卸载中 / 跨沙箱）不能拖累登录刷新，也不能抛回 ExternalInterface。
+            }
+         }
       }
 
       /** 凭证边界改变时，尚未发送的任务不能借用新账号凭证重放。 */
@@ -248,13 +318,60 @@ package
 
       public function simpleShowLogin(callback:Function = null) : void
       {
-         if(!this.loggedIn) this.notifyLoginRequired();
-         this.callOnce(callback,{
+         if(this.loggedIn)
+         {
+            this.callOnce(callback,this.loginResult());
+            return;
+         }
+         // 玩家主动点登录：每次都要能重新打开登录框（上次可能被他自己关掉了）。
+         this.loginPromptSent = false;
+         this.notifyLoginRequired();
+         if(!this.loginPromptSent)
+         {
+            // 页面登录框打不开（会话服务故障 / 不在本站播放器里）：按原样立刻回未登录。
+            this.callOnce(callback,this.loginResult());
+            return;
+         }
+         if(callback != null) this.pendingLoginCallbacks.push(callback);
+         this.armLoginWait();
+      }
+
+      private function loginResult() : Object
+      {
+         return {
             "success":this.loggedIn,
             "loggedIn":this.loggedIn,
             "user":this.simpleGetUser(),
             "error":this.loggedIn ? null : {"code":"not_logged_in"}
+         };
+      }
+
+      private function armLoginWait() : void
+      {
+         if(this.loginWaitTimer != null) this.loginWaitTimer.stop();
+         this.loginWaitTimer = new Timer(LOGIN_WAIT_MS,1);
+         this.loginWaitTimer.addEventListener(TimerEvent.TIMER_COMPLETE,function(event:TimerEvent):void
+         {
+            flushPendingLogin();
          });
+         this.loginWaitTimer.start();
+      }
+
+      /** 按当前登录状态回掉全部挂起的 showLogin；回调里再点登录会重新挂起，不会被这一轮吃掉。 */
+      private function flushPendingLogin() : void
+      {
+         if(this.loginWaitTimer != null)
+         {
+            this.loginWaitTimer.stop();
+            this.loginWaitTimer = null;
+         }
+         if(this.pendingLoginCallbacks.length == 0) return;
+         var callbacks:Array = this.pendingLoginCallbacks.splice(0,this.pendingLoginCallbacks.length);
+         var result:Object = this.loginResult();
+         for each(var callback:Function in callbacks)
+         {
+            this.callOnce(callback,result);
+         }
       }
 
       /** 简化读档只回一个 value，不把 AGI2 的 keys 容器泄给新游戏。 */

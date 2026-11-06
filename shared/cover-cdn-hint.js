@@ -97,10 +97,11 @@ export function retargetStaticToCnEdge(html, edgeOrigin) {
   const back = `this.onerror=null;`
   let out = html.replace(/(\s(?:src|href|data-src))="\/(assets|fonts)\//g, `$1="${base}/$2/`)
   out = out.replace(
-    /<script type="module" crossorigin src="([^"]+)"><\/script>/,
-    (tag, src) =>
+    // data-cfasync 是 Rocket Loader 退出标记（shared/rocket-loader-optout.js），模板里可能已带上
+    /<script((?: data-cfasync="false")?) type="module" crossorigin src="([^"]+)"><\/script>/,
+    (tag, optOut, src) =>
       src.startsWith(base)
-        ? `<script type="module" crossorigin src="${src}" onerror="${back}var s=document.createElement('script');s.type='module';s.crossOrigin='';s.src='${src.slice(base.length)}';document.head.appendChild(s)"></script>`
+        ? `<script${optOut} type="module" crossorigin src="${src}" onerror="${back}var s=document.createElement('script');s.type='module';s.crossOrigin='';s.src='${src.slice(base.length)}';document.head.appendChild(s)"></script>`
         : tag,
   )
   out = out.replace(/<link rel="stylesheet"([^>]*?) href="([^"]+)"([^>]*)>/g, (tag, pre, href, post) =>

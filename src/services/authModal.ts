@@ -31,6 +31,11 @@ function subscribe(l: () => void) {
   }
 }
 
+/** 非 React 代码（如 Flash 播放器）关心「登录框关了没」时用；返回取消订阅函数。 */
+export function subscribeAuthModal(listener: (open: boolean) => void): () => void {
+  return subscribe(() => listener(open))
+}
+
 export function useAuthModalOpen(): boolean {
   return useSyncExternalStore(subscribe, () => open, () => open)
 }

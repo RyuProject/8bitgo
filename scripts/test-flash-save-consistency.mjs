@@ -31,7 +31,7 @@ import {
   flashSaveProtocol,
 } from '../server/src/flash-save-contract.js'
 import { flashSaveBridgeParameters, flashSaveBridgeRewriteRules } from '../src/services/flashBridgeUrl.js'
-import { updateAgi2BridgeSession } from '../src/emulator/flashBridgeSession.js'
+import { settleAgi2BridgeLogin, updateAgi2BridgeSession } from '../src/emulator/flashBridgeSession.js'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PROTOCOLS = ['agi1', 'agi2']
@@ -145,6 +145,27 @@ check('AGI2 登录后可原地刷新短期会话，不重载游戏', () => {
   assert.ok(bridge.includes('if(readGeneration != sessionGeneration)'), '旧账号迟到的读档响应可能泄漏到新账号游戏态')
   assert.ok(bridge.includes('if(writeGeneration != sessionGeneration)'), '旧账号迟到的写档响应可能污染新账号版本号')
   assert.ok(bridge.includes('requestGeneration == sessionGeneration'), '旧会话的 401 可能把新账号登录态清掉')
+})
+
+check('KRF 面板里的 Login / 游客 START 接回站内登录框，登录后面板原地变成已登录（2026-11-06）', () => {
+  // 站内 KRF 包的 tryToLogin 被改成 navigateToURL("https://8bitgo.com", "_blank")，不经过桥
+  assert.deepEqual(flashSaveLoginUrlsOf('kingdom-rushfrontiers'), ['https://8bitgo.com/'], 'KRF 的登录跳转没有接回站内登录框')
+  const bridge = readFileSync(join(root, 'flash-api/armor-games/src-agi2/KrfAgiBridge.as'), 'utf8')
+  // _-im.init / showLoggedIn 不是 public（Ruffle 实测直接调抛 #1069），只能补发 ADDED_TO_STAGE
+  assert.ok(bridge.includes('dispatchEvent(new Event(Event.ADDED_TO_STAGE))'), '会话变化后 KRF 登录小部件不会重画')
+  assert.ok(!/node\.init\s*\(/.test(bridge), '不要直接调 KRF 小部件的 init()：它不是 public')
+  assert.ok(bridge.includes('if(!wasLoggedIn || changed) this.refreshGameLoginWidgets();'), '登录成功没有刷新面板')
+  assert.ok(bridge.includes('if(wasLoggedIn) this.refreshGameLoginWidgets();'), '登出没有刷新面板')
+  // showLogin 等登录有结论再回调；没登录就关框由页面补结论
+  assert.ok(bridge.includes('ExternalInterface.addCallback("eightbitgoLoginSettled"'), '桥没有暴露「登录框已关闭」入口')
+  assert.ok(bridge.includes('this.pendingLoginCallbacks.push(callback)'), 'showLogin 又变回了立刻回调未登录')
+  const calls = []
+  assert.equal(settleAgi2BridgeLogin({ callExternalInterface: (...args) => { calls.push(args); return true } }), true)
+  assert.deepEqual(calls, [['eightbitgoLoginSettled']])
+  assert.equal(settleAgi2BridgeLogin({}), false, '老桥没有回调时必须安全降级')
+  const adapter = readFileSync(join(root, 'src/emulator/adapters/ruffle.ts'), 'utf8')
+  assert.ok(adapter.includes('subscribeAuthModal('), '登录框关闭时没有通知桥')
+  assert.ok(adapter.includes('stopAuthModalWatch()'), '销毁播放器时没有解绑登录框监听')
 })
 
 check('服务端契约读到的方言 / 桥地址和注册表一致', () => {

@@ -29,7 +29,8 @@ import {
 } from '@/services/flashOnlineSave'
 import { prepareSfsRuffleConfig } from '@/services/sfs'
 import { getToken, TOKEN_CHANGED_EVENT } from '@/services/api'
-import { updateAgi2BridgeSession } from '../flashBridgeSession.js'
+import { settleAgi2BridgeLogin, updateAgi2BridgeSession } from '../flashBridgeSession.js'
+import { subscribeAuthModal } from '@/services/authModal'
 import {
   createRuffleAdaptiveController,
   installRuffleFrameTelemetry,
@@ -885,6 +886,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
               if (!applied || destroyed || generation !== refreshGeneration || getToken() !== currentToken) {
                 if (oldSessionStillValid) return
                 console.warn('[flash-save] AGI2 当前局未能刷新存档会话；请重新进入本局后再使用在线存档')
+                settleAgi2BridgeLogin(api)
                 options.onFlashSaveSession?.(refreshed.expiresAt, refreshed.mode, false)
                 return
               }
@@ -895,6 +897,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             }).catch((error) => {
               if (!destroyed && generation === refreshGeneration) {
                 console.warn('[flash-save] 刷新 AGI2 在线存档会话失败：', error)
+                settleAgi2BridgeLogin(api)
                 if (!(sameAccount && onlineSave?.mode === 'authenticated' && onlineSave.expiresAt > Date.now() + 30_000)) {
                   options.onFlashSaveSession?.(0, 'unavailable', true)
                 }
@@ -902,8 +905,19 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             })
           }
           window.addEventListener(TOKEN_CHANGED_EVENT, onTokenChanged)
+          /*
+            游戏调 showLogin 后桥会挂起回调，等登录有结论再回（真 Armor Games 的语义）。
+            登录成功由上面的 TOKEN_CHANGED 推会话；玩家没登录就把登录框关掉时这里补一个结论，
+            否则挂起的回调要等桥自己的 10 分钟兜底。登录流程都是先写 token 再关框，所以关框时
+            仍无 token 才算「放弃登录」。
+          */
+          const stopAuthModalWatch = subscribeAuthModal((open) => {
+            if (open || destroyed || getToken()) return
+            settleAgi2BridgeLogin(api)
+          })
           cancelFlashSaveAuthRefresh = () => {
             refreshGeneration++
+            stopAuthModalWatch()
             window.removeEventListener(TOKEN_CHANGED_EVENT, onTokenChanged)
             cancelFlashSaveAuthRefresh = () => {}
           }

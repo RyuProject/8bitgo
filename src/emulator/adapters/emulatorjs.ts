@@ -23,7 +23,7 @@
  *    要用联机必须自建 EmulatorJS 构建，见 docs 或 README。
  */
 import type { ArcadeButtonCount, PlatformId } from '@/types'
-import { arcadeButtonIdsFor, EJS_ARCADE_DEFAULT_CONTROLS, EJS_DEFAULT_CONTROLS, EJS_P2_KEY_OVERRIDE } from '@/lib/keymapData'
+import { arcadeButtonIdsFor, EJS_ARCADE_DEFAULT_CONTROLS, EJS_DEFAULT_CONTROLS, EJS_P2_KEYS } from '@/lib/keymapData'
 import type { Capability, CaptureSources, LoadPhase, LoadProgress, MameArcadeDiskSource, MountOptions, RuntimeHandle, StageMode } from '../types'
 import { fetchBlobWithProgress, fetchWithProgress, throttleProgress } from '../loadProgress'
 import { emulatorJsDownloadPhase, isCriticalEmulatorJsDownload } from '../emulatorjsDownload'
@@ -2001,7 +2001,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     // 2P 的键存在 100 + 下标上（见 EJS_P2_KEY_OFFSET），只同步站点给了 2P 默认键的那几颗
     const p2 = emu.controls?.[1]
     if (p2) {
-      for (const id of Object.keys(EJS_P2_KEY_OVERRIDE).map(Number)) {
+      for (const id of Object.keys(EJS_P2_KEYS).map(Number)) {
         if (relevant.includes(id)) out[EJS_P2_KEY_OFFSET + id] = labelOf(p2[id]?.value)
       }
     }
@@ -3946,7 +3946,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           // 固定文件名会被 CDN 缓存一个月；显式版本化，避免旧引擎继续索取已删除的 NDS 核心。
           // 核心、样式与构建报告共用一份版本化映射。报告改走 metadata 别名，避免浏览器
           // 把 `/reports/` 当追踪接口拦掉后，EmulatorJS 静默禁用核心缓存。
-          EJS_paths: emulatorJsRuntimePaths(core),
+          EJS_paths: emulatorJsRuntimePaths(core, EJS_LANG[getLang()]),
           /*
             平台级 BIOS。Neo Geo 这类平台不给就直接起不来；不需要 BIOS 的平台这里是空串。
 

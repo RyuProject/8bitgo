@@ -11,6 +11,13 @@ export const FBNEO_ARCADE_AUDIO_BUFFER_BYTES_48K = FBNEO_ARCADE_AUDIO_LATENCY_MS
 
 const METAL_SLUG_SLUG = /(?:^|-)metal-slug(?:-|$)|^mslug\d*(?:-|$)/
 const FOUR_BUTTON_ARCADE_GAMES = new Set(['jojos-bizarre-adventure'])
+/**
+ * Namco 的四键格斗（铁拳 LP RP LK RK、灵魂之刃 / 灵魂能力 横斩 纵斩 踢 防御）。
+ * 播放器开局后会从 ROM 内容识别出 namcoMameSets 的 `buttons: 4`，可详情页的键位表和
+ * 开局前的按键图拿不到 ROM，只有 slug —— 以前这两处一律画六键，铁拳页写着「按键 5 = Q、
+ * 按键 6 = E」，按下去什么也没有（2026-11-06）。与 namcoMameSets 的 FOUR_BUTTON_FIGHTERS 同一组游戏。
+ */
+const NAMCO_FOUR_BUTTON_SLUG = /^(?:tekken|soul-?edge|soul-?blade|soul-?cal(?:i)?bur)(?:$|[-\d~])/
 
 export function isFbneoArcadeCore(platform: PlatformId, core: string): boolean {
   return platform === 'arcade' && core === 'fbneo'
@@ -38,7 +45,8 @@ export function effectiveArcadeButtons(
   if (explicit === 2 || explicit === 4 || explicit === 6) return explicit
   // 《未来遗产》使用轻拳 / 中拳 / 重拳 / 替身四键；它不是 Neo Geo，旧数据也未必有 BIOS 名，
   // 只按板卡推断会把不存在的 5、6 键画给玩家。配置过的 arcadeButtons 仍始终优先。
-  if (FOUR_BUTTON_ARCADE_GAMES.has(gameSlug?.trim().toLowerCase() ?? '')) return 4
+  const slug = gameSlug?.trim().toLowerCase() ?? ''
+  if (FOUR_BUTTON_ARCADE_GAMES.has(slug) || NAMCO_FOUR_BUTTON_SLUG.test(slug)) return 4
   return biosName?.trim().toLowerCase() === 'neogeo' ? 4 : 6
 }
 

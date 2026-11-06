@@ -17,6 +17,7 @@ import { coverBaseUrl, publicSiteUrl } from './site-urls.js'
 import { requestHostname } from './url-normalize.js'
 import { tvRenderPath } from '../../shared/tv-host.js'
 import { CN_SITE_HEADER, isCnRequest } from '../../shared/cn-host.js'
+import { ROCKET_LOADER_OPT_OUT, optOutRocketLoader } from '../../shared/rocket-loader-optout.js'
 import { COVER_CDN_META, cnEdgeOrigin, coverCdnHint, retargetStaticToCnEdge } from '../../shared/cover-cdn-hint.js'
 import { isolatedRuntimeRoute } from '../../shared/isolated-runtime-platforms.js'
 
@@ -67,7 +68,7 @@ let template = null
 let templateMtime = 0
 function primeTemplate() {
   if (template !== null || !existsSync(TEMPLATE)) return
-  template = readFileSync(TEMPLATE, 'utf8')
+  template = optOutRocketLoader(readFileSync(TEMPLATE, 'utf8'))
   templateMtime = statSync(TEMPLATE).mtimeMs
 }
 
@@ -85,7 +86,8 @@ function getTemplate() {
     if (template !== null) return template
   }
   if (template === null || mtime !== templateMtime) {
-    template = readFileSync(TEMPLATE, 'utf8')
+    // 构建期的 vite 插件已经加过 data-cfasync；这里再兜一次，旧产物 / 手改模板也不被 Rocket Loader 推迟
+    template = optOutRocketLoader(readFileSync(TEMPLATE, 'utf8'))
     templateMtime = mtime ?? 0
   }
   return template
@@ -310,7 +312,8 @@ export async function renderPage(req, res, next) {
     page = injectOnce(page, '</head>', `${headHtml}\n</head>`)
 
     // 首屏 HTML + 给客户端 hydrate 用的数据
-    const bootstrap = `<script>window.__8BITGO__=${safeJson({ data, lang })}</script>`
+    // data-cfasync：别让 Cloudflare Rocket Loader 把注水数据推迟到 load 之后（shared/rocket-loader-optout.js）
+    const bootstrap = `<script ${ROCKET_LOADER_OPT_OUT}>window.__8BITGO__=${safeJson({ data, lang })}</script>`
     page = injectOnce(page, '<div id="root"></div>', `<div id="root">${html}</div>\n${bootstrap}`)
 
     // 渲染出「页面不存在」时回 404：一律 200 会让爬虫把不存在的 URL 当正常页面收录

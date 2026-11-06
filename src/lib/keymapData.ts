@@ -117,8 +117,29 @@ export const EJS_P2_KEY_OVERRIDE: Readonly<Record<number, readonly [engine: stri
   3: ['numpad 1', 'Num 1'],
 }
 
+/**
+ * 2P 的另外四颗面键 / 肩键（libretro Y X L R），放在小键盘最上一排和右侧：/ * - +。
+ *
+ * 为什么要给（2026-11-06《铁拳》）：上面那套是照红白机两键抄的，只有 A / B。街机格斗是四键起步
+ * （铁拳 LP RP LK RK = mame-current 的 B A Y X），SFC / PS1 也有 X Y L R —— 两个人共用一块键盘时
+ * 2P 只按得出两颗，铁拳 2P 一脚都踢不出来。这四颗不受 NumLock 影响（keyCode 恒为 111 / 106 / 109 / 107），
+ * 也不和 1P 的任何一颗撞。jsnes 没有这四颗按钮，所以单列一张表，不进上面那张「和 jsnes 同一套」的表。
+ */
+export const EJS_P2_EXTRA_KEY_OVERRIDE: Readonly<Record<number, readonly [engine: string, label: string]>> = {
+  1: ['divide', 'Num /'],
+  9: ['multiply', 'Num *'],
+  10: ['subtract', 'Num -'],
+  11: ['add', 'Num +'],
+}
+
+/** 2P 最终的小键盘键位：和 jsnes 共用的那套 + 上面四颗。显示、同步、补座位都用这一份 */
+export const EJS_P2_KEYS: Readonly<Record<number, readonly [engine: string, label: string]>> = {
+  ...EJS_P2_KEY_OVERRIDE,
+  ...EJS_P2_EXTRA_KEY_OVERRIDE,
+}
+
 function p2Controls(): Record<number, { value: string }> {
-  return Object.fromEntries(Object.entries(EJS_P2_KEY_OVERRIDE).map(([id, [engine]]) => [Number(id), { value: engine }]))
+  return Object.fromEntries(Object.entries(EJS_P2_KEYS).map(([id, [engine]]) => [Number(id), { value: engine }]))
 }
 
 /**
