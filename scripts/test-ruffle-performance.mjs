@@ -443,8 +443,15 @@ assert.match(adapter, /if \(!win \|\| !doc \|\| !isRuffleFrameReady\(doc\)\) ret
   'load 事件必须忽略 iframe 的初始 about:blank 文档')
 assert.match(adapter, /frameInitTimer = window\.setTimeout[\s\S]*10_000/,
   '忽略假 load 后仍需有初始化超时，避免错误响应让界面永久等待')
-assert.ok(adapter.indexOf('container.appendChild(iframe)') < adapter.indexOf("iframe.src = '/flash-frame.html'"),
+assert.match(adapter, /container\.appendChild\(iframe\)\s*\/\*[\s\S]*?\*\/\s*iframe\.src = '\/flash-frame\.html'/,
   'iframe 必须先挂载再导航，避免 detached iframe 的真实 src 请求被初始空文档吞掉')
+// 2026-11-07《以撒的结合》：慢网下 10 秒一到就 abort 已下一半的 SWF，玩家只看到「无法初始化 Flash 播放器容器」
+assert.match(adapter, /const onFrameInitTimeout = \(\) => \{[\s\S]*?if \(isRuffleFrameReady\(iframe\.contentDocument\)\) \{\s*initFrame\(\)/,
+  '超时先要直接检查壳是否其实已经到了（load 事件可能比定时器晚一步）')
+assert.match(adapter, /if \(!frameNavigationRetried\) \{[\s\S]*?iframe\.src = '\/flash-frame\.html'[\s\S]*?20_000/,
+  '壳第一次超时要重新导航并再等一轮，不能直接判死刑')
+assert.ok(adapter.indexOf('aborter.abort()', adapter.indexOf('const onFrameInitTimeout')) > adapter.indexOf('if (!frameNavigationRetried)'),
+  '重试之前不能 abort 已经在下载的 SWF')
 assert.match(adapter, /options\.onError\?\.\(rt\.flashInitFailed, 'runtime'\)/,
   '播放壳初始化失败必须标成运行时故障，不能误判成某一种语言 ROM 损坏')
 assert.match(adapter, /installRuffleCrashGuard\(win,/,

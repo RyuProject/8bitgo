@@ -557,7 +557,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
   }
 
-  iframe.addEventListener('load', () => {
+  /** 壳页面就绪后的一次性初始化；load 事件和超时兜底都走这里，frameInitialized 保证只跑一次。 */
+  const initFrame = () => {
     if (destroyed || frameInitialized) return
     const win = iframe.contentWindow as (Window & { RufflePlayer?: RuffleGlobal }) | null
     const doc = iframe.contentDocument
@@ -1012,17 +1013,55 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       }
     }
     doc.head.appendChild(script)
-  })
+  }
+  iframe.addEventListener('load', initFrame)
 
-  // 静态壳只有几百字节；超时说明请求被拦、反代回错页面或同源访问失效。
-  // 必须有兜底，否则忽略初始 about:blank 后会永远停在「正在准备模拟器」。
-  frameInitTimer = window.setTimeout(() => {
+  /** 失败时记录 iframe 里到底是什么：about:blank、错误页、Cloudflare 质询页还是跨源。 */
+  const describeFrame = () => {
+    try {
+      const frameDoc = iframe.contentDocument
+      return {
+        href: iframe.contentWindow?.location.href ?? '',
+        readyState: frameDoc?.readyState ?? '',
+        title: frameDoc?.title?.slice(0, 80) ?? '',
+        marker: frameDoc?.documentElement?.getAttribute('data-8bitgo-ruffle-frame') ?? null,
+        online: navigator.onLine,
+        hidden: document.hidden,
+      }
+    } catch (error) {
+      return { crossOrigin: true, error: error instanceof Error ? error.message : String(error), online: navigator.onLine }
+    }
+  }
+  /*
+    静态壳只有几百字节；超时说明请求被拦、反代回错页面或同源访问失效。
+    必须有兜底，否则忽略初始 about:blank 后会永远停在「正在准备模拟器」。
+
+    ⚠️ 但 10 秒一到就判死刑太狠（2026-11-07《以撒的结合》「无法初始化 Flash 播放器容器」）：
+    挂载时 SWF 已经和壳并行下载，慢网 / 丢包时这个 600 字节的导航可能排在大文件后面，
+    十几秒才回来；load 事件也可能和定时器排在同一轮任务里、比定时器晚一步。旧代码在这两种
+    情况下都直接 abort 掉已经下了一半的游戏。现在：先直接查一遍壳是否其实已经到了；没到就重新
+    导航一次再等 20 秒；还不行才报错，并把 iframe 里的实际内容打进控制台方便定位。
+  */
+  let frameNavigationRetried = false
+  const onFrameInitTimeout = () => {
     frameInitTimer = 0
     if (destroyed || frameInitialized) return
+    if (isRuffleFrameReady(iframe.contentDocument)) {
+      initFrame()
+      if (frameInitialized || destroyed) return
+    }
+    if (!frameNavigationRetried) {
+      frameNavigationRetried = true
+      console.warn('[ruffle] /flash-frame.html 10 秒内未就绪，重新加载一次', describeFrame())
+      iframe.src = '/flash-frame.html'
+      frameInitTimer = window.setTimeout(onFrameInitTimeout, 20_000)
+      return
+    }
     aborter.abort()
-    console.warn('[ruffle] /flash-frame.html 未在 10 秒内完成同源初始化')
+    console.warn('[ruffle] /flash-frame.html 30 秒内未完成同源初始化', describeFrame())
     options.onError?.(rt.flashInitFailed, 'runtime')
-  }, 10_000)
+  }
+  frameInitTimer = window.setTimeout(onFrameInitTimeout, 10_000)
   container.appendChild(iframe)
   /*
     先挂进 DOM 再设 src。Chrome 153 的 detached iframe 若预先设置 src，插入时会先派发

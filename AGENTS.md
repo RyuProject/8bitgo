@@ -1330,6 +1330,14 @@ Flash 手柄键位存在 `games.flash_controls` JSON，街机屏幕手柄的动�
 所以可以先迁移再慢慢在后台补配置。部署这版必须先跑 `cd server && npm run migrate`；
 自测用 `npm run test:ruffle-runtime && npm run test:game-controls && npm run test:keymap`。
 
+### 2.24.0a 「无法初始化 Flash 播放器容器」= 播放壳没按时就绪（2026-11-07《以撒的结合》）
+
+`flashInitFailed` 只有两个来源：`/flash-frame.html` 壳未就绪超时，或 `replaceState` 改逐游戏地址失败。
+挂载时 SWF 就和壳并行下载（以撒 36.7 MB），慢网 / 丢包下 600 字节的壳导航可能排在大文件后面
+十几秒；旧代码 10 秒一到就 `abort()` 掉已下一半的游戏。现在超时先直接查壳是否已到（load 可能比
+定时器晚一步），没到就重新导航一次再等 20 秒，30 秒仍不行才报错，并在控制台打出 iframe 实际内容
+（about:blank / 错误页 / Cloudflare 质询页 / 跨源）。重试前不许 abort。回归：`npm run test:ruffle-runtime`。
+
 ### 2.24.0 Ruffle 存档要跟着游戏走；舞台按显示尺寸渲染
 
 Ruffle 的 SharedObject 键是 `<hostname>/<localPath>/<名字>`，而本站所有 Flash 共用一个源：
