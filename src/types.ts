@@ -262,6 +262,11 @@ export interface Game {
   /** Flash 的画面模式与逐游戏键位；纯鼠标游戏可以只配置画面模式。 */
   flashControls?: FlashControls
   /**
+   * 是否依赖外部网络资源 / 服务。null 或 undefined = 尚未核实；
+   * true/false 仅为目录提示，不代表运行时会自动拦截或代理外部请求。
+   */
+  requiresNetwork?: boolean | null
+  /**
    * DOS 启动程序：zip 包内的相对路径（如 PARANOID.COM、NFS/TNFS.EXE）。
    * 留空由前端启发式去猜（src/lib/jsdosBundle.ts 的 pickExecutable）——
    * 共享软件时代的包里常混着安装器 / 评估版工具，猜错时在后台填这个字段一锤定音。

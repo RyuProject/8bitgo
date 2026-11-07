@@ -276,6 +276,12 @@ const patches = [
     run: () => conn.query('ALTER TABLE `games` ADD COLUMN `flash_controls` JSON NULL AFTER `arcade_buttons`'),
   },
   {
+    name: 'games.requires_network（Flash 外部网络依赖状态）',
+    table: 'games',
+    needed: async () => !(await hasColumn('games', 'requires_network')),
+    run: () => conn.query('ALTER TABLE `games` ADD COLUMN `requires_network` TINYINT(1) NULL DEFAULT NULL AFTER `flash_controls`'),
+  },
+  {
     name: 'games.adult（成人游戏，前台启动前验证年满 18 岁）',
     table: 'games',
     needed: async () => !(await hasColumn('games', 'adult')),

@@ -886,10 +886,10 @@ const DOC_ENDPOINT_GROUPS: { title: string; items: DocEndpoint[] }[] = [
     items: [
       { method: 'POST', path: '/v1/token', access: 'AppID + AppKey', desc: '换 15 分钟访问令牌', detail: 'JSON 或 application/x-www-form-urlencoded；凭据可放 HTTP Basic，也可放 client_id/client_secret 字段。grant_type=client_credentials 取应用令牌，响应含 access_token/token_type/expires_in/scope/rom_access；用户数据不能用此流。它也承接 device_code 的轮询换令牌。' },
       { method: 'GET', path: '/v1/me', access: '有效令牌', desc: '自查令牌和权限', detail: '成功返回 {client_id,kind,user_id,scope,expires_at}。应用令牌的 kind=app、user_id=null；用户令牌的 kind=user。遇其他接口 401/403 时可先确认拿的是哪类令牌、是否有需要的 scope。' },
-      { method: 'GET', path: '/v1/games/:slug/rom', access: 'games.rom', desc: '领取 ROM 下载凭据', detail: '沙箱只允许 /v1/rom-samples 所列游戏，其余返回 403 sandbox_resource_only；审核通过可访问全库。可传 lang；返回 {url,expires_in:300,lang_actual,filename}。' },
+      { method: 'GET', path: '/v1/games/:slug/rom', access: 'games.rom', desc: '领取 ROM 下载凭据', detail: '沙箱只允许 /v1/rom-samples 所列游戏，其余返回 403 sandbox_resource_only；审核通过可访问全库。可传 lang 和 delivery=redirect|plain；plain 会直接返回服务端解密 / 解压后的 ROM 流，不需要客户端改写 URL。响应含 requires_network；null 表示尚未核实。' },
       { method: 'GET', path: '/v1/rom/:grant', access: '下载凭据', desc: '兑现 ROM 凭据（302）', detail: '上一步返回的 url 就是此端点；不再带 Bearer，跟随 302 跳转到对象存储下载。凭据 5 分钟过期，每张票最多兑现 10 次，并受每 IP 60 次/分钟限制。' },
-      { method: 'GET', path: '/v1/rom-plain/:grant', access: '下载凭据', desc: '兑现并流式返回明文 ROM', detail: '与 /v1/rom 共用短期凭据，不需 Bearer。8BG 包由服务端按需解密、解压后流式返回；普通 ROM 直接透传。支持 HEAD 与单段 Range/If-Range 断点续传，适合无法自行解码 8BG 的客户端。存在单文件大小、并发数与超时限制；过载会返回 503 server_busy，超限 413 payload_too_large。' },
-      { method: 'HEAD', path: '/v1/rom-plain/:grant', access: '下载凭据', desc: '查询明文 ROM 元信息', detail: '与 GET 共用凭据和限流，不返回 ROM 正文；用于先读取 Content-Length、Accept-Ranges、ETag 等响应头。Express 由同一路由处理 HEAD。' },
+      { method: 'GET', path: '/v1/rom-plain/:grant', access: '下载凭据', desc: '兑现并流式返回明文 ROM', detail: 'delivery=plain 领到的凭据专用于此端点；旧版未选择 delivery 的凭据仍兼容两种路径。不需 Bearer。8BG 包由服务端按需解密、解压后流式返回；普通 ROM 直接透传。支持 HEAD 与单段 Range/If-Range 断点续传。存在单文件大小、并发数与超时限制；过载会返回 503 server_busy，超限 413 payload_too_large。' },
+      { method: 'HEAD', path: '/v1/rom-plain/:grant', access: '下载凭据', desc: '查询明文 ROM 元信息', detail: '与明文 GET 共用凭据和限流，不返回 ROM 正文；用于先读取 Content-Length、Accept-Ranges、ETag 等响应头。Express 由同一路由处理 HEAD。' },
       { method: 'GET', path: '/v1/games/:slug/embed', access: 'games.read', desc: '获取嵌入播放器地址', detail: '路径参数 slug，可选 lang；返回 {url,expires_in,allow}，签名地址默认有效 1 小时。当前嵌入页未强制验证签名，因此该地址不是安全边界，也不应当作访问控制。' },
     ],
   },
@@ -982,6 +982,7 @@ const DOC_GAME_FIELDS: [string, string, string][] = [
   ['lang_actual', '{title,description}', '实际是哪门；und=原名'],
   ['platform', 'string', '平台 id，如 nes / dos'],
   ['requires_windows', 'bool', 'DOS 游戏是否需要 Windows 3.x / 95 / 98 客体；其他平台为 false'],
+  ['requires_network', 'bool|null', '是否依赖外部网络；null = 尚未核实，不等于离线可玩'],
   ['genres / tags', 'string[]', '类型 / 标签'],
   ['year', 'number', '0=没填'],
   ['developer', 'string', '开发商'],
@@ -998,7 +999,7 @@ const DOC_GAME_FIELDS: [string, string, string][] = [
 const DOC_OTHER_FIELDS: [string, string][] = [
   ['TokenResponse', 'access_token, token_type=Bearer, expires_in（秒）, scope；仅 client_credentials 另有 rom_access=none/samples/full'],
   ['DeviceCodeResponse', 'device_code（机器轮询）, user_code（给用户）, verification_uri, verification_uri_complete, expires_in, interval（秒）'],
-  ['RomGrantResponse', 'url（5 分钟凭据）, expires_in, lang_requested, lang_actual, filename；不返回对象存储 key'],
+  ['RomGrantResponse', 'url（5 分钟凭据）, delivery, requires_network, expires_in, lang_requested, lang_actual, filename；不返回对象存储 key'],
   ['EmbedResponse', 'url, expires_in, allow（iframe 功能策略字符串）'],
   ['LibraryResponse', 'favorites（最多 100 款）, recent（最多 12 款）, favorites_total（未截断总数）'],
   ['SaveMeta', 'runtime, game_slug, slot, size（字节）, created_at, updated_at；不含存档内容'],
@@ -1110,8 +1111,8 @@ function DocsPanel() {
             </DocSection>
             <DocSection title="下载 ROM · 两步，凭据短时有效">
               <p className="text-muted">第一步用带 <code className="text-fg">games.rom</code> 的 Bearer 领取凭据；沙箱 slug 必须来自 <code className="text-fg">/v1/rom-samples</code>。</p>
-              <DocCode code='curl -H "Authorization: Bearer ACCESS_TOKEN" "https://8bitgo.com/api/open/v1/games/contra/rom?lang=ja"' />
-              <p className="text-muted">响应中的 <code className="text-fg">url</code> 可直接下载（第二步不带 Bearer，服务端 302 到资源地址）。需要服务端解密 8BG 时，把 url 路径里的 <code className="text-fg">/v1/rom/</code> 改为 <code className="text-fg">/v1/rom-plain/</code>；后者支持 HEAD 和 Range 续传。</p>
+              <DocCode code='curl -H "Authorization: Bearer ACCESS_TOKEN" "https://8bitgo.com/api/open/v1/games/contra/rom?lang=ja&delivery=plain"' />
+              <p className="text-muted">默认 <code className="text-fg">delivery=redirect</code>，第二步会 302 到原对象；不支持 8BG 解码的客户端传 <code className="text-fg">delivery=plain</code>，返回的 <code className="text-fg">url</code> 会直接指向服务端解密 / 解压后的 ROM 流，支持 HEAD 和 Range 续传。<code className="text-fg">requires_network</code> 是站点核实过的游戏依赖提示；<code className="text-fg">null</code> 表示未知，不代表已打包所有资源。</p>
             </DocSection>
             <DocSection title="第三步 · 读取玩家数据">
               <p className="text-muted">应用级令牌没有玩家身份。设备先向 <code className="text-fg">POST /v1/device/code</code> 申请码，玩家在 <code className="text-fg">/open/device</code> 同意后，设备轮询 <code className="text-fg">POST /v1/token</code> 换用户令牌。</p>

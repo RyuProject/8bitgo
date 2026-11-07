@@ -37,6 +37,8 @@ export function openGame(row, rel = {}, ctx = {}) {
     lang_actual: { title: title.lang, description: description.lang },
 
     platform: String(row.platform),
+    // 仅表达是否已知依赖外部网络；null = 未核实，不推断为离线可玩。
+    requires_network: row.requires_network == null ? null : Number(row.requires_network) === 1,
     // DOSBox-X 也承载 PC-98；只有真正配置了 Windows 客体的条目才要求 Windows。
     requires_windows: row.platform === 'dos' && row.dos_backend === 'dosboxX' && !Number(row.dos_pc98),
     genres: rel.genres ?? [],

@@ -66,6 +66,7 @@ const GAME = {
   rating_weight: 10,
   rating_count: 9,
   plays: 120,
+  requires_network: 1,
   added_at: '1987-02-20',
   created_at: '2026-01-01 00:00:00',
   updated_at: '2026-02-01 00:00:00',
@@ -82,7 +83,7 @@ const GAME = {
 }
 const HIDDEN_GAME = { ...GAME, id: 2, slug: 'secret-game', hidden: 1 }
 /** 只有日文版、没有通用件的游戏。用来验「ROM 不做跨语言回退」 */
-const JA_ONLY = { ...GAME, id: 3, slug: 'ja-only' }
+const JA_ONLY = { ...GAME, id: 3, slug: 'ja-only', requires_network: null }
 /**
  * 成人游戏。专门用来验「列表的 total 和实际条目算在同一层」。
  *
@@ -92,7 +93,7 @@ const JA_ONLY = { ...GAME, id: 3, slug: 'ja-only' }
  */
 const ADULT_GAME = { ...GAME, id: 4, slug: 'adult-game', adult: 1 }
 const GBA_GAME = { ...GAME, id: 5, slug: 'gba-rpg', platform: 'gba' }
-const DOS_GAME = { ...GAME, id: 6, slug: 'dos-game', platform: 'dos', dos_backend: null }
+const DOS_GAME = { ...GAME, id: 6, slug: 'dos-game', platform: 'dos', dos_backend: null, requires_network: null }
 const WIN31_GAME = { ...GAME, id: 7, slug: 'win31-game', platform: 'dos', dos_backend: 'dosboxX', dos_windows_version: '3x' }
 const WIN9X_GAME = { ...GAME, id: 8, slug: 'win9x-game', platform: 'dos', dos_backend: 'dosboxX', dos_windows_version: '9x' }
 // PC-98 仍显示为 DOS 游戏，DOSBox-X 在此只是硬件模拟器，不能被开放接口误标成 Windows 客体。
@@ -619,6 +620,20 @@ await check('⚠️ 对外响应里不能出现任何内部字段', async () => 
   assert.ok(!blob.includes('roms/contra'), 'ROM 的对象 key 原文出现在响应里')
   assert.ok(!blob.includes('"covers/'), '封面给的应该是绝对地址，不是对象 key')
   assert.equal(g.cover, 'https://assets.8bitgo.com/covers/contra.jpg')
+  assert.equal(g.requires_network, true, '外部网络依赖状态未进入公开游戏资料')
+  assert.ok(!('requiresNetwork' in g), '开放 API 字段名应使用 snake_case')
+})
+
+await check('外部网络依赖字段保留三态，并严格校验后台输入', async () => {
+  const { gameApiToPartialRow } = await import('../src/mappers.js')
+  assert.deepEqual(gameApiToPartialRow({ requiresNetwork: true }), { requires_network: 1 })
+  assert.deepEqual(gameApiToPartialRow({ requiresNetwork: false }), { requires_network: 0 })
+  assert.deepEqual(gameApiToPartialRow({ requiresNetwork: null }), { requires_network: null })
+  assert.throws(() => gameApiToPartialRow({ requiresNetwork: 'false' }), /外部网络依赖/)
+  const unknown = await (await api('/api/open/v1/games/ja-only')).json()
+  assert.equal(unknown.requires_network, null, '未知状态必须保留 null')
+  const noRomDependency = await (await api('/api/open/v1/games/dos-game')).json()
+  assert.equal(noRomDependency.requires_network, null, '不能按平台推断网络依赖')
 })
 
 await check('ROM 语言只报语言码，不报 key', async () => {
@@ -1073,6 +1088,45 @@ await check('ROM 语言不做跨语言回退（要日文没有就给通用件，
   const { access_token } = await getToken('games.rom')
   const r = await api('/api/open/v1/games/contra/rom?lang=de', { headers: { Authorization: `Bearer ${access_token}` } })
   assert.equal((await r.json()).lang_actual, '*')
+})
+
+await check('明文交付是显式选项，并且短期凭据绑定所选端点', async () => {
+  const { access_token } = await getToken('games.rom')
+  const plain = await api('/api/open/v1/games/contra/rom?delivery=plain', {
+    headers: { Authorization: 'Bearer ' + access_token },
+  })
+  assert.equal(plain.status, 200)
+  const body = await plain.json()
+  assert.equal(body.delivery, 'plain')
+  assert.ok(body.url.includes('/api/open/v1/rom-plain/'))
+  assert.equal(body.requires_network, true)
+  const grant = body.url.split('/api/open/v1/rom-plain/')[1]
+  assert.ok(grant)
+  const wrongRoute = await api('/api/open/v1/rom/' + grant, { redirect: 'manual' })
+  assert.equal(wrongRoute.status, 403, 'plain 凭据可被换路径改成对象跳转')
+  assert.equal((await wrongRoute.json()).error, 'invalid_grant')
+  const nativeFetch = globalThis.fetch
+  globalThis.fetch = async (input, init) => {
+    if (String(input).startsWith('https://assets.8bitgo.com/')) {
+      return new Response('ROMDATA', {
+        status: 200,
+        headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': '7', 'Accept-Ranges': 'bytes' },
+      })
+    }
+    return nativeFetch(input, init)
+  }
+  try {
+    const downloaded = await api('/api/open/v1/rom-plain/' + grant)
+    assert.equal(downloaded.status, 200, 'plain 凭据不能兑现成明文流')
+    assert.equal(await downloaded.text(), 'ROMDATA', '明文端点没有透传原生 ROM 字节')
+  } finally {
+    globalThis.fetch = nativeFetch
+  }
+  const invalid = await api('/api/open/v1/games/contra/rom?delivery=download', {
+    headers: { Authorization: 'Bearer ' + access_token },
+  })
+  assert.equal(invalid.status, 400)
+  assert.equal((await invalid.json()).error, 'invalid_request')
 })
 
 await check('⚠️ 下架的游戏也拿不到 ROM / 嵌入地址（这条路和详情页是两个查询）', async () => {

@@ -428,15 +428,17 @@ Content-Length: 0
 `403 sandbox_resource_only`。完整游戏库须通过人工审核。某机型尚未配置合法样本时，目录里不会出现该机型。
 样本由站长全站统一选定，开发者不能自行指定，以免反复创建应用逐款下载整个游戏库。
 
-### 第一步：换凭据 `GET /v1/games/:slug/rom?lang=ja`
+### 第一步：换凭据 `GET /v1/games/:slug/rom?lang=ja&delivery=redirect|plain`
 
 ```json
 {
-  "url": "https://8bitgo.com/api/open/v1/rom/eyJ...xxx.yyy",
+  "url": "https://8bitgo.com/api/open/v1/rom-plain/eyJ...xxx.yyy",
   "expires_in": 300,
   "lang_requested": "ja",
   "lang_actual": "*",
-  "filename": "zeekthegeek.zip"
+  "filename": "zeekthegeek.zip",
+  "delivery": "plain",
+  "requires_network": null
 }
 ```
 
@@ -447,12 +449,14 @@ Content-Length: 0
   要日文版给不了，就给通用件或者干脆没有，**绝不悄悄发一份别的语言的 ROM**。
   所以 `lang_actual` 必须看：它可能是 `*` 而不是你要的那门。
 - 这款没有可下载的 ROM → `404 rom_unavailable`。
+- `delivery=redirect`（默认）返回对象跳转地址；`delivery=plain` 返回服务端明文流地址，服务端会按需解密 / 解压 8BG。
+- `requires_network` 表示站点是否确认这款游戏依赖外部网络：`true` 需要联网、`false` 已确认不需要、`null` 尚未核实。这个字段是提示，不会自动补齐 SWF 依赖或代理第三方服务。
 
-### 第二步：兑现 `GET /v1/rom/:grant`
+### 第二步：兑现第一步返回的下载 URL
 
-**这一条不要求 `Authorization` 头** —— 凭据本身就是授权。
+**这一条不要求 `Authorization` 头** —— 凭据本身就是授权。默认地址是 `/v1/rom/:grant`；选择 `delivery=plain` 后地址是 `/v1/rom-plain/:grant`。
 
-响应是 **`302` 重定向**到对象存储的真实地址，外加 `Cache-Control: private, no-store`。
+默认 `delivery=redirect` 响应为 **`302` 重定向**到对象存储地址，并带 `Cache-Control: private, no-store`；若第一步传了 `delivery=plain`，URL 直接指向下一节，成功时以 `200` 或 `206` 流式返回明文 ROM。
 
 ### ⚠️ 设备端三个坑
 
@@ -477,17 +481,17 @@ Content-Length: 0
 站点里的 ROM 是 **8BG 容器**：先 zstd 压缩、再 AES-256-GCM 加密。浏览器的 Worker 在本地做
 「解密 + 解压」；但 ESP32 这类低端设备没这个能力 —— 它拿到 8BG 字节也解不开。
 
-所以加了一条**中间件**端点。它和 `/v1/rom/:grant` 用**同一张凭据**（也是两步式、也是 302 那张票），
+所以加了一条**中间件**端点。它仍是两步式短期凭据；使用 `delivery=plain` 领票后，凭据会绑定到明文交付端点，
 但**不 302**：服务端取回 8BG 对象、逐块解密解压、把**原生 ROM 的明文**流式吐给设备。
 设备这一侧只要会收字节、会写文件就行，完全不用碰 zstd / AES。
 
-**请求**（和 §6 完全一样，只是 URL 换成 `rom-plain`）：
+**请求**（第一步选择 `delivery=plain` 后，响应 URL 已经指向这里，无需客户端改写路径）：
 
 ```http
 GET /api/open/v1/rom-plain/<grant> HTTP/1.1
 ```
 
-**设备实际调用顺序**：先用 AppID / key 换应用令牌，再用带 `games.rom` 的令牌领一次 ROM 凭据，最后把返回 URL 中的 `/rom/` 改成 `/rom-plain/`。第二个下载请求**不带 Bearer**，短期凭据本身就是授权。下面是可直接改成固件逻辑的 `curl` 示例（需要 `jq`）：
+**设备实际调用顺序**：先用 AppID / key 换应用令牌，再用带 `games.rom` 的令牌以 `delivery=plain` 领 ROM 凭据，最后直接 GET 返回的 URL。第二个下载请求**不带 Bearer**，短期凭据本身就是授权。下面是可直接改成固件逻辑的 `curl` 示例（需要 `jq`）：
 
 ```bash
 BASE='https://8bitgo.com/api/open/v1'
@@ -501,22 +505,19 @@ TOKEN=$(curl --fail-with-body --silent --show-error -X POST "$BASE/token" \
     '{grant_type:"client_credentials",client_id:$id,client_secret:$secret}')" | jq -r '.access_token')
 
 GRANT=$(curl --fail-with-body --silent --show-error \
-  -H "Authorization: Bearer $TOKEN" "$BASE/games/$SLUG/rom")
+  -H "Authorization: Bearer $TOKEN" "$BASE/games/$SLUG/rom?delivery=plain")
 ROM_URL=$(printf '%s' "$GRANT" | jq -r '.url')
-FILENAME=$(printf '%s' "$GRANT" | jq -r '.filename')
-PLAIN_URL=$(printf '%s' "$ROM_URL" | sed 's#/rom/#/rom-plain/#')
-OUTPUT=${FILENAME%.8bg}
 
-# 设备保存为原生扩展名，例如 game.nes.8bg → game.nes
-curl --fail-with-body --silent --show-error "$PLAIN_URL" --output "$OUTPUT"
+# 使用服务端从 8BG 头恢复出的原始文件名（Content-Disposition）。
+curl --fail-with-body --silent --show-error -OJ "$ROM_URL"
 ```
 
 ESP 固件照这个顺序实现即可：
 
 1. `POST /token`，解析 `access_token`；App 需要有 `games.rom` 权限。
 2. `GET /games/<slug>/rom` 带 `Authorization: Bearer <access_token>`，解析响应里的 `url` 和 `filename`。
-3. 把 `url` 路径中的 `/rom/` 换成 `/rom-plain/` 后 GET；**此请求不要再附加 Bearer**。
-4. 按 HTTP `Content-Length` 收满正文后再把临时文件改成最终名。最终名可用上一步的 `filename` 去掉末尾 `.8bg` 得到；例如 `game.nes.8bg` → `game.nes`。不要把 JSON 错误体写进 ROM 文件：先检查状态码是 `200` 或 `206`，其余状态读取 `error` / `error_description`。
+3. 直接 GET 第一步返回的 `url`；若选择 `delivery=plain`，它已指向明文端点。**此请求不要再附加 Bearer**。
+4. 按 HTTP `Content-Length` 收满正文后再把临时文件改成最终名。明文接口响应的 `Content-Disposition` 是从 8BG 容器头恢复的原始 ROM 文件名；不要把 JSON 错误体写进 ROM 文件：先检查状态码是 `200` 或 `206`，其余状态读取 `error` / `error_description`。
 
 同一张 ROM 凭据最多兑现 **10 次**，包括 `HEAD`、整包下载和 Range 重试；五分钟过期。收到 `429` 后重新调用 `/games/<slug>/rom` 领新凭据，再走明文下载端点。AppKey 不要烧进公开发布的固件：设备固件可被读取，建议由你自己的服务端保管 AppKey 并代领短期凭据。
 

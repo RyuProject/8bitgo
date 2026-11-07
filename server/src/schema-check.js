@@ -41,6 +41,7 @@ const EXPECTED_COLUMNS = [
   { table: 'games', column: 'arcade_bios', why: '街机游戏需要的 BIOS 系统包（neogeo / pgm）；缺列会让后台保存游戏 500' },
   { table: 'games', column: 'arcade_dip', why: '街机 DIP 开关（麻将类游戏的摇杆 / 麻将那一档）；缺列会让后台保存游戏 500' },
   { table: 'games', column: 'flash_controls', why: '逐游戏 Flash 屏幕手柄与实体手柄键位' },
+  { table: 'games', column: 'requires_network', why: 'Flash 外部网络依赖状态；NULL 表示尚未核实' },
   { table: 'games', column: 'adult', why: '成人游戏 18 岁验证' },
   { table: 'games', column: 'created_at', why: '真实入库时间' },
   { table: 'games', column: 'rating_sum', why: '评分聚合；缺了详情页星星读得出来，但一有人打分 POST /api/ratings 就 500' },

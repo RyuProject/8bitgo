@@ -155,6 +155,7 @@
           },
           "platform": { "type": "string" },
           "requires_windows": { "type": "boolean", "description": "DOS 游戏是否需要 Windows 3.x / 95 / 98 客体；对应后台的 Windows 复选框。其他平台为 false" },
+          "requires_network": { "type": ["boolean", "null"], "description": "游戏资源是否依赖外部网络；null 表示尚未核实，不等同于离线可玩" },
           "genres": { "type": "array", "items": { "type": "string" } },
           "tags": { "type": "array", "items": { "type": "string" } },
           "year": { "type": "integer" },
@@ -171,7 +172,7 @@
           "adult": { "type": "boolean" },
           "rom_langs": { "type": "array", "items": { "type": "string" }, "description": "可选 ROM 语言码，* 表示通用件" }
         },
-        "required": ["slug", "title", "platform", "requires_windows"]
+        "required": ["slug", "title", "platform", "requires_windows", "requires_network"]
       },
       "GamePage": {
         "type": "object",
@@ -191,9 +192,11 @@
           "expires_in": { "type": "integer", "description": "秒，固定 300" },
           "lang_requested": { "type": ["string", "null"] },
           "lang_actual": { "type": "string" },
-          "filename": { "type": "string" }
+          "filename": { "type": "string", "description": "存储对象文件名；明文交付的最终文件名以 Content-Disposition 为准" },
+          "delivery": { "type": "string", "enum": ["redirect", "plain"], "description": "本次凭据选择的交付方式" },
+          "requires_network": { "type": ["boolean", "null"], "description": "游戏是否依赖外部网络；null 表示未知" }
         },
-        "required": ["url", "expires_in", "lang_actual", "filename"]
+        "required": ["url", "expires_in", "lang_actual", "filename", "delivery", "requires_network"]
       },
       "EmbedResponse": {
         "type": "object",
@@ -565,7 +568,8 @@
         "security": [{ "openToken": ["games.rom"] }],
         "parameters": [
           { "name": "slug", "in": "path", "required": true, "schema": { "type": "string" } },
-          { "name": "lang", "in": "query", "schema": { "type": "string" }, "description": "要的 ROM 语言，默认通用件；精确→通用件，不跨语言回退" }
+          { "name": "lang", "in": "query", "schema": { "type": "string" }, "description": "要的 ROM 语言，默认通用件；精确→通用件，不跨语言回退" },
+          { "name": "delivery", "in": "query", "schema": { "type": "string", "enum": ["redirect", "plain"], "default": "redirect" }, "description": "redirect = 302 到原对象；plain = 服务端流式解密 / 解压 8BG 后直返 ROM 字节，URL 直接指向 /v1/rom-plain/。未指定时兼容旧客户端的两种兑现路径。" }
         ],
         "responses": {
           "200": {

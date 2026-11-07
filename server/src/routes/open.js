@@ -936,6 +936,10 @@ openRouter.get('/v1/games/:slug/rom', requireApp('games.rom'), async (req, res, 
   try {
     const cfg = openConfig()
     if (!cfg.romEnabled) return fail(res, 501, 'temporarily_unavailable', 'ROM 接口未启用')
+    const requestedDelivery = req.query.delivery == null ? 'redirect' : String(req.query.delivery)
+    if (requestedDelivery !== 'redirect' && requestedDelivery !== 'plain') {
+      return fail(res, 400, 'invalid_request', 'delivery 只能是 redirect 或 plain')
+    }
     const mode = await romAccessForApp(req.openClaims.appId)
     if (!mode) return fail(res, 403, 'app_not_authorized', '应用已停用或没有当前 ROM 权限')
     const slug = String(req.params.slug)
@@ -965,15 +969,25 @@ openRouter.get('/v1/games/:slug/rom', requireApp('games.rom'), async (req, res, 
       lang: hit.lang,
       key: hit.key,
       mode,
+      // 不传 delivery 的旧客户端继续拿到可兼容两种兑现路径的凭据；
+      // 新客户端显式选择后，凭据会绑定对应端点。
+      delivery: req.query.delivery == null ? 'legacy' : requestedDelivery,
     })
-    res.json({
+    const response = {
       // 凭据换成地址：注意 URL 里**没有** object key，抄走也只能下这一款、这几分钟
       url: `${publicSiteUrl()}/api/open/v1/rom/${grant}`,
       expires_in: ROM_GRANT_TTL_SEC,
       lang_requested: want || null,
       lang_actual: hit.lang,
       filename: hit.key.split('/').pop(),
-    })
+      delivery: requestedDelivery,
+      // null 表示尚未核实；不能把它当成「SWF 已经自包含」。
+      requires_network: row.requires_network == null ? null : Number(row.requires_network) === 1,
+    }
+    if (requestedDelivery === 'plain') {
+      response.url = response.url.replace('/v1/rom/', '/v1/rom-plain/')
+    }
+    res.json(response)
   } catch (e) {
     next(e)
   }
@@ -985,13 +999,19 @@ openRouter.get('/v1/games/:slug/rom', requireApp('games.rom'), async (req, res, 
  * 就等于给另一张开了后门（例如只给转码那张加了 sandbox 校验、302 那张忘了）。
  * 失败时已 res 回包，调用方直接 return；成功时回 { v, target }。
  */
-async function redeemRomGrant(req, res) {
+async function redeemRomGrant(req, res, expectedDelivery) {
   const cfg = openConfig()
   if (!cfg?.romEnabled) { fail(res, 501, 'temporarily_unavailable', 'ROM 接口未启用'); return null }
   const v = verifyRomGrant(req.params.grant, { secret: cfg.romSecret })
   if (!v.ok) {
     const status = v.reason === 'expired' ? 410 : 403
     fail(res, status, v.reason === 'expired' ? 'grant_expired' : 'invalid_grant', '凭据无效或已过期')
+    return null
+  }
+  // 旧票没有交付声明，且未显式选择方式的新票走兼容模式；
+  // 显式选择 plain / redirect 的票不能被改路径来切换交付方式。
+  if (v.delivery !== 'legacy' && v.delivery !== expectedDelivery) {
+    fail(res, 403, 'invalid_grant', '凭据对应的 ROM 交付方式不匹配')
     return null
   }
   const currentAccess = await romAccessForApp(v.appId)
@@ -1037,7 +1057,7 @@ async function redeemRomGrant(req, res) {
  */
 openRouter.get('/v1/rom/:grant', async (req, res, next) => {
   try {
-    const redeemed = await redeemRomGrant(req, res)
+    const redeemed = await redeemRomGrant(req, res, 'redirect')
     if (!redeemed) return
     const { target } = redeemed
     // 302 而不是代理转发：ROM 动辄几十上百 MB，全走源站的带宽没必要。
@@ -1063,7 +1083,7 @@ openRouter.get('/v1/rom/:grant', async (req, res, next) => {
  */
 openRouter.get('/v1/rom-plain/:grant', async (req, res, next) => {
   try {
-    const redeemed = await redeemRomGrant(req, res)
+    const redeemed = await redeemRomGrant(req, res, 'plain')
     if (!redeemed) return
     const limits = romTranscodeLimits()
     // 先判断是不是 8BG；明文 ROM 只透传，不应占用真正解密解压的并发槽。

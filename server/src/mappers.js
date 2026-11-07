@@ -29,6 +29,14 @@ export const dbFlag = (v) => v === 1 || v === true || v === '1'
 
 const bool = dbFlag
 
+/** 可空布尔项：null 表示未确认，严格拒绝隐式输入，避免把“未知”误存为 false。 */
+function nullableFlagOf(v) {
+  if (v == null) return null
+  if (v === true || v === 1) return 1
+  if (v === false || v === 0) return 0
+  return badGameField('外部网络依赖必须选择「需要」「不需要」或「未确认」')
+}
+
 /**
  * 把数据库 JSON 列读出来的「翻译缓存对象」规整一下再交给 API：
  *   - mysql2 默认把 JSON 列解成普通 JS 对象，但空 / null / 数组都被 mysql2 默默处理成 undefined，
@@ -669,6 +677,7 @@ export function gameRowToApi(r, rel = {}) {
       ? Math.round((Number(r.rating_sum) / Number(r.rating_weight)) * 10) / 10
       : 0,
     ratingCount: Number(r.rating_count) || 0,
+    requiresNetwork: r.requires_network == null ? null : bool(r.requires_network),
   }
   // 不上首页的游戏干脆不带这个字段，前台拿到的形状和以前一样
   if (r.home_rank != null) g.homeRank = Number(r.home_rank)
@@ -799,6 +808,7 @@ export function gameApiToRow(g) {
     arcade_dip: arcadeDipOf(g.arcadeDip),
     arcade_buttons: arcadeButtonsOf(g.arcadeButtons),
     flash_controls: flashControlsOf(g.flashControls),
+    requires_network: nullableFlagOf(g.requiresNetwork),
   }
 }
 
@@ -846,6 +856,7 @@ const FIELD_TO_COLUMN = {
   arcadeDip: ['arcade_dip', arcadeDipOf],
   arcadeButtons: ['arcade_buttons', arcadeButtonsOf],
   flashControls: ['flash_controls', flashControlsOf],
+  requiresNetwork: ['requires_network', nullableFlagOf],
 }
 
 export function gameApiToPartialRow(patch) {

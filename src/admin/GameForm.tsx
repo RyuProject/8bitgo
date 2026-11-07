@@ -216,6 +216,7 @@ const EMPTY: Game = {
   roms: {},
   // 逐游戏运行时覆盖；NES 与 Play! System 2x6 街机包会用到，其余平台留空走默认引擎
   runtime: null,
+  requiresNetwork: null,
 }
 
 const FLASH_CONTROL_PRESETS = {
@@ -1021,6 +1022,8 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
       arcadeButtons: form.platform === 'arcade' ? form.arcadeButtons : undefined,
       // Flash 配置同时保存画面兼容模式和键位；纯鼠标游戏也可能只留下显示模式。
       flashControls: form.platform === 'flash' ? form.flashControls : undefined,
+      // 只在 Flash 条目保存依赖标记；未核实必须保留 null，不能等同于离线可玩。
+      requiresNetwork: form.platform === 'flash' ? form.requiresNetwork ?? null : null,
       dosboxConfig,
       // 空字符串写成 undefined，否则会存一条空的英文简介，
       // 前台判「有没有英文版」时就会误判成有
@@ -1421,10 +1424,26 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
           </>
         )}
         {form.platform === 'flash' && (
-          <FlashControlsField
-            value={form.flashControls}
-            onChange={(value) => set('flashControls', value)}
-          />
+          <>
+            <Field label="外部网络依赖">
+              <select
+                className={inputClass}
+                value={form.requiresNetwork == null ? '' : form.requiresNetwork ? 'yes' : 'no'}
+                onChange={(e) => set('requiresNetwork', e.target.value === 'yes' ? true : e.target.value === 'no' ? false : null)}
+              >
+                <option value="">未确认</option>
+                <option value="yes">需要外部网络</option>
+                <option value="no">不需要外部网络</option>
+              </select>
+              <p className="mt-1 text-[11px] text-dim">
+                这是给 API 客户端的运行提示，不会自动补齐 Flash 外部资源。确认自包含后再选「不需要」。
+              </p>
+            </Field>
+            <FlashControlsField
+              value={form.flashControls}
+              onChange={(value) => set('flashControls', value)}
+            />
+          </>
         )}
         {coreOptions.length > 0 && (
           <Field label="模拟器核心">

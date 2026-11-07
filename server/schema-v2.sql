@@ -124,6 +124,8 @@ CREATE TABLE IF NOT EXISTS games (
   arcade_mame_disks JSON NULL,
   -- Flash 的原始舞台显示模式和逐游戏键位；纯鼠标游戏也可以只保存显示模式。
   flash_controls JSON NULL,
+  -- Flash 资源是否依赖外部网络。NULL = 尚未核实，不可以当作离线可玩。
+  requires_network TINYINT(1) NULL DEFAULT NULL,
   -- 首页「精选」位的排序号。NULL = 不上首页，数字小的排前面。
   -- 一款都没设时，首页那一栏退回按 plays 自动排（见 server/src/content.js 的 loadHome）
   home_rank     SMALLINT UNSIGNED NULL,
