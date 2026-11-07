@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
-import { Link } from 'react-router-dom'
 import { cx } from '@/lib/format'
 import { useAuthReady, useCurrentUser } from '@/services/auth'
 import { openAuthModal } from '@/services/authModal'
@@ -183,7 +182,7 @@ export function OpenPlatformPage() {
           <SandboxSampleList />
 
           <p className="mt-8 text-[11px] leading-relaxed text-dim">
-            接口文档见 <Link to="/about" className="underline underline-offset-2">关于页</Link> 里的开放平台一节。
+            本页 API 文档包含接入说明与全部端点；<a href="/.well-known/openapi.json" target="_blank" rel="noreferrer" className="underline underline-offset-2">OpenAPI 机器规格</a>可供代码生成器导入。
             遇到问题把 AppID（不是 AppKey！）连同报错一起发给我们。
           </p>
 
@@ -853,54 +852,74 @@ function SecretOnce({ data, onClose }: { data: SecretIssued & { appName: string 
   )
 }
 
-/* ---------------- 右侧：API 参考（可滚动的内容面板） ---------------- */
+/* ---------------- 开放平台 API 文档（可滚动的内容面板） ---------------- */
 
 /**
- * 右栏要让设备开发者在这里完成第一次请求，不能只堆端点名：
- * 公开查询、Windows 客体筛选、令牌流程和错误处理都给出可直接照用的例子。
- * 数值与权限以 `server/src/routes/open.js` 为准；接口变动时同步这份速查。
+ * 文档以实际 Express 路由和 server/openapi.json 为准。测试会核对这里列出的
+ * /v1 方法与路径是否覆盖机器规格；OAuth 和站内授权确认流程在下方单独解释。
  */
 
-type DocEndpoint = { method: 'GET' | 'POST'; path: string; access: string; desc: string; detail: string }
+type DocEndpoint = { method: 'GET' | 'POST' | 'HEAD'; path: string; access: string; desc: string; detail: string }
 
 const DOC_ENDPOINT_GROUPS: { title: string; items: DocEndpoint[] }[] = [
   {
     title: '公开目录 · 无需令牌',
     items: [
-      { method: 'GET', path: '/v1/games', access: '公开', desc: '分页查游戏', detail: '支持 platform、genre、q、sort、lang、page、page_size、requires_windows。返回 items、page、page_size、total、total_pages；所有筛选均在分页和 total 计算前完成。' },
-      { method: 'GET', path: '/v1/games/:slug', access: '公开', desc: '游戏详情', detail: '返回单个游戏对象；可传 lang。不存在、下架或成人内容统一返回 404 not_found。' },
-      { method: 'GET', path: '/v1/platforms', access: '公开', desc: '平台与本地模拟器建议', detail: '返回 items，包含 id、runtime、core、romExtensions、enabled 和 native{runnable,emulator,note}。DOS 下的 Windows 游戏还要看游戏对象的 requires_windows；不能仅凭 platform=dos 判断能否运行。' },
-      { method: 'GET', path: '/v1/rom-samples', access: '公开', desc: '沙箱 ROM 测试游戏', detail: '返回每个已配置机型的一款样本 {platform,slug,title}；不含存储 key。未审核应用申请 games.rom 后可领取这些样本的下载凭据。' },
-      { method: 'GET', path: '/v1/genres', access: '公开', desc: '类型枚举', detail: '返回 items：{id,name}。类型 id 可传给游戏列表的 genre。' },
-      { method: 'GET', path: '/v1/languages', access: '公开', desc: '语言枚举', detail: '返回 items：{code,label,english}。语言码可传给 lang。' },
-      { method: 'GET', path: '/v1/collections', access: '公开', desc: '合集列表', detail: '分页返回 {items,page,page_size,total,total_pages}。' },
-      { method: 'GET', path: '/v1/collections/:id', access: '公开', desc: '合集详情及游戏', detail: '返回 {collection,games}；games 使用同一套对外游戏字段。' },
-      { method: 'GET', path: '/v1/live/rooms', access: '公开', desc: '在播房间', detail: '返回 {items}；可传 game=<slug> 只看一款游戏。每个条目带 watchUrl，可直接打开观看。' },
-      { method: 'GET', path: '/v1/live/rooms/:roomId', access: '公开', desc: '单个直播房间', detail: '返回已脱敏快照与 watchUrl；房间不存在返回 404。' },
-      { method: 'GET', path: '/v1/netplay/rooms', access: '公开', desc: 'P2P 联机房间', detail: '返回 {items}；传 game=<slug> 会筛选游戏，并给每个条目补 gameSlug 与 joinUrl。' },
-      { method: 'GET', path: '/v1/netplay/rooms/:roomId', access: '公开', desc: '单个联机房间', detail: '房主迁移后旧 roomId 仍可查询；可传 game=<slug> 校验游戏并取得 joinUrl。' },
+      { method: 'GET', path: '/v1/games', access: '公开', desc: '分页查游戏', detail: '查询参数：platform、genre、q、sort、lang、page、page_size、requires_windows。page 从 1 起，page_size 默认 24、最大 50；sort 支持 popular/newest/name/rating/home。返回 {items,page,page_size,total,total_pages}，筛选先于计数和分页。成人、下架内容不对外返回。' },
+      { method: 'GET', path: '/v1/games/:slug', access: '公开', desc: '游戏详情', detail: '路径参数 slug；可选 lang。成功直接返回 Game 对象（字段表见「数据 & 错误码」）；不存在、下架或成人内容统一返回 404 not_found。' },
+      { method: 'GET', path: '/v1/platforms', access: '公开', desc: '平台与本地模拟器建议', detail: '返回 {items:[Platform]}，字段含 id/name/nameZh/manufacturer/year/runtime/core/romExtensions/enabled/native。native.runnable 表示本机建议是否可运行；enabled=false 表示本站当前未开放该平台。' },
+      { method: 'GET', path: '/v1/rom-samples', access: '公开', desc: '沙箱 ROM 测试游戏', detail: '返回 {items:[{platform,slug,title}]}，只露站长配置的沙箱样本，不含存储 key。申请 games.rom 的沙箱应用只能为这些 slug 领取 ROM 下载凭据。' },
+      { method: 'GET', path: '/v1/genres', access: '公开', desc: '类型枚举', detail: '返回 {items:[{id,name}]}。id 可直接传给游戏列表的 genre；这是筛选用的展示目录，不保证每种类型当前都有游戏。' },
+      { method: 'GET', path: '/v1/languages', access: '公开', desc: '语言枚举', detail: '返回 {items:[{code,label,english}]}。code 可用于 lang 查询参数；未知语言码会回退到默认语言，而不是报错。' },
+      { method: 'GET', path: '/v1/collections', access: '公开', desc: '合集列表', detail: '查询参数 page（默认 1）和 page_size（默认 24、最大 48）。返回 {items,page,page_size,total,total_pages}；列表只带合集摘要。' },
+      { method: 'GET', path: '/v1/collections/:id', access: '公开', desc: '合集详情及游戏', detail: '路径参数 id 为合集编号，可选 lang。返回 {collection,games}；games 是完整 Game 对象数组，按公开字段白名单映射，不包含 ROM 地址。不存在返回 404。' },
+      { method: 'GET', path: '/v1/live/rooms', access: '公开', desc: '在播房间', detail: '可选 game=<slug> 筛选单款游戏；返回 {items:[LiveRoom]}，每个条目含可直接打开的 watchUrl。房间列表是实时快照，不做边缘缓存。' },
+      { method: 'GET', path: '/v1/live/rooms/:roomId', access: '公开', desc: '单个直播房间', detail: '路径参数 roomId；返回一个已脱敏 LiveRoom 快照及 watchUrl。房间不存在返回 404 not_found；不会暴露主播 IP、续播凭证或 socket id。' },
+      { method: 'GET', path: '/v1/live/capacity', access: '公开', desc: '直播容量预检', detail: '返回 {used,max,remaining,available}，不缓存也不预留席位。available=true 仅代表查询瞬间有容量，真正开播仍可能因并发占满而失败。' },
+      { method: 'GET', path: '/v1/netplay/rooms', access: '公开', desc: 'P2P 联机房间', detail: '可选 game=<slug>；返回 {items:[NetplayRoom]}。带 game 时按本站游戏 id 筛选，并额外返回 gameSlug 与 joinUrl；不带时保留协议原生 gameId。这里只发现房间，实时输入与媒体仍走 WebRTC/Socket.IO。' },
+      { method: 'GET', path: '/v1/netplay/rooms/:roomId', access: '公开', desc: '单个联机房间', detail: '路径参数 roomId；可选 game=<slug> 校验房间游戏并取得 joinUrl。房主迁移后旧 roomId 仍可查；房间不存在或游戏不匹配返回 404。' },
       { method: 'GET', path: '/v1/health', access: '公开', desc: '服务与数据库健康状态', detail: '返回 {service,db,timestamp}；数据库不可用时 HTTP 503。这条探针不受目录限流。' },
     ],
   },
   {
     title: '应用令牌 · AppID + AppKey',
     items: [
-      { method: 'POST', path: '/v1/token', access: 'AppID + AppKey', desc: '换 15 分钟访问令牌', detail: '请求体用 JSON 或 x-www-form-urlencoded；grant_type=client_credentials。沙箱申请 games.rom 后可取该 scope，但仅限测试样本；响应 rom_access 为 samples/full/none。' },
-      { method: 'GET', path: '/v1/me', access: '有效令牌', desc: '自查令牌和权限', detail: '返回 client_id、kind、user_id、scope、expires_at；403 时先用它核对令牌类型与 scope。' },
+      { method: 'POST', path: '/v1/token', access: 'AppID + AppKey', desc: '换 15 分钟访问令牌', detail: 'JSON 或 application/x-www-form-urlencoded；凭据可放 HTTP Basic，也可放 client_id/client_secret 字段。grant_type=client_credentials 取应用令牌，响应含 access_token/token_type/expires_in/scope/rom_access；用户数据不能用此流。它也承接 device_code 的轮询换令牌。' },
+      { method: 'GET', path: '/v1/me', access: '有效令牌', desc: '自查令牌和权限', detail: '成功返回 {client_id,kind,user_id,scope,expires_at}。应用令牌的 kind=app、user_id=null；用户令牌的 kind=user。遇其他接口 401/403 时可先确认拿的是哪类令牌、是否有需要的 scope。' },
       { method: 'GET', path: '/v1/games/:slug/rom', access: 'games.rom', desc: '领取 ROM 下载凭据', detail: '沙箱只允许 /v1/rom-samples 所列游戏，其余返回 403 sandbox_resource_only；审核通过可访问全库。可传 lang；返回 {url,expires_in:300,lang_actual,filename}。' },
-      { method: 'GET', path: '/v1/rom/:grant', access: '下载凭据', desc: '兑现 ROM 凭据', detail: '上一步返回的 url 就是此端点；不再带 Bearer，跟随 302 跳转下载。凭据 5 分钟过期，最多兑现 10 次。' },
-      { method: 'GET', path: '/v1/games/:slug/embed', access: 'games.read', desc: '获取嵌入播放器地址', detail: '返回 {url,expires_in,allow}。当前嵌入页未强制验证签名，不能把地址当作访问控制。' },
+      { method: 'GET', path: '/v1/rom/:grant', access: '下载凭据', desc: '兑现 ROM 凭据（302）', detail: '上一步返回的 url 就是此端点；不再带 Bearer，跟随 302 跳转到对象存储下载。凭据 5 分钟过期，每张票最多兑现 10 次，并受每 IP 60 次/分钟限制。' },
+      { method: 'GET', path: '/v1/rom-plain/:grant', access: '下载凭据', desc: '兑现并流式返回明文 ROM', detail: '与 /v1/rom 共用短期凭据，不需 Bearer。8BG 包由服务端按需解密、解压后流式返回；普通 ROM 直接透传。支持 HEAD 与单段 Range/If-Range 断点续传，适合无法自行解码 8BG 的客户端。存在单文件大小、并发数与超时限制；过载会返回 503 server_busy，超限 413 payload_too_large。' },
+      { method: 'HEAD', path: '/v1/rom-plain/:grant', access: '下载凭据', desc: '查询明文 ROM 元信息', detail: '与 GET 共用凭据和限流，不返回 ROM 正文；用于先读取 Content-Length、Accept-Ranges、ETag 等响应头。Express 由同一路由处理 HEAD。' },
+      { method: 'GET', path: '/v1/games/:slug/embed', access: 'games.read', desc: '获取嵌入播放器地址', detail: '路径参数 slug，可选 lang；返回 {url,expires_in,allow}，签名地址默认有效 1 小时。当前嵌入页未强制验证签名，因此该地址不是安全边界，也不应当作访问控制。' },
     ],
   },
   {
     title: '用户令牌 · 设备码授权',
     items: [
-      { method: 'POST', path: '/v1/device/code', access: 'AppID + AppKey', desc: '申请设备授权码', detail: '返回 user_code、device_code、verification_uri、expires_in:900、interval:5。用户在手机上输入 user_code 并同意，设备再轮询 /v1/token。仅机密客户端可用。' },
-      { method: 'GET', path: '/v1/library', access: '用户令牌 · library.read', desc: '收藏与最近在玩', detail: '返回 favorites、recent（最多 12 款）和 favorites_total；收藏列表最多返回 100 款。' },
+      { method: 'POST', path: '/v1/device/code', access: 'AppID + AppKey', desc: '申请设备授权码', detail: 'JSON 或表单请求体含 client_id/client_secret，可选 scope。仅机密客户端可用；返回 device_code（机器轮询）、user_code（展示给用户）、verification_uri、verification_uri_complete、expires_in=900、interval=5。用户确认后用完整 device grant 值向 /v1/token 轮询。' },
+      { method: 'GET', path: '/v1/library', access: '用户令牌 · library.read', desc: '收藏与最近在玩', detail: '可选 lang；返回 {favorites,recent,favorites_total}。favorites 是最多 100 款的完整 Game 对象；recent 最多 12 款。favorites_total 是实际收藏总量，可判断列表是否被截断。' },
       { method: 'POST', path: '/v1/games/:slug/play', access: '用户令牌 · library.write', desc: '上报真实开玩', detail: '只在模拟器真正可玩后调用；同时刷新最近游玩。同一账号跨设备、换网络或重试都只增加一次，counted 表示本次是否实际计数。' },
-      { method: 'POST', path: '/v1/live/publish-token', access: '用户令牌 · live.write', desc: '外部设备领取开播凭证', detail: '返回只能连接 Socket.IO /live 的 12 小时发布凭证、信令地址和 ICE 地址；Linux、掌机及桌面客户端用它通过 WebRTC 开播。' },
-      { method: 'GET', path: '/v1/saves', access: '用户令牌 · saves.read', desc: '存档清单', detail: '只返回 runtime、game_slug、slot、size、created_at、updated_at，不含存档内容。' },
-      { method: 'GET', path: '/v1/saves/:runtime/:slug', access: '用户令牌 · saves.read', desc: '下载单份存档', detail: '可传 slot=0…9，默认 0；返回 application/octet-stream，x-save-updated-at 是毫秒时间戳。' },
+      { method: 'POST', path: '/v1/live/publish-token', access: '用户令牌 · live.write', desc: '外部设备领取开播凭证', detail: 'POST 无需额外 body。返回 publisher_token、token_type=LivePublisher、expires_in（默认 12 小时，可由服务器配置）、protocol、signaling_url、socket_path、namespace、auth_field、capacity_url、ice_url。publisher_token 只能放 Socket.IO /live 握手认证中作为主播，不能用于 REST API。' },
+      { method: 'GET', path: '/v1/saves', access: '用户令牌 · saves.read', desc: '存档清单', detail: '返回 {items:[SaveMeta]}，每项含 runtime、game_slug、slot、size（字节）、created_at、updated_at。只列元信息，不含存档内容；用户的数据只对当前用户令牌可见。' },
+      { method: 'GET', path: '/v1/saves/:runtime/:slug', access: '用户令牌 · saves.read', desc: '下载单份存档', detail: 'runtime 是引擎标识、slug 是游戏标识；可传 slot=0…9，默认 0。返回 application/octet-stream 二进制，x-save-updated-at 是 Unix 毫秒时间戳；坐标不合法 400，存档不存在 404。' },
+    ],
+  },
+  {
+    title: '浏览器 OAuth 2.0 · 授权码 + PKCE',
+    items: [
+      { method: 'GET', path: '/api/oauth/authorize', access: '站内登录令牌', desc: '发起或读取授权请求', detail: 'query 必需：client_id、redirect_uri（必须与控制台登记值完全一致）、response_type=code、code_challenge（43 位 Base64URL SHA-256）、code_challenge_method=S256；可选 scope（空格分隔）和 state。请求需携带 8BitGo 站内登录 Bearer。Accept: application/json 返回应用信息、权限、allowed；否则返回授权确认 HTML。浏览器客户端通常跳到 /open/authorize 页面进入此流程。' },
+      { method: 'POST', path: '/api/oauth/authorize', access: '站内登录令牌', desc: '同意或拒绝授权', detail: '重复校验 GET 的所有参数，并要求登录。表单或 JSON 提交 decision=approve/deny。成功默认 302 回登记的 redirect_uri，并带一次性 code 与原 state；Accept: application/json 时返回 {redirect_uri,state,code,error}。拒绝返回 error=access_denied。' },
+      { method: 'POST', path: '/api/oauth/token', access: '授权码 + PKCE', desc: '授权码换用户令牌', detail: '仅收 application/x-www-form-urlencoded。必需 grant_type=authorization_code、client_id、code、redirect_uri、code_verifier；机密客户端还要 client_secret，公开客户端不发 secret。code_verifier 为 43–128 个允许字符；授权码 60 秒有效、一次性，并绑定应用和 redirect_uri。成功返回 15 分钟 Bearer 用户令牌。' },
+      { method: 'GET', path: '/api/open-device/:code', access: '站内登录令牌', desc: '读取设备授权确认页信息', detail: '这是 /open/device 页面使用的站内接口，不是第三方服务端的公开 API。返回应用信息、申请权限及是否允许当前账号授权；需要 8BitGo 站内登录 Bearer。' },
+      { method: 'POST', path: '/api/open-device/:code', access: '站内登录令牌', desc: '确认或拒绝设备码授权', detail: '这是 /open/device 页面使用的站内接口。JSON 请求体 {"approve":true} 表示同意，false 表示拒绝；成功返回 {ok,approved}。无效或过期代码 404，重复处理 409。' },
+    ],
+  },
+  {
+    title: '协议发现 · 站点根路径',
+    items: [
+      { method: 'GET', path: '/.well-known/oauth-authorization-server', access: '公开', desc: 'OAuth 2.0 授权服务器元数据', detail: 'RFC 8414 元数据，列出 issuer、授权/令牌/设备码/JWKS 地址、支持的 grant、scope 和 PKCE S256。它描述 OAuth 2.0，不代表支持 OpenID Connect。' },
+      { method: 'GET', path: '/.well-known/jwks.json', access: '公开', desc: '令牌验签公钥', detail: '开放平台 access token 使用 RS256。服务端验令牌通常直接调用 API 即可；只有需要在自己服务端本地验签时才读取 JWKS，并按 kid 选择密钥。未配置密钥时返回 503。' },
+      { method: 'GET', path: '/.well-known/openapi.json', access: '公开', desc: '机器可读 OpenAPI 规格', detail: '返回 OpenAPI 3.1 JSON，覆盖当前 /api/open/v1 下的全部接口。代码生成器可直接导入；它不包含站内控制台管理 API。' },
     ],
   },
 ]
@@ -917,20 +936,31 @@ const DOC_GAME_QUERIES: [string, string][] = [
 
 const DOC_ERRORS: [string, string, string][] = [
   ['400', 'invalid_request', '参数格式不正确；requires_windows 只接受 true / false'],
-  ['400', 'unsupported_grant_type', '只支持 client_credentials / device_code'],
-  ['400', 'unauthorized_client', 'public 客户端不能用此端点'],
+  ['400', 'unsupported_grant_type', '/api/open/v1/token 支持 client_credentials 与完整 device_code grant；/api/oauth/token 只支持 authorization_code'],
+  ['400', 'unauthorized_client', 'public 客户端不能用 client_credentials 或设备码流程'],
   ['400', 'invalid_scope', 'scope 不认识 / 未获批 / 要了用户级'],
   ['400', 'authorization_pending', '用户尚未同意设备码，按 interval 继续轮询'],
   ['400', 'slow_down', '设备码轮询过快，按返回的 interval 放慢'],
-  ['400', 'invalid_grant', '设备码无效或已被兑现'],
-  ['401', 'invalid_client', 'AppID 或 key 不对（不区分）'],
-  ['401', 'invalid_token', '令牌无效或过期 → 续一次、重试一次'],
+  ['400', 'invalid_grant', '设备码 / 授权码无效、已使用或 PKCE 校验失败'],
+  ['400', 'expired_token', '设备码或 OAuth 授权码已过期；重新发起授权'],
+  ['400', 'invalid_redirect_uri', '回调地址未精确登记在应用设置中'],
+  ['400', 'unsupported_response_type', '浏览器授权只支持 response_type=code'],
+  ['401', 'invalid_client', 'AppID / key 不匹配，或应用已停用；服务端不区分账号是否存在'],
+  ['401', 'invalid_token', '令牌无效或过期；应用令牌重新取，用户令牌重新走授权流程'],
   ['403', 'insufficient_scope', '差哪个 scope（响应带 scope 字段）'],
-  ['403', 'invalid_grant', 'ROM 凭据签名不对'],
-  ['404', 'not_found', '没这款游戏（下架/成人/不存在不区分）'],
+  ['403', 'invalid_grant', 'ROM 下载凭据无效或签名校验失败'],
+  ['403', 'app_not_authorized', '应用已停用，或当前没有对应 ROM / 嵌入权限'],
+  ['403', 'sandbox_resource_only', '沙箱 ROM 权限仅限 /v1/rom-samples 列出的样本'],
+  ['403', 'access_denied', '用户拒绝授权，或沙箱应用不能请求当前账号授权'],
+  ['404', 'not_found', '资源不存在或不可见；游戏下架/成人/不存在对外不区分'],
   ['404', 'rom_unavailable', '这款游戏没有可下载 ROM'],
   ['410', 'grant_expired', 'ROM 凭据过期 → 回第一步重换'],
+  ['413', 'payload_too_large', '明文 ROM 超过服务端允许上限'],
+  ['415', 'unsupported_codec', '服务端暂不支持该 8BG 压缩算法'],
   ['429', 'rate_limited', '看 Retry-After 退避'],
+  ['502', 'bad_gateway', 'ROM 源站读取或转码失败；稍后重试'],
+  ['503', 'server_busy', 'ROM 明文转码并发已满；稍后重试'],
+  ['504', 'upstream_timeout', 'ROM 源站读取或转码超时；稍后重试'],
   ['500', 'server_error', '服务端问题，重试或联系我们'],
   ['501', 'temporarily_unavailable', '服务端未启用开放平台'],
 ]
@@ -939,9 +969,9 @@ const DOC_RATES: [string, string][] = [
   ['匿名目录 · 单 IP', '300 / 分钟'],
   ['匿名目录 · 全站', '3000 / 分钟'],
   ['带令牌接口 · 单 AppID', '3600 / 小时'],
-  ['取令牌 · 单 IP / AppID', '120 / 60 每小时'],
+  ['取令牌 · 单 IP / AppID', '120 / 60 每小时（含 OAuth 授权码兑换）'],
   ['申请设备码 · 单 IP / AppID', '各 60 / 小时'],
-  ['领取 ROM 凭据 · 单 AppID', '600 / 小时'],
+  ['领取 ROM 凭据 · 沙箱 AppID / 上产 AppID', '10 / 600 每小时'],
   ['兑现 ROM 凭据 · 单凭据 / IP', '10 / 5 分钟；60 / 分钟'],
 ]
 
@@ -965,18 +995,33 @@ const DOC_GAME_FIELDS: [string, string, string][] = [
   ['rom_langs', 'string[]', '可选 ROM 语言，* = 通用件'],
 ]
 
+const DOC_OTHER_FIELDS: [string, string][] = [
+  ['TokenResponse', 'access_token, token_type=Bearer, expires_in（秒）, scope；仅 client_credentials 另有 rom_access=none/samples/full'],
+  ['DeviceCodeResponse', 'device_code（机器轮询）, user_code（给用户）, verification_uri, verification_uri_complete, expires_in, interval（秒）'],
+  ['RomGrantResponse', 'url（5 分钟凭据）, expires_in, lang_requested, lang_actual, filename；不返回对象存储 key'],
+  ['EmbedResponse', 'url, expires_in, allow（iframe 功能策略字符串）'],
+  ['LibraryResponse', 'favorites（最多 100 款）, recent（最多 12 款）, favorites_total（未截断总数）'],
+  ['SaveMeta', 'runtime, game_slug, slot, size（字节）, created_at, updated_at；不含存档内容'],
+  ['LiveCapacity', 'used, max, remaining, available；只是瞬时预检，不代表占位成功'],
+  ['LiveRoom', 'roomId, title, gameSlug, gameName, platform, hostName, viewers, maxViewers, startedAt, hostAway, hostFrozen, netplayRoomId, coopOpen, coopTaken, presence, watchUrl'],
+  ['NetplayRoom', 'roomId, gameId, roomName, createdAt, host, presence, players/max, spectators/maxSpectators, hasPassword, members, kind, awaitingHost, claimed, hasState, migratedTo；带 game 查询时另有 gameSlug/joinUrl'],
+  ['CollectionSummary', 'id, title, kind, description, gameCount, viewCount, covers, author, hidden, createdAt, updatedAt'],
+  ['LivePublisherGrant', 'publisher_token, token_type, expires_in, protocol, signaling_url, socket_path, namespace, auth_field, capacity_url, ice_url'],
+  ['Error', 'error, error_description, error_uri；部分错误另带 scope、retry_after、interval。/api/open-device 是站内页面接口，使用简化的中文 error，不是同一种错误封套'],
+]
+
 const DOC_TABS: { id: 'auth' | 'endpoints' | 'ref'; label: string }[] = [
-  { id: 'auth', label: '鉴权' },
+  { id: 'auth', label: '接入与鉴权' },
   { id: 'endpoints', label: '接口' },
   { id: 'ref', label: '数据 & 错误码' },
 ]
 
-function MethodBadge({ method }: { method: 'GET' | 'POST' }) {
+function MethodBadge({ method }: { method: 'GET' | 'POST' | 'HEAD' }) {
   return (
     <span
       className={cx(
         'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold',
-        method === 'GET' ? 'bg-brand-soft text-brand-hover' : 'bg-coin/20 text-coin',
+        method === 'GET' ? 'bg-brand-soft text-brand-hover' : method === 'POST' ? 'bg-coin/20 text-coin' : 'bg-surface-2 text-muted',
       )}
     >
       {method}
@@ -1015,7 +1060,7 @@ function DocsPanel() {
   return (
     <div className="overflow-hidden rounded-2xl border border-line bg-surface" aria-label="开放平台 API 文档">
       <div className="flex items-center justify-between border-b border-line px-4 py-3">
-        <strong className="text-sm">API 速查</strong>
+        <strong className="text-sm">API 文档</strong>
         <a href="/.well-known/openapi.json" target="_blank" rel="noreferrer" className="text-xs text-brand-hover underline underline-offset-2">机器可读规格 ↗</a>
       </div>
       <div className="flex border-b border-line bg-surface/95" role="tablist" aria-label="文档章节">
@@ -1060,14 +1105,28 @@ function DocsPanel() {
               <p className="text-muted">ROM 下载凭据、嵌入地址、令牌自查和用户数据需要令牌。先在左侧创建应用，保存只显示一次的 AppKey：</p>
               <DocCode code="curl -u 'APP_ID:APP_KEY' -d grant_type=client_credentials 'https://8bitgo.com/api/open/v1/token'" />
               <p className="text-muted">令牌有效期 15 分钟。后续请求带 <code className="text-fg">Authorization: Bearer &lt;access_token&gt;</code>。沙箱申请 <code className="text-fg">games.rom</code> 即可下载 <code>/v1/rom-samples</code> 中的样本；全库需审核通过。</p>
-              <p className="text-dim">公开接口不带 Authorization 就能读；带了无效或过期令牌会返回 <code className="text-fg">401 invalid_token</code>。</p>
+              <p className="text-dim">AppKey 是机密：不要放进网页前端、公开仓库或会发给用户的固件。纯前端应用使用授权码 + PKCE，不需要也不应保存 AppKey。</p>
+              <p className="text-dim">公开接口不带 Authorization 就能读；带了无效或过期令牌会返回 <code className="text-fg">401 invalid_token</code>。设备码授权在同一个 token 接口轮询，grant 值必须是 <code className="text-fg">urn:ietf:params:oauth:grant-type:device_code</code>。</p>
+            </DocSection>
+            <DocSection title="下载 ROM · 两步，凭据短时有效">
+              <p className="text-muted">第一步用带 <code className="text-fg">games.rom</code> 的 Bearer 领取凭据；沙箱 slug 必须来自 <code className="text-fg">/v1/rom-samples</code>。</p>
+              <DocCode code='curl -H "Authorization: Bearer ACCESS_TOKEN" "https://8bitgo.com/api/open/v1/games/contra/rom?lang=ja"' />
+              <p className="text-muted">响应中的 <code className="text-fg">url</code> 可直接下载（第二步不带 Bearer，服务端 302 到资源地址）。需要服务端解密 8BG 时，把 url 路径里的 <code className="text-fg">/v1/rom/</code> 改为 <code className="text-fg">/v1/rom-plain/</code>；后者支持 HEAD 和 Range 续传。</p>
             </DocSection>
             <DocSection title="第三步 · 读取玩家数据">
               <p className="text-muted">应用级令牌没有玩家身份。设备先向 <code className="text-fg">POST /v1/device/code</code> 申请码，玩家在 <code className="text-fg">/open/device</code> 同意后，设备轮询 <code className="text-fg">POST /v1/token</code> 换用户令牌。</p>
               <p className="text-dim"><code className="text-fg">authorization_pending</code> 与 <code className="text-fg">slow_down</code> 表示继续等待；轮询间隔以接口返回的 <code className="text-fg">interval</code> 为准。</p>
             </DocSection>
+            <DocSection title="浏览器应用 · OAuth 授权码 + PKCE">
+              <p className="text-muted">有浏览器的 Web 应用应跳转至 <code className="text-fg">/open/authorize</code>，使用 <code className="text-fg">response_type=code</code>、登记过的 <code className="text-fg">redirect_uri</code> 和 <code className="text-fg">S256</code> PKCE。用户登录并同意后，回调收到短时一次性 code，再用 <code className="text-fg">POST /api/oauth/token</code> 兑换用户令牌。</p>
+              <p className="text-dim">兑换 body 为 <code className="text-fg">application/x-www-form-urlencoded</code>，包括 <code className="text-fg">grant_type=authorization_code</code>、client_id、code、redirect_uri 和 code_verifier。公开客户端不发送 AppKey；机密客户端还要 AppKey。授权码仅 60 秒有效且不能重放。</p>
+            </DocSection>
+            <DocSection title="发现与边界">
+              <p className="text-muted">OAuth 元数据位于 <code className="text-fg">/.well-known/oauth-authorization-server</code>，验签公钥位于 <code className="text-fg">/.well-known/jwks.json</code>；完整机器规格见 <code className="text-fg">/.well-known/openapi.json</code>。</p>
+              <p className="text-dim">当前是 OAuth 2.0，不是 OIDC：不签 id_token，也没有 userinfo、refresh_token、revoke。站内应用管理 API 不是第三方开放 API，不要从浏览器控制台调用。</p>
+            </DocSection>
             <DocSection title="接入约定">
-              <p className="text-muted">响应中的 <code className="text-fg">error</code> 是稳定错误码；429 按 <code className="text-fg">Retry-After</code>（秒）退避。CORS 允许任意 Origin，接口不使用 cookie。</p>
+              <p className="text-muted">响应中的 <code className="text-fg">error</code> 是稳定错误码；429 按 <code className="text-fg">Retry-After</code>（秒）退避。第三方开放 API 和 OAuth token 请求使用 Bearer/客户端凭据，不靠 cookie；设备授权确认页的 <code className="text-fg">/api/open-device</code> 是站内登录接口，不属于任意来源可调用的开放 API。</p>
               <p className="text-dim">本地运行前先查 <code className="text-fg">/v1/platforms</code> 的 <code className="text-fg">native</code> 和 <code className="text-fg">enabled</code>，再看游戏的 <code className="text-fg">requires_windows</code>。Windows 客体需要 DOSBox-X；普通 DOS 与它不能仅凭 <code className="text-fg">platform=dos</code> 区分。</p>
             </DocSection>
           </>
@@ -1086,6 +1145,7 @@ function DocsPanel() {
               </div>
               <DocCode code="GET /v1/games?platform=dos&requires_windows=false&page_size=10" />
             </DocSection>
+            <p className="rounded-lg border border-line bg-surface-2 px-3 py-2 text-muted">以下列出可供第三方接入的 API。<code className="text-fg">/v1</code> 使用上方 Base URL；OAuth 与 <code className="text-fg">/.well-known</code> 使用站点根路径。站内应用管理接口仅供 8BitGo 页面自身使用。</p>
             {DOC_ENDPOINT_GROUPS.map((group) => (
               <DocSection key={group.title} title={group.title}>
                 <div className="space-y-2">
@@ -1111,7 +1171,7 @@ function DocsPanel() {
         {tab === 'ref' && (
           <>
             <DocSection title="游戏对象字段">
-              <p className="text-muted">列表元素、详情和收藏中的游戏共用这套字段。普通 DOS 游戏的 <code className="text-fg">requires_windows</code> 为 false；勾选 Windows 客体后为 true。</p>
+              <p className="text-muted">列表元素、详情、合集与用户收藏中的游戏共用这套字段。普通 DOS 游戏的 <code className="text-fg">requires_windows</code> 为 false；需要 Windows 客体的游戏为 true。</p>
               <DocCode code={'{"slug":"…","platform":"dos","requires_windows":false,"rom_langs":["*"]}'} />
               <div className="overflow-x-auto">
                 <table className="w-full border-collapse text-[10px]">
@@ -1136,7 +1196,30 @@ function DocsPanel() {
               <p className="text-dim">不会返回 ROM 存储地址、后台运行参数或隐藏状态；请只依赖上表列出的对外字段。</p>
             </DocSection>
 
+            <DocSection title="其他响应对象字段">
+              <p className="text-muted">端点成功响应的完整 JSON schema 可从 OpenAPI 规格导入；下表列出最常用的对象结构和字段语义。</p>
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse text-[10px]">
+                  <thead>
+                    <tr className="text-left text-dim">
+                      <th className="border-b border-line py-1 pr-2 font-medium">对象</th>
+                      <th className="border-b border-line py-1 font-medium">字段 / 说明</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {DOC_OTHER_FIELDS.map(([name, fields]) => (
+                      <tr key={name}>
+                        <td className="border-b border-line/60 py-1 pr-2 align-top"><code className="text-fg">{name}</code></td>
+                        <td className="border-b border-line/60 py-1 align-top text-muted">{fields}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </DocSection>
+
             <DocSection title="错误码">
+              <p className="text-muted">开放 API 与 OAuth 错误采用 JSON：<code className="text-fg">error</code> 是程序判断用的稳定码，<code className="text-fg">error_description</code> 是说明，<code className="text-fg">error_uri</code> 指向说明页。不要根据中文说明文本写分支。</p>
               <div className="overflow-x-auto">
                 <table className="w-full border-collapse text-[10px]">
                   <thead>
@@ -1186,9 +1269,11 @@ function DocsPanel() {
                 <li><code className="text-fg">games.read</code> <span className="rounded bg-brand-soft px-1 text-brand-hover">自助</span> <span className="text-dim">嵌入地址需要；公开游戏目录不需要</span></li>
                 <li><code className="text-fg">games.rom</code> <span className="rounded bg-coin/20 px-1 text-coin">全库需审核</span> <span className="text-dim">沙箱可领逐机型样本的 ROM 下载凭据</span></li>
                 <li><code className="text-fg">library.read</code> <span className="rounded bg-coin/20 px-1 text-coin">需审核</span> <span className="text-dim">用户级，需设备码流程</span></li>
+                <li><code className="text-fg">library.write</code> <span className="rounded bg-coin/20 px-1 text-coin">需审核</span> <span className="text-dim">用户级；目前仅用于真实开玩上报，不提供收藏写入</span></li>
+                <li><code className="text-fg">live.write</code> <span className="rounded bg-coin/20 px-1 text-coin">需审核</span> <span className="text-dim">用户级；换取外部设备专用直播发布凭证</span></li>
                 <li><code className="text-fg">saves.read</code> <span className="rounded bg-coin/20 px-1 text-coin">需审核</span> <span className="text-dim">用户级，需设备码流程</span></li>
               </ul>
-              <p className="text-dim">写入收藏和云存档的开放接口尚未上线；在申请单中勾选写入权限不会让本页出现相应端点。</p>
+              <p className="text-dim">当前没有收藏写入、云存档写入、用户资料、OIDC id_token 或 userinfo 接口；权限目录里即使出现 <code className="text-fg">openid</code>、<code className="text-fg">profile</code>、<code className="text-fg">email</code>、<code className="text-fg">saves.write</code>，也不要据此假设这些功能已经可用。</p>
             </DocSection>
 
             <DocSection title="语言码">

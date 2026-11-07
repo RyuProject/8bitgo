@@ -1,5 +1,5 @@
 /**
- * 开发者控制台 `/open` 上「回调地址」那一节的回归测试。跑：npm run test:open-console
+ * 开发者控制台 `/open` 的 API 文档与「回调地址」回归测试。跑：npm run test:open-console
  *
  * ## 这条测试是被一个真实的死胡同逼出来的（2026-09-12）
  *
@@ -42,6 +42,7 @@ const page = strip(read('src/pages/OpenPlatformPage.tsx'))
 const repo = strip(read('server/src/open/apps-repo.js'))
 const review = strip(read('server/src/open/review.js'))
 const routes = strip(read('server/src/routes/open-apps.js'))
+const openapi = JSON.parse(read('server/openapi.json'))
 
 /** RedirectUris 组件的函数体 */
 const uiBody = (() => {
@@ -98,6 +99,49 @@ check('提交审核那条闸还在（没有回调地址就打回）', () => {
 check('服务端仍然校验回调地址（https / 不带 # / 条数上限）', () => {
   assert.match(routes, /if \(u\.hash\) return \{ error/, '不再拒绝带 # 的地址')
   assert.match(routes, /必须是 https（沙箱可以用 http:\/\/localhost）/, 'https 那道闸变了')
+})
+
+console.log('\n── API 文档与线上规格覆盖一致 ──')
+
+check('文档标题使用「API 文档」', () => {
+  assert.match(page, /<strong className="text-sm">API 文档<\/strong>/)
+  assert.doesNotMatch(page, /API 速查/)
+})
+
+check('API 文档完整列出 OpenAPI 中每个 /v1 方法与路径', () => {
+  const start = page.indexOf('const DOC_ENDPOINT_GROUPS')
+  const end = page.indexOf('const DOC_GAME_QUERIES', start)
+  assert.ok(start >= 0 && end > start, '找不到 API 文档端点清单')
+  const block = page.slice(start, end)
+  const documented = new Set([...block.matchAll(/\{ method: '(GET|POST)', path: '([^']+)'/g)]
+    .map(([, method, route]) => `${method} ${route.replace(/:([A-Za-z0-9_]+)/g, '{$1}')}`)
+    .filter((entry) => entry.includes(' /v1/')))
+  const specified = new Set()
+  for (const [route, operations] of Object.entries(openapi.paths)) {
+    if (!route.startsWith('/v1/')) continue
+    for (const method of Object.keys(operations)) specified.add(`${method.toUpperCase()} ${route}`)
+  }
+  assert.deepEqual([...documented].sort(), [...specified].sort(), '文档端点清单与 server/openapi.json 不一致')
+})
+
+check('文档也覆盖 OAuth 授权、设备确认和协议发现端点', () => {
+  for (const endpoint of [
+    "path: '/api/oauth/authorize'",
+    "path: '/api/oauth/token'",
+    "path: '/api/open-device/:code'",
+    "path: '/.well-known/oauth-authorization-server'",
+    "path: '/.well-known/jwks.json'",
+    "path: '/.well-known/openapi.json'",
+    "path: '/v1/rom-plain/:grant'",
+    "method: 'HEAD', path: '/v1/rom-plain/:grant'",
+    "path: '/v1/live/capacity'",
+  ]) assert.ok(page.includes(endpoint), `缺少 ${endpoint}`)
+})
+
+check('限流说明区分沙箱 ROM 与上产 ROM，且错误说明不混淆两类 token 流程', () => {
+  assert.match(page, /10 \/ 600 每小时/)
+  assert.match(page, /authorization_code/)
+  assert.match(page, /当前没有收藏写入、云存档写入/)
 })
 
 console.log('')
