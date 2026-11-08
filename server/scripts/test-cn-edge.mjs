@@ -86,7 +86,22 @@ ok('/_cn 前缀剥掉后交给原路由，固定带 CORS / CORP 头（含 Emulat
 r = await run('/_cn/admin/x'); assert.equal(r.status, 404)
 r = await run('/_cn/../server/.env'); assert.equal(r.status, 404)
 r = await run('/_cn/assets/..%2f..%2fetc%2fpasswd.css'); assert.equal(r.status, 404)
-r = await run('/_cn/ppsspp/x.js'); assert.equal(r.status, 404, '隔离页运行时不走加速入口')
+r = await run('/_cn/ppsspp/x.js'); assert.equal(r.status, 404, 'PSP 只放 wasm / data')
+r = await run('/_cn/ppsspp/v0dbfaca/v17/PPSSPPSDL.js'); assert.equal(r.status, 404, 'PSP 胶水是 pthread Worker 入口，必须同源')
+r = await run('/_cn/ppsspp/v0dbfaca/v17/host.js'); assert.equal(r.status, 404)
+for (const name of ['PPSSPPSDL.wasm', 'PPSSPPSDL.data']) {
+  r = await run(`/_cn/ppsspp/v0dbfaca/v17/${name}`)
+  assert.equal(r.next, true); assert.equal(r.req.url, `/ppsspp/v0dbfaca/v17/${name}`); assert.equal(r.req.cnEdge, true)
+}
+{
+  const { staticCacheHeaders } = await import('../src/cache.js')
+  const headers = new Map()
+  const fake = (cnEdge) => ({ req: { cnEdge }, setHeader: (k, v) => headers.set(k, v), getHeader: (k) => headers.get(k) })
+  staticCacheHeaders(fake(true), '/dist/client/ppsspp/v0dbfaca/v17/PPSSPPSDL.wasm')
+  assert.equal(headers.get('Cross-Origin-Resource-Policy'), 'cross-origin', '经加速入口的 PSP 核心必须允许跨源加载')
+  staticCacheHeaders(fake(false), '/dist/client/ppsspp/v0dbfaca/v17/PPSSPPSDL.wasm')
+  assert.equal(headers.get('Cross-Origin-Resource-Policy'), 'same-origin', '同源请求仍只许同源')
+}
 ok('只放行 assets / fonts / api / 三个模拟器目录，路径穿越 404')
 r = await run('/_cn/assets/index-C.css')
 assert.equal(r.status, 200); assert.equal(r.body, '@font-face{src:url(/_cn/fonts/a.woff2)}')
@@ -126,6 +141,8 @@ assert.match(jsdos, /pathPrefix: emulatorsPrefix,/)
 assert.match(jsdos, /emulatorsGlobal\.pathPrefix = emulatorsPrefix/, '已加载的 emulators.js 要跟着换线路')
 const prewarm = readFileSync(new URL('../../src/emulator/prewarm.ts', import.meta.url), 'utf8')
 assert.doesNotMatch(prewarm, /\$\{(RUFFLE|JSDOS)_PATH\}/, '预热与正式加载必须同一个 URL')
+assert.match(prewarm, /warmHttpCache\(ppssppAsset\('PPSSPPSDL\.wasm'\)\)/, 'PSP 预热与桥取同一个 wasm 地址')
+assert.match(paths, /\$\{ppssppUsingEdge\(\) \? '&edge=cn' : ''\}/, '大陆访客在 PSP iframe 地址上带 edge=cn')
 ok('SSR / API / 构建配置 / 模拟器引擎接线')
 
 console.log(`\n${passed} 项通过`)

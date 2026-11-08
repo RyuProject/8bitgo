@@ -11,13 +11,18 @@
  *   3. CSS 里写死的 `url(/fonts/...)` 会按样式表所在的 cn 域解析到 EdgeOne 上那批**没有 CORS 头**
  *      的旧缓存，字体就被拦了。所以 `/_cn/**.css` 在这里读出文件，把 `/fonts/` 改成 `/_cn/fonts/`。
  *
- * 只放行 assets / fonts / api / emulatorjs / ruffle / jsdos 六个前缀，别的一律 404：这不是通用的反代入口。
+ * 只放行 assets / fonts / api / emulatorjs / ruffle / jsdos 六个前缀和 PSP 的 wasm / data，别的一律 404：这不是通用的反代入口。
  * 后三个给大陆访客取模拟器引擎与核心（src/emulator/paths.ts 的 runtimeBase：EmulatorJS、Flash、DOS）。
  */
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { CN_EDGE_PREFIX } from '../../shared/cover-cdn-hint.js'
 
+/*
+  ppsspp 只放两份大文件（wasm / data）：入口、胶水 JS、Worker 必须和跨源隔离页同源，放出来也用不上，
+  还会让 EdgeOne 缓存一批 CORP 不对的副本。
+*/
+const PPSSPP_EDGE = /^\/ppsspp\/v[0-9a-f]+\/v\d+\/PPSSPPSDL\.(?:wasm|data)(?:\?|$)/
 const ALLOWED = /^\/(assets|fonts|api|emulatorjs|ruffle|jsdos)\//
 const IMMUTABLE = 'public, max-age=31536000, immutable'
 
@@ -31,7 +36,7 @@ export function createCnEdgeMiddleware({ clientDir, siteOrigin }) {
     const raw = req.url || ''
     if (raw !== CN_EDGE_PREFIX && !raw.startsWith(`${CN_EDGE_PREFIX}/`)) return next()
     const rest = raw.slice(CN_EDGE_PREFIX.length) || '/'
-    if (!ALLOWED.test(rest)) {
+    if (!ALLOWED.test(rest) && !PPSSPP_EDGE.test(rest)) {
       return res.status(404).set('Cache-Control', 'public, max-age=60').type('text/plain').send('Not Found')
     }
     req.url = rest

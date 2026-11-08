@@ -2797,12 +2797,17 @@ ATRAC3+ 和 MP3 解码。构建/发布检查必须同时看到 `USE_FFMPEG:BOOL=
 Cloudflare 对这组静态文件的缓存键**忽略查询串**：请求 `PPSSPPSDL.data?r=17` 仍命中旧的 r16
 （22,417,304B，`CF-Cache-Status: HIT`），而新清单需要 19,434,861B。查询参数不能再承担版本隔离，
 否则新 JS、旧 data 和旧 Wasm 会被拼在同一局里。当前整套资源发布在
-`public/ppsspp/v0dbfaca/v16/`（上一版为 v15）；下次桥、JS、Wasm、data、Range 胶水或 AudioWorklet 任一项改变就
-复制/构建到 `v17/`，并同步 `PPSSPP_RUNTIME_GENERATION` 和服务端旧地址 302。旧目录保留给旧页面，
+`public/ppsspp/v0dbfaca/v17/`（上一版为 v16）；下次桥、JS、Wasm、data、Range 胶水或 AudioWorklet 任一项改变就
+复制/构建到 `v18/`，并同步 `PPSSPP_RUNTIME_GENERATION` 和服务端旧地址 302。旧目录保留给旧页面，
 不原地覆盖。
 v13 只修桥和新增本地光盘 Service Worker；v14/v15/v16 只修预读胶水，Wasm/data 与 v13 的 SHA-256 相同。
-`scripts/refresh-ppsspp-js-runtime.mjs` 仍是生成 v12 的历史入口，不要用它覆盖 v13～v16。
-下一次重新构建核心前，先把 `scripts/build-ppsspp.mjs` 的目标代次和相应模板一起升到 v17。
+v17 只改桥（`scripts/refresh-ppsspp-edge-v17.mjs` 从 v16 生成）：iframe 地址带 `edge=cn`（大陆访客，
+`paths.ts` 的 `ppssppFrameUrl`）时，`PPSSPPSDL.wasm` / `.data` 改从 `cn.<裸域>/_cn/ppsspp/...` 取。只能挪这两份：
+`PPSSPPSDL.js` 是 pthread Worker 入口，预读 Worker、Service Worker 也都必须同源；wasm 只在主线程编译后传给 Worker。
+胶水没有 wasm 加载钩子（流式编译失败会用同一 URL 再取），所以桥只对这两个地址包一层 fetch：首次走 EdgeOne，
+失败或同一文件第二次被请求就回同源。`cache.js` 对 `req.cnEdge` 发 `CORP: cross-origin`，否则跨源隔离页会拦下。
+`scripts/refresh-ppsspp-js-runtime.mjs` 仍是生成 v12 的历史入口，不要用它覆盖 v13～v17。
+下一次重新构建核心前，先把 `scripts/build-ppsspp.mjs` 的目标代次和相应模板一起升到 v18。
 
 Emscripten
 自带的 preload fetch 没有重试，`host.js` 用 `getPreloadedPackage` 接管：优先读浏览器缓存，连续

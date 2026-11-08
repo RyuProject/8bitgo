@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+  <meta name="theme-color" content="#000000">
+  <title>PPSSPP · 8BitGo</title>
+  <style>
+    html,body,#stage{width:100%;height:100%;margin:0;overflow:hidden;background:#000;color:#fff}
+    body{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;touch-action:none}
+    #canvas{display:block;width:100%;height:100%;border:0;outline:0}
+    #status{position:fixed;inset:0;display:grid;place-items:center;padding:24px;text-align:center;background:#000;z-index:2}
+    #status[data-tone="error"]{color:#ff8e8e;white-space:pre-wrap;line-height:1.6}
+    #status[hidden]{display:none}
+  </style>
+</head>
+<body>
+  <main id="stage">
+    <canvas id="canvas" tabindex="0" oncontextmenu="event.preventDefault()"></canvas>
+    <div id="status">等待游戏镜像…</div>
+  </main>
+  <script src="host.js"></script>
+</body>
+</html>

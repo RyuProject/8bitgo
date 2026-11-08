@@ -169,7 +169,9 @@ export function staticCacheHeaders(res, filePath) {
   if (p.includes('/ppsspp/')) {
     res.setHeader('Cross-Origin-Opener-Policy', 'same-origin')
     res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
-    res.setHeader('Cross-Origin-Resource-Policy', 'same-origin')
+    // 大陆访客经 EdgeOne 取 wasm / data（server/src/cn-edge.js 标的 req.cnEdge）是跨源请求，
+    // 这里再写 same-origin 会盖掉 cn-edge 给的 cross-origin，浏览器在跨源隔离页里直接拦下。
+    res.setHeader('Cross-Origin-Resource-Policy', res.req?.cnEdge ? 'cross-origin' : 'same-origin')
     // index.html 只是启动入口，不是内容寻址产物。若某次部署中浏览器先缓存到缺文件时的
     // 回退响应，immutable 会让 iframe 长期显示 ERR_BLOCKED_BY_RESPONSE；核心二进制仍可
     // 长缓存，只有这不足 2KB 的外壳每次重新校验。

@@ -65,7 +65,7 @@ export const EJS_PATH: string = asDir(import.meta.env.VITE_EJS_PATH, '/emulatorj
  *
  * ⚠️ 引擎的 IndexedDB 核心缓存以 URL 为键：大陆老访客第一次换到这条线路会重下一次核心。
  */
-type RuntimeEdgeKind = 'ejs' | 'ruffle' | 'jsdos'
+type RuntimeEdgeKind = 'ejs' | 'ruffle' | 'jsdos' | 'ppsspp'
 let runtimeEdgeOrigin: string | null = null
 const runtimeEdgeFailed = new Set<RuntimeEdgeKind>()
 
@@ -305,7 +305,11 @@ export const PPSSPP_PATH: string = asDir(import.meta.env.VITE_PPSSPP_PATH)
  * Cloudflare 对这组静态文件的缓存键会忽略查询串，所以 PPSSPP 不能靠 `?r=` 换代。
  * 桥、Wasm 或 data 任一项变化都发布到新的实体目录，保证边缘不会拼出两代运行时。
  */
-export const PPSSPP_RUNTIME_GENERATION = 'v16'
+/*
+  2026-11-09 v17：只改桥（host.js），大陆访客的 PPSSPPSDL.wasm / .data 走 EdgeOne（见 ppssppFrameUrl），
+  Wasm / data / JS 与 v16 逐字节相同。生成脚本 scripts/refresh-ppsspp-edge-v17.mjs。
+*/
+export const PPSSPP_RUNTIME_GENERATION = 'v17'
 export const PPSSPP_RUNTIME_PATH: string = PPSSPP_PATH
   ? asDir(`${PPSSPP_PATH}${PPSSPP_RUNTIME_GENERATION}`)
   : ''
@@ -319,8 +323,20 @@ export const PPSSPP_RUNTIME_PATH: string = PPSSPP_PATH
  * 只用于让浏览器放弃旧的“入口 HTML”缓存。改动入口协议时递增它，不能拿来改 Wasm/data。
  */
 export const PPSSPP_FRAME_REVISION = '2'
+/*
+  大陆访客在 iframe 地址上加 `edge=cn`：桥据此把两份大文件（PPSSPPSDL.wasm 18MB、PPSSPPSDL.data br 后 9MB）
+  改从 EdgeOne 取，取不到当场回同源（public/ppsspp/.../v17/host.js）。入口、胶水 JS、各类 Worker 必须同源，
+  所以只有这两份能挪；跨源隔离页里的跨源 fetch 靠 /_cn 的 ACAO + CORP cross-origin 放行。
+*/
+const ppssppEdgeBase = (): string => (PPSSPP_RUNTIME_PATH ? runtimeBase('ppsspp', PPSSPP_RUNTIME_PATH) : '')
+export const ppssppUsingEdge = (): boolean => Boolean(PPSSPP_RUNTIME_PATH) && ppssppEdgeBase() !== PPSSPP_RUNTIME_PATH
+/** PSP 运行时里的文件地址；只有 wasm / data 会给大陆访客换成加速入口，和桥的判断一致 */
+export const ppssppAsset = (name: string): string =>
+  (name === 'PPSSPPSDL.wasm' || name === 'PPSSPPSDL.data') && ppssppUsingEdge()
+    ? `${ppssppEdgeBase()}${name}`
+    : `${PPSSPP_RUNTIME_PATH}${name}`
 export const ppssppFrameUrl = (): string =>
-  `${PPSSPP_RUNTIME_PATH}index.html?embed=1&frame=${encodeURIComponent(PPSSPP_FRAME_REVISION)}`
+  `${PPSSPP_RUNTIME_PATH}index.html?embed=1&frame=${encodeURIComponent(PPSSPP_FRAME_REVISION)}${ppssppUsingEdge() ? '&edge=cn' : ''}`
 
 /**
  * wasm-dolphin 随仓库发布在版本目录里。目录名就是接入时锁定的上游提交短 SHA：

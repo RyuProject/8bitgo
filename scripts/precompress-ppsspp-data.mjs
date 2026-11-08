@@ -4,7 +4,7 @@
  *
  * 源站的 server/src/precompressed-static.js 会对接受 br 的浏览器直接吐它：19.4MB → 约 9.2MB。
  * 先按 runtime.json 核对原文件哈希再压，压完立刻解开比对；任何一步对不上都不落盘。
- * 换新实体目录（v16 …）后要重跑一次，scripts/check-ppsspp.mjs 会拦住缺失或过期的 .br。
+ * 换新实体目录（v17 …）后要重跑一次，scripts/check-ppsspp.mjs 会拦住缺失或过期的 .br。
  *
  * 用法：npm run ppsspp:precompress [-- <运行时目录>]
  */
@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url'
 import { brotliCompressSync, brotliDecompressSync, constants } from 'node:zlib'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
-const dir = resolve(process.argv[2] || join(root, 'public', 'ppsspp', 'v0dbfaca', 'v16'))
+const dir = resolve(process.argv[2] || join(root, 'public', 'ppsspp', 'v0dbfaca', 'v17'))
 const dataPath = join(dir, 'PPSSPPSDL.data')
 const outPath = `${dataPath}.br`
 
