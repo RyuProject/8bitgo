@@ -235,34 +235,40 @@ function autoRetryAllowed(): boolean {
 }
 
 /**
- * `login()` 兑现之后等 `SDK_READY` 的上限。
+ * 等 `SDK_READY` 的上限：首次登录 20 秒，掉线后的 SDK 自恢复留 60 秒。
  *
  * ⚠️ 这一段以前**没有任何超时**，而 `connecting` 是个**没有出口**的状态：
  * 回到前台的自检刻意跳过它（怕打断 SDK 自己的重连），抽屉里那一分支也只画一句
  * 「正在连接…」。于是弱网下 login 成功、长连接却建不起来时，用户面前是一个
  * 永远转不完的圈，手上没有任何可点的东西，只能刷新页面。
  *
- * 超时之后转 error —— error 是有出口的：抽屉和顶栏都会给出「重新连接」。
+ * 两种超时都转 error —— error 是有出口的：抽屉和顶栏都会给出「重新连接」。
  */
 const READY_TIMEOUT_MS = 20_000
+/** 网络恢复可能比首次登录慢；留足 SDK 自己重连的时间，但不能让 UI 永久卡在 connecting */
+const RECONNECT_TIMEOUT_MS = 60_000
 let readyTimer: number | null = null
+/** 已排队但无法再取消的旧 timeout 也必须失效，不能误伤同一连接代次里的下一轮重连 */
+let readyWatchdogGeneration = 0
 
 function clearReadyWatchdog(): void {
-  if (readyTimer === null) return
-  clearTimeout(readyTimer)
+  readyWatchdogGeneration++
+  if (readyTimer !== null) clearTimeout(readyTimer)
   readyTimer = null
 }
 
-function armReadyWatchdog(epoch: number): void {
+function armReadyWatchdog(epoch: number, timeoutMs = READY_TIMEOUT_MS): void {
   clearReadyWatchdog()
   if (typeof window === 'undefined') return
+  const generation = readyWatchdogGeneration
   readyTimer = window.setTimeout(() => {
+    if (generation !== readyWatchdogGeneration) return
     readyTimer = null
     // 这一代作废了、或者早就连上了，都不关这个定时器的事
     if (imState() !== 'connecting') return
     // detail 留空：这里不该把英文/中文的内部原因塞给八种语言的用户
     setStateIf(epoch, 'error')
-  }, READY_TIMEOUT_MS)
+  }, timeoutMs)
 }
 
 interface SigResponse {
@@ -491,8 +497,12 @@ function wireEvents(c: Chat, epoch: number) {
 
   on(E.SDK_NOT_READY, () => {
     // 断线重连中间会经过这个状态。不改成 error：SDK 自己会重试，
-    // 报错会让抽屉闪一下红字然后自己好，比不报更让人困惑
-    if (live() && imState() === 'ready') setState('connecting')
+    // 但重连若一直没有结果，connecting 不能成为无出口的状态；给 SDK 一分钟自行恢复，
+    // 超时后显示手动重连入口。短暂断网仍由 SDK 无感恢复，不会立刻打断当前连接。
+    if (live() && imState() === 'ready') {
+      setState('connecting')
+      armReadyWatchdog(epoch, RECONNECT_TIMEOUT_MS)
+    }
   })
 
   /** 未读**总数**由 SDK 报，我们只转发。绝不自己 +1 —— 断线重连后本地累加值一定是错的 */

@@ -799,7 +799,8 @@ httpServer.listen(PORT, () => {
    * 只在这里显式起（不接在请求路径上，也不在 import 时自启）——
    * 测试直接 import 路由时不会顺带对着假地址发出探测包。TURN_PROBE=off 可关。
    */
-  void registerTurnProbeTargets()
+  // 开站时登记自建 / 已配置托管中继；Cloudflare 是付费末级兜底，不在启动或直播首轮申请凭证。
+  void registerTurnProbeTargets({ includeCloudflare: false })
     .then(() => startTurnHealth())
     .catch((e) => console.warn('[turn] 探活没起来（不影响下发）：', e?.message || e))
   logSearchPushStatus()

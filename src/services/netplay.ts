@@ -48,14 +48,16 @@ export interface IceConfig {
   iceServers: RTCIceServer[]
   /** 有没有 TURN 兜底。没有的话大约一到两成的玩家组合会连不通 */
   hasTurn: boolean
+  /** 实际下发的中继来源；直播只在明确拿到 cloudflare 时才切入付费兜底 */
+  turnSources?: string[]
   /** 凭证过期时间（unix 秒），0 = 没有 TURN */
   expiry: number
   /** 只有「接口没打通、用的是退路」那份才有：到这个时刻（unix 秒）就该再问一次服务端 */
   retryAt?: number
 }
 
-let icePromise: Promise<IceConfig> | null = null
-let iceCached: IceConfig | null = null
+type IceCacheState = { promise: Promise<IceConfig> | null; cached: IceConfig | null }
+const iceStates = new Map<string, IceCacheState>()
 /**
  * 接口打不通时，退路配置只缓存这么久（秒）就再去问一次。
  *
@@ -65,6 +67,8 @@ let iceCached: IceConfig | null = null
  * 需要中继的全部连不上，而控制台一行报错都没有。真没配 TURN 的站点多问一次也只是一个小请求。
  */
 const ICE_RETRY_S = 60
+/** ICE 配置在开局关键路径上，但反代卡住时也不能让直播永久停在“连接中”。 */
+const ICE_FETCH_TIMEOUT_MS = 6_000
 /**
  * 请求 ICE 时挂一个「分钟桶」参数。
  *
@@ -98,15 +102,47 @@ const iceBucket = () => Math.floor(Date.now() / 60_000)
  * 功能照常，只是连通率低一些。凭证快过期时自动重取。
  */
 export async function fetchIceConfig(): Promise<IceConfig> {
+  return fetchIceProfile('default', `t=${iceBucket()}`, ICE_SERVERS)
+}
+
+/**
+ * 直播专用 ICE 配置。
+ *
+ * 首轮请求明确标成 purpose=live，服务端只签发直连/STUN 和自建中继；只有观众连接失败
+ * 后显式请求 cloudflareFallback，才会返回 Cloudflare 的短期 TURN 凭证。它与游戏联机
+ * 的通用 ICE 缓存分开，避免一次付费兜底请求污染后续直播首连或 EmulatorJS 联机配置。
+ */
+export async function fetchLiveIceConfig({ cloudflareFallback = false }: { cloudflareFallback?: boolean } = {}): Promise<IceConfig> {
+  const mode = cloudflareFallback ? 'cloudflare-fallback' : 'primary'
+  const query = `purpose=live${cloudflareFallback ? '&fallback=cloudflare' : ''}&t=${iceBucket()}`
+  // 接口故障时，直播只退到静态 STUN；未知域名可能是付费 TURN 的别名，不能靠字符串猜测后放行。
+  const noPaidFallback = ICE_SERVERS.flatMap((server) => {
+    const urls = Array.isArray(server.urls) ? server.urls : [server.urls]
+    const stunUrls = urls.filter((url) => /^stun:/i.test(String(url)))
+    return stunUrls.length ? [{ urls: stunUrls.length === 1 ? stunUrls[0] : stunUrls }] : []
+  })
+  return fetchIceProfile(`live:${mode}`, query, noPaidFallback.length ? noPaidFallback : [{ urls: 'stun:stun.l.google.com:19302' }])
+}
+
+async function fetchIceProfile(profile: string, query: string, fallbackServers: RTCIceServer[]): Promise<IceConfig> {
+  let state = iceStates.get(profile)
+  if (!state) {
+    state = { promise: null, cached: null }
+    iceStates.set(profile, state)
+  }
   const now = Math.floor(Date.now() / 1000)
   // 提前 5 分钟续，别让一局玩到一半凭证过期
-  if (iceCached && (iceCached.expiry === 0 || iceCached.expiry - now > 300) && !(iceCached.retryAt && iceCached.retryAt <= now)) return iceCached
-  if (icePromise) return icePromise
+  if (state.cached && (state.cached.expiry === 0 || state.cached.expiry - now > 300) && !(state.cached.retryAt && state.cached.retryAt <= now)) return state.cached
+  if (state.promise) return state.promise
 
-  icePromise = (async () => {
+  state.promise = (async () => {
+    let timeout: ReturnType<typeof globalThis.setTimeout> | undefined
     try {
       const base = NETPLAY_URL.replace(/\/netplay$/, '')
-      const res = await fetch(`${base}/api/netplay/ice?t=${iceBucket()}`, { cache: 'no-store' })
+      const controller = new AbortController()
+      // Fetch 只 resolve headers；计时器必须覆盖 res.json()，否则半开响应体会让播放器无限等。
+      timeout = globalThis.setTimeout(() => controller.abort(), ICE_FETCH_TIMEOUT_MS)
+      const res = await fetch(`${base}/api/netplay/ice?${query}`, { cache: 'no-store', signal: controller.signal })
       if (!res.ok) throw new Error(String(res.status))
       const data = (await res.json()) as Partial<IceConfig>
       if (!Array.isArray(data.iceServers) || !data.iceServers.length) throw new Error('empty')
@@ -128,21 +164,34 @@ export async function fetchIceConfig(): Promise<IceConfig> {
             '"Cache Everything" 规则会盖掉它）。自建 coturn 的凭证是带时间戳的，过期即 401，' +
             '这一路现在对所有人都不可用。去把 /api/ 那条路径排除出缓存规则。',
         )
-        iceCached = { iceServers: data.iceServers, hasTurn: false, expiry: 0, retryAt: now + ICE_RETRY_S }
-        return iceCached
+        state!.cached = {
+          iceServers: data.iceServers,
+          hasTurn: false,
+          turnSources: data.turnSources,
+          expiry: 0,
+          retryAt: now + ICE_RETRY_S,
+        }
+        return state!.cached
       }
 
-      iceCached = { iceServers: data.iceServers, hasTurn: Boolean(data.hasTurn), expiry }
-      return iceCached
+      state!.cached = {
+        iceServers: data.iceServers,
+        hasTurn: Boolean(data.hasTurn),
+        turnSources: Array.isArray(data.turnSources) ? data.turnSources : undefined,
+        expiry,
+        retryAt: Number(data.retryAt) || undefined,
+      }
+      return state!.cached
     } catch {
       // 退路：过 ICE_RETRY_S 秒再问一次，别把「这一刻接口挂了」记成「这个站没有 TURN」
-      iceCached = { iceServers: ICE_SERVERS, hasTurn: false, expiry: 0, retryAt: now + ICE_RETRY_S }
-      return iceCached
+      state!.cached = { iceServers: fallbackServers, hasTurn: false, expiry: 0, retryAt: now + ICE_RETRY_S }
+      return state!.cached
     } finally {
-      icePromise = null
+      if (timeout !== undefined) globalThis.clearTimeout(timeout)
+      state!.promise = null
     }
   })()
-  return icePromise
+  return state.promise
 }
 
 /** socket.io 客户端脚本地址：模拟器 iframe 里需要全局的 io()，由信令服务器自带 */

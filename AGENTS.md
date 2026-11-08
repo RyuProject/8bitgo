@@ -1526,6 +1526,26 @@ WebRTC 的 `disconnected` 不保证后面一定会进 `failed`。网络切换时
 不应把仍正常的视频直播一起关掉。主播统计读取要并行且不重入；12 个观众若串行
 `getStats()` 并与下一轮叠加，自适应降帧会被重复计数、反而增加主线程压力。
 
+### 2.25.3 直播 TURN 必须分档；Cloudflare 只能是显式末级兜底
+
+`/api/netplay/ice` 的普通游戏联机继续保留现有多路行为；直播专用 `purpose=live` 首轮只给
+STUN、自建海外 TURN（`TURN_URLS`）和仅发给大陆访客的大陆 TURN（`TURN_CN_URLS`）。大陆浏览器
+同时收到两路自建候选，让真实的浏览器 ICE 收集 / 连通性检查决定可达路径；不能把候选数组顺序
+宣传成 RTT 测速结果，也不能把 Cloudflare 混进首轮后声称它只会最后使用。
+
+观众只有在 `connectionState=failed` 或 `disconnected` 宽限期耗尽后才请求
+`purpose=live&fallback=cloudflare`。该请求仅返回 Cloudflare TURN，不混回已失败的自建 TURN；
+拿不到有效 Cloudflare TURN 时须保留自建配置，并给临时故障设置 `retryAt`，不能把一次 API 抖动
+按 `expiry: 0` 永久缓存。观众确认凭证到手后，`watch` 信令把兜底档位传给主播，由主播只为该观众
+重建一条匹配配置的 PeerConnection；本次回退成功交给主播后，该观众会话不再重复使用 Cloudflare。
+
+Cloudflare 凭证单独缓存，默认有效 15 分钟；接口另有单 IP / 全站限流。启动探针和直播首轮不可
+为了预热而请求 Cloudflare 凭证。普通游戏联机需要的既有 Cloudflare 探针行为保留。服务端探针
+来自源站，与大陆观众到中继的网络路径不同，因此显式末级回退不能因源站探针的 `down` 判断而
+被删除；凭证接口正常时让浏览器实测自己的候选可达性。回归：`npm run test:ice-config`、
+`npm run test:broadcast-signal`、`npm run test:watch-panel`、`cd server && npm run test:live`、
+`cd server && npm run test:netplay:hardening`。
+
 生产机是从 `dist/client` 现场服务，所以 `vite.config.ts` 的 `emptyOutDir` 必须是 `false`。
 2026-09-25 日志已取证到构建期 `dist/client/index.html` 短暂不存在，SSR 当场 500。
 旧哈希资源留着也能保证已打开的观众页在部署期间继续懒加载；`ssr.js` 在模板

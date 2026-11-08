@@ -52,7 +52,7 @@ const { list: lst } = attachLive(server, {
   // 联机房玩家令牌：令牌就是「房号:player」才算该房玩家（真实校验见 netplay.js 的 isNetplayPlayer）
   isNetplayPlayer: (roomId, token) => Boolean(roomId) && token === `${roomId}:player`,
 })
-await new Promise((r) => http.listen(0, r))
+await new Promise((r) => http.listen(0, '127.0.0.1', r))
 const url = `http://127.0.0.1:${http.address().port}/live`
 const conn = (token = '') => client(url, {
   transports: ['websocket'],
@@ -345,6 +345,13 @@ const again = await call(v3, 'watch', { roomId: room2 })
 check('重新 watch 不报 already in a room', !again.err && again.data?.hostId === host4.id, again.err || '')
 check('重新 watch 触发 viewer-joined', (await rejoin).viewerId === v3.id)
 check('重新 watch 人数不变', liveRoom(room2).viewers === 1, `实际 ${liveRoom(room2).viewers}`)
+
+// 付费 TURN 只能由观众在自建路线失败后显式请求，信令必须把该档位交给主播重建对应连接。
+const paidFallbackJoin = once(host4, 'viewer-joined')
+const paidFallbackWatch = await call(v3, 'watch', { roomId: room2, reoffer: true, cloudflareFallback: true })
+const paidFallbackEvent = await paidFallbackJoin
+check('Cloudflare 末级兜底请求仍成功 watch', !paidFallbackWatch.err)
+check('付费兜底标记只传给主播的 viewer-joined', paidFallbackEvent.viewerId === v3.id && paidFallbackEvent.cloudflareFallback === true)
 
 // 15. 主播不在时观众进来：能进，hostId 为空，等主播回来
 host4.close()

@@ -112,7 +112,8 @@ const canvas = {
 /** 所有建过的连接，按顺序 */
 const pcs = []
 class FakeRTCPeerConnection {
-  constructor() {
+  constructor(configuration = {}) {
+    this.configuration = configuration
     this.connectionState = 'new'
     this.remoteDescription = null
     this.localDescription = null
@@ -513,6 +514,23 @@ console.log('\n── ICE 等待期间信令断开 ──')
   fire('connect')
   await sleep(40)
   ok(offersTo('during-down').length === 1, '信令恢复并续播后按名单正常补发 offer')
+}
+
+/* ---------------- 12. Cloudflare 只在观众显式请求末级兜底时进入主播的 ICE 配置 ---------------- */
+{
+  globalThis.__fakeLiveIceConfig = async ({ cloudflareFallback = false } = {}) => ({
+    iceServers: [{ urls: cloudflareFallback ? 'turn:turn.cloudflare.com:3478' : 'turn:turn.8bitgo.com:3478' }],
+    turnSources: [cloudflareFallback ? 'cloudflare' : 'self-hosted'],
+    hasTurn: true,
+    expiry: Math.floor(Date.now() / 1000) + 900,
+  })
+  const before = pcs.length
+  fire('viewer-joined', { viewerId: 'paid-fallback', cloudflareFallback: true })
+  await sleep(30)
+  const paidPc = pcs.at(-1)
+  ok(pcs.length === before + 1, '付费兜底信令只给该观众重建一条连接')
+  ok(paidPc.configuration.iceServers[0].urls.includes('cloudflare'), '主播收到显式标记后才配置 Cloudflare TURN')
+  delete globalThis.__fakeLiveIceConfig
 }
 
 live.stop()

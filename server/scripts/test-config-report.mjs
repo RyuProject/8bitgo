@@ -382,7 +382,7 @@ console.log('\n五、HTTP 层：只读，且只给 admin')
 const app = express()
 app.use(express.json())
 app.use('/api/admin/config', adminConfigRouter)
-const server = app.listen(0)
+const server = app.listen(0, '127.0.0.1')
 await new Promise((r) => server.once('listening', r))
 const base = `http://127.0.0.1:${server.address().port}`
 const call = (init) => fetch(`${base}/api/admin/config`, init)

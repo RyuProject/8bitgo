@@ -1198,12 +1198,18 @@ export function attachLive(io, options = {}) {
       // 由主播发起 offer：它才知道自己有几条轨、什么编码。
       // 主播不在就先不发，它 resume 回来时会拿到观众名单自己补
       if (room.hostSocketId) {
-        const reoffer = Boolean(payload?.reoffer)
+        const cloudflareFallback = payload?.cloudflareFallback === true
+        // 付费兜底必须新建一对匹配的 PeerConnection，不能把仍活着的旧连接只改 socket 名。
+        const reoffer = Boolean(payload?.reoffer) || cloudflareFallback
         if (previous && !reoffer) {
           // 画面还连着，只是 socket 换了：主播把那条 PeerConnection 换个名字就行，别重建
           nsp.to(room.hostSocketId).emit('viewer-rebound', { from: previous, to: socket.id })
         } else {
-          nsp.to(room.hostSocketId).emit('viewer-joined', { viewerId: socket.id, ...(previous ? { replaces: previous } : {}) })
+          nsp.to(room.hostSocketId).emit('viewer-joined', {
+            viewerId: socket.id,
+            ...(previous ? { replaces: previous } : {}),
+            ...(cloudflareFallback ? { cloudflareFallback: true } : {}),
+          })
         }
         /*
           名字**不在这条里**，单独异步发，见下面 resolveViewerName。

@@ -23,7 +23,7 @@ const app = express()
 app.use('/api/netplay/ice', iceRouter)
 const httpServer = createServer(app)
 attachNetplay(httpServer, app, ['*'], { resolveGamePolicy: testGameRoomPolicy })
-await new Promise((r) => httpServer.listen(0, r))
+await new Promise((r) => httpServer.listen(0, '127.0.0.1', r))
 const port = httpServer.address().port
 const base = `http://127.0.0.1:${port}`
 
@@ -398,6 +398,8 @@ ok(Array.isArray(ice1.iceServers) && ice1.iceServers.length >= 1, '没配 TURN �
 ok(ice1.hasTurn === false, '如实报告没有 TURN')
 process.env.TURN_URLS = 'turn:turn.example.com:3478'
 process.env.TURN_SECRET = 'test-secret'
+process.env.TURN_CN_URLS = 'turn:115.190.230.20:3478'
+process.env.TURN_CN_SECRET = 'test-cn-secret'
 const ice2 = await (await fetch(`${base}/api/netplay/ice`)).json()
 const turn = ice2.iceServers.find((x) => String(x.urls).includes('turn:'))
 ok(Boolean(turn?.username && turn?.credential), '配了 TURN 后带上凭证')
@@ -541,14 +543,61 @@ ok(
 )
 cfShape = 'split'
 
-const hitsAfterFirst = cfHits
-await (await fetch(`${base}/api/netplay/ice`)).json()
-await (await fetch(`${base}/api/netplay/ice`)).json()
-ok(cfHits === hitsAfterFirst, `凭证被缓存住，没有每个请求都去撞 CF（总共撞了 ${cfHits} 次）`)
+// 直播首轮不应申请 CF 凭证或把它的候选交给浏览器；只有显式末级回退才请求短期凭证。
+const cfHitsBeforeLivePrimary = cfHits
+const livePrimary = await (await fetch(`${base}/api/netplay/ice?purpose=live`)).json()
+ok(!livePrimary.turnSources.includes('cloudflare'), '直播首轮只下发免费 / 自建中继')
+ok(!livePrimary.turnSources.includes('managed'), '直播首轮不碰额外托管中继')
+ok(!JSON.stringify(livePrimary.iceServers).includes('turn.cloudflare.com'), '直播首轮候选里完全没有 Cloudflare TURN')
+ok(cfHits === cfHitsBeforeLivePrimary, '直播首轮没有向 Cloudflare 申请付费兜底凭证')
+const liveMainland = await (await fetch(`${base}/api/netplay/ice?purpose=live`, { headers: { 'CF-IPCountry': 'CN' } })).json()
+ok(liveMainland.turnSources.includes('mainland') && liveMainland.turnSources.includes('self-hosted'), '大陆直播首轮同时配置大陆与海外自建 TURN，让 ICE 检查实际可达路线')
+ok(!liveMainland.turnSources.includes('managed') && !liveMainland.turnSources.includes('cloudflare'), '大陆直播首轮不混入托管 / Cloudflare 付费候选')
+ok(
+  JSON.stringify(liveMainland.iceServers.flatMap((entry) => Array.isArray(entry.urls) ? entry.urls : [entry.urls])).includes('115.190.230.20') &&
+    JSON.stringify(liveMainland.iceServers.flatMap((entry) => Array.isArray(entry.urls) ? entry.urls : [entry.urls])).includes('turn.example.com'),
+  '大陆与海外地址都实际出现在首轮候选配置里',
+)
+
+const livePaidFallback = await (await fetch(`${base}/api/netplay/ice?purpose=live&fallback=cloudflare`)).json()
+ok(livePaidFallback.fallback === 'cloudflare', '直播兜底响应明确标记 Cloudflare 档位')
+ok(
+  JSON.stringify(livePaidFallback.turnSources) === JSON.stringify(['cloudflare']),
+  'Cloudflare 末级响应只含 CF 中继，不混入已失败的自建中继',
+)
+ok(
+  livePaidFallback.expiry - Math.floor(Date.now() / 1000) <= 900 && livePaidFallback.expiry - Math.floor(Date.now() / 1000) > 600,
+  '直播 CF 凭证默认仅保留 15 分钟，限制泄露后的可用窗口',
+)
+const cfHitsAfterFallback = cfHits
+await (await fetch(`${base}/api/netplay/ice?purpose=live&fallback=cloudflare`)).json()
+ok(cfHits === cfHitsAfterFallback, '同一短时凭证窗口内复用 CF 凭证，不重复请求其 API')
+
+cfMode = 'down'
+useFreshCfKey()
+const unavailableFallback = await (await fetch(`${base}/api/netplay/ice?purpose=live&fallback=cloudflare`)).json()
+ok(!unavailableFallback.turnSources.includes('cloudflare'), 'CF API 暂时不可用时不伪报兜底已启用')
+ok(!unavailableFallback.turnSources.includes('self-hosted'), '末级兜底响应不会把失败的首轮 TURN 混回去')
+ok(unavailableFallback.retryAt > Math.floor(Date.now() / 1000), 'CF 临时故障返回短重试窗口，不被客户端永久缓存')
+let paidLimitStatus = 200
+const paidLimitHeaders = { 'X-Forwarded-For': '198.51.100.88' }
+for (let i = 0; i < 40; i++) {
+  paidLimitStatus = (await fetch(`${base}/api/netplay/ice?purpose=live&fallback=cloudflare`, { headers: paidLimitHeaders })).status
+}
+const paidLimit = await fetch(`${base}/api/netplay/ice?purpose=live&fallback=cloudflare`, { headers: paidLimitHeaders })
+ok(paidLimitStatus === 200 && paidLimit.status === 429, '单 IP 的付费凭证请求有独立限流，不会被反复刷取')
+cfMode = 'ok'
 
 useFreshCfKey()
+const hitsBeforeGenericCache = cfHits
 await (await fetch(`${base}/api/netplay/ice`)).json()
-ok(cfHits === hitsAfterFirst + 1, '换了 key 之后缓存作废，会重新去领')
+await (await fetch(`${base}/api/netplay/ice`)).json()
+ok(cfHits === hitsBeforeGenericCache + 1, `凭证被缓存住，没有每个请求都去撞 CF（总共撞了 ${cfHits} 次）`)
+
+const hitsBeforeKeyRotation = cfHits
+useFreshCfKey()
+await (await fetch(`${base}/api/netplay/ice`)).json()
+ok(cfHits === hitsBeforeKeyRotation + 1, '换了 key 之后缓存作废，会重新去领')
 
 // CF 挂掉：其余几路必须照常，接口不能 500、也不能因此变慢很多
 cfMode = 'down'

@@ -27,7 +27,7 @@
  * （见 peers 的注释）。
  */
 import type { CaptureSources, PadButton } from './types'
-import { type LiveChatMessage, connectLive, liveIceServers, type LiveSocket } from '@/services/live'
+import { type LiveChatMessage, connectLive, liveIceConfig, type LiveSocket } from '@/services/live'
 // 弹幕的清洗 / 限流 / ack 都在 chatSend.ts 里（两条发送路径共用一份，见那边的文件头）
 import { sendChatWithAck, type ChatSendResult } from './chatSend'
 import { applyTuning, fpsForViewers, sizeOfTrack, tuningFor, usableVideoSize } from './videoTuning'
@@ -666,7 +666,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
    * force=false 时，已有的连接还活着就不动它（主播重连回来对照名单用）；
    * force=true 是观众明确要求重来（它重新 watch 了），旧连接不管死活都换掉。
    */
-  const addViewer = async (viewerId: string, force: boolean, coopRecoveryAttempt = 0) => {
+  const addViewer = async (viewerId: string, force: boolean, coopRecoveryAttempt = 0, cloudflareFallback = false) => {
     if (stopped) return
     const existing = peers.get(viewerId)
     if (existing) {
@@ -685,7 +685,13 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
      */
     let iceServers: RTCIceServer[]
     try {
-      iceServers = await liveIceServers()
+      let ice = await liveIceConfig({ cloudflareFallback })
+      if (cloudflareFallback && !ice.turnSources?.includes('cloudflare')) {
+        // CF 凭证可能刚好不可用；不能把空兜底误当成功，也不让失败挡住直连/自建的再次尝试。
+        console.warn('[live] 观众请求 Cloudflare 末级兜底，但凭证不可用；本轮退回自建中继配置')
+        ice = await liveIceConfig()
+      }
+      iceServers = ice.iceServers
     } catch (e) {
       // 这条函数由 socket 事件用 void 调用；异常若冒出去会变成 unhandled rejection，
       // 严格浏览器/测试环境甚至会把整页打断。留给观众的 rewatch 再发起一轮即可。
@@ -1210,12 +1216,12 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     }
   }
 
-  socket.on('viewer-joined', ((payload: { viewerId?: string; replaces?: string }) => {
+  socket.on('viewer-joined', ((payload: { viewerId?: string; replaces?: string; cloudflareFallback?: boolean }) => {
     // 观众进来 / 观众重新 watch：都是「请给我一轮新的 offer」
     if (!payload?.viewerId) return
     // 它上一条连接用的是另一个 socket.id（信令重连过、画面也断了）：那条直接拆，不用等服务端的 viewer-left
     if (payload.replaces && payload.replaces !== payload.viewerId) cancelViewer(payload.replaces)
-    void addViewer(payload.viewerId, true)
+    void addViewer(payload.viewerId, true, 0, Boolean(payload.cloudflareFallback))
   }) as (...args: never[]) => void)
 
   socket.on('viewer-rebound', ((payload: { from?: string; to?: string }) => {

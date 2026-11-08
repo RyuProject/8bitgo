@@ -402,12 +402,20 @@ check('⚠️ 自动路径必须过节流，手动路径不受它管', () => {
 
 check('⚠️ connecting 有看门狗兜底（否则它是个没有出口的状态）', () => {
   assert.match(clientCode, /armReadyWatchdog\(epoch\)/, 'login 之后没有武装看门狗')
+  assert.match(clientCode, /const RECONNECT_TIMEOUT_MS = 60_000/, 'SDK 自动恢复需要更宽松的超时，避免短暂断网就报错')
   assert.match(clientCode, /clearReadyWatchdog\(\)/, '没有清看门狗的地方')
   const i = clientCode.indexOf('function armReadyWatchdog')
   assert.ok(i > 0, '找不到看门狗')
   const body = clientCode.slice(i, i + 400)
+  assert.match(clientCode, /let readyWatchdogGeneration = 0/, '旧 timeout 已排队时缺少代次保护')
+  assert.match(body, /const generation = readyWatchdogGeneration/, '看门狗没有记录自己的代次')
+  assert.match(body, /if \(generation !== readyWatchdogGeneration\) return/, '已过期的看门狗仍可能改变新连接状态')
   assert.match(body, /imState\(\) !== 'connecting'/, '看门狗没有确认自己还在 connecting 上')
   assert.match(body, /setStateIf\(epoch, 'error'\)/, "超时之后必须转成 error —— 那是唯一有出口的失败态")
+
+  const notReady = clientCode.slice(clientCode.indexOf('on(E.SDK_NOT_READY'), clientCode.indexOf('on(E.TOTAL_UNREAD_MESSAGE_COUNT_UPDATED'))
+  assert.match(notReady, /setState\('connecting'\)[\s\S]{0,120}armReadyWatchdog\(epoch, RECONNECT_TIMEOUT_MS\)/,
+    '已连接后的断线恢复也必须有看门狗，否则 SDK 重连卡住时用户只能刷新页面')
 })
 
 check('⚠️ 被踢下线不清未读数（那会告诉用户「没有新消息」）', () => {

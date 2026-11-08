@@ -222,10 +222,24 @@ check('观众端不会永久卡在 disconnected，视频轨单独 ended 也会�
   assert.match(src, /track\.onended = \(\) =>[\s\S]*?void rewatch\(\)/, '媒体轨结束后仍只等 ICE failed')
 })
 
+check('直播先用免费 / 自建 ICE；Cloudflare 只在失败后单次兜底', () => {
+  const viewer = code('src/emulator/adapters/liveview.ts')
+  assert.match(viewer, /let cloudflareFallbackAttempted = false/, '没有按观众会话限制付费兜底次数')
+  assert.match(viewer, /requestCloudflareFallback && !cloudflareFallbackAttempted/, '正常重试可能默认请求付费中继')
+  assert.match(viewer, /useCloudflareFallback = await refreshIce\(true\)/, 'ICE 失败后没有先确认拿到 CF 凭证')
+  assert.match(viewer, /cloudflareFallbackAttempted = true/, '没有在兜底确实交给主播后封住重复付费尝试')
+  assert.match(viewer, /next\.turnSources\?\.includes\('cloudflare'\)/, '拿到 STUN 也会被误判成已启用 CF')
+  assert.match(viewer, /rewatch\(!cloudflareFallbackAttempted\)/, 'ICE failed / disconnected 没有按顺序切入末级档')
+  const client = code('src/services/netplay.ts')
+  assert.match(client, /purpose=live/, '直播没有独立 ICE 下发策略')
+  assert.ok(client.includes('urls.filter((url) => /^stun:/i.test'), '接口失效时静态配置可能泄漏付费 TURN')
+  assert.match(client, /ICE_FETCH_TIMEOUT_MS/, 'ICE 接口挂起会让播放器无限等')
+})
+
 check('生产构建期间不拆掉正在看播用的旧入口和哈希资源', () => {
   const vite = code('vite.config.ts')
   const ssr = code('server/src/ssr.js')
-  assert.match(vite, /emptyOutDir: false/, 'Vite 仍会在现场构建前清空 dist\/client')
+  assert.match(vite, /emptyOutDir: false/, 'Vite 仍会在现场构建前清空 dist/client')
   assert.match(ssr, /if \(template !== null\) return template/, 'index.html 短暂不存在时 SSR 不会使用已缓存的完整模板')
 })
 

@@ -235,16 +235,22 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    * 主播那边（broadcast.ts 的 addViewer）早就是每条连接现取的，观众这边一直漏着。
    */
   let iceServers: RTCIceServer[] = []
-  /** 刷一遍 ICE 配置。liveIceConfig 自带缓存，没过期时只读内存，不发请求 */
-  const refreshIce = async () => {
-    if (destroyed) return
+  /** 付费中继只允许在自建路线明确失败后尝试一次；连接重试不能反复扩大账单。 */
+  let cloudflareFallbackAttempted = false
+  /** 刷一遍 ICE 配置。按档位独立缓存，未过期时只读内存，不发请求 */
+  const refreshIce = async (cloudflareFallback = false): Promise<boolean> => {
+    if (destroyed) return false
     try {
-      const next = await liveIceConfig()
-      if (destroyed) return
+      const next = await liveIceConfig({ cloudflareFallback })
+      if (destroyed) return false
+      // 不能把“拿到 STUN”误认为 Cloudflare 兜底已配置；没有凭证时保留原自建配置。
+      if (cloudflareFallback && !next.turnSources?.includes('cloudflare')) return false
       iceServers = next.iceServers
       hasTurn = next.hasTurn
+      return true
     } catch {
       /* 取不到就沿用上一次的，总比不连强 */
+      return false
     }
   }
   /**
@@ -809,6 +815,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             } else if (!socket?.connected) {
               live.onState?.('reconnecting')
             } else {
+              // 远端视频轨已结束不是 ICE 断线证据：先走普通恢复，不能据此触发付费中继。
               void rewatch()
             }
           }
@@ -850,7 +857,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             } else if (!socket?.connected) {
               live.onState?.('reconnecting')
             } else {
-              void rewatch()
+              // 自建路线经过断线宽限仍未恢复，才申请一次 Cloudflare 末级兜底。
+              void rewatch(!cloudflareFallbackAttempted)
             }
           }, DISCONNECTED_GRACE_MS)
         }
@@ -860,7 +868,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         if (orphan) return fail(rt.liveLost) // 服务器早不认这个房间了，画面也断了：真的结束
         if (hostAway) return live.onState?.('host-away') // 主播回来会重新 offer
         if (!socket?.connected) return live.onState?.('reconnecting') // socket 连上会重新 watch
-        void rewatch()
+        // ICE 明确失败才触发付费兜底；普通“没收到首帧”仍只重试免费路线。
+        void rewatch(!cloudflareFallbackAttempted)
       }
     }
     next.onicecandidate = (ev) => {
@@ -879,7 +888,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    * `reoffer`：明确告诉服务端「我的画面断了，要一轮新 offer」。不带的话，服务端认出我们只是换了 socket
    * 时会让主播**保留**那条还在流的连接（viewer-rebound），而不是拆了重建。
    */
-  const watch = async (reoffer = true): Promise<boolean> => {
+  const watch = async (reoffer = true, useCloudflareFallback = false): Promise<boolean> => {
     if (destroyed || !socket?.connected) return false
     lastWatchRetryable = false
     const s = socket
@@ -887,11 +896,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     try {
       info = await new Promise<WatchAck>((resolve, reject) => {
         const timer = window.setTimeout(() => reject(new Error('watch timeout')), 10_000)
-        s.emit('watch', { roomId: live.roomId, key: viewerKey, reoffer }, (err: string | null, data: WatchAck) => {
+        s.emit(
+          'watch',
+          { roomId: live.roomId, key: viewerKey, reoffer, ...(useCloudflareFallback ? { cloudflareFallback: true } : {}) },
+          (err: string | null, data: WatchAck) => {
           window.clearTimeout(timer)
           if (err) reject(new Error(err))
           else resolve(data)
-        })
+          },
+        )
       })
     } catch (e) {
       if (destroyed) return false
@@ -976,7 +989,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   }
 
   /** 要一轮新 offer；等不到就再要，几次都没用才算断 */
-  const rewatch = async () => {
+  const rewatch = async (requestCloudflareFallback = false) => {
     if (destroyed || !socket?.connected || recoveryInFlight) return
     // 主播冻着的时候重来多少次都等不到帧，记一笔，等它 host-frozen:false 回来再补（见 thawRewatch）
     if (hostFrozen) {
@@ -990,10 +1003,22 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     live.onState?.('reconnecting')
     recoveryInFlight = true
     try {
-      // 重连这一轮多半要新建 PeerConnection，凭证先刷一遍再要 offer
-      await refreshIce()
+      // 先试完本地 / 自建 TURN 才申请付费凭证；它只作用于这一位观众的新 PeerConnection。
+      let useCloudflareFallback = false
+      if (requestCloudflareFallback && !cloudflareFallbackAttempted) {
+        useCloudflareFallback = await refreshIce(true)
+        if (!useCloudflareFallback) console.warn('[live] 自建 TURN 连接失败，但 Cloudflare 兜底凭证不可用；继续尝试免费候选')
+      }
+      if (!useCloudflareFallback) {
+        await refreshIce(false)
+      }
       if (destroyed) return
-      const ok = await watch()
+      const ok = await watch(true, useCloudflareFallback)
+      if (ok && useCloudflareFallback) {
+        // 只有信令确认已把这轮 Cloudflare ICE 交给主播后才消耗机会；接口 / 信令瞬断可继续补试。
+        cloudflareFallbackAttempted = true
+        console.info('[live] 自建 TURN 连接失败，本观众启用一次 Cloudflare 末级兜底')
+      }
       if (!ok) {
         // socket 还连着就不会再触发 connect；临时失败必须由自己的计时器继续推进。
         if (lastWatchRetryable && !destroyed && socket?.connected && !hostAway && !hostFrozen) armRewatch(FIRST_OFFER_MS)

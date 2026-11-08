@@ -14,13 +14,12 @@
  *
  * 3. **请求要带分钟桶参数**，否则又会被缓存住（带 query 就是另一个 cache key，必然回源）。
  *
- * ⚠️ 全程只有**一个**模块实例：`iceCached` 是模块级状态，而 `import('...?fresh=1')`
+ * ⚠️ 全程只有**一个**模块实例：ICE 配置缓存是模块级状态，而 `import('...?fresh=1')`
  * 拿不到新实例（ESM 按解析后的 URL 缓存，loader 会把 query 归一化掉）。
  * 所以下面是按状态顺序推进的一条线，每一步都靠「该续期了 / 过了 retryAt」逼它真的回源。
  *
  * 跑：npm run test:ice-config
  */
-import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
 
 let n = 0
@@ -53,7 +52,14 @@ process.on('exit', () => {
 
 /* ---------------- 打桩 ---------------- */
 
-globalThis.__viteEnv = { VITE_NETPLAY_URL: 'https://8bitgo.com/netplay' }
+globalThis.__viteEnv = {
+  VITE_NETPLAY_URL: 'https://8bitgo.com/netplay',
+  VITE_NETPLAY_ICE: JSON.stringify([{
+    urls: ['stun:stun.example:3478', 'turn:turn.8bitgo.com:3478', 'turn:turn.cloudflare.com:3478'],
+    username: 'user',
+    credential: 'secret',
+  }]),
+}
 
 /** 可控的时钟：fetchIceConfig 通篇用 Date.now() 判过期 */
 let clock = Date.UTC(2026, 8, 7, 6, 0, 0)
@@ -76,7 +82,7 @@ const warnings = []
 const realWarn = console.warn
 console.warn = (...a) => warnings.push(a.join(' '))
 
-const { fetchIceConfig } = await import(fileURLToPath(new URL('../src/services/netplay.ts', import.meta.url)))
+const { fetchIceConfig, fetchLiveIceConfig } = await import(fileURLToPath(new URL('../src/services/netplay.ts', import.meta.url)))
 
 const stun = { urls: 'stun:stun.example:3478' }
 /** 自建 coturn 那种凭证：username 就是 `<过期时间戳>:label`，过期即 401 */
@@ -163,6 +169,86 @@ console.log('\n── expiry:0 的语义 ──')
   await fetchIceConfig()
   ok(calls.length === 5, 'expiry:0 的语义是「永不过期」，隔一天也不重取')
   ok(warnings.length === 0, '没有把 expiry:0 误判成「凭证已过期」')
+}
+
+/* ---------------- 7. 直播首轮与 Cloudflare 末级兜底缓存隔离 ---------------- */
+console.log('\n── 直播 ICE 分档与缓存隔离 ──')
+{
+  const primaryExpiry = nowSec() + 3600
+  nextResponse = {
+    iceServers: [stun, turn(primaryExpiry)],
+    hasTurn: true,
+    turnSources: ['self-hosted'],
+    expiry: primaryExpiry,
+  }
+  const primary = await fetchLiveIceConfig()
+  ok(calls.length === 6 && calls[5].includes('purpose=live') && !calls[5].includes('fallback=cloudflare'), '直播首轮用独立请求档位，不携带付费兜底标记')
+  ok(primary.turnSources?.includes('self-hosted') && !primary.turnSources?.includes('cloudflare'), '直播首轮只缓存自建路线')
+
+  const paidExpiry = nowSec() + 900
+  nextResponse = {
+    iceServers: [stun, { urls: 'turn:turn.cloudflare.com:3478', username: 'cf-user', credential: 'cf-secret' }],
+    hasTurn: true,
+    turnSources: ['cloudflare'],
+    expiry: paidExpiry,
+  }
+  const paid = await fetchLiveIceConfig({ cloudflareFallback: true })
+  ok(calls.length === 7 && calls[6].includes('fallback=cloudflare'), '付费兜底独立请求，不复用首轮 ICE 缓存')
+  ok(paid.turnSources?.length === 1 && paid.turnSources[0] === 'cloudflare', '兜底缓存只含明确标记的 Cloudflare 配置')
+  await fetchLiveIceConfig({ cloudflareFallback: true })
+  ok(calls.length === 7, '有效期内复用末级兜底凭证，不重复请求服务端')
+  await fetchIceConfig()
+  ok(calls.length === 7, '直播兜底缓存不会污染通用游戏联机 ICE 配置')
+
+  advance(901)
+  nextResponse = 502
+  const unavailable = await fetchLiveIceConfig({ cloudflareFallback: true })
+  const urls = unavailable.iceServers.flatMap((server) => Array.isArray(server.urls) ? server.urls : [server.urls])
+  ok(calls.length === 8 && typeof unavailable.retryAt === 'number', '末级接口临时失败只缓存 60 秒，之后允许自愈重试')
+  ok(urls.includes('stun:stun.example:3478'), '直播接口故障时保留静态 STUN，尽可能维持直连')
+  ok(urls.every((url) => /^stun:/i.test(String(url))), '接口故障时只保留 STUN，不猜自定义 TURN 域名是否计费')
+  ok(!unavailable.iceServers.some((server) => server.username || server.credential), '接口故障时不把静态 TURN 凭证泄漏到直播配置')
+  await fetchLiveIceConfig({ cloudflareFallback: true })
+  ok(calls.length === 8, '末级接口故障窗口内不会连续打请求')
+}
+
+/* ---------------- 8. 响应头到达但 JSON 正文卡住，仍要受超时保护 ---------------- */
+console.log('\n── ICE 响应体超时 ──')
+{
+  const realFetch = globalThis.fetch
+  const realSetTimeout = globalThis.setTimeout
+  const realClearTimeout = globalThis.clearTimeout
+  let timeoutCallback = null
+  try {
+    advance(61) // 让末级兜底的短失败缓存到期，确保真正发起请求
+    globalThis.setTimeout = (callback) => {
+      timeoutCallback = callback
+      return 1
+    }
+    globalThis.clearTimeout = () => {
+      timeoutCallback = null
+    }
+    globalThis.fetch = async (_url, init) => ({
+      ok: true,
+      status: 200,
+      json: async () => {
+        const fireTimeout = timeoutCallback
+        if (!fireTimeout) return new Promise(() => {})
+        fireTimeout()
+        if (!init.signal.aborted) throw new Error('timeout did not abort the request')
+        throw new DOMException('Aborted', 'AbortError')
+      },
+    })
+    const result = await Promise.race([
+      fetchLiveIceConfig({ cloudflareFallback: true }),
+      new Promise((resolve) => setImmediate(() => resolve(null))),
+    ])
+    ok(result !== null && typeof result.retryAt === 'number', '响应头已到但 JSON 卡住时，中止正文读取并退回可重试配置')
+  } finally {
+    globalThis.fetch = realFetch
+    globalThis.setTimeout = realSetTimeout
+    globalThis.clearTimeout = realClearTimeout
+  }
 }
 
 Date.now = realNow

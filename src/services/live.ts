@@ -15,7 +15,7 @@ import { useSyncExternalStore } from 'react'
 import { fallbackAfterErrors } from './sseFallback'
 import { getToken, apiBase, TOKEN_CHANGED_EVENT } from './api'
 import { getT } from './i18n'
-import { fetchIceConfig, type IceConfig } from './netplay'
+import { fetchLiveIceConfig, type IceConfig } from './netplay'
 import type { Presence } from './presence'
 import type { UserRole } from '@/types'
 import { describeExport, looksLikeSocketIo, runAsCommonJs, umdGlobals } from '@/lib/umd'
@@ -269,7 +269,7 @@ export async function connectLive(): Promise<LiveSocket> {
   return socket
 }
 
-/** 直播用的 ICE 配置，和联机共用同一个接口（TURN 凭证由后端现签） */
+/** 直播首轮只取直连与自建 TURN；Cloudflare 不能混进首轮候选。 */
 export async function liveIceServers(): Promise<RTCIceServer[]> {
   return (await liveIceConfig()).iceServers
 }
@@ -282,11 +282,16 @@ export async function liveIceServers(): Promise<RTCIceServer[]> {
  * 却要让观众对着转圈等满超时，再收一句「可能是网络限制」。观众侧现在拿它来分辨
  * 「真的连不上」和「主播下播了」，给出的提示才有指向。
  */
-export async function liveIceConfig(): Promise<IceConfig> {
+export async function liveIceConfig({ cloudflareFallback = false }: { cloudflareFallback?: boolean } = {}): Promise<IceConfig> {
   try {
-    return await fetchIceConfig()
+    return await fetchLiveIceConfig({ cloudflareFallback })
   } catch {
-    return { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }], hasTurn: false, expiry: 0 }
+    return {
+      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+      hasTurn: false,
+      expiry: 0,
+      retryAt: Math.floor(Date.now() / 1000) + 60,
+    }
   }
 }
 

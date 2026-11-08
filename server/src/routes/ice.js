@@ -21,11 +21,12 @@
  *   3. 托管（固定账号）  TURN_BACKUP_URLS + USERNAME/CREDENTIAL 或 BACKUP_SECRET
  *   4. Cloudflare       TURN_CF_KEY_ID + TURN_CF_API_TOKEN  服务端向 CF 现领短期凭证
  *
- * 全都会**一起**下发给浏览器。WebRTC 不是「主的挂了才用备的」那种串行回退 ——
- * 它从所有 ICE 服务器一起收集候选，然后按优先级配对：中继（relay）候选的优先级本来就最低，
- * 只有直连全部失败时才会用上；两个中继之间，排在前面的那个本地优先级更高，所以自建那路会先被试。
- * 也就是说兜底那路只在「直连不通 **且** 自建 coturn 这一路也配不上」时才吃流量 ——
- * 正是兜底该有的行为，而且自建挂掉的那段时间站点不会整个瘫掉。
+ * 普通游戏联机继续沿用多路一起下发。直播则分两档：首轮只下发 STUN 和两台本站自建 TURN，
+ * 不下发额外托管中继；只有观众连接失败并显式申请时才单独下发 Cloudflare TURN，
+ * 避免付费中继进入首轮 ICE 收集。
+ * 普通游戏联机的候选会同时收集并检查，不是串行的「主挂了再试备」；其中某条不可达会由探针摘除。
+ * 直播不靠候选顺序假装串行回退：Cloudflare 完全不在首轮配置里，只有自建路线明确失败后才
+ * 显式取凭证并重建这位观众的连接，因而付费中继不会和免费路线一起被 ICE 收集。
  *
  * ⚠️ **Cloudflare Realtime 有两个完全不同的产品，别拿错：**
  *   · TURN Service —— 就是这里用的。仪表盘里建一个 **TURN key**，给你 Key ID + API token，
@@ -75,6 +76,8 @@ function turnCredentials(secret, ttlSec, label) {
 const cfApiBase = () => process.env.TURN_CF_API_BASE || 'https://rtc.live.cloudflare.com/v1'
 /** 向 CF 领一份凭证的有效期。它家默认给 86400（24 小时） */
 const cfTtl = () => Math.max(600, Math.min(172_800, Number(process.env.TURN_CF_TTL_SEC) || 86_400))
+/** 直播末级兜底只发短时凭证，降低客户端凭证泄露后的可用窗口。 */
+const cfFallbackTtl = () => Math.max(600, Math.min(3_600, Number(process.env.TURN_CF_FALLBACK_TTL_SEC) || 900))
 /**
  * 领凭证的超时。这个接口在**开局的关键路径上** —— 玩家点开始游戏就要等它。
  * CF 那边抽风的话宁可这一轮没有 CF 中继，也不能让所有人卡在这里。
@@ -91,12 +94,23 @@ const CF_COOLDOWN_MS = 30_000
  * 按「key + 接口地址 + ttl」缓存：运维换了 key（或者轮换了 token）之后，
  * 缓存和冷却计时都要跟着作废 —— 否则旧凭证还会挂着用到过期，换 key 等于没换。
  */
-let cfState = { key: '', cache: null, inflight: null, failedAt: 0, warned: false }
+let cfScope = ''
+const cfStates = new Map()
 
 function cfSlot(keyId, base, ttl) {
-  const key = `${keyId}|${base}|${ttl}`
-  if (cfState.key !== key) cfState = { key, cache: null, inflight: null, failedAt: 0, warned: false }
-  return cfState
+  const scope = `${keyId}|${base}`
+  // 轮换 key / API 地址时丢掉旧的短期凭证；同一配置下则让普通 ICE 与直播兜底 TTL 各自缓存。
+  if (cfScope !== scope) {
+    cfStates.clear()
+    cfScope = scope
+  }
+  const cacheKey = String(ttl)
+  let state = cfStates.get(cacheKey)
+  if (!state) {
+    state = { cache: null, inflight: null, failedAt: 0, warned: false }
+    cfStates.set(cacheKey, state)
+  }
+  return state
 }
 
 /**
@@ -118,12 +132,12 @@ function cfSlot(keyId, base, ttl) {
  *
  * 拿不到就返回 null：调用方照常下发其它几路，绝不让这一路的故障拖垮整个接口。
  */
-async function cloudflareIce() {
+async function cloudflareIce(ttlOverride = cfTtl()) {
   const keyId = (process.env.TURN_CF_KEY_ID || '').trim()
   const token = (process.env.TURN_CF_API_TOKEN || '').trim()
   if (!keyId || !token) return null
 
-  const ttl = cfTtl()
+  const ttl = Math.max(600, Math.min(172_800, Number(ttlOverride) || cfTtl()))
   const base = cfApiBase()
   const st = cfSlot(keyId, base, ttl)
   const now = Math.floor(Date.now() / 1000)
@@ -236,7 +250,7 @@ async function mintCloudflare() {
  * 和这个文件里「所有配置按请求现读」的约定一致。src/index.js 启动时也调一次，
  * 免得开站到第一个玩家之间那段时间探针没东西可探。
  */
-export async function registerTurnProbeTargets() {
+export async function registerTurnProbeTargets({ includeCloudflare = true } = {}) {
   const self = selfHostedUrls()
   registerTurnPath('self-hosted', (process.env.TURN_SECRET || '').trim() ? self : [], mintSelfHosted)
 
@@ -249,15 +263,17 @@ export async function registerTurnProbeTargets() {
     ((process.env.TURN_BACKUP_USERNAME || '').trim() && (process.env.TURN_BACKUP_CREDENTIAL || '').trim())
   registerTurnPath('managed', hasManagedCred ? managed : [], mintManaged)
 
-  // CF 的地址是它现发的，所以要先有一份凭证才知道探哪儿
-  let cfUrls = []
-  try {
-    const cf = await cloudflareIce()
-    cfUrls = (cf?.turns || []).flatMap((t) => t.urls)
-  } catch {
-    cfUrls = []
+  // 直播首轮不碰 CF 凭证，也不启动付费路径的探活；普通联机或显式末级兜底才登记它。
+  if (includeCloudflare) {
+    let cfUrls = []
+    try {
+      const cf = await cloudflareIce()
+      cfUrls = (cf?.turns || []).flatMap((t) => t.urls)
+    } catch {
+      cfUrls = []
+    }
+    registerTurnPath('cloudflare', cfUrls, mintCloudflare)
   }
-  registerTurnPath('cloudflare', cfUrls, mintCloudflare)
 }
 
 /**
@@ -278,8 +294,13 @@ export async function registerTurnProbeTargets() {
  */
 const ICE_PER_IP_PER_HOUR = Number(process.env.ICE_PER_IP_PER_HOUR || 60)
 const ICE_GLOBAL_PER_MIN = Number(process.env.ICE_GLOBAL_PER_MIN || 600)
+// 同一 NAT 下 12 位观众 + 主播会为同一直播各请求一次兜底配置，40 次能覆盖全员且留有少量重试余量。
+const ICE_CF_FALLBACK_PER_IP_PER_HOUR = Number(process.env.ICE_CF_FALLBACK_PER_IP_PER_HOUR || 40)
+const ICE_CF_FALLBACK_GLOBAL_PER_MIN = Number(process.env.ICE_CF_FALLBACK_GLOBAL_PER_MIN || 240)
 
 iceRouter.get('/', async (req, res) => {
+  const liveRequest = String(req.query.purpose || '').trim() === 'live'
+  const cloudflareFallback = liveRequest && String(req.query.fallback || '').trim() === 'cloudflare'
   const ip = clientIpFrom(req.ip, req.headers)
   if (isMeaningfulIp(ip)) {
     const perIp = take(`ice:ip:${ip}`, ICE_PER_IP_PER_HOUR, 3600_000)
@@ -289,6 +310,15 @@ iceRouter.get('/', async (req, res) => {
         .set('Retry-After', String(perIp.retryAfter))
         .json({ error: '取中继凭证太频繁了，稍后再试', retryAfter: perIp.retryAfter })
     }
+    if (cloudflareFallback) {
+      const paidPerIp = take(`ice:live-cf:${ip}`, ICE_CF_FALLBACK_PER_IP_PER_HOUR, 3600_000)
+      if (!paidPerIp.ok) {
+        return res
+          .status(429)
+          .set('Retry-After', String(paidPerIp.retryAfter))
+          .json({ error: '付费中继兜底请求过于频繁，请稍后重试', retryAfter: paidPerIp.retryAfter })
+      }
+    }
   }
   const global = take('ice:global', ICE_GLOBAL_PER_MIN, 60_000)
   if (!global.ok) {
@@ -296,6 +326,15 @@ iceRouter.get('/', async (req, res) => {
       .status(429)
       .set('Retry-After', String(global.retryAfter))
       .json({ error: '中继服务正忙，稍后再试', retryAfter: global.retryAfter })
+  }
+  if (cloudflareFallback) {
+    const paidGlobal = take('ice:live-cf:global', ICE_CF_FALLBACK_GLOBAL_PER_MIN, 60_000)
+    if (!paidGlobal.ok) {
+      return res
+        .status(429)
+        .set('Retry-After', String(paidGlobal.retryAfter))
+        .json({ error: '付费中继兜底当前请求较多，请稍后重试', retryAfter: paidGlobal.retryAfter })
+    }
   }
 
   const ttl = iceTtl()
@@ -309,19 +348,22 @@ iceRouter.get('/', async (req, res) => {
   /** 哪几路真的生效了。运维自查用：线上打开这个接口就知道兜底到底配上没有 */
   const turnSources = []
 
-  // Cloudflare 那一路要先取（异步），它还会顺带给我们两台 STUN
+  // 普通联机继续沿用现有候选；直播首轮完全不申请 Cloudflare 凭证，只有显式兜底才申请短时凭证。
   let cf = null
-  try {
-    cf = await cloudflareIce()
-  } catch {
-    cf = null // cloudflareIce 内部已经兜过了，这里只是再保一层：绝不让它 500
+  const includeCloudflare = !liveRequest || cloudflareFallback
+  if (includeCloudflare) {
+    try {
+      cf = await cloudflareIce(cloudflareFallback ? cfFallbackTtl() : cfTtl())
+    } catch {
+      cf = null // cloudflareIce 内部已经兜过了，这里只是再保一层：绝不让它 500
+    }
   }
 
   const stun = list(process.env.STUN_URLS)
   const stunUrls = [
     ...(isMainlandVisitor ? mainlandStunUrls() : []),
     ...(stun.length ? stun : DEFAULT_STUN),
-    ...(cf?.stunUrls ?? []),
+    ...(includeCloudflare ? (cf?.stunUrls ?? []) : []),
   ]
   const iceServers = [{ urls: [...new Set(stunUrls)] }]
 
@@ -338,7 +380,7 @@ iceRouter.get('/', async (req, res) => {
   // ── 1. 自建 coturn ──
   const turnUrls = selfHostedUrls()
   const secret = (process.env.TURN_SECRET || '').trim()
-  if (turnUrls.length && secret) {
+  if (!cloudflareFallback && turnUrls.length && secret) {
     const cred = turnCredentials(secret, ttl, label)
     candidates.push({
       name: 'self-hosted',
@@ -350,7 +392,7 @@ iceRouter.get('/', async (req, res) => {
   // 大陆 TURN 只在 Cloudflare 明确标记为 CN 时下发；其它地区不尝试这个高延迟节点。
   const cnTurnUrls = mainlandTurnUrls()
   const cnSecret = (process.env.TURN_CN_SECRET || '').trim()
-  if (isMainlandVisitor && cnTurnUrls.length && cnSecret) {
+  if (!cloudflareFallback && isMainlandVisitor && cnTurnUrls.length && cnSecret) {
     const cred = turnCredentials(cnSecret, ttl, label)
     candidates.unshift({
       name: 'mainland',
@@ -364,7 +406,7 @@ iceRouter.get('/', async (req, res) => {
   const backupSecret = (process.env.TURN_BACKUP_SECRET || '').trim()
   const backupUser = (process.env.TURN_BACKUP_USERNAME || '').trim()
   const backupCred = (process.env.TURN_BACKUP_CREDENTIAL || '').trim()
-  if (backupUrls.length) {
+  if (!liveRequest && !cloudflareFallback && backupUrls.length) {
     if (backupSecret) {
       const cred = turnCredentials(backupSecret, ttl, label)
       candidates.push({
@@ -400,10 +442,14 @@ iceRouter.get('/', async (req, res) => {
    * （只有 host/srflx 候选时，一到两成的玩家组合是**必然**连不通的）。
    * 这种时候 hasTurn 如实报 false —— 观众端据此把「网络之间没有通路」和「主播下播了」分开。
    */
-  const downNames = new Set(candidates.filter((c) => turnPathDown(c.name)).map((c) => c.name))
+  // 浏览器与源站到 TURN 的网络路径可能完全不同，不能用服务器探针替浏览器否决末级兜底。
+  const downNames = new Set(
+    cloudflareFallback ? [] : candidates.filter((c) => turnPathDown(c.name)).map((c) => c.name),
+  )
   const kept = candidates.filter((c) => !downNames.has(c.name))
+  // 普通 ICE 保留「探针全误判时照发」的安全阀；显式兜底时优先以浏览器可达性为准。
   const serving = kept.length ? kept : candidates
-  const turnDropped = kept.length ? [...downNames] : []
+  const turnDropped = cloudflareFallback ? [] : kept.length ? [...downNames] : []
 
   for (const c of serving) {
     iceServers.push(c.server)
@@ -413,7 +459,7 @@ iceRouter.get('/', async (req, res) => {
 
   // 顺手把「现在配到了哪几路」同步给探针（很便宜，改了 env 不用重启）。
   // **不 await** —— 这个接口在开局的关键路径上，一毫秒都不该为探活的簿记等。
-  registerTurnProbeTargets().catch(() => {})
+  registerTurnProbeTargets({ includeCloudflare: !liveRequest }).catch(() => {})
 
   /**
    * 凭证会过期，别让 CDN / 浏览器缓存住。
@@ -433,14 +479,12 @@ iceRouter.get('/', async (req, res) => {
   res.set('Cloudflare-CDN-Cache-Control', 'no-store')
   res.json({
     iceServers,
-    /**
-     * 有没有**活着的** TURN 兜底。前端据此决定要不要提示「可能连不通」。
-     * 注意：探针把所有路都判死时 iceServers 里其实还留着它们（见上面那个安全阀），
-     * 但这里如实报 false —— 别骗观众端「有中继」。
-     */
+    /** 有没有当前档位可用的 TURN；普通 ICE 的安全阀可能仍保留被探针判死的地址，但这里如实报 false。 */
     hasTurn: kept.length > 0,
     /** 配了几路 TURN */
     turnCount: turnSources.length,
+    /** 让直播端验证付费兜底确实到手，避免把普通 STUN 误当成 Cloudflare 已启用。 */
+    fallback: cloudflareFallback ? 'cloudflare' : undefined,
     /** 分别是哪几路（self-hosted / managed / cloudflare）—— 自查用 */
     turnSources,
     /**
@@ -453,6 +497,8 @@ iceRouter.get('/', async (req, res) => {
     turnHealth: turnHealthSnapshot(),
     /** 最早的凭证过期时间（unix 秒）；0 表示没有会过期的凭证，无需续期 */
     expiry: expiries.length ? Math.min(...expiries) : 0,
+    /** 兜底凭证暂时不可用时，客户端短暂缓存后可重试；不把一次 CF 抖动记成永久无兜底。 */
+    ...(cloudflareFallback && !turnSources.includes('cloudflare') ? { retryAt: Math.floor(Date.now() / 1000) + 30 } : {}),
     ttl,
   })
 })
