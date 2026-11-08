@@ -2934,6 +2934,11 @@ EdgeOne 只能用境外（香港）节点。主站、ROM、Pages 子域都不受
     浏览器禁止跨源启动 Worker，所以它们固定用 `self.location.origin + /assets/...`；新增 Worker 时文件名要带 `Worker`。
   - 兜底：入口脚本 / 样式表 `onerror` 退回同源；API 网络错误或 502–504 退回同源，网络错误后本次会话不再走加速入口。
     写操作、后台请求、socket.io、SSE、OAuth 跳转都留在同源。
+  - **EmulatorJS 引擎与核心也在内**（2026-11-08，《合金弹头 2》大陆玩家反馈加载极慢）：ROM 早已走 cn-assets，
+    loader / emulator.min.js / FBNeo 8MB 核心却还从 Cloudflare 洛杉矶取。`paths.ts` 的 `ejsBase()` 给大陆访客返回
+    `https://cn.<裸域>/_cn/emulatorjs/`，`ejsRuntimeAsset` / `ejsCoreAsset` / `EJS_pathtodata` 都走它；iframe 是不带 sandbox
+    的同源 srcdoc，7z Worker 是 blob URL，跨域无碍。开局前失败（`failLoad` / loader 注入失败）就 `markEjsEdgeFailed()`，
+    自动重试退回同源。引擎 IndexedDB 核心缓存以 URL 为键，大陆老访客换线路后会重下一次核心。
   - 回归：`cd server && npm run test:cn-edge`。
 - **ROM 线路：所有平台开局前选一次 assets / cn-assets**（2026-11-07，`romRoute.ts` 的 `chooseRomHost`）：
   两边取同一个 64KB 固定探针 `roms/_route-probe/v1.bin?v=1`（R2 上的随机字节，两边边缘都长缓存），

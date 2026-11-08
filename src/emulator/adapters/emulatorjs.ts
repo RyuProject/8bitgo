@@ -121,7 +121,7 @@ import {
  * 玩家看到的就是「Error loading EmulatorJS runtime」。本地有核心，这条路不会走。
  */
 export { EJS_PATH } from '../paths'
-import { EJS_PATH, EJS_RUNTIME_GENERATION, ejsCoreAsset, ejsRuntimeAsset, emulatorJsCoreDataFile, emulatorJsCoreFileFor, emulatorJsCoreForGame, emulatorJsRuntimePaths, isDiscPlatform, isLargeDirectEjsRom, isSelfDownloadPlatform } from '../paths'
+import { EJS_PATH, EJS_RUNTIME_GENERATION, ejsBase, ejsCoreAsset, ejsUsingEdge, markEjsEdgeFailed, ejsRuntimeAsset, emulatorJsCoreDataFile, emulatorJsCoreFileFor, emulatorJsCoreForGame, emulatorJsRuntimePaths, isDiscPlatform, isLargeDirectEjsRom, isSelfDownloadPlatform } from '../paths'
 import { applyTuning, sizeOfTrack, tuningFor, usableVideoSize } from '../videoTuning'
 import {
   findLayoutOption,
@@ -2316,12 +2316,16 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let loadFailed = false
   let crashReported = false
   /** 开局前的致命错误：报上去并停掉轮询（播放器收到 onError 会把这局拆掉） */
+  /** 这一局的引擎是不是从大陆加速入口取的（挂载时定下，失败后标记，下一局退回同源） */
+  const usedEjsEdge = ejsUsingEdge()
   const failLoad = (message: string, scope?: LoadErrorScope) => {
     // 核心陷阱已经走 onCoreCrash（换兼容核心）时，紧随其后的 FATAL 文本（Failed to start game）不能再报
     // onError，否则播放器会对同一次崩溃再做一轮重试 + 换语言 ROM。
     if (destroyed || started || loadFailed || crashReported) return
     loadFailed = true
     window.clearInterval(startWatch)
+    // 开局前卡住 / 报错时，大陆加速入口可能就是原因：自动重试改走同源（paths.ts 的 ejsBase）
+    if (usedEjsEdge) markEjsEdgeFailed()
     options.onError?.(message, scope)
   }
   /**
@@ -3936,7 +3940,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           EJS_controlScheme: options.platform === 'gbc' ? 'gb' : options.platform,
           EJS_gameUrl: gameUrl,
           EJS_gameName: engineGameName,
-          EJS_pathtodata: EJS_PATH,
+          EJS_pathtodata: ejsBase(),
           /*
             引擎缓存（EmulatorJS-Cache，存的是**解压后**的核心）默认 5 天没用就清：每周来一次的玩家每次都
             重走 mame-current 的 37MB 下载 + 242MB 解压（冷启动约 57 秒，热启动约 20 秒）。
@@ -4521,7 +4525,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           return
         }
         // 给运维看的细节进控制台；红字只说玩家能理解的那句
-        console.warn(`[emulatorjs] failed to load runtime from ${EJS_PATH} — check the network or set VITE_EJS_PATH to a self-hosted copy`)
+        const failedBase = ejsBase()
+        if (usedEjsEdge) markEjsEdgeFailed()
+        console.warn(`[emulatorjs] failed to load runtime from ${failedBase} — check the network or set VITE_EJS_PATH to a self-hosted copy`)
         options.onError?.(fmt(rt.ejsLoadFailed, { path: EJS_PATH }))
       }
     })()

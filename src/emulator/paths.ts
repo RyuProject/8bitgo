@@ -19,6 +19,7 @@ import type { PlatformId } from '@/types'
 import { platformMap } from '@/data/platforms'
 import { NETPLAY_URL } from '@/services/roomFlags'
 import { EJS_CORE_VERSIONS } from './ejsCoreVersionsData'
+import { cnEdgeApiBase } from '@/services/cnHost'
 
 /** 末尾补上斜杠；空值原样返回（空 = 没配置 = 该引擎不可用） */
 const asDir = (raw: string | undefined, fallback = ''): string => {
@@ -37,6 +38,31 @@ const asDir = (raw: string | undefined, fallback = ''): string => {
 export const EJS_PATH: string = asDir(import.meta.env.VITE_EJS_PATH, '/emulatorjs/')
 
 /**
+ * 这一局实际用的 EmulatorJS 根。8bitgo.com 上的大陆访客改走 EdgeOne 的
+ * `https://cn.<裸域>/_cn/emulatorjs/`（server/src/cn-edge.js）：loader / 引擎 / 核心（FBNeo 8MB、
+ * mame-current 37MB）以前都从 Cloudflare 洛杉矶取，ROM 已经走 cn-assets，引擎却还在绕美国，
+ * 2026-11-08《合金弹头 2》大陆玩家反馈「加载极慢」就卡在这一段。
+ *
+ * iframe 是**不带 sandbox** 的 srcdoc，和页面同源，跨域请求带 `Origin: https://8bitgo.com`，
+ * cn-edge 固定回这个 ACAO；引擎的 7z Worker 是 blob URL，不受跨域 Worker 限制。
+ * 只在默认的同源 `/emulatorjs/` 上做（配了绝对地址的 VITE_EJS_PATH 原样用）。
+ * 这次会话里加速入口出过一次加载失败（markEjsEdgeFailed）就退回同源。
+ *
+ * ⚠️ 引擎的 IndexedDB 核心缓存以 URL 为键：大陆老访客第一次换到这条线路会重下一次核心。
+ */
+let ejsEdgeFailed = false
+export function ejsBase(): string {
+  if (ejsEdgeFailed || !EJS_PATH.startsWith('/')) return EJS_PATH
+  const edge = cnEdgeApiBase()
+  return edge ? `${edge}${EJS_PATH}` : EJS_PATH
+}
+/** 当前是否在用大陆加速入口取引擎 */
+export const ejsUsingEdge = (): boolean => ejsBase() !== EJS_PATH
+export function markEjsEdgeFailed(): void {
+  ejsEdgeFailed = true
+}
+
+/**
  * EmulatorJS 的文件名没有内容哈希，而 CDN 会缓存一个月。每次改自托管引擎或 loader
  * 都要加一代，让浏览器和边缘不再把旧 JS 与新核心拼在一起。
  */
@@ -46,7 +72,7 @@ export const EJS_PATH: string = asDir(import.meta.env.VITE_EJS_PATH, '/emulatorj
 */
 export const EJS_RUNTIME_GENERATION = '20261027-melondsds-ff33abb1-psxrange1-corecompat1-stateglue3-mameglue3-ejsperf1'
 export const ejsRuntimeAsset = (name: string): string =>
-  `${EJS_PATH}${name}?v=${encodeURIComponent(EJS_RUNTIME_GENERATION)}`
+  `${ejsBase()}${name}?v=${encodeURIComponent(EJS_RUNTIME_GENERATION)}`
 
 /**
  * 核心文件（`cores/*.data`、`cores/metadata/*.json`）按**内容**取版本（ejsCoreVersionsData.ts）。
@@ -57,7 +83,7 @@ export const ejsRuntimeAsset = (name: string): string =>
  */
 export const ejsCoreAsset = (relativePath: string): string => {
   const version = EJS_CORE_VERSIONS[decodeURIComponent(relativePath)] ?? EJS_RUNTIME_GENERATION
-  return `${EJS_PATH}${relativePath}?v=${encodeURIComponent(version)}`
+  return `${ejsBase()}${relativePath}?v=${encodeURIComponent(version)}`
 }
 
 /**
