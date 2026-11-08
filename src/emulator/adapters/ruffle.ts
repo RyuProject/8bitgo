@@ -50,7 +50,7 @@ import { installFlashLegacyLoginRedirect } from '../flashLegacyLogin'
 import { installRuffleCrashGuard } from '../ruffleCrash'
 
 export { RUFFLE_PATH } from '../paths'
-import { RUFFLE_PATH, RUFFLE_VERSION } from '../paths'
+import { markRuffleEdgeFailed, RUFFLE_PATH, RUFFLE_VERSION, ruffleBase } from '../paths'
 
 /* ---------------- 设备字体（中文不显示的根因）---------------- */
 
@@ -250,6 +250,26 @@ function installRuffleStageFit(
 
 export function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const rt = getT().runtime
+  /*
+    大陆访客从 EdgeOne 取 Ruffle（paths.ts 的 ruffleBase）。开局前任何报错都可能是这条线路造成的，
+    记下来让自动重试退回同源；开局后的运行期错误与线路无关，不动它。
+  */
+  let ruffleRoot = ruffleBase()
+  if (ruffleRoot !== RUFFLE_PATH) {
+    const { onError: reportError, onReady: reportReady } = options
+    let started = false
+    options = {
+      ...options,
+      onReady: () => {
+        started = true
+        reportReady?.()
+      },
+      onError: (...args) => {
+        if (!started) markRuffleEdgeFailed()
+        reportError?.(...args)
+      },
+    }
+  }
   /** 加载成功后才知道能不能暂停 / 调音量，先空着，等 load() 回来再报 */
   const caps = new Set<Capability>()
   /** 播放器元素与它的 API 门面（两者都可能带 volume / pause） */
@@ -619,12 +639,24 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     })
 
     const script = doc.createElement('script')
-    script.src = `${RUFFLE_PATH}ruffle.js`
+    script.src = `${ruffleRoot}ruffle.js`
     script.onerror = () => {
+      // 加速入口取不到 ruffle.js：这一局当场换同源再试一次，不让玩家等自动重试
+      if (ruffleRoot !== RUFFLE_PATH && !destroyed) {
+        console.warn(`[ruffle] ${ruffleRoot}ruffle.js 加载失败，改走同源 ${RUFFLE_PATH}`)
+        markRuffleEdgeFailed()
+        ruffleRoot = RUFFLE_PATH
+        const retry = doc.createElement('script')
+        retry.src = `${ruffleRoot}ruffle.js`
+        retry.onerror = script.onerror
+        retry.onload = script.onload
+        doc.head.appendChild(retry)
+        return
+      }
       aborter.abort()
       // 给运维看的细节（路径 / 该配哪个 env）进控制台；红字只说玩家能理解的那句
-      console.warn(`[ruffle] failed to load ${RUFFLE_PATH}ruffle.js — run \`npm run ruffle\` or set VITE_RUFFLE_PATH`)
-      if (!destroyed) options.onError?.(fmt(rt.ruffleLoadFailed, { path: RUFFLE_PATH }), 'runtime')
+      console.warn(`[ruffle] failed to load ${ruffleRoot}ruffle.js — run \`npm run ruffle\` or set VITE_RUFFLE_PATH`)
+      if (!destroyed) options.onError?.(fmt(rt.ruffleLoadFailed, { path: ruffleRoot }), 'runtime')
     }
     script.onload = async () => {
       if (destroyed) return
@@ -758,7 +790,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           backgroundColor: null,
           splashScreen: false,
           warnOnUnsupportedContent: false,
-          publicPath: RUFFLE_PATH,
+          publicPath: ruffleRoot,
           ...(gamepadButtonMapping ? { gamepadButtonMapping } : {}),
           // SAS3.swf 写死 sas3server.ninjakiwi.com:444；Ruffle 用这张表把它改送同源 WSS 桥。
           ...sfsConfig,

@@ -20,6 +20,8 @@ import { platformMap } from '@/data/platforms'
 import { NETPLAY_URL } from '@/services/roomFlags'
 import { EJS_CORE_VERSIONS } from './ejsCoreVersionsData'
 import { cnEdgeApiBase } from '@/services/cnHost'
+import { ENV_ROM_BASE, ENV_ROM_MIRROR } from '@/services/romHosts'
+import { readCachedRomHost } from '@/services/romRoute'
 
 /** 末尾补上斜杠；空值原样返回（空 = 没配置 = 该引擎不可用） */
 const asDir = (raw: string | undefined, fallback = ''): string => {
@@ -38,28 +40,56 @@ const asDir = (raw: string | undefined, fallback = ''): string => {
 export const EJS_PATH: string = asDir(import.meta.env.VITE_EJS_PATH, '/emulatorjs/')
 
 /**
- * 这一局实际用的 EmulatorJS 根。8bitgo.com 上的大陆访客改走 EdgeOne 的
- * `https://cn.<裸域>/_cn/emulatorjs/`（server/src/cn-edge.js）：loader / 引擎 / 核心（FBNeo 8MB、
- * mame-current 37MB）以前都从 Cloudflare 洛杉矶取，ROM 已经走 cn-assets，引擎却还在绕美国，
- * 2026-11-08《合金弹头 2》大陆玩家反馈「加载极慢」就卡在这一段。
+ * 模拟器运行时（EmulatorJS / Ruffle / js-dos）给 8bitgo.com 上的大陆访客改走 EdgeOne 的
+ * `https://cn.<裸域>/_cn/<运行时目录>/`（server/src/cn-edge.js）。
  *
- * iframe 是**不带 sandbox** 的 srcdoc，和页面同源，跨域请求带 `Origin: https://8bitgo.com`，
- * cn-edge 固定回这个 ACAO；引擎的 7z Worker 是 blob URL，不受跨域 Worker 限制。
- * 只在默认的同源 `/emulatorjs/` 上做（配了绝对地址的 VITE_EJS_PATH 原样用）。
- * 这次会话里加速入口出过一次加载失败（markEjsEdgeFailed）就退回同源。
+ * 2026-11-08《合金弹头 2》大陆玩家反馈「加载极慢」：ROM 早已走 cn-assets，引擎和核心却还从
+ * Cloudflare 洛杉矶取。EmulatorJS 先改，随后 Ruffle（Flash，约 14MB wasm）和 js-dos（DOS，
+ * DOSBox-X 约 8MB）照同一套做。
+ *
+ * 线路怎么定：
+ *   - 只有边缘标成大陆访客（coverCdnHint）且不在 cn.8bitgo.com 本身时才考虑加速入口；
+ *   - ROM 线路测速（romRoute.chooseRomHost，同样是 EdgeOne 对 Cloudflare）30 分钟内已有结论、
+ *     而且测出 Cloudflare 更快，就不走加速入口；没测过默认走 EdgeOne；
+ *   - **每页只定一次**：同一页里预热和正式加载必须是同一个 URL，否则测速结论中途出来会让同一份核心
+ *     两边各下一遍。新结论从下一次打开页面起生效；
+ *   - 某个运行时开局前出过一次错（mark…EdgeFailed），这页里它就退回同源。
+ *
+ * 可行性（各运行时都核对过）：
+ *   - EmulatorJS 的 iframe 是不带 sandbox 的 srcdoc，Ruffle 的 /flash-frame.html 是同源 iframe，
+ *     跨域请求都带 `Origin: https://8bitgo.com`，cn-edge 固定回这个 ACAO；
+ *   - EmulatorJS 的 7z Worker、js-dos 的 DOSBox Worker 都是先 fetch 再转 blob URL 启动
+ *     （emulators.js 的 dosWorker），不受「Worker 必须同源」限制；Ruffle 唯一的 Worker 也是 blob；
+ *   - js-dos 官方默认 pathPrefix 本来就是跨域的 v8.js-dos.com，跨域加载是它支持的用法。
+ * 只在默认的同源相对目录上做：配了绝对地址（VITE_*_PATH 指向 CDN）的原样用。
  *
  * ⚠️ 引擎的 IndexedDB 核心缓存以 URL 为键：大陆老访客第一次换到这条线路会重下一次核心。
  */
-let ejsEdgeFailed = false
-export function ejsBase(): string {
-  if (ejsEdgeFailed || !EJS_PATH.startsWith('/')) return EJS_PATH
-  const edge = cnEdgeApiBase()
-  return edge ? `${edge}${EJS_PATH}` : EJS_PATH
+type RuntimeEdgeKind = 'ejs' | 'ruffle' | 'jsdos'
+let runtimeEdgeOrigin: string | null = null
+const runtimeEdgeFailed = new Set<RuntimeEdgeKind>()
+
+function cnRuntimeEdge(): string {
+  if (typeof window === 'undefined') return ''
+  if (runtimeEdgeOrigin === null) {
+    const edge = cnEdgeApiBase()
+    runtimeEdgeOrigin = edge && readCachedRomHost(ENV_ROM_BASE, ENV_ROM_MIRROR) !== 'primary' ? edge : ''
+  }
+  return runtimeEdgeOrigin
 }
+
+function runtimeBase(kind: RuntimeEdgeKind, path: string): string {
+  if (!path.startsWith('/') || runtimeEdgeFailed.has(kind)) return path
+  const edge = cnRuntimeEdge()
+  return edge ? `${edge}${path}` : path
+}
+
+/** 这一局实际用的 EmulatorJS 根 */
+export const ejsBase = (): string => runtimeBase('ejs', EJS_PATH)
 /** 当前是否在用大陆加速入口取引擎 */
 export const ejsUsingEdge = (): boolean => ejsBase() !== EJS_PATH
 export function markEjsEdgeFailed(): void {
-  ejsEdgeFailed = true
+  runtimeEdgeFailed.add('ejs')
 }
 
 /**
@@ -129,6 +159,11 @@ export const RUFFLE_PATH: string = asDir(
   import.meta.env.VITE_RUFFLE_PATH,
   `/ruffle/v${RUFFLE_VERSION}/`,
 )
+/** 这一局实际用的 Ruffle 目录（大陆访客走 EdgeOne，见上面 runtimeBase） */
+export const ruffleBase = (): string => runtimeBase('ruffle', RUFFLE_PATH)
+export function markRuffleEdgeFailed(): void {
+  runtimeEdgeFailed.add('ruffle')
+}
 
 /**
  * js-dos 的 JS、DOSBox 和 DOSBox-X wasm 必须来自同一批产物。
@@ -146,6 +181,11 @@ export const JSDOS_PATH: string = asDir(
   import.meta.env.VITE_JSDOS_PATH,
   `/jsdos/v${JSDOS_ASSET_VERSION}/`,
 )
+/** 这一局实际用的 js-dos 目录（大陆访客走 EdgeOne，见上面 runtimeBase） */
+export const jsdosBase = (): string => runtimeBase('jsdos', JSDOS_PATH)
+export function markJsdosEdgeFailed(): void {
+  runtimeEdgeFailed.add('jsdos')
+}
 
 /* ---------------- EmulatorJS：平台别名 → 实际核心文件 ---------------- */
 

@@ -11,14 +11,14 @@
  *   3. CSS 里写死的 `url(/fonts/...)` 会按样式表所在的 cn 域解析到 EdgeOne 上那批**没有 CORS 头**
  *      的旧缓存，字体就被拦了。所以 `/_cn/**.css` 在这里读出文件，把 `/fonts/` 改成 `/_cn/fonts/`。
  *
- * 只放行 assets / fonts / api / emulatorjs 四个前缀，别的一律 404：这不是通用的反代入口。
- * emulatorjs 给大陆访客取模拟器引擎与核心（src/emulator/paths.ts 的 ejsBase）。
+ * 只放行 assets / fonts / api / emulatorjs / ruffle / jsdos 六个前缀，别的一律 404：这不是通用的反代入口。
+ * 后三个给大陆访客取模拟器引擎与核心（src/emulator/paths.ts 的 runtimeBase：EmulatorJS、Flash、DOS）。
  */
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { CN_EDGE_PREFIX } from '../../shared/cover-cdn-hint.js'
 
-const ALLOWED = /^\/(assets|fonts|api|emulatorjs)\//
+const ALLOWED = /^\/(assets|fonts|api|emulatorjs|ruffle|jsdos)\//
 const IMMUTABLE = 'public, max-age=31536000, immutable'
 
 export function rewriteCssFontUrls(css) {

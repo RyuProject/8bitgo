@@ -6,10 +6,10 @@
 import type { MameArcadeDiskSource, RuntimeId } from './types'
 import {
   J2ME_PATH,
-  JSDOS_PATH,
+  jsdosBase,
   PPSSPP_RUNTIME_PATH,
   ppssppFrameUrl,
-  RUFFLE_PATH,
+  ruffleBase,
   ejsCoreAsset,
   ejsRuntimeAsset,
   emulatorJsCoreDataFile,
@@ -76,7 +76,7 @@ async function prewarmRuffleCore() {
   if (ruffleCoreWarmStarted || !allowsLargeHoverPrewarm()) return
   ruffleCoreWarmStarted = true
   try {
-    const response = await fetch(`${RUFFLE_PATH}bootstrap.json`, {
+    const response = await fetch(`${ruffleBase()}bootstrap.json`, {
       cache: 'force-cache',
       credentials: 'same-origin',
     })
@@ -86,7 +86,7 @@ async function prewarmRuffleCore() {
     if (!Array.isArray(variant) || variant.length !== 2) return
     // 文件名来自构建时校验过的同目录清单；这里再挡路径字符，避免外部 CDN 的畸形清单。
     for (const name of variant) {
-      if (/^[\w.-]+$/.test(name)) warmHttpCache(`${RUFFLE_PATH}${name}`)
+      if (/^[\w.-]+$/.test(name)) warmHttpCache(`${ruffleBase()}${name}`)
     }
   } catch {
     // 预热失败不能影响点击后的正式启动；ruffle.js 仍会走自己的兼容选择与错误处理。
@@ -103,8 +103,8 @@ async function prewarmRuffleCore() {
  * jspiEnabled；两边分叉会让玩家白下另一份 7.5 MB 核心。
  */
 function prewarmJsdos(core: string | null | undefined, aggressive: boolean) {
-  warmHttpCache(`${JSDOS_PATH}js-dos.js`)
-  warmHttpCache(`${JSDOS_PATH}js-dos.css`)
+  warmHttpCache(`${jsdosBase()}js-dos.js`)
+  warmHttpCache(`${jsdosBase()}js-dos.css`)
   if (!aggressive || !hasHoverIntent() || !allowsLargeHoverPrewarm()) return
   warmJsdosCore(core)
 }
@@ -118,7 +118,7 @@ function prewarmJsdos(core: string | null | undefined, aggressive: boolean) {
  * 这里与那两路下载并行，正式请求时直接命中缓存。`warmHttpCache` 自带去重，悬停已拉过就不再发。
  */
 export function warmJsdosCore(core: string | null | undefined) {
-  const emulatorRoot = `${JSDOS_PATH}emulators/`
+  const emulatorRoot = `${jsdosBase()}emulators/`
   // 两个后端都先经过这层调度和 ZIP 文件系统；合计不足 300 KB，和核心并行拉最划算。
   warmHttpCache(`${emulatorRoot}emulators.js`)
   warmHttpCache(`${emulatorRoot}wlibzip.js`)
@@ -137,7 +137,7 @@ export function prewarmRuntime(runtime: RuntimeId | undefined, core?: string | n
     return
   }
   if (runtime === 'ruffle') {
-    warmHttpCache(`${RUFFLE_PATH}ruffle.js`)
+    warmHttpCache(`${ruffleBase()}ruffle.js`)
     // 只有真实指针悬停才预拉大核心；focus 在触屏上与点击同时发生，抢拉会有重复下载风险。
     if (aggressive) void prewarmRuffleCore()
     return

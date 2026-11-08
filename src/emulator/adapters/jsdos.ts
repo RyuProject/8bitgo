@@ -77,7 +77,7 @@ import {
   windows3xLaunchCommands,
   type WindowsLaunchCi,
 } from '../windowsLaunch'
-import { JSDOS_ASSET_VERSION, JSDOS_PATH } from '../paths'
+import { JSDOS_ASSET_VERSION, JSDOS_PATH, jsdosBase, markJsdosEdgeFailed } from '../paths'
 import {
   DOS_MOUSE_SENSITIVITY_DEFAULT,
   dosMouseSpeedMultiplier,
@@ -664,9 +664,11 @@ function loadJsDos(): Promise<DosFn> {
     const win = window as unknown as { Dos?: DosFn }
     if (win.Dos) return resolve(win.Dos)
 
+    // 大陆访客从 EdgeOne 取（paths.ts 的 jsdosBase）；取不到就当场换同源再来一次
+    const root = jsdosBase()
     const css = document.createElement('link')
     css.rel = 'stylesheet'
-    css.href = `${JSDOS_PATH}js-dos.css`
+    css.href = `${root}js-dos.css`
     document.head.appendChild(css)
 
     /*
@@ -677,9 +679,20 @@ function loadJsDos(): Promise<DosFn> {
     armJspi()
 
     const script = document.createElement('script')
-    script.src = `${JSDOS_PATH}js-dos.js`
+    script.src = `${root}js-dos.js`
     script.onload = () => (win.Dos ? resolve(win.Dos) : reject(new Error('js-dos 已加载但没有暴露 Dos()')))
-    script.onerror = () => reject(new Error(`加载失败：${JSDOS_PATH}js-dos.js`))
+    script.onerror = () => {
+      if (root !== JSDOS_PATH) {
+        console.warn(`[jsdos] ${root}js-dos.js 加载失败，改走同源 ${JSDOS_PATH}`)
+        markJsdosEdgeFailed()
+        css.remove()
+        script.remove()
+        loading = null
+        loadJsDos().then(resolve, reject)
+        return
+      }
+      reject(new Error(`加载失败：${root}js-dos.js`))
+    }
     document.head.appendChild(script)
   }).catch((e) => {
     loading = null // 允许下次重试
@@ -1188,6 +1201,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   /** onReady 的延时兜底定时器，销毁时要清掉 */
   let readyFallback = 0
   let readySent = false
+  /** 这一局开始时是否走大陆加速入口（paths.ts 的 jsdosBase） */
+  const usedJsdosEdge = jsdosBase() !== JSDOS_PATH
   let windowsGuestAutoSaveTimer = 0
   let windowsGuestCheckpointInFlight: Promise<{
     ok: boolean
@@ -1346,6 +1361,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const failLoad = (message: string) => {
     if (destroyed || terminalErrorSent) return
     terminalErrorSent = true
+    // 开局前失败可能是加速入口造成的：自动重试改走同源（paths.ts 的 jsdosBase）
+    if (usedJsdosEdge && !readySent) markJsdosEdgeFailed()
     window.clearTimeout(readyFallback)
     cancelGuestStartupTimeout?.()
     cancelGuestStartupTimeout = null
@@ -1706,14 +1723,21 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       if (guest) {
         armGuestStartupTimeout('ci', windowsGuestStartupBudgetMs(options.dosLaunchDelay ?? (dosSystemGuest ? 8 : 24)))
       }
+      /*
+        emulators.js 整页只注入一次，wasm / Worker 的地址取它首次加载时记下的 pathPrefix。
+        上一局在加速入口失败、这一局换回同源时，已加载的全局对象还指着旧地址，这里同步过去。
+      */
+      const emulatorsPrefix = `${jsdosBase()}emulators/`
+      const emulatorsGlobal = (window as unknown as { emulators?: { pathPrefix?: string } }).emulators
+      if (emulatorsGlobal && emulatorsGlobal.pathPrefix !== emulatorsPrefix) emulatorsGlobal.pathPrefix = emulatorsPrefix
       props = Dos(host, {
         ...(streamingGame
           ? { url: primaryUrl, initFs }
           : guest
           ? { dosboxConf: guest.dosboxConf, jsdosConf: { version: '8' }, initFs }
           : { url: primaryUrl }),
-        // 自托管的 wasm / worker 都在这个目录下
-        pathPrefix: `${JSDOS_PATH}emulators/`,
+        // 自托管的 wasm / worker 都在这个目录下（大陆访客是 EdgeOne 上的同一份，见 jsdosBase）
+        pathPrefix: emulatorsPrefix,
         // Windows 3.x / 9x 仍是装在磁盘镜像里的客体系统；这里切的是能启动该镜像的 DOSBox-X 核心。
         // 新模式把系统 bundle 与游戏 ZIP 分开叠加；没配系统 bundle 时仍兼容旧的完整 .jsdos 包。
         backend: pc98 || guest || options.dosBackend === 'dosboxX' ? 'dosboxX' : 'dosbox',
