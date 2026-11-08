@@ -94,6 +94,8 @@ import { newStartupId, recordStartupEvent, type StartupEventName } from '@/servi
 import { recordRecent } from '@/services/auth'
 import { openAuthModal } from '@/services/authModal'
 import { onMatchRequest } from '@/services/matchRequest'
+import { onIpxHostRequest } from '@/services/ipxRequest'
+import { IpxPanel } from './IpxPanel'
 import {
   claimRoom,
   downloadState,
@@ -727,6 +729,10 @@ export function EmulatorPlayer({
   const [jsnesNetplayOpen, setJsnesNetplayOpen] = useState(false)
   /** 通用“创建联机房间”落到 jsnes 时，面板打开后要自动执行一次开房。 */
   const [jsnesNetplayAutoHost, setJsnesNetplayAutoHost] = useState(false)
+  /** DOS IPX 房间使用独立的面板与 peer 信令，不混入锁步联机房。 */
+  const [ipxPanelOpen, setIpxPanelOpen] = useState(false)
+  const [ipxAutoHost, setIpxAutoHost] = useState(false)
+  const [ignoreIpxInvite, setIgnoreIpxInvite] = useState(false)
   /**
    * 远端直链 `.nes` 的格式 / mapper 探测结果必须和 URL 绑在一起。
    * 只存一个裸 boolean 会在切语言的那一帧把上一份 ROM 的结果套到新地址上，
@@ -761,6 +767,9 @@ export function EmulatorPlayer({
   const jsnesInviteCode = typeof window !== 'undefined'
     ? (new URLSearchParams(window.location.search).get('jsnesp2p')?.trim().toLowerCase() ?? '')
     : ''
+  const ipxInviteCode = typeof window !== 'undefined'
+    ? (new URLSearchParams(window.location.search).get('ipx')?.trim() ?? '')
+    : ''
   // 带 ?jsnesp2p=CODE 时打开面板，由面板自己自动进房。
   // 连接也放在面板里做，信令/ROM/状态回调才会更新玩家眼前的这一张界面。
   useEffect(() => {
@@ -769,6 +778,12 @@ export function EmulatorPlayer({
     setJsnesNetplayOpen(true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, handle, jsnesInviteCode])
+  // DOS IPX 邀请链接带着同一游戏 slug；ROM 开始运行后再建立 IPX 数据通道。
+  useEffect(() => {
+    if (ignoreIpxInvite || !ipxInviteCode || status !== 'running' || !handle?.joinIpx) return
+    setIpxAutoHost(false)
+    setIpxPanelOpen(true)
+  }, [status, handle, ipxInviteCode, ignoreIpxInvite])
   /** netplay 给我们分配的身份 id，服务器用它判断「谁该接手」 */
   const myIdRef = useRef<string>('')
   /** 正在接手的旧房间 id：新房间开好后要调 /migrate 把两者接上 */
@@ -2789,38 +2804,21 @@ export function EmulatorPlayer({
    * 游戏还没跑起来的话先跑起来：开房必须在**已经挂载的引擎**上做
    * （openNetplay 的前提），所以记一个「跑起来就开房」的标记，
    * 等 status 变成 running 再补上那一步。
-   */
+  */
   const wantMatchRef = useRef(false)
-  useEffect(
-    () =>
-      onMatchRequest(() => {
-        if (hosting || matchBusy) return
-        // 已经在跑：立刻开，用不着留标记
-        if (status === 'running') {
-          if (!openMatchForCurrentRuntime()) setNotice(t.player.matchFailed)
-          return
-        }
-        /**
-         * 还没跑：先跑起来，running 之后由下面那个 effect 补上开房。
-         *
-         * ⚠️ 标记只在**确定这一次真能开起来**时才留。
-         * 以前是无条件先 `wantMatchRef.current = true` 再看情况 —— 于是
-         * 「没有 ROM / 这个平台没有可用运行时」这类点了没反应的情况，标记会一直挂着，
-         * 等玩家过一会儿自己传个本地 ROM 开始玩，冷不丁就被开了个房。
-         * 而且设 ref 不触发渲染，指望后面的 effect 去兜底是兜不住的（可能根本不再渲染）。
-         */
-        if (status === 'idle' && romUrl && pageRuntime) {
-          wantMatchRef.current = true
-          void start(null)
-        } else if (status === 'loading') {
-          // ROM 正在下：等它跑起来
-          wantMatchRef.current = true
-        }
-      }),
-    // openMatchForCurrentRuntime / start 每次渲染都是新的；状态变化时重订阅以拿到最新句柄。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [status, hosting, matchBusy, romUrl, pageRuntime, handle],
-  )
+  const wantIpxHostRef = useRef(false)
+  useEffect(() => {
+    if (!wantIpxHostRef.current) return
+    // 和普通联机意图一样，启动失败或玩家停掉游戏时作废这次请求，不能污染下一局。
+    if (status === 'error' || status === 'idle') {
+      wantIpxHostRef.current = false
+      return
+    }
+    if (status !== 'running') return
+    wantIpxHostRef.current = false
+    setIpxAutoHost(true)
+    setIpxPanelOpen(true)
+  }, [status, handle])
 
   // 游戏跑起来了，而且是因为「想开房」才跑的 —— 把那一步补上
   useEffect(() => {
@@ -3175,6 +3173,56 @@ export function EmulatorPlayer({
       begin(picked, targetPlatform, runtime)
     },
     [platform, romUrl, pageRuntime, engineReady, jsnesNetplay, onDetectMismatch, onPlatformChange, onRuntimeChange, onDetectFailed, onLocalFileSelected, t],
+  )
+
+  useEffect(
+    () =>
+      onMatchRequest(() => {
+        if (hosting || matchBusy) return
+        // 已经在跑：立刻开，用不着留标记
+        if (status === 'running') {
+          if (!openMatchForCurrentRuntime()) setNotice(t.player.matchFailed)
+          return
+        }
+        /**
+         * 还没跑：先跑起来，running 之后由下面那个 effect 补上开房。
+         *
+         * ⚠️ 标记只在**确定这一次真能开起来**时才留。
+         * 以前是无条件先 `wantMatchRef.current = true` 再看情况 —— 于是
+         * 「没有 ROM / 这个平台没有可用运行时」这类点了没反应的情况，标记会一直挂着，
+         * 等玩家过一会儿自己传个本地 ROM 开始玩，冷不丁就被开了个房。
+         * 而且设 ref 不触发渲染，指望后面的 effect 去兜底是兜不住的（可能根本不再渲染）。
+         */
+        if (status === 'idle' && romUrl && pageRuntime) {
+          wantMatchRef.current = true
+          void start(null)
+        } else if (status === 'loading') {
+          // ROM 正在下：等它跑起来
+          wantMatchRef.current = true
+        }
+      }),
+    // start 在此处已经声明；订阅随开局回调更新，避免从旧闭包启动过期 ROM。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [status, hosting, matchBusy, romUrl, pageRuntime, handle, start],
+  )
+
+  useEffect(
+    () => onIpxHostRequest(() => {
+      if (status === 'running' && handle?.openIpxHost) {
+        setIpxAutoHost(true)
+        setIpxPanelOpen(true)
+        return
+      }
+      if ((status === 'idle' || status === 'loading') && pageRuntime?.id === 'jsdos' && romUrl) {
+        wantIpxHostRef.current = true
+        if (status === 'idle') void start(null)
+        return
+      }
+      setNotice(t.player.ipxFailed)
+    }),
+    // 详情页命令可在播放器仍加载时到达；订阅更新时带上当前 ROM、运行时和启动回调。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [status, handle, pageRuntime, romUrl, start],
   )
 
   /*
@@ -4600,6 +4648,19 @@ export function EmulatorPlayer({
           </>
         ) : null}
 
+        {status === 'running' && handle?.openIpxHost && handle.joinIpx && (
+          <button
+            type="button"
+            onClick={() => {
+              setIpxAutoHost(false)
+              setIpxPanelOpen(true)
+            }}
+            className="rounded-md border border-line px-2 py-1 text-muted transition-colors hover:text-fg"
+          >
+            {t.player.ipxTitle}
+          </button>
+        )}
+
         {/*
           可变长度的说明文字（文件名、没有运行时、检测/回退提示）**全部收进这一块**，
           而且整条工具栏里只有它能被压缩。
@@ -4906,6 +4967,25 @@ export function EmulatorPlayer({
         onClose={() => {
           setJsnesNetplayOpen(false)
           setJsnesNetplayAutoHost(false)
+        }}
+      />
+    )}
+    {ipxPanelOpen && handle?.openIpxHost && handle.joinIpx && (
+      <IpxPanel
+        handle={handle}
+        gameSlug={gameSlug}
+        initialAddress={ignoreIpxInvite ? '' : ipxInviteCode}
+        autoHost={ipxAutoHost}
+        onClose={() => {
+          setIpxPanelOpen(false)
+          setIpxAutoHost(false)
+          setIgnoreIpxInvite(true)
+          // 退出后移除自动加入参数；否则刷新或再次打开面板会悄悄重新连回原房间。
+          if (ipxInviteCode) {
+            const url = new URL(window.location.href)
+            url.searchParams.delete('ipx')
+            window.history.replaceState(window.history.state, '', url)
+          }
         }}
       />
     )}

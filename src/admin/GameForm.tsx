@@ -214,6 +214,8 @@ const EMPTY: Game = {
   hidden: false,
   rom: '',
   roms: {},
+  romAssets: {},
+  romBundleEntries: {},
   // 逐游戏运行时覆盖；NES 与 Play! System 2x6 街机包会用到，其余平台留空走默认引擎
   runtime: null,
   requiresNetwork: null,
@@ -228,6 +230,10 @@ const FLASH_CONTROL_PRESETS = {
     p2: { up: 'KeyW', down: 'KeyS', left: 'KeyA', right: 'KeyD' },
   },
 } satisfies Record<string, NonNullable<Game['flashControls']>>
+
+// Flash 包请求路径必须能在浏览器 URL 与服务端白名单间无歧义往返。
+// eslint-disable-next-line no-control-regex
+const INVALID_FLASH_BUNDLE_PATH = /[\\?#\x00-\x1f\x7f]/
 
 const cloneFlashControls = (value: NonNullable<Game['flashControls']>): NonNullable<Game['flashControls']> =>
   JSON.parse(JSON.stringify(value))
@@ -601,9 +607,29 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
   const setRomLang = (lang: RomSlotLang, key: string) =>
     setForm((f) => {
       const roms = { ...f.roms }
+      const romAssets = { ...f.romAssets }
+      const romBundleEntries = { ...f.romBundleEntries }
+      if ((f.roms?.[lang] ?? '') !== key.trim()) delete romAssets[lang]
+      if ((f.roms?.[lang] ?? '') !== key.trim()) delete romBundleEntries[lang]
       if (key.trim()) roms[lang] = key.trim()
       else delete roms[lang]
-      return { ...f, roms }
+      return { ...f, roms, romAssets, romBundleEntries }
+    })
+
+  const setRomAssetsLang = (lang: RomSlotLang, paths: string[]) =>
+    setForm((f) => {
+      const romAssets = { ...f.romAssets }
+      if (paths.length) romAssets[lang] = [...new Set(paths)]
+      else delete romAssets[lang]
+      return { ...f, romAssets }
+    })
+
+  const setRomBundleEntryLang = (lang: RomSlotLang, path: string) =>
+    setForm((f) => {
+      const romBundleEntries = { ...f.romBundleEntries }
+      if (path.trim()) romBundleEntries[lang] = path.trim()
+      else delete romBundleEntries[lang]
+      return { ...f, romBundleEntries }
     })
 
   const setDosEntryLang = (lang: RomSlotLang, path: string) =>
@@ -918,9 +944,15 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
 
     const cleanedRoms: Record<string, string> = {}
     const cleanedRomBackups: Record<string, string> = {}
+    const cleanedRomAssets: Record<string, string[]> = {}
+    const cleanedRomBundleEntries: Record<string, string> = {}
     for (const l of allRomLangs) {
       const v = form.roms?.[l]?.trim()
       if (v) cleanedRoms[l] = v
+      const assets = form.romAssets?.[l]
+      if (v && Array.isArray(assets) && assets.length) cleanedRomAssets[l] = [...new Set(assets)]
+      const entry = form.romBundleEntries?.[l]?.trim()
+      if (v && entry) cleanedRomBundleEntries[l] = entry
       const backup = form.romBackups?.[l]?.trim()
       if (!backup) continue
       if (!v) return setError(`${romLanguageLabel(l)} 填了备用地址，但还没有主地址`)
@@ -954,6 +986,9 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
       video: form.video?.trim() || undefined,
       rom: form.rom?.trim() || undefined,
       roms: Object.keys(cleanedRoms).length ? cleanedRoms : undefined,
+      // 显式提交空对象：解绑入口 / 改成单文件时必须清除旧的多文件授权清单。
+      romAssets: form.platform === 'flash' ? cleanedRomAssets : {},
+      romBundleEntries: form.platform === 'flash' ? cleanedRomBundleEntries : {},
       // 空对象也要送出：管理员清空最后一个备用地址时，服务端才能删除旧值。
       romBackups: cleanedRomBackups,
       // 空对象也显式提交：编辑时清空所有语言入口，服务端才知道这是有意清除。
@@ -1652,6 +1687,8 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
                   : `${romLanguageLabel(lang)} 街机 ROM（地区 / 语言变体）`
                 : lang === 'en' ? 'English ROM（第一回退）' : lang === 'ja' ? '日本語 ROM（第二回退）' : `${romLanguageLabel(lang)} ROM`}
               value={form.roms?.[lang] ?? ''}
+              assetsValue={form.romAssets?.[lang] ?? []}
+              bundleEntryValue={form.romBundleEntries?.[lang] ?? ''}
               backupValue={form.romBackups?.[lang] ?? ''}
               platform={form.platform}
               runtime={form.runtime}
@@ -1666,6 +1703,8 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
                 onCompleted: (job) => acceptCompletedSockdrive(lang, job),
               } : undefined}
               onChange={(key) => setRomLang(lang, key)}
+              onAssetsChange={(paths) => setRomAssetsLang(lang, paths)}
+              onBundleEntryChange={(path) => setRomBundleEntryLang(lang, path)}
               onBackupChange={(key) => setRomBackupLang(lang, key)}
               allBoundKeys={allBoundKeys}
               onDeleteRom={deleteBoundRom}
@@ -2899,6 +2938,8 @@ function MameDiskUploadRow({
  */
 function RomField({
   value,
+  assetsValue,
+  bundleEntryValue,
   backupValue,
   platform,
   runtime,
@@ -2906,6 +2947,8 @@ function RomField({
   persistedSlug,
   autoSockdrive,
   onChange,
+  onAssetsChange,
+  onBundleEntryChange,
   onBackupChange,
   lang,
   dosEntry,
@@ -2923,6 +2966,8 @@ function RomField({
   allowStorage,
 }: {
   value: string
+  assetsValue: string[]
+  bundleEntryValue: string
   backupValue: string
   platform: PlatformId
   runtime?: Game['runtime']
@@ -2939,6 +2984,8 @@ function RomField({
     onCompleted: (job: SockdriveConversionJob) => void
   }
   onChange: (key: string) => void
+  onAssetsChange: (paths: string[]) => void
+  onBundleEntryChange: (path: string) => void
   onBackupChange: (key: string) => void
   lang?: RomSlotLang
   dosEntry?: string
@@ -2979,6 +3026,7 @@ function RomField({
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [pending, setPending] = useState<PendingBundle | null>(null)
   const [bundleAt, setBundleAt] = useState<BundleUploadProgress | null>(null)
+  const [scanningBundle, setScanningBundle] = useState(false)
   /** 街机 ROM 的自动识别结果，上传后显示在下面 */
   const [romset, setRomset] = useState<RomsetIdentification | null>(null)
   /** FBNeo 索引没有覆盖的、按 MAME 源码 CRC 精确识别的街机 set */
@@ -3126,6 +3174,37 @@ function RomField({
   const bundleDir = () => {
     const old = value.trim()
     return old && !/^https?:/i.test(old) && isBundleKey(old) ? dirOfKey(old) : bundleDirFor(platform, slug, lang)
+  }
+
+  /** 旧包 / 手工绑 key 的游戏可主动扫描同目录，并把确认范围限制在网页资源文件。 */
+  const scanFlashAssets = async () => {
+    const key = value.trim()
+    if (!key || /^https?:/i.test(key) || !isBundleKey(key)) {
+      setMsg({ ok: false, text: '请先绑定一个 R2 多文件包里的主 SWF' })
+      return
+    }
+    const dir = dirOfKey(key)
+    setScanningBundle(true)
+    setMsg(null)
+    try {
+      const prefix = `${dir}/`
+      const objects = await listRomObjects(dir)
+      const skipped = /(^|\/)(?:\.DS_Store|Thumbs\.db|desktop\.ini)$/i
+      const nonWeb = /\.(?:exe|dll|bat|cmd|com|msi|scr|lnk|url|rar|7z|zip|iso|dmg)$/i
+      const paths = objects
+        .filter((object) => object.key.startsWith(prefix) && object.key !== key)
+        .map((object) => object.key.slice(prefix.length))
+        .filter((path) => path && path.length <= 500 && !INVALID_FLASH_BUNDLE_PATH.test(path) &&
+          !skipped.test(path) && !nonWeb.test(path) && path.split('/').every((part) => part && part !== '.' && part !== '..'))
+      if (paths.length > 512) throw new Error(`目录中有 ${paths.length} 个候选资源；API 单包上限为 512 个，请先清理无关文件`)
+      onAssetsChange(paths)
+      onBundleEntryChange(key.slice(key.lastIndexOf('/') + 1))
+      setMsg({ ok: true, text: paths.length ? `已登记 ${paths.length} 个同目录依赖文件；保存游戏后开放 API 才会返回这些资源` : '没有找到可登记的同目录依赖文件' })
+    } catch (error) {
+      setMsg({ ok: false, text: error instanceof Error ? error.message : '扫描多文件包失败' })
+    } finally {
+      setScanningBundle(false)
+    }
   }
 
   /** 选中 zip：解出目录结构，交给下面的面板等管理员确认 */
@@ -3741,6 +3820,15 @@ function RomField({
   /** 面板上点「上传整包」 */
   const runBundle = async () => {
     if (!pending) return
+    const dependencies = pending.plan.files.filter((file) => file.include && file.path !== pending.plan.main)
+    if (dependencies.length > 512) {
+      setMsg({ ok: false, text: '单个 Flash 包最多登记 512 个依赖文件；请先从 ZIP 中移除网页不需要的文件' })
+      return
+    }
+    if (pending.plan.files.some((file) => file.include && (file.path.length > 500 || INVALID_FLASH_BUNDLE_PATH.test(file.path) || file.path.split('/').some((part) => !part || part === '.' || part === '..')))) {
+      setMsg({ ok: false, text: '包内路径过长或含反斜杠、问号、井号、控制字符、空目录段 / 点目录，浏览器无法可靠按相对路径请求；请先在 ZIP 中修正' })
+      return
+    }
     const oldKey = value.trim()
     setMsg(null)
     setBundleAt({ done: 0, total: pending.plan.files.filter((f) => f.include).length, path: '', pct: 0 })
@@ -3757,6 +3845,8 @@ function RomField({
         return
       }
       onChange(r.mainKey)
+      onAssetsChange(dependencies.map((file) => file.path))
+      onBundleEntryChange(pending.plan.main)
       // 旧 ROM 还在同一个包目录里的话，孤儿清理那步已经处理过了，别再问第二遍
       const removedOld = dirOfKey(oldKey) === pending.dir ? null : await cleanupSuperseded(oldKey, r.mainKey, allBoundKeys)
       setMsg({
@@ -4007,6 +4097,25 @@ function RomField({
         )}
         {progress !== null && stageText(stage) && <p className="mt-1 font-mono text-[11px] text-dim">{stageText(stage)}</p>}
         {msg && <p className={cx('mt-2 text-xs', msg.ok ? 'text-online' : 'text-live')}>{msg.text}</p>}
+        {isFlash && value.trim() && isBundleKey(value.trim()) && (
+          <div className="mt-2 space-y-2 rounded-md border border-line p-2 text-xs text-muted">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span>Flash 依赖清单：{assetsValue.length} 个文件</span>
+              <div className="flex gap-2">
+                <button type="button" className={btnClass.secondary} disabled={!canUpload || scanningBundle || progress !== null || bundleAt !== null} onClick={() => void scanFlashAssets()}>
+                  {scanningBundle ? '扫描中…' : '扫描并登记同目录资源'}
+                </button>
+                {assetsValue.length > 0 && <button type="button" className={btnClass.secondary} onClick={() => onAssetsChange([])}>清空依赖</button>}
+              </div>
+            </div>
+            <label className="flex flex-wrap items-center gap-2">
+              <span>入口包内路径</span>
+              <input className={cx(inputClass, 'min-w-48 flex-1 font-mono')} value={bundleEntryValue} onChange={(event) => onBundleEntryChange(event.target.value)} placeholder={value.slice(dirOfKey(value).length + 1)} />
+            </label>
+            <p>开放 API 会按这份白名单提供入口 SWF 的相对依赖；扫描结果保存前只在当前表单生效。</p>
+            {assetsValue.length > 0 && <p className="break-all font-mono text-[11px]">{assetsValue.slice(0, 12).join(' · ')}{assetsValue.length > 12 ? ` · …另有 ${assetsValue.length - 12} 个` : ''}</p>}
+          </div>
+        )}
         {romset && (
           <RomsetHint
             found={romset}

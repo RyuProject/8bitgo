@@ -21,6 +21,8 @@ const EXPECTED_COLUMNS = [
   { table: 'game_roms', column: 'dos_executable', why: '同一 DOS ZIP 按语言选择启动文件；缺列会让后台保存 500' },
   { table: 'game_roms', column: 'dos_startup_commands', why: '各语言 DOS 光盘挂载命令；缺列会让后台保存 500' },
   { table: 'game_roms', column: 'dos_sockdrive', why: '多语言 DOS / Windows 游戏逐语言绑定流式盘；缺列会让后台保存 500' },
+  { table: 'game_roms', column: 'bundle_assets', why: 'Flash 多文件包的依赖资源清单；缺列会让 API 只提供入口 SWF' },
+  { table: 'game_roms', column: 'bundle_entry', why: 'Flash 主 SWF 在包目录中的相对位置；缺列会让子目录入口的相对资源地址失效' },
   { table: 'game_roms', column: 'backup_key', why: '同语言 ROM 备用地址；缺列会让后台保存备用源 500' },
   { table: 'games', column: 'dos_backend', why: 'DOS / Windows 客体运行核心选择' },
   { table: 'games', column: 'dos_pc98', why: 'DOS 分类中的 PC-98 软盘模式开关' },

@@ -737,6 +737,8 @@ export function gameRowToApi(r, rel = {}) {
   const byLang = { ...roms }
   delete byLang[GENERIC_ROM_LANG]
   if (Object.keys(byLang).length) g.roms = byLang
+  if (rel.romAssets && Object.keys(rel.romAssets).length) g.romAssets = rel.romAssets
+  if (rel.romBundleEntries && Object.keys(rel.romBundleEntries).length) g.romBundleEntries = rel.romBundleEntries
   /*
     官方 ROM 都是 FBNeo 索引里不需要 BIOS 的 romset 时，告诉播放器别再下平台级 BIOS
     （平台那格通常是 neogeo.zip，恐龙快打这类 CPS 游戏用不上）。后台填了系统包 / RomData、
@@ -873,7 +875,7 @@ export function gameApiToPartialRow(patch) {
 /** 请求体里带了关联字段吗（决定 PATCH 要不要动关联表） */
 export function relationsInPatch(patch) {
   const has = (k) => Object.prototype.hasOwnProperty.call(patch ?? {}, k)
-  return { genres: has('genres'), tags: has('tags'), roms: has('rom') || has('roms') || has('romBackups') || has('dosExecutables') || has('dosStartupCommands') || has('dosSockdrives') }
+  return { genres: has('genres'), tags: has('tags'), roms: has('rom') || has('roms') || has('romBackups') || has('romAssets') || has('romBundleEntries') || has('dosExecutables') || has('dosStartupCommands') || has('dosSockdrives') }
 }
 
 /** 把 API 对象里的 rom / roms 归一成 { lang: key } 的形式（通用 ROM 用 '*'） */
@@ -886,6 +888,63 @@ export function romsOf(g) {
   return out
 }
 
+const FLASH_BUNDLE_ASSET_MAX = 512
+const FLASH_BUNDLE_PATH_MAX = 500
+
+/** Flash 包清单里只存相对路径；写入时拒绝危险项，读取时则丢弃旧脏数据。 */
+export function flashBundleAssetPaths(value, { strict = false } = {}) {
+  let input = value
+  if (typeof input === 'string') {
+    try { input = JSON.parse(input) } catch {
+      if (strict) return badGameField('Flash 依赖清单不是有效 JSON 数组')
+      return []
+    }
+  }
+  if (input == null) return []
+  if (!Array.isArray(input)) {
+    if (strict) return badGameField('Flash 依赖清单必须是路径数组')
+    return []
+  }
+  if (input.length > FLASH_BUNDLE_ASSET_MAX) {
+    if (strict) return badGameField(`Flash 包最多登记 ${FLASH_BUNDLE_ASSET_MAX} 个依赖文件`)
+    input = input.slice(0, FLASH_BUNDLE_ASSET_MAX)
+  }
+  const out = []
+  const seen = new Set()
+  let total = 0
+  for (const raw of input) {
+    const path = typeof raw === 'string' ? raw : ''
+    const parts = path.split('/')
+    // 路径不能跳出当前包目录，也不能用反斜杠 / 查询串改变 URL 的解析边界。
+    // eslint-disable-next-line no-control-regex
+    const unsafeCharacters = /[\\?#\x00-\x1f\x7f]/
+    const valid = path.length > 0 && path.length <= FLASH_BUNDLE_PATH_MAX && path === path.trim() &&
+      !unsafeCharacters.test(path) && !path.startsWith('/') && !path.endsWith('/') &&
+      parts.every((part) => part && part !== '.' && part !== '..')
+    if (!valid) {
+      if (strict) return badGameField('Flash 依赖路径必须是安全的相对路径，不能包含空段、点目录、反斜杠或控制字符')
+      continue
+    }
+    if (seen.has(path)) continue
+    total += path.length
+    if (total > 64 * 1024) {
+      if (strict) return badGameField('Flash 依赖清单总长度不能超过 64 KB')
+      break
+    }
+    seen.add(path)
+    out.push(path)
+  }
+  return out
+}
+
+/** 主入口也是相对路径；复用同一套边界校验，避免入口与依赖使用不同的路径规则。 */
+export function flashBundleEntryPath(value, { strict = false } = {}) {
+  if (value == null || value === '') return null
+  const paths = flashBundleAssetPaths([value], { strict })
+  if (!paths.length && strict) return badGameField('Flash 主入口必须是包目录内的安全相对路径')
+  return paths[0] ?? null
+}
+
 /** 关联表重写时，同 key 的旧入口可沿用；换包后旧入口必须作废。 */
 export function romRelationRows(game, previous = [], partial = false) {
   const hasRomKeys = Object.prototype.hasOwnProperty.call(game, 'rom') || Object.prototype.hasOwnProperty.call(game, 'roms')
@@ -893,6 +952,8 @@ export function romRelationRows(game, previous = [], partial = false) {
   const hasCommands = Object.prototype.hasOwnProperty.call(game, 'dosStartupCommands')
   const hasBackups = Object.prototype.hasOwnProperty.call(game, 'romBackups')
   const hasSockdrives = Object.prototype.hasOwnProperty.call(game, 'dosSockdrives')
+  const hasBundleAssets = Object.prototype.hasOwnProperty.call(game, 'romAssets')
+  const hasBundleEntries = Object.prototype.hasOwnProperty.call(game, 'romBundleEntries')
   const oldByLang = new Map(previous.map((row) => [row.lang, row]))
   const roms = hasRomKeys || !partial ? Object.entries(romsOf(game)) : previous.map((row) => [row.lang, row.object_key])
   return roms.map(([lang, key]) => ({
@@ -915,6 +976,12 @@ export function romRelationRows(game, previous = [], partial = false) {
     dosSockdrive: lang === GENERIC_ROM_LANG ? null : hasSockdrives
       ? dosSockdriveOf(game.dosSockdrives?.[lang])
       : oldByLang.get(lang)?.object_key === key ? oldByLang.get(lang)?.dos_sockdrive ?? null : null,
+    bundleAssets: hasBundleAssets
+      ? flashBundleAssetPaths(game.romAssets?.[lang], { strict: true })
+      : oldByLang.get(lang)?.object_key === key ? flashBundleAssetPaths(oldByLang.get(lang)?.bundle_assets) : [],
+    bundleEntry: hasBundleEntries
+      ? flashBundleEntryPath(game.romBundleEntries?.[lang], { strict: true })
+      : oldByLang.get(lang)?.object_key === key ? flashBundleEntryPath(oldByLang.get(lang)?.bundle_entry) : null,
   }))
 }
 

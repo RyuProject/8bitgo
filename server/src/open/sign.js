@@ -61,7 +61,7 @@ function sameSig(a, b) {
  * @param {number} [o.ttl]
  * @param {number} [o.now]
  */
-export function signRomGrant({ secret, appId, slug, lang, key, mode = 'live', delivery = 'legacy', ttl = ROM_GRANT_TTL_SEC, now }) {
+export function signRomGrant({ secret, appId, slug, lang, key, mode = 'live', delivery = 'legacy', bundle = false, ttl = ROM_GRANT_TTL_SEC, now }) {
   if (!secret) throw new Error('缺少 OPEN_ROM_SECRET')
   if (!['redirect', 'plain', 'legacy'].includes(delivery)) throw new Error('ROM 凭据交付方式无效')
   const exp = Math.floor((now ?? Date.now()) / 1000) + Math.max(30, Math.floor(ttl))
@@ -75,6 +75,8 @@ export function signRomGrant({ secret, appId, slug, lang, key, mode = 'live', de
     // 显式选择的交付方式签进票里，避免明文转码地址与普通跳转地址混用。
     // 未指定方式的旧调用方保留双路行为，给现有路径替换客户端迁移窗口。
     d: delivery,
+    // 多文件 Flash 凭据只能经受限的 bundle 路由兑现，不能把它当普通单文件 ROM 使用。
+    ...(bundle ? { b: 1 } : {}),
     e: exp,
     // 随机串：同一个应用同一分钟内反复领票，得到的凭据不一样 —— 便于按票追踪单次下载
     n: b64url(randomBytes(6)),
@@ -100,6 +102,7 @@ export function verifyRomGrant(grant, { secret, now } = {}) {
   if (!p?.k || !p?.a || !p?.s) return { ok: false, reason: 'malformed' }
   if (p.m && p.m !== 'live' && p.m !== 'sandbox') return { ok: false, reason: 'malformed' }
   if (p.d != null && !['redirect', 'plain', 'legacy'].includes(p.d)) return { ok: false, reason: 'malformed' }
+  if (p.b != null && p.b !== 1) return { ok: false, reason: 'malformed' }
   // ⚠️ 先验签再看过期：顺序反了的话，一张改过 e 的票会走到「过期」分支，
   // 攻击者就能从错误码里区分「签名错」和「只是过期」，那是一条信息泄露
   if (Number(p.e) * 1000 <= (now ?? Date.now())) return { ok: false, reason: 'expired' }
@@ -111,6 +114,7 @@ export function verifyRomGrant(grant, { secret, now } = {}) {
     key: String(p.k),
     mode: p.m || 'live',
     delivery: p.d || 'legacy',
+    bundle: p.b === 1,
     exp: Number(p.e),
   }
 }

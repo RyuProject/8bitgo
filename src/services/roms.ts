@@ -583,10 +583,10 @@ export function hasRom(game: Pick<Game, 'rom' | 'roms' | 'romBackups'>): boolean
 }
 
 /** 把某个对象 key 从游戏上解绑（通用 rom 与所有语言槽都清掉），返回要提交的补丁 */
-export function unbindKeyPatch(game: Pick<Game, 'rom' | 'roms' | 'romBackups'>, key: string): Partial<Game> {
+export function unbindKeyPatch(game: Pick<Game, 'rom' | 'roms' | 'romBackups' | 'romAssets'>, key: string): Partial<Game> {
   const patch: Partial<Game> = {}
   if (game.rom === key) patch.rom = undefined
-  const roms = { ...(game.roms ?? {}) }
+  const roms = { ...game.roms }
   let touched = false
   for (const [lang, value] of Object.entries(roms)) {
     if (value === key) {
@@ -595,7 +595,16 @@ export function unbindKeyPatch(game: Pick<Game, 'rom' | 'roms' | 'romBackups'>, 
     }
   }
   if (touched) patch.roms = Object.keys(roms).length ? roms : undefined
-  const romBackups = { ...(game.romBackups ?? {}) }
+  const romAssets = { ...game.romAssets }
+  let assetsTouched = false
+  for (const [lang, value] of Object.entries(game.roms ?? {})) {
+    if (value === key && Object.prototype.hasOwnProperty.call(romAssets, lang)) {
+      delete romAssets[lang]
+      assetsTouched = true
+    }
+  }
+  if (assetsTouched) patch.romAssets = Object.keys(romAssets).length ? romAssets : {}
+  const romBackups = { ...game.romBackups }
   let backupTouched = false
   for (const [lang, value] of Object.entries(romBackups)) {
     if (value === key) {

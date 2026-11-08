@@ -11,6 +11,7 @@ import { extOf, resolveRuntime, runtimesFor, type Runtime } from '@/emulator'
 import { p2pPlayable } from '@/emulator'
 import { visitCountsAsPlayed } from '@/emulator/playedScope'
 import { requestMatch } from '@/services/matchRequest'
+import { requestIpxHost } from '@/services/ipxRequest'
 import { usePageData, type GameData } from '@/services/pageData'
 import { platformMap, EXPERIMENTAL_PLATFORMS } from '@/data/platforms'
 import { genreMap } from '@/data/genres'
@@ -59,12 +60,14 @@ export function GameDetailPage() {
   const watchOnly = searchParams.get('watch') === '1'
   // ?live= 是「一人玩多人看」的直播间（和联机房的观众席不是一回事）
   const liveInvite = searchParams.get('live') ?? undefined
+  // DOS IPX 邀请是 P2P peer 别名；打开链接后自动启动同一游戏并加入局域网隧道。
+  const ipxInvite = searchParams.get('ipx')?.trim() ?? ''
   /*
     ?autoplay=1：进来就自动开一局。目前的来路只有 TV（遥控器回车即播）。
     ⚠️ 不进 canonical —— useSeo 的 canonicalPath 取的是 pathname，不带查询串，
     所以这个参数不会造出第二个可收录地址。
   */
-  const autoStart = searchParams.get('autoplay') === '1'
+  const autoStart = searchParams.get('autoplay') === '1' || Boolean(ipxInvite)
   const t = useT()
   // 详情页要的就是这一款游戏和它的相关推荐，由后端一次给全 ——
   // v1 是把整个游戏库拉进内存再 find(slug)，几千款时光是首屏就得下载整个目录
@@ -632,9 +635,13 @@ export function GameDetailPage() {
                 不代表这个平台的模拟器能联机、也不代表信令配好了。画一个点了没反应的按钮
                 比不画更糟。
               */}
-              {game.multiplayer && p2pPlayable(game.platform) && (
-                <Button variant="secondary" size="sm" onClick={requestMatch}>
-                  {t.game.createRoom}
+              {game.multiplayer && (p2pPlayable(game.platform) || game.platform === 'dos') && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={game.platform === 'dos' ? requestIpxHost : requestMatch}
+                >
+                  {game.platform === 'dos' ? t.game.createIpxRoom : t.game.createRoom}
                 </Button>
               )}
               <Button variant="ghost" size="sm" onClick={reportProblem}>

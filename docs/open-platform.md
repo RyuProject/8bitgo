@@ -455,6 +455,25 @@ GET /api/open/v1/games/contra/rom?lang=ja      （scope: games.rom）
     "filename": "contra-ja.zip" }
 ```
 
+Flash 多文件包会额外返回 `bundle: true`、入口 `entry` 和依赖 `assets`：
+
+```json
+{
+  "bundle": true,
+  "url": "https://8bitgo.com/api/open/v1/bundle/<grant>/game/loader.swf",
+  "entry": { "path": "game/loader.swf", "url": "https://8bitgo.com/api/open/v1/bundle/<grant>/game/loader.swf" },
+  "assets": [
+    { "path": "game/ui.swf", "url": "https://8bitgo.com/api/open/v1/bundle/<grant>/game/ui.swf" },
+    { "path": "game/audio/intro.mp3", "url": "https://8bitgo.com/api/open/v1/bundle/<grant>/game/audio/intro.mp3" }
+  ],
+  "asset_count": 3
+}
+```
+
+播放器应直接把 `url` 作为入口 SWF 地址加载；它保留了入口在包目录中的原相对位置，因此 Ruffle 的 `loadMovie("ui.swf")`、`sound/intro.mp3` 等请求会自然落到同一 `/v1/bundle/{grant}/...` 路径。`assets` 是完整清单，适合非浏览器客户端预下载或校验。每个资源请求都复核当前入口绑定和依赖白名单；没有登记的文件、路径穿越或已换包资源会拒绝。单文件游戏的响应形状与原来相同。`delivery=plain` 使用 `/v1/bundle-plain/{grant}/...`，可流式转发并支持 Range。
+
+后台通过多 SWF ZIP 上传会自动保存入口相对路径与依赖清单；已经上传在 R2 的旧包可在 ROM 槽中点“扫描并登记同目录资源”，核对后保存。ZIP 上传最多为单包登记 512 个依赖文件；扫描只登记网页资源文件，不会将 EXE、DLL、压缩包等加入清单。
+
 凭据是 `base64url(JSON).base64url(HMAC-SHA256)`，**自包含、不落库**（寿命只有五分钟，
 落库就要配清理和同步）。里面绑死四样东西：
 

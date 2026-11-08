@@ -318,9 +318,8 @@ export interface IpxSession {
   /** P2P：要连的对方（peer id 或别名） */
   connectTo?: string
   /**
-   * 显示 js-dos 自带的界面。
-   * 中继模式必须打开 —— js-dos 没有对外暴露「连接到 IPX 服务器」的接口，
-   * 只能由玩家自己在它的设置面板里填 Server 和 Room。
+   * 显示 js-dos 自带的界面，供手动配置传统 WebSocket 中继时使用。
+   * 站内 IPX 面板走 P2P 控制接口，不依赖这套上游设置 UI。
    */
   showUi?: boolean
 }
@@ -663,6 +662,14 @@ export interface RuntimeHandle {
   openJsnesNetplay?: (session: JsnesNetplaySession) => boolean
   /** 退出联机房间，回到一个人玩；游戏继续跑，不重开 */
   closeNetplay?: () => void
+  /** js-dos：在当前游戏里启动 IPX 主机并注册可分享的别名，不重启游戏。 */
+  openIpxHost?: (alias: string) => Promise<void>
+  /** js-dos：按 peer id 或邀请别名加入 IPX 对端，不重启游戏。 */
+  joinIpx?: (address: string) => Promise<void>
+  /** js-dos：断开当前 IPX 网络并释放主机别名。 */
+  closeIpx?: () => Promise<void>
+  /** js-dos：用于 UI 显示的本地 peer id 与已连接对端数量。 */
+  ipxStatus?: () => { peerId: number; peers: number; active: boolean } | null
   /**
    * 引擎自己打出来的最近若干行日志（错误 / 警告）。
    *

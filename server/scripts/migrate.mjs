@@ -1022,6 +1022,18 @@ const patches = [
     run: () => conn.query('ALTER TABLE `game_roms` ADD COLUMN `dos_sockdrive` VARCHAR(500) NULL AFTER `dos_startup_commands`'),
   },
   {
+    name: 'game_roms.bundle_assets（Flash 多文件包的相对资源清单）',
+    table: 'game_roms',
+    needed: async () => !(await hasColumn('game_roms', 'bundle_assets')),
+    run: () => conn.query('ALTER TABLE `game_roms` ADD COLUMN `bundle_assets` JSON NULL AFTER `dos_sockdrive`'),
+  },
+  {
+    name: 'game_roms.bundle_entry（Flash 主 SWF 在包目录中的相对路径）',
+    table: 'game_roms',
+    needed: async () => !(await hasColumn('game_roms', 'bundle_entry')),
+    run: () => conn.query('ALTER TABLE `game_roms` ADD COLUMN `bundle_entry` VARCHAR(500) NULL AFTER `bundle_assets`'),
+  },
+  {
     name: 'open_rom_samples（开放平台每机型一款沙箱测试 ROM）',
     table: null,
     skip: async () => (!(await hasTable('game_roms')) ? '还没有 v2 的 game_roms 表' : null),

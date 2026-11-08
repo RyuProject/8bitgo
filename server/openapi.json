@@ -194,7 +194,11 @@
           "lang_actual": { "type": "string" },
           "filename": { "type": "string", "description": "存储对象文件名；明文交付的最终文件名以 Content-Disposition 为准" },
           "delivery": { "type": "string", "enum": ["redirect", "plain"], "description": "本次凭据选择的交付方式" },
-          "requires_network": { "type": ["boolean", "null"], "description": "游戏是否依赖外部网络；null 表示未知" }
+          "requires_network": { "type": ["boolean", "null"], "description": "游戏是否依赖外部网络；null 表示未知" },
+          "bundle": { "type": "boolean", "description": "存在时表示这是多文件 Flash 包，url 指向入口；assets 是按原相对路径列出的白名单依赖" },
+          "entry": { "type": "object", "properties": { "path": { "type": "string" }, "url": { "type": "string", "format": "uri" } }, "required": ["path", "url"] },
+          "assets": { "type": "array", "items": { "type": "object", "properties": { "path": { "type": "string" }, "url": { "type": "string", "format": "uri" } }, "required": ["path", "url"] } },
+          "asset_count": { "type": "integer", "description": "入口与依赖文件总数" }
         },
         "required": ["url", "expires_in", "lang_actual", "filename", "delivery", "requires_network"]
       },
@@ -613,6 +617,44 @@
           "302": { "description": "302 重定向到 ROM 下载地址（跟随到 assets 主机，凭据 5 分钟过期）" },
           "403": { "description": "凭据无效、应用已停用，或沙箱样本已撤换", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "410": { "description": "凭据已过期", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/v1/bundle/{grant}/{asset_path}": {
+      "get": {
+        "tags": ["games"],
+        "summary": "兑现多文件 Flash 包中的入口或已登记资源（302）",
+        "description": "asset_path 可包含多级相对路径。每个请求都校验短期凭据、当前游戏绑定和依赖白名单；目录遍历及未登记文件返回 404。无需 Authorization。",
+        "parameters": [
+          { "name": "grant", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "asset_path", "in": "path", "required": true, "schema": { "type": "string" }, "description": "包目录内的相对路径，可包含 /，例如 game/audio/intro.mp3" }
+        ],
+        "responses": {
+          "302": { "description": "重定向到指定的公开资源对象" },
+          "403": { "description": "凭据无效 / 应用权限撤销 / 资源不在白名单中", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "404": { "description": "入口已变更、游戏已下架或资源未登记", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "410": { "description": "凭据过期", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "429": { "description": "凭据或 IP 超出请求限流" }
+        }
+      }
+    },
+    "/v1/bundle-plain/{grant}/{asset_path}": {
+      "get": {
+        "tags": ["games"],
+        "summary": "流式兑现多文件 Flash 包中的资源",
+        "description": "与 /v1/bundle/{grant}/{asset_path} 使用同一类短期凭据与白名单，但由站点转发并支持 Range。供需要明文交付的客户端使用；无需 Authorization。",
+        "parameters": [
+          { "name": "grant", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "asset_path", "in": "path", "required": true, "schema": { "type": "string" }, "description": "包目录内的相对路径，可包含 /" },
+          { "name": "Range", "in": "header", "required": false, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "资源完整内容", "content": { "application/octet-stream": { "schema": { "type": "string", "format": "binary" } } } },
+          "206": { "description": "Range 部分内容", "content": { "application/octet-stream": { "schema": { "type": "string", "format": "binary" } } } },
+          "403": { "description": "凭据无效或资源不在白名单中", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "404": { "description": "入口已变更、游戏已下架或资源未登记", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "410": { "description": "凭据过期", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "429": { "description": "凭据或 IP 超出请求限流" }
         }
       }
     },

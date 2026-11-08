@@ -8,7 +8,7 @@
  * WHERE game_id IN (...)，不会变成每款查三次。
  */
 import { jsonMemberPath, query, queryOne, withTransaction } from './db.js'
-import { gameRowToApi, gameApiToRow, dateTimeIso, romRelationRows, GENERIC_ROM_LANG } from './mappers.js'
+import { gameRowToApi, gameApiToRow, dateTimeIso, romRelationRows, flashBundleAssetPaths, GENERIC_ROM_LANG } from './mappers.js'
 import { boundedSearchLimit, buildGameTokens, queryTerms, tokenMatchSql, normalize, tokenize, escapeLike } from './search.js'
 import { BAYES_SCORE_SQL } from './ratings-repo.js'
 import { SITE_LANGUAGES } from '../../shared/site-languages.js'
@@ -43,6 +43,8 @@ export async function attachRelations(rows) {
   const dosStartupCommands = new Map()
   const dosSockdrives = new Map()
   const romBackups = new Map()
+  const romAssets = new Map()
+  const romBundleEntries = new Map()
   for (const r of genreRows) {
     const k = key(r.game_id)
     if (!genres.has(k)) genres.set(k, [])
@@ -73,6 +75,15 @@ export async function attachRelations(rows) {
       if (!dosSockdrives.has(k)) dosSockdrives.set(k, {})
       dosSockdrives.get(k)[r.lang] = r.dos_sockdrive
     }
+    const assets = flashBundleAssetPaths(r.bundle_assets)
+    if (assets.length) {
+      if (!romAssets.has(k)) romAssets.set(k, {})
+      romAssets.get(k)[r.lang] = assets
+    }
+    if (r.bundle_entry) {
+      if (!romBundleEntries.has(k)) romBundleEntries.set(k, {})
+      romBundleEntries.get(k)[r.lang] = r.bundle_entry
+    }
   }
   return rows.map((r) => {
     const k = key(r.id)
@@ -84,6 +95,8 @@ export async function attachRelations(rows) {
       dosStartupCommands: dosStartupCommands.get(k) ?? {},
       dosSockdrives: dosSockdrives.get(k) ?? {},
       romBackups: romBackups.get(k) ?? {},
+      romAssets: romAssets.get(k) ?? {},
+      romBundleEntries: romBundleEntries.get(k) ?? {},
     })
   })
 }
@@ -679,13 +692,13 @@ async function writeRelations(run, gameId, game, only) {
   if (!only || only.roms) {
     // ROM 存储页的 PATCH 只传 ROM key。重建关联表时保留仍指向同一 ZIP 的入口，
     // 换了 key 的槽不能继承旧入口，否则可能启动新包里碰巧同名的错误程序。
-    const previous = await run('SELECT lang, object_key, backup_key, dos_executable, dos_startup_commands, dos_sockdrive FROM game_roms WHERE game_id = ?', [gameId])
+    const previous = await run('SELECT lang, object_key, backup_key, dos_executable, dos_startup_commands, dos_sockdrive, bundle_assets, bundle_entry FROM game_roms WHERE game_id = ?', [gameId])
     const roms = romRelationRows(game, previous, Boolean(only))
     await run('DELETE FROM game_roms WHERE game_id = ?', [gameId])
     if (roms.length) {
       await run(
-        `INSERT INTO game_roms (game_id, lang, object_key, backup_key, dos_executable, dos_startup_commands, dos_sockdrive) VALUES ${roms.map(() => '(?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
-        roms.flatMap((row) => [gameId, row.lang, row.key, row.backupKey, row.dosExecutable, row.dosStartupCommands, row.dosSockdrive]),
+        `INSERT INTO game_roms (game_id, lang, object_key, backup_key, dos_executable, dos_startup_commands, dos_sockdrive, bundle_assets, bundle_entry) VALUES ${roms.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
+        roms.flatMap((row) => [gameId, row.lang, row.key, row.backupKey, row.dosExecutable, row.dosStartupCommands, row.dosSockdrive, row.bundleAssets.length ? JSON.stringify(row.bundleAssets) : null, row.bundleEntry]),
       )
     }
   }

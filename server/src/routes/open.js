@@ -49,6 +49,7 @@ import { netplayGameId } from '../../../shared/netplay-game-id.js'
 import { listPublicCollections, getPublicCollection } from '../routes/collections.js'
 import { normalizeLang, pickRom } from '../open/i18n.js'
 import { ROM_GRANT_TTL_SEC, EMBED_TTL_SEC, signEmbed, signRomGrant, verifyRomGrant } from '../open/sign.js'
+import { flashBundleAssetPaths, flashBundleEntryPath } from '../mappers.js'
 import { canRedeemSandboxRom, isSandboxRomSample, listSandboxRomSamples, romAccessForApp } from '../open/sandbox-roms.js'
 import { recordRecent } from '../userdata.js'
 import { Readable } from 'node:stream'
@@ -643,16 +644,23 @@ async function relationsFor(rows) {
   const [genreRows, tagRows, romRows] = await Promise.all([
     query(`SELECT game_id, genre_id FROM game_genres WHERE game_id IN (${holes})`, ids),
     query(`SELECT game_id, tag FROM game_tags WHERE game_id IN (${holes})`, ids),
-    query(`SELECT game_id, lang, object_key FROM game_roms WHERE game_id IN (${holes})`, ids),
+    query(`SELECT game_id, lang, object_key, bundle_assets, bundle_entry FROM game_roms WHERE game_id IN (${holes})`, ids),
   ])
   const bucket = (id) => {
     const k = String(id)
-    if (!out.has(k)) out.set(k, { genres: [], tags: [], roms: {} })
+    if (!out.has(k)) out.set(k, { genres: [], tags: [], roms: {}, romAssets: {}, romBundleEntries: {} })
     return out.get(k)
   }
   for (const r of genreRows) bucket(r.game_id).genres.push(r.genre_id)
   for (const r of tagRows) bucket(r.game_id).tags.push(r.tag)
-  for (const r of romRows) bucket(r.game_id).roms[r.lang] = r.object_key
+  for (const r of romRows) {
+    const value = bucket(r.game_id)
+    value.roms[r.lang] = r.object_key
+    const assets = flashBundleAssetPaths(r.bundle_assets)
+    if (assets.length) value.romAssets[r.lang] = assets
+    const entry = flashBundleEntryPath(r.bundle_entry)
+    if (entry) value.romBundleEntries[r.lang] = entry
+  }
   return out
 }
 
@@ -918,8 +926,9 @@ openRouter.get('/v1/collections/:id', optionalApp(), async (req, res, next) => {
 
 /* ---------------- ROM：短期签名凭据 ---------------- */
 
-/** 一张 ROM 凭据最多能兑现多少次（余量留给断点续传 / 失败重试） */
+/** 单文件票留给断点续传；Flash 包票要允许同一入口加载数百个白名单资源。 */
 const ROM_GRANT_MAX_REDEEM = 10
+const ROM_BUNDLE_GRANT_MAX_REDEEM = 512
 
 /**
  * `GET /v1/games/:slug/rom?lang=ja`
@@ -957,11 +966,23 @@ openRouter.get('/v1/games/:slug/rom', requireApp('games.rom'), async (req, res, 
     if (!gate.ok) return rateLimited(res, gate)
 
     const rel = await relationsFor([row])
-    const roms = rel.get(String(row.id))?.roms ?? {}
+    const relations = rel.get(String(row.id)) ?? {}
+    const roms = relations.roms ?? {}
     const want = req.query.lang ? String(req.query.lang) : ''
     const hit = pickRom(roms, want)
     if (!hit) return fail(res, 404, 'rom_unavailable', '这款游戏没有可下载的 ROM')
 
+    const mainKey = hit.key
+    const mainPath = flashBundleEntryPath(relations.romBundleEntries?.[hit.lang]) || mainKey.split('/').pop() || ''
+    const baseSuffix = `/${mainPath}`
+    const mainDirectory = mainKey.endsWith(baseSuffix) ? mainKey.slice(0, -baseSuffix.length) : ''
+    // 只有 Flash 的站内对象 key 才能开目录式授权；普通 ROM / 外链继续走旧的单文件 URL。
+    const isInternalMain = Boolean(mainDirectory && mainPath && !/^https?:\/\//i.test(mainKey) &&
+      !mainKey.startsWith('/') && !mainKey.split('/').some((part) => !part || part === '.' || part === '..'))
+    const bundleAssets = row.platform === 'flash' && isInternalMain
+      ? flashBundleAssetPaths(relations.romAssets?.[hit.lang]).filter((path) => path !== mainPath)
+      : []
+    const isBundle = bundleAssets.length > 0
     const grant = signRomGrant({
       secret: cfg.romSecret,
       appId: req.openClaims.appId,
@@ -969,13 +990,16 @@ openRouter.get('/v1/games/:slug/rom', requireApp('games.rom'), async (req, res, 
       lang: hit.lang,
       key: hit.key,
       mode,
+      bundle: isBundle,
       // 不传 delivery 的旧客户端继续拿到可兼容两种兑现路径的凭据；
       // 新客户端显式选择后，凭据会绑定对应端点。
       delivery: req.query.delivery == null ? 'legacy' : requestedDelivery,
     })
+    const apiBase = `${publicSiteUrl()}/api/open/v1`
+    const singleUrl = `${apiBase}/rom/${grant}`
     const response = {
       // 凭据换成地址：注意 URL 里**没有** object key，抄走也只能下这一款、这几分钟
-      url: `${publicSiteUrl()}/api/open/v1/rom/${grant}`,
+      url: singleUrl,
       expires_in: ROM_GRANT_TTL_SEC,
       lang_requested: want || null,
       lang_actual: hit.lang,
@@ -984,8 +1008,16 @@ openRouter.get('/v1/games/:slug/rom', requireApp('games.rom'), async (req, res, 
       // null 表示尚未核实；不能把它当成「SWF 已经自包含」。
       requires_network: row.requires_network == null ? null : Number(row.requires_network) === 1,
     }
-    if (requestedDelivery === 'plain') {
-      response.url = response.url.replace('/v1/rom/', '/v1/rom-plain/')
+    if (isBundle) {
+      const endpoint = requestedDelivery === 'plain' ? 'bundle-plain' : 'bundle'
+      const urlFor = (path) => `${apiBase}/${endpoint}/${grant}/${path.split('/').map(encodeURIComponent).join('/')}`
+      response.url = urlFor(mainPath)
+      response.entry = { path: mainPath, url: response.url }
+      response.assets = bundleAssets.map((path) => ({ path, url: urlFor(path) }))
+      response.asset_count = response.assets.length + 1
+      response.bundle = true
+    } else if (requestedDelivery === 'plain') {
+      response.url = singleUrl.replace('/v1/rom/', '/v1/rom-plain/')
     }
     res.json(response)
   } catch (e) {
@@ -999,7 +1031,7 @@ openRouter.get('/v1/games/:slug/rom', requireApp('games.rom'), async (req, res, 
  * 就等于给另一张开了后门（例如只给转码那张加了 sandbox 校验、302 那张忘了）。
  * 失败时已 res 回包，调用方直接 return；成功时回 { v, target }。
  */
-async function redeemRomGrant(req, res, expectedDelivery) {
+async function redeemRomGrant(req, res, expectedDelivery, { bundle = false } = {}) {
   const cfg = openConfig()
   if (!cfg?.romEnabled) { fail(res, 501, 'temporarily_unavailable', 'ROM 接口未启用'); return null }
   const v = verifyRomGrant(req.params.grant, { secret: cfg.romSecret })
@@ -1012,6 +1044,10 @@ async function redeemRomGrant(req, res, expectedDelivery) {
   // 显式选择 plain / redirect 的票不能被改路径来切换交付方式。
   if (v.delivery !== 'legacy' && v.delivery !== expectedDelivery) {
     fail(res, 403, 'invalid_grant', '凭据对应的 ROM 交付方式不匹配')
+    return null
+  }
+  if (v.bundle !== bundle) {
+    fail(res, 403, 'invalid_grant', bundle ? '这不是多文件包凭据' : '多文件包凭据必须通过资源路径兑现')
     return null
   }
   const currentAccess = await romAccessForApp(v.appId)
@@ -1031,18 +1067,82 @@ async function redeemRomGrant(req, res, expectedDelivery) {
     净增一条记录，那正是 token 端点注释里写着要避免的那件事。
     key 用票本身：signRomGrant 里那个随机 nonce 保证同一个应用同一秒领两次也是两张票。
   */
-  const byGrant = take(`open:romdl:${req.params.grant}`, ROM_GRANT_MAX_REDEEM, ROM_GRANT_TTL_SEC * 1000)
+  const byGrant = take(`open:romdl:${req.params.grant}`, bundle ? ROM_BUNDLE_GRANT_MAX_REDEEM : ROM_GRANT_MAX_REDEEM, ROM_GRANT_TTL_SEC * 1000)
   if (!byGrant.ok) { rateLimited(res, byGrant); return null }
   // 按 IP：挡住「拿一批票从一台机器上刷」。反代没透传真实 IP 时跳过，理由见 anonGate
   const ip = clientIpFrom(req.ip, req.headers)
   if (isMeaningfulIp(ip)) {
-    const byIp = take(`open:romdl:ip:${ip}`, 60, 60_000)
+    const byIp = take(`open:romdl:ip:${ip}`, bundle ? 600 : 60, 60_000)
     if (!byIp.ok) { rateLimited(res, byIp); return null }
   }
   const target = assetPublicUrl(v.key)
   if (!target) { fail(res, 404, 'not_found', 'ROM 不可用'); return null }
   return { v, target }
 }
+
+/** 兑现单个白名单相对路径；每次请求都复核入口仍绑定且依赖仍登记。 */
+async function redeemBundleAsset(req, res, delivery) {
+  const redeemed = await redeemRomGrant(req, res, delivery, { bundle: true })
+  if (!redeemed) return null
+  const { v } = redeemed
+  const game = await getRawGame(v.slug)
+  if (!game || game.platform !== 'flash') {
+    fail(res, 404, 'not_found', 'Flash 游戏或资源包不可用')
+    return null
+  }
+  const rows = await query('SELECT object_key, bundle_assets, bundle_entry FROM game_roms WHERE game_id = ? AND lang = ? LIMIT 1', [game.id, v.lang])
+  const row = rows[0]
+  if (!row || row.object_key !== v.key) {
+    fail(res, 404, 'not_found', 'Flash 入口已变更，请重新获取资源凭据')
+    return null
+  }
+  const entry = flashBundleEntryPath(row.bundle_entry)
+  const assets = flashBundleAssetPaths(row.bundle_assets)
+  const path = String(req.params.asset_path ?? req.params[0] ?? '')
+  // 入口也允许从清单路由请求；其它路径必须精确命中登记清单，不提供目录枚举。
+  if (!entry || (!assets.includes(path) && path !== entry)) {
+    fail(res, 404, 'asset_not_found', '此文件不在 Flash 包依赖清单中')
+    return null
+  }
+  const suffix = `/${entry}`
+  if (!v.key.endsWith(suffix)) {
+    fail(res, 404, 'not_found', 'Flash 入口路径与对象地址不匹配')
+    return null
+  }
+  const base = v.key.slice(0, -suffix.length)
+  if (!base || base.startsWith('/') || base.split('/').some((part) => !part || part === '.' || part === '..')) {
+    fail(res, 404, 'not_found', 'Flash 包目录无效')
+    return null
+  }
+  const target = assetPublicUrl(`${base}/${path}`)
+  if (!target) {
+    fail(res, 404, 'not_found', 'Flash 资源不可用')
+    return null
+  }
+  return { ...redeemed, target }
+}
+
+const bundleRedirectHandler = async (req, res, next) => {
+  try {
+    const redeemed = await redeemBundleAsset(req, res, 'redirect')
+    if (!redeemed) return
+    res.set('Cache-Control', 'private, no-store').redirect(302, redeemed.target)
+  } catch (error) { next(error) }
+}
+
+const bundlePlainHandler = async (req, res, next) => {
+  try {
+    const redeemed = await redeemBundleAsset(req, res, 'plain')
+    if (!redeemed) return
+    await streamRomPlain({ req, res, target: redeemed.target, limits: romTranscodeLimits() })
+  } catch (error) { next(error) }
+}
+
+// OpenAPI 用命名单段参数描述；实际路由再加 wildcard 版本以接住 swf/、sound/ 等嵌套资源。
+openRouter.get('/v1/bundle/:grant/:asset_path', bundleRedirectHandler)
+openRouter.get('/v1/bundle/:grant/*', bundleRedirectHandler)
+openRouter.get('/v1/bundle-plain/:grant/:asset_path', bundlePlainHandler)
+openRouter.get('/v1/bundle-plain/:grant/*', bundlePlainHandler)
 
 /**
  * `GET /v1/rom/:grant` —— 兑现凭据（302 直链）。

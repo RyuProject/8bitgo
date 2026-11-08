@@ -280,6 +280,10 @@ CREATE TABLE IF NOT EXISTS game_roms (
   dos_startup_commands TEXT NULL,
   -- 多语言 Windows 游戏各自的流式盘；不能共用 games.dos_sockdrive 后误挂另一语言内容。
   dos_sockdrive VARCHAR(500) NULL,
+  -- Flash 多文件包的相对依赖路径；入口 SWF 用 object_key，客户端按目录相对路径取其余文件。
+  bundle_assets JSON NULL,
+  -- 主 SWF 在包目录中的相对路径；主文件在子目录时，API 需用它重建正确的相对资源基准。
+  bundle_entry VARCHAR(500) NULL,
   PRIMARY KEY (game_id, lang),
   -- 后台「ROM 存储」页要反查「这个文件绑给了哪款游戏」
   KEY idx_object_key (object_key(191)),

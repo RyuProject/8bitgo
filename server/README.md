@@ -655,3 +655,7 @@ Server（`wss://你的域名`）和 Room（房间名），双方填同一个房�
 `https://net.dos.zone`。想自建的话要部署 [WebRTC-NET](https://github.com/caiiiycuk/WebRTC-NET)
 的 peer-server（Go + FlatBuffers），然后设 `VITE_JSDOS_PEER_SERVER` 指过去。
 NAT 穿透用的 STUN/TURN 已经接到了本站自己的 `/api/netplay/ice`，跟 P2P 联机共用一套凭据。
+
+播放器现已提供 IPX 面板：房主在运行中的游戏里开 IPX 主机并生成邀请链接；访客打开链接后会自动启动
+同一游戏并接入房主的 IPX 隧道，不需要重启房主当前进度。双方仍需在游戏菜单中选择相同的 IPX/LAN
+模式并自行开始对局。该 P2P 路径依赖 peer-server；旧式 `/ipx/<房间>` 中继仍可通过 js-dos 设置面板手动使用。

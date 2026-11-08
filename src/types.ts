@@ -406,6 +406,10 @@ export interface Game {
   rom?: string
   /** 各语言 ROM：按玩家语言自动选用，缺失依次回退英语、日语、中文，再兼容旧版 rom */
   roms?: Partial<Record<RomSlotLang, string>>
+  /** Flash 多文件包在同一对象目录中的相对依赖路径；入口文件仍由 roms 指向。 */
+  romAssets?: Partial<Record<RomSlotLang, string[]>>
+  /** 主 SWF 在多文件包目录中的路径，用于让 Ruffle 的相对 URL 指向正确基准目录。 */
+  romBundleEntries?: Partial<Record<RomSlotLang, string>>
 }
 
 export interface FaqItem {

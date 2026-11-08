@@ -98,7 +98,8 @@ const WIN31_GAME = { ...GAME, id: 7, slug: 'win31-game', platform: 'dos', dos_ba
 const WIN9X_GAME = { ...GAME, id: 8, slug: 'win9x-game', platform: 'dos', dos_backend: 'dosboxX', dos_windows_version: '9x' }
 // PC-98 仍显示为 DOS 游戏，DOSBox-X 在此只是硬件模拟器，不能被开放接口误标成 Windows 客体。
 const PC98_GAME = { ...GAME, id: 9, slug: 'pc98-game', platform: 'dos', dos_backend: 'dosboxX', dos_pc98: 1 }
-const ALL_GAMES = [GAME, HIDDEN_GAME, JA_ONLY, ADULT_GAME, GBA_GAME, DOS_GAME, WIN31_GAME, WIN9X_GAME, PC98_GAME]
+const FLASH_GAME = { ...GAME, id: 10, slug: 'multi-swf', platform: 'flash', requires_network: null }
+const ALL_GAMES = [GAME, HIDDEN_GAME, JA_ONLY, ADULT_GAME, GBA_GAME, DOS_GAME, WIN31_GAME, WIN9X_GAME, PC98_GAME, FLASH_GAME]
 const GAME_GENRES = [
   { game_id: 1, genre_id: 'action' },
   { game_id: 3, genre_id: 'puzzle' },
@@ -108,6 +109,7 @@ const ROMS = [
   { game_id: 1, lang: '*', object_key: 'roms/contra.zip' },
   { game_id: 1, lang: 'ja', object_key: 'roms/contra-ja.zip' },
   { game_id: 3, lang: 'ja', object_key: 'roms/ja-only.zip' },
+  { game_id: 10, lang: '*', object_key: 'roms/flash/multi-swf/game/loader.swf', bundle_assets: ['game/ui.swf', 'game/audio/intro.mp3'], bundle_entry: 'game/loader.swf' },
 ]
 const SAMPLES = [{ platform: 'nes', game_id: 1 }]
 
@@ -296,6 +298,9 @@ globalThis.__fakeDb = {
     if (s.startsWith('SELECT COUNT')) return [{ n: 1 }]
     if (s.startsWith('SELECT game_id, genre_id')) return GAME_GENRES.filter((r) => params.includes(r.game_id))
     if (s.startsWith('SELECT game_id, tag')) return [{ game_id: 1, tag: '经典' }]
+    if (s.startsWith('SELECT object_key, bundle_assets, bundle_entry FROM game_roms')) {
+      return ROMS.filter((rom) => rom.game_id === params[0] && rom.lang === params[1])
+    }
     if (s.startsWith('SELECT game_id, lang, object_key')) return ROMS
     if (s.startsWith('SELECT s.platform, g.slug, g.title FROM open_rom_samples')) {
       return SAMPLES.flatMap((sample) => {
@@ -367,6 +372,7 @@ const { issueAppToken, verifyOpenToken } = await import('../src/open/tokens.js')
 const { verifyLivePublisherToken } = await import('../src/open/live-publisher.js')
 const { signToken } = await import('../src/auth.js')
 const { FORBIDDEN_OUT_KEYS } = await import('../src/open/mapper.js')
+const { flashBundleAssetPaths, romRelationRows } = await import('../src/mappers.js')
 const { isOpenPath, openErrorFor, openErrorMiddleware } = await import('../src/open/errors.js')
 const device = await import('../src/open/device.js')
 const { pickDescription, pickTitle } = await import('../src/open/i18n.js')
@@ -871,7 +877,8 @@ await check('DOS 与 Windows 客体按后台复选框筛选，详情标记和分
   assert.equal(smallPage.items[0].requires_windows, false)
 
   const allCapable = await (await api('/api/open/v1/games?requires_windows=false&page_size=50')).json()
-  assert.equal(allCapable.total, 5)
+  // 加入 Flash 多文件包夹具后，非 Windows 平台的总量也多一款；筛选结果仍必须一致。
+  assert.equal(allCapable.total, 6)
   assert.ok(allCapable.items.every((g) => g.requires_windows === false))
   for (const [slug, expected] of [['dos-game', false], ['win31-game', true], ['win9x-game', true], ['pc98-game', false]]) {
     const detail = await (await api(`/api/open/v1/games/${slug}`)).json()
@@ -983,6 +990,9 @@ await check('⚠️ openapi.json 的 security 和真实路由表一致（规格�
   for (const m of src.matchAll(/openRouter\.(get|post)\('([^']+)'\s*,\s*(?:tokenBody\s*,\s*)?async/g)) {
     if (!guards.has(`${m[1]} ${m[2]}`)) guards.set(`${m[1]} ${m[2]}`, { fn: 'none', scope: '' })
   }
+  // 资源路径路由用已验证的短期凭据授权；handler 是共享函数而不是 inline async。
+  guards.set('get /v1/bundle/:grant/:asset_path', { fn: 'none', scope: '' })
+  guards.set('get /v1/bundle-plain/:grant/:asset_path', { fn: 'none', scope: '' })
   assert.ok(guards.size >= 18, `只认出了 ${guards.size} 条路由，正则漂了`)
 
   for (const [path, ops] of Object.entries(spec.paths)) {
@@ -1013,6 +1023,20 @@ await check('⚠️ openapi.json 的 security 和真实路由表一致（规格�
 })
 
 console.log('\n四、ROM：独立 scope + 短期凭据')
+
+await check('Flash 依赖写入会保留嵌套相对路径并拒绝目录穿越', () => {
+  const rows = romRelationRows({
+    roms: { en: 'roms/flash/test/game/loader.swf' },
+    romAssets: { en: ['game/ui.swf', 'game/audio/intro.mp3'] },
+    romBundleEntries: { en: 'game/loader.swf' },
+  })
+  assert.deepEqual(rows[0].bundleAssets, ['game/ui.swf', 'game/audio/intro.mp3'])
+  assert.equal(rows[0].bundleEntry, 'game/loader.swf')
+  assert.throws(() => flashBundleAssetPaths(['../private.swf'], { strict: true }), /安全的相对路径/)
+  const previous = [{ lang: 'en', object_key: 'roms/flash/test/game/loader.swf', bundle_assets: ['game/ui.swf'], bundle_entry: 'game/loader.swf' }]
+  assert.deepEqual(romRelationRows({ roms: { en: previous[0].object_key } }, previous, true)[0].bundleAssets, ['game/ui.swf'])
+  assert.deepEqual(romRelationRows({ roms: { en: 'roms/flash/replaced.swf' } }, previous, true)[0].bundleAssets, [])
+})
 
 await check('⚠️ games.read 不附带 ROM 权限（那是两个量级的风险）', async () => {
   const { access_token } = await getToken('games.read')
@@ -1174,6 +1198,48 @@ await check('合法凭据 302 到资源地址，且不许被缓存', async () =>
   assert.equal(r.status, 302)
   assert.equal(r.headers.get('location'), 'https://assets.8bitgo.com/roms/contra.zip')
   assert.match(String(r.headers.get('cache-control')), /no-store/)
+})
+
+await check('多文件 Flash 凭据返回完整相对资源清单，并按白名单服务嵌套路径', async () => {
+  const { access_token } = await getToken('games.rom')
+  const response = await api('/api/open/v1/games/multi-swf/rom', { headers: { Authorization: `Bearer ${access_token}` } })
+  assert.equal(response.status, 200)
+  const body = await response.json()
+  assert.equal(body.bundle, true)
+  assert.equal(body.asset_count, 3)
+  assert.equal(body.entry.path, 'game/loader.swf')
+  assert.deepEqual(body.assets.map((asset) => asset.path), ['game/ui.swf', 'game/audio/intro.mp3'])
+  assert.match(body.url, /\/api\/open\/v1\/bundle\/[^/]+\/game\/loader\.swf$/)
+  assert.ok(!JSON.stringify(body).includes('roms/flash/multi-swf'), '响应泄露了 R2 对象 key')
+
+  const asset = await api(new URL(body.assets[1].url).pathname, { redirect: 'manual' })
+  assert.equal(asset.status, 302)
+  assert.equal(asset.headers.get('location'), 'https://assets.8bitgo.com/roms/flash/multi-swf/game/audio/intro.mp3')
+  const main = await api(`/api/open/v1/rom/${new URL(body.url).pathname.split('/bundle/')[1].split('/')[0]}`, { redirect: 'manual' })
+  assert.equal(main.status, 403, '多文件票可以绕过白名单直接兑换成原始入口对象')
+  const missing = await api(`/api/open/v1/bundle/${new URL(body.url).pathname.split('/bundle/')[1].split('/')[0]}/unlisted.swf`, { redirect: 'manual' })
+  assert.equal(missing.status, 404, '未登记资源不应可通过目录式凭据读取')
+
+  const plainResponse = await api('/api/open/v1/games/multi-swf/rom?delivery=plain', { headers: { Authorization: `Bearer ${access_token}` } })
+  const plainBody = await plainResponse.json()
+  assert.match(plainBody.url, /\/api\/open\/v1\/bundle-plain\//)
+  const plainGrant = new URL(plainBody.url).pathname.split('/bundle-plain/')[1].split('/')[0]
+  const wrongDelivery = await api(`/api/open/v1/bundle/${plainGrant}/game/ui.swf`, { redirect: 'manual' })
+  assert.equal(wrongDelivery.status, 403, '明文流凭据不应切换成 302 交付')
+
+  const nativeFetch = globalThis.fetch
+  globalThis.fetch = async (input, init) => {
+    const url = String(typeof input === 'string' ? input : input?.url ?? input)
+    if (url.startsWith('https://assets.8bitgo.com/')) return new Response(Buffer.from('FLASH-ASSET'))
+    return nativeFetch(input, init)
+  }
+  try {
+    const streamed = await api(new URL(plainBody.assets[0].url).pathname)
+    assert.equal(streamed.status, 200)
+    assert.equal(await streamed.text(), 'FLASH-ASSET', 'bundle-plain 没有流式返回依赖文件')
+  } finally {
+    globalThis.fetch = nativeFetch
+  }
 })
 
 await check('⚠️ 一张 ROM 凭据不能被无限兑现（它是唯一一条既没令牌、原先也没配额的路）', async () => {

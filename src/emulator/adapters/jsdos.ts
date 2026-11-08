@@ -78,6 +78,7 @@ import {
   type WindowsLaunchCi,
 } from '../windowsLaunch'
 import { JSDOS_ASSET_VERSION, JSDOS_PATH, jsdosBase, markJsdosEdgeFailed } from '../paths'
+import { jsdosIceEndpoint, parseIpxAddress } from '../ipxAddress'
 import {
   DOS_MOUSE_SENSITIVITY_DEFAULT,
   dosMouseSpeedMultiplier,
@@ -120,15 +121,23 @@ export const JSDOS_PEER_SERVER: string = import.meta.env.VITE_JSDOS_PEER_SERVER 
 
 /** TURN / STUN 从自家后端拿（和 P2P 联机共用同一个接口） */
 async function fetchIceServers(): Promise<RTCIceServer[]> {
-  const base = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '')
-  if (!base) return []
+  const fallback: RTCIceServer[] = [{ urls: 'stun:stun.l.google.com:19302' }]
+  const controller = new AbortController()
+  const timer = window.setTimeout(() => controller.abort(), 4000)
   try {
-    const res = await fetch(`${base}/api/netplay/ice`, { cache: 'no-store' })
-    if (!res.ok) return []
+    // same-origin 是构建配置值，不可直接拼成 URL；同源 API 必须请求站点自己的 ICE 配置，
+    // 否则播放器会拿到空列表，受限 NAT 下的 IPX 房间就会在 WebRTC 握手阶段静默失败。
+    const res = await fetch(jsdosIceEndpoint(import.meta.env.VITE_API_URL), {
+      cache: 'no-store',
+      signal: controller.signal,
+    })
+    if (!res.ok) return fallback
     const data = (await res.json()) as { iceServers?: RTCIceServer[] }
-    return data.iceServers ?? []
+    return Array.isArray(data.iceServers) && data.iceServers.length ? data.iceServers : fallback
   } catch {
-    return []
+    return fallback
+  } finally {
+    window.clearTimeout(timer)
   }
 }
 
@@ -232,6 +241,16 @@ interface DosCi extends WindowsLaunchCi {
   height?: () => number
   screenshot: () => Promise<ImageData>
   sendKeyEvent: (keyCode: number, pressed: boolean) => void
+  sendBackendEvent?: (payload: unknown) => void
+  networkConnect?: (networkType: number, address: string) => Promise<void>
+  networkDisconnect?: (networkType: number) => Promise<void>
+  net?: () => {
+    peerId: number
+    connected: Set<number>
+    registerAlias: (alias: string) => Promise<void>
+    unregisterAlias: (alias: string) => void
+    queryAliases: (query: string) => Promise<Array<{ peerId: number }>>
+  } | null
   /** 相对鼠标位移（指针锁定 / 触屏拖动那一路）。js-dos 的界面层在事件发生时调它 */
   sendMouseRelativeMotion?: (x: number, y: number) => void
   /** 0～1 的绝对鼠标坐标；Windows 客体里的 DOSBox-X 集成鼠标驱动消费这一条。 */
@@ -1191,6 +1210,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let destroyed = false
   let props: DosProps | null = null
   let ci: DosCi | null = null
+  let ipxAlias: string | null = null
+  let ipxActive = false
   let pad: GamepadBridge | null = null
   const objectUrls: string[] = []
   let cancelWindowsLaunch: (() => void) | null = null
@@ -2036,6 +2057,28 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
   })()
 
+  const closeIpxSession = async () => {
+    const current = ci
+    const alias = ipxAlias
+    ipxAlias = null
+    const wasActive = ipxActive
+    ipxActive = false
+    if (alias) {
+      try {
+        current?.net?.()?.unregisterAlias(alias)
+      } catch {
+        /* 房间已断开或信令暂不可用时，释放别名失败不应阻止游戏继续运行。 */
+      }
+    }
+    if (wasActive && current?.networkDisconnect) {
+      try {
+        await current.networkDisconnect(0)
+      } catch {
+        /* js-dos 在底层连接已经断开时可能拒绝；会话状态仍应回到可重试。 */
+      }
+    }
+  }
+
   options.onCaps?.(caps)
 
   return {
@@ -2049,6 +2092,58 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       return saveKey || undefined
     },
     volume,
+    async openIpxHost(rawAlias: string) {
+      const alias = parseIpxAddress(rawAlias)
+      const current = ci
+      const net = current?.net?.()
+      if (!alias || alias.kind !== 'alias') throw new Error('IPX 房间号格式不正确')
+      if (destroyed || !current || !net || !current.sendBackendEvent) {
+        throw new Error('当前 js-dos 会话尚未准备好 IPX 网络')
+      }
+      if (ipxActive) throw new Error('当前游戏已经加入 IPX 房间')
+
+      await net.registerAlias(alias.alias)
+      try {
+        // 复用 js-dos 自带 IPX 主机事件；自建 alias 只负责把访客引到这台 peer。
+        current.sendBackendEvent({ type: 'wc-trigger-event', event: 'hand_ipx_startserver' })
+        ipxAlias = alias.alias
+        ipxActive = true
+      } catch (error) {
+        net.unregisterAlias(alias.alias)
+        throw error
+      }
+    },
+    async joinIpx(rawAddress: string) {
+      const address = parseIpxAddress(rawAddress)
+      const current = ci
+      const net = current?.net?.()
+      if (!address) throw new Error('IPX 房间号或 peer id 格式不正确')
+      if (destroyed || !current || !net || !current.networkConnect) {
+        throw new Error('当前 js-dos 会话尚未准备好 IPX 网络')
+      }
+      if (ipxActive) throw new Error('当前游戏已经加入 IPX 房间')
+
+      let peerId: number
+      if (address.kind === 'peer') {
+        peerId = address.peerId
+      } else {
+        const peers = await net.queryAliases(`=${address.alias}`)
+        const peer = peers.find((candidate) => candidate.peerId !== net.peerId)
+        if (!peer) throw new Error('没有找到这个 IPX 房间，请确认链接仍有效')
+        peerId = peer.peerId
+      }
+      if (peerId === net.peerId) throw new Error('不能加入自己创建的 IPX 房间')
+      await current.networkConnect(0, String(peerId))
+      ipxActive = true
+    },
+    async closeIpx() {
+      await closeIpxSession()
+    },
+    ipxStatus() {
+      const net = ci?.net?.()
+      if (!net) return null
+      return { peerId: net.peerId, peers: net.connected.size, active: ipxActive }
+    },
     /** 鼠标上下当前反转了没有。写成 getter：工具栏读到的永远是现值，不是挂载时的快照 */
     get mouseInverted() {
       return mouseInverted
@@ -2167,6 +2262,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       cancelGuestStartupTimeout?.()
       cancelGuestStartupTimeout = null
       abort.abort()
+      void closeIpxSession()
       try {
         if (document.pointerLockElement && host.contains(document.pointerLockElement)) document.exitPointerLock()
       } catch {

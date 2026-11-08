@@ -62,10 +62,11 @@ export function planRomObjectDeletion(games: Game[], objectKeys: string[]): RomD
  * 逐 key 复用同一补丁器，避免多语言槽共享同一对象时只清掉第一处引用。
  */
 export function unbindRomObjectKeys(game: Game, objectKeys: string[]): Partial<Game> {
-  let current: Pick<Game, 'rom' | 'roms' | 'romBackups'> = {
+  let current: Pick<Game, 'rom' | 'roms' | 'romBackups' | 'romAssets'> = {
     rom: game.rom,
     roms: game.roms,
     romBackups: game.romBackups,
+    romAssets: game.romAssets,
   }
   const patch: Partial<Game> = {}
 
