@@ -1338,6 +1338,13 @@ Flash 手柄键位存在 `games.flash_controls` JSON，街机屏幕手柄的动�
 定时器晚一步），没到就重新导航一次再等 20 秒，30 秒仍不行才报错，并在控制台打出 iframe 实际内容
 （about:blank / 错误页 / Cloudflare 质询页 / 跨源）。重试前不许 abort。回归：`npm run test:ruffle-runtime`。
 
+**2026-11-09 起默认不再请求这个壳**：壳必须与页面同源，只能从 8bitgo.com 取，大陆访客绕 Cloudflare 洛杉矶，
+EdgeOne 帮不上。现在 `writeInlineRuffleFrame()`（`src/emulator/ruffleFrame.ts`）在没有 src 的 iframe 里
+`document.open()` 就地写出同一份 HTML：父页面调用 `document.open()` 会把子文档 URL 改成父页面的同源地址，
+`replaceState` 到 `/flash-frames/<slug>/frame.html` 照常成立，存档路径不变；about:blank 继承父页面的跨源隔离，
+`/play-local` 也可用（已实测）。写不出来才导航到 `/flash-frame.html`，上面的超时重试保留为兜底。
+`RUFFLE_FRAME_HTML` 与 `public/flash-frame.html` 必须逐字一致，测试会核对。
+
 ### 2.24.0 Ruffle 存档要跟着游戏走；舞台按显示尺寸渲染
 
 Ruffle 的 SharedObject 键是 `<hostname>/<localPath>/<名字>`，而本站所有 Flash 共用一个源：

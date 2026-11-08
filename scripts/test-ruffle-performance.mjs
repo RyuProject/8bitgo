@@ -15,7 +15,7 @@ import {
   supportsRuffleWasmExtensions,
 } from '../src/emulator/rufflePerformance.ts'
 import { RUFFLE_MAX_RENDER_AREA, ruffleStageRenderPlan, ruffleStageScale, ruffleStageSize } from '../src/emulator/ruffleStageFit.ts'
-import { isRuffleFrameReady } from '../src/emulator/ruffleFrame.ts'
+import { isRuffleFrameReady, RUFFLE_FRAME_HTML } from '../src/emulator/ruffleFrame.ts'
 import { installRuffleCrashGuard, ruffleFatalDetail } from '../src/emulator/ruffleCrash.ts'
 import { isSfsGame } from '../shared/sfs-games.js'
 
@@ -443,8 +443,11 @@ assert.match(adapter, /if \(!win \|\| !doc \|\| !isRuffleFrameReady\(doc\)\) ret
   'load 事件必须忽略 iframe 的初始 about:blank 文档')
 assert.match(adapter, /frameInitTimer = window\.setTimeout[\s\S]*10_000/,
   '忽略假 load 后仍需有初始化超时，避免错误响应让界面永久等待')
-assert.match(adapter, /container\.appendChild\(iframe\)\s*\/\*[\s\S]*?\*\/\s*iframe\.src = '\/flash-frame\.html'/,
+assert.match(adapter, /container\.appendChild\(iframe\)\s*\/\*[\s\S]*?\*\/\s*queueMicrotask\(/,
   'iframe 必须先挂载再导航，避免 detached iframe 的真实 src 请求被初始空文档吞掉')
+assert.match(adapter, /queueMicrotask\(\(\) => \{\s*if \(destroyed \|\| frameInitialized\) return\s*if \(writeInlineRuffleFrame\(iframe\)\) initFrame\(\)\s*else iframe\.src = '\/flash-frame\.html'/,
+  '播放壳优先就地写出，免掉一次只能走主站的网络往返；写不出才导航到静态壳')
+assert.equal(RUFFLE_FRAME_HTML, frame, '就地写出的壳必须和 public/flash-frame.html 逐字一致')
 // 2026-11-07《以撒的结合》：慢网下 10 秒一到就 abort 已下一半的 SWF，玩家只看到「无法初始化 Flash 播放器容器」
 assert.match(adapter, /const onFrameInitTimeout = \(\) => \{[\s\S]*?if \(isRuffleFrameReady\(iframe\.contentDocument\)\) \{\s*initFrame\(\)/,
   '超时先要直接检查壳是否其实已经到了（load 事件可能比定时器晚一步）')

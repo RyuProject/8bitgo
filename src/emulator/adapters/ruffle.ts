@@ -42,7 +42,7 @@ import {
   type RufflePixelRatioController,
 } from '../rufflePerformance'
 import { ruffleStageRenderPlan, ruffleStageSize } from '../ruffleStageFit'
-import { isRuffleFrameReady } from '../ruffleFrame'
+import { isRuffleFrameReady, writeInlineRuffleFrame } from '../ruffleFrame'
 import { flashCompatibilityIssue } from '../flashCompatibility'
 import { ruffleRendererPreference, type RuffleRendererPreference } from '../flashStage3D'
 import { flashLegacyBundleRules, type FlashUrlRewriteRule } from '../flashLegacyBundle'
@@ -1100,8 +1100,16 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     about:blank 的 load；在慢机 / WebView 中后续真实导航还可能被这次初始提交吞掉，表现为
     壳页面的网络请求始终为 0。挂载后显式导航既消除这条差异，上一段的标记检查又能安全忽略
     appendChild 同步或异步产生的 about:blank 事件。
+
+    优先就地写出播放壳（ruffleFrame.ts 的 writeInlineRuffleFrame），省掉一次只能走 8bitgo.com 的
+    网络往返；放进微任务是为了等 mount 的同步部分跑完，initFrame 引用的变量都已初始化。
+    写不出来（极老的浏览器、异常的 WebView）才导航到静态壳，超时重试那一套仍照旧兜底。
   */
-  iframe.src = '/flash-frame.html'
+  queueMicrotask(() => {
+    if (destroyed || frameInitialized) return
+    if (writeInlineRuffleFrame(iframe)) initFrame()
+    else iframe.src = '/flash-frame.html'
+  })
   options.onCaps?.(caps)
 
   /**
