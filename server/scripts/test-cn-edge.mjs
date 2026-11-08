@@ -53,6 +53,7 @@ function run(url, method = 'GET') {
     const res = {
       statusCode: 200,
       setHeader: (k, v) => { headers[k.toLowerCase()] = v },
+      removeHeader: (k) => { delete headers[k.toLowerCase()] },
       set(obj) { for (const [k, v] of Object.entries(typeof obj === 'string' ? { [obj]: arguments[1] } : obj)) headers[k.toLowerCase()] = v; return this },
       status(c) { this.statusCode = c; return this },
       type() { return this },
@@ -71,8 +72,10 @@ assert.equal(r.headers['access-control-allow-origin'], 'https://8bitgo.com')
 assert.equal(r.headers['cross-origin-resource-policy'], 'cross-origin')
 r = await run('/_cn/api/games?x=1')
 assert.equal(r.req.url, '/api/games?x=1')
+assert.equal(r.headers.vary, 'Origin')
 r = await run('/_cn/emulatorjs/cores/fbneo-legacy-wasm.data?v=x')
 assert.equal(r.next, true); assert.equal(r.req.url, '/emulatorjs/cores/fbneo-legacy-wasm.data?v=x')
+assert.equal(r.headers.vary, undefined, '静态文件不带 Vary: Origin，预热与 <script> 共用一条缓存')
 assert.equal(r.headers['access-control-allow-origin'], 'https://8bitgo.com')
 ok('/_cn 前缀剥掉后交给原路由，固定带 CORS / CORP 头（含模拟器引擎 / 核心）')
 r = await run('/_cn/admin/x'); assert.equal(r.status, 404)

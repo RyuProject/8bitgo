@@ -70,7 +70,11 @@ export function markEjsEdgeFailed(): void {
   2026-10-27：引擎打了「7z Worker 用完即关」「缓存键抽样哈希」两组补丁（patch-emulatorjs.mjs），引擎入口必须换代。
   核心从这一版起按内容版本（ejsCoreVersionsData.ts），这次换代不会再让玩家重下核心。
 */
-export const EJS_RUNTIME_GENERATION = '20261027-melondsds-ff33abb1-psxrange1-corecompat1-stateglue3-mameglue3-ejsperf1'
+/*
+  2026-11-08：引擎入口改由 EdgeOne（cn.<裸域>/_cn/emulatorjs/）发给大陆访客。部署后头十几分钟的响应带着
+  `Vary: Origin` 进了 EdgeOne 缓存（没有清缓存通道），换一代绕开；核心按内容版本，两次都是带 Origin 的 fetch，不受影响。
+*/
+export const EJS_RUNTIME_GENERATION = '20261027-melondsds-ff33abb1-psxrange1-corecompat1-stateglue3-mameglue3-ejsperf1-cnedge1'
 export const ejsRuntimeAsset = (name: string): string =>
   `${ejsBase()}${name}?v=${encodeURIComponent(EJS_RUNTIME_GENERATION)}`
 

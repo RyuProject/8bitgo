@@ -39,7 +39,13 @@ export function createCnEdgeMiddleware({ clientDir, siteOrigin }) {
     req.cnEdge = true
     if (siteOrigin) {
       res.setHeader('Access-Control-Allow-Origin', siteOrigin)
-      res.setHeader('Vary', 'Origin')
+      /*
+        静态文件（assets / fonts / emulatorjs）的 ACAO 是固定值，内容不随 Origin 变，不能留 `Vary: Origin`
+        （前面的 cors 中间件会加）：预热用 fetch 带 Origin，`<script>` / `<link>` 不带，Vary 让浏览器
+        把同一个 URL 当成两条缓存，预热白做。2026-11-08 实测 loader.js / emulator.min.css 因此各下两遍。
+      */
+      if (rest.startsWith('/api/')) res.setHeader('Vary', 'Origin')
+      else res.removeHeader('Vary')
     }
     res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
 
