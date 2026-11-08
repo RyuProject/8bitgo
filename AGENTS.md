@@ -2919,7 +2919,8 @@ npm run build:server
 
 2026-09-29 的 `wrangler@4.141.0` 经 `miniflare@5.20260925.0-alpha` 精确依赖了存在
 GHSA-3wwx-pv8p-q78v 的 `undici@7.29.0`。npm 自动修复会建议把 Wrangler 大幅回退到 4.101.0，
-所以根 `package.json` 暂用 `overrides` 把 Undici 固定到官方修复版 7.29.1；这只影响开发/部署工具，
+所以根 `package.json` 暂用 `overrides` 把 Undici 固定到官方修复版；截至 2026-11-09 为 7.30.1，
+它同时修复 2026-10 月新增的多项高危 / 中危公告。这只影响开发/部署工具，
 不进入主站或 Worker 的发布脚本。
 
 升级 Wrangler 后先看 `npm ls wrangler miniflare undici`：如果上游已经依赖 7.29.1 或更高的

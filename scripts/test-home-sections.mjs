@@ -158,11 +158,13 @@ check('带名次角标（这一栏是榜，名次要看得见）', () => {
 
 console.log('\n── 排版 ──')
 
-check('宽屏 5 列，窄屏不掉到 1 列', () => {
-  const grid = bodyOf('MostPlayedSection').match(/className="grid[^"]*"/)?.[0] ?? ''
-  assert.match(grid, /xl:grid-cols-5/, '宽屏不是 5 列')
-  assert.match(grid, /grid-cols-2/, '窄屏没兜住')
-  assert.doesNotMatch(grid, /grid-cols-1\b/, '掉到 1 列了：一列会让每张卡横着拉得很长')
+check('游戏榜单跟随正文宽度自适应，宽屏至少 5 列且窄屏不掉到 1 列', () => {
+  const grid = bodyOf('MostPlayedSection').match(/<div className="([^"]*adaptive-game-grid[^"]*)"/)?.[1] ?? ''
+  const css = read('src/index.css')
+  assert.match(grid, /\badaptive-game-grid\b/, '榜单没有使用与骨架一致的自适应网格')
+  assert.match(css, /\.adaptive-game-grid\s*\{[^}]*grid-template-columns:\s*repeat\(2,/s, '窄屏至少两列')
+  assert.match(css, /@container page-content \(min-width: 72rem\)[\s\S]*?\.adaptive-game-grid\s*\{\s*grid-template-columns:\s*repeat\(5,/s, '宽屏至少五列')
+  assert.match(css, /@container page-content \(min-width: 90rem\)[\s\S]*?\.adaptive-game-grid\s*\{\s*grid-template-columns:\s*repeat\(6,/s, '超宽屏应利用额外空间展示六列')
 })
 
 check('⚠️ 封面占满卡片宽度（缩成固定小宽度就「看不见 cover 上是什么」）', () => {
