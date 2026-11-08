@@ -2939,6 +2939,8 @@ EdgeOne 只能用境外（香港）节点。主站、ROM、Pages 子域都不受
     `https://cn.<裸域>/_cn/emulatorjs/`，`ejsRuntimeAsset` / `ejsCoreAsset` / `EJS_pathtodata` 都走它；iframe 是不带 sandbox
     的同源 srcdoc，7z Worker 是 blob URL，跨域无碍。开局前失败（`failLoad` / loader 注入失败）就 `markEjsEdgeFailed()`，
     自动重试退回同源。引擎 IndexedDB 核心缓存以 URL 为键，大陆老访客换线路后会重下一次核心。
+    ⚠️ `/_cn` 下的静态文件**不能带 `Vary: Origin`**（cors 中间件会加，cn-edge 对非 API 路径删掉）：预热 fetch 带 Origin、
+    `<script>` / `<link>` 不带，Vary 会让同一 URL 存两条缓存、预热白做。EdgeOne 已缓存过带这个头的副本，所以换过一代 `-cnedge1`。
   - 回归：`cd server && npm run test:cn-edge`。
 - **ROM 线路：所有平台开局前选一次 assets / cn-assets**（2026-11-07，`romRoute.ts` 的 `chooseRomHost`）：
   两边取同一个 64KB 固定探针 `roms/_route-probe/v1.bin?v=1`（R2 上的随机字节，两边边缘都长缓存），
