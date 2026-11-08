@@ -202,3 +202,9 @@ public/web/PvZ2
 # 随当天的 push 暴露。文件留在磁盘上（nginx 还要用），但永远不进 git。
 # 谁拿到这把私钥，就能冒充 Cloudflare 直连源站、绕开 WAF 和防刷。
 ssl/
+
+# 运行时 wasm 的 Brotli 11 预压缩版：构建时由 scripts/precompress-runtimes.mjs 生成（按 sha 跳过未变的）
+public/**/*.wasm.br
+public/**/*.wasm.br.json
+public/emulatorjs/emulator.min.js.br
+public/emulatorjs/emulator.min.js.br.json

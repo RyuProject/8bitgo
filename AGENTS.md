@@ -2685,6 +2685,15 @@ melonDS DS 的包换了，要同步四处：报告 sha256、`NDS_MODERN_CORE_BUI
 - PSP 现在有音量（核心总输出 GainNode `__ppssppAudio.node`，读档 / 重开音频后 1 秒内压回）、截图（captureStream，
   占位 canvas 不能 getContext）和录像（captureSources 早就给直播用）。暂停仍没有：桥没有暂停命令，要改原生补丁。
 
+- **各平台模拟器的 wasm 也预压缩**（2026-11-09，`scripts/precompress-runtimes.mjs`，prebuild 生成、postbuild `--check dist/client` 核对）。
+  在生产机上实测 Cloudflare 现场压 wasm 比 Brotli 11 大 25~30%（Ruffle 4.68→3.26MB、Dolphin 4.59→3.22MB、DOSBox-X 2.69→2.02MB、
+  Play! 0.96→0.69MB），名单：Ruffle / js-dos（wdosbox、wdosbox-x、jspi、wlibzip）/ Dolphin / Play! / PPSSPP 的 wasm 和
+  `emulatorjs/emulator.min.js`，与 `precompressed-static.js` 的 `PRECOMPRESSED_STATIC_PATTERNS` 一一对应（测试核对）。
+  EmulatorJS 的 `cores/*.data` 本身是 7z（LZMA2），最强档重压只省约 2%，不预压。生成物 `<文件>.br` + `.br.json`（原文件字节数与 sha256）
+  不进 git；按 sha 跳过未变的，相同内容只压一次（首次全量约 1 分钟）。中间件只在原文件字节数与 `.br.json` 一致时才吐 .br，
+  wasm 必须带 `Content-Type: application/wasm`，否则流式编译直接失败。⚠️ 这些文件在 Cloudflare / EdgeOne 上是一年长缓存，
+  上线新压缩版要清掉对应 URL 的边缘缓存，否则继续吐旧的现场压缩副本。
+
 ### 2.32.1 PSP 必须留在普通详情页内启动，不能再复用 PS2 的独立播放器外壳
 
 PPSSPP 的 pthread 仍然需要 `Cross-Origin-Opener-Policy: same-origin` 与

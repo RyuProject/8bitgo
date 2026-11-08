@@ -36,6 +36,20 @@ writeFileSync(join(dir, 'PPSSPPSDL.data.br'), brotliCompressSync(data))
 mkdirSync(join(root, 'ppsspp', 'v0dbfaca', 'v16'), { recursive: true })
 writeFileSync(join(root, 'ppsspp', 'v0dbfaca', 'v16', 'PPSSPPSDL.data'), data)
 writeFileSync(join(dir, 'host.js'), 'console.log(1)')
+// 2026-11-09：构建时生成的 wasm 压缩版，带 .br.json 旁注
+const wasm = Buffer.concat([Buffer.from([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0]), Buffer.from('ruffle core '.repeat(4096))])
+const ruffleDir = join(root, 'ruffle', 'v0.7.1')
+mkdirSync(ruffleDir, { recursive: true })
+writeFileSync(join(ruffleDir, 'core.wasm'), wasm)
+writeFileSync(join(ruffleDir, 'core.wasm.br'), brotliCompressSync(wasm))
+writeFileSync(join(ruffleDir, 'core.wasm.br.json'), JSON.stringify({ bytes: wasm.length, sha256: 'x', brBytes: 0 }))
+// 旁注字节数对不上（原文件换过、压缩版过期）：不能吐
+writeFileSync(join(ruffleDir, 'stale.wasm'), wasm)
+writeFileSync(join(ruffleDir, 'stale.wasm.br'), brotliCompressSync(Buffer.from('old')))
+writeFileSync(join(ruffleDir, 'stale.wasm.br.json'), JSON.stringify({ bytes: 3, sha256: 'x', brBytes: 0 }))
+// 没有旁注：不能吐
+writeFileSync(join(ruffleDir, 'bare.wasm'), wasm)
+writeFileSync(join(ruffleDir, 'bare.wasm.br'), brotliCompressSync(wasm))
 
 const app = express()
 app.use(precompressedStatic(root, { setHeaders: staticCacheHeaders }))
@@ -121,10 +135,37 @@ await check('白名单外不碰：host.js 不加 Vary、不找 .br', async () =>
   assert.doesNotMatch(String(r.headers.vary || ''), /Accept-Encoding/i)
 })
 
+await check('⚠️ wasm 压缩版：Content-Type 必须是 application/wasm（否则流式编译直接失败）', async () => {
+  const r = await get('/ruffle/v0.7.1/core.wasm', { 'accept-encoding': 'br, zstd' })
+  assert.equal(r.headers['content-encoding'], 'br')
+  assert.equal(r.headers['content-type'], 'application/wasm')
+  assert.deepEqual(brotliDecompressSync(r.body), wasm)
+})
+
+await check('旁注字节数对不上 / 没有旁注：退回原文件', async () => {
+  for (const name of ['stale.wasm', 'bare.wasm']) {
+    const r = await get(`/ruffle/v0.7.1/${name}`, { 'accept-encoding': 'br' })
+    assert.equal(r.headers['content-encoding'], undefined, name)
+    assert.deepEqual(r.body, wasm, name)
+  }
+})
+
+await check('构建脚本与中间件的名单一一对应', async () => {
+  const { RUNTIME_PRECOMPRESS_PATTERNS } = await import('../../scripts/precompress-runtimes.mjs')
+  const served = (p) => PRECOMPRESSED_STATIC_PATTERNS.some((r) => r.test(p))
+  for (const rel of ['ruffle/v0.7.1/172de42e6619eac8f371.wasm', 'jsdos/v8.5.3-8bitgo.4/emulators/wdosbox-x.wasm',
+    'dolphin/v7e38409/cores/dolphin/dolphin-core-upstream.wasm', 'play/20261026-system2x6-v1/Play.wasm', 'play/Play.wasm',
+    'ppsspp/v0dbfaca/v17/PPSSPPSDL.wasm', 'emulatorjs/emulator.min.js']) {
+    assert.ok(RUNTIME_PRECOMPRESS_PATTERNS.some((r) => r.test(rel)), `构建脚本漏了 ${rel}`)
+    assert.ok(served(`/${rel}`), `中间件漏了 ${rel}`)
+  }
+  assert.ok(!served('/emulatorjs/cores/fbneo-legacy-wasm.data'), '7z 核心不预压')
+  assert.ok(!served('/jsdos/v8.5.3-8bitgo.4/emulators/wdosbox-x-dbg.wasm'), '调试版不用')
+})
+
 await check('白名单只认实体运行时目录里的 PPSSPPSDL.data', () => {
   const ok = (p) => PRECOMPRESSED_STATIC_PATTERNS.some((r) => r.test(p))
   assert.ok(ok('/ppsspp/v0dbfaca/v15/PPSSPPSDL.data'))
-  assert.ok(!ok('/ppsspp/v0dbfaca/v15/PPSSPPSDL.wasm'))
   assert.ok(!ok('/ppsspp/v0dbfaca/v15/PPSSPPSDL.data.br'))
   assert.ok(!ok('/ppsspp/v0dbfaca/../../etc/PPSSPPSDL.data'))
   assert.ok(!ok('/ppsspp/v0dbfaca/v15/x/PPSSPPSDL.data'))

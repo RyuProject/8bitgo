@@ -63,7 +63,8 @@ function walk(dir) {
   for (const name of readdirSync(dir)) {
     const path = join(dir, name)
     if (statSync(path).isDirectory()) walk(path)
-    else if (name !== 'runtime.json') listed.push(relative(runtimeDir, path).replace(/\\/g, '/'))
+    // `.br` / `.br.json` 是 scripts/precompress-runtimes.mjs 构建时生成的传输压缩版，由它自己的 --check 核对
+    else if (name !== 'runtime.json' && !/\.br(?:\.json)?$/.test(name)) listed.push(relative(runtimeDir, path).replace(/\\/g, '/'))
   }
 }
 walk(runtimeDir)

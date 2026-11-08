@@ -15,14 +15,59 @@
  *    runtime.json 的 sha256，prebuild 与 postbuild 都跑；生成用 `npm run ppsspp:precompress`。
  * ⚠️ Range 一律退回原文件：Range 的偏移是针对未编码内容的，不能套在压缩字节上。
  */
-import { stat } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { acceptsBrotli } from './r2-runtime-proxy.js'
 
-/** 只收这些路径。别放 .wasm / .js（边缘本来就会压）或已经是压缩容器的文件 */
+/**
+ * 只收这些路径。别放已经是压缩容器的文件（EmulatorJS 的 cores/*.data 是 7z）。
+ *
+ * PPSSPPSDL.data 的 .br 随运行时目录提交、由 scripts/check-ppsspp.mjs 校验；
+ * 其余（2026-11-09 加）由 scripts/precompress-runtimes.mjs 在构建时生成，旁边带 `.br.json`
+ * 记原文件字节数，这里字节数对不上就不吐（防过期的压缩版）。实测 Cloudflare 现场压 wasm
+ * 比 Brotli 11 大 25~30%：Ruffle 4.68MB → 3.26MB、Dolphin 4.59MB → 3.22MB。
+ */
 export const PRECOMPRESSED_STATIC_PATTERNS = Object.freeze([
   /^\/ppsspp\/v[0-9a-f]+\/v\d+\/PPSSPPSDL\.data$/,
+  /^\/ruffle\/v[^/]+\/[^/]+\.wasm$/,
+  /^\/jsdos\/v[^/]+\/emulators\/(?:wdosbox|wdosbox-x|wdosbox-x-jspi|wlibzip)\.wasm$/,
+  /^\/dolphin\/v[^/]+\/cores\/dolphin\/[^/]+\.wasm$/,
+  /^\/play\/(?:[^/]+\/)?Play\.wasm$/,
+  /^\/ppsspp\/v[0-9a-f]+\/v\d+\/PPSSPPSDL\.wasm$/,
+  /^\/emulatorjs\/emulator\.min\.js$/,
 ])
+
+/** 提交在运行时目录里、没有旁注的历史 .br（由各自的检查脚本保证一致） */
+const LEGACY_WITHOUT_SIDECAR = /^\/ppsspp\/v[0-9a-f]+\/v\d+\/PPSSPPSDL\.data$/
+
+const CONTENT_TYPES = {
+  '.wasm': 'application/wasm',
+  '.js': 'application/javascript; charset=utf-8',
+  '.data': 'application/octet-stream',
+}
+
+/** 原文件字节数与 `.br.json` 一致才算这份压缩版是当前的；同一文件只读一次旁注 */
+const sidecarCache = new Map()
+async function sidecarMatches(file) {
+  let source
+  try {
+    source = await stat(file)
+  } catch {
+    return false
+  }
+  const key = `${file}:${source.size}:${source.mtimeMs}`
+  if (sidecarCache.has(key)) return sidecarCache.get(key)
+  let ok = false
+  try {
+    const sidecar = JSON.parse(await readFile(`${file}.br.json`, 'utf8'))
+    ok = sidecar?.bytes === source.size
+  } catch {
+    ok = false
+  }
+  if (sidecarCache.size > 500) sidecarCache.clear()
+  sidecarCache.set(key, ok)
+  return ok
+}
 
 function appendVary(res, token) {
   const current = String(res.getHeader('Vary') || '')
@@ -56,10 +101,12 @@ export function precompressedStatic(root, { setHeaders, patterns = PRECOMPRESSED
     } catch {
       return next()
     }
+    if (!LEGACY_WITHOUT_SIDECAR.test(urlPath) && !(await sidecarMatches(file))) return next()
 
     // 跨源隔离头与缓存策略按**原文件**的路径给，和 express.static 那条路完全一致
     setHeaders?.(res, file)
-    res.setHeader('Content-Type', 'application/octet-stream')
+    // wasm 必须是 application/wasm，否则 WebAssembly.instantiateStreaming 直接拒绝
+    res.setHeader('Content-Type', CONTENT_TYPES[path.extname(file)] || 'application/octet-stream')
     res.setHeader('Content-Encoding', 'br')
     res.setHeader('X-Content-Type-Options', 'nosniff')
     res.sendFile(encoded, {
