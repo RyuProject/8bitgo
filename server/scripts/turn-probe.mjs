@@ -19,7 +19,7 @@ import { probeNow } from '../src/turnProbe.js'
 
 config()
 
-const names = { 'self-hosted': '自建 coturn', managed: '托管服务', cloudflare: 'Cloudflare' }
+const names = { 'self-hosted': '自建 coturn', mainland: '中国大陆 coturn', managed: '托管服务', cloudflare: 'Cloudflare' }
 
 await registerTurnProbeTargets()
 const snap = await probeNow()

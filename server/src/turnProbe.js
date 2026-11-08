@@ -401,15 +401,18 @@ async function probePath(name) {
   const results = []
   if (cred?.username && cred?.credential) {
     for (const url of p.urls) {
-      results.push(
-        await probeTurnUrl({
-          url,
-          username: cred.username,
-          credential: cred.credential,
-          timeoutMs: probeTimeoutMs(),
-          insecureTls: insecureTls(),
-        }),
-      )
+      const result = await probeTurnUrl({
+        url,
+        username: cred.username,
+        credential: cred.credential,
+        timeoutMs: probeTimeoutMs(),
+        insecureTls: insecureTls(),
+      })
+      // 独立的大陆密钥出错时，诊断必须指向对应变量，不能误导人去改全球密钥。
+      if (name === 'mainland' && result.code === 401 && result.error) {
+        result.error = result.error.replace('TURN_SECRET', 'TURN_CN_SECRET')
+      }
+      results.push(result)
     }
   }
   // 一条通就算这一路通（浏览器也是有一条能用就够）；全被跳过的话不算数据

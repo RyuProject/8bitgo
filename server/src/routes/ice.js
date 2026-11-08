@@ -14,11 +14,12 @@
  *    任何人打开 DevTools 就能抄走，拿你的 TURN 当免费流量中转。
  *    这里改成按请求现算 / 现取一份**短期凭证**，密码永远不出服务器。
  *
- * ── 三种 TURN，可以同时配，按这个顺序下发 ──────────────────
+ * ── 四种 TURN，可以同时配 ──────────────────
  *
  *   1. 自建 coturn      TURN_URLS + TURN_SECRET            static-auth-secret，服务端现算 HMAC
- *   2. 托管（固定账号）  TURN_BACKUP_URLS + USERNAME/CREDENTIAL 或 BACKUP_SECRET
- *   3. Cloudflare       TURN_CF_KEY_ID + TURN_CF_API_TOKEN  服务端向 CF 现领短期凭证
+ *   2. 大陆 coturn      TURN_CN_URLS + TURN_CN_SECRET       仅 CF-IPCountry: CN 访客收到
+ *   3. 托管（固定账号）  TURN_BACKUP_URLS + USERNAME/CREDENTIAL 或 BACKUP_SECRET
+ *   4. Cloudflare       TURN_CF_KEY_ID + TURN_CF_API_TOKEN  服务端向 CF 现领短期凭证
  *
  * 全都会**一起**下发给浏览器。WebRTC 不是「主的挂了才用备的」那种串行回退 ——
  * 它从所有 ICE 服务器一起收集候选，然后按优先级配对：中继（relay）候选的优先级本来就最低，
@@ -195,12 +196,21 @@ const iceTtl = () => Math.max(300, Math.min(86400, Number(process.env.TURN_TTL_S
 
 const selfHostedUrls = () => list(process.env.TURN_URLS)
 const managedUrls = () => list(process.env.TURN_BACKUP_URLS)
+const mainlandTurnUrls = () => list(process.env.TURN_CN_URLS)
+const mainlandStunUrls = () => list(process.env.STUN_CN_URLS)
 
 /** 探活时用的签名函数：**每次现签**，不能存签好的凭证（见 turnProbe.js 里 registerTurnPath 的注释） */
 function mintSelfHosted() {
   const secret = (process.env.TURN_SECRET || '').trim()
   if (!secret) throw new Error('TURN_SECRET 没配')
   return turnCredentials(secret, iceTtl(), 'probe')
+}
+
+/** 大陆中继单独用密钥，避免把一个地区节点的配置错误扩大到全球 TURN。 */
+function mintMainland() {
+  const secret = (process.env.TURN_CN_SECRET || '').trim()
+  if (!secret) throw new Error('TURN_CN_SECRET 没配')
+  return turnCredentials(secret, iceTtl(), 'cn')
 }
 
 function mintManaged() {
@@ -229,6 +239,9 @@ async function mintCloudflare() {
 export async function registerTurnProbeTargets() {
   const self = selfHostedUrls()
   registerTurnPath('self-hosted', (process.env.TURN_SECRET || '').trim() ? self : [], mintSelfHosted)
+
+  const mainland = mainlandTurnUrls()
+  registerTurnPath('mainland', (process.env.TURN_CN_SECRET || '').trim() ? mainland : [], mintMainland)
 
   const managed = managedUrls()
   const hasManagedCred =
@@ -286,6 +299,8 @@ iceRouter.get('/', async (req, res) => {
   }
 
   const ttl = iceTtl()
+  // Cloudflare 会在边缘覆盖此头；只按它判断，缺失/未知时不把大陆节点泄露给海外访客。
+  const isMainlandVisitor = String(req.headers['cf-ipcountry'] || '').trim().toUpperCase() === 'CN'
   // 标签只用来在 coturn 日志里区分来源，不参与鉴权，所以放个粗粒度的标识就行
   const label = String(req.query.u || 'guest').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 24) || 'guest'
 
@@ -303,11 +318,15 @@ iceRouter.get('/', async (req, res) => {
   }
 
   const stun = list(process.env.STUN_URLS)
-  const stunUrls = [...(stun.length ? stun : DEFAULT_STUN), ...(cf?.stunUrls ?? [])]
+  const stunUrls = [
+    ...(isMainlandVisitor ? mainlandStunUrls() : []),
+    ...(stun.length ? stun : DEFAULT_STUN),
+    ...(cf?.stunUrls ?? []),
+  ]
   const iceServers = [{ urls: [...new Set(stunUrls)] }]
 
   /**
-   * 三路先各自算出来，**最后再决定发哪几路** —— 切换就发生在这一步。
+   * 各路先各自算出来，**最后再决定发哪几路** —— 切换就发生在这一步。
    *
    * WebRTC 那边没有串行回退（所有服务器一起收集候选），所以「自建挂了换 CF」
    * 唯一能做手脚的地方就是这里：探针说某一路是死的，就干脆不把它交给浏览器。
@@ -324,6 +343,18 @@ iceRouter.get('/', async (req, res) => {
     candidates.push({
       name: 'self-hosted',
       server: { urls: turnUrls, username: cred.username, credential: cred.credential },
+      expiry: cred.expiry,
+    })
+  }
+
+  // 大陆 TURN 只在 Cloudflare 明确标记为 CN 时下发；其它地区不尝试这个高延迟节点。
+  const cnTurnUrls = mainlandTurnUrls()
+  const cnSecret = (process.env.TURN_CN_SECRET || '').trim()
+  if (isMainlandVisitor && cnTurnUrls.length && cnSecret) {
+    const cred = turnCredentials(cnSecret, ttl, label)
+    candidates.unshift({
+      name: 'mainland',
+      server: { urls: cnTurnUrls, username: cred.username, credential: cred.credential },
       expiry: cred.expiry,
     })
   }

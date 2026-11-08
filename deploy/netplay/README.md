@@ -154,6 +154,17 @@ TURN_TTL_SEC=3600
 STUN_URLS=stun:turn.你的域名:3478
 ```
 
+中国大陆节点单独使用 `TURN_CN_URLS`、`TURN_CN_SECRET` 和可选的 `STUN_CN_URLS`，
+只有 Cloudflare 明确发送 `CF-IPCountry: CN` 时才下发；未知地区按海外处理，避免无关访客尝试国内节点。
+它有独立的主动探活状态 `mainland`，故障时仍由其它已配置 TURN 兜底。大陆节点可直接用 IP，
+本项目当前不要求配置 `turns:` / TLS 证书。示例：
+
+```bash
+TURN_CN_URLS=turn:115.190.230.20:3478?transport=udp,turn:115.190.230.20:3478?transport=tcp
+TURN_CN_SECRET=<与大陆服务器 coturn 的 static-auth-secret 相同>
+STUN_CN_URLS=stun:115.190.230.20:3478
+```
+
 ### 兜底之一：Cloudflare Realtime TURN（推荐，按流量计费）
 
 ⚠️ **先别拿错产品。** Cloudflare 仪表盘的 Realtime 下面有两样完全不同的东西：

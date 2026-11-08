@@ -373,7 +373,7 @@ await check('turns: + transport=udp（DTLS）要标成 skipped，不能算「不
 
 console.log('\n四、up / down 状态机（判死要慢、恢复要快、凭证必须现签）')
 
-const { registerTurnPath, turnPathState, probeNow, _resetTurnHealth } = await import('../src/turnProbe.js')
+const { registerTurnPath, turnPathState, turnHealthSnapshot, probeNow, _resetTurnHealth } = await import('../src/turnProbe.js')
 
 await check('⭐ 一次失败不算死（连续两次才判 down）—— 一个丢包不该踢掉一路 TURN', async () => {
   _resetTurnHealth()
@@ -459,6 +459,7 @@ console.log('\n五、下发时真的切了（以及「摘完一路不剩」的�
 
 const selfSrv = await fakeTurn({ secret: SECRET })
 const mgdSrv = await fakeTurn({ secret: SECRET, checkExpiry: false })
+const cnSrv = await fakeTurn({ secret: SECRET })
 const MGD_USER = '9999999999:managed'
 const MGD_PASS = createHmac('sha1', SECRET).update(MGD_USER).digest('base64')
 
@@ -467,6 +468,9 @@ process.env.TURN_SECRET = SECRET
 process.env.TURN_BACKUP_URLS = mgdSrv.url
 process.env.TURN_BACKUP_USERNAME = MGD_USER
 process.env.TURN_BACKUP_CREDENTIAL = MGD_PASS
+process.env.TURN_CN_URLS = cnSrv.url
+process.env.TURN_CN_SECRET = SECRET
+process.env.STUN_CN_URLS = 'stun:cn-stun.8bitgo.test:3478'
 process.env.TURN_PROBE_TIMEOUT_MS = '1200'
 delete process.env.TURN_CF_KEY_ID
 delete process.env.TURN_CF_API_TOKEN
@@ -476,7 +480,8 @@ const app = express()
 app.use('/api/netplay/ice', iceRouter)
 const http = createServer(app)
 await new Promise((r) => http.listen(0, r))
-const ice = async () => (await fetch(`http://127.0.0.1:${http.address().port}/api/netplay/ice`)).json()
+const ice = async (headers = {}) =>
+  (await fetch(`http://127.0.0.1:${http.address().port}/api/netplay/ice`, { headers })).json()
 const urlsOf = (d) => d.iceServers.flatMap((s) => (Array.isArray(s.urls) ? s.urls : [s.urls]))
 
 _resetTurnHealth()
@@ -490,6 +495,36 @@ await check('两路都好 → 都下发，turnDropped 是空的', async () => {
   assert.equal(d.hasTurn, true)
   assert.equal(d.turnHealth['self-hosted'].state, 'up')
   assert.ok(urlsOf(d).includes(selfSrv.url) && urlsOf(d).includes(mgdSrv.url))
+})
+
+await check('大陆 TURN / STUN 只随 Cloudflare 的 CN 国家头下发', async () => {
+  await probeNow()
+  const cn = await ice({ 'CF-IPCountry': 'cn' })
+  assert.ok(cn.turnSources.includes('mainland'))
+  assert.ok(urlsOf(cn).includes(cnSrv.url))
+  assert.ok(urlsOf(cn).includes('stun:cn-stun.8bitgo.test:3478'))
+  const overseas = await ice({ 'CF-IPCountry': 'US' })
+  assert.equal(overseas.turnSources.includes('mainland'), false)
+  assert.equal(urlsOf(overseas).includes(cnSrv.url), false)
+  assert.equal(urlsOf(overseas).includes('stun:cn-stun.8bitgo.test:3478'), false)
+  // 不能把任意国家头当成 Cloudflare 的判定，否则直连源站时可以伪造地区。
+  const forged = await ice({ 'X-Country-Code': 'CN' })
+  assert.equal(forged.turnSources.includes('mainland'), false)
+})
+
+await check('大陆 TURN 探活失败时只从 CN 候选中摘除，错误提示指向大陆密钥', async () => {
+  cnSrv.st.mode = 'bad-cred'
+  await probeNow()
+  await probeNow()
+  const cn = await ice({ 'CF-IPCountry': 'CN' })
+  assert.deepEqual(cn.turnDropped, ['mainland'])
+  assert.equal(cn.turnSources.includes('mainland'), false)
+  assert.match(turnHealthSnapshot({ verbose: true }).mainland.error, /TURN_CN_SECRET/)
+  const overseas = await ice({ 'CF-IPCountry': 'US' })
+  assert.deepEqual(overseas.turnDropped, [], '大陆节点不应影响海外候选或健康判定')
+  cnSrv.st.mode = 'ok'
+  await probeNow()
+  assert.equal((await ice({ 'CF-IPCountry': 'CN' })).turnSources.includes('mainland'), true)
 })
 
 await check('⭐ 自建那路死了 → **从 iceServers 里消失**，turnDropped 记着它', async () => {
@@ -541,6 +576,7 @@ await check('expiry 取最早的那个（托管那路固定账号不会过期，
 
 selfSrv.close()
 mgdSrv.close()
+cnSrv.close()
 srv.close()
 http.close()
 
