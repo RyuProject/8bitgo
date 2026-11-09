@@ -334,14 +334,15 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
   )
   const arcadePrimaryLang = allRomLangs.find((lang) => Boolean(form.roms?.[lang]?.trim())) ?? 'en'
   /*
-    刷新编辑页后浏览器已没有刚刚选择的 File，无法再读 ZIP 中央目录；对象 key 仍保留 MAME
-    短名时先恢复 CHD 面板。真正保存前 CHD 会核验 MAME SHA-1，玩家开局还会重验 ZIP CRC，
+    只有选择 MAME 核心时，才按已保存对象 key 恢复 CHD 面板；FBNeo 的 CPS-3 ROMset
+    也可能有同名 MAME 版本。真正保存前 CHD 会核验 MAME SHA-1，玩家开局还会重验 ZIP CRC，
     所以这只是恢复操作入口，不能把“文件名碰巧一样”当成可运行的结论。
   */
-  const restoredMameMediaProfile = form.platform === 'arcade'
+  const selectedMameCore = form.platform === 'arcade' && form.core === 'mame-current'
+  const restoredMameMediaProfile = selectedMameCore
     ? mameChdProfileForRomFileName(form.roms?.[arcadePrimaryLang])
     : null
-  const activeMameMediaProfile = mameMediaProfile ?? restoredMameMediaProfile
+  const activeMameMediaProfile = selectedMameCore ? mameMediaProfile ?? restoredMameMediaProfile : null
   const displayedRomLangs: readonly RomSlotLang[] = form.platform === 'arcade' && !showArcadeVariants
     ? [arcadePrimaryLang]
     : allRomLangs
@@ -1752,7 +1753,7 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
         ))}
       </div>
 
-      {form.platform === 'arcade' && (activeMameMediaProfile || form.arcadeMameDisks?.length) && (
+      {selectedMameCore && (activeMameMediaProfile || form.arcadeMameDisks?.length) && (
         <MameDiskField
           profile={activeMameMediaProfile}
           value={form.arcadeMameDisks ?? []}
@@ -3264,19 +3265,29 @@ function RomField({
       if (recommendation) onCoreFound?.(recommendation.core)
       return `${mameMatch.romset}.zip`
     }
-    if (mameMedia) {
+    let found: RomsetIdentification | null = null
+    try {
+      found = await identifyArcadeRomset(entries, file.name)
+    } catch (err) {
+      console.warn('[romset] 识别失败，继续检查 MAME 媒体：', err)
+    }
+
+    // CPS-3 等游戏会同时存在 FBNeo 与 MAME 描述；MAME 清单可能只列一颗区域 BIOS，
+    // 和 FBNeo 的完整 SIMM 包共享 CRC。完整 FBNeo 指纹优先，否则会把可直接玩的 ZIP
+    // 错改名为 MAME set，并让管理员误以为还必须补一张 CHD。
+    const fbneoHasExactSet = Boolean(found?.hack || found?.candidates.some((candidate) => candidate.coverage === 1))
+    if (mameMedia && !fbneoHasExactSet) {
       setMameMedia(mameMedia)
       onMameMediaFound?.(mameMedia)
-      const recommendation = detectArcadeCore({ exactMameBoard: true })
+      const recommendation = detectArcadeCore({ mameChdSet: true })
       if (recommendation) onCoreFound?.(recommendation.core)
       return `${mameMedia.romset}.zip`
     }
 
-    try {
-      const found = await identifyArcadeRomset(entries, file.name)
-      if (!found) return null
-      setRomset(found)
+    if (!found) return null
+    setRomset(found)
 
+    try {
       /*
         已知改版包优先。它的包名由指纹表说了算（FBNeo 靠包名认游戏，RomData 的
         ZipName 也必须和它一致），不能再走下面那套「覆盖率满分才改名」的判断 ——

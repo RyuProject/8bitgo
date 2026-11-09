@@ -3,16 +3,18 @@ export type ArcadeCoreId = 'fbneo' | 'mame-current'
 
 export interface ArcadeCoreRecommendation {
   core: ArcadeCoreId
-  confidence: 'exact-board-signature' | 'complete-romset' | 'fbneo-romdata'
+  confidence: 'exact-board-signature' | 'complete-romset' | 'fbneo-romdata' | 'mame-chd-set'
   reason: string
 }
 
 /**
  * 让识别策略保持纯函数，避免上传表单、播放器和回归测试各自复制一套猜测规则。
- * MAME 专属硬件的精确指纹优先；完整 FBNeo set 或可由 RomData 明确加载的改版包才选 FBNeo。
+ * MAME 专属硬件的精确指纹优先；通用 MAME CHD 指纹不能压过完整 FBNeo ROM set，
+ * 因为两套核心可能共享 BIOS ROM，而 FBNeo 自己已包含所需游戏数据。
  */
 export function detectArcadeCore(evidence: {
   exactMameBoard?: boolean
+  mameChdSet?: boolean
   indexedFbneoSet?: boolean
   supportedFbneoRomData?: boolean
 }): ArcadeCoreRecommendation | null {
@@ -35,6 +37,13 @@ export function detectArcadeCore(evidence: {
       core: 'fbneo',
       confidence: 'complete-romset',
       reason: 'ZIP 成员 CRC 完整命中 FBNeo 支持的 romset',
+    }
+  }
+  if (evidence.mameChdSet) {
+    return {
+      core: 'mame-current',
+      confidence: 'mame-chd-set',
+      reason: 'ROM CRC 命中需要 CHD 媒体的 MAME set，且没有完整 FBNeo set 证据',
     }
   }
   return null

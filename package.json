@@ -60,7 +60,7 @@
     "test:namco-system11-upload": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-namco-system11-upload.mjs",
     "test:mame-arcade-media": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-mame-arcade-media.mjs",
     "test:mame-chd-warm": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-mame-chd-warm.mjs",
-    "test:arcade-runtime": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-arcade-runtime.mjs",
+    "test:arcade-runtime": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-arcade-runtime.mjs && node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-arcade-romset-index.mjs",
     "test:arcade-performance": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-arcade-performance.mjs",
     "test:mame-audio": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-mame-audio.mjs",
     "test:nds-audio": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-nds-audio.mjs",

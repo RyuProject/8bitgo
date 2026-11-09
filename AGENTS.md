@@ -102,7 +102,7 @@ grep -c 'this.functions.saveStateInfo()' public/emulatorjs/emulator.min.js   # �
 所以 `src/services/roms.ts` 里 `FILENAME_IS_IDENTITY` 把 arcade 列为「保留原文件名」。
 
 现在后台上传街机 ROM 会**自动识别**（`src/lib/arcadeRomset.ts`）：读 zip 中央目录里每个成员的
-CRC-32（不用解压），比对 `public/arcade-romsets.bin`（8721 个 romset / 12.7 万条 CRC）。
+CRC-32（不用解压），比对 `public/arcade-romsets.bin`（9377 个 romset / 13.8 万条 CRC，含跨行 ROM 宏展开）。
 完全命中才自动改名；部分命中只列候选——拿父集的名字去套残缺包只会换来 missing files。
 完整性校验走 `assertValidZipBlob()`，只读文件尾部 / 中央目录 / 本地头，不再把整个大包
 复制成 ArrayBuffer；ZIP 成员套子目录会在上传前直接拦下，因为街机核心只读根目录。
@@ -3197,7 +3197,7 @@ npm run test:codes                                      # 验证码状态机（�
 | `97db215` | 清除被污染的 `EmulatorJS-Cache`；语言包码改成自建构建的两字码（`zh`/`fr`…） |
 | `aba17b6` | 播放器状态栏去掉「云端 ROM · 文件名」和常驻的运行时标签 |
 | `4a2fb9f` | blob URL 文件名补丁 + `npm run ejspatch` + 体检把关 |
-| `7aaaf67` | 街机 ROM 上传时自动识别 romset（`public/arcade-romsets.bin`，8721 个 romset / 12.7 万条 CRC） |
+| `7aaaf67` | 街机 ROM 上传时自动识别 romset（`public/arcade-romsets.bin`，9377 个 romset / 13.8 万条 CRC，含跨行 ROM 宏展开） |
 
 ### 待办
 

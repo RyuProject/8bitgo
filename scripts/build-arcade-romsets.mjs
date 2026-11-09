@@ -68,14 +68,52 @@ function walk(dir, out = []) {
   return out
 }
 
+/**
+ * FBNeo 把不少 CPS-3 等大 ROM 清单写成跨行宏，再在 BurnRomInfo 数组里引用。
+ * 只扫数组正文会把《街头霸王 III》这类清单缩成一颗 BIOS ROM，后台就会拿这个
+ * 偶然共享的 BIOS CRC 去误认 MAME/CHD。这里只展开源码文件内的对象宏；不执行
+ * C 预处理器，也不把宏参数/编译条件当成 ROM 数据。
+ */
+function objectMacros(source) {
+  const macros = new Map()
+  const lines = source.split(/\r?\n/)
+  for (let i = 0; i < lines.length; i++) {
+    const match = /^\s*#\s*define\s+([A-Za-z_]\w*)(.*)$/.exec(lines[i])
+    if (!match || match[2].startsWith('(')) continue // 函数式宏不参与 ROM 清单展开
+    const parts = []
+    let body = match[2]
+    let continued = /\\\s*$/.test(body)
+    parts.push(body.replace(/\\\s*$/, ''))
+    while (continued && i + 1 < lines.length) {
+      body = lines[++i]
+      continued = /\\\s*$/.test(body)
+      parts.push(body.replace(/\\\s*$/, ''))
+    }
+    macros.set(match[1], parts.join('\n'))
+  }
+  return macros
+}
+
+function expandObjectMacros(input, macros, expanding = new Set()) {
+  return input.replace(/\b[A-Za-z_]\w*\b/g, (token) => {
+    const body = macros.get(token)
+    if (body === undefined || expanding.has(token)) return token
+    const next = new Set(expanding)
+    next.add(token)
+    return expandObjectMacros(body, macros, next)
+  })
+}
+
 const descs = new Map() // 数组名 -> CRC[]
 const drivers = [] // { short, parent, bios, key }
 for (const f of walk(srcDir)) {
   if (SKIP.has(relative(srcDir, f).split(sep)[0])) continue
   const src = readFileSync(f, 'utf8')
+  const macros = objectMacros(src)
   for (const m of src.matchAll(DESC)) {
     const crcs = []
-    for (const r of m[2].matchAll(ROW)) {
+    const expanded = expandObjectMacros(m[2], macros)
+    for (const r of expanded.matchAll(ROW)) {
       const crc = Number(r[3])
       if (crc) crcs.push(crc >>> 0) // CRC 为 0 = 未 dump 的占位项，跳过
     }

@@ -13,7 +13,7 @@
  *（见 lib/unzip.ts 的 crc32 字段）。拿这些 CRC 去比 FBNeo 的驱动表就行了。
  *
  * 索引是 public/arcade-romsets.bin，由 scripts/build-arcade-romsets.mjs 从
- * FBNeo 源码生成，8721 个 romset / 12 万条 CRC。**只在后台按需加载**，
+ * FBNeo 源码生成，9377 个 romset / 13.8 万条 CRC（含跨行 ROM 宏展开）。**只在后台按需加载**，
  * 玩家端一个字节都不会下。
  *
  * ── 为什么要算「覆盖率」而不是命中数就完事 ───────────────────
