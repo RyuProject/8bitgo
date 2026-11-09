@@ -108,7 +108,7 @@ adminRouter.get('/stats', requireAbility('content:edit'), async (_req, res, next
 adminRouter.get('/startup-stats', requireAbility('content:edit'), async (req, res, next) => {
   try {
     res.setHeader('Cache-Control', 'no-store')
-    res.json(await startupStats(req.query.days))
+    res.json(await startupStats(req.query.days, req.query.q))
   } catch (e) {
     next(e)
   }

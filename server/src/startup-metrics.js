@@ -23,6 +23,8 @@ const EVENTS = new Set([
 ])
 const ID_RE = /^[A-Za-z0-9_-]{8,64}$/
 const NAME_RE = /^[A-Za-z0-9_-]{0,32}$/
+const IPV4_RE = /(?<![\d.])(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?![\d.])/g
+const IPV6_RE = /(?<![\da-f:])(?:[\da-f]{0,4}:){2,7}[\da-f]{0,4}(?![\da-f:])/gi
 
 const text = (value, max) => Array.from(String(value ?? ''), (char) => {
   const code = char.charCodeAt(0)
@@ -32,6 +34,28 @@ const finiteMs = (value) => {
   if (value === undefined || value === null || value === '') return null
   const n = Number(value)
   return Number.isFinite(n) ? Math.max(0, Math.min(3_600_000, Math.round(n))) : null
+}
+
+/**
+ * 错误摘要要能帮助定位启动阶段，但不能把网络诊断里带出的 ROM 地址、凭据或玩家 IP 存进库。
+ * 老记录在返回后台时也经过同一层清洗，避免历史数据绕过新规则。
+ */
+export function sanitizeStartupDetail(value) {
+  const normalized = Array.from(String(value ?? ''), (char) => {
+    const code = char.codePointAt(0) ?? 0
+    return code <= 31 || code === 127 || code === 0x2028 || code === 0x2029 ? ' ' : char
+  }).join('')
+  const detail = normalized
+    .replace(/https?:\/\/[^\s"'<>]+/gi, '[URL]')
+    .replace(/\b(bearer)\s+[^\s,;]+/gi, '$1 [已隐藏]')
+    .replace(/\b(authorization|proxy-authorization|cookie|set-cookie|access[_-]?token|refresh[_-]?token|api[_-]?key|password|secret|token)\b(\s*[:=]\s*)[^\s,;]+/gi, '$1$2[已隐藏]')
+    .replace(/\beyJ[\da-z_-]{8,}\.[\da-z_-]{8,}\.[\da-z_-]{8,}\b/gi, '[令牌]')
+    .replace(IPV4_RE, '[IP]')
+    .replace(IPV6_RE, '[IP]')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 160)
+  return detail || null
 }
 
 /**
@@ -56,7 +80,7 @@ export function normalizeStartupEvent(body = {}) {
     runtime,
     platform,
     elapsedMs: finiteMs(body.elapsedMs),
-    detail: text(body.detail, 160) || null,
+    detail: sanitizeStartupDetail(body.detail),
   }
 }
 
@@ -173,10 +197,11 @@ async function grouped(cutoff, dimension) {
 }
 
 /** 后台概览只拉最近 1～90 天；长周期原始事件仍受上面的 90 天保留期约束。 */
-export async function startupStats(rawDays = 7) {
+export async function startupStats(rawDays = 7, rawQuery = '') {
   const days = Math.max(1, Math.min(90, Math.round(Number(rawDays) || 7)))
   const cutoff = cutoffFor(days)
-  const [summaryRows, byGame, byRuntime, byCountry, recentSlow] = await Promise.all([
+  const search = text(rawQuery, 80)
+  const [summaryRows, byGame, byRuntime, byCountry, recentSlow, recentFailures] = await Promise.all([
     query(`SELECT ${AGGREGATES} FROM game_startup_events e WHERE e.created_at >= ?`, [cutoff]),
     grouped(cutoff, 'game'),
     grouped(cutoff, 'runtime'),
@@ -191,6 +216,31 @@ export async function startupStats(rawDays = 7) {
         LIMIT 20`,
       [STARTUP_SLOW_MS, cutoff],
     ),
+    query(
+      `SELECT e.id, g.slug, COALESCE(NULLIF(g.title_zh, ''), g.title) AS title,
+              e.platform, e.runtime, e.country, e.event, e.elapsed_ms AS elapsedMs,
+              e.detail, e.created_at AS createdAt
+         FROM game_startup_events e
+         JOIN games g ON g.id = e.game_id
+        WHERE e.event IN ('failed', 'timeout') AND e.created_at >= ?
+          AND (? = '' OR LOWER(CONCAT_WS(' ', g.slug, g.title, g.title_zh)) LIKE LOWER(?))
+        ORDER BY e.created_at DESC, e.id DESC
+        LIMIT 50`,
+      [cutoff, search, `%${search}%`],
+    ),
   ])
-  return { days, slowThresholdMs: STARTUP_SLOW_MS, summary: shapeAggregate(summaryRows[0]), byGame, byRuntime, byCountry, recentSlow }
+  return {
+    days,
+    slowThresholdMs: STARTUP_SLOW_MS,
+    summary: shapeAggregate(summaryRows[0]),
+    byGame,
+    byRuntime,
+    byCountry,
+    recentSlow,
+    recentFailures: recentFailures.map((row) => ({
+      ...row,
+      id: String(row.id),
+      detail: sanitizeStartupDetail(row.detail),
+    })),
+  }
 }

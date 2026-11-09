@@ -15,7 +15,7 @@ import { platformMap, platforms } from '@/data/platforms'
 import { genreMap } from '@/data/genres'
 import { formatCount } from '@/lib/format'
 import { trackPageLoad } from '@/services/progress'
-import { BarList, Card, Stat } from './ui'
+import { BarList, btnClass, Card, inputClass, Stat } from './ui'
 
 /** 「最近上线」取几条 */
 const RECENT_SIZE = 8
@@ -30,7 +30,6 @@ interface OverviewData {
   /** 按 plays 倒序的前 TOP_SIZE 款（后端列表默认就是这个排序） */
   top: Game[]
   recent: Game[]
-  startup: StartupStats
 }
 
 /**
@@ -47,7 +46,7 @@ interface OverviewData {
  * 上千款游戏时光为了这几个数字就要下载整个目录。
  */
 async function loadOverview(): Promise<OverviewData> {
-  const [stats, facets, top, recent, startup] = await Promise.all([
+  const [stats, facets, top, recent] = await Promise.all([
     fetchAdminStats(),
     api.get<Facets>('/api/games/facets'),
     // 后端列表默认按 plays 倒序，第一页就是排行榜；顺带把 total 也带回来了，
@@ -55,12 +54,15 @@ async function loadOverview(): Promise<OverviewData> {
     fetchAdminGames({ page: 1, pageSize: TOP_SIZE }),
     // fetchAdminGames 没有 sort 参数（后台列表用不到），所以「最近上线」直接走接口
     api.get<Paged<Game>>(`/api/games?all=1&sort=newest&pageSize=${RECENT_SIZE}`, true),
-    fetchStartupStats(7),
   ])
-  return { stats, facets, total: top.total, top: top.items, recent: recent.items, startup }
+  return { stats, facets, total: top.total, top: top.items, recent: recent.items }
 }
 
 const startupTime = (ms: number | null) => ms == null ? '—' : ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`
+const startupDate = (value: string) => {
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('zh-CN', { dateStyle: 'short', timeStyle: 'medium' })
+}
 
 function StartupBreakdown({ title, rows }: { title: string; rows: StartupGroup[] }) {
   return (
@@ -98,8 +100,79 @@ function StartupBreakdown({ title, rows }: { title: string; rows: StartupGroup[]
   )
 }
 
+function StartupFailures({
+  rows,
+  loading,
+}: {
+  rows: StartupStats['recentFailures']
+  loading: boolean
+}) {
+  return (
+    <Card title="最近启动故障" extra={<span className="text-xs text-muted">最多显示 50 条 · 不含账号或 ROM 地址</span>}>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[58rem] text-sm">
+          <thead className="text-left text-xs text-muted">
+            <tr>
+              <th className="pb-2 font-medium">时间</th>
+              <th className="pb-2 font-medium">游戏</th>
+              <th className="pb-2 font-medium">平台 / 模拟器</th>
+              <th className="pb-2 font-medium">地区</th>
+              <th className="pb-2 font-medium">结果</th>
+              <th className="pb-2 font-medium">错误摘要</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-line">
+            {rows.map((row) => (
+              <tr key={row.id}>
+                <td className="whitespace-nowrap py-2 text-xs tabular-nums text-muted">
+                  <time dateTime={row.createdAt}>{startupDate(row.createdAt)}</time>
+                </td>
+                <td className="max-w-52 py-2">
+                  <Link to={`/games/${encodeURIComponent(row.slug)}`} className="block truncate text-brand-hover hover:underline" title={row.title}>
+                    {row.title}
+                  </Link>
+                  <span className="block truncate text-[11px] text-dim">{row.slug}</span>
+                </td>
+                <td className="whitespace-nowrap py-2 text-xs">
+                  {(platformMap[row.platform]?.shortName ?? row.platform) || '未知'}
+                  <span className="ml-1 text-muted">/ {row.runtime || '未知'}</span>
+                </td>
+                <td className="py-2 text-xs text-muted">{row.country || 'XX'}</td>
+                <td className="py-2">
+                  <span className={row.event === 'timeout'
+                    ? 'rounded bg-live/10 px-1.5 py-0.5 text-xs text-live'
+                    : 'rounded bg-yellow-500/10 px-1.5 py-0.5 text-xs text-yellow-400'}>
+                    {row.event === 'timeout' ? '启动超时' : '加载失败'}
+                  </span>
+                  <span className="mt-1 block text-[11px] text-muted">{startupTime(row.elapsedMs)}</span>
+                </td>
+                <td className="max-w-[24rem] whitespace-normal break-words py-2 text-xs text-muted" title={row.detail ?? undefined}>
+                  {row.detail || (row.event === 'timeout' ? '等待游戏进入可玩状态超时，未收到更具体的错误信息。' : '客户端未提供错误摘要。')}
+                </td>
+              </tr>
+            ))}
+            {!rows.length && (
+              <tr>
+                <td colSpan={6} className="py-5 text-center text-sm text-muted">
+                  {loading ? '正在读取故障记录…' : '所选时间范围内没有启动失败记录'}
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </Card>
+  )
+}
+
 export function AdminOverview() {
   const [data, setData] = useState<OverviewData | null>(null)
+  const [startup, setStartup] = useState<StartupStats | null>(null)
+  const [startupDays, setStartupDays] = useState(7)
+  const [startupQuery, setStartupQuery] = useState('')
+  const [startupSearch, setStartupSearch] = useState('')
+  const [startupLoading, setStartupLoading] = useState(false)
+  const [startupError, setStartupError] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
@@ -122,6 +195,26 @@ export function AdminOverview() {
       cancelled = true
     }
   }, [])
+
+  useEffect(() => {
+    if (!apiEnabled()) return
+    let cancelled = false
+    setStartupLoading(true)
+    setStartupError('')
+    fetchStartupStats(startupDays, startupSearch)
+      .then((result) => {
+        if (!cancelled) setStartup(result)
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setStartupError(e instanceof Error ? e.message : '读取失败')
+      })
+      .finally(() => {
+        if (!cancelled) setStartupLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [startupDays, startupSearch])
 
   const facets = data?.facets
   const total = data?.total ?? 0
@@ -197,29 +290,68 @@ export function AdminOverview() {
       <div>
         <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
           <div>
-            <h2 className="font-semibold">启动漏斗 · 最近 7 天</h2>
+            <h2 className="font-semibold">启动漏斗 · 最近 {startupDays} 天</h2>
             <p className="mt-1 text-xs text-muted">可玩成功率以“点击开始”为分母；超过 20 秒的成功启动单独告警。</p>
           </div>
-          <span className="text-xs text-muted">详情页 {data?.startup.summary.detailViews ?? 0} 次</span>
+          <span className="text-xs text-muted">详情页 {startup?.summary.detailViews ?? 0} 次</span>
         </div>
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
-          <Stat label="点击开始" value={data?.startup.summary.starts ?? 0} sub="每次主动启动一条" />
-          <Stat label="成功可玩" value={data?.startup.summary.playable ?? 0} sub={`${(data?.startup.summary.playableRate ?? 0).toFixed(1)}% 成功率`} />
-          <Stat label="首帧" value={data?.startup.summary.firstFrames ?? 0} sub="运行时确认进入主循环" />
-          <Stat label="慢启动" value={data?.startup.summary.slowStarts ?? 0} sub="可玩耗时超过 20 秒" />
+          <Stat label="点击开始" value={startup?.summary.starts ?? 0} sub="每次主动启动一条" />
+          <Stat label="成功可玩" value={startup?.summary.playable ?? 0} sub={`${(startup?.summary.playableRate ?? 0).toFixed(1)}% 成功率`} />
+          <Stat label="首帧" value={startup?.summary.firstFrames ?? 0} sub="运行时确认进入主循环" />
+          <Stat label="慢启动" value={startup?.summary.slowStarts ?? 0} sub="可玩耗时超过 20 秒" />
           <Stat
             label="失败 / 超时"
-            value={(data?.startup.summary.failures ?? 0) + (data?.startup.summary.timeouts ?? 0)}
-            sub={`平均可玩 ${startupTime(data?.startup.summary.avgPlayableMs ?? null)}`}
+            value={(startup?.summary.failures ?? 0) + (startup?.summary.timeouts ?? 0)}
+            sub={`平均可玩 ${startupTime(startup?.summary.avgPlayableMs ?? null)}`}
           />
         </div>
       </div>
 
       <div className="grid gap-4 xl:grid-cols-3">
-        <StartupBreakdown title="按游戏" rows={data?.startup.byGame ?? []} />
-        <StartupBreakdown title="按运行时" rows={data?.startup.byRuntime ?? []} />
-        <StartupBreakdown title="按地区" rows={data?.startup.byCountry ?? []} />
+        <StartupBreakdown title="按游戏" rows={startup?.byGame ?? []} />
+        <StartupBreakdown title="按运行时" rows={startup?.byRuntime ?? []} />
+        <StartupBreakdown title="按地区" rows={startup?.byCountry ?? []} />
       </div>
+
+      <section className="space-y-3">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h2 className="font-semibold">启动故障明细</h2>
+            <p className="mt-1 text-xs text-muted">按时间查看失败原因；游戏搜索只筛选下方明细，不影响上方汇总。</p>
+          </div>
+          <form
+            className="flex flex-wrap items-end gap-2"
+            onSubmit={(event) => {
+              event.preventDefault()
+              setStartupSearch(startupQuery.trim())
+            }}
+          >
+            <label className="block">
+              <span className="mb-1 block text-xs text-muted">时间范围</span>
+              <select className={inputClass} value={startupDays} onChange={(event) => setStartupDays(Number(event.target.value))}>
+                <option value={1}>最近 24 小时</option>
+                <option value={7}>最近 7 天</option>
+                <option value={30}>最近 30 天</option>
+                <option value={90}>最近 90 天</option>
+              </select>
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs text-muted">搜索游戏</span>
+              <input
+                className={inputClass}
+                value={startupQuery}
+                onChange={(event) => setStartupQuery(event.target.value)}
+                placeholder="名称或 slug"
+                maxLength={80}
+              />
+            </label>
+            <button type="submit" className={btnClass.secondary} disabled={startupLoading}>筛选</button>
+          </form>
+        </div>
+        {startupError && <p className="rounded-lg bg-live/10 px-3 py-2 text-sm text-live">故障记录读取失败：{startupError}</p>}
+        <StartupFailures rows={startup?.recentFailures ?? []} loading={startupLoading} />
+      </section>
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card

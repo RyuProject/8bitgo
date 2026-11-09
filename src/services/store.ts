@@ -275,8 +275,22 @@ export interface StartupStats {
     elapsedMs: number
     createdAt: string
   }>
+  recentFailures: Array<{
+    id: string
+    slug: string
+    title: string
+    platform: string
+    runtime: string
+    country: string
+    event: 'failed' | 'timeout'
+    elapsedMs: number | null
+    detail: string | null
+    createdAt: string
+  }>
 }
 
-export async function fetchStartupStats(days = 7): Promise<StartupStats> {
-  return api.get<StartupStats>(`/api/admin/startup-stats?days=${Math.max(1, Math.min(90, Math.round(days)))}`, true)
+export async function fetchStartupStats(days = 7, query = ''): Promise<StartupStats> {
+  const params = new URLSearchParams({ days: String(Math.max(1, Math.min(90, Math.round(days)))) })
+  if (query.trim()) params.set('q', query.trim())
+  return api.get<StartupStats>(`/api/admin/startup-stats?${params}`, true)
 }
