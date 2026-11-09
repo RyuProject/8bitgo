@@ -89,12 +89,69 @@ console.log('④ looksLikeSocketIo 认得出冒牌货')
 
 console.log('⑤ 首次连接遇到瞬时网络错误不会立刻放弃')
 {
-  const live = readFileSync(join(root, 'src/services/live.ts'), 'utf8')
+  const liveSource = readFileSync(join(root, 'src/services/live.ts'), 'utf8')
+  const live = liveSource
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/^\s*\/\/.*$/gm, '')
   ck('Invalid namespace 这种确定错误仍然立即失败', /if \(\/invalid namespace\/i\.test\(msg\)\) finishError\(err\)/.test(live))
   ck('其余 connect_error 先记下，给 Socket.IO 留自动重连预算', /else lastError = err/.test(live))
   ck('总预算到期才真正关闭首连', /finishError\(lastError \?\? new Error\(getT\(\)\.runtime\.liveTimeout\)\)/.test(live))
+}
+
+console.log('⑥ 直播入口的资源请求不能无限挂起')
+{
+  const live = readFileSync(join(root, 'src/services/live.ts'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '')
+  ck('socket.io 源码请求有独立超时', /IO_ASSET_TIMEOUT_MS = 8_000/.test(live))
+  ck('CommonJS 拉取把 AbortSignal 传给 fetch', /fetch\(url, \{ credentials: 'omit', signal: controller\.signal \}\)/.test(live))
+  ck('兼容脚本标签的回退路径也有超时', /加载超时/.test(live) && /script\.remove\(\)/.test(live))
+  ck('超时或加载失败会清理共享加载 Promise，后续还能重试', /ioLoading = null/.test(live))
+  ck('容量预检最多等 4 秒，失败时沿用 fail-open 策略', /LIVE_CAPACITY_TIMEOUT_MS = 4_000/.test(live) && /signal: controller\.signal/.test(live))
+}
+
+console.log('⑦ 超时要真的中止并释放直播入口')
+{
+  globalThis.__viteEnv = { VITE_API_URL: 'same-origin' }
+  const removed = []
+  let appended = null
+  globalThis.window = {
+    io: undefined,
+    setTimeout: (fn) => globalThis.setTimeout(fn, 10),
+    clearTimeout: (id) => globalThis.clearTimeout(id),
+  }
+  globalThis.document = {
+    createElement: () => ({ src: '', async: false, onload: null, onerror: null, remove() { removed.push(this) } }),
+    head: { appendChild: (script) => { appended = script } },
+  }
+  const previousFetch = globalThis.fetch
+  let aborted = 0
+  globalThis.fetch = (_url, init = {}) => new Promise((_resolve, reject) => {
+    const signal = init.signal
+    const rejectAbort = () => {
+      aborted++
+      reject(new DOMException('aborted', 'AbortError'))
+    }
+    if (signal?.aborted) rejectAbort()
+    else signal?.addEventListener('abort', rejectAbort, { once: true })
+  })
+
+  try {
+    const { canAutoStartLive, connectLive } = await import('../src/services/live.ts')
+    let connectRejected = false
+    try { await connectLive() } catch { connectRejected = true }
+    ck('源码 fetch 卡住后会 abort，再给兼容脚本一次有界机会', aborted === 1 && appended !== null)
+    ck('兼容脚本超时后被移除并清理回调', removed.length === 1 && appended.onload === null && appended.onerror === null)
+    ck('客户端加载失败会让 connectLive 明确失败，不会永久 pending', connectRejected)
+
+    const started = Date.now()
+    const capacity = await canAutoStartLive()
+    ck('容量预检超时后按 fail-open 返回，自动开播仍由服务端最终限额', capacity === true && Date.now() - started < 1_000)
+  } catch (e) {
+    ck(`直播传输超时行为可执行（${e instanceof Error ? e.message : String(e)}）`, false)
+  } finally {
+    globalThis.fetch = previousFetch
+  }
 }
 
 console.log(`\n${pass}/${pass + fails.length} 通过`)

@@ -115,6 +115,10 @@ export interface LiveSocket {
 }
 type IoFactory = (uri: string, opts?: Record<string, unknown>) => LiveSocket
 
+/** 直播首屏不能被静态 socket.io 脚本或容量预检无限期挂住。 */
+const IO_ASSET_TIMEOUT_MS = 8_000
+const LIVE_CAPACITY_TIMEOUT_MS = 4_000
+
 /**
  * `liveEnabled()` 的定义在 ./roomFlags —— runtimeMeta.ts 只需要这一个布尔值，
  * 从本文件取会把整条直播链路拖进主包。这里转出去，别删。
@@ -145,11 +149,17 @@ export function socketScriptUrl(): string {
  * 或者 API 在别的域上没开 CORS，就退回下面那条老路子。
  */
 async function loadIoAsModule(url: string): Promise<IoFactory> {
-  const res = await fetch(url, { credentials: 'omit' })
-  if (!res.ok) throw new Error(`${url} → HTTP ${res.status}`)
-  const exported = runAsCommonJs(await res.text())
-  if (!looksLikeSocketIo(exported)) throw new Error(`${url} 跑完没导出 io()：${describeExport(exported)}`)
-  return exported as IoFactory
+  const controller = new AbortController()
+  const timer = window.setTimeout(() => controller.abort(), IO_ASSET_TIMEOUT_MS)
+  try {
+    const res = await fetch(url, { credentials: 'omit', signal: controller.signal })
+    if (!res.ok) throw new Error(`${url} → HTTP ${res.status}`)
+    const exported = runAsCommonJs(await res.text())
+    if (!looksLikeSocketIo(exported)) throw new Error(`${url} 跑完没导出 io()：${describeExport(exported)}`)
+    return exported as IoFactory
+  } finally {
+    window.clearTimeout(timer)
+  }
 }
 
 /** 退路：老老实实插一个 <script>，装完把 window.io 原样放回去 */
@@ -163,19 +173,43 @@ function loadIoAsScript(url: string): Promise<IoFactory> {
       else delete win.io
     }
     const script = document.createElement('script')
+    let settled = false
+    const cleanup = () => {
+      window.clearTimeout(timer)
+      script.onload = null
+      script.onerror = null
+      restore()
+      script.remove()
+    }
+    const fail = (error: Error) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      reject(error)
+    }
+    const timer = window.setTimeout(
+      () => fail(new Error(`${url} 加载超时（${IO_ASSET_TIMEOUT_MS}ms）`)),
+      IO_ASSET_TIMEOUT_MS,
+    )
     script.src = url
     script.async = true
     script.onload = () => {
+      if (settled) return
       const loaded = win.io
-      restore()
-      if (looksLikeSocketIo(loaded)) resolve(loaded as IoFactory)
-      else reject(new Error(`${url} 装上了却没暴露 io()：${describeExport(loaded)}；${umdGlobals()}`))
+      if (!looksLikeSocketIo(loaded)) {
+        fail(new Error(`${url} 装上了却没暴露 io()：${describeExport(loaded)}；${umdGlobals()}`))
+        return
+      }
+      settled = true
+      cleanup()
+      resolve(loaded as IoFactory)
     }
-    script.onerror = () => {
-      restore()
-      reject(new Error(`${url} 加载失败（网络或反代）`))
+    script.onerror = () => fail(new Error(`${url} 加载失败（网络或反代）`))
+    try {
+      document.head.appendChild(script)
+    } catch (e) {
+      fail(e instanceof Error ? e : new Error(String(e)))
     }
-    document.head.appendChild(script)
   })
 }
 
@@ -333,13 +367,21 @@ export async function fetchLiveRoom(roomId: string): Promise<LiveRoomInfo | null
  */
 export async function canAutoStartLive(signal?: AbortSignal): Promise<boolean> {
   if (!liveEnabled()) return false
+  const controller = new AbortController()
+  const abort = () => controller.abort(signal?.reason)
+  if (signal?.aborted) abort()
+  else signal?.addEventListener('abort', abort, { once: true })
+  const timer = window.setTimeout(() => controller.abort(), LIVE_CAPACITY_TIMEOUT_MS)
   try {
-    const res = await fetch(`${apiBase()}/api/live/capacity`, { cache: 'no-store', signal })
+    const res = await fetch(`${apiBase()}/api/live/capacity`, { cache: 'no-store', signal: controller.signal })
     if (!res.ok) return true
     const capacity = (await res.json()) as Partial<LiveCapacity>
     return typeof capacity.available === 'boolean' ? capacity.available : true
   } catch {
     return true
+  } finally {
+    window.clearTimeout(timer)
+    signal?.removeEventListener('abort', abort)
   }
 }
 
@@ -356,15 +398,18 @@ export async function canAutoStartLive(signal?: AbortSignal): Promise<boolean> {
 const LIST_POLL_MS = 15_000
 /** 轮询连续失败时的退避上限：后端挂着的那几分钟，每个登录用户别再按 15 秒一次去撞它 */
 const LIST_POLL_MAX_MS = 120_000
+/** 与 netplay 列表一致：网关挂起时必须释放轮询锁，不能让大厅永久停在旧快照。 */
+const LIST_REQUEST_TIMEOUT_MS = 8_000
 /** 空数组用固定引用：useSyncExternalStore 要求快照引用稳定，否则会无限重渲染 */
 const NO_LIVE_ROOMS: LiveRoomInfo[] = []
 
 /** 和 fetchLiveRooms 的区别：这个会把失败抛出来，让 store 能区分「没人在播」和「后端不可达」 */
-async function loadLiveRooms(): Promise<LiveRoomInfo[]> {
-  const res = await fetch(`${apiBase()}/api/live/rooms`, { cache: 'no-store', headers: liveAuthHeaders() })
+async function loadLiveRooms(signal?: AbortSignal): Promise<LiveRoomInfo[]> {
+  const res = await fetch(`${apiBase()}/api/live/rooms`, { cache: 'no-store', headers: liveAuthHeaders(), signal })
   if (!res.ok) throw new Error(String(res.status))
   const list = (await res.json()) as LiveRoomInfo[]
-  return Array.isArray(list) ? list : []
+  if (!Array.isArray(list)) throw new Error('invalid live room list')
+  return list
 }
 
 const liveStore = (() => {
@@ -379,8 +424,14 @@ const liveStore = (() => {
   let pollFailures = 0
   /** 当前连接按哪一张 JWT 建立；登录 / 退出后必须换通道，否则会沿用旧权限。 */
   let connectedToken = ''
+  /** 记录缓存快照所属的权限身份；身份变化时先清缓存，避免成人房残留给新身份。 */
+  let roomsToken = ''
   /** 让旧连接 / 旧 JWT 发起的迟到响应失效，避免登出后短暂显示成人房或陈旧房间。 */
   let generation = 0
+  /** REST 与 SSE 都是快照；序号阻止较旧的 HTTP 响应覆盖更新的推送。 */
+  let listRevision = 0
+  let activeRequest: AbortController | null = null
+  let inFlight: { generation: number; token: string; promise: Promise<boolean> } | null = null
   const emit = () => listeners.forEach((l) => l())
 
   /** 列表空了要真的清空 —— 主播下播之后卡片必须消失，不能因为「保留上次结果」一直挂着 */
@@ -393,14 +444,34 @@ const liveStore = (() => {
   const refresh = async (): Promise<boolean> => {
     const mine = generation
     const token = getToken()
-    try {
-      const next = await loadLiveRooms()
-      if (mine === generation && token === getToken()) apply(next)
-      return true
-    } catch {
-      /* 后端暂时不可达时保留上次结果，别闪一下空列表 */
-      return false
-    }
+    if (!liveEnabled()) return false
+    if (inFlight?.generation === mine && inFlight.token === token) return inFlight.promise
+
+    // 轮询期间若 SSE 或本地权限变化已产生更新，迟到的 REST 快照不能把大厅倒退。
+    const revision = listRevision
+    const controller = new AbortController()
+    activeRequest = controller
+    let promise!: Promise<boolean>
+    promise = (async () => {
+      const timeout = window.setTimeout(() => controller.abort(), LIST_REQUEST_TIMEOUT_MS)
+      try {
+        const next = await loadLiveRooms(controller.signal)
+        if (mine !== generation || token !== getToken() || revision !== listRevision) return true
+        roomsToken = token
+        apply(next)
+        listRevision++
+        return true
+      } catch {
+        /* 后端暂时不可达时保留上次结果，别闪一下空列表；超时后轮询仍可继续退避重试。 */
+        return false
+      } finally {
+        window.clearTimeout(timeout)
+        if (activeRequest === controller) activeRequest = null
+        if (inFlight?.promise === promise) inFlight = null
+      }
+    })()
+    inFlight = { generation: mine, token, promise }
+    return promise
   }
 
   /**
@@ -417,8 +488,9 @@ const liveStore = (() => {
     const mine = generation
     polling = true
     const ok = await refresh()
-    polling = false
+    // disconnect / 身份切换已经让这一轮作废；旧轮询不能解锁新一轮的 polling 标志。
     if (mine !== generation) return
+    polling = false
     pollFailures = ok ? 0 : pollFailures + 1
     const delay = Math.min(LIST_POLL_MAX_MS, LIST_POLL_MS * 2 ** pollFailures)
     timer = window.setTimeout(() => void pollOnce(), delay)
@@ -438,6 +510,13 @@ const liveStore = (() => {
 
   const connect = () => {
     connectedToken = getToken()
+    if (roomsToken !== connectedToken) {
+      // 房间快照可能包含按年龄权限过滤后的直播；切换账号时必须先抹掉旧权限的数据。
+      roomsToken = connectedToken
+      rooms = NO_LIVE_ROOMS
+      listRevision++
+      emit()
+    }
     const mine = generation
     /*
       EventSource 不能自定义 Authorization 头。游客继续用它享受低请求量；登录用户改用带 JWT 的
@@ -462,7 +541,11 @@ const liveStore = (() => {
       if (mine !== generation || connectedToken) return
       try {
         const list = JSON.parse((e as MessageEvent<string>).data) as LiveRoomInfo[]
-        if (Array.isArray(list)) apply(list)
+        if (Array.isArray(list)) {
+          roomsToken = ''
+          listRevision++
+          apply(list)
+        }
       } catch {
         /* 坏包忽略，等下一条 */
       }
@@ -493,6 +576,9 @@ const liveStore = (() => {
       document.removeEventListener('visibilitychange', onVisible)
     }
     polling = false
+    activeRequest?.abort()
+    activeRequest = null
+    inFlight = null
   }
 
   const reconnectForToken = () => {

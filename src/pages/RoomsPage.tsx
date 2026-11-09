@@ -25,9 +25,15 @@ export function RoomsPage() {
   const [searchParams] = useSearchParams()
   const live = searchParams.get('live') === '1'
   const [visibleRoomCount, setVisibleRoomCount] = useState(ROOM_PAGE_SIZE)
+  const [initialSyncDone, setInitialSyncDone] = useState(false)
   useEffect(() => {
     setVisibleRoomCount(ROOM_PAGE_SIZE)
   }, [live])
+  useEffect(() => {
+    // 房间快照来自三条独立通道；首个 SSE/HTTP 快照到达前，空数组不代表真的无人在线。
+    const timer = window.setTimeout(() => setInitialSyncDone(true), 1_500)
+    return () => window.clearTimeout(timer)
+  }, [])
   useSeo({
     title: live ? t.rooms.liveH1 : t.rooms.title,
     description: live ? t.rooms.liveSeo : t.rooms.seo,
@@ -57,7 +63,7 @@ export function RoomsPage() {
       <section className="mt-8">
         <SectionHeader
           title={t.rooms.liveTitle}
-          subtitle={enabled ? fmt(t.rooms.liveCount, { n: String(rooms.length) }) : undefined}
+          subtitle={enabled && (rooms.length > 0 || initialSyncDone) ? fmt(t.rooms.liveCount, { n: String(rooms.length) }) : undefined}
           icon={live ? '📡' : '👥'}
           actions={
             enabled ? (
@@ -73,6 +79,11 @@ export function RoomsPage() {
           <div className="rounded-2xl border border-line bg-surface p-6 text-sm text-muted">
             <p className="font-semibold text-fg">{t.rooms.disabledTitle}</p>
             <p className="mt-1 leading-relaxed">{t.rooms.disabledBody}</p>
+          </div>
+        ) : rooms.length === 0 && !initialSyncDone ? (
+          <div role="status" aria-live="polite" aria-busy="true">
+            <span className="sr-only">{t.common.loadingMore}</span>
+            <GameGridSkeleton count={6} className="adaptive-room-grid" coverRatio="landscape" />
           </div>
         ) : rooms.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-line-strong bg-surface p-8 text-center">

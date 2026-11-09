@@ -102,9 +102,12 @@ export function roomLink(gameSlug: string, roomId: string): string {
   return `${origin}/games/${gameSlug}?room=${encodeURIComponent(roomId)}`
 }
 
-export async function fetchRooms(): Promise<Room[]> {
+export async function fetchRooms(signal?: AbortSignal): Promise<Room[]> {
   if (!roomsEnabled()) return []
-  return api.get<Room[]>('/api/rooms')
+  const result: unknown = await api.get<unknown>('/api/rooms', false, signal)
+  // 服务端/网关若回了非数组 JSON，不能把它塞进共享 store 后让大厅在 for-of 处崩溃。
+  if (!Array.isArray(result)) throw new Error('invalid room list')
+  return result as Room[]
 }
 
 export async function fetchRoom(roomId: string): Promise<Room | null> {
@@ -174,18 +177,31 @@ const cache = (() => {
   const listeners = new Set<() => void>()
   let timer = 0
   let refreshing = false
+  let refreshGeneration = 0
+  let activeRequest: AbortController | null = null
   let onVisibility: (() => void) | null = null
   const emit = () => listeners.forEach((l) => l())
   const refresh = async () => {
-    if (refreshing) return
+    if (refreshing || !roomsEnabled()) return
     refreshing = true
+    const mine = ++refreshGeneration
+    const controller = new AbortController()
+    activeRequest = controller
+    const timeout = window.setTimeout(() => controller.abort(), 8_000)
     try {
-      rooms = await fetchRooms()
-      emit()
+      const next = await fetchRooms(controller.signal)
+      if (mine === refreshGeneration) {
+        rooms = next.length ? next : NO_ROOMS
+        emit()
+      }
     } catch {
       /* 后端不可达时保留上次结果 */
     } finally {
-      refreshing = false
+      window.clearTimeout(timeout)
+      if (mine === refreshGeneration) {
+        refreshing = false
+        activeRequest = null
+      }
     }
   }
   return {
@@ -220,6 +236,11 @@ const cache = (() => {
         if (listeners.size === 0) {
           window.clearInterval(timer)
           timer = 0
+          // 页面卸载后不让悬挂的请求占着 single-flight 锁，下一次进入大厅可立即重拉。
+          refreshGeneration++
+          activeRequest?.abort()
+          activeRequest = null
+          refreshing = false
           if (onVisibility) document.removeEventListener('visibilitychange', onVisibility)
           onVisibility = null
         }

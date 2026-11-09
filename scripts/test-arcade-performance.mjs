@@ -20,17 +20,21 @@ const test = (name, fn) => {
 
 console.log('\n街机性能与输入体检')
 
-test('Metal Slug X 在强机上使用重度去降速档，同时保持帧跳关闭', () => {
-  const options = arcadePerformanceDefaultOptions('arcade', 'fbneo', 'metal-slug-x-super-vehicle-001', 8)
+test('目标初代与 Metal Slug X 在强机上使用重度去降速档，同时保持帧跳关闭', () => {
+  const options = arcadePerformanceDefaultOptions('arcade', 'fbneo', 'metal-slug-super-vehicle-001', 8)
   assert.equal(options['fbneo-cpu-speed-adjust'], '150%')
   assert.equal(options['fbneo-frameskip-type'], 'disabled')
   assert.equal(options['fbneo-samplerate'], '44100')
   assert.equal(options['fbneo-sample-interpolation'], '2-point 1st order')
   assert.equal(options['fbneo-allow-depth-32'], 'disabled')
+  assert.equal(
+    arcadePerformanceDefaultOptions('arcade', 'fbneo', 'metal-slug-x-super-vehicle-001', 8)['fbneo-cpu-speed-adjust'],
+    '150%',
+  )
 })
 
 test('低端双线程设备只做保守去降速，避免优化反而压垮宿主', () => {
-  const options = arcadePerformanceDefaultOptions('arcade', 'fbneo', 'metal-slug-x-super-vehicle-001', 2)
+  const options = arcadePerformanceDefaultOptions('arcade', 'fbneo', 'metal-slug-super-vehicle-001', 2)
   assert.equal(options['fbneo-cpu-speed-adjust'], '110%')
 })
 
@@ -74,6 +78,21 @@ test('Neo Geo 缺少后台按钮数时按四键推断，明确配置仍优先', 
   assert.equal(effectiveArcadeButtons(undefined, 'NeoGeo'), 4)
   assert.equal(effectiveArcadeButtons(2, 'neogeo'), 2)
   assert.equal(effectiveArcadeButtons(undefined, 'pgm'), 6)
+})
+
+test('Metal Slug 系列在缺少游戏级 BIOS 名时仍按四键显示，且不匹配相似标题', () => {
+  for (const slug of [
+    'metal-slug-super-vehicle-001',
+    'metal-slug-2-super-vehicle-001ii',
+    'metal-slug-3',
+    'metal-slug-x-super-vehicle-001',
+    'mslug',
+    'mslug3',
+  ]) {
+    assert.equal(effectiveArcadeButtons(undefined, undefined, slug), 4, slug)
+  }
+  assert.equal(effectiveArcadeButtons(6, undefined, 'metal-slug-3'), 6, '后台明确配置仍优先')
+  assert.equal(effectiveArcadeButtons(undefined, undefined, 'metal-sluggers'), 6, '不误伤相似但不同的 slug')
 })
 
 test('JoJo 未配置 arcadeButtons 时使用四键替身布局，显式配置仍优先', () => {

@@ -7,8 +7,6 @@
  * 「玩着玩着内存涨」。所以这里用假的 VideoFrame / 流把整套消息协议在 node 里跑一遍，
  * 顺带数帧有没有泄漏。
  */
-import assert from 'node:assert/strict'
-
 let pass = 0
 let failedChecks = 0
 /**
@@ -122,6 +120,11 @@ function makeSource() {
 await import('../src/emulator/captureWorker.ts')
 const send = (msg) => globalThis.self.onmessage({ data: msg })
 const tick = (ms) => new Promise((r) => setTimeout(r, ms))
+const waitFor = async (predicate, timeoutMs = 500) => {
+  const deadline = Date.now() + timeoutMs
+  while (!predicate() && Date.now() < deadline) await tick(5)
+  return predicate()
+}
 
 /* ---------------- 跑 ---------------- */
 
@@ -134,7 +137,8 @@ console.log('── 转发 ──')
   send({ t: 'src', readable: src.stream })
   src.push('a', 1000)
   src.push('b', 2000)
-  await tick(30)
+  // 并行回归时 Node 会有调度抖动；等真实写帧 / 快照事件，不能用固定短睡眠误报失败。
+  await waitFor(() => written.some((x) => x.tag === 'b') && posted.some((m) => m.t === 'snap'))
   ok(written.map((x) => x.tag).join(',') === 'a,b', '读到的帧原样写进了 generator')
   ok(posted.filter((m) => m.t === 'snap').length === 1, '第一帧就推了一张快照回主线程（feed 活得短也有种子）')
 }

@@ -46,7 +46,9 @@ export function effectiveArcadeButtons(
   // 《未来遗产》使用轻拳 / 中拳 / 重拳 / 替身四键；它不是 Neo Geo，旧数据也未必有 BIOS 名，
   // 只按板卡推断会把不存在的 5、6 键画给玩家。配置过的 arcadeButtons 仍始终优先。
   const slug = gameSlug?.trim().toLowerCase() ?? ''
-  if (FOUR_BUTTON_ARCADE_GAMES.has(slug) || NAMCO_FOUR_BUTTON_SLUG.test(slug)) return 4
+  // 合金弹头各作都是 Neo Geo 的四键板。详情数据有时只有平台级 BIOS，`arcadeBios` 会为空，
+  // 不能因此在页面和触屏手柄上多画 5、6 键；复用性能分档识别的系列边界，避免两处判断漂移。
+  if (FOUR_BUTTON_ARCADE_GAMES.has(slug) || NAMCO_FOUR_BUTTON_SLUG.test(slug) || METAL_SLUG_SLUG.test(slug)) return 4
   return biosName?.trim().toLowerCase() === 'neogeo' ? 4 : 6
 }
 
