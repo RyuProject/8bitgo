@@ -433,6 +433,31 @@ CREATE TABLE IF NOT EXISTS game_startup_events (
   CONSTRAINT fk_startup_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- 启动失败 / 超时 / 慢启动的诊断包（后台「错误诊断」页），保留 30 天，不存 IP / 完整 UA / ROM 地址
+CREATE TABLE IF NOT EXISTS game_startup_diagnostics (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  game_id BIGINT UNSIGNED NOT NULL,
+  visit_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  attempt_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  event VARCHAR(24) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  runtime VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '',
+  platform VARCHAR(20) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '',
+  country CHAR(2) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'XX',
+  elapsed_ms INT UNSIGNED NULL,
+  signature CHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  signature_text VARCHAR(200) NOT NULL,
+  browser VARCHAR(40) NOT NULL DEFAULT '',
+  os VARCHAR(40) NOT NULL DEFAULT '',
+  device VARCHAR(16) NOT NULL DEFAULT '',
+  payload MEDIUMTEXT NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_startup_diag (visit_id, attempt_id, event),
+  KEY idx_diag_time (created_at),
+  KEY idx_diag_sig_time (signature, created_at),
+  KEY idx_diag_game_time (game_id, created_at),
+  CONSTRAINT fk_startup_diag_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- ---------- 合集浏览量（多少人看过，按人去重） ----------
 -- 和 game_plays 是同一套身份规则（见 src/playcount.js）：
 --   kind = 'u'  identity = HMAC(账号 id)    已登录：换设备换 IP 都算同一个人

@@ -83,6 +83,7 @@
     "test:robots": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-robots.mjs",
     "test:site-notice": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-site-notice.mjs",
     "test:startup-metrics": "node server/scripts/test-startup-metrics.mjs",
+    "test:startup-diagnostics": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-startup-diagnostics.mjs",
     "test:home-sections": "node scripts/test-home-sections.mjs",
     "diablo:build": "node scripts/build-diabloweb.mjs",
     "diablo:upload": "node scripts/upload-diablo-r2.mjs",

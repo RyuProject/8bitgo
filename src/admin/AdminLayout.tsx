@@ -16,6 +16,8 @@ const SESSION_KEY = '8bitgo.admin.unlocked'
  */
 const TABS: { to: string; label: string; end?: boolean; need: Ability; adminOnly?: true }[] = [
   { to: '/admin', label: '概览', end: true, need: 'content:edit' },
+  // 与 /api/admin/startup-diagnostics 同一权限点（和概览里的启动统计一致）
+  { to: '/admin/diagnostics', label: '错误诊断', need: 'content:edit' },
   { to: '/admin/games', label: '游戏', need: 'games:edit' },
   { to: '/admin/posts', label: '文章', need: 'posts:edit' },
   { to: '/admin/developers', label: '开发商', need: 'content:edit' },

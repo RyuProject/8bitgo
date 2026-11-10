@@ -3071,6 +3071,24 @@ EdgeOne 只能用境外（香港）节点。主站、ROM、Pages 子域都不受
 
 回归：`npm run test:game-media && npm run test:seo-performance && npm run test:tv-host`。
 
+### 2.36.1 启动诊断包：后台「错误诊断」页（2026-11-11）
+
+启动漏斗（`game_startup_events`）每局只有阶段时间点和 160 字摘要，查不出「哪个浏览器、卡在哪一步」。
+现在一局**失败 / 超时 / 慢启动**时，`startupFunnel.ts` 自动附上 `startupDiagnostics.ts` 采的诊断包：
+环境（内存、核数、网络、屏幕、语言、跨源隔离、本局在后台多久）、本局阶段时间线、外层页面 warn/error、
+EmulatorJS 引擎日志与加载阶段文字（`diagLog`）、下载器的重试（`loadProgress.ts`）、慢 / 大 / 失败的网络请求
+（外层 + 登记过的 iframe，`watchFramePerformance`；核心是在 iframe 里下的）。服务端 `startup-diagnostics.js`
+按白名单重建、二次脱敏，从请求头归出「Safari 26 / macOS / desktop」后**丢掉原始 UA**，按「事件 · 运行时 ·
+抹掉数字后的错误原文」算特征归组，存 `game_startup_diagnostics`，保留 30 天。后台 `/admin/diagnostics`
+按影响访问数排组，「复制给 AI」拼出概况 + 最近 5 份完整现场的 Markdown。
+
+- 要给别的运行时补日志：调 `diagLog('<来源>', level, …)`；iframe 里下载的运行时调 `watchFramePerformance(win)`，
+  销毁时调用它的返回值（会先拍快照）。不要改 EmulatorPlayer 的上报路径，漏斗是唯一出口。
+- 隐私边界写在隐私政策（`test:legal` 的 `startup-diagnostics` 两条）：不存 IP、完整 UA、ROM 地址、账号；
+  ROM 文件名一律 `[ROM]`。加新字段先改白名单 `normalizeDiagnostics()`，否则服务端会直接丢掉。
+- 部署要 `cd server && npm run migrate`；缺表时漏斗照常，诊断包不入库，后台该页 503。
+- 回归：`npm run test:startup-diagnostics`。
+
 ### 2.37 SSR 页面在 Cloudflare 缓存一天，靠「改内容就清」保证新鲜
 
 源站渲染只要 20～100ms，TTFB 慢在回源：页面原来只在边缘缓存 5 分钟，游戏 × 八语言的长尾页几乎

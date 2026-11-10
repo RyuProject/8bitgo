@@ -140,6 +140,7 @@ import {
   决策全在 dipPlan.ts 那个纯函数里，这里只负责读核心选项、写值、回读核对。
 */
 import { findDipOptions, planDipChanges, type DipPlan } from '../dipPlan'
+import { diagLog, watchFramePerformance } from '@/services/startupDiagnostics'
 
 /**
  * 站点语言 → EmulatorJS 自带的界面语言包（data/localization/*.json）。
@@ -1177,6 +1178,8 @@ function installErrorTap(
     const line = `[${level}] ${text}`.slice(0, 500)
     lines.push(line)
     if (lines.length > LOG_LIMIT) lines.shift()
+    // 同一行也进启动诊断包（失败 / 超时时随漏斗上报，后台「错误诊断」页可看）
+    diagLog('ejs', level === 'error' || level === 'warn' ? level : 'log', text)
     const low = text.toLowerCase()
     // WASM 主循环的异常发生在 EJS_onGameStart 之后；普通 FATAL 表在这时会被忽略。
     // 只对 NDS 的确定陷阱另开一条通道，不能让任意游戏日志触发清盘重开。
@@ -2381,12 +2384,16 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let flushState: (() => void) | null = null
   /** 引擎日志探针。街机 ROM 排查全靠它 —— 详见 installErrorTap */
   let errorTap: { lines: string[] } | null = null
+  /** 登记 iframe 的网络记录给启动诊断包；销毁时调用会先拍快照 */
+  let stopFramePerf: (() => void) | null = null
+  let lastStageName = ''
   /**
    * 往引擎日志里补一条我们自己的观察。
    * 探针只收 iframe 里的 console，适配器这一侧抓到的异常（比如取存档抛的 TypeError）
    * 进不去，但那恰恰是排查时最想看到的一条，所以手动塞进同一个缓冲区。
    */
   const logEngine = (line: string) => {
+    diagLog('adapter', 'warn', line)
     if (!errorTap) return
     errorTap.lines.push(line.slice(0, 500))
     if (errorTap.lines.length > LOG_LIMIT) errorTap.lines.shift()
@@ -3519,6 +3526,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       const stage = doc?.querySelector('.ejs_loading_text')?.textContent?.trim() ?? ''
       if (stage !== lastStage) {
         lastStage = stage
+        // 去掉百分比只留阶段名，避免下载进度一秒刷几十行把别的日志挤掉
+        const stageName = stage.replace(/\s*[\d.]+\s*(?:%|MB)\s*$/i, '')
+        if (stageName !== lastStageName) {
+          lastStageName = stageName
+          diagLog('stage', 'info', stage)
+        }
         beat()
       }
       const stallBudget = isMameCurrentCore(core)
@@ -4146,6 +4159,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
         // 引擎的报错探针也要赶在 loader.js 之前装：核心是在加载过程中打错误的，
         // 装晚了那句「缺哪个文件」就已经过去了
+        stopFramePerf = watchFramePerformance(win)
         errorTap = installErrorTap(win, reportEngineError, options.platform === 'nds' ? reportCoreCrash : undefined)
 
         // RomData / BIOS 也要赶在 loader.js 之前装：它靠接管 window.EJS_emulator 的赋值来生效，
@@ -4655,6 +4669,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
   const destroy = () => {
     destroyed = true
+    stopFramePerf?.()
+    stopFramePerf = null
     cancelBootFastForward?.()
     padObserver?.disconnect()
     padObserver = null

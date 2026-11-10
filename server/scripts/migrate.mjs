@@ -1103,6 +1103,35 @@ const patches = [
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`),
   },
   {
+    name: 'game_startup_diagnostics（启动失败 / 超时 / 慢启动的诊断包，保留 30 天）',
+    table: null,
+    skip: async () => (!(await hasTable('game_roms')) ? '不是 v2 数据库' : null),
+    needed: async () => !(await hasTable('game_startup_diagnostics')),
+    run: () => conn.query(`CREATE TABLE IF NOT EXISTS game_startup_diagnostics (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      game_id BIGINT UNSIGNED NOT NULL,
+      visit_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+      attempt_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+      event VARCHAR(24) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+      runtime VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '',
+      platform VARCHAR(20) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '',
+      country CHAR(2) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'XX',
+      elapsed_ms INT UNSIGNED NULL,
+      signature CHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+      signature_text VARCHAR(200) NOT NULL,
+      browser VARCHAR(40) NOT NULL DEFAULT '',
+      os VARCHAR(40) NOT NULL DEFAULT '',
+      device VARCHAR(16) NOT NULL DEFAULT '',
+      payload MEDIUMTEXT NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY uniq_startup_diag (visit_id, attempt_id, event),
+      KEY idx_diag_time (created_at),
+      KEY idx_diag_sig_time (signature, created_at),
+      KEY idx_diag_game_time (game_id, created_at),
+      CONSTRAINT fk_startup_diag_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`),
+  },
+  {
     name: 'psp_conversion_jobs（PSP ISO → CHD 后台压缩队列）',
     table: null,
     skip: async () => (!(await hasTable('game_roms')) ? '不是 v2 数据库' : null),
@@ -1271,7 +1300,7 @@ const patches = [
   },
 ]
 
-const TABLES = ['games', 'posts', 'users', 'volunteer_games', 'volunteer_posts', 'favorites', 'recents', 'saves', 'flash_save_slots', 'flash_save_kv', 'flash_save_seqs', 'login_codes', 'platform_bios', 'game_plays', 'game_startup_events', 'psp_conversion_jobs', 'sockdrive_conversion_jobs', 'developers', 'friend_links', 'friend_link_hits', 'game_comments', 'game_ratings', 'oauth_apps', 'open_rom_samples']
+const TABLES = ['games', 'posts', 'users', 'volunteer_games', 'volunteer_posts', 'favorites', 'recents', 'saves', 'flash_save_slots', 'flash_save_kv', 'flash_save_seqs', 'login_codes', 'platform_bios', 'game_plays', 'game_startup_events', 'game_startup_diagnostics', 'psp_conversion_jobs', 'sockdrive_conversion_jobs', 'developers', 'friend_links', 'friend_link_hits', 'game_comments', 'game_ratings', 'oauth_apps', 'open_rom_samples']
 
 try {
   /*

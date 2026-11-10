@@ -108,7 +108,15 @@ function StartupFailures({
   loading: boolean
 }) {
   return (
-    <Card title="最近启动故障" extra={<span className="text-xs text-muted">最多显示 50 条 · 不含账号或 ROM 地址</span>}>
+    <Card
+      title="最近启动故障"
+      extra={(
+        <span className="text-xs text-muted">
+          最多显示 50 条 · 不含账号或 ROM 地址 ·{' '}
+          <Link to="/admin/diagnostics" className="text-brand-hover hover:underline">按错误归类看现场 →</Link>
+        </span>
+      )}
+    >
       <div className="overflow-x-auto">
         <table className="w-full min-w-[58rem] text-sm">
           <thead className="text-left text-xs text-muted">

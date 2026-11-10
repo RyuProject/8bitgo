@@ -67,6 +67,7 @@ const EXPECTED_TABLES = [
   { table: 'platform_bios', why: '平台级 BIOS' },
   { table: 'game_plays', why: '游玩去重名单；缺了 POST /api/games/:slug/play 会 500，游玩数永远是 0' },
   { table: 'game_startup_events', why: '第一方启动漏斗；缺了详情页到首帧/首次操作的性能统计会全部 500' },
+  { table: 'game_startup_diagnostics', why: '启动诊断包；缺了失败现场不入库，后台「错误诊断」页 503' },
   { table: 'game_roms', why: '按语言分槽的 ROM' },
   { table: 'psp_conversion_jobs', why: 'PSP / PS1 ISO → CHD 后台压缩队列；缺了上传 ISO 后无法创建转换任务' },
   { table: 'sockdrive_conversion_jobs', why: '大型 DOS / Windows ZIP → Sockdrive 后台队列；缺了后台上传后无法自动转换' },

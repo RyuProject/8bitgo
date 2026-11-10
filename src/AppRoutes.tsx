@@ -23,6 +23,7 @@ import { PrivacyPage } from '@/pages/PrivacyPage'
  */
 const AdminLayout = lazyNamed(() => import('@/admin/AdminLayout'), 'AdminLayout')
 const AdminOverview = lazyNamed(() => import('@/admin/AdminOverview'), 'AdminOverview')
+const AdminDiagnostics = lazyNamed(() => import('@/admin/AdminDiagnostics'), 'AdminDiagnostics')
 const AdminGames = lazyNamed(() => import('@/admin/AdminGames'), 'AdminGames')
 const AdminPosts = lazyNamed(() => import('@/admin/AdminPosts'), 'AdminPosts')
 const AdminUsers = lazyNamed(() => import('@/admin/AdminUsers'), 'AdminUsers')
@@ -130,6 +131,7 @@ export function AppRoutes() {
             连后台侧边栏一起被 fallback 掉，整个外壳闪一下再回来。
           */}
           <Route index element={<RouteChunk><AdminOverview /></RouteChunk>} />
+          <Route path="diagnostics" element={<RouteChunk><AdminDiagnostics /></RouteChunk>} />
           <Route path="games" element={<RouteChunk><AdminGames /></RouteChunk>} />
           <Route path="posts" element={<RouteChunk><AdminPosts /></RouteChunk>} />
           <Route path="developers" element={<RouteChunk><AdminDevelopers /></RouteChunk>} />

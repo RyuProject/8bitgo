@@ -1,6 +1,7 @@
 import type { PlatformId } from '@/types'
 import type { RuntimeId } from '@/emulator/types'
 import { apiBase, apiEnabled } from './api'
+import { collectStartupDiagnostics, noteStartupEvent, type StartupDiagnostics } from './startupDiagnostics'
 
 export type StartupEventName =
   | 'detail_view'
@@ -23,6 +24,8 @@ export interface StartupEvent {
   platform?: PlatformId | ''
   elapsedMs?: number
   detail?: string
+  /** 只在失败 / 超时 / 慢启动时附带，见 startupDiagnostics.ts */
+  diagnostics?: StartupDiagnostics
 }
 
 /**
@@ -38,6 +41,8 @@ export function newStartupId(): string {
 }
 
 const sent = new Set<string>()
+/** 出问题的这几种才附诊断包；正常开局不多发任何东西 */
+const DIAGNOSTIC_EVENTS = new Set<StartupEventName>(['failed', 'timeout', 'slow_start'])
 
 /**
  * 漏斗永远不能卡住游戏本身。客户端只做会话内去重并异步上报；网络失败不弹提示，
@@ -48,6 +53,11 @@ export function recordStartupEvent(slug: string | undefined, payload: StartupEve
   const key = `${slug}:${payload.visitId}:${payload.attemptId ?? ''}:${payload.event}`
   if (sent.has(key)) return
   sent.add(key)
+  noteStartupEvent(payload.visitId, payload.attemptId, payload.event)
+  if (DIAGNOSTIC_EVENTS.has(payload.event) && !payload.diagnostics) {
+    const diagnostics = collectStartupDiagnostics(payload.attemptId, payload.detail)
+    if (diagnostics) payload = { ...payload, diagnostics }
+  }
   void fetch(`${apiBase()}/api/games/${encodeURIComponent(slug)}/startup`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },

@@ -32,6 +32,7 @@ import { getVolcTranslationUsage } from '../translation-usage.js'
 import { takeAnonymous } from '../rateLimit.js'
 import { clientIpFrom, resolveCountry } from '../presence.js'
 import { isSlowStartup, normalizeStartupEvent, recordStartupEvent } from '../startup-metrics.js'
+import { recordStartupDiagnostics } from '../startup-diagnostics.js'
 import { dosGameConfigError, mergeGamePatchForDosValidation } from '../dos-game-config.js'
 import {
   createVolunteerGame,
@@ -407,6 +408,14 @@ gamesRouter.post('/:slug/startup', async (req, res, next) => {
     const ip = clientIpFrom(req.socket?.remoteAddress, req.headers)
     const result = await recordStartupEvent(req.params.slug, normalized, resolveCountry(ip, req.headers) || 'XX')
     if (!result.accepted) return res.status(404).json({ error: '游戏不存在' })
+    // 失败 / 超时 / 慢启动附带的诊断包。只在这一阶段第一次入库时写（重放不重复写），
+    // 浏览器只存粗粒度的「Safari 26 / macOS」，不存完整 UA；写失败不影响漏斗本身。
+    if (result.recorded && req.body?.diagnostics) {
+      await recordStartupDiagnostics(req.params.slug, result.event, req.body.diagnostics, {
+        country: result.country,
+        userAgent: req.headers['user-agent'],
+      })
+    }
     if (isSlowStartup(result.event)) {
       console.warn('[startup] 启动超过 20 秒', {
         slug: req.params.slug,

@@ -11,6 +11,7 @@
  * （见 adapters/emulatorjs.ts 的 installProgressTap）—— 它自己那套文字进度 UI 我们
  * 一个字都不用碰，反正整个加载期间都被遮罩盖着。
  */
+import { diagLog } from '@/services/startupDiagnostics'
 import type { PlatformId } from '@/types'
 import type { LoadPhase, LoadProgress, RuntimeId } from './types'
 import {
@@ -631,6 +632,7 @@ export async function fetchBlobWithProgress(url: string, opts: BlobFetchOptions 
       attempt = -1
       continue
     }
+    diagLog('download', 'warn', `整包第 ${attempt + 1} 次${guard.stalled() ? '卡住' : '失败'}，重试`, currentUrl)
     await sleep(500 * 2 ** attempt, opts.signal)
   }
 }
@@ -862,6 +864,7 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
         if (error instanceof RangeError) throw error
         if (isAbort(error) || opts.signal?.aborted) throw error
         if (attempt >= (isNetworkFetchError(error) ? networkRetries : retries)) throw error
+        diagLog('download', 'warn', `首片第 ${attempt + 1} 次失败，重试：`, error, url)
         await sleep(500 * 2 ** attempt, opts.signal)
       }
     }
@@ -951,6 +954,7 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
         if (error instanceof RangeError) throw error
         if (isAbort(error) || opts.signal?.aborted) throw error
         if (attempt >= (isNetworkFetchError(error) ? networkRetries : retries)) throw error
+        diagLog('download', 'warn', `分片 ${index} 第 ${attempt + 1} 次失败，重试：`, error, url)
         // 退避：0.5s / 1s / 2s（网络层失败最多到 8s）。切网络那一下往往要一两秒才恢复
         await sleep(500 * 2 ** attempt, opts.signal)
       } finally {

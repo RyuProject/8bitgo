@@ -344,6 +344,25 @@ const FACTS = [
     say: { zh: ['90 天'], en: ['90 days'] },
   },
   {
+    id: 'startup-diagnostics',
+    where: 'no-account',
+    doc: 'privacy',
+    what: '开局失败 / 超时 / 慢启动时上报诊断包：粗粒度浏览器与系统、设备与网络、时间线、日志、慢请求；不落 IP、完整 UA、ROM 地址、账号',
+    probe: ['server/src/startup-diagnostics.js', 'classifyUserAgent'],
+    say: {
+      zh: ['启动诊断包|啟動診斷包', '超过 20 秒|超過 20 秒', '完整的 User-Agent', '[ROM]'],
+      en: ['Startup diagnostic bundles', 'longer than 20 seconds', 'full User-Agent string', '[ROM]'],
+    },
+  },
+  {
+    id: 'startup-diagnostics-retention',
+    where: 'retention',
+    doc: 'privacy',
+    what: '启动诊断包保留 30 天后由服务端清理',
+    probe: ['server/src/startup-diagnostics.js', 'DIAGNOSTICS_RETENTION_DAYS = 30'],
+    say: { zh: ['30 天'], en: ['30 days'] },
+  },
+  {
     id: 'auto-broadcast',
     where: 'broadcast',
     doc: 'privacy',
