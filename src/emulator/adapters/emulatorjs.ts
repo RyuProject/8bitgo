@@ -32,6 +32,7 @@ import { romCacheDelete, romCacheGetBlob, romCacheKey, romCachePutBlob } from '.
 import { focusFrame, frameGamepads } from '../frameFocus'
 import { installAudioTap, type AudioTap } from '../audioTap'
 import { getT, fmt } from '@/services/i18n'
+import { alternateRomUrl } from '@/services/romHosts'
 import { getLang } from '@/services/lang'
 import type { Lang } from '@/config/languages'
 import { ICE_SERVERS, NETPLAY_URL, fetchIceConfig, gameIdFor, netplayUrlForFrame, socketIoScriptUrl, uploadState } from '@/services/netplay'
@@ -1116,6 +1117,7 @@ function fetchMameDiskBytes(
     }
     const blob = await fetchBlobWithProgress(disk.url, {
       phase: 'rom',
+      alternateUrl: alternateRomUrl(disk.url),
       maxBytes: Math.min(MAME_CHD_MAX_BYTES, disk.storedBytes),
       signal,
       // 内容寻址（两组 SHA-1 + 字节数），是全站最安全的断点续传键：断网 / 卡死后只补缺片，不再从 0 重下 160MB
@@ -1704,6 +1706,7 @@ export async function prepareRemoteArcadeRom(
     phase: 'rom',
     onProgress,
     signal,
+    alternateUrl: alternateRomUrl(url),
     // 街机大包与 NDS 共用 8MB Range 断点续传。romCacheKey 只对带 romv /
     // 归档版本的内容生成；无版本 URL 可能原地换包，不许拼入旧分片。
     resumeKey: cacheKey || undefined,
@@ -1853,6 +1856,7 @@ export async function prepareRemoteDiscRom(
     phase: 'rom',
     onProgress,
     signal,
+    alternateUrl: alternateRomUrl(url),
     maxBytes: options.maxBytes,
     // 只在明确要求且 URL 带内容版本时落临时分片。无版本地址原地换包后会混入旧片，宁可重下。
     resumeKey: options.resumeAcrossRefresh ? cacheKey : undefined,

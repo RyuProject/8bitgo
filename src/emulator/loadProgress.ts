@@ -298,6 +298,11 @@ export interface BlobFetchOptions {
   stallMs?: number
   /** 下载前就限制响应总量；不能等完整 Blob 到手后才让格式校验发现异常大文件。 */
   maxBytes?: number
+  /**
+   * 同一对象在另一条 CDN 线路上的地址（romHosts.ts 的 alternateRomUrl）。在当前线路上把重试用光后
+   * 换到这里整套再试一次；断点分片按 resumeKey 存，已下的片不重下。
+   */
+  alternateUrl?: string
   /** 外站 ZIP 的完整归档不留 HTTP 副本；续传片由独立 IndexedDB 管。 */
   cache?: RequestCache
   /**
@@ -462,6 +467,14 @@ export function prewarmBlobChunks(url: string, opts: BlobChunkWarmOptions): Prom
 
 /** 单片重试次数。三次退避（0.5s / 1s / 2s）足够熬过一次 Wi-Fi 切换 */
 export const CHUNK_RETRIES = 3
+/**
+ * 网络层失败（fetch 抛 TypeError：「Failed to fetch」、连接被重置、断网）另给更长的窗口：
+ * 0.5 / 1 / 2 / 4 / 8 秒，合计约 15 秒。2026-11-10 墨西哥玩家《合金弹头 3》第二次开局 8.4 秒就失败，
+ * 三次 3.5 秒的退避连一次线路抖动都熬不过。只在调用方没指定 retries 时生效。
+ */
+export const NETWORK_RETRIES = 5
+const isNetworkFetchError = (error: unknown): boolean =>
+  Boolean(error && typeof error === 'object' && (error as { name?: unknown }).name === 'TypeError')
 
 const MAX_CHUNK_CONCURRENCY = 4
 /**
@@ -587,17 +600,36 @@ export async function fetchBlobWithProgress(url: string, opts: BlobFetchOptions 
     带 resumeKey 时，已完成分片已经落进 IndexedDB，新尝试只补缺片；不带持久化键时
     至少仍会自动再试，而不是让 fetch 永久挂住。退避与普通分片一致。
   */
+  let currentUrl = url
+  let alternate = opts.alternateUrl && opts.alternateUrl !== url ? opts.alternateUrl : ''
   for (let attempt = 0; ; attempt++) {
     const guard = createStallGuard(opts.signal, stallMs)
     guard.touch()
+    let failure: unknown = null
     try {
-      return await blobWithProgressGuarded(url, guardedOpts, guard)
+      return await blobWithProgressGuarded(currentUrl, guardedOpts, guard)
     } catch (error) {
-      if (!guard.stalled()) throw error
-      if (opts.signal?.aborted) throw error
-      if (attempt >= retries) throw new Error(stallMessage(stallMs))
+      if (opts.signal?.aborted || isAbort(error) && !guard.stalled()) throw error
+      // 超过上限是这个对象本身的问题，换线路也一样
+      if (error instanceof RangeError) throw error
+      if (!guard.stalled() || attempt >= retries) {
+        failure = guard.stalled() ? new Error(stallMessage(stallMs)) : error
+      }
     } finally {
       guard.stop()
+    }
+    if (failure) {
+      if (!alternate) throw failure
+      /*
+        这条线路用光了重试：同一个对象换另一条 CDN 整套再来（只换一次）。两边是同一个 R2 对象、
+        同一个 romv，断点分片按 resumeKey 续，已下的片不重下。
+      */
+      console.warn(`[download] ${new URL(currentUrl).host} 下载失败，改走 ${new URL(alternate).host}：`,
+        failure instanceof Error ? failure.message : failure)
+      currentUrl = alternate
+      alternate = ''
+      attempt = -1
+      continue
     }
     await sleep(500 * 2 ** attempt, opts.signal)
   }
@@ -614,6 +646,7 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
     throw new RangeError('无效的分片下载上限')
   }
   const retries = opts.retries ?? CHUNK_RETRIES
+  const networkRetries = opts.retries ?? NETWORK_RETRIES
   const doFetch = opts.fetchImpl ?? fetch
   const emit = throttleProgress(opts.onProgress)
   const resumeKey = opts.resumeKey ?? ''
@@ -828,7 +861,7 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
         if (guard.stalled()) throw error
         if (error instanceof RangeError) throw error
         if (isAbort(error) || opts.signal?.aborted) throw error
-        if (attempt >= retries) throw error
+        if (attempt >= (isNetworkFetchError(error) ? networkRetries : retries)) throw error
         await sleep(500 * 2 ** attempt, opts.signal)
       }
     }
@@ -917,8 +950,8 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
         // 取消是用户意图，不是失败，别在这儿空转重试
         if (error instanceof RangeError) throw error
         if (isAbort(error) || opts.signal?.aborted) throw error
-        if (attempt >= retries) throw error
-        // 退避：0.5s / 1s / 2s。切网络那一下往往要一两秒才恢复
+        if (attempt >= (isNetworkFetchError(error) ? networkRetries : retries)) throw error
+        // 退避：0.5s / 1s / 2s（网络层失败最多到 8s）。切网络那一下往往要一两秒才恢复
         await sleep(500 * 2 ** attempt, opts.signal)
       } finally {
         guard.signal.removeEventListener('abort', abortFromGuard)

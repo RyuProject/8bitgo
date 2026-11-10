@@ -31,6 +31,19 @@ export function mirrorRomUrl(url: string, base = ENV_ROM_BASE, mirror = ENV_ROM_
 }
 
 /**
+ * 同一个对象在另一条线路上的地址（主域 ↔ 镜像）；不在这两个域上的地址返回空串。
+ *
+ * 下载器在一条线路上把重试用光后改走另一条（loadProgress.ts 的 alternateUrl）：两个域回源同一个
+ * R2 桶，带同一个 romv 就是同一份字节，断点分片按 canonical 键存，换线路也能接着补。
+ * 2026-11-10 墨西哥玩家《合金弹头 3》两次「Failed to fetch」：那条线路对他不通，而另一条从没试过。
+ */
+export function alternateRomUrl(url: string, base = ENV_ROM_BASE, mirror = ENV_ROM_MIRROR): string {
+  if (!url || !base || !mirror || base === mirror) return ''
+  if (url.startsWith(`${mirror}/`)) return canonicalRomUrl(url, base, mirror)
+  return mirrorRomUrl(url, base, mirror)
+}
+
+/**
  * 开局前已经测好的线路（chooseRomHost 写的 30 分钟结论）；还没测完时用 fallback。
  * 只在浏览器里有意义，SSR 一律主域。
  */

@@ -1,5 +1,6 @@
 /** 各轻量运行时共用的 ROM 读取入口：有内容版本的地址可跨刷新补缺片，无版本地址保持单次直取。 */
 import { fetchBlobWithProgress, fetchWithProgress } from './loadProgress'
+import { alternateRomUrl } from '@/services/romHosts'
 import { downloadResumeStore } from './downloadResume'
 import { romCacheGet, romCacheGetBlob, romCacheKey, romCachePut } from './romCache'
 import type { LoadProgress } from './types'
@@ -139,6 +140,7 @@ export async function loadGameBytes(
   const data = cacheKey
     ? await (await fetchBlobWithProgress(game, {
         phase: 'rom', onProgress, signal, resumeKey: cacheKey, check, maxBytes: limits.maxBytes,
+        alternateUrl: alternateRomUrl(game),
       })).arrayBuffer()
     : await fetchWithProgress(game, { phase: 'rom', onProgress, signal, check, maxBytes: limits.maxBytes })
   assertSizeLimit(data.byteLength, limits.maxBytes, '游戏文件')

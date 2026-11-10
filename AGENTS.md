@@ -903,6 +903,14 @@ GameCube、Wii 的按需读盘缓存 2MB 块。只有带真实 R2 ETag `romv`、
 Content-Range 全部吻合的公开请求才可入边缘缓存；任意短 Range、未版本化或条件不一致仍直达 R2。
 不要再把规则缩回某几个扩展名，否则 NDS / PS1 / DOS 和流式光盘会让每位玩家重复穿透存储。
 
+⚠️ **网络层失败要多熬一会儿，并且能换线路**（2026-11-10 墨西哥玩家《合金弹头 3》两次「Failed to fetch」，
+第二次 8.4 秒就放弃）。`fetchBlobWithProgress` 对 fetch 抛出的 TypeError 按 `NETWORK_RETRIES`（5 次，
+0.5～8 秒退避，约 15 秒）重试，其它错误仍是 3 次；调用方显式传 `retries` 时两者都按传入值。
+一条 CDN 线路重试用光后，用 `alternateUrl`（`romHosts.ts` 的 `alternateRomUrl`：assets ↔ cn-assets）整套
+再来一次，只换一次；两边是同一个 R2 对象 + 同一个 romv，断点分片按 canonical 的 resumeKey 续。
+RangeError（超大小上限）和用户取消不换线路。街机、光盘 / NDS、MAME CHD、DOS 包、通用 ROM 加载都已接上。
+回归：`npm run test:chunked-fetch` 第八节。
+
 1. R2 要求**除最后一片外所有片等大**、最小 5MB、最多 10000 片 —— 改 `PART_SIZE` 会让旧的续传记录作废；续传还校验文件名、字节数、修改时间和头/中/尾内容指纹，防止把同名的另一份文件拼进旧分片
 2. binding **没有 `listParts`**：complete 时必须把每片的 `{partNumber, etag}` 全报回去，所以这份账只能记在前端 —— **换浏览器就续不上**
 3. binding 也**没有 `listMultipartUploads`**：没合并的分片在 R2 默认 7 天自动中止之前仍占用存储；自定义生命周期可能改变期限。Worker 在 `_uploads/` 下写标记对象，后台「ROM 存储」页靠它列出并清理残留；R2 自动中止后标记对象仍需手动清理

@@ -678,5 +678,53 @@ await check('⚠️ 第一片还没读完时每帧都带 Content-Range 给的总
   }
 })
 
+console.log('\n八、一条 CDN 线路不通时换另一条（2026-11-10 墨西哥《合金弹头 3》Failed to fetch）')
+
+await check('当前线路重试用光后改走 alternateUrl，同一份内容完整拿到', async () => {
+  const size = 3072
+  const good = server(size)
+  const urls = []
+  const fetchImpl = async (url, init) => {
+    urls.push(String(url))
+    if (String(url).startsWith('https://primary.test/')) throw new TypeError('Failed to fetch')
+    return good.fetchImpl(url, init)
+  }
+  const blob = await fetchBlobWithProgress('https://primary.test/roms/arcade/mslug3.zip.8bg?romv=a', {
+    fetchImpl, chunkBytes: 1024, retries: 1,
+    alternateUrl: 'https://mirror.test/roms/arcade/mslug3.zip.8bg?romv=a',
+  })
+  expectExact(await readAll(blob), size)
+  assert.equal(urls.filter((u) => u.startsWith('https://primary.test/')).length, 2, '主线路按 retries 试满')
+  assert.ok(urls.slice(2).every((u) => u.startsWith('https://mirror.test/')), '之后全部改走另一条线路')
+})
+
+await check('另一条线路也不通时原样报错，只换一次不来回横跳', async () => {
+  const urls = []
+  const fetchImpl = async (url) => { urls.push(String(url)); throw new TypeError('Failed to fetch') }
+  await assert.rejects(
+    fetchBlobWithProgress('https://primary.test/x?romv=a', { fetchImpl, chunkBytes: 1024, retries: 0, alternateUrl: 'https://mirror.test/x?romv=a' }),
+    /Failed to fetch/,
+  )
+  assert.deepEqual(urls, ['https://primary.test/x?romv=a', 'https://mirror.test/x?romv=a'])
+})
+
+await check('超过大小上限（RangeError）是对象本身的问题，不换线路', async () => {
+  const urls = []
+  const big = server(4096)
+  const fetchImpl = async (url, init) => { urls.push(String(url)); return big.fetchImpl(url, init) }
+  await assert.rejects(
+    fetchBlobWithProgress('https://primary.test/x', { fetchImpl, chunkBytes: 1024, retries: 0, maxBytes: 2048, alternateUrl: 'https://mirror.test/x' }),
+    RangeError,
+  )
+  assert.ok(urls.every((u) => u.startsWith('https://primary.test/')))
+})
+
+await check('没指定 retries 时网络层失败按 NETWORK_RETRIES 重试（比普通失败多）', async () => {
+  const { NETWORK_RETRIES, CHUNK_RETRIES } = await import('../src/emulator/loadProgress.ts')
+  assert.ok(NETWORK_RETRIES > CHUNK_RETRIES)
+  const src = (await import('node:fs')).readFileSync(new URL('../src/emulator/loadProgress.ts', import.meta.url), 'utf8')
+  assert.equal((src.match(/attempt >= \(isNetworkFetchError\(error\) \? networkRetries : retries\)/g) ?? []).length, 2, '首片与后续分片两处都要用')
+})
+
 console.log(failed ? `\n${failed} 项未通过` : '\n全部通过 ✅')
 process.exit(failed ? 1 : 0)
