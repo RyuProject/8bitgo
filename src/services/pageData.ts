@@ -17,6 +17,7 @@ import type { FriendLink } from './friendLinks'
 import type { VisibleSiteNotice } from '../../shared/site-notice.js'
 import { api, apiEnabled } from './api'
 import { startPageLoad } from './progress'
+import { getPageDataCache, peekPageDataCache, setPageDataCache } from './pageDataCache'
 
 /* ---------------- 各路由的数据形状 ---------------- */
 
@@ -202,18 +203,29 @@ export function usePageData<T extends PageData>(
   const [state, setState] = useState<PageState<T>>(() => {
     const boot = peekBootstrap()
     if (boot && (!expect || boot.route === expect)) return { status: 'ready', data: boot as T }
+    const cached = peekPageDataCache<T>(key)
+    if (cached && (!expect || cached.route === expect)) return { status: 'ready', data: cached }
     return { status: 'loading', data: null }
   })
-  // 提交了才清。保持旧语义「首屏数据只用一次」：不管对不对得上，本页提交后都不再留给下一页
-  useEffect(releaseBootstrap, [])
   // 记住上一次真正取过的 key：路由或筛选条件变了才重新拉
   const loadedKey = useRef<string | null>(state.status === 'ready' ? key : null)
+  // 提交后缓存这次首屏数据，再释放 bootstrap；渲染期间不消费全局数据，避免 hydration 重试时丢失。
+  useEffect(() => {
+    if (state.status === 'ready' && loadedKey.current === key) setPageDataCache(key, state.data)
+    releaseBootstrap()
+  }, [])
   // 失败后玩家点「重试」：只加一下计数让 effect 再跑一遍（失败时 loadedKey 已经清掉了）
   const [attempt, setAttempt] = useState(0)
   const retry = useCallback(() => setAttempt((n) => n + 1), [])
 
   useEffect(() => {
     if (loadedKey.current === key) return
+    const cached = getPageDataCache<T>(key)
+    if (cached && (!expect || cached.route === expect)) {
+      loadedKey.current = key
+      setState({ status: 'ready', data: cached })
+      return
+    }
     if (!apiEnabled()) {
       setState({ status: 'error', data: null, error: '未配置后端（VITE_API_URL）' })
       return
@@ -229,7 +241,10 @@ export function usePageData<T extends PageData>(
     api
       .get<T>(key, false, controller.signal)
       .then((data) => {
-        if (!cancelled) setState({ status: 'ready', data })
+        if (!cancelled) {
+          setPageDataCache(key, data)
+          setState({ status: 'ready', data })
+        }
       })
       .catch((e: unknown) => {
         if (cancelled) return

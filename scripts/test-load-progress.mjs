@@ -29,7 +29,6 @@ const {
   loadProgressDurationMs,
   loadProgressPlan,
   loadProgressRange,
-  LOAD_PHASE_RANGE,
   nextLoadProgressPhase,
   nextStartupMilestone,
   startingSegmentMs,
@@ -38,6 +37,7 @@ const {
   windowsGuestStartupBudgetMs,
 } = await import(fileURLToPath(new URL('../src/emulator/loadProgress.ts', import.meta.url)))
 const { formatSpeed } = await import(fileURLToPath(new URL('../src/lib/emulator.ts', import.meta.url)))
+const { createLoadProgressSession } = await import(fileURLToPath(new URL('../src/emulator/loadProgressSession.ts', import.meta.url)))
 
 /* ---- 播放器那套的最小复刻（逐字照抄 EmulatorPlayer.tsx 的公式与常量）---- */
 const LOAD_PHASE_DURATION_MS = { engine: 20_000, assets: 45_000, rom: 45_000 }
@@ -278,8 +278,9 @@ console.log('\n── 拿不到 Content-Length 时不能谎报已进入启动 �
 console.log('\n── NDS 大 ROM 的真实进度不能被视觉计时抢跑 ──')
 {
   const playerCode = readFileSync(fileURLToPath(new URL('../src/emulator/EmulatorPlayer.tsx', import.meta.url)), 'utf8')
-  ok(/if \(!\(progressSignal\.current\.phase === phase && progressSignal\.current\.measurable\)\)\s*\{\s*setLoadRatio/.test(playerCode),
-    '播放器本体也守住真实字节进度，不能只在测试复刻里修')
+  const sessionCode = readFileSync(fileURLToPath(new URL('../src/emulator/loadProgressSession.ts', import.meta.url)), 'utf8')
+  ok(/useLoadProgress/.test(playerCode) && /if \(!measurable\)\s*\{\s*const timed/.test(sessionCode),
+    '播放器实际使用的进度状态机守住真实字节进度')
   const plan = loadProgressPlan({ runtime: 'emulatorjs', platform: 'nds' })
   const p = makePlayer({ autoAdvance: true, plan })
   p.onProgress({ phase: 'rom', loaded: 9_000_000, total: 68_000_000, ratio: 9 / 68 }, 0)
@@ -401,6 +402,35 @@ console.log('\n── 别的运行时不能被分段拖慢 ──')
   ok(p.phase === 'starting' && p.startup === 0, 'EmulatorJS 进了 starting，且没有里程碑')
   for (let i = 1; i <= 200; i++) p.tick(t + i * 250)
   ok(p.shown > 0.95, `⭐ 50 秒内照样爬到 ${(p.shown * 100).toFixed(0)}%，没被切段拖慢`)
+}
+
+console.log('\n── 播放器实际使用的进度状态机 ──')
+{
+  const plan = loadProgressPlan({ runtime: 'emulatorjs', platform: 'nes' })
+  const session = createLoadProgressSession(plan, { now: 0 })
+  const engineEnd = session.accept({ phase: 'engine', ratio: 1 }, 100)
+  ok(session.phase === 'assets', '实际状态机在引擎阶段完成后进入资源阶段')
+  const assetsEnd = session.accept({ phase: 'assets', ratio: 1 }, 200)
+  ok(session.phase === 'rom' && assetsEnd >= engineEnd, '真实阶段推进只前进，且资源阶段不倒退')
+  const romEnd = session.accept({ phase: 'rom', loaded: 1_000_000, total: 1_000_000, ratio: 1 }, 300)
+  ok(session.phase === 'starting', 'ROM 到达阶段上界时由实际状态机自动进入启动阶段')
+  const startupTick = session.tick(45_300)
+  ok(startupTick.phase === 'starting' && startupTick.ratio > romEnd, '没有启动回调时，视觉计时器继续向 99% 前进')
+  ok(startupTick.ratio <= 0.99, '实际状态机永远不把加载进度推进到 100%')
+
+  const weakNetwork = createLoadProgressSession(plan, { now: 0 })
+  weakNetwork.accept({ phase: 'engine', ratio: 1 }, 0)
+  weakNetwork.accept({ phase: 'assets', ratio: 1 }, 1)
+  weakNetwork.accept({ phase: 'rom', loaded: 1, total: 100, ratio: 0.01 }, 2)
+  const beforeStallTick = weakNetwork.shown
+  const stalledTick = weakNetwork.tick(60_000)
+  ok(stalledTick.phase === 'rom', '仍有真实 ROM 字节信号时，视觉预算不会谎报已经进入启动阶段')
+  ok(stalledTick.ratio === beforeStallTick, '真实下载停顿时视觉计时不会越过可测下载进度')
+
+  const retry = createLoadProgressSession(plan, { floor: 0.6, now: 0 })
+  retry.accept({ phase: 'engine', loaded: 1_000_000, total: 2_000_000, ratio: 0.5 }, 1)
+  ok(retry.shown > 0.6, '实际状态机在自动重试时从保留进度继续前进')
+  ok(retry.tick(10_001).ratio > 0.6, '实际视觉计时器使用同一进度 floor，不会冻在旧百分比')
 }
 
 console.log('\n── 分段预算本身 ──')

@@ -46,6 +46,7 @@
     "test:cover-cdn": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-cover-cdn.mjs",
     "test:cover-thumb": "node scripts/test-cover-thumb.mjs",
     "test:cover-priority": "node scripts/test-cover-priority.mjs",
+    "test:page-data-cache": "node --experimental-strip-types scripts/test-page-data-cache.mjs",
     "test:player-lazy-controls": "node scripts/test-player-lazy-controls.mjs",
     "test:rooms-page": "node scripts/test-rooms-page.mjs",
     "test:responsive-layout": "node scripts/test-responsive-layout.mjs",

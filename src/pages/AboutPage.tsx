@@ -56,7 +56,7 @@ export function AboutPage() {
             <p className="text-pixel text-[11px] tracking-wider text-brand-hover">{copy.heroEyebrow}</p>
             <h1 className="mt-5 max-w-4xl text-4xl font-black leading-[1.08] tracking-tight sm:text-6xl xl:text-7xl">
               {copy.heroTitleLead}
-              <span className="block text-brand">{copy.heroTitleAccent}</span>
+              <span className="block text-brand-hover">{copy.heroTitleAccent}</span>
             </h1>
             <p className="mt-6 max-w-2xl text-base leading-8 text-muted sm:text-lg">{copy.heroBody}</p>
             <div className="mt-8 flex flex-wrap gap-3">

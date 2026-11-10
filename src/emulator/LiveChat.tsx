@@ -454,7 +454,7 @@ export function LiveChatBar({
           type="button"
           onClick={send}
           disabled={!onSend || !sanitizeChatText(text)}
-          className="shrink-0 rounded-lg border border-line px-2.5 py-1.5 text-xs font-semibold text-fg transition hover:border-brand hover:text-brand disabled:opacity-40 disabled:hover:border-line disabled:hover:text-fg"
+          className="shrink-0 rounded-lg border border-line px-2.5 py-1.5 text-xs font-semibold text-fg transition hover:border-brand hover:text-brand-hover disabled:opacity-40 disabled:hover:border-line disabled:hover:text-fg"
         >
           {tt.chatSend}
         </button>
@@ -507,7 +507,7 @@ function ToggleButton({ icon, t, expands }: { icon: string; t: ChatBarToggle; ex
         'inline-flex shrink-0 items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition disabled:opacity-40',
         t.on
           ? 'border-live bg-live/15 text-live'
-          : 'border-line text-muted hover:border-brand hover:text-brand',
+          : 'border-line text-muted hover:border-brand hover:text-brand-hover',
       )}
     >
       <span aria-hidden>{icon}</span>

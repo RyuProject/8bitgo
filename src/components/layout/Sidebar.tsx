@@ -509,7 +509,7 @@ function NavItem({
       : !isHash && location.pathname.startsWith(path) && path !== '/'
 
   const className = cx(
-    'group relative flex h-9 items-center gap-3 rounded-lg px-3 text-sm transition',
+    'group relative flex h-9 items-center gap-3 rounded-lg px-3 text-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-hover focus-visible:ring-offset-2 focus-visible:ring-offset-bg',
     collapsed && 'lg:justify-center lg:px-0',
     item.disabled
       ? 'cursor-not-allowed text-dim opacity-60'
@@ -564,7 +564,7 @@ function NavItem({
           {content}
         </a>
       ) : (
-        <Link to={item.to} className={className} onClick={() => setMobileOpen(false)} title={collapsed ? item.label : undefined}>
+        <Link to={item.to} className={className} onClick={() => setMobileOpen(false)} title={collapsed ? item.label : undefined} aria-current={active ? 'page' : undefined}>
           {content}
         </Link>
       )}

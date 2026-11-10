@@ -64,7 +64,7 @@ export const GameCard = memo(function GameCard({ game, className, coverRatio = '
     <Link
       to={`/games/${game.slug}`}
       className={cx(
-        'group card-hover block overflow-hidden rounded-card border border-line bg-surface hover:border-brand/60',
+        'group card-hover block overflow-hidden rounded-card border border-line bg-surface outline-none hover:border-brand/60 focus-visible:z-10 focus-visible:border-brand focus-visible:ring-2 focus-visible:ring-brand-hover focus-visible:ring-offset-2 focus-visible:ring-offset-bg',
         className,
       )}
     >
@@ -86,8 +86,8 @@ export const GameCard = memo(function GameCard({ game, className, coverRatio = '
             👥 {game.players}P
           </Badge>
         )}
-        <div className="absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition duration-300 group-hover:bg-black/30 group-hover:opacity-100">
-          <span className="grid h-12 w-12 place-items-center rounded-full bg-brand text-white shadow-lg shadow-brand/40 transition group-hover:scale-110">
+        <div className="absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition duration-300 group-hover:bg-black/30 group-hover:opacity-100 group-focus-visible:bg-black/30 group-focus-visible:opacity-100">
+          <span className="grid h-12 w-12 place-items-center rounded-full bg-brand text-[#183500] shadow-lg shadow-brand/40 transition group-hover:scale-110 group-focus-visible:scale-110">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" className="ml-0.5">
               <path d="M8 5v14l11-7z" />
             </svg>

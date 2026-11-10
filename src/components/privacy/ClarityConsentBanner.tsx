@@ -67,7 +67,7 @@ export function ClarityConsentBanner() {
           <h2 className="text-sm font-black text-fg">{t.clarityConsent.title}</h2>
           <p className="mt-1 text-xs leading-relaxed text-muted">
             {t.clarityConsent.body}{' '}
-            <Link to="/privacy#third-parties" className="font-bold text-brand hover:underline">
+            <Link to="/privacy#third-parties" className="font-bold text-brand-hover hover:underline">
               {t.clarityConsent.learnMore}
             </Link>
           </p>

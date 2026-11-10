@@ -169,7 +169,7 @@ export function SearchBox({ className, full, onSubmitted }: Props) {
           role="combobox"
           autoComplete="off"
           className={cx(
-            'h-10 w-full rounded-xl border border-line bg-surface pl-10 pr-16 text-sm text-fg placeholder:text-dim transition focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/30',
+            'h-10 w-full rounded-xl border border-line bg-surface pl-10 pr-16 text-sm text-fg placeholder:text-dim transition focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/30 focus-visible:ring-2 focus-visible:ring-brand-hover focus-visible:ring-offset-2 focus-visible:ring-offset-bg',
             full && 'w-full',
           )}
         />

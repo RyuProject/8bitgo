@@ -76,27 +76,27 @@
     'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', 'Helvetica Neue', Arial, sans-serif;
   --font-pixel: 'Geist Pixel', ui-monospace, 'SFMono-Regular', Menlo, monospace;
 
-  /* 配色参考 Duolingo：亮白底 + 亮绿主色，圆角、活泼、柔和 */
-  --color-bg: #ffffff;
+  /* 保留亮绿的轻快感，用低饱和画布区分页面层级，长时间找游戏不必盯着纯白。 */
+  --color-bg: #f6f8f5;
   --color-surface: #ffffff;
-  --color-surface-2: #f7f7f7;
-  --color-surface-3: #eaeaea;
-  --color-line: #e5e5e5;
-  --color-line-strong: #d4d4d4;
+  --color-surface-2: #f0f5ee;
+  --color-surface-3: #e6eee3;
+  --color-line: #dce5da;
+  --color-line-strong: #c5d3c1;
 
-  --color-fg: #3c3c3c;
-  --color-muted: #777777;
-  --color-dim: #afafaf;
+  --color-fg: #263329;
+  --color-muted: #536354;
+  --color-dim: #687668;
 
   --color-brand: #58cc02;
-  --color-brand-hover: #46a302;
+  --color-brand-hover: #2f740c;
   --color-brand-soft: rgba(88, 204, 2, 0.15);
   /* 按钮底部的「3D」阴影色（比主色深一档） */
-  --color-brand-shadow: #46a302;
+  --color-brand-shadow: #348b0c;
   --color-coin: #ffc800;
   --color-coin-soft: rgba(255, 200, 0, 0.18);
-  --color-live: #ff4b4b;
-  --color-online: #58cc02;
+  --color-live: #c9363e;
+  --color-online: #287a2d;
 
   --radius-card: 16px;
 
@@ -590,7 +590,8 @@ body {
   border-color: var(--color-brand);
   border-radius: 1rem;
   background-color: var(--color-brand);
-  color: #fff;
+  /* 亮绿底配白字对比度不足；深色字仍保留品牌色，同时更容易一眼读出主操作。 */
+  color: #183500;
   font-weight: 700;
   box-shadow: 0 4px 0 var(--color-brand-shadow);
   transition:
@@ -638,6 +639,9 @@ body {
   --color-muted: rgba(255, 255, 255, 0.8);
   --color-dim: rgba(255, 255, 255, 0.45);
   --color-brand-soft: rgba(88, 204, 2, 0.3);
+  /* 全局绿色在白底上加深以保证对比；深色游戏画面上则恢复亮绿提示。 */
+  --color-brand-hover: #a8ef78;
+  --color-online: #a8ef78;
   color: var(--color-fg);
 }
 

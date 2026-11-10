@@ -13,22 +13,12 @@ import { clearSockdrivePin, pinnedSockdriveUrl, routeRomAssetUrl } from '@/servi
 import { coverCdnHint } from '@/services/cnHost'
 import { isRomPackBytes, unpackRomPackBlob } from '@/services/romPack'
 import { isRomPackUrl } from '../../shared/rom-pack-format.js'
-import type { Capability, LoadPhase, LoadProgress, Runtime, RuntimeHandle, RuntimeId, ScreenLayoutState, StageMode } from './types'
+import type { Capability, Runtime, RuntimeHandle, RuntimeId, ScreenLayoutState, StageMode } from './types'
 import {
-  createOverallRatio,
-  createSpeedMeter,
-  DEFAULT_LOAD_PROGRESS_PLAN,
-  firstLoadProgressPhase,
-  liftRatio,
-  loadProgressDurationMs,
   loadProgressPlan,
   loadProgressRange,
-  nextStartupMilestone,
-  nextLoadProgressPhase,
-  startingSegmentMs,
-  STARTING_MILESTONE_CAP,
-  type LoadProgressPlan,
 } from './loadProgress'
+import { useLoadProgress } from './useLoadProgress'
 import { isTyping } from './hotkeyBridge'
 import { observeFrameDocs } from './frameDocs'
 import { installScrollGuard } from './scrollGuard'
@@ -125,56 +115,6 @@ type Channel = 'p2p' | 'cloud'
  */
 const loadTouchPad = () => import('./TouchPad')
 const LazyTouchPad = lazy(() => loadTouchPad().then(({ TouchPad }) => ({ default: TouchPad })))
-
-const LOAD_PROGRESS_CEILING = 0.99
-
-/**
- * 视觉进度当前在爬哪一格。
- *
- * 原来只有 `{ phase, startedAt }`，一格就是一整个阶段。starting 这个阶段因此成了
- * 一格 20 个百分点、预算 389 秒的巨无霸 —— 每 1% 要走 20.5 秒，玩家看到的就是
- * 「卡在 80%」（见 loadProgress 的 windowsGuestStartupBudgetMs 那段注释）。
- *
- * 现在 starting 内部按里程碑再切成四小格，每格自己的起止点和预算都单独算。
- * `from` / `to` 都是**抬起来之前**的整条进度坐标（liftRatio 之前），
- * 和合成器那边保持同一套坐标系，否则重试那一轮两边会对不上。
- */
-type ProgressClock = {
-  phase: LoadPhase
-  startedAt: number
-  from: number
-  to: number
-  startup: number
-  /** 这一局有没有里程碑可报（只有 Windows 客体那条路有） */
-  milestones: boolean
-}
-
-/**
- * 造一格新的进度时钟。
- *
- * ⚠️ `milestones` 必须只对 Windows 客体开。别的运行时（EmulatorJS / jsnes / ruffle…）
- * 一个 startup 都不报，给它们切成四小格的话，每格都得先耗光自己的预算才往下走，
- * 80→99% 会从 45 秒变成 180 秒 —— 那是把这次要修的 bug 搬到别的平台上再犯一遍。
- */
-const makeProgressClock = (
-  plan: LoadProgressPlan,
-  phase: LoadPhase,
-  startup = 0,
-  milestones = false,
-): ProgressClock => {
-  const [start, end] = loadProgressRange(plan, phase)
-  const span = end - start
-  const segmented = phase === 'starting' && milestones
-  return {
-    phase,
-    startedAt: Date.now(),
-    from: segmented ? start + span * startup : start,
-    // 有里程碑时只准爬到下一个跟前 —— 越过去就等于替客体作证「那一步已经发生了」
-    to: segmented ? start + span * nextStartupMilestone(startup) : end,
-    startup: segmented ? startup : 0,
-    milestones,
-  }
-}
 
 /**
  * 大到值得在加载界面上专门说一句「本局需下载 XXX」的门槛。
@@ -855,73 +795,31 @@ export function EmulatorPlayer({
   const cloudJoinPending = Boolean(cloudInviteId) && roomsEnabled() && cloudJoinRoom === undefined
   const myCloudRoom = useRoom(session?.cloud ? (roomId ?? undefined) : undefined)
 
-  /**
-   * 加载进度：存的是**合成后**的整条进度（0~1），不是适配器报的分阶段进度。
-   * 合成逻辑在 loadProgress.ts 的 createOverallRatio —— 每次加载新建一个，
-   * 它按当前运行时的真实启动链把各段折进同一条 0→100，并且只进不退。
-   */
-  const [loadRatio, setLoadRatio] = useState<number | null>(null)
-  /** 每款运行时的瓶颈不同，不能再让 HTML5、Flash、Win95 和 PSP 共用一张比例表。 */
-  const progressPlan = useRef<LoadProgressPlan>(DEFAULT_LOAD_PROGRESS_PLAN)
-  const overallRatio = useRef(createOverallRatio(0, progressPlan.current))
-  /** 供 begin() 读当前百分比 —— 它可能从过期闭包里被调用，直接读 state 会拿到旧值 */
-  const loadRatioRef = useRef<number | null>(null)
-  loadRatioRef.current = loadRatio
-  /**
-   * 这一轮进度的**起点**。
-   *
-   * 自动重试和换引擎都属于「同一次开始游戏」，播放器会保留玩家已经看到的百分比。
-   * 但保留之后，新一轮的进度是从 0 重算的，被 `Math.max(已显示, 新算的)` 整段吃掉 ——
-   * 条子会在整个第二次下载期间纹丝不动（和「卡在 80%」是同一种病）。
-   * 所以新一轮要整体压进 [floor, 1]：从保留下来的百分比继续往前爬。
-   * 合成器和视觉计时器**必须用同一个 floor**，只改一边等于没改。
-   */
-  const progressFloor = useRef(0)
-  /**
-   * 下载速度（字节/秒），显示在百分比后面。
-   *
-   * 存在的理由和进度条本身一样：让「下得慢」和「卡死了」在视觉上分开。
-   * 一个 40MB 的核心在 200KB/s 的网络上要三分多钟，期间进度条几乎不动 ——
-   * 有这个读数玩家就知道它还在走；没有的话只会以为坏了然后刷新重来（重来更慢）。
-   */
-  const speedMeter = useRef(createSpeedMeter())
-  const [loadSpeed, setLoadSpeed] = useState(0)
-  /**
-   * 当前加载阶段的镜像（progressClock 是 ref，界面读不到它的变化）。
-   * 只给遮罩上那一行「正在下载游戏…」用，由下面那个 250ms 定时器顺手刷 —— 同值 setState 会被 React 跳过。
-   */
-  const [loadPhase, setLoadPhase] = useState<LoadPhase>(firstLoadProgressPhase(progressPlan.current))
-  const [loadDetail, setLoadDetail] = useState<LoadProgress['detail']>()
-  /** 按需读盘的 total 是镜像容量，不是必须下载量；单独记住，避免加载文案和百分比说反话。 */
-  const [loadStreaming, setLoadStreaming] = useState(false)
-  /**
-   * 「这一局要下多少」。
-   *
-   * 只有光盘平台报得出来（PS1 的 prepareRemoteDiscRom、PS2 的 Play! 适配器）——
-   * 别的平台 ROM 就几 MB，说一句「需下载 3 MB」纯属噪音，所以下面还有个体积门槛。
-   *
-   * cached 表示整盘已经在本地；streaming 表示只会按需读分块。这两个都不能写成“需下载整盘”，
-   * 否则几百 MB 的容量提示反而会劝退本来几秒就能开局的玩家。
-   */
-  const [discSize, setDiscSize] = useState<{
-    bytes: number
-    loaded: number
-    cached: boolean
-    streaming: boolean
-  } | null>(null)
-  /** 当前视觉阶段的起点；真实回调停顿时，计时兜底从这里继续向前走。 */
-  const progressClock = useRef<ProgressClock>(
-    makeProgressClock(progressPlan.current, firstLoadProgressPhase(progressPlan.current)),
-  )
-  /**
-   * 当前阶段有没有真实字节/比例在走。
-   * 有真实下载时不能因为“视觉预算到了”就擅自切到下一阶段，否则慢网会一边还在下 ROM，
-   * 文案却已经说“正在启动”。没有任何可测信号的 WASM 编译阶段才允许按预算兜底前进。
-   */
-  const progressSignal = useRef<{ phase: LoadPhase; measurable: boolean }>({
-    phase: firstLoadProgressPhase(progressPlan.current),
-    measurable: false,
+  // 运行时配置 ref 放在 hook 前：进度状态机需要读取当前一局的 DOS 启动策略，
+  // 但后台设置变化不能重建已经开始的模拟器会话。
+  const dosBackendRef = useRef(dosBackend)
+  dosBackendRef.current = dosBackend
+  const dosSystemUrlRef = useRef(effectiveDosSystemUrl)
+  dosSystemUrlRef.current = effectiveDosSystemUrl
+  const dosLaunchDelayRef = useRef(dosLaunchDelay)
+  dosLaunchDelayRef.current = dosLaunchDelay
+  const loadProgress = useLoadProgress({
+    status,
+    sessionId: session?.id,
+    dosBackendRef,
+    dosSystemUrlRef,
+    dosLaunchDelayRef,
   })
+  const {
+    ratio: loadRatio,
+    setRatio: setLoadRatio,
+    speed: loadSpeed,
+    phase: loadPhase,
+    detail: loadDetail,
+    streaming: loadStreaming,
+    discSize,
+    planRef: progressPlan,
+  } = loadProgress
   const [caps, setCaps] = useState<Set<Capability>>(() => new Set())
   /** 内嵌网页游戏点了自己的存档入口；用递增号保证连续两次点击都能触发面板。 */
   const [saveRequest, setSaveRequest] = useState(0)
@@ -1588,13 +1486,9 @@ export function EmulatorPlayer({
   const dosStartupCommandsRef = useRef(dosStartupCommands)
   dosStartupCommandsRef.current = dosStartupCommands
   // 和启动程序一样，只在真正挂载 js-dos 时读取，后台配置变化不该打断已经开始的游戏
-  const dosBackendRef = useRef(dosBackend)
-  dosBackendRef.current = dosBackend
   const dosPc98Ref = useRef(dosPc98)
   dosPc98Ref.current = dosPc98
   // 系统镜像与等待时间也只在新会话挂载时读取；后台热改配置不应中断玩家当前这一局。
-  const dosSystemUrlRef = useRef(effectiveDosSystemUrl)
-  dosSystemUrlRef.current = effectiveDosSystemUrl
   const dosSockdriveUrlRef = useRef(dosSockdriveUrl)
   dosSockdriveUrlRef.current = dosSockdriveUrl
   /**
@@ -1633,8 +1527,6 @@ export function EmulatorPlayer({
   dosExtrasRef.current = activeExtras
   const dosWindowsVersionRef = useRef(dosWindowsVersion)
   dosWindowsVersionRef.current = dosWindowsVersion
-  const dosLaunchDelayRef = useRef(dosLaunchDelay)
-  dosLaunchDelayRef.current = dosLaunchDelay
   const dosboxConfigRef = useRef(dosboxConfig)
   dosboxConfigRef.current = dosboxConfig
   /** 云端联机是否真的跑起来过（用于区分「没连上」和「玩到一半断了」） */
@@ -1784,7 +1676,6 @@ export function EmulatorPlayer({
       core: coreOverride ?? coreRef.current,
       localFile: typeof game !== 'string',
     })
-    progressPlan.current = plan
     sessionCounter.current += 1
     setSession({ id: sessionCounter.current, game, platform: targetPlatform, runtime, saveSlug,
       pspLoadMode: runtime.id === 'ppsspp' ? pspLoadModeRef.current : undefined,
@@ -1799,166 +1690,11 @@ export function EmulatorPlayer({
         elapsedMs: 0,
       })
     }
-    /*
-      自动重试、以及 mapper 认不出之后换引擎（ruledOut），都仍是**同一次开始游戏**：
-      保留玩家已经看到的进度，避免失败瞬间从高位跳回 0%，看起来像整个加载被推倒重来。
-      玩家主动开的新一局才从头显示。
-
-      ⚠️ 保留百分比就必须同时抬高 floor，否则条子会冻在那个数上不动 ——
-      见 progressFloor 的注释。以前只做了前半件事。
-    */
+    // 自动重试与换引擎属于同一次开局：保留已显示进度，并由状态机把新一轮映射到剩余区间。
     const carryOver = Boolean(extra?.retryAttempt) || Boolean(extra?.ruledOut?.length) || Boolean(extra?.coreOverride)
-    progressFloor.current = carryOver ? (loadRatioRef.current ?? 0) : 0
-    // 上一局的进度必须清掉，否则新会话的遮罩会先闪一下上次的 100%。
-    // 合成器也要换一个新的：它记着「已显示的最大值」，不换的话新一局会被上一局的 100% 卡住
-    overallRatio.current = createOverallRatio(progressFloor.current, plan)
-    // 速度表也换新的：它记着累计字节和时间窗口，留着会让新一局开头继承上一局的读数
-    speedMeter.current = createSpeedMeter()
-    setLoadSpeed(0)
-    setDiscSize(null)
-    const firstPhase = firstLoadProgressPhase(plan)
-    progressClock.current = makeProgressClock(plan, firstPhase, 0, startupMilestonesOn())
-    progressSignal.current = { phase: firstPhase, measurable: false }
-    setLoadPhase(firstPhase)
-    setLoadDetail(undefined)
-    setLoadStreaming(false)
-    if (!carryOver) setLoadRatio(null)
+    loadProgress.reset(plan, { carryOver })
     setStatus('loading')
   }
-
-  /**
-   * 这一局有没有启动里程碑可报。
-   *
-   * Windows 与 DOS 7.1 客体会报启动里程碑；`effectiveDosSystemUrl` 非空就是这条路径，
-   * 而 dosboxX 是跑客体的硬前提。别的运行时全都一个 startup 都不报，
-   * 给它们分段等于把 80→99% 从 45 秒拖成 180 秒（见 makeProgressClock 的说明）。
-   */
-  const startupMilestonesOn = () => Boolean(dosBackendRef.current === 'dosboxX' && dosSystemUrlRef.current)
-
-  /** 阶段只允许向前走；并行请求迟到的回调不能把计时器拨回上一段。 */
-  const enterProgressPhase = (phase: LoadPhase) => {
-    const plan = progressPlan.current
-    const nextIndex = plan.order.indexOf(phase)
-    const currentIndex = plan.order.indexOf(progressClock.current.phase)
-    // 不在这款运行时策略里的阶段（例如纯 DOS 空的 assets）不占区域，也不能拨动时钟。
-    if (nextIndex < 0 || nextIndex <= currentIndex) return
-    progressClock.current = makeProgressClock(plan, phase, 0, startupMilestonesOn())
-    progressSignal.current = { phase, measurable: false }
-  }
-
-  /**
-   * 适配器报来一个**确证发生过**的启动里程碑（见 loadProgress 的 STARTING_MILESTONE）。
-   *
-   * 这是 Windows 客体进入 starting 区域后的真实信号源。和阶段一样只进不退：迟到的早期里程碑
-   * （比如 ci-ready 的回调排在 desktop 后面才跑）不能把条子拽回去。
-   */
-  const enterStartupMilestone = (startup: number | undefined) => {
-    if (startup === undefined || !Number.isFinite(startup)) return
-    const clock = progressClock.current
-    if (clock.phase !== 'starting' || startup <= clock.startup + 1e-6) return
-    progressClock.current = makeProgressClock(
-      progressPlan.current,
-      'starting',
-      Math.min(STARTING_MILESTONE_CAP, startup),
-      true,
-    )
-  }
-
-  /**
-   * 自己往下一个阶段推一格，不等适配器报。
-   *
-   * ⚠️ 这是「一直卡在 80%」那个 bug 的正解，值得说清楚：
-   *
-   * EmulatorJS（站上绝大多数平台的运行时）和 J2ME **从来不报 `phase: 'starting'`**。
-   * 于是 ROM 下完之后：整条进度正好等于 rom 阶段的上界 0.80，而进度时钟还停在 'rom'，
-   * 视觉计时器算出来的上限是 `0.8 - 0.01 = 0.79` —— 比已经显示的 0.80 还小，
-   * 被 `Math.max` 原样吃掉。接下来 WASM 编译 + 核心初始化那十几到几十秒里，
-   * 一个进度事件都没有，条子**一动不动地停在 80%**，直到游戏突然就绪。
-   *
-   * 与其去每个引擎的生命周期里找「下载完了」那一刻（EmulatorJS 那边只能靠它自己那行
-   * 本地化的状态文字去猜，脆得很），不如在这里定一条谁都适用的规矩：
-   * **当前阶段已经跑满了，就进下一阶段。** 两种情况会推进 ——
-   *   · 实际进度触到了本阶段的上界（下载真的完成了）
-   *   · 阶段完全没有可测信号，视觉预算也耗光了（例如静默的 WASM 编译）
-   * 只要还有真实字节在报，即使拿不到 Content-Length 也留在下载阶段，不能谎称已经启动。
-   * 这样以后新写的适配器漏报阶段，也不会再把条子冻住。
-   */
-  const advanceProgressPhase = () => {
-    const clock = progressClock.current
-    /*
-      starting 是最后一个阶段，但它内部还有里程碑。视觉预算耗光了就自己往下一格推 ——
-      理由和上面那段阶段推进一模一样：**别让条子停在某个整数上装死**。
-      这不是替客体作证，失败仍然由 windowsGuestStartupBudgetMs 那条超时说了算。
-    */
-    if (clock.phase === 'starting') {
-      if (!clock.milestones) return
-      const next = nextStartupMilestone(clock.startup)
-      if (next >= 1) return
-      progressClock.current = makeProgressClock(progressPlan.current, 'starting', next, true)
-      progressSignal.current = { phase: 'starting', measurable: false }
-      return
-    }
-    const next = nextLoadProgressPhase(progressPlan.current, clock.phase)
-    if (!next) return
-    progressClock.current = makeProgressClock(progressPlan.current, next, 0, clock.milestones)
-    progressSignal.current = { phase: next, measurable: false }
-  }
-
-  /**
-   * 有些阶段拿不到 Content-Length，甚至在 WASM 初始化期间完全没有网络回调。
-   * 这时在当前运行时分到的区间内补一条缓慢前进的视觉进度；真实进度更快就跟真实进度走。
-   * 区间不是全平台写死的：Flash、HTML5、光盘流式和 Windows 客体各用自己的策略。
-   */
-  useEffect(() => {
-    if (status !== 'loading' || !session) return
-    setLoadRatio((current) => Math.max(current ?? 0, 0.01))
-    const timer = window.setInterval(() => {
-      const { phase, startedAt, from, to, startup, milestones } = progressClock.current
-      let duration: number
-      if (phase === 'starting') {
-        /*
-          ⚠️ 这里**不能**用 windowsGuestStartupBudgetMs —— 那是「最坏情况下才判失败」的
-          上限（389 秒），拿它铺 0.80→0.99 等于 1% 走 20.5 秒，正是「卡在 80%」的病根。
-          现在按里程碑分段取**预计**耗时；失败仍由 jsdos 那边同一个 389 秒的
-          readyFallback 兜底，两个数各管各的。
-        */
-        duration = milestones
-          ? startingSegmentMs(startup, true, dosLaunchDelayRef.current)
-          : loadProgressDurationMs(progressPlan.current, phase)
-      } else {
-        duration = loadProgressDurationMs(progressPlan.current, phase)
-      }
-      const elapsed = Date.now() - startedAt
-      const visualStart = Math.max(0.01, from)
-      const visualEnd = Math.max(visualStart, Math.min(LOAD_PROGRESS_CEILING, to - 0.01))
-      // 和合成器共用同一个 floor，否则重试那一轮的视觉进度永远低于保留下来的百分比
-      const timed = Math.min(
-        LOAD_PROGRESS_CEILING,
-        liftRatio(progressFloor.current, visualStart + (visualEnd - visualStart) * Math.min(1, elapsed / duration)),
-      )
-      // 大 ROM 有真实字节进度时不能再让“视觉计时”超过它：弱网下 9MB / 68MB
-      // 曾显示 78%，随后长时间挂在高位，玩家无法判断是慢还是死锁。
-      if (!(progressSignal.current.phase === phase && progressSignal.current.measurable)) {
-        setLoadRatio((current) => Math.max(current ?? 0, timed))
-      }
-      setLoadPhase(phase)
-      // 这个阶段的视觉预算也耗光了还没等到下一个阶段的事件 —— 自己往前走一格，
-      // 别让条子停在某个整数上装死（见 advanceProgressPhase）
-      if (
-        elapsed >= duration &&
-        !(progressSignal.current.phase === phase && progressSignal.current.measurable)
-      ) {
-        advanceProgressPhase()
-      }
-      /*
-        速度读数也在这里刷，而不是只在收到进度事件时刷 —— 恰恰是「没有事件」的那几十秒
-        最需要它衰减到 0。read() 会按当前时刻重新算窗口，下载停了就自然归零。
-      */
-      setLoadSpeed(speedMeter.current.read())
-    }, 250)
-    return () => window.clearInterval(timer)
-  }, [status, session?.id])
-
   // 会话变化时挂载 / 卸载运行时
   useEffect(() => {
     const host = frameRef.current
@@ -2193,51 +1929,15 @@ export function EmulatorPlayer({
       onProgress: (next) => {
         if (!isCurrent()) return
         noteStartupActivity()
-        setLoadDetail(next.detail)
-        if (next.streaming) setLoadStreaming(true)
-        // 只认 rom 阶段的第一个带总量的帧：核心和系统镜像也走进度回调，
-        // 把它们的字节数报成「本局需下载」会差出一个数量级
-        if (next.phase === 'rom') {
-          setDiscSize((cur) => {
-            const bytes = next.total ?? cur?.bytes ?? 0
-            // 有些下载器只在第一帧给 total；建档后仍要吃后续 loaded，否则“已下载”会停在起点。
-            if (bytes < DISC_NOTICE_BYTES) return cur
-            return {
-              bytes,
-              // 断点续传会把已落盘分片一起报上来；这里显示真实字节，不拿总进度百分比反推假数字。
-              loaded: Math.min(next.loaded ?? cur?.loaded ?? 0, bytes),
-              cached: next.cached ?? cur?.cached ?? false,
-              streaming: next.streaming ?? cur?.streaming ?? false,
-            }
-          })
-        }
-        enterProgressPhase(next.phase)
-        // Windows 客体进入启动区域后的真实信号：ci-ready / 桌面画完 / 命令敲完
-        enterStartupMilestone(next.startup)
-        if (
-          progressClock.current.phase === next.phase &&
-          ((next.loaded !== undefined && next.loaded > 0) || next.ratio !== undefined)
-        ) {
-          progressSignal.current = { phase: next.phase, measurable: true }
-        }
-        speedMeter.current.push(next.loaded)
-        const actual = Math.min(LOAD_PROGRESS_CEILING, overallRatio.current(next))
-        setLoadRatio((current) => Math.max(current ?? 0, actual))
+        loadProgress.updateDiscSize(next, DISC_NOTICE_BYTES)
+        loadProgress.accept(next)
         if (
           session.runtime.id !== 'html5' &&
           (next.phase === 'starting' || (next.phase === 'rom' && Boolean(next.total) && Number(next.loaded) >= Number(next.total)))
         ) {
           reportStartup('download_complete')
         }
-        // 实际进度已经把这个阶段跑满了（下载真的完成），立刻进下一阶段。
-        // EmulatorJS 就是靠这一条从 ROM 区域走出来的 —— 它自己不报 starting
-        const phaseEnd = liftRatio(
-          progressFloor.current,
-          loadProgressRange(progressPlan.current, progressClock.current.phase)[1],
-        )
-        if (actual >= phaseEnd - 1e-6) {
-          advanceProgressPhase()
-        }
+        // accept() 会在真实进度跑满阶段时推进状态机；此处只负责记录开局漏斗事件。
       },
       onReady: () => {
         if (!isCurrent() || ready) return
@@ -2946,23 +2646,9 @@ export function EmulatorPlayer({
       setLiveFrozen(false)
       // 换一间看：上一间的联机房号跟这一间无关，不清的话「加入联机」会指向别人的房间
       setLiveNetplayRoom(null)
-      // begin() 里那两行同样要做：不清的话遮罩会用上一局的阶段和起始时间算进度，
-      // 第一拍就把条子顶到那个阶段的天花板（79% / 99%）再慢慢爬，看着像卡住
-      progressFloor.current = 0
       const plan = loadProgressPlan({ runtime: 'liveview', platform: platform.id })
-      progressPlan.current = plan
-      overallRatio.current = createOverallRatio(0, plan)
-      // 速度表也换新的：它记着累计字节和时间窗口，留着会让新一局开头继承上一局的读数
-      speedMeter.current = createSpeedMeter()
-      setLoadSpeed(0)
-      setDiscSize(null)
-      const firstPhase = firstLoadProgressPhase(plan)
-      progressClock.current = makeProgressClock(plan, firstPhase)
-      progressSignal.current = { phase: firstPhase, measurable: false }
-      setLoadPhase(firstPhase)
-      setLoadDetail(undefined)
-      setLoadStreaming(false)
-      setLoadRatio(null)
+      // 看直播也是一轮新加载：完整重置视觉进度与测速窗口，不能继承上一局的阶段或速度。
+      loadProgress.reset(plan)
       sessionCounter.current += 1
       setSession({
         id: sessionCounter.current,
@@ -4222,17 +3908,6 @@ export function EmulatorPlayer({
               */}
               <div className="absolute inset-0 flex flex-col items-center overflow-x-hidden overflow-y-auto overscroll-contain px-6 py-3 text-center">
               <div className="m-auto flex w-full flex-col items-center gap-4">
-              {/*
-                空闲态原本这里是大号平台图标（🎮 之类）。按需求换成播放页广告位：
-                广告只在「还没开始跑」的空闲态出现，游戏一旦加载（busy）整块浮层就卸掉，
-                不会盖住画面，也不会影响性能。
-
-                ⚠️ 必须是 horizontal + 关掉 full-width-responsive。默认的 auto 在方屏 /
-                竖屏容器里能长到两三百像素高，而手机上的画面框只有三百多像素 ——
-                广告一长就把「开始游戏」顶出去。加载屏那两处早就这么改了，
-                这一处当初漏掉，2026-09-17 被线上截图抓出来。
-              */}
-              <AdSenseSlot slot="9386967599" format="horizontal" responsive={false} className="max-w-xl" />
               {!engineReady ? (
                 <Button size="lg" disabled>
                   {t.player.loadingEngine}
@@ -4241,9 +3916,7 @@ export function EmulatorPlayer({
                 <>
                   {/*
                     桌面端按键图仍放在开始按钮上方；窄屏必须直接收掉。
-                    390px 视口实测：广告 + 完整键位图会把 48px 高的主按钮顶到画面框下面，
-                    它虽然还在可滚容器里，却被播放器自己的工具栏盖住，玩家看到的就是“无法开始”。
-                    触屏玩家开局后会看到屏幕手柄提示，不会因此丢失操作说明。
+                    触屏玩家开局后会看到屏幕手柄提示；把广告放到操作入口之后，按钮不再被广告挤出首屏。
                   */}
                   {showKeymap && (
                     <PadDiagram
@@ -4345,8 +4018,8 @@ export function EmulatorPlayer({
                       <>
                         {fmt(channel === 'p2p' ? t.player.p2pHint : t.player.onlineHint, { max: String(slots) })}
                         <br />
-                        {t.player.alsoCan}
-                        <button type="button" className="mx-1 underline underline-offset-2 hover:text-white" onClick={() => setMode('local')}>
+                        <span className="mr-1">{t.player.alsoCan}</span>
+                        <button type="button" className="mx-1 inline-flex min-h-10 items-center rounded-lg border border-white/30 bg-black/45 px-3 font-semibold text-white transition hover:border-white/60 hover:bg-white/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-black" onClick={() => setMode('local')}>
                           {t.player.localInstead}
                         </button>
                         {pageRuntime ? fmt(t.player.localInsteadHint, { runtime: pageRuntime.name }) : ''}
@@ -4359,19 +4032,18 @@ export function EmulatorPlayer({
                           纯解释的文字会把「也可以选本地 ROM / 切到联机」这两个**入口**挤下去。
                           文案键 t.player.cloudHint 留着没删 —— 要恢复的话原样接回这里即可。
                         */}
-                        {t.player.alsoCan}
-                        <button type="button" className="mx-1 underline underline-offset-2 hover:text-white" onClick={() => inputRef.current?.click()}>
-                          {t.player.pickLocal}
-                        </button>
-                        {t.player.orDrag}
-                        {onlineOk && (
-                          <>
-                            {' '}
-                            <button type="button" className="mx-1 underline underline-offset-2 hover:text-white" onClick={() => setMode('online')}>
+                        <span className="mr-1">{t.player.alsoCan}</span>
+                        <span className="inline-flex flex-wrap items-center justify-center gap-2 align-middle">
+                          <button type="button" className="inline-flex min-h-10 items-center rounded-lg border border-white/30 bg-black/45 px-3 font-semibold text-white transition hover:border-white/60 hover:bg-white/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-black" onClick={() => inputRef.current?.click()}>
+                            {t.player.pickLocal}
+                          </button>
+                          <span className="text-white/70">{t.player.orDrag}</span>
+                          {onlineOk && (
+                            <button type="button" className="inline-flex min-h-10 items-center rounded-lg border border-white/30 bg-black/45 px-3 font-semibold text-white transition hover:border-white/60 hover:bg-white/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-black" onClick={() => setMode('online')}>
                               {t.player.onlineInstead}
                             </button>
-                          </>
-                        )}
+                          )}
+                        </span>
                       </>
                     ) : romChecking ? (
                       <>{t.player.checkingHint}</>
@@ -4411,6 +4083,8 @@ export function EmulatorPlayer({
                       </>
                     )}
                   </p>
+                  {/* 玩家进入页面的第一目标是开局；广告排在开始与备用入口之后，避免先占视线或挤压小屏按钮。 */}
+                  <AdSenseSlot slot="9386967599" format="horizontal" responsive={false} className="max-w-xl" />
                   {/*
                     资料片开关。只在**本机开局**这条路上出现：联机由房主的机器跑，
                     观战根本不跑游戏，这两种情况下勾它没有任何意义，反而会让人以为

@@ -34,7 +34,7 @@ export function MobileBottomNav() {
           to={item.to}
           aria-current={item.active ? 'page' : undefined}
           className={cx(
-            'flex min-h-14 min-w-0 flex-col items-center justify-center gap-0.5 rounded-lg px-0.5 text-[10px] leading-tight transition-colors',
+            'flex min-h-14 min-w-0 flex-col items-center justify-center gap-0.5 rounded-lg px-0.5 text-[10px] leading-tight transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-hover focus-visible:ring-inset',
             item.active ? 'font-semibold text-brand-hover' : 'text-muted active:bg-black/5 active:text-fg',
           )}
         >
@@ -48,7 +48,7 @@ export function MobileBottomNav() {
           to="/me"
           aria-current={path === '/me' || path.startsWith('/me/') ? 'page' : undefined}
           className={cx(
-            'flex min-h-14 min-w-0 flex-col items-center justify-center gap-0.5 rounded-lg px-0.5 text-[10px] leading-tight transition-colors',
+            'flex min-h-14 min-w-0 flex-col items-center justify-center gap-0.5 rounded-lg px-0.5 text-[10px] leading-tight transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-hover focus-visible:ring-inset',
             path === '/me' || path.startsWith('/me/') ? 'font-semibold text-brand-hover' : 'text-muted active:bg-black/5 active:text-fg',
           )}
         >
@@ -59,7 +59,8 @@ export function MobileBottomNav() {
         <button
           type="button"
           onClick={openAuthModal}
-          className="flex min-h-14 min-w-0 flex-col items-center justify-center gap-0.5 rounded-lg px-0.5 text-[10px] leading-tight text-muted transition-colors active:bg-black/5 active:text-fg"
+          aria-label={t.sidebar.profile}
+          className="flex min-h-14 min-w-0 flex-col items-center justify-center gap-0.5 rounded-lg px-0.5 text-[10px] leading-tight text-muted transition-colors active:bg-black/5 active:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-hover focus-visible:ring-inset"
         >
           <span aria-hidden className="text-lg leading-5">👤</span>
           <span className="max-w-full truncate">{t.sidebar.profile}</span>

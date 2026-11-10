@@ -137,6 +137,7 @@ export const ENV_MANIFEST = [
   { name: 'IPX_PUBLIC_HOST', group: 'ROM / J2ME / IPX', kind: 'config', file: 'index.js', note: 'IPX_PORT 留空时（共用端口模式）这里填 ipx 才对' },
   { name: 'I_KNOW_ADMIN_AUTH_IS_DISABLED', group: '安全', kind: 'config', file: 'auth.js', note: 'ADMIN_AUTH_DISABLED 的第二道闸，本机调试专用，线上永远不该出现' },
   { name: 'J2ME_MAX_UPLOAD_MB', group: 'ROM / J2ME / IPX', kind: 'config', file: 'j2me.js' },
+  { name: 'J2ME_PACKED_CACHE_MB', group: 'ROM / J2ME / IPX', kind: 'config', file: 'j2me.js', note: '服务端缓存解包后的 8BG JAR 上限；减少同一局的重复解密与上游读取' },
   { name: 'J2ME_PROXY_CONCURRENCY', group: 'ROM / J2ME / IPX', kind: 'config', file: 'j2me.js', note: 'jar 转发到对象存储的并发上限，按进程算' },
   { name: 'J2ME_PROXY_MAX_MB', group: 'ROM / J2ME / IPX', kind: 'config', file: 'j2me.js', note: '一次转发最多收多少 MB（超过就中止上游）' },
   { name: 'J2ME_PROXY_TIMEOUT_MS', group: 'ROM / J2ME / IPX', kind: 'config', file: 'j2me.js', note: '上游没在期限内给完就 504' },

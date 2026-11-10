@@ -148,7 +148,7 @@ export function NesKeyBinder() {
       <button
         type="button"
         onClick={() => setShowP2((v) => !v)}
-        className="mt-2 font-semibold text-muted hover:text-brand"
+        className="mt-2 font-semibold text-muted hover:text-brand-hover"
         aria-expanded={showP2}
       >
         2P {showP2 ? '▾' : '▸'}
@@ -170,7 +170,7 @@ export function NesKeyBinder() {
             setBinding(null)
             setNote('')
           }}
-          className="mt-2 rounded-md border border-line px-2 py-0.5 font-semibold text-fg hover:border-brand hover:text-brand"
+          className="mt-2 rounded-md border border-line px-2 py-0.5 font-semibold text-fg hover:border-brand hover:text-brand-hover"
         >
           {tt.padReset}
         </button>

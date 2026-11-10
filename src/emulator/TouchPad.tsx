@@ -662,7 +662,7 @@ export function TouchPad({ handle, layout = 'overlay', onInput, highlight, class
                   className={cx(
                     'rounded-md border px-2 py-1 font-mono text-[11px] font-semibold transition-colors',
                     active
-                      ? 'border-line text-fg hover:border-brand hover:text-brand'
+                      ? 'border-line text-fg hover:border-brand hover:text-brand-hover'
                       : 'border-dashed border-line-strong text-dim',
                   )}
                 >
@@ -679,7 +679,7 @@ export function TouchPad({ handle, layout = 'overlay', onInput, highlight, class
                 <button
                   type="button"
                   onClick={resetRemap}
-                  className="rounded-md border border-line px-3 py-1.5 text-xs font-semibold text-fg hover:border-brand hover:text-brand"
+                  className="rounded-md border border-line px-3 py-1.5 text-xs font-semibold text-fg hover:border-brand hover:text-brand-hover"
                 >
                   {t.player.padMap.reset}
                 </button>

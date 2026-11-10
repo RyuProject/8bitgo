@@ -217,7 +217,7 @@ export function ChatButton() {
               */
               className="block whitespace-nowrap text-xs leading-9"
             >
-              {preview.nick && <span className="font-semibold text-brand">{preview.nick}</span>}
+              {preview.nick && <span className="font-semibold text-brand-hover">{preview.nick}</span>}
               {preview.nick && <span className="text-dim">：</span>}
               <span className="text-fg">{preview.text}</span>
             </span>
@@ -254,10 +254,10 @@ export function ChatButton() {
         aria-busy={loading || undefined}
         className={cx(
           // z-10：长条是绝对定位的，不抬一手会盖在按钮上面把点击吃掉
-          'relative z-10 grid h-9 w-9 place-items-center rounded-lg border border-line bg-surface transition hover:border-brand/60 hover:text-brand',
-          placeholder && 'border-brand/60 text-brand',
+          'relative z-10 grid h-9 w-9 place-items-center rounded-lg border border-line bg-surface transition hover:border-brand/60 hover:text-brand-hover',
+          placeholder && 'border-brand/60 text-brand-hover',
           // 有新消息滚着时把气泡也点亮，让人看出这两块是一体的
-          preview && 'border-brand/60 text-brand',
+          preview && 'border-brand/60 text-brand-hover',
         )}
       >
         {/*
@@ -325,7 +325,7 @@ export function ChatButton() {
             <button
               type="button"
               onClick={() => retryIm()}
-              className="mt-2 w-full rounded-lg border border-line px-2 py-1 text-xs font-semibold transition hover:border-brand hover:text-brand"
+              className="mt-2 w-full rounded-lg border border-line px-2 py-1 text-xs font-semibold transition hover:border-brand hover:text-brand-hover"
             >
               {t.topbar.chatRetry}
             </button>

@@ -93,7 +93,7 @@ function timeAgo(ts: number, lang: string): string {
  * 手机上 44px 才是能让拇指稳定命中的尺寸；sm 以上恢复原来的紧凑工具栏。
  * 次要按钮虽然收进「⋯」，弹层里仍然是触控操作，所以也必须共用这一条。
  */
-const BTN = 'inline-flex h-11 min-w-11 items-center justify-center gap-1 rounded-md border border-line px-2 text-muted transition-colors hover:border-brand hover:text-fg disabled:opacity-40 sm:h-7 sm:min-w-7 sm:px-1.5'
+const BTN = 'inline-flex h-11 min-w-11 items-center justify-center gap-1 rounded-md border border-line px-2 text-muted transition-colors hover:border-brand hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-surface disabled:opacity-40 sm:h-8 sm:min-w-8 sm:px-1.5'
 const BTN_ON = 'border-brand bg-brand-soft text-brand-hover'
 
 /**
@@ -890,7 +890,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
   return (
     <div className={cx('relative flex flex-wrap items-center gap-1.5', className)}>
       {caps.has('pause') && (
-        <button type="button" className={cx(BTN, paused && BTN_ON)} onClick={refocus(togglePause)} title={paused ? tt.resume : tt.pause} aria-pressed={paused}>
+        <button type="button" className={cx(BTN, paused && BTN_ON)} onClick={refocus(togglePause)} title={paused ? tt.resume : tt.pause} aria-label={paused ? tt.resume : tt.pause} aria-pressed={paused}>
           {paused ? '▶' : '⏸'}
         </button>
       )}
@@ -906,6 +906,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
             setPanel(panel === 'fsSave' ? null : 'fsSave')
           }}
           title={`${tt.fsSave} · ${tt.fsSaveHint}`}
+          aria-label={tt.fsSave}
           aria-expanded={panel === 'fsSave'}
         >
           💾
@@ -936,6 +937,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
                 })}`
               : tt.fsLoad
           }
+          aria-label={tt.fsLoad}
           aria-expanded={panel === 'fsLoad'}
         >
           📂
@@ -974,6 +976,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
                   })}`
                 : tt.saveLoadTitle
             }
+            aria-label={remoteOnly ? tt.save : tt.saveLoadTitle}
           >
             💾
           </button>
@@ -1016,6 +1019,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
               setMore(false)
             }}
             title={tt.volume}
+            aria-label={tt.volume}
             aria-expanded={panel === 'volume'}
           >
             {muted || volume === 0 ? '🔇' : '🔊'}
@@ -1047,6 +1051,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
               setMore(false)
             }}
             title={tt.gamepad}
+            aria-label={tt.gamepad}
             aria-expanded={panel === 'gamepad'}
           >
             🎮
@@ -1054,7 +1059,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
         )}
 
         {caps.has('screenshot') && (
-          <button type="button" className={BTN} onClick={refocus(() => void doShot())} title={tt.shot}>
+          <button type="button" className={BTN} onClick={refocus(() => void doShot())} title={tt.shot} aria-label={tt.shot}>
             📷
           </button>
         )}
@@ -1065,6 +1070,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
             className={cx(BTN, recording && 'border-live bg-live/15 text-live')}
             onClick={refocus(toggleRecord)}
             title={recording ? fmt(tt.recStop, { s: String(seconds) }) : tt.rec}
+            aria-label={recording ? fmt(tt.recStop, { s: String(seconds) }) : tt.rec}
             aria-pressed={recording}
           >
             {recording ? <span className="tabular-nums">⏹ {seconds}s</span> : '⏺'}
@@ -1093,7 +1099,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
 
       {panel === 'volume' && (
         <div className="absolute bottom-full left-0 z-20 mb-2 flex items-center gap-2 rounded-lg border border-line bg-surface px-3 py-2 shadow-lg">
-          <button type="button" className={BTN} onClick={refocus(() => applyVolume(volume, !muted))} title={muted ? tt.unmute : tt.mute}>
+          <button type="button" className={BTN} onClick={refocus(() => applyVolume(volume, !muted))} title={muted ? tt.unmute : tt.mute} aria-label={muted ? tt.unmute : tt.mute}>
             {muted ? '🔇' : '🔊'}
           </button>
           <input
@@ -1236,7 +1242,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
                     // 面板弹在播放器里、和这个下拉不在一层，留着这个下拉只会挡住它
                     setPanel(null)
                   }}
-                  className="rounded-md border border-line px-2 py-0.5 font-semibold text-fg hover:border-brand hover:text-brand"
+                  className="rounded-md border border-line px-2 py-0.5 font-semibold text-fg hover:border-brand hover:text-brand-hover"
                 >
                   {tt.remapKeys}
                 </button>
@@ -1244,7 +1250,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
                   <button
                     type="button"
                     onClick={() => handle.resetControls?.()}
-                    className="rounded-md border border-line px-2 py-0.5 font-semibold text-muted hover:border-brand hover:text-brand"
+                    className="rounded-md border border-line px-2 py-0.5 font-semibold text-muted hover:border-brand hover:text-brand-hover"
                   >
                     {tt.padReset}
                   </button>
@@ -1276,7 +1282,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
                       'rounded-md border px-2 py-0.5',
                       value === screenLayout.current
                         ? 'border-brand bg-brand-soft font-semibold text-brand-hover'
-                        : 'border-line text-fg hover:border-brand hover:text-brand',
+                        : 'border-line text-fg hover:border-brand hover:text-brand-hover',
                     )}
                   >
                     {layoutLabel(value)}
@@ -1311,7 +1317,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
               <button
                 type="button"
                 onClick={() => handle.setEnginePad?.(!caps.has('enginePad'))}
-                className="shrink-0 rounded-md border border-line px-2 py-0.5 font-semibold text-fg hover:border-brand hover:text-brand"
+                className="shrink-0 rounded-md border border-line px-2 py-0.5 font-semibold text-fg hover:border-brand hover:text-brand-hover"
               >
                 {caps.has('enginePad') ? tt.screenPadHide : tt.screenPadShow}
               </button>

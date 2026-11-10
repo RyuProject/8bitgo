@@ -39,7 +39,7 @@ export function Topbar() {
   if (immersive) return null
 
   return (
-    <header className="sticky top-0 z-30 bg-bg/80 backdrop-blur-xl">
+    <header className="sticky top-0 z-30 border-b border-line/80 bg-bg/90 backdrop-blur-xl">
       <div className="flex h-16 items-center gap-3 px-4 sm:px-6 lg:px-8">
         {/* 移动端：菜单 + Logo */}
         <button
@@ -48,7 +48,7 @@ export function Topbar() {
           aria-label={t.topbar.openMenu}
           aria-controls="site-sidebar"
           aria-expanded={mobileOpen}
-          className="grid h-10 w-10 shrink-0 place-items-center rounded-lg text-fg hover:bg-black/5 lg:hidden"
+          className="grid h-10 w-10 shrink-0 place-items-center rounded-lg text-fg hover:bg-black/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-hover focus-visible:ring-offset-2 focus-visible:ring-offset-bg lg:hidden"
         >
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
             <path d="M4 7h16M4 12h16M4 17h16" />
@@ -66,7 +66,7 @@ export function Topbar() {
             aria-label={t.topbar.search}
             aria-expanded={searchOpen}
             aria-controls="mobile-search-panel"
-            className="grid h-10 w-10 place-items-center rounded-lg text-muted hover:bg-black/5 hover:text-fg md:hidden"
+            className="grid h-10 w-10 place-items-center rounded-lg text-muted hover:bg-black/5 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-hover focus-visible:ring-offset-2 focus-visible:ring-offset-bg md:hidden"
           >
             <SearchIcon />
           </button>

@@ -130,7 +130,7 @@ export function OpenAuthorizePage() {
               href={info.app.homepage}
               target="_blank"
               rel="noreferrer noopener"
-              className="text-xs text-muted underline hover:text-brand"
+              className="text-xs text-muted underline hover:text-brand-hover"
             >
               {info.app.homepage}
             </a>

@@ -269,7 +269,7 @@ export function SaveLoadModal({ cards, onClose, busy, hint, legacyRecovery }: Pr
               type="button"
               disabled={busy}
               onClick={legacyRecovery.onRecover}
-              className="mt-2 rounded-full border border-line px-4 py-1.5 text-sm font-semibold text-fg hover:border-brand hover:text-brand disabled:opacity-40"
+              className="mt-2 rounded-full border border-line px-4 py-1.5 text-sm font-semibold text-fg hover:border-brand hover:text-brand-hover disabled:opacity-40"
             >
               {legacyRecovery.button}
             </button>

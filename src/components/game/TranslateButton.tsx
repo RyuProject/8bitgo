@@ -115,7 +115,7 @@ export function TranslateButton<T>({ endpoint, onTranslated, show = true, lang: 
         onClick={startTranslate}
         disabled={status === 'translating'}
         // 颜色明显（和「展开全文」区分开），但不喧宾夺主 —— 玩家不点也完全可以看英文原文
-        className="rounded-full border border-brand/60 bg-brand/5 px-3 py-1 text-xs font-semibold text-brand transition hover:bg-brand hover:text-white disabled:cursor-wait disabled:opacity-60"
+        className="rounded-full border border-brand/60 bg-brand/5 px-3 py-1 text-xs font-semibold text-brand-hover transition hover:bg-brand hover:text-[#183500] disabled:cursor-wait disabled:opacity-60"
       >
         {status === 'translating' ? <span className="inline-block animate-pulse">{label}</span> : label}
       </button>

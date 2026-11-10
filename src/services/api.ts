@@ -145,10 +145,14 @@ async function request<T>(
   if (edgeBase) {
     try {
       res = await fetch(`${edgeBase}${path}`, init)
-      // 加速入口自己的网关错误（回不到源站）：GET 幂等，直接同源再试一次
-      if (res.status >= 502 && res.status <= 504) res = await fetch(`${API_URL}${path}`, init)
     } catch (err) {
       if (signal?.aborted) throw err
+      markCnEdgeApiFailed()
+      res = await fetch(`${API_URL}${path}`, init)
+    }
+    // 只对加速入口本身的网关错误退回源站；源站请求失败应原样交给上层，不能被 catch 后再请求一次。
+    if (res.status >= 502 && res.status <= 504) {
+      // 标记整个会话退回同源，避免后续每次站内跳转都先等一遍已故障的加速入口。
       markCnEdgeApiFailed()
       res = await fetch(`${API_URL}${path}`, init)
     }

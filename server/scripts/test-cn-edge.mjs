@@ -114,6 +114,8 @@ assert.match(ssr, /coverHint === 'cn' && !cnSite\) page = retargetStaticToCnEdge
 const api = readFileSync(new URL('../../src/services/api.ts', import.meta.url), 'utf8')
 assert.match(api, /SAME_ORIGIN && method === 'GET' && !admin \? cnEdgeApiBase\(\)/, '只有只读、非后台请求走加速入口')
 assert.match(api, /markCnEdgeApiFailed\(\)/)
+assert.match(api, /if \(res\.status >= 502 && res\.status <= 504\) \{\s*\/\/ 标记整个会话退回同源[\s\S]*?markCnEdgeApiFailed\(\)/, '加速网关报错后本次会话不再重复等待故障入口')
+assert.match(api, /catch \(err\) \{\s*if \(signal\?\.aborted\) throw err[\s\S]*?res = await fetch\(`\$\{API_URL\}\$\{path\}`, init\)\s*\}\s*\/\/ 只对加速入口本身/, '同源回退失败不应被误捕获并重复请求')
 const vite = readFileSync(new URL('../../vite.config.ts', import.meta.url), 'utf8')
 assert.match(vite, /if \(hostType === 'html'\) return undefined[\s\S]*?return \{ relative: true \}/, 'chunk 预加载要相对引用方解析，否则大陆页面会下两遍')
 assert.match(vite, /Worker-\[\\w-\]\+\\\.js\$\/\.test\(filename\)\) \{\s*return \{ runtime: `self\.location\.origin\+/, 'Worker 必须同源加载：浏览器禁止跨源 Worker')

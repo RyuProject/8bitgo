@@ -2473,7 +2473,7 @@ function SystemImageField({
         可填对象 key、站内路径或完整 URL。相同值可给所有 Win95 游戏复用；留空则兼容旧模式，把游戏 ROM 当作系统与游戏合一的完整 .jsdos。
         {value.trim() && romUrlForKey(value.trim()) && (
           <>
-            {' '}<a className="text-brand hover:underline" href={romUrlForKey(value.trim())} target="_blank" rel="noreferrer">检查文件</a>
+            {' '}<a className="text-brand-hover hover:underline" href={romUrlForKey(value.trim())} target="_blank" rel="noreferrer">检查文件</a>
           </>
         )}
       </p>
@@ -2483,7 +2483,7 @@ function SystemImageField({
         </p>
       )}
       {progress !== null && stageText(stage) && <p className="mt-1 font-mono text-[11px] text-dim">{stageText(stage)}</p>}
-      {msg && <p className={cx('mt-1 text-xs', msg.ok ? 'text-brand' : 'text-live')}>{msg.text}</p>}
+      {msg && <p className={cx('mt-1 text-xs', msg.ok ? 'text-brand-hover' : 'text-live')}>{msg.text}</p>}
     </Field>
   )
 }

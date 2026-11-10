@@ -407,7 +407,7 @@ export function ImPanel() {
                       aria-expanded={composeOpen}
                       className={cx(
                         'grid h-8 w-8 shrink-0 place-items-center rounded-lg transition hover:bg-surface-2 hover:text-fg',
-                        composeOpen ? 'bg-surface-2 text-brand' : 'text-muted',
+                        composeOpen ? 'bg-surface-2 text-brand-hover' : 'text-muted',
                       )}
                     >
                       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -591,7 +591,7 @@ function StatusBody({ state, detail }: { state: ImState; detail: string }) {
           }
         }}
         disabled={busy}
-        className="mt-1 rounded-lg border border-line px-3 py-1.5 text-xs font-semibold transition hover:border-brand hover:text-brand disabled:opacity-50"
+        className="mt-1 rounded-lg border border-line px-3 py-1.5 text-xs font-semibold transition hover:border-brand hover:text-brand-hover disabled:opacity-50"
       >
         {t.im.reconnect}
       </button>
@@ -631,7 +631,7 @@ function ConversationList({
         <button
           type="button"
           onClick={onNew}
-          className="mt-1 rounded-lg border border-line px-3 py-1.5 text-xs font-semibold transition hover:border-brand hover:text-brand"
+          className="mt-1 rounded-lg border border-line px-3 py-1.5 text-xs font-semibold transition hover:border-brand hover:text-brand-hover"
         >
           {t.im.newChat}
         </button>
@@ -889,7 +889,7 @@ function ChatView({
               type="button"
               onClick={() => void loadMore()}
               disabled={loading}
-              className="rounded-full border border-line px-3 py-1 text-[11px] text-muted transition hover:border-brand hover:text-brand disabled:opacity-50"
+              className="rounded-full border border-line px-3 py-1 text-[11px] text-muted transition hover:border-brand hover:text-brand-hover disabled:opacity-50"
             >
               {loading ? t.common.loadingMore : t.im.loadMore}
             </button>
