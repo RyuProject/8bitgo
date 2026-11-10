@@ -1246,6 +1246,28 @@ export function netplayRejection(reason: string): { message: string; final: bool
   return { message: fmt(rt.netplayRoomRejected, { reason: reason.trim().slice(0, 80) }), final: false }
 }
 
+/**
+ * 核心建不出 WebGL 上下文时的说法。RetroArch 胶水 `GL.makeContextCurrent` 拿到的上下文是 undefined，
+ * 下一句读 `.GLctx` 抛 TypeError —— 2026-11-11 美国 Linux Chrome 156《魂斗罗》开局 0.4 秒就报，
+ * 播放器原地重试、再换三种语言的 ROM，一共试了 5 遍，每遍都一样：浏览器关了硬件加速 / WebGL。
+ */
+export function isWebglUnavailableText(text: string): boolean {
+  return /reading 'GLctx'|GLctx is undefined|webgl (?:is )?not supported|could not create (?:a )?webgl context|failed to create webgl context/i.test(text)
+}
+
+/** 现在还建不建得出 WebGL。建得出说明刚才只是一时（上下文数超限 / GPU 进程重启），值得重试一次 */
+export function canCreateWebgl(doc: Document = document): boolean {
+  try {
+    const canvas = doc.createElement('canvas')
+    const gl = (canvas.getContext('webgl2') || canvas.getContext('webgl')) as WebGLRenderingContext | null
+    if (!gl) return false
+    gl.getExtension('WEBGL_lose_context')?.loseContext()
+    return true
+  } catch {
+    return false
+  }
+}
+
 /** 浏览器分配不出 WASM / ArrayBuffer 内存时各家的说法 */
 export function isOutOfMemoryText(text: string): boolean {
   return /out of memory|could not allocate memory|cannot allocate wasm memory|array buffer allocation failed|webassembly\.memory\(\): could not/i.test(text)
@@ -2301,6 +2323,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    * 而真正的原因是房间早就不在了；单人游戏（players=1）开房被拒也报成同一句。
    */
   let roomAckError = ''
+  /**
+   * 联机握手到了哪一步，超时时写进启动诊断包。「联机没有连上」两周 100 多次，以前只知道等满了 20 秒，
+   * 分不出是信令没连上、房间请求没发出去，还是发出去了服务端没回。
+   */
+  const netTrace = { connectedAt: 0, lastError: '', emitted: '', emittedAt: 0, ackAt: 0, ack: '' }
   /** 上次刷新 EJS_netplayICEServers 的时间，见 ICE_REFRESH_MS */
   let lastIceAt = 0
   /**
@@ -2334,8 +2361,16 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             sock.emit = (event: string, ...emitArgs: unknown[]) => {
               const roomEvent = event === 'open-room' || event === 'join-room'
               const ack = emitArgs[emitArgs.length - 1]
+              if (roomEvent) {
+                netTrace.emitted = event
+                netTrace.emittedAt = Date.now()
+                diagLog('netplay', 'info', `发出 ${event}（信令${(sock as { connected?: boolean }).connected ? '已连上' : '未连上，进发送缓冲'}）`)
+              }
               if (roomEvent && typeof ack === 'function') {
                 emitArgs[emitArgs.length - 1] = (error: unknown, ...rest: unknown[]) => {
+                  netTrace.ackAt = Date.now()
+                  netTrace.ack = error ? (typeof error === 'string' ? error : safeStr(error)) : 'ok'
+                  diagLog('netplay', 'info', `${event} 回执：${netTrace.ack}，用时 ${netTrace.ackAt - netTrace.emittedAt}ms`)
                   if (error) {
                     roomAckError = typeof error === 'string' ? error : safeStr(error)
                     logEngine(`[netplay] ${event} 被服务端拒绝：${roomAckError}`)
@@ -2365,8 +2400,14 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           // 下面的轮询看到 socket 没连上就按「房主断线」处理 —— 排查时至少要在引擎日志里留下真相。
           // 重连每次都会触发，只记第一次
           let signalErrorLogged = false
+          sock?.on?.('connect', () => {
+            if (!netTrace.connectedAt) diagLog('netplay', 'info', '信令已连上')
+            netTrace.connectedAt = Date.now()
+          })
+          sock?.on?.('disconnect', (reason: unknown) => diagLog('netplay', 'warn', `信令断开：${safeStr(reason)}`))
           sock?.on?.('connect_error', (e: unknown) => {
             signalErrorAt = Date.now()
+            netTrace.lastError = safeStr(e).slice(0, 160)
             if (signalErrorLogged) return
             signalErrorLogged = true
             logEngine(`[netplay] 信令连接失败：${safeStr(e)}`)
@@ -2440,6 +2481,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     const recent = (errorTap?.lines ?? []).slice(-12).join('\n')
     // 浏览器给不出 WASM 内存：重下多少遍都一样，告诉玩家关掉别的标签页
     if (isOutOfMemoryText(`${line}\n${recent}`)) return failLoad(rt.ejsOutOfMemory)
+    /*
+      建不出 WebGL：浏览器关了硬件加速或 GPU 被拉黑。重下 ROM、换语言版本都没用，'config' 让播放器
+      别原地重试也别换 ROM。现场再建一次试试：建得出说明只是一时（上下文太多 / GPU 进程重启），照常重试。
+    */
+    if (isWebglUnavailableText(`${line}\n${recent}`)) {
+      const webglNow = canCreateWebgl()
+      logEngine(`[webgl] 核心建不出 WebGL 上下文；现在再建一次：${webglNow ? '能建' : '仍建不出'}`)
+      if (!webglNow) return failLoad(rt.ejsWebglUnavailable, 'config')
+    }
     /*
       「Error loading EmulatorJS runtime」= 核心脚本跑完却没定义 EJS_Runtime。几秒内就报，且同一位玩家
       连报十次（2026-11-08《拳皇 97 风云再起 Plus》一分钟 10 次）—— 引擎直接从 IndexedDB 拿了一份坏核心，
@@ -2607,6 +2657,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     let connectedOnce = false
     const openedAt = Date.now()
     roomAckError = ''
+    // 信令连接可以沿用（connectedAt 留着），这一轮的房间请求与回执重新记
+    Object.assign(netTrace, { lastError: '', emitted: '', emittedAt: 0, ackAt: 0, ack: '' })
     playersTimer = window.setInterval(() => {
       if (destroyed) return
       const cur = win.EJS_emulator as EjsEmulator | undefined
@@ -2686,6 +2738,16 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           } catch {
             /* 还没连上，没什么可退的 */
           }
+          const since = (at: number) => (at ? `${at - openedAt}ms` : '无')
+          const transport = (n.socket as unknown as { io?: { engine?: { transport?: { name?: string } } } } | undefined)?.io?.engine?.transport?.name
+          diagLog('netplay', 'warn', [
+            `联机等了 ${waited}ms 没进房`,
+            `信令 ${n.socket?.connected ? '已连上' : '未连上'}（首次连上 ${since(netTrace.connectedAt)}，传输 ${transport || '?'}）`,
+            `最后错误 ${netTrace.lastError || '无'}`,
+            `房间请求 ${netTrace.emitted || '没发出'} @${since(netTrace.emittedAt)}`,
+            `回执 ${netTrace.ack || '没收到'} @${since(netTrace.ackAt)}`,
+            `isNetplay=${Boolean(cur?.isNetplay)} 房主=${Boolean(n.owner)}`,
+          ].join('；'))
           failNetplay(hopeless ? fmt(rt.netplaySignalUnreachable, { url: netplayUrlForFrame() }) : rt.netplayJoinTimeout)
         }
         return

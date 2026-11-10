@@ -110,3 +110,22 @@ for (const lang of ['zh-Hans', 'zh-Hant', 'en', 'es', 'fr', 'de', 'it', 'ja']) {
 }
 
 console.log('✔ 启动失败原因：跨 realm 错误原文、内存不足、坏核心缓存、联机拒绝原因、CHD 只拦 MAME、缓存挂死后关缓存')
+
+// ── WebGL 建不出来：不重试、不换 ROM（2026-11-11《魂斗罗》Linux Chrome 156 连试 5 遍）──
+{
+  const context = {}
+  vm.runInNewContext(`${stripTypes(fnSource('isWebglUnavailableText'))};globalThis.f=isWebglUnavailableText`, context)
+  const f = context.f
+  assert.equal(f("Failed to start game TypeError: Cannot read properties of undefined (reading 'GLctx')"), true)
+  assert.equal(f('TypeError: GLctx is undefined'), true)
+  assert.equal(f('WebGL not supported'), true)
+  assert.equal(f('Failed to start game RuntimeError: unreachable'), false)
+  assert.equal(f('Romset is unknown'), false)
+  assert.match(adapter, /if \(!webglNow\) return failLoad\(rt\.ejsWebglUnavailable, 'config'\)/)
+  // 先判内存、再判 WebGL：内存不足时 GL 也可能建不出，但该给的是内存那句话
+  assert.ok(adapter.indexOf('return failLoad(rt.ejsOutOfMemory)') < adapter.indexOf('isWebglUnavailableText(`${line}'))
+  // 联机超时要把握手进度写进诊断包
+  assert.match(adapter, /联机等了 \$\{waited\}ms 没进房/)
+  assert.match(adapter, /netTrace\.ack = error \?/)
+  console.log('✓ WebGL 不可用归为 config；联机超时带握手进度')
+}

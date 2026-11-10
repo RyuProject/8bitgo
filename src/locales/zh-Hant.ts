@@ -1470,6 +1470,7 @@ const zhHant: Translation = {
     ejsLoadFailed: '模擬器沒能載入。請檢查網路後點「重試」；一直不行請回報給我們',
     ejsEngineError: '引擎報錯：{msg}',
     ejsOutOfMemory: '裝置記憶體不足，模擬器沒能啟動。關掉其他分頁或應用程式後點「重試」；手機上可以換一台記憶體更大的裝置。',
+    ejsWebglUnavailable: '瀏覽器沒能建立 WebGL 畫面，模擬器無法啟動。請在瀏覽器設定裡開啟「使用硬體加速」（Chrome：設定 → 系統），或換一個瀏覽器 / 裝置再試。',
     ejsArcadeRomInvalid: '街機遊戲檔案不完整或不是有效的 ZIP：{name}',
     ejsArcadeUnknownSet: '模擬器不認識這個街機包（{msg}）。請確認 ZIP 檔名是正確的 romset 短名（如 kof97.zip、tekken3.zip），且內容是完整的同一版本。',
     ejsArcadeMissingFiles: '街機包缺少執行所需的檔案（{msg}）。常見原因：BIOS 包沒有綁定、複製集缺少父集 ROM，或 ROM 版本與模擬器不一致。',

@@ -158,6 +158,12 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
 
 改引擎后要换 `EJS_RUNTIME_GENERATION`，入口文件名不带内容哈希。
 
+- **建不出 WebGL 不重试、不换 ROM**（2026-11-11《魂斗罗》Linux Chrome 156：`reading 'GLctx'`，原地重试加三种语言 ROM
+  一共试了 5 遍）。`isWebglUnavailableText` 命中后现场再建一次 WebGL：仍建不出就以 `'config'` 报
+  `ejsWebglUnavailable`（提示打开硬件加速）；建得出说明只是一时，照常重试。
+- **联机超时把握手进度写进诊断包**：信令是否连上、`open-room` / `join-room` 有没有发出、回执是什么、各在第几毫秒
+  （`netTrace`）。「联机没有连上」两周 100 多次，11-07 识别出服务端拒绝后已降到每天一两次，剩下的靠这一行定位。
+
 ### 2.8.1 街机 BIOS 分两档：平台一份 + **按系统包**各一份
 
 引擎（EmulatorJS）只给**一个** BIOS 槽位（`EJS_biosUrl`），而 `arcade` 是**一个平台**却顶着
