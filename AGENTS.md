@@ -1457,6 +1457,21 @@ Windows 系统镜像、游戏包和资料片从同一刻下载；ROM 进度在�
 EXE。不能只在后台表单拦：批量导入和直接 API 会绕过页面。`server/src/dos-game-config.js` 在
 PUT / PATCH 前按关联表的真实重写语义校验；启动时 `schema-check.js` 还会点名历史坏记录。
 
+### 2.24.1.1 J2ME 的 8BG JAR 由服务端解包，不再经玩家浏览器上传（2026-11-10）
+
+线上 49 款 J2ME 全是 `roms/java/*.jar.8bg`。以前适配器要在玩家浏览器里下载、解密，再 POST 回
+`/api/j2me/upload` 才能交给 CheerpJ（freej2me 只认 `<J2ME_PATH>jar/<纯文件名>`）；大陆实测光上传就
+23 秒，《寂静岭2》有玩家两分钟都没起来。现在适配器把本站 ROM 根下的 `roms/java/X.jar.8bg` 写成
+`X.8bg.jar`（`j2meUrl.ts` 的 `packedJarProxyName`），`server/src/j2me.js` 从 R2 取回、用
+`rom-pack-transcode.js` 解密校验，按 R2 ETag 缓存在内存（`J2ME_PACKED_CACHE_MB`，默认 64），CheerpJ 的
+多次 Range 直接命中。名字必须带 `.8bg` 标记：同目录可能还留着迁移前的明文旧包，不能按「先明文再 8BG」猜。
+适配器先 HEAD 一次（顺带让服务端预解），失败（没配 `ROM_PACK_SECRET`、对象缺失、外链 8BG）才退回旧的
+上传路径。回归：`npm run test:j2me && cd server && npm run test:j2me-packed`。
+
+⚠️ 播放器的启动看门狗（`EmulatorPlayer.tsx`，「连续 120 秒没有启动进度或可玩信号」）只数**前台**时间：
+标签页在后台时浏览器会节流 Win95 开机和 CheerpJ，各适配器自己的开机计时器也只按前台走；按墙钟计时会把
+还在开机的游戏记成超时（2026-11-10《天之痕》下载 146 秒后被记超时，适配器从未报错）。
+
 ### 2.24.2 加载进度按运行时的真实启动链分区，不能全平台写死一套比例
 
 加载条仍然只有一根、只进不退，但 `src/emulator/loadProgress.ts` 的 `loadProgressPlan()` 会按

@@ -119,3 +119,27 @@ export function j2meWarmTargets(base: string): string[] {
   const dir = base.endsWith('/') ? base : `${base}/`
   return [`${dir}freej2me-web.jar`, `${dir}libmidi/libmidi.wasm`, `${dir}libmidi/worklet.js`]
 }
+
+/**
+ * 本站对象存储里的 8BG JAR（`<ROM 根>/roms/java/X.jar.8bg`）交给服务端解包时用的名字：`X.8bg.jar`。
+ *
+ * 以前 8BG 要在玩家浏览器里下载、解密，再 POST 回本站临时目录（2026-11-10 大陆实测光上传就 23 秒，
+ * 慢线路两分钟传不完）。现在 `/j2me/jar/X.8bg.jar` 由 server/src/j2me.js 从 R2 取回并解包。
+ * 只认本站 ROM 根下 `roms/java/` 里的对象：外链 8BG 服务端无从代理，返回空串，仍走上传那条路。
+ *
+ * @param url       播放地址（可能是主域或大陆镜像，带 `?romv=`）
+ * @param romBases  本站 ROM 根地址（主域、镜像），不带结尾斜杠
+ */
+export function packedJarProxyName(url: string, romBases: readonly string[]): string {
+  const clean = String(url).split(/[?#]/)[0]
+  for (const base of romBases) {
+    if (!base) continue
+    const prefix = `${base.replace(/\/+$/, '')}/roms/java/`
+    if (!clean.startsWith(prefix)) continue
+    const file = decodeURIComponent(clean.slice(prefix.length))
+    const match = /^([A-Za-z0-9._-]+)\.jar\.8bg$/i.exec(file)
+    return match ? `${match[1]}.8bg.jar` : ''
+  }
+  return ''
+}
+

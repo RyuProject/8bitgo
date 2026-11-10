@@ -81,4 +81,12 @@ for (const lang of ['zh-Hans', 'zh-Hant', 'en', 'es', 'fr', 'de', 'it', 'ja']) {
   }
 }
 
+// 启动看门狗只数前台时间：后台被节流的开机（Win95 客体、CheerpJ）不能记成「超时」
+{
+  const player = readFileSync(new URL('../src/emulator/EmulatorPlayer.tsx', import.meta.url), 'utf8')
+  assert.match(player, /if \(document\.visibilityState === 'hidden'\) return\s*timeoutTimer = window\.setTimeout/)
+  assert.match(player, /document\.addEventListener\('visibilitychange', onStartupVisibility\)/)
+  assert.match(player, /document\.removeEventListener\('visibilitychange', onStartupVisibility\)/)
+}
+
 console.log('✔ 启动失败原因：跨 realm 错误原文、内存不足、坏核心缓存、联机拒绝原因、CHD 只拦 MAME')

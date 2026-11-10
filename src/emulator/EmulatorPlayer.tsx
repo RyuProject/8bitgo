@@ -2005,9 +2005,25 @@ export function EmulatorPlayer({
       slowStartupReported = true
       reportStartup('slow_start', '等待 game_playable 已超过 20 秒')
     }
+    /*
+      只数**前台**时间（2026-11-10《天之痕》）：下载 146 秒的那段玩家切去了别的标签页，Win95 在后台
+      开机被节流，适配器自己的开机 / 自启动计时器都是按前台时间走的（AGENTS §2.24.1），从没报错；
+      这里却按墙钟数满 120 秒，把一局还在开机的游戏记成「超时」。后台不计时，回到前台重新给满 120 秒。
+    */
+    const onStartupVisibility = () => {
+      if (document.visibilityState === 'visible') armStartupWatchdog()
+      else window.clearTimeout(timeoutTimer)
+    }
+    document.addEventListener('visibilitychange', onStartupVisibility)
+    const stopStartupWatchdog = () => {
+      window.clearTimeout(timeoutTimer)
+      window.clearTimeout(slowTimer)
+      document.removeEventListener('visibilitychange', onStartupVisibility)
+    }
     const armStartupWatchdog = () => {
       window.clearTimeout(timeoutTimer)
       if (!isCurrent() || ready || crashed || startupTimedOut) return
+      if (document.visibilityState === 'hidden') return
       timeoutTimer = window.setTimeout(() => {
         if (!isCurrent() || ready || crashed || startupTimedOut) return
         startupTimedOut = true
@@ -2231,8 +2247,7 @@ export function EmulatorPlayer({
           setDiag((d) => d.map((e) => (e.stage === 'launch' ? { ...e, status: 'ok', detail: '运行时已挂载' } : e)))
           setDiag((d) => d.map((e) => (e.stage === 'content' ? { ...e, status: 'ok', detail: 'ROM 已被核心读取' } : e)))
         }
-        window.clearTimeout(timeoutTimer)
-        window.clearTimeout(slowTimer)
+        stopStartupWatchdog()
         // 拿不到完整下载阶段的运行时在这里兜底；同一事件客户端与数据库都会去重。
         reportStartup('download_complete')
         // 新版 melonDS 会在 onReady 之后才 trap；立即计数会把白屏误报成可玩。
@@ -2425,8 +2440,7 @@ export function EmulatorPlayer({
       },
       })
     } catch (error) {
-      window.clearTimeout(timeoutTimer)
-      window.clearTimeout(slowTimer)
+      stopStartupWatchdog()
       window.clearTimeout(playableTimer)
       const message = error instanceof Error ? error.message : String(error)
       reportStartupFailure(message)
@@ -2444,8 +2458,7 @@ export function EmulatorPlayer({
     setGeometry(null)
     setScreenLayout(null)
     return () => {
-      window.clearTimeout(timeoutTimer)
-      window.clearTimeout(slowTimer)
+      stopStartupWatchdog()
       window.clearTimeout(playableTimer)
       setHandle(null)
       setCaps(new Set())

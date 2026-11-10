@@ -29,6 +29,8 @@ import { fileURLToPath } from 'node:url'
 import { assertJarBuffer } from './jar-validation.js'
 import { take, clientKey, isMeaningfulIp } from './rateLimit.js'
 import { assetBaseUrl } from './site-urls.js'
+import { ByteReader, decryptRomPackChunk, deriveRomPackKey, readRomPackHead } from './rom-pack-transcode.js'
+import { isRomPackConfigured } from './rom-pack-key.js'
 
 // 公开 R2 域名不是机密，给线上同源 JAR 代理一个可用默认值（默认值和读取逻辑都在
 // site-urls.js —— 动态 sitemap 的 <image:loc> 也要用同一个根地址，抄两份就会出现
@@ -243,6 +245,154 @@ export async function releaseJar(req, res) {
   if (!res.destroyed) res.status(204).end()
 }
 
+/* ---------------- 8BG 正式 ROM：服务端解包 ---------------- */
+
+/**
+ * `X.8bg.jar` ↔ R2 上的 `roms/java/X.jar.8bg`。
+ *
+ * 2026-11-10《寂静岭2》大陆玩家两分钟起不来：8BG 的 JAR 以前要在**玩家浏览器**里下载、解密，
+ * 再 POST 回本站临时目录（/api/j2me/upload）才能交给 CheerpJ —— 同一份游戏在玩家的上行链路上
+ * 又走一遍。大陆宽带实测这一步 23 秒，慢的线路两分钟都传不完。现在由服务端从 R2 取回、解密、
+ * 校验后缓存在内存里，玩家只剩 CheerpJ 自己那几次 Range 读取。
+ *
+ * 名字必须带 `.8bg` 标记：同目录可能还留着迁移前的明文旧包（AGENTS §2.20），按名字猜「先明文、
+ * 再 8BG」会把旧版本交给玩家。结尾保持 `.jar`，SAFE_NAME 和 FreeJ2ME 都按扩展名认文件。
+ */
+export function packedJarKeyName(name) {
+  const match = /^([A-Za-z0-9._-]+)\.8bg\.jar$/i.exec(String(name || ''))
+  return match ? `${match[1]}.jar.8bg` : ''
+}
+
+/** 解好的 JAR 留在内存：CheerpJ 一次开局会对同一份文件发 3～5 个 Range，不能每个都解一遍 */
+const PACKED_CACHE_BYTES = Math.floor(envNumber('J2ME_PACKED_CACHE_MB', 64, { integer: false, min: 1, max: 1024 }) * 1024 * 1024)
+/** 这么久之内的重复请求直接用缓存；过了就带 If-None-Match 回 R2 问一句，没变就是 304 */
+const PACKED_FRESH_MS = 60_000
+const packedCache = new Map()
+const packedInflight = new Map()
+let packedCacheBytes = 0
+
+function packedCacheSet(keyName, entry) {
+  const old = packedCache.get(keyName)
+  if (old) packedCacheBytes -= old.bytes.length
+  packedCache.delete(keyName)
+  packedCache.set(keyName, entry)
+  packedCacheBytes += entry.bytes.length
+  for (const [k, v] of packedCache) {
+    if (packedCacheBytes <= PACKED_CACHE_BYTES || k === keyName) break
+    packedCache.delete(k)
+    packedCacheBytes -= v.bytes.length
+  }
+}
+
+async function decryptPackedJar(buffer) {
+  const reader = new ByteReader([buffer][Symbol.iterator]())
+  const { header } = await readRomPackHead(reader)
+  if (header.originalSize > MAX_BYTES * 4) throw new Error('JAR 过大')
+  const key = deriveRomPackKey(header.packageId, header.keyId)
+  const parts = []
+  for (let index = 0; index < header.chunks.length; index++) {
+    const encrypted = await reader.readExactly(header.chunks[index].cipherSize)
+    parts.push(await decryptRomPackChunk({ header, key, index, encrypted }))
+  }
+  const jar = Buffer.concat(parts)
+  if (jar.length !== header.originalSize) throw new Error('解包后的 JAR 长度不符')
+  assertJarBuffer(jar)
+  return jar
+}
+
+/** 取（必要时解包）一份 8BG JAR；同一份并发请求只解一次 */
+async function loadPackedJar(keyName, signal) {
+  const cached = packedCache.get(keyName)
+  if (cached && Date.now() - cached.checkedAt < PACKED_FRESH_MS) return cached
+  const running = packedInflight.get(keyName)
+  if (running) return running
+  const task = (async () => {
+    const target = `${ROM_BASE}/${ROM_PREFIX}/java/${encodeURIComponent(keyName)}`
+    const headers = cached?.etag ? { 'if-none-match': cached.etag } : {}
+    const upstream = await fetch(target, { headers, signal })
+    if (upstream.status === 304 && cached) {
+      cached.checkedAt = Date.now()
+      return cached
+    }
+    if (!upstream.ok) {
+      await upstream.body?.cancel().catch(() => {})
+      const error = new Error(`上游返回 ${upstream.status}`)
+      error.status = upstream.status === 404 ? 404 : 502
+      throw error
+    }
+    const packed = await readResponseBuffer(upstream, PROXY_BYTES, signal)
+    const bytes = await decryptPackedJar(packed)
+    const entry = {
+      bytes,
+      etag: upstream.headers.get('etag') || '',
+      lastModified: upstream.headers.get('last-modified') || '',
+      checkedAt: Date.now(),
+    }
+    packedCacheSet(keyName, entry)
+    return entry
+  })()
+  packedInflight.set(keyName, task)
+  try {
+    return await task
+  } finally {
+    packedInflight.delete(keyName)
+  }
+}
+
+async function servePackedJar(req, res, keyName) {
+  if (!ROM_BASE) return res.status(404).send('ROM_BASE_URL 未配置')
+  if (!isRomPackConfigured()) return res.status(503).send('服务端没有配置 ROM_PACK_SECRET，无法解包')
+  if (activeProxies >= MAX_PROXIES && !packedCache.has(keyName)) {
+    res.setHeader('Retry-After', '1')
+    return res.status(503).send('jar 代理繁忙')
+  }
+  activeProxies++
+  const controller = new AbortController()
+  const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(PROXY_TIMEOUT)])
+  const onClose = () => { if (!res.writableEnded) controller.abort(new Error('Client disconnected')) }
+  res.once('close', onClose)
+  try {
+    const entry = await loadPackedJar(keyName, signal)
+    const size = entry.bytes.length
+    // 解包后的明文 ETag 跟着 8BG 对象走：重传 ROM 后 R2 的 ETag 变了，这里也跟着变
+    const etag = entry.etag ? `"8bg-${entry.etag.replace(/^W\/|"/g, '')}"` : ''
+    res.setHeader('Content-Type', 'application/java-archive')
+    res.setHeader('X-Content-Type-Options', 'nosniff')
+    res.setHeader('Accept-Ranges', 'bytes')
+    res.setHeader('Cache-Control', 'public, max-age=0, must-revalidate')
+    if (etag) res.setHeader('ETag', etag)
+    if (entry.lastModified) res.setHeader('Last-Modified', entry.lastModified)
+    if (etag && req.headers['if-none-match'] === etag) return res.status(304).end()
+    let start = 0
+    let end = size - 1
+    let status = 200
+    if (req.headers.range) {
+      const range = parseJarRange(req.headers.range, size)
+      if (!range) {
+        res.setHeader('Content-Range', `bytes */${size}`)
+        res.setHeader('Content-Length', '0')
+        return res.status(416).end()
+      }
+      ;({ start, end } = range)
+      status = 206
+      res.setHeader('Content-Range', `bytes ${start}-${end}/${size}`)
+    }
+    const length = size === 0 ? 0 : end - start + 1
+    res.setHeader('Content-Length', String(length))
+    if (req.method === 'HEAD' || length === 0) return res.status(status).end()
+    return res.status(status).end(entry.bytes.subarray(start, end + 1))
+  } catch (e) {
+    console.error(`[j2me] 8BG JAR 解包失败 ${keyName}:`, e.message)
+    if (!res.destroyed && !res.headersSent) {
+      const status = e.status || (signal.aborted && !controller.signal.aborted ? 504 : 502)
+      res.status(status).send(status === 404 ? 'jar 不存在' : 'jar 获取失败')
+    }
+  } finally {
+    res.off('close', onClose)
+    activeProxies--
+  }
+}
+
 /* ---------------- 取 jar ---------------- */
 
 /**
@@ -314,7 +464,11 @@ export async function j2meJarProxy(req, res) {
     return res.status(404).send('临时文件已过期')
   }
 
-  // 2. 对象存储
+  // 2. 对象存储里的 8BG 正式 ROM：服务端解包
+  const packedKey = packedJarKeyName(name)
+  if (packedKey) return servePackedJar(req, res, packedKey)
+
+  // 3. 对象存储里的明文 JAR
   if (!ROM_BASE) return res.status(404).send('ROM_BASE_URL 未配置')
   const target = `${ROM_BASE}/${ROM_PREFIX}/java/${encodeURIComponent(name)}`
   if (activeProxies >= MAX_PROXIES) {

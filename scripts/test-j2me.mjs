@@ -13,7 +13,7 @@
  */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { CHEERPJ_ORIGIN, buildJ2meUrl, isCrossOriginBase, j2meFileName, j2meWarmTargets } from '../src/emulator/j2meUrl.ts'
+import { CHEERPJ_ORIGIN, buildJ2meUrl, isCrossOriginBase, j2meFileName, j2meWarmTargets, packedJarProxyName } from '../src/emulator/j2meUrl.ts'
 import { take } from '../server/src/rateLimit.js'
 
 let failed = 0
@@ -28,6 +28,16 @@ const check = (name, fn) => {
 }
 
 console.log('一、URL 规则')
+
+check('本站 R2 的 8BG JAR 交给服务端解包，不再经浏览器上传', () => {
+  const bases = ['https://assets.8bitgo.com', 'https://cn-assets.8bitgo.com']
+  assert.equal(packedJarProxyName('https://assets.8bitgo.com/roms/java/silent-hill-2.zh-Hans.jar.8bg?romv=abc', bases), 'silent-hill-2.zh-Hans.8bg.jar')
+  assert.equal(packedJarProxyName('https://cn-assets.8bitgo.com/roms/java/sh2.jar.8bg', bases), 'sh2.8bg.jar', '大陆镜像也认')
+  assert.equal(packedJarProxyName('https://elsewhere.example/roms/java/sh2.jar.8bg', bases), '', '外链服务端代理不了，仍走上传')
+  assert.equal(packedJarProxyName('https://assets.8bitgo.com/roms/java/sub/sh2.jar.8bg', bases), '', '子目录不认')
+  assert.equal(packedJarProxyName('https://assets.8bitgo.com/roms/nes/x.nes.8bg', bases), '')
+  assert.equal(packedJarProxyName('https://assets.8bitgo.com/roms/java/x.jar', bases), '', '明文 JAR 原本就走代理')
+})
 
 check('播放地址压成纯文件名，查询串和 hash 都要剥掉', () => {
   assert.equal(j2meFileName('https://r2.example.com/roms/java/snake.jar'), 'snake.jar')

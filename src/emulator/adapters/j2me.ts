@@ -37,6 +37,7 @@ import { focusFrame, frameGamepads } from '../frameFocus'
 import { loadGameBytes } from '../romLoader'
 import { isRomPackUrl } from '@/services/romPack'
 import { warmHttpCache } from '../httpWarm'
+import { ENV_ROM_BASE, ENV_ROM_MIRROR } from '@/services/romHosts'
 
 /* ---------------- 从 freej2me-web 源码里挖出来的接入点 ---------------- */
 
@@ -175,7 +176,7 @@ export { J2ME_PATH } from '../paths'
 import { J2ME_PATH } from '../paths'
 // URL 那几条规则搬到了 ../j2meUrl（纯函数，有单测）—— 尤其是跨源判定那一条，
 // 原来靠「读 contentDocument 会不会抛」判，而它跨源时返回 null 不抛，那条退路是死代码
-import { buildJ2meUrl, isCrossOriginBase, j2meFileName, j2meWarmTargets } from '../j2meUrl'
+import { buildJ2meUrl, isCrossOriginBase, j2meFileName, j2meWarmTargets, packedJarProxyName } from '../j2meUrl'
 
 
 /* ---------------- 玩家上传的临时 jar ---------------- */
@@ -231,7 +232,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   }
 
   const isFile = typeof options.game !== 'string'
-  const needsTempJar = isFile || (typeof options.game === 'string' && isRomPackUrl(options.game))
+  /** 本站 R2 上的 8BG JAR：由服务端解包（见 j2meUrl.ts 的 packedJarProxyName），不再经玩家浏览器上传 */
+  const packedName = typeof options.game === 'string' && isRomPackUrl(options.game)
+    ? packedJarProxyName(options.game, [ENV_ROM_BASE, ENV_ROM_MIRROR])
+    : ''
+  let needsTempJar = isFile || (typeof options.game === 'string' && isRomPackUrl(options.game))
   // 本地文件和 8BG 都要先变回普通 JAR 再放进临时目录，这需要后端存在。
   if (needsTempJar && !apiEnabled()) {
     options.onError?.(rt.j2meLocalUnsupported)
@@ -441,8 +446,28 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
   void (async () => {
     try {
-      let name: string
-      if (needsTempJar) {
+      let name = ''
+      if (packedName) {
+        /*
+          先问一声服务端能不能解：没配 ROM_PACK_SECRET、对象不在 R2 或旧服务端没有这条路时，
+          退回原来的「浏览器解包 + 上传」，不能让 CheerpJ 拿着一个 404 名字干等两分钟。
+          这次 HEAD 同时让服务端把解好的 JAR 放进内存，CheerpJ 随后的 Range 直接命中。
+        */
+        options.onProgress?.({ phase: 'rom' })
+        const ok = await fetch(`${J2ME_PATH}jar/${packedName}`, { method: 'HEAD' })
+          .then((res) => res.ok)
+          .catch(() => false)
+        if (destroyed) return
+        if (ok) {
+          name = packedName
+          needsTempJar = false
+        } else {
+          console.warn(`[j2me] 服务端解包 ${packedName} 不可用，改由浏览器解包上传`)
+        }
+      }
+      if (name) {
+        // 服务端解包那条路已经拿到名字
+      } else if (needsTempJar) {
         // 本地 jar 要先传到后端才能被 freej2me-web 取到。fetch 拿不到上传进度
         // （只有 XHR 的 upload.onprogress 有），所以这里只报阶段，UI 转不确定态。
         options.onProgress?.({ phase: 'rom' })
