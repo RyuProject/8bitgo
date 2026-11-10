@@ -429,8 +429,9 @@ const SAVE_FLUSH_MS = 30_000
  * EmulatorJS 有好几处 promise 断在半路就再也不 resolve（见 installNetTap 的说明），
  * 没有这道闸，玩家就只能对着一根不动的进度条一直等下去。
  *
- * 30 秒是给最慢的一步留的余量：几十 MB 的核心在慢手机上编译 wasm 期间既没有网络请求、
- * 也不更新文案，实测能安静十几秒。
+ * 30 秒用于一般核心；街机核心完成下载后还要解压、写虚拟盘并编译 wasm，低端设备上这段
+ * 可能明显更长。街机与 mame-current 共用 120 秒空闲上限，避免“核心下载 100%”后的冷初始化
+ * 被误判卡死并自动重下 ROM / 核心。
  */
 const STALL_MS = 30_000
 /**
@@ -438,6 +439,8 @@ const STALL_MS = 30_000
  * 那行状态文字也常常不变；低端手机上一步就能超过 30 秒，误报「卡住」后还会触发一次整局重来。
  */
 const MAME_CURRENT_STALL_MS = 120_000
+/** FBNeo 等街机核心下载完成后仍需解压和冷编译，防止低端设备在初始化时被错误重启。 */
+const ARCADE_CORE_START_STALL_MS = 120_000
 
 const FRAME_HTML = `<!doctype html>
 <html lang="zh-CN">
@@ -3417,7 +3420,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         lastStage = stage
         beat()
       }
-      if (Date.now() - lastBeat > (isMameCurrentCore(core) ? MAME_CURRENT_STALL_MS : STALL_MS)) failLoad(fmt(rt.ejsStalled, { stage: lastStage || core }))
+      const stallBudget = isMameCurrentCore(core)
+        ? MAME_CURRENT_STALL_MS
+        : options.platform === 'arcade' ? ARCADE_CORE_START_STALL_MS : STALL_MS
+      if (Date.now() - lastBeat > stallBudget) failLoad(fmt(rt.ejsStalled, { stage: lastStage || core }))
     }, 400)
   }
 

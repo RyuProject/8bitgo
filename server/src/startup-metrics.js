@@ -18,6 +18,7 @@ const EVENTS = new Set([
   'game_playable',
   'first_interaction',
   'slow_start',
+  'readiness_unobservable',
   'failed',
   'timeout',
 ])
@@ -151,6 +152,7 @@ function shapeAggregate(row = {}) {
     failures: numeric(row, 'failures'),
     timeouts: numeric(row, 'timeouts'),
     slowStarts: numeric(row, 'slow_starts'),
+    readinessUnobservable: numeric(row, 'readiness_unobservable'),
     avgPlayableMs: row.avg_playable_ms == null ? null : Math.round(Number(row.avg_playable_ms)),
     maxPlayableMs: row.max_playable_ms == null ? null : Math.round(Number(row.max_playable_ms)),
     playableRate: starts ? Math.round((playable / starts) * 10_000) / 100 : 0,
@@ -168,6 +170,7 @@ const AGGREGATES = `
   SUM(e.event = 'failed') AS failures,
   SUM(e.event = 'timeout') AS timeouts,
   SUM(e.event = 'slow_start') AS slow_starts,
+  SUM(e.event = 'readiness_unobservable') AS readiness_unobservable,
   AVG(CASE WHEN e.event = 'game_playable' THEN e.elapsed_ms END) AS avg_playable_ms,
   MAX(CASE WHEN e.event = 'game_playable' THEN e.elapsed_ms END) AS max_playable_ms`
 

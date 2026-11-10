@@ -22,6 +22,7 @@ import { fileURLToPath } from 'node:url'
 const {
   createOverallRatio,
   createSpeedMeter,
+  fetchBlobWithProgress,
   DEFAULT_LOAD_PROGRESS_PLAN,
   firstLoadProgressPhase,
   liftRatio,
@@ -511,6 +512,37 @@ console.log('\n── 速度文案 ──')
   ok(formatSpeed(102_400) === '100 KB/s', '100KB/s')
   ok(formatSpeed(1024 * 1024 * 2.5) === '2.5 MB/s', '1MB 以上给一位小数的 MB/s')
   ok(formatSpeed(1024 * 1023) === '1023 KB/s', '刚好不到 1MB 仍用 KB/s，慢网络下看得出在变')
+}
+
+console.log('\n── ROM 分片遇到浏览器缓存读取故障后绕过坏缓存重试 ──')
+{
+  const requests = []
+  const fetchImpl = async (_url, init = {}) => {
+    requests.push(init)
+    if (requests.length === 1) {
+      const body = new ReadableStream({
+        start(controller) {
+          controller.error(new DOMException('The requested file could not be read', 'NotReadableError'))
+        },
+      })
+      return new Response(body, {
+        status: 206,
+        headers: { 'Content-Range': 'bytes 0-3/4', 'Content-Length': '4' },
+      })
+    }
+    return new Response(new Uint8Array([1, 2, 3, 4]), {
+      status: 206,
+      headers: { 'Content-Range': 'bytes 0-3/4', 'Content-Length': '4' },
+    })
+  }
+  const blob = await fetchBlobWithProgress('https://assets.example/roms/arcade/demo.zip?romv=test', {
+    chunkBytes: 4,
+    retries: 1,
+    fetchImpl,
+  })
+  assert.deepEqual([...new Uint8Array(await blob.arrayBuffer())], [1, 2, 3, 4])
+  ok(requests.length === 2, '浏览器 Blob 读取错误触发一次分片重试')
+  ok(requests[1]?.cache === 'reload', '⭐ 重试绕过可能损坏的 HTTP 206 磁盘缓存')
 }
 
 console.log(`\n✅ 加载进度测试通过（${n} 项）`)

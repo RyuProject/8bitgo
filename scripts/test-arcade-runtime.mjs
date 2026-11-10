@@ -138,6 +138,12 @@ await check('MAME 路径解析失败不会被误判为成功启动', async () =>
   }
 })
 
+await check('街机核心冷初始化有独立的空闲上限，不因下载后编译慢而整局重启', async () => {
+  const source = await readFile(new URL('../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8')
+  assert.match(source, /const ARCADE_CORE_START_STALL_MS = 120_000/)
+  assert.match(source, /options\.platform === 'arcade' \? ARCADE_CORE_START_STALL_MS : STALL_MS/)
+})
+
 await check('同一根因的多条核心错误只会上报一次终止事件', async () => {
   const source = await readFile(new URL('../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8')
   assert.match(source, /let loadFailed = false/)

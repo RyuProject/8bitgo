@@ -188,7 +188,7 @@ const makeProgressClock = (
 const DISC_NOTICE_BYTES = 64 * 1024 * 1024
 /** 自动重试只做一次：网络抖动能自愈，坏 ROM 也不会陷入无限刷新。 */
 const AUTO_RETRY_LIMIT = 1
-/** 启动超过两分钟仍没有 game_playable，漏斗记一次超时；运行时自己的重试/错误处理照常继续。 */
+/** 连续两分钟没有任何启动活动，漏斗记一次 watchdog 结果；运行时自己的重试/错误处理照常继续。 */
 const STARTUP_TIMEOUT_MS = 120_000
 /**
  * 在线存档会话还剩多久就开始提示玩家。
@@ -1993,6 +1993,38 @@ export function EmulatorPlayer({
     const reportStartupFailure = (reason: string) => {
       reportStartup(/(?:超时|timeout|timed out)/i.test(reason) ? 'timeout' : 'failed', reason)
     }
+    let readinessState: 'unknown' | 'observable' | 'unobservable' = session.runtime.id === 'html5' ? 'unknown' : 'observable'
+    let startupTimedOut = false
+    let lastStartupActivityAt = Date.now()
+    let timeoutTimer = 0
+    let slowTimer = 0
+    let slowStartupReported = false
+    const reportSlowStartupIfNeeded = () => {
+      if (!isCurrent() || ready || slowStartupReported || readinessState !== 'observable' ||
+        Date.now() - session.startedAt < 20_000) return
+      slowStartupReported = true
+      reportStartup('slow_start', '等待 game_playable 已超过 20 秒')
+    }
+    const armStartupWatchdog = () => {
+      window.clearTimeout(timeoutTimer)
+      if (!isCurrent() || ready || crashed || startupTimedOut) return
+      timeoutTimer = window.setTimeout(() => {
+        if (!isCurrent() || ready || crashed || startupTimedOut) return
+        startupTimedOut = true
+        if (readinessState === 'unobservable') {
+          reportStartup('readiness_unobservable', '跨域 HTML5 页面无法由父页面确认游戏是否已就绪')
+        } else {
+          reportStartup('timeout', '连续 120 秒没有启动进度或可玩信号')
+        }
+      }, STARTUP_TIMEOUT_MS)
+    }
+    const noteStartupActivity = () => {
+      const now = Date.now()
+      // 进度流可能每帧回调；每秒最多重置一次 watchdog，避免下载期间反复创建/清除定时器。
+      if (now - lastStartupActivityAt < 1_000) return
+      lastStartupActivityAt = now
+      armStartupWatchdog()
+    }
     const confirmPlayable = () => {
       if (!isCurrent() || crashed || session.runtime.id === 'liveview' ||
         countedPlayAttemptRef.current === session.startupAttemptId) return
@@ -2004,12 +2036,8 @@ export function EmulatorPlayer({
         if (liveInviteRef.current) void recordRecent(gameSlugRef.current)
       }
     }
-    const timeoutTimer = window.setTimeout(() => {
-      if (isCurrent() && !ready) reportStartup('timeout', '等待 game_playable 超过 120 秒')
-    }, Math.max(0, STARTUP_TIMEOUT_MS - (Date.now() - session.startedAt)))
-    const slowTimer = window.setTimeout(() => {
-      if (isCurrent() && !ready) reportStartup('slow_start', '等待 game_playable 已超过 20 秒')
-    }, Math.max(0, 20_000 - (Date.now() - session.startedAt)))
+    armStartupWatchdog()
+    slowTimer = window.setTimeout(reportSlowStartupIfNeeded, Math.max(0, 20_000 - (Date.now() - session.startedAt)))
     let handle: RuntimeHandle
     try {
       handle = mountOf(session.runtime.id)(host, {
@@ -2118,22 +2146,37 @@ export function EmulatorPlayer({
       },
       onIframeLoaded: () => {
         if (!isCurrent()) return
+        noteStartupActivity()
         reportStartup('iframe_loaded')
         // HTML5 的脚本/WASM由子页面自己下载，父层看不到字节；document load 是这一路唯一的资源边界。
         reportStartup('download_complete')
       },
       onSurfaceReady: () => {
         if (!isCurrent()) return
+        noteStartupActivity()
         // iframe 壳已显示就撤掉外层遮罩，但不设 ready、不计游玩；后续仍等真正的 game_playable。
         setLoadRatio(null)
         setStatus('running')
       },
+      onReadinessVisibilityChange: (observable) => {
+        if (!isCurrent()) return
+        readinessState = observable ? 'observable' : 'unobservable'
+        if (!observable) {
+          // HTML5 的慢启动统计要求可判断 playable；跨源又没有 ready bridge 时不能制造慢启动假数据。
+          window.clearTimeout(slowTimer)
+        } else {
+          // iframe 可能在 20 秒后才完成同源导航；此时补做一次检查，不漏掉真实慢启动。
+          reportSlowStartupIfNeeded()
+        }
+      },
       onFirstInteraction: () => {
         if (!isCurrent()) return
+        noteStartupActivity()
         reportStartup('first_interaction')
       },
       onProgress: (next) => {
         if (!isCurrent()) return
+        noteStartupActivity()
         setLoadDetail(next.detail)
         if (next.streaming) setLoadStreaming(true)
         // 只认 rom 阶段的第一个带总量的帧：核心和系统镜像也走进度回调，

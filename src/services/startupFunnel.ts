@@ -11,6 +11,7 @@ export type StartupEventName =
   | 'game_playable'
   | 'first_interaction'
   | 'slow_start'
+  | 'readiness_unobservable'
   | 'failed'
   | 'timeout'
 

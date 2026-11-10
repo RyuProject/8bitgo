@@ -350,6 +350,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
      * 评论框里抢进 iframe，后面敲的字全打进游戏里。
      */
     options.onIframeLoaded?.()
+    // 跨源页面的 load 只能证明入口文档到达，父页读不到画布与加载错误；把这种限制告知漏斗，
+    // 后续由播放器将 watchdog 结果记为“无法观测”，而不是错误地认定游戏失败。
+    options.onReadinessVisibilityChange?.(Boolean(frameDocument()))
     if (loaded) return
     loaded = true
     // 这里只撤加载遮罩。真实成功必须等运行时桥或同源 canvas 探针，不能再拿 load 冒充。

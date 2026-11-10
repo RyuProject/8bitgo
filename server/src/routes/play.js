@@ -46,12 +46,16 @@ function funnelScript(slug, funnel) {
       body:JSON.stringify({visitId:c.visitId,attemptId:c.attemptId,event,runtime:'html5',platform:'',elapsedMs:Math.max(0,Date.now()-c.startedAt),detail})
     }).then(r=>{if(!r.ok) throw new Error(String(r.status))}).catch(()=>sent.delete(event));
   };
+  let readinessObservable=true;
   const playable=()=>{report('first_frame');report('game_playable')};
   const inspect=()=>{
     try {
-      const canvas=frame.contentDocument&&frame.contentDocument.querySelector('canvas');
+      const doc=frame.contentDocument;
+      if(!doc) { readinessObservable=false; return; }
+      readinessObservable=true;
+      const canvas=doc.querySelector('canvas');
       if(canvas&&canvas.width>1&&canvas.height>1) requestAnimationFrame(()=>requestAnimationFrame(playable));
-    } catch {}
+    } catch { readinessObservable=false; }
   };
   frame.addEventListener('load',()=>{report('iframe_loaded');report('download_complete');inspect()});
   frame.addEventListener('focus',()=>report('first_interaction'));
@@ -64,8 +68,13 @@ function funnelScript(slug, funnel) {
     else if(m.type==='first-interaction') report('first_interaction');
     else if(m.type==='failed') report('failed',String(m.detail||'HTML5 游戏报告启动失败').slice(0,160));
   });
-  setTimeout(()=>{if(!sent.has('game_playable'))report('slow_start','等待 game_playable 已超过 20 秒')},Math.max(0,20000-(Date.now()-c.startedAt)));
-  setTimeout(()=>{if(!sent.has('game_playable'))report('timeout','等待 game_playable 超过 120 秒')},Math.max(0,120000-(Date.now()-c.startedAt)));
+  setTimeout(()=>{if(!sent.has('game_playable')&&!sent.has('failed')&&readinessObservable)report('slow_start','等待 game_playable 已超过 20 秒')},Math.max(0,20000-(Date.now()-c.startedAt)));
+  setTimeout(()=>{
+    if(sent.has('game_playable')||sent.has('failed')) return;
+    inspect();
+    if(readinessObservable) report('timeout','等待 game_playable 超过 120 秒');
+    else report('readiness_unobservable','跨域 HTML5 页面无法由父页面确认游戏是否已就绪');
+  },Math.max(0,120000-(Date.now()-c.startedAt)));
 })();
 </script>`
 }

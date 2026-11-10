@@ -236,27 +236,34 @@ async function drain(
   const chunks: Uint8Array[] = []
   let total = totalHint
   let loaded = 0
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
-    if (!value) continue
-    // 有字节到达就推迟「卡死」判定：卡死看的是**流停了**，不是**流慢**
-    touch?.()
-    if (loaded + value.byteLength > maxBytes) {
-      await reader.cancel().catch(() => {})
-      // 真实流量越过硬上限时不能把同一份畸形回包当瞬时网络错误反复重下。
-      throw new RangeError('文件过大，无法在浏览器内存中解包')
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!value) continue
+      // 有字节到达就推迟「卡死」判定：卡死看的是**流停了**，不是**流慢**
+      touch?.()
+      if (loaded + value.byteLength > maxBytes) {
+        // 真实流量越过硬上限时不能把同一份畸形回包当瞬时网络错误反复重下。
+        throw new RangeError('文件过大，无法在浏览器内存中解包')
+      }
+      chunks.push(value)
+      loaded += value.byteLength
+      // 万一还是超了（服务器给的 Content-Length 本身就不对），转不确定态而不是显示 120%
+      if (total !== undefined && loaded > total) total = undefined
+      emit({ phase, loaded, total, ratio: total ? Math.min(loaded / total, 1) : undefined })
     }
-    chunks.push(value)
-    loaded += value.byteLength
-    // 万一还是超了（服务器给的 Content-Length 本身就不对），转不确定态而不是显示 120%
-    if (total !== undefined && loaded > total) total = undefined
-    emit({ phase, loaded, total, ratio: total ? Math.min(loaded / total, 1) : undefined })
+    if (total !== undefined && loaded !== total) {
+      throw new Error(`下载不完整：应为 ${total} 字节，实际收到 ${loaded} 字节`)
+    }
+    return { chunks, loaded }
+  } catch (error) {
+    // Chromium 的磁盘缓存 / IDB Blob 偶发 NotReadableError 时要释放坏流，重试才不会留住旧文件引用。
+    await reader.cancel(error).catch(() => {})
+    throw error
+  } finally {
+    try { reader.releaseLock() } catch { /* 已被浏览器释放时无需再处理 */ }
   }
-  if (total !== undefined && loaded !== total) {
-    throw new Error(`下载不完整：应为 ${total} 字节，实际收到 ${loaded} 字节`)
-  }
-  return { chunks, loaded }
 }
 
 /**
@@ -787,7 +794,7 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
         const sampleStartedAt = monotonicNow()
         const first = await doFetch(url, {
           headers: { Range: `bytes=0-${chunkBytes - 1}` }, signal: guard.signal,
-          ...(opts.cache ? { cache: opts.cache } : {}),
+          cache: attempt > 0 ? 'reload' : (opts.cache ?? 'default'),
         })
         validateResponse(first, opts.check)
         if (first.status !== 206) return takeWhole(first)
@@ -875,7 +882,8 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
         guard.touch()
         const res = await doFetch(url, {
           headers: { Range: `bytes=${start}-${end}` }, signal: controller.signal,
-          ...(opts.cache ? { cache: opts.cache } : {}),
+          // 浏览器磁盘缓存里的 206 若底层文件失效，重试必须绕过同一条坏缓存记录。
+          cache: attempt > 0 ? 'reload' : (opts.cache ?? 'default'),
         })
         validateResponse(res, opts.check)
         if (res.status !== 206) {

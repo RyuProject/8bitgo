@@ -249,6 +249,7 @@ export interface StartupAggregate {
   failures: number
   timeouts: number
   slowStarts: number
+  readinessUnobservable: number
   avgPlayableMs: number | null
   maxPlayableMs: number | null
   /** 0～100 的百分数，不是 0～1。 */

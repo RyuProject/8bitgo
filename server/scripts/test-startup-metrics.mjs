@@ -15,6 +15,8 @@ const slow = normalizeStartupEvent({ ...base, event: 'slow_start', elapsedMs: 20
 assert.equal(slow.elapsedMs, 20_001)
 assert.equal(isSlowStartup(slow), true)
 assert.equal(isSlowStartup({ ...slow, elapsedMs: STARTUP_SLOW_MS - 1 }), false, '未满 20 秒不应误报慢启动')
+const unobservable = normalizeStartupEvent({ ...base, event: 'readiness_unobservable', elapsedMs: 120_000 })
+assert.equal(unobservable.event, 'readiness_unobservable', '跨域页面的不可观测状态必须可记录，但不能当成失败')
 
 const view = normalizeStartupEvent({ visitId: base.visitId, event: 'detail_view', platform: 'nds' })
 assert.equal(view.attemptId, '', '详情页加载发生在点击前，不应伪造 attempt id')
@@ -45,6 +47,7 @@ assert.match(schema, /UNIQUE KEY uniq_startup_event \(visit_id, attempt_id, even
 assert.match(migration, /game_startup_events（第一方启动漏斗与 20 秒性能告警）/)
 assert.match(metricsSource, /const accepted = recorded \|\|/, '唯一键拦住的重放必须按幂等成功处理，不能误回 404')
 assert.match(metricsSource, /recentFailures/, '统计接口应提供最近启动失败明细')
+assert.match(metricsSource, /readiness_unobservable/, '汇总必须单独统计无法观测的页面，不混进失败数')
 assert.match(metricsSource, /sanitizeStartupDetail\(row\.detail\)/, '历史错误摘要返回后台前也必须脱敏')
 assert.match(adminRoute, /startupStats\(req\.query\.days, req\.query\.q\)/, '后台故障列表支持按游戏搜索')
 
@@ -62,6 +65,8 @@ const isolated = renderShell({ fv: base.visitId, fa: base.attemptId, fs: Date.no
 assert.match(isolated, /iframe_loaded/)
 assert.match(isolated, /game_playable/)
 assert.match(isolated, /slow_start/)
+assert.match(isolated, /readiness_unobservable/)
+assert.match(isolated, /readinessObservable/)
 assert.match(isolated, /keepalive:true/)
 assert.doesNotMatch(renderShell({}), /8bitgo-runtime-bridge/, '直接打开隔离页时没有详情页漏斗，不应伪造一条')
 

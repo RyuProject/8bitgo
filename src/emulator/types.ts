@@ -234,6 +234,8 @@ export interface MountOptions {
   onSurfaceReady?: () => void
   /** HTML5 iframe 的 document 完成一次导航；只用于诊断，严禁据此计真实游玩。 */
   onIframeLoaded?: () => void
+  /** HTML5 iframe 导航后的可观测性；跨源时父页面读不到画布或 DOM，不能当作启动失败。 */
+  onReadinessVisibilityChange?: (observable: boolean) => void
   /**
    * 资源齐了、这局可以真正开始玩了。
    *
