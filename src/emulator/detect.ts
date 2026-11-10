@@ -7,6 +7,7 @@
  */
 import type { PlatformId } from '@/types'
 import { platformMap } from '@/data/platforms'
+import { rawDeflateStream } from '@/lib/unzip'
 import { getT, fmt } from '@/services/i18n'
 import { platformLabel } from '@/services/i18nData'
 
@@ -442,11 +443,9 @@ async function readEntryHead(file: File, entry: ZipEntry, maxBytes: number): Pro
   const out = new Uint8Array(maxBytes)
   let n = 0
   try {
-    const ds = new DecompressionStream('deflate-raw')
-    const writer = ds.writable.getWriter()
-    void writer.write(chunk).catch(() => {})
-    void writer.close().catch(() => {})
-    const reader = ds.readable.getReader()
+    // 老浏览器没有 deflate-raw 时 rawDeflateStream 改包成 gzip；这里只读开头，校验和填 0 也无妨
+    // （gzip 只在流末尾校验，读够 maxBytes 就 cancel 了，末尾的报错照样被下面的 catch 吃掉）
+    const reader = rawDeflateStream(chunk, 0, 0).getReader()
     try {
       while (n < maxBytes) {
         const { value, done } = await reader.read()

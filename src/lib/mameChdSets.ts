@@ -48,7 +48,9 @@ function fileBase(value: string | undefined): string {
 function profileFor(set: ParsedSet): MameChdCatalogProfile {
   return {
     romset: set.row.r,
-    board: 'MAME 已识别 CHD 媒体',
+    // 玩家提示（ejsMameDiskMissing）会原样嵌入这个名字，八种语言共用 —— 只能写不需要翻译的专名，
+    // 以前写成中文「MAME 已识别 CHD 媒体」，英文 / 西语 / 日语玩家看到的是半句中文。
+    board: `MAME ${set.row.r}`,
     disks: set.row.d.map(([name, chdSha1]) => ({ romset: set.row.r, name, chdSha1 })),
     source: set.row.s,
   }

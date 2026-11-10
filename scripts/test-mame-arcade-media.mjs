@@ -165,6 +165,12 @@ const progress = readFileSync(new URL('../src/emulator/loadProgress.ts', import.
 assert.match(adapter, /`\/roms\/\$\{disk\.romset\}\/\$\{disk\.name\}\.chd`/, 'CHD 必须挂在 MAME 的 romset 子目录')
 assert.match(adapter, /required: true/, 'CHD 挂载失败必须阻止 startGame，不能静默进入 MAME 菜单')
 assert.match(adapter, /ejsMameDiskMissing|还缺必需媒体盘/, '已知 taiko2 缺盘必须在核心启动前给出明确错误')
+assert.match(adapter, /if \(detectedMameMedia && isMameCurrentCore\(core\)\)/,
+  'FBNeo 跑完整 SIMM 集（jojo / sfiii3）不需要 CHD：缺盘拦截只能在真用 MAME 时生效')
+{
+  const source = readFileSync(new URL('../src/lib/mameChdSets.ts', import.meta.url), 'utf8')
+  assert.doesNotMatch(source, /board: 'MAME 已识别 CHD 媒体'/, '板子名会嵌进八种语言的玩家提示，不能是中文占位')
+}
 assert.match(progress, /emulatorjs-arcade-mame-media/, 'CHD 街机应使用独立的长 ROM 进度预算')
 
 // 2026-10-27 线上《狂热节拍》：目录不再固定 storedBytes，播放器却还逐字段 === 比较，绑好的盘恒被判「缺失」。

@@ -142,6 +142,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   }
 
   const reportFatal = (message: string, scope?: 'runtime' | 'content') => {
+    // 2026-11-02 后台：沙特玩家《初音未来》两次「Out of memory」。PSP 核心是 512MB 起步的共享内存，
+    // 再加 96MB 读盘缓存，手机上长不动就 abort；重试同一台机器前要先腾出内存，直说比一串英文管用。
+    if (/out of memory|could not allocate memory|cannot allocate wasm memory/i.test(message)) {
+      failSession(rt.ejsOutOfMemory, message, scope)
+      return
+    }
     failSession(fmt(rt.ppssppLoadFailed, { msg: message }), message, scope)
   }
 

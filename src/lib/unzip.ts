@@ -260,8 +260,31 @@ export async function extractZipEntry(buf: ArrayBuffer, entry: ZipFileEntry, max
       controller.enqueue(chunk)
     },
   })
-  const stream = new Blob([raw as BlobPart]).stream().pipeThrough(new DecompressionStream('deflate-raw')).pipeThrough(limiter)
+  const stream = rawDeflateStream(raw, entry.crc32, entry.uncompressedSize).pipeThrough(limiter)
   return new Uint8Array(await new Response(stream).arrayBuffer())
+}
+
+/**
+ * 解 raw deflate（ZIP 成员的格式）。
+ *
+ * `DecompressionStream('deflate-raw')` 要 Chrome 103 / Safari 16.4 / Firefox 113；更老但已有
+ * DecompressionStream 的浏览器（Chrome 80+、国内不少套壳浏览器）构造时直接抛
+ * 「Unsupported compression format」——2026-11-09 后台两次《暴力摩托》DOS 包因此整局起不来。
+ * 它们都支持 'gzip'，而 gzip 就是「10 字节头 + 同一份 raw deflate + CRC-32 + 原长」：ZIP 中央目录
+ * 正好给了这两个值，所以原样包一层就能解，结尾的校验和还白送一次完整性检查。
+ */
+export function rawDeflateStream(raw: Uint8Array, crc32: number, uncompressedSize: number): ReadableStream<Uint8Array> {
+  const source = () => new Blob([raw as BlobPart]).stream()
+  try {
+    return source().pipeThrough(new DecompressionStream('deflate-raw'))
+  } catch {
+    const header = new Uint8Array([0x1f, 0x8b, 0x08, 0, 0, 0, 0, 0, 0, 0xff])
+    const trailer = new Uint8Array(8)
+    const view = new DataView(trailer.buffer)
+    view.setUint32(0, crc32 >>> 0, true)
+    view.setUint32(4, uncompressedSize >>> 0, true)
+    return new Blob([header, raw as BlobPart, trailer]).stream().pipeThrough(new DecompressionStream('gzip'))
+  }
 }
 
 /**

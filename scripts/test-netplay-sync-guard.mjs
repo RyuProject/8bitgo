@@ -19,7 +19,7 @@ assert.ok(
 )
 assert.match(
   adapter,
-  /event === 'open-room' \|\| event === 'join-room'[\s\S]{0,500}game_slug: options\.gameSlug/,
+  /const roomEvent = event === 'open-room' \|\| event === 'join-room'[\s\S]{0,1500}if \(addSlug && roomEvent[\s\S]{0,500}game_slug: options\.gameSlug/,
   '开房和加房都必须带稳定 slug，不能只靠可能碰撞的 32 位 gameId',
 )
 

@@ -1202,8 +1202,37 @@ function installErrorTap(
   return { lines }
 }
 
+/**
+ * 把信令服务端的拒绝原因（server/src/netplay.js 里 ack 的那些字符串）翻成玩家能做点什么的话。
+ * final = 重试同一个房间不会有结果（房间没了、满员、密码错、单人游戏），播放器不要自动重试。
+ */
+export function netplayRejection(reason: string): { message: string; final: boolean } {
+  const rt = getT().runtime
+  const r = reason.trim().toLowerCase()
+  if (r === 'room not found' || r.startsWith('room belongs to another')) return { message: rt.netplayRoomGone, final: true }
+  if (r === 'room is full') return { message: rt.netplayRoomFull, final: true }
+  if (r === 'game does not support multiplayer') return { message: rt.netplayNoMultiplayer, final: true }
+  if (r === 'wrong password') return { message: rt.netplayWrongPassword, final: true }
+  return { message: fmt(rt.netplayRoomRejected, { reason: reason.trim().slice(0, 80) }), final: false }
+}
+
+/** 浏览器分配不出 WASM / ArrayBuffer 内存时各家的说法 */
+export function isOutOfMemoryText(text: string): boolean {
+  return /out of memory|could not allocate memory|cannot allocate wasm memory|array buffer allocation failed|webassembly\.memory\(\): could not/i.test(text)
+}
+
 function safeStr(v: unknown): string {
-  if (v instanceof Error) return v.message
+  /*
+    ⚠️ 不能用 `instanceof Error`：引擎跑在 iframe 里，它抛的 Error / RuntimeError / RangeError 属于
+    另一个 realm，instanceof 恒为 false，下面的 JSON.stringify 又只认自有可枚举属性 ——
+    以前所有引擎异常都被记成「Failed to start game {}」，真正的原因（内存不足、WASM 陷阱……）一个字都没留下。
+  */
+  if (v && typeof v === 'object' && typeof (v as { message?: unknown }).message === 'string') {
+    const { name, message, status } = v as { name?: unknown; message: string; status?: unknown }
+    const label = typeof name === 'string' && name ? `${name}: ${message}` : message
+    // Emscripten 的 ExitStatus 带退出码，核心 retro_load_game 失败时就是它
+    return typeof status === 'number' ? `${label} (status ${status})` : label
+  }
   try {
     return typeof v === 'object' ? JSON.stringify(v) : String(v)
   } catch {
@@ -2229,6 +2258,14 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let stateToken = ''
   /** 信令最后一次 connect_error 的时间。轮询靠它区分「握手慢」和「连不上」 */
   let signalErrorAt = 0
+  /**
+   * 服务端对 open-room / join-room 的拒绝原因（ack 的第一个参数）。
+   *
+   * 引擎收到拒绝只闪一句「Room error: …」或弹自己的对话框，适配器以前完全不知道，干等 20 秒后
+   * 报「信令服务器没有回应」—— 2026-11-07 智利玩家对《恐龙快打》连试 13 次，每次都是这句，
+   * 而真正的原因是房间早就不在了；单人游戏（players=1）开房被拒也报成同一句。
+   */
+  let roomAckError = ''
   /** 上次刷新 EJS_netplayICEServers 的时间，见 ICE_REFRESH_MS */
   let lastIceAt = 0
   /**
@@ -2256,10 +2293,22 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
            * 确实等于 game_id。这里在 socket 发包的最后一刻补字段，不改上游压缩产物；
            * 房主迁移时重新开房也会经过同一层，所以不会漏掉第二次开房。
            */
-          if (sock?.emit && options.gameSlug && !options.gameSlug.startsWith('local:')) {
+          if (sock?.emit) {
+            const addSlug = Boolean(options.gameSlug && !options.gameSlug.startsWith('local:'))
             const realEmit = sock.emit.bind(sock)
             sock.emit = (event: string, ...emitArgs: unknown[]) => {
-              if ((event === 'open-room' || event === 'join-room')
+              const roomEvent = event === 'open-room' || event === 'join-room'
+              const ack = emitArgs[emitArgs.length - 1]
+              if (roomEvent && typeof ack === 'function') {
+                emitArgs[emitArgs.length - 1] = (error: unknown, ...rest: unknown[]) => {
+                  if (error) {
+                    roomAckError = typeof error === 'string' ? error : safeStr(error)
+                    logEngine(`[netplay] ${event} 被服务端拒绝：${roomAckError}`)
+                  }
+                  return (ack as (...a: unknown[]) => unknown)(error, ...rest)
+                }
+              }
+              if (addSlug && roomEvent
                 && emitArgs[0] && typeof emitArgs[0] === 'object' && !Array.isArray(emitArgs[0])) {
                 const payload = emitArgs[0] as Record<string, unknown>
                 const rawExtra = payload.extra
@@ -2285,7 +2334,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             signalErrorAt = Date.now()
             if (signalErrorLogged) return
             signalErrorLogged = true
-            logEngine(`[netplay] 信令连接失败：${e instanceof Error ? e.message : String(e)}`)
+            logEngine(`[netplay] 信令连接失败：${safeStr(e)}`)
           })
         } catch {
           /* 不是 socket.io 的 socket？那就算了，轮询那边还有一次兜底 */
@@ -2348,6 +2397,17 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (started) {
       logEngine(`[engine] ${line}`)
       return
+    }
+    const recent = (errorTap?.lines ?? []).slice(-12).join('\n')
+    // 浏览器给不出 WASM 内存：重下多少遍都一样，告诉玩家关掉别的标签页
+    if (isOutOfMemoryText(`${line}\n${recent}`)) return failLoad(rt.ejsOutOfMemory)
+    /*
+      「Error loading EmulatorJS runtime」= 核心脚本跑完却没定义 EJS_Runtime。几秒内就报，且同一位玩家
+      连报十次（2026-11-08《拳皇 97 风云再起 Plus》一分钟 10 次）—— 引擎直接从 IndexedDB 拿了一份坏核心，
+      重试永远拿到同一份。撤掉清理记账，播放器自动重试时 purgePoisonedEngineCache 会先清空引擎缓存再下载。
+    */
+    if (/error loading emulatorjs runtime/i.test(line)) {
+      try { localStorage.removeItem(EJS_CACHE_PURGED_KEY) } catch { /* 存储不可用时每局本来就会清 */ }
     }
     // 街机的两类根因给玩家能看懂的话；同一个包重下一遍不会变好，跳过原地重试，直接让播放器试备用 ROM
     const arcadeFatal = options.platform === 'arcade' ? arcadeFatalKind(line) : null
@@ -2421,9 +2481,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
      * onError 会让播放器把这局拆掉，那是惩罚不是报错；只收回会话、通知界面复位。
      */
     const fromMount = cfg === options.netplay
-    const failNetplay = (message: string) => {
+    const failNetplay = (message: string, scope?: LoadErrorScope) => {
       if (fromMount) {
-        options.onError?.(message)
+        options.onError?.(message, scope)
         return
       }
       console.warn('[netplay]', message)
@@ -2507,6 +2567,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     /** 信令连上过没有：没连上过时的「未连接」是还在握手，不是掉线 */
     let connectedOnce = false
     const openedAt = Date.now()
+    roomAckError = ''
     playersTimer = window.setInterval(() => {
       if (destroyed) return
       const cur = win.EJS_emulator as EjsEmulator | undefined
@@ -2562,6 +2623,14 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       if (n.playerID && n.playerID !== reportedId) {
         reportedId = n.playerID
         cfg.onIdentity?.(n.playerID)
+      }
+      if (!reportedRoom && roomAckError) {
+        // 服务端已经明确拒绝：不用再等 20 秒，也不能说成「信令没回应」
+        window.clearInterval(playersTimer)
+        const rejection = netplayRejection(roomAckError)
+        // 'config' 而不是 'deterministic'：后者会让播放器换备用 ROM / 换语言，房间被拒跟 ROM 毫无关系
+        failNetplay(rejection.message, rejection.final ? 'config' : undefined)
+        return
       }
       if (!reportedRoom) {
         /**
@@ -3922,7 +3991,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           failLoad(fmt(rt.ejsMameDiskMismatch, { disk: mismatchedDisk.name, expected: mismatchedDisk.romset, actual: mameRomset || '?' }), 'config')
           return
         }
-        if (detectedMameMedia) {
+        /*
+          ⚠️ 只有真要交给 MAME 跑时才拦。CRC 认出「这是 MAME 的 CHD 游戏」不等于这局要用 MAME：
+          《JoJo 的奇妙冒险》jojo.zip、《街霸 III 3rd Strike》sfiii3.zip 是完整的 SIMM 集，后台没选核心
+          → 默认 FBNeo，FBNeo 的 CPS-3 驱动直接读 SIMM，根本不需要光盘。以前不看核心一律拦下，
+          2026-10-27～11-06 两款共 30 多次「缺少必需的媒体盘 cap-jjk-3.chd / cap-33s-2.chd」，全是能玩的游戏被挡住。
+        */
+        if (detectedMameMedia && isMameCurrentCore(core)) {
           const missing = detectedMameMedia.disks.find((expected) =>
             !activeMameDisks.some((disk) => mameDiskSatisfies(disk, expected)))
           if (missing) {
