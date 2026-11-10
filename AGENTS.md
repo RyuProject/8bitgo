@@ -3084,6 +3084,10 @@ EmulatorJS 引擎日志与加载阶段文字（`diagLog`）、下载器的重试
 
 - 要给别的运行时补日志：调 `diagLog('<来源>', level, …)`；iframe 里下载的运行时调 `watchFramePerformance(win)`，
   销毁时调用它的返回值（会先拍快照）。不要改 EmulatorPlayer 的上报路径，漏斗是唯一出口。
+- PSP（2026-11-11 接入）：桥的 `#status` 阶段文字、核心 stdout/stderr 里的 `E[`/`W[`/Booted 等关键行、iframe 里的
+  核心下载请求；读盘 Range 跑在 pthread Worker 里看不到单个请求，靠 `registerDiagnosticSnapshot` 在打包时给出
+  模式、镜像大小、已读字节、桥状态和最近一次 `performance` 采样（帧率 + 预读命中）。新运行时有类似「只有汇总、
+  没有日志」的状态，也走 snapshot。终端颜色码（`ESC[91m`）在前后端都会去掉。
 - 隐私边界写在隐私政策（`test:legal` 的 `startup-diagnostics` 两条）：不存 IP、完整 UA、ROM 地址、账号；
   ROM 文件名一律 `[ROM]`。加新字段先改白名单 `normalizeDiagnostics()`，否则服务端会直接丢掉。
 - 部署要 `cd server && npm run migrate`；缺表时漏斗照常，诊断包不入库，后台该页 503。

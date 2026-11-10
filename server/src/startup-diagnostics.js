@@ -40,7 +40,9 @@ function shortenUrl(raw) {
 
 /** 所有入库文本都过这一层：控制字符、网址、令牌、口令、IP */
 export function scrub(value, max = 300) {
-  return Array.from(String(value ?? ''), (char) => {
+  // PPSSPP 输出带终端颜色码（ESC[91m），只留文字
+  // eslint-disable-next-line no-control-regex
+  return Array.from(String(value ?? '').replace(/\u001b?\[\d{1,3}(?:;\d{1,3})*m/g, ''), (char) => {
     const code = char.codePointAt(0) ?? 0
     return code <= 31 || code === 127 || code === 0x2028 || code === 0x2029 ? ' ' : char
   }).join('')
@@ -106,7 +108,8 @@ export function normalizeDiagnostics(raw) {
       t: int(row?.t),
       e: scrub(row?.e, 24).replace(/[^\w-]/g, ''),
     })).filter((row) => row.e),
-    logs: arr(raw.logs, 60).map((row) => ({
+    // 日志留最后 60 行：越靠近失败的越有用，运行时现场快照也在最后
+    logs: (Array.isArray(raw.logs) ? raw.logs.slice(-60) : []).map((row) => ({
       t: int(row?.t),
       s: scrub(row?.s, 16).replace(/[^\w-]/g, ''),
       l: pick(row?.l, ['error', 'warn', 'log', 'info'], 'log'),

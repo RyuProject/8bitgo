@@ -94,6 +94,7 @@ const attempts = new Map<string, AttemptState>()
 const visitStarts = new Map<string, number>()
 const frameSources = new Set<Performance>()
 const frameSnapshots: RawResource[] = []
+const snapshotProviders = new Set<() => string | null | undefined>()
 let hiddenSince: number | null = null
 const hiddenSpans: Array<[number, number]> = []
 let installed = false
@@ -125,6 +126,9 @@ export function shortenUrl(raw: string): string {
 
 export function scrubDiagnosticText(value: unknown, max = LOG_LINE_MAX): string {
   return String(value ?? '')
+    // PPSSPP 输出带终端颜色码（ESC[91m），只留文字
+    // oxlint-disable-next-line no-control-regex -- 就是要匹配 ESC
+    .replace(/\u001b?\[\d{1,3}(?:;\d{1,3})*m/g, '')
     // oxlint-disable-next-line no-control-regex -- 就是要把控制字符换成空格
     .replace(/[\u0000-\u001f\u007f\u2028\u2029]/g, ' ')
     .replace(/(?:https?|blob|wss?):\/\/[^\s"'<>)\]]+/gi, (url) => shortenUrl(url))
@@ -243,6 +247,31 @@ export function watchFramePerformance(win: Window | null | undefined): () => voi
   }
 }
 
+/**
+ * 登记一个「打包那一刻的现场」：运行时自己知道、但不会主动打日志的状态（PSP 的读盘字节数、
+ * 预读命中率、最近一次帧率采样……）。打包时调用，结果作为一行 snapshot 日志放在最后。
+ * 返回注销函数；运行时销毁时调用。
+ */
+export function registerDiagnosticSnapshot(provider: () => string | null | undefined): () => void {
+  snapshotProviders.add(provider)
+  return () => {
+    snapshotProviders.delete(provider)
+  }
+}
+
+function snapshotLines(sinceStart: number): DiagnosticLogLine[] {
+  const out: DiagnosticLogLine[] = []
+  for (const provider of snapshotProviders) {
+    try {
+      const m = scrubDiagnosticText(provider() ?? '', LOG_LINE_MAX)
+      if (m) out.push({ t: sinceStart, s: 'snapshot', l: 'info', m })
+    } catch {
+      /* 现场取不到就算了 */
+    }
+  }
+  return out
+}
+
 /** 启动漏斗每个事件都过一遍这里：记这一局的时间线，点击开始时起算 */
 export function noteStartupEvent(visitId: string, attemptId: string | undefined, event: string): void {
   if (typeof window === 'undefined') return
@@ -338,8 +367,9 @@ export function collectStartupDiagnostics(attemptId: string | undefined, reason 
       env: environment(start, now),
       attempt: { index: state.index, sinceStartMs: now - start },
       timeline: state.timeline.map(({ at, e }) => ({ t: at - start, e })),
-      logs: logs.filter((line) => line.at >= start - 5000).slice(-BUNDLE_LOG_MAX)
-        .map(({ at, s, l, m }) => ({ t: at - start, s, l, m })),
+      logs: logs.filter((line) => line.at >= start - 5000).slice(-(BUNDLE_LOG_MAX - Math.min(4, snapshotProviders.size)))
+        .map(({ at, s, l, m }) => ({ t: at - start, s, l, m }))
+        .concat(snapshotLines(now - start)),
       resources: pickResources(start),
     }
     // 超了就先砍最早的日志，再砍请求，保证一定发得出去
@@ -360,6 +390,7 @@ export function resetStartupDiagnosticsForTest(): void {
   visitStarts.clear()
   frameSources.clear()
   frameSnapshots.length = 0
+  snapshotProviders.clear()
   hiddenSpans.length = 0
   hiddenSince = null
 }

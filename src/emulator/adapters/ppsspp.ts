@@ -15,6 +15,7 @@ import { PPSSPP_VERSION, ppssppFrameUrl } from '../paths'
 import { probeRange } from '../remoteDisc'
 import { downloadPspDisc, PspDiscStorageError } from '../pspFullDownload'
 import { fmt, getT } from '@/services/i18n'
+import { diagLog, registerDiagnosticSnapshot, watchFramePerformance } from '@/services/startupDiagnostics'
 
 const BRIDGE_SOURCE = '8bitgo-ppsspp-bridge'
 const BRIDGE_VERSION = 1
@@ -364,10 +365,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (message.type === 'stream-progress' && Number.isFinite(message.loaded) && Number.isFinite(message.total)) {
       const loaded = Math.max(0, Number(message.loaded))
       const total = Math.max(0, Number(message.total))
+      lastStream = { loaded, total }
       // loaded 是本局累计网络字节，不是光盘顺序位置；随机寻道会重复取块，甚至可能超过 total。
       // 把它除以镜像容量当完成度，会谎称玩家必须下载完整 1.45GB，也会让进度条忽快忽慢。
       if (!romPhaseReported) reportRomPhase(loaded, total)
       else options.onProgress?.({ phase: 'rom', loaded, total, streaming: true })
+      return
+    }
+    if (message.type === 'performance') {
+      lastPerformance = (message as BridgeMessage & { sample?: unknown }).sample ?? null
       return
     }
     if (message.type === 'runtime-error') {
@@ -386,6 +392,82 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
   iframe.addEventListener('error', () => {
     reportFatal('运行时页面加载失败')
+  })
+
+  /*
+    启动诊断包（后台「错误诊断」页，2026-11-11）：PSP 以前失败 / 慢启动时只有一句摘要，
+    看不出时间花在核心下载、挂盘还是读盘。这里把桥的 #status 阶段文字、核心的错误 / 警告输出、
+    iframe 里的核心下载请求，以及打包那一刻的读盘字节数和最近一次帧率 / 预读采样都交给诊断包。
+    读盘的 Range 请求跑在 pthread Worker 里，外面看不到单个请求，只能靠这份汇总。
+  */
+  let stopFramePerf: (() => void) | null = null
+  let statusWatch: MutationObserver | null = null
+  let lastStream: { loaded: number; total: number } | null = null
+  let lastPerformance: unknown = null
+  const stopSnapshot = registerDiagnosticSnapshot(() => {
+    let status = ''
+    try {
+      status = iframe.contentDocument?.getElementById('status')?.textContent?.trim() ?? ''
+    } catch { /* 跨源或已移除 */ }
+    const mb = (n: number) => `${(n / 1048576).toFixed(1)}MB`
+    const mode = options.game instanceof File ? 'local' : options.pspLoadMode === 'download' ? 'download' : 'stream'
+    const parts = [
+      `PSP 现场：模式 ${mode}`,
+      `镜像 ${streamDiscSize ? mb(streamDiscSize) : '?'}`,
+      `已读 ${lastStream ? mb(lastStream.loaded) : '0'}`,
+      `核心${ready ? '已' : '未'}启动`,
+      `跨源隔离 ${globalThis.crossOriginIsolated ? '是' : '否'}`,
+      status ? `状态「${status}」` : '',
+      lastPerformance ? `最近采样 ${JSON.stringify(lastPerformance)}` : '',
+    ]
+    return parts.filter(Boolean).join('，')
+  })
+  /** 核心 stdout 里 I[...] 级别的日志很多，只留错误 / 警告和几个关键里程碑 */
+  const KEY_CORE_LINE = /(?:^|\s)[EW]\[|Booted|Loading|failed|error|timeout|Range|warn/i
+  const tapFrameConsole = (win: Window) => {
+    const c = (win as Window & { console?: Console }).console
+    if (!c) return
+    for (const level of ['error', 'warn', 'log', 'info'] as const) {
+      const native = c[level]
+      if (typeof native !== 'function') continue
+      c[level] = (...args: unknown[]) => {
+        try {
+          const first = typeof args[0] === 'string' ? args[0] : ''
+          const text = args.map((a) => (typeof a === 'string' ? a : '')).join(' ')
+          // 性能采样每 5 秒一条，交给快照只留最新的，别把日志挤掉
+          const isSample = first.includes('性能采样')
+          if (!isSample && (level === 'error' || level === 'warn' || KEY_CORE_LINE.test(text))) {
+            diagLog('ppsspp', level === 'info' ? 'log' : level, ...args)
+          }
+        } catch { /* 记日志不能影响核心 */ }
+        native.apply(c, args as [])
+      }
+    }
+  }
+  iframe.addEventListener('load', () => {
+    if (destroyed) return
+    try {
+      const win = iframe.contentWindow
+      if (!win) return
+      stopFramePerf?.()
+      stopFramePerf = watchFramePerformance(win)
+      tapFrameConsole(win)
+      const status = iframe.contentDocument?.getElementById('status')
+      if (status && typeof MutationObserver !== 'undefined') {
+        let lastStage = ''
+        statusWatch?.disconnect()
+        statusWatch = new MutationObserver(() => {
+          const text = status.textContent?.trim() ?? ''
+          // 下载百分比一秒变好几次，只在阶段名变化时记一行
+          const stage = text.replace(/\s*\d{1,3}%\s*$/, '')
+          if (stage && stage !== lastStage) {
+            lastStage = stage
+            diagLog('stage', 'info', text)
+          }
+        })
+        statusWatch.observe(status, { childList: true, characterData: true, subtree: true })
+      }
+    } catch { /* 诊断不能影响启动 */ }
   })
 
   options.onCaps?.(caps)
@@ -493,6 +575,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       window.clearTimeout(hostTimer)
       window.clearInterval(volumeTimer)
       stopCoreWatch()
+      statusWatch?.disconnect()
+      stopFramePerf?.()
+      stopSnapshot()
       window.removeEventListener('message', onMessage)
       rejectPending('PPSSPP 会话已经关闭')
       iframe.remove()
