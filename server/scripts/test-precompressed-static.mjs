@@ -155,7 +155,7 @@ await check('构建脚本与中间件的名单一一对应', async () => {
   const served = (p) => PRECOMPRESSED_STATIC_PATTERNS.some((r) => r.test(p))
   for (const rel of ['ruffle/v0.7.1/172de42e6619eac8f371.wasm', 'jsdos/v8.5.3-8bitgo.4/emulators/wdosbox-x.wasm',
     'dolphin/v7e38409/cores/dolphin/dolphin-core-upstream.wasm', 'play/20261026-system2x6-v1/Play.wasm', 'play/Play.wasm',
-    'ppsspp/v0dbfaca/v18/PPSSPPSDL.wasm', 'emulatorjs/emulator.min.js']) {
+    'ppsspp/v0dbfaca/v19/PPSSPPSDL.wasm', 'emulatorjs/emulator.min.js']) {
     assert.ok(RUNTIME_PRECOMPRESS_PATTERNS.some((r) => r.test(rel)), `构建脚本漏了 ${rel}`)
     assert.ok(served(`/${rel}`), `中间件漏了 ${rel}`)
   }

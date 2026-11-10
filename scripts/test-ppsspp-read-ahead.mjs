@@ -16,6 +16,7 @@ function makeRuntime(effectiveType = '4g', saveData = false, deviceMemory = 8, h
   let competingJobsAtWait = 0
   let syncFailures = 0
   let syncFailMode = 'throw'
+  const timeoutsSeen = []
 
   class FakeWorker {
     constructor() {
@@ -83,6 +84,10 @@ function makeRuntime(effectiveType = '4g', saveData = false, deviceMemory = 8, h
         syncFailures--
         // 同步 XHR 的网络失败：浏览器要么直接抛 NetworkError，要么以 status 0 收尾
         if (syncFailMode === 'throw') throw new Error('NetworkError: Failed to execute send')
+        if (syncFailMode === 'timeout') {
+          timeoutsSeen.push(this.timeout)
+          const error = new Error('Timed out'); error.name = 'TimeoutError'; throw error
+        }
         this.readyState = 4
         this.status = 0
         this.onreadystatechange?.({ target: this })
@@ -192,6 +197,7 @@ function makeRuntime(effectiveType = '4g', saveData = false, deviceMemory = 8, h
     sharedWaits: () => sharedWaits,
     competingJobsAtWait: () => competingJobsAtWait,
     failNextSync: (count, mode = 'throw') => { syncFailures = count; syncFailMode = mode },
+    timeoutsSeen,
   }
 }
 
@@ -445,6 +451,21 @@ function makeRuntime(effectiveType = '4g', saveData = false, deviceMemory = 8, h
   xhr.setRequestHeader('Range', `bytes=0-${BLOCK - 1}`)
   assert.throws(() => xhr.send(null), /NetworkError/, '最后一次失败原样抛给 Emscripten')
   assert.equal(broken.requests.filter((request) => !request.async).length, 5, '首发 + 4 次重试')
+
+  // 慢线路：每次超时后把时限翻倍再试，第三次在 120 秒时限内读完
+  const slow = makeRuntime('4g', false, 8, 8, false, 6, 'https://assets.test/game.chd?romv=abc-1')
+  slow.failNextSync(2, 'timeout')
+  const slowXhr = slow.context.__8bitgoCreatePspRangeXhr()
+  slowXhr.open('GET', 'https://assets.test/game.chd?romv=abc-1', false)
+  slowXhr.timeout = 30_000
+  slowXhr.setRequestHeader('Range', `bytes=0-${BLOCK - 1}`)
+  let slowLoaded = false
+  slowXhr.onload = () => { slowLoaded = true }
+  slowXhr.send(null)
+  assert.equal(slowLoaded, true)
+  assert.deepEqual(slow.timeoutsSeen, [30_000, 60_000], '第一次 30 秒超时后第二次放宽到 60 秒')
+  assert.equal(slowXhr.timeout, 120_000, '第二次超时后放宽到 120 秒上限')
+  assert.equal(slow.context.__8bitgoPspRangeWarmStats().syncTimeouts, 2)
 }
 
 console.log('✔ PSP 自适应滚动预读：共享 Worker 命中、同步等待、四路填充、追尾扩窗与版本隔离均通过')

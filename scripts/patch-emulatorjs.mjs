@@ -216,6 +216,53 @@ const DEFAULT_OPTIONS_TO =
   't+=`${e} = ${isNaN(this.config.defaultOptions[e])?`"${this.config.defaultOptions[e]}"`:this.config.defaultOptions[e]}\\n`}return t}return""}loadSettings(){'
 
 /**
+ * ── 十、下载不会永远停在「下载游戏核心 100%」（2026-11-10）─────────────
+ * 后台 14 天：境外 / 大陆合计 30 多次「加载在『下载游戏核心 N%』这一步停住了」（拳皇 2002 哥伦比亚、
+ * 拳皇 97 等）。引擎的下载器有三处会让 Promise 永远不结束，进度文字就停在最后一次的百分比：
+ *
+ * 1. 30 秒超时（AbortController）在**拿到响应头就清掉**，读包体的 `reader.read()` 没有任何时限：
+ *    跨洲线路丢了最后几个包 / 连接半开时，进度到 100% 却等不来流结束。改成每收到一块就重新计时，
+ *    20 秒没有新字节就 abort → 下载器报错 → 适配器 failLoad → 播放器自动重试一次。
+ * 2. 下载完成后 `await this.storageCache.put()` 才把结果交出去；开局前还 `await storageCache.get()`。
+ *    引擎的 IndexedDB 封装有好几条路永远不 settle：`transaction()` 在 onsuccess 里同步抛错（表不存在 /
+ *    库正在关闭）、`put/get/delete` 同步抛 TransactionInactiveError / DataCloneError（async 执行器里的
+ *    异常没人接）、`remove` 的 onerror 是空函数。缓存只是加速，所以 put 最多等 10 秒、get 最多等
+ *    20 秒（大核心从库里读出来要时间），超时就当没缓存；封装里的同步异常一律收成「没有缓存」。
+ * 3. 核心下载失败后引擎会去 `cdn.emulatorjs.org/<版本>/data/` 再拉一次（cdnFallback）。我们的引擎自称
+ *    4.3.0-pre，那里的核心初始化不出 EJS_Runtime（AGENTS §2.4），只会多等几十秒再报
+ *    「Error loading EmulatorJS runtime」。关掉，让失败立刻交给播放器的自动重试。
+ */
+const BODY_READ_FROM =
+  'for(;;){const{done:s,value:o}=await e.read();if(s)break;n.push(o),i+=o.length,r&&t&&r("downloading",Math.floor(i/t*100),i,t)}'
+const BODY_READ_TO =
+  'let __8bgStall=0;const __8bgArm=()=>{clearTimeout(__8bgStall),__8bgStall=setTimeout(()=>{console.warn("[EJS Download] 20 秒没有新数据，中止："+S),f.abort()},2e4)};' +
+  'try{for(;;){__8bgArm();const{done:s,value:o}=await e.read();if(s)break;n.push(o),i+=o.length,r&&t&&r("downloading",Math.floor(i/t*100),i,t)}}finally{clearTimeout(__8bgStall)}'
+const CACHE_PUT_FROM = '!1===u&&await this.storageCache.put(n),c(n)'
+const CACHE_PUT_TO =
+  '!1===u&&await Promise.race([this.storageCache.put(n).catch(t=>console.warn("[EJS Cache] put failed",t)),' +
+  'new Promise(t=>setTimeout(()=>{console.warn("[EJS Cache] put 超过 10 秒，跳过缓存"),t()},1e4))]),c(n)'
+const CACHE_GET_FROM = 'this.storageCache&&(I=await this.storageCache.get(t,!1,"url"));'
+const CACHE_GET_TO =
+  'this.storageCache&&(I=await Promise.race([this.storageCache.get(t,!1,"url").catch(t=>(console.warn("[EJS Cache] get failed",t),null)),' +
+  'new Promise(t=>setTimeout(()=>{console.warn("[EJS Cache] get 超过 20 秒，改走网络"),t(null)},2e4))]));'
+const CORE_CDN_FROM = 'core:{name:"Core",dontCache:!1,cdnFallback:!0}'
+const CORE_CDN_TO = 'core:{name:"Core",dontCache:!1,cdnFallback:!1}'
+const IDB_OPEN_FROM = 'n.onerror=()=>e(),n.onsuccess=()=>{let i=n.result.transaction(this.storeName,t).objectStore(this.storeName);e(i)},'
+const IDB_OPEN_TO = 'n.onerror=()=>e(),n.onblocked=()=>e(),n.onsuccess=()=>{try{let i=n.result.transaction(this.storeName,t).objectStore(this.storeName);e(i)}catch(t){console.warn("[EJS Cache] store unavailable",t),e()}},'
+const IDB_PUT_FROM = 'let o=s.put(e,t);o.onerror=()=>i(),'
+const IDB_PUT_TO = 'let o;try{o=s.put(e,t)}catch(t){return console.warn("[EJS Cache] put threw",t),i()}o.onerror=()=>i(),'
+const IDB_DELETE_FROM = 'let s=n.delete(t);this.addFileToDB(t,!1),s.onsuccess=()=>e(),s.onerror=()=>{}'
+const IDB_DELETE_TO = 'let s;try{s=n.delete(t)}catch(t){return e()}this.addFileToDB(t,!1),s.onsuccess=()=>e(),s.onerror=()=>e()'
+const IDB_GET_FROM = 'else{let e=s.get(t);e.onsuccess=()=>i(e.result),e.onerror=()=>i()}'
+const IDB_GET_TO = 'else{let e;try{e=s.get(t)}catch(t){return i()}e.onsuccess=()=>i(e.result),e.onerror=()=>i()}'
+const BLOB_PUT_FROM = 'const s=i.put(e,t);s.onsuccess=()=>n(),s.onerror=()=>n()'
+const BLOB_PUT_TO = 'let s;try{s=i.put(e,t)}catch(t){return n()}s.onsuccess=()=>n(),s.onerror=()=>n()'
+const BLOB_GET_FROM = 'const n=e.get(t);n.onsuccess=()=>i(n.result??null),n.onerror=()=>i(null)'
+const BLOB_GET_TO = 'let n;try{n=e.get(t)}catch(t){return i(null)}n.onsuccess=()=>i(n.result??null),n.onerror=()=>i(null)'
+const BLOB_DELETE_FROM = 'const n=e.delete(t);n.onsuccess=()=>i(),n.onerror=()=>i()'
+const BLOB_DELETE_TO = 'let n;try{n=e.delete(t)}catch(t){return i()}n.onsuccess=()=>i(),n.onerror=()=>i()'
+
+/**
  * 每组：name 显示用；patches 是 [要找的原文, 替换后]；
  * legacy 可选，把「替换后」映射成更早一版补丁的样子，用来在引擎升级后接管旧补丁；
  * hint 是位置对不上时打给人看的排查思路。
@@ -329,6 +376,41 @@ const GROUPS = [
       '第三方/旧版核心报告可能没有该字段，缺省时应跳过兼容性比较，不能把 undefined 传给 versionAsInt。',
     ],
   },
+  {
+    name: '下载包体 20 秒无数据中止',
+    patches: [[BODY_READ_FROM, BODY_READ_TO]],
+    hint: [
+      '在下载器 downloadFile 的 arraybuffer 分支找 y.body.getReader() 之后的 for(;;) 读循环；',
+      '每次 read 前重置 20 秒定时器，超时调用同一个 AbortController（f）的 abort()。',
+    ],
+  },
+  {
+    name: '引擎缓存读写有时限',
+    patches: [
+      [CACHE_PUT_FROM, CACHE_PUT_TO],
+      [CACHE_GET_FROM, CACHE_GET_TO],
+      [IDB_OPEN_FROM, IDB_OPEN_TO],
+      [IDB_PUT_FROM, IDB_PUT_TO],
+      [IDB_DELETE_FROM, IDB_DELETE_TO],
+      [IDB_GET_FROM, IDB_GET_TO],
+      [BLOB_PUT_FROM, BLOB_PUT_TO],
+      [BLOB_GET_FROM, BLOB_GET_TO],
+      [BLOB_DELETE_FROM, BLOB_DELETE_TO],
+    ],
+    hint: [
+      '下载器里 storageCache.get(t,!1,"url") / storageCache.put(n) 两处 await 用 Promise.race 加时限；',
+      'IndexedDB 封装（getObjectStore / get / put / remove 与 blob 表三个助手）里的同步异常收成「没有缓存」。',
+    ],
+  },
+  {
+    name: '核心不回落官方 CDN',
+    patches: [[CORE_CDN_FROM, CORE_CDN_TO]],
+    hint: [
+      '在 downloadType 表里找 core:{...cdnFallback:!0}，改成 !1；',
+      'cdn.emulatorjs.org/4.3.0-pre 的核心起不来（AGENTS §2.4），回落只会多等再报错。',
+    ],
+  },
+
 ]
 
 let src = readFileSync(file, 'utf8')

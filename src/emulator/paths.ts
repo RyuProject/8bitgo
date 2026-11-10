@@ -105,7 +105,11 @@ export function markEjsEdgeFailed(): void {
   2026-11-08：引擎入口改由 EdgeOne（cn.<裸域>/_cn/emulatorjs/）发给大陆访客。部署后头十几分钟的响应带着
   `Vary: Origin` 进了 EdgeOne 缓存（没有清缓存通道），换一代绕开；核心按内容版本，两次都是带 Origin 的 fetch，不受影响。
 */
-export const EJS_RUNTIME_GENERATION = '20261027-melondsds-ff33abb1-psxrange1-corecompat1-stateglue3-mameglue3-ejsperf1-cnedge1'
+/*
+  2026-11-10：引擎下载器补了三处（20 秒无数据中止、缓存读写时限、核心不回落官方 CDN，见 patch-emulatorjs.mjs 第十节），
+  入口必须换代，否则边缘继续发旧的 emulator.min.js。核心按内容版本，不受影响。
+*/
+export const EJS_RUNTIME_GENERATION = '20261027-melondsds-ff33abb1-psxrange1-corecompat1-stateglue3-mameglue3-ejsperf1-cnedge1-dlguard1'
 export const ejsRuntimeAsset = (name: string): string =>
   `${ejsBase()}${name}?v=${encodeURIComponent(EJS_RUNTIME_GENERATION)}`
 
@@ -311,8 +315,9 @@ export const PPSSPP_PATH: string = asDir(import.meta.env.VITE_PPSSPP_PATH)
   Wasm / data / JS 与 v16 逐字节相同。生成脚本 scripts/refresh-ppsspp-edge-v17.mjs。
   2026-11-10 v18：只换 JS 读盘层，同步 Range 读遇到 status 0 就地退避重试（海外玩家开局后断流整局失败）。
   Wasm / data 与 v17 逐字节相同。生成脚本 scripts/refresh-ppsspp-retry-v18.mjs。
+  2026-11-10 v19：超时后的重试把时限翻倍（30 → 60 → 120 秒），慢线路的 2MB 分片能读完。生成脚本 refresh-ppsspp-retry-v19.mjs。
 */
-export const PPSSPP_RUNTIME_GENERATION = 'v18'
+export const PPSSPP_RUNTIME_GENERATION = 'v19'
 export const PPSSPP_RUNTIME_PATH: string = PPSSPP_PATH
   ? asDir(`${PPSSPP_PATH}${PPSSPP_RUNTIME_GENERATION}`)
   : ''

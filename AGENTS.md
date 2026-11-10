@@ -136,6 +136,21 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
 类型为 0 的行会被直接丢掉。生成脚本按 CRC 对照基础驱动源码把类型抄准，
 对不上的（也就是改版包换掉的那几个）留成 `TODO_TYPE` 由人来定。
 
+### 2.8.0.1 引擎下载器不能永远停在「下载游戏核心 100%」（2026-11-10）
+
+后台 14 天里「加载在『下载游戏核心 N%』这一步停住了」有 30 多次（拳皇 2002 哥伦比亚、拳皇 97 等）。
+引擎下载器有三处会让 Promise 永不结束，`npm run ejspatch` 第十节都补上了，`npm run test:ejs-download` 守着：
+
+- 30 秒超时在**收到响应头就清掉**，读包体没有时限：跨洲线路丢了流结尾，进度停在 100% 一直等。
+  现在 20 秒没有新字节就 abort，失败交给播放器的自动重试；
+- 下载完要 `await storageCache.put()` 才交出结果，开局前还 `await storageCache.get()`；引擎的 IndexedDB 封装
+  在 `transaction()` 同步抛错、请求同步抛错、`remove` 出错时都不 settle。put 限 10 秒、get 限 20 秒，
+  封装里的同步异常一律当作「没有缓存」；
+- 核心失败后引擎会回落 `cdn.emulatorjs.org/<版本>/data/`，而 4.3.0-pre 的官方核心起不来（§2.4），
+  只会多等几十秒再报 `Error loading EmulatorJS runtime`。已关掉（`cdnFallback:!1`）。
+
+改引擎后要换 `EJS_RUNTIME_GENERATION`，入口文件名不带内容哈希。
+
 ### 2.8.1 街机 BIOS 分两档：平台一份 + **按系统包**各一份
 
 引擎（EmulatorJS）只给**一个** BIOS 槽位（`EJS_biosUrl`），而 `arcade` 是**一个平台**却顶着
@@ -2806,8 +2821,8 @@ ATRAC3+ 和 MP3 解码。构建/发布检查必须同时看到 `USE_FFMPEG:BOOL=
 Cloudflare 对这组静态文件的缓存键**忽略查询串**：请求 `PPSSPPSDL.data?r=17` 仍命中旧的 r16
 （22,417,304B，`CF-Cache-Status: HIT`），而新清单需要 19,434,861B。查询参数不能再承担版本隔离，
 否则新 JS、旧 data 和旧 Wasm 会被拼在同一局里。当前整套资源发布在
-`public/ppsspp/v0dbfaca/v18/`（上一版为 v17）；下次桥、JS、Wasm、data、Range 胶水或 AudioWorklet 任一项改变就
-复制/构建到 `v19/`，并同步 `PPSSPP_RUNTIME_GENERATION` 和服务端旧地址 302。旧目录保留给旧页面，
+`public/ppsspp/v0dbfaca/v19/`（上一版为 v18）；下次桥、JS、Wasm、data、Range 胶水或 AudioWorklet 任一项改变就
+复制/构建到 `v20/`，并同步 `PPSSPP_RUNTIME_GENERATION` 和服务端旧地址 302。旧目录保留给旧页面，
 不原地覆盖。
 v13 只修桥和新增本地光盘 Service Worker；v14/v15/v16 只修预读胶水，Wasm/data 与 v13 的 SHA-256 相同。
 v17 只改桥（`scripts/refresh-ppsspp-edge-v17.mjs` 从 v16 生成）：iframe 地址带 `edge=cn`（大陆访客，
@@ -2819,9 +2834,12 @@ v18 只换 JS 读盘层（`scripts/refresh-ppsspp-retry-v18.mjs` 从 v17 生成�
 遇到网络层失败（status 0）时，`range-read-ahead.js` 先就地退避重试 4 次（0.8 / 2 / 4 / 8 秒，单次请求累计超过
 45 秒不再重试），失败的那几次不让 Emscripten 看到，最后一次才原样交回 C++。2026-11-10 后台：阿尔及利亚、智利玩家
 进游戏几十秒后报「Range request failed: HTTP 0」整局失败，C++ 自己的三次 250 / 500ms 重试扛不住跨洲线路的短暂断流。
-诊断看 `__8bitgoPspRangeWarmStats()` 的 `syncRetries` / `syncRecovered`。
-`scripts/refresh-ppsspp-js-runtime.mjs` 仍是生成 v12 的历史入口，不要用它覆盖 v13～v18。
-下一次重新构建核心前，先把 `scripts/build-ppsspp.mjs` 的目标代次和相应模板一起升到 v19。
+诊断看 `__8bitgoPspRangeWarmStats()` 的 `syncRetries` / `syncRecovered` / `syncTimeouts`。
+v19（`refresh-ppsspp-retry-v19.mjs` 从 v18 生成）：**超时**后的重试把时限翻倍（30 → 60 → 120 秒，整个请求最多
+3 分钟）。慢线路上 2MB 分片本来就要 30 秒以上，用同样的 30 秒重试只会再超时；游戏会卡住等盘，但不再整局失败。
+已排除的方向：assets / cn-assets 两条线路的 206 在 MISS 与 HIT 下都带 ACAO 与 CORP，HTTP 0 不是缓存丢头。
+`scripts/refresh-ppsspp-js-runtime.mjs` 仍是生成 v12 的历史入口，不要用它覆盖 v13～v19。
+下一次重新构建核心前，先把 `scripts/build-ppsspp.mjs` 的目标代次和相应模板一起升到 v20。
 
 Emscripten
 自带的 preload fetch 没有重试，`host.js` 用 `getPreloadedPackage` 接管：优先读浏览器缓存，连续

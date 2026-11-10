@@ -24,11 +24,17 @@
    * 2026-11-10 后台：阿尔及利亚、智利的玩家已经进了游戏（game_playable），几十秒后一次 Range
    * 失败就整局报「Range request failed: HTTP 0」。C++ loader 只重试 3 次、间隔 250 / 500ms，
    * 跨洲线路上一次几秒的断流就能把三次全部吃掉。这里每次 C++ 请求再给最多 4 次退避重试，
-   * 合计等待约 15 秒；单次请求累计超过 45 秒（多半是连续超时）就不再重试，交回 C++ 处理，
-   * 避免游戏冻住几分钟。只重试 status 0：HTTP 412 / 4xx 等确定的结果原样交还。
+   * 合计等待约 15 秒；连续快速失败累计超过 45 秒就不再重试，交回 C++ 处理。只重试 status 0：
+   * HTTP 412 / 4xx 等确定的结果原样交还。
+   *
+   * 超时另算（v19）：C++ 给每次请求 30 秒，慢线路（几十 KB/s）上一个 2MB 分片本来就要更久，
+   * 用同样的 30 秒重试只会再超时一次。超时后的重试把时限翻倍（30 → 60 → 120 秒），
+   * 整个请求最多 3 分钟 —— 游戏会卡住等盘，但不再整局失败。
    */
   const SYNC_RETRY_DELAYS_MS = [800, 2000, 4000, 8000]
   const SYNC_RETRY_BUDGET_MS = 45_000
+  const SYNC_TIMEOUT_BUDGET_MS = 180_000
+  const SYNC_TIMEOUT_MAX_MS = 120_000
   const NativeXMLHttpRequest = globalThis.XMLHttpRequest
   if (typeof NativeXMLHttpRequest !== 'function' || globalThis.__8bitgoCreatePspRangeXhr) return
 
@@ -56,6 +62,7 @@
   let sequentialDemandRun = 0
   let syncRetries = 0
   let syncRecovered = 0
+  let syncTimeouts = 0
 
   /** pthread 里可以同步睡；拿不到 SharedArrayBuffer 时直接重试（不会发生在跨源隔离页） */
   const sleepSync = (ms) => {
@@ -513,10 +520,13 @@
     /** 同步 Range 读：网络层失败（status 0）就地退避重试，见 SYNC_RETRY_DELAYS_MS */
     _sendSyncWithRetry(data, requested) {
       const startedAt = Date.now()
+      let lastTimedOut = false
       for (let attempt = 0; ; attempt++) {
-        const final = attempt >= SYNC_RETRY_DELAYS_MS.length || Date.now() - startedAt > SYNC_RETRY_BUDGET_MS
+        const budget = lastTimedOut ? SYNC_TIMEOUT_BUDGET_MS : SYNC_RETRY_BUDGET_MS
+        const final = attempt >= SYNC_RETRY_DELAYS_MS.length || Date.now() - startedAt > budget
         const inner = this._inner
         let failed = false
+        let timedOut = false
         inner.onload = (event) => {
           if (!final && inner.status === 0) { failed = true; return }
           if (attempt > 0) syncRecovered++
@@ -524,22 +534,30 @@
           this.onload?.(event)
         }
         inner.onerror = (event) => { if (final) this.onerror?.(event); else failed = true }
-        inner.ontimeout = (event) => { if (final) this.ontimeout?.(event); else failed = true }
+        inner.ontimeout = (event) => { if (final) this.ontimeout?.(event); else failed = timedOut = true }
         inner.onprogress = (event) => this.onprogress?.(event)
         inner.onreadystatechange = (event) => {
           // 要重试的那次失败不让 Emscripten 看到 readyState 4 + status 0
           if (!final && inner.readyState === 4 && inner.status === 0) return
           this.onreadystatechange?.(event)
         }
+        const sentAt = Date.now()
         try {
           inner.send(data)
         } catch (error) {
           if (final) throw error
           failed = true
+          // 同步 XHR 超时多数浏览器是抛 TimeoutError，不一定触发 ontimeout
+          timedOut = error?.name === 'TimeoutError' || (this._timeout > 0 && Date.now() - sentAt >= this._timeout - 50)
         }
         if (final || (!failed && inner.status !== 0)) return
         syncRetries++
-        console.warn(`[ppsspp] Range ${this.__8bitgoHeaders.get('range') || ''} 网络失败，${SYNC_RETRY_DELAYS_MS[attempt]}ms 后第 ${attempt + 1} 次重试`)
+        lastTimedOut = timedOut
+        if (timedOut) {
+          syncTimeouts++
+          this._timeout = Math.min(Math.max(this._timeout || 30_000, 30_000) * 2, SYNC_TIMEOUT_MAX_MS)
+        }
+        console.warn(`[ppsspp] Range ${this.__8bitgoHeaders.get('range') || ''} ${timedOut ? '超时' : '网络失败'}，${SYNC_RETRY_DELAYS_MS[attempt]}ms 后第 ${attempt + 1} 次重试${timedOut ? `（时限放宽到 ${this._timeout / 1000} 秒）` : ''}`)
         sleepSync(SYNC_RETRY_DELAYS_MS[attempt])
         this._reopen()
       }
@@ -636,6 +654,7 @@
     sequentialDemandRun,
     syncRetries,
     syncRecovered,
+    syncTimeouts,
   })
 })()
 /* 8BITGO_PSP_RANGE_READ_AHEAD_END */
