@@ -14,6 +14,8 @@ function makeRuntime(effectiveType = '4g', saveData = false, deviceMemory = 8, h
   let maxActiveAsync = 0
   let sharedWaits = 0
   let competingJobsAtWait = 0
+  let syncFailures = 0
+  let syncFailMode = 'throw'
 
   class FakeWorker {
     constructor() {
@@ -77,6 +79,16 @@ function makeRuntime(effectiveType = '4g', saveData = false, deviceMemory = 8, h
       const start = Number(match[1])
       const end = Number(match[2])
       requests.push({ start, end, async: this.async, headers: new Map(this.headers) })
+      if (!this.async && syncFailures > 0) {
+        syncFailures--
+        // 同步 XHR 的网络失败：浏览器要么直接抛 NetworkError，要么以 status 0 收尾
+        if (syncFailMode === 'throw') throw new Error('NetworkError: Failed to execute send')
+        this.readyState = 4
+        this.status = 0
+        this.onreadystatechange?.({ target: this })
+        this.onerror?.({ target: this })
+        return
+      }
       const finish = () => {
         if (this.aborted) return
         if (this.asyncActive) {
@@ -179,6 +191,7 @@ function makeRuntime(effectiveType = '4g', saveData = false, deviceMemory = 8, h
     sharedJobs: () => workers[0]?.jobs.size ?? 0,
     sharedWaits: () => sharedWaits,
     competingJobsAtWait: () => competingJobsAtWait,
+    failNextSync: (count, mode = 'throw') => { syncFailures = count; syncFailMode = mode },
   }
 }
 
@@ -390,6 +403,48 @@ function makeRuntime(effectiveType = '4g', saveData = false, deviceMemory = 8, h
   assert.ok(job, '共享 Worker 预读已排上')
   assert.equal(job.sendValidators, false, '共享 Worker 的钉代次预读也不发条件头')
   assert.equal(job.ifMatch, '"disc-v1"', '但校验器仍随任务带过去，用来核对响应')
+}
+
+{
+  // 2026-11-10：海外玩家进游戏后一次断流就整局报 HTTP 0；同步读盘先在 JS 层退避重试
+  for (const mode of ['throw', 'status0']) {
+    const runtime = makeRuntime('4g', false, 8, 8, false, 6, 'https://assets.test/game.chd?romv=abc-1')
+    runtime.failNextSync(2, mode)
+    let errors = 0
+    const states = []
+    const xhr = runtime.context.__8bitgoCreatePspRangeXhr()
+    xhr.open('GET', 'https://assets.test/game.chd?romv=abc-1', false)
+    xhr.responseType = 'arraybuffer'
+    xhr.timeout = 30_000
+    xhr.setRequestHeader('Range', `bytes=0-${BLOCK - 1}`)
+    xhr.setRequestHeader('If-Match', '"disc-v1"')
+    let loaded = false
+    xhr.onload = () => { loaded = true }
+    xhr.onerror = () => { errors++ }
+    xhr.onreadystatechange = () => states.push([xhr.readyState, xhr.status])
+    xhr.send(null)
+    assert.equal(loaded, true, `${mode}：两次网络失败后第三次成功，send 返回前就拿到数据`)
+    assert.equal(errors, 0, `${mode}：被重试吃掉的失败不能报给 Emscripten`)
+    assert.equal(xhr.status, 206)
+    assert.equal(xhr.response.byteLength, BLOCK)
+    assert.ok(states.every(([state, status]) => !(state === 4 && status === 0)), `${mode}：重试中的 readyState 4 / status 0 不外泄`)
+    const sync = runtime.requests.filter((request) => !request.async)
+    assert.equal(sync.length, 3, `${mode}：一共发了三次正式请求`)
+    assert.equal(sync[2].headers.get('range'), `bytes=0-${BLOCK - 1}`, '重试原样重放 Range 头')
+    assert.equal(sync[2].headers.get('if-match'), undefined, '钉了 romv 的条件头重试时同样不发')
+    const stats = runtime.context.__8bitgoPspRangeWarmStats()
+    assert.equal(stats.syncRetries, 2)
+    assert.equal(stats.syncRecovered, 1)
+  }
+
+  // 一直失败：用完重试次数后把错误交回 C++（它再决定重试或报错），不能无限卡住模拟线程
+  const broken = makeRuntime()
+  broken.failNextSync(100, 'throw')
+  const xhr = broken.context.__8bitgoCreatePspRangeXhr()
+  xhr.open('GET', 'https://assets.test/game.chd', false)
+  xhr.setRequestHeader('Range', `bytes=0-${BLOCK - 1}`)
+  assert.throws(() => xhr.send(null), /NetworkError/, '最后一次失败原样抛给 Emscripten')
+  assert.equal(broken.requests.filter((request) => !request.async).length, 5, '首发 + 4 次重试')
 }
 
 console.log('✔ PSP 自适应滚动预读：共享 Worker 命中、同步等待、四路填充、追尾扩窗与版本隔离均通过')

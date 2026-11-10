@@ -2806,8 +2806,8 @@ ATRAC3+ 和 MP3 解码。构建/发布检查必须同时看到 `USE_FFMPEG:BOOL=
 Cloudflare 对这组静态文件的缓存键**忽略查询串**：请求 `PPSSPPSDL.data?r=17` 仍命中旧的 r16
 （22,417,304B，`CF-Cache-Status: HIT`），而新清单需要 19,434,861B。查询参数不能再承担版本隔离，
 否则新 JS、旧 data 和旧 Wasm 会被拼在同一局里。当前整套资源发布在
-`public/ppsspp/v0dbfaca/v17/`（上一版为 v16）；下次桥、JS、Wasm、data、Range 胶水或 AudioWorklet 任一项改变就
-复制/构建到 `v18/`，并同步 `PPSSPP_RUNTIME_GENERATION` 和服务端旧地址 302。旧目录保留给旧页面，
+`public/ppsspp/v0dbfaca/v18/`（上一版为 v17）；下次桥、JS、Wasm、data、Range 胶水或 AudioWorklet 任一项改变就
+复制/构建到 `v19/`，并同步 `PPSSPP_RUNTIME_GENERATION` 和服务端旧地址 302。旧目录保留给旧页面，
 不原地覆盖。
 v13 只修桥和新增本地光盘 Service Worker；v14/v15/v16 只修预读胶水，Wasm/data 与 v13 的 SHA-256 相同。
 v17 只改桥（`scripts/refresh-ppsspp-edge-v17.mjs` 从 v16 生成）：iframe 地址带 `edge=cn`（大陆访客，
@@ -2815,8 +2815,13 @@ v17 只改桥（`scripts/refresh-ppsspp-edge-v17.mjs` 从 v16 生成）：iframe
 `PPSSPPSDL.js` 是 pthread Worker 入口，预读 Worker、Service Worker 也都必须同源；wasm 只在主线程编译后传给 Worker。
 胶水没有 wasm 加载钩子（流式编译失败会用同一 URL 再取），所以桥只对这两个地址包一层 fetch：首次走 EdgeOne，
 失败或同一文件第二次被请求就回同源。`cache.js` 对 `req.cnEdge` 发 `CORP: cross-origin`，否则跨源隔离页会拦下。
-`scripts/refresh-ppsspp-js-runtime.mjs` 仍是生成 v12 的历史入口，不要用它覆盖 v13～v17。
-下一次重新构建核心前，先把 `scripts/build-ppsspp.mjs` 的目标代次和相应模板一起升到 v18。
+v18 只换 JS 读盘层（`scripts/refresh-ppsspp-retry-v18.mjs` 从 v17 生成，Wasm / data 不变）：正式的同步 Range 读
+遇到网络层失败（status 0）时，`range-read-ahead.js` 先就地退避重试 4 次（0.8 / 2 / 4 / 8 秒，单次请求累计超过
+45 秒不再重试），失败的那几次不让 Emscripten 看到，最后一次才原样交回 C++。2026-11-10 后台：阿尔及利亚、智利玩家
+进游戏几十秒后报「Range request failed: HTTP 0」整局失败，C++ 自己的三次 250 / 500ms 重试扛不住跨洲线路的短暂断流。
+诊断看 `__8bitgoPspRangeWarmStats()` 的 `syncRetries` / `syncRecovered`。
+`scripts/refresh-ppsspp-js-runtime.mjs` 仍是生成 v12 的历史入口，不要用它覆盖 v13～v18。
+下一次重新构建核心前，先把 `scripts/build-ppsspp.mjs` 的目标代次和相应模板一起升到 v19。
 
 Emscripten
 自带的 preload fetch 没有重试，`host.js` 用 `getPreloadedPackage` 接管：优先读浏览器缓存，连续
@@ -2984,8 +2989,12 @@ EdgeOne 只能用境外（香港）节点。主站、ROM、Pages 子域都不受
     ⚠️ `/_cn` 下的静态文件**不能带 `Vary: Origin`**（cors 中间件会加，cn-edge 对非 API 路径删掉）：预热 fetch 带 Origin、
     `<script>` / `<link>` 不带，Vary 会让同一 URL 存两条缓存、预热白做。EdgeOne 已缓存过带这个头的副本，所以换过一代 `-cnedge1`。
   - **Ruffle（Flash）与 js-dos（DOS）同理**（2026-11-08）：`ruffleBase()` / `jsdosBase()` 与 `ejsBase()` 共用
-    `paths.ts` 的 `runtimeBase`。线路**每页只定一次**（预热与正式加载必须同一个 URL）；ROM 测速 30 分钟内测出
-    Cloudflare 更快就不走 EdgeOne。入口脚本取不到当场换同源；开局前报错标记失败，自动重试走同源。
+    `paths.ts` 的 `runtimeBase`。线路**每页只定一次**（预热与正式加载必须同一个 URL）；大陆访客一律走 EdgeOne。
+    入口脚本取不到当场换同源；开局前报错标记失败，自动重试走同源（EmulatorJS 的「卡住」不算）。
+    ⚠️ **不能拿 ROM 线路测速决定运行时线路**（2026-11-10，拳皇 97 大陆玩家卡在「下载游戏核心」）：ROM 探针是
+    assets.8bitgo.com 上的 64KB，量的是延迟（实测 Cloudflare 1.4s 对 EdgeOne 1.9s，Cloudflare「更快」）；
+    同一时刻大陆宽带下 8bitgo.com 的 8MB 核心走 Cloudflare 只有 1.5～43KB/s（cf HIT 也一样），
+    cn.8bitgo.com/_cn 约 0.8～1MB/s。以前「测出 Cloudflare 更快就不走 EdgeOne」把这批玩家送去了几 KB/s 的线路。
     js-dos 的 DOSBox Worker 本来就是 fetch 后转 blob 启动，跨域无碍；`emulators.js` 整页只注入一次，换线路时要同步
     `window.emulators.pathPrefix`。PPSSPP / Dolphin / Play! 是跨源隔离页 + pthread 同源 Worker，**没有**接入，
     `/_cn/ppsspp` 等仍 404。

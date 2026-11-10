@@ -256,7 +256,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    * 核心下载却挤在只占 10% 的 rom 段里，条子停在 50% 二十秒，速度栏还显示探测那 2 字节
    * 算出来的「1 B/s」（2026-11-04《GT 赛车》实测）。
    *
-   * 桥（不可变的 v17 实体目录）只把核心进度写进自己的 #status，这里同源观察那行字：
+   * 桥（不可变的 v18 实体目录）只把核心进度写进自己的 #status，这里同源观察那行字：
    * 「正在下载 PSP 核心资源… NN%」→ engine 阶段的 ratio；换成读盘文案或收到第一条
    * stream-progress 就进 rom 阶段。文案的出处由 check-ppsspp 守着，变了只是退回计时推进。
    */

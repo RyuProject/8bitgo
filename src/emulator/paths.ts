@@ -20,8 +20,6 @@ import { platformMap } from '@/data/platforms'
 import { NETPLAY_URL } from '@/services/roomFlags'
 import { EJS_CORE_VERSIONS } from './ejsCoreVersionsData'
 import { cnEdgeApiBase } from '@/services/cnHost'
-import { ENV_ROM_BASE, ENV_ROM_MIRROR } from '@/services/romHosts'
-import { readCachedRomHost } from '@/services/romRoute'
 
 /** 末尾补上斜杠；空值原样返回（空 = 没配置 = 该引擎不可用） */
 const asDir = (raw: string | undefined, fallback = ''): string => {
@@ -49,11 +47,14 @@ export const EJS_PATH: string = asDir(import.meta.env.VITE_EJS_PATH, '/emulatorj
  *
  * 线路怎么定：
  *   - 只有边缘标成大陆访客（coverCdnHint）且不在 cn.8bitgo.com 本身时才考虑加速入口；
- *   - ROM 线路测速（romRoute.chooseRomHost，同样是 EdgeOne 对 Cloudflare）30 分钟内已有结论、
- *     而且测出 Cloudflare 更快，就不走加速入口；没测过默认走 EdgeOne；
+ *   - **不再参考 ROM 线路测速**：那是 assets.8bitgo.com（R2）上 64KB 探针的结论，量的是延迟；
+ *     8bitgo.com 自己的大文件从大陆走 Cloudflare 是另一回事。2026-11-10 在大陆宽带实测同一个
+ *     8MB FBNeo 核心：8bitgo.com（cf HIT）1.5～43KB/s，cn.8bitgo.com/_cn 约 0.8～1MB/s，
+ *     assets.8bitgo.com 0.3～0.7MB/s，而 64KB 探针 Cloudflare 反而快（1.4s 对 1.9s）。
+ *     以前「测出 Cloudflare 更快就不走 EdgeOne」让这批玩家的核心卡在「下载游戏核心」；
  *   - **每页只定一次**：同一页里预热和正式加载必须是同一个 URL，否则测速结论中途出来会让同一份核心
  *     两边各下一遍。新结论从下一次打开页面起生效；
- *   - 某个运行时开局前出过一次错（mark…EdgeFailed），这页里它就退回同源。
+ *   - 某个运行时开局前出过一次错（mark…EdgeFailed），这页里它就退回同源；EmulatorJS 的「卡住」不算。
  *
  * 可行性（各运行时都核对过）：
  *   - EmulatorJS 的 iframe 是不带 sandbox 的 srcdoc，Ruffle 的 /flash-frame.html 是同源 iframe，
@@ -73,7 +74,7 @@ function cnRuntimeEdge(): string {
   if (typeof window === 'undefined') return ''
   if (runtimeEdgeOrigin === null) {
     const edge = cnEdgeApiBase()
-    runtimeEdgeOrigin = edge && readCachedRomHost(ENV_ROM_BASE, ENV_ROM_MIRROR) !== 'primary' ? edge : ''
+    runtimeEdgeOrigin = edge || ''
   }
   return runtimeEdgeOrigin
 }
@@ -308,8 +309,10 @@ export const PPSSPP_PATH: string = asDir(import.meta.env.VITE_PPSSPP_PATH)
 /*
   2026-11-09 v17：只改桥（host.js），大陆访客的 PPSSPPSDL.wasm / .data 走 EdgeOne（见 ppssppFrameUrl），
   Wasm / data / JS 与 v16 逐字节相同。生成脚本 scripts/refresh-ppsspp-edge-v17.mjs。
+  2026-11-10 v18：只换 JS 读盘层，同步 Range 读遇到 status 0 就地退避重试（海外玩家开局后断流整局失败）。
+  Wasm / data 与 v17 逐字节相同。生成脚本 scripts/refresh-ppsspp-retry-v18.mjs。
 */
-export const PPSSPP_RUNTIME_GENERATION = 'v17'
+export const PPSSPP_RUNTIME_GENERATION = 'v18'
 export const PPSSPP_RUNTIME_PATH: string = PPSSPP_PATH
   ? asDir(`${PPSSPP_PATH}${PPSSPP_RUNTIME_GENERATION}`)
   : ''

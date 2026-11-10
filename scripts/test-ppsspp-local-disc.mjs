@@ -3,8 +3,8 @@ import { readFileSync } from 'node:fs'
 import { webcrypto } from 'node:crypto'
 import vm from 'node:vm'
 
-const source = readFileSync(new URL('../public/ppsspp/v0dbfaca/v17/local-disc-sw.js', import.meta.url), 'utf8')
-const host = readFileSync(new URL('../public/ppsspp/v0dbfaca/v17/host.js', import.meta.url), 'utf8')
+const source = readFileSync(new URL('../public/ppsspp/v0dbfaca/v18/local-disc-sw.js', import.meta.url), 'utf8')
+const host = readFileSync(new URL('../public/ppsspp/v0dbfaca/v18/host.js', import.meta.url), 'utf8')
 const events = new Map()
 const channels = new Map()
 const file = Uint8Array.from({ length: 2048 }, (_, index) => index & 255)
@@ -25,7 +25,7 @@ class Channel {
   }
 }
 
-const scope = 'https://8bitgo.test/ppsspp/v0dbfaca/v17/'
+const scope = 'https://8bitgo.test/ppsspp/v0dbfaca/v18/'
 const context = {
   URL, Response, ArrayBuffer, BroadcastChannel: Channel, crypto: webcrypto, setTimeout, clearTimeout,
   self: {

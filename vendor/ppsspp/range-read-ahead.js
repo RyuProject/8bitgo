@@ -18,6 +18,17 @@
   const MAX_DEPTH = 10
   const MAX_CONCURRENCY = 4
   const PREFETCH_TIMEOUT_MS = 20_000
+  /**
+   * 正式读盘遇到网络层失败（status 0：连接被重置、断线、超时）时，先在这一层就地重试。
+   *
+   * 2026-11-10 后台：阿尔及利亚、智利的玩家已经进了游戏（game_playable），几十秒后一次 Range
+   * 失败就整局报「Range request failed: HTTP 0」。C++ loader 只重试 3 次、间隔 250 / 500ms，
+   * 跨洲线路上一次几秒的断流就能把三次全部吃掉。这里每次 C++ 请求再给最多 4 次退避重试，
+   * 合计等待约 15 秒；单次请求累计超过 45 秒（多半是连续超时）就不再重试，交回 C++ 处理，
+   * 避免游戏冻住几分钟。只重试 status 0：HTTP 412 / 4xx 等确定的结果原样交还。
+   */
+  const SYNC_RETRY_DELAYS_MS = [800, 2000, 4000, 8000]
+  const SYNC_RETRY_BUDGET_MS = 45_000
   const NativeXMLHttpRequest = globalThis.XMLHttpRequest
   if (typeof NativeXMLHttpRequest !== 'function' || globalThis.__8bitgoCreatePspRangeXhr) return
 
@@ -43,6 +54,15 @@
   let assessedDemandBlocks = 0
   let assessedHits = 0
   let sequentialDemandRun = 0
+  let syncRetries = 0
+  let syncRecovered = 0
+
+  /** pthread 里可以同步睡；拿不到 SharedArrayBuffer 时直接重试（不会发生在跨源隔离页） */
+  const sleepSync = (ms) => {
+    try {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+    } catch { /* 不能睡就立刻重试 */ }
+  }
 
   const initPrefetchWorker = () => {
     if (prefetchWorker || prefetchWorkerFailed) return
@@ -448,12 +468,20 @@
       this.__8bitgoHeaders = new Map()
       this.url_ = ''
       this._streamData = false
+      // 重试要原样重建请求，这些都得记下来
+      this._openArgs = null
+      this._sentHeaders = []
+      this._mime = null
+      this._responseType = ''
+      this._timeout = 0
+      this._withCredentials = false
     }
 
     open(method, url, async = true, username, password) {
       this._method = String(method || 'GET').toUpperCase()
       this._async = async !== false
       this.url_ = String(url)
+      this._openArgs = [method, url, async, username, password]
       this._inner.open(method, url, async, username, password)
     }
 
@@ -461,11 +489,60 @@
       this.__8bitgoHeaders.set(String(name).toLowerCase(), String(value))
       // 记下来给预读比对用，但钉了代次的地址不真的发出去（见 versionPinned）
       if (validatorHeader(name) && versionPinned(this.url_)) return
+      this._sentHeaders.push([name, value])
       this._inner.setRequestHeader(name, value)
     }
 
     overrideMimeType(value) {
+      this._mime = value
       this._inner.overrideMimeType(value)
+    }
+
+    /** 换一个全新的原生 XHR，按原样重放 open / 头 / 属性（失败过的 XHR 不能再 send） */
+    _reopen() {
+      const inner = new NativeXMLHttpRequest()
+      inner.open(...this._openArgs)
+      if (this._responseType) inner.responseType = this._responseType
+      if (this._timeout) inner.timeout = this._timeout
+      if (this._withCredentials) inner.withCredentials = true
+      if (this._mime) inner.overrideMimeType(this._mime)
+      for (const [name, value] of this._sentHeaders) inner.setRequestHeader(name, value)
+      this._inner = inner
+    }
+
+    /** 同步 Range 读：网络层失败（status 0）就地退避重试，见 SYNC_RETRY_DELAYS_MS */
+    _sendSyncWithRetry(data, requested) {
+      const startedAt = Date.now()
+      for (let attempt = 0; ; attempt++) {
+        const final = attempt >= SYNC_RETRY_DELAYS_MS.length || Date.now() - startedAt > SYNC_RETRY_BUDGET_MS
+        const inner = this._inner
+        let failed = false
+        inner.onload = (event) => {
+          if (!final && inner.status === 0) { failed = true; return }
+          if (attempt > 0) syncRecovered++
+          afterDemand(this, requested)
+          this.onload?.(event)
+        }
+        inner.onerror = (event) => { if (final) this.onerror?.(event); else failed = true }
+        inner.ontimeout = (event) => { if (final) this.ontimeout?.(event); else failed = true }
+        inner.onprogress = (event) => this.onprogress?.(event)
+        inner.onreadystatechange = (event) => {
+          // 要重试的那次失败不让 Emscripten 看到 readyState 4 + status 0
+          if (!final && inner.readyState === 4 && inner.status === 0) return
+          this.onreadystatechange?.(event)
+        }
+        try {
+          inner.send(data)
+        } catch (error) {
+          if (final) throw error
+          failed = true
+        }
+        if (final || (!failed && inner.status !== 0)) return
+        syncRetries++
+        console.warn(`[ppsspp] Range ${this.__8bitgoHeaders.get('range') || ''} 网络失败，${SYNC_RETRY_DELAYS_MS[attempt]}ms 后第 ${attempt + 1} 次重试`)
+        sleepSync(SYNC_RETRY_DELAYS_MS[attempt])
+        this._reopen()
+      }
     }
 
     send(data) {
@@ -498,6 +575,10 @@
         }
       }
 
+      if (!this._async && this._method === 'GET' && this.__8bitgoHeaders.has('range') && this._openArgs) {
+        this._sendSyncWithRetry(data, requested)
+        return
+      }
       this._inner.onload = (event) => {
         afterDemand(this, requested)
         this.onload?.(event)
@@ -523,11 +604,11 @@
     get statusText() { return this._fake?.statusText || this._inner.statusText }
     get responseURL() { return this._fake?.responseURL || this._inner.responseURL }
     get responseType() { return this._inner.responseType }
-    set responseType(value) { this._inner.responseType = value }
+    set responseType(value) { this._responseType = value; this._inner.responseType = value }
     get timeout() { return this._inner.timeout }
-    set timeout(value) { this._inner.timeout = value }
+    set timeout(value) { this._timeout = value; this._inner.timeout = value }
     get withCredentials() { return this._inner.withCredentials }
-    set withCredentials(value) { this._inner.withCredentials = value }
+    set withCredentials(value) { this._withCredentials = Boolean(value); this._inner.withCredentials = value }
   }
 
   globalThis.__8bitgoCreatePspRangeXhr = () => {
@@ -553,6 +634,8 @@
     assessedDemandBlocks,
     assessedHits,
     sequentialDemandRun,
+    syncRetries,
+    syncRecovered,
   })
 })()
 /* 8BITGO_PSP_RANGE_READ_AHEAD_END */

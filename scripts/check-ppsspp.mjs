@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const VERSION = '0dbfaca'
-const RUNTIME_GENERATION = 'v17'
+const RUNTIME_GENERATION = 'v18'
 const useDist = process.argv.includes('--dist')
 const sourceOnly = process.argv.includes('--source-only')
 const publicDir = join(root, 'public', 'ppsspp', `v${VERSION}`, RUNTIME_GENERATION)
@@ -66,10 +66,10 @@ for (const marker of [
 }
 
 if (!/<script src="host\.js"><\/script>/.test(need(join(runtimeDir, 'index.html')).toString('utf8'))) {
-  fail('v17 index.html 没有引用同一实体目录里的 host.js')
+  fail('v18 index.html 没有引用同一实体目录里的 host.js')
 }
-if (!/PPSSPP_RUNTIME_GENERATION = 'v17'/.test(paths) || !/PPSSPP_FRAME_REVISION = '2'/.test(paths) || !/ppssppFrameUrl/.test(adapter)) {
-  fail('PPSSPP iframe 没有使用 v17 实体目录；查询串不能穿透当前 Cloudflare 缓存键')
+if (!/PPSSPP_RUNTIME_GENERATION = 'v18'/.test(paths) || !/PPSSPP_FRAME_REVISION = '2'/.test(paths) || !/ppssppFrameUrl/.test(adapter)) {
+  fail('PPSSPP iframe 没有使用 v18 实体目录；查询串不能穿透当前 Cloudflare 缓存键')
 }
 if (/fetch\s*\(\s*(?:remote(?:\?\.)?\.url|gamePath)/.test(host)) {
   fail('host.js 出现整盘下载代码；远程镜像只能把 URL 交给 C++ Range loader')
@@ -102,13 +102,13 @@ if (!/FS\.stat\(path\)[\s\S]*?FS\.writeFile\(path, new Uint8Array\(\)\)/.test(ho
   fail('host.js 没有保留已有控制器配置并只在首次启动补空 controls.ini')
 }
 if (host.includes('核心没有 Range 遥测回调，使用首帧兼容判据')) {
-  fail('v17 仍会在没有真实读盘时把空画布误报成游戏已启动')
+  fail('v18 仍会在没有真实读盘时把空画布误报成游戏已启动')
 }
 if (!/gameBootConfirmed/.test(host) || !/BOOTED_LOG_PATTERN = \/\\bBooted\\s\+\.\+\\\.\\\.\\\.\//.test(host)) {
-  fail('v17 没有等待 PPSSPP 的 Booted 日志；Range 遥测跨线程丢失时会再次超时')
+  fail('v18 没有等待 PPSSPP 的 Booted 日志；Range 遥测跨线程丢失时会再次超时')
 }
 if (!/print\(text\)[\s\S]*?observeCoreLog\(message\)[\s\S]*?printErr\(text\)[\s\S]*?observeCoreLog\(message\)/.test(host)) {
-  fail('v17 没有同时观察 stdout/stderr；不同 Emscripten 日志路由下会漏掉 Booted')
+  fail('v18 没有同时观察 stdout/stderr；不同 Emscripten 日志路由下会漏掉 Booted')
 }
 if (/FS\.mount\([^\n]*WORKERFS|FS\.createLazyFile\(/.test(host)) {
   fail('本地 PSP 镜像不能在主线程挂 WORKERFS 或用同步 XHR 的 LazyFile')
@@ -237,7 +237,9 @@ if (
   manifest.browserHttpCache !== 'romv-pinned-no-conditional-v1' ||
   manifest.rangeReadAheadBlocks !== 10 ||
   manifest.rangeReadAheadConcurrency !== 4 ||
-  manifest.rangeReadAheadCacheBytes !== 25165824
+  manifest.rangeReadAheadCacheBytes !== 25165824 ||
+  // v18：正式同步读盘遇到 status 0 就地退避重试（海外玩家开局后断流整局失败）
+  manifest.rangeSyncRetryProfile !== 'status0-backoff-4x-45s-v1'
 ) {
   fail('runtime.json 没有声明 PSP 自适应滚动预读策略')
 }
@@ -296,7 +298,7 @@ if (installed) {
   const runtimeScript = need(join(runtimeDir, 'PPSSPPSDL.js')).toString('utf8')
   const readAheadSource = need(join(root, 'vendor', 'ppsspp', 'range-read-ahead.js')).toString('utf8').trimEnd()
   if (!runtimeScript.includes(readAheadSource)) {
-    fail('v17 发布脚本与预读源码不一致；改源码后必须生成新实体运行时')
+    fail('v18 发布脚本与预读源码不一致；改源码后必须生成新实体运行时')
   }
   if (!runtimeScript.includes('if(fetched?.then){fetched=await fetched}else if(!fetched){fetched=await fetchPromise}')) {
     fail('PPSSPPSDL.js 没有等待异步核心资源重试 Promise，真机解包会报 bad input')

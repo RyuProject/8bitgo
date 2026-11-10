@@ -2324,8 +2324,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (destroyed || started || loadFailed || crashReported) return
     loadFailed = true
     window.clearInterval(startWatch)
-    // 开局前卡住 / 报错时，大陆加速入口可能就是原因：自动重试改走同源（paths.ts 的 ejsBase）
-    if (usedEjsEdge) markEjsEdgeFailed()
+    // 开局前报错时大陆加速入口可能是原因：自动重试改走同源（paths.ts 的 ejsBase）。
+    // 「卡住」除外：大陆走 Cloudflare 取 8bitgo.com 的大文件实测只有几 KB/s（paths.ts 注释），
+    // 卡住多半是慢网或冷编译，退回同源只会让重试必然再卡一次。入口脚本真加载不了另有一处标记。
+    const stalled = message.startsWith(rt.ejsStalled.split('{stage}')[0])
+    if (usedEjsEdge && !stalled) markEjsEdgeFailed()
     options.onError?.(message, scope)
   }
   /**
