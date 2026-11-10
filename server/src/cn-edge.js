@@ -44,6 +44,8 @@ export function createCnEdgeMiddleware({ clientDir, siteOrigin }) {
     req.cnEdge = true
     if (siteOrigin) {
       res.setHeader('Access-Control-Allow-Origin', siteOrigin)
+      // 让页面的 Resource Timing 看得到传输字节数（启动诊断包靠它判断是慢还是命中缓存）；不含任何内容
+      res.setHeader('Timing-Allow-Origin', siteOrigin)
       /*
         静态文件（assets / fonts / emulatorjs）的 ACAO 是固定值，内容不随 Origin 变，不能留 `Vary: Origin`
         （前面的 cors 中间件会加）：预热用 fetch 带 Origin，`<script>` / `<link>` 不带，Vary 让浏览器
