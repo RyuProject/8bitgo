@@ -149,6 +149,13 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
 - 核心失败后引擎会回落 `cdn.emulatorjs.org/<版本>/data/`，而 4.3.0-pre 的官方核心起不来（§2.4），
   只会多等几十秒再报 `Error loading EmulatorJS runtime`。已关掉（`cdnFallback:!1`）。
 
+- **IndexedDB 挂死只等一次**（第十一节，2026-11-11 萨尔瓦多 macOS Safari《超级马里奥》三局都停在「下载游戏核心」、
+  **没有百分比**）：一局要连查两次缓存（核心报告 + 核心），各等满 20 秒就超过适配器 30 秒的卡死预算，库坏掉的浏览器
+  每局都这样。现在 get 15 秒超时或 put 超时后下载器打 `__8bgCacheDead`，本局不再碰缓存，并写 localStorage
+  `8bitgo.ejs.idbStall`；适配器 3 天内据此 `EJS_cacheConfig.enabled=false`、跳过清库和预热探测。
+  `purgePoisonedEngineCache` 里的 `indexedDB.databases()` 也加了 3 秒时限（开局要等它）。
+  缓存过期后的 HEAD 复验（8 秒）和文本响应包体（核心报告，20 秒）同样补了时限。
+
 改引擎后要换 `EJS_RUNTIME_GENERATION`，入口文件名不带内容哈希。
 
 ### 2.8.1 街机 BIOS 分两档：平台一份 + **按系统包**各一份

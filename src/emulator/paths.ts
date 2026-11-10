@@ -109,7 +109,7 @@ export function markEjsEdgeFailed(): void {
   2026-11-10：引擎下载器补了三处（20 秒无数据中止、缓存读写时限、核心不回落官方 CDN，见 patch-emulatorjs.mjs 第十节），
   入口必须换代，否则边缘继续发旧的 emulator.min.js。核心按内容版本，不受影响。
 */
-export const EJS_RUNTIME_GENERATION = '20261027-melondsds-ff33abb1-psxrange1-corecompat1-stateglue3-mameglue3-ejsperf1-cnedge1-dlguard1'
+export const EJS_RUNTIME_GENERATION = '20261027-melondsds-ff33abb1-psxrange1-corecompat1-stateglue3-mameglue3-ejsperf1-cnedge1-dlguard2'
 export const ejsRuntimeAsset = (name: string): string =>
   `${ejsBase()}${name}?v=${encodeURIComponent(EJS_RUNTIME_GENERATION)}`
 

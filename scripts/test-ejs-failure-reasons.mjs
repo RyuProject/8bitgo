@@ -89,4 +89,24 @@ for (const lang of ['zh-Hans', 'zh-Hant', 'en', 'es', 'fr', 'de', 'it', 'ja']) {
   assert.match(player, /document\.removeEventListener\('visibilitychange', onStartupVisibility\)/)
 }
 
-console.log('✔ 启动失败原因：跨 realm 错误原文、内存不足、坏核心缓存、联机拒绝原因、CHD 只拦 MAME')
+// 引擎缓存的 IndexedDB 挂死过：3 天内整局关缓存、不清库、不探测（2026-11-11 萨尔瓦多 Safari）
+{
+  const context = {}
+  const src = fnSource('engineCacheStalledRecently')
+    .replace('(raw: string | null, now = Date.now()): boolean', '(raw, now = Date.now())')
+  vm.runInNewContext(`const EJS_IDB_STALL_TTL_MS = 3 * 24 * 3600_000;${src};globalThis.f=engineCacheStalledRecently`, context)
+  const now = 1_800_000_000_000
+  assert.equal(context.f(null, now), false)
+  assert.equal(context.f('garbage', now), false)
+  assert.equal(context.f(String(now - 3600_000), now), true)
+  assert.equal(context.f(String(now - 4 * 24 * 3600_000), now), false, '3 天后重新试缓存')
+  assert.equal(context.f(String(now + 60_000), now), false, '时钟回拨的未来时间不算')
+  assert.match(adapter, /EJS_cacheConfig: \{ enabled: !engineCacheOff,/)
+  assert.match(adapter, /assumeUncached: engineCachePurgePending\(\) \|\| engineCacheOff/)
+  assert.match(fnSource('purgePoisonedEngineCache'), /if \(readEngineCacheStall\(\)\) return/)
+  assert.match(fnSource('purgePoisonedEngineCache'), /indexedDB\.databases\(\), new Promise<never>/, 'databases() 必须有时限')
+  const engine = readFileSync(new URL('../public/emulatorjs/emulator.min.js', import.meta.url), 'utf8')
+  assert.ok(engine.includes(`localStorage.setItem("${adapter.match(/EJS_IDB_STALL_KEY = '([^']+)'/)[1]}"`), '引擎补丁与适配器用同一个键')
+}
+
+console.log('✔ 启动失败原因：跨 realm 错误原文、内存不足、坏核心缓存、联机拒绝原因、CHD 只拦 MAME、缓存挂死后关缓存')

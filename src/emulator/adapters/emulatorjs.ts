@@ -203,6 +203,26 @@ const EJS_CACHE_GENERATION = '2026-10-25.melondsds-wfc-sourceport.touch-dpr.psx-
 // 浏览器实测已能按片读取，但现有 Beetle WASM 在该样本的完整下载路径也会崩溃；未确认可玩前不能让生产自动进入实验链路。
 const PSX_RANGE_ENABLED = import.meta.env.VITE_PSX_RANGE_ENABLED === '1'
 const EJS_CACHE_PURGED_KEY = '8bitgo.ejs.cachePurged'
+/**
+ * 引擎缓存的 IndexedDB 在这个浏览器里挂死过（`npm run ejspatch` 第十一节写入的时间戳）。
+ * 2026-11-11 萨尔瓦多 macOS Safari：库坏了以后每局都先等满两次缓存查询，停在「下载游戏核心」被判卡住，
+ * 重试也一样。记下来之后几天内直接关掉引擎缓存开局：多下一次核心，换一局能开。
+ */
+export const EJS_IDB_STALL_KEY = '8bitgo.ejs.idbStall'
+const EJS_IDB_STALL_TTL_MS = 3 * 24 * 3600_000
+
+export function engineCacheStalledRecently(raw: string | null, now = Date.now()): boolean {
+  const at = Number(raw)
+  return Number.isFinite(at) && at > 0 && now - at >= 0 && now - at < EJS_IDB_STALL_TTL_MS
+}
+
+function readEngineCacheStall(): boolean {
+  try {
+    return engineCacheStalledRecently(localStorage.getItem(EJS_IDB_STALL_KEY))
+  } catch {
+    return false
+  }
+}
 
 /** 这一局开局前会不会清掉引擎缓存（预热据此决定要不要信库里的「已缓存」） */
 function engineCachePurgePending(): boolean {
@@ -214,6 +234,8 @@ function engineCachePurgePending(): boolean {
 }
 
 async function purgePoisonedEngineCache(): Promise<void> {
+  // 缓存已整局停用：库本来就打不开，再去清只会多等几秒
+  if (readEngineCacheStall()) return
   try {
     if (localStorage.getItem(EJS_CACHE_PURGED_KEY) === EJS_CACHE_GENERATION) return
   } catch {
@@ -238,7 +260,10 @@ async function purgePoisonedEngineCache(): Promise<void> {
    * indexedDB.databases() 确认；没有这个 API 的浏览器退回 deleteDatabase。
    */
   try {
-    const list = typeof indexedDB.databases === 'function' ? await indexedDB.databases() : null
+    // databases() 在 IndexedDB 挂死的 Safari 上永不 resolve，而开局要等这一步；3 秒拿不到就走 deleteDatabase 那条（同样有时限）
+    const list = typeof indexedDB.databases === 'function'
+      ? await Promise.race([indexedDB.databases(), new Promise<never>((_, reject) => setTimeout(() => reject(new Error('databases() timeout')), 3000))])
+      : null
     if (list) {
       if (!list.some((d) => d.name === DB)) return markDone() // 本来就没有，没什么可清
       const cleared = await new Promise<boolean>((resolve) => {
@@ -1978,6 +2003,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let mameBootRomset = ''
   let cancelBootFastForward: (() => void) | null = null
   /** 最近一次「引擎还在动」的时刻，卡死检测用 */
+  // 本局开局时读一次：库挂死过就整局关掉引擎缓存（读 / 写 / 预热探测都不碰 IndexedDB）
+  const engineCacheOff = readEngineCacheStall()
+  if (engineCacheOff) console.warn('[emulatorjs] 引擎缓存的 IndexedDB 近期挂死过，本局不用缓存')
   let lastBeat = Date.now()
   /** 引擎自己那行状态文字上次的内容，变了就算有动静 */
   let lastStage = ''
@@ -3653,7 +3681,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             ejsCoreAsset(`cores/${encodeURIComponent(emulatorJsCoreDataFile(warmCore))}`),
             ...(/^https?:|^\//.test(engineBiosUrl) ? [engineBiosUrl] : []),
           ],
-        }, { assumeUncached: engineCachePurgePending() }).catch(() => {})
+        }, { assumeUncached: engineCachePurgePending() || engineCacheOff }).catch(() => {})
         const cachePurgeTask = purgePoisonedEngineCache()
         const socketIoTask: Promise<unknown | null> = NETPLAY_URL
           ? injectScript(doc, socketIoScriptUrl(), 8_000).then(() => null, (error: unknown) => error)
@@ -4034,7 +4062,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             重走 mame-current 的 37MB 下载 + 242MB 解压（冷启动约 57 秒，热启动约 20 秒）。
             核心 URL 带内容版本号，换版本时旧条目自然不再命中，放宽到 30 天没有串版本的风险。
           */
-          EJS_cacheConfig: { enabled: true, cacheMaxSizeMB: 4096, cacheMaxAgeMins: 60 * 24 * 30 },
+          // 库在这个浏览器里挂死过就整局不用缓存（见 EJS_IDB_STALL_KEY）
+          EJS_cacheConfig: { enabled: !engineCacheOff, cacheMaxSizeMB: 4096, cacheMaxAgeMins: 60 * 24 * 30 },
           // 固定文件名会被 CDN 缓存一个月；显式版本化，避免旧引擎继续索取已删除的 NDS 核心。
           // 核心、样式与构建报告共用一份版本化映射。报告改走 metadata 别名，避免浏览器
           // 把 `/reports/` 当追踪接口拦掉后，EmulatorJS 静默禁用核心缓存。

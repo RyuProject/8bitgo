@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 引擎下载器补丁的行为回归（patch-emulatorjs.mjs 第十节）。
+ * 引擎下载器补丁的行为回归（patch-emulatorjs.mjs 第十、十一节）。
  *
  * 直接把 public/emulatorjs/emulator.min.js 开头的下载器 / 缓存类切出来在 Node 里跑：
  *   - 包体发到 100% 却迟迟不结束时，20 秒无新数据必须 abort 并 reject（以前永远停在「下载游戏核心 100%」）；
@@ -18,7 +18,7 @@ assert.ok(cut > 0, '找不到 GameManager 类，引擎结构变了')
 const prelude = engine.slice(0, cut)
 assert.match(prelude, /class s\{constructor\(t=null,e=null\)\{this\.storageCache=t,this\.EJS=e\}/, '下载器类名变了，更新本测试')
 
-function makeContext({ fetchImpl, indexedDB }) {
+function makeContext({ fetchImpl, indexedDB, localStorage }) {
   const realSetTimeout = setTimeout
   const context = {
     console: { log() {}, warn() {}, error() {} },
@@ -37,6 +37,7 @@ function makeContext({ fetchImpl, indexedDB }) {
     performance,
     window: { indexedDB },
     indexedDB,
+    ...(localStorage ? { localStorage } : {}),
   }
   context.globalThis = context
   vm.runInNewContext(`${prelude};globalThis.__classes={Storage:e,Downloader:s,Cache:o}`, context)
@@ -108,8 +109,66 @@ const stalledBody = (bytes) => new ReadableStream({
 }
 
 {
+  // 第十一节：IndexedDB 挂死时只等一次。get 超时后本局后续下载不再查缓存，并在 localStorage 记下来
+  const fetchImpl = async () => new Response(new Uint8Array([5, 6]), { status: 200, headers: { 'Content-Length': '2' } })
+  const store = new Map()
+  const localStorage = { setItem: (k, v) => store.set(k, String(v)), getItem: (k) => store.get(k) ?? null }
+  const { __classes } = makeContext({ fetchImpl, indexedDB: undefined, localStorage })
+  let gets = 0
+  let puts = 0
+  const hangingCache = {
+    get: () => { gets++; return new Promise(() => {}) },
+    put: () => { puts++; return new Promise(() => {}) },
+    generateCacheKey: () => 'k',
+  }
+  const downloader = new __classes.Downloader(hangingCache, null)
+  const t0 = Date.now()
+  await downloader.downloadFile('https://8bitgo.test/emulatorjs/cores/reports/fceumm.json', 'Reports', 'GET', {}, null, null, null, 30000, 'text', !1, !0)
+  assert.equal(gets, 1)
+  assert.ok(Number(store.get('8bitgo.ejs.idbStall')) > 0, 'get 超时要记到 localStorage，适配器据此后几天关掉缓存')
+  const progress = []
+  const item = await downloader.downloadFile('https://8bitgo.test/emulatorjs/cores/fceumm-wasm.data', 'Core', 'GET', {}, null, (...a) => progress.push(a), null, 30000, 'arraybuffer')
+  assert.deepEqual([...item.files[0].bytes], [5, 6])
+  assert.equal(gets, 1, '缓存判死以后，核心下载不再先等一次 get')
+  assert.equal(puts, 0, '缓存判死以后也不再 put')
+  assert.ok(progress.some(([phase]) => phase === 'downloading'), '核心下载立刻出进度文字，不会被判卡住')
+  // 缩放后：一次 get 超时 15ms，远小于两次（以前要连等 2 × 20 秒）
+  assert.ok(Date.now() - t0 < 1000)
+}
+
+{
+  // 文本响应（核心报告）的包体读不完：20 秒后 reject，不能永远挂着
+  const fetchImpl = async (_url, init) => new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('{"buildStart":'))
+      init.signal.addEventListener('abort', () => controller.error(new DOMException('aborted', 'AbortError')))
+    },
+  }), { status: 200 })
+  const { __classes } = makeContext({ fetchImpl, indexedDB: undefined })
+  const downloader = new __classes.Downloader(null, null)
+  await assert.rejects(
+    downloader.downloadFile('https://8bitgo.test/emulatorjs/cores/reports/fceumm.json', 'Reports', 'GET', {}, null, null, null, 30000, 'text', !1, !0),
+    /Download failed/,
+  )
+}
+
+{
+  // 缓存过期后的 HEAD 复验卡住：8 秒后放弃复验，直接用缓存
+  const fetchImpl = (_url, init) => init.method === 'HEAD' ? new Promise(() => {}) : Promise.reject(new Error('不该走到 GET'))
+  const { __classes } = makeContext({ fetchImpl, indexedDB: undefined })
+  const cached = { cacheExpiry: 1, files: [{ filename: 'fceumm-wasm.data', bytes: new Uint8Array([9]) }] }
+  const cache = { get: async () => cached, put: async () => {}, generateCacheKey: () => 'k' }
+  const downloader = new __classes.Downloader(cache, null)
+  const item = await Promise.race([
+    downloader.downloadFile('https://8bitgo.test/emulatorjs/cores/fceumm-wasm.data', 'Core', 'GET', {}, null, null, null, 30000, 'arraybuffer'),
+    new Promise((resolve) => setTimeout(() => resolve('hung'), 1000)),
+  ])
+  assert.equal(item, cached, 'HEAD 复验卡住时用缓存继续')
+}
+
+{
   const engineCore = /core:\{name:"Core",dontCache:!1,cdnFallback:!1\}/.test(engine)
   assert.ok(engineCore, '核心下载失败不能回落 cdn.emulatorjs.org（那里的 4.3.0-pre 核心起不来）')
 }
 
-console.log('✔ EmulatorJS 下载器：包体卡住 20 秒中止、缓存卡住不挡开局、IndexedDB 同步异常可收敛、核心不回落官方 CDN')
+console.log('✔ EmulatorJS 下载器：包体卡住 20 秒中止、缓存卡住不挡开局且只等一次、报告包体与 HEAD 复验有时限、IndexedDB 同步异常可收敛、核心不回落官方 CDN')

@@ -107,6 +107,10 @@ for (const [needle, what, why] of [
   ['try{for(;;){__8bgArm();const{done:s,value:o}=await e.read()', '下载包体 20 秒无数据中止', '跨洲线路丢了流结尾时会永远停在「下载游戏核心 100%」'],
   ['await Promise.race([this.storageCache.put(n)', '引擎缓存读写有时限', 'IndexedDB 卡住时核心下完也交不出去，停在 100%'],
   ['n.onblocked=()=>e(),n.onsuccess=()=>{try{let i=n.result.transaction(', '引擎缓存读写有时限', '表不存在 / 库正在关闭时 transaction() 同步抛错，Promise 永远不 settle'],
+  ['this.storageCache&&!this.__8bgCacheDead&&(I=await Promise.race(', '缓存挂死一次就停用', 'Safari 的 IndexedDB 挂死时每局连等两次缓存查询，停在「下载游戏核心」（没有百分比）被判卡住'],
+  ['localStorage.setItem("8bitgo.ejs.idbStall"', '缓存挂死一次就停用', '不记下来的话下一局又要先等满一次，适配器也没法提前关掉缓存'],
+  ['fetch(t,{method:"HEAD",headers:s}),new Promise((t,e)=>setTimeout(()=>e(new Error("HEAD timeout")),8e3))', '缓存复验 HEAD 有时限', '缓存过期后的 HEAD 复验没有时限，网络半开时永远停在「下载游戏核心」'],
+  ['else Z=await Promise.race([y[d](),', '文本响应包体有时限', '核心报告 JSON 的包体读不完时引擎永远不往下走'],
   ['core:{name:"Core",dontCache:!1,cdnFallback:!1}', '核心不回落官方 CDN', 'cdn.emulatorjs.org/4.3.0-pre 的核心起不来（AGENTS §2.4），只会多等几十秒再报 Error loading EmulatorJS runtime'],
 ]) {
   if (!js.includes(needle)) fail(`emulator.min.js 缺「${what}」补丁 —— ${why}`, 'npm run ejspatch，然后换 EJS_RUNTIME_GENERATION')

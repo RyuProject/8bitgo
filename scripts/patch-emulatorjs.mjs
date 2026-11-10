@@ -263,6 +263,38 @@ const BLOB_DELETE_FROM = 'const n=e.delete(t);n.onsuccess=()=>i(),n.onerror=()=>
 const BLOB_DELETE_TO = 'let n;try{n=e.delete(t)}catch(t){return i()}n.onsuccess=()=>i(),n.onerror=()=>i()'
 
 /**
+ * 第十一节：IndexedDB 挂死一次，就整局（并在本浏览器几天内）不再碰引擎缓存。
+ *
+ * 2026-11-11 萨尔瓦多 macOS Safari 26.6《超级马里奥》：同一玩家隔 17 小时两次来访，三局都停在
+ * 「下载游戏核心」（**没有百分比**），62 秒后被判卡住。ROM 1 秒内就下完了，引擎文件全是边缘缓存命中。
+ * 没有百分比说明连 `r("downloading",0)` 都没走到：卡在 `storageCache.get()`。第十节给 get 加了 20 秒
+ * 时限，但一局要连查两次（核心报告 + 核心），两次都等满就是 40 秒，期间文字一直是「下载游戏核心」，
+ * 超过适配器 30 秒的卡死预算。库坏掉的浏览器每局都会这样，重试也没用。
+ *
+ * 1. get 超时（15 秒：首查要建库 + 全表清理，大核心读库也要时间；一次等待加报告下载仍在 30 秒卡死预算内）或 put 超时：下载器打上 `__8bgCacheDead`，
+ *    本局后续 get / put 直接跳过；并在 localStorage 记 `8bitgo.ejs.idbStall`，适配器据此在后面几天
+ *    关掉引擎缓存开局（`EJS_cacheConfig.enabled=false`），不再每局先等一次。
+ * 2. 缓存过期后的 HEAD 复验原来没有任何时限；加 8 秒。
+ * 3. 文本类响应（核心报告 JSON）读包体没有时限（第十节只管 arraybuffer）；加 20 秒，超时 abort。
+ */
+const CACHE_DEAD_MARK =
+  'this.__8bgCacheDead=!0;try{localStorage.setItem("8bitgo.ejs.idbStall",String(Date.now()))}catch(t){}'
+const CACHE_GET_DEAD_FROM = CACHE_GET_TO
+const CACHE_GET_DEAD_TO =
+  'this.storageCache&&!this.__8bgCacheDead&&(I=await Promise.race([this.storageCache.get(t,!1,"url").catch(t=>(console.warn("[EJS Cache] get failed",t),null)),' +
+  'new Promise(t=>setTimeout(()=>{console.warn("[EJS Cache] get 超过 15 秒，本局停用缓存，改走网络");' + CACHE_DEAD_MARK + 't(null)},15e3))]));'
+const CACHE_PUT_DEAD_FROM = CACHE_PUT_TO
+const CACHE_PUT_DEAD_TO =
+  '!1===u&&!this.__8bgCacheDead&&await Promise.race([this.storageCache.put(n).catch(t=>console.warn("[EJS Cache] put failed",t)),' +
+  'new Promise(t=>setTimeout(()=>{console.warn("[EJS Cache] put 超过 10 秒，本局停用缓存");' + CACHE_DEAD_MARK + 't()},1e4))]),c(n)'
+const HEAD_REVALIDATE_FROM = 'e=(await fetch(t,{method:"HEAD",headers:s})).headers.get("Last-Modified")'
+const HEAD_REVALIDATE_TO =
+  'e=(await Promise.race([fetch(t,{method:"HEAD",headers:s}),new Promise((t,e)=>setTimeout(()=>e(new Error("HEAD timeout")),8e3))])).headers.get("Last-Modified")'
+const TEXT_BODY_FROM = 'else Z=await y[d]()}catch(t){return clearTimeout(V),void m(`Download failed: ${t}`)}'
+const TEXT_BODY_TO =
+  'else Z=await Promise.race([y[d](),new Promise((t,e)=>setTimeout(()=>{f.abort(),e(new Error("20 秒没有读完响应体"))},2e4))])}catch(t){return clearTimeout(V),void m(`Download failed: ${t}`)}'
+
+/**
  * 每组：name 显示用；patches 是 [要找的原文, 替换后]；
  * legacy 可选，把「替换后」映射成更早一版补丁的样子，用来在引擎升级后接管旧补丁；
  * hint 是位置对不上时打给人看的排查思路。
@@ -411,7 +443,26 @@ const GROUPS = [
     ],
   },
 
+  {
+    name: '缓存挂死一次就停用 + HEAD / 文本包体时限',
+    patches: [
+      [CACHE_GET_DEAD_FROM, CACHE_GET_DEAD_TO],
+      [CACHE_PUT_DEAD_FROM, CACHE_PUT_DEAD_TO],
+      [HEAD_REVALIDATE_FROM, HEAD_REVALIDATE_TO],
+      [TEXT_BODY_FROM, TEXT_BODY_TO],
+    ],
+    hint: [
+      '必须排在「引擎缓存读写有时限」之后：前两条找的是那一组打完后的文本；',
+      '下载器里缓存过期复验的 fetch(t,{method:"HEAD"...}) 与非 arraybuffer 分支的 y[d]() 各加时限。',
+    ],
+  },
+
 ]
+
+const SUPERSEDED = new Map([
+  [CACHE_GET_TO, CACHE_GET_DEAD_TO],
+  [CACHE_PUT_TO, CACHE_PUT_DEAD_TO],
+])
 
 let src = readFileSync(file, 'utf8')
 let changed = false
@@ -421,7 +472,8 @@ for (const group of GROUPS) {
   let applied = 0
   let already = 0
   for (const [from, to] of group.patches) {
-    if (src.includes(to)) {
+    // 被后一组在原地改写过的补丁（第十节 → 第十一节）也算已在位
+    if (src.includes(to) || (SUPERSEDED.has(to) && src.includes(SUPERSEDED.get(to)))) {
       already++
       continue
     }
