@@ -156,6 +156,12 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
   `purgePoisonedEngineCache` 里的 `indexedDB.databases()` 也加了 3 秒时限（开局要等它）。
   缓存过期后的 HEAD 复验（8 秒）和文本响应包体（核心报告，20 秒）同样补了时限。
 
+- **时限定时器必须在 get / put 完成后清掉**（第十二节，2026-11-11 孟加拉 Android 10《拳皇 2002》两局慢启动 20 秒）：
+  第十一节的 `Promise.race([get(), setTimeout(15s)])` 从不 clearTimeout，get 早已返回，15 秒后定时器照样把缓存判死、
+  写挂死标记 —— 开局超过 15 秒的每一局都被误判，适配器随后关缓存，关缓存那局的 get 又续一次标记，永远关着；
+  每局都要在手机上重解 7z 核心（约 12 秒）。现在 race 后 clearTimeout，挂死标记换新键 `8bitgo.ejs.idbStall2`
+  （旧键全是误判，作废）。`test:ejs-download` 有「缓存正常时不误判挂死」一节。凡是 race 加时限的补丁都要清定时器。
+
 改引擎后要换 `EJS_RUNTIME_GENERATION`，入口文件名不带内容哈希。
 
 - **建不出 WebGL 不重试、不换 ROM**（2026-11-11《魂斗罗》Linux Chrome 156：`reading 'GLctx'`，原地重试加三种语言 ROM

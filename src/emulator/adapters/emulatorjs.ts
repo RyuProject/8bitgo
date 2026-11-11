@@ -208,8 +208,9 @@ const EJS_CACHE_PURGED_KEY = '8bitgo.ejs.cachePurged'
  * 引擎缓存的 IndexedDB 在这个浏览器里挂死过（`npm run ejspatch` 第十一节写入的时间戳）。
  * 2026-11-11 萨尔瓦多 macOS Safari：库坏了以后每局都先等满两次缓存查询，停在「下载游戏核心」被判卡住，
  * 重试也一样。记下来之后几天内直接关掉引擎缓存开局：多下一次核心，换一局能开。
+ * 键带 2：旧键 `8bitgo.ejs.idbStall` 由没清定时器的第十一节写入，开局超过 15 秒就会误判（第十二节），全部作废。
  */
-export const EJS_IDB_STALL_KEY = '8bitgo.ejs.idbStall'
+export const EJS_IDB_STALL_KEY = '8bitgo.ejs.idbStall2'
 const EJS_IDB_STALL_TTL_MS = 3 * 24 * 3600_000
 
 export function engineCacheStalledRecently(raw: string | null, now = Date.now()): boolean {

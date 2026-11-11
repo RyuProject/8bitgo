@@ -295,6 +295,27 @@ const TEXT_BODY_TO =
   'else Z=await Promise.race([y[d](),new Promise((t,e)=>setTimeout(()=>{f.abort(),e(new Error("20 秒没有读完响应体"))},2e4))])}catch(t){return clearTimeout(V),void m(`Download failed: ${t}`)}'
 
 /**
+ * 第十二节：缓存时限的定时器要在 get / put 完成后清掉（2026-11-11）。
+ *
+ * 第十、十一节用 `Promise.race([get(), new Promise(r => setTimeout(..., 15e3))])`，定时器**从不清除**：
+ * get 早就回来了，15 秒后定时器照样触发，打 `__8bgCacheDead` 并写 localStorage 的挂死标记（put 那条 10 秒同理）。
+ * 后果：开局超过 15 秒的每一局都把这个浏览器记成「IndexedDB 挂死」，适配器之后 3 天关掉引擎缓存；
+ * 关缓存的那一局 get 仍会调用，15 秒后又续一次标记——永远关着。孟加拉 Android 10《拳皇 2002》两局：
+ * 核心 HTTP 缓存秒到，但每局都要重新解 7z（手机上约 12 秒），慢启动 20 秒，而以前第二局起是 0.7 秒。
+ * 修法：settle 后 clearTimeout。挂死标记换成新键 `8bitgo.ejs.idbStall2`，旧键全是误判，直接作废。
+ */
+const CACHE_DEAD_MARK_V2 =
+  'this.__8bgCacheDead=!0;try{localStorage.setItem("8bitgo.ejs.idbStall2",String(Date.now()))}catch(t){}'
+const CACHE_GET_CLEAR_FROM = CACHE_GET_DEAD_TO
+const CACHE_GET_CLEAR_TO =
+  'this.storageCache&&!this.__8bgCacheDead&&(I=await (()=>{let __8bgT;return Promise.race([this.storageCache.get(t,!1,"url").catch(t=>(console.warn("[EJS Cache] get failed",t),null)),' +
+  'new Promise(t=>{__8bgT=setTimeout(()=>{console.warn("[EJS Cache] get 超过 15 秒，本局停用缓存，改走网络");' + CACHE_DEAD_MARK_V2 + 't(null)},15e3)})]).finally(()=>clearTimeout(__8bgT))})());'
+const CACHE_PUT_CLEAR_FROM = CACHE_PUT_DEAD_TO
+const CACHE_PUT_CLEAR_TO =
+  '!1===u&&!this.__8bgCacheDead&&await (()=>{let __8bgT;return Promise.race([this.storageCache.put(n).catch(t=>console.warn("[EJS Cache] put failed",t)),' +
+  'new Promise(t=>{__8bgT=setTimeout(()=>{console.warn("[EJS Cache] put 超过 10 秒，本局停用缓存");' + CACHE_DEAD_MARK_V2 + 't()},1e4)})]).finally(()=>clearTimeout(__8bgT))})(),c(n)'
+
+/**
  * 每组：name 显示用；patches 是 [要找的原文, 替换后]；
  * legacy 可选，把「替换后」映射成更早一版补丁的样子，用来在引擎升级后接管旧补丁；
  * hint 是位置对不上时打给人看的排查思路。
@@ -457,11 +478,26 @@ const GROUPS = [
     ],
   },
 
+  {
+    name: '缓存时限定时器用完即清',
+    patches: [
+      [CACHE_GET_CLEAR_FROM, CACHE_GET_CLEAR_TO],
+      [CACHE_PUT_CLEAR_FROM, CACHE_PUT_CLEAR_TO],
+    ],
+    hint: [
+      '必须排在「缓存挂死一次就停用」之后：找的是那一组打完后的文本；',
+      'race 结束后 clearTimeout，否则 get / put 成功 15 / 10 秒后照样把缓存判死并写挂死标记。',
+    ],
+  },
+
 ]
 
+// 被后面各节在原地改写过的补丁：值是所有更新的写法
 const SUPERSEDED = new Map([
-  [CACHE_GET_TO, CACHE_GET_DEAD_TO],
-  [CACHE_PUT_TO, CACHE_PUT_DEAD_TO],
+  [CACHE_GET_TO, [CACHE_GET_DEAD_TO, CACHE_GET_CLEAR_TO]],
+  [CACHE_PUT_TO, [CACHE_PUT_DEAD_TO, CACHE_PUT_CLEAR_TO]],
+  [CACHE_GET_DEAD_TO, [CACHE_GET_CLEAR_TO]],
+  [CACHE_PUT_DEAD_TO, [CACHE_PUT_CLEAR_TO]],
 ])
 
 let src = readFileSync(file, 'utf8')
@@ -472,8 +508,8 @@ for (const group of GROUPS) {
   let applied = 0
   let already = 0
   for (const [from, to] of group.patches) {
-    // 被后一组在原地改写过的补丁（第十节 → 第十一节）也算已在位
-    if (src.includes(to) || (SUPERSEDED.has(to) && src.includes(SUPERSEDED.get(to)))) {
+    // 被后面的组在原地改写过的补丁（第十 → 十一 → 十二节）也算已在位
+    if (src.includes(to) || (SUPERSEDED.get(to) ?? []).some((later) => src.includes(later))) {
       already++
       continue
     }

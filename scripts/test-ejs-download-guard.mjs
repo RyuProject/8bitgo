@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 引擎下载器补丁的行为回归（patch-emulatorjs.mjs 第十、十一节）。
+ * 引擎下载器补丁的行为回归（patch-emulatorjs.mjs 第十、十一、十二节）。
  *
  * 直接把 public/emulatorjs/emulator.min.js 开头的下载器 / 缓存类切出来在 Node 里跑：
  *   - 包体发到 100% 却迟迟不结束时，20 秒无新数据必须 abort 并 reject（以前永远停在「下载游戏核心 100%」）；
@@ -125,7 +125,7 @@ const stalledBody = (bytes) => new ReadableStream({
   const t0 = Date.now()
   await downloader.downloadFile('https://8bitgo.test/emulatorjs/cores/reports/fceumm.json', 'Reports', 'GET', {}, null, null, null, 30000, 'text', !1, !0)
   assert.equal(gets, 1)
-  assert.ok(Number(store.get('8bitgo.ejs.idbStall')) > 0, 'get 超时要记到 localStorage，适配器据此后几天关掉缓存')
+  assert.ok(Number(store.get('8bitgo.ejs.idbStall2')) > 0, 'get 超时要记到 localStorage，适配器据此后几天关掉缓存')
   const progress = []
   const item = await downloader.downloadFile('https://8bitgo.test/emulatorjs/cores/fceumm-wasm.data', 'Core', 'GET', {}, null, (...a) => progress.push(a), null, 30000, 'arraybuffer')
   assert.deepEqual([...item.files[0].bytes], [5, 6])
@@ -134,6 +134,25 @@ const stalledBody = (bytes) => new ReadableStream({
   assert.ok(progress.some(([phase]) => phase === 'downloading'), '核心下载立刻出进度文字，不会被判卡住')
   // 缩放后：一次 get 超时 15ms，远小于两次（以前要连等 2 × 20 秒）
   assert.ok(Date.now() - t0 < 1000)
+}
+
+{
+  // 第十二节：get / put 很快回来时，15 / 10 秒的时限定时器必须清掉，不能事后把缓存判死、写挂死标记
+  // （2026-11-11 孟加拉 Android《拳皇 2002》：开局超过 15 秒的每一局都被误判，之后永远关缓存、每局重解 7z）
+  const fetchImpl = async () => new Response(new Uint8Array([7]), { status: 200, headers: { 'Content-Length': '1' } })
+  const store = new Map()
+  const localStorage = { setItem: (k, v) => store.set(k, String(v)), getItem: (k) => store.get(k) ?? null }
+  const { __classes } = makeContext({ fetchImpl, indexedDB: undefined, localStorage })
+  let gets = 0
+  const fastCache = { get: async () => { gets++; return null }, put: async () => {}, generateCacheKey: () => 'k' }
+  const downloader = new __classes.Downloader(fastCache, null)
+  await downloader.downloadFile('https://8bitgo.test/emulatorjs/cores/fceumm-wasm.data', 'Core', 'GET', {}, null, null, null, 30000, 'arraybuffer')
+  // 缩放后 get 时限 15ms、put 10ms：多等一会儿，旧补丁在这里已经触发
+  await new Promise((resolve) => setTimeout(resolve, 60))
+  assert.equal(store.size, 0, '缓存读写都正常时不能写挂死标记')
+  assert.notEqual(downloader.__8bgCacheDead, true, '缓存读写都正常时本局不能停用缓存')
+  await downloader.downloadFile('https://8bitgo.test/emulatorjs/cores/fbneo-wasm.data', 'Core', 'GET', {}, null, null, null, 30000, 'arraybuffer')
+  assert.equal(gets, 2, '第二次下载照样先查缓存')
 }
 
 {
@@ -171,4 +190,4 @@ const stalledBody = (bytes) => new ReadableStream({
   assert.ok(engineCore, '核心下载失败不能回落 cdn.emulatorjs.org（那里的 4.3.0-pre 核心起不来）')
 }
 
-console.log('✔ EmulatorJS 下载器：包体卡住 20 秒中止、缓存卡住不挡开局且只等一次、报告包体与 HEAD 复验有时限、IndexedDB 同步异常可收敛、核心不回落官方 CDN')
+console.log('✔ EmulatorJS 下载器：包体卡住 20 秒中止、缓存卡住不挡开局且只等一次、缓存正常时不误判挂死、报告包体与 HEAD 复验有时限、IndexedDB 同步异常可收敛、核心不回落官方 CDN')
