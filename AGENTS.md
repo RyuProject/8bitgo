@@ -3097,6 +3097,10 @@ EmulatorJS 引擎日志与加载阶段文字（`diagLog`）、下载器的重试
 - 隐私边界写在隐私政策（`test:legal` 的 `startup-diagnostics` 两条）：不存 IP、完整 UA、ROM 地址、账号；
   ROM 文件名一律 `[ROM]`。加新字段先改白名单 `normalizeDiagnostics()`，否则服务端会直接丢掉。
 - 部署要 `cd server && npm run migrate`；缺表时漏斗照常，诊断包不入库，后台该页 503。
+- **慢启动要分清「还在下载」和「下载完卡在启动」**（2026-11-10 阿联酋《心灵之金》：42MB 的 NDS ROM 跑在 6～10Mbps
+  的线路上，物理上就要 35～60 秒；诊断包却只有 start_click → slow_start 和一条第 0 片，后续分片还没进 Resource Timing）。
+  `startupProgressTrace.ts` 记下最后进度：slow_start 的原因原文带上阶段（后台归组时两类自然分开），快照行带字节数与平均速率。
+  ROM Worker 发 `Timing-Allow-Origin`，否则跨源请求的传输量恒为 0；边缘已缓存的旧响应要等过期才带上。
 - 回归：`npm run test:startup-diagnostics`。
 
 ### 2.37 SSR 页面在 Cloudflare 缓存一天，靠「改内容就清」保证新鲜

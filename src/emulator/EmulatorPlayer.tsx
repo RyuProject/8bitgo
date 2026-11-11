@@ -81,6 +81,8 @@ import { FEATURES } from '@/config/features'
 import { desktopScreenAspect, liveStageStyle, mobileScreenAspect, stableLiveGeometry, stageHeightCap } from './screenAspect'
 import { recordPlay } from '@/services/store'
 import { newStartupId, recordStartupEvent, type StartupEventName } from '@/services/startupFunnel'
+import { registerDiagnosticSnapshot } from '@/services/startupDiagnostics'
+import { createStartupProgressTrace } from './startupProgressTrace'
 import { recordRecent } from '@/services/auth'
 import { openAuthModal } from '@/services/authModal'
 import { onMatchRequest } from '@/services/matchRequest'
@@ -1735,11 +1737,14 @@ export function EmulatorPlayer({
     let timeoutTimer = 0
     let slowTimer = 0
     let slowStartupReported = false
+    // 慢启动 / 超时诊断包要看得出「还在下载」还是「下载完卡在启动」，见 startupProgressTrace.ts
+    const progressTrace = createStartupProgressTrace(session.startedAt)
+    const stopProgressSnapshot = registerDiagnosticSnapshot(() => (isCurrent() && !ready ? progressTrace.snapshot() : null))
     const reportSlowStartupIfNeeded = () => {
       if (!isCurrent() || ready || slowStartupReported || readinessState !== 'observable' ||
         Date.now() - session.startedAt < 20_000) return
       slowStartupReported = true
-      reportStartup('slow_start', '等待 game_playable 已超过 20 秒')
+      reportStartup('slow_start', `等待 game_playable 已超过 20 秒${progressTrace.phaseNote()}`)
     }
     /*
       只数**前台**时间（2026-11-10《天之痕》）：下载 146 秒的那段玩家切去了别的标签页，Win95 在后台
@@ -1929,6 +1934,7 @@ export function EmulatorPlayer({
       onProgress: (next) => {
         if (!isCurrent()) return
         noteStartupActivity()
+        progressTrace.accept(next)
         loadProgress.updateDiscSize(next, DISC_NOTICE_BYTES)
         loadProgress.accept(next)
         if (
@@ -2141,6 +2147,7 @@ export function EmulatorPlayer({
       })
     } catch (error) {
       stopStartupWatchdog()
+      stopProgressSnapshot()
       window.clearTimeout(playableTimer)
       const message = error instanceof Error ? error.message : String(error)
       reportStartupFailure(message)
@@ -2159,6 +2166,7 @@ export function EmulatorPlayer({
     setScreenLayout(null)
     return () => {
       stopStartupWatchdog()
+      stopProgressSnapshot()
       window.clearTimeout(playableTimer)
       setHandle(null)
       setCaps(new Set())

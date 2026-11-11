@@ -52,6 +52,12 @@ test('CORS exposes Content-Encoding so browsers do not compare compressed length
   const exposed = r.headers.get('Access-Control-Expose-Headers') || ''
   assert.match(exposed, /(?:^|,\s*)Content-Encoding(?:,|$)/i)
 })
+test('public objects send Timing-Allow-Origin so diagnostics can see transfer sizes', async () => {
+  const e = environment()
+  e.ROMS.seed('roms/nds/game.nds.8bg', 'x')
+  const r = await worker.fetch(req('/roms/nds/game.nds.8bg'), e)
+  assert.equal(r.headers.get('Timing-Allow-Origin'), '*')
+})
 test('CS1.5 and CS1.6 assets prefer WEBGAMES and fall back to the legacy ROMS bucket', async () => {
   const e=environment(); e.WEBGAMES=new Bucket('webgames')
   e.ROMS.seed('web/cs15/packs/index.json','legacy-cs15')

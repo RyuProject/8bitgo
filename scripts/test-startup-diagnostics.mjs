@@ -218,5 +218,33 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   assert.match(psp, /stopSnapshot\(\)/, '销毁时注销快照')
 }
 
+/* ---------- 慢启动要看得出卡在下载还是启动 ---------- */
+{
+  const { createStartupProgressTrace } = await import('../src/emulator/startupProgressTrace.ts')
+  let clock = 1_000
+  const trace = createStartupProgressTrace(1_000, () => clock)
+  assert.equal(trace.snapshot(), null, '没有进度就不出快照')
+  assert.match(trace.phaseNote(), /还没有任何加载进度/)
+  clock = 1_500; trace.accept({ phase: 'engine', ratio: 1 })
+  assert.match(trace.phaseNote(), /仍在加载引擎/)
+  clock = 2_000; trace.accept({ phase: 'rom', loaded: 0, total: 42 * 1048576 })
+  clock = 22_000; trace.accept({ phase: 'rom', loaded: 16 * 1048576, total: 42 * 1048576 })
+  assert.match(trace.phaseNote(), /仍在下载 ROM：16\.0MB\/42\.0MB，平均 6\.7Mbps/, '心灵之金现场：慢网上的大 ROM')
+  assert.match(trace.snapshot(), /阶段 rom，ROM 16\.0MB\/42\.0MB，ROM 起于 1\.0s/)
+  clock = 30_000; trace.accept({ phase: 'rom', loaded: 42 * 1048576, total: 42 * 1048576 })
+  clock = 33_000
+  assert.match(trace.phaseNote(), /下载已完成，正在启动，下载完已 3\.0 秒/)
+  assert.match(trace.snapshot(), /ROM 完成于 29\.0s/)
+  const disc = createStartupProgressTrace(0, () => clock)
+  disc.accept({ phase: 'rom', loaded: 4 * 1048576, total: 600 * 1048576, streaming: true })
+  assert.match(disc.phaseNote(), /流式读盘中/, '流式读盘不能说成「仍在下载」')
+
+  const player = read('src/emulator/EmulatorPlayer.tsx')
+  assert.match(player, /reportStartup\('slow_start', `等待 game_playable 已超过 20 秒\$\{progressTrace\.phaseNote\(\)\}`\)/)
+  assert.match(player, /progressTrace\.accept\(next\)/)
+  assert.equal(player.match(/stopProgressSnapshot\(\)/g)?.length, 2, '挂载失败与卸载都要注销快照')
+  assert.match(read('worker/src/common.js'), /'Timing-Allow-Origin'\] = '\*'/, 'ROM 对象要让诊断包看得到传输字节')
+}
+
 console.log('✔ 启动诊断包：脱敏与白名单、UA 粗粒度、错误归组、前端采集、复制给 AI、PSP 现场、接线')
 process.exit(0)

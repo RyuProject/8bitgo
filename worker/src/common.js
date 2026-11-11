@@ -121,6 +121,10 @@ export function corsHeaders(request, env) {
     'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges, Content-Encoding, ETag, Last-Modified, Retry-After, CF-Cache-Status, X-8BitGo-Edge-Cache',
     'Access-Control-Max-Age': '86400', Vary: 'Origin',
   }
+  // 启动诊断包读 Resource Timing：跨源对象不带这个头时传输量 / 内容量恒为 0，看不出 ROM 下了多少、
+  // 是否命中缓存（2026-11-10《心灵之金》现场）。只放给同样被 CORS 放行的来源。
+  if (allowed.includes('*')) headers['Timing-Allow-Origin'] = '*'
+  else if (allowed.includes(origin)) headers['Timing-Allow-Origin'] = origin
   if (allowed.includes('*')) headers['Access-Control-Allow-Origin'] = '*'
   else if (allowed.includes(origin)) headers['Access-Control-Allow-Origin'] = origin
   return headers

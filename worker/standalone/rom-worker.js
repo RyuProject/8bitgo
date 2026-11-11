@@ -124,6 +124,10 @@ function corsHeaders(request, env) {
     'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges, Content-Encoding, ETag, Last-Modified, Retry-After, CF-Cache-Status, X-8BitGo-Edge-Cache',
     'Access-Control-Max-Age': '86400', Vary: 'Origin',
   }
+  // 启动诊断包读 Resource Timing：跨源对象不带这个头时传输量 / 内容量恒为 0，看不出 ROM 下了多少、
+  // 是否命中缓存（2026-11-10《心灵之金》现场）。只放给同样被 CORS 放行的来源。
+  if (allowed.includes('*')) headers['Timing-Allow-Origin'] = '*'
+  else if (allowed.includes(origin)) headers['Timing-Allow-Origin'] = origin
   if (allowed.includes('*')) headers['Access-Control-Allow-Origin'] = '*'
   else if (allowed.includes(origin)) headers['Access-Control-Allow-Origin'] = origin
   return headers
@@ -516,6 +520,16 @@ export function edgeCacheEligible(request, url, cors) {
  * 所以命中仍是同一代不可变字节；若旧版本只有部分块留在 PoP，未命中的块会从 R2 得到 412，
  * 而不是悄悄拼进新镜像。
  */
+/**
+ * 已核验的 MAME 媒体盘（shared/mame-arcade-media.js 的 mameArcadeDiskObjectKey）：路径里就是 CHD 头的
+ * SHA-1，内容寻址、后台禁止原地覆盖。以前它没有 romv，于是既不进分片边缘缓存、也只拿 5 分钟短缓存 ——
+ * 每位新玩家都要从 R2 源站拉约 20 片 8MB（160MB），国内访客还要绕洛杉矶。
+ */
+const MAME_MEDIA_PATH = /^\/roms\/arcade-media\/mame\/([a-f0-9]{40})\/[a-z0-9][a-z0-9_-]{0,63}\.chd$/
+export function contentAddressedMediaVersion(pathname) {
+  return MAME_MEDIA_PATH.exec(pathname || '')?.[1] || ''
+}
+
 function romRangeCachePlan(request, url, cors) {
   if (request.method !== 'GET' || cors['Access-Control-Allow-Origin'] !== '*') return null
   /*
@@ -531,22 +545,25 @@ function romRangeCachePlan(request, url, cors) {
   if (!blockBytes || url.searchParams.has(RANGE_CACHE_PARAM)) return null
   if (request.headers.has('Authorization') || ['If-Range', 'If-None-Match', 'If-Modified-Since', 'If-Unmodified-Since'].some(name => request.headers.has(name))) return null
   if (/\b(?:no-cache|no-store)\b/i.test(request.headers.get('Cache-Control') || '')) return null
-  const version = url.searchParams.get('romv') || ''
-  if (!/^[a-f0-9]{32}(?:-\d+)?$/i.test(version)) return null
+  const contentVersion = contentAddressedMediaVersion(url.pathname)
+  const version = url.searchParams.get('romv') || contentVersion
+  const contentAddressed = Boolean(contentVersion) && !url.searchParams.get('romv')
+  if (!contentAddressed && !/^[a-f0-9]{32}(?:-\d+)?$/i.test(version)) return null
   const ifMatch = request.headers.get('If-Match')
-  if (ifMatch && ifMatch !== `"${version}"`) return null
+  if (ifMatch && !contentAddressed && ifMatch !== `"${version}"`) return null
   const match = /^bytes=(\d+)-(\d+)$/.exec(request.headers.get('Range') || '')
   if (!match) return null
   const start = Number(match[1]); const end = Number(match[2])
   if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start % blockBytes !== 0 || end < start || end - start + 1 > blockBytes) return null
   const cacheUrl = new URL(url)
   cacheUrl.searchParams.set(RANGE_CACHE_PARAM, `${start}-${end}`)
-  return { key: new Request(cacheUrl, { method: 'GET' }), version, start, end, blockBytes }
+  return { key: new Request(cacheUrl, { method: 'GET' }), version, start, end, blockBytes, contentAddressed }
 }
 
 function verifiedRangeHeaders(response, plan, stored = false) {
   if (response.status !== (stored ? 200 : 206) || response.headers.get('Content-Encoding')) return null
-  if (response.headers.get('ETag') !== `"${plan.version}"`) return null
+  // 内容寻址的媒体盘：身份是路径里的 SHA-1，不靠 R2 ETag（它们没有 romv 可比）
+  if (!plan.contentAddressed && response.headers.get('ETag') !== `"${plan.version}"`) return null
   const value = response.headers.get(stored ? RANGE_CACHE_HEADER : 'Content-Range') || ''
   const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(value)
   if (!match) return null
@@ -589,7 +606,8 @@ export function cachePolicy(env, url) {
   // CS16 分片的路径本身就是压缩字节 SHA-256；它不会被原地替换，可以安全缓存一年。
   if (
     /^\/web\/cs16\/zstd-v1\/chunks\/[a-f0-9]{64}\.zst$/.test(url?.pathname || '') ||
-    immutableSockdrivePath(url?.pathname || '')
+    immutableSockdrivePath(url?.pathname || '') ||
+    contentAddressedMediaVersion(url?.pathname || '')
   ) {
     return cacheValue(env, 'IMMUTABLE_CACHE_CONTROL', IMMUTABLE_CACHE_CONTROL)
   }
@@ -673,9 +691,16 @@ async function createMultipart(request, env, key, cors) {
   if (contentType.length > 256 || /[\r\n]/.test(contentType)) throw new HttpError(400, '无效 contentType')
   if (meta.size !== undefined && (!Number.isSafeInteger(Number(meta.size)) || Number(meta.size) < 0)) throw new HttpError(400, '无效 size')
   const bucket = bucketForWrite(env, key)
-  const upload = await bucket.createMultipartUpload(key, {
-    httpMetadata: { contentType, ...(contentEncoding ? { contentEncoding } : {}), cacheControl: writeCacheControl(env) },
-  })
+  let upload
+  try {
+    upload = await bucket.createMultipartUpload(key, {
+      httpMetadata: { contentType, ...(contentEncoding ? { contentEncoding } : {}), cacheControl: writeCacheControl(env) },
+    })
+  } catch (error) {
+    // 让管理员端能区分“创建会话时的临时 R2 故障”和后续分片失败；只有这个明确的
+    // Worker 可重试响应才允许客户端重试 POST，避免把未知网关响应当成幂等操作。
+    return storageFailure(error, cors, '开始分片上传')
+  }
   const marker = await deterministicMarker(key, upload.uploadId)
   try {
     // Preserve the original list-with-metadata interface without per-marker GETs.
@@ -694,10 +719,10 @@ async function createMultipart(request, env, key, cors) {
     let cleanupFailed = false
     try { await upload.abort() } catch { cleanupFailed = true }
     if (cleanupFailed) {
-      return json({ ok: false, error: '标记写入失败且分片中止失败，请保留返回的 uploadId 进行清理', key, uploadId: upload.uploadId, marker, retryable: true, cleanupRequired: true }, cors, 503)
+      return json({ ok: false, error: '标记写入失败且分片中止失败，请保留返回的 uploadId 进行清理', code: 'multipart_marker_write_failed', key, uploadId: upload.uploadId, marker, retryable: true, cleanupRequired: true }, cors, 503)
     }
     if (error instanceof HttpError) throw error
-    return json({ error: '标记写入失败，已中止新建的分片会话', retryable: true }, cors, 503)
+    return json({ error: '标记写入失败，已中止新建的分片会话', code: 'multipart_marker_write_failed', retryable: true }, cors, 503)
   }
   return json({ ok: true, key, uploadId: upload.uploadId, marker, maxPartBytes: MAX_PART_BYTES }, cors)
 }
