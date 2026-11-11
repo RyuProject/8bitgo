@@ -169,6 +169,14 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
   `ejsWebglUnavailable`（提示打开硬件加速）；建得出说明只是一时，照常重试。
 - **联机超时把握手进度写进诊断包**：信令是否连上、`open-room` / `join-room` 有没有发出、回执是什么、各在第几毫秒
   （`netTrace`）。「联机没有连上」两周 100 多次，11-07 识别出服务端拒绝后已降到每天一两次，剩下的靠这一行定位。
+- **全局 `io` 会被引擎覆盖；没连上就断会被引擎退房**（2026-11-11，大陆玩家《拳皇97》《合金弹头2》5 次，
+  诊断包「信令 未连上、传输 ?、房间请求 没发出」）。`emulator.min.js` 自带 socket.io，加载时 UMD 执行
+  `(globalThis).io = e()`，把 `hookRoomToken` 提前装的包装原样盖掉 —— game_slug 补丁、room-token、握手轨迹、
+  拒绝原因全部失效（服务端没有 slug 就回 `game does not support multiplayer`）。现在 `netplaySocketHook.ts` 的
+  `installIoHook` 把 `io` 钉成访问器，后赋的值也先包一层。另外 socket.io 的 `Socket.onclose` 没连上过也发
+  `disconnect`，引擎据此 `leaveRoom()` 把 socket 置空、自动重连跟着没了（「传输 ?」就是 socket 已是 null）；
+  `guardPreConnectDisconnect` 只拦从未连上过的那种。单次握手超时 8 秒（socket.io 默认 20 秒正好等于以前的整体等待），
+  整体等待 30 秒，连着 3 次 connect_error 才提前判「连不上」。回归：`npm run test:netplay-socket-hook`。
 
 ### 2.8.1 街机 BIOS 分两档：平台一份 + **按系统包**各一份
 

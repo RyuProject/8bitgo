@@ -35,6 +35,7 @@ import { getT, fmt } from '@/services/i18n'
 import { alternateRomUrl } from '@/services/romHosts'
 import { getLang } from '@/services/lang'
 import type { Lang } from '@/config/languages'
+import { guardPreConnectDisconnect, installIoHook, withSignalTimeout } from '../netplaySocketHook'
 import { ICE_SERVERS, NETPLAY_URL, fetchIceConfig, gameIdFor, netplayUrlForFrame, socketIoScriptUrl, uploadState } from '@/services/netplay'
 import { guardInputChannel } from '../netplayGuard'
 import { normalizeHostSync } from '../netplaySyncGuard'
@@ -430,11 +431,18 @@ const MISS_BEFORE_WARN = 3
  * 开房 / 进房最多等多久。信令握手 + open-room 的 ack 正常一两秒；移动网络、跨洋线路慢一些也就几秒。
  * 以前是 1 秒后看到 socket 没连上就按「房主断线」处理 —— 握手慢一点的正常用户开房就被拆掉。
  */
-const JOIN_TIMEOUT_MS = 20_000
+const JOIN_TIMEOUT_MS = 30_000
+/**
+ * 信令单次握手的超时（socket.io 默认 20 秒，等于以前的整体等待，一次卡住就没有第二次机会）。
+ * 缩到 8 秒后，30 秒里能自动重试两三轮。
+ */
+const SIGNAL_CONNECT_TIMEOUT_MS = 8_000
 /** 多久把 EJS_netplayICEServers 续一次。TURN 凭证默认 1 小时过期，10 分钟一次很宽裕 */
 const ICE_REFRESH_MS = 10 * 60_000
 /** 信令报过 connect_error 且这么久还没连上，就不用等满 JOIN_TIMEOUT_MS 了（Mixed Content、服务器挂了） */
 const SIGNAL_FAIL_MS = 6_000
+/** 至少这么多次 connect_error 才算「连不上」：一次握手超时只是要重试 */
+const SIGNAL_FAIL_ERRORS = 3
 /**
  * 电池存档（SRAM）主动落盘的间隔。
  *
@@ -2330,7 +2338,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    * 联机握手到了哪一步，超时时写进启动诊断包。「联机没有连上」两周 100 多次，以前只知道等满了 20 秒，
    * 分不出是信令没连上、房间请求没发出去，还是发出去了服务端没回。
    */
-  const netTrace = { connectedAt: 0, lastError: '', emitted: '', emittedAt: 0, ackAt: 0, ack: '' }
+  const netTrace = {
+    connectedAt: 0, lastError: '', emitted: '', emittedAt: 0, ackAt: 0, ack: '',
+    /** io() 被调了几次（引擎每次开房 / 进房各一次）；0 说明引擎压根没建 socket */
+    sockets: 0,
+    /** connect_error 次数：一次握手超时不算没救，连着几次才算 */
+    errors: 0,
+    /** 没连上就断开、被拦下来改走自动重连的次数 */
+    earlyCloses: 0,
+  }
   /** 上次刷新 EJS_netplayICEServers 的时间，见 ICE_REFRESH_MS */
   let lastIceAt = 0
   /**
@@ -2343,10 +2359,18 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    * 函数上挂着的那些属性（io.connect、io.Manager…）Proxy 会原样透出去。
    */
   const hookRoomToken = (win: Window & Record<string, unknown>) => {
-    const realIo = win.io
-    if (typeof realIo !== 'function' || (realIo as { __8bit?: boolean }).__8bit) return
-    const proxy = new Proxy(realIo as (...a: unknown[]) => unknown, {
-      apply(target, thisArg, args) {
+    /*
+      ⚠️ 不能只在这里给 win.io 赋一次值：emulator.min.js 自带一份 socket.io 客户端，加载时会把
+      全局 io 原样覆盖，这层包装连同 slug 补丁、room-token、握手轨迹全部失效（2026-11-11 线上取证，
+      见 netplaySocketHook.ts）。installIoHook 把 io 钉成访问器，后来者赋的值也先经过 wrapIo。
+    */
+    installIoHook(win, wrapIo)
+  }
+  const wrapIo = (realIo: (...a: unknown[]) => unknown) => {
+    const proxy = new Proxy(realIo, {
+      apply(target, thisArg, rawArgs) {
+        netTrace.sockets++
+        const args = withSignalTimeout(rawArgs, SIGNAL_CONNECT_TIMEOUT_MS)
         const sock = Reflect.apply(target, thisArg, args) as {
           on?: (ev: string, cb: (d: unknown) => void) => void
           emit?: (event: string, ...args: unknown[]) => unknown
@@ -2410,10 +2434,16 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           sock?.on?.('disconnect', (reason: unknown) => diagLog('netplay', 'warn', `信令断开：${safeStr(reason)}`))
           sock?.on?.('connect_error', (e: unknown) => {
             signalErrorAt = Date.now()
+            netTrace.errors++
             netTrace.lastError = safeStr(e).slice(0, 160)
             if (signalErrorLogged) return
             signalErrorLogged = true
             logEngine(`[netplay] 信令连接失败：${safeStr(e)}`)
+          })
+          // 必须挂在上面那几条之后：它只拦之后注册的 disconnect（引擎的 leaveRoom），我们自己的日志照记
+          guardPreConnectDisconnect(sock, (reason) => {
+            netTrace.earlyCloses++
+            diagLog('netplay', 'warn', `信令没连上就断了（${safeStr(reason)}），交给 socket.io 自动重连，不让引擎退房`)
           })
         } catch {
           /* 不是 socket.io 的 socket？那就算了，轮询那边还有一次兜底 */
@@ -2422,7 +2452,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       },
     })
     ;(proxy as unknown as { __8bit: boolean }).__8bit = true
-    win.io = proxy
+    return proxy
   }
   /** 关页面前补传存档用 */
   let flushState: (() => void) | null = null
@@ -2661,7 +2691,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     const openedAt = Date.now()
     roomAckError = ''
     // 信令连接可以沿用（connectedAt 留着），这一轮的房间请求与回执重新记
-    Object.assign(netTrace, { lastError: '', emitted: '', emittedAt: 0, ackAt: 0, ack: '' })
+    Object.assign(netTrace, { lastError: '', emitted: '', emittedAt: 0, ackAt: 0, ack: '', sockets: 0, errors: 0, earlyCloses: 0 })
     playersTimer = window.setInterval(() => {
       if (destroyed) return
       const cur = win.EJS_emulator as EjsEmulator | undefined
@@ -2733,7 +2763,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
          * 以前 1 秒后看到 socket 没连上就按「房主断线」处理，握手慢一点的正常用户也会中招。
          */
         const waited = Date.now() - openedAt
-        const hopeless = signalErrorAt > openedAt && waited > SIGNAL_FAIL_MS
+        // 握手超时会自动重试，一次 connect_error 不代表没救；连着几次（Mixed Content、服务器挂了）才提前放弃
+        const hopeless = signalErrorAt > openedAt && netTrace.errors >= SIGNAL_FAIL_ERRORS && waited > SIGNAL_FAIL_MS
         if (hopeless || waited > JOIN_TIMEOUT_MS) {
           window.clearInterval(playersTimer)
           try {
@@ -2745,8 +2776,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           const transport = (n.socket as unknown as { io?: { engine?: { transport?: { name?: string } } } } | undefined)?.io?.engine?.transport?.name
           diagLog('netplay', 'warn', [
             `联机等了 ${waited}ms 没进房`,
-            `信令 ${n.socket?.connected ? '已连上' : '未连上'}（首次连上 ${since(netTrace.connectedAt)}，传输 ${transport || '?'}）`,
-            `最后错误 ${netTrace.lastError || '无'}`,
+            `信令 ${n.socket?.connected ? '已连上' : '未连上'}（首次连上 ${since(netTrace.connectedAt)}，传输 ${transport || '?'}，socket ${n.socket ? '在' : '无'}，建了 ${netTrace.sockets} 个，io 已挂钩 ${Boolean((win.io as { __8bit?: boolean } | undefined)?.__8bit)}）`,
+            `最后错误 ${netTrace.lastError || '无'}（共 ${netTrace.errors} 次，没连上就断 ${netTrace.earlyCloses} 次）`,
             `房间请求 ${netTrace.emitted || '没发出'} @${since(netTrace.emittedAt)}`,
             `回执 ${netTrace.ack || '没收到'} @${since(netTrace.ackAt)}`,
             `isNetplay=${Boolean(cur?.isNetplay)} 房主=${Boolean(n.owner)}`,
