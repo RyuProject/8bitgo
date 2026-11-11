@@ -1387,6 +1387,30 @@ EdgeOne 帮不上。现在 `writeInlineRuffleFrame()`（`src/emulator/ruffleFram
 `/play-local` 也可用（已实测）。写不出来才导航到 `/flash-frame.html`，上面的超时重试保留为兜底。
 `RUFFLE_FRAME_HTML` 与 `public/flash-frame.html` 必须逐字一致，测试会核对。
 
+### 2.24.0b Flash 冷启动：核心与 Zstd 解码器必须和 SWF 并行取（2026-11-11 大陆四局慢启动）
+
+大陆玩家四局 Flash 在 20 秒内没进游戏（《Dad 'n Me》两局、《僵尸危机：房间》3G、《森林冰火人》）。两处串行：
+
+- **Ruffle 核心只在 `player.load()` 里才下载**，而 load() 要等 SWF 下完、解完。核心是 core JS + wasm，
+  经 EdgeOne 走 br 约 3.4MB。悬停预热只对桌面真悬停生效，触屏 / 键盘开局从来没有。《Dad 'n Me》的 SWF
+  178ms 就从缓存拿到，随后整整 20 秒全是核心下载编译。现在适配器挂载时调用 `warmRuffleCore(ruffleRoot)`
+  （`prewarm.ts`，不看悬停 / 省流量，反正马上要下），读 `bootstrap.json` 选出与 Ruffle 一致的那一套，
+  和 SWF 并行进 HTTP 缓存。
+- **8BG 的 Zstd 解码器 wasm 等到解包才 `init()`**：《森林冰火人》的 SWF 用 10.9 秒下完，11.0 秒才去取
+  74KB 的 `zstd-*.wasm`，弱网上又排了 7 秒。现在 `loadGameBytes` 见到 `.8bg` 地址（`isRomPackUrl`）就先
+  `prewarmRomPackDecoder()`，所有运行时共用。`readyZstd` 失败后会清掉，不再永久钉在 rejected。
+- 还剩一趟串行：`/api/rom-pack/key` 要用文件头里的 packageId，只能等第一片到了再取，没有改。
+
+**诊断**：以前 Ruffle 的诊断包在 ROM 之后一行日志都没有，因为 ruffle.js / 核心都在 iframe 里下，外层
+performance 看不到。现在适配器做三件事：
+- 用 `markStage` 记每个阶段：播放壳就绪 → 取 ruffle.js → ruffle.js 已加载 → 等 SWF 与存档会话 →
+  检查 SWF → Ruffle load() → 等元数据 → 可以玩了；
+- 登记 `watchFramePerformance(iframe)`；
+- 打包时给一行 `Ruffle 现场：卡在「…」Ns`，带线路、SWF 大小、核心预热耗时。
+
+看慢启动先找这行：卡在「Ruffle load()」且核心预热未完成，就是核心下载慢。回归：`npm run test:ruffle-runtime`
+（含 `scripts/test-ruffle-startup.mjs`）。
+
 ### 2.24.0 Ruffle 存档要跟着游戏走；舞台按显示尺寸渲染
 
 Ruffle 的 SharedObject 键是 `<hostname>/<localPath>/<名字>`，而本站所有 Flash 共用一个源：

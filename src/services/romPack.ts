@@ -118,7 +118,28 @@ interface RomPackCapacity {
 
 const keyCache = new Map<string, Promise<CryptoKey>>()
 let zstdReady: Promise<void> | null = null
-const readyZstd = () => (zstdReady ??= init())
+const readyZstd = (): Promise<void> => {
+  if (!zstdReady) {
+    const pending = init()
+    zstdReady = pending
+    // 一次网络失败不能把解码器永久钉死在 rejected：下一局 / 自动重试要能重新取 wasm。
+    pending.catch(() => {
+      if (zstdReady === pending) zstdReady = null
+    })
+  }
+  return zstdReady
+}
+
+/**
+ * 在下载 8BG 的**同时**把 Zstd 解码器（约 74KB br 的 wasm）取回并编译好。
+ *
+ * 2026-11-11 大陆《森林冰火人》慢启动：SWF 用 10.9 秒下完，到 11.0 秒解包时才第一次
+ * `init()` 去取 zstd-*.wasm，又在弱网上花了 7 秒 —— 一个几十 KB 的文件排在整个 ROM 之后
+ * 串行走一趟高 RTT 往返。loadGameBytes 见到 .8bg 地址就调这里；失败静默，解包时会再试一次。
+ */
+export function prewarmRomPackDecoder(): void {
+  void readyZstd().catch(() => {})
+}
 
 interface PackedRomRetryCache extends Omit<PackedRomUpload, 'reused'> {
   sourceName: string

@@ -48,6 +48,8 @@ import { ruffleRendererPreference, type RuffleRendererPreference } from '../flas
 import { flashLegacyBundleRules, type FlashUrlRewriteRule } from '../flashLegacyBundle'
 import { installFlashLegacyLoginRedirect } from '../flashLegacyLogin'
 import { installRuffleCrashGuard } from '../ruffleCrash'
+import { warmRuffleCore } from '../prewarm'
+import { diagLog, registerDiagnosticSnapshot, watchFramePerformance } from '@/services/startupDiagnostics'
 
 export { RUFFLE_PATH } from '../paths'
 import { markRuffleEdgeFailed, RUFFLE_PATH, RUFFLE_VERSION, ruffleBase } from '../paths'
@@ -270,6 +272,49 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       },
     }
   }
+  /*
+    启动阶段要进诊断包（startupDiagnostics.ts）。2026-11-11 大陆四局 Flash 慢启动的诊断包里，
+    ROM 下完之后整整 20 秒一行日志都没有：Ruffle 的 ruffle.js / 核心 wasm 是在 iframe 里取的，
+    外层 performance 看不到，适配器自己也从不报阶段，根本分不清卡在壳、ruffle.js、核心下载、
+    load() 还是等元数据。现在每过一个阶段记一行，打包时再给一行「卡在哪一步、已多久」的现场。
+  */
+  const mountedAt = Date.now()
+  let startupStage = '挂载'
+  let startupStageAt = mountedAt
+  let startupDone = false
+  const markStage = (name: string, detail = '') => {
+    const now = Date.now()
+    startupStage = name
+    startupStageAt = now
+    diagLog('stage', 'info', `${name}${detail ? ` · ${detail}` : ''} (+${now - mountedAt}ms)`)
+  }
+  const kb = (n: number) => `${Math.round(n / 1024)}KB`
+  /*
+    玩家已经点了开始：Ruffle 核心（core JS + wasm）现在就和 SWF 并行进 HTTP 缓存。
+    Ruffle 只在 load() 里才取核心，而 load() 要等 SWF 下完、解完 —— 不预热就是串行（见 warmRuffleCore）。
+  */
+  let coreWarmFile: string | null = null
+  let coreWarmMs = -1
+  void warmRuffleCore(ruffleRoot).then((warm) => {
+    coreWarmFile = warm.wasm
+    return warm.done.then(() => {
+      coreWarmMs = Date.now() - mountedAt
+      if (!destroyed && warm.wasm) diagLog('ruffle', 'info', `核心 ${warm.wasm} 预热完成 (+${coreWarmMs}ms)`)
+    })
+  })
+  let swfInfo = ''
+  let stopFramePerf: (() => void) | null = null
+  const stopSnapshot = registerDiagnosticSnapshot(() => {
+    const now = Date.now()
+    return [
+      `Ruffle 现场：${startupDone ? '已启动' : `卡在「${startupStage}」${Math.round((now - startupStageAt) / 100) / 10}s`}`,
+      `挂载后 ${Math.round((now - mountedAt) / 100) / 10}s`,
+      `线路 ${ruffleRoot === RUFFLE_PATH ? '同源' : '加速'}`,
+      `SWF ${swfInfo || '未到'}`,
+      `核心预热 ${coreWarmMs >= 0 ? `${coreWarmMs}ms` : coreWarmFile ? '进行中' : '未开始/失败'}`,
+      `页面${document.hidden ? '在后台' : '在前台'}`,
+    ].join('，')
+  })
   /** 加载成功后才知道能不能暂停 / 调音量，先空着，等 load() 回来再报 */
   const caps = new Set<Capability>()
   /** 播放器元素与它的 API 门面（两者都可能带 volume / pause） */
@@ -439,6 +484,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     maxUnpackedBytes: MAX_SWF_BYTES,
   }).then((loaded) => {
     assertSwf(loaded.data)
+    swfInfo = `${kb(loaded.data.byteLength)}${loaded.fromCache ? '（本地缓存）' : ''}`
+    diagLog('ruffle', 'info', `SWF 就绪 ${swfInfo} (+${Date.now() - mountedAt}ms)`)
     return loaded
   })
   void gameBytes.catch(() => {})
@@ -595,6 +642,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     frameInitialized = true
     if (frameInitTimer) window.clearTimeout(frameInitTimer)
     frameInitTimer = 0
+    // ruffle.js、core JS、核心 wasm 都在这个 iframe 里下，诊断包要看得到它们的耗时
+    stopFramePerf?.()
+    stopFramePerf = watchFramePerformance(win)
+    markStage('播放壳就绪')
     try {
       win.history.replaceState(null, '', `/flash-frames/${encodeURIComponent(saveId)}/frame.html`)
     } catch (error) {
@@ -640,12 +691,14 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
     const script = doc.createElement('script')
     script.src = `${ruffleRoot}ruffle.js`
+    markStage('取 ruffle.js', ruffleRoot === RUFFLE_PATH ? '同源' : '加速线路')
     script.onerror = () => {
       // 加速入口取不到 ruffle.js：这一局当场换同源再试一次，不让玩家等自动重试
       if (ruffleRoot !== RUFFLE_PATH && !destroyed) {
         console.warn(`[ruffle] ${ruffleRoot}ruffle.js 加载失败，改走同源 ${RUFFLE_PATH}`)
         markRuffleEdgeFailed()
         ruffleRoot = RUFFLE_PATH
+        markStage('取 ruffle.js', '加速线路失败，改同源')
         const retry = doc.createElement('script')
         retry.src = `${ruffleRoot}ruffle.js`
         retry.onerror = script.onerror
@@ -661,6 +714,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     script.onload = async () => {
       if (destroyed) return
       try {
+        markStage('ruffle.js 已加载')
         const source = win.RufflePlayer?.newest()
         if (!source) throw new Error(rt.ruffleNotInit)
         player = source.createPlayer()
@@ -676,7 +730,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           stage?.appendChild(player)
         }
 
+        markStage('等 SWF 与存档会话')
         const [loaded, initialOnlineSave, sfsConfig] = await Promise.all([gameBytes, flashOnlineSave, sfsRuffleConfig])
+        markStage('检查 SWF')
         let onlineSave = initialOnlineSave
         /*
           这类站点锁不会抛异常：Armor Games 片头播完后只打一行 LOCATION IS VALID: false，
@@ -967,8 +1023,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
          * 两条 Promise 必须由同一个 Promise.all 持有：若 load 同步失败后玩家马上离开，独立的
          * metadataReady 会在 abort 时形成无人接收的 rejection，污染全局错误上报。
          */
+        markStage('Ruffle load()', `核心预热${coreWarmMs >= 0 ? '已完成' : '未完成'}`)
         await Promise.all([
-          Promise.resolve().then(() => api!.load(loadOptions)),
+          Promise.resolve().then(() => api!.load(loadOptions)).then(() => {
+            // load() 回来 = 核心已下载编译、SWF 已交给 WASM；之后的等待是 SWF 自己的首帧
+            if (!destroyed) markStage('等元数据')
+          }),
           waitForRuffleMetadata(player, aborter.signal),
         ])
         if (destroyed) return
@@ -1009,6 +1069,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         syncVisibility()
         // onReady 必须在 load 完成之后 —— 以前放在 load 之前，播放器会在 SWF 还没解析完
         // 就把加载遮罩撤掉，玩家对着空白舞台点半天
+        startupDone = true
+        markStage('可以玩了')
         options.onReady?.()
         // 不只依赖外层播放器下一次 React effect：解密后的异步启动链较长，Ruffle 自己还会
         // 在 load resolve 后换内部节点。这里从适配器内部钉住真正接键盘的元素。
@@ -1307,6 +1369,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     },
     destroy() {
       destroyed = true
+      // 先拍下 iframe 里的网络记录，iframe 一移除就读不到了
+      stopFramePerf?.()
+      stopFramePerf = null
+      stopSnapshot()
       document.removeEventListener('visibilitychange', syncVisibility)
       cancelStageFit()
       cancelLegacyLoginRedirect()

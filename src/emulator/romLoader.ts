@@ -8,7 +8,7 @@ import { assertNotHtml } from '@/lib/romValidation'
 import { romCacheDelete } from './romCache'
 import { romArchiveRef } from '@/lib/romArchiveUrl'
 import { loadRemoteArchiveRom } from './remoteArchive'
-import { isRomPackBytes, unpackRomPack } from '@/services/romPack'
+import { isRomPackBytes, prewarmRomPackDecoder, unpackRomPack } from '@/services/romPack'
 import { parseRomPackHeader } from '../../shared/rom-pack-format.js'
 
 export interface GameBytesLimits {
@@ -49,6 +49,15 @@ export interface LoadedGameBytes {
   fromCache?: boolean
 }
 
+/** 地址本身就指向 8BG 容器（`….swf.8bg?romv=…`）。只看路径，查询串和片段不算。 */
+export function isRomPackUrl(url: string): boolean {
+  try {
+    return new URL(url, 'https://x.invalid/').pathname.toLowerCase().endsWith('.8bg')
+  } catch {
+    return /\.8bg(?:[?#]|$)/i.test(url)
+  }
+}
+
 export function fileNameFromUrl(url: string, fallback = 'game.rom'): string {
   try {
     const pathname = new URL(url, window.location.href).pathname
@@ -87,6 +96,9 @@ export async function loadGameBytes(
     if (signal?.aborted) throw new DOMException('已取消', 'AbortError')
     return { name: extracted.name, data, remoteUrl: game, fromCache: extracted.fromCache }
   }
+
+  // 8BG 的解码器 wasm 与 ROM 并行取，别等下完了才发现要它（见 prewarmRomPackDecoder）
+  if (isRomPackUrl(game)) prewarmRomPackDecoder()
 
   // 缓存键只有在播放地址带内容版本号（?romv=<etag>）时才成立，见 romCache.ts 的文件头注释
   const cacheKey = romCacheKey(game)
