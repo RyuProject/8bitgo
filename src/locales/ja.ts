@@ -1462,7 +1462,7 @@ const ja: Translation = {
     ejsInitFailed: 'エミュレーターのコンテナを初期化できません',
     ejsEngineError: 'エミュレーターのエラー：{msg}',
     ejsOutOfMemory: 'メモリが足りずエミュレーターを起動できませんでした。ほかのタブやアプリを閉じて「再試行」を押すか、メモリの多い端末でお試しください。',
-    ejsWebglUnavailable: 'ブラウザーが WebGL の描画領域を作成できず、エミュレーターを起動できませんでした。ブラウザーの設定でハードウェア アクセラレーションをオンにする（Chrome：設定 → システム）か、別のブラウザーや端末でお試しください。',
+    ejsWebglUnavailable: 'ブラウザーで WebGL 画面を作成できません。ハードウェア アクセラレーションをオンにしてください',
     ejsArcadeRomInvalid: 'アーケードゲームのファイルが不完全か、有効な ZIP ではありません：{name}',
     ejsArcadeUnknownSet: 'エミュレーターがこのアーケードパッケージを認識できません（{msg}）。ZIP のファイル名を正しい romset 名（例：kof97.zip、tekken3.zip）にし、同じバージョンの完全な内容にしてください。',
     ejsArcadeMissingFiles: 'アーケードパッケージに起動に必要なファイルが足りません（{msg}）。よくある原因：BIOS パッケージ未設定、クローンセットに親セットの ROM がない、ROM のバージョンがエミュレーターと合わない。',

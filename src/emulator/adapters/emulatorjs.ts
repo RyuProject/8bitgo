@@ -1252,7 +1252,9 @@ export function netplayRejection(reason: string): { message: string; final: bool
  * 播放器原地重试、再换三种语言的 ROM，一共试了 5 遍，每遍都一样：浏览器关了硬件加速 / WebGL。
  */
 export function isWebglUnavailableText(text: string): boolean {
-  return /reading 'GLctx'|GLctx is undefined|webgl (?:is )?not supported|could not create (?:a )?webgl context|failed to create webgl context/i.test(text)
+  // GLctx 只出现在 Emscripten 的 GL 胶水里；三家措辞：Chrome「(reading 'GLctx')」、
+  // Firefox「can't access property "GLctx", e is undefined」、Safari「evaluating 'GL.currentContext.GLctx'」
+  return /\bGLctx\b|webgl (?:is )?not supported|could not create (?:a )?webgl context|failed to create webgl context/i.test(text)
 }
 
 /** 现在还建不建得出 WebGL。建得出说明刚才只是一时（上下文数超限 / GPU 进程重启），值得重试一次 */

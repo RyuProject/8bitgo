@@ -1521,7 +1521,7 @@ const en: Translation = {
     ejsInitFailed: 'Could not initialize the emulator container',
     ejsEngineError: 'Emulator error: {msg}',
     ejsOutOfMemory: 'Not enough memory to start the emulator. Close other tabs or apps and press Retry, or try a device with more memory.',
-    ejsWebglUnavailable: 'Your browser couldn\'t create a WebGL canvas, so the emulator can\'t start. Turn on hardware acceleration in your browser settings (Chrome: Settings → System), or try another browser or device.',
+    ejsWebglUnavailable: 'Your browser can\'t create a WebGL display. Please turn on hardware acceleration',
     ejsArcadeRomInvalid: 'The arcade game file is incomplete or is not a valid ZIP: {name}',
     ejsArcadeUnknownSet: 'The emulator does not recognise this arcade package ({msg}). The ZIP must be named after its romset (e.g. kof97.zip, tekken3.zip) and contain one complete version.',
     ejsArcadeMissingFiles: 'The arcade package is missing files the game needs ({msg}). Common causes: the BIOS package is not linked, a clone set lacks its parent ROMs, or the ROM version does not match the emulator.',

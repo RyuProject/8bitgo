@@ -118,6 +118,8 @@ console.log('✔ 启动失败原因：跨 realm 错误原文、内存不足、�
   const f = context.f
   assert.equal(f("Failed to start game TypeError: Cannot read properties of undefined (reading 'GLctx')"), true)
   assert.equal(f('TypeError: GLctx is undefined'), true)
+  assert.equal(f('Failed to start game TypeError: can\'t access property "GLctx", e is undefined'), true)
+  assert.equal(f("TypeError: undefined is not an object (evaluating 'GL.currentContext.GLctx')"), true)
   assert.equal(f('WebGL not supported'), true)
   assert.equal(f('Failed to start game RuntimeError: unreachable'), false)
   assert.equal(f('Romset is unknown'), false)
