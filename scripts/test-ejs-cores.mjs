@@ -222,6 +222,17 @@ check('固定名核心与悬停预热共用版本化 URL，不会把两代核心
   assert.equal(emulatorJsRuntimePaths('fbneo', 'en').en, undefined, '英文不加载语言包')
   assert.equal(emulatorJsRuntimePaths('fbneo', '../x').zh, undefined)
   assert.equal(Object.keys(emulatorJsRuntimePaths('fbneo', '../x')).some((k) => k.includes('..')), false, '畸形语言码不进路径')
+  // 7z 解压脚本也走版本化地址，并在点开始时与 ROM 并行预热（2026-11-11 圆桌骑士串行 1 秒）
+  assert.equal(fbneoPaths['extract7z.js'], ejsRuntimeAsset('compression/extract7z.js'))
+  assert.ok(existsSync(join(root, 'public/emulatorjs/compression/extract7z.js')), '解压脚本文件真的在')
+  const engine = readFileSync(join(root, 'public/emulatorjs/emulator.min.js'), 'utf8')
+  assert.ok(engine.includes('n="compression/extract7z.js"') && engine.includes('this.config.filePaths[p]'), '引擎仍按末段文件名查 EJS_paths（升级引擎后这条红了就重新取证）')
+  assert.match(adapter, /warmPaths\[EJS_EXTRACT_7Z_FILE\]/, '解压脚本进预热清单')
+  assert.match(adapter, /\.\.\.\(warmLanguage \? \[warmLanguage\] : \[\]\)/, '语言包进预热清单')
+  // css 由 loader 用不带 crossorigin 的 <link> 加载：fetch 预热在 Firefox 跨源时用不上，改在 iframe 里 preload
+  assert.match(adapter, /preloadEjsStyle\(doc, ejsRuntimeAsset\('emulator\.min\.css'\)\)/)
+  assert.doesNotMatch(adapter, /always: \[[^\]]*emulator\.min\.css/, 'css 不再走匿名 fetch 预热')
+  assert.match(adapter, /if \(isRomPackUrl\(url\)\) prewarmRomPackDecoder\(\)/, '街机 / 光盘 8BG 的解码器与 ROM 并行取')
   assert.match(prewarm, /const file = emulatorJsCoreFileFor\(core\)/)
   assert.match(prewarm, /file === PSX_CHD_CORE \? PSX_CHD_ARCHIVE : encodeURIComponent\(emulatorJsCoreDataFile\(file\)\)/)
 })

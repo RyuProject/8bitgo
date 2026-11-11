@@ -135,6 +135,9 @@ export const ejsCoreAsset = (relativePath: string): string => {
  * 映射到内容相同的 `cores/metadata/` 避开误杀；键仍必须是 basename，因为上游
  * `EJS_paths` 正是用下载目标的末段文件名查覆盖地址。
  */
+/** 引擎解压 7z 核心用的 Worker 脚本（public/emulatorjs/compression/ 下） */
+export const EJS_EXTRACT_7Z_FILE = 'extract7z.js'
+
 export function emulatorJsRuntimePaths(core: string, language?: string): Record<string, string> {
   return {
     /*
@@ -147,6 +150,13 @@ export function emulatorJsRuntimePaths(core: string, language?: string): Record<
       : {}),
     'emulator.min.js': ejsRuntimeAsset('emulator.min.js'),
     'emulator.min.css': ejsRuntimeAsset('emulator.min.css'),
+    /*
+      核心是 7z 包，引擎首次解压前要先取 compression/extract7z.js（274KB）。它是引擎自己拼的地址、
+      不带 ?v，只有短缓存，而且排在核心之后串行下载：2026-11-11 大陆 Firefox《圆桌骑士》这一步 1 秒。
+      引擎按末段文件名查 EJS_paths（downloadFile 的 filePaths[basename]），给它版本化地址后
+      可长期缓存，也能在点开始时与 ROM 并行预热（ejsStartWarm）。
+    */
+    [EJS_EXTRACT_7Z_FILE]: ejsRuntimeAsset(`compression/${EJS_EXTRACT_7Z_FILE}`),
     [`${core}-wasm.data`]: ejsCoreAsset(`cores/${encodeURIComponent(core)}-wasm.data`),
     // FBNeo 在不满足 SIMD / WebGL 条件的浏览器会选 legacy；线上 KOF97 实际走的就是这一支。
     // 两个变体必须一起换代，否则边缘仍可能把新引擎和缓存一个月的旧 legacy 核心拼在一起。

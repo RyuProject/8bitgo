@@ -16,6 +16,8 @@
  * 采集本身绝不能影响游戏：所有钩子都 try/catch，原生 console 照常调用。
  */
 
+import { browserBitness } from '@/emulator/browserBitness'
+
 const LOG_LIMIT = 80
 const LOG_LINE_MAX = 300
 const BUNDLE_LOG_MAX = 60
@@ -65,6 +67,8 @@ export interface StartupDiagnostics {
     lang: string
     coi: boolean
     sab: boolean
+    /** 浏览器位数（'32' / '64'），判不出时 null —— 32 位浏览器开大核心会分配不出 WASM 内存 */
+    bits: '32' | '64' | null
     online: boolean
     /** 这一局里页面处于后台的累计毫秒数 */
     hiddenMs: number
@@ -326,6 +330,7 @@ function environment(start: number, now: number): StartupDiagnostics['env'] {
     lang: String(nav.language || '').slice(0, 16),
     coi: Boolean(window.crossOriginIsolated),
     sab: typeof SharedArrayBuffer === 'function',
+    bits: browserBitness(),
     online: nav.onLine !== false,
     hiddenMs: hiddenMsSince(start, now),
     visible: document.visibilityState !== 'hidden',

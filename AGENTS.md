@@ -162,6 +162,13 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
   每局都要在手机上重解 7z 核心（约 12 秒）。现在 race 后 clearTimeout，挂死标记换新键 `8bitgo.ejs.idbStall2`
   （旧键全是误判，作废）。`test:ejs-download` 有「缓存正常时不误判挂死」一节。凡是 race 加时限的补丁都要清定时器。
 
+- **「Cannot allocate Wasm memory」先看是不是 32 位浏览器**（2026-11-11 大陆 Chrome 109 / Windows，8GB、4 核，
+  《合金弹头 2》《1941》各一次，核心编译完在 instantiate 时报）。FBNeo 核心起步 128MB、最大 2GB，V8 分配失败会自己
+  逐级缩到起步值再试，64 位浏览器不会连 128MB 都给不出；Chrome 109 是 Win7 / 8.1 的最后一版，这批机器常装 32 位版。
+  `browserBitness.ts` 用高熵 `bitness`（UA 只能证明 32 位，Chrome 110 起精简 UA 一律写 x64）判断：32 位时以 `'config'`
+  报 `ejsOutOfMemory32bit`（换 64 位浏览器，不原地重试）；诊断包环境多一项「32 / 64 位浏览器」。
+  位数是推断，这两份样本当时没采到位数，下一份同类现场要先核对这一项。
+
 改引擎后要换 `EJS_RUNTIME_GENERATION`，入口文件名不带内容哈希。
 
 - **建不出 WebGL 不重试、不换 ROM**（2026-11-11《魂斗罗》Linux Chrome 156：`reading 'GLctx'`，原地重试加三种语言 ROM
@@ -219,6 +226,13 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
 - **点击后与 ROM 并行预热**（`ejsStartWarm.ts`）：入口 / css / 核心报告无条件预热。核心和平台 BIOS 只在引擎库 `EmulatorJS-Cache` 里没有这个 URL 时才预热。⚠️ 查库遇到 `onupgradeneeded` 必须 abort：替引擎建出一个没有 `cache` 表的空 v1 库，会让核心缓存永久失效。
 - **平台 BIOS 只在用得上时才下。** 服务端按 romset 索引推导 `Game.arcadeNoBios`（`arcade-bios-index.js` 的 `romsetsNeedNoBios`），条件是所有官方 ROM（含备用源）都是已知、且不需要 BIOS 的 romset。后台填了系统包或 RomData、或者换了非 FBNeo 核心的游戏不推导。认不出的名字一律保守地照下平台 BIOS。播放器只对官方远端 ROM、FBNeo 核心生效。
 - **带 `?v=` 的 `/emulatorjs/` 请求长期缓存**（`cache.js` 的 `isVersionedRequest`）。引擎自己拼的 `compression/*` 不带版本，仍然短缓存。界面语言包例外：loader.js **等语言包回来才起核心**，所以 `emulatorJsRuntimePaths(core, 语言)` 经 `EJS_paths[语言]` 给它版本化 URL（2026-11-06《铁拳》热启动里这一步回源 0.8 秒）；改 `localization/*.json` 同样要换代。前提不变：改引擎或核心必须换 `EJS_RUNTIME_GENERATION`。
+
+- **点开始后引擎还串行走四步，也要并行**（2026-11-11 大陆 Firefox《圆桌骑士》：ROM 4.9 秒到手，之后 zstd 解码器 1.9 秒 →
+  css 2.5 秒 → 语言包 0.9 秒 → `extract7z.js` 1 秒，依次排队）。现在：街机 / 光盘 8BG 在开始下载时就 `prewarmRomPackDecoder()`；
+  语言包进预热清单；`compression/extract7z.js` 经 `EJS_paths` 拿版本化地址（引擎按末段文件名查），可长期缓存，
+  并在核心不在引擎缓存时一起预热。⚠️ css 不能用 fetch 预热：loader 用不带 crossorigin 的 `<link>`，是带凭据请求，
+  Firefox 的 HTTP 缓存把匿名与带凭据分开存、连接也不共用，跨源（cn.8bitgo.com）时 fetch 预热等于白做。
+  改为在引擎 iframe 里插 `<link rel=preload as=style>`（`preloadEjsStyle`）。回归：`npm run test:ejs-cores`。
 
 ### 2.8.2 mame-current 的内容必须在子目录里：根路径解析不出 rompath
 

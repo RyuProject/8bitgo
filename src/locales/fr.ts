@@ -1527,6 +1527,7 @@ const fr: Translation = {
     ejsInitFailed: "Impossible d'initialiser le conteneur de l'émulateur",
     ejsEngineError: "Erreur de l'émulateur : {msg}",
     ejsOutOfMemory: 'Pas assez de mémoire pour démarrer l’émulateur. Ferme les autres onglets ou applis puis appuie sur « Réessayer », ou essaie un appareil avec plus de mémoire.',
+    ejsOutOfMemory32bit: 'Ton navigateur est en 32 bits et ne peut pas réserver assez de mémoire pour cet émulateur ; réessayer n’y changera rien. Passe à Chrome ou Edge 64 bits (sous Windows 7/8, Chrome 109 64 bits fonctionne).',
     ejsWebglUnavailable: 'Ton navigateur ne peut pas créer l’affichage WebGL. Active l’accélération matérielle',
     ejsArcadeRomInvalid: "Le fichier d'arcade est incomplet ou n'est pas un ZIP valide : {name}",
     ejsArcadeUnknownSet: 'L’émulateur ne reconnaît pas ce paquet arcade ({msg}). Le ZIP doit porter le nom de son romset (p. ex. kof97.zip, tekken3.zip) et contenir une version complète.',

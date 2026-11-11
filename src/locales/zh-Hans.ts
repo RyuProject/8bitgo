@@ -1548,6 +1548,7 @@ export const zhHans = {
     ejsLoadFailed: '模拟器没能加载。请检查网络后点「重试」；一直不行请反馈给我们',
     ejsEngineError: '引擎报错：{msg}',
     ejsOutOfMemory: '设备内存不够，模拟器没能启动。关掉其它标签页或应用后点「重试」；手机上可以换一台内存更大的设备。',
+    ejsOutOfMemory32bit: '你用的是 32 位浏览器，内存不够启动这个模拟器，重试也不会好。请换 64 位的 Chrome 或 Edge（Windows 7/8 可以装 64 位的 Chrome 109）。',
     ejsWebglUnavailable: '浏览器无法建立 WebGL 画面，请打开硬件加速',
     ejsArcadeRomInvalid: '街机游戏文件不完整或不是有效的 ZIP：{name}',
     ejsArcadeUnknownSet: '模拟器不认识这个街机包（{msg}）。请确认 ZIP 文件名是正确的 romset 短名（如 kof97.zip、tekken3.zip），且内容是完整的同一版本。',

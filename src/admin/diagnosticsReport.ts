@@ -45,6 +45,7 @@ export interface DiagnosticPayload {
     lang: string
     coi: boolean
     sab: boolean
+    bits?: '32' | '64' | null
     online: boolean
     hiddenMs: number
     visible: boolean
@@ -104,6 +105,7 @@ export function formatEnvironment(sample: DiagnosticSample): string {
     if (env.net) parts.push(`网络 ${env.net.type || '?'}${env.net.downlink != null ? ` ${env.net.downlink}Mbps` : ''}${env.net.rtt != null ? ` rtt ${env.net.rtt}ms` : ''}${env.net.saveData ? ' 省流量' : ''}`)
     parts.push(`屏幕 ${env.screen}`, `触点 ${env.touch}`, `语言 ${env.lang}`)
     parts.push(`跨源隔离 ${env.coi ? '是' : '否'}`, `SharedArrayBuffer ${env.sab ? '有' : '无'}`)
+    if (env.bits) parts.push(`${env.bits} 位浏览器`)
     if (!env.online) parts.push('离线')
     if (env.hiddenMs > 0) parts.push(`本局在后台 ${fmtMs(env.hiddenMs)}`)
     if (!env.visible) parts.push('上报时页面在后台')

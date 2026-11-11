@@ -96,6 +96,7 @@ export function normalizeDiagnostics(raw) {
       lang: scrub(env.lang, 16).replace(/[^\w-]/g, ''),
       coi: Boolean(env.coi),
       sab: Boolean(env.sab),
+      bits: pick(env.bits, ['32', '64'], null),
       online: env.online !== false,
       hiddenMs: int(env.hiddenMs, 0),
       visible: env.visible !== false,

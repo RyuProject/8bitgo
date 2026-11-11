@@ -90,7 +90,7 @@ import {
   installNdsCoreOptionsGuard,
   type NdsCoreOptionsFs,
 } from '../ndsStartup'
-import { inspectRomPackBlob, isRomPackBytes, isRomPackUrl, unpackRomPackBlob } from '@/services/romPack'
+import { inspectRomPackBlob, isRomPackBytes, isRomPackUrl, prewarmRomPackDecoder, unpackRomPackBlob } from '@/services/romPack'
 import { assertNdsRomBlob, MAX_NDS_ROM_BYTES } from '@/lib/romValidation'
 import {
   EJS_P2_KEY_OFFSET,
@@ -123,7 +123,7 @@ import {
  * 玩家看到的就是「Error loading EmulatorJS runtime」。本地有核心，这条路不会走。
  */
 export { EJS_PATH } from '../paths'
-import { EJS_PATH, EJS_RUNTIME_GENERATION, ejsBase, ejsCoreAsset, ejsUsingEdge, markEjsEdgeFailed, ejsRuntimeAsset, emulatorJsCoreDataFile, emulatorJsCoreFileFor, emulatorJsCoreForGame, emulatorJsRuntimePaths, isDiscPlatform, isLargeDirectEjsRom, isSelfDownloadPlatform } from '../paths'
+import { EJS_PATH, EJS_RUNTIME_GENERATION, ejsBase, ejsCoreAsset, ejsUsingEdge, markEjsEdgeFailed, ejsRuntimeAsset, EJS_EXTRACT_7Z_FILE, emulatorJsCoreDataFile, emulatorJsCoreFileFor, emulatorJsCoreForGame, emulatorJsRuntimePaths, isDiscPlatform, isLargeDirectEjsRom, isSelfDownloadPlatform } from '../paths'
 import { applyTuning, sizeOfTrack, tuningFor, usableVideoSize } from '../videoTuning'
 import {
   findLayoutOption,
@@ -142,6 +142,7 @@ import {
 */
 import { findDipOptions, planDipChanges, type DipPlan } from '../dipPlan'
 import { diagLog, watchFramePerformance } from '@/services/startupDiagnostics'
+import { browserBitness, probeBrowserBitness } from '../browserBitness'
 
 /**
  * 站点语言 → EmulatorJS 自带的界面语言包（data/localization/*.json）。
@@ -1704,6 +1705,29 @@ async function arcadeBlobFrom(
   return { url: URL.createObjectURL(output), name, hack, mameMedia, namcoSet }
 }
 
+/**
+ * 在引擎 iframe 里提前 `<link rel=preload as=style>` 引擎样式表。
+ *
+ * loader.js 用 `<link rel=stylesheet>`（不带 crossorigin）加载 css，这是**带凭据**的 no-cors 请求；
+ * 而 warmHttpCache 的 fetch 对跨源地址（大陆走 cn.8bitgo.com）是**不带凭据**的。Firefox 的 HTTP 缓存
+ * 按「是否匿名」分开存，两边也不共用连接 —— 2026-11-11 大陆 Firefox《圆桌骑士》css 明明预热过，
+ * 正式加载照样新建连接又等 2.5 秒。preload 不带 crossorigin，与之后那条 stylesheet 完全同型，
+ * 放进同一个文档还能被它直接取用（不会有「预加载未使用」告警）。
+ */
+export function preloadEjsStyle(doc: Document | null | undefined, href: string): boolean {
+  if (!doc?.head || !href) return false
+  try {
+    const link = doc.createElement('link')
+    link.rel = 'preload'
+    link.as = 'style'
+    link.href = href
+    doc.head.appendChild(link)
+    return true
+  } catch {
+    return false
+  }
+}
+
 interface PreparedArcadeRom {
   url: string
   name: string
@@ -1726,6 +1750,8 @@ export async function prepareRemoteArcadeRom(
   }
   const name = arcadeRomsetName(url)
   if (!name || (!/\.zip$/i.test(name) && !isRomPackUrl(url))) throw new InvalidArcadeArchiveError(name || 'ROM')
+  // 8BG 的 zstd 解码器 wasm 与 ROM 并行取：以前要等 ROM 下完、密钥回来才 init()，大陆线路上又串行 1.9 秒
+  if (isRomPackUrl(url)) prewarmRomPackDecoder()
 
   const decodedArcade = async (stored: Blob): Promise<{ blob: Blob; name: string }> => {
     const magic = new Uint8Array(await stored.slice(0, 4).arrayBuffer())
@@ -1869,6 +1895,7 @@ export async function prepareRemoteDiscRom(
     maxUnpackedBytes?: number
   } = {},
 ): Promise<{ url: string; bytes: number; name?: string }> {
+  if (isRomPackUrl(url)) prewarmRomPackDecoder()
   const prepare = async (stored: Blob): Promise<{ url: string; bytes: number; name?: string }> => {
     // 历史缓存不经过本版下载器；同一上限也得在解密/解压前拦住旧数据。
     if (options.maxBytes !== undefined && stored.size > options.maxBytes) {
@@ -2042,6 +2069,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   // 本局开局时读一次：库挂死过就整局关掉引擎缓存（读 / 写 / 预热探测都不碰 IndexedDB）
   const engineCacheOff = readEngineCacheStall()
   if (engineCacheOff) console.warn('[emulatorjs] 引擎缓存的 IndexedDB 近期挂死过，本局不用缓存')
+  // 内存不足时要分清是不是 32 位浏览器（见 browserBitness.ts）；高熵查询异步，开局先发出去
+  void probeBrowserBitness()
   let lastBeat = Date.now()
   /** 引擎自己那行状态文字上次的内容，变了就算有动静 */
   let lastStage = ''
@@ -2513,7 +2542,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
     const recent = (errorTap?.lines ?? []).slice(-12).join('\n')
     // 浏览器给不出 WASM 内存：重下多少遍都一样，告诉玩家关掉别的标签页
-    if (isOutOfMemoryText(`${line}\n${recent}`)) return failLoad(rt.ejsOutOfMemory)
+    /*
+      32 位浏览器（Win7 / 8.1 上的 Chrome 109 常见）的渲染进程只有 2～4GB 地址空间，连核心起步的 128MB
+      都划不出来；重试、关标签页都救不了，'config' 让播放器别原地重试，直接告诉玩家换 64 位浏览器。
+    */
+    if (isOutOfMemoryText(`${line}\n${recent}`)) {
+      const bits = browserBitness()
+      logEngine(`[memory] 分配不出 WASM 内存；浏览器位数 ${bits ?? '未知'}`)
+      return bits === '32' ? failLoad(rt.ejsOutOfMemory32bit, 'config') : failLoad(rt.ejsOutOfMemory)
+    }
     /*
       建不出 WebGL：浏览器关了硬件加速或 GPU 被拉黑。重下 ROM、换语言版本都没用，'config' 让播放器
       别原地重试也别换 ROM。现场再建一次试试：建得出说明只是一时（上下文太多 / GPU 进程重启），照常重试。
@@ -3780,14 +3817,23 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         const warmCore = options.platform === 'psx'
           ? psxCoreForTransfer('psx', core, isFile ? (options.game as File).name : remoteGameUrl) ?? core
           : core
+        /*
+          2026-11-11 大陆 Firefox《圆桌骑士》：ROM 4.9 秒就到了，引擎却又串行走了 css 2.5 秒 → 语言包 0.9 秒
+          → 核心报告 → 7z 解压脚本 1 秒。语言包和 extract7z.js 一起预热；css 见 preloadEjsStyle。
+        */
+        const warmPaths = emulatorJsRuntimePaths(warmCore, EJS_LANG[getLang()])
+        const warmLanguage = warmPaths[EJS_LANG[getLang()] ?? '']
+        preloadEjsStyle(doc, ejsRuntimeAsset('emulator.min.css'))
         void warmEmulatorJsStart({
           always: [
             ejsRuntimeAsset('emulator.min.js'),
-            ejsRuntimeAsset('emulator.min.css'),
             ejsCoreAsset(`cores/metadata/${encodeURIComponent(emulatorJsCoreFileFor(warmCore))}.json`),
+            ...(warmLanguage ? [warmLanguage] : []),
           ],
           large: [
             ejsCoreAsset(`cores/${encodeURIComponent(emulatorJsCoreDataFile(warmCore))}`),
+            // 核心已在引擎缓存里就不用解压，也就不需要它（同属「引擎库里没有才预热」）
+            warmPaths[EJS_EXTRACT_7Z_FILE],
             ...(/^https?:|^\//.test(engineBiosUrl) ? [engineBiosUrl] : []),
           ],
         }, { assumeUncached: engineCachePurgePending() || engineCacheOff }).catch(() => {})

@@ -246,5 +246,25 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   assert.match(read('worker/src/common.js'), /'Timing-Allow-Origin'\] = '\*'/, 'ROM 对象要让诊断包看得到传输字节')
 }
 
+/* ---------- 浏览器位数：32 位 Chrome 分配不出 WASM 内存（2026-11-11 Chrome 109 / Win7） ---------- */
+{
+  const { bitnessFromUserAgent } = await import('../src/emulator/browserBitness.ts')
+  assert.equal(bitnessFromUserAgent('Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 Chrome/109.0.0.0'), '32', 'WOW64 = 64 位系统上的 32 位浏览器')
+  assert.equal(bitnessFromUserAgent('Mozilla/5.0 (Windows NT 6.1) AppleWebKit/537.36 Chrome/109.0.0.0'), '32', '32 位 Windows')
+  assert.equal(bitnessFromUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131.0.0.0'), null, 'UA 精简后写着 x64 不作数')
+  assert.equal(bitnessFromUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'), null)
+  const env = (bits) => normalizeDiagnostics({ env: { mem: 8, bits } }).env.bits
+  assert.equal(env('32'), '32')
+  assert.equal(env('64'), '64')
+  assert.equal(env('16; drop table'), null, '位数走白名单')
+  assert.match(read('src/admin/diagnosticsReport.ts'), /位浏览器/)
+  const ejs = read('src/emulator/adapters/emulatorjs.ts')
+  assert.match(ejs, /void probeBrowserBitness\(\)/, '开局先发高熵查询')
+  assert.match(ejs, /bits === '32' \? failLoad\(rt\.ejsOutOfMemory32bit, 'config'\)/, '32 位浏览器内存不足：换浏览器提示，不原地重试')
+  for (const lang of ['zh-Hans', 'zh-Hant', 'en', 'es', 'de', 'it', 'fr', 'ja']) {
+    assert.match(read(`src/locales/${lang}.ts`), /ejsOutOfMemory32bit: '/, `${lang} 有 32 位提示`)
+  }
+}
+
 console.log('✔ 启动诊断包：脱敏与白名单、UA 粗粒度、错误归组、前端采集、复制给 AI、PSP 现场、接线')
 process.exit(0)
