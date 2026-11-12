@@ -47,7 +47,7 @@ import { flashSaveConfigured, flashSaveConfigurationError } from './flash-save-t
 import { attachNetplay } from './netplay.js'
 import { attachJsnesNetplay } from './jsnes-netplay.js'
 import { attachLive, canAccessAdultLive, liveCapacity, liveRoom, liveRooms, subscribeLiveRooms } from './live.js'
-import { admitSse, SSE_HEARTBEAT_MS } from './sseGuard.js'
+import { admitSse, SSE_HEARTBEAT_FRAME, SSE_HEARTBEAT_MS } from './sseGuard.js'
 import { iceRouter, registerTurnProbeTargets } from './routes/ice.js'
 import { startTurnHealth } from './turnProbe.js'
 import { imRouter } from './routes/im.js'
@@ -330,7 +330,7 @@ app.get('/api/live/events', optionalUser, (req, res) => {
   const unsubscribe = subscribeLiveRooms(res, { includeAdult: canAccessAdultLive(req.user) })
   const beat = setInterval(() => {
     try {
-      res.write(': ping\n\n')
+      res.write(SSE_HEARTBEAT_FRAME)
     } catch {
       clearInterval(beat)
       unsubscribe()

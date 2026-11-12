@@ -170,5 +170,57 @@ await checkAsync('收到快照或订阅已取消时，首个快照闹钟不能�
   assert.equal(cancelled.closed, false)
 })
 
+await checkAsync('⚠️ 首个快照之后流静悄悄断了（没有 error）：超过停滞上限退回轮询', async () => {
+  // 2026-11-12：大陆线路上连接首个快照后被中间设备丢弃，侧边栏「一起玩」一直停在 0
+  const es = fakeSse(1)
+  let clock = 0
+  let gaveUp = 0
+  const stop = fallbackAfterErrors(es, () => gaveUp++, SSE_ERROR_LIMIT, 5, 30, () => clock)
+  es.fire('rooms')
+  clock = 31
+  await new Promise((resolve) => setTimeout(resolve, 60))
+  assert.equal(gaveUp, 1)
+  assert.equal(es.closed, true)
+  stop()
+})
+
+await checkAsync('心跳（event: ping）能证明连接还活着，列表长时间不变不算停滞', async () => {
+  const es = fakeSse(1)
+  let clock = 0
+  let gaveUp = 0
+  const stop = fallbackAfterErrors(es, () => gaveUp++, SSE_ERROR_LIMIT, 5, 30, () => clock)
+  es.fire('rooms')
+  for (let i = 0; i < 4; i++) {
+    clock += 20
+    es.fire('ping')
+    await new Promise((resolve) => setTimeout(resolve, 35))
+  }
+  assert.equal(gaveUp, 0)
+  assert.equal(es.closed, false)
+  stop()
+})
+
+await checkAsync('退订后停滞检查也要一起停，不能把没人订阅的大厅变成轮询', async () => {
+  const es = fakeSse(1)
+  let clock = 0
+  let gaveUp = 0
+  const stop = fallbackAfterErrors(es, () => gaveUp++, SSE_ERROR_LIMIT, 5, 30, () => clock)
+  es.fire('rooms')
+  stop()
+  clock = 1000
+  await new Promise((resolve) => setTimeout(resolve, 60))
+  assert.equal(gaveUp, 0)
+})
+
+check('⚠️ 服务端心跳必须是具名事件（注释行 `: ping` 浏览器看不见）', () => {
+  const guard = readFileSync(path.join(ROOT, 'server/src/sseGuard.js'), 'utf8')
+  assert.match(guard, /SSE_HEARTBEAT_FRAME = 'event: ping\\ndata: 1\\n\\n'/)
+  for (const rel of ['server/src/index.js', 'server/src/netplay.js']) {
+    const code = readFileSync(path.join(ROOT, rel), 'utf8')
+    assert.doesNotMatch(code, /res\.write\(': ping/, `${rel} 还在发注释心跳`)
+    assert.match(code, /res\.write\(SSE_HEARTBEAT_FRAME\)/, `${rel} 没用具名心跳`)
+  }
+})
+
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')
 process.exit(failed ? 1 : 0)

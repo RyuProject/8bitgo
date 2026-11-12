@@ -38,6 +38,16 @@ const CLOSED = 2
 export const SSE_ERROR_LIMIT = 3
 /** 线上曾出现事件流 28 秒都没有响应头；收到响应头但没有事件也不能一直等。 */
 export const SSE_CONNECT_TIMEOUT_MS = 12_000
+/**
+ * 首个快照之后，多久既没有快照也没有心跳就算这条流已经死了。
+ *
+ * 服务端每 10 秒发一帧 `event: ping`（sseGuard.js 的 SSE_HEARTBEAT_FRAME）。以前心跳是注释行，
+ * 页面看不见，连接在首个快照后静悄悄断掉时（大陆线路上中间设备丢弃空闲 TCP、不回 RST，
+ * 浏览器不报 error），列表就永远停在那一刻 —— 侧边栏「一起玩」一直是 0，别人那里明明有房间。
+ * 45 秒 = 四个多心跳周期，偶尔丢一两帧不会误判；后台标签页的定时器被节流也不要紧，
+ * 判据是墙钟时间差，回到前台那一刻照样判得准。
+ */
+export const SSE_STALL_MS = 45_000
 
 /** 只用到这几个成员；这样测试里可以喂一个假的，不必有 DOM */
 export interface SseLike {
@@ -45,6 +55,9 @@ export interface SseLike {
   close: () => void
   addEventListener: (type: string, listener: () => void) => void
 }
+
+/** 停滞检查的节拍；比 SSE_STALL_MS 短得多，判死不至于拖太久 */
+const STALL_CHECK_MS = 15_000
 
 /**
  * 给一条 EventSource 装上「放弃」逻辑。
@@ -59,14 +72,28 @@ export function fallbackAfterErrors(
   onGiveUp: () => void,
   limit = SSE_ERROR_LIMIT,
   connectTimeoutMs = SSE_CONNECT_TIMEOUT_MS,
+  stallMs = SSE_STALL_MS,
+  now: () => number = Date.now,
 ): () => void {
   let errors = 0
   let stopped = false
   let receivedRooms = false
   let timer: ReturnType<typeof setTimeout> | undefined
+  let stallTimer: ReturnType<typeof setInterval> | undefined
+  /** 最近一次从这条流收到任何事件（快照或心跳）的墙钟时间 */
+  let lastSeen = now()
   const clearTimer = () => {
     if (timer !== undefined) clearTimeout(timer)
     timer = undefined
+    if (stallTimer !== undefined) clearInterval(stallTimer)
+    stallTimer = undefined
+  }
+  // 收到首个快照才开始盯：之前那段由 connectTimeoutMs 管
+  const watchStall = () => {
+    if (stallTimer !== undefined || stopped) return
+    stallTimer = setInterval(() => {
+      if (now() - lastSeen > stallMs) giveUp()
+    }, Math.min(STALL_CHECK_MS, stallMs))
   }
   const giveUp = () => {
     if (stopped) return
@@ -79,7 +106,13 @@ export function fallbackAfterErrors(
     if (stopped) return
     receivedRooms = true
     errors = 0
-    clearTimer()
+    lastSeen = now()
+    if (timer !== undefined) clearTimeout(timer)
+    timer = undefined
+    watchStall()
+  })
+  es.addEventListener('ping', () => {
+    if (!stopped) lastSeen = now()
   })
   es.addEventListener('error', () => {
     if (stopped) return
