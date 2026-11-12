@@ -107,12 +107,33 @@ function openDb(): Promise<IDBDatabase | null> {
       if (!db.objectStoreNames.contains(STORE_BLOB)) db.createObjectStore(STORE_BLOB)
       if (!db.objectStoreNames.contains(STORE_META)) db.createObjectStore(STORE_META)
     }
-    req.onsuccess = () => resolve(req.result)
-    req.onerror = () => resolve(null)
+    /*
+      库坏掉的浏览器上 open 可能既不 success 也不 error（引擎缓存同一个库挂死过的现象，见 AGENTS §2.8.0.1）。
+      读缓存挡在每次 ROM 下载前面，等不到就本页当作没有缓存。迟到的连接直接关掉，不留着占锁。
+    */
+    const timer = setTimeout(() => {
+      resolve(null)
+      req.onsuccess = () => { try { req.result.close() } catch { /* 已关闭 */ } }
+    }, OPEN_TIMEOUT_MS)
+    req.onsuccess = () => { clearTimeout(timer); resolve(req.result) }
+    req.onerror = () => { clearTimeout(timer); resolve(null) }
     // 别的标签页占着旧版本时会一直卡在 blocked，给个出口别让调用方永远等
-    req.onblocked = () => resolve(null)
+    req.onblocked = () => { clearTimeout(timer); resolve(null) }
   })
   return dbPromise
+}
+
+const OPEN_TIMEOUT_MS = 5_000
+/** 开局前的读缓存上限：读的只是 Blob 引用或小 ROM，正常几十毫秒；超过就当未命中，直接走网络 */
+const READ_TIMEOUT_MS = 8_000
+
+/** 带上限的读请求，超时解析成 null。定时器必须清掉，否则快的读也会在稍后被误判 */
+function askWithin<T>(req: IDBRequest<T>, ms: number): Promise<T | null> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), ms)
+    req.onsuccess = () => { clearTimeout(timer); resolve(req.result) }
+    req.onerror = () => { clearTimeout(timer); resolve(null) }
+  })
 }
 
 /** 把一个 IDBRequest 包成 Promise；失败一律解析成 null，不抛 */
@@ -147,7 +168,7 @@ export async function romCacheGet(key: string): Promise<ArrayBuffer | null> {
   if (!db) return null
   let value: unknown
   try {
-    value = await ask(db.transaction(STORE_BLOB, 'readonly').objectStore(STORE_BLOB).get(key))
+    value = await askWithin(db.transaction(STORE_BLOB, 'readonly').objectStore(STORE_BLOB).get(key), READ_TIMEOUT_MS)
   } catch {
     return null
   }
@@ -169,7 +190,7 @@ export async function romCacheGetBlob(key: string, type = 'application/octet-str
   if (!db) return null
   let value: unknown
   try {
-    value = await ask(db.transaction(STORE_BLOB, 'readonly').objectStore(STORE_BLOB).get(key))
+    value = await askWithin(db.transaction(STORE_BLOB, 'readonly').objectStore(STORE_BLOB).get(key), READ_TIMEOUT_MS)
   } catch {
     return null
   }

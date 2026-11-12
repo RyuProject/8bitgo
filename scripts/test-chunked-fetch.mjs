@@ -726,5 +726,25 @@ await check('没指定 retries 时网络层失败按 NETWORK_RETRIES 重试（�
   assert.equal((src.match(/attempt >= \(isNetworkFetchError\(error\) \? networkRetries : retries\)/g) ?? []).length, 2, '首片与后续分片两处都要用')
 })
 
+console.log('\n九、续传仓库挂死不能挡住开局（2026-11-11 大陆 Chrome 132《植物大战僵尸》下完 100% 后停 120 秒）')
+
+await check('withResumeTimeout：挂死的操作按时返回哨兵，快的操作照常返回且不留定时器', async () => {
+  const { withResumeTimeout, RESUME_TIMED_OUT } = await import('../src/emulator/loadProgress.ts')
+  assert.equal(await withResumeTimeout(new Promise(() => {}), 20), RESUME_TIMED_OUT)
+  assert.equal(await withResumeTimeout(Promise.resolve(true), 20), true)
+  // 快的那次若不清定时器，进程会多挂 1 秒；这里只验返回值，清定时器由下面的源码断言守
+})
+
+await check('load / put / clear 三处都经 withResumeTimeout，put 超时后本局放弃续传', async () => {
+  const src = (await import('node:fs')).readFileSync(new URL('../src/emulator/loadProgress.ts', import.meta.url), 'utf8')
+  assert.match(src, /withResumeTimeout\(resumeStore\.load\(/)
+  assert.match(src, /withResumeTimeout\(resumeStore\.put\(/)
+  assert.match(src, /withResumeTimeout\(resumeStore\.clear\(/)
+  assert.match(src, /stored === RESUME_TIMED_OUT\) resumeStore = null/)
+  assert.match(src, /finally \{\n    clearTimeout\(timer\)/)
+  const cache = (await import('node:fs')).readFileSync(new URL('../src/emulator/romCache.ts', import.meta.url), 'utf8')
+  assert.equal((cache.match(/askWithin\(db\.transaction\(STORE_BLOB, 'readonly'\)/g) ?? []).length, 2, 'romCache 两处开局读都要有上限')
+})
+
 console.log(failed ? `\n${failed} 项未通过` : '\n全部通过 ✅')
 process.exit(failed ? 1 : 0)

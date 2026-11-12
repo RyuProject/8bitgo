@@ -56,7 +56,9 @@ const stripTypes = (code) => code
 
 // 坏核心缓存：下次开局前强制清
 assert.match(adapter, /error loading emulatorjs runtime\/i\.test\(line\)\) \{\s*try \{ localStorage\.removeItem\(EJS_CACHE_PURGED_KEY\)/)
-assert.match(adapter, /if \(isOutOfMemoryText\(`\$\{line\}\\n\$\{recent\}`\)\) return failLoad\(rt\.ejsOutOfMemory\)/)
+assert.match(adapter, /if \(isOutOfMemoryText\(`\$\{line\}\\n\$\{recent\}`\)\) \{[\s\S]{0,300}failLoad\(rt\.ejsOutOfMemory\)/)
+// 错误级的内存不足要直接走 onFatal：7z Worker 报 DataCloneError out of memory 后引擎不会再发任何事件
+assert.match(adapter, /level === 'error' && isOutOfMemoryText\(text\)\)\)\) \{\n\s*onFatal\(text\.trim\(\)\)/)
 
 // 联机拒绝
 assert.match(adapter, /roomAckError = typeof error === 'string' \? error : safeStr\(error\)/)
@@ -125,7 +127,7 @@ console.log('✔ 启动失败原因：跨 realm 错误原文、内存不足、�
   assert.equal(f('Romset is unknown'), false)
   assert.match(adapter, /if \(!webglNow\) return failLoad\(rt\.ejsWebglUnavailable, 'config'\)/)
   // 先判内存、再判 WebGL：内存不足时 GL 也可能建不出，但该给的是内存那句话
-  assert.ok(adapter.indexOf('return failLoad(rt.ejsOutOfMemory)') < adapter.indexOf('isWebglUnavailableText(`${line}'))
+  assert.ok(adapter.indexOf(': failLoad(rt.ejsOutOfMemory)') < adapter.indexOf('isWebglUnavailableText(`${line}'))
   // 联机超时要把握手进度写进诊断包
   assert.match(adapter, /联机等了 \$\{waited\}ms 没进房/)
   assert.match(adapter, /netTrace\.ack = error \?/)

@@ -483,6 +483,29 @@ const MAX_CHUNK_CONCURRENCY = 4
  * 不设上限会在高速网络 + 慢闪存上堆出几十个 8MB 事务，最后反过来挤掉模拟器启动所需内存。
  */
 const RESUME_WRITE_BACKLOG = 2
+/*
+ * 断点续传仓库（IndexedDB / OPFS）的每次等待都要有上限。2026-11-11 大陆 Windows Chrome 132《植物大战僵尸》NDS：
+ * ROM 152 秒下完、进度报 100%，之后 120 秒没有任何动静，被看门狗判超时；同一浏览器的 IndexedDB 早被引擎缓存判过挂死。
+ * 收尾的 flushPartSaves 要等最后两笔写盘，而 put 的事务在坏掉的库上永不 complete，整局就停在这里。
+ * 续传只是优化：等不到就本局放弃续传、改走内存，绝不能挡住开局。
+ */
+const RESUME_LOAD_TIMEOUT_MS = 8_000
+const RESUME_PUT_TIMEOUT_MS = 15_000
+const RESUME_CLEAR_TIMEOUT_MS = 5_000
+export const RESUME_TIMED_OUT = Symbol('resume-timeout')
+
+/** 带上限地等一个续传仓库操作；超时返回 RESUME_TIMED_OUT。定时器必须清掉，否则快的那次也会在稍后被当成超时。 */
+export async function withResumeTimeout<T>(task: Promise<T>, ms: number): Promise<T | typeof RESUME_TIMED_OUT> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      task,
+      new Promise<typeof RESUME_TIMED_OUT>((resolve) => { timer = setTimeout(() => resolve(RESUME_TIMED_OUT), ms) }),
+    ])
+  } finally {
+    clearTimeout(timer)
+  }
+}
 
 /**
  * 第一片本来就必须下载；用它的真实吞吐决定后续并发，不另发一份“测速垃圾流量”。
@@ -671,7 +694,7 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
   const clearResume = async () => {
     if (!resumeStore) return
     try {
-      await resumeStore.clear(resumeKey)
+      await withResumeTimeout(resumeStore.clear(resumeKey), RESUME_CLEAR_TIMEOUT_MS)
     } catch {
       /* 临时缓存清不掉不能把一份已经完整的 ROM 判成下载失败。 */
     }
@@ -680,7 +703,12 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
   const loadResume = async (): Promise<DownloadResumeSnapshot | null> => {
     if (!resumeStore) return null
     try {
-      return await resumeStore.load(resumeKey, chunkBytes)
+      const snapshot = await withResumeTimeout(resumeStore.load(resumeKey, chunkBytes), RESUME_LOAD_TIMEOUT_MS)
+      if (snapshot === RESUME_TIMED_OUT) {
+        resumeStore = null
+        return null
+      }
+      return snapshot
     } catch {
       // Safari 隐私模式和配额故障都可能让 IDB 抛错；本局直接退回内存下载。
       resumeStore = null
@@ -692,8 +720,9 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
     if (!resumeStore) return
     try {
       // 这层必须等事务提交；上面的有界队列可以让网络继续跑，但最终清理前仍要知道写盘真的结束。
-      const stored = await resumeStore.put(resumeKey, total, chunkBytes, index, blob)
-      if (stored === false) resumeStore = null
+      const stored = await withResumeTimeout(resumeStore.put(resumeKey, total, chunkBytes, index, blob), RESUME_PUT_TIMEOUT_MS)
+      // 超时那笔事务也许稍后才提交，留下一片孤儿；本局不再写也不再清，交给仓库的过期清理
+      if (stored === false || stored === RESUME_TIMED_OUT) resumeStore = null
     } catch {
       resumeStore = null
     }

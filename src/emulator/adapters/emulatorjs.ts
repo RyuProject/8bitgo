@@ -1197,7 +1197,14 @@ function installErrorTap(
     // 不是 error 级。warn 只认**真正的 RuntimeError 对象**（error 参数），核心 stderr 打出的文字不算。
     const trap = level === 'error' ? isNdsWasmCrash(text, error) : level === 'warn' && error !== undefined
     if (trap && onCoreCrash) onCoreCrash(text.trim() || 'RuntimeError: unreachable')
-    if (level !== 'log' && FATAL_PHRASES.some((h) => low.includes(h))) onFatal(text.trim())
+    /*
+      内存不足也按致命处理：2026-11-12 2GB 安卓平板《太鼓达人 2》（mame-current，172MB ROM + CHD），
+      解 35MB 核心的 7z Worker 报「DataCloneError … out of memory」后引擎永远停在「下载游戏核心」，
+      直到 120 秒看门狗判超时。错误级才算（核心 stdout 里偶尔也会出现这几个词）。
+    */
+    if (level !== 'log' && (FATAL_PHRASES.some((h) => low.includes(h)) || (level === 'error' && isOutOfMemoryText(text)))) {
+      onFatal(text.trim())
+    }
   }
 
   /**
