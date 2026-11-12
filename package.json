@@ -66,6 +66,7 @@
     "test:mame-audio": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-mame-audio.mjs",
     "test:nds-audio": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-nds-audio.mjs",
     "test:gba-video": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-gba-video.mjs",
+    "test:ejs-battery-saves": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-ejs-battery-saves.mjs",
     "test:nds-startup": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-nds-startup.mjs",
     "test:nds-crash": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-nds-crash.mjs",
     "test:nds-platform": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-nds-platform.mjs",

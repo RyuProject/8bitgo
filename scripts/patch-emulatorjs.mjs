@@ -62,6 +62,25 @@
  * 两者任一存在，引擎都会打印「Core caching will be disabled」，玩家每次开局重新下载并解压核心。
  * KOF97 的 FBNeo legacy 核心约 8MB，弱网下尤其明显。补丁先让路径匹配忽略查询串，再从
  * CacheItem 第一份文件的 bytes 解码 JSON；旧下载器若已经返回对象则保持原路径。
+ *
+ * ── 十三、退出时不卸载 /data/saves（影响全平台电池存档，2026-11-12）─────────
+ * 症状：GBA / SNES / GB 等游戏内存档（.srm）刷新页面、切游戏、返回之后全部消失 —— 而且是
+ * 这个域名下**所有游戏**的电池存档一起没了，不只是当前这款。
+ *
+ * 引擎的 exit 处理（iframe beforeunload、适配器拆 iframe 都会触发）依次做：
+ *     saveSaveFiles() → restart() → saveSaveFiles() → toggleMainLoop(0) → FS.unmount("/data/saves")
+ * /data/saves 是 IDBFS + autoPersist：两次 saveSaveFiles 写文件时只是 setTimeout(0) 排了一次
+ * 同步，紧接着同一个同步块里就把挂载卸掉了。定时器随后执行 IDBFS.syncfs(mount,false)，
+ * getLocalSet 按 mountpoint 路径去走 —— 卸载后那里只剩 MEMFS 的空目录，于是「本地一个文件都
+ * 没有」，reconcile 把 IndexedDB 里的每一条记录都当成「本地已删除」逐条删掉。
+ *
+ * 实测（2026-11-12，本地 dev + 自制 SRAM 计数 ROM）：exit 前 FILE_DATA 里有
+ * `/data/saves/mGBA/savetest.srm`，callEvent("exit") 800ms 后 FILE_DATA 为空；刷新页面同样清空。
+ *
+ * 补丁：删掉那句 unmount。iframe 随后就被拆掉、Module 一秒后 abort，卸不卸载对内存没有区别；
+ * 留着挂载，排队的那次同步还会把 exit 里最后一次 saveSaveFiles 写进 IndexedDB。
+ * 适配器另有一道运行时保护（src/emulator/ejsSaveFs.ts：持久化方向只写更新、永不删除），
+ * 两道独立，任何一道在都不会再清库。
  */
 import { readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -315,6 +334,12 @@ const CACHE_PUT_CLEAR_TO =
   '!1===u&&!this.__8bgCacheDead&&await (()=>{let __8bgT;return Promise.race([this.storageCache.put(n).catch(t=>console.warn("[EJS Cache] put failed",t)),' +
   'new Promise(t=>{__8bgT=setTimeout(()=>{console.warn("[EJS Cache] put 超过 10 秒，本局停用缓存");' + CACHE_DEAD_MARK_V2 + 't()},1e4)})]).finally(()=>clearTimeout(__8bgT))})(),c(n)'
 
+/** 第十三节：exit 里不再卸载 /data/saves（卸载后排队的 autoPersist 会把整个 IndexedDB 存档库清空） */
+const EXIT_UNMOUNT_FROM =
+  'this.toggleMainLoop(0),this.FS.unmount("/data/saves"),setTimeout(()=>{try{this.Module.abort()}catch(t){console.warn(t)}},1e3)'
+const EXIT_UNMOUNT_TO =
+  'this.toggleMainLoop(0),setTimeout(()=>{try{this.Module.abort()}catch(t){console.warn(t)}},1e3)'
+
 /**
  * 每组：name 显示用；patches 是 [要找的原文, 替换后]；
  * legacy 可选，把「替换后」映射成更早一版补丁的样子，用来在引擎升级后接管旧补丁；
@@ -487,6 +512,15 @@ const GROUPS = [
     hint: [
       '必须排在「缓存挂死一次就停用」之后：找的是那一组打完后的文本；',
       'race 结束后 clearTimeout，否则 get / put 成功 15 / 10 秒后照样把缓存判死并写挂死标记。',
+    ],
+  },
+
+  {
+    name: '退出时不卸载 /data/saves',
+    patches: [[EXIT_UNMOUNT_FROM, EXIT_UNMOUNT_TO]],
+    hint: [
+      '在 gameManager 构造里找 this.EJS.on("exit",…)：saveSaveFiles / restart / toggleMainLoop(0) 之后那句 FS.unmount("/data/saves")；',
+      '删掉它。卸载后 autoPersist 排队的 syncfs 会把 IndexedDB 里所有电池存档当成「已删除」清空（见头注释第十三节）。',
     ],
   },
 

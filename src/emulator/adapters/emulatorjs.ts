@@ -143,6 +143,7 @@ import {
 import { findDipOptions, planDipChanges, type DipPlan } from '../dipPlan'
 import { diagLog, watchFramePerformance } from '@/services/startupDiagnostics'
 import { browserBitness, probeBrowserBitness } from '../browserBitness'
+import { batterySaveGameName, guardIdbfsPersist, migrateLegacyBatterySaves, type IdbfsLike, type SaveFsLike } from '../ejsSaveFs'
 
 /**
  * 站点语言 → EmulatorJS 自带的界面语言包（data/localization/*.json）。
@@ -2595,6 +2596,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const remoteGameUrl = isFile ? '' : (options.game as string)
   let gameUrl = isFile ? URL.createObjectURL(options.game as File) : remoteGameUrl
   let engineGameName = isFile ? (options.game as File).name : options.gameName
+  /** 8BG 改名前引擎会用的名字；开局前把这个名字下的电池存档迁到新名字（见 guardSaveFs） */
+  let legacyBatteryName: string | undefined
   /** 远端 ZIP 的 CRC 指纹识别结果；用于在真正交给 MAME 前确认后台是否绑定了必需 CHD。 */
   let detectedMameMedia: MameArcadeDiskProfile | null = null
   /** 远端街机包按 CRC 认出的 Namco System 11/12 set（决定核心、包名、平台 BIOS 与按键数） */
@@ -3960,6 +3963,16 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           preparedArcadeBlobUrl = prepared.url
           gameUrl = prepared.url
           engineGameName = prepared.name || discNameFor(remoteGameUrl.replace(/\.8bg(?=\?|$)/i, ''), options.gameName)
+          /*
+            电池存档（.srm）按内容文件名命名，而 prepared.name 是管理员本机的文件名（线上大量
+            「德文.gba」「日文.gba」），不同游戏会共用、互相覆盖同一份存档。改按存档 slug 命名，
+            旧名字下的存档在开局前迁一次（见 ejsSaveFs.ts 的 batterySaveGameName）。
+          */
+          const batteryName = batterySaveGameName(options.gameSlug, engineGameName)
+          if (batteryName && batteryName !== engineGameName) {
+            legacyBatteryName = engineGameName
+            engineGameName = batteryName
+          }
           if (isDiscPlatform(options.platform)) discRomPrepared = true
         } else if (!isFile && (
           isSelfDownloadPlatform(options.platform) && !isDiscPlatform(options.platform)
@@ -4425,6 +4438,27 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           : undefined
 
         /**
+         * 电池存档的 IndexedDB 只许「写更新、不许删」（见 ejsSaveFs.ts）：引擎 exit 卸载
+         * /data/saves 后排队的同步、或另一个标签页的旧内存副本，都曾把这个域名下所有游戏的
+         * .srm 清掉或回滚。必须在 callMain 之前装好 —— 核心写第一份存档就会排同步。
+         * 所有平台都装，所以 installFsInjector 现在每局都会挂（它本来就是唯一的 FS 注入通道）。
+         */
+        const guardSaveFs = (emu: EjsEmulator) => {
+          const fs = emu.gameManager?.FS as { filesystems?: { IDBFS?: IdbfsLike } } | undefined
+          if (!guardIdbfsPersist(fs?.filesystems?.IDBFS)) {
+            console.warn('[emulatorjs] 没找到核心的 IDBFS.reconcile，电池存档保护未生效')
+          }
+          if (legacyBatteryName && options.gameSlug) {
+            try {
+              const copied = migrateLegacyBatterySaves(fs as unknown as SaveFsLike, legacyBatteryName, engineGameName, options.gameSlug)
+              if (copied) console.info(`[emulatorjs] 已把「${legacyBatteryName}」名下的 ${copied} 份电池存档迁到「${engineGameName}」`)
+            } catch (e) {
+              console.warn('[emulatorjs] 电池存档迁移失败，按新名字继续：', e)
+            }
+          }
+        }
+
+        /**
          * GBA 的 240×160 帧先做整数倍放大，避免非整数最近邻造成像素列宽忽粗忽细。
          * 这必须在 callMain 前改 retroarch.cfg：核心启动后视频驱动已经按旧值建好，晚改只会
          * 出现“日志说写成功、画面却完全没变”的假修复。失败时继续用默认画面，不拦开局。
@@ -4652,7 +4686,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             ? '[emulatorjs] NDS WFC 会话已建立，网络连接将走同源中继'
             : '[emulatorjs] NDS WFC 未启用或服务不可用，游戏仍可离线游玩')
         }
-        if (injections.length || forceArcadeCoreLog || relocateMameRom || relocateMameBios || configureGbaScaling || raiseCoreAudioLatency || configureNdsStartup || selectNdsArchiveRom || selectPsxChd || ndsWfcSession || preparedPsxRange) {
+        {
           installFsInjector(win, injections, (path, msg) => {
             /*
               写失败**不拦着开局**（和 installFsInjector 的注释一致）：没了改版 dat，
@@ -4661,9 +4695,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
               真缺文件的话核心自己会报「缺 xxx」，那条走 errorTap，比这里更准。
             */
             if (!destroyed) console.warn(`[emulatorjs] ${path || '待注入文件'} 没写进虚拟文件系统，按原始配置继续：`, fmt(rt.ejsFsInjectFailed, { msg }))
-          }, forceArcadeCoreLog || relocateMameRom || relocateMameBios || configureGbaScaling || raiseCoreAudioLatency || configureNdsStartup || selectNdsArchiveRom || selectPsxChd
-            ? (emu) => {
-                // 顺序有讲究：先处理内容/BIOS，再准备核心专属目录与选项，最后调音频窗口。
+          }, (emu) => {
+                // 顺序有讲究：先保护存档库，再处理内容/BIOS，再准备核心专属目录与选项，最后调音频窗口。
+                guardSaveFs(emu)
                 forceArcadeCoreLog?.(emu)
                 relocateMameRom?.(emu)
                 relocateMameBios?.(emu)
@@ -4672,8 +4706,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
                 configureGbaScaling?.(emu)
                 configureNdsStartup?.(emu)
                 raiseCoreAudioLatency?.(emu)
-              }
-            : undefined,
+              },
           () => !destroyed,
           ndsWfcSession ? () => {
             if (!installNdsWfcRuntime(win, ndsWfcSession, window.location.origin)) {

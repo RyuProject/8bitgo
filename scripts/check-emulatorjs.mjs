@@ -112,6 +112,7 @@ for (const [needle, what, why] of [
   ['.finally(()=>clearTimeout(__8bgT))', '缓存时限定时器用完即清', '不清的话 get 成功 15 秒后照样写挂死标记，开局超过 15 秒的浏览器都被永久关掉核心缓存，每局重解 7z'],
   ['fetch(t,{method:"HEAD",headers:s}),new Promise((t,e)=>setTimeout(()=>e(new Error("HEAD timeout")),8e3))', '缓存复验 HEAD 有时限', '缓存过期后的 HEAD 复验没有时限，网络半开时永远停在「下载游戏核心」'],
   ['else Z=await Promise.race([y[d](),', '文本响应包体有时限', '核心报告 JSON 的包体读不完时引擎永远不往下走'],
+  ['this.toggleMainLoop(0),setTimeout(()=>{try{this.Module.abort()}', '退出时不卸载 /data/saves', '卸载后排队的 autoPersist 会把 IndexedDB 里所有游戏的电池存档（.srm）清空，刷新 / 切游戏就丢档'],
   ['core:{name:"Core",dontCache:!1,cdnFallback:!1}', '核心不回落官方 CDN', 'cdn.emulatorjs.org/4.3.0-pre 的核心起不来（AGENTS §2.4），只会多等几十秒再报 Error loading EmulatorJS runtime'],
 ]) {
   if (!js.includes(needle)) fail(`emulator.min.js 缺「${what}」补丁 —— ${why}`, 'npm run ejspatch，然后换 EJS_RUNTIME_GENERATION')

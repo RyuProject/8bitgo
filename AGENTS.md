@@ -96,6 +96,24 @@ grep -c 'this.functions.saveStateInfo()' public/emulatorjs/emulator.min.js   # �
 脚本里现在有**两组**补丁：blob 文件名（这一节）+ 存档 ABI 回退（§2.5）。两组各自幂等，
 一条命令全打；位置对不上会当场退出并打印排查思路，见 `scripts/patch-emulatorjs.mjs` 头注释。
 
+### 2.7.1 电池存档（.srm）曾被引擎 exit 整库清空；文件名不能用 8BG 的 originalName（2026-11-12）
+
+游戏内存档（GBA / SNES / GB / NDS 的 SRAM）存在 IDBFS `/data/saves`（IndexedDB 库名同名），路径是
+`/data/saves/<核心>/<内容文件名去扩展名>.srm`，和本站即时存档（`/api/saves`、`8bitgo` 库）是两套东西。
+
+- **整库被清空**：引擎 exit（iframe beforeunload、适配器拆 iframe 都会触发）先 saveSaveFiles 排一次 autoPersist、
+  紧接着 `FS.unmount("/data/saves")`；排队的同步随后看到的是卸载后的空目录，把库里**所有游戏**的 .srm 删光。
+  实测刷新一次就空。修法两道，缺一不可：`npm run ejspatch` 第十三节删掉 unmount（`check-emulatorjs` 守着）；
+  `src/emulator/ejsSaveFs.ts` 的 `guardIdbfsPersist` 在每局 callMain 前给核心 IDBFS 的 reconcile 加「内存 → 库只写更新、
+  从不删除」，顺带挡住第二个标签页拿旧内存副本回滚别的游戏的存档。因此 `installFsInjector` 现在每局都装。
+- **文件名撞车**：8BG 解包名是管理员本机文件名，线上 GBA 大量是「德文.gba」「日文.gba」—— 不同游戏同一语言共用
+  一个 .srm。现在 8BG 内容交给引擎的名字是 `batterySaveGameName(存档 slug, originalName)`：slug（含 `~rom-<语言>`，
+  去掉 `:melonds-compat` 这类核心后缀）+ 原扩展名。压缩包、本地文件、非 8BG 直链不改。旧名字以游戏 slug 开头时
+  开局前复制一份过去；「德文.srm」这种通用名可能属于别的游戏，不迁。
+- 电池存档**只在本浏览器、本域名**：8bitgo.com 与 cn.8bitgo.com 各一份，也不进云存档。
+
+回归：`npm run test:ejs-battery-saves`。
+
 ### 2.8 街机靠**压缩包文件名**认游戏
 
 叫 `kof97.zip` 才会跑 kof97 驱动，叫别的就 `Romset is unknown`，和内容对不对无关。
