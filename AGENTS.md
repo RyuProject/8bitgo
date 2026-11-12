@@ -110,7 +110,11 @@ grep -c 'this.functions.saveStateInfo()' public/emulatorjs/emulator.min.js   # �
   一个 .srm。现在 8BG 内容交给引擎的名字是 `batterySaveGameName(存档 slug, originalName)`：slug（含 `~rom-<语言>`，
   去掉 `:melonds-compat` 这类核心后缀）+ 原扩展名。压缩包、本地文件、非 8BG 直链不改。旧名字以游戏 slug 开头时
   开局前复制一份过去；「德文.srm」这种通用名可能属于别的游戏，不迁。
-- 电池存档**只在本浏览器、本域名**：8bitgo.com 与 cn.8bitgo.com 各一份，也不进云存档。
+- 电池存档 IDBFS 本身是**按浏览器、按域名**的；登录后由 `src/emulator/batterySync.ts` 同步进云存档：
+  `emulatorjs` / 存档 slug / **slot 9**，信封 `format = battery:<核心目录>/<文件名>`。开局与 ROM 并行拉云端，callMain 前
+  （存档库保护与旧名迁移之后）按「上次同步时的内容指纹」决定用哪份；两边都改过留本地、云端另存 `.cloud-<时间>.bak`。
+  核心刷存档（30 秒 / 切后台 / 离页 / 拆播放器）后内容变了就推，推送都带开局读到的 revision，别的设备先写了就 409、不覆盖。
+  开局没读到云端（断网、超时）的一局**不推送**。不同步：未登录、选了只存本地、本地文件、街机、联机加入方。
 
 回归：`npm run test:ejs-battery-saves`。
 

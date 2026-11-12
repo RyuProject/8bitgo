@@ -657,6 +657,7 @@ const it: Translation = {
     savesEmpty: 'Nessun salvataggio cloud. Usa «Salva progressi» in un gioco e comparirà qui.',
     savesSummary: '{n} salvataggi · {size} in totale',
     savesSlot: 'Slot {n}',
+    savesBattery: 'Salvataggio di gioco',
     savesDownload: 'Scarica',
     savesDelete: 'Elimina',
     savesDeleteConfirm: 'Eliminare questo salvataggio cloud? La copia nel browser non viene toccata.',

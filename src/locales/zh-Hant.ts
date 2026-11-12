@@ -668,6 +668,7 @@ const zhHant: Translation = {
     savesEmpty: '還沒有雲端存檔。遊戲中按「儲存進度」就會存到這裡。',
     savesSummary: '{n} 份 · 共 {size}',
     savesSlot: '存檔位 {n}',
+    savesBattery: '遊戲內存檔',
     savesDownload: '下載',
     savesDelete: '刪除',
     savesDeleteConfirm: '刪掉這份雲端存檔？瀏覽器裡的那份不受影響。',

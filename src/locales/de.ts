@@ -657,6 +657,7 @@ const de: Translation = {
     savesEmpty: 'Noch keine Cloud-Spielstände. Nutze im Spiel „Fortschritt speichern“, dann landet er hier.',
     savesSummary: '{n} Spielstände · {size} insgesamt',
     savesSlot: 'Slot {n}',
+    savesBattery: 'Spielinterner Speicherstand',
     savesDownload: 'Herunterladen',
     savesDelete: 'Löschen',
     savesDeleteConfirm: 'Diesen Cloud-Spielstand löschen? Die Kopie im Browser bleibt unberührt.',

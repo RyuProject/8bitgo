@@ -16,6 +16,7 @@
  * 浏览器发普通链接请求时不会带上任何自定义头，点下去只会拿到一句 401。
  */
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
+import { BATTERY_SAVE_SLOT } from '@/emulator/batterySync'
 import { Link } from 'react-router-dom'
 import { formatBytes } from '@/lib/emulator'
 import { downloadBlob } from '@/emulator/recorder'
@@ -171,7 +172,7 @@ export function CloudSaves() {
                   <p className="mt-0.5 truncate text-xs text-muted">
                     {isLocal ? t.account.savesLocalGame : platform ? platformLabel(t, platform, platform) : s.runtime}
                     {' · '}
-                    {fmt(t.account.savesSlot, { n: s.slot })}
+                    {s.runtime === 'emulatorjs' && s.slot === BATTERY_SAVE_SLOT ? t.account.savesBattery : fmt(t.account.savesSlot, { n: s.slot })}
                     {identity.romLang ? ` · ${romLanguageLabel(identity.romLang)}` : ''}
                     {' · '}
                     {formatBytes(s.size)}

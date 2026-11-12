@@ -656,6 +656,7 @@ const en: Translation = {
     savesEmpty: 'No cloud saves yet. Hit "Save progress" in a game and it lands here.',
     savesSummary: '{n} saves · {size} total',
     savesSlot: 'Slot {n}',
+    savesBattery: 'In-game save',
     savesDownload: 'Download',
     savesDelete: 'Delete',
     savesDeleteConfirm: 'Delete this cloud save? The copy in your browser is untouched.',

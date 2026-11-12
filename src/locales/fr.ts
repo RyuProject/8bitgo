@@ -657,6 +657,7 @@ const fr: Translation = {
     savesEmpty: 'Aucune sauvegarde cloud. Utilisez « Sauvegarder la progression » dans un jeu et elle apparaîtra ici.',
     savesSummary: '{n} sauvegardes · {size} au total',
     savesSlot: 'Emplacement {n}',
+    savesBattery: 'Sauvegarde en jeu',
     savesDownload: 'Télécharger',
     savesDelete: 'Supprimer',
     savesDeleteConfirm: 'Supprimer cette sauvegarde cloud ? La copie dans votre navigateur reste intacte.',

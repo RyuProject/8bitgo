@@ -203,13 +203,42 @@ async function ensureCloudRevision(
 async function decodeCloudResponse(
   res: Response,
   coordinate: SaveArchiveCoordinate,
-): Promise<{ data: Uint8Array; archive: Uint8Array; updatedAt: number; revision: string }> {
+): Promise<{ data: Uint8Array; archive: Uint8Array; updatedAt: number; revision: string; format?: string }> {
   const archive = new Uint8Array(await res.arrayBuffer())
   const decoded = await decodeSaveArchive(archive, coordinate)
   const key = localKey(coordinate.runtime as SaveRuntime, coordinate.gameSlug, coordinate.slot)
   const revision = rememberCloudRevision(key, headerOf(res, 'x-save-revision'))
   const stamp = Number(headerOf(res, 'x-save-updated-at') || 0)
-  return { data: decoded.payload, archive, updatedAt: stamp || Date.now(), revision }
+  return { data: decoded.payload, archive, updatedAt: stamp || Date.now(), revision, format: decoded.header?.format }
+}
+
+/**
+ * 读云端那一格，并且把「确实没有」和「没读到」分开：
+ *   - `null`：云端确认没有这一格（404 / 204）。之后的 pushSave 以「必须还是空的」为前提写入，
+ *     期间别的设备先写了就会收到 409，而不是被静默覆盖；
+ *   - 抛错：网络断了、5xx、令牌失效……调用方**不能**当成「没有」，否则会拿本地旧档盖掉云端。
+ * 读到时同样记下 revision，后续写入都是带条件的。电池存档同步（emulator/batterySync.ts）用它。
+ */
+export async function fetchCloudSaveStrict(
+  runtime: SaveRuntime,
+  gameSlug: string,
+  slot: number,
+  signal?: AbortSignal,
+): Promise<{ data: Uint8Array; revision: string; updatedAt: number; format?: string } | null> {
+  if (!cloudSavesEnabled()) throw new Error('not signed in')
+  const res = await fetch(cloudUrl(runtime, gameSlug, slot), { headers: authHeaders(), cache: 'no-store', signal })
+  const key = localKey(runtime, gameSlug, slot)
+  if (res.status === 404 || res.status === 204) {
+    cloudRevisions.set(key, NO_CLOUD_REVISION)
+    return null
+  }
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  const got = await decodeCloudResponse(res, { runtime, gameSlug, slot })
+  if (!got.data.length) {
+    cloudRevisions.set(key, NO_CLOUD_REVISION)
+    return null
+  }
+  return { data: got.data, revision: got.revision, updatedAt: got.updatedAt, format: got.format }
 }
 
 export interface PulledSave {

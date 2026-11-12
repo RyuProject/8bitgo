@@ -479,6 +479,10 @@ Once signed in you can store saves on our servers. Cloud saves are **private**: 
 
 One detail worth stating: if you save a game from a **ROM you uploaded yourself**, the save's identifier includes **that file's filename** (in the form of "local" plus the filename). So what the file on your computer is called is stored on the server. Its contents are not.
 
+### In-game saves
+
+A game's own "save" (the cartridge battery save, such as the .srm of a GBA, SNES or NDS game) is **automatically** synced to your cloud saves while you are signed in, so you can continue on another device or browser (including between 8bitgo.com and cn.8bitgo.com). We read the cloud copy when a game starts and upload whenever the save changes while you play. Nothing is synced if you chose "local only" in the save panel or are not signed in. If two devices both changed the save, the copy on this device is kept and the cloud copy is set aside in your browser rather than lost.
+
 ### Local saves
 
 If you choose local storage, saves live in your browser's IndexedDB and are not uploaded. Clearing browser data removes them, and we cannot restore that.

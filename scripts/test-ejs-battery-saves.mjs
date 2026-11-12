@@ -9,6 +9,7 @@
  */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { BATTERY_SAVE_SLOT, batteryHash, batteryRelOf, batteryRelPath, createBatterySync, decideBatterySync } from '../src/emulator/batterySync.ts'
 import { batterySaveGameName, guardIdbfsPersist, guardedPersistSets, migrateLegacyBatterySaves } from '../src/emulator/ejsSaveFs.ts'
 
 let failed = 0
@@ -194,6 +195,154 @@ await check('适配器：8BG 解包名改成存档 slug 名，并在开局前迁
   const adapter = readFileSync(new URL('../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8')
   assert.match(adapter, /const batteryName = batterySaveGameName\(options\.gameSlug, engineGameName\)/)
   assert.match(adapter, /migrateLegacyBatterySaves\(fs as unknown as SaveFsLike, legacyBatteryName, engineGameName, options\.gameSlug\)/)
+})
+
+// ── 云同步 ──────────────────────────────────────────────────────
+const bytes = (...v) => new Uint8Array(v)
+
+await check('同步规则：比上次同步时的指纹，不比时间', () => {
+  const a = bytes(1, 2), b = bytes(3, 4), base = batteryHash(bytes(9))
+  assert.equal(decideBatterySync(null, null, undefined), 'none')
+  assert.equal(decideBatterySync(a, null, undefined), 'keep-local')
+  assert.equal(decideBatterySync(null, b, undefined), 'use-cloud')
+  assert.equal(decideBatterySync(a, bytes(1, 2), undefined), 'in-sync')
+  assert.equal(decideBatterySync(a, b, batteryHash(a)), 'use-cloud') // 本地没动，别的设备玩过
+  assert.equal(decideBatterySync(a, b, batteryHash(b)), 'keep-local') // 云端没动，本地玩过
+  assert.equal(decideBatterySync(a, b, base), 'conflict')
+  assert.equal(decideBatterySync(a, b, undefined), 'conflict')
+})
+
+await check('同步路径：只接受 /data/saves 底下、不越级的相对路径', () => {
+  assert.equal(batteryRelPath('battery:mGBA/x.srm'), 'mGBA/x.srm')
+  assert.equal(batteryRelPath('battery:x.srm'), 'x.srm')
+  for (const bad of ['battery:../x.srm', 'battery:/etc/x', 'battery:a//b', 'emulatorjs-state', undefined, 'battery:a\\b']) {
+    assert.equal(batteryRelPath(bad), null, String(bad))
+  }
+  assert.equal(batteryRelOf('/data/saves/mGBA/x.srm'), 'mGBA/x.srm')
+  assert.equal(batteryRelOf('/home/x.srm'), null)
+})
+
+function fakeFs(files = {}) {
+  const map = new Map(Object.entries(files))
+  return {
+    map,
+    analyzePath: (p) => ({ exists: map.has(p) }),
+    readFile: (p) => map.get(p),
+    writeFile: (p, d) => map.set(p, d),
+    mkdir: () => {},
+  }
+}
+function fakeStore() {
+  const m = new Map()
+  return { m, getItem: (k) => m.get(k) ?? null, setItem: (k, v) => m.set(k, v) }
+}
+const deps = (over) => ({ enabled: () => true, now: () => 1, timeoutMs: 50, log: () => {}, storage: fakeStore(), ...over })
+const P = '/data/saves/mGBA/pokemon-firered.srm'
+
+await check('新设备：云端有、本地没有 → 开机前写进 FS，随后没改过就不重复上传', async () => {
+  const pushes = []
+  const sync = createBatterySync('pokemon-firered', deps({
+    fetch: async (runtime, slug, slot) => {
+      assert.deepEqual([runtime, slug, slot], ['emulatorjs', 'pokemon-firered', BATTERY_SAVE_SLOT])
+      return { data: bytes(7, 7), revision: 'r1', updatedAt: 1, format: 'battery:mGBA/pokemon-firered.srm' }
+    },
+    push: async (...a) => { pushes.push(a); return { ok: true, where: 'cloud' } },
+  }))
+  const fs = fakeFs()
+  assert.equal(await sync.apply(fs), 'use-cloud')
+  assert.deepEqual([...fs.readFile(P)], [7, 7])
+  assert.equal(await sync.push(fs, P), 'unchanged')
+  assert.equal(pushes.length, 0)
+})
+
+await check('玩家存了档 → 带 format 推到 slot 9；推成功后同内容不再推', async () => {
+  const pushes = []
+  const sync = createBatterySync('pokemon-firered', deps({
+    fetch: async () => null,
+    push: async (...a) => { pushes.push(a); return { ok: true, where: 'cloud' } },
+  }))
+  const fs = fakeFs({ [P]: bytes(1) })
+  // 云端没有时不知道核心目录，FS 不动，只是允许之后上传
+  assert.equal(await sync.apply(fs), 'none')
+  assert.equal(await sync.push(fs, P, 'mgba'), 'pushed')
+  assert.equal(pushes[0][3], BATTERY_SAVE_SLOT)
+  assert.equal(pushes[0][4], 'cloud')
+  assert.deepEqual(pushes[0][5], { format: 'battery:mGBA/pokemon-firered.srm', core: 'mgba' })
+  assert.equal(await sync.push(fs, P), 'unchanged')
+  fs.writeFile(P, bytes(2))
+  assert.equal(await sync.push(fs, P), 'pushed')
+  assert.equal(pushes.length, 2)
+})
+
+await check('开局没读到云端（断网 / 超时）→ 本局只用本地，绝不上传', async () => {
+  for (const fetch of [async () => { throw new Error('HTTP 500') }, () => new Promise(() => {})]) {
+    let pushed = 0
+    const sync = createBatterySync('g', deps({ fetch, push: async () => { pushed++; return { where: 'cloud' } } }))
+    const fs = fakeFs({ '/data/saves/mGBA/g.srm': bytes(5) })
+    assert.equal(await sync.apply(fs), 'pull-failed')
+    assert.equal(await sync.push(fs, '/data/saves/mGBA/g.srm'), 'skipped')
+    assert.equal(pushed, 0)
+    assert.deepEqual([...fs.readFile('/data/saves/mGBA/g.srm')], [5])
+  }
+})
+
+await check('两边都改过 → 留本地，云端那份另存 .bak，不丢', async () => {
+  const sync = createBatterySync('g', deps({
+    fetch: async () => ({ data: bytes(9), revision: 'r', updatedAt: 1, format: 'battery:mGBA/g.srm' }),
+    push: async () => ({ where: 'cloud' }),
+    now: () => 42,
+  }))
+  const fs = fakeFs({ '/data/saves/mGBA/g.srm': bytes(5) })
+  assert.equal(await sync.apply(fs), 'conflict')
+  assert.deepEqual([...fs.readFile('/data/saves/mGBA/g.srm')], [5])
+  assert.deepEqual([...fs.readFile('/data/saves/mGBA/g.srm.cloud-42.bak')], [9])
+})
+
+await check('同一台设备第二次开局：本地没动、云端被别的设备更新 → 用云端', async () => {
+  const storage = fakeStore()
+  const fs = fakeFs({ '/data/saves/mGBA/g.srm': bytes(1) })
+  const first = createBatterySync('g', deps({ storage, fetch: async () => null, push: async () => ({ where: 'cloud' }) }))
+  await first.apply(fs)
+  await first.push(fs, '/data/saves/mGBA/g.srm')
+  const second = createBatterySync('g', deps({
+    storage,
+    fetch: async () => ({ data: bytes(2), revision: 'r2', updatedAt: 2, format: 'battery:mGBA/g.srm' }),
+    push: async () => ({ where: 'cloud' }),
+  }))
+  assert.equal(await second.apply(fs), 'use-cloud')
+  assert.deepEqual([...fs.readFile('/data/saves/mGBA/g.srm')], [2])
+})
+
+await check('云端连续拒收（409 / 超配额）三次后本局停止上传', async () => {
+  let pushed = 0
+  const sync = createBatterySync('g', deps({ fetch: async () => null, push: async () => { pushed++; return { where: 'local', error: 'conflict', cloudFailed: true } } }))
+  const fs = fakeFs({ '/data/saves/mGBA/g.srm': bytes(1) })
+  await sync.apply(fs)
+  for (let i = 0; i < 5; i++) {
+    fs.writeFile('/data/saves/mGBA/g.srm', bytes(i + 10))
+    await sync.push(fs, '/data/saves/mGBA/g.srm')
+  }
+  assert.equal(pushed, 3)
+})
+
+await check('没登录 / 选了只存本地 → 不拉不推', async () => {
+  let called = 0
+  const sync = createBatterySync('g', deps({ enabled: () => false, fetch: async () => { called++; return null }, push: async () => { called++; return {} } }))
+  const fs = fakeFs({ '/data/saves/mGBA/g.srm': bytes(1) })
+  assert.equal(await sync.apply(fs), 'off')
+  assert.equal(await sync.push(fs, '/data/saves/mGBA/g.srm'), 'skipped')
+  assert.equal(called, 0)
+})
+
+await check('适配器：开机前等同步、刷存档后推送；本地文件 / 街机 / 联机加入方不同步', () => {
+  const adapter = readFileSync(new URL('../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8')
+  assert.match(adapter, /options\.platform !== 'arcade' && options\.netplay\?\.mode !== 'join'\s*\n\s*\? createBatterySync\(options\.gameSlug\)/)
+  assert.match(adapter, /await batterySync\.apply\(fs as unknown as BatteryFs\)/)
+  assert.match(adapter, /gm\?\.saveSaveFiles\?\.\(\)[\s\S]{0,400}batterySync\.push\(/)
+  // 异步步骤必须在 beforeStart（含存档库保护与旧名迁移）之后、original 之前
+  assert.match(adapter, /beforeStart\?\.\(next\)[\s\S]{0,300}await beforeStartAsync\(next\)[\s\S]{0,300}return original\.call\(this\)/)
+  const saves = readFileSync(new URL('../src/services/saves.ts', import.meta.url), 'utf8')
+  assert.match(saves, /export async function fetchCloudSaveStrict/)
 })
 
 if (failed) {

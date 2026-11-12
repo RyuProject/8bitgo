@@ -651,6 +651,7 @@ const ja: Translation = {
     savesEmpty: 'クラウドセーブはまだありません。ゲーム中に「進行状況を保存」するとここに入ります。',
     savesSummary: '{n} 件 · 合計 {size}',
     savesSlot: 'スロット {n}',
+    savesBattery: 'ゲーム内セーブ',
     savesDownload: 'ダウンロード',
     savesDelete: '削除',
     savesDeleteConfirm: 'このクラウドセーブを削除しますか？ブラウザ内のセーブには影響しません。',

@@ -656,6 +656,7 @@ const es: Translation = {
     savesEmpty: 'Todavía no hay partidas en la nube. Usa «Guardar progreso» en un juego y aparecerá aquí.',
     savesSummary: '{n} partidas · {size} en total',
     savesSlot: 'Ranura {n}',
+    savesBattery: 'Partida guardada en el juego',
     savesDownload: 'Descargar',
     savesDelete: 'Eliminar',
     savesDeleteConfirm: '¿Eliminar esta partida en la nube? La copia de tu navegador no se toca.',

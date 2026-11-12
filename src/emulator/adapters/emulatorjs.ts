@@ -143,6 +143,7 @@ import {
 import { findDipOptions, planDipChanges, type DipPlan } from '../dipPlan'
 import { diagLog, watchFramePerformance } from '@/services/startupDiagnostics'
 import { browserBitness, probeBrowserBitness } from '../browserBitness'
+import { createBatterySync, type BatteryFs, type BatterySync } from '../batterySync'
 import { batterySaveGameName, guardIdbfsPersist, migrateLegacyBatterySaves, type IdbfsLike, type SaveFsLike } from '../ejsSaveFs'
 
 /**
@@ -596,6 +597,8 @@ interface EjsGameManager {
   supportsStates?: () => boolean
   /** 把电池存档（SRAM）从核心刷进 /data/saves（cwrap cmd_savefiles）*/
   saveSaveFiles?: () => void
+  /** 核心当前这份电池存档的完整路径（cwrap save_file_path），如 /data/saves/mGBA/x.srm */
+  getSaveFilePath?: () => string
   /** Emscripten 的虚拟文件系统。RomData / BIOS 要往里塞文件，见 installFsInjector */
   FS?: {
     writeFile: (path: string, data: string | Uint8Array) => void
@@ -965,6 +968,8 @@ function installFsInjector(
   psxRange?: PsxRangeMedia,
   onRequiredFailure?: (path: string, message: string) => void,
   onPsxRangeFailure?: (message: string) => void,
+  /** beforeStart 之后、callMain 之前要等的异步步骤（电池存档云同步）。失败不拦开局 */
+  beforeStartAsync?: (emu: EjsEmulator) => Promise<unknown>,
 ): void {
   let emu: EjsEmulator | undefined
   let wrapped = false
@@ -1039,6 +1044,14 @@ function installFsInjector(
         beforeStart?.(next)
       } catch (e) {
         console.warn('[emulatorjs] startGame 前置修正失败，按引擎默认路径继续：', e)
+      }
+      if (beforeStartAsync) {
+        try {
+          await beforeStartAsync(next)
+        } catch (e) {
+          console.warn('[emulatorjs] startGame 前置异步步骤失败，按本地状态继续：', e)
+        }
+        if (!shouldContinue()) return
       }
       return original.call(this)
     }
@@ -2303,7 +2316,17 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const flushSaveFiles = () => {
     if (!started) return
     try {
-      emuOf()?.gameManager?.saveSaveFiles?.()
+      const gm = emuOf()?.gameManager
+      gm?.saveSaveFiles?.()
+      if (batterySync && gm?.FS) {
+        let savePath: string | undefined
+        try {
+          savePath = gm.getSaveFilePath?.()
+        } catch {
+          savePath = undefined
+        }
+        void batterySync.push(gm.FS as unknown as BatteryFs, savePath, core)
+      }
     } catch (e) {
       logEngine(`[saveFiles] ${e instanceof Error ? e.message : String(e)}`)
       if (options.platform === 'nds' && isNdsWasmCrash('', e)) reportCoreCrash(e instanceof Error ? e.message : String(e))
@@ -2598,6 +2621,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let engineGameName = isFile ? (options.game as File).name : options.gameName
   /** 8BG 改名前引擎会用的名字；开局前把这个名字下的电池存档迁到新名字（见 guardSaveFs） */
   let legacyBatteryName: string | undefined
+  /**
+   * 游戏内存档（.srm）的云同步（见 batterySync.ts）。只给站内的远程游戏：本地文件没有 slug；
+   * 街机的 nvram / hiscore 不是玩家意义上的存档；联机加入方跑的是房主的进度，不能拿它盖自己的档。
+   * 现在就开始拉，和 ROM 下载并行；callMain 前才等它。
+   */
+  const batterySync: BatterySync | null = !isFile && options.gameSlug && !options.gameSlug.startsWith('local:') &&
+    options.platform !== 'arcade' && options.netplay?.mode !== 'join'
+    ? createBatterySync(options.gameSlug)
+    : null
   /** 远端 ZIP 的 CRC 指纹识别结果；用于在真正交给 MAME 前确认后台是否绑定了必需 CHD。 */
   let detectedMameMedia: MameArcadeDiskProfile | null = null
   /** 远端街机包按 CRC 认出的 Namco System 11/12 set（决定核心、包名、平台 BIOS 与按键数） */
@@ -4722,7 +4754,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             const disk = (path?.split('/').pop() ?? '').replace(/\.chd$/i, '') || '?'
             failLoad(fmt(rt.ejsMameDiskFailed, { disk, msg: message }), 'runtime')
           },
-          (message) => failLoad(message, 'runtime'))
+          (message) => failLoad(message, 'runtime'),
+          batterySync
+            ? async (emu) => {
+                const fs = emu.gameManager?.FS
+                if (fs) await batterySync.apply(fs as unknown as BatteryFs)
+              }
+            : undefined)
         }
 
         // 网络探针也要赶在 loader.js 之前包好，否则核心那一趟就漏过去了

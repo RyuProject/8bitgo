@@ -710,6 +710,7 @@ export const zhHans = {
     savesEmpty: '还没有云存档。游戏里按「保存进度」就会存到这里。',
     savesSummary: '{n} 份 · 共 {size}',
     savesSlot: '存档位 {n}',
+    savesBattery: '游戏内存档',
     savesDownload: '下载',
     savesDelete: '删除',
     savesDeleteConfirm: '删掉这份云存档？浏览器里的那份不受影响。',
