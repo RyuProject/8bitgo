@@ -52,6 +52,18 @@ export const SSE_MAX_LIFETIME_MS = num(process.env.SSE_MAX_LIFETIME_MS, 30 * 60_
 export const SSE_HEARTBEAT_MS = num(process.env.SSE_HEARTBEAT_MS, 10_000)
 
 /**
+ * 心跳帧。⚠️ 必须是**具名事件**、data 不能为空，不能再用注释行 `: ping`。
+ *
+ * 注释行只喂饱沿途代理，EventSource 收到后什么都不触发 —— 页面因此分不清「列表没变」和
+ * 「连接早就静悄悄地死了」。大陆线路上空闲 TCP 被中间设备丢弃、不回 RST 很常见：
+ * 浏览器不报 error，首个快照之后再也收不到更新，侧边栏「一起玩」就一直停在打开那一刻的数
+ * （2026-11-12 站长反馈：自己电脑上永远是 0，别的电脑看得到 3 个房间）。
+ * 具名事件能被 sseFallback 看到并当作「还活着」；spec 规定 data 为空的事件不派发，所以写个 1。
+ * 老页面没有 ping 监听器，浏览器直接忽略，不影响它们。
+ */
+export const SSE_HEARTBEAT_FRAME = 'event: ping\ndata: 1\n\n'
+
+/**
  * 爬虫 UA。命中就不给开流。
  *
  * ⚠️ **UA 为空不算爬虫**：真浏览器一定带 UA，而我们自己的测试脚本用裸 fetch 不带 UA，
