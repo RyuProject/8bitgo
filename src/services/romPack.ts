@@ -137,8 +137,41 @@ const readyZstd = (): Promise<void> => {
  * `init()` 去取 zstd-*.wasm，又在弱网上花了 7 秒 —— 一个几十 KB 的文件排在整个 ROM 之后
  * 串行走一趟高 RTT 往返。loadGameBytes 见到 .8bg 地址就调这里；失败静默，解包时会再试一次。
  */
-export function prewarmRomPackDecoder(): void {
+export function prewarmRomPackDecoder(url?: string): void {
   void readyZstd().catch(() => {})
+  if (url) prewarmRomPackKey(url)
+}
+
+/** 取包头只读这么多：单块包头约 600 字节，每多一个 8MB 块约多 200 字节，4KB 覆盖到约 150MB 的 ROM。 */
+const KEY_PREWARM_PREFIX_BYTES = 4096
+const keyPrewarmed = new Set<string>()
+
+/**
+ * 与 ROM 下载并行取这一包的数据密钥。
+ *
+ * 2026-11-12《凯撒大帝》（DOS，737KB）实测：ROM 下完才读包头、才去要密钥，密钥回来才取解码器 ——
+ * 高 RTT 线路上 ROM 之后又串行走了两趟往返（约 2 秒）。包头就在文件最前面，先用一个小 Range
+ * 读出 packageId，把密钥请求提前到下载期间；结果放进 contentKey 的同一份缓存，解包时直接复用。
+ * 包头超出这段前缀（超大 ROM）就不预取，照旧在解包时取；任何失败都静默，由解包那一步报错。
+ * 解包先一步调了 contentKey 也没关系：两边按 keyId + packageId 共用同一个 promise，不会多要一次。
+ */
+export function prewarmRomPackKey(url: string, fetchImpl: typeof fetch = fetch): void {
+  if (!apiEnabled() || !isRomPackUrl(url) || keyPrewarmed.has(url)) return
+  keyPrewarmed.add(url)
+  void (async () => {
+    const response = await fetchImpl(url, { headers: { Range: `bytes=0-${KEY_PREWARM_PREFIX_BYTES - 1}` } })
+    if (response.status !== 206) {
+      // 不支持 Range 的源会回整包，预取不值得为此多下一份
+      void response.body?.cancel().catch(() => {})
+      return
+    }
+    const bytes = new Uint8Array(await response.arrayBuffer())
+    const required = ROM_PACK_HEADER_PREFIX_BYTES + romPackHeaderLength(bytes.subarray(0, ROM_PACK_HEADER_PREFIX_BYTES))
+    if (bytes.byteLength < required) return
+    await contentKey(parseRomPackHeader(bytes.subarray(0, required)).header)
+  })().catch(() => {
+    keyPrewarmed.delete(url)
+  })
 }
 
 interface PackedRomRetryCache extends Omit<PackedRomUpload, 'reused'> {

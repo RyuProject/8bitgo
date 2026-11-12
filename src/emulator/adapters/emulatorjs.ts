@@ -1758,7 +1758,7 @@ export async function prepareRemoteArcadeRom(
   const name = arcadeRomsetName(url)
   if (!name || (!/\.zip$/i.test(name) && !isRomPackUrl(url))) throw new InvalidArcadeArchiveError(name || 'ROM')
   // 8BG 的 zstd 解码器 wasm 与 ROM 并行取：以前要等 ROM 下完、密钥回来才 init()，大陆线路上又串行 1.9 秒
-  if (isRomPackUrl(url)) prewarmRomPackDecoder()
+  if (isRomPackUrl(url)) prewarmRomPackDecoder(url)
 
   const decodedArcade = async (stored: Blob): Promise<{ blob: Blob; name: string }> => {
     const magic = new Uint8Array(await stored.slice(0, 4).arrayBuffer())
@@ -1902,7 +1902,7 @@ export async function prepareRemoteDiscRom(
     maxUnpackedBytes?: number
   } = {},
 ): Promise<{ url: string; bytes: number; name?: string }> {
-  if (isRomPackUrl(url)) prewarmRomPackDecoder()
+  if (isRomPackUrl(url)) prewarmRomPackDecoder(url)
   const prepare = async (stored: Blob): Promise<{ url: string; bytes: number; name?: string }> => {
     // 历史缓存不经过本版下载器；同一上限也得在解密/解压前拦住旧数据。
     if (options.maxBytes !== undefined && stored.size > options.maxBytes) {

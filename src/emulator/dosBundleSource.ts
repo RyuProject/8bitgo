@@ -11,7 +11,7 @@ import { fetchBlobWithProgress } from './loadProgress'
 import { alternateRomUrl } from '@/services/romHosts'
 import { romCacheDelete, romCacheGetBlob, romCacheKey, romCachePutBlob } from './romCache'
 import { isReadyJsdosBundleBlob } from '@/lib/jsdosBundle'
-import { isRomPackBytes, unpackRomPackBlob } from '@/services/romPack'
+import { isRomPackBytes, isRomPackUrl, prewarmRomPackDecoder, unpackRomPackBlob } from '@/services/romPack'
 
 export interface DosBundleBlob {
   name: string
@@ -55,6 +55,9 @@ export async function prepareRemoteDosBundle(
 ): Promise<DosBundleBlob> {
   const fallbackName = fileNameFromUrl(url)
   const cacheKey = romCacheKey(url)
+  // 普通 DOS 包走这里而不经过 loadGameBytes：解码器和密钥同样要与下载（或读缓存）并行取，
+  // 否则下完 ROM 还要串行等两趟往返（2026-11-12《凯撒大帝》实测约 2 秒）。
+  if (isRomPackUrl(url)) prewarmRomPackDecoder(url)
 
   const decode = async (stored: Blob) => {
     // 下载到 100% 后还有 63 个 8MB 块要验签/解密/解压；把真相写在遮罩上，别让 99% 像死机。

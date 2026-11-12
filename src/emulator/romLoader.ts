@@ -97,8 +97,8 @@ export async function loadGameBytes(
     return { name: extracted.name, data, remoteUrl: game, fromCache: extracted.fromCache }
   }
 
-  // 8BG 的解码器 wasm 与 ROM 并行取，别等下完了才发现要它（见 prewarmRomPackDecoder）
-  if (isRomPackUrl(game)) prewarmRomPackDecoder()
+  // 8BG 的解码器 wasm 和数据密钥与 ROM 并行取，别等下完了才发现要它（见 prewarmRomPackDecoder）
+  if (isRomPackUrl(game)) prewarmRomPackDecoder(game)
 
   // 缓存键只有在播放地址带内容版本号（?romv=<etag>）时才成立，见 romCache.ts 的文件头注释
   const cacheKey = romCacheKey(game)

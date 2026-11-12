@@ -1421,7 +1421,11 @@ EdgeOne 帮不上。现在 `writeInlineRuffleFrame()`（`src/emulator/ruffleFram
 - **8BG 的 Zstd 解码器 wasm 等到解包才 `init()`**：《森林冰火人》的 SWF 用 10.9 秒下完，11.0 秒才去取
   74KB 的 `zstd-*.wasm`，弱网上又排了 7 秒。现在 `loadGameBytes` 见到 `.8bg` 地址（`isRomPackUrl`）就先
   `prewarmRomPackDecoder()`，所有运行时共用。`readyZstd` 失败后会清掉，不再永久钉在 rejected。
-- 还剩一趟串行：`/api/rom-pack/key` 要用文件头里的 packageId，只能等第一片到了再取，没有改。
+- **数据密钥也与下载并行**（2026-11-12《凯撒大帝》）：以前 `/api/rom-pack/key` 要等 ROM 下完、读出包头才发，
+  密钥回来才取解码器，高 RTT 线路上 ROM 之后串行多走两趟往返（实测约 2 秒）。现在 `prewarmRomPackDecoder(url)`
+  同时调 `prewarmRomPackKey`：先 Range 读前 4KB 包头拿 packageId，提前要密钥，结果进 `contentKey` 的同一份缓存。
+  包头超过 4KB（约 150MB 以上的 ROM）或源站不支持 Range 就不预取。普通 DOS 包走 `prepareRemoteDosBundle`、
+  不经 `loadGameBytes`，以前连解码器预热都漏了，现在入口处一起补上。回归：`npm run test:rompack`。
 
 **诊断**：以前 Ruffle 的诊断包在 ROM 之后一行日志都没有，因为 ruffle.js / 核心都在 iframe 里下，外层
 performance 看不到。现在适配器做三件事：

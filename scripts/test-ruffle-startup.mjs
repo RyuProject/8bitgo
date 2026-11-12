@@ -25,11 +25,11 @@ assert.equal(isRomPackUrl('https://assets.8bitgo.com/roms/flash/a.swf'), false)
 
 console.log('── Zstd 解码器与 ROM 并行取 ──')
 const loader = read('src/emulator/romLoader.ts')
-const warmAt = loader.indexOf('if (isRomPackUrl(game)) prewarmRomPackDecoder()')
+const warmAt = loader.indexOf('if (isRomPackUrl(game)) prewarmRomPackDecoder(game)')
 assert.ok(warmAt > 0, 'loadGameBytes 见到 .8bg 地址必须先预热解码器')
 assert.ok(warmAt < loader.indexOf('await (await fetchBlobWithProgress(game'), '解码器预热必须在 ROM 下载之前发起')
 const romPack = read('src/services/romPack.ts')
-assert.match(romPack, /export function prewarmRomPackDecoder\(\)/)
+assert.match(romPack, /export function prewarmRomPackDecoder\(url\?: string\)/)
 assert.match(romPack, /if \(zstdReady === pending\) zstdReady = null/, 'init 失败不能把解码器永久钉在 rejected')
 
 console.log('── Ruffle 核心预热（真实 fetch 路径）──')

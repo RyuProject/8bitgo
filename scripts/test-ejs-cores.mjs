@@ -232,7 +232,7 @@ check('固定名核心与悬停预热共用版本化 URL，不会把两代核心
   // css 由 loader 用不带 crossorigin 的 <link> 加载：fetch 预热在 Firefox 跨源时用不上，改在 iframe 里 preload
   assert.match(adapter, /preloadEjsStyle\(doc, ejsRuntimeAsset\('emulator\.min\.css'\)\)/)
   assert.doesNotMatch(adapter, /always: \[[^\]]*emulator\.min\.css/, 'css 不再走匿名 fetch 预热')
-  assert.match(adapter, /if \(isRomPackUrl\(url\)\) prewarmRomPackDecoder\(\)/, '街机 / 光盘 8BG 的解码器与 ROM 并行取')
+  assert.match(adapter, /if \(isRomPackUrl\(url\)\) prewarmRomPackDecoder\(url\)/, '街机 / 光盘 8BG 的解码器与 ROM 并行取')
   assert.match(prewarm, /const file = emulatorJsCoreFileFor\(core\)/)
   assert.match(prewarm, /file === PSX_CHD_CORE \? PSX_CHD_ARCHIVE : encodeURIComponent\(emulatorJsCoreDataFile\(file\)\)/)
 })
