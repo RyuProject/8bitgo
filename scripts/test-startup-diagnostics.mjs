@@ -192,7 +192,9 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   assert.match(funnel, /DIAGNOSTIC_EVENTS = new Set<StartupEventName>\(\['failed', 'timeout', 'slow_start'\]\)/)
   assert.match(funnel, /collectStartupDiagnostics\(payload\.attemptId, payload\.detail\)/)
   const games = read('server/src/routes/games.js')
-  assert.match(games, /if \(result\.recorded && req\.body\?\.diagnostics\)/, '只在漏斗事件首次入库时写诊断包')
+  assert.match(games, /if \(result\.recorded && req\.body\?\.diagnostics\n/, '只在漏斗事件首次入库时写诊断包')
+  // 诊断包一份最多 32KB，必须有自己的闸，不能只靠漏斗那道每分钟 12000 的总量
+  assert.match(games, /takeAnonymous\(req, 'startup-diagnostics', \{ perIp: 6, global: 120 \}\)\.ok/)
   assert.match(games, /userAgent: req\.headers\['user-agent'\]/)
   const admin = read('server/src/routes/admin.js')
   for (const path of ["'/startup-diagnostics'", "'/startup-diagnostics/samples'", "'/startup-diagnostics/:id'"]) {

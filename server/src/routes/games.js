@@ -410,7 +410,10 @@ gamesRouter.post('/:slug/startup', async (req, res, next) => {
     if (!result.accepted) return res.status(404).json({ error: '游戏不存在' })
     // 失败 / 超时 / 慢启动附带的诊断包。只在这一阶段第一次入库时写（重放不重复写），
     // 浏览器只存粗粒度的「Safari 26 / macOS」，不存完整 UA；写失败不影响漏斗本身。
-    if (result.recorded && req.body?.diagnostics) {
+    // 诊断包单独限流：一份最多 32KB，若只受漏斗那道闸（每 IP 360 / 全站 12000 每分钟），伪造的失败事件
+    // 每分钟能写进几百 MB。正常量一天约一百份，这道闸远够用；超了只丢诊断包，漏斗事件照常入库。
+    if (result.recorded && req.body?.diagnostics
+      && takeAnonymous(req, 'startup-diagnostics', { perIp: 6, global: 120 }).ok) {
       await recordStartupDiagnostics(req.params.slug, result.event, req.body.diagnostics, {
         country: result.country,
         userAgent: req.headers['user-agent'],
