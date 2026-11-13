@@ -113,7 +113,11 @@ export function markEjsEdgeFailed(): void {
   2026-11-12：引擎 exit 不再卸载 /data/saves（patch-emulatorjs.mjs 第十三节）——卸载后排队的 autoPersist
   会把所有游戏的电池存档从 IndexedDB 清空。入口必须换代，否则边缘继续发会清库的旧 emulator.min.js。
 */
-export const EJS_RUNTIME_GENERATION = '20261027-melondsds-ff33abb1-psxrange1-corecompat1-stateglue3-mameglue3-ejsperf1-cnedge1-dlguard3-srmkeep1-fbneolowmem-0a473a39'
+/*
+  2026-11-13：fbneo-lowmem 也必须保留街机 ZIP（patch-emulatorjs.mjs）；引擎文件名不带哈希，
+  所以即使已有 fbneolowmem 代号，也要再换一代让边缘与浏览器取到这次更新。
+*/
+export const EJS_RUNTIME_GENERATION = '20261027-melondsds-ff33abb1-psxrange1-corecompat1-stateglue3-mameglue3-ejsperf1-cnedge1-dlguard3-srmkeep1-fbneolowmem-0a473a39-fbneozip1'
 export const ejsRuntimeAsset = (name: string): string =>
   `${ejsBase()}${name}?v=${encodeURIComponent(EJS_RUNTIME_GENERATION)}`
 
