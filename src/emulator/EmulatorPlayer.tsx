@@ -1608,18 +1608,20 @@ export function EmulatorPlayer({
     放在 effect 里而不是渲染时算：SSR 没有 document，渲染时算会让首屏和水合选出不同的引擎。
   */
   const [webglUnavailable, setWebglUnavailable] = useState(false)
+  const [webglProbeReady, setWebglProbeReady] = useState(false)
   useEffect(() => {
     if (platform.id !== 'nes') return
     const missing = !canCreateWebgl()
     if (missing) console.warn('[8bitgo/runtime] 这个浏览器建不出 WebGL，NES 改用 jsnes')
     setWebglUnavailable(missing)
+    setWebglProbeReady(true)
   }, [platform.id])
 
   const currentNesProbe = nesProbe.url === romUrl ? nesProbe : undefined
   const jsnesCompatible = shouldProbeNes ? currentNesProbe?.compatible : undefined
 
   // 直链 `.nes` 的头还没回来前故意不定引擎：autoplay / 切语言重开都必须等当前 URL 的结果，
-  // 不能先拿上一份 ROM 的 mapper 开局。容器包无需等待，稳定默认 EmulatorJS。
+  // 不能先拿上一份 ROM 的 mapper 开局。容器包不用等 mapper，但 NES 仍须等 WebGL 预检再开局。
   const pageRuntime = useMemo(() => {
     if (shouldProbeNes && !currentNesProbe?.ready) return undefined
     return resolveRuntime({
@@ -1632,8 +1634,9 @@ export function EmulatorPlayer({
     })
   }, [platform.id, runtime, romUrl, shouldProbeNes, currentNesProbe?.ready, jsnesNetplay, jsnesCompatible, webglUnavailable])
 
-  /** 当前直链 `.nes` 的头是否已探完；等待时“开始”进入准备态，不误显为平台不支持。 */
-  const engineReady = !shouldProbeNes || Boolean(currentNesProbe?.ready)
+  /** NES 的 mapper 与 WebGL 结论都确定后再开放启动，避免自动播放抢在环境探测前挂载错误引擎。 */
+  const engineReady = (!shouldProbeNes || Boolean(currentNesProbe?.ready)) &&
+    (platform.id !== 'nes' || webglProbeReady)
   const supported = Boolean(pageRuntime) || onlineOk
   /** js-dos 预热必须知道最终后端，否则会把普通 DOS 的 1.4 MB 核心当成 Win95 的 7.5 MB 核心。 */
   const requestedPrewarmCore = core ?? platform.core
@@ -2740,6 +2743,8 @@ export function EmulatorPlayer({
 
   const start = useCallback(
     async (picked: File | null, confirmedPlatform = false) => {
+      // 自动播放等入口也可能在预检完成前触发；远端 NES ROM 必须等最终运行时选好再挂载。
+      if (!picked && !engineReady) return
       // 玩家在语言探测失败后改选本地文件，说明他已经放弃那次自动重开；旧请求日后恢复
       // 也不能突然盖掉正在玩的本地会话。
       if (picked) {
@@ -2966,7 +2971,7 @@ export function EmulatorPlayer({
          * 等玩家过一会儿自己传个本地 ROM 开始玩，冷不丁就被开了个房。
          * 而且设 ref 不触发渲染，指望后面的 effect 去兜底是兜不住的（可能根本不再渲染）。
          */
-        if (status === 'idle' && romUrl && pageRuntime) {
+        if (status === 'idle' && romUrl && pageRuntime && engineReady) {
           wantMatchRef.current = true
           void start(null)
         } else if (status === 'loading') {
@@ -2976,7 +2981,7 @@ export function EmulatorPlayer({
       }),
     // start 在此处已经声明；订阅随开局回调更新，避免从旧闭包启动过期 ROM。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [status, hosting, matchBusy, romUrl, pageRuntime, handle, start],
+    [status, hosting, matchBusy, romUrl, pageRuntime, engineReady, handle, start],
   )
 
   useEffect(
@@ -3012,10 +3017,10 @@ export function EmulatorPlayer({
   useEffect(() => {
     if (!autoStart || autoStartedRef.current) return
     if (status !== 'idle' || session) return
-    if (!romUrl || !pageRuntime) return
+    if (!romUrl || !pageRuntime || !engineReady) return
     autoStartedRef.current = true
     void start(null)
-  }, [autoStart, status, session, romUrl, pageRuntime, start])
+  }, [autoStart, status, session, romUrl, pageRuntime, engineReady, start])
 
   /**
    * 外部重试：用户在识别失败后手动选了平台，页面把同一个文件递回来重跑一次。
