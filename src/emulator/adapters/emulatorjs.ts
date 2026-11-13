@@ -91,7 +91,10 @@ import {
   installNdsCoreOptionsGuard,
   type NdsCoreOptionsFs,
 } from '../ndsStartup'
-import { inspectRomPackBlob, isBlobReadError, isRomPackBytes, isRomPackUrl, prewarmRomPackDecoder, unpackRomPackBlob } from '@/services/romPack'
+import {
+  inspectRomPackBlob, isBlobReadError, isRomPackBytes, isRomPackUrl, memoryRomOf, prewarmRomPackDecoder,
+  RomBlobStorageError, unpackRomPackBlob, unpackRomPackToMemory,
+} from '@/services/romPack'
 import { assertNdsRomBlob, MAX_NDS_ROM_BYTES } from '@/lib/romValidation'
 import {
   EJS_P2_KEY_OFFSET,
@@ -375,6 +378,8 @@ export interface NetplaySession {
   initialState?: Uint8Array
   /** 进入房间后回调，带房间 id（host 模式下是客户端生成的） */
   onRoom?: (roomId: string, isHost: boolean) => void
+  /** 游戏已启动、但最初的联机握手失败时调用；单机模拟器继续运行。 */
+  onConnectionFailed?: (message: string) => void
   /** netplay 内部给我们分配的身份 id —— 服务器就是用它来判断「谁该接手」 */
   onIdentity?: (playerId: string) => void
   /** 房间人数变化 */
@@ -1204,14 +1209,63 @@ function fetchMameDiskBytes(
  * 只拦这一个地址，其余请求原样交给原生 fetch。
  */
 function installBlobFetchShortcut(win: Window, url: string, blob: Blob): void {
-  const frame = win as Window & { fetch: typeof fetch; Response: typeof Response }
+  const frame = win as Window & { fetch: typeof fetch; Response: typeof Response; ReadableStream: typeof ReadableStream }
   const native = frame.fetch?.bind(frame)
   if (typeof native !== 'function' || typeof frame.Response !== 'function') return
   frame.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     const target = typeof input === 'string' ? input : input instanceof URL ? input.href : ''
     if (target === url && (!init?.method || init.method.toUpperCase() === 'GET')) {
-      diagLog('adapter', 'info', `ROM 由 Blob 直接交给引擎（${Math.round(blob.size / 1048576)}MB）`)
-      return Promise.resolve(new frame.Response(blob, { headers: { 'Content-Type': blob.type || 'application/octet-stream' } }))
+      const headers = { 'Content-Type': blob.type || 'application/octet-stream', 'Content-Length': String(blob.size) }
+      const memory = memoryRomOf(blob)
+      // 不把外层 Blob 直接当 iframe Response 的 body：Safari 18 对 256MB 跨上下文 Blob
+      // 在 response.arrayBuffer() 时会报 TypeError: Load failed。4MB 一片由外层读取，
+      // 再交给 iframe 自己的 ReadableStream；避免 WebKit 的 blob: URL / 跨 realm Blob 路径，
+      // 同时不在交接时额外复制整份 ROM。
+      diagLog('adapter', 'info', `ROM 按块流给引擎（${Math.round(blob.size / 1048576)}MB${memory ? '，内存回退' : ''}）`)
+      const Stream = typeof frame.ReadableStream === 'function' ? frame.ReadableStream : ReadableStream
+      const CHUNK_BYTES = 4 * 1024 * 1024
+      let offset = 0
+      let partIndex = 0
+      let cancelled = false
+      const body = new Stream<Uint8Array>({
+        async pull(controller) {
+          if (cancelled) return
+          if (memory) {
+            const part = memory.parts[partIndex]
+            if (partIndex >= memory.parts.length || !part) {
+              controller.close()
+              return
+            }
+            memory.parts[partIndex++] = null
+            controller.enqueue(part)
+            if (partIndex >= memory.parts.length) controller.close()
+            return
+          }
+          if (offset >= blob.size) {
+            controller.close()
+            return
+          }
+          const end = Math.min(blob.size, offset + CHUNK_BYTES)
+          try {
+            const chunk = new Uint8Array(await blob.slice(offset, end).arrayBuffer())
+            if (cancelled) return
+            offset = end
+            controller.enqueue(chunk)
+            if (offset >= blob.size) controller.close()
+          } catch (error) {
+            // 同一页之后的 8BG 重试改用内存输出，避免对坏掉的浏览器 Blob 存储反复走同一路径。
+            markRomBlobStorageBroken('引擎分块读取')
+            diagLog('adapter', 'warn', `ROM Blob 分块读取失败：${safeStr(error)}`)
+            controller.error(error)
+          }
+        },
+        cancel() {
+          cancelled = true
+          // 内存回退 ROM 只供本次请求使用；取消后立即放掉尚未交给引擎的块。
+          if (memory) memory.parts.fill(null)
+        },
+      })
+      return Promise.resolve(new frame.Response(body, { headers }))
     }
     return native(input as RequestInfo, init)
   }) as typeof fetch
@@ -1775,6 +1829,43 @@ interface PreparedArcadeRom {
 
 
 /**
+ * 本页已证实 Blob 存储接不住解开的 ROM（见 RomBlobStorageError）：之后的解包直接留在内存，
+ * 播放器的自动重试 / 换语言 ROM 不再把同一个必然失败的路子再走一遍。
+ * 两个来源：解包后探测读不出；或引擎读预下载 ROM 时报 NotReadableError（failLoad 里认）。
+ */
+let romBlobStorageBroken = false
+/** 内存退路的上限：DS 卡带最大 512MB，再大的光盘镜像放进 JS 内存只会让标签页被杀，宁可照实报错。 */
+const MEMORY_ROM_MAX_BYTES = 520 * 1024 * 1024
+
+function markRomBlobStorageBroken(where: string): void {
+  if (romBlobStorageBroken) return
+  romBlobStorageBroken = true
+  console.warn(`[emulatorjs] ${where}时 Blob 存储读不出，本页之后的 ROM 解包改走内存`)
+}
+
+/** Chromium 的 NotReadableError 原文；跨 realm 的引擎错误只剩这句话。 */
+export function isNativeBlobReadMessage(message: string): boolean {
+  return /requested file could not be read|NotReadableError/i.test(message)
+}
+
+/** 8BG 解包：正常走 Blob；Blob 存储坏了（这次探出或本页早已探出）就整份留在内存。 */
+async function unpackRomPackForEngine(stored: Blob, onProgress: MountOptions['onProgress']): Promise<{ name: string; blob: Blob }> {
+  const toMemory = async () => {
+    const { header } = await inspectRomPackBlob(stored)
+    if (header.originalSize > MEMORY_ROM_MAX_BYTES) throw new RomBlobStorageError()
+    return unpackRomPackToMemory(stored, romPackUnpackProgress(onProgress))
+  }
+  if (romBlobStorageBroken) return toMemory()
+  try {
+    return await unpackRomPackBlob(stored, romPackUnpackProgress(onProgress))
+  } catch (error) {
+    if (!(error instanceof RomBlobStorageError)) throw error
+    markRomBlobStorageBroken('解包')
+    return toMemory()
+  }
+}
+
+/**
  * 已下载的 ROM 读不出来时（底层 Blob 存储坏了 / 读包卡死，见 readBlobRange）作废这一份的续传片与完整缓存，
  * 不带续传再整包下一次。只重来一次：第二次还读不出就是这台浏览器的存储本身不可用，照实报错。
  */
@@ -1973,13 +2064,15 @@ export async function prepareRemoteDiscRom(
           throw new RangeError('ROM 解开后超过浏览器下载上限')
         }
       }
-      const unpacked = await unpackRomPackBlob(stored, romPackUnpackProgress(onProgress))
+      const unpacked = await unpackRomPackForEngine(stored, onProgress)
       playable = unpacked.blob
       name = unpacked.name
     }
     // 必须在 createObjectURL 和正式入缓存之前验；失败时不能留下 URL，也不能钉住坏缓存。
     await options.validate?.(playable)
-    return { url: URL.createObjectURL(playable), bytes: playable.size, name, blob: playable }
+    // 内存 ROM 不是真 Blob，建不了 URL：给引擎一个空占位地址，取它时由 installBlobFetchShortcut 用内存回应。
+    const urlSource = memoryRomOf(playable) ? new Blob([], { type: 'application/octet-stream' }) : playable
+    return { url: URL.createObjectURL(urlSource), bytes: playable.size, name, blob: playable }
   }
   const cacheKey = romCacheKey(url)
   if (cacheKey) {
@@ -2603,7 +2696,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     // 「卡住」除外：大陆走 Cloudflare 取 8bitgo.com 的大文件实测只有几 KB/s（paths.ts 注释），
     // 卡住多半是慢网或冷编译，退回同源只会让重试必然再卡一次。入口脚本真加载不了另有一处标记。
     const stalled = message.startsWith(rt.ejsStalled.split('{stage}')[0])
-    if (usedEjsEdge && !stalled) markEjsEdgeFailed()
+    // 内存不足同理：浏览器给不出地址空间，和从哪条线路取的引擎无关
+    const outOfMemory = message === rt.ejsOutOfMemory || message === rt.ejsOutOfMemory32bit
+    if (usedEjsEdge && !stalled && !outOfMemory) markEjsEdgeFailed()
+    // 引擎读预下载好的 ROM Blob 读不出：这台浏览器的 Blob 存储坏了，自动重试 / 换语言 ROM 改走内存
+    if (preparedRomBlob && !memoryRomOf(preparedRomBlob) && isNativeBlobReadMessage(message)) {
+      markRomBlobStorageBroken('引擎读 ROM ')
+    }
     options.onError?.(message, scope)
   }
   /**
@@ -2629,8 +2728,18 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     */
     if (isOutOfMemoryText(`${line}\n${recent}`)) {
       const bits = browserBitness()
-      logEngine(`[memory] 分配不出 WASM 内存；浏览器位数 ${bits ?? '未知'}`)
-      return bits === '32' ? failLoad(rt.ejsOutOfMemory32bit, 'config') : failLoad(rt.ejsOutOfMemory)
+      logEngine(`[memory] 分配不出 WASM 内存；浏览器位数 ${bits ?? '未知'}；核心 ${core}`)
+      /*
+        默认 FBNeo 起步就要一整块 128 MiB：先让播放器换起步 80 MiB 的低内存核心重开（fbneoLowmem.ts），
+        32 位浏览器也先试这一步 —— 那个核心就是为它们做的。播放器接手了就不再报 onError。
+      */
+      if (!destroyed && !started && !loadFailed && !crashReported && options.onOutOfMemory?.(core, line)) {
+        loadFailed = true
+        window.clearInterval(startWatch)
+        return
+      }
+      // 'runtime'：可以原地重试一次（别的标签页可能刚释放了内存），但换 ROM / 换语言版本毫无意义
+      return bits === '32' ? failLoad(rt.ejsOutOfMemory32bit, 'config') : failLoad(rt.ejsOutOfMemory, 'runtime')
     }
     /*
       建不出 WebGL：浏览器关了硬件加速或 GPU 被拉黑。重下 ROM、换语言版本都没用，'config' 让播放器
@@ -2729,13 +2838,24 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     const emu = win.EJS_emulator as EjsEmulator | undefined
     const np = emu?.netplay
     /**
-     * 开不了房怎么报：带着联机会话挂载进来的（点邀请链接的访客、接手房主的人），联机开不了
-     * 这局就没意义，走 onError。玩到一半点「联机匹配」的，游戏本身好好地在跑 ——
-     * onError 会让播放器把这局拆掉，那是惩罚不是报错；只收回会话、通知界面复位。
+     * 开局前，带着联机会话挂载进来的玩家联机开不了就走 onError；核心已经可玩后，失败只撤掉联机请求，
+     * 保留本地游戏。玩到一半点「联机匹配」的也一样保留游戏，只通知界面复位。
      */
     const fromMount = cfg === options.netplay
     const failNetplay = (message: string, scope?: LoadErrorScope) => {
+      // 房间拒绝 / 握手超时只结束联机尝试；无论入口在哪，都要断开这次信令 socket。
+      try {
+        np?.leaveRoom?.()
+      } catch {
+        /* 尚未连上或引擎已自行退房 */
+      }
       if (fromMount) {
+        if (started) {
+          // ROM 和核心已经可玩；联机失败只结束联机请求，不能把玩家正在玩的整局拆掉。
+          if (netplay === cfg) netplay = undefined
+          cfg.onConnectionFailed?.(message)
+          return
+        }
         options.onError?.(message, scope)
         return
       }
@@ -2898,11 +3018,6 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         const hopeless = signalErrorAt > openedAt && netTrace.errors >= SIGNAL_FAIL_ERRORS && waited > SIGNAL_FAIL_MS
         if (hopeless || waited > JOIN_TIMEOUT_MS) {
           window.clearInterval(playersTimer)
-          try {
-            n.leaveRoom?.()
-          } catch {
-            /* 还没连上，没什么可退的 */
-          }
           const since = (at: number) => (at ? `${at - openedAt}ms` : '无')
           const transport = (n.socket as unknown as { io?: { engine?: { transport?: { name?: string } } } } | undefined)?.io?.engine?.transport?.name
           diagLog('netplay', 'warn', [

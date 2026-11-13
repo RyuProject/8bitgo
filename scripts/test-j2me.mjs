@@ -13,7 +13,7 @@
  */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { CHEERPJ_ORIGIN, buildJ2meUrl, isCrossOriginBase, j2meFileName, j2meWarmTargets, packedJarProxyName } from '../src/emulator/j2meUrl.ts'
+import { CHEERPJ_ORIGIN, buildJ2meUrl, cheerpjLoaderMissing, isCrossOriginBase, j2meFileName, j2meWarmTargets, packedJarProxyName } from '../src/emulator/j2meUrl.ts'
 import { take } from '../server/src/rateLimit.js'
 
 let failed = 0
@@ -322,6 +322,23 @@ check('⭐ sendReady 要同时兜住 onStart —— 只发 onReady 的话计次�
   const body = adapterCode.slice(at, at + 400)
   assert.ok(body.includes('onReady'), 'sendReady 里缺 onReady')
   assert.ok(body.includes('onStart'), 'sendReady 里缺 onStart')
+})
+
+check('⭐ JVM 起不来是运行时故障：超时 / 缺 loader 都带 runtime，不能逐个语言 ROM 各等一轮', () => {
+  assert.match(adapterCode, /onError\?\.\(rt\.j2meStartTimeout, 'runtime'\)/, '启动超时必须带 runtime scope')
+  assert.match(adapterCode, /onError\?\.\(rt\.j2meCheerpjUnreachable, 'runtime'\)/, '缺 CheerpJ loader 必须带 runtime scope')
+  const at = adapterCode.indexOf('cheerpjLoaderMissing(win)')
+  assert.ok(at > 0, 'iframe load 时要检查 CheerpJ loader')
+  assert.ok(at < adapterCode.indexOf('audio = installJ2meAudio(win'), '要在装音频之前判掉')
+})
+
+check('cheerpjLoaderMissing：只认 run.html，有 cheerpjInit 不算缺', () => {
+  const run = (extra) => ({ location: { pathname: '/j2me/run.html' }, ...extra })
+  assert.equal(cheerpjLoaderMissing(run({})), true)
+  assert.equal(cheerpjLoaderMissing(run({ cheerpjInit: async () => {} })), false)
+  assert.equal(cheerpjLoaderMissing({ location: { pathname: 'blank' } }), false, 'about:blank 的 load 不算')
+  assert.equal(cheerpjLoaderMissing(null), false)
+  assert.equal(cheerpjLoaderMissing({ get location() { throw new Error('x') } }), false, '读不到就交给看门狗')
 })
 
 console.log('\n七、冷启动预热：清单与「什么时候才能预取 ROM」')

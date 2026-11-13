@@ -1471,6 +1471,7 @@ const de: Translation = {
     j2meUploadFailed: 'Dein Java-Spiel konnte nicht hochgeladen werden: {msg}',
     j2meLoadFailed: 'Die J2ME-Laufzeit ({path}) konnte nicht geladen werden – prüfe den Bereitstellungspfad',
     j2meStartTimeout: 'Die Java-Laufzeit ist in zwei Minuten nicht gestartet – vermutlich ist das CheerpJ-CDN nicht erreichbar',
+    j2meCheerpjUnreachable: 'Das CheerpJ-CDN ist nicht erreichbar (der Java-Lader wurde nicht geladen) – anderes Netz versuchen oder Inhaltsblocker abschalten',
     stateBad: 'Diese Datei ist kein Spielstand für diesen Emulator – es wurde nichts geladen',
     webretroDesc: 'RetroArch als WebAssembly-Portierung; spielt Nintendo DS über den melonDS-Kern. Selbst gehostet.',
     playDesc: 'Play!, ein PlayStation-2-Emulator für den Browser. Experimentell: eingeschränkte Kompatibilität, selbst gehostet.',

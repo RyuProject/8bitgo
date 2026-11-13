@@ -191,7 +191,7 @@ export { J2ME_PATH } from '../paths'
 import { J2ME_PATH, j2meEdgeBase, markJ2meEdgeFailed } from '../paths'
 // URL 那几条规则搬到了 ../j2meUrl（纯函数，有单测）—— 尤其是跨源判定那一条，
 // 原来靠「读 contentDocument 会不会抛」判，而它跨源时返回 null 不抛，那条退路是死代码
-import { buildJ2meUrl, isCrossOriginBase, j2meFileName, j2meWarmTargets, packedJarProxyName } from '../j2meUrl'
+import { CHEERPJ_ORIGIN, buildJ2meUrl, cheerpjLoaderMissing, isCrossOriginBase, j2meFileName, j2meWarmTargets, packedJarProxyName } from '../j2meUrl'
 
 
 /* ---------------- 玩家上传的临时 jar ---------------- */
@@ -436,6 +436,17 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
     const win = iframe.contentWindow
     if (!win) return
+    /*
+      run.html 的 CheerpJ loader.js 是 leaningtech CDN 上的普通 <script>，load 事件在它执行（或失败）之后才来。
+      此时还没有 cheerpjInit，说明 loader 被拦或取不到 —— 不必再等 120 秒前台无进展才判死。
+    */
+    if (!crossOrigin && !readySent && cheerpjLoaderMissing(win)) {
+      window.clearInterval(readyTimer)
+      stopPoll()
+      diagLog('j2me', 'warn', `CheerpJ loader 没加载上（${CHEERPJ_ORIGIN}）`)
+      options.onError?.(rt.j2meCheerpjUnreachable, 'runtime')
+      return
+    }
     audio = installJ2meAudio(win, () => volume)
     if (audio) caps.add('volume')
     // 画面是普通 2D canvas，截图和录像都没有 WebGL 那些麻烦
@@ -612,7 +623,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         stopPoll()
         diagLog('j2me', 'warn', `放弃：前台 ${Math.round(foregroundMs / 1000)}s，其中 ${Math.round(stalledMs / 1000)}s 没有新请求完成，iframe 共完成 ${Math.max(seenResources, 0)} 个请求`)
         if (edgeOn) markJ2meEdgeFailed()
-        options.onError?.(rt.j2meStartTimeout)
+        /*
+          'runtime'：JVM 没起来是运行时设施的事，换语言 ROM 修不好。不带 scope 时播放器会把它当内容错，
+          逐个语言槽各等一轮（2026-11-13《帝国时代 3》en 失败后又去试 zh-Hans，玩家白等 4 分钟）。
+        */
+        options.onError?.(rt.j2meStartTimeout, 'runtime')
       }, 1_000)
       edgeOn = await edgeReady
       if (destroyed) return

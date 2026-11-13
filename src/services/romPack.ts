@@ -568,29 +568,133 @@ export async function verifyRomPackBlob(blob: Blob, onProgress?: (progress: Pack
 }
 
 /**
- * 大 ROM 走 Blob：逐块解密解压，浏览器可把结果落盘，避免申请一整块连续内存。
+ * 解开的 ROM 存不进浏览器的 Blob 存储（建出来就读不出第一个字节）。
  *
- * onProgress 每解完一块报一次。114MB 的 NDS 有 14 块，低配机上要几十秒；以前这段一个进度都不报，
- * 进度条停在 100%，启动看门狗也把它当成卡死。
+ * 2026-11-12/13 大陆 Windows Chrome 132 / 2GB 内存《口袋妖怪：白 2》《口袋妖怪：黑》四局：密文读得出、解包也走完，
+ * 引擎读 256MB 的解包结果时抛 NotReadableError。Chromium 的 Blob 存储超出内存配额就落盘，磁盘那一侧写不进
+ * （C 盘满、配额小或文件被删）时 Blob 照样建得出、一读就坏 —— 同一台机器上 IDB 里的续传片读不出也是这个原因。
+ * name 仍是 NotReadableError（isBlobReadError 能认），但光盘 / NDS 路径会先认这个类，改走内存而不是重下。
  */
-export async function unpackRomPackBlob(
+export class RomBlobStorageError extends Error {
+  override name = 'NotReadableError'
+  constructor() {
+    super('解开的 ROM 写不进浏览器的 Blob 存储（内存或磁盘配额不足）')
+  }
+}
+
+/** 逐块解密解压，每块交给 take；两种输出（Blob / 内存）共用这一份循环。 */
+async function unpackEachChunk(
   blob: Blob,
-  onProgress?: (progress: PackProgress) => void,
-): Promise<{ name: string; blob: Blob; header: RomPackHeader }> {
+  onProgress: ((progress: PackProgress) => void) | undefined,
+  take: (source: Uint8Array<ArrayBuffer>) => void,
+): Promise<RomPackHeader> {
   const { header, dataOffset } = await inspectRomPackBlob(blob)
   const key = await contentKey(header)
-  const output: Blob[] = []
   let cipherAt = dataOffset
   let unpacked = 0
   for (let index = 0; index < header.chunks.length; index++) {
     const meta = header.chunks[index]
     const cipher = await readBlobRange(blob, cipherAt, cipherAt + meta.cipherSize)
-    const source = await decryptChunk(header, index, cipher, key)
-    // 每块立刻固化成 Blob：既脱离可能复用的 WASM 内存，也允许浏览器把大结果落到磁盘。
-    output.push(new Blob([source]))
+    take(await decryptChunk(header, index, cipher, key))
     cipherAt += meta.cipherSize
     unpacked += meta.sourceSize
     onProgress?.({ loaded: unpacked, total: header.originalSize })
   }
+  return header
+}
+
+/** 探 Blob 存储是否真的接住了这些块：每块读 1 字节。坏掉的存储在这里就抛，不再等引擎读 256MB 时才失败。 */
+const BLOB_STORAGE_PROBE_MS = 8_000
+async function assertBlobPartsReadable(parts: Blob[]): Promise<void> {
+  try {
+    await Promise.all(parts.map((part) => (part.size ? readBlobRange(part, 0, 1, BLOB_STORAGE_PROBE_MS) : null)))
+  } catch {
+    throw new RomBlobStorageError()
+  }
+}
+
+/**
+ * 大 ROM 走 Blob：逐块解密解压，浏览器可把结果落盘，避免申请一整块连续内存。
+ *
+ * onProgress 每解完一块报一次。114MB 的 NDS 有 14 块，低配机上要几十秒；以前这段一个进度都不报，
+ * 进度条停在 100%，启动看门狗也把它当成卡死。
+ *
+ * 结果建好后探一遍每块能不能读（RomBlobStorageError），调用方可改用 unpackRomPackToMemory。
+ */
+export async function unpackRomPackBlob(
+  blob: Blob,
+  onProgress?: (progress: PackProgress) => void,
+): Promise<{ name: string; blob: Blob; header: RomPackHeader }> {
+  const output: Blob[] = []
+  // 每块立刻固化成 Blob：既脱离可能复用的 WASM 内存，也允许浏览器把大结果落到磁盘。
+  const header = await unpackEachChunk(blob, onProgress, (source) => { output.push(new Blob([source])) })
+  await assertBlobPartsReadable(output)
   return { name: header.originalName, blob: new Blob(output, { type: 'application/octet-stream' }), header }
+}
+
+/**
+ * Blob 存储坏掉时的退路：解包结果留在 JS 内存里（按块，不要求连续），返回一个只读的 Blob 替身
+ * （size / slice().arrayBuffer() 够校验用），交给引擎时由 memoryRomOf 取出块数据流式回应。
+ * 每块 decode 出来本来就是独立副本，不再多拷一份。
+ */
+export async function unpackRomPackToMemory(
+  blob: Blob,
+  onProgress?: (progress: PackProgress) => void,
+): Promise<{ name: string; blob: Blob; header: RomPackHeader }> {
+  const parts: Uint8Array<ArrayBuffer>[] = []
+  const header = await unpackEachChunk(blob, onProgress, (source) => { parts.push(source) })
+  return { name: header.originalName, blob: memoryRomBlob(parts), header }
+}
+
+/** 内存里的 ROM。parts 交给引擎时逐块置 null，让这份内存在引擎拷走后就能回收。 */
+export interface MemoryRom {
+  parts: (Uint8Array<ArrayBuffer> | null)[]
+  size: number
+  type: string
+}
+
+const memoryRoms = new WeakMap<object, MemoryRom>()
+
+/** memoryRomBlob 造出的替身对应的内存 ROM；真 Blob 返回 undefined。 */
+export function memoryRomOf(blob: Blob): MemoryRom | undefined {
+  return memoryRoms.get(blob)
+}
+
+function copyMemoryRange(rom: MemoryRom, start: number, end: number): ArrayBuffer {
+  const out = new Uint8Array(Math.max(0, end - start))
+  let partAt = 0
+  for (const part of rom.parts) {
+    const size = part?.byteLength ?? 0
+    if (part === null) throw new DOMException('内存里的 ROM 已交给引擎', 'NotReadableError')
+    const from = Math.max(start, partAt)
+    const to = Math.min(end, partAt + size)
+    if (from < to) out.set(part.subarray(from - partAt, to - partAt), from - start)
+    partAt += size
+    if (partAt >= end) break
+  }
+  return out.buffer
+}
+
+/** 按 Blob.slice 的规则归一 start / end（负数从尾部算，越界截断）。 */
+function clampSliceIndex(value: number | undefined, size: number, fallback: number): number {
+  if (value === undefined) return fallback
+  return value < 0 ? Math.max(size + value, 0) : Math.min(value, size)
+}
+
+export function memoryRomBlob(parts: Uint8Array<ArrayBuffer>[], type = 'application/octet-stream'): Blob {
+  const rom: MemoryRom = { parts: [...parts], size: parts.reduce((sum, part) => sum + part.byteLength, 0), type }
+  const view = (start: number, end: number): Blob => ({
+    size: Math.max(0, end - start),
+    type,
+    slice: (s?: number, e?: number) => {
+      const len = Math.max(0, end - start)
+      const from = clampSliceIndex(s, len, 0)
+      const to = clampSliceIndex(e, len, len)
+      return view(start + from, start + Math.max(from, to))
+    },
+    arrayBuffer: async () => copyMemoryRange(rom, start, end),
+  }) as unknown as Blob
+  const whole = view(0, rom.size)
+  memoryRoms.set(whole, rom)
+  return whole
 }

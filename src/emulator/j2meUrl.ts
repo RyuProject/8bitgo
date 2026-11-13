@@ -145,3 +145,17 @@ export function packedJarProxyName(url: string, romBases: readonly string[]): st
   return ''
 }
 
+
+/**
+ * run.html 已触发 load、却没有 CheerpJ 的全局入口：leaningtech 的 loader.js 被拦或取不到。
+ * 只认 run.html 本身（初始 about:blank 的 load 不算），读不到时按「没缺」处理，交给进展看门狗。
+ */
+export function cheerpjLoaderMissing(frame: object | null): boolean {
+  try {
+    const win = frame as { location?: { pathname?: string }; cheerpjInit?: unknown } | null
+    if (!win || !(win.location?.pathname ?? '').endsWith('/run.html')) return false
+    return typeof win.cheerpjInit !== 'function'
+  } catch {
+    return false
+  }
+}

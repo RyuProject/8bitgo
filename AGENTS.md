@@ -197,6 +197,12 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
   `browserBitness.ts` 用高熵 `bitness`（UA 只能证明 32 位，Chrome 110 起精简 UA 一律写 x64）判断：32 位时以 `'config'`
   报 `ejsOutOfMemory32bit`（换 64 位浏览器，不原地重试）；诊断包环境多一项「32 / 64 位浏览器」。
   位数是推断，这两份样本当时没采到位数，下一份同类现场要先核对这一项。
+  **2026-11-13 起默认 FBNeo 内存不足先换 `fbneo-lowmem`**（起步 80 MiB、按需增长，`src/emulator/fbneoLowmem.ts`）：
+  又来三份同类现场（Chrome 109 / Windows ×2、Chrome 114 / Android 12，位数「未知」），旧逻辑对同一核心原地重试、
+  换线路、换 ROM，十秒撞三次同一个错。现在适配器经 `onOutOfMemory` 交给播放器换核心重开一次（32 位也先试），
+  并在本浏览器记 30 天，之后街机开局直接用它；低内存版也失败才报原文案。内存不足不再把大陆加速入口判坏、
+  不再换 ROM（scope `runtime`）。低内存版是另一批 FBNeo 源码，即时存档单独一档（`:fbneo-lowmem`）；
+  换它的构建要同步 `FBNEO_LOWMEM_BUILD`。回归：`npm run test:fbneo-lowmem`。
 
 改引擎后要换 `EJS_RUNTIME_GENERATION`，入口文件名不带内容哈希。
 
@@ -218,6 +224,9 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
   `disconnect`，引擎据此 `leaveRoom()` 把 socket 置空、自动重连跟着没了（「传输 ?」就是 socket 已是 null）；
   `guardPreConnectDisconnect` 只拦从未连上过的那种。单次握手超时 8 秒（socket.io 默认 20 秒正好等于以前的整体等待），
   整体等待 30 秒，连着 3 次 connect_error 才提前判「连不上」。回归：`npm run test:netplay-socket-hook`。
+- **首帧后的开房拒绝不是游戏加载失败**（2026-11-13，MX 玩家《火红》×2、《JOJO》×1）：游戏已出首帧，随后 `open-room` 才收到
+  `game does not support multiplayer`；原来适配器把联机拒绝送进 `onError`，播放器因此拆掉能玩的单机游戏并记成启动失败。
+  现在只在核心尚未启动时才报加载错误；首帧之后退出房间、保留模拟器并提示联机失败。任何联机失败出口都要清理本次 socket。
 
 ### 2.8.1 街机 BIOS 分两档：平台一份 + **按系统包**各一份
 
@@ -502,6 +511,11 @@ EmulatorJS 的“扩展名不认识就取第一个成员”兜底（典型失败
 不能先 `Array.from` 再指望 `assertNdsRomBlob` 收尾。损坏的跨刷新续传 metadata 也要先验总量再分配。
 `200` 整包路径同样检查 Content-Length，未知长度流按已收字节止损。回归：
 `npm run test:chunked-fetch && npm run test:nds-platform`。
+⚠️ **Safari 18 不能把大 ROM 的外层 Blob 直接交给 iframe Response**（2026-11-13 爱尔兰 Safari 18《宝可梦 白 2》）：
+ROM 已下载完成、核心也命中缓存，EmulatorJS 再 fetch 外层创建的 `blob:` 地址时读约 3 秒报 `TypeError: Load failed`；
+原地重试和换语言只会重复同一路径。`installBlobFetchShortcut()` 要从外层 `Blob.slice()` 每次读 4MB，
+再用 iframe 自己的 `ReadableStream` 交给引擎，不能把整个 Blob 当 `Response` body 跨 realm 传递。
+若分块读取仍失败，本页后续 8BG 开局改用有大小上限的内存块输出，避免对坏掉的 Blob 存储持续重试。
 每个 `206` 响应也只能读这一片声明的字节量：`Content-Range` 是服务端自报，畸形响应可以宣称
 8MB 却持续发送巨大流，不能把它无限攒进 `chunks` 再在末尾核对；超过后直接取消并停止重试。
 旧版完整 ROM 缓存不会重走下载器，同样要在解密前查缓存 Blob 大小；8BG 还得先读文件头，
@@ -1602,6 +1616,9 @@ libmidi.wasm 3.1MB 要 48 秒，CheerpJ 自己的 CDN 全程闲着；之后再�
 自动重试两次又各等 120 秒。现在预热最多等 2 秒就设 src（实测 Chrome 会合并同一 URL 的在途请求，iframe 那次传输 0 字节，
 不会下两遍）；`J2ME_STALL_TIMEOUT_MS` 只数前台、iframe 每完成一个请求就重新计时，前台总上限 6 分钟；
 iframe 登记了 `watchFramePerformance`，诊断包里能看到 CheerpJ 的下载。回归：`npm run test:j2me`。
+JVM 起不来一律以 `'runtime'` 报（`j2meStartTimeout`）：不带 scope 时播放器当内容错，en 失败又去试 zh-Hans，玩家再等一轮。
+run.html 的 load 到了却没有 `cheerpjInit`（leaningtech 的 loader.js 被拦 / 取不到，`cheerpjLoaderMissing`）立刻报
+`j2meCheerpjUnreachable`，不再等满 120 秒前台无进展。
 
 ⚠️ **J2ME 大文件给大陆访客走 cn.8bitgo.com，靠 Service Worker 而不是改地址**（2026-11-13）：run.html 必须与父页面同源
 （读画面、接手柄、截图），CheerpJ 只会从同源 `/app/` 取 JAR、没有改源的配置。所以 `/j2me/edge-sw.js`

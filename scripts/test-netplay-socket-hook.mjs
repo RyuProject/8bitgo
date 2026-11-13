@@ -128,4 +128,15 @@ const wrapper = () => {
   ok(/withSignalTimeout\(rawArgs, SIGNAL_CONNECT_TIMEOUT_MS\)/.test(adapter), 'io() 带上更短的握手超时')
   ok(/guardPreConnectDisconnect\(sock,/.test(adapter), 'socket 诞生时挂上未连先断守卫')
   ok(/netTrace\.errors >= SIGNAL_FAIL_ERRORS/.test(adapter), '一次 connect_error 不再直接判「连不上」')
+  const failStart = adapter.indexOf('const failNetplay =')
+  const failEnd = adapter.indexOf('\n    if (!np)', failStart)
+  const failNetplay = adapter.slice(failStart, failEnd)
+  ok(
+    failNetplay.indexOf('if (started)') >= 0 &&
+      failNetplay.indexOf('cfg.onConnectionFailed?.(message)') > failNetplay.indexOf('if (started)') &&
+      failNetplay.indexOf('options.onError?.(message, scope)') > failNetplay.indexOf('cfg.onConnectionFailed?.(message)'),
+    '游戏可玩后联机失败只通知联机回退，不走致命 onError',
+  )
+  const player = readFileSync(new URL('../src/emulator/EmulatorPlayer.tsx', import.meta.url), 'utf8')
+  ok(/onConnectionFailed: \(message\) =>/.test(player) && /setP2pConnectionFailed\(true\)/.test(player), '播放器失败后切回本地游玩状态')
 }

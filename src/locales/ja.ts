@@ -1411,6 +1411,7 @@ const ja: Translation = {
     j2meUploadFailed: 'Java ゲームのアップロードに失敗しました：{msg}',
     j2meLoadFailed: 'J2ME ランタイム（{path}）を読み込めませんでした。配置先のパスを確認してください',
     j2meStartTimeout: 'Java ランタイムが 2 分経っても起動しませんでした。CheerpJ の CDN に接続できない可能性があります',
+    j2meCheerpjUnreachable: 'CheerpJ の CDN に接続できません（Java ランタイムのローダーを取得できませんでした）。別のネットワークを試すか、ブロッカーを無効にしてください',
     stateBad: 'このエミュレータのセーブデータではありません。読み込みは行われませんでした',
     webretroDesc: 'RetroArch のブラウザ移植。melonDS コアでニンテンドー DS を動かします（要セルフホスト）',
     playDesc: 'PlayStation 2 エミュレーター Play! のブラウザ版。実験的で互換性は限られ、セルフホストが必要です',

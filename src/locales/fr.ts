@@ -1475,6 +1475,7 @@ const fr: Translation = {
     j2meUploadFailed: "Impossible d'envoyer ton jeu Java : {msg}",
     j2meLoadFailed: "Impossible de charger l'environnement J2ME ({path}) — vérifie le chemin de déploiement",
     j2meStartTimeout: 'L’environnement Java n’a pas démarré en deux minutes — le CDN de CheerpJ est probablement inaccessible',
+    j2meCheerpjUnreachable: 'Impossible de joindre le CDN de CheerpJ (le chargeur Java n’a pas été téléchargé) — essayez un autre réseau ou désactivez les bloqueurs',
     stateBad: 'Ce fichier n’est pas une sauvegarde de cet émulateur : rien n’a été chargé',
     webretroDesc: 'RetroArch porté en WebAssembly ; fait tourner la Nintendo DS via le cœur melonDS. À héberger soi-même.',
     playDesc: 'Play!, un émulateur PlayStation 2 compilé pour le navigateur. Expérimental : compatibilité limitée, à héberger soi-même.',

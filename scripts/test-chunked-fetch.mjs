@@ -795,5 +795,31 @@ await check('解包逐块报进度；读不出时作废续传 / 缓存只重下�
   assert.match(dos, /if \(!cacheKey \|\| !isBlobReadError\(error\)\) throw error/)
 })
 
+await check('Blob 存储坏掉：内存 ROM 替身可切片校验，交给引擎时逐块流出（2026-11-13 宝可梦白 2 / 黑）', async () => {
+  const { memoryRomBlob, memoryRomOf, RomBlobStorageError, isBlobReadError } = await import('../src/services/romPack.ts')
+  const parts = [new Uint8Array([0, 1, 2, 3]), new Uint8Array([4, 5]), new Uint8Array([6, 7, 8])]
+  const view = memoryRomBlob(parts)
+  assert.equal(view.size, 9)
+  assert.deepEqual([...new Uint8Array(await view.slice(3, 7).arrayBuffer())], [3, 4, 5, 6])
+  assert.deepEqual([...new Uint8Array(await view.slice(-2).arrayBuffer())], [7, 8])
+  assert.deepEqual([...new Uint8Array(await view.slice(2).slice(1, 3).arrayBuffer())], [3, 4])
+  assert.equal(view.slice(8, 2).size, 0)
+  const rom = memoryRomOf(view)
+  assert.ok(rom && rom.parts.length === 3 && rom.size === 9)
+  assert.equal(memoryRomOf(new Blob([parts[0]])), undefined)
+  rom.parts[0] = null
+  await assert.rejects(view.slice(0, 2).arrayBuffer(), (e) => isBlobReadError(e))
+  const err = new RomBlobStorageError()
+  assert.equal(isBlobReadError(err), true)
+
+  const { readFileSync } = await import('node:fs')
+  const ejs = readFileSync(new URL('../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8')
+  assert.match(ejs, /const unpacked = await unpackRomPackForEngine\(stored, onProgress\)/, '光盘 / NDS 解包要走带内存退路的入口')
+  assert.match(ejs, /isNativeBlobReadMessage\(message\)/, '引擎读 ROM 报 NotReadableError 时要标记本页 Blob 存储已坏')
+  assert.match(ejs, /const memory = memoryRomOf\(blob\)/, '引擎取 ROM 的快捷回应要认内存 ROM')
+  const pack = readFileSync(new URL('../src/services/romPack.ts', import.meta.url), 'utf8')
+  assert.match(pack, /await assertBlobPartsReadable\(output\)/, '解包后要探一遍每块能不能读')
+})
+
 console.log(failed ? `\n${failed} 项未通过` : '\n全部通过 ✅')
 process.exit(failed ? 1 : 0)

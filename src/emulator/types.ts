@@ -260,6 +260,11 @@ export interface MountOptions {
   /** NDS 核心的 WASM 主循环已经崩溃；和普通加载失败分开，允许一次有界的换核心重开。 */
   onCoreCrash?: (core: string, message: string) => void
   /**
+   * 开局前核心分配不出 WASM 内存。返回 true = 播放器已换低内存核心重开（适配器不再报 onError），
+   * false / 未提供 = 照常走 onError。见 fbneoLowmem.ts。
+   */
+  onOutOfMemory?: (core: string, message: string) => boolean
+  /**
    * 「这份 ROM 我跑不了，换个引擎吧」—— 和 onError 是两回事。
    *
    * onError 是**失败**：播放器会报红字，开局前还会原样自动重试几次。

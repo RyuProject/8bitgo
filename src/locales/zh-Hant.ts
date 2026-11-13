@@ -1418,6 +1418,7 @@ const zhHant: Translation = {
     j2meUploadFailed: '本機 Java 遊戲上傳失敗：{msg}',
     j2meLoadFailed: '無法載入 J2ME 執行環境（{path}），請檢查部署位址',
     j2meStartTimeout: 'Java 執行環境兩分鐘都沒起來 —— 多半是 CheerpJ 的 CDN 連不上，換個網路再試',
+    j2meCheerpjUnreachable: '連不上 CheerpJ 的 CDN（Java 執行環境的載入器沒下載下來）—— 換個網路或關掉攔截外掛再試',
     stateBad: '這不是這台模擬器的存檔檔案，沒有載入',
     webretroDesc: 'RetroArch 的瀏覽器移植，用 melonDS 核心跑任天堂 DS，需自行部署',
     playDesc: 'PlayStation 2 模擬器 Play! 的瀏覽器版本，**實驗性**：相容性有限，需自行部署',

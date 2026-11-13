@@ -1496,6 +1496,7 @@ export const zhHans = {
     j2meUploadFailed: '本地 Java 游戏上传失败：{msg}',
     j2meLoadFailed: '无法加载 J2ME 运行时（{path}），请检查部署地址',
     j2meStartTimeout: 'Java 运行时两分钟都没起来 —— 多半是 CheerpJ 的 CDN 连不上，换个网络再试',
+    j2meCheerpjUnreachable: '连不上 CheerpJ 的 CDN（Java 运行时的加载器没下载下来）—— 换个网络或关掉拦截插件再试',
     stateBad: '这不是这台模拟器的存档文件，没有载入',
     webretroDesc: 'RetroArch 的浏览器移植，用 melonDS 核心跑任天堂 DS，需自行部署',
     playDesc: 'PlayStation 2 模拟器 Play! 的浏览器版本，**实验性**：兼容性有限，需自行部署',

@@ -159,7 +159,14 @@ const PRINT_OUT_TO = 'print:t=>{this.debug&&console.log(t),/^\\[libretro ERROR\\
  * 这里**不改那份名单**，而是改判定：上游以后增删名单都不会让这处失效。
  */
 const KEEP_ZIP_FROM = 'e.dontExtractIfCore?.includes(this.getCore())'
-const KEEP_ZIP_TO = '(e.dontExtractIfCore?.includes(this.getCore())||"mame-current"===this.getCore())'
+/**
+ * 2026-11-13 补上 fbneo-lowmem：它是 FBNeo 内存不足时的退路（src/emulator/fbneoLowmem.ts），
+ * 名字不在上游名单里，引擎会把 kof97.zip / neogeo.zip 解成散文件 → Romset is unknown / 缺 BIOS 成员（§2.3）。
+ * 旧版补丁（只有 mame-current）由下面 legacy 接管升级。
+ */
+const KEEP_ZIP_TO_V1 = '(e.dontExtractIfCore?.includes(this.getCore())||"mame-current"===this.getCore())'
+const KEEP_ZIP_TO =
+  '(e.dontExtractIfCore?.includes(this.getCore())||"mame-current"===this.getCore()||"fbneo-lowmem"===this.getCore())'
 
 /**
  * melonDS DS 只构建 WebGL2 版，必须让引擎无条件选择 `<core>-wasm.data`。
@@ -406,11 +413,13 @@ const GROUPS = [
     ],
   },
   {
-    name: '街机 ROM 保持 zip（mame-current）',
+    name: '街机 ROM 保持 zip（mame-current / fbneo-lowmem）',
     patches: [[KEEP_ZIP_FROM, KEEP_ZIP_TO]],
+    legacy: () => KEEP_ZIP_TO_V1,
     hint: [
       '在 download() 里找 `dontExtractIfCore?.includes(this.getCore())` 那个三元条件；',
-      '把 mame-current 也判成「不解压」—— 否则 MAME 拿不到 romset 压缩包会直接 Abort。',
+      '把 mame-current / fbneo-lowmem 也判成「不解压」—— 否则 MAME 拿不到 romset 压缩包会直接 Abort，',
+      'fbneo-lowmem 拿到散文件报 Romset is unknown。',
       '⚠️ 这一组没了的话，mame-current 的游戏 100% 起不来，且只有一句「Failed to start game」。',
     ],
   },

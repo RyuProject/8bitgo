@@ -1470,6 +1470,7 @@ const en: Translation = {
     j2meUploadFailed: 'Could not upload your Java game: {msg}',
     j2meLoadFailed: 'Could not load the J2ME runtime ({path}) — check the deployment path',
     j2meStartTimeout: 'The Java runtime never started (two minutes) — the CheerpJ CDN is probably unreachable from your network',
+    j2meCheerpjUnreachable: 'Could not reach the CheerpJ CDN (the Java runtime loader did not download) — try another network or disable content blockers',
     stateBad: 'That file isn’t a save state for this emulator — nothing was loaded',
     webretroDesc: 'RetroArch compiled to WebAssembly; runs Nintendo DS on the melonDS core. Self-hosted.',
     playDesc: 'Play!, a PlayStation 2 emulator compiled for the browser. Experimental: limited compatibility, self-hosted.',

@@ -42,7 +42,8 @@ import type { DosExtraSource } from '@/lib/dosExtras'
 import type { LiveSession } from './adapters/liveview'
 import type { NetplaySession } from './adapters/emulatorjs'
 import type { CloudSession, CloudState } from './adapters/cloudgame'
-import { p2pPlayable, cloudPlayable, emulatorJsCoreFileFor, NDS_COMPAT_CORE } from './paths'
+import { p2pPlayable, cloudPlayable, emulatorJsCoreFileFor, emulatorJsCoreForGame, NDS_COMPAT_CORE } from './paths'
+import { FBNEO_LOWMEM_CORE, fbneoLowmemSaveSlug, fbneoMemoryFallbackCore, prefersFbneoLowmem, rememberFbneoMemoryFailure } from './fbneoLowmem'
 import { ndsCrashFallbackCore } from './ndsCrash'
 import { rememberNdsCoreFailure, rememberedNdsCore } from './ndsCorePreference'
 import { psxChdSaveSlug, psxCoreForTransfer } from './psxChd'
@@ -581,6 +582,8 @@ export function EmulatorPlayer({
   const [notice, setNotice] = useState<string | null>(null)
   const [dragging, setDragging] = useState(false)
   const [session, setSession] = useState<ActiveSession | null>(null)
+  /** 首次联机失败后让这局仍按本地游戏显示；换会话时由 begin() 清掉。 */
+  const [p2pConnectionFailed, setP2pConnectionFailed] = useState(false)
   const [pspLoadMode, setPspLoadMode] = useState<'stream' | 'download'>('stream')
   const pspLoadModeRef = useRef(pspLoadMode)
   pspLoadModeRef.current = pspLoadMode
@@ -677,6 +680,7 @@ export function EmulatorPlayer({
    */
   const [hosting, setHosting] = useState(false)
   const [matchBusy, setMatchBusy] = useState(false)
+  const netplayActive = Boolean(session?.netplay) && !p2pConnectionFailed
   /** jsnes 联机面板开关（与 EmulatorJS 的 MatchControls 平行，互不干扰） */
   const [jsnesNetplayOpen, setJsnesNetplayOpen] = useState(false)
   /** 通用“创建联机房间”落到 jsnes 时，面板打开后要自动执行一次开房。 */
@@ -794,7 +798,7 @@ export function EmulatorPlayer({
    */
   const willWatch = canWatch && (watch || inviteFull)
   /** 正在看的人数（自己所在的房间） */
-  const myNetRoom = (session?.netplay || hosting) && roomId ? p2pRooms.find((r) => r.roomId === roomId) : undefined
+  const myNetRoom = (netplayActive || hosting) && roomId ? p2pRooms.find((r) => r.roomId === roomId) : undefined
   const viewers = myNetRoom?.spectators ?? 0
   /** 直播与联机配对关系变化时让玩家重进弹幕通道，避免两边各聊各的。 */
   const pairedLiveRoomId = liveRooms.find((r) => r.netplayRoomId === roomId)?.roomId ?? null
@@ -881,12 +885,12 @@ export function EmulatorPlayer({
   const [flashSaveExpiry, setFlashSaveExpiry] = useState(0)
 
   const liveChatOn = Boolean(liveSession) || Boolean(session?.live) ||
-    (Boolean(session?.netplay || hosting) && role === 'player')
+    ((netplayActive || hosting) && role === 'player')
 
   useEffect(() => {
-    const active = status === 'running' && Boolean(session?.netplay || hosting) && role === 'player'
+    const active = status === 'running' && Boolean(netplayActive || hosting) && role === 'player'
     onMatchPlayerChange?.(active)
-  }, [status, session?.netplay, hosting, role, onMatchPlayerChange])
+  }, [status, netplayActive, hosting, role, onMatchPlayerChange])
 
   useEffect(() => () => onMatchPlayerChange?.(false), [onMatchPlayerChange])
 
@@ -896,7 +900,7 @@ export function EmulatorPlayer({
    */
   useEffect(() => {
     if (!roomId || !roomChatToken || status !== 'running' ||
-        !(session?.netplay || hosting) || role !== 'player' || liveSession) {
+        !(netplayActive || hosting) || role !== 'player' || liveSession) {
       setMatchChatSocket(null)
       return
     }
@@ -1028,7 +1032,7 @@ export function EmulatorPlayer({
     return listenMediaQuery(mq, sync)
   }, [])
   const matchPanelOn = wideLayout && Boolean(matchPanelSlot) && status === 'running' &&
-    Boolean(session?.netplay || hosting) && role === 'player'
+    Boolean(netplayActive || hosting) && role === 'player'
   const liveCap = watchingLiveStage ? liveStageStyle(geometry, immersive) : undefined
   /**
    * 是不是正处在原生全屏里。
@@ -1685,7 +1689,12 @@ export function EmulatorPlayer({
       canRestartInPlace(extra ?? {}) && emulatorJsCoreFileFor(coreRef.current ?? 'nds') === 'melondsds'
       ? rememberedNdsCore(game)
       : null
-    const coreOverride = extra?.coreOverride ?? rememberedCore ?? undefined
+    // 这个浏览器默认 FBNeo 分配不出 WASM 内存过：街机直接用低内存核心，省掉一轮必然失败的开局
+    const rememberedArcadeCore = !extra?.coreOverride && targetPlatform === 'arcade' && runtime.id === 'emulatorjs' &&
+      canRestartInPlace(extra ?? {}) && emulatorJsCoreForGame('arcade', coreRef.current) === 'fbneo' && prefersFbneoLowmem()
+      ? FBNEO_LOWMEM_CORE
+      : null
+    const coreOverride = extra?.coreOverride ?? rememberedCore ?? rememberedArcadeCore ?? undefined
     // 新旧 melonDS 的即时存档 ABI 不能假定兼容；兼容核心必须用独立档位，
     // 否则自动切换后可能把旧核心的快照写回原档，造成无法恢复的覆盖。
     const coreSaveSlug = targetPlatform === 'psx' && runtime.id === 'emulatorjs' && typeof game === 'string' && baseSaveSlug
@@ -1693,7 +1702,9 @@ export function EmulatorPlayer({
       : baseSaveSlug
     const saveSlug = coreOverride === NDS_COMPAT_CORE && coreSaveSlug
       ? `${coreSaveSlug}:melonds-compat`
-      : coreSaveSlug
+      : coreOverride === FBNEO_LOWMEM_CORE && coreSaveSlug
+        ? fbneoLowmemSaveSlug(coreSaveSlug)
+        : coreSaveSlug
     const plan = loadProgressPlan({
       runtime: runtime.id,
       platform: targetPlatform,
@@ -1707,6 +1718,7 @@ export function EmulatorPlayer({
     setSession({ id: sessionCounter.current, game, platform: targetPlatform, runtime, saveSlug,
       pspLoadMode: runtime.id === 'ppsspp' ? pspLoadModeRef.current : undefined,
       ...extra, coreOverride, startupAttemptId, startedAt })
+    setP2pConnectionFailed(false)
     if (!extra?.startupAttemptId && !inherited && runtime.id !== 'liveview' && startupVisitId) {
       recordStartupEvent(gameSlugRef.current, {
         visitId: startupVisitId,
@@ -2068,6 +2080,26 @@ export function EmulatorPlayer({
         setError(fmt(t.player.ndsCoreFailed, { reason }))
         setStatus('error')
       },
+      /*
+        默认 FBNeo 起步要一整块 128 MiB，32 位 / 地址空间吃紧的浏览器给不出来（fbneoLowmem.ts）。
+        原地重试同一个核心、换线路、换 ROM 都是同一个错误；换起步 80 MiB 的低内存核心重开一次。
+      */
+      onOutOfMemory: (failedCore: string, reason: string) => {
+        if (!isCurrent() || ready) return false
+        const nextCore = session.runtime.id === 'emulatorjs'
+          ? fbneoMemoryFallbackCore(session.platform, failedCore, canRestartInPlace(session) && !session.coreOverride)
+          : null
+        if (!nextCore) return false
+        console.warn(`[8bitgo/arcade] ${failedCore} 分配不出 WASM 内存，改用 ${nextCore} 重开：${reason}`)
+        rememberFbneoMemoryFailure()
+        setError(null)
+        begin(session.game, session.platform, session.runtime, {
+          coreOverride: nextCore,
+          startupAttemptId: session.startupAttemptId,
+          startedAt: session.startedAt,
+        })
+        return true
+      },
       onError: (message: string, errorScope?: 'runtime' | 'content' | 'config' | 'deterministic') => {
         if (!isCurrent()) return
         // Sockdrive 起不来时解除这块盘的线路绑定，下一次按最新测速结果重选（镜像故障时会回到主域）
@@ -2222,7 +2254,7 @@ export function EmulatorPlayer({
    * 服务器保留 60 秒宽限期，2.5 秒一轮足够。
    */
   useEffect(() => {
-    if (!session?.netplay || !roomId || status === 'error') return
+    if (!netplayActive || !roomId || status === 'error') return
     /**
      * ⚠️ 房主不订阅这条。
      *
@@ -2314,7 +2346,7 @@ export function EmulatorPlayer({
       cancelled = true
       stop()
     }
-  }, [session, roomId, status, isHost])
+  }, [session, netplayActive, roomId, status, isHost])
 
   useEffect(() => {
     if (!copied) return
@@ -2403,6 +2435,22 @@ export function EmulatorPlayer({
         roomId: join,
         initialState: takeOver?.state ?? undefined,
         onIdentity: (id) => (myIdRef.current = id),
+        onConnectionFailed: (message) => {
+          if (p2pStale()) return
+          // 游戏画面已经正常运行；仅退出失败的联机尝试，保留本地游玩与当前进度。
+          setP2pConnectionFailed(true)
+          setRoomId(null)
+          setPlayers(1)
+          setRole('player')
+          setIsHost(false)
+          setHosting(false)
+          setMatchBusy(false)
+          roomTokenRef.current = ''
+          setRoomChatToken('')
+          setError(null)
+          setNotice(message)
+          refreshNetplayRooms()
+        },
         onToken: (tk) => {
           if (p2pStale()) return
           roomTokenRef.current = tk
@@ -3097,7 +3145,7 @@ export function EmulatorPlayer({
     startSeqRef.current += 1
     // 主动离开房间后，URL 里的 ?p2p= / ?room= 就不该再把人拉回同一个房间
     // 直播也算：离开之后别被上面那个自动开看的 effect 又拽回去
-    if (session?.netplay || session?.cloud || session?.live || joining) setIgnoreInvite(true)
+    if (netplayActive || session?.cloud || session?.live || joining) setIgnoreInvite(true)
     endSession()
     setStatus('idle')
     setFile(null)
@@ -3203,7 +3251,7 @@ export function EmulatorPlayer({
   const canMatch =
     status === 'running' &&
     !session?.live &&
-    !session?.netplay &&
+    !netplayActive &&
     !session?.cloud &&
     Boolean(handle?.openNetplay) &&
     p2pOk &&
@@ -3265,9 +3313,9 @@ export function EmulatorPlayer({
 
   const busy = status === 'loading' || status === 'running'
   /** 「在房间里」：挂载时就联机的，或者玩到一半点「联机匹配」开出来的 */
-  const inRoom = Boolean(session?.netplay || session?.cloud || hosting)
+  const inRoom = Boolean(netplayActive || session?.cloud || hosting)
   /** 这个房间是 P2P 那一路（工具栏的观众数、观众席、身份切换只对它有意义） */
-  const netplayOn = Boolean(session?.netplay) || hosting
+  const netplayOn = netplayActive || hosting
   const activeRuntime =
     session?.runtime ?? (online ? (channel === 'p2p' ? emulatorJsMeta : cloudGameMeta) : pageRuntime)
   const cloudStateLabel = cloudState ? t.player.cloudState[cloudState] : ''
@@ -4400,12 +4448,12 @@ export function EmulatorPlayer({
                 👀 {fmt(t.player.viewers, { n: String(viewers) })}
               </span>
             )}
-            {session?.netplay && role === 'spectator' && (
+            {netplayActive && role === 'spectator' && (
               <span className="inline-flex items-center gap-1 rounded-md bg-live/15 px-2 py-1 font-semibold text-live">
                 {t.player.spectatorTag}
               </span>
             )}
-            {session?.netplay && roomId && !isHost && (
+            {netplayActive && roomId && !isHost && (
               <button
                 type="button"
                 onClick={() => void toggleRole()}
@@ -4551,7 +4599,7 @@ export function EmulatorPlayer({
               于是点一下「联机」正在看的人当场断流。现在直播照推，把房号报上去，
               大厅把直播卡和联机卡合成一张（见 services/allRooms.ts）。
             */
-            active={!session?.netplay && !session?.cloud}
+            active={!netplayActive && !session?.cloud}
             netplayRoomId={hosting ? roomId : null}
             netplayToken={hosting ? roomChatToken : ''}
             captureRef={hostRef}
