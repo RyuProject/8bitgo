@@ -1483,6 +1483,7 @@ export const zhHans = {
     cloudProtocolError: '联机通信出错：{msg}',
     ruffleDesc: '开源的 Flash 播放器（WebAssembly），运行 .swf 网页游戏',
     jsnesDesc: '纯 JavaScript 的 NES 模拟器，无需下载核心，打开即玩',
+    binjgbDesc: 'Game Boy / Color 模拟器，使用 Canvas 2D 绘图，不依赖 WebGL',
     romNotBinary: '游戏文件没能正确取到（服务器返回的是网页而不是 ROM）。请稍后再试，或反馈给我们',
     jsnesLoadFailed: 'NES ROM 加载失败：{msg}',
     jsnesRunFailed: 'NES 模拟器运行出错：{msg}',

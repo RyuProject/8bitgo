@@ -1405,6 +1405,7 @@ const zhHant: Translation = {
     cloudProtocolError: '連線通訊出錯：{msg}',
     ruffleDesc: '開源的 Flash 播放器（WebAssembly），執行 .swf 網頁遊戲',
     jsnesDesc: '純 JavaScript 的 NES 模擬器，不用下載核心，開啟即玩',
+    binjgbDesc: 'Game Boy / Color 模擬器，使用 Canvas 2D 繪圖，不依賴 WebGL',
     romNotBinary: '遊戲檔案沒能正確取到（伺服器回傳的是網頁而不是 ROM）。請稍後再試，或回報給我們',
     jsnesLoadFailed: 'NES ROM 載入失敗：{msg}',
     jsnesRunFailed: 'NES 模擬器執行發生錯誤：{msg}',

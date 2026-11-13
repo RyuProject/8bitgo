@@ -1588,6 +1588,7 @@ export function EmulatorPlayer({
     && extOf(romUrl) === 'nes'
     && !isRomPackUrl(romUrl)
     && !romArchiveRef(romUrl ?? '')
+  const shouldProbeNoWebgl = platform.id === 'nes' || platform.id === 'gb' || platform.id === 'gbc'
 
   useEffect(() => {
     if (!shouldProbeNes || !romUrl) return
@@ -1610,18 +1611,23 @@ export function EmulatorPlayer({
   }, [romUrl, shouldProbeNes])
 
   /*
-    NES 开局前问一次浏览器建不建得出 WebGL：建不出就改走画 2D canvas 的 jsnes（见 webglSupport.ts）。
+    开局前问一次浏览器建不建得出 WebGL：NES 改走 jsnes，GB/GBC 改走 binjgb。
     放在 effect 里而不是渲染时算：SSR 没有 document，渲染时算会让首屏和水合选出不同的引擎。
   */
-  const [webglUnavailable, setWebglUnavailable] = useState(false)
-  const [webglProbeReady, setWebglProbeReady] = useState(false)
+  const [webglProbe, setWebglProbe] = useState<{ platform: PlatformId; ready: boolean; unavailable: boolean }>(
+    () => ({ platform: platform.id, ready: false, unavailable: false }),
+  )
+  const webglProbeReady = !shouldProbeNoWebgl || (webglProbe.platform === platform.id && webglProbe.ready)
+  const webglUnavailable = webglProbe.platform === platform.id && webglProbe.unavailable
   useEffect(() => {
-    if (platform.id !== 'nes') return
+    if (!shouldProbeNoWebgl) return
     const missing = !canCreateWebgl()
-    if (missing) console.warn('[8bitgo/runtime] 这个浏览器建不出 WebGL，NES 改用 jsnes')
-    setWebglUnavailable(missing)
-    setWebglProbeReady(true)
-  }, [platform.id])
+    if (missing) {
+      const fallback = platform.id === 'nes' ? 'jsnes' : 'binjgb'
+      console.warn(`[8bitgo/runtime] 这个浏览器建不出 WebGL，${platform.id.toUpperCase()} 改用 ${fallback}`)
+    }
+    setWebglProbe({ platform: platform.id, ready: true, unavailable: missing })
+  }, [platform.id, shouldProbeNoWebgl])
 
   const currentNesProbe = nesProbe.url === romUrl ? nesProbe : undefined
   const jsnesCompatible = shouldProbeNes ? currentNesProbe?.compatible : undefined
@@ -1640,9 +1646,9 @@ export function EmulatorPlayer({
     })
   }, [platform.id, runtime, romUrl, shouldProbeNes, currentNesProbe?.ready, jsnesNetplay, jsnesCompatible, webglUnavailable])
 
-  /** NES 的 mapper 与 WebGL 结论都确定后再开放启动，避免自动播放抢在环境探测前挂载错误引擎。 */
+  /** NES 的 mapper 与 NES / GB / GBC 的 WebGL 结论都确定后再开放启动，避免自动播放抢先挂载错误引擎。 */
   const engineReady = (!shouldProbeNes || Boolean(currentNesProbe?.ready)) &&
-    (platform.id !== 'nes' || webglProbeReady)
+    webglProbeReady
   const supported = Boolean(pageRuntime) || onlineOk
   /** js-dos 预热必须知道最终后端，否则会把普通 DOS 的 1.4 MB 核心当成 Win95 的 7.5 MB 核心。 */
   const requestedPrewarmCore = core ?? platform.core
@@ -2995,7 +3001,7 @@ export function EmulatorPlayer({
         ext: extOf(picked),
         jsnesNetplay,
         jsnesCompatible: localJsnesCompatible,
-        webglUnavailable: targetPlatform === 'nes' && !canCreateWebgl(),
+        webglUnavailable: (targetPlatform === 'nes' || targetPlatform === 'gb' || targetPlatform === 'gbc') && !canCreateWebgl(),
       })
       if (!runtime) {
         if (debugRef.current) {

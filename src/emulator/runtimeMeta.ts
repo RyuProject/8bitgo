@@ -1,5 +1,5 @@
 /**
- * 九个运行时的**元数据**：id、展示名、能跑哪些格式、优先级、可用性判断。
+ * 全部运行时的**元数据**：id、展示名、能跑哪些格式、优先级、可用性判断。
  *
  * 为什么单独一个文件 —— 见 paths.ts 的开头。一句话：
  * 「该用哪个引擎」这个问题不需要把引擎本身下载下来才能回答。
@@ -72,7 +72,7 @@ export const ruffleMeta: Runtime = {
 export const html5Meta: Runtime = {
   id: 'html5',
   name: 'HTML5 / WebAssembly',
-  // 和其余八个一样必须是 getter（见文件头）：以前是普通字段，非中文站点上这一行永远是中文
+  // 必须是 getter（见文件头）：以前是普通字段，非中文站点上这一行永远是中文
   get description() {
     return getT().runtime.html5Desc
   },
@@ -95,6 +95,20 @@ export const jsnesMeta: Runtime = {
   available: () => true,
   supports: (platform) => platform === 'nes',
   engineLabel: () => 'jsnes',
+}
+
+export const binjgbMeta: Runtime = {
+  id: 'binjgb',
+  name: 'binjgb',
+  get description() {
+    return getT().runtime.binjgbDesc
+  },
+  extensions: ['gb', 'gbc', 'zip'],
+  // 只在 GB/GBC 明确检测到无 WebGL 时自动接管；有 WebGL 的浏览器仍先用 Gambatte。
+  priority: 4,
+  available: () => true,
+  supports: (platform) => platform === 'gb' || platform === 'gbc',
+  engineLabel: () => 'Canvas 2D',
 }
 
 export const j2meMeta: Runtime = {
@@ -229,6 +243,7 @@ export const runtimeMetas: Record<Runtime['id'], Runtime> = {
   ruffle: ruffleMeta,
   html5: html5Meta,
   jsnes: jsnesMeta,
+  binjgb: binjgbMeta,
   j2me: j2meMeta,
   jsdos: jsdosMeta,
   webretro: webretroMeta,

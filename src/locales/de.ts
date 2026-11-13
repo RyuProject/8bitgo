@@ -1458,6 +1458,7 @@ const de: Translation = {
     cloudProtocolError: 'Multiplayer-Kommunikationsfehler: {msg}',
     ruffleDesc: 'Open-Source-Flash-Player (WebAssembly), der .swf-Webspiele ausführt',
     jsnesDesc: 'NES-Emulator in reinem JavaScript – kein Core-Download, einfach losspielen',
+    binjgbDesc: 'Game-Boy-/Color-Emulator mit Canvas-2D-Ausgabe; benötigt kein WebGL',
     romNotBinary: 'Die Spieldatei konnte nicht geladen werden (der Server hat eine Webseite statt einer ROM geliefert). Versuch es später noch einmal oder melde es uns',
     jsnesLoadFailed: 'Die NES-ROM konnte nicht geladen werden: {msg}',
     jsnesRunFailed: 'Im NES-Emulator ist ein Fehler aufgetreten: {msg}',

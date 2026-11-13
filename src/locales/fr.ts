@@ -1462,6 +1462,7 @@ const fr: Translation = {
     cloudProtocolError: 'Erreur de communication multijoueur : {msg}',
     ruffleDesc: 'Lecteur Flash open source (WebAssembly) qui fait tourner les jeux web .swf',
     jsnesDesc: 'Émulateur NES en JavaScript pur : aucun cœur à télécharger, on joue tout de suite',
+    binjgbDesc: 'Émulateur Game Boy / Color rendu avec Canvas 2D, sans WebGL',
     romNotBinary: 'Le fichier du jeu n’a pas pu être récupéré (le serveur a renvoyé une page web au lieu d’une ROM). Réessaie plus tard ou signale-le-nous',
     jsnesLoadFailed: 'Échec du chargement de la ROM NES : {msg}',
     jsnesRunFailed: "L'émulateur NES a rencontré une erreur : {msg}",

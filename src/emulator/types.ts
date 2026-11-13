@@ -6,6 +6,7 @@
  *   Ruffle      Flash (.swf)
  *   HTML5       现代网页 / WebAssembly 游戏（加载受权部署的网页入口）
  *   jsnes       NES (.nes)
+ *   binjgb      GB / GBC（无 WebGL 时使用 Canvas 2D）
  *   J2ME        Java 手机游戏 (.jar) —— 需自托管，见 adapters/j2me.ts
  *   js-dos      DOS 游戏 —— DOSBox 的浏览器移植，见 adapters/jsdos.ts
  *   webretro    历史备用的 RetroArch WASM 移植（当前不自动接管任何平台）
@@ -41,7 +42,7 @@ import type { ChatSendResult } from './chatSend'
 import type { GbaVideoMode } from './gbaVideo'
 import type { SaveArchiveDetails } from './saveEnvelope'
 
-export type RuntimeId = 'emulatorjs' | 'ruffle' | 'html5' | 'jsnes' | 'j2me' | 'jsdos' | 'webretro' | 'play' | 'ppsspp' | 'dolphin' | 'cloudgame' | 'liveview'
+export type RuntimeId = 'emulatorjs' | 'ruffle' | 'html5' | 'jsnes' | 'binjgb' | 'j2me' | 'jsdos' | 'webretro' | 'play' | 'ppsspp' | 'dolphin' | 'cloudgame' | 'liveview'
 
 /**
  * jsnes 的 P2P 联机会话参数（见 adapters/jsnes.ts 与 emulator/jsnesNetplay.ts）。
@@ -407,7 +408,7 @@ export interface ResolveContext {
    * Range 不可用时不会靠外层大小猜引擎。jsnes 邀请链接仍会优先 jsnes，除非已经明确为 false。
    */
   jsnesCompatible?: boolean
-  /** 这个浏览器建不出 WebGL（见 webglSupport.ts）。NES 据此改走 jsnes，连后台固定的 emulatorjs 也让路。 */
+  /** 这个浏览器建不出 WebGL（见 webglSupport.ts）。NES 改走 jsnes，GB/GBC 改走 binjgb。 */
   webglUnavailable?: boolean
 }
 

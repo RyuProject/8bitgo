@@ -212,10 +212,17 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
 - **NES 建不出 WebGL 时改走 jsnes**（2026-11-13 大陆 Android 12 Chrome 123 / Linux Chrome 108，15 次失败，
   其中《超级玛丽》一人连开 5 局）：这些浏览器整机就没有 WebGL，报得再清楚也玩不了。jsnes 画 2D canvas，播放器开局前
   （effect 里，避开 SSR 水合）用 `webglSupport.ts` 的 `canCreateWebgl()` 问一次，结论经 `webglUnavailable` 交给
-  `preferredNesRuntime`：mapper 未明确不支持就选 jsnes，后台固定的 emulatorjs 也让路。其它平台没有非 WebGL 引擎，仍报原因。
+  `preferredNesRuntime`：mapper 未明确不支持就选 jsnes，后台固定的 emulatorjs 也让路。
   回归：`npm run test:nes-mapper`。
+- **GB/GBC 建不出 WebGL 时改走 binjgb**：备用核心固定使用 Canvas 2D，不依赖 WebGL；有 WebGL 时仍使用 Gambatte。
+  运行时先读 ROM，再载入自托管 `/binjgb/` 的 JS/WASM；支持 MBC1 / MBC1M / MMM01 / MBC2 / MBC3 / MBC5 / HuC1，
+  其它卡带类型或损坏 ROM 明确报错。输入复用站内键盘、屏幕手柄和物理手柄；即时存档走 binjgb 状态格式，
+  普通 SRAM 使用独立本地键与现有 slot 9 云同步；导入的电池数据长度必须与卡带匹配。MBC3 RTC 卡带不写入
+  Gambatte 的云存档，避免把 RTC 格式交叉覆盖；binjgb 的 WebAssembly 接口只暴露外部 RAM，RTC 时钟不跨设备同步。
+  升级 binjgb 必须换 `BINJGB_BUILD` 并更新
+  `public/binjgb/UPSTREAM.md` 中的上游 commit。
 - **EmulatorJS 无 WebGL 时在下载前停止**（2026-11-12/13 中国大陆 Linux Chrome 108 街机《恐龙快打》9 次、Android 12 Chrome 123 GB《俄罗斯方块 2》1 次；
-  现场均是 ROM / 核心成功后在 `GLctx` 初始化失败）。NES 已能切 jsnes；街机和 GB 当前没有经真实核心验证的非 WebGL 后备引擎。
+  现场均是 ROM / 核心成功后在 `GLctx` 初始化失败）。NES 已能切 jsnes，GB/GBC 已能切 binjgb；街机和其它平台目前没有非 WebGL 后备引擎。
   `emulatorjs.ts` 开局先用 `canCreateWebgl()` 探测：没有上下文就以 `config` 错误提示开启硬件加速或换支持 WebGL 的设备，
   不再先下载 ROM / 核心 / BIOS，也不触发无效重试。不要把未验证的软件 WebGL 原型接进生产。
 - **联机超时把握手进度写进诊断包**：信令是否连上、`open-room` / `join-room` 有没有发出、回执是什么、各在第几毫秒

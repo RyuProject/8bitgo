@@ -1398,6 +1398,7 @@ const ja: Translation = {
     cloudProtocolError: '対戦通信エラー：{msg}',
     ruffleDesc: 'オープンソースの Flash プレイヤー（WebAssembly）。.swf のブラウザゲームを実行します',
     jsnesDesc: '純 JavaScript の NES エミュレーター。コアのダウンロード不要ですぐ遊べます',
+    binjgbDesc: 'WebGL 不要の Canvas 2D 描画を使う Game Boy / Color エミュレーター',
     romNotBinary: 'ゲームファイルを取得できませんでした（サーバーが ROM ではなくウェブページを返しました）。しばらくしてから再試行するか、ご報告ください',
     jsnesLoadFailed: 'NES ROM の読み込みに失敗しました：{msg}',
     jsnesRunFailed: 'NES エミュレーターでエラーが発生しました：{msg}',

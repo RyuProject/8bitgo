@@ -13,6 +13,7 @@ import { mount as emulatorjs } from './adapters/emulatorjs'
 import { mount as ruffle } from './adapters/ruffle'
 import { mount as html5 } from './adapters/html5'
 import { mount as jsnes } from './adapters/jsnes'
+import { mount as binjgb } from './adapters/binjgb'
 import { mount as j2me } from './adapters/j2me'
 import { mount as jsdos } from './adapters/jsdos'
 import { mount as webretro } from './adapters/webretro'
@@ -27,6 +28,7 @@ const MOUNTS: Record<RuntimeId, RuntimeMount> = {
   ruffle,
   html5,
   jsnes,
+  binjgb,
   j2me,
   jsdos,
   webretro,

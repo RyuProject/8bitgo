@@ -220,7 +220,8 @@ export function staticCacheHeaders(res, filePath) {
     不带 ?v 的（引擎自己拼的 compression/*.js、localization/*.json）仍走短缓存。
   */
   if (p.includes('/emulatorjs/') && isVersionedRequest(res)) return set(CACHE.engineVersioned)
-  if (p.includes('/ruffle/') || p.includes('/emulatorjs/') || p.includes('/j2me/') || p.includes('/jsdos/') || p.includes('/webretro/') || p.includes('/qemu-wasm/')) return set(CACHE.engine)
+  if (p.includes('/binjgb/') && isVersionedRequest(res)) return set(CACHE.engineVersioned)
+  if (p.includes('/binjgb/') || p.includes('/ruffle/') || p.includes('/emulatorjs/') || p.includes('/j2me/') || p.includes('/jsdos/') || p.includes('/webretro/') || p.includes('/qemu-wasm/')) return set(CACHE.engine)
   if (p.includes('/play/')) return set(versionedPlayAsset || isVersionedRequest(res) ? CACHE.engineVersioned : CACHE.engine)
   if (/\.(png|jpg|jpeg|gif|webp|avif|svg|ico)$/i.test(p)) return set(CACHE.image)
   // ads.txt 跟 robots / sitemap 一样属于「构建时生成、但要能被外部频繁核对」的元文件，
