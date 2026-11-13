@@ -5,7 +5,7 @@ import { publicApi } from '../cache.js'
 import { playIdentity } from '../playcount.js'
 import { gameApiToPartialRow, relationsInPatch, dateOnly } from '../mappers.js'
 import { isAdultByBirthDate } from '../../../shared/age.js'
-import { gameSupportsNetplay } from '../../../shared/netplay-players.js'
+import { gameSupportsNetplay, netplayModeFromInput } from '../../../shared/netplay-players.js'
 import { query } from '../db.js'
 import { attachRelations, writeDescriptionTranslation } from '../games-repo.js'
 import { queueGameSearchPush } from '../search-push.js'
@@ -61,6 +61,8 @@ export const dbFlag = (v) => v === 1 || v === true || v === '1'
  * `multiplayer=true, players=1` 入库，运营下一次编辑又会造出同一种“按钮可见却必失败”。
  */
 export function netplayGameConfigError(game) {
+  // 自动 / 强制关闭时人数由服务端推断或不生效，表单里那两个值不参与校验
+  if (game?.netplayMode === 'auto' || game?.netplayMode === 'off') return null
   if (!dbFlag(game?.multiplayer)) return null
   return gameSupportsNetplay(game.multiplayer, game.players)
     ? null
@@ -675,7 +677,7 @@ gamesRouter.patch('/:slug', requireAbility('games:edit'), async (req, res, next)
     if (mameDiskError) return res.status(400).json({ error: mameDiskError })
     const patchRow = gameApiToPartialRow(req.body)
     const relations = relationsInPatch(req.body)
-    if (!Object.keys(patchRow).length && !relations.genres && !relations.tags && !relations.roms) {
+    if (!Object.keys(patchRow).length && !relations.genres && !relations.tags && !relations.roms && !netplayModeFromInput(req.body)) {
       return res.status(400).json({ error: '没有可更新的字段' })
     }
     const id = await patchGame(slug, patchRow, relations, req.body)

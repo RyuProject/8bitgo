@@ -12,7 +12,7 @@
 import { normalizeDosboxConfigOverride } from '../../shared/dosbox-config.js'
 import { normalizeDosStartupCommands } from '../../shared/dos-startup-commands.js'
 import { isAdultByBirthDate } from '../../shared/age.js'
-import { gameSupportsNetplay, normalizeGamePlayers } from '../../shared/netplay-players.js'
+import { gameSupportsNetplay, normalizeGamePlayers, normalizeNetplayMode } from '../../shared/netplay-players.js'
 import { knownMameArcadeDisk, mameArcadeDiskObjectKey } from '../../shared/mame-arcade-media.js'
 import { knownMameChdDiskExpectation } from '../../shared/mame-chd-catalog.js'
 import { romsetsNeedNoBios } from './arcade-bios-index.js'
@@ -658,6 +658,9 @@ export function gameRowToApi(r, rel = {}) {
     // 不把「已勾联机、人数却是 1」的脏记录发给页面：这种按钮服务端一定拒绝，
     // 与其让所有玩家点到死路，不如先安全降级；迁移脚本会修复已知的马力欧记录。
     multiplayer: gameSupportsNetplay(r.multiplayer, r.players),
+    // 意图与推断结果：后台表单要用；旧库没有这两列时按 auto / 未推断处理
+    netplayMode: normalizeNetplayMode(r.netplay_mode),
+    ...(r.players_inferred != null ? { playersInferred: normalizeGamePlayers(r.players_inferred) } : {}),
     coinReward: Number(r.coin_reward) || 0,
     icon: r.icon || '🎮',
     description: r.description || '',

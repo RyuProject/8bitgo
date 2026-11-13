@@ -188,6 +188,13 @@ export interface Game {
   players: 1 | 2 | 3 | 4
   /** 是否支持联机同玩 */
   multiplayer: boolean
+  /**
+   * 联机人数从哪来：auto = 按 ROM 推断（街机读 FBNeo 驱动表），on / off = 后台强制。
+   * players / multiplayer 已经是服务端算好的生效值，前台只读那两个；这两项给后台表单用。
+   */
+  netplayMode?: 'auto' | 'on' | 'off'
+  /** 按 ROM 推断出的最大玩家数（推断不出时没有这一项） */
+  playersInferred?: number
   /** 通关或达成成就可获得的 G 币，0 表示不参与 */
   coinReward: number
   /** 封面上展示的 emoji */

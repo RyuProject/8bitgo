@@ -1322,6 +1322,15 @@ cd .. && npm run test:flash-online-save
 
 自测：`cd server && npm run test:netplay:all`。这一项不改数据库结构，不需要迁移。
 
+**联机人数默认自动推断（2026-11-13）。** `games.netplay_mode` 记意图：`auto`（默认）/ `on` / `off`；
+`players` / `multiplayer` 两列是**生效值**，每次写游戏后由 `server/src/netplay-auto.js` 的
+`syncNetplayDerived` 在同一事务里重算，所以公开 API、游戏库筛选、开房鉴权都不用看 mode。
+auto 下街机按 ROM 短名（或 RomData 的 `DrvName`）查 `shared/arcade-players.json`
+（FBNeo `BurnDriver.Players`，`node scripts/build-arcade-players.mjs <FBNeo>/src/burn/drv` 生成）；
+多个语言槽取最少人数；驱动表里没有的街机按 2 人；其它平台暂时沿用库里的值。
+迁移把「已勾联机且 ≥2 人」的存量游戏记为 `on`，其余交给 auto，并在每次 `npm run migrate` 全库重算
+（`cd server && npm run netplay-players -- --dry-run` 先预览）。回归：`cd server && npm run test:netplay-auto`。
+
 ### 2.22.1 EmulatorJS 的 2P~4P 出厂是空的；红白机连发被控制方案删掉（2026-11-03《魂斗罗》）
 
 - 引擎 `defaultControllers[1..3]` 是 `{}`：2P~4P **既没有键盘也没有手柄映射**。第二个手柄被分到

@@ -202,6 +202,7 @@ const EMPTY: Game = {
   plays: 0,
   players: 1,
   multiplayer: false,
+  netplayMode: 'auto',
   coinReward: 0,
   icon: '🎮',
   cover: '',
@@ -1139,8 +1140,16 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
         <Field label="开发商" hint="多个开发商用逗号分隔">
           <input className={inputClass} value={form.developer} onChange={(e) => set('developer', e.target.value)} placeholder="Nintendo, HAL Laboratory" />
         </Field>
-        <Field label="最大玩家数">
-          <select className={inputClass} value={form.players} onChange={(e) => set('players', Number(e.target.value) as Game['players'])}>
+        <Field
+          label="最大玩家数"
+          hint={(form.netplayMode ?? 'auto') === 'on' ? '强制开启联机时用这个人数' : '「自动」时按 ROM 推断，这里的值不生效'}
+        >
+          <select
+            className={inputClass}
+            value={form.players}
+            disabled={(form.netplayMode ?? 'auto') !== 'on'}
+            onChange={(e) => set('players', Number(e.target.value) as Game['players'])}
+          >
             {Array.from({ length: NETPLAY_MAX_PLAYERS }, (_, i) => i + 1).map((n) => (
               <option key={n} value={n}>
                 {n} 人
@@ -1876,8 +1885,30 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
       </Field>
 
       <div className="flex flex-wrap gap-4 text-sm">
+        {/*
+          联机不再要求逐款勾选：默认「自动」由服务端按 ROM 推断人数（街机读 FBNeo 驱动表，
+          见 server/src/netplay-auto.js），这里只用来纠错。
+        */}
         <label className="inline-flex items-center gap-2">
-          <input type="checkbox" checked={form.multiplayer} onChange={(e) => set('multiplayer', e.target.checked)} /> 支持联机 / 双人
+          联机
+          <select
+            className={inputClass}
+            value={form.netplayMode ?? 'auto'}
+            onChange={(e) => set('netplayMode', e.target.value as NonNullable<Game['netplayMode']>)}
+          >
+            <option value="auto">自动（按 ROM 推断）</option>
+            <option value="on">强制开启</option>
+            <option value="off">强制关闭</option>
+          </select>
+          <span className="text-xs text-muted">
+            {(form.netplayMode ?? 'auto') === 'auto'
+              ? form.playersInferred
+                ? `推断为 ${form.playersInferred} 人${form.playersInferred >= 2 ? '，可联机' : '，单人游戏不开放联机'}`
+                : form.platform === 'arcade'
+                  ? '驱动表里没有这个 romset，按街机默认 2 人'
+                  : '这个平台还没有自动数据，沿用已保存的设置'
+              : null}
+          </span>
         </label>
         <label className="inline-flex items-center gap-2">
           <input type="checkbox" checked={Boolean(form.bodyControl)} onChange={(e) => set('bodyControl', e.target.checked)} /> 体感控制友好

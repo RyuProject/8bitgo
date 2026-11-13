@@ -8,6 +8,8 @@
  * WHERE game_id IN (...)，不会变成每款查三次。
  */
 import { jsonMemberPath, query, queryOne, withTransaction } from './db.js'
+import { syncNetplayDerived } from './netplay-auto.js'
+import { netplayModeFromInput } from '../../shared/netplay-players.js'
 import { gameRowToApi, gameApiToRow, dateTimeIso, romRelationRows, flashBundleAssetPaths, GENERIC_ROM_LANG } from './mappers.js'
 import { boundedSearchLimit, buildGameTokens, queryTerms, tokenMatchSql, normalize, tokenize, escapeLike } from './search.js'
 import { BAYES_SCORE_SQL } from './ratings-repo.js'
@@ -759,6 +761,8 @@ async function persistGame(slug, game, createOnly) {
     // 不在这里清的话，玩家点过翻译的多语言版本会和新的基准对不上，但前端看不出来。
     await run('UPDATE games SET title_i18n = NULL, description_i18n = NULL WHERE id = ?', [id])
     await writeRelations(run, id, game)
+    // 联机人数在 ROM 绑定写完之后重算（auto 模式按 ROM 推断，见 netplay-auto.js）
+    await syncNetplayDerived(run, id, { mode: netplayModeFromInput(game) })
     await reindexGame(run, id, { ...game, slug })
     return id
   })
@@ -800,6 +804,8 @@ export async function patchGame(slug, patchRow, relations, game) {
     if (relations.genres || relations.tags || relations.roms) {
       await writeRelations(run, id, game, relations)
     }
+    // 换了 ROM、平台或联机模式都可能改变生效人数；没变时这一步只是一次读
+    await syncNetplayDerived(run, id, { mode: netplayModeFromInput(game) })
     // PATCH 可能只改了标题、也可能只改了标签，两者都会影响索引。
     // 与其判断「这次改动是否涉及可搜索字段」，不如从库里读回完整一行重建 ——
     // 判断漏一个字段就是搜不到，代价远大于多跑一次几十行的插入。
