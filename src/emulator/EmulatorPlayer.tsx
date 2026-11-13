@@ -7,6 +7,7 @@ import { isPc98FdiFileName } from './pc98'
 import { jsnesCanRun } from './nesMapper'
 import { probeNesRomHeader } from './nesRomProbe'
 import { resolveRuntime, runtimesFor, extOf } from './registry'
+import { canCreateWebgl } from './webglSupport'
 import { romArchiveRef } from '@/lib/romArchiveUrl'
 import { romUrlForKey } from '@/services/roms'
 import { clearSockdrivePin, pinnedSockdriveUrl, routeRomAssetUrl } from '@/services/romHosts'
@@ -1594,6 +1595,18 @@ export function EmulatorPlayer({
     return () => controller.abort()
   }, [romUrl, shouldProbeNes])
 
+  /*
+    NES 开局前问一次浏览器建不建得出 WebGL：建不出就改走画 2D canvas 的 jsnes（见 webglSupport.ts）。
+    放在 effect 里而不是渲染时算：SSR 没有 document，渲染时算会让首屏和水合选出不同的引擎。
+  */
+  const [webglUnavailable, setWebglUnavailable] = useState(false)
+  useEffect(() => {
+    if (platform.id !== 'nes') return
+    const missing = !canCreateWebgl()
+    if (missing) console.warn('[8bitgo/runtime] 这个浏览器建不出 WebGL，NES 改用 jsnes')
+    setWebglUnavailable(missing)
+  }, [platform.id])
+
   const currentNesProbe = nesProbe.url === romUrl ? nesProbe : undefined
   const jsnesCompatible = shouldProbeNes ? currentNesProbe?.compatible : undefined
 
@@ -1607,8 +1620,9 @@ export function EmulatorPlayer({
       runtimeOverride: runtime,
       jsnesNetplay,
       jsnesCompatible,
+      webglUnavailable,
     })
-  }, [platform.id, runtime, romUrl, shouldProbeNes, currentNesProbe?.ready, jsnesNetplay, jsnesCompatible])
+  }, [platform.id, runtime, romUrl, shouldProbeNes, currentNesProbe?.ready, jsnesNetplay, jsnesCompatible, webglUnavailable])
 
   /** 当前直链 `.nes` 的头是否已探完；等待时“开始”进入准备态，不误显为平台不支持。 */
   const engineReady = !shouldProbeNes || Boolean(currentNesProbe?.ready)
@@ -2897,6 +2911,7 @@ export function EmulatorPlayer({
         ext: extOf(picked),
         jsnesNetplay,
         jsnesCompatible: localJsnesCompatible,
+        webglUnavailable: targetPlatform === 'nes' && !canCreateWebgl(),
       })
       if (!runtime) {
         if (debugRef.current) {

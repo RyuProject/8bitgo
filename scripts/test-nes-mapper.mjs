@@ -236,6 +236,21 @@ for (const m of [0, 25, 256, 555, 4095]) {
 /* ---------- 8. 运行时策略只看明确能力，不看外层文件大小 ---------- */
 {
   assert.equal(preferredNesRuntime({ jsnesCompatible: true }), 'jsnes', '明确支持的 mapper 才默认走 jsnes')
+  // 2026-11-13 大陆 Android 12 Chrome 123：建不出 WebGL，《超级玛丽》（容器包，mapper 未探明）连开 5 局失败
+  assert.equal(preferredNesRuntime({ webglUnavailable: true }), 'jsnes', '没有 WebGL 时容器包也改走画 2D canvas 的 jsnes')
+  assert.equal(preferredNesRuntime({ webglUnavailable: true, jsnesCompatible: true }), 'jsnes')
+  assert.equal(
+    preferredNesRuntime({ webglUnavailable: true, jsnesCompatible: false }),
+    'emulatorjs',
+    '明确不支持的 mapper 仍交给 EmulatorJS（由它报 WebGL 原因），不硬塞给必败的 jsnes',
+  )
+  {
+    const { readFileSync } = await import('node:fs')
+    const registry = readFileSync(new URL('../src/emulator/registry.ts', import.meta.url), 'utf8')
+    assert.match(registry, /platform === 'nes' && ctx\.webglUnavailable && ctx\.runtimeOverride === 'emulatorjs'/, '后台固定 emulatorjs 时没有 WebGL 也要让路')
+    const player = readFileSync(new URL('../src/emulator/EmulatorPlayer.tsx', import.meta.url), 'utf8')
+    assert.equal((player.match(/webglUnavailable[,:]/g) ?? []).length >= 2, true, '页面 ROM 与本地文件两处选引擎都要带上 WebGL 结论')
+  }
   assert.equal(preferredNesRuntime({ jsnesCompatible: false }), 'emulatorjs', '不支持的 mapper 直接走 EmulatorJS')
   assert.equal(preferredNesRuntime({}), 'emulatorjs', '容器 / 未知格式稳定走 EmulatorJS，不再用包大小猜')
   assert.equal(preferredNesRuntime({ jsnesNetplay: true }), 'jsnes', 'jsnes 邀请链接必须回到 jsnes')

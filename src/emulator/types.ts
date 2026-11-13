@@ -400,6 +400,8 @@ export interface ResolveContext {
    * Range 不可用时不会靠外层大小猜引擎。jsnes 邀请链接仍会优先 jsnes，除非已经明确为 false。
    */
   jsnesCompatible?: boolean
+  /** 这个浏览器建不出 WebGL（见 webglSupport.ts）。NES 据此改走 jsnes，连后台固定的 emulatorjs 也让路。 */
+  webglUnavailable?: boolean
 }
 
 /** 运行时能提供的能力。播放器按这个集合决定显示哪些按钮 —— 支持才亮，不支持不显示 */

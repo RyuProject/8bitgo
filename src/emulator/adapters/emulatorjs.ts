@@ -25,6 +25,7 @@
 import type { ArcadeButtonCount, PlatformId } from '@/types'
 import { arcadeButtonIdsFor, EJS_ARCADE_DEFAULT_CONTROLS, EJS_DEFAULT_CONTROLS, EJS_P2_KEYS } from '@/lib/keymapData'
 import type { Capability, CaptureSources, LoadPhase, LoadProgress, MameArcadeDiskSource, MountOptions, RuntimeHandle, StageMode } from '../types'
+import { canCreateWebgl } from '../webglSupport'
 import { fetchBlobWithProgress, fetchWithProgress, throttleProgress, withResumeTimeout } from '../loadProgress'
 import { emulatorJsDownloadPhase, isCriticalEmulatorJsDownload } from '../emulatorjsDownload'
 import { downloadResumeStore, mameChdResumeStore } from '../downloadResume'
@@ -1288,18 +1289,7 @@ export function isWebglUnavailableText(text: string): boolean {
   return /\bGLctx\b|webgl (?:is )?not supported|could not create (?:a )?webgl context|failed to create webgl context/i.test(text)
 }
 
-/** 现在还建不建得出 WebGL。建得出说明刚才只是一时（上下文数超限 / GPU 进程重启），值得重试一次 */
-export function canCreateWebgl(doc: Document = document): boolean {
-  try {
-    const canvas = doc.createElement('canvas')
-    const gl = (canvas.getContext('webgl2') || canvas.getContext('webgl')) as WebGLRenderingContext | null
-    if (!gl) return false
-    gl.getExtension('WEBGL_lose_context')?.loseContext()
-    return true
-  } catch {
-    return false
-  }
-}
+export { canCreateWebgl }
 
 /** 浏览器分配不出 WASM / ArrayBuffer 内存时各家的说法 */
 export function isOutOfMemoryText(text: string): boolean {
