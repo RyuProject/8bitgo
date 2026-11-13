@@ -247,7 +247,7 @@ check('⚠️ 自动开局只开一次（否则玩家停掉这一局会被立刻
 check('⚠️ 没有云端 ROM / 没有运行时时不能把标记消耗掉（romUrl 是异步探的）', () => {
   const i = player.indexOf('autoStartedRef')
   const body = player.slice(i, i + 600)
-  const guard = body.indexOf('if (!romUrl || !pageRuntime) return')
+  const guard = body.search(/if \(!romUrl \|\| !pageRuntime(?: \|\| !engineReady)?\) return/)
   const mark = body.indexOf('autoStartedRef.current = true')
   assert.ok(guard > 0, '没有 romUrl / pageRuntime 的前置判断')
   assert.ok(guard < mark, '标记被放在了前置判断之前 —— 地址还没探到就把这一次自动开局用掉了')
@@ -262,6 +262,13 @@ check('⚠️ 未开联机 / 单人游戏不画联机入口（服务端会回 ga
   assert.match(player, /const p2pOk = hostable &&/, 'P2P 入口没看 hostable：单人游戏仍会画「改为联机」')
   assert.match(player, /const cloudOk = hostable &&/, '云端入口没看 hostable')
   assert.ok(player.indexOf('const slots =') < player.indexOf('const p2pOk ='), 'slots 必须在 p2pOk 之前定义')
+})
+
+check('⚠️ 房间在首帧后被拒不能把已经运行的游戏报成加载失败', () => {
+  const adapter = strip(read('src/emulator/adapters/emulatorjs.ts'))
+  assert.match(adapter, /if \(started\) \{[\s\S]{0,500}cfg\.onConnectionFailed\?\.\(message\)/, '首帧后联机失败仍走 onError 拆游戏')
+  assert.match(adapter, /const failNetplay = \(message: string, scope\?: LoadErrorScope\) => \{[\s\S]{0,250}np\?\.leaveRoom\?\.\(\)/, '失败后没有断开这次信令连接')
+  assert.match(player, /onConnectionFailed: \(message\) => \{[\s\S]{0,500}setP2pConnectionFailed\(true\)[\s\S]{0,500}setNotice\(message\)/, '播放器未恢复单机 UI 并展示联机失败原因')
 })
 
 console.log('')
