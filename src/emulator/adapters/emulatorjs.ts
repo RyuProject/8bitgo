@@ -1193,6 +1193,30 @@ function fetchMameDiskBytes(
   })
 }
 
+/**
+ * 引擎取预下载 ROM 的 blob: 地址时，直接用 Blob 本体回应，不经浏览器的 blob URL 加载。
+ *
+ * 2026-11-13 爱尔兰 Safari 18（iPad，UA 报 macOS）《宝可梦 白 2》：256MB 的 ROM 已在外层解包成 Blob，
+ * 引擎 `fetch(blobUrl)` 读了约 3 秒后报「TypeError: Load failed」，原地重试、换语言 ROM 一共 6 局全是这样；
+ * 同一流程在桌面 Chrome 能过片头。WebKit 读 blob URL 走另一套加载路径（URL 由外层页面建、在 iframe 里取），
+ * 而 `new Response(blob)` 直接读 Blob 本体。若仍失败，引擎日志里的原文就不再是笼统的 Load failed，
+ * 而是读 Blob 时的真实错误（多半是内存），下一份现场就能分清两种原因。
+ * 只拦这一个地址，其余请求原样交给原生 fetch。
+ */
+function installBlobFetchShortcut(win: Window, url: string, blob: Blob): void {
+  const frame = win as Window & { fetch: typeof fetch; Response: typeof Response }
+  const native = frame.fetch?.bind(frame)
+  if (typeof native !== 'function' || typeof frame.Response !== 'function') return
+  frame.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const target = typeof input === 'string' ? input : input instanceof URL ? input.href : ''
+    if (target === url && (!init?.method || init.method.toUpperCase() === 'GET')) {
+      diagLog('adapter', 'info', `ROM 由 Blob 直接交给引擎（${Math.round(blob.size / 1048576)}MB）`)
+      return Promise.resolve(new frame.Response(blob, { headers: { 'Content-Type': blob.type || 'application/octet-stream' } }))
+    }
+    return native(input as RequestInfo, init)
+  }) as typeof fetch
+}
+
 function installErrorTap(
   win: Window & Record<string, unknown>,
   onFatal: (line: string) => void,
@@ -1929,9 +1953,9 @@ export async function prepareRemoteDiscRom(
     maxBytes?: number
     maxUnpackedBytes?: number
   } = {},
-): Promise<{ url: string; bytes: number; name?: string }> {
+): Promise<{ url: string; bytes: number; name?: string; blob: Blob }> {
   if (isRomPackUrl(url)) prewarmRomPackDecoder(url)
-  const prepare = async (stored: Blob): Promise<{ url: string; bytes: number; name?: string }> => {
+  const prepare = async (stored: Blob): Promise<{ url: string; bytes: number; name?: string; blob: Blob }> => {
     // 历史缓存不经过本版下载器；同一上限也得在解密/解压前拦住旧数据。
     if (options.maxBytes !== undefined && stored.size > options.maxBytes) {
       throw new RangeError('ROM 文件超过浏览器下载上限')
@@ -1953,7 +1977,7 @@ export async function prepareRemoteDiscRom(
     }
     // 必须在 createObjectURL 和正式入缓存之前验；失败时不能留下 URL，也不能钉住坏缓存。
     await options.validate?.(playable)
-    return { url: URL.createObjectURL(playable), bytes: playable.size, name }
+    return { url: URL.createObjectURL(playable), bytes: playable.size, name, blob: playable }
   }
   const cacheKey = romCacheKey(url)
   if (cacheKey) {
@@ -2671,6 +2695,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const prepareAbort = new AbortController()
   /** 预下载生成的 blob:。引擎通常会自行回收，销毁时再兜一次是幂等的。 */
   let preparedArcadeBlobUrl = ''
+  /** 与 preparedArcadeBlobUrl 对应的 Blob 本体；引擎取这个地址时直接用它回应（installBlobFetchShortcut） */
+  let preparedRomBlob: Blob | null = null
   /** 只给带固定 romv 的裸 CHD 挂按需文件；其它光盘仍走完整下载。 */
   let preparedPsxRange: PsxRangeMedia | null = null
   /** 区分「ROM 预下载失败」与后续 loader.js / 核心加载失败，避免错误提示张冠李戴。 */
@@ -3982,6 +4008,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           }, prepareAbort.signal, validateNds)
           if (destroyed) return
           preparedArcadeBlobUrl = URL.createObjectURL(extracted.blob)
+          preparedRomBlob = extracted.blob
           gameUrl = preparedArcadeBlobUrl
           engineGameName = extracted.name
           archiveRomPrepared = true
@@ -4017,6 +4044,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           // 同理：ROM 已完整到手，合成进度里的这一路记满（节流不保证最后一帧发出）
           romProgress?.({ phase: 'rom', ratio: 1 })
           preparedArcadeBlobUrl = prepared.url
+          preparedRomBlob = prepared.blob
           gameUrl = prepared.url
           engineGameName = prepared.name || discNameFor(remoteGameUrl.replace(/\.8bg(?=\?|$)/i, ''), options.gameName)
           /*
@@ -4062,6 +4090,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
               return
             }
             preparedArcadeBlobUrl = prepared.url
+            preparedRomBlob = prepared.blob
             gameUrl = prepared.url
             /*
               名字必须留住原始扩展名：EmulatorJS 是按扩展名认容器的，melonDS 的
@@ -4098,6 +4127,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           // 同理：ROM 已完整到手，合成进度里的这一路记满（节流不保证最后一帧发出）
           romProgress?.({ phase: 'rom', ratio: 1 })
           preparedArcadeBlobUrl = prepared.url
+          preparedRomBlob = prepared.blob
           gameUrl = prepared.url
           /**
            * ⚠️ 引擎的名字必须保留**原始扩展名**：核心是按扩展名认容器格式的
@@ -4123,6 +4153,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           // 同理：ROM 已完整到手，合成进度里的这一路记满（节流不保证最后一帧发出）
           romProgress?.({ phase: 'rom', ratio: 1 })
           preparedArcadeBlobUrl = prepared.url
+          preparedRomBlob = prepared.blob
           gameUrl = prepared.url
           engineGameName = prepared.name
           arcadeRomPrepared = true
@@ -4379,6 +4410,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         // 装晚了那句「缺哪个文件」就已经过去了
         stopFramePerf = watchFramePerformance(win)
         errorTap = installErrorTap(win, reportEngineError, options.platform === 'nds' ? reportCoreCrash : undefined)
+        // 预下载好的 ROM：引擎取 blob: 地址时直接拿 Blob 回应，不走 Safari 的 blob URL 加载（见 installBlobFetchShortcut）
+        if (preparedRomBlob && preparedArcadeBlobUrl && gameUrl === preparedArcadeBlobUrl) {
+          installBlobFetchShortcut(win, preparedArcadeBlobUrl, preparedRomBlob)
+        }
 
         // RomData / BIOS 也要赶在 loader.js 之前装：它靠接管 window.EJS_emulator 的赋值来生效，
         // loader.js 第一行就把实例挂上去了，晚一步就接不着。
@@ -4956,6 +4991,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     audioTap = null
     if (isFile) URL.revokeObjectURL(gameUrl)
     if (preparedArcadeBlobUrl) URL.revokeObjectURL(preparedArcadeBlobUrl)
+    preparedRomBlob = null
 
     /**
      * 拆 iframe 之前把电池存档刷出去。

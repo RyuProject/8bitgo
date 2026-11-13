@@ -133,3 +133,26 @@ console.log('✔ 启动失败原因：跨 realm 错误原文、内存不足、�
   assert.match(adapter, /netTrace\.ack = error \?/)
   console.log('✓ WebGL 不可用归为 config；联机超时带握手进度')
 }
+
+// ── 预下载 ROM 由 Blob 直接交给引擎（2026-11-13 Safari 18 iPad《宝可梦 白 2》fetch(blob:) 报 Load failed）──
+{
+  const { transformSync } = await import('esbuild')
+  const js = transformSync(fnSource('installBlobFetchShortcut'), { loader: 'ts' }).code
+  const logs = []
+  const context = { diagLog: (...a) => logs.push(a.join(' ')), Promise, URL }
+  vm.runInNewContext(`${js};globalThis.install=installBlobFetchShortcut`, context)
+  const passthrough = []
+  const win = { fetch: async (input) => { passthrough.push(String(input)); return new Response('net') }, Response }
+  const blob = new Blob([new Uint8Array([1, 2, 3, 4])])
+  context.install(win, 'blob:x/rom', blob)
+  const res = await win.fetch('blob:x/rom')
+  assert.deepEqual([...new Uint8Array(await res.arrayBuffer())], [1, 2, 3, 4], '注册的 blob 地址直接用 Blob 回应')
+  assert.equal(passthrough.length, 0, '注册的地址不能再走原生 fetch')
+  assert.equal(await (await win.fetch('/emulatorjs/cores/x.data')).text(), 'net', '其它请求原样放行')
+  assert.equal((await win.fetch('blob:x/rom', { method: 'HEAD' })).constructor, Response)
+  assert.deepEqual(passthrough, ['/emulatorjs/cores/x.data', 'blob:x/rom'], 'HEAD 不拦')
+  assert.match(logs[0], /ROM 由 Blob 直接交给引擎/)
+  assert.match(adapter, /installBlobFetchShortcut\(win, preparedArcadeBlobUrl, preparedRomBlob\)/)
+  assert.equal((adapter.match(/preparedRomBlob = (prepared|extracted)\.blob/g) ?? []).length, 5, '每处预下载 ROM 都要记下 Blob')
+  console.log('✓ 预下载 ROM 由 Blob 直接交给引擎，其余请求放行')
+}
