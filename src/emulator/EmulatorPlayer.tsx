@@ -180,6 +180,8 @@ interface ActiveSession {
   retryAttempt?: number
   /** 只属于这一局的核心覆盖；崩溃兜底不能改后台配置或污染下一次主动启动。 */
   coreOverride?: string
+  /** GBA 启动陷阱后已执行过一次远端 ROM 强制刷新；防止同一坏输入循环下载。 */
+  forceRomRefresh?: boolean
   /**
    * 这一局已经试过、并且自己说「跑不了这份 ROM」的引擎（见 RuntimeHandle 那侧的 onUnsupported）。
    * 换引擎时要把它们排除掉，否则两个引擎可以来回踢皮球，永远转圈。
@@ -1663,6 +1665,7 @@ export function EmulatorPlayer({
       cloud?: CloudSession
       retryAttempt?: number
       coreOverride?: string
+      forceRomRefresh?: boolean
       ruledOut?: RuntimeId[]
       startupAttemptId?: string
       startedAt?: number
@@ -1730,7 +1733,7 @@ export function EmulatorPlayer({
       })
     }
     // 自动重试与换引擎属于同一次开局：保留已显示进度，并由状态机把新一轮映射到剩余区间。
-    const carryOver = Boolean(extra?.retryAttempt) || Boolean(extra?.ruledOut?.length) || Boolean(extra?.coreOverride)
+    const carryOver = Boolean(extra?.retryAttempt) || Boolean(extra?.ruledOut?.length) || Boolean(extra?.coreOverride) || Boolean(extra?.forceRomRefresh)
     loadProgress.reset(plan, { carryOver })
     setStatus('loading')
   }
@@ -1842,6 +1845,7 @@ export function EmulatorPlayer({
       // 按游戏覆盖核心 / 平台级 BIOS：都用 ref 读当前值，
       // 放进 effect 依赖会让「BIOS 异步到货」把正在跑的游戏重启一遍
       core: session.coreOverride ?? coreRef.current,
+      forceRomRefresh: session.forceRomRefresh,
       mouseCapture: shouldCaptureMouse(session.platform, genresRef.current),
       arcadeRomData: arcadeRomDataRef.current,
       arcadeMameDisks: arcadeMameDisksRef.current?.map((disk) => ({
@@ -2055,6 +2059,21 @@ export function EmulatorPlayer({
         if (!isCurrent()) return
         crashed = true
         window.clearTimeout(playableTimer)
+        const gbaRomTrap = !ready && session.platform === 'gba' && session.runtime.id === 'emulatorjs' &&
+          /table index is out of bounds/i.test(reason) && typeof session.game === 'string' &&
+          isRomPackUrl(session.game) && !session.forceRomRefresh && canRestartInPlace(session)
+        if (gbaRomTrap) {
+          // 普通重试会再次使用同一份已解包 ROM；这类现场之后曾在新访问重下 ROM 后恢复，因此清缓存并重取一次。
+          console.warn(`[8bitgo/gba] ${crashedCore} 启动时发生 WASM table trap，刷新 8BG ROM 后重开一次：${reason}`)
+          setError(null)
+          begin(session.game, session.platform, session.runtime, {
+            retryAttempt: (session.retryAttempt ?? 0) + 1,
+            forceRomRefresh: true,
+            startupAttemptId: session.startupAttemptId,
+            startedAt: session.startedAt,
+          })
+          return
+        }
         const nextCore = session.platform === 'nds' && session.runtime.id === 'emulatorjs'
           ? ndsCrashFallbackCore(crashedCore, canRestartInPlace(session), Boolean(session.coreOverride))
           : null
@@ -2077,7 +2096,9 @@ export function EmulatorPlayer({
         if (debugRef.current) setEngineLines(handle?.engineLog?.() ?? [])
         reportStartupFailure(reason)
         endSession()
-        setError(fmt(t.player.ndsCoreFailed, { reason }))
+        setError(session.platform === 'nds'
+          ? fmt(t.player.ndsCoreFailed, { reason })
+          : fmt(t.runtime.ejsEngineError, { msg: reason }))
         setStatus('error')
       },
       /*

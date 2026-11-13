@@ -120,9 +120,9 @@ grep -c 'this.functions.saveStateInfo()' public/emulatorjs/emulator.min.js   # �
 - ⚠️ 引擎的改键 / 金手指 / 核心选项存在 localStorage `ejs-<gameId>-<系统>-<gameName>-settings`，**gameName 一变就读不到**。
   8BG 改名时 `migrateEngineSettingsKey` 把旧键复制到新键；以后再改 EJS_gameName 的规则也必须带上这一步。
 - 开局前 `describeBootState` 把本浏览器里的电池存档（大小）、引擎设置项名、金手指条数写进诊断包（不记内容）。
-  2026-11-13《火红》一例 `table index is out of bounds`（CN / Chrome 132 / Windows，自动重试同样失败，下一次访问重新下载 ROM 后正常）
-  当时看不出开机状态；本地已实测排除：SRAM / Flash 存档（含错尺寸、乱码）、金手指、mGBA 全部核心选项、回退 / 快进 / 旋转、LCD shader。
-  再出现时先看这一行。
+  2026-11-13《火红》`table index is out of bounds`（CN / Chrome 132 / Windows）两次都在 ROM 交给 mGBA 后约 200ms 失败；第二次只换了引擎入口，仍复用同页 ROM，下一次访问重新下载 ROM 后正常。证据更像启动重试复用了有问题的 ROM 缓存 / Blob；诊断包没有保留该玩家 ROM 字节与完整开机状态，所以不能断言更底层的损坏位置。
+  适配器现在仅对远端 8BG GBA 的启动期 table trap 清理 ROM 缓存与续传片、强制网络重取一次；刷新后仍失败则删除刚写入的缓存并停止，不循环重试。新增恢复只依赖 `isWasmRuntimeCrash` 识别真实 RuntimeError，不看核心普通日志。
+  本地已实测排除 SRAM / Flash 存档（含错尺寸、乱码）、金手指、mGBA 全部核心选项、回退 / 快进 / 旋转、LCD shader；再出现先看诊断包里的 `describeBootState` 行和 `[core-crash]` / ROM 刷新日志。
 
 
 ### 2.8 街机靠**压缩包文件名**认游戏

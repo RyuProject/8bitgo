@@ -76,6 +76,8 @@ export interface MountOptions {
   platform: PlatformId
   /** ROM：本地文件或可跨域访问的 URL */
   game: File | string
+  /** 启动期 GBA WASM 越界后的唯一恢复轮：丢弃该远端 ROM 的缓存与续传片，再从网络读取。 */
+  forceRomRefresh?: boolean
   /** PSP 在线镜像的读取方式；整包先落 OPFS 再挂成本地盘，默认按需流式读取。 */
   pspLoadMode?: 'stream' | 'download'
   /** 显示名（存档 / 截图命名用） */
@@ -257,7 +259,7 @@ export interface MountOptions {
    * （如包名不是任何驱动），跳过原地重试、直接试备用 ROM。
    */
   onError?: (message: string, scope?: 'runtime' | 'content' | 'config' | 'deterministic') => void
-  /** NDS 核心的 WASM 主循环已经崩溃；和普通加载失败分开，允许一次有界的换核心重开。 */
+  /** EmulatorJS 核心发生 WASM 陷阱；NDS 用于兼容核心回退，GBA 8BG 用于一次缓存刷新恢复。 */
   onCoreCrash?: (core: string, message: string) => void
   /**
    * 开局前核心分配不出 WASM 内存。返回 true = 播放器已换低内存核心重开（适配器不再报 onError），

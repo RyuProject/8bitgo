@@ -63,7 +63,7 @@ import { arcadeCoreForRomData, supportsFbneoRomData } from '../arcadeCore'
 import { MAME_AUDIO_LATENCY_MS, RETROARCH_CFG_PATH, raiseAudioLatency } from '../mameAudio'
 import { ndsAudioLatencyMs } from '../ndsAudio'
 import { disposeNdsWfcRuntime, installNdsWfcRuntime, isWorldAtWarNdsRomHeader, loadNdsWfcSettings, ndsWfcMacAddress, prepareNdsWfcSession, saveNdsWfcSettings } from '../ndsWfc'
-import { isNdsWasmCrash } from '../ndsCrash'
+import { isNdsWasmCrash, isWasmRuntimeCrash } from '../ndsCrash'
 import {
   arcadePerformanceDefaultOptions,
   effectiveArcadeButtons,
@@ -1285,11 +1285,13 @@ function installErrorTap(
     diagLog('ejs', level === 'error' || level === 'warn' ? level : 'log', text)
     const low = text.toLowerCase()
     // WASM 主循环的异常发生在 EJS_onGameStart 之后；普通 FATAL 表在这时会被忽略。
-    // 只对 NDS 的确定陷阱另开一条通道，不能让任意游戏日志触发清盘重开。
+    // 只对接入了有界恢复的核心（当前 NDS / GBA）确定陷阱另开通道，普通游戏日志不能触发重开。
     // ⚠️ 开局阶段的陷阱（retro_load_game 里 trap）被引擎 catch 后是 `console.warn('Failed to start game', e)`，
     // 不是 error 级。warn 只认**真正的 RuntimeError 对象**（error 参数），核心 stderr 打出的文字不算。
-    const trap = level === 'error' ? isNdsWasmCrash(text, error) : level === 'warn' && error !== undefined
-    if (trap && onCoreCrash) onCoreCrash(text.trim() || 'RuntimeError: unreachable')
+    const trap = level === 'error'
+      ? isWasmRuntimeCrash(text, error)
+      : level === 'warn' && error !== undefined && isWasmRuntimeCrash('', error)
+    if (trap && onCoreCrash) onCoreCrash(error !== undefined ? safeStr(error) : text.trim() || 'RuntimeError: unreachable')
     /*
       内存不足也按致命处理：2026-11-12 2GB 安卓平板《太鼓达人 2》（mame-current，172MB ROM + CHD），
       解 35MB 核心的 7z Worker 报「DataCloneError … out of memory」后引擎永远停在「下载游戏核心」，
@@ -1869,7 +1871,19 @@ async function unpackRomPackForEngine(stored: Blob, onProgress: MountOptions['on
  * 已下载的 ROM 读不出来时（底层 Blob 存储坏了 / 读包卡死，见 readBlobRange）作废这一份的续传片与完整缓存，
  * 不带续传再整包下一次。只重来一次：第二次还读不出就是这台浏览器的存储本身不可用，照实报错。
  */
+const pendingRomCacheWrites = new Map<string, Promise<void>>()
+
+function cacheRomBlob(cacheKey: string, blob: Blob): void {
+  const write = romCachePutBlob(cacheKey, blob).catch(() => {})
+  pendingRomCacheWrites.set(cacheKey, write)
+  void write.finally(() => {
+    if (pendingRomCacheWrites.get(cacheKey) === write) pendingRomCacheWrites.delete(cacheKey)
+  })
+}
+
 async function discardStoredRom(cacheKey: string): Promise<void> {
+  // 等本页较早发起的 put 完成后再删，避免慢的 IndexedDB 写入在清理之后把旧 ROM 复活。
+  await pendingRomCacheWrites.get(cacheKey)?.catch(() => {})
   await withResumeTimeout(downloadResumeStore.clear(cacheKey), 5_000).catch(() => {})
   await withResumeTimeout(romCacheDelete(cacheKey), 5_000).catch(() => {})
 }
@@ -2042,6 +2056,7 @@ export async function prepareRemoteDiscRom(
   signal: AbortSignal,
   options: {
     resumeAcrossRefresh?: boolean
+    forceRomRefresh?: boolean
     validate?: (blob: Blob) => Promise<void>
     maxBytes?: number
     maxUnpackedBytes?: number
@@ -2075,6 +2090,9 @@ export async function prepareRemoteDiscRom(
     return { url: URL.createObjectURL(urlSource), bytes: playable.size, name, blob: playable }
   }
   const cacheKey = romCacheKey(url)
+  // ROM trap 发生在模拟器里，通用自动重试会再次命中同一条 IDB 记录 / 续传片，永远喂回同一份输入。
+  // 仅 GBA 崩溃恢复路径设置此项；清除后仍保留原 URL 的内容版本校验与正常缓存写入。
+  if (options.forceRomRefresh && cacheKey) await discardStoredRom(cacheKey)
   if (cacheKey) {
     const cached = await romCacheGetBlob(cacheKey)
     if (cached) {
@@ -2109,7 +2127,7 @@ export async function prepareRemoteDiscRom(
     },
   })
 
-  let blob = await download(true)
+  let blob = await download(!options.forceRomRefresh)
   // 8BG 要先确认能解密解压再入缓存；否则一次坏响应会被钉在这台浏览器上，重试永远失败。
   let prepared: { url: string; bytes: number; name?: string; blob: Blob }
   try {
@@ -2123,7 +2141,7 @@ export async function prepareRemoteDiscRom(
   }
   // 不 await：写几百 MB 要花时间，不该让玩家在开局前干等。Blob 本身是不可变的，
   // prepare 产出的 URL 与这份密文缓存互不影响。
-  if (cacheKey) void romCachePutBlob(cacheKey, blob).catch(() => {})
+  if (cacheKey) cacheRomBlob(cacheKey, blob)
 
   return prepared
 }
@@ -2769,6 +2787,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     crashReported = true
     window.clearInterval(startWatch)
     logEngine(`[core-crash] ${core}: ${line}`)
+    // 强制刷新后仍然发生同一陷阱：本轮下载的密文不留在 ROM 缓存，下一次访问会再向源站取一份。
+    if (options.platform === 'gba' && options.forceRomRefresh &&
+      /table index is out of bounds/i.test(line) && isRomPackUrl(remoteGameUrl)) {
+      const cacheKey = romCacheKey(remoteGameUrl)
+      if (cacheKey) void discardStoredRom(cacheKey)
+    }
     // WASM 已经 trap，不可能靠继续等画面恢复；即使 onGameStart 抢先报了 ready 也必须终止这局。
     if (options.onCoreCrash) options.onCoreCrash(core, line)
     else options.onError?.(line, 'runtime')
@@ -4136,6 +4160,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             原文件名和字节。复用 Blob 路径后，大包会落盘，不要求一块连续内存；旧 URL
             完全不进这支，所以现有未迁移游戏的行为一个字节不变。
           */
+          if (options.forceRomRefresh && options.platform === 'gba') {
+            logEngine('[gba] table trap recovery: 清 ROM 缓存与续传片后强制重新下载一次')
+          }
           const prepared = await prepareRemoteDiscRom(
             remoteGameUrl,
             (p) => {
@@ -4147,6 +4174,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
               // 8BG 自带内容版本，任何平台的密文都可以按同一 URL 安全补片；
               // 小卡带只发首片一个请求，不必为每个平台维持另一条下载链。
               resumeAcrossRefresh: Boolean(romCacheKey(remoteGameUrl)),
+              forceRomRefresh: options.forceRomRefresh,
               validate: validateNds,
               // 外层 8BG 的密文和清单会略大于裸卡带，但绝不能让错误响应宣称几百 GB。
               maxBytes: options.platform === 'nds' ? MAX_NDS_ROM_BYTES + 64 * 1024 * 1024 : undefined,
@@ -4532,7 +4560,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         // 引擎的报错探针也要赶在 loader.js 之前装：核心是在加载过程中打错误的，
         // 装晚了那句「缺哪个文件」就已经过去了
         stopFramePerf = watchFramePerformance(win)
-        errorTap = installErrorTap(win, reportEngineError, options.platform === 'nds' ? reportCoreCrash : undefined)
+        errorTap = installErrorTap(win, reportEngineError,
+          options.platform === 'nds' || (options.platform === 'gba' && isRomPackUrl(remoteGameUrl))
+            ? reportCoreCrash
+            : undefined)
         // 预下载好的 ROM：引擎取 blob: 地址时直接拿 Blob 回应，不走 Safari 的 blob URL 加载（见 installBlobFetchShortcut）
         if (preparedRomBlob && preparedArcadeBlobUrl && gameUrl === preparedArcadeBlobUrl) {
           installBlobFetchShortcut(win, preparedArcadeBlobUrl, preparedRomBlob)
