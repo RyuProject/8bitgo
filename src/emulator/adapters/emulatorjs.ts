@@ -25,7 +25,7 @@
 import type { ArcadeButtonCount, PlatformId } from '@/types'
 import { arcadeButtonIdsFor, EJS_ARCADE_DEFAULT_CONTROLS, EJS_DEFAULT_CONTROLS, EJS_P2_KEYS } from '@/lib/keymapData'
 import type { Capability, CaptureSources, LoadPhase, LoadProgress, MameArcadeDiskSource, MountOptions, RuntimeHandle, StageMode } from '../types'
-import { fetchBlobWithProgress, fetchWithProgress, throttleProgress } from '../loadProgress'
+import { fetchBlobWithProgress, fetchWithProgress, throttleProgress, withResumeTimeout } from '../loadProgress'
 import { emulatorJsDownloadPhase, isCriticalEmulatorJsDownload } from '../emulatorjsDownload'
 import { downloadResumeStore, mameChdResumeStore } from '../downloadResume'
 import { romCacheDelete, romCacheGetBlob, romCacheKey, romCachePutBlob } from '../romCache'
@@ -90,7 +90,7 @@ import {
   installNdsCoreOptionsGuard,
   type NdsCoreOptionsFs,
 } from '../ndsStartup'
-import { inspectRomPackBlob, isRomPackBytes, isRomPackUrl, prewarmRomPackDecoder, unpackRomPackBlob } from '@/services/romPack'
+import { inspectRomPackBlob, isBlobReadError, isRomPackBytes, isRomPackUrl, prewarmRomPackDecoder, unpackRomPackBlob } from '@/services/romPack'
 import { assertNdsRomBlob, MAX_NDS_ROM_BYTES } from '@/lib/romValidation'
 import {
   EJS_P2_KEY_OFFSET,
@@ -1757,6 +1757,20 @@ interface PreparedArcadeRom {
   namcoSet: NamcoMameMatch | null
 }
 
+
+/**
+ * 已下载的 ROM 读不出来时（底层 Blob 存储坏了 / 读包卡死，见 readBlobRange）作废这一份的续传片与完整缓存，
+ * 不带续传再整包下一次。只重来一次：第二次还读不出就是这台浏览器的存储本身不可用，照实报错。
+ */
+async function discardStoredRom(cacheKey: string): Promise<void> {
+  await withResumeTimeout(downloadResumeStore.clear(cacheKey), 5_000).catch(() => {})
+  await withResumeTimeout(romCacheDelete(cacheKey), 5_000).catch(() => {})
+}
+
+/** 解包 8BG 时每块报一次进度：进度条写「正在解包」，启动看门狗也知道还活着。 */
+const romPackUnpackProgress = (onProgress: MountOptions['onProgress']) => () =>
+  onProgress?.({ phase: 'rom', ratio: 1, detail: 'rom-pack' })
+
 export async function prepareRemoteArcadeRom(
   url: string,
   onProgress: MountOptions['onProgress'],
@@ -1777,7 +1791,7 @@ export async function prepareRemoteArcadeRom(
   const decodedArcade = async (stored: Blob): Promise<{ blob: Blob; name: string }> => {
     const magic = new Uint8Array(await stored.slice(0, 4).arrayBuffer())
     if (!isRomPackBytes(magic)) return { blob: stored, name }
-    const unpacked = await unpackRomPackBlob(stored)
+    const unpacked = await unpackRomPackBlob(stored, romPackUnpackProgress(onProgress))
     if (!/\.zip$/i.test(unpacked.name)) throw new InvalidArcadeArchiveError(unpacked.name)
     return { blob: unpacked.blob, name: unpacked.name }
   }
@@ -1810,21 +1824,31 @@ export async function prepareRemoteArcadeRom(
     }
   }
 
-  const stored = await fetchBlobWithProgress(url, {
+  const download = (resume: boolean) => fetchBlobWithProgress(url, {
     phase: 'rom',
     onProgress,
     signal,
     alternateUrl: alternateRomUrl(url),
     // 街机大包与 NDS 共用 8MB Range 断点续传。romCacheKey 只对带 romv /
     // 归档版本的内容生成；无版本 URL 可能原地换包，不许拼入旧分片。
-    resumeKey: cacheKey || undefined,
+    resumeKey: resume ? cacheKey || undefined : undefined,
     check: (res) => {
       const type = res.headers.get('content-type') ?? ''
       // 地址或反代配错时，SSR 常会回 200 + HTML；状态码正常也绝不能交给核心。
       if (/text\/html|application\/xhtml/i.test(type)) throw new InvalidArcadeArchiveError(name)
     },
   })
-  const decoded = await decodedArcade(stored)
+  let stored = await download(true)
+  let decoded: { blob: Blob; name: string }
+  try {
+    decoded = await decodedArcade(stored)
+  } catch (error) {
+    if (!cacheKey || !isBlobReadError(error)) throw error
+    console.warn('[arcade] 下载好的 ROM 读不出来，作废续传片重下一次：', error)
+    await discardStoredRom(cacheKey)
+    stored = await download(false)
+    decoded = await decodedArcade(stored)
+  }
   // 只读 Blob 的尾部和目录；截断包会被拦住，但普通大包不再复制成连续 ArrayBuffer。
   let entries: ZipFileEntry[]
   try { entries = await assertValidZipBlob(decoded.blob, '街机 ROM') } catch { throw new InvalidArcadeArchiveError(name) }
@@ -1933,7 +1957,7 @@ export async function prepareRemoteDiscRom(
           throw new RangeError('ROM 解开后超过浏览器下载上限')
         }
       }
-      const unpacked = await unpackRomPackBlob(stored)
+      const unpacked = await unpackRomPackBlob(stored, romPackUnpackProgress(onProgress))
       playable = unpacked.blob
       name = unpacked.name
     }
@@ -1961,14 +1985,14 @@ export async function prepareRemoteDiscRom(
     }
   }
 
-  const blob = await fetchBlobWithProgress(url, {
+  const download = (resume: boolean) => fetchBlobWithProgress(url, {
     phase: 'rom',
     onProgress,
     signal,
     alternateUrl: alternateRomUrl(url),
     maxBytes: options.maxBytes,
     // 只在明确要求且 URL 带内容版本时落临时分片。无版本地址原地换包后会混入旧片，宁可重下。
-    resumeKey: options.resumeAcrossRefresh ? cacheKey : undefined,
+    resumeKey: resume && options.resumeAcrossRefresh ? cacheKey : undefined,
     check: (res) => {
       const type = res.headers.get('content-type') ?? ''
       // 地址或反代配错时，SSR 常会回 200 + HTML；状态码正常也绝不能当成镜像交给核心
@@ -1976,8 +2000,18 @@ export async function prepareRemoteDiscRom(
     },
   })
 
+  let blob = await download(true)
   // 8BG 要先确认能解密解压再入缓存；否则一次坏响应会被钉在这台浏览器上，重试永远失败。
-  const prepared = await prepare(blob)
+  let prepared: { url: string; bytes: number; name?: string }
+  try {
+    prepared = await prepare(blob)
+  } catch (error) {
+    if (!cacheKey || !isBlobReadError(error)) throw error
+    console.warn('[emulatorjs] 下载好的 ROM 读不出来，作废续传片重下一次：', error)
+    await discardStoredRom(cacheKey)
+    blob = await download(false)
+    prepared = await prepare(blob)
+  }
   // 不 await：写几百 MB 要花时间，不该让玩家在开局前干等。Blob 本身是不可变的，
   // prepare 产出的 URL 与这份密文缓存互不影响。
   if (cacheKey) void romCachePutBlob(cacheKey, blob).catch(() => {})

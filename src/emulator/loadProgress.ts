@@ -494,6 +494,18 @@ const RESUME_PUT_TIMEOUT_MS = 15_000
 const RESUME_CLEAR_TIMEOUT_MS = 5_000
 export const RESUME_TIMED_OUT = Symbol('resume-timeout')
 
+/** 探一个 Blob 的首尾字节能不能读出来；IDB 背后的文件丢了或损坏时会抛 NotReadableError。 */
+export async function blobReadable(blob: Blob): Promise<boolean> {
+  if (!blob.size) return true
+  try {
+    await blob.slice(0, 1).arrayBuffer()
+    if (blob.size > 1) await blob.slice(blob.size - 1).arrayBuffer()
+    return true
+  } catch {
+    return false
+  }
+}
+
 /** 带上限地等一个续传仓库操作；超时返回 RESUME_TIMED_OUT。定时器必须清掉，否则快的那次也会在稍后被当成超时。 */
 export async function withResumeTimeout<T>(task: Promise<T>, ms: number): Promise<T | typeof RESUME_TIMED_OUT> {
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -812,6 +824,24 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
         }
         parts[index] = blob
         completed += blob.size
+      }
+    }
+    /*
+      续传片是 IndexedDB 里的 Blob 引用，字节在浏览器自己的存储里。2026-11-12 大陆 Windows Chrome 132（2GB）
+      《口袋妖怪：白 2》：同一页里重开 7 次，靠续传片拼出来的 114MB ROM 有一次读包时永远不返回（120 秒后超时），
+      一次抛 NotReadableError —— 这台浏览器的 IDB Blob 存储已经坏了。拼进整包前先探一下每片首尾各一个字节；
+      读不出或卡住就整组作废、本局不再写续传，宁可重下，也不把一份读不出来的 ROM 交给解包。
+    */
+    if (valid && completed > 0) {
+      const readable = await withResumeTimeout(
+        Promise.all(parts.map((part) => (part ? blobReadable(part) : true))).then((all) => all.every(Boolean)),
+        RESUME_LOAD_TIMEOUT_MS,
+      )
+      if (readable !== true) {
+        console.warn('[download] 续传分片读不出来，作废并重新下载')
+        valid = false
+        await clearResume()
+        resumeStore = null
       }
     }
     if (!valid || completed === 0) {

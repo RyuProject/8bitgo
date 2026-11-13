@@ -466,6 +466,14 @@ NDS ROM 由适配器自己按 **8MB Range** 顺序下载；每片完成后写进
 无痕模式、配额满或 IndexedDB 故障一律降级为普通下载，不能影响开局。实现见
 `src/emulator/downloadResume.ts` 与 `fetchBlobWithProgress`，回归：`npm run test:chunked-fetch`。
 
+⚠️ **续传片可能读不出来，解包要报进度**（2026-11-12 大陆 Windows Chrome 132 / 2GB《口袋妖怪：白 2》：同一页重开 7 次，
+ROM 每次都下完，之后一局 120 秒没动静被判超时，一局抛 `NotReadableError`）。续传片是 IndexedDB 里的 Blob 引用，
+这台浏览器的 Blob 存储已经坏了，读包时要么永不返回、要么抛错；而 114MB 的 8BG 解包 14 块期间又一个进度都不报。
+现在：`fetchBlobWithProgress` 复用续传片前先探首尾字节（`blobReadable`，8 秒上限），读不出整组作废、本局不再写续传；
+`unpackRomPackBlob` 每块经 `readBlobRange`（60 秒上限，超时也抛 `NotReadableError`）读并报一次进度
+（街机 / NDS / 光盘报 `rom` + `detail: 'rom-pack'`，DOS 报 `starting`），启动看门狗不再把慢解包当卡死；
+街机、NDS / 光盘、DOS 三条下载路径遇到 `isBlobReadError` 作废续传片与缓存、不带续传重下一次。回归：`npm run test:chunked-fetch`。
+
 ⚠️ 首个 Range 请求同样必须进重试循环；它既是能力探测也是第 0 片，弱网最常在建连时断。
 连续 30 秒无字节会 abort 当前 signal，再换新的 controller 重试（已 abort 的 signal 不能复活）。
 NDS 分片失败不能退回 EmulatorJS 的整包 XHR：那会无视已落盘分片，还吞掉播放器的自动重试。

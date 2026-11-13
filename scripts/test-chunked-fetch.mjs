@@ -746,5 +746,54 @@ await check('load / put / clear 三处都经 withResumeTimeout，put 超时后�
   assert.equal((cache.match(/askWithin\(db\.transaction\(STORE_BLOB, 'readonly'\)/g) ?? []).length, 2, 'romCache 两处开局读都要有上限')
 })
 
+// 2026-11-12《口袋妖怪：白 2》：同一页重开 7 次，续传片拼出来的 ROM 一次读包永不返回、一次抛 NotReadableError
+class UnreadableBlob extends Blob {
+  slice() { return { arrayBuffer: () => Promise.reject(new DOMException('gone', 'NotReadableError')) } }
+}
+await check('续传片读不出来：整组作废、本局不再写续传，从头下载出完整 ROM', async () => {
+  const size = 3000
+  const resumeStore = memoryResumeStore()
+  await resumeStore.put('rom?v=bad', size, 1024, 0, new UnreadableBlob([new Uint8Array(1024)]))
+  const { fetchImpl, calls } = server(size)
+  const blob = await fetchBlobWithProgress('u', { fetchImpl, chunkBytes: 1024, resumeKey: 'rom?v=bad', resumeStore })
+  expectExact(await readAll(blob), size)
+  assert.ok(calls.length >= 3, '三片都要重新下载')
+  assert.equal(resumeStore.sessions.size, 0, '坏的续传片必须清掉，不能留给下一局')
+})
+
+await check('续传片可读：照常复用，不重复下载', async () => {
+  const size = 3000
+  const resumeStore = memoryResumeStore()
+  await resumeStore.put('rom?v=ok', size, 1024, 0, new Blob([bodyFor(0, 1023)]))
+  const { fetchImpl, calls } = server(size)
+  const blob = await fetchBlobWithProgress('u', { fetchImpl, chunkBytes: 1024, resumeKey: 'rom?v=ok', resumeStore })
+  expectExact(await readAll(blob), size)
+  assert.ok(!calls.some((c) => /bytes=0-/.test(String(c.range ?? c))), '第 0 片来自续传，不该再请求')
+})
+
+await check('读包卡死：readBlobRange 到时抛 NotReadableError，调用方据此重下', async () => {
+  const { readBlobRange, isBlobReadError } = await import('../src/services/romPack.ts')
+  const stuck = { slice: () => ({ arrayBuffer: () => new Promise(() => {}) }) }
+  const started = Date.now()
+  await assert.rejects(readBlobRange(stuck, 0, 8, 30), (e) => isBlobReadError(e))
+  assert.ok(Date.now() - started < 1000)
+  assert.equal(isBlobReadError(new DOMException('x', 'NotReadableError')), true)
+  assert.equal(isBlobReadError(new Error('解密失败')), false)
+})
+
+await check('解包逐块报进度；读不出时作废续传 / 缓存只重下一次（街机、NDS / 光盘、DOS）', async () => {
+  const { readFileSync } = await import('node:fs')
+  const read = (f) => readFileSync(new URL(`../${f}`, import.meta.url), 'utf8')
+  const pack = read('src/services/romPack.ts')
+  assert.match(pack, /const cipher = await readBlobRange\(blob, cipherAt, cipherAt \+ meta\.cipherSize\)/)
+  assert.match(pack, /onProgress\?\.\(\{ loaded: unpacked, total: header\.originalSize \}\)/)
+  const ejs = read('src/emulator/adapters/emulatorjs.ts')
+  assert.equal((ejs.match(/unpackRomPackBlob\(stored, romPackUnpackProgress\(onProgress\)\)/g) ?? []).length, 2)
+  assert.equal((ejs.match(/if \(!cacheKey \|\| !isBlobReadError\(error\)\) throw error/g) ?? []).length, 2)
+  const dos = read('src/emulator/dosBundleSource.ts')
+  assert.match(dos, /decodeDosBundle\(stored, fallbackName, report\)/)
+  assert.match(dos, /if \(!cacheKey \|\| !isBlobReadError\(error\)\) throw error/)
+})
+
 console.log(failed ? `\n${failed} 项未通过` : '\n全部通过 ✅')
 process.exit(failed ? 1 : 0)

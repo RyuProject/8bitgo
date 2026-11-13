@@ -510,11 +510,38 @@ export async function unpackRomPack(data: ArrayBuffer): Promise<{ name: string; 
   return { name: header.originalName, data: output.buffer, header }
 }
 
+/**
+ * 读一段 Blob 最多等这么久。8MB 一块，就算老机器在换页也该几秒读完；卡满一分钟就当底层存储坏了。
+ * 2026-11-12《口袋妖怪：白 2》（2GB Windows Chrome）：续传片拼出的 ROM 有一局读包时永不返回，
+ * 一局抛 NotReadableError —— 前者以前只会让进度停在 100% 等看门狗。现在两种都抛 NotReadableError，
+ * 调用方据此作废续传与缓存、重下一次。
+ */
+export const ROM_PACK_READ_TIMEOUT_MS = 60_000
+
+export async function readBlobRange(blob: Blob, start: number, end: number, timeoutMs = ROM_PACK_READ_TIMEOUT_MS): Promise<ArrayBuffer> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      blob.slice(start, end).arrayBuffer(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new DOMException('读取已下载的 ROM 超时', 'NotReadableError')), timeoutMs)
+      }),
+    ])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** Blob 读不出来（底层存储丢失、损坏或卡死）。浏览器原生的和 readBlobRange 超时的都是这个名字。 */
+export function isBlobReadError(error: unknown): boolean {
+  return Boolean(error && typeof error === 'object' && (error as { name?: unknown }).name === 'NotReadableError')
+}
+
 /** 只读取并验证文件头与总长度；后台识别现成 .8bg 时不能只看四字节魔数。 */
 export async function inspectRomPackBlob(blob: Blob): Promise<{ header: RomPackHeader; dataOffset: number }> {
-  const prefix = new Uint8Array(await blob.slice(0, ROM_PACK_HEADER_PREFIX_BYTES).arrayBuffer())
+  const prefix = new Uint8Array(await readBlobRange(blob, 0, ROM_PACK_HEADER_PREFIX_BYTES))
   const headerLength = romPackHeaderLength(prefix)
-  const headBytes = new Uint8Array(await blob.slice(0, ROM_PACK_HEADER_PREFIX_BYTES + headerLength).arrayBuffer())
+  const headBytes = new Uint8Array(await readBlobRange(blob, 0, ROM_PACK_HEADER_PREFIX_BYTES + headerLength))
   const parsed = parseRomPackHeader(headBytes)
   if (parsed.dataOffset + parsed.header.payloadSize !== blob.size) throw new Error('8BG 文件长度与文件头不一致')
   return parsed
@@ -540,19 +567,30 @@ export async function verifyRomPackBlob(blob: Blob, onProgress?: (progress: Pack
   return header
 }
 
-/** 大 ROM 走 Blob：逐块解密解压，浏览器可把结果落盘，避免申请一整块连续内存。 */
-export async function unpackRomPackBlob(blob: Blob): Promise<{ name: string; blob: Blob; header: RomPackHeader }> {
+/**
+ * 大 ROM 走 Blob：逐块解密解压，浏览器可把结果落盘，避免申请一整块连续内存。
+ *
+ * onProgress 每解完一块报一次。114MB 的 NDS 有 14 块，低配机上要几十秒；以前这段一个进度都不报，
+ * 进度条停在 100%，启动看门狗也把它当成卡死。
+ */
+export async function unpackRomPackBlob(
+  blob: Blob,
+  onProgress?: (progress: PackProgress) => void,
+): Promise<{ name: string; blob: Blob; header: RomPackHeader }> {
   const { header, dataOffset } = await inspectRomPackBlob(blob)
   const key = await contentKey(header)
   const output: Blob[] = []
   let cipherAt = dataOffset
+  let unpacked = 0
   for (let index = 0; index < header.chunks.length; index++) {
     const meta = header.chunks[index]
-    const cipher = await blob.slice(cipherAt, cipherAt + meta.cipherSize).arrayBuffer()
+    const cipher = await readBlobRange(blob, cipherAt, cipherAt + meta.cipherSize)
     const source = await decryptChunk(header, index, cipher, key)
     // 每块立刻固化成 Blob：既脱离可能复用的 WASM 内存，也允许浏览器把大结果落到磁盘。
     output.push(new Blob([source]))
     cipherAt += meta.cipherSize
+    unpacked += meta.sourceSize
+    onProgress?.({ loaded: unpacked, total: header.originalSize })
   }
   return { name: header.originalName, blob: new Blob(output, { type: 'application/octet-stream' }), header }
 }

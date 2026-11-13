@@ -7,11 +7,11 @@
  */
 import type { LoadProgress } from './types'
 import { downloadResumeStore } from './downloadResume'
-import { fetchBlobWithProgress } from './loadProgress'
+import { fetchBlobWithProgress, withResumeTimeout } from './loadProgress'
 import { alternateRomUrl } from '@/services/romHosts'
 import { romCacheDelete, romCacheGetBlob, romCacheKey, romCachePutBlob } from './romCache'
 import { isReadyJsdosBundleBlob } from '@/lib/jsdosBundle'
-import { isRomPackBytes, isRomPackUrl, prewarmRomPackDecoder, unpackRomPackBlob } from '@/services/romPack'
+import { isBlobReadError, isRomPackBytes, isRomPackUrl, prewarmRomPackDecoder, unpackRomPackBlob } from '@/services/romPack'
 
 export interface DosBundleBlob {
   name: string
@@ -31,12 +31,16 @@ function fileNameFromUrl(url: string): string {
   }
 }
 
-async function decodeDosBundle(stored: Blob, fallbackName: string): Promise<Omit<DosBundleBlob, 'fromCache'>> {
+async function decodeDosBundle(
+  stored: Blob,
+  fallbackName: string,
+  onChunk?: () => void,
+): Promise<Omit<DosBundleBlob, 'fromCache'>> {
   const magic = new Uint8Array(await stored.slice(0, 4).arrayBuffer())
   let blob = stored
   let name = fallbackName
   if (isRomPackBytes(magic)) {
-    const unpacked = await unpackRomPackBlob(stored)
+    const unpacked = await unpackRomPackBlob(stored, onChunk)
     blob = unpacked.blob
     name = unpacked.name
   }
@@ -61,8 +65,10 @@ export async function prepareRemoteDosBundle(
 
   const decode = async (stored: Blob) => {
     // 下载到 100% 后还有 63 个 8MB 块要验签/解密/解压；把真相写在遮罩上，别让 99% 像死机。
-    onProgress?.({ phase: 'starting', detail: 'rom-pack' })
-    return decodeDosBundle(stored, fallbackName)
+    const report = () => onProgress?.({ phase: 'starting', detail: 'rom-pack' })
+    report()
+    // 每解完一块再报一次：500MB 的包有 63 块，低配机上会超过启动看门狗的 120 秒
+    return decodeDosBundle(stored, fallbackName, report)
   }
 
   if (cacheKey) {
@@ -83,13 +89,13 @@ export async function prepareRemoteDosBundle(
     }
   }
 
-  const stored = await fetchBlobWithProgress(url, {
+  const download = (resume: boolean) => fetchBlobWithProgress(url, {
     phase: 'rom',
     onProgress,
     signal,
     alternateUrl: alternateRomUrl(url),
     // URL 没有 romv 时可能被后台原地替换，绝不能把两代分片拼成一个“完整”坏包。
-    resumeKey: cacheKey || undefined,
+    resumeKey: resume ? cacheKey || undefined : undefined,
     check: (response) => {
       const type = response.headers.get('content-type') ?? ''
       if (/text\/html|application\/xhtml/i.test(type)) {
@@ -97,7 +103,18 @@ export async function prepareRemoteDosBundle(
       }
     },
   })
-  const decoded = await decode(stored)
+  let stored = await download(true)
+  let decoded: Omit<DosBundleBlob, 'fromCache'>
+  try {
+    decoded = await decode(stored)
+  } catch (error) {
+    // 续传片拼出的包读不出来（Blob 存储坏了或读包卡死）：作废续传片，不带续传重下一次。
+    if (!cacheKey || !isBlobReadError(error)) throw error
+    console.warn('[jsdos] 下载好的 DOS 包读不出来，作废续传片重下一次：', error)
+    await withResumeTimeout(downloadResumeStore.clear(cacheKey), 5_000).catch(() => {})
+    stored = await download(false)
+    decoded = await decode(stored)
+  }
 
   // 保留 8BG 密文而不是明文：既避免扩大磁盘占用，也不把后台加密在浏览器缓存层绕开。
   // 不 await，写几百 MB 的 IndexedDB 不应该挡住 DOSBox 开机。
