@@ -25,7 +25,7 @@
  *      - 后端按 TTL 定时清扫兜底 —— 浏览器崩溃、断网、强杀进程时不会有通知，
  *        只靠前端通知一定会漏，磁盘迟早被占满
  *
- * ⚠️ CheerpJ 从 leaningtech 的 CDN 加载，离线环境跑不了。
+ * ⚠️ CheerpJ 从 leaningtech 的 CDN 加载；确认 CDN 不可达时会切到仓库自带的 j2me-web 兼容运行时。
  */
 import type { Capability, CaptureSources, MountOptions, RuntimeHandle } from '../types'
 import { getT, fmt } from '@/services/i18n'
@@ -37,7 +37,7 @@ import { focusFrame, frameGamepads } from '../frameFocus'
 import { loadGameBytes } from '../romLoader'
 import { isRomPackUrl } from '@/services/romPack'
 import { warmHttpCache } from '../httpWarm'
-import { diagLog, watchFramePerformance } from '@/services/startupDiagnostics'
+import { diagLog, registerDiagnosticSnapshot, watchFramePerformance } from '@/services/startupDiagnostics'
 import { ENV_ROM_BASE, ENV_ROM_MIRROR } from '@/services/romHosts'
 
 /* ---------------- 从 freej2me-web 源码里挖出来的接入点 ---------------- */
@@ -60,6 +60,9 @@ const J2ME_POLL_MS = 250
 const J2ME_STALL_TIMEOUT_MS = 120_000
 /** 前台总预算的硬上限：慢慢在下也不能无限等下去 */
 const J2ME_READY_HARD_CAP_MS = 360_000
+/** 备用 JVM 启动预算；它不需要下载 CheerpJ，但大型 JAR 仍要留出解包和 JPEG 预热时间。 */
+const J2ME_WEB_READY_TIMEOUT_MS = 120_000
+const J2ME_WEB_EMBED_URL = '/j2me-web/embed.html'
 /**
  * 预热最多等这么久就照样设 iframe.src。以前要等预热全下完才开始起 CheerpJ：大陆线路上
  * libmidi.wasm（3.1MB）走 Cloudflare 要 48 秒，CheerpJ 自己的 CDN 那一路全程闲着。
@@ -191,7 +194,7 @@ export { J2ME_PATH } from '../paths'
 import { J2ME_PATH, j2meEdgeBase, markJ2meEdgeFailed } from '../paths'
 // URL 那几条规则搬到了 ../j2meUrl（纯函数，有单测）—— 尤其是跨源判定那一条，
 // 原来靠「读 contentDocument 会不会抛」判，而它跨源时返回 null 不抛，那条退路是死代码
-import { CHEERPJ_ORIGIN, buildJ2meUrl, cheerpjLoaderMissing, isCrossOriginBase, j2meFileName, j2meWarmTargets, packedJarProxyName } from '../j2meUrl'
+import { CHEERPJ_ORIGIN, buildJ2meUrl, cheerpjLoaderMissing, cheerpjLoaderSrc, probeCheerpjCdn, summarizeCheerpjCdn, type CheerpjProbeResult, isCrossOriginBase, j2meFileName, j2meWarmTargets, packedJarProxyName } from '../j2meUrl'
 
 
 /* ---------------- 玩家上传的临时 jar ---------------- */
@@ -353,10 +356,25 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
   let poll: ReturnType<typeof setInterval> | null = null
   let readySent = false
+  let fallbackActive = false
+  let cheerpjConfirmedDown = false
+  let jarName = ''
+  let fallbackTimer = 0
   /** 起不来的兜底计时器，销毁时要收掉 */
   let readyTimer = 0
   /** 切后台会节流定时器；恢复前台时重置基准，避免把整段后台时间算成启动停滞 */
   let onReadyVisibilityChange: (() => void) | null = null
+  /** 启动看门狗的计数；loader 抖动后原地重载 iframe 时要从头计 */
+  let stalledMs = 0
+  let foregroundMs = 0
+  let seenResources = -1
+  let lastTick = 0
+  const resetStartWatch = () => {
+    stalledMs = 0
+    foregroundMs = 0
+    seenResources = -1
+    lastTick = performance.now()
+  }
 
   const stopReadyWatch = () => {
     if (readyTimer) {
@@ -378,6 +396,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const sendReady = () => {
     stopPoll()
     stopReadyWatch()
+    if (fallbackTimer) {
+      window.clearTimeout(fallbackTimer)
+      fallbackTimer = 0
+    }
     if (readySent || destroyed) return
     readySent = true
     options.onReady?.()
@@ -421,14 +443,175 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
   }
   let stopFramePerf: (() => void) | null = null
+  /**
+   * 发往 CheerpJ CDN 的请求归纳成一行（见 summarizeCheerpjCdn）。跨源部署或 iframe 已拆读不到时返回 null。
+   * 「起不来」时靠它分清是 CDN 连不上 / 很慢，还是 CDN 没问题、卡在后面的 FreeJ2ME 或游戏 JAR。
+   */
+  const cheerpjCdnSummary = (): string | null => {
+    try {
+      // 跨源部署读不到 iframe 内部
+      const win = crossOrigin ? null : iframe.contentWindow
+      if (!win || !(win.location.pathname ?? '').endsWith('/run.html')) return null
+      const entries = win.performance.getEntriesByType('resource') as PerformanceResourceTiming[]
+      return summarizeCheerpjCdn(entries, cheerpjLoaderSrc(win.document), win.performance.now())
+    } catch {
+      return null
+    }
+  }
+  /** 打包诊断时现取一次：只在还没出画面时有意义 */
+  const stopCdnSnapshot = registerDiagnosticSnapshot(() => (readySent ? null : cheerpjCdnSummary()))
+
+  /* ---------------- CheerpJ CDN 兜底 ---------------- */
+  /*
+    CheerpJ 免费版不许自托管 / 镜像；只在网络层确认 CDN 不可达时切换仓库自带的 j2me-web。
+    慢或状态不明不切换，避免把暂时拥塞当故障；这一路的 MIDP API 覆盖不完整，失败时明确报告兼容性错误。
+  */
+  /** 本局已经报过错：之后的探测结果、看门狗、load 回调都不再出声 */
+  let failed = false
+  const fail = (message: string) => {
+    if (failed || readySent || destroyed) return
+    failed = true
+    stopReadyWatch()
+    stopPoll()
+    if (fallbackTimer) {
+      window.clearTimeout(fallbackTimer)
+      fallbackTimer = 0
+    }
+    if (edgeOn && !fallbackActive) markJ2meEdgeFailed()
+    options.onError?.(message, 'runtime')
+  }
+  const probeAbort = new AbortController()
+  const runCdnProbe = (): Promise<CheerpjProbeResult> =>
+    crossOrigin
+      ? Promise.resolve('unknown' as const)
+      : probeCheerpjCdn({ runHtmlUrl: `${J2ME_PATH}run.html`, signal: probeAbort.signal }).catch(() => 'unknown' as const)
+  const cdnProbeStarted = performance.now()
+  void runCdnProbe().then((result) => {
+    if (destroyed) return
+    diagLog('j2me', result === 'down' ? 'warn' : 'info', `CheerpJ CDN 探测：${result}（+${Math.round(performance.now() - cdnProbeStarted)}ms）`)
+    if (result === 'down') {
+      cheerpjConfirmedDown = true
+      maybeStartJ2meWebFallback()
+    }
+  })
+  /** loader 缺失后已经原地重载过一次 iframe */
+  let cdnReloaded = false
 
   /** 这一局 run.html 是否带 edge=cn 打开（大文件经 SW 走加速入口）；开局失败时据此让自动重试改回同源 */
   let edgeOn = false
   let srcSet = false
+  const setupFrameCapabilities = (win: Window) => {
+    audio = installJ2meAudio(win, () => volume)
+    if (audio) caps.add('volume')
+    // 两个运行时都把 2D 画布放在 #display，截图、录像和控制栏沿用同一条路径。
+    caps.add('screenshot')
+    caps.add('record')
+    if (hasGamepadApi()) {
+      caps.add('gamepad')
+      pad?.stop()
+      pad = startGamepadBridge<J2meKey>(
+        J2ME_PAD_MAP,
+        (k, pressed) => {
+          const display = displayOf()
+          if (!display) return
+          const win2 = iframe.contentWindow as (Window & { KeyboardEvent?: typeof KeyboardEvent }) | null
+          const Ctor = win2?.KeyboardEvent ?? KeyboardEvent
+          display.dispatchEvent(new Ctor(pressed ? 'keydown' : 'keyup', { code: k.code, key: k.key, bubbles: true }))
+        },
+        {
+          /**
+           * 从拿着焦点的那个文档读手柄。CheerpJ 与备用运行时都在同源 iframe 中，
+           * 父页面在焦点交给 iframe 后读到的手柄会是 null。
+           */
+          getPads: () => {
+            try {
+              const nav = iframe.contentWindow?.navigator
+              const inner = nav?.getGamepads ? Array.from(nav.getGamepads()) : []
+              if (inner.some(Boolean)) return inner
+            } catch {
+              /* 跨源就退回父页面 */
+            }
+            return navigator.getGamepads ? Array.from(navigator.getGamepads()) : []
+          },
+        },
+      )
+    }
+    options.onCaps?.(caps)
+  }
+  const startJ2meWebFallback = () => {
+    if (fallbackActive || readySent || destroyed || failed || !jarName) return
+    fallbackActive = true
+    srcSet = true
+    stopPoll()
+    stopReadyWatch()
+    stopFramePerf?.()
+    stopFramePerf = null
+    pad?.stop()
+    pad = null
+    audio = null
+    caps.clear()
+    options.onCaps?.(caps)
+    options.onProgress?.({ phase: 'engine' })
+    diagLog('j2me', 'warn', `CheerpJ CDN 已确认不可达，切换到 j2me-web（JAR：${jarName}）`)
+    const embedUrl = new URL(J2ME_WEB_EMBED_URL, window.location.origin)
+    iframe.src = embedUrl.href
+    fallbackTimer = window.setTimeout(() => {
+      fail(fmt(rt.j2meFallbackFailed, { msg: '备用运行时启动超时' }))
+    }, J2ME_WEB_READY_TIMEOUT_MS)
+  }
+  function maybeStartJ2meWebFallback() {
+    if (!cheerpjConfirmedDown || !jarName || readySent || destroyed || failed) return
+    if (crossOrigin) {
+      fail(rt.j2meCheerpjUnreachable)
+      return
+    }
+    startJ2meWebFallback()
+  }
+  const onJ2meWebMessage = (event: MessageEvent) => {
+    if (!fallbackActive || event.source !== iframe.contentWindow || event.origin !== window.location.origin) return
+    const message = event.data as { source?: unknown; type?: unknown; message?: unknown; level?: unknown }
+    if (message?.source !== '8bitgo-j2me-web') return
+    if (message.type === 'ready') {
+      diagLog('j2me', 'info', `j2me-web 已启动（JAR：${jarName}）`)
+      sendReady()
+    } else if (message.type === 'error') {
+      const detail = typeof message.message === 'string' ? message.message.slice(0, 500) : '未知错误'
+      diagLog('j2me', 'error', `j2me-web 启动失败：${detail}`)
+      fail(fmt(rt.j2meFallbackFailed, { msg: detail }))
+    } else if (message.type === 'log' && typeof message.message === 'string') {
+      const level = message.level === 'error' || message.level === 'warn' ? message.level : 'info'
+      diagLog('j2me-web', level, message.message)
+    }
+  }
+  window.addEventListener('message', onJ2meWebMessage)
   iframe.addEventListener('load', () => {
     if (!srcSet || destroyed) return
+    if (fallbackActive) {
+      const win = iframe.contentWindow
+      if (!win) return fail(fmt(rt.j2meFallbackFailed, { msg: '无法读取备用运行时页面' }))
+      try {
+        if (win.location.pathname !== new URL(J2ME_WEB_EMBED_URL, window.location.origin).pathname) return
+      } catch {
+        return
+      }
+      if (!stopFramePerf) stopFramePerf = watchFramePerformance(win)
+      setupFrameCapabilities(win)
+      const jarUrl = new URL(`${J2ME_PATH}jar/${encodeURIComponent(jarName)}`, window.location.href).href
+      const storageId = options.gameSlug || (isFile ? `local:${options.gameName}` : jarName)
+      win.postMessage({
+        source: '8bitgo-j2me',
+        type: 'start',
+        jarUrl,
+        fileName: jarName,
+        storageId: `8bitgo:${storageId}`,
+      }, window.location.origin)
+      return
+    }
     // CheerpJ 的运行库都在 iframe 里下，外层 performance 看不到；登记后诊断包才带得上
     if (!crossOrigin && !stopFramePerf) stopFramePerf = watchFramePerformance(iframe.contentWindow)
+    // run.html 的 load 在 loader.js 执行（或失败）之后才来，这时 loader.js 那条一定已经有结论
+    const cdnAtLoad = cheerpjCdnSummary()
+    if (cdnAtLoad) diagLog('j2me', 'info', `run.html 已加载；${cdnAtLoad}`)
 
     if (crossOrigin) {
       // 跨源：读不到 iframe 内部状态，只能退回「load 即就绪」的老行为。
@@ -455,51 +638,46 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       此时还没有 cheerpjInit，说明 loader 被拦或取不到 —— 不必再等 120 秒前台无进展才判死。
     */
     if (!crossOrigin && !readySent && cheerpjLoaderMissing(win)) {
-      stopReadyWatch()
       stopPoll()
-      diagLog('j2me', 'warn', `CheerpJ loader 没加载上（${CHEERPJ_ORIGIN}）`)
-      options.onError?.(rt.j2meCheerpjUnreachable, 'runtime')
+      diagLog('j2me', 'warn', `CheerpJ loader 没加载上（${CHEERPJ_ORIGIN}）${cdnReloaded ? '，重载后仍然没有' : '，再探一次 CDN'}`)
+      if (cdnReloaded) {
+        void runCdnProbe().then((result) => {
+          if (destroyed || failed || readySent) return
+          diagLog('j2me', 'warn', `第二次加载失败后的 CheerpJ CDN 探测：${result}`)
+          if (result === 'down') {
+            cheerpjConfirmedDown = true
+            maybeStartJ2meWebFallback()
+          } else {
+            fail(rt.j2meStartTimeout)
+          }
+        })
+        return
+      }
+      cdnReloaded = true
+      void runCdnProbe().then((result) => {
+        if (destroyed || failed || readySent) return
+        if (result !== 'ok') {
+          diagLog('j2me', 'warn', `CheerpJ CDN 再探：${result}，放弃`)
+          if (result === 'down') {
+            cheerpjConfirmedDown = true
+            maybeStartJ2meWebFallback()
+          } else {
+            fail(rt.j2meStartTimeout)
+          }
+          return
+        }
+        // 这回连得上：一时抖动。重载 run.html 一次，看门狗从头计
+        diagLog('j2me', 'info', 'CheerpJ CDN 再探连得上，原地重载 run.html 一次')
+        resetStartWatch()
+        try {
+          win.location.reload()
+        } catch {
+          fail(rt.j2meStartTimeout)
+        }
+      })
       return
     }
-    audio = installJ2meAudio(win, () => volume)
-    if (audio) caps.add('volume')
-    // 画面是普通 2D canvas，截图和录像都没有 WebGL 那些麻烦
-    caps.add('screenshot')
-    caps.add('record')
-    if (hasGamepadApi()) {
-      caps.add('gamepad')
-      pad = startGamepadBridge<J2meKey>(
-        J2ME_PAD_MAP,
-        (k, pressed) => {
-          const display = displayOf()
-          if (!display) return
-          const win2 = iframe.contentWindow as (Window & { KeyboardEvent?: typeof KeyboardEvent }) | null
-          const Ctor = win2?.KeyboardEvent ?? KeyboardEvent
-          display.dispatchEvent(new Ctor(pressed ? 'keydown' : 'keyup', { code: k.code, key: k.key, bubbles: true }))
-        },
-        {
-          /**
-           * 从**拿着焦点的那个文档**读手柄。
-           *
-           * 这里的焦点是我们自己交进 iframe 的（下面 focus: () => focusFrame(iframe)，
-           * 而且插手柄时播放器还会再交一次），此后父页面 navigator.getGamepads() 读到的
-           * 全是 null —— 桥每帧都判定「手柄拔了」，玩家插着手柄却一个键都不生效，
-           * 工具栏的手柄面板也报「没检测到」。iframe 同源，直接问它。
-           */
-          getPads: () => {
-            try {
-              const nav = iframe.contentWindow?.navigator
-              const inner = nav?.getGamepads ? Array.from(nav.getGamepads()) : []
-              if (inner.some(Boolean)) return inner
-            } catch {
-              /* 跨源就退回父页面 */
-            }
-            return navigator.getGamepads ? Array.from(navigator.getGamepads()) : []
-          },
-        },
-      )
-    }
-    options.onCaps?.(caps)
+    setupFrameCapabilities(win)
   })
   iframe.addEventListener('error', () => {
     if (destroyed) return
@@ -515,8 +693,16 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
     stopReadyWatch()
     stopPoll()
-    if (edgeOn) markJ2meEdgeFailed()
-    options.onError?.(fmt(rt.j2meLoadFailed, { path: J2ME_PATH }))
+    if (failed) return
+    failed = true
+    if (edgeOn && !fallbackActive) markJ2meEdgeFailed()
+    if (fallbackTimer) {
+      window.clearTimeout(fallbackTimer)
+      fallbackTimer = 0
+    }
+    options.onError?.(fallbackActive
+      ? fmt(rt.j2meFallbackFailed, { msg: '备用运行时页面加载失败' })
+      : fmt(rt.j2meLoadFailed, { path: J2ME_PATH }), 'runtime')
   })
   container.appendChild(iframe)
 
@@ -581,6 +767,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       } else {
         name = directName ?? j2meFileName(options.game as string)
       }
+      jarName = name
+      maybeStartJ2meWebFallback()
+      if (destroyed || failed || fallbackActive) return
       /*
         正式 ROM（对象存储里那份）在 CheerpJ 把 JVM 起来之前根本不会被取 ——
         也就是说这份文件是**在几十秒之后**才开始下载的，而那几十秒里连接一直闲着。
@@ -602,7 +791,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         Promise.all([runtimeWarmup, directJarWarmup]).then(() => true),
         new Promise<false>((resolve) => { window.setTimeout(() => resolve(false), J2ME_WARMUP_WAIT_MS) }),
       ])
-      if (destroyed) return
+      if (destroyed || failed || fallbackActive) return
       diagLog('j2me', 'info', warmed
         ? `预热完成 (+${Date.now() - warmStarted}ms)，启动 CheerpJ`
         : `预热 ${J2ME_WARMUP_WAIT_MS}ms 未完成，与 CheerpJ 并行继续`)
@@ -616,10 +805,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         现在两边共用一个从「设 src」就开始计时的预算：CheerpJ 冷启动本来就慢，
         但慢和死是两回事，到点必须报出来（j2meStartTimeout）。
       */
-      let stalledMs = 0
-      let foregroundMs = 0
-      let seenResources = -1
-      let lastTick = performance.now()
+      resetStartWatch()
       onReadyVisibilityChange = () => {
         // 浏览器会暂停或合并后台定时器；恢复时从当前时刻重新计，不能补算隐藏期间的时间。
         lastTick = performance.now()
@@ -644,20 +830,29 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         if (stalledMs < J2ME_STALL_TIMEOUT_MS && foregroundMs < J2ME_READY_HARD_CAP_MS) return
         stopReadyWatch()
         stopPoll()
-        diagLog('j2me', 'warn', `放弃：前台 ${Math.round(foregroundMs / 1000)}s，其中 ${Math.round(stalledMs / 1000)}s 没有新请求完成，iframe 共完成 ${Math.max(seenResources, 0)} 个请求`)
-        if (edgeOn) markJ2meEdgeFailed()
+        diagLog('j2me', 'warn', `放弃：前台 ${Math.round(foregroundMs / 1000)}s，其中 ${Math.round(stalledMs / 1000)}s 没有新请求完成，iframe 共完成 ${Math.max(seenResources, 0)} 个请求；${cheerpjCdnSummary() ?? 'CheerpJ CDN 读不到'}`)
         /*
           'runtime'：JVM 没起来是运行时设施的事，换语言 ROM 修不好。不带 scope 时播放器会把它当内容错，
           逐个语言槽各等一轮（2026-11-13《帝国时代 3》en 失败后又去试 zh-Hans，玩家白等 4 分钟）。
+          判死前再探一次 CDN：明确 down 才启用兼容性有限的备用运行时，其他结果按启动故障处理。
         */
-        options.onError?.(rt.j2meStartTimeout, 'runtime')
+        void runCdnProbe().then((result) => {
+          if (destroyed) return
+          diagLog('j2me', 'warn', `判死前 CheerpJ CDN 探测：${result}`)
+          if (result === 'down') {
+            cheerpjConfirmedDown = true
+            maybeStartJ2meWebFallback()
+          } else {
+            fail(rt.j2meStartTimeout)
+          }
+        })
       }, 1_000)
       edgeOn = await edgeReady
-      if (destroyed) return
+      if (destroyed || failed || fallbackActive) return
       if (edgeBase) diagLog('j2me', 'info', edgeOn ? `大文件走加速入口 ${edgeBase}` : '加速入口的 SW 没装上，走同源')
       iframe.src = buildJ2meUrl(J2ME_PATH, name, { fractionScale: true, mobile: touchControls, edge: edgeOn })
     } catch (e) {
-      if (destroyed) return
+      if (destroyed || failed) return
       const msg = e instanceof Error ? e.message : String(e)
       options.onError?.(fmt(rt.j2meUploadFailed, { msg }))
     }
@@ -665,10 +860,17 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
   const destroy = () => {
     destroyed = true
+    probeAbort.abort()
     stopReadyWatch()
+    stopCdnSnapshot()
     stopFramePerf?.()
     stopFramePerf = null
     stopPoll()
+    window.removeEventListener('message', onJ2meWebMessage)
+    if (fallbackTimer) {
+      window.clearTimeout(fallbackTimer)
+      fallbackTimer = 0
+    }
     pad?.stop()
     pad = null
     audio = null

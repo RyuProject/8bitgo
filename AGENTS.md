@@ -1633,8 +1633,24 @@ libmidi.wasm 3.1MB 要 48 秒，CheerpJ 自己的 CDN 全程闲着；之后再�
 不会下两遍）；`J2ME_STALL_TIMEOUT_MS` 只数前台、iframe 每完成一个请求就重新计时，前台总上限 6 分钟；
 iframe 登记了 `watchFramePerformance`，诊断包里能看到 CheerpJ 的下载。回归：`npm run test:j2me`。
 JVM 起不来一律以 `'runtime'` 报（`j2meStartTimeout`）：不带 scope 时播放器当内容错，en 失败又去试 zh-Hans，玩家再等一轮。
-run.html 的 load 到了却没有 `cheerpjInit`（leaningtech 的 loader.js 被拦 / 取不到，`cheerpjLoaderMissing`）立刻报
-`j2meCheerpjUnreachable`，不再等满 120 秒前台无进展。
+run.html 的 load 到了却没有 `cheerpjInit`（leaningtech 的 loader.js 被拦 / 取不到，`cheerpjLoaderMissing`）先再探 CDN；
+明确 `down` 才切到备用运行时，其余情况按原逻辑重载一次或报启动故障。
+
+⚠️ **「CheerpJ 的 CDN 连不上」要看诊断包里的 `CheerpJ CDN：` 一行再下结论**（2026-11-14）：错误文案只是猜测。
+适配器在 run.html load 时记一行、慢启动快照和「放弃」原因里各带一次（`summarizeCheerpjCdn`）：loader.js 是否完成与耗时、
+其余 cjrtnc 请求数 / 字节 / 最慢一个、最后一个完成后又等了多久。跨源无 TAO 时字节和状态码读不到，只有耗时可信。
+loader.js 地址从 run.html 现读，不抄版本号。CheerpJ 免费版**不允许**自托管或镜像运行时（官方许可：CDN 以外的任何提供方式都算 self-hosting，
+需付费授权），所以别把 cjrtnc 的文件搬进 R2 / `/_cn/`。
+
+⚠️ **只有确认 CheerpJ CDN 不可达才切到 j2me-web**（2026-11-14）：CheerpJ 免费版不允许自托管 / 镜像，不能把其运行文件搬到 R2。
+适配器挂载时与 JAR 解包 / 预热并行调 `probeCheerpjCdn`（`j2meUrl.ts`）：从 run.html 读 loader.js 地址，
+用 `no-cors + credentials:'include'` 取一次（与 `<script>` 同一种请求，命中同一条 HTTP 缓存，不算白下）。
+两次网络层失败才判 `down`；只有 `down` 会把同一个 iframe 切到本站构建的 `public/j2me-web/`，并通过既有 `/j2me/jar/<文件名>` 代理读取已解包 JAR。
+`slow`（慢不等于死）和 `unknown` 不切换；CheerpJ 仍是默认主运行时。页面由 `npm run j2me-web:build` 生成，`predev` / `prebuild` 自动调用，生成目录不进 git。
+`j2me-web` 是独立的纯浏览器 JVM，MIDP / Java ME API 覆盖不如 FreeJ2ME 完整；带表单控件、厂商扩展或特殊音频的游戏可能无法启动。
+失败时适配器用 `j2meFallbackFailed` 展示实际错误，不把这类兼容性失败伪装成 CDN 故障。run.html 加载完却没有 `cheerpjInit` 时先再探一次：
+这回连得上就原地重载 run.html **一次**（看门狗从头计），仍不行才报错；进展看门狗判死前也再探一次，`down` 才转备用运行时，否则报「起不来」。
+诊断包保留「CheerpJ CDN 探测：…」和备用运行时日志；所有错误出口经 `fail()`，一局只报一次。
 
 ⚠️ **后台节流后的第一跳不能把隐藏时间算成前台卡死**（2026-11-14 玩家现场）：浏览器切后台会暂停 iframe 的定时器，
 原看门狗只在回调里检查当前 `visibilityState`；玩家回来后第一跳已经是 visible，会把上次回调到现在的整段后台时间

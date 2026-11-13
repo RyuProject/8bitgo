@@ -91,7 +91,7 @@ assert.match(cnEdge, /Access-Control-Expose-Headers', 'Content-Range, Accept-Ran
 console.log('── 适配器：SW 没激活就不带 edge=cn；开局失败让重试走同源 ──')
 const adapter = readFileSync(new URL('../src/emulator/adapters/j2me.ts', import.meta.url), 'utf8')
 assert.match(adapter, /edgeOn = await edgeReady[\s\S]{0,300}edge: edgeOn \}\)/)
-assert.equal((adapter.match(/if \(edgeOn\) markJ2meEdgeFailed\(\)/g) ?? []).length, 2)
+assert.equal((adapter.match(/if \(edgeOn && !fallbackActive\) markJ2meEdgeFailed\(\)/g) ?? []).length, 2)
 assert.match(readFileSync(new URL('../scripts/patch-j2me-runtime.mjs', import.meta.url), 'utf8'), /scripts\/j2me-web\/edge-sw\.js/)
 
 console.log('✅ J2ME 加速入口回归通过')

@@ -159,3 +159,169 @@ export function cheerpjLoaderMissing(frame: object | null): boolean {
     return false
   }
 }
+
+/* ---------------- CheerpJ CDN 连通性（诊断用） ---------------- */
+
+/** 诊断只需要 PerformanceResourceTiming 的这几项；单测可以直接造 */
+export interface CheerpjTimingEntry {
+  name: string
+  startTime: number
+  duration: number
+  transferSize?: number
+  encodedBodySize?: number
+  responseStatus?: number
+}
+
+const kb = (bytes: number) => (bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)}MB` : `${Math.round(bytes / 1024)}KB`)
+const sec = (ms: number) => `${(ms / 1000).toFixed(1)}s`
+
+/**
+ * 把 iframe 里发往 CheerpJ CDN 的请求归纳成一行，进诊断包。
+ *
+ * 2026-11-13 三份「Java 执行环境起不来」的现场里一条 cjrtnc 请求都看不到，「多半是 CDN 连不上」只是猜测；
+ * 有了这一行才能分清：loader.js 根本没完成 / 完成了但很慢 / CDN 很快、卡在 FreeJ2ME 或游戏 JAR。
+ *
+ * ⚠️ 跨源又没有 Timing-Allow-Origin：传输量、状态码读出来都是 0（loader.js 还是不带 crossorigin 的 <script>）。
+ * 这时**耗时仍然可信**，字节数只在确实读到时才写，0 不能写成「下了 0 字节」。
+ *
+ * @param entries     iframe 的 resource timing
+ * @param loaderSrc   run.html 里 loader.js 的完整地址（从页面读，不在代码里抄版本号），读不到传空串
+ * @param iframeAgeMs 距 iframe 文档开始已经过了多久（iframe 的 performance.now()），用来写「最后一个完成后又等了多久」
+ */
+export function summarizeCheerpjCdn(
+  entries: readonly CheerpjTimingEntry[],
+  loaderSrc: string,
+  iframeAgeMs: number,
+): string {
+  const cdn = entries.filter((e) => {
+    try {
+      return new URL(e.name).origin === CHEERPJ_ORIGIN
+    } catch {
+      return false
+    }
+  })
+  const loaderPath = loaderSrc ? loaderSrc.split(/[?#]/)[0] : ''
+  const loader = loaderPath ? cdn.find((e) => e.name.split(/[?#]/)[0] === loaderPath) : undefined
+  const parts: string[] = []
+  if (!loaderPath) parts.push('loader.js 地址未知')
+  else if (!loader) parts.push('loader.js 未完成（请求没回来或被拦截）')
+  else {
+    const failed = loader.responseStatus !== undefined && loader.responseStatus >= 400
+    const bytes = loader.encodedBodySize || loader.transferSize || 0
+    parts.push(`loader.js ${failed ? `HTTP ${loader.responseStatus} ` : ''}耗时 ${sec(loader.duration)}${bytes ? ` ${kb(bytes)}` : ''}`)
+  }
+  const rest = cdn.filter((e) => e !== loader)
+  if (!rest.length) {
+    parts.push('之后没有任何 CDN 请求完成')
+  } else {
+    const bytes = rest.reduce((sum, e) => sum + (e.encodedBodySize || e.transferSize || 0), 0)
+    const slowest = rest.reduce((a, b) => (b.duration > a.duration ? b : a))
+    const lastEnd = Math.max(...rest.map((e) => e.startTime + e.duration))
+    const failed = rest.filter((e) => e.responseStatus !== undefined && e.responseStatus >= 400).length
+    parts.push(
+      `其余 ${rest.length} 个完成${bytes ? `，共 ${kb(bytes)}` : ''}` +
+        `，最慢 ${slowest.name.slice(CHEERPJ_ORIGIN.length).split(/[?#]/)[0]} ${sec(slowest.duration)}` +
+        `，最后一个完成后又过了 ${sec(Math.max(0, iframeAgeMs - lastEnd))}` +
+        (failed ? `，${failed} 个 HTTP 错误` : ''),
+    )
+  }
+  return `CheerpJ CDN：${parts.join('；')}`
+}
+
+/** run.html 里 CheerpJ loader.js 的地址；读不到返回空串 */
+export function cheerpjLoaderSrc(doc: Document | null | undefined): string {
+  try {
+    const script = doc?.querySelector<HTMLScriptElement>(`script[src^="${CHEERPJ_ORIGIN}/"]`)
+    return script?.src ?? ''
+  } catch {
+    return ''
+  }
+}
+
+/* ---------------- CheerpJ CDN 探测（兜底用） ---------------- */
+
+/**
+ * 从 run.html 的文本里取 loader.js 地址（版本号以 run.html 为准，不在代码里抄）。取不到返回空串。
+ */
+export function cheerpjLoaderFromHtml(html: string): string {
+  const escaped = CHEERPJ_ORIGIN.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')
+  const match = new RegExp(`<script[^>]+src=["'](${escaped}/[^"'\\s>]+)["']`, 'i').exec(String(html))
+  return match ? match[1] : ''
+}
+
+/**
+ * 探测结论：
+ * - `ok`：loader.js 拿到了响应（no-cors 读不到状态码，只能证明连得上）；
+ * - `down`：两次都是网络层失败（DNS / TCP / TLS 不通、被拦截插件或防火墙挡掉）；
+ * - `slow`：超时还没回来 —— 慢不等于死，只记日志，不据此报错；
+ * - `unknown`：读不到 run.html 或里面没有 loader 地址，无法判断。
+ */
+export type CheerpjProbeResult = 'ok' | 'down' | 'slow' | 'unknown'
+
+export interface CheerpjProbeOptions {
+  /** run.html 的地址（同源） */
+  runHtmlUrl: string
+  fetchImpl?: typeof fetch
+  /** 单次 loader.js 请求的时限 */
+  timeoutMs?: number
+  /** 第一次网络失败后隔多久再试 */
+  retryDelayMs?: number
+  /** 中止整个探测（销毁播放器时） */
+  signal?: AbortSignal
+}
+
+const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve) => {
+  const timer = setTimeout(resolve, ms)
+  signal?.addEventListener('abort', () => { clearTimeout(timer); resolve() }, { once: true })
+})
+
+/**
+ * 开局前探一次 CheerpJ CDN。
+ *
+ * 为什么要探：CheerpJ 免费版**不允许**自托管或镜像（见 AGENTS.md §2.24.1.1），备用方案必须是独立实现，
+ * 不能把 CheerpJ 文件复制到本站或其他域名。只有确认网络层不可达才切到 j2me-web；慢或未知仍留给主运行时，
+ * 避免把暂时拥塞误判成 CDN 故障。以前要等前台 120 秒没有进展才报，玩家白等两分钟，8BG 的 JAR 还照样解包下载一遍。
+ *
+ * 用 no-cors + credentials:'include'：和 run.html 里不带 crossorigin 的 <script> 是同一种请求，
+ * 探测拿到的响应会进同一条 HTTP 缓存，iframe 稍后加载 loader.js 直接命中，不算白下。
+ * 只有「两次都是网络层失败」才判 down：一次抖动不该把玩家挡在门外。
+ */
+export async function probeCheerpjCdn(options: CheerpjProbeOptions): Promise<CheerpjProbeResult> {
+  const doFetch = options.fetchImpl ?? fetch
+  const timeoutMs = options.timeoutMs ?? 15_000
+  const retryDelayMs = options.retryDelayMs ?? 1_500
+  const { signal } = options
+  let loaderUrl = ''
+  try {
+    const res = await doFetch(options.runHtmlUrl, { signal })
+    if (!res.ok) return 'unknown'
+    loaderUrl = cheerpjLoaderFromHtml(await res.text())
+  } catch {
+    return 'unknown'
+  }
+  if (!loaderUrl) return 'unknown'
+
+  const once = async (): Promise<'ok' | 'down' | 'slow'> => {
+    const controller = new AbortController()
+    const onAbort = () => controller.abort()
+    signal?.addEventListener('abort', onAbort, { once: true })
+    let timedOut = false
+    const timer = setTimeout(() => { timedOut = true; controller.abort() }, timeoutMs)
+    try {
+      await doFetch(loaderUrl, { mode: 'no-cors', credentials: 'include', signal: controller.signal })
+      return 'ok'
+    } catch {
+      return timedOut ? 'slow' : 'down'
+    } finally {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+    }
+  }
+
+  const first = await once()
+  if (signal?.aborted) return 'unknown'
+  if (first !== 'down') return first
+  await sleep(retryDelayMs, signal)
+  if (signal?.aborted) return 'unknown'
+  return await once()
+}

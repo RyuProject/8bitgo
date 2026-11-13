@@ -13,7 +13,7 @@
  */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { CHEERPJ_ORIGIN, buildJ2meUrl, cheerpjLoaderMissing, isCrossOriginBase, j2meFileName, j2meWarmTargets, packedJarProxyName } from '../src/emulator/j2meUrl.ts'
+import { CHEERPJ_ORIGIN, buildJ2meUrl, cheerpjLoaderFromHtml, cheerpjLoaderMissing, cheerpjLoaderSrc, probeCheerpjCdn, summarizeCheerpjCdn, isCrossOriginBase, j2meFileName, j2meWarmTargets, packedJarProxyName } from '../src/emulator/j2meUrl.ts'
 import { take } from '../server/src/rateLimit.js'
 
 let failed = 0
@@ -297,7 +297,7 @@ const adapterCode = codeOnly(readFileSync(new URL('../src/emulator/adapters/j2me
 check('⭐ 就绪之后 iframe 报 error 必须早退 —— onReady 之后的 onError 等于拆会话', () => {
   const at = adapterCode.indexOf("addEventListener('error'")
   assert.ok(at > 0, '找不到 iframe 的 error 监听')
-  const handler = adapterCode.slice(at, at + 400)
+  const handler = adapterCode.slice(at, at + 900)
   const guard = handler.indexOf('readySent')
   const report = handler.indexOf('onError')
   assert.ok(guard > 0, 'error 处理里没有 readySent 早退')
@@ -306,9 +306,10 @@ check('⭐ 就绪之后 iframe 报 error 必须早退 —— onReady 之后的 o
 
 check('⭐ 跨源部署要直接 sendReady，不能进轮询 —— 那条路以前一路轮到超时', () => {
   assert.match(adapterCode, /isCrossOriginBase\(/, '跨源判定没接上，displayShown() 只会一直抛跨源异常')
-  const at = adapterCode.indexOf('if (crossOrigin)')
+  const loadAt = adapterCode.indexOf("iframe.addEventListener('load'")
+  const at = adapterCode.indexOf('if (crossOrigin) {', loadAt)
   assert.ok(at > 0, '缺跨源分支')
-  const branch = adapterCode.slice(at, at + 200)
+  const branch = adapterCode.slice(at, at + 500)
   assert.ok(branch.indexOf('sendReady()') > 0, '跨源分支里必须直接 sendReady()')
   assert.ok(
     branch.indexOf('sendReady()') < (branch.indexOf('setInterval') + 1 || 1e9),
@@ -325,11 +326,13 @@ check('⭐ sendReady 要同时兜住 onStart —— 只发 onReady 的话计次�
 })
 
 check('⭐ JVM 起不来是运行时故障：超时 / 缺 loader 都带 runtime，不能逐个语言 ROM 各等一轮', () => {
-  assert.match(adapterCode, /onError\?\.\(rt\.j2meStartTimeout, 'runtime'\)/, '启动超时必须带 runtime scope')
-  assert.match(adapterCode, /onError\?\.\(rt\.j2meCheerpjUnreachable, 'runtime'\)/, '缺 CheerpJ loader 必须带 runtime scope')
+  assert.match(adapterCode, /onError\?\.\(message, 'runtime'\)/, 'fail() 必须带 runtime scope')
+  assert.match(adapterCode, /if \(result === 'down'\) \{\s+cheerpjConfirmedDown = true\s+maybeStartJ2meWebFallback\(\)/, 'CDN 确认不可达时要走备用运行时')
+  assert.match(adapterCode, /fail\(rt\.j2meStartTimeout\)/, 'CDN 未确认 down 时启动超时要按运行时故障报出')
   const at = adapterCode.indexOf('cheerpjLoaderMissing(win)')
   assert.ok(at > 0, 'iframe load 时要检查 CheerpJ loader')
-  assert.ok(at < adapterCode.indexOf('audio = installJ2meAudio(win'), '要在装音频之前判掉')
+  const setup = adapterCode.indexOf('setupFrameCapabilities(win)', at)
+  assert.ok(setup > at, '检测 loader 后才安装 CheerpJ 的音频和手柄能力')
 })
 
 check('cheerpjLoaderMissing：只认 run.html，有 cheerpjInit 不算缺', () => {
@@ -405,7 +408,7 @@ check('⭐ 预热与 CheerpJ 并行：最多等 2 秒就设 src，不再等预�
   assert.ok(warm >= 0 && warm < upload, '运行时预热必须先于 ROM 解密/上传开始')
   assert.ok(wait > upload && wait < src, '预热要和启动 iframe 赛跑，而不是挡在前面')
   assert.match(adapterCode, /J2ME_WARMUP_WAIT_MS = 2_000/)
-  assert.match(adapterCode, /if \(destroyed\) return\s+diagLog\('j2me'[\s\S]{0,200}?srcSet = true/, '等待期间若取消游戏，不能再启动隐藏 iframe')
+  assert.match(adapterCode, /if \(destroyed \|\| failed \|\| fallbackActive\) return\s+diagLog\('j2me'[\s\S]{0,200}?srcSet = true/, '等待期间若取消游戏或已切备用运行时，不能再启动 CheerpJ iframe')
 })
 
 check('⭐ 起不来的判定只数前台，且 iframe 每完成一个请求就重新计时', () => {
@@ -413,7 +416,37 @@ check('⭐ 起不来的判定只数前台，且 iframe 每完成一个请求就�
   assert.match(adapterCode, /if \(count > seenResources\) \{\s+seenResources = count\s+stalledMs = 0/)
   assert.match(adapterCode, /stalledMs < J2ME_STALL_TIMEOUT_MS && foregroundMs < J2ME_READY_HARD_CAP_MS/)
   assert.match(adapterCode, /stopFramePerf = watchFramePerformance\(iframe\.contentWindow\)/, 'CheerpJ 在 iframe 里下的东西要进诊断包')
-  assert.match(adapterCode, /window\.clearInterval\(readyTimer\)\s+stopFramePerf\?\.\(\)/, '销毁时收掉计时器和诊断观察')
+  assert.match(adapterCode, /destroyed = true\s+probeAbort\.abort\(\)\s+stopReadyWatch\(\)\s+stopCdnSnapshot\(\)\s+stopFramePerf\?\.\(\)/, '销毁时收掉计时器、CDN 现场和诊断观察')
+  assert.match(adapterCode, /const stopReadyWatch = \(\) => \{[\s\S]{0,200}?window\.clearInterval\(readyTimer\)[\s\S]{0,200}?removeEventListener\('visibilitychange', onReadyVisibilityChange\)/, 'stopReadyWatch 要同时收计时器和 visibilitychange 监听')
+})
+
+check('⭐ CheerpJ CDN 连通性进诊断包：loader.js 有没有回来、之后的 CDN 请求快不快', () => {
+  const loaderSrc = `${CHEERPJ_ORIGIN}/20260317_2978/loader.js`
+  // loader.js 根本没完成：这才是「CDN 连不上」
+  assert.match(summarizeCheerpjCdn([], loaderSrc, 60_000), /loader\.js 未完成[\s\S]*之后没有任何 CDN 请求完成/)
+  // 跨源不带 TAO：字节和状态码都是 0，耗时照写、不能写成「0KB」
+  const opaque = summarizeCheerpjCdn([{ name: loaderSrc, startTime: 100, duration: 8_400, transferSize: 0, encodedBodySize: 0, responseStatus: 0 }], loaderSrc, 60_000)
+  assert.match(opaque, /loader\.js 耗时 8\.4s；/)
+  assert.doesNotMatch(opaque, /0KB|HTTP 0/)
+  // 之后的请求：数量、字节、最慢的那个、最后一个完成后又等了多久、HTTP 错误数
+  const rest = summarizeCheerpjCdn([
+    { name: loaderSrc, startTime: 0, duration: 900 },
+    { name: `${CHEERPJ_ORIGIN}/20260317_2978/rt/a.jar?x=1`, startTime: 1_000, duration: 2_000, encodedBodySize: 2 * 1024 * 1024 },
+    { name: `${CHEERPJ_ORIGIN}/20260317_2978/rt/b.jar`, startTime: 1_500, duration: 30_000, encodedBodySize: 1024 * 1024, responseStatus: 200 },
+    { name: `${CHEERPJ_ORIGIN}/20260317_2978/rt/c.jar`, startTime: 2_000, duration: 500, responseStatus: 503 },
+    { name: 'https://8bitgo.com/j2me/freej2me-web.jar', startTime: 0, duration: 99_000 },
+  ], loaderSrc, 61_500)
+  assert.match(rest, /其余 3 个完成，共 3\.0MB，最慢 \/20260317_2978\/rt\/b\.jar 30\.0s，最后一个完成后又过了 30\.0s，1 个 HTTP 错误/)
+  assert.doesNotMatch(rest, /freej2me-web/, '本站的请求不算 CDN')
+  assert.match(summarizeCheerpjCdn([], '', 0), /loader\.js 地址未知/)
+  // 地址从 run.html 读，不在代码里抄版本号
+  assert.equal(cheerpjLoaderSrc({ querySelector: () => ({ src: loaderSrc }) }), loaderSrc)
+  assert.equal(cheerpjLoaderSrc(null), '')
+  assert.doesNotMatch(readFileSync('src/emulator/j2meUrl.ts', 'utf8').split('CheerpJ CDN 连通性')[1], /\d{8}_\d{4}/, '版本号不能抄进代码')
+  // 接线：run.html load 时记一行、打包时取一次、放弃时写进原因
+  assert.match(adapterCode, /const cdnAtLoad = cheerpjCdnSummary\(\)/)
+  assert.match(adapterCode, /registerDiagnosticSnapshot\(\(\) => \(readySent \? null : cheerpjCdnSummary\(\)\)\)/)
+  assert.match(adapterCode, /\$\{cheerpjCdnSummary\(\) \?\? 'CheerpJ CDN 读不到'\}/)
 })
 
 check('⚠️ 没有 hover 提前量的设备不预拉那几个大文件', () => {
@@ -441,6 +474,81 @@ check('⭐ 构建时补掉上游高频按键日志，且运行时重新安装后
   const setup = readFileSync(new URL('../scripts/setup-j2me.mjs', import.meta.url), 'utf8')
   assert.equal((setup.match(/applyLocalRuntimePatches\(\)/g) ?? []).length, 3,
     '已安装跳过分支和全新安装分支都必须应用补丁')
+})
+
+console.log('\n八、CheerpJ CDN 兜底：探测、抖动重载、快速失败')
+
+const asyncCheck = async (name, fn) => {
+  try {
+    await fn()
+    console.log(`  ✅ ${name}`)
+  } catch (e) {
+    failed++
+    console.error(`  ❌ ${name}\n     ${e.message}`)
+  }
+}
+const RUN_HTML = `<html><script src="${CHEERPJ_ORIGIN}/20260317_2978/loader.js"></script></html>`
+const fakeFetch = (loaderOutcomes) => {
+  const calls = []
+  const impl = async (url, init = {}) => {
+    calls.push({ url: String(url), init })
+    if (String(url).endsWith('run.html')) return { ok: true, text: async () => RUN_HTML }
+    const outcome = loaderOutcomes.shift() ?? 'ok'
+    if (outcome === 'ok') return { ok: false, status: 0, type: 'opaque' }
+    if (outcome === 'hang') {
+      return await new Promise((_, reject) => init.signal?.addEventListener('abort', () => reject(new Error('aborted'))))
+    }
+    throw new TypeError('Failed to fetch')
+  }
+  return { impl, calls }
+}
+
+check('cheerpjLoaderFromHtml：从 run.html 读版本路径，不在代码里抄', () => {
+  assert.equal(cheerpjLoaderFromHtml(RUN_HTML), `${CHEERPJ_ORIGIN}/20260317_2978/loader.js`)
+  assert.equal(cheerpjLoaderFromHtml('<script src="/j2me/src/main.js"></script>'), '')
+  assert.equal(cheerpjLoaderFromHtml('<script src="https://evil.example/loader.js"></script>'), '')
+})
+
+await asyncCheck('连得上 = ok，且用 no-cors + include（与 <script> 共用 HTTP 缓存）', async () => {
+  const f = fakeFetch(['ok'])
+  assert.equal(await probeCheerpjCdn({ runHtmlUrl: '/j2me/run.html', fetchImpl: f.impl }), 'ok')
+  const loader = f.calls.find((c) => c.url.includes('loader.js'))
+  assert.equal(loader.init.mode, 'no-cors')
+  assert.equal(loader.init.credentials, 'include')
+})
+
+await asyncCheck('⭐ 一次网络抖动不判死：失败一次、第二次连上 = ok', async () => {
+  const f = fakeFetch(['fail', 'ok'])
+  assert.equal(await probeCheerpjCdn({ runHtmlUrl: '/j2me/run.html', fetchImpl: f.impl, retryDelayMs: 1 }), 'ok')
+})
+
+await asyncCheck('⭐ 两次网络层失败才判 down', async () => {
+  const f = fakeFetch(['fail', 'fail'])
+  assert.equal(await probeCheerpjCdn({ runHtmlUrl: '/j2me/run.html', fetchImpl: f.impl, retryDelayMs: 1 }), 'down')
+})
+
+await asyncCheck('⭐ 超时只算 slow，不算 down（慢不等于死）', async () => {
+  const f = fakeFetch(['hang'])
+  assert.equal(await probeCheerpjCdn({ runHtmlUrl: '/j2me/run.html', fetchImpl: f.impl, timeoutMs: 5 }), 'slow')
+})
+
+await asyncCheck('读不到 run.html / 播放器销毁 = unknown，不能当 down 报错', async () => {
+  const broken = async () => { throw new TypeError('x') }
+  assert.equal(await probeCheerpjCdn({ runHtmlUrl: '/j2me/run.html', fetchImpl: broken }), 'unknown')
+  const ac = new AbortController()
+  const f = fakeFetch(['fail', 'fail'])
+  const pending = probeCheerpjCdn({ runHtmlUrl: '/j2me/run.html', fetchImpl: f.impl, retryDelayMs: 50, signal: ac.signal })
+  ac.abort()
+  assert.equal(await pending, 'unknown')
+})
+
+check('⭐ 适配器接线：开局确认 CDN down 后启用备用运行时、loader 缺失先再探并只重载一次、销毁时中止探测', () => {
+  assert.match(adapterCode, /if \(result === 'down'\) \{\s+cheerpjConfirmedDown = true\s+maybeStartJ2meWebFallback\(\)/, '开局探测确认 CDN down 要启动备用运行时')
+  assert.match(adapterCode, /cdnReloaded = true/, 'loader 缺失要先再探一次')
+  assert.match(adapterCode, /win\.location\.reload\(\)/, '再探连得上要原地重载 run.html')
+  assert.match(adapterCode, /resetStartWatch\(\)\s*\n\s*try \{\s*\n\s*win\.location\.reload/, '重载前看门狗要从头计')
+  assert.match(adapterCode, /probeAbort\.abort\(\)/, '销毁时要中止探测')
+  assert.match(adapterCode, /if \(destroyed \|\| failed \|\| fallbackActive\) return\s*\n\s*diagLog\('j2me', 'info', warmed/, '探测已判死或已切备用运行时就不要再设 CheerpJ iframe.src')
 })
 
 console.log(failed ? `\n${failed} 项失败` : `\nJ2ME 测试全部通过 ✅`)

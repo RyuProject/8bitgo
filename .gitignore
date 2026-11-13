@@ -122,6 +122,7 @@ public/jsdos
 # FreeJ2ME 运行时（predev / prebuild 从上游稀疏检出）
 # 不进 git，但构建前必须自动安装，否则线上 /j2me/run.html 会 404。
 public/j2me
+public/j2me-web
 .j2me-tmp
 
 # webretro 运行时（npm run webretro 从 GitHub 稀疏检出，约 80MB）
