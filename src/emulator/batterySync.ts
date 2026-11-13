@@ -21,6 +21,7 @@
  * 这一局就停止推送，绝不静默覆盖。开局没读到云端（断网、超时、5xx）的一局**不推送**——
  * 那时不知道云端有什么，推上去可能盖掉更新的进度。
  */
+import { diagLog } from '@/services/startupDiagnostics'
 import { MAX_SAVE_BYTES, cloudSavesEnabled, fetchCloudSaveStrict, getSaveTarget, pushSave } from '@/services/saves'
 
 /** 云端 emulatorjs 存档里留给电池存档的那一格（即时存档用 0） */
@@ -109,7 +110,10 @@ const defaultDeps = (): BatterySyncDeps => ({
   storage: safeStorage(),
   now: () => Date.now(),
   timeoutMs: BATTERY_PULL_TIMEOUT_MS,
-  log: (msg) => console.info(`[battery-sync] ${msg}`),
+  log: (msg) => {
+    console.info(`[battery-sync] ${msg}`)
+    diagLog('adapter', 'info', `电池存档同步：${msg}`)
+  },
 })
 
 export interface BatterySync {
@@ -205,6 +209,7 @@ export function createBatterySync(saveSlug: string, partial: Partial<BatterySync
           fs.writeFile(`${path}.cloud-${deps.now()}.bak`, cloud.data)
           deps.log(`本地与云端的游戏内存档都改过，保留本地，云端那份另存为 ${rel}.cloud-*.bak`)
         }
+        if (decision !== 'use-cloud' && decision !== 'conflict') deps.log(`开局决定：${decision}`)
         ready = true
         return decision
       } catch (e) {

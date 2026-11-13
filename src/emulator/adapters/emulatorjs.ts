@@ -145,7 +145,7 @@ import { findDipOptions, planDipChanges, type DipPlan } from '../dipPlan'
 import { diagLog, watchFramePerformance } from '@/services/startupDiagnostics'
 import { browserBitness, probeBrowserBitness } from '../browserBitness'
 import { createBatterySync, type BatteryFs, type BatterySync } from '../batterySync'
-import { batterySaveGameName, guardIdbfsPersist, migrateLegacyBatterySaves, type IdbfsLike, type SaveFsLike } from '../ejsSaveFs'
+import { batterySaveGameName, describeBootState, guardIdbfsPersist, migrateEngineSettingsKey, migrateLegacyBatterySaves, type IdbfsLike, type SaveFsLike } from '../ejsSaveFs'
 
 /**
  * 站点语言 → EmulatorJS 自带的界面语言包（data/localization/*.json）。
@@ -4056,6 +4056,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           if (batteryName && batteryName !== engineGameName) {
             legacyBatteryName = engineGameName
             engineGameName = batteryName
+            // 引擎的改键 / 金手指 / 核心选项按 gameName 存；换了名字就要把旧键带过来（见 migrateEngineSettingsKey）
+            try {
+              migrateEngineSettingsKey(window.localStorage, gameId, legacyBatteryName, engineGameName)
+            } catch {
+              /* localStorage 不可用：设置本来也存不下 */
+            }
           }
           if (isDiscPlatform(options.platform)) discRomPrepared = true
         } else if (!isFile && (
@@ -4538,6 +4544,17 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           const fs = emu.gameManager?.FS as { filesystems?: { IDBFS?: IdbfsLike } } | undefined
           if (!guardIdbfsPersist(fs?.filesystems?.IDBFS)) {
             console.warn('[emulatorjs] 没找到核心的 IDBFS.reconcile，电池存档保护未生效')
+          }
+          // 开机时这个浏览器里跟本局有关的状态（电池存档、引擎设置、金手指）进诊断包；开局失败时才看得出是不是它们
+          try {
+            const settingsKey = (emu as { getLocalStorageKey?: () => string }).getLocalStorageKey?.()
+            diagLog('adapter', 'info', describeBootState(
+              fs as unknown as Parameters<typeof describeBootState>[0],
+              engineGameName,
+              settingsKey ? window.localStorage.getItem(settingsKey) : null,
+            ))
+          } catch {
+            /* 诊断不影响开局 */
           }
           if (legacyBatteryName && options.gameSlug) {
             try {

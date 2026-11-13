@@ -117,6 +117,13 @@ grep -c 'this.functions.saveStateInfo()' public/emulatorjs/emulator.min.js   # �
   开局没读到云端（断网、超时）的一局**不推送**。不同步：未登录、选了只存本地、本地文件、街机、联机加入方。
 
 回归：`npm run test:ejs-battery-saves`。
+- ⚠️ 引擎的改键 / 金手指 / 核心选项存在 localStorage `ejs-<gameId>-<系统>-<gameName>-settings`，**gameName 一变就读不到**。
+  8BG 改名时 `migrateEngineSettingsKey` 把旧键复制到新键；以后再改 EJS_gameName 的规则也必须带上这一步。
+- 开局前 `describeBootState` 把本浏览器里的电池存档（大小）、引擎设置项名、金手指条数写进诊断包（不记内容）。
+  2026-11-13《火红》一例 `table index is out of bounds`（CN / Chrome 132 / Windows，自动重试同样失败，下一次访问重新下载 ROM 后正常）
+  当时看不出开机状态；本地已实测排除：SRAM / Flash 存档（含错尺寸、乱码）、金手指、mGBA 全部核心选项、回退 / 快进 / 旋转、LCD shader。
+  再出现时先看这一行。
+
 
 ### 2.8 街机靠**压缩包文件名**认游戏
 
