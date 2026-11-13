@@ -603,11 +603,17 @@ async function unpackEachChunk(
   return header
 }
 
-/** 探 Blob 存储是否真的接住了这些块：每块读 1 字节。坏掉的存储在这里就抛，不再等引擎读 256MB 时才失败。 */
+/** 探 Blob 存储是否真的接住了解包结果：每块抽查首字节，再按引擎真实读取大小探合并后的 ROM。 */
 const BLOB_STORAGE_PROBE_MS = 8_000
-async function assertBlobPartsReadable(parts: Blob[]): Promise<void> {
+async function assertBlobPartsReadable(parts: Blob[]): Promise<Blob> {
   try {
     await Promise.all(parts.map((part) => (part.size ? readBlobRange(part, 0, 1, BLOB_STORAGE_PROBE_MS) : null)))
+    const combined = new Blob(parts, { type: 'application/octet-stream' })
+    // 引擎以 4MB 为一片读取。只探 1 字节会漏掉“文件头可读、实际内容读不出”的临时 Blob。
+    const probeBytes = Math.min(combined.size, 4 * 1024 * 1024)
+    const probe = await readBlobRange(combined, 0, probeBytes, BLOB_STORAGE_PROBE_MS)
+    if (probe.byteLength !== probeBytes) throw new Error('ROM Blob 预读长度不符')
+    return combined
   } catch {
     throw new RomBlobStorageError()
   }
@@ -628,8 +634,8 @@ export async function unpackRomPackBlob(
   const output: Blob[] = []
   // 每块立刻固化成 Blob：既脱离可能复用的 WASM 内存，也允许浏览器把大结果落到磁盘。
   const header = await unpackEachChunk(blob, onProgress, (source) => { output.push(new Blob([source])) })
-  await assertBlobPartsReadable(output)
-  return { name: header.originalName, blob: new Blob(output, { type: 'application/octet-stream' }), header }
+  const playable = await assertBlobPartsReadable(output)
+  return { name: header.originalName, blob: playable, header }
 }
 
 /**

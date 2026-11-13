@@ -1208,7 +1208,7 @@ function fetchMameDiskBytes(
  * 而是读 Blob 时的真实错误（多半是内存），下一份现场就能分清两种原因。
  * 只拦这一个地址，其余请求原样交给原生 fetch。
  */
-function installBlobFetchShortcut(win: Window, url: string, blob: Blob): void {
+function installBlobFetchShortcut(win: Window, url: string, blob: Blob, onBlobReadError?: (error: unknown) => void): void {
   const frame = win as Window & { fetch: typeof fetch; Response: typeof Response; ReadableStream: typeof ReadableStream }
   const native = frame.fetch?.bind(frame)
   if (typeof native !== 'function' || typeof frame.Response !== 'function') return
@@ -1257,6 +1257,7 @@ function installBlobFetchShortcut(win: Window, url: string, blob: Blob): void {
             markRomBlobStorageBroken('引擎分块读取')
             diagLog('adapter', 'warn', `ROM Blob 分块读取失败：${safeStr(error)}`)
             controller.error(error)
+            onBlobReadError?.(error)
           }
         },
         cancel() {
@@ -4566,7 +4567,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             : undefined)
         // 预下载好的 ROM：引擎取 blob: 地址时直接拿 Blob 回应，不走 Safari 的 blob URL 加载（见 installBlobFetchShortcut）
         if (preparedRomBlob && preparedArcadeBlobUrl && gameUrl === preparedArcadeBlobUrl) {
-          installBlobFetchShortcut(win, preparedArcadeBlobUrl, preparedRomBlob)
+          installBlobFetchShortcut(win, preparedArcadeBlobUrl, preparedRomBlob, (error) => {
+            const message = safeStr(error)
+            logEngine(`[rom-blob] 文件读取失败，下一次开局将改用内存：${message}`)
+            // 别等引擎把流错误改写成含糊的启动失败或卡死超时；受控重挂后，8BG ROM 会走内存退路。
+            failLoad(fmt(rt.ejsEngineError, { msg: message }), 'runtime')
+          })
         }
 
         // RomData / BIOS 也要赶在 loader.js 之前装：它靠接管 window.EJS_emulator 的赋值来生效，

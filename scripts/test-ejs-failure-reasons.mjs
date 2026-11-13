@@ -143,7 +143,12 @@ console.log('✔ 启动失败原因：跨 realm 错误原文、内存不足、�
   const js = transformSync(fnSource('installBlobFetchShortcut'), { loader: 'ts' }).code
   const logs = []
   const memoryRoms = new WeakMap()
-  const context = { diagLog: (...a) => logs.push(a.join(' ')), Promise, URL, ReadableStream, memoryRomOf: (b) => memoryRoms.get(b) }
+  const context = {
+    diagLog: (...a) => logs.push(a.join(' ')), Promise, URL, ReadableStream,
+    memoryRomOf: (b) => memoryRoms.get(b),
+    markRomBlobStorageBroken: () => logs.push('Blob storage marked broken'),
+    safeStr: (error) => error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+  }
   vm.runInNewContext(`${js};globalThis.install=installBlobFetchShortcut`, context)
   // Blob 存储坏掉时的内存 ROM（2026-11-13 大陆 2GB Chrome 宝可梦白 2 / 黑 NotReadableError）：逐块流出、交出即放
   {
@@ -171,7 +176,13 @@ console.log('✔ 启动失败原因：跨 realm 错误原文、内存不足、�
   assert.deepEqual(passthrough, ['/emulatorjs/cores/x.data', 'blob:x/rom'], 'HEAD 不拦')
   assert.equal(res.headers.get('content-length'), '4')
   assert.match(logs[0], /ROM 按块流给引擎/)
-  assert.match(adapter, /installBlobFetchShortcut\(win, preparedArcadeBlobUrl, preparedRomBlob\)/)
+  let readError
+  const unreadable = { size: 4, type: '', slice: () => ({ arrayBuffer: async () => { throw new DOMException('requested file could not be read', 'NotReadableError') } }) }
+  const badWin = { fetch: async () => new Response('net'), Response, ReadableStream }
+  context.install(badWin, 'blob:x/bad', unreadable, (error) => { readError = error })
+  await assert.rejects((await badWin.fetch('blob:x/bad')).arrayBuffer(), /requested file could not be read/)
+  assert.equal(readError?.name, 'NotReadableError', 'Blob 读取错误必须直接触发受控重启回调')
+  assert.match(adapter, /installBlobFetchShortcut\(win, preparedArcadeBlobUrl, preparedRomBlob, \(error\) => \{/)
   assert.equal((adapter.match(/preparedRomBlob = (prepared|extracted)\.blob/g) ?? []).length, 5, '每处预下载 ROM 都要记下 Blob')
   console.log('✓ 预下载 ROM 由 Blob 直接交给引擎，其余请求放行')
 }

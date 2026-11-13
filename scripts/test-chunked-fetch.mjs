@@ -818,7 +818,10 @@ await check('Blob 存储坏掉：内存 ROM 替身可切片校验，交给引擎
   assert.match(ejs, /isNativeBlobReadMessage\(message\)/, '引擎读 ROM 报 NotReadableError 时要标记本页 Blob 存储已坏')
   assert.match(ejs, /const memory = memoryRomOf\(blob\)/, '引擎取 ROM 的快捷回应要认内存 ROM')
   const pack = readFileSync(new URL('../src/services/romPack.ts', import.meta.url), 'utf8')
-  assert.match(pack, /await assertBlobPartsReadable\(output\)/, '解包后要探一遍每块能不能读')
+  assert.match(pack, /await Promise\.all\(parts\.map\(\(part\) => \(part\.size \? readBlobRange\(part, 0, 1, BLOB_STORAGE_PROBE_MS\) : null\)\)\)/, '解包后要探每个 Blob 块是否存在')
+  assert.match(pack, /const probeBytes = Math\.min\(combined\.size, 4 \* 1024 \* 1024\)/, '还要按引擎的 4MB 读取大小探合并后的 ROM')
+  assert.match(ejs, /onBlobReadError\?\.\(error\)/, '引擎读取 Blob 失败时要主动通知启动恢复')
+  assert.match(ejs, /failLoad\(fmt\(rt\.ejsEngineError, \{ msg: message \}\), 'runtime'\)/, 'Blob 读取失败应重挂一次并保留 ROM 候选')
 })
 
 console.log(failed ? `\n${failed} 项未通过` : '\n全部通过 ✅')
