@@ -253,6 +253,17 @@ check('⚠️ 没有云端 ROM / 没有运行时时不能把标记消耗掉（ro
   assert.ok(guard < mark, '标记被放在了前置判断之前 —— 地址还没探到就把这一次自动开局用掉了')
 })
 
+check('⚠️ 未开联机 / 单人游戏不画联机入口（服务端会回 game does not support multiplayer）', () => {
+  const tv = strip(read('src/components/tv/TvPlay.tsx'))
+  for (const [name, src] of [['GameDetailPage', detail], ['TvPlay', tv]]) {
+    assert.match(src, /maxPlayers=\{game\.multiplayer \? game\.players : 1\}/, `${name} 直接传了 game.players：players=2 却未开联机的游戏（铁拳）仍会画「联机匹配」`)
+  }
+  assert.match(player, /const hostable = slots > 1/, '播放器没有按手柄位数判断能否开房')
+  assert.match(player, /const p2pOk = hostable &&/, 'P2P 入口没看 hostable：单人游戏仍会画「改为联机」')
+  assert.match(player, /const cloudOk = hostable &&/, '云端入口没看 hostable')
+  assert.ok(player.indexOf('const slots =') < player.indexOf('const p2pOk ='), 'slots 必须在 p2pOk 之前定义')
+})
+
 console.log('')
 if (fails.length) {
   for (const f of fails) console.error('✗ ' + f.name + '\n' + (f.e?.stack ?? f.e))

@@ -493,7 +493,7 @@ export function GameDetailPage() {
                   gameSlug={game.slug}
                   runtime={game.runtime}
                   startupVisitId={startupVisitId}
-                  maxPlayers={game.players}
+                  maxPlayers={game.multiplayer ? game.players : 1}
                   invite={invite}
                   cloudInvite={cloudInvite}
                   watch={watchOnly}

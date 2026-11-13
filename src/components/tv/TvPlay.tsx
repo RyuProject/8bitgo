@@ -118,7 +118,7 @@ export function TvPlay({ slug, onExit }: { slug: string; onExit: () => void }) {
               gameName={game.title}
               gameSlug={game.slug}
               runtime={game.runtime}
-              maxPlayers={game.players}
+              maxPlayers={game.multiplayer ? game.players : 1}
               /* 回车进来的就直接开一局 —— 遥控器上再要求按一次「开始游戏」是多余的一步 */
               autoStart
               /*
