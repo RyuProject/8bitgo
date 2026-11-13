@@ -2170,8 +2170,10 @@ export function EmulatorPlayer({
           setStatus('idle')
           return
         }
-        // 后台配置错误 / 必然失败的包：原地重来一遍只会让玩家再等一轮（mame-current 还要重新解压编译 242MB）
-        const retryUseless = errorScope === 'config' || errorScope === 'deterministic'
+        // 后台配置错误 / 必然失败的包：原地重来一遍只会让玩家再等一轮（mame-current 还要重新解压编译 242MB）。
+        // CheerpJ 的 runtime 错误也不重试：同一个官方 CDN / 浏览器环境再走一遍只会重复数分钟等待。
+        const retryUseless = errorScope === 'config' || errorScope === 'deterministic' ||
+          (session.runtime.id === 'j2me' && errorScope === 'runtime')
         if (!ready && !retryUseless && canRestartInPlace(session) && attempt < AUTO_RETRY_LIMIT) {
           setError(null)
           begin(session.game, session.platform, session.runtime, {

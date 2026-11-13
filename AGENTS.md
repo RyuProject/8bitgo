@@ -1624,6 +1624,12 @@ JVM 起不来一律以 `'runtime'` 报（`j2meStartTimeout`）：不带 scope �
 run.html 的 load 到了却没有 `cheerpjInit`（leaningtech 的 loader.js 被拦 / 取不到，`cheerpjLoaderMissing`）立刻报
 `j2meCheerpjUnreachable`，不再等满 120 秒前台无进展。
 
+⚠️ **后台节流后的第一跳不能把隐藏时间算成前台卡死**（2026-11-14 玩家现场）：浏览器切后台会暂停 iframe 的定时器，
+原看门狗只在回调里检查当前 `visibilityState`；玩家回来后第一跳已经是 visible，会把上次回调到现在的整段后台时间
+记进 `stalledMs`，立即误报「CheerpJ 起不来」。`visibilitychange` 必须重置计时基准，耗时用 `performance.now()`，
+单次前台计时步长封顶 2 秒，并在就绪、失败、销毁时移除监听。J2ME 的 `'runtime'` 错误（含 CheerpJ CDN 不可达）
+也不做播放器自动重试：同一 CDN / 浏览器环境再等完整一轮只会放大等待，不会修好运行时设施。
+
 ⚠️ **J2ME 大文件给大陆访客走 cn.8bitgo.com，靠 Service Worker 而不是改地址**（2026-11-13）：run.html 必须与父页面同源
 （读画面、接手柄、截图），CheerpJ 只会从同源 `/app/` 取 JAR、没有改源的配置。所以 `/j2me/edge-sw.js`
 （源文件 `scripts/j2me-web/edge-sw.js`，`patch-j2me-runtime.mjs` 复制进被忽略的 public/j2me）只在 run.html 带 `edge=cn`

@@ -355,6 +355,19 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let readySent = false
   /** 起不来的兜底计时器，销毁时要收掉 */
   let readyTimer = 0
+  /** 切后台会节流定时器；恢复前台时重置基准，避免把整段后台时间算成启动停滞 */
+  let onReadyVisibilityChange: (() => void) | null = null
+
+  const stopReadyWatch = () => {
+    if (readyTimer) {
+      window.clearInterval(readyTimer)
+      readyTimer = 0
+    }
+    if (onReadyVisibilityChange) {
+      document.removeEventListener('visibilitychange', onReadyVisibilityChange)
+      onReadyVisibilityChange = null
+    }
+  }
 
   const stopPoll = () => {
     if (poll) {
@@ -364,6 +377,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   }
   const sendReady = () => {
     stopPoll()
+    stopReadyWatch()
     if (readySent || destroyed) return
     readySent = true
     options.onReady?.()
@@ -441,7 +455,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       此时还没有 cheerpjInit，说明 loader 被拦或取不到 —— 不必再等 120 秒前台无进展才判死。
     */
     if (!crossOrigin && !readySent && cheerpjLoaderMissing(win)) {
-      window.clearInterval(readyTimer)
+      stopReadyWatch()
       stopPoll()
       diagLog('j2me', 'warn', `CheerpJ loader 没加载上（${CHEERPJ_ORIGIN}）`)
       options.onError?.(rt.j2meCheerpjUnreachable, 'runtime')
@@ -499,6 +513,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       console.warn('[j2me] 就绪之后 iframe 报了 error，忽略（不拆会话）')
       return
     }
+    stopReadyWatch()
+    stopPoll()
     if (edgeOn) markJ2meEdgeFailed()
     options.onError?.(fmt(rt.j2meLoadFailed, { path: J2ME_PATH }))
   })
@@ -603,14 +619,21 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       let stalledMs = 0
       let foregroundMs = 0
       let seenResources = -1
-      let lastTick = Date.now()
+      let lastTick = performance.now()
+      onReadyVisibilityChange = () => {
+        // 浏览器会暂停或合并后台定时器；恢复时从当前时刻重新计，不能补算隐藏期间的时间。
+        lastTick = performance.now()
+      }
+      document.addEventListener('visibilitychange', onReadyVisibilityChange)
       readyTimer = window.setInterval(() => {
-        if (destroyed || readySent) return window.clearInterval(readyTimer)
-        const now = Date.now()
-        const step = now - lastTick
+        if (destroyed || readySent) return stopReadyWatch()
+        const now = performance.now()
+        const elapsed = now - lastTick
         lastTick = now
         // 后台被节流时 CheerpJ 本来就起不动，这段不算
         if (document.visibilityState === 'hidden') return
+        // 即使浏览器没有及时发 visibilitychange，也不让单次长间隔吞掉启动预算。
+        const step = Math.min(Math.max(elapsed, 0), 2_000)
         foregroundMs += step
         stalledMs += step
         const count = frameResourceCount()
@@ -619,7 +642,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           stalledMs = 0
         }
         if (stalledMs < J2ME_STALL_TIMEOUT_MS && foregroundMs < J2ME_READY_HARD_CAP_MS) return
-        window.clearInterval(readyTimer)
+        stopReadyWatch()
         stopPoll()
         diagLog('j2me', 'warn', `放弃：前台 ${Math.round(foregroundMs / 1000)}s，其中 ${Math.round(stalledMs / 1000)}s 没有新请求完成，iframe 共完成 ${Math.max(seenResources, 0)} 个请求`)
         if (edgeOn) markJ2meEdgeFailed()
@@ -642,7 +665,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
   const destroy = () => {
     destroyed = true
-    window.clearInterval(readyTimer)
+    stopReadyWatch()
     stopFramePerf?.()
     stopFramePerf = null
     stopPoll()
