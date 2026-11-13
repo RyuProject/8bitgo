@@ -1594,6 +1594,14 @@ libmidi.wasm 3.1MB 要 48 秒，CheerpJ 自己的 CDN 全程闲着；之后再�
 不会下两遍）；`J2ME_STALL_TIMEOUT_MS` 只数前台、iframe 每完成一个请求就重新计时，前台总上限 6 分钟；
 iframe 登记了 `watchFramePerformance`，诊断包里能看到 CheerpJ 的下载。回归：`npm run test:j2me`。
 
+⚠️ **J2ME 大文件给大陆访客走 cn.8bitgo.com，靠 Service Worker 而不是改地址**（2026-11-13）：run.html 必须与父页面同源
+（读画面、接手柄、截图），CheerpJ 只会从同源 `/app/` 取 JAR、没有改源的配置。所以 `/j2me/edge-sw.js`
+（源文件 `scripts/j2me-web/edge-sw.js`，`patch-j2me-runtime.mjs` 复制进被忽略的 public/j2me）只在 run.html 带 `edge=cn`
+时，把 freej2me-web.jar、libmidi/libmidi.wasm、`jar/*.jar` 三类请求连同 Range 转给 `https://cn.<裸域>/_cn/j2me/…`；
+边缘出错或 Range 没回 206 就退回同源。**加速域名只能由 SW 从自己的地址推出**，绝不接受参数（否则可以把任意 JAR 喂给
+CheerpJ 在本站源上执行）。`cn-edge.js` 放行 `j2me` 前缀并暴露 Content-Range 等响应头。适配器 3 秒内 SW 没激活就整局同源，
+开局失败 `markJ2meEdgeFailed()`，自动重试改回同源。回归：`npm run test:j2me`。
+
 ⚠️ 播放器的启动看门狗（`EmulatorPlayer.tsx`，「连续 120 秒没有启动进度或可玩信号」）只数**前台**时间：
 标签页在后台时浏览器会节流 Win95 开机和 CheerpJ，各适配器自己的开机计时器也只按前台走；按墙钟计时会把
 还在开机的游戏记成超时（2026-11-10《天之痕》下载 146 秒后被记超时，适配器从未报错）。

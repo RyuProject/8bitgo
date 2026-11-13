@@ -4,7 +4,7 @@
  * 上游运行时是构建时下载的，直接改 public/j2me 会在换机器或部署时丢失；
  * 因此补丁必须由 setup-j2me 在“已安装”和“刚安装”两条路径都执行。
  */
-import { readFileSync, writeFileSync } from 'node:fs'
+import { copyFileSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -36,3 +36,6 @@ patchFile(
   '/* 8BitGo patch: MIDI 时长只供开发调试，不在玩家控制台输出。 */',
   ["console.log('duration', duration);"],
 )
+
+// 大陆加速入口的 Service Worker（scripts/j2me-web/edge-sw.js）。作用域就是 /j2me/，所以文件必须放在这个目录里。
+copyFileSync(path.join(root, 'scripts/j2me-web/edge-sw.js'), path.join(runtime, 'edge-sw.js'))

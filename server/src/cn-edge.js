@@ -11,7 +11,8 @@
  *   3. CSS 里写死的 `url(/fonts/...)` 会按样式表所在的 cn 域解析到 EdgeOne 上那批**没有 CORS 头**
  *      的旧缓存，字体就被拦了。所以 `/_cn/**.css` 在这里读出文件，把 `/fonts/` 改成 `/_cn/fonts/`。
  *
- * 只放行 assets / fonts / api / emulatorjs / ruffle / jsdos 六个前缀和 PSP 的 wasm / data，别的一律 404：这不是通用的反代入口。
+ * 只放行 assets / fonts / api / emulatorjs / ruffle / jsdos / j2me 七个前缀和 PSP 的 wasm / data，别的一律 404：这不是通用的反代入口。
+ * j2me 是给 /j2me/edge-sw.js 用的：CheerpJ 只认同源，SW 拦下它的 Range 请求转到这里（见 scripts/j2me-web/edge-sw.js）。
  * 后三个给大陆访客取模拟器引擎与核心（src/emulator/paths.ts 的 runtimeBase：EmulatorJS、Flash、DOS）。
  */
 import { readFile } from 'node:fs/promises'
@@ -23,7 +24,7 @@ import { CN_EDGE_PREFIX } from '../../shared/cover-cdn-hint.js'
   还会让 EdgeOne 缓存一批 CORP 不对的副本。
 */
 const PPSSPP_EDGE = /^\/ppsspp\/v[0-9a-f]+\/v\d+\/PPSSPPSDL\.(?:wasm|data)(?:\?|$)/
-const ALLOWED = /^\/(assets|fonts|api|emulatorjs|ruffle|jsdos)\//
+const ALLOWED = /^\/(assets|fonts|api|emulatorjs|ruffle|jsdos|j2me)\//
 const IMMUTABLE = 'public, max-age=31536000, immutable'
 
 export function rewriteCssFontUrls(css) {
@@ -55,6 +56,10 @@ export function createCnEdgeMiddleware({ clientDir, siteOrigin }) {
       else res.removeHeader('Vary')
     }
     res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
+    // J2ME 的请求经 SW 跨源取回再交给 CheerpJ：它要读 Content-Range 判断 Range 生效，没暴露就只看得到安全名单里的头
+    if (rest.startsWith('/j2me/')) {
+      res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length, ETag, Last-Modified')
+    }
 
     const pathname = rest.split('?')[0]
     if ((req.method === 'GET' || req.method === 'HEAD') && pathname.endsWith('.css') && !pathname.startsWith('/api/')) {

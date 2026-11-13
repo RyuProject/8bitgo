@@ -188,7 +188,7 @@ function installJ2meAudio(win: Window, getVolume: () => number): J2meAudio | nul
 }
 
 export { J2ME_PATH } from '../paths'
-import { J2ME_PATH } from '../paths'
+import { J2ME_PATH, j2meEdgeBase, markJ2meEdgeFailed } from '../paths'
 // URL 那几条规则搬到了 ../j2meUrl（纯函数，有单测）—— 尤其是跨源判定那一条，
 // 原来靠「读 contentDocument 会不会抛」判，而它跨源时返回 null 不抛，那条退路是死代码
 import { buildJ2meUrl, isCrossOriginBase, j2meFileName, j2meWarmTargets, packedJarProxyName } from '../j2meUrl'
@@ -237,6 +237,30 @@ function deadHandle(): RuntimeHandle {
   return { destroy: () => {}, caps: new Set<Capability>() }
 }
 
+/** 装上（或确认已装）/j2me/edge-sw.js，并等它激活。3 秒内没好就当没有，这一局走同源 */
+const J2ME_EDGE_SW_WAIT_MS = 3_000
+function registerJ2meEdgeWorker(base: string): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const timer = window.setTimeout(() => resolve(false), J2ME_EDGE_SW_WAIT_MS)
+    const done = (ok: boolean) => {
+      window.clearTimeout(timer)
+      resolve(ok)
+    }
+    navigator.serviceWorker.register(`${base}edge-sw.js`, { scope: base }).then((reg) => {
+      if (reg.active) return done(true)
+      const worker = reg.installing || reg.waiting
+      if (!worker) return done(false)
+      worker.addEventListener('statechange', () => {
+        if (worker.state === 'activated') done(true)
+        else if (worker.state === 'redundant') done(false)
+      })
+    }, (error: unknown) => {
+      console.warn('[j2me] 加速入口的 Service Worker 注册失败，走同源：', error)
+      done(false)
+    })
+  })
+}
+
 export function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const rt = getT().runtime
 
@@ -260,10 +284,21 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
   // 8BG / 本地 JAR 后面还要解包并上传临时盘，这段等待可以与 FreeJ2ME 的大资源下载并行。
   // 先建好可复用的 Promise，悬停预热若已启动同一 URL，这里就等待那一份而不会重复下载。
-  const runtimeWarmup = Promise.all(j2meWarmTargets(J2ME_PATH).map((url) => warmHttpCache(url)))
+  /*
+    大陆访客：freej2me-web.jar、libmidi.wasm、游戏 JAR 改从 cn.8bitgo.com（EdgeOne）取。
+    run.html 仍同源（父页面要读画面、接手柄），CheerpJ 又只认同源，所以由 /j2me/edge-sw.js 拦下这几类
+    请求转过去；预热也直接拉加速入口的那份，SW 稍后的请求命中同一条缓存。SW 没装上就整局照旧走同源。
+  */
+  const edgeBase = !isCrossOriginBase(J2ME_PATH, window.location.origin) && 'serviceWorker' in navigator
+    ? j2meEdgeBase(J2ME_PATH)
+    : ''
+  const edgeReady: Promise<boolean> = edgeBase ? registerJ2meEdgeWorker(J2ME_PATH) : Promise.resolve(false)
+  const warmUrl = (url: string) =>
+    edgeBase && !url.endsWith('/worklet.js') ? `${edgeBase}${url.slice(J2ME_PATH.length)}` : url
+  const runtimeWarmup = Promise.all(j2meWarmTargets(J2ME_PATH).map((url) => warmHttpCache(warmUrl(url))))
   const directName = !needsTempJar && typeof options.game === 'string' ? j2meFileName(options.game) : null
   const directJarWarmup = directName
-    ? warmHttpCache(`${J2ME_PATH}jar/${directName}`)
+    ? warmHttpCache(warmUrl(`${J2ME_PATH}jar/${directName}`))
     : Promise.resolve()
   const touchControls = Boolean(
     (navigator.maxTouchPoints ?? 0) > 0 || window.matchMedia?.('(pointer: coarse)').matches,
@@ -373,6 +408,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   }
   let stopFramePerf: (() => void) | null = null
 
+  /** 这一局 run.html 是否带 edge=cn 打开（大文件经 SW 走加速入口）；开局失败时据此让自动重试改回同源 */
+  let edgeOn = false
   let srcSet = false
   iframe.addEventListener('load', () => {
     if (!srcSet || destroyed) return
@@ -451,6 +488,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       console.warn('[j2me] 就绪之后 iframe 报了 error，忽略（不拆会话）')
       return
     }
+    if (edgeOn) markJ2meEdgeFailed()
     options.onError?.(fmt(rt.j2meLoadFailed, { path: J2ME_PATH }))
   })
   container.appendChild(iframe)
@@ -573,9 +611,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         window.clearInterval(readyTimer)
         stopPoll()
         diagLog('j2me', 'warn', `放弃：前台 ${Math.round(foregroundMs / 1000)}s，其中 ${Math.round(stalledMs / 1000)}s 没有新请求完成，iframe 共完成 ${Math.max(seenResources, 0)} 个请求`)
+        if (edgeOn) markJ2meEdgeFailed()
         options.onError?.(rt.j2meStartTimeout)
       }, 1_000)
-      iframe.src = buildJ2meUrl(J2ME_PATH, name, { fractionScale: true, mobile: touchControls })
+      edgeOn = await edgeReady
+      if (destroyed) return
+      if (edgeBase) diagLog('j2me', 'info', edgeOn ? `大文件走加速入口 ${edgeBase}` : '加速入口的 SW 没装上，走同源')
+      iframe.src = buildJ2meUrl(J2ME_PATH, name, { fractionScale: true, mobile: touchControls, edge: edgeOn })
     } catch (e) {
       if (destroyed) return
       const msg = e instanceof Error ? e.message : String(e)

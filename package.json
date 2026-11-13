@@ -221,7 +221,7 @@
     "test:ejs-download": "node scripts/test-ejs-download-guard.mjs",
     "test:ejs-failure-reasons": "node scripts/test-ejs-failure-reasons.mjs",
     "test:unzip-legacy": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-unzip-legacy-inflate.mjs",
-    "test:j2me": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-j2me.mjs",
+    "test:j2me": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-j2me.mjs && node scripts/test-j2me-edge.mjs",
     "test:ejs-cores": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-ejs-cores.mjs",
     "test:nds-layout": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-nds-layout.mjs",
     "test:worker": "npm --prefix worker test",

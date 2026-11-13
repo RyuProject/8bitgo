@@ -32,7 +32,7 @@ export function j2meFileName(url: string): string {
 export function buildJ2meUrl(
   base: string,
   name: string,
-  options: { mobile?: boolean; fractionScale?: boolean } = {},
+  options: { mobile?: boolean; fractionScale?: boolean; edge?: boolean } = {},
 ): string {
   const runHtml = `${base}run.html`
   const app = name.toLowerCase().endsWith('.zip')
@@ -41,6 +41,8 @@ export function buildJ2meUrl(
   const query = [`${key}=${encodeURIComponent(value)}`]
   if (options.fractionScale) query.push('fractionScale=1')
   if (options.mobile) query.push('mobile=1')
+  // 让 /j2me/edge-sw.js 把这一局的大文件转给大陆加速入口（只是开关，目标域名 SW 自己推，不能由参数指定）
+  if (options.edge) query.push('edge=cn')
   return `${runHtml}?${query.join('&')}`
 }
 

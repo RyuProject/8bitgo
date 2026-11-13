@@ -66,7 +66,7 @@ export const EJS_PATH: string = asDir(import.meta.env.VITE_EJS_PATH, '/emulatorj
  *
  * ⚠️ 引擎的 IndexedDB 核心缓存以 URL 为键：大陆老访客第一次换到这条线路会重下一次核心。
  */
-type RuntimeEdgeKind = 'ejs' | 'ruffle' | 'jsdos' | 'ppsspp'
+type RuntimeEdgeKind = 'ejs' | 'ruffle' | 'jsdos' | 'ppsspp' | 'j2me'
 let runtimeEdgeOrigin: string | null = null
 const runtimeEdgeFailed = new Set<RuntimeEdgeKind>()
 
@@ -204,6 +204,19 @@ export const JSDOS_PATH: string = asDir(
 export const jsdosBase = (): string => runtimeBase('jsdos', JSDOS_PATH)
 export function markJsdosEdgeFailed(): void {
   runtimeEdgeFailed.add('jsdos')
+}
+
+/**
+ * J2ME 的大文件（freej2me-web.jar、libmidi.wasm、游戏 JAR）走大陆加速入口时的目录，例如
+ * `https://cn.8bitgo.com/_cn/j2me/`；不走就返回空串。run.html 本身仍必须同源，所以这里只给预热与
+ * /j2me/edge-sw.js 用，不能拿它去拼 iframe 地址（见 adapters/j2me.ts）。
+ */
+export function j2meEdgeBase(j2mePath: string): string {
+  const base = runtimeBase('j2me', j2mePath)
+  return base === j2mePath ? '' : base
+}
+export function markJ2meEdgeFailed(): void {
+  runtimeEdgeFailed.add('j2me')
 }
 
 /* ---------------- EmulatorJS：平台别名 → 实际核心文件 ---------------- */
