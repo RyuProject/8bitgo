@@ -45,8 +45,9 @@ const STOP_WORDS_BY_LANGUAGE: Record<string, Set<string>> = {
 }
 
 const SHORT_KEYWORDS = new Set(['2d', '3d', 'fps', 'rpg', 'jrpg', 'mmorpg', 'vr', 'gba', 'nes', 'ps1', 'ps2'])
-const CJK_SCRIPT = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u
-const CJK_RUN = /^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]+$/u
+// 直接列码位范围，避免 legacy 构建的 Unicode 属性表拒绝 Script=Han，导致整站生产构建失败。
+const CJK_SCRIPT = /[\u1100-\u11FF\u2E80-\u2FFF\u3005\u3007\u3021-\u3029\u3038-\u303B\u3040-\u30FF\u3130-\u318F\u31F0-\u31FF\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF\uFF65-\uFF9F\u{20000}-\u{323AF}]/u
+const CJK_RUN = /^[\u1100-\u11FF\u2E80-\u2FFF\u3005\u3007\u3021-\u3029\u3038-\u303B\u3040-\u30FF\u3130-\u318F\u31F0-\u31FF\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF\uFF65-\uFF9F\u{20000}-\u{323AF}]+$/u
 
 type KeywordDescriptions = Readonly<Record<string, string | undefined>>
 
@@ -73,7 +74,7 @@ function usefulToken(raw: string, stopWords: Set<string>): string | null {
 }
 
 function fallbackTokens(text: string): string[] {
-  const parts = text.match(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]+|[\p{L}\p{N}]+(?:['’.-][\p{L}\p{N}]+)*/gu) ?? []
+  const parts = text.match(/[\u1100-\u11FF\u2E80-\u2FFF\u3005\u3007\u3021-\u3029\u3038-\u303B\u3040-\u30FF\u3130-\u318F\u31F0-\u31FF\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF\uFF65-\uFF9F\u{20000}-\u{323AF}]+|[\p{L}\p{N}]+(?:['’.-][\p{L}\p{N}]+)*/gu) ?? []
   return parts.flatMap((part) => {
     if (!CJK_RUN.test(part)) return [part]
     // 没有 Intl.Segmenter 的旧浏览器按二/三字片段退化，宁可少给几个候选也不把整句当关键词。
