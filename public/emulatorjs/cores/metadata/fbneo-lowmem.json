@@ -1,0 +1,20 @@
+{
+  "core": "fbneo-lowmem",
+  "buildStart": "2026-11-11T15:00:22.616Z",
+  "buildEnd": "2026-11-11T15:03:02.180Z",
+  "options": {},
+  "upstreamRepo": "https://github.com/EmulatorJS/FBNeo.git",
+  "upstreamCommit": "d5f072e147cfd01cb7c095470fd9c5c2697753d8",
+  "emulatorJsRetroArchCommit": "97f2cfa65d01d57406e4ce9459242c8ada7c7e3b",
+  "emsdkVersion": "3.1.74",
+  "minimumEJSVersion": "4.2.2",
+  "memory": {
+    "initialHeapBytes": 83886080,
+    "allowMemoryGrowth": true,
+    "minimumBytes": 83886080,
+    "maximumBytes": 2147483648,
+    "baselineMinimumBytes": 134217728,
+    "legacyMinimumBytes": 83886080
+  },
+  "sha256": "0a473a39337a55487270123017d5c1ec7669f4c76cbd0ac859048f5f052a5903"
+}

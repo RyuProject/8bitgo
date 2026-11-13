@@ -7,9 +7,16 @@
  * 页面会看似完成注入、核心却仍然报 Romset is unknown，排查方向完全错误。
  */
 
-/** 当前发布的核心里，只有 fbneo 的 wasm 确实包含 RomData / ZipName / DrvName 实现。 */
+const FBNEO_CORE_IDS = new Set(['fbneo', 'fbneo-lowmem'])
+
+/** 当前发布的 FBNeo 变体都包含 RomData / ZipName / DrvName 实现。 */
+export function isFbneoCore(core: string | undefined): boolean {
+  return core !== undefined && FBNEO_CORE_IDS.has(core)
+}
+
+/** 当前发布的核心里，只有 FBNeo 变体的 wasm 确实包含 RomData / ZipName / DrvName 实现。 */
 export function supportsFbneoRomData(core: string | undefined): boolean {
-  return core === 'fbneo'
+  return isFbneoCore(core)
 }
 
 /**
@@ -19,5 +26,6 @@ export function supportsFbneoRomData(core: string | undefined): boolean {
  * 已经有完整加载方案的改版游戏因为后台核心选错而必定开局失败更安全。
  */
 export function arcadeCoreForRomData(core: string, romData: string | undefined): string {
-  return romData?.trim() ? 'fbneo' : core
+  if (!romData?.trim()) return core
+  return isFbneoCore(core) ? core : 'fbneo'
 }

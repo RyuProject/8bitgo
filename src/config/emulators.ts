@@ -66,6 +66,7 @@ export const EXT_RUNTIME_OVERRIDES: Record<string, RuntimeId> = {
 export const CORE_OPTIONS: Record<string, Array<{ id: string; label: string }>> = {
   arcade: [
     { id: 'fbneo', label: 'FBNeo（默认，Neo Geo / 拳皇首选）' },
+    { id: 'fbneo-lowmem', label: 'FBNeo 低内存实验版（初始 80 MiB，按需增长）' },
     { id: 'fbalpha2012_cps1', label: 'FB Alpha CPS1（街霸 2 这类）' },
     { id: 'fbalpha2012_cps2', label: 'FB Alpha CPS2' },
     { id: 'mame2003_plus', label: 'MAME 2003-Plus（兼容面最广，较慢）' },
@@ -94,14 +95,14 @@ export function coreOptionsFor(platform: string): Array<{ id: string; label: str
 
 /**
  * 自构建核心：引擎别名表里没有、由 scripts/build-*.mjs 现编并丢进
- * public/emulatorjs/cores/ 的核心（mame-current 给 IGS027A 这类新驱动用，melondsds 是 NDS 默认核心）。
+ * public/emulatorjs/cores/ 的核心（mame-current 给 IGS027A 这类新驱动用，fbneo-lowmem 用于验证较小初始堆）。
  * test:ejs-cores 对它们跳过「引擎内建别名表」校验，改查实际产物。
  * 只要已经出现在后台下拉里就是对玩家的可用承诺：产物缺失必须阻断构建，
  * 不能只打一条线上根本没人看的警告后继续发布。
  */
 export const MELONDSDS_VERSION = '1.4.0'
 
-export const SELF_BUILT_CORES = new Set<string>(['mame-current', 'melondsds', 'mednafen_psx'])
+export const SELF_BUILT_CORES = new Set<string>(['mame-current', 'melondsds', 'mednafen_psx', 'fbneo-lowmem'])
 
 /** 后台已承诺这些核心可用，缺任意一份产物都会让相应游戏无法启动。 */
-export const REQUIRED_SELF_BUILT_CORES = new Set<string>(['mame-current', 'melondsds', 'mednafen_psx'])
+export const REQUIRED_SELF_BUILT_CORES = new Set<string>(['mame-current', 'melondsds', 'mednafen_psx', 'fbneo-lowmem'])

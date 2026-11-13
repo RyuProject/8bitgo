@@ -43,6 +43,7 @@ test('普通 FBNeo 街机也启用全站去降速，但不冒险关闭 32 位色
   assert.equal(options['fbneo-cpu-speed-adjust'], '130%')
   assert.equal(options['fbneo-samplerate'], '44100')
   assert.equal(options['fbneo-allow-depth-32'], undefined)
+  assert.deepEqual(arcadePerformanceDefaultOptions('arcade', 'fbneo-lowmem', 'kof97', 8), options)
 })
 
 test('玩家本地 ROM 没有 slug 时仍得到全站 FBNeo 优化', () => {
@@ -69,6 +70,7 @@ test('MAME 2003 系只启用安全的宿主加速，不伪造全局 CPU 超频',
 
 test('80ms 音频窗口覆盖全部轻量街机核心，mame-current 继续单独走 128ms', () => {
   assert.equal(isLightArcadeCore('arcade', 'fbneo'), true)
+  assert.equal(isLightArcadeCore('arcade', 'fbneo-lowmem'), true)
   assert.equal(isLightArcadeCore('arcade', 'mame2003'), true)
   assert.equal(isLightArcadeCore('arcade', 'mame2003_plus'), true)
   assert.equal(isLightArcadeCore('arcade', 'mame-current'), false)

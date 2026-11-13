@@ -3889,7 +3889,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
          * FBNeo 驱动表；后台手填了 arcadeBios 或 RomData 的游戏服务端根本不会给这个标记。
          */
         const noBiosNeeded = Boolean(
-          options.platform === 'arcade' && options.arcadeNoBios && core === 'fbneo' &&
+          options.platform === 'arcade' && options.arcadeNoBios && supportsFbneoRomData(core) &&
             !options.arcadeRomData?.trim() && !gameBiosName,
         )
         /** 这次真正交给引擎去下载的平台级 BIOS（空串 = 标不设 EJS_biosUrl）。进度探针也用这个值 */
@@ -4775,7 +4775,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
          * 这些行都在 callMain 内同步打印、早于 started，正好落进 FATAL_PHRASES 的开局前判定。
          * 只给 FBNeo / mame-current：verbose 只多出开局几十行，运行时没有逐帧日志。
          */
-        const forceArcadeCoreLog = options.platform === 'arcade' && (core === 'fbneo' || isMameCurrentCore(core))
+        const forceArcadeCoreLog = options.platform === 'arcade' && (supportsFbneoRomData(core) || isMameCurrentCore(core))
           ? (emu: EjsEmulator) => {
               const mod = (emu as { Module?: { callMain?: (args: string[]) => unknown } }).Module
               const call = mod?.callMain

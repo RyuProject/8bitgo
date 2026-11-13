@@ -1,4 +1,5 @@
 import type { ArcadeButtonCount, PlatformId } from '@/types'
+import { isFbneoCore } from './arcadeCore'
 
 /**
  * FBNeo 街机的音频排期窗口。引擎默认 64ms，网页主线程一次稍长的布局 / GC 就会把它抽空；
@@ -20,13 +21,13 @@ const FOUR_BUTTON_ARCADE_GAMES = new Set(['jojos-bizarre-adventure'])
 const NAMCO_FOUR_BUTTON_SLUG = /^(?:tekken|soul-?edge|soul-?blade|soul-?cal(?:i)?bur)(?:$|[-\d~])/
 
 export function isFbneoArcadeCore(platform: PlatformId, core: string): boolean {
-  return platform === 'arcade' && core === 'fbneo'
+  return platform === 'arcade' && isFbneoCore(core)
 }
 
 /** 较轻的街机核心共用 80ms 音频窗口；mame-current 单独走 128ms。 */
 export function isLightArcadeCore(platform: PlatformId, core: string): boolean {
   // fbalpha2012_cps1/cps2 是同一族更轻的核心，以前漏了它们，CPS 游戏改用轻核心后反而回到 64ms 窗口
-  return platform === 'arcade' && (core === 'fbneo' || core === 'mame2003' || core === 'mame2003_plus' ||
+  return platform === 'arcade' && (isFbneoCore(core) || core === 'mame2003' || core === 'mame2003_plus' ||
     core === 'fbalpha2012_cps1' || core === 'fbalpha2012_cps2')
 }
 

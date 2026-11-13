@@ -3960,6 +3960,16 @@ export function EmulatorPlayer({
                       className="mb-1 max-sm:hidden"
                     />
                   )}
+                  {!online && romUrl && status === 'idle' && !romChecking && !romUnavailable && (
+                    <p
+                      role="status"
+                      aria-live="polite"
+                      className="inline-flex items-center gap-2 rounded-full border border-emerald-200/25 bg-emerald-950/55 px-3 py-1.5 text-xs font-semibold text-emerald-50 shadow-sm backdrop-blur"
+                    >
+                      <span aria-hidden className="size-2 rounded-full bg-brand shadow-[0_0_10px_var(--color-brand)]" />
+                      {t.player.readyToPlay}
+                    </p>
+                  )}
                   <span
                     className="inline-flex flex-wrap items-center justify-center gap-2"
                     onPointerEnter={() => prewarmPrimaryAction(true)}
@@ -4007,7 +4017,7 @@ export function EmulatorPlayer({
                       {t.player.pspDownloadHint}
                     </p>
                   )}
-                  <p className="max-w-md text-[11px] leading-relaxed text-white/70 sm:text-xs">
+                  <div className="w-full max-w-xl text-xs leading-relaxed text-white/80 sm:text-sm">
                     {joining && online ? (
                       <>
                         {inviteGone
@@ -4056,26 +4066,39 @@ export function EmulatorPlayer({
                         {pageRuntime ? fmt(t.player.localInsteadHint, { runtime: pageRuntime.name }) : ''}
                       </>
                     ) : romUrl ? (
-                      <>
-                        {/*
-                          「ROM 将从云端加载，由 XXX 在浏览器内运行…」那句去掉了（2026-09-12）：
-                          说明性的话看一次就够，而这一屏现在上面多了一张按键图，再留一句
-                          纯解释的文字会把「也可以选本地 ROM / 切到联机」这两个**入口**挤下去。
-                          文案键 t.player.cloudHint 留着没删 —— 要恢复的话原样接回这里即可。
-                        */}
-                        <span className="mr-1">{t.player.alsoCan}</span>
-                        <span className="inline-flex flex-wrap items-center justify-center gap-2 align-middle">
-                          <button type="button" className="inline-flex min-h-10 items-center rounded-lg border border-white/30 bg-black/45 px-3 font-semibold text-white transition hover:border-white/60 hover:bg-white/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-black" onClick={() => inputRef.current?.click()}>
+                      <div className="flex flex-col items-center gap-2.5">
+                        <div
+                          className={cx(
+                            'w-full rounded-2xl border border-dashed px-4 py-3 text-center backdrop-blur transition-colors duration-150',
+                            dragging
+                              ? 'border-brand bg-brand/15 shadow-[0_0_0_1px_var(--color-brand)]'
+                              : 'border-white/25 bg-black/45 hover:border-white/40',
+                          )}
+                        >
+                          <p className="mb-2 text-[11px] font-semibold tracking-wide text-white/65">
+                            {t.player.alsoCan.trim()}
+                          </p>
+                          <button
+                            type="button"
+                            className="inline-flex min-h-11 max-w-full items-center justify-center rounded-xl border border-white/30 bg-white/10 px-4 py-2 text-center font-semibold text-white transition hover:border-white/55 hover:bg-white/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-black"
+                            onClick={() => inputRef.current?.click()}
+                          >
                             {t.player.pickLocal}
                           </button>
-                          <span className="text-white/70">{t.player.orDrag}</span>
-                          {onlineOk && (
-                            <button type="button" className="inline-flex min-h-10 items-center rounded-lg border border-white/30 bg-black/45 px-3 font-semibold text-white transition hover:border-white/60 hover:bg-white/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-black" onClick={() => setMode('online')}>
-                              {t.player.onlineInstead}
-                            </button>
-                          )}
-                        </span>
-                      </>
+                          <p className="mt-2 text-xs text-white/70">
+                            {dragging ? t.player.dropNow : t.player.orDrag}
+                          </p>
+                        </div>
+                        {onlineOk && (
+                          <button
+                            type="button"
+                            className="min-h-10 rounded-lg px-3 text-xs font-semibold text-white/70 underline-offset-4 transition hover:text-white hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-black"
+                            onClick={() => setMode('online')}
+                          >
+                            {t.player.onlineInstead}
+                          </button>
+                        )}
+                      </div>
                     ) : romChecking ? (
                       <>{t.player.checkingHint}</>
                     ) : (
@@ -4113,7 +4136,7 @@ export function EmulatorPlayer({
                         })}
                       </>
                     )}
-                  </p>
+                  </div>
                   {/* 玩家进入页面的第一目标是开局；广告排在开始与备用入口之后，避免先占视线或挤压小屏按钮。 */}
                   <AdSenseSlot slot="9386967599" format="horizontal" responsive={false} className="max-w-xl" />
                   {/*

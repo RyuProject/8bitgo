@@ -270,7 +270,7 @@ for (const { id, from } of wanted) {
   if (seen.has(`${id}`)) continue
   seen.add(`${id}`)
   // 自构建核心不在 EmulatorJS 别名表里，EJS_core 直接传核心名。
-  // 两个核心都已对后台开放；缺少任何一个都会让已配置的游戏 100% 开局失败，必须阻断构建。
+  // 自构建核心一旦对后台开放，缺产物就会让已配置的游戏开局失败，必须阻断构建。
   if (SELF_BUILT_CORES.has(id)) {
     const haveJs = existsSync(join(coresDir, `${core}-wasm.data`))
     const haveReport = existsSync(join(coresDir, 'reports', `${core}.json`))
@@ -278,7 +278,9 @@ for (const { id, from } of wanted) {
     else if (REQUIRED_SELF_BUILT_CORES.has(id)) {
       check(`${id}（必需自构建核心）`, () => {
         const missing = [!haveJs && `${core}-wasm.data`, !haveReport && `reports/${core}.json`].filter(Boolean).join('、')
-        const buildCommand = id === 'mame-current' ? 'node scripts/build-mame-current-core.mjs' : 'npm run build:melondsds'
+        const buildCommand = id === 'mame-current'
+          ? 'node scripts/build-mame-current-core.mjs'
+          : id === 'fbneo-lowmem' ? 'npm run build:fbneo-lowmem' : 'npm run build:melondsds'
         assert.fail(`缺 ${missing}；运行 ${buildCommand}，否则选用 ${id} 的游戏会开局失败`)
       })
     } else {
@@ -320,6 +322,20 @@ check(`melonDS DS 构建报告与代码锁定的 ${MELONDSDS_VERSION} 一致`, (
   assert.match(report.upstreamCommit, /^[0-9a-f]{40}$/)
   const binary = readFileSync(join(coresDir, 'melondsds-wasm.data'))
   assert.equal(createHash('sha256').update(binary).digest('hex'), report.sha256, '核心二进制与构建报告不是同一批')
+})
+
+check('FBNeo 低内存实验版报告与普通 / legacy 产物一致', () => {
+  const report = JSON.parse(readFileSync(join(coresDir, 'reports', 'fbneo-lowmem.json'), 'utf8'))
+  const binary = readFileSync(join(coresDir, 'fbneo-lowmem-wasm.data'))
+  assert.equal(report.core, 'fbneo-lowmem')
+  assert.match(report.upstreamCommit, /^[0-9a-f]{40}$/)
+  assert.equal(createHash('sha256').update(binary).digest('hex'), report.sha256, '实验核心二进制与构建报告不是同一批')
+  assert.equal(report.memory.initialHeapBytes, 80 * 1024 * 1024)
+  assert.equal(report.memory.minimumBytes, 80 * 1024 * 1024)
+  assert.equal(report.memory.legacyMinimumBytes, 80 * 1024 * 1024)
+  assert.equal(report.memory.baselineMinimumBytes, 128 * 1024 * 1024)
+  assert.equal(report.memory.maximumBytes, 2 * 1024 * 1024 * 1024)
+  assert.equal(report.memory.allowMemoryGrowth, true)
 })
 
 check('旧 melonDS 只作为崩溃兜底，产物与报告必须完整', () => {
