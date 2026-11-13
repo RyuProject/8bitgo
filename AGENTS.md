@@ -1580,6 +1580,13 @@ PUT / PATCH 前按关联表的真实重写语义校验；启动时 `schema-check
 适配器先 HEAD 一次（顺带让服务端预解），失败（没配 `ROM_PACK_SECRET`、对象缺失、外链 8BG）才退回旧的
 上传路径。回归：`npm run test:j2me && cd server && npm run test:j2me-packed`。
 
+⚠️ **J2ME 不能等预热下完才起 CheerpJ，起不来的判定要看进展**（2026-11-13 大陆 Windows Chrome 149《帝国时代 2 / 3》、
+iOS《仙剑 2004》）：以前 `iframe.src` 要等 freej2me-web.jar / libmidi.wasm / 游戏 JAR 预热全部下完 —— 大陆走 Cloudflare 实测
+libmidi.wasm 3.1MB 要 48 秒，CheerpJ 自己的 CDN 全程闲着；之后再按墙钟数 120 秒，后台也数、文件还在下也照样判死，
+自动重试两次又各等 120 秒。现在预热最多等 2 秒就设 src（实测 Chrome 会合并同一 URL 的在途请求，iframe 那次传输 0 字节，
+不会下两遍）；`J2ME_STALL_TIMEOUT_MS` 只数前台、iframe 每完成一个请求就重新计时，前台总上限 6 分钟；
+iframe 登记了 `watchFramePerformance`，诊断包里能看到 CheerpJ 的下载。回归：`npm run test:j2me`。
+
 ⚠️ 播放器的启动看门狗（`EmulatorPlayer.tsx`，「连续 120 秒没有启动进度或可玩信号」）只数**前台**时间：
 标签页在后台时浏览器会节流 Win95 开机和 CheerpJ，各适配器自己的开机计时器也只按前台走；按墙钟计时会把
 还在开机的游戏记成超时（2026-11-10《天之痕》下载 146 秒后被记超时，适配器从未报错）。

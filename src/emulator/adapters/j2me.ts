@@ -37,6 +37,7 @@ import { focusFrame, frameGamepads } from '../frameFocus'
 import { loadGameBytes } from '../romLoader'
 import { isRomPackUrl } from '@/services/romPack'
 import { warmHttpCache } from '../httpWarm'
+import { diagLog, watchFramePerformance } from '@/services/startupDiagnostics'
 import { ENV_ROM_BASE, ENV_ROM_MIRROR } from '@/services/romHosts'
 
 /* ---------------- 从 freej2me-web 源码里挖出来的接入点 ---------------- */
@@ -49,8 +50,22 @@ import { ENV_ROM_BASE, ENV_ROM_MIRROR } from '@/services/romHosts'
 const DISPLAY_ID = 'display'
 /** 轮询 CheerpJ 是否已经把画面亮出来的间隔 */
 const J2ME_POLL_MS = 250
-/** 兜底放行时间。CheerpJ 冷启动本来就慢，给足两分钟 */
-const J2ME_READY_TIMEOUT_MS = 120_000
+/**
+ * 「起不来」的判定：前台连续这么久**没有任何新文件下完**才算卡死。
+ *
+ * 2026-11-13 大陆 Windows Chrome 149《帝国时代 2 / 3》：以前是从设 src 起按墙钟数 120 秒，后台也数，
+ * 文件还在一个个下完也照样判死；一局 240 秒里有 240 秒在后台，CheerpJ 被节流，必败。
+ * 现在只数前台时间，并且 iframe 里每完成一个请求（CheerpJ 的运行库、FreeJ2ME、游戏 JAR）就重新计时。
+ */
+const J2ME_STALL_TIMEOUT_MS = 120_000
+/** 前台总预算的硬上限：慢慢在下也不能无限等下去 */
+const J2ME_READY_HARD_CAP_MS = 360_000
+/**
+ * 预热最多等这么久就照样设 iframe.src。以前要等预热全下完才开始起 CheerpJ：大陆线路上
+ * libmidi.wasm（3.1MB）走 Cloudflare 要 48 秒，CheerpJ 自己的 CDN 那一路全程闲着。
+ * 快网两秒内早就预热完，CheerpJ 稍后的请求照样命中缓存；慢网就让两路并行。
+ */
+const J2ME_WARMUP_WAIT_MS = 2_000
 
 /**
  * 手柄：iframe 是同源的，而 main.js 把 keydown / keyup 监听挂在 display 上，
@@ -348,9 +363,21 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
   }
 
+  /** iframe 里已完成的请求数；跨源读不到时返回 -1（那时只按前台时间判）。 */
+  const frameResourceCount = (): number => {
+    try {
+      return iframe.contentWindow?.performance.getEntriesByType('resource').length ?? -1
+    } catch {
+      return -1
+    }
+  }
+  let stopFramePerf: (() => void) | null = null
+
   let srcSet = false
   iframe.addEventListener('load', () => {
     if (!srcSet || destroyed) return
+    // CheerpJ 的运行库都在 iframe 里下，外层 performance 看不到；登记后诊断包才带得上
+    if (!crossOrigin && !stopFramePerf) stopFramePerf = watchFramePerformance(iframe.contentWindow)
 
     if (crossOrigin) {
       // 跨源：读不到 iframe 内部状态，只能退回「load 即就绪」的老行为。
@@ -505,8 +532,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         年龄门已经过了，预取的是玩家这一局真的要玩的文件。
       */
       options.onProgress?.({ phase: 'engine' })
-      await Promise.all([runtimeWarmup, directJarWarmup])
+      const warmStarted = Date.now()
+      const warmed = await Promise.race([
+        Promise.all([runtimeWarmup, directJarWarmup]).then(() => true),
+        new Promise<false>((resolve) => { window.setTimeout(() => resolve(false), J2ME_WARMUP_WAIT_MS) }),
+      ])
       if (destroyed) return
+      diagLog('j2me', 'info', warmed
+        ? `预热完成 (+${Date.now() - warmStarted}ms)，启动 CheerpJ`
+        : `预热 ${J2ME_WARMUP_WAIT_MS}ms 未完成，与 CheerpJ 并行继续`)
       srcSet = true
       /*
         启动看门狗挂在这里 —— **不是**在 iframe 的 load 回调里。
@@ -517,11 +551,30 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         现在两边共用一个从「设 src」就开始计时的预算：CheerpJ 冷启动本来就慢，
         但慢和死是两回事，到点必须报出来（j2meStartTimeout）。
       */
-      readyTimer = window.setTimeout(() => {
-        if (destroyed || readySent) return
+      let stalledMs = 0
+      let foregroundMs = 0
+      let seenResources = -1
+      let lastTick = Date.now()
+      readyTimer = window.setInterval(() => {
+        if (destroyed || readySent) return window.clearInterval(readyTimer)
+        const now = Date.now()
+        const step = now - lastTick
+        lastTick = now
+        // 后台被节流时 CheerpJ 本来就起不动，这段不算
+        if (document.visibilityState === 'hidden') return
+        foregroundMs += step
+        stalledMs += step
+        const count = frameResourceCount()
+        if (count > seenResources) {
+          seenResources = count
+          stalledMs = 0
+        }
+        if (stalledMs < J2ME_STALL_TIMEOUT_MS && foregroundMs < J2ME_READY_HARD_CAP_MS) return
+        window.clearInterval(readyTimer)
         stopPoll()
+        diagLog('j2me', 'warn', `放弃：前台 ${Math.round(foregroundMs / 1000)}s，其中 ${Math.round(stalledMs / 1000)}s 没有新请求完成，iframe 共完成 ${Math.max(seenResources, 0)} 个请求`)
         options.onError?.(rt.j2meStartTimeout)
-      }, J2ME_READY_TIMEOUT_MS)
+      }, 1_000)
       iframe.src = buildJ2meUrl(J2ME_PATH, name, { fractionScale: true, mobile: touchControls })
     } catch (e) {
       if (destroyed) return
@@ -532,7 +585,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
   const destroy = () => {
     destroyed = true
-    window.clearTimeout(readyTimer)
+    window.clearInterval(readyTimer)
+    stopFramePerf?.()
+    stopFramePerf = null
     stopPoll()
     pad?.stop()
     pad = null

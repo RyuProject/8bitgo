@@ -375,14 +375,28 @@ check('⭐ 正式 ROM 可以预取，但**临时上传的那份不行**', () => 
   assert.ok(at < src, '预热要排在设 iframe.src 之前，越早开始越好')
 })
 
-check('⭐ 临时 JAR 上传期间并行预热运行时，启动前等待同一批资源完成', () => {
+check('⭐ 预热与 CheerpJ 并行：最多等 2 秒就设 src，不再等预热全下完', () => {
+  /*
+    2026-11-13 大陆《帝国时代 2》：libmidi.wasm 预热走 Cloudflare 48 秒，iframe 到那时才设 src，
+    CheerpJ 自己的 CDN 一路闲着。实测 Chrome 会把同一 URL 的在途请求合并
+    （iframe 那次 transferSize=0，与预热同时完成），所以并行不会下两遍。
+  */
   const warm = adapterCode.indexOf('const runtimeWarmup = Promise.all')
   const upload = adapterCode.indexOf('const loaded = await loadGameBytes')
-  const wait = adapterCode.indexOf('await Promise.all([runtimeWarmup, directJarWarmup])')
+  const wait = adapterCode.indexOf('Promise.all([runtimeWarmup, directJarWarmup]).then(() => true)')
   const src = adapterCode.indexOf('iframe.src = buildJ2meUrl')
   assert.ok(warm >= 0 && warm < upload, '运行时预热必须先于 ROM 解密/上传开始')
-  assert.ok(wait > upload && wait < src, '上传期间预热的资源要在启动 iframe 前复用，不能重复下载')
-  assert.match(adapterCode, /if \(destroyed\) return\s+srcSet = true/, '等待期间若取消游戏，不能再启动隐藏 iframe')
+  assert.ok(wait > upload && wait < src, '预热要和启动 iframe 赛跑，而不是挡在前面')
+  assert.match(adapterCode, /J2ME_WARMUP_WAIT_MS = 2_000/)
+  assert.match(adapterCode, /if \(destroyed\) return\s+diagLog\('j2me'[\s\S]{0,200}?srcSet = true/, '等待期间若取消游戏，不能再启动隐藏 iframe')
+})
+
+check('⭐ 起不来的判定只数前台，且 iframe 每完成一个请求就重新计时', () => {
+  assert.match(adapterCode, /if \(document\.visibilityState === 'hidden'\) return/)
+  assert.match(adapterCode, /if \(count > seenResources\) \{\s+seenResources = count\s+stalledMs = 0/)
+  assert.match(adapterCode, /stalledMs < J2ME_STALL_TIMEOUT_MS && foregroundMs < J2ME_READY_HARD_CAP_MS/)
+  assert.match(adapterCode, /stopFramePerf = watchFramePerformance\(iframe\.contentWindow\)/, 'CheerpJ 在 iframe 里下的东西要进诊断包')
+  assert.match(adapterCode, /window\.clearInterval\(readyTimer\)\s+stopFramePerf\?\.\(\)/, '销毁时收掉计时器和诊断观察')
 })
 
 check('⚠️ 没有 hover 提前量的设备不预拉那几个大文件', () => {
