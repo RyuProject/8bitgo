@@ -2151,6 +2151,13 @@ const isMameCurrentCore = (core: string | undefined): boolean => core === 'mame-
 
 export function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const rt = getT().runtime
+  // EJS 的 RetroArch 核心只能用 WebGL。先探测可用性，避免 ROM、核心和 BIOS 都下载完才在 GLctx 初始化处失败；
+  // 同时标成配置问题，播放器不会对同一台无 WebGL 的设备重复下载和重启。
+  if (!canCreateWebgl()) {
+    console.warn('[emulatorjs] 当前浏览器无法创建 WebGL 上下文，跳过核心与 ROM 下载')
+    options.onError?.(rt.ejsWebglUnavailable, 'config')
+    return { destroy: () => {}, caps: new Set<Capability>() }
+  }
   // 按游戏覆盖优先，其次才是平台默认。街机一个平台底下其实是好几套硬件，
   // 拳皇 / 街霸 / 老板子各要各的核心，光靠平台默认值盖不住
   const resolvedCore = emulatorJsCoreForGame(options.platform, options.core)
