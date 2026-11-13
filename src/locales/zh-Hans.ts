@@ -1024,6 +1024,8 @@ export const zhHans = {
     pspDownload: '整包下载',
     pspDownloadHint: '下载完成后才启动，占用浏览器本地空间；再次打开同一版本可直接复用。游玩时无需联网读盘。',
     pickRom: '选择 ROM 开始游戏',
+    readyToPlay: '游戏已就绪，可以开始',
+    dropNow: '松开即可加载 ROM',
     cloudHint: 'ROM 将从云端加载，由 {runtime} 在浏览器内运行，首次加载需要几秒钟。',
     alsoCan: '也可以',
     pickLocal: '选择本地 ROM 文件',

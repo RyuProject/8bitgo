@@ -972,6 +972,8 @@ const zhHant: Translation = {
     pspDownload: '完整下載',
     pspDownloadHint: '下載完成後才啟動，會佔用瀏覽器本機空間；再次開啟同一版本可直接重用。遊玩時無需連線讀碟。',
     pickRom: '選擇 ROM 開始遊戲',
+    readyToPlay: '遊戲已就緒，可以開始',
+    dropNow: '放開即可載入 ROM',
     cloudHint: 'ROM 將從雲端載入，由 {runtime} 在瀏覽器內執行，首次載入需要幾秒鐘。',
     alsoCan: '也可以',
     pickLocal: '選擇本機 ROM 檔案',

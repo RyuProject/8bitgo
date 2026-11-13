@@ -959,6 +959,8 @@ const ja: Translation = {
     pspDownload: '全体をダウンロード',
     pspDownloadHint: '全体のダウンロード後に起動します。ブラウザーの保存領域を使いますが、同じ版なら再利用でき、プレイ中の通信による読み込み待ちを避けられます。',
     pickRom: 'ROM を選んでゲームを開始',
+    readyToPlay: 'ゲームをプレイできます',
+    dropNow: 'ドロップして ROM を読み込む',
     cloudHint: 'ROM はクラウドから読み込まれ、{runtime} がブラウザ内で実行します。初回の読み込みには数秒かかります。',
     alsoCan: 'または',
     pickLocal: 'ローカルの ROM ファイルを選択',

@@ -72,6 +72,7 @@
     "test:nds-platform": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-nds-platform.mjs",
     "test:nds-wfc": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-nds-wfc.mjs && npm --prefix server run test:nds-wfc",
     "build:melondsds": "node scripts/build-melondsds-core.mjs",
+    "build:fbneo-lowmem": "node scripts/build-fbneo-lowmem-core.mjs",
     "test:melondsds-abi": "node scripts/test-melondsds-abi.mjs",
     "test:fs-write": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-fs-write.mjs",
     "audit:rom-langs": "node scripts/audit-rom-langs.mjs",

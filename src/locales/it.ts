@@ -971,6 +971,8 @@ const it: Translation = {
     pspDownload: 'Scarica tutto il gioco',
     pspDownloadHint: 'Si avvia dopo il download completo. Usa lo spazio del browser, riutilizza la stessa versione ed evita letture di rete durante il gioco.',
     pickRom: 'Scegli una ROM per iniziare a giocare',
+    readyToPlay: 'Gioco pronto',
+    dropNow: 'Rilascia per caricare la ROM',
     cloudHint:
       'La ROM viene caricata dal cloud e gira nel tuo browser con {runtime}. Il primo caricamento richiede qualche secondo.',
     alsoCan: 'Puoi anche ',
