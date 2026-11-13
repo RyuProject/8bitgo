@@ -1737,7 +1737,7 @@ async function arcadeBlobFrom(
       console.info(`[arcade] ${hack.title}：已现场合成 ${hack.derive.outputs.join(' / ')} 并补进包里`)
     }
   }
-  return { url: URL.createObjectURL(output), name, hack, mameMedia, namcoSet }
+  return { url: URL.createObjectURL(output), name, hack, mameMedia, namcoSet, blob: output }
 }
 
 /**
@@ -1765,6 +1765,8 @@ export function preloadEjsStyle(doc: Document | null | undefined, href: string):
 
 interface PreparedArcadeRom {
   url: string
+  /** 和 url 同一份字节；引擎取 blob: 地址时直接用它回应（见 installBlobFetchShortcut） */
+  blob: Blob
   name: string
   hack: ArcadeHack | null
   mameMedia: MameArcadeDiskProfile | null
@@ -2016,7 +2018,7 @@ export async function prepareRemoteDiscRom(
 
   let blob = await download(true)
   // 8BG 要先确认能解密解压再入缓存；否则一次坏响应会被钉在这台浏览器上，重试永远失败。
-  let prepared: { url: string; bytes: number; name?: string }
+  let prepared: { url: string; bytes: number; name?: string; blob: Blob }
   try {
     prepared = await prepare(blob)
   } catch (error) {
