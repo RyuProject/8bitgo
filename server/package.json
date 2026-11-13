@@ -63,6 +63,8 @@
     "gen-sql:empty": "node scripts/gen-sql.mjs --empty",
     "backfill-search": "node scripts/backfill-search.mjs",
     "backfill-arcade-bios": "node scripts/backfill-arcade-bios.mjs",
+    "netplay-players": "node scripts/netplay-players.mjs",
+    "test:netplay-auto": "node scripts/test-netplay-auto.mjs",
     "test:search": "node scripts/test-search.mjs",
     "test:search:db": "node scripts/test-search-db.mjs",
     "indexnow": "node scripts/submit-indexnow.mjs",
