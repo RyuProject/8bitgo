@@ -59,7 +59,7 @@ import { isPsxM3uUrl } from '../psxM3u'
 import { MAME_CHD_MAX_BYTES, mameChdCacheKey } from '../mameChdWarm'
 import { warmEmulatorJsStart } from '../ejsStartWarm'
 import { writeFsInjections, type FsInjection } from '../fsInjection'
-import { arcadeCoreForRomData, supportsFbneoRomData } from '../arcadeCore'
+import { arcadeCoreForRomData, isFbneoCore, supportsFbneoRomData } from '../arcadeCore'
 import { MAME_AUDIO_LATENCY_MS, RETROARCH_CFG_PATH, raiseAudioLatency } from '../mameAudio'
 import { ndsAudioLatencyMs } from '../ndsAudio'
 import { disposeNdsWfcRuntime, installNdsWfcRuntime, isWorldAtWarNdsRomHeader, loadNdsWfcSettings, ndsWfcMacAddress, prepareNdsWfcSession, saveNdsWfcSettings } from '../ndsWfc'
@@ -2151,13 +2151,7 @@ const isMameCurrentCore = (core: string | undefined): boolean => core === 'mame-
 
 export function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const rt = getT().runtime
-  // EJS 的 RetroArch 核心只能用 WebGL。先探测可用性，避免 ROM、核心和 BIOS 都下载完才在 GLctx 初始化处失败；
-  // 同时标成配置问题，播放器不会对同一台无 WebGL 的设备重复下载和重启。
-  if (!canCreateWebgl()) {
-    console.warn('[emulatorjs] 当前浏览器无法创建 WebGL 上下文，跳过核心与 ROM 下载')
-    options.onError?.(rt.ejsWebglUnavailable, 'config')
-    return { destroy: () => {}, caps: new Set<Capability>() }
-  }
+  const webglAvailable = canCreateWebgl()
   // 按游戏覆盖优先，其次才是平台默认。街机一个平台底下其实是好几套硬件，
   // 拳皇 / 街霸 / 老板子各要各的核心，光靠平台默认值盖不住
   const resolvedCore = emulatorJsCoreForGame(options.platform, options.core)
@@ -2173,6 +2167,18 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       console.warn(`[arcade] ${core} 不支持 FBNeo RomData，已自动切换为 ${corrected}，避免必然出现 Romset is unknown`)
       core = corrected
     }
+  }
+  // 无 WebGL 时只给已经选定 FBNeo 的街机核心接 Canvas 2D 兼容层。
+  // 不把 MAME / FBA 核心强改成 FBNeo：它们的驱动表、CHD 和启动参数并不等价。
+  const softwareWebglFallback = !webglAvailable && options.platform === 'arcade' && isFbneoCore(core)
+  if (!webglAvailable && !softwareWebglFallback) {
+    console.warn(`[emulatorjs] 当前浏览器无法创建 WebGL 上下文，${options.platform}/${core} 没有已验证的软件画面后备`)
+    options.onError?.(rt.ejsWebglUnavailable, 'config')
+    return { destroy: () => {}, caps: new Set<Capability>() }
+  }
+  if (softwareWebglFallback) {
+    console.info(`[emulatorjs] 当前浏览器没有 WebGL；将尝试用 Canvas 2D 运行已选的 ${core} legacy 核心`)
+    diagLog('adapter', 'info', `街机 WebGL 后备：${core} legacy / Canvas 2D`)
   }
   /**
    * 联机会话。**可变**：一开始可能没有（玩家先自己开着玩），
@@ -5061,6 +5067,20 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         // 清掉旧时代缓存的坏核心（见 purgePoisonedEngineCache 的注释），
         // 必须在 loader.js 之前 —— 引擎一起来就会去查这个库
         await cachePurgeTask
+
+        if (softwareWebglFallback) {
+          // 适配层必须装在 EmulatorJS loader 前，RetroArch 建 GL context 时才能接到 2D 画布。
+          // 限定当前 iframe：不能改父页原型，详情页其它 canvas 仍使用浏览器原生实现。
+          const { installSoftwareWebgl } = await import('../softwareWebgl')
+          const installed = installSoftwareWebgl(win as unknown as Window & typeof globalThis, () => {
+            console.info('[emulatorjs] FBNeo 已创建 Canvas 2D 软件画面')
+            diagLog('adapter', 'info', 'FBNeo Canvas 2D context 已创建')
+          })
+          if (!installed) {
+            failLoad(rt.ejsWebglUnavailable, 'config')
+            return
+          }
+        }
 
         /**
          * ⚠️ 看门狗必须放在这里，不能更早。

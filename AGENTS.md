@@ -221,10 +221,15 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
   Gambatte 的云存档，避免把 RTC 格式交叉覆盖；binjgb 的 WebAssembly 接口只暴露外部 RAM，RTC 时钟不跨设备同步。
   升级 binjgb 必须换 `BINJGB_BUILD` 并更新
   `public/binjgb/UPSTREAM.md` 中的上游 commit。
-- **EmulatorJS 无 WebGL 时在下载前停止**（2026-11-12/13 中国大陆 Linux Chrome 108 街机《恐龙快打》9 次、Android 12 Chrome 123 GB《俄罗斯方块 2》1 次；
-  现场均是 ROM / 核心成功后在 `GLctx` 初始化失败）。NES 已能切 jsnes，GB/GBC 已能切 binjgb；街机和其它平台目前没有非 WebGL 后备引擎。
-  `emulatorjs.ts` 开局先用 `canCreateWebgl()` 探测：没有上下文就以 `config` 错误提示开启硬件加速或换支持 WebGL 的设备，
-  不再先下载 ROM / 核心 / BIOS，也不触发无效重试。不要把未验证的软件 WebGL 原型接进生产。
+- **街机无 WebGL 只给 FBNeo legacy 试 Canvas 2D 后备**（2026-11-14）：适配器先按后台核心与 RomData 规则定出最终核心；只有
+  `fbneo` / `fbneo-lowmem` 才在 EmulatorJS iframe 的 `loader.js` 前安装 `src/emulator/softwareWebgl.ts`。
+  WebGL2 仍返回不可用，因此 EmulatorJS 应加载对应的 `*-legacy-wasm.data`；不把 MAME / FBA 核心改成 FBNeo，
+  `mame-current` 和非 FBNeo 游戏仍在 ROM / 核心下载前报 WebGL 环境错误。该兼容层只实现 RetroArch WebGL1 的基本纹理四边形，
+  不支持离屏帧缓冲、自定义 shader 与顶点颜色；若改了它，必须在禁用 WebGL 的浏览器用真实 FBNeo ROM 验证画面、旋转、
+  BIOS 与 RomData，再扩大可用范围。不要把 `public/__swgl/` 里的本地试验页或 ROM 当作生产资源提交。
+- **EmulatorJS 无 WebGL 的处理按核心收窄**：NES 用 jsnes、GB/GBC 用 binjgb；街机只有最终核心为 FBNeo legacy
+  才尝试 `softwareWebgl.ts`，其余平台 / 核心都在 ROM / 核心 / BIOS 下载前报 `config` 错误。
+  若兼容层自身仍报 `GLctx`，按 WebGL 环境错误停止，不重试、不换 ROM。
 - **联机超时把握手进度写进诊断包**：信令是否连上、`open-room` / `join-room` 有没有发出、回执是什么、各在第几毫秒
   （`netTrace`）。「联机没有连上」两周 100 多次，11-07 识别出服务端拒绝后已降到每天一两次，剩下的靠这一行定位。
 - **全局 `io` 会被引擎覆盖；没连上就断会被引擎退房**（2026-11-11，大陆玩家《拳皇97》《合金弹头2》5 次，
