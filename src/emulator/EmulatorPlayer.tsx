@@ -604,9 +604,18 @@ export function EmulatorPlayer({
 
   /* ---------------- 联机 ---------------- */
   // 联机需要云端 ROM：房主和访客都得能拿到同一个 ROM
-  const p2pOk = Boolean(gameSlug) && Boolean(romUrl) && p2pPlayable(platform.id)
+  const slots = Math.max(1, Math.min(MAX_PLAYERS, maxPlayers))
+  /**
+   * 单人游戏（后台 players < 2 或没开「支持联机」）没有联机可言：服务端开房 / 云端心跳都会回
+   * `game does not support multiplayer`。以前这里只看平台，于是「改为联机」和运行中的
+   * 「联机匹配」照样画出来，玩家一点就在已经跑起来的游戏上报错（2026-11-13 诊断：
+   * 《铁拳》players=2 但未开联机、《JOJO》《火红》一人游戏，open-room 全被拒）。
+   * 调用方负责把「未开联机」压成 maxPlayers=1（见 GameDetailPage / TvPlay / EmbedPage）。
+   */
+  const hostable = slots > 1
+  const p2pOk = hostable && Boolean(gameSlug) && Boolean(romUrl) && p2pPlayable(platform.id)
   // 云端房间由服务器取 ROM，不会执行玩家浏览器里的 ZIP 解包；这类外链只开放本地/P2P。
-  const cloudOk = FEATURES.cloudGame && Boolean(gameSlug) && !romArchiveRef(romUrl ?? '') && cloudPlayable(platform.id)
+  const cloudOk = hostable && FEATURES.cloudGame && Boolean(gameSlug) && !romArchiveRef(romUrl ?? '') && cloudPlayable(platform.id)
   const onlineOk = p2pOk || cloudOk
   /** 优先 P2P；P2P 不可用而云端可用时才走云端 */
   const channel: Channel = p2pOk ? 'p2p' : 'cloud'
@@ -760,7 +769,6 @@ export function EmulatorPlayer({
   /** 适配器交出来的「切身份」函数：不用断线重连就能上场 / 退下 */
   const roleSwitchRef = useRef<((spectator: boolean) => void) | null>(null)
   const [copied, setCopied] = useState(false)
-  const slots = Math.max(1, Math.min(MAX_PLAYERS, maxPlayers))
 
   // P2P：从房间列表里找要加入的那个房间（判断满没满、还在不在）
   const p2pRooms = useNetplayRooms()
