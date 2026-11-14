@@ -2,8 +2,8 @@
 /**
  * 构建独立的 FBNeo 低内存实验版，不覆盖线上默认 `fbneo`。
  *
- * 这次只把 Emscripten 初始堆从 128 MiB 降到 80 MiB，并保留 ALLOW_MEMORY_GROWTH。
- * 最大值仍沿用 2 GiB；先验证 32 位浏览器能否完成核心实例化，再根据真实峰值决定是否设上限。
+ * 这次只把 Emscripten 初始堆从 128 MiB 降到 72 MiB，并保留 ALLOW_MEMORY_GROWTH。
+ * 最大值仍沿用 2 GiB；新产物需核对 48 MiB 初始值、动态增长配置和实际游戏启动表现。
  *
  * 用法：npm run build:fbneo-lowmem
  *       node scripts/build-fbneo-lowmem-core.mjs --workdir /tmp/fbneo-lowmem-build --jobs 4
@@ -33,7 +33,7 @@ const CORE_REPO = 'https://github.com/EmulatorJS/FBNeo.git'
 const EMSDK_REPO = 'https://github.com/emscripten-core/emsdk.git'
 const EMSDK_VERSION = '3.1.74'
 const CORE_ID = 'fbneo-lowmem'
-const INITIAL_HEAP_BYTES = 80 * 1024 * 1024
+const INITIAL_HEAP_BYTES = 72 * 1024 * 1024
 const EXPECTED_MINIMUM_EJS_VERSION = '4.2.2'
 
 function parseArgs(argv) {
@@ -219,7 +219,7 @@ function setLowMemoryHeap(retroDir, jobs) {
   if (nameLine.test(source)) source = source.replace(nameLine, fixedNameParser)
   else if (!source.includes(fixedNameParser)) throw new Error('EmulatorJS 链接脚本的核心名解析位置变化，停止以免错误选择内存档位')
   const marker = '  if [[ $(containsElement $name "${largeHeap[@]}") = 1 ]]; then\n    heap_mem=536870912 # 512mb\n  fi\n'
-  const setting = `  if [[ "$name" = "${CORE_ID}" ]]; then\n    heap_mem=${INITIAL_HEAP_BYTES} # 初始堆 80 MiB，仍启用动态增长\n  fi\n`
+  const setting = `  if [[ "$name" = "${CORE_ID}" ]]; then\n    heap_mem=${INITIAL_HEAP_BYTES} # 初始堆 72 MiB，仍启用动态增长\n  fi\n`
   if (!source.includes(setting)) {
     if (!source.includes(marker)) throw new Error('EmulatorJS 链接脚本中的 largeHeap 位置变化，停止应用内存补丁')
     source = source.replace(marker, `${marker}${setting}`)

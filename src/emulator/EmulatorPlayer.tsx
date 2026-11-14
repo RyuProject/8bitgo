@@ -2132,7 +2132,7 @@ export function EmulatorPlayer({
       },
       /*
         默认 FBNeo 起步要一整块 128 MiB，32 位 / 地址空间吃紧的浏览器给不出来（fbneoLowmem.ts）。
-        原地重试同一个核心、换线路、换 ROM 都是同一个错误；换起步 80 MiB 的低内存核心重开一次。
+        原地重试同一个核心、换线路、换 ROM 都是同一个错误；换起步 72 MiB 的低内存核心重开一次。
       */
       onOutOfMemory: (failedCore: string, reason: string) => {
         if (!isCurrent() || ready) return false

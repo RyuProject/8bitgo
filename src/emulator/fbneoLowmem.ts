@@ -7,8 +7,9 @@
  * 128 MiB 连续地址；32 位浏览器、或地址空间已被别的东西占碎的渲染进程给不出来。旧逻辑对同一个
  * 核心原地重试两遍、再换线路 / 换 ROM，三轮都是同一个错误（样本 1 十秒内撞了三次）。
  *
- * `fbneo-lowmem`（scripts/build-fbneo-lowmem-core.mjs）起步只要 80 MiB、按需增长到 2 GiB，
- * 能跑的游戏和默认核心一样，只是不再一开局就索要一整块 128 MiB。所以：
+ * `fbneo-lowmem`（scripts/build-fbneo-lowmem-core.mjs）起步只要 72 MiB、按需增长到 2 GiB，
+ * 能跑的游戏和默认核心一样，只是不再一开局就索要一整块 128 MiB。2026-11-14 的新现场连 80 MiB 都分配失败；
+ * 尝试降到 48 MiB 时，链接器报告核心至少要 70.2 MB，因此取可构建的 72 MiB。是否改善启动率仍需真实现场确认。所以：
  *   - 默认 FBNeo 一报内存不足，本局立刻换它重开，不再原地重试同一个核心；
  *   - 在这个浏览器里记一笔（内存不够是设备的事，和哪款游戏无关），之后的街机开局直接用它；
  *   - 它也起不来时照旧报内存不足，不再来回切。
@@ -23,7 +24,7 @@ import type { PlatformId } from '@/types'
 export const FBNEO_LOWMEM_CORE = 'fbneo-lowmem'
 const SAVE_SUFFIX = ':fbneo-lowmem'
 /** 换低内存核心的构建时同步改这里（test:fbneo-lowmem 会对构建报告核对），旧记录随之作废。 */
-export const FBNEO_LOWMEM_BUILD = '0a473a39'
+export const FBNEO_LOWMEM_BUILD = '1548ccb5'
 const STORAGE_KEY = `8bitgo:fbneo-oom:${FBNEO_LOWMEM_BUILD}`
 const RETAIN_MS = 30 * 24 * 60 * 60 * 1000
 

@@ -2887,7 +2887,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       const bits = browserBitness()
       logEngine(`[memory] 分配不出 WASM 内存；浏览器位数 ${bits ?? '未知'}；核心 ${core}`)
       /*
-        默认 FBNeo 起步就要一整块 128 MiB：先让播放器换起步 80 MiB 的低内存核心重开（fbneoLowmem.ts），
+        默认 FBNeo 起步就要一整块 128 MiB：先让播放器换起步 72 MiB 的低内存核心重开（fbneoLowmem.ts），
         32 位浏览器也先试这一步 —— 那个核心就是为它们做的。播放器接手了就不再报 onError。
       */
       if (!destroyed && !started && !loadFailed && !crashReported && options.onOutOfMemory?.(core, line)) {
@@ -2897,7 +2897,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       }
       if (bits === '32') return failLoad(rt.ejsOutOfMemory32bit, 'config')
       /*
-        低内存核心（起步 80 MiB）也分配不出：这是浏览器 / 设备环境给不出地址空间，原地重试同一个核心
+        低内存核心（起步 72 MiB）也分配不出：这是浏览器 / 设备环境给不出地址空间，原地重试同一个核心
         只是再等十秒撞同一个错（2026-11-14 大陆 Chrome 114 / Android 12、8GB 内存《拳皇97》：两轮都在
         instantiate 报 Out of memory）。'config'：不自动重试、不换 ROM，告诉玩家更新或换浏览器；手动重试仍可点。
       */

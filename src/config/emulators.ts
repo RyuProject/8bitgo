@@ -66,7 +66,7 @@ export const EXT_RUNTIME_OVERRIDES: Record<string, RuntimeId> = {
 export const CORE_OPTIONS: Record<string, Array<{ id: string; label: string }>> = {
   arcade: [
     { id: 'fbneo', label: 'FBNeo（默认，Neo Geo / 拳皇首选）' },
-    { id: 'fbneo-lowmem', label: 'FBNeo 低内存实验版（初始 80 MiB，按需增长）' },
+    { id: 'fbneo-lowmem', label: 'FBNeo 低内存实验版（初始 72 MiB，按需增长）' },
     { id: 'fbalpha2012_cps1', label: 'FB Alpha CPS1（街霸 2 这类）' },
     { id: 'fbalpha2012_cps2', label: 'FB Alpha CPS2' },
     { id: 'mame2003_plus', label: 'MAME 2003-Plus（兼容面最广，较慢）' },

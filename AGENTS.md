@@ -197,13 +197,17 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
   `browserBitness.ts` 用高熵 `bitness`（UA 只能证明 32 位，Chrome 110 起精简 UA 一律写 x64）判断：32 位时以 `'config'`
   报 `ejsOutOfMemory32bit`（换 64 位浏览器，不原地重试）；诊断包环境多一项「32 / 64 位浏览器」。
   位数是推断，这两份样本当时没采到位数，下一份同类现场要先核对这一项。
-  **2026-11-13 起默认 FBNeo 内存不足先换 `fbneo-lowmem`**（起步 80 MiB、按需增长，`src/emulator/fbneoLowmem.ts`）：
+  **2026-11-13 起默认 FBNeo 内存不足先换 `fbneo-lowmem`**（当前起步 72 MiB、按需增长，`src/emulator/fbneoLowmem.ts`）：
   又来三份同类现场（Chrome 109 / Windows ×2、Chrome 114 / Android 12，位数「未知」），旧逻辑对同一核心原地重试、
   换线路、换 ROM，十秒撞三次同一个错。现在适配器经 `onOutOfMemory` 交给播放器换核心重开一次（32 位也先试），
   并在本浏览器记 30 天，之后街机开局直接用它。低内存版也失败时以 `'config'` 报 `ejsOutOfMemoryLowmem`
   （更新或换浏览器），**不再自动原地重试**：2026-11-14 大陆 Chrome 114 / Android 12、8GB《拳皇97》两轮都在 instantiate
-  报 Out of memory，重试只是多等十秒（这台机器 11-13 已出现过，换低内存核心没救）。起步只要 80 MiB 都给不出，
-  说明不是物理内存小，而是渲染进程地址空间给不出——具体是 32 位内核还是 Wasm 预留耗尽，诊断包的位数一项仍是「未知」，没坐实。
+  报 Out of memory，重试只是多等十秒（这台机器 11-13 已出现过，换低内存核心没救）。2026-11-14 又有 Android 玩家在
+  8GB 设备上连起步 80 MiB 都分配失败；物理内存充足不代表浏览器渲染进程有足够、连续的 WASM 地址空间，具体是 32 位内核、
+  进程限制还是内存碎片仍未知，诊断包的位数当时也是「未知」。尝试将起步堆降到 48 MiB 时，Emscripten 链接器报告核心本身
+  至少需要 70.2 MB，产物无法生成。因此将自建低内存核心的起步堆改为可构建的 72 MiB，并继续允许按需增长到 2 GiB；
+  `scripts/build-fbneo-lowmem-core.mjs`、`FBNEO_LOWMEM_BUILD`、核心报告和运行时代次必须一起更新。这是降低启动门槛的实验，
+  不保证解决硬性进程上限，也可能让运行中扩容更频繁；用新诊断现场和真实街机游戏验证后再决定是否保留。
   于是 `src/emulator/memoryRecovery.ts` 再做三件事：① 失败那一刻 `probeWasmMemoryCeilingMB` 实测还能新建多大的 WASM 内存，
   写进诊断包（`[memory] 低内存核心也失败；此刻还能新建…`），下一份现场分得清「整个进程给不出」还是「被占碎」；
   ② `vendorBrowserName` 认出厂商 / 应用内浏览器（华为、小米、OPPO、vivo、夸克、UC、QQ、微信、百度、360、搜狗 …，
@@ -1707,6 +1711,10 @@ loader.js 地址从 run.html 现读，不抄版本号。CheerpJ 免费版**不�
 失败时适配器用 `j2meFallbackFailed` 展示实际错误，不把这类兼容性失败伪装成 CDN 故障。run.html 加载完却没有 `cheerpjInit` 时先再探一次：
 这回连得上就原地重载 run.html **一次**（看门狗从头计），仍不行才报错；进展看门狗判死前也再探一次，`down` 才转备用运行时，否则报「起不来」。
 诊断包保留「CheerpJ CDN 探测：…」和备用运行时日志；所有错误出口经 `fail()`，一局只报一次。
+例外（2026-11-15）：run.html 的 load 时**没有 `cheerpjInit`**（loader 在本页执行不起来）且重载一次后仍然没有，或再探结果不是 ok，
+直接换 j2me-web，**不再看探测是否 ok**。2026-11-14 大陆 Android Chrome 143《仙剑 2004》两局：Rocket Loader 把 loader.js 改写成延后执行，
+三次探测都是 ok，旧逻辑重载一次后报「CDN 连不上」。广告拦截 / 内容过滤挡掉 `<script>` 但放行 no-cors fetch 也是这种形态。
+「慢」仍按原规则不切换；此时备用运行时失败的提示是「CheerpJ 无法启动」，不再写成连不上。
 
 ⚠️ **后台节流后的第一跳不能把隐藏时间算成前台卡死**（2026-11-14 玩家现场）：浏览器切后台会暂停 iframe 的定时器，
 原看门狗只在回调里检查当前 `visibilityState`；玩家回来后第一跳已经是 visible，会把上次回调到现在的整段后台时间

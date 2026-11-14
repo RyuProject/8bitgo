@@ -1,9 +1,9 @@
 /**
- * 低内存核心（fbneo-lowmem，起步 80 MiB）也分配不出 WASM 内存时，还能做的三件事。
+ * 低内存核心（fbneo-lowmem，当前起步 72 MiB）也分配不出 WASM 内存时，还能做的三件事。
  *
  * 2026-11-14 大陆 Chrome 114 / Android 12、8GB《拳皇97》：默认 FBNeo（128 MiB）和低内存核心先后都在
- * instantiate 报 `Out of memory: Cannot allocate Wasm memory for new instance`。8GB 的机器给不出 80 MiB，
- * 说明不是物理内存小，而是这个渲染进程的地址空间给不出来。两种可能，诊断包目前分不清：
+ * instantiate 报 `Out of memory: Cannot allocate Wasm memory for new instance`。8GB 物理内存的设备仍没能给出 80 MiB，
+ * 说明浏览器当时无法满足这次分配，但不能据此确定物理内存余量或进程限制。两种可能，诊断包目前分不清：
  *   - 32 位内核的浏览器：国内手机自带浏览器（华为 / 小米 / OPPO / vivo / 夸克 …）多是 Chromium 改的，
  *     UA 里照样写「Chrome/114」，后台原来一律归成 Chrome；
  *   - 64 位，但同一页面里先前的引擎 iframe、ROM 副本等还没被回收，地址空间被占碎。

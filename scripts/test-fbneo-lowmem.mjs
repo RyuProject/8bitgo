@@ -34,6 +34,7 @@ assert.equal(m.prefersFbneoLowmem({ getItem() { throw new Error('denied') } }, 0
 const report = JSON.parse(read('public/emulatorjs/cores/reports/fbneo-lowmem.json'))
 assert.ok(report.sha256.startsWith(m.FBNEO_LOWMEM_BUILD), '换了 fbneo-lowmem 构建要同步 FBNEO_LOWMEM_BUILD')
 assert.ok(report.memory.initialHeapBytes < 128 * 1024 * 1024, '低内存核心的起步堆必须小于默认 FBNeo 的 128 MiB')
+assert.equal(report.memory.initialHeapBytes, 72 * 1024 * 1024, '低内存核心必须从 72 MiB 起步')
 
 // 接线：适配器把内存不足交给播放器，播放器换核心重开并记住；存档档位与个人页对得上
 const player = read('src/emulator/EmulatorPlayer.tsx')
