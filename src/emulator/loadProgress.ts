@@ -105,9 +105,16 @@ const SLOW_ROUTE_MIN_FILE_BYTES = 512 * 1024
 const SLOW_ROUTE_MIN_MBPS = 3
 
 class SlowRomRouteError extends Error {
-  constructor(readonly sampledMbps: number, readonly elapsedMs: number, readonly alternateMbps: number) {
+  readonly sampledMbps: number
+  readonly elapsedMs: number
+  readonly alternateMbps: number
+
+  constructor(sampledMbps: number, elapsedMs: number, alternateMbps: number) {
     super(`首段吞吐 ${sampledMbps.toFixed(1)} Mbps，备用线路 ${alternateMbps.toFixed(1)} Mbps`)
     this.name = 'SlowRomRouteError'
+    this.sampledMbps = sampledMbps
+    this.elapsedMs = elapsedMs
+    this.alternateMbps = alternateMbps
   }
 }
 
