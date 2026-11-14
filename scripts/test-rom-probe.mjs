@@ -47,7 +47,7 @@ assert.equal(romUrlForKey(coverThumbKey(externalCover), 'https://assets.8bitgo.c
 assert.equal(romUrlForKey(externalCover, 'https://assets.8bitgo.com'), externalCover)
 const { ROM_LANGS, normalizeRomLanguageCode, romLanguageLabel } = await import(fileURLToPath(new URL('../src/config/languages.ts', import.meta.url)))
 const { romCacheKey } = await import(fileURLToPath(new URL('../src/emulator/romCache.ts', import.meta.url)))
-const { chooseFasterRomRoute, chooseRomHost, ROM_ROUTE_PROBE_PATH } = await import(fileURLToPath(new URL('../src/services/romRoute.ts', import.meta.url)))
+const { chooseFasterRomRoute, chooseRomHost, clearRomHostChoice, ROM_ROUTE_PROBE_PATH } = await import(fileURLToPath(new URL('../src/services/romRoute.ts', import.meta.url)))
 const { isolatedEmbedFor } = await import(fileURLToPath(new URL('../shared/isolated-embeds.js', import.meta.url)))
 const { gameRowToApi, dosExecutableOf, dosStartupCommandsOf, relationsInPatch, romRelationRows } = await import(fileURLToPath(new URL('../server/src/mappers.js', import.meta.url)))
 // ts-loader 为了让 ROM 探测测试保持轻量，会把平台表换成空桩；补齐流式光盘真正用到的格式。
@@ -243,7 +243,8 @@ assert.equal(isolatedEmbedFor('diablo'), undefined, 'Diablo 不需要 COOP/COEP�
   assert.equal(await chooseRomHost(primary, mirror, { ...base, fetchImpl: timedFetch({ primary: 80, mirror: 10 }) }), 'mirror', '镜像明显更快就走镜像')
   assert.ok(seen.every((url) => url.endsWith(ROM_ROUTE_PROBE_PATH)), '测的是固定探针，不是 ROM 本身')
   assert.equal(await chooseRomHost(primary, mirror, { ...base, fetchImpl: timedFetch({ primary: 50, mirror: 46 }) }), 'primary', '默认主域时镜像要快 15% 才赢')
-  assert.equal(await chooseRomHost(primary, mirror, { ...base, prefer: 'mirror', fetchImpl: timedFetch({ primary: 46, mirror: 50 }) }), 'mirror', '大陆访客默认镜像，主域要快 15% 才赢')
+  assert.equal(await chooseRomHost(primary, mirror, { ...base, prefer: 'mirror', fetchImpl: timedFetch({ primary: 46, mirror: 50 }) }), 'mirror', '大陆访客默认镜像')
+  assert.equal(await chooseRomHost(primary, mirror, { ...base, prefer: 'mirror', fetchImpl: timedFetch({ primary: 5, mirror: 80 }) }), 'mirror', '大陆访客不测速：主域探针再快也走镜像（探针量不出吞吐）')
   assert.equal(await chooseRomHost(primary, mirror, { ...base, prefer: 'mirror', fetchImpl: timedFetch({ primary: Infinity, mirror: Infinity }), timeoutMs: 100 }), 'mirror', '两边都测不出就用默认')
   assert.equal(await chooseRomHost(primary, mirror, { ...base, fetchImpl: timedFetch({ primary: Infinity, mirror: 20 }), timeoutMs: 300 }), 'mirror', '主域挂住、镜像能到就走镜像')
 
@@ -265,6 +266,14 @@ assert.equal(isolatedEmbedFor('diablo'), undefined, 'Diablo 不需要 COOP/COEP�
   fetched = 0
   assert.equal(await chooseRomHost(primary, mirror, { ...cached, fetchImpl: counting }), 'mirror', '30 分钟内复用结论')
   assert.equal(fetched, 0, '复用结论不再发探针')
+  // 主域赢过一次的旧结论，不能让大陆访客继续走主域（BIOS / 系统盘也读这份缓存）
+  store.clear()
+  clearRomHostChoice()
+  assert.equal(await chooseRomHost(primary, mirror, { ...cached, fetchImpl: timedFetch({ primary: 5, mirror: 80 }) }), 'primary')
+  fetched = 0
+  assert.equal(await chooseRomHost(primary, mirror, { ...cached, prefer: 'mirror', fetchImpl: counting }), 'mirror', '大陆访客覆盖旧的主域结论')
+  assert.equal(fetched, 0, '大陆访客不发探针')
+  assert.equal(await chooseRomHost(primary, mirror, { ...cached, fetchImpl: counting }), 'mirror', '缓存里已改成镜像')
 
   const roms = readFileSync(new URL('../src/services/roms.ts', import.meta.url), 'utf8')
   assert.match(roms, /chooseRomHost\(getRomBase\(\), getRomMirrorBase\(\), \{ prefer: coverCdnHint\(\) === 'cn' \? 'mirror' : 'primary' \}\)/, '所有平台都选线路，大陆访客默认镜像')

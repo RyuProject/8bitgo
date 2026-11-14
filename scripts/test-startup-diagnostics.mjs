@@ -66,6 +66,10 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
     ['Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0', 'Edge 130', 'Windows', 'desktop'],
     ['Mozilla/5.0 (Linux; Android 13; V2219A Build/TP1A.220624.014; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/116.0.0.0 Mobile Safari/537.36 MicroMessenger/8.0.47', 'WeChat 8', 'Android 13', 'mobile'],
     ['Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36', 'Chrome 156', 'ChromeOS', 'desktop'],
+    ['Mozilla/5.0 (Linux; Android 12; NOH-AN00; HMSCore 6.13.0.302) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.5735.196 HuaweiBrowser/15.0.4.312 Mobile Safari/537.36', 'Huawei Browser 15', 'Android 12', 'mobile'],
+    ['Mozilla/5.0 (Linux; U; Android 12; zh-cn; 22081212C Build/SKQ1.220303.001) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/112.0.5615.136 Mobile Safari/537.36 XiaoMi/MiuiBrowser/18.1.170911', 'Mi Browser 18', 'Android 12', 'mobile'],
+    ['Mozilla/5.0 (Linux; U; Android 12; zh-CN; V2172A Build/SP1A.210812.003) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/100.0.4896.58 Quark/6.9.0.380 Mobile Safari/537.36', 'Quark 6', 'Android 12', 'mobile'],
+    ['Mozilla/5.0 (Linux; Android 12; PFEM10 Build/SKQ1.211019.001; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/114.0.5735.196 Mobile Safari/537.36 aweme_290100', 'Android WebView 114', 'Android 12', 'mobile'],
     ['', 'Other', 'Other', 'desktop'],
   ]
   for (const [ua, browser, os, device] of cases) {
@@ -262,9 +266,15 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   assert.match(read('src/admin/diagnosticsReport.ts'), /位浏览器/)
   const ejs = read('src/emulator/adapters/emulatorjs.ts')
   assert.match(ejs, /void probeBrowserBitness\(\)/, '开局先发高熵查询')
-  assert.match(ejs, /bits === '32' \? failLoad\(rt\.ejsOutOfMemory32bit, 'config'\)/, '32 位浏览器内存不足：换浏览器提示，不原地重试')
+  assert.match(ejs, /if \(bits === '32'\) return failLoad\(rt\.ejsOutOfMemory32bit, 'config'\)/, '32 位浏览器内存不足：换浏览器提示，不原地重试')
+  assert.match(ejs, /if \(core === FBNEO_LOWMEM_CORE\) \{[\s\S]{0,600}return failLoad\(lowmemOomMessage\(vendor\), 'config'\)/, '低内存核心也内存不足：不再原地重试同一个核心')
+  assert.match(ejs, /probeWasmMemoryCeilingMB\(\)/, '失败时实测还能分配多少 WASM 内存，写进诊断包')
+  assert.match(ejs, /\|\| isLowmemOomMessage\(message\)/, '低内存核心的内存不足同样不把大陆加速入口判坏')
   for (const lang of ['zh-Hans', 'zh-Hant', 'en', 'es', 'de', 'it', 'fr', 'ja']) {
     assert.match(read(`src/locales/${lang}.ts`), /ejsOutOfMemory32bit: '/, `${lang} 有 32 位提示`)
+    assert.match(read(`src/locales/${lang}.ts`), /ejsOutOfMemoryLowmem: ['"]/, `${lang} 有低内存核心失败提示`)
+    assert.match(read(`src/locales/${lang}.ts`), /ejsOutOfMemoryVendor: ['"][^\n]*\{browser\}/, `${lang} 有厂商浏览器提示`)
+    assert.match(read(`src/locales/${lang}.ts`), /memoryCleanRetry: '/, `${lang} 有干净页面重开提示`)
   }
 }
 

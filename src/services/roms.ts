@@ -23,6 +23,7 @@ import { isRomPackUrl, romPackKey } from '../../shared/rom-pack-format.js'
 import { isStreamingDiscPlatform } from '../../shared/streaming-disc-platforms.js'
 import { builtinWebGameFor } from '../../shared/builtin-web-games.js'
 import { chooseFasterRomRoute, chooseRomHost, ROM_ROUTE_RACE_MIN_BYTES, type RomHost } from './romRoute'
+import { diagLog } from './startupDiagnostics'
 import { coverCdnHint } from './cnHost'
 import { reportCoverCdnFailure, selectedCoverCdn, startCoverCdnProbe, subscribeCoverCdn } from './coverCdn'
 
@@ -1328,9 +1329,9 @@ export function useRomUrl(game: Game | undefined, prefer?: RomSlotLang | null): 
         hostChoice,
         new Promise<RomHost>((resolve) => window.setTimeout(() => resolve(fallback), ROM_HOST_WAIT_MS)),
       ])
-      if (host !== 'mirror') return url
-      console.info(`[8bitgo/rom] ${game.slug} 走加速镜像：${new URL(mirror).origin}`)
-      return mirror
+      // 记进启动诊断：慢启动时一眼看出 ROM 走的是哪条线路（2026-11-14 大陆《仙剑》报告里看不出）
+      diagLog('download', 'info', `ROM 线路：${host === 'mirror' ? '加速镜像' : '主域'} ${new URL(host === 'mirror' ? mirror : url).origin}`)
+      return host === 'mirror' ? mirror : url
     }
 
     ;(async () => {

@@ -7,6 +7,7 @@
  *
  * 只在有按键变化时发事件，不会每帧刷屏。
  */
+import { readGamepadsSafe } from './gamepadAccess'
 
 /** 标准布局的按钮下标，见 https://w3c.github.io/gamepad/#remapping */
 export const GP = {
@@ -89,7 +90,8 @@ export function hasGamepadApi(): boolean {
 export function startGamepadBridge<K>(map: GamepadKeyMap<K>, send: (key: K, pressed: boolean) => void, opts: GamepadBridgeOptions<K> = {}): GamepadBridge {
   const threshold = opts.axisThreshold ?? 0.5
   const stickAsDpad = opts.stickAsDpad !== false
-  const readPads = opts.getPads ?? (() => (navigator.getGamepads ? navigator.getGamepads() : []))
+  // 被权限策略挡住时 getGamepads() 会抛错，抛在 rAF 里就把整条轮询掐断了（gamepadAccess.ts）
+  const readPads = opts.getPads ?? (() => readGamepadsSafe(navigator))
   const down = new Set<number>()
   const axisDown = new Map<string, K>()
   /** 按下去的鼠标键（来自 mouseButtons 表），拔出时统一松开 */

@@ -43,4 +43,47 @@ assert.match(player, /coreOverride === FBNEO_LOWMEM_CORE && coreSaveSlug\s*\?\s*
 assert.match(read('src/components/profile/CloudSaves.tsx'), /parseFbneoLowmemSaveSlug\(s\.gameSlug\)/)
 assert.match(read('src/emulator/types.ts'), /onOutOfMemory\?: \(core: string, message: string\) => boolean/)
 
+/* ---------- 低内存核心也失败之后（src/emulator/memoryRecovery.ts） ---------- */
+const r = await import('../src/emulator/memoryRecovery.ts')
+// 厂商 / 应用内浏览器：UA 照样写 Chrome/xxx，要先认出来
+assert.equal(r.vendorBrowserName('Mozilla/5.0 (Linux; Android 12; NOH-AN00) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.5735.196 HuaweiBrowser/15.0.4.312 Mobile Safari/537.36'), 'Huawei Browser')
+assert.equal(r.vendorBrowserName('Mozilla/5.0 (Linux; Android 13; wv) AppleWebKit/537.36 Chrome/116.0.0.0 Mobile Safari/537.36 MicroMessenger/8.0.47'), 'WeChat')
+assert.equal(r.vendorBrowserName('Mozilla/5.0 (Linux; U; Android 12; zh-cn) AppleWebKit/537.36 Chrome/112.0 Mobile Safari/537.36 XiaoMi/MiuiBrowser/18.1'), 'Mi Browser')
+assert.equal(r.vendorBrowserName('Mozilla/5.0 (Linux; Android 12; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36'), null, '正牌 Chrome 不点名')
+assert.equal(r.vendorBrowserName('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0'), null)
+
+// 探测：从大到小，第一次成功就停；一块都建不出来是 0；没有 WebAssembly 是 null
+{
+  const asked = []
+  const fake = (limitMb) => class { constructor({ initial }) { const mb = initial * 64 / 1024; asked.push(mb); if (mb > limitMb) throw new RangeError('Out of memory') } }
+  assert.equal(r.probeWasmMemoryCeilingMB(fake(100)), 80)
+  assert.deepEqual(asked, [512, 256, 128, 80], '成功一次就停，不在吃紧的进程里多占')
+  asked.length = 0
+  assert.equal(r.probeWasmMemoryCeilingMB(fake(1)), 0)
+  assert.equal(r.probeWasmMemoryCeilingMB(fake(4096)), 512)
+  assert.equal(r.probeWasmMemoryCeilingMB(null), null)
+}
+
+// 干净页面重开：每款游戏十分钟只一次；存储不可用就不重开（没法防循环）
+{
+  const map = new Map()
+  const store = { getItem: (k) => map.get(k) ?? null, setItem: (k, v) => map.set(k, v) }
+  assert.equal(r.takeCleanPageRetry('the-king-of-fighters-97', store, 1_000_000), true)
+  assert.equal(r.takeCleanPageRetry('the-king-of-fighters-97', store, 1_000_000 + 60_000), false, '刷新后再失败就照常报错')
+  assert.equal(r.takeCleanPageRetry('metal-slug-2', store, 1_000_000 + 60_000), true, '按游戏分开记')
+  assert.equal(r.takeCleanPageRetry('the-king-of-fighters-97', store, 1_000_000 + 11 * 60_000), true, '十分钟后可以再来一次')
+  assert.equal(r.takeCleanPageRetry('x', null), false)
+  assert.equal(r.takeCleanPageRetry('', store), false)
+}
+assert.equal(r.cleanPageRetryUrl('https://8bitgo.com/games/the-king-of-fighters-97'), 'https://8bitgo.com/games/the-king-of-fighters-97?autoplay=1')
+assert.equal(r.cleanPageRetryUrl('https://8bitgo.com/zh-Hant/games/kof97?lang=ja#x'), 'https://8bitgo.com/zh-Hant/games/kof97?lang=ja&autoplay=1')
+assert.equal(r.cleanPageRetryUrl('https://8bitgo.com/tv/play/kof97'), null, '只在认 ?autoplay=1 的详情页做')
+assert.equal(r.cleanPageRetryUrl('https://8bitgo.com/play-local'), null)
+
+// 接线：适配器在低内存核心失败时实测、点名浏览器、按 config 报；播放器只做一次干净页面重开
+const adapterSrc = read('src/emulator/adapters/emulatorjs.ts')
+assert.match(adapterSrc, /if \(core === FBNEO_LOWMEM_CORE\) \{[\s\S]{0,600}probeWasmMemoryCeilingMB\(\)[\s\S]{0,400}failLoad\(lowmemOomMessage\(vendor\), 'config'\)/)
+assert.match(player, /isLowmemOomMessage\(failureReason\)[\s\S]{0,200}cleanPageRetryUrl\(window\.location\.href\)[\s\S]{0,120}takeCleanPageRetry\(/)
+assert.match(read('src/pages/GameDetailPage.tsx'), /searchParams\.get\('autoplay'\) === '1'/, '详情页仍认 ?autoplay=1')
+
 console.log('test:fbneo-lowmem 通过')

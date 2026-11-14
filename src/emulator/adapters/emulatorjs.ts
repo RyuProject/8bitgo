@@ -63,6 +63,9 @@ import { arcadeCoreForRomData, isFbneoCore, supportsFbneoRomData } from '../arca
 import { MAME_AUDIO_LATENCY_MS, RETROARCH_CFG_PATH, raiseAudioLatency } from '../mameAudio'
 import { ndsAudioLatencyMs } from '../ndsAudio'
 import { disposeNdsWfcRuntime, installNdsWfcRuntime, isWorldAtWarNdsRomHeader, loadNdsWfcSettings, ndsWfcMacAddress, prepareNdsWfcSession, saveNdsWfcSettings } from '../ndsWfc'
+import { FBNEO_LOWMEM_CORE } from '../fbneoLowmem'
+import { guardFrameGamepads } from '../gamepadAccess'
+import { isLowmemOomMessage, lowmemOomMessage, probeWasmMemoryCeilingMB, vendorBrowserName } from '../memoryRecovery'
 import { isNdsWasmCrash, isWasmRuntimeCrash } from '../ndsCrash'
 import {
   arcadePerformanceDefaultOptions,
@@ -2851,7 +2854,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     // 卡住多半是慢网或冷编译，退回同源只会让重试必然再卡一次。入口脚本真加载不了另有一处标记。
     const stalled = message.startsWith(rt.ejsStalled.split('{stage}')[0])
     // 内存不足同理：浏览器给不出地址空间，和从哪条线路取的引擎无关
-    const outOfMemory = message === rt.ejsOutOfMemory || message === rt.ejsOutOfMemory32bit
+    const outOfMemory = message === rt.ejsOutOfMemory || message === rt.ejsOutOfMemory32bit || isLowmemOomMessage(message)
     if (usedEjsEdge && !stalled && !outOfMemory) markEjsEdgeFailed()
     // 引擎读预下载好的 ROM Blob 读不出：这台浏览器的 Blob 存储坏了，自动重试 / 换语言 ROM 改走内存
     if (preparedRomBlob && !memoryRomOf(preparedRomBlob) && isNativeBlobReadMessage(message)) {
@@ -2892,8 +2895,21 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         window.clearInterval(startWatch)
         return
       }
+      if (bits === '32') return failLoad(rt.ejsOutOfMemory32bit, 'config')
+      /*
+        低内存核心（起步 80 MiB）也分配不出：这是浏览器 / 设备环境给不出地址空间，原地重试同一个核心
+        只是再等十秒撞同一个错（2026-11-14 大陆 Chrome 114 / Android 12、8GB 内存《拳皇97》：两轮都在
+        instantiate 报 Out of memory）。'config'：不自动重试、不换 ROM，告诉玩家更新或换浏览器；手动重试仍可点。
+      */
+      if (core === FBNEO_LOWMEM_CORE) {
+        // 失败这一刻实测还能划出多大一块：分清「整个进程都给不出」和「只是这一刻被占碎」（memoryRecovery.ts）
+        const ceiling = probeWasmMemoryCeilingMB()
+        const vendor = vendorBrowserName(navigator.userAgent || '')
+        logEngine(`[memory] 低内存核心也失败；此刻还能新建的 WASM 内存约 ${ceiling === null ? '未知' : `${ceiling}MB`}；厂商浏览器 ${vendor ?? '否'}`)
+        return failLoad(lowmemOomMessage(vendor), 'config')
+      }
       // 'runtime'：可以原地重试一次（别的标签页可能刚释放了内存），但换 ROM / 换语言版本毫无意义
-      return bits === '32' ? failLoad(rt.ejsOutOfMemory32bit, 'config') : failLoad(rt.ejsOutOfMemory, 'runtime')
+      return failLoad(rt.ejsOutOfMemory, 'runtime')
     }
     /*
       建不出 WebGL：浏览器关了硬件加速或 GPU 被拉黑。重下 ROM、换语言版本都没用，'config' 让播放器
@@ -5230,6 +5246,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
          * 于是**单机开一局街机也会被判「卡住了」**，重试一次再等 30 秒，最后红字。
          * 那一局根本不需要联机。
          */
+        /*
+          getGamepads() 被权限策略挡住时会抛 SecurityError，而 EmulatorJS 的 GamepadHandler 在构造里同步调它：
+          一抛错引擎还没下核心就死了，只剩看门狗两分钟后报「卡住」（gamepadAccess.ts）。读不到就当没手柄。
+        */
+        if (guardFrameGamepads(win) === true) {
+          diagLog('adapter', 'warn', '手柄接口被权限策略挡住（页面可能被别的应用 / 网站嵌在 iframe 里），本局不读手柄')
+        }
         watchStart(win)
         if (destroyed) return
         await injectScript(doc, ejsRuntimeAsset('loader.js'))

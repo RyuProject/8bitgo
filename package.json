@@ -245,7 +245,7 @@
     "arcade:fuse": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/fuse-arcade-clone.mjs",
     "rompack": "node scripts/pack-rom.mjs",
     "romunpack": "node scripts/unpack-rom.mjs",
-    "test:rompack": "node scripts/test-rom-pack.mjs && node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-rom-pack-key-prewarm.mjs",
+    "test:rompack": "node scripts/test-rom-pack.mjs && node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-rom-pack-key-prewarm.mjs && node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-hedged-request.mjs",
     "hackpack": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/prep-arcade-hack.mjs",
     "test:ssr-hoist": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-ssr-hoist.mjs",
     "test:watch-scope": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-watch-scope.mjs",
@@ -262,7 +262,8 @@
     "repack:jsdos": "node scripts/repack-jsdos.mjs",
     "test:system-source": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-system-source.mjs",
     "test:netplay-socket-hook": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-netplay-socket-hook.mjs",
-    "test:fbneo-lowmem": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-fbneo-lowmem.mjs"
+    "test:fbneo-lowmem": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-fbneo-lowmem.mjs",
+    "test:gamepad-access": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-gamepad-access.mjs"
   },
   "dependencies": {
     "@bokuweb/zstd-wasm": "^0.0.27",

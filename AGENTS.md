@@ -200,7 +200,17 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
   **2026-11-13 起默认 FBNeo 内存不足先换 `fbneo-lowmem`**（起步 80 MiB、按需增长，`src/emulator/fbneoLowmem.ts`）：
   又来三份同类现场（Chrome 109 / Windows ×2、Chrome 114 / Android 12，位数「未知」），旧逻辑对同一核心原地重试、
   换线路、换 ROM，十秒撞三次同一个错。现在适配器经 `onOutOfMemory` 交给播放器换核心重开一次（32 位也先试），
-  并在本浏览器记 30 天，之后街机开局直接用它；低内存版也失败才报原文案。内存不足不再把大陆加速入口判坏、
+  并在本浏览器记 30 天，之后街机开局直接用它。低内存版也失败时以 `'config'` 报 `ejsOutOfMemoryLowmem`
+  （更新或换浏览器），**不再自动原地重试**：2026-11-14 大陆 Chrome 114 / Android 12、8GB《拳皇97》两轮都在 instantiate
+  报 Out of memory，重试只是多等十秒（这台机器 11-13 已出现过，换低内存核心没救）。起步只要 80 MiB 都给不出，
+  说明不是物理内存小，而是渲染进程地址空间给不出——具体是 32 位内核还是 Wasm 预留耗尽，诊断包的位数一项仍是「未知」，没坐实。
+  于是 `src/emulator/memoryRecovery.ts` 再做三件事：① 失败那一刻 `probeWasmMemoryCeilingMB` 实测还能新建多大的 WASM 内存，
+  写进诊断包（`[memory] 低内存核心也失败；此刻还能新建…`），下一份现场分得清「整个进程给不出」还是「被占碎」；
+  ② `vendorBrowserName` 认出厂商 / 应用内浏览器（华为、小米、OPPO、vivo、夸克、UC、QQ、微信、百度、360、搜狗 …，
+  UA 照样写 Chrome/xxx），提示换 Chrome / Edge / Firefox（`ejsOutOfMemoryVendor`）；服务端 `classifyUserAgent` 同步认这些，
+  另把带 `; wv)` 的归成 Android WebView，后台不再一律显示成「Chrome 114」；③ 详情页上整页导航到 `?autoplay=1`
+  换一个干净文档重开一次（`takeCleanPageRetry`，每款游戏十分钟一次，sessionStorage 防循环），旧文档的引擎 iframe、
+  ROM 副本随之释放。回归：`npm run test:fbneo-lowmem && npm run test:startup-diagnostics`。内存不足不再把大陆加速入口判坏、
   不再换 ROM（scope `runtime`）。低内存版是另一批 FBNeo 源码，即时存档单独一档（`:fbneo-lowmem`）；
   换它的构建要同步 `FBNEO_LOWMEM_BUILD`。回归：`npm run test:fbneo-lowmem`。
 
@@ -230,6 +240,13 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
 - **EmulatorJS 无 WebGL 的处理按核心收窄**：NES 用 jsnes、GB/GBC 用 binjgb；街机只有最终核心为 FBNeo legacy
   才尝试 `softwareWebgl.ts`，其余平台 / 核心都在 ROM / 核心 / BIOS 下载前报 `config` 错误。
   若兼容层自身仍报 `GLctx`，按 WebGL 环境错误停止，不重试、不换 ROM。
+- **`getGamepads()` 被权限策略挡住会抛错，不能让它弄死引擎**（2026-11-14 大陆 iPad iOS 17 应用内浏览器《拳皇 97 风云再起 Plus》：
+  `SecurityError: Third-party iframes are not allowed to call getGamepads()…`，之后引擎一行日志都没有、核心一字节没下，
+  两分钟看门狗报「卡住」，换线路重试又等两分钟）。本站页面被别的应用 / 网站嵌在 iframe 里、外层没给 `allow="gamepad"` 时，
+  我们 iframe 自带的 allow 也拿不到权限；EmulatorJS 的 GamepadHandler 在构造里同步调 `getGamepads()`，一抛错整个引擎没起来。
+  `src/emulator/gamepadAccess.ts`：loader.js 之前 `guardFrameGamepads(win)` 把 iframe 的 `getGamepads` 换成读不到就返回 `[]`，
+  被挡住时诊断包记一行；外层的手柄轮询（gamepad.ts / gamepadInput.ts / frameFocus.ts）一律走 `readGamepadsSafe`。
+  代价只是这种环境里手柄不可用。回归：`npm run test:gamepad-access`。
 - **联机超时把握手进度写进诊断包**：信令是否连上、`open-room` / `join-room` 有没有发出、回执是什么、各在第几毫秒
   （`netTrace`）。「联机没有连上」两周 100 多次，11-07 识别出服务端拒绝后已降到每天一两次，剩下的靠这一行定位。
 - **全局 `io` 会被引擎覆盖；没连上就断会被引擎退房**（2026-11-11，大陆玩家《拳皇97》《合金弹头2》5 次，
@@ -1531,6 +1548,11 @@ EdgeOne 帮不上。现在 `writeInlineRuffleFrame()`（`src/emulator/ruffleFram
   同时调 `prewarmRomPackKey`：先 Range 读前 4KB 包头拿 packageId，提前要密钥，结果进 `contentKey` 的同一份缓存。
   包头超过 4KB（约 150MB 以上的 ROM）或源站不支持 Range 就不预取。普通 DOS 包走 `prepareRemoteDosBundle`、
   不经 `loadGameBytes`，以前连解码器预热都漏了，现在入口处一起补上。回归：`npm run test:rompack`。
+- **密钥请求要对冲，不能单发干等**（2026-11-14《僵尸盒子 2：双人版》CN / Android Chrome 109）：ROM 0.4 秒下完，
+  113 字节的 `/api/rom-pack/key` 在 cn.8bitgo.com（EdgeOne）上走了 17.3 秒，整局卡在等密钥；服务端这条接口是即时返回的，慢在线路。
+  现在 `fetchRawKey` 经 `hedgedRequest`（`src/services/hedgedRequest.ts`）：同源先发，3 秒没结果（或直接失败）就同时走另一条——
+  大陆入口上是主域（Cloudflare，`ALLOWED_ORIGINS` 已放行跨域），主域的大陆访客是 EdgeOne `/_cn/api`；先成功的赢，其余中止，
+  每条响应仍逐条校验 packageId / 长度；单条 30 秒上限。回归：`npm run test:rompack`（含 `scripts/test-hedged-request.mjs`）。
 
 **诊断**：以前 Ruffle 的诊断包在 ROM 之后一行日志都没有，因为 ruffle.js / 核心都在 iframe 里下，外层
 performance 看不到。现在适配器做三件事：
@@ -3257,8 +3279,11 @@ EdgeOne 只能用境外（香港）节点。主站、ROM、Pages 子域都不受
 - **ROM 线路：所有平台开局前选一次 assets / cn-assets**（2026-11-07，`romRoute.ts` 的 `chooseRomHost`）：
   两边取同一个 64KB 固定探针 `roms/_route-probe/v1.bin?v=1`（R2 上的随机字节，两边边缘都长缓存），
   不再拿 ROM 自己的前 128KB 测——冷门 ROM 在 EdgeOne 上第一次必然 MISS，测到的是回源，会系统性偏向主域。
-  大陆访客（`coverCdnHint() === 'cn'`）默认镜像、其他人默认主域，非默认方要快 15% 才赢；两边都测不出或
-  省流量 / 2G 直接用默认。结论按域名对存 30 分钟（内存 + localStorage `8bitgo.rom-host.v1`）。
+  大陆访客（`coverCdnHint() === 'cn'`）**不测速、固定走镜像**，其他人默认主域、镜像要快 15% 才赢；两边都测不出或
+  省流量 / 2G 直接用默认。⚠️ 2026-11-14 大陆 Android Chrome《仙剑奇侠传》：64KB 探针判 Cloudflare 更快，
+  3.2MB ROM 从 assets 下了 16.8 秒（1.6Mbps，本机网络 9.3Mbps）—— 探针量的是延迟，量不出 Cloudflare
+  往大陆的吞吐，和下面运行时线路是同一个坑。镜像下不动时 `alternateUrl` 自动换回主域；诊断包里
+  `ROM 线路：…` 一行记着这局走了哪边。结论按域名对存 30 分钟（内存 + localStorage `8bitgo.rom-host.v1`）。
   探针上限 8 秒（详情页刚打开时要和封面 / 脚本抢连接，实测 2.5 秒会两边一起超时），但开局只在 HEAD 之后
   再等 `ROM_HOST_WAIT_MS`（1.5 秒），没结论先用默认，测速在后台跑完并缓存给下一局。
   ROM 本体仍走 8MB 对齐 Range（带 romv 的都是），实测 EdgeOne 免费版按片缓存 98MB 的大包，不会因整包大被拒。

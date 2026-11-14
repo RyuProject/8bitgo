@@ -188,7 +188,8 @@ export function clearRomRouteSpeedCache(): void {
  * 免费版按片缓存（实测 98MB 的 8BG 冷片 12.6s → 再取 3.1s HIT），不会因为整包太大被拒缓存。
  *
  * 有先验：边缘已经判定是大陆访客（cn 入口，或 Cloudflare 按国家改写过的页面，见 coverCdnHint）时
- * 默认镜像，否则默认主域；非默认的一方必须快 15% 才能赢，两边都测不出就用默认。省流量 / 2G 不测，直接用默认。
+ * 直接用镜像、不测速（探针只量得出延迟，量不出 Cloudflare 往大陆那可怜的吞吐）；其他访客默认主域，
+ * 镜像必须快 15% 才能赢，两边都测不出就用默认。省流量 / 2G 不测，直接用默认。
  */
 export const ROM_ROUTE_PROBE_PATH = '/roms/_route-probe/v1.bin?v=1'
 const HOST_CHOICE_STORAGE_KEY = '8bitgo.rom-host.v1'
@@ -318,6 +319,18 @@ export async function chooseRomHost(primaryBase: string, mirrorBase: string, opt
   const cacheResults = options.cacheResults ?? !options.fetchImpl
   const storage = cacheResults ? (options.storage === undefined ? browserStorage() : options.storage) : null
   const pair = `${routeId(primaryBase)}|${routeId(mirrorBase)}`
+  /*
+    大陆访客（边缘判定的 prefer=mirror）不测速，固定走镜像（2026-11-14）。
+    64KB 探针量的是延迟：Cloudflare 往大陆的首包常常比 EdgeOne 快，探针就判主域赢，可真实吞吐
+    只有几百 KB/s —— 大陆 Android Chrome《仙剑奇侠传》3.2MB 的 GBA ROM 从 assets 下了 16.8 秒
+    （1.6Mbps，同机网络 9.3Mbps），慢启动。运行时线路早就因同一个原因不再测速（AGENTS.md §2.36）。
+    镜像真下不动时 fetchBlobWithProgress 的 alternateUrl 会换回主域。结论照样写缓存：
+    BIOS / 系统盘 / Sockdrive 经 readCachedRomHost 读到的也是镜像，旧的「主域」结论一并覆盖掉。
+  */
+  if (prefer === 'mirror') {
+    if (cacheResults) writeHostChoice(pair, 'mirror', storage)
+    return 'mirror'
+  }
   if (cacheResults) {
     const cached = readHostChoice(pair, storage)
     if (cached) return cached

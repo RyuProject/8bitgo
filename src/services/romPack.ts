@@ -1,5 +1,7 @@
 import { decompress, init } from '@bokuweb/zstd-wasm'
 import { apiBase, apiEnabled } from './api'
+import { cnEdgeApiBase, onCnSite } from './cnHost'
+import { hedgedRequest } from './hedgedRequest'
 import {
   ROM_PACK_CHUNK_BYTES,
   ROM_PACK_CODEC,
@@ -260,11 +262,39 @@ export function releasePackedRomUpload(blob: Blob): void {
   if (packedRomRetryCache?.blob === blob) packedRomRetryCache = null
 }
 
-async function fetchRawKey(packageId: string, keyId?: string): Promise<KeyResponse> {
-  if (!apiEnabled()) throw new Error('8BG 打包需要后端 API（VITE_API_URL）')
-  const params = new URLSearchParams({ packageId })
-  if (keyId) params.set('keyId', keyId)
-  const res = await fetch(`${apiBase()}/api/rom-pack/key?${params}`, { cache: 'no-store' })
+/** 密钥第一条线路这么久还没回来，就同时走另一条（见 hedgedRequest.ts） */
+const KEY_HEDGE_DELAY_MS = 3_000
+/** 单条线路的上限：到点中止这一条，另一条照旧 */
+const KEY_ATTEMPT_TIMEOUT_MS = 30_000
+
+/**
+ * 密钥接口的线路：同源在前，另一条作对冲。
+ *   · 在大陆入口 cn.8bitgo.com 上：另一条是主域（Cloudflare）。ALLOWED_ORIGINS 放行跨域，
+ *     简单 GET 不触发预检；
+ *   · 主域上的大陆访客：另一条是 EdgeOne 的 /_cn/api（cn-edge.js 已放行 /api/ 前缀）；
+ *   · 其他人 / 配了绝对 VITE_API_URL 的部署：只有一条。
+ * 密钥由 packageId 推导、对所有访客都一样，换线路拿到的是同一把；响应仍逐条校验。
+ */
+function romPackKeyUrls(query: string): string[] {
+  const path = `/api/rom-pack/key?${query}`
+  const urls = [`${apiBase()}${path}`]
+  if (apiBase() || typeof window === 'undefined') return urls
+  try {
+    if (onCnSite()) {
+      const site = new URL(import.meta.env.VITE_SITE_URL ?? '').origin
+      if (site && site !== window.location.origin) urls.push(`${site}${path}`)
+    } else {
+      const edge = cnEdgeApiBase()
+      if (edge) urls.push(`${edge}${path}`)
+    }
+  } catch {
+    /* 拼不出另一条就只走同源 */
+  }
+  return urls
+}
+
+async function fetchKeyFrom(url: string, signal: AbortSignal, packageId: string, keyId?: string): Promise<KeyResponse> {
+  const res = await fetch(url, { cache: 'no-store', signal })
   const data = (await res.json().catch(() => null)) as (Partial<KeyResponse> & { error?: string }) | null
   if (!res.ok || !data?.key || !data.keyId) throw new Error(data?.error || `获取 ROM 包密钥失败（HTTP ${res.status}）`)
   // 不能只信“有一段 key”：代理缓存串包或后端回错 packageId 时，用错密钥打出来的文件
@@ -278,6 +308,17 @@ async function fetchRawKey(packageId: string, keyId?: string): Promise<KeyRespon
   }
   if (raw.byteLength !== 32) throw new Error('ROM 包密钥长度不是 256 位')
   return { packageId: data.packageId, keyId: data.keyId, key: data.key }
+}
+
+async function fetchRawKey(packageId: string, keyId?: string): Promise<KeyResponse> {
+  if (!apiEnabled()) throw new Error('8BG 打包需要后端 API（VITE_API_URL）')
+  const params = new URLSearchParams({ packageId })
+  if (keyId) params.set('keyId', keyId)
+  return hedgedRequest(
+    romPackKeyUrls(params.toString()),
+    (url, signal) => fetchKeyFrom(url, signal, packageId, keyId),
+    { hedgeDelayMs: KEY_HEDGE_DELAY_MS, attemptTimeoutMs: KEY_ATTEMPT_TIMEOUT_MS },
+  )
 }
 
 async function contentKey(header: Pick<RomPackHeader, 'packageId' | 'keyId'>): Promise<CryptoKey> {

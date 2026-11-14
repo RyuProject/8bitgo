@@ -41,6 +41,7 @@ import { arcadeCoreForRomData } from './arcadeCore'
 import type { DosExtraSource } from '@/lib/dosExtras'
 import type { LiveSession } from './adapters/liveview'
 import type { NetplaySession, SeatEvent } from './adapters/emulatorjs'
+import { cleanPageRetryUrl, isLowmemOomMessage, takeCleanPageRetry } from './memoryRecovery'
 import type { CloudSession, CloudState } from './adapters/cloudgame'
 import { p2pPlayable, cloudPlayable, emulatorJsCoreFileFor, emulatorJsCoreForGame, NDS_COMPAT_CORE, ndsCoreForWebgl2 } from './paths'
 import { FBNEO_LOWMEM_CORE, fbneoLowmemSaveSlug, fbneoMemoryFallbackCore, prefersFbneoLowmem, rememberFbneoMemoryFailure } from './fbneoLowmem'
@@ -2247,6 +2248,23 @@ export function EmulatorPlayer({
           setDiag((d) => d.map((e) => (e.stage === 'launch' || e.stage === 'content' ? { ...e, status: 'fail', detail: failureReason } : e)))
           // 出错时立刻把引擎日志定格：再往下 endSession 会拆掉 iframe，轮询就停了
           setEngineLines(handle?.engineLog?.() ?? [])
+        }
+        /*
+          低内存核心也分配不出 WASM 内存：换一个干净的文档重开一次（整页导航带 ?autoplay=1）。
+          旧文档里的引擎 iframe、ROM 副本、编译产物随之释放，被占碎的地址空间有机会腾出来
+          （memoryRecovery.ts）。每款游戏十分钟内只自动做一次，第二次照常报错；只在详情页做。
+        */
+        if (!ready && isLowmemOomMessage(failureReason) && typeof window !== 'undefined') {
+          const target = cleanPageRetryUrl(window.location.href)
+          if (target && takeCleanPageRetry(gameSlug ?? '')) {
+            reportStartupFailure(`${failureReason}（换干净页面重开一次）`)
+            setError(null)
+            setNotice(t.runtime.memoryCleanRetry)
+            setStatus('loading')
+            // 让启动漏斗的 keepalive 请求先发出去
+            window.setTimeout(() => window.location.assign(target), 300)
+            return
+          }
         }
         setError(failureReason)
         reportStartupFailure(failureReason)

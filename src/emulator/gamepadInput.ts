@@ -16,6 +16,7 @@
  * `allow="gamepad"`），两边同时喂会变成一按走两格。
  */
 import type { PadButton } from './types'
+import { readGamepadsSafe } from './gamepadAccess'
 
 /**
  * 标准布局的按钮下标 → 手柄键。
@@ -98,7 +99,9 @@ export function startGamepadInput(send: (button: PadButton, down: boolean) => vo
   let raf = 0
 
   const poll = () => {
-    const next = gamepadPadState(navigator.getGamepads())
+    // 被权限策略挡住时 getGamepads() 会抛错，抛在 rAF 里就把轮询掐断了（gamepadAccess.ts）
+    const pads = readGamepadsSafe(navigator)
+    const next = gamepadPadState(Array.isArray(pads) ? pads : Array.from(pads))
     for (const button of ALL) {
       const want = next.has(button)
       if (want === held.has(button)) continue

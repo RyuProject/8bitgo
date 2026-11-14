@@ -147,10 +147,22 @@ export function classifyUserAgent(ua = '') {
     ['WeChat', /MicroMessenger\/(\d+)/],
     ['QQ', /\bQQ(?:Browser)?\/(\d+)/],
     ['UC', /UCBrowser\/(\d+)/],
+    // 国内手机自带 / 应用内浏览器都是 Chromium 改的，UA 照样写 Chrome/xxx，不先认出来就一律成了「Chrome」，
+    // 内存不足这类按浏览器分的故障就查不清（2026-11-14 大陆 Chrome 114 / Android 12《拳皇97》）
+    ['Quark', /Quark\/(\d+)/],
+    ['Huawei Browser', /HuaweiBrowser\/(\d+)/],
+    ['Mi Browser', /MiuiBrowser\/(\d+)/],
+    ['OPPO Browser', /(?:HeyTapBrowser|OppoBrowser)\/(\d+)/],
+    ['vivo Browser', /VivoBrowser\/(\d+)/],
+    ['Baidu', /(?:baiduboxapp|BaiduBrowser)\/(\d+)/],
+    ['360', /QihooBrowser\/(\d+)/],
+    ['Sogou', /SogouMobileBrowser\/(\d+)/],
     ['Samsung', /SamsungBrowser\/(\d+)/],
     ['Edge', /Edg(?:e|A|iOS)?\/(\d+)/],
     ['Opera', /(?:OPR|Opera)\/(\d+)/],
     ['Firefox', /(?:Firefox|FxiOS)\/(\d+)/],
+    // 其它 App 内嵌的 Android WebView（抖音、B 站 …）：UA 带「; wv)」
+    ['Android WebView', /; wv\).*?Chrome\/(\d+)/],
     ['Chrome', /(?:Chrome|CriOS)\/(\d+)/],
     ['Safari', /Version\/(\d+)[\d.]* (?:Mobile\/\w+ )?Safari\//],
   ]
