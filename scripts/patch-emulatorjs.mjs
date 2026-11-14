@@ -348,6 +348,17 @@ const EXIT_UNMOUNT_TO =
   'this.toggleMainLoop(0),setTimeout(()=>{try{this.Module.abort()}catch(t){console.warn(t)}},1e3)'
 
 /**
+ * 第十四节：游戏文件写进虚拟文件系统时让 MEMFS 直接接管那块数组，不再整份复制（2026-11-14）。
+ *
+ * 引擎 download() 拿到（或解压出）游戏字节后用 `FS.writeFile(path, bytes)` 写进 MEMFS；不带 canOwn 时
+ * MEMFS 会 `slice` 一份新的，开局那一刻同一份 ROM 在 JS 侧就有两份。2GB 内存的 Android 手机开 64MB 的
+ * NDS ROM（《使命召唤：战争世界》），核心把 ROM 读进 WASM 堆时堆长不动，melonDS DS 和兼容核心都只剩一句
+ * `Aborted()`。canOwn 后 MEMFS 的文件内容就是这块数组，引擎之后只读不写它（缓存写 IndexedDB 是结构化克隆）。
+ */
+const GAME_WRITE_FROM = '(this.gameManager.FS.writeFile(`/${t}`,e),t)};if(o&&o.files)'
+const GAME_WRITE_TO = '(this.gameManager.FS.writeFile(`/${t}`,e,{canOwn:!0}),t)};if(o&&o.files)'
+
+/**
  * 每组：name 显示用；patches 是 [要找的原文, 替换后]；
  * legacy 可选，把「替换后」映射成更早一版补丁的样子，用来在引擎升级后接管旧补丁；
  * hint 是位置对不上时打给人看的排查思路。
@@ -524,6 +535,14 @@ const GROUPS = [
     ],
   },
 
+  {
+    name: '游戏文件写 MEMFS 不复制',
+    patches: [[GAME_WRITE_FROM, GAME_WRITE_TO]],
+    hint: [
+      '在 download() 末尾找写游戏文件的那个箭头函数（建中间目录后 FS.writeFile(`/${t}`,e)，紧跟 if(o&&o.files) 循环）；',
+      '给 writeFile 加第三个参数 {canOwn:!0}，见头注释第十四节。',
+    ],
+  },
   {
     name: '退出时不卸载 /data/saves',
     patches: [[EXIT_UNMOUNT_FROM, EXIT_UNMOUNT_TO]],

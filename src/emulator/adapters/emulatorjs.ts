@@ -65,7 +65,7 @@ import { ndsAudioLatencyMs } from '../ndsAudio'
 import { disposeNdsWfcRuntime, installNdsWfcRuntime, isWorldAtWarNdsRomHeader, loadNdsWfcSettings, ndsWfcMacAddress, prepareNdsWfcSession, saveNdsWfcSettings } from '../ndsWfc'
 import { FBNEO_LOWMEM_CORE } from '../fbneoLowmem'
 import { guardFrameGamepads } from '../gamepadAccess'
-import { isLowmemOomMessage, lowmemOomMessage, probeWasmMemoryCeilingMB, vendorBrowserName } from '../memoryRecovery'
+import { isLowMemoryAbort, isLowmemOomMessage, lowmemOomMessage, probeWasmMemoryCeilingMB, vendorBrowserName } from '../memoryRecovery'
 import { isNdsWasmCrash, isWasmRuntimeCrash } from '../ndsCrash'
 import {
   arcadePerformanceDefaultOptions,
@@ -2949,6 +2949,16 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   }
   const reportCoreCrash = (line: string) => {
     if (destroyed || crashReported || loadFailed) return
+    // 不带原因的 Aborted() + 小内存设备：是 WASM 堆长不动，换核心 / 重试都没用（memoryRecovery.ts）
+    if (!started) {
+      const deviceMemory = (navigator as Navigator & { deviceMemory?: number }).deviceMemory
+      const bits = browserBitness()
+      if (isLowMemoryAbort(line, deviceMemory, bits)) {
+        logEngine(`[memory] 核心 abort，设备内存约 ${deviceMemory ?? '未知'}GB、浏览器位数 ${bits ?? '未知'}：按内存不足处理，不换核心；核心 ${core}`)
+        failLoad(bits === '32' ? rt.ejsOutOfMemory32bit : rt.ejsOutOfMemory, 'config')
+        return
+      }
+    }
     crashReported = true
     window.clearInterval(startWatch)
     logEngine(`[core-crash] ${core}: ${line}`)

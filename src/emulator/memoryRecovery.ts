@@ -130,3 +130,18 @@ export function isLowmemOomMessage(message: string): boolean {
   const [head, tail] = rt.ejsOutOfMemoryVendor.split('{browser}')
   return Boolean(head || tail) && message.startsWith(head) && message.endsWith(tail ?? '')
 }
+
+/**
+ * 核心只报一句不带原因的 `Aborted()`，而且设备内存很小：按内存不足处理，不当成核心 bug。
+ *
+ * 2026-11-14 香港 Android 10、2GB 内存、Chrome 138《使命召唤：战争世界》（64MB NDS ROM）：melonDS DS 在 ROM
+ * 交给引擎几秒后 `Aborted()`，播放器按「核心崩溃」换兼容核心并记住，兼容核心同样 `Aborted()` —— 白等三十秒，
+ * 下一次访问还直接用了兼容核心。C/C++ 里 new / malloc 拿不到内存（WASM 堆长不动）就是 terminate → abort()，
+ * 不带任何文字；真正的核心 bug 是 unreachable / null function 这类带名字的陷阱，不受影响。
+ * 换核心解决不了内存，原地重试也一样：交给播放器按内存不足报错（'config'，不自动重试、不换 ROM）。
+ */
+export function isLowMemoryAbort(text: string, deviceMemoryGb: number | undefined, bitness: '32' | '64' | null): boolean {
+  if (!/(?:^|RuntimeError:\s*)Aborted\(\)(?=[\s.]|$)/.test(text.trim())) return false
+  const lowRam = typeof deviceMemoryGb === 'number' && deviceMemoryGb > 0 && deviceMemoryGb <= 2
+  return lowRam || bitness === '32'
+}

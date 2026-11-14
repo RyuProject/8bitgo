@@ -80,6 +80,21 @@ assert.equal(r.cleanPageRetryUrl('https://8bitgo.com/zh-Hant/games/kof97?lang=ja
 assert.equal(r.cleanPageRetryUrl('https://8bitgo.com/tv/play/kof97'), null, '只在认 ?autoplay=1 的详情页做')
 assert.equal(r.cleanPageRetryUrl('https://8bitgo.com/play-local'), null)
 
+// 不带原因的 Aborted() + 小内存设备 = 内存不足；带名字的陷阱、大内存设备都不算
+assert.equal(r.isLowMemoryAbort('RuntimeError: Aborted(). Build with -sASSERTIONS for more info.', 2, null), true)
+assert.equal(r.isLowMemoryAbort('Aborted()', undefined, '32'), true, '32 位浏览器')
+assert.equal(r.isLowMemoryAbort('RuntimeError: Aborted(). Build with -sASSERTIONS for more info.', 4, null), false, '4GB 设备照常换兼容核心')
+assert.equal(r.isLowMemoryAbort('RuntimeError: Aborted(). Build with -sASSERTIONS for more info.', undefined, null), false, '读不到内存（iOS）不猜')
+assert.equal(r.isLowMemoryAbort('RuntimeError: Aborted(native code called abort())', 2, null), false, '带原因的 abort 不归内存')
+assert.equal(r.isLowMemoryAbort('RuntimeError: unreachable', 2, null), false, '真正的核心陷阱照常换核心')
+{
+  const src = read('src/emulator/adapters/emulatorjs.ts')
+  const at = src.indexOf('const reportCoreCrash = ')
+  const body = src.slice(at, at + 1400)
+  assert.ok(body.indexOf('isLowMemoryAbort(') > 0 && body.indexOf('isLowMemoryAbort(') < body.indexOf('crashReported = true'), '在交给换核心之前先认内存不足')
+  assert.match(body, /failLoad\(bits === '32' \? rt\.ejsOutOfMemory32bit : rt\.ejsOutOfMemory, 'config'\)/)
+}
+
 // 接线：适配器在低内存核心失败时实测、点名浏览器、按 config 报；播放器只做一次干净页面重开
 const adapterSrc = read('src/emulator/adapters/emulatorjs.ts')
 assert.match(adapterSrc, /if \(core === FBNEO_LOWMEM_CORE\) \{[\s\S]{0,600}probeWasmMemoryCeilingMB\(\)[\s\S]{0,400}failLoad\(lowmemOomMessage\(vendor\), 'config'\)/)
