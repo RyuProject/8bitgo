@@ -1,3 +1,4 @@
+import { decodeGif } from '../../gfx/gif';
 import { decodePng, isPng } from '../../gfx/png';
 import { cachedJpeg, fingerprint, isGif, isJpeg, jpegSize } from '../../gfx/jpeg';
 import type { DisplayService } from '../../platform/display';
@@ -313,7 +314,7 @@ const graphicsClass: NativeClassDef = {
 // ---------------------------------------------------------------------------------------------------
 // Image
 
-function decodeImage(jvm: Jvm, bytes: Uint8Array): ImagePeer {
+export function decodeImage(jvm: Jvm, bytes: Uint8Array): ImagePeer {
   if (isPng(bytes)) {
     try {
       const img = decodePng(bytes);
@@ -335,6 +336,16 @@ function decodeImage(jvm: Jvm, bytes: Uint8Array): ImagePeer {
     if (size) return new ImagePeer(createSurface(size.width, size.height, '#ffffff'), false);
     throw jvm.throwable('java/lang/IllegalArgumentException', 'Cannot decode JPEG');
   }
+  if (isGif(bytes)) {
+    // 8BitGo：GIF 同步解码（只取第一帧，和真机 MIDP Image 一致）。很多游戏把 GIF 打在自己的资源包里，
+    // 运行时才 createImage(byte[])，启动预解码看不到，所以不能像 JPEG 那样只靠缓存（见 gfx/gif.ts）。
+    try {
+      const img = decodeGif(bytes);
+      return new ImagePeer(surfaceFromPixels(img.width, img.height, img.data), false);
+    } catch (e) {
+      throw jvm.throwable('java/lang/IllegalArgumentException', `Bad GIF data: ${e instanceof Error ? e.message : e}`);
+    }
+  }
   throw jvm.throwable('java/lang/IllegalArgumentException', unsupportedImageFormat(bytes));
 }
 
@@ -344,7 +355,7 @@ function unsupportedImageFormat(bytes: Uint8Array): string {
   return 'Unsupported image format (only PNG and JPEG)';
 }
 
-function newImage(jvm: Jvm, peer: ImagePeer): JObject {
+export function newImage(jvm: Jvm, peer: ImagePeer): JObject {
   const obj = new JObject(jvm.loadClass('javax/microedition/lcdui/Image'));
   obj.n = peer;
   return obj;
@@ -446,9 +457,28 @@ const fp = (f: JObject) => f.n as FontPeer;
  * AlertType —— 规范里的 5 个常量，只有 INFO/ERROR/警告 有图标，
  * CONFIRMATION/NONE 什么都不显示。
  */
+const ALERT_TYPE_NAMES = ['INFO', 'ERROR', 'WARNING', 'CONFIRMATION', 'ALARM'] as const;
 const alertTypeClass: NativeClassDef = {
   name: 'javax/microedition/lcdui/AlertType',
-  fields: { 'INFO:I': 0, 'ERROR:I': 1, 'WARNING:I': 2, 'CONFIRMATION:I': 3, 'NONE:I': 4 },
+  /*
+    8BitGo：规范里这几个常量是 AlertType **对象**（描述符 Ljavax/microedition/lcdui/AlertType;），
+    上游只有 int 版本，游戏 getstatic AlertType.ERROR 找不到字段（2026-11-15《模拟人生 3》静态扫描）。
+    int 版本留着兼容，对象版本在类加载时建好。
+  */
+  fields: {
+    'INFO:I': 0, 'ERROR:I': 1, 'WARNING:I': 2, 'CONFIRMATION:I': 3, 'NONE:I': 4,
+    ...Object.fromEntries(ALERT_TYPE_NAMES.map((n) => [`${n}:Ljavax/microedition/lcdui/AlertType;`, null])),
+  },
+  methods: {
+    'playSound(Ljavax/microedition/lcdui/Display;)Z': () => false,
+  },
+  onLoad: (jvm, cls) => {
+    ALERT_TYPE_NAMES.forEach((n, i) => {
+      const obj = new JObject(cls);
+      obj.n = { kind: i };
+      jvm.setStatic(cls, `${n}:Ljavax/microedition/lcdui/AlertType;`, obj);
+    });
+  },
 };
 
 interface AlertPeer extends DisplayablePeer {

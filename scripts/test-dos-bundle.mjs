@@ -473,6 +473,15 @@ console.log('\n── StarCraft：启动前静默导入安装路径 ──')
     windowsGameCompatibilityDosboxConfig('theme-hospital', 'HOSPITAL.EXE', '[cpu]\ncycles=max') === '[cpu]\ncycles=max',
     '其它 Windows 游戏的 DOSBox 配置不被 StarCraft 规则改写',
   )
+  ok(
+    /cycles=fixed 25000/.test(windowsGameCompatibilityDosboxConfig('theme-park', 'PARK.BAT', undefined)),
+    '《主题公园》默认固定 CPU 周期，不再随 auto 在保护模式放到 max',
+  )
+  ok(
+    /cycles=fixed 15000/.test(windowsGameCompatibilityDosboxConfig('theme-park', 'PARK.BAT', '[cpu]\ncycles=fixed 15000'))
+      && !/25000/.test(windowsGameCompatibilityDosboxConfig('theme-park', 'PARK.BAT', '[cpu]\ncycles=fixed 15000')),
+    '《主题公园》的后台显式周期仍可覆盖兼容默认值',
+  )
   await throwsWith(
     () => Promise.resolve(windowsGameCompatibilityRegistryImport('starcraft', 'Brood.exe')),
     /必须是 StarCraft\.exe/,

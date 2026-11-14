@@ -8,6 +8,7 @@ import { jsnesCanRun } from './nesMapper'
 import { probeNesRomHeader } from './nesRomProbe'
 import { resolveRuntime, runtimesFor, extOf } from './registry'
 import { canCreateWebgl, canCreateWebgl2 } from './webglSupport'
+import { modernRuntimeSyntaxSupported, runtimeNeedsModernBrowser } from './browserSupport'
 import { romArchiveRef } from '@/lib/romArchiveUrl'
 import { romUrlForKey } from '@/services/roms'
 import { clearSockdrivePin, pinnedSockdriveUrl, routeRomAssetUrl } from '@/services/romHosts'
@@ -1635,7 +1636,8 @@ export function EmulatorPlayer({
   const webglUnavailable = webglProbe.platform === platform.id && webglProbe.unavailable
   useEffect(() => {
     if (!shouldProbeNoWebgl) return
-    const missing = !canCreateWebgl()
+    // NES 在太旧的浏览器上也改走 jsnes：EmulatorJS 的引擎和核心语法都跑不动（browserSupport.ts）
+    const missing = !canCreateWebgl() || (platform.id === 'nes' && !modernRuntimeSyntaxSupported())
     if (missing) {
       const fallback = platform.id === 'nes' ? 'jsnes' : 'binjgb'
       console.warn(`[8bitgo/runtime] 这个浏览器建不出 WebGL，${platform.id.toUpperCase()} 改用 ${fallback}`)
@@ -1691,6 +1693,17 @@ export function EmulatorPlayer({
       startedAt?: number
     },
   ) => {
+    /*
+      模拟器运行时是原样发布的第三方产物，最低要 Chrome 80 / Safari 14 / Firefox 74（browserSupport.ts）。
+      更老的浏览器页面能打开，点开始后会在 iframe / Worker 里静默语法错误、等满看门狗才报超时：
+      开局前就说清楚，不白下几十 MB 的核心和 ROM。NES 已在选运行时那一步改走 jsnes。
+    */
+    if (runtimeNeedsModernBrowser(runtime.id) && !modernRuntimeSyntaxSupported()) {
+      console.warn(`[8bitgo/runtime] 浏览器不支持 ${runtime.id} 需要的语法（类字段 / ?. / ??），不开局`)
+      setError(t.player.browserTooOld)
+      setStatus('error')
+      return
+    }
     const inherited = !extra?.startupAttemptId && inheritedStartupRef.current && !inheritedStartupRef.current.consumed
       ? inheritedStartupRef.current
       : null
@@ -3053,7 +3066,8 @@ export function EmulatorPlayer({
         ext: extOf(picked),
         jsnesNetplay,
         jsnesCompatible: localJsnesCompatible,
-        webglUnavailable: (targetPlatform === 'nes' || targetPlatform === 'gb' || targetPlatform === 'gbc') && !canCreateWebgl(),
+        webglUnavailable: ((targetPlatform === 'nes' || targetPlatform === 'gb' || targetPlatform === 'gbc') && !canCreateWebgl()) ||
+          (targetPlatform === 'nes' && !modernRuntimeSyntaxSupported()),
       })
       if (!runtime) {
         if (debugRef.current) {

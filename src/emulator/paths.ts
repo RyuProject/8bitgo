@@ -346,9 +346,25 @@ export const PLAY_PATH: string = asDir(import.meta.env.VITE_PLAY_PATH)
 /** Play! JS/WASM 不带文件哈希；换核心时必须换 URL，避免边缘节点把新旧两件套拼起来。 */
 export const PLAY_RUNTIME_GENERATION = '20261026-system2x6-v1'
 
-export function playRuntimeAsset(file: 'Play.js' | 'Play.wasm'): string {
+let playWasmEdgeFailed = false
+
+/** 大陆主站只把 WASM 请求送到 EdgeOne；Play.js 仍同源以满足 pthread Worker 的同源要求。 */
+export function playWasmUsingEdge(): boolean {
+  return fileUsesCnEdgePlayWasm()
+}
+
+function fileUsesCnEdgePlayWasm(): boolean {
+  return !playWasmEdgeFailed && PLAY_PATH.startsWith('/') && Boolean(cnEdgeApiBase())
+}
+
+export function markPlayWasmEdgeFailed(): void {
+  playWasmEdgeFailed = true
+}
+
+export function playRuntimeAsset(file: 'Play.js' | 'Play.wasm', { sameOrigin = false }: { sameOrigin?: boolean } = {}): string {
   // Cloudflare 可按配置忽略 query string，所以代次必须落在实际路径而不只是 ?v 参数里。
-  return `${PLAY_PATH}${PLAY_RUNTIME_GENERATION}/${file}`
+  const edge = file === 'Play.wasm' && !sameOrigin && fileUsesCnEdgePlayWasm() ? cnEdgeApiBase() : ''
+  return `${edge}${PLAY_PATH}${PLAY_RUNTIME_GENERATION}/${file}`
 }
 
 /**

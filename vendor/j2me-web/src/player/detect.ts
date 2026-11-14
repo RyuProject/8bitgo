@@ -28,12 +28,22 @@ export function detectScreenSize(jar: JarFile, fileName = ''): ScreenSize {
   }
   const fromName = parseSize(fileName);
   if (fromName) return fromName;
+  // 8BitGo：Glu 的游戏在清单里写 Glu-Screen-Mode: landscape（《帝国时代 3 亚洲王朝》），竖屏开就提示
+  // 「Please switch to other screen mode」进不去。
+  if (/landscape/i.test(jar.manifest.get('Glu-Screen-Mode') ?? '')) return { width: 320, height: 240 };
 
   const widths = new Map<number, number>();
   for (const [path, bytes] of jar.entries) {
     const lower = path.toLowerCase();
     if (lower.endsWith('.png') && isPng(bytes) && bytes.length >= 24) {
       const w = (bytes[16] << 24) | (bytes[17] << 16) | (bytes[18] << 8) | bytes[19];
+      if (HEIGHT_FOR_WIDTH[w]) widths.set(w, (widths.get(w) ?? 0) + 1);
+      continue;
+    }
+    // 8BitGo：GIF 的宽高就在文件头 6～9 字节。《仙剑奇侠传 2004》的整屏图全是 176x208 的 GIF，
+    // 以前只看 PNG / JPEG，于是退回 240x320，界面一半按 getWidth()、一半按写死的 176 排，错位。
+    if (lower.endsWith('.gif') && bytes.length >= 10 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) {
+      const w = bytes[6] | (bytes[7] << 8);
       if (HEIGHT_FOR_WIDTH[w]) widths.set(w, (widths.get(w) ?? 0) + 1);
       continue;
     }
@@ -46,6 +56,11 @@ export function detectScreenSize(jar: JarFile, fileName = ''): ScreenSize {
   const best = [...widths.entries()].sort((a, b) => b[1] - a[1] || b[0] - a[0])[0];
   if (best) {
     const width = best[0];
+    /*
+      8BitGo：只按图片宽度猜 128 很容易被贴图 / 瓦片骗（3D 游戏的 128x128 纹理、《模拟人生 3》的 128 宽背景块），
+      把一款 240x320 的游戏缩成 128x128。真正的 128 屏机型（老 S40）游戏都很小，JAR 超过 256KB 就不信这个猜测。
+    */
+    if (width === 128 && jarBytes(jar) > 256 * 1024) return { width: 240, height: 320 };
     let height = HEIGHT_FOR_WIDTH[width];
     if (width === 176 && usesPackage(jar, 'com/nokia')) height = 208;
     return { width, height };
@@ -63,4 +78,11 @@ function usesPackage(jar: JarFile, prefix: string): boolean {
     }
   }
   return false;
+}
+
+/** JAR 里所有条目解压后的总字节数（只用来判断游戏大小量级） */
+function jarBytes(jar: JarFile): number {
+  let total = 0;
+  for (const [, bytes] of jar.entries) total += bytes.length;
+  return total;
 }

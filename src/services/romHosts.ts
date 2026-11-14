@@ -7,7 +7,7 @@
  *
  * 只读构建期配置（不读管理员本机覆盖），也不 import 任何业务模块，romCache 等底层模块可以放心引用。
  */
-import { readCachedRomHost, type RomHost } from './romRoute'
+import { readCachedRomHost, rememberRomHostFromDownload, type RomHost } from './romRoute'
 
 const trim = (value: string | undefined) => {
   const raw = String(value ?? '').trim().replace(/\/+$/, '')
@@ -33,7 +33,7 @@ export function mirrorRomUrl(url: string, base = ENV_ROM_BASE, mirror = ENV_ROM_
 /**
  * 同一个对象在另一条线路上的地址（主域 ↔ 镜像）；不在这两个域上的地址返回空串。
  *
- * 下载器在一条线路上把重试用光后改走另一条（loadProgress.ts 的 alternateUrl）：两个域回源同一个
+ * 下载器在一条线路上测到首段过慢或重试用光后改走另一条（loadProgress.ts 的 alternateUrl）：两个域回源同一个
  * R2 桶，带同一个 romv 就是同一份字节，断点分片按 canonical 键存，换线路也能接着补。
  * 2026-11-10 墨西哥玩家《合金弹头 3》两次「Failed to fetch」：那条线路对他不通，而另一条从没试过。
  */
@@ -43,8 +43,15 @@ export function alternateRomUrl(url: string, base = ENV_ROM_BASE, mirror = ENV_R
   return mirrorRomUrl(url, base, mirror)
 }
 
+/** 已在 ROM / 光盘的真实 Range 请求中验证或回退成功的线路，短时供下一局和系统资源复用。 */
+export function rememberRomHostForUrl(url: string, base = ENV_ROM_BASE, mirror = ENV_ROM_MIRROR): void {
+  if (!url || typeof window === 'undefined' || !base || !mirror) return
+  if (url.startsWith(`${mirror}/`)) rememberRomHostFromDownload(base, mirror, 'mirror')
+  else if (url.startsWith(`${base}/`)) rememberRomHostFromDownload(base, mirror, 'primary')
+}
+
 /**
- * 开局前已经测好的线路（chooseRomHost 写的 30 分钟结论）；还没测完时用 fallback。
+ * 开局前已经测好的线路（chooseRomHost 写的 30 分钟探针结论，或真实下载写的 5 分钟结论）；还没测完时用 fallback。
  * 只在浏览器里有意义，SSR 一律主域。
  */
 export function currentRomHost(fallback: RomHost = 'primary'): RomHost {

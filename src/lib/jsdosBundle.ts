@@ -518,33 +518,145 @@ const RUNNABLE = /\.(exe|com|bat)$/i
  * 按 zip 里的顺序取第一个，玩家点开游戏看到的是个安装界面。
  * ⚠️ 别把 demo 加进来：太多游戏本体就叫 XXDEMO.EXE。
  */
-const NOT_GAME = /(^|\/)(install|setup|config|setsound|readme|uninst|dos4gw|cwsdpmi|eval|order|regist|vendor|catalog)/i
+const NOT_GAME = /(^|\/)(install|setup|config|setsound|readme|uninst|dos4gw|cwsdpmi|eval|order|regist|vendor|catalog|ibmbio|ibmdos|msdos|command)/i
+/**
+ * 名字完全等于这些的程序几乎不会是入口：结局动画（三国志 III 的 END.EXE）、
+ * 看说明文档的小工具（英雄无敌 1 的 SVIEW.EXE）、用 debug 打补丁的脚本（FIXIT.BAT）。
+ * 只按整个文件名匹配，ENDLESS.EXE / VIEWER2.EXE 之类不受影响。
+ */
+const NOT_ENTRY = /(^|\/)(end|ending|s?view|fixit)\.(exe|com|bat)$/i
+
+/**
+ * 启动程序候选。只有名字时退化成旧的按名打分；带上大小和内容（见 executableCandidates）
+ * 才能用下面三条只看文件本身的信号 —— 2026-11-15 线上普查里按名打分猜错了四款：
+ * 英雄无敌 1 → SVIEW.EXE、主题医院繁体 → S.BAT（只起 IPX 服务器）、
+ * Castle Wolfenstein → FIXIT.BAT（debug 打补丁）、三国志 III → END.EXE（结局动画）。
+ */
+export interface ExecutableCandidate {
+  name: string
+  /** 解压后大小 */
+  size?: number
+  /** .bat 全文、或小于 LAUNCHER_MAX_BYTES 的 .exe/.com 原始字节 */
+  content?: Uint8Array
+}
+
+/** 只有这么小的 .exe/.com 才当成可能的启动器去看内容；大程序里顺带出现文件名不说明什么 */
+export const LAUNCHER_MAX_BYTES = 64 * 1024
+/** .bat 超过这个就不读了：启动脚本不会有这么长 */
+export const BATCH_MAX_BYTES = 16 * 1024
+
+const latin1 = (bytes: Uint8Array) => {
+  let out = ''
+  for (let i = 0; i < bytes.length; i++) out += String.fromCharCode(bytes[i])
+  return out
+}
+const escapeRe = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const baseOf = (path: string) => path.split('/').pop()!
 
 /**
  * 从文件列表里猜一个启动程序。
  * hint 是包的文件名（去掉扩展名和语言后缀），可执行文件和它同名的几乎必是本体 ——
  * paranoid.zip 里的 PARANOID.COM、doom.zip 里的 DOOM.EXE。这是最强的信号，
  * 比任何后缀加分都可靠，所以给的分也最高。
+ *
+ * 有大小 / 内容时再加三条：
+ * - 大小：主程序通常是包里最大的 EXE（对数加分，封顶 +3），几十 KB 的小工具赢不过它；
+ * - 启动器：小 .exe/.com 里写着包内两个以上别的程序名（KOEI.COM → FMDRV / OPEN / MAIN / END），+5；
+ * - 批处理：真的调用了包内程序才可信；一个也没调用、也不换盘（ARENA.BAT 会切到光盘 D:）
+ *   的 BAT 只是工具脚本（ipxnet、debug 补丁），-8。
  */
-export function pickExecutable(names: string[], hint?: string): string | null {
-  const runnable = names.filter((n) => RUNNABLE.test(n) && !n.startsWith('.jsdos/'))
-  if (runnable.length === 0) return null
+export function pickExecutable(input: readonly (string | ExecutableCandidate)[], hint?: string): string | null {
+  const candidates = input
+    .map((item) => (typeof item === 'string' ? { name: item } : item))
+    .filter((c) => RUNNABLE.test(c.name) && !c.name.startsWith('.jsdos/'))
+  if (candidates.length === 0) return null
   // need-for-speed.en.zip → need-for-speed；比对时去掉连字符差异（NEED4SPD 这类缩写救不了，不强求）
   const base = (hint ?? '').replace(/\.[^.]+$/, '').replace(/\.(zh-Han[st]|en|ja|fr|de|es|it)$/i, '')
   const norm = (x: string) => x.toLowerCase().replace(/[-_ ]/g, '')
   const wanted = norm(base)
-  const score = (n: string) => {
+  // 「游戏程序」：别的脚本 / 启动器引用到它才算数。系统文件、安装器、DOS4GW 不算
+  const gamePrograms = candidates.filter((c) => !NOT_GAME.test(c.name))
+  const referencesIn = (text: string, self: string, withExtension: boolean) => {
+    const found = new Set<string>()
+    for (const other of gamePrograms) {
+      if (other.name === self) continue
+      const file = baseOf(other.name)
+      const stem = file.replace(/\.[^.]+$/, '')
+      // 单字母名（S.BAT / C.BAT）会撞上 c: 这类盘符，不认
+      if (stem.length < 2) continue
+      const pattern = withExtension
+        ? new RegExp(`(^|[^A-Za-z0-9_])${escapeRe(file)}($|[^A-Za-z0-9_])`, 'i')
+        : new RegExp(`(^|[^A-Za-z0-9_~!$#%&-])${escapeRe(stem)}(\\.(exe|com|bat))?($|[^A-Za-z0-9_~!$#%&-])`, 'i')
+      if (pattern.test(text)) found.add(file.toLowerCase())
+    }
+    return found.size
+  }
+  const score = (c: ExecutableCandidate) => {
+    const n = c.name
     let s = 0
-    const stem = norm(n.split('/').pop()!.replace(/\.[^.]+$/, ''))
+    const stem = norm(baseOf(n).replace(/\.[^.]+$/, ''))
     if (wanted && stem === wanted) s += 6
     if (NOT_GAME.test(n)) s -= 10
-    if (/\.bat$/i.test(n)) s += 3 // 作者自己写的启动批处理通常最靠谱
-    if (/\.(exe|com)$/i.test(n)) s += 2 // .com 和 .exe 在 DOS 里同级，以前漏了 .com，才会出现平局
+    if (NOT_ENTRY.test(n)) s -= 6
+    const bat = /\.bat$/i.test(n)
+    if (bat) s += 3 // 作者自己写的启动批处理通常最靠谱
+    else s += 2 // .com 和 .exe 在 DOS 里同级，以前漏了 .com，才会出现平局
+    if (!bat && c.size && c.size > 64 * 1024) s += Math.min(3, Math.log2(c.size / (64 * 1024)))
+    if (c.content) {
+      const text = latin1(c.content)
+      if (bat) {
+        // 去掉注释和 echo 行，免得「echo Type SC2000 to play」这种说明文字被当成调用
+        const body = text
+          .split(/\r?\n/)
+          .filter((line) => !/^\s*@?\s*(rem\b|::|echo\b)/i.test(line))
+          .join('\n')
+        const calls = referencesIn(body, n, false)
+        const switchesDrive = /^\s*@?\s*[a-z]:\s*$/im.test(body) || /\b[a-z]:\\/i.test(body)
+        if (calls > 0) s += 1
+        else if (!switchesDrive) s -= 8
+      } else if (c.content.length <= LAUNCHER_MAX_BYTES && referencesIn(text, n, true) >= 2) {
+        s += 5
+      }
+    }
     s -= (n.split('/').length - 1) * 2 // 越靠近根目录越可能是主程序
     s -= n.length * 0.01
     return s
   }
-  return runnable.sort((a, b) => score(b) - score(a))[0]
+  return candidates
+    .map((c) => ({ c, s: score(c) }))
+    .sort((a, b) => b.s - a.s)[0].c.name
+}
+
+/**
+ * 给 pickExecutable 准备带大小和内容的候选。只解 .bat 和小于 64KB 的 .exe/.com，
+ * 一个包最多读 256 个：模拟城市 2000 那种带几十个 VESA 小驱动的包也就多解几十 KB。
+ * 读失败（加密、坏条目）就只给名字，不影响原来的按名打分。
+ */
+export async function executableCandidates(entries: readonly ZipEntry[], buf: ArrayBuffer): Promise<ExecutableCandidate[]> {
+  const out: ExecutableCandidate[] = []
+  let read = 0
+  for (const e of entries) {
+    if (e.name.endsWith('/') || !RUNNABLE.test(e.name) || e.name.startsWith('.jsdos/')) continue
+    const candidate: ExecutableCandidate = { name: e.name, size: e.uncompressedSize }
+    const limit = /\.bat$/i.test(e.name) ? BATCH_MAX_BYTES : LAUNCHER_MAX_BYTES
+    if (e.uncompressedSize > 0 && e.uncompressedSize <= limit && read < 256) {
+      read++
+      try {
+        candidate.content = await extractZipEntry(buf, {
+          name: e.name,
+          method: e.method,
+          compressedSize: e.compressedSize,
+          uncompressedSize: e.uncompressedSize,
+          crc32: e.crc,
+          offset: e.localOffset,
+        }, limit)
+      } catch {
+        /* 只按名字打分 */
+      }
+    }
+    out.push(candidate)
+  }
+  return out
 }
 
 /**
@@ -1281,7 +1393,7 @@ export async function makeJsdosBundle(
       crc32: bundledConf.crc,
       offset: bundledConf.localOffset,
     })
-    const picked = configuredExecutable ?? ((startupCommands?.trim() || launchArguments.length) ? pickExecutable(entries.map((e) => e.name)) : null)
+    const picked = configuredExecutable ?? ((startupCommands?.trim() || launchArguments.length) ? pickExecutable(await executableCandidates(entries, buf), name) : null)
     const launch = picked
       ? await dosLaunchBatchCompat(entries, buf, dosLaunchTarget(entries, buf, picked), picked, startupCommands)
       : null
@@ -1330,7 +1442,7 @@ export async function makeJsdosBundle(
   let launchExe: string | null = null
 
   if (entries) {
-    exe = configuredExecutable ?? pickExecutable(entries.map((e) => e.name), name)
+    exe = configuredExecutable ?? pickExecutable(await executableCandidates(entries, buf), name)
     if (!exe) throw new Error('DOS 压缩包里没有可运行的 .exe、.com 或 .bat 文件')
 
     /**

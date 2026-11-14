@@ -643,17 +643,26 @@ export class Jvm {
     this.wake();
   }
 
-  /** Starts the MIDlet: <clinit>, <init>() then startApp() on the event thread. */
+  /** Starts the MIDlet: <clinit> and <init>() on the event thread, then startApp() on its own thread. */
   startMidlet(className: string): void {
     this.postEvent((t) => {
       const cls = this.loadClass(className.replace(/\./g, '/'));
       const midlet = new JObject(cls);
       this.platform?.onMidletCreated?.(midlet);
       const startApp = this.findVirtual(cls, 'startApp()V');
-      if (startApp) this.pushCall(t, startApp, [midlet]);
       const init = this.findMethod(cls, '<init>()V');
       if (!init) throw new Error(`${className} has no public no-arg constructor`);
-      this.pushCall(t, init, [midlet]);
+      /*
+        8BitGo：startApp 放到单独的线程里跑，不占事件线程。
+        不少游戏把整个主循环写在 startApp 里（repaint → serviceRepaints → Thread.sleep 永不返回），
+        真机上按键由系统 UI 线程另外投递，所以照样能玩；以前这里把 startApp 压在唯一的事件线程上，
+        按键事件全排在它后面永远轮不到 —— 《仙剑奇侠传 2004》菜单画出来却一键都不响应（2026-11-15）。
+        <clinit> / 构造器仍在事件线程，与原行为一致；非事件线程的 serviceRepaints 会等事件线程画完。
+      */
+      this.pushCall(t, init, [midlet], () => {
+        if (!startApp) return;
+        this.startThread('MIDlet', (mt) => this.pushCall(mt, startApp, [midlet]));
+      });
       // Initialize the class chain before the constructor runs (superclasses on top).
       const chain: RuntimeClass[] = [];
       for (let c: RuntimeClass | null = cls; c && c.initState === 0; c = c.superClass) chain.push(c);

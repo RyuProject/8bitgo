@@ -293,7 +293,7 @@ export class MidiPlayer {
   private anchor = 0;
   private index = 0;
   private cycle = 0;
-  private loopCount = -1;
+  private loopCount = 1;
   private playing = false;
   private closed = false;
   private dropped = 0;
@@ -410,7 +410,8 @@ export class MidiPlayer {
     const notes = this.song.notes;
     const duration = this.song.duration;
     const horizon = ctx.currentTime + LOOKAHEAD;
-    const totalPasses = this.loopCount < 0 ? Infinity : this.loopCount + 1;
+    // 8BitGo：MIDP 的 setLoopCount(n) 是「一共播 n 遍」（-1 无限，0 非法），不是「额外再播 n 遍」
+    const totalPasses = this.loopCount < 0 ? Infinity : Math.max(1, this.loopCount);
     let guard = 0;
     for (;;) {
       if (guard++ > 8192) break;

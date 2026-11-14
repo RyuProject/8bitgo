@@ -25,6 +25,8 @@ let player: GamePlayer | null = null;
 let input: InputManager | null = null;
 let touch: TouchControls | null = null;
 let started = false;
+/** 开局后观察多久的未捕获异常再报 ready（见 start 里的说明） */
+const STARTUP_GRACE_MS = 2_000;
 
 function prefersTouch(): boolean {
   return matchMedia('(pointer: coarse)').matches || (navigator.maxTouchPoints > 0 && matchMedia('(hover: none)').matches);
@@ -140,8 +142,18 @@ async function start(message: StartMessage): Promise<void> {
     };
     packedWindow.__PACK__ = { identity: { storageId: message.storageId } };
 
+    /*
+      8BitGo：开局阶段的未捕获异常要算启动失败。startApp 里缺类（如 Nokia API）时 JVM 只记一条
+      「Uncaught exception」日志、画面全黑，而这里早已发了 ready —— 播放器撤掉加载遮罩，
+      玩家对着黑屏永远等不到报错（2026-11-15 实测《帝国时代 2》）。
+    */
+    let startupError: string | null = null;
+    let readySent = false;
     const game = new GamePlayer(bytes, message.fileName, {
-      onLog: (level, text) => notify({ source: '8bitgo-j2me-web', type: 'log', level, message: text }),
+      onLog: (level, text) => {
+        if (!readySent && startupError === null && /Uncaught exception/.test(text)) startupError = text;
+        notify({ source: '8bitgo-j2me-web', type: 'log', level, message: text });
+      },
       onHalt: (reason, text) => {
         if (reason === 'error') {
           notify({ source: '8bitgo-j2me-web', type: 'error', message: text || 'J2ME 游戏运行失败' });
@@ -216,6 +228,16 @@ async function start(message: StartMessage): Promise<void> {
     });
     game.start();
     canvas.focus({ preventScroll: true });
+    // 给 startApp 和头几帧一点时间：真正能玩的游戏这段里不会抛未捕获异常
+    const deadline = performance.now() + STARTUP_GRACE_MS;
+    while (startupError === null && performance.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    if (startupError !== null) {
+      game.stop();
+      throw new Error(String(startupError).split('\n')[0].replace(/^Uncaught exception in thread "[^"]*": /, ''));
+    }
+    readySent = true;
     notify({ source: '8bitgo-j2me-web', type: 'ready' });
   } catch (error) {
     started = false;

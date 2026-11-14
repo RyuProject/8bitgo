@@ -335,6 +335,17 @@ check('⭐ JVM 起不来是运行时故障：超时 / 缺 loader 都带 runtime�
   assert.ok(setup > at, '检测 loader 后才安装 CheerpJ 的音频和手柄能力')
 })
 
+check('⭐ loader 两次都没执行起来就换 j2me-web，不看 CDN 探测是不是 ok（2026-11-14《仙剑 2004》）', () => {
+  const at = adapterCode.indexOf('cheerpjLoaderMissing(win)')
+  const end = adapterCode.indexOf('setupFrameCapabilities(win)', at)
+  const block = adapterCode.slice(at, end)
+  assert.ok(block.includes('const loaderBroken'), '缺 loaderBroken')
+  assert.match(block, /loaderBroken\(`CheerpJ loader 两次都没执行起来/, '第二次缺 loader 要切备用运行时')
+  assert.match(block, /loaderBroken\(`CheerpJ loader 没执行起来，CDN 再探/, '再探不是 ok 也要切备用运行时')
+  assert.ok(!block.includes('fail(rt.j2meStartTimeout)'), 'loader 缺失分支不能再直接报「CDN 连不上」')
+  assert.match(adapterCode, /const startJ2meWebFallback = \(reason = /, '备用运行时要记下切换原因')
+})
+
 check('cheerpjLoaderMissing：只认 run.html，有 cheerpjInit 不算缺', () => {
   const doc = (type) => ({ querySelector: () => ({ getAttribute: () => type }) })
   const run = (extra, type = null) => ({ location: { pathname: '/j2me/run.html' }, document: doc(type), ...extra })
@@ -439,7 +450,7 @@ check('⭐ 预热与 CheerpJ 并行：最多等 2 秒就设 src，不再等预�
 check('⭐ 起不来的判定只数前台，且 iframe 每完成一个请求就重新计时', () => {
   assert.match(adapterCode, /if \(document\.visibilityState === 'hidden'\) return/)
   assert.match(adapterCode, /if \(count > seenResources\) \{\s+seenResources = count\s+stalledMs = 0/)
-  assert.match(adapterCode, /stalledMs < J2ME_STALL_TIMEOUT_MS && foregroundMs < J2ME_READY_HARD_CAP_MS/)
+  assert.match(adapterCode, /stalledMs < stallLimit && foregroundMs < J2ME_READY_HARD_CAP_MS/)
   assert.match(adapterCode, /stopFramePerf = watchFramePerformance\(iframe\.contentWindow\)/, 'CheerpJ 在 iframe 里下的东西要进诊断包')
   assert.match(adapterCode, /destroyed = true\s+probeAbort\.abort\(\)\s+stopReadyWatch\(\)\s+stopCdnSnapshot\(\)\s+stopFramePerf\?\.\(\)/, '销毁时收掉计时器、CDN 现场和诊断观察')
   assert.match(adapterCode, /const stopReadyWatch = \(\) => \{[\s\S]{0,200}?window\.clearInterval\(readyTimer\)[\s\S]{0,200}?removeEventListener\('visibilitychange', onReadyVisibilityChange\)/, 'stopReadyWatch 要同时收计时器和 visibilitychange 监听')
@@ -574,6 +585,17 @@ check('⭐ 适配器接线：开局确认 CDN down 后启用备用运行时、lo
   assert.match(adapterCode, /resetStartWatch\(\)\s*\n\s*try \{\s*\n\s*win\.location\.reload/, '重载前看门狗要从头计')
   assert.match(adapterCode, /probeAbort\.abort\(\)/, '销毁时要中止探测')
   assert.match(adapterCode, /if \(destroyed \|\| failed \|\| fallbackActive\) return\s*\n\s*diagLog\('j2me', 'info', warmed/, '探测已判死或已切备用运行时就不要再设 CheerpJ iframe.src')
+})
+
+check('⭐ CheerpJ 起来后卡住（探测 ok）也换 j2me-web，不再等满两分钟报 CDN 连不上（2026-11-14《帝国时代 2》）', () => {
+  assert.match(adapterCode, /const J2ME_FALLBACK_STALL_MS = 45_000/)
+  assert.match(adapterCode, /const stallLimit = canFallback \? J2ME_FALLBACK_STALL_MS : J2ME_STALL_TIMEOUT_MS/)
+  const at = adapterCode.indexOf('if (canFallback) {')
+  assert.ok(at > 0, '看门狗要有换备用运行时的分支')
+  const branch = adapterCode.slice(at, at + 700)
+  assert.match(branch, /startJ2meWebFallback\(why\)/, '卡住要直接换，不看探测结果')
+  assert.ok(branch.indexOf('startJ2meWebFallback(why)') < branch.indexOf('runCdnProbe'), '探测只记日志，不能挡在换运行时前面')
+  assert.match(adapterCode, /const canFallback = !crossOrigin && Boolean\(jarName\)/, '跨源或没有 JAR 名时仍按原超时报错')
 })
 
 console.log(failed ? `\n${failed} 项失败` : `\nJ2ME 测试全部通过 ✅`)

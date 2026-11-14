@@ -20,16 +20,20 @@ import { MidiPlayer } from '../../midi/synth';
  * 会把字节流读出来解析，然后由 src/midi/synth.ts 的合成器实时发声。
  * 非 MIDI 数据（wav/amr 等）目前仍走静音分支。
  *
- * 状态常量（javax.microedition.media.Player）：
- *   REALIZED 4 / PREFETCHED 8 / STARTED 16 / CLOSED 32 / ERROR 0
+ * 状态常量（javax.microedition.media.Player，JSR-135 规范值）：
+ *   UNREALIZED 100 / REALIZED 200 / PREFETCHED 300 / STARTED 400 / CLOSED 0
  */
 
-/** javax.microedition.media.Player 的状态常量（真实 MIDP 取值）。 */
+/**
+ * 8BitGo：上游写成 4 / 8 / 16 / 32，与规范不符。这些是 static final 编译期常量，javac 会直接内联进
+ * 游戏字节码，游戏拿 getState() 和字面量 300 比 —— 《仙剑奇侠传 2004》prefetch 后见状态不是 300，
+ * 弹「has not prefecthed」卡死（2026-11-15）。
+ */
 const UNREALIZED = 100;
-const REALIZED = 4;
-const PREFETCHED = 8;
-const STARTED = 16;
-const CLOSED = 32;
+const REALIZED = 200;
+const PREFETCHED = 300;
+const STARTED = 400;
+const CLOSED = 0;
 
 const LOOP_INDEFINITE = -1;
 
@@ -51,6 +55,49 @@ interface PlayerPeer {
   volume: JObject | null;
   /** 供 VolumeControl 反查 Player 用。 */
   self: JObject | null;
+  /** 8BitGo：PlayerListener 与「播完」定时器（见 notifyPlayer） */
+  listeners?: JObject[];
+  endTimer?: ReturnType<typeof setTimeout> | null;
+}
+
+/** 非 MIDI（静音）片段假装的长度：够「等开场音效播完」的游戏往下走，又不会让玩家多等 */
+const SILENT_CLIP_MS = 500;
+
+/**
+ * 8BitGo：给 PlayerListener 投递事件。上游的 addPlayerListener 是空实现，
+ * 不少游戏（《模拟人生 3》等）开场放一段音效、收到 endOfMedia 才进菜单 —— 永远等不到，卡在 logo。
+ * 回调在事件线程上跑（和真机一样）；data 按规范该是 Long，这里给 null，游戏极少读它。
+ */
+function notifyPlayer(jvm: Jvm, p: PlayerPeer, event: string): void {
+  const player = p.self;
+  if (!player || !p.listeners?.length) return;
+  for (const listener of p.listeners) {
+    jvm.postEvent((t) => {
+      const m = jvm.findVirtual(jvm.classOf(listener), 'playerUpdate(Ljavax/microedition/media/Player;Ljava/lang/String;Ljava/lang/Object;)V');
+      if (!m) return false;
+      jvm.pushCall(t, m, [listener, player, event, null]);
+      return true;
+    });
+  }
+}
+
+function clearEndTimer(p: PlayerPeer): void {
+  if (p.endTimer) clearTimeout(p.endTimer);
+  p.endTimer = null;
+}
+
+/** start 之后按时长排一个 endOfMedia；无限循环不排 */
+function scheduleEnd(jvm: Jvm, p: PlayerPeer): void {
+  clearEndTimer(p);
+  if (p.loopCount < 0) return;
+  const once = p.midi && !p.midi.error && p.midi.durationMs > 0 ? p.midi.durationMs : SILENT_CLIP_MS;
+  p.endTimer = setTimeout(() => {
+    p.endTimer = null;
+    if (p.state !== STARTED) return;
+    p.midi?.stop();
+    p.state = PREFETCHED;
+    notifyPlayer(jvm, p, 'endOfMedia');
+  }, once * Math.max(1, p.loopCount));
 }
 
 function newVolumePeer(owner: MidiPlayer | null): VolumePeer {
@@ -67,7 +114,8 @@ function newPlayer(jvm: Jvm, data: Uint8Array | null): JObject {
   const peer: PlayerPeer = {
     state: midi && !midi.error ? REALIZED : STARTED,
     loopMode: LOOP_INDEFINITE,
-    loopCount: -1,
+    // 8BitGo：JSR-135 规定默认播 1 遍；上游默认无限循环，开场音效永远播不完、等 END_OF_MEDIA 的游戏卡死
+    loopCount: 1,
     midi,
     volume: null,
     self,
@@ -84,7 +132,7 @@ function newStartedPlayer(jvm: Jvm): JObject {
 
 function peerOf(self: JObject): PlayerPeer {
   if (self.n === undefined || self.n === null) {
-    self.n = { state: UNREALIZED, loopMode: LOOP_INDEFINITE, loopCount: -1, midi: null, volume: null, self } satisfies PlayerPeer;
+    self.n = { state: UNREALIZED, loopMode: LOOP_INDEFINITE, loopCount: 1, midi: null, volume: null, self } satisfies PlayerPeer;
   }
   return self.n as PlayerPeer;
 }
@@ -171,17 +219,18 @@ const volumeControlImpl: NativeClassDef = {
 const playerClass: NativeClassDef = {
   name: 'javax/microedition/media/Player',
   interfaces: ['javax/microedition/media/Controllable'],
+  // 静态字段键必须是「名字:描述符」，和其它类一致，否则 getstatic 解析不到
   fields: {
-    UNREALIZED: UNREALIZED,
-    REALIZED,
-    PREFETCHED,
-    STARTED,
-    CLOSED,
-    ERROR: 0,
+    'UNREALIZED:I': UNREALIZED,
+    'REALIZED:I': REALIZED,
+    'PREFETCHED:I': PREFETCHED,
+    'STARTED:I': STARTED,
+    'CLOSED:I': CLOSED,
+    'TIME_UNKNOWN:J': -1n,
   },
   methods: {
     '<init>()V': (_t, [self]) => {
-      self.n = { state: UNREALIZED, loopMode: LOOP_INDEFINITE, loopCount: -1, midi: null, volume: null, self } satisfies PlayerPeer;
+      self.n = { state: UNREALIZED, loopMode: LOOP_INDEFINITE, loopCount: 1, midi: null, volume: null, self } satisfies PlayerPeer;
     },
     // ---- 生命周期：realize/prefetch 不做实际预读，start 才开始发声 ----
     'realize()V': (t, [self]) => enter(t, self, REALIZED),
@@ -192,16 +241,24 @@ const playerClass: NativeClassDef = {
       enter(t, self, STARTED);
       p.midi?.setLoopCount(p.loopCount);
       p.midi?.start();
+      (p as PlayerPeer & { startedAt?: number }).startedAt = performance.now();
+      notifyPlayer(t.jvm, p, 'started');
+      scheduleEnd(t.jvm, p);
     },
     'stop()V': (t, [self]) => {
       const p = peerOf(self);
+      const wasStarted = p.state === STARTED;
       enter(t, self, PREFETCHED);
       p.midi?.stop();
+      clearEndTimer(p);
+      if (wasStarted) notifyPlayer(t.jvm, p, 'stopped');
     },
     'close()V': (t, [self]) => {
       const p = peerOf(self);
       if (p.state === CLOSED) throw t.jvm.throwable('javax/microedition/media/MediaException', 'player already closed');
       p.midi?.close();
+      clearEndTimer(p);
+      notifyPlayer(t.jvm, p, 'closed');
       p.state = CLOSED;
       p.volume = null;
       p.self = null;
@@ -225,6 +282,33 @@ const playerClass: NativeClassDef = {
     'getMediaType()Ljava/lang/String;': () => 'audio/midi',
     'getContentType(Ljava/lang/String;)Ljava/lang/String;': (_t, [, type]) => type,
     'getLongDuration()J': (_t, [self]) => BigInt(peerOf(self).midi?.durationMs ?? -1),
+    /*
+      8BitGo：MIDP 2.0 Player 规范里的几个方法上游没实现，游戏一调就 AbstractMethodError、事件线程挂掉
+      （2026-11-15《仙剑奇侠传 2004》开局 4 秒后 setMediaTime）。时间单位都是微秒，未知时 -1（TIME_UNKNOWN）。
+    */
+    'getDuration()J': (_t, [self]) => {
+      const ms = peerOf(self).midi?.durationMs;
+      return ms === undefined || ms < 0 ? -1n : BigInt(Math.round(ms * 1000));
+    },
+    'getMediaTime()J': (_t, [self]) => {
+      const p = peerOf(self) as PlayerPeer & { startedAt?: number };
+      if (p.state !== STARTED || p.startedAt === undefined) return 0n;
+      const elapsedMs = performance.now() - p.startedAt;
+      const duration = p.midi?.durationMs ?? -1;
+      return BigInt(Math.round((duration > 0 ? Math.min(elapsedMs, duration) : elapsedMs) * 1000));
+    },
+    'setMediaTime(J)J': (_t, [self, time]) => {
+      const p = peerOf(self) as PlayerPeer & { startedAt?: number };
+      const micros = Math.max(0, Number(time));
+      // 游戏几乎只用 setMediaTime(0) 倒回开头：正在播就从头再播，否则下次 start 自然从头
+      if (micros === 0 && p.state === STARTED && p.midi) {
+        p.midi.stop();
+        p.midi.start();
+        p.startedAt = performance.now();
+      }
+      return BigInt(micros);
+    },
+    'getContentType()Ljava/lang/String;': () => 'audio/midi',
 
     // ---- 参数设置 ----
     'setLoopMode(I)V': (t, [self, mode]) => {
@@ -254,8 +338,16 @@ const playerClass: NativeClassDef = {
     },
 
     // ---- 监听器：只保留注册，事件不派发 ----
-    'addPlayerListener(Ljavax/microedition/media/PlayerListener;)V': () => {},
-    'removePlayerListener(Ljavax/microedition/media/PlayerListener;)V': () => {},
+    'addPlayerListener(Ljavax/microedition/media/PlayerListener;)V': (_t, [self, listener]) => {
+      if (listener === null) return;
+      const p = peerOf(self);
+      const listeners = (p.listeners ??= []);
+      if (!listeners.includes(listener)) listeners.push(listener);
+    },
+    'removePlayerListener(Ljavax/microedition/media/PlayerListener;)V': (_t, [self, listener]) => {
+      const p = peerOf(self);
+      p.listeners = (p.listeners ?? []).filter((l) => l !== listener);
+    },
 
     // ---- 音量：真实 API 在控制器上，这里也转发一份给老代码 ----
     'setVolume(I)V': (t, [self, level]) => {
@@ -300,6 +392,7 @@ const managerClass: NativeClassDef = {
     'getSystemSound(Ljava/lang/String;)Ljavax/microedition/media/Player;': (t) => newStartedPlayer(t.jvm),
     'playTone(IILjava/io/InputStream;)V': () => {},
     'playTone(I)V': () => {},
+    'playTone(III)V': () => {},
     'getPlyBtnOrder()I': () => 0,
     'setPlyBtnOrder(I)V': () => {},
   },
@@ -358,7 +451,21 @@ const inputConnectionClass: NativeClassDef = {
   flags: ACC_ABSTRACT | ACC_INTERFACE,
 };
 
+/** 8BitGo：RateControl / TempoControl 只需类存在（getControl 对它们返回 null），否则引用它们的游戏一加载就崩 */
+const rateControlInterface: NativeClassDef = {
+  name: 'javax/microedition/media/control/RateControl',
+  interfaces: ['javax/microedition/media/Control'],
+  flags: ACC_ABSTRACT | ACC_INTERFACE,
+};
+const tempoControlInterface: NativeClassDef = {
+  name: 'javax/microedition/media/control/TempoControl',
+  interfaces: ['javax/microedition/media/control/RateControl'],
+  flags: ACC_ABSTRACT | ACC_INTERFACE,
+};
+
 export const mediaNatives: NativeClassDef[] = [
+  rateControlInterface,
+  tempoControlInterface,
   mediaException,
   playerListener,
   controlClass,

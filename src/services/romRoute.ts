@@ -181,7 +181,8 @@ export function clearRomRouteSpeedCache(): void {
  * 为什么不再拿 ROM 自己的前 128KB 测：EdgeOne 上一份没人玩过的 ROM 第一次必然 MISS（实测样本
  * 先 MISS 后 HIT），测到的是「EdgeOne 回源」而不是「EdgeOne 线路」，冷门游戏会系统性地偏向主域。
  * 现在两边取同一个 64KB 的固定探针（R2 `roms/_route-probe/v1.bin`，带 `?v=1` 长缓存，两边边缘都常驻），
- * 量的是纯线路：TLS + 首字节 + 一小段吞吐。结论按「主域 + 镜像」这一对存 30 分钟（内存 + localStorage），
+ * 量的是纯线路：TLS + 首字节 + 一小段吞吐。探针结论按「主域 + 镜像」这一对存 30 分钟（内存 + localStorage）；
+ * 若真实下载证明另一域更快，则用 5 分钟的短期结论覆盖探针结果。
  * 同一会话、刷新页面、换游戏都不重测。
  *
  * 线路定了以后 ROM 本身照旧走 fetchBlobWithProgress 的 8MB 对齐 Range（带 romv 的都是），EdgeOne
@@ -208,6 +209,9 @@ interface StoredHostChoice {
   pair: string
   host: RomHost
   at: number
+  /** 下载本体的真实吞吐比小探针更有代表性，但只短时沿用，避免把单个冷缓存对象当成永久结论。 */
+  source?: 'probe' | 'download'
+  ttlMs?: number
 }
 
 export interface RomHostOptions {
@@ -233,17 +237,22 @@ const browserStorage = (): Pick<Storage, 'getItem' | 'setItem'> | null => {
   }
 }
 
-function readHostChoice(pair: string, storage: Pick<Storage, 'getItem' | 'setItem'> | null): RomHost | null {
-  const fresh = (choice: StoredHostChoice | undefined | null) =>
-    choice && choice.pair === pair && (choice.host === 'primary' || choice.host === 'mirror') &&
-    Date.now() - choice.at >= 0 && Date.now() - choice.at < HOST_CHOICE_TTL_MS
+function readHostChoiceEntry(pair: string, storage: Pick<Storage, 'getItem' | 'setItem'> | null): StoredHostChoice | null {
+  const fresh = (choice: StoredHostChoice | undefined | null) => {
+    const storedTtl = choice?.ttlMs
+    const ttlMs = Number.isFinite(storedTtl) && (storedTtl ?? 0) > 0
+      ? Math.min(storedTtl!, HOST_CHOICE_TTL_MS)
+      : HOST_CHOICE_TTL_MS
+    return choice && choice.pair === pair && (choice.host === 'primary' || choice.host === 'mirror') &&
+      Date.now() - choice.at >= 0 && Date.now() - choice.at < ttlMs
+  }
   const memory = hostChoices.get(pair)
-  if (fresh(memory)) return memory!.host
+  if (fresh(memory)) return memory!
   try {
     const parsed = JSON.parse(storage?.getItem(HOST_CHOICE_STORAGE_KEY) || 'null') as StoredHostChoice | null
     if (fresh(parsed)) {
       hostChoices.set(pair, parsed!)
-      return parsed!.host
+      return parsed!
     }
   } catch {
     /* 存储坏了就当没测过 */
@@ -251,8 +260,18 @@ function readHostChoice(pair: string, storage: Pick<Storage, 'getItem' | 'setIte
   return null
 }
 
-function writeHostChoice(pair: string, host: RomHost, storage: Pick<Storage, 'getItem' | 'setItem'> | null) {
-  const choice = { pair, host, at: Date.now() }
+function readHostChoice(pair: string, storage: Pick<Storage, 'getItem' | 'setItem'> | null): RomHost | null {
+  return readHostChoiceEntry(pair, storage)?.host ?? null
+}
+
+function writeHostChoice(
+  pair: string,
+  host: RomHost,
+  storage: Pick<Storage, 'getItem' | 'setItem'> | null,
+  source: StoredHostChoice['source'] = 'probe',
+  ttlMs = HOST_CHOICE_TTL_MS,
+) {
+  const choice: StoredHostChoice = { pair, host, at: Date.now(), source, ttlMs }
   hostChoices.set(pair, choice)
   try {
     storage?.setItem(HOST_CHOICE_STORAGE_KEY, JSON.stringify(choice))
@@ -310,7 +329,7 @@ async function raceHosts(primaryBase: string, mirrorBase: string, prefer: RomHos
 }
 
 /**
- * 这次开局走主域还是加速镜像。同一对域名同时只测一次，结论缓存 30 分钟；
+ * 这次开局走主域还是加速镜像。同一对域名同时只测一次，探针结论缓存 30 分钟；
  * 调用方被取消时不影响别人在等的同一轮测速（两次 64KB，很便宜）。
  */
 export async function chooseRomHost(primaryBase: string, mirrorBase: string, options: RomHostOptions = {}): Promise<RomHost> {
@@ -320,14 +339,15 @@ export async function chooseRomHost(primaryBase: string, mirrorBase: string, opt
   const storage = cacheResults ? (options.storage === undefined ? browserStorage() : options.storage) : null
   const pair = `${routeId(primaryBase)}|${routeId(mirrorBase)}`
   /*
-    大陆访客（边缘判定的 prefer=mirror）不测速，固定走镜像（2026-11-14）。
+    大陆访客（边缘判定的 prefer=mirror）不跑小探针，默认走镜像（2026-11-14）。
     64KB 探针量的是延迟：Cloudflare 往大陆的首包常常比 EdgeOne 快，探针就判主域赢，可真实吞吐
     只有几百 KB/s —— 大陆 Android Chrome《仙剑奇侠传》3.2MB 的 GBA ROM 从 assets 下了 16.8 秒
     （1.6Mbps，同机网络 9.3Mbps），慢启动。运行时线路早就因同一个原因不再测速（AGENTS.md §2.36）。
-    镜像真下不动时 fetchBlobWithProgress 的 alternateUrl 会换回主域。结论照样写缓存：
-    BIOS / 系统盘 / Sockdrive 经 readCachedRomHost 读到的也是镜像，旧的「主域」结论一并覆盖掉。
+    下载器测到镜像慢时会切主域，并将这条真实线路短时缓存；BIOS / 系统盘等经 readCachedRomHost 也会跟随。
   */
   if (prefer === 'mirror') {
+    const observed = cacheResults ? readHostChoiceEntry(pair, storage) : null
+    if (observed?.source === 'download') return observed.host
     if (cacheResults) writeHostChoice(pair, 'mirror', storage)
     return 'mirror'
   }
@@ -368,4 +388,11 @@ export function clearRomHostChoice(): void {
 export function readCachedRomHost(primaryBase: string, mirrorBase: string): RomHost | null {
   if (!primaryBase || !mirrorBase || routeId(primaryBase) === routeId(mirrorBase)) return null
   return readHostChoice(`${routeId(primaryBase)}|${routeId(mirrorBase)}`, browserStorage())
+}
+
+/** 首段真实下载证明另一线路更快时，短时覆盖小探针结论，供接下来的游戏与系统资源复用。 */
+export function rememberRomHostFromDownload(primaryBase: string, mirrorBase: string, host: RomHost): void {
+  if (!primaryBase || !mirrorBase || routeId(primaryBase) === routeId(mirrorBase)) return
+  const pair = `${routeId(primaryBase)}|${routeId(mirrorBase)}`
+  writeHostChoice(pair, host, browserStorage(), 'download', 5 * 60 * 1000)
 }

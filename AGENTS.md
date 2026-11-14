@@ -1048,8 +1048,12 @@ XHR 的 `progress` 事件按字节差值维护总量，并限到约 12fps 再通
 Local Uploads 只优化写入，不优化下载；玩家读取继续依赖 Anycast、版本化 URL、Worker Cache API、
 Range 边缘分片缓存，以及 `fetchBlobWithProgress()` 用首个真实分片选择下载并发。
 
-大 ROM 完整下载固定用 8MB 对齐 Range：首片是真实测速，之后按吞吐、RTT、省流量模式与设备内存
-选择 1–4 路；浏览器没有 Network Information API 时仍以真实吞吐为准，不能永远卡在三路。
+大 ROM 完整下载固定用 8MB 对齐 Range：首片开始后先用 256KiB 实际字节估速；超过 3Mbps 且并发可用时，
+提前启动后续完整 Range，避免整片串行下完才开始并发；其余分片再按吞吐、RTT、省流量模式与设备内存
+选择 1–4 路。ROM 至少 512KiB 且非 2G / 省流量时，首段低于 3Mbps 才比较另一域的同 ROM 对齐首片，
+备用实测速率高 15% 才放弃未完成首片并换域；2G / 省流量模式不因测速额外耗流量。
+测速与线路回退写入诊断包，成功的实际下载线路短时覆盖小探针结论 5 分钟。
+浏览器没有 Network Information API 时仍以真实吞吐为准，不能永远卡在三路。
 断点分片写 IndexedDB 与下一片网络传输重叠，但写盘积压最多两笔；进度按每路字节差值累计，禁止在
 每个底层 stream chunk 上展开全部请求重新求和。完整 Blob 到手后，临时分片删除留在后台，不能让
 几十到几百次 IDB delete 挡在模拟器启动前。回归：`npm run test:chunked-fetch`。
@@ -1062,8 +1066,10 @@ Content-Range 全部吻合的公开请求才可入边缘缓存；任意短 Range
 ⚠️ **网络层失败要多熬一会儿，并且能换线路**（2026-11-10 墨西哥玩家《合金弹头 3》两次「Failed to fetch」，
 第二次 8.4 秒就放弃）。`fetchBlobWithProgress` 对 fetch 抛出的 TypeError 按 `NETWORK_RETRIES`（5 次，
 0.5～8 秒退避，约 15 秒）重试，其它错误仍是 3 次；调用方显式传 `retries` 时两者都按传入值。
-一条 CDN 线路重试用光后，用 `alternateUrl`（`romHosts.ts` 的 `alternateRomUrl`：assets ↔ cn-assets）整套
-再来一次，只换一次；两边是同一个 R2 对象 + 同一个 romv，断点分片按 canonical 的 resumeKey 续。
+一条 CDN 线路首片实际吞吐低于 3Mbps 时，先测另一域同 ROM 的 64KiB 样本；备用实测速率至少快 15%，
+或当前线路重试用光后，才用 `alternateUrl`
+（`romHosts.ts` 的 `alternateRomUrl`：assets ↔ cn-assets）整套再来一次，只换一次；两边是同一个 R2 对象
+和同一个 romv，断点分片按 canonical 的 resumeKey 续。成功的实际线路短时记 5 分钟，覆盖小探针结论。
 RangeError（超大小上限）和用户取消不换线路。街机、光盘 / NDS、MAME CHD、DOS 包、通用 ROM 加载都已接上。
 回归：`npm run test:chunked-fetch` 第八节。
 
@@ -1630,6 +1636,10 @@ js-dos 运行时从 npm 复制到 `public/jsdos/v<version>/`，版本同时写�
    通过。排查手段：往虚拟盘写一个 INT 33h 记录 TSR（`wc-send-data-chunk` 可直接写文件），再从
    `ws-update-lines` 维护帧缓冲按形状找光标，能把「游戏读哪个接口、位移是否线性」量化出来。
 
+普通 DOS 包生成的 `cycles=auto` 一遇保护模式就放到 max：DOS4GW 游戏若模拟节奏跟 CPU 走，就会快得没法玩
+（2026-11-15《主题公园》）。这类游戏在 `windowsGameCompatibilityDosboxConfig` 里给固定周期（`theme-park` 为
+`cycles=fixed 25000`），后台 `dosbox_config_override` 仍优先；别把全站默认改成 fixed，慢保护模式游戏会被拖垮。
+
 普通 DOS 的 EXE / COM / BAT 若不是 8.3 文件名，不能直接在 autoexec 里加引号：DOSBox 那条命令
 不会可靠剥掉，引擎照样报 ready，实际只停在 `C:\>`。`makeJsdosBundle()` 会保留原文件，再在同目录
 补一个真实的 `8BITGO.EXE`（撞名时递增）供启动。ZIP 的绝对路径、盘符和 `../` 也在重打包前拒绝，
@@ -1715,6 +1725,24 @@ loader.js 地址从 run.html 现读，不抄版本号。CheerpJ 免费版**不�
 直接换 j2me-web，**不再看探测是否 ok**。2026-11-14 大陆 Android Chrome 143《仙剑 2004》两局：Rocket Loader 把 loader.js 改写成延后执行，
 三次探测都是 ok，旧逻辑重载一次后报「CDN 连不上」。广告拦截 / 内容过滤挡掉 `<script>` 但放行 no-cors fetch 也是这种形态。
 「慢」仍按原规则不切换；此时备用运行时失败的提示是「CheerpJ 无法启动」，不再写成连不上。
+第二个例外（2026-11-15）：CheerpJ **起来之后卡住**也换 j2me-web。2026-11-14 大陆 Edge 157 / Windows《帝国时代 2》：
+Rocket Loader 已关，loader.js 与 c.html 都到了，之后 121 秒 iframe 里一个请求都没再完成，探测仍是 ok，旧逻辑等满两分钟报「CDN 连不上」。
+现在能换（同源、JAR 名已定）时，前台 `J2ME_FALLBACK_STALL_MS`（45 秒）没有新请求完成就直接换，不看探测结果，探测只记日志；
+CheerpJ 的 cj3.js / cj3.wasm 压缩后约 150KB / 100KB、类库按需小块取，45 秒零完成是卡死而不是慢。换不了时仍按 120 秒报错。
+
+⚠️ **j2me-web 备用运行时要按游戏实测，不能只看「起来了」**（2026-11-15 把站内 24 款 J2ME 全部放进去跑过）。
+上游缺的东西补在 `vendor/j2me-web`（清单见其 `NOTICE.md`）：Nokia UI API（国产 / Gameloft 游戏大量继承 `FullCanvas`）、
+MIDP 2.0 图层（Sprite / TiledLayer / LayerManager）、同步 GIF 解码（资源包里运行时才读的 GIF）、**startApp 改到独立线程**
+（主循环写在 startApp 里的游戏，否则按键永远排在它后面）、Player 状态常量改成规范值 100/200/300/400/0（被 javac 内联进游戏，
+上游的 4/8/16 让《仙剑》卡在「has not prefecthed」）、PlayerListener 事件与默认播 1 遍、`RecordStore.getRecord(int,byte[],int)`、
+`AlertType` 对象常量、屏幕尺寸（GIF 整屏图、`Glu-Screen-Mode: landscape`、大 JAR 不信 128 的猜测）。
+embed 开局 2 秒内的未捕获 Java 异常报 error，不报 ready（以前黑屏也撤遮罩）。
+实测结果：能进菜单 / 游戏 —— 帝国时代 2 / 3 / 亚洲王朝、Anarchy 2087、Asphalt 4 / 6 / Nitro / Urban GT / Urban GT 2、仙剑 2004、
+辐射、寂静岭 1 / 2、模拟人生 2；**仍不行** —— 3D（M3G，不打算支持）的 Asphalt 3 3D / Urban GT 3D / Rally / 模拟人生 3 冬季版，
+以及停在片头的 Asphalt 3、模拟人生 3、逆转裁判、寂静岭 3（游戏线程 NPE）。`warcraft-iii` 的 JAR 与帝国时代 3 逐字节相同，是数据错（同 §2.27）。
+复测方法：静态扫描用 javap 列出游戏引用的平台方法、对照 `allNatives` 找缺口；运行用无头 Chromium 在本地 dev 服务器里
+iframe 嵌 `/j2me-web/embed.html` 发 start 消息、按键并比对画面。端到端（CheerpJ loader 404 / 卡死 → 自动换 j2me-web → 出画面）
+两种都实测通过（卡死那种约 48 秒出画面）。回归：`node scripts/test-j2me-web.mjs`（已并入 `npm run test:j2me`）。
 
 ⚠️ **后台节流后的第一跳不能把隐藏时间算成前台卡死**（2026-11-14 玩家现场）：浏览器切后台会暂停 iframe 的定时器，
 原看门狗只在回调里检查当前 `visibilityState`；玩家回来后第一跳已经是 visible，会把上次回调到现在的整段后台时间
@@ -3291,17 +3319,22 @@ EdgeOne 只能用境外（香港）节点。主站、ROM、Pages 子域都不受
     同一时刻大陆宽带下 8bitgo.com 的 8MB 核心走 Cloudflare 只有 1.5～43KB/s（cf HIT 也一样），
     cn.8bitgo.com/_cn 约 0.8～1MB/s。以前「测出 Cloudflare 更快就不走 EdgeOne」把这批玩家送去了几 KB/s 的线路。
     js-dos 的 DOSBox Worker 本来就是 fetch 后转 blob 启动，跨域无碍；`emulators.js` 整页只注入一次，换线路时要同步
-    `window.emulators.pathPrefix`。PPSSPP / Dolphin / Play! 是跨源隔离页 + pthread 同源 Worker，**没有**接入，
-    `/_cn/ppsspp` 等仍 404。
+    `window.emulators.pathPrefix`。Play! 从 2026-11-15 起仅把版本化 `Play.wasm` 走 `/_cn/play/`：`Play.js` 和 pthread
+    Worker 仍同源；EdgeOne 请求 12 秒无响应或失败时，同一次启动会退回同源并标记本页不再走 EdgeOne。新增 Play! 运行版本时
+    `cn-edge.js` 的窄白名单按路径模式覆盖，但仍只允许 `Play.wasm`。Dolphin 仍未接入：它的 iframe 消息校验要求同源，
+    核心 JS / Worker 又按相对路径互相加载；不能只加白名单或把 iframe 整体改到 EdgeOne。
   - 回归：`cd server && npm run test:cn-edge`。
 - **ROM 线路：所有平台开局前选一次 assets / cn-assets**（2026-11-07，`romRoute.ts` 的 `chooseRomHost`）：
   两边取同一个 64KB 固定探针 `roms/_route-probe/v1.bin?v=1`（R2 上的随机字节，两边边缘都长缓存），
   不再拿 ROM 自己的前 128KB 测——冷门 ROM 在 EdgeOne 上第一次必然 MISS，测到的是回源，会系统性偏向主域。
-  大陆访客（`coverCdnHint() === 'cn'`）**不测速、固定走镜像**，其他人默认主域、镜像要快 15% 才赢；两边都测不出或
+  大陆访客（`coverCdnHint() === 'cn'`）**不跑小探针、默认走镜像**，其他人默认主域、镜像要快 15% 才赢；两边都测不出或
   省流量 / 2G 直接用默认。⚠️ 2026-11-14 大陆 Android Chrome《仙剑奇侠传》：64KB 探针判 Cloudflare 更快，
   3.2MB ROM 从 assets 下了 16.8 秒（1.6Mbps，本机网络 9.3Mbps）—— 探针量的是延迟，量不出 Cloudflare
-  往大陆的吞吐，和下面运行时线路是同一个坑。镜像下不动时 `alternateUrl` 自动换回主域；诊断包里
-  `ROM 线路：…` 一行记着这局走了哪边。结论按域名对存 30 分钟（内存 + localStorage `8bitgo.rom-host.v1`）。
+  往大陆的吞吐，和下面运行时线路是同一个坑。首段 256KiB 低于 3Mbps 时会测另一域同 ROM 的 64KiB；
+  只有备用实测速率至少快 15%（ROM ≥512KiB，且非 2G / 省流量），或下载重试用尽时，`alternateUrl` 才整局换域。
+  诊断包记录所选线路、首段吞吐、备用线路速度和切换原因。
+  仅 ROM ≥512KiB 且非 2G / 省流量时比较线路；实际下载证明的线路短时覆盖探针结论 5 分钟，其余探针结论仍按域名对存 30 分钟
+  （内存 + localStorage `8bitgo.rom-host.v1`）。
   探针上限 8 秒（详情页刚打开时要和封面 / 脚本抢连接，实测 2.5 秒会两边一起超时），但开局只在 HEAD 之后
   再等 `ROM_HOST_WAIT_MS`（1.5 秒），没结论先用默认，测速在后台跑完并缓存给下一局。
   ROM 本体仍走 8MB 对齐 Range（带 romv 的都是），实测 EdgeOne 免费版按片缓存 98MB 的大包，不会因整包大被拒。

@@ -175,6 +175,19 @@ const recordStoreClass: NativeClassDef = {
       const rec = recordOrThrow(t, store(t, self), id);
       return rec.length ? toJavaBytes(rec) : null;
     },
+    /*
+      8BitGo：MIDP 规范的签名是 getRecord(int, byte[], int)（整条记录拷到 buffer 的 offset 处，返回长度）。
+      上游只有一个规范里没有的四参数版本，游戏一调就 AbstractMethodError —— 《仙剑奇侠传 2004》
+      解完资源包读存档时卡死（2026-11-15）。四参数版本留着兼容。
+    */
+    'getRecord(I[BI)I': (t, [self, id, buffer, offset]) => {
+      const rec = recordOrThrow(t, store(t, self), id);
+      if (buffer === null) throw t.jvm.npe();
+      const out = buffer.d as Int8Array;
+      if (offset < 0 || offset + rec.length > out.length) throw t.jvm.throwable('java/lang/ArrayIndexOutOfBoundsException');
+      out.set(new Int8Array(rec.buffer, rec.byteOffset, rec.length), offset);
+      return rec.length;
+    },
     'getRecord(I[BII)I': (t, [self, id, buffer, offset, len]) => {
       const peer = store(t, self);
       const rec = recordOrThrow(t, peer, id);

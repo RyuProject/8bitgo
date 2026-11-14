@@ -29,6 +29,35 @@ function recoverStaleChunk(error: unknown): boolean {
 
 interface AppErrorBoundaryState {
   failed: boolean
+  /** 给人看的错误摘要：错误原文 + 前几帧调用栈 + 浏览器 / 版本。玩家截图反馈时才知道是哪里坏了 */
+  detail: string
+}
+
+/**
+ * 拼「技术细节」那一段。
+ *
+ * 2026-11-15 有人在 Android 模拟器里打开《拳皇97》详情页只看到「页面暂时没有正常打开」，同一页在
+ * 桌面 Chromium、Android 16 模拟器的 Chrome 134（中英文、点开始）都复现不出来 —— 而这张兜底页把错误
+ * 原文整个吞掉了，只能猜。现在把它摆出来（折叠着，不吓人），截图就能定位。
+ * 只放错误本身、浏览器 UA 和前端版本，不放地址参数、账号或存档之类的东西。
+ */
+export function describeRenderError(error: unknown, ua = '', build = ''): string {
+  const head = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+  const frames = error instanceof Error && typeof error.stack === 'string'
+    ? error.stack.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('at ') || l.includes('@')).slice(0, 4)
+    : []
+  return [head.slice(0, 400), ...frames.map((f) => f.slice(0, 200)), ua && `UA: ${ua.slice(0, 200)}`, build && `build: ${build}`]
+    .filter(Boolean)
+    .join('\n')
+}
+
+function currentBuild(): string {
+  try {
+    const src = document.querySelector<HTMLScriptElement>('script[type="module"][src*="/assets/index-"]')?.src ?? ''
+    return src.split('/').pop() ?? ''
+  } catch {
+    return ''
+  }
 }
 
 /**
@@ -39,10 +68,12 @@ interface AppErrorBoundaryState {
  * 这张最后的错误页也必须能画出来。
  */
 export class AppErrorBoundary extends Component<{ children: ReactNode }, AppErrorBoundaryState> {
-  state: AppErrorBoundaryState = { failed: false }
+  state: AppErrorBoundaryState = { failed: false, detail: '' }
 
-  static getDerivedStateFromError(): AppErrorBoundaryState {
-    return { failed: true }
+  static getDerivedStateFromError(error: unknown): AppErrorBoundaryState {
+    let ua = ''
+    try { ua = navigator.userAgent } catch { /* 拿不到就不写 */ }
+    return { failed: true, detail: describeRenderError(error, ua, currentBuild()) }
   }
 
   componentDidCatch(error: unknown, info: ErrorInfo) {
@@ -85,6 +116,16 @@ export class AppErrorBoundary extends Component<{ children: ReactNode }, AppErro
               {chinese ? '回到首页' : 'Back to home'}
             </a>
           </div>
+          {this.state.detail && (
+            <details className="mt-6 text-left">
+              <summary className="cursor-pointer text-xs font-semibold text-muted">
+                {chinese ? '技术细节（反馈问题时请截图这一段）' : 'Technical details (screenshot this when reporting)'}
+              </summary>
+              <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-black/5 p-3 text-[11px] leading-snug text-muted">
+                {this.state.detail}
+              </pre>
+            </details>
+          )}
         </section>
       </main>
     )

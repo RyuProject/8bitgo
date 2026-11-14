@@ -60,6 +60,16 @@ const J2ME_POLL_MS = 250
 const J2ME_STALL_TIMEOUT_MS = 120_000
 /** 前台总预算的硬上限：慢慢在下也不能无限等下去 */
 const J2ME_READY_HARD_CAP_MS = 360_000
+/**
+ * 能换备用运行时（同源、JAR 名已定）时，CheerpJ 这么久没有任何新请求完成就换 j2me-web。
+ *
+ * 2026-11-14 大陆 Edge 157 / Windows《帝国时代 2》：loader.js 和 c.html 都到了（Rocket Loader 已关），
+ * 之后 121 秒 iframe 里一个请求都没再完成，CDN 探测仍是 ok —— 旧逻辑只在探测 down 时才换备用，
+ * 于是等满两分钟报「CDN 连不上」。CheerpJ 自己的 cj3.js / cj3.wasm 压缩后才约 150KB / 100KB，
+ * Java 类库按需小块取，45 秒一个都没完成就是卡死，不是慢；j2me-web 全在本站，换过去几秒就起来。
+ * 换不了时仍按 J2ME_STALL_TIMEOUT_MS 报错。
+ */
+const J2ME_FALLBACK_STALL_MS = 45_000
 /** 备用 JVM 启动预算；它不需要下载 CheerpJ，但大型 JAR 仍要留出解包和 JPEG 预热时间。 */
 const J2ME_WEB_READY_TIMEOUT_MS = 120_000
 const J2ME_WEB_EMBED_URL = '/j2me-web/embed.html'
@@ -538,7 +548,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
     options.onCaps?.(caps)
   }
-  const startJ2meWebFallback = () => {
+  const startJ2meWebFallback = (reason = 'CheerpJ CDN 已确认不可达') => {
     if (fallbackActive || readySent || destroyed || failed || !jarName) return
     fallbackActive = true
     srcSet = true
@@ -552,7 +562,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     caps.clear()
     options.onCaps?.(caps)
     options.onProgress?.({ phase: 'engine' })
-    diagLog('j2me', 'warn', `CheerpJ CDN 已确认不可达，切换到 j2me-web（JAR：${jarName}）`)
+    diagLog('j2me', 'warn', `${reason}，切换到 j2me-web（JAR：${jarName}）`)
     const embedUrl = new URL(J2ME_WEB_EMBED_URL, window.location.origin)
     iframe.src = embedUrl.href
     fallbackTimer = window.setTimeout(() => {
@@ -640,16 +650,22 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (!crossOrigin && !readySent && cheerpjLoaderMissing(win)) {
       stopPoll()
       diagLog('j2me', 'warn', `CheerpJ loader 没加载上（${CHEERPJ_ORIGIN}）${cdnReloaded ? '，重载后仍然没有' : '，再探一次 CDN'}`)
+      /*
+        loader 在这个页面里执行不起来时，CDN 探测连得上也救不了这一局：
+        2026-11-14 大陆 Android Chrome 143《仙剑 2004》两局，探测三次都是 ok，loader 却被页面改写 / 拦截，
+        重载一次照旧，最后报「CDN 连不上」。加载两次都没有 cheerpjInit 是「CheerpJ 在这里坏了」，
+        不是「慢」，所以不论探测结果都换 j2me-web；探测只记进诊断包。跨源部署读不到 iframe，到不了这里。
+      */
+      const loaderBroken = (why: string) => {
+        if (destroyed || failed || readySent) return
+        startJ2meWebFallback(why)
+      }
       if (cdnReloaded) {
         void runCdnProbe().then((result) => {
           if (destroyed || failed || readySent) return
           diagLog('j2me', 'warn', `第二次加载失败后的 CheerpJ CDN 探测：${result}`)
-          if (result === 'down') {
-            cheerpjConfirmedDown = true
-            maybeStartJ2meWebFallback()
-          } else {
-            fail(rt.j2meStartTimeout)
-          }
+          if (result === 'down') cheerpjConfirmedDown = true
+          loaderBroken(`CheerpJ loader 两次都没执行起来（CDN 探测：${result}）`)
         })
         return
       }
@@ -657,13 +673,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       void runCdnProbe().then((result) => {
         if (destroyed || failed || readySent) return
         if (result !== 'ok') {
-          diagLog('j2me', 'warn', `CheerpJ CDN 再探：${result}，放弃`)
-          if (result === 'down') {
-            cheerpjConfirmedDown = true
-            maybeStartJ2meWebFallback()
-          } else {
-            fail(rt.j2meStartTimeout)
-          }
+          diagLog('j2me', 'warn', `CheerpJ CDN 再探：${result}，不再重载`)
+          if (result === 'down') cheerpjConfirmedDown = true
+          loaderBroken(`CheerpJ loader 没执行起来，CDN 再探：${result}`)
           return
         }
         // 这回连得上：一时抖动。重载 run.html 一次，看门狗从头计
@@ -672,7 +684,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         try {
           win.location.reload()
         } catch {
-          fail(rt.j2meStartTimeout)
+          loaderBroken('CheerpJ loader 没执行起来，run.html 也重载不了')
         }
       })
       return
@@ -827,9 +839,19 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           seenResources = count
           stalledMs = 0
         }
-        if (stalledMs < J2ME_STALL_TIMEOUT_MS && foregroundMs < J2ME_READY_HARD_CAP_MS) return
+        const canFallback = !crossOrigin && Boolean(jarName)
+        const stallLimit = canFallback ? J2ME_FALLBACK_STALL_MS : J2ME_STALL_TIMEOUT_MS
+        if (stalledMs < stallLimit && foregroundMs < J2ME_READY_HARD_CAP_MS) return
         stopReadyWatch()
         stopPoll()
+        if (canFallback) {
+          const why = `CheerpJ 前台 ${Math.round(foregroundMs / 1000)}s、其中 ${Math.round(stalledMs / 1000)}s 没有新请求完成`
+          diagLog('j2me', 'warn', `${why}，iframe 共完成 ${Math.max(seenResources, 0)} 个请求；${cheerpjCdnSummary() ?? 'CheerpJ CDN 读不到'}`)
+          // 卡死与 CDN 连不连得上无关（探测常常是 ok），直接换；探测结果只进诊断包
+          startJ2meWebFallback(why)
+          void runCdnProbe().then((result) => diagLog('j2me', 'info', `换备用运行时时的 CheerpJ CDN 探测：${result}`))
+          return
+        }
         diagLog('j2me', 'warn', `放弃：前台 ${Math.round(foregroundMs / 1000)}s，其中 ${Math.round(stalledMs / 1000)}s 没有新请求完成，iframe 共完成 ${Math.max(seenResources, 0)} 个请求；${cheerpjCdnSummary() ?? 'CheerpJ CDN 读不到'}`)
         /*
           'runtime'：JVM 没起来是运行时设施的事，换语言 ROM 修不好。不带 scope 时播放器会把它当内容错，
