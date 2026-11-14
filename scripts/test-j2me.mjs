@@ -336,12 +336,37 @@ check('⭐ JVM 起不来是运行时故障：超时 / 缺 loader 都带 runtime�
 })
 
 check('cheerpjLoaderMissing：只认 run.html，有 cheerpjInit 不算缺', () => {
-  const run = (extra) => ({ location: { pathname: '/j2me/run.html' }, ...extra })
+  const doc = (type) => ({ querySelector: () => ({ getAttribute: () => type }) })
+  const run = (extra, type = null) => ({ location: { pathname: '/j2me/run.html' }, document: doc(type), ...extra })
   assert.equal(cheerpjLoaderMissing(run({})), true)
+  assert.equal(cheerpjLoaderMissing(run({}, 'text/javascript')), true)
   assert.equal(cheerpjLoaderMissing(run({ cheerpjInit: async () => {} })), false)
   assert.equal(cheerpjLoaderMissing({ location: { pathname: 'blank' } }), false, 'about:blank 的 load 不算')
   assert.equal(cheerpjLoaderMissing(null), false)
   assert.equal(cheerpjLoaderMissing({ get location() { throw new Error('x') } }), false, '读不到就交给看门狗')
+})
+
+check('⭐ Rocket Loader 改写过的 loader.js 不算缺（load 之后才执行，2026-11-14 全站误判）', () => {
+  const run = (script) => ({
+    location: { pathname: '/j2me/run.html' },
+    document: { querySelector: () => script },
+  })
+  assert.equal(cheerpjLoaderMissing(run({ getAttribute: () => '843b7ee4f2a70ca5ad85b803-text/javascript' })), false)
+  assert.equal(cheerpjLoaderMissing(run(null)), false, '找不到 loader 的 <script> 就不下结论')
+})
+
+check('⭐ run.html 与 j2me-web 都退出 Rocket Loader', () => {
+  const patcher = readFileSync(new URL('../scripts/patch-j2me-runtime.mjs', import.meta.url), 'utf8')
+  assert.match(patcher, /optOutRocketLoader\(source\)/, 'run.html 要补 data-cfasync="false"')
+  assert.match(patcher, /throw new Error\('FreeJ2ME run\.html 结构变化/, '找不到 loader 的 <script> 要让构建失败')
+  const webConfig = readFileSync(new URL('../vite.j2me-web.config.ts', import.meta.url), 'utf8')
+  assert.match(webConfig, /transformIndexHtml: \(html\) => optOutRocketLoader\(html\)/, 'embed.html 也要退出')
+  let runHtml = ''
+  try { runHtml = readFileSync(new URL('../public/j2me/run.html', import.meta.url), 'utf8') } catch { /* 未安装运行时 */ }
+  if (runHtml) {
+    assert.match(runHtml, /<script data-cfasync="false" src="https:\/\/cjrtnc\.leaningtech\.com\//, '本地 run.html 未打补丁，跑 npm run j2me')
+    assert.match(runHtml, /<script data-cfasync="false" type="module" src="src\/main\.js">/)
+  }
 })
 
 console.log('\n七、冷启动预热：清单与「什么时候才能预取 ROM」')

@@ -714,6 +714,58 @@ export async function setRoomRole(roomId: string, token: string, role: RoomRole)
   }
 }
 
+/**
+ * 观众申请上场的应答窗口：房主那边的卡片到点自动收起，观众这边到点退回可再申请。
+ * 必须和服务端 server/src/netplay.js 的 SEAT_REQUEST_MS 是同一个数。
+ */
+export const SEAT_REQUEST_TTL_MS = 15_000
+
+export type SeatRequestResult =
+  | { kind: 'pending'; expiresIn: number }
+  /** 老服务端不需要房主同意，直接上场了 */
+  | { kind: 'granted' }
+  | { kind: 'cooldown'; retryAfter: number }
+  | { kind: 'full' }
+  | { kind: 'failed' }
+
+/**
+ * 观众申请上场当玩家。服务端回 202 = 已经把申请递给房主，结果走 socket 的 seat-decision。
+ */
+export async function requestSeat(roomId: string, token: string): Promise<SeatRequestResult> {
+  if (!token) return { kind: 'failed' }
+  try {
+    const res = await fetch(`${apiBase()}/api/netplay/rooms/${encodeURIComponent(roomId)}/role`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-netplay-token': token },
+      body: JSON.stringify({ role: 'player' }),
+    })
+    const body = (await res.json().catch(() => ({}))) as { pending?: boolean; expiresIn?: number; retryAfter?: number; error?: string }
+    if (res.status === 202 || body.pending) return { kind: 'pending', expiresIn: Number(body.expiresIn) || SEAT_REQUEST_TTL_MS }
+    if (res.ok) return { kind: 'granted' }
+    if (res.status === 429 && body.error === 'seat request cooldown') return { kind: 'cooldown', retryAfter: Number(body.retryAfter) || 5 }
+    if (res.status === 409 && body.error === 'no free player slot') return { kind: 'full' }
+    return { kind: 'failed' }
+  } catch {
+    return { kind: 'failed' }
+  }
+}
+
+/** 房主答复一条上场申请。返回是否真的让对方上场了 */
+export async function decideSeat(roomId: string, token: string, userid: string, approve: boolean): Promise<boolean> {
+  if (!token || !userid) return false
+  try {
+    const res = await fetch(`${apiBase()}/api/netplay/rooms/${encodeURIComponent(roomId)}/seat-decision`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-netplay-token': token },
+      body: JSON.stringify({ userid, approve }),
+    })
+    const body = (await res.json().catch(() => ({}))) as { approved?: boolean }
+    return res.ok && body.approved === true
+  } catch {
+    return false
+  }
+}
+
 /** 房间里在看的人数（老服务端没有这个字段时返回 0） */
 export function viewersOf(room: NetplayRoom): number {
   return room.spectators ?? 0

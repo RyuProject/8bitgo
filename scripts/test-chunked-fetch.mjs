@@ -822,6 +822,21 @@ await check('Blob 存储坏掉：内存 ROM 替身可切片校验，交给引擎
   assert.match(pack, /const probeBytes = Math\.min\(combined\.size, 4 \* 1024 \* 1024\)/, '还要按引擎的 4MB 读取大小探合并后的 ROM')
   assert.match(ejs, /onBlobReadError\?\.\(error\)/, '引擎读取 Blob 失败时要主动通知启动恢复')
   assert.match(ejs, /failLoad\(fmt\(rt\.ejsEngineError, \{ msg: message \}\), 'runtime'\)/, 'Blob 读取失败应重挂一次并保留 ROM 候选')
+  // 跨访问记住：同一台 2GB 机器第 7、8 次开局都要先失败一次才走内存
+  assert.match(ejs, /let romBlobStorageBroken = readRomBlobBroken\(\)/, 'Blob 存储坏的结论要从 localStorage 读回')
+  assert.match(ejs, /localStorage\.setItem\(ROM_BLOB_BROKEN_KEY, String\(Date\.now\(\)\)\)/, '标记时要写进 localStorage')
+  const fnText = ejs.match(/export function romBlobBrokenRecently[\s\S]*?\n\}/)?.[0]
+  assert.ok(fnText, '缺 romBlobBrokenRecently')
+  const { transformSync } = await import('esbuild')
+  const vm = await import('node:vm')
+  const ctx = { ROM_BLOB_BROKEN_TTL_MS: 3 * 24 * 3600_000 }
+  vm.runInNewContext(`${transformSync(fnText.replace(/^export /, ''), { loader: 'ts' }).code};globalThis.f=romBlobBrokenRecently`, ctx)
+  const now = 1_800_000_000_000
+  assert.equal(ctx.f(null, now), false)
+  assert.equal(ctx.f('garbage', now), false)
+  assert.equal(ctx.f(String(now - 3600_000), now), true, '一小时前标记过：仍走内存')
+  assert.equal(ctx.f(String(now - 4 * 24 * 3600_000), now), false, '三天后过期，重新试 Blob')
+  assert.equal(ctx.f(String(now + 60_000), now), false, '时钟回拨写出的未来时间不算')
 })
 
 console.log(failed ? `\n${failed} 项未通过` : '\n全部通过 ✅')

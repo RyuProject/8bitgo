@@ -1,0 +1,20 @@
+<!doctype html><html><head><meta charset="utf-8"><title>swgl</title>
+<style>body{margin:0;background:#222}#game{width:640px;height:480px}</style></head><body>
+<div id="game"></div>
+<script type="module">
+const q = new URLSearchParams(location.search)
+const nogl = q.get('nogl') !== '0'
+window.__calls = new Map()
+if (nogl) {
+  const n = HTMLCanvasElement.prototype.getContext
+  HTMLCanvasElement.prototype.getContext = function (t, a) { return /webgl/.test(t) ? null : n.call(this, t, a) }
+  const { installSoftwareWebgl } = await import('/src/emulator/softwareWebgl.ts')
+  installSoftwareWebgl(window, () => console.log('[swgl] software context in use'))
+}
+Object.assign(window, {
+  EJS_player: '#game', EJS_core: q.get('core') || 'fceumm', EJS_gameUrl: q.get('rom') || '/scripts/fixtures/software-webgl/test.nes',
+  EJS_pathtodata: '/emulatorjs/', EJS_startOnLoaded: true, EJS_DEBUG: true,
+  EJS_onGameStart: () => console.log('[swgl] game started'),
+})
+const s = document.createElement('script'); s.src = '/emulatorjs/loader.js'; document.body.append(s)
+</script></body></html>

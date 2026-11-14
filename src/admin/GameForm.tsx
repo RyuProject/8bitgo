@@ -1142,12 +1142,16 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
         </Field>
         <Field
           label="最大玩家数"
-          hint={(form.netplayMode ?? 'auto') === 'on' ? '强制开启联机时用这个人数' : '「自动」时按 ROM 推断，这里的值不生效'}
+          hint={
+            form.platform === 'arcade'
+              ? '街机按 ROM 自动识别，这里的值不生效'
+              : (form.netplayMode ?? 'auto') === 'on' ? '强制开启联机时用这个人数' : '「自动」时按 ROM 推断，这里的值不生效'
+          }
         >
           <select
             className={inputClass}
             value={form.players}
-            disabled={(form.netplayMode ?? 'auto') !== 'on'}
+            disabled={form.platform === 'arcade' || (form.netplayMode ?? 'auto') !== 'on'}
             onChange={(e) => set('players', Number(e.target.value) as Game['players'])}
           >
             {Array.from({ length: NETPLAY_MAX_PLAYERS }, (_, i) => i + 1).map((n) => (
@@ -1889,6 +1893,18 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
           联机不再要求逐款勾选：默认「自动」由服务端按 ROM 推断人数（街机读 FBNeo 驱动表，
           见 server/src/netplay-auto.js），这里只用来纠错。
         */}
+        {/* 街机没有手动开关：服务端忽略 netplayMode，按 FBNeo 驱动表自动识别（netplay-auto.js） */}
+        {form.platform === 'arcade' ? (
+          <span className="inline-flex items-center gap-2">
+            联机
+            <span className="text-xs text-muted">
+              自动识别：
+              {form.playersInferred
+                ? `${form.playersInferred} 人${form.playersInferred >= 2 ? '，可联机' : '，单人游戏不开放联机'}`
+                : '驱动表里没有这个 romset，按街机默认 2 人'}
+            </span>
+          </span>
+        ) : (
         <label className="inline-flex items-center gap-2">
           联机
           <select
@@ -1904,12 +1920,11 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
             {(form.netplayMode ?? 'auto') === 'auto'
               ? form.playersInferred
                 ? `推断为 ${form.playersInferred} 人${form.playersInferred >= 2 ? '，可联机' : '，单人游戏不开放联机'}`
-                : form.platform === 'arcade'
-                  ? '驱动表里没有这个 romset，按街机默认 2 人'
-                  : '这个平台还没有自动数据，沿用已保存的设置'
+                : '这个平台还没有自动数据，沿用已保存的设置'
               : null}
           </span>
         </label>
+        )}
         <label className="inline-flex items-center gap-2">
           <input type="checkbox" checked={Boolean(form.bodyControl)} onChange={(e) => set('bodyControl', e.target.checked)} /> 体感控制友好
         </label>

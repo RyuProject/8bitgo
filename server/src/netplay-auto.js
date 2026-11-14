@@ -73,12 +73,20 @@ export function inferNetplayPlayers({ platform, romKeys = [], romData = '' }, lo
 }
 
 /**
+ * 街机没有手动开关：能不能联机、几个人，一律按 ROM 自动识别（2026-11-14 运营决定）。
+ * 库里历史遗留的 on / off 不再生效，下一次写入或全库重算时也会被改回 auto。
+ */
+export function effectiveNetplayMode(platform, mode) {
+  return platform === 'arcade' ? 'auto' : normalizeNetplayMode(mode)
+}
+
+/**
  * 意图 + 推断 → 生效的 { players, multiplayer }。
  * @param {{ mode?: string, platform?: string, players?: unknown, multiplayer?: unknown, inferred?: number | null }} input
  */
 export function resolveNetplay({ mode, platform, players, multiplayer, inferred }) {
   const stored = normalizeGamePlayers(players)
-  switch (normalizeNetplayMode(mode)) {
+  switch (effectiveNetplayMode(platform, mode)) {
     case 'off':
       return { players: stored, multiplayer: 0 }
     case 'on':
@@ -109,7 +117,6 @@ let missingColumnsWarned = false
 export async function syncNetplayDerived(run, gameId, { mode, dryRun = false } = {}, lookup = defaultArcadePlayers()) {
   let game
   try {
-    if (mode && !dryRun) await run('UPDATE games SET netplay_mode = ? WHERE id = ?', [normalizeNetplayMode(mode), gameId])
     ;[game] = await run(
       'SELECT platform, netplay_mode, players, multiplayer, players_inferred, arcade_romdata FROM games WHERE id = ?',
       [gameId],
@@ -123,6 +130,12 @@ export async function syncNetplayDerived(run, gameId, { mode, dryRun = false } =
     return null
   }
   if (!game) return null
+  // 街机忽略请求里的模式，并把库里遗留的 on / off 收回 auto
+  const wantMode = game.platform === 'arcade' ? 'auto' : mode ? normalizeNetplayMode(mode) : null
+  if (wantMode && wantMode !== normalizeNetplayMode(game.netplay_mode)) {
+    if (!dryRun) await run('UPDATE games SET netplay_mode = ? WHERE id = ?', [wantMode, gameId])
+    game.netplay_mode = wantMode
+  }
   const keys = (await run('SELECT object_key FROM game_roms WHERE game_id = ?', [gameId])).map((r) => r.object_key)
   const inferred = inferNetplayPlayers({ platform: game.platform, romKeys: keys, romData: game.arcade_romdata }, lookup)
   const next = resolveNetplay({ ...game, mode: game.netplay_mode, inferred })

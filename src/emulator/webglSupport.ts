@@ -18,3 +18,25 @@ export function canCreateWebgl(doc: Document = document): boolean {
     return false
   }
 }
+
+/**
+ * 现在还建不建得出 **WebGL2**。
+ *
+ * 只有 WebGL1 的浏览器（GPU 被 Chrome 拉黑 WebGL2、老显卡驱动）里，引擎会改下 `<核心>-legacy-wasm.data`；
+ * 没有 legacy 构建的核心（melondsds，见 paths.ts 的 EJS_WEBGL2_ONLY_CORES）就 404，
+ * 引擎报「Outdated graphics driver / 显卡驱动已过时」。2026-11-14 大陆 Chrome 149《使命召唤：战争世界》
+ * 下完 ROM 才失败，又被当成 ROM 坏换语言版本，前后白下三遍。
+ *
+ * 判定照抄引擎（emulator.min.js 的 supportsWebgl2）：`getContext('webgl2')` 有没有返回。
+ */
+export function canCreateWebgl2(doc: Document = document): boolean {
+  try {
+    const canvas = doc.createElement('canvas')
+    const gl = canvas.getContext('webgl2') as WebGL2RenderingContext | null
+    if (!gl) return false
+    gl.getExtension('WEBGL_lose_context')?.loseContext()
+    return true
+  } catch {
+    return false
+  }
+}

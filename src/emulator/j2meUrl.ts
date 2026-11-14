@@ -149,12 +149,25 @@ export function packedJarProxyName(url: string, romBases: readonly string[]): st
 /**
  * run.html 已触发 load、却没有 CheerpJ 的全局入口：leaningtech 的 loader.js 被拦或取不到。
  * 只认 run.html 本身（初始 about:blank 的 load 不算），读不到时按「没缺」处理，交给进展看门狗。
+ *
+ * ⚠️ 只有 loader.js 是**普通同步脚本**时，「load 时还没有 cheerpjInit」才说明它失败了。
+ * Cloudflare Rocket Loader 会把它改成 `type="<前缀>-text/javascript"`，load 之后才补执行
+ * （2026-11-14 线上实测，所有 J2ME 开局都被误判成 loader 缺失）。脚本类型被改过、或找不到这个
+ * <script>，一律不下结论，交给进展看门狗。
  */
 export function cheerpjLoaderMissing(frame: object | null): boolean {
   try {
-    const win = frame as { location?: { pathname?: string }; cheerpjInit?: unknown } | null
+    const win = frame as {
+      location?: { pathname?: string }
+      cheerpjInit?: unknown
+      document?: { querySelector?: (selector: string) => { getAttribute?: (name: string) => string | null } | null }
+    } | null
     if (!win || !(win.location?.pathname ?? '').endsWith('/run.html')) return false
-    return typeof win.cheerpjInit !== 'function'
+    if (typeof win.cheerpjInit === 'function') return false
+    const script = win.document?.querySelector?.(`script[src^="${CHEERPJ_ORIGIN}/"]`)
+    if (!script) return false
+    const type = (script.getAttribute?.('type') ?? '').trim().toLowerCase()
+    return type === '' || type === 'text/javascript' || type === 'application/javascript'
   } catch {
     return false
   }

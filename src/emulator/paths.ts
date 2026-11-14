@@ -279,6 +279,27 @@ export const EJS_WEBGL2_DEFAULT_CORES: ReadonlySet<string> = new Set([
 ])
 
 /**
+ * 只发布了 WebGL2 版（`<core>-wasm.data`）、**没有** `-legacy-wasm.data` 的自建核心。
+ * 浏览器建不出 WebGL2 时引擎会去下 legacy 版 → 404 →「Outdated graphics driver」。
+ * `npm run test:ejs-cores` 会对着 public/emulatorjs/cores 核对这张表。
+ */
+export const EJS_WEBGL2_ONLY_CORES: ReadonlySet<string> = new Set(['melondsds'])
+
+/** 这个核心在没有 WebGL2 的浏览器里根本起不来（没有 legacy 构建）。 */
+export function ejsCoreNeedsWebgl2(core: string): boolean {
+  return EJS_WEBGL2_ONLY_CORES.has(emulatorJsCoreFileFor(core))
+}
+
+/**
+ * NDS 开局选核心时考虑 WebGL2：新核心没有 legacy 构建，只有 WebGL1 的浏览器改用旧 melonDS
+ * （`melonds-compat` → `melonds-legacy-wasm.data`，即时存档单独一档）。其余情况原样返回。
+ */
+export function ndsCoreForWebgl2(core: string | null | undefined, hasWebgl2: boolean): string | null {
+  if (hasWebgl2) return null
+  return emulatorJsCoreForGame('nds', core || 'nds') === 'melondsds' ? NDS_COMPAT_CORE : null
+}
+
+/**
  * 引擎在**默认设置**下真正会下载的核心文件名。玩家在引擎菜单里手动改过 WebGL2 开关时
  * 会不同，但那是逐游戏的少数情况；猜错的代价只是一次没用上的预热。
  */

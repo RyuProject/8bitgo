@@ -54,7 +54,7 @@
     "test:netplay": "NETPLAY_HOST_GRACE_MS=400 NETPLAY_CLAIM_WINDOW_MS=500 node scripts/test-netplay.mjs",
     "test:netplay:hardening": "node scripts/test-netplay-hardening.mjs",
     "test:netplay:failover": "node scripts/test-host-failover.mjs",
-    "test:netplay:spectator": "node scripts/test-spectator.mjs",
+    "test:netplay:spectator": "NETPLAY_SEAT_REQUEST_MS=300 NETPLAY_SEAT_REQUEST_COOLDOWN_MS=200 node scripts/test-spectator.mjs",
     "test:jsnes-netplay": "node scripts/test-jsnes-netplay.mjs",
     "test:netplay:all": "npm run test:netplay && npm run test:netplay:hardening && npm run test:netplay:failover && npm run test:netplay:spectator && npm run test:jsnes-netplay && npm run test:rooms && npm run test:live",
     "test:play": "node scripts/test-playcount.mjs",

@@ -104,8 +104,47 @@ await wait(40)
 room = await getJson('/api/netplay/rooms/S1')
 ok('退下之后手柄位空出来了', room.players === 1 && room.spectators === 2)
 
-ok('观众可以上场', (await setRole('S1', v1.roomToken, 'player')).ok)
-await wait(40)
+// 观众上场要房主点头：先挂申请，房主那边收到 seat-request
+const asks = []
+const cancels = []
+host.on('seat-request', (m) => asks.push(m))
+host.on('seat-request-cancel', (m) => cancels.push(m))
+const v1Decisions = []
+v1.on('seat-decision', (m) => v1Decisions.push(m))
+const decide = (roomId, token, userid, approve) =>
+  fetch(`${API}/api/netplay/rooms/${roomId}/seat-decision`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...(token ? { 'x-netplay-token': token } : {}) },
+    body: JSON.stringify({ userid, approve }),
+  })
+{
+  const r = await setRole('S1', v1.roomToken, 'player')
+  const body = await r.json()
+  ok('观众申请上场先挂起（202 pending）', r.status === 202 && body.pending === true && body.expiresIn > 0)
+  await wait(40)
+  room = await getJson('/api/netplay/rooms/S1')
+  ok('房主答复之前角色不变', room.players === 1)
+  ok('房主收到带名字的上场申请', asks.length === 1 && asks[0].userid === 's-v1' && asks[0].name === '路人甲')
+  ok('重复申请不会再弹一次', (await setRole('S1', v1.roomToken, 'player')).status === 202 && (await wait(30), asks.length === 1))
+  ok('非房主不能替房主答复', (await decide('S1', p2.roomToken, 's-v1', true)).status === 403)
+  // 拒绝 → 观众收到 rejected，冷却期内不能马上再申请
+  ok('房主可以拒绝', (await (await decide('S1', host.roomToken, 's-v1', false)).json()).approved === false)
+  await wait(40)
+  ok('观众收到拒绝结果', v1Decisions.at(-1)?.approved === false && v1Decisions.at(-1)?.reason === 'rejected')
+  ok('拒绝后房主那张卡片被收起', cancels.some((m) => m.userid === 's-v1'))
+  ok('拒绝后冷却期内不能马上再申请', (await setRole('S1', v1.roomToken, 'player')).status === 429)
+  // 等过冷却（测试把冷却调短），再申请、等它超时
+  await wait(Number(process.env.NETPLAY_SEAT_REQUEST_COOLDOWN_MS || 5000) + 20)
+  ok('冷却过后可以再申请', (await setRole('S1', v1.roomToken, 'player')).status === 202)
+  await wait(Number(process.env.NETPLAY_SEAT_REQUEST_MS || 15000) + 60)
+  ok('房主不答复，到点按超时作废', v1Decisions.at(-1)?.reason === 'timeout')
+  ok('超时后同意已经没有用了', (await decide('S1', host.roomToken, 's-v1', true)).status === 404)
+  await wait(Number(process.env.NETPLAY_SEAT_REQUEST_COOLDOWN_MS || 5000) + 20)
+  ok('再申请一次', (await setRole('S1', v1.roomToken, 'player')).status === 202)
+  ok('房主同意', (await (await decide('S1', host.roomToken, 's-v1', true)).json()).approved === true)
+  await wait(40)
+  ok('观众收到同意结果', v1Decisions.at(-1)?.approved === true)
+}
 room = await getJson('/api/netplay/rooms/S1')
 ok('上场后计到玩家里', room.players === 2 && room.spectators === 1)
 
@@ -164,6 +203,25 @@ await wait(200)
 const s2 = await getJson('/api/netplay/rooms/S2')
 ok('房间没有立刻解散', s2.awaitingHost === true)
 ok('挑的是玩家而不是观众', (s2.nextHostUserId ?? nextHost) === 't-player')
+
+/* ============ 五、说明只看的人进房就是观众 ============ */
+section('以观众身份进房')
+const h4 = await connect()
+const w4 = await connect()
+const h4asks = []
+h4.on('seat-request', (m) => h4asks.push(m))
+await open(h4, extra('u-host', 'S4', '房主4'), 2)
+await join(w4, { ...extra('u-watch', 'S4', '看客4'), role: 'spectator' })
+await wait(40)
+let s4 = await getJson('/api/netplay/rooms/S4')
+ok('带 role=spectator 进房，手柄位没满也只当观众', s4.players === 1 && s4.spectators === 1)
+ok('观众想上场同样要申请', (await setRole('S4', w4.roomToken, 'player')).status === 202)
+await wait(40)
+ok('房主收到申请', h4asks.length === 1)
+w4.close()
+await wait(60)
+ok('申请人走了，申请随之作废', (await decide('S4', h4.roomToken, 'u-watch', true)).status === 404)
+h4.close()
 
 for (const s of [host, p2, v1, spec, player, ...extras]) s.close()
 console.log(failed === 0 ? '\n全部通过 ✅' : `\n有 ${failed} 项失败 ❌`)

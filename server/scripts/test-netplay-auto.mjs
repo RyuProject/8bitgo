@@ -10,6 +10,7 @@ import {
   defaultArcadePlayers,
   inferNetplayPlayers,
   resolveNetplay,
+  effectiveNetplayMode,
   romDataDriverName,
   syncNetplayDerived,
 } from '../src/netplay-auto.js'
@@ -85,8 +86,18 @@ await check('resolveNetplay：auto 推断不出——街机默认 2 人，其它
 
 await check('resolveNetplay：强制开至少 2 人、强制关一律不联机', () => {
   assert.deepEqual(resolveNetplay({ mode: 'on', platform: 'gba', players: 1, multiplayer: 0, inferred: null }), { players: 2, multiplayer: 1 })
-  assert.deepEqual(resolveNetplay({ mode: 'on', platform: 'arcade', players: 3, multiplayer: 0, inferred: 2 }), { players: 3, multiplayer: 1 }, '强制开不被推断覆盖')
-  assert.deepEqual(resolveNetplay({ mode: 'off', platform: 'arcade', players: 2, multiplayer: 1, inferred: 4 }), { players: 2, multiplayer: 0 })
+  assert.deepEqual(resolveNetplay({ mode: 'on', platform: 'nes', players: 3, multiplayer: 0, inferred: 2 }), { players: 3, multiplayer: 1 }, '强制开不被推断覆盖')
+  assert.deepEqual(resolveNetplay({ mode: 'off', platform: 'nes', players: 2, multiplayer: 1, inferred: 4 }), { players: 2, multiplayer: 0 })
+})
+
+await check('街机没有手动开关：on / off 一律按自动识别', () => {
+  assert.equal(effectiveNetplayMode('arcade', 'off'), 'auto')
+  assert.equal(effectiveNetplayMode('arcade', 'on'), 'auto')
+  assert.equal(effectiveNetplayMode('nes', 'off'), 'off')
+  assert.deepEqual(resolveNetplay({ mode: 'off', platform: 'arcade', players: 2, multiplayer: 1, inferred: 4 }), { players: 4, multiplayer: 1 })
+  assert.deepEqual(resolveNetplay({ mode: 'on', platform: 'arcade', players: 3, multiplayer: 0, inferred: 1 }), { players: 1, multiplayer: 0 })
+  assert.deepEqual(resolveNetplay({ mode: 'off', platform: 'arcade', players: 1, multiplayer: 0, inferred: null }), { players: 2, multiplayer: 1 })
+  assert.equal(netplayGameConfigError({ platform: 'arcade', netplayMode: 'on', multiplayer: true, players: 1 }), null)
 })
 
 await check('请求里的模式：显式值优先；旧客户端勾了联机 = 强制开；没勾不改库', () => {
@@ -139,13 +150,24 @@ await check('syncNetplayDerived：auto 街机写回推断人数，再跑一次�
 })
 
 await check('syncNetplayDerived：dryRun 只算不写；传 mode 先落库', async () => {
-  const db = fakeDb({ platform: 'arcade', netplay_mode: 'auto', players: 1, multiplayer: 0, players_inferred: null, arcade_romdata: null }, ['roms/arcade/dino.zip'])
+  const db = fakeDb({ platform: 'nes', netplay_mode: 'auto', players: 2, multiplayer: 1, players_inferred: null, arcade_romdata: null }, ['roms/nes/x.nes'])
   const diff = await syncNetplayDerived(db.run, 1, { dryRun: true, mode: 'off' }, lookup)
-  assert.deepEqual(diff?.to, { players: 3, multiplayer: 1 })
+  assert.deepEqual(diff?.to, { players: 2, multiplayer: 0 })
   assert.equal(db.writes.length, 0)
   await syncNetplayDerived(db.run, 1, { mode: 'off' }, lookup)
   assert.equal(db.game.netplay_mode, 'off')
   assert.equal(db.game.multiplayer, 0)
+})
+
+await check('syncNetplayDerived：街机忽略请求里的 off，库里遗留的 on 收回 auto', async () => {
+  const db = fakeDb({ platform: 'arcade', netplay_mode: 'auto', players: 1, multiplayer: 0, players_inferred: null, arcade_romdata: null }, ['roms/arcade/dino.zip'])
+  await syncNetplayDerived(db.run, 1, { mode: 'off' }, lookup)
+  assert.equal(db.game.netplay_mode, 'auto')
+  assert.deepEqual([db.game.players, db.game.multiplayer], [3, 1])
+  const legacy = fakeDb({ platform: 'arcade', netplay_mode: 'on', players: 4, multiplayer: 1, players_inferred: null, arcade_romdata: null }, ['roms/arcade/dino.zip'])
+  await syncNetplayDerived(legacy.run, 1, {}, lookup)
+  assert.equal(legacy.game.netplay_mode, 'auto')
+  assert.deepEqual([legacy.game.players, legacy.game.multiplayer], [3, 1])
 })
 
 await check('syncNetplayDerived：迁移没跑（缺列）时不抛错、不写', async () => {

@@ -495,6 +495,12 @@ threaded renderer 都在构建时关闭，避免 SharedArrayBuffer 初始化失�
 pcap 直连网络在浏览器构建里关闭。可复现构建入口：`npm run build:melondsds`。
 DeSmuME / DeSmuME 2015 仍是逐游戏兜底；自动切换仅由确定的 WASM 崩溃触发，
 普通下载/ROM 错误不能误切到旧 melonDS。
+⚠️ **melondsds 只有 WebGL2 构建，没有 `-legacy-wasm.data`**（2026-11-14 大陆 Chrome 149 / Windows《使命召唤：战争世界》）：
+浏览器建得出 WebGL1、建不出 WebGL2 时，引擎去下不存在的 legacy 版 → 404 →「显卡驱动已过时」；ROM 下完才报，
+又被当成内容错误换语言 ROM，前后白下三遍。现在播放器开局（和悬停预热）用 `canCreateWebgl2()` 问一次，
+建不出就走 `ndsCoreForWebgl2` 换 `melonds-compat`（旧 melonDS 有 legacy 构建，即时存档独立一档）；显式指定核心时
+适配器在下载 ROM 前以 `'config'` 报 WebGL 环境错误；引擎这句「Outdated graphics driver」也一律按 `'config'` 报，
+不重试、不换 ROM。`EJS_WEBGL2_ONLY_CORES` 由 `test:nds-crash` 对着 cores/ 核对。
 
 NDS ROM 由适配器自己按 **8MB Range** 顺序下载；每片完成后写进独立的
 `8bitgo-rom-downloads` IndexedDB，所以刷新页面、浏览器崩溃或断网重开后会只补缺失片。
@@ -531,7 +537,13 @@ EmulatorJS 的“扩展名不认识就取第一个成员”兜底（典型失败
 ROM 已下载完成、核心也命中缓存，EmulatorJS 再 fetch 外层创建的 `blob:` 地址时读约 3 秒报 `TypeError: Load failed`；
 原地重试和换语言只会重复同一路径。`installBlobFetchShortcut()` 要从外层 `Blob.slice()` 每次读 4MB，
 再用 iframe 自己的 `ReadableStream` 交给引擎，不能把整个 Blob 当 `Response` body 跨 realm 传递。
-若分块读取仍失败，本页后续 8BG 开局改用有大小上限的内存块输出，避免对坏掉的 Blob 存储持续重试。
+⚠️ **分块流只给 WebKit 和内存 ROM，Chromium / Firefox 仍用 `new Response(blob)`**（`streamRomToEngine`）：流没有已知长度，
+Chrome 的 `response.arrayBuffer()` 只能边收边扩容。2026-11-13 大陆 Chrome 132《生化危机 3》352MB PS1 镜像连开 9 局，
+每局流到约 300MB 报 `Failed to fetch non-http URL: TypeError: Failed to fetch`（我们的分块读取没出错）；Blob 回应一次分配。
+Blob 回应读不出时 NotReadableError 只在引擎那一行里，`reportEngineError` 据此同样记 Blob 存储已坏并按 `'runtime'` 重试。
+若分块读取仍失败，后续 8BG 开局改用有大小上限的内存块输出，避免对坏掉的 Blob 存储持续重试。
+这个结论记在 localStorage `8bitgo.ejs.romBlobBroken`（3 天）：2026-11-12/13 大陆 Chrome 132 / 2GB 的《宝可梦 白 2 / 黑》
+是同一台机器第 7、8 次开局，只记本页的话每次新访问都要先白失败 30～40 秒（`npm run test:chunked-fetch`）。
 每个 `206` 响应也只能读这一片声明的字节量：`Content-Range` 是服务端自报，畸形响应可以宣称
 8MB 却持续发送巨大流，不能把它无限攒进 `chunks` 再在末尾核对；超过后直接取消并停止重试。
 旧版完整 ROM 缓存不会重走下载器，同样要在解密前查缓存 Blob 大小；8BG 还得先读文件头，
@@ -1360,6 +1372,18 @@ auto 下街机按 ROM 短名（或 RomData 的 `DrvName`）查 `shared/arcade-pl
 多个语言槽取最少人数；驱动表里没有的街机按 2 人；其它平台暂时沿用库里的值。
 迁移把「已勾联机且 ≥2 人」的存量游戏记为 `on`，其余交给 auto，并在每次 `npm run migrate` 全库重算
 （`cd server && npm run netplay-players -- --dry-run` 先预览）。回归：`cd server && npm run test:netplay-auto`。
+
+**街机没有联机开关（2026-11-14）。** `effectiveNetplayMode` 对 `platform = arcade` 一律按 `auto` 算，
+写入时把库里遗留的 `on` / `off` 收回 `auto`；后台表单对街机只显示自动识别结果，人数下拉也禁用。
+别再给街机加回手动开关，识别错了就修 `shared/arcade-players.json` 或 RomData 的 `DrvName`。
+
+**观众上场要房主同意。** 观众调 `/role {role:'player'}` 时服务端只挂申请（202），给房主 socket 发
+`seat-request`；房主经 `/seat-decision` 接受才改角色（排到玩家组末尾），申请人收到 `seat-decision`。
+15 秒（`NETPLAY_SEAT_REQUEST_MS`，前端 `SEAT_REQUEST_TTL_MS` 同值）不答复按超时作废，被拒 / 超时后
+冷却 5 秒；申请人离房、换房主、散房都清掉申请。房主那边是画面上沿的不挡操作卡片（接受 / 拒绝 + 倒计时）。
+以观众身份进房（观看链接、直播观众点「申请当玩家」）要在 join-room 的 extra 里带 `role: 'spectator'`，
+否则服务端在有空位时把他记成玩家，点「上场」就绕过了同意。凭邀请链接直接加入仍然直接当玩家。
+直播同屏双打（`coopSeat.ts`）的申请也同为 15 秒。回归：`cd server && npm run test:netplay:spectator`。
 
 ### 2.22.1 EmulatorJS 的 2P~4P 出厂是空的；红白机连发被控制方案删掉（2026-11-03《魂斗罗》）
 
@@ -3307,6 +3331,13 @@ SSR 的 `window.__8BITGO__` 注水）改写成 `<随机前缀>-module` / `-text/
   才能覆盖它注入的 nomodule 脚本，已用同版本 vite 8.3.5 + plugin-legacy 8.2.3 构建核对）、SSR 读模板时再兜一次、
   SSR 注水脚本本身。
 - `retargetStaticToCnEdge`（大陆入口改写）和 Early Hints 都按标签文本解析 HTML，新属性不能打断它们的正则。
+- **J2ME 的 run.html 与 j2me-web 的 embed.html 也要退出**（2026-11-14《仙剑奇侠传 2004》）：run.html 不走 SSR 模板，
+  CheerpJ 的 loader.js 被改写后在 load 之后才执行，适配器 load 时看不到 `cheerpjInit`，**每一局**都误判成「loader 没加载上」，
+  CDN 探测 ok、重载一次也照旧，最后报「Java 运行时卡住了」。`patch-j2me-runtime.mjs`（setup-j2me / prebuild）给 run.html 补标记，
+  `vite.j2me-web.config.ts` 给 embed.html 补；`cheerpjLoaderMissing` 只在 loader 是普通同步脚本时才下结论。
+  run.html 在 Cloudflare 有 1 小时边缘缓存，部署后要清 `/j2me/run.html`。
+- **2026-11-14 已用 `cf zones settings edit rocket_loader -z 8bitgo.com --body '{"value":"off"}'` 关掉**（改写发生在出边缘时，
+  已缓存页面无需清缓存即恢复原样）。`data-cfasync` 标记继续保留，防止有人再打开。查看：`cf zones settings get rocket_loader -z 8bitgo.com`。
 - 根治是 Cloudflare 后台关掉 Rocket Loader（Speed → Optimization → Content Optimization）；`/web/*`
   下独立部署的网页游戏不经过这条模板，开着时仍会被改写（PvZ 的 check 脚本已在拦它的残留）。
 - 回归：`npm run test:rocket-loader`。

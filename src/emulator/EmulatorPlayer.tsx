@@ -7,7 +7,7 @@ import { isPc98FdiFileName } from './pc98'
 import { jsnesCanRun } from './nesMapper'
 import { probeNesRomHeader } from './nesRomProbe'
 import { resolveRuntime, runtimesFor, extOf } from './registry'
-import { canCreateWebgl } from './webglSupport'
+import { canCreateWebgl, canCreateWebgl2 } from './webglSupport'
 import { romArchiveRef } from '@/lib/romArchiveUrl'
 import { romUrlForKey } from '@/services/roms'
 import { clearSockdrivePin, pinnedSockdriveUrl, routeRomAssetUrl } from '@/services/romHosts'
@@ -40,9 +40,9 @@ import { matchLocalArcadeHack } from './arcadeHack'
 import { arcadeCoreForRomData } from './arcadeCore'
 import type { DosExtraSource } from '@/lib/dosExtras'
 import type { LiveSession } from './adapters/liveview'
-import type { NetplaySession } from './adapters/emulatorjs'
+import type { NetplaySession, SeatEvent } from './adapters/emulatorjs'
 import type { CloudSession, CloudState } from './adapters/cloudgame'
-import { p2pPlayable, cloudPlayable, emulatorJsCoreFileFor, emulatorJsCoreForGame, NDS_COMPAT_CORE } from './paths'
+import { p2pPlayable, cloudPlayable, emulatorJsCoreFileFor, emulatorJsCoreForGame, NDS_COMPAT_CORE, ndsCoreForWebgl2 } from './paths'
 import { FBNEO_LOWMEM_CORE, fbneoLowmemSaveSlug, fbneoMemoryFallbackCore, prefersFbneoLowmem, rememberFbneoMemoryFailure } from './fbneoLowmem'
 import { ndsCrashFallbackCore } from './ndsCrash'
 import { rememberNdsCoreFailure, rememberedNdsCore } from './ndsCorePreference'
@@ -101,6 +101,8 @@ import {
   playerName,
   refreshNetplayRooms,
   setRoomRole,
+  requestSeat,
+  decideSeat,
   useNetplayRooms,
   watchNetplayRoom,
   type NetplayRoom,
@@ -774,6 +776,17 @@ export function EmulatorPlayer({
   const [isHost, setIsHost] = useState(false)
   /** 适配器交出来的「切身份」函数：不用断线重连就能上场 / 退下 */
   const roleSwitchRef = useRef<((spectator: boolean) => void) | null>(null)
+  /**
+   * 观众上场要房主同意（server/src/netplay.js 的 seat-*）。
+   * 房主侧：还没答复的申请（先到先显示），到点自动收起；
+   * 观众侧：申请挂到什么时候（0 = 没在等）。
+   */
+  const [seatAsks, setSeatAsks] = useState<{ userid: string; name: string; expiresAt: number }[]>([])
+  const [seatAskingUntil, setSeatAskingUntil] = useState(0)
+  /** 适配器的回调在挂载那一刻就定了，经 ref 转到最新的处理函数，免得闭包里拿到旧的 t / 状态 */
+  const seatEventRef = useRef<(e: SeatEvent) => void>(() => {})
+  /** 直播观众点「申请当玩家」：进房拿到令牌后自动递申请 */
+  const autoSeatRef = useRef(false)
   const [copied, setCopied] = useState(false)
 
   // P2P：从房间列表里找要加入的那个房间（判断满没满、还在不在）
@@ -1703,7 +1716,16 @@ export function EmulatorPlayer({
       canRestartInPlace(extra ?? {}) && emulatorJsCoreForGame('arcade', coreRef.current) === 'fbneo' && prefersFbneoLowmem()
       ? FBNEO_LOWMEM_CORE
       : null
-    const coreOverride = extra?.coreOverride ?? rememberedCore ?? rememberedArcadeCore ?? undefined
+    /*
+      新版 melonDS DS 只有 WebGL2 构建：只建得出 WebGL1 的浏览器里引擎去下不存在的 legacy 版，
+      报「显卡驱动已过时」（2026-11-14 大陆 Chrome 149，下完 ROM 才失败、又换语言 ROM 白下三遍）。
+      开局前问一次，改用有 legacy 构建的旧 melonDS；两版即时存档各存一档（下面的 saveSlug）。
+    */
+    const webgl2Core = !extra?.coreOverride && targetPlatform === 'nds' && runtime.id === 'emulatorjs'
+      ? ndsCoreForWebgl2(coreRef.current, canCreateWebgl2())
+      : null
+    if (webgl2Core) console.warn('[8bitgo/nds] 浏览器建不出 WebGL2，新版 melonDS DS 没有 WebGL1 构建，改用兼容核心')
+    const coreOverride = extra?.coreOverride ?? webgl2Core ?? rememberedCore ?? rememberedArcadeCore ?? undefined
     // 新旧 melonDS 的即时存档 ABI 不能假定兼容；兼容核心必须用独立档位，
     // 否则自动切换后可能把旧核心的快照写回原档，造成无法恢复的覆盖。
     const coreSaveSlug = targetPlatform === 'psx' && runtime.id === 'emulatorjs' && typeof game === 'string' && baseSaveSlug
@@ -2410,6 +2432,8 @@ export function EmulatorPlayer({
     setRole(asRole)
     setIsHost(!join)
     roleSwitchRef.current = null
+    setSeatAsks([])
+    setSeatAskingUntil(0)
     migrateFromRef.current = takeOver?.from ?? ''
     migrateToRef.current = ''
     if (!takeOver) claimTokenRef.current = ''
@@ -2461,6 +2485,9 @@ export function EmulatorPlayer({
         mode: join ? 'join' : 'host',
         role: asRole,
         onSpectatorControl: (fn) => (roleSwitchRef.current = fn),
+        onSeatEvent: (e) => {
+          if (!p2pStale()) seatEventRef.current(e)
+        },
         roomId: join,
         initialState: takeOver?.state ?? undefined,
         onIdentity: (id) => (myIdRef.current = id),
@@ -2485,6 +2512,10 @@ export function EmulatorPlayer({
           roomTokenRef.current = tk
           setRoomChatToken(tk)
           tryMigrate()
+          if (autoSeatRef.current && join) {
+            autoSeatRef.current = false
+            void askForSeat(join, tk)
+          }
         },
         onRoom: (id, host) => {
           if (p2pStale()) return
@@ -2591,6 +2622,8 @@ export function EmulatorPlayer({
     setRole('player')
     setIsHost(true)
     roleSwitchRef.current = null
+    setSeatAsks([])
+    setSeatAskingUntil(0)
     setRoomChatToken('')
     const ok = handle.openNetplay({
       gameId: gameIdFor(gameSlug),
@@ -2600,6 +2633,7 @@ export function EmulatorPlayer({
       mode: 'host',
       role: 'player',
       onSpectatorControl: (fn) => (roleSwitchRef.current = fn),
+      onSeatEvent: (e) => seatEventRef.current(e),
       onIdentity: (id) => (myIdRef.current = id),
       onToken: (tk) => {
         roomTokenRef.current = tk
@@ -3431,7 +3465,12 @@ export function EmulatorPlayer({
     const target = liveNetplayRoom
     if (!target) return
     const room = p2pRooms.find((r) => r.roomId === target)
-    const asRole: RoomRole = room && room.players >= room.max ? 'spectator' : 'player'
+    /*
+      直播观众一律先以观众身份进房（2026-11-14）：上场要房主点头。手柄位还空着就在拿到令牌后
+      自动递申请，房主那边弹 15 秒的卡片；满了就只是进去看，等有人下场再点「上场玩」。
+    */
+    const asRole: RoomRole = 'spectator'
+    autoSeatRef.current = !(room && room.players >= room.max)
     /**
      * 不在这里把 liveNetplayRoom 清掉。
      *
@@ -3444,9 +3483,67 @@ export function EmulatorPlayer({
     startP2p(target, undefined, asRole)
   }
 
+  /** 上场：游戏真的读这一位的按键 */
+  const takeSeatNow = () => {
+    roleSwitchRef.current?.(false)
+    setRole('player')
+    setSeatAskingUntil(0)
+    refreshNetplayRooms()
+  }
+  /** 观众递上场申请：服务端挂着等房主答复，结果经 seat-decision 回来（见 seatEventRef） */
+  const askForSeat = async (room: string, token: string) => {
+    const result = await requestSeat(room, token)
+    switch (result.kind) {
+      case 'pending':
+        setSeatAskingUntil(Date.now() + result.expiresIn)
+        setNotice(t.player.seatRequested)
+        return
+      case 'granted':
+        // 老服务端：不需要同意，直接上场
+        takeSeatNow()
+        setNotice(null)
+        return
+      case 'cooldown':
+        setNotice(fmt(t.player.seatCooldown, { s: String(result.retryAfter) }))
+        return
+      default:
+        setNotice(t.player.roleFailed)
+    }
+  }
+  seatEventRef.current = (e) => {
+    if (e.type === 'request') {
+      if (!isHost) return
+      const expiresAt = Date.now() + e.expiresIn
+      setSeatAsks((list) => [...list.filter((a) => a.userid !== e.userid), { userid: e.userid, name: e.name, expiresAt }])
+      return
+    }
+    if (e.type === 'cancel') {
+      setSeatAsks((list) => list.filter((a) => a.userid !== e.userid))
+      return
+    }
+    setSeatAskingUntil(0)
+    if (e.approved) {
+      takeSeatNow()
+      setNotice(t.player.seatApproved)
+    } else {
+      setNotice(e.reason === 'timeout' ? t.player.seatTimeout : t.player.seatRejected)
+    }
+  }
+  /** 房主点了接受 / 拒绝。卡片先收起，别让人连点；结果服务端会再发 cancel，重复收起无害 */
+  const answerSeat = (userid: string, approve: boolean) => {
+    setSeatAsks((list) => list.filter((a) => a.userid !== userid))
+    if (!roomId) return
+    void decideSeat(roomId, roomTokenRef.current, userid, approve).then(() => refreshNetplayRooms())
+  }
+
   const toggleRole = async () => {
     if (!roomId || isHost) return
-    const next: RoomRole = role === 'spectator' ? 'player' : 'spectator'
+    if (role === 'spectator') {
+      if (seatAskingUntil > Date.now()) return
+      await askForSeat(roomId, roomTokenRef.current)
+      return
+    }
+    const next: RoomRole = 'spectator'
     const ok = await setRoomRole(roomId, roomTokenRef.current, next)
     if (!ok) {
       setNotice(t.player.roleFailed)
@@ -3457,6 +3554,32 @@ export function EmulatorPlayer({
     setNotice(null)
     refreshNetplayRooms()
   }
+
+  /*
+    上场申请的倒计时：房主卡片到点收起（服务端也会发 cancel，这里是丢包兜底），
+    观众这边到点退回可再点。每秒刷一次，卡片上的剩余秒数靠它走。
+  */
+  const [seatNow, setSeatNow] = useState(() => Date.now())
+  const seatTicking = seatAsks.length > 0 || seatAskingUntil > 0
+  useEffect(() => {
+    if (!seatTicking) return
+    const timer = window.setInterval(() => {
+      const now = Date.now()
+      setSeatNow(now)
+      setSeatAsks((list) => (list.some((a) => a.expiresAt <= now) ? list.filter((a) => a.expiresAt > now) : list))
+      setSeatAskingUntil((until) => (until && until <= now ? 0 : until))
+    }, 1000)
+    setSeatNow(Date.now())
+    return () => window.clearInterval(timer)
+  }, [seatTicking])
+  // 离开房间 / 不再是房主：挂着的申请都作废
+  useEffect(() => {
+    if (!roomId || !isHost) setSeatAsks([])
+    if (!roomId) setSeatAskingUntil(0)
+  }, [roomId, isHost])
+  const seatAsk = seatAsks[0]
+  const seatAskLeft = seatAsk ? Math.max(0, Math.ceil((seatAsk.expiresAt - seatNow) / 1000)) : 0
+  const seatAskingLeft = seatAskingUntil ? Math.max(0, Math.ceil((seatAskingUntil - seatNow) / 1000)) : 0
 
   // 「2P 位被收回」那句话几秒后自己撤掉，别一直挂在画面上
   useEffect(() => {
@@ -3713,7 +3836,7 @@ export function EmulatorPlayer({
     // 预热与真正开局必须选同一个核心，否则玩家悬停时会白下载已知会崩溃的新版 WASM。
     const selectedCore = platform.id === 'nds' && pageRuntime?.id === 'emulatorjs' && romUrl &&
       emulatorJsCoreFileFor(prewarmCore ?? 'nds') === 'melondsds'
-      ? rememberedNdsCore(romUrl) ?? prewarmCore
+      ? ndsCoreForWebgl2(prewarmCore, canCreateWebgl2()) ?? rememberedNdsCore(romUrl) ?? prewarmCore
       : prewarmCore
     // CHD 开局会改用 Beetle；悬停时若还预拉默认 PCSX，就白下另一份大核心。
     const warmCore = pageRuntime?.id === 'emulatorjs' && romUrl
@@ -3942,7 +4065,41 @@ export function EmulatorPlayer({
               房主 —— 没人申请就点了「让人上场」→ 一句解释（nudge，几秒后自己消失）
               访客 —— 座位刚被收回 → 只是一句话，几秒后自己消失
           */}
-          {(liveCtl?.coop?.pending || liveCtl?.coop?.nudge || coopLost) && (
+          {/*
+            联机房：观众申请上场。不挡操作 —— 只占画面上沿一小条，点不点都不影响游戏，
+            15 秒（SEAT_REQUEST_TTL_MS）到点自己收起，等于拒绝。
+          */}
+          {seatAsk && isHost && (
+            <div className="pointer-events-none absolute inset-x-0 top-0 z-30 flex justify-center px-2 pt-2">
+              <div
+                role="status"
+                className="pointer-events-auto flex max-w-full items-center gap-2 rounded-xl border border-white/20 bg-black/80 px-3 py-2 text-left text-[11px] leading-snug text-white/90 shadow-lg backdrop-blur"
+              >
+                <span aria-hidden className="text-base leading-none">
+                  🎮
+                </span>
+                <span className="min-w-0 truncate font-semibold text-white">
+                  {seatAsk.name ? fmt(t.player.seatAskFrom, { name: seatAsk.name }) : t.player.seatAskTitle}
+                </span>
+                <span className="shrink-0 tabular-nums text-white/60">{seatAskLeft}s</span>
+                <button
+                  type="button"
+                  onClick={() => answerSeat(seatAsk.userid, true)}
+                  className="shrink-0 rounded-md border border-live/60 bg-live/15 px-2 py-1 font-semibold text-live hover:bg-live/25"
+                >
+                  {t.player.seatAccept}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => answerSeat(seatAsk.userid, false)}
+                  className="shrink-0 rounded-md border border-white/25 px-2 py-1 font-semibold text-white/80 hover:border-white/50 hover:text-white"
+                >
+                  {t.player.seatReject}
+                </button>
+              </div>
+            </div>
+          )}
+          {!(seatAsk && isHost) && (liveCtl?.coop?.pending || liveCtl?.coop?.nudge || coopLost) && (
             <div className="pointer-events-none absolute inset-x-0 top-0 z-30 flex justify-center px-2 pt-2">
               <div className="pointer-events-auto flex items-center gap-2 rounded-xl border border-white/20 bg-black/80 px-3 py-2 text-left text-[11px] leading-snug text-white/90 shadow-lg backdrop-blur">
                 <span aria-hidden className="text-base leading-none">
@@ -4492,7 +4649,7 @@ export function EmulatorPlayer({
                   房间信息还没到货（myNetRoom 为空）时不禁：宁可点了服务端拒，
                   也不要因为列表慢一拍把唯一的入口锁死。
                 */
-                disabled={role === 'spectator' && Boolean(myNetRoom) && roomPlayers >= slots}
+                disabled={(role === 'spectator' && Boolean(myNetRoom) && roomPlayers >= slots) || seatAskingLeft > 0}
                 title={
                   role === 'spectator' && Boolean(myNetRoom) && roomPlayers >= slots
                     ? t.player.seatsFull
@@ -4500,7 +4657,11 @@ export function EmulatorPlayer({
                 }
                 className="rounded-md border border-line px-2 py-1 text-muted transition-colors hover:text-fg disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:text-muted"
               >
-                {role === 'spectator' ? t.player.takeSeat : t.player.goWatch}
+                {role === 'spectator'
+                  ? seatAskingLeft > 0
+                    ? fmt(t.player.seatWaiting, { s: String(seatAskingLeft) })
+                    : t.player.takeSeat
+                  : t.player.goWatch}
               </button>
             )}
             {roomId && (
@@ -4606,7 +4767,7 @@ export function EmulatorPlayer({
             className="inline-flex items-center gap-1 rounded-md border border-brand bg-brand-soft px-2 py-1 font-semibold text-brand-hover transition-colors hover:bg-brand/20"
           >
             <span aria-hidden>👋</span>
-            {t.player.joinMatch}
+            {t.player.seatJoinLive}
           </button>
         )}
 

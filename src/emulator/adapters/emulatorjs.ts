@@ -25,7 +25,7 @@
 import type { ArcadeButtonCount, PlatformId } from '@/types'
 import { arcadeButtonIdsFor, EJS_ARCADE_DEFAULT_CONTROLS, EJS_DEFAULT_CONTROLS, EJS_P2_KEYS } from '@/lib/keymapData'
 import type { Capability, CaptureSources, LoadPhase, LoadProgress, MameArcadeDiskSource, MountOptions, RuntimeHandle, StageMode } from '../types'
-import { canCreateWebgl } from '../webglSupport'
+import { canCreateWebgl, canCreateWebgl2 } from '../webglSupport'
 import { fetchBlobWithProgress, fetchWithProgress, throttleProgress, withResumeTimeout } from '../loadProgress'
 import { emulatorJsDownloadPhase, isCriticalEmulatorJsDownload } from '../emulatorjsDownload'
 import { downloadResumeStore, mameChdResumeStore } from '../downloadResume'
@@ -127,7 +127,7 @@ import {
  * 玩家看到的就是「Error loading EmulatorJS runtime」。本地有核心，这条路不会走。
  */
 export { EJS_PATH } from '../paths'
-import { EJS_PATH, EJS_RUNTIME_GENERATION, ejsBase, ejsCoreAsset, ejsUsingEdge, markEjsEdgeFailed, ejsRuntimeAsset, EJS_EXTRACT_7Z_FILE, emulatorJsCoreDataFile, emulatorJsCoreFileFor, emulatorJsCoreForGame, emulatorJsRuntimePaths, isDiscPlatform, isLargeDirectEjsRom, isSelfDownloadPlatform } from '../paths'
+import { EJS_PATH, EJS_RUNTIME_GENERATION, ejsBase, ejsCoreAsset, ejsUsingEdge, markEjsEdgeFailed, ejsRuntimeAsset, EJS_EXTRACT_7Z_FILE, emulatorJsCoreDataFile, emulatorJsCoreFileFor, emulatorJsCoreForGame, ejsCoreNeedsWebgl2, emulatorJsRuntimePaths, isDiscPlatform, isLargeDirectEjsRom, isSelfDownloadPlatform } from '../paths'
 import { applyTuning, sizeOfTrack, tuningFor, usableVideoSize } from '../videoTuning'
 import {
   findLayoutOption,
@@ -394,6 +394,11 @@ export interface NetplaySession {
   /** 服务端下发的房间令牌：上传存档、接手房主都要用它证明身份 */
   onToken?: (token: string) => void
   /**
+   * 观众申请上场（房主收到）/ 申请人走了或超时（房主收起卡片）/ 房主的答复（申请人收到）。
+   * 走的是引擎那条信令 socket，服务端按 socket.id 单独投递，见 server/src/netplay.js 的 seat-*。
+   */
+  onSeatEvent?: (event: SeatEvent) => void
+  /**
    * WebRTC 连接状态（'connecting' | 'connected' | 'failed' | 'disconnected'）。
    * 用来在界面上区分「还在连」和「连不通」——以前连不通时界面上什么都不显示，
    * 玩家只看到一片黑，不知道是在加载还是已经失败了。
@@ -401,6 +406,39 @@ export interface NetplaySession {
   onLinkState?: (state: RTCPeerConnectionState) => void
   /** 没有 TURN 兜底时为 false，可据此提示「部分网络可能连不上」 */
   onIceReady?: (hasTurn: boolean) => void
+}
+
+export type SeatEvent =
+  | { type: 'request'; userid: string; name: string; expiresIn: number }
+  | { type: 'cancel'; userid: string }
+  | { type: 'decision'; approved: boolean; reason?: string }
+
+/** 把服务端的 seat-* 三条消息翻成 SeatEvent。消息来自服务端，但形状照样核一遍 */
+function hookSeatEvents(sock: { on?: (ev: string, cb: (d: unknown) => void) => void } | undefined, emit: (e: SeatEvent) => void) {
+  if (typeof sock?.on !== 'function') return
+  // 诞生钩子和兜底轮询可能挂到同一条 socket 上：只挂一次，否则房主一条申请弹两张卡
+  const marked = sock as { __8bgSeatHooked?: boolean }
+  if (marked.__8bgSeatHooked) return
+  marked.__8bgSeatHooked = true
+  const obj = (d: unknown) => (d && typeof d === 'object' ? (d as Record<string, unknown>) : {})
+  sock.on('seat-request', (d) => {
+    const m = obj(d)
+    if (typeof m.userid !== 'string' || !m.userid) return
+    emit({
+      type: 'request',
+      userid: m.userid,
+      name: typeof m.name === 'string' ? m.name.slice(0, 40) : '',
+      expiresIn: typeof m.expiresIn === 'number' && m.expiresIn > 0 ? Math.min(m.expiresIn, 60_000) : 15_000,
+    })
+  })
+  sock.on('seat-request-cancel', (d) => {
+    const m = obj(d)
+    if (typeof m.userid === 'string' && m.userid) emit({ type: 'cancel', userid: m.userid })
+  })
+  sock.on('seat-decision', (d) => {
+    const m = obj(d)
+    emit({ type: 'decision', approved: m.approved === true, ...(typeof m.reason === 'string' ? { reason: m.reason } : {}) })
+  })
 }
 
 /**
@@ -1207,9 +1245,29 @@ function fetchMameDiskBytes(
  * 而 `new Response(blob)` 直接读 Blob 本体。若仍失败，引擎日志里的原文就不再是笼统的 Load failed，
  * 而是读 Blob 时的真实错误（多半是内存），下一份现场就能分清两种原因。
  * 只拦这一个地址，其余请求原样交给原生 fetch。
+ *
+ * 回应体分两种（见 streamRomToEngine）：WebKit 与内存 ROM 用 4MB 分块流；其余浏览器直接 `new Response(blob)`。
  */
+/**
+ * 引擎取预下载 ROM 时要不要用分块流回应（否则直接 `new Response(blob)`）。
+ *
+ * 只有两种情况需要流：
+ *   · WebKit（Safari、iPad 报 macOS 的 Safari、iOS 上所有浏览器）：跨上下文的大 Blob 在 response.arrayBuffer()
+ *     时报 TypeError: Load failed（2026-11-13 爱尔兰 Safari 18《宝可梦 白 2》）；
+ *   · 内存 ROM（Blob 存储坏掉后的替身）：根本没有真 Blob 可交。
+ *
+ * ⚠️ Chromium 不能用流：流没有已知长度，response.arrayBuffer() 只能边收边扩容缓冲区，峰值是 ROM 的两倍多、
+ * 还要一块连续大内存。2026-11-13 大陆 Chrome 132 / Windows《生化危机 3》352MB PS1 镜像，一页里连开 9 局，
+ * 每局「ROM 按块流给引擎」两秒后（约读到 300MB）引擎报 `Failed to fetch non-http URL: TypeError: Failed to fetch`，
+ * 而我们自己的分块读取一次都没出错。`new Response(blob)` 知道总长，Chrome 一次分配到位（本机 352MB 约 0.3 秒）。
+ */
+export function streamRomToEngine(userAgent: string, memory: boolean): boolean {
+  if (memory) return true
+  return /AppleWebKit\//.test(userAgent) && !/(?:Chrome|Chromium|Edg|OPR|Firefox)\//.test(userAgent)
+}
+
 function installBlobFetchShortcut(win: Window, url: string, blob: Blob, onBlobReadError?: (error: unknown) => void): void {
-  const frame = win as Window & { fetch: typeof fetch; Response: typeof Response; ReadableStream: typeof ReadableStream }
+  const frame = win as Window & { fetch: typeof fetch; Response: typeof Response; ReadableStream: typeof ReadableStream; navigator?: Navigator }
   const native = frame.fetch?.bind(frame)
   if (typeof native !== 'function' || typeof frame.Response !== 'function') return
   frame.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
@@ -1217,6 +1275,10 @@ function installBlobFetchShortcut(win: Window, url: string, blob: Blob, onBlobRe
     if (target === url && (!init?.method || init.method.toUpperCase() === 'GET')) {
       const headers = { 'Content-Type': blob.type || 'application/octet-stream', 'Content-Length': String(blob.size) }
       const memory = memoryRomOf(blob)
+      if (!streamRomToEngine(frame.navigator?.userAgent ?? '', Boolean(memory))) {
+        diagLog('adapter', 'info', `ROM 以 Blob 交给引擎（${Math.round(blob.size / 1048576)}MB）`)
+        return Promise.resolve(new frame.Response(blob, { headers }))
+      }
       // 不把外层 Blob 直接当 iframe Response 的 body：Safari 18 对 256MB 跨上下文 Blob
       // 在 response.arrayBuffer() 时会报 TypeError: Load failed。4MB 一片由外层读取，
       // 再交给 iframe 自己的 ReadableStream；避免 WebKit 的 blob: URL / 跨 realm Blob 路径，
@@ -1371,6 +1433,15 @@ export function isWebglUnavailableText(text: string): boolean {
 }
 
 export { canCreateWebgl }
+
+/**
+ * 引擎的 `startGameError(localization("Outdated graphics driver"))`：核心要 WebGL2 而浏览器没有，
+ * 或者没 WebGL2 时核心下载失败。和 ROM 无关，换语言版本、原地重试都是同一个结果。
+ * 站点用到的语言包里只有 zh / fr / es 翻了这句，de / it / ja 回落英文。
+ */
+export function isOutdatedGraphicsDriverText(text: string): boolean {
+  return /outdated graphics driver|显卡驱动已过时|pilote graphique obsolète|controlador de gráficos obsoleto/i.test(text)
+}
 
 /** 浏览器分配不出 WASM / ArrayBuffer 内存时各家的说法 */
 export function isOutOfMemoryText(text: string): boolean {
@@ -1832,18 +1903,43 @@ interface PreparedArcadeRom {
 
 
 /**
- * 本页已证实 Blob 存储接不住解开的 ROM（见 RomBlobStorageError）：之后的解包直接留在内存，
+ * 这个浏览器的 Blob 存储接不住解开的 ROM（见 RomBlobStorageError）：之后的解包直接留在内存，
  * 播放器的自动重试 / 换语言 ROM 不再把同一个必然失败的路子再走一遍。
  * 两个来源：解包后探测读不出；或引擎读预下载 ROM 时报 NotReadableError（failLoad 里认）。
+ *
+ * 结论要**跨访问**记住：2026-11-12/13 那批大陆 Chrome 132 / 2GB 现场是同一台机器第 7、8 次开局，
+ * Blob 存储坏是这台机器的状态（C 盘满 / 配额小），不是一次偶发。只记本页的话，每次新打开页面都要先下完、
+ * 解完、让引擎读挂一次（30～40 秒）才轮到内存退路。记 3 天，过期后重新走 Blob，机器修好了就自然回来。
  */
-let romBlobStorageBroken = false
+export const ROM_BLOB_BROKEN_KEY = '8bitgo.ejs.romBlobBroken'
+const ROM_BLOB_BROKEN_TTL_MS = 3 * 24 * 3600_000
+
+export function romBlobBrokenRecently(raw: string | null, now = Date.now()): boolean {
+  const at = Number(raw)
+  return Number.isFinite(at) && at > 0 && now - at >= 0 && now - at < ROM_BLOB_BROKEN_TTL_MS
+}
+
+function readRomBlobBroken(): boolean {
+  try {
+    return romBlobBrokenRecently(localStorage.getItem(ROM_BLOB_BROKEN_KEY))
+  } catch {
+    return false
+  }
+}
+
+let romBlobStorageBroken = readRomBlobBroken()
 /** 内存退路的上限：DS 卡带最大 512MB，再大的光盘镜像放进 JS 内存只会让标签页被杀，宁可照实报错。 */
 const MEMORY_ROM_MAX_BYTES = 520 * 1024 * 1024
 
 function markRomBlobStorageBroken(where: string): void {
   if (romBlobStorageBroken) return
   romBlobStorageBroken = true
-  console.warn(`[emulatorjs] ${where}时 Blob 存储读不出，本页之后的 ROM 解包改走内存`)
+  try {
+    localStorage.setItem(ROM_BLOB_BROKEN_KEY, String(Date.now()))
+  } catch {
+    /* 无痕 / 存储被禁：只在本页生效 */
+  }
+  console.warn(`[emulatorjs] ${where}时 Blob 存储读不出，之后 3 天内的 ROM 解包改走内存`)
 }
 
 /** Chromium 的 NotReadableError 原文；跨 realm 的引擎错误只剩这句话。 */
@@ -1858,7 +1954,10 @@ async function unpackRomPackForEngine(stored: Blob, onProgress: MountOptions['on
     if (header.originalSize > MEMORY_ROM_MAX_BYTES) throw new RomBlobStorageError()
     return unpackRomPackToMemory(stored, romPackUnpackProgress(onProgress))
   }
-  if (romBlobStorageBroken) return toMemory()
+  if (romBlobStorageBroken) {
+    diagLog('adapter', 'info', '这个浏览器的 Blob 存储近期读不出解开的 ROM，本局直接解包到内存')
+    return toMemory()
+  }
   try {
     return await unpackRomPackBlob(stored, romPackUnpackProgress(onProgress))
   } catch (error) {
@@ -2173,6 +2272,16 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const softwareWebglFallback = !webglAvailable && options.platform === 'arcade' && isFbneoCore(core)
   if (!webglAvailable && !softwareWebglFallback) {
     console.warn(`[emulatorjs] 当前浏览器无法创建 WebGL 上下文，${options.platform}/${core} 没有已验证的软件画面后备`)
+    options.onError?.(rt.ejsWebglUnavailable, 'config')
+    return { destroy: () => {}, caps: new Set<Capability>() }
+  }
+  /*
+    没有 legacy 构建的核心（melondsds）在只有 WebGL1 的浏览器里必然 404 →「显卡驱动已过时」。
+    NDS 的播放器已在开局前换旧核心；走到这里说明是显式指定的核心（联机 / 后台固定），
+    在下载 ROM 之前就停下，'config' 让播放器别重试、别换语言 ROM。
+  */
+  if (webglAvailable && ejsCoreNeedsWebgl2(core) && !canCreateWebgl2()) {
+    console.warn(`[emulatorjs] 当前浏览器建不出 WebGL2，${core} 没有 WebGL1（legacy）构建`)
     options.onError?.(rt.ejsWebglUnavailable, 'config')
     return { destroy: () => {}, caps: new Set<Capability>() }
   }
@@ -2640,14 +2749,26 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
                   return (ack as (...a: unknown[]) => unknown)(error, ...rest)
                 }
               }
-              if (addSlug && roomEvent
+              /*
+                以观众身份进房要告诉服务端：以前只在本地把输入掐掉，服务端照样记成玩家，
+                于是观众占着一个手柄位，点「上场」又直接成功，绕过房主同意（2026-11-14）。
+              */
+              const asSpectator = event === 'join-room' && netplay?.role === 'spectator'
+              if ((addSlug || asSpectator) && roomEvent
                 && emitArgs[0] && typeof emitArgs[0] === 'object' && !Array.isArray(emitArgs[0])) {
                 const payload = emitArgs[0] as Record<string, unknown>
                 const rawExtra = payload.extra
                 const extra = rawExtra && typeof rawExtra === 'object' && !Array.isArray(rawExtra)
                   ? rawExtra as Record<string, unknown>
                   : {}
-                emitArgs[0] = { ...payload, extra: { ...extra, game_slug: options.gameSlug } }
+                emitArgs[0] = {
+                  ...payload,
+                  extra: {
+                    ...extra,
+                    ...(addSlug ? { game_slug: options.gameSlug } : {}),
+                    ...(asSpectator ? { role: 'spectator' } : {}),
+                  },
+                }
               }
               return realEmit(event, ...emitArgs)
             }
@@ -2658,6 +2779,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             stateToken = token
             netplay?.onToken?.(token)
           })
+          hookSeatEvents(sock, (e) => netplay?.onSeatEvent?.(e))
           // 信令连不上时引擎只在自己的弹窗里闪一句 "Connect error"，适配器这边什么都不知道，
           // 下面的轮询看到 socket 没连上就按「房主断线」处理 —— 排查时至少要在引擎日志里留下真相。
           // 重连每次都会触发，只记第一次
@@ -2777,6 +2899,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       建不出 WebGL：浏览器关了硬件加速或 GPU 被拉黑。重下 ROM、换语言版本都没用，'config' 让播放器
       别原地重试也别换 ROM。现场再建一次试试：建得出说明只是一时（上下文太多 / GPU 进程重启），照常重试。
     */
+    if (isOutdatedGraphicsDriverText(line)) {
+      logEngine(`[webgl] 引擎报显卡驱动过时；WebGL2 ${canCreateWebgl2() ? '能建' : '建不出'}；核心 ${core}`)
+      return failLoad(rt.ejsWebglUnavailable, 'config')
+    }
     if (isWebglUnavailableText(`${line}\n${recent}`)) {
       const webglNow = canCreateWebgl()
       logEngine(`[webgl] 核心建不出 WebGL 上下文；现在再建一次：${webglNow ? '能建' : '仍建不出'}`)
@@ -2794,6 +2920,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     const arcadeFatal = options.platform === 'arcade' ? arcadeFatalKind(line) : null
     if (arcadeFatal === 'unknown-set') return failLoad(fmt(rt.ejsArcadeUnknownSet, { msg: line }), 'deterministic')
     if (arcadeFatal === 'missing-files') return failLoad(fmt(rt.ejsArcadeMissingFiles, { msg: line }))
+    /*
+      引擎读预下载 ROM 时 Blob 读不出（Chromium 走 new Response(blob) 后，NotReadableError 只出现在引擎的
+      「Failed to fetch non-http URL」那一行，上报的却是「网络错误」）：同样记下 Blob 存储已坏，按运行时故障
+      原地重试一次，重试改走内存 ROM，不去换语言 ROM。
+    */
+    if (preparedRomBlob && !memoryRomOf(preparedRomBlob) && isNativeBlobReadMessage(`${line}\n${recent}`)) {
+      markRomBlobStorageBroken('引擎读 ROM ')
+      return failLoad(fmt(rt.ejsEngineError, { msg: line }), 'runtime')
+    }
     failLoad(fmt(rt.ejsEngineError, { msg: line }))
   }
   const reportCoreCrash = (line: string) => {
@@ -3010,6 +3145,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             stateToken = token
             cfg.onToken?.(token)
           })
+          hookSeatEvents(sock, (e) => cfg.onSeatEvent?.(e))
         }
       }
 

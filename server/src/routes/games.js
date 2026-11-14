@@ -61,8 +61,8 @@ export const dbFlag = (v) => v === 1 || v === true || v === '1'
  * `multiplayer=true, players=1` 入库，运营下一次编辑又会造出同一种“按钮可见却必失败”。
  */
 export function netplayGameConfigError(game) {
-  // 自动 / 强制关闭时人数由服务端推断或不生效，表单里那两个值不参与校验
-  if (game?.netplayMode === 'auto' || game?.netplayMode === 'off') return null
+  // 自动 / 强制关闭时人数由服务端推断或不生效，表单里那两个值不参与校验；街机永远是自动
+  if (game?.platform === 'arcade' || game?.netplayMode === 'auto' || game?.netplayMode === 'off') return null
   if (!dbFlag(game?.multiplayer)) return null
   return gameSupportsNetplay(game.multiplayer, game.players)
     ? null

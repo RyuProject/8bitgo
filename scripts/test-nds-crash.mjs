@@ -5,7 +5,8 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isNdsWasmCrash, ndsCrashFallbackCore } from '../src/emulator/ndsCrash.ts'
 import { NDS_MODERN_CORE_BUILD, ndsRomIdentity, rememberNdsCoreFailure, rememberedNdsCore } from '../src/emulator/ndsCorePreference.ts'
-import { emulatorJsCoreForGame, NDS_COMPAT_CORE } from '../src/emulator/paths.ts'
+import { EJS_WEBGL2_ONLY_CORES, ejsCoreNeedsWebgl2, emulatorJsCoreForGame, NDS_COMPAT_CORE, ndsCoreForWebgl2 } from '../src/emulator/paths.ts'
+import { readdirSync } from 'node:fs'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const cores = join(root, 'public/emulatorjs/cores')
@@ -108,5 +109,39 @@ assert.match(player, /rememberedNdsCore\(romUrl\)/)
 assert.match(player, /const saveSlug = coreOverride === NDS_COMPAT_CORE/)
 assert.match(copier, /PRESERVED_CORES = new Set\(\[\.\.\.SELF_BUILT_CORES, 'melonds'\]\)/)
 assert.match(copier, /for \(const c of PRESERVED_CORES\)/)
+
+// 只有 WebGL1 的浏览器：新核心没有 legacy 构建，开局前就换旧 melonDS（2026-11-14 Chrome 149「显卡驱动已过时」）
+{
+  const files = new Set(readdirSync(cores))
+  const noLegacy = [...files].filter((f) => f.endsWith('-wasm.data') && !f.endsWith('-legacy-wasm.data'))
+    .map((f) => f.slice(0, -'-wasm.data'.length)).filter((c) => !files.has(`${c}-legacy-wasm.data`)).sort()
+  assert.deepEqual(noLegacy, [...EJS_WEBGL2_ONLY_CORES].sort(), 'EJS_WEBGL2_ONLY_CORES 必须与 cores/ 里缺 legacy 构建的核心一致')
+  assert.ok(files.has('melonds-legacy-wasm.data'), '兼容核心必须有 WebGL1 构建')
+  for (const core of [undefined, null, 'nds', 'melonds', 'melondsds']) {
+    assert.equal(ndsCoreForWebgl2(core, false), NDS_COMPAT_CORE, `${core} 无 WebGL2 时换兼容核心`)
+    assert.equal(ndsCoreForWebgl2(core, true), null, `${core} 有 WebGL2 时不换`)
+  }
+  assert.equal(ndsCoreForWebgl2('desmume', false), null, '后台固定的有 legacy 构建的核心不动')
+  assert.equal(ejsCoreNeedsWebgl2('melondsds'), true)
+  assert.equal(ejsCoreNeedsWebgl2('melonds-compat'), false)
+  assert.match(player, /ndsCoreForWebgl2\(coreRef\.current, canCreateWebgl2\(\)\)/)
+  assert.match(player, /ndsCoreForWebgl2\(prewarmCore, canCreateWebgl2\(\)\)/)
+  const adapter = readFileSync(join(root, 'src/emulator/adapters/emulatorjs.ts'), 'utf8')
+  assert.match(adapter, /ejsCoreNeedsWebgl2\(core\) && !canCreateWebgl2\(\)/)
+  assert.match(adapter, /isOutdatedGraphicsDriverText\(line\)[\s\S]{0,200}failLoad\(rt\.ejsWebglUnavailable, 'config'\)/)
+  // 适配器在 node 里 import 不进来（依赖浏览器模块），只取这一句正则来测
+  const re = adapter.match(/function isOutdatedGraphicsDriverText\(text: string\): boolean \{\s*return (\/.+\/i)\.test\(text\)/)
+  assert.ok(re, '找不到 isOutdatedGraphicsDriverText')
+  const outdated = (0, eval)(re[1])
+  for (const lang of ['zh', 'en', 'fr', 'es']) {
+    const text = JSON.parse(readFileSync(join(root, `public/emulatorjs/localization/${lang}.json`), 'utf8'))['Outdated graphics driver']
+    assert.ok(outdated.test(text), `${lang} 语言包的「显卡驱动过时」要能认出来`)
+  }
+  for (const lang of ['de', 'it', 'ja']) {
+    const text = JSON.parse(readFileSync(join(root, `public/emulatorjs/localization/${lang}.json`), 'utf8'))['Outdated graphics driver']
+    assert.ok(text === undefined || outdated.test(text), `${lang} 语言包新翻了这句，要补进正则`)
+  }
+  assert.equal(outdated.test('Network Error'), false)
+}
 
 console.log('NDS WASM 崩溃检测、一次性兼容核心回退与发布产物均通过')
