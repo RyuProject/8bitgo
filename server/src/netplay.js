@@ -53,6 +53,13 @@ const MAX_PLAYERS = NETPLAY_MAX_PLAYERS
  * 真要做几十上百人的直播，得在中间加 SFU（房主只推一路，服务器转发 N 路）。
  */
 const MAX_SPECTATORS = Number(process.env.NETPLAY_MAX_SPECTATORS || 12)
+/**
+ * 观众申请上场（2P）的应答窗口。房主那边弹一张不挡操作的卡片，到点没点就当拒绝。
+ * 前端 src/services/netplay.ts 的 SEAT_REQUEST_TTL_MS 必须是同一个数。
+ */
+const SEAT_REQUEST_MS = Number(process.env.NETPLAY_SEAT_REQUEST_MS || 15_000)
+/** 被拒绝 / 超时后多久才能再申请一次：不卡的话一个观众能把房主的屏幕刷满 */
+const SEAT_REQUEST_COOLDOWN_MS = Number(process.env.NETPLAY_SEAT_REQUEST_COOLDOWN_MS || 5_000)
 /** 房主掉线后保留房间、等人接手的时间（测试里会调短） */
 const HOST_GRACE_MS = Number(process.env.NETPLAY_HOST_GRACE_MS || 30_000)
 /**
@@ -361,7 +368,31 @@ export function isNetplayPlayer(roomId, token) {
   return Boolean(member && member.role !== 'spectator')
 }
 
+/**
+ * 撤掉一条上场申请：清定时器，必要时通知申请人（结果）和房主（收起卡片）。
+ * @param {'rejected' | 'timeout' | 'gone' | null} reason null = 已经批准、调用方自己发结果
+ */
+function dropSeatRequest(nsp, room, userid, reason) {
+  const req = room.seatRequests?.get(userid)
+  if (!req) return
+  clearTimeout(req.timer)
+  room.seatRequests.delete(userid)
+  if (reason && reason !== 'gone') {
+    room.seatCooldown ??= new Map()
+    room.seatCooldown.set(userid, Date.now() + SEAT_REQUEST_COOLDOWN_MS)
+  }
+  if (!nsp) return
+  if (room.ownerSocketId) nsp.to(room.ownerSocketId).emit('seat-request-cancel', { userid })
+  if (reason && reason !== 'gone' && req.socketId) nsp.to(req.socketId).emit('seat-decision', { approved: false, reason })
+}
+
+/** 房间散了 / 换房主：所有挂着的申请一并作废（新房主没见过那些卡片） */
+function dropAllSeatRequests(nsp, room, reason) {
+  for (const userid of [...(room.seatRequests?.keys() ?? [])]) dropSeatRequest(nsp, room, userid, reason)
+}
+
 function destroyRoom(room) {
+  dropAllSeatRequests(null, room, 'gone')
   if (room.graceTimer) clearTimeout(room.graceTimer)
   if (room.claimTimer) clearTimeout(room.claimTimer)
   room.claim = null
@@ -385,6 +416,7 @@ function destroyRoom(room) {
  * 剩下的人靠轮询 /api/netplay/rooms/:id 看到 awaitingHost 与 nextHostUserId。
  */
 function beginHostMigration(nsp, room) {
+  dropAllSeatRequests(nsp, room, 'timeout')
   if (room.users.size === 0) {
     destroyRoom(room)
     return
@@ -469,7 +501,10 @@ function removeSocket(socket, nsp) {
 
   const wasHost = room.ownerSocketId === socket.id
   for (const [userid, u] of room.users) {
-    if (u.socketId === socket.id) room.users.delete(userid)
+    if (u.socketId !== socket.id) continue
+    room.users.delete(userid)
+    // 申请人走了：房主那张卡片要收起来
+    dropSeatRequest(wasHost ? null : nsp, room, userid, 'gone')
   }
   socket.leave(roomKey(roomId))
 
@@ -730,7 +765,8 @@ export function attachNetplay(httpServer, app, origins = ['*'], { resolveGamePol
 
       // 手柄位满了不再把人拒之门外，改成让他当观众（只看不操作）。
       // 客户端也可以事后调 /role 主动把自己降成观众。
-      const asSpectator = playerCount(room) >= room.maxPlayers
+      // 观看链接 / 直播观众点「加入联机」时客户端会说明自己只看：要上场得走申请、房主同意
+      const asSpectator = str(extra.role, 16) === 'spectator' || playerCount(room) >= room.maxPlayers
       if (asSpectator && spectatorCount(room) >= MAX_SPECTATORS) return ack?.('room is full')
       // 同一 IP 别把一屋的位子占光（见 maxMembersPerIp）。房主自己也算一个
       const ip = socketIp(socket)
@@ -1008,12 +1044,38 @@ export function attachNetplay(httpServer, app, origins = ['*'], { resolveGamePol
     if (want === 'player') {
       // 想上场：得有空手柄位
       if (playerCount(room) >= room.maxPlayers) return res.status(409).json({ error: 'no free player slot' })
+      /*
+        观众上场要房主点头（2026-11-14）。以前观众点一下就直接占了 2P，房主正在打的局里
+        突然多出一个陌生人的按键。现在挂一条申请，房主那边弹 15 秒不挡操作的卡片，
+        同意才真的改角色（见 /seat-decision），到点没答复就当拒绝。
+      */
+      if (me.userid !== room.ownerUserId) {
+        if (room.awaitingHost) return res.status(409).json({ error: 'room is changing host' })
+        room.seatRequests ??= new Map()
+        const pending = room.seatRequests.get(me.userid)
+        if (pending) return res.status(202).json({ ok: true, pending: true, expiresIn: Math.max(0, pending.expiresAt - Date.now()) })
+        const cooldown = room.seatCooldown?.get(me.userid) ?? 0
+        if (cooldown > Date.now()) return res.status(429).json({ error: 'seat request cooldown', retryAfter: Math.ceil((cooldown - Date.now()) / 1000) })
+        if (room.seatRequests.size >= MAX_SPECTATORS) return res.status(429).json({ error: 'too many seat requests' })
+        const expiresAt = Date.now() + SEAT_REQUEST_MS
+        room.seatRequests.set(me.userid, {
+          socketId: me.socketId,
+          expiresAt,
+          timer: setTimeout(() => dropSeatRequest(nsp, room, me.userid, 'timeout'), SEAT_REQUEST_MS),
+        })
+        if (room.ownerSocketId) {
+          nsp.to(room.ownerSocketId).emit('seat-request', { userid: me.userid, name: me.player_name || '', expiresIn: SEAT_REQUEST_MS })
+        }
+        return res.status(202).json({ ok: true, pending: true, expiresIn: SEAT_REQUEST_MS })
+      }
     } else {
       // 想下场看：房主不能把自己变成观众 —— 游戏就跑在他机器上
       if (me.userid === room.ownerUserId) return res.status(409).json({ error: 'the host cannot spectate' })
       if (spectatorCount(room) >= MAX_SPECTATORS) return res.status(409).json({ error: 'too many spectators' })
     }
 
+    // 自己退回观众席时，挂着的申请没意义了
+    if (want === 'spectator') dropSeatRequest(nsp, room, me.userid, 'gone')
     me.role = want
     if (want === 'player') {
       /**
@@ -1031,6 +1093,39 @@ export function attachNetplay(httpServer, app, origins = ['*'], { resolveGamePol
     nsp.to(roomKey(room.id)).emit('users-updated', usersPayload(room))
     notifyRooms()
     res.json({ ok: true, role: want })
+  })
+
+  /**
+   * 房主答复一条上场申请。只认房主的令牌；批准时再核一次空位（等待的 15 秒里可能有人直接进房占了）。
+   * 上场的人照 /role 的规矩排到玩家组末尾，现有玩家的手柄号不动。
+   */
+  app.post('/api/netplay/rooms/:roomId/seat-decision', express.json(), (req, res) => {
+    const room = getRoom(req.params.roomId)
+    if (!room) return res.status(404).json({ error: 'room not found' })
+    const me = memberByToken(room, str(req.get('x-netplay-token'), 64) || str(req.body?.token, 64))
+    if (!me) return res.status(403).json({ error: 'not a member' })
+    if (me.userid !== room.ownerUserId) return res.status(403).json({ error: 'only the host can decide' })
+    const userid = str(req.body?.userid, 64)
+    const pending = userid ? room.seatRequests?.get(userid) : undefined
+    if (!pending) return res.status(404).json({ error: 'no such request' })
+    const approve = req.body?.approve === true
+    const target = room.users.get(userid)
+    if (!approve || !target || target.role !== 'spectator') {
+      dropSeatRequest(nsp, room, userid, target ? 'rejected' : 'gone')
+      return res.json({ ok: true, approved: false })
+    }
+    if (playerCount(room) >= room.maxPlayers) {
+      dropSeatRequest(nsp, room, userid, 'rejected')
+      return res.status(409).json({ error: 'no free player slot' })
+    }
+    dropSeatRequest(nsp, room, userid, null)
+    target.role = 'player'
+    room.users.delete(userid)
+    room.users.set(userid, target)
+    nsp.to(target.socketId).emit('seat-decision', { approved: true })
+    nsp.to(roomKey(room.id)).emit('users-updated', usersPayload(room))
+    notifyRooms()
+    res.json({ ok: true, approved: true })
   })
 
   /**

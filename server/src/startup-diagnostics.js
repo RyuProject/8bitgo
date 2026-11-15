@@ -11,6 +11,7 @@
  */
 import { createHash } from 'node:crypto'
 import { query } from './db.js'
+import { maybeAlertSignature } from './diag-alert.js'
 
 export const DIAGNOSTIC_EVENTS = new Set(['failed', 'timeout', 'slow_start'])
 export const DIAGNOSTICS_RETENTION_DAYS = 30
@@ -147,10 +148,22 @@ export function classifyUserAgent(ua = '') {
     ['WeChat', /MicroMessenger\/(\d+)/],
     ['QQ', /\bQQ(?:Browser)?\/(\d+)/],
     ['UC', /UCBrowser\/(\d+)/],
+    // 国内手机自带 / 应用内浏览器都是 Chromium 改的，UA 照样写 Chrome/xxx，不先认出来就一律成了「Chrome」，
+    // 内存不足这类按浏览器分的故障就查不清（2026-11-14 大陆 Chrome 114 / Android 12《拳皇97》）
+    ['Quark', /Quark\/(\d+)/],
+    ['Huawei Browser', /HuaweiBrowser\/(\d+)/],
+    ['Mi Browser', /MiuiBrowser\/(\d+)/],
+    ['OPPO Browser', /(?:HeyTapBrowser|OppoBrowser)\/(\d+)/],
+    ['vivo Browser', /VivoBrowser\/(\d+)/],
+    ['Baidu', /(?:baiduboxapp|BaiduBrowser)\/(\d+)/],
+    ['360', /QihooBrowser\/(\d+)/],
+    ['Sogou', /SogouMobileBrowser\/(\d+)/],
     ['Samsung', /SamsungBrowser\/(\d+)/],
     ['Edge', /Edg(?:e|A|iOS)?\/(\d+)/],
     ['Opera', /(?:OPR|Opera)\/(\d+)/],
     ['Firefox', /(?:Firefox|FxiOS)\/(\d+)/],
+    // 其它 App 内嵌的 Android WebView（抖音、B 站 …）：UA 带「; wv)」
+    ['Android WebView', /; wv\).*?Chrome\/(\d+)/],
     ['Chrome', /(?:Chrome|CriOS)\/(\d+)/],
     ['Safari', /Version\/(\d+)[\d.]* (?:Mobile\/\w+ )?Safari\//],
   ]
@@ -241,7 +254,10 @@ export async function recordStartupDiagnostics(slug, event, rawDiagnostics, { co
       ],
     )
     scheduleCleanup()
-    return Number(result?.affectedRows ?? 0) > 0
+    const inserted = Number(result?.affectedRows ?? 0) > 0
+    // 同一特征短时间内聚集就发邮件（没配 DIAG_ALERT_EMAIL 时立即返回）；不 await，不拖慢接口
+    if (inserted) void maybeAlertSignature(signature)
+    return inserted
   } catch (error) {
     if (error?.code === 'ER_NO_SUCH_TABLE') {
       if (!missingTableWarned) console.warn('[startup] game_startup_diagnostics 表不存在，诊断包没有保存 —— cd server && npm run migrate')

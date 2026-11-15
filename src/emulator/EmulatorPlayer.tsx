@@ -7,7 +7,9 @@ import { isPc98FdiFileName } from './pc98'
 import { jsnesCanRun } from './nesMapper'
 import { probeNesRomHeader } from './nesRomProbe'
 import { resolveRuntime, runtimesFor, extOf } from './registry'
-import { canCreateWebgl } from './webglSupport'
+import { canCreateWebgl, canCreateWebgl2 } from './webglSupport'
+import { modernRuntimeSyntaxSupported, runtimeNeedsModernBrowser, runtimeRunsWithoutWasm, webAssemblyAvailable } from './browserSupport'
+import { awayflForcedByUrl, useAwayflChoice } from './awayflPolicy'
 import { romArchiveRef } from '@/lib/romArchiveUrl'
 import { romUrlForKey } from '@/services/roms'
 import { clearSockdrivePin, pinnedSockdriveUrl, routeRomAssetUrl } from '@/services/romHosts'
@@ -40,11 +42,20 @@ import { matchLocalArcadeHack } from './arcadeHack'
 import { arcadeCoreForRomData } from './arcadeCore'
 import type { DosExtraSource } from '@/lib/dosExtras'
 import type { LiveSession } from './adapters/liveview'
-import type { NetplaySession } from './adapters/emulatorjs'
+import type { NetplaySession, SeatEvent } from './adapters/emulatorjs'
+import { cleanPageRetryUrl, isLowmemOomMessage, takeCleanPageRetry } from './memoryRecovery'
 import type { CloudSession, CloudState } from './adapters/cloudgame'
-import { p2pPlayable, cloudPlayable, emulatorJsCoreFileFor, NDS_COMPAT_CORE } from './paths'
+import { p2pPlayable, cloudPlayable, emulatorJsCoreFileFor, emulatorJsCoreForGame, NDS_COMPAT_CORE, ndsCoreForWebgl2 } from './paths'
+import { FBNEO_LOWMEM_CORE, fbneoLowmemSaveSlug, fbneoMemoryFallbackCore, prefersFbneoLowmem, rememberFbneoMemoryFailure } from './fbneoLowmem'
 import { ndsCrashFallbackCore } from './ndsCrash'
 import { rememberNdsCoreFailure, rememberedNdsCore } from './ndsCorePreference'
+import {
+  clearRememberedNdsPerformanceCore,
+  NDS_ADAPTIVE_PERFORMANCE_CORE,
+  NDS_ADAPTIVE_PERFORMANCE_SAVE_SUFFIX,
+  rememberedNdsPerformanceCore,
+  rememberNdsPerformanceCore,
+} from './ndsAdaptivePerformance'
 import { psxChdSaveSlug, psxCoreForTransfer } from './psxChd'
 import { prewarmMameChdMediaOnHover, prewarmRuntime } from './prewarm'
 import { defaultDos71SystemUrl, prewarmSystemCache } from './systemSource'
@@ -100,6 +111,8 @@ import {
   playerName,
   refreshNetplayRooms,
   setRoomRole,
+  requestSeat,
+  decideSeat,
   useNetplayRooms,
   watchNetplayRoom,
   type NetplayRoom,
@@ -179,6 +192,8 @@ interface ActiveSession {
   retryAttempt?: number
   /** 只属于这一局的核心覆盖；崩溃兜底不能改后台配置或污染下一次主动启动。 */
   coreOverride?: string
+  /** GBA 启动陷阱后已执行过一次远端 ROM 强制刷新；防止同一坏输入循环下载。 */
+  forceRomRefresh?: boolean
   /**
    * 这一局已经试过、并且自己说「跑不了这份 ROM」的引擎（见 RuntimeHandle 那侧的 onUnsupported）。
    * 换引擎时要把它们排除掉，否则两个引擎可以来回踢皮球，永远转圈。
@@ -579,8 +594,11 @@ export function EmulatorPlayer({
   const [file, setFile] = useState<File | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [ndsPerformanceSuggestion, setNdsPerformanceSuggestion] = useState<{ fps: number; game: File | string } | null>(null)
   const [dragging, setDragging] = useState(false)
   const [session, setSession] = useState<ActiveSession | null>(null)
+  /** 首次联机失败后让这局仍按本地游戏显示；换会话时由 begin() 清掉。 */
+  const [p2pConnectionFailed, setP2pConnectionFailed] = useState(false)
   const [pspLoadMode, setPspLoadMode] = useState<'stream' | 'download'>('stream')
   const pspLoadModeRef = useRef(pspLoadMode)
   pspLoadModeRef.current = pspLoadMode
@@ -600,13 +618,23 @@ export function EmulatorPlayer({
   const [localRomData, setLocalRomData] = useState<string | undefined>(undefined)
 
   const t = useT()
+  const awayflChoice = useAwayflChoice(platform.id, gameSlug)
   const { immersive, setImmersive, toggleImmersive, available: shellAvailable } = useShell()
 
   /* ---------------- 联机 ---------------- */
   // 联机需要云端 ROM：房主和访客都得能拿到同一个 ROM
-  const p2pOk = Boolean(gameSlug) && Boolean(romUrl) && p2pPlayable(platform.id)
+  const slots = Math.max(1, Math.min(MAX_PLAYERS, maxPlayers))
+  /**
+   * 单人游戏（后台 players < 2 或没开「支持联机」）没有联机可言：服务端开房 / 云端心跳都会回
+   * `game does not support multiplayer`。以前这里只看平台，于是「改为联机」和运行中的
+   * 「联机匹配」照样画出来，玩家一点就在已经跑起来的游戏上报错（2026-11-13 诊断：
+   * 《铁拳》players=2 但未开联机、《JOJO》《火红》一人游戏，open-room 全被拒）。
+   * 调用方负责把「未开联机」压成 maxPlayers=1（见 GameDetailPage / TvPlay / EmbedPage）。
+   */
+  const hostable = slots > 1
+  const p2pOk = hostable && Boolean(gameSlug) && Boolean(romUrl) && p2pPlayable(platform.id)
   // 云端房间由服务器取 ROM，不会执行玩家浏览器里的 ZIP 解包；这类外链只开放本地/P2P。
-  const cloudOk = FEATURES.cloudGame && Boolean(gameSlug) && !romArchiveRef(romUrl ?? '') && cloudPlayable(platform.id)
+  const cloudOk = hostable && FEATURES.cloudGame && Boolean(gameSlug) && !romArchiveRef(romUrl ?? '') && cloudPlayable(platform.id)
   const onlineOk = p2pOk || cloudOk
   /** 优先 P2P；P2P 不可用而云端可用时才走云端 */
   const channel: Channel = p2pOk ? 'p2p' : 'cloud'
@@ -668,6 +696,7 @@ export function EmulatorPlayer({
    */
   const [hosting, setHosting] = useState(false)
   const [matchBusy, setMatchBusy] = useState(false)
+  const netplayActive = Boolean(session?.netplay) && !p2pConnectionFailed
   /** jsnes 联机面板开关（与 EmulatorJS 的 MatchControls 平行，互不干扰） */
   const [jsnesNetplayOpen, setJsnesNetplayOpen] = useState(false)
   /** 通用“创建联机房间”落到 jsnes 时，面板打开后要自动执行一次开房。 */
@@ -759,8 +788,18 @@ export function EmulatorPlayer({
   const [isHost, setIsHost] = useState(false)
   /** 适配器交出来的「切身份」函数：不用断线重连就能上场 / 退下 */
   const roleSwitchRef = useRef<((spectator: boolean) => void) | null>(null)
+  /**
+   * 观众上场要房主同意（server/src/netplay.js 的 seat-*）。
+   * 房主侧：还没答复的申请（先到先显示），到点自动收起；
+   * 观众侧：申请挂到什么时候（0 = 没在等）。
+   */
+  const [seatAsks, setSeatAsks] = useState<{ userid: string; name: string; expiresAt: number }[]>([])
+  const [seatAskingUntil, setSeatAskingUntil] = useState(0)
+  /** 适配器的回调在挂载那一刻就定了，经 ref 转到最新的处理函数，免得闭包里拿到旧的 t / 状态 */
+  const seatEventRef = useRef<(e: SeatEvent) => void>(() => {})
+  /** 直播观众点「申请当玩家」：进房拿到令牌后自动递申请 */
+  const autoSeatRef = useRef(false)
   const [copied, setCopied] = useState(false)
-  const slots = Math.max(1, Math.min(MAX_PLAYERS, maxPlayers))
 
   // P2P：从房间列表里找要加入的那个房间（判断满没满、还在不在）
   const p2pRooms = useNetplayRooms()
@@ -786,7 +825,7 @@ export function EmulatorPlayer({
    */
   const willWatch = canWatch && (watch || inviteFull)
   /** 正在看的人数（自己所在的房间） */
-  const myNetRoom = (session?.netplay || hosting) && roomId ? p2pRooms.find((r) => r.roomId === roomId) : undefined
+  const myNetRoom = (netplayActive || hosting) && roomId ? p2pRooms.find((r) => r.roomId === roomId) : undefined
   const viewers = myNetRoom?.spectators ?? 0
   /** 直播与联机配对关系变化时让玩家重进弹幕通道，避免两边各聊各的。 */
   const pairedLiveRoomId = liveRooms.find((r) => r.netplayRoomId === roomId)?.roomId ?? null
@@ -873,12 +912,12 @@ export function EmulatorPlayer({
   const [flashSaveExpiry, setFlashSaveExpiry] = useState(0)
 
   const liveChatOn = Boolean(liveSession) || Boolean(session?.live) ||
-    (Boolean(session?.netplay || hosting) && role === 'player')
+    ((netplayActive || hosting) && role === 'player')
 
   useEffect(() => {
-    const active = status === 'running' && Boolean(session?.netplay || hosting) && role === 'player'
+    const active = status === 'running' && Boolean(netplayActive || hosting) && role === 'player'
     onMatchPlayerChange?.(active)
-  }, [status, session?.netplay, hosting, role, onMatchPlayerChange])
+  }, [status, netplayActive, hosting, role, onMatchPlayerChange])
 
   useEffect(() => () => onMatchPlayerChange?.(false), [onMatchPlayerChange])
 
@@ -888,7 +927,7 @@ export function EmulatorPlayer({
    */
   useEffect(() => {
     if (!roomId || !roomChatToken || status !== 'running' ||
-        !(session?.netplay || hosting) || role !== 'player' || liveSession) {
+        !(netplayActive || hosting) || role !== 'player' || liveSession) {
       setMatchChatSocket(null)
       return
     }
@@ -1020,7 +1059,7 @@ export function EmulatorPlayer({
     return listenMediaQuery(mq, sync)
   }, [])
   const matchPanelOn = wideLayout && Boolean(matchPanelSlot) && status === 'running' &&
-    Boolean(session?.netplay || hosting) && role === 'player'
+    Boolean(netplayActive || hosting) && role === 'player'
   const liveCap = watchingLiveStage ? liveStageStyle(geometry, immersive) : undefined
   /**
    * 是不是正处在原生全屏里。
@@ -1574,6 +1613,7 @@ export function EmulatorPlayer({
     && extOf(romUrl) === 'nes'
     && !isRomPackUrl(romUrl)
     && !romArchiveRef(romUrl ?? '')
+  const shouldProbeNoWebgl = platform.id === 'nes' || platform.id === 'gb' || platform.id === 'gbc' || platform.id === 'gba'
 
   useEffect(() => {
     if (!shouldProbeNes || !romUrl) return
@@ -1596,24 +1636,39 @@ export function EmulatorPlayer({
   }, [romUrl, shouldProbeNes])
 
   /*
-    NES 开局前问一次浏览器建不建得出 WebGL：建不出就改走画 2D canvas 的 jsnes（见 webglSupport.ts）。
+    开局前检查运行时能力：NES 改走 jsnes，GB/GBC 改走 binjgb，禁用 WebAssembly 的 GBA 改走 IodineGBA。
     放在 effect 里而不是渲染时算：SSR 没有 document，渲染时算会让首屏和水合选出不同的引擎。
   */
-  const [webglUnavailable, setWebglUnavailable] = useState(false)
+  const [webglProbe, setWebglProbe] = useState<{ platform: PlatformId; ready: boolean; unavailable: boolean }>(
+    () => ({ platform: platform.id, ready: false, unavailable: false }),
+  )
+  const webglProbeReady = !shouldProbeNoWebgl || (webglProbe.platform === platform.id && webglProbe.ready)
+  const webglUnavailable = webglProbe.platform === platform.id && webglProbe.unavailable && platform.id !== 'gba'
   useEffect(() => {
-    if (platform.id !== 'nes') return
-    const missing = !canCreateWebgl()
-    if (missing) console.warn('[8bitgo/runtime] 这个浏览器建不出 WebGL，NES 改用 jsnes')
-    setWebglUnavailable(missing)
-  }, [platform.id])
+    if (!shouldProbeNoWebgl) return
+    // NES 在太旧的浏览器上也改走 jsnes：EmulatorJS 的引擎和核心语法都跑不动（browserSupport.ts）
+    const noWebgl = platform.id !== 'gba' && !canCreateWebgl()
+    // NES：太旧或没有 WebAssembly 都改走 jsnes；GB/GBC：没有 WebAssembly 改走 binjgb（它自己换纯 JS 构建）
+    const noModernRuntime = platform.id === 'nes'
+      ? !modernRuntimeSyntaxSupported() || !webAssemblyAvailable()
+      : !webAssemblyAvailable()
+    const missing = platform.id === 'gba' ? !webAssemblyAvailable() : noWebgl || noModernRuntime
+    if (missing) {
+      const fallback = platform.id === 'nes' ? 'jsnes' : platform.id === 'gba' ? 'IodineGBA（纯 JavaScript）' : !webAssemblyAvailable() ? 'binjgb（纯 JavaScript 构建）' : 'binjgb'
+      const why = noWebgl ? '建不出 WebGL' : !webAssemblyAvailable() ? '没有 WebAssembly' : '太旧（不支持类字段 / ?. / ??）'
+      console.warn(`[8bitgo/runtime] 这个浏览器${why}，${platform.id.toUpperCase()} 改用 ${fallback}`)
+    }
+    setWebglProbe({ platform: platform.id, ready: true, unavailable: missing })
+  }, [platform.id, shouldProbeNoWebgl])
 
   const currentNesProbe = nesProbe.url === romUrl ? nesProbe : undefined
   const jsnesCompatible = shouldProbeNes ? currentNesProbe?.compatible : undefined
 
   // 直链 `.nes` 的头还没回来前故意不定引擎：autoplay / 切语言重开都必须等当前 URL 的结果，
-  // 不能先拿上一份 ROM 的 mapper 开局。容器包无需等待，稳定默认 EmulatorJS。
+  // 不能先拿上一份 ROM 的 mapper 开局。容器包不用等 mapper，但 NES 仍须等 WebGL 预检再开局。
   const pageRuntime = useMemo(() => {
     if (shouldProbeNes && !currentNesProbe?.ready) return undefined
+    if (!awayflChoice.ready) return undefined
     return resolveRuntime({
       platform: platform.id,
       ext: extOf(romUrl),
@@ -1621,11 +1676,14 @@ export function EmulatorPlayer({
       jsnesNetplay,
       jsnesCompatible,
       webglUnavailable,
+      gbaWasmUnavailable: platform.id === 'gba' && !webAssemblyAvailable(),
+      flashAwayfl: awayflChoice.use,
     })
-  }, [platform.id, runtime, romUrl, shouldProbeNes, currentNesProbe?.ready, jsnesNetplay, jsnesCompatible, webglUnavailable])
+  }, [platform.id, runtime, romUrl, shouldProbeNes, currentNesProbe?.ready, jsnesNetplay, jsnesCompatible, webglUnavailable, awayflChoice.ready, awayflChoice.use])
 
-  /** 当前直链 `.nes` 的头是否已探完；等待时“开始”进入准备态，不误显为平台不支持。 */
-  const engineReady = !shouldProbeNes || Boolean(currentNesProbe?.ready)
+  /** NES 的 mapper 与 NES / GB / GBC 的 WebGL 结论都确定后再开放启动，避免自动播放抢先挂载错误引擎。 */
+  const engineReady = (!shouldProbeNes || Boolean(currentNesProbe?.ready)) &&
+    webglProbeReady && awayflChoice.ready
   const supported = Boolean(pageRuntime) || onlineOk
   /** js-dos 预热必须知道最终后端，否则会把普通 DOS 的 1.4 MB 核心当成 Win95 的 7.5 MB 核心。 */
   const requestedPrewarmCore = core ?? platform.core
@@ -1648,11 +1706,33 @@ export function EmulatorPlayer({
       cloud?: CloudSession
       retryAttempt?: number
       coreOverride?: string
+      forceRomRefresh?: boolean
       ruledOut?: RuntimeId[]
       startupAttemptId?: string
       startedAt?: number
     },
   ) => {
+    /*
+      模拟器运行时是原样发布的第三方产物，最低要 Chrome 80 / Safari 14 / Firefox 74（browserSupport.ts）。
+      更老的浏览器页面能打开，点开始后会在 iframe / Worker 里静默语法错误、等满看门狗才报超时：
+      开局前就说清楚，不白下几十 MB 的核心和 ROM。NES 已在选运行时那一步改走 jsnes。
+    */
+    /*
+      没有 WebAssembly（Edge 增强安全性、iOS 锁定模式、关了 JIT 的安卓模拟器）：核心和 8BG 解码器都跑不了，
+      开局前说清楚原因，不下载也不进必然失败的引擎（browserSupport.ts）。
+    */
+    if (!webAssemblyAvailable() && !runtimeRunsWithoutWasm(runtime.id, game)) {
+      console.warn(`[8bitgo/runtime] 浏览器没有 WebAssembly，${runtime.id} 无法运行`)
+      setError(t.player.browserNoWasm)
+      setStatus('error')
+      return
+    }
+    if (runtimeNeedsModernBrowser(runtime.id) && !modernRuntimeSyntaxSupported()) {
+      console.warn(`[8bitgo/runtime] 浏览器不支持 ${runtime.id} 需要的语法（类字段 / ?. / ??），不开局`)
+      setError(t.player.browserTooOld)
+      setStatus('error')
+      return
+    }
     const inherited = !extra?.startupAttemptId && inheritedStartupRef.current && !inheritedStartupRef.current.consumed
       ? inheritedStartupRef.current
       : null
@@ -1674,7 +1754,28 @@ export function EmulatorPlayer({
       canRestartInPlace(extra ?? {}) && emulatorJsCoreFileFor(coreRef.current ?? 'nds') === 'melondsds'
       ? rememberedNdsCore(game)
       : null
-    const coreOverride = extra?.coreOverride ?? rememberedCore ?? undefined
+    // 这个浏览器默认 FBNeo 分配不出 WASM 内存过：街机直接用低内存核心，省掉一轮必然失败的开局
+    const rememberedArcadeCore = !extra?.coreOverride && targetPlatform === 'arcade' && runtime.id === 'emulatorjs' &&
+      canRestartInPlace(extra ?? {}) && emulatorJsCoreForGame('arcade', coreRef.current) === 'fbneo' && prefersFbneoLowmem()
+      ? FBNEO_LOWMEM_CORE
+      : null
+    /*
+      新版 melonDS DS 只有 WebGL2 构建：只建得出 WebGL1 的浏览器里引擎去下不存在的 legacy 版，
+      报「显卡驱动已过时」（2026-11-14 大陆 Chrome 149，下完 ROM 才失败、又换语言 ROM 白下三遍）。
+      开局前问一次，改用有 legacy 构建的旧 melonDS；两版即时存档各存一档（下面的 saveSlug）。
+    */
+    const webgl2Core = !extra?.coreOverride && targetPlatform === 'nds' && runtime.id === 'emulatorjs'
+      ? ndsCoreForWebgl2(coreRef.current, canCreateWebgl2())
+      : null
+    if (webgl2Core) console.warn('[8bitgo/nds] 浏览器建不出 WebGL2，新版 melonDS DS 没有 WebGL1 构建，改用兼容核心')
+    // 只有玩家在掉帧提示上主动选择「下次尝试」时，才把下一局一次性改用 DeSmuME。
+    // 确定性崩溃记忆优先；DeSmuME 自带 legacy 包，因此可由玩家明确选择来覆盖 WebGL2 兼容核心。
+    const rememberedPerformanceCore = !extra?.coreOverride && !rememberedCore &&
+      targetPlatform === 'nds' && runtime.id === 'emulatorjs' && canRestartInPlace(extra ?? {}) &&
+      emulatorJsCoreForGame('nds', coreRef.current ?? 'nds') === 'melondsds'
+      ? rememberedNdsPerformanceCore(game)
+      : null
+    const coreOverride = extra?.coreOverride ?? rememberedCore ?? rememberedPerformanceCore ?? webgl2Core ?? rememberedArcadeCore ?? undefined
     // 新旧 melonDS 的即时存档 ABI 不能假定兼容；兼容核心必须用独立档位，
     // 否则自动切换后可能把旧核心的快照写回原档，造成无法恢复的覆盖。
     const coreSaveSlug = targetPlatform === 'psx' && runtime.id === 'emulatorjs' && typeof game === 'string' && baseSaveSlug
@@ -1682,7 +1783,11 @@ export function EmulatorPlayer({
       : baseSaveSlug
     const saveSlug = coreOverride === NDS_COMPAT_CORE && coreSaveSlug
       ? `${coreSaveSlug}:melonds-compat`
-      : coreSaveSlug
+      : coreOverride === NDS_ADAPTIVE_PERFORMANCE_CORE && coreSaveSlug
+        ? `${coreSaveSlug}${NDS_ADAPTIVE_PERFORMANCE_SAVE_SUFFIX}`
+      : coreOverride === FBNEO_LOWMEM_CORE && coreSaveSlug
+        ? fbneoLowmemSaveSlug(coreSaveSlug)
+        : coreSaveSlug
     const plan = loadProgressPlan({
       runtime: runtime.id,
       platform: targetPlatform,
@@ -1696,6 +1801,8 @@ export function EmulatorPlayer({
     setSession({ id: sessionCounter.current, game, platform: targetPlatform, runtime, saveSlug,
       pspLoadMode: runtime.id === 'ppsspp' ? pspLoadModeRef.current : undefined,
       ...extra, coreOverride, startupAttemptId, startedAt })
+    setNdsPerformanceSuggestion(null)
+    setP2pConnectionFailed(false)
     if (!extra?.startupAttemptId && !inherited && runtime.id !== 'liveview' && startupVisitId) {
       recordStartupEvent(gameSlugRef.current, {
         visitId: startupVisitId,
@@ -1707,7 +1814,7 @@ export function EmulatorPlayer({
       })
     }
     // 自动重试与换引擎属于同一次开局：保留已显示进度，并由状态机把新一轮映射到剩余区间。
-    const carryOver = Boolean(extra?.retryAttempt) || Boolean(extra?.ruledOut?.length) || Boolean(extra?.coreOverride)
+    const carryOver = Boolean(extra?.retryAttempt) || Boolean(extra?.ruledOut?.length) || Boolean(extra?.coreOverride) || Boolean(extra?.forceRomRefresh)
     loadProgress.reset(plan, { carryOver })
     setStatus('loading')
   }
@@ -1819,6 +1926,7 @@ export function EmulatorPlayer({
       // 按游戏覆盖核心 / 平台级 BIOS：都用 ref 读当前值，
       // 放进 effect 依赖会让「BIOS 异步到货」把正在跑的游戏重启一遍
       core: session.coreOverride ?? coreRef.current,
+      forceRomRefresh: session.forceRomRefresh,
       mouseCapture: shouldCaptureMouse(session.platform, genresRef.current),
       arcadeRomData: arcadeRomDataRef.current,
       arcadeMameDisks: arcadeMameDisksRef.current?.map((disk) => ({
@@ -1962,6 +2070,14 @@ export function EmulatorPlayer({
       onReady: () => {
         if (!isCurrent() || ready) return
         ready = true
+        if (
+          session.platform === 'nds' && session.runtime.id === 'emulatorjs' &&
+          session.coreOverride === NDS_ADAPTIVE_PERFORMANCE_CORE &&
+          rememberedNdsPerformanceCore(session.game)
+        ) {
+          clearRememberedNdsPerformanceCore(session.game)
+          setNotice(t.player.ndsPerformanceCoreStarted)
+        }
         // 调试：运行时挂载成功、ROM 已被核心读取 —— 这两步都过了，卡点就在「出首帧」之后了
         if (debugRef.current) {
           setDiag((d) => d.map((e) => (e.stage === 'launch' ? { ...e, status: 'ok', detail: '运行时已挂载' } : e)))
@@ -1990,6 +2106,18 @@ export function EmulatorPlayer({
         // 调试：核心已经产出首帧，游戏真的跑起来了
         if (debugRef.current) setDiag((d) => [...d, { stage: 'engine', label: '引擎出首帧', status: 'ok', detail: '游戏已开始运行' }])
         reportStartup('first_frame')
+      },
+      onNdsPerformanceIssue: (fps, reason) => {
+        if (!isCurrent() || session.platform !== 'nds') return
+        if (reason === 'no-live-option') {
+          setNdsPerformanceSuggestion({ fps: Math.round(fps), game: session.game })
+        } else {
+          setNotice(fmt(t.player.ndsPerformanceExhausted, { fps: String(Math.round(fps)) }))
+        }
+      },
+      onNdsPerformanceApplied: (frameskip) => {
+        if (!isCurrent() || session.platform !== 'nds') return
+        setNotice(fmt(t.player.ndsFrameskipApplied, { value: frameskip }))
       },
       /*
         引擎说「这份 ROM 得换个人跑」（目前只有 jsnes 会说：格式 / 板型能力不兼容）。
@@ -2032,6 +2160,21 @@ export function EmulatorPlayer({
         if (!isCurrent()) return
         crashed = true
         window.clearTimeout(playableTimer)
+        const gbaRomTrap = !ready && session.platform === 'gba' && session.runtime.id === 'emulatorjs' &&
+          /table index is out of bounds/i.test(reason) && typeof session.game === 'string' &&
+          isRomPackUrl(session.game) && !session.forceRomRefresh && canRestartInPlace(session)
+        if (gbaRomTrap) {
+          // 普通重试会再次使用同一份已解包 ROM；这类现场之后曾在新访问重下 ROM 后恢复，因此清缓存并重取一次。
+          console.warn(`[8bitgo/gba] ${crashedCore} 启动时发生 WASM table trap，刷新 8BG ROM 后重开一次：${reason}`)
+          setError(null)
+          begin(session.game, session.platform, session.runtime, {
+            retryAttempt: (session.retryAttempt ?? 0) + 1,
+            forceRomRefresh: true,
+            startupAttemptId: session.startupAttemptId,
+            startedAt: session.startedAt,
+          })
+          return
+        }
         const nextCore = session.platform === 'nds' && session.runtime.id === 'emulatorjs'
           ? ndsCrashFallbackCore(crashedCore, canRestartInPlace(session), Boolean(session.coreOverride))
           : null
@@ -2054,8 +2197,30 @@ export function EmulatorPlayer({
         if (debugRef.current) setEngineLines(handle?.engineLog?.() ?? [])
         reportStartupFailure(reason)
         endSession()
-        setError(fmt(t.player.ndsCoreFailed, { reason }))
+        setError(session.platform === 'nds'
+          ? fmt(t.player.ndsCoreFailed, { reason })
+          : fmt(t.runtime.ejsEngineError, { msg: reason }))
         setStatus('error')
+      },
+      /*
+        默认 FBNeo 起步要一整块 128 MiB，32 位 / 地址空间吃紧的浏览器给不出来（fbneoLowmem.ts）。
+        原地重试同一个核心、换线路、换 ROM 都是同一个错误；换起步 72 MiB 的低内存核心重开一次。
+      */
+      onOutOfMemory: (failedCore: string, reason: string) => {
+        if (!isCurrent() || ready) return false
+        const nextCore = session.runtime.id === 'emulatorjs'
+          ? fbneoMemoryFallbackCore(session.platform, failedCore, canRestartInPlace(session) && !session.coreOverride)
+          : null
+        if (!nextCore) return false
+        console.warn(`[8bitgo/arcade] ${failedCore} 分配不出 WASM 内存，改用 ${nextCore} 重开：${reason}`)
+        rememberFbneoMemoryFailure()
+        setError(null)
+        begin(session.game, session.platform, session.runtime, {
+          coreOverride: nextCore,
+          startupAttemptId: session.startupAttemptId,
+          startedAt: session.startedAt,
+        })
+        return true
       },
       onError: (message: string, errorScope?: 'runtime' | 'content' | 'config' | 'deterministic') => {
         if (!isCurrent()) return
@@ -2106,8 +2271,10 @@ export function EmulatorPlayer({
           setStatus('idle')
           return
         }
-        // 后台配置错误 / 必然失败的包：原地重来一遍只会让玩家再等一轮（mame-current 还要重新解压编译 242MB）
-        const retryUseless = errorScope === 'config' || errorScope === 'deterministic'
+        // 后台配置错误 / 必然失败的包：原地重来一遍只会让玩家再等一轮（mame-current 还要重新解压编译 242MB）。
+        // CheerpJ 的 runtime 错误也不重试：同一个官方 CDN / 浏览器环境再走一遍只会重复数分钟等待。
+        const retryUseless = errorScope === 'config' || errorScope === 'deterministic' ||
+          (session.runtime.id === 'j2me' && errorScope === 'runtime')
         if (!ready && !retryUseless && canRestartInPlace(session) && attempt < AUTO_RETRY_LIMIT) {
           setError(null)
           begin(session.game, session.platform, session.runtime, {
@@ -2153,6 +2320,23 @@ export function EmulatorPlayer({
           setDiag((d) => d.map((e) => (e.stage === 'launch' || e.stage === 'content' ? { ...e, status: 'fail', detail: failureReason } : e)))
           // 出错时立刻把引擎日志定格：再往下 endSession 会拆掉 iframe，轮询就停了
           setEngineLines(handle?.engineLog?.() ?? [])
+        }
+        /*
+          低内存核心也分配不出 WASM 内存：换一个干净的文档重开一次（整页导航带 ?autoplay=1）。
+          旧文档里的引擎 iframe、ROM 副本、编译产物随之释放，被占碎的地址空间有机会腾出来
+          （memoryRecovery.ts）。每款游戏十分钟内只自动做一次，第二次照常报错；只在详情页做。
+        */
+        if (!ready && isLowmemOomMessage(failureReason) && typeof window !== 'undefined') {
+          const target = cleanPageRetryUrl(window.location.href)
+          if (target && takeCleanPageRetry(gameSlug ?? '')) {
+            reportStartupFailure(`${failureReason}（换干净页面重开一次）`)
+            setError(null)
+            setNotice(t.runtime.memoryCleanRetry)
+            setStatus('loading')
+            // 让启动漏斗的 keepalive 请求先发出去
+            window.setTimeout(() => window.location.assign(target), 300)
+            return
+          }
         }
         setError(failureReason)
         reportStartupFailure(failureReason)
@@ -2211,7 +2395,7 @@ export function EmulatorPlayer({
    * 服务器保留 60 秒宽限期，2.5 秒一轮足够。
    */
   useEffect(() => {
-    if (!session?.netplay || !roomId || status === 'error') return
+    if (!netplayActive || !roomId || status === 'error') return
     /**
      * ⚠️ 房主不订阅这条。
      *
@@ -2303,7 +2487,7 @@ export function EmulatorPlayer({
       cancelled = true
       stop()
     }
-  }, [session, roomId, status, isHost])
+  }, [session, netplayActive, roomId, status, isHost])
 
   useEffect(() => {
     if (!copied) return
@@ -2338,6 +2522,8 @@ export function EmulatorPlayer({
     setRole(asRole)
     setIsHost(!join)
     roleSwitchRef.current = null
+    setSeatAsks([])
+    setSeatAskingUntil(0)
     migrateFromRef.current = takeOver?.from ?? ''
     migrateToRef.current = ''
     if (!takeOver) claimTokenRef.current = ''
@@ -2389,14 +2575,37 @@ export function EmulatorPlayer({
         mode: join ? 'join' : 'host',
         role: asRole,
         onSpectatorControl: (fn) => (roleSwitchRef.current = fn),
+        onSeatEvent: (e) => {
+          if (!p2pStale()) seatEventRef.current(e)
+        },
         roomId: join,
         initialState: takeOver?.state ?? undefined,
         onIdentity: (id) => (myIdRef.current = id),
+        onConnectionFailed: (message) => {
+          if (p2pStale()) return
+          // 游戏画面已经正常运行；仅退出失败的联机尝试，保留本地游玩与当前进度。
+          setP2pConnectionFailed(true)
+          setRoomId(null)
+          setPlayers(1)
+          setRole('player')
+          setIsHost(false)
+          setHosting(false)
+          setMatchBusy(false)
+          roomTokenRef.current = ''
+          setRoomChatToken('')
+          setError(null)
+          setNotice(message)
+          refreshNetplayRooms()
+        },
         onToken: (tk) => {
           if (p2pStale()) return
           roomTokenRef.current = tk
           setRoomChatToken(tk)
           tryMigrate()
+          if (autoSeatRef.current && join) {
+            autoSeatRef.current = false
+            void askForSeat(join, tk)
+          }
         },
         onRoom: (id, host) => {
           if (p2pStale()) return
@@ -2503,6 +2712,8 @@ export function EmulatorPlayer({
     setRole('player')
     setIsHost(true)
     roleSwitchRef.current = null
+    setSeatAsks([])
+    setSeatAskingUntil(0)
     setRoomChatToken('')
     const ok = handle.openNetplay({
       gameId: gameIdFor(gameSlug),
@@ -2512,6 +2723,7 @@ export function EmulatorPlayer({
       mode: 'host',
       role: 'player',
       onSpectatorControl: (fn) => (roleSwitchRef.current = fn),
+      onSeatEvent: (e) => seatEventRef.current(e),
       onIdentity: (id) => (myIdRef.current = id),
       onToken: (tk) => {
         roomTokenRef.current = tk
@@ -2732,6 +2944,8 @@ export function EmulatorPlayer({
 
   const start = useCallback(
     async (picked: File | null, confirmedPlatform = false) => {
+      // 自动播放等入口也可能在预检完成前触发；远端 NES ROM 必须等最终运行时选好再挂载。
+      if (!picked && !engineReady) return
       // 玩家在语言探测失败后改选本地文件，说明他已经放弃那次自动重开；旧请求日后恢复
       // 也不能突然盖掉正在玩的本地会话。
       if (picked) {
@@ -2911,7 +3125,12 @@ export function EmulatorPlayer({
         ext: extOf(picked),
         jsnesNetplay,
         jsnesCompatible: localJsnesCompatible,
-        webglUnavailable: targetPlatform === 'nes' && !canCreateWebgl(),
+        // 本地 ROM 不以详情页 slug 作为验证依据；只有显式调试参数能强制它走 AwayFL。
+        flashAwayfl: targetPlatform === 'flash' && awayflForcedByUrl(),
+        webglUnavailable: ((targetPlatform === 'nes' || targetPlatform === 'gb' || targetPlatform === 'gbc') && !canCreateWebgl()) ||
+          (targetPlatform === 'nes' && (!modernRuntimeSyntaxSupported() || !webAssemblyAvailable())),
+        wasmUnavailable: (targetPlatform === 'gb' || targetPlatform === 'gbc') && !webAssemblyAvailable(),
+        gbaWasmUnavailable: targetPlatform === 'gba' && !webAssemblyAvailable(),
       })
       if (!runtime) {
         if (debugRef.current) {
@@ -2958,7 +3177,7 @@ export function EmulatorPlayer({
          * 等玩家过一会儿自己传个本地 ROM 开始玩，冷不丁就被开了个房。
          * 而且设 ref 不触发渲染，指望后面的 effect 去兜底是兜不住的（可能根本不再渲染）。
          */
-        if (status === 'idle' && romUrl && pageRuntime) {
+        if (status === 'idle' && romUrl && pageRuntime && engineReady) {
           wantMatchRef.current = true
           void start(null)
         } else if (status === 'loading') {
@@ -2968,7 +3187,7 @@ export function EmulatorPlayer({
       }),
     // start 在此处已经声明；订阅随开局回调更新，避免从旧闭包启动过期 ROM。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [status, hosting, matchBusy, romUrl, pageRuntime, handle, start],
+    [status, hosting, matchBusy, romUrl, pageRuntime, engineReady, handle, start],
   )
 
   useEffect(
@@ -3004,10 +3223,10 @@ export function EmulatorPlayer({
   useEffect(() => {
     if (!autoStart || autoStartedRef.current) return
     if (status !== 'idle' || session) return
-    if (!romUrl || !pageRuntime) return
+    if (!romUrl || !pageRuntime || !engineReady) return
     autoStartedRef.current = true
     void start(null)
-  }, [autoStart, status, session, romUrl, pageRuntime, start])
+  }, [autoStart, status, session, romUrl, pageRuntime, engineReady, start])
 
   /**
    * 外部重试：用户在识别失败后手动选了平台，页面把同一个文件递回来重跑一次。
@@ -3084,12 +3303,13 @@ export function EmulatorPlayer({
     startSeqRef.current += 1
     // 主动离开房间后，URL 里的 ?p2p= / ?room= 就不该再把人拉回同一个房间
     // 直播也算：离开之后别被上面那个自动开看的 effect 又拽回去
-    if (session?.netplay || session?.cloud || session?.live || joining) setIgnoreInvite(true)
+    if (netplayActive || session?.cloud || session?.live || joining) setIgnoreInvite(true)
     endSession()
     setStatus('idle')
     setFile(null)
     setError(null)
     setNotice(null)
+    setNdsPerformanceSuggestion(null)
     setRoomId(null)
     setPlayers(1)
     setHosting(false)
@@ -3190,7 +3410,7 @@ export function EmulatorPlayer({
   const canMatch =
     status === 'running' &&
     !session?.live &&
-    !session?.netplay &&
+    !netplayActive &&
     !session?.cloud &&
     Boolean(handle?.openNetplay) &&
     p2pOk &&
@@ -3252,9 +3472,9 @@ export function EmulatorPlayer({
 
   const busy = status === 'loading' || status === 'running'
   /** 「在房间里」：挂载时就联机的，或者玩到一半点「联机匹配」开出来的 */
-  const inRoom = Boolean(session?.netplay || session?.cloud || hosting)
+  const inRoom = Boolean(netplayActive || session?.cloud || hosting)
   /** 这个房间是 P2P 那一路（工具栏的观众数、观众席、身份切换只对它有意义） */
-  const netplayOn = Boolean(session?.netplay) || hosting
+  const netplayOn = netplayActive || hosting
   const activeRuntime =
     session?.runtime ?? (online ? (channel === 'p2p' ? emulatorJsMeta : cloudGameMeta) : pageRuntime)
   const cloudStateLabel = cloudState ? t.player.cloudState[cloudState] : ''
@@ -3341,7 +3561,12 @@ export function EmulatorPlayer({
     const target = liveNetplayRoom
     if (!target) return
     const room = p2pRooms.find((r) => r.roomId === target)
-    const asRole: RoomRole = room && room.players >= room.max ? 'spectator' : 'player'
+    /*
+      直播观众一律先以观众身份进房（2026-11-14）：上场要房主点头。手柄位还空着就在拿到令牌后
+      自动递申请，房主那边弹 15 秒的卡片；满了就只是进去看，等有人下场再点「上场玩」。
+    */
+    const asRole: RoomRole = 'spectator'
+    autoSeatRef.current = !(room && room.players >= room.max)
     /**
      * 不在这里把 liveNetplayRoom 清掉。
      *
@@ -3354,9 +3579,67 @@ export function EmulatorPlayer({
     startP2p(target, undefined, asRole)
   }
 
+  /** 上场：游戏真的读这一位的按键 */
+  const takeSeatNow = () => {
+    roleSwitchRef.current?.(false)
+    setRole('player')
+    setSeatAskingUntil(0)
+    refreshNetplayRooms()
+  }
+  /** 观众递上场申请：服务端挂着等房主答复，结果经 seat-decision 回来（见 seatEventRef） */
+  const askForSeat = async (room: string, token: string) => {
+    const result = await requestSeat(room, token)
+    switch (result.kind) {
+      case 'pending':
+        setSeatAskingUntil(Date.now() + result.expiresIn)
+        setNotice(t.player.seatRequested)
+        return
+      case 'granted':
+        // 老服务端：不需要同意，直接上场
+        takeSeatNow()
+        setNotice(null)
+        return
+      case 'cooldown':
+        setNotice(fmt(t.player.seatCooldown, { s: String(result.retryAfter) }))
+        return
+      default:
+        setNotice(t.player.roleFailed)
+    }
+  }
+  seatEventRef.current = (e) => {
+    if (e.type === 'request') {
+      if (!isHost) return
+      const expiresAt = Date.now() + e.expiresIn
+      setSeatAsks((list) => [...list.filter((a) => a.userid !== e.userid), { userid: e.userid, name: e.name, expiresAt }])
+      return
+    }
+    if (e.type === 'cancel') {
+      setSeatAsks((list) => list.filter((a) => a.userid !== e.userid))
+      return
+    }
+    setSeatAskingUntil(0)
+    if (e.approved) {
+      takeSeatNow()
+      setNotice(t.player.seatApproved)
+    } else {
+      setNotice(e.reason === 'timeout' ? t.player.seatTimeout : t.player.seatRejected)
+    }
+  }
+  /** 房主点了接受 / 拒绝。卡片先收起，别让人连点；结果服务端会再发 cancel，重复收起无害 */
+  const answerSeat = (userid: string, approve: boolean) => {
+    setSeatAsks((list) => list.filter((a) => a.userid !== userid))
+    if (!roomId) return
+    void decideSeat(roomId, roomTokenRef.current, userid, approve).then(() => refreshNetplayRooms())
+  }
+
   const toggleRole = async () => {
     if (!roomId || isHost) return
-    const next: RoomRole = role === 'spectator' ? 'player' : 'spectator'
+    if (role === 'spectator') {
+      if (seatAskingUntil > Date.now()) return
+      await askForSeat(roomId, roomTokenRef.current)
+      return
+    }
+    const next: RoomRole = 'spectator'
     const ok = await setRoomRole(roomId, roomTokenRef.current, next)
     if (!ok) {
       setNotice(t.player.roleFailed)
@@ -3367,6 +3650,32 @@ export function EmulatorPlayer({
     setNotice(null)
     refreshNetplayRooms()
   }
+
+  /*
+    上场申请的倒计时：房主卡片到点收起（服务端也会发 cancel，这里是丢包兜底），
+    观众这边到点退回可再点。每秒刷一次，卡片上的剩余秒数靠它走。
+  */
+  const [seatNow, setSeatNow] = useState(() => Date.now())
+  const seatTicking = seatAsks.length > 0 || seatAskingUntil > 0
+  useEffect(() => {
+    if (!seatTicking) return
+    const timer = window.setInterval(() => {
+      const now = Date.now()
+      setSeatNow(now)
+      setSeatAsks((list) => (list.some((a) => a.expiresAt <= now) ? list.filter((a) => a.expiresAt > now) : list))
+      setSeatAskingUntil((until) => (until && until <= now ? 0 : until))
+    }, 1000)
+    setSeatNow(Date.now())
+    return () => window.clearInterval(timer)
+  }, [seatTicking])
+  // 离开房间 / 不再是房主：挂着的申请都作废
+  useEffect(() => {
+    if (!roomId || !isHost) setSeatAsks([])
+    if (!roomId) setSeatAskingUntil(0)
+  }, [roomId, isHost])
+  const seatAsk = seatAsks[0]
+  const seatAskLeft = seatAsk ? Math.max(0, Math.ceil((seatAsk.expiresAt - seatNow) / 1000)) : 0
+  const seatAskingLeft = seatAskingUntil ? Math.max(0, Math.ceil((seatAskingUntil - seatNow) / 1000)) : 0
 
   // 「2P 位被收回」那句话几秒后自己撤掉，别一直挂在画面上
   useEffect(() => {
@@ -3622,8 +3931,9 @@ export function EmulatorPlayer({
     if (online) return
     // 预热与真正开局必须选同一个核心，否则玩家悬停时会白下载已知会崩溃的新版 WASM。
     const selectedCore = platform.id === 'nds' && pageRuntime?.id === 'emulatorjs' && romUrl &&
-      emulatorJsCoreFileFor(prewarmCore ?? 'nds') === 'melondsds'
-      ? rememberedNdsCore(romUrl) ?? prewarmCore
+      emulatorJsCoreForGame('nds', prewarmCore ?? 'nds') === 'melondsds'
+      ? rememberedNdsCore(romUrl) ?? rememberedNdsPerformanceCore(romUrl) ??
+        ndsCoreForWebgl2(prewarmCore, canCreateWebgl2()) ?? prewarmCore
       : prewarmCore
     // CHD 开局会改用 Beetle；悬停时若还预拉默认 PCSX，就白下另一份大核心。
     const warmCore = pageRuntime?.id === 'emulatorjs' && romUrl
@@ -3852,7 +4162,41 @@ export function EmulatorPlayer({
               房主 —— 没人申请就点了「让人上场」→ 一句解释（nudge，几秒后自己消失）
               访客 —— 座位刚被收回 → 只是一句话，几秒后自己消失
           */}
-          {(liveCtl?.coop?.pending || liveCtl?.coop?.nudge || coopLost) && (
+          {/*
+            联机房：观众申请上场。不挡操作 —— 只占画面上沿一小条，点不点都不影响游戏，
+            15 秒（SEAT_REQUEST_TTL_MS）到点自己收起，等于拒绝。
+          */}
+          {seatAsk && isHost && (
+            <div className="pointer-events-none absolute inset-x-0 top-0 z-30 flex justify-center px-2 pt-2">
+              <div
+                role="status"
+                className="pointer-events-auto flex max-w-full items-center gap-2 rounded-xl border border-white/20 bg-black/80 px-3 py-2 text-left text-[11px] leading-snug text-white/90 shadow-lg backdrop-blur"
+              >
+                <span aria-hidden className="text-base leading-none">
+                  🎮
+                </span>
+                <span className="min-w-0 truncate font-semibold text-white">
+                  {seatAsk.name ? fmt(t.player.seatAskFrom, { name: seatAsk.name }) : t.player.seatAskTitle}
+                </span>
+                <span className="shrink-0 tabular-nums text-white/60">{seatAskLeft}s</span>
+                <button
+                  type="button"
+                  onClick={() => answerSeat(seatAsk.userid, true)}
+                  className="shrink-0 rounded-md border border-live/60 bg-live/15 px-2 py-1 font-semibold text-live hover:bg-live/25"
+                >
+                  {t.player.seatAccept}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => answerSeat(seatAsk.userid, false)}
+                  className="shrink-0 rounded-md border border-white/25 px-2 py-1 font-semibold text-white/80 hover:border-white/50 hover:text-white"
+                >
+                  {t.player.seatReject}
+                </button>
+              </div>
+            </div>
+          )}
+          {!(seatAsk && isHost) && (liveCtl?.coop?.pending || liveCtl?.coop?.nudge || coopLost) && (
             <div className="pointer-events-none absolute inset-x-0 top-0 z-30 flex justify-center px-2 pt-2">
               <div className="pointer-events-auto flex items-center gap-2 rounded-xl border border-white/20 bg-black/80 px-3 py-2 text-left text-[11px] leading-snug text-white/90 shadow-lg backdrop-blur">
                 <span aria-hidden className="text-base leading-none">
@@ -3952,6 +4296,16 @@ export function EmulatorPlayer({
                       className="mb-1 max-sm:hidden"
                     />
                   )}
+                  {!online && romUrl && status === 'idle' && !romChecking && !romUnavailable && (
+                    <p
+                      role="status"
+                      aria-live="polite"
+                      className="inline-flex items-center gap-2 rounded-full border border-emerald-200/25 bg-emerald-950/55 px-3 py-1.5 text-xs font-semibold text-emerald-50 shadow-sm backdrop-blur"
+                    >
+                      <span aria-hidden className="size-2 rounded-full bg-brand shadow-[0_0_10px_var(--color-brand)]" />
+                      {t.player.readyToPlay}
+                    </p>
+                  )}
                   <span
                     className="inline-flex flex-wrap items-center justify-center gap-2"
                     onPointerEnter={() => prewarmPrimaryAction(true)}
@@ -3999,7 +4353,7 @@ export function EmulatorPlayer({
                       {t.player.pspDownloadHint}
                     </p>
                   )}
-                  <p className="max-w-md text-[11px] leading-relaxed text-white/70 sm:text-xs">
+                  <div className="w-full max-w-xl text-xs leading-relaxed text-white/80 sm:text-sm">
                     {joining && online ? (
                       <>
                         {inviteGone
@@ -4048,26 +4402,39 @@ export function EmulatorPlayer({
                         {pageRuntime ? fmt(t.player.localInsteadHint, { runtime: pageRuntime.name }) : ''}
                       </>
                     ) : romUrl ? (
-                      <>
-                        {/*
-                          「ROM 将从云端加载，由 XXX 在浏览器内运行…」那句去掉了（2026-09-12）：
-                          说明性的话看一次就够，而这一屏现在上面多了一张按键图，再留一句
-                          纯解释的文字会把「也可以选本地 ROM / 切到联机」这两个**入口**挤下去。
-                          文案键 t.player.cloudHint 留着没删 —— 要恢复的话原样接回这里即可。
-                        */}
-                        <span className="mr-1">{t.player.alsoCan}</span>
-                        <span className="inline-flex flex-wrap items-center justify-center gap-2 align-middle">
-                          <button type="button" className="inline-flex min-h-10 items-center rounded-lg border border-white/30 bg-black/45 px-3 font-semibold text-white transition hover:border-white/60 hover:bg-white/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-black" onClick={() => inputRef.current?.click()}>
+                      <div className="flex flex-col items-center gap-2.5">
+                        <div
+                          className={cx(
+                            'w-full rounded-2xl border border-dashed px-4 py-3 text-center backdrop-blur transition-colors duration-150',
+                            dragging
+                              ? 'border-brand bg-brand/15 shadow-[0_0_0_1px_var(--color-brand)]'
+                              : 'border-white/25 bg-black/45 hover:border-white/40',
+                          )}
+                        >
+                          <p className="mb-2 text-[11px] font-semibold tracking-wide text-white/65">
+                            {t.player.alsoCan.trim()}
+                          </p>
+                          <button
+                            type="button"
+                            className="inline-flex min-h-11 max-w-full items-center justify-center rounded-xl border border-white/30 bg-white/10 px-4 py-2 text-center font-semibold text-white transition hover:border-white/55 hover:bg-white/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-black"
+                            onClick={() => inputRef.current?.click()}
+                          >
                             {t.player.pickLocal}
                           </button>
-                          <span className="text-white/70">{t.player.orDrag}</span>
-                          {onlineOk && (
-                            <button type="button" className="inline-flex min-h-10 items-center rounded-lg border border-white/30 bg-black/45 px-3 font-semibold text-white transition hover:border-white/60 hover:bg-white/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-black" onClick={() => setMode('online')}>
-                              {t.player.onlineInstead}
-                            </button>
-                          )}
-                        </span>
-                      </>
+                          <p className="mt-2 text-xs text-white/70">
+                            {dragging ? t.player.dropNow : t.player.orDrag}
+                          </p>
+                        </div>
+                        {onlineOk && (
+                          <button
+                            type="button"
+                            className="min-h-10 rounded-lg px-3 text-xs font-semibold text-white/70 underline-offset-4 transition hover:text-white hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-black"
+                            onClick={() => setMode('online')}
+                          >
+                            {t.player.onlineInstead}
+                          </button>
+                        )}
+                      </div>
                     ) : romChecking ? (
                       <>{t.player.checkingHint}</>
                     ) : (
@@ -4105,7 +4472,7 @@ export function EmulatorPlayer({
                         })}
                       </>
                     )}
-                  </p>
+                  </div>
                   {/* 玩家进入页面的第一目标是开局；广告排在开始与备用入口之后，避免先占视线或挤压小屏按钮。 */}
                   <AdSenseSlot slot="9386967599" format="horizontal" responsive={false} className="max-w-xl" />
                   {/*
@@ -4364,12 +4731,12 @@ export function EmulatorPlayer({
                 👀 {fmt(t.player.viewers, { n: String(viewers) })}
               </span>
             )}
-            {session?.netplay && role === 'spectator' && (
+            {netplayActive && role === 'spectator' && (
               <span className="inline-flex items-center gap-1 rounded-md bg-live/15 px-2 py-1 font-semibold text-live">
                 {t.player.spectatorTag}
               </span>
             )}
-            {session?.netplay && roomId && !isHost && (
+            {netplayActive && roomId && !isHost && (
               <button
                 type="button"
                 onClick={() => void toggleRole()}
@@ -4379,7 +4746,7 @@ export function EmulatorPlayer({
                   房间信息还没到货（myNetRoom 为空）时不禁：宁可点了服务端拒，
                   也不要因为列表慢一拍把唯一的入口锁死。
                 */
-                disabled={role === 'spectator' && Boolean(myNetRoom) && roomPlayers >= slots}
+                disabled={(role === 'spectator' && Boolean(myNetRoom) && roomPlayers >= slots) || seatAskingLeft > 0}
                 title={
                   role === 'spectator' && Boolean(myNetRoom) && roomPlayers >= slots
                     ? t.player.seatsFull
@@ -4387,7 +4754,11 @@ export function EmulatorPlayer({
                 }
                 className="rounded-md border border-line px-2 py-1 text-muted transition-colors hover:text-fg disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:text-muted"
               >
-                {role === 'spectator' ? t.player.takeSeat : t.player.goWatch}
+                {role === 'spectator'
+                  ? seatAskingLeft > 0
+                    ? fmt(t.player.seatWaiting, { s: String(seatAskingLeft) })
+                    : t.player.takeSeat
+                  : t.player.goWatch}
               </button>
             )}
             {roomId && (
@@ -4462,6 +4833,33 @@ export function EmulatorPlayer({
               {notice}
             </span>
           )}
+          {ndsPerformanceSuggestion && (
+            <div role="status" className="flex min-w-0 items-center gap-1.5 text-brand-hover">
+              <span className="truncate" title={fmt(t.player.ndsPerformanceSlow, { fps: String(ndsPerformanceSuggestion.fps) })}>
+                {fmt(t.player.ndsPerformanceSlow, { fps: String(ndsPerformanceSuggestion.fps) })}
+              </span>
+              <button
+                type="button"
+                className="shrink-0 rounded-md border border-line px-2 py-1 text-xs hover:text-fg"
+                onClick={() => {
+                  const saved = rememberNdsPerformanceCore(ndsPerformanceSuggestion.game)
+                  setNdsPerformanceSuggestion(null)
+                  setNotice(saved ? t.player.ndsPerformanceSaved : t.player.ndsPerformanceRememberFailed)
+                }}
+              >
+                {t.player.ndsPerformanceNextLaunch}
+              </button>
+              <button
+                type="button"
+                aria-label={t.common.close}
+                title={t.common.close}
+                className="shrink-0 rounded px-1 text-muted hover:text-fg"
+                onClick={() => setNdsPerformanceSuggestion(null)}
+              >
+                ×
+              </button>
+            </div>
+          )}
         </div>
 
         {status === 'running' && (
@@ -4493,7 +4891,7 @@ export function EmulatorPlayer({
             className="inline-flex items-center gap-1 rounded-md border border-brand bg-brand-soft px-2 py-1 font-semibold text-brand-hover transition-colors hover:bg-brand/20"
           >
             <span aria-hidden>👋</span>
-            {t.player.joinMatch}
+            {t.player.seatJoinLive}
           </button>
         )}
 
@@ -4515,7 +4913,7 @@ export function EmulatorPlayer({
               于是点一下「联机」正在看的人当场断流。现在直播照推，把房号报上去，
               大厅把直播卡和联机卡合成一张（见 services/allRooms.ts）。
             */
-            active={!session?.netplay && !session?.cloud}
+            active={!netplayActive && !session?.cloud}
             netplayRoomId={hosting ? roomId : null}
             netplayToken={hosting ? roomChatToken : ''}
             captureRef={hostRef}

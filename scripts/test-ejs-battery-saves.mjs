@@ -10,7 +10,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { BATTERY_SAVE_SLOT, batteryHash, batteryRelOf, batteryRelPath, createBatterySync, decideBatterySync } from '../src/emulator/batterySync.ts'
-import { batterySaveGameName, guardIdbfsPersist, guardedPersistSets, migrateLegacyBatterySaves } from '../src/emulator/ejsSaveFs.ts'
+import { batterySaveGameName, describeBootState, guardIdbfsPersist, migrateEngineSettingsKey, guardedPersistSets, migrateLegacyBatterySaves } from '../src/emulator/ejsSaveFs.ts'
 
 let failed = 0
 const check = async (name, fn) => {
@@ -343,6 +343,49 @@ await check('适配器：开机前等同步、刷存档后推送；本地文件 
   assert.match(adapter, /beforeStart\?\.\(next\)[\s\S]{0,300}await beforeStartAsync\(next\)[\s\S]{0,300}return original\.call\(this\)/)
   const saves = readFileSync(new URL('../src/services/saves.ts', import.meta.url), 'utf8')
   assert.match(saves, /export async function fetchCloudSaveStrict/)
+})
+
+// ── 引擎逐游戏设置跟着改名走；开机状态进诊断包 ─────────────────────
+function memStorage(init = {}) {
+  const m = new Map(Object.entries(init))
+  return { m, get length() { return m.size }, key: (i) => [...m.keys()][i] ?? null, getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)) }
+}
+
+await check('改名后把引擎设置（改键 / 金手指 / 核心选项）从旧键复制到新键', () => {
+  const st = memStorage({ 'ejs-123-gba-德文.gba-settings': '{"cheats":[1]}', 'ejs-999-gba-德文.gba-settings': 'other-game' })
+  assert.equal(migrateEngineSettingsKey(st, 123, '德文.gba', 'pokemon-firered~rom-de.gba'), 1)
+  assert.equal(st.getItem('ejs-123-gba-pokemon-firered~rom-de.gba-settings'), '{"cheats":[1]}')
+  assert.equal(st.getItem('ejs-123-gba-德文.gba-settings'), '{"cheats":[1]}', '旧键保留')
+  // 另一款游戏（gameId 不同）的同名旧键不能被搬过来
+  assert.equal(st.getItem('ejs-999-gba-pokemon-firered~rom-de.gba-settings'), null)
+})
+
+await check('新键已有设置时不覆盖；没有 gameId 时按引擎的默认 1', () => {
+  const st = memStorage({ 'ejs-5-gba-a.gba-settings': 'old', 'ejs-5-gba-b.gba-settings': 'new', 'ejs-1-nds-x.nds-settings': 'v' })
+  assert.equal(migrateEngineSettingsKey(st, 5, 'a.gba', 'b.gba'), 0)
+  assert.equal(st.getItem('ejs-5-gba-b.gba-settings'), 'new')
+  assert.equal(migrateEngineSettingsKey(st, undefined, 'x.nds', 'y.nds'), 1)
+  assert.equal(st.getItem('ejs-1-nds-y.nds-settings'), 'v')
+  assert.equal(migrateEngineSettingsKey(null, 1, 'a', 'b'), 0)
+})
+
+await check('开机状态摘要：电池存档大小、设置项名、金手指条数，不带存档内容', () => {
+  const fs = {
+    readdir: (p) => (p === '/data/saves' ? ['.', '..', 'mGBA'] : ['.', '..', 'pokemon-firered.srm', 'zelda.srm']),
+    stat: (p) => (p.endsWith('mGBA') ? { mode: 1 } : { mode: 0, size: 131072 }),
+    isDir: (m) => m === 1,
+  }
+  const line = describeBootState(fs, 'pokemon-firered.gba', JSON.stringify({ settings: { rewindEnabled: 'enabled' }, cheats: [{ code: 'secret' }], controlSettings: {} }))
+  assert.match(line, /电池存档 mGBA\/\*\.srm 131072B/)
+  assert.match(line, /1 项（rewindEnabled）、金手指 1 条、改键有/)
+  assert.doesNotMatch(line, /secret|zelda/)
+  assert.match(describeBootState(undefined, 'x.gba', null), /电池存档 无；引擎设置 无/)
+})
+
+await check('适配器：改名时迁移引擎设置键；开机前把状态写进诊断包', () => {
+  const adapter = readFileSync(new URL('../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8')
+  assert.match(adapter, /engineGameName = batteryName\s*\n[\s\S]{0,300}migrateEngineSettingsKey\(window\.localStorage, gameId, legacyBatteryName, engineGameName\)/)
+  assert.match(adapter, /diagLog\('adapter', 'info', describeBootState\(/)
 })
 
 if (failed) {

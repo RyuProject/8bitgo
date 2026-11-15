@@ -78,6 +78,8 @@ CREATE TABLE IF NOT EXISTS games (
   plays         INT UNSIGNED  NOT NULL DEFAULT 0,
   players       TINYINT UNSIGNED NOT NULL DEFAULT 1,
   multiplayer   TINYINT(1)    NOT NULL DEFAULT 0,
+  netplay_mode  VARCHAR(4)    NOT NULL DEFAULT 'auto',  -- auto / on / off，见 server/src/netplay-auto.js
+  players_inferred TINYINT UNSIGNED NULL,               -- 按 ROM 推断的人数（FBNeo 驱动表）
   -- G 币奖励。功能未开放时一律为 0
   coin_reward   INT UNSIGNED  NOT NULL DEFAULT 0,
   -- 没有封面图时的兜底 emoji

@@ -18,7 +18,7 @@ assert.ok(cut > 0, '找不到 GameManager 类，引擎结构变了')
 const prelude = engine.slice(0, cut)
 assert.match(prelude, /class s\{constructor\(t=null,e=null\)\{this\.storageCache=t,this\.EJS=e\}/, '下载器类名变了，更新本测试')
 
-function makeContext({ fetchImpl, indexedDB, localStorage }) {
+function makeContext({ fetchImpl, indexedDB, localStorage, XMLHttpRequest }) {
   const realSetTimeout = setTimeout
   const context = {
     console: { log() {}, warn() {}, error() {} },
@@ -32,6 +32,8 @@ function makeContext({ fetchImpl, indexedDB, localStorage }) {
     TextEncoder,
     TextDecoder,
     URL,
+    Headers,
+    ...(XMLHttpRequest ? { XMLHttpRequest } : {}),
     Date,
     Promise,
     performance,
@@ -185,9 +187,75 @@ const stalledBody = (bytes) => new ReadableStream({
   assert.equal(item, cached, 'HEAD 复验卡住时用缓存继续')
 }
 
+// 核心响应流读到一半报 NotReadableError（华为浏览器 17）：改走 XHR arraybuffer 再取一次
+function fakeXhr({ status = 200, bytes, fail = false }) {
+  const opened = []
+  class X {
+    constructor() { this.headers = {} }
+    open(method, url) { opened.push([method, url]) }
+    setRequestHeader(k, v) { this.headers[k] = v }
+    send() {
+      setTimeout(() => {
+        if (fail) return this.onerror?.()
+        this.onprogress?.({ lengthComputable: true, loaded: bytes.length, total: bytes.length })
+        this.status = status
+        this.response = bytes.buffer
+        this.onload?.()
+      })
+    }
+    abort() { this.onabort?.() }
+  }
+  return { X, opened }
+}
+const unreadableResponse = (url) => {
+  const res = new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(new Uint8Array([1, 2]))
+      controller.error(new DOMException('The requested file could not be read', 'NotReadableError'))
+    },
+  }), { status: 200, headers: { 'Content-Length': '4' } })
+  Object.defineProperty(res, 'url', { value: url })
+  return res
+}
+{
+  const url = 'https://8bitgo.test/emulatorjs/cores/melondsds-wasm.data?v=1'
+  const xhr = fakeXhr({ bytes: new Uint8Array([4, 3, 2, 1]) })
+  const { __classes } = makeContext({ fetchImpl: async () => unreadableResponse(url), indexedDB: undefined, XMLHttpRequest: xhr.X })
+  const downloader = new __classes.Downloader(null, null)
+  const item = await downloader.downloadFile(url, 'Core', 'GET', {}, null, null, null, 30000, 'arraybuffer')
+  assert.deepEqual(xhr.opened, [['GET', url]], 'XHR 必须用响应地址重取（块内的 t 是 Content-Length，不是 URL）')
+  assert.deepEqual([...item.files[0].bytes], [4, 3, 2, 1], 'XHR 拿到的整份字节交给引擎，不能拼上流里读到的前半段')
+}
+{
+  const url = 'https://8bitgo.test/emulatorjs/cores/melondsds-wasm.data?v=1'
+  const xhr = fakeXhr({ fail: true })
+  const { __classes } = makeContext({ fetchImpl: async () => unreadableResponse(url), indexedDB: undefined, XMLHttpRequest: xhr.X })
+  const downloader = new __classes.Downloader(null, null)
+  await assert.rejects(
+    downloader.downloadFile(url, 'Core', 'GET', {}, null, null, null, 30000, 'arraybuffer'),
+    /Download failed: Error: XHR fallback network error after NotReadableError/,
+    'XHR 也失败时照常 reject，并保留原始 NotReadableError，适配器据此按本机环境错误停止',
+  )
+}
+{
+  // 我们自己 20 秒失速中止的不回退 XHR（那是网络问题，交给播放器重试）
+  let made = 0
+  class X { constructor() { made++ } }
+  const fetchImpl = async (_url, init) => new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(new Uint8Array(4))
+      init.signal.addEventListener('abort', () => controller.error(new DOMException('aborted', 'AbortError')))
+    },
+  }), { status: 200, headers: { 'Content-Length': '8' } })
+  const { __classes } = makeContext({ fetchImpl, indexedDB: undefined, XMLHttpRequest: X })
+  const downloader = new __classes.Downloader(null, null)
+  await assert.rejects(downloader.downloadFile('https://8bitgo.test/emulatorjs/cores/fbneo-wasm.data', 'Core', 'GET', {}, null, null, null, 30000, 'arraybuffer'), /Download failed/)
+  assert.equal(made, 0, '失速中止不能再起一次 XHR')
+}
+
 {
   const engineCore = /core:\{name:"Core",dontCache:!1,cdnFallback:!1\}/.test(engine)
   assert.ok(engineCore, '核心下载失败不能回落 cdn.emulatorjs.org（那里的 4.3.0-pre 核心起不来）')
 }
 
-console.log('✔ EmulatorJS 下载器：包体卡住 20 秒中止、缓存卡住不挡开局且只等一次、缓存正常时不误判挂死、报告包体与 HEAD 复验有时限、IndexedDB 同步异常可收敛、核心不回落官方 CDN')
+console.log('✔ EmulatorJS 下载器：包体卡住 20 秒中止、缓存卡住不挡开局且只等一次、缓存正常时不误判挂死、报告包体与 HEAD 复验有时限、IndexedDB 同步异常可收敛、核心不回落官方 CDN、核心流读失败改走 XHR')

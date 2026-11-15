@@ -14,6 +14,7 @@ import { stripLang } from '@/config/languages'
 import { TV_ROUTE } from '../../../shared/tv-host.js'
 import { ClarityConsentBanner } from '@/components/privacy/ClarityConsentBanner'
 import { MobileBottomNav } from './MobileBottomNav'
+import { NoWasmNotice } from './NoWasmNotice'
 
 /** 路由切换时回到顶部；带 hash 时滚动到对应锚点；同时退出沉浸模式、关闭抽屉 */
 function RouteEffects() {
@@ -129,6 +130,7 @@ function Shell() {
       >
         <Topbar />
         <main className="site-main flex-1">
+          {!isAdminRoute && !isTvRoute && <NoWasmNotice />}
           {/* 只让正文在站内首次进入某页时等待 chunk；顶栏与侧栏不跟着闪退。SSR 同一边界留住水合中的 HTML。 */}
           <Suspense fallback={<PageSkeleton />}><Outlet /></Suspense>
         </main>

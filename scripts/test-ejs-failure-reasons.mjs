@@ -56,7 +56,10 @@ const stripTypes = (code) => code
 
 // 坏核心缓存：下次开局前强制清
 assert.match(adapter, /error loading emulatorjs runtime\/i\.test\(line\)\) \{\s*try \{ localStorage\.removeItem\(EJS_CACHE_PURGED_KEY\)/)
-assert.match(adapter, /if \(isOutOfMemoryText\(`\$\{line\}\\n\$\{recent\}`\)\) \{[\s\S]{0,300}failLoad\(rt\.ejsOutOfMemory\)/)
+assert.match(adapter, /if \(isOutOfMemoryText\(`\$\{line\}\\n\$\{recent\}`\)\) \{[\s\S]{0,1500}failLoad\(rt\.ejsOutOfMemory, 'runtime'\)/)
+// 默认 FBNeo 内存不足先交给播放器换低内存核心；内存不足不能把大陆加速入口判坏
+assert.match(adapter, /options\.onOutOfMemory\?\.\(core, line\)\) \{\s*loadFailed = true/)
+assert.match(adapter, /usedEjsEdge && !stalled && !outOfMemory\) markEjsEdgeFailed\(\)/)
 // 错误级的内存不足要直接走 onFatal：7z Worker 报 DataCloneError out of memory 后引擎不会再发任何事件
 assert.match(adapter, /level === 'error' && isOutOfMemoryText\(text\)\)\)\) \{\n\s*onFatal\(text\.trim\(\)\)/)
 
@@ -127,22 +130,59 @@ console.log('✔ 启动失败原因：跨 realm 错误原文、内存不足、�
   assert.equal(f('Romset is unknown'), false)
   assert.match(adapter, /if \(!webglNow\) return failLoad\(rt\.ejsWebglUnavailable, 'config'\)/)
   // 先判内存、再判 WebGL：内存不足时 GL 也可能建不出，但该给的是内存那句话
-  assert.ok(adapter.indexOf(': failLoad(rt.ejsOutOfMemory)') < adapter.indexOf('isWebglUnavailableText(`${line}'))
+  assert.ok(adapter.indexOf(": failLoad(rt.ejsOutOfMemory, 'runtime')") < adapter.indexOf('isWebglUnavailableText(`${line}'))
   // 联机超时要把握手进度写进诊断包
   assert.match(adapter, /联机等了 \$\{waited\}ms 没进房/)
   assert.match(adapter, /netTrace\.ack = error \?/)
   console.log('✓ WebGL 不可用归为 config；联机超时带握手进度')
 }
 
-// ── 预下载 ROM 由 Blob 直接交给引擎（2026-11-13 Safari 18 iPad《宝可梦 白 2》fetch(blob:) 报 Load failed）──
+// ── 预下载 ROM 按块流给引擎（2026-11-13 Safari 18《宝可梦 白 2》跨上下文 Blob 报 Load failed）──
 {
   const { transformSync } = await import('esbuild')
-  const js = transformSync(fnSource('installBlobFetchShortcut'), { loader: 'ts' }).code
+  const js = transformSync(`${fnSource('streamRomToEngine')}\n${fnSource('installBlobFetchShortcut')}`, { loader: 'ts' }).code
   const logs = []
-  const context = { diagLog: (...a) => logs.push(a.join(' ')), Promise, URL }
-  vm.runInNewContext(`${js};globalThis.install=installBlobFetchShortcut`, context)
+  const memoryRoms = new WeakMap()
+  const context = {
+    diagLog: (...a) => logs.push(a.join(' ')), Promise, URL, ReadableStream,
+    memoryRomOf: (b) => memoryRoms.get(b),
+    markRomBlobStorageBroken: () => logs.push('Blob storage marked broken'),
+    safeStr: (error) => error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+  }
+  vm.runInNewContext(`${js};globalThis.install=installBlobFetchShortcut;globalThis.stream=streamRomToEngine`, context)
+  const SAFARI = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15'
+  const CHROME = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36'
+  // 2026-11-13 大陆 Chrome 132《生化危机 3》352MB：流式回应在 Chromium 上要边收边扩容，读到约 300MB 报 Failed to fetch
+  assert.equal(context.stream(SAFARI, false), true, 'Safari 走分块流')
+  assert.equal(context.stream('Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/132.0 Mobile/15E148 Safari/604.1', false), true, 'iOS 上的 Chrome 也是 WebKit')
+  assert.equal(context.stream(CHROME, false), false, 'Chromium 直接给 Blob')
+  assert.equal(context.stream('Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0', false), false)
+  assert.equal(context.stream(CHROME, true), true, '内存 ROM 只能流')
+  {
+    const chromeWin = { fetch: async () => new Response('net'), Response, ReadableStream, navigator: { userAgent: CHROME } }
+    const big = new Blob([new Uint8Array([5, 6, 7])])
+    context.install(chromeWin, 'blob:x/chrome', big)
+    const res = await chromeWin.fetch('blob:x/chrome')
+    assert.deepEqual([...new Uint8Array(await res.arrayBuffer())], [5, 6, 7])
+    assert.match(logs.at(-1), /ROM 以 Blob 交给引擎/, 'Chromium 不能走流')
+    logs.length = 0
+  }
+  // Blob 存储坏掉时的内存 ROM（2026-11-13 大陆 2GB Chrome 宝可梦白 2 / 黑 NotReadableError）：逐块流出、交出即放
+  {
+    const parts = [new Uint8Array([9, 8]), new Uint8Array([7])]
+    const fake = { size: 3, type: '' }
+    memoryRoms.set(fake, { parts, size: 3, type: '' })
+    const memWin = { fetch: async () => new Response('net'), Response, ReadableStream }
+    context.install(memWin, 'blob:x/mem', fake)
+    const res = await memWin.fetch('blob:x/mem')
+    assert.equal(res.headers.get('content-length'), '3')
+    assert.deepEqual([...new Uint8Array(await res.arrayBuffer())], [9, 8, 7], '内存 ROM 按块原样交给引擎')
+    assert.deepEqual(parts, [null, null], '交出去的块要放掉')
+    assert.match(logs.at(-1), /ROM 按块流给引擎.*内存回退/)
+    logs.length = 0
+  }
   const passthrough = []
-  const win = { fetch: async (input) => { passthrough.push(String(input)); return new Response('net') }, Response }
+  const win = { fetch: async (input) => { passthrough.push(String(input)); return new Response('net') }, Response, ReadableStream, navigator: { userAgent: SAFARI } }
   const blob = new Blob([new Uint8Array([1, 2, 3, 4])])
   context.install(win, 'blob:x/rom', blob)
   const res = await win.fetch('blob:x/rom')
@@ -151,8 +191,17 @@ console.log('✔ 启动失败原因：跨 realm 错误原文、内存不足、�
   assert.equal(await (await win.fetch('/emulatorjs/cores/x.data')).text(), 'net', '其它请求原样放行')
   assert.equal((await win.fetch('blob:x/rom', { method: 'HEAD' })).constructor, Response)
   assert.deepEqual(passthrough, ['/emulatorjs/cores/x.data', 'blob:x/rom'], 'HEAD 不拦')
-  assert.match(logs[0], /ROM 由 Blob 直接交给引擎/)
-  assert.match(adapter, /installBlobFetchShortcut\(win, preparedArcadeBlobUrl, preparedRomBlob\)/)
+  assert.equal(res.headers.get('content-length'), '4')
+  assert.match(logs[0], /ROM 按块流给引擎/)
+  let readError
+  const unreadable = { size: 4, type: '', slice: () => ({ arrayBuffer: async () => { throw new DOMException('requested file could not be read', 'NotReadableError') } }) }
+  const badWin = { fetch: async () => new Response('net'), Response, ReadableStream, navigator: { userAgent: SAFARI } }
+  context.install(badWin, 'blob:x/bad', unreadable, (error) => { readError = error })
+  await assert.rejects((await badWin.fetch('blob:x/bad')).arrayBuffer(), /requested file could not be read/)
+  assert.equal(readError?.name, 'NotReadableError', 'Blob 读取错误必须直接触发受控重启回调')
+  assert.match(adapter, /installBlobFetchShortcut\(win, preparedArcadeBlobUrl, preparedRomBlob, \(error\) => \{/)
   assert.equal((adapter.match(/preparedRomBlob = (prepared|extracted)\.blob/g) ?? []).length, 5, '每处预下载 ROM 都要记下 Blob')
+  // Chromium 走 Blob 回应时，NotReadableError 只在引擎的 non-http 那一行里：也要记 Blob 存储已坏、按运行时重试
+  assert.match(adapter, /isNativeBlobReadMessage\(`\$\{line\}\\n\$\{recent\}`\)\) \{\s+markRomBlobStorageBroken\('引擎读 ROM '\)\s+return failLoad\(fmt\(rt\.ejsEngineError, \{ msg: line \}\), 'runtime'\)/)
   console.log('✓ 预下载 ROM 由 Blob 直接交给引擎，其余请求放行')
 }

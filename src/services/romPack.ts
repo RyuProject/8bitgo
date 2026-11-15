@@ -1,5 +1,8 @@
-import { decompress, init } from '@bokuweb/zstd-wasm'
 import { apiBase, apiEnabled } from './api'
+import { cnEdgeApiBase, onCnSite } from './cnHost'
+import { hedgedRequest } from './hedgedRequest'
+import { memoryRomBlob, releaseMemoryRomBefore } from './memoryRom'
+import { webAssemblyAvailable } from '@/emulator/browserSupport'
 import {
   ROM_PACK_CHUNK_BYTES,
   ROM_PACK_CODEC,
@@ -118,9 +121,44 @@ interface RomPackCapacity {
 
 const keyCache = new Map<string, Promise<CryptoKey>>()
 let zstdReady: Promise<void> | null = null
+/**
+ * Zstd 解码器按需加载，不在模块顶层 import。
+ *
+ * @bokuweb/zstd-wasm 的胶水在**模块求值时**就检查 WebAssembly：没有就 abort()，而 abort 里又
+ * `new WebAssembly.RuntimeError(...)` —— 抛 ReferenceError。静态 import 时这一下发生在加载本模块那一刻，
+ * 游戏详情页直接崩到「页面暂时没有正常打开」（2026-11-15 Android 模拟器 Chrome 110，WebAssembly 被关掉：
+ * `ReferenceError: WebAssembly is not defined at romPack`）。改成用到时才 import，没有 WebAssembly
+ * 只让这一局解包失败、给出能看懂的原因，页面本身照常。
+ */
+let zstd: { decompress: (buf: Uint8Array, opts?: { defaultHeapSize?: number }) => Uint8Array } | null = null
+/**
+ * 没有 WebAssembly 时的纯 JS 解码器（fzstd，MIT，约 8KB）。
+ *
+ * 为什么在浏览器里解、而不是让后端吐明文 ROM：8BG 加密就是为了不让 R2 对象被成批离线读走（AGENTS §2.20），
+ * 一个「按 slug 给明文」的接口等于把这道门拆了；明文还得绕源站、走不了 R2/CDN 和大陆镜像。NES ROM 只有
+ * 几十 KB 到 1MB，纯 JS 解压是毫秒级的事。正常浏览器仍用 WebAssembly 版（更快、已经过线上验证），
+ * 只有 Edge 增强安全性 / iOS 锁定模式 / 关了 JIT 的安卓模拟器才会走到这里（jsnes 本身是纯 JS，见 browserSupport.ts）。
+ */
+const loadJsZstd = async () => {
+  const { decompress } = await import('fzstd')
+  return {
+    decompress: (buf: Uint8Array, opts?: { defaultHeapSize?: number }) =>
+      // 已知原文长度就直接写进一块定长输出，免得 fzstd 边解边扩容
+      opts?.defaultHeapSize ? decompress(buf, new Uint8Array(opts.defaultHeapSize)) : decompress(buf),
+  }
+}
 const readyZstd = (): Promise<void> => {
   if (!zstdReady) {
-    const pending = init()
+    const pending = (async () => {
+      // 与播放器开局前的判断同一个口径（browserSupport.ts），免得两边对「有没有 WebAssembly」各说各话
+      if (!webAssemblyAvailable()) {
+        zstd = await loadJsZstd()
+        return
+      }
+      const mod = await import('@bokuweb/zstd-wasm')
+      await mod.init()
+      zstd = mod
+    })()
     zstdReady = pending
     // 一次网络失败不能把解码器永久钉死在 rejected：下一局 / 自动重试要能重新取 wasm。
     pending.catch(() => {
@@ -260,11 +298,39 @@ export function releasePackedRomUpload(blob: Blob): void {
   if (packedRomRetryCache?.blob === blob) packedRomRetryCache = null
 }
 
-async function fetchRawKey(packageId: string, keyId?: string): Promise<KeyResponse> {
-  if (!apiEnabled()) throw new Error('8BG 打包需要后端 API（VITE_API_URL）')
-  const params = new URLSearchParams({ packageId })
-  if (keyId) params.set('keyId', keyId)
-  const res = await fetch(`${apiBase()}/api/rom-pack/key?${params}`, { cache: 'no-store' })
+/** 密钥第一条线路这么久还没回来，就同时走另一条（见 hedgedRequest.ts） */
+const KEY_HEDGE_DELAY_MS = 3_000
+/** 单条线路的上限：到点中止这一条，另一条照旧 */
+const KEY_ATTEMPT_TIMEOUT_MS = 30_000
+
+/**
+ * 密钥接口的线路：同源在前，另一条作对冲。
+ *   · 在大陆入口 cn.8bitgo.com 上：另一条是主域（Cloudflare）。ALLOWED_ORIGINS 放行跨域，
+ *     简单 GET 不触发预检；
+ *   · 主域上的大陆访客：另一条是 EdgeOne 的 /_cn/api（cn-edge.js 已放行 /api/ 前缀）；
+ *   · 其他人 / 配了绝对 VITE_API_URL 的部署：只有一条。
+ * 密钥由 packageId 推导、对所有访客都一样，换线路拿到的是同一把；响应仍逐条校验。
+ */
+function romPackKeyUrls(query: string): string[] {
+  const path = `/api/rom-pack/key?${query}`
+  const urls = [`${apiBase()}${path}`]
+  if (apiBase() || typeof window === 'undefined') return urls
+  try {
+    if (onCnSite()) {
+      const site = new URL(import.meta.env.VITE_SITE_URL ?? '').origin
+      if (site && site !== window.location.origin) urls.push(`${site}${path}`)
+    } else {
+      const edge = cnEdgeApiBase()
+      if (edge) urls.push(`${edge}${path}`)
+    }
+  } catch {
+    /* 拼不出另一条就只走同源 */
+  }
+  return urls
+}
+
+async function fetchKeyFrom(url: string, signal: AbortSignal, packageId: string, keyId?: string): Promise<KeyResponse> {
+  const res = await fetch(url, { cache: 'no-store', signal })
   const data = (await res.json().catch(() => null)) as (Partial<KeyResponse> & { error?: string }) | null
   if (!res.ok || !data?.key || !data.keyId) throw new Error(data?.error || `获取 ROM 包密钥失败（HTTP ${res.status}）`)
   // 不能只信“有一段 key”：代理缓存串包或后端回错 packageId 时，用错密钥打出来的文件
@@ -278,6 +344,17 @@ async function fetchRawKey(packageId: string, keyId?: string): Promise<KeyRespon
   }
   if (raw.byteLength !== 32) throw new Error('ROM 包密钥长度不是 256 位')
   return { packageId: data.packageId, keyId: data.keyId, key: data.key }
+}
+
+async function fetchRawKey(packageId: string, keyId?: string): Promise<KeyResponse> {
+  if (!apiEnabled()) throw new Error('8BG 打包需要后端 API（VITE_API_URL）')
+  const params = new URLSearchParams({ packageId })
+  if (keyId) params.set('keyId', keyId)
+  return hedgedRequest(
+    romPackKeyUrls(params.toString()),
+    (url, signal) => fetchKeyFrom(url, signal, packageId, keyId),
+    { hedgeDelayMs: KEY_HEDGE_DELAY_MS, attemptTimeoutMs: KEY_ATTEMPT_TIMEOUT_MS },
+  )
 }
 
 async function contentKey(header: Pick<RomPackHeader, 'packageId' | 'keyId'>): Promise<CryptoKey> {
@@ -457,9 +534,14 @@ async function decode(header: Pick<RomPackHeader, 'codec' | 'codecVersion'>, dat
   if (header.codec === ROM_PACK_CODEC.ZSTD) {
     assertZstdFrameContentSize(data, expectedSize)
     await readyZstd()
-    // TS 6 会把第三方声明视为可能指向 SharedArrayBuffer；复制后 Web Crypto 才能确认是普通 ArrayBuffer。
     // 无帧大小的 Zstd 数据也只能申请当前块声明的大小，不能让畸形文件退回库默认的 1MB。
-    return new Uint8Array(decompress(data, { defaultHeapSize: expectedSize }))
+    const out = zstd!.decompress(data, { defaultHeapSize: expectedSize })
+    // 两个解码器交回来的都已是独立的整块输出（zstd-wasm 从堆里 slice() 出来、fzstd 写进新分配的定长块），
+    // 不必再整块复制一遍（每块 8MB）。只有视图不独占缓冲区、或缓冲区不是普通 ArrayBuffer
+    // （TS 6 把第三方声明视为可能是 SharedArrayBuffer，Web Crypto 不收）时才复制。
+    return out.buffer instanceof ArrayBuffer && out.byteOffset === 0 && out.byteLength === out.buffer.byteLength
+      ? out as Uint8Array<ArrayBuffer>
+      : new Uint8Array(out)
   }
   throw new Error(`这个版本的播放器还没有安装 ${header.codec} 解码器`)
 }
@@ -568,29 +650,95 @@ export async function verifyRomPackBlob(blob: Blob, onProgress?: (progress: Pack
 }
 
 /**
- * 大 ROM 走 Blob：逐块解密解压，浏览器可把结果落盘，避免申请一整块连续内存。
+ * 解开的 ROM 存不进浏览器的 Blob 存储（建出来就读不出第一个字节）。
  *
- * onProgress 每解完一块报一次。114MB 的 NDS 有 14 块，低配机上要几十秒；以前这段一个进度都不报，
- * 进度条停在 100%，启动看门狗也把它当成卡死。
+ * 2026-11-12/13 大陆 Windows Chrome 132 / 2GB 内存《口袋妖怪：白 2》《口袋妖怪：黑》四局：密文读得出、解包也走完，
+ * 引擎读 256MB 的解包结果时抛 NotReadableError。Chromium 的 Blob 存储超出内存配额就落盘，磁盘那一侧写不进
+ * （C 盘满、配额小或文件被删）时 Blob 照样建得出、一读就坏 —— 同一台机器上 IDB 里的续传片读不出也是这个原因。
+ * name 仍是 NotReadableError（isBlobReadError 能认），但光盘 / NDS 路径会先认这个类，改走内存而不是重下。
  */
-export async function unpackRomPackBlob(
+export class RomBlobStorageError extends Error {
+  override name = 'NotReadableError'
+  constructor() {
+    super('解开的 ROM 写不进浏览器的 Blob 存储（内存或磁盘配额不足）')
+  }
+}
+
+/** 逐块解密解压，每块交给 take；两种输出（Blob / 内存）共用这一份循环。 */
+async function unpackEachChunk(
   blob: Blob,
-  onProgress?: (progress: PackProgress) => void,
-): Promise<{ name: string; blob: Blob; header: RomPackHeader }> {
+  onProgress: ((progress: PackProgress) => void) | undefined,
+  take: (source: Uint8Array<ArrayBuffer>) => void,
+  consumeInput = false,
+): Promise<RomPackHeader> {
   const { header, dataOffset } = await inspectRomPackBlob(blob)
   const key = await contentKey(header)
-  const output: Blob[] = []
   let cipherAt = dataOffset
   let unpacked = 0
   for (let index = 0; index < header.chunks.length; index++) {
     const meta = header.chunks[index]
     const cipher = await readBlobRange(blob, cipherAt, cipherAt + meta.cipherSize)
-    const source = await decryptChunk(header, index, cipher, key)
-    // 每块立刻固化成 Blob：既脱离可能复用的 WASM 内存，也允许浏览器把大结果落到磁盘。
-    output.push(new Blob([source]))
+    take(await decryptChunk(header, index, cipher, key))
     cipherAt += meta.cipherSize
+    if (consumeInput) releaseMemoryRomBefore(blob, cipherAt)
     unpacked += meta.sourceSize
     onProgress?.({ loaded: unpacked, total: header.originalSize })
   }
-  return { name: header.originalName, blob: new Blob(output, { type: 'application/octet-stream' }), header }
+  return header
 }
+
+/** 探 Blob 存储是否真的接住了解包结果：每块抽查首字节，再按引擎真实读取大小探合并后的 ROM。 */
+const BLOB_STORAGE_PROBE_MS = 8_000
+async function assertBlobPartsReadable(parts: Blob[]): Promise<Blob> {
+  try {
+    await Promise.all(parts.map((part) => (part.size ? readBlobRange(part, 0, 1, BLOB_STORAGE_PROBE_MS) : null)))
+    const combined = new Blob(parts, { type: 'application/octet-stream' })
+    // 引擎以 4MB 为一片读取。只探 1 字节会漏掉“文件头可读、实际内容读不出”的临时 Blob。
+    const probeBytes = Math.min(combined.size, 4 * 1024 * 1024)
+    const probe = await readBlobRange(combined, 0, probeBytes, BLOB_STORAGE_PROBE_MS)
+    if (probe.byteLength !== probeBytes) throw new Error('ROM Blob 预读长度不符')
+    return combined
+  } catch {
+    throw new RomBlobStorageError()
+  }
+}
+
+/**
+ * 大 ROM 走 Blob：逐块解密解压，浏览器可把结果落盘，避免申请一整块连续内存。
+ *
+ * onProgress 每解完一块报一次。114MB 的 NDS 有 14 块，低配机上要几十秒；以前这段一个进度都不报，
+ * 进度条停在 100%，启动看门狗也把它当成卡死。
+ *
+ * 结果建好后探一遍每块能不能读（RomBlobStorageError），调用方可改用 unpackRomPackToMemory。
+ */
+export async function unpackRomPackBlob(
+  blob: Blob,
+  onProgress?: (progress: PackProgress) => void,
+): Promise<{ name: string; blob: Blob; header: RomPackHeader }> {
+  const output: Blob[] = []
+  // 每块立刻固化成 Blob：既脱离可能复用的 WASM 内存，也允许浏览器把大结果落到磁盘。
+  const header = await unpackEachChunk(blob, onProgress, (source) => { output.push(new Blob([source])) })
+  const playable = await assertBlobPartsReadable(output)
+  return { name: header.originalName, blob: playable, header }
+}
+
+/**
+ * Blob 存储坏掉时的退路：解包结果留在 JS 内存里（按块，不要求连续），返回一个只读的 Blob 替身
+ * （size / slice().arrayBuffer() 够校验用），交给引擎时由 memoryRomOf 取出块数据流式回应。
+ * 每块 decode 出来本来就是独立副本，不再多拷一份。
+ *
+ * consumeInput：输入本身也是内存替身（内存下载）时，解完一块就放掉这块密文，峰值从「整份密文 + 整份明文」
+ * 降到「整份明文 + 一块密文」。之后这份输入就读不全了，只在调用方确定不再用它时打开（不缓存、失败就整包重下）。
+ */
+export async function unpackRomPackToMemory(
+  blob: Blob,
+  onProgress?: (progress: PackProgress) => void,
+  consumeInput = false,
+): Promise<{ name: string; blob: Blob; header: RomPackHeader }> {
+  const parts: Uint8Array<ArrayBuffer>[] = []
+  const header = await unpackEachChunk(blob, onProgress, (source) => { parts.push(source) }, consumeInput)
+  return { name: header.originalName, blob: memoryRomBlob(parts), header }
+}
+
+/* 内存 ROM 替身放在独立小模块里：下载器（loadProgress.ts）也要造它，不能为此把整个 8BG 解包器拉进来。 */
+export { memoryRomBlob, memoryRomOf, type MemoryRom } from './memoryRom'

@@ -417,7 +417,7 @@ export const ARCADE_FIGHTER_BUTTONS: Readonly<Record<string, number>> = {
 export const QUICK_SAVE_RUNTIMES: readonly string[] = ['emulatorjs', 'jsnes', 'ruffle', 'html5', 'cloudgame', 'ppsspp', 'dolphin']
 
 /** 键盘直通给游戏的那几种运行时：键位是游戏自己定的，我们给不出表 */
-export const PASSTHROUGH_RUNTIMES: readonly string[] = ['jsdos', 'ruffle', 'html5']
+export const PASSTHROUGH_RUNTIMES: readonly string[] = ['jsdos', 'ruffle', 'awayfl', 'html5']
 
 /**
  * jsnes 的默认键盘映射（红白机走的是它，不是 EmulatorJS —— 见 config/emulators.ts）。

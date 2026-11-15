@@ -66,7 +66,7 @@ export const EJS_PATH: string = asDir(import.meta.env.VITE_EJS_PATH, '/emulatorj
  *
  * ⚠️ 引擎的 IndexedDB 核心缓存以 URL 为键：大陆老访客第一次换到这条线路会重下一次核心。
  */
-type RuntimeEdgeKind = 'ejs' | 'ruffle' | 'jsdos' | 'ppsspp'
+type RuntimeEdgeKind = 'ejs' | 'ruffle' | 'jsdos' | 'ppsspp' | 'j2me'
 let runtimeEdgeOrigin: string | null = null
 const runtimeEdgeFailed = new Set<RuntimeEdgeKind>()
 
@@ -113,9 +113,27 @@ export function markEjsEdgeFailed(): void {
   2026-11-12：引擎 exit 不再卸载 /data/saves（patch-emulatorjs.mjs 第十三节）——卸载后排队的 autoPersist
   会把所有游戏的电池存档从 IndexedDB 清空。入口必须换代，否则边缘继续发会清库的旧 emulator.min.js。
 */
-export const EJS_RUNTIME_GENERATION = '20261027-melondsds-ff33abb1-psxrange1-corecompat1-stateglue3-mameglue3-ejsperf1-cnedge1-dlguard3-srmkeep1'
-export const ejsRuntimeAsset = (name: string): string =>
-  `${ejsBase()}${name}?v=${encodeURIComponent(EJS_RUNTIME_GENERATION)}`
+/*
+  2026-11-13：fbneo-lowmem 也必须保留街机 ZIP（patch-emulatorjs.mjs）；引擎文件名不带哈希，
+  所以即使已有 fbneolowmem 代号，也要再换一代让边缘与浏览器取到这次更新。
+*/
+export const EJS_RUNTIME_GENERATION = '20261027-melondsds-ff33abb1-psxrange1-corecompat1-stateglue3-mameglue3-ejsperf1-cnedge1-dlguard3-srmkeep1-fbneozip1-memfsown1-fbneolowmem-1548ccb5'
+/*
+  2026-11-15：引擎入口（emulator.min.js / css、loader.js、extract7z.js、语言包）也按**内容**取版本，
+  和核心一张表（ejsCoreVersionsData.ts，`npm run ejspatch` 会自动重新生成）。
+  为什么：以前靠人手换 EJS_RUNTIME_GENERATION，忘了就是「补丁已打、玩家还拿旧引擎」（§2.5），
+  换了又让没变的 css / 语言包跟着重下。现在只有字节真变了的文件换 URL。
+  表里没有的（本地还没生成）退回全局代号，与旧行为一致。
+
+  EJS_ENGINE_URL_EPOCH：内容没变、但要绕开某个边缘上已缓存坏响应时用（例如 2026-11-08 EdgeOne
+  缓存了带 `Vary: Origin` 的副本、又没有清缓存通道）。改它只换引擎入口的 URL，不动核心。
+*/
+export const EJS_ENGINE_URL_EPOCH = 'e1'
+export const ejsRuntimeAsset = (name: string): string => {
+  const hash = EJS_CORE_VERSIONS[name]
+  const version = hash ? `${hash}.${EJS_ENGINE_URL_EPOCH}` : EJS_RUNTIME_GENERATION
+  return `${ejsBase()}${name}?v=${encodeURIComponent(version)}`
+}
 
 /**
  * 核心文件（`cores/*.data`、`cores/metadata/*.json`）按**内容**取版本（ejsCoreVersionsData.ts）。
@@ -184,6 +202,11 @@ export function markRuffleEdgeFailed(): void {
   runtimeEdgeFailed.add('ruffle')
 }
 
+/** AwayFL 官方嵌入包版本；宿主页单独版本化，改动时需换 host-vN。 */
+export const AWAYFL_VERSION = '0.1.4'
+export const AWAYFL_PATH = `/awayfl/v${AWAYFL_VERSION}/`
+export const AWAYFL_HOST_PATH = '/awayfl/host-v1/'
+
 /**
  * js-dos 的 JS、DOSBox 和 DOSBox-X wasm 必须来自同一批产物。
  *
@@ -204,6 +227,19 @@ export const JSDOS_PATH: string = asDir(
 export const jsdosBase = (): string => runtimeBase('jsdos', JSDOS_PATH)
 export function markJsdosEdgeFailed(): void {
   runtimeEdgeFailed.add('jsdos')
+}
+
+/**
+ * J2ME 的大文件（freej2me-web.jar、libmidi.wasm、游戏 JAR）走大陆加速入口时的目录，例如
+ * `https://cn.8bitgo.com/_cn/j2me/`；不走就返回空串。run.html 本身仍必须同源，所以这里只给预热与
+ * /j2me/edge-sw.js 用，不能拿它去拼 iframe 地址（见 adapters/j2me.ts）。
+ */
+export function j2meEdgeBase(j2mePath: string): string {
+  const base = runtimeBase('j2me', j2mePath)
+  return base === j2mePath ? '' : base
+}
+export function markJ2meEdgeFailed(): void {
+  runtimeEdgeFailed.add('j2me')
 }
 
 /* ---------------- EmulatorJS：平台别名 → 实际核心文件 ---------------- */
@@ -262,6 +298,27 @@ export const EJS_WEBGL2_DEFAULT_CORES: ReadonlySet<string> = new Set([
 ])
 
 /**
+ * 只发布了 WebGL2 版（`<core>-wasm.data`）、**没有** `-legacy-wasm.data` 的自建核心。
+ * 浏览器建不出 WebGL2 时引擎会去下 legacy 版 → 404 →「Outdated graphics driver」。
+ * `npm run test:ejs-cores` 会对着 public/emulatorjs/cores 核对这张表。
+ */
+export const EJS_WEBGL2_ONLY_CORES: ReadonlySet<string> = new Set(['melondsds'])
+
+/** 这个核心在没有 WebGL2 的浏览器里根本起不来（没有 legacy 构建）。 */
+export function ejsCoreNeedsWebgl2(core: string): boolean {
+  return EJS_WEBGL2_ONLY_CORES.has(emulatorJsCoreFileFor(core))
+}
+
+/**
+ * NDS 开局选核心时考虑 WebGL2：新核心没有 legacy 构建，只有 WebGL1 的浏览器改用旧 melonDS
+ * （`melonds-compat` → `melonds-legacy-wasm.data`，即时存档单独一档）。其余情况原样返回。
+ */
+export function ndsCoreForWebgl2(core: string | null | undefined, hasWebgl2: boolean): string | null {
+  if (hasWebgl2) return null
+  return emulatorJsCoreForGame('nds', core || 'nds') === 'melondsds' ? NDS_COMPAT_CORE : null
+}
+
+/**
  * 引擎在**默认设置**下真正会下载的核心文件名。玩家在引擎菜单里手动改过 WebGL2 开关时
  * 会不同，但那是逐游戏的少数情况；猜错的代价只是一次没用上的预热。
  */
@@ -308,9 +365,25 @@ export const PLAY_PATH: string = asDir(import.meta.env.VITE_PLAY_PATH)
 /** Play! JS/WASM 不带文件哈希；换核心时必须换 URL，避免边缘节点把新旧两件套拼起来。 */
 export const PLAY_RUNTIME_GENERATION = '20261026-system2x6-v1'
 
-export function playRuntimeAsset(file: 'Play.js' | 'Play.wasm'): string {
+let playWasmEdgeFailed = false
+
+/** 大陆主站只把 WASM 请求送到 EdgeOne；Play.js 仍同源以满足 pthread Worker 的同源要求。 */
+export function playWasmUsingEdge(): boolean {
+  return fileUsesCnEdgePlayWasm()
+}
+
+function fileUsesCnEdgePlayWasm(): boolean {
+  return !playWasmEdgeFailed && PLAY_PATH.startsWith('/') && Boolean(cnEdgeApiBase())
+}
+
+export function markPlayWasmEdgeFailed(): void {
+  playWasmEdgeFailed = true
+}
+
+export function playRuntimeAsset(file: 'Play.js' | 'Play.wasm', { sameOrigin = false }: { sameOrigin?: boolean } = {}): string {
   // Cloudflare 可按配置忽略 query string，所以代次必须落在实际路径而不只是 ?v 参数里。
-  return `${PLAY_PATH}${PLAY_RUNTIME_GENERATION}/${file}`
+  const edge = file === 'Play.wasm' && !sameOrigin && fileUsesCnEdgePlayWasm() ? cnEdgeApiBase() : ''
+  return `${edge}${PLAY_PATH}${PLAY_RUNTIME_GENERATION}/${file}`
 }
 
 /**
@@ -330,8 +403,11 @@ export const PPSSPP_PATH: string = asDir(import.meta.env.VITE_PPSSPP_PATH)
   2026-11-10 v18：只换 JS 读盘层，同步 Range 读遇到 status 0 就地退避重试（海外玩家开局后断流整局失败）。
   Wasm / data 与 v17 逐字节相同。生成脚本 scripts/refresh-ppsspp-retry-v18.mjs。
   2026-11-10 v19：超时后的重试把时限翻倍（30 → 60 → 120 秒），慢线路的 2MB 分片能读完。生成脚本 refresh-ppsspp-retry-v19.mjs。
+  2026-11-15 v20：现场发现实际 canvas 可随视口扩到 1533×777，且 3G 高延迟设备仍选高性能档；慢网现限制真实绘图缓冲到 480×272，并采集 worker 错误栈。
+  2026-11-15 v21：QQ Browser 固定为 480×272 稳定档，运行时崩溃时先等待 IDBFS 冲刷存档（最多 1.5 秒）。
+  2026-11-15 v22：移动/弱网/低配设备使用 480×272，普通设备 640×360，明确高配桌面设备最高 720×408。
 */
-export const PPSSPP_RUNTIME_GENERATION = 'v19'
+export const PPSSPP_RUNTIME_GENERATION = 'v22'
 export const PPSSPP_RUNTIME_PATH: string = PPSSPP_PATH
   ? asDir(`${PPSSPP_PATH}${PPSSPP_RUNTIME_GENERATION}`)
   : ''
@@ -344,7 +420,7 @@ export const PPSSPP_RUNTIME_PATH: string = PPSSPP_PATH
  * Cloudflare 对这套运行时忽略查询串，因此核心数据仍复用同一份边缘缓存；这里的查询参数
  * 只用于让浏览器放弃旧的“入口 HTML”缓存。改动入口协议时递增它，不能拿来改 Wasm/data。
  */
-export const PPSSPP_FRAME_REVISION = '2'
+export const PPSSPP_FRAME_REVISION = '4'
 /*
   大陆访客在 iframe 地址上加 `edge=cn`：桥据此把两份大文件（PPSSPPSDL.wasm 18MB、PPSSPPSDL.data br 后 9MB）
   改从 EdgeOne 取，取不到当场回同源（public/ppsspp/.../v17/host.js）。入口、胶水 JS、各类 Worker 必须同源，

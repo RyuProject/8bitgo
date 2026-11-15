@@ -1,3 +1,6 @@
+import { diagLog } from '@/services/startupDiagnostics'
+import { rememberRomHostForUrl } from '@/services/romHosts'
+
 /**
  * 远程光盘：用 HTTP Range 按需读盘，不把整张盘下下来。
  *
@@ -26,7 +29,8 @@
  *   2. **缓存已取回的块**（LRU，有字节上限），来回读同一片地图不重复走网络；
  *   3. **顺序预取**：给出第 n 块时顺手把第 n+1 块也拉了。光盘读取绝大多数是顺序的，
  *      这一条基本上把「过场动画卡顿」消掉。
- * 三条都是纯粹的访问模式优化，不改变任何语义。
+ *   4. **线路回退**：首个 2 MiB 块显著偏慢且同盘备用线路实测快 15%，或 Range 请求失败时，当前盘改走备用 CDN。
+ * 这些都是纯粹的访问模式优化，不改变光盘字节和读取语义。
  */
 
 /** Play! 的读盘口子真正用到的东西，就这么两样 */
@@ -249,13 +253,60 @@ export function httpRangeFetcher(
   url: string,
   signal?: AbortSignal,
   stallMs = RANGE_STALL_TIMEOUT_MS,
+  alternateUrl = '',
 ): RangeFetcher {
-  return async (start, endInclusive) => {
-    const expected = endInclusive - start + 1
-    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(endInclusive) || start < 0 || expected <= 0) {
-      throw new RangeError('读盘失败：Range 偏移无效')
+  let activeUrl = url
+  let alternate = alternateUrl && alternateUrl !== url ? alternateUrl : ''
+  const measureAlternateRange = async (target: string, total: number): Promise<number | null> => {
+    const sampleBytes = Math.min(64 * 1024, CHUNK_BYTES, total)
+    const sampleEnd = Math.min(CHUNK_BYTES, total) - 1
+    const controller = new AbortController()
+    const abortFromParent = () => controller.abort()
+    if (signal?.aborted) controller.abort()
+    else signal?.addEventListener('abort', abortFromParent, { once: true })
+    let timedOut = false
+    const timer = setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, 1_500)
+    const startedAt = typeof performance !== 'undefined' ? performance.now() : Date.now()
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+    let loaded = 0
+    try {
+      const res = await fetch(target, { headers: { Range: `bytes=0-${sampleEnd}` }, signal: controller.signal })
+      if (res.status !== 206 || res.headers.get('content-encoding')) {
+        cancelResponse(res)
+        return null
+      }
+      const match = /^bytes 0-(\d+)\/(\d+)$/i.exec(res.headers.get('content-range') ?? '')
+      if (!match || Number(match[1]) !== sampleEnd || Number(match[2]) !== total || !res.body) {
+        cancelResponse(res)
+        return null
+      }
+      reader = res.body.getReader()
+      while (loaded < sampleBytes) {
+        const { done, value } = await reader.read()
+        if (done) break
+        if (value) loaded += value.byteLength
+      }
+      if (loaded >= sampleBytes && !controller.signal.aborted) {
+        return (loaded * 8) / (Math.max(1, (typeof performance !== 'undefined' ? performance.now() : Date.now()) - startedAt) * 1000)
+      }
+      return null
+    } catch {
+      if (timedOut && loaded >= 32 * 1024) {
+        return (loaded * 8) / (Math.max(1, (typeof performance !== 'undefined' ? performance.now() : Date.now()) - startedAt) * 1000)
+      }
+      return null
+    } finally {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', abortFromParent)
+      await reader?.cancel().catch(() => {})
+      try { reader?.releaseLock() } catch { /* 已由浏览器释放 */ }
     }
-
+  }
+  const fetchOnce = async (target: string, start: number, endInclusive: number, alternateTarget: string) => {
+    const expected = endInclusive - start + 1
     const controller = new AbortController()
     const abortFromParent = () => controller.abort()
     if (signal?.aborted) controller.abort()
@@ -272,7 +323,8 @@ export function httpRangeFetcher(
 
     try {
       touch()
-      const res = await fetch(url, {
+      const startedAt = typeof performance !== 'undefined' ? performance.now() : Date.now()
+      const res = await fetch(target, {
         headers: { Range: `bytes=${start}-${endInclusive}` },
         signal: controller.signal,
       })
@@ -312,6 +364,12 @@ export function httpRangeFetcher(
       const reader = res.body.getReader()
       const bytes = new Uint8Array(expected)
       let loaded = 0
+      const hints = typeof navigator === 'undefined' ? undefined : (navigator as Navigator & {
+        connection?: { saveData?: boolean; effectiveType?: string }
+      }).connection
+      const effectiveType = String(hints?.effectiveType ?? '').toLowerCase()
+      const conserveTraffic = hints?.saveData || effectiveType === 'slow-2g' || effectiveType === '2g'
+      let sampled = false
       try {
         for (;;) {
           const { done, value } = await reader.read()
@@ -324,6 +382,22 @@ export function httpRangeFetcher(
           }
           bytes.set(value, loaded)
           loaded += value.byteLength
+          if (!sampled && alternateTarget && start === 0 && expected >= 512 * 1024 && !conserveTraffic && loaded >= 256 * 1024) {
+            sampled = true
+            const elapsedMs = Math.max(1, (typeof performance !== 'undefined' ? performance.now() : Date.now()) - startedAt)
+            const mbps = (loaded * 8) / (elapsedMs * 1000)
+            diagLog('download', 'info', `PS2 首段 ${loaded} 字节 / ${Math.round(elapsedMs)}ms / ${mbps.toFixed(1)} Mbps：`, target)
+            if (mbps < 3) {
+              const alternateMbps = await measureAlternateRange(alternateTarget, Number(match[3]))
+              if (alternateMbps !== null && alternateMbps > mbps * 1.15) {
+                await reader.cancel().catch(() => {})
+                const slow = new Error(`首段 ${mbps.toFixed(1)} Mbps，备用线路 ${alternateMbps.toFixed(1)} Mbps`)
+                slow.name = 'SlowDiscRouteError'
+                throw slow
+              }
+              diagLog('download', 'info', `PS2 备用线路没有明显更快（${alternateMbps?.toFixed(1) ?? '未测出'} Mbps），继续当前线路：`, target)
+            }
+          }
         }
       } finally {
         reader.releaseLock()
@@ -338,6 +412,26 @@ export function httpRangeFetcher(
     } finally {
       if (timer !== undefined) clearTimeout(timer)
       signal?.removeEventListener('abort', abortFromParent)
+    }
+  }
+
+  return async (start, endInclusive) => {
+    const expected = endInclusive - start + 1
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(endInclusive) || start < 0 || expected <= 0) {
+      throw new RangeError('读盘失败：Range 偏移无效')
+    }
+    try {
+      return await fetchOnce(activeUrl, start, endInclusive, alternate)
+    } catch (error) {
+      if (signal?.aborted || !alternate) throw error
+      const failedUrl = activeUrl
+      activeUrl = alternate
+      alternate = ''
+      diagLog('download', 'warn', 'Play! 读盘切换线路：', failedUrl, '→', activeUrl, error)
+      const bytes = await fetchOnce(activeUrl, start, endInclusive, '')
+      rememberRomHostForUrl(activeUrl)
+      diagLog('download', 'info', 'Play! 读盘已切到：', activeUrl)
+      return bytes
     }
   }
 }

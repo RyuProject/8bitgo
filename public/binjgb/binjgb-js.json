@@ -1,0 +1,9 @@
+{
+  "upstream": "https://github.com/binji/binjgb.git",
+  "commit": "16621111ed0ee73bcc45c912a823bcebedcffc0f",
+  "emsdk": "4.0.20",
+  "wasm": false,
+  "exportName": "BinjgbJs",
+  "bytes": 201314,
+  "sha256": "2d77d706c4bf900f7c502d7d4f7d81bc1a917dbbffcba9a58909270841212be7"
+}

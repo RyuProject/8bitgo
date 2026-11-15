@@ -22,6 +22,7 @@
  *
  * 所以开局之后（以及手柄接上时）主动把焦点还给 iframe，两个问题一起解决。
  */
+import { readGamepadsSafe } from './gamepadAccess'
 
 /**
  * 把焦点交给这个 iframe。
@@ -46,9 +47,7 @@ export function focusFrame(iframe: HTMLIFrameElement | null | undefined): void {
  */
 export function frameGamepads(iframe: HTMLIFrameElement | null | undefined): string[] {
   try {
-    const nav = iframe?.contentWindow?.navigator
-    if (!nav || typeof nav.getGamepads !== 'function') return []
-    return Array.from(nav.getGamepads())
+    return Array.from(readGamepadsSafe(iframe?.contentWindow?.navigator))
       .filter((p): p is Gamepad => Boolean(p?.connected))
       .map((p) => p.id)
   } catch {

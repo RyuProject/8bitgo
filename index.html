@@ -44,6 +44,141 @@
          逐个语言标记对一遍，改了一处忘了另一处会红。
     -->
     <!--
+      不在明文 HTTP 上跑。
+
+      2026-11-15 有人在 Android 模拟器的 Chrome 110 里打开《拳皇97》只看到「页面暂时没有正常打开」，
+      浏览器同时提示「与 8bitgo.com 的连接不安全，该网站不支持 HTTPS」：那台设备上 HTTPS 连不上
+      （模拟器系统时间不对最常见，证书会被判成「尚未生效」），Chrome 退回 http://，而大陆入口
+      cn.8bitgo.com（EdgeOne）对 HTTP 照样回 200 整页。明文页面里 crypto.subtle 等安全上下文 API 不存在，
+      写死 https:// 的资源、接口在这台设备上又都连不上，应用就崩到兜底页 —— 玩家只看到一句「没正常打开」。
+
+      所以：明文 HTTP 先换成 HTTPS 再说；刚换过一次又被退回 HTTP（HTTPS 真连不上）就不再来回跳，
+      直接在页面顶部说清楚原因和办法（多半是改对日期时间）。本机开发地址不受影响。必须放在所有脚本之前，
+      而且只用 ES5：旧浏览器也要能看懂这句话。
+    -->
+    <script>
+      ;(function () {
+        try {
+          var l = window.location
+          if (l.protocol !== 'http:' || /^(localhost|127\.|\[::1\]$|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)|\.(localhost|test|local)$/.test(l.hostname)) return
+          var key = '8bitgo.https-upgrade'
+          var cookieKey = '8bitgo_https_try'
+          var now = Date.now()
+          // 防来回跳的记号：优先 sessionStorage；它不可用时（安卓 WebView 默认不开 DOM 存储）退到一分钟的 Cookie。
+          // 两样都写不进才只提示、不跳 —— 以前 sessionStorage 一抛错就从不升级，HTTPS 明明能用也留在明文上。
+          var readMark = function () {
+            try { return Number(sessionStorage.getItem(key)) || 0 } catch (e) {}
+            var m = /(?:^|;\s*)8bitgo_https_try=(\d+)/.exec(String(document.cookie || ''))
+            return m ? Number(m[1]) : 0
+          }
+          var writeMark = function () {
+            try { sessionStorage.setItem(key, String(now)); return true } catch (e) {}
+            try {
+              document.cookie = cookieKey + '=' + now + '; max-age=60; path=/; SameSite=Lax'
+              return String(document.cookie || '').indexOf(cookieKey + '=' + now) >= 0
+            } catch (e) { return false }
+          }
+          var last = readMark()
+          if (!(now - last >= 0 && now - last < 60000) && writeMark()) {
+            l.replace('https://' + l.host + l.pathname + l.search + l.hash)
+            return
+          }
+          var zh = /^zh/i.test(document.documentElement.lang || navigator.language || '')
+          var text = zh
+            ? '当前是不安全的 HTTP 连接，游戏没法正常加载：你的浏览器连不上本站的 HTTPS。最常见的原因是设备的日期和时间不对（模拟器尤其常见），请在系统设置里把日期时间改成自动，再重新打开 https://8bitgo.com ；如果用了代理或网络过滤，也请关掉再试。'
+            : 'This page is on an insecure HTTP connection, so games cannot load: your browser could not reach this site over HTTPS. The usual cause is a wrong device date and time (common on emulators). Set the date and time to automatic, then reopen https://8bitgo.com. If you use a proxy or network filter, try turning it off.'
+          var show = function () {
+            if (!document.body || document.getElementById('insecure-http-notice')) return
+            var bar = document.createElement('div')
+            bar.id = 'insecure-http-notice'
+            bar.setAttribute('role', 'alert')
+            bar.style.cssText = 'position:sticky;top:0;z-index:2147483647;padding:12px 16px;background:#7f1d1d;color:#fff;font:14px/1.5 system-ui,sans-serif;text-align:center'
+            bar.textContent = text
+            document.body.insertBefore(bar, document.body.firstChild)
+          }
+          if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', show)
+          else show()
+        } catch (e) {}
+      })()
+    </script>
+    <!--
+      坏 chunk 自修复的钩子（2026-11-15 PK / TH：浏览器拿到的 live-*.js 和源站不一样，缺具名导出直接崩）。
+
+      正常访问只做两件小事，不发任何请求：
+        1. 上次修复发现「CDN 边缘那份就是坏的」的文件，用 import map 改指到带查询串的回源地址
+           （记在 localStorage 8bitgo.asset-remap，7 天过期）。必须在任何模块脚本之前插入，所以放在 head 这里。
+        2. 定义 window.__8bitgoAssetRepair：真出错时才去加载 /asset-repair-v1.js 核对 SHA-256、重取坏文件。
+           入口模块本身链接失败时 React 根本起不来，所以这里还要监听 window 的 SyntaxError；
+           React 里懒加载失败由 AppErrorBoundary 调同一个函数。
+      只用 ES5，任何一步出错都静默放过：这段坏了也不能拖垮页面。
+    -->
+    <script>
+      ;(function () {
+        try {
+          var w = window
+          var KEY = '8bitgo.asset-remap'
+          try {
+            var raw = localStorage.getItem(KEY)
+            var supports = w.HTMLScriptElement && HTMLScriptElement.supports && HTMLScriptElement.supports('importmap')
+            if (raw && supports) {
+              var data = JSON.parse(raw)
+              var imports = {}
+              var count = 0
+              var now = Date.now()
+              for (var k in data) {
+                if (Object.prototype.hasOwnProperty.call(data, k) && data[k] && data[k].until > now && typeof data[k].to === 'string') {
+                  imports[k] = data[k].to
+                  count++
+                }
+              }
+              if (count) {
+                var map = document.createElement('script')
+                map.type = 'importmap'
+                map.textContent = JSON.stringify({ imports: imports })
+                document.head.appendChild(map)
+              }
+            }
+          } catch (e) {}
+          var pending = null
+          w.__8bitgoAssetRepair = function (opts) {
+            if (!pending) {
+              pending = new Promise(function (resolve) {
+                var s = document.createElement('script')
+                s.src = '/asset-repair-v1.js'
+                s.async = true
+                s.onload = function () {
+                  try { resolve(w.__8bitgoAssetRepairRun ? w.__8bitgoAssetRepairRun(opts) : null) } catch (e) { resolve(null) }
+                }
+                s.onerror = function () { resolve(null) }
+                document.head.appendChild(s)
+              })
+            }
+            return pending
+          }
+          var LINK = /does not provide an export named|import not found|Importing binding name/
+          var resolveSpecifier = function (message, from) {
+            var m = /module ['"](\.{1,2}\/[^'"]+\.js)['"]/.exec(message)
+            if (!m || !from) return []
+            try { return [new URL(m[1], from).href] } catch (e) { return [] }
+          }
+          w.addEventListener('error', function (event) {
+            var err = event && event.error
+            var file = String((event && event.filename) || '')
+            if (!err || err.name !== 'SyntaxError' || file.indexOf('/assets/') < 0) return
+            var message = String(err.message || '')
+            w.__8bitgoAssetRepair({ reason: message.slice(0, 300), urls: [file].concat(resolveSpecifier(message, file)) })
+          })
+          w.addEventListener('unhandledrejection', function (event) {
+            var err = event && event.reason
+            if (!err || err.name !== 'SyntaxError' || !LINK.test(String(err.message || ''))) return
+            var entry = document.querySelector('script[type="module"][src*="/assets/index-"]')
+            var message = String(err.message || '')
+            w.__8bitgoAssetRepair({ reason: message.slice(0, 300), urls: resolveSpecifier(message, entry ? entry.src : '') })
+          })
+        } catch (e) {}
+      })()
+    </script>
+    <!--
       先选离访客更快的完整站点镜像，再让语言脚本决定目标路径。它只写一个两小时的
       非认证 Cookie；已有登录态、后台、OAuth、爬虫和测速工具会留在当前域名。
       文件名带版本号，发版改变规则时必须同时换文件名，避免边缘拿到旧逻辑。

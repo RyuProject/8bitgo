@@ -178,3 +178,98 @@ export function migrateLegacyBatterySaves(
   visit(root, 0)
   return copied
 }
+
+/*
+ * ── 引擎的逐游戏设置跟着改名走 ───────────────────────────────
+ * EmulatorJS 把改键、金手指、核心选项存在 localStorage 的 `ejs-<gameId>-<系统>-<gameName>-settings`。
+ * batterySaveGameName 把 8BG 游戏交给引擎的 gameName 从 originalName 换成了存档 slug 名，旧键就再也
+ * 读不到了 —— 玩家调好的按键、金手指、核心选项在 2026-11-12 那次部署后看起来「全没了」。
+ * 开局前把旧键复制一份到新键（新键已有就不动，旧键保留）。
+ */
+interface KeyedStorage {
+  readonly length: number
+  key(index: number): string | null
+  getItem(key: string): string | null
+  setItem(key: string, value: string): void
+}
+
+export function migrateEngineSettingsKey(
+  storage: KeyedStorage | null | undefined,
+  gameId: number | undefined,
+  legacyName: string | undefined,
+  nextName: string,
+): number {
+  if (!storage || !legacyName || legacyName === nextName) return 0
+  const prefix = `ejs-${gameId || 1}-`
+  const suffix = `-${legacyName}-settings`
+  const found: string[] = []
+  for (let i = 0; i < storage.length; i++) {
+    const key = storage.key(i)
+    if (key && key.startsWith(prefix) && key.endsWith(suffix) && key.length > prefix.length + suffix.length) found.push(key)
+  }
+  let copied = 0
+  for (const key of found) {
+    const system = key.slice(prefix.length, key.length - suffix.length)
+    const target = `${prefix}${system}-${nextName}-settings`
+    if (storage.getItem(target) !== null) continue
+    const value = storage.getItem(key)
+    if (value === null) continue
+    storage.setItem(target, value)
+    copied++
+  }
+  return copied
+}
+
+/**
+ * 开机那一刻跟「这个玩家」有关的状态，写进诊断包。
+ * 2026-11-13 一例《火红》开局 `table index is out of bounds`、自动重试同样失败，诊断包里却看不出
+ * 开机时有没有电池存档、有没有存过引擎设置 / 金手指 —— 这几样都会在 callMain 里被核心读进去，
+ * 也都只存在这个浏览器里。只记有无、大小、条数，不记内容。
+ */
+export function describeBootState(
+  fs: Pick<SaveFsLike, 'readdir' | 'stat' | 'isDir'> | undefined,
+  engineGameName: string,
+  settingsJson: string | null,
+): string {
+  const base = stripExt(engineGameName.split('/').pop() ?? '')
+  const saves: string[] = []
+  if (fs) {
+    try {
+      for (const dir of fs.readdir('/data/saves')) {
+        if (dir === '.' || dir === '..') continue
+        const path = `/data/saves/${dir}`
+        let names: string[] = []
+        try {
+          if (!fs.isDir(fs.stat(path).mode)) continue
+          names = fs.readdir(path)
+        } catch {
+          continue
+        }
+        for (const name of names) {
+          if (!name.startsWith(`${base}.`)) continue
+          let size = -1
+          try {
+            size = (fs.stat(`${path}/${name}`) as { size?: number }).size ?? -1
+          } catch {
+            /* ignore */
+          }
+          saves.push(`${dir}/*${name.slice(base.length)} ${size}B`)
+        }
+      }
+    } catch {
+      /* /data/saves 还没建 */
+    }
+  }
+  let settings = '无'
+  if (settingsJson) {
+    try {
+      const parsed = JSON.parse(settingsJson) as { settings?: Record<string, unknown>; cheats?: unknown[]; controlSettings?: unknown }
+      const changed = Object.keys(parsed.settings ?? {})
+      const cheats = Array.isArray(parsed.cheats) ? parsed.cheats.length : 0
+      settings = `${changed.length} 项（${changed.slice(0, 12).join(', ') || '-'}）、金手指 ${cheats} 条、改键${parsed.controlSettings ? '有' : '无'}`
+    } catch {
+      settings = `无法解析（${settingsJson.length} 字节）`
+    }
+  }
+  return `开机状态：电池存档 ${saves.length ? saves.join('; ') : '无'}；引擎设置 ${settings}`
+}

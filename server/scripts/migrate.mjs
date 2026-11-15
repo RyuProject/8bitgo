@@ -19,6 +19,7 @@ import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import mysql from 'mysql2/promise'
 import { ensureDatabase } from '../src/db-ensure.js'
+import { recomputeAllNetplay } from '../src/netplay-auto.js'
 
 const DB_NAME = process.env.DB_NAME || '8bitgo'
 
@@ -39,6 +40,7 @@ const conn = await mysql.createConnection({
 })
 
 const one = async (q, p) => (await conn.query(q, p))[0][0]
+const runRows = async (q, p) => (await conn.query(q, p))[0]
 
 /** 用 DATABASE() 而不是变量，保证检查的就是当前真正选中的库 */
 async function hasTable(table) {
@@ -1296,6 +1298,38 @@ const patches = [
       if (!(await hasIndex('game_comments', 'idx_cmt_review_time'))) {
         await conn.query('ALTER TABLE `game_comments` ADD INDEX `idx_cmt_review_time` (`pending_review`, `created_at` DESC)')
       }
+    },
+  },
+  {
+    name: 'games.netplay_mode / players_inferred（联机人数自动推断）',
+    /*
+      以前联机全靠后台勾选 + 填人数；现在默认 auto，按 ROM 推断（server/src/netplay-auto.js）。
+      已经被管理员明确开过联机的游戏（multiplayer=1 且 ≥2 人）记成 on，保留他们填的人数；
+      其余都交给自动推断。只在**刚加列**的这一次做映射，以后运营改成 auto 不会被迁移改回去。
+    */
+    table: 'games',
+    needed: async () => !(await hasColumn('games', 'netplay_mode')) || !(await hasColumn('games', 'players_inferred')),
+    run: async () => {
+      if (!(await hasColumn('games', 'netplay_mode'))) {
+        await conn.query("ALTER TABLE `games` ADD COLUMN `netplay_mode` VARCHAR(4) NOT NULL DEFAULT 'auto' AFTER `multiplayer`")
+        await conn.query("UPDATE `games` SET `netplay_mode` = 'on' WHERE `multiplayer` = 1 AND `players` >= 2")
+      }
+      if (!(await hasColumn('games', 'players_inferred'))) {
+        await conn.query('ALTER TABLE `games` ADD COLUMN `players_inferred` TINYINT UNSIGNED NULL AFTER `netplay_mode`')
+      }
+    },
+  },
+  {
+    name: '按 ROM 重算 auto 模式的联机人数（FBNeo 人数表更新后会再次执行）',
+    table: 'games',
+    skip: async () => ((await hasColumn('games', 'netplay_mode')) ? '' : '缺 netplay_mode 列'),
+    needed: async () => (await recomputeAllNetplay(runRows, { dryRun: true })).length > 0,
+    run: async () => {
+      const changed = await recomputeAllNetplay(runRows)
+      for (const c of changed.slice(0, 40)) {
+        console.log(`    · ${c.slug}: ${c.from.multiplayer ? c.from.players + ' 人联机' : '不联机'} → ${c.to.multiplayer ? c.to.players + ' 人联机' : '不联机'}${c.inferred != null ? `（FBNeo ${c.inferred} 人）` : ''}`)
+      }
+      if (changed.length > 40) console.log(`    … 共 ${changed.length} 款`)
     },
   },
 ]

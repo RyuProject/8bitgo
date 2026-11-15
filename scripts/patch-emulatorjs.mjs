@@ -159,7 +159,14 @@ const PRINT_OUT_TO = 'print:t=>{this.debug&&console.log(t),/^\\[libretro ERROR\\
  * 这里**不改那份名单**，而是改判定：上游以后增删名单都不会让这处失效。
  */
 const KEEP_ZIP_FROM = 'e.dontExtractIfCore?.includes(this.getCore())'
-const KEEP_ZIP_TO = '(e.dontExtractIfCore?.includes(this.getCore())||"mame-current"===this.getCore())'
+/**
+ * 2026-11-13 补上 fbneo-lowmem：它是 FBNeo 内存不足时的退路（src/emulator/fbneoLowmem.ts），
+ * 名字不在上游名单里，引擎会把 kof97.zip / neogeo.zip 解成散文件 → Romset is unknown / 缺 BIOS 成员（§2.3）。
+ * 旧版补丁（只有 mame-current）由下面 legacy 接管升级。
+ */
+const KEEP_ZIP_TO_V1 = '(e.dontExtractIfCore?.includes(this.getCore())||"mame-current"===this.getCore())'
+const KEEP_ZIP_TO =
+  '(e.dontExtractIfCore?.includes(this.getCore())||"mame-current"===this.getCore()||"fbneo-lowmem"===this.getCore())'
 
 /**
  * melonDS DS 只构建 WebGL2 版，必须让引擎无条件选择 `<core>-wasm.data`。
@@ -256,6 +263,34 @@ const BODY_READ_FROM =
 const BODY_READ_TO =
   'let __8bgStall=0;const __8bgArm=()=>{clearTimeout(__8bgStall),__8bgStall=setTimeout(()=>{console.warn("[EJS Download] 20 秒没有新数据，中止："+S),f.abort()},2e4)};' +
   'try{for(;;){__8bgArm();const{done:s,value:o}=await e.read();if(s)break;n.push(o),i+=o.length,r&&t&&r("downloading",Math.floor(i/t*100),i,t)}}finally{clearTimeout(__8bgStall)}'
+/**
+ * 华为浏览器 17 的两份现场里，核心 HTTP 200 收到 1.3MB 后立刻报 NotReadableError，且在 IndexedDB put 之前。
+ * 上游把 `reader.read()` 与 `new Blob(chunks).arrayBuffer()` 放在同一个 catch 里，旧现场没有子阶段栈，无法证明
+ * 是哪一行抛错；但该浏览器已有 Blob 存储读不出的现场，而 Blob 往返完全多余。去掉它，按实际收到的字节数拼成
+ * Uint8Array；流读取本身若失败，另打印原始异常对象，以便下一份诊断确认阶段。
+ */
+const BODY_READ_DIAGNOSTICS_FROM =
+  'try{for(;;){__8bgArm();const{done:s,value:o}=await e.read();if(s)break;n.push(o),i+=o.length,r&&t&&r("downloading",Math.floor(i/t*100),i,t)}}finally{clearTimeout(__8bgStall)}'
+const BODY_READ_DIAGNOSTICS_TO =
+  'try{for(;;){__8bgArm();const{done:s,value:o}=await e.read();if(s)break;n.push(o),i+=o.length,r&&t&&r("downloading",Math.floor(i/t*100),i,t)}}catch(__8bgReadError){console.warn("[EJS Download] response stream read failed",__8bgReadError);throw __8bgReadError}finally{clearTimeout(__8bgStall)}'
+const ARRAYBUFFER_BLOB_FROM = 'const s=new Blob(n),o=await s.arrayBuffer();Z=new Uint8Array(o)'
+const ARRAYBUFFER_BLOB_TO =
+  'Z=new Uint8Array(i);let __8bgOffset=0;for(const __8bgChunk of n){Z.set(__8bgChunk,__8bgOffset);__8bgOffset+=__8bgChunk.byteLength}'
+/**
+ * 流读取本身失败时改走 XHR arraybuffer 再取一次（2026-11-15，华为浏览器 17 / Android 12《节奏天国》后续防线）。
+ * 上一节去掉了 Blob 往返；若这类浏览器连 `ReadableStream.read()` 也读不出（NotReadableError），XHR 的
+ * arraybuffer 响应既不走流也不走 Blob，是最后一条与 fetch 读法不同的路。只对没有请求体（GET）且不是我们自己
+ * 20 秒失速中止的下载回退一次；回退请求同样 20 秒无进度就中止，失败原样交回引擎（适配器按原规则处理）。
+ */
+const BODY_READ_FALLBACK_TO =
+  'try{for(;;){__8bgArm();const{done:s,value:o}=await e.read();if(s)break;n.push(o),i+=o.length,r&&t&&r("downloading",Math.floor(i/t*100),i,t)}}catch(__8bgReadError){console.warn("[EJS Download] response stream read failed",__8bgReadError);' +
+  'if(f.signal.aborted||o)throw __8bgReadError;clearTimeout(__8bgStall);console.warn("[EJS Download] 改用 XHR arraybuffer 重新下载："+S);' +
+  'const __8bgBuf=await new Promise((__8bgOk,__8bgFail)=>{const __8bgX=new XMLHttpRequest;let __8bgXT=0;const __8bgXArm=()=>{clearTimeout(__8bgXT),__8bgXT=setTimeout(()=>{console.warn("[EJS Download] XHR 20 秒没有新数据，中止："+S),__8bgX.abort()},2e4)};' +
+  '__8bgX.open("GET",y.url),__8bgX.responseType="arraybuffer";try{s&&new Headers(s).forEach((__8bgV,__8bgK)=>__8bgX.setRequestHeader(__8bgK,__8bgV))}catch(__8bgH){}' +
+  '__8bgX.onprogress=__8bgE=>{__8bgXArm(),r&&__8bgE.lengthComputable&&r("downloading",Math.floor(__8bgE.loaded/__8bgE.total*100),__8bgE.loaded,__8bgE.total)};' +
+  '__8bgX.onload=()=>{clearTimeout(__8bgXT),__8bgX.status>=200&&__8bgX.status<300&&__8bgX.response?__8bgOk(__8bgX.response):__8bgFail(new Error("XHR fallback HTTP "+__8bgX.status))};' +
+  '__8bgX.onerror=()=>{clearTimeout(__8bgXT),__8bgFail(new Error("XHR fallback network error after "+__8bgReadError))};__8bgX.onabort=()=>{clearTimeout(__8bgXT),__8bgFail(new Error("XHR fallback stalled after "+__8bgReadError))};' +
+  '__8bgXArm(),__8bgX.send()});console.warn("[EJS Download] XHR arraybuffer 重新下载成功："+S+" "+__8bgBuf.byteLength+" 字节");n=[new Uint8Array(__8bgBuf)],i=__8bgBuf.byteLength}finally{clearTimeout(__8bgStall)}'
 const CACHE_PUT_FROM = '!1===u&&await this.storageCache.put(n),c(n)'
 const CACHE_PUT_TO =
   '!1===u&&await Promise.race([this.storageCache.put(n).catch(t=>console.warn("[EJS Cache] put failed",t)),' +
@@ -341,6 +376,17 @@ const EXIT_UNMOUNT_TO =
   'this.toggleMainLoop(0),setTimeout(()=>{try{this.Module.abort()}catch(t){console.warn(t)}},1e3)'
 
 /**
+ * 第十四节：游戏文件写进虚拟文件系统时让 MEMFS 直接接管那块数组，不再整份复制（2026-11-14）。
+ *
+ * 引擎 download() 拿到（或解压出）游戏字节后用 `FS.writeFile(path, bytes)` 写进 MEMFS；不带 canOwn 时
+ * MEMFS 会 `slice` 一份新的，开局那一刻同一份 ROM 在 JS 侧就有两份。2GB 内存的 Android 手机开 64MB 的
+ * NDS ROM（《使命召唤：战争世界》），核心把 ROM 读进 WASM 堆时堆长不动，melonDS DS 和兼容核心都只剩一句
+ * `Aborted()`。canOwn 后 MEMFS 的文件内容就是这块数组，引擎之后只读不写它（缓存写 IndexedDB 是结构化克隆）。
+ */
+const GAME_WRITE_FROM = '(this.gameManager.FS.writeFile(`/${t}`,e),t)};if(o&&o.files)'
+const GAME_WRITE_TO = '(this.gameManager.FS.writeFile(`/${t}`,e,{canOwn:!0}),t)};if(o&&o.files)'
+
+/**
  * 每组：name 显示用；patches 是 [要找的原文, 替换后]；
  * legacy 可选，把「替换后」映射成更早一版补丁的样子，用来在引擎升级后接管旧补丁；
  * hint 是位置对不上时打给人看的排查思路。
@@ -406,11 +452,13 @@ const GROUPS = [
     ],
   },
   {
-    name: '街机 ROM 保持 zip（mame-current）',
+    name: '街机 ROM 保持 zip（mame-current / fbneo-lowmem）',
     patches: [[KEEP_ZIP_FROM, KEEP_ZIP_TO]],
+    legacy: () => KEEP_ZIP_TO_V1,
     hint: [
       '在 download() 里找 `dontExtractIfCore?.includes(this.getCore())` 那个三元条件；',
-      '把 mame-current 也判成「不解压」—— 否则 MAME 拿不到 romset 压缩包会直接 Abort。',
+      '把 mame-current / fbneo-lowmem 也判成「不解压」—— 否则 MAME 拿不到 romset 压缩包会直接 Abort，',
+      'fbneo-lowmem 拿到散文件报 Romset is unknown。',
       '⚠️ 这一组没了的话，mame-current 的游戏 100% 起不来，且只有一句「Failed to start game」。',
     ],
   },
@@ -460,6 +508,25 @@ const GROUPS = [
     hint: [
       '在下载器 downloadFile 的 arraybuffer 分支找 y.body.getReader() 之后的 for(;;) 读循环；',
       '每次 read 前重置 20 秒定时器，超时调用同一个 AbortController（f）的 abort()。',
+    ],
+  },
+  {
+    name: '核心响应直接拼接 Uint8Array',
+    patches: [
+      [BODY_READ_DIAGNOSTICS_FROM, BODY_READ_DIAGNOSTICS_TO],
+      [ARRAYBUFFER_BLOB_FROM, ARRAYBUFFER_BLOB_TO],
+    ],
+    hint: [
+      'arraybuffer 下载已经拿到 Uint8Array 分块，不要再用 new Blob(chunks).arrayBuffer() 读回；',
+      '直接按总字节数分配 Uint8Array 并顺序 set，读流异常同时输出原始错误对象。',
+    ],
+  },
+  {
+    name: '核心响应流读失败改走 XHR',
+    patches: [[BODY_READ_DIAGNOSTICS_TO, BODY_READ_FALLBACK_TO]],
+    hint: [
+      '在「核心响应直接拼接 Uint8Array」那段 catch 里：只对无请求体（o 为空）、非失速中止的下载，用 XHR arraybuffer 重下一次，',
+      '结果写回分块数组 n 与总长 i，后面的 Uint8Array 拼接照常。',
     ],
   },
   {
@@ -516,6 +583,14 @@ const GROUPS = [
   },
 
   {
+    name: '游戏文件写 MEMFS 不复制',
+    patches: [[GAME_WRITE_FROM, GAME_WRITE_TO]],
+    hint: [
+      '在 download() 末尾找写游戏文件的那个箭头函数（建中间目录后 FS.writeFile(`/${t}`,e)，紧跟 if(o&&o.files) 循环）；',
+      '给 writeFile 加第三个参数 {canOwn:!0}，见头注释第十四节。',
+    ],
+  },
+  {
     name: '退出时不卸载 /data/saves',
     patches: [[EXIT_UNMOUNT_FROM, EXIT_UNMOUNT_TO]],
     hint: [
@@ -528,6 +603,8 @@ const GROUPS = [
 
 // 被后面各节在原地改写过的补丁：值是所有更新的写法
 const SUPERSEDED = new Map([
+  [BODY_READ_TO, [BODY_READ_DIAGNOSTICS_TO, BODY_READ_FALLBACK_TO]],
+  [BODY_READ_DIAGNOSTICS_TO, [BODY_READ_FALLBACK_TO]],
   [CACHE_GET_TO, [CACHE_GET_DEAD_TO, CACHE_GET_CLEAR_TO]],
   [CACHE_PUT_TO, [CACHE_PUT_DEAD_TO, CACHE_PUT_CLEAR_TO]],
   [CACHE_GET_DEAD_TO, [CACHE_GET_CLEAR_TO]],
@@ -565,3 +642,14 @@ for (const group of GROUPS) {
 
 if (changed) writeFileSync(file, src)
 for (const line of report) console.log(`✔ ${line}`)
+
+/*
+  引擎入口按内容取版本（src/emulator/ejsCoreVersionsData.ts）。补丁改了 emulator.min.js 就顺手重生成表，
+  省掉以前「打完补丁还要记得换 EJS_RUNTIME_GENERATION」这一步；没改动时生成结果不变，幂等。
+*/
+{
+  const { spawnSync } = await import('node:child_process')
+  const gen = fileURLToPath(new URL('./gen-ejs-core-versions.mjs', import.meta.url))
+  const r = spawnSync(process.execPath, [gen], { stdio: 'inherit' })
+  if (r.status !== 0) process.exit(r.status ?? 1)
+}

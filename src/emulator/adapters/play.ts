@@ -29,13 +29,15 @@
  * 见 ../remoteDisc.ts。这是 PS2 能上网页的唯一前提，别改回整份下载。
  */
 import type { Capability, CaptureSources, MountOptions, PadButton, RuntimeHandle } from '../types'
-import { PLAY_PATH, playRuntimeAsset } from '../paths'
+import { PLAY_PATH, markPlayWasmEdgeFailed, playRuntimeAsset, playWasmUsingEdge } from '../paths'
 import { getT, fmt } from '@/services/i18n'
 import { RemoteDisc, httpRangeFetcher, probeRange, type DiscSource } from '../remoteDisc'
 import { GP, hasGamepadApi, startGamepadBridge, type GamepadBridge } from '../gamepad'
 import { canvasToBlob } from '../recorder'
 import { fetchBlobWithProgress, fetchWithProgress } from '../loadProgress'
 import { romCacheKey } from '../romCache'
+import { alternateRomUrl, rememberRomHostForUrl } from '@/services/romHosts'
+import { diagLog } from '@/services/startupDiagnostics'
 import { inspectPlayArcadeBundle, PLAY_ARCADE_BUNDLE_MAX_BYTES, type PlayArcadeBundle } from '@/lib/playArcadeBundle'
 
 /** Emscripten 模块工厂（MODULARIZE 构建）。只列我们真正调到的那几样 */
@@ -382,6 +384,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           signal: requestController.signal,
           maxBytes: PLAY_ARCADE_BUNDLE_MAX_BYTES,
           resumeKey: romCacheKey(options.game) || undefined,
+          alternateUrl: alternateRomUrl(options.game),
           check: (res) => {
             if (/text\/html|application\/xhtml/i.test(res.headers.get('content-type') ?? '')) throw new Error('Play! 街机 ROM 地址返回了网页')
           },
@@ -409,7 +412,21 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         elfBytes = new Uint8Array(bytes)
         assertPlayElf(elfBytes)
       } else {
-        const probe = await probeRange(options.game, requestController.signal)
+        let discUrl = options.game
+        let alternateDiscUrl = alternateRomUrl(discUrl)
+        let probe = await probeRange(discUrl, requestController.signal, alternateDiscUrl ? 5_000 : undefined)
+        if ((!probe.rangeSupported || !probe.size) && alternateDiscUrl && !requestController.signal.aborted) {
+          const failedUrl = discUrl
+          const retryUrl = alternateDiscUrl
+          const alternateProbe = await probeRange(retryUrl, requestController.signal, 5_000)
+          if (alternateProbe.rangeSupported && alternateProbe.size) {
+            discUrl = retryUrl
+            alternateDiscUrl = failedUrl
+            probe = alternateProbe
+            rememberRomHostForUrl(discUrl)
+            diagLog('download', 'warn', 'Play! Range 探测切换线路：', failedUrl, '→', discUrl)
+          }
+        }
         if (destroyed) return
         if (!probe.rangeSupported || !probe.size) {
           // 整份下载不是退路：PS2 一张盘几 GB，下不下来也存不下。
@@ -417,7 +434,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           options.onError?.(rt.playNoRange)
           return
         }
-        disc = new RemoteDisc({ size: probe.size, fetchRange: httpRangeFetcher(options.game, requestController.signal) })
+        diagLog('download', 'info', 'Play! 光盘线路：', new URL(discUrl, window.location.href).origin)
+        disc = new RemoteDisc({
+          size: probe.size,
+          fetchRange: httpRangeFetcher(discUrl, requestController.signal, undefined, alternateDiscUrl),
+        })
         source = disc
         // 盘是按需读的，没有「下载完成」这一说 —— 直接把 rom 阶段推满，
         // 后面的时间都花在引擎启动上，进度条不该卡在 40% 装死
@@ -452,7 +473,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
     /* ---- 3. 起 VM ---- */
     try {
-      const instance = await factory({
+      const createModule = () => factory({
         canvas,
         // Play.wasm 和 Play.js 放在一起。不给这个的话 emscripten 会按**当前页面**的
         // 地址去找 wasm —— 站点是 SPA，任何一个 /games/xxx 路径下都会 404
@@ -464,6 +485,60 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           if (bootError) fail(fmt(rt.playLoadFailed, { msg: bootError[1] || msg }))
         },
       })
+      let instance: PlayModule
+      if (!playWasmUsingEdge()) {
+        instance = await createModule()
+      } else {
+        /*
+         * 只拦截这一份版本化 WASM 的 fetch：这样 EdgeOne 不可达、跨源头不匹配或返回错误状态时，
+         * 在 Emscripten 创建 pthread 之前就改取同源副本，保留 instantiateStreaming 和原有 worker 地址。
+         */
+        const edgeUrl = new URL(playRuntimeAsset('Play.wasm'), location.href).href
+        const fallbackUrl = new URL(playRuntimeAsset('Play.wasm', { sameOrigin: true }), location.href).href
+        const originalFetch = window.fetch
+        const edgeTimeoutMs = 12_000
+        const wrappedFetch: typeof window.fetch = async (input, init) => {
+          const requestedUrl = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+          if (new URL(requestedUrl, location.href).href !== edgeUrl) {
+            return originalFetch.call(window, input, init)
+          }
+
+          const parentSignal = init?.signal
+          const edgeController = new AbortController()
+          let edgeTimedOut = false
+          const abortFromParent = () => edgeController.abort(parentSignal?.reason)
+          if (parentSignal?.aborted) abortFromParent()
+          else parentSignal?.addEventListener('abort', abortFromParent, { once: true })
+          const timer = window.setTimeout(() => {
+            edgeTimedOut = true
+            edgeController.abort()
+          }, edgeTimeoutMs)
+          let failure: unknown
+          try {
+            const response = await originalFetch.call(window, input, { ...init, signal: edgeController.signal })
+            if (response.ok) return response
+            failure = new Error(`HTTP ${response.status}`)
+          } catch (error) {
+            if (parentSignal?.aborted) throw error
+            failure = error
+          } finally {
+            window.clearTimeout(timer)
+            parentSignal?.removeEventListener('abort', abortFromParent)
+          }
+
+          markPlayWasmEdgeFailed()
+          console.warn(`[play] EdgeOne Play.wasm ${edgeTimedOut ? '超过 12 秒无响应' : '请求失败'}，退回同源`, failure)
+          return originalFetch.call(window, fallbackUrl, init)
+        }
+
+        window.fetch = wrappedFetch
+        try {
+          instance = await createModule()
+        } finally {
+          // 不覆盖运行期间其它模块安装的新 fetch 包装。
+          if (window.fetch === wrappedFetch) window.fetch = originalFetch
+        }
+      }
       if (destroyed) return
       module = instance
       try {

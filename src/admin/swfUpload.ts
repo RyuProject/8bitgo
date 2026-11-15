@@ -16,6 +16,7 @@ import type { SwfBundleFile } from '@/lib/swfBundle'
 import { deleteRom, listRomDir, uploadRom } from '@/services/roms'
 import { human } from './uploadGuards'
 import { flashCompatibilityIssue } from '@/emulator/flashCompatibility'
+import { assertSwf } from '@/lib/romValidation'
 
 export interface BundleUploadProgress {
   /** 已经传完的文件数 */
@@ -79,7 +80,9 @@ export async function uploadSwfBundle({
   */
   const mainFile = picked.find((file) => file.path === main)!
   const mainData = await extractZipEntry(zip, mainFile.entry)
-  const compatibilityIssue = await flashCompatibilityIssue(new Uint8Array(mainData).buffer)
+  const mainBuffer = new Uint8Array(mainData).buffer
+  assertSwf(mainBuffer)
+  const compatibilityIssue = await flashCompatibilityIssue(mainBuffer)
   if (compatibilityIssue) throw new Error(`${main}：${compatibilityIssue.message}；整包没有上传`)
 
   const base = dir.replace(/\/+$/, '')

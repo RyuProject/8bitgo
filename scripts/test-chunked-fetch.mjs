@@ -771,6 +771,81 @@ await check('续传片可读：照常复用，不重复下载', async () => {
   assert.ok(!calls.some((c) => /bytes=0-/.test(String(c.range ?? c))), '第 0 片来自续传，不该再请求')
 })
 
+await check('inMemoryUpTo：整份留在内存（memoryRomBlob 替身），一个真 Blob 都不建、不写续传片', async () => {
+  const { memoryRomOf } = await import('../src/services/memoryRom.ts')
+  const size = 4096 + 7
+  const resumeStore = memoryResumeStore()
+  const { fetchImpl } = server(size)
+  const RealBlob = globalThis.Blob
+  let created = 0
+  globalThis.Blob = class extends RealBlob { constructor(...a) { super(...a); created++ } }
+  let blob
+  try {
+    blob = await fetchBlobWithProgress('u', { fetchImpl, chunkBytes: 1024, inMemoryUpTo: 1 << 20, resumeKey: 'rom?v=m', resumeStore })
+  } finally {
+    globalThis.Blob = RealBlob
+  }
+  assert.ok(memoryRomOf(blob), '结果应是内存 ROM 替身')
+  assert.equal(created, 0, '内存模式不能建任何真 Blob（华为浏览器上建出来就读不出）')
+  assert.equal(resumeStore.sessions.size, 0, '内存模式不写 IndexedDB 续传片')
+  assert.equal(blob.size, size)
+  expectExact(await readAll(blob), size)
+  assert.deepEqual([...new Uint8Array(await blob.slice(1020, 1030).arrayBuffer())], [...bodyFor(1020, 1029)], '跨片切片也要对')
+})
+
+await check('inMemoryUpTo：超过上限的大文件照常走 Blob；服务器不认 Range 时整份也留在内存', async () => {
+  const { memoryRomOf } = await import('../src/services/memoryRom.ts')
+  const big = await fetchBlobWithProgress('u', { fetchImpl: server(4096).fetchImpl, chunkBytes: 1024, inMemoryUpTo: 2048 })
+  assert.equal(memoryRomOf(big), undefined, '放不进内存的不能硬塞')
+  expectExact(await readAll(big), 4096)
+  const whole = await fetchBlobWithProgress('u', { fetchImpl: server(5000, { noRange: true }).fetchImpl, chunkBytes: 1024, inMemoryUpTo: 1 << 20 })
+  assert.ok(memoryRomOf(whole))
+  expectExact(await readAll(whole), 5000)
+})
+
+await check('下载好的 ROM 读不出：记下 Blob 存储已坏并改内存重下（2026-11-15 华为浏览器《拳皇 97 风云再起 Plus》）', async () => {
+  const { readFileSync } = await import('node:fs')
+  const ejs = readFileSync(new URL('../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8')
+  const fn = ejs.match(/function retryModeAfterBlobReadError[\s\S]*?\n\}/)?.[0]
+  assert.ok(fn, '缺 retryModeAfterBlobReadError')
+  const { transformSync } = await import('esbuild')
+  const vm = await import('node:vm')
+  const marks = []
+  const ctx = { MEMORY_ROM_MAX_BYTES: 520 * 1024 * 1024, markRomBlobStorageBroken: (w) => marks.push(w) }
+  vm.runInNewContext(`${transformSync(fn, { loader: 'ts' }).code};globalThis.f=retryModeAfterBlobReadError`, ctx)
+  assert.equal(ctx.f(40 << 20, true), 'memory', '街机包放得进内存：内存重下，不再建第二个读不出的 Blob')
+  assert.equal(ctx.f(40 << 20, false), 'memory', '没有内容版本也能内存重下')
+  assert.equal(ctx.f(700 << 20, true), 'fresh', '放不进内存的大光盘照旧整包重下')
+  assert.equal(ctx.f(700 << 20, false), null)
+  assert.equal(marks.length, 4, '每次都要记下 Blob 存储已坏（3 天内直接内存下载）')
+  assert.match(ejs, /const firstDownloadMode = \(\): 'preemptive-memory' \| 'resume' => \(romBlobStorageBroken \? 'preemptive-memory' : 'resume'\)/)
+  assert.match(ejs, /let stored = await download\(firstDownloadMode\(\)\)/, '街机第一次下载就要看 Blob 存储是否坏过')
+  assert.match(ejs, /let blob = await download\(romBlobStorageBroken \? 'preemptive-memory'/, '光盘 / NDS 同理')
+  assert.equal((ejs.match(/inMemoryUpTo: memoryLimitFor\(mode\)/g) ?? []).length, 2)
+  // 先发制人的那次按设备内存收着；确认读不出之后才放到最大
+  const limitFn = ejs.match(/function preemptiveMemoryRomBytes[\s\S]*?\n\}/)?.[0]
+  const limitOf = ejs.match(/const memoryLimitFor = [\s\S]*?\n\n/)?.[0]
+  assert.ok(limitFn && limitOf)
+  const lctx = { MEMORY_ROM_MAX_BYTES: 520 * 1024 * 1024, Number, Math }
+  vm.runInNewContext(`${transformSync(`${limitFn}\n${limitOf}`, { loader: 'ts' }).code};globalThis.f=memoryLimitFor`, lctx)
+  const MB = 1024 * 1024
+  const limitWith = (deviceMemory, mode) => { lctx.navigator = { deviceMemory }; return lctx.f(mode) }
+  assert.equal(limitWith(2, 'preemptive-memory'), 128 * MB, '2GB 设备先发制人只到 128MB')
+  assert.equal(limitWith(2, 'memory'), 520 * MB, '确认读不出之后放到最大')
+  assert.equal(limitWith(8, 'preemptive-memory'), 520 * MB)
+  assert.equal(limitWith(undefined, 'preemptive-memory'), 256 * MB, '读不到内存按 4GB 算')
+  assert.equal(limitWith(4, 'resume'), undefined)
+  // 读魔数要有时限：坏掉的 IDB Blob 会永不返回，以前整局停在这里等看门狗
+  assert.equal((ejs.match(/const magic = await readRomMagic\(stored\)/g) ?? []).length, 2)
+  assert.match(ejs, /new Uint8Array\(await readBlobRange\(blob, 0, 4, ROM_MAGIC_READ_TIMEOUT_MS\)\)/)
+  // 缓存读不出也记 Blob 存储已坏；内存下载的密文解一块放一块
+  assert.equal((ejs.match(/if \(isBlobReadError\(error\)\) markRomBlobStorageBroken\('读 ROM 缓存'\)/g) ?? []).length, 2)
+  assert.match(ejs, /if \(memoryRomOf\(stored\)\) return toMemory\(true\)/)
+  assert.match(ejs, /if \(cacheKey && !memoryRomOf\(stored\)\) void romCachePutBlob/, '内存那份不是真 Blob，不能写缓存')
+  assert.match(ejs, /if \(cacheKey && !memoryRomOf\(blob\)\) cacheRomBlob/)
+  assert.match(ejs, /return \{ url: objectUrlForEngine\(output\), name, hack, mameMedia, namcoSet, blob: output \}/, '街机内存 ROM 不能直接 createObjectURL')
+})
+
 await check('读包卡死：readBlobRange 到时抛 NotReadableError，调用方据此重下', async () => {
   const { readBlobRange, isBlobReadError } = await import('../src/services/romPack.ts')
   const stuck = { slice: () => ({ arrayBuffer: () => new Promise(() => {}) }) }
@@ -788,11 +863,57 @@ await check('解包逐块报进度；读不出时作废续传 / 缓存只重下�
   assert.match(pack, /const cipher = await readBlobRange\(blob, cipherAt, cipherAt \+ meta\.cipherSize\)/)
   assert.match(pack, /onProgress\?\.\(\{ loaded: unpacked, total: header\.originalSize \}\)/)
   const ejs = read('src/emulator/adapters/emulatorjs.ts')
-  assert.equal((ejs.match(/unpackRomPackBlob\(stored, romPackUnpackProgress\(onProgress\)\)/g) ?? []).length, 2)
-  assert.equal((ejs.match(/if \(!cacheKey \|\| !isBlobReadError\(error\)\) throw error/g) ?? []).length, 2)
+  // 街机也走带内存退路的解包入口；unpackRomPackBlob 只剩 unpackRomPackForEngine 里那一处
+  assert.equal((ejs.match(/unpackRomPackBlob\(stored, romPackUnpackProgress\(onProgress\)\)/g) ?? []).length, 1)
+  assert.equal((ejs.match(/const unpacked = await unpackRomPackForEngine\(stored, onProgress\)/g) ?? []).length, 2)
+  assert.equal((ejs.match(/if \(!isBlobReadError\(error\) \|\| memoryRomOf\((?:stored|blob)\)\) throw error/g) ?? []).length, 2)
   const dos = read('src/emulator/dosBundleSource.ts')
   assert.match(dos, /decodeDosBundle\(stored, fallbackName, report\)/)
   assert.match(dos, /if \(!cacheKey \|\| !isBlobReadError\(error\)\) throw error/)
+})
+
+await check('Blob 存储坏掉：内存 ROM 替身可切片校验，交给引擎时逐块流出（2026-11-13 宝可梦白 2 / 黑）', async () => {
+  const { memoryRomBlob, memoryRomOf, RomBlobStorageError, isBlobReadError } = await import('../src/services/romPack.ts')
+  const parts = [new Uint8Array([0, 1, 2, 3]), new Uint8Array([4, 5]), new Uint8Array([6, 7, 8])]
+  const view = memoryRomBlob(parts)
+  assert.equal(view.size, 9)
+  assert.deepEqual([...new Uint8Array(await view.slice(3, 7).arrayBuffer())], [3, 4, 5, 6])
+  assert.deepEqual([...new Uint8Array(await view.slice(-2).arrayBuffer())], [7, 8])
+  assert.deepEqual([...new Uint8Array(await view.slice(2).slice(1, 3).arrayBuffer())], [3, 4])
+  assert.equal(view.slice(8, 2).size, 0)
+  const rom = memoryRomOf(view)
+  assert.ok(rom && rom.parts.length === 3 && rom.size === 9)
+  assert.equal(memoryRomOf(new Blob([parts[0]])), undefined)
+  rom.parts[0] = null
+  await assert.rejects(view.slice(0, 2).arrayBuffer(), (e) => isBlobReadError(e))
+  const err = new RomBlobStorageError()
+  assert.equal(isBlobReadError(err), true)
+
+  const { readFileSync } = await import('node:fs')
+  const ejs = readFileSync(new URL('../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8')
+  assert.match(ejs, /const unpacked = await unpackRomPackForEngine\(stored, onProgress\)/, '光盘 / NDS 解包要走带内存退路的入口')
+  assert.match(ejs, /isNativeBlobReadMessage\(message\)/, '引擎读 ROM 报 NotReadableError 时要标记本页 Blob 存储已坏')
+  assert.match(ejs, /const memory = memoryRomOf\(blob\)/, '引擎取 ROM 的快捷回应要认内存 ROM')
+  const pack = readFileSync(new URL('../src/services/romPack.ts', import.meta.url), 'utf8')
+  assert.match(pack, /await Promise\.all\(parts\.map\(\(part\) => \(part\.size \? readBlobRange\(part, 0, 1, BLOB_STORAGE_PROBE_MS\) : null\)\)\)/, '解包后要探每个 Blob 块是否存在')
+  assert.match(pack, /const probeBytes = Math\.min\(combined\.size, 4 \* 1024 \* 1024\)/, '还要按引擎的 4MB 读取大小探合并后的 ROM')
+  assert.match(ejs, /onBlobReadError\?\.\(error\)/, '引擎读取 Blob 失败时要主动通知启动恢复')
+  assert.match(ejs, /failLoad\(fmt\(rt\.ejsEngineError, \{ msg: message \}\), 'runtime'\)/, 'Blob 读取失败应重挂一次并保留 ROM 候选')
+  // 跨访问记住：同一台 2GB 机器第 7、8 次开局都要先失败一次才走内存
+  assert.match(ejs, /let romBlobStorageBroken = readRomBlobBroken\(\)/, 'Blob 存储坏的结论要从 localStorage 读回')
+  assert.match(ejs, /localStorage\.setItem\(ROM_BLOB_BROKEN_KEY, String\(Date\.now\(\)\)\)/, '标记时要写进 localStorage')
+  const fnText = ejs.match(/export function romBlobBrokenRecently[\s\S]*?\n\}/)?.[0]
+  assert.ok(fnText, '缺 romBlobBrokenRecently')
+  const { transformSync } = await import('esbuild')
+  const vm = await import('node:vm')
+  const ctx = { ROM_BLOB_BROKEN_TTL_MS: 3 * 24 * 3600_000 }
+  vm.runInNewContext(`${transformSync(fnText.replace(/^export /, ''), { loader: 'ts' }).code};globalThis.f=romBlobBrokenRecently`, ctx)
+  const now = 1_800_000_000_000
+  assert.equal(ctx.f(null, now), false)
+  assert.equal(ctx.f('garbage', now), false)
+  assert.equal(ctx.f(String(now - 3600_000), now), true, '一小时前标记过：仍走内存')
+  assert.equal(ctx.f(String(now - 4 * 24 * 3600_000), now), false, '三天后过期，重新试 Blob')
+  assert.equal(ctx.f(String(now + 60_000), now), false, '时钟回拨写出的未来时间不算')
 })
 
 console.log(failed ? `\n${failed} 项未通过` : '\n全部通过 ✅')

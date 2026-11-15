@@ -100,10 +100,13 @@ ratingsRouter.get('/', optionalUser, async (req, res, next) => {
     const game = await gameBySlug(slug)
     if (!game) return res.status(404).json({ error: '游戏不存在' })
 
-    const stats = await ratingStats(game.id)
     const identity = { userId: req.user?.id ?? null, anonId: anonIdOf(req), anonIp: anonIpOf(req) }
-    // 完全没身份（未登录且没带 anon_id、IP 也不可信）时不查 mine，省一次查询
-    const mine = identity.userId || identity.anonId || identity.anonIp ? await findRating(query, game.id, identity) : null
+    // 完全没身份（未登录且没带 anon_id、IP 也不可信）时不查 mine，省一次查询。
+    // 汇总与「我的分」只依赖 game.id，并行查（每个详情页都会请求这条）
+    const [stats, mine] = await Promise.all([
+      ratingStats(game.id),
+      identity.userId || identity.anonId || identity.anonIp ? findRating(query, game.id, identity) : null,
+    ])
     res.json({ ...stats, mine: mineOf(mine) })
   } catch (e) {
     next(e)
@@ -162,8 +165,8 @@ ratingsRouter.post('/', optionalUser, async (req, res, next) => {
     const identity = { userId, anonId, anonIp }
     const { created } = await submitRating({ gameId: game.id, ...identity, score, country })
 
-    const stats = await ratingStats(game.id)
-    const mine = await findRating(query, game.id, identity)
+    // 写入已经完成；之后两次只读互不依赖，并行
+    const [stats, mine] = await Promise.all([ratingStats(game.id), findRating(query, game.id, identity)])
     // 新插的回 201、改分的回 200。前端不靠它区分，纯粹是让访问日志能一眼看出哪些是新票
     res.status(created ? 201 : 200).json({ ...stats, mine: mineOf(mine) })
   } catch (e) {

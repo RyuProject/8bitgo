@@ -12,6 +12,8 @@
  * 一个字都不用碰，反正整个加载期间都被遮罩盖着。
  */
 import { diagLog } from '@/services/startupDiagnostics'
+import { memoryRomBlob, memoryRomOf } from '@/services/memoryRom'
+import { rememberRomHostForUrl } from '@/services/romHosts'
 import type { PlatformId } from '@/types'
 import type { LoadPhase, LoadProgress, RuntimeId } from './types'
 import {
@@ -94,6 +96,28 @@ export function throttleProgress(sink: ProgressSink | undefined): (p: LoadProgre
  * 所以这个阈值不会误伤慢网络。
  */
 export const STALL_MS = 30_000
+/** 取首段 256 KiB 的真实速率；足以分辨明显慢线路，又只会在切线路时重复少量字节。 */
+const FIRST_RANGE_SAMPLE_BYTES = 256 * 1024
+const ALTERNATE_ROUTE_SAMPLE_BYTES = 64 * 1024
+const ALTERNATE_ROUTE_MIN_SAMPLE_BYTES = 32 * 1024
+const ALTERNATE_ROUTE_SAMPLE_TIMEOUT_MS = 1_500
+const SLOW_ROUTE_MIN_FILE_BYTES = 512 * 1024
+/** 和自适应并发的弱网档位保持一致；2G / 省流量设备不触发额外线路请求。 */
+const SLOW_ROUTE_MIN_MBPS = 3
+
+class SlowRomRouteError extends Error {
+  readonly sampledMbps: number
+  readonly elapsedMs: number
+  readonly alternateMbps: number
+
+  constructor(sampledMbps: number, elapsedMs: number, alternateMbps: number) {
+    super(`首段吞吐 ${sampledMbps.toFixed(1)} Mbps，备用线路 ${alternateMbps.toFixed(1)} Mbps`)
+    this.name = 'SlowRomRouteError'
+    this.sampledMbps = sampledMbps
+    this.elapsedMs = elapsedMs
+    this.alternateMbps = alternateMbps
+  }
+}
 
 interface StallGuard {
   signal: AbortSignal
@@ -229,7 +253,7 @@ async function drain(
   body: ReadableStream<Uint8Array>,
   phase: LoadPhase,
   totalHint: number | undefined,
-  emit: (p: LoadProgress, flush?: boolean) => void,
+  emit: (p: LoadProgress, flush?: boolean) => void | Promise<void>,
   maxBytes = Infinity,
   touch?: () => void,
 ): Promise<{ chunks: Uint8Array[]; loaded: number }> {
@@ -252,7 +276,7 @@ async function drain(
       loaded += value.byteLength
       // 万一还是超了（服务器给的 Content-Length 本身就不对），转不确定态而不是显示 120%
       if (total !== undefined && loaded > total) total = undefined
-      emit({ phase, loaded, total, ratio: total ? Math.min(loaded / total, 1) : undefined })
+      await emit({ phase, loaded, total, ratio: total ? Math.min(loaded / total, 1) : undefined })
     }
     if (total !== undefined && loaded !== total) {
       throw new Error(`下载不完整：应为 ${total} 字节，实际收到 ${loaded} 字节`)
@@ -300,8 +324,8 @@ export interface BlobFetchOptions {
   /** 下载前就限制响应总量；不能等完整 Blob 到手后才让格式校验发现异常大文件。 */
   maxBytes?: number
   /**
-   * 同一对象在另一条 CDN 线路上的地址（romHosts.ts 的 alternateRomUrl）。在当前线路上把重试用光后
-   * 换到这里整套再试一次；断点分片按 resumeKey 存，已下的片不重下。
+   * 同一对象在另一条 CDN 线路上的地址（romHosts.ts 的 alternateRomUrl）。首段 256 KiB 吞吐低于 3Mbps
+   * 且备用线路实测快 15%，或当前线路重试用尽时，整局改用这里；断点分片按 resumeKey 存，已下的片不重下。
    */
   alternateUrl?: string
   /** 外站 ZIP 的完整归档不留 HTTP 副本；续传片由独立 IndexedDB 管。 */
@@ -313,6 +337,16 @@ export interface BlobFetchOptions {
   resumeKey?: string
   /** 注入临时分片仓库，只给测试用；生产默认使用 downloadResumeStore。 */
   resumeStore?: DownloadResumeStore
+  /**
+   * 整份不超过这个字节数时，结果留在 JS 内存里（memoryRomBlob 替身），全程一个真 Blob 都不建；
+   * 超过的照常走 Blob —— 宁可让那一份按老路失败，也不把几百 MB 放进 JS 内存让标签页被杀。
+   * 设了它就不写续传片（续传片本身就是 IndexedDB 里的 Blob）。
+   *
+   * 2026-11-15 大陆华为浏览器 17 / Android 9《拳皇 97 风云再起 Plus》两次访问 5 局：ROM 每次都下完，
+   * 一读就 NotReadableError；作废续传片、不带续传整包重下后，`new Blob(网络分片)` 照样读不出 ——
+   * 这台浏览器的 Blob 存储本身坏了，只有不经过 Blob 才能开局。
+   */
+  inMemoryUpTo?: number
   /**
    * 自适应并发的硬上限。生产默认最多四路；测试可设成 1 固定旧的串行时序。
    * 这不是“越大越快”：每一路都可能暂存一个完整分片，低内存设备还会被运行时提示继续压低。
@@ -520,7 +554,7 @@ export async function withResumeTimeout<T>(task: Promise<T>, ms: number): Promis
 }
 
 /**
- * 第一片本来就必须下载；用它的真实吞吐决定后续并发，不另发一份“测速垃圾流量”。
+ * 第一片本来就必须下载；用前 256 KiB 的真实吞吐决定后续并发，不另发一份测速流量。
  *
  * 并发的目标是藏住高 RTT、丢包和单连接拥塞窗口，不是假设带宽可以凭空变多。因此弱网、省流量
  * 和低内存设备主动收缩；快网也最多四路，把瞬时 Blob 内存限制在 4 × 8 MiB 左右。
@@ -596,8 +630,9 @@ const isAbort = (e: unknown) => e instanceof DOMException && e.name === 'AbortEr
  * 再拷一份进 Blob、引擎再 XHR 回来一份，峰值是文件的两三倍。
  *
  * ── 为什么要分片 ────────────────────────────────────────────
- * 分片首先买到断点续传与内存封顶；在高 RTT、丢包或 CDN 单连接受限的路径上，第一片的真实吞吐还会
- * 决定后续开 1～4 路。HTTP/2 复用时并发未必增加总带宽，所以绝不固定四路硬冲：
+ * 分片首先买到断点续传与内存封顶；首片 256 KiB 的真实吞吐决定后续开 1～4 路。测速通过后，
+ * 大文件会提前并行取下一块完整 8 MiB Range，避免首片下完前网络空等。HTTP/2 复用时并发未必增加总带宽，
+ * 所以绝不固定四路硬冲：
  *
  *   1. **断了不用从头来**。600MB 下到 95% 遇上一次 TCP reset / Wi-Fi 切 4G /
  *      代理超时，原来整个从 0 重来。现在只白下那 8MB。
@@ -642,17 +677,31 @@ export async function fetchBlobWithProgress(url: string, opts: BlobFetchOptions 
     const guard = createStallGuard(opts.signal, stallMs)
     guard.touch()
     let failure: unknown = null
+    let switchForSpeed = false
     try {
-      return await blobWithProgressGuarded(currentUrl, guardedOpts, guard)
+      const blob = await blobWithProgressGuarded(currentUrl, { ...guardedOpts, alternateUrl: alternate }, guard)
+      if (currentUrl !== url) rememberRomHostForUrl(currentUrl)
+      return blob
     } catch (error) {
       if (opts.signal?.aborted || isAbort(error) && !guard.stalled()) throw error
       // 超过上限是这个对象本身的问题，换线路也一样
       if (error instanceof RangeError) throw error
-      if (!guard.stalled() || attempt >= retries) {
+      if (error instanceof SlowRomRouteError && alternate) {
+        failure = error
+        switchForSpeed = true
+      } else if (!guard.stalled() || attempt >= retries) {
         failure = guard.stalled() ? new Error(stallMessage(stallMs)) : error
       }
     } finally {
       guard.stop()
+    }
+    if (switchForSpeed && alternate) {
+      const slowRoute = failure as SlowRomRouteError
+      diagLog('download', 'warn', `ROM 首段 ${slowRoute.sampledMbps.toFixed(1)} Mbps，备用线路 ${slowRoute.alternateMbps.toFixed(1)} Mbps，切换：`, currentUrl, '→', alternate)
+      currentUrl = alternate
+      alternate = ''
+      attempt = -1
+      continue
     }
     if (failure) {
       if (!alternate) throw failure
@@ -686,9 +735,21 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
   const networkRetries = opts.retries ?? NETWORK_RETRIES
   const doFetch = opts.fetchImpl ?? fetch
   const emit = throttleProgress(opts.onProgress)
-  const resumeKey = opts.resumeKey ?? ''
+  const memoryLimit = Math.max(0, opts.inMemoryUpTo ?? 0)
+  const resumeKey = memoryLimit ? '' : opts.resumeKey ?? ''
   let resumeStore: DownloadResumeStore | null = resumeKey ? (opts.resumeStore ?? downloadResumeStore) : null
   let reportedLoaded = 0
+  /** 这一份（按整份大小）要不要留在内存里。分片模式下 total 在建第一个分片之前就已确定。 */
+  const keepInMemory = (size: number) => memoryLimit > 0 && size > 0 && size <= memoryLimit
+  const memoryParts = (chunks: Uint8Array[]) => chunks as Uint8Array<ArrayBuffer>[]
+  /** 网络分片收齐后的那一块：内存模式下不建 Blob（建出来就可能读不出）。 */
+  const makePart = (chunks: Uint8Array[], wholeSize: number): Blob =>
+    keepInMemory(wholeSize) ? memoryRomBlob(memoryParts(chunks)) : new Blob(chunks as BlobPart[])
+  /** 没有 body 的回应（测试 / 个别实现）：内存模式读成字节，不经 res.blob()。 */
+  const bodylessPart = async (res: Response, wholeSize: number): Promise<Blob> =>
+    memoryLimit > 0 && (wholeSize === 0 || keepInMemory(wholeSize))
+      ? memoryRomBlob([new Uint8Array(await res.arrayBuffer())])
+      : res.blob()
 
   emit({ phase, loaded: 0 }, true)
 
@@ -770,6 +831,55 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
     }
   }
 
+  /** 慢线路才请求另一域的同一 ROM 对齐首片；若对方没有快 15%，继续当前流避免盲切更差线路。 */
+  const measureAlternateRomRange = async (candidateUrl: string, expectedTotal: number): Promise<number | null> => {
+    const sampleBytes = Math.min(ALTERNATE_ROUTE_SAMPLE_BYTES, chunkBytes, expectedTotal)
+    if (!candidateUrl || sampleBytes <= 0) return null
+    const candidateEnd = Math.min(chunkBytes, expectedTotal) - 1
+    const controller = new AbortController()
+    const abortFromGuard = () => controller.abort()
+    if (guard.signal.aborted) controller.abort()
+    else guard.signal.addEventListener('abort', abortFromGuard, { once: true })
+    let timedOut = false
+    const timer = setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, ALTERNATE_ROUTE_SAMPLE_TIMEOUT_MS)
+    const startedAt = monotonicNow()
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+    let loaded = 0
+    try {
+      const res = await doFetch(candidateUrl, {
+        headers: { Range: `bytes=0-${candidateEnd}` }, signal: controller.signal,
+        cache: opts.cache ?? 'default',
+      })
+      validateResponse(res, opts.check)
+      if (res.status !== 206 || !res.body) {
+        void res.body?.cancel().catch(() => {})
+        return null
+      }
+      assertContentRange(res, 0, candidateEnd, expectedTotal)
+      reader = res.body.getReader()
+      while (loaded < sampleBytes) {
+        const { done, value } = await reader.read()
+        if (done) break
+        if (value) loaded += value.byteLength
+      }
+      if (loaded < sampleBytes || controller.signal.aborted) return null
+      return (loaded * 8) / (Math.max(1, monotonicNow() - startedAt) * 1000)
+    } catch {
+      if (timedOut && loaded >= ALTERNATE_ROUTE_MIN_SAMPLE_BYTES) {
+        return (loaded * 8) / (Math.max(1, monotonicNow() - startedAt) * 1000)
+      }
+      return null
+    } finally {
+      clearTimeout(timer)
+      guard.signal.removeEventListener('abort', abortFromGuard)
+      await reader?.cancel().catch(() => {})
+      try { reader?.releaseLock() } catch { /* 已由浏览器释放 */ }
+    }
+  }
+
   /** 服务器忽略 Range 时把 200 当整份读；已缓存的残片全部作废，不能混着拼。 */
   const takeWhole = async (res: Response): Promise<Blob> => {
     const encoded = Boolean(res.headers.get('content-encoding'))
@@ -777,7 +887,7 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
     const total = !encoded && Number.isFinite(len) && len > 0 ? len : undefined
     if (total !== undefined && total > maxBytes) throw new RangeError('ROM 文件超过浏览器下载上限')
     if (!res.body) {
-      const blob = await res.blob()
+      const blob = await bodylessPart(res, total ?? 0)
       if (blob.size > maxBytes) throw new RangeError('ROM 文件超过浏览器下载上限')
       if (total !== undefined && blob.size !== total) {
         throw new Error(`下载不完整：应为 ${total} 字节，实际收到 ${blob.size} 字节`)
@@ -785,6 +895,7 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
       emitTotal(blob.size, blob.size, true)
       await flushPartSaves()
       await clearResume()
+      if (memoryRomOf(blob)) return keepInMemory(blob.size) ? blob : new Blob([await blob.arrayBuffer()], { type })
       return blob.type === type ? blob : new Blob([blob], { type })
     }
     const { chunks, loaded } = await drain(
@@ -798,7 +909,7 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
     emitTotal(loaded, loaded, true)
     await flushPartSaves()
     await clearResume()
-    return new Blob(chunks as BlobPart[], { type })
+    return keepInMemory(loaded) ? memoryRomBlob(memoryParts(chunks), type) : new Blob(chunks as BlobPart[], { type })
   }
 
   let total = 0
@@ -806,6 +917,12 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
   let completed = 0
   let sampleBytes = 0
   let sampleElapsedMs = 0
+  const networkHints = opts.networkHints ?? browserChunkNetworkHints()
+  const requestedMax = Math.trunc(opts.maxConcurrency ?? (opts.fetchImpl ? 1 : MAX_CHUNK_CONCURRENCY))
+  const hardMax = Number.isFinite(requestedMax) ? Math.max(1, Math.min(
+    MAX_CHUNK_CONCURRENCY,
+    requestedMax,
+  )) : 1
   const resumed = await loadResume()
 
   if (resumed) {
@@ -855,23 +972,72 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
   }
 
   /*
-    第一片的 Content-Range 已经说出了整份大小，但 `total` 要等这一片读完才赋值。
-    旧代码在这 8MB 里一直报 total=0，createOverallRatio 只能走「没有总量」的渐近映射：
-    8MB 被算成 rom 阶段的 86%（《主题医院》150MB：开局 6 秒条子就到 67%），之后真实比例
-    5%→85% 全都输给它，条子在 67% 一动不动好几分钟。第一片期间改用这个已知总量。
+    第一片的 Content-Range 已经说出了整份大小，必须在读完前就赋给 total：
+    旧代码等首片下载完才赋值，8MB 期间只能走渐近映射，《主题医院》150MB 开局 6 秒进度就到 67%，
+    后面真实比例 5%→85% 都输给它。现在首片开始就用总量算进度，也能在测速后提前启动下一片。
   */
   let probedTotal = 0
+  let firstRangeInFlight = 0
+  let earlyRangeInFlight = 0
+  const earlyRangeLoaded = new Map<number, number>()
+  const earlyChunkTasks: Array<{ index: number; promise: Promise<Blob | null> }> = []
+  let earlyChunkError: unknown
+  let earlyPrefetchStarted = false
+  const setEarlyRangeLoaded = (index: number, loaded: number) => {
+    const previous = earlyRangeLoaded.get(index) ?? 0
+    earlyRangeLoaded.set(index, loaded)
+    earlyRangeInFlight += loaded - previous
+  }
+  const emitInitialRangeProgress = (flush = false) =>
+    emitTotal(completed + firstRangeInFlight + earlyRangeInFlight, total || probedTotal || undefined, flush)
   /** 把分片内的字节换算成“已经完整落盘的分片 + 当前片”的整份进度。 */
-  const takePart = async (res: Response, expect: number) => {
-    const relay = (p: LoadProgress) => emitTotal(completed + (p.loaded ?? 0), total || probedTotal || undefined)
+  const takePart = async (res: Response, expect: number, onLoaded?: (loaded: number) => void | Promise<void>) => {
+    const relay = async (p: LoadProgress) => {
+      const loaded = p.loaded ?? 0
+      await onLoaded?.(loaded)
+      if (onLoaded) emitInitialRangeProgress()
+      else emitTotal(completed + loaded, total || probedTotal || undefined)
+    }
     if (!res.body) {
-      const blob = await res.blob()
+      const blob = await bodylessPart(res, total)
       if (blob.size !== expect) throw new Error(`分片不完整：应为 ${expect} 字节，实际 ${blob.size}`)
+      if (onLoaded) await relay({ phase, loaded: blob.size })
       return blob
     }
     // Content-Range 只是服务器自报；若实际流远大于这一片，不能先无限攒进 chunks 再验长度。
     const { chunks } = await drain(res.body, phase, expect, relay, expect, guard.touch)
-    return new Blob(chunks as BlobPart[])
+    return makePart(chunks, total)
+  }
+
+  /** 首片测速通过后抢先取后续块；仍用完整 8 MiB Range，不破坏边缘缓存的对齐规则。 */
+  const fetchEarlyChunk = async (index: number, expectedTotal: number): Promise<Blob | null> => {
+    const start = index * chunkBytes
+    const end = Math.min(start + chunkBytes, expectedTotal) - 1
+    if (end < start) return null
+    try {
+      guard.touch()
+      const res = await doFetch(url, {
+        headers: { Range: `bytes=${start}-${end}` }, signal: guard.signal,
+        cache: opts.cache ?? 'default',
+      })
+      validateResponse(res, opts.check)
+      if (res.status !== 206) {
+        void res.body?.cancel().catch(() => {})
+        return null
+      }
+      assertContentRange(res, start, end, expectedTotal)
+      const part = await takePart(res, end - start + 1, (loaded) => setEarlyRangeLoaded(index, loaded))
+      await queuePartSave(expectedTotal, index, part)
+      return part
+    } catch (error) {
+      setEarlyRangeLoaded(index, 0)
+      emitInitialRangeProgress()
+      if (guard.stalled() || opts.signal?.aborted) earlyChunkError = error
+      if (!guard.stalled() && !opts.signal?.aborted) {
+        diagLog('download', 'warn', '首片期间的提前分片失败，后续会按常规重试：', error, url)
+      }
+      return null
+    }
   }
 
   /* 没有续传现场时，第一个请求同时探测 Range 支持并取得整份大小。 */
@@ -906,19 +1072,73 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
         if (Number(match[2]) !== firstEnd) throw new Error(`分片范围不匹配：期望 bytes 0-${firstEnd}/${firstTotal}`)
 
         probedTotal = firstTotal
-        const firstPart = await takePart(first, firstEnd + 1)
-        sampleBytes = firstPart.size
-        sampleElapsedMs = Math.max(1, monotonicNow() - sampleStartedAt)
         total = firstTotal
         parts = Array.from({ length: Math.ceil(total / chunkBytes) }, () => undefined as Blob | undefined)
+        const firstSampleSize = Math.min(FIRST_RANGE_SAMPLE_BYTES, firstEnd + 1)
+        let sampled = false
+        const onFirstLoaded = async (loaded: number) => {
+          firstRangeInFlight = loaded
+          if (!sampled && loaded >= firstSampleSize) {
+            sampled = true
+            sampleBytes = Math.min(loaded, firstEnd + 1)
+            sampleElapsedMs = Math.max(1, monotonicNow() - sampleStartedAt)
+            const sampledMbps = (sampleBytes * 8) / (sampleElapsedMs * 1000)
+            const alternateExists = Boolean(opts.alternateUrl && opts.alternateUrl !== url)
+            const effectiveType = String(networkHints.effectiveType ?? '').toLowerCase()
+            const conserveTraffic = networkHints.saveData || effectiveType === 'slow-2g' || effectiveType === '2g'
+            if (alternateExists && firstTotal >= SLOW_ROUTE_MIN_FILE_BYTES && !conserveTraffic) {
+              diagLog('download', 'info', `ROM 首段 ${sampleBytes} 字节 / ${sampleElapsedMs}ms（${sampledMbps.toFixed(1)} Mbps）：`, url)
+              if (sampledMbps < SLOW_ROUTE_MIN_MBPS) {
+                const alternateMbps = await measureAlternateRomRange(opts.alternateUrl!, firstTotal)
+                if (alternateMbps !== null && alternateMbps > sampledMbps * 1.15) {
+                  throw new SlowRomRouteError(sampledMbps, sampleElapsedMs, alternateMbps)
+                }
+                diagLog('download', 'info', `备用 ROM 线路没有明显更快（${alternateMbps?.toFixed(1) ?? '未测出'} Mbps），继续当前线路：`, url)
+              }
+            }
+            const earlyConcurrency = Math.min(
+              hardMax,
+              adaptiveChunkConcurrency(sampleBytes, sampleElapsedMs, networkHints),
+              Math.ceil(firstTotal / chunkBytes),
+            )
+            if (!earlyPrefetchStarted && earlyConcurrency > 1) {
+              earlyPrefetchStarted = true
+              for (let index = 1; index < earlyConcurrency; index++) {
+                earlyChunkTasks.push({
+                  index,
+                  promise: fetchEarlyChunk(index, firstTotal),
+                })
+              }
+            }
+          }
+        }
+        const firstPart = await takePart(first, firstEnd + 1, onFirstLoaded)
+        if (!sampled) {
+          sampleBytes = firstPart.size
+          sampleElapsedMs = Math.max(1, monotonicNow() - sampleStartedAt)
+        }
+        firstRangeInFlight = 0
         parts[0] = firstPart
         completed = firstPart.size
-        emitTotal(completed, total, true)
+        emitInitialRangeProgress(true)
+        if (earlyChunkTasks.length) {
+          const earlyParts = await Promise.all(earlyChunkTasks.map(async ({ index, promise }) => ({ index, part: await promise })))
+          if (guard.stalled() && earlyChunkError) throw earlyChunkError
+          for (const { index, part } of earlyParts) {
+            if (part) {
+              setEarlyRangeLoaded(index, 0)
+              parts[index] = part
+              completed += part.size
+              emitInitialRangeProgress(true)
+            }
+          }
+        }
         // 整份不足一片时已经完整，落临时库再立刻删只会拖慢几百 KB 的小游戏开局。
         if (firstTotal > chunkBytes) await queuePartSave(total, 0, firstPart)
         break
       } catch (error) {
         // 卡死会在外层换一只新的 AbortController；这里不能拿已 abort 的 signal 空转。
+        if (error instanceof SlowRomRouteError) throw error
         if (guard.stalled()) throw error
         if (error instanceof RangeError) throw error
         if (isAbort(error) || opts.signal?.aborted) throw error
@@ -929,14 +1149,9 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
     }
   }
 
-  const requestedMax = Math.trunc(opts.maxConcurrency ?? (opts.fetchImpl ? 1 : MAX_CHUNK_CONCURRENCY))
-  const hardMax = Number.isFinite(requestedMax) ? Math.max(1, Math.min(
-    MAX_CHUNK_CONCURRENCY,
-    requestedMax,
-  )) : 1
   const concurrency = Math.min(
     hardMax,
-    adaptiveChunkConcurrency(sampleBytes, sampleElapsedMs, opts.networkHints ?? browserChunkNetworkHints()),
+    adaptiveChunkConcurrency(sampleBytes, sampleElapsedMs, networkHints),
   )
   const pending = parts.map((part, index) => part ? -1 : index).filter((index) => index >= 0)
   const inFlightLoaded = new Map<number, number>()
@@ -1030,14 +1245,14 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
       emitTotal(completed + inFlightBytes, total)
     }
     if (!res.body) {
-      const blob = await res.blob()
+      const blob = await bodylessPart(res, total)
       if (blob.size !== expect) throw new Error(`分片不完整：应为 ${expect} 字节，实际 ${blob.size}`)
       setInFlight(index, blob.size)
       return blob
     }
     // 并发片同样要按实际读入字节止损，不能信 CDN 宣称的 Content-Range。
     const { chunks } = await drain(res.body, phase, expect, relay, expect, guard.touch)
-    return new Blob(chunks as BlobPart[])
+    return makePart(chunks, total)
   }
 
   const worker = async () => {
@@ -1066,6 +1281,10 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
   // 删除几十到几百个临时片可能明显拖住开局。完整 Blob 已在手里，清理留在后台即可；
   // 同一个内容键此刻再次进入，最多只是短暂复用这份完整现场，不会混入另一代 ROM。
   void clearResume()
+  if (keepInMemory(total)) {
+    // 各片本来就是独立的字节块，拼成一个替身只是换个索引，不复制
+    return memoryRomBlob(complete.flatMap((part) => (memoryRomOf(part)?.parts ?? []) as Uint8Array<ArrayBuffer>[]), type)
+  }
   return new Blob(complete, { type })
 }
 
@@ -1171,7 +1390,7 @@ export function loadProgressPlan(ctx: LoadProgressPlanContext): LoadProgressPlan
   if (ctx.runtime === 'html5' || ctx.runtime === 'cloudgame' || ctx.runtime === 'liveview') {
     return makeLoadProgressPlan(`${ctx.runtime}-surface`, [['starting', 100]], { starting: 60_000 })
   }
-  if (ctx.runtime === 'ruffle') {
+  if (ctx.runtime === 'ruffle' || ctx.runtime === 'awayfl') {
     return makeLoadProgressPlan('flash', [['rom', 60], ['starting', 40]], { rom: 60_000, starting: 35_000 })
   }
   if (ctx.runtime === 'jsnes') {

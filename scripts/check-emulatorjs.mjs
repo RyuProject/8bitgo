@@ -105,6 +105,9 @@ for (const [needle, what, why] of [
   ['n<=3*s?o(0,n):(o(0,s),o((n>>1)-(s>>1),(n>>1)+(s>>1)),o(n-s,n))', '缓存键抽样哈希', '主线程会逐字节哈希 242MB 的 wasm（实测 1.3 秒卡顿），街机 blob ROM 每局也算一遍'],
   ['Could not load previous settings",t)}if(this.config.defaultOptions){', '首次开局带核心默认选项', '只在 retro_load_game 读取的核心选项（FBNeo 采样率 / 色深）对没保存过设置的玩家永不生效'],
   ['try{for(;;){__8bgArm();const{done:s,value:o}=await e.read()', '下载包体 20 秒无数据中止', '跨洲线路丢了流结尾时会永远停在「下载游戏核心 100%」'],
+  ['Z=new Uint8Array(i);let __8bgOffset=0;for(const __8bgChunk of n){Z.set(__8bgChunk,__8bgOffset)', '核心响应直接拼接 Uint8Array', '避免对已读出的核心响应再做 Blob → ArrayBuffer 回读'],
+  ['response stream read failed', '核心响应阶段诊断', '如果浏览器仍在读 HTTP 流时失败，诊断包必须保留原始异常对象'],
+  ['改用 XHR arraybuffer 重新下载', '核心响应流读失败改走 XHR', '华为浏览器这类读不出 HTTP 流（NotReadableError）的环境没有别的读法，核心下载一失败整局就停'],
   ['return Promise.race([this.storageCache.put(n)', '引擎缓存读写有时限', 'IndexedDB 卡住时核心下完也交不出去，停在 100%'],
   ['n.onblocked=()=>e(),n.onsuccess=()=>{try{let i=n.result.transaction(', '引擎缓存读写有时限', '表不存在 / 库正在关闭时 transaction() 同步抛错，Promise 永远不 settle'],
   ['this.storageCache&&!this.__8bgCacheDead&&(I=await (()=>{let __8bgT;return Promise.race(', '缓存挂死一次就停用', 'Safari 的 IndexedDB 挂死时每局连等两次缓存查询，停在「下载游戏核心」（没有百分比）被判卡住'],
@@ -113,6 +116,7 @@ for (const [needle, what, why] of [
   ['fetch(t,{method:"HEAD",headers:s}),new Promise((t,e)=>setTimeout(()=>e(new Error("HEAD timeout")),8e3))', '缓存复验 HEAD 有时限', '缓存过期后的 HEAD 复验没有时限，网络半开时永远停在「下载游戏核心」'],
   ['else Z=await Promise.race([y[d](),', '文本响应包体有时限', '核心报告 JSON 的包体读不完时引擎永远不往下走'],
   ['this.toggleMainLoop(0),setTimeout(()=>{try{this.Module.abort()}', '退出时不卸载 /data/saves', '卸载后排队的 autoPersist 会把 IndexedDB 里所有游戏的电池存档（.srm）清空，刷新 / 切游戏就丢档'],
+  ['FS.writeFile(`/${t}`,e,{canOwn:!0})', '游戏文件写 MEMFS 不复制', '开局那一刻 ROM 在 JS 侧多一整份；2GB 手机开 64MB NDS ROM 时核心的 WASM 堆因此长不动，只报 Aborted()'],
   ['core:{name:"Core",dontCache:!1,cdnFallback:!1}', '核心不回落官方 CDN', 'cdn.emulatorjs.org/4.3.0-pre 的核心起不来（AGENTS §2.4），只会多等几十秒再报 Error loading EmulatorJS runtime'],
 ]) {
   if (!js.includes(needle)) fail(`emulator.min.js 缺「${what}」补丁 —— ${why}`, 'npm run ejspatch，然后换 EJS_RUNTIME_GENERATION')

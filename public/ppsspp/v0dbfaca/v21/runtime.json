@@ -1,0 +1,82 @@
+{
+  "runtime": "PPSSPP WebAssembly",
+  "runtimeGeneration": "v21",
+  "upstream": "https://github.com/root-hunter/ppsspp-wasm",
+  "commit": "0dbfaca62a8a924abc2c5dd5dd0733b668e5e68a",
+  "emscripten": "5.0.7",
+  "rangeStreaming": true,
+  "rangeLoaderRevision": 4,
+  "blockBytes": 2097152,
+  "chdBlockBytes": 2097152,
+  "memoryCacheBytes": 100663296,
+  "rangeTelemetry": true,
+  "objectValidator": "etag-or-last-modified",
+  "workerModel": "self-script",
+  "offscreenCanvas": true,
+  "offscreenFramebuffer": "fallback",
+  "webglContext": "worker-offscreen-canvas-with-proxy-fallback",
+  "proxiedWebglPreloop": "fallback-skip-worker-token",
+  "pthreadAudioContext": "shared-ring-buffer-worklet-fade-v2",
+  "performanceProfile": "qq-browser-stable-canvas-audio-v1+adaptive-canvas-slow-network-v2",
+  "maxCanvasPixels": 522240,
+  "pthreadPoolMax": 8,
+  "lto": true,
+  "performanceTelemetry": true,
+  "inputLatencyProfile": "inflight-2-vsync-off-buffered-native",
+  "graphicsCompatibilityProfile": "buffered-native-v1",
+  "startupReadinessProfile": "core-boot-log-v1",
+  "localDiscProfile": "service-worker-range-v1",
+  "preloadAssetsProfile": "runtime-no-debugger",
+  "rangeReadAheadProfile": "adaptive-rolling-buffer-shared-worker-recovery-v8",
+  "rangeReadAheadBlocks": 10,
+  "rangeReadAheadCacheBytes": 25165824,
+  "webFeaturesBridge": "savestate-controls-v1",
+  "mediaEngine": "ffmpeg-h264-audio-minimal",
+  "ffmpegCommit": "1e3b4965632f60b1d85360261d1b9dd45444bc71",
+  "mediaDecoders": [
+    "h264",
+    "aac",
+    "atrac3",
+    "atrac3p",
+    "mp3",
+    "mp3float"
+  ],
+  "artifactsInstalled": true,
+  "artifacts": {
+    "PPSSPPSDL.js": {
+      "bytes": 412996,
+      "sha256": "76793ff3dcb6ce725fdc29d8f48f5ea0a029561f0ec8a30077263bd46253e6e0"
+    },
+    "PPSSPPSDL.wasm": {
+      "bytes": 18179755,
+      "sha256": "f3d66fd8368cf937fca7067927084fe64e167881465a6b53e75d0ea2c0451a12"
+    },
+    "PPSSPPSDL.data": {
+      "bytes": 19434861,
+      "sha256": "1b2a982c85a1c25577e4d154a0f21c91c72f070a7f30a6e6f7465e2d6e941e82"
+    },
+    "range-prefetch-worker.js": {
+      "bytes": 2760,
+      "sha256": "759ad98a251deb9873ad944ead4bf9b8e71e5edc15b62d00ca21f96a313c5cf5"
+    },
+    "local-disc-sw.js": {
+      "bytes": 3664,
+      "sha256": "4d2b4ebeb17e55237d959ebd4e7c9609fda7ed06c977ce93d470331432569fd1"
+    },
+    "host.js": {
+      "bytes": 35325,
+      "sha256": "4065c0f253fc8beb8c1bcf22aa205cab364c745c2c73a4786b714dfb6ed3e3e9"
+    },
+    "SOURCE.txt": {
+      "bytes": 2078,
+      "sha256": "9f49287bf4d15e32b99e1f0eac3459f590d560f6098fe8aa3f8d044e5e45222e"
+    }
+  },
+  "rangeReadAheadConcurrency": 4,
+  "browserHttpCache": "romv-pinned-no-conditional-v1",
+  "cnEdgeCore": "wasm-data-edgeone-fallback-v1",
+  "rangeSyncRetryProfile": "status0-backoff-4x-45s-timeout-escalate-v2",
+  "workerErrorDiagnostics": "stack-v1",
+  "canvasLimitProfile": "qqBrowser=480x272;performance=480x272;balanced=720x408;quality=960x544;slowNetwork=performance",
+  "runtimeErrorSaveFlush": "idbfs-flush-before-report-1500ms-v1"
+}

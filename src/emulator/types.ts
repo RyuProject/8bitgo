@@ -4,8 +4,11 @@
  * 一个「运行时」负责把某类 ROM 跑起来。播放器只面向这个接口，不关心背后是谁：
  *   EmulatorJS  主机 / 掌机 / 街机 / DOS（RetroArch 核心）
  *   Ruffle      Flash (.swf)
+ *   AwayFL      仅供已验证游戏使用的 Flash 纯 JavaScript 回退
  *   HTML5       现代网页 / WebAssembly 游戏（加载受权部署的网页入口）
  *   jsnes       NES (.nes)
+ *   binjgb      GB / GBC（无 WebGL 时使用 Canvas 2D）
+ *   IodineGBA   GBA（没有 WebAssembly 时使用纯 JavaScript）
  *   J2ME        Java 手机游戏 (.jar) —— 需自托管，见 adapters/j2me.ts
  *   js-dos      DOS 游戏 —— DOSBox 的浏览器移植，见 adapters/jsdos.ts
  *   webretro    历史备用的 RetroArch WASM 移植（当前不自动接管任何平台）
@@ -41,7 +44,7 @@ import type { ChatSendResult } from './chatSend'
 import type { GbaVideoMode } from './gbaVideo'
 import type { SaveArchiveDetails } from './saveEnvelope'
 
-export type RuntimeId = 'emulatorjs' | 'ruffle' | 'html5' | 'jsnes' | 'j2me' | 'jsdos' | 'webretro' | 'play' | 'ppsspp' | 'dolphin' | 'cloudgame' | 'liveview'
+export type RuntimeId = 'emulatorjs' | 'ruffle' | 'awayfl' | 'html5' | 'jsnes' | 'binjgb' | 'iodinegba' | 'j2me' | 'jsdos' | 'webretro' | 'play' | 'ppsspp' | 'dolphin' | 'cloudgame' | 'liveview'
 
 /**
  * jsnes 的 P2P 联机会话参数（见 adapters/jsnes.ts 与 emulator/jsnesNetplay.ts）。
@@ -76,6 +79,8 @@ export interface MountOptions {
   platform: PlatformId
   /** ROM：本地文件或可跨域访问的 URL */
   game: File | string
+  /** 启动期 GBA WASM 越界后的唯一恢复轮：丢弃该远端 ROM 的缓存与续传片，再从网络读取。 */
+  forceRomRefresh?: boolean
   /** PSP 在线镜像的读取方式；整包先落 OPFS 再挂成本地盘，默认按需流式读取。 */
   pspLoadMode?: 'stream' | 'download'
   /** 显示名（存档 / 截图命名用） */
@@ -257,8 +262,17 @@ export interface MountOptions {
    * （如包名不是任何驱动），跳过原地重试、直接试备用 ROM。
    */
   onError?: (message: string, scope?: 'runtime' | 'content' | 'config' | 'deterministic') => void
-  /** NDS 核心的 WASM 主循环已经崩溃；和普通加载失败分开，允许一次有界的换核心重开。 */
+  /** EmulatorJS 核心发生 WASM 陷阱；NDS 用于兼容核心回退，GBA 8BG 用于一次缓存刷新恢复。 */
   onCoreCrash?: (core: string, message: string) => void
+  /** NDS 持续掉帧但当前核心没有已验证的运行时降档项时，提示玩家下次开局尝试性能核心。 */
+  onNdsPerformanceIssue?: (fps: number, reason: 'no-live-option' | 'frameskip-exhausted') => void
+  /** NDS 核心回读确认帧跳选项已经生效；只用于告知玩家和诊断，不触发重启。 */
+  onNdsPerformanceApplied?: (frameskip: string) => void
+  /**
+   * 开局前核心分配不出 WASM 内存。返回 true = 播放器已换低内存核心重开（适配器不再报 onError），
+   * false / 未提供 = 照常走 onError。见 fbneoLowmem.ts。
+   */
+  onOutOfMemory?: (core: string, message: string) => boolean
   /**
    * 「这份 ROM 我跑不了，换个引擎吧」—— 和 onError 是两回事。
    *
@@ -400,8 +414,20 @@ export interface ResolveContext {
    * Range 不可用时不会靠外层大小猜引擎。jsnes 邀请链接仍会优先 jsnes，除非已经明确为 false。
    */
   jsnesCompatible?: boolean
-  /** 这个浏览器建不出 WebGL（见 webglSupport.ts）。NES 据此改走 jsnes，连后台固定的 emulatorjs 也让路。 */
+  /**
+   * 浏览器没有 WebAssembly（Edge 增强安全性、iOS 锁定模式、关了 JIT 的安卓模拟器，见 browserSupport.ts）。
+   * GB/GBC 改走 binjgb 的纯 JavaScript 构建（public/binjgb/binjgb-js.js，scripts/build-binjgb-js.mjs）。
+   */
+  wasmUnavailable?: boolean
+  /** GBA 无 WebAssembly 时改走必须有平台 BIOS 的纯 JavaScript IodineGBA。 */
+  gbaWasmUnavailable?: boolean
+  /** 这个浏览器建不出 WebGL（见 webglSupport.ts）。NES 改走 jsnes，GB/GBC 改走 binjgb。 */
   webglUnavailable?: boolean
+  /**
+   * Flash 这一局改用 AwayFL（纯 JavaScript）：没有 WebAssembly 且游戏在验证名单里，或地址带 ?awayfl=1。
+   * 由 awayflPolicy.ts 在 effect 里判断后传进来；它比逐游戏的 runtime 覆盖优先（Ruffle 本来就跑不了）。
+   */
+  flashAwayfl?: boolean
 }
 
 /** 运行时能提供的能力。播放器按这个集合决定显示哪些按钮 —— 支持才亮，不支持不显示 */

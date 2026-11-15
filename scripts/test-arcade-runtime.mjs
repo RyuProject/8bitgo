@@ -37,6 +37,7 @@ console.log('\n街机启动链体检')
 
 await check('RomData 只对实际包含该实现的 FBNeo 开放', () => {
   assert.equal(supportsFbneoRomData('fbneo'), true)
+  assert.equal(supportsFbneoRomData('fbneo-lowmem'), true)
   for (const core of ['mame2003', 'mame2003_plus', 'mame-current', 'fbalpha2012_cps1']) {
     assert.equal(supportsFbneoRomData(core), false, `${core} 被误判为支持 RomData`)
   }
@@ -44,6 +45,7 @@ await check('RomData 只对实际包含该实现的 FBNeo 开放', () => {
 
 await check('已配 RomData 时自动纠正到 FBNeo，空值不干预选核', () => {
   assert.equal(arcadeCoreForRomData('mame2003', 'ZipName wofcn'), 'fbneo')
+  assert.equal(arcadeCoreForRomData('fbneo-lowmem', 'ZipName wofcn'), 'fbneo-lowmem')
   assert.equal(arcadeCoreForRomData('mame-current', '  \n'), 'mame-current')
 })
 

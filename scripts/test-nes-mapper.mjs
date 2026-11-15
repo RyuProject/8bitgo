@@ -247,7 +247,12 @@ for (const m of [0, 25, 256, 555, 4095]) {
   {
     const { readFileSync } = await import('node:fs')
     const registry = readFileSync(new URL('../src/emulator/registry.ts', import.meta.url), 'utf8')
-    assert.match(registry, /platform === 'nes' && ctx\.webglUnavailable && ctx\.runtimeOverride === 'emulatorjs'/, '后台固定 emulatorjs 时没有 WebGL 也要让路')
+    // d84df01 起 NES / GB / GBC 共用这一条（GB/GBC 改走 binjgb），NES 必须仍在列表里
+    assert.match(
+      registry,
+      /const overrideNeedsWebgl = \([^)]*platform === 'nes'[^)]*\) &&\s*ctx\.webglUnavailable && ctx\.runtimeOverride === 'emulatorjs'/,
+      '后台固定 emulatorjs 时没有 WebGL 也要让路',
+    )
     const player = readFileSync(new URL('../src/emulator/EmulatorPlayer.tsx', import.meta.url), 'utf8')
     assert.equal((player.match(/webglUnavailable[,:]/g) ?? []).length >= 2, true, '页面 ROM 与本地文件两处选引擎都要带上 WebGL 结论')
   }

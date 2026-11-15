@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const VERSION = '0dbfaca'
-const RUNTIME_GENERATION = 'v19'
+const RUNTIME_GENERATION = 'v22'
 const useDist = process.argv.includes('--dist')
 const sourceOnly = process.argv.includes('--source-only')
 const publicDir = join(root, 'public', 'ppsspp', `v${VERSION}`, RUNTIME_GENERATION)
@@ -66,16 +66,24 @@ for (const marker of [
 }
 
 if (!/<script src="host\.js"><\/script>/.test(need(join(runtimeDir, 'index.html')).toString('utf8'))) {
-  fail('v19 index.html 没有引用同一实体目录里的 host.js')
+  fail('v22 index.html 没有引用同一实体目录里的 host.js')
 }
-if (!/PPSSPP_RUNTIME_GENERATION = 'v19'/.test(paths) || !/PPSSPP_FRAME_REVISION = '2'/.test(paths) || !/ppssppFrameUrl/.test(adapter)) {
-  fail('PPSSPP iframe 没有使用 v19 实体目录；查询串不能穿透当前 Cloudflare 缓存键')
+if (!/PPSSPP_RUNTIME_GENERATION = 'v22'/.test(paths) || !/PPSSPP_FRAME_REVISION = '4'/.test(paths) || !/ppssppFrameUrl/.test(adapter)) {
+  fail('PPSSPP iframe 没有使用 v22 实体目录；查询串不能穿透当前 Cloudflare 缓存键')
 }
 if (/fetch\s*\(\s*(?:remote(?:\?\.)?\.url|gamePath)/.test(host)) {
   fail('host.js 出现整盘下载代码；远程镜像只能把 URL 交给 C++ Range loader')
 }
-if (!/arguments:\s*\[[\s\S]*?'--windowed'[\s\S]*?'--xres'[\s\S]*?'--yres'/.test(host) || !host.includes('width: 960, height: 544')) {
-  fail('host.js 没有限制 PSP 后备缓冲；Retina 屏会重新触发每帧多倍像素复制')
+if (!/arguments:\s*\[[\s\S]*?'--windowed'[\s\S]*?'--xres'[\s\S]*?'--yres'/.test(host) ||
+  !host.includes('width: 480, height: 272') || !host.includes('width: 640, height: 360') || !host.includes('width: 720, height: 408')) {
+  fail('host.js 缺少性能优先的 480×272 / 640×360 / 720×408 自适应档')
+}
+if (!host.includes('slowNetwork') || !host.includes('qq-compat') || !host.includes('mobileDevice') ||
+  !host.includes('highEndDesktop') || !host.includes('diagnostics') || !host.includes('error?.stack')) {
+  fail('v22 缺少慢网/移动/高配桌面分档、QQ 浏览器兼容档或运行时 worker 调用栈')
+}
+if (!host.includes('flushDeadline') || !host.includes('Promise.race([syncSaves(), flushDeadline])')) {
+  fail('v22 运行时错误没有先冲刷 PPSSPP 电池存档')
 }
 for (const marker of [
   '--appendconfig=${PERFORMANCE_CONFIG_PATH}',
@@ -102,13 +110,13 @@ if (!/FS\.stat\(path\)[\s\S]*?FS\.writeFile\(path, new Uint8Array\(\)\)/.test(ho
   fail('host.js 没有保留已有控制器配置并只在首次启动补空 controls.ini')
 }
 if (host.includes('核心没有 Range 遥测回调，使用首帧兼容判据')) {
-  fail('v19 仍会在没有真实读盘时把空画布误报成游戏已启动')
+  fail('v22 仍会在没有真实读盘时把空画布误报成游戏已启动')
 }
 if (!/gameBootConfirmed/.test(host) || !/BOOTED_LOG_PATTERN = \/\\bBooted\\s\+\.\+\\\.\\\.\\\.\//.test(host)) {
-  fail('v19 没有等待 PPSSPP 的 Booted 日志；Range 遥测跨线程丢失时会再次超时')
+  fail('v22 没有等待 PPSSPP 的 Booted 日志；Range 遥测跨线程丢失时会再次超时')
 }
 if (!/print\(text\)[\s\S]*?observeCoreLog\(message\)[\s\S]*?printErr\(text\)[\s\S]*?observeCoreLog\(message\)/.test(host)) {
-  fail('v19 没有同时观察 stdout/stderr；不同 Emscripten 日志路由下会漏掉 Booted')
+  fail('v22 没有同时观察 stdout/stderr；不同 Emscripten 日志路由下会漏掉 Booted')
 }
 if (/FS\.mount\([^\n]*WORKERFS|FS\.createLazyFile\(/.test(host)) {
   fail('本地 PSP 镜像不能在主线程挂 WORKERFS 或用同步 XHR 的 LazyFile')
@@ -206,6 +214,9 @@ for (const marker of [
 }
 
 const manifest = JSON.parse(need(join(runtimeDir, 'runtime.json')).toString('utf8'))
+if (manifest.runtimeErrorSaveFlush !== 'idbfs-flush-before-report-1500ms-v1') {
+  fail('runtime.json 没有声明运行时故障前冲刷 PPSSPP 电池存档')
+}
 if (manifest.runtimeGeneration !== RUNTIME_GENERATION) fail('runtime.json 的实体目录代次不正确')
 if (manifest.localDiscProfile !== 'service-worker-range-v1') fail('runtime.json 没有声明本地镜像按需读盘方案')
 const localDiscBytes = need(join(runtimeDir, 'local-disc-sw.js'))
@@ -238,7 +249,7 @@ if (
   manifest.rangeReadAheadBlocks !== 10 ||
   manifest.rangeReadAheadConcurrency !== 4 ||
   manifest.rangeReadAheadCacheBytes !== 25165824 ||
-  // v18/v19：正式同步读盘遇到 status 0 就地退避重试，超时后放宽时限（海外玩家开局后断流整局失败）
+  // v18/v20：正式同步读盘遇到 status 0 就地退避重试，超时后放宽时限（海外玩家开局后断流整局失败）
   manifest.rangeSyncRetryProfile !== 'status0-backoff-4x-45s-timeout-escalate-v2'
 ) {
   fail('runtime.json 没有声明 PSP 自适应滚动预读策略')
@@ -258,8 +269,10 @@ if (manifest.pthreadAudioContext !== 'shared-ring-buffer-worklet-fade-v2') {
   fail('runtime.json 没有声明 AudioWorklet 共享音频桥；页面主线程卡顿会造成 PSP 爆音')
 }
 if (
-  manifest.performanceProfile !== 'adaptive-canvas-v1' ||
-  manifest.maxCanvasPixels !== 522240 ||
+  manifest.performanceProfile !== 'adaptive-performance-first-device-v1' ||
+  manifest.maxCanvasPixels !== 293760 ||
+  manifest.canvasLimitProfile !== 'qq/mobile/weak/low=480x272;default=640x360;highEndDesktop=720x408' ||
+  manifest.workerErrorDiagnostics !== 'stack-v1' ||
   manifest.pthreadPoolMax !== 8 ||
   manifest.lto !== true ||
   manifest.performanceTelemetry !== true
@@ -296,9 +309,15 @@ if ((!sourceOnly || productionEnabled) && !installed) {
 if (installed) {
   if (!manifest.artifactsInstalled || !manifest.artifacts) fail('已有二进制，但 runtime.json 没有来源/哈希清单')
   const runtimeScript = need(join(runtimeDir, 'PPSSPPSDL.js')).toString('utf8')
+  if (!runtimeScript.includes('__8bitgoPspCanvasSize') || !runtimeScript.includes('var qqBrowser=') ||
+    !runtimeScript.includes('var mobileDevice=') || !runtimeScript.includes('var highEndDesktop=') ||
+    !runtimeScript.includes('maxWidth=qqBrowser||mobileDevice||slow||low?480:highEndDesktop?720:640') ||
+    !runtimeScript.includes('e.error?.stack')) {
+    fail('v22 核心缺少实际画布自适应上限、QQ/移动档或 pthread worker 错误栈采集')
+  }
   const readAheadSource = need(join(root, 'vendor', 'ppsspp', 'range-read-ahead.js')).toString('utf8').trimEnd()
   if (!runtimeScript.includes(readAheadSource)) {
-    fail('v19 发布脚本与预读源码不一致；改源码后必须生成新实体运行时')
+    fail('v22 发布脚本与预读源码不一致；改源码后必须生成新实体运行时')
   }
   if (!runtimeScript.includes('if(fetched?.then){fetched=await fetched}else if(!fetched){fetched=await fetchPromise}')) {
     fail('PPSSPPSDL.js 没有等待异步核心资源重试 Promise，真机解包会报 bad input')

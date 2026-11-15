@@ -8,6 +8,8 @@
  * WHERE game_id IN (...)，不会变成每款查三次。
  */
 import { jsonMemberPath, query, queryOne, withTransaction } from './db.js'
+import { syncNetplayDerived } from './netplay-auto.js'
+import { netplayModeFromInput } from '../../shared/netplay-players.js'
 import { gameRowToApi, gameApiToRow, dateTimeIso, romRelationRows, flashBundleAssetPaths, GENERIC_ROM_LANG } from './mappers.js'
 import { boundedSearchLimit, buildGameTokens, queryTerms, tokenMatchSql, normalize, tokenize, escapeLike } from './search.js'
 import { BAYES_SCORE_SQL } from './ratings-repo.js'
@@ -181,6 +183,23 @@ export async function listGames(q = {}) {
   if (q.platform) {
     where.push('g.platform = ?')
     params.push(String(q.platform))
+  }
+  /*
+    无 WebAssembly 的精简列表按平台白名单过滤，另外只放行逐款实测过的 Flash 游戏。
+    过滤放 SQL 里做，total / totalPages 才与实际结果一致；语言 ROM 的 slug 后缀也保留。
+  */
+  if (Array.isArray(q.platforms) || Array.isArray(q.gameSlugs)) {
+    const allowed = []
+    if (Array.isArray(q.platforms) && q.platforms.length) {
+      allowed.push(`g.platform IN (${q.platforms.map(() => '?').join(', ')})`)
+      params.push(...q.platforms.map(String))
+    }
+    if (Array.isArray(q.gameSlugs) && q.gameSlugs.length) {
+      const verified = q.gameSlugs.map(() => '(g.slug = ? OR g.slug LIKE ?)').join(' OR ')
+      allowed.push(`(g.platform = 'flash' AND (${verified}))`)
+      params.push(...q.gameSlugs.flatMap((slug) => [String(slug), `${String(slug)}~%`]))
+    }
+    where.push(allowed.length ? `(${allowed.join(' OR ')})` : '1 = 0')
   }
   // DOSBox-X 同时承载 Windows 客体和 PC-98；设备筛“需要 Windows”时不能把后者误排掉。
   if (q.requiresWindows === true) where.push("g.platform = 'dos' AND g.dos_backend = 'dosboxX' AND COALESCE(g.dos_pc98, 0) = 0")
@@ -460,11 +479,24 @@ export async function clearPlatformBios(platform) {
  * 一款都没钦点时返回空数组 —— 调用方据此退回「按游玩次数自动排」，
  * 也就是这个功能加进来之前的行为。这样新装的站不需要先去后台点一遍才有首页。
  */
-export async function listHomePicks(limit) {
+export async function listHomePicks(limit, platforms, gameSlugs) {
   const n = Math.min(MAX_PAGE_SIZE, Math.max(1, Number(limit) || 12))
+  const allowed = []
+  const params = []
+  if (Array.isArray(platforms) && platforms.length) {
+    allowed.push(`platform IN (${platforms.map(() => '?').join(', ')})`)
+    params.push(...platforms.map(String))
+  }
+  if (Array.isArray(gameSlugs) && gameSlugs.length) {
+    allowed.push(`(platform = 'flash' AND (${gameSlugs.map(() => '(slug = ? OR slug LIKE ?)').join(' OR ')}))`)
+    params.push(...gameSlugs.flatMap((slug) => [String(slug), `${String(slug)}~%`]))
+  }
+  const hasFilter = Array.isArray(platforms) || Array.isArray(gameSlugs)
+  const only = hasFilter ? ` AND (${allowed.length ? allowed.join(' OR ') : '1 = 0'})` : ''
   const rows = await query(
-    `SELECT ${CARD_COLUMNS} FROM games g WHERE hidden = 0 AND home_rank IS NOT NULL
+    `SELECT ${CARD_COLUMNS} FROM games g WHERE hidden = 0 AND home_rank IS NOT NULL${only}
       ORDER BY home_rank ASC, plays DESC, id DESC LIMIT ${n}`,
+    params.length ? params : undefined,
   )
   return attachCardRelations(rows)
 }
@@ -501,10 +533,9 @@ async function latestVisibleCommentIso(gameId) {
 export async function getGameBySlug(slug) {
   const row = await queryOne('SELECT * FROM games WHERE slug = ?', [slug])
   if (!row) return undefined
-  const [g] = await attachRelations([row])
-  // 只有详情页要这个字段，所以不放进 attachRelations —— 那条路列表页也走，
-  // 一页 24 条就会变成 24 次多余的聚合查询。
-  const lastCommentAt = await latestVisibleCommentIso(row.id)
+  // 只有详情页要 lastCommentAt，所以不放进 attachRelations —— 那条路列表页也走，
+  // 一页 24 条就会变成 24 次多余的聚合查询。两者都只依赖 row，并行查（详情页是全站最热的路径）。
+  const [[g], lastCommentAt] = await Promise.all([attachRelations([row]), latestVisibleCommentIso(row.id)])
   return lastCommentAt ? { ...g, lastCommentAt } : g
 }
 
@@ -529,6 +560,17 @@ export async function getGamesBySlugs(slugs) {
 /** 各平台的上架游戏数（平台页 / 首页用） */
 export function platformCounts() {
   return query('SELECT platform, COUNT(*) AS n FROM games WHERE hidden = 0 GROUP BY platform')
+}
+
+/** 精简模式里唯一放行的 Flash slug 数量，用于把可玩的 Flash 平台入口显示出来。 */
+export async function verifiedFlashGameCount(slugs) {
+  if (!Array.isArray(slugs) || !slugs.length) return 0
+  const match = slugs.map(() => '(slug = ? OR slug LIKE ?)').join(' OR ')
+  const row = await queryOne(
+    `SELECT COUNT(*) AS n FROM games WHERE hidden = 0 AND platform = 'flash' AND (${match})`,
+    slugs.flatMap((slug) => [String(slug), `${String(slug)}~%`]),
+  )
+  return Number(row?.n) || 0
 }
 
 /** 各类型的上架游戏数 */
@@ -759,6 +801,8 @@ async function persistGame(slug, game, createOnly) {
     // 不在这里清的话，玩家点过翻译的多语言版本会和新的基准对不上，但前端看不出来。
     await run('UPDATE games SET title_i18n = NULL, description_i18n = NULL WHERE id = ?', [id])
     await writeRelations(run, id, game)
+    // 联机人数在 ROM 绑定写完之后重算（auto 模式按 ROM 推断，见 netplay-auto.js）
+    await syncNetplayDerived(run, id, { mode: netplayModeFromInput(game) })
     await reindexGame(run, id, { ...game, slug })
     return id
   })
@@ -800,6 +844,8 @@ export async function patchGame(slug, patchRow, relations, game) {
     if (relations.genres || relations.tags || relations.roms) {
       await writeRelations(run, id, game, relations)
     }
+    // 换了 ROM、平台或联机模式都可能改变生效人数；没变时这一步只是一次读
+    await syncNetplayDerived(run, id, { mode: netplayModeFromInput(game) })
     // PATCH 可能只改了标题、也可能只改了标签，两者都会影响索引。
     // 与其判断「这次改动是否涉及可搜索字段」，不如从库里读回完整一行重建 ——
     // 判断漏一个字段就是搜不到，代价远大于多跑一次几十行的插入。

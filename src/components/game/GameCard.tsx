@@ -10,6 +10,7 @@ import { RatingText } from './StarRating'
 import { useLang } from '@/services/lang'
 import { useT } from '@/services/i18n'
 import { genreLabel, gameTitle } from '@/services/i18nData'
+import { useGameListed } from '@/services/noWasm'
 
 interface Props {
   game: Game
@@ -59,6 +60,9 @@ export const GameCard = memo(function GameCard({ game, className, coverRatio = '
   const t = useT()
   const platform = platformMap[game.platform]
   const genre = genreMap[game.genres[0]]
+  // 浏览器没有 WebAssembly 时只画能跑的平台（services/noWasm.ts）
+  const listed = useGameListed(game.platform, game.slug)
+  if (!listed) return null
 
   return (
     <Link

@@ -1,0 +1,240 @@
+#!/usr/bin/env node
+/**
+ * 真实开局冒烟（2026-11-15 系统优化 #4）：用无头 Chrome 打开几款游戏的详情页（?autoplay=1），
+ * 等到播放器报「首帧」才算过。
+ *
+ *   node scripts/smoke-start.mjs                                   默认测 https://8bitgo.com
+ *   node scripts/smoke-start.mjs --base http://127.0.0.1:8788      测本机 / 刚重启的生产进程
+ *   SMOKE_GAMES=super-mario-bros,cadillacs-and-dinosaurs node scripts/smoke-start.mjs
+ *
+ * 为什么要有它：/api/health 200 只说明进程活着。2026-09 以来好几次事故都是「站点一切正常、
+ * 游戏打不开」—— 引擎补丁没进 dist（§2.5）、核心回落坏地址（§2.4）、Rocket Loader 改写脚本（§2.37.1）。
+ * 这些只有真把一局跑到首帧才看得出来。
+ *
+ * 判据取自播放器自己的启动漏斗：它在出首帧时 POST /api/games/<slug>/startup {event:'first_frame'}，
+ * 失败 / 超时时发 failed / timeout。这里用 Chrome DevTools 协议的 Fetch 域**拦下**这些请求读出事件，
+ * 再回一个假的 200 —— 冒烟不会进生产的启动漏斗、诊断包和游玩次数（/play 一并拦下）。
+ *
+ * 不引入任何依赖：Chrome 自带 DevTools 协议，Node 22 自带 WebSocket。找 Chrome 的顺序：
+ * 环境变量 CHROME_PATH → 常见安装位置。找不到就退出码 2（redeploy 据此只记一行「跳过」）。
+ *
+ * 退出码：0 全部到首帧；1 有游戏失败；2 环境不满足（没有 Chrome 等）。
+ */
+import { spawn } from 'node:child_process'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { setTimeout as sleep } from 'node:timers/promises'
+
+const args = process.argv.slice(2)
+const argOf = (name, fallback) => {
+  const i = args.indexOf(name)
+  return i >= 0 && args[i + 1] ? args[i + 1] : fallback
+}
+const BASE = argOf('--base', process.env.SMOKE_BASE_URL || 'https://8bitgo.com').replace(/\/+$/, '')
+// 一款 NES（jsnes / EmulatorJS 最常见的一条路）+ 一款不需要 BIOS 的 CPS1 街机（FBNeo + 8BG 解包）
+const GAMES = argOf('--games', process.env.SMOKE_GAMES || 'super-mario-bros,cadillacs-and-dinosaurs')
+  .split(',').map((s) => s.trim()).filter(Boolean)
+const TIMEOUT_MS = Number(argOf('--timeout', process.env.SMOKE_TIMEOUT_MS || 150_000))
+
+export const CHROME_CANDIDATES = [
+  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  '/Applications/Chromium.app/Contents/MacOS/Chromium',
+  '/usr/bin/google-chrome',
+  '/usr/bin/google-chrome-stable',
+  '/usr/bin/chromium',
+  '/usr/bin/chromium-browser',
+  '/snap/bin/chromium',
+]
+
+export function findChrome(env = process.env, exists = existsSync) {
+  if (env.CHROME_PATH && exists(env.CHROME_PATH)) return env.CHROME_PATH
+  return CHROME_CANDIDATES.find((p) => exists(p)) || ''
+}
+
+/** 拦下的启动漏斗请求体 → 事件名（解析不了返回空串） */
+export function startupEventOf(postData) {
+  try {
+    const body = JSON.parse(postData || '{}')
+    return typeof body.event === 'string' ? body.event : ''
+  } catch {
+    return ''
+  }
+}
+
+/** 一局的结论：首帧 = 过；failed / timeout = 不过；其它事件继续等 */
+export function verdictOf(event) {
+  if (event === 'first_frame') return 'pass'
+  if (event === 'failed' || event === 'timeout') return 'fail'
+  return ''
+}
+
+class Cdp {
+  constructor(url) {
+    this.ws = new WebSocket(url)
+    this.nextId = 1
+    this.pending = new Map()
+    this.listeners = new Set()
+    this.ws.addEventListener('message', (e) => {
+      const msg = JSON.parse(String(e.data))
+      if (msg.id && this.pending.has(msg.id)) {
+        const { resolve, reject } = this.pending.get(msg.id)
+        this.pending.delete(msg.id)
+        if (msg.error) reject(new Error(`${msg.error.message} (${msg.error.code})`))
+        else resolve(msg.result)
+      } else if (msg.method) {
+        for (const fn of this.listeners) fn(msg)
+      }
+    })
+  }
+  open() {
+    return new Promise((resolve, reject) => {
+      this.ws.addEventListener('open', resolve, { once: true })
+      this.ws.addEventListener('error', () => reject(new Error('连不上 Chrome DevTools')), { once: true })
+    })
+  }
+  send(method, params = {}, sessionId) {
+    const id = this.nextId++
+    this.ws.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }))
+    return new Promise((resolve, reject) => this.pending.set(id, { resolve, reject }))
+  }
+  on(fn) {
+    this.listeners.add(fn)
+    return () => this.listeners.delete(fn)
+  }
+  close() {
+    try { this.ws.close() } catch { /* 已断开 */ }
+  }
+}
+
+async function launchChrome(chrome) {
+  const profile = mkdtempSync(join(tmpdir(), '8bitgo-smoke-'))
+  const proc = spawn(chrome, [
+    '--headless=new',
+    '--remote-debugging-port=0',
+    `--user-data-dir=${profile}`,
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--mute-audio',
+    '--autoplay-policy=no-user-gesture-required',
+    // 服务器上没有 GPU：用软件 WebGL，否则 EmulatorJS 会按「建不出 WebGL」直接报环境错误
+    '--use-angle=swiftshader',
+    '--enable-unsafe-swiftshader',
+    '--window-size=1280,800',
+    ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
+    'about:blank',
+  ], { stdio: 'ignore' })
+  const portFile = join(profile, 'DevToolsActivePort')
+  for (let i = 0; i < 100 && !existsSync(portFile); i++) await sleep(100)
+  if (!existsSync(portFile)) {
+    proc.kill('SIGKILL')
+    throw new Error('Chrome 没有启动 DevTools（10 秒）')
+  }
+  const [port, path] = readFileSync(portFile, 'utf8').trim().split('\n')
+  return {
+    url: `ws://127.0.0.1:${port}${path}`,
+    close() {
+      proc.kill('SIGTERM')
+      setTimeout(() => {
+        try { proc.kill('SIGKILL') } catch { /* 已退出 */ }
+        rmSync(profile, { recursive: true, force: true })
+      }, 1000).unref()
+    },
+  }
+}
+
+async function smokeOne(cdp, slug) {
+  const started = Date.now()
+  const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' })
+  const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true })
+  const events = []
+  const errors = []
+  let settle
+  const done = new Promise((resolve) => { settle = resolve })
+  const off = cdp.on(async (msg) => {
+    if (msg.sessionId !== sessionId) return
+    if (msg.method === 'Fetch.requestPaused') {
+      const { requestId, request } = msg.params
+      if (/\/startup(?:\?|$)/.test(new URL(request.url).pathname)) {
+        let body = request.postData
+        if (!body && request.hasPostData) {
+          body = (await cdp.send('Fetch.getRequestPostData', { requestId }, sessionId).catch(() => ({}))).postData
+        }
+        const event = startupEventOf(body)
+        if (event) events.push(`${event}@${Math.round((Date.now() - started) / 1000)}s`)
+        const verdict = verdictOf(event)
+        if (verdict) settle({ verdict, event })
+      }
+      // 回假的 200：不进生产漏斗、诊断包、游玩次数
+      await cdp.send('Fetch.fulfillRequest', {
+        requestId,
+        responseCode: 200,
+        responseHeaders: [{ name: 'Content-Type', value: 'application/json' }],
+        body: Buffer.from('{"ok":true}').toString('base64'),
+      }, sessionId).catch(() => {})
+    } else if (msg.method === 'Runtime.exceptionThrown') {
+      errors.push(msg.params.exceptionDetails?.exception?.description?.split('\n')[0] || msg.params.exceptionDetails?.text)
+    } else if (msg.method === 'Runtime.consoleAPICalled' && msg.params.type === 'error') {
+      errors.push(msg.params.args?.map((a) => a.value ?? a.description ?? '').join(' ').slice(0, 200))
+    }
+  })
+  try {
+    await cdp.send('Fetch.enable', {
+      patterns: [
+        { urlPattern: '*/api/games/*/startup*', requestStage: 'Request' },
+        { urlPattern: '*/api/games/*/play*', requestStage: 'Request' },
+      ],
+    }, sessionId)
+    await cdp.send('Runtime.enable', {}, sessionId)
+    await cdp.send('Page.enable', {}, sessionId)
+    await cdp.send('Page.navigate', { url: `${BASE}/games/${encodeURIComponent(slug)}?autoplay=1` }, sessionId)
+    const timer = setTimeout(() => settle({ verdict: 'fail', event: `${Math.round(TIMEOUT_MS / 1000)} 秒内没有首帧` }), TIMEOUT_MS)
+    const result = await done
+    clearTimeout(timer)
+    return { slug, ...result, seconds: Math.round((Date.now() - started) / 1000), events, errors: errors.filter(Boolean).slice(-5) }
+  } finally {
+    off()
+    await cdp.send('Target.closeTarget', { targetId }).catch(() => {})
+  }
+}
+
+async function main() {
+  const chrome = findChrome()
+  if (!chrome) {
+    console.error('✖ 找不到 Chrome / Chromium（设 CHROME_PATH 指定）；跳过开局冒烟')
+    process.exit(2)
+  }
+  if (typeof WebSocket !== 'function') {
+    console.error('✖ 这个 Node 没有全局 WebSocket（需要 Node 22+）；跳过开局冒烟')
+    process.exit(2)
+  }
+  console.log(`开局冒烟：${BASE}，${GAMES.join('、')}（每款最多 ${Math.round(TIMEOUT_MS / 1000)} 秒）`)
+  const browser = await launchChrome(chrome)
+  const cdp = new Cdp(browser.url)
+  let failed = 0
+  try {
+    await cdp.open()
+    // 逐款串行：并行几局会互相抢 CPU（无头 Chrome 是软件 WebGL），慢的那款容易被误判超时
+    for (const slug of GAMES) {
+      const r = await smokeOne(cdp, slug)
+      const line = `${r.verdict === 'pass' ? '✔' : '✖'} ${slug}：${r.event}（${r.seconds} 秒；漏斗 ${r.events.join(' → ') || '无'}）`
+      if (r.verdict === 'pass') console.log(line)
+      else {
+        failed++
+        console.error(line)
+        for (const e of r.errors) console.error(`    ${e}`)
+      }
+    }
+  } finally {
+    cdp.close()
+    browser.close()
+  }
+  process.exit(failed ? 1 : 0)
+}
+
+if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
+  main().catch((e) => {
+    console.error('✖ 冒烟脚本出错：', e?.message || e)
+    process.exit(2)
+  })
+}

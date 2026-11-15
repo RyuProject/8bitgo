@@ -42,15 +42,26 @@ export function edgePurgeEnabled() {
 let timer = null
 let running = false
 let pendingAfterRun = false
+/*
+  最近一次自动清缓存的结果，给后台「站点健康」看（见 admin-health.js）。
+  只记在进程内存：重启后是空的，这正好如实表达「本进程还没清过」；
+  失败时只会打日志，以前管理员要登服务器 journalctl 才知道后台改动卡在边缘一天。
+*/
+let lastRun = null
 
-/** 发一次按标签清缓存。成功 true；失败抛错，错误上带 retryable */
-export async function purgeHtmlNow({ fetchImpl = fetch } = {}) {
+/** 后台健康面板用：是否配置、最近一次结果（时间、成功与否、错误摘要） */
+export function edgePurgeStatus() {
+  return { enabled: edgePurgeEnabled(), pending: Boolean(timer) || running, last: lastRun }
+}
+
+/** 调一次 Cloudflare 清缓存接口。成功 true；没配令牌 false；失败抛错，错误上带 retryable */
+async function purgeRequest(payload, fetchImpl) {
   const cfg = config()
   if (!cfg) return false
   const res = await fetchImpl(`https://api.cloudflare.com/client/v4/zones/${cfg.zone}/purge_cache`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${cfg.token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ tags: [HTML_CACHE_TAG] }),
+    body: JSON.stringify(payload),
     signal: AbortSignal.timeout(10_000),
   })
   let body = null
@@ -65,10 +76,26 @@ export async function purgeHtmlNow({ fetchImpl = fetch } = {}) {
   throw err
 }
 
+/** 发一次按标签清缓存。成功 true；失败抛错，错误上带 retryable */
+export async function purgeHtmlNow({ fetchImpl = fetch } = {}) {
+  return purgeRequest({ tags: [HTML_CACHE_TAG] }, fetchImpl)
+}
+
+/**
+ * 按完整 URL 清几个文件（坏 chunk 自修复用，见 routes/asset-repair.js）。
+ * 一次最多 30 个（Cloudflare 免费版单次按 URL 清的上限）。
+ */
+export async function purgeUrlsNow(urls, { fetchImpl = fetch } = {}) {
+  const files = [...new Set(urls)].filter((u) => typeof u === 'string' && u.startsWith('https://')).slice(0, 30)
+  if (!files.length) return false
+  return purgeRequest({ files }, fetchImpl)
+}
+
 async function run(attempt = 0) {
   running = true
   try {
     await purgeHtmlNow()
+    lastRun = { at: new Date().toISOString(), ok: true, attempts: attempt + 1 }
     console.log('[edge-purge] 已清除 Cloudflare 边缘 HTML 缓存')
   } catch (e) {
     const retryable = e?.retryable !== false
@@ -79,6 +106,7 @@ async function run(attempt = 0) {
       setTimeout(() => void run(attempt + 1), wait).unref?.()
       return
     }
+    lastRun = { at: new Date().toISOString(), ok: false, attempts: attempt + 1, error: String(e?.message || e).slice(0, 300) }
     console.error('[edge-purge] 放弃清缓存，后台改动要等边缘自然过期才可见：', e?.message || e)
   }
   running = false

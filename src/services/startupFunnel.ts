@@ -20,7 +20,8 @@ export interface StartupEvent {
   visitId: string
   attemptId?: string
   event: StartupEventName
-  runtime?: RuntimeId | ''
+  /** `page`：详情页还没到模拟器就渲染崩溃了（AppErrorBoundary 上报） */
+  runtime?: RuntimeId | 'page' | ''
   platform?: PlatformId | ''
   elapsedMs?: number
   detail?: string

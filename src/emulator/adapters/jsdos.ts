@@ -672,8 +672,12 @@ type DosFn = (el: HTMLElement, options: Record<string, unknown>) => DosProps
  * 正常会话 ci-ready 一到就立即放行，不会因此多等。
  */
 const PLAIN_DOS_CI_BUDGET_MS = 180_000
-/** Windows 客体的内存盘不能靠关页保存；定期把游戏盘差异落到浏览器，离开/切后台再补一次。 */
-const WINDOWS_GUEST_AUTOSAVE_INTERVAL_MS = 60_000
+/**
+ * 自动检查点：定期把游戏盘差异落到浏览器，离开 / 切后台 / 拆会话时再补一次。
+ * 最早只给 Windows 客体（内存盘不能靠关页保存）；2026-11-15 起普通 DOS 和纯 DOS 流式盘也一样，
+ * 以前它们只能靠玩家先在游戏里存盘、再点工具栏「保存进度」，漏了第二步就丢进度。
+ */
+const DOS_AUTOSAVE_INTERVAL_MS = 60_000
 
 /** js-dos 是全局脚本，整页只加载一次 */
 let loading: Promise<DosFn> | null = null
@@ -1188,6 +1192,20 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const fullWindowsGuest = Boolean(systemUrl && !streamingGame)
   // 槽 0 留给普通 DOS 文件差异；槽 1 是 Sockdrive 扇区差异；槽 2 是整包 Windows 的 GAME/ 差异。
   const saveSlot = streamingGame ? 1 : fullWindowsGuest ? 2 : 0
+  /**
+   * 这一局用哪种自动检查点。
+   * - windows：只取 GAME/ 的文件差异并合并（见 persistWindowsGuestCheckpoint）；
+   * - files：普通 DOS，`ci.persist(true)` 与「保存进度」按钮取的是同一包（js-dos 的 save 就是它 + push 钩子）。
+   *   开局回放的旧存档层解在基础包之后、mtime 晚于 fsCreatedAt，所以每次都会被带上，不会盖掉旧进度；
+   * - sockdrive：纯 DOS 流式盘的扇区差异，同 fsSave 的 persistSockdrives。
+   * Windows 流式盘（Win9x on Sockdrive）不自动做：js-dos 自己提示 Win9x 运行中途存扇区不安全，
+   * 那一类仍只在玩家手动保存时固化。
+   */
+  const autoCheckpointKind: 'windows' | 'files' | 'sockdrive' | null = fullWindowsGuest
+    ? 'windows'
+    : streamingGame
+      ? (dosSystemGuest ? 'sockdrive' : null)
+      : 'files'
   /*
     逐游戏兼容修正（凯撒 3 的 c3.inf、星际的注册表、辐射的 CPU、大富翁3 / 天之痕的鼠标、
     DirectDraw 刷新、匕首雨的 EXE……）认的是**目录里的游戏 slug**。播放器传进来的
@@ -1224,7 +1242,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let readySent = false
   /** 这一局开始时是否走大陆加速入口（paths.ts 的 jsdosBase） */
   const usedJsdosEdge = jsdosBase() !== JSDOS_PATH
-  let windowsGuestAutoSaveTimer = 0
+  let autoSaveTimer = 0
   let windowsGuestCheckpointInFlight: Promise<{
     ok: boolean
     where?: 'cloud' | 'local'
@@ -1233,10 +1251,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     bytes?: Uint8Array
   }> | null = null
   let windowsGuestSaveArchive: Uint8Array | null = null
-  const onWindowsGuestHidden = () => {
-    if (document.visibilityState === 'hidden') void persistWindowsGuestCheckpoint('local')
+  const onAutoSaveHidden = () => {
+    if (document.visibilityState === 'hidden') void persistAutoCheckpoint()
   }
-  const onWindowsGuestPageHide = () => void persistWindowsGuestCheckpoint('local')
+  const onAutoSavePageHide = () => void persistAutoCheckpoint()
+  let autoCheckpointInFlight: Promise<void> | null = null
   /** 一次失败就是终态；否则迟到的 ci-ready / 兜底定时器会把错误会话重新标成“运行中”。 */
   let terminalErrorSent = false
   /** 玩家切走时把还在下的系统镜像 / ROM 掐掉：近百 MB 的镜像不该在后台继续吞流量、写缓存 */
@@ -1354,6 +1373,33 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       windowsGuestCheckpointInFlight = null
     })
     return windowsGuestCheckpointInFlight
+  }
+  /**
+   * 自动检查点只写浏览器（'local'）：选了云存档的玩家会被标成待同步，由 saves.ts 排队上传，
+   * 不必每分钟同步等一次网络。失败只记日志 —— 自动保存不能打断正在玩的游戏，也不弹提示。
+   */
+  const persistAutoCheckpoint = (): Promise<void> => {
+    if (autoCheckpointKind === 'windows') return persistWindowsGuestCheckpoint('local').then(() => undefined)
+    if (!autoCheckpointKind || !ci || !saveKey) return Promise.resolve()
+    if (autoCheckpointInFlight) return autoCheckpointInFlight
+    const currentCi = ci
+    const run = async () => {
+      try {
+        const changes = autoCheckpointKind === 'sockdrive'
+          ? (typeof currentCi.persistSockdrives === 'function' ? await currentCi.persistSockdrives() : null)
+          : (typeof currentCi.persist === 'function' ? await currentCi.persist(true) : null)
+        if (!changes || changes.length === 0) return
+        // 和上一次存下的一字不差就不再写；上一次没写成功时照样重试
+        if (lastPush?.ok && sameBytes(lastBytes, changes)) return
+        await storeChanges(changes, 'local')
+      } catch (error) {
+        console.warn('[jsdos] DOS 自动存档失败', error)
+      }
+    }
+    autoCheckpointInFlight = run().finally(() => {
+      autoCheckpointInFlight = null
+    })
+    return autoCheckpointInFlight
   }
   let windowsLaunchStage: 'ci' | 'boot' | 'desktop' | 'launched' = 'ci'
   const armGuestStartupTimeout = (stage: 'ci' | 'boot', budgetMs: number) => {
@@ -1889,14 +1935,14 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
                 caps.add('fsSave')
                 caps.add('fsFile')
                 options.onCaps?.(caps)
-                if (!windowsGuestAutoSaveTimer) {
-                  // 每分钟最多打一次 GAME/ 差异包；切后台/离开页面时再立即做本地检查点。
-                  windowsGuestAutoSaveTimer = window.setInterval(() => {
-                    if (document.visibilityState !== 'hidden') void persistWindowsGuestCheckpoint('local')
-                  }, WINDOWS_GUEST_AUTOSAVE_INTERVAL_MS)
-                  document.addEventListener('visibilitychange', onWindowsGuestHidden)
-                  window.addEventListener('pagehide', onWindowsGuestPageHide)
-                }
+              }
+              if (autoCheckpointKind && saveKey && !autoSaveTimer) {
+                // 每分钟最多打一次差异包；切后台/离开页面时再立即做本地检查点。
+                autoSaveTimer = window.setInterval(() => {
+                  if (document.visibilityState !== 'hidden') void persistAutoCheckpoint()
+                }, DOS_AUTOSAVE_INTERVAL_MS)
+                document.addEventListener('visibilitychange', onAutoSaveHidden)
+                window.addEventListener('pagehide', onAutoSavePageHide)
               }
               /*
                 命令接口建好 = 启动数据早已交给 worker：js-dos 在 ws-ready 后把 initFs 每层按 4MB
@@ -2249,16 +2295,17 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       customized: () => dosPadCustomized(padKey),
     },
     destroy() {
-      const finalGuestCheckpoint = fullWindowsGuest && ci?.persist
-        ? persistWindowsGuestCheckpoint('local')
+      // 关游戏 / 换游戏时最后补一次；拿不到 ci（还没开机）就没有可存的东西
+      const finalGuestCheckpoint = autoCheckpointKind && ci && saveKey
+        ? persistAutoCheckpoint()
         : null
       const stoppedProps = props
       destroyed = true
       window.clearTimeout(readyFallback)
-      window.clearInterval(windowsGuestAutoSaveTimer)
-      windowsGuestAutoSaveTimer = 0
-      document.removeEventListener('visibilitychange', onWindowsGuestHidden)
-      window.removeEventListener('pagehide', onWindowsGuestPageHide)
+      window.clearInterval(autoSaveTimer)
+      autoSaveTimer = 0
+      document.removeEventListener('visibilitychange', onAutoSaveHidden)
+      window.removeEventListener('pagehide', onAutoSavePageHide)
       cancelGuestStartupTimeout?.()
       cancelGuestStartupTimeout = null
       abort.abort()

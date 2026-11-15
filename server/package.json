@@ -54,7 +54,7 @@
     "test:netplay": "NETPLAY_HOST_GRACE_MS=400 NETPLAY_CLAIM_WINDOW_MS=500 node scripts/test-netplay.mjs",
     "test:netplay:hardening": "node scripts/test-netplay-hardening.mjs",
     "test:netplay:failover": "node scripts/test-host-failover.mjs",
-    "test:netplay:spectator": "node scripts/test-spectator.mjs",
+    "test:netplay:spectator": "NETPLAY_SEAT_REQUEST_MS=300 NETPLAY_SEAT_REQUEST_COOLDOWN_MS=200 node scripts/test-spectator.mjs",
     "test:jsnes-netplay": "node scripts/test-jsnes-netplay.mjs",
     "test:netplay:all": "npm run test:netplay && npm run test:netplay:hardening && npm run test:netplay:failover && npm run test:netplay:spectator && npm run test:jsnes-netplay && npm run test:rooms && npm run test:live",
     "test:play": "node scripts/test-playcount.mjs",
@@ -63,6 +63,8 @@
     "gen-sql:empty": "node scripts/gen-sql.mjs --empty",
     "backfill-search": "node scripts/backfill-search.mjs",
     "backfill-arcade-bios": "node scripts/backfill-arcade-bios.mjs",
+    "netplay-players": "node scripts/netplay-players.mjs",
+    "test:netplay-auto": "node scripts/test-netplay-auto.mjs",
     "test:search": "node scripts/test-search.mjs",
     "test:search:db": "node scripts/test-search-db.mjs",
     "indexnow": "node scripts/submit-indexnow.mjs",
@@ -84,7 +86,13 @@
     "test:psx-conversion": "node scripts/test-psx-conversion.mjs",
     "test:platform-bios": "node scripts/test-platform-bios-key.mjs",
     "test:sockdrive-conversion": "node scripts/test-sockdrive-conversion.mjs",
-    "test:game-media": "node --test scripts/test-game-media.mjs"
+    "test:game-media": "node --test scripts/test-game-media.mjs",
+    "test:nowasm-lists": "node scripts/test-nowasm-lists.mjs",
+    "test:admin-health": "node scripts/test-admin-health.mjs",
+    "test:ssr-parallel": "node scripts/test-ssr-parallel.mjs",
+    "test:schema-drift": "node scripts/test-schema-drift.mjs",
+    "test:parallel-reads": "node scripts/test-parallel-reads.mjs",
+    "test:diag-alert": "node scripts/test-diag-alert.mjs"
   },
   "dependencies": {
     "@ip-location-db/geo-whois-asn-country-mmdb": "^2.3.2026061719",

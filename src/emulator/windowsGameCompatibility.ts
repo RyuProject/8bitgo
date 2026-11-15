@@ -82,6 +82,14 @@ export function windowsGameCompatibilityDosboxConfig(
       override,
     )
   }
+  if (slug === 'theme-park') {
+    /*
+      2026-11-15 玩家反馈《主题公园》速度快得没法玩。包里是我们生成的 `cycles=auto`，而 MAIN.EXE
+      走 DOS4GW 保护模式，auto 一进保护模式就放到 max；这款 1994 年的 Bullfrog 游戏模拟节奏跟
+      CPU 走，宿主越快越失控。固定在 486DX2-66 档位附近，后台显式配置仍可改。
+    */
+    return mergeDosboxConfigOverride('[cpu]\ncycles=fixed 25000', override)
+  }
   if (slug !== 'starcraft' && slug !== 'starcraft-1-16-1') return override
   windowsGameCompatibilityRegistryImport(gameSlug, executable ?? '')
   return mergeDosboxConfigOverride('[cpu]\ncore=normal', override)

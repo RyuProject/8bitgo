@@ -5,9 +5,13 @@ import { useT, fmt } from '@/services/i18n'
 import { platformLabel } from '@/services/i18nData'
 import { PlatformIcon } from './PlatformIcon'
 import { EXPERIMENTAL_PLATFORMS } from '@/data/platforms'
+import { platformListed, useNoWasmMode } from '@/services/noWasm'
 
 export function PlatformCard({ platform, className }: { platform: PlatformWithCount; className?: string }) {
   const t = useT()
+  // 浏览器没有 WebAssembly 时不露出跑不起来的平台入口（services/noWasm.ts）
+  const listed = platformListed(useNoWasmMode(), platform.id)
+  if (!listed) return null
   return (
     <Link
       to={`/platforms/${platform.id}`}

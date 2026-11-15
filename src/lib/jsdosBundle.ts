@@ -12,7 +12,7 @@
  * 压缩前后大小一起搬过去，完全不用碰数据本身。
  */
 
-import { assertValidZipBlob, extractZipEntry, crc32, decodeZipName } from './unzip'
+import { assertValidZipBlob, extractZipEntry, crc32, decodeZipName, rawDeflateStream } from './unzip'
 import { mergeDosboxConfigOverride, parseDosboxConfigOverride } from '../../shared/dosbox-config.js'
 import { isPc98FdiFileName } from '../emulator/pc98'
 import { dosMountedDrives, planDosBatchCompatibility } from './dosBatchCompat'
@@ -518,33 +518,354 @@ const RUNNABLE = /\.(exe|com|bat)$/i
  * 按 zip 里的顺序取第一个，玩家点开游戏看到的是个安装界面。
  * ⚠️ 别把 demo 加进来：太多游戏本体就叫 XXDEMO.EXE。
  */
-const NOT_GAME = /(^|\/)(install|setup|config|setsound|readme|uninst|dos4gw|cwsdpmi|eval|order|regist|vendor|catalog)/i
+const NOT_GAME = /(^|\/)_?(install|setup|config|setsound|readme|uninst|dos4gw|cwsdpmi|eval|order|regist|vendor|catalog|ibmbio|ibmdos|msdos|command)/i
+/**
+ * 名字完全等于这些的程序几乎不会是入口：结局动画（三国志 III 的 END.EXE）、
+ * 看说明文档的小工具（英雄无敌 1 的 SVIEW.EXE）、用 debug 打补丁的脚本（FIXIT.BAT）。
+ * 只按整个文件名匹配，ENDLESS.EXE / VIEWER2.EXE 之类不受影响。
+ */
+const NOT_ENTRY = /(^|\/)(end|ending|s?view|fixit)\.(exe|com|bat)$/i
+
+/**
+ * 启动程序候选。只有名字时退化成旧的按名打分；带上大小和内容（见 executableCandidates）
+ * 才能用下面三条只看文件本身的信号 —— 2026-11-15 线上普查里按名打分猜错了四款：
+ * 英雄无敌 1 → SVIEW.EXE、主题医院繁体 → S.BAT（只起 IPX 服务器）、
+ * Castle Wolfenstein → FIXIT.BAT（debug 打补丁）、三国志 III → END.EXE（结局动画）。
+ */
+export interface ExecutableCandidate {
+  name: string
+  /** 解压后大小 */
+  size?: number
+  /** .bat 全文、或小于 LAUNCHER_MAX_BYTES 的 .exe/.com 原始字节 */
+  content?: Uint8Array
+  /** .exe 的新式头签名：PE / NE 是 Windows 程序，LE / LX 是 DOS 扩展器；没有新式头为 undefined */
+  format?: 'PE' | 'NE' | 'LE' | 'LX'
+}
+
+/** 读 MZ 头判断是不是 Windows 程序。重定位表偏移 < 0x40 的老式 EXE 没有新式头，0x3C 处是随机数据 */
+export function exeFormat(head: Uint8Array): ExecutableCandidate['format'] {
+  if (head.length < 0x40 || head[0] !== 0x4d || head[1] !== 0x5a) return undefined
+  const view = new DataView(head.buffer, head.byteOffset, head.byteLength)
+  if (view.getUint16(0x18, true) < 0x40) return undefined
+  const at = view.getUint32(0x3c, true)
+  if (at + 2 > head.length) return undefined
+  const sig = String.fromCharCode(head[at], head[at + 1])
+  return sig === 'PE' || sig === 'NE' || sig === 'LE' || sig === 'LX' ? sig : undefined
+}
+
+/** 只有这么小的 .exe/.com 才当成可能的启动器去看内容；大程序里顺带出现文件名不说明什么 */
+export const LAUNCHER_MAX_BYTES = 64 * 1024
+/** .bat 超过这个就不读了：启动脚本不会有这么长 */
+export const BATCH_MAX_BYTES = 16 * 1024
+
+const latin1 = (bytes: Uint8Array) => {
+  let out = ''
+  for (let i = 0; i < bytes.length; i++) out += String.fromCharCode(bytes[i])
+  return out
+}
+const escapeRe = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const baseOf = (path: string) => path.split('/').pop()!
 
 /**
  * 从文件列表里猜一个启动程序。
  * hint 是包的文件名（去掉扩展名和语言后缀），可执行文件和它同名的几乎必是本体 ——
  * paranoid.zip 里的 PARANOID.COM、doom.zip 里的 DOOM.EXE。这是最强的信号，
  * 比任何后缀加分都可靠，所以给的分也最高。
+ *
+ * 有大小 / 内容时再加四条。⚠️ 它们只能在**同类之间**分高下，不能盖过「调用了包内程序的 BAT」：
+ * 第一版让大小封顶 +3、启动器 +5，回放线上 67 款时把主题公园 PARK.BAT、英雄无敌 2 START.BAT
+ * 这类作者写好的启动脚本全换成了 MAIN.EXE / 编辑器 / 安装程序。所以：
+ * - 大小：只给 ≥512KB 的大主程序 +0.6（≥2MB +0.9），够在几个 EXE 之间挑出主程序，
+ *   又不让几百 KB 的编辑器盖过 1～2KB 的启动壳（RA.EXE、CC.COM）；
+ * - 启动器：小 .exe/.com 里写着包内两个以上别的程序名（KOEI.COM → FMDRV / OPEN / MAIN / END），+1.5，
+ *   仍低于有效 BAT；
+ * - Windows 程序：PE / NE 头的 EXE 在纯 DOS 里跑不起来（红警的 RA95.EXE、英雄无敌 2 的 HEROES2W.EXE），-6；
+ * - 批处理：调用了包内程序 +1；一个也没调用、也不换盘（ARENA.BAT 会切到光盘 D:）的 BAT
+ *   只是工具脚本（ipxnet、debug 补丁），-8。
  */
-export function pickExecutable(names: string[], hint?: string): string | null {
-  const runnable = names.filter((n) => RUNNABLE.test(n) && !n.startsWith('.jsdos/'))
-  if (runnable.length === 0) return null
+export function pickExecutable(input: readonly (string | ExecutableCandidate)[], hint?: string): string | null {
+  const candidates = input
+    .map((item) => (typeof item === 'string' ? { name: item } : item))
+    .filter((c) => RUNNABLE.test(c.name) && !c.name.startsWith('.jsdos/'))
+  if (candidates.length === 0) return null
   // need-for-speed.en.zip → need-for-speed；比对时去掉连字符差异（NEED4SPD 这类缩写救不了，不强求）
   const base = (hint ?? '').replace(/\.[^.]+$/, '').replace(/\.(zh-Han[st]|en|ja|fr|de|es|it)$/i, '')
   const norm = (x: string) => x.toLowerCase().replace(/[-_ ]/g, '')
   const wanted = norm(base)
-  const score = (n: string) => {
+  // 「游戏程序」：别的脚本 / 启动器引用到它才算数。系统文件、安装器、DOS4GW 不算
+  const gamePrograms = candidates.filter((c) => !NOT_GAME.test(c.name))
+  const referencesIn = (text: string, self: string, withExtension: boolean) => {
+    const found = new Set<string>()
+    for (const other of gamePrograms) {
+      if (other.name === self) continue
+      const file = baseOf(other.name)
+      const stem = file.replace(/\.[^.]+$/, '')
+      /*
+        单字母程序名（金庸群侠传的 Z.COM、主题医院的 S.BAT）在文本里到处都是，还会撞上 c: 这类盘符，
+        所以只认「行首当命令」的写法：`z`、`@z`、`call z.bat`。
+      */
+      const pattern = withExtension
+        ? new RegExp(`(^|[^A-Za-z0-9_])${escapeRe(file)}($|[^A-Za-z0-9_])`, 'i')
+        : stem.length < 2
+          ? new RegExp(`^\\s*@?\\s*(call\\s+)?${escapeRe(stem)}(\\.(exe|com|bat))?(\\s|$)`, 'im')
+          : new RegExp(`(^|[^A-Za-z0-9_~!$#%&-])${escapeRe(stem)}(\\.(exe|com|bat))?($|[^A-Za-z0-9_~!$#%&-])`, 'i')
+      if (pattern.test(text)) found.add(file.toLowerCase())
+    }
+    return found.size
+  }
+  const score = (c: ExecutableCandidate) => {
+    const n = c.name
     let s = 0
-    const stem = norm(n.split('/').pop()!.replace(/\.[^.]+$/, ''))
+    const stem = norm(baseOf(n).replace(/\.[^.]+$/, ''))
     if (wanted && stem === wanted) s += 6
     if (NOT_GAME.test(n)) s -= 10
-    if (/\.bat$/i.test(n)) s += 3 // 作者自己写的启动批处理通常最靠谱
-    if (/\.(exe|com)$/i.test(n)) s += 2 // .com 和 .exe 在 DOS 里同级，以前漏了 .com，才会出现平局
+    if (NOT_ENTRY.test(n)) s -= 6
+    const bat = /\.bat$/i.test(n)
+    if (bat) s += 3 // 作者自己写的启动批处理通常最靠谱
+    else s += 2 // .com 和 .exe 在 DOS 里同级，以前漏了 .com，才会出现平局
+    // 只奖励真正的大主程序：红警 RA.EXE、命令与征服 CC.COM 是 1～2KB 的启动壳，几百 KB 的
+    // 地图工具 / 编辑器（RUNMAP.EXE、CCEDIT.EXE）不能靠大小反超它们
+    if (!bat && c.size && c.size >= 512 * 1024) s += c.size >= 2 * 1024 * 1024 ? 0.9 : 0.6
+    if (c.format === 'PE' || c.format === 'NE') s -= 6
+    if (c.content) {
+      const text = latin1(c.content)
+      if (bat) {
+        // 去掉注释和 echo 行，免得「echo Type SC2000 to play」这种说明文字被当成调用
+        const body = text
+          .split(/\r?\n/)
+          .filter((line) => !/^\s*@?\s*(rem\b|::|echo\b)/i.test(line))
+          .join('\n')
+        const calls = referencesIn(body, n, false)
+        const switchesDrive = /^\s*@?\s*[a-z]:\s*$/im.test(body) || /\b[a-z]:\\/i.test(body)
+        if (calls > 0) s += 1
+        else if (!switchesDrive) s -= 8
+      } else if (c.content.length <= LAUNCHER_MAX_BYTES && referencesIn(text, n, true) >= 2) {
+        s += 1.5
+      }
+    }
     s -= (n.split('/').length - 1) * 2 // 越靠近根目录越可能是主程序
     s -= n.length * 0.01
     return s
   }
-  return runnable.sort((a, b) => score(b) - score(a))[0]
+  return candidates
+    .map((c) => ({ c, s: score(c) }))
+    .sort((a, b) => b.s - a.s)[0].c.name
+}
+
+/**
+ * 给 pickExecutable 准备带大小和内容的候选。只解 .bat 和小于 64KB 的 .exe/.com，
+ * 一个包最多读 256 个：模拟城市 2000 那种带几十个 VESA 小驱动的包也就多解几十 KB。
+ * 读失败（加密、坏条目）就只给名字，不影响原来的按名打分。
+ */
+export async function executableCandidates(entries: readonly ZipEntry[], buf: ArrayBuffer): Promise<ExecutableCandidate[]> {
+  const out: ExecutableCandidate[] = []
+  let read = 0
+  for (const e of entries) {
+    if (e.name.endsWith('/') || !RUNNABLE.test(e.name) || e.name.startsWith('.jsdos/')) continue
+    const candidate: ExecutableCandidate = { name: e.name, size: e.uncompressedSize }
+    const limit = /\.bat$/i.test(e.name) ? BATCH_MAX_BYTES : LAUNCHER_MAX_BYTES
+    if (e.uncompressedSize > 0 && e.uncompressedSize <= limit && read < 256) {
+      read++
+      try {
+        candidate.content = await extractZipEntry(buf, {
+          name: e.name,
+          method: e.method,
+          compressedSize: e.compressedSize,
+          uncompressedSize: e.uncompressedSize,
+          crc32: e.crc,
+          offset: e.localOffset,
+        }, limit)
+      } catch {
+        /* 只按名字打分 */
+      }
+    }
+    if (/\.exe$/i.test(e.name) && e.uncompressedSize >= 0x40) {
+      try {
+        const head = candidate.content ?? await readZipEntryHead(buf, e, EXE_HEAD_BYTES)
+        candidate.format = exeFormat(head)
+      } catch {
+        /* 读不出头就不判断格式 */
+      }
+    }
+    out.push(candidate)
+  }
+  return out
+}
+
+/* ---------------- 光盘镜像自动挂载 ---------------- */
+
+/**
+ * 包里光盘镜像的自动挂载命令（2026-11-15）。
+ *
+ * 以前只有匕首雨、竞技场在 dosGameCompatibility 里按 slug 写死 imgmount，其余带镜像的包
+ * （雷神之锤的 CD/QUAKE.cue + OGG 音轨、凯撒 II 的 CloneCD 镜像）从来没挂上，配乐和光盘素材都没有。
+ * 只在**认得出唯一一张盘**时才挂，多张盘、找不到数据文件都返回 null（行为和以前一样）：
+ * - 一个 .cue：FILE 行的文件名按包内真实大小写改写（宿主文件系统区分大小写，QUAKE.cue 写的是
+ *   track01.iso，包里却是 Track01.iso）；需要改写就另存一份 `.8bitgo.cue`，原文件不动；
+ * - 没有 .cue、有一个 .ccd + 同名 .img：按 CCD 的 [TRACK n] 生成 cue（竞技场手写的那份就是这个格式）；
+ * - 只有一个 .iso：直接挂。
+ * 挂载失败时 DOSBox 只打一行错误、接着跑 autoexec，游戏照常启动，不会比不挂更糟。
+ */
+export interface AutoDiscMount {
+  command: string
+  /** 需要新写进包里的 cue */
+  cue?: OutEntry
+}
+
+const DISC_TEXT_MAX_BYTES = 64 * 1024
+
+export async function autoDiscMount(
+  entries: readonly ZipEntry[],
+  buf: ArrayBuffer,
+  taken: ReadonlySet<string> = new Set(),
+): Promise<AutoDiscMount | null> {
+  const files = entries.filter((e) => !e.name.endsWith('/') && !e.name.startsWith('.jsdos/'))
+  const byLower = new Map(files.map((e) => [e.name.toLowerCase(), e]))
+  const dirOf = (path: string) => (path.includes('/') ? path.slice(0, path.lastIndexOf('/') + 1) : '')
+  const readText = async (e: ZipEntry) => {
+    if (e.uncompressedSize > DISC_TEXT_MAX_BYTES) return null
+    const bytes = await extractZipEntry(buf, {
+      name: e.name,
+      method: e.method,
+      compressedSize: e.compressedSize,
+      uncompressedSize: e.uncompressedSize,
+      crc32: e.crc,
+      offset: e.localOffset,
+    }, DISC_TEXT_MAX_BYTES)
+    return latin1(bytes)
+  }
+  // 只在路径带空格时才加引号（凯撒 II 的「Caesar II」）；其余保持和匕首雨 / 竞技场已验证过的裸写法一致
+  const mount = (path: string) => `imgmount d ${/\s/.test(path) ? `"${path}"` : path} -t iso`
+  const newCue = (beside: string, text: string): AutoDiscMount | null => {
+    const path = `${beside.replace(/\.[^./]+$/, '')}.8bitgo.cue`
+    if (taken.has(path.toLowerCase()) || byLower.has(path.toLowerCase())) return null
+    const data = te.encode(text) as Uint8Array<ArrayBuffer>
+    return {
+      command: mount(path),
+      cue: { name: path, method: 0, crc: crc32(data), compressedSize: data.length, uncompressedSize: data.length, data },
+    }
+  }
+
+  const cues = files.filter((e) => /\.cue$/i.test(e.name))
+  if (cues.length > 1) return null
+  if (cues.length === 1) {
+    const cue = cues[0]
+    const text = await readText(cue)
+    if (!text) return null
+    let rewritten = false
+    let missing = false
+    let dataFiles = 0
+    const fixed = text.replace(/^(\s*FILE\s+)(?:"([^"]+)"|(\S+))/gim, (line, lead: string, quoted?: string, bare?: string) => {
+      const ref = (quoted ?? bare ?? '').replace(/\\/g, '/')
+      if (!ref || ref.startsWith('/') || ref.includes(':') || ref.split('/').includes('..')) {
+        missing = true
+        return line
+      }
+      const actual = byLower.get((dirOf(cue.name) + ref).toLowerCase())
+      if (!actual) {
+        missing = true
+        return line
+      }
+      dataFiles++
+      const relative = actual.name.slice(dirOf(cue.name).length)
+      if (relative !== ref || !quoted) rewritten = true
+      return `${lead}"${relative}"`
+    })
+    // 第一条 FILE 就是数据轨；它都缺了说明镜像不全，不挂。后面的音轨缺几条只是少几首配乐
+    const firstFile = /^\s*FILE\s+(?:"([^"]+)"|(\S+))/im.exec(text)
+    if (!firstFile || !dataFiles) return null
+    const firstRef = (firstFile[1] ?? firstFile[2]).replace(/\\/g, '/')
+    if (!byLower.has((dirOf(cue.name) + firstRef).toLowerCase())) return null
+    if (!rewritten && !missing) return { command: mount(cue.name) }
+    if (missing) {
+      // 缺了的音轨整段删掉，免得 DOSBox 因为一条 FILE 打不开就整张盘挂载失败
+      const kept: string[] = []
+      let skip = false
+      for (const line of fixed.split(/\r?\n/)) {
+        const file = /^\s*FILE\s+(?:"([^"]+)"|(\S+))/i.exec(line)
+        if (file) skip = !byLower.has((dirOf(cue.name) + (file[1] ?? file[2]).replace(/\\/g, '/')).toLowerCase())
+        if (!skip) kept.push(line)
+      }
+      return newCue(cue.name, kept.join('\r\n'))
+    }
+    return newCue(cue.name, fixed)
+  }
+
+  const ccds = files.filter((e) => /\.ccd$/i.test(e.name))
+  if (ccds.length > 1) return null
+  if (ccds.length === 1) {
+    const ccd = ccds[0]
+    const image = byLower.get(ccd.name.replace(/\.ccd$/i, '.img').toLowerCase())
+    if (!image) return null
+    const text = await readText(ccd)
+    if (!text) return null
+    const tracks: { no: number; mode: string; index: Map<number, number> }[] = []
+    let current: (typeof tracks)[number] | null = null
+    for (const raw of text.split(/\r?\n/)) {
+      const line = raw.trim()
+      const section = /^\[TRACK\s+(\d+)\]$/i.exec(line)
+      if (section) {
+        current = { no: Number(section[1]), mode: '', index: new Map() }
+        tracks.push(current)
+        continue
+      }
+      if (line.startsWith('[')) {
+        current = null
+        continue
+      }
+      if (!current) continue
+      const mode = /^MODE\s*=\s*(\d+)$/i.exec(line)
+      if (mode) current.mode = mode[1] === '0' ? 'AUDIO' : mode[1] === '2' ? 'MODE2/2352' : 'MODE1/2352'
+      const index = /^INDEX\s+(\d+)\s*=\s*(\d+)$/i.exec(line)
+      if (index) current.index.set(Number(index[1]), Number(index[2]))
+    }
+    const usable = tracks.filter((t) => t.mode && t.index.has(1)).sort((a, b) => a.no - b.no)
+    if (!usable.length) return null
+    const msf = (lba: number) => [Math.floor(lba / 4500), Math.floor((lba % 4500) / 75), lba % 75]
+      .map((n) => String(n).padStart(2, '0'))
+      .join(':')
+    const lines = [`FILE "${image.name.slice(dirOf(ccd.name).length)}" BINARY`]
+    for (const t of usable) {
+      lines.push(`  TRACK ${String(t.no).padStart(2, '0')} ${t.mode}`)
+      for (const [n, lba] of [...t.index].sort((a, b) => a[0] - b[0])) {
+        lines.push(`    INDEX ${String(n).padStart(2, '0')} ${msf(lba)}`)
+      }
+    }
+    return newCue(ccd.name, lines.join('\r\n') + '\r\n')
+  }
+
+  const isos = files.filter((e) => /\.iso$/i.test(e.name))
+  return isos.length === 1 ? { command: mount(isos[0].name) } : null
+}
+
+/** 新式头偏移通常在 0x80～0x400，8KB 足够；比它更远的就当没有 */
+const EXE_HEAD_BYTES = 8 * 1024
+
+/** 只解出条目开头 n 字节：deflate 流读够就取消，不为了看 EXE 头把 1MB 主程序整个解一遍 */
+async function readZipEntryHead(buf: ArrayBuffer, e: ZipEntry, n: number): Promise<Uint8Array> {
+  const view = new DataView(buf)
+  if (e.localOffset + 30 > buf.byteLength || view.getUint32(e.localOffset, true) !== 0x04034b50) {
+    throw new Error('zip: 本地文件头损坏')
+  }
+  const start = e.localOffset + 30 + view.getUint16(e.localOffset + 26, true) + view.getUint16(e.localOffset + 28, true)
+  const raw = new Uint8Array(buf, start, Math.min(e.compressedSize, buf.byteLength - start))
+  if (e.method === 0) return raw.subarray(0, n)
+  if (e.method !== 8) throw new Error(`zip: 不支持的压缩方式 ${e.method}`)
+  const reader = rawDeflateStream(raw, e.crc, e.uncompressedSize).getReader()
+  const out = new Uint8Array(Math.min(n, e.uncompressedSize))
+  let filled = 0
+  try {
+    while (filled < out.length) {
+      const { done, value } = await reader.read()
+      if (done) break
+      const take = Math.min(value.length, out.length - filled)
+      out.set(value.subarray(0, take), filled)
+      filled += take
+    }
+  } finally {
+    void reader.cancel().catch(() => {})
+  }
+  return out.subarray(0, filled)
 }
 
 /**
@@ -1281,7 +1602,7 @@ export async function makeJsdosBundle(
       crc32: bundledConf.crc,
       offset: bundledConf.localOffset,
     })
-    const picked = configuredExecutable ?? ((startupCommands?.trim() || launchArguments.length) ? pickExecutable(entries.map((e) => e.name)) : null)
+    const picked = configuredExecutable ?? ((startupCommands?.trim() || launchArguments.length) ? pickExecutable(await executableCandidates(entries, buf), name) : null)
     const launch = picked
       ? await dosLaunchBatchCompat(entries, buf, dosLaunchTarget(entries, buf, picked), picked, startupCommands)
       : null
@@ -1330,7 +1651,7 @@ export async function makeJsdosBundle(
   let launchExe: string | null = null
 
   if (entries) {
-    exe = configuredExecutable ?? pickExecutable(entries.map((e) => e.name), name)
+    exe = configuredExecutable ?? pickExecutable(await executableCandidates(entries, buf), name)
     if (!exe) throw new Error('DOS 压缩包里没有可运行的 .exe、.com 或 .bat 文件')
 
     /**
@@ -1383,6 +1704,14 @@ export async function makeJsdosBundle(
         uncompressedSize: e.uncompressedSize,
         data: rawData(buf, e), // 压缩数据整段照抄，不解压
       })
+    }
+    // 后台没填挂盘命令、包里又带着一张光盘镜像时自动挂成 D:（雷神之锤的配乐音轨、凯撒 II 的光盘素材）
+    if (!startupCommands?.trim()) {
+      const disc = await autoDiscMount(entries, buf, new Set(out.map((entry) => entry.name.toLowerCase())))
+      if (disc) {
+        startupCommands = disc.command
+        if (disc.cue) out.push(disc.cue)
+      }
     }
     const launch = await dosLaunchBatchCompat(entries, buf, dosLaunchTarget(entries, buf, exe), exe, startupCommands)
     launchExe = launch.path

@@ -1,5 +1,5 @@
 /* 自动生成，勿手改：node scripts/gen-ejs-core-versions.mjs（换核心后必须重跑，见脚本头注释） */
-/** 核心文件（相对 /emulatorjs/）→ 内容 SHA-256 前 16 位。表里没有的文件退回全局 EJS_RUNTIME_GENERATION。 */
+/** 核心与引擎入口文件（相对 /emulatorjs/）→ 内容 SHA-256 前 16 位。表里没有的文件退回全局 EJS_RUNTIME_GENERATION。 */
 export const EJS_CORE_VERSIONS: Readonly<Record<string, string>> = Object.freeze({
   "cores/a5200-legacy-wasm.data": "f1813f8e316c59cd",
   "cores/a5200-wasm.data": "c82476478d6b70b9",
@@ -12,6 +12,8 @@ export const EJS_CORE_VERSIONS: Readonly<Record<string, string>> = Object.freeze
   "cores/fbalpha2012_cps2-legacy-wasm.data": "f896158999103151",
   "cores/fbalpha2012_cps2-wasm.data": "432c2dd513603b04",
   "cores/fbneo-legacy-wasm.data": "9dbb6242c028f417",
+  "cores/fbneo-lowmem-legacy-wasm.data": "8c0e4fb41f3680c5",
+  "cores/fbneo-lowmem-wasm.data": "1548ccb595103725",
   "cores/fbneo-wasm.data": "315a25e0bcd61d58",
   "cores/fceumm-legacy-wasm.data": "f1054b094e7149fd",
   "cores/fceumm-wasm.data": "8c449fd5c36646fb",
@@ -63,6 +65,7 @@ export const EJS_CORE_VERSIONS: Readonly<Record<string, string>> = Object.freeze
   "cores/metadata/desmume2015.json": "5c4b73d00e8b0962",
   "cores/metadata/fbalpha2012_cps1.json": "8b7ed7aef4912969",
   "cores/metadata/fbalpha2012_cps2.json": "46aef58004a9a34b",
+  "cores/metadata/fbneo-lowmem.json": "0a200069e38d9ee8",
   "cores/metadata/fbneo.json": "d2c5e07c2afc2b53",
   "cores/metadata/fceumm.json": "13dbbfba0ea1bea0",
   "cores/metadata/gambatte.json": "a240a47bd6b2a38a",
@@ -86,5 +89,32 @@ export const EJS_CORE_VERSIONS: Readonly<Record<string, string>> = Object.freeze
   "cores/metadata/puae.json": "a49ac77870e383d8",
   "cores/metadata/snes9x.json": "dc7ac963eb7935a7",
   "cores/metadata/stella2014.json": "c9920b95db48f678",
-  "cores/metadata/vice_x64sc.json": "5c50bc4ff5546a2c"
+  "cores/metadata/vice_x64sc.json": "5c50bc4ff5546a2c",
+  "emulator.min.js": "3460569361f2bfb1",
+  "emulator.min.css": "6c7b0ae656c00b8f",
+  "loader.js": "25a45520522322b0",
+  "compression/extract7z.js": "4ac9933b995a516c",
+  "localization/ar.json": "52922a619850556c",
+  "localization/bn.json": "da706dbaeb0803cf",
+  "localization/de.json": "be3dfde02f0f4fa7",
+  "localization/el.json": "0b43c4aac9b1800c",
+  "localization/en.json": "e241e358d229d992",
+  "localization/es.json": "2ac8cfafcd489ab9",
+  "localization/fa.json": "a10ed4bc4a688460",
+  "localization/fr.json": "6667529d154b95c2",
+  "localization/hi.json": "12449b8a149a20b6",
+  "localization/it.json": "5c831dfb47f48c24",
+  "localization/ja.json": "ec0c86621867a7af",
+  "localization/jv.json": "a428694b496f575f",
+  "localization/km.json": "86d720d0536c8312",
+  "localization/ko.json": "3281bed4713b1f65",
+  "localization/pt.json": "cee0e1cee3d1545c",
+  "localization/retroarch.json": "31e0c9c1876402da",
+  "localization/ro.json": "d2907fad7d988611",
+  "localization/ru.json": "f466956918200e65",
+  "localization/tr.json": "1641b65c9cac3144",
+  "localization/ua.json": "d715f68b13ca518f",
+  "localization/ur.json": "71fcf421cb20cfda",
+  "localization/vi.json": "4e837353134897c7",
+  "localization/zh.json": "bce713e287bf2de5"
 })

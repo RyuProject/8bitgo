@@ -61,6 +61,10 @@ fi
 [ -n "$NODE_BIN" ] && export PATH="$(dirname "$NODE_BIN"):$PATH"
 command -v node >/dev/null || die "找不到 node，用 NODE_BIN=/绝对路径/node 指定"
 
+# 依赖安装的「lock 未变就跳过」判据单独放一个文件，方便测试（scripts/test-redeploy.mjs）
+# shellcheck source=lib/npm-ci-if-changed.sh
+. "$(dirname "$(readlink -f "$0")")/lib/npm-ci-if-changed.sh" || die "缺少 deploy/lib/npm-ci-if-changed.sh"
+
 # Bash 只会在执行流走到函数定义后才认得它。健康检查与回滚函数必须放在主流程之前，
 # 否则发布已重启服务后会报 command not found，还会让自动回滚同样失效。
 health_ok() {
@@ -111,8 +115,37 @@ BEFORE_COMMIT="$(git rev-parse HEAD)"
 log "当前提交 ${BEFORE_COMMIT}（分支 ${BRANCH}）"
 
 # ── 1. 先备份（改动之前）──
-log "── 步骤 1/7  数据库备份 → R2 ──"
-"$BACKUP_SCRIPT" || die "备份失败，整个流程中止（不动线上）"
+# 2026-11-15：拆成两半。mysqldump + 校验 + 本地轮转仍在**任何改动之前**同步做完，失败照旧中止；
+# 传 R2（几十 MB，跨境链路几十秒）放到后台，和拉代码 / 装依赖 / 构建并行。上传失败只告警：
+# 本地那份已经验过（Dump completed + gzip -t），回滚需要的快照就在本机。
+# 脚本退出前（成功、回滚、die 都算）会等后台上传结束，否则 systemd oneshot 退出时会把它一起杀掉。
+# BACKUP_ASYNC_UPLOAD=0 退回旧行为（上传完才继续）。
+BACKUP_UPLOAD_PID=""
+finish_backup_upload() {
+  [ -n "$BACKUP_UPLOAD_PID" ] || return 0
+  local pid="$BACKUP_UPLOAD_PID"
+  BACKUP_UPLOAD_PID=""
+  if wait "$pid"; then
+    log "备份已上传 R2（后台）"
+  else
+    log "⚠️ 备份上传 R2 失败（本地已有校验过的备份，部署不受影响）；详见 /var/log/8bitgo-backup.log"
+  fi
+}
+trap finish_backup_upload EXIT
+if [ "${BACKUP_ASYNC_UPLOAD:-1}" = "1" ]; then
+  log "── 步骤 1/7  数据库备份（本地校验完再继续，R2 上传转后台）──"
+  BACKUP_STDOUT="$("$BACKUP_SCRIPT" --local-only)" || die "备份失败，整个流程中止（不动线上）"
+  BACKUP_FILE="$(printf '%s\n' "$BACKUP_STDOUT" | sed -n 's/^BACKUP_FILE=//p' | tail -1)"
+  if [ -n "$BACKUP_FILE" ]; then
+    "$BACKUP_SCRIPT" --upload-file "$BACKUP_FILE" >/dev/null 2>&1 &
+    BACKUP_UPLOAD_PID=$!
+  else
+    log "⚠️ 备份脚本没报出文件路径（旧版脚本？），这次不传 R2"
+  fi
+else
+  log "── 步骤 1/7  数据库备份 → R2 ──"
+  "$BACKUP_SCRIPT" || die "备份失败，整个流程中止（不动线上）"
+fi
 
 # ── 2. 拉取最新 ──
 if [ "$PULL_LATEST" = "1" ]; then
@@ -126,9 +159,11 @@ else
 fi
 
 # ── 3. 安装依赖（根 + server 两套；API 跑的是 server/src 源码）──
-log "── 步骤 3/7  安装依赖（npm ci）──"
-( cd "$REPO_DIR"  && npm ci ) || die "根 npm ci 失败"
-( cd "$SERVER_DIR" && npm ci ) || die "server npm ci 失败"
+# lock 文件和上次成功安装时一样就跳过（见 deploy/lib/npm-ci-if-changed.sh；FORCE_NPM_CI=1 强制重装）。
+# 两套仍然串行：4GB 的生产机上并行两次 npm ci 会和线上进程抢内存。
+log "── 步骤 3/7  安装依赖（npm ci，lock 未变则跳过）──"
+npm_ci_if_changed "$REPO_DIR"   || die "根 npm ci 失败"
+npm_ci_if_changed "$SERVER_DIR" || die "server npm ci 失败"
 
 # ── 4. CI 卡点：lint + 类型检查（不碰库、秒级）──
 log "── 步骤 4/7  CI 卡点：oxlint + tsc ──"
@@ -183,6 +218,18 @@ if health_ok && ps2_headers_ok; then
   # 页面在 Cloudflare 边缘缓存一天（见 server/src/edge-purge.js），新前端要靠这一步立刻生效。
   # 清失败不回滚：站点是好的，只是旧 HTML 要等过期（旧哈希资源仍保留在 dist，不会白屏）。
   ( cd "$SERVER_DIR" && npm run --silent purge:edge-html ) || log "⚠️ 清 Cloudflare HTML 缓存失败，新版要等边缘过期才全量生效"
+  # 可选：真把一款 NES、一款街机跑到首帧（scripts/smoke-start.mjs，需要本机有 Chrome / Chromium）。
+  # 默认关；SMOKE_TEST=1 打开。失败只告警、不回滚：站点进程是健康的，游戏打不开多半是
+  # 运行时 / ROM / CDN 的问题，回滚代码未必有用，需要人看诊断再决定。
+  if [ "${SMOKE_TEST:-0}" = "1" ]; then
+    log "── 开局冒烟（SMOKE_TEST=1）──"
+    ( cd "$REPO_DIR" && node scripts/smoke-start.mjs --base "${SMOKE_BASE_URL:-http://127.0.0.1:8788}" ) 2>&1 | tee -a "$LOG" >&2
+    case "${PIPESTATUS[0]}" in
+      0) log "开局冒烟通过" ;;
+      2) log "⚠️ 开局冒烟跳过（没有 Chrome / 环境不满足）" ;;
+      *) log "⚠️ 开局冒烟失败：站点已上线，但上面这些游戏没跑到首帧，请看后台「错误诊断」" ;;
+    esac
+  fi
   log "✅ 部署完成：$(git rev-parse --short HEAD)"
   exit 0
 fi

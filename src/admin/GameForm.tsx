@@ -72,7 +72,7 @@ import { normalizeDevelopers } from '@/lib/developers'
 import { Field, btnClass, inputClass } from './ui'
 import { fetchAdminGames, patchGame } from '@/services/store'
 import { api, apiEnabled } from '@/services/api'
-import { objectReferenceMatches, planRomObjectDeletion, unbindRomObjectKeys } from './romDeletePlan'
+import { objectReferenceMatches, planRomObjectDeletion, unbindRomObjectKeys, type PlatformBiosRefs } from './romDeletePlan'
 import { mergeDosboxConfigOverride, normalizeDosboxConfigOverride, parseDosboxConfigOverride } from '../../shared/dosbox-config.js'
 import { romPackInnerName } from '../../shared/rom-pack-format.js'
 import { extractGameKeywordsFromDescriptions } from './gameKeywords'
@@ -82,6 +82,7 @@ import { probeRange } from '@/emulator/remoteDisc'
 import { isRomPackBytes, isRomPackUrl, packRomForUpload, recommendedRomPackCodec, releasePackedRomUpload, romPackKey, unpackRomPackBlob, verifyRomPackBlob } from '@/services/romPack'
 import { isStreamingDiscPlatform } from '../../shared/streaming-disc-platforms.js'
 import { flashCompatibilityIssue } from '@/emulator/flashCompatibility'
+import { assertSwf, assertSwfBlob } from '@/lib/romValidation'
 import {
   createPspConversion,
   pspChdKey,
@@ -202,6 +203,7 @@ const EMPTY: Game = {
   plays: 0,
   players: 1,
   multiplayer: false,
+  netplayMode: 'auto',
   coinReward: 0,
   icon: '🎮',
   cover: '',
@@ -439,8 +441,12 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
       if (games.length !== first.total) {
         throw new Error(`全库引用检查不完整（读取 ${games.length} / ${first.total} 款游戏），为避免误删没有执行`)
       }
+      // 平台 BIOS 也是 R2 对象；fetchPlatformBios 失败时会静默给空表，删除前必须直接读、读不到就停。
+      const platformBios = await api.get<PlatformBiosRefs>('/api/platform-bios').catch(() => {
+        throw new Error('读取平台 BIOS 绑定失败，无法确认对象没被 BIOS 使用；已阻止删除')
+      })
 
-      const plan = planRomObjectDeletion(games, objectKeys)
+      const plan = planRomObjectDeletion(games, objectKeys, platformBios ?? {})
       // 未保存的表单也可能把同一 key 用作封面 / 系统盘；这类引用不能由 ROM 按钮顺手清除。
       const targets = new Set(objectKeys)
       const draftReferences: Array<[string, string | undefined]> = [
@@ -1139,8 +1145,20 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
         <Field label="开发商" hint="多个开发商用逗号分隔">
           <input className={inputClass} value={form.developer} onChange={(e) => set('developer', e.target.value)} placeholder="Nintendo, HAL Laboratory" />
         </Field>
-        <Field label="最大玩家数">
-          <select className={inputClass} value={form.players} onChange={(e) => set('players', Number(e.target.value) as Game['players'])}>
+        <Field
+          label="最大玩家数"
+          hint={
+            form.platform === 'arcade'
+              ? '街机按 ROM 自动识别，这里的值不生效'
+              : (form.netplayMode ?? 'auto') === 'on' ? '强制开启联机时用这个人数' : '「自动」时按 ROM 推断，这里的值不生效'
+          }
+        >
+          <select
+            className={inputClass}
+            value={form.players}
+            disabled={form.platform === 'arcade' || (form.netplayMode ?? 'auto') !== 'on'}
+            onChange={(e) => set('players', Number(e.target.value) as Game['players'])}
+          >
             {Array.from({ length: NETPLAY_MAX_PLAYERS }, (_, i) => i + 1).map((n) => (
               <option key={n} value={n}>
                 {n} 人
@@ -1876,9 +1894,42 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
       </Field>
 
       <div className="flex flex-wrap gap-4 text-sm">
+        {/*
+          联机不再要求逐款勾选：默认「自动」由服务端按 ROM 推断人数（街机读 FBNeo 驱动表，
+          见 server/src/netplay-auto.js），这里只用来纠错。
+        */}
+        {/* 街机没有手动开关：服务端忽略 netplayMode，按 FBNeo 驱动表自动识别（netplay-auto.js） */}
+        {form.platform === 'arcade' ? (
+          <span className="inline-flex items-center gap-2">
+            联机
+            <span className="text-xs text-muted">
+              自动识别：
+              {form.playersInferred
+                ? `${form.playersInferred} 人${form.playersInferred >= 2 ? '，可联机' : '，单人游戏不开放联机'}`
+                : '驱动表里没有这个 romset，按街机默认 2 人'}
+            </span>
+          </span>
+        ) : (
         <label className="inline-flex items-center gap-2">
-          <input type="checkbox" checked={form.multiplayer} onChange={(e) => set('multiplayer', e.target.checked)} /> 支持联机 / 双人
+          联机
+          <select
+            className={inputClass}
+            value={form.netplayMode ?? 'auto'}
+            onChange={(e) => set('netplayMode', e.target.value as NonNullable<Game['netplayMode']>)}
+          >
+            <option value="auto">自动（按 ROM 推断）</option>
+            <option value="on">强制开启</option>
+            <option value="off">强制关闭</option>
+          </select>
+          <span className="text-xs text-muted">
+            {(form.netplayMode ?? 'auto') === 'auto'
+              ? form.playersInferred
+                ? `推断为 ${form.playersInferred} 人${form.playersInferred >= 2 ? '，可联机' : '，单人游戏不开放联机'}`
+                : '这个平台还没有自动数据，沿用已保存的设置'
+              : null}
+          </span>
         </label>
+        )}
         <label className="inline-flex items-center gap-2">
           <input type="checkbox" checked={Boolean(form.bodyControl)} onChange={(e) => set('bodyControl', e.target.checked)} /> 体感控制友好
         </label>
@@ -3481,14 +3532,16 @@ function RomField({
     if (isFlash && /\.swf$/i.test(file.name)) {
       setMsg({ ok: true, text: `正在检查 ${file.name} 的网页兼容性…` })
       try {
-        const issue = await flashCompatibilityIssue(await file.arrayBuffer())
+        const data = await file.arrayBuffer()
+        assertSwf(data)
+        const issue = await flashCompatibilityIssue(data)
         if (issue) {
           setMsg({ ok: false, text: `${issue.message}；这份文件没有上传` })
           if (inputRef.current) inputRef.current.value = ''
           return
         }
       } catch (error) {
-        setMsg({ ok: false, text: error instanceof Error ? `无法检查 SWF：${error.message}` : '无法检查 SWF' })
+        setMsg({ ok: false, text: error instanceof Error ? `SWF 无效或无法检查：${error.message}；这份文件没有上传` : 'SWF 无效或无法检查；这份文件没有上传' })
         if (inputRef.current) inputRef.current.value = ''
         return
       }
@@ -3544,9 +3597,18 @@ function RomField({
     if (hasPackMagic) {
       setMsg({ ok: true, text: `正在校验已有 8BG 容器 ${file.name}…` })
       try {
-        const header = await verifyRomPackBlob(file, ({ loaded, total }) => {
+        const onPackProgress = ({ loaded, total }: { loaded: number; total: number }) => {
           setProgress(Math.min(49, Math.round((loaded / Math.max(1, total)) * 50)))
-        })
+        }
+        let header: Awaited<ReturnType<typeof verifyRomPackBlob>>
+        if (platform === 'flash') {
+          // 已加密的 8BG 也要验内层 SWF；只验证容器认证码会放过容器里原本就截断的影片。
+          const unpacked = await unpackRomPackBlob(file, onPackProgress)
+          await assertSwfBlob(unpacked.blob)
+          header = unpacked.header
+        } else {
+          header = await verifyRomPackBlob(file, onPackProgress)
+        }
         alreadyPacked = true
         packedOriginalName = header.originalName
         const allowed = platformMap[platform]?.romExtensions ?? ['.zip']
@@ -3875,6 +3937,35 @@ function RomField({
     }
   }
 
+  /**
+   * 备用地址同样走全库安全删除：主表单的 deleteBoundRom 会把这个 key 从所有游戏的主 / 语言 / 备用槽摘掉，
+   * 并同步清掉表单草稿。以前这里只能改文本框，清空后 R2 上的文件就成了没人认领的孤儿。
+   */
+  const removeBackup = async () => {
+    const key = backupValue.trim()
+    if (!key) return
+    setMsg(null)
+    if (!(allowStorage && isDeletableKey(key))) {
+      onBackupChange('')
+      setMsg({ ok: true, text: '已清空备用地址；外部文件不会被删除' })
+      return
+    }
+    if (!canUpload) {
+      setMsg({ ok: false, text: '请先在“ROM 存储”页配置 Worker 地址和口令，才能解绑并删除 R2 文件' })
+      return
+    }
+    if (!onDeleteRom) {
+      setMsg({ ok: false, text: '当前窗口无法安全检查全库引用，已阻止删除' })
+      return
+    }
+    try {
+      const result = await onDeleteRom(key)
+      if (result) setMsg({ ok: true, text: `已解绑备用地址并删除 ${result.removed} 个 R2 对象（影响 ${result.unboundGames} 款游戏）` })
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof Error ? err.message : '解绑并删除失败' })
+    }
+  }
+
   /** 删除 R2 ROM 时经父表单先解除全库引用；外部地址 / 站内静态文件只允许解绑。 */
   const removeRom = async () => {
     const key = value.trim()
@@ -4029,7 +4120,23 @@ function RomField({
               >
                 {health?.checking ? '检测中…' : '检测主/备'}
               </button>
+              {backupValue.trim() && (
+                <button
+                  type="button"
+                  className={cx(btnClass.danger, 'shrink-0 whitespace-nowrap')}
+                  onClick={() => void removeBackup()}
+                  disabled={deletingRom || (allowStorage && isDeletableKey(backupValue) && !canUpload)}
+                  title={allowStorage && isDeletableKey(backupValue)
+                    ? canUpload ? '检查全库引用后解除备用地址并永久删除 R2 文件' : '请先配置 Worker 地址和口令，才能删除 R2 文件'
+                    : '只清空备用地址；外部文件不会被删除'}
+                >
+                  {allowStorage && isDeletableKey(backupValue) ? deletingRom ? '删除中…' : '解绑并删除' : '解绑'}
+                </button>
+              )}
             </div>
+            {allowStorage && isDeletableKey(backupValue) && (
+              <p className="mt-1 text-[11px] text-dim">只想换掉备用地址、保留文件时，直接改写或清空上面的输入框即可。</p>
+            )}
             {health && !health.checking && (
               <p className="mt-2 space-x-3">
                 <span>主地址：{healthText(health.primary)}</span>

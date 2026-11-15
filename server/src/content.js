@@ -10,7 +10,7 @@
  * 仍然保留一层短缓存（SSR_CACHE_MS，默认 60 秒），但缓存的是「每个路由的结果」
  * 而不是整个库，且带容量上限，不会被爬虫翻页翻到内存爆掉。
  */
-import { listGames, listHomePicks, getGameBySlug, platformCounts, genreCounts, developerCounts } from './games-repo.js'
+import { listGames, listHomePicks, getGameBySlug, platformCounts, genreCounts, developerCounts, verifiedFlashGameCount } from './games-repo.js'
 import { getPublicCollectionDetail, listPublicCollections, topCollections } from './routes/collections.js'
 import { query } from './db.js'
 import { attachPostTags } from './routes/posts.js'
@@ -18,6 +18,7 @@ import { listPublicFriendLinks } from './friend-links.js'
 import { loadVisibleNotice } from './site-notice.js'
 import { isolatedRuntimeRoute } from '../../shared/isolated-runtime-platforms.js'
 import { schedulePurge } from './edge-purge.js'
+import { WASM_FREE_GAME_SLUGS, WASM_FREE_PLATFORM_IDS } from '../../shared/wasm-free-platforms.js'
 
 const TTL = Number(process.env.SSR_CACHE_MS || 60_000)
 /** 缓存最多存多少个路由的结果 */
@@ -102,14 +103,14 @@ const HOT_SIZE = 10
 /** 首页「分类网格」下面那几栏各列几款游戏 */
 const GENRE_COLUMNS = ['action', 'adventure', 'rpg', 'puzzle']
 
-async function loadHome() {
+async function loadHome(platforms, gameSlugs) {
   const [picks, popular, newest, multiplayer, facets, collections, friendLinks, notice, ...samples] = await Promise.all([
     // 首页第一栏：后台钦点的优先
-    listHomePicks(HOME_SIZE),
-    listGames({ sort: 'popular', pageSize: HOME_SIZE, card: true }),
-    listGames({ sort: 'newest', pageSize: HOME_SIZE, card: true }),
-    listGames({ multiplayer: true, sort: 'popular', pageSize: HOME_SIZE, card: true }),
-    loadFacets(),
+    listHomePicks(HOME_SIZE, platforms, gameSlugs),
+    listGames({ sort: 'popular', pageSize: HOME_SIZE, card: true, platforms, gameSlugs }),
+    listGames({ sort: 'newest', pageSize: HOME_SIZE, card: true, platforms, gameSlugs }),
+    listGames({ multiplayer: true, sort: 'popular', pageSize: HOME_SIZE, card: true, platforms, gameSlugs }),
+    loadFacets({ platforms, gameSlugs }),
     // 合集那一栏。取 8 个：首页一行最多摆 4 个，多取一些是为了万一有空合集（还没加游戏）
     // 也能凑够一行；建不出来（表还没迁移）时不能把整个首页拖垮，所以单独兜一层
     topCollections(8).catch(() => []),
@@ -123,7 +124,7 @@ async function loadHome() {
       读失败（表还没迁移）时是 null，整条不画，见 site-notice.js 的 readStoredNoticeSoft。
     */
     loadVisibleNotice(),
-    ...GENRE_COLUMNS.map((id) => listGames({ genre: id, sort: 'popular', pageSize: 4, card: true })),
+    ...GENRE_COLUMNS.map((id) => listGames({ genre: id, sort: 'popular', pageSize: 4, card: true, platforms, gameSlugs })),
   ])
   const genreSamples = {}
   GENRE_COLUMNS.forEach((id, i) => {
@@ -166,16 +167,25 @@ async function loadHome() {
   }
 }
 
-export async function loadFacets({ includeDevelopers = false } = {}) {
+export async function loadFacets({ includeDevelopers = false, platforms: only, gameSlugs } = {}) {
   // 开发商统计要拆分字符串并运行窗口函数，只有 /developers 页面会展示它。
   // 首页和普通列表页只需要平台/类型数量，省掉这条查询也缩短首屏等待。
-  const [platforms, genres, developers] = await Promise.all([
+  const [platforms, genres, developers, verifiedFlashCount] = await Promise.all([
     platformCounts(),
     genreCounts(),
     includeDevelopers ? developerCounts() : Promise.resolve([]),
+    Array.isArray(gameSlugs) ? verifiedFlashGameCount(gameSlugs) : Promise.resolve(0),
   ])
+  const platformFacets = platforms
+    // noWasm 模式下 Flash 只显示实测名单内的数量，不能把其他依赖 Ruffle 的游戏一起露出。
+    .filter((r) => (!Array.isArray(gameSlugs) || r.platform !== 'flash') && (!only || only.includes(r.platform)))
+    .map((r) => ({ id: r.platform, count: Number(r.n) }))
+  if (only && Array.isArray(gameSlugs) && verifiedFlashCount > 0) {
+    platformFacets.push({ id: 'flash', count: verifiedFlashCount })
+  }
   return {
-    platforms: platforms.map((r) => ({ id: r.platform, count: Number(r.n) })),
+    // 没有 WebAssembly 的浏览器只看得到能跑的平台（类型 / 开发商计数仍是全库的，只是参考数）
+    platforms: platformFacets,
     genres: genres.map((r) => ({ id: r.genre, count: Number(r.n) })),
     developers: developers.map((r) => ({
       name: r.developer,
@@ -229,11 +239,12 @@ export function cachePage(raw) {
 }
 
 /** 游戏详情和各模拟器隔离播放页读的是同一份数据；集中一处避免两条路回退规则漂移。 */
-function loadGamePage(slug) {
-  return cached(`game:${slug}`, async () => {
+function loadGamePage(slug, platforms, gameSlugs) {
+  // 详情页本身照常给（玩家点开始时播放器会说明原因），只有「相关推荐」按能跑的平台筛
+  return cached(`${platforms ? 'nw:' : ''}game:${slug}`, async () => {
     const game = await getGameBySlug(slug)
     if (!game || game.hidden) return { route: 'game', game: null }
-    const related = await loadRelatedGames(game)
+    const related = await loadRelatedGames(game, platforms, gameSlugs)
     return { route: 'game', game, related }
   })
 }
@@ -251,7 +262,7 @@ function loadGamePage(slug) {
  *   1 分 · 同平台（兜底，补满剩余位）
  * 同分再按热度排，保证顺序稳定。三档各取 12 条候选，在已缓存的 `game:slug` 里只跑一次。
  */
-async function loadRelatedGames(game) {
+async function loadRelatedGames(game, platforms, gameSlugs) {
   const slug = game.slug
   // 厂商可能录了多家（「SNK, Mega Enterprise」）。listGames 的 developer 过滤是按
   // FIND_IN_SET 边界匹配的，必须传单个厂商 token，否则整串当成一个值去比永远命中不了。
@@ -260,12 +271,12 @@ async function loadRelatedGames(game) {
     ?.trim()
   const [devRows, genreRows, platRows] = await Promise.all([
     primaryDev
-      ? listGames({ developer: primaryDev, sort: 'popular', pageSize: 12 })
+      ? listGames({ developer: primaryDev, sort: 'popular', pageSize: 12, platforms, gameSlugs })
       : { items: [] },
     Array.isArray(game.genres) && game.genres.length
-      ? listGames({ genre: game.genres[0], platform: game.platform, sort: 'popular', pageSize: 12 })
+      ? listGames({ genre: game.genres[0], platform: game.platform, sort: 'popular', pageSize: 12, platforms, gameSlugs })
       : { items: [] },
-    listGames({ platform: game.platform, sort: 'popular', pageSize: 12 }),
+    listGames({ platform: game.platform, sort: 'popular', pageSize: 12, platforms, gameSlugs }),
   ])
 
   const seen = new Set([slug])
@@ -302,58 +313,70 @@ function safeDecode(s) {
 export async function loadForRoute(pathname, search) {
   const seg = pathname.split('/').filter(Boolean)
   const qs = (k) => search?.get(k) ?? undefined
+  /*
+    `nowasm=1`：浏览器没有 WebAssembly（前端探测到才会带，SSR 永远不带），
+    所有游戏列表只给 shared/wasm-free-platforms.js 里的平台。缓存 key 前缀 `nw:` 与普通访客分开。
+  */
+  const nowasm = qs('nowasm') === '1'
+  const platforms = nowasm ? [...WASM_FREE_PLATFORM_IDS] : undefined
+  const gameSlugs = nowasm ? [...WASM_FREE_GAME_SLUGS] : undefined
+  const nw = nowasm ? 'nw:' : ''
 
   // 首页
-  if (seg.length === 0) return cached('home', async () => ({ route: 'home', ...(await loadHome()) }))
+  if (seg.length === 0) return cached(`${nw}home`, async () => ({ route: 'home', ...(await loadHome(platforms, gameSlugs)) }))
 
   // /games、/games/:slug
   if (seg[0] === 'games') {
     if (seg[1]) {
       const slug = safeDecode(seg[1])
-      return loadGamePage(slug)
+      return loadGamePage(slug, platforms, gameSlugs)
     }
     const q = {
       platform: qs('platform'), genre: qs('genre'), developer: qs('developer'),
       multiplayer: qs('multiplayer') === '1', coin: qs('coin') === '1',
-      q: qs('q'), sort: qs('sort'), page: qs('page'), letter: qs('letter'),
+      q: qs('q'), sort: qs('sort'), page: qs('page'), letter: qs('letter'), platforms, gameSlugs,
     }
     // 带搜索词的组合太发散，不进缓存，免得把内存塞满。
     // ⚠️ page 要规整过再进 key，理由见 cachePage
     const key = q.q ? null : `games:${JSON.stringify({ ...q, page: cachePage(q.page) })}`
-    const load = async () => ({ route: 'games', list: await listGames(q), facets: await loadFacets() })
+    // 列表与筛选面板互不依赖：并行查，缓存未命中时 TTFB 少一整段 SQL 往返（以前先等列表再查 facets）
+    const load = async () => {
+      const [list, facets] = await Promise.all([listGames(q), loadFacets({ platforms, gameSlugs })])
+      return { route: 'games', list, facets }
+    }
     return key ? cached(key, load) : load()
   }
 
   // `/play/<平台>/:slug` 是独立的跨源隔离播放器，但首屏仍需同一款游戏的数据。
   const isolatedPlay = isolatedRuntimeRoute(pathname)
   if (isolatedPlay) {
-    return loadGamePage(safeDecode(isolatedPlay.slug))
+    return loadGamePage(safeDecode(isolatedPlay.slug), platforms, gameSlugs)
   }
 
   // /platforms、/platforms/:id
   if (seg[0] === 'platforms') {
     if (seg[1]) {
       const id = safeDecode(seg[1])
-      return cached(`platform:${id}:${cachePage(qs('page'))}`, async () => ({
+      return cached(`${nw}platform:${id}:${cachePage(qs('page'))}`, async () => ({
         route: 'platform',
         id,
-        list: await listGames({ platform: id, sort: 'popular', page: qs('page') }),
+        list: await listGames({ platform: id, sort: 'popular', page: qs('page'), platforms, gameSlugs }),
       }))
     }
-    return cached('platforms', async () => ({ route: 'platforms', facets: await loadFacets() }))
+    return cached(`${nw}platforms`, async () => ({ route: 'platforms', facets: await loadFacets({ platforms, gameSlugs }) }))
   }
 
   // /genres、/genres/:id
   if (seg[0] === 'genres') {
     if (seg[1]) {
       const id = safeDecode(seg[1])
-      return cached(`genre:${id}:${cachePage(qs('page'))}`, async () => ({
+      return cached(`${nw}genre:${id}:${cachePage(qs('page'))}`, async () => ({
         route: 'genre',
         id,
-        list: await listGames({ genre: id, sort: 'popular', page: qs('page') }),
+        list: await listGames({ genre: id, sort: 'popular', page: qs('page'), platforms, gameSlugs }),
       }))
     }
-    return cached('genres', async () => ({ route: 'genres', facets: await loadFacets() }))
+    return cached(`${nw}genres`, async () => ({ route: 'genres', facets: await loadFacets({ platforms, gameSlugs }) }))
   }
 
   if (seg[0] === 'developers') return cached('developers', async () => ({ route: 'developers', facets: await loadFacets({ includeDevelopers: true }) }))

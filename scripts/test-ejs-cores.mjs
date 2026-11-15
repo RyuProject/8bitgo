@@ -33,6 +33,7 @@ import { platforms } from '../src/data/platforms.ts'
 import {
   EJS_PATH,
   EJS_RUNTIME_GENERATION,
+  EJS_ENGINE_URL_EPOCH,
   ejsCoreAsset,
   ejsRuntimeAsset,
   emulatorJsCoreFileFor,
@@ -211,7 +212,18 @@ check('固定名核心与悬停预热共用版本化 URL，不会把两代核心
     ejsCoreAsset('cores/fbneo-legacy-wasm.data'),
     'KOF97 实际选到 legacy 核心时也必须走版本化 URL',
   )
-  assert.equal(fbneoPaths['emulator.min.js'], ejsRuntimeAsset('emulator.min.js'), '引擎入口仍跟全局代号走')
+  assert.equal(fbneoPaths['emulator.min.js'], ejsRuntimeAsset('emulator.min.js'))
+  // 2026-11-15：引擎入口也按内容取版本，不再靠手换 EJS_RUNTIME_GENERATION
+  for (const name of ['emulator.min.js', 'emulator.min.css', 'loader.js', 'compression/extract7z.js', 'localization/zh.json']) {
+    const engineFile = join(root, 'public/emulatorjs', name)
+    if (!existsSync(engineFile)) continue
+    const hash = createHash('sha256').update(readFileSync(engineFile)).digest('hex').slice(0, 16)
+    assert.ok(ejsRuntimeAsset(name).endsWith(`?v=${hash}.${EJS_ENGINE_URL_EPOCH}`), `${name} 的 URL 必须带内容哈希：${ejsRuntimeAsset(name)}`)
+  }
+  assert.ok(!ejsRuntimeAsset('emulator.min.css').includes(EJS_RUNTIME_GENERATION), '引擎入口不再跟手写代号走')
+  // ejspatch 打完补丁必须自动重生成版本表，否则「忘了重跑」只能靠构建失败才发现
+  const patcher = readFileSync(join(root, 'scripts/patch-emulatorjs.mjs'), 'utf8')
+  assert.match(patcher, /gen-ejs-core-versions\.mjs/, 'npm run ejspatch 会自动重跑 gen-ejs-core-versions')
   const adapter = readFileSync(join(root, 'src/emulator/adapters/emulatorjs.ts'), 'utf8')
   const prewarm = readFileSync(join(root, 'src/emulator/prewarm.ts'), 'utf8')
   assert.match(adapter, /EJS_paths: emulatorJsRuntimePaths\(core, EJS_LANG\[getLang\(\)\]\)/)
@@ -270,7 +282,7 @@ for (const { id, from } of wanted) {
   if (seen.has(`${id}`)) continue
   seen.add(`${id}`)
   // 自构建核心不在 EmulatorJS 别名表里，EJS_core 直接传核心名。
-  // 两个核心都已对后台开放；缺少任何一个都会让已配置的游戏 100% 开局失败，必须阻断构建。
+  // 自构建核心一旦对后台开放，缺产物就会让已配置的游戏开局失败，必须阻断构建。
   if (SELF_BUILT_CORES.has(id)) {
     const haveJs = existsSync(join(coresDir, `${core}-wasm.data`))
     const haveReport = existsSync(join(coresDir, 'reports', `${core}.json`))
@@ -278,7 +290,9 @@ for (const { id, from } of wanted) {
     else if (REQUIRED_SELF_BUILT_CORES.has(id)) {
       check(`${id}（必需自构建核心）`, () => {
         const missing = [!haveJs && `${core}-wasm.data`, !haveReport && `reports/${core}.json`].filter(Boolean).join('、')
-        const buildCommand = id === 'mame-current' ? 'node scripts/build-mame-current-core.mjs' : 'npm run build:melondsds'
+        const buildCommand = id === 'mame-current'
+          ? 'node scripts/build-mame-current-core.mjs'
+          : id === 'fbneo-lowmem' ? 'npm run build:fbneo-lowmem' : 'npm run build:melondsds'
         assert.fail(`缺 ${missing}；运行 ${buildCommand}，否则选用 ${id} 的游戏会开局失败`)
       })
     } else {
@@ -320,6 +334,20 @@ check(`melonDS DS 构建报告与代码锁定的 ${MELONDSDS_VERSION} 一致`, (
   assert.match(report.upstreamCommit, /^[0-9a-f]{40}$/)
   const binary = readFileSync(join(coresDir, 'melondsds-wasm.data'))
   assert.equal(createHash('sha256').update(binary).digest('hex'), report.sha256, '核心二进制与构建报告不是同一批')
+})
+
+check('FBNeo 低内存实验版报告与普通 / legacy 产物一致', () => {
+  const report = JSON.parse(readFileSync(join(coresDir, 'reports', 'fbneo-lowmem.json'), 'utf8'))
+  const binary = readFileSync(join(coresDir, 'fbneo-lowmem-wasm.data'))
+  assert.equal(report.core, 'fbneo-lowmem')
+  assert.match(report.upstreamCommit, /^[0-9a-f]{40}$/)
+  assert.equal(createHash('sha256').update(binary).digest('hex'), report.sha256, '实验核心二进制与构建报告不是同一批')
+  assert.equal(report.memory.initialHeapBytes, 72 * 1024 * 1024)
+  assert.equal(report.memory.minimumBytes, 72 * 1024 * 1024)
+  assert.equal(report.memory.legacyMinimumBytes, 72 * 1024 * 1024)
+  assert.equal(report.memory.baselineMinimumBytes, 128 * 1024 * 1024)
+  assert.equal(report.memory.maximumBytes, 2 * 1024 * 1024 * 1024)
+  assert.equal(report.memory.allowMemoryGrowth, true)
 })
 
 check('旧 melonDS 只作为崩溃兜底，产物与报告必须完整', () => {

@@ -5,7 +5,10 @@
 # 用法：
 #   ./8bitgo-backup.sh              正常跑（给 systemd timer 用）
 #   ./8bitgo-backup.sh --dry-run    走完整流程但不上传、不删旧的
-#   ./8bitgo-backup.sh --local-only 只在本地留一份，不碰 R2
+#   ./8bitgo-backup.sh --local-only 只在本地留一份，不碰 R2（结束时在 stdout 打一行 BACKUP_FILE=<路径>）
+#   ./8bitgo-backup.sh --upload-file <已验过的 .sql.gz>
+#                                   只把一份本地备份传到 R2、回头核对、轮转 R2 上的旧备份；
+#                                   不连数据库。redeploy.sh 用它把上传放到后台，和构建并行
 #
 # 配置：默认读 /var/www/8bitgo/server/.env 里的 DB_*，R2 相关见下面 R2_* 那几个变量。
 #
@@ -38,14 +41,22 @@ set -euo pipefail
 
 DRY_RUN=0
 LOCAL_ONLY=0
-for a in "$@"; do
-  case "$a" in
+UPLOAD_FILE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
     --dry-run) DRY_RUN=1 ;;
     --local-only) LOCAL_ONLY=1 ;;
-    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
-    *) echo "不认识的参数：$a" >&2; exit 2 ;;
+    --upload-file)
+      [ $# -ge 2 ] || { echo "--upload-file 需要一个文件路径" >&2; exit 2; }
+      UPLOAD_FILE="$2"; shift ;;
+    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+    *) echo "不认识的参数：$1" >&2; exit 2 ;;
   esac
+  shift
 done
+if [ -n "$UPLOAD_FILE" ] && [ "$LOCAL_ONLY" -eq 1 ]; then
+  echo "--upload-file 与 --local-only 不能同时用" >&2; exit 2
+fi
 
 ENV_FILE="${ENV_FILE:-/var/www/8bitgo/server/.env}"
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/8bitgo}"
@@ -68,6 +79,19 @@ human_size() {
   fi
 }
 
+CNF=""
+TMP=""
+if [ -n "$UPLOAD_FILE" ]; then
+  # ── 只上传模式：文件必须是本脚本刚产出并验过的那种 .sql.gz；这里再做一次便宜的完整性校验，
+  #    防止有人手动传了个半截文件进来，「以为传上去了」仍是最贵的错 ──
+  [ -s "$UPLOAD_FILE" ] || die "要上传的备份不存在或是空的：$UPLOAD_FILE"
+  case "$UPLOAD_FILE" in *.sql.gz) ;; *) die "只接受 .sql.gz：$UPLOAD_FILE" ;; esac
+  gzip -t "$UPLOAD_FILE" 2>/dev/null || die "gz 校验不过，不上传：$UPLOAD_FILE"
+  gzip -cd "$UPLOAD_FILE" | tail -5 | grep -q 'Dump completed' || die "末尾没有 'Dump completed'，不上传：$UPLOAD_FILE"
+  OUT="$UPLOAD_FILE"
+  SIZE="$(file_size "$OUT")"
+  log "只上传模式：${OUT}（$(human_size "$SIZE")）"
+else
 [ -r "$ENV_FILE" ] || die "读不到 ${ENV_FILE}（用 ENV_FILE=... 指对路径）"
 
 # 只取需要的那几个键，不 source 整个 .env —— 那里面有几十个变量，
@@ -97,7 +121,7 @@ TMP="$OUT.partial"
 
 # 口令文件。⚠️ trap 要在**创建之前**装好，否则中间任何一步失败都会把它留在盘上
 CNF="$(mktemp)"
-cleanup() { rm -f "$CNF" "$TMP"; }
+cleanup() { rm -f ${CNF:+"$CNF"} ${TMP:+"$TMP"}; }
 trap cleanup EXIT
 chmod 600 "$CNF"
 cat > "$CNF" <<CNFEOF
@@ -142,6 +166,9 @@ fi
 mv "$TMP" "$OUT"
 chmod 600 "$OUT"
 log "✅ 本地完成 $(human_size "$SIZE")：$OUT"
+# 给调用方（redeploy.sh）拿路径用；日志都在 stderr，stdout 上这一行好认
+echo "BACKUP_FILE=$OUT"
+fi
 
 if [ -z "$R2_REMOTE" ] && command -v rclone >/dev/null; then
   RCLONE_REMOTES="$(rclone listremotes 2>/dev/null || true)"
@@ -177,8 +204,11 @@ fi
 if [ "$DRY_RUN" -eq 1 ]; then
   log "--dry-run，跳过轮转"
 else
-  find "$BACKUP_DIR" -name "${DB_NAME}-*.sql.gz" -mtime "+$KEEP_LOCAL_DAYS" -print -delete \
-    | sed 's/^/    本地删除 /' | tee -a "$LOG" || true
+  # 只上传模式不碰本地轮转：那一份是 --local-only 那次已经轮转过的，而且这里没读 DB_NAME
+  if [ -z "$UPLOAD_FILE" ]; then
+    find "$BACKUP_DIR" -name "${DB_NAME}-*.sql.gz" -mtime "+$KEEP_LOCAL_DAYS" -print -delete \
+      | sed 's/^/    本地删除 /' | tee -a "$LOG" || true
+  fi
   if [ "$LOCAL_ONLY" -eq 0 ] && command -v rclone >/dev/null; then
     rclone delete "$R2_REMOTE:$R2_BUCKET/$R2_PREFIX/" --min-age "${KEEP_REMOTE_DAYS}d" 2>&1 \
       | sed 's/^/    R2 /' | tee -a "$LOG" || true

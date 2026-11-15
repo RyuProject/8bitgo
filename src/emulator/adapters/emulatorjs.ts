@@ -25,7 +25,7 @@
 import type { ArcadeButtonCount, PlatformId } from '@/types'
 import { arcadeButtonIdsFor, EJS_ARCADE_DEFAULT_CONTROLS, EJS_DEFAULT_CONTROLS, EJS_P2_KEYS } from '@/lib/keymapData'
 import type { Capability, CaptureSources, LoadPhase, LoadProgress, MameArcadeDiskSource, MountOptions, RuntimeHandle, StageMode } from '../types'
-import { canCreateWebgl } from '../webglSupport'
+import { canCreateWebgl, canCreateWebgl2 } from '../webglSupport'
 import { fetchBlobWithProgress, fetchWithProgress, throttleProgress, withResumeTimeout } from '../loadProgress'
 import { emulatorJsDownloadPhase, isCriticalEmulatorJsDownload } from '../emulatorjsDownload'
 import { downloadResumeStore, mameChdResumeStore } from '../downloadResume'
@@ -59,11 +59,19 @@ import { isPsxM3uUrl } from '../psxM3u'
 import { MAME_CHD_MAX_BYTES, mameChdCacheKey } from '../mameChdWarm'
 import { warmEmulatorJsStart } from '../ejsStartWarm'
 import { writeFsInjections, type FsInjection } from '../fsInjection'
-import { arcadeCoreForRomData, supportsFbneoRomData } from '../arcadeCore'
+import { arcadeCoreForRomData, isFbneoCore, supportsFbneoRomData } from '../arcadeCore'
 import { MAME_AUDIO_LATENCY_MS, RETROARCH_CFG_PATH, raiseAudioLatency } from '../mameAudio'
 import { ndsAudioLatencyMs } from '../ndsAudio'
 import { disposeNdsWfcRuntime, installNdsWfcRuntime, isWorldAtWarNdsRomHeader, loadNdsWfcSettings, ndsWfcMacAddress, prepareNdsWfcSession, saveNdsWfcSettings } from '../ndsWfc'
-import { isNdsWasmCrash } from '../ndsCrash'
+import { FBNEO_LOWMEM_CORE } from '../fbneoLowmem'
+import {
+  NDS_PERFORMANCE_SAMPLE_MS,
+  NDS_PERFORMANCE_SLOW_FPS,
+  NDS_PERFORMANCE_SLOW_WINDOWS,
+} from '../ndsAdaptivePerformance'
+import { guardFrameGamepads } from '../gamepadAccess'
+import { isLowMemoryAbort, isLowmemOomMessage, lowmemOomMessage, probeWasmMemoryCeilingMB, vendorBrowserName } from '../memoryRecovery'
+import { isNdsWasmCrash, isWasmRuntimeCrash } from '../ndsCrash'
 import {
   arcadePerformanceDefaultOptions,
   effectiveArcadeButtons,
@@ -91,7 +99,10 @@ import {
   installNdsCoreOptionsGuard,
   type NdsCoreOptionsFs,
 } from '../ndsStartup'
-import { inspectRomPackBlob, isBlobReadError, isRomPackBytes, isRomPackUrl, prewarmRomPackDecoder, unpackRomPackBlob } from '@/services/romPack'
+import {
+  inspectRomPackBlob, isBlobReadError, isRomPackBytes, isRomPackUrl, memoryRomBlob, memoryRomOf, prewarmRomPackDecoder,
+  readBlobRange, RomBlobStorageError, unpackRomPackBlob, unpackRomPackToMemory,
+} from '@/services/romPack'
 import { assertNdsRomBlob, MAX_NDS_ROM_BYTES } from '@/lib/romValidation'
 import {
   EJS_P2_KEY_OFFSET,
@@ -124,9 +135,10 @@ import {
  * 玩家看到的就是「Error loading EmulatorJS runtime」。本地有核心，这条路不会走。
  */
 export { EJS_PATH } from '../paths'
-import { EJS_PATH, EJS_RUNTIME_GENERATION, ejsBase, ejsCoreAsset, ejsUsingEdge, markEjsEdgeFailed, ejsRuntimeAsset, EJS_EXTRACT_7Z_FILE, emulatorJsCoreDataFile, emulatorJsCoreFileFor, emulatorJsCoreForGame, emulatorJsRuntimePaths, isDiscPlatform, isLargeDirectEjsRom, isSelfDownloadPlatform } from '../paths'
+import { EJS_PATH, EJS_RUNTIME_GENERATION, ejsBase, ejsCoreAsset, ejsUsingEdge, markEjsEdgeFailed, ejsRuntimeAsset, EJS_EXTRACT_7Z_FILE, emulatorJsCoreDataFile, emulatorJsCoreFileFor, emulatorJsCoreForGame, ejsCoreNeedsWebgl2, emulatorJsRuntimePaths, isDiscPlatform, isLargeDirectEjsRom, isSelfDownloadPlatform } from '../paths'
 import { applyTuning, sizeOfTrack, tuningFor, usableVideoSize } from '../videoTuning'
 import {
+  flatValues,
   findLayoutOption,
   findTouchModeOption,
   isDualScreen,
@@ -136,6 +148,7 @@ import {
   showsTouchScreen,
   type LayoutOption,
   type TouchModeOption,
+  type CoreOption,
 } from '../dualScreen'
 /*
   街机 DIP 开关（后台「DIP 开关」那一栏）。
@@ -145,7 +158,7 @@ import { findDipOptions, planDipChanges, type DipPlan } from '../dipPlan'
 import { diagLog, watchFramePerformance } from '@/services/startupDiagnostics'
 import { browserBitness, probeBrowserBitness } from '../browserBitness'
 import { createBatterySync, type BatteryFs, type BatterySync } from '../batterySync'
-import { batterySaveGameName, guardIdbfsPersist, migrateLegacyBatterySaves, type IdbfsLike, type SaveFsLike } from '../ejsSaveFs'
+import { batterySaveGameName, describeBootState, guardIdbfsPersist, migrateEngineSettingsKey, migrateLegacyBatterySaves, type IdbfsLike, type SaveFsLike } from '../ejsSaveFs'
 
 /**
  * 站点语言 → EmulatorJS 自带的界面语言包（data/localization/*.json）。
@@ -375,6 +388,8 @@ export interface NetplaySession {
   initialState?: Uint8Array
   /** 进入房间后回调，带房间 id（host 模式下是客户端生成的） */
   onRoom?: (roomId: string, isHost: boolean) => void
+  /** 游戏已启动、但最初的联机握手失败时调用；单机模拟器继续运行。 */
+  onConnectionFailed?: (message: string) => void
   /** netplay 内部给我们分配的身份 id —— 服务器就是用它来判断「谁该接手」 */
   onIdentity?: (playerId: string) => void
   /** 房间人数变化 */
@@ -389,6 +404,11 @@ export interface NetplaySession {
   /** 服务端下发的房间令牌：上传存档、接手房主都要用它证明身份 */
   onToken?: (token: string) => void
   /**
+   * 观众申请上场（房主收到）/ 申请人走了或超时（房主收起卡片）/ 房主的答复（申请人收到）。
+   * 走的是引擎那条信令 socket，服务端按 socket.id 单独投递，见 server/src/netplay.js 的 seat-*。
+   */
+  onSeatEvent?: (event: SeatEvent) => void
+  /**
    * WebRTC 连接状态（'connecting' | 'connected' | 'failed' | 'disconnected'）。
    * 用来在界面上区分「还在连」和「连不通」——以前连不通时界面上什么都不显示，
    * 玩家只看到一片黑，不知道是在加载还是已经失败了。
@@ -396,6 +416,39 @@ export interface NetplaySession {
   onLinkState?: (state: RTCPeerConnectionState) => void
   /** 没有 TURN 兜底时为 false，可据此提示「部分网络可能连不上」 */
   onIceReady?: (hasTurn: boolean) => void
+}
+
+export type SeatEvent =
+  | { type: 'request'; userid: string; name: string; expiresIn: number }
+  | { type: 'cancel'; userid: string }
+  | { type: 'decision'; approved: boolean; reason?: string }
+
+/** 把服务端的 seat-* 三条消息翻成 SeatEvent。消息来自服务端，但形状照样核一遍 */
+function hookSeatEvents(sock: { on?: (ev: string, cb: (d: unknown) => void) => void } | undefined, emit: (e: SeatEvent) => void) {
+  if (typeof sock?.on !== 'function') return
+  // 诞生钩子和兜底轮询可能挂到同一条 socket 上：只挂一次，否则房主一条申请弹两张卡
+  const marked = sock as { __8bgSeatHooked?: boolean }
+  if (marked.__8bgSeatHooked) return
+  marked.__8bgSeatHooked = true
+  const obj = (d: unknown) => (d && typeof d === 'object' ? (d as Record<string, unknown>) : {})
+  sock.on('seat-request', (d) => {
+    const m = obj(d)
+    if (typeof m.userid !== 'string' || !m.userid) return
+    emit({
+      type: 'request',
+      userid: m.userid,
+      name: typeof m.name === 'string' ? m.name.slice(0, 40) : '',
+      expiresIn: typeof m.expiresIn === 'number' && m.expiresIn > 0 ? Math.min(m.expiresIn, 60_000) : 15_000,
+    })
+  })
+  sock.on('seat-request-cancel', (d) => {
+    const m = obj(d)
+    if (typeof m.userid === 'string' && m.userid) emit({ type: 'cancel', userid: m.userid })
+  })
+  sock.on('seat-decision', (d) => {
+    const m = obj(d)
+    emit({ type: 'decision', approved: m.approved === true, ...(typeof m.reason === 'string' ? { reason: m.reason } : {}) })
+  })
 }
 
 /**
@@ -1202,16 +1255,90 @@ function fetchMameDiskBytes(
  * 而 `new Response(blob)` 直接读 Blob 本体。若仍失败，引擎日志里的原文就不再是笼统的 Load failed，
  * 而是读 Blob 时的真实错误（多半是内存），下一份现场就能分清两种原因。
  * 只拦这一个地址，其余请求原样交给原生 fetch。
+ *
+ * 回应体分两种（见 streamRomToEngine）：WebKit 与内存 ROM 用 4MB 分块流；其余浏览器直接 `new Response(blob)`。
  */
-function installBlobFetchShortcut(win: Window, url: string, blob: Blob): void {
-  const frame = win as Window & { fetch: typeof fetch; Response: typeof Response }
+/**
+ * 引擎取预下载 ROM 时要不要用分块流回应（否则直接 `new Response(blob)`）。
+ *
+ * 只有两种情况需要流：
+ *   · WebKit（Safari、iPad 报 macOS 的 Safari、iOS 上所有浏览器）：跨上下文的大 Blob 在 response.arrayBuffer()
+ *     时报 TypeError: Load failed（2026-11-13 爱尔兰 Safari 18《宝可梦 白 2》）；
+ *   · 内存 ROM（Blob 存储坏掉后的替身）：根本没有真 Blob 可交。
+ *
+ * ⚠️ Chromium 不能用流：流没有已知长度，response.arrayBuffer() 只能边收边扩容缓冲区，峰值是 ROM 的两倍多、
+ * 还要一块连续大内存。2026-11-13 大陆 Chrome 132 / Windows《生化危机 3》352MB PS1 镜像，一页里连开 9 局，
+ * 每局「ROM 按块流给引擎」两秒后（约读到 300MB）引擎报 `Failed to fetch non-http URL: TypeError: Failed to fetch`，
+ * 而我们自己的分块读取一次都没出错。`new Response(blob)` 知道总长，Chrome 一次分配到位（本机 352MB 约 0.3 秒）。
+ */
+export function streamRomToEngine(userAgent: string, memory: boolean): boolean {
+  if (memory) return true
+  return /AppleWebKit\//.test(userAgent) && !/(?:Chrome|Chromium|Edg|OPR|Firefox)\//.test(userAgent)
+}
+
+function installBlobFetchShortcut(win: Window, url: string, blob: Blob, onBlobReadError?: (error: unknown) => void): void {
+  const frame = win as Window & { fetch: typeof fetch; Response: typeof Response; ReadableStream: typeof ReadableStream; navigator?: Navigator }
   const native = frame.fetch?.bind(frame)
   if (typeof native !== 'function' || typeof frame.Response !== 'function') return
   frame.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     const target = typeof input === 'string' ? input : input instanceof URL ? input.href : ''
     if (target === url && (!init?.method || init.method.toUpperCase() === 'GET')) {
-      diagLog('adapter', 'info', `ROM 由 Blob 直接交给引擎（${Math.round(blob.size / 1048576)}MB）`)
-      return Promise.resolve(new frame.Response(blob, { headers: { 'Content-Type': blob.type || 'application/octet-stream' } }))
+      const headers = { 'Content-Type': blob.type || 'application/octet-stream', 'Content-Length': String(blob.size) }
+      const memory = memoryRomOf(blob)
+      if (!streamRomToEngine(frame.navigator?.userAgent ?? '', Boolean(memory))) {
+        diagLog('adapter', 'info', `ROM 以 Blob 交给引擎（${Math.round(blob.size / 1048576)}MB）`)
+        return Promise.resolve(new frame.Response(blob, { headers }))
+      }
+      // 不把外层 Blob 直接当 iframe Response 的 body：Safari 18 对 256MB 跨上下文 Blob
+      // 在 response.arrayBuffer() 时会报 TypeError: Load failed。4MB 一片由外层读取，
+      // 再交给 iframe 自己的 ReadableStream；避免 WebKit 的 blob: URL / 跨 realm Blob 路径，
+      // 同时不在交接时额外复制整份 ROM。
+      diagLog('adapter', 'info', `ROM 按块流给引擎（${Math.round(blob.size / 1048576)}MB${memory ? '，内存回退' : ''}）`)
+      const Stream = typeof frame.ReadableStream === 'function' ? frame.ReadableStream : ReadableStream
+      const CHUNK_BYTES = 4 * 1024 * 1024
+      let offset = 0
+      let partIndex = 0
+      let cancelled = false
+      const body = new Stream<Uint8Array>({
+        async pull(controller) {
+          if (cancelled) return
+          if (memory) {
+            const part = memory.parts[partIndex]
+            if (partIndex >= memory.parts.length || !part) {
+              controller.close()
+              return
+            }
+            memory.parts[partIndex++] = null
+            controller.enqueue(part)
+            if (partIndex >= memory.parts.length) controller.close()
+            return
+          }
+          if (offset >= blob.size) {
+            controller.close()
+            return
+          }
+          const end = Math.min(blob.size, offset + CHUNK_BYTES)
+          try {
+            const chunk = new Uint8Array(await blob.slice(offset, end).arrayBuffer())
+            if (cancelled) return
+            offset = end
+            controller.enqueue(chunk)
+            if (offset >= blob.size) controller.close()
+          } catch (error) {
+            // 同一页之后的 8BG 重试改用内存输出，避免对坏掉的浏览器 Blob 存储反复走同一路径。
+            markRomBlobStorageBroken('引擎分块读取')
+            diagLog('adapter', 'warn', `ROM Blob 分块读取失败：${safeStr(error)}`)
+            controller.error(error)
+            onBlobReadError?.(error)
+          }
+        },
+        cancel() {
+          cancelled = true
+          // 内存回退 ROM 只供本次请求使用；取消后立即放掉尚未交给引擎的块。
+          if (memory) memory.parts.fill(null)
+        },
+      })
+      return Promise.resolve(new frame.Response(body, { headers }))
     }
     return native(input as RequestInfo, init)
   }) as typeof fetch
@@ -1231,11 +1358,13 @@ function installErrorTap(
     diagLog('ejs', level === 'error' || level === 'warn' ? level : 'log', text)
     const low = text.toLowerCase()
     // WASM 主循环的异常发生在 EJS_onGameStart 之后；普通 FATAL 表在这时会被忽略。
-    // 只对 NDS 的确定陷阱另开一条通道，不能让任意游戏日志触发清盘重开。
+    // 只对接入了有界恢复的核心（当前 NDS / GBA）确定陷阱另开通道，普通游戏日志不能触发重开。
     // ⚠️ 开局阶段的陷阱（retro_load_game 里 trap）被引擎 catch 后是 `console.warn('Failed to start game', e)`，
     // 不是 error 级。warn 只认**真正的 RuntimeError 对象**（error 参数），核心 stderr 打出的文字不算。
-    const trap = level === 'error' ? isNdsWasmCrash(text, error) : level === 'warn' && error !== undefined
-    if (trap && onCoreCrash) onCoreCrash(text.trim() || 'RuntimeError: unreachable')
+    const trap = level === 'error'
+      ? isWasmRuntimeCrash(text, error)
+      : level === 'warn' && error !== undefined && isWasmRuntimeCrash('', error)
+    if (trap && onCoreCrash) onCoreCrash(error !== undefined ? safeStr(error) : text.trim() || 'RuntimeError: unreachable')
     /*
       内存不足也按致命处理：2026-11-12 2GB 安卓平板《太鼓达人 2》（mame-current，172MB ROM + CHD），
       解 35MB 核心的 7z Worker 报「DataCloneError … out of memory」后引擎永远停在「下载游戏核心」，
@@ -1314,6 +1443,15 @@ export function isWebglUnavailableText(text: string): boolean {
 }
 
 export { canCreateWebgl }
+
+/**
+ * 引擎的 `startGameError(localization("Outdated graphics driver"))`：核心要 WebGL2 而浏览器没有，
+ * 或者没 WebGL2 时核心下载失败。和 ROM 无关，换语言版本、原地重试都是同一个结果。
+ * 站点用到的语言包里只有 zh / fr / es 翻了这句，de / it / ja 回落英文。
+ */
+export function isOutdatedGraphicsDriverText(text: string): boolean {
+  return /outdated graphics driver|显卡驱动已过时|pilote graphique obsolète|controlador de gráficos obsoleto/i.test(text)
+}
 
 /** 浏览器分配不出 WASM / ArrayBuffer 内存时各家的说法 */
 export function isOutOfMemoryText(text: string): boolean {
@@ -1733,11 +1871,22 @@ async function arcadeBlobFrom(
     // 合成失败不能静默放行 —— 放行的结果是 100% 起不来，而报错会指向完全无关的方向
     const merged = await deriveArcadeHackBytes(data, entries, hack)
     if (merged) {
-      output = new Blob([merged as BlobPart], { type: 'application/zip' })
+      // Blob 存储坏掉的浏览器上合成结果也留在内存，不再建一个必然读不出的 Blob
+      output = memoryRomOf(blob) || romBlobStorageBroken
+        ? memoryRomBlob([merged as Uint8Array<ArrayBuffer>], 'application/zip')
+        : new Blob([merged as BlobPart], { type: 'application/zip' })
       console.info(`[arcade] ${hack.title}：已现场合成 ${hack.derive.outputs.join(' / ')} 并补进包里`)
     }
   }
-  return { url: URL.createObjectURL(output), name, hack, mameMedia, namcoSet }
+  return { url: objectUrlForEngine(output), name, hack, mameMedia, namcoSet, blob: output }
+}
+
+/**
+ * 交给引擎的 blob: 地址。内存 ROM 不是真 Blob、建不了 URL：给一个空占位地址，
+ * 引擎取它时由 installBlobFetchShortcut 用内存块回应。
+ */
+function objectUrlForEngine(blob: Blob): string {
+  return URL.createObjectURL(memoryRomOf(blob) ? new Blob([], { type: 'application/octet-stream' }) : blob)
 }
 
 /**
@@ -1765,6 +1914,8 @@ export function preloadEjsStyle(doc: Document | null | undefined, href: string):
 
 interface PreparedArcadeRom {
   url: string
+  /** 和 url 同一份字节；引擎取 blob: 地址时直接用它回应（见 installBlobFetchShortcut） */
+  blob: Blob
   name: string
   hack: ArcadeHack | null
   mameMedia: MameArcadeDiskProfile | null
@@ -1773,13 +1924,138 @@ interface PreparedArcadeRom {
 
 
 /**
+ * 这个浏览器的 Blob 存储接不住解开的 ROM（见 RomBlobStorageError）：之后的解包直接留在内存，
+ * 播放器的自动重试 / 换语言 ROM 不再把同一个必然失败的路子再走一遍。
+ * 两个来源：解包后探测读不出；或引擎读预下载 ROM 时报 NotReadableError（failLoad 里认）。
+ *
+ * 结论要**跨访问**记住：2026-11-12/13 那批大陆 Chrome 132 / 2GB 现场是同一台机器第 7、8 次开局，
+ * Blob 存储坏是这台机器的状态（C 盘满 / 配额小），不是一次偶发。只记本页的话，每次新打开页面都要先下完、
+ * 解完、让引擎读挂一次（30～40 秒）才轮到内存退路。记 3 天，过期后重新走 Blob，机器修好了就自然回来。
+ */
+export const ROM_BLOB_BROKEN_KEY = '8bitgo.ejs.romBlobBroken'
+const ROM_BLOB_BROKEN_TTL_MS = 3 * 24 * 3600_000
+
+export function romBlobBrokenRecently(raw: string | null, now = Date.now()): boolean {
+  const at = Number(raw)
+  return Number.isFinite(at) && at > 0 && now - at >= 0 && now - at < ROM_BLOB_BROKEN_TTL_MS
+}
+
+function readRomBlobBroken(): boolean {
+  try {
+    return romBlobBrokenRecently(localStorage.getItem(ROM_BLOB_BROKEN_KEY))
+  } catch {
+    return false
+  }
+}
+
+let romBlobStorageBroken = readRomBlobBroken()
+/** 内存退路的上限：DS 卡带最大 512MB，再大的光盘镜像放进 JS 内存只会让标签页被杀，宁可照实报错。 */
+const MEMORY_ROM_MAX_BYTES = 520 * 1024 * 1024
+
+function markRomBlobStorageBroken(where: string): void {
+  if (romBlobStorageBroken) return
+  romBlobStorageBroken = true
+  try {
+    localStorage.setItem(ROM_BLOB_BROKEN_KEY, String(Date.now()))
+  } catch {
+    /* 无痕 / 存储被禁：只在本页生效 */
+  }
+  console.warn(`[emulatorjs] ${where}时 Blob 存储读不出，之后 3 天内的 ROM 解包改走内存`)
+}
+
+/** Chromium 的 NotReadableError 原文；跨 realm 的引擎错误只剩这句话。 */
+export function isNativeBlobReadMessage(message: string): boolean {
+  return /requested file could not be read|NotReadableError/i.test(message)
+}
+
+/** 8BG 解包：正常走 Blob；Blob 存储坏了（这次探出或本页早已探出）就整份留在内存。 */
+async function unpackRomPackForEngine(stored: Blob, onProgress: MountOptions['onProgress']): Promise<{ name: string; blob: Blob }> {
+  const toMemory = async (consumeInput = false) => {
+    const { header } = await inspectRomPackBlob(stored)
+    if (header.originalSize > MEMORY_ROM_MAX_BYTES) throw new RomBlobStorageError()
+    return unpackRomPackToMemory(stored, romPackUnpackProgress(onProgress), consumeInput)
+  }
+  // 输入本身就是内存替身（内存下载）：结果也只能在内存；调用方不再用这份密文（不缓存、失败整包重下），
+  // 解一块放一块，峰值不再是「整份密文 + 整份明文」
+  if (memoryRomOf(stored)) return toMemory(true)
+  if (romBlobStorageBroken) {
+    diagLog('adapter', 'info', '这个浏览器的 Blob 存储近期读不出解开的 ROM，本局直接解包到内存')
+    return toMemory()
+  }
+  try {
+    return await unpackRomPackBlob(stored, romPackUnpackProgress(onProgress))
+  } catch (error) {
+    if (!(error instanceof RomBlobStorageError)) throw error
+    markRomBlobStorageBroken('解包')
+    return toMemory()
+  }
+}
+
+/**
  * 已下载的 ROM 读不出来时（底层 Blob 存储坏了 / 读包卡死，见 readBlobRange）作废这一份的续传片与完整缓存，
  * 不带续传再整包下一次。只重来一次：第二次还读不出就是这台浏览器的存储本身不可用，照实报错。
  */
+const pendingRomCacheWrites = new Map<string, Promise<void>>()
+
+function cacheRomBlob(cacheKey: string, blob: Blob): void {
+  const write = romCachePutBlob(cacheKey, blob).catch(() => {})
+  pendingRomCacheWrites.set(cacheKey, write)
+  void write.finally(() => {
+    if (pendingRomCacheWrites.get(cacheKey) === write) pendingRomCacheWrites.delete(cacheKey)
+  })
+}
+
 async function discardStoredRom(cacheKey: string): Promise<void> {
+  // 等本页较早发起的 put 完成后再删，避免慢的 IndexedDB 写入在清理之后把旧 ROM 复活。
+  await pendingRomCacheWrites.get(cacheKey)?.catch(() => {})
   await withResumeTimeout(downloadResumeStore.clear(cacheKey), 5_000).catch(() => {})
   await withResumeTimeout(romCacheDelete(cacheKey), 5_000).catch(() => {})
 }
+
+/**
+ * 下载好的 ROM 读不出（NotReadableError）之后怎么重下。
+ *
+ * 2026-11-15 大陆华为浏览器 17 / Android 9《拳皇 97 风云再起 Plus》两次访问 5 局全失败：每局 ROM 都下完，
+ * 一读就 NotReadableError；以前的退路是「作废续传片、不带续传再整包下一次」，可第二份照样是 Blob，照样读不出 ——
+ * 坏的不是续传片，是这台浏览器的 Blob 存储（同一结论见 RomBlobStorageError）。所以：
+ *   · 记下 Blob 存储已坏（3 天），之后的开局直接内存下载、内存解包，不再先白失败一次；
+ *   · 放得进内存（≤ MEMORY_ROM_MAX_BYTES）就内存重下；放不下的大光盘照旧作废续传片整包重下一次；
+ *   · 没有内容版本（cacheKey）又放不下内存时，重下也是同一条路，直接报错。
+ */
+function retryModeAfterBlobReadError(size: number, hasCacheKey: boolean): 'memory' | 'fresh' | null {
+  markRomBlobStorageBroken('读已下载的 ROM ')
+  if (size > 0 && size <= MEMORY_ROM_MAX_BYTES) return 'memory'
+  return hasCacheKey ? 'fresh' : null
+}
+
+/**
+ * Blob 存储近期坏过时，第一次下载就直接留在内存的上限（超过的仍先走 Blob，读不出再按上面重下）。
+ *
+ * 不直接用 MEMORY_ROM_MAX_BYTES：这条结论是按机器记的，而坏法和大小有关 —— 2026-11-12/13 那台 2GB Chrome
+ * 下载的密文读得出、只是 256MB 的解包结果读不出。8BG 内存解包会边解边放密文，峰值和以前差不多；
+ * 未打包的大镜像（PS1 CHD 等）整份进 JS 内存则是净增，所以按设备内存收着点。读不到内存（Safari / Firefox）按 4GB 算。
+ */
+function preemptiveMemoryRomBytes(): number {
+  const gb = Number((globalThis.navigator as Navigator & { deviceMemory?: number } | undefined)?.deviceMemory) || 4
+  const mb = gb <= 1 ? 32 : gb <= 2 ? 128 : gb <= 4 ? 256 : 520
+  return Math.min(MEMORY_ROM_MAX_BYTES, mb * 1024 * 1024)
+}
+
+/** 本局第一次下载：Blob 存储近期坏过就直接内存下载（超过上限的下载器会自己退回 Blob）。 */
+const firstDownloadMode = (): 'preemptive-memory' | 'resume' => (romBlobStorageBroken ? 'preemptive-memory' : 'resume')
+
+/** 下载模式对应的内存上限：确认读不出之后才放到最大，先发制人的那次按设备内存收着。 */
+const memoryLimitFor = (mode: 'resume' | 'fresh' | 'memory' | 'preemptive-memory'): number | undefined =>
+  mode === 'memory' ? MEMORY_ROM_MAX_BYTES : mode === 'preemptive-memory' ? preemptiveMemoryRomBytes() : undefined
+
+/**
+ * 读已下载 ROM 的头几个字节（认 8BG 魔数）。必须有时限：IndexedDB 里的缓存 / 续传 Blob 在坏掉的存储上
+ * 会永不返回（2026-11-12 Chrome 132《口袋妖怪：白 2》），这一步以前没有上限，整局会停在这里等看门狗。
+ * 超时按 NotReadableError 处理，调用方据此作废缓存、换内存重下。
+ */
+const ROM_MAGIC_READ_TIMEOUT_MS = 8_000
+const readRomMagic = async (blob: Blob): Promise<Uint8Array> =>
+  new Uint8Array(await readBlobRange(blob, 0, 4, ROM_MAGIC_READ_TIMEOUT_MS))
 
 /** 解包 8BG 时每块报一次进度：进度条写「正在解包」，启动看门狗也知道还活着。 */
 const romPackUnpackProgress = (onProgress: MountOptions['onProgress']) => () =>
@@ -1803,9 +2079,10 @@ export async function prepareRemoteArcadeRom(
   if (isRomPackUrl(url)) prewarmRomPackDecoder(url)
 
   const decodedArcade = async (stored: Blob): Promise<{ blob: Blob; name: string }> => {
-    const magic = new Uint8Array(await stored.slice(0, 4).arrayBuffer())
+    const magic = await readRomMagic(stored)
     if (!isRomPackBytes(magic)) return { blob: stored, name }
-    const unpacked = await unpackRomPackBlob(stored, romPackUnpackProgress(onProgress))
+    // 与光盘 / NDS 同一个入口：Blob 存储坏掉时解包结果留在内存
+    const unpacked = await unpackRomPackForEngine(stored, onProgress)
     if (!/\.zip$/i.test(unpacked.name)) throw new InvalidArcadeArchiveError(unpacked.name)
     return { blob: unpacked.blob, name: unpacked.name }
   }
@@ -1833,34 +2110,39 @@ export async function prepareRemoteArcadeRom(
         // 旧密钥被移除或缓存写到一半时，当场删掉并回网络；抛给播放器会触发备用源，
         // 让一份完全正常的远端新包因为本机旧缓存而被本轮永久跳过。
         await romCacheDelete(cacheKey).catch(() => {})
+        // 缓存读不出也是 Blob 存储坏了的信号：下面这次下载就别再建一个读不出的 Blob
+        if (isBlobReadError(error)) markRomBlobStorageBroken('读 ROM 缓存')
         console.warn('[arcade] ROM 缓存不可用，重新下载：', error)
       }
     }
   }
 
-  const download = (resume: boolean) => fetchBlobWithProgress(url, {
+  const download = (mode: 'resume' | 'fresh' | 'memory' | 'preemptive-memory') => fetchBlobWithProgress(url, {
     phase: 'rom',
     onProgress,
     signal,
     alternateUrl: alternateRomUrl(url),
     // 街机大包与 NDS 共用 8MB Range 断点续传。romCacheKey 只对带 romv /
     // 归档版本的内容生成；无版本 URL 可能原地换包，不许拼入旧分片。
-    resumeKey: resume ? cacheKey || undefined : undefined,
+    resumeKey: mode === 'resume' ? cacheKey || undefined : undefined,
+    inMemoryUpTo: memoryLimitFor(mode),
     check: (res) => {
       const type = res.headers.get('content-type') ?? ''
       // 地址或反代配错时，SSR 常会回 200 + HTML；状态码正常也绝不能交给核心。
       if (/text\/html|application\/xhtml/i.test(type)) throw new InvalidArcadeArchiveError(name)
     },
   })
-  let stored = await download(true)
+  let stored = await download(firstDownloadMode())
   let decoded: { blob: Blob; name: string }
   try {
     decoded = await decodedArcade(stored)
   } catch (error) {
-    if (!cacheKey || !isBlobReadError(error)) throw error
-    console.warn('[arcade] 下载好的 ROM 读不出来，作废续传片重下一次：', error)
-    await discardStoredRom(cacheKey)
-    stored = await download(false)
+    if (!isBlobReadError(error) || memoryRomOf(stored)) throw error
+    const retry = retryModeAfterBlobReadError(stored.size, Boolean(cacheKey))
+    if (!retry) throw error
+    console.warn(`[arcade] 下载好的 ROM 读不出来，作废续传片${retry === 'memory' ? '改在内存里' : ''}重下一次：`, error)
+    if (cacheKey) await discardStoredRom(cacheKey)
+    stored = await download(retry)
     decoded = await decodedArcade(stored)
   }
   // 只读 Blob 的尾部和目录；截断包会被拦住，但普通大包不再复制成连续 ArrayBuffer。
@@ -1868,7 +2150,8 @@ export async function prepareRemoteArcadeRom(
   try { entries = await assertValidZipBlob(decoded.blob, '街机 ROM') } catch { throw new InvalidArcadeArchiveError(name) }
 
   // 不 await：Blob 不可变，写盘慢也不耽误开局；8BG 缓存的仍是密文，避免扩大磁盘占用。
-  if (cacheKey) void romCachePutBlob(cacheKey, stored).catch(() => {})
+  // 内存下载的那份不是真 Blob（这台浏览器的 Blob 存储也写不进），不缓存。
+  if (cacheKey && !memoryRomOf(stored)) void romCachePutBlob(cacheKey, stored).catch(() => {})
 
   return arcadeBlobFrom(decoded.blob, decoded.name, entries)
 }
@@ -1949,6 +2232,7 @@ export async function prepareRemoteDiscRom(
   signal: AbortSignal,
   options: {
     resumeAcrossRefresh?: boolean
+    forceRomRefresh?: boolean
     validate?: (blob: Blob) => Promise<void>
     maxBytes?: number
     maxUnpackedBytes?: number
@@ -1960,7 +2244,7 @@ export async function prepareRemoteDiscRom(
     if (options.maxBytes !== undefined && stored.size > options.maxBytes) {
       throw new RangeError('ROM 文件超过浏览器下载上限')
     }
-    const magic = new Uint8Array(await stored.slice(0, 4).arrayBuffer())
+    const magic = await readRomMagic(stored)
     let playable = stored
     let name: string | undefined
     if (isRomPackBytes(magic)) {
@@ -1971,15 +2255,18 @@ export async function prepareRemoteDiscRom(
           throw new RangeError('ROM 解开后超过浏览器下载上限')
         }
       }
-      const unpacked = await unpackRomPackBlob(stored, romPackUnpackProgress(onProgress))
+      const unpacked = await unpackRomPackForEngine(stored, onProgress)
       playable = unpacked.blob
       name = unpacked.name
     }
     // 必须在 createObjectURL 和正式入缓存之前验；失败时不能留下 URL，也不能钉住坏缓存。
     await options.validate?.(playable)
-    return { url: URL.createObjectURL(playable), bytes: playable.size, name, blob: playable }
+    return { url: objectUrlForEngine(playable), bytes: playable.size, name, blob: playable }
   }
   const cacheKey = romCacheKey(url)
+  // ROM trap 发生在模拟器里，通用自动重试会再次命中同一条 IDB 记录 / 续传片，永远喂回同一份输入。
+  // 仅 GBA 崩溃恢复路径设置此项；清除后仍保留原 URL 的内容版本校验与正常缓存写入。
+  if (options.forceRomRefresh && cacheKey) await discardStoredRom(cacheKey)
   if (cacheKey) {
     const cached = await romCacheGetBlob(cacheKey)
     if (cached) {
@@ -1994,19 +2281,22 @@ export async function prepareRemoteDiscRom(
       } catch (error) {
         // 密文被截断或旧密钥配错时，当场回网络；若远端也坏，下面才把真实错误交给备用源。
         await romCacheDelete(cacheKey).catch(() => {})
+        // 缓存读不出也是 Blob 存储坏了的信号：下面这次下载就别再建一个读不出的 Blob
+        if (isBlobReadError(error)) markRomBlobStorageBroken('读 ROM 缓存')
         console.warn('[emulatorjs] ROM 缓存不可用，重新下载：', error)
       }
     }
   }
 
-  const download = (resume: boolean) => fetchBlobWithProgress(url, {
+  const download = (mode: 'resume' | 'fresh' | 'memory' | 'preemptive-memory') => fetchBlobWithProgress(url, {
     phase: 'rom',
     onProgress,
     signal,
     alternateUrl: alternateRomUrl(url),
     maxBytes: options.maxBytes,
     // 只在明确要求且 URL 带内容版本时落临时分片。无版本地址原地换包后会混入旧片，宁可重下。
-    resumeKey: resume && options.resumeAcrossRefresh ? cacheKey : undefined,
+    resumeKey: mode === 'resume' && options.resumeAcrossRefresh ? cacheKey : undefined,
+    inMemoryUpTo: memoryLimitFor(mode),
     check: (res) => {
       const type = res.headers.get('content-type') ?? ''
       // 地址或反代配错时，SSR 常会回 200 + HTML；状态码正常也绝不能当成镜像交给核心
@@ -2014,21 +2304,23 @@ export async function prepareRemoteDiscRom(
     },
   })
 
-  let blob = await download(true)
+  let blob = await download(romBlobStorageBroken ? 'preemptive-memory' : options.forceRomRefresh ? 'fresh' : 'resume')
   // 8BG 要先确认能解密解压再入缓存；否则一次坏响应会被钉在这台浏览器上，重试永远失败。
-  let prepared: { url: string; bytes: number; name?: string }
+  let prepared: { url: string; bytes: number; name?: string; blob: Blob }
   try {
     prepared = await prepare(blob)
   } catch (error) {
-    if (!cacheKey || !isBlobReadError(error)) throw error
-    console.warn('[emulatorjs] 下载好的 ROM 读不出来，作废续传片重下一次：', error)
-    await discardStoredRom(cacheKey)
-    blob = await download(false)
+    if (!isBlobReadError(error) || memoryRomOf(blob)) throw error
+    const retry = retryModeAfterBlobReadError(blob.size, Boolean(cacheKey))
+    if (!retry) throw error
+    console.warn(`[emulatorjs] 下载好的 ROM 读不出来，作废续传片${retry === 'memory' ? '改在内存里' : ''}重下一次：`, error)
+    if (cacheKey) await discardStoredRom(cacheKey)
+    blob = await download(retry)
     prepared = await prepare(blob)
   }
   // 不 await：写几百 MB 要花时间，不该让玩家在开局前干等。Blob 本身是不可变的，
-  // prepare 产出的 URL 与这份密文缓存互不影响。
-  if (cacheKey) void romCachePutBlob(cacheKey, blob).catch(() => {})
+  // prepare 产出的 URL 与这份密文缓存互不影响。内存下载的那份不是真 Blob，不缓存。
+  if (cacheKey && !memoryRomOf(blob)) cacheRomBlob(cacheKey, blob)
 
   return prepared
 }
@@ -2037,6 +2329,7 @@ const isMameCurrentCore = (core: string | undefined): boolean => core === 'mame-
 
 export function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const rt = getT().runtime
+  const webglAvailable = canCreateWebgl()
   // 按游戏覆盖优先，其次才是平台默认。街机一个平台底下其实是好几套硬件，
   // 拳皇 / 街霸 / 老板子各要各的核心，光靠平台默认值盖不住
   const resolvedCore = emulatorJsCoreForGame(options.platform, options.core)
@@ -2052,6 +2345,28 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       console.warn(`[arcade] ${core} 不支持 FBNeo RomData，已自动切换为 ${corrected}，避免必然出现 Romset is unknown`)
       core = corrected
     }
+  }
+  // 无 WebGL 时只给已经选定 FBNeo 的街机核心接 Canvas 2D 兼容层。
+  // 不把 MAME / FBA 核心强改成 FBNeo：它们的驱动表、CHD 和启动参数并不等价。
+  const softwareWebglFallback = !webglAvailable && options.platform === 'arcade' && isFbneoCore(core)
+  if (!webglAvailable && !softwareWebglFallback) {
+    console.warn(`[emulatorjs] 当前浏览器无法创建 WebGL 上下文，${options.platform}/${core} 没有已验证的软件画面后备`)
+    options.onError?.(rt.ejsWebglUnavailable, 'config')
+    return { destroy: () => {}, caps: new Set<Capability>() }
+  }
+  /*
+    没有 legacy 构建的核心（melondsds）在只有 WebGL1 的浏览器里必然 404 →「显卡驱动已过时」。
+    NDS 的播放器已在开局前换旧核心；走到这里说明是显式指定的核心（联机 / 后台固定），
+    在下载 ROM 之前就停下，'config' 让播放器别重试、别换语言 ROM。
+  */
+  if (webglAvailable && ejsCoreNeedsWebgl2(core) && !canCreateWebgl2()) {
+    console.warn(`[emulatorjs] 当前浏览器建不出 WebGL2，${core} 没有 WebGL1（legacy）构建`)
+    options.onError?.(rt.ejsWebglUnavailable, 'config')
+    return { destroy: () => {}, caps: new Set<Capability>() }
+  }
+  if (softwareWebglFallback) {
+    console.info(`[emulatorjs] 当前浏览器没有 WebGL；将尝试用 Canvas 2D 运行已选的 ${core} legacy 核心`)
+    diagLog('adapter', 'info', `街机 WebGL 后备：${core} legacy / Canvas 2D`)
   }
   /**
    * 联机会话。**可变**：一开始可能没有（玩家先自己开着玩），
@@ -2513,14 +2828,26 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
                   return (ack as (...a: unknown[]) => unknown)(error, ...rest)
                 }
               }
-              if (addSlug && roomEvent
+              /*
+                以观众身份进房要告诉服务端：以前只在本地把输入掐掉，服务端照样记成玩家，
+                于是观众占着一个手柄位，点「上场」又直接成功，绕过房主同意（2026-11-14）。
+              */
+              const asSpectator = event === 'join-room' && netplay?.role === 'spectator'
+              if ((addSlug || asSpectator) && roomEvent
                 && emitArgs[0] && typeof emitArgs[0] === 'object' && !Array.isArray(emitArgs[0])) {
                 const payload = emitArgs[0] as Record<string, unknown>
                 const rawExtra = payload.extra
                 const extra = rawExtra && typeof rawExtra === 'object' && !Array.isArray(rawExtra)
                   ? rawExtra as Record<string, unknown>
                   : {}
-                emitArgs[0] = { ...payload, extra: { ...extra, game_slug: options.gameSlug } }
+                emitArgs[0] = {
+                  ...payload,
+                  extra: {
+                    ...extra,
+                    ...(addSlug ? { game_slug: options.gameSlug } : {}),
+                    ...(asSpectator ? { role: 'spectator' } : {}),
+                  },
+                }
               }
               return realEmit(event, ...emitArgs)
             }
@@ -2531,6 +2858,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             stateToken = token
             netplay?.onToken?.(token)
           })
+          hookSeatEvents(sock, (e) => netplay?.onSeatEvent?.(e))
           // 信令连不上时引擎只在自己的弹窗里闪一句 "Connect error"，适配器这边什么都不知道，
           // 下面的轮询看到 socket 没连上就按「房主断线」处理 —— 排查时至少要在引擎日志里留下真相。
           // 重连每次都会触发，只记第一次
@@ -2568,6 +2896,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let errorTap: { lines: string[] } | null = null
   /** 登记 iframe 的网络记录给启动诊断包；销毁时调用会先拍快照 */
   let stopFramePerf: (() => void) | null = null
+  /** NDS 按核心帧计数监测持续性能；会话销毁时一并停止。 */
+  let stopNdsPerformanceWatch: (() => void) | null = null
   let lastStageName = ''
   /**
    * 往引擎日志里补一条我们自己的观察。
@@ -2601,7 +2931,14 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     // 「卡住」除外：大陆走 Cloudflare 取 8bitgo.com 的大文件实测只有几 KB/s（paths.ts 注释），
     // 卡住多半是慢网或冷编译，退回同源只会让重试必然再卡一次。入口脚本真加载不了另有一处标记。
     const stalled = message.startsWith(rt.ejsStalled.split('{stage}')[0])
-    if (usedEjsEdge && !stalled) markEjsEdgeFailed()
+    // 内存不足同理：浏览器给不出地址空间，和从哪条线路取的引擎无关
+    const outOfMemory = message === rt.ejsOutOfMemory || message === rt.ejsOutOfMemory32bit || isLowmemOomMessage(message)
+    // 配置 / 浏览器本地读取错误与边缘线路无关；尤其核心 arraybuffer 的 NotReadableError 不能让整页退回慢线路。
+    if (usedEjsEdge && !stalled && !outOfMemory && scope !== 'config') markEjsEdgeFailed()
+    // 引擎读预下载好的 ROM Blob 读不出：这台浏览器的 Blob 存储坏了，自动重试 / 换语言 ROM 改走内存
+    if (scope !== 'config' && preparedRomBlob && !memoryRomOf(preparedRomBlob) && isNativeBlobReadMessage(message)) {
+      markRomBlobStorageBroken('引擎读 ROM ')
+    }
     options.onError?.(message, scope)
   }
   /**
@@ -2627,17 +2964,51 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     */
     if (isOutOfMemoryText(`${line}\n${recent}`)) {
       const bits = browserBitness()
-      logEngine(`[memory] 分配不出 WASM 内存；浏览器位数 ${bits ?? '未知'}`)
-      return bits === '32' ? failLoad(rt.ejsOutOfMemory32bit, 'config') : failLoad(rt.ejsOutOfMemory)
+      logEngine(`[memory] 分配不出 WASM 内存；浏览器位数 ${bits ?? '未知'}；核心 ${core}`)
+      /*
+        默认 FBNeo 起步就要一整块 128 MiB：先让播放器换起步 72 MiB 的低内存核心重开（fbneoLowmem.ts），
+        32 位浏览器也先试这一步 —— 那个核心就是为它们做的。播放器接手了就不再报 onError。
+      */
+      if (!destroyed && !started && !loadFailed && !crashReported && options.onOutOfMemory?.(core, line)) {
+        loadFailed = true
+        window.clearInterval(startWatch)
+        return
+      }
+      if (bits === '32') return failLoad(rt.ejsOutOfMemory32bit, 'config')
+      /*
+        低内存核心（起步 72 MiB）也分配不出：这是浏览器 / 设备环境给不出地址空间，原地重试同一个核心
+        只是再等十秒撞同一个错（2026-11-14 大陆 Chrome 114 / Android 12、8GB 内存《拳皇97》：两轮都在
+        instantiate 报 Out of memory）。'config'：不自动重试、不换 ROM，告诉玩家更新或换浏览器；手动重试仍可点。
+      */
+      if (core === FBNEO_LOWMEM_CORE) {
+        // 失败这一刻实测还能划出多大一块：分清「整个进程都给不出」和「只是这一刻被占碎」（memoryRecovery.ts）
+        const ceiling = probeWasmMemoryCeilingMB()
+        const vendor = vendorBrowserName(navigator.userAgent || '')
+        logEngine(`[memory] 低内存核心也失败；此刻还能新建的 WASM 内存约 ${ceiling === null ? '未知' : `${ceiling}MB`}；厂商浏览器 ${vendor ?? '否'}`)
+        return failLoad(lowmemOomMessage(vendor), 'config')
+      }
+      // 'runtime'：可以原地重试一次（别的标签页可能刚释放了内存），但换 ROM / 换语言版本毫无意义
+      return failLoad(rt.ejsOutOfMemory, 'runtime')
     }
     /*
       建不出 WebGL：浏览器关了硬件加速或 GPU 被拉黑。重下 ROM、换语言版本都没用，'config' 让播放器
       别原地重试也别换 ROM。现场再建一次试试：建得出说明只是一时（上下文太多 / GPU 进程重启），照常重试。
     */
+    if (isOutdatedGraphicsDriverText(line)) {
+      logEngine(`[webgl] 引擎报显卡驱动过时；WebGL2 ${canCreateWebgl2() ? '能建' : '建不出'}；核心 ${core}`)
+      return failLoad(rt.ejsWebglUnavailable, 'config')
+    }
     if (isWebglUnavailableText(`${line}\n${recent}`)) {
       const webglNow = canCreateWebgl()
       logEngine(`[webgl] 核心建不出 WebGL 上下文；现在再建一次：${webglNow ? '能建' : '仍建不出'}`)
       if (!webglNow) return failLoad(rt.ejsWebglUnavailable, 'config')
+    }
+    const nativeBlobReadError = isNativeBlobReadMessage(`${line}\n${recent}`)
+    if (nativeBlobReadError && /error downloading core\s*\(/i.test(line)) {
+      // NotReadableError 来自 melondsds-wasm.data 等核心响应时，不是预下载 ROM Blob 坏了。
+      // 这类本地读取错误重下 120 秒 NDS ROM、切 ROM 语言或退 EdgeOne 都不会修复；不污染 ROM / 线路状态，也停止自动重试。
+      logEngine(`[download] 核心响应读取报 NotReadableError；不标记 ROM Blob / 加速线路故障：${line}`)
+      return failLoad(fmt(rt.ejsEngineError, { msg: line }), 'config')
     }
     /*
       「Error loading EmulatorJS runtime」= 核心脚本跑完却没定义 EJS_Runtime。几秒内就报，且同一位玩家
@@ -2651,13 +3022,38 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     const arcadeFatal = options.platform === 'arcade' ? arcadeFatalKind(line) : null
     if (arcadeFatal === 'unknown-set') return failLoad(fmt(rt.ejsArcadeUnknownSet, { msg: line }), 'deterministic')
     if (arcadeFatal === 'missing-files') return failLoad(fmt(rt.ejsArcadeMissingFiles, { msg: line }))
+    /*
+      引擎读预下载 ROM 时 Blob 读不出（Chromium 走 new Response(blob) 后，NotReadableError 只出现在引擎的
+      「Failed to fetch non-http URL」那一行，上报的却是「网络错误」）：同样记下 Blob 存储已坏，按运行时故障
+      原地重试一次，重试改走内存 ROM，不去换语言 ROM。
+    */
+    if (preparedRomBlob && !memoryRomOf(preparedRomBlob) && nativeBlobReadError) {
+      markRomBlobStorageBroken('引擎读 ROM ')
+      return failLoad(fmt(rt.ejsEngineError, { msg: line }), 'runtime')
+    }
     failLoad(fmt(rt.ejsEngineError, { msg: line }))
   }
   const reportCoreCrash = (line: string) => {
     if (destroyed || crashReported || loadFailed) return
+    // 不带原因的 Aborted() + 小内存设备：是 WASM 堆长不动，换核心 / 重试都没用（memoryRecovery.ts）
+    if (!started) {
+      const deviceMemory = (navigator as Navigator & { deviceMemory?: number }).deviceMemory
+      const bits = browserBitness()
+      if (isLowMemoryAbort(line, deviceMemory, bits)) {
+        logEngine(`[memory] 核心 abort，设备内存约 ${deviceMemory ?? '未知'}GB、浏览器位数 ${bits ?? '未知'}：按内存不足处理，不换核心；核心 ${core}`)
+        failLoad(bits === '32' ? rt.ejsOutOfMemory32bit : rt.ejsOutOfMemory, 'config')
+        return
+      }
+    }
     crashReported = true
     window.clearInterval(startWatch)
     logEngine(`[core-crash] ${core}: ${line}`)
+    // 强制刷新后仍然发生同一陷阱：本轮下载的密文不留在 ROM 缓存，下一次访问会再向源站取一份。
+    if (options.platform === 'gba' && options.forceRomRefresh &&
+      /table index is out of bounds/i.test(line) && isRomPackUrl(remoteGameUrl)) {
+      const cacheKey = romCacheKey(remoteGameUrl)
+      if (cacheKey) void discardStoredRom(cacheKey)
+    }
     // WASM 已经 trap，不可能靠继续等画面恢复；即使 onGameStart 抢先报了 ready 也必须终止这局。
     if (options.onCoreCrash) options.onCoreCrash(core, line)
     else options.onError?.(line, 'runtime')
@@ -2727,13 +3123,24 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     const emu = win.EJS_emulator as EjsEmulator | undefined
     const np = emu?.netplay
     /**
-     * 开不了房怎么报：带着联机会话挂载进来的（点邀请链接的访客、接手房主的人），联机开不了
-     * 这局就没意义，走 onError。玩到一半点「联机匹配」的，游戏本身好好地在跑 ——
-     * onError 会让播放器把这局拆掉，那是惩罚不是报错；只收回会话、通知界面复位。
+     * 开局前，带着联机会话挂载进来的玩家联机开不了就走 onError；核心已经可玩后，失败只撤掉联机请求，
+     * 保留本地游戏。玩到一半点「联机匹配」的也一样保留游戏，只通知界面复位。
      */
     const fromMount = cfg === options.netplay
     const failNetplay = (message: string, scope?: LoadErrorScope) => {
+      // 房间拒绝 / 握手超时只结束联机尝试；无论入口在哪，都要断开这次信令 socket。
+      try {
+        np?.leaveRoom?.()
+      } catch {
+        /* 尚未连上或引擎已自行退房 */
+      }
       if (fromMount) {
+        if (started) {
+          // ROM 和核心已经可玩；联机失败只结束联机请求，不能把玩家正在玩的整局拆掉。
+          if (netplay === cfg) netplay = undefined
+          cfg.onConnectionFailed?.(message)
+          return
+        }
         options.onError?.(message, scope)
         return
       }
@@ -2850,6 +3257,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             stateToken = token
             cfg.onToken?.(token)
           })
+          hookSeatEvents(sock, (e) => cfg.onSeatEvent?.(e))
         }
       }
 
@@ -2896,11 +3304,6 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         const hopeless = signalErrorAt > openedAt && netTrace.errors >= SIGNAL_FAIL_ERRORS && waited > SIGNAL_FAIL_MS
         if (hopeless || waited > JOIN_TIMEOUT_MS) {
           window.clearInterval(playersTimer)
-          try {
-            n.leaveRoom?.()
-          } catch {
-            /* 还没连上，没什么可退的 */
-          }
           const since = (at: number) => (at ? `${at - openedAt}ms` : '无')
           const transport = (n.socket as unknown as { io?: { engine?: { transport?: { name?: string } } } } | undefined)?.io?.engine?.transport?.name
           diagLog('netplay', 'warn', [
@@ -3309,6 +3712,137 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const currentDipValue = (emu: EjsEmulator, key: string): string =>
     findDipOptions(readCoreOptions(emu)).find((o) => o.key === key)?.current ?? ''
 
+  /** 从核心实际公开的选项表里找 DeSmuME 帧跳；绝不根据 UI 名称或引擎设置猜 key。 */
+  const ndsFrameskipOption = (emu: EjsEmulator): CoreOption | null => {
+    const raw = readCoreOptions(emu)
+    const rows = Array.isArray(raw)
+      ? raw
+      : raw && typeof raw === 'object' && Array.isArray((raw as { options?: unknown }).options)
+        ? (raw as { options: unknown[] }).options
+        : []
+    return rows.find((row): row is CoreOption =>
+      Boolean(row) && typeof row === 'object' && (row as CoreOption).key === 'desmume_frameskip') ?? null
+  }
+
+  /**
+   * DeSmuME 的 Frameskip 是运行时选项；内部 3D 分辨率则要求重启。
+   * 只选核心这局实际报告的 1–3 档，经设置 API 写入后跨过两个绘制周期再回读核心当前值。
+   * 回读没变就视为未应用，不能对玩家说已降档。
+   */
+  const applyNextNdsFrameskip = async (win: Window & Record<string, unknown>, emu: EjsEmulator): Promise<string | null> => {
+    const key = 'desmume_frameskip'
+    const option = ndsFrameskipOption(emu)
+    if (!option) return null
+    // settings 只包含玩家明确保存过的值；自动性能档不能覆盖玩家在核心菜单里的选择。
+    if (typeof emu.settings?.[key] === 'string') return null
+    const values = flatValues(option.values)
+      .map((value) => ({ value, number: /^\d+$/.test(value) ? Number(value) : NaN }))
+      .filter((entry) => Number.isInteger(entry.number) && entry.number > 0 && entry.number <= 3)
+      .sort((a, b) => a.number - b.number)
+    if (!values.length) return null
+    const current = String(option.current ?? '')
+    const currentNumber = /^\d+$/.test(current) ? Number(current) : 0
+    const next = values.find((entry) => entry.number > currentNumber)?.value
+    if (!next) return null
+
+    try {
+      emu.changeSettingOption?.(key, next, true)
+      if (String(ndsFrameskipOption(emu)?.current ?? '') !== next) {
+        emu.gameManager?.setVariable?.(key, next)
+      }
+      const frame = () => new Promise<void>((resolve) => {
+        win.requestAnimationFrame(() => win.requestAnimationFrame(() => resolve()))
+      })
+      await frame()
+      await frame()
+      const effective = String(ndsFrameskipOption(emu)?.current ?? '')
+      if (effective !== next) {
+        console.warn(`[nds/performance] 核心未接受帧跳：请求 ${next}，回读 ${effective || '空'}`)
+        diagLog('nds-performance', 'warn', `DeSmuME 帧跳 ${next} 未确认；核心回读 ${effective || '空'}`)
+        return null
+      }
+      console.info(`[nds/performance] DeSmuME 帧跳已由核心确认：${next}`)
+      diagLog('nds-performance', 'info', `DeSmuME 核心回读确认帧跳 ${next}`)
+      return next
+    } catch (error) {
+      console.warn('[nds/performance] 调整 DeSmuME 帧跳失败：', error)
+      return null
+    }
+  }
+
+  /** 只用 RetroArch 核心帧计数测模拟器吞吐，不用页面 RAF 推测；暂停、后台页和联机时不触发。 */
+  const watchNdsPerformance = (win: Window & Record<string, unknown>): (() => void) => {
+    if (options.platform !== 'nds') return () => {}
+    let lastFrame: number | null = null
+    let lastAt = 0
+    let slowWindows = 0
+    let adapting = false
+    let issueSent = false
+    let appliedFrameskip = ''
+    const timer = window.setInterval(() => {
+      if (destroyed) return
+      const emu = emuOf()
+      const gm = emu?.gameManager
+      if (!emu || typeof gm?.getFrameNum !== 'function') return
+      let frame: number
+      try { frame = Number(gm.getFrameNum()) } catch { return }
+      if (!Number.isFinite(frame)) return
+      const now = win.performance.now()
+      if (
+        document.visibilityState === 'hidden' || win.document.visibilityState === 'hidden' ||
+        emu.paused === true || emu.isNetplay === true || Boolean(netplay)
+      ) {
+        lastFrame = frame
+        lastAt = now
+        slowWindows = 0
+        return
+      }
+      if (lastFrame == null || !lastAt || frame < lastFrame) {
+        lastFrame = frame
+        lastAt = now
+        return
+      }
+      const elapsed = now - lastAt
+      const fps = elapsed > 0 ? ((frame - lastFrame) * 1000) / elapsed : 0
+      lastFrame = frame
+      lastAt = now
+      // 高于核心常规节奏通常是快进；不把玩家主动快进误判成低帧率。
+      if (fps >= 65) {
+        slowWindows = 0
+        return
+      }
+      if (fps < NDS_PERFORMANCE_SLOW_FPS) slowWindows++
+      else slowWindows = 0
+      if (slowWindows < NDS_PERFORMANCE_SLOW_WINDOWS || adapting) return
+
+      if (core === 'desmume' || core === 'desmume2015') {
+        adapting = true
+        void applyNextNdsFrameskip(win, emu).then((value) => {
+          if (destroyed) return
+          adapting = false
+          slowWindows = 0
+          if (value) {
+            appliedFrameskip = value
+            options.onNdsPerformanceApplied?.(value)
+          } else if (!issueSent) {
+            issueSent = true
+            diagLog('nds-performance', 'warn', `持续低于 ${NDS_PERFORMANCE_SLOW_FPS} FPS，DeSmuME 没有可确认的更低帧跳档（上次自动档 ${appliedFrameskip || '无'}）`)
+            options.onNdsPerformanceIssue?.(fps, 'frameskip-exhausted')
+          }
+        })
+        return
+      }
+
+      // 自建 melonDS DS 没有编入已验证的帧跳项；只能把画质核心留给下一局，不能中途换核。
+      if (!issueSent && (core === 'melondsds' || core === 'melonds')) {
+        issueSent = true
+        diagLog('nds-performance', 'warn', `melonDS 持续低于 ${NDS_PERFORMANCE_SLOW_FPS} FPS；当前核心没有安全的运行时画质降档项`)
+        options.onNdsPerformanceIssue?.(fps, 'no-live-option')
+      }
+    }, NDS_PERFORMANCE_SAMPLE_MS)
+    return () => window.clearInterval(timer)
+  }
+
   /**
    * 把后台配的「DIP 开关」应用给核心 —— 麻将游戏要的那一档（见 dipPlan.ts 的长注释）。
    *
@@ -3660,6 +4194,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (options.platform === 'gba') applyGbaVideoMode(win.EJS_emulator as EjsEmulator | undefined, gbaVideoMode)
     options.onReady?.()
     options.onStart?.()
+    stopNdsPerformanceWatch?.()
+    stopNdsPerformanceWatch = watchNdsPerformance(win)
     refineCaps()
     if (crashReported) return
     applyTouchInput(win)
@@ -3887,7 +4423,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
          * FBNeo 驱动表；后台手填了 arcadeBios 或 RomData 的游戏服务端根本不会给这个标记。
          */
         const noBiosNeeded = Boolean(
-          options.platform === 'arcade' && options.arcadeNoBios && core === 'fbneo' &&
+          options.platform === 'arcade' && options.arcadeNoBios && supportsFbneoRomData(core) &&
             !options.arcadeRomData?.trim() && !gameBiosName,
         )
         /** 这次真正交给引擎去下载的平台级 BIOS（空串 = 标不设 EJS_biosUrl）。进度探针也用这个值 */
@@ -4019,6 +4555,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             原文件名和字节。复用 Blob 路径后，大包会落盘，不要求一块连续内存；旧 URL
             完全不进这支，所以现有未迁移游戏的行为一个字节不变。
           */
+          if (options.forceRomRefresh && options.platform === 'gba') {
+            logEngine('[gba] table trap recovery: 清 ROM 缓存与续传片后强制重新下载一次')
+          }
           const prepared = await prepareRemoteDiscRom(
             remoteGameUrl,
             (p) => {
@@ -4030,6 +4569,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
               // 8BG 自带内容版本，任何平台的密文都可以按同一 URL 安全补片；
               // 小卡带只发首片一个请求，不必为每个平台维持另一条下载链。
               resumeAcrossRefresh: Boolean(romCacheKey(remoteGameUrl)),
+              forceRomRefresh: options.forceRomRefresh,
               validate: validateNds,
               // 外层 8BG 的密文和清单会略大于裸卡带，但绝不能让错误响应宣称几百 GB。
               maxBytes: options.platform === 'nds' ? MAX_NDS_ROM_BYTES + 64 * 1024 * 1024 : undefined,
@@ -4056,6 +4596,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           if (batteryName && batteryName !== engineGameName) {
             legacyBatteryName = engineGameName
             engineGameName = batteryName
+            // 引擎的改键 / 金手指 / 核心选项按 gameName 存；换了名字就要把旧键带过来（见 migrateEngineSettingsKey）
+            try {
+              migrateEngineSettingsKey(window.localStorage, gameId, legacyBatteryName, engineGameName)
+            } catch {
+              /* localStorage 不可用：设置本来也存不下 */
+            }
           }
           if (isDiscPlatform(options.platform)) discRomPrepared = true
         } else if (!isFile && (
@@ -4409,10 +4955,18 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         // 引擎的报错探针也要赶在 loader.js 之前装：核心是在加载过程中打错误的，
         // 装晚了那句「缺哪个文件」就已经过去了
         stopFramePerf = watchFramePerformance(win)
-        errorTap = installErrorTap(win, reportEngineError, options.platform === 'nds' ? reportCoreCrash : undefined)
+        errorTap = installErrorTap(win, reportEngineError,
+          options.platform === 'nds' || (options.platform === 'gba' && isRomPackUrl(remoteGameUrl))
+            ? reportCoreCrash
+            : undefined)
         // 预下载好的 ROM：引擎取 blob: 地址时直接拿 Blob 回应，不走 Safari 的 blob URL 加载（见 installBlobFetchShortcut）
         if (preparedRomBlob && preparedArcadeBlobUrl && gameUrl === preparedArcadeBlobUrl) {
-          installBlobFetchShortcut(win, preparedArcadeBlobUrl, preparedRomBlob)
+          installBlobFetchShortcut(win, preparedArcadeBlobUrl, preparedRomBlob, (error) => {
+            const message = safeStr(error)
+            logEngine(`[rom-blob] 文件读取失败，下一次开局将改用内存：${message}`)
+            // 别等引擎把流错误改写成含糊的启动失败或卡死超时；受控重挂后，8BG ROM 会走内存退路。
+            failLoad(fmt(rt.ejsEngineError, { msg: message }), 'runtime')
+          })
         }
 
         // RomData / BIOS 也要赶在 loader.js 之前装：它靠接管 window.EJS_emulator 的赋值来生效，
@@ -4538,6 +5092,17 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           const fs = emu.gameManager?.FS as { filesystems?: { IDBFS?: IdbfsLike } } | undefined
           if (!guardIdbfsPersist(fs?.filesystems?.IDBFS)) {
             console.warn('[emulatorjs] 没找到核心的 IDBFS.reconcile，电池存档保护未生效')
+          }
+          // 开机时这个浏览器里跟本局有关的状态（电池存档、引擎设置、金手指）进诊断包；开局失败时才看得出是不是它们
+          try {
+            const settingsKey = (emu as { getLocalStorageKey?: () => string }).getLocalStorageKey?.()
+            diagLog('adapter', 'info', describeBootState(
+              fs as unknown as Parameters<typeof describeBootState>[0],
+              engineGameName,
+              settingsKey ? window.localStorage.getItem(settingsKey) : null,
+            ))
+          } catch {
+            /* 诊断不影响开局 */
           }
           if (legacyBatteryName && options.gameSlug) {
             try {
@@ -4756,7 +5321,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
          * 这些行都在 callMain 内同步打印、早于 started，正好落进 FATAL_PHRASES 的开局前判定。
          * 只给 FBNeo / mame-current：verbose 只多出开局几十行，运行时没有逐帧日志。
          */
-        const forceArcadeCoreLog = options.platform === 'arcade' && (core === 'fbneo' || isMameCurrentCore(core))
+        const forceArcadeCoreLog = options.platform === 'arcade' && (supportsFbneoRomData(core) || isMameCurrentCore(core))
           ? (emu: EjsEmulator) => {
               const mod = (emu as { Module?: { callMain?: (args: string[]) => unknown } }).Module
               const call = mod?.callMain
@@ -4884,6 +5449,20 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         // 必须在 loader.js 之前 —— 引擎一起来就会去查这个库
         await cachePurgeTask
 
+        if (softwareWebglFallback) {
+          // 适配层必须装在 EmulatorJS loader 前，RetroArch 建 GL context 时才能接到 2D 画布。
+          // 限定当前 iframe：不能改父页原型，详情页其它 canvas 仍使用浏览器原生实现。
+          const { installSoftwareWebgl } = await import('../softwareWebgl')
+          const installed = installSoftwareWebgl(win as unknown as Window & typeof globalThis, () => {
+            console.info('[emulatorjs] FBNeo 已创建 Canvas 2D 软件画面')
+            diagLog('adapter', 'info', 'FBNeo Canvas 2D context 已创建')
+          })
+          if (!installed) {
+            failLoad(rt.ejsWebglUnavailable, 'config')
+            return
+          }
+        }
+
         /**
          * ⚠️ 看门狗必须放在这里，不能更早。
          *
@@ -4896,6 +5475,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
          * 于是**单机开一局街机也会被判「卡住了」**，重试一次再等 30 秒，最后红字。
          * 那一局根本不需要联机。
          */
+        /*
+          getGamepads() 被权限策略挡住时会抛 SecurityError，而 EmulatorJS 的 GamepadHandler 在构造里同步调它：
+          一抛错引擎还没下核心就死了，只剩看门狗两分钟后报「卡住」（gamepadAccess.ts）。读不到就当没手柄。
+        */
+        if (guardFrameGamepads(win) === true) {
+          diagLog('adapter', 'warn', '手柄接口被权限策略挡住（页面可能被别的应用 / 网站嵌在 iframe 里），本局不读手柄')
+        }
         watchStart(win)
         if (destroyed) return
         await injectScript(doc, ejsRuntimeAsset('loader.js'))
@@ -4950,6 +5536,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     destroyed = true
     stopFramePerf?.()
     stopFramePerf = null
+    stopNdsPerformanceWatch?.()
+    stopNdsPerformanceWatch = null
     cancelBootFastForward?.()
     padObserver?.disconnect()
     padObserver = null

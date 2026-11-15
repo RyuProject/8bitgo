@@ -10,7 +10,7 @@
 import type { CaptureSources, Capability, MountOptions, PadButton, RuntimeHandle } from '../types'
 import { flashKeysFor, keyDesc, type KeyDesc } from '../flashKeys'
 import { loadGameBytes } from '../romLoader'
-import { assertSwf, MAX_SWF_BYTES } from '@/lib/romValidation'
+import { assertSwf, assertSwfBlob, MAX_SWF_BYTES } from '@/lib/romValidation'
 import { captureCanvasScreenshot } from '../recorder'
 import { usableVideoSize } from '../videoTuning'
 import { focusFrame } from '../frameFocus'
@@ -482,8 +482,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const gameBytes = loadGameBytes(options.game, options.onProgress, aborter.signal, {
     maxBytes: MAX_SWF_BYTES + 16 * 1024 * 1024,
     maxUnpackedBytes: MAX_SWF_BYTES,
+    // 先验证 SWF，再允许 romLoader 写入缓存；历史坏缓存会被丢弃并从线路重新读取。
+    validate: assertSwf,
+    validateBlob: assertSwfBlob,
   }).then((loaded) => {
-    assertSwf(loaded.data)
     swfInfo = `${kb(loaded.data.byteLength)}${loaded.fromCache ? '（本地缓存）' : ''}`
     diagLog('ruffle', 'info', `SWF 就绪 ${swfInfo} (+${Date.now() - mountedAt}ms)`)
     return loaded

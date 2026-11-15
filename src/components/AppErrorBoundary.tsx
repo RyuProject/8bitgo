@@ -1,4 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
+import { newStartupId, recordStartupEvent } from '@/services/startupFunnel'
+import { moduleLinkFailure, repairAssets, repairFixedSomething, resolveChunkUrl, summarizeRepair } from '@/services/moduleLinkRecovery'
 
 const CHUNK_RELOAD_PREFIX = '8bitgo.chunk-reload:'
 const CHUNK_RELOAD_COOLDOWN_MS = 60_000
@@ -8,12 +10,10 @@ const CHUNK_RELOAD_COOLDOWN_MS = 60_000
  * 这类错误整页刷新通常能拿到新 HTML，所以自动自救一次；一分钟内仍失败就停下来画兜底，
  * 不能用无限刷新把真正的发布故障藏起来。
  */
-function recoverStaleChunk(error: unknown): boolean {
-  const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
-  if (!/Loading chunk|ChunkLoadError|Failed to fetch dynamically imported module|Importing a module script failed/i.test(message)) {
-    return false
-  }
+const STALE_CHUNK = /Loading chunk|ChunkLoadError|Failed to fetch dynamically imported module|Importing a module script failed/i
 
+/** 一分钟内同一页只自动刷新一次，防止真正的发布故障被无限刷新藏起来。 */
+function reloadOnce(): boolean {
   try {
     const key = `${CHUNK_RELOAD_PREFIX}${location.pathname}`
     const previous = Number(sessionStorage.getItem(key) || 0)
@@ -27,8 +27,101 @@ function recoverStaleChunk(error: unknown): boolean {
   }
 }
 
+/**
+ * chunk 没加载上（404 / 网络）或者加载上了却解析 / 链接失败（字节坏了，2026-11-15 PK / TH 的
+ * `does not provide an export named`）：先让 public/asset-repair-v1.js 按构建时的 SHA-256 清单核对本页
+ * 用过的 chunk，坏的绕过缓存重取 —— 普通刷新只会从一年 immutable 的缓存里拿回同一份坏字节。
+ *
+ * - 修好了：上报（带上修了哪些文件）再刷新一次；
+ * - 没发现坏文件、但这是 404 那类旧 chunk：照旧刷新一次，不算故障；
+ * - 其余：上报，停在兜底页。
+ * 修复脚本是首页内联钩子按需加载的；钩子不在（旧模板）时退回原来的行为。
+ */
+function recoverBrokenAsset(error: unknown, info: ErrorInfo): boolean {
+  const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+  const stale = STALE_CHUNK.test(message)
+  const syntax = error instanceof Error && error.name === 'SyntaxError'
+  if (!stale && !syntax) return false
+  const failure = moduleLinkFailure(message)
+  const named = failure?.specifier ? resolveChunkUrl(failure.specifier, currentEntrySrc()) : null
+  const pending = repairAssets({ reason: message.slice(0, 300), urls: named ? [named] : [] })
+  if (!pending) return stale ? reloadOnce() : false
+  void pending.then((result) => {
+    if (repairFixedSomething(result)) {
+      reportRenderCrash(error, info, summarizeRepair(result))
+      reloadOnce()
+      return
+    }
+    if (stale && reloadOnce()) return
+    reportRenderCrash(error, info, summarizeRepair(result))
+  })
+  return true
+}
+
 interface AppErrorBoundaryState {
   failed: boolean
+  /** 给人看的错误摘要：错误原文 + 前几帧调用栈 + 浏览器 / 版本。玩家截图反馈时才知道是哪里坏了 */
+  detail: string
+}
+
+/**
+ * 拼「技术细节」那一段。
+ *
+ * 2026-11-15 有人在 Android 模拟器里打开《拳皇97》详情页只看到「页面暂时没有正常打开」，同一页在
+ * 桌面 Chromium、Android 16 模拟器的 Chrome 134（中英文、点开始）都复现不出来 —— 而这张兜底页把错误
+ * 原文整个吞掉了，只能猜。现在把它摆出来（折叠着，不吓人），截图就能定位。
+ * 只放错误本身、浏览器 UA 和前端版本，不放地址参数、账号或存档之类的东西。
+ */
+export function describeRenderError(error: unknown, ua = '', build = ''): string {
+  const head = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+  const frames = error instanceof Error && typeof error.stack === 'string'
+    ? error.stack.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('at ') || l.includes('@')).slice(0, 4)
+    : []
+  return [head.slice(0, 400), ...frames.map((f) => f.slice(0, 200)), ua && `UA: ${ua.slice(0, 200)}`, build && `build: ${build}`]
+    .filter(Boolean)
+    .join('\n')
+}
+
+/**
+ * 游戏详情页上的渲染崩溃按一次「启动失败」上报（运行时记 `page`），后台「错误诊断」按错误原文归组。
+ *
+ * 2026-11-15 有人在 Android 模拟器（Chrome 110）里打开《拳皇97》只看到兜底页；同一页在 Chromium 110、
+ * Chrome 134 的 Android 模拟器、强制 legacy 包里都打得开、能开局，猜不出来。这张页面以前只往本机控制台
+ * 打一行，谁也看不到。现在玩家不用截图，下一次出现就能在后台看到错误原文、组件栈和粗粒度浏览器信息
+ * （服务端只存「Chrome 110 / Android 15」，不存完整 UA；地址参数、账号、存档都不上报）。
+ * 只在 /games/<slug> 上报：漏斗按游戏记账，别的页面没有挂靠的游戏。
+ */
+function reportRenderCrash(error: unknown, info: ErrorInfo, note = ''): void {
+  try {
+    const slug = location.pathname.match(/(?:^|\/)games\/([^/?#]+)/)?.[1]
+    if (!slug) return
+    const components = String(info.componentStack ?? '')
+      .split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 3).join(' < ')
+    const detail = [describeRenderError(error), components && `组件：${components}`, note, `build: ${currentBuild()}`]
+      .filter(Boolean).join('\n')
+    recordStartupEvent(decodeURIComponent(slug), {
+      visitId: newStartupId(),
+      attemptId: newStartupId(),
+      event: 'failed',
+      runtime: 'page',
+      platform: '',
+      detail,
+    })
+  } catch {
+    /* 上报本身出错也不能影响兜底页 */
+  }
+}
+
+function currentEntrySrc(): string {
+  try {
+    return document.querySelector<HTMLScriptElement>('script[type="module"][src*="/assets/index-"]')?.src ?? ''
+  } catch {
+    return ''
+  }
+}
+
+function currentBuild(): string {
+  return currentEntrySrc().split('/').pop() ?? ''
 }
 
 /**
@@ -39,15 +132,19 @@ interface AppErrorBoundaryState {
  * 这张最后的错误页也必须能画出来。
  */
 export class AppErrorBoundary extends Component<{ children: ReactNode }, AppErrorBoundaryState> {
-  state: AppErrorBoundaryState = { failed: false }
+  state: AppErrorBoundaryState = { failed: false, detail: '' }
 
-  static getDerivedStateFromError(): AppErrorBoundaryState {
-    return { failed: true }
+  static getDerivedStateFromError(error: unknown): AppErrorBoundaryState {
+    let ua = ''
+    try { ua = navigator.userAgent } catch { /* 拿不到就不写 */ }
+    return { failed: true, detail: describeRenderError(error, ua, currentBuild()) }
   }
 
   componentDidCatch(error: unknown, info: ErrorInfo) {
     console.error('[8bitgo] 页面渲染失败', error, info.componentStack)
-    recoverStaleChunk(error)
+    // 部署切换的旧 chunk 会自动刷新自救，不算故障；其余情况把现场送进后台「错误诊断」
+    // chunk 下载失败 / 字节坏了：先核对修复，再按结果决定刷新还是上报（异步，自己负责上报）
+    if (!recoverBrokenAsset(error, info)) reportRenderCrash(error, info)
   }
 
   render() {
@@ -85,6 +182,16 @@ export class AppErrorBoundary extends Component<{ children: ReactNode }, AppErro
               {chinese ? '回到首页' : 'Back to home'}
             </a>
           </div>
+          {this.state.detail && (
+            <details className="mt-6 text-left">
+              <summary className="cursor-pointer text-xs font-semibold text-muted">
+                {chinese ? '技术细节（反馈问题时请截图这一段）' : 'Technical details (screenshot this when reporting)'}
+              </summary>
+              <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-black/5 p-3 text-[11px] leading-snug text-muted">
+                {this.state.detail}
+              </pre>
+            </details>
+          )}
         </section>
       </main>
     )
