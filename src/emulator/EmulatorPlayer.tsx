@@ -28,6 +28,7 @@ import { installScrollGuard } from './scrollGuard'
 import { shouldCaptureMouse } from './mouseCapture'
 import { biosSetUrlSync, platformBiosUrlSync } from '@/services/platformBios'
 import { EmulatorTools } from './EmulatorTools'
+import { downloadBlob } from './recorder'
 import { PadDiagram } from './PadDiagram'
 import { LiveControls, type LiveControlsHandle } from './LiveControls'
 import { createPortal } from 'react-dom'
@@ -59,7 +60,6 @@ import {
 import { psxChdSaveSlug, psxCoreForTransfer } from './psxChd'
 import { prewarmMameChdMediaOnHover, prewarmRuntime } from './prewarm'
 import { defaultDos71SystemUrl, prewarmSystemCache } from './systemSource'
-import { prewarmSockdriveCache } from './adapters/jsdos'
 import { canRestartInPlace } from './sessionRestart'
 import { confirmAndReplayAnchorNavigation } from './leaveNavigation'
 import { AdSenseSlot } from '@/components/ads/AdSenseSlot'
@@ -70,11 +70,10 @@ import { sessionCountsAsPlayed } from './playedScope'
 import { cloudGameMeta, emulatorJsMeta, liveViewMeta } from './runtimeMeta'
 import { isStreamingDiscPlatform } from '../../shared/streaming-disc-platforms.js'
 /**
- * 挂载实现。**只有这里引它** —— runtimes.ts 是唯一静态引入九个适配器的地方，
- * 而本组件由页面懒加载（见 PlayerChunk.tsx），所以引擎代码不进主包。
- * 「该用哪个引擎」的解析仍然走轻的 registry + runtimeMeta。
+ * 挂载实现。runtimes.ts 按选中的运行时动态导入对应适配器；本组件由页面懒加载，
+ * 所以没选中的引擎代码不会随播放器一起下载。「该用哪个引擎」仍走轻量 registry + runtimeMeta。
  */
-import { mountOf } from './runtimes'
+import { loadMountOf } from './runtimes'
 import { cx } from '@/lib/format'
 import { Button, buttonClasses } from '@/components/ui/Button'
 import { JsnesNetplayPanel } from './JsnesNetplayPanel'
@@ -168,6 +167,25 @@ const BAR_IDLE_MS = 2500
  */
 const BAR_HOT_ZONE_RATIO = 0
 const BAR_HOT_ZONE_MIN = 10
+
+/** 清理下载文件名，去掉 URL 或包内名称中的目录和系统不允许的字符。 */
+function safeRomDownloadFilename(name: string): string {
+  const basename = name.replace(/\\/g, '/').split('/').pop() || 'game.rom'
+  const safe = basename.replace(/[:*?"<>|\u0000-\u001f]/g, '_').trim()
+  return safe || 'game.rom'
+}
+
+/** 从当前 ROM 地址取文件名；8BG 包下载时会优先使用包内原名。 */
+function romDownloadFilename(url: string, fallback: string): string {
+  let name = fallback || 'game.rom'
+  try {
+    const pathName = new URL(url, window.location.href).pathname.split('/').pop()
+    if (pathName) name = decodeURIComponent(pathName)
+  } catch {
+    /* URL 不可解析时用游戏名 */
+  }
+  return safeRomDownloadFilename(name)
+}
 
 interface ActiveSession {
   id: number
@@ -594,6 +612,9 @@ export function EmulatorPlayer({
   const [file, setFile] = useState<File | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [romDownloadBusy, setRomDownloadBusy] = useState(false)
+  const [romDownloadError, setRomDownloadError] = useState(false)
+  const romDownloadBusyRef = useRef(false)
   const [ndsPerformanceSuggestion, setNdsPerformanceSuggestion] = useState<{ fps: number; game: File | string } | null>(null)
   const [dragging, setDragging] = useState(false)
   const [session, setSession] = useState<ActiveSession | null>(null)
@@ -620,6 +641,31 @@ export function EmulatorPlayer({
   const t = useT()
   const awayflChoice = useAwayflChoice(platform.id, gameSlug)
   const { immersive, setImmersive, toggleImmersive, available: shellAvailable } = useShell()
+
+  /** 明文只在浏览器生成，继续让云端 ROM 对象保持 8BG 加密，不新增公开明文接口。 */
+  const downloadCurrentRom = async () => {
+    if (!romUrl || romDownloadBusyRef.current) return
+    romDownloadBusyRef.current = true
+    setRomDownloadBusy(true)
+    setRomDownloadError(false)
+    try {
+      const response = await fetch(romUrl, { cache: 'no-store' })
+      if (!response.ok) throw new Error(`ROM download failed (${response.status})`)
+      const source = await response.blob()
+      const magic = await source.slice(0, 4).arrayBuffer()
+      if (isRomPackBytes(magic)) {
+        const unpacked = await unpackRomPackBlob(source)
+        downloadBlob(unpacked.blob, safeRomDownloadFilename(unpacked.name))
+      } else {
+        downloadBlob(source, romDownloadFilename(romUrl, gameName))
+      }
+    } catch {
+      setRomDownloadError(true)
+    } finally {
+      romDownloadBusyRef.current = false
+      setRomDownloadBusy(false)
+    }
+  }
 
   /* ---------------- 联机 ---------------- */
   // 联机需要云端 ROM：房主和访客都得能拿到同一个 ROM
@@ -1681,6 +1727,20 @@ export function EmulatorPlayer({
     })
   }, [platform.id, runtime, romUrl, shouldProbeNes, currentNesProbe?.ready, jsnesNetplay, jsnesCompatible, webglUnavailable, awayflChoice.ready, awayflChoice.use])
 
+  /**
+   * 玩家点击前预取本局最可能使用的适配器：播放器壳和适配器并行到达，避免把新代码块的网络往返
+   * 加到真正开局之后。直播 / 云端邀请分别预取自己的运行时；未选中的平台适配器不下载。
+   */
+  const runtimeToPreload = liveInvite
+    ? liveViewMeta
+    : cloudInviteId && cloudOk
+      ? cloudGameMeta
+      : pageRuntime
+  useEffect(() => {
+    if (session || !runtimeToPreload) return
+    void loadMountOf(runtimeToPreload.id).catch(() => {})
+  }, [session, runtimeToPreload?.id])
+
   /** NES 的 mapper 与 NES / GB / GBC 的 WebGL 结论都确定后再开放启动，避免自动播放抢先挂载错误引擎。 */
   const engineReady = (!shouldProbeNes || Boolean(currentNesProbe?.ready)) &&
     webglProbeReady && awayflChoice.ready
@@ -1916,9 +1976,13 @@ export function EmulatorPlayer({
     }
     armStartupWatchdog()
     slowTimer = window.setTimeout(reportSlowStartupIfNeeded, Math.max(0, 20_000 - (Date.now() - session.startedAt)))
-    let handle: RuntimeHandle
-    try {
-      handle = mountOf(session.runtime.id)(host, {
+    let handle: RuntimeHandle | null = null
+    let mountCancelled = false
+    void (async () => {
+      try {
+        const mount = await loadMountOf(session.runtime.id)
+        if (mountCancelled || !isCurrent()) return
+        handle = mount(host, {
       platform: session.platform,
       game: session.game,
       pspLoadMode: session.pspLoadMode,
@@ -2342,27 +2406,34 @@ export function EmulatorPlayer({
         reportStartupFailure(failureReason)
         setStatus('error')
       },
-      })
-    } catch (error) {
-      stopStartupWatchdog()
-      stopProgressSnapshot()
-      window.clearTimeout(playableTimer)
-      const message = error instanceof Error ? error.message : String(error)
-      reportStartupFailure(message)
-      setError(message)
-      setStatus('error')
-      return
-    }
-    setHandle(handle)
-    setCaps(new Set(handle.caps))
-    /*
-      几何和布局都是**这一局**的属性，换游戏/换引擎必须清掉。
-      不清的话下一局开头会拿上一局的比例去定容器：从 NDS 换到红白机，
-      那个 2:3 的竖框会一直挂到新引擎报出几何为止（而红白机根本不报）。
-    */
-    setGeometry(null)
-    setScreenLayout(null)
+        })
+      } catch (error) {
+        if (mountCancelled || !isCurrent()) return
+        stopStartupWatchdog()
+        stopProgressSnapshot()
+        window.clearTimeout(playableTimer)
+        const message = error instanceof Error ? error.message : String(error)
+        reportStartupFailure(message)
+        setError(message)
+        setStatus('error')
+        return
+      }
+      if (!handle || mountCancelled || !isCurrent()) {
+        handle?.destroy()
+        return
+      }
+      setHandle(handle)
+      setCaps(new Set(handle.caps))
+      /*
+        几何和布局都是**这一局**的属性，换游戏/换引擎必须清掉。
+        不清的话下一局开头会拿上一局的比例去定容器：从 NDS 换到红白机，
+        那个 2:3 的竖框会一直挂到新引擎报出几何为止（而红白机根本不报）。
+      */
+      setGeometry(null)
+      setScreenLayout(null)
+    })()
     return () => {
+      mountCancelled = true
       stopStartupWatchdog()
       stopProgressSnapshot()
       window.clearTimeout(playableTimer)
@@ -2370,7 +2441,7 @@ export function EmulatorPlayer({
       setCaps(new Set())
       setGeometry(null)
       setScreenLayout(null)
-      handle.destroy()
+      handle?.destroy()
     }
   }, [session])
 
@@ -3949,7 +4020,10 @@ export function EmulatorPlayer({
     }
     if (pageRuntime?.id === 'jsdos' && effectiveDosSystemUrl) prewarmSystemCache(effectiveDosSystemUrl)
     if (pageRuntime?.id === 'jsdos' && dosSockdriveUrl) {
-      prewarmSockdriveCache(dosSockdriveUrl, Boolean(effectiveDosSystemUrl))
+      // 不要为了 DOS 的悬停预热静态引入整份适配器；选中 js-dos 时适配器已并行预取。
+      void import('./adapters/jsdos')
+        .then(({ prewarmSockdriveCache }) => prewarmSockdriveCache(dosSockdriveUrl, Boolean(effectiveDosSystemUrl)))
+        .catch(() => {})
     }
   }
 
@@ -4403,27 +4477,23 @@ export function EmulatorPlayer({
                       </>
                     ) : romUrl ? (
                       <div className="flex flex-col items-center gap-2.5">
-                        <div
-                          className={cx(
-                            'w-full rounded-2xl border border-dashed px-4 py-3 text-center backdrop-blur transition-colors duration-150',
-                            dragging
-                              ? 'border-brand bg-brand/15 shadow-[0_0_0_1px_var(--color-brand)]'
-                              : 'border-white/25 bg-black/45 hover:border-white/40',
-                          )}
-                        >
+                        <div className="w-full rounded-2xl border border-white/25 bg-black/45 px-4 py-3 text-center backdrop-blur">
                           <p className="mb-2 text-[11px] font-semibold tracking-wide text-white/65">
                             {t.player.alsoCan.trim()}
                           </p>
                           <button
                             type="button"
-                            className="inline-flex min-h-11 max-w-full items-center justify-center rounded-xl border border-white/30 bg-white/10 px-4 py-2 text-center font-semibold text-white transition hover:border-white/55 hover:bg-white/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-black"
-                            onClick={() => inputRef.current?.click()}
+                            disabled={romDownloadBusy}
+                            aria-busy={romDownloadBusy}
+                            className="inline-flex min-h-11 max-w-full items-center justify-center rounded-xl border border-white/30 bg-white/10 px-4 py-2 text-center font-semibold text-white transition hover:border-white/55 hover:bg-white/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-black disabled:cursor-wait disabled:opacity-65"
+                            onClick={() => void downloadCurrentRom()}
                           >
-                            {t.player.pickLocal}
+                            {romDownloadBusy ? t.player.downloadingRom : t.player.downloadRom}
                           </button>
-                          <p className="mt-2 text-xs text-white/70">
-                            {dragging ? t.player.dropNow : t.player.orDrag}
-                          </p>
+                          <p className="mt-2 text-xs text-white/70">{t.player.downloadRomHint}</p>
+                          {romDownloadError && (
+                            <p role="alert" className="mt-2 text-xs text-red-200">{t.player.downloadRomFailed}</p>
+                          )}
                         </div>
                         {onlineOk && (
                           <button

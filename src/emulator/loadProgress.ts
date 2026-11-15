@@ -96,8 +96,9 @@ export function throttleProgress(sink: ProgressSink | undefined): (p: LoadProgre
  * 所以这个阈值不会误伤慢网络。
  */
 export const STALL_MS = 30_000
-/** 取首段 256 KiB 的真实速率；足以分辨明显慢线路，又只会在切线路时重复少量字节。 */
+/** 普通网络取 256 KiB；明确弱网改取 128 KiB，避免慢线路上等太久才开始比较线路。 */
 const FIRST_RANGE_SAMPLE_BYTES = 256 * 1024
+const WEAK_NETWORK_FIRST_RANGE_SAMPLE_BYTES = 128 * 1024
 const ALTERNATE_ROUTE_SAMPLE_BYTES = 64 * 1024
 const ALTERNATE_ROUTE_MIN_SAMPLE_BYTES = 32 * 1024
 const ALTERNATE_ROUTE_SAMPLE_TIMEOUT_MS = 1_500
@@ -324,7 +325,7 @@ export interface BlobFetchOptions {
   /** 下载前就限制响应总量；不能等完整 Blob 到手后才让格式校验发现异常大文件。 */
   maxBytes?: number
   /**
-   * 同一对象在另一条 CDN 线路上的地址（romHosts.ts 的 alternateRomUrl）。首段 256 KiB 吞吐低于 3Mbps
+   * 同一对象在另一条 CDN 线路上的地址（romHosts.ts 的 alternateRomUrl）。首段采样（普通 256 KiB、弱网提示下 128 KiB）吞吐低于 3Mbps
    * 且备用线路实测快 15%，或当前线路重试用尽时，整局改用这里；断点分片按 resumeKey 存，已下的片不重下。
    */
   alternateUrl?: string
@@ -554,7 +555,7 @@ export async function withResumeTimeout<T>(task: Promise<T>, ms: number): Promis
 }
 
 /**
- * 第一片本来就必须下载；用前 256 KiB 的真实吞吐决定后续并发，不另发一份测速流量。
+ * 第一片本来就必须下载；用前 256 KiB（明确弱网提示下 128 KiB）的真实吞吐决定后续并发，不另发一份测速流量。
  *
  * 并发的目标是藏住高 RTT、丢包和单连接拥塞窗口，不是假设带宽可以凭空变多。因此弱网、省流量
  * 和低内存设备主动收缩；快网也最多四路，把瞬时 Blob 内存限制在 4 × 8 MiB 左右。
@@ -602,6 +603,16 @@ function browserChunkNetworkHints(): ChunkNetworkHints {
     deviceMemoryGb: nav.deviceMemory,
     hardwareConcurrency: nav.hardwareConcurrency,
   }
+}
+
+/** 弱网先用较短样本判断线路；高 RTT 且带宽未知时也缩短，但不把已知高速网络误判成低吞吐。 */
+function firstRangeSampleBytes(hints: ChunkNetworkHints): number {
+  const effectiveType = String(hints.effectiveType ?? '').toLowerCase()
+  const downlink = Number.isFinite(hints.downlinkMbps) ? Math.max(0, hints.downlinkMbps ?? 0) : 0
+  const rtt = Number.isFinite(hints.rttMs) ? Math.max(0, hints.rttMs ?? 0) : 0
+  const weakNetwork = effectiveType === 'slow-2g' || effectiveType === '2g' || effectiveType === '3g' ||
+    (downlink > 0 && downlink < 1.5) || (rtt >= 800 && downlink < 3)
+  return weakNetwork ? WEAK_NETWORK_FIRST_RANGE_SAMPLE_BYTES : FIRST_RANGE_SAMPLE_BYTES
 }
 
 const monotonicNow = () => typeof performance !== 'undefined' ? performance.now() : Date.now()
@@ -1074,7 +1085,7 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
         probedTotal = firstTotal
         total = firstTotal
         parts = Array.from({ length: Math.ceil(total / chunkBytes) }, () => undefined as Blob | undefined)
-        const firstSampleSize = Math.min(FIRST_RANGE_SAMPLE_BYTES, firstEnd + 1)
+        const firstSampleSize = Math.min(firstRangeSampleBytes(networkHints), firstEnd + 1)
         let sampled = false
         const onFirstLoaded = async (loaded: number) => {
           firstRangeInFlight = loaded

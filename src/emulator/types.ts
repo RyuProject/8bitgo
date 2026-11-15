@@ -859,7 +859,6 @@ export interface Runtime {
  *
  * ⚠️ 它**不在** `Runtime` 里 —— 这是分包的关键。`Runtime` 现在只剩元数据
  * （见 runtimeMeta.ts），任何页面拿它做「该用哪个引擎」的判断都不会把引擎实现拖进来。
- * 真正的实现由 `runtimes.ts` 的 `mountOf(id)` 提供，而那个文件只被
- * EmulatorPlayer 引用 —— 后者是懒加载的。
+ * 真正的实现由 `runtimes.ts` 的 `loadMountOf(id)` 按需加载；播放器 chunk 本身也由页面懒加载。
  */
 export type RuntimeMount = (container: HTMLElement, options: MountOptions) => RuntimeHandle

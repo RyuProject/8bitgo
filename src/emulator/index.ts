@@ -14,7 +14,7 @@
  * 首页和博客根本不跑游戏，一样得下载。
  *
  * 现在：常量在 paths.ts、元数据在 runtimeMeta.ts、解析在 registry.ts，全都是轻的；
- * 挂载实现只在 runtimes.ts 里静态引入，而它只被 EmulatorPlayer 引用。
+ * 挂载实现由 runtimes.ts 按选中的运行时动态加载；解析页面仍只拿轻量元数据。
  * 页面这样懒加载播放器：
  *
  *   const EmulatorPlayer = lazyNamed(() => import('@/emulator/EmulatorPlayer'), 'EmulatorPlayer')

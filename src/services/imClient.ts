@@ -829,6 +829,12 @@ export async function listImMessages(
   return { items, cursor: res?.data?.nextReqMessageID ?? '', done: Boolean(res?.data?.isCompleted) }
 }
 
+/** 删除一条会话并清除该用户的聊天记录。清理是用户主动点删除后才发生的。 */
+export async function deleteImConversation(conversationId: string): Promise<void> {
+  if (!chat) throw new ImNotConnectedError()
+  await chat.deleteConversation({ conversationIDList: [conversationId], clearHistoryMessage: true })
+}
+
 /**
  * 一条私信最多多少字。
  *

@@ -10,8 +10,8 @@
  * 看直播七个适配器的全部实现 —— 看博客、逛首页的人同样中招。
  *
  * 现在这里只放「不需要跑起来就能回答的问题」：路径配了没有、这个平台有没有核心。
- * 真正的实现（mount）留在 adapters/ 里，由 runtimes.ts 静态引入，
- * 而 runtimes.ts 只被 EmulatorPlayer 引用 —— 后者是懒加载的。
+ * 真正的实现（mount）留在 adapters/ 里，由 runtimes.ts 按需动态导入；
+ * runtimes.ts 只被懒加载的 EmulatorPlayer 引用。
  *
  * ⚠️ 往这里加东西前先问一句：它会不会把某个适配器拖进来？会的话就不该放这儿。
  */

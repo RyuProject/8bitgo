@@ -1093,7 +1093,8 @@ XHR 的 `progress` 事件按字节差值维护总量，并限到约 12fps 再通
 Local Uploads 只优化写入，不优化下载；玩家读取继续依赖 Anycast、版本化 URL、Worker Cache API、
 Range 边缘分片缓存，以及 `fetchBlobWithProgress()` 用首个真实分片选择下载并发。
 
-大 ROM 完整下载固定用 8MB 对齐 Range：首片开始后先用 256KiB 实际字节估速；超过 3Mbps 且并发可用时，
+大 ROM 完整下载固定用 8MB 对齐 Range：普通网络首片用 256KiB 实际字节估速；明确弱网（Network Information API 报 3G、
+下行低于 1.5Mbps，或 RTT ≥800ms 且下行低于 3Mbps / 未知）改用 128KiB，避免在慢线路上等太久才比较另一域；超过 3Mbps 且并发可用时，
 提前启动后续完整 Range，避免整片串行下完才开始并发；其余分片再按吞吐、RTT、省流量模式与设备内存
 选择 1–4 路。ROM 至少 512KiB 且非 2G / 省流量时，首段低于 3Mbps 才比较另一域的同 ROM 对齐首片，
 备用实测速率高 15% 才放弃未完成首片并换域；2G / 省流量模式不因测速额外耗流量。
@@ -1102,6 +1103,11 @@ Range 边缘分片缓存，以及 `fetchBlobWithProgress()` 用首个真实分�
 断点分片写 IndexedDB 与下一片网络传输重叠，但写盘积压最多两笔；进度按每路字节差值累计，禁止在
 每个底层 stream chunk 上展开全部请求重新求和。完整 Blob 到手后，临时分片删除留在后台，不能让
 几十到几百次 IDB delete 挡在模拟器启动前。回归：`npm run test:chunked-fetch`。
+
+⚠️ **明确弱网要提前比较 ROM 线路**（2026-11-15，大陆 Chrome 132 / Windows，《泡泡龙 4》）：现场 0.45Mbps / RTT 1100ms，
+固定 256KiB 首段花了 7.9 秒才开始测备用域，随后再花约 1.2 秒比较；切线后 ROM 到 20 秒时已下完 6.5/6.7MB，
+仍被记为慢启动。改为弱网提示下 128KiB 即开始测速，普通网络保留 256KiB；备用域仍必须实测快 15% 才切，
+并发继续按真实吞吐与弱网提示收敛。若后续现场的 Network Information API 不可用，仍用完整 256KiB 实测，不凭空猜带宽。
 
 Worker 的 Range Cache 覆盖整个版本化 `/roms/<平台>/…`：完整下载型平台缓存 8MB 块；PSP、PS2、
 GameCube、Wii 的按需读盘缓存 2MB 块。只有带真实 R2 ETag `romv`、严格对齐且响应长度 / ETag /

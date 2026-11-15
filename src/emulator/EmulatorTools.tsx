@@ -97,6 +97,128 @@ const BTN = 'inline-flex h-11 min-w-11 items-center justify-center gap-1 rounded
 const BTN_ON = 'border-brand bg-brand-soft text-brand-hover'
 
 /**
+ * 图标字体由浏览器直接从 jsDelivr 获取，避免把字体文件放进本站发布包；
+ * 工具栏才会挂载，所以普通页面不会额外请求第三方资源。
+ */
+const FONT_AWESOME_BASE_CSS = 'https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@7.3.1/css/fontawesome.min.css'
+const FONT_AWESOME_SOLID_CSS = 'https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@7.3.1/css/solid.min.css'
+let fontAwesomePromise: Promise<boolean> | null = null
+
+function loadExternalStylesheet(id: string, href: string): Promise<boolean> {
+  const existing = document.getElementById(id) as HTMLLinkElement | null
+  if (existing?.dataset.loadState === 'loaded') return Promise.resolve(true)
+  if (existing?.dataset.loadState === 'failed') return Promise.resolve(false)
+
+  const link = existing ?? document.createElement('link')
+  if (!existing) {
+    link.id = id
+    link.rel = 'stylesheet'
+    link.href = href
+    link.dataset.loadState = 'loading'
+  }
+
+  return new Promise((resolve) => {
+    let settled = false
+    let timeout = 0
+    const finish = (loaded: boolean) => {
+      if (settled) return
+      settled = true
+      window.clearTimeout(timeout)
+      link.removeEventListener('load', onLoad)
+      link.removeEventListener('error', onError)
+      link.dataset.loadState = loaded ? 'loaded' : 'failed'
+      resolve(loaded)
+    }
+    const onLoad = () => finish(true)
+    const onError = () => finish(false)
+    link.addEventListener('load', onLoad)
+    link.addEventListener('error', onError)
+    timeout = window.setTimeout(() => finish(false), 10000)
+    if (!existing) document.head.append(link)
+  })
+}
+
+function withTimeout<T>(task: Promise<T>, fallback: T, ms: number): Promise<T> {
+  return new Promise((resolve) => {
+    let settled = false
+    const timeout = window.setTimeout(() => {
+      settled = true
+      resolve(fallback)
+    }, ms)
+    task.then(
+      (value) => {
+        if (settled) return
+        settled = true
+        window.clearTimeout(timeout)
+        resolve(value)
+      },
+      () => {
+        if (settled) return
+        settled = true
+        window.clearTimeout(timeout)
+        resolve(fallback)
+      },
+    )
+  })
+}
+
+function ensureFontAwesome(): Promise<boolean> {
+  if (typeof document === 'undefined') return Promise.resolve(false)
+  if (fontAwesomePromise) return fontAwesomePromise
+
+  fontAwesomePromise = (async () => {
+    if (!document.getElementById('8bitgo-fontawesome-preconnect')) {
+      const preconnect = document.createElement('link')
+      preconnect.id = '8bitgo-fontawesome-preconnect'
+      preconnect.rel = 'preconnect'
+      preconnect.href = 'https://cdn.jsdelivr.net'
+      preconnect.crossOrigin = 'anonymous'
+      document.head.append(preconnect)
+    }
+
+    const stylesLoaded = await Promise.all([
+      loadExternalStylesheet('8bitgo-fontawesome-base', FONT_AWESOME_BASE_CSS),
+      loadExternalStylesheet('8bitgo-fontawesome-solid', FONT_AWESOME_SOLID_CSS),
+    ])
+    if (stylesLoaded.some((loaded) => !loaded) || !document.fonts?.load) return false
+
+    try {
+      // 等待真正的字形文件就绪，避免 CSS 到了但图标字体还没到时按钮短暂空白。
+      const faces = await withTimeout(
+        document.fonts.load('900 16px "Font Awesome 7 Free"', '\uf04c'),
+        [],
+        10000,
+      )
+      return faces.length > 0
+    } catch {
+      return false
+    }
+  })().catch(() => false)
+
+  return fontAwesomePromise
+}
+
+type PlayerIconName =
+  | 'pause'
+  | 'play'
+  | 'floppy-disk'
+  | 'folder-open'
+  | 'volume-xmark'
+  | 'volume-high'
+  | 'wand-magic-sparkles'
+  | 'gamepad'
+  | 'camera'
+  | 'stop'
+  | 'circle'
+  | 'ellipsis'
+
+function PlayerIcon({ name, fallback, loaded }: { name: PlayerIconName; fallback: string; loaded: boolean }) {
+  return loaded
+    ? <i className={cx('fa-solid fa-fw', `fa-${name}`)} aria-hidden="true" />
+    : <span aria-hidden="true">{fallback}</span>
+}
+
+/**
  * 能力可能晚于游戏画面就绪才上报（HTML5 存档桥就是这样）。
  *
  * 把“还没能力就不画工具栏”的判断留在一个**不使用 Hook 的外壳**里；Ready 组件一旦挂载，
@@ -115,6 +237,17 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
   const t = useT()
   const lang = useLang()
   const tt = t.player.tools
+  const [fontAwesomeLoaded, setFontAwesomeLoaded] = useState(false)
+
+  useEffect(() => {
+    let mounted = true
+    void ensureFontAwesome().then((loaded) => {
+      if (mounted) setFontAwesomeLoaded(loaded)
+    })
+    return () => {
+      mounted = false
+    }
+  }, [])
 
   /**
    * 可选的屏幕布局。**少于两个就等于没有** —— 只有一个取值的选择器没有意义，
@@ -891,7 +1024,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
     <div className={cx('relative flex flex-wrap items-center gap-1.5', className)}>
       {caps.has('pause') && (
         <button type="button" className={cx(BTN, paused && BTN_ON)} onClick={refocus(togglePause)} title={paused ? tt.resume : tt.pause} aria-label={paused ? tt.resume : tt.pause} aria-pressed={paused}>
-          {paused ? '▶' : '⏸'}
+          <PlayerIcon name={paused ? 'play' : 'pause'} fallback={paused ? '▶' : '⏸'} loaded={fontAwesomeLoaded} />
         </button>
       )}
 
@@ -909,7 +1042,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
           aria-label={tt.fsSave}
           aria-expanded={panel === 'fsSave'}
         >
-          💾
+          <PlayerIcon name="floppy-disk" fallback="💾" loaded={fontAwesomeLoaded} />
         </button>
       )}
 
@@ -940,7 +1073,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
           aria-label={tt.fsLoad}
           aria-expanded={panel === 'fsLoad'}
         >
-          📂
+          <PlayerIcon name="folder-open" fallback="📂" loaded={fontAwesomeLoaded} />
         </button>
       )}
 
@@ -978,7 +1111,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
             }
             aria-label={remoteOnly ? tt.save : tt.saveLoadTitle}
           >
-            💾
+            <PlayerIcon name="floppy-disk" fallback="💾" loaded={fontAwesomeLoaded} />
           </button>
           <input
             ref={fileRef}
@@ -1022,7 +1155,11 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
             aria-label={tt.volume}
             aria-expanded={panel === 'volume'}
           >
-            {muted || volume === 0 ? '🔇' : '🔊'}
+            <PlayerIcon
+              name={muted || volume === 0 ? 'volume-xmark' : 'volume-high'}
+              fallback={muted || volume === 0 ? '🔇' : '🔊'}
+              loaded={fontAwesomeLoaded}
+            />
           </button>
         )}
 
@@ -1038,7 +1175,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
             aria-label={tt.gbaVideo}
             aria-expanded={panel === 'gbaVideo'}
           >
-            ✨
+            <PlayerIcon name="wand-magic-sparkles" fallback="✨" loaded={fontAwesomeLoaded} />
           </button>
         )}
 
@@ -1054,13 +1191,13 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
             aria-label={tt.gamepad}
             aria-expanded={panel === 'gamepad'}
           >
-            🎮
+            <PlayerIcon name="gamepad" fallback="🎮" loaded={fontAwesomeLoaded} />
           </button>
         )}
 
         {caps.has('screenshot') && (
           <button type="button" className={BTN} onClick={refocus(() => void doShot())} title={tt.shot} aria-label={tt.shot}>
-            📷
+            <PlayerIcon name="camera" fallback="📷" loaded={fontAwesomeLoaded} />
           </button>
         )}
 
@@ -1073,7 +1210,9 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
             aria-label={recording ? fmt(tt.recStop, { s: String(seconds) }) : tt.rec}
             aria-pressed={recording}
           >
-            {recording ? <span className="tabular-nums">⏹ {seconds}s</span> : '⏺'}
+            {recording
+              ? <span className="tabular-nums"><PlayerIcon name="stop" fallback="⏹" loaded={fontAwesomeLoaded} /> {seconds}s</span>
+              : <PlayerIcon name="circle" fallback="⏺" loaded={fontAwesomeLoaded} />}
           </button>
         )}
       </div>
@@ -1091,7 +1230,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
           aria-label={tt.more}
           aria-expanded={more}
         >
-          ⋯
+          <PlayerIcon name="ellipsis" fallback="⋯" loaded={fontAwesomeLoaded} />
         </button>
       )}
 
@@ -1100,7 +1239,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
       {panel === 'volume' && (
         <div className="absolute bottom-full left-0 z-20 mb-2 flex items-center gap-2 rounded-lg border border-line bg-surface px-3 py-2 shadow-lg">
           <button type="button" className={BTN} onClick={refocus(() => applyVolume(volume, !muted))} title={muted ? tt.unmute : tt.mute} aria-label={muted ? tt.unmute : tt.mute}>
-            {muted ? '🔇' : '🔊'}
+            <PlayerIcon name={muted ? 'volume-xmark' : 'volume-high'} fallback={muted ? '🔇' : '🔊'} loaded={fontAwesomeLoaded} />
           </button>
           <input
             type="range"

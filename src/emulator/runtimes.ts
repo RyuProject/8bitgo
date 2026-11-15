@@ -1,49 +1,39 @@
 /**
- * id → 真正的挂载实现。**这是整个模块里唯一静态引入全部适配器的地方。**
+ * id → 真正的挂载实现。每个运行时单独动态导入，避免启动一款游戏时把其它平台的适配器一起下载。
  *
- * 所以它也是唯一「一被引用就会把整套模拟器拉进包里」的文件 ——
- * 请只让 EmulatorPlayer 引用它，而 EmulatorPlayer 由页面懒加载
- * （`lazyNamed(() => import('@/emulator/EmulatorPlayer'), …)`）。
- * 这样首页、博客、游戏库、房间列表这些**不跑游戏的页面**一个字节的引擎代码都不会下载。
- *
- * 判断「该用哪个引擎」不需要经过这里，走 registry.ts + runtimeMeta.ts 那条轻的路。
+ * 判断「该用哪个引擎」仍走 registry.ts + runtimeMeta.ts；只有真正选定运行时后才会取它的适配器代码。
  */
 import type { RuntimeId, RuntimeMount } from './types'
-import { mount as emulatorjs } from './adapters/emulatorjs'
-import { mount as ruffle } from './adapters/ruffle'
-import { mount as awayfl } from './adapters/awayfl'
-import { mount as html5 } from './adapters/html5'
-import { mount as jsnes } from './adapters/jsnes'
-import { mount as binjgb } from './adapters/binjgb'
-import { mount as iodinegba } from './adapters/iodinegba'
-import { mount as j2me } from './adapters/j2me'
-import { mount as jsdos } from './adapters/jsdos'
-import { mount as webretro } from './adapters/webretro'
-import { mount as play } from './adapters/play'
-import { mount as ppsspp } from './adapters/ppsspp'
-import { mount as dolphin } from './adapters/dolphin'
-import { mount as cloudgame } from './adapters/cloudgame'
-import { mount as liveview } from './adapters/liveview'
 
-const MOUNTS: Record<RuntimeId, RuntimeMount> = {
-  emulatorjs,
-  ruffle,
-  awayfl,
-  html5,
-  jsnes,
-  binjgb,
-  iodinegba,
-  j2me,
-  jsdos,
-  webretro,
-  play,
-  ppsspp,
-  dolphin,
-  cloudgame,
-  liveview,
+const LOADERS: Record<RuntimeId, () => Promise<RuntimeMount>> = {
+  emulatorjs: () => import('./adapters/emulatorjs').then((module) => module.mount),
+  ruffle: () => import('./adapters/ruffle').then((module) => module.mount),
+  awayfl: () => import('./adapters/awayfl').then((module) => module.mount),
+  html5: () => import('./adapters/html5').then((module) => module.mount),
+  jsnes: () => import('./adapters/jsnes').then((module) => module.mount),
+  binjgb: () => import('./adapters/binjgb').then((module) => module.mount),
+  iodinegba: () => import('./adapters/iodinegba').then((module) => module.mount),
+  j2me: () => import('./adapters/j2me').then((module) => module.mount),
+  jsdos: () => import('./adapters/jsdos').then((module) => module.mount),
+  webretro: () => import('./adapters/webretro').then((module) => module.mount),
+  play: () => import('./adapters/play').then((module) => module.mount),
+  ppsspp: () => import('./adapters/ppsspp').then((module) => module.mount),
+  dolphin: () => import('./adapters/dolphin').then((module) => module.mount),
+  cloudgame: () => import('./adapters/cloudgame').then((module) => module.mount),
+  liveview: () => import('./adapters/liveview').then((module) => module.mount),
 }
 
-/** 取某个运行时的挂载函数。id 来自 registry 解析出来的元数据 */
-export function mountOf(id: RuntimeId): RuntimeMount {
-  return MOUNTS[id]
+const pendingLoads = new Map<RuntimeId, Promise<RuntimeMount>>()
+
+/** 按选中的运行时加载并缓存挂载函数；失败时清掉 promise，允许用户重试下载代码块。 */
+export function loadMountOf(id: RuntimeId): Promise<RuntimeMount> {
+  const existing = pendingLoads.get(id)
+  if (existing) return existing
+
+  const loading = LOADERS[id]()
+  pendingLoads.set(id, loading)
+  void loading.catch(() => {
+    if (pendingLoads.get(id) === loading) pendingLoads.delete(id)
+  })
+  return loading
 }

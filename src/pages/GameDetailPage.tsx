@@ -16,12 +16,13 @@ import { usePageData, type GameData } from '@/services/pageData'
 import { platformMap, EXPERIMENTAL_PLATFORMS } from '@/data/platforms'
 import { genreMap } from '@/data/genres'
 import { isPlatformEnabled } from '@/config/platforms'
-import { formatPlayers } from '@/lib/format'
+import { formatCount, formatPlayers } from '@/lib/format'
 import { usePlatformBiosUrl, usePsxBiosUrl } from '@/services/platformBios'
 import { detectPsxBiosRegion } from '@/emulator/psxBiosRegion'
 import { useSeo, breadcrumbSchema, videoGameSchema, faqSchema } from '@/services/seo'
 import { useLang } from '@/services/lang'
 import { useT, fmt } from '@/services/i18n'
+import { getLang } from '@/services/lang'
 import { dosExtrasName, gameDescription, gameSeoLanguagePlan, gameSeoTitle, gameTitle, genreLabel, needsTranslation, platformDesc, platformLabel } from '@/services/i18nData'
 import { EmulatorPlayer, preloadPlayer } from '@/emulator/PlayerChunk'
 import { stageHeightCap } from '@/emulator/screenAspect'
@@ -29,14 +30,14 @@ import { IsolatedPlayCard } from '@/components/game/IsolatedPlayCard'
 import { GameCover } from '@/components/game/GameCover'
 import { GameAgeGuard } from '@/components/game/AgeGate'
 import { GameComments } from '@/components/comments/Comments'
-import { GameRating, GameRatingBadge } from '@/components/game/GameRating'
+import { GameRating } from '@/components/game/GameRating'
 import { ShareDialog } from '@/components/game/ShareDialog'
 import { AddToCollectionDialog } from '@/components/game/AddToCollectionDialog'
 import { GameCard } from '@/components/game/GameCard'
 import { KeymapCards } from '@/components/game/KeymapCards'
 import { TranslateButton } from '@/components/game/TranslateButton'
 import { SectionHeader } from '@/components/ui/SectionHeader'
-import { Badge } from '@/components/ui/Badge'
+import { Badge, CoinBadge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { SkeletonBlock } from '@/components/ui/PageSkeleton'
 import { NotFoundPage } from './NotFoundPage'
@@ -385,20 +386,6 @@ export function GameDetailPage() {
   const supportedLangs = Array.from(
     new Set(romLangs.map((l) => romLanguageLabel(l))),
   ).join(' · ')
-  const titleInfo: { key: string; icon: string; label: string; to?: string }[] = [
-    { key: 'platform', icon: platform.icon, label: platformLabel(t, platform.id, platform.name), to: `/platforms/${platform.id}` },
-    {
-      key: 'players',
-      icon: effectiveMultiplayer ? '👥' : '🎮',
-      label: effectiveMultiplayer ? t.game.badgeMultiplayer : t.game.badgeSinglePlayer,
-    },
-    {
-      key: 'language',
-      icon: '🌐',
-      label: romLangs.includes(lang) ? t.game.badgeLanguageYes : t.game.badgeLanguageNo,
-    },
-    ...(rom.status === 'found' ? [{ key: 'instant-play', icon: '⚡', label: t.common.instantPlay }] : []),
-  ]
 
   return (
     <div className="container-x py-6 sm:py-8">
@@ -558,35 +545,30 @@ export function GameDetailPage() {
                 <h1 className="text-2xl font-extrabold tracking-tight sm:text-3xl">{seoTitle}</h1>
                 {seoTitle !== game.title && <p className="mt-1 text-sm text-muted">{game.title}</p>}
                 <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <Link to={`/platforms/${platform.id}`}>
+                    <Badge tone="brand" className="text-xs">
+                      {platform.icon} {platformLabel(t, platform.id, platform.name)}
+                    </Badge>
+                  </Link>
                   {game.genres.map((id) => (
                     <Link key={id} to={`/genres/${id}`}>
-                      <Badge tone="brand" className="text-xs">
+                      <Badge className="text-xs">
                         {genreMap[id]?.icon} {genreLabel(t, id, genreMap[id]?.name ?? id)}
                       </Badge>
                     </Link>
                   ))}
+                  {rom.status === 'found' && <Badge tone="online" className="text-xs">{t.common.instantPlay}</Badge>}
+                  {effectiveMultiplayer && <Badge tone="online" className="text-xs">{t.game.badgeMultiplayer}</Badge>}
+                  {game.bodyControl && <Badge tone="coin" className="text-xs">{t.game.badgeBodyControl}</Badge>}
                   {game.adult && <Badge tone="live" className="text-xs">{t.game.badgeAdult}</Badge>}
-                </div>
-                <div className="mt-2 flex flex-wrap items-center text-xs leading-5 text-muted sm:text-sm">
-                  {titleInfo.map((item, index) => (
-                    <span key={item.key} className="inline-flex items-center whitespace-nowrap">
-                      {item.to ? (
-                        <Link to={item.to} className="inline-flex items-center whitespace-nowrap hover:text-fg">
-                          <span aria-hidden className="mr-1.5">{item.icon}</span>{item.label}
-                        </Link>
-                      ) : (
-                        <span className="inline-flex items-center whitespace-nowrap">
-                          <span aria-hidden className="mr-1.5">{item.icon}</span>{item.label}
-                        </span>
-                      )}
-                      {index < titleInfo.length - 1 && (
-                        <span aria-hidden className="mx-2 text-dim">·</span>
-                      )}
-                    </span>
-                  ))}
+                  <CoinBadge amount={game.coinReward} className="text-xs" />
                 </div>
               </div>
-              {FEATURES.ratings && <GameRatingBadge gameSlug={game.slug} />}
+              {game.plays > 0 && (
+                <div className="flex shrink-0 flex-col items-start gap-2 sm:items-end">
+                  <span className="text-xs text-muted">{fmt(t.common.playsCount, { n: formatCount(game.plays) })}</span>
+                </div>
+              )}
             </div>
 
             {/* 动作按钮 */}
@@ -793,6 +775,28 @@ export function GameDetailPage() {
               {FEATURES.ratings && <GameRating gameSlug={game.slug} />}
               {FEATURES.comments && <GameComments gameSlug={game.slug} />}
 
+              {FEATURES.coins && (
+              <div className="rounded-2xl border border-coin/30 bg-gradient-to-br from-coin/10 to-transparent p-5">
+                <p className="text-pixel text-[11px] text-coin">G COIN</p>
+                <p className="mt-2 text-sm leading-relaxed text-muted">
+                  {game.coinReward > 0
+                    ? fmt(t.game.coinReward, {
+                        n: game.coinReward,
+                        suffix: user ? t.game.coinSuffixIn : t.game.coinSuffixOut,
+                      })
+                    : t.game.coinNone}
+                </p>
+                {user ? (
+                  <p className="mt-4 text-sm font-semibold text-coin">
+                    {fmt(t.game.coinBalance, { n: user.coins.toLocaleString(getLang()) })}
+                  </p>
+                ) : (
+                  <Button onClick={openAuthModal} variant="coin" size="sm" className="mt-4">
+                    {t.game.coinLogin}
+                  </Button>
+                )}
+              </div>
+              )}
               </>
             )}
           </aside>

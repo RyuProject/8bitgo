@@ -8,6 +8,7 @@ import { avatarForShow } from '../../../shared/avatar.js'
 import { useShell } from '@/components/layout/ShellContext'
 import {
   convIdFor,
+  deleteImConversation,
   ImLookupError,
   ImNotConnectedError,
   imReconnect,
@@ -32,8 +33,15 @@ import {
   type ImConversation,
   type ImLookupCode,
   type ImMessage,
+  type ImPeer,
   type ImState,
 } from '@/services/imClient'
+
+const SUPPORT_EMAIL = 'yeahcore@yeah.net'
+const SUPPORT_NICK = '8bitgo'
+const SUPPORT_DISMISSED_KEY = '8bitgo:im-support-dismissed:v1'
+
+type ConversationListItem = ImConversation & { support?: boolean }
 
 /**
  * 站内消息的右侧抽屉。
@@ -66,6 +74,8 @@ export function ImPanel() {
   const user = useCurrentUser()
   const authReady = useAuthReady()
   const { immersive } = useShell()
+  const userId = user?.id
+  const isSupportAccount = String(user?.email ?? '').trim().toLowerCase() === SUPPORT_EMAIL
 
   const [open, setOpen] = useState(false)
   /**
@@ -87,6 +97,11 @@ export function ImPanel() {
   const [detail, setDetail] = useState(() => imStateDetail())
   const [convs, setConvs] = useState<ImConversation[]>([])
   const [convError, setConvError] = useState(false)
+  const [supportPeer, setSupportPeer] = useState<ImPeer | null>(null)
+  const [supportDismissed, setSupportDismissed] = useState(false)
+  const [supportBusy, setSupportBusy] = useState(false)
+  const [supportError, setSupportError] = useState('')
+  const supportLookup = useRef<Promise<ImPeer> | null>(null)
   /** 「按邮箱找人」那一行展开了没有。收起是默认态：绝大多数时候用户是来看会话的 */
   const [composeOpen, setComposeOpen] = useState(false)
   const [emailDraft, setEmailDraft] = useState('')
@@ -98,6 +113,19 @@ export function ImPanel() {
   /** 打开抽屉前焦点在哪。关闭时还回去 —— 不还的话焦点会留在刚被 inert 掉的子树里 */
   const returnFocus = useRef<HTMLElement | null>(null)
   const panelRef = useRef<HTMLElement>(null)
+
+  useEffect(() => {
+    if (!userId || typeof window === 'undefined') {
+      setSupportDismissed(false)
+      return
+    }
+    try {
+      setSupportDismissed(window.localStorage.getItem(`${SUPPORT_DISMISSED_KEY}:${userId}`) === '1')
+    } catch {
+      // 隐藏状态只影响本地提示；浏览器禁用存储时仍允许照常使用 IM。
+      setSupportDismissed(false)
+    }
+  }, [userId])
 
   /* ---------------- 注册与生命周期 ---------------- */
 
@@ -302,6 +330,105 @@ export function ImPanel() {
     [t],
   )
 
+  const resolveSupportPeer = useCallback((): Promise<ImPeer> => {
+    if (supportPeer) return Promise.resolve(supportPeer)
+    if (!supportLookup.current) {
+      supportLookup.current = lookupImUserByEmail(SUPPORT_EMAIL)
+        .then((peer) => {
+          setSupportPeer(peer)
+          setSupportError('')
+          return peer
+        })
+        .catch((e) => {
+          supportLookup.current = null
+          throw e
+        })
+    }
+    return supportLookup.current
+  }, [supportPeer])
+
+  // 只在用户打开消息抽屉时查一次固定反馈账号，避免每个页面加载都消耗邮箱查找额度。
+  useEffect(() => {
+    if (!open || state !== 'ready' || !userId || isSupportAccount || supportPeer) return
+    void resolveSupportPeer().catch((e) => {
+      setSupportError(lookupText(e instanceof ImLookupError ? e.code : 'failed'))
+      if (!(e instanceof ImLookupError)) console.warn('[im] 反馈联系人查找失败：', e)
+    })
+  }, [open, state, userId, isSupportAccount, supportPeer, resolveSupportPeer, lookupText])
+
+  const openSupportChat = useCallback(async () => {
+    try {
+      const peer = await resolveSupportPeer()
+      setSupportError('')
+      setActive({ id: convIdFor(peer.id), peerId: peer.id, nick: SUPPORT_NICK, avatar: peer.avatar })
+    } catch (e) {
+      setSupportError(lookupText(e instanceof ImLookupError ? e.code : 'failed'))
+      if (!(e instanceof ImLookupError)) console.warn('[im] 打开反馈会话失败：', e)
+    }
+  }, [resolveSupportPeer, lookupText])
+
+  const dismissSupport = useCallback(async () => {
+    if (supportBusy) return
+    setSupportBusy(true)
+    setSupportError('')
+    try {
+      let peer = supportPeer
+      if (!peer) {
+        // 查找失败时仍可收起默认提示；若会话已经存在，下面会在查到联系人后清理云端记录。
+        try {
+          peer = await resolveSupportPeer()
+        } catch (e) {
+          // 暂时查不到账号时也允许隐藏默认入口；失败细节不应跟着一个已隐藏的提示显示。
+          if (!(e instanceof ImLookupError)) console.warn('[im] 删除反馈入口时查找联系人失败：', e)
+        }
+      }
+      const existing = peer ? convs.find((c) => c.peerId === peer.id) : undefined
+      if (existing) await deleteImConversation(existing.id)
+      if (existing) setConvs((prev) => prev.filter((c) => c.id !== existing.id))
+      if (userId && typeof window !== 'undefined') {
+        try {
+          window.localStorage.setItem(`${SUPPORT_DISMISSED_KEY}:${userId}`, '1')
+        } catch {
+          // 当前页面仍能隐藏；存储不可用时，下次访问会重新显示默认反馈入口。
+        }
+      }
+      setSupportDismissed(true)
+      if (existing) await reload()
+    } catch (e) {
+      setSupportError(lookupText(e instanceof ImLookupError ? e.code : 'failed'))
+      if (!(e instanceof ImLookupError)) console.warn('[im] 删除反馈会话失败：', e)
+    } finally {
+      setSupportBusy(false)
+    }
+  }, [supportBusy, supportPeer, resolveSupportPeer, lookupText, convs, userId, reload])
+
+  const supportConversation = supportPeer ? convs.find((c) => c.peerId === supportPeer.id) : undefined
+  const supportRow: ConversationListItem = supportConversation
+    ? {
+        ...supportConversation,
+        nick: SUPPORT_NICK,
+        avatar: supportConversation.avatar || supportPeer?.avatar || '💬',
+        lastText: supportConversation.lastText || t.im.supportHint,
+        support: true,
+      }
+    : {
+        id: 'C2C8bitgo-support-contact',
+        peerId: supportPeer?.id ?? '',
+        nick: SUPPORT_NICK,
+        avatar: supportPeer?.avatar || '💬',
+        lastText: supportError || t.im.supportHint,
+        lastTime: 0,
+        unread: 0,
+        support: true,
+      }
+  const visibleConvs: ConversationListItem[] = isSupportAccount
+    ? convs
+    : supportConversation
+      ? [supportRow, ...convs.filter((c) => c.id !== supportConversation.id)]
+      : supportDismissed
+        ? convs
+        : [supportRow, ...convs]
+
   /**
    * 查到人就直接进会话。
    *
@@ -495,9 +622,15 @@ export function ImPanel() {
               <ChatView key={active.id} conv={active} open={open} />
             ) : (
               <ConversationList
-                convs={convs}
+                convs={visibleConvs}
                 error={convError}
-                onPick={(c) => setActive({ id: c.id, peerId: c.peerId, nick: c.nick, avatar: c.avatar })}
+                supportBusy={supportBusy}
+                supportError={supportError}
+                onPick={(c) => {
+                  if (c.support) void openSupportChat()
+                  else setActive({ id: c.id, peerId: c.peerId, nick: c.nick, avatar: c.avatar })
+                }}
+                onRemoveSupport={() => void dismissSupport()}
                 onNew={() => {
                   setComposeOpen(true)
                   setLookupError('')
@@ -602,12 +735,18 @@ function StatusBody({ state, detail }: { state: ImState; detail: string }) {
 function ConversationList({
   convs,
   error,
+  supportBusy,
+  supportError,
   onPick,
+  onRemoveSupport,
   onNew,
 }: {
-  convs: ImConversation[]
+  convs: ConversationListItem[]
   error: boolean
-  onPick: (c: ImConversation) => void
+  supportBusy: boolean
+  supportError: string
+  onPick: (c: ConversationListItem) => void
+  onRemoveSupport: () => void
   /** 打开顶栏那一行「按邮箱找人」。空列表时这里是唯一的入口 */
   onNew: () => void
 }) {
@@ -640,18 +779,23 @@ function ConversationList({
   }
 
   return (
-    <ul className="flex-1 overflow-y-auto overscroll-contain">
+    <div className="flex-1 overflow-y-auto overscroll-contain">
+      {supportError && <p role="alert" className="px-3 pt-2 text-xs text-live">{supportError}</p>}
+      <ul>
       {convs.map((c) => (
-        <li key={c.id}>
+        <li key={c.id} className="group relative">
           <button
             type="button"
             onClick={() => onPick(c)}
-            className="flex w-full items-center gap-3 px-3 py-2.5 text-left transition hover:bg-surface-2"
+            className="flex w-full items-center gap-3 px-3 py-2.5 pr-10 text-left transition hover:bg-surface-2"
           >
             <Avatar value={c.avatar} size="md" />
             <span className="min-w-0 flex-1">
               <span className="flex items-baseline gap-2">
-                <span className="min-w-0 flex-1 truncate text-sm font-semibold">{c.nick || c.peerId}</span>
+                <span className="min-w-0 flex-1 truncate text-sm font-semibold">
+                  {c.nick || c.peerId}
+                  {c.support && <span className="ml-1 font-normal text-dim">({SUPPORT_EMAIL})</span>}
+                </span>
                 {c.lastTime > 0 && (
                   <span className="shrink-0 text-[10px] text-dim">{timeAgo(new Date(c.lastTime * 1000).toISOString())}</span>
                 )}
@@ -666,9 +810,27 @@ function ConversationList({
               </span>
             </span>
           </button>
+          {c.support && (
+            <button
+              type="button"
+              aria-label={t.im.removeSupport}
+              title={t.im.removeSupport}
+              disabled={supportBusy}
+              onClick={(event) => {
+                event.stopPropagation()
+                onRemoveSupport()
+              }}
+              className="absolute right-2 top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center rounded-full text-dim opacity-70 transition hover:bg-surface-2 hover:text-fg disabled:opacity-40 sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
+                <path d="m18 6-12 12M6 6l12 12" />
+              </svg>
+            </button>
+          )}
         </li>
       ))}
-    </ul>
+      </ul>
+    </div>
   )
 }
 

@@ -1,6 +1,6 @@
 /**
- * 播放器的懒加载壳。详情页只 import 这一个文件，EmulatorPlayer 本体（连同各引擎适配器）
- * 走独立 chunk —— 见 project 记忆「模拟器不进主包」。
+ * 播放器的懒加载壳。详情页只 import 这一个文件；EmulatorPlayer 本体独立分块，
+ * 适配器再按选中的运行时动态加载 —— 见 project 记忆「模拟器不进主包」。
  */
 import { Suspense, type ReactNode } from 'react'
 import { lazyNamed } from '@/routes/lazy'

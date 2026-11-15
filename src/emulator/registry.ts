@@ -23,7 +23,7 @@ import { romPackInnerName } from '../../shared/rom-pack-format.js'
 
 /**
  * 全部运行时。**这里放的是元数据，不含 mount** —— 挂载实现在 runtimes.ts，
- * 那个文件只被懒加载的 EmulatorPlayer 引用。
+ * 由懒加载的 EmulatorPlayer 按选中的运行时取用。
  *
  * 这么分是为了让「该用哪个引擎」这个问题不必把引擎本身下载下来才能回答：
  * 详情页、游戏库、房间列表、后台表单都要调下面这几个函数，
