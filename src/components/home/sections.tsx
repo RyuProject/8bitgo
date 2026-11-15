@@ -114,12 +114,8 @@ export function MostPlayedSection({ games }: { games: Game[] }) {
         */
         moreTo="/games"
       />
-      {/*
-        5 列到 2 列。移动端不降到 1 列：一列会让每张卡横着拉得很长，反而更难扫。
-        ⚠️ 列数直接决定封面能有多大（卡片内宽 = 列宽 − 2×p-3）。要再加列之前先想清楚
-        封面会缩到多少 —— 「看不见 cover 上是什么」就是这么来的。
-      */}
-      <div className="adaptive-game-grid">
+      {/* 列数和卡片总数一起跟随内容区宽度变化，始终展示两行。 */}
+      <div className="adaptive-game-grid adaptive-ranked-grid">
         {games.map((g, i) => (
           <GameRankCard
             key={g.slug}

@@ -230,6 +230,11 @@ body {
   gap: 1rem;
 }
 
+/* 热门榜保持两行：窄屏少展示几张，宽屏逐步补到 12 张。 */
+.adaptive-ranked-grid > :nth-child(n + 5) {
+  display: none;
+}
+
 .adaptive-room-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -278,6 +283,10 @@ body {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
+  .adaptive-ranked-grid > :nth-child(n + 5):nth-child(-n + 6) {
+    display: flex;
+  }
+
   .adaptive-room-grid,
   .adaptive-developer-grid,
   .adaptive-app-grid,
@@ -291,6 +300,10 @@ body {
   .adaptive-entity-grid,
   .adaptive-platform-grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .adaptive-ranked-grid > :nth-child(n + 7):nth-child(-n + 8) {
+    display: flex;
   }
 
   .adaptive-room-grid,
@@ -315,6 +328,10 @@ body {
     grid-template-columns: repeat(5, minmax(0, 1fr));
   }
 
+  .adaptive-ranked-grid > :nth-child(n + 9):nth-child(-n + 10) {
+    display: flex;
+  }
+
   .adaptive-room-grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
@@ -323,6 +340,10 @@ body {
 @container page-content (min-width: 90rem) {
   .adaptive-game-grid {
     grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+
+  .adaptive-ranked-grid > :nth-child(n + 11):nth-child(-n + 12) {
+    display: flex;
   }
 }
 
