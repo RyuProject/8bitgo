@@ -11,6 +11,8 @@ import {
   ppssppAsset,
   ppssppFrameUrl,
   ruffleBase,
+  AWAYFL_HOST_PATH,
+  AWAYFL_PATH,
   ejsCoreAsset,
   ejsRuntimeAsset,
   emulatorJsCoreDataFile,
@@ -166,6 +168,21 @@ export function prewarmRuntime(runtime: RuntimeId | undefined, core?: string | n
     warmHttpCache(`${ruffleBase()}ruffle.js`)
     // 只有真实指针悬停才预拉大核心；focus 在触屏上与点击同时发生，抢拉会有重复下载风险。
     if (aggressive) void prewarmRuffleCore()
+    return
+  }
+  if (runtime === 'awayfl') {
+    // 宿主页只会在真正走 AwayFL 时加载；悬停时并行预热 JS 引擎和 AVM 字体 / 内置类资源。
+    if (aggressive) {
+      for (const file of ['host.html', 'host.js']) warmHttpCache(`${AWAYFL_HOST_PATH}${file}`)
+      for (const file of [
+        'runtime.js',
+        'assets/fonts.swf',
+        'assets/builtins/avmplus.abc',
+        'assets/builtins/builtin.abc',
+        'assets/builtins/playerglobal.abcs',
+        'assets/builtins/playerglobal.json',
+      ]) warmHttpCache(`${AWAYFL_PATH}${file}`)
+    }
     return
   }
   if (runtime === 'ppsspp') {

@@ -185,15 +185,21 @@ export async function listGames(q = {}) {
     params.push(String(q.platform))
   }
   /*
-    只列这几种平台（浏览器没有 WebAssembly 时，见 shared/wasm-free-platforms.js）。
-    和 platform 叠加：要的平台不在名单里就是空列表。在 SQL 里做，total / totalPages 才对。
+    无 WebAssembly 的精简列表按平台白名单过滤，另外只放行逐款实测过的 Flash 游戏。
+    过滤放 SQL 里做，total / totalPages 才与实际结果一致；语言 ROM 的 slug 后缀也保留。
   */
-  if (Array.isArray(q.platforms)) {
-    if (!q.platforms.length) where.push('1 = 0')
-    else {
-      where.push(`g.platform IN (${q.platforms.map(() => '?').join(', ')})`)
+  if (Array.isArray(q.platforms) || Array.isArray(q.gameSlugs)) {
+    const allowed = []
+    if (Array.isArray(q.platforms) && q.platforms.length) {
+      allowed.push(`g.platform IN (${q.platforms.map(() => '?').join(', ')})`)
       params.push(...q.platforms.map(String))
     }
+    if (Array.isArray(q.gameSlugs) && q.gameSlugs.length) {
+      const verified = q.gameSlugs.map(() => '(g.slug = ? OR g.slug LIKE ?)').join(' OR ')
+      allowed.push(`(g.platform = 'flash' AND (${verified}))`)
+      params.push(...q.gameSlugs.flatMap((slug) => [String(slug), `${String(slug)}~%`]))
+    }
+    where.push(allowed.length ? `(${allowed.join(' OR ')})` : '1 = 0')
   }
   // DOSBox-X 同时承载 Windows 客体和 PC-98；设备筛“需要 Windows”时不能把后者误排掉。
   if (q.requiresWindows === true) where.push("g.platform = 'dos' AND g.dos_backend = 'dosboxX' AND COALESCE(g.dos_pc98, 0) = 0")
@@ -473,15 +479,24 @@ export async function clearPlatformBios(platform) {
  * 一款都没钦点时返回空数组 —— 调用方据此退回「按游玩次数自动排」，
  * 也就是这个功能加进来之前的行为。这样新装的站不需要先去后台点一遍才有首页。
  */
-export async function listHomePicks(limit, platforms) {
+export async function listHomePicks(limit, platforms, gameSlugs) {
   const n = Math.min(MAX_PAGE_SIZE, Math.max(1, Number(limit) || 12))
-  const only = Array.isArray(platforms) && platforms.length
-    ? ` AND platform IN (${platforms.map(() => '?').join(', ')})`
-    : ''
+  const allowed = []
+  const params = []
+  if (Array.isArray(platforms) && platforms.length) {
+    allowed.push(`platform IN (${platforms.map(() => '?').join(', ')})`)
+    params.push(...platforms.map(String))
+  }
+  if (Array.isArray(gameSlugs) && gameSlugs.length) {
+    allowed.push(`(platform = 'flash' AND (${gameSlugs.map(() => '(slug = ? OR slug LIKE ?)').join(' OR ')}))`)
+    params.push(...gameSlugs.flatMap((slug) => [String(slug), `${String(slug)}~%`]))
+  }
+  const hasFilter = Array.isArray(platforms) || Array.isArray(gameSlugs)
+  const only = hasFilter ? ` AND (${allowed.length ? allowed.join(' OR ') : '1 = 0'})` : ''
   const rows = await query(
     `SELECT ${CARD_COLUMNS} FROM games g WHERE hidden = 0 AND home_rank IS NOT NULL${only}
       ORDER BY home_rank ASC, plays DESC, id DESC LIMIT ${n}`,
-    only ? platforms.map(String) : undefined,
+    params.length ? params : undefined,
   )
   return attachCardRelations(rows)
 }
@@ -545,6 +560,17 @@ export async function getGamesBySlugs(slugs) {
 /** 各平台的上架游戏数（平台页 / 首页用） */
 export function platformCounts() {
   return query('SELECT platform, COUNT(*) AS n FROM games WHERE hidden = 0 GROUP BY platform')
+}
+
+/** 精简模式里唯一放行的 Flash slug 数量，用于把可玩的 Flash 平台入口显示出来。 */
+export async function verifiedFlashGameCount(slugs) {
+  if (!Array.isArray(slugs) || !slugs.length) return 0
+  const match = slugs.map(() => '(slug = ? OR slug LIKE ?)').join(' OR ')
+  const row = await queryOne(
+    `SELECT COUNT(*) AS n FROM games WHERE hidden = 0 AND platform = 'flash' AND (${match})`,
+    slugs.flatMap((slug) => [String(slug), `${String(slug)}~%`]),
+  )
+  return Number(row?.n) || 0
 }
 
 /** 各类型的上架游戏数 */

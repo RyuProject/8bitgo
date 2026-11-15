@@ -61,7 +61,7 @@ export const GameCard = memo(function GameCard({ game, className, coverRatio = '
   const platform = platformMap[game.platform]
   const genre = genreMap[game.genres[0]]
   // 浏览器没有 WebAssembly 时只画能跑的平台（services/noWasm.ts）
-  const listed = useGameListed(game.platform)
+  const listed = useGameListed(game.platform, game.slug)
   if (!listed) return null
 
   return (

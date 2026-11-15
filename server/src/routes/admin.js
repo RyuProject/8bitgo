@@ -11,6 +11,7 @@ import { diagnosticById, diagnosticGroups, diagnosticSamples } from '../startup-
 import { validateAdminImportPayload } from '../admin-import.js'
 import { getVolcTranslationUsage } from '../translation-usage.js'
 import { isTranslateConfigured } from '../translate.js'
+import { collectAdminHealth } from '../admin-health.js'
 
 export const adminRouter = Router()
 
@@ -100,6 +101,16 @@ adminRouter.post('/import', requireAdmin, async (req, res, next) => {
 adminRouter.get('/stats', requireAbility('content:edit'), async (_req, res, next) => {
   try {
     res.json(await adminStats())
+  } catch (e) {
+    next(e)
+  }
+})
+
+/** 站点运行情况、后台转换任务与待处理内容；仅站点管理员可见，避免把全站运营数据暴露给协作者。 */
+adminRouter.get('/health', requireAbility('site:manage'), async (_req, res, next) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store')
+    res.json(await collectAdminHealth())
   } catch (e) {
     next(e)
   }

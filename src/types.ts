@@ -145,6 +145,7 @@ export interface Genre {
 export type RuntimeId =
   | 'emulatorjs'
   | 'ruffle'
+  | 'awayfl'
   | 'html5'
   | 'jsnes'
   | 'j2me'

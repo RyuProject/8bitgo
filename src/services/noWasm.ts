@@ -11,7 +11,7 @@
  */
 import { useSyncExternalStore } from 'react'
 import { webAssemblyAvailable } from '@/emulator/browserSupport'
-import { platformRunsWithoutWasm } from '../../shared/wasm-free-platforms.js'
+import { gameRunsWithoutWasm, platformHasWasmFreeGames, platformRunsWithoutWasm } from '../../shared/wasm-free-platforms.js'
 
 const noop = () => () => {}
 const clientSnapshot = () => !webAssemblyAvailable()
@@ -24,10 +24,16 @@ export function useNoWasmMode(): boolean {
 
 /** 精简模式下这个平台还要不要露出来 */
 export function platformListed(noWasm: boolean, platform: string | undefined | null): boolean {
-  return !noWasm || platformRunsWithoutWasm(platform)
+  return !noWasm || platformRunsWithoutWasm(platform) || platformHasWasmFreeGames(platform)
+}
+
+/** 游戏卡片 / 推荐位：精简模式下逐款判断，Flash 只放行 AwayFL 实测名单。 */
+export function gameListed(noWasm: boolean, platform: string | undefined | null, slug: string | undefined | null): boolean {
+  return !noWasm || gameRunsWithoutWasm(platform, slug)
 }
 
 /** 卡片 / 推荐位用：精简模式下这款游戏要不要画 */
-export function useGameListed(platform: string | undefined | null): boolean {
-  return platformListed(useNoWasmMode(), platform)
+export function useGameListed(platform: string | undefined | null, slug?: string | undefined | null): boolean {
+  const noWasm = useNoWasmMode()
+  return gameListed(noWasm, platform, slug)
 }

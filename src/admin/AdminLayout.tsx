@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
-import { Link, Navigate, NavLink, Outlet, useLocation, useOutletContext } from 'react-router-dom'
+import { Link, Navigate, NavLink, Outlet, useLocation, useNavigate, useOutletContext } from 'react-router-dom'
 import { cx } from '@/lib/format'
 import { useDocumentTitle } from '@/lib/useDocumentTitle'
 import { ApiError, api, apiEnabled, getAdminApiToken, getToken, setAdminApiToken } from '@/services/api'
 import { fetchAdminGames } from '@/services/store'
 import { ABILITIES, ROLE_LABELS, type Ability, type UserRole } from '../../shared/roles.js'
+import { AdminHealthProvider, hasHealthError, useAdminHealth } from './adminHealth'
 
 const SESSION_KEY = '8bitgo.admin.unlocked'
 
@@ -14,26 +15,27 @@ const SESSION_KEY = '8bitgo.admin.unlocked'
  * 藏起来只是体面 —— 真正拦人的是服务端各路由上的 requireAbility（shared/roles.js
  * 是前后端共用的那张表）。这里的作用只是别让志愿者看见一堆点了就 403 的入口。
  */
-const TABS: { to: string; label: string; end?: boolean; need: Ability; adminOnly?: true }[] = [
-  { to: '/admin', label: '概览', end: true, need: 'content:edit' },
+const TABS: { to: string; label: string; end?: boolean; need: Ability; group: string; adminOnly?: true }[] = [
+  { to: '/admin', label: '概览', end: true, need: 'content:edit', group: '工作台' },
   // 与 /api/admin/startup-diagnostics 同一权限点（和概览里的启动统计一致）
-  { to: '/admin/diagnostics', label: '错误诊断', need: 'content:edit' },
-  { to: '/admin/games', label: '游戏', need: 'games:edit' },
-  { to: '/admin/posts', label: '文章', need: 'posts:edit' },
-  { to: '/admin/developers', label: '开发商', need: 'content:edit' },
-  { to: '/admin/friend-links', label: '友情链接', need: 'content:edit' },
+  { to: '/admin/diagnostics', label: '错误诊断', need: 'content:edit', group: '工作台' },
+  { to: '/admin/games', label: '游戏', need: 'games:edit', group: '内容管理' },
+  { to: '/admin/posts', label: '文章', need: 'posts:edit', group: '内容管理' },
+  { to: '/admin/developers', label: '开发商', need: 'content:edit', group: '内容管理' },
+  { to: '/admin/apps', label: '应用', need: 'content:edit', group: '内容管理' },
+  { to: '/admin/comments', label: '评论', need: 'comments:review', group: '内容管理' },
+  { to: '/admin/open-apps', label: '开放平台', need: 'apps:review', group: '内容管理' },
+  { to: '/admin/users', label: '用户', need: 'users:manage', group: '运营管理' },
+  { to: '/admin/friend-links', label: '友情链接', need: 'content:edit', group: '运营管理' },
   /*
     公告条用的不是 content:edit 而是 site:manage：它是在**替站点本身说话**
     （「站点在波动」/「抱歉，是我搞坏的」），不是某一款游戏的资料 ——
     志愿者的那一档权限是「改错了看得见也改得回来」的内容协作，
     而这一条是每个访客进门第一眼看到的东西。服务端同一权限点，两边一致。
   */
-  { to: '/admin/notice', label: '公告', need: 'site:manage' },
-  { to: '/admin/apps', label: '应用', need: 'content:edit' },
-  { to: '/admin/comments', label: '评论', need: 'comments:review' },
-  { to: '/admin/users', label: '用户', need: 'users:manage' },
-  { to: '/admin/roms', label: 'ROM 存储', need: 'site:manage' },
-  { to: '/admin/data', label: '数据', need: 'site:manage' },
+  { to: '/admin/notice', label: '公告', need: 'site:manage', group: '运营管理' },
+  { to: '/admin/roms', label: 'ROM 存储', need: 'site:manage', group: '站点设置' },
+  { to: '/admin/data', label: '数据', need: 'site:manage', group: '站点设置' },
   /*
     ⚠️ `adminOnly` 不是「再保险一层」，是**和服务端对齐**。
 
@@ -44,10 +46,10 @@ const TABS: { to: string; label: string; end?: boolean; need: Ability; adminOnly
     （比如「让运营也能管 ROM 存储」），志愿者的导航里就会多出这个入口，
     点进去稳定 403 —— 界面陈述的事实必须成立。
   */
-  { to: '/admin/config', label: '配置', need: 'site:manage', adminOnly: true },
-  // 开放平台的应用审核。单独一个权限点，理由见 shared/roles.js 里 apps:review 那段
-  { to: '/admin/open-apps', label: '开放平台', need: 'apps:review' },
+  { to: '/admin/config', label: '配置', need: 'site:manage', group: '站点设置', adminOnly: true },
 ]
+
+const NAV_GROUPS = ['工作台', '内容管理', '运营管理', '站点设置'] as const
 
 type GateState = 'checking' | 'locked' | 'unlocked'
 
@@ -128,12 +130,18 @@ export function AdminLayout() {
     )
   }
 
-  return <AdminShell onLock={lock} me={me} />
+  const healthEnabled = !me || (me.abilities ?? [...ABILITIES]).includes('site:manage')
+  return (
+    <AdminHealthProvider enabled={healthEnabled}>
+      <AdminShell onLock={lock} me={me} healthEnabled={healthEnabled} />
+    </AdminHealthProvider>
+  )
 }
 
 /** 验证成功后才挂载后台及其子路由，未登录时不会提前请求任何管理数据。 */
-function AdminShell({ onLock, me }: { onLock: () => void; me: VerifyResult | null }) {
+function AdminShell({ onLock, me, healthEnabled }: { onLock: () => void; me: VerifyResult | null; healthEnabled: boolean }) {
   const location = useLocation()
+  const navigate = useNavigate()
   /**
    * v1 在这里把整个游戏库和全部文章灌进一个前端 store，子页面再从里面读。
    * v2 没有那个 store 了 —— 每个子页面自己按需向后端取数（分页 / 按 slug）。
@@ -187,62 +195,89 @@ function AdminShell({ onLock, me }: { onLock: () => void; me: VerifyResult | nul
   const routeDenied = me?.role === 'volunteer' && (!routeTab || !tabs.includes(routeTab))
   const firstAllowed = tabs[0]?.to ?? '/'
 
-  return (
-    <div className="min-h-dvh bg-bg text-fg">
-      <header className="sticky top-0 z-30 border-b border-line bg-surface/90 backdrop-blur">
-        <div className="mx-auto flex h-14 max-w-6xl items-center gap-4 px-4 sm:px-6">
-          <Link to="/admin" className="flex items-center gap-2">
-            <span className="grid h-7 w-7 place-items-center rounded-md bg-brand text-sm text-white">⚙</span>
-            <span className="text-pixel text-xs">
-              8BitGo <span className="text-brand-hover">Admin</span>
-            </span>
-          </Link>
-          {/* 入口较多时让导航自身横向滚动，不能把两个字压成竖排撑高整个顶栏。 */}
-          <nav className="scrollbar-none ml-2 flex min-w-0 flex-1 items-center gap-1 overflow-x-auto" aria-label="后台导航">
-            {tabs.map((t) => (
-              <NavLink
-                key={t.to}
-                to={t.to}
-                end={t.end}
-                className={({ isActive }) =>
-                  cx(
-                    'shrink-0 whitespace-nowrap rounded-lg px-3 py-1.5 text-sm transition',
-                    isActive ? 'bg-brand-soft font-semibold text-fg' : 'text-muted hover:bg-black/5 hover:text-fg',
-                  )
-                }
-              >
-                {t.label}
-              </NavLink>
-            ))}
-          </nav>
-          <div className="ml-auto flex shrink-0 items-center gap-3 text-xs text-muted">
-            {/* 管理员不用标 —— 后台默认就是管理员的地方；志愿者要一眼看出自己是谁 */}
-            {me && me.role !== 'admin' && (
-              <span className="rounded bg-brand-soft px-1.5 py-0.5 text-brand-hover">{ROLE_LABELS[me.role]}</span>
-            )}
-            <DataBadge state={data} error={dataError} onRetry={load} />
-            <Link to="/" className="rounded-lg border border-line px-3 py-1.5 transition hover:border-brand hover:text-fg">
-              ← 返回网站
-            </Link>
-          </div>
-        </div>
-      </header>
+  const visibleGroups = NAV_GROUPS.map((group) => ({ group, items: tabs.filter((tab) => tab.group === group) }))
+    .filter(({ items }) => items.length > 0)
 
-      <main className="mx-auto max-w-6xl px-4 py-6 sm:px-6">
-        {routeDenied ? (
-          <Navigate to={firstAllowed} replace />
-        ) : (
-          <Outlet
-            context={{
-              state: data,
-              error: dataError,
-              reload: load,
-              abilities,
-              role: me?.role ?? 'admin',
-            } satisfies AdminData}
-          />
-        )}
-      </main>
+  return (
+    <div className="min-h-dvh overflow-x-hidden bg-bg text-fg lg:flex">
+      <aside className="sticky top-0 hidden h-dvh w-64 shrink-0 flex-col border-r border-line bg-surface lg:flex">
+        <div className="flex h-16 shrink-0 items-center gap-2 border-b border-line px-5">
+          <span className="grid h-8 w-8 place-items-center rounded-lg bg-brand text-sm text-white">⚙</span>
+          <span className="text-pixel text-xs">8BitGo <span className="text-brand-hover">Admin</span></span>
+        </div>
+        <nav className="min-h-0 flex-1 space-y-5 overflow-y-auto px-3 py-5" aria-label="后台导航">
+          {visibleGroups.map(({ group, items }) => (
+            <section key={group} aria-label={group}>
+              <h2 className="mb-1 px-3 text-[10px] font-semibold uppercase tracking-[0.16em] text-dim">{group}</h2>
+              <div className="space-y-0.5">
+                {items.map((tab) => (
+                  <NavLink
+                    key={tab.to}
+                    to={tab.to}
+                    end={tab.end}
+                    className={({ isActive }) => cx(
+                      'flex items-center rounded-lg px-3 py-2 text-sm transition',
+                      isActive ? 'bg-brand-soft font-semibold text-brand-hover' : 'text-muted hover:bg-black/5 hover:text-fg',
+                    )}
+                  >
+                    <span>{tab.label}</span>
+                    {tab.to === '/admin' && <AdminTaskBadge />}
+                  </NavLink>
+                ))}
+              </div>
+            </section>
+          ))}
+        </nav>
+        <div className="shrink-0 space-y-3 border-t border-line px-4 py-4">
+          {me && me.role !== 'admin' && <span className="inline-flex rounded bg-brand-soft px-2 py-1 text-xs text-brand-hover">{ROLE_LABELS[me.role]}</span>}
+          {healthEnabled && <AdminTaskCard />}
+          <DataBadge state={data} error={dataError} onRetry={load} />
+          <Link to="/" className="flex items-center rounded-lg border border-line px-3 py-2 text-sm text-muted transition hover:border-brand hover:text-fg">
+            ← 返回网站
+          </Link>
+        </div>
+      </aside>
+
+      <div className="min-w-0 flex-1">
+        <header className="sticky top-0 z-30 border-b border-line bg-surface/95 backdrop-blur lg:hidden">
+          <div className="flex min-h-14 items-center gap-3 px-4 py-2">
+            <Link to="/admin" className="flex shrink-0 items-center gap-2" aria-label="8BitGo 后台概览">
+              <span className="grid h-7 w-7 place-items-center rounded-md bg-brand text-sm text-white">⚙</span>
+              <span className="text-pixel text-[10px]">Admin</span>
+            </Link>
+            <select
+              aria-label="跳转到后台页面"
+              className="h-9 min-w-0 flex-1 rounded-lg border border-line bg-surface-2 px-2 text-sm text-fg"
+              value={routeTab?.to ?? tabs[0]?.to ?? ''}
+              onChange={(event) => navigate(event.target.value)}
+            >
+              {visibleGroups.map(({ group, items }) => (
+                <optgroup key={group} label={group}>
+                  {items.map((tab) => <option key={tab.to} value={tab.to}>{tab.label}</option>)}
+                </optgroup>
+              ))}
+            </select>
+            <DataBadge state={data} error={dataError} onRetry={load} />
+            <Link to="/" className="shrink-0 text-xs text-muted">网站</Link>
+          </div>
+        </header>
+
+        <main className="mx-auto w-full min-w-0 max-w-[1600px] px-4 py-6 sm:px-6 xl:px-8">
+          {routeDenied ? (
+            <Navigate to={firstAllowed} replace />
+          ) : (
+            <Outlet
+              context={{
+                state: data,
+                error: dataError,
+                reload: load,
+                abilities,
+                role: me?.role ?? 'admin',
+              } satisfies AdminData}
+            />
+          )}
+        </main>
+      </div>
     </div>
   )
 }
@@ -263,6 +298,51 @@ export interface AdminData {
 /** 子页面读取当前数据源状态 */
 export function useAdminData(): AdminData {
   return useOutletContext<AdminData>()
+}
+
+function taskMetrics(snapshot: ReturnType<typeof useAdminHealth>['snapshot']) {
+  const queues = snapshot && !hasHealthError(snapshot.jobs) ? snapshot.jobs.queues : []
+  const active = queues.reduce((count, queue) => count + queue.active, 0)
+  const queued = queues.reduce((count, queue) => count + queue.queued, 0)
+  const stalled = queues.reduce((count, queue) => count + queue.stalled, 0)
+  const attention = snapshot?.alerts.filter((alert) => alert.level !== 'info').length ?? 0
+  return { active, queued, stalled, attention, count: stalled || attention || active + queued }
+}
+
+/** 独立订阅健康状态，避免每分钟的任务轮询重渲染整棵后台页面。 */
+function AdminTaskBadge() {
+  const { snapshot } = useAdminHealth()
+  if (!snapshot) return null
+  const { active, queued, stalled, attention, count } = taskMetrics(snapshot)
+  return (
+    <span
+      className={cx(
+        'ml-auto min-w-5 rounded-full px-1.5 py-0.5 text-center text-[10px] tabular-nums',
+        stalled || attention ? 'bg-live/10 text-live' : 'bg-surface-2 text-muted',
+      )}
+      title={`${active} 个处理中，${queued} 个排队，${stalled} 个停滞`}
+    >
+      {count > 99 ? '99+' : count}
+    </span>
+  )
+}
+
+function AdminTaskCard() {
+  const { snapshot, error } = useAdminHealth()
+  const { active, queued, stalled, attention } = taskMetrics(snapshot)
+  return (
+    <Link to="/admin" className="block rounded-xl border border-line bg-surface-2 px-3 py-2 transition hover:border-brand/40">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-semibold">后台任务</span>
+        <span className={cx('rounded-full px-1.5 py-0.5 text-[10px]', stalled || attention || error ? 'bg-live/10 text-live' : 'bg-brand-soft text-brand-hover')}>
+          {error ? '状态异常' : !snapshot ? '读取中' : stalled ? `${stalled} 个停滞` : attention ? `${attention} 项需关注` : `${active + queued} 个进行中`}
+        </span>
+      </div>
+      <p className="mt-1 truncate text-[10px] text-dim">
+        {error ? '点此查看站点状态并重试' : snapshot ? `转换中 ${active} · 排队 ${queued} · 需关注 ${attention}` : '正在汇总转换、内容与启动状态'}
+      </p>
+    </Link>
+  )
 }
 
 /**

@@ -32,7 +32,7 @@ export function GameCardWide({ game, className, isNew }: Props) {
   // 在中文站上全是英文原名，而旁边用 GameCard 的区块却是中文 —— 同一页两套名字
   const title = gameTitle(game, lang)
   // 浏览器没有 WebAssembly 时只画能跑的平台（services/noWasm.ts）
-  const listed = useGameListed(game.platform)
+  const listed = useGameListed(game.platform, game.slug)
   if (!listed) return null
 
   return (

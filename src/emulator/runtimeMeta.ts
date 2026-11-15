@@ -69,6 +69,19 @@ export const ruffleMeta: Runtime = {
   engineLabel: () => 'swf',
 }
 
+/** AwayFL 仅由无 WebAssembly 回退策略内部选择，不放进手动运行时列表。 */
+export const awayflMeta: Runtime = {
+  id: 'awayfl',
+  name: 'AwayFL',
+  description: '纯 JavaScript Flash 播放器，仅用于已验证的游戏',
+  extensions: ['swf'],
+  priority: 0,
+  available: () => true,
+  // supports=false 会将它从常规引擎列表与后台覆盖选项中隐藏；registry 只在显式回退时取它。
+  supports: () => false,
+  engineLabel: () => 'JavaScript',
+}
+
 export const html5Meta: Runtime = {
   id: 'html5',
   name: 'HTML5 / WebAssembly',
@@ -109,6 +122,18 @@ export const binjgbMeta: Runtime = {
   available: () => true,
   supports: (platform) => platform === 'gb' || platform === 'gbc',
   engineLabel: () => 'Canvas 2D',
+}
+
+export const iodineGbaMeta: Runtime = {
+  id: 'iodinegba',
+  name: 'IodineGBA',
+  description: 'GBA 纯 JavaScript 备用核心（需要 GBA BIOS）',
+  extensions: ['gba', 'agb', 'bin', 'zip'],
+  // 只在 GBA 浏览器没有 WebAssembly 时由兼容策略接管。
+  priority: 4,
+  available: () => true,
+  supports: (platform) => platform === 'gba',
+  engineLabel: () => 'IodineGBA · Canvas 2D',
 }
 
 export const j2meMeta: Runtime = {
@@ -241,9 +266,11 @@ export const liveViewMeta: Runtime = {
 export const runtimeMetas: Record<Runtime['id'], Runtime> = {
   emulatorjs: emulatorJsMeta,
   ruffle: ruffleMeta,
+  awayfl: awayflMeta,
   html5: html5Meta,
   jsnes: jsnesMeta,
   binjgb: binjgbMeta,
+  iodinegba: iodineGbaMeta,
   j2me: j2meMeta,
   jsdos: jsdosMeta,
   webretro: webretroMeta,

@@ -212,7 +212,7 @@ export function staticCacheHeaders(res, filePath) {
   if (/\/edge-route-v\d+\.js$/i.test(p)) return set(CACHE.engineVersioned)
   // 坏 chunk 自修复脚本同理：只在出错时加载，文件名就是代次，改逻辑新建 asset-repair-vN.js
   if (/\/asset-repair-v\d+\.js$/i.test(p)) return set(CACHE.engineVersioned)
-  if (/\/(?:ruffle|jsdos)\/v[^/]+\//.test(p)) return set(CACHE.engineVersioned)
+  if (/\/(?:ruffle|jsdos|awayfl)\/v[^/]+\//.test(p) || /\/awayfl\/host-v\d+\//.test(p)) return set(CACHE.engineVersioned)
   /*
     EmulatorJS 的文件名不带哈希，但播放器交给引擎的入口、样式、核心与核心报告全部经
     EJS_paths 带上 `?v=<EJS_RUNTIME_GENERATION>`（src/emulator/paths.ts），换代就换 URL。
@@ -223,7 +223,8 @@ export function staticCacheHeaders(res, filePath) {
   */
   if (p.includes('/emulatorjs/') && isVersionedRequest(res)) return set(CACHE.engineVersioned)
   if (p.includes('/binjgb/') && isVersionedRequest(res)) return set(CACHE.engineVersioned)
-  if (p.includes('/binjgb/') || p.includes('/ruffle/') || p.includes('/emulatorjs/') || p.includes('/j2me/') || p.includes('/jsdos/') || p.includes('/webretro/') || p.includes('/qemu-wasm/')) return set(CACHE.engine)
+  if (p.includes('/iodinegba/') && isVersionedRequest(res)) return set(CACHE.engineVersioned)
+  if (p.includes('/binjgb/') || p.includes('/iodinegba/') || p.includes('/ruffle/') || p.includes('/emulatorjs/') || p.includes('/j2me/') || p.includes('/jsdos/') || p.includes('/awayfl/') || p.includes('/webretro/') || p.includes('/qemu-wasm/')) return set(CACHE.engine)
   if (p.includes('/play/')) return set(versionedPlayAsset || isVersionedRequest(res) ? CACHE.engineVersioned : CACHE.engine)
   if (/\.(png|jpg|jpeg|gif|webp|avif|svg|ico)$/i.test(p)) return set(CACHE.image)
   // ads.txt 跟 robots / sitemap 一样属于「构建时生成、但要能被外部频繁核对」的元文件，

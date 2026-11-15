@@ -72,7 +72,7 @@ import { normalizeDevelopers } from '@/lib/developers'
 import { Field, btnClass, inputClass } from './ui'
 import { fetchAdminGames, patchGame } from '@/services/store'
 import { api, apiEnabled } from '@/services/api'
-import { objectReferenceMatches, planRomObjectDeletion, unbindRomObjectKeys } from './romDeletePlan'
+import { objectReferenceMatches, planRomObjectDeletion, unbindRomObjectKeys, type PlatformBiosRefs } from './romDeletePlan'
 import { mergeDosboxConfigOverride, normalizeDosboxConfigOverride, parseDosboxConfigOverride } from '../../shared/dosbox-config.js'
 import { romPackInnerName } from '../../shared/rom-pack-format.js'
 import { extractGameKeywordsFromDescriptions } from './gameKeywords'
@@ -441,8 +441,12 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
       if (games.length !== first.total) {
         throw new Error(`全库引用检查不完整（读取 ${games.length} / ${first.total} 款游戏），为避免误删没有执行`)
       }
+      // 平台 BIOS 也是 R2 对象；fetchPlatformBios 失败时会静默给空表，删除前必须直接读、读不到就停。
+      const platformBios = await api.get<PlatformBiosRefs>('/api/platform-bios').catch(() => {
+        throw new Error('读取平台 BIOS 绑定失败，无法确认对象没被 BIOS 使用；已阻止删除')
+      })
 
-      const plan = planRomObjectDeletion(games, objectKeys)
+      const plan = planRomObjectDeletion(games, objectKeys, platformBios ?? {})
       // 未保存的表单也可能把同一 key 用作封面 / 系统盘；这类引用不能由 ROM 按钮顺手清除。
       const targets = new Set(objectKeys)
       const draftReferences: Array<[string, string | undefined]> = [
@@ -3933,6 +3937,35 @@ function RomField({
     }
   }
 
+  /**
+   * 备用地址同样走全库安全删除：主表单的 deleteBoundRom 会把这个 key 从所有游戏的主 / 语言 / 备用槽摘掉，
+   * 并同步清掉表单草稿。以前这里只能改文本框，清空后 R2 上的文件就成了没人认领的孤儿。
+   */
+  const removeBackup = async () => {
+    const key = backupValue.trim()
+    if (!key) return
+    setMsg(null)
+    if (!(allowStorage && isDeletableKey(key))) {
+      onBackupChange('')
+      setMsg({ ok: true, text: '已清空备用地址；外部文件不会被删除' })
+      return
+    }
+    if (!canUpload) {
+      setMsg({ ok: false, text: '请先在“ROM 存储”页配置 Worker 地址和口令，才能解绑并删除 R2 文件' })
+      return
+    }
+    if (!onDeleteRom) {
+      setMsg({ ok: false, text: '当前窗口无法安全检查全库引用，已阻止删除' })
+      return
+    }
+    try {
+      const result = await onDeleteRom(key)
+      if (result) setMsg({ ok: true, text: `已解绑备用地址并删除 ${result.removed} 个 R2 对象（影响 ${result.unboundGames} 款游戏）` })
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof Error ? err.message : '解绑并删除失败' })
+    }
+  }
+
   /** 删除 R2 ROM 时经父表单先解除全库引用；外部地址 / 站内静态文件只允许解绑。 */
   const removeRom = async () => {
     const key = value.trim()
@@ -4087,7 +4120,23 @@ function RomField({
               >
                 {health?.checking ? '检测中…' : '检测主/备'}
               </button>
+              {backupValue.trim() && (
+                <button
+                  type="button"
+                  className={cx(btnClass.danger, 'shrink-0 whitespace-nowrap')}
+                  onClick={() => void removeBackup()}
+                  disabled={deletingRom || (allowStorage && isDeletableKey(backupValue) && !canUpload)}
+                  title={allowStorage && isDeletableKey(backupValue)
+                    ? canUpload ? '检查全库引用后解除备用地址并永久删除 R2 文件' : '请先配置 Worker 地址和口令，才能删除 R2 文件'
+                    : '只清空备用地址；外部文件不会被删除'}
+                >
+                  {allowStorage && isDeletableKey(backupValue) ? deletingRom ? '删除中…' : '解绑并删除' : '解绑'}
+                </button>
+              )}
             </div>
+            {allowStorage && isDeletableKey(backupValue) && (
+              <p className="mt-1 text-[11px] text-dim">只想换掉备用地址、保留文件时，直接改写或清空上面的输入框即可。</p>
+            )}
             {health && !health.checking && (
               <p className="mt-2 space-x-3">
                 <span>主地址：{healthText(health.primary)}</span>

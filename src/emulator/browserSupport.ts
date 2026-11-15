@@ -19,7 +19,7 @@
 import type { RuntimeId } from './types'
 
 /** 随站点代码一起经 Vite 转译、在 legacy 包里也能跑的运行时 */
-const LEGACY_SAFE_RUNTIMES: ReadonlySet<RuntimeId> = new Set<RuntimeId>(['jsnes', 'liveview', 'cloudgame', 'html5'])
+const LEGACY_SAFE_RUNTIMES: ReadonlySet<RuntimeId> = new Set<RuntimeId>(['jsnes', 'iodinegba', 'liveview', 'cloudgame', 'html5'])
 
 export function runtimeNeedsModernBrowser(id: RuntimeId): boolean {
   return !LEGACY_SAFE_RUNTIMES.has(id)
@@ -64,11 +64,12 @@ export function webAssemblyAvailable(): boolean {
 /**
  * 这一局在没有 WebAssembly 的浏览器里起得来吗。
  * jsnes 是纯 JS；8BG 外壳在没有 WebAssembly 时改用纯 JS 的 fzstd 解压（romPack.ts），所以本站的 NES 游戏照样能玩。
- * GB/GBC 的 binjgb 没有 WebAssembly 时自动换成它的纯 JavaScript 构建（public/binjgb/binjgb-js.js）。
+ * GB/GBC 的 binjgb 没有 WebAssembly 时自动换成它的纯 JavaScript 构建（public/binjgb/binjgb-js.js）；
+ * GBA 没有 WebAssembly 时使用 IodineGBA 纯 JavaScript 核心（需要已配置的 GBA BIOS）。
  * 直播观看、云游戏只收视频，不需要。
- * 其余核心（EmulatorJS、js-dos、Ruffle …）本身就是 WebAssembly。
+ * 其余核心（EmulatorJS、js-dos、Ruffle …）本身就是 WebAssembly；Flash 仅验证名单中的游戏可由 AwayFL 回退。
  */
 export function runtimeRunsWithoutWasm(id: RuntimeId, _game?: File | string): boolean {
   // 网页游戏各有各的实现，纯 JS 的不少：让它自己试，别一刀切挡住
-  return id === 'jsnes' || id === 'binjgb' || id === 'liveview' || id === 'cloudgame' || id === 'html5'
+  return id === 'jsnes' || id === 'binjgb' || id === 'iodinegba' || id === 'awayfl' || id === 'liveview' || id === 'cloudgame' || id === 'html5'
 }

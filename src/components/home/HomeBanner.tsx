@@ -14,7 +14,7 @@ import { gameTitle } from '@/services/i18nData'
 import type { Game } from '@/types'
 import type { Translation } from '@/locales'
 import { usePrefersReducedMotion } from '@/lib/motion'
-import { platformListed, useNoWasmMode } from '@/services/noWasm'
+import { gameListed, useNoWasmMode } from '@/services/noWasm'
 
 /**
  * 首页热门还没到货时先顶上的几款。取不到的（不存在 / 已下架）自动跳过，
@@ -121,7 +121,7 @@ function Banner({ className, games }: { className?: string; games?: Game[] }) {
   // 浏览器没有 WebAssembly 时只轮换能跑的平台（services/noWasm.ts）
   const noWasm = useNoWasmMode()
   const base = useMemo(
-    () => (games?.length ? games : fallback).filter((g) => platformListed(noWasm, g.platform)).slice(0, POOL_MAX),
+    () => (games?.length ? games : fallback).filter((g) => gameListed(noWasm, g.platform, g.slug)).slice(0, POOL_MAX),
     [games, fallback, noWasm],
   )
 

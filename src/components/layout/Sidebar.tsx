@@ -20,7 +20,7 @@ import { platformMap } from '@/data/platforms'
 import { gameTitle, platformLabel } from '@/services/i18nData'
 import { GameCover } from '@/components/game/GameCover'
 import { UserRoleRing } from '@/components/UserRole'
-import { platformListed, useNoWasmMode } from '@/services/noWasm'
+import { gameListed, useNoWasmMode } from '@/services/noWasm'
 
 export const SIDEBAR_WIDTH = 240
 export const SIDEBAR_COLLAPSED_WIDTH = 72
@@ -301,7 +301,7 @@ function PlayedBox({ collapsed }: { collapsed: boolean }) {
   const { setMobileOpen } = useShell()
   const noWasm = useNoWasmMode()
   // 浏览器没有 WebAssembly 时只列能跑的平台（services/noWasm.ts）
-  const games = useGamesBySlugs((user ? user.recent : guest).slice(0, 4)).filter((g) => platformListed(noWasm, g.platform))
+  const games = useGamesBySlugs((user ? user.recent : guest).slice(0, 4)).filter((g) => gameListed(noWasm, g.platform, g.slug))
   if (!games.length) return null
 
   const title = <>{t.sidebar.playedTitle}</>

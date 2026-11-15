@@ -10,6 +10,8 @@ import { Field, btnClass, inputClass } from './ui'
 import { useAdminData } from './AdminLayout'
 
 type Editing = { mode: 'add' } | { mode: 'edit'; post: Post } | null
+type PostFilter = 'all' | 'published' | 'draft'
+type PublishBatchProgress = { published: boolean; done: number; total: number }
 
 export function AdminPosts() {
   const db = useAdminData()
@@ -23,12 +25,16 @@ export function AdminPosts() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [q, setQ] = useState('')
+  const [postFilter, setPostFilter] = useState<PostFilter>('all')
   const [editing, setEditing] = useState<Editing>(null)
   const [toast, setToast] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [rowAction, setRowAction] = useState<{ slug: string; kind: 'edit' | 'published' | 'delete' } | null>(null)
+  const [selectedSlugs, setSelectedSlugs] = useState<Set<string>>(() => new Set())
+  const [batchProgress, setBatchProgress] = useState<PublishBatchProgress | null>(null)
   const savingRef = useRef(false)
   const rowActionRef = useRef(false)
+  const batchActionRef = useRef(false)
 
   const reload = useCallback(() => {
     if (!apiEnabled()) return
@@ -55,13 +61,42 @@ export function AdminPosts() {
     const needle = q.trim().toLowerCase()
     return posts
       .filter((p) => !needle || p.title.toLowerCase().includes(needle) || p.tags.some((t) => t.toLowerCase().includes(needle)))
+      .filter((p) => postFilter === 'all' || p.published === (postFilter === 'published'))
       .sort((a, b) => (a.date < b.date ? 1 : -1))
-  }, [posts, q])
+  }, [posts, q, postFilter])
+
+  const publishedCount = posts.filter((post) => post.published).length
+  const draftCount = posts.length - publishedCount
+  const selectedCount = list.reduce((count, post) => count + Number(selectedSlugs.has(post.slug)), 0)
+  const allVisibleSelected = list.length > 0 && selectedCount === list.length
+  const someVisibleSelected = selectedCount > 0 && !allVisibleSelected
+
+  useEffect(() => {
+    setSelectedSlugs(new Set())
+  }, [q, postFilter])
+
+  const toggleVisibleSelection = () => {
+    setSelectedSlugs((current) => {
+      const next = new Set(current)
+      if (allVisibleSelected) list.forEach((post) => next.delete(post.slug))
+      else list.forEach((post) => next.add(post.slug))
+      return next
+    })
+  }
+
+  const togglePostSelection = (slug: string, checked: boolean) => {
+    setSelectedSlugs((current) => {
+      const next = new Set(current)
+      if (checked) next.add(slug)
+      else next.delete(slug)
+      return next
+    })
+  }
 
   const remove = async (p: Post) => {
     const scope = personalLibrary ? '只会从你的独立文章库移除，不影响主文章库或其他志愿者。' : '此操作会从主文章库删除。'
     if (!window.confirm(`确定删除文章「${p.title}」？${scope}`)) return
-    if (rowActionRef.current) return
+    if (rowActionRef.current || batchActionRef.current) return
     rowActionRef.current = true
     setRowAction({ slug: p.slug, kind: 'delete' })
     try {
@@ -77,7 +112,7 @@ export function AdminPosts() {
   }
 
   const togglePublished = async (p: Post) => {
-    if (rowActionRef.current) return
+    if (rowActionRef.current || batchActionRef.current) return
     rowActionRef.current = true
     setRowAction({ slug: p.slug, kind: 'published' })
     try {
@@ -93,7 +128,7 @@ export function AdminPosts() {
   }
 
   const edit = async (summary: Post) => {
-    if (rowActionRef.current) return
+    if (rowActionRef.current || batchActionRef.current) return
     rowActionRef.current = true
     setRowAction({ slug: summary.slug, kind: 'edit' })
     try {
@@ -103,6 +138,50 @@ export function AdminPosts() {
     } finally {
       rowActionRef.current = false
       setRowAction(null)
+    }
+  }
+
+  /** 状态批量写入有并发上限且逐篇隔离失败，不会因一篇文章失败而丢掉整批结果。 */
+  const setSelectedPublished = async (published: boolean) => {
+    if (batchActionRef.current || rowActionRef.current) return
+    const selected = list.filter((post) => selectedSlugs.has(post.slug))
+    const pending = selected.filter((post) => post.published !== published)
+    if (!pending.length) {
+      setToast(selected.length ? '所选文章已是目标状态' : '先选择文章')
+      return
+    }
+    const actionLabel = published ? (personalLibrary ? '标记成稿' : '发布') : '转为草稿'
+    if (!window.confirm(`确定将所选 ${pending.length} 篇文章${actionLabel}？`)) return
+
+    batchActionRef.current = true
+    setBatchProgress({ published, done: 0, total: pending.length })
+    let nextIndex = 0
+    let completed = 0
+    const failed: string[] = []
+    const worker = async () => {
+      while (nextIndex < pending.length) {
+        const post = pending[nextIndex++]
+        try {
+          await setPostPublished(post, published)
+        } catch {
+          failed.push(post.slug)
+        } finally {
+          completed += 1
+          setBatchProgress({ published, done: completed, total: pending.length })
+        }
+      }
+    }
+
+    try {
+      await Promise.all(Array.from({ length: Math.min(4, pending.length) }, () => worker()))
+      setSelectedSlugs(new Set(failed))
+      setToast(failed.length
+        ? `批量完成：成功 ${pending.length - failed.length} 篇，失败 ${failed.length} 篇；失败项已保留勾选`
+        : `已${actionLabel} ${pending.length} 篇文章`)
+      reload()
+    } finally {
+      batchActionRef.current = false
+      setBatchProgress(null)
     }
   }
 
@@ -122,17 +201,74 @@ export function AdminPosts() {
           </p>
         </div>
         <div className="flex gap-2">
-          <input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索标题 / 标签…" className={cx(inputClass, 'w-56')} />
-          <button type="button" className={btnClass.primary} onClick={() => setEditing({ mode: 'add' })} disabled={!apiEnabled()}>
+          <input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索标题 / 标签…" className={cx(inputClass, 'w-56')} disabled={Boolean(batchProgress)} />
+          <button type="button" className={btnClass.primary} onClick={() => setEditing({ mode: 'add' })} disabled={!apiEnabled() || Boolean(batchProgress)}>
             ＋ 写文章
           </button>
         </div>
       </div>
 
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap gap-1" role="group" aria-label="按文章状态筛选">
+          {([
+            ['all', `全部 ${posts.length}`],
+            ['published', `${personalLibrary ? '已成稿' : '已发布'} ${publishedCount}`],
+            ['draft', `草稿 ${draftCount}`],
+          ] as const).map(([filter, label]) => (
+            <button
+              key={filter}
+              type="button"
+              aria-pressed={postFilter === filter}
+              onClick={() => setPostFilter(filter)}
+              disabled={Boolean(batchProgress)}
+              className={cx('rounded-lg px-3 py-1.5 text-xs transition', postFilter === filter ? 'bg-brand-soft font-semibold text-brand-hover' : 'text-muted hover:bg-black/5 hover:text-fg')}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <span className="text-xs text-muted">显示 {list.length} 篇</span>
+      </div>
+
+      {selectedCount > 0 && (
+        <section className="rounded-xl border border-brand/25 bg-brand-soft/40 px-3 py-3" aria-label="批量文章操作">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold">已选择 {selectedCount} 篇 <span className="font-normal text-muted">· 当前筛选结果</span></p>
+              {batchProgress && <p className="mt-1 text-xs text-muted" aria-live="polite">处理中：{batchProgress.done} / {batchProgress.total}</p>}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button type="button" className={btnClass.small} onClick={() => void setSelectedPublished(true)} disabled={Boolean(batchProgress) || Boolean(rowAction)}>
+                {personalLibrary ? '批量标记成稿' : '批量发布'}
+              </button>
+              <button type="button" className={btnClass.small} onClick={() => void setSelectedPublished(false)} disabled={Boolean(batchProgress) || Boolean(rowAction)}>批量转草稿</button>
+              <button type="button" className={cx(btnClass.small, 'text-muted')} onClick={() => setSelectedSlugs(new Set())} disabled={Boolean(batchProgress)}>清除选择</button>
+            </div>
+          </div>
+          {batchProgress && (
+            <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-surface" role="progressbar" aria-valuemin={0} aria-valuemax={batchProgress.total} aria-valuenow={batchProgress.done} aria-label="批量文章操作进度">
+              <div className="h-full rounded-full bg-brand transition-[width]" style={{ width: `${Math.round((batchProgress.done / batchProgress.total) * 100)}%` }} />
+            </div>
+          )}
+        </section>
+      )}
+
       <div className="overflow-x-auto rounded-2xl border border-line bg-surface">
         <table className="w-full min-w-[760px] text-sm">
           <thead className="bg-surface-2 text-left text-xs text-muted">
             <tr>
+              <th className="w-10 px-3 py-2">
+                <input
+                  type="checkbox"
+                  checked={allVisibleSelected}
+                  ref={(element) => { if (element) element.indeterminate = someVisibleSelected }}
+                  onChange={toggleVisibleSelection}
+                  aria-label="选择当前筛选结果中的文章"
+                  title="选择当前筛选结果"
+                  disabled={!list.length || Boolean(batchProgress)}
+                  className="h-4 w-4 accent-[var(--color-brand)]"
+                />
+              </th>
               <th className="px-3 py-2 font-medium">文章</th>
               <th className="px-3 py-2 font-medium">标签</th>
               <th className="px-3 py-2 font-medium">作者</th>
@@ -143,7 +279,17 @@ export function AdminPosts() {
           </thead>
           <tbody className="divide-y divide-line">
             {list.map((p) => (
-              <tr key={p.slug} className={cx('transition hover:bg-black/[0.03]', !p.published && 'opacity-60')}>
+              <tr key={p.slug} className={cx('transition hover:bg-black/[0.03]', !p.published && 'opacity-60', selectedSlugs.has(p.slug) && 'bg-brand-soft/30')}>
+                <td className="px-3 py-2">
+                  <input
+                    type="checkbox"
+                    checked={selectedSlugs.has(p.slug)}
+                    onChange={(event) => togglePostSelection(p.slug, event.target.checked)}
+                    aria-label={`选择文章：${p.title}`}
+                    disabled={Boolean(batchProgress)}
+                    className="h-4 w-4 accent-[var(--color-brand)]"
+                  />
+                </td>
                 <td className="px-3 py-2">
                   <div className="flex items-center gap-2">
                     <span className="grid h-8 w-8 shrink-0 place-items-center rounded-md bg-surface-2 text-base" aria-hidden>
@@ -175,20 +321,20 @@ export function AdminPosts() {
                 </td>
                 <td className="px-3 py-2">
                   <div className="flex justify-end gap-1">
-                    <button type="button" disabled={Boolean(rowAction)} className={cx(btnClass.small, 'text-brand-hover hover:bg-brand-soft')} onClick={() => void edit(p)}>
+                    <button type="button" disabled={Boolean(rowAction) || Boolean(batchProgress)} className={cx(btnClass.small, 'text-brand-hover hover:bg-brand-soft')} onClick={() => void edit(p)}>
                       {rowAction?.slug === p.slug && rowAction.kind === 'edit' ? '读取中…' : '编辑'}
                     </button>
                     <button
                       type="button"
                       className={cx(btnClass.small, 'text-muted hover:bg-black/5 hover:text-fg')}
-                      disabled={Boolean(rowAction)}
+                      disabled={Boolean(rowAction) || Boolean(batchProgress)}
                       onClick={() => void togglePublished(p)}
                     >
                       {rowAction?.slug === p.slug && rowAction.kind === 'published'
                         ? '处理中…'
                         : p.published ? '转草稿' : personalLibrary ? '标记成稿' : '发布'}
                     </button>
-                    <button type="button" disabled={Boolean(rowAction)} className={cx(btnClass.small, 'text-live hover:bg-live/15')} onClick={() => void remove(p)}>
+                    <button type="button" disabled={Boolean(rowAction) || Boolean(batchProgress)} className={cx(btnClass.small, 'text-live hover:bg-live/15')} onClick={() => void remove(p)}>
                       {rowAction?.slug === p.slug && rowAction.kind === 'delete' ? '删除中…' : '删除'}
                     </button>
                   </div>
@@ -197,7 +343,7 @@ export function AdminPosts() {
             ))}
             {list.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-3 py-10 text-center text-sm text-muted">
+                <td colSpan={7} className="px-3 py-10 text-center text-sm text-muted">
                   {loading ? (
                     '正在读取数据库…'
                   ) : error ? (

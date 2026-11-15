@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { Game } from '@/types'
-import { apiEnabled } from '@/services/api'
+import { api, apiEnabled } from '@/services/api'
 import { fetchAdminGames, patchGame } from '@/services/store'
 import {
   conventionalKeys,
   deleteRom,
-  deleteRomDir,
+  deleteRomObjectsExactly,
   dirOfKey,
   getRomConfig,
   getRomPrefix,
@@ -30,6 +30,8 @@ import { platformMap } from '@/data/platforms'
 import { cx } from '@/lib/format'
 import { slugify } from './GameForm'
 import { PlatformBiosPanel } from './PlatformBiosPanel'
+import { RomCleanupPanel } from './RomCleanupPanel'
+import { objectKeyOf, planRomObjectDeletion, type PlatformBiosRefs } from './romDeletePlan'
 import { Card, Field, Stat, btnClass, inputClass } from './ui'
 
 /** 后端列表接口一页最多给 100 条 */
@@ -245,7 +247,10 @@ export function AdminRoms() {
   /** 对象 key -> 绑定了它的游戏 */
   const byRom = useMemo(() => {
     const m = new Map<string, Game>()
-    for (const g of games) for (const key of romKeysOf(g)) if (!m.has(key)) m.set(key, g)
+    for (const g of games) for (const raw of romKeysOf(g)) {
+      const key = objectKeyOf(raw) ?? raw
+      if (!m.has(key)) m.set(key, g)
+    }
     return m
   }, [games])
   /**
@@ -255,7 +260,8 @@ export function AdminRoms() {
   const bindingsByRom = useMemo(() => {
     const m = new Map<string, Game[]>()
     for (const game of games) {
-      for (const key of romKeysOf(game)) {
+      for (const raw of romKeysOf(game)) {
+        const key = objectKeyOf(raw) ?? raw
         const list = m.get(key)
         if (list) list.push(game)
         else m.set(key, [game])
@@ -397,17 +403,18 @@ export function AdminRoms() {
    * 同一款游戏可能在多个语言槽里引用包内不同文件，因此每次 PATCH 后都用服务端回包作为
    * 下一次的基准；若一直拿打开页面时的旧对象算补丁，后一次会把前一次刚清掉的绑定写回来。
    */
-  const unbindKeys = async (keys: string[]) => {
-    if (!requireCompleteReferences()) throw new Error('尚未加载全部游戏，已阻止危险解绑')
+  const unbindKeys = async (keys: string[], sourceGames: Game[] = games) => {
     const wanted = new Set(keys)
-    const candidates = new Map<string, Game>()
-    for (const key of wanted) for (const game of bindingsByRom.get(key) ?? []) candidates.set(game.slug, game)
+    const candidates = new Map(sourceGames
+      .filter((game) => romKeysOf(game).some((raw) => wanted.has(objectKeyOf(raw) ?? raw)))
+      .map((game) => [game.slug, game]))
     const updated: Game[] = []
     for (const original of candidates.values()) {
       let current = original
-      for (const key of wanted) {
-        if (!romKeysOf(current).includes(key)) continue
-        const patch = unbindKeyPatch(current, key)
+      for (const raw of romKeysOf(current)) {
+        const normalized = objectKeyOf(raw) ?? raw
+        if (!wanted.has(normalized)) continue
+        const patch = unbindKeyPatch(current, raw)
         if (Object.keys(patch).length) current = await patchGame(current.slug, patch)
       }
       updated.push(current)
@@ -415,9 +422,26 @@ export function AdminRoms() {
     applyGames(updated)
   }
 
-  /** 把某个对象 key 从所有绑定它的游戏上摘掉（删文件前、或行内「解绑」时调用） */
+  /** 行内解绑只改绑定，不删对象；沿用当前已加载的引用快照。 */
   const unbindKey = async (key: string) => {
     await unbindKeys([key])
+  }
+
+  /** 删除前重新读取完整游戏库与 BIOS；页面打开后别的管理员可能刚绑定了同一个对象。 */
+  const loadSafeDeleteGames = async (keys: string[]): Promise<Game[]> => {
+    const [fresh, platformBios] = await Promise.all([
+      fetchGamePages(Number.MAX_SAFE_INTEGER),
+      api.get<PlatformBiosRefs>('/api/platform-bios').catch((err: unknown) => {
+        throw new Error(err instanceof Error ? `读取平台 BIOS 绑定失败，已阻止删除：${err.message}` : '读取平台 BIOS 绑定失败，已阻止删除')
+      }),
+    ])
+    if (fresh.items.length !== fresh.total) throw new Error(`删除前引用检查不完整（读取 ${fresh.items.length} / ${fresh.total} 款游戏），已停止`)
+    const { otherReferences } = planRomObjectDeletion(fresh.items, keys, platformBios ?? {})
+    if (otherReferences.length) {
+      const refs = [...new Set(otherReferences.map((reference) => `${reference.title}（${reference.field}）`))]
+      throw new Error(`不能删除：仍被非 ROM 字段使用 —— ${refs.slice(0, 6).join('、')}${refs.length > 6 ? '…' : ''}。请先在对应位置解除引用。`)
+    }
+    return fresh.items
   }
 
   /** 行内「解绑」：只摘掉这一行对应的 key，不影响这款游戏的其它语言版本 */
@@ -473,7 +497,6 @@ export function AdminRoms() {
   }
 
   const removeObject = async (o: RomObject) => {
-    if (!requireCompleteReferences()) return
     if (busyRef.current) return
     const references = bindingsByRom.get(o.key) ?? []
     const note = references.length
@@ -483,9 +506,10 @@ export function AdminRoms() {
     busyRef.current = true
     setBusy(true)
     try {
+      const freshGames = await loadSafeDeleteGames([o.key])
       // 先解绑再删文件：反过来的话一旦解绑失败，库里还留着指向已删文件的 key，
       // 玩家点「开始游戏」直接 404。
-      await unbindKey(o.key)
+      await unbindKeys([o.key], freshGames)
       await deleteRom(o.key)
       setObjects((list) => list?.filter((x) => x.key !== o.key) ?? null)
       flash('已删除')
@@ -499,7 +523,6 @@ export function AdminRoms() {
 
   /** 整组删：包目录下的文件一个个删没意义，还容易删一半留一半 */
   const removeBundle = async (b: BundleGroup) => {
-    if (!requireCompleteReferences()) return
     if (busyRef.current) return
     const keys = b.files.map((file) => file.key)
     const referenceSlugs = new Set(keys.flatMap((key) => (bindingsByRom.get(key) ?? []).map((game) => game.slug)))
@@ -508,12 +531,18 @@ export function AdminRoms() {
     busyRef.current = true
     setBusy(true)
     try {
+      const freshGames = await loadSafeDeleteGames(keys)
       // 同样是先解绑再删：反过来一旦解绑失败，库里就留着指向已删文件的 key
-      await unbindKeys(keys)
-      const removed = await deleteRomDir(b.dir)
-      const gone = new Set(removed.length ? removed : b.files.map((f) => f.key))
+      await unbindKeys(keys, freshGames)
+      // 只删列表里已纳入引用检查的精确清单；重新列目录会把检查后新上传的兄弟文件也删掉。
+      const result = await deleteRomObjectsExactly(keys)
+      const gone = new Set(result.removed)
       setObjects((list) => list?.filter((x) => !gone.has(x.key)) ?? null)
-      flash(`已删除 ${gone.size} 个文件`)
+      if (result.failed.length) {
+        setListError(`已删除 ${result.removed.length} 个文件；${result.failed.length} 个删除失败（如 ${result.failed.slice(0, 3).join('、')}），请刷新列表后重试`)
+      } else {
+        flash(`已删除 ${gone.size} 个文件`)
+      }
     } catch (err) {
       setListError(err instanceof Error ? err.message : '删除失败')
     } finally {
@@ -735,6 +764,13 @@ export function AdminRoms() {
       )}
 
       <MultipartPanel />
+
+      <RomCleanupPanel
+        onDeleted={(keys) => {
+          const gone = new Set(keys)
+          setObjects((list) => list?.filter((x) => !gone.has(x.key)) ?? null)
+        }}
+      />
 
       <PlatformBiosPanel />
 

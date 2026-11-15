@@ -65,11 +65,23 @@ export function resolveRuntime(target: PlatformId | ResolveContext): Runtime | u
   const ctx: ResolveContext = typeof target === 'string' ? { platform: target } : target
   const { platform, ext } = ctx
 
+  // AwayFL 只作为显式兼容回退；必须先于后台固定的 Ruffle 覆盖，因为 Ruffle 仍依赖 WebAssembly。
+  if (platform === 'flash' && ctx.flashAwayfl) {
+    const fallback = getRuntime('awayfl')
+    if (fallback?.available()) return fallback
+  }
+
   // Gambatte 的 RetroArch 画面路径需要 WebGL，Gambatte 本身又是 WebAssembly：没有 WebGL 或没有 WebAssembly
   // 时 GB/GBC 都切到纯 2D 的 binjgb（没有 WebAssembly 时它自己换纯 JavaScript 构建，见 adapters/binjgb.ts），
   // 不让逐游戏的 emulatorjs 固定配置或扩展名优先级把玩家送回注定起不来的核心。
   if ((platform === 'gb' || platform === 'gbc') && (ctx.webglUnavailable || ctx.wasmUnavailable)) {
     const fallback = getRuntime('binjgb')
+    if (fallback?.available() && fallback.supports(platform)) return fallback
+  }
+
+  // IodineGBA 是 GBA 在无 WebAssembly 浏览器中的纯 JS 退路，不能被逐游戏固定的 EmulatorJS 覆盖拦回去。
+  if (platform === 'gba' && ctx.gbaWasmUnavailable) {
+    const fallback = getRuntime('iodinegba')
     if (fallback?.available() && fallback.supports(platform)) return fallback
   }
 

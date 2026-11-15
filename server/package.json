@@ -88,6 +88,7 @@
     "test:sockdrive-conversion": "node scripts/test-sockdrive-conversion.mjs",
     "test:game-media": "node --test scripts/test-game-media.mjs",
     "test:nowasm-lists": "node scripts/test-nowasm-lists.mjs",
+    "test:admin-health": "node scripts/test-admin-health.mjs",
     "test:ssr-parallel": "node scripts/test-ssr-parallel.mjs",
     "test:schema-drift": "node scripts/test-schema-drift.mjs",
     "test:parallel-reads": "node scripts/test-parallel-reads.mjs",

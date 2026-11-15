@@ -9,6 +9,7 @@ import { probeNesRomHeader } from './nesRomProbe'
 import { resolveRuntime, runtimesFor, extOf } from './registry'
 import { canCreateWebgl, canCreateWebgl2 } from './webglSupport'
 import { modernRuntimeSyntaxSupported, runtimeNeedsModernBrowser, runtimeRunsWithoutWasm, webAssemblyAvailable } from './browserSupport'
+import { awayflForcedByUrl, useAwayflChoice } from './awayflPolicy'
 import { romArchiveRef } from '@/lib/romArchiveUrl'
 import { romUrlForKey } from '@/services/roms'
 import { clearSockdrivePin, pinnedSockdriveUrl, routeRomAssetUrl } from '@/services/romHosts'
@@ -609,6 +610,7 @@ export function EmulatorPlayer({
   const [localRomData, setLocalRomData] = useState<string | undefined>(undefined)
 
   const t = useT()
+  const awayflChoice = useAwayflChoice(platform.id, gameSlug)
   const { immersive, setImmersive, toggleImmersive, available: shellAvailable } = useShell()
 
   /* ---------------- 联机 ---------------- */
@@ -1603,7 +1605,7 @@ export function EmulatorPlayer({
     && extOf(romUrl) === 'nes'
     && !isRomPackUrl(romUrl)
     && !romArchiveRef(romUrl ?? '')
-  const shouldProbeNoWebgl = platform.id === 'nes' || platform.id === 'gb' || platform.id === 'gbc'
+  const shouldProbeNoWebgl = platform.id === 'nes' || platform.id === 'gb' || platform.id === 'gbc' || platform.id === 'gba'
 
   useEffect(() => {
     if (!shouldProbeNes || !romUrl) return
@@ -1626,25 +1628,25 @@ export function EmulatorPlayer({
   }, [romUrl, shouldProbeNes])
 
   /*
-    开局前问一次浏览器建不建得出 WebGL：NES 改走 jsnes，GB/GBC 改走 binjgb。
+    开局前检查运行时能力：NES 改走 jsnes，GB/GBC 改走 binjgb，禁用 WebAssembly 的 GBA 改走 IodineGBA。
     放在 effect 里而不是渲染时算：SSR 没有 document，渲染时算会让首屏和水合选出不同的引擎。
   */
   const [webglProbe, setWebglProbe] = useState<{ platform: PlatformId; ready: boolean; unavailable: boolean }>(
     () => ({ platform: platform.id, ready: false, unavailable: false }),
   )
   const webglProbeReady = !shouldProbeNoWebgl || (webglProbe.platform === platform.id && webglProbe.ready)
-  const webglUnavailable = webglProbe.platform === platform.id && webglProbe.unavailable
+  const webglUnavailable = webglProbe.platform === platform.id && webglProbe.unavailable && platform.id !== 'gba'
   useEffect(() => {
     if (!shouldProbeNoWebgl) return
     // NES 在太旧的浏览器上也改走 jsnes：EmulatorJS 的引擎和核心语法都跑不动（browserSupport.ts）
-    const noWebgl = !canCreateWebgl()
+    const noWebgl = platform.id !== 'gba' && !canCreateWebgl()
     // NES：太旧或没有 WebAssembly 都改走 jsnes；GB/GBC：没有 WebAssembly 改走 binjgb（它自己换纯 JS 构建）
     const noModernRuntime = platform.id === 'nes'
       ? !modernRuntimeSyntaxSupported() || !webAssemblyAvailable()
       : !webAssemblyAvailable()
-    const missing = noWebgl || noModernRuntime
+    const missing = platform.id === 'gba' ? !webAssemblyAvailable() : noWebgl || noModernRuntime
     if (missing) {
-      const fallback = platform.id === 'nes' ? 'jsnes' : !webAssemblyAvailable() ? 'binjgb（纯 JavaScript 构建）' : 'binjgb'
+      const fallback = platform.id === 'nes' ? 'jsnes' : platform.id === 'gba' ? 'IodineGBA（纯 JavaScript）' : !webAssemblyAvailable() ? 'binjgb（纯 JavaScript 构建）' : 'binjgb'
       const why = noWebgl ? '建不出 WebGL' : !webAssemblyAvailable() ? '没有 WebAssembly' : '太旧（不支持类字段 / ?. / ??）'
       console.warn(`[8bitgo/runtime] 这个浏览器${why}，${platform.id.toUpperCase()} 改用 ${fallback}`)
     }
@@ -1658,6 +1660,7 @@ export function EmulatorPlayer({
   // 不能先拿上一份 ROM 的 mapper 开局。容器包不用等 mapper，但 NES 仍须等 WebGL 预检再开局。
   const pageRuntime = useMemo(() => {
     if (shouldProbeNes && !currentNesProbe?.ready) return undefined
+    if (!awayflChoice.ready) return undefined
     return resolveRuntime({
       platform: platform.id,
       ext: extOf(romUrl),
@@ -1665,12 +1668,14 @@ export function EmulatorPlayer({
       jsnesNetplay,
       jsnesCompatible,
       webglUnavailable,
+      gbaWasmUnavailable: platform.id === 'gba' && !webAssemblyAvailable(),
+      flashAwayfl: awayflChoice.use,
     })
-  }, [platform.id, runtime, romUrl, shouldProbeNes, currentNesProbe?.ready, jsnesNetplay, jsnesCompatible, webglUnavailable])
+  }, [platform.id, runtime, romUrl, shouldProbeNes, currentNesProbe?.ready, jsnesNetplay, jsnesCompatible, webglUnavailable, awayflChoice.ready, awayflChoice.use])
 
   /** NES 的 mapper 与 NES / GB / GBC 的 WebGL 结论都确定后再开放启动，避免自动播放抢先挂载错误引擎。 */
   const engineReady = (!shouldProbeNes || Boolean(currentNesProbe?.ready)) &&
-    webglProbeReady
+    webglProbeReady && awayflChoice.ready
   const supported = Boolean(pageRuntime) || onlineOk
   /** js-dos 预热必须知道最终后端，否则会把普通 DOS 的 1.4 MB 核心当成 Win95 的 7.5 MB 核心。 */
   const requestedPrewarmCore = core ?? platform.core
@@ -3082,9 +3087,12 @@ export function EmulatorPlayer({
         ext: extOf(picked),
         jsnesNetplay,
         jsnesCompatible: localJsnesCompatible,
+        // 本地 ROM 不以详情页 slug 作为验证依据；只有显式调试参数能强制它走 AwayFL。
+        flashAwayfl: targetPlatform === 'flash' && awayflForcedByUrl(),
         webglUnavailable: ((targetPlatform === 'nes' || targetPlatform === 'gb' || targetPlatform === 'gbc') && !canCreateWebgl()) ||
           (targetPlatform === 'nes' && (!modernRuntimeSyntaxSupported() || !webAssemblyAvailable())),
         wasmUnavailable: (targetPlatform === 'gb' || targetPlatform === 'gbc') && !webAssemblyAvailable(),
+        gbaWasmUnavailable: targetPlatform === 'gba' && !webAssemblyAvailable(),
       })
       if (!runtime) {
         if (debugRef.current) {

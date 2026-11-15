@@ -66,7 +66,7 @@ export function GameRankCard({ game, rank, metric, className }: Props) {
   const genreId = game.genres[0]
   const genre = genreId ? genreMap[genreId] : undefined
   // 浏览器没有 WebAssembly 时只画能跑的平台（services/noWasm.ts）
-  const listed = useGameListed(game.platform)
+  const listed = useGameListed(game.platform, game.slug)
   if (!listed) return null
 
   return (

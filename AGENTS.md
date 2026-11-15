@@ -1585,7 +1585,27 @@ EdgeOne 帮不上。现在 `writeInlineRuffleFrame()`（`src/emulator/ruffleFram
 `/play-local` 也可用（已实测）。写不出来才导航到 `/flash-frame.html`，上面的超时重试保留为兜底。
 `RUFFLE_FRAME_HTML` 与 `public/flash-frame.html` 必须逐字一致，测试会核对。
 
-### 2.24.0b Flash 冷启动：核心与 Zstd 解码器必须和 SWF 并行取（2026-11-11 大陆四局慢启动）
+### 2.24.0b AwayFL 只接管逐款验证过的 Flash 游戏
+
+Ruffle 的网页运行时依赖 WebAssembly；浏览器彻底禁用 WebAssembly 时，播放器可以改用 AwayFL 纯 JavaScript 运行时。
+Shumway 原型的 15 款游戏结果只属于 Shumway，**不能照搬成 AwayFL 的通过名单**。AwayFL 验证账本在
+`shared/awayfl-games.js`；当前还没有任何一款通过，所以无 WebAssembly 浏览器暂时不会自动把 Flash 游戏切过去。
+候选列表包含 `fireboy-and-watergirl` 和同系列第 2～4 作，但它们都必须在 AwayFL 上单独验收。
+名单外继续使用原有错误提示，不能把 AwayFL 注册成整个平台的通用 Flash 引擎。
+
+加新游戏前必须在「没有 WebAssembly」和「禁用 JIT」两种环境完成标题 → 菜单 → 第一关 → 按键移动，
+并在非高配 Mac 的真实目标设备上确认；记录浏览器 / 系统、两种限制是否生效、是否进入第一关、实际输入结果。
+手工地址参数 `?awayfl=1` 只用于兼容性排查，不能作为自动放行依据。AwayFL SharedObject 存档只留在本浏览器，
+按游戏 slug 隔离，不支持本站即时存档导出或云同步。宿主页位于 `public/awayfl/host-vN/`，改它必须新建版本目录
+并同步 `AWAYFL_HOST_PATH`；上游运行时位于 `public/awayfl/v<版本>/`，升级时同步 `AWAYFL_VERSION`。
+两类路径在 `server/src/cache.js` 都是一年缓存。
+
+Shumway 原型记录仅作历史参考：当时 15 款里 12 款能进菜单，只有《森林冰火人》确认可玩；《黄金矿工》《雷电 X》
+在开始后失败，另有 3 款黑屏。不要把这些结果写入 AwayFL 通过名单。Ruffle 仍是主运行时。
+参考：[AwayFL embed](https://github.com/awayfl/awayfl-embed)、[AwayFL player](https://github.com/awayfl/awayfl-player)、
+[Shumway 上游归档](https://github.com/mozilla/shumway)、[Ruffle 网页 API](https://ruffle.rs/js-docs/master/)。
+
+### 2.24.0c Flash 冷启动：核心与 Zstd 解码器必须和 SWF 并行取（2026-11-11 大陆四局慢启动）
 
 大陆玩家四局 Flash 在 20 秒内没进游戏（《Dad 'n Me》两局、《僵尸危机：房间》3G、《森林冰火人》）。两处串行：
 
@@ -3210,8 +3230,19 @@ v18 只换 JS 读盘层（`scripts/refresh-ppsspp-retry-v18.mjs` 从 v17 生成�
 v19（`refresh-ppsspp-retry-v19.mjs` 从 v18 生成）：**超时**后的重试把时限翻倍（30 → 60 → 120 秒，整个请求最多
 3 分钟）。慢线路上 2MB 分片本来就要 30 秒以上，用同样的 30 秒重试只会再超时；游戏会卡住等盘，但不再整局失败。
 已排除的方向：assets / cn-assets 两条线路的 206 在 MISS 与 HIT 下都带 ACAO 与 CORP，HTTP 0 不是缓存丢头。
-`scripts/refresh-ppsspp-js-runtime.mjs` 仍是生成 v12 的历史入口，不要用它覆盖 v13～v19。
-下一次重新构建核心前，先把 `scripts/build-ppsspp.mjs` 的目标代次和相应模板一起升到 v20。
+`scripts/refresh-ppsspp-js-runtime.mjs` 仍是生成 v12 的历史入口，不要用它覆盖 v13～v20。
+下一次重新构建核心前，先把 `scripts/build-ppsspp.mjs` 的目标代次和相应模板一起升到 v21。
+
+v20（`scripts/refresh-ppsspp-stability-v20.mjs` 从 v19 生成，Wasm / data 不变）修 2026-11-15 QQ Browser 21
+《初音未来：歌姬计划》现场暴露的两件事：实际 canvas 报 1533×777，超过 profile 规定的 960×544，说明只传
+`--xres/--yres` 没有约束 Emscripten 最终 backing buffer；现在在主线程和 Worker 的 canvas 尺寸入口都按宽高比例封顶，
+慢网再降到 480×272。此前性能档只看 CPU 核数 / 内存，1.3 Mbps、800ms 的 3G 设备仍启用高分辨率和独立 SAS 线程；
+现在 `saveData`、2G、弱 3G（downlink ≤3 Mbps 或 RTT ≥400ms）、downlink ≤1.5 Mbps 或 RTT ≥800ms 都关闭额外 SAS 线程，
+并用低画布档减少呈现开销。它针对现场的 FPS 与音频欠载做缓解，不能保证消除由同步 Range 等待造成的声音中断。
+
+该现场最后的 `type incompatibility when transforming from/to JS` 是 V8 的 Wasm/JS 边界类型转换异常；ROM 已启动且只按需读了
+73.6 MB，报告没有原始 worker 调用栈，所以**不能据此断言 CHD、FFmpeg 或音频桥是 TypeError 根因**。v20 将 Emscripten pthread 的
+`ErrorEvent.error.stack`、文件行列号一路送进启动诊断包；后续同类现场先看这段 worker 栈再定位具体回调，不按错误字符串猜补丁。
 
 Emscripten
 自带的 preload fetch 没有重试，`host.js` 用 `getPreloadedPackage` 接管：优先读浏览器缓存，连续
@@ -3515,19 +3546,25 @@ SSR 的 `window.__8BITGO__` 注水）改写成 `<随机前缀>-module` / `-text/
   《魂斗罗》是 mapper 2 / submapper 2，jsnes 不收，退回 EmulatorJS 后按 `browserNoWasm` 提示）。
   选浏览器内解包而不是让后端吐明文：明文接口等于拆掉 8BG 防成批离线读取这道门，还得绕源站、走不了 CDN / 大陆镜像。
   `begin()` 先查 `webAssemblyAvailable()`：jsnes、直播、云游戏、网页游戏放行，其余报 `browserNoWasm`。
-  GB/GBC 没有 WebAssembly 时走 binjgb 的纯 JavaScript 构建（见 §2.8.0.1）；js-dos 本身就是 WebAssembly，没有纯 JS 退路。
+  GB/GBC 没有 WebAssembly 时走 binjgb 的纯 JavaScript 构建（见 §2.8.0.1）；GBA 改用自托管 IodineGBA 纯 JavaScript 核心，
+  它必须拿到正好 16 KiB 的平台 BIOS，未配置时开局前报配置错误。IodineGBA 没有即时存档 ABI，游戏内电池存档只写独立的
+  `8bitgo.iodinegba.battery.v1` 本地键，不与 EmulatorJS 的 SRAM / 云存档槽互相覆盖。上游源码钉在 `vendor/iodinegba/`，
+  `npm run iodinegba` 重新生成 `public/iodinegba/iodinegba.js` 与内容哈希版本；更新核心时必须同时改 URL 版本。
+  js-dos 本身就是 WebAssembly，没有纯 JS 退路。
   回归：`npm run test:js-zstd-fallback`（fzstd 逐字节解开 @bokuweb/zstd-wasm 等级 19 的 frame，含 8MB 满块）。
   用 Chromium 110 加 `--js-flags=--noexpose-wasm` 可以原样复现（线上旧版崩到兜底页，修后页面正常、点开始给出提示）。
   **别在主包模块顶层碰 WebAssembly / 静态 import 任何 wasm 胶水**，`test:browser-support` 守着 romPack。
   核心胶水封在 7z 里、随核心更新，**别去转译它们**；升级引擎 / 核心后跑 `npm run test:browser-support`，
   它会重新取证，超过 ES2022 就红，提醒改下限和文案。
 
-**没有 WebAssembly 时只列能玩的平台**（2026-11-15）：名单在 `shared/wasm-free-platforms.js`（nes / gb / gbc），
-给新平台加了纯 JS 退路就同步这里和 `browserSupport.ts`。探测只是一次 `typeof WebAssembly`，正常访客零开销：
+**没有 WebAssembly 时只列能玩的内容**（2026-11-15）：平台名单在 `shared/wasm-free-platforms.js`
+（nes / gb / gbc / gba）；Flash 单独按 `WASM_FREE_GAME_SLUGS` 逐款过滤，当前只放 `fireboy-and-watergirl`。
+给新平台加纯 JS 退路就同步平台名单和 `browserSupport.ts`；给 AwayFL 加游戏必须先满足 §2.24.0b 的实玩门槛。
+探测只是一次 `typeof WebAssembly`，正常访客零开销：
 - `src/services/noWasm.ts` 的 `useNoWasmMode()` 走 useSyncExternalStore，**服务端快照固定 false** —— SSR HTML、
   Cloudflare 页面缓存对所有人仍是同一份，水合也不会不匹配；这类浏览器水合后才切换。别改成按 UA / 请求头在服务端判断。
 - 水合后 `usePageData` / `fetchPageData` 给 `/api/page` 加 `nowasm=1`，`loadForRoute` 按名单查首页、游戏库、平台、类型、
-  相关推荐（缓存 key 前缀 `nw:`，`total` / 分页由 SQL 算准）；平台计数也按名单筛，类型计数仍是全库数。
+  相关推荐（缓存 key 前缀 `nw:`，`total` / 分页由 SQL 算准）；Flash 平台计数也只算通过 slug 名单的游戏，类型计数仍是全库数。
 - 组件兜底：GameCard / GameCardWide / GameRankCard / PlatformCard 返回 null，首页横幅、类型样例、侧栏最近玩、搜索联想按平台过滤；
   `Layout` 顶部挂 `NoWasmNotice`（`site.noWasmNotice`）。详情页仍可打开，点开始由播放器给 `browserNoWasm`。
 - 回归：`cd server && npm run test:nowasm-lists`。用 Chromium 110 加 `--js-flags=--noexpose-wasm` 实测首页只剩 NES / GB、

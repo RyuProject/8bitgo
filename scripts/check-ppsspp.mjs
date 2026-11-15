@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const VERSION = '0dbfaca'
-const RUNTIME_GENERATION = 'v19'
+const RUNTIME_GENERATION = 'v20'
 const useDist = process.argv.includes('--dist')
 const sourceOnly = process.argv.includes('--source-only')
 const publicDir = join(root, 'public', 'ppsspp', `v${VERSION}`, RUNTIME_GENERATION)
@@ -66,16 +66,19 @@ for (const marker of [
 }
 
 if (!/<script src="host\.js"><\/script>/.test(need(join(runtimeDir, 'index.html')).toString('utf8'))) {
-  fail('v19 index.html 没有引用同一实体目录里的 host.js')
+  fail('v20 index.html 没有引用同一实体目录里的 host.js')
 }
-if (!/PPSSPP_RUNTIME_GENERATION = 'v19'/.test(paths) || !/PPSSPP_FRAME_REVISION = '2'/.test(paths) || !/ppssppFrameUrl/.test(adapter)) {
-  fail('PPSSPP iframe 没有使用 v19 实体目录；查询串不能穿透当前 Cloudflare 缓存键')
+if (!/PPSSPP_RUNTIME_GENERATION = 'v20'/.test(paths) || !/PPSSPP_FRAME_REVISION = '2'/.test(paths) || !/ppssppFrameUrl/.test(adapter)) {
+  fail('PPSSPP iframe 没有使用 v20 实体目录；查询串不能穿透当前 Cloudflare 缓存键')
 }
 if (/fetch\s*\(\s*(?:remote(?:\?\.)?\.url|gamePath)/.test(host)) {
   fail('host.js 出现整盘下载代码；远程镜像只能把 URL 交给 C++ Range loader')
 }
 if (!/arguments:\s*\[[\s\S]*?'--windowed'[\s\S]*?'--xres'[\s\S]*?'--yres'/.test(host) || !host.includes('width: 960, height: 544')) {
   fail('host.js 没有限制 PSP 后备缓冲；Retina 屏会重新触发每帧多倍像素复制')
+}
+if (!host.includes('slowNetwork') || !host.includes('diagnostics') || !host.includes('error?.stack')) {
+  fail('v20 缺少慢网档或运行时 worker 调用栈，无法保护 3G 用户并定位 JS/Wasm 崩溃')
 }
 for (const marker of [
   '--appendconfig=${PERFORMANCE_CONFIG_PATH}',
@@ -102,13 +105,13 @@ if (!/FS\.stat\(path\)[\s\S]*?FS\.writeFile\(path, new Uint8Array\(\)\)/.test(ho
   fail('host.js 没有保留已有控制器配置并只在首次启动补空 controls.ini')
 }
 if (host.includes('核心没有 Range 遥测回调，使用首帧兼容判据')) {
-  fail('v19 仍会在没有真实读盘时把空画布误报成游戏已启动')
+  fail('v20 仍会在没有真实读盘时把空画布误报成游戏已启动')
 }
 if (!/gameBootConfirmed/.test(host) || !/BOOTED_LOG_PATTERN = \/\\bBooted\\s\+\.\+\\\.\\\.\\\.\//.test(host)) {
-  fail('v19 没有等待 PPSSPP 的 Booted 日志；Range 遥测跨线程丢失时会再次超时')
+  fail('v20 没有等待 PPSSPP 的 Booted 日志；Range 遥测跨线程丢失时会再次超时')
 }
 if (!/print\(text\)[\s\S]*?observeCoreLog\(message\)[\s\S]*?printErr\(text\)[\s\S]*?observeCoreLog\(message\)/.test(host)) {
-  fail('v19 没有同时观察 stdout/stderr；不同 Emscripten 日志路由下会漏掉 Booted')
+  fail('v20 没有同时观察 stdout/stderr；不同 Emscripten 日志路由下会漏掉 Booted')
 }
 if (/FS\.mount\([^\n]*WORKERFS|FS\.createLazyFile\(/.test(host)) {
   fail('本地 PSP 镜像不能在主线程挂 WORKERFS 或用同步 XHR 的 LazyFile')
@@ -238,7 +241,7 @@ if (
   manifest.rangeReadAheadBlocks !== 10 ||
   manifest.rangeReadAheadConcurrency !== 4 ||
   manifest.rangeReadAheadCacheBytes !== 25165824 ||
-  // v18/v19：正式同步读盘遇到 status 0 就地退避重试，超时后放宽时限（海外玩家开局后断流整局失败）
+  // v18/v20：正式同步读盘遇到 status 0 就地退避重试，超时后放宽时限（海外玩家开局后断流整局失败）
   manifest.rangeSyncRetryProfile !== 'status0-backoff-4x-45s-timeout-escalate-v2'
 ) {
   fail('runtime.json 没有声明 PSP 自适应滚动预读策略')
@@ -258,8 +261,10 @@ if (manifest.pthreadAudioContext !== 'shared-ring-buffer-worklet-fade-v2') {
   fail('runtime.json 没有声明 AudioWorklet 共享音频桥；页面主线程卡顿会造成 PSP 爆音')
 }
 if (
-  manifest.performanceProfile !== 'adaptive-canvas-v1' ||
+  manifest.performanceProfile !== 'adaptive-canvas-slow-network-v2' ||
   manifest.maxCanvasPixels !== 522240 ||
+  manifest.canvasLimitProfile !== 'performance=480x272;balanced=720x408;quality=960x544;slowNetwork=performance' ||
+  manifest.workerErrorDiagnostics !== 'stack-v1' ||
   manifest.pthreadPoolMax !== 8 ||
   manifest.lto !== true ||
   manifest.performanceTelemetry !== true
@@ -296,9 +301,12 @@ if ((!sourceOnly || productionEnabled) && !installed) {
 if (installed) {
   if (!manifest.artifactsInstalled || !manifest.artifacts) fail('已有二进制，但 runtime.json 没有来源/哈希清单')
   const runtimeScript = need(join(runtimeDir, 'PPSSPPSDL.js')).toString('utf8')
+  if (!runtimeScript.includes('__8bitgoPspCanvasSize') || !runtimeScript.includes('e.error?.stack')) {
+    fail('v20 核心缺少实际画布上限或 pthread worker 错误栈采集')
+  }
   const readAheadSource = need(join(root, 'vendor', 'ppsspp', 'range-read-ahead.js')).toString('utf8').trimEnd()
   if (!runtimeScript.includes(readAheadSource)) {
-    fail('v19 发布脚本与预读源码不一致；改源码后必须生成新实体运行时')
+    fail('v20 发布脚本与预读源码不一致；改源码后必须生成新实体运行时')
   }
   if (!runtimeScript.includes('if(fetched?.then){fetched=await fetched}else if(!fetched){fetched=await fetchPromise}')) {
     fail('PPSSPPSDL.js 没有等待异步核心资源重试 Promise，真机解包会报 bad input')

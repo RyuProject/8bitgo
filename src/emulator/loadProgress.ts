@@ -1390,7 +1390,7 @@ export function loadProgressPlan(ctx: LoadProgressPlanContext): LoadProgressPlan
   if (ctx.runtime === 'html5' || ctx.runtime === 'cloudgame' || ctx.runtime === 'liveview') {
     return makeLoadProgressPlan(`${ctx.runtime}-surface`, [['starting', 100]], { starting: 60_000 })
   }
-  if (ctx.runtime === 'ruffle') {
+  if (ctx.runtime === 'ruffle' || ctx.runtime === 'awayfl') {
     return makeLoadProgressPlan('flash', [['rom', 60], ['starting', 40]], { rom: 60_000, starting: 35_000 })
   }
   if (ctx.runtime === 'jsnes') {

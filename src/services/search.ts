@@ -6,7 +6,7 @@
  */
 import { api, apiEnabled } from './api'
 import { webAssemblyAvailable } from '@/emulator/browserSupport'
-import { platformRunsWithoutWasm } from '../../shared/wasm-free-platforms.js'
+import { gameRunsWithoutWasm } from '../../shared/wasm-free-platforms.js'
 
 export interface SuggestItem {
   slug: string
@@ -36,7 +36,7 @@ export async function fetchSuggest(q: string, limit = 8): Promise<SuggestItem[]>
     `/api/games/suggest?q=${encodeURIComponent(text)}&limit=${limit}`,
   )
   // 浏览器没有 WebAssembly 时只联想能跑的平台（services/noWasm.ts）
-  return (res.items ?? []).filter((g) => webAssemblyAvailable() || platformRunsWithoutWasm(g.platform))
+  return (res.items ?? []).filter((g) => webAssemblyAvailable() || gameRunsWithoutWasm(g.platform, g.slug))
 }
 
 export async function fetchSearchFallback(q: string): Promise<SearchFallback> {
@@ -44,7 +44,7 @@ export async function fetchSearchFallback(q: string): Promise<SearchFallback> {
   if (!text || !apiEnabled()) return { suggestion: null, related: [] }
   const res = await api.get<SearchFallback>(`/api/games/search-fallback?q=${encodeURIComponent(text)}`)
   if (webAssemblyAvailable()) return res
-  return { ...res, related: (res.related ?? []).filter((g) => platformRunsWithoutWasm(g.platform)) }
+  return { ...res, related: (res.related ?? []).filter((g) => gameRunsWithoutWasm(g.platform, g.slug)) }
 }
 
 /* ---------------- 最近搜索 ---------------- */

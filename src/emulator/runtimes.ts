@@ -11,9 +11,11 @@
 import type { RuntimeId, RuntimeMount } from './types'
 import { mount as emulatorjs } from './adapters/emulatorjs'
 import { mount as ruffle } from './adapters/ruffle'
+import { mount as awayfl } from './adapters/awayfl'
 import { mount as html5 } from './adapters/html5'
 import { mount as jsnes } from './adapters/jsnes'
 import { mount as binjgb } from './adapters/binjgb'
+import { mount as iodinegba } from './adapters/iodinegba'
 import { mount as j2me } from './adapters/j2me'
 import { mount as jsdos } from './adapters/jsdos'
 import { mount as webretro } from './adapters/webretro'
@@ -26,9 +28,11 @@ import { mount as liveview } from './adapters/liveview'
 const MOUNTS: Record<RuntimeId, RuntimeMount> = {
   emulatorjs,
   ruffle,
+  awayfl,
   html5,
   jsnes,
   binjgb,
+  iodinegba,
   j2me,
   jsdos,
   webretro,

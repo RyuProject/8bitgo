@@ -16,6 +16,9 @@ import { genreMap } from '@/data/genres'
 import { formatCount } from '@/lib/format'
 import { trackPageLoad } from '@/services/progress'
 import { BarList, btnClass, Card, inputClass, Stat } from './ui'
+import { SiteHealthPanel } from './SiteHealthPanel'
+import { useAdminData } from './AdminLayout'
+import type { Ability } from '../../shared/roles.js'
 
 /** 「最近上线」取几条 */
 const RECENT_SIZE = 8
@@ -174,6 +177,7 @@ function StartupFailures({
 }
 
 export function AdminOverview() {
+  const { abilities, state: dataState } = useAdminData()
   const [data, setData] = useState<OverviewData | null>(null)
   const [startup, setStartup] = useState<StartupStats | null>(null)
   const [startupDays, setStartupDays] = useState(7)
@@ -253,6 +257,14 @@ export function AdminOverview() {
     hint: platformMap[g.platform]?.shortName,
   }))
 
+  const allQuickActions: Array<{ ability: Ability; to: string; title: string; detail: string }> = [
+    { ability: 'games:edit', to: '/admin/games', title: '游戏与上传', detail: '新增条目、上传 ROM、检查游戏资料' },
+    { ability: 'posts:edit', to: '/admin/posts', title: '文章', detail: '编辑内容、发布文章、整理草稿' },
+    { ability: 'users:manage', to: '/admin/users', title: '用户', detail: '查找用户、处理封禁与角色' },
+    { ability: 'site:manage', to: '/admin/roms', title: 'ROM 存储', detail: '管理文件、BIOS 与后台转换' },
+  ]
+  const quickActions = allQuickActions.filter((action) => abilities.includes(action.ability))
+
   return (
     <div className="space-y-6">
       <div>
@@ -269,6 +281,23 @@ export function AdminOverview() {
       )}
       {error && <p className="rounded-lg bg-live/10 px-3 py-2 text-sm text-live">取不到统计数据：{error}</p>}
       {loading && !data && <p className="text-sm text-muted">正在读取数据库…</p>}
+
+      {abilities.includes('site:manage') && <SiteHealthPanel dataState={dataState} />}
+
+      <Card title="常用管理入口" className="overflow-hidden">
+        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+          {quickActions.map((action) => (
+            <Link
+              key={action.to}
+              to={action.to}
+              className="group rounded-xl border border-line bg-surface-2 px-4 py-3 transition hover:border-brand/50 hover:bg-brand-soft/50"
+            >
+              <span className="font-semibold group-hover:text-brand-hover">{action.title} <span aria-hidden>→</span></span>
+              <span className="mt-1 block text-xs text-muted">{action.detail}</span>
+            </Link>
+          ))}
+        </div>
+      </Card>
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">
         <Stat

@@ -4,9 +4,11 @@
  * 一个「运行时」负责把某类 ROM 跑起来。播放器只面向这个接口，不关心背后是谁：
  *   EmulatorJS  主机 / 掌机 / 街机 / DOS（RetroArch 核心）
  *   Ruffle      Flash (.swf)
+ *   AwayFL      仅供已验证游戏使用的 Flash 纯 JavaScript 回退
  *   HTML5       现代网页 / WebAssembly 游戏（加载受权部署的网页入口）
  *   jsnes       NES (.nes)
  *   binjgb      GB / GBC（无 WebGL 时使用 Canvas 2D）
+ *   IodineGBA   GBA（没有 WebAssembly 时使用纯 JavaScript）
  *   J2ME        Java 手机游戏 (.jar) —— 需自托管，见 adapters/j2me.ts
  *   js-dos      DOS 游戏 —— DOSBox 的浏览器移植，见 adapters/jsdos.ts
  *   webretro    历史备用的 RetroArch WASM 移植（当前不自动接管任何平台）
@@ -42,7 +44,7 @@ import type { ChatSendResult } from './chatSend'
 import type { GbaVideoMode } from './gbaVideo'
 import type { SaveArchiveDetails } from './saveEnvelope'
 
-export type RuntimeId = 'emulatorjs' | 'ruffle' | 'html5' | 'jsnes' | 'binjgb' | 'j2me' | 'jsdos' | 'webretro' | 'play' | 'ppsspp' | 'dolphin' | 'cloudgame' | 'liveview'
+export type RuntimeId = 'emulatorjs' | 'ruffle' | 'awayfl' | 'html5' | 'jsnes' | 'binjgb' | 'iodinegba' | 'j2me' | 'jsdos' | 'webretro' | 'play' | 'ppsspp' | 'dolphin' | 'cloudgame' | 'liveview'
 
 /**
  * jsnes 的 P2P 联机会话参数（见 adapters/jsnes.ts 与 emulator/jsnesNetplay.ts）。
@@ -413,8 +415,15 @@ export interface ResolveContext {
    * GB/GBC 改走 binjgb 的纯 JavaScript 构建（public/binjgb/binjgb-js.js，scripts/build-binjgb-js.mjs）。
    */
   wasmUnavailable?: boolean
+  /** GBA 无 WebAssembly 时改走必须有平台 BIOS 的纯 JavaScript IodineGBA。 */
+  gbaWasmUnavailable?: boolean
   /** 这个浏览器建不出 WebGL（见 webglSupport.ts）。NES 改走 jsnes，GB/GBC 改走 binjgb。 */
   webglUnavailable?: boolean
+  /**
+   * Flash 这一局改用 AwayFL（纯 JavaScript）：没有 WebAssembly 且游戏在验证名单里，或地址带 ?awayfl=1。
+   * 由 awayflPolicy.ts 在 effect 里判断后传进来；它比逐游戏的 runtime 覆盖优先（Ruffle 本来就跑不了）。
+   */
+  flashAwayfl?: boolean
 }
 
 /** 运行时能提供的能力。播放器按这个集合决定显示哪些按钮 —— 支持才亮，不支持不显示 */

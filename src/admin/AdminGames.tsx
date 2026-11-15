@@ -16,6 +16,7 @@ import { btnClass, inputClass } from './ui'
 
 type Status = 'all' | 'visible' | 'hidden'
 type HomeFilter = 'all' | 'picked' | 'unpicked'
+type BatchProgress = { hidden: boolean; done: number; total: number }
 /**
  * 排序。这几档服务端早就实现了（games-repo.js 的 orderBy），后台以前只是没给入口。
  * 'home' 不放进下拉里让人主动选 —— 它是「只看首页位」那一档的附带效果，见下面 effectiveSort。
@@ -50,9 +51,12 @@ export function AdminGames() {
   const [saving, setSaving] = useState(false)
   /** 同一时刻只做一个行操作，避免双击产生两次相反的上下架或重复删除。 */
   const [rowAction, setRowAction] = useState<{ slug: string; kind: 'visibility' | 'delete' } | null>(null)
+  const [selectedSlugs, setSelectedSlugs] = useState<Set<string>>(() => new Set())
+  const [batchProgress, setBatchProgress] = useState<BatchProgress | null>(null)
   // React 状态要到下一轮渲染才生效；ref 封住同一事件循环里的快速双击。
   const savingRef = useRef(false)
   const rowActionRef = useRef(false)
+  const batchActionRef = useRef(false)
 
   const [paged, setPaged] = useState<Paged<Game> | null>(null)
   const [loading, setLoading] = useState(false)
@@ -91,6 +95,10 @@ export function AdminGames() {
   useEffect(() => {
     setPage(1)
   }, [debouncedQ, platform, status, home, sort])
+
+  useEffect(() => {
+    setSelectedSlugs(new Set())
+  }, [debouncedQ, platform, status, home, sort, page])
 
   useEffect(() => {
     if (!apiEnabled()) {
@@ -146,6 +154,28 @@ export function AdminGames() {
   // 关键词、平台、上下架状态全部由服务端筛选，所以 items 就是最终结果，
   // total 和翻页也都是全库口径 —— 不能在前端再过滤一道，那会让「共 N 款」对不上。
   const rows = items
+  const selectedOnPage = rows.reduce((count, game) => count + Number(selectedSlugs.has(game.slug)), 0)
+  const allPageSelected = rows.length > 0 && selectedOnPage === rows.length
+  const somePageSelected = selectedOnPage > 0 && !allPageSelected
+
+  const togglePageSelection = () => {
+    const pageSlugs = rows.map((game) => game.slug)
+    setSelectedSlugs((current) => {
+      const next = new Set(current)
+      if (allPageSelected) pageSlugs.forEach((slug) => next.delete(slug))
+      else pageSlugs.forEach((slug) => next.add(slug))
+      return next
+    })
+  }
+
+  const toggleGameSelection = (slug: string, checked: boolean) => {
+    setSelectedSlugs((current) => {
+      const next = new Set(current)
+      if (checked) next.add(slug)
+      else next.delete(slug)
+      return next
+    })
+  }
 
   const save = async (game: Game) => {
     if (savingRef.current) return
@@ -178,7 +208,7 @@ export function AdminGames() {
       ? '只会从你的独立游戏库移除，不影响主游戏库、其他志愿者或 ROM 文件。'
       : '此操作会从主数据库中移除该游戏；R2 文件会保留，避免误删被其他游戏共用的资源。'
     if (!window.confirm(`确定删除「${g.titleZh ?? g.title}」？${scope}`)) return
-    if (rowActionRef.current) return
+    if (rowActionRef.current || batchActionRef.current) return
     rowActionRef.current = true
     setRowAction({ slug: g.slug, kind: 'delete' })
 
@@ -195,7 +225,7 @@ export function AdminGames() {
   }
 
   const toggleHidden = async (g: Game) => {
-    if (rowActionRef.current) return
+    if (rowActionRef.current || batchActionRef.current) return
     rowActionRef.current = true
     setRowAction({ slug: g.slug, kind: 'visibility' })
     try {
@@ -207,6 +237,50 @@ export function AdminGames() {
     } finally {
       rowActionRef.current = false
       setRowAction(null)
+    }
+  }
+
+  /** 批量操作限 4 路并发，单条失败不会中断其他游戏；失败项保留勾选方便重试。 */
+  const setSelectedVisibility = async (hidden: boolean) => {
+    if (batchActionRef.current || rowActionRef.current) return
+    const selected = rows.filter((game) => selectedSlugs.has(game.slug))
+    const pending = selected.filter((game) => game.hidden !== hidden)
+    if (!pending.length) {
+      setToast(selected.length ? '所选游戏已是目标状态' : '先选择当前页的游戏')
+      return
+    }
+    const actionLabel = personalLibrary ? (hidden ? '隐藏' : '显示') : (hidden ? '下架' : '上架')
+    if (!window.confirm(`确定${actionLabel}所选的 ${pending.length} 款游戏？这只会处理当前页已勾选的游戏。`)) return
+
+    batchActionRef.current = true
+    setBatchProgress({ hidden, done: 0, total: pending.length })
+    let nextIndex = 0
+    let completed = 0
+    const failed: string[] = []
+    const worker = async () => {
+      while (nextIndex < pending.length) {
+        const game = pending[nextIndex++]
+        try {
+          await setGameHidden(game.slug, hidden)
+        } catch {
+          failed.push(game.slug)
+        } finally {
+          completed += 1
+          setBatchProgress({ hidden, done: completed, total: pending.length })
+        }
+      }
+    }
+
+    try {
+      await Promise.all(Array.from({ length: Math.min(4, pending.length) }, () => worker()))
+      setSelectedSlugs(new Set(failed))
+      setToast(failed.length
+        ? `批量完成：成功 ${pending.length - failed.length} 款，失败 ${failed.length} 款；失败项已保留勾选`
+        : `已${actionLabel} ${pending.length} 款游戏`)
+      reload()
+    } finally {
+      batchActionRef.current = false
+      setBatchProgress(null)
     }
   }
 
@@ -225,7 +299,7 @@ export function AdminGames() {
                   : `共 ${total} 款（含已下架）。修改直接写入数据库，前台立即生效。`}
           </p>
         </div>
-        <button type="button" className={btnClass.primary} onClick={() => setEditing({ mode: 'add' })} disabled={!apiEnabled()}>
+        <button type="button" className={btnClass.primary} onClick={() => setEditing({ mode: 'add' })} disabled={!apiEnabled() || Boolean(batchProgress)}>
           ＋ 新增游戏
         </button>
       </div>
@@ -237,9 +311,10 @@ export function AdminGames() {
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder="搜索标题 / 译名 / 开发商 / 标签…"
+          disabled={Boolean(batchProgress)}
           className={cx(inputClass, 'w-64')}
         />
-        <select className={cx(inputClass, 'w-44')} value={platform} onChange={(e) => setPlatform(e.target.value as PlatformId | 'all')}>
+        <select className={cx(inputClass, 'w-44')} value={platform} onChange={(e) => setPlatform(e.target.value as PlatformId | 'all')} disabled={Boolean(batchProgress)}>
           <option value="all">全部平台</option>
           {platforms.map((p) => (
             <option key={p.id} value={p.id}>
@@ -247,14 +322,14 @@ export function AdminGames() {
             </option>
           ))}
         </select>
-        <select className={cx(inputClass, 'w-32')} value={status} onChange={(e) => setStatus(e.target.value as Status)}>
+        <select className={cx(inputClass, 'w-32')} value={status} onChange={(e) => setStatus(e.target.value as Status)} disabled={Boolean(batchProgress)}>
           <option value="all">全部状态</option>
           <option value="visible">{personalLibrary ? '库内显示' : '上架中'}</option>
           <option value="hidden">{personalLibrary ? '库内隐藏' : '已下架'}</option>
         </select>
         {/* 挑好首页位之后，对着这一档逐个传视频最省事 */}
         {!personalLibrary && (
-          <select className={cx(inputClass, 'w-36')} value={home} onChange={(e) => setHome(e.target.value as HomeFilter)}>
+          <select className={cx(inputClass, 'w-36')} value={home} onChange={(e) => setHome(e.target.value as HomeFilter)} disabled={Boolean(batchProgress)}>
             <option value="all">首页位：全部</option>
             <option value="picked">只看首页位</option>
             <option value="unpicked">未上首页</option>
@@ -263,7 +338,7 @@ export function AdminGames() {
         <select
           className={cx(inputClass, 'w-40')}
           value={effectiveSort}
-          disabled={effectiveSort !== sort}
+          disabled={effectiveSort !== sort || Boolean(batchProgress)}
           /* 禁用的 select 不触发 hover，说明只能挂在 title 上 */
           title={
             home === 'picked'
@@ -287,11 +362,54 @@ export function AdminGames() {
         </span>
       </div>
 
+      {selectedOnPage > 0 && (
+        <section className="rounded-xl border border-brand/25 bg-brand-soft/40 px-3 py-3" aria-label="批量游戏操作">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-sm font-semibold">已选择 {selectedOnPage} 款 <span className="font-normal text-muted">· 仅当前页</span></p>
+              {batchProgress && (
+                <p className="mt-1 text-xs text-muted" aria-live="polite">
+                  正在{personalLibrary ? (batchProgress.hidden ? '隐藏' : '显示') : (batchProgress.hidden ? '下架' : '上架')}：{batchProgress.done} / {batchProgress.total}
+                </p>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button type="button" className={btnClass.small} onClick={() => void setSelectedVisibility(false)} disabled={Boolean(batchProgress) || Boolean(rowAction)}>
+                {personalLibrary ? '批量显示' : '批量上架'}
+              </button>
+              <button type="button" className={btnClass.small} onClick={() => void setSelectedVisibility(true)} disabled={Boolean(batchProgress) || Boolean(rowAction)}>
+                {personalLibrary ? '批量隐藏' : '批量下架'}
+              </button>
+              <button type="button" className={cx(btnClass.small, 'text-muted')} onClick={() => setSelectedSlugs(new Set())} disabled={Boolean(batchProgress)}>
+                清除选择
+              </button>
+            </div>
+          </div>
+          {batchProgress && (
+            <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-surface" role="progressbar" aria-valuemin={0} aria-valuemax={batchProgress.total} aria-valuenow={batchProgress.done} aria-label="批量操作进度">
+              <div className="h-full rounded-full bg-brand transition-[width]" style={{ width: `${Math.round((batchProgress.done / batchProgress.total) * 100)}%` }} />
+            </div>
+          )}
+        </section>
+      )}
+
       {/* 表格 */}
       <div className="overflow-x-auto rounded-2xl border border-line bg-surface">
         <table className="w-full min-w-[880px] text-sm">
           <thead className="bg-surface-2 text-left text-xs text-muted">
             <tr>
+              <th className="w-10 px-3 py-2">
+                <input
+                  type="checkbox"
+                  checked={allPageSelected}
+                  ref={(element) => { if (element) element.indeterminate = somePageSelected }}
+                  onChange={togglePageSelection}
+                  aria-label="选择当前页全部游戏"
+                  title="只选择当前页"
+                  disabled={!rows.length || Boolean(batchProgress)}
+                  className="h-4 w-4 accent-[var(--color-brand)]"
+                />
+              </th>
               <th className="px-3 py-2 font-medium">游戏</th>
               <th className="px-3 py-2 font-medium">平台</th>
               <th className="px-3 py-2 font-medium">类型</th>
@@ -309,7 +427,17 @@ export function AdminGames() {
             {rows.map((g) => {
               const p = platformMap[g.platform]
               return (
-                <tr key={g.slug} className={cx('transition hover:bg-black/[0.03]', g.hidden && 'opacity-60')}>
+                <tr key={g.slug} className={cx('transition hover:bg-black/[0.03]', g.hidden && 'opacity-60', selectedSlugs.has(g.slug) && 'bg-brand-soft/30')}>
+                  <td className="px-3 py-2">
+                    <input
+                      type="checkbox"
+                      checked={selectedSlugs.has(g.slug)}
+                      onChange={(event) => toggleGameSelection(g.slug, event.target.checked)}
+                      aria-label={`选择${g.titleZh ?? g.title}`}
+                      disabled={Boolean(batchProgress)}
+                      className="h-4 w-4 accent-[var(--color-brand)]"
+                    />
+                  </td>
                   <td className="px-3 py-2">
                     <div className="flex items-center gap-2">
                       <span className="grid h-8 w-8 shrink-0 place-items-center rounded-md bg-surface-2 text-base" aria-hidden>
@@ -380,20 +508,20 @@ export function AdminGames() {
                   </td>
                   <td className="px-3 py-2">
                     <div className="flex justify-end gap-1">
-                      <button type="button" disabled={Boolean(rowAction)} className={cx(btnClass.small, 'text-brand-hover hover:bg-brand-soft')} onClick={() => setEditing({ mode: 'edit', game: g })}>
+                      <button type="button" disabled={Boolean(rowAction) || Boolean(batchProgress)} className={cx(btnClass.small, 'text-brand-hover hover:bg-brand-soft')} onClick={() => setEditing({ mode: 'edit', game: g })}>
                         编辑
                       </button>
                       <button
                         type="button"
                         className={cx(btnClass.small, 'text-muted hover:bg-black/5 hover:text-fg')}
-                        disabled={Boolean(rowAction)}
+                        disabled={Boolean(rowAction) || Boolean(batchProgress)}
                         onClick={() => void toggleHidden(g)}
                       >
                         {rowAction?.slug === g.slug && rowAction.kind === 'visibility'
                           ? '处理中…'
                           : personalLibrary ? (g.hidden ? '显示' : '隐藏') : (g.hidden ? '上架' : '下架')}
                       </button>
-                      <button type="button" disabled={Boolean(rowAction)} className={cx(btnClass.small, 'text-live hover:bg-live/15')} onClick={() => void remove(g)}>
+                      <button type="button" disabled={Boolean(rowAction) || Boolean(batchProgress)} className={cx(btnClass.small, 'text-live hover:bg-live/15')} onClick={() => void remove(g)}>
                         {rowAction?.slug === g.slug && rowAction.kind === 'delete' ? '删除中…' : '删除'}
                       </button>
                     </div>
@@ -403,7 +531,7 @@ export function AdminGames() {
             })}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={(FEATURES.coins ? 10 : 9) - (personalLibrary ? 1 : 0)} className="px-3 py-10 text-center text-sm text-muted">
+                <td colSpan={(FEATURES.coins ? 11 : 10) - (personalLibrary ? 1 : 0)} className="px-3 py-10 text-center text-sm text-muted">
                   {loading ? (
                     '正在读取数据库…'
                   ) : error ? (
@@ -453,13 +581,13 @@ export function AdminGames() {
             第 {page} / {totalPages} 页 · 共 {total} 款
           </span>
           <div className="flex gap-2">
-            <button type="button" className={btnClass.secondary} disabled={page <= 1 || loading} onClick={() => setPage((p) => Math.max(1, p - 1))}>
+            <button type="button" className={btnClass.secondary} disabled={page <= 1 || loading || Boolean(batchProgress)} onClick={() => setPage((p) => Math.max(1, p - 1))}>
               ← 上一页
             </button>
             <button
               type="button"
               className={btnClass.secondary}
-              disabled={page >= totalPages || loading}
+              disabled={page >= totalPages || loading || Boolean(batchProgress)}
               onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
             >
               下一页 →

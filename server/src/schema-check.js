@@ -158,7 +158,26 @@ export const EXPECTED_TABLES = [
   { table: 'friend_link_hits', why: '友情链接点击去重；缺了点击统计写入失败（首页照常）' },
 ]
 
+/*
+  最近一次自检的结论，给后台「站点健康」直接展示（见 admin-health.js）。
+  以前这些只打在启动日志里：缺表缺列时后台保存 500，管理员看到的是「保存失败」，
+  要登服务器翻 journalctl 才知道是没跑 migrate。null = 本进程还没跑完自检。
+*/
+let lastReport = null
+
+/** 后台健康面板读取最近一次自检结果；不重新查库，自检只在启动时跑一次 */
+export function schemaReport() {
+  return lastReport
+}
+
 export async function checkSchema() {
+  const ok = await runSchemaCheck()
+  return ok
+}
+
+async function runSchemaCheck() {
+  const report = { at: new Date().toISOString(), ok: false, missingTables: [], missingColumns: [], invalidDos: [], nonStreamingWindows: 0, error: null }
+  lastReport = report
   try {
     const cols = await query(
       `SELECT table_name AS t, column_name AS c
@@ -174,6 +193,8 @@ export async function checkSchema() {
     )
     const missingTables = EXPECTED_TABLES.filter((e) => !tables.has(e.table))
 
+    report.missingTables = missingTables.map((e) => ({ table: e.table, why: e.why }))
+    report.missingColumns = missingCols.map((e) => ({ table: e.table, column: e.column, why: e.why }))
     if (missingCols.length || missingTables.length) {
       console.warn('')
       console.warn('⚠️  数据库结构落后于代码，以下东西还没有：')
@@ -243,6 +264,7 @@ export async function checkSchema() {
     const invalid = [...games.values()]
       .map((game) => ({ slug: game.slug, error: dosGameConfigError(game) }))
       .filter((item) => item.error)
+    report.invalidDos = invalid.slice(0, 20)
     if (invalid.length) {
       console.warn('')
       console.warn('⚠️  DOSBox-X / Windows 客体 / PC-98 配置有致命缺项：')
@@ -271,6 +293,7 @@ export async function checkSchema() {
         ],
       }))
       .filter((item) => item.missing.length)
+    report.nonStreamingWindows = nonStreamingWindows.length
     if (nonStreamingWindows.length) {
       console.warn('')
       console.warn('⚠️  Windows 客体仍在使用整包兼容模式（严重性能 / 存档风险）：')
@@ -279,8 +302,10 @@ export async function checkSchema() {
       console.warn('   请在后台把原始 ZIP 转成版本化 Sockdrive；完整 ZIP 继续保留作回退。')
       console.warn('')
     }
+    report.ok = true
     return true
   } catch (e) {
+    report.error = e instanceof Error ? e.message : String(e)
     // 连不上库之类：这里不是主流程，别把启动搞挂
     console.warn('⚠️  表结构自检没跑成：', e instanceof Error ? e.message : String(e))
     return false

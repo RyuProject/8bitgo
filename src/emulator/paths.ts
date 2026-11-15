@@ -202,6 +202,11 @@ export function markRuffleEdgeFailed(): void {
   runtimeEdgeFailed.add('ruffle')
 }
 
+/** AwayFL 官方嵌入包版本；宿主页单独版本化，改动时需换 host-vN。 */
+export const AWAYFL_VERSION = '0.1.4'
+export const AWAYFL_PATH = `/awayfl/v${AWAYFL_VERSION}/`
+export const AWAYFL_HOST_PATH = '/awayfl/host-v1/'
+
 /**
  * js-dos 的 JS、DOSBox 和 DOSBox-X wasm 必须来自同一批产物。
  *
@@ -398,8 +403,9 @@ export const PPSSPP_PATH: string = asDir(import.meta.env.VITE_PPSSPP_PATH)
   2026-11-10 v18：只换 JS 读盘层，同步 Range 读遇到 status 0 就地退避重试（海外玩家开局后断流整局失败）。
   Wasm / data 与 v17 逐字节相同。生成脚本 scripts/refresh-ppsspp-retry-v18.mjs。
   2026-11-10 v19：超时后的重试把时限翻倍（30 → 60 → 120 秒），慢线路的 2MB 分片能读完。生成脚本 refresh-ppsspp-retry-v19.mjs。
+  2026-11-15 v20：现场发现实际 canvas 可随视口扩到 1533×777，且 3G 高延迟设备仍选高性能档；慢网现限制真实绘图缓冲到 480×272，并采集 worker 错误栈。
 */
-export const PPSSPP_RUNTIME_GENERATION = 'v19'
+export const PPSSPP_RUNTIME_GENERATION = 'v20'
 export const PPSSPP_RUNTIME_PATH: string = PPSSPP_PATH
   ? asDir(`${PPSSPP_PATH}${PPSSPP_RUNTIME_GENERATION}`)
   : ''

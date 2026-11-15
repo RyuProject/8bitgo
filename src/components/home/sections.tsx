@@ -13,7 +13,7 @@ import { GameCover } from '@/components/game/GameCover'
 import { genreMap, genres } from '@/data/genres'
 import { platformMap, platforms } from '@/data/platforms'
 import { isPlatformEnabled } from '@/config/platforms'
-import { platformListed, useNoWasmMode } from '@/services/noWasm'
+import { gameListed, useNoWasmMode } from '@/services/noWasm'
 import { gradientFor } from '@/lib/gradients'
 import { cx, formatCount } from '@/lib/format'
 import { useLang } from '@/services/lang'
@@ -284,7 +284,7 @@ export function GenreGridSection({
   const columns = GENRE_COLUMNS.map((id) => ({
     genre: genreMap[id],
     // 浏览器没有 WebAssembly 时只列能跑的平台（services/noWasm.ts）
-    games: (genreSamples?.[id] ?? []).filter((g) => platformListed(noWasm, g.platform)),
+    games: (genreSamples?.[id] ?? []).filter((g) => gameListed(noWasm, g.platform, g.slug)),
   })).filter((c) => c.games.length > 0)
 
   return (

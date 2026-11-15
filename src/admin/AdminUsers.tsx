@@ -8,6 +8,8 @@ import { btnClass, inputClass } from './ui'
 import { useAdminData } from './AdminLayout'
 import { ROLES, ROLE_LABELS, type UserRole } from '../../shared/roles.js'
 
+type UserFilter = 'all' | 'active' | 'banned'
+
 export function AdminUsers() {
   const me = useCurrentUser()
   // 改角色单独一道权限点：能封号的人不一定就该能发权限（见 shared/roles.js）
@@ -15,6 +17,7 @@ export function AdminUsers() {
   const canSetRole = abilities.includes('users:role')
   const [q, setQ] = useState('')
   const [debouncedQ, setDebouncedQ] = useState('')
+  const [userFilter, setUserFilter] = useState<UserFilter>('all')
   const [toast, setToast] = useState<string | null>(null)
   const [busyUserId, setBusyUserId] = useState<string | null>(null)
   const busyUserRef = useRef(false)
@@ -29,8 +32,12 @@ export function AdminUsers() {
     const needle = q.trim().toLowerCase()
     return users
       .filter((u) => !needle || u.nickname.toLowerCase().includes(needle) || u.email.toLowerCase().includes(needle))
+      .filter((u) => userFilter === 'all' || u.status === userFilter)
       .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
-  }, [users, q])
+  }, [users, q, userFilter])
+
+  const activeCount = users.filter((user) => user.status === 'active').length
+  const bannedCount = users.length - activeCount
 
   /** 是不是当前登录的这个管理员自己 */
   const isSelf = (u: PublicUser) => Boolean(me && me.id === u.id)
@@ -133,6 +140,27 @@ export function AdminUsers() {
           <p className="mt-1 text-xs text-dim">志愿者只拥有各自独立的游戏库和文章库；主库与其他志愿者的内容互相隔离。</p>
         </div>
         <input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索昵称 / 邮箱…" className={cx(inputClass, 'w-64')} />
+      </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap gap-1" role="group" aria-label="按用户状态筛选">
+          {([
+            ['all', `全部 ${users.length}`],
+            ['active', `正常 ${activeCount}`],
+            ['banned', `已封禁 ${bannedCount}`],
+          ] as const).map(([filter, label]) => (
+            <button
+              key={filter}
+              type="button"
+              aria-pressed={userFilter === filter}
+              onClick={() => setUserFilter(filter)}
+              className={cx('rounded-lg px-3 py-1.5 text-xs transition', userFilter === filter ? 'bg-brand-soft font-semibold text-brand-hover' : 'text-muted hover:bg-black/5 hover:text-fg')}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <span className="text-xs text-muted">显示 {list.length} 位</span>
       </div>
 
       <div className="overflow-x-auto rounded-2xl border border-line bg-surface">

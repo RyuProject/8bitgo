@@ -303,10 +303,9 @@ export function getDefaultKeymap(
       note: t.keymap.passthrough,
       rebind: 'none',
       quickSave,
-      // DOS 的手柄由 adapters/jsdos.ts 翻译成键盘（DOS_PAD_MAP）；Flash 那边没有手柄映射，
-      // 屏幕手柄也只画给键位表里认得的那些游戏（adapters/ruffle.ts 的 `if (keys)`）
-      pad: runtimeId === 'jsdos',
-      touch: runtimeId === 'ruffle' ? 'some' : runtimeId === 'jsdos' ? 'all' : 'none',
+      // DOS 的手柄由 adapters/jsdos.ts 翻译成键盘（DOS_PAD_MAP）；Flash 仅给后台配过键位的游戏画触控板。
+      pad: runtimeId === 'jsdos' || runtimeId === 'awayfl',
+      touch: runtimeId === 'ruffle' || runtimeId === 'awayfl' ? 'some' : runtimeId === 'jsdos' ? 'all' : 'none',
     }
   }
 
