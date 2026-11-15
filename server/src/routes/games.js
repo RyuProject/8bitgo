@@ -60,6 +60,13 @@ const duplicateGameSlugMessage = (slug, game) => {
     : `slug「${slug}」已存在，本次没有覆盖现有游戏。请修改 slug，或搜索并编辑该游戏。`
 }
 
+/** 只记录重复键的表 / 索引名，不把标签等用户填写的值写进服务日志。 */
+const duplicateKeyContext = (error) => {
+  const table = /^\s*INSERT\s+INTO\s+`?(game_[a-z_]+)`?/i.exec(String(error?.sql ?? ''))?.[1] ?? null
+  const fullKey = /for key ['`](.+?)['`]$/i.exec(String(error?.sqlMessage ?? ''))?.[1] ?? ''
+  return { table, key: fullKey.split('.').pop() || null }
+}
+
 // 数据库里的布尔列走 mysql2，tinyint(1) 回来的是数字 1/0，不是字符串。
 // 别用上面那个 truthy() —— 它只认查询串里的 '1'/'true'，套在数据行上会一律判 false。
 export const dbFlag = (v) => v === 1 || v === true || v === '1'
@@ -630,8 +637,8 @@ gamesRouter.put('/:slug', requireAbility('games:edit'), async (req, res, next) =
         return res.status(createOnly ? 201 : 200).json(saved)
       } catch (error) {
         if (createOnly && error?.code === 'ER_DUP_ENTRY') {
-          const existing = await getVolunteerGame(ownerId, slug).catch(() => null)
-          return res.status(409).json({ error: duplicateGameSlugMessage(slug, existing) })
+          const existing = await getVolunteerGame(ownerId, slug)
+          if (existing) return res.status(409).json({ error: duplicateGameSlugMessage(slug, existing) })
         }
         throw error
       }
@@ -641,8 +648,15 @@ gamesRouter.put('/:slug', requireAbility('games:edit'), async (req, res, next) =
       else await upsertGame(slug, req.body)
     } catch (error) {
       if (createOnly && error?.code === 'ER_DUP_ENTRY') {
-        const existing = await getGameBySlug(slug).catch(() => null)
-        return res.status(409).json({ error: duplicateGameSlugMessage(slug, existing) })
+        const existing = await getGameBySlug(slug)
+        if (existing) return res.status(409).json({ error: duplicateGameSlugMessage(slug, existing) })
+        const duplicate = duplicateKeyContext(error)
+        // createGame 的唯一键冲突也可能来自类型 / 标签 / ROM 关联表。
+        // 只有查到同 slug 的游戏才报 409；否则把真实失败交给错误处理中间件，免得误导管理员改 slug。
+        console.error('[games] 新增游戏遇到非 slug 重复键：', duplicate)
+        if (duplicate.table === 'game_roms') {
+          return res.status(400).json({ error: 'ROM 语言槽重复（语言代码大小写不同也视为重复），请合并后再保存。' })
+        }
       }
       throw error
     }

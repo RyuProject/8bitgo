@@ -752,10 +752,15 @@ export async function adminStats() {
 async function writeRelations(run, gameId, game, only) {
   if (!only || only.genres) {
     await run('DELETE FROM game_genres WHERE game_id = ?', [gameId])
-    const genres = [...new Set((game.genres ?? []).filter((x) => typeof x === 'string' && x))]
+    // 数据库按 utf8mb4_unicode_ci 判重；类型 ID 是 ASCII 标识，先统一小写，避免 `RPG` / `rpg`
+    // 在 JS Set 里不同、写到唯一键时却撞在一起。
+    const genres = [...new Set((game.genres ?? [])
+      .filter((x) => typeof x === 'string' && x)
+      .map((x) => x.toLowerCase()))]
     if (genres.length) {
       await run(
-        `INSERT INTO game_genres (game_id, genre_id) VALUES ${genres.map(() => '(?, ?)').join(', ')}`,
+        `INSERT INTO game_genres (game_id, genre_id) VALUES ${genres.map(() => '(?, ?)').join(', ')}
+         ON DUPLICATE KEY UPDATE genre_id = VALUES(genre_id)`,
         genres.flatMap((gid) => [gameId, gid]),
       )
     }
@@ -765,7 +770,8 @@ async function writeRelations(run, gameId, game, only) {
     const tags = [...new Set((game.tags ?? []).map((t) => String(t).trim()).filter(Boolean))]
     if (tags.length) {
       await run(
-        `INSERT INTO game_tags (game_id, tag) VALUES ${tags.map(() => '(?, ?)').join(', ')}`,
+        `INSERT INTO game_tags (game_id, tag) VALUES ${tags.map(() => '(?, ?)').join(', ')}
+         ON DUPLICATE KEY UPDATE tag = VALUES(tag)`,
         tags.flatMap((t) => [gameId, t]),
       )
     }
