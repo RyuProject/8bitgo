@@ -84,6 +84,11 @@ const MIRRORS: Readonly<Record<string, readonly SystemMirror[]>> = {
   '/systems/dos/system-win311-v1.jsdos': mirrorsFor('system-win311-v1.jsdos'),
   '/systems/dos/system-win95-v1.jsdos': mirrorsFor('system-win95-v1.jsdos'),
   '/systems/dos/system-win98-v1.jsdos': mirrorsFor('system-win98-v1.jsdos'),
+  /*
+    老游戏数据仍绑定这份繁中 Win95 原始镜像（包括《大富翁4》）。
+    它和后来的 DirectInput / DirectX 镜像不是同一份系统；兜底只能代理同名 R2 对象，不能替换成新版。
+  */
+  '/systems/dos/Windows95_Traditional-Chinese.jsdos': sameOriginMirror('Windows95_Traditional-Chinese.jsdos'),
   // 保留第一版路径给旧数据/缓存回退；自制对象都不能回落到官方同名系统。
   '/systems/dos/Windows95_Traditional-Chinese-DirectInput-v1.jsdos': sameOriginMirror(
     'Windows95_Traditional-Chinese-DirectInput-v1.jsdos',
