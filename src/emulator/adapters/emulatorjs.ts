@@ -1968,6 +1968,32 @@ export function isNativeBlobReadMessage(message: string): boolean {
   return /requested file could not be read|NotReadableError/i.test(message)
 }
 
+/**
+ * 核心下载失败时，EmulatorJS 先打印底层 fetch 异常，稍后才把错误写进加载框。
+ * 两条日志分开时不能把核心文件的 NotReadableError 当成 ROM Blob 故障，否则会重下整份 ROM。
+ * 只看异常之前最近一次 arraybuffer 请求，避免旧核心日志污染后续 ROM 读取错误的归因。
+ */
+export function isCoreDownloadReadError(message: string, recent: string): boolean {
+  const context = `${recent}\n${message}`
+  if (!isNativeBlobReadMessage(context)) return false
+  if (/error downloading core\s*\(/i.test(message)) return true
+
+  let lastArrayBufferUrl = ''
+  let coreRequestAtReadError = ''
+  for (const line of context.split(/\r?\n/)) {
+    const request = line.match(/Downloading arraybuffer file:\s*([^\s)]+)/i)
+    // 之后又开始了新的下载（如 ROM），或下载器的 XHR 回退已经把核心取回：之前那次读取错误已经了结，
+    // 不能拿它给后面的失败定性（否则 ROM 那边的错误会被说成「浏览器读不出核心」）。
+    if (request) {
+      lastArrayBufferUrl = request[1]
+      coreRequestAtReadError = ''
+    }
+    if (/XHR arraybuffer 重新下载成功/.test(line)) coreRequestAtReadError = ''
+    if (isNativeBlobReadMessage(line)) coreRequestAtReadError = lastArrayBufferUrl
+  }
+  return /(?:^|\/)emulatorjs\/cores\/[^/?#]+\.data(?:[?#]|$)/i.test(coreRequestAtReadError)
+}
+
 /** 8BG 解包：正常走 Blob；Blob 存储坏了（这次探出或本页早已探出）就整份留在内存。 */
 async function unpackRomPackForEngine(stored: Blob, onProgress: MountOptions['onProgress']): Promise<{ name: string; blob: Blob }> {
   const toMemory = async (consumeInput = false) => {
@@ -3004,11 +3030,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       if (!webglNow) return failLoad(rt.ejsWebglUnavailable, 'config')
     }
     const nativeBlobReadError = isNativeBlobReadMessage(`${line}\n${recent}`)
-    if (nativeBlobReadError && /error downloading core\s*\(/i.test(line)) {
+    if (isCoreDownloadReadError(line, recent)) {
       // NotReadableError 来自 melondsds-wasm.data 等核心响应时，不是预下载 ROM Blob 坏了。
       // 这类本地读取错误重下 120 秒 NDS ROM、切 ROM 语言或退 EdgeOne 都不会修复；不污染 ROM / 线路状态，也停止自动重试。
       logEngine(`[download] 核心响应读取报 NotReadableError；不标记 ROM Blob / 加速线路故障：${line}`)
-      return failLoad(fmt(rt.ejsEngineError, { msg: line }), 'config')
+      // 给玩家的话要说实话：是这台浏览器本地读不出文件，换浏览器才有用（原始那一行留在括号里给后台归组）。
+      return failLoad(fmt(rt.ejsCoreReadFailed, { msg: line }), 'config')
     }
     /*
       「Error loading EmulatorJS runtime」= 核心脚本跑完却没定义 EJS_Runtime。几秒内就报，且同一位玩家

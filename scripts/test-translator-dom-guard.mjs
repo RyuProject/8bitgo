@@ -67,4 +67,11 @@ for (const f of ['src/entry-client.tsx', 'src/main.tsx']) {
 }
 const counts = readFileSync('src/components/layout/SidebarCounts.tsx', 'utf8')
 assert.ok((counts.match(/translate="no"/g) || []).length >= 3, '计数徽标要 translate="no"')
+// 「0」与「• N」两种形态必须用不同 key：同 key 时 React 逐个删 [点, N]，N 被挪走就崩
+assert.match(counts, /key="empty"/, 'RoomCount 的 0 形态要有自己的 key')
+assert.match(counts, /key="live"/, 'RoomCount 的有房形态要有自己的 key')
+// 侧栏 RoomCard：⏸ / 👋 出现时以后面的数字为参照 insertBefore，数字不能是裸文本节点
+const card = readFileSync('src/components/game/RoomCard.tsx', 'utf8')
+assert.match(card, /<span translate="no">📡 \{viewers\}<\/span>/, 'RoomCard 直播在看人数要包进自己的元素')
+assert.match(card, /<span translate="no">\{room\.players\}\/\{max\}<\/span>/, 'RoomCard 人数/上限要包进自己的元素')
 console.log('translatorDomGuard：全部通过')

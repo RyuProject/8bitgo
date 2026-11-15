@@ -65,7 +65,7 @@ export function webAssemblyAvailable(): boolean {
  * 这一局在没有 WebAssembly 的浏览器里起得来吗。
  * jsnes 是纯 JS；8BG 外壳在没有 WebAssembly 时改用纯 JS 的 fzstd 解压（romPack.ts），所以本站的 NES 游戏照样能玩。
  * GB/GBC 的 binjgb 没有 WebAssembly 时自动换成它的纯 JavaScript 构建（public/binjgb/binjgb-js.js）；
- * GBA 没有 WebAssembly 时使用 IodineGBA 纯 JavaScript 核心（需要已配置的 GBA BIOS）。
+ * GBA 没有 WebAssembly 时使用 IodineGBA 纯 JavaScript 核心（没绑官方 BIOS 时用随站的开源替代 BIOS）。
  * 直播观看、云游戏只收视频，不需要。
  * 其余核心（EmulatorJS、js-dos、Ruffle …）本身就是 WebAssembly；Flash 仅验证名单中的游戏可由 AwayFL 回退。
  */

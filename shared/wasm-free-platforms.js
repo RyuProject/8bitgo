@@ -5,7 +5,7 @@
  * 而本站绝大多数核心都是 WebAssembly。这几种平台有纯 JS 退路：
  *   nes      → jsnes（随 Vite 打包），8BG 用纯 JS 的 fzstd 解压
  *   gb / gbc → binjgb 的纯 JavaScript 构建（public/binjgb/binjgb-js.js）
- *   gba      → IodineGBA（纯 JavaScript，上游要求平台 BIOS）
+ *   gba      → IodineGBA（纯 JavaScript；后台没绑官方 BIOS 时用随站的 MIT 开源替代 BIOS）
  * 网页游戏（html5）不算：站内的主力网页游戏几乎都是 WebAssembly 移植。
  *
  * 前端用它过滤游戏库、平台入口和卡片；后端 loadForRoute 收到 `nowasm=1` 时按平台和逐款名单查。

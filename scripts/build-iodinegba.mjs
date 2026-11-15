@@ -20,6 +20,8 @@ const { code } = await transform(source, {
   target: 'es2015',
   minify: true,
   legalComments: 'none',
+  // 压缩会删掉每个源文件头上的 MIT 声明；许可证要求随副本附上，所以在产物头部留一行并指向完整文本。
+  banner: '/*! IodineGBA (C) 2010-2019 Grant Galitz, MIT License: /iodinegba/LICENSE */',
 })
 const version = createHash('sha256').update(code).digest('hex').slice(0, 16)
 const publicDir = path.join(root, 'public/iodinegba')

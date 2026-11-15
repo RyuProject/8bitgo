@@ -201,6 +201,12 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
   作为第二道防线，流读取本身抛错时（非我们的 20 秒失速中止、无请求体）下载器改用 **XHR arraybuffer** 重取一次——不走流也不走 Blob，
   控制台出现「改用 XHR arraybuffer 重新下载」。⚠️ 那段代码块里 `t` 被 Content-Length 遮蔽，重取地址必须用 `y.url`。
   XHR 也失败才 reject，错误带原始 NotReadableError，适配器照旧按本机环境错误停止。回归：`npm run test:ejs-download`。
+  为什么当时每局都重下整份 ROM：旧适配器见 `recent` 里有 NotReadableError 就记 `romBlobBroken` 并按 `'runtime'` 重试，之后的开局
+  一律内存下载，而内存 ROM 按设计不进 `romCache`；内存那局再失败落到默认 scope，又触发加速镜像「改回主域重试」，每轮约 2 分钟。
+  现在 `isCoreDownloadReadError(line, recent)` 排在 ROM Blob 恢复之前：引擎写进加载框的 `Error downloading core (…)` 只认英文原文
+  （引擎语言包没有这个键），底层那一行先到时按「NotReadableError 之前最近一次 arraybuffer 请求是不是 `emulatorjs/cores/*.data`」判断；
+  之后又开始新下载或 XHR 回退成功都会清掉这个结论。玩家看到 `ejsCoreReadFailed`（换 Chrome / Edge / Firefox），不自动重试、不换 ROM、
+  不标记加速线路坏。回归：`npm run test:ejs-failure-reasons`。
 
 - **「Cannot allocate Wasm memory」先看是不是 32 位浏览器**（2026-11-11 大陆 Chrome 109 / Windows，8GB、4 核，
   《合金弹头 2》《1941》各一次，核心编译完在 instantiate 时报）。FBNeo 核心起步 128MB、最大 2GB，V8 分配失败会自己
@@ -3552,10 +3558,12 @@ SSR 的 `window.__8BITGO__` 注水）改写成 `<随机前缀>-module` / `-text/
 
 大陆 Edge 157 两份现场（《愤怒的小鸟》《JoJo》详情页）：`NotFoundError: Failed to execute 'removeChild' on 'Node'`，
 组件栈落在侧栏房间数徽标 `SidebarCounts`。Edge / Chrome 自带翻译把文本节点挪进 `<font>`，徽标在「0」与「• N」间切换时
-React 仍从原父元素删那个文本节点 → 整页崩到兜底页（facebook/react#11538，上游不修）。两处修法：
+React 仍从原父元素删那个文本节点 → 整页崩到兜底页（facebook/react#11538，上游不修）。触发时刻是房间数从 N 掉回 0
+（React 逐个删 `[点, N]` 两个子节点，N 那个文本节点已被挪走）；0 → N 走 `textContent = ''` 不会崩。两份现场的构建都早于修复提交。两处修法：
 `src/services/translatorDomGuard.ts` 在两个入口**首次渲染前**给 `Node.prototype.removeChild / insertBefore` 加「已不是直接子节点」
 的纠正分支（正常路径不变，只 warn 一次）；纯数字徽标加 `translate="no"`，两种形态用不同 key 整块替换。
-新写会在文字与元素之间切换的组件时，把可变文字包进自己的元素里。回归：`npm run test:translator-dom-guard`。
+新写会在文字与元素之间切换的组件时，把可变文字包进自己的元素里（侧栏 `RoomCard` 的 `📡 N`、`人数/上限` 同理：
+前面的 ⏸ / 👋 出现时 React 以裸文本节点为参照 insertBefore）。回归：`npm run test:translator-dom-guard`。
 
 ### 2.38 浏览器兼容下限：页面 Chrome 64，模拟器运行时 Chrome 80（2026-11-15）
 
@@ -3578,10 +3586,20 @@ React 仍从原父元素删那个文本节点 → 整页崩到兜底页（facebo
   《魂斗罗》是 mapper 2 / submapper 2，jsnes 不收，退回 EmulatorJS 后按 `browserNoWasm` 提示）。
   选浏览器内解包而不是让后端吐明文：明文接口等于拆掉 8BG 防成批离线读取这道门，还得绕源站、走不了 CDN / 大陆镜像。
   `begin()` 先查 `webAssemblyAvailable()`：jsnes、直播、云游戏、网页游戏放行，其余报 `browserNoWasm`。
-  GB/GBC 没有 WebAssembly 时走 binjgb 的纯 JavaScript 构建（见 §2.8.0.1）；GBA 改用自托管 IodineGBA 纯 JavaScript 核心，
-  它必须拿到正好 16 KiB 的平台 BIOS，未配置时开局前报配置错误。IodineGBA 没有即时存档 ABI，游戏内电池存档只写独立的
-  `8bitgo.iodinegba.battery.v1` 本地键，不与 EmulatorJS 的 SRAM / 云存档槽互相覆盖。上游源码钉在 `vendor/iodinegba/`，
-  `npm run iodinegba` 重新生成 `public/iodinegba/iodinegba.js` 与内容哈希版本；更新核心时必须同时改 URL 版本。
+  GB/GBC 没有 WebAssembly 时走 binjgb 的纯 JavaScript 构建（见 §2.8.0.1）；GBA 改用自托管 IodineGBA 纯 JavaScript 核心。
+  IodineGBA 没有 BIOS 高级模拟，必须拿到正好 16 KiB 的 BIOS：后台绑了官方 GBA BIOS 就用它，**没绑（线上至今没绑）就用随站发布的
+  MIT 开源替代 BIOS** `public/iodinegba/gba-bios-cult-of-gba.bin`（Cult-of-GBA，出处与摘要见 `vendor/iodinegba/UPSTREAM.md`）。
+  2026-11-15 前它没配 BIOS 就报配置错误，整条 GBA 退路其实不可用。三条实测结论（`npm run test:iodinegba` 守着）：
+  ① 开源 BIOS 的开机动画在 IodineGBA 里走不完（PC 卡在 0x100 附近、画面强制空白 = 白屏），所以**一律 `SKIPBoot`**，BIOS 只管 SWI；
+  ② 上游按音频缓冲水位决定每轮跑多少周期，AudioContext 还被挂起（iOS / Safari 没点过画面）时缓冲一直是满的，核心被压到 0%——
+  `createIodineAudioQueue` 在声音没放时不入队、`remainingBuffer` 返回 undefined，让核心按定时器照跑；
+  ③ 等后台 BIOS 映射最多 3 秒（接口慢时本地实测整局停在「正在准备模拟器 14%」），超时用开源 BIOS。
+  速度（M 系列 Mac / Chromium 153，《高级战争》《火红》《马里奥赛车》《缩小帽》）：只删 WebAssembly、JIT 照常时都是 100%；
+  `--js-flags=--jitless`（Edge 增强安全性 / Chrome 关掉 JS 优化器的样子）只有 12～20%，适配器连续 4 秒低于 70% 就在画面底部
+  提示原因（`runtime.iodinegbaSlow`）。IodineGBA 没有即时存档 ABI，游戏内电池存档只写独立的
+  `8bitgo.iodinegba.battery.v1` 本地键，不与 EmulatorJS 的 SRAM / 云存档槽互相覆盖（格式是否与 mGBA 互通未核对，别贸然接进 slot 9）。
+  上游源码钉在 `vendor/iodinegba/`，`npm run iodinegba` 重新生成 `public/iodinegba/iodinegba.js`（头部保留 MIT 声明）与内容哈希版本；
+  更新核心时必须同时改 URL 版本。
   js-dos 本身就是 WebAssembly，没有纯 JS 退路。
   回归：`npm run test:js-zstd-fallback`（fzstd 逐字节解开 @bokuweb/zstd-wasm 等级 19 的 frame，含 8MB 满块）。
   用 Chromium 110 加 `--js-flags=--noexpose-wasm` 可以原样复现（线上旧版崩到兜底页，修后页面正常、点开始给出提示）。

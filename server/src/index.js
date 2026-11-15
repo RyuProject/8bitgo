@@ -33,6 +33,7 @@ import { adminRouter } from './routes/admin.js'
 import { roomsRouter } from './routes/rooms.js'
 import { pageRouter } from './routes/page.js'
 import { platformBiosRouter } from './routes/platform-bios.js'
+import { systemImageSourcesRouter, adminSystemImageSourcesRouter } from './system-image-sources.js'
 import { siteNoticeRouter, adminSiteNoticeRouter } from './routes/site-notice.js'
 import { createAssetRepairRouter } from './routes/asset-repair.js'
 import { developersRouter } from './routes/developers.js'
@@ -235,6 +236,8 @@ app.use('/api/oauth', oauthRouter)
 app.use('/api/admin/open-apps', adminOpenAppsRouter)
 // 同理要排在 /api/admin 之前：adminRouter 里有 /:id 这类通配路由
 app.use('/api/admin/config', adminConfigRouter)
+// 必须排在 /api/admin 通用路由之前，避免被 adminRouter 的通配 id 吞掉。
+app.use('/api/admin/system-image-sources', adminSystemImageSourcesRouter)
 // 必须排在 /api/admin 之前：adminRouter 有通配参数，先挂可避免任务 id 被当成普通后台资源 id。
 app.use('/api/admin/psp-conversions', pspConversionsRouter)
 // 已有 PSP 地址保持兼容；新的中性入口让 PS1 不必依赖一个名字写死为 PSP 的 URL。
@@ -258,6 +261,7 @@ app.use('/api/rooms', roomsRouter)
 // 按路由取数：SSR 与客户端共用同一份定义（见 routes/page.js）
 app.use('/api/page', pageRouter)
 app.use('/api/platform-bios', platformBiosRouter)
+app.use('/api/system-image-sources', systemImageSourcesRouter)
 app.use('/api/site-notice', siteNoticeRouter)
 // 坏 chunk 自修复：访客发现 Cloudflare 边缘缓存了坏的 /assets/ 文件时，按清单核对后清那几个 URL
 app.use('/api/asset-repair', createAssetRepairRouter({ clientDir: CLIENT_DIR, siteOrigin: originOfSite() }))

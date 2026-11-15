@@ -150,7 +150,9 @@ export function RoomCard({ room, compact = false, watchOnly = false }: { room: R
                 ⏸
               </span>
             )}
-            📡 {viewers}
+            {/* 数字单独包一层：前面的 ⏸ 出现 / 消失时 React 以它为参照 insertBefore，
+                裸文本节点会被页面翻译挪进 <font>，参照失效就整页崩（见 translatorDomGuard.ts） */}
+            <span translate="no">📡 {viewers}</span>
           </span>
         ) : (
           <span className={cx('shrink-0 text-[11px] font-semibold', full ? 'text-dim' : 'text-online')}>
@@ -160,8 +162,8 @@ export function RoomCard({ room, compact = false, watchOnly = false }: { room: R
                 👋
               </span>
             )}
-            {room.players}/{max}
-            {viewers > 0 && <span className="ml-1 font-normal text-muted">👀 {viewers}</span>}
+            <span translate="no">{room.players}/{max}</span>
+            {viewers > 0 && <span translate="no" className="ml-1 font-normal text-muted">👀 {viewers}</span>}
           </span>
         )}
       </Link>

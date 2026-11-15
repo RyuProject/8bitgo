@@ -7,3 +7,19 @@
 - The upstream `index.html` is retained only as the authoritative script load order. The site provides its own canvas, audio, input, ROM loading, and save bridge.
 
 Update the pinned source and commit together. Rebuild the bundle and version stamp after any upstream source change.
+
+## Open-source GBA BIOS (default when no official BIOS is configured)
+
+IodineGBA has no high-level BIOS emulation, so it cannot start without a 16 KiB BIOS image. The site does not
+ship Nintendo's BIOS. When no GBA platform BIOS is bound in the admin, the player uses the MIT-licensed
+replacement BIOS written from scratch in ARM assembly by DenSinH and fleroviux:
+
+- Source: https://github.com/Cult-of-GBA/BIOS
+- Pinned commit: `a30e9a96df083628b650724b7d4d7112b4070b98` (prebuilt `bios.bin` from that commit)
+- Served as: `public/iodinegba/gba-bios-cult-of-gba.bin`
+- SHA-256: `61af6e8c2db6cf24aa6924e8133f6a50833158fca33ff08ea5e11e1a06e132f2` (checked by `npm run test:iodinegba`)
+- License: MIT; see `public/iodinegba/LICENSE-gba-bios`.
+
+Its boot animation never finishes under IodineGBA (the CPU loops near 0x100 with the screen in forced blank),
+so the adapter always sets `SKIPBoot`; the BIOS is then only used for SWI calls, which it implements
+(including `MidiKey2Freq`; a few sound-driver calls are no-ops upstream).

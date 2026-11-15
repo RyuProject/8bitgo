@@ -236,6 +236,7 @@
     "j2me": "node scripts/setup-j2me.mjs",
     "webretro": "node scripts/setup-webretro.mjs",
     "iodinegba": "node scripts/build-iodinegba.mjs",
+    "test:iodinegba": "node scripts/test-iodinegba.mjs",
     "qemu": "node scripts/setup-qemu-wasm.mjs",
     "ejscores": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/copy-ejs-cores.mjs",
     "ejsmeta": "node scripts/sync-emulatorjs-core-metadata.mjs",

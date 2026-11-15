@@ -54,12 +54,43 @@ const stripTypes = (code) => code
   assert.equal(context.f('Failed to start game'), false)
 }
 
+// 核心响应读不出（2026-11-15 华为浏览器 17《节奏天国》）：按现场日志原文归为核心读取错误，ROM Blob 的读错不能被算进来
+{
+  const code = [fnSource('isNativeBlobReadMessage'), fnSource('isCoreDownloadReadError')]
+    .join('\n')
+    .replace('(message: string): boolean', '(message)')
+    .replace('(message: string, recent: string): boolean', '(message, recent)')
+  const context = {}
+  vm.runInNewContext(`${code};globalThis.f=isCoreDownloadReadError`, context)
+  const NRE = 'NotReadableError: The requested file could not be read, typically due to permission problems that have occurred after a reference to a file was acquired.'
+  const coreReq = '[log] [EJS Download] Downloading arraybuffer file: https://8bitgo.com/emulatorjs/cores/melondsds-wasm.data?v=ff33abb149a27202 (cache usage requested)'
+  const edgeCoreReq = '[log] [EJS Download] Downloading arraybuffer file: https://cn.8bitgo.com/_cn/emulatorjs/cores/melondsds-wasm.data?v=ff33abb149a27202 (cache usage requested)'
+  const romReq = '[log] [EJS Download] Downloading arraybuffer file: blob:https://8bitgo.com/0d6f8c1e-6f8a-4a8e-9a43-1f2b3c4d5e6f'
+  const downloadError = `[error] Download error: Download failed: ${NRE}`
+  // 现场原样：先打底层异常，再在加载框写 Error downloading core
+  assert.equal(context.f('Error downloading core (melondsds-wasm.data)', [coreReq, downloadError].join('\n')), true)
+  // 走大陆加速入口取的核心同样算
+  assert.equal(context.f('Error downloading core (melondsds-wasm.data)', [edgeCoreReq, downloadError].join('\n')), true)
+  // 加载框文字还没出来、先报的是底层那一行
+  assert.equal(context.f(downloadError, coreReq), true)
+  // XHR 回退也失败：错误里带着原始 NotReadableError
+  assert.equal(context.f(`[error] Download error: Download failed: Error: XHR fallback network error after ${NRE}`, [coreReq, `[warn] [EJS Download] response stream read failed ${NRE}`].join('\n')), true)
+  // 预下载 ROM 的 Blob 读不出：不是核心，照旧走 ROM Blob 恢复
+  assert.equal(context.f(`[error] [EJS Download] Failed to fetch non-http URL: blob:x TypeError: ${NRE}`, [coreReq, romReq].join('\n')), false)
+  // 核心读错后 XHR 已经取回，后面 ROM 再出别的错：旧的核心读错不能拿来定性
+  assert.equal(context.f('[error] Failed to start game', [coreReq, `[warn] [EJS Download] response stream read failed ${NRE}`, '[warn] [EJS Download] XHR arraybuffer 重新下载成功：melondsds-wasm.data 1310720 字节'].join('\n')), false)
+  assert.equal(context.f('[error] Failed to start game', [coreReq, `[warn] [EJS Download] response stream read failed ${NRE}`, romReq].join('\n')), false)
+  // 没有 NotReadableError 的核心下载失败（404、断网）不归这一类，仍按原规则重试
+  assert.equal(context.f('Error downloading core (melondsds-wasm.data)', [coreReq, '[error] Download error: Download failed: Error: HTTP 404'].join('\n')), false)
+}
+
 // 坏核心缓存：下次开局前强制清
 assert.match(adapter, /error loading emulatorjs runtime\/i\.test\(line\)\) \{\s*try \{ localStorage\.removeItem\(EJS_CACHE_PURGED_KEY\)/)
 assert.match(adapter, /if \(isOutOfMemoryText\(`\$\{line\}\\n\$\{recent\}`\)\) \{[\s\S]{0,1500}failLoad\(rt\.ejsOutOfMemory, 'runtime'\)/)
 // 默认 FBNeo 内存不足先交给播放器换低内存核心；内存不足不能把大陆加速入口判坏
 assert.match(adapter, /options\.onOutOfMemory\?\.\(core, line\)\) \{\s*loadFailed = true/)
-assert.match(adapter, /usedEjsEdge && !stalled && !outOfMemory\) markEjsEdgeFailed\(\)/)
+// 本机环境错误（config，如核心响应读不出）同样与加速线路无关
+assert.match(adapter, /usedEjsEdge && !stalled && !outOfMemory && scope !== 'config'\) markEjsEdgeFailed\(\)/)
 // 错误级的内存不足要直接走 onFatal：7z Worker 报 DataCloneError out of memory 后引擎不会再发任何事件
 assert.match(adapter, /level === 'error' && isOutOfMemoryText\(text\)\)\)\) \{\n\s*onFatal\(text\.trim\(\)\)/)
 
@@ -202,6 +233,11 @@ console.log('✔ 启动失败原因：跨 realm 错误原文、内存不足、�
   assert.match(adapter, /installBlobFetchShortcut\(win, preparedArcadeBlobUrl, preparedRomBlob, \(error\) => \{/)
   assert.equal((adapter.match(/preparedRomBlob = (prepared|extracted)\.blob/g) ?? []).length, 5, '每处预下载 ROM 都要记下 Blob')
   // Chromium 走 Blob 回应时，NotReadableError 只在引擎的 non-http 那一行里：也要记 Blob 存储已坏、按运行时重试
-  assert.match(adapter, /isNativeBlobReadMessage\(`\$\{line\}\\n\$\{recent\}`\)\) \{\s+markRomBlobStorageBroken\('引擎读 ROM '\)\s+return failLoad\(fmt\(rt\.ejsEngineError, \{ msg: line \}\), 'runtime'\)/)
+  assert.match(adapter, /if \(isCoreDownloadReadError\(line, recent\)\) \{[\s\S]{0,600}failLoad\(fmt\(rt\.ejsCoreReadFailed, \{ msg: line \}\), 'config'\)/, '核心下载 NotReadableError 要先归为本机环境错误，并如实告诉玩家换浏览器')
+  assert.ok(
+    adapter.indexOf('if (isCoreDownloadReadError(line, recent))') < adapter.indexOf('if (preparedRomBlob && !memoryRomOf(preparedRomBlob) && nativeBlobReadError)'),
+    '核心读取错误必须先于 ROM Blob 恢复判断，否则会记 romBlobBroken 并重下整份 ROM',
+  )
+  assert.match(adapter, /if \(preparedRomBlob && !memoryRomOf\(preparedRomBlob\) && nativeBlobReadError\) \{\s+markRomBlobStorageBroken\('引擎读 ROM '\)\s+return failLoad\(fmt\(rt\.ejsEngineError, \{ msg: line \}\), 'runtime'\)/, '只有非核心的 ROM Blob 读取错误才走内存 ROM 恢复')
   console.log('✓ 预下载 ROM 由 Blob 直接交给引擎，其余请求放行')
 }

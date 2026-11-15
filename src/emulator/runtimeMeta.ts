@@ -127,7 +127,10 @@ export const binjgbMeta: Runtime = {
 export const iodineGbaMeta: Runtime = {
   id: 'iodinegba',
   name: 'IodineGBA',
-  description: 'GBA 纯 JavaScript 备用核心（需要 GBA BIOS）',
+  // getter：站点语言可切换（见文件头）
+  get description() {
+    return getT().runtime.iodinegbaDesc
+  },
   extensions: ['gba', 'agb', 'bin', 'zip'],
   // 只在 GBA 浏览器没有 WebAssembly 时由兼容策略接管。
   priority: 4,

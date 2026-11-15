@@ -50,6 +50,7 @@ import {
   defaultDos71SystemUrl,
   isDos71SystemUrl,
   loadSystemBytes,
+  prepareSystemImageSources,
   systemSourcesFor,
 } from '../systemSource'
 import { armJspi } from '../jspiFlag'
@@ -1543,19 +1544,19 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         ? verifySockdriveForLaunch(sockdriveUrl, abort.signal, Boolean(systemUrl))
         : Promise.resolve<SockdriveRuntimePreload>('none'))
       /*
-        系统镜像走**多源兜底**（见 ../systemSource）：主源是我们自己的资源域名，
-        取不到或者卡死就换 js-dos 官方源。它是 Win9x/Win3.x 游戏的硬前提 ——
+        系统镜像走**多源测速与兜底**（见 ../systemSource）：先读后台已校验的副本，
+        再对候选源的首块做小范围并行测速；固定的同源 R2 代理始终留作兜底。它是 Win9x/Win3.x 游戏的硬前提 ——
         拿不到就什么都做不了，而玩家看到的只是一个永远不动的进度条。
       */
       const systemTask = settled(systemUrl
-        ? loadSystemBytes(
+        ? prepareSystemImageSources(abort.signal).then(() => loadSystemBytes(
             systemSourcesFor(systemUrl),
             (progress) => {
               latestSystemProgress = { ...progress, phase: 'assets' }
               if (engineDone) options.onProgress?.(latestSystemProgress)
             },
             abort.signal,
-          )
+          ))
         : Promise.resolve(null))
 
       let Dos: DosFn
