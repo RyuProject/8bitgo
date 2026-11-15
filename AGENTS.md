@@ -265,6 +265,19 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
   `game does not support multiplayer`；原来适配器把联机拒绝送进 `onError`，播放器因此拆掉能玩的单机游戏并记成启动失败。
   现在只在核心尚未启动时才报加载错误；首帧之后退出房间、保留模拟器并提示联机失败。任何联机失败出口都要清理本次 socket。
 
+### 2.8.0.2 AvP 的旧 CPS2 图形 ROM 是 overdump（2026-11-14）
+
+《异形大战铁血战士》（`alien-vs-predator`）两份玩家现场都由 FBNeo 找到了 `/avsp`，但报缺少
+`avp.14m`、要求 CRC `0x39933b1e`。线上旧包 `roms/arcade/avsp.zip.8bg` 中的 `avp.14m` 是 2 MiB，
+前后两个 1 MiB 完全相同，每半段 CRC 都是核心要求值；另外三个图形成员也有同样的重复半段：
+`avp.16m` → `0x85412860`、`avp.18m` → `0x2e2beb06`、`avp.20m` → `0xe4798d1a`。
+这是旧 overdump，不是 BIOS、核心或下载故障。只在确认两半逐字节相同、且半段 CRC 与驱动清单一致后，
+才可去掉重复后半段；不要把这个规则套到其它包或改版 ROM。
+
+修正版保存在 R2 的独立 key `roms/arcade/avsp-fixed-20261115.zip.8bg`，生产 `game_roms` 英文绑定已切换，
+旧对象保留用于回滚。改 ROM 绑定后要验证游戏详情 API，并刷新 Cloudflare 精确 URL；大陆入口 EdgeOne
+没有清缓存通道，需确认它也已返回新 key，或等待其 `s-maxage=300` 缓存自然过期。
+
 ### 2.8.1 街机 BIOS 分两档：平台一份 + **按系统包**各一份
 
 引擎（EmulatorJS）只给**一个** BIOS 槽位（`EJS_biosUrl`），而 `arcade` 是**一个平台**却顶着
