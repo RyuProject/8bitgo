@@ -10,7 +10,7 @@
  * 仍然保留一层短缓存（SSR_CACHE_MS，默认 60 秒），但缓存的是「每个路由的结果」
  * 而不是整个库，且带容量上限，不会被爬虫翻页翻到内存爆掉。
  */
-import { listGames, listHomePicks, getGameBySlug, platformCounts, genreCounts, developerCounts, verifiedFlashGameCount } from './games-repo.js'
+import { listGames, listHomePicks, getGameBySlug, platformCounts, genreCounts, developerCounts, verifiedFlashGameCount, filteredGameFacetCounts } from './games-repo.js'
 import { getPublicCollectionDetail, listPublicCollections, topCollections } from './routes/collections.js'
 import { query } from './db.js'
 import { attachPostTags } from './routes/posts.js'
@@ -339,9 +339,10 @@ export async function loadForRoute(pathname, search) {
     // 带搜索词的组合太发散，不进缓存，免得把内存塞满。
     // ⚠️ page 要规整过再进 key，理由见 cachePage
     const key = q.q ? null : `games:${JSON.stringify({ ...q, page: cachePage(q.page) })}`
-    // 列表与筛选面板互不依赖：并行查，缓存未命中时 TTFB 少一整段 SQL 往返（以前先等列表再查 facets）
+    // 列表与上下文筛选计数并行查，首屏结果和标签数字使用同一组筛选条件。
     const load = async () => {
-      const [list, facets] = await Promise.all([listGames(q), loadFacets({ platforms, gameSlugs })])
+      const [list, counts] = await Promise.all([listGames(q), filteredGameFacetCounts(q)])
+      const facets = { ...counts, developers: [] }
       return { route: 'games', list, facets }
     }
     return key ? cached(key, load) : load()
