@@ -40,6 +40,11 @@ bucket_name = "8bitgo-webgame"
 # ALLOWED_ORIGINS = "https://8bitgo.example.com,http://localhost:5173"
 ALLOWED_ORIGINS = "*"
 
+# 下载域名上把 /api/open/v1/rom-plain|bundle-plain 与 /api/diag 原样转发给源站（见 src/index.js
+# 的 PLAIN_PROXY_PATH）。凭据校验、限流、解密都在源站；留空任一项即关闭转发。
+PLAIN_PROXY_HOSTS = "download.8bitgo.com"
+PLAIN_PROXY_ORIGIN = "https://8bitgo.com"
+
 # 以下上限单位为 MiB，只约束单次 PUT；不能绕过平台入口大小上限。
 MAX_UPLOAD_MB = "512"
 # 缓存分两档，判据是**请求 URL 有没有版本戳**（完整理由见 src/index.js 顶部注释）：
