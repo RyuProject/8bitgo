@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { Link } from 'react-router-dom'
 import type { Game, PlatformId } from '@/types'
 import type { Paged } from '@/services/pageData'
@@ -13,6 +13,7 @@ import { romKeysOf } from '@/services/roms'
 import { trackPageLoad } from '@/services/progress'
 import { GameForm } from './GameForm'
 import { btnClass, inputClass } from './ui'
+import { getUploadActivity, subscribeUploadActivity } from '@/services/uploadActivity'
 
 type Status = 'all' | 'visible' | 'hidden'
 type HomeFilter = 'all' | 'picked' | 'unpicked'
@@ -47,6 +48,9 @@ export function AdminGames() {
   const [sort, setSort] = useState<Sort>('newest')
   const [page, setPage] = useState(1)
   const [editing, setEditing] = useState<Editing>(null)
+  const [editorMinimized, setEditorMinimized] = useState(false)
+  const [autoSaveAfterUpload, setAutoSaveAfterUpload] = useState(false)
+  const uploadActivity = useSyncExternalStore(subscribeUploadActivity, getUploadActivity, getUploadActivity)
   const [toast, setToast] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   /** 同一时刻只做一个行操作，避免双击产生两次相反的上下架或重复删除。 */
@@ -177,8 +181,20 @@ export function AdminGames() {
     })
   }
 
+  const openEditor = (next: Exclude<Editing, null>) => {
+    setEditorMinimized(false)
+    setAutoSaveAfterUpload(false)
+    setEditing(next)
+  }
+
+  const restoreEditor = useCallback((message?: string | null) => {
+    setEditorMinimized(false)
+    setAutoSaveAfterUpload(false)
+    if (message) setToast(message)
+  }, [])
+
   const save = async (game: Game) => {
-    if (savingRef.current) return
+    if (savingRef.current) return false
     savingRef.current = true
     setSaving(true)
     try {
@@ -186,10 +202,14 @@ export function AdminGames() {
       await upsertGame(game, { createOnly: editing?.mode === 'add' })
       // 只有保存成功才关闭；请求失败时 catch 会保留表单，避免已经填写的内容丢失。
       setEditing(null)
+      setEditorMinimized(false)
+      setAutoSaveAfterUpload(false)
       setToast(editing?.mode === 'edit' ? `已保存「${game.titleZh ?? game.title}」` : `已新增「${game.titleZh ?? game.title}」`)
       reload()
+      return true
     } catch (err) {
       setToast(err instanceof Error ? err.message : '保存失败')
+      return false
     } finally {
       savingRef.current = false
       setSaving(false)
@@ -299,7 +319,7 @@ export function AdminGames() {
                   : `共 ${total} 款（含已下架）。修改直接写入数据库，前台立即生效。`}
           </p>
         </div>
-        <button type="button" className={btnClass.primary} onClick={() => setEditing({ mode: 'add' })} disabled={!apiEnabled() || Boolean(batchProgress)}>
+        <button type="button" className={btnClass.primary} onClick={() => openEditor({ mode: 'add' })} disabled={!apiEnabled() || Boolean(batchProgress)}>
           ＋ 新增游戏
         </button>
       </div>
@@ -508,7 +528,7 @@ export function AdminGames() {
                   </td>
                   <td className="px-3 py-2">
                     <div className="flex justify-end gap-1">
-                      <button type="button" disabled={Boolean(rowAction) || Boolean(batchProgress)} className={cx(btnClass.small, 'text-brand-hover hover:bg-brand-soft')} onClick={() => setEditing({ mode: 'edit', game: g })}>
+                      <button type="button" disabled={Boolean(rowAction) || Boolean(batchProgress)} className={cx(btnClass.small, 'text-brand-hover hover:bg-brand-soft')} onClick={() => openEditor({ mode: 'edit', game: g })}>
                         编辑
                       </button>
                       <button
@@ -598,26 +618,60 @@ export function AdminGames() {
 
       {/* 编辑弹窗 */}
       {editing && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-4 backdrop-blur-sm">
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-label={editing.mode === 'edit' ? '编辑游戏' : '新增游戏'}
-            className="max-h-[90dvh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-line bg-surface p-5"
-          >
-            <h2 className="mb-4 text-lg font-bold">{editing.mode === 'edit' ? `编辑：${editing.game.titleZh ?? editing.game.title}` : '新增游戏'}</h2>
-            <GameForm
-              key={editing.mode === 'edit' ? editing.game.slug : 'new'}
-              initial={editing.mode === 'edit' ? editing.game : undefined}
-              // 表单里这份只够挡住「和当前页某条重名」，真正的判重在 save() 里问后端
-              existingSlugs={items.map((g) => g.slug)}
-              personalLibrary={personalLibrary}
-              submitting={saving}
-              onSubmit={save}
-              onCancel={() => setEditing(null)}
-            />
+        <>
+          <div hidden={editorMinimized} className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-2 backdrop-blur-sm sm:p-4">
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-label={editing.mode === 'edit' ? '编辑游戏' : '新增游戏'}
+              className="max-h-[96dvh] w-full max-w-5xl overflow-y-auto rounded-2xl border border-line bg-surface p-3 sm:max-h-[92dvh] sm:p-5"
+            >
+              <h2 className="mb-3 text-lg font-bold">{editing.mode === 'edit' ? `编辑：${editing.game.titleZh ?? editing.game.title}` : '新增游戏'}</h2>
+              <GameForm
+                key={editing.mode === 'edit' ? editing.game.slug : 'new'}
+                initial={editing.mode === 'edit' ? editing.game : undefined}
+                // 表单里这份只够挡住「和当前页某条重名」，真正的判重在 save() 里问后端
+                existingSlugs={items.map((g) => g.slug)}
+                personalLibrary={personalLibrary}
+                submitting={saving}
+                autoSaveAfterUpload={autoSaveAfterUpload}
+                onMinimizeForUpload={() => {
+                  setAutoSaveAfterUpload(true)
+                  setEditorMinimized(true)
+                }}
+                onBackgroundUploadFailure={restoreEditor}
+                onSubmit={save}
+                onCancel={() => {
+                  setEditing(null)
+                  setEditorMinimized(false)
+                  setAutoSaveAfterUpload(false)
+                }}
+              />
+            </div>
           </div>
-        </div>
+          {editorMinimized && (
+            <aside className="fixed bottom-4 right-4 z-[60] w-[min(24rem,calc(100vw-2rem))] rounded-xl border border-brand/40 bg-surface p-4 shadow-2xl" role="status" aria-live="polite">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold">
+                    {saving ? '正在保存游戏资料…' : uploadActivity.active.length
+                      ? '后台处理中'
+                      : autoSaveAfterUpload ? '等待上传 / 转码任务完成…' : '编辑器已最小化'}
+                  </p>
+                  <p className="mt-1 text-xs text-muted">所有文件任务完成后会自动提交游戏资料。</p>
+                </div>
+                <button type="button" className={btnClass.small} onClick={() => restoreEditor()}>
+                  恢复编辑
+                </button>
+              </div>
+              {uploadActivity.active.length > 0 && (
+                <ul className="mt-3 max-h-24 space-y-1 overflow-y-auto border-t border-line pt-2 text-xs text-muted">
+                  {uploadActivity.active.map((task) => <li key={task.id} className="truncate">{task.label}</li>)}
+                </ul>
+              )}
+            </aside>
+          )}
+        </>
       )}
 
       {toast && (

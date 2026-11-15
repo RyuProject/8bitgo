@@ -17,6 +17,7 @@ import { deleteRom, listRomDir, uploadRom } from '@/services/roms'
 import { human } from './uploadGuards'
 import { flashCompatibilityIssue } from '@/emulator/flashCompatibility'
 import { assertSwf } from '@/lib/romValidation'
+import { trackUploadActivity } from '@/services/uploadActivity'
 
 export interface BundleUploadProgress {
   /** 已经传完的文件数 */
@@ -40,11 +41,11 @@ export interface BundleUploadResult {
 /** 传一个文件，失败重试一次 —— 几十个文件里偶发一个网络抖动就整包失败太脆了 */
 async function putOnce(blob: Blob, key: string, onPct: (p: number) => void) {
   try {
-    return await uploadRom(blob, key, onPct)
+    return await uploadRom(blob, key, onPct, { failureIsFatal: false })
   } catch (err) {
     // 口令 / 地址不对这类问题重试多少次都一样，直接抛
     if (err instanceof Error && /被拒绝|不可用|尚未配置/.test(err.message)) throw err
-    return await uploadRom(blob, key, onPct)
+    return await uploadRom(blob, key, onPct, { failureIsFatal: false })
   }
 }
 
@@ -102,57 +103,59 @@ export async function uploadSwfBundle({
     if (!ok) return null
   }
 
-  const totalBytes = picked.reduce((s, f) => s + f.size, 0) || 1
-  const keys: string[] = []
-  let doneBytes = 0
+  return trackUploadActivity(`Flash 整包发布：${base}`, async () => {
+    const totalBytes = picked.reduce((s, f) => s + f.size, 0) || 1
+    const keys: string[] = []
+    let doneBytes = 0
 
-  for (let i = 0; i < picked.length; i++) {
-    const f = picked[i]
-    const key = keyOf(f.path)
-    onProgress?.({ done: i, total: picked.length, path: f.path, pct: Math.round((doneBytes / totalBytes) * 100) })
-    try {
-      const data = await extractZipEntry(zip, f.entry)
-      const blob = new Blob([data as BlobPart])
-      await putOnce(blob, key, (pct) => {
-        onProgress?.({
-          done: i,
-          total: picked.length,
-          path: f.path,
-          pct: Math.round(((doneBytes + (f.size * pct) / 100) / totalBytes) * 100),
+    for (let i = 0; i < picked.length; i++) {
+      const f = picked[i]
+      const key = keyOf(f.path)
+      onProgress?.({ done: i, total: picked.length, path: f.path, pct: Math.round((doneBytes / totalBytes) * 100) })
+      try {
+        const data = await extractZipEntry(zip, f.entry)
+        const blob = new Blob([data as BlobPart])
+        await putOnce(blob, key, (pct) => {
+          onProgress?.({
+            done: i,
+            total: picked.length,
+            path: f.path,
+            pct: Math.round(((doneBytes + (f.size * pct) / 100) / totalBytes) * 100),
+          })
         })
-      })
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      throw new Error(`第 ${i + 1}/${picked.length} 个文件 ${f.path} 失败：${msg}（前 ${i} 个已经传上去了，修好后重传整包即可覆盖）`)
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        throw new Error(`第 ${i + 1}/${picked.length} 个文件 ${f.path} 失败：${msg}（前 ${i} 个已经传上去了，修好后重传整包即可覆盖）`)
+      }
+      keys.push(key)
+      doneBytes += f.size
     }
-    keys.push(key)
-    doneBytes += f.size
-  }
-  onProgress?.({ done: picked.length, total: picked.length, path: '', pct: 100 })
+    onProgress?.({ done: picked.length, total: picked.length, path: '', pct: 100 })
 
-  // 清理孤儿：上一版包里有、这一版没有的文件。留着不影响加载，但会一直占空间，
-  // 而且下次有人来看目录会以为它们还在被引用。
-  const removed: string[] = []
-  const uploaded = new Set(keys)
-  const stale = existing.filter((o) => !uploaded.has(o.key))
-  if (stale.length) {
-    const ok = window.confirm(
-      `${base}/\n\n目录里还剩 ${stale.length} 个这次没传的旧文件：\n` +
-        stale.slice(0, 8).map((o) => `  ${o.key.slice(base.length + 1)}`).join('\n') +
-        (stale.length > 8 ? `\n  …还有 ${stale.length - 8} 个` : '') +
-        '\n\n从 R2 删掉吗？（不确定就选取消，它们不影响游戏加载）',
-    )
-    if (ok) {
-      for (const o of stale) {
-        try {
-          await deleteRom(o.key)
-          removed.push(o.key)
-        } catch {
-          /* 删不掉就算了，不能让清理失败把整次上传判成失败 */
+    // 清理孤儿：上一版包里有、这一版没有的文件。留着不影响加载，但会一直占空间，
+    // 而且下次有人来看目录会以为它们还在被引用。
+    const removed: string[] = []
+    const uploaded = new Set(keys)
+    const stale = existing.filter((o) => !uploaded.has(o.key))
+    if (stale.length) {
+      const ok = window.confirm(
+        `${base}/\n\n目录里还剩 ${stale.length} 个这次没传的旧文件：\n` +
+          stale.slice(0, 8).map((o) => `  ${o.key.slice(base.length + 1)}`).join('\n') +
+          (stale.length > 8 ? `\n  …还有 ${stale.length - 8} 个` : '') +
+          '\n\n从 R2 删掉吗？（不确定就选取消，它们不影响游戏加载）',
+      )
+      if (ok) {
+        for (const o of stale) {
+          try {
+            await deleteRom(o.key)
+            removed.push(o.key)
+          } catch {
+            /* 删不掉就算了，不能让清理失败把整次上传判成失败 */
+          }
         }
       }
     }
-  }
 
-  return { mainKey: keyOf(main), keys, bytes: totalBytes, removed }
+    return { mainKey: keyOf(main), keys, bytes: totalBytes, removed }
+  })
 }

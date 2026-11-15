@@ -1,5 +1,7 @@
 /** 大型 DOS / Windows ZIP → Sockdrive 后台任务客户端；原始文件继续复用 ROM multipart 上传。 */
 import { api, ApiError } from './api'
+import { trackUploadActivity } from './uploadActivity'
+import type { UploadActivityOptions } from './uploadActivity'
 
 export type SockdriveConversionStatus =
   | 'queued'
@@ -173,18 +175,26 @@ async function retryRequest<T>(run: () => Promise<T>, attempts: number): Promise
   throw last
 }
 
-export async function createSockdriveConversion(request: CreateSockdriveConversion): Promise<SockdriveConversionJob> {
+export async function createSockdriveConversion(
+  request: CreateSockdriveConversion,
+  activityOptions?: UploadActivityOptions,
+): Promise<SockdriveConversionJob> {
   // sourceKey 是幂等键；网关可能在服务端插入任务后才丢掉响应，原请求重发只会取回那一项。
-  return retryRequest(() => api.post<SockdriveConversionJob>('/api/admin/sockdrive-conversions', request, true), 5)
+  return trackUploadActivity('创建 Sockdrive 转换任务', () =>
+    retryRequest(() => api.post<SockdriveConversionJob>('/api/admin/sockdrive-conversions', request, true), 5),
+    activityOptions,
+  )
 }
 
 export const getSockdriveConversion = (id: string) =>
   api.get<SockdriveConversionJob>(`/api/admin/sockdrive-conversions/${encodeURIComponent(id)}`, true)
 
 export const retrySockdriveConversion = (id: string) =>
-  retryRequest(
-    () => api.post<SockdriveConversionJob>(`/api/admin/sockdrive-conversions/${encodeURIComponent(id)}/retry`, undefined, true),
-    5,
+  trackUploadActivity('重新排队 Sockdrive 转换', () =>
+    retryRequest(
+      () => api.post<SockdriveConversionJob>(`/api/admin/sockdrive-conversions/${encodeURIComponent(id)}/retry`, undefined, true),
+      5,
+    ),
   )
 
 export function sockdriveConversionLabel(job: SockdriveConversionJob): string {
@@ -205,26 +215,29 @@ export async function waitForSockdriveConversion(
   onUpdate?: (job: SockdriveConversionJob) => void,
   signal?: AbortSignal,
   onConnectionIssue?: (error: Error, attempt: number, retryInMs: number) => void,
+  activityOptions?: UploadActivityOptions,
 ): Promise<SockdriveConversionJob> {
-  let failures = 0
-  for (;;) {
-    if (signal?.aborted) throw new DOMException('页面已离开，后台转换仍会继续', 'AbortError')
-    let job: SockdriveConversionJob
-    try {
-      job = await getSockdriveConversion(id)
-      failures = 0
-    } catch (error) {
-      if (!retryableSockdriveRequestError(error)) throw error
-      failures++
-      // 后台任务在 MySQL 与独立队列里继续跑；一次 502/断网只代表这次“查询”失败，绝不能改成任务失败。
-      const retryInMs = Math.min(15_000, 1_000 * 2 ** Math.min(4, failures - 1))
-      onConnectionIssue?.(error instanceof Error ? error : new Error(String(error)), failures, retryInMs)
-      await wait(retryInMs, signal)
-      continue
+  return trackUploadActivity('服务器制作并发布 Sockdrive', async () => {
+    let failures = 0
+    for (;;) {
+      if (signal?.aborted) throw new DOMException('页面已离开，后台转换仍会继续', 'AbortError')
+      let job: SockdriveConversionJob
+      try {
+        job = await getSockdriveConversion(id)
+        failures = 0
+      } catch (error) {
+        if (!retryableSockdriveRequestError(error)) throw error
+        failures++
+        // 后台任务在 MySQL 与独立队列里继续跑；一次 502/断网只代表这次“查询”失败，绝不能改成任务失败。
+        const retryInMs = Math.min(15_000, 1_000 * 2 ** Math.min(4, failures - 1))
+        onConnectionIssue?.(error instanceof Error ? error : new Error(String(error)), failures, retryInMs)
+        await wait(retryInMs, signal)
+        continue
+      }
+      onUpdate?.(job)
+      if (job.status === 'completed') return job
+      if (job.status === 'failed') throw new Error(job.error || 'Sockdrive 转换失败')
+      await wait(1800, signal)
     }
-    onUpdate?.(job)
-    if (job.status === 'completed') return job
-    if (job.status === 'failed') throw new Error(job.error || 'Sockdrive 转换失败')
-    await wait(1800, signal)
-  }
+  }, activityOptions)
 }

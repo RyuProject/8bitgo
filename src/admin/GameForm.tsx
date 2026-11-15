@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import type { ArcadeMameDisk, FlashControlButton, Game, GenreId, PlatformId } from '@/types'
 import { normalizeRomLanguageCode, romLanguageLabel, ROM_LANGS, type RomSlotLang } from '@/config/languages'
@@ -81,6 +81,7 @@ import { isVersionedSockdriveDirectory } from '../../shared/sockdrive-url.js'
 import { probeRange } from '@/emulator/remoteDisc'
 import { isRomPackBytes, isRomPackUrl, packRomForUpload, recommendedRomPackCodec, releasePackedRomUpload, romPackKey, unpackRomPackBlob, verifyRomPackBlob } from '@/services/romPack'
 import { isStreamingDiscPlatform } from '../../shared/streaming-disc-platforms.js'
+import { getUploadActivity, subscribeUploadActivity, trackUploadActivity } from '@/services/uploadActivity'
 import { flashCompatibilityIssue } from '@/emulator/flashCompatibility'
 import { assertSwf, assertSwfBlob } from '@/lib/romValidation'
 import {
@@ -248,14 +249,35 @@ interface Props {
   personalLibrary?: boolean
   /** 保存期间由父层锁住整张表单，避免请求飞行中继续编辑却被成功回包关闭。 */
   submitting?: boolean
-  onSubmit: (game: Game) => void | Promise<void>
+  /** 管理员可把编辑器缩到角落；文件上传 / 转码结束后再自动提交当前草稿。 */
+  autoSaveAfterUpload?: boolean
+  onMinimizeForUpload?: () => void
+  onBackgroundUploadFailure?: (message?: string | null) => void
+  onSubmit: (game: Game) => void | boolean | Promise<void | boolean>
   onCancel: () => void
 }
 
-export function GameForm({ initial, existingSlugs, personalLibrary = false, submitting = false, onSubmit, onCancel }: Props) {
+export function GameForm({
+  initial,
+  existingSlugs,
+  personalLibrary = false,
+  submitting = false,
+  autoSaveAfterUpload = false,
+  onMinimizeForUpload,
+  onBackgroundUploadFailure,
+  onSubmit,
+  onCancel,
+}: Props) {
   const initialForm = initial ?? { ...EMPTY, addedAt: today() }
   const initialTagsText = (initial?.tags ?? []).join(', ')
   const [form, setForm] = useState<Game>(initialForm)
+  const formElementRef = useRef<HTMLFormElement | null>(null)
+  const uploadActivity = useSyncExternalStore(subscribeUploadActivity, getUploadActivity, getUploadActivity)
+  const backgroundSawActivity = useRef(false)
+  const backgroundFailureBaseline = useRef(0)
+  const backgroundStartedBaseline = useRef(0)
+  const backgroundSubmitRequested = useRef(false)
+  const backgroundFailureReported = useRef(false)
   /** 上传 ROM 得出的“这包还缺哪张盘”只在当前编辑会话提示；真正的绑定要等 CHD 上传成功才入表单。 */
   const [mameMediaProfile, setMameMediaProfile] = useState<MameArcadeDiskProfile | null>(null)
   /** 街机通常只有一个可启动 ROM；地区变体按需展开，避免新建条目先看到八份空上传位。 */
@@ -352,6 +374,48 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
   const hasUnsavedChanges = () => JSON.stringify({ form, tagsText }) !== initialSnapshot.current
 
   useEffect(() => {
+    if (!autoSaveAfterUpload) {
+      backgroundSawActivity.current = false
+      backgroundSubmitRequested.current = false
+      backgroundFailureReported.current = false
+    }
+  // 失败基线在按钮事件里同步记录，避免很快完成的上传先于 effect 被错误地当成旧失败。
+  }, [autoSaveAfterUpload])
+
+  useEffect(() => {
+    if (!autoSaveAfterUpload) return
+    if (uploadActivity.active.length) {
+      backgroundSawActivity.current = true
+      backgroundSubmitRequested.current = false
+      return
+    }
+    // 活动可能在 React 收到限频通知前已经结束；started 计数仍能确认后台确实等过任务。
+    if (uploadActivity.started > backgroundStartedBaseline.current) backgroundSawActivity.current = true
+    // 嵌套任务可能有一次失败后被外层上传器成功重试。只有全部任务结束后才判定最终失败。
+    if (uploadActivity.failures > backgroundFailureBaseline.current && !backgroundFailureReported.current) {
+      backgroundFailureReported.current = true
+      setError('后台上传或转码失败，已停止自动保存；恢复编辑后可查看具体错误并重试。')
+      onBackgroundUploadFailure?.('后台上传或转码失败，已恢复编辑。')
+      return
+    }
+    // 点击“后台上传并保存”时可能还在本机校验 / 打包；等第一项任务真正开始后再判断空闲。
+    if (!backgroundSawActivity.current) return
+    const timer = window.setTimeout(() => {
+      if (getUploadActivity().active.length) return
+      backgroundSubmitRequested.current = true
+      // 直接派发 submit 事件，沿用同一套表单校验，同时避免浏览器原生 required 校验吞掉事件。
+      formElementRef.current?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    }, 1500)
+    return () => window.clearTimeout(timer)
+  }, [autoSaveAfterUpload, uploadActivity, onBackgroundUploadFailure])
+
+  useEffect(() => {
+    if (!autoSaveAfterUpload || !backgroundSubmitRequested.current || !error) return
+    onBackgroundUploadFailure?.(error)
+    backgroundSubmitRequested.current = false
+  }, [autoSaveAfterUpload, error, onBackgroundUploadFailure])
+
+  useEffect(() => {
     if (submitting) return
     const warn = (event: BeforeUnloadEvent) => {
       if (!hasUnsavedChanges()) return
@@ -373,8 +437,23 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
 
   const requestCancel = () => {
     if (submitting || romDeleteBusy) return
+    if (getUploadActivity().active.length) {
+      setError('上传或转码仍在进行中；请先缩小窗口让任务在后台完成，或等任务结束后再关闭。')
+      return
+    }
     if (hasUnsavedChanges() && !window.confirm('还有未保存的修改，确定放弃吗？')) return
     onCancel()
+  }
+
+  const startBackgroundUpload = () => {
+    const activity = getUploadActivity()
+    backgroundFailureBaseline.current = activity.failures
+    backgroundStartedBaseline.current = activity.started
+    backgroundSawActivity.current = activity.active.length > 0
+    backgroundSubmitRequested.current = false
+    backgroundFailureReported.current = false
+    setError(null)
+    onMinimizeForUpload?.()
   }
 
   useEffect(() => {
@@ -793,6 +872,10 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
   const submit = (e: FormEvent) => {
     e.preventDefault()
     if (submitting) return
+    if (getUploadActivity().active.length) {
+      setError('上传或转码仍在进行中；等文件完成后再保存，避免把旧地址写回游戏。')
+      return
+    }
     const slug = slugify(form.slug || form.title)
     if (!form.title.trim()) return setError('请填写英文标题')
     if (!slug) return setError('slug 不能为空')
@@ -983,7 +1066,7 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
       }
     }
 
-    onSubmit({
+    const gameToSave: Game = {
       ...form,
       slug,
       title: form.title.trim(),
@@ -1076,12 +1159,62 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
           .map(([language, description]) => [language, description.trim()] as const)
           .filter(([, description]) => Boolean(description)),
       ),
+    }
+    void Promise.resolve(onSubmit(gameToSave)).then((saved) => {
+      if (saved === false && autoSaveAfterUpload) {
+        backgroundSubmitRequested.current = false
+        setError('游戏资料未保存成功，草稿仍保留在编辑器中。')
+        onBackgroundUploadFailure?.(null)
+      }
+    }).catch(() => {
+      if (autoSaveAfterUpload) {
+        backgroundSubmitRequested.current = false
+        setError('游戏资料未保存成功，草稿仍保留在编辑器中。')
+        onBackgroundUploadFailure?.(null)
+      }
     })
   }
 
   return (
-    <form onSubmit={submit} className="space-y-4" aria-busy={submitting || romDeleteBusy}>
+    <form ref={formElementRef} onSubmit={submit} className="space-y-4" aria-busy={submitting || romDeleteBusy || uploadActivity.active.length > 0}>
+      <nav aria-label="游戏编辑分区" className="sticky top-0 z-20 -mx-3 flex flex-wrap gap-1 border-b border-line bg-surface/95 px-3 py-2 backdrop-blur sm:-mx-5 sm:px-5">
+        {[
+          ['game-basic', '基础信息'],
+          ['game-runtime', '平台与运行'],
+          ['game-roms', '游戏文件'],
+          ['game-media', '展示与简介'],
+          ['game-publish', '发布设置'],
+        ].map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            className={cx(btnClass.small, 'border border-transparent text-muted hover:border-line hover:bg-surface-2 hover:text-fg')}
+            onClick={() => document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+          >
+            {label}
+          </button>
+        ))}
+      </nav>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg bg-surface-2 px-3 py-2 text-xs" role="status">
+        <span><b className="text-fg">{platformMap[form.platform]?.nameZh ?? form.platform}</b></span>
+        <span className="text-muted">{Object.values(form.roms ?? {}).filter((key) => key?.trim()).length || Number(Boolean(form.rom?.trim()))} 个 ROM 槽已绑定</span>
+        {coreOptions.length > 0 && (
+          <span className="text-muted">核心：{form.core ? coreOptions.find((option) => option.id === form.core)?.label ?? form.core : '自动适配'}</span>
+        )}
+        {form.platform === 'arcade' && (
+          <span className="text-muted">
+            自动识别：{form.playersInferred ? `${form.playersInferred} 人` : '玩家人数待识别'}
+            {form.arcadeBios ? ` · BIOS ${form.arcadeBios}` : ''}
+          </span>
+        )}
+        {!isPlayable(form.platform) && <span className="text-live">此平台暂不支持在线运行</span>}
+      </div>
       <fieldset disabled={submitting || romDeleteBusy} className="contents">
+      <section id="game-basic" className="scroll-mt-14 space-y-4 rounded-xl border border-line p-4">
+        <header>
+          <h3 className="text-sm font-semibold">基础信息</h3>
+          <p className="mt-1 text-xs text-muted">先填标题、平台与分类；slug 会跟随英文标题生成，也可以在新建时手动调整。</p>
+        </header>
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="英文标题 *">
           <input className={inputClass} value={form.title} onChange={(e) => set('title', e.target.value)} placeholder="Super Mario Bros." required />
@@ -1174,6 +1307,15 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
         <Field label="上线日期">
           <input type="date" className={inputClass} value={form.addedAt} onChange={(e) => set('addedAt', e.target.value)} />
         </Field>
+      </div>
+      </section>
+
+      <section id="game-runtime" className="scroll-mt-14 space-y-4 rounded-xl border border-line p-4">
+        <header>
+          <h3 className="text-sm font-semibold">平台与运行</h3>
+          <p className="mt-1 text-xs text-muted">{platformMap[form.platform]?.name ?? form.platform} 专属选项会按平台自动展开；留空的核心和引擎由播放器按 ROM 特征选择。</p>
+        </header>
+      <div className="grid gap-3 sm:grid-cols-2">
         {form.platform === 'dos' && (
           <>
             <Field label="运行环境">
@@ -1591,7 +1733,18 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
           </p>
         </Field>}
       </div>
+      </section>
 
+      <section id="game-roms" className="scroll-mt-14 space-y-4 rounded-xl border border-line p-4">
+        <header className="flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <h3 className="text-sm font-semibold">游戏文件</h3>
+            <p className="mt-1 text-xs text-muted">选择文件后会先做平台识别与完整性检查，再按文件大小和网络条件选择直传或断点分片。</p>
+          </div>
+          <span className="rounded-full bg-surface-2 px-2 py-1 text-[11px] text-muted">
+            {Object.values(form.roms ?? {}).filter((key) => key?.trim()).length} 个语言槽已绑定
+          </span>
+        </header>
       <div className="space-y-3 rounded-xl border border-line p-3">
         <div>
           <p className="text-sm font-semibold">{form.platform === 'arcade' ? '街机 ROM 与启动配置' : 'ROM 文件（按语言）'}</p>
@@ -1779,7 +1932,13 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
           allowStorage={!personalLibrary}
         />
       )}
+      </section>
 
+      <section id="game-media" className="scroll-mt-14 space-y-4 rounded-xl border border-line p-4">
+        <header>
+          <h3 className="text-sm font-semibold">展示与简介</h3>
+          <p className="mt-1 text-xs text-muted">封面会自动缩放压缩；关键词可从已有语言简介提取，翻译结果仍可继续手动校对。</p>
+        </header>
       <div className="grid gap-3 sm:grid-cols-[6rem_1fr]">
         <Field label="封面 emoji" hint="无封面图 / 视频时的兜底">
           <input className={cx(inputClass, 'text-center text-lg')} value={form.icon} onChange={(e) => set('icon', e.target.value)} maxLength={4} />
@@ -1892,7 +2051,13 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
           </button>
         </div>
       </Field>
+      </section>
 
+      <section id="game-publish" className="scroll-mt-14 space-y-4 rounded-xl border border-line p-4">
+        <header>
+          <h3 className="text-sm font-semibold">发布设置</h3>
+          <p className="mt-1 text-xs text-muted">联机人数默认按 ROM 推断；这里集中管理上下架、精选和玩家可见行为。</p>
+        </header>
       <div className="flex flex-wrap gap-4 text-sm">
         {/*
           联机不再要求逐款勾选：默认「自动」由服务端按 ROM 推断人数（街机读 FBNeo 驱动表，
@@ -1947,11 +2112,23 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
           {error}
         </p>
       )}
+      </section>
 
-      <div className="flex justify-end gap-2 border-t border-line pt-4">
+      <div className="sticky bottom-0 z-20 -mx-3 flex justify-end gap-2 border-t border-line bg-surface/95 px-3 py-3 backdrop-blur sm:-mx-5 sm:px-5">
         <button type="button" className={btnClass.secondary} onClick={requestCancel} disabled={submitting || romDeleteBusy}>
           取消
         </button>
+        {!personalLibrary && onMinimizeForUpload && (
+          <button
+            type="button"
+            className={btnClass.secondary}
+            onClick={startBackgroundUpload}
+            disabled={submitting || romDeleteBusy}
+            title="弹窗会缩到角落；当前上传与转码全部结束后自动保存"
+          >
+            后台上传并保存
+          </button>
+        )}
         <button type="submit" className={btnClass.primary}>
           {submitting ? '保存中…' : isEdit ? '保存修改' : '新增游戏'}
         </button>
@@ -2234,33 +2411,35 @@ function DosExtrasField({
     const next = refs.slice()
     const failed: string[] = []
     let done = 0
-    for (const item of usable) {
-      const path = normalizeExtraPath(item.path)
-      const key = `${dir}/${extraObjectName(path)}`
-      try {
-        if (!(await confirmUpload(key, item.blob))) continue
-        setBusy(`${path} 0%`)
-        const result = await uploadRom(item.blob, key, (pct) => setBusy(`${path} ${pct}%`))
-        const at = next.findIndex((r) => r.path.toLowerCase() === path.toLowerCase())
-        /*
-          新传的默认是**强制注入**。可选与否由管理员看着体积自己勾 ——
-          默认成可选的话，补丁这种「不打就是另一个游戏」的东西会悄悄变成没人打。
-          原地替换时保留原来那一条的可选状态：重传一版资料片不该把开关也弄丢。
-        */
-        const ref = { key: result.key, path, optional: at >= 0 ? next[at].optional : false }
-        if (at >= 0) next[at] = ref
-        else next.push(ref)
-        done++
-      } catch (err) {
-        failed.push(`${path}（${err instanceof Error ? err.message : '上传失败'}）`)
+    await trackUploadActivity('DOS 附加文件批量上传与绑定', async () => {
+      for (const item of usable) {
+        const path = normalizeExtraPath(item.path)
+        const key = `${dir}/${extraObjectName(path)}`
+        try {
+          if (!(await confirmUpload(key, item.blob))) continue
+          setBusy(`${path} 0%`)
+          const result = await uploadRom(item.blob, key, (pct) => setBusy(`${path} ${pct}%`))
+          const at = next.findIndex((r) => r.path.toLowerCase() === path.toLowerCase())
+          /*
+            新传的默认是**强制注入**。可选与否由管理员看着体积自己勾 ——
+            默认成可选的话，补丁这种「不打就是另一个游戏」的东西会悄悄变成没人打。
+            原地替换时保留原来那一条的可选状态：重传一版资料片不该把开关也弄丢。
+          */
+          const ref = { key: result.key, path, optional: at >= 0 ? next[at].optional : false }
+          if (at >= 0) next[at] = ref
+          else next.push(ref)
+          done++
+        } catch (err) {
+          failed.push(`${path}（${err instanceof Error ? err.message : '上传失败'}）`)
+        }
       }
-    }
-    setBusy(null)
-    if (inputRef.current) inputRef.current.value = ''
-    write(next)
-    const warn = problems.map((p) => p.text).join(' ')
-    if (failed.length) setMsg({ ok: false, text: `${done} 个已上传，${failed.length} 个失败：${failed.join('；')}` })
-    else if (done) setMsg({ ok: !warn, text: `已上传并绑定 ${done} 个附加文件。${warn}`.trim() })
+      setBusy(null)
+      if (inputRef.current) inputRef.current.value = ''
+      write(next)
+      const warn = problems.map((p) => p.text).join(' ')
+      if (failed.length) setMsg({ ok: false, text: `${done} 个已上传，${failed.length} 个失败：${failed.join('；')}` })
+      else if (done) setMsg({ ok: !warn, text: `已上传并绑定 ${done} 个附加文件。${warn}`.trim() })
+    })
   }
 
   return (
@@ -2914,38 +3093,40 @@ function MameDiskUploadRow({
     if (!file) return
     setMessage(null)
     try {
-      if (!/\.chd$/i.test(file.name)) throw new Error('必需媒体盘必须是 .chd 文件')
-      const problem = await mameDiskHeaderProblem(file, expected)
-      if (problem) throw new Error(problem)
-      const resolved = await mameDiskFromFile(file, expected)
-      const key = mameDiskObjectKey(resolved)
-      /*
-        对象路径包含 MAME 需要的 CHD SHA-1：多游戏共用盘时只保存一份，且不会把
-        新上传的压缩版本覆盖正在被玩家下载的旧对象。
-      */
-      const head = await headRom(key).catch(() => null)
-      if (head?.exists) {
+      await trackUploadActivity(`MAME 媒体盘校验与绑定：${file.name}`, async () => {
+        if (!/\.chd$/i.test(file.name)) throw new Error('必需媒体盘必须是 .chd 文件')
+        const problem = await mameDiskHeaderProblem(file, expected)
+        if (problem) throw new Error(problem)
+        const resolved = await mameDiskFromFile(file, expected)
+        const key = mameDiskObjectKey(resolved)
         /*
-          对象 key 是 CHD SHA-1 的内容地址。相同扇区数据可以被不同 chdman 压缩成不同
-          大小，不能因为这次选中的压缩版本与桶内版本体积不同而拒绝；播放器会使用桶内
-          那份已验证内容，记录也必须反映实际被绑定对象的大小。
+          对象路径包含 MAME 需要的 CHD SHA-1：多游戏共用盘时只保存一份，且不会把
+          新上传的压缩版本覆盖正在被玩家下载的旧对象。
         */
-        const storedBytes = typeof head.size === 'number' && Number.isSafeInteger(head.size)
-          ? head.size
-          : resolved.storedBytes
-        merge({ ...resolved, storedBytes, key })
-        setMessage({
-          ok: true,
-          text: head.size !== undefined && head.size !== resolved.storedBytes
-            ? `桶里已有相同内容的 ${expected.name}.chd（${human(head.size)}；本次文件采用不同压缩体积），已直接绑定，不会覆盖正在使用的版本。`
-            : `桶里已有 ${expected.name}.chd，已直接绑定。`,
-        })
-        return
-      }
-      setProgress(0)
-      const result = await uploadRom(file, key, setProgress)
-      merge({ ...resolved, key: result.key })
-      setMessage({ ok: true, text: `已绑定 ${expected.name}.chd（${human(result.size)}）。保存后会挂到 /roms/${expected.romset}/。` })
+        const head = await headRom(key).catch(() => null)
+        if (head?.exists) {
+          /*
+            对象 key 是 CHD SHA-1 的内容地址。相同扇区数据可以被不同 chdman 压缩成不同
+            大小，不能因为这次选中的压缩版本与桶内版本体积不同而拒绝；播放器会使用桶内
+            那份已验证内容，记录也必须反映实际被绑定对象的大小。
+          */
+          const storedBytes = typeof head.size === 'number' && Number.isSafeInteger(head.size)
+            ? head.size
+            : resolved.storedBytes
+          merge({ ...resolved, storedBytes, key })
+          setMessage({
+            ok: true,
+            text: head.size !== undefined && head.size !== resolved.storedBytes
+              ? `桶里已有相同内容的 ${expected.name}.chd（${human(head.size)}；本次文件采用不同压缩体积），已直接绑定，不会覆盖正在使用的版本。`
+              : `桶里已有 ${expected.name}.chd，已直接绑定。`,
+          })
+          return
+        }
+        setProgress(0)
+        const result = await uploadRom(file, key, setProgress)
+        merge({ ...resolved, key: result.key })
+        setMessage({ ok: true, text: `已绑定 ${expected.name}.chd（${human(result.size)}）。保存后会挂到 /roms/${expected.romset}/。` })
+      })
     } catch (error) {
       setMessage({ ok: false, text: error instanceof Error ? error.message : 'CHD 上传失败' })
     } finally {
@@ -3409,7 +3590,7 @@ function RomField({
       await uploadRom(file, stagingKey, (pct, at) => {
         setProgress(Math.round(pct * 0.45))
         if (at) setStage(at)
-      })
+      }, { failureIsFatal: false })
       sourceUploaded = true
       setStage(null)
       setProgress(45)
@@ -3426,14 +3607,14 @@ function RomField({
         encoding: 'br',
       } as const
       rememberPendingSockdriveCreation(autoSockdrive.gameSlug, request, lang)
-      const job = await createSockdriveConversion(request)
+      const job = await createSockdriveConversion(request, { failureIsFatal: false })
       taskCreated = true
       clearPendingSockdriveCreation(autoSockdrive.gameSlug, lang)
       rememberSockdriveConversion(autoSockdrive.gameSlug, job.id, lang)
       const completed = await waitForSockdriveConversion(job.id, (next) => {
         setProgress(45 + Math.round(next.progress * 0.55))
         setMsg({ ok: true, text: `${sockdriveConversionLabel(next)} ${next.progress}%${next.message ? `；${next.message}` : ''}` })
-      })
+      }, undefined, undefined, { failureIsFatal: false })
       rememberSockdriveConversion(autoSockdrive.gameSlug, null, lang)
       autoSockdrive.onCompleted(completed)
       return `；${romLanguageLabel(lang)}流式盘已发布并${completed.bound ? '自动绑定' : '等待保存'}：${completed.targetPrefix}`
@@ -3470,49 +3651,51 @@ function RomField({
     setStage(null)
     setMsg({ ok: true, text: '正在检查盘片顺序、CHD v5 格式与容量…' })
     try {
-      const entries: { filename: string; label: string }[] = []
-      const uploadFiles: File[] = []
-      for (const [index, source] of files.entries()) {
-        if (!/\.chd$/i.test(source.name)) throw new Error(`${source.name} 不是 CHD；多盘流式组只接受裸 CHD 文件`)
-        if (source.size < PSX_RANGE_BYTES || source.size > 1024 * 1024 * 1024) {
-          throw new Error(`${source.name} 大小不在 2MB–1GB 的 PS1 Range 支持范围内`)
+      await trackUploadActivity('PS1 多盘组校验与发布', async () => {
+        const entries: { filename: string; label: string }[] = []
+        const uploadFiles: File[] = []
+        for (const [index, source] of files.entries()) {
+          if (!/\.chd$/i.test(source.name)) throw new Error(`${source.name} 不是 CHD；多盘流式组只接受裸 CHD 文件`)
+          if (source.size < PSX_RANGE_BYTES || source.size > 1024 * 1024 * 1024) {
+            throw new Error(`${source.name} 大小不在 2MB–1GB 的 PS1 Range 支持范围内`)
+          }
+          if (!chdCompressors(new Uint8Array(await source.slice(0, 32).arrayBuffer()))) {
+            throw new Error(`${source.name} 不是受支持的 CHD v5；请先用 chdman 转换`)
+          }
+          const stem = source.name.replace(/\.chd$/i, '').replace(/[\\/:?#|\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 90)
+          const filename = `Disc ${index + 1}${stem ? ` - ${stem}` : ''}.chd`
+          entries.push({ filename, label: `Disc ${index + 1}` })
+          uploadFiles.push(new File([source], filename, { type: 'application/octet-stream', lastModified: source.lastModified }))
         }
-        if (!chdCompressors(new Uint8Array(await source.slice(0, 32).arrayBuffer()))) {
-          throw new Error(`${source.name} 不是受支持的 CHD v5；请先用 chdman 转换`)
+        const playlist = buildPsxM3u(entries)
+        const parent = dirOfKey(defKey('discs.m3u'))
+        if (!parent) throw new Error('无法生成 PS1 多盘对象目录；请先配置 ROM 前缀')
+        const random = new Uint8Array(8)
+        crypto.getRandomValues(random)
+        const setId = [...random].map(byte => byte.toString(16).padStart(2, '0')).join('')
+        const safeSlug = slug.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '') || 'game'
+        const setDir = `${parent}/${safeSlug}.${lang}.set-${setId}`
+        const totalBytes = uploadFiles.reduce((sum, file) => sum + file.size, 0)
+        for (const [index, file] of uploadFiles.entries()) {
+          const key = `${setDir}/${entries[index].filename}`
+          setMsg({ ok: true, text: `正在上传第 ${index + 1}/${uploadFiles.length} 张盘；完成后才会发布多盘清单…` })
+          await uploadRom(file, key, (pct, at) => {
+            setProgress(Math.min(94, Math.round(((index + pct / 100) / uploadFiles.length) * 94)))
+            if (at) setStage(at)
+          })
+          setStage(null)
         }
-        const stem = source.name.replace(/\.chd$/i, '').replace(/[\\/:?#|\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 90)
-        const filename = `Disc ${index + 1}${stem ? ` - ${stem}` : ''}.chd`
-        entries.push({ filename, label: `Disc ${index + 1}` })
-        uploadFiles.push(new File([source], filename, { type: 'application/octet-stream', lastModified: source.lastModified }))
-      }
-      const playlist = buildPsxM3u(entries)
-      const parent = dirOfKey(defKey('discs.m3u'))
-      if (!parent) throw new Error('无法生成 PS1 多盘对象目录；请先配置 ROM 前缀')
-      const random = new Uint8Array(8)
-      crypto.getRandomValues(random)
-      const setId = [...random].map(byte => byte.toString(16).padStart(2, '0')).join('')
-      const safeSlug = slug.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '') || 'game'
-      const setDir = `${parent}/${safeSlug}.${lang}.set-${setId}`
-      const totalBytes = uploadFiles.reduce((sum, file) => sum + file.size, 0)
-      for (const [index, file] of uploadFiles.entries()) {
-        const key = `${setDir}/${entries[index].filename}`
-        setMsg({ ok: true, text: `正在上传第 ${index + 1}/${uploadFiles.length} 张盘；完成后才会发布多盘清单…` })
-        await uploadRom(file, key, (pct, at) => {
-          setProgress(Math.min(94, Math.round(((index + pct / 100) / uploadFiles.length) * 94)))
+        const playlistKey = `${setDir}/discs.m3u`
+        setProgress(95)
+        setMsg({ ok: true, text: '盘片已上传，正在发布多盘清单并绑定当前语言…' })
+        const playlistFile = new File([playlist], 'discs.m3u', { type: 'audio/x-mpegurl' })
+        await uploadRom(playlistFile, playlistKey, (pct, at) => {
+          setProgress(95 + Math.floor(pct / 20))
           if (at) setStage(at)
         })
-        setStage(null)
-      }
-      const playlistKey = `${setDir}/discs.m3u`
-      setProgress(95)
-      setMsg({ ok: true, text: '盘片已上传，正在发布多盘清单并绑定当前语言…' })
-      const playlistFile = new File([playlist], 'discs.m3u', { type: 'audio/x-mpegurl' })
-      await uploadRom(playlistFile, playlistKey, (pct, at) => {
-        setProgress(95 + Math.floor(pct / 20))
-        if (at) setStage(at)
+        onChange(playlistKey)
+        setMsg({ ok: true, text: `已发布 ${uploadFiles.length} 张 PS1 光盘（${human(totalBytes)}）和 M3U 清单；当前语言已改绑，请保存游戏条目` })
       })
-      onChange(playlistKey)
-      setMsg({ ok: true, text: `已发布 ${uploadFiles.length} 张 PS1 光盘（${human(totalBytes)}）和 M3U 清单；当前语言已改绑，请保存游戏条目` })
     } catch (error) {
       setMsg({ ok: false, text: `${error instanceof Error ? error.message : 'PS1 多盘组上传失败'}；未发布清单，现有绑定不变` })
     } finally {
@@ -3762,124 +3945,128 @@ function RomField({
     }
     setProgress(0)
     try {
-      if ((pspIsoToChd || psxIsoToChd) && lang) {
-        const stagingKey = psxIsoToChd ? psxStagingKey() : pspStagingKey()
-        setMsg({ ok: true, text: `正在断点上传临时 ISO；上传后服务器会自动转为 ${finalKey}` })
-        await uploadRom(file, stagingKey, (pct, at) => {
-          // 临时 ISO 上传占前 45%，服务器下载 / 转换 / 校验 / 发布占后 55%。
-          setProgress(Math.round(pct * 0.45))
+      await trackUploadActivity(`ROM 上传、识别与发布：${file.name}`, async () => {
+        if ((pspIsoToChd || psxIsoToChd) && lang) {
+          const stagingKey = psxIsoToChd ? psxStagingKey() : pspStagingKey()
+          setMsg({ ok: true, text: `正在断点上传临时 ISO；上传后服务器会自动转为 ${finalKey}` })
+          await uploadRom(file, stagingKey, (pct, at) => {
+            // 临时 ISO 上传占前 45%，服务器下载 / 转换 / 校验 / 发布占后 55%。
+            setProgress(Math.round(pct * 0.45))
+            if (at) setStage(at)
+          })
+          setStage(null)
+          setProgress(45)
+          setMsg({ ok: true, text: 'ISO 已到 R2，正在创建持久转换任务…' })
+          const request = {
+            sourceKey: stagingKey,
+            targetKey: finalKey,
+            sourceSize: file.size,
+            // 新建表单里的 slug 还没入库，可能正好撞到一款旧游戏；只给真实存在的编辑对象做自动绑定。
+            ...(persistedSlug ? { gameSlug: persistedSlug, lang, expectedCurrentKey: oldKey } : {}),
+            // 只有确实看到了目标并得到确认，才允许任务覆盖；探测时不存在就保持禁止覆盖。
+            overwrite: allowOverwrite,
+          }
+          const job = psxIsoToChd ? await createPsxConversion(request) : await createPspConversion(request)
+          if (psxIsoToChd) rememberPsxConversion(slug, lang, job.id)
+          else rememberPspConversion(slug, lang, job.id)
+          const onUpdate = (next: typeof job) => {
+            setProgress(45 + Math.round(next.progress * 0.55))
+            const label = psxIsoToChd ? psxConversionLabel(next) : pspConversionLabel(next)
+            setMsg({ ok: true, text: `${label} ${next.progress}%${next.message ? `；${next.message}` : ''}` })
+          }
+          const completed = psxIsoToChd
+            ? await waitForPsxConversion(job.id, onUpdate)
+            : await waitForPspConversion(job.id, onUpdate)
+          if (psxIsoToChd) rememberPsxConversion(slug, lang, null)
+          else rememberPspConversion(slug, lang, null)
+          onChange(completed.targetKey)
+          const removed = await cleanupSuperseded(oldKey, completed.targetKey, allBoundKeys)
+          const ratio = completed.outputSize && completed.sourceSize
+            ? `；压缩后 ${(completed.outputSize / completed.sourceSize * 100).toFixed(1)}%`
+            : ''
+          setMsg({
+            ok: true,
+            text: `${psxIsoToChd ? 'PS1 CD CHD' : 'PSP CHD'} 已校验并发布：${completed.targetKey}（${human(completed.outputSize ?? 0)}）${ratio}` +
+              (completed.bound ? '；已原子绑定到游戏' : `；${completed.message || '请保存表单完成绑定'}`) +
+              (removed ? `；旧文件 ${removed} 已删除` : ''),
+          })
+          return
+        }
+        let uploadFile: Blob = uploadSourceFile
+        let packedBlob: Blob | null = null
+        let packCodecLabel = ''
+        if (needsPacking) {
+          /*
+            街机：8BG 头里的 originalName 就是播放器交给核心的 EJS_gameName（FBNeo / MAME 靠它认驱动）。
+            以前未识别的包写的是原始文件名（如 wofcn_fix.zip），而对象 key 复用了旧槽 wofcn.zip.8bg ——
+            后台看 key 一切正常，核心拿到的却是 wofcn_fix.zip，报 Romset is unknown。
+            头里的名字一律取对象 key 的末段，两边永远一致。
+          */
+          const arcadeHeaderName = isArcade && !isPlayArcadeBundle
+            ? (plainKey.split('/').pop() || '').replace(/\.8bg$/i, '')
+            : ''
+          const originalName = arcadeHeaderName || sniffed || uploadSourceFile.name
+          const codec = recommendedRomPackCodec(originalName)
+          packCodecLabel = codec === 'store' ? '仅 AES-256-GCM（已压缩容器不重复压缩）' : 'Zstd 19 + AES-256-GCM'
+          setMsg({
+            ok: true,
+            text: codec === 'store'
+              ? `正在分块加密 ${originalName}；ZIP/CHD 已压缩，不再重复跑 Zstd…`
+              : `正在用 Zstd 19 压缩并加密 ${originalName}…`,
+          })
+          const packed = await trackUploadActivity(`本机压缩并加密：${originalName}`, () =>
+            packRomForUpload(uploadSourceFile, originalName, ({ loaded, total }) => {
+              // 打包与上传各占一半；AES/Zstd 的单块内部没有细进度，按已完成的 8MB 块推进。
+              setProgress(Math.min(49, Math.round((loaded / Math.max(1, total)) * 50)))
+            }, codec),
+          )
+          packedBlob = packed.blob
+          uploadFile = new File([packed.blob], key.split('/').pop() || `${uploadSourceFile.name}.8bg`, {
+            type: packed.blob.type,
+            lastModified: uploadSourceFile.lastModified,
+          })
+          if (packed.reused) {
+            setMsg({ ok: true, text: '源 ROM 校验一致，已复用上次生成的加密包，正在从已完成分片继续上传…' })
+          } else if (packed.workers > 1) {
+            setMsg({ ok: true, text: `本地已用 ${packed.workers} 路并行完成分块处理，正在自适应并发上传…` })
+          }
+        }
+        const result = await uploadRom(uploadFile, finalKey, (pct, at) => {
+          setProgress(needsPacking ? 50 + Math.round(pct / 2) : pct)
           if (at) setStage(at)
         })
-        setStage(null)
-        setProgress(45)
-        setMsg({ ok: true, text: 'ISO 已到 R2，正在创建持久转换任务…' })
-        const request = {
-          sourceKey: stagingKey,
-          targetKey: finalKey,
-          sourceSize: file.size,
-          // 新建表单里的 slug 还没入库，可能正好撞到一款旧游戏；只给真实存在的编辑对象做自动绑定。
-          ...(persistedSlug ? { gameSlug: persistedSlug, lang, expectedCurrentKey: oldKey } : {}),
-          // 只有确实看到了目标并得到确认，才允许任务覆盖；探测时不存在就保持禁止覆盖。
-          overwrite: allowOverwrite,
+        // 已经确认 R2 收到完整对象，马上释放可能很大的重试缓存；只有失败才需要把它留给下一次。
+        if (packedBlob) releasePackedRomUpload(packedBlob)
+        onChange(result.key)
+        const migrationBackup = shouldPack && oldKey && oldKey !== result.key && !isRomPackUrl(oldKey)
+        if (migrationBackup && !backupValue.trim()) onBackupChange(oldKey)
+        // 第一次从明文/ZIP 迁到 8BG 时先留着旧对象。若备用栏空，就自动绑成回退地址；
+        // 等线上确认新包可玩后再由管理员删，不能在第一次上传成功时就把唯一退路抹掉。
+        const removed = migrationBackup ? null : await cleanupSuperseded(oldKey, result.key, allBoundKeys)
+        let streamSuffix = ''
+        let streamFailure = ''
+        if (oneClickSockdrive && !alreadyPacked) {
+          try {
+            streamSuffix = await publishLanguageSockdrive(file, result.key, oldKey)
+          } catch (error) {
+            streamFailure = error instanceof Error ? error.message : '流式盘转换没有启动'
+          }
+        } else if (oneClickSockdrive && alreadyPacked) {
+          streamFailure = '选择的是现成 8BG，缺少制作流式盘所需的原始 ZIP；完整包已正常上传'
         }
-        const job = psxIsoToChd ? await createPsxConversion(request) : await createPspConversion(request)
-        if (psxIsoToChd) rememberPsxConversion(slug, lang, job.id)
-        else rememberPspConversion(slug, lang, job.id)
-        const onUpdate = (next: typeof job) => {
-          setProgress(45 + Math.round(next.progress * 0.55))
-          const label = psxIsoToChd ? psxConversionLabel(next) : pspConversionLabel(next)
-          setMsg({ ok: true, text: `${label} ${next.progress}%${next.message ? `；${next.message}` : ''}` })
-        }
-        const completed = psxIsoToChd
-          ? await waitForPsxConversion(job.id, onUpdate)
-          : await waitForPspConversion(job.id, onUpdate)
-        if (psxIsoToChd) rememberPsxConversion(slug, lang, null)
-        else rememberPspConversion(slug, lang, null)
-        onChange(completed.targetKey)
-        const removed = await cleanupSuperseded(oldKey, completed.targetKey, allBoundKeys)
-        const ratio = completed.outputSize && completed.sourceSize
-          ? `；压缩后 ${(completed.outputSize / completed.sourceSize * 100).toFixed(1)}%`
-          : ''
         setMsg({
-          ok: true,
-          text: `${psxIsoToChd ? 'PS1 CD CHD' : 'PSP CHD'} 已校验并发布：${completed.targetKey}（${human(completed.outputSize ?? 0)}）${ratio}` +
-            (completed.bound ? '；已原子绑定到游戏' : `；${completed.message || '请保存表单完成绑定'}`) +
-            (removed ? `；旧文件 ${removed} 已删除` : ''),
+          ok: !streamFailure,
+          text:
+            `已上传到 R2：${result.key}（${human(result.size)}）` +
+            (needsPacking ? `；${packCodecLabel}` : alreadyPacked ? '；沿用已有 8BG 容器' : '') +
+            (sniffed ? `；已按识别结果命名为 ${sniffed}` : '') +
+            (isArcade && sniffed && oldKey !== result.key ? '；当前语言已改绑到标准 romset 对象，请保存游戏条目' : '') +
+            (flattenedArcadeFiles ? `；已自动拍平 ${flattenedArcadeFiles} 个子目录 ROM 文件` : '') +
+            (migrationBackup ? `；旧文件 ${oldKey} 已保留${backupValue.trim() ? '' : '为备用地址'}` : '') +
+            (removed ? `；旧文件 ${removed} 已删除` : '') +
+            streamSuffix +
+            (streamFailure ? `；完整回退包可用，但流式盘未完成：${streamFailure}` : ''),
         })
-        return
-      }
-      let uploadFile: Blob = uploadSourceFile
-      let packedBlob: Blob | null = null
-      let packCodecLabel = ''
-      if (needsPacking) {
-        /*
-          街机：8BG 头里的 originalName 就是播放器交给核心的 EJS_gameName（FBNeo / MAME 靠它认驱动）。
-          以前未识别的包写的是原始文件名（如 wofcn_fix.zip），而对象 key 复用了旧槽 wofcn.zip.8bg ——
-          后台看 key 一切正常，核心拿到的却是 wofcn_fix.zip，报 Romset is unknown。
-          头里的名字一律取对象 key 的末段，两边永远一致。
-        */
-        const arcadeHeaderName = isArcade && !isPlayArcadeBundle
-          ? (plainKey.split('/').pop() || '').replace(/\.8bg$/i, '')
-          : ''
-        const originalName = arcadeHeaderName || sniffed || uploadSourceFile.name
-        const codec = recommendedRomPackCodec(originalName)
-        packCodecLabel = codec === 'store' ? '仅 AES-256-GCM（已压缩容器不重复压缩）' : 'Zstd 19 + AES-256-GCM'
-        setMsg({
-          ok: true,
-          text: codec === 'store'
-            ? `正在分块加密 ${originalName}；ZIP/CHD 已压缩，不再重复跑 Zstd…`
-            : `正在用 Zstd 19 压缩并加密 ${originalName}…`,
-        })
-        const packed = await packRomForUpload(uploadSourceFile, originalName, ({ loaded, total }) => {
-          // 打包与上传各占一半；AES/Zstd 的单块内部没有细进度，按已完成的 8MB 块推进。
-          setProgress(Math.min(49, Math.round((loaded / Math.max(1, total)) * 50)))
-        }, codec)
-        packedBlob = packed.blob
-        uploadFile = new File([packed.blob], key.split('/').pop() || `${uploadSourceFile.name}.8bg`, {
-          type: packed.blob.type,
-          lastModified: uploadSourceFile.lastModified,
-        })
-        if (packed.reused) {
-          setMsg({ ok: true, text: '源 ROM 校验一致，已复用上次生成的加密包，正在从已完成分片继续上传…' })
-        } else if (packed.workers > 1) {
-          setMsg({ ok: true, text: `本地已用 ${packed.workers} 路并行完成分块处理，正在自适应并发上传…` })
-        }
-      }
-      const result = await uploadRom(uploadFile, finalKey, (pct, at) => {
-        setProgress(needsPacking ? 50 + Math.round(pct / 2) : pct)
-        if (at) setStage(at)
-      })
-      // 已经确认 R2 收到完整对象，马上释放可能很大的重试缓存；只有失败才需要把它留给下一次。
-      if (packedBlob) releasePackedRomUpload(packedBlob)
-      onChange(result.key)
-      const migrationBackup = shouldPack && oldKey && oldKey !== result.key && !isRomPackUrl(oldKey)
-      if (migrationBackup && !backupValue.trim()) onBackupChange(oldKey)
-      // 第一次从明文/ZIP 迁到 8BG 时先留着旧对象。若备用栏空，就自动绑成回退地址；
-      // 等线上确认新包可玩后再由管理员删，不能在第一次上传成功时就把唯一退路抹掉。
-      const removed = migrationBackup ? null : await cleanupSuperseded(oldKey, result.key, allBoundKeys)
-      let streamSuffix = ''
-      let streamFailure = ''
-      if (oneClickSockdrive && !alreadyPacked) {
-        try {
-          streamSuffix = await publishLanguageSockdrive(file, result.key, oldKey)
-        } catch (error) {
-          streamFailure = error instanceof Error ? error.message : '流式盘转换没有启动'
-        }
-      } else if (oneClickSockdrive && alreadyPacked) {
-        streamFailure = '选择的是现成 8BG，缺少制作流式盘所需的原始 ZIP；完整包已正常上传'
-      }
-      setMsg({
-        ok: !streamFailure,
-        text:
-          `已上传到 R2：${result.key}（${human(result.size)}）` +
-          (needsPacking ? `；${packCodecLabel}` : alreadyPacked ? '；沿用已有 8BG 容器' : '') +
-          (sniffed ? `；已按识别结果命名为 ${sniffed}` : '') +
-          (isArcade && sniffed && oldKey !== result.key ? '；当前语言已改绑到标准 romset 对象，请保存游戏条目' : '') +
-          (flattenedArcadeFiles ? `；已自动拍平 ${flattenedArcadeFiles} 个子目录 ROM 文件` : '') +
-          (migrationBackup ? `；旧文件 ${oldKey} 已保留${backupValue.trim() ? '' : '为备用地址'}` : '') +
-          (removed ? `；旧文件 ${removed} 已删除` : '') +
-          streamSuffix +
-          (streamFailure ? `；完整回退包可用，但流式盘未完成：${streamFailure}` : ''),
       })
     } catch (err) {
       setMsg({ ok: false, text: err instanceof Error ? err.message : '上传失败' })
@@ -4463,7 +4650,9 @@ function MediaField({
       const oldKey = value.trim()
       const isCover = kind === 'covers'
       // 封面图先压成 300×300（按短边居中裁切，不拉伸）再传，见 imageResize.ts；视频原样走 R2。
-      const compressed = isCover ? await compressCoverToWebp(file) : null
+      const compressed = isCover
+        ? await trackUploadActivity('本机压缩封面图片', () => compressCoverToWebp(file))
+        : null
       const targetFile: Blob = compressed ? compressed.blob : file
       /**
        * 同 RomField：复用已绑定的 key，避免 covers/slug.jpg 与 covers/slug.png 并存。
@@ -4477,30 +4666,32 @@ function MediaField({
       const key = compressed ? withImageExt(baseKey, compressed.ext) : baseKey
       if (!(await confirmUpload(key, targetFile))) return
       setProgress(0)
-      const result = await uploadRom(targetFile, key, setProgress)
-      /*
-        缩略图（96×96）跟着主图一起传，给搜索联想、首页样例、详情页背景那些
-        小尺寸位置用 —— 它们本来在下载 300×300 的主图。
-        ⚠️ 缩略图失败不能牵连主图：主图已经传完、key 也已经写进表单了，
-        这里失败了最多是「小图继续用大图」，不该把整个上传报成失败。
-      */
-      if (isCover && compressed?.thumb) {
-        try {
-          await uploadRom(compressed.thumb, coverThumbKey(result.key))
-        } catch (err) {
-          console.warn('[cover] 缩略图上传失败，小尺寸位置会继续用主图', err)
+      await trackUploadActivity(`${isCover ? '封面' : '视频'}上传与绑定：${file.name}`, async () => {
+        const result = await uploadRom(targetFile, key, setProgress)
+        /*
+          缩略图（96×96）跟着主图一起传，给搜索联想、首页样例、详情页背景那些
+          小尺寸位置用 —— 它们本来在下载 300×300 的主图。
+          ⚠️ 缩略图失败不能牵连主图：主图已经传完、key 也已经写进表单了，
+          这里失败了最多是「小图继续用大图」，不该把整个上传报成失败。
+        */
+        if (isCover && compressed?.thumb) {
+          try {
+            await uploadRom(compressed.thumb, coverThumbKey(result.key), undefined, { failureIsFatal: false })
+          } catch (err) {
+            console.warn('[cover] 缩略图上传失败，小尺寸位置会继续用主图', err)
+          }
         }
-      }
-      onChange(result.key)
-      const removed = await cleanupSuperseded(oldKey, result.key, allBoundKeys)
-      const note = !compressed
-        ? ''
-        : compressed.fellBackToJpeg
-          ? '（已压成 300×300，但这个浏览器不支持 WebP 编码，存的是 JPEG）'
-          : `（已从 ${compressed.sourceWidth}×${compressed.sourceHeight} 压成 300×300 WebP）`
-      setMsg({
-        ok: true,
-        text: `已上传：${result.key}（${human(result.size)}）${note}${removed ? `；旧文件 ${removed} 已删除` : ''}`,
+        onChange(result.key)
+        const removed = await cleanupSuperseded(oldKey, result.key, allBoundKeys)
+        const note = !compressed
+          ? ''
+          : compressed.fellBackToJpeg
+            ? '（已压成 300×300，但这个浏览器不支持 WebP 编码，存的是 JPEG）'
+            : `（已从 ${compressed.sourceWidth}×${compressed.sourceHeight} 压成 300×300 WebP）`
+        setMsg({
+          ok: true,
+          text: `已上传：${result.key}（${human(result.size)}）${note}${removed ? `；旧文件 ${removed} 已删除` : ''}`,
+        })
       })
     } catch (err) {
       setMsg({ ok: false, text: err instanceof Error ? err.message : '上传失败' })

@@ -1,6 +1,7 @@
 /** PSP ISO → CHD 后台任务客户端。文件上传仍复用 romMultipart，这里只管理任务状态。 */
 import { api, ApiError } from './api'
 import { waitForConversionJob } from './conversionPoll.js'
+import { trackUploadActivity } from './uploadActivity'
 
 export type PspConversionStatus =
   | 'queued'
@@ -92,18 +93,20 @@ export const pspConversionCapability = () =>
   api.get<PspConversionCapability>('/api/admin/psp-conversions/capability', true)
 
 export async function createPspConversion(request: CreatePspConversion): Promise<PspConversionJob> {
-  let last: unknown
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    try {
-      return await api.post<PspConversionJob>('/api/admin/psp-conversions', request, true)
-    } catch (error) {
-      last = error
-      // sourceKey 在服务端是唯一幂等键；只重试网络错误和 5xx，明确的 4xx 必须交给管理员处理。
-      if (error instanceof ApiError && error.status < 500) throw error
-      if (attempt < 2) await new Promise((resolve) => window.setTimeout(resolve, 600 * 2 ** attempt))
+  return trackUploadActivity('创建 PSP 转码任务', async () => {
+    let last: unknown
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await api.post<PspConversionJob>('/api/admin/psp-conversions', request, true)
+      } catch (error) {
+        last = error
+        // sourceKey 在服务端是唯一幂等键；只重试网络错误和 5xx，明确的 4xx 必须交给管理员处理。
+        if (error instanceof ApiError && error.status < 500) throw error
+        if (attempt < 2) await new Promise((resolve) => window.setTimeout(resolve, 600 * 2 ** attempt))
+      }
     }
-  }
-  throw last
+    throw last
+  })
 }
 
 export const getPspConversion = (id: string, signal?: AbortSignal) =>

@@ -26,6 +26,8 @@ import { chooseFasterRomRoute, chooseRomHost, ROM_ROUTE_RACE_MIN_BYTES, type Rom
 import { diagLog } from './startupDiagnostics'
 import { coverCdnHint } from './cnHost'
 import { reportCoverCdnFailure, selectedCoverCdn, startCoverCdnProbe, subscribeCoverCdn } from './coverCdn'
+import { trackUploadActivity } from './uploadActivity'
+import type { UploadActivityOptions } from './uploadActivity'
 
 export const ROM_BASE_KEY = '8bitgo.rom.base'
 export const ROM_API_KEY = '8bitgo.rom.api'
@@ -1743,28 +1745,36 @@ export function guessUploadType(key: string): string {
  * 收 Blob 而不只是 File：多 SWF 包是在浏览器里解开 zip 之后逐个上传的，
  * 手上只有 Blob，没有 File。（Blob 没有名字和修改时间，所以不支持续传，只能重传。）
  */
-export async function uploadRom(file: Blob, key: string, onProgress?: UploadProgress): Promise<UploadResult> {
-  const api = getRomApi()
-  if (!api) throw new Error('尚未配置 Worker 地址，无法上传')
-  if (!getRomToken()) throw new Error('请先在「ROM 存储」页填写 Worker 口令（ADMIN_TOKEN）')
+export async function uploadRom(
+  file: Blob,
+  key: string,
+  onProgress?: UploadProgress,
+  activityOptions?: UploadActivityOptions,
+): Promise<UploadResult> {
   const cleanKey = key.replace(/^\/+/, '')
 
-  if (file.size > MULTIPART_THRESHOLD) {
-    // 动态 import：分片那套只有后台用得上，静态引会被打进播放器的首屏包里
-    const mp = await import('./romMultipart')
-    try {
-      const result = await mp.uploadRomMultipart(file, cleanKey, onProgress)
-      clearRomProbeCache()
-      return result
-    } catch (err) {
-      // Worker 还没部署分片接口（忘了 wrangler deploy）时退回单发 PUT。
-      // 大文件照样会失败，但小一点的文件不该因为后端没更新就整个传不了。
-      if (!(err instanceof mp.MultipartUnsupportedError)) throw err
-      console.warn('[rom] Worker 没有分片接口，退回单发 PUT；大文件请部署 worker/ 的新版本')
-    }
-  }
+  return trackUploadActivity(`R2 上传：${cleanKey.split('/').pop() || cleanKey}`, async () => {
+    const api = getRomApi()
+    if (!api) throw new Error('尚未配置 Worker 地址，无法上传')
+    if (!getRomToken()) throw new Error('请先在「ROM 存储」页填写 Worker 口令（ADMIN_TOKEN）')
 
-  return singlePut(file, cleanKey, api, onProgress)
+    if (file.size > MULTIPART_THRESHOLD) {
+      // 动态 import：分片那套只有后台用得上，静态引会被打进播放器的首屏包里
+      const mp = await import('./romMultipart')
+      try {
+        const result = await mp.uploadRomMultipart(file, cleanKey, onProgress)
+        clearRomProbeCache()
+        return result
+      } catch (err) {
+        // Worker 还没部署分片接口（忘了 wrangler deploy）时退回单发 PUT。
+        // 大文件照样会失败，但小一点的文件不该因为后端没更新就整个传不了。
+        if (!(err instanceof mp.MultipartUnsupportedError)) throw err
+        console.warn('[rom] Worker 没有分片接口，退回单发 PUT；大文件请部署 worker/ 的新版本')
+      }
+    }
+
+    return singlePut(file, cleanKey, api, onProgress)
+  }, activityOptions)
 }
 
 /** 一次 PUT 传完。只适合小文件，大文件见 uploadRom 里的分片分支 */

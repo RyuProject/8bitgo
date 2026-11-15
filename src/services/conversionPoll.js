@@ -1,3 +1,5 @@
+import { trackUploadActivity } from './uploadActivity.js'
+
 /**
  * 服务器转换是长任务，短暂的 502 / DNS 抖动只代表这次状态查询失败，不代表任务失败。
  * 只重试网关、限流和浏览器网络错误；权限、参数、任务不存在等 4xx 仍立即交给调用方。
@@ -46,25 +48,27 @@ export async function waitForConversionJob(read, {
   pollIntervalMs = 1500,
   sleep = delay,
 }) {
-  let consecutiveFailures = 0
-  for (;;) {
-    if (signal?.aborted) throw abortError()
+  return trackUploadActivity('服务器转码、校验并发布到 R2', async () => {
+    let consecutiveFailures = 0
+    for (;;) {
+      if (signal?.aborted) throw abortError()
 
-    let job
-    try {
-      job = await read()
-    } catch (error) {
-      if (!isTransientConversionPollError(error)) throw error
-      consecutiveFailures += 1
-      const backoff = Math.min(15_000, 1000 * 2 ** Math.min(consecutiveFailures - 1, 4))
-      await sleep(backoff, signal)
-      continue
+      let job
+      try {
+        job = await read()
+      } catch (error) {
+        if (!isTransientConversionPollError(error)) throw error
+        consecutiveFailures += 1
+        const backoff = Math.min(15_000, 1000 * 2 ** Math.min(consecutiveFailures - 1, 4))
+        await sleep(backoff, signal)
+        continue
+      }
+
+      consecutiveFailures = 0
+      onUpdate?.(job)
+      if (isCompleted(job)) return job
+      if (isFailed(job)) throw new Error(failureMessage?.(job) || '服务器转换失败')
+      await sleep(pollIntervalMs, signal)
     }
-
-    consecutiveFailures = 0
-    onUpdate?.(job)
-    if (isCompleted(job)) return job
-    if (isFailed(job)) throw new Error(failureMessage?.(job) || '服务器转换失败')
-    await sleep(pollIntervalMs, signal)
-  }
+  })
 }

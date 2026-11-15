@@ -1,6 +1,7 @@
 /** PS1 ISO → CD CHD：只传任务元数据，大文件仍由浏览器分片直传 R2。 */
 import { api, ApiError } from './api'
 import { waitForConversionJob } from './conversionPoll.js'
+import { trackUploadActivity } from './uploadActivity'
 import type { PspConversionCapability, PspConversionJob } from './pspConversion'
 import { pspConversionLabel } from './pspConversion'
 
@@ -54,18 +55,20 @@ export interface CreatePsxConversion {
 }
 
 export async function createPsxConversion(request: CreatePsxConversion): Promise<PspConversionJob> {
-  let last: unknown
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    try {
-      return await api.post<PspConversionJob>('/api/admin/disc-conversions', { ...request, platform: 'psx' }, true)
-    } catch (error) {
-      last = error
-      // 创建任务以 staging key 幂等；只重试可能是网络抖动的失败。
-      if (error instanceof ApiError && error.status < 500) throw error
-      if (attempt < 2) await new Promise((resolve) => window.setTimeout(resolve, 600 * 2 ** attempt))
+  return trackUploadActivity('创建 PS1 转码任务', async () => {
+    let last: unknown
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await api.post<PspConversionJob>('/api/admin/disc-conversions', { ...request, platform: 'psx' }, true)
+      } catch (error) {
+        last = error
+        // 创建任务以 staging key 幂等；只重试可能是网络抖动的失败。
+        if (error instanceof ApiError && error.status < 500) throw error
+        if (attempt < 2) await new Promise((resolve) => window.setTimeout(resolve, 600 * 2 ** attempt))
+      }
     }
-  }
-  throw last
+    throw last
+  })
 }
 
 export const getPsxConversion = (id: string, signal?: AbortSignal) =>
