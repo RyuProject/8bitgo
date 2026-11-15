@@ -133,6 +133,7 @@ export function GamesPage() {
   const platformChips = platforms
     .filter((p) => isPlatformEnabled(p.id) && platformListed(noWasm, p.id))
     .map((p) => ({ ...p, count: platformCounts.get(p.id) }))
+    .filter((p) => (p.count ?? 0) > 0)
     .sort((a, b) => (b.count ?? 0) - (a.count ?? 0))
 
   const title = q

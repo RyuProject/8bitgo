@@ -166,11 +166,11 @@ function orderBy(sort) {
 }
 
 /**
- * 列表查询。
- * @param {object} q { platform, genre, developer, multiplayer, coin, q, sort, page, pageSize, includeHidden, excludeAdult, requiresWindows }
- * @returns {Promise<{items, total, page, pageSize, totalPages}>}
+ * 列表与筛选计数共用的过滤条件。
+ * 筛选计数会忽略正在统计的那一维（平台或类型），但其余条件必须和列表一致，
+ * 否则搜索结果是 4 款、筛选标签却仍显示全库 19 款这种错位还会出现。
  */
-export async function listGames(q = {}) {
+function gameFilterParts(q = {}, { omitPlatform = false, omitGenre = false } = {}) {
   const where = []
   const params = []
 
@@ -180,13 +180,13 @@ export async function listGames(q = {}) {
   // 否则「只看已下架」会退化成在当前页的 24 条里挑，翻页结果毫无意义。
   else if (q.status === 'visible') where.push('g.hidden = 0')
   else if (q.status === 'hidden') where.push('g.hidden = 1')
-  if (q.platform) {
+  if (q.platform && !omitPlatform) {
     where.push('g.platform = ?')
     params.push(String(q.platform))
   }
   /*
     无 WebAssembly 的精简列表按平台白名单过滤，另外只放行逐款实测过的 Flash 游戏。
-    过滤放 SQL 里做，total / totalPages 才与实际结果一致；语言 ROM 的 slug 后缀也保留。
+    过滤放 SQL 里做，列表、总数和筛选计数才会一致；语言 ROM 的 slug 后缀也保留。
   */
   if (Array.isArray(q.platforms) || Array.isArray(q.gameSlugs)) {
     const allowed = []
@@ -211,19 +211,14 @@ export async function listGames(q = {}) {
   }
   /*
     成人内容整体排除。**只有开放平台（routes/open.js）会传**。
-
-    ⚠️ 必须在这里过滤，不能让调用方拿到结果之后自己筛：`total` 和 `totalPages`
-    是这个函数算的。调用方事后再筛，症状是「total 说 100，一页页翻到底只有 87 款」，
-    而且夹着成人游戏的那几页会比 page_size 短。接入方查不出原因，
-    只会觉得我们的分页时好时坏 —— 这正是最难被报告的一类 bug。
+    必须同时用于列表和计数，避免标签显示玩家实际看不到的内容。
   */
   if (q.excludeAdult) where.push('g.adult = 0')
   // 联机专区只能列出服务端真的允许开房的游戏。历史脏数据可能勾了联机却仍是 1 人，
   // 只筛 multiplayer 会把一个注定失败的「创建房间」入口送到首页和联机游戏库。
   if (q.multiplayer) where.push('g.multiplayer = 1 AND g.players >= 2')
   if (q.coin) where.push('g.coin_reward > 0')
-  // 字母索引（参照 /pro 那种 A-Z 快跳）：按标题首字母过滤。
-  // 只认 A-Z，拼进 LIKE 的模式固定是「单字母 + %」，没有通配符注入空间
+  // 字母索引只认 A-Z，拼进 LIKE 的模式固定是「单字母 + %」。
   if (q.letter) {
     const ch = String(q.letter).charAt(0).toUpperCase()
     if (/^[A-Z]$/.test(ch)) {
@@ -235,11 +230,10 @@ export async function listGames(q = {}) {
   if (q.home === true) where.push('g.home_rank IS NOT NULL')
   else if (q.home === false) where.push('g.home_rank IS NULL')
 
-
   // 按类型筛选走关联表。用 JOIN 而不是 EXISTS：genre_id 上有索引，
-  // 先在小表上定位再回主键，比全表扫 games 快得多
-  const genreJoin = q.genre ? 'JOIN game_genres gg ON gg.game_id = g.id AND gg.genre_id = ?' : ''
-  const genreParams = q.genre ? [String(q.genre)] : []
+  // 先在小表上定位再回主键，比全表扫 games 快得多。
+  const genreJoin = q.genre && !omitGenre ? 'JOIN game_genres gg ON gg.game_id = g.id AND gg.genre_id = ?' : ''
+  const genreParams = q.genre && !omitGenre ? [String(q.genre)] : []
 
   /**
    * 关键词走倒排索引，不再用 LIKE '%…%'。
@@ -249,43 +243,88 @@ export async function listGames(q = {}) {
   let searchParams = []
   let relevanceSql = ''
   let relevanceParams = []
+  let emptySearch = false
   if (q.q && String(q.q).trim()) {
     const parsed = queryTerms(q.q, { prefixLast: q.prefixLast !== false })
     if (parsed.empty) {
-      // 输入里一个可搜索字符都没有（比如全是标点）：直接给空，别退化成「搜全部」
-      const pageSize = boundedSearchLimit(q.pageSize, 24, MAX_PAGE_SIZE)
-      return { items: [], total: 0, page: 1, pageSize, totalPages: 1 }
+      // 输入里一个可搜索字符都没有（比如全是标点）：直接给空，别退化成「搜全部」。
+      emptySearch = true
+    } else {
+      const match = tokenMatchSql(parsed)
+      searchJoin = `JOIN (${match.sql}) s ON s.game_id = g.id`
+      searchParams = match.params
+      const norm = normalize(q.q).trim()
+      // 索引给的是「命中了什么」，这里再叠一层「命中得有多正」：
+      // 标题整个就是这个词 > 标题以它开头 > 只是含在某处。
+      // 不这么做的话，一个标签里带「马里奥」的冷门游戏会和《超级马里奥》并列。
+      relevanceSql =
+        '(s.score + CASE WHEN g.title = ? OR g.title_zh = ? THEN 1000 ELSE 0 END' +
+        ' + CASE WHEN g.title LIKE ? OR g.title_zh LIKE ? THEN 300 ELSE 0 END) DESC, '
+      /*
+        ⚠️ LIKE 的模式要转义 `%` 和 `_`。
+
+        normalize() 只做 NFKC / 繁转简 / 小写 / 去音调，不碰这两个通配符。
+        搜「马_」的时候拼出来是 `LIKE '马_%'`，`_` 匹配任意单字符，
+        会让本来不该拿前缀加分的游戏拿到分数，搜索排序就会错。
+      */
+      const likePrefix = `${escapeLike(norm)}%`
+      relevanceParams = [norm, norm, likePrefix, likePrefix]
     }
-    const m = tokenMatchSql(parsed)
-    searchJoin = `JOIN (${m.sql}) s ON s.game_id = g.id`
-    searchParams = m.params
-    const norm = normalize(q.q).trim()
-    // 索引给的是「命中了什么」，这里再叠一层「命中得有多正」：
-    // 标题整个就是这个词 > 标题以它开头 > 只是含在某处。
-    // 不这么做的话，一个标签里带「马里奥」的冷门游戏会和《超级马里奥》并列。
-    relevanceSql =
-      '(s.score + CASE WHEN g.title = ? OR g.title_zh = ? THEN 1000 ELSE 0 END' +
-      ' + CASE WHEN g.title LIKE ? OR g.title_zh LIKE ? THEN 300 ELSE 0 END) DESC, '
-    /*
-      ⚠️ LIKE 的模式要转义 `%` 和 `_`。
-
-      normalize() 只做 NFKC / 繁转简 / 小写 / 去音调，**不碰这两个通配符**。
-      搜「马_」的时候拼出来是 `LIKE '马_%'`，`_` 匹配任意单字符 ——
-      于是一批本来不该拿那 300 分前缀加分的游戏拿到了，搜索结果顺序整个是错的。
-
-      不是全表扫描（这两个 LIKE 只在 ORDER BY 的 CASE 里，作用对象是倒排索引已经
-      筛出来的候选行），所以症状很轻：没有报错、没有变慢，只是**排序不对**，
-      而「搜出来的第一个不是我要的」这种事没人会去查 SQL。
-      同仓 search.js 的 tokenMatchSql 和 comments.js 都转义了，这里是遗漏。
-    */
-    const likePrefix = `${escapeLike(norm)}%`
-    relevanceParams = [norm, norm, likePrefix, likePrefix]
   }
 
   const join = `${genreJoin} ${searchJoin}`.trim()
   const joinParams = [...genreParams, ...searchParams]
-  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : ''
-  const allParams = [...joinParams, ...params]
+  return {
+    join,
+    whereSql: where.length ? `WHERE ${where.join(' AND ')}` : '',
+    allParams: [...joinParams, ...params],
+    relevanceSql,
+    relevanceParams,
+    emptySearch,
+  }
+}
+
+/**
+ * 游戏库筛选标签的上下文计数。
+ * 每一维按搜索词和其它筛选项统计，同时忽略这一维自身的选择，方便玩家判断切换后有多少结果。
+ */
+export async function filteredGameFacetCounts(q = {}) {
+  const platformFilter = gameFilterParts(q, { omitPlatform: true })
+  const genreFilter = gameFilterParts(q, { omitGenre: true })
+  if (platformFilter.emptySearch || genreFilter.emptySearch) return { platforms: [], genres: [] }
+
+  const [platformRows, genreRows] = await Promise.all([
+    query(
+      `SELECT g.platform AS id, COUNT(DISTINCT g.id) AS n
+         FROM games g ${platformFilter.join} ${platformFilter.whereSql}
+        GROUP BY g.platform`,
+      platformFilter.allParams,
+    ),
+    query(
+      `SELECT gg.genre_id AS id, COUNT(DISTINCT g.id) AS n
+         FROM games g JOIN game_genres gg ON gg.game_id = g.id ${genreFilter.join} ${genreFilter.whereSql}
+        GROUP BY gg.genre_id`,
+      genreFilter.allParams,
+    ),
+  ])
+  return {
+    platforms: platformRows.map((row) => ({ id: row.id, count: Number(row.n) })),
+    genres: genreRows.map((row) => ({ id: row.id, count: Number(row.n) })),
+  }
+}
+
+/**
+ * 列表查询。
+ * @param {object} q { platform, genre, developer, multiplayer, coin, q, sort, page, pageSize, includeHidden, excludeAdult, requiresWindows }
+ * @returns {Promise<{items, total, page, pageSize, totalPages}>}
+ */
+export async function listGames(q = {}) {
+  const filters = gameFilterParts(q)
+  if (filters.emptySearch) {
+    const pageSize = boundedSearchLimit(q.pageSize, 24, MAX_PAGE_SIZE)
+    return { items: [], total: 0, page: 1, pageSize, totalPages: 1 }
+  }
+  const { join, whereSql, allParams, relevanceSql, relevanceParams } = filters
 
   const totalRow = await queryOne(`SELECT COUNT(*) AS n FROM games g ${join} ${whereSql}`, allParams)
   const total = Number(totalRow?.n ?? 0)
