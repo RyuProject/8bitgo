@@ -8,7 +8,7 @@ import { jsnesCanRun } from './nesMapper'
 import { probeNesRomHeader } from './nesRomProbe'
 import { resolveRuntime, runtimesFor, extOf } from './registry'
 import { canCreateWebgl, canCreateWebgl2 } from './webglSupport'
-import { modernRuntimeSyntaxSupported, runtimeNeedsModernBrowser } from './browserSupport'
+import { modernRuntimeSyntaxSupported, runtimeNeedsModernBrowser, runtimeRunsWithoutWasm, webAssemblyAvailable } from './browserSupport'
 import { romArchiveRef } from '@/lib/romArchiveUrl'
 import { romUrlForKey } from '@/services/roms'
 import { clearSockdrivePin, pinnedSockdriveUrl, routeRomAssetUrl } from '@/services/romHosts'
@@ -1637,10 +1637,16 @@ export function EmulatorPlayer({
   useEffect(() => {
     if (!shouldProbeNoWebgl) return
     // NES 在太旧的浏览器上也改走 jsnes：EmulatorJS 的引擎和核心语法都跑不动（browserSupport.ts）
-    const missing = !canCreateWebgl() || (platform.id === 'nes' && !modernRuntimeSyntaxSupported())
+    const noWebgl = !canCreateWebgl()
+    // NES：太旧或没有 WebAssembly 都改走 jsnes；GB/GBC：没有 WebAssembly 改走 binjgb（它自己换纯 JS 构建）
+    const noModernRuntime = platform.id === 'nes'
+      ? !modernRuntimeSyntaxSupported() || !webAssemblyAvailable()
+      : !webAssemblyAvailable()
+    const missing = noWebgl || noModernRuntime
     if (missing) {
-      const fallback = platform.id === 'nes' ? 'jsnes' : 'binjgb'
-      console.warn(`[8bitgo/runtime] 这个浏览器建不出 WebGL，${platform.id.toUpperCase()} 改用 ${fallback}`)
+      const fallback = platform.id === 'nes' ? 'jsnes' : !webAssemblyAvailable() ? 'binjgb（纯 JavaScript 构建）' : 'binjgb'
+      const why = noWebgl ? '建不出 WebGL' : !webAssemblyAvailable() ? '没有 WebAssembly' : '太旧（不支持类字段 / ?. / ??）'
+      console.warn(`[8bitgo/runtime] 这个浏览器${why}，${platform.id.toUpperCase()} 改用 ${fallback}`)
     }
     setWebglProbe({ platform: platform.id, ready: true, unavailable: missing })
   }, [platform.id, shouldProbeNoWebgl])
@@ -1698,6 +1704,16 @@ export function EmulatorPlayer({
       更老的浏览器页面能打开，点开始后会在 iframe / Worker 里静默语法错误、等满看门狗才报超时：
       开局前就说清楚，不白下几十 MB 的核心和 ROM。NES 已在选运行时那一步改走 jsnes。
     */
+    /*
+      没有 WebAssembly（Edge 增强安全性、iOS 锁定模式、关了 JIT 的安卓模拟器）：核心和 8BG 解码器都跑不了，
+      开局前说清楚原因，不下载也不进必然失败的引擎（browserSupport.ts）。
+    */
+    if (!webAssemblyAvailable() && !runtimeRunsWithoutWasm(runtime.id, game)) {
+      console.warn(`[8bitgo/runtime] 浏览器没有 WebAssembly，${runtime.id} 无法运行`)
+      setError(t.player.browserNoWasm)
+      setStatus('error')
+      return
+    }
     if (runtimeNeedsModernBrowser(runtime.id) && !modernRuntimeSyntaxSupported()) {
       console.warn(`[8bitgo/runtime] 浏览器不支持 ${runtime.id} 需要的语法（类字段 / ?. / ??），不开局`)
       setError(t.player.browserTooOld)
@@ -3067,7 +3083,8 @@ export function EmulatorPlayer({
         jsnesNetplay,
         jsnesCompatible: localJsnesCompatible,
         webglUnavailable: ((targetPlatform === 'nes' || targetPlatform === 'gb' || targetPlatform === 'gbc') && !canCreateWebgl()) ||
-          (targetPlatform === 'nes' && !modernRuntimeSyntaxSupported()),
+          (targetPlatform === 'nes' && (!modernRuntimeSyntaxSupported() || !webAssemblyAvailable())),
+        wasmUnavailable: (targetPlatform === 'gb' || targetPlatform === 'gbc') && !webAssemblyAvailable(),
       })
       if (!runtime) {
         if (debugRef.current) {

@@ -210,6 +210,8 @@ export function staticCacheHeaders(res, filePath) {
   // 首屏边缘选路脚本在 React 前执行，文件名本身就是代次。长期缓存可以避免它反过来
   // 变成每次访问都要校验的一跳；修改逻辑时必须新增 edge-route-vN.js，而不是原地覆盖。
   if (/\/edge-route-v\d+\.js$/i.test(p)) return set(CACHE.engineVersioned)
+  // 坏 chunk 自修复脚本同理：只在出错时加载，文件名就是代次，改逻辑新建 asset-repair-vN.js
+  if (/\/asset-repair-v\d+\.js$/i.test(p)) return set(CACHE.engineVersioned)
   if (/\/(?:ruffle|jsdos)\/v[^/]+\//.test(p)) return set(CACHE.engineVersioned)
   /*
     EmulatorJS 的文件名不带哈希，但播放器交给引擎的入口、样式、核心与核心报告全部经

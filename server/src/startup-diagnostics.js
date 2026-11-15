@@ -11,6 +11,7 @@
  */
 import { createHash } from 'node:crypto'
 import { query } from './db.js'
+import { maybeAlertSignature } from './diag-alert.js'
 
 export const DIAGNOSTIC_EVENTS = new Set(['failed', 'timeout', 'slow_start'])
 export const DIAGNOSTICS_RETENTION_DAYS = 30
@@ -253,7 +254,10 @@ export async function recordStartupDiagnostics(slug, event, rawDiagnostics, { co
       ],
     )
     scheduleCleanup()
-    return Number(result?.affectedRows ?? 0) > 0
+    const inserted = Number(result?.affectedRows ?? 0) > 0
+    // 同一特征短时间内聚集就发邮件（没配 DIAG_ALERT_EMAIL 时立即返回）；不 await，不拖慢接口
+    if (inserted) void maybeAlertSignature(signature)
+    return inserted
   } catch (error) {
     if (error?.code === 'ER_NO_SUCH_TABLE') {
       if (!missingTableWarned) console.warn('[startup] game_startup_diagnostics 表不存在，诊断包没有保存 —— cd server && npm run migrate')

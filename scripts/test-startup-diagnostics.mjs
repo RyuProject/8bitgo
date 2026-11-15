@@ -268,7 +268,8 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   assert.match(ejs, /void probeBrowserBitness\(\)/, '开局先发高熵查询')
   // 详情页渲染崩溃（兜底页）也进「错误诊断」：只在 /games/<slug>，旧 chunk 自救刷新的不报
   const boundary = read('src/components/AppErrorBoundary.tsx')
-  assert.match(boundary, /if \(!recoverStaleChunk\(error\)\) reportRenderCrash\(error, info\)/)
+  assert.match(boundary, /if \(!recoverBrokenAsset\(error, info\)\) reportRenderCrash\(error, info\)/)
+  // 坏 chunk（缺具名导出 / 404）先核对修复再决定刷新还是上报，细节见 scripts/test-asset-repair.mjs
   assert.match(boundary, /event: 'failed',\s*runtime: 'page'/)
   assert.match(boundary, /games\\\/\(\[\^\/\?#\]\+\)/, '只在游戏详情页上报')
   assert.match(boundary, /<details/, '兜底页把错误原文摆出来')

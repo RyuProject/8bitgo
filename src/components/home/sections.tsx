@@ -13,6 +13,7 @@ import { GameCover } from '@/components/game/GameCover'
 import { genreMap, genres } from '@/data/genres'
 import { platformMap, platforms } from '@/data/platforms'
 import { isPlatformEnabled } from '@/config/platforms'
+import { platformListed, useNoWasmMode } from '@/services/noWasm'
 import { gradientFor } from '@/lib/gradients'
 import { cx, formatCount } from '@/lib/format'
 import { useLang } from '@/services/lang'
@@ -279,7 +280,12 @@ export function GenreGridSection({
   const t = useT()
   const genreList = genresWithCount(facets)
   // 服务端只给「确实有游戏」的类型建键，所以这里取不到就是这一栏没内容，整栏不渲染
-  const columns = GENRE_COLUMNS.map((id) => ({ genre: genreMap[id], games: genreSamples?.[id] ?? [] })).filter((c) => c.games.length > 0)
+  const noWasm = useNoWasmMode()
+  const columns = GENRE_COLUMNS.map((id) => ({
+    genre: genreMap[id],
+    // 浏览器没有 WebAssembly 时只列能跑的平台（services/noWasm.ts）
+    games: (genreSamples?.[id] ?? []).filter((g) => platformListed(noWasm, g.platform)),
+  })).filter((c) => c.games.length > 0)
 
   return (
     <section className="container-x">

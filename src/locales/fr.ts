@@ -54,6 +54,7 @@ const fr: Translation = {
   site: {
     defaultTitle: '{site} — Jouer gratuitement aux jeux rétro sur émulateur en ligne',
     titleTemplate: '{title} - {site}',
+    noWasmNotice: 'Votre navigateur ne prend pas en charge WebAssembly ou l’a désactivé : tous les jeux ne peuvent pas être affichés.',
   },
 
   /* ---------------- Navigation ---------------- */
@@ -888,6 +889,7 @@ const fr: Translation = {
     goWatch: 'Juste regarder',
     roleFailed: 'Changement impossible : aucune manette libre, ou la salle est terminée.',
     browserTooOld: 'Ton navigateur est trop ancien pour faire tourner cet émulateur. Mets-le à jour (au moins Chrome 80, Safari 14 ou Firefox 74) ou ouvre cette page dans un Chrome, Edge ou Firefox récent.',
+    browserNoWasm: 'WebAssembly est désactivé dans ce navigateur, l’émulateur ne peut donc pas tourner. Causes fréquentes : la « sécurité renforcée » d’Edge, le mode Isolement de l’iPhone, certains émulateurs Android ou navigateurs allégés. Désactive-les ou ouvre cette page dans un Chrome, Edge ou Firefox récent.',
     seatAskFrom: '{name} souhaite rejoindre en tant que joueur',
     seatAskTitle: 'Un spectateur souhaite rejoindre en tant que joueur',
     seatAccept: 'Accepter',

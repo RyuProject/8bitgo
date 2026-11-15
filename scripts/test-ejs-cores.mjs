@@ -33,6 +33,7 @@ import { platforms } from '../src/data/platforms.ts'
 import {
   EJS_PATH,
   EJS_RUNTIME_GENERATION,
+  EJS_ENGINE_URL_EPOCH,
   ejsCoreAsset,
   ejsRuntimeAsset,
   emulatorJsCoreFileFor,
@@ -211,7 +212,18 @@ check('固定名核心与悬停预热共用版本化 URL，不会把两代核心
     ejsCoreAsset('cores/fbneo-legacy-wasm.data'),
     'KOF97 实际选到 legacy 核心时也必须走版本化 URL',
   )
-  assert.equal(fbneoPaths['emulator.min.js'], ejsRuntimeAsset('emulator.min.js'), '引擎入口仍跟全局代号走')
+  assert.equal(fbneoPaths['emulator.min.js'], ejsRuntimeAsset('emulator.min.js'))
+  // 2026-11-15：引擎入口也按内容取版本，不再靠手换 EJS_RUNTIME_GENERATION
+  for (const name of ['emulator.min.js', 'emulator.min.css', 'loader.js', 'compression/extract7z.js', 'localization/zh.json']) {
+    const engineFile = join(root, 'public/emulatorjs', name)
+    if (!existsSync(engineFile)) continue
+    const hash = createHash('sha256').update(readFileSync(engineFile)).digest('hex').slice(0, 16)
+    assert.ok(ejsRuntimeAsset(name).endsWith(`?v=${hash}.${EJS_ENGINE_URL_EPOCH}`), `${name} 的 URL 必须带内容哈希：${ejsRuntimeAsset(name)}`)
+  }
+  assert.ok(!ejsRuntimeAsset('emulator.min.css').includes(EJS_RUNTIME_GENERATION), '引擎入口不再跟手写代号走')
+  // ejspatch 打完补丁必须自动重生成版本表，否则「忘了重跑」只能靠构建失败才发现
+  const patcher = readFileSync(join(root, 'scripts/patch-emulatorjs.mjs'), 'utf8')
+  assert.match(patcher, /gen-ejs-core-versions\.mjs/, 'npm run ejspatch 会自动重跑 gen-ejs-core-versions')
   const adapter = readFileSync(join(root, 'src/emulator/adapters/emulatorjs.ts'), 'utf8')
   const prewarm = readFileSync(join(root, 'src/emulator/prewarm.ts'), 'utf8')
   assert.match(adapter, /EJS_paths: emulatorJsRuntimePaths\(core, EJS_LANG\[getLang\(\)\]\)/)

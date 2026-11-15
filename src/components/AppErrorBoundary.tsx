@@ -1,5 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
 import { newStartupId, recordStartupEvent } from '@/services/startupFunnel'
+import { moduleLinkFailure, repairAssets, repairFixedSomething, resolveChunkUrl, summarizeRepair } from '@/services/moduleLinkRecovery'
 
 const CHUNK_RELOAD_PREFIX = '8bitgo.chunk-reload:'
 const CHUNK_RELOAD_COOLDOWN_MS = 60_000
@@ -9,12 +10,10 @@ const CHUNK_RELOAD_COOLDOWN_MS = 60_000
  * 这类错误整页刷新通常能拿到新 HTML，所以自动自救一次；一分钟内仍失败就停下来画兜底，
  * 不能用无限刷新把真正的发布故障藏起来。
  */
-function recoverStaleChunk(error: unknown): boolean {
-  const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
-  if (!/Loading chunk|ChunkLoadError|Failed to fetch dynamically imported module|Importing a module script failed/i.test(message)) {
-    return false
-  }
+const STALE_CHUNK = /Loading chunk|ChunkLoadError|Failed to fetch dynamically imported module|Importing a module script failed/i
 
+/** 一分钟内同一页只自动刷新一次，防止真正的发布故障被无限刷新藏起来。 */
+function reloadOnce(): boolean {
   try {
     const key = `${CHUNK_RELOAD_PREFIX}${location.pathname}`
     const previous = Number(sessionStorage.getItem(key) || 0)
@@ -26,6 +25,37 @@ function recoverStaleChunk(error: unknown): boolean {
   } catch {
     return false
   }
+}
+
+/**
+ * chunk 没加载上（404 / 网络）或者加载上了却解析 / 链接失败（字节坏了，2026-11-15 PK / TH 的
+ * `does not provide an export named`）：先让 public/asset-repair-v1.js 按构建时的 SHA-256 清单核对本页
+ * 用过的 chunk，坏的绕过缓存重取 —— 普通刷新只会从一年 immutable 的缓存里拿回同一份坏字节。
+ *
+ * - 修好了：上报（带上修了哪些文件）再刷新一次；
+ * - 没发现坏文件、但这是 404 那类旧 chunk：照旧刷新一次，不算故障；
+ * - 其余：上报，停在兜底页。
+ * 修复脚本是首页内联钩子按需加载的；钩子不在（旧模板）时退回原来的行为。
+ */
+function recoverBrokenAsset(error: unknown, info: ErrorInfo): boolean {
+  const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+  const stale = STALE_CHUNK.test(message)
+  const syntax = error instanceof Error && error.name === 'SyntaxError'
+  if (!stale && !syntax) return false
+  const failure = moduleLinkFailure(message)
+  const named = failure?.specifier ? resolveChunkUrl(failure.specifier, currentEntrySrc()) : null
+  const pending = repairAssets({ reason: message.slice(0, 300), urls: named ? [named] : [] })
+  if (!pending) return stale ? reloadOnce() : false
+  void pending.then((result) => {
+    if (repairFixedSomething(result)) {
+      reportRenderCrash(error, info, summarizeRepair(result))
+      reloadOnce()
+      return
+    }
+    if (stale && reloadOnce()) return
+    reportRenderCrash(error, info, summarizeRepair(result))
+  })
+  return true
 }
 
 interface AppErrorBoundaryState {
@@ -61,13 +91,13 @@ export function describeRenderError(error: unknown, ua = '', build = ''): string
  * （服务端只存「Chrome 110 / Android 15」，不存完整 UA；地址参数、账号、存档都不上报）。
  * 只在 /games/<slug> 上报：漏斗按游戏记账，别的页面没有挂靠的游戏。
  */
-function reportRenderCrash(error: unknown, info: ErrorInfo): void {
+function reportRenderCrash(error: unknown, info: ErrorInfo, note = ''): void {
   try {
     const slug = location.pathname.match(/(?:^|\/)games\/([^/?#]+)/)?.[1]
     if (!slug) return
     const components = String(info.componentStack ?? '')
       .split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 3).join(' < ')
-    const detail = [describeRenderError(error), components && `组件：${components}`, `build: ${currentBuild()}`]
+    const detail = [describeRenderError(error), components && `组件：${components}`, note, `build: ${currentBuild()}`]
       .filter(Boolean).join('\n')
     recordStartupEvent(decodeURIComponent(slug), {
       visitId: newStartupId(),
@@ -82,13 +112,16 @@ function reportRenderCrash(error: unknown, info: ErrorInfo): void {
   }
 }
 
-function currentBuild(): string {
+function currentEntrySrc(): string {
   try {
-    const src = document.querySelector<HTMLScriptElement>('script[type="module"][src*="/assets/index-"]')?.src ?? ''
-    return src.split('/').pop() ?? ''
+    return document.querySelector<HTMLScriptElement>('script[type="module"][src*="/assets/index-"]')?.src ?? ''
   } catch {
     return ''
   }
+}
+
+function currentBuild(): string {
+  return currentEntrySrc().split('/').pop() ?? ''
 }
 
 /**
@@ -110,7 +143,8 @@ export class AppErrorBoundary extends Component<{ children: ReactNode }, AppErro
   componentDidCatch(error: unknown, info: ErrorInfo) {
     console.error('[8bitgo] 页面渲染失败', error, info.componentStack)
     // 部署切换的旧 chunk 会自动刷新自救，不算故障；其余情况把现场送进后台「错误诊断」
-    if (!recoverStaleChunk(error)) reportRenderCrash(error, info)
+    // chunk 下载失败 / 字节坏了：先核对修复，再按结果决定刷新还是上报（异步，自己负责上报）
+    if (!recoverBrokenAsset(error, info)) reportRenderCrash(error, info)
   }
 
   render() {

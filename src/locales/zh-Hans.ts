@@ -67,6 +67,7 @@ export const zhHans = {
   site: {
     defaultTitle: '{site} — 经典游戏在线玩｜街机·红白机·GBA·Flash',
     titleTemplate: '{title}｜{site}',
+    noWasmNotice: '当前浏览器不支持或者禁用了WebAssembly，无法显示全部游戏。',
   },
 
   /* ---------------- 导航 ---------------- */
@@ -940,6 +941,7 @@ export const zhHans = {
     goWatch: '退到观众席',
     roleFailed: '换不了身份：手柄位满了，或者房间已经结束。',
     browserTooOld: '你的浏览器版本太旧，跑不了这个模拟器。请把浏览器更新到最新版（至少 Chrome 80、Safari 14 或 Firefox 74），或换用最新的 Chrome、Edge、Firefox 打开本页。',
+    browserNoWasm: '这个浏览器关闭了 WebAssembly，模拟器没法运行。常见原因：Edge 的「增强安全性」、iPhone 的「锁定模式」、部分安卓模拟器或精简浏览器。请关掉这些设置，或换最新的 Chrome、Edge、Firefox 打开本页。',
     seatAskFrom: '{name} 申请成为玩家',
     seatAskTitle: '有观众申请成为玩家',
     seatAccept: '接受',

@@ -13,7 +13,7 @@ import { query } from './db.js'
 import { dosGameConfigError } from './dos-game-config.js'
 
 /** 会随版本增加的列。新增迁移时同步往这里加一条 */
-const EXPECTED_COLUMNS = [
+export const EXPECTED_COLUMNS = [
   { table: 'games', column: 'home_rank', why: '首页精选位' },
   { table: 'games', column: 'core', why: '按游戏覆盖模拟器核心' },
   { table: 'games', column: 'description_localized', why: '逐语言人工简介；缺列会导致后台 SEO 文案保存失败' },
@@ -53,6 +53,34 @@ const EXPECTED_COLUMNS = [
   { table: 'game_comments', column: 'pending_review', why: '游客评论审核状态；缺列时评论读取和发表会 500' },
   { table: 'users', column: 'token_version', why: '退出所有设备 / 改完密码作废旧令牌' },
   { table: 'users', column: 'birth_date', why: '成人内容年龄验证：出生日期记在账号上，缺了 PUT /api/me/birth-date 会 500，成人游戏谁也进不去' },
+  /*
+    2026-11-15 由 scripts/check-schema-drift.mjs 对账补登：下面这些列 migrate.mjs 一直在补，
+    但启动自检从没查过 —— 生产库漏跑迁移时它们缺了也不会有任何提醒。以后新增迁移，
+    check-schema-drift 会在构建时要求同步登记到这里。
+  */
+  { table: 'games', column: 'runtime', why: '按游戏覆盖运行时；缺列时后台保存 500' },
+  { table: 'games', column: 'description_en', why: '英文简介基准；缺列时详情页与后台读写 500' },
+  { table: 'games', column: 'description_i18n', why: '按需翻译的简介缓存；缺列时「翻译」按钮 500' },
+  { table: 'games', column: 'title_i18n', why: '逐语言游戏名；缺列时后台保存 500' },
+  { table: 'posts', column: 'title_i18n', why: '文章逐语言标题；缺列时文章保存 500' },
+  { table: 'posts', column: 'excerpt_i18n', why: '文章摘要翻译缓存；缺列时文章「翻译」500' },
+  { table: 'posts', column: 'content_i18n', why: '文章正文翻译缓存；缺列时文章「翻译」500' },
+  { table: 'games', column: 'arcade_mame_disks', why: 'mame-current 的 CHD 媒体盘绑定；缺列时后台保存 500' },
+  { table: 'games', column: 'netplay_mode', why: '联机人数 auto / on / off 意图；缺列时写游戏 500' },
+  { table: 'games', column: 'players_inferred', why: '自动推断的联机人数；缺列时写游戏 500' },
+  { table: 'saves', column: 'revision', why: '云存档条件写入代次；缺列时 /api/saves 写入 500' },
+  { table: 'oauth_apps', column: 'review_state', why: '开放平台应用审核状态；缺列时 /open 控制台 500' },
+  { table: 'oauth_apps', column: 'requested_scopes', why: '应用申请的权限范围；缺列时提交审核 500' },
+  { table: 'oauth_apps', column: 'review_note', why: '审核备注；缺列时后台审核页 500' },
+  { table: 'oauth_apps', column: 'review_reason', why: '审核驳回理由；缺列时后台审核页 500' },
+  { table: 'oauth_apps', column: 'submitted_at', why: '提交审核时间；缺列时提交审核 500' },
+  { table: 'oauth_apps', column: 'reviewed_by', why: '审核人；缺列时后台审核 500' },
+  { table: 'oauth_apps', column: 'reviewed_at', why: '审核时间；缺列时后台审核 500' },
+  { table: 'oauth_apps', column: 'suspended_from', why: '暂停前的状态（恢复时用）；缺列时暂停 / 恢复 500' },
+  { table: 'psp_conversion_jobs', column: 'target_etag_before', why: '转换期间目标对象被替换时中止发布；缺列时建任务 500' },
+  { table: 'psp_conversion_jobs', column: 'output_etag', why: '重启后凭输出 ETag 收尾；缺列时转换队列 500' },
+  { table: 'psp_conversion_jobs', column: 'game_id', why: '按数字主键绑定游戏，防 slug 改名绑错；缺列时建任务 500' },
+  { table: 'psp_conversion_jobs', column: 'disc_platform', why: '区分 PSP / PS1 转换；缺列时 PS1 ISO 上传无法建任务' },
 ]
 
 /**
@@ -63,7 +91,7 @@ const EXPECTED_COLUMNS = [
  *
  * 加新表的迁移时同步往这里补一条。
  */
-const EXPECTED_TABLES = [
+export const EXPECTED_TABLES = [
   { table: 'platform_bios', why: '平台级 BIOS' },
   { table: 'game_plays', why: '游玩去重名单；缺了 POST /api/games/:slug/play 会 500，游玩数永远是 0' },
   { table: 'game_startup_events', why: '第一方启动漏斗；缺了详情页到首帧/首次操作的性能统计会全部 500' },
@@ -126,6 +154,8 @@ const EXPECTED_TABLES = [
       同意页每次都要重新问一遍，也没有「解除授权」的地方。要做那个功能时再把表用起来。）
     */
   { table: 'apps', why: '应用中心：官方 SDK / APP 下载 / 社区上架；缺了 /apps 列表空、后台管理读写全 500' },
+  { table: 'site_settings', why: '站点级热改配置（首页公告、翻译额度计数）；缺了首页照常、后台保存公告 500，火山翻译停用' },
+  { table: 'friend_link_hits', why: '友情链接点击去重；缺了点击统计写入失败（首页照常）' },
 ]
 
 export async function checkSchema() {

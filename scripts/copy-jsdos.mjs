@@ -547,6 +547,15 @@ writeFileSync(
   'utf8',
 )
 
+// 版本号 ↔ 字节锁：新版本号自动记下指纹；同一版本号字节变了就让人去换版本号（见 lib/jsdos-asset-lock.mjs）
+if (withDosboxX) {
+  const { filesFingerprint, readLock, verifyLock, writeLock } = await import('./lib/jsdos-asset-lock.mjs')
+  const fingerprint = filesFingerprint(files)
+  const verdict = verifyLock(readLock(), assetVersion, fingerprint)
+  if (!verdict.ok) fail(verdict.reason)
+  if (verdict.action === 'new-version') writeLock(assetVersion, fingerprint)
+}
+
 const bytes = files.reduce((sum, file) => sum + file.size, 0)
 console.log(`✔ js-dos ${version} 已同步 ${files.length} 个文件（${(bytes / 1024 / 1024).toFixed(1)} MB）到 public/jsdos/v${assetVersion}/`)
 if (!withDosboxX) console.log('  （未包含 DOSBox-X；需要跑 Windows 客体时加 --with-dosbox-x）')

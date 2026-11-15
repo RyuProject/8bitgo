@@ -57,6 +57,15 @@ if (
 }
 if (manifest.copyScriptSha256 !== sha256(copyScript)) fail('复制补丁脚本已经变化，public 仍是旧产物；请运行 npm run jsdos')
 if (!Array.isArray(manifest.files) || !manifest.files.length) fail('runtime.json 没有文件清单')
+{
+  // 产物字节变了却没换版本号 → 同一 URL 发新字节，长期缓存的访客拿不到（见 lib/jsdos-asset-lock.mjs）
+  const { filesFingerprint, readLock, verifyLock } = await import('./lib/jsdos-asset-lock.mjs')
+  const lock = readLock()
+  if (!lock) fail('缺少 scripts/jsdos-asset-lock.json；运行 npm run jsdos 生成后一起提交')
+  const verdict = verifyLock(lock, assetVersion, filesFingerprint(manifest.files))
+  if (!verdict.ok) fail(verdict.reason)
+  if (verdict.action === 'new-version') fail(`scripts/jsdos-asset-lock.json 记的是 ${lock.assetVersion}，当前是 ${assetVersion}；运行 npm run jsdos 更新后一起提交`)
+}
 
 const listed = []
 function walk(dir) {

@@ -5,6 +5,8 @@
  * 用户每敲一个字就会调一次，多查一次关联表就是多一轮往返。
  */
 import { api, apiEnabled } from './api'
+import { webAssemblyAvailable } from '@/emulator/browserSupport'
+import { platformRunsWithoutWasm } from '../../shared/wasm-free-platforms.js'
 
 export interface SuggestItem {
   slug: string
@@ -33,13 +35,16 @@ export async function fetchSuggest(q: string, limit = 8): Promise<SuggestItem[]>
   const res = await api.get<{ items: SuggestItem[] }>(
     `/api/games/suggest?q=${encodeURIComponent(text)}&limit=${limit}`,
   )
-  return res.items ?? []
+  // 浏览器没有 WebAssembly 时只联想能跑的平台（services/noWasm.ts）
+  return (res.items ?? []).filter((g) => webAssemblyAvailable() || platformRunsWithoutWasm(g.platform))
 }
 
 export async function fetchSearchFallback(q: string): Promise<SearchFallback> {
   const text = q.trim()
   if (!text || !apiEnabled()) return { suggestion: null, related: [] }
-  return await api.get<SearchFallback>(`/api/games/search-fallback?q=${encodeURIComponent(text)}`)
+  const res = await api.get<SearchFallback>(`/api/games/search-fallback?q=${encodeURIComponent(text)}`)
+  if (webAssemblyAvailable()) return res
+  return { ...res, related: (res.related ?? []).filter((g) => platformRunsWithoutWasm(g.platform)) }
 }
 
 /* ---------------- 最近搜索 ---------------- */

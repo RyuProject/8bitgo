@@ -118,8 +118,22 @@ export function markEjsEdgeFailed(): void {
   所以即使已有 fbneolowmem 代号，也要再换一代让边缘与浏览器取到这次更新。
 */
 export const EJS_RUNTIME_GENERATION = '20261027-melondsds-ff33abb1-psxrange1-corecompat1-stateglue3-mameglue3-ejsperf1-cnedge1-dlguard3-srmkeep1-fbneozip1-memfsown1-fbneolowmem-1548ccb5'
-export const ejsRuntimeAsset = (name: string): string =>
-  `${ejsBase()}${name}?v=${encodeURIComponent(EJS_RUNTIME_GENERATION)}`
+/*
+  2026-11-15：引擎入口（emulator.min.js / css、loader.js、extract7z.js、语言包）也按**内容**取版本，
+  和核心一张表（ejsCoreVersionsData.ts，`npm run ejspatch` 会自动重新生成）。
+  为什么：以前靠人手换 EJS_RUNTIME_GENERATION，忘了就是「补丁已打、玩家还拿旧引擎」（§2.5），
+  换了又让没变的 css / 语言包跟着重下。现在只有字节真变了的文件换 URL。
+  表里没有的（本地还没生成）退回全局代号，与旧行为一致。
+
+  EJS_ENGINE_URL_EPOCH：内容没变、但要绕开某个边缘上已缓存坏响应时用（例如 2026-11-08 EdgeOne
+  缓存了带 `Vary: Origin` 的副本、又没有清缓存通道）。改它只换引擎入口的 URL，不动核心。
+*/
+export const EJS_ENGINE_URL_EPOCH = 'e1'
+export const ejsRuntimeAsset = (name: string): string => {
+  const hash = EJS_CORE_VERSIONS[name]
+  const version = hash ? `${hash}.${EJS_ENGINE_URL_EPOCH}` : EJS_RUNTIME_GENERATION
+  return `${ejsBase()}${name}?v=${encodeURIComponent(version)}`
+}
 
 /**
  * 核心文件（`cores/*.data`、`cores/metadata/*.json`）按**内容**取版本（ejsCoreVersionsData.ts）。

@@ -2,6 +2,9 @@
  * binjgb 备用运行时：只接管没有 WebGL 的 GB / GBC 浏览器。
  *
  * 核心是仓库内自托管的 WebAssembly；画面固定走 Canvas 2D，不创建 WebGL 上下文。
+ * 浏览器没有 WebAssembly（Edge 增强安全性、iOS 锁定模式、关了 JIT 的安卓模拟器）时改载同一个提交的
+ * 纯 JavaScript 构建 `binjgb-js.js`（scripts/build-binjgb-js.mjs，Emscripten -s WASM=0）：核心、即时存档、
+ * 电池存档格式都一样，只是慢一些。
  * 输入仍复用播放器的键盘、手柄与触屏按键，电池存档使用与 Gambatte 相同的 SRAM 字节，
  * 避免玩家在 WebGL 设备与旧浏览器之间切换时丢掉游戏内进度。
  */
@@ -13,6 +16,8 @@ import { batterySaveGameName } from '../ejsSaveFs'
 import { createBatterySync, type BatteryFs, type BatterySync } from '../batterySync'
 import { installPadKeyboard } from '../padKeyboard'
 import { startGamepadInput } from '../gamepadInput'
+import { webAssemblyAvailable } from '../browserSupport'
+import { diagLog } from '@/services/startupDiagnostics'
 
 const BINJGB_BUILD = '16621111ed0ee73bcc45c912a823bcebedcffc0f'
 const BINJGB_BASE = '/binjgb'
@@ -68,20 +73,29 @@ type BinjgbFactory = (options: {
 declare global {
   interface Window {
     Binjgb?: BinjgbFactory
+    /** 纯 JavaScript 构建（-s WASM=0）的导出名，和 WebAssembly 版分开，免得两者撞名 */
+    BinjgbJs?: BinjgbFactory
   }
+}
+
+/** 这一页用哪份构建：有 WebAssembly 用快的那份，没有就用 wasm2js 出来的纯 JS 版 */
+function binjgbBuild(): { file: string; global: 'Binjgb' | 'BinjgbJs' } {
+  return webAssemblyAvailable() ? { file: 'binjgb.js', global: 'Binjgb' } : { file: 'binjgb-js.js', global: 'BinjgbJs' }
 }
 
 let scriptPromise: Promise<void> | null = null
 let modulePromise: Promise<BinjgbModule> | null = null
 
 function loadBinjgbScript(): Promise<void> {
-  if (window.Binjgb) return Promise.resolve()
+  const build = binjgbBuild()
+  if (window[build.global]) return Promise.resolve()
   if (!scriptPromise) {
+    if (build.global === 'BinjgbJs') diagLog('adapter', 'info', '浏览器没有 WebAssembly，binjgb 改用纯 JavaScript 构建')
     scriptPromise = new Promise<void>((resolve, reject) => {
       const script = document.createElement('script')
       script.async = true
-      script.src = `${BINJGB_BASE}/binjgb.js?v=${BINJGB_BUILD}`
-      script.onload = () => window.Binjgb ? resolve() : reject(new Error('binjgb 脚本没有导出运行时'))
+      script.src = `${BINJGB_BASE}/${build.file}?v=${BINJGB_BUILD}`
+      script.onload = () => window[build.global] ? resolve() : reject(new Error('binjgb 脚本没有导出运行时'))
       script.onerror = () => reject(new Error('无法加载自托管的 binjgb 运行时'))
       document.head.appendChild(script)
     }).catch((error: unknown) => {
@@ -96,7 +110,7 @@ function loadBinjgb(): Promise<BinjgbModule> {
   if (!modulePromise) {
     modulePromise = loadBinjgbScript()
       .then(() => {
-        const factory = window.Binjgb
+        const factory = window[binjgbBuild().global]
         if (!factory) throw new Error('binjgb 脚本没有导出运行时')
         return factory({
           locateFile: (path) => `${BINJGB_BASE}/${path}?v=${BINJGB_BUILD}`,

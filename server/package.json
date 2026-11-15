@@ -86,7 +86,12 @@
     "test:psx-conversion": "node scripts/test-psx-conversion.mjs",
     "test:platform-bios": "node scripts/test-platform-bios-key.mjs",
     "test:sockdrive-conversion": "node scripts/test-sockdrive-conversion.mjs",
-    "test:game-media": "node --test scripts/test-game-media.mjs"
+    "test:game-media": "node --test scripts/test-game-media.mjs",
+    "test:nowasm-lists": "node scripts/test-nowasm-lists.mjs",
+    "test:ssr-parallel": "node scripts/test-ssr-parallel.mjs",
+    "test:schema-drift": "node scripts/test-schema-drift.mjs",
+    "test:parallel-reads": "node scripts/test-parallel-reads.mjs",
+    "test:diag-alert": "node scripts/test-diag-alert.mjs"
   },
   "dependencies": {
     "@ip-location-db/geo-whois-asn-country-mmdb": "^2.3.2026061719",

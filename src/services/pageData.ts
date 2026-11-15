@@ -18,6 +18,8 @@ import type { VisibleSiteNotice } from '../../shared/site-notice.js'
 import { api, apiEnabled } from './api'
 import { startPageLoad } from './progress'
 import { getPageDataCache, peekPageDataCache, setPageDataCache } from './pageDataCache'
+import { useNoWasmMode } from './noWasm'
+import { webAssemblyAvailable } from '@/emulator/browserSupport'
 
 /* ---------------- 各路由的数据形状 ---------------- */
 
@@ -167,7 +169,9 @@ function pageUrl(path: string, params?: Record<string, string | number | undefin
 }
 
 export function fetchPageData(path: string, params?: Record<string, string | number | undefined>) {
-  return api.get<PageData>(pageUrl(path, params))
+  // 只在浏览器事件 / effect 里调用（无限滚动续页），直接读当前浏览器的结论，和 usePageData 的 key 保持一致
+  const noWasm = typeof window !== 'undefined' && !webAssemblyAvailable()
+  return api.get<PageData>(pageUrl(path, noWasm ? { ...params, nowasm: 1 } : params))
 }
 
 export type PageState<T> =
@@ -197,7 +201,10 @@ export function usePageData<T extends PageData>(
       : { status: 'loading', data: null }
   }
 
-  const key = pageUrl(path, params)
+  // 浏览器没有 WebAssembly：所有列表让服务端只给能跑的平台（见 services/noWasm.ts）。
+  // 水合那一遍它是 false，用的是服务端注入的那份；水合后 key 变了，下面的 effect 再取精简版。
+  const noWasm = useNoWasmMode()
+  const key = pageUrl(path, noWasm ? { ...params, nowasm: 1 } : params)
   // 首帧：如果服务端注入的数据正是本页的，直接同步用掉，不闪 loading
   // 注意是 peek 不是 take：这一遍渲染可能被丢掉重来，见 bootstrapped 的注释
   const [state, setState] = useState<PageState<T>>(() => {

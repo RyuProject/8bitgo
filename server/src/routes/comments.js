@@ -306,16 +306,18 @@ commentsRouter.get('/', async (req, res, next) => {
 
     const { page, size, offset } = pageParams(req)
     const visible = `WHERE c.${target.col} = ? AND c.pending_review = 0 AND c.hidden = 0 AND c.deleted_at IS NULL`
-    // 总数只需要主表，不必带上那两个为了引用卡片而做的 JOIN
-    const total = Number(
-      (await queryOne(`SELECT COUNT(*) AS n FROM game_comments c ${visible}`, [target.id]))?.n ?? 0,
-    )
-    const rows = await query(
-      `SELECT ${SELECT_COLS} ${FROM_JOINS} ${visible}
-       ORDER BY c.created_at DESC, c.id DESC
-       LIMIT ? OFFSET ?`,
-      [target.id, size, offset],
-    )
+    // 总数只需要主表，不必带上那两个为了引用卡片而做的 JOIN。
+    // 总数与本页互不依赖（分页参数在查总数之前就定了），并行查：每个详情页都会请求这条
+    const [countRow, rows] = await Promise.all([
+      queryOne(`SELECT COUNT(*) AS n FROM game_comments c ${visible}`, [target.id]),
+      query(
+        `SELECT ${SELECT_COLS} ${FROM_JOINS} ${visible}
+         ORDER BY c.created_at DESC, c.id DESC
+         LIMIT ? OFFSET ?`,
+        [target.id, size, offset],
+      ),
+    ])
+    const total = Number(countRow?.n ?? 0)
     res.json({ total, page, pageSize: size, items: rows.map((r) => commentRowToApi(r)) })
   } catch (e) {
     next(e)

@@ -95,8 +95,8 @@ import {
   type NdsCoreOptionsFs,
 } from '../ndsStartup'
 import {
-  inspectRomPackBlob, isBlobReadError, isRomPackBytes, isRomPackUrl, memoryRomOf, prewarmRomPackDecoder,
-  RomBlobStorageError, unpackRomPackBlob, unpackRomPackToMemory,
+  inspectRomPackBlob, isBlobReadError, isRomPackBytes, isRomPackUrl, memoryRomBlob, memoryRomOf, prewarmRomPackDecoder,
+  readBlobRange, RomBlobStorageError, unpackRomPackBlob, unpackRomPackToMemory,
 } from '@/services/romPack'
 import { assertNdsRomBlob, MAX_NDS_ROM_BYTES } from '@/lib/romValidation'
 import {
@@ -1864,11 +1864,22 @@ async function arcadeBlobFrom(
     // 合成失败不能静默放行 —— 放行的结果是 100% 起不来，而报错会指向完全无关的方向
     const merged = await deriveArcadeHackBytes(data, entries, hack)
     if (merged) {
-      output = new Blob([merged as BlobPart], { type: 'application/zip' })
+      // Blob 存储坏掉的浏览器上合成结果也留在内存，不再建一个必然读不出的 Blob
+      output = memoryRomOf(blob) || romBlobStorageBroken
+        ? memoryRomBlob([merged as Uint8Array<ArrayBuffer>], 'application/zip')
+        : new Blob([merged as BlobPart], { type: 'application/zip' })
       console.info(`[arcade] ${hack.title}：已现场合成 ${hack.derive.outputs.join(' / ')} 并补进包里`)
     }
   }
-  return { url: URL.createObjectURL(output), name, hack, mameMedia, namcoSet, blob: output }
+  return { url: objectUrlForEngine(output), name, hack, mameMedia, namcoSet, blob: output }
+}
+
+/**
+ * 交给引擎的 blob: 地址。内存 ROM 不是真 Blob、建不了 URL：给一个空占位地址，
+ * 引擎取它时由 installBlobFetchShortcut 用内存块回应。
+ */
+function objectUrlForEngine(blob: Blob): string {
+  return URL.createObjectURL(memoryRomOf(blob) ? new Blob([], { type: 'application/octet-stream' }) : blob)
 }
 
 /**
@@ -1952,11 +1963,14 @@ export function isNativeBlobReadMessage(message: string): boolean {
 
 /** 8BG 解包：正常走 Blob；Blob 存储坏了（这次探出或本页早已探出）就整份留在内存。 */
 async function unpackRomPackForEngine(stored: Blob, onProgress: MountOptions['onProgress']): Promise<{ name: string; blob: Blob }> {
-  const toMemory = async () => {
+  const toMemory = async (consumeInput = false) => {
     const { header } = await inspectRomPackBlob(stored)
     if (header.originalSize > MEMORY_ROM_MAX_BYTES) throw new RomBlobStorageError()
-    return unpackRomPackToMemory(stored, romPackUnpackProgress(onProgress))
+    return unpackRomPackToMemory(stored, romPackUnpackProgress(onProgress), consumeInput)
   }
+  // 输入本身就是内存替身（内存下载）：结果也只能在内存；调用方不再用这份密文（不缓存、失败整包重下），
+  // 解一块放一块，峰值不再是「整份密文 + 整份明文」
+  if (memoryRomOf(stored)) return toMemory(true)
   if (romBlobStorageBroken) {
     diagLog('adapter', 'info', '这个浏览器的 Blob 存储近期读不出解开的 ROM，本局直接解包到内存')
     return toMemory()
@@ -1991,6 +2005,51 @@ async function discardStoredRom(cacheKey: string): Promise<void> {
   await withResumeTimeout(romCacheDelete(cacheKey), 5_000).catch(() => {})
 }
 
+/**
+ * 下载好的 ROM 读不出（NotReadableError）之后怎么重下。
+ *
+ * 2026-11-15 大陆华为浏览器 17 / Android 9《拳皇 97 风云再起 Plus》两次访问 5 局全失败：每局 ROM 都下完，
+ * 一读就 NotReadableError；以前的退路是「作废续传片、不带续传再整包下一次」，可第二份照样是 Blob，照样读不出 ——
+ * 坏的不是续传片，是这台浏览器的 Blob 存储（同一结论见 RomBlobStorageError）。所以：
+ *   · 记下 Blob 存储已坏（3 天），之后的开局直接内存下载、内存解包，不再先白失败一次；
+ *   · 放得进内存（≤ MEMORY_ROM_MAX_BYTES）就内存重下；放不下的大光盘照旧作废续传片整包重下一次；
+ *   · 没有内容版本（cacheKey）又放不下内存时，重下也是同一条路，直接报错。
+ */
+function retryModeAfterBlobReadError(size: number, hasCacheKey: boolean): 'memory' | 'fresh' | null {
+  markRomBlobStorageBroken('读已下载的 ROM ')
+  if (size > 0 && size <= MEMORY_ROM_MAX_BYTES) return 'memory'
+  return hasCacheKey ? 'fresh' : null
+}
+
+/**
+ * Blob 存储近期坏过时，第一次下载就直接留在内存的上限（超过的仍先走 Blob，读不出再按上面重下）。
+ *
+ * 不直接用 MEMORY_ROM_MAX_BYTES：这条结论是按机器记的，而坏法和大小有关 —— 2026-11-12/13 那台 2GB Chrome
+ * 下载的密文读得出、只是 256MB 的解包结果读不出。8BG 内存解包会边解边放密文，峰值和以前差不多；
+ * 未打包的大镜像（PS1 CHD 等）整份进 JS 内存则是净增，所以按设备内存收着点。读不到内存（Safari / Firefox）按 4GB 算。
+ */
+function preemptiveMemoryRomBytes(): number {
+  const gb = Number((globalThis.navigator as Navigator & { deviceMemory?: number } | undefined)?.deviceMemory) || 4
+  const mb = gb <= 1 ? 32 : gb <= 2 ? 128 : gb <= 4 ? 256 : 520
+  return Math.min(MEMORY_ROM_MAX_BYTES, mb * 1024 * 1024)
+}
+
+/** 本局第一次下载：Blob 存储近期坏过就直接内存下载（超过上限的下载器会自己退回 Blob）。 */
+const firstDownloadMode = (): 'preemptive-memory' | 'resume' => (romBlobStorageBroken ? 'preemptive-memory' : 'resume')
+
+/** 下载模式对应的内存上限：确认读不出之后才放到最大，先发制人的那次按设备内存收着。 */
+const memoryLimitFor = (mode: 'resume' | 'fresh' | 'memory' | 'preemptive-memory'): number | undefined =>
+  mode === 'memory' ? MEMORY_ROM_MAX_BYTES : mode === 'preemptive-memory' ? preemptiveMemoryRomBytes() : undefined
+
+/**
+ * 读已下载 ROM 的头几个字节（认 8BG 魔数）。必须有时限：IndexedDB 里的缓存 / 续传 Blob 在坏掉的存储上
+ * 会永不返回（2026-11-12 Chrome 132《口袋妖怪：白 2》），这一步以前没有上限，整局会停在这里等看门狗。
+ * 超时按 NotReadableError 处理，调用方据此作废缓存、换内存重下。
+ */
+const ROM_MAGIC_READ_TIMEOUT_MS = 8_000
+const readRomMagic = async (blob: Blob): Promise<Uint8Array> =>
+  new Uint8Array(await readBlobRange(blob, 0, 4, ROM_MAGIC_READ_TIMEOUT_MS))
+
 /** 解包 8BG 时每块报一次进度：进度条写「正在解包」，启动看门狗也知道还活着。 */
 const romPackUnpackProgress = (onProgress: MountOptions['onProgress']) => () =>
   onProgress?.({ phase: 'rom', ratio: 1, detail: 'rom-pack' })
@@ -2013,9 +2072,10 @@ export async function prepareRemoteArcadeRom(
   if (isRomPackUrl(url)) prewarmRomPackDecoder(url)
 
   const decodedArcade = async (stored: Blob): Promise<{ blob: Blob; name: string }> => {
-    const magic = new Uint8Array(await stored.slice(0, 4).arrayBuffer())
+    const magic = await readRomMagic(stored)
     if (!isRomPackBytes(magic)) return { blob: stored, name }
-    const unpacked = await unpackRomPackBlob(stored, romPackUnpackProgress(onProgress))
+    // 与光盘 / NDS 同一个入口：Blob 存储坏掉时解包结果留在内存
+    const unpacked = await unpackRomPackForEngine(stored, onProgress)
     if (!/\.zip$/i.test(unpacked.name)) throw new InvalidArcadeArchiveError(unpacked.name)
     return { blob: unpacked.blob, name: unpacked.name }
   }
@@ -2043,34 +2103,39 @@ export async function prepareRemoteArcadeRom(
         // 旧密钥被移除或缓存写到一半时，当场删掉并回网络；抛给播放器会触发备用源，
         // 让一份完全正常的远端新包因为本机旧缓存而被本轮永久跳过。
         await romCacheDelete(cacheKey).catch(() => {})
+        // 缓存读不出也是 Blob 存储坏了的信号：下面这次下载就别再建一个读不出的 Blob
+        if (isBlobReadError(error)) markRomBlobStorageBroken('读 ROM 缓存')
         console.warn('[arcade] ROM 缓存不可用，重新下载：', error)
       }
     }
   }
 
-  const download = (resume: boolean) => fetchBlobWithProgress(url, {
+  const download = (mode: 'resume' | 'fresh' | 'memory' | 'preemptive-memory') => fetchBlobWithProgress(url, {
     phase: 'rom',
     onProgress,
     signal,
     alternateUrl: alternateRomUrl(url),
     // 街机大包与 NDS 共用 8MB Range 断点续传。romCacheKey 只对带 romv /
     // 归档版本的内容生成；无版本 URL 可能原地换包，不许拼入旧分片。
-    resumeKey: resume ? cacheKey || undefined : undefined,
+    resumeKey: mode === 'resume' ? cacheKey || undefined : undefined,
+    inMemoryUpTo: memoryLimitFor(mode),
     check: (res) => {
       const type = res.headers.get('content-type') ?? ''
       // 地址或反代配错时，SSR 常会回 200 + HTML；状态码正常也绝不能交给核心。
       if (/text\/html|application\/xhtml/i.test(type)) throw new InvalidArcadeArchiveError(name)
     },
   })
-  let stored = await download(true)
+  let stored = await download(firstDownloadMode())
   let decoded: { blob: Blob; name: string }
   try {
     decoded = await decodedArcade(stored)
   } catch (error) {
-    if (!cacheKey || !isBlobReadError(error)) throw error
-    console.warn('[arcade] 下载好的 ROM 读不出来，作废续传片重下一次：', error)
-    await discardStoredRom(cacheKey)
-    stored = await download(false)
+    if (!isBlobReadError(error) || memoryRomOf(stored)) throw error
+    const retry = retryModeAfterBlobReadError(stored.size, Boolean(cacheKey))
+    if (!retry) throw error
+    console.warn(`[arcade] 下载好的 ROM 读不出来，作废续传片${retry === 'memory' ? '改在内存里' : ''}重下一次：`, error)
+    if (cacheKey) await discardStoredRom(cacheKey)
+    stored = await download(retry)
     decoded = await decodedArcade(stored)
   }
   // 只读 Blob 的尾部和目录；截断包会被拦住，但普通大包不再复制成连续 ArrayBuffer。
@@ -2078,7 +2143,8 @@ export async function prepareRemoteArcadeRom(
   try { entries = await assertValidZipBlob(decoded.blob, '街机 ROM') } catch { throw new InvalidArcadeArchiveError(name) }
 
   // 不 await：Blob 不可变，写盘慢也不耽误开局；8BG 缓存的仍是密文，避免扩大磁盘占用。
-  if (cacheKey) void romCachePutBlob(cacheKey, stored).catch(() => {})
+  // 内存下载的那份不是真 Blob（这台浏览器的 Blob 存储也写不进），不缓存。
+  if (cacheKey && !memoryRomOf(stored)) void romCachePutBlob(cacheKey, stored).catch(() => {})
 
   return arcadeBlobFrom(decoded.blob, decoded.name, entries)
 }
@@ -2171,7 +2237,7 @@ export async function prepareRemoteDiscRom(
     if (options.maxBytes !== undefined && stored.size > options.maxBytes) {
       throw new RangeError('ROM 文件超过浏览器下载上限')
     }
-    const magic = new Uint8Array(await stored.slice(0, 4).arrayBuffer())
+    const magic = await readRomMagic(stored)
     let playable = stored
     let name: string | undefined
     if (isRomPackBytes(magic)) {
@@ -2188,9 +2254,7 @@ export async function prepareRemoteDiscRom(
     }
     // 必须在 createObjectURL 和正式入缓存之前验；失败时不能留下 URL，也不能钉住坏缓存。
     await options.validate?.(playable)
-    // 内存 ROM 不是真 Blob，建不了 URL：给引擎一个空占位地址，取它时由 installBlobFetchShortcut 用内存回应。
-    const urlSource = memoryRomOf(playable) ? new Blob([], { type: 'application/octet-stream' }) : playable
-    return { url: URL.createObjectURL(urlSource), bytes: playable.size, name, blob: playable }
+    return { url: objectUrlForEngine(playable), bytes: playable.size, name, blob: playable }
   }
   const cacheKey = romCacheKey(url)
   // ROM trap 发生在模拟器里，通用自动重试会再次命中同一条 IDB 记录 / 续传片，永远喂回同一份输入。
@@ -2210,19 +2274,22 @@ export async function prepareRemoteDiscRom(
       } catch (error) {
         // 密文被截断或旧密钥配错时，当场回网络；若远端也坏，下面才把真实错误交给备用源。
         await romCacheDelete(cacheKey).catch(() => {})
+        // 缓存读不出也是 Blob 存储坏了的信号：下面这次下载就别再建一个读不出的 Blob
+        if (isBlobReadError(error)) markRomBlobStorageBroken('读 ROM 缓存')
         console.warn('[emulatorjs] ROM 缓存不可用，重新下载：', error)
       }
     }
   }
 
-  const download = (resume: boolean) => fetchBlobWithProgress(url, {
+  const download = (mode: 'resume' | 'fresh' | 'memory' | 'preemptive-memory') => fetchBlobWithProgress(url, {
     phase: 'rom',
     onProgress,
     signal,
     alternateUrl: alternateRomUrl(url),
     maxBytes: options.maxBytes,
     // 只在明确要求且 URL 带内容版本时落临时分片。无版本地址原地换包后会混入旧片，宁可重下。
-    resumeKey: resume && options.resumeAcrossRefresh ? cacheKey : undefined,
+    resumeKey: mode === 'resume' && options.resumeAcrossRefresh ? cacheKey : undefined,
+    inMemoryUpTo: memoryLimitFor(mode),
     check: (res) => {
       const type = res.headers.get('content-type') ?? ''
       // 地址或反代配错时，SSR 常会回 200 + HTML；状态码正常也绝不能当成镜像交给核心
@@ -2230,21 +2297,23 @@ export async function prepareRemoteDiscRom(
     },
   })
 
-  let blob = await download(!options.forceRomRefresh)
+  let blob = await download(romBlobStorageBroken ? 'preemptive-memory' : options.forceRomRefresh ? 'fresh' : 'resume')
   // 8BG 要先确认能解密解压再入缓存；否则一次坏响应会被钉在这台浏览器上，重试永远失败。
   let prepared: { url: string; bytes: number; name?: string; blob: Blob }
   try {
     prepared = await prepare(blob)
   } catch (error) {
-    if (!cacheKey || !isBlobReadError(error)) throw error
-    console.warn('[emulatorjs] 下载好的 ROM 读不出来，作废续传片重下一次：', error)
-    await discardStoredRom(cacheKey)
-    blob = await download(false)
+    if (!isBlobReadError(error) || memoryRomOf(blob)) throw error
+    const retry = retryModeAfterBlobReadError(blob.size, Boolean(cacheKey))
+    if (!retry) throw error
+    console.warn(`[emulatorjs] 下载好的 ROM 读不出来，作废续传片${retry === 'memory' ? '改在内存里' : ''}重下一次：`, error)
+    if (cacheKey) await discardStoredRom(cacheKey)
+    blob = await download(retry)
     prepared = await prepare(blob)
   }
   // 不 await：写几百 MB 要花时间，不该让玩家在开局前干等。Blob 本身是不可变的，
-  // prepare 产出的 URL 与这份密文缓存互不影响。
-  if (cacheKey) cacheRomBlob(cacheKey, blob)
+  // prepare 产出的 URL 与这份密文缓存互不影响。内存下载的那份不是真 Blob，不缓存。
+  if (cacheKey && !memoryRomOf(blob)) cacheRomBlob(cacheKey, blob)
 
   return prepared
 }

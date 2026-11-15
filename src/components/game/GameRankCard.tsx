@@ -6,6 +6,7 @@ import { cx } from '@/lib/format'
 import { GameCover } from './GameCover'
 import { useT } from '@/services/i18n'
 import { genreLabel } from '@/services/i18nData'
+import { useGameListed } from '@/services/noWasm'
 
 interface Props {
   game: Game
@@ -64,6 +65,9 @@ export function GameRankCard({ game, rank, metric, className }: Props) {
   const t = useT()
   const genreId = game.genres[0]
   const genre = genreId ? genreMap[genreId] : undefined
+  // 浏览器没有 WebAssembly 时只画能跑的平台（services/noWasm.ts）
+  const listed = useGameListed(game.platform)
+  if (!listed) return null
 
   return (
     <Link

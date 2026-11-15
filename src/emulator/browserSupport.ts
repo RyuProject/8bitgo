@@ -49,3 +49,26 @@ export function modernRuntimeSyntaxSupported(
 export function resetBrowserSupportProbe(): void {
   cached = undefined
 }
+
+/**
+ * 浏览器有没有 WebAssembly。
+ *
+ * 不只是老浏览器：Edge 的「增强安全性」、iOS 锁定模式、关了 JIT 的安卓模拟器 / 精简浏览器都会把它整个拿掉
+ * （2026-11-15 Android 模拟器 Chrome 110：`ReferenceError: WebAssembly is not defined`）。
+ * 所有模拟器核心都是 WebAssembly，只有 jsnes 是纯 JS（8BG 解压没有 WebAssembly 时改用纯 JS 的 fzstd）。
+ */
+export function webAssemblyAvailable(): boolean {
+  return typeof WebAssembly === 'object' && WebAssembly !== null && typeof WebAssembly.instantiate === 'function'
+}
+
+/**
+ * 这一局在没有 WebAssembly 的浏览器里起得来吗。
+ * jsnes 是纯 JS；8BG 外壳在没有 WebAssembly 时改用纯 JS 的 fzstd 解压（romPack.ts），所以本站的 NES 游戏照样能玩。
+ * GB/GBC 的 binjgb 没有 WebAssembly 时自动换成它的纯 JavaScript 构建（public/binjgb/binjgb-js.js）。
+ * 直播观看、云游戏只收视频，不需要。
+ * 其余核心（EmulatorJS、js-dos、Ruffle …）本身就是 WebAssembly。
+ */
+export function runtimeRunsWithoutWasm(id: RuntimeId, _game?: File | string): boolean {
+  // 网页游戏各有各的实现，纯 JS 的不少：让它自己试，别一刀切挡住
+  return id === 'jsnes' || id === 'binjgb' || id === 'liveview' || id === 'cloudgame' || id === 'html5'
+}

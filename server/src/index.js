@@ -34,6 +34,7 @@ import { roomsRouter } from './routes/rooms.js'
 import { pageRouter } from './routes/page.js'
 import { platformBiosRouter } from './routes/platform-bios.js'
 import { siteNoticeRouter, adminSiteNoticeRouter } from './routes/site-notice.js'
+import { createAssetRepairRouter } from './routes/asset-repair.js'
 import { developersRouter } from './routes/developers.js'
 import { friendLinksRouter } from './routes/friend-links.js'
 import { appsRouter } from './routes/apps.js'
@@ -258,6 +259,8 @@ app.use('/api/rooms', roomsRouter)
 app.use('/api/page', pageRouter)
 app.use('/api/platform-bios', platformBiosRouter)
 app.use('/api/site-notice', siteNoticeRouter)
+// 坏 chunk 自修复：访客发现 Cloudflare 边缘缓存了坏的 /assets/ 文件时，按清单核对后清那几个 URL
+app.use('/api/asset-repair', createAssetRepairRouter({ clientDir: CLIENT_DIR, siteOrigin: originOfSite() }))
 app.use('/api/admin/site-notice', adminSiteNoticeRouter)
 app.use('/api/developers', developersRouter)
 // 首页「特别鸣谢」的后台管理；公开列表跟着 /api/page 的首页数据返回

@@ -184,6 +184,17 @@ export async function listGames(q = {}) {
     where.push('g.platform = ?')
     params.push(String(q.platform))
   }
+  /*
+    只列这几种平台（浏览器没有 WebAssembly 时，见 shared/wasm-free-platforms.js）。
+    和 platform 叠加：要的平台不在名单里就是空列表。在 SQL 里做，total / totalPages 才对。
+  */
+  if (Array.isArray(q.platforms)) {
+    if (!q.platforms.length) where.push('1 = 0')
+    else {
+      where.push(`g.platform IN (${q.platforms.map(() => '?').join(', ')})`)
+      params.push(...q.platforms.map(String))
+    }
+  }
   // DOSBox-X 同时承载 Windows 客体和 PC-98；设备筛“需要 Windows”时不能把后者误排掉。
   if (q.requiresWindows === true) where.push("g.platform = 'dos' AND g.dos_backend = 'dosboxX' AND COALESCE(g.dos_pc98, 0) = 0")
   else if (q.requiresWindows === false) where.push("(g.platform <> 'dos' OR COALESCE(g.dos_backend, '') <> 'dosboxX' OR COALESCE(g.dos_pc98, 0) = 1)")
@@ -462,11 +473,15 @@ export async function clearPlatformBios(platform) {
  * 一款都没钦点时返回空数组 —— 调用方据此退回「按游玩次数自动排」，
  * 也就是这个功能加进来之前的行为。这样新装的站不需要先去后台点一遍才有首页。
  */
-export async function listHomePicks(limit) {
+export async function listHomePicks(limit, platforms) {
   const n = Math.min(MAX_PAGE_SIZE, Math.max(1, Number(limit) || 12))
+  const only = Array.isArray(platforms) && platforms.length
+    ? ` AND platform IN (${platforms.map(() => '?').join(', ')})`
+    : ''
   const rows = await query(
-    `SELECT ${CARD_COLUMNS} FROM games g WHERE hidden = 0 AND home_rank IS NOT NULL
+    `SELECT ${CARD_COLUMNS} FROM games g WHERE hidden = 0 AND home_rank IS NOT NULL${only}
       ORDER BY home_rank ASC, plays DESC, id DESC LIMIT ${n}`,
+    only ? platforms.map(String) : undefined,
   )
   return attachCardRelations(rows)
 }
@@ -503,10 +518,9 @@ async function latestVisibleCommentIso(gameId) {
 export async function getGameBySlug(slug) {
   const row = await queryOne('SELECT * FROM games WHERE slug = ?', [slug])
   if (!row) return undefined
-  const [g] = await attachRelations([row])
-  // 只有详情页要这个字段，所以不放进 attachRelations —— 那条路列表页也走，
-  // 一页 24 条就会变成 24 次多余的聚合查询。
-  const lastCommentAt = await latestVisibleCommentIso(row.id)
+  // 只有详情页要 lastCommentAt，所以不放进 attachRelations —— 那条路列表页也走，
+  // 一页 24 条就会变成 24 次多余的聚合查询。两者都只依赖 row，并行查（详情页是全站最热的路径）。
+  const [[g], lastCommentAt] = await Promise.all([attachRelations([row]), latestVisibleCommentIso(row.id)])
   return lastCommentAt ? { ...g, lastCommentAt } : g
 }
 

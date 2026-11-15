@@ -9,6 +9,7 @@ import { InfiniteFooter } from '@/components/ui/InfiniteFooter'
 import { platforms, platformMap } from '@/data/platforms'
 import { genres, genreMap } from '@/data/genres'
 import { isPlatformEnabled } from '@/config/platforms'
+import { platformListed, useNoWasmMode } from '@/services/noWasm'
 import { useSeo, breadcrumbSchema, itemListSchema } from '@/services/seo'
 import { useT, fmt } from '@/services/i18n'
 import { gameTitle, genreDesc, genreLabel, platformDesc, platformLabel } from '@/services/i18nData'
@@ -53,6 +54,7 @@ function countsOf(rows: Array<{ id: string; count: number }> | undefined): Map<s
 export function GamesPage() {
   const [params, setParams] = useSearchParams()
   const t = useT()
+  const noWasm = useNoWasmMode()
   const lang = useLang()
   const SORTS = sortsFor(t)
 
@@ -129,7 +131,7 @@ export function GamesPage() {
   const genreCounts = countsOf(facets?.genres)
   // 平台顺序沿用「收录多的排前面」；数量还没回来时 sort 是稳定的，保持配置里的顺序
   const platformChips = platforms
-    .filter((p) => isPlatformEnabled(p.id))
+    .filter((p) => isPlatformEnabled(p.id) && platformListed(noWasm, p.id))
     .map((p) => ({ ...p, count: platformCounts.get(p.id) }))
     .sort((a, b) => (b.count ?? 0) - (a.count ?? 0))
 

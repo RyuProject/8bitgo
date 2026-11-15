@@ -54,6 +54,7 @@ const de: Translation = {
   site: {
     defaultTitle: '{site} — Retro-Emulator-Spiele kostenlos online spielen',
     titleTemplate: '{title} - {site}',
+    noWasmNotice: 'Dein Browser unterstützt WebAssembly nicht oder hat es deaktiviert, daher können nicht alle Spiele angezeigt werden.',
   },
 
   /* ---------------- Navigation ---------------- */
@@ -887,6 +888,7 @@ const de: Translation = {
     goWatch: 'Nur zuschauen',
     roleFailed: 'Wechsel nicht möglich: kein freier Platz, oder der Raum ist zu Ende.',
     browserTooOld: 'Dein Browser ist zu alt für diesen Emulator. Aktualisiere ihn auf die neueste Version (mindestens Chrome 80, Safari 14 oder Firefox 74) oder öffne diese Seite in einem aktuellen Chrome, Edge oder Firefox.',
+    browserNoWasm: 'In diesem Browser ist WebAssembly deaktiviert, daher kann der Emulator nicht laufen. Häufige Ursachen: „Erweiterte Sicherheit“ in Edge, der Blockierungsmodus auf dem iPhone, manche Android-Emulatoren oder Lite-Browser. Schalte das ab oder öffne die Seite in einem aktuellen Chrome, Edge oder Firefox.',
     seatAskFrom: '{name} möchte als Spieler mitmachen',
     seatAskTitle: 'Ein Zuschauer möchte als Spieler mitmachen',
     seatAccept: 'Annehmen',

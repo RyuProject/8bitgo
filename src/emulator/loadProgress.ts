@@ -12,6 +12,7 @@
  * 一个字都不用碰，反正整个加载期间都被遮罩盖着。
  */
 import { diagLog } from '@/services/startupDiagnostics'
+import { memoryRomBlob, memoryRomOf } from '@/services/memoryRom'
 import { rememberRomHostForUrl } from '@/services/romHosts'
 import type { PlatformId } from '@/types'
 import type { LoadPhase, LoadProgress, RuntimeId } from './types'
@@ -336,6 +337,16 @@ export interface BlobFetchOptions {
   resumeKey?: string
   /** 注入临时分片仓库，只给测试用；生产默认使用 downloadResumeStore。 */
   resumeStore?: DownloadResumeStore
+  /**
+   * 整份不超过这个字节数时，结果留在 JS 内存里（memoryRomBlob 替身），全程一个真 Blob 都不建；
+   * 超过的照常走 Blob —— 宁可让那一份按老路失败，也不把几百 MB 放进 JS 内存让标签页被杀。
+   * 设了它就不写续传片（续传片本身就是 IndexedDB 里的 Blob）。
+   *
+   * 2026-11-15 大陆华为浏览器 17 / Android 9《拳皇 97 风云再起 Plus》两次访问 5 局：ROM 每次都下完，
+   * 一读就 NotReadableError；作废续传片、不带续传整包重下后，`new Blob(网络分片)` 照样读不出 ——
+   * 这台浏览器的 Blob 存储本身坏了，只有不经过 Blob 才能开局。
+   */
+  inMemoryUpTo?: number
   /**
    * 自适应并发的硬上限。生产默认最多四路；测试可设成 1 固定旧的串行时序。
    * 这不是“越大越快”：每一路都可能暂存一个完整分片，低内存设备还会被运行时提示继续压低。
@@ -724,9 +735,21 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
   const networkRetries = opts.retries ?? NETWORK_RETRIES
   const doFetch = opts.fetchImpl ?? fetch
   const emit = throttleProgress(opts.onProgress)
-  const resumeKey = opts.resumeKey ?? ''
+  const memoryLimit = Math.max(0, opts.inMemoryUpTo ?? 0)
+  const resumeKey = memoryLimit ? '' : opts.resumeKey ?? ''
   let resumeStore: DownloadResumeStore | null = resumeKey ? (opts.resumeStore ?? downloadResumeStore) : null
   let reportedLoaded = 0
+  /** 这一份（按整份大小）要不要留在内存里。分片模式下 total 在建第一个分片之前就已确定。 */
+  const keepInMemory = (size: number) => memoryLimit > 0 && size > 0 && size <= memoryLimit
+  const memoryParts = (chunks: Uint8Array[]) => chunks as Uint8Array<ArrayBuffer>[]
+  /** 网络分片收齐后的那一块：内存模式下不建 Blob（建出来就可能读不出）。 */
+  const makePart = (chunks: Uint8Array[], wholeSize: number): Blob =>
+    keepInMemory(wholeSize) ? memoryRomBlob(memoryParts(chunks)) : new Blob(chunks as BlobPart[])
+  /** 没有 body 的回应（测试 / 个别实现）：内存模式读成字节，不经 res.blob()。 */
+  const bodylessPart = async (res: Response, wholeSize: number): Promise<Blob> =>
+    memoryLimit > 0 && (wholeSize === 0 || keepInMemory(wholeSize))
+      ? memoryRomBlob([new Uint8Array(await res.arrayBuffer())])
+      : res.blob()
 
   emit({ phase, loaded: 0 }, true)
 
@@ -864,7 +887,7 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
     const total = !encoded && Number.isFinite(len) && len > 0 ? len : undefined
     if (total !== undefined && total > maxBytes) throw new RangeError('ROM 文件超过浏览器下载上限')
     if (!res.body) {
-      const blob = await res.blob()
+      const blob = await bodylessPart(res, total ?? 0)
       if (blob.size > maxBytes) throw new RangeError('ROM 文件超过浏览器下载上限')
       if (total !== undefined && blob.size !== total) {
         throw new Error(`下载不完整：应为 ${total} 字节，实际收到 ${blob.size} 字节`)
@@ -872,6 +895,7 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
       emitTotal(blob.size, blob.size, true)
       await flushPartSaves()
       await clearResume()
+      if (memoryRomOf(blob)) return keepInMemory(blob.size) ? blob : new Blob([await blob.arrayBuffer()], { type })
       return blob.type === type ? blob : new Blob([blob], { type })
     }
     const { chunks, loaded } = await drain(
@@ -885,7 +909,7 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
     emitTotal(loaded, loaded, true)
     await flushPartSaves()
     await clearResume()
-    return new Blob(chunks as BlobPart[], { type })
+    return keepInMemory(loaded) ? memoryRomBlob(memoryParts(chunks), type) : new Blob(chunks as BlobPart[], { type })
   }
 
   let total = 0
@@ -975,14 +999,14 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
       else emitTotal(completed + loaded, total || probedTotal || undefined)
     }
     if (!res.body) {
-      const blob = await res.blob()
+      const blob = await bodylessPart(res, total)
       if (blob.size !== expect) throw new Error(`分片不完整：应为 ${expect} 字节，实际 ${blob.size}`)
       if (onLoaded) await relay({ phase, loaded: blob.size })
       return blob
     }
     // Content-Range 只是服务器自报；若实际流远大于这一片，不能先无限攒进 chunks 再验长度。
     const { chunks } = await drain(res.body, phase, expect, relay, expect, guard.touch)
-    return new Blob(chunks as BlobPart[])
+    return makePart(chunks, total)
   }
 
   /** 首片测速通过后抢先取后续块；仍用完整 8 MiB Range，不破坏边缘缓存的对齐规则。 */
@@ -1221,14 +1245,14 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
       emitTotal(completed + inFlightBytes, total)
     }
     if (!res.body) {
-      const blob = await res.blob()
+      const blob = await bodylessPart(res, total)
       if (blob.size !== expect) throw new Error(`分片不完整：应为 ${expect} 字节，实际 ${blob.size}`)
       setInFlight(index, blob.size)
       return blob
     }
     // 并发片同样要按实际读入字节止损，不能信 CDN 宣称的 Content-Range。
     const { chunks } = await drain(res.body, phase, expect, relay, expect, guard.touch)
-    return new Blob(chunks as BlobPart[])
+    return makePart(chunks, total)
   }
 
   const worker = async () => {
@@ -1257,6 +1281,10 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
   // 删除几十到几百个临时片可能明显拖住开局。完整 Blob 已在手里，清理留在后台即可；
   // 同一个内容键此刻再次进入，最多只是短暂复用这份完整现场，不会混入另一代 ROM。
   void clearResume()
+  if (keepInMemory(total)) {
+    // 各片本来就是独立的字节块，拼成一个替身只是换个索引，不复制
+    return memoryRomBlob(complete.flatMap((part) => (memoryRomOf(part)?.parts ?? []) as Uint8Array<ArrayBuffer>[]), type)
+  }
   return new Blob(complete, { type })
 }
 

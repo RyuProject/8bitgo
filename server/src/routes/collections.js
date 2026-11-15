@@ -213,11 +213,15 @@ export async function topCollections(limit = 8) {
 export async function listPublicCollections(page, pageSize) {
   const size = Math.min(MAX_PAGE_SIZE, Math.max(1, Number(pageSize) || DEFAULT_PAGE_SIZE))
   const p = Math.max(1, Number(page) || 1)
-  const total = Number((await queryOne('SELECT COUNT(*) AS n FROM collections WHERE hidden = 0'))?.n) || 0
-  const rows = await query(
-    `${SELECT_WITH_AUTHOR} WHERE c.hidden = 0 ORDER BY c.updated_at DESC, c.id DESC LIMIT ? OFFSET ?`,
-    [size, (p - 1) * size],
-  )
+  // 总数与本页互不依赖（页码不按总数夹），并行查
+  const [countRow, rows] = await Promise.all([
+    queryOne('SELECT COUNT(*) AS n FROM collections WHERE hidden = 0'),
+    query(
+      `${SELECT_WITH_AUTHOR} WHERE c.hidden = 0 ORDER BY c.updated_at DESC, c.id DESC LIMIT ? OFFSET ?`,
+      [size, (p - 1) * size],
+    ),
+  ])
+  const total = Number(countRow?.n) || 0
   return { items: await decorate(rows, null), total, page: p, pageSize: size }
 }
 
@@ -304,11 +308,15 @@ collectionsRouter.get('/', optionalUser, async (req, res, next) => {
   try {
     const size = Math.min(MAX_PAGE_SIZE, Math.max(1, Number(req.query.pageSize) || DEFAULT_PAGE_SIZE))
     const page = Math.max(1, Number(req.query.page) || 1)
-    const total = Number((await queryOne('SELECT COUNT(*) AS n FROM collections WHERE hidden = 0'))?.n) || 0
-    const rows = await query(
-      `${SELECT_WITH_AUTHOR} WHERE c.hidden = 0 ORDER BY c.updated_at DESC, c.id DESC LIMIT ? OFFSET ?`,
-      [size, (page - 1) * size],
-    )
+    // 总数与本页互不依赖（页码不按总数夹），并行查
+    const [countRow, rows] = await Promise.all([
+      queryOne('SELECT COUNT(*) AS n FROM collections WHERE hidden = 0'),
+      query(
+        `${SELECT_WITH_AUTHOR} WHERE c.hidden = 0 ORDER BY c.updated_at DESC, c.id DESC LIMIT ? OFFSET ?`,
+        [size, (page - 1) * size],
+      ),
+    ])
+    const total = Number(countRow?.n) || 0
     res.json({ items: await decorate(rows, req.user?.id ?? null), total, page, pageSize: size })
   } catch (e) {
     next(e)

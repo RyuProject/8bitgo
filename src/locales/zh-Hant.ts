@@ -51,6 +51,7 @@ const zhHant: Translation = {
   site: {
     defaultTitle: '{site} — 免費線上玩經典復古遊戲｜紅白機·GBA·街機·Flash 模擬器',
     titleTemplate: '{title}｜{site}',
+    noWasmNotice: '目前瀏覽器不支援或停用了 WebAssembly，無法顯示全部遊戲。',
   },
 
   nav: {
@@ -888,6 +889,7 @@ const zhHant: Translation = {
     goWatch: '退到觀眾席',
     roleFailed: '換不了身分：手把位滿了，或者房間已經結束。',
     browserTooOld: '你的瀏覽器版本太舊，跑不了這個模擬器。請把瀏覽器更新到最新版（至少 Chrome 80、Safari 14 或 Firefox 74），或改用最新的 Chrome、Edge、Firefox 開啟本頁。',
+    browserNoWasm: '這個瀏覽器關閉了 WebAssembly，模擬器沒辦法執行。常見原因：Edge 的「增強安全性」、iPhone 的「鎖定模式」、部分 Android 模擬器或精簡瀏覽器。請關掉這些設定，或改用最新的 Chrome、Edge、Firefox 開啟本頁。',
     seatAskFrom: '{name} 申請成為玩家',
     seatAskTitle: '有觀眾申請成為玩家',
     seatAccept: '接受',

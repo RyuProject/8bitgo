@@ -218,7 +218,7 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
   不再换 ROM（scope `runtime`）。低内存版是另一批 FBNeo 源码，即时存档单独一档（`:fbneo-lowmem`）；
   换它的构建要同步 `FBNEO_LOWMEM_BUILD`。回归：`npm run test:fbneo-lowmem`。
 
-改引擎后要换 `EJS_RUNTIME_GENERATION`，入口文件名不带内容哈希。
+改引擎后 URL 会自动换（2026-11-15 起引擎入口按内容版本，见 §2.8.1.1 末条），不用再手动换 `EJS_RUNTIME_GENERATION`。
 
 - **建不出 WebGL 不重试、不换 ROM**（2026-11-11《魂斗罗》Linux Chrome 156：`reading 'GLctx'`，原地重试加三种语言 ROM
   一共试了 5 遍）。`isWebglUnavailableText` 命中后现场再建一次 WebGL：仍建不出就以 `'config'` 报
@@ -234,7 +234,11 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
   普通 SRAM 使用独立本地键与现有 slot 9 云同步；导入的电池数据长度必须与卡带匹配。MBC3 RTC 卡带不写入
   Gambatte 的云存档，避免把 RTC 格式交叉覆盖；binjgb 的 WebAssembly 接口只暴露外部 RAM，RTC 时钟不跨设备同步。
   升级 binjgb 必须换 `BINJGB_BUILD` 并更新
-  `public/binjgb/UPSTREAM.md` 中的上游 commit。
+  `public/binjgb/UPSTREAM.md` 中的上游 commit，**同时重跑 `node scripts/build-binjgb-js.mjs`**：浏览器没有 WebAssembly 时
+  binjgb 改载同一提交的纯 JavaScript 构建 `public/binjgb/binjgb-js.js`（Emscripten 4.0.20，上游 CMake 自带的 `-DWASM=OFF`
+  → `-s WASM=0`，全局名改成 `BinjgbJs`），两份构建的提交必须一致（`test:browser-support` 核对 sha256 与提交）。
+  为什么不用 jsGBC 之类的纯 JS 模拟器：同一个核心精度更高、即时存档 / 电池存档格式不变、适配器原样复用；
+  jsGBC 的 npm 包还把原生模块 `speaker`（npm audit 高危）和 webpack 拖进生产依赖，它的即时存档 `load()` 是空实现。
 - **街机无 WebGL 只给 FBNeo legacy 试 Canvas 2D 后备**（2026-11-14）：适配器先按后台核心与 RomData 规则定出最终核心；只有
   `fbneo` / `fbneo-lowmem` 才在 EmulatorJS iframe 的 `loader.js` 前安装 `src/emulator/softwareWebgl.ts`。
   WebGL2 仍返回不可用，因此 EmulatorJS 应加载对应的 `*-legacy-wasm.data`；不把 MAME / FBA 核心改成 FBNeo，
@@ -318,7 +322,8 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
 - **引擎下的核心大多是 legacy 版。** 核心报告的 `options.defaultWebGL2` 为空时，引擎下载 `<core>-legacy-wasm.data`。FBNeo、snes9x、mame2003 都属于这种情况。预热必须用 `emulatorJsCoreDataFile()`，名单是 `EJS_WEBGL2_DEFAULT_CORES`，`test:arcade-runtime` 会把它和 metadata、引擎源码逐项核对。以前悬停预热拉的是 `fbneo-wasm.data`，白下 8MB，点开后引擎再下另一份。
 - **点击后与 ROM 并行预热**（`ejsStartWarm.ts`）：入口 / css / 核心报告无条件预热。核心和平台 BIOS 只在引擎库 `EmulatorJS-Cache` 里没有这个 URL 时才预热。⚠️ 查库遇到 `onupgradeneeded` 必须 abort：替引擎建出一个没有 `cache` 表的空 v1 库，会让核心缓存永久失效。
 - **平台 BIOS 只在用得上时才下。** 服务端按 romset 索引推导 `Game.arcadeNoBios`（`arcade-bios-index.js` 的 `romsetsNeedNoBios`），条件是所有官方 ROM（含备用源）都是已知、且不需要 BIOS 的 romset。后台填了系统包或 RomData、或者换了非 FBNeo 核心的游戏不推导。认不出的名字一律保守地照下平台 BIOS。播放器只对官方远端 ROM、FBNeo 核心生效。
-- **带 `?v=` 的 `/emulatorjs/` 请求长期缓存**（`cache.js` 的 `isVersionedRequest`）。引擎自己拼的 `compression/*` 不带版本，仍然短缓存。界面语言包例外：loader.js **等语言包回来才起核心**，所以 `emulatorJsRuntimePaths(core, 语言)` 经 `EJS_paths[语言]` 给它版本化 URL（2026-11-06《铁拳》热启动里这一步回源 0.8 秒）；改 `localization/*.json` 同样要换代。前提不变：改引擎或核心必须换 `EJS_RUNTIME_GENERATION`。
+- **带 `?v=` 的 `/emulatorjs/` 请求长期缓存**（`cache.js` 的 `isVersionedRequest`）。引擎自己拼的 `compression/*` 不带版本，仍然短缓存。界面语言包例外：loader.js **等语言包回来才起核心**，所以 `emulatorJsRuntimePaths(core, 语言)` 经 `EJS_paths[语言]` 给它版本化 URL（2026-11-06《铁拳》热启动里这一步回源 0.8 秒）；改 `localization/*.json` 同样会换 URL。
+- **引擎入口与核心都按内容版本**（2026-11-15）：`src/emulator/ejsCoreVersionsData.ts` 记着 cores、`emulator.min.js` / css、`loader.js`、`compression/extract7z.js`、`localization/*.json` 的 SHA-256 前 16 位，`ejsRuntimeAsset` / `ejsCoreAsset` 据此拼 `?v=`。`npm run ejspatch` 打完补丁自动重生成，`check-emulatorjs` 用 `--check` 拦住过期的表；**不再需要手动换 `EJS_RUNTIME_GENERATION`**，它只剩存档元数据 / NDS 偏好键的语义代号。内容没变、只想绕开边缘上的坏缓存（2026-11-08 EdgeOne `Vary: Origin` 那种）时改 `EJS_ENGINE_URL_EPOCH`，只换引擎入口、不动核心。回归：`npm run test:ejs-cores`。
 
 - **点开始后引擎还串行走四步，也要并行**（2026-11-11 大陆 Firefox《圆桌骑士》：ROM 4.9 秒到手，之后 zstd 解码器 1.9 秒 →
   css 2.5 秒 → 语言包 0.9 秒 → `extract7z.js` 1 秒，依次排队）。现在：街机 / 光盘 8BG 在开始下载时就 `prewarmRomPackDecoder()`；
@@ -543,7 +548,7 @@ abort()，不带文字；真正的核心 bug 是 unreachable / null function 这
 `isLowMemoryAbort`（`memoryRecovery.ts`：裸 `Aborted()` 且 `deviceMemory ≤ 2` 或 32 位浏览器），命中就以 `'config'` 报
 `ejsOutOfMemory`，不换核心、不记偏好、不自动重试。读不到内存（iOS）不猜，照旧换核心。
 同时 `npm run ejspatch` 第十四节让引擎写游戏文件时 `FS.writeFile(…, {canOwn:!0})`：MEMFS 直接接管那块数组，开局那一刻
-JS 侧少一整份 ROM（64MB ROM 就是 64MB），所有 EmulatorJS 平台受益；`check-emulatorjs` 守着，改了要换 `EJS_RUNTIME_GENERATION`。
+JS 侧少一整份 ROM（64MB ROM 就是 64MB），所有 EmulatorJS 平台受益；`check-emulatorjs` 守着；改了重跑 `npm run ejspatch`，引擎 URL 按内容自动换代。
 这只能降低峰值，2GB 设备开 64MB 以上的 NDS ROM 仍可能不够。回归：`npm run test:fbneo-lowmem && npm run test:nds-crash`。
 
 NDS ROM 由适配器自己按 **8MB Range** 顺序下载；每片完成后写进独立的
@@ -588,6 +593,17 @@ Blob 回应读不出时 NotReadableError 只在引擎那一行里，`reportEngin
 若分块读取仍失败，后续 8BG 开局改用有大小上限的内存块输出，避免对坏掉的 Blob 存储持续重试。
 这个结论记在 localStorage `8bitgo.ejs.romBlobBroken`（3 天）：2026-11-12/13 大陆 Chrome 132 / 2GB 的《宝可梦 白 2 / 黑》
 是同一台机器第 7、8 次开局，只记本页的话每次新访问都要先白失败 30～40 秒（`npm run test:chunked-fetch`）。
+⚠️ **下载结果本身也可能读不出，重下要改走内存**（2026-11-15 大陆华为浏览器 17 / Android 9《拳皇 97 风云再起 Plus》两次访问 5 局）：
+ROM 每局都下完，一读密文就 NotReadableError；作废续传片、不带续传整包重下后，`new Blob(网络分片)` 照样读不出 ——
+坏的是这台浏览器的 Blob 存储，不是续传片。现在 `fetchBlobWithProgress` 有 `inMemoryUpTo`：整份不超过上限就留在 JS 内存
+（`src/services/memoryRom.ts` 的 `memoryRomBlob` 替身，全程不建真 Blob、不写续传片、不进 romCache），超过的照常走 Blob。
+街机与光盘 / NDS 两条路读不出时 `retryModeAfterBlobReadError` 记 `romBlobBroken`，≤520MB 改内存重下（大光盘仍整包重下一次）；
+ROM 缓存读不出同样记它。标记有效期内第一次下载就先走内存，但上限按设备内存收着（`preemptiveMemoryRomBytes`：≤2GB 128MB、
+≤4GB 或读不到 256MB）—— 坏法和大小有关（那台 2GB Chrome 的密文读得出、只是 256MB 解包结果读不出），未打包的大镜像整份进 JS 内存是净增。
+内存下载的 8BG 解包时 `unpackRomPackToMemory(…, true)` 解一块放一块密文，峰值是「明文 + 一块密文」而不是两份整包
+（`npm run test:memory-rom-unpack` 用真打包器在有 / 没有 WebAssembly 两种环境下核对）。读 8BG 魔数经 `readRomMagic`（8 秒上限）：
+坏掉的 IDB Blob 会永不返回，以前整局停在这一步等看门狗。街机解包也换成 `unpackRomPackForEngine`，内存 ROM 交给引擎一律经 `objectUrlForEngine` 占位地址
+（替身不是真 Blob，不能 `createObjectURL` / `new Blob([...])` / `stream()`）。DOS 包（`dosBundleSource.ts`）还是老的「整包重下一次」。
 每个 `206` 响应也只能读这一片声明的字节量：`Content-Range` 是服务端自报，畸形响应可以宣称
 8MB 却持续发送巨大流，不能把它无限攒进 `chunks` 再在末尾核对；超过后直接取消并停止重试。
 旧版完整 ROM 缓存不会重走下载器，同样要在解密前查缓存 Blob 大小；8BG 还得先读文件头，
@@ -1020,6 +1036,11 @@ Worker 必须把 `psp-staging/` / `sockdrive-staging/` 的 GET/HEAD 也设为 Be
 ```bash
 cd server && npm run migrate      # 幂等
 ```
+
+**加迁移时三处要同步**（2026-11-15 起构建会拦）：`migrate.mjs` 负责给已有库补表补列，`schema-v2.sql` 只管新库，
+`schema-check.js` 的 `EXPECTED_TABLES` / `EXPECTED_COLUMNS` 负责启动提醒。`server/scripts/check-schema-drift.mjs`
+在 prebuild 里静态对账：期望的表 / 列迁移补不上、或迁移补了却没登记，构建直接失败。确实不该查的（代码不读写的表）
+写进它的 `TABLE_ALLOWLIST` / `COLUMN_ALLOWLIST` 并注明原因。回归：`cd server && npm run test:schema-drift`。
 
 ### 2.11 Flash 大游戏是多 SWF 的，不能只传主文件
 
@@ -1622,6 +1643,10 @@ transform 不改它，550×400 的游戏在 1080p 全屏里会按 687×500 画�
 在线存档会话请求有 6 秒总时限，API 卡住时按「不可用」启动，不能把已登录玩家挡在加载遮罩上。
 
 ### 2.24.1 js-dos 的 JS / DOSBox / DOSBox-X 必须整套更新，stop 必须真清理
+
+> 2026-11-15：`scripts/jsdos-asset-lock.json` 记「`JSDOS_ASSET_VERSION` → 产物指纹」。改了 `copy-jsdos.mjs` 的补丁却没换版本号时，
+> `copy-jsdos` 和 `check-jsdos` 都会失败（同一 URL 发新字节，长期缓存的访客拿不到）；换了版本号后 `npm run jsdos` 自动更新锁，
+> 和 paths.ts 一起提交。回归：`npm run test:jsdos-asset-lock`。
 
 js-dos 运行时从 npm 复制到 `public/jsdos/v<version>/`，版本同时写在
 `src/emulator/paths.ts` 的 `JSDOS_VERSION`。这不是目录整理：`js-dos.js`、`wdosbox.wasm`、
@@ -2817,6 +2842,14 @@ ROM 存储和其它站级入口全部是管理员权限。后台列表统一带 
 
 ### 2.30 部署形态与换机记录（2026-09-21 已迁到 38.76.186.225）
 
+> 2026-11-15 `deploy/redeploy.sh` 的三处自动化（见 `docs/system-optimization-2026-11.md`）：
+> - **备份拆两半**：`8bitgo-backup.sh --local-only` 同步 dump + 校验（失败照旧中止），R2 上传用 `--upload-file` 转后台、与构建并行，
+>   `trap … EXIT` 保证任何退出路径都等它结束；上传失败只告警。`BACKUP_ASYNC_UPLOAD=0` 退回同步。
+> - **lock 未变跳过 `npm ci`**（`deploy/lib/npm-ci-if-changed.sh`，戳在 `node_modules/.8bitgo-lock-sha256`）；`FORCE_NPM_CI=1` 强制重装。
+>   以后若给根目录或 server 加 install / postinstall 钩子，要重新评估这条。
+> - **开局冒烟**（可选）：`SMOKE_TEST=1` 时健康检查后跑 `scripts/smoke-start.mjs`，无头 Chrome 把一款 NES、一款街机跑到首帧；
+>   拦下启动漏斗与游玩计数请求，不污染统计；失败只告警、不回滚。生产机需先装 Chromium（未装时记「跳过」）。
+
 生产机是 **38.76.186.225**（Ubuntu 24.04，4C/4G）。旧机 103.242.13.112 已停服且
 `8bitgo.service` 已 disable，**只作回滚后路 —— 它的数据库已冻结，别再在上面改任何内容**，
 否则两边分叉。确认稳定后可退租。
@@ -3383,6 +3416,12 @@ EdgeOne 只能用境外（香港）节点。主站、ROM、Pages 子域都不受
     js-dos 的 OPFS 扇区缓存按 URL 存，来回切会存两份。播放器 onError 时 `clearSockdrivePin`，下次按新线路重选。
   - 实测 EdgeOne 原样转发 `.raw` / `sockdrive.metaj` 的 `Content-Encoding: br`，解码后与主域逐字节一致并会 HIT；
     BIOS、系统盘两边 ETag 相同。回归：`npm run test:rom-hosts`。
+- ⚠️ **`http://cn.8bitgo.com` 会回 200 整页**（2026-11-15 实测；主站 Cloudflare 会 301 到 HTTPS，EdgeOne 不会）。
+  Android 模拟器 Chrome 110 那台设备 HTTPS 连不上（模拟器系统时间不对最常见），Chrome 退回 http:// 并提示
+  「该网站不支持 HTTPS」，页面在明文里跑：没有 `crypto.subtle`（8BG 解不了），写死 https:// 的资源 / 接口全连不上，
+  最后崩到「页面暂时没有正常打开」。`index.html` 最前面的内联脚本：明文 HTTP 先换 HTTPS，一分钟内又被退回就不再跳、
+  在页面顶部提示「检查日期时间 / 关掉代理」（sessionStorage 防循环，只写 ES5，本机与局域网开发地址不动）。
+  回归：`npm run test:https-guard`。**还应在 EdgeOne 控制台打开「强制 HTTPS」并配 HSTS**，那样连页面都不会以明文发出。
 - ⚠️ 加速域名**不能带下划线**（`image_cn` 这种）：公共 CA 不为含 `_` 的主机名签证书，HTTPS 永远起不来。
 - 两个域名的本地存档、IndexedDB 和登录态互不相通（按 origin 隔离），云存档不受影响。
 
@@ -3413,6 +3452,9 @@ EmulatorJS 引擎日志与加载阶段文字（`diagLog`）、下载器的重试
   `startupProgressTrace.ts` 记下最后进度：slow_start 的原因原文带上阶段（后台归组时两类自然分开），快照行带字节数与平均速率。
   ROM Worker 发 `Timing-Allow-Origin`，否则跨源请求的传输量恒为 0；边缘已缓存的旧响应要等过期才带上。
 - 回归：`npm run test:startup-diagnostics`。
+- **聚集报警**（2026-11-15，`server/src/diag-alert.js`）：同一特征 60 分钟内来自 ≥10 个不同访问就给 `DIAG_ALERT_EMAIL` 发一封
+  （复用 Resend），同一特征 6 小时内不重复，冷却记在 `site_settings` 的 `diag.alert.<特征>`。没配邮箱完全不启用。
+  阈值见 `server/.env.example` 的 `DIAG_ALERT_*`。回归：`cd server && npm run test:diag-alert`。
 
 ### 2.37 SSR 页面在 Cloudflare 缓存一天，靠「改内容就清」保证新鲜
 
@@ -3465,8 +3507,60 @@ SSR 的 `window.__8BITGO__` 注水）改写成 `<随机前缀>-module` / `-text/
   **Chrome 80 / Safari 14 / Firefox 74**。更老的浏览器页面打得开，点开始后在 iframe / Worker 里静默语法错误，
   只剩看门狗超时。`src/emulator/browserSupport.ts` 用 `new Function` 探一次（只认 SyntaxError，CSP 的 EvalError 不算）：
   NES 改走 jsnes（随 Vite 转译），其它运行时在 `begin()` 一开头报 `browserTooOld`，不下载核心和 ROM。
+  **没有 WebAssembly 的浏览器**（Edge 增强安全性、iOS 锁定模式、关了 JIT 的安卓模拟器）另算：2026-11-15 Android 模拟器
+  Chrome 110 打开《拳皇97》崩到兜底页，兜底页的技术细节写着 `ReferenceError: WebAssembly is not defined at romPack`
+  —— @bokuweb/zstd-wasm 的胶水在**模块求值时**就碰 WebAssembly，`romPack.ts` 静态 import 它，详情页一加载就崩。
+  现在 zstd 在 `readyZstd()` 里按需 `import()`；**没有 WebAssembly 时改用纯 JS 的 `fzstd`（MIT，0.1.1 钉版本）解 8BG**，
+  所以 NES 走 jsnes 照样能玩本站的 8BG ROM（2026-11-15 实测《坦克大战》在关掉 WebAssembly 的 Chromium 110 里正常出画面；
+  《魂斗罗》是 mapper 2 / submapper 2，jsnes 不收，退回 EmulatorJS 后按 `browserNoWasm` 提示）。
+  选浏览器内解包而不是让后端吐明文：明文接口等于拆掉 8BG 防成批离线读取这道门，还得绕源站、走不了 CDN / 大陆镜像。
+  `begin()` 先查 `webAssemblyAvailable()`：jsnes、直播、云游戏、网页游戏放行，其余报 `browserNoWasm`。
+  GB/GBC 没有 WebAssembly 时走 binjgb 的纯 JavaScript 构建（见 §2.8.0.1）；js-dos 本身就是 WebAssembly，没有纯 JS 退路。
+  回归：`npm run test:js-zstd-fallback`（fzstd 逐字节解开 @bokuweb/zstd-wasm 等级 19 的 frame，含 8MB 满块）。
+  用 Chromium 110 加 `--js-flags=--noexpose-wasm` 可以原样复现（线上旧版崩到兜底页，修后页面正常、点开始给出提示）。
+  **别在主包模块顶层碰 WebAssembly / 静态 import 任何 wasm 胶水**，`test:browser-support` 守着 romPack。
   核心胶水封在 7z 里、随核心更新，**别去转译它们**；升级引擎 / 核心后跑 `npm run test:browser-support`，
   它会重新取证，超过 ES2022 就红，提醒改下限和文案。
+
+**没有 WebAssembly 时只列能玩的平台**（2026-11-15）：名单在 `shared/wasm-free-platforms.js`（nes / gb / gbc），
+给新平台加了纯 JS 退路就同步这里和 `browserSupport.ts`。探测只是一次 `typeof WebAssembly`，正常访客零开销：
+- `src/services/noWasm.ts` 的 `useNoWasmMode()` 走 useSyncExternalStore，**服务端快照固定 false** —— SSR HTML、
+  Cloudflare 页面缓存对所有人仍是同一份，水合也不会不匹配；这类浏览器水合后才切换。别改成按 UA / 请求头在服务端判断。
+- 水合后 `usePageData` / `fetchPageData` 给 `/api/page` 加 `nowasm=1`，`loadForRoute` 按名单查首页、游戏库、平台、类型、
+  相关推荐（缓存 key 前缀 `nw:`，`total` / 分页由 SQL 算准）；平台计数也按名单筛，类型计数仍是全库数。
+- 组件兜底：GameCard / GameCardWide / GameRankCard / PlatformCard 返回 null，首页横幅、类型样例、侧栏最近玩、搜索联想按平台过滤；
+  `Layout` 顶部挂 `NoWasmNotice`（`site.noWasmNotice`）。详情页仍可打开，点开始由播放器给 `browserNoWasm`。
+- 回归：`cd server && npm run test:nowasm-lists`。用 Chromium 110 加 `--js-flags=--noexpose-wasm` 实测首页只剩 NES / GB、
+  平台入口只剩 nes / gb / gbc、请求带 `nowasm=1`、顶部出提示；正常浏览器不变。
+
+### 2.39 坏 chunk 自修复：出错时按 SHA-256 清单核对、重取，正常加载零开销（2026-11-15）
+
+PK / TH 两份现场：`The requested module './live-Cqhc9j-k.js' does not provide an export named 'x'`。源站那份有这个导出，
+同一提交构建两次逐字节相同，改导出名也会换文件名 —— 浏览器拿到的字节被某一跳缓存换掉了，具体哪一跳无法从现场判定。
+`/assets/` 一年 immutable，普通刷新只会从缓存拿回同一份坏字节。
+
+- **构建**：`scripts/lib/vite-asset-integrity.mjs` 在 writeBundle 里读磁盘字节，写 `assets/integrity-<入口哈希>.json`
+  （现代版 /assets/ 下所有 js / css / wasm 的 SHA-256，约 8KB）。入口哈希随任何 chunk 变化，修复脚本只看入口 src 就能找到本版清单。
+  `postbuild:client` 跑 `check-asset-integrity.mjs` 逐个核对，清单错了会把好文件判坏（反复重取、刷新、清边缘），所以宁可构建失败。
+- **正常访问**：`index.html` 里一段 ES5 内联钩子，不发请求。只在 localStorage `8bitgo.asset-remap` 有未过期记录时插一张 import map；
+  定义 `window.__8bitgoAssetRepair`，并监听 window 的 `SyntaxError`（入口模块链接失败时 React 起不来，兜底页接不住）。
+  钩子必须排在任何模块脚本之前，import map 才来得及生效。
+- **出错时**：才加载 `public/asset-repair-v1.js`（文件名即代次，长期缓存；改逻辑新建 v2）。只核对本页 Resource Timing 里用过的
+  chunk 和错误点名的那个，先 `cache: 'force-cache'` 读浏览器缓存算 SHA-256，三种结果：
+  浏览器缓存坏了 → `cache: 'reload'` 重取（同时覆盖缓存里的坏副本）→ 刷新一次；
+  重取还是坏（CDN 边缘那份坏了）→ 带 `?asset-repair=1` 直接回源核对，好的话记进 `8bitgo.asset-remap`（7 天）、
+  `POST /api/asset-repair` 请服务端清 Cloudflare 上那个 URL → 刷新后 import map 把它改指到回源地址；
+  回源也坏（部署本身坏了）→ 不刷新，留在兜底页并上报。一分钟内同一页最多自动刷新一次。
+- 用 SHA-256 不用 MD5：`crypto.subtle` 只有 SHA 系列，原生实现比 JS 版 MD5 快。没上全量 SRI：那要把约 110 个哈希塞进每份 HTML。
+- `AppErrorBoundary` 对 SyntaxError 与旧 chunk 404 都先走修复：修好了先上报（诊断包带「资源核对：…」一行）再刷新；
+  没发现坏文件的 404 照旧刷新一次；其余上报。诊断包里的那一行分得清浏览器缓存坏、CDN 边缘坏、源站坏。
+- `/api/asset-repair` 不用登录：只认磁盘上这一版清单里、且磁盘 SHA-256 与清单一致的文件，按 IP 6 次 / 小时、全站 60 次 / 小时、
+  同一文件 15 分钟一次。只清 Cloudflare；大陆入口 EdgeOne 没有清缓存通道，靠客户端 import map 绕过。
+  没配 `CF_ZONE_ID` / `CF_PURGE_API_TOKEN` 时只打日志（`[asset-repair]`）。
+- 本地复现：静态服务 `dist/client`，把某个懒加载 chunk 末尾的 `export{…}` 去掉再回给浏览器（立即 immutable 缓存）。
+  2026-11-15 已在 Chrome 里实测三条路径：缓存坏（/blog 的 posts chunk）→ 重取后自动恢复；边缘坏（/games 的 Pagination）→
+  回源地址 + import map 后恢复；入口模块链接失败 → window 收到 SyntaxError，钩子解析出导入方和被导入方。
+- 回归：`npm run test:asset-repair`。
 
 ## 3. 常用命令
 

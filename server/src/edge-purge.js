@@ -43,14 +43,14 @@ let timer = null
 let running = false
 let pendingAfterRun = false
 
-/** 发一次按标签清缓存。成功 true；失败抛错，错误上带 retryable */
-export async function purgeHtmlNow({ fetchImpl = fetch } = {}) {
+/** 调一次 Cloudflare 清缓存接口。成功 true；没配令牌 false；失败抛错，错误上带 retryable */
+async function purgeRequest(payload, fetchImpl) {
   const cfg = config()
   if (!cfg) return false
   const res = await fetchImpl(`https://api.cloudflare.com/client/v4/zones/${cfg.zone}/purge_cache`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${cfg.token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ tags: [HTML_CACHE_TAG] }),
+    body: JSON.stringify(payload),
     signal: AbortSignal.timeout(10_000),
   })
   let body = null
@@ -63,6 +63,21 @@ export async function purgeHtmlNow({ fetchImpl = fetch } = {}) {
   const err = new Error(`Cloudflare 清缓存失败 HTTP ${res.status} ${JSON.stringify(body?.errors ?? '')}`)
   err.retryable = res.status === 429 || res.status >= 500
   throw err
+}
+
+/** 发一次按标签清缓存。成功 true；失败抛错，错误上带 retryable */
+export async function purgeHtmlNow({ fetchImpl = fetch } = {}) {
+  return purgeRequest({ tags: [HTML_CACHE_TAG] }, fetchImpl)
+}
+
+/**
+ * 按完整 URL 清几个文件（坏 chunk 自修复用，见 routes/asset-repair.js）。
+ * 一次最多 30 个（Cloudflare 免费版单次按 URL 清的上限）。
+ */
+export async function purgeUrlsNow(urls, { fetchImpl = fetch } = {}) {
+  const files = [...new Set(urls)].filter((u) => typeof u === 'string' && u.startsWith('https://')).slice(0, 30)
+  if (!files.length) return false
+  return purgeRequest({ files }, fetchImpl)
 }
 
 async function run(attempt = 0) {

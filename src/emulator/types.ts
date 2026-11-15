@@ -408,6 +408,11 @@ export interface ResolveContext {
    * Range 不可用时不会靠外层大小猜引擎。jsnes 邀请链接仍会优先 jsnes，除非已经明确为 false。
    */
   jsnesCompatible?: boolean
+  /**
+   * 浏览器没有 WebAssembly（Edge 增强安全性、iOS 锁定模式、关了 JIT 的安卓模拟器，见 browserSupport.ts）。
+   * GB/GBC 改走 binjgb 的纯 JavaScript 构建（public/binjgb/binjgb-js.js，scripts/build-binjgb-js.mjs）。
+   */
+  wasmUnavailable?: boolean
   /** 这个浏览器建不出 WebGL（见 webglSupport.ts）。NES 改走 jsnes，GB/GBC 改走 binjgb。 */
   webglUnavailable?: boolean
 }

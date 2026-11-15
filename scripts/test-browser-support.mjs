@@ -29,6 +29,30 @@ b.resetBrowserSupportProbe()
 assert.equal(b.modernRuntimeSyntaxSupported(), true, 'Node 自己当然支持')
 b.resetBrowserSupportProbe()
 
+// 没有 WebAssembly（Edge 增强安全性 / iOS 锁定模式 / 关了 JIT 的安卓模拟器）
+assert.equal(b.webAssemblyAvailable(), true, 'Node 有 WebAssembly')
+assert.equal(b.runtimeRunsWithoutWasm('jsnes', 'https://assets.8bitgo.com/roms/nes/smb.nes'), true, '未打包的 NES 用 jsnes 照样能玩')
+assert.equal(b.runtimeRunsWithoutWasm('jsnes', 'https://assets.8bitgo.com/roms/nes/smb.nes.8bg?romv=1'), true, '8BG 没有 WebAssembly 时改用纯 JS 的 fzstd 解压')
+assert.equal(b.runtimeRunsWithoutWasm('jsnes', { name: 'smb.nes' }), true, '本地文件')
+assert.equal(b.runtimeRunsWithoutWasm('emulatorjs', 'x.nes'), false)
+assert.equal(b.runtimeRunsWithoutWasm('binjgb', 'x.gb'), true, 'binjgb 没有 WebAssembly 时用纯 JS 构建')
+for (const id of ['liveview', 'cloudgame', 'html5']) assert.equal(b.runtimeRunsWithoutWasm(id, 'x'), true, id)
+{
+  // romPack 不能在模块顶层 import zstd-wasm：它的胶水求值时就碰 WebAssembly，没有就抛 ReferenceError，
+  // 游戏详情页整个崩到兜底页（2026-11-15 Android 模拟器 Chrome 110 线上复现）
+  const romPack = read('src/services/romPack.ts')
+  assert.ok(!/^import [^\n]*'@bokuweb\/zstd-wasm'/m.test(romPack), 'romPack 不许静态 import zstd-wasm')
+  assert.match(romPack, /if \(!webAssemblyAvailable\(\)\) \{\s*zstd = await loadJsZstd\(\)/, '没有 WebAssembly 改用纯 JS 解码（与播放器同一个判断）')
+  assert.match(romPack, /await import\('fzstd'\)/, 'fzstd 也按需加载，不进主包')
+  assert.match(romPack, /await import\('@bokuweb\/zstd-wasm'\)/)
+  const p = read('src/emulator/EmulatorPlayer.tsx')
+  assert.match(p, /if \(!webAssemblyAvailable\(\) && !runtimeRunsWithoutWasm\(runtime\.id, game\)\)/)
+  assert.match(p, /setError\(t\.player\.browserNoWasm\)/)
+  for (const lang of ['zh-Hans', 'zh-Hant', 'en', 'es', 'de', 'it', 'fr', 'ja']) {
+    assert.match(read(`src/locales/${lang}.ts`), /browserNoWasm: ['"][^\n]*WebAssembly/, `${lang} 有 WebAssembly 提示`)
+  }
+}
+
 // 哪些运行时要求新浏览器：经 Vite 转译的几个不要求
 for (const id of ['jsnes', 'liveview', 'cloudgame', 'html5']) assert.equal(b.runtimeNeedsModernBrowser(id), false, id)
 for (const id of ['emulatorjs', 'ruffle', 'binjgb', 'jsdos', 'j2me', 'webretro', 'play', 'ppsspp', 'dolphin']) assert.equal(b.runtimeNeedsModernBrowser(id), true, id)
@@ -39,8 +63,23 @@ const beginAt = player.indexOf('const begin = (')
 const guardAt = player.indexOf('if (runtimeNeedsModernBrowser(runtime.id) && !modernRuntimeSyntaxSupported())')
 assert.ok(beginAt > 0 && guardAt > beginAt && guardAt - beginAt < 1500, 'begin() 一开头就拦，在下载任何东西之前')
 assert.match(player, /setError\(t\.player\.browserTooOld\)/)
-assert.match(player, /platform\.id === 'nes' && !modernRuntimeSyntaxSupported\(\)/, 'NES 详情页走 jsnes')
-assert.match(player, /targetPlatform === 'nes' && !modernRuntimeSyntaxSupported\(\)/, '本地 ROM 的 NES 也走 jsnes')
+assert.match(player, /const noModernRuntime = platform\.id === 'nes'\s*\? !modernRuntimeSyntaxSupported\(\) \|\| !webAssemblyAvailable\(\)\s*: !webAssemblyAvailable\(\)/, 'NES 详情页走 jsnes，GB/GBC 走 binjgb（太旧 / 没有 WebAssembly）')
+assert.match(player, /wasmUnavailable: \(targetPlatform === 'gb' \|\| targetPlatform === 'gbc'\) && !webAssemblyAvailable\(\)/, '本地 GB/GBC 也走 binjgb')
+assert.match(read('src/emulator/registry.ts'), /\(platform === 'gb' \|\| platform === 'gbc'\) && \(ctx\.webglUnavailable \|\| ctx\.wasmUnavailable\)/)
+// binjgb 没有 WebAssembly 时换同一提交的纯 JS 构建（scripts/build-binjgb-js.mjs）
+{
+  const adapter = read('src/emulator/adapters/binjgb.ts')
+  assert.match(adapter, /webAssemblyAvailable\(\) \? \{ file: 'binjgb\.js', global: 'Binjgb' \} : \{ file: 'binjgb-js\.js', global: 'BinjgbJs' \}/)
+  const meta = JSON.parse(read('public/binjgb/binjgb-js.json'))
+  assert.equal(meta.wasm, false)
+  assert.equal(meta.exportName, 'BinjgbJs')
+  assert.ok(adapter.includes(`const BINJGB_BUILD = '${meta.commit}'`), '纯 JS 构建必须和 WebAssembly 版同一个 binjgb 提交')
+  const js = read('public/binjgb/binjgb-js.js')
+  assert.equal(require('node:crypto').createHash('sha256').update(js).digest('hex'), meta.sha256, 'binjgb-js.js 与清单一致')
+  assert.match(js, /var BinjgbJs=/)
+  assert.ok(!/\bfetch\([^)]*\.wasm/.test(js) && !js.includes('binjgb.wasm'), '纯 JS 构建不该再去取 .wasm')
+}
+assert.match(player, /targetPlatform === 'nes' && \(!modernRuntimeSyntaxSupported\(\) \|\| !webAssemblyAvailable\(\)\)/, '本地 ROM 的 NES 也走 jsnes')
 for (const lang of ['zh-Hans', 'zh-Hant', 'en', 'es', 'de', 'it', 'fr', 'ja']) {
   assert.match(read(`src/locales/${lang}.ts`), /browserTooOld: ['"][^\n]*Chrome 80[^\n]*Safari 14/, `${lang} 有升级提示`)
 }

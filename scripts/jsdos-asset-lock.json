@@ -1,0 +1,5 @@
+{
+  "_note": "自动生成（scripts/copy-jsdos.mjs）：这个 assetVersion 对应的产物指纹。换补丁必须换 JSDOS_ASSET_VERSION，见 scripts/lib/jsdos-asset-lock.mjs",
+  "assetVersion": "8.5.3-8bitgo.4",
+  "fingerprint": "70e81acb309c19207be611a2bf8b7f9dbabc1a0d2c3d00d6d9529ae205e23747"
+}

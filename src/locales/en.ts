@@ -54,6 +54,7 @@ const en: Translation = {
   site: {
     defaultTitle: '{site} — Play Retro Emulator Games Free Online',
     titleTemplate: '{title} - {site}',
+    noWasmNotice: 'Your browser does not support WebAssembly or has it disabled, so not all games can be shown.',
   },
 
   /* ---------------- Navigation ---------------- */
@@ -886,6 +887,7 @@ const en: Translation = {
     goWatch: 'Just watch',
     roleFailed: 'Could not switch: no free controller slot, or the room has ended.',
     browserTooOld: 'Your browser is too old to run this emulator. Update it to the latest version (at least Chrome 80, Safari 14 or Firefox 74), or open this page in an up-to-date Chrome, Edge or Firefox.',
+    browserNoWasm: 'WebAssembly is turned off in this browser, so the emulator cannot run. Common causes: Edge “Enhanced security”, iPhone Lockdown Mode, some Android emulators or lite browsers. Turn those off, or open this page in an up-to-date Chrome, Edge or Firefox.',
     seatAskFrom: '{name} wants to join as a player',
     seatAskTitle: 'A spectator wants to join as a player',
     seatAccept: 'Accept',

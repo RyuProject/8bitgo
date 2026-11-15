@@ -593,3 +593,14 @@ for (const group of GROUPS) {
 
 if (changed) writeFileSync(file, src)
 for (const line of report) console.log(`✔ ${line}`)
+
+/*
+  引擎入口按内容取版本（src/emulator/ejsCoreVersionsData.ts）。补丁改了 emulator.min.js 就顺手重生成表，
+  省掉以前「打完补丁还要记得换 EJS_RUNTIME_GENERATION」这一步；没改动时生成结果不变，幂等。
+*/
+{
+  const { spawnSync } = await import('node:child_process')
+  const gen = fileURLToPath(new URL('./gen-ejs-core-versions.mjs', import.meta.url))
+  const r = spawnSync(process.execPath, [gen], { stdio: 'inherit' })
+  if (r.status !== 0) process.exit(r.status ?? 1)
+}

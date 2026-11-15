@@ -54,6 +54,7 @@ const ja: Translation = {
   site: {
     defaultTitle: '{site} — レトロゲームのエミュレーターをブラウザで無料プレイ',
     titleTemplate: '{title}｜{site}',
+    noWasmNotice: 'お使いのブラウザは WebAssembly に対応していないか無効になっているため、すべてのゲームを表示できません。',
   },
 
   /* ---------------- ナビゲーション ---------------- */
@@ -875,6 +876,7 @@ const ja: Translation = {
     goWatch: '観戦にまわる',
     roleFailed: '切り替えできません：空きがないか、部屋が終了しています。',
     browserTooOld: 'お使いのブラウザは古すぎて、このエミュレーターを実行できません。最新版に更新するか（Chrome 80・Safari 14・Firefox 74 以上）、最新の Chrome・Edge・Firefox でこのページを開いてください。',
+    browserNoWasm: 'このブラウザでは WebAssembly が無効になっているため、エミュレーターを実行できません。主な原因：Edge の「セキュリティ強化」、iPhone のロックダウンモード、一部の Android エミュレーターや軽量ブラウザ。これらを無効にするか、最新の Chrome・Edge・Firefox でこのページを開いてください。',
     seatAskFrom: '{name} がプレイヤー参加を希望しています',
     seatAskTitle: '観戦者がプレイヤー参加を希望しています',
     seatAccept: '承認',

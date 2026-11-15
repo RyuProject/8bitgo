@@ -54,6 +54,7 @@ const it: Translation = {
   site: {
     defaultTitle: '{site} — Gioca gratis online ai giochi retro con emulatore',
     titleTemplate: '{title} - {site}',
+    noWasmNotice: 'Il tuo browser non supporta WebAssembly o lo ha disattivato, quindi non è possibile mostrare tutti i giochi.',
   },
 
   /* ---------------- Navigazione ---------------- */
@@ -887,6 +888,7 @@ const it: Translation = {
     goWatch: 'Solo guardare',
     roleFailed: 'Cambio non riuscito: nessun posto libero, o la stanza è finita.',
     browserTooOld: 'Il tuo browser è troppo vecchio per eseguire questo emulatore. Aggiornalo all’ultima versione (almeno Chrome 80, Safari 14 o Firefox 74) oppure apri questa pagina in un Chrome, Edge o Firefox aggiornato.',
+    browserNoWasm: 'In questo browser WebAssembly è disattivato, quindi l’emulatore non può funzionare. Cause comuni: la «sicurezza avanzata» di Edge, la modalità di isolamento dell’iPhone, alcuni emulatori Android o browser leggeri. Disattivale oppure apri questa pagina in un Chrome, Edge o Firefox aggiornato.',
     seatAskFrom: '{name} vuole unirsi come giocatore',
     seatAskTitle: 'Uno spettatore vuole unirsi come giocatore',
     seatAccept: 'Accetta',

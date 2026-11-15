@@ -260,5 +260,42 @@ check('.env 读不到 -> 明确报错，不是静默跑空', () => {
   assert.match(r.out, /读不到/)
 })
 
+check('--local-only 在 stdout 报出备份路径；--upload-file 只上传那一份、不连库（redeploy 后台上传用）', () => {
+  const e = env({ dump: GOOD_DUMP })
+  const local = spawnSync('bash', [SCRIPT, '--local-only'], {
+    env: { ...process.env, PATH: `${e.bin}:${process.env.PATH}`, ENV_FILE: e.envFile, BACKUP_DIR: e.backups, LOG: join(e.dir, 'log'), R2_REMOTE: 'r2', R2_BUCKET: 'b', R2_PREFIX: 'p', TMPDIR: e.tmp },
+    encoding: 'utf8',
+  })
+  assert.equal(local.status, 0, local.stderr)
+  const file = (/^BACKUP_FILE=(.+)$/m.exec(local.stdout) || [])[1]
+  assert.ok(file && file.startsWith(e.backups), `stdout 里没有 BACKUP_FILE：${local.stdout}`)
+  assert.equal(readdirSync(e.remote).length, 0)
+  // 只上传模式不该碰数据库：把 mysqldump 换成「一调用就失败」，.env 也删掉
+  writeFileSync(join(e.bin, 'mysqldump'), '#!/usr/bin/env bash\necho "不该被调用" >&2; exit 9\n')
+  rmSync(e.envFile)
+  const r = run(e, ['--upload-file', file])
+  assert.equal(r.code, 0, r.out)
+  assert.equal(readdirSync(e.remote).length, 1, '没传上去')
+  assert.match(r.out, /已上传/)
+  assert.doesNotMatch(r.out, /不该被调用/)
+})
+
+check('⚠️ --upload-file 拒绝半截文件与上传后大小不符', () => {
+  const e = env({ dump: GOOD_DUMP })
+  const bad = join(e.backups, 'testdb-x.sql.gz')
+  spawnSync('bash', ['-c', `printf 'CREATE TABLE a (id int);\n' | gzip > "${bad}"`])
+  const r1 = run(e, ['--upload-file', bad])
+  assert.notEqual(r1.code, 0, '没有 Dump completed 的文件被传了')
+  assert.equal(readdirSync(e.remote).length, 0)
+  const r2 = run(e, ['--upload-file', join(e.backups, 'nope.sql.gz')])
+  assert.notEqual(r2.code, 0, '不存在的文件居然成功了')
+  assert.notEqual(run(e, ['--upload-file']).code, 0, '缺参数要报错')
+  const e2 = env({ dump: GOOD_DUMP, rcloneSize: '11' })
+  assert.equal(run(e2, ['--local-only']).code, 0)
+  const r3 = run(e2, ['--upload-file', join(e2.backups, kept(e2)[0])])
+  assert.notEqual(r3.code, 0)
+  assert.match(r3.out, /大小对不上/)
+})
+
 console.log(failed ? `\n❌ ${failed} 条失败` : '\n全部通过')
 process.exit(failed ? 1 : 0)
