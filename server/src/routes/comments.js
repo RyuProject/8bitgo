@@ -24,7 +24,7 @@
 import { Router } from 'express'
 import { query, queryOne } from '../db.js'
 import { optionalUser, requireUser, requireAbility, hasAbility } from '../auth.js'
-import { commentRowToApi, countryOf } from '../mappers.js'
+import { commentRowToApi, countryOf, dateTimeIso, readI18nMap } from '../mappers.js'
 import { take, takeAnonymous, clientKey, isMeaningfulIp } from '../rateLimit.js'
 
 export const commentsRouter = Router()
@@ -283,6 +283,67 @@ async function resolveTarget(gameSlug, postSlug) {
   }
   return { status: 400, error: '缺少 game 或 post 参数' }
 }
+
+/**
+ * 当前用户收到的评论回复提醒。只返回公开可见、由别人发表的回复，避免把待审 / 隐藏内容
+ * 从消息抽屉这条旁路泄露出来。父评论可以后来被隐藏或删除；回复仍然可见时仍保留提醒。
+ */
+commentsRouter.get('/replies', requireUser, async (req, res, next) => {
+  try {
+    const rows = await query(
+      `SELECT c.id, c.content, c.created_at, c.user_id, u.nickname, u.avatar,
+              g.slug AS game_slug, g.title AS game_title, g.title_zh AS game_title_zh,
+              g.title_i18n AS game_title_i18n,
+              po.slug AS post_slug, po.title AS post_title, po.title_i18n AS post_title_i18n
+       FROM game_comments p
+       JOIN game_comments c ON c.parent_id = p.id
+       LEFT JOIN users u ON u.id = c.user_id
+       LEFT JOIN games g ON g.id = c.game_id
+       LEFT JOIN posts po ON po.id = c.post_id
+       WHERE p.user_id = ?
+         AND c.user_id IS NOT NULL AND c.user_id <> p.user_id
+         AND c.pending_review = 0 AND c.hidden = 0 AND c.deleted_at IS NULL
+         AND (
+           (c.game_id IS NOT NULL AND c.game_id = p.game_id AND g.id IS NOT NULL)
+           OR
+           (c.post_id IS NOT NULL AND c.post_id = p.post_id AND po.id IS NOT NULL AND po.published = 1)
+         )
+       ORDER BY c.created_at DESC, c.id DESC
+       LIMIT 20`,
+      [req.user.id],
+    )
+    res.json({
+      items: rows.map((row) => {
+        const isGame = row.game_slug != null
+        return {
+          id: String(row.id),
+          content: String(row.content ?? ''),
+          createdAt: dateTimeIso(row.created_at),
+          author: {
+            nickname: row.nickname ?? '',
+            avatar: row.avatar || '🕹️',
+          },
+          target: isGame
+            ? {
+                kind: 'game',
+                slug: row.game_slug,
+                title: row.game_title ?? row.game_slug,
+                titleZh: row.game_title_zh ?? undefined,
+                titleI18n: readI18nMap(row.game_title_i18n),
+              }
+            : {
+                kind: 'post',
+                slug: row.post_slug,
+                title: row.post_title ?? row.post_slug,
+                titleI18n: readI18nMap(row.post_title_i18n),
+              },
+        }
+      }),
+    })
+  } catch (e) {
+    next(e)
+  }
+})
 
 /**
  * 某个宿主（游戏 / 文章）的评论：

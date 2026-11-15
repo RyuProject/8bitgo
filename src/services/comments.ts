@@ -25,6 +25,17 @@ export const COMMENT_PAGE_SIZE = 20
 /** 评论挂在哪个宿主下：一款游戏，或一篇文章 */
 export type CommentTarget = { kind: 'game' | 'post'; slug: string }
 
+/** 消息抽屉里的最新回复提醒；正文只取公开可见回复。 */
+export interface CommentReplyNotice {
+  id: string
+  content: string
+  createdAt: string
+  author: { nickname: string; avatar: string }
+  target:
+    | { kind: 'game'; slug: string; title: string; titleZh?: string; titleI18n?: Record<string, string> }
+    | { kind: 'post'; slug: string; title: string; titleI18n?: Record<string, string> }
+}
+
 const EMPTY: CommentPage = { total: 0, page: 1, pageSize: COMMENT_PAGE_SIZE, items: [] }
 
 export function commentsAvailable(): boolean {
@@ -44,6 +55,13 @@ export async function fetchComments(target: CommentTarget, page = 1): Promise<Co
   const r = await api.get<CommentPage>(`/api/comments?${qs}`)
   // 后端理论上一定给全，但前端不该因为少一个字段整块崩掉
   return { ...EMPTY, ...r, items: Array.isArray(r?.items) ? r.items : [] }
+}
+
+/** 登录用户收到的最新评论回复，最多 20 条。 */
+export async function fetchCommentReplies(): Promise<CommentReplyNotice[]> {
+  if (!apiEnabled()) return []
+  const response = await api.get<{ items?: CommentReplyNotice[] }>('/api/comments/replies')
+  return Array.isArray(response?.items) ? response.items : []
 }
 
 /**

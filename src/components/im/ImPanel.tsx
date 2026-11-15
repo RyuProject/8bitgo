@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { cx } from '@/lib/format'
 import { lockBodyScroll } from '@/lib/scrollLock'
-import { useT } from '@/services/i18n'
-import { timeAgo } from '@/services/comments'
+import { fmt, useT } from '@/services/i18n'
+import { fetchCommentReplies, timeAgo, type CommentReplyNotice } from '@/services/comments'
+import { useLang } from '@/services/lang'
+import { gameTitle, postTitle } from '@/services/i18nData'
 import { useAuthReady, useCurrentUser } from '@/services/auth'
 import { avatarForShow } from '../../../shared/avatar.js'
 import { useShell } from '@/components/layout/ShellContext'
@@ -76,6 +79,7 @@ export function ImPanel() {
   const { immersive } = useShell()
   const userId = user?.id
   const isSupportAccount = String(user?.email ?? '').trim().toLowerCase() === SUPPORT_EMAIL
+  const lang = useLang()
 
   const [open, setOpen] = useState(false)
   /**
@@ -97,6 +101,13 @@ export function ImPanel() {
   const [detail, setDetail] = useState(() => imStateDetail())
   const [convs, setConvs] = useState<ImConversation[]>([])
   const [convError, setConvError] = useState(false)
+  const [replyNotices, setReplyNotices] = useState<CommentReplyNotice[]>([])
+  const [replyNoticeOwner, setReplyNoticeOwner] = useState<string | null>(null)
+  const [replyNoticeStatus, setReplyNoticeStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
+  const replyRequestSeq = useRef(0)
+  const replyNoticeOwnerRef = useRef<string | null>(null)
+  const replyUserRef = useRef(userId)
+  replyUserRef.current = userId
   const [supportPeer, setSupportPeer] = useState<ImPeer | null>(null)
   const [supportDismissed, setSupportDismissed] = useState(false)
   const [supportBusy, setSupportBusy] = useState(false)
@@ -282,6 +293,50 @@ export function ImPanel() {
       else console.warn('[im] 会话列表拉取失败：', e)
     }
   }, [])
+
+  const reloadReplyNotices = useCallback(async (quiet = false) => {
+    if (!userId) {
+      replyRequestSeq.current += 1
+      setReplyNotices([])
+      replyNoticeOwnerRef.current = null
+      setReplyNoticeOwner(null)
+      setReplyNoticeStatus('idle')
+      return
+    }
+    const requestSeq = ++replyRequestSeq.current
+    if (!quiet) {
+      setReplyNoticeStatus('loading')
+      if (replyNoticeOwnerRef.current !== userId) {
+        replyNoticeOwnerRef.current = userId
+        setReplyNotices([])
+        setReplyNoticeOwner(userId)
+      }
+    }
+    try {
+      const items = await fetchCommentReplies()
+      if (requestSeq !== replyRequestSeq.current || replyUserRef.current !== userId) return
+      setReplyNotices(items)
+      replyNoticeOwnerRef.current = userId
+      setReplyNoticeOwner(userId)
+      setReplyNoticeStatus('ready')
+    } catch (e) {
+      if (requestSeq !== replyRequestSeq.current || replyUserRef.current !== userId) return
+      // 轮询失败时保留已有提醒；首次加载或手动重试失败才显示错误态。
+      setReplyNoticeStatus((current) => (quiet && current === 'ready' ? 'ready' : 'error'))
+      if (!quiet) console.warn('[comments] 回复提醒加载失败：', e)
+    }
+  }, [userId])
+
+  useEffect(() => {
+    if (!open) return
+    void reloadReplyNotices()
+    if (!userId) return
+    // 抽屉保持打开时也能看到新回复；隐藏标签页不轮询，避免白耗请求。
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void reloadReplyNotices(true)
+    }, 60_000)
+    return () => window.clearInterval(timer)
+  }, [open, userId, reloadReplyNotices])
 
   useEffect(() => {
     if (state !== 'ready') return
@@ -558,6 +613,15 @@ export function ImPanel() {
               </button>
             </header>
 
+            {userId && (
+              <CommentReplyNotices
+                items={replyNoticeOwner === userId ? replyNotices : []}
+                status={replyNoticeOwner === userId ? replyNoticeStatus : 'loading'}
+                lang={lang}
+                onRetry={() => void reloadReplyNotices()}
+                onNavigate={doClose}
+              />
+            )}
             {/*
               找人的输入行。放在顶栏和列表之间，收起时整块不渲染 ——
               它不是常驻控件，常驻会让一个「看消息」的面板第一眼像个搜索页。
@@ -641,6 +705,84 @@ export function ImPanel() {
         )}
       </aside>
     </>
+  )
+}
+
+function CommentReplyNotices({
+  items,
+  status,
+  lang,
+  onRetry,
+  onNavigate,
+}: {
+  items: CommentReplyNotice[]
+  status: 'idle' | 'loading' | 'ready' | 'error'
+  lang: ReturnType<typeof useLang>
+  onRetry: () => void
+  onNavigate: () => void
+}) {
+  const t = useT()
+
+  return (
+    <section aria-label={t.im.replyNoticeTitle} className="shrink-0 border-b border-line bg-surface-2/30">
+      <header className="flex items-center justify-between px-3 pb-1.5 pt-2.5">
+        <h2 className="text-xs font-bold">{t.im.replyNoticeTitle}</h2>
+        {items.length > 0 && (
+          <span className="rounded-full bg-brand/15 px-1.5 py-0.5 text-[10px] font-semibold text-brand-hover">
+            {items.length}
+          </span>
+        )}
+      </header>
+
+      {status === 'loading' && items.length === 0 ? (
+        <p className="px-3 pb-2.5 text-xs text-dim">{t.im.replyNoticeLoading}</p>
+      ) : status === 'error' && items.length === 0 ? (
+        <div className="flex items-center justify-between gap-2 px-3 pb-2.5 text-xs">
+          <span className="text-muted">{t.im.replyNoticeFailed}</span>
+          <button type="button" onClick={onRetry} className="shrink-0 font-semibold text-brand-hover hover:underline">
+            {t.im.retry}
+          </button>
+        </div>
+      ) : items.length === 0 ? (
+        <p className="px-3 pb-2.5 text-xs leading-relaxed text-dim">{t.im.replyNoticeEmpty}</p>
+      ) : (
+        <ul className="max-h-44 space-y-1 overflow-y-auto px-2 pb-2">
+          {items.map((notice) => {
+            const targetTitle = notice.target.kind === 'game'
+              ? gameTitle(notice.target, lang)
+              : postTitle(notice.target, lang)
+            const targetLabel = notice.target.kind === 'game' ? t.im.replyNoticeGame : t.im.replyNoticePost
+            const targetPath = notice.target.kind === 'game' ? 'games' : 'blog'
+
+            return (
+              <li key={notice.id}>
+                <Link
+                  to={`/${targetPath}/${encodeURIComponent(notice.target.slug)}#comments`}
+                  onClick={onNavigate}
+                  className="flex gap-2 rounded-lg px-1.5 py-1.5 transition hover:bg-surface-2"
+                >
+                  <Avatar value={notice.author.avatar} size="sm" />
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-baseline justify-between gap-2">
+                      <span className="truncate text-xs font-semibold">
+                        {fmt(t.im.replyNoticeBy, { name: notice.author.nickname || t.comments.guestAuthor })}
+                      </span>
+                      <time className="shrink-0 text-[10px] text-dim">{timeAgo(notice.createdAt)}</time>
+                    </span>
+                    <span className="mt-0.5 block truncate text-[11px] text-muted">
+                      {targetLabel} · {targetTitle}
+                    </span>
+                    <span className="mt-0.5 block line-clamp-2 break-words text-xs leading-relaxed text-dim">
+                      {notice.content}
+                    </span>
+                  </span>
+                </Link>
+              </li>
+            )
+          })}
+        </ul>
+      )}
+    </section>
   )
 }
 
