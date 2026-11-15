@@ -7,7 +7,7 @@
  * 2026-09-07 的自查发现那是个**跨账号冒充**漏洞，而且当时的测试完全查不出来 ——
  * 它只 grep 了两个防护的**代码形状**，形状在、但两个都能绕过：
  *
- *   1. A 点私信 -> ensureImStarted 开始拉 700 KB 的 SDK 分包（几百毫秒到几秒）
+ *   1. A 点私信 -> ensureImStarted 开始拉 IM SDK 核心和必需插件（几百毫秒到几秒）
  *   2. A 退出登录 -> imStop() -> hardReset() 里 `chat` 还是 null，直接 early return，
  *      **`starting` 一个字都没动**
  *   3. B 在同一个标签页登录，点私信 -> ensureImStarted 看到 `starting` 非空，

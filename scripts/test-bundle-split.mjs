@@ -84,13 +84,13 @@ const isHeavy = (f) =>
  * 三方包里也有「绝对不能进主包」的。
  *
  * 上面那套闭包分析刻意不跟三方包（见 resolve 里的 `if (!spec.startsWith('.')) return null`），
- * 所以静态 import 一个 700 KB 的 SDK 它抓不到。这里按包名单独扫一遍主包入口的
+ * 所以静态 import 一个大型 SDK 它抓不到。这里按包名单独扫一遍主包入口的
  * **源码文本**：只要出现顶层的 `from '<包名>'`（不带 type），就是进主包了。
  *
- * @tencentcloud/chat：站内消息的 SDK，只允许在 services/imClient.ts 里动态 import。
+ * @tencentcloud/lite-chat：站内消息的 SDK 核心和插件，只允许在 services/imClient.ts 里动态 import。
  * 更细的检查在 scripts/test-im-client.mjs。
  */
-const HEAVY_PACKAGES = ['@tencentcloud/chat']
+const HEAVY_PACKAGES = ['@tencentcloud/lite-chat']
 
 const MAIN_BUNDLE_ENTRIES = {
   'AppRoutes（静态路由，主包）': 'src/AppRoutes.tsx',

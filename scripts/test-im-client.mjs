@@ -4,7 +4,7 @@
  * 这一份**不测 UI、也不连腾讯** —— 那需要真账号和真 WebSocket，跑不进 CI。
  * 它盯的是七件「改一行就坏、而且坏了很难看出来」的事，全部靠读源码断言：
  *
- *   1. SDK 只能动态 import。写成顶层 import，700 KB 会静默进主包 ——
+ *   1. SDK 核心和插件只能动态 import。写成顶层 import 会静默进主包 ——
  *      没登录的访客也要下载，而且没有任何报错提示你。
  *   2. 密钥不能出现在前端任何地方。
  *   3. 签发接口只认 req.user.id，不认请求参数（认了就等于把主密钥开放出去）。
@@ -55,16 +55,20 @@ const clientCode = strip(client)
 console.log('\n一、SDK 不能进主包')
 
 check('⭐ imClient.ts 里 SDK 只有动态 import 和纯类型 import', () => {
-  // 顶层值导入会让 @tencentcloud/chat 进主包。这个仓库的 test-bundle-split.mjs
+  // 顶层值导入会让 @tencentcloud/lite-chat 进主包。这个仓库的 test-bundle-split.mjs
   // 刻意不跟随动态 import（那正是分包点），所以它抓不到这个错 —— 只能在这里抓。
-  const valueImports = [...clientCode.matchAll(/^import\s+(?!type\b)[^\n]*?from\s+'@tencentcloud\/chat'/gm)]
+  const valueImports = [...clientCode.matchAll(/^import\s+(?!type\b)[^\n]*?from\s+'@tencentcloud\/lite-chat(?:\/[^']+)?'/gm)]
   assert.deepEqual(
     valueImports.map((m) => m[0]),
     [],
-    '出现了顶层值导入 —— 700 KB 会静默进主包，没有任何报错提示你',
+    '出现了顶层值导入 —— IM SDK 会静默进主包，没有任何报错提示你',
   )
-  assert.match(clientCode, /import type\s+\w+\s+from\s+'@tencentcloud\/chat'/, '类型导入不见了？')
-  assert.match(clientCode, /await import\('@tencentcloud\/chat'\)/, '找不到动态 import')
+  assert.match(clientCode, /import type\s+\w+\s+from\s+'@tencentcloud\/lite-chat\/basic'/, '精简版类型导入不见了？')
+  assert.match(clientCode, /import\('@tencentcloud\/lite-chat\/basic'\)/, '精简 SDK 没有动态加载')
+  assert.match(clientCode, /import\('@tencentcloud\/lite-chat\/plugins\/conversation'\)/, '会话插件没有动态加载')
+  assert.match(clientCode, /import\('@tencentcloud\/lite-chat\/plugins\/history-message'\)/, '历史消息插件没有动态加载')
+  assert.match(clientCode, /created\.use\(conversationPlugin\.default\)/, '会话插件没有安装到 SDK')
+  assert.match(clientCode, /created\.use\(historyPlugin\.default\)/, '历史消息插件没有安装到 SDK')
 })
 
 check('⭐ 除 imClient.ts 外，没有别的文件引用这个包', () => {
@@ -77,23 +81,24 @@ check('⭐ 除 imClient.ts 外，没有别的文件引用这个包', () => {
   assert.deepEqual(bad, [], 'SDK 的引用点必须只有一处，否则分包边界会漏')
 })
 
-check('包版本钉死，不用 ^ 或 ~', () => {
+check('V4 包版本钉死，不用 ^ 或 ~', () => {
   // 这个 SDK 的小版本里改过事件语义（未读总数口径、KICKED_OUT 的子类型），
   // 而 imClient.ts 对那些语义是有依赖的。升级要人看着升。
   const pkg = JSON.parse(read('package.json'))
-  const v = pkg.dependencies?.['@tencentcloud/chat']
-  assert.ok(v, 'package.json 的 dependencies 里没有 @tencentcloud/chat')
+  const v = pkg.dependencies?.['@tencentcloud/lite-chat']
+  assert.ok(v, 'package.json 的 dependencies 里没有 @tencentcloud/lite-chat')
   assert.match(v, /^\d+\.\d+\.\d+$/, `版本必须是精确值，现在是 ${v}`)
   assert.ok(
-    existsSync(path.join(root, 'node_modules/@tencentcloud/chat/package.json')),
+    existsSync(path.join(root, 'node_modules/@tencentcloud/lite-chat/package.json')),
     'node_modules 里没装 —— 在你自己的机器上跑一次 npm install',
   )
-  const installed = JSON.parse(read('node_modules/@tencentcloud/chat/package.json')).version
+  const installed = JSON.parse(read('node_modules/@tencentcloud/lite-chat/package.json')).version
   assert.equal(installed, v, `装的是 ${installed}，package.json 写的是 ${v}`)
+  assert.equal(pkg.dependencies?.['@tencentcloud/chat'], undefined, '旧 V3 包仍在依赖中')
 })
 
-check('分包测试会盯住这个包（将来有人写成静态 import 时能红两次）', () => {
-  assert.match(read('scripts/test-bundle-split.mjs'), /@tencentcloud\/chat/, 'test-bundle-split.mjs 的重量级清单里没有它')
+check('分包测试会盯住精简 SDK（将来有人写成静态 import 时能红两次）', () => {
+  assert.match(read('scripts/test-bundle-split.mjs'), /@tencentcloud\/lite-chat/, 'test-bundle-split.mjs 的重量级清单里没有它')
 })
 
 console.log('\n二、密钥不能出现在前端')
@@ -346,7 +351,11 @@ check('⭐ 每跨一个 await 都问一次 isStale —— 守卫必须紧贴下�
     String.raw`setStateIf\(epoch, 'error', e instanceof Error \? e\.message : String\(e\)\)\n\s*return false\n\s*\}`,
     '取 sig 的 try/catch 收尾',
   )
-  adjacent(String.raw`const mod = await import\('@tencentcloud/chat'\)`, '下 SDK 分包')
+  assert.match(
+    clientCode,
+    /const \[mod, conversationPlugin, historyPlugin\] = await Promise\.all\(\[\s*import\('@tencentcloud\/lite-chat\/basic'\),\s*import\('@tencentcloud\/lite-chat\/plugins\/conversation'\),\s*import\('@tencentcloud\/lite-chat\/plugins\/history-message'\),\s*\]\)\s*if \(isStale\(epoch\)\) return false/,
+    '下载精简 SDK 和插件之后必须紧邻做代次检查',
+  )
 
   // login 之后那道守卫形状不同（要 teardown），单独一条断言查，见下
   assert.match(clientCode, /userSig: sig\.userSig \}\)/, '找不到 login 调用')

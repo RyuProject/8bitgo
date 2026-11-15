@@ -161,7 +161,7 @@ function Shell() {
         但推迟到浏览器空闲才挂 —— 见上面 DeferredImPanel 的注释。
         它在服务端渲染时什么都不做：useCurrentUser() 的 SSR 快照恒为 null
         （见 services/auth.ts 的注释），所以 SSR 出来就是一个空壳。
-        SDK 那 700 KB 是 services/imClient.ts 里的动态 import，不在主包里。
+        SDK 核心和抽屉所需插件是 services/imClient.ts 里的动态 import，不在首屏主包里。
       */}
       <DeferredImPanel />
     </div>

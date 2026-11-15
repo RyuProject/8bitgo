@@ -4,15 +4,16 @@
  * ## 它在整个结构里的位置
  *
  *   顶栏按钮 ChatButton ──> services/im.ts（接缝：开关 + 未读数，零 import）
- *   抽屉 ImPanel ─────────> **本文件** ──动态 import──> @tencentcloud/chat
+ *   抽屉 ImPanel ─────────> **本文件** ──动态 import──> @tencentcloud/lite-chat/basic + 两个必需插件
  *                              └──────> services/imSession.ts（状态机 + epoch，零 import）
  *   服务端 /api/im/sig ────────┘（只签发短期 UserSig，密钥不出服务器）
  *
  * ## 为什么 SDK 是动态 import
  *
- * `@tencentcloud/chat` 3.6.7 的产物 700 KB 上下。本文件被抽屉静态引用、抽屉被 Layout
- * 静态引用，写成顶层 import 这 700 KB 就进主包 —— 没登录、根本看不到那颗按钮的访客
- * 也要下载。顶部那个是 `import type`，编译后整行消失，别改成值导入。
+ * 旧版 `@tencentcloud/chat` 把标准版所有 IM 能力打成约 700 KB 的单文件。本项目只用
+ * 文本消息、会话、历史消息和资料：改用 V4 精简核心，再按需装会话 / 历史消息插件，
+ * 去掉群组、信令、媒体消息等没用到的代码。SDK 和插件仍只在登录连接阶段动态下载；
+ * 顶部那个是 `import type`，编译后整行消失，别改成值导入。
  *
  * ## 2026-09-07 自查修掉的几件事（都不是理论问题）
  *
@@ -39,7 +40,7 @@
  * ⚠️ 移动端浏览器把后台标签页彻底冻结时，任何前端手段都收不到消息 —— 那需要
  *    离线推送（腾讯的 push 服务 + Service Worker），属于另一个量级的接入，本版没有。
  */
-import type TencentCloudChatSDK from '@tencentcloud/chat'
+import type TencentCloudChatSDK from '@tencentcloud/lite-chat/basic'
 import { api, apiEnabled, ApiError } from './api'
 import { getCurrentUser } from './auth'
 import { getImUnread, imUnreadLabel, onImChange, pushImPreview, registerImOpener, registerImRetry, setImStatus, setImUnread } from './im'
@@ -342,13 +343,20 @@ export function ensureImStarted(options: { auto?: boolean } = {}): Promise<boole
 
     let created: Chat | null = null
     try {
-      const mod = await import('@tencentcloud/chat')
+      const [mod, conversationPlugin, historyPlugin] = await Promise.all([
+        import('@tencentcloud/lite-chat/basic'),
+        import('@tencentcloud/lite-chat/plugins/conversation'),
+        import('@tencentcloud/lite-chat/plugins/history-message'),
+      ])
       if (isStale(epoch)) return false
       // UMD 产物经 Vite 的 CJS 互操作后具名导出挂在 default 上；两种形状都兜一下，
       // 免得换成 ESM 产物或升级 Vite 时这里静默拿到 undefined
       TC = ((mod as { default?: ChatNS }).default ?? (mod as unknown as ChatNS)) as ChatNS
       created = TC.create({ SDKAppID: sig.sdkAppId })
       if (!created) throw new Error('TencentCloudChat.create 返回空 —— SDKAppID 不合法？')
+      // 精简版不含会话列表 / 历史消息；只注册抽屉实际调用的两个插件，避免把其它能力打进下载块。
+      created.use(conversationPlugin.default)
+      created.use(historyPlugin.default)
       // 日志等级：默认 0 会往控制台刷大量 SDK 内部日志，而这个站的控制台本来就有模拟器的输出。
       // 1（release）也还会打「SDK is ready」「No upload plugin is detected」这类提示 ——
       // 本站 IM 只发文字，不需要上传插件，这条每次登录都刷是噪音。生产只留告警和错误（2），
@@ -992,7 +1000,7 @@ let ambientWired = false
 /**
  * 登录之后在浏览器空闲时把 IM 连起来。
  *
- * 不在登录成功那一刻就连：SDK 有 700 KB，会和首屏的字体、封面图抢带宽。
+ * 不在登录成功那一刻就连：IM SDK 只在登录后的空闲启动阶段下载，避免和首屏资源抢带宽。
  * requestIdleCallback 等到主线程真空下来；没有它（Safari 长期不支持）就退回一个
  * 3 秒的 setTimeout —— 比首屏抢带宽晚，比用户找到那颗按钮早。
  *

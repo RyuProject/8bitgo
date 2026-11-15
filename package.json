@@ -278,7 +278,7 @@
   "dependencies": {
     "@bokuweb/zstd-wasm": "^0.0.27",
     "@microsoft/clarity": "^1.0.2",
-    "@tencentcloud/chat": "3.6.7",
+    "@tencentcloud/lite-chat": "4.4.9",
     "fflate": "^0.8.3",
     "fzstd": "0.1.1",
     "jsnes": "^2.1.0",
