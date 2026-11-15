@@ -387,9 +387,9 @@ export function LiveChatBar({
   const remaining = CHAT_MAX_LENGTH - used
 
   return (
-    <div className={cx('rounded-2xl border border-line bg-surface p-2 sm:p-3', className)}>
+    <div className={cx('rounded-2xl border border-line bg-surface', className)}>
       {/* 只有这一行。消息列表在 2026-09-07 整块删掉了，理由见文件头 */}
-      <div className="flex min-w-0 flex-wrap items-center gap-2">
+      <div className="flex items-center gap-3 px-4 py-3">
         <input
           value={text}
           onChange={(e) => {
@@ -406,7 +406,7 @@ export function LiveChatBar({
           }}
           disabled={!onSend}
           placeholder={tt.chatPlaceholder}
-          className="h-11 min-w-0 flex-1 basis-full rounded-xl border border-line bg-surface-2 px-3 text-sm text-fg placeholder:text-dim focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/30 disabled:opacity-50 sm:h-12 sm:basis-0 sm:px-4"
+          className="min-w-0 flex-1 rounded-xl border border-line bg-surface-2 px-2.5 py-1.5 text-sm text-fg placeholder:text-dim focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/30 disabled:opacity-50"
         />
         {remaining < 20 && <span className="shrink-0 text-[11px] tabular-nums text-dim">{remaining}</span>}
 
@@ -421,7 +421,7 @@ export function LiveChatBar({
             title={live.quality.hint}
             value={live.quality.value}
             onChange={(event) => live.quality?.change(event.currentTarget.value as LiveQualityPreference)}
-            className="h-10 max-w-28 shrink rounded-xl border border-line bg-surface px-3 text-xs text-muted focus:border-brand focus:outline-none sm:h-12"
+            className="h-7 max-w-24 shrink rounded-xl border border-line bg-surface px-1.5 text-[11px] text-muted focus:border-brand focus:outline-none"
           >
             {live.quality.options.map((option) => (
               <option key={option.value} value={option.value}>{option.label}</option>
@@ -454,7 +454,7 @@ export function LiveChatBar({
           type="button"
           onClick={send}
           disabled={!onSend || !sanitizeChatText(text)}
-          className="h-10 shrink-0 rounded-xl border border-line px-4 text-sm font-semibold text-fg transition hover:border-brand hover:text-brand-hover disabled:opacity-40 disabled:hover:border-line disabled:hover:text-fg sm:h-12 sm:px-5"
+          className="shrink-0 rounded-xl border border-line px-2.5 py-1.5 text-xs font-semibold text-fg transition hover:border-brand hover:text-brand-hover disabled:opacity-40 disabled:hover:border-line disabled:hover:text-fg"
         >
           {tt.chatSend}
         </button>
@@ -504,7 +504,7 @@ function ToggleButton({ icon, t, expands }: { icon: string; t: ChatBarToggle; ex
       aria-expanded={expands ? t.on : undefined}
       aria-controls={expands}
       className={cx(
-        'inline-flex h-10 shrink-0 items-center gap-1.5 rounded-xl border px-3 text-sm font-semibold transition disabled:opacity-40 sm:h-12 sm:px-4',
+        'inline-flex shrink-0 items-center gap-1 rounded-xl border px-2.5 py-1.5 text-xs font-semibold transition disabled:opacity-40',
         t.on
           ? 'border-live bg-live/15 text-live'
           : 'border-line text-muted hover:border-brand hover:text-brand-hover',
