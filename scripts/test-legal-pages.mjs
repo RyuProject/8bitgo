@@ -239,10 +239,9 @@ const HOSTS = {
   /*
    * 这里**只列 index.html 里还真的存在的外部主机**。
    *
-   * fonts.googleapis.com / fonts.gstatic.com 曾经在表里 —— 2026-09-18 起英文字体
-   * （Geist Pixel）也改成自托管了，index.html 不再引 Google，所以两条一起删掉。
-   * 政策里对应的那一段也删了，否则就是「披露了一件已经不做的事」。
+   * ZeoSeven FontsAPI 提供站点界面字体，详情在隐私政策的「涉及哪些第三方」一节。
    */
+  'fontsapi.zeoseven.com': { zh: 'ZeoSeven', en: 'ZeoSeven' },
   'lf1-cdn-tos.bytegoofy.com': { zh: '字节跳动', en: 'ByteDance' },
 }
 
@@ -303,11 +302,14 @@ const FACTS = [
     probe: ['src/services/autoInclude.ts', 'pathname'],
     say: { zh: ['每次切换页面|每次切換頁面'], en: ['every in-site page change'] },
   },
-  /*
-   * 'google-fonts' 这条 2026-09-18 撤了：西文像素字体改成自托管（见 index.html 与
-   * src/index.css 的 @font-face），页面加载不再碰 Google 的服务器，也就没有可披露的事。
-   * 留着这条会逼着政策继续写一段已经不存在的行为。
-   */
+  {
+    id: 'zeoseven-fonts',
+    where: 'third-parties',
+    doc: 'privacy',
+    what: 'ZeoSeven FontsAPI 提供界面字体样式与字形，浏览器向第三方发出字体请求',
+    probe: ['index.html', 'fontsapi.zeoseven.com'],
+    say: { zh: ['ZeoSeven FontsAPI'], en: ['ZeoSeven FontsAPI'] },
+  },
   {
     id: 'anon-ip-plaintext',
     where: 'ip',

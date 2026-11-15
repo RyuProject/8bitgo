@@ -345,30 +345,19 @@
     <meta data-ssr-default name="twitter:card" content="summary_large_image" />
 
     <!--
-      字体：两个都是自托管的本地文件（SIL OFL），由 npm run fonts 下载到 public/fonts/。
-      @font-face 声明在 src/index.css 里。
-
-      ⚠️ 西文那份**本来是 Google Fonts 的 <link rel="stylesheet">**（外加两条 preconnect）：
-      那条链要先连 fonts.googleapis.com 取 CSS 才能开始渲染，再连 fonts.gstatic.com 取文件，
-      两次跨源握手都在首屏关键路径上。现在同一个文件从自家域名出，只留一条 preload。
-      只 preload latin（英文正文用的那份）；latin-ext 是扩展拉丁字母，按需下载即可。
+      字体样式表先以 preload 下载，加载完成后才切成 stylesheet。
+      因此首次绘制使用 src/index.css 的系统字体兜底，字体 CDN 慢或不可用也不挡页面。
     -->
     <link
+      href="https://fontsapi.zeoseven.com/214/main/result.css"
       rel="preload"
-      as="font"
-      type="font/woff2"
-      href="/fonts/geist-pixel/geist-pixel-latin.woff2"
+      as="style"
       crossorigin
+      onload="this.onload=null;this.rel='stylesheet'"
     />
-    <!--
-      中文像素字体（方舟像素）按 unicode-range 拆成 15 份，@font-face 列表单独一个文件，
-      只有桌面（hover + 精确指针）才是阻塞样式；手机不用这个字体，media 不匹配就只在空闲时低优先级取回。
-      不放进首屏 preload：弱网先用系统中文字体，避免它和 LCP 封面抢带宽。
-      下面那条由 scripts/fonts/split-ark-pixel.py 自动改写，不要手改。
-    -->
-    <!-- ark-pixel-faces:start -->
-    <link rel="stylesheet" href="/fonts/ark-pixel/split/ark-pixel-faces-4e7b9df104.css" media="(hover: hover) and (pointer: fine)" />
-    <!-- ark-pixel-faces:end -->
+    <noscript>
+      <link rel="stylesheet" href="https://fontsapi.zeoseven.com/214/main/result.css" crossorigin />
+    </noscript>
   </head>
   <body>
     <div id="root"></div>

@@ -16,7 +16,7 @@ assert.equal(cnEdgeOrigin(''), '')
 ok('由站点地址推出大陆加速入口')
 
 const tpl = `<html><head>
-<link rel="preload" href="/fonts/geist-pixel/a.woff2" as="font" crossorigin>
+<link rel="preload" href="/fonts/demo.woff2" as="font" crossorigin>
 <link rel="stylesheet" href="/fonts/ark-pixel/split/faces.css" media="(hover: hover)" />
 <script type="module" crossorigin src="/assets/index-A.js"></script>
 <link rel="modulepreload" crossorigin href="/assets/react-B.js">
@@ -27,7 +27,7 @@ const tpl = `<html><head>
 const out = retargetStaticToCnEdge(tpl, 'https://cn.8bitgo.com')
 const B = 'https://cn.8bitgo.com/_cn'
 assert.match(out, /<head>\n<link rel="preconnect" href="https:\/\/cn\.8bitgo\.com" crossorigin>/)
-assert.ok(out.includes(`href="${B}/fonts/geist-pixel/a.woff2"`))
+assert.ok(out.includes(`href="${B}/fonts/demo.woff2"`))
 assert.ok(out.includes(`src="${B}/assets/index-A.js" onerror=`), '入口脚本带同源回退')
 assert.ok(out.includes(`s.src='/assets/index-A.js'`))
 assert.ok(out.includes(`href="${B}/assets/react-B.js"`))

@@ -579,7 +579,7 @@ Clearing this site's data removes all of the above (your browser's "clear site d
 
 - **ByteDance (Toutiao) URL submission** — on every page load, and on every in-site page change, the site loads a ByteDance script that submits **the current page URL** to it for search indexing. What it sees is the page address, your IP address and your browser information. This script currently has **no switch and no consent step**.
 
-(Both the Latin and Chinese pixel fonts are self-hosted and are not in the list above — loading a font does not hand any information to a third party.)
+- **ZeoSeven FontsAPI fonts** — the page loads the Sarasa UI SC stylesheet and glyphs from fontsapi.zeoseven.com. Browser requests expose the IP address and request information normally sent with network requests; they do not include 8BitGo account details. System fonts appear first and are replaced when the remote font is ready.
 
 ### Only when you trigger it
 

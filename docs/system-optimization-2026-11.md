@@ -124,7 +124,7 @@ sha256」（戳文件放在 node_modules 里）判断；node_modules 丢失、�
 ### 7 的做法备忘
 
 如果以后检查脚本变慢，按三段跑：
-1. 准备（现有 `fetch-fonts` … `setup-qemu-wasm`，会写 public/，保持串行）；
+1. 准备（现有 `copy-ruffle` … `setup-qemu-wasm`，会写 public/，保持串行）；
 2. 生成（`sync-emulatorjs-core-metadata`、`precompress-runtimes`、`prepare-pvzge`、`gen-sitemap`，
    会写文件，串行，且必须在所有 check 之前——`check-emulatorjs` / `test:ejs-cores` 读 metadata，
    `check-pvzge` 读 prepare 的产物）；

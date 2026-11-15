@@ -38,24 +38,21 @@ check('侧栏微型封面不在开局时下载和解码宣传视频', () => {
   assert.ok(compactCovers.some((tag) => tag.includes('ratio="landscape"')), '曾经玩过的横版微缩图仍会加载视频')
 })
 
-check('中文像素字体按 unicode-range 拆分，不 preload，也不强制慢网下载', () => {
+check('ZeoSeven 字体非阻塞加载，首屏先显示系统字体', () => {
   const html = read('index.html')
   const css = read('src/index.css')
-  assert.doesNotMatch(html, /rel="preload"[\s\S]{0,180}ark-pixel/, 'Ark Pixel 仍在关键资源 preload')
-  // 41KB 的 @font-face 列表只能以桌面媒体条件引入；进了主 CSS 就成了每个手机访客的首屏阻塞字节
-  const link = html.match(/<link rel="stylesheet" href="(\/fonts\/ark-pixel\/split\/ark-pixel-faces-[a-f0-9]+\.css)" media="\(hover: hover\) and \(pointer: fine\)" \/>/)
-  assert.ok(link, 'index.html 没有按桌面媒体条件引入 Ark Pixel 分片声明')
-  assert.doesNotMatch(css, /font-family: 'Ark Pixel'|url\('\/fonts\/ark-pixel/, 'Ark Pixel 的 @font-face 又写回了主 CSS')
-  const faces = read(`public${link[1]}`).match(/@font-face \{[\s\S]*?\}/g) ?? []
-  assert.ok(faces.length > 1, 'Ark Pixel 又变回单个整包字体')
-  for (const face of faces) {
-    assert.match(face, /font-display: optional/, 'Ark Pixel 慢网仍会强制 swap')
-    assert.match(face, /unicode-range: U\+/, 'Ark Pixel 分片缺 unicode-range，会被无条件下载')
-  }
+  const fontUrl = 'https://fontsapi.zeoseven.com/214/main/result.css'
+  const preload = html.match(/<link\b[^>]*fontsapi\.zeoseven\.com\/214\/main\/result\.css[^>]*>/)?.[0] ?? ''
+  assert.ok(preload, 'index.html 没有引用 ZeoSeven 的 Sarasa UI SC 字体样式表')
+  assert.match(preload, /rel="preload"/, '字体样式表不是 preload')
+  assert.match(preload, /as="style"/, '字体样式表的 preload 类型不正确')
+  assert.match(preload, /crossorigin/, '跨域预载与 stylesheet 的凭证模式不一致')
+  assert.match(preload, /onload="this\.onload=null;this\.rel='stylesheet'"/, 'CSS 下载完成后没有再应用为 stylesheet')
+  assert.match(html, new RegExp(`<noscript>\\s*<link[^>]+href="${fontUrl.replaceAll('.', '\\.')}"`), '禁用 JavaScript 时没有字体样式表兜底')
+  assert.doesNotMatch(css, /@font-face|Geist Pixel|Ark Pixel|\/fonts\/(?:geist|ark)-pixel/, '主 CSS 仍引用已移除的自托管字体')
   const theme = css.match(/@theme \{[\s\S]*?\n\}/)?.[0] ?? ''
-  assert.doesNotMatch(theme, /'Ark Pixel'/, '移动端基础字体栈仍会触发 Ark Pixel 下载')
-  const desktop = css.match(/@media \(hover: hover\) and \(pointer: fine\) \{[\s\S]*?\n\}/)?.[0] ?? ''
-  assert.match(desktop, /'Ark Pixel'/, '桌面端没有保留 Ark Pixel 品牌字体')
+  assert.match(theme, /'Sarasa UI SC'/, '基础字体栈没有使用 ZeoSeven 的 Sarasa UI SC')
+  assert.match(theme, /ui-sans-serif, system-ui/, '基础字体栈没有系统字体兜底')
 })
 
 check('SSR 在启动时预热模板和渲染入口，部署窗口继续用内存副本', () => {
@@ -84,12 +81,12 @@ check('头条收录脚本不抢首屏资源，且跳过爬虫、后台、登录�
   assert.match(pushScript, /admin\|embed\|play\|auth\|login\|me/, '非公开落地页仍会触发提交')
 })
 
-check('Early Hints：从构建模板提取入口 JS / CSS / 首屏字体 / 封面域预连接', () => {
+check('Early Hints：从构建模板提取入口 JS / CSS / 本地字体和封面域预连接', () => {
   const template = `<html><head>
 <link rel="preconnect" href="https://image.8bitgo.com">
 <link
   rel="preload"
-  href="/fonts/geist-pixel/geist-pixel-latin.woff2"
+  href="/fonts/demo.woff2"
   as="font"
   type="font/woff2"
   crossorigin
@@ -107,7 +104,7 @@ check('Early Hints：从构建模板提取入口 JS / CSS / 首屏字体 / 封�
       '</assets/index-g-Tc-3Xd.css>; rel=preload; as=style; crossorigin',
       '</assets/index-CL8i0tUz.js>; rel=preload; as=script; crossorigin',
       '</assets/react-vendor-mkkrrnzo.js>; rel=preload; as=script; crossorigin',
-      '</fonts/geist-pixel/geist-pixel-latin.woff2>; rel=preload; as=font; type="font/woff2"; crossorigin',
+      '</fonts/demo.woff2>; rel=preload; as=font; type="font/woff2"; crossorigin',
     ].join(', '),
   )
   // 没有构建产物（开发态模板）时不发 Link，不能预载不存在的文件

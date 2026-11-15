@@ -249,7 +249,7 @@ The final home chip row mirrors the reference's defining structure: each light r
 
 ## Required fidelity surfaces
 
-- Fonts and typography: loaded page copy keeps the existing Geist Pixel / Ark Pixel stack, weights, line heights, and hierarchy; the skeleton introduces no fake text.
+- Fonts and typography: loaded page copy uses the ZeoSeven Sarasa UI SC font with system-font fallback, while keeping existing weights, line heights, and hierarchy; the skeleton introduces no fake text.
 - Spacing and layout rhythm: chip height, 8 px gaps, card grid columns, player aspect ratio, content padding, radii, and mobile wrapping follow the real components. Mobile main-content overflow measured 0 px.
 - Colors and visual tokens: placeholders use the existing `surface-2`, `surface-3`, `line`, and `brand` tokens; contrast is visible on the light site without becoming a second visual theme.
 - Image quality and asset fidelity: the existing 8BitGo logo, banner treatment, and game-cover regions are preserved. No visible logo, illustration, or icon was recreated with placeholder art.
