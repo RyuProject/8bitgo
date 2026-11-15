@@ -1,4 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react'
+import { useNavigate } from 'react-router-dom'
 import type { ArcadeButtonCount, DosBackend, DosWindowsVersion, FlashControls, Game, GenreId, Platform, PlatformId } from '@/types'
 import { platformMap } from '@/data/platforms'
 import { formatBytes, formatSpeed, isRomFileAccepted } from '@/lib/emulator'
@@ -61,7 +62,6 @@ import { psxChdSaveSlug, psxCoreForTransfer } from './psxChd'
 import { prewarmMameChdMediaOnHover, prewarmRuntime } from './prewarm'
 import { defaultDos71SystemUrl, prewarmSystemCache } from './systemSource'
 import { canRestartInPlace } from './sessionRestart'
-import { confirmAndReplayAnchorNavigation } from './leaveNavigation'
 import { AdSenseSlot } from '@/components/ads/AdSenseSlot'
 import { LoadingProgressOverlay } from './LoadingProgressOverlay'
 import { copyText } from '@/lib/clipboard'
@@ -592,6 +592,7 @@ export function EmulatorPlayer({
   autoStart,
   debug = false,
 }: Props) {
+  const navigate = useNavigate()
   /*
     系统盘和 Sockdrive 也跟 ROM 一样走测好的线路（主域 / EdgeOne 镜像，见 services/romHosts.ts）。
     系统盘的 IndexedDB 缓存键已按主域写法归一，换线路不会重下；Sockdrive 每块盘在本浏览器里钉死一条线路，
@@ -1382,8 +1383,6 @@ export function EmulatorPlayer({
    * 站内点链接那种 SPA 跳转走不到 beforeunload，由下面那个 click 守卫单独拦。
    */
   const watchingLive = Boolean(session?.live)
-  /** 确认后重放的那一条链接点击；第二次进捕获监听时凭它放行，避免递归确认。 */
-  const replayingLeaveAnchorRef = useRef<HTMLAnchorElement | null>(null)
   /** 普通 <a> 会触发 beforeunload；站内确认已经问过一次，那次卸载不能再问第二遍。 */
   const allowConfirmedUnloadRef = useRef(false)
   const confirmedUnloadTimerRef = useRef(0)
@@ -1407,9 +1406,8 @@ export function EmulatorPlayer({
    * 站内链接的守卫。播放器正下方就是 8 张「你可能也喜欢」、面包屑、平台 / 类型标签 ——
    * 玩到一半误点一下，路由一换播放器整个卸载、handle.destroy()，半小时进度当场没了，连个确认都没有。
    *
-   * 路由是 BrowserRouter，没有 useBlocker 可用，所以在 document 的**捕获阶段**拦 click：
-   * 它跑在 React 根节点的监听之前。第一次点击总是拦住；玩家确定后重放同一个 anchor.click()，
-   * 让 React Router 收到一条没有经过同步 confirm 阻塞的新事件。
+   * 在 document 的**捕获阶段**拦 click，避免 React Router 先换页并拆掉正在运行的模拟器。
+   * 确认后对站内 Link 直接调用 navigate；合成 anchor.click() 在部分浏览器里不会可靠触发路由。
    * 只拦「会离开本页的同源左键点击」：新标签（target=_blank / 修饰键）、下载、外站、同页锚点都放过 ——
    * 这些不会拆掉正在跑的游戏。
    * 管不到的：地址栏 / 前进后退（那是 beforeunload 和 popstate 的事，后者拦不住）、代码里直接 navigate() 的少数路径。
@@ -1430,35 +1428,33 @@ export function EmulatorPlayer({
       }
       if (url.origin !== location.origin) return
       if (url.pathname === location.pathname && url.search === location.search) return
-      confirmAndReplayAnchorNavigation(e, a, t.player.leaveConfirm, replayingLeaveAnchorRef, (message) => {
-        const accepted = window.confirm(message)
-        if (!accepted) return false
+      e.preventDefault()
+      e.stopPropagation()
+      if (!window.confirm(t.player.leaveConfirm)) return
 
-        /*
-          React Router 的 <Link>（data-discover）重放后走 history，不触发 beforeunload。
-          裸 <a> 则会整页导航：这里给它一次短期通行证，避免玩家刚点过“确定”又看到浏览器
-          自己的第二个离页弹窗。若导航最终没发生，1.5 秒后自动恢复保护。
-        */
-        allowConfirmedUnloadRef.current = !a.hasAttribute('data-discover')
-        window.clearTimeout(confirmedUnloadTimerRef.current)
-        if (allowConfirmedUnloadRef.current) {
-          confirmedUnloadTimerRef.current = window.setTimeout(() => {
-            allowConfirmedUnloadRef.current = false
-            confirmedUnloadTimerRef.current = 0
-          }, 1500)
-        }
-        return true
-      })
+      const destination = `${url.pathname}${url.search}${url.hash}`
+      if (a.hasAttribute('data-discover')) {
+        navigate(destination)
+        return
+      }
+
+      // 裸同源链接仍按整页跳转；只放行这次已确认的 unload，随后恢复刷新保护。
+      allowConfirmedUnloadRef.current = true
+      window.clearTimeout(confirmedUnloadTimerRef.current)
+      confirmedUnloadTimerRef.current = window.setTimeout(() => {
+        allowConfirmedUnloadRef.current = false
+        confirmedUnloadTimerRef.current = 0
+      }, 1500)
+      window.location.assign(url.href)
     }
     document.addEventListener('click', onClick, true)
     return () => {
       document.removeEventListener('click', onClick, true)
-      replayingLeaveAnchorRef.current = null
       allowConfirmedUnloadRef.current = false
       window.clearTimeout(confirmedUnloadTimerRef.current)
       confirmedUnloadTimerRef.current = 0
     }
-  }, [status, watchingLive, t])
+  }, [status, watchingLive, t, navigate])
 
   /**
    * 屏幕常亮：用手柄玩、或者看别人直播时手指不碰屏幕，手机一分钟就暗屏锁屏，游戏跟着挂起。
