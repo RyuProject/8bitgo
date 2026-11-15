@@ -1584,6 +1584,10 @@ performance 看不到。现在适配器做三件事：
 看慢启动先找这行：卡在「Ruffle load()」且核心预热未完成，就是核心下载慢。回归：`npm run test:ruffle-runtime`
 （含 `scripts/test-ruffle-startup.mjs`）。
 
+**SWF 格式校验必须先于 ROM 缓存（2026-11-15，秘鲁 Edge《华纳史诗冒险 2》）**：FWS 头声明的未压缩长度大于实际字节时，播放器报「SWF 文件下载不完整」。
+`loadGameBytes()` 原先在 Ruffle 的 `assertSwf()` 之前就缓存 8BG 密文，后续开局从 ROM 缓存重复取到坏内容，短时间多次点击都秒失败；诊断包没有保留文件字节，不能据此判定坏内容最初来自 R2 还是浏览器缓存。
+Ruffle 要把 `assertSwf` / `assertSwfBlob` 通过 `loadGameBytes` 的校验回调传入，确保普通 SWF、8BG 解包结果、远程 ZIP 内层 SWF 都在写缓存前校验；历史缓存校验失败要同时删除 ROM 缓存和续传片再回源。管理员上传单 SWF、多 SWF ZIP、已有 8BG 容器时也先校验内层主文件。**不要在适配器拿到已缓存的字节后才做平台完整性校验。**
+
 ### 2.24.0 Ruffle 存档要跟着游戏走；舞台按显示尺寸渲染
 
 Ruffle 的 SharedObject 键是 `<hostname>/<localPath>/<名字>`，而本站所有 Flash 共用一个源：

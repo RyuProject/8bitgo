@@ -63,7 +63,32 @@ export function assertSwf(buf: ArrayBuffer): void {
     throw new Error('Flash 文件超过 256 MiB 浏览器安全上限，已停止加载以避免内存耗尽')
   }
   // 只有 FWS 是未压缩文件，声明长度应当能在当前字节里完整兑现；CWS/ZWS 声明的是解压后大小。
-  if (magic === 'FWS' && declared > b.length) throw new Error('SWF 文件下载不完整')
+  if (magic === 'FWS' && declared > b.length) {
+    throw new Error(`SWF 文件下载不完整：文件头声明至少 ${declared} 字节，实际收到 ${b.length} 字节`)
+  }
+}
+
+/** 远程 ZIP 解出的 SWF 以 Blob 缓存；只读头部即可判断 FWS 长度，不复制整份大文件。 */
+export async function assertSwfBlob(blob: Blob): Promise<void> {
+  if (blob.size === 0) throw new Error('Flash 文件为空')
+  if (blob.size > MAX_SWF_BYTES) {
+    throw new Error('Flash 文件超过 256 MiB 浏览器安全上限，已停止加载以避免内存耗尽')
+  }
+  const head = await blob.slice(0, 256).arrayBuffer()
+  assertNotHtml(head, 'Flash 文件')
+  const bytes = new Uint8Array(head)
+  const magic = ascii(bytes, 0, 3)
+  if (blob.size < 8 || bytes.length < 8 || !['FWS', 'CWS', 'ZWS'].includes(magic)) {
+    throw new Error('不是有效的 SWF 文件（缺少 FWS / CWS / ZWS 文件头）')
+  }
+  const declared = new DataView(head).getUint32(4, true)
+  if (declared < 8) throw new Error('SWF 文件头中的长度无效')
+  if (declared > MAX_SWF_BYTES) {
+    throw new Error('Flash 文件超过 256 MiB 浏览器安全上限，已停止加载以避免内存耗尽')
+  }
+  if (magic === 'FWS' && declared > blob.size) {
+    throw new Error(`SWF 文件下载不完整：文件头声明至少 ${declared} 字节，实际收到 ${blob.size} 字节`)
+  }
 }
 
 function isNdsHeader(buf: ArrayBuffer): boolean {

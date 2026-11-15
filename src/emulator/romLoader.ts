@@ -16,6 +16,10 @@ export interface GameBytesLimits {
   maxBytes?: number
   /** 8BG 解包后的文件上限；必须在分配输出缓冲前检查容器头。 */
   maxUnpackedBytes?: number
+  /** 平台格式校验必须先于 ROM 缓存写入，避免把损坏内容钉在浏览器里。 */
+  validate?: (data: ArrayBuffer) => void
+  /** 远程 ZIP 内层内容以 Blob 缓存时使用，避免为校验额外复制整份文件。 */
+  validateBlob?: (blob: Blob) => void | Promise<void>
 }
 
 function assertSizeLimit(size: number, limit: number | undefined, label: string): void {
@@ -82,14 +86,19 @@ export async function loadGameBytes(
     assertNotHtml(data)
     const unpacked = await unpackIfNeeded(data, limits)
     assertNotHtml(unpacked.data)
+    limits.validate?.(unpacked.data)
     if (unpacked.name) return { name: unpacked.name, data: unpacked.data }
     return { name: game.name, data }
   }
 
   if (romArchiveRef(game)) {
-    const validateExtracted = limits.maxUnpackedBytes === undefined
+    const validateExtracted = limits.maxUnpackedBytes === undefined && !limits.validate && !limits.validateBlob
       ? undefined
-      : async (blob: Blob) => assertSizeLimit(blob.size, limits.maxUnpackedBytes, '游戏文件')
+      : async (blob: Blob) => {
+          assertSizeLimit(blob.size, limits.maxUnpackedBytes, '游戏文件')
+          if (limits.validateBlob) await limits.validateBlob(blob)
+          else if (limits.validate) limits.validate(await blob.arrayBuffer())
+        }
     const extracted = await loadRemoteArchiveRom(game, onProgress, signal, validateExtracted, limits.maxUnpackedBytes)
     assertSizeLimit(extracted.blob.size, limits.maxUnpackedBytes, '游戏文件')
     const data = await extracted.blob.arrayBuffer()
@@ -128,17 +137,21 @@ export async function loadGameBytes(
         if (isRomPackBytes(cached)) {
           const unpacked = await unpackIfNeeded(cached, limits)
           assertNotHtml(unpacked.data)
+          limits.validate?.(unpacked.data)
           onProgress?.({ phase: 'rom', loaded: cached.byteLength, total: cached.byteLength, ratio: 1, cached: true })
           void downloadResumeStore.clear(cacheKey).catch(() => {})
           if (unpacked.name) return { name: unpacked.name, data: unpacked.data, remoteUrl: game, fromCache: true }
         }
         assertSizeLimit(cached.byteLength, limits.maxUnpackedBytes, '游戏文件')
+        limits.validate?.(cached)
         // 完整缓存验证通过后才报满格；坏缓存回源时不能让进度从 100% 倒退。
         onProgress?.({ phase: 'rom', loaded: cached.byteLength, total: cached.byteLength, ratio: 1, cached: true })
         void downloadResumeStore.clear(cacheKey).catch(() => {})
         return { name: fileNameFromUrl(game), data: cached, remoteUrl: game, fromCache: true }
       } catch {
         await romCacheDelete(cacheKey).catch(() => {})
+        // 旧缓存对应的续传片也可能不可信；一并清掉，回源不能再拼出同一份坏内容。
+        await downloadResumeStore.clear(cacheKey).catch(() => {})
       }
     }
   }
@@ -160,11 +173,13 @@ export async function loadGameBytes(
   if (isRomPackBytes(data)) {
     const unpacked = await unpackIfNeeded(data, limits)
     assertNotHtml(unpacked.data)
+    limits.validate?.(unpacked.data)
     // 解密、解压、摘要都通过后才缓存密文；截断包不能因为一次失败被永久钉在浏览器里。
     if (cacheKey) void romCachePut(cacheKey, data).catch(() => {})
     return { name: unpacked.name!, data: unpacked.data, remoteUrl: game }
   }
   assertSizeLimit(data.byteLength, limits.maxUnpackedBytes, '游戏文件')
+  limits.validate?.(data)
   // 不 await：写几百 MB 要花时间，没理由让玩家在 100% 的进度条前面干等。
   // 失败（配额满、无痕模式）在 romCachePut 内部静默吞掉，这里不需要 catch 以外的处理。
   if (cacheKey) void romCachePut(cacheKey, data).catch(() => {})

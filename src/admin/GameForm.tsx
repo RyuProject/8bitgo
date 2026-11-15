@@ -82,6 +82,7 @@ import { probeRange } from '@/emulator/remoteDisc'
 import { isRomPackBytes, isRomPackUrl, packRomForUpload, recommendedRomPackCodec, releasePackedRomUpload, romPackKey, unpackRomPackBlob, verifyRomPackBlob } from '@/services/romPack'
 import { isStreamingDiscPlatform } from '../../shared/streaming-disc-platforms.js'
 import { flashCompatibilityIssue } from '@/emulator/flashCompatibility'
+import { assertSwf, assertSwfBlob } from '@/lib/romValidation'
 import {
   createPspConversion,
   pspChdKey,
@@ -3527,14 +3528,16 @@ function RomField({
     if (isFlash && /\.swf$/i.test(file.name)) {
       setMsg({ ok: true, text: `正在检查 ${file.name} 的网页兼容性…` })
       try {
-        const issue = await flashCompatibilityIssue(await file.arrayBuffer())
+        const data = await file.arrayBuffer()
+        assertSwf(data)
+        const issue = await flashCompatibilityIssue(data)
         if (issue) {
           setMsg({ ok: false, text: `${issue.message}；这份文件没有上传` })
           if (inputRef.current) inputRef.current.value = ''
           return
         }
       } catch (error) {
-        setMsg({ ok: false, text: error instanceof Error ? `无法检查 SWF：${error.message}` : '无法检查 SWF' })
+        setMsg({ ok: false, text: error instanceof Error ? `SWF 无效或无法检查：${error.message}；这份文件没有上传` : 'SWF 无效或无法检查；这份文件没有上传' })
         if (inputRef.current) inputRef.current.value = ''
         return
       }
@@ -3590,9 +3593,18 @@ function RomField({
     if (hasPackMagic) {
       setMsg({ ok: true, text: `正在校验已有 8BG 容器 ${file.name}…` })
       try {
-        const header = await verifyRomPackBlob(file, ({ loaded, total }) => {
+        const onPackProgress = ({ loaded, total }: { loaded: number; total: number }) => {
           setProgress(Math.min(49, Math.round((loaded / Math.max(1, total)) * 50)))
-        })
+        }
+        let header: Awaited<ReturnType<typeof verifyRomPackBlob>>
+        if (platform === 'flash') {
+          // 已加密的 8BG 也要验内层 SWF；只验证容器认证码会放过容器里原本就截断的影片。
+          const unpacked = await unpackRomPackBlob(file, onPackProgress)
+          await assertSwfBlob(unpacked.blob)
+          header = unpacked.header
+        } else {
+          header = await verifyRomPackBlob(file, onPackProgress)
+        }
         alreadyPacked = true
         packedOriginalName = header.originalName
         const allowed = platformMap[platform]?.romExtensions ?? ['.zip']
