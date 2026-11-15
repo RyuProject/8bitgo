@@ -1645,3 +1645,10 @@ const fr: Translation = {
 }
 
 export default fr
+    ndsPerformanceSlow: 'Des ralentissements persistants ont été détectés (environ {fps} FPS). Ce cœur NDS ne propose aucun réglage de qualité en cours de jeu vérifié ; la partie continue.',
+    ndsPerformanceNextLaunch: 'Essayer DeSmuME la prochaine fois',
+    ndsPerformanceSaved: 'DeSmuME est mémorisé pour le prochain lancement. La partie actuelle n’a pas redémarré ; sauvegardez dans le jeu avant de changer, car chaque cœur garde ses propres sauvegardes.',
+    ndsPerformanceRememberFailed: 'Le navigateur n’a pas pu mémoriser le prochain cœur. Choisissez DeSmuME manuellement et sauvegardez dans le jeu avant de changer.',
+    ndsPerformanceCoreStarted: 'Le cœur DeSmuME est en essai. Si les ralentissements persistent, le cœur confirmera chaque réglage de saut d’images avant de l’appliquer. Les sauvegardes sont séparées par cœur.',
+    ndsFrameskipApplied: 'Le cœur a confirmé le saut d’images {value} ; le jeu n’a pas redémarré. L’image peut être moins fluide.',
+    ndsPerformanceExhausted: 'Les ralentissements persistent (environ {fps} FPS) et le cœur ne propose aucun autre niveau de saut d’images qu’il puisse confirmer. Sauvegardez dans le jeu avant de réduire la résolution 3D interne et de redémarrer.',

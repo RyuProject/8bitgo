@@ -1580,3 +1580,10 @@ const ja: Translation = {
 }
 
 export default ja
+    ndsPerformanceSlow: '低フレームレートが続いています（約 {fps} FPS）。現在の NDS コアには動作中に変更できることを確認済みの画質設定がないため、このゲームはそのまま続行します。',
+    ndsPerformanceNextLaunch: '次回 DeSmuME を試す',
+    ndsPerformanceSaved: '次回起動時に DeSmuME を試す設定を保存しました。現在のゲームは再起動していません。コアごとにセーブデータが分かれるため、切り替える前にゲーム内でセーブしてください。',
+    ndsPerformanceRememberFailed: 'ブラウザーに次回のコア設定を保存できませんでした。手動で DeSmuME を選び、切り替える前にゲーム内でセーブしてください。',
+    ndsPerformanceCoreStarted: 'DeSmuME の性能を試しています。低フレームレートが続く場合、コアが変更を確認してから段階的にフレームスキップを適用します。セーブデータはコアごとに分かれます。',
+    ndsFrameskipApplied: 'コアがフレームスキップ {value} を確認しました。ゲームは再起動していません。画面が滑らかでなくなる場合があります。',
+    ndsPerformanceExhausted: '低フレームレート（約 {fps} FPS）が続いており、コアが確認できる次のフレームスキップ設定はありません。ゲーム内でセーブしてから、3D 内部解像度を下げて再起動してください。',

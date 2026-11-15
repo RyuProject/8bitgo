@@ -264,6 +264,10 @@ export interface MountOptions {
   onError?: (message: string, scope?: 'runtime' | 'content' | 'config' | 'deterministic') => void
   /** EmulatorJS 核心发生 WASM 陷阱；NDS 用于兼容核心回退，GBA 8BG 用于一次缓存刷新恢复。 */
   onCoreCrash?: (core: string, message: string) => void
+  /** NDS 持续掉帧但当前核心没有已验证的运行时降档项时，提示玩家下次开局尝试性能核心。 */
+  onNdsPerformanceIssue?: (fps: number, reason: 'no-live-option' | 'frameskip-exhausted') => void
+  /** NDS 核心回读确认帧跳选项已经生效；只用于告知玩家和诊断，不触发重启。 */
+  onNdsPerformanceApplied?: (frameskip: string) => void
   /**
    * 开局前核心分配不出 WASM 内存。返回 true = 播放器已换低内存核心重开（适配器不再报 onError），
    * false / 未提供 = 照常走 onError。见 fbneoLowmem.ts。

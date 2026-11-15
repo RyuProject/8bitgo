@@ -64,6 +64,11 @@ import { MAME_AUDIO_LATENCY_MS, RETROARCH_CFG_PATH, raiseAudioLatency } from '..
 import { ndsAudioLatencyMs } from '../ndsAudio'
 import { disposeNdsWfcRuntime, installNdsWfcRuntime, isWorldAtWarNdsRomHeader, loadNdsWfcSettings, ndsWfcMacAddress, prepareNdsWfcSession, saveNdsWfcSettings } from '../ndsWfc'
 import { FBNEO_LOWMEM_CORE } from '../fbneoLowmem'
+import {
+  NDS_PERFORMANCE_SAMPLE_MS,
+  NDS_PERFORMANCE_SLOW_FPS,
+  NDS_PERFORMANCE_SLOW_WINDOWS,
+} from '../ndsAdaptivePerformance'
 import { guardFrameGamepads } from '../gamepadAccess'
 import { isLowMemoryAbort, isLowmemOomMessage, lowmemOomMessage, probeWasmMemoryCeilingMB, vendorBrowserName } from '../memoryRecovery'
 import { isNdsWasmCrash, isWasmRuntimeCrash } from '../ndsCrash'
@@ -133,6 +138,7 @@ export { EJS_PATH } from '../paths'
 import { EJS_PATH, EJS_RUNTIME_GENERATION, ejsBase, ejsCoreAsset, ejsUsingEdge, markEjsEdgeFailed, ejsRuntimeAsset, EJS_EXTRACT_7Z_FILE, emulatorJsCoreDataFile, emulatorJsCoreFileFor, emulatorJsCoreForGame, ejsCoreNeedsWebgl2, emulatorJsRuntimePaths, isDiscPlatform, isLargeDirectEjsRom, isSelfDownloadPlatform } from '../paths'
 import { applyTuning, sizeOfTrack, tuningFor, usableVideoSize } from '../videoTuning'
 import {
+  flatValues,
   findLayoutOption,
   findTouchModeOption,
   isDualScreen,
@@ -142,6 +148,7 @@ import {
   showsTouchScreen,
   type LayoutOption,
   type TouchModeOption,
+  type CoreOption,
 } from '../dualScreen'
 /*
   街机 DIP 开关（后台「DIP 开关」那一栏）。
@@ -2889,6 +2896,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let errorTap: { lines: string[] } | null = null
   /** 登记 iframe 的网络记录给启动诊断包；销毁时调用会先拍快照 */
   let stopFramePerf: (() => void) | null = null
+  /** NDS 按核心帧计数监测持续性能；会话销毁时一并停止。 */
+  let stopNdsPerformanceWatch: (() => void) | null = null
   let lastStageName = ''
   /**
    * 往引擎日志里补一条我们自己的观察。
@@ -3703,6 +3712,137 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const currentDipValue = (emu: EjsEmulator, key: string): string =>
     findDipOptions(readCoreOptions(emu)).find((o) => o.key === key)?.current ?? ''
 
+  /** 从核心实际公开的选项表里找 DeSmuME 帧跳；绝不根据 UI 名称或引擎设置猜 key。 */
+  const ndsFrameskipOption = (emu: EjsEmulator): CoreOption | null => {
+    const raw = readCoreOptions(emu)
+    const rows = Array.isArray(raw)
+      ? raw
+      : raw && typeof raw === 'object' && Array.isArray((raw as { options?: unknown }).options)
+        ? (raw as { options: unknown[] }).options
+        : []
+    return rows.find((row): row is CoreOption =>
+      Boolean(row) && typeof row === 'object' && (row as CoreOption).key === 'desmume_frameskip') ?? null
+  }
+
+  /**
+   * DeSmuME 的 Frameskip 是运行时选项；内部 3D 分辨率则要求重启。
+   * 只选核心这局实际报告的 1–3 档，经设置 API 写入后跨过两个绘制周期再回读核心当前值。
+   * 回读没变就视为未应用，不能对玩家说已降档。
+   */
+  const applyNextNdsFrameskip = async (win: Window & Record<string, unknown>, emu: EjsEmulator): Promise<string | null> => {
+    const key = 'desmume_frameskip'
+    const option = ndsFrameskipOption(emu)
+    if (!option) return null
+    // settings 只包含玩家明确保存过的值；自动性能档不能覆盖玩家在核心菜单里的选择。
+    if (typeof emu.settings?.[key] === 'string') return null
+    const values = flatValues(option.values)
+      .map((value) => ({ value, number: /^\d+$/.test(value) ? Number(value) : NaN }))
+      .filter((entry) => Number.isInteger(entry.number) && entry.number > 0 && entry.number <= 3)
+      .sort((a, b) => a.number - b.number)
+    if (!values.length) return null
+    const current = String(option.current ?? '')
+    const currentNumber = /^\d+$/.test(current) ? Number(current) : 0
+    const next = values.find((entry) => entry.number > currentNumber)?.value
+    if (!next) return null
+
+    try {
+      emu.changeSettingOption?.(key, next, true)
+      if (String(ndsFrameskipOption(emu)?.current ?? '') !== next) {
+        emu.gameManager?.setVariable?.(key, next)
+      }
+      const frame = () => new Promise<void>((resolve) => {
+        win.requestAnimationFrame(() => win.requestAnimationFrame(() => resolve()))
+      })
+      await frame()
+      await frame()
+      const effective = String(ndsFrameskipOption(emu)?.current ?? '')
+      if (effective !== next) {
+        console.warn(`[nds/performance] 核心未接受帧跳：请求 ${next}，回读 ${effective || '空'}`)
+        diagLog('nds-performance', 'warn', `DeSmuME 帧跳 ${next} 未确认；核心回读 ${effective || '空'}`)
+        return null
+      }
+      console.info(`[nds/performance] DeSmuME 帧跳已由核心确认：${next}`)
+      diagLog('nds-performance', 'info', `DeSmuME 核心回读确认帧跳 ${next}`)
+      return next
+    } catch (error) {
+      console.warn('[nds/performance] 调整 DeSmuME 帧跳失败：', error)
+      return null
+    }
+  }
+
+  /** 只用 RetroArch 核心帧计数测模拟器吞吐，不用页面 RAF 推测；暂停、后台页和联机时不触发。 */
+  const watchNdsPerformance = (win: Window & Record<string, unknown>): (() => void) => {
+    if (options.platform !== 'nds') return () => {}
+    let lastFrame: number | null = null
+    let lastAt = 0
+    let slowWindows = 0
+    let adapting = false
+    let issueSent = false
+    let appliedFrameskip = ''
+    const timer = window.setInterval(() => {
+      if (destroyed) return
+      const emu = emuOf()
+      const gm = emu?.gameManager
+      if (!emu || typeof gm?.getFrameNum !== 'function') return
+      let frame: number
+      try { frame = Number(gm.getFrameNum()) } catch { return }
+      if (!Number.isFinite(frame)) return
+      const now = win.performance.now()
+      if (
+        document.visibilityState === 'hidden' || win.document.visibilityState === 'hidden' ||
+        emu.paused === true || emu.isNetplay === true || Boolean(netplay)
+      ) {
+        lastFrame = frame
+        lastAt = now
+        slowWindows = 0
+        return
+      }
+      if (lastFrame == null || !lastAt || frame < lastFrame) {
+        lastFrame = frame
+        lastAt = now
+        return
+      }
+      const elapsed = now - lastAt
+      const fps = elapsed > 0 ? ((frame - lastFrame) * 1000) / elapsed : 0
+      lastFrame = frame
+      lastAt = now
+      // 高于核心常规节奏通常是快进；不把玩家主动快进误判成低帧率。
+      if (fps >= 65) {
+        slowWindows = 0
+        return
+      }
+      if (fps < NDS_PERFORMANCE_SLOW_FPS) slowWindows++
+      else slowWindows = 0
+      if (slowWindows < NDS_PERFORMANCE_SLOW_WINDOWS || adapting) return
+
+      if (core === 'desmume' || core === 'desmume2015') {
+        adapting = true
+        void applyNextNdsFrameskip(win, emu).then((value) => {
+          if (destroyed) return
+          adapting = false
+          slowWindows = 0
+          if (value) {
+            appliedFrameskip = value
+            options.onNdsPerformanceApplied?.(value)
+          } else if (!issueSent) {
+            issueSent = true
+            diagLog('nds-performance', 'warn', `持续低于 ${NDS_PERFORMANCE_SLOW_FPS} FPS，DeSmuME 没有可确认的更低帧跳档（上次自动档 ${appliedFrameskip || '无'}）`)
+            options.onNdsPerformanceIssue?.(fps, 'frameskip-exhausted')
+          }
+        })
+        return
+      }
+
+      // 自建 melonDS DS 没有编入已验证的帧跳项；只能把画质核心留给下一局，不能中途换核。
+      if (!issueSent && (core === 'melondsds' || core === 'melonds')) {
+        issueSent = true
+        diagLog('nds-performance', 'warn', `melonDS 持续低于 ${NDS_PERFORMANCE_SLOW_FPS} FPS；当前核心没有安全的运行时画质降档项`)
+        options.onNdsPerformanceIssue?.(fps, 'no-live-option')
+      }
+    }, NDS_PERFORMANCE_SAMPLE_MS)
+    return () => window.clearInterval(timer)
+  }
+
   /**
    * 把后台配的「DIP 开关」应用给核心 —— 麻将游戏要的那一档（见 dipPlan.ts 的长注释）。
    *
@@ -4054,6 +4194,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (options.platform === 'gba') applyGbaVideoMode(win.EJS_emulator as EjsEmulator | undefined, gbaVideoMode)
     options.onReady?.()
     options.onStart?.()
+    stopNdsPerformanceWatch?.()
+    stopNdsPerformanceWatch = watchNdsPerformance(win)
     refineCaps()
     if (crashReported) return
     applyTouchInput(win)
@@ -5394,6 +5536,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     destroyed = true
     stopFramePerf?.()
     stopFramePerf = null
+    stopNdsPerformanceWatch?.()
+    stopNdsPerformanceWatch = null
     cancelBootFastForward?.()
     padObserver?.disconnect()
     padObserver = null

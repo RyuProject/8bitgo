@@ -49,6 +49,13 @@ import { p2pPlayable, cloudPlayable, emulatorJsCoreFileFor, emulatorJsCoreForGam
 import { FBNEO_LOWMEM_CORE, fbneoLowmemSaveSlug, fbneoMemoryFallbackCore, prefersFbneoLowmem, rememberFbneoMemoryFailure } from './fbneoLowmem'
 import { ndsCrashFallbackCore } from './ndsCrash'
 import { rememberNdsCoreFailure, rememberedNdsCore } from './ndsCorePreference'
+import {
+  clearRememberedNdsPerformanceCore,
+  NDS_ADAPTIVE_PERFORMANCE_CORE,
+  NDS_ADAPTIVE_PERFORMANCE_SAVE_SUFFIX,
+  rememberedNdsPerformanceCore,
+  rememberNdsPerformanceCore,
+} from './ndsAdaptivePerformance'
 import { psxChdSaveSlug, psxCoreForTransfer } from './psxChd'
 import { prewarmMameChdMediaOnHover, prewarmRuntime } from './prewarm'
 import { defaultDos71SystemUrl, prewarmSystemCache } from './systemSource'
@@ -587,6 +594,7 @@ export function EmulatorPlayer({
   const [file, setFile] = useState<File | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [ndsPerformanceSuggestion, setNdsPerformanceSuggestion] = useState<{ fps: number; game: File | string } | null>(null)
   const [dragging, setDragging] = useState(false)
   const [session, setSession] = useState<ActiveSession | null>(null)
   /** 首次联机失败后让这局仍按本地游戏显示；换会话时由 begin() 清掉。 */
@@ -1760,7 +1768,14 @@ export function EmulatorPlayer({
       ? ndsCoreForWebgl2(coreRef.current, canCreateWebgl2())
       : null
     if (webgl2Core) console.warn('[8bitgo/nds] 浏览器建不出 WebGL2，新版 melonDS DS 没有 WebGL1 构建，改用兼容核心')
-    const coreOverride = extra?.coreOverride ?? webgl2Core ?? rememberedCore ?? rememberedArcadeCore ?? undefined
+    // 只有玩家在掉帧提示上主动选择「下次尝试」时，才把下一局一次性改用 DeSmuME。
+    // 确定性崩溃记忆优先；DeSmuME 自带 legacy 包，因此可由玩家明确选择来覆盖 WebGL2 兼容核心。
+    const rememberedPerformanceCore = !extra?.coreOverride && !rememberedCore &&
+      targetPlatform === 'nds' && runtime.id === 'emulatorjs' && canRestartInPlace(extra ?? {}) &&
+      emulatorJsCoreForGame('nds', coreRef.current ?? 'nds') === 'melondsds'
+      ? rememberedNdsPerformanceCore(game)
+      : null
+    const coreOverride = extra?.coreOverride ?? rememberedCore ?? rememberedPerformanceCore ?? webgl2Core ?? rememberedArcadeCore ?? undefined
     // 新旧 melonDS 的即时存档 ABI 不能假定兼容；兼容核心必须用独立档位，
     // 否则自动切换后可能把旧核心的快照写回原档，造成无法恢复的覆盖。
     const coreSaveSlug = targetPlatform === 'psx' && runtime.id === 'emulatorjs' && typeof game === 'string' && baseSaveSlug
@@ -1768,6 +1783,8 @@ export function EmulatorPlayer({
       : baseSaveSlug
     const saveSlug = coreOverride === NDS_COMPAT_CORE && coreSaveSlug
       ? `${coreSaveSlug}:melonds-compat`
+      : coreOverride === NDS_ADAPTIVE_PERFORMANCE_CORE && coreSaveSlug
+        ? `${coreSaveSlug}${NDS_ADAPTIVE_PERFORMANCE_SAVE_SUFFIX}`
       : coreOverride === FBNEO_LOWMEM_CORE && coreSaveSlug
         ? fbneoLowmemSaveSlug(coreSaveSlug)
         : coreSaveSlug
@@ -1784,6 +1801,7 @@ export function EmulatorPlayer({
     setSession({ id: sessionCounter.current, game, platform: targetPlatform, runtime, saveSlug,
       pspLoadMode: runtime.id === 'ppsspp' ? pspLoadModeRef.current : undefined,
       ...extra, coreOverride, startupAttemptId, startedAt })
+    setNdsPerformanceSuggestion(null)
     setP2pConnectionFailed(false)
     if (!extra?.startupAttemptId && !inherited && runtime.id !== 'liveview' && startupVisitId) {
       recordStartupEvent(gameSlugRef.current, {
@@ -2052,6 +2070,14 @@ export function EmulatorPlayer({
       onReady: () => {
         if (!isCurrent() || ready) return
         ready = true
+        if (
+          session.platform === 'nds' && session.runtime.id === 'emulatorjs' &&
+          session.coreOverride === NDS_ADAPTIVE_PERFORMANCE_CORE &&
+          rememberedNdsPerformanceCore(session.game)
+        ) {
+          clearRememberedNdsPerformanceCore(session.game)
+          setNotice(t.player.ndsPerformanceCoreStarted)
+        }
         // 调试：运行时挂载成功、ROM 已被核心读取 —— 这两步都过了，卡点就在「出首帧」之后了
         if (debugRef.current) {
           setDiag((d) => d.map((e) => (e.stage === 'launch' ? { ...e, status: 'ok', detail: '运行时已挂载' } : e)))
@@ -2080,6 +2106,18 @@ export function EmulatorPlayer({
         // 调试：核心已经产出首帧，游戏真的跑起来了
         if (debugRef.current) setDiag((d) => [...d, { stage: 'engine', label: '引擎出首帧', status: 'ok', detail: '游戏已开始运行' }])
         reportStartup('first_frame')
+      },
+      onNdsPerformanceIssue: (fps, reason) => {
+        if (!isCurrent() || session.platform !== 'nds') return
+        if (reason === 'no-live-option') {
+          setNdsPerformanceSuggestion({ fps: Math.round(fps), game: session.game })
+        } else {
+          setNotice(fmt(t.player.ndsPerformanceExhausted, { fps: String(Math.round(fps)) }))
+        }
+      },
+      onNdsPerformanceApplied: (frameskip) => {
+        if (!isCurrent() || session.platform !== 'nds') return
+        setNotice(fmt(t.player.ndsFrameskipApplied, { value: frameskip }))
       },
       /*
         引擎说「这份 ROM 得换个人跑」（目前只有 jsnes 会说：格式 / 板型能力不兼容）。
@@ -3271,6 +3309,7 @@ export function EmulatorPlayer({
     setFile(null)
     setError(null)
     setNotice(null)
+    setNdsPerformanceSuggestion(null)
     setRoomId(null)
     setPlayers(1)
     setHosting(false)
@@ -3892,8 +3931,9 @@ export function EmulatorPlayer({
     if (online) return
     // 预热与真正开局必须选同一个核心，否则玩家悬停时会白下载已知会崩溃的新版 WASM。
     const selectedCore = platform.id === 'nds' && pageRuntime?.id === 'emulatorjs' && romUrl &&
-      emulatorJsCoreFileFor(prewarmCore ?? 'nds') === 'melondsds'
-      ? ndsCoreForWebgl2(prewarmCore, canCreateWebgl2()) ?? rememberedNdsCore(romUrl) ?? prewarmCore
+      emulatorJsCoreForGame('nds', prewarmCore ?? 'nds') === 'melondsds'
+      ? rememberedNdsCore(romUrl) ?? rememberedNdsPerformanceCore(romUrl) ??
+        ndsCoreForWebgl2(prewarmCore, canCreateWebgl2()) ?? prewarmCore
       : prewarmCore
     // CHD 开局会改用 Beetle；悬停时若还预拉默认 PCSX，就白下另一份大核心。
     const warmCore = pageRuntime?.id === 'emulatorjs' && romUrl
@@ -4792,6 +4832,33 @@ export function EmulatorPlayer({
             <span data-testid="detect-notice" className="truncate text-brand-hover" title={notice}>
               {notice}
             </span>
+          )}
+          {ndsPerformanceSuggestion && (
+            <div role="status" className="flex min-w-0 items-center gap-1.5 text-brand-hover">
+              <span className="truncate" title={fmt(t.player.ndsPerformanceSlow, { fps: String(ndsPerformanceSuggestion.fps) })}>
+                {fmt(t.player.ndsPerformanceSlow, { fps: String(ndsPerformanceSuggestion.fps) })}
+              </span>
+              <button
+                type="button"
+                className="shrink-0 rounded-md border border-line px-2 py-1 text-xs hover:text-fg"
+                onClick={() => {
+                  const saved = rememberNdsPerformanceCore(ndsPerformanceSuggestion.game)
+                  setNdsPerformanceSuggestion(null)
+                  setNotice(saved ? t.player.ndsPerformanceSaved : t.player.ndsPerformanceRememberFailed)
+                }}
+              >
+                {t.player.ndsPerformanceNextLaunch}
+              </button>
+              <button
+                type="button"
+                aria-label={t.common.close}
+                title={t.common.close}
+                className="shrink-0 rounded px-1 text-muted hover:text-fg"
+                onClick={() => setNdsPerformanceSuggestion(null)}
+              >
+                ×
+              </button>
+            </div>
           )}
         </div>
 

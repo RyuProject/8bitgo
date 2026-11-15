@@ -1640,3 +1640,10 @@ const it: Translation = {
 }
 
 export default it
+    ndsPerformanceSlow: 'Rilevati rallentamenti persistenti (circa {fps} FPS). Questo core NDS non ha una regolazione della qualità in gioco verificata, quindi la partita corrente continuerà.',
+    ndsPerformanceNextLaunch: 'Prova DeSmuME al prossimo avvio',
+    ndsPerformanceSaved: 'DeSmuME è memorizzato per il prossimo avvio. La partita non è stata riavviata; salva nel gioco prima di cambiare, perché ogni core conserva salvataggi separati.',
+    ndsPerformanceRememberFailed: 'Il browser non ha potuto memorizzare la scelta del core. Seleziona DeSmuME manualmente e salva nel gioco prima di cambiare.',
+    ndsPerformanceCoreStarted: 'È in corso la prova del core DeSmuME. Se i rallentamenti continuano, il core confermerà ogni modifica al salto dei fotogrammi prima di applicarla. I salvataggi sono separati per core.',
+    ndsFrameskipApplied: 'Il core ha confermato il salto fotogrammi {value}; il gioco non è stato riavviato. L’immagine potrebbe risultare meno fluida.',
+    ndsPerformanceExhausted: 'I rallentamenti continuano (circa {fps} FPS) e il core non ha un altro livello di salto fotogrammi che possa confermare. Salva nel gioco prima di ridurre la risoluzione 3D interna e riavviare.',

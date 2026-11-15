@@ -1666,3 +1666,10 @@ export const zhHans = {
 }
 
 export default zhHans
+    ndsPerformanceSlow: '检测到持续掉帧（约 {fps} FPS）。当前 NDS 核心没有已确认的运行中降档项；本局会继续运行。',
+    ndsPerformanceNextLaunch: '下次尝试 DeSmuME',
+    ndsPerformanceSaved: '已记住下次开局尝试 DeSmuME。本局没有重启；切换核心前请先在游戏内存档，各核心的存档彼此独立。',
+    ndsPerformanceRememberFailed: '浏览器没有保存下次核心偏好，请手动选择 DeSmuME；切换前先在游戏内存档。',
+    ndsPerformanceCoreStarted: '已启动 DeSmuME 性能试用核心；若持续掉帧，会在核心确认后逐级启用帧跳。不同核心的存档彼此独立。',
+    ndsFrameskipApplied: '核心已确认帧跳调整为 {value}；本局没有重启，画面可能变得不连续。',
+    ndsPerformanceExhausted: '持续掉帧（约 {fps} FPS），核心没有可确认的下一档帧跳设置。请先在游戏内存档，再考虑降低 3D 内部分辨率并重启。',
