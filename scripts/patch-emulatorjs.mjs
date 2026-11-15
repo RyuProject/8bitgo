@@ -276,6 +276,21 @@ const BODY_READ_DIAGNOSTICS_TO =
 const ARRAYBUFFER_BLOB_FROM = 'const s=new Blob(n),o=await s.arrayBuffer();Z=new Uint8Array(o)'
 const ARRAYBUFFER_BLOB_TO =
   'Z=new Uint8Array(i);let __8bgOffset=0;for(const __8bgChunk of n){Z.set(__8bgChunk,__8bgOffset);__8bgOffset+=__8bgChunk.byteLength}'
+/**
+ * 流读取本身失败时改走 XHR arraybuffer 再取一次（2026-11-15，华为浏览器 17 / Android 12《节奏天国》后续防线）。
+ * 上一节去掉了 Blob 往返；若这类浏览器连 `ReadableStream.read()` 也读不出（NotReadableError），XHR 的
+ * arraybuffer 响应既不走流也不走 Blob，是最后一条与 fetch 读法不同的路。只对没有请求体（GET）且不是我们自己
+ * 20 秒失速中止的下载回退一次；回退请求同样 20 秒无进度就中止，失败原样交回引擎（适配器按原规则处理）。
+ */
+const BODY_READ_FALLBACK_TO =
+  'try{for(;;){__8bgArm();const{done:s,value:o}=await e.read();if(s)break;n.push(o),i+=o.length,r&&t&&r("downloading",Math.floor(i/t*100),i,t)}}catch(__8bgReadError){console.warn("[EJS Download] response stream read failed",__8bgReadError);' +
+  'if(f.signal.aborted||o)throw __8bgReadError;clearTimeout(__8bgStall);console.warn("[EJS Download] 改用 XHR arraybuffer 重新下载："+S);' +
+  'const __8bgBuf=await new Promise((__8bgOk,__8bgFail)=>{const __8bgX=new XMLHttpRequest;let __8bgXT=0;const __8bgXArm=()=>{clearTimeout(__8bgXT),__8bgXT=setTimeout(()=>{console.warn("[EJS Download] XHR 20 秒没有新数据，中止："+S),__8bgX.abort()},2e4)};' +
+  '__8bgX.open("GET",y.url),__8bgX.responseType="arraybuffer";try{s&&new Headers(s).forEach((__8bgV,__8bgK)=>__8bgX.setRequestHeader(__8bgK,__8bgV))}catch(__8bgH){}' +
+  '__8bgX.onprogress=__8bgE=>{__8bgXArm(),r&&__8bgE.lengthComputable&&r("downloading",Math.floor(__8bgE.loaded/__8bgE.total*100),__8bgE.loaded,__8bgE.total)};' +
+  '__8bgX.onload=()=>{clearTimeout(__8bgXT),__8bgX.status>=200&&__8bgX.status<300&&__8bgX.response?__8bgOk(__8bgX.response):__8bgFail(new Error("XHR fallback HTTP "+__8bgX.status))};' +
+  '__8bgX.onerror=()=>{clearTimeout(__8bgXT),__8bgFail(new Error("XHR fallback network error after "+__8bgReadError))};__8bgX.onabort=()=>{clearTimeout(__8bgXT),__8bgFail(new Error("XHR fallback stalled after "+__8bgReadError))};' +
+  '__8bgXArm(),__8bgX.send()});console.warn("[EJS Download] XHR arraybuffer 重新下载成功："+S+" "+__8bgBuf.byteLength+" 字节");n=[new Uint8Array(__8bgBuf)],i=__8bgBuf.byteLength}finally{clearTimeout(__8bgStall)}'
 const CACHE_PUT_FROM = '!1===u&&await this.storageCache.put(n),c(n)'
 const CACHE_PUT_TO =
   '!1===u&&await Promise.race([this.storageCache.put(n).catch(t=>console.warn("[EJS Cache] put failed",t)),' +
@@ -507,6 +522,14 @@ const GROUPS = [
     ],
   },
   {
+    name: '核心响应流读失败改走 XHR',
+    patches: [[BODY_READ_DIAGNOSTICS_TO, BODY_READ_FALLBACK_TO]],
+    hint: [
+      '在「核心响应直接拼接 Uint8Array」那段 catch 里：只对无请求体（o 为空）、非失速中止的下载，用 XHR arraybuffer 重下一次，',
+      '结果写回分块数组 n 与总长 i，后面的 Uint8Array 拼接照常。',
+    ],
+  },
+  {
     name: '引擎缓存读写有时限',
     patches: [
       [CACHE_PUT_FROM, CACHE_PUT_TO],
@@ -580,7 +603,8 @@ const GROUPS = [
 
 // 被后面各节在原地改写过的补丁：值是所有更新的写法
 const SUPERSEDED = new Map([
-  [BODY_READ_TO, [BODY_READ_DIAGNOSTICS_TO]],
+  [BODY_READ_TO, [BODY_READ_DIAGNOSTICS_TO, BODY_READ_FALLBACK_TO]],
+  [BODY_READ_DIAGNOSTICS_TO, [BODY_READ_FALLBACK_TO]],
   [CACHE_GET_TO, [CACHE_GET_DEAD_TO, CACHE_GET_CLEAR_TO]],
   [CACHE_PUT_TO, [CACHE_PUT_DEAD_TO, CACHE_PUT_CLEAR_TO]],
   [CACHE_GET_DEAD_TO, [CACHE_GET_CLEAR_TO]],
