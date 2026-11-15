@@ -385,6 +385,20 @@ export function GameDetailPage() {
   const supportedLangs = Array.from(
     new Set(romLangs.map((l) => romLanguageLabel(l))),
   ).join(' · ')
+  const titleInfo: { key: string; icon: string; label: string; to?: string }[] = [
+    { key: 'platform', icon: platform.icon, label: platformLabel(t, platform.id, platform.name), to: `/platforms/${platform.id}` },
+    {
+      key: 'players',
+      icon: effectiveMultiplayer ? '👥' : '🎮',
+      label: effectiveMultiplayer ? t.game.badgeMultiplayer : t.game.badgeSinglePlayer,
+    },
+    {
+      key: 'language',
+      icon: '🌐',
+      label: romLangs.includes(lang) ? t.game.badgeLanguageYes : t.game.badgeLanguageNo,
+    },
+    ...(rom.status === 'found' ? [{ key: 'instant-play', icon: '⚡', label: t.common.instantPlay }] : []),
+  ]
 
   return (
     <div className="container-x py-6 sm:py-8">
@@ -544,26 +558,32 @@ export function GameDetailPage() {
                 <h1 className="text-2xl font-extrabold tracking-tight sm:text-3xl">{seoTitle}</h1>
                 {seoTitle !== game.title && <p className="mt-1 text-sm text-muted">{game.title}</p>}
                 <div className="mt-3 flex flex-wrap items-center gap-2">
-                  <Link to={`/platforms/${platform.id}`}>
-                    <Badge tone="brand" className="text-xs">
-                      {platform.icon} {platformLabel(t, platform.id, platform.name)}
-                    </Badge>
-                  </Link>
                   {game.genres.map((id) => (
                     <Link key={id} to={`/genres/${id}`}>
-                      <Badge className="text-xs">
+                      <Badge tone="brand" className="text-xs">
                         {genreMap[id]?.icon} {genreLabel(t, id, genreMap[id]?.name ?? id)}
                       </Badge>
                     </Link>
                   ))}
-                  {rom.status === 'found' && <Badge tone="online" className="text-xs">{t.common.instantPlay}</Badge>}
-                  <Badge tone="online" className="text-xs">
-                    {effectiveMultiplayer ? t.game.badgeMultiplayer : t.game.badgeSinglePlayer}
-                  </Badge>
-                  <Badge tone={romLangs.includes(lang) ? 'brand' : 'neutral'} className="text-xs">
-                    {romLangs.includes(lang) ? t.game.badgeLanguageYes : t.game.badgeLanguageNo}
-                  </Badge>
                   {game.adult && <Badge tone="live" className="text-xs">{t.game.badgeAdult}</Badge>}
+                </div>
+                <div className="mt-2 flex flex-wrap items-center text-xs leading-5 text-muted sm:text-sm">
+                  {titleInfo.map((item, index) => (
+                    <span key={item.key} className="inline-flex items-center whitespace-nowrap">
+                      {item.to ? (
+                        <Link to={item.to} className="inline-flex items-center whitespace-nowrap hover:text-fg">
+                          <span aria-hidden className="mr-1.5">{item.icon}</span>{item.label}
+                        </Link>
+                      ) : (
+                        <span className="inline-flex items-center whitespace-nowrap">
+                          <span aria-hidden className="mr-1.5">{item.icon}</span>{item.label}
+                        </span>
+                      )}
+                      {index < titleInfo.length - 1 && (
+                        <span aria-hidden className="mx-2 text-dim">·</span>
+                      )}
+                    </span>
+                  ))}
                 </div>
               </div>
               {FEATURES.ratings && <GameRatingBadge gameSlug={game.slug} />}
