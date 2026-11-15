@@ -19,6 +19,8 @@ const {
   isReadyJsdosBundleBlob,
   makeJsdosBundle,
   makePc98FdiBundle,
+  pickExecutable,
+  exeFormat,
   makeWindowsGameLayer,
   buildDosboxConf,
   mergeExtraFiles,
@@ -549,7 +551,12 @@ console.log('\n── 同一游戏中文先挂 CUE，免 CD 英文直接启动 �
   ok(chineseBytes.includes('mount c .\nc:\n' + commands + '\nHEROES2.EXE'), '⭐ 中文 autoexec 在启动程序前挂光盘，使用 ZIP 内相对路径')
   const english = await makeJsdosBundle('heroes.zip', archive, undefined, undefined, 'HEROES2.EXE')
   const englishBytes = new TextDecoder().decode(await english.blob.arrayBuffer())
-  ok(englishBytes.includes('mount c .\nc:\nHEROES2.EXE') && !englishBytes.includes('imgmount d'), '⭐ 英文槽没有挂盘命令，直接运行程序')
+  // 2026-11-15 起没填挂盘命令的槽会自动挂包里那张盘；免 CD 版多一个 D: 不影响启动
+  ok(
+    englishBytes.includes('mount c .\nc:\nimgmount d CD/HEROES2_fixed.cue -t iso\nHEROES2.EXE')
+      && !englishBytes.includes('-t cdrom'),
+    '⭐ 英文槽没填挂盘命令时自动挂包里唯一那张盘，再运行程序',
+  )
   await throwsWith(
     () => makeJsdosBundle('heroes.zip', makeZip([{ name: 'HEROES2.EXE', data: EXE }]), undefined, undefined, 'HEROES2.EXE', commands),
     /找不到挂载命令指定的 CUE/,
@@ -568,6 +575,118 @@ console.log('\n── 同一游戏中文先挂 CUE，免 CD 英文直接启动 �
     /找不到 CUE 引用的音轨文件/,
     '⭐ CUE 引用的 BIN 不在 ZIP 时提前报出文件名',
   )
+}
+
+console.log('\n── 包里光盘镜像自动挂载（2026-11-15）──')
+{
+  const confOf = async (bundle) => new TextDecoder().decode(await bundle.blob.arrayBuffer())
+  // 雷神之锤：cue 写小写 track01.iso，包里是 Track01.iso；第 3 轨不在包里
+  const quake = await makeJsdosBundle('quake.zip', makeZip([
+    { name: 'QUAKE.EXE', data: EXE },
+    { name: 'CD/QUAKE.cue', data: te.encode('FILE "track01.iso" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\nFILE "track02.ogg" MP3\n  TRACK 02 AUDIO\n    INDEX 01 00:00:00\nFILE "track03.ogg" MP3\n  TRACK 03 AUDIO\n    INDEX 01 00:00:00\n') },
+    { name: 'CD/Track01.iso', data: EXE },
+    { name: 'CD/Track02.ogg', data: EXE },
+  ]), undefined, undefined, 'QUAKE.EXE')
+  const quakeText = await confOf(quake)
+  ok(quakeText.includes('c:\nimgmount d CD/QUAKE.8bitgo.cue -t iso\nQUAKE.EXE'), '⭐ 只有一张 cue 时自动挂成 D:，挂载在启动程序之前')
+  ok(quakeText.includes('FILE "Track01.iso" BINARY') && quakeText.includes('FILE "Track02.ogg" MP3'), '⭐ cue 里的文件名改成包内真实大小写（宿主文件系统区分大小写）')
+  const generatedCue = await readZipFile(await quake.blob.arrayBuffer(), 'CD/QUAKE.8bitgo.cue')
+  const generatedText = new TextDecoder().decode(generatedCue?.data ?? new Uint8Array())
+  ok(
+    generatedText.includes('TRACK 02') && !/track03\.ogg/i.test(generatedText) && !generatedText.includes('TRACK 03'),
+    '⭐ 包里没有的音轨整段删掉，免得整张盘挂载失败',
+  )
+
+  // 凯撒 II / 竞技场：CloneCD 只有 .ccd + .img，按 [TRACK n] 生成 cue；路径带空格时才加引号
+  const ccd = '[CloneCD]\nVersion=3\n[Entry 3]\nPoint=0x01\n[TRACK 1]\nMODE=1\nINDEX 1=0\n'
+  const caesar = await makeJsdosBundle('caesar.zip', makeZip([
+    { name: 'C2/PS.EXE', data: EXE },
+    { name: 'C2/cd/Caesar II.ccd', data: te.encode(ccd) },
+    { name: 'C2/cd/Caesar II.img', data: EXE },
+  ]), undefined, undefined, 'C2/PS.EXE')
+  const caesarText = await confOf(caesar)
+  ok(caesarText.includes('imgmount d "C2/cd/Caesar II.8bitgo.cue" -t iso'), '⭐ .ccd + .img 自动挂载，带空格的路径加引号')
+  ok(caesarText.includes('FILE "Caesar II.img" BINARY\r\n  TRACK 01 MODE1/2352\r\n    INDEX 01 00:00:00'), '⭐ 由 CCD 生成和竞技场同格式的 MODE1/2352 cue')
+
+  const twoDiscs = await makeJsdosBundle('two.zip', makeZip([
+    { name: 'GAME.EXE', data: EXE },
+    { name: 'DISC1.ISO', data: EXE },
+    { name: 'DISC2.ISO', data: EXE },
+  ]), undefined, undefined, 'GAME.EXE')
+  ok(!(await confOf(twoDiscs)).includes('imgmount'), '多张盘认不出该挂哪张，不自动挂')
+  const brokenCue = await makeJsdosBundle('broken.zip', makeZip([
+    { name: 'GAME.EXE', data: EXE },
+    { name: 'GAME.CUE', data: te.encode('FILE "MISSING.BIN" BINARY\n') },
+  ]), undefined, undefined, 'GAME.EXE')
+  ok(!(await confOf(brokenCue)).includes('imgmount'), '数据轨不在包里就不挂，游戏照旧启动')
+  const dataImg = await makeJsdosBundle('data.zip', makeZip([
+    { name: 'GAME.EXE', data: EXE },
+    { name: 'PIC/BAR.IMG', data: EXE },
+    { name: 'INSTALL.BIN', data: EXE },
+  ]), undefined, undefined, 'GAME.EXE')
+  ok(!(await confOf(dataImg)).includes('imgmount'), '游戏自己的 .IMG / .BIN 数据文件不当成光盘')
+  const admin = await makeJsdosBundle('quake.zip', makeZip([
+    { name: 'QUAKE.EXE', data: EXE },
+    { name: 'GAME.ISO', data: EXE },
+  ]), undefined, undefined, 'QUAKE.EXE', 'imgmount e GAME.ISO -t iso')
+  const adminText = await confOf(admin)
+  ok(adminText.includes('imgmount e GAME.ISO') && !adminText.includes('imgmount d'), '后台填了挂盘命令就完全按后台的来')
+}
+
+console.log('\n── 启动程序识别看文件内容（2026-11-15 线上普查）──')
+{
+  const bat = (text) => te.encode(text)
+  const mz = (sig) => {
+    const head = new Uint8Array(0x90)
+    head[0] = 0x4d; head[1] = 0x5a
+    new DataView(head.buffer).setUint16(0x18, 0x40, true)
+    new DataView(head.buffer).setUint32(0x3c, 0x80, true)
+    head.set(te.encode(sig), 0x80)
+    return head
+  }
+  ok(exeFormat(mz('PE')) === 'PE' && exeFormat(mz('LE')) === 'LE', 'MZ 新式头识别 PE / LE')
+  ok(exeFormat(te.encode('MZ' + '\0'.repeat(0x40))) === undefined, '老式 EXE（重定位表偏移 < 0x40）没有新式头')
+  ok(
+    pickExecutable([{ name: 'HEROES.EXE', size: 1218871 }, { name: 'SVIEW.EXE', size: 12442 }, { name: 'README.BAT', size: 35, content: bat('sview.exe readme.txt') }], 'heroes-of-might-and-magic-a-strategic-quest.en.zip') === 'HEROES.EXE',
+    '⭐ 英雄无敌 1：看说明文档的 SVIEW.EXE 不再赢过 1.2MB 的 HEROES.EXE',
+  )
+  ok(
+    pickExecutable([
+      { name: 'S.BAT', size: 58, content: bat('ipxnet disconnect\r\nipxnet stopserver\r\nipxnet startserver\r\n') },
+      { name: 'C.BAT', size: 57, content: bat('ipxnet disconnect\r\nipxnet stopserver\r\nipxnet connect %1\r\n') },
+      { name: 'HOSPITAL.EXE', size: 1773047, format: 'LE' },
+      { name: 'WINMAIN.EXE', size: 1291264, format: 'PE' },
+    ], 'theme-hospital.zh-Hant.zip') === 'HOSPITAL.EXE',
+    '⭐ 主题医院：只跑 ipxnet 的 BAT 不算启动脚本，Windows 版 WINMAIN.EXE 不能选',
+  )
+  ok(
+    pickExecutable([{ name: 'CW.EXE', size: 83840 }, { name: 'FIXIT.BAT', size: 47, content: bat('debug<inp1\r\ndebug<inp2 ibmdos.com\r\ndebug<inp3\r\n') }, { name: 'IBMDOS.COM', size: 6400 }], 'castle-wolfenstein.en.zip') === 'CW.EXE',
+    '⭐ Castle Wolfenstein：debug 打补丁脚本和 DOS 系统文件都不是入口',
+  )
+  ok(
+    pickExecutable([
+      { name: 'KOEI.COM', size: 694, content: te.encode('\0FMDRV.COM\0OPEN.EXE\0MAIN.EXE\0END.EXE\0') },
+      { name: 'OPEN.EXE', size: 47833 }, { name: 'FMDRV.COM', size: 20736 }, { name: 'MAIN.EXE', size: 228698 }, { name: 'END.EXE', size: 77065 },
+    ], '三国志3.zip') === 'KOEI.COM',
+    '⭐ 三国志 III：引用了包内多个程序的小 COM 是启动器，结局动画 END.EXE 不是入口',
+  )
+  ok(
+    pickExecutable([{ name: 'PARK.BAT', size: 60, content: bat(':START\r\n@intro.exe\r\n@main /l0\r\n') }, { name: 'MAIN.EXE', size: 1500000, format: 'LE' }, { name: 'INTRO.EXE', size: 400000, format: 'LE' }], 'theme-park.zip') === 'PARK.BAT',
+    '⭐ 调用了包内程序的 BAT 仍然优先于大主程序（主题公园）',
+  )
+  ok(
+    pickExecutable([{ name: 'PLAY.BAT', size: 36, content: bat('@ECHO OFF\r\nrem call showtit.bat\r\nz\r\n') }, { name: 'PLAY4MB.BAT', size: 56, content: bat('@ECHO OFF\r\nset dos4gvm=@swap.vmc\r\ncall showtit.bat\r\nz\r\n') }, { name: 'Z.COM', size: 413 }, { name: 'SHOWTIT.BAT', size: 25, content: bat('@G:flivwav G:tit2 G:tit\r\n') }], 'jin.zip') === 'PLAY.BAT',
+    '⭐ 单字母程序（Z.COM）在行首当命令也算调用',
+  )
+  ok(
+    pickExecutable([{ name: 'RA.EXE', size: 1656 }, { name: 'RUNMAP.EXE', size: 97792 }, { name: 'RA95.EXE', size: 2181632, format: 'PE' }, { name: '_SETUP.EXE', size: 706371 }], 'ra.zip') === 'RA.EXE',
+    '⭐ 红警：几百 KB 的工具不能靠大小赢过 1.6KB 的启动壳，_SETUP 也是安装程序',
+  )
+  ok(
+    pickExecutable([{ name: 'ARENA.BAT', size: 108, content: bat('@SET ARENADATA=C:\\ESARENA\r\n@D:\r\n@ACD -Ssbpdig.adv\r\n') }, { name: 'SETUP.EXE', size: 1000 }], 'arena.zip') === 'ARENA.BAT',
+    '会切到光盘 D: 的 BAT 不因为「没调用包内程序」被扣分',
+  )
+  ok(pickExecutable(['DOOM.EXE', 'SETUP.EXE'], 'doom.zip') === 'DOOM.EXE', '只给名字时仍按旧规则打分')
 }
 
 console.log('\n── 自带 dosbox.conf 的 .jsdos 包不能吞掉后台配置 ──')

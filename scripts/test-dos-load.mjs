@@ -120,9 +120,9 @@ check('restartSession 走 canRestartInPlace 判定，没有另写一份', () => 
 })
 
 /*
-  「哪些会话不能重挂引擎」这个判断，播放器里有**四处**要用：工具栏重开、加载失败后的
-  自动重试、ROM 迁移期间切备用文件（这两处在 onError 里），以及 NDS 新核心 WASM 崩溃后
-  切兼容核心（onCoreCrash）。四处必须是同一份。
+  「哪些会话不能重挂引擎」这个判断，播放器里有六处要用：工具栏重开、加载失败后的自动重试、
+  ROM 迁移期间切备用文件、GBA table trap 后清缓存重取、NDS 新核心崩溃后切兼容核心、
+  FBNeo 内存不足后切低内存核心。六处必须是同一份。
 
   以前自动重试那儿手写着 `!session.netplay && !session.cloud && !session.live`。
   留着它才是真正的风险：以后新增一种「游戏不在本机跑」的会话，
@@ -131,8 +131,10 @@ check('restartSession 走 canRestartInPlace 判定，没有另写一份', () => 
 */
 check('自动重试和读档共用同一份会话判断，没有第二份手写的', () => {
   const hits = player.match(/canRestartInPlace\(session\)/g) ?? []
-  assert.equal(hits.length, 4, `canRestartInPlace(session) 用了 ${hits.length} 处，应该是重开 + 自动重试 + ROM 故障切换 + NDS 崩溃换核心四处`)
+  assert.equal(hits.length, 6, `canRestartInPlace(session) 用了 ${hits.length} 处，应该是重开、自动重试、两类 ROM 故障恢复、NDS 与 FBNeo 核心回退六处`)
   assert.match(player, /ndsCrashFallbackCore\(crashedCore, canRestartInPlace\(session\)/)
+  assert.match(player, /fbneoMemoryFallbackCore\([^\n]*canRestartInPlace\(session\)/)
+  assert.match(player, /isRomPackUrl\(session\.game\)[\s\S]{0,100}?canRestartInPlace\(session\)/)
   assert.match(player, /typeof session\.game === 'string'[\s\S]{0,160}?canRestartInPlace\(session\)/)
   // 2026-10 起中间多了一道「重试也没用」的判断（配置错误、确定性错误），会话判断仍须走 canRestartInPlace
   assert.match(player, /if \(!ready && (?:!retryUseless && )?canRestartInPlace\(session\) && attempt < AUTO_RETRY_LIMIT\)/)
@@ -376,6 +378,24 @@ check('兼容表按目录 slug 查：第二语言版的存档后缀不能让逐�
   assert.match(jsdos, /windowsGameCompatibilityExtras\(\s*compatSlug,/)
   // 存档键仍按语言版隔离
   assert.match(jsdos, /const baseSaveKey = options\.gameSlug \|\| `local:/)
+})
+
+check('普通 DOS / 纯 DOS 流式盘也自动存档，不用玩家再点「保存进度」（2026-11-15）', () => {
+  // 三类会话各自的检查点；Win9x 流式盘中途存扇区不安全，保持手动
+  assert.match(jsdos, /const autoCheckpointKind:[^=]+= fullWindowsGuest\s*\? 'windows'\s*: streamingGame\s*\? \(dosSystemGuest \? 'sockdrive' : null\)\s*: 'files'/)
+  // 计时器不再只给 Windows 客体开
+  assert.match(jsdos, /if \(autoCheckpointKind && saveKey && !autoSaveTimer\)/)
+  assert.doesNotMatch(jsdos, /fullWindowsGuest && typeof ci\.persist === 'function'\) \{[^}]*setInterval/)
+  // 普通 DOS 取的是和「保存进度」同一包；流式盘只取扇区差异
+  assert.match(jsdos, /currentCi\.persistSockdrives\(\)/)
+  assert.match(jsdos, /currentCi\.persist\(true\)/)
+  // 只写浏览器，云端由待同步队列补；内容没变不重复写
+  assert.match(jsdos, /await storeChanges\(changes, 'local'\)/)
+  assert.match(jsdos, /if \(lastPush\?\.ok && sameBytes\(lastBytes, changes\)\) return/)
+  // 切后台、离开页面、拆会话都补一次
+  assert.match(jsdos, /const onAutoSaveHidden = \(\) => \{\s*if \(document\.visibilityState === 'hidden'\) void persistAutoCheckpoint\(\)/)
+  assert.match(jsdos, /const onAutoSavePageHide = \(\) => void persistAutoCheckpoint\(\)/)
+  assert.match(jsdos, /const finalGuestCheckpoint = autoCheckpointKind && ci && saveKey\s*\? persistAutoCheckpoint\(\)/)
 })
 
 check('普通 DOS：引擎壳起来不等于 DOSBox 在跑，8 秒兜底不能提前撤遮罩', () => {

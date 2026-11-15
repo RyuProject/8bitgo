@@ -1657,6 +1657,23 @@ js-dos 运行时从 npm 复制到 `public/jsdos/v<version>/`，版本同时写�
 （2026-11-15《主题公园》）。这类游戏在 `windowsGameCompatibilityDosboxConfig` 里给固定周期（`theme-park` 为
 `cycles=fixed 25000`），后台 `dosbox_config_override` 仍优先；别把全站默认改成 fixed，慢保护模式游戏会被拖垮。
 
+**DOS 三项自动化（2026-11-15，线上 67 款普查后补的）**：
+- **自动存档**：以前只有 Windows 客体每 60 秒做检查点，普通 DOS 要玩家「游戏内存盘 + 点保存进度」两步，漏第二步就丢。
+  现在 `autoCheckpointKind` 决定：`windows`（只取 GAME/ 差异）、`files`（普通 DOS，`ci.persist(true)`，与按钮同一包）、
+  `sockdrive`（纯 DOS 流式盘的扇区差异）；Win9x 流式盘中途存扇区不安全，仍只手动。只写 `'local'`，选了云存档的由待同步队列补传；
+  内容没变不重写。`persist(true)` 会带上开局回放的旧存档层（它解在基础包之后，mtime 晚于 `fsCreatedAt`），不会盖掉旧进度。
+  别改调 `props.save()`：它每次都弹 js-dos 自带的提示。
+- **启动程序识别看文件内容**（`pickExecutable` + `executableCandidates`）：按名打分曾把英雄无敌 1 选成 `SVIEW.EXE`、
+  主题医院繁体选成只跑 `ipxnet` 的 `S.BAT`、Castle Wolfenstein 选成 debug 补丁 `FIXIT.BAT`、三国志 III 选成结局 `END.EXE`。
+  现在：BAT 调用了包内程序 +1、一个没调用又不换盘 -8；引用包内两个以上程序的小 EXE/COM 是启动器 +1.5；PE/NE 头（Windows 程序）-6；
+  ≥512KB 才给大小分。⚠️ 这些分都必须低于「有效 BAT」：第一版大小封顶 +3、启动器 +5，回放时把主题公园 PARK.BAT、
+  英雄无敌 2 START.BAT 全换成了 MAIN.EXE / 编辑器 / 安装程序。改权重前先对线上全部 DOS 包做新旧对比回放。后台配置永远优先。
+- **光盘镜像自动挂载**（`autoDiscMount`）：后台没填挂盘命令、包里认得出唯一一张盘时挂成 D:。cue 的 FILE 名按包内真实大小写改写
+  （宿主文件系统区分大小写，雷神之锤写的是 track01.iso、包里是 Track01.iso），缺的音轨整段删掉，改过就另存 `.8bitgo.cue`；
+  只有 `.ccd + .img` 的 CloneCD（凯撒 II）按 `[TRACK n]` 生成 cue；单个 `.iso` 直接挂；多张盘 / 数据轨缺失不挂。
+  游戏自己的 `.IMG` / `.BIN` 数据文件不算光盘。挂载失败 DOSBox 只打一行错误，游戏照旧启动。
+回归：`npm run test:dos-bundle && npm run test:dos-load`。
+
 普通 DOS 的 EXE / COM / BAT 若不是 8.3 文件名，不能直接在 autoexec 里加引号：DOSBox 那条命令
 不会可靠剥掉，引擎照样报 ready，实际只停在 `C:\>`。`makeJsdosBundle()` 会保留原文件，再在同目录
 补一个真实的 `8BITGO.EXE`（撞名时递增）供启动。ZIP 的绝对路径、盘符和 `../` 也在重打包前拒绝，
@@ -3434,6 +3451,22 @@ SSR 的 `window.__8BITGO__` 注水）改写成 `<随机前缀>-module` / `-text/
 - 根治是 Cloudflare 后台关掉 Rocket Loader（Speed → Optimization → Content Optimization）；`/web/*`
   下独立部署的网页游戏不经过这条模板，开着时仍会被改写（PvZ 的 check 脚本已在拦它的残留）。
 - 回归：`npm run test:rocket-loader`。
+
+### 2.38 浏览器兼容下限：页面 Chrome 64，模拟器运行时 Chrome 80（2026-11-15）
+
+两层下限不一样，别混为一谈：
+
+- **页面**（React、路由、详情页）：`vite.config.ts` 的 `LEGACY_BROWSER_TARGETS`（Chrome 64 / Safari 12 / Firefox 67）。
+  `@vitejs/plugin-legacy` 的运行时检测要求 `import.meta.resolve`（Chrome 105 / Safari 16.4 / Firefox 106），
+  不满足的浏览器自动改走转译好的 legacy 包。2026-11-15 用 Chromium 强制走 legacy 包实测线上《拳皇97》：
+  详情页正常渲染、能开局、FBNeo 起来了。
+- **模拟器运行时**是第三方预编译产物、原样发布，不经过 Vite。acorn 取证的最低语法：EmulatorJS 引擎 ES2020，
+  各核心胶水 ES2022（类字段 + `?.` / `??`），binjgb / js-dos ES2022，Ruffle ES2021 —— 合起来要
+  **Chrome 80 / Safari 14 / Firefox 74**。更老的浏览器页面打得开，点开始后在 iframe / Worker 里静默语法错误，
+  只剩看门狗超时。`src/emulator/browserSupport.ts` 用 `new Function` 探一次（只认 SyntaxError，CSP 的 EvalError 不算）：
+  NES 改走 jsnes（随 Vite 转译），其它运行时在 `begin()` 一开头报 `browserTooOld`，不下载核心和 ROM。
+  核心胶水封在 7z 里、随核心更新，**别去转译它们**；升级引擎 / 核心后跑 `npm run test:browser-support`，
+  它会重新取证，超过 ES2022 就红，提醒改下限和文案。
 
 ## 3. 常用命令
 

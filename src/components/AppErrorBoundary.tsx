@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
+import { newStartupId, recordStartupEvent } from '@/services/startupFunnel'
 
 const CHUNK_RELOAD_PREFIX = '8bitgo.chunk-reload:'
 const CHUNK_RELOAD_COOLDOWN_MS = 60_000
@@ -51,6 +52,36 @@ export function describeRenderError(error: unknown, ua = '', build = ''): string
     .join('\n')
 }
 
+/**
+ * 游戏详情页上的渲染崩溃按一次「启动失败」上报（运行时记 `page`），后台「错误诊断」按错误原文归组。
+ *
+ * 2026-11-15 有人在 Android 模拟器（Chrome 110）里打开《拳皇97》只看到兜底页；同一页在 Chromium 110、
+ * Chrome 134 的 Android 模拟器、强制 legacy 包里都打得开、能开局，猜不出来。这张页面以前只往本机控制台
+ * 打一行，谁也看不到。现在玩家不用截图，下一次出现就能在后台看到错误原文、组件栈和粗粒度浏览器信息
+ * （服务端只存「Chrome 110 / Android 15」，不存完整 UA；地址参数、账号、存档都不上报）。
+ * 只在 /games/<slug> 上报：漏斗按游戏记账，别的页面没有挂靠的游戏。
+ */
+function reportRenderCrash(error: unknown, info: ErrorInfo): void {
+  try {
+    const slug = location.pathname.match(/(?:^|\/)games\/([^/?#]+)/)?.[1]
+    if (!slug) return
+    const components = String(info.componentStack ?? '')
+      .split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 3).join(' < ')
+    const detail = [describeRenderError(error), components && `组件：${components}`, `build: ${currentBuild()}`]
+      .filter(Boolean).join('\n')
+    recordStartupEvent(decodeURIComponent(slug), {
+      visitId: newStartupId(),
+      attemptId: newStartupId(),
+      event: 'failed',
+      runtime: 'page',
+      platform: '',
+      detail,
+    })
+  } catch {
+    /* 上报本身出错也不能影响兜底页 */
+  }
+}
+
 function currentBuild(): string {
   try {
     const src = document.querySelector<HTMLScriptElement>('script[type="module"][src*="/assets/index-"]')?.src ?? ''
@@ -78,7 +109,8 @@ export class AppErrorBoundary extends Component<{ children: ReactNode }, AppErro
 
   componentDidCatch(error: unknown, info: ErrorInfo) {
     console.error('[8bitgo] 页面渲染失败', error, info.componentStack)
-    recoverStaleChunk(error)
+    // 部署切换的旧 chunk 会自动刷新自救，不算故障；其余情况把现场送进后台「错误诊断」
+    if (!recoverStaleChunk(error)) reportRenderCrash(error, info)
   }
 
   render() {
