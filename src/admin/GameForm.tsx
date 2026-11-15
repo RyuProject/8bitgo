@@ -243,7 +243,6 @@ const cloneFlashControls = (value: NonNullable<Game['flashControls']>): NonNulla
 interface Props {
   /** 传入则为编辑模式 */
   initial?: Game
-  existingSlugs: string[]
   /** 志愿者个人库只能编辑资料，不得借表单触发 R2 上传 / 删除。 */
   personalLibrary?: boolean
   /** 保存期间由父层锁住整张表单，避免请求飞行中继续编辑却被成功回包关闭。 */
@@ -252,13 +251,12 @@ interface Props {
   autoSaveAfterUpload?: boolean
   onMinimizeForUpload?: () => void
   onBackgroundUploadFailure?: (message?: string | null) => void
-  onSubmit: (game: Game) => void | boolean | Promise<void | boolean>
+  onSubmit: (game: Game) => void | boolean | string | Promise<void | boolean | string>
   onCancel: () => void
 }
 
 export function GameForm({
   initial,
-  existingSlugs,
   personalLibrary = false,
   submitting = false,
   autoSaveAfterUpload = false,
@@ -275,6 +273,7 @@ export function GameForm({
   const backgroundSawActivity = useRef(false)
   const backgroundFailureBaseline = useRef(0)
   const backgroundStartedBaseline = useRef(0)
+  const backgroundWaitingForSelectedFile = useRef(false)
   const backgroundSubmitRequested = useRef(false)
   const backgroundFailureReported = useRef(false)
   /** 上传 ROM 得出的“这包还缺哪张盘”只在当前编辑会话提示；真正的绑定要等 CHD 上传成功才入表单。 */
@@ -284,6 +283,7 @@ export function GameForm({
     Object.keys(initial?.roms ?? {}).some((lang) => lang !== 'en'),
   )
   const [tagsText, setTagsText] = useState(initialTagsText)
+  const [backgroundFilePoll, setBackgroundFilePoll] = useState(0)
   const formRef = useRef(form)
   const keywordDescriptions = useMemo(() => ({
     'zh-Hans': form.description ?? '',
@@ -371,10 +371,18 @@ export function GameForm({
     : allRomLangs
 
   const hasUnsavedChanges = () => JSON.stringify({ form, tagsText }) !== initialSnapshot.current
+  // 文件选择后会先做本地校验、识别和覆盖确认，活动账本在这些步骤后才开始计数。
+  // 保存 / 最小化不能只看账本，否则会把仍在预检的文件当成“没有上传任务”。
+  const hasSelectedUploadFiles = () => {
+    const formElement = formElementRef.current
+    return Boolean(formElement && [...formElement.querySelectorAll<HTMLInputElement>('input[type="file"]')]
+      .some((input) => input.files?.length))
+  }
 
   useEffect(() => {
     if (!autoSaveAfterUpload) {
       backgroundSawActivity.current = false
+      backgroundWaitingForSelectedFile.current = false
       backgroundSubmitRequested.current = false
       backgroundFailureReported.current = false
     }
@@ -397,7 +405,31 @@ export function GameForm({
       onBackgroundUploadFailure?.('后台上传或转码失败，已恢复编辑。')
       return
     }
-    // 点击“后台上传并保存”时可能还在本机校验 / 打包；等第一项任务真正开始后再判断空闲。
+    // 本地预检没有计入活动账本；选中的文件还在时轮询，等预检结束并进入上传账本。
+    if (hasSelectedUploadFiles()) {
+      backgroundSawActivity.current = true
+      let timer = 0
+      const pollSelectedFile = () => {
+        const current = getUploadActivity()
+        if (current.active.length || current.started > backgroundStartedBaseline.current || !hasSelectedUploadFiles()) {
+          // 文件选择本身不会触发账本通知；只在预检结束 / 任务开始时重读一次表单。
+          setBackgroundFilePoll((value) => value + 1)
+          return
+        }
+        timer = window.setTimeout(pollSelectedFile, 250)
+      }
+      timer = window.setTimeout(pollSelectedFile, 250)
+      return () => window.clearTimeout(timer)
+    }
+    // 用户选择了文件，但预检 / 确认后没有启动任何任务，不能把旧表单当作上传结果提交。
+    if (backgroundWaitingForSelectedFile.current && uploadActivity.started <= backgroundStartedBaseline.current) {
+      backgroundWaitingForSelectedFile.current = false
+      backgroundSawActivity.current = false
+      setError('文件没有进入上传流程；请查看文件校验提示并重新选择，游戏资料未自动保存。')
+      onBackgroundUploadFailure?.('文件没有进入上传流程，已恢复编辑。')
+      return
+    }
+    backgroundWaitingForSelectedFile.current = false
     if (!backgroundSawActivity.current) return
     const timer = window.setTimeout(() => {
       if (getUploadActivity().active.length) return
@@ -406,7 +438,7 @@ export function GameForm({
       formElementRef.current?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     }, 1500)
     return () => window.clearTimeout(timer)
-  }, [autoSaveAfterUpload, uploadActivity, onBackgroundUploadFailure])
+  }, [autoSaveAfterUpload, uploadActivity, onBackgroundUploadFailure, backgroundFilePoll])
 
   useEffect(() => {
     if (!autoSaveAfterUpload || !backgroundSubmitRequested.current || !error) return
@@ -436,8 +468,8 @@ export function GameForm({
 
   const requestCancel = () => {
     if (submitting || romDeleteBusy) return
-    if (getUploadActivity().active.length) {
-      setError('上传或转码仍在进行中；请先缩小窗口让任务在后台完成，或等任务结束后再关闭。')
+    if (getUploadActivity().active.length || hasSelectedUploadFiles()) {
+      setError('文件仍在校验、上传或转码；请先缩小窗口让任务在后台完成，或等任务结束后再关闭。')
       return
     }
     if (hasUnsavedChanges() && !window.confirm('还有未保存的修改，确定放弃吗？')) return
@@ -448,7 +480,10 @@ export function GameForm({
     const activity = getUploadActivity()
     backgroundFailureBaseline.current = activity.failures
     backgroundStartedBaseline.current = activity.started
-    backgroundSawActivity.current = activity.active.length > 0
+    const hasSelectedFiles = hasSelectedUploadFiles()
+    backgroundWaitingForSelectedFile.current = hasSelectedFiles && activity.active.length === 0
+    // 没有待处理文件时，点击“上传并保存”本身就是保存当前草稿的请求。
+    backgroundSawActivity.current = true
     backgroundSubmitRequested.current = false
     backgroundFailureReported.current = false
     setError(null)
@@ -871,8 +906,8 @@ export function GameForm({
   const submit = (e: FormEvent) => {
     e.preventDefault()
     if (submitting) return
-    if (getUploadActivity().active.length) {
-      setError('上传或转码仍在进行中；等文件完成后再保存，避免把旧地址写回游戏。')
+    if (getUploadActivity().active.length || hasSelectedUploadFiles()) {
+      setError('文件仍在本地校验、上传或转码；等它完成后再保存，避免把旧地址写回游戏。')
       return
     }
     const slug = slugify(form.slug || form.title)
@@ -881,7 +916,6 @@ export function GameForm({
     if (Object.values(form.descriptionLocalized ?? {}).some((value) => value.length > 4000)) {
       return setError('各语言简介不能超过 4000 个字符')
     }
-    if (!isEdit && existingSlugs.includes(slug)) return setError(`slug「${slug}」已存在，请换一个`)
     if (form.genres.length === 0) return setError('至少选择一个类型')
     const pc98 = form.platform === 'dos' && Boolean(form.dosPc98)
     const windowsGuest = form.platform === 'dos' && form.dosBackend === 'dosboxX' && !pc98 && Boolean(form.dosSystem?.trim())
@@ -1160,6 +1194,12 @@ export function GameForm({
       ),
     }
     void Promise.resolve(onSubmit(gameToSave)).then((saved) => {
+      if (typeof saved === 'string') {
+        backgroundSubmitRequested.current = false
+        setError(saved)
+        if (autoSaveAfterUpload) onBackgroundUploadFailure?.(null)
+        return
+      }
       if (saved === false && autoSaveAfterUpload) {
         backgroundSubmitRequested.current = false
         setError('游戏资料未保存成功，草稿仍保留在编辑器中。')
