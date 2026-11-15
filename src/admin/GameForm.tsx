@@ -1354,7 +1354,7 @@ export function GameForm({
           <h3 className="text-sm font-semibold">平台与运行</h3>
           <p className="mt-1 text-xs text-muted">{platformMap[form.platform]?.name ?? form.platform} 专属选项会按平台自动展开；留空的核心和引擎由播放器按 ROM 特征选择。</p>
         </header>
-      <div className="grid gap-3 sm:grid-cols-2">
+      <div className="grid min-w-0 gap-3 sm:grid-cols-2">
         {form.platform === 'dos' && (
           <>
             <Field label="运行环境">
@@ -1408,7 +1408,7 @@ export function GameForm({
               </p>
             </Field>
             {pc98Form ? (
-              <Field label="PC-98 启动方式" className="col-span-2 sm:col-span-4">
+              <Field label="PC-98 启动方式" className="col-span-full min-w-0">
                 <p className="rounded-lg border border-brand/30 bg-brand/5 px-3 py-2 text-sm text-fg">
                   上传一张 <code>.fdi</code> 软盘镜像即可。播放器会在本地生成 js-dos 启动包，固定以 <code>machine=pc98</code> 挂载到 A: 后启动，不需要填写 EXE、BAT、Windows 系统盘或 Sockdrive。
                 </p>
@@ -1420,7 +1420,7 @@ export function GameForm({
                   onChange={(value) => set('dosSystem', value || undefined)}
                   allowStorage={!personalLibrary}
                 />
-                <Field label="全语言共用流式盘（旧数据兼容，可选）" className="col-span-2">
+                <Field label="全语言共用流式盘（旧数据兼容，可选）" className="col-span-full min-w-0">
                   <input
                     className={cx(inputClass, 'font-mono')}
                     value={form.dosSockdrive ?? ''}
@@ -1494,7 +1494,7 @@ export function GameForm({
             )}
             <Field
               label={`${form.dosBackend === 'dosboxX' ? 'DOSBox-X' : 'DOSBox'} 配置覆盖`}
-              className="col-span-2 sm:col-span-4"
+              className="col-span-full min-w-0"
             >
               <textarea
                 className={cx(inputClass, 'h-44 resize-y py-2 font-mono text-xs leading-5')}
@@ -1555,7 +1555,7 @@ export function GameForm({
             )}
             {/* 整包 qcow2 不可保存；Sockdrive 只持久化改过的扇区，可以安全接回存档入口。 */}
             {(!windowsGuestForm || hasAnySockdrive) && (
-              <Field label="存档提示" className="col-span-2 sm:col-span-4">
+              <Field label="存档提示" className="col-span-full min-w-0">
                 <input
                   className={inputClass}
                   value={form.dosSaveHint ?? ''}
@@ -1573,6 +1573,22 @@ export function GameForm({
         )}
         {form.platform === 'arcade' && (
           <>
+          <div className="col-span-full min-w-0 rounded-xl border border-line bg-surface-2/40 p-3 sm:p-4">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div>
+                <h4 className="text-sm font-semibold">街机专属设置</h4>
+                <p className="mt-1 text-xs text-muted">上传 ROM 后会自动识别核心、BIOS、动作键和联机人数；只在识别不适用或需要特殊兼容时手动调整。</p>
+              </div>
+              <div className="flex flex-wrap gap-1.5 text-[11px]">
+                <span className="rounded-full border border-line bg-surface px-2 py-1 text-muted">
+                  联机人数：{form.playersInferred ? `${form.playersInferred} 人` : '上传后识别'}
+                </span>
+                <span className="rounded-full border border-line bg-surface px-2 py-1 text-muted">
+                  BIOS：{form.arcadeBios || '平台默认'}
+                </span>
+              </div>
+            </div>
+            <div className="mt-3 grid min-w-0 gap-3 sm:grid-cols-2">
           <Field label="街机动作键" hint="手机屏幕只显示游戏真正使用的按钮">
             <select
               className={inputClass}
@@ -1586,14 +1602,14 @@ export function GameForm({
               <option value={6}>6 键</option>
             </select>
           </Field>
-          <Field label="BIOS 包（系统名）" className="col-span-2">
+          <Field label="BIOS 包（系统名）" className="col-span-full min-w-0">
             <input
               className={cx(inputClass, 'font-mono')}
               list="known-arcade-bios"
               value={form.arcadeBios ?? ''}
               onChange={(e) => set('arcadeBios', e.target.value || undefined)}
               spellCheck={false}
-              placeholder="neogeo / pgm / namcoc76"
+              placeholder="自动识别；例如 neogeo / pgm"
             />
             <datalist id="known-arcade-bios">
               {KNOWN_ARCADE_BIOS.map((n) => (
@@ -1601,9 +1617,7 @@ export function GameForm({
               ))}
             </datalist>
             <p className="mt-1 text-[11px] text-dim">
-              核心按 <b>set 名</b>找 BIOS 包：Neo Geo 是 <code>neogeo</code>，IGS PGM 是 <code>pgm</code>，Namco System 11 是 <code>namcoc76</code>（Namco System 12 不需要 BIOS，留空）。
-              上传 ROM 时识别出来的会自动填上；识别不出来（汉化版、驱动表里没有的板子）就在这里手填。
-              留空 = 用平台默认那一份。地址在「ROM 存储 → 街机 BIOS 包」里按系统名绑。
+              上传时会自动匹配；留空使用平台默认 BIOS。只有改版包或识别不到的系统才需要手填，地址在「ROM 存储 → 街机 BIOS 包」里按系统名绑定。
             </p>
             {/*
               手填这条路必须当场告诉人「这个系统还没绑地址」—— 上传那次识别会自动查一遍，
@@ -1622,14 +1636,18 @@ export function GameForm({
               </p>
             )}
           </Field>
-          <details className="col-span-2 rounded-lg border border-line bg-surface-2 px-3 py-2 sm:col-span-4">
+            </div>
+          <details
+            open={Boolean(form.arcadeDip?.trim() || form.arcadeRomData?.trim())}
+            className="mt-3 rounded-lg border border-line bg-surface-2 px-3 py-2"
+          >
             <summary className="cursor-pointer select-none text-xs font-medium text-fg">
               高级兼容设置（仅麻将 DIP、汉化 / 改版 RomData 需要）
             </summary>
             <p className="mt-1 text-[11px] text-dim">
-              普通官方 romset 不需要填写这里。把低频且高风险的设置收起，避免新建条目时误改启动配置。
+              普通官方 romset 不需要填写这里。已有配置会自动展开，避免编辑时漏看。
             </p>
-            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <div className="mt-3 grid min-w-0 gap-3 sm:grid-cols-2">
               <Field label="DIP 开关">
                 <input
                   className={cx(inputClass, 'font-mono')}
@@ -1656,6 +1674,7 @@ export function GameForm({
               </Field>
             </div>
           </details>
+          </div>
           </>
         )}
         {form.platform === 'flash' && (
