@@ -1,6 +1,10 @@
 import { createRoot } from 'react-dom/client'
 import '@/index.css'
+import { installTranslatorDomGuard } from '@/services/translatorDomGuard'
 import { LoadingProgressOverlay } from './LoadingProgressOverlay'
+
+// 这个独立预览入口也会创建 React 根；与正式页面一致，先保护翻译器改写过的 DOM。
+installTranslatorDomGuard()
 
 createRoot(document.getElementById('root')!).render(
   <main className="relative bg-black" style={{ width: '100vw', height: '100vh' }}>

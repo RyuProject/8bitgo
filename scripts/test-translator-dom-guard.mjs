@@ -58,8 +58,8 @@ installTranslatorDomGuard(N.prototype) // 幂等
 }
 console.warn = warn
 
-// 两个入口都必须在首次渲染前装上
-for (const f of ['src/entry-client.tsx', 'src/main.tsx']) {
+// 每个 React 根都必须在首次渲染前装上；含独立预览页，避免它日后重新接入时漏防护。
+for (const f of ['src/entry-client.tsx', 'src/main.tsx', 'src/emulator/loading-progress-qa.tsx']) {
   const s = readFileSync(f, 'utf8')
   const call = s.indexOf('installTranslatorDomGuard()')
   assert.ok(call > 0, `${f} 没装 translatorDomGuard`)
@@ -67,4 +67,7 @@ for (const f of ['src/entry-client.tsx', 'src/main.tsx']) {
 }
 const counts = readFileSync('src/components/layout/SidebarCounts.tsx', 'utf8')
 assert.ok((counts.match(/translate="no"/g) || []).length >= 3, '计数徽标要 translate="no"')
+const card = readFileSync('src/components/game/RoomCard.tsx', 'utf8')
+assert.match(card, /<span translate="no">📡 \{viewers\}<\/span>/, '直播人数要和条件暂停图标隔离')
+assert.match(card, /<span translate="no">\{room\.players\}\/\{max\}<\/span>/, '房间人数要和条件举手图标隔离')
 console.log('translatorDomGuard：全部通过')

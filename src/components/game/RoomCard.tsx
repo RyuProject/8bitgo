@@ -150,7 +150,8 @@ export function RoomCard({ room, compact = false, watchOnly = false }: { room: R
                 ⏸
               </span>
             )}
-            📡 {viewers}
+            {/* 观众数前的暂停图标会动态增删；把数字包起来，避免翻译器移动裸文本后 React 找错插入参照。 */}
+            <span translate="no">📡 {viewers}</span>
           </span>
         ) : (
           <span className={cx('shrink-0 text-[11px] font-semibold', full ? 'text-dim' : 'text-online')}>
@@ -160,7 +161,8 @@ export function RoomCard({ room, compact = false, watchOnly = false }: { room: R
                 👋
               </span>
             )}
-            {room.players}/{max}
+            {/* 举手图标会动态增删；人数独立成节点，翻译器改 DOM 时不让 React 以裸文本作参照。 */}
+            <span translate="no">{room.players}/{max}</span>
             {viewers > 0 && <span className="ml-1 font-normal text-muted">👀 {viewers}</span>}
           </span>
         )}
