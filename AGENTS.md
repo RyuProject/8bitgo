@@ -197,6 +197,10 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
   存储读不出的现场，而 Blob 往返完全多余。响应块已经是 `Uint8Array`，直接按累计字节数分配目标数组并 `set`；流读取本身若仍失败，
   必须把原始异常对象写控制台，以便后续现场确认阶段。引擎核心日志里的 NotReadableError 不能套用 ROM Blob 的恢复：不记 `romBlobBroken`、不标记加速线路坏、
   不自动重下大 ROM；按本机运行环境错误停止并让诊断包保留原因。补丁在 `scripts/patch-emulatorjs.mjs`，构建守卫在 `scripts/check-emulatorjs.mjs`。
+  这两份现场的 Resource Timing 都显示核心 1.3MB 已整份收到（等于 `melondsds-wasm.data` 大小）才报错，更像 Blob 往返那一步；
+  作为第二道防线，流读取本身抛错时（非我们的 20 秒失速中止、无请求体）下载器改用 **XHR arraybuffer** 重取一次——不走流也不走 Blob，
+  控制台出现「改用 XHR arraybuffer 重新下载」。⚠️ 那段代码块里 `t` 被 Content-Length 遮蔽，重取地址必须用 `y.url`。
+  XHR 也失败才 reject，错误带原始 NotReadableError，适配器照旧按本机环境错误停止。回归：`npm run test:ejs-download`。
 
 - **「Cannot allocate Wasm memory」先看是不是 32 位浏览器**（2026-11-11 大陆 Chrome 109 / Windows，8GB、4 核，
   《合金弹头 2》《1941》各一次，核心编译完在 instantiate 时报）。FBNeo 核心起步 128MB、最大 2GB，V8 分配失败会自己
