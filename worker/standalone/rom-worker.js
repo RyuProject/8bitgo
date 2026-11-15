@@ -454,6 +454,62 @@ const PSP_RANGE_BYTES = 2 * 1024 * 1024
 const RANGE_CACHE_PARAM = '__8bg_edge_range'
 const RANGE_CACHE_HEADER = 'X-8BitGo-Stored-Range'
 
+/*
+ * 下载域名（download.8bitgo.com，DNS 不走代理、CNAME 到优选域名）上的明文 ROM 转发。
+ *
+ * 客户端拿开放平台凭据走 /api/open/v1/rom-plain/{grant}，把主机名换成下载域名，
+ * 就能借优选线路取明文。凭据校验、按应用 / 按票 / 按 IP 限流、8BG 解密全部留在源站做，
+ * Worker 只原样转发 —— 访问控制不因为换了域名而变弱，Worker 也不持有 ROM 密钥。
+ *
+ * 只放行这三类路径：其它 /api/* 一律 404。下载域名是给客户端取文件用的，
+ * 不能变成绕开主站 Cloudflare 规则的整站后门（登录、后台、写接口都不该从这里进）。
+ * /api/diag 是主站上本来就公开的只读诊断，留着用来核对源站看到的客户端 IP。
+ *
+ * 不转发 Cookie / Authorization：凭据在 URL 里，带上登录态只会扩大泄露面。
+ * 响应一律不进 Worker 边缘缓存（源站本身回 private, no-store）。
+ */
+const PLAIN_PROXY_PATH = /^\/api\/open\/v1\/(?:rom-plain\/[^/]+|bundle-plain\/[^/]+\/.+)$|^\/api\/diag$/
+const PLAIN_PROXY_FORWARD_HEADERS = [
+  'Range', 'If-Range', 'Origin', 'User-Agent', 'Accept',
+  'Access-Control-Request-Method', 'Access-Control-Request-Headers',
+]
+
+function plainProxyHost(url, env) {
+  const hosts = String(env.PLAIN_PROXY_HOSTS || '').split(',').map((h) => h.trim().toLowerCase()).filter(Boolean)
+  return Boolean(env.PLAIN_PROXY_ORIGIN) && hosts.includes(url.hostname.toLowerCase())
+}
+
+async function proxyPlainDownload(request, env, url, cors) {
+  if (!PLAIN_PROXY_PATH.test(url.pathname)) return json({ error: 'not found' }, cors, 404)
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method)) return methodNotAllowed(cors, 'GET, HEAD, OPTIONS')
+  const origin = new URL(env.PLAIN_PROXY_ORIGIN)
+  const target = new URL(url.pathname + url.search, origin)
+  const headers = new Headers({ 'Accept-Encoding': 'identity' })
+  for (const name of PLAIN_PROXY_FORWARD_HEADERS) {
+    const value = request.headers.get(name)
+    if (value) headers.set(name, value)
+  }
+  // Worker 子请求到源站时 CF-Connecting-IP 会变成 Worker 出口（2026-11-16 实测），
+  // 源站按 IP 的限流就成了全员共用一个额度。带上真实客户端 IP 和共享密钥，源站只在
+  // 密钥对上时才采信（server/src/download-proxy.js）。没配密钥就不带，源站照旧按出口算。
+  const clientIp = request.headers.get('CF-Connecting-IP')
+  if (env.PLAIN_PROXY_SECRET && clientIp) {
+    headers.set('X-8BitGo-Proxy-Key', env.PLAIN_PROXY_SECRET)
+    headers.set('X-8BitGo-Client-IP', clientIp)
+  }
+  // redirect: manual —— 源站若回 302（例如未来改成预签名直链），交给客户端自己跟，
+  // 不在 Worker 里替它跟到别的主机。
+  const upstream = await fetch(target, { method: request.method, headers, redirect: 'manual' })
+  const out = new Headers(upstream.headers)
+  out.set('Cache-Control', 'private, no-store')
+  out.set('X-8BitGo-Plain-Proxy', '1')
+  return new Response(request.method === 'HEAD' ? null : upstream.body, {
+    status: upstream.status,
+    statusText: upstream.statusText,
+    headers: out,
+  })
+}
+
 /**
  * Sockdrive 的版本在路径里而不在查询串里。只把严格版本目录下的固定产物视为不可变，
  * 避免把同目录的说明文件或误上传内容也永久钉进边缘缓存。
@@ -898,6 +954,14 @@ export default {
   async fetch(request, env, context) {
     const cors = corsHeaders(request, env)
     const url = new URL(request.url)
+    // 必须排在边缘缓存之前：明文是按凭据交付的，绝不能被 Cache API 存下来给下一个人。
+    if (plainProxyHost(url, env) && url.pathname.startsWith('/api/')) {
+      try { return await proxyPlainDownload(request, env, url, cors) }
+      catch (error) {
+        console.warn('[plain-proxy] upstream failed', error instanceof Error ? error.message : String(error))
+        return json({ error: 'upstream unavailable' }, cors, 502)
+      }
+    }
     const rangePlan = romRangeCachePlan(request, url, cors)
     let edgeCache = (edgeCacheEligible(request, url, cors) || rangePlan) && context?.waitUntil
       ? globalThis.caches?.default

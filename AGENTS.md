@@ -3516,6 +3516,25 @@ EmulatorJS 引擎日志与加载阶段文字（`diagLog`）、下载器的重试
   （复用 Resend），同一特征 6 小时内不重复，冷却记在 `site_settings` 的 `diag.alert.<特征>`。没配邮箱完全不启用。
   阈值见 `server/.env.example` 的 `DIAG_ALERT_*`。回归：`cd server && npm run test:diag-alert`。
 
+### 2.36.2 download.8bitgo.com：给客户端整包下载用的优选线路（2026-11-16）
+
+DNS 是**不走代理**的 CNAME，指向 BestCF 名单里的 `youxuan.cf.090227.xyz`（CMLiussss 维护，按三网分别解析）。
+流量打到 Cloudflare IP 后照样按 Host 匹配 ROM Worker 的路由 `download.8bitgo.com/*`（实测可行、证书正常）。
+网页不用它：`romHosts.ts` 只认 `assets` / `cn-assets`。
+
+- `/roms/...` 等对象路径与 `assets` 完全一样（同一个 Worker，私有前缀 401、`romv` 校验、Range 边缘缓存都在；边缘缓存按完整 URL，两个域名各存一份）。
+- `/api/open/v1/rom-plain/{grant}`、`/api/open/v1/bundle-plain/{grant}/...`、`/api/diag` 由 Worker 原样转发到源站
+  （`PLAIN_PROXY_HOSTS` / `PLAIN_PROXY_ORIGIN`），凭据校验、限流、8BG 解密都在源站，Worker 不持有 ROM 密钥；
+  其它 `/api/*` 一律 404，不转发 Cookie / Authorization，响应不进边缘缓存。
+- ⚠️ Worker 子请求到源站时 CF-Connecting-IP 是 **Worker 出口**（实测 `2a06:98c0:3600::103`）。Worker 带
+  `X-8BitGo-Client-IP` + 共享密钥，源站只在密钥对上时才采信（`server/src/download-proxy.js`）。两边密钥必须一致：
+  Worker `PLAIN_PROXY_SECRET`（`wrangler secret put`）、源站 `DOWNLOAD_PROXY_SECRET`。核对：`curl https://download.8bitgo.com/api/diag`
+  的 `ip.downloadProxyClientIp` 应是你自己的 IP，为 null 就是密钥没配或对不上。
+- **不做「下载域名直接吐明文」**：那等于把商业 ROM 变成谁都能匿名成批下载的文件。明文只经凭据接口发给授权应用。
+- 明文转码受 `ROM_TRANSCODE_CONCURRENCY`（默认 2）全局并发限制，超额回 503 `server_busy`。
+- 回滚：删掉 `download` 这条 CNAME，域名回落到开代理的 `*.8bitgo.com` 通配记录，Worker 路由照常生效，只是不再走优选 IP。
+- 回归：`npm run test:worker`（`plain-proxy.test.mjs`）、`cd server && npm run test:download-proxy`。
+
 ### 2.37 SSR 页面在 Cloudflare 缓存一天，靠「改内容就清」保证新鲜
 
 源站渲染只要 20～100ms，TTFB 慢在回源：页面原来只在边缘缓存 5 分钟，游戏 × 八语言的长尾页几乎

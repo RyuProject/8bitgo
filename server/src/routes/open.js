@@ -23,6 +23,7 @@ import { take, isMeaningfulIp } from '../rateLimit.js'
 import { assetPublicUrl, publicSiteUrl } from '../site-urls.js'
 import { CACHE } from '../cache.js'
 import { clientIpFrom } from '../presence.js'
+import { trustedProxyClientIp } from '../download-proxy.js'
 import { openConfig } from '../open/config.js'
 import { authenticateApp, readClientCredentials } from '../open/apps.js'
 import { issueAppToken, issueUserToken, verifyOpenToken, OPEN_ACCESS_TTL_SEC } from '../open/tokens.js'
@@ -1069,8 +1070,10 @@ async function redeemRomGrant(req, res, expectedDelivery, { bundle = false } = {
   */
   const byGrant = take(`open:romdl:${req.params.grant}`, bundle ? ROM_BUNDLE_GRANT_MAX_REDEEM : ROM_GRANT_MAX_REDEEM, ROM_GRANT_TTL_SEC * 1000)
   if (!byGrant.ok) { rateLimited(res, byGrant); return null }
-  // 按 IP：挡住「拿一批票从一台机器上刷」。反代没透传真实 IP 时跳过，理由见 anonGate
-  const ip = clientIpFrom(req.ip, req.headers)
+  // 按 IP：挡住「拿一批票从一台机器上刷」。反代没透传真实 IP 时跳过，理由见 anonGate。
+  // 经下载域名转发的请求，CF-Connecting-IP 是 Worker 出口，要用 Worker 带密钥报上来的 IP
+  // （见 download-proxy.js），否则所有下载域名用户共用一个额度。
+  const ip = trustedProxyClientIp(req.headers) || clientIpFrom(req.ip, req.headers)
   if (isMeaningfulIp(ip)) {
     const byIp = take(`open:romdl:ip:${ip}`, bundle ? 600 : 60, 60_000)
     if (!byIp.ok) { rateLimited(res, byIp); return null }

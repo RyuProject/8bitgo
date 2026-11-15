@@ -21,6 +21,7 @@ import { Router } from 'express'
 import { turnHealthSnapshot } from '../turnProbe.js'
 import { sseStats } from '../sseGuard.js'
 import { isAdminRequest } from '../auth.js'
+import { trustedProxyClientIp } from '../download-proxy.js'
 import {
   clientIpFrom,
   countryFromHeaders,
@@ -122,6 +123,11 @@ diagRouter.get('/', async (req, res) => {
        */
       usingCdnEdgeIp: usingEdgeIp,
       trustProxy: String(process.env.TRUST_PROXY ?? 'loopback'),
+      /**
+       * 经 download.8bitgo.com 转发、且共享密钥对上时，ROM 明文接口按这个 IP 限流；
+       * null = 不是转发来的，或密钥没配 / 对不上（那样会按 Worker 出口 IP 算）。
+       */
+      downloadProxyClientIp: trustedProxyClientIp(headers) || null,
     },
     country: {
       /** 按 IP 查离线库的结果 */
