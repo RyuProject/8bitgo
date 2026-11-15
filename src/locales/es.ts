@@ -871,6 +871,13 @@ const es: Translation = {
     runtimeFellBack: 'Esta ROM necesita un núcleo más completo: se cambió a {runtime}',
     ndsCoreFellBack: 'El núcleo NDS falló. Reiniciando con el núcleo compatible; las partidas se guardan por separado',
     ndsCoreFailed: 'El núcleo NDS falló: {reason}',
+    ndsPerformanceSlow: 'Se detectaron fotogramas lentos de forma continua (unos {fps} FPS). Este núcleo NDS no tiene un ajuste de calidad en ejecución verificado, así que la partida actual continuará.',
+    ndsPerformanceNextLaunch: 'Probar DeSmuME la próxima vez',
+    ndsPerformanceSaved: 'DeSmuME se usará como prueba en el próximo inicio. El juego no se reinició; guarda dentro del juego antes de cambiar, porque cada núcleo conserva partidas distintas.',
+    ndsPerformanceRememberFailed: 'El navegador no pudo guardar la elección del próximo núcleo. Elige DeSmuME manualmente y guarda dentro del juego antes de cambiar.',
+    ndsPerformanceCoreStarted: 'Se está probando el núcleo DeSmuME. Si los fotogramas siguen lentos, el núcleo confirmará cada ajuste de salto de fotogramas antes de aplicarlo. Las partidas se guardan por separado.',
+    ndsFrameskipApplied: 'El núcleo confirmó el salto de fotogramas {value}; el juego no se reinició. La imagen puede verse menos fluida.',
+    ndsPerformanceExhausted: 'Los fotogramas siguen lentos (unos {fps} FPS) y el núcleo no tiene otro ajuste de salto que pueda confirmar. Guarda dentro del juego antes de bajar la resolución 3D interna y reiniciar.',
     arcadeHackFound: 'Hack reconocido: {title} (se ejecuta con el driver {driver})',
     arcadeHackNoPlan: 'Se reconoció {title}, pero aún no hay un método de carga que funcione para este paquete.',
     watchHintPick: 'Entras solo para mirar: verás y oirás la partida del anfitrión, pero sin controles. Pulsa «Coger un mando» en la barra cuando quieras jugar.',
@@ -1639,10 +1646,3 @@ const es: Translation = {
 }
 
 export default es
-    ndsPerformanceSlow: 'Se detectaron fotogramas lentos de forma continua (unos {fps} FPS). Este núcleo NDS no tiene un ajuste de calidad en ejecución verificado, así que la partida actual continuará.',
-    ndsPerformanceNextLaunch: 'Probar DeSmuME la próxima vez',
-    ndsPerformanceSaved: 'DeSmuME se usará como prueba en el próximo inicio. El juego no se reinició; guarda dentro del juego antes de cambiar, porque cada núcleo conserva partidas distintas.',
-    ndsPerformanceRememberFailed: 'El navegador no pudo guardar la elección del próximo núcleo. Elige DeSmuME manualmente y guarda dentro del juego antes de cambiar.',
-    ndsPerformanceCoreStarted: 'Se está probando el núcleo DeSmuME. Si los fotogramas siguen lentos, el núcleo confirmará cada ajuste de salto de fotogramas antes de aplicarlo. Las partidas se guardan por separado.',
-    ndsFrameskipApplied: 'El núcleo confirmó el salto de fotogramas {value}; el juego no se reinició. La imagen puede verse menos fluida.',
-    ndsPerformanceExhausted: 'Los fotogramas siguen lentos (unos {fps} FPS) y el núcleo no tiene otro ajuste de salto que pueda confirmar. Guarda dentro del juego antes de bajar la resolución 3D interna y reiniciar.',

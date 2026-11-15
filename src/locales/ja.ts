@@ -860,6 +860,13 @@ const ja: Translation = {
     runtimeFellBack: 'この ROM にはより完全なコアが必要です。{runtime} に切り替えました',
     ndsCoreFellBack: 'NDS コアが停止したため互換コアで再起動します。セーブデータはコアごとに保存されます',
     ndsCoreFailed: 'NDS コアが停止しました：{reason}',
+    ndsPerformanceSlow: '低フレームレートが続いています（約 {fps} FPS）。現在の NDS コアには動作中に変更できることを確認済みの画質設定がないため、このゲームはそのまま続行します。',
+    ndsPerformanceNextLaunch: '次回 DeSmuME を試す',
+    ndsPerformanceSaved: '次回起動時に DeSmuME を試す設定を保存しました。現在のゲームは再起動していません。コアごとにセーブデータが分かれるため、切り替える前にゲーム内でセーブしてください。',
+    ndsPerformanceRememberFailed: 'ブラウザーに次回のコア設定を保存できませんでした。手動で DeSmuME を選び、切り替える前にゲーム内でセーブしてください。',
+    ndsPerformanceCoreStarted: 'DeSmuME の性能を試しています。低フレームレートが続く場合、コアが変更を確認してから段階的にフレームスキップを適用します。セーブデータはコアごとに分かれます。',
+    ndsFrameskipApplied: 'コアがフレームスキップ {value} を確認しました。ゲームは再起動していません。画面が滑らかでなくなる場合があります。',
+    ndsPerformanceExhausted: '低フレームレート（約 {fps} FPS）が続いており、コアが確認できる次のフレームスキップ設定はありません。ゲーム内でセーブしてから、3D 内部解像度を下げて再起動してください。',
     arcadeHackFound: '改造版を認識しました：{title}（{driver} ドライバで実行）',
     arcadeHackNoPlan: '{title} と認識しましたが、この ROM セットに使える読み込み方法がまだないため実行できません。',
     watchHintPick: '観るだけで参加します。ホストの画面と音は届きますが、操作はできません。プレイしたくなったらツールバーの「プレイに加わる」から。',
@@ -1580,10 +1587,3 @@ const ja: Translation = {
 }
 
 export default ja
-    ndsPerformanceSlow: '低フレームレートが続いています（約 {fps} FPS）。現在の NDS コアには動作中に変更できることを確認済みの画質設定がないため、このゲームはそのまま続行します。',
-    ndsPerformanceNextLaunch: '次回 DeSmuME を試す',
-    ndsPerformanceSaved: '次回起動時に DeSmuME を試す設定を保存しました。現在のゲームは再起動していません。コアごとにセーブデータが分かれるため、切り替える前にゲーム内でセーブしてください。',
-    ndsPerformanceRememberFailed: 'ブラウザーに次回のコア設定を保存できませんでした。手動で DeSmuME を選び、切り替える前にゲーム内でセーブしてください。',
-    ndsPerformanceCoreStarted: 'DeSmuME の性能を試しています。低フレームレートが続く場合、コアが変更を確認してから段階的にフレームスキップを適用します。セーブデータはコアごとに分かれます。',
-    ndsFrameskipApplied: 'コアがフレームスキップ {value} を確認しました。ゲームは再起動していません。画面が滑らかでなくなる場合があります。',
-    ndsPerformanceExhausted: '低フレームレート（約 {fps} FPS）が続いており、コアが確認できる次のフレームスキップ設定はありません。ゲーム内でセーブしてから、3D 内部解像度を下げて再起動してください。',

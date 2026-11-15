@@ -922,6 +922,13 @@ export const zhHans = {
     runtimeFellBack: '这份 ROM 需要更完整的模拟核心，已自动切换到 {runtime}',
     ndsCoreFellBack: 'NDS 核心意外退出，已切换兼容核心并重新开始；两种核心的存档分别保存',
     ndsCoreFailed: 'NDS 核心运行失败：{reason}',
+    ndsPerformanceSlow: '检测到持续掉帧（约 {fps} FPS）。当前 NDS 核心没有已确认的运行中降档项；本局会继续运行。',
+    ndsPerformanceNextLaunch: '下次尝试 DeSmuME',
+    ndsPerformanceSaved: '已记住下次开局尝试 DeSmuME。本局没有重启；切换核心前请先在游戏内存档，各核心的存档彼此独立。',
+    ndsPerformanceRememberFailed: '浏览器没有保存下次核心偏好，请手动选择 DeSmuME；切换前先在游戏内存档。',
+    ndsPerformanceCoreStarted: '已启动 DeSmuME 性能试用核心；若持续掉帧，会在核心确认后逐级启用帧跳。不同核心的存档彼此独立。',
+    ndsFrameskipApplied: '核心已确认帧跳调整为 {value}；本局没有重启，画面可能变得不连续。',
+    ndsPerformanceExhausted: '持续掉帧（约 {fps} FPS），核心没有可确认的下一档帧跳设置。请先在游戏内存档，再考虑降低 3D 内部分辨率并重启。',
     arcadeHackFound: '已认出改版包：{title}（借 {driver} 驱动运行）',
     arcadeHackNoPlan: '认出来了：{title}，但这个包还没有可用的加载方案，暂时跑不起来。',
     watchHintPick: '你选的是只看不玩：能看到房主的画面、听到声音，但不参与操作。想上场随时在工具栏点「上场玩」。',
@@ -1666,10 +1673,3 @@ export const zhHans = {
 }
 
 export default zhHans
-    ndsPerformanceSlow: '检测到持续掉帧（约 {fps} FPS）。当前 NDS 核心没有已确认的运行中降档项；本局会继续运行。',
-    ndsPerformanceNextLaunch: '下次尝试 DeSmuME',
-    ndsPerformanceSaved: '已记住下次开局尝试 DeSmuME。本局没有重启；切换核心前请先在游戏内存档，各核心的存档彼此独立。',
-    ndsPerformanceRememberFailed: '浏览器没有保存下次核心偏好，请手动选择 DeSmuME；切换前先在游戏内存档。',
-    ndsPerformanceCoreStarted: '已启动 DeSmuME 性能试用核心；若持续掉帧，会在核心确认后逐级启用帧跳。不同核心的存档彼此独立。',
-    ndsFrameskipApplied: '核心已确认帧跳调整为 {value}；本局没有重启，画面可能变得不连续。',
-    ndsPerformanceExhausted: '持续掉帧（约 {fps} FPS），核心没有可确认的下一档帧跳设置。请先在游戏内存档，再考虑降低 3D 内部分辨率并重启。',

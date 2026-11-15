@@ -873,6 +873,13 @@ const zhHant: Translation = {
     runtimeFellBack: '這份 ROM 需要更完整的模擬核心，已自動切換到 {runtime}',
     ndsCoreFellBack: 'NDS 核心意外退出，已切換相容核心並重新開始；兩種核心的存檔分開保存',
     ndsCoreFailed: 'NDS 核心執行失敗：{reason}',
+    ndsPerformanceSlow: '偵測到持續掉幀（約 {fps} FPS）。目前 NDS 核心沒有已確認可在遊戲中調整的降檔選項；本局會繼續執行。',
+    ndsPerformanceNextLaunch: '下次嘗試 DeSmuME',
+    ndsPerformanceSaved: '已記住下次開局嘗試 DeSmuME。本局不會重啟；切換核心前請先在遊戲內存檔，各核心的存檔分開保存。',
+    ndsPerformanceRememberFailed: '瀏覽器無法記住下次核心選擇。請手動選擇 DeSmuME，並在切換前先於遊戲內存檔。',
+    ndsPerformanceCoreStarted: '已啟動 DeSmuME 效能試用核心；若持續掉幀，會先由核心確認再逐級啟用跳幀。不同核心的存檔分開保存。',
+    ndsFrameskipApplied: '核心已確認將跳幀調整為 {value}；本局沒有重啟，畫面可能會比較不流暢。',
+    ndsPerformanceExhausted: '仍持續掉幀（約 {fps} FPS），核心沒有可確認的下一級跳幀設定。請先在遊戲內存檔，再考慮降低 3D 內部分辨率並重新啟動。',
     arcadeHackFound: '已認出改版包：{title}（借 {driver} 驅動執行）',
     arcadeHackNoPlan: '認出來了：{title}，但這個包還沒有可用的載入方案，暫時跑不起來。',
     watchHintPick: '你選的是只看不玩：能看到房主的畫面、聽到聲音，但不參與操作。想上場隨時在工具列點「上場玩」。',
@@ -1585,10 +1592,3 @@ const zhHant: Translation = {
 }
 
 export default zhHant
-    ndsPerformanceSlow: '偵測到持續掉幀（約 {fps} FPS）。目前 NDS 核心沒有已確認可在遊戲中調整的降檔選項；本局會繼續執行。',
-    ndsPerformanceNextLaunch: '下次嘗試 DeSmuME',
-    ndsPerformanceSaved: '已記住下次開局嘗試 DeSmuME。本局不會重啟；切換核心前請先在遊戲內存檔，各核心的存檔分開保存。',
-    ndsPerformanceRememberFailed: '瀏覽器無法記住下次核心選擇。請手動選擇 DeSmuME，並在切換前先於遊戲內存檔。',
-    ndsPerformanceCoreStarted: '已啟動 DeSmuME 效能試用核心；若持續掉幀，會先由核心確認再逐級啟用跳幀。不同核心的存檔分開保存。',
-    ndsFrameskipApplied: '核心已確認將跳幀調整為 {value}；本局沒有重啟，畫面可能會比較不流暢。',
-    ndsPerformanceExhausted: '仍持續掉幀（約 {fps} FPS），核心沒有可確認的下一級跳幀設定。請先在遊戲內存檔，再考慮降低 3D 內部分辨率並重新啟動。',

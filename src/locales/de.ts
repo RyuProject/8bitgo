@@ -872,6 +872,13 @@ const de: Translation = {
     runtimeFellBack: 'Diese ROM braucht einen vollständigeren Kern – zu {runtime} gewechselt',
     ndsCoreFellBack: 'Der NDS-Kern ist abgestürzt. Neustart mit dem kompatiblen Kern; Spielstände bleiben getrennt',
     ndsCoreFailed: 'Der NDS-Kern ist abgestürzt: {reason}',
+    ndsPerformanceSlow: 'Anhaltend niedrige Bildrate erkannt (etwa {fps} FPS). Dieser NDS-Kern hat keine bestätigte Qualitätsanpassung während des Spiels; die aktuelle Partie läuft weiter.',
+    ndsPerformanceNextLaunch: 'DeSmuME beim nächsten Start testen',
+    ndsPerformanceSaved: 'DeSmuME ist für den nächsten Start vorgemerkt. Das Spiel wurde nicht neu gestartet; speichere im Spiel, bevor du wechselst, da jeder Kern eigene Spielstände hat.',
+    ndsPerformanceRememberFailed: 'Dieser Browser konnte die Kernwahl nicht speichern. Wähle DeSmuME manuell und speichere im Spiel, bevor du wechselst.',
+    ndsPerformanceCoreStarted: 'Der DeSmuME-Leistungstest läuft. Wenn die Bildrate weiter niedrig ist, bestätigt der Kern jede Frame-Skip-Anpassung vor dem Anwenden. Spielstände sind je Kern getrennt.',
+    ndsFrameskipApplied: 'Der Kern hat Frame-Skip {value} bestätigt; das Spiel wurde nicht neu gestartet. Das Bild kann weniger flüssig wirken.',
+    ndsPerformanceExhausted: 'Die Bildrate bleibt niedrig (etwa {fps} FPS), und der Kern hat keine weitere bestätigbare Frame-Skip-Stufe. Speichere im Spiel, bevor du die interne 3D-Auflösung senkst und neu startest.',
     arcadeHackFound: 'Hack erkannt: {title} (läuft über den Treiber {driver})',
     arcadeHackNoPlan: '{title} erkannt, aber für dieses Paket gibt es noch kein funktionierendes Ladeverfahren.',
     watchHintPick: 'Du kommst als Zuschauer rein: Bild und Ton des Gastgebers, aber keine Steuerung. Über „Platz nehmen“ in der Leiste kannst du jederzeit mitspielen.',
@@ -1640,10 +1647,3 @@ const de: Translation = {
 }
 
 export default de
-    ndsPerformanceSlow: 'Anhaltend niedrige Bildrate erkannt (etwa {fps} FPS). Dieser NDS-Kern hat keine bestätigte Qualitätsanpassung während des Spiels; die aktuelle Partie läuft weiter.',
-    ndsPerformanceNextLaunch: 'DeSmuME beim nächsten Start testen',
-    ndsPerformanceSaved: 'DeSmuME ist für den nächsten Start vorgemerkt. Das Spiel wurde nicht neu gestartet; speichere im Spiel, bevor du wechselst, da jeder Kern eigene Spielstände hat.',
-    ndsPerformanceRememberFailed: 'Dieser Browser konnte die Kernwahl nicht speichern. Wähle DeSmuME manuell und speichere im Spiel, bevor du wechselst.',
-    ndsPerformanceCoreStarted: 'Der DeSmuME-Leistungstest läuft. Wenn die Bildrate weiter niedrig ist, bestätigt der Kern jede Frame-Skip-Anpassung vor dem Anwenden. Spielstände sind je Kern getrennt.',
-    ndsFrameskipApplied: 'Der Kern hat Frame-Skip {value} bestätigt; das Spiel wurde nicht neu gestartet. Das Bild kann weniger flüssig wirken.',
-    ndsPerformanceExhausted: 'Die Bildrate bleibt niedrig (etwa {fps} FPS), und der Kern hat keine weitere bestätigbare Frame-Skip-Stufe. Speichere im Spiel, bevor du die interne 3D-Auflösung senkst und neu startest.',

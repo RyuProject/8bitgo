@@ -871,6 +871,13 @@ const en: Translation = {
     runtimeFellBack: 'This ROM needs a more complete emulator core — switched to {runtime}',
     ndsCoreFellBack: 'The NDS core crashed. Restarting with the compatibility core; saves are kept separate',
     ndsCoreFailed: 'The NDS core crashed: {reason}',
+    ndsPerformanceSlow: 'Sustained slow frames detected (about {fps} FPS). This NDS core has no verified live quality control, so the current game will keep running.',
+    ndsPerformanceNextLaunch: 'Try DeSmuME next time',
+    ndsPerformanceSaved: 'DeSmuME is saved for the next launch. This game was not restarted; save in-game before switching because each core has separate saves.',
+    ndsPerformanceRememberFailed: 'This browser could not save the next-core choice. Select DeSmuME manually, and save in-game before switching.',
+    ndsPerformanceCoreStarted: 'The DeSmuME performance trial is running. If slow frames continue, the core will confirm each frameskip change before applying it. Saves are separate between cores.',
+    ndsFrameskipApplied: 'The core confirmed frameskip {value}; the game was not restarted. The picture may look less smooth.',
+    ndsPerformanceExhausted: 'Slow frames continue (about {fps} FPS), and the core has no further frameskip setting it can confirm. Save in-game before lowering 3D internal resolution and restarting.',
     arcadeHackFound: 'Recognized hack: {title} (running on the {driver} driver)',
     arcadeHackNoPlan: 'Recognized {title}, but there\'s no working load plan for this package yet, so it can\'t run.',
     watchHintPick: 'You are joining to watch: you get the host’s picture and sound but no controls. Hit “Take a slot” in the toolbar whenever you want to play.',
@@ -1639,10 +1646,3 @@ const en: Translation = {
 }
 
 export default en
-    ndsPerformanceSlow: 'Sustained slow frames detected (about {fps} FPS). This NDS core has no verified live quality control, so the current game will keep running.',
-    ndsPerformanceNextLaunch: 'Try DeSmuME next time',
-    ndsPerformanceSaved: 'DeSmuME is saved for the next launch. This game was not restarted; save in-game before switching because each core has separate saves.',
-    ndsPerformanceRememberFailed: 'This browser could not save the next-core choice. Select DeSmuME manually, and save in-game before switching.',
-    ndsPerformanceCoreStarted: 'The DeSmuME performance trial is running. If slow frames continue, the core will confirm each frameskip change before applying it. Saves are separate between cores.',
-    ndsFrameskipApplied: 'The core confirmed frameskip {value}; the game was not restarted. The picture may look less smooth.',
-    ndsPerformanceExhausted: 'Slow frames continue (about {fps} FPS), and the core has no further frameskip setting it can confirm. Save in-game before lowering 3D internal resolution and restarting.',
