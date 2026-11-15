@@ -208,8 +208,9 @@ export function AdminGames() {
       reload()
       return true
     } catch (err) {
-      setToast(err instanceof Error ? err.message : '保存失败')
-      return false
+      const message = err instanceof Error ? err.message : '保存失败'
+      setToast(message)
+      return message
     } finally {
       savingRef.current = false
       setSaving(false)
@@ -630,8 +631,6 @@ export function AdminGames() {
               <GameForm
                 key={editing.mode === 'edit' ? editing.game.slug : 'new'}
                 initial={editing.mode === 'edit' ? editing.game : undefined}
-                // 表单里这份只够挡住「和当前页某条重名」，真正的判重在 save() 里问后端
-                existingSlugs={items.map((g) => g.slug)}
                 personalLibrary={personalLibrary}
                 submitting={saving}
                 autoSaveAfterUpload={autoSaveAfterUpload}

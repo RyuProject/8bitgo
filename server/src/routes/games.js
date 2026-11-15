@@ -52,6 +52,14 @@ const truthy = (v) => v === '1' || v === 'true'
 const tooMany = (res, retryAfter, msg = '请求太频繁了，请稍后再试') =>
   res.status(429).json({ error: msg, retryAfter })
 
+/** 后端唯一索引才是全库判重依据；回冲突时顺带指出占用者，方便管理员改 slug 或直接编辑旧条目。 */
+const duplicateGameSlugMessage = (slug, game) => {
+  const title = String(game?.titleZh || game?.title || '').trim()
+  return title
+    ? `slug「${slug}」已被「${title}」占用，本次没有覆盖现有游戏。请修改 slug，或搜索并编辑该游戏。`
+    : `slug「${slug}」已存在，本次没有覆盖现有游戏。请修改 slug，或搜索并编辑该游戏。`
+}
+
 // 数据库里的布尔列走 mysql2，tinyint(1) 回来的是数字 1/0，不是字符串。
 // 别用上面那个 truthy() —— 它只认查询串里的 '1'/'true'，套在数据行上会一律判 false。
 export const dbFlag = (v) => v === 1 || v === true || v === '1'
@@ -622,7 +630,8 @@ gamesRouter.put('/:slug', requireAbility('games:edit'), async (req, res, next) =
         return res.status(createOnly ? 201 : 200).json(saved)
       } catch (error) {
         if (createOnly && error?.code === 'ER_DUP_ENTRY') {
-          return res.status(409).json({ error: `slug「${slug}」已存在，请换一个` })
+          const existing = await getVolunteerGame(ownerId, slug).catch(() => null)
+          return res.status(409).json({ error: duplicateGameSlugMessage(slug, existing) })
         }
         throw error
       }
@@ -632,13 +641,31 @@ gamesRouter.put('/:slug', requireAbility('games:edit'), async (req, res, next) =
       else await upsertGame(slug, req.body)
     } catch (error) {
       if (createOnly && error?.code === 'ER_DUP_ENTRY') {
-        return res.status(409).json({ error: `slug「${slug}」已存在，请换一个` })
+        const existing = await getGameBySlug(slug).catch(() => null)
+        return res.status(409).json({ error: duplicateGameSlugMessage(slug, existing) })
       }
       throw error
     }
-    invalidateContent()
-    const saved = await getGameBySlug(slug)
-    queueGameSearchPush(saved)
+    // INSERT / UPDATE 已在 games-repo 事务中提交；后续回读、缓存清理或搜索推送失败不能
+    // 把成功写入伪装成失败，否则客户端重试新建会撞唯一索引，误以为游戏一直没建成。
+    try {
+      invalidateContent()
+    } catch (error) {
+      console.error('[games] 保存后清理页面缓存失败：', error?.message || error)
+    }
+    let saved
+    try {
+      saved = await getGameBySlug(slug)
+    } catch (error) {
+      console.error('[games] 保存后回读游戏失败，改用已提交的请求内容响应：', error?.message || error)
+    }
+    // 主表与关联表已经一起提交；在回读暂时不可用时回显本次已写入的资料，避免诱发重复 INSERT。
+    if (!saved) saved = { ...req.body, slug }
+    try {
+      queueGameSearchPush(saved)
+    } catch (error) {
+      console.error('[games] 保存后加入搜索推送队列失败：', error?.message || error)
+    }
     res.status(createOnly ? 201 : 200).json(saved)
   } catch (e) {
     next(e)
