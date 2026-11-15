@@ -3544,6 +3544,15 @@ SSR 的 `window.__8BITGO__` 注水）改写成 `<随机前缀>-module` / `-text/
   下独立部署的网页游戏不经过这条模板，开着时仍会被改写（PvZ 的 check 脚本已在拦它的残留）。
 - 回归：`npm run test:rocket-loader`。
 
+### 2.37.2 浏览器整页翻译会让 React 崩在 removeChild（2026-11-15）
+
+大陆 Edge 157 两份现场（《愤怒的小鸟》《JoJo》详情页）：`NotFoundError: Failed to execute 'removeChild' on 'Node'`，
+组件栈落在侧栏房间数徽标 `SidebarCounts`。Edge / Chrome 自带翻译把文本节点挪进 `<font>`，徽标在「0」与「• N」间切换时
+React 仍从原父元素删那个文本节点 → 整页崩到兜底页（facebook/react#11538，上游不修）。两处修法：
+`src/services/translatorDomGuard.ts` 在两个入口**首次渲染前**给 `Node.prototype.removeChild / insertBefore` 加「已不是直接子节点」
+的纠正分支（正常路径不变，只 warn 一次）；纯数字徽标加 `translate="no"`，两种形态用不同 key 整块替换。
+新写会在文字与元素之间切换的组件时，把可变文字包进自己的元素里。回归：`npm run test:translator-dom-guard`。
+
 ### 2.38 浏览器兼容下限：页面 Chrome 64，模拟器运行时 Chrome 80（2026-11-15）
 
 两层下限不一样，别混为一谈：

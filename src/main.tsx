@@ -1,11 +1,15 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
+import { installTranslatorDomGuard } from '@/services/translatorDomGuard'
 import App from './App.tsx'
 import { apiEnabled } from '@/services/api'
 import { hydrateAuth } from '@/services/auth'
 import { syncHtmlLang } from '@/services/lang'
 import { initClarity } from '@/services/clarity'
+
+// 页面翻译会挪动文本节点，React 删插时崩溃；必须在首次渲染前装上（见 translatorDomGuard.ts）
+installTranslatorDomGuard()
 
 /**
  * 纯客户端入口（没有 SSR 时用，比如 vite dev）。

@@ -30,9 +30,11 @@ const COUNT_BADGE = 'inline-flex items-center rounded bg-black/5 px-1.5 py-0.5 t
 export function RoomCount() {
   const rooms = useAllRooms()
   if (!anyRoomsEnabled()) return null
-  if (rooms.length === 0) return <span className={COUNT_BADGE}>0</span>
+  // translate="no"：数字不用翻译；页面翻译把文本节点包进 <font> 后，React 在两种形态间切换会
+  // removeChild 失败（2026-11-15 大陆 Edge 现场）。两种形态用不同 key，切换时整块替换而不是逐个删子节点。
+  if (rooms.length === 0) return <span key="empty" translate="no" className={COUNT_BADGE}>0</span>
   return (
-    <span className="inline-flex items-center gap-1 rounded bg-online/15 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-online">
+    <span key="live" translate="no" className="inline-flex items-center gap-1 rounded bg-online/15 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-online">
       <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-online" />
       {rooms.length}
     </span>
@@ -43,5 +45,5 @@ export function RoomCount() {
 export function GamesCount() {
   const total = useGamesTotal()
   if (total === undefined) return null
-  return <span className={COUNT_BADGE}>{total.toLocaleString()}</span>
+  return <span translate="no" className={COUNT_BADGE}>{total.toLocaleString()}</span>
 }

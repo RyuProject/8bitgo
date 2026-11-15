@@ -1,6 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot, hydrateRoot } from 'react-dom/client'
 import './index.css'
+import { installTranslatorDomGuard } from '@/services/translatorDomGuard'
 import App from './App'
 import { apiEnabled } from '@/services/api'
 import { hydrateAuth } from '@/services/auth'
@@ -8,6 +9,9 @@ import { setLangForRender, syncHtmlLang } from '@/services/lang'
 import { langFromPath, langPrefix } from '@/config/languages'
 import { loadLocale } from '@/locales'
 import { initClarity } from '@/services/clarity'
+
+// 页面翻译会挪动文本节点，React 删插时崩溃；必须在首次渲染前装上（见 translatorDomGuard.ts）
+installTranslatorDomGuard()
 
 /**
  * 首屏数据由 services/pageData 在模块加载时从 window.__8BITGO__ 里读走，
