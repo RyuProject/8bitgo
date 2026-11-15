@@ -8,12 +8,12 @@
  * 而它是**一个单点** —— 所有人都从 assets.8bitgo.com 取同一个近百 MB 的文件。
  * 那个域名对某些网络慢、对某些网络干脆不通，而玩家看到的只是一个永远不动的进度条。
  *
- * 所以这里给每个镜像配两条备用路径：先走 8bitgo.com 的同源流式代理（避开资源子域
- * 在部分网络上的连接问题），最后才试 js-dos 官方的 br.cdn.dos.zone。官方源没有稳定的
- * CORS 许可，不能再把它当唯一兜底；保留它是为了上游哪天恢复跨域时仍有第三条路。
+ * 所以这里固定保留主资源域与同源 R2 代理；管理员还可为同一镜像配置 Gitee 等副本。
+ * 外链先经浏览器 Range 测速，且完整 SHA-256 必须与 R2 原件相同才会进入玩家候选；
+ * 下载后还会再验一次，防止外链被原地替换。js-dos 官方源只保留为已有的最后回退。
  *
- * ⚠️ **备用源不是「更快的源」，是「另一条路」**。没有任何证据说明 br.cdn.dos.zone
- * 对你的用户比 R2 快 —— 它只在主源**失败或卡死**时才上场。别把顺序倒过来。
+ * ⚠️ 测速只决定通过校验的候选顺序，不降低内容校验要求；测速不支持或 CORS 不可读的源
+ * 仍留在后面作故障回退。R2 同源代理始终存在，后台无法删除或改写它。
  *
  * ── 三条必须守住的规矩 ────────────────────────────────────
  * 1. **镜像表按我们自己的路径显式写死，不按文件名猜。**
@@ -31,6 +31,8 @@ import { fetchWithProgress } from './loadProgress'
 import type { LoadProgress } from './types'
 import { romCacheDelete, romCacheGet, romCacheKey, romCachePut } from './romCache'
 import { versionedRomUrl } from '@/services/roms'
+import { fetchPublicSystemImageSettings, type PublicSystemImageSettings } from '@/services/systemImageSources'
+import { DOS_SYSTEM_IMAGE_CATALOG } from '../../shared/dos-system-images.js'
 
 /**
  * js-dos 官方镜像站。地址来自 `public/jsdos/js-dos.js` 里 studio 的下载列表 ——
@@ -119,9 +121,59 @@ export interface SystemSource {
   url: string
   /** 出错和日志里显示用。不要放完整 URL，那会把资源域名拼进用户看得到的文案里 */
   label: string
+  /** 外部副本必须与 R2 原件完全一致；下载后再验一次，防止外链原地换包。 */
+  expectedSha256?: string
+  /** R2 对象被原地更新时，不继续使用旧版本的外部副本。 */
+  expectedR2Version?: string
 }
 
-/** 这个主地址有没有备用源。顺序就是尝试顺序：自家的永远排第一 */
+type PublicMirror = { id: string; label: string; url: string; sha256: string; r2Version: string }
+let publicSourceSettings: PublicSystemImageSettings | null = null
+let publicSourceSettingsExpiresAt = 0
+let publicSourceSettingsRetryAt = 0
+
+/** 后台配置的公开镜像不应让开局等待后台接口；最多等 1.2 秒，超时继续走固定 R2 链。 */
+export async function prepareSystemImageSources(signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted || publicSourceSettingsExpiresAt > Date.now() || publicSourceSettingsRetryAt > Date.now()) return
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 1200)
+  const relayAbort = () => controller.abort(signal?.reason)
+  signal?.addEventListener('abort', relayAbort, { once: true })
+  try {
+    const settings = await fetchPublicSystemImageSettings(controller.signal)
+    if (!signal?.aborted) {
+      publicSourceSettings = settings
+      publicSourceSettingsExpiresAt = Date.now() + 60_000
+      publicSourceSettingsRetryAt = 0
+    }
+  } catch {
+    if (!signal?.aborted) {
+      // 接口临时不可用不应让玩家每局都先等超时；一段时间后再静默重试。
+      publicSourceSettings = null
+      publicSourceSettingsRetryAt = Date.now() + 10_000
+    }
+  } finally {
+    clearTimeout(timer)
+    signal?.removeEventListener('abort', relayAbort)
+  }
+}
+
+function publicMirrorsFor(file: string): PublicMirror[] {
+  const item = publicSourceSettings?.files?.[file]
+  if (!item || !/^[a-f0-9]{64}$/i.test(item.sha256) || !item.r2Version || !Array.isArray(item.mirrors)) return []
+  return item.mirrors.flatMap((mirror) => {
+    if (
+      !mirror ||
+      !mirror.label ||
+      !/^https:\/\//i.test(mirror.url) ||
+      !/^[a-f0-9]{64}$/i.test(mirror.sha256) ||
+      mirror.sha256.toLowerCase() !== item.sha256.toLowerCase()
+    ) return []
+    return [{ id: mirror.id, label: mirror.label, url: mirror.url, sha256: mirror.sha256.toLowerCase(), r2Version: item.r2Version }]
+  })
+}
+
+/** 主资源域始终保留；已校验外链参与测速；同源 R2 代理仍固定在链路里且不可配置删除。 */
 export function systemSourcesFor(primaryUrl: string): SystemSource[] {
   const list: SystemSource[] = [{ url: primaryUrl, label: '主源' }]
   let path = ''
@@ -130,10 +182,18 @@ export function systemSourcesFor(primaryUrl: string): SystemSource[] {
   } catch {
     return list
   }
+  const file = path.split('/').pop() ?? ''
+  if (DOS_SYSTEM_IMAGE_CATALOG.some((image) => image.file === file)) {
+    for (const mirror of publicMirrorsFor(file)) {
+      if (!list.some((source) => source.url === mirror.url)) {
+        list.push({ url: mirror.url, label: mirror.label, expectedSha256: mirror.sha256, expectedR2Version: mirror.r2Version })
+      }
+    }
+  }
   const mirrors = MIRRORS[path] ?? []
   for (const mirror of mirrors) {
     // 相对地址必须保留：它会自动跟随当前站点域名，本地和预览环境也不用写死生产域名。
-    if (mirror.url !== primaryUrl) list.push(mirror)
+    if (mirror.url !== primaryUrl && !list.some((source) => source.url === mirror.url)) list.push(mirror)
   }
   return list
 }
@@ -290,6 +350,97 @@ export function prewarmSystemCache(url: string): void {
   void systemCacheUrl(url)
 }
 
+const MIRROR_PROBE_BYTES = 64 * 1024
+const MIRROR_PROBE_MS = 2500
+
+/** 只把真正可由浏览器读取的 Range 响应参与测速；不支持 Range / CORS 的源留作故障回退。 */
+async function probeSystemSource(source: SystemSource, signal?: AbortSignal): Promise<number | null> {
+  if (signal?.aborted) return null
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), MIRROR_PROBE_MS)
+  const relayAbort = () => controller.abort(signal?.reason)
+  signal?.addEventListener('abort', relayAbort, { once: true })
+  const started = typeof performance !== 'undefined' ? performance.now() : Date.now()
+  try {
+    const response = await fetch(source.url, {
+      method: 'GET',
+      mode: 'cors',
+      credentials: 'omit',
+      cache: 'no-store',
+      headers: { Range: `bytes=0-${MIRROR_PROBE_BYTES - 1}` },
+      signal: controller.signal,
+    })
+    const contentRange = response.headers.get('content-range') ?? ''
+    const match = /^bytes 0-(\d+)\/(\d+)$/i.exec(contentRange)
+    if (response.status !== 206 || (contentRange && (!match || Number(match[2]) <= Number(match[1])))) {
+      await response.body?.cancel().catch(() => {})
+      return null
+    }
+    const advertisedBytes = match ? Number(match[1]) + 1 : null
+    if (advertisedBytes !== null && (advertisedBytes < 1 || advertisedBytes > MIRROR_PROBE_BYTES)) {
+      await response.body?.cancel().catch(() => {})
+      return null
+    }
+    const reader = response.body?.getReader()
+    if (!reader) return null
+    let bytes = 0
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        bytes += value.byteLength
+        if (bytes > MIRROR_PROBE_BYTES) {
+          await reader.cancel().catch(() => {})
+          return null
+        }
+      }
+    } finally {
+      reader.releaseLock()
+    }
+    if (bytes < 1 || (advertisedBytes !== null && bytes !== advertisedBytes)) return null
+    const ended = typeof performance !== 'undefined' ? performance.now() : Date.now()
+    return Math.max(1, ended - started)
+  } catch {
+    return null
+  } finally {
+    clearTimeout(timer)
+    signal?.removeEventListener('abort', relayAbort)
+  }
+}
+
+/**
+ * 命中缓存时不会调用；冷启动时同时读取每条可用线路的首块，再按实测耗时排序。
+ * 范围请求最多 64 KB × 候选数，且每条有 2.5 秒硬超时；探测失败的源仍留在后面作兜底。
+ */
+async function fastestSystemSources(sources: readonly SystemSource[], signal?: AbortSignal): Promise<SystemSource[]> {
+  if (typeof window === 'undefined' || sources.length < 2) return [...sources]
+  const measured = await Promise.all(sources.map(async (source, index) => ({ source, index, elapsed: await probeSystemSource(source, signal) })))
+  if (signal?.aborted) throw new DOMException('已取消', 'AbortError')
+  const available: Array<{ source: SystemSource; index: number; elapsed: number }> = measured.flatMap((item) =>
+    item.elapsed === null ? [] : [{ source: item.source, index: item.index, elapsed: item.elapsed }],
+  )
+  if (!available.length) return [...sources]
+  available.sort((a, b) => a.elapsed - b.elapsed || a.index - b.index)
+  const measuredUrls = new Set(available.map((item) => item.source.url))
+  const unavailable = measured.filter((item) => !measuredUrls.has(item.source.url)).sort((a, b) => a.index - b.index)
+  return [...available.map((item) => item.source), ...unavailable.map((item) => item.source)]
+}
+
+async function sha256Hex(data: ArrayBuffer): Promise<string> {
+  if (!globalThis.crypto?.subtle) throw new Error('浏览器无法验证外部系统镜像的 SHA-256')
+  const digest = await crypto.subtle.digest('SHA-256', data)
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+function versionTokenFromUrl(url: string): string {
+  if (!url) return ''
+  try {
+    return new URL(url, typeof window === 'undefined' ? 'https://x/' : window.location.href).searchParams.get('romv') ?? ''
+  } catch {
+    return ''
+  }
+}
+
 /** 把外部 signal 和「失速自杀」合成一个 */
 function stallGuard(signal: AbortSignal | undefined, onGiveUp: () => void) {
   const ctl = new AbortController()
@@ -336,14 +487,40 @@ export async function loadSystemBytes(
     ⚠️ 缓存只认**主源**那一份。
     备用源按文件头第 1 条只登记「确实是同一个系统」的地址，但那是靠人维护的表；
     万一哪天登记错了，把备用源的内容按主源的 key 存进缓存，等于把一个错误的 Windows
-    永久钉在玩家本地 —— 主源后来好了也换不回来。所以只有 i === 0 那一趟才写。
+    永久钉在玩家本地 —— 主源后来好了也换不回来。所以只下载主源时才写。
   */
   /*
     ⚠️ 没有 IndexedDB 就**连探都不探**：无痕模式、禁用站点数据、SSR、node 里跑测试，
     这一趟 HEAD 的结果没有任何人用得上，白白给每次加载加一个往返。
   */
   const canCache = typeof indexedDB !== 'undefined'
-  const cacheUrl = canCache ? await systemCacheUrl(sources[0].url, signal) : ''
+  const primaryUrl = sources[0].url
+  const versionedMirrors = sources.filter((source) => source.expectedR2Version)
+  let canonicalVersionPromise: Promise<string> = Promise.resolve('')
+  if (versionedMirrors.length) {
+    let file = ''
+    try {
+      file = new URL(primaryUrl, typeof window === 'undefined' ? 'https://x/' : window.location.href).pathname.split('/').pop() ?? ''
+    } catch {
+      file = ''
+    }
+    if (file && DOS_SYSTEM_IMAGE_CATALOG.some((image) => image.file === file)) {
+      // 只有配置了已校验外链时才多探一次 R2 版本，确保 R2 原地更新后不再使用旧副本。
+      canonicalVersionPromise = systemCacheUrl(`/system-images/${encodeURIComponent(file)}`, signal)
+    }
+  }
+  const [cacheUrl, canonicalVersionUrl] = await Promise.all([
+    canCache ? systemCacheUrl(primaryUrl, signal) : Promise.resolve(''),
+    canonicalVersionPromise,
+  ])
+  let usableSources = [...sources]
+  if (versionedMirrors.length) {
+    const expectedVersion = versionedMirrors[0].expectedR2Version ?? ''
+    if (!expectedVersion || versionTokenFromUrl(canonicalVersionUrl) !== expectedVersion) {
+      usableSources = usableSources.filter((source) => !source.expectedR2Version)
+      console.warn('[jsdos] 系统镜像外部副本对应的 R2 版本已变化或无法确认，已跳过外链并保留固定兜底')
+    }
+  }
   const key = cacheUrl ? romCacheKey(cacheUrl) : ''
 
   if (key) {
@@ -366,8 +543,8 @@ export async function loadSystemBytes(
     }
   }
 
-  for (let i = 0; i < sources.length; i++) {
-    const source = sources[i]
+  const candidates = await fastestSystemSources(usableSources, signal)
+  for (const source of candidates) {
     if (signal?.aborted) throw new DOMException('已取消', 'AbortError')
     let stalled = false
     const guard = stallGuard(signal, () => {
@@ -381,7 +558,7 @@ export async function loadSystemBytes(
           2. 浏览器 HTTP 缓存也按完整 URL 建键，顺带多一层命中。
         游戏 ROM 那条路（probeRomUrl → 播放地址）本来就是这么做的。
       */
-      const fetchUrl = i === 0 && cacheUrl ? cacheUrl : source.url
+      const fetchUrl = source.url === primaryUrl && cacheUrl ? cacheUrl : source.url
       const data = await fetchWithProgress(fetchUrl, {
         phase: 'assets',
         signal: guard.signal,
@@ -395,9 +572,13 @@ export async function loadSystemBytes(
         },
       })
       if (!looksLikeSystemBundle(data)) throw new Error('不是一个合法的系统镜像（缺 .jsdos/dosbox.conf）')
+      if (source.expectedSha256) {
+        const actualSha256 = await sha256Hex(data)
+        if (actualSha256 !== source.expectedSha256) throw new Error('镜像内容与 R2 原件的 SHA-256 不一致')
+      }
       // 只有主源进缓存（上面那段注释）。写失败一律不管，缓存只是加速
-      if (key && i === 0) void romCachePut(key, data).catch(() => {})
-      return { data, url: source.url, label: source.label, usedFallback: i > 0, fromCache: false }
+      if (key && source.url === primaryUrl) void romCachePut(key, data).catch(() => {})
+      return { data, url: source.url, label: source.label, usedFallback: source.url !== primaryUrl, fromCache: false }
     } catch (e) {
       // 玩家自己取消：立刻出去，别把剩下的源也试一遍
       if (!stalled && signal?.aborted) throw e

@@ -30,6 +30,7 @@ import { platformMap } from '@/data/platforms'
 import { cx } from '@/lib/format'
 import { slugify } from './GameForm'
 import { PlatformBiosPanel } from './PlatformBiosPanel'
+import { SystemImageSourcesPanel } from './SystemImageSourcesPanel'
 import { RomCleanupPanel } from './RomCleanupPanel'
 import { objectKeyOf, planRomObjectDeletion, type PlatformBiosRefs } from './romDeletePlan'
 import { Card, Field, Stat, btnClass, inputClass } from './ui'
@@ -773,6 +774,8 @@ export function AdminRoms() {
       />
 
       <PlatformBiosPanel />
+
+      <SystemImageSourcesPanel />
 
       <Card title={`已绑定的游戏（${bound.length}）`} extra={<Link to="/admin/games" className="text-xs text-brand-hover hover:underline">去游戏编辑里上传 →</Link>}>
         {bound.length === 0 ? (
