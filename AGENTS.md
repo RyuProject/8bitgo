@@ -3220,8 +3220,8 @@ ATRAC3+ 和 MP3 解码。构建/发布检查必须同时看到 `USE_FFMPEG:BOOL=
 Cloudflare 对这组静态文件的缓存键**忽略查询串**：请求 `PPSSPPSDL.data?r=17` 仍命中旧的 r16
 （22,417,304B，`CF-Cache-Status: HIT`），而新清单需要 19,434,861B。查询参数不能再承担版本隔离，
 否则新 JS、旧 data 和旧 Wasm 会被拼在同一局里。当前整套资源发布在
-`public/ppsspp/v0dbfaca/v19/`（上一版为 v18）；下次桥、JS、Wasm、data、Range 胶水或 AudioWorklet 任一项改变就
-复制/构建到 `v20/`，并同步 `PPSSPP_RUNTIME_GENERATION` 和服务端旧地址 302。旧目录保留给旧页面，
+`public/ppsspp/v0dbfaca/v21/`（上一版为 v20）；下次桥、JS、Wasm、data、Range 胶水或 AudioWorklet 任一项改变就
+复制/构建到 `v22/`，并同步 `PPSSPP_RUNTIME_GENERATION` 和服务端旧地址 302。旧目录保留给旧页面，
 不原地覆盖。
 v13 只修桥和新增本地光盘 Service Worker；v14/v15/v16 只修预读胶水，Wasm/data 与 v13 的 SHA-256 相同。
 v17 只改桥（`scripts/refresh-ppsspp-edge-v17.mjs` 从 v16 生成）：iframe 地址带 `edge=cn`（大陆访客，
@@ -3237,8 +3237,8 @@ v18 只换 JS 读盘层（`scripts/refresh-ppsspp-retry-v18.mjs` 从 v17 生成�
 v19（`refresh-ppsspp-retry-v19.mjs` 从 v18 生成）：**超时**后的重试把时限翻倍（30 → 60 → 120 秒，整个请求最多
 3 分钟）。慢线路上 2MB 分片本来就要 30 秒以上，用同样的 30 秒重试只会再超时；游戏会卡住等盘，但不再整局失败。
 已排除的方向：assets / cn-assets 两条线路的 206 在 MISS 与 HIT 下都带 ACAO 与 CORP，HTTP 0 不是缓存丢头。
-`scripts/refresh-ppsspp-js-runtime.mjs` 仍是生成 v12 的历史入口，不要用它覆盖 v13～v20。
-下一次重新构建核心前，先把 `scripts/build-ppsspp.mjs` 的目标代次和相应模板一起升到 v21。
+`scripts/refresh-ppsspp-js-runtime.mjs` 仍是生成 v12 的历史入口，不要用它覆盖 v13～v21。
+下一次重新构建核心前，先把 `scripts/build-ppsspp.mjs` 的目标代次和相应模板一起升到 v22。
 
 v20（`scripts/refresh-ppsspp-stability-v20.mjs` 从 v19 生成，Wasm / data 不变）修 2026-11-15 QQ Browser 21
 《初音未来：歌姬计划》现场暴露的两件事：实际 canvas 报 1533×777，超过 profile 规定的 960×544，说明只传
@@ -3250,6 +3250,11 @@ v20（`scripts/refresh-ppsspp-stability-v20.mjs` 从 v19 生成，Wasm / data �
 该现场最后的 `type incompatibility when transforming from/to JS` 是 V8 的 Wasm/JS 边界类型转换异常；ROM 已启动且只按需读了
 73.6 MB，报告没有原始 worker 调用栈，所以**不能据此断言 CHD、FFmpeg 或音频桥是 TypeError 根因**。v20 将 Emscripten pthread 的
 `ErrorEvent.error.stack`、文件行列号一路送进启动诊断包；后续同类现场先看这段 worker 栈再定位具体回调，不按错误字符串猜补丁。
+
+v21（`scripts/refresh-ppsspp-compat-v21.mjs` 从 v20 生成，Wasm / data 不变）根据该现场补了两层保护：QQ Browser
+（含 `QQBrowser`、`MQQBrowser`、`QQ/` UA）固定 480×272 画布并关闭额外 SAS 线程，避免继续走高性能档；运行时错误上报前
+先触发一次 IDBFS 存档冲刷，最多等 1.5 秒，IndexedDB 卡住时仍会继续报错。v20 的 worker 栈采集保留，因此后续复现可以
+从调用栈继续定根因。性能档是兼容性缓解，不代表确认了 QQ Browser 的 Wasm 类型转换根因。
 
 Emscripten
 自带的 preload fetch 没有重试，`host.js` 用 `getPreloadedPackage` 接管：优先读浏览器缓存，连续
