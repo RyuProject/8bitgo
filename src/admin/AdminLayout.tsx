@@ -198,8 +198,9 @@ function AdminShell({ onLock, me, healthEnabled }: { onLock: () => void; me: Ver
   const visibleGroups = NAV_GROUPS.map((group) => ({ group, items: tabs.filter((tab) => tab.group === group) }))
     .filter(({ items }) => items.length > 0)
 
+  // x 轴只裁切溢出，不创建滚动容器；否则左侧 sticky 导航会随页面一起滚走。
   return (
-    <div className="min-h-dvh overflow-x-hidden bg-bg text-fg lg:flex">
+    <div className="min-h-dvh overflow-x-clip bg-bg text-fg lg:flex">
       <aside className="sticky top-0 hidden h-dvh w-64 shrink-0 flex-col border-r border-line bg-surface lg:flex">
         <div className="flex h-16 shrink-0 items-center gap-2 border-b border-line px-5">
           <span className="grid h-8 w-8 place-items-center rounded-lg bg-brand text-sm text-white">⚙</span>
