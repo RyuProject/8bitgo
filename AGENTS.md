@@ -191,6 +191,13 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
   每局都要在手机上重解 7z 核心（约 12 秒）。现在 race 后 clearTimeout，挂死标记换新键 `8bitgo.ejs.idbStall2`
   （旧键全是误判，作废）。`test:ejs-download` 有「缓存正常时不误判挂死」一节。凡是 race 加时限的补丁都要清定时器。
 
+- **核心响应不要 Blob → ArrayBuffer 往返**（2026-11-15，华为浏览器 17 / Android 12，《节奏天国》两次）：两份现场的核心请求均 HTTP 200、
+  收到 1.3MB 后立刻报 `NotReadableError`，错误发生在核心写 IndexedDB 缓存之前。旧引擎把 `ReadableStream` 读取和
+  `new Blob(chunks).arrayBuffer()` 放在同一个 catch 中，现场没有子阶段栈，不能断言具体是哪一行抛错；但该浏览器已有 Blob
+  存储读不出的现场，而 Blob 往返完全多余。响应块已经是 `Uint8Array`，直接按累计字节数分配目标数组并 `set`；流读取本身若仍失败，
+  必须把原始异常对象写控制台，以便后续现场确认阶段。引擎核心日志里的 NotReadableError 不能套用 ROM Blob 的恢复：不记 `romBlobBroken`、不标记加速线路坏、
+  不自动重下大 ROM；按本机运行环境错误停止并让诊断包保留原因。补丁在 `scripts/patch-emulatorjs.mjs`，构建守卫在 `scripts/check-emulatorjs.mjs`。
+
 - **「Cannot allocate Wasm memory」先看是不是 32 位浏览器**（2026-11-11 大陆 Chrome 109 / Windows，8GB、4 核，
   《合金弹头 2》《1941》各一次，核心编译完在 instantiate 时报）。FBNeo 核心起步 128MB、最大 2GB，V8 分配失败会自己
   逐级缩到起步值再试，64 位浏览器不会连 128MB 都给不出；Chrome 109 是 Win7 / 8.1 的最后一版，这批机器常装 32 位版。

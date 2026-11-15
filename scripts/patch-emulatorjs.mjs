@@ -263,6 +263,19 @@ const BODY_READ_FROM =
 const BODY_READ_TO =
   'let __8bgStall=0;const __8bgArm=()=>{clearTimeout(__8bgStall),__8bgStall=setTimeout(()=>{console.warn("[EJS Download] 20 秒没有新数据，中止："+S),f.abort()},2e4)};' +
   'try{for(;;){__8bgArm();const{done:s,value:o}=await e.read();if(s)break;n.push(o),i+=o.length,r&&t&&r("downloading",Math.floor(i/t*100),i,t)}}finally{clearTimeout(__8bgStall)}'
+/**
+ * 华为浏览器 17 的两份现场里，核心 HTTP 200 收到 1.3MB 后立刻报 NotReadableError，且在 IndexedDB put 之前。
+ * 上游把 `reader.read()` 与 `new Blob(chunks).arrayBuffer()` 放在同一个 catch 里，旧现场没有子阶段栈，无法证明
+ * 是哪一行抛错；但该浏览器已有 Blob 存储读不出的现场，而 Blob 往返完全多余。去掉它，按实际收到的字节数拼成
+ * Uint8Array；流读取本身若失败，另打印原始异常对象，以便下一份诊断确认阶段。
+ */
+const BODY_READ_DIAGNOSTICS_FROM =
+  'try{for(;;){__8bgArm();const{done:s,value:o}=await e.read();if(s)break;n.push(o),i+=o.length,r&&t&&r("downloading",Math.floor(i/t*100),i,t)}}finally{clearTimeout(__8bgStall)}'
+const BODY_READ_DIAGNOSTICS_TO =
+  'try{for(;;){__8bgArm();const{done:s,value:o}=await e.read();if(s)break;n.push(o),i+=o.length,r&&t&&r("downloading",Math.floor(i/t*100),i,t)}}catch(__8bgReadError){console.warn("[EJS Download] response stream read failed",__8bgReadError);throw __8bgReadError}finally{clearTimeout(__8bgStall)}'
+const ARRAYBUFFER_BLOB_FROM = 'const s=new Blob(n),o=await s.arrayBuffer();Z=new Uint8Array(o)'
+const ARRAYBUFFER_BLOB_TO =
+  'Z=new Uint8Array(i);let __8bgOffset=0;for(const __8bgChunk of n){Z.set(__8bgChunk,__8bgOffset);__8bgOffset+=__8bgChunk.byteLength}'
 const CACHE_PUT_FROM = '!1===u&&await this.storageCache.put(n),c(n)'
 const CACHE_PUT_TO =
   '!1===u&&await Promise.race([this.storageCache.put(n).catch(t=>console.warn("[EJS Cache] put failed",t)),' +
@@ -483,6 +496,17 @@ const GROUPS = [
     ],
   },
   {
+    name: '核心响应直接拼接 Uint8Array',
+    patches: [
+      [BODY_READ_DIAGNOSTICS_FROM, BODY_READ_DIAGNOSTICS_TO],
+      [ARRAYBUFFER_BLOB_FROM, ARRAYBUFFER_BLOB_TO],
+    ],
+    hint: [
+      'arraybuffer 下载已经拿到 Uint8Array 分块，不要再用 new Blob(chunks).arrayBuffer() 读回；',
+      '直接按总字节数分配 Uint8Array 并顺序 set，读流异常同时输出原始错误对象。',
+    ],
+  },
+  {
     name: '引擎缓存读写有时限',
     patches: [
       [CACHE_PUT_FROM, CACHE_PUT_TO],
@@ -556,6 +580,7 @@ const GROUPS = [
 
 // 被后面各节在原地改写过的补丁：值是所有更新的写法
 const SUPERSEDED = new Map([
+  [BODY_READ_TO, [BODY_READ_DIAGNOSTICS_TO]],
   [CACHE_GET_TO, [CACHE_GET_DEAD_TO, CACHE_GET_CLEAR_TO]],
   [CACHE_PUT_TO, [CACHE_PUT_DEAD_TO, CACHE_PUT_CLEAR_TO]],
   [CACHE_GET_DEAD_TO, [CACHE_GET_CLEAR_TO]],

@@ -2924,9 +2924,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     const stalled = message.startsWith(rt.ejsStalled.split('{stage}')[0])
     // 内存不足同理：浏览器给不出地址空间，和从哪条线路取的引擎无关
     const outOfMemory = message === rt.ejsOutOfMemory || message === rt.ejsOutOfMemory32bit || isLowmemOomMessage(message)
-    if (usedEjsEdge && !stalled && !outOfMemory) markEjsEdgeFailed()
+    // 配置 / 浏览器本地读取错误与边缘线路无关；尤其核心 arraybuffer 的 NotReadableError 不能让整页退回慢线路。
+    if (usedEjsEdge && !stalled && !outOfMemory && scope !== 'config') markEjsEdgeFailed()
     // 引擎读预下载好的 ROM Blob 读不出：这台浏览器的 Blob 存储坏了，自动重试 / 换语言 ROM 改走内存
-    if (preparedRomBlob && !memoryRomOf(preparedRomBlob) && isNativeBlobReadMessage(message)) {
+    if (scope !== 'config' && preparedRomBlob && !memoryRomOf(preparedRomBlob) && isNativeBlobReadMessage(message)) {
       markRomBlobStorageBroken('引擎读 ROM ')
     }
     options.onError?.(message, scope)
@@ -2993,6 +2994,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       logEngine(`[webgl] 核心建不出 WebGL 上下文；现在再建一次：${webglNow ? '能建' : '仍建不出'}`)
       if (!webglNow) return failLoad(rt.ejsWebglUnavailable, 'config')
     }
+    const nativeBlobReadError = isNativeBlobReadMessage(`${line}\n${recent}`)
+    if (nativeBlobReadError && /error downloading core\s*\(/i.test(line)) {
+      // NotReadableError 来自 melondsds-wasm.data 等核心响应时，不是预下载 ROM Blob 坏了。
+      // 这类本地读取错误重下 120 秒 NDS ROM、切 ROM 语言或退 EdgeOne 都不会修复；不污染 ROM / 线路状态，也停止自动重试。
+      logEngine(`[download] 核心响应读取报 NotReadableError；不标记 ROM Blob / 加速线路故障：${line}`)
+      return failLoad(fmt(rt.ejsEngineError, { msg: line }), 'config')
+    }
     /*
       「Error loading EmulatorJS runtime」= 核心脚本跑完却没定义 EJS_Runtime。几秒内就报，且同一位玩家
       连报十次（2026-11-08《拳皇 97 风云再起 Plus》一分钟 10 次）—— 引擎直接从 IndexedDB 拿了一份坏核心，
@@ -3010,7 +3018,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       「Failed to fetch non-http URL」那一行，上报的却是「网络错误」）：同样记下 Blob 存储已坏，按运行时故障
       原地重试一次，重试改走内存 ROM，不去换语言 ROM。
     */
-    if (preparedRomBlob && !memoryRomOf(preparedRomBlob) && isNativeBlobReadMessage(`${line}\n${recent}`)) {
+    if (preparedRomBlob && !memoryRomOf(preparedRomBlob) && nativeBlobReadError) {
       markRomBlobStorageBroken('引擎读 ROM ')
       return failLoad(fmt(rt.ejsEngineError, { msg: line }), 'runtime')
     }
