@@ -18,8 +18,53 @@ import type { RatingSummary } from '@/types'
 import { useCurrentUser } from '@/services/auth'
 import { fmt, useT } from '@/services/i18n'
 import { getLang } from '@/services/lang'
-import { clearRating, fetchRating, ratingsAvailable, submitRating } from '@/services/ratings'
+import { clearRating, fetchRating, ratingsAvailable, submitRating, subscribeRating } from '@/services/ratings'
 import { Stars, StarPicker } from './StarRating'
+
+/** 标题旁的紧凑评分摘要；百分比按 4–5 星的好评票数计算。 */
+export function GameRatingBadge({ gameSlug }: { gameSlug: string }) {
+  const t = useT()
+  const r = t.ratings
+  const [data, setData] = useState<RatingSummary | null>(null)
+
+  useEffect(() => {
+    let active = true
+    setData(null)
+    const unsubscribe = subscribeRating(gameSlug, (next) => {
+      if (active) setData(next)
+    })
+    void fetchRating(gameSlug).then((next) => {
+      if (active) setData(next)
+    }).catch(() => {
+      if (active) setData(null)
+    })
+    return () => {
+      active = false
+      unsubscribe()
+    }
+  }, [gameSlug])
+
+  if (!ratingsAvailable() || !data) return null
+  const positive = (Number(data.distribution['4']) || 0) + (Number(data.distribution['5']) || 0)
+  const percent = data.count > 0 ? Math.round((positive / data.count) * 100) : '—'
+
+  return (
+    <div
+      className="inline-flex shrink-0 items-center gap-3 rounded-xl border border-line bg-surface px-3 py-2"
+      aria-label={`${percent}${r.likePercent}, ${fmt(r.compactCount, { n: data.count.toLocaleString(getLang()) })}`}
+    >
+      <span className="grid h-12 w-12 place-items-center rounded-xl bg-brand text-2xl font-black leading-none text-black">
+        {percent}
+      </span>
+      <span className="min-w-0">
+        <span className="block whitespace-nowrap text-sm font-bold leading-5">{r.likePercent}</span>
+        <span className="block whitespace-nowrap text-xs leading-4 text-muted">
+          {fmt(r.compactCount, { n: data.count.toLocaleString(getLang()) })}
+        </span>
+      </span>
+    </div>
+  )
+}
 
 export function GameRating({ gameSlug }: { gameSlug: string }) {
   const t = useT()

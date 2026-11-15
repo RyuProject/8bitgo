@@ -65,6 +65,25 @@ const EMPTY: RatingSummary = {
   mine: null,
 }
 
+const pendingReads = new Map<string, Promise<RatingSummary>>()
+const subscribers = new Map<string, Set<(summary: RatingSummary) => void>>()
+
+/** 同页的紧凑评分徽章与评分卡共用在途读取，并在玩家改分后同步更新。 */
+export function subscribeRating(gameSlug: string, listener: (summary: RatingSummary) => void): () => void {
+  const listeners = subscribers.get(gameSlug) ?? new Set<(summary: RatingSummary) => void>()
+  listeners.add(listener)
+  subscribers.set(gameSlug, listeners)
+  return () => {
+    listeners.delete(listener)
+    if (listeners.size === 0) subscribers.delete(gameSlug)
+  }
+}
+
+function publishRating(gameSlug: string, summary: RatingSummary): RatingSummary {
+  for (const listener of subscribers.get(gameSlug) ?? []) listener(summary)
+  return summary
+}
+
 /** 后端理论上一定给全，但前端不该因为少一个字段整块崩掉 */
 function normalize(r: Partial<RatingSummary> | null | undefined): RatingSummary {
   return {
@@ -77,17 +96,25 @@ function normalize(r: Partial<RatingSummary> | null | undefined): RatingSummary 
 
 export async function fetchRating(gameSlug: string): Promise<RatingSummary> {
   if (!ratingsAvailable()) return EMPTY
+  const pending = pendingReads.get(gameSlug)
+  if (pending) return pending
   const qs = `game=${encodeURIComponent(gameSlug)}&anonId=${anonId()}`
-  return normalize(await api.get<RatingSummary>(`/api/ratings?${qs}`))
+  const request = api.get<RatingSummary>(`/api/ratings?${qs}`).then(normalize)
+  pendingReads.set(gameSlug, request)
+  try {
+    return await request
+  } finally {
+    if (pendingReads.get(gameSlug) === request) pendingReads.delete(gameSlug)
+  }
 }
 
 /** 打分 / 改分。登录与否由 api 层的 Bearer 决定，这里两种情况都把 anonId 带上 */
 export async function submitRating(gameSlug: string, score: number): Promise<RatingSummary> {
-  return normalize(await api.post<RatingSummary>('/api/ratings', { gameSlug, score, anonId: anonId() }))
+  return publishRating(gameSlug, normalize(await api.post<RatingSummary>('/api/ratings', { gameSlug, score, anonId: anonId() })))
 }
 
 /** 撤销自己那一票（在星星上再点一次当前分数） */
 export async function clearRating(gameSlug: string): Promise<RatingSummary> {
   const qs = `game=${encodeURIComponent(gameSlug)}&anonId=${anonId()}`
-  return normalize(await api.del<RatingSummary>(`/api/ratings?${qs}`))
+  return publishRating(gameSlug, normalize(await api.del<RatingSummary>(`/api/ratings?${qs}`)))
 }
