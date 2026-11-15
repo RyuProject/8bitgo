@@ -405,8 +405,9 @@ export const PPSSPP_PATH: string = asDir(import.meta.env.VITE_PPSSPP_PATH)
   2026-11-10 v19：超时后的重试把时限翻倍（30 → 60 → 120 秒），慢线路的 2MB 分片能读完。生成脚本 refresh-ppsspp-retry-v19.mjs。
   2026-11-15 v20：现场发现实际 canvas 可随视口扩到 1533×777，且 3G 高延迟设备仍选高性能档；慢网现限制真实绘图缓冲到 480×272，并采集 worker 错误栈。
   2026-11-15 v21：QQ Browser 固定为 480×272 稳定档，运行时崩溃时先等待 IDBFS 冲刷存档（最多 1.5 秒）。
+  2026-11-15 v22：移动/弱网/低配设备使用 480×272，普通设备 640×360，明确高配桌面设备最高 720×408。
 */
-export const PPSSPP_RUNTIME_GENERATION = 'v21'
+export const PPSSPP_RUNTIME_GENERATION = 'v22'
 export const PPSSPP_RUNTIME_PATH: string = PPSSPP_PATH
   ? asDir(`${PPSSPP_PATH}${PPSSPP_RUNTIME_GENERATION}`)
   : ''
@@ -419,7 +420,7 @@ export const PPSSPP_RUNTIME_PATH: string = PPSSPP_PATH
  * Cloudflare 对这套运行时忽略查询串，因此核心数据仍复用同一份边缘缓存；这里的查询参数
  * 只用于让浏览器放弃旧的“入口 HTML”缓存。改动入口协议时递增它，不能拿来改 Wasm/data。
  */
-export const PPSSPP_FRAME_REVISION = '3'
+export const PPSSPP_FRAME_REVISION = '4'
 /*
   大陆访客在 iframe 地址上加 `edge=cn`：桥据此把两份大文件（PPSSPPSDL.wasm 18MB、PPSSPPSDL.data br 后 9MB）
   改从 EdgeOne 取，取不到当场回同源（public/ppsspp/.../v17/host.js）。入口、胶水 JS、各类 Worker 必须同源，

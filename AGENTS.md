@@ -3187,18 +3187,19 @@ AudioWorklet 会把最后一个有效采样衰减到 0，恢复时用 32 帧淡�
 
 PSP 原生只有 480×272。旧 Web 壳让 SDL 带 `ALLOW_HIGHDPI`，在桌面 Retina 上实测创建到
 1948×1096；但 PPSSPP 内部仍只渲染 960×544，代理 WebGL 每帧白复制、合成并给直播编码器输入
-约 4 倍无新增细节的像素。`host.js` 现在按设备能力固定三档后备缓冲：480×272（省流量/弱机）、
-720×408（中档）和最高 960×544（强机）；核心内部分辨率统一固定 1x，三档只改变最终呈现画布。
+约 4 倍无新增细节的像素。`host.js` 按设备能力固定三档后备缓冲：480×272（移动/省流/弱网/低配）、
+640×360（默认）和最高 720×408（明确高配桌面设备）；核心内部分辨率统一固定 1x，三档只改变最终呈现画布。
 不要再按 CSS 尺寸、DPR 或浏览器全屏尺寸回写 canvas 的 width/height。
 
 浏览器 SDL 窗口不再启用 `SDL_WINDOW_ALLOW_HIGHDPI`，启动参数显式带 `--windowed --xres --yres`。
 这和页面 CSS 的响应式铺满是两件事：CSS 仍可把 960×544 画面放大到播放器宽度，只有昂贵的后备缓冲
-被限制。最高档从 2,135,008 像素降到 522,240（少 75.5%），同时降低代理呈现与开播编码负载。
+被限制。原有 960×544 上限从 2,135,008 像素降到 522,240（少 75.5%）；v22 再将最高档限制到 293,760 像素，
+普通设备 640×360（230,400 像素），移动/弱网/低配设备固定在 PSP 原生 480×272（130,560 像素）。
 
 发布核心还必须保持 `WASM_ENABLE_LTO=ON`，pthread 预热池限制在 4–8 条；浏览器报 16/32 核时
 预建同等数量 Worker 只会拖慢启动，而当前 PPSSPP Web 实测总线程不超过 6。核心每 300 帧上报一次
 VPS/FPS、实际 FPS、画布尺寸和音频模式，供真机确认选档与掉速，不能逐帧跨线程发消息。
-`runtime.json` 以 `performanceProfile=adaptive-canvas-v1`、`maxCanvasPixels=522240`、
+`runtime.json` 以 `performanceProfile=adaptive-performance-first-device-v1`、`maxCanvasPixels=293760`、
 `pthreadPoolMax=8`、`lto=true` 和 `performanceTelemetry=true` 固化验收。
 
 ⚠️ 自适应只选最终画布与 SAS 线程，不再提高游戏的内部分辨率。v8 给**所有 PSP**统一写入
@@ -3220,8 +3221,8 @@ ATRAC3+ 和 MP3 解码。构建/发布检查必须同时看到 `USE_FFMPEG:BOOL=
 Cloudflare 对这组静态文件的缓存键**忽略查询串**：请求 `PPSSPPSDL.data?r=17` 仍命中旧的 r16
 （22,417,304B，`CF-Cache-Status: HIT`），而新清单需要 19,434,861B。查询参数不能再承担版本隔离，
 否则新 JS、旧 data 和旧 Wasm 会被拼在同一局里。当前整套资源发布在
-`public/ppsspp/v0dbfaca/v21/`（上一版为 v20）；下次桥、JS、Wasm、data、Range 胶水或 AudioWorklet 任一项改变就
-复制/构建到 `v22/`，并同步 `PPSSPP_RUNTIME_GENERATION` 和服务端旧地址 302。旧目录保留给旧页面，
+`public/ppsspp/v0dbfaca/v22/`（上一版为 v21）；下次桥、JS、Wasm、data、Range 胶水或 AudioWorklet 任一项改变就
+复制/构建到 `v23/`，并同步 `PPSSPP_RUNTIME_GENERATION` 和服务端旧地址 302。旧目录保留给旧页面，
 不原地覆盖。
 v13 只修桥和新增本地光盘 Service Worker；v14/v15/v16 只修预读胶水，Wasm/data 与 v13 的 SHA-256 相同。
 v17 只改桥（`scripts/refresh-ppsspp-edge-v17.mjs` 从 v16 生成）：iframe 地址带 `edge=cn`（大陆访客，
@@ -3237,8 +3238,8 @@ v18 只换 JS 读盘层（`scripts/refresh-ppsspp-retry-v18.mjs` 从 v17 生成�
 v19（`refresh-ppsspp-retry-v19.mjs` 从 v18 生成）：**超时**后的重试把时限翻倍（30 → 60 → 120 秒，整个请求最多
 3 分钟）。慢线路上 2MB 分片本来就要 30 秒以上，用同样的 30 秒重试只会再超时；游戏会卡住等盘，但不再整局失败。
 已排除的方向：assets / cn-assets 两条线路的 206 在 MISS 与 HIT 下都带 ACAO 与 CORP，HTTP 0 不是缓存丢头。
-`scripts/refresh-ppsspp-js-runtime.mjs` 仍是生成 v12 的历史入口，不要用它覆盖 v13～v21。
-下一次重新构建核心前，先把 `scripts/build-ppsspp.mjs` 的目标代次和相应模板一起升到 v22。
+`scripts/refresh-ppsspp-js-runtime.mjs` 仍是生成 v12 的历史入口，不要用它覆盖 v13～v22。
+下一次重新构建核心前，先把 `scripts/build-ppsspp.mjs` 的目标代次和相应模板一起升到 v23。
 
 v20（`scripts/refresh-ppsspp-stability-v20.mjs` 从 v19 生成，Wasm / data 不变）修 2026-11-15 QQ Browser 21
 《初音未来：歌姬计划》现场暴露的两件事：实际 canvas 报 1533×777，超过 profile 规定的 960×544，说明只传
@@ -3255,6 +3256,12 @@ v21（`scripts/refresh-ppsspp-compat-v21.mjs` 从 v20 生成，Wasm / data 不�
 （含 `QQBrowser`、`MQQBrowser`、`QQ/` UA）固定 480×272 画布并关闭额外 SAS 线程，避免继续走高性能档；运行时错误上报前
 先触发一次 IDBFS 存档冲刷，最多等 1.5 秒，IndexedDB 卡住时仍会继续报错。v20 的 worker 栈采集保留，因此后续复现可以
 从调用栈继续定根因。性能档是兼容性缓解，不代表确认了 QQ Browser 的 Wasm 类型转换根因。
+
+v22（`scripts/refresh-ppsspp-performance-v22.mjs` 从 v21 生成，Wasm / data 不变）改为性能优先的三档设备画布：
+移动端、QQ Browser、省流/弱网与可识别低配设备固定 480×272；普通或设备信息不完整的设备用 640×360；只有桌面设备
+同时报告至少 8 个逻辑核和 8 GB 内存才升到 720×408 并启用独立 SAS 线程。主线程和 Worker 的实际 canvas
+backing buffer 使用同一条件，`scale <= 1` 不会放大原始尺寸。最高绘图缓冲从 v21 的 522,240 像素降到 293,760，
+PSP 游戏内部分辨率仍固定 1x。旧 v21 运行时保持不可变。
 
 Emscripten
 自带的 preload fetch 没有重试，`host.js` 用 `getPreloadedPackage` 接管：优先读浏览器缓存，连续
