@@ -151,7 +151,9 @@ fi
 if [ "$PULL_LATEST" = "1" ]; then
   log "── 步骤 2/7  拉取最新代码 ──"
   # reset --hard 到远端，避免本地脏改动 / 合并冲突卡死自动部署
-  git fetch --quiet origin "$BRANCH" || die "git fetch 失败"
+  # 生产仓库可能只在 remote.origin.fetch 里配置 main；显式写目标引用，
+  # 否则非 main 分支只更新 FETCH_HEAD，下面 reset origin/$BRANCH 会继续用旧提交。
+  git fetch --quiet origin "refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" || die "git fetch 失败"
   git reset --hard "origin/$BRANCH" || die "git reset 失败"
   log "已更新到 $(git rev-parse --short HEAD)"
 else
