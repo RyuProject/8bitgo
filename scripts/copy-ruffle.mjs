@@ -8,6 +8,8 @@
  *
  *   npm run ruffle                              强制同步当前 npm 版本
  *   node scripts/copy-ruffle.mjs --if-missing  完整一致时跳过
+ *   node scripts/copy-ruffle.mjs --source <dir> --source-version <upstream> --version <version>
+ *                                                  发布自建补丁运行时
  */
 import { createHash } from 'node:crypto'
 import {
@@ -24,12 +26,17 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-const src = join(root, 'node_modules', '@ruffle-rs', 'ruffle')
+const argValue = (flag) => {
+  const index = process.argv.indexOf(flag)
+  return index >= 0 ? process.argv[index + 1] : undefined
+}
+const src = argValue('--source') || join(root, 'node_modules', '@ruffle-rs', 'ruffle')
+const sourceVersionOverride = argValue('--source-version')
 const ifMissing = process.argv.includes('--if-missing')
 const packageFile = join(src, 'package.json')
 
-if (!existsSync(join(src, 'ruffle.js')) || !existsSync(packageFile)) {
-  const msg = '未找到 node_modules/@ruffle-rs/ruffle，请先 npm install'
+if (!existsSync(join(src, 'ruffle.js')) || (!existsSync(packageFile) && !sourceVersionOverride)) {
+  const msg = '未找到 Ruffle 包或自建产物目录，请先构建 Ruffle 运行时'
   if (ifMissing) {
     console.warn(`⚠ ${msg}；Flash 游戏暂不可用`)
     process.exit(0)
@@ -38,9 +45,15 @@ if (!existsSync(join(src, 'ruffle.js')) || !existsSync(packageFile)) {
   process.exit(1)
 }
 
-const { version } = JSON.parse(readFileSync(packageFile, 'utf8'))
+const sourceVersion = sourceVersionOverride
+  || JSON.parse(readFileSync(packageFile, 'utf8')).version
+const version = argValue('--version') || sourceVersion
 if (!/^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(version)) {
   console.error(`✖ Ruffle 包版本格式异常：${String(version)}`)
+  process.exit(1)
+}
+if (!/^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(sourceVersion)) {
+  console.error(`✖ Ruffle 源包版本格式异常：${String(sourceVersion)}`)
   process.exit(1)
 }
 
@@ -95,7 +108,7 @@ function outputIsCurrent() {
   try {
     const manifest = JSON.parse(readFileSync(manifestFile, 'utf8'))
     const bootstrapManifest = JSON.parse(readFileSync(bootstrapFile, 'utf8'))
-    if (manifest.version !== version || !Array.isArray(manifest.files)) return false
+    if (manifest.version !== version || (version !== sourceVersion && manifest.sourceVersion !== sourceVersion) || !Array.isArray(manifest.files)) return false
     if (JSON.stringify(manifest.files) !== JSON.stringify(sourceFiles)) return false
     if (bootstrapManifest.version !== version) return false
     if (JSON.stringify(bootstrapManifest.bootstrap) !== JSON.stringify(bootstrap)) return false
@@ -114,7 +127,8 @@ mkdirSync(publicRoot, { recursive: true })
 rmSync(out, { recursive: true, force: true })
 mkdirSync(out, { recursive: true })
 for (const file of sourceFiles) copyFileSync(join(src, file.name), join(out, file.name))
-writeFileSync(manifestFile, `${JSON.stringify({ version, files: sourceFiles }, null, 2)}\n`, 'utf8')
+const manifest = { version, ...(version !== sourceVersion ? { sourceVersion } : {}), files: sourceFiles }
+writeFileSync(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
 /*
  * runtime.json 已经在同一个版本目录下长期缓存过，不能给它原地加字段：旧访客会一直拿不到预热入口。
  * bootstrap.json 是首次发布的新 URL，仍可跟版本目录一起 immutable，并且不会污染运行时完整性清单。

@@ -189,9 +189,9 @@ export function emulatorJsRuntimePaths(core: string, language?: string): Record<
 
 /**
  * Ruffle 的版本既进入 URL，也由构建检查和 npm 包互相校验。
- * wasm / glue 文件名不是稳定的内容哈希；把版本放进目录后，旧 CDN 缓存不会和新版混用。
+ * wasm / glue 文件名不是稳定的内容哈希；带本站补丁时另开版本目录，避免 CDN 把旧核心和修复版混用。
  */
-export const RUFFLE_VERSION = '0.7.1'
+export const RUFFLE_VERSION = '0.7.1-8bitgo.1'
 export const RUFFLE_PATH: string = asDir(
   import.meta.env.VITE_RUFFLE_PATH,
   `/ruffle/v${RUFFLE_VERSION}/`,

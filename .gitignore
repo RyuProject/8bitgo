@@ -114,8 +114,12 @@ diabloweb/build
 # 根上的 README.md 规则会连上游那份一起忽略；那份写着 devilution 源码仓库的出处，要留。
 !diabloweb/README.md
 
-# Ruffle 运行时（npm run ruffle 从 node_modules 复制）
+# Ruffle 上游运行时由 npm run ruffle 生成；本站修补版单独纳入发布产物。
 public/ruffle
+!public/ruffle/
+public/ruffle/*
+!public/ruffle/v0.7.1-8bitgo.1/
+!public/ruffle/v0.7.1-8bitgo.1/**
 
 # js-dos 运行时（npm run jsdos 从 node_modules 复制）
 public/jsdos

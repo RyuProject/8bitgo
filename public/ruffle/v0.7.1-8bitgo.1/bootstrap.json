@@ -1,0 +1,13 @@
+{
+  "version": "0.7.1-8bitgo.1",
+  "bootstrap": {
+    "modern": [
+      "core.ruffle.1e8ba0ba354ac1c1caa1.js",
+      "fc897fa050f6083d84aa.wasm"
+    ],
+    "fallback": [
+      "core.ruffle.d9827e036807622b5ae9.js",
+      "73c962b987ad7c7f7ee8.wasm"
+    ]
+  }
+}

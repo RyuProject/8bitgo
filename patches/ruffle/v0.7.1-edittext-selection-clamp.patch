@@ -1,0 +1,38 @@
+diff --git a/core/src/display_object/edit_text.rs b/core/src/display_object/edit_text.rs
+index 63e3d997..f910bf7e 100644
+--- a/core/src/display_object/edit_text.rs
++++ b/core/src/display_object/edit_text.rs
+@@ -868,6 +868,11 @@ impl<'gc> EditText<'gc> {
+     /// have already been calculated and applied to HTML trees lowered into the
+     /// text-span representation.
+     pub fn relayout(self, context: &mut dyn LayoutContext<'gc>) {
++        // 脚本可能在选区建立后缩短文本；重排前先收紧旧选区，避免下一次按词移动越界切片。
++        if let Some(selection) = self.selection() {
++            self.set_selection(Some(selection));
++        }
++
+         let autosize = self.0.autosize.get();
+         let is_word_wrap = self.0.flags.get().contains(EditTextFlag::WORD_WRAP);
+         let movie = self.0.shared.swf.clone();
+@@ -1954,7 +1959,9 @@ impl<'gc> EditText<'gc> {
+     ///
+     /// This algorithm is based on [UAX #29](https://unicode.org/reports/tr29/).
+     fn find_prev_word_boundary(self, pos: usize, stop_on_space: bool) -> usize {
+-        let head = &self.text()[..pos];
++        let text = self.text();
++        let pos = pos.min(text.len());
++        let head = &text[..pos];
+         if stop_on_space && head.ends_with(ruffle_wstr::utils::swf_is_whitespace) {
+             return pos;
+         }
+@@ -1976,7 +1983,9 @@ impl<'gc> EditText<'gc> {
+     ///
+     /// This algorithm is based on [UAX #29](https://unicode.org/reports/tr29/).
+     fn find_next_word_boundary(self, pos: usize, stop_on_space: bool) -> usize {
+-        let tail = &self.text()[pos..];
++        let text = self.text();
++        let pos = pos.min(text.len());
++        let tail = &text[pos..];
+         if stop_on_space && tail.starts_with(ruffle_wstr::utils::swf_is_whitespace) {
+             return pos;
+         }

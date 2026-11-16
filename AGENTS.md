@@ -1699,6 +1699,12 @@ performance 看不到。现在适配器做三件事：
 `loadGameBytes()` 原先在 Ruffle 的 `assertSwf()` 之前就缓存 8BG 密文，后续开局从 ROM 缓存重复取到坏内容，短时间多次点击都秒失败；诊断包没有保留文件字节，不能据此判定坏内容最初来自 R2 还是浏览器缓存。
 Ruffle 要把 `assertSwf` / `assertSwfBlob` 通过 `loadGameBytes` 的校验回调传入，确保普通 SWF、8BG 解包结果、远程 ZIP 内层 SWF 都在写缓存前校验；历史缓存校验失败要同时删除 ROM 缓存和续传片再回源。管理员上传单 SWF、多 SWF ZIP、已有 8BG 容器时也先校验内层主文件。**不要在适配器拿到已缓存的字节后才做平台完整性校验。**
 
+### 2.24.0d EditText 文本缩短后必须收紧旧选区（2026-11-16，《咒怨》Ruffle panic）
+
+Ruffle 0.7.1 的 `EditText::set_selection()` 会把选区裁到当前文本长度，但 ActionScript 缩短文本并触发 `relayout()` 时没有重新裁选区；随后按词移动 / 删除把旧光标位置交给单词边界计算，`&text[..pos]` 越界会 panic `string indices out of bounds`。玩家现场的 SWF、WASM、首帧都已成功，约 44 秒后才报错，因此这不是下载或 SWF 完整性故障。
+
+本站补丁 `patches/ruffle/v0.7.1-edittext-selection-clamp.patch` 在 `relayout()` 前重新调用 `set_selection()`，并在按词移动的前后边界计算中把位置限制在当前文本长度内。修补后的运行时必须发布到新路径 `public/ruffle/v0.7.1-8bitgo.1/`，不能覆盖已缓存一年的 `v0.7.1`。重编时按 Ruffle 上游 `web/README.md` 构建流程，在 v0.7.1 源码应用补丁并运行 `npm run build:dual-wasm`；随后用 `node scripts/copy-ruffle.mjs --source <packages/selfhosted/dist> --source-version 0.7.1 --version 0.7.1-8bitgo.1` 发布。`check-ruffle.mjs` 和性能回归都必须同时核对自定义运行时代次与当前 npm 上游版本。
+
 ### 2.24.0 Ruffle 存档要跟着游戏走；舞台按显示尺寸渲染
 
 Ruffle 的 SharedObject 键是 `<hostname>/<localPath>/<名字>`，而本站所有 Flash 共用一个源：

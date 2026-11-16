@@ -23,12 +23,12 @@ if (!existsSync(pkgFile)) fail('npm 包不存在，请先 npm install')
 const { version } = JSON.parse(readFileSync(pkgFile, 'utf8'))
 const pathsSource = readFileSync(pathsFile, 'utf8')
 const declared = pathsSource.match(/export const RUFFLE_VERSION\s*=\s*['"]([^'"]+)['"]/)?.[1]
-if (declared !== version) {
-  fail(`src/emulator/paths.ts 声明 ${declared || '空'}，npm 安装的是 ${version}`)
+if (!declared) {
+  fail('src/emulator/paths.ts 没有声明 RUFFLE_VERSION')
 }
 
 const base = distMode ? join(root, 'dist', 'client') : join(root, 'public')
-const runtimeDir = join(base, 'ruffle', `v${version}`)
+const runtimeDir = join(base, 'ruffle', `v${declared}`)
 const manifestFile = join(runtimeDir, 'runtime.json')
 const bootstrapFile = join(runtimeDir, 'bootstrap.json')
 if (!existsSync(manifestFile)) fail(`${manifestFile} 不存在；先运行 npm run ruffle`)
@@ -40,8 +40,11 @@ try {
 } catch {
   fail('runtime.json 不是合法 JSON')
 }
-if (manifest.version !== version || !Array.isArray(manifest.files) || !manifest.files.length) {
+if (manifest.version !== declared || !Array.isArray(manifest.files) || !manifest.files.length) {
   fail('runtime.json 的版本或文件列表不正确')
+}
+if (declared === version ? manifest.sourceVersion !== undefined : manifest.sourceVersion !== version) {
+  fail(`runtime.json 来源版本 ${manifest.sourceVersion || '未记录'} 与 npm 包 ${version} 不一致`)
 }
 
 for (const file of manifest.files) {
@@ -60,7 +63,7 @@ try {
 } catch {
   fail('bootstrap.json 不是合法 JSON')
 }
-if (bootstrapManifest.version !== version) fail('bootstrap.json 的版本不正确')
+if (bootstrapManifest.version !== declared) fail('bootstrap.json 的版本不正确')
 const published = new Set(manifest.files.map((file) => file.name))
 for (const variant of ['modern', 'fallback']) {
   const targets = bootstrapManifest.bootstrap?.[variant]
@@ -70,4 +73,4 @@ for (const variant of ['modern', 'fallback']) {
   }
   for (const name of targets) if (!published.has(name)) fail(`${variant} 预热入口指向未发布文件 ${name}`)
 }
-console.log(`✔ Ruffle ${version} ${distMode ? '部署产物' : '公开目录'}完整且版本一致`)
+console.log(`✔ Ruffle ${declared}（上游 ${version}）${distMode ? '部署产物' : '公开目录'}完整且版本一致`)

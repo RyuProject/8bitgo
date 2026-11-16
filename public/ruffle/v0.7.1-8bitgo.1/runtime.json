@@ -1,0 +1,41 @@
+{
+  "version": "0.7.1-8bitgo.1",
+  "sourceVersion": "0.7.1",
+  "files": [
+    {
+      "name": "73c962b987ad7c7f7ee8.wasm",
+      "size": 13304518,
+      "sha256": "cd926a83b736146ec9f8786ecfd4c4db3ec6a843ea54caa1ddcb6a9f15601ec3"
+    },
+    {
+      "name": "LICENSE_APACHE",
+      "size": 9723,
+      "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+    },
+    {
+      "name": "LICENSE_MIT",
+      "size": 1097,
+      "sha256": "4de9338a7879c68e911742a7d691f0797ff1ef8d8a6fb978b0c711e258fe959c"
+    },
+    {
+      "name": "core.ruffle.1e8ba0ba354ac1c1caa1.js",
+      "size": 108310,
+      "sha256": "43117660943fbca9853e1f9a0aa6f42f5b30f2ad9e4c0a3c7c67d59d1ceb6cb0"
+    },
+    {
+      "name": "core.ruffle.d9827e036807622b5ae9.js",
+      "size": 114743,
+      "sha256": "f8ccb4a1afb7568a7519e5ca14c19b8e3e2b6a773882f49d83faff3ab03eee64"
+    },
+    {
+      "name": "fc897fa050f6083d84aa.wasm",
+      "size": 13231578,
+      "sha256": "0dd2507bd021e3a625910f8043dcd34cfe1759827c7fe31762aae3d0d1751205"
+    },
+    {
+      "name": "ruffle.js",
+      "size": 465890,
+      "sha256": "8418ac50bd25f7dce8b81b84c02fdbab9de3a355f7ee730fe0b19e3f0455d8d2"
+    }
+  ]
+}

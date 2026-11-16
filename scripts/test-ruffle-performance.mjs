@@ -22,8 +22,11 @@ import { isSfsGame } from '../shared/sfs-games.js'
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const read = (path) => readFileSync(join(root, path), 'utf8')
 // 不从 paths.ts 导入：它会读取 Vite 的 import.meta.env，Node 回归环境没有这层对象。
-// npm 包版本就是 copy-ruffle/check-ruffle 的真源，拿它拼目录才能防止继续读取残留的旧版本产物。
-const { version: RUFFLE_VERSION } = JSON.parse(read('node_modules/@ruffle-rs/ruffle/package.json'))
+// 公开目录跟随源码里声明的运行时版本；清单还要证明它来自当前 npm 包，避免拿残留旧目录假绿。
+const { version: RUFFLE_PACKAGE_VERSION } = JSON.parse(read('node_modules/@ruffle-rs/ruffle/package.json'))
+const pathsSource = read('src/emulator/paths.ts')
+const RUFFLE_VERSION = pathsSource.match(/export const RUFFLE_VERSION\s*=\s*['"]([^'"]+)['"]/)?.[1]
+assert.ok(RUFFLE_VERSION, 'paths.ts 必须声明当前 Ruffle 运行时版本')
 
 console.log('── 高分屏清晰度与抗锯齿平衡 ──')
 assert.deepEqual(selectRufflePerformanceProfile({ deviceMemory: 8, hardwareConcurrency: 8, devicePixelRatio: 2 }), {
@@ -471,6 +474,8 @@ console.log('── 大核心预热与旁路门控 ──')
 const manifest = JSON.parse(read(`public/ruffle/v${RUFFLE_VERSION}/runtime.json`))
 const bootstrap = JSON.parse(read(`public/ruffle/v${RUFFLE_VERSION}/bootstrap.json`))
 assert.equal(manifest.version, RUFFLE_VERSION, '性能回归必须读取当前 Ruffle 版本，不能拿旧目录假绿')
+assert.equal(manifest.sourceVersion ?? manifest.version, RUFFLE_PACKAGE_VERSION,
+  '公开运行时必须来自当前 npm 包版本；站内补丁版本需在清单标明上游版本')
 assert.equal(bootstrap.version, RUFFLE_VERSION, '预热清单必须和当前 Ruffle 版本一致')
 const files = new Set(manifest.files.map((file) => file.name))
 for (const variant of ['modern', 'fallback']) {
