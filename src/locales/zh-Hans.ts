@@ -949,6 +949,13 @@ export const zhHans = {
   player: {
     romLang: 'ROM 语言',
     romLangTitle: '换一个语言版本的游戏 ROM',
+    discSwap: '换盘',
+    discSwapTitle: '在不退出游戏的情况下切换光盘',
+    discSwapHelp: '请在游戏提示换盘时选择。切换不会重启游戏。',
+    discNumber: '第 {n} 张',
+    discCurrent: '当前',
+    discSwitched: '已切换到第 {n} 张光盘',
+    discSwitchFailed: '切换光盘失败，请稍后重试',
     romLangSwitched: '已换成{lang}版本，这一局重新开始了',
     noCurrentLanguageVersion: '游戏没有当前语言版本',
     romUnreachable: '暂时读取不到 ROM，可能是网络问题',

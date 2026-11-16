@@ -768,6 +768,9 @@ export function EmulatorPlayer({
    *  必须在引用它的 ?jsnesp2p effect 之前声明：该 effect 的依赖数组在渲染期访问 handle，
    *  若声明在它之后会触发 TDZ（TS2448/2454 + 运行时 ReferenceError）。 */
   const [handle, setHandle] = useState<RuntimeHandle | null>(null)
+  const [discMenuOpen, setDiscMenuOpen] = useState(false)
+  const [discSnapshot, setDiscSnapshot] = useState<{ count: number; current: number; labels: readonly string[] } | null>(null)
+  const discControlRef = useRef<HTMLDivElement>(null)
   /** 调试模式下的诊断时间线：每个阶段一笔成败，出问题时据此定位卡点。 */
   const [diag, setDiag] = useState<DiagEntry[]>([])
   const [diagCause, setDiagCause] = useState<DiagCause | null>(null)
@@ -784,6 +787,28 @@ export function EmulatorPlayer({
     const id = window.setInterval(sync, 600)
     return () => window.clearInterval(id)
   }, [debug, handle])
+
+  useEffect(() => {
+    if (!discMenuOpen) return
+    const onPointerDown = (event: PointerEvent) => {
+      if (!discControlRef.current?.contains(event.target as Node)) setDiscMenuOpen(false)
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setDiscMenuOpen(false)
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [discMenuOpen])
+
+  useEffect(() => {
+    if (status === 'running' && handle?.caps.has('discControl')) return
+    setDiscMenuOpen(false)
+    setDiscSnapshot(null)
+  }, [status, handle])
 
   const jsnesInviteCode = typeof window !== 'undefined'
     ? (new URLSearchParams(window.location.search).get('jsnesp2p')?.trim().toLowerCase() ?? '')
@@ -5066,6 +5091,69 @@ export function EmulatorPlayer({
                 ▾
               </span>
             </label>
+          )}
+          {status === 'running' && handle?.caps.has('discControl') && handle.discControl && !inRoom && !session?.live && (
+            <div ref={discControlRef} className="relative">
+              <Button
+                variant={discMenuOpen ? 'primary' : 'secondary'}
+                size="sm"
+                className="max-sm:h-11 max-sm:px-2"
+                title={t.player.discSwapTitle}
+                aria-haspopup="menu"
+                aria-expanded={discMenuOpen}
+                onClick={() => {
+                  const snapshot = handle.discControl?.getState()
+                  if (!snapshot) {
+                    setDiscMenuOpen(false)
+                    setDiscSnapshot(null)
+                    setNotice(t.player.discSwitchFailed)
+                    return
+                  }
+                  setDiscSnapshot(snapshot)
+                  setDiscMenuOpen((open) => !open)
+                }}
+              >
+                <span aria-hidden>💿</span>
+                <span>{t.player.discSwap}</span>
+                {discSnapshot && <span className="text-muted">{discSnapshot.current + 1}/{discSnapshot.count}</span>}
+              </Button>
+              {discMenuOpen && discSnapshot && (
+                <div role="menu" aria-label={t.player.discSwapTitle} className="absolute bottom-full right-0 z-50 mb-2 w-64 max-w-[calc(100vw-2rem)] rounded-xl border border-line bg-surface p-2 shadow-xl">
+                  <p className="px-2 pb-2 text-xs text-muted">{t.player.discSwapHelp}</p>
+                  <div className="grid gap-1">
+                    {Array.from({ length: discSnapshot.count }, (_, index) => {
+                      const current = discSnapshot.current === index
+                      const label = discSnapshot.labels[index]?.trim()
+                      return (
+                        <button
+                          key={index}
+                          type="button"
+                          role="menuitemradio"
+                          aria-checked={current}
+                          disabled={current}
+                          className="flex min-w-0 items-center gap-2 rounded-lg px-2 py-2 text-left text-sm transition hover:bg-surface-2 disabled:bg-brand/10 disabled:text-brand disabled:opacity-100"
+                          onClick={() => {
+                            const changed = handle.discControl?.select(index) ?? false
+                            if (!changed) {
+                              setNotice(t.player.discSwitchFailed)
+                              return
+                            }
+                            setDiscSnapshot((previous) => previous ? { ...previous, current: index } : previous)
+                            setDiscMenuOpen(false)
+                            setNotice(fmt(t.player.discSwitched, { n: String(index + 1) }))
+                          }}
+                        >
+                          <span className="shrink-0">{current ? '●' : '○'}</span>
+                          <span className="shrink-0">{fmt(t.player.discNumber, { n: String(index + 1) })}</span>
+                          {label && <span className="min-w-0 flex-1 truncate text-muted" title={label}>{label}</span>}
+                          {current && <span className="ml-auto shrink-0 text-xs">{t.player.discCurrent}</span>}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
           )}
           {/*
             这个位置只有两种情况需要按钮：

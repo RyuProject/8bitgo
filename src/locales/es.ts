@@ -898,6 +898,13 @@ const es: Translation = {
   player: {
     romLang: 'Idioma de la ROM',
     romLangTitle: 'Cambiar a otra versión de idioma de este juego',
+    discSwap: 'Cambiar disco',
+    discSwapTitle: 'Cambiar de disco sin salir del juego',
+    discSwapHelp: 'Elige un disco cuando el juego te pida cambiarlo. La partida no se reiniciará.',
+    discNumber: 'Disco {n}',
+    discCurrent: 'Actual',
+    discSwitched: 'Se cambió al disco {n}',
+    discSwitchFailed: 'No se pudo cambiar el disco. Inténtalo de nuevo.',
     romLangSwitched: 'Cambiado a la versión en {lang}: la partida ha vuelto a empezar',
     noCurrentLanguageVersion: 'Este juego no está disponible en el idioma actual',
     romUnreachable: 'Ahora mismo no se puede acceder a la ROM, probablemente por la red',

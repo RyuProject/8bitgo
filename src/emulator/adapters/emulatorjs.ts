@@ -640,6 +640,10 @@ interface EjsNetplay {
 }
 interface EjsGameManager {
   getState: () => Uint8Array
+  /** EmulatorJS 的光盘控制封装；M3U 多盘游戏可在运行中切换当前盘。 */
+  getDiskCount?: () => number
+  getCurrentDisk?: () => number
+  setCurrentDisk?: (index: number) => void
   /** RetroArch 帧计数（cwrap get_current_frame_count） */
   getFrameNum?: () => number
   toggleFastForward?: (on: number) => void
@@ -2771,6 +2775,17 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (typeof emu.pause !== 'function' || typeof emu.play !== 'function') caps.delete('pause')
     if (typeof emu.setVolume !== 'function' && !('volume' in emu)) caps.delete('volume')
     if (typeof emu.gameManager?.getState !== 'function') caps.delete('saveState')
+    const gameManager = emu.gameManager
+    let canControlDiscs = false
+    try {
+      canControlDiscs = options.platform === 'psx' && preparedPsxRange?.multiDisc === true &&
+        typeof gameManager?.getDiskCount === 'function' && typeof gameManager.getCurrentDisk === 'function' &&
+        typeof gameManager.setCurrentDisk === 'function' && Number(gameManager.getDiskCount()) > 1
+    } catch {
+      canControlDiscs = false
+    }
+    if (canControlDiscs) caps.add('discControl')
+    else caps.delete('discControl')
     // 改键面板是 createBottomMenuBar() 里建的。我们只用 CSS 把那条栏藏了、没删，
     // 所以正常情况下它一定在；真没有（引擎换了实现）就把按钮摘掉，别亮一个点了没反应的
     if (!canSetDisplay(emu.controlMenu)) caps.delete('remapKeys')
@@ -5826,6 +5841,42 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   return {
     caps,
     destroy,
+    ...(options.platform === 'psx'
+      ? {
+          discControl: {
+            getState() {
+              const gm = emuOf()?.gameManager
+              try {
+                const count = Number(gm?.getDiskCount?.())
+                const current = Number(gm?.getCurrentDisk?.())
+                if (!preparedPsxRange?.multiDisc || !Number.isInteger(count) || count < 2 ||
+                    !Number.isInteger(current) || current < 0 || current >= count) return null
+                return {
+                  count,
+                  current,
+                  labels: preparedPsxRange.discLabels ?? [],
+                }
+              } catch {
+                return null
+              }
+            },
+            select(index: number) {
+              const gm = emuOf()?.gameManager
+              try {
+                const count = Number(gm?.getDiskCount?.())
+                if (!preparedPsxRange?.multiDisc || !Number.isInteger(count) || count < 2 ||
+                    !Number.isInteger(index) || index < 0 || index >= count ||
+                    typeof gm?.setCurrentDisk !== 'function') return false
+                gm.setCurrentDisk(index)
+                return true
+              } catch (error) {
+                logEngine(`[psx] 切换光盘失败：${error instanceof Error ? error.message : String(error)}`)
+                return false
+              }
+            },
+          },
+        }
+      : {}),
     // CHD / 改版街机的核心在异步准备 ROM 后才最终确定；存档时必须读最终核心，不能固定挂载时的旧值。
     get saveMetadata() {
       return { core, build: EJS_RUNTIME_GENERATION, format: 'emulatorjs-state' }

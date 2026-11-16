@@ -35,6 +35,8 @@ export interface PsxRangeDisc {
 /** 单盘与 M3U 共用的流式媒体契约，安装时由一个 EmulatorJS 下载钩子挂入虚拟文件系统。 */
 export interface PsxRangeMedia {
   readonly multiDisc: boolean
+  /** M3U 里的盘序与文件名，供站内换盘菜单显示。 */
+  readonly discLabels?: readonly string[]
   readonly url: string
   readonly name: string
   readonly size: number
@@ -419,6 +421,7 @@ export async function preparePsxRangePlaylist(url: string, signal: AbortSignal,
     const playlistBytes = encoder.encode(manifest.text.replace(/^\uFEFF/, ''))
     return {
       multiDisc: true, url, name: decodedName, size: totalSize, startupBytes,
+      discLabels: entries.map((entry) => entry.filename.replace(/\.chd$/i, '').replace(/^Disc \d+\s*-\s*/i, '') || entry.label),
       head: discs[0].head,
       heads: discs.map(disc => disc.head),
       install(fs, xhrFactory) {

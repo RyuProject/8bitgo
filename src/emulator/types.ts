@@ -475,6 +475,8 @@ export type Capability =
   | 'enginePad'
   | 'enginePointer'
   | 'remapKeys'
+  /** M3U 多盘游戏可由站内工具栏选盘，不必打开模拟器菜单。 */
+  | 'discControl'
 
 /**
  * 屏幕手柄能按的键。取 NES/FC 的键位作最小公约数 —— 手机屏上再多按键也放不下，
@@ -535,6 +537,11 @@ export interface RuntimeHandle {
   caps: Set<Capability>
   /** 暂停 / 继续 */
   setPaused?: (paused: boolean) => void
+  /** 多盘游戏的站内换盘入口；只切换当前盘，不重启模拟器或游戏。 */
+  discControl?: {
+    getState: () => { count: number; current: number; labels: readonly string[] } | null
+    select: (index: number) => boolean
+  }
   /**
    * 游戏真正输出的逻辑画面尺寸（不是画布尺寸）。直播靠它把编码分辨率缩回有效舞台；
    * 画布按「容器 × dpr」建的运行时（EmulatorJS / Ruffle）必须实现，否则缩放永远不生效。

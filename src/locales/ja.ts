@@ -887,6 +887,13 @@ const ja: Translation = {
   player: {
     romLang: 'ROM の言語',
     romLangTitle: 'このゲームの別の言語版 ROM に切り替える',
+    discSwap: 'ディスク交換',
+    discSwapTitle: 'ゲームを終了せずにディスクを切り替える',
+    discSwapHelp: 'ゲーム内でディスク交換を求められたら選択してください。ゲームは再起動しません。',
+    discNumber: 'ディスク {n}',
+    discCurrent: '現在',
+    discSwitched: 'ディスク {n} に切り替えました',
+    discSwitchFailed: 'ディスクを切り替えられませんでした。もう一度お試しください。',
     romLangSwitched: '{lang}版に切り替えました。プレイは最初からになります',
     noCurrentLanguageVersion: 'このゲームには現在の言語版がありません',
     romUnreachable: '今は ROM を読み込めません（ネットワークの問題の可能性があります）',

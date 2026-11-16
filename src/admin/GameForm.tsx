@@ -3312,6 +3312,7 @@ function RomField({
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
   const multiDiscInputRef = useRef<HTMLInputElement>(null)
+  const [multiDiscFiles, setMultiDiscFiles] = useState<File[]>([])
   const [progress, setProgress] = useState<number | null>(null)
   /** 分片上传的进度明细（单发 PUT 时一直是 null） */
   const [stage, setStage] = useState<UploadStage | null>(null)
@@ -3696,10 +3697,11 @@ function RomField({
   }
 
   /**
-   * 多盘组先上传不可变盘片对象，最后才发布 M3U 指针并改绑语言槽。
+   * 先预览并允许管理员重排盘序，避免文件选择器的返回顺序悄悄决定游戏换盘顺序；
+   * 多盘组再上传不可变盘片对象，最后才发布 M3U 指针并改绑语言槽。
    * 中途失败最多留下未引用的 CHD，不会让线上玩家读到半套或新旧混合的盘组。
    */
-  const onMultiDiscFiles = async (files: File[] | undefined) => {
+  const onMultiDiscFiles = (files: File[] | undefined) => {
     if (!files?.length) return
     if (!lang) {
       setMsg({ ok: false, text: '请先选择 ROM 语言槽，再上传 PS1 多盘组' })
@@ -3709,6 +3711,34 @@ function RomField({
     if (files.length < 2 || files.length > PSX_M3U_MAX_DISCS) {
       setMsg({ ok: false, text: `请选择 2–${PSX_M3U_MAX_DISCS} 张 CHD，并按游戏要求的盘片顺序选择` })
       if (multiDiscInputRef.current) multiDiscInputRef.current.value = ''
+      return
+    }
+    const invalid = files.find((file) => !/\.chd$/i.test(file.name) || file.size < PSX_RANGE_BYTES || file.size > 1024 * 1024 * 1024)
+    if (invalid) {
+      setMsg({ ok: false, text: `${invalid.name} 不是 2MB–1GB 范围内的裸 CHD；多盘流式组只接受 CHD v5` })
+      if (multiDiscInputRef.current) multiDiscInputRef.current.value = ''
+      return
+    }
+    setMultiDiscFiles(files)
+    setMsg({ ok: true, text: `已载入 ${files.length} 张盘片；请检查顺序，确认后才会上传并绑定。` })
+    if (multiDiscInputRef.current) multiDiscInputRef.current.value = ''
+  }
+
+  const moveMultiDiscFile = (index: number, offset: -1 | 1) => {
+    setMultiDiscFiles((current) => {
+      const nextIndex = index + offset
+      if (nextIndex < 0 || nextIndex >= current.length) return current
+      const next = [...current]
+      ;[next[index], next[nextIndex]] = [next[nextIndex], next[index]]
+      return next
+    })
+  }
+
+  const uploadMultiDiscFiles = async () => {
+    const files = multiDiscFiles
+    if (!files.length) return
+    if (!lang) {
+      setMsg({ ok: false, text: '请先选择 ROM 语言槽，再上传 PS1 多盘组' })
       return
     }
     setProgress(0)
@@ -3758,6 +3788,7 @@ function RomField({
           if (at) setStage(at)
         })
         onChange(playlistKey)
+        setMultiDiscFiles([])
         setMsg({ ok: true, text: `已发布 ${uploadFiles.length} 张 PS1 光盘（${human(totalBytes)}）和 M3U 清单；当前语言已改绑，请保存游戏条目` })
       })
     } catch (error) {
@@ -3765,7 +3796,6 @@ function RomField({
     } finally {
       setProgress(null)
       setStage(null)
-      if (multiDiscInputRef.current) multiDiscInputRef.current.value = ''
     }
   }
 
@@ -4327,25 +4357,50 @@ function RomField({
           )}
         </div>
         {platform === 'psx' && (
-          <div className="flex flex-wrap items-center gap-2 rounded-md border border-line p-2">
+          <div className="grid gap-2 rounded-md border border-line p-2">
             <input
               ref={multiDiscInputRef}
               type="file"
               accept=".chd,application/octet-stream"
               multiple
               className="hidden"
-              onChange={(event) => void onMultiDiscFiles(event.target.files ? Array.from(event.target.files) : undefined)}
+              onChange={(event) => onMultiDiscFiles(event.target.files ? Array.from(event.target.files) : undefined)}
             />
-            <button
-              type="button"
-              className={cx(btnClass.secondary, 'shrink-0 whitespace-nowrap')}
-              disabled={!canUpload || !lang || progress !== null || bundleAt !== null}
-              onClick={() => multiDiscInputRef.current?.click()}
-              title={!lang ? '先选择 ROM 语言槽' : canUpload ? `按顺序选择 2–${PSX_M3U_MAX_DISCS} 张裸 CHD；自动创建多盘清单并绑定当前语言` : '需要先配置 Worker'}
-            >
-              ☁️ 上传双盘 / 多盘组
-            </button>
-            <span className="text-[11px] text-dim">仅限裸 CHD；先上传全部盘，再发布清单，失败不改现有绑定。</span>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                className={cx(btnClass.secondary, 'shrink-0 whitespace-nowrap')}
+                disabled={!canUpload || !lang || progress !== null || bundleAt !== null}
+                onClick={() => multiDiscInputRef.current?.click()}
+                title={!lang ? '先选择 ROM 语言槽' : canUpload ? `选择 2–${PSX_M3U_MAX_DISCS} 张裸 CHD，然后确认盘序再上传` : '需要先配置 Worker'}
+              >
+                📀 选择双盘 / 多盘组
+              </button>
+              <span className="text-[11px] text-dim">裸 CHD v5；上传前可调整顺序。全部盘上传成功后才发布清单并绑定。</span>
+            </div>
+            {multiDiscFiles.length > 0 && (
+              <>
+                <ol className="grid gap-1.5">
+                  {multiDiscFiles.map((file, index) => (
+                    <li key={`${file.name}-${file.size}-${file.lastModified}`} className="flex min-w-0 items-center gap-2 rounded-md bg-surface-muted px-2 py-1.5 text-xs">
+                      <span className="grid size-6 shrink-0 place-items-center rounded-full bg-brand/15 font-semibold text-brand">{index + 1}</span>
+                      <span className="min-w-0 flex-1 truncate" title={file.name}>{file.name}</span>
+                      <span className="shrink-0 text-dim">{human(file.size)}</span>
+                      <button type="button" className={cx(btnClass.small, 'h-8 min-w-8 border border-line bg-surface-2 text-fg hover:border-line-strong disabled:opacity-50')} disabled={index === 0 || progress !== null} onClick={() => moveMultiDiscFile(index, -1)} aria-label={`将第 ${index + 1} 张上移`} title="上移">↑</button>
+                      <button type="button" className={cx(btnClass.small, 'h-8 min-w-8 border border-line bg-surface-2 text-fg hover:border-line-strong disabled:opacity-50')} disabled={index === multiDiscFiles.length - 1 || progress !== null} onClick={() => moveMultiDiscFile(index, 1)} aria-label={`将第 ${index + 1} 张下移`} title="下移">↓</button>
+                    </li>
+                  ))}
+                </ol>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button type="button" className={cx(btnClass.primary, 'shrink-0')} disabled={!canUpload || progress !== null || bundleAt !== null} onClick={() => void uploadMultiDiscFiles()}>
+                    ☁️ 确认盘序并上传 {multiDiscFiles.length} 张盘
+                  </button>
+                  <button type="button" className={cx(btnClass.small, 'h-9 rounded-lg border border-line px-3 text-sm text-muted hover:bg-surface-2 disabled:opacity-50')} disabled={progress !== null} onClick={() => setMultiDiscFiles([])}>
+                    清除选择
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         )}
         {!isHtml5 && value.trim() && (

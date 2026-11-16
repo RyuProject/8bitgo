@@ -900,6 +900,13 @@ const zhHant: Translation = {
   player: {
     romLang: 'ROM 語言',
     romLangTitle: '換一個語言版本的遊戲 ROM',
+    discSwap: '換片',
+    discSwapTitle: '不退出遊戲即可切換光碟',
+    discSwapHelp: '請在遊戲提示換片時選擇。切換不會重新啟動遊戲。',
+    discNumber: '第 {n} 張',
+    discCurrent: '目前',
+    discSwitched: '已切換至第 {n} 張光碟',
+    discSwitchFailed: '切換光碟失敗，請稍後再試',
     romLangSwitched: '已換成{lang}版本，這一局重新開始了',
     noCurrentLanguageVersion: '遊戲沒有目前語言版本',
     romUnreachable: '暫時讀取不到 ROM，可能是網路問題',
