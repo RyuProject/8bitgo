@@ -48,6 +48,7 @@ import { ruffleRendererPreference, type RuffleRendererPreference } from '../flas
 import { flashLegacyBundleRules, type FlashUrlRewriteRule } from '../flashLegacyBundle'
 import { installFlashLegacyLoginRedirect } from '../flashLegacyLogin'
 import { installRuffleCrashGuard } from '../ruffleCrash'
+import { installRuffleWordShortcutGuard } from '../ruffleWordShortcutGuard'
 import { warmRuffleCore } from '../prewarm'
 import { diagLog, registerDiagnosticSnapshot, watchFramePerformance } from '@/services/startupDiagnostics'
 
@@ -501,6 +502,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let cancelLegacyLoginRedirect = () => {}
   let cancelFlashSaveAuthRefresh = () => {}
   let cancelCrashGuard = () => {}
+  let cancelWordShortcutGuard = () => {}
 
   const cancelFocusRetry = () => {
     if (focusRaf) cancelAnimationFrame(focusRaf)
@@ -629,7 +631,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   /** 壳页面就绪后的一次性初始化；load 事件和超时兜底都走这里，frameInitialized 保证只跑一次。 */
   const initFrame = () => {
     if (destroyed || frameInitialized) return
-    const win = iframe.contentWindow as (Window & { RufflePlayer?: RuffleGlobal }) | null
+    const win = iframe.contentWindow as (Window & typeof globalThis & { RufflePlayer?: RuffleGlobal }) | null
     const doc = iframe.contentDocument
     /*
       ⚠️ 不能把每一次 load 都当成 `/flash-frame.html` 已经回来。
@@ -690,6 +692,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       setEnginePaused(true)
       options.onError?.(fmt(rt.flashLoadFailed, { msg: detail }), 'runtime')
     })
+    cancelWordShortcutGuard()
+    cancelWordShortcutGuard = installRuffleWordShortcutGuard(win, doc)
 
     const script = doc.createElement('script')
     script.src = `${ruffleRoot}ruffle.js`
@@ -1380,6 +1384,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       cancelLegacyLoginRedirect()
       cancelFlashSaveAuthRefresh()
       cancelCrashGuard()
+      cancelWordShortcutGuard()
       cancelFocusRetry()
       if (canvasCapsTimer) window.clearTimeout(canvasCapsTimer)
       canvasCapsTimer = 0
