@@ -19,6 +19,7 @@ README.md
 # 而 server/、worker/、deploy/live/ 那三份是当初 git add -f 硬塞进去的。
 # 部署说明是运维步骤，丢了只能靠人回忆，所以这里把 deploy/ 下的放行。
 !deploy/**/README.md
+!public/eka2l1/**/source/patches/external/README.md
 # env
 .env
 .env.*.local
