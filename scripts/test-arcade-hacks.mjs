@@ -96,20 +96,19 @@ console.log('\n── 合成 ROM（derive）──')
 /**
  * 合成用真包跑不了（仓库里不放 ROM），所以这里只验**机制**：
  * 输出必须是「原 ROM 原样 + 只有那个窗口换成补丁片」。
- * 窗口一旦改动，dat 里那两个合成产物的 CRC 就不再是 arcadeHacks.ts 记的值 ——
- * 那两个 CRC 是 2026-09-04 拿真包（wofj 的 gfx1/gfx3 + wofcn 的 gfx5cn/gfx6cn）
- * 实算出来的，并且用完整的 FBNeo 装载管线渲染验证过中文能正常显示。
+ * 窗口或四通道顺序一旦改动，dat 里的合成产物 CRC 就必须重新从真包计算。
  */
 const SIZE = 0x080000
-const WINDOW = [0x010000, 0x019c00]
+const WINDOW = [0x010000, 0x018000]
 const fill = (byte) => new Uint8Array(SIZE).fill(byte)
 const derived = hack.derive.run({
   'tk2_gfx1.rom': fill(0x11), 'tk2_gfx3.rom': fill(0x33),
+  'tk2_gfx2.rom': fill(0x22), 'tk2_gfx4.rom': fill(0x44),
   'tk2_gfx5cn.rom': fill(0x55), 'tk2_gfx6cn.rom': fill(0x66),
 })
-ok(derived.length === 2, `产出 2 块合成 ROM：${derived.map((d) => d.name).join(', ')}`)
-for (const [i, base] of [0x11, 0x33].entries()) {
-  const patch = [0x55, 0x66][i]
+ok(derived.length === 4, `产出 4 条合成图形通道：${derived.map((d) => d.name).join(', ')}`)
+for (const [i, base] of [0x11, 0x33, 0x22, 0x44].entries()) {
+  const patch = i < 2 ? 0x55 : 0x66
   const d = derived[i].data
   ok(d.length === SIZE, `${derived[i].name}: 长度还是 0x${SIZE.toString(16)}`)
   ok(d.subarray(0, WINDOW[0]).every((b) => b === base), `${derived[i].name}: 窗口之前是原 ROM 的内容`)
@@ -119,6 +118,7 @@ for (const [i, base] of [0x11, 0x33].entries()) {
 // 合成不能改调用方的 buffer —— 上面那些 fill() 如果被就地改了，第二次调用结果就不对
 const again = hack.derive.run({
   'tk2_gfx1.rom': fill(0x11), 'tk2_gfx3.rom': fill(0x33),
+  'tk2_gfx2.rom': fill(0x22), 'tk2_gfx4.rom': fill(0x44),
   'tk2_gfx5cn.rom': fill(0x55), 'tk2_gfx6cn.rom': fill(0x66),
 })
 ok(crc32(again[0].data) === crc32(derived[0].data), '合成是纯函数，同样输入同样输出')
@@ -228,7 +228,7 @@ for (const h of ARCADE_HACKS) {
   /*
     病史：合成（derive）以前**只有「玩本地 ROM」那条路接了**。入库的游戏那条只做两件事 ——
     套 hack.romData、把包名改成 hack.zipName —— 而 dat 里引用的偏偏是合成产物
-    （wofcn 的两块中文字库片是原图形 ROM 的一个字节窗口被补丁片盖过）。包里没有这两块，
+    （wofcn 的中文字库要先合成进原图形 ROM）。包里没有这些合成通道，
     核心按 dat 去找就是两条 missing，游戏必死，而后台界面还绿字写着「✓ 识别为已知改版包」。
   */
   const adapter = strip(readFileSync(new URL('../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8'))
