@@ -3,7 +3,7 @@
  * 坏 chunk 自修复回归（不联网）：
  *   - 构建清单：文件名跟入口走、只收 /assets/ 子资源、按磁盘字节算 SHA-256；
  *   - 首页内联钩子：import map 改指、过期项丢弃、SyntaxError 才触发、点名文件解析；
- *   - public/asset-repair-v1.js：缓存坏→重取修好；边缘坏→回源地址 + 通知清缓存；源站坏→不刷新；
+ *   - public/assets/asset-repair-v2.js：缓存坏→重取修好；边缘坏→回源地址 + 通知清缓存；源站坏→不刷新；
  *     正常文件不重取；点名文件强制覆盖；没清单只处理点名文件；一分钟内只刷新一次；
  *   - 服务端 /api/asset-repair：只认清单里且磁盘一致的文件、限流、每个文件 15 分钟清一次；
  *   - React 兜底页的接线与诊断摘要。
@@ -117,7 +117,7 @@ function runRepair({ serve, opts = {}, resources = Object.keys(GOOD).map((n) => 
   window.window = window
   window.crypto = webcrypto
   const context = vm.createContext(window)
-  vm.runInContext(read('public/asset-repair-v1.js'), context)
+  vm.runInContext(read('public/assets/asset-repair-v2.js'), context)
   return window.__8bitgoAssetRepairRun(opts).then((result) => ({ result: JSON.parse(JSON.stringify(result)), calls, posts, reloads, store, session }))
 }
 
@@ -273,9 +273,12 @@ function runHook({ remap, supports = true }) {
       createElement: () => ({}),
       querySelector: () => ({ src: ENTRY }),
     },
+    location: { href: `${ORIGIN}/games/test` },
     addEventListener: (type, fn) => { listeners[type] = fn },
     Promise,
     URL,
+    setTimeout,
+    clearTimeout,
     JSON,
     Date,
     Object,
@@ -300,7 +303,7 @@ function runHook({ remap, supports = true }) {
   // 入口模块链接失败：window 收到 SyntaxError，解析出被导入的那个文件
   const err = Object.assign(new SyntaxError("The requested module './live-L1.js' does not provide an export named 'x'"), {})
   h.listeners.error({ error: err, filename: `${ORIGIN}/assets/index-ABCD1234.js` })
-  assert.equal(h.appended.filter((el) => el.src === '/asset-repair-v1.js').length, 1, '出错才加载修复脚本')
+  assert.equal(h.appended.filter((el) => el.src === `${ORIGIN}/assets/asset-repair-v2.js`).length, 1, '出错时跟随入口资源域加载修复脚本')
   await new Promise((r) => setTimeout(r, 0))
   assert.deepEqual([...h.repairCalls[0].urls], [`${ORIGIN}/assets/index-ABCD1234.js`, live])
   h.listeners.error({ error: new TypeError('x'), filename: `${ORIGIN}/assets/a.js` })
@@ -397,7 +400,7 @@ assert.equal(parseRepairRequest({ build: '../../etc', files: ['a.js'] }), null)
 
 // 修复脚本只用 ES2017（页面兼容下限 Chrome 64）
 {
-  const src = read('public/asset-repair-v1.js')
+  const src = read('public/assets/asset-repair-v2.js')
   assert.ok(!/\?\.|\?\?|catch \{|=>/.test(src), '修复脚本不用可选链、空值合并、省略 catch 参数和箭头函数')
   assert.equal(createHash('sha256').update(src).digest('hex').length, 64)
 }

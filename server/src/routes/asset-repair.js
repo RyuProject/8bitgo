@@ -1,7 +1,7 @@
 /**
  * POST /api/asset-repair  { build, files: [文件名] }
  *
- * 坏 chunk 自修复（public/asset-repair-v1.js）发现「绕过浏览器缓存重取，CDN 边缘给的还是坏字节，
+ * 坏 chunk 自修复（public/assets/asset-repair-v2.js）发现「绕过浏览器缓存重取，CDN 边缘给的还是坏字节，
  * 带查询串回源的那份却是好的」时调这里：Cloudflare 边缘某个节点缓存了一份坏的 /assets/ 文件，
  * 而这些文件一年 immutable，不清的话那个节点的所有访客都会一直拿到坏的。
  *

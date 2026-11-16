@@ -1,5 +1,5 @@
 /**
- * React 侧接入「坏 chunk 自修复」（public/asset-repair-v1.js）。
+ * React 侧接入「坏 chunk 自修复」（public/assets/asset-repair-v2.js）。
  *
  * 2026-11-15 PK / TH 两位玩家打开详情页就崩：
  * `SyntaxError: The requested module './live-Cqhc9j-k.js' does not provide an export named 'x'`。
@@ -8,7 +8,7 @@
  * 普通刷新不会重新取它，只会原样再崩一次。
  *
  * 修复逻辑不放在这个 bundle 里：bundle 自己坏了时它也跑不起来。首页内联钩子定义
- * `window.__8bitgoAssetRepair`，出错时才去加载那份独立脚本；这里只负责调用和把结果写进诊断包。
+ * `window.__8bitgoAssetRepair`，出错时才从入口脚本所在资源域加载那份独立脚本；这里只负责调用和把结果写进诊断包。
  */
 
 /** 各家浏览器的措辞：Chrome / Firefox / Safari */
@@ -45,7 +45,7 @@ export function resolveChunkUrl(specifier: string, entrySrc: string): string | n
   }
 }
 
-/** 与 public/asset-repair-v1.js 的返回值一致 */
+/** 与 public/assets/asset-repair-v2.js 的返回值一致 */
 export interface AssetRepairResult {
   manifest: boolean
   checked: number
