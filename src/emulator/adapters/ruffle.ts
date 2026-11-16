@@ -631,7 +631,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   /** 壳页面就绪后的一次性初始化；load 事件和超时兜底都走这里，frameInitialized 保证只跑一次。 */
   const initFrame = () => {
     if (destroyed || frameInitialized) return
-    const win = iframe.contentWindow as (Window & { RufflePlayer?: RuffleGlobal }) | null
+    const win = iframe.contentWindow as (Window & typeof globalThis & { RufflePlayer?: RuffleGlobal }) | null
     const doc = iframe.contentDocument
     /*
       ⚠️ 不能把每一次 load 都当成 `/flash-frame.html` 已经回来。
