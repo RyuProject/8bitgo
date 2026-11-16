@@ -3639,7 +3639,10 @@ PK / TH 两份现场：`The requested module './live-Cqhc9j-k.js' does not provi
 - **正常访问**：`index.html` 里一段 ES5 内联钩子，不发请求。只在 localStorage `8bitgo.asset-remap` 有未过期记录时插一张 import map；
   定义 `window.__8bitgoAssetRepair`，并监听 window 的 `SyntaxError`（入口模块链接失败时 React 起不来，兜底页接不住）。
   钩子必须排在任何模块脚本之前，import map 才来得及生效。
-- **出错时**：才加载 `public/asset-repair-v1.js`（文件名即代次，长期缓存；改逻辑新建 v2）。只核对本页 Resource Timing 里用过的
+- **出错时**：才加载 `public/assets/asset-repair-v2.js`（文件名即代次，长期缓存；改逻辑新建 v3）。首页按入口脚本所在资源域加载，
+  所以大陆入口 `cn.8bitgo.com/_cn/assets/` 的自修复也走 EdgeOne；该路超时或失败后再回主站 `/assets/` 重试。
+  2026-11-15 WeChat iOS 27 的单份现场在 `/_cn/assets/` 加载 React chunk 失败，旧钩子却从主站根路径取修复脚本，
+  诊断只记到「修复脚本没有运行（加载失败或超时）」，无法区分网络失败和超时。只核对本页 Resource Timing 里用过的
   chunk 和错误点名的那个，先 `cache: 'force-cache'` 读浏览器缓存算 SHA-256，三种结果：
   浏览器缓存坏了 → `cache: 'reload'` 重取（同时覆盖缓存里的坏副本）→ 刷新一次；
   重取还是坏（CDN 边缘那份坏了）→ 带 `?asset-repair=1` 直接回源核对，好的话记进 `8bitgo.asset-remap`（7 天）、

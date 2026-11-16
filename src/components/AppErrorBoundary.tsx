@@ -29,7 +29,7 @@ function reloadOnce(): boolean {
 
 /**
  * chunk 没加载上（404 / 网络）或者加载上了却解析 / 链接失败（字节坏了，2026-11-15 PK / TH 的
- * `does not provide an export named`）：先让 public/asset-repair-v1.js 按构建时的 SHA-256 清单核对本页
+ * `does not provide an export named`）：先让 public/assets/asset-repair-v2.js 按构建时的 SHA-256 清单核对本页
  * 用过的 chunk，坏的绕过缓存重取 —— 普通刷新只会从一年 immutable 的缓存里拿回同一份坏字节。
  *
  * - 修好了：上报（带上修了哪些文件）再刷新一次；

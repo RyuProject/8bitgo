@@ -107,7 +107,7 @@
       正常访问只做两件小事，不发任何请求：
         1. 上次修复发现「CDN 边缘那份就是坏的」的文件，用 import map 改指到带查询串的回源地址
            （记在 localStorage 8bitgo.asset-remap，7 天过期）。必须在任何模块脚本之前插入，所以放在 head 这里。
-        2. 定义 window.__8bitgoAssetRepair：真出错时才去加载 /asset-repair-v1.js 核对 SHA-256、重取坏文件。
+        2. 定义 window.__8bitgoAssetRepair：真出错时才从入口脚本所在资源域加载修复脚本；大陆入口优先走 EdgeOne。
            入口模块本身链接失败时 React 根本起不来，所以这里还要监听 window 的 SyntaxError；
            React 里懒加载失败由 AppErrorBoundary 调同一个函数。
       只用 ES5，任何一步出错都静默放过：这段坏了也不能拖垮页面。
@@ -140,17 +140,59 @@
             }
           } catch (e) {}
           var pending = null
+          var repairScriptUrls = function () {
+            var urls = []
+            try {
+              var entry = document.querySelector('script[type="module"][src*="/assets/index-"]')
+              if (entry && entry.src) urls.push(new URL('asset-repair-v2.js', entry.src).href)
+            } catch (e) {}
+            try {
+              var fallback = new URL('/assets/asset-repair-v2.js', w.location.href).href
+              if (urls.indexOf(fallback) < 0) urls.push(fallback)
+            } catch (e) {
+              if (urls.indexOf('/assets/asset-repair-v2.js') < 0) urls.push('/assets/asset-repair-v2.js')
+            }
+            return urls
+          }
           w.__8bitgoAssetRepair = function (opts) {
             if (!pending) {
               pending = new Promise(function (resolve) {
-                var s = document.createElement('script')
-                s.src = '/asset-repair-v1.js'
-                s.async = true
-                s.onload = function () {
-                  try { resolve(w.__8bitgoAssetRepairRun ? w.__8bitgoAssetRepairRun(opts) : null) } catch (e) { resolve(null) }
+                var urls = repairScriptUrls()
+                var index = 0
+                var loadNext = function () {
+                  if (w.__8bitgoAssetRepairRun) {
+                    try { Promise.resolve(w.__8bitgoAssetRepairRun(opts)).then(resolve, function () { resolve(null) }) } catch (e) { resolve(null) }
+                    return
+                  }
+                  if (index >= urls.length) { resolve(null); return }
+                  var s = document.createElement('script')
+                  var settled = false
+                  var timer = setTimeout(function () {
+                    if (settled) return
+                    settled = true
+                    s.onload = s.onerror = null
+                    loadNext()
+                  }, 5000)
+                  var failed = function () {
+                    if (settled) return
+                    settled = true
+                    clearTimeout(timer)
+                    loadNext()
+                  }
+                  s.src = urls[index++]
+                  s.async = true
+                  s.onload = function () {
+                    if (settled) return
+                    settled = true
+                    clearTimeout(timer)
+                    if (w.__8bitgoAssetRepairRun) {
+                      try { Promise.resolve(w.__8bitgoAssetRepairRun(opts)).then(resolve, function () { resolve(null) }) } catch (e) { resolve(null) }
+                    } else loadNext()
+                  }
+                  s.onerror = failed
+                  document.head.appendChild(s)
                 }
-                s.onerror = function () { resolve(null) }
-                document.head.appendChild(s)
+                loadNext()
               })
             }
             return pending
