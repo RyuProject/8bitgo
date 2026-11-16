@@ -71,7 +71,7 @@ import {
 } from '../ndsAdaptivePerformance'
 import { guardFrameGamepads } from '../gamepadAccess'
 import { isLowMemoryAbort, isLowmemOomMessage, lowmemOomMessage, probeWasmMemoryCeilingMB, vendorBrowserName } from '../memoryRecovery'
-import { isNdsWasmCrash, isWasmRuntimeCrash } from '../ndsCrash'
+import { isNdsBareAbort, isNdsWasmCrash, isWasmRuntimeCrash } from '../ndsCrash'
 import {
   arcadePerformanceDefaultOptions,
   effectiveArcadeButtons,
@@ -3035,12 +3035,19 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   }
   const reportCoreCrash = (line: string) => {
     if (destroyed || crashReported || loadFailed) return
-    // 不带原因的 Aborted() + 小内存设备：是 WASM 堆长不动，换核心 / 重试都没用（memoryRecovery.ts）
+    // 裸 Aborted() 可能是当前浏览器进程的内存压力，设备标称内存与位数不足以判断；在崩溃当刻探测可分配的 WASM 地址空间。
     if (!started) {
       const deviceMemory = (navigator as Navigator & { deviceMemory?: number }).deviceMemory
       const bits = browserBitness()
-      if (isLowMemoryAbort(line, deviceMemory, bits)) {
-        logEngine(`[memory] 核心 abort，设备内存约 ${deviceMemory ?? '未知'}GB、浏览器位数 ${bits ?? '未知'}：按内存不足处理，不换核心；核心 ${core}`)
+      const ndsBareAbort = options.platform === 'nds' && isNdsBareAbort(line)
+      // 已知小内存 / 32 位时不再额外申请一块探针内存，直接走既有恢复提示。
+      const knownLowMemory = isLowMemoryAbort(line, deviceMemory, bits)
+      const availableWasmMemoryMB = ndsBareAbort && !knownLowMemory ? probeWasmMemoryCeilingMB() : null
+      if (ndsBareAbort) {
+        logEngine(`[memory] NDS 裸 abort；设备内存约 ${deviceMemory ?? '未知'}GB、浏览器位数 ${bits ?? '未知'}、此刻可新建 WASM 内存约 ${availableWasmMemoryMB === null ? '未知' : `${availableWasmMemoryMB}MB`}`)
+      }
+      if (knownLowMemory || isLowMemoryAbort(line, deviceMemory, bits, availableWasmMemoryMB)) {
+        logEngine(`[memory] 核心 abort；按当前 WASM 内存压力处理，不切兼容核心；核心 ${core}`)
         failLoad(bits === '32' ? rt.ejsOutOfMemory32bit : rt.ejsOutOfMemory, 'config')
         return
       }

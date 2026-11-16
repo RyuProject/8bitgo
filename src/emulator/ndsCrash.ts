@@ -49,6 +49,16 @@ export function isNdsWasmCrash(text: string, error?: unknown): boolean {
   return isWasmRuntimeCrash(text, error)
 }
 
+/** `Aborted()` 没有给出触发原因；它可能是内存分配失败，不能据此把 ROM 记成新版核心专属故障。 */
+export function isNdsBareAbort(text: string): boolean {
+  return /(?:^|RuntimeError:\s*)Aborted\(\)(?=[\s.]|$)/i.test(text.trim())
+}
+
+/** 仅对能指向核心自身的 WASM 陷阱记住兼容核心偏好；裸 abort 留给内存恢复与下一次开局重新判断。 */
+export function shouldRememberNdsCoreFailure(text: string): boolean {
+  return isNdsWasmCrash(text) && !isNdsBareAbort(text)
+}
+
 /** 已经确定不能恢复的 melonDS DS 才换到旧核心，且每局最多切一次。 */
 export function ndsCrashFallbackCore(core: string, restartable: boolean, alreadyFallback: boolean): string | null {
   return core === 'melondsds' && restartable && !alreadyFallback ? 'melonds-compat' : null

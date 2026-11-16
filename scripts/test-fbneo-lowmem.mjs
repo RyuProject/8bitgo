@@ -83,6 +83,10 @@ assert.equal(r.cleanPageRetryUrl('https://8bitgo.com/play-local'), null)
 
 // 不带原因的 Aborted() + 小内存设备 = 内存不足；带名字的陷阱、大内存设备都不算
 assert.equal(r.isLowMemoryAbort('RuntimeError: Aborted(). Build with -sASSERTIONS for more info.', 2, null), true)
+assert.equal(r.isLowMemoryAbort('RuntimeError: Aborted(). Build with -sASSERTIONS for more info.', 8, '64', 256), true,
+  '8GB / 64 位设备当前连 512MB WASM 地址空间都分配不出时按内存压力处理')
+assert.equal(r.isLowMemoryAbort('RuntimeError: Aborted(). Build with -sASSERTIONS for more info.', 8, '64', 512), false,
+  '标称内存高且现场至少能分配 512MB 时不误判为内存不足')
 assert.equal(r.isLowMemoryAbort('Aborted()', undefined, '32'), true, '32 位浏览器')
 assert.equal(r.isLowMemoryAbort('RuntimeError: Aborted(). Build with -sASSERTIONS for more info.', 4, null), false, '4GB 设备照常换兼容核心')
 assert.equal(r.isLowMemoryAbort('RuntimeError: Aborted(). Build with -sASSERTIONS for more info.', undefined, null), false, '读不到内存（iOS）不猜')
@@ -99,7 +103,7 @@ assert.equal(r.isLowMemoryAbort('RuntimeError: unreachable', 2, null), false, '�
 // 接线：适配器在低内存核心失败时实测、点名浏览器、按 config 报；播放器只做一次干净页面重开
 const adapterSrc = read('src/emulator/adapters/emulatorjs.ts')
 assert.match(adapterSrc, /if \(core === FBNEO_LOWMEM_CORE\) \{[\s\S]{0,600}probeWasmMemoryCeilingMB\(\)[\s\S]{0,400}failLoad\(lowmemOomMessage\(vendor\), 'config'\)/)
-assert.match(player, /isLowmemOomMessage\(failureReason\)[\s\S]{0,200}cleanPageRetryUrl\(window\.location\.href\)[\s\S]{0,120}takeCleanPageRetry\(/)
+assert.match(player, /isMemoryPressureMessage\(failureReason\)[\s\S]{0,200}cleanPageRetryUrl\(window\.location\.href\)[\s\S]{0,120}takeCleanPageRetry\(/)
 assert.match(read('src/pages/GameDetailPage.tsx'), /searchParams\.get\('autoplay'\) === '1'/, '详情页仍认 ?autoplay=1')
 
 console.log('test:fbneo-lowmem 通过')

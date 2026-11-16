@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { isNdsWasmCrash, ndsCrashFallbackCore } from '../src/emulator/ndsCrash.ts'
+import { isNdsBareAbort, isNdsWasmCrash, ndsCrashFallbackCore, shouldRememberNdsCoreFailure } from '../src/emulator/ndsCrash.ts'
 import { NDS_MODERN_CORE_BUILD, ndsRomIdentity, rememberNdsCoreFailure, rememberedNdsCore } from '../src/emulator/ndsCorePreference.ts'
 import { EJS_WEBGL2_ONLY_CORES, ejsCoreNeedsWebgl2, emulatorJsCoreForGame, NDS_COMPAT_CORE, ndsCoreForWebgl2 } from '../src/emulator/paths.ts'
 import { readdirSync } from 'node:fs'
@@ -43,6 +43,11 @@ assert.equal(isNdsWasmCrash('', { name: 'TypeError', message: 'null function' })
 assert.equal(isNdsWasmCrash('', { name: 'RuntimeError', message: 'something unrelated' }), false)
 assert.equal(isNdsWasmCrash('RuntimeError: game log says hello'), false)
 assert.equal(isNdsWasmCrash('Warning: RuntimeError was mentioned in a log'), false)
+assert.equal(isNdsBareAbort('RuntimeError: Aborted(). Build with -sASSERTIONS for more info.'), true)
+assert.equal(isNdsBareAbort('RuntimeError: Aborted(native code called abort())'), false, '有明确 abort 原因时保留原分类')
+assert.equal(shouldRememberNdsCoreFailure('RuntimeError: Aborted(). Build with -sASSERTIONS for more info.'), false,
+  '裸 abort 可能是内存不足，不能把 ROM 记成新版核心专属故障')
+assert.equal(shouldRememberNdsCoreFailure('RuntimeError: unreachable'), true, '确定的 WASM 陷阱仍记住兼容核心偏好')
 
 assert.equal(ndsCrashFallbackCore('melondsds', true, false), NDS_COMPAT_CORE)
 assert.equal(ndsCrashFallbackCore('melondsds', false, false), null)
@@ -59,6 +64,8 @@ const rom = 'https://assets.8bitgo.com/roms/nds/pokemon-white.nds?romv=abc'
 assert.equal(rememberedNdsCore(rom, storage, 1000), null)
 rememberNdsCoreFailure(rom, storage, 1000)
 assert.equal(rememberedNdsCore(rom, storage, 1001), NDS_COMPAT_CORE)
+assert.match(readFileSync(join(root, 'src/emulator/ndsCorePreference.ts'), 'utf8'), /nds-core-failures:v2:/,
+  '旧版把裸 abort 记下的兼容核心偏好必须随策略升级作废')
 assert.equal(rememberedNdsCore(rom.replace('abc', 'def'), storage, 1001), null)
 assert.equal(rememberedNdsCore(rom, storage, 1000 + 31 * 24 * 60 * 60 * 1000), null)
 assert.equal(ndsRomIdentity('https://assets.8bitgo.com/roms/nds/pokemon-white.nds'), null)
@@ -104,7 +111,7 @@ assert.match(player, /\$\{coreSaveSlug\}:melonds-compat/)
 assert.match(player, /countedPlayAttemptRef\.current === session\.startupAttemptId/)
 assert.match(player, /playableTimer = window\.setTimeout\(confirmPlayable, 5_000\)/)
 assert.match(player, /window\.clearTimeout\(playableTimer\)/)
-assert.match(player, /rememberNdsCoreFailure\(session\.game\)/)
+assert.match(player, /shouldRememberNdsCoreFailure\(reason\)\) rememberNdsCoreFailure\(session\.game\)/)
 assert.match(player, /rememberedNdsCore\(romUrl\)/)
 assert.match(player, /const saveSlug = coreOverride === NDS_COMPAT_CORE/)
 assert.match(copier, /PRESERVED_CORES = new Set\(\[\.\.\.SELF_BUILT_CORES, 'melonds'\]\)/)

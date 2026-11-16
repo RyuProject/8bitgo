@@ -556,11 +556,18 @@ DeSmuME / DeSmuME 2015 仍是逐游戏兜底；自动切换仅由确定的 WASM 
 《使命召唤：战争世界》，64MB ROM）：melonDS DS 在 ROM 交给引擎几秒后只报 `Aborted()`，播放器换兼容核心并记住，兼容核心
 同样 `Aborted()`，白等三十秒、下次访问还直接用兼容核心。C/C++ 的 new / malloc 拿不到内存（WASM 堆长不动）就是 terminate →
 abort()，不带文字；真正的核心 bug 是 unreachable / null function 这类带名字的陷阱。适配器 `reportCoreCrash` 先过
-`isLowMemoryAbort`（`memoryRecovery.ts`：裸 `Aborted()` 且 `deviceMemory ≤ 2` 或 32 位浏览器），命中就以 `'config'` 报
-`ejsOutOfMemory`，不换核心、不记偏好、不自动重试。读不到内存（iOS）不猜，照旧换核心。
+`isLowMemoryAbort`（`memoryRecovery.ts`：裸 `Aborted()` 且 `deviceMemory ≤ 2`、32 位浏览器，或 NDS 崩溃时连 512 MiB WASM
+地址空间都分配不出），命中就以 `'config'` 报 `ejsOutOfMemory`，不换核心、不记偏好、不自动重试；读不到内存且探针不可用时照旧换核心。
 同时 `npm run ejspatch` 第十四节让引擎写游戏文件时 `FS.writeFile(…, {canOwn:!0})`：MEMFS 直接接管那块数组，开局那一刻
 JS 侧少一整份 ROM（64MB ROM 就是 64MB），所有 EmulatorJS 平台受益；`check-emulatorjs` 守着；改了重跑 `npm run ejspatch`，引擎 URL 按内容自动换代。
 这只能降低峰值，2GB 设备开 64MB 以上的 NDS ROM 仍可能不够。回归：`npm run test:fbneo-lowmem && npm run test:nds-crash`。
+
+⚠️ **裸 `Aborted()` 不能当作新版核心专属故障长期记住**（2026-11-16，大陆 Chrome 132 / Windows 64 位、8GB，
+《侠盗猎车手：血战唐人街》连续 4 次）：melonDS DS 首次 abort 后切旧 melonDS，旧核心也 abort；旧逻辑仍把第一次失败记成 ROM 的
+兼容核心偏好，后续开局就跳过新版，重复撞旧核心。裸 abort 没有说明是核心缺陷还是当前标签页内存压力，故 NDS 在崩溃时探测
+可新建的 WASM 地址空间；连 512 MiB 都分配不出时走内存提示与一次干净页面恢复。设备内存和浏览器位数正常、未检测到明显内存压力时，
+仍允许本局切旧核心，但**不保存偏好**；unreachable / 越界 / 空函数等确定陷阱仍可记住。偏好键升到 v2，让旧逻辑写入的错误记录失效。
+回归：`npm run test:nds-crash && npm run test:fbneo-lowmem`。
 
 NDS ROM 由适配器自己按 **8MB Range** 顺序下载；每片完成后写进独立的
 `8bitgo-rom-downloads` IndexedDB，所以刷新页面、浏览器崩溃或断网重开后会只补缺失片。

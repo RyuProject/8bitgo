@@ -140,8 +140,22 @@ export function isLowmemOomMessage(message: string): boolean {
  * 不带任何文字；真正的核心 bug 是 unreachable / null function 这类带名字的陷阱，不受影响。
  * 换核心解决不了内存，原地重试也一样：交给播放器按内存不足报错（'config'，不自动重试、不换 ROM）。
  */
-export function isLowMemoryAbort(text: string, deviceMemoryGb: number | undefined, bitness: '32' | '64' | null): boolean {
+export function isLowMemoryAbort(
+  text: string,
+  deviceMemoryGb: number | undefined,
+  bitness: '32' | '64' | null,
+  availableWasmMemoryMB: number | null = null,
+): boolean {
   if (!/(?:^|RuntimeError:\s*)Aborted\(\)(?=[\s.]|$)/.test(text.trim())) return false
   const lowRam = typeof deviceMemoryGb === 'number' && deviceMemoryGb > 0 && deviceMemoryGb <= 2
-  return lowRam || bitness === '32'
+  // 设备总内存 / 浏览器位数无法代表当前标签页还能分到多少连续 WASM 地址空间；崩溃当刻连 512 MiB 都分配不出时，
+  // 即使设备标称 8GB、浏览器 64 位，也按内存压力处理，避免再启动一份同样会失败的核心。
+  const lowWasmHeadroom = availableWasmMemoryMB !== null && availableWasmMemoryMB < 512
+  return lowRam || bitness === '32' || lowWasmHeadroom
+}
+
+/** 一般内存不足提示和低内存核心耗尽提示都可以尝试一次干净页面，给浏览器回收旧 WASM 地址空间。 */
+export function isMemoryPressureMessage(message: string): boolean {
+  const rt = getT().runtime
+  return message === rt.ejsOutOfMemory || isLowmemOomMessage(message)
 }

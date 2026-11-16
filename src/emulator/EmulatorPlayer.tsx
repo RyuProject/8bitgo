@@ -45,11 +45,11 @@ import { arcadeCoreForRomData } from './arcadeCore'
 import type { DosExtraSource } from '@/lib/dosExtras'
 import type { LiveSession } from './adapters/liveview'
 import type { NetplaySession, SeatEvent } from './adapters/emulatorjs'
-import { cleanPageRetryUrl, isLowmemOomMessage, takeCleanPageRetry } from './memoryRecovery'
+import { cleanPageRetryUrl, isMemoryPressureMessage, takeCleanPageRetry } from './memoryRecovery'
 import type { CloudSession, CloudState } from './adapters/cloudgame'
 import { p2pPlayable, cloudPlayable, emulatorJsCoreFileFor, emulatorJsCoreForGame, NDS_COMPAT_CORE, ndsCoreForWebgl2 } from './paths'
 import { FBNEO_LOWMEM_CORE, fbneoLowmemSaveSlug, fbneoMemoryFallbackCore, prefersFbneoLowmem, rememberFbneoMemoryFailure } from './fbneoLowmem'
-import { ndsCrashFallbackCore } from './ndsCrash'
+import { ndsCrashFallbackCore, shouldRememberNdsCoreFailure } from './ndsCrash'
 import { rememberNdsCoreFailure, rememberedNdsCore } from './ndsCorePreference'
 import {
   clearRememberedNdsPerformanceCore,
@@ -2243,7 +2243,8 @@ export function EmulatorPlayer({
           // 同一份 ROM 的旧 melonDS 兼容核心已实测能播放片头；换核心只重建本机引擎，
           // 不改游戏的默认核心，也不会在旧核心再次失败时来回循环。
           console.warn(`[8bitgo/nds] ${crashedCore} WASM 崩溃，切换兼容核心：${reason}`)
-          rememberNdsCoreFailure(session.game)
+          // 裸 Aborted() 没有说明是新版核心缺陷还是内存分配失败；旧核心也可能同样失败，不能把它记成 ROM 的长期核心偏好。
+          if (shouldRememberNdsCoreFailure(reason)) rememberNdsCoreFailure(session.game)
           setError(null)
           setNotice(t.player.ndsCoreFellBack)
           begin(session.game, session.platform, session.runtime, {
@@ -2386,7 +2387,7 @@ export function EmulatorPlayer({
           旧文档里的引擎 iframe、ROM 副本、编译产物随之释放，被占碎的地址空间有机会腾出来
           （memoryRecovery.ts）。每款游戏十分钟内只自动做一次，第二次照常报错；只在详情页做。
         */
-        if (!ready && isLowmemOomMessage(failureReason) && typeof window !== 'undefined') {
+        if (!ready && isMemoryPressureMessage(failureReason) && typeof window !== 'undefined') {
           const target = cleanPageRetryUrl(window.location.href)
           if (target && takeCleanPageRetry(gameSlug ?? '')) {
             reportStartupFailure(`${failureReason}（换干净页面重开一次）`)
