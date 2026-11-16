@@ -179,10 +179,49 @@ export async function listAcross(buckets, options, rawCursor, scope) {
   const truncated = Object.values(state.positions).some(p => p !== null)
   return { entries: pages.flat(), truncated, cursor: truncated ? encodeCursor(state) : undefined }
 }
+/**
+ * R2 异常会在响应里收敛成可重试的通用 503，但服务端仍需保留足够线索定位故障。
+ * 日志不带请求 URL、对象 key、授权头或 uploadId，避免把后台上传凭据与文件名写进日志。
+ */
+function diagnosticValue(value, maxLength = 300) {
+  if (value === undefined || value === null) return undefined
+  return String(value)
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\bBearer\s+\S+/gi, 'Bearer [redacted]')
+    .replace(/\b(upload[-_ ]?id|authorization|token|secret|password)\b\s*[:=]?\s*[^\s,;]+/gi, '$1=[redacted]')
+    .replace(/\b(?:object\s+)?key\b\s*[:=]?\s*[^\s,;]+/gi, 'key=[redacted]')
+    .replace(/https?:\/\/\S+/gi, '[url]')
+    .replace(/(?:roms|covers|_uploads|psp-staging|sockdrive-staging)\/[^\s,;]+/gi, '[object]')
+    .replace(/\b[^\s,;]+\.(?:nes|sfc|smc|gb|gbc|gba|nds|n64|z64|iso|chd|zip|7z|rom)\b/gi, '[file]')
+    .slice(0, maxLength)
+}
+
+function storageErrorDetails(error, depth = 0) {
+  const details = {}
+  const name = diagnosticValue(error?.name || (error === null ? 'null' : typeof error), 80)
+  const code = diagnosticValue(error?.code, 100)
+  const status = Number(error?.status ?? error?.statusCode ?? error?.httpStatus)
+  const requestId = diagnosticValue(error?.requestId ?? error?.requestID, 120)
+  const message = diagnosticValue(error instanceof Error ? error.message : error, 300)
+  if (name) details.name = name
+  if (code) details.code = code
+  if (Number.isInteger(status) && status > 0) details.status = status
+  if (requestId) details.requestId = requestId
+  if (message) details.message = message
+  if (depth < 1 && error?.cause) details.cause = storageErrorDetails(error.cause, depth + 1)
+  return details
+}
+
+function logStorageFailure(error, operation) {
+  // 结构化字段便于 Wrangler tail 按操作类型检索；只记录异常摘要，不序列化整个 Request/Error。
+  console.warn('[r2-storage-failure]', JSON.stringify({ operation, error: storageErrorDetails(error) }))
+}
+
 /** Unknown/transient R2 failures MUST NOT invalidate a client's resumable upload. */
 export function storageFailure(error, cors, operation = 'storage') {
   if (error instanceof HttpError) return json({ error: error.message, code: error.code }, cors, error.status)
   const message = error instanceof Error ? error.message : String(error)
+  logStorageFailure(error, operation)
   // Recognize only explicit NoSuchUpload. Generic 400/409/messages are not evidence.
   const gone = error?.code === 'NoSuchUpload' || /\bNoSuchUpload\b/i.test(message)
   if (gone) return json({ error: '分片会话不存在或已结束', code: 'upload_gone', fatal: true, retryable: false }, cors, 409)
