@@ -36,6 +36,9 @@ function appendVary(res, token) {
  * @param {number} options.timeoutMs
  * @param {(file: string) => Record<string, string>} [options.extraHeaders]
  */
+/** 包体传输阶段允许多久没有新字节。 */
+const STALL_MS = Math.max(5000, Number(process.env.R2_RUNTIME_STALL_MS) || 60_000)
+
 export function createR2RuntimeProxy({
   label,
   resolveAsset,
@@ -58,8 +61,16 @@ export function createR2RuntimeProxy({
 
     activeProxies++
     const disconnect = new AbortController()
-    const timeout = AbortSignal.timeout(timeoutMs)
-    const signal = AbortSignal.any([disconnect.signal, timeout])
+    /*
+      timeoutMs 只管「拿到响应头」之前；以前同一个超时一直盖到包体传完，
+      100MB 的 wasm 给慢于约 2.7Mbps 的玩家传到第 300 秒就被硬切成半截文件。
+      包体阶段改成失速超时：连续 STALL_MS 没有新字节才放弃。
+    */
+    const timeout = new AbortController()
+    const headerTimer = setTimeout(() => timeout.abort(new Error('upstream header timeout')), timeoutMs)
+    headerTimer.unref?.()
+    let stallTimer = null
+    const signal = AbortSignal.any([disconnect.signal, timeout.signal])
     const onClose = () => {
       if (!res.writableEnded) disconnect.abort(new Error('Client disconnected'))
     }
@@ -141,13 +152,23 @@ export function createR2RuntimeProxy({
         并发名额当场释放、close 监听也被摘掉：100MB 仍在传，代码却以为已经结束。
         pipeline 同时提供背压、错误传播，并把“玩家关页”真正传到 AbortController。
       */
-      await pipeline(Readable.fromWeb(upstream.body), res)
+      clearTimeout(headerTimer)
+      const body = Readable.fromWeb(upstream.body)
+      let lastProgress = Date.now()
+      body.on('data', () => { lastProgress = Date.now() })
+      stallTimer = setInterval(() => {
+        if (Date.now() - lastProgress > STALL_MS) timeout.abort(new Error('upstream body stalled'))
+      }, Math.min(5000, STALL_MS))
+      stallTimer.unref?.()
+      await pipeline(body, res, { signal })
     } catch (error) {
       if (disconnect.signal.aborted || res.destroyed) return
       console.error(`[${label}] 运行时文件代理失败：`, error.message)
-      if (!res.headersSent) res.status(timeout.aborted ? 504 : 502).send('运行时文件获取失败')
+      if (!res.headersSent) res.status(timeout.signal.aborted ? 504 : 502).send('运行时文件获取失败')
       else res.destroy()
     } finally {
+      clearTimeout(headerTimer)
+      if (stallTimer) clearInterval(stallTimer)
       res.off('close', onClose)
       activeProxies--
     }

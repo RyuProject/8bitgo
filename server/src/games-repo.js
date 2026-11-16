@@ -918,7 +918,7 @@ export async function patchGame(slug, patchRow, relations, game) {
  * @param {string} text   已翻译的文本
  * @returns {Promise<boolean>} true = 有行被更新
  */
-export async function writeDescriptionTranslation(slug, lang, text) {
+export async function writeDescriptionTranslation(slug, lang, text, sourceGuard = null) {
   if (!/^[a-zA-Z-]{2,10}$/.test(lang)) throw new Error('lang 必须是合法的语言代码')
   const safeText = String(text ?? '').slice(0, 4000) // 防御性截断，正常简介撑死几百字
   // JSON_OBJECT 的参数形式不支持「key 是变量」—— 用 JSON_QUOTE 包住 lang 当 key，
@@ -928,8 +928,10 @@ export async function writeDescriptionTranslation(slug, lang, text) {
        COALESCE(description_i18n, JSON_OBJECT()),
        ?,
        CAST(? AS JSON)
-     ) WHERE slug = ?`,
-    [jsonMemberPath(lang), JSON.stringify(safeText), slug],
+     ) WHERE slug = ?${sourceGuard ? ' AND COALESCE(description, \'\') = ? AND COALESCE(description_en, \'\') = ?' : ''}`,
+    sourceGuard
+      ? [jsonMemberPath(lang), JSON.stringify(safeText), slug, String(sourceGuard.description ?? ''), String(sourceGuard.descriptionEn ?? '')]
+      : [jsonMemberPath(lang), JSON.stringify(safeText), slug],
   )
   return r.affectedRows > 0
 }

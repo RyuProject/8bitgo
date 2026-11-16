@@ -2,9 +2,11 @@
 /**
  * 坏 chunk 自修复回归（不联网）：
  *   - 构建清单：文件名跟入口走、只收 /assets/ 子资源、按磁盘字节算 SHA-256；
- *   - 首页内联钩子：import map 改指、过期项丢弃、SyntaxError 才触发、点名文件解析；
- *   - public/assets/asset-repair-v2.js：缓存坏→重取修好；边缘坏→回源地址 + 通知清缓存；源站坏→不刷新；
+ *   - 首页内联钩子：import map 改指、过期项丢弃、SyntaxError 才触发、点名文件解析、修复脚本加载经过；
+ *   - 入口去掉 __assets=origin（兜底页改用主站资源重新载入）；
+ *   - public/assets/asset-repair-v3.js：缓存坏→重取修好；边缘坏→回源地址 + 通知清缓存；源站坏→不刷新；
  *     正常文件不重取；点名文件强制覆盖；没清单只处理点名文件；一分钟内只刷新一次；
+ *     取不下来→重试一次；大陆加速入口取不下来、主站正常→edgeOnly（诊断包 #761）；
  *   - 服务端 /api/asset-repair：只认清单里且磁盘一致的文件、限流、每个文件 15 分钟清一次；
  *   - React 兜底页的接线与诊断摘要。
  */
@@ -22,10 +24,17 @@ import {
 } from './lib/vite-asset-integrity.mjs'
 import { createAssetRepairRouter, parseRepairRequest } from '../server/src/routes/asset-repair.js'
 import {
+  assetsFromCnEdge,
+  consumeOriginAssetsParam,
+  lazyChunkFile,
+  lazyFailure,
   moduleLinkFailure,
+  onOriginAssetsPage,
+  originAssetsUrl,
   repairFixedSomething,
   resolveChunkUrl,
   summarizeRepair,
+  tagLazyFailure,
 } from '../src/services/moduleLinkRecovery.ts'
 
 // express 装在 server/ 下，根目录没有
@@ -67,12 +76,16 @@ const GOOD = {
 }
 const MANIFEST = buildIntegrityManifest('assets/index-ABCD1234.js', Object.fromEntries(Object.entries(GOOD).map(([k, v]) => [k, sha256Base64(v)])))
 const enc = (text) => new TextEncoder().encode(text).buffer
+/** vm 里的数组 / 对象原型和这边不同，deepStrictEqual 前转成普通值 */
+const plain = (value) => JSON.parse(JSON.stringify(value))
 
 /**
  * 在 vm 里跑修复脚本。`serve(url, cacheMode)` 决定每次 fetch 返回什么：
  * 返回字符串 = 200 + 内容，数字 = HTTP 状态，null = 网络错误。
  */
 function runRepair({ serve, opts = {}, resources = Object.keys(GOOD).map((n) => `${ORIGIN}/assets/${n}`), store = new Map(), session = new Map(), entry = ENTRY }) {
+  // serve 可以返回 { error: 'AbortError' } 表示超时
+
   const calls = []
   const posts = []
   let reloads = 0
@@ -90,11 +103,12 @@ function runRepair({ serve, opts = {}, resources = Object.keys(GOOD).map((n) => 
       calls.push({ url, cache: init.cache })
       const out = serve(url, init.cache)
       if (out === null) throw new TypeError('Failed to fetch')
+      if (out && typeof out === 'object' && out.error) throw Object.assign(new Error('aborted'), { name: out.error })
       if (typeof out === 'number') return { ok: false, status: out, arrayBuffer: async () => enc('') }
       return { ok: true, status: 200, arrayBuffer: async () => enc(out) }
     },
     crypto: webcrypto,
-    location: { pathname: '/games/x', reload: () => { reloads++ } },
+    location: { pathname: '/games/x', origin: ORIGIN, href: `${ORIGIN}/games/x`, reload: () => { reloads++ } },
     localStorage: storage(store),
     sessionStorage: storage(session),
     performance: { getEntriesByType: () => resources.map((name) => ({ name })) },
@@ -107,6 +121,7 @@ function runRepair({ serve, opts = {}, resources = Object.keys(GOOD).map((n) => 
     clearTimeout,
     Promise,
     Uint8Array,
+    URL,
     JSON,
     Date,
     Object,
@@ -117,7 +132,7 @@ function runRepair({ serve, opts = {}, resources = Object.keys(GOOD).map((n) => 
   window.window = window
   window.crypto = webcrypto
   const context = vm.createContext(window)
-  vm.runInContext(read('public/assets/asset-repair-v2.js'), context)
+  vm.runInContext(read('public/assets/asset-repair-v3.js'), context)
   return window.__8bitgoAssetRepairRun(opts).then((result) => ({ result: JSON.parse(JSON.stringify(result)), calls, posts, reloads, store, session }))
 }
 
@@ -252,6 +267,85 @@ const fileOf = (url) => /\/assets\/([^/?#]+)/.exec(url)?.[1]
   assert.equal(r.result.ok, 1)
 }
 
+/* ---------- v3：取不下来的文件（诊断包 #761：微信 iOS 在 EdgeOne 上懒加载 GameDetailPage 失败） ---------- */
+const CN = 'https://cn.8bitgo.com/_cn/assets'
+const cnEntry = `${CN}/index-ABCD1234.js`
+const cnManifest = `${CN}/integrity-ABCD1234.json`
+
+{
+  // 11. EdgeOne 上点名的 chunk 网络错误、重试还错，主站同名文件正常 → edgeOnly；不自己刷新，交给兜底页决定
+  const r = await runRepair({
+    entry: cnEntry,
+    resources: [`${CN}/index-ABCD1234.js`],
+    opts: { urls: [`${CN}/live-L1.js`] },
+    serve(url) {
+      if (url === cnManifest) return JSON.stringify(MANIFEST)
+      if (url === `${CN}/live-L1.js`) return null
+      return GOOD[fileOf(url)]
+    },
+  })
+  assert.deepEqual(r.result.edgeOnly, ['live-L1.js'])
+  assert.deepEqual(r.result.failed, [])
+  assert.equal(r.result.from, 'cn.8bitgo.com')
+  assert.equal(r.reloads, 0, 'edgeOnly 不算修好，脚本自己不刷新（刷新回来还是 EdgeOne）')
+  assert.deepEqual(r.calls.filter((c) => fileOf(c.url) === 'live-L1.js').map((c) => [c.url, c.cache]), [
+    [`${CN}/live-L1.js`, 'force-cache'],
+    [`${CN}/live-L1.js`, 'reload'],
+    [`${ORIGIN}/assets/live-L1.js`, 'reload'],
+  ], '先缓存、再绕过缓存重试、最后才对照主站')
+  assert.deepEqual(r.result.trace, ['live-L1.js 网络错误→网络错误，主站 正常'])
+  assert.equal(r.posts.length, 0, '取不下来不是缓存坏字节，不请求清边缘缓存')
+}
+
+{
+  // 12. 偶发：第一次取不下来，绕过缓存重试就好了 → recovered，算修好、刷新一次
+  let hits = 0
+  const r = await runRepair({
+    entry: cnEntry,
+    resources: [],
+    opts: { urls: [`${CN}/live-L1.js`] },
+    serve(url) {
+      if (url === cnManifest) return JSON.stringify(MANIFEST)
+      if (url === `${CN}/live-L1.js` && hits++ === 0) return 502
+      return GOOD[fileOf(url)]
+    },
+  })
+  assert.deepEqual(r.result.recovered, ['live-L1.js'])
+  assert.deepEqual(r.result.trace, ['live-L1.js HTTP 502→重试正常'])
+  assert.equal(r.reloads, 1)
+  assert.equal(repairFixedSomething(r.result), true)
+}
+
+{
+  // 13. EdgeOne 和主站都取不下来（访客断网）→ failed，trace 分得清超时和 HTTP 错误
+  const r = await runRepair({
+    entry: cnEntry,
+    resources: [],
+    opts: { urls: [`${CN}/live-L1.js`] },
+    serve(url) {
+      if (url === cnManifest) return JSON.stringify(MANIFEST)
+      if (fileOf(url) === 'live-L1.js') return url.startsWith(CN) ? { error: 'AbortError' } : 503
+      return GOOD[fileOf(url)]
+    },
+  })
+  assert.deepEqual(r.result.failed, ['live-L1.js'])
+  assert.deepEqual(r.result.edgeOnly, [])
+  assert.deepEqual(r.result.trace, ['live-L1.js 超时→超时，主站 HTTP 503'])
+  assert.equal(r.reloads, 0)
+}
+
+{
+  // 14. 本来就同源（非大陆访客）：重试还取不下来就是 failed，没有「主站」可对照
+  const r = await runRepair({
+    resources: [],
+    opts: { urls: [`${ORIGIN}/assets/live-L1.js`] },
+    serve: (url) => (url === manifestUrl ? JSON.stringify(MANIFEST) : fileOf(url) === 'live-L1.js' ? 404 : GOOD[fileOf(url)]),
+  })
+  assert.deepEqual(r.result.failed, ['live-L1.js'])
+  assert.equal(r.calls.filter((c) => fileOf(c.url) === 'live-L1.js').length, 2, '缓存一次 + 重试一次，不对照自己')
+  assert.deepEqual(r.result.trace, ['live-L1.js HTTP 404→HTTP 404'])
+}
+
 /* ---------- 首页内联钩子 ---------- */
 const html = read('index.html')
 const hook = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).find((s) => s.includes('__8bitgoAssetRepair'))
@@ -260,7 +354,7 @@ assert.ok(!/=>|\blet\b|\bconst\b|`/.test(hook), '钩子只能写 ES5')
 assert.ok(html.indexOf('__8bitgoAssetRepair') < html.indexOf('type="module"'), '必须排在模块脚本之前，import map 才来得及生效')
 assert.ok(html.indexOf('8bitgo.https-upgrade') < html.indexOf('__8bitgoAssetRepair'), 'HTTPS 守卫仍是第一段脚本')
 
-function runHook({ remap, supports = true }) {
+function runHook({ remap, supports = true, entry = ENTRY, failing = [], hang = [], empty = [], timers = null } = {}) {
   const appended = []
   const listeners = {}
   const repairCalls = []
@@ -269,25 +363,34 @@ function runHook({ remap, supports = true }) {
     HTMLScriptElement: { supports: () => supports },
     localStorage: { getItem: () => (remap ? JSON.stringify(remap) : null) },
     document: {
-      head: { appendChild: (el) => { appended.push(el); if (el.src && el.onload) el.onload() } },
+      head: {
+        // 和真实浏览器一样：修复脚本「加载成功」时才定义 __8bitgoAssetRepairRun
+        appendChild: (el) => {
+          appended.push(el)
+          if (!el.src || hang.includes(el.src)) return
+          if (failing.includes(el.src)) return el.onerror?.()
+          if (!empty.includes(el.src)) window.__8bitgoAssetRepairRun = run
+          el.onload?.()
+        },
+      },
       createElement: () => ({}),
-      querySelector: () => ({ src: ENTRY }),
+      querySelector: () => ({ src: entry }),
     },
     location: { href: `${ORIGIN}/games/test` },
     addEventListener: (type, fn) => { listeners[type] = fn },
     Promise,
     URL,
-    setTimeout,
-    clearTimeout,
+    setTimeout: timers ? (fn) => timers.push(fn) : setTimeout,
+    clearTimeout: timers ? () => {} : clearTimeout,
     JSON,
     Date,
     Object,
     String,
   }
   window.window = window
+  const run = (opts) => { repairCalls.push(opts); return { ok: true } }
 
   vm.runInContext(hook, vm.createContext(window))
-  window.__8bitgoAssetRepairRun = (opts) => { repairCalls.push(opts); return { ok: true } }
   return { window, appended, listeners, repairCalls, now }
 }
 
@@ -303,12 +406,68 @@ function runHook({ remap, supports = true }) {
   // 入口模块链接失败：window 收到 SyntaxError，解析出被导入的那个文件
   const err = Object.assign(new SyntaxError("The requested module './live-L1.js' does not provide an export named 'x'"), {})
   h.listeners.error({ error: err, filename: `${ORIGIN}/assets/index-ABCD1234.js` })
-  assert.equal(h.appended.filter((el) => el.src === `${ORIGIN}/assets/asset-repair-v2.js`).length, 1, '出错时跟随入口资源域加载修复脚本')
+  assert.equal(h.appended.filter((el) => el.src === `${ORIGIN}/assets/asset-repair-v3.js`).length, 1, '出错时跟随入口资源域加载修复脚本')
+  assert.deepEqual(plain(h.window.__8bitgoAssetRepairLoad).map((a) => [a.u, a.r]), [[`${ORIGIN}/assets/asset-repair-v3.js`, 'ok']], '加载经过记下来')
   await new Promise((r) => setTimeout(r, 0))
   assert.deepEqual([...h.repairCalls[0].urls], [`${ORIGIN}/assets/index-ABCD1234.js`, live])
   h.listeners.error({ error: new TypeError('x'), filename: `${ORIGIN}/assets/a.js` })
   h.listeners.error({ error: new SyntaxError('Unexpected token'), filename: 'https://third.party/x.js' })
   assert.equal(h.repairCalls.length, 1, '别的错误、第三方脚本不触发')
+}
+
+{
+  // 大陆入口：先从 EdgeOne 取修复脚本，加载失败再回主站；每一次的经过都记下来（诊断包 #761 只有「加载失败或超时」）
+  const cnRepair = 'https://cn.8bitgo.com/_cn/assets/asset-repair-v3.js'
+  const h = runHook({ entry: 'https://cn.8bitgo.com/_cn/assets/index-ABCD1234.js', failing: [cnRepair] })
+  const result = await h.window.__8bitgoAssetRepair({ urls: [] })
+  assert.deepEqual(result, { ok: true })
+  assert.deepEqual(plain(h.window.__8bitgoAssetRepairLoad).map((a) => [a.u, a.r]), [[cnRepair, 'error'], [`${ORIGIN}/assets/asset-repair-v3.js`, 'ok']])
+  assert.ok(h.window.__8bitgoAssetRepairLoad.every((a) => typeof a.ms === 'number' && a.ms >= 0))
+
+  // 加载超时（5 秒没动静）：记 timeout，换下一个地址
+  const timers = []
+  const slow = runHook({ entry: 'https://cn.8bitgo.com/_cn/assets/index-ABCD1234.js', hang: [cnRepair], timers })
+  const pending = slow.window.__8bitgoAssetRepair({ urls: [] })
+  assert.equal(slow.window.__8bitgoAssetRepairLoad.length, 0)
+  timers[0]()
+  assert.deepEqual(await pending, { ok: true })
+  assert.deepEqual(plain(slow.window.__8bitgoAssetRepairLoad).map((a) => a.r), ['timeout', 'ok'])
+
+  // 两处都取不下来：结果为 null，经过里两条都在
+  const dead = runHook({ entry: 'https://cn.8bitgo.com/_cn/assets/index-ABCD1234.js', failing: [cnRepair, `${ORIGIN}/assets/asset-repair-v3.js`] })
+  assert.equal(await dead.window.__8bitgoAssetRepair({ urls: [] }), null)
+  assert.deepEqual(plain(dead.window.__8bitgoAssetRepairLoad).map((a) => a.r), ['error', 'error'])
+
+  // 加载了却没定义入口（拿到的不是这份脚本）
+  const empty = runHook({ entry: 'https://cn.8bitgo.com/_cn/assets/index-ABCD1234.js', empty: [cnRepair] })
+  await empty.window.__8bitgoAssetRepair({ urls: [] })
+  assert.deepEqual(plain(empty.window.__8bitgoAssetRepairLoad).map((a) => a.r), ['empty', 'ok'])
+}
+
+{
+  // __assets=origin：兜底页改用主站资源重新载入后，入口在路由读地址之前去掉参数，其余查询串和 hash 原样保留
+  const hist = () => {
+    const calls = []
+    return { calls, state: { k: 1 }, replaceState: (state, _t, url) => calls.push([state, url]) }
+  }
+  const loc = (search) => ({ pathname: '/games/test', search, hash: '#top' })
+  assert.equal(onOriginAssetsPage(), false)
+  const h1 = hist()
+  assert.equal(consumeOriginAssetsParam(loc('?__assets=origin'), h1), true)
+  assert.deepEqual(h1.calls, [[{ k: 1 }, '/games/test#top']])
+  assert.equal(onOriginAssetsPage(), true)
+  const h2 = hist()
+  consumeOriginAssetsParam(loc('?a=1&__assets=origin&b=2'), h2)
+  assert.deepEqual(h2.calls.map((c) => c[1]), ['/games/test?a=1&b=2#top'])
+  const h3 = hist()
+  assert.equal(consumeOriginAssetsParam(loc('?a=1'), h3), false)
+  assert.equal(h3.calls.length, 0)
+  assert.equal(consumeOriginAssetsParam(loc('?__assets=originx'), hist()), false, '只认 origin 这一个值')
+  assert.equal(consumeOriginAssetsParam(loc('?__assets=origin'), { state: null, replaceState() { throw new Error('SecurityError') } }), true, '改不了地址栏也不抛错')
+  // 入口在渲染前调用；不放进内联钩子：钩子后面的语言跳转会用 location.search 拼地址
+  const entry = read('src/entry-client.tsx')
+  assert.ok(entry.indexOf('consumeOriginAssetsParam()') > 0 && entry.indexOf('consumeOriginAssetsParam()') < entry.indexOf('async function start()'))
+  assert.doesNotMatch(hook, /__assets/, '内联钩子不碰 __assets')
 }
 
 /* ---------- 服务端 ---------- */
@@ -378,9 +537,20 @@ assert.equal(parseRepairRequest({ build: '../../etc', files: ['a.js'] }), null)
 {
   const boundary = read('src/components/AppErrorBoundary.tsx')
   assert.match(boundary, /if \(!recoverBrokenAsset\(error, info\)\) reportRenderCrash\(error, info\)/)
-  assert.match(boundary, /if \(repairFixedSomething\(result\)\) \{\s*reportRenderCrash\(error, info, summarizeRepair\(result\)\)\s*reloadOnce\(\)/, '修好了：先上报再刷新')
+  assert.match(boundary, /if \(repairFixedSomething\(result\)\) \{\s*reportRenderCrash\(error, info, note\)\s*if \(!reloadOnce\(\) && claimOriginReload\(edge\)\) toOrigin\(\)/, '修好了：先上报再刷新；一分钟内又坏了才换主站')
   assert.match(boundary, /if \(stale && reloadOnce\(\)\) return/, '404 那类旧 chunk 照旧刷新一次，不算故障')
   assert.match(boundary, /if \(!pending\) return stale \? reloadOnce\(\) : false/, '钩子不在时退回原来的行为')
+  // 诊断包 #761：大陆加速入口取不下来、主站正常 → 先上报，再带 __assets=origin 整页重新载入
+  assert.match(boundary, /if \(edge && result\?\.edgeOnly\?\.length && claimOriginReload\(edge\)\) \{\s*reportRenderCrash\([^;]+\)\s*toOrigin\(\)/)
+  assert.ok(boundary.indexOf('result?.edgeOnly?.length') < boundary.indexOf('if (repairFixedSomething(result))'), 'edgeOnly 先于「修好了」判断：刷新回来还是 EdgeOne')
+  assert.match(boundary, /const edge = stale && assetsFromCnEdge\(entrySrc, location\.origin\)/, '只有大陆加速入口上的加载失败才换主站')
+  assert.match(boundary, /const toOrigin = \(\) => location\.replace\(originAssetsUrl\(location\)\)/)
+  assert.match(boundary, /lazy\?\.file \? resolveChunkUrl\(`\.\/\$\{lazy\.file\}`, entrySrc\)/, '懒加载失败的 chunk 作为点名文件交给修复脚本')
+  assert.match(boundary, /summarizeRepair\(result, repairLoadInfo\(\)\)/, '诊断包写出修复脚本的加载经过')
+  assert.match(boundary, /if \(onOriginAssetsPage\(\)\) location\.replace\(originAssetsUrl\(location\)\)/, '退到主站之后再刷新也留在主站')
+
+  const lazy = read('src/routes/lazy.tsx')
+  assert.match(lazy, /tagLazyFailure\(error, lazyChunkFile\(load\), name\)/, 'lazyNamed 失败时把 chunk 文件名挂在错误上')
 
   assert.deepEqual(moduleLinkFailure("SyntaxError: The requested module './live-Cqhc9j-k.js' does not provide an export named 'x'"), { specifier: './live-Cqhc9j-k.js', exportName: 'x' })
   assert.deepEqual(moduleLinkFailure('SyntaxError: import not found: x'), { specifier: null, exportName: 'x' })
@@ -389,20 +559,59 @@ assert.equal(parseRepairRequest({ build: '../../etc', files: ['a.js'] }), null)
   assert.equal(resolveChunkUrl('./live-a.js', 'https://cn.8bitgo.com/_cn/assets/index-a.js'), 'https://cn.8bitgo.com/_cn/assets/live-a.js')
   assert.equal(resolveChunkUrl('https://evil.example/x.js', ENTRY), null)
 
+  // 生产构建里懒加载函数的源码就带着 chunk 文件名（2026-11-16 线上 index-BFBijGbj.js 的写法）
+  const built = '()=>h(()=>import(`./GameDetailPage-BfqMSSyK.js`),__vite__mapDeps([28,1,2]),import.meta.url)'
+  assert.equal(lazyChunkFile({ toString: () => built }), 'GameDetailPage-BfqMSSyK.js')
+  assert.equal(lazyChunkFile({ toString: () => '()=>import("./BrowsePages-x1.js")' }), 'BrowsePages-x1.js')
+  assert.equal(lazyChunkFile(() => import('@/pages/GameDetailPage')), null, '开发环境的源码路径认不出就算了')
+  assert.equal(lazyChunkFile({ toString: () => '()=>import("https://evil.example/x.js")' }), null)
+  const err = new TypeError('Importing a module script failed.')
+  tagLazyFailure(err, 'GameDetailPage-BfqMSSyK.js', 'GameDetailPage')
+  assert.deepEqual(lazyFailure(err), { file: 'GameDetailPage-BfqMSSyK.js', name: 'GameDetailPage' })
+  assert.equal(Object.keys(err).length, 0, '不可枚举，不污染错误对象的序列化')
+  assert.equal(lazyFailure(new Error('x')), null)
+  tagLazyFailure(Object.freeze(new Error('frozen')), 'a.js', 'A')
+
+  assert.equal(assetsFromCnEdge('https://cn.8bitgo.com/_cn/assets/index-a.js', 'https://8bitgo.com'), true)
+  assert.equal(assetsFromCnEdge('https://8bitgo.com/assets/index-a.js', 'https://8bitgo.com'), false, '主站资源')
+  assert.equal(assetsFromCnEdge('https://cn.8bitgo.com/assets/index-a.js', 'https://cn.8bitgo.com'), false, '大陆入口站点本身是同源')
+  assert.equal(assetsFromCnEdge('', 'https://8bitgo.com'), false)
+  assert.equal(originAssetsUrl({ pathname: '/games/x', search: '', hash: '' }), '/games/x?__assets=origin')
+  assert.equal(originAssetsUrl({ pathname: '/de/games', search: '?page=2&__assets=origin', hash: '#c' }), '/de/games?page=2&__assets=origin#c', '不重复加参数')
+
   const empty = { manifest: true, checked: 3, ok: 3, repaired: [], refreshed: [], remapped: [], bad: [], failed: [], reloaded: false, ms: 12 }
   assert.equal(repairFixedSomething(empty), false)
   assert.equal(repairFixedSomething({ ...empty, remapped: ['a.js'] }), true)
+  assert.equal(repairFixedSomething({ ...empty, recovered: ['a.js'] }), true, '重试后正常也算修好')
+  assert.equal(repairFixedSomething({ ...empty, edgeOnly: ['a.js'] }), false, 'edgeOnly 要换主站，不是普通刷新能好的')
   assert.equal(repairFixedSomething(null), false)
   assert.match(summarizeRepair({ ...empty, repaired: ['live-L1.js'] }), /浏览器缓存里的坏副本已重取：live-L1\.js/)
   assert.match(summarizeRepair({ ...empty, remapped: ['a.js', 'b.js', 'c.js', 'd.js', 'e.js'] }), /CDN 边缘副本是坏的.*等 5 个/)
-  assert.match(summarizeRepair(null), /没有运行/)
+  assert.match(
+    summarizeRepair({ ...empty, from: 'cn.8bitgo.com', edgeOnly: ['GameDetailPage-x.js'], trace: ['GameDetailPage-x.js 网络错误→网络错误，主站 正常'] }),
+    /资源在 cn\.8bitgo\.com.*大陆加速入口取不下来、主站正常：GameDetailPage-x\.js.*经过：GameDetailPage-x\.js 网络错误→网络错误，主站 正常/,
+  )
+  assert.match(summarizeRepair(null), /没有运行/, '旧调用方不给加载经过时保持原文')
+  // 「修复脚本没有运行」分清加载失败 / 超时 / 已加载但核对没结束（诊断包 #761 只有一句「加载失败或超时」）
+  const cnRepair = 'https://cn.8bitgo.com/_cn/assets/asset-repair-v3.js'
+  assert.equal(
+    summarizeRepair(null, { attempts: [{ u: cnRepair, r: 'error', ms: 812 }, { u: 'https://8bitgo.com/assets/asset-repair-v3.js', r: 'timeout', ms: 5003 }], timedOut: false, noHook: false }),
+    `资源核对：修复脚本没有加载上：${cnRepair} 加载失败 812ms；https://8bitgo.com/assets/asset-repair-v3.js 5 秒超时 5003ms`,
+  )
+  assert.match(summarizeRepair(null, { attempts: [{ u: cnRepair, r: 'ok', ms: 90 }], timedOut: true, noHook: false }), /修复脚本已加载.*核对 20 秒内没有结束/)
+  assert.match(summarizeRepair(null, { attempts: [], timedOut: true, noHook: false }), /20 秒内修复脚本一次加载都没结束/)
+  assert.match(summarizeRepair(null, { attempts: [], timedOut: false, noHook: true }), /页面没有修复钩子/)
 }
 
-// 修复脚本只用 ES2017（页面兼容下限 Chrome 64）
+// 修复脚本只用 ES2017（页面兼容下限 Chrome 64）；旧的 v2 留着给已打开的旧页面用
 {
-  const src = read('public/assets/asset-repair-v2.js')
-  assert.ok(!/\?\.|\?\?|catch \{|=>/.test(src), '修复脚本不用可选链、空值合并、省略 catch 参数和箭头函数')
-  assert.equal(createHash('sha256').update(src).digest('hex').length, 64)
+  for (const file of ['public/assets/asset-repair-v3.js', 'public/assets/asset-repair-v2.js']) {
+    const src = read(file)
+    assert.ok(!/\?\.|\?\?|catch \{|=>/.test(src), `${file} 不用可选链、空值合并、省略 catch 参数和箭头函数`)
+    assert.equal(createHash('sha256').update(src).digest('hex').length, 64)
+  }
+  assert.match(read('index.html'), /asset-repair-v3\.js/, '首页钩子加载 v3')
+  assert.doesNotMatch(read('index.html'), /asset-repair-v2\.js/)
 }
 
-console.log('✔ 坏 chunk 自修复：构建清单、内联钩子、缓存坏 / 边缘坏 / 源站坏三种处理、清边缘接口、兜底页接线')
+console.log('✔ 坏 chunk 自修复：构建清单、内联钩子（加载经过）、去 __assets 参数、缓存坏 / 边缘坏 / 源站坏 / EdgeOne 取不下来、清边缘接口、兜底页接线')

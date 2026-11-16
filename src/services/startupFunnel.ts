@@ -56,7 +56,9 @@ export function recordStartupEvent(slug: string | undefined, payload: StartupEve
   sent.add(key)
   noteStartupEvent(payload.visitId, payload.attemptId, payload.event)
   if (DIAGNOSTIC_EVENTS.has(payload.event) && !payload.diagnostics) {
-    const diagnostics = collectStartupDiagnostics(payload.attemptId, payload.detail)
+    const diagnostics = collectStartupDiagnostics(payload.attemptId, payload.detail, {
+      resourcesSincePageStart: payload.runtime === 'page',
+    })
     if (diagnostics) payload = { ...payload, diagnostics }
   }
   void fetch(`${apiBase()}/api/games/${encodeURIComponent(slug)}/startup`, {

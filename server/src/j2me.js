@@ -304,9 +304,36 @@ async function decryptPackedJar(buffer) {
 async function loadPackedJar(keyName, signal) {
   const cached = packedCache.get(keyName)
   if (cached && Date.now() - cached.checkedAt < PACKED_FRESH_MS) return cached
-  const running = packedInflight.get(keyName)
-  if (running) return running
-  const task = (async () => {
+  let task = packedInflight.get(keyName)
+  if (!task) {
+    task = startPackedJarTask(keyName, cached)
+    packedInflight.set(keyName, task)
+    task.finally(() => {
+      if (packedInflight.get(keyName) === task) packedInflight.delete(keyName)
+    }).catch(() => {})
+  }
+  // 共享任务用自己的超时，不吃第一个请求的 signal：以前第一个客户端断开 / 超时会把上游取数中止，
+  // 同时在等这一份的其它 Range 请求（CheerpJ 冷启动会并发好几条）全部跟着 502。
+  // 每个等待者只拿自己的 signal 跟任务赛跑。
+  return raceSignal(task, signal)
+}
+
+function raceSignal(promise, signal) {
+  if (!signal) return promise
+  if (signal.aborted) return Promise.reject(signal.reason ?? new Error('aborted'))
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(signal.reason ?? new Error('aborted'))
+    signal.addEventListener('abort', onAbort, { once: true })
+    promise.then(
+      (v) => { signal.removeEventListener('abort', onAbort); resolve(v) },
+      (e) => { signal.removeEventListener('abort', onAbort); reject(e) },
+    )
+  })
+}
+
+function startPackedJarTask(keyName, cached) {
+  const signal = AbortSignal.timeout(PROXY_TIMEOUT)
+  return (async () => {
     const target = `${ROM_BASE}/${ROM_PREFIX}/java/${encodeURIComponent(keyName)}`
     const headers = cached?.etag ? { 'if-none-match': cached.etag } : {}
     const upstream = await fetch(target, { headers, signal })
@@ -331,12 +358,6 @@ async function loadPackedJar(keyName, signal) {
     packedCacheSet(keyName, entry)
     return entry
   })()
-  packedInflight.set(keyName, task)
-  try {
-    return await task
-  } finally {
-    packedInflight.delete(keyName)
-  }
 }
 
 async function servePackedJar(req, res, keyName) {
@@ -419,7 +440,9 @@ export async function j2meJarProxy(req, res) {
       try { info = await statFile(p) }
       catch (e) {
         if (e.code === 'ENOENT') return res.status(404).send('临时文件已过期')
-        throw e
+        // Express 4 不接异步处理器的拒绝：直接 throw 会让请求挂到客户端超时
+        console.error('[j2me] 读取临时 JAR 失败：', e)
+        return res.status(500).send('临时文件读取失败')
       }
       const size = info.size
       res.setHeader('Accept-Ranges', 'bytes')

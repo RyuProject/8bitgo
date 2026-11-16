@@ -635,6 +635,11 @@ const es: Translation = {
     emailNew: 'Nuevo correo',
     emailNewPlaceholder: 'Escribe la nueva dirección de correo',
     emailCodeHint: 'El código va a la nueva dirección: recibirlo es la prueba de que ese buzón es tuyo.',
+    reauthTitle: "Primero, confirma que eres tú",
+    reauthHintPassword: "Por seguridad, introduce primero tu contraseña actual.",
+    reauthHintCode: "Por seguridad, primero enviaremos un código a tu dirección actual {email}.",
+    reauthContinue: "Continuar",
+    reauthExpired: "La confirmación caducó. Vuelve a confirmar que eres tú.",
     emailChanged: 'Correo cambiado. Los demás dispositivos deben volver a iniciar sesión.',
     sameEmail: 'Ese ya es tu correo actual',
 

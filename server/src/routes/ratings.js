@@ -193,6 +193,9 @@ ratingsRouter.delete('/', optionalUser, async (req, res, next) => {
 
     const identity = { userId: req.user?.id ?? null, anonId: anonIdOf(req), anonIp: anonIpOf(req) }
     if (!identity.userId && !identity.anonId) return res.status(400).json({ error: '缺少 anonId' })
+    // 撤分每次都是一个事务 + 聚合重算，以前完全没限流
+    const gate = take(`rating:delete:${identity.userId || identity.anonIp || identity.anonId}`, 20, 60_000)
+    if (!gate.ok) return res.status(429).json({ error: '操作太频繁，请稍后再试', retryAfter: gate.retryAfter })
 
     await removeRating({ gameId: game.id, ...identity })
 

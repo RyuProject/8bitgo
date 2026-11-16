@@ -49,6 +49,7 @@ import { cleanPageRetryUrl, isMemoryPressureMessage, takeCleanPageRetry } from '
 import type { CloudSession, CloudState } from './adapters/cloudgame'
 import { p2pPlayable, cloudPlayable, emulatorJsCoreFileFor, emulatorJsCoreForGame, NDS_COMPAT_CORE, ndsCoreForWebgl2 } from './paths'
 import { FBNEO_LOWMEM_CORE, fbneoLowmemSaveSlug, fbneoMemoryFallbackCore, prefersFbneoLowmem, rememberFbneoMemoryFailure } from './fbneoLowmem'
+import { prefersPsxLowmem, psxLowmemCoreFor, psxMemoryFallbackCore, rememberPsxMemoryFailure } from './psxLowmem'
 import { ndsCrashFallbackCore, shouldRememberNdsCoreFailure } from './ndsCrash'
 import { rememberNdsCoreFailure, rememberedNdsCore } from './ndsCorePreference'
 import {
@@ -1815,6 +1816,11 @@ export function EmulatorPlayer({
       canRestartInPlace(extra ?? {}) && emulatorJsCoreForGame('arcade', coreRef.current) === 'fbneo' && prefersFbneoLowmem()
       ? FBNEO_LOWMEM_CORE
       : null
+    // 同理：这个浏览器默认 PCSX 的 512 MiB 起步内存给不出来过，PS1 直接用低内存版（与默认核心共用存档档位）
+    const rememberedPsxCore = !extra?.coreOverride && targetPlatform === 'psx' && runtime.id === 'emulatorjs' &&
+      canRestartInPlace(extra ?? {})
+      ? psxLowmemCoreFor(emulatorJsCoreForGame('psx', coreRef.current), prefersPsxLowmem())
+      : null
     /*
       新版 melonDS DS 只有 WebGL2 构建：只建得出 WebGL1 的浏览器里引擎去下不存在的 legacy 版，
       报「显卡驱动已过时」（2026-11-14 大陆 Chrome 149，下完 ROM 才失败、又换语言 ROM 白下三遍）。
@@ -1831,7 +1837,7 @@ export function EmulatorPlayer({
       emulatorJsCoreForGame('nds', coreRef.current ?? 'nds') === 'melondsds'
       ? rememberedNdsPerformanceCore(game)
       : null
-    const coreOverride = extra?.coreOverride ?? rememberedCore ?? rememberedPerformanceCore ?? webgl2Core ?? rememberedArcadeCore ?? undefined
+    const coreOverride = extra?.coreOverride ?? rememberedCore ?? rememberedPerformanceCore ?? webgl2Core ?? rememberedArcadeCore ?? rememberedPsxCore ?? undefined
     // 新旧 melonDS 的即时存档 ABI 不能假定兼容；兼容核心必须用独立档位，
     // 否则自动切换后可能把旧核心的快照写回原档，造成无法恢复的覆盖。
     const coreSaveSlug = targetPlatform === 'psx' && runtime.id === 'emulatorjs' && typeof game === 'string' && baseSaveSlug
@@ -2269,12 +2275,19 @@ export function EmulatorPlayer({
       */
       onOutOfMemory: (failedCore: string, reason: string) => {
         if (!isCurrent() || ready) return false
-        const nextCore = session.runtime.id === 'emulatorjs'
-          ? fbneoMemoryFallbackCore(session.platform, failedCore, canRestartInPlace(session) && !session.coreOverride)
+        const restartable = canRestartInPlace(session) && !session.coreOverride
+        const fbneoCore = session.runtime.id === 'emulatorjs'
+          ? fbneoMemoryFallbackCore(session.platform, failedCore, restartable)
           : null
+        // PS1 默认 PCSX 起步写死 512 MiB（psxLowmem.ts）；实例化才报内存不足时引擎已加载，只能重挂换低内存版
+        const psxCore = !fbneoCore && session.runtime.id === 'emulatorjs'
+          ? psxMemoryFallbackCore(session.platform, failedCore, restartable)
+          : null
+        const nextCore = fbneoCore ?? psxCore
         if (!nextCore) return false
-        console.warn(`[8bitgo/arcade] ${failedCore} 分配不出 WASM 内存，改用 ${nextCore} 重开：${reason}`)
-        rememberFbneoMemoryFailure()
+        console.warn(`[8bitgo/${session.platform}] ${failedCore} 分配不出 WASM 内存，改用 ${nextCore} 重开：${reason}`)
+        if (fbneoCore) rememberFbneoMemoryFailure()
+        else rememberPsxMemoryFailure()
         setError(null)
         begin(session.game, session.platform, session.runtime, {
           coreOverride: nextCore,
@@ -2282,6 +2295,18 @@ export function EmulatorPlayer({
           startedAt: session.startedAt,
         })
         return true
+      },
+      /*
+        引擎加载前的分配预检给不出默认 PCSX 的 512 MiB 时，本局原地换低内存版：ROM 已经下好、解好，
+        重挂会让内存下载模式下的玩家把几百 MB 再下一遍。存档档位相同，所以不必换会话（psxLowmem.ts）。
+      */
+      inPlaceMemoryFallback: (failedCore: string) => {
+        if (!isCurrent() || ready || session.runtime.id !== 'emulatorjs') return null
+        const nextCore = psxMemoryFallbackCore(session.platform, failedCore, canRestartInPlace(session) && !session.coreOverride)
+        if (!nextCore) return null
+        console.warn(`[8bitgo/psx] ${failedCore} 起步内存预检失败，本局改用 ${nextCore}`)
+        rememberPsxMemoryFailure()
+        return nextCore
       },
       onError: (message: string, errorScope?: 'runtime' | 'content' | 'config' | 'deterministic') => {
         if (!isCurrent()) return
@@ -4002,7 +4027,10 @@ export function EmulatorPlayer({
       emulatorJsCoreForGame('nds', prewarmCore ?? 'nds') === 'melondsds'
       ? rememberedNdsCore(romUrl) ?? rememberedNdsPerformanceCore(romUrl) ??
         ndsCoreForWebgl2(prewarmCore, canCreateWebgl2()) ?? prewarmCore
-      : prewarmCore
+      // 开局会直接用低内存 PCSX 的浏览器，悬停时也只预拉它（psxLowmem.ts）
+      : platform.id === 'psx' && pageRuntime?.id === 'emulatorjs'
+        ? psxLowmemCoreFor(emulatorJsCoreForGame('psx', prewarmCore ?? 'psx'), prefersPsxLowmem()) ?? prewarmCore
+        : prewarmCore
     // CHD 开局会改用 Beetle；悬停时若还预拉默认 PCSX，就白下另一份大核心。
     const warmCore = pageRuntime?.id === 'emulatorjs' && romUrl
       ? psxCoreForTransfer(platform.id, selectedCore, romUrl)

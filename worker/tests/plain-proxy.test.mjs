@@ -107,3 +107,27 @@ test('origin failures become a JSON 502', async () => {
     assert.equal(r.headers.get('Access-Control-Allow-Origin'), '*')
   })
 })
+
+test('origin Set-Cookie is never passed through the download host', async () => {
+  await withFetch(() => new Response('x', { headers: { 'Set-Cookie': 'sid=secret; Path=/' } }), async () => {
+    const r = await worker.fetch(at('/api/open/v1/rom-plain/G'), proxyEnv())
+    assert.equal(r.headers.get('Set-Cookie'), null)
+  })
+})
+
+test('a hung origin becomes a 504 instead of holding the client until the platform limit', async () => {
+  await withFetch((_input, init) => new Promise((_resolve, reject) => {
+    init.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })))
+    // 立刻触发超时，而不是在测试里真的等 30 秒
+    queueMicrotask(() => init.signal.dispatchEvent?.(new Event('abort')))
+  }), async () => {
+    const original = globalThis.setTimeout
+    globalThis.setTimeout = (fn) => original(fn, 0)
+    try {
+      const r = await worker.fetch(at('/api/open/v1/rom-plain/G'), proxyEnv())
+      assert.equal(r.status, 504)
+    } finally {
+      globalThis.setTimeout = original
+    }
+  })
+})

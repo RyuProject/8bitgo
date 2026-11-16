@@ -119,8 +119,14 @@ export function corsHeaders(request, env) {
     // Sockdrive 的 .raw / .metaj 是预压缩对象。浏览器会自动解码正文，但跨域脚本只有看见
     // Content-Encoding 才知道 Content-Length 仍是压缩字节数，不能拿它和解码后上限比较。
     'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges, Content-Encoding, ETag, Last-Modified, Retry-After, CF-Cache-Status, X-8BitGo-Edge-Cache',
-    'Access-Control-Max-Age': '86400', Vary: 'Origin',
+    'Access-Control-Max-Age': '86400',
   }
+  /*
+   * ALLOWED_ORIGINS=* 时响应与 Origin 无关，不能再发 Vary: Origin：浏览器会按「带不带 Origin」
+   * 把同一个 URL 存成两份 —— fetch() 预热（带 Origin）和 <img> / <script> / 引擎 XHR（可能不带）
+   * 互相命中不了，同一份 ROM / 封面白下两遍。只有按来源反射 ACAO 时，响应才真的随 Origin 变。
+   */
+  if (!allowed.includes('*')) headers.Vary = 'Origin'
   // 启动诊断包读 Resource Timing：跨源对象不带这个头时传输量 / 内容量恒为 0，看不出 ROM 下了多少、
   // 是否命中缓存（2026-11-10《心灵之金》现场）。只放给同样被 CORS 放行的来源。
   if (allowed.includes('*')) headers['Timing-Allow-Origin'] = '*'

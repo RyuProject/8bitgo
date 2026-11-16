@@ -33,7 +33,7 @@ usersRouter.get('/', async (req, res, next) => {
     // 不把 password_hash 读进 Node 内存；后台只需要知道“是否设置过”，不需要拿到哈希本身。
     const users = await query(
       `SELECT id, email, nickname, avatar, coins, role, status, birth_date, created_at,
-              (password_hash IS NOT NULL) AS has_password
+              (password_hash IS NOT NULL AND password_hash <> '') AS has_password
          FROM users ${where} ORDER BY created_at DESC LIMIT ?`,
       params,
     )

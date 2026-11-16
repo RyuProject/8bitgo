@@ -8,6 +8,7 @@ import { verifyLivePublisherToken } from './open/live-publisher.js'
 import { dateOnly, dbFlag } from './mappers.js'
 import { isAdultByBirthDate } from '../../shared/age.js'
 import { guardSocketArgs } from './socket-guard.js'
+import { sseWrite } from './sseGuard.js'
 import {
   CHAT_ACK_EMPTY,
   CHAT_ACK_FAILED,
@@ -611,7 +612,7 @@ function notifyRoomList() {
       if (json === watcher.lastJson) continue
       watcher.lastJson = json
       try {
-        watcher.res.write(`event: rooms\ndata: ${json}\n\n`)
+        if (!sseWrite(watcher.res, `event: rooms\ndata: ${json}\n\n`)) listWatchers.delete(watcher)
       } catch {
         listWatchers.delete(watcher)
       }

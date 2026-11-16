@@ -110,6 +110,8 @@
         2. 定义 window.__8bitgoAssetRepair：真出错时才从入口脚本所在资源域加载修复脚本；大陆入口优先走 EdgeOne。
            入口模块本身链接失败时 React 根本起不来，所以这里还要监听 window 的 SyntaxError；
            React 里懒加载失败由 AppErrorBoundary 调同一个函数。
+           每次加载修复脚本的经过（地址、失败 / 超时 / 成功、耗时）记在 window.__8bitgoAssetRepairLoad，
+           诊断包靠它分清「加载失败」和「超时」（2026-11-16 诊断包 #761 只有一句「加载失败或超时」）。
       只用 ES5，任何一步出错都静默放过：这段坏了也不能拖垮页面。
     -->
     <script>
@@ -140,17 +142,18 @@
             }
           } catch (e) {}
           var pending = null
+          var loadLog = w.__8bitgoAssetRepairLoad = []
           var repairScriptUrls = function () {
             var urls = []
             try {
               var entry = document.querySelector('script[type="module"][src*="/assets/index-"]')
-              if (entry && entry.src) urls.push(new URL('asset-repair-v2.js', entry.src).href)
+              if (entry && entry.src) urls.push(new URL('asset-repair-v3.js', entry.src).href)
             } catch (e) {}
             try {
-              var fallback = new URL('/assets/asset-repair-v2.js', w.location.href).href
+              var fallback = new URL('/assets/asset-repair-v3.js', w.location.href).href
               if (urls.indexOf(fallback) < 0) urls.push(fallback)
             } catch (e) {
-              if (urls.indexOf('/assets/asset-repair-v2.js') < 0) urls.push('/assets/asset-repair-v2.js')
+              if (urls.indexOf('/assets/asset-repair-v3.js') < 0) urls.push('/assets/asset-repair-v3.js')
             }
             return urls
           }
@@ -167,24 +170,32 @@
                   if (index >= urls.length) { resolve(null); return }
                   var s = document.createElement('script')
                   var settled = false
+                  var url = urls[index++]
+                  var t0 = Date.now()
+                  var log = function (outcome) {
+                    if (loadLog.length < 6) loadLog.push({ u: url, r: outcome, ms: Date.now() - t0 })
+                  }
                   var timer = setTimeout(function () {
                     if (settled) return
                     settled = true
                     s.onload = s.onerror = null
+                    log('timeout')
                     loadNext()
                   }, 5000)
                   var failed = function () {
                     if (settled) return
                     settled = true
                     clearTimeout(timer)
+                    log('error')
                     loadNext()
                   }
-                  s.src = urls[index++]
+                  s.src = url
                   s.async = true
                   s.onload = function () {
                     if (settled) return
                     settled = true
                     clearTimeout(timer)
+                    log(w.__8bitgoAssetRepairRun ? 'ok' : 'empty')
                     if (w.__8bitgoAssetRepairRun) {
                       try { Promise.resolve(w.__8bitgoAssetRepairRun(opts)).then(resolve, function () { resolve(null) }) } catch (e) { resolve(null) }
                     } else loadNext()

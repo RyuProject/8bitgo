@@ -340,11 +340,11 @@ function environment(start: number, now: number): StartupDiagnostics['env'] {
 /**
  * 挑出这一局里值得看的请求：失败的、慢的、大的。命中缓存的小文件没信息量，挤掉它们给真问题留位置。
  */
-function pickResources(start: number): DiagnosticResource[] {
+function pickResources(start: number, from = start - 2000): DiagnosticResource[] {
   const all = [...readResources(performance), ...frameSnapshots, ...[...frameSources].flatMap(readResources)]
   const seen = new Set<string>()
   const relevant = all.filter((r) => {
-    if (r.atEpoch < start - 2000) return false
+    if (r.atEpoch < from) return false
     if (/\/api\/(?:games\/[^/]+\/startup|rooms|live|netplay)/.test(r.n)) return false
     const key = `${r.n}@${Math.round(r.atEpoch)}`
     if (seen.has(key)) return false
@@ -357,8 +357,17 @@ function pickResources(start: number): DiagnosticResource[] {
     .map(({ atEpoch, ...rest }) => ({ ...rest, at: Math.round(atEpoch - start) }))
 }
 
-/** 打包。没有这一局的记录（比如页面刚刷新）时返回 null，漏斗事件照常上报。 */
-export function collectStartupDiagnostics(attemptId: string | undefined, reason = ''): StartupDiagnostics | null {
+/**
+ * 打包。没有这一局的记录（比如页面刚刷新）时返回 null，漏斗事件照常上报。
+ *
+ * `resourcesSincePageStart`：页面崩溃（runtime 'page'）的「这一局」是上报那一刻才建的，按开局时间筛就一条请求都没有；
+ * 它要看的是页面打开以来慢的 / 失败的 chunk（2026-11-16 诊断包 #761 的资源列表就是空的）。
+ */
+export function collectStartupDiagnostics(
+  attemptId: string | undefined,
+  reason = '',
+  { resourcesSincePageStart = false }: { resourcesSincePageStart?: boolean } = {},
+): StartupDiagnostics | null {
   if (typeof window === 'undefined' || !attemptId) return null
   const state = attempts.get(attemptId)
   if (!state) return null
@@ -375,7 +384,7 @@ export function collectStartupDiagnostics(attemptId: string | undefined, reason 
       logs: logs.filter((line) => line.at >= start - 5000).slice(-(BUNDLE_LOG_MAX - Math.min(4, snapshotProviders.size)))
         .map(({ at, s, l, m }) => ({ t: at - start, s, l, m }))
         .concat(snapshotLines(now - start)),
-      resources: pickResources(start),
+      resources: pickResources(start, resourcesSincePageStart ? -Infinity : start - 2000),
     }
     // 超了就先砍最早的日志，再砍请求，保证一定发得出去
     while (JSON.stringify(bundle).length > BUNDLE_BYTES_MAX && (bundle.logs.length || bundle.resources.length)) {

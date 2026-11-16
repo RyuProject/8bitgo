@@ -169,6 +169,17 @@ const KEEP_ZIP_TO =
   '(e.dontExtractIfCore?.includes(this.getCore())||"mame-current"===this.getCore()||"fbneo-lowmem"===this.getCore())'
 
 /**
+ * 2026-11-16 补上 pcsx_rearmed-lowmem：它是 PS1 默认核心内存不足时的退路（src/emulator/psxLowmem.ts），
+ * 代码与默认 PCSX 逐字节相同，引擎对它的处理也必须相同。引擎只在两处按核心名认 PCSX：psx 别名组（故意不加，
+ * 理由见 ejsSaveFs.ts 的 copyEngineSettingsToSystem）和这里的 CUE 处理名单 —— 不在名单里的核心会改用另一套
+ * 「从压缩包里挑 cue / ccd / toc / m3u」的规则，同一个 cue+bin 包两种核心挑出的文件可能不同。
+ */
+const PSX_LOWMEM_CUE_FROM =
+  '["pcsx_rearmed","genesis_plus_gx","picodrive","mednafen_pce","smsplus","vice_x64","vice_x64sc","vice_x128","vice_xvic","vice_xpet","puae"].includes(this.getCore())'
+const PSX_LOWMEM_CUE_TO =
+  '["pcsx_rearmed","pcsx_rearmed-lowmem","genesis_plus_gx","picodrive","mednafen_pce","smsplus","vice_x64","vice_x64sc","vice_x128","vice_xvic","vice_xpet","puae"].includes(this.getCore())'
+
+/**
  * melonDS DS 只构建 WebGL2 版，必须让引擎无条件选择 `<core>-wasm.data`。
  *
  * 引擎通常会从 reports/melondsds.json 里的 defaultWebGL2 得到这个结论，但报告 URL
@@ -460,6 +471,14 @@ const GROUPS = [
       '把 mame-current / fbneo-lowmem 也判成「不解压」—— 否则 MAME 拿不到 romset 压缩包会直接 Abort，',
       'fbneo-lowmem 拿到散文件报 Romset is unknown。',
       '⚠️ 这一组没了的话，mame-current 的游戏 100% 起不来，且只有一句「Failed to start game」。',
+    ],
+  },
+  {
+    name: 'PS1 低内存核心沿用 PCSX 的 CUE 处理',
+    patches: [[PSX_LOWMEM_CUE_FROM, PSX_LOWMEM_CUE_TO]],
+    hint: [
+      '在 determineCueSettings() 里找那份核心名单（第一个是 pcsx_rearmed）；',
+      '把 pcsx_rearmed-lowmem 加在 pcsx_rearmed 后面。只改名单，不要把它加进 getCores 的 psx 组。',
     ],
   },
   {

@@ -110,7 +110,7 @@ ok('样式表现场改写字体地址')
 
 // ── 接线 ──
 const ssr = readFileSync(new URL('../src/ssr.js', import.meta.url), 'utf8')
-assert.match(ssr, /coverHint === 'cn' && !cnSite\) page = retargetStaticToCnEdge/)
+assert.match(ssr, /coverHint === 'cn' && !cnSite && !req\.assetsFromOrigin\) page = retargetStaticToCnEdge/, '兜底页带 __assets=origin 重新载入时不改写（诊断包 #761）')
 const api = readFileSync(new URL('../../src/services/api.ts', import.meta.url), 'utf8')
 assert.match(api, /SAME_ORIGIN && method === 'GET' && !admin \? cnEdgeApiBase\(\)/, '只有只读、非后台请求走加速入口')
 assert.match(api, /markCnEdgeApiFailed\(\)/)

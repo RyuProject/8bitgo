@@ -51,7 +51,12 @@ export function scrub(value, max = 300) {
     .replace(/\b(bearer)\s+[^\s,;]+/gi, '$1 [已隐藏]')
     .replace(/\b(authorization|cookie|access[_-]?token|refresh[_-]?token|api[_-]?key|password|secret|token|key)\b(\s*[:=]\s*)[^\s,;&]+/gi, '$1$2[已隐藏]')
     .replace(/\beyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,}\b/g, '[令牌]')
-    .replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, '[邮箱]')
+    /*
+      邮箱后面不能紧跟路径或「:行号」。Safari / Firefox 的调用栈写成 `vt@https://cn.8bitgo.com/_cn/assets/x.js:11:4269`，
+      网址缩短后是 `vt@cn.8bitgo.com/_cn/…/x.js:11:4269` —— 以前整段被当成邮箱换成 [邮箱]，
+      函数名和资源域名一起丢了（2026-11-16 诊断包 #761）。真邮箱后面跟的是空白、标点或行尾。
+    */
+    .replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+(?![\w-]|\.[\w-]|[/:]\S)/g, '[邮箱]')
     .replace(IPV4_RE, '[IP]')
     .replace(IPV6_RE, '[IP]')
     .replace(/\s+/g, ' ')

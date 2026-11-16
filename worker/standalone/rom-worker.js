@@ -122,8 +122,14 @@ function corsHeaders(request, env) {
     // Sockdrive 的 .raw / .metaj 是预压缩对象。浏览器会自动解码正文，但跨域脚本只有看见
     // Content-Encoding 才知道 Content-Length 仍是压缩字节数，不能拿它和解码后上限比较。
     'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges, Content-Encoding, ETag, Last-Modified, Retry-After, CF-Cache-Status, X-8BitGo-Edge-Cache',
-    'Access-Control-Max-Age': '86400', Vary: 'Origin',
+    'Access-Control-Max-Age': '86400',
   }
+  /*
+   * ALLOWED_ORIGINS=* 时响应与 Origin 无关，不能再发 Vary: Origin：浏览器会按「带不带 Origin」
+   * 把同一个 URL 存成两份 —— fetch() 预热（带 Origin）和 <img> / <script> / 引擎 XHR（可能不带）
+   * 互相命中不了，同一份 ROM / 封面白下两遍。只有按来源反射 ACAO 时，响应才真的随 Origin 变。
+   */
+  if (!allowed.includes('*')) headers.Vary = 'Origin'
   // 启动诊断包读 Resource Timing：跨源对象不带这个头时传输量 / 内容量恒为 0，看不出 ROM 下了多少、
   // 是否命中缓存（2026-11-10《心灵之金》现场）。只放给同样被 CORS 放行的来源。
   if (allowed.includes('*')) headers['Timing-Allow-Origin'] = '*'
@@ -182,10 +188,49 @@ async function listAcross(buckets, options, rawCursor, scope) {
   const truncated = Object.values(state.positions).some(p => p !== null)
   return { entries: pages.flat(), truncated, cursor: truncated ? encodeCursor(state) : undefined }
 }
+/**
+ * R2 异常会在响应里收敛成可重试的通用 503，但服务端仍需保留足够线索定位故障。
+ * 日志不带请求 URL、对象 key、授权头或 uploadId，避免把后台上传凭据与文件名写进日志。
+ */
+function diagnosticValue(value, maxLength = 300) {
+  if (value === undefined || value === null) return undefined
+  return String(value)
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\bBearer\s+\S+/gi, 'Bearer [redacted]')
+    .replace(/\b(upload[-_ ]?id|authorization|token|secret|password)\b\s*[:=]?\s*[^\s,;]+/gi, '$1=[redacted]')
+    .replace(/\b(?:object\s+)?key\b\s*[:=]?\s*[^\s,;]+/gi, 'key=[redacted]')
+    .replace(/https?:\/\/\S+/gi, '[url]')
+    .replace(/(?:roms|covers|_uploads|psp-staging|sockdrive-staging)\/[^\s,;]+/gi, '[object]')
+    .replace(/\b[^\s,;]+\.(?:nes|sfc|smc|gb|gbc|gba|nds|n64|z64|iso|chd|zip|7z|rom)\b/gi, '[file]')
+    .slice(0, maxLength)
+}
+
+function storageErrorDetails(error, depth = 0) {
+  const details = {}
+  const name = diagnosticValue(error?.name || (error === null ? 'null' : typeof error), 80)
+  const code = diagnosticValue(error?.code, 100)
+  const status = Number(error?.status ?? error?.statusCode ?? error?.httpStatus)
+  const requestId = diagnosticValue(error?.requestId ?? error?.requestID, 120)
+  const message = diagnosticValue(error instanceof Error ? error.message : error, 300)
+  if (name) details.name = name
+  if (code) details.code = code
+  if (Number.isInteger(status) && status > 0) details.status = status
+  if (requestId) details.requestId = requestId
+  if (message) details.message = message
+  if (depth < 1 && error?.cause) details.cause = storageErrorDetails(error.cause, depth + 1)
+  return details
+}
+
+function logStorageFailure(error, operation) {
+  // 结构化字段便于 Wrangler tail 按操作类型检索；只记录异常摘要，不序列化整个 Request/Error。
+  console.warn('[r2-storage-failure]', JSON.stringify({ operation, error: storageErrorDetails(error) }))
+}
+
 /** Unknown/transient R2 failures MUST NOT invalidate a client's resumable upload. */
 function storageFailure(error, cors, operation = 'storage') {
   if (error instanceof HttpError) return json({ error: error.message, code: error.code }, cors, error.status)
   const message = error instanceof Error ? error.message : String(error)
+  logStorageFailure(error, operation)
   // Recognize only explicit NoSuchUpload. Generic 400/409/messages are not evidence.
   const gone = error?.code === 'NoSuchUpload' || /\bNoSuchUpload\b/i.test(message)
   if (gone) return json({ error: '分片会话不存在或已结束', code: 'upload_gone', fatal: true, retryable: false }, cors, 409)
@@ -469,6 +514,7 @@ const RANGE_CACHE_HEADER = 'X-8BitGo-Stored-Range'
  * 响应一律不进 Worker 边缘缓存（源站本身回 private, no-store）。
  */
 const PLAIN_PROXY_PATH = /^\/api\/open\/v1\/(?:rom-plain\/[^/]+|bundle-plain\/[^/]+\/.+)$|^\/api\/diag$/
+const PLAIN_PROXY_HEADER_TIMEOUT_MS = 30_000
 const PLAIN_PROXY_FORWARD_HEADERS = [
   'Range', 'If-Range', 'Origin', 'User-Agent', 'Accept',
   'Access-Control-Request-Method', 'Access-Control-Request-Headers',
@@ -499,8 +545,19 @@ async function proxyPlainDownload(request, env, url, cors) {
   }
   // redirect: manual —— 源站若回 302（例如未来改成预签名直链），交给客户端自己跟，
   // 不在 Worker 里替它跟到别的主机。
-  const upstream = await fetch(target, { method: request.method, headers, redirect: 'manual' })
+  // 只限「等响应头」的时长：源站挂住时以前要等到平台 100 秒上限才断，客户端一直转圈。
+  // 响应头到了就清掉定时器，大文件正文不受这个时限影响。
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(new Error('upstream header timeout')), PLAIN_PROXY_HEADER_TIMEOUT_MS)
+  let upstream
+  try {
+    upstream = await fetch(target, { method: request.method, headers, redirect: 'manual', signal: controller.signal })
+  } finally {
+    clearTimeout(timer)
+  }
   const out = new Headers(upstream.headers)
+  // 下载域名上不给源站种 Cookie：凭据在 URL 里，这条路本来就不该带任何登录态
+  out.delete('Set-Cookie')
   out.set('Cache-Control', 'private, no-store')
   out.set('X-8BitGo-Plain-Proxy', '1')
   return new Response(request.method === 'HEAD' ? null : upstream.body, {
@@ -554,6 +611,15 @@ const COVER_IMAGE_PATH = /^\/covers\/.+\.(?:png|jpe?g|webp|avif|gif)$/i
  * 完整 GET 走普通边缘缓存；Range 请求命中整份副本就在 Worker 里切片，未命中照常回 R2，
  * 同时在后台把整份写进缓存。超过上限的大视频不缓存，避免把几十 MB 读进 Worker 内存。
  */
+/** 整份 200 进边缘缓存的上限（见 fetch 里「写边缘缓存」那段）。 */
+const EDGE_FULL_PUT_MAX_BYTES = 64 * 1024 * 1024
+/** 缺失封面的负缓存时长：管理员补传后最多晚这么久生效。 */
+const MISSING_COVER_TTL_SECONDS = 60
+function missingCoverResponse(response) {
+  const headers = new Headers(response.headers)
+  headers.set('Cache-Control', `public, max-age=0, s-maxage=${MISSING_COVER_TTL_SECONDS}`)
+  return new Response('{"error":"not found"}', { status: 404, headers })
+}
 const PREVIEW_VIDEO_PATH = /^\/videos\/[^/]+\.(?:mp4|webm)$/i
 const PREVIEW_VIDEO_CACHE_MAX_BYTES = 32 * 1024 * 1024
 const previewVideoFills = new Set()
@@ -671,22 +737,71 @@ function cacheablePreviewVideo(response) {
   return Number.isSafeInteger(length) && length > 0 && length <= PREVIEW_VIDEO_CACHE_MAX_BYTES
 }
 
-/** 用缓存里的整份视频回答 Range；副本不可用时返回 null，调用方回 R2 */
+/**
+ * 用缓存里的整份视频回答 Range；副本不可用时返回 null，调用方回 R2。
+ *
+ * 以前是 `await hit.arrayBuffer()` 再切片：每个 Range 请求都把最大 32MB 的整份视频读进
+ * Worker 内存，首页一屏几个预览视频同时播放就可能撞上 128MB 的隔离内存上限，
+ * 把同一隔离里的其它请求一起带崩。现在边读边丢弃前缀、只转发需要的那段，内存只占一个块。
+ */
 async function slicedPreviewVideo(hit, rangeHeader) {
   if (!cacheablePreviewVideo(hit)) { await hit.body?.cancel().catch(() => {}); return null }
-  const bytes = new Uint8Array(await hit.arrayBuffer())
-  const range = parseRange(rangeHeader, bytes.byteLength)
+  const size = Number(hit.headers.get('Content-Length'))
+  const range = parseRange(rangeHeader, size)
   const headers = new Headers(hit.headers)
   headers.set('Accept-Ranges', 'bytes')
   if (!range || range.unsatisfiable) {
-    headers.set('Content-Range', `bytes */${bytes.byteLength}`)
+    // 不能 await：缓存命中的正文可能是 tee 出来的一支，取消要等另一支也结束才落定，会把请求挂住
+    hit.body.cancel().catch(() => {})
+    headers.set('Content-Range', `bytes */${size}`)
     headers.set('Content-Length', '0')
     return edgeCacheHeader(new Response(null, r2BodyResponseInit(headers, 416)), 'HIT')
   }
   const end = range.offset + range.length - 1
-  headers.set('Content-Range', `bytes ${range.offset}-${end}/${bytes.byteLength}`)
+  headers.set('Content-Range', `bytes ${range.offset}-${end}/${size}`)
   headers.set('Content-Length', String(range.length))
-  return edgeCacheHeader(new Response(bytes.slice(range.offset, end + 1), r2BodyResponseInit(headers, 206)), 'HIT')
+  return edgeCacheHeader(new Response(knownLength(sliceStream(hit.body, range.offset, range.length), range.length), r2BodyResponseInit(headers, 206)), 'HIT')
+}
+
+/** 从流里跳过 offset 字节、只放出 length 字节，其余直接取消读取 */
+export function sliceStream(body, offset, length) {
+  const reader = body.getReader()
+  let skipped = 0
+  let sent = 0
+  const finish = (controller) => {
+    controller.close()
+    reader.cancel().catch(() => {})
+  }
+  return new ReadableStream({
+    async pull(controller) {
+      while (true) {
+        if (sent >= length) return finish(controller)
+        const { done, value } = await reader.read()
+        if (done) return controller.error(new Error('cached preview video is shorter than declared'))
+        let chunk = value
+        if (skipped < offset) {
+          const need = offset - skipped
+          if (chunk.byteLength <= need) { skipped += chunk.byteLength; continue }
+          chunk = chunk.subarray(need)
+          skipped = offset
+        }
+        const take = Math.min(chunk.byteLength, length - sent)
+        controller.enqueue(chunk.subarray(0, take))
+        sent += take
+        if (sent >= length) finish(controller)
+        return
+      }
+    },
+    cancel(reason) { return reader.cancel(reason) },
+  })
+}
+
+/** 让运行时知道正文长度（发 Content-Length 而不是分块编码）；Node 测试环境没有 FixedLengthStream */
+function knownLength(stream, length) {
+  if (typeof FixedLengthStream === 'undefined') return stream
+  const fixed = new FixedLengthStream(length)
+  stream.pipeTo(fixed.writable).catch(() => {})
+  return fixed.readable
 }
 
 /** 后台把整份预览视频写进边缘缓存；同一隔离环境里同一地址只填一次 */
@@ -1020,7 +1135,8 @@ export default {
       try { return await proxyPlainDownload(request, env, url, cors) }
       catch (error) {
         console.warn('[plain-proxy] upstream failed', error instanceof Error ? error.message : String(error))
-        return json({ error: 'upstream unavailable' }, cors, 502)
+        const timedOut = error?.name === 'AbortError' || /timeout/i.test(String(error?.message || ''))
+        return json({ error: timedOut ? 'upstream timeout' : 'upstream unavailable' }, cors, timedOut ? 504 : 502, { 'Retry-After': '2' })
       }
     }
     const videoRangeKey = previewVideoRangeKey(request, url, cors)
@@ -1071,7 +1187,24 @@ export default {
     // Sockdrive 那段），这种封面宁可每次回 R2，也不能让 HIT 吐出一张解不开的图。
     const encodedCover = COVER_IMAGE_PATH.test(url.pathname) && response.headers.has('Content-Encoding')
     const uncacheableVideo = PREVIEW_VIDEO_PATH.test(url.pathname) && !cacheablePreviewVideo(response)
-    if (edgeCache && response.status === 200 && response.body && !response.headers.has('Content-Range') && !encodedCover && !uncacheableVideo) {
+    /*
+     * 写边缘缓存靠 response.clone() 把流一分为二：缓存那一路按 R2 速度读，玩家那一路按网速读，
+     * 两路的差额全攒在 Worker 内存里。8MB 的 ROM 分片有界；整份对象以前没有上限，
+     * 几个慢速玩家同时拉大文件就能撑爆 128MB 的隔离内存。大文件本来就走 8MB Range 分片缓存，
+     * 整份 200 只缓存不超过上限的对象；没有 Content-Length 的也不缓存。
+     */
+    const fullLength = Number(response.headers.get('Content-Length'))
+    const tooLargeForFullPut = !Number.isSafeInteger(fullLength) || fullLength > EDGE_FULL_PUT_MAX_BYTES
+    if (edgeCache && response.status === 404 && COVER_IMAGE_PATH.test(url.pathname)) {
+      // 缺图会让同一页面的每次访问都穿透 R2（缩略图还要按 4 个位置依次找），短暂记住「没有」
+      context.waitUntil(
+        edgeCache.put(new Request(request.url, { method: 'GET' }), missingCoverResponse(response)).catch((error) => {
+          console.warn('[rom-cache] negative put failed', error instanceof Error ? error.message : String(error))
+        }),
+      )
+      return response
+    }
+    if (edgeCache && response.status === 200 && response.body && !response.headers.has('Content-Range') && !encodedCover && !uncacheableVideo && !tooLargeForFullPut) {
       // clone 后立刻回玩家；75 MB 的 NDS ROM 写边缘缓存不能挡住首包。
       const cacheKey = new Request(request.url, { method: 'GET' })
       context.waitUntil(

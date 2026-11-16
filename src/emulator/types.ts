@@ -274,6 +274,13 @@ export interface MountOptions {
    */
   onOutOfMemory?: (core: string, message: string) => boolean
   /**
+   * 引擎加载之前的分配预检给不出这个核心的起步内存时，本局能不能**原地**换成低内存核心（不重挂、不重新准备 ROM）。
+   * 返回替换核心 = 播放器同意并已记下偏好；null = 不能换（适配器再问 onOutOfMemory，或照实报内存不足）。
+   * 只给即时存档档位不变的替换用（PS1 的 pcsx_rearmed-lowmem 与默认 PCSX 共用档位，见 psxLowmem.ts）；
+   * FBNeo 低内存版另有档位，必须经 onOutOfMemory 重挂，播放器才能换掉会话的存档档位。
+   */
+  inPlaceMemoryFallback?: (core: string) => string | null
+  /**
    * 「这份 ROM 我跑不了，换个引擎吧」—— 和 onError 是两回事。
    *
    * onError 是**失败**：播放器会报红字，开局前还会原样自动重试几次。

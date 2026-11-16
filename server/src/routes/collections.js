@@ -344,6 +344,11 @@ collectionsRouter.get('/:id', optionalUser, async (req, res, next) => {
   try {
     const id = idOf(req.params.id)
     if (!id) return res.status(404).json({ error: '合集不存在' })
+    // 一次详情最多拉 500 款游戏 + 三组关联查询，以前对匿名访问完全不限流
+    if (!req.user) {
+      const gate = takeAnonymous(req, 'collection-detail', { perIp: 120, global: 3000 })
+      if (!gate.ok) return res.status(429).json({ error: '请求太频繁，请稍后再试', retryAfter: gate.retryAfter })
+    }
     const row = await queryOne(`${SELECT_WITH_AUTHOR} WHERE c.id = ?`, [id])
     if (!row) return res.status(404).json({ error: '合集不存在' })
     const viewerId = req.user?.id ?? null

@@ -40,6 +40,17 @@ assert.ok(build.includes("'    u16 VRAMCaptureBlockFlags[16];'"), 'VRAMCaptureBl
 assert.ok(build.includes("u16 VRAMCaptureBlockFlags[16] {};"))
 assert.ok(build.includes('if (!Rend) return;'), 'SyncAllVRAMCaptures 在渲染器建好前必须跳过')
 assert.match(build, /gpuCaptureFlagsInit: true/)
+// 《血战唐人街》128MiB ROM 开局三份副本把堆撑到 470MiB：GameInfo 必须借用 RetroArch 的 persistent 缓冲
+assert.match(build, /function patchCore\(coreDir\) \{\n\s*patchPathGetSizeAbi\(coreDir\)\n\s*patchBorrowPersistentRom\(coreDir\)/,
+  'patchCore 必须应用 ROM 缓冲借用补丁')
+assert.ok(build.includes('RETRO_ENVIRONMENT_GET_GAME_INFO_EXT'), '借用前必须向前端逐项确认 persistent_data，不能假定')
+assert.ok(build.includes('gameInfoExt[i].persistent_data && gameInfoExt[i].data == game[i].data'),
+  '借用条件必须同时核对 persistent_data 与指针，前端换了缓冲就要退回复制')
+for (const site of ["'                _ndsInfo = game[0];'", "'                _gbaInfo = game[1];'"]) {
+  assert.ok(build.includes(site), `必须替换上游 GameInfo 构造点：${site}`)
+}
+assert.ok(build.includes('info.data && info.size && !borrowData ? std::make_unique'), '借用时不能再分配整份 ROM')
+assert.match(build, /borrowsPersistentRom: true/)
 
 const report = JSON.parse(readFileSync(join(root, 'public/emulatorjs/cores/reports/melondsds.json'), 'utf8'))
 if (report.linkAbiChecked !== true) {
@@ -53,6 +64,13 @@ if (report.gpuCaptureFlagsInit !== true) {
   console.warn(
     '⚠️ melondsds-wasm.data 没有 GPU 截图标志初始化补丁（report 没有 gpuCaptureFlagsInit）。' +
     '口袋妖怪 黑 等 ROM 开局必然 RuntimeError: null function，请运行 npm run build:melondsds 重新出包。',
+  )
+}
+
+if (report.borrowsPersistentRom !== true) {
+  console.warn(
+    '⚠️ melondsds-wasm.data 开局仍复制三份 ROM（report 没有 borrowsPersistentRom）。' +
+    '128MiB ROM 要把 WASM 堆撑到约 470MiB，内存紧张的浏览器会裸 Aborted()；请运行 npm run build:melondsds 重新出包。',
   )
 }
 

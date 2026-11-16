@@ -208,7 +208,10 @@ postsRouter.post('/:slug/translate', async (req, res, next) => {
     const titleCached = row.title_i18n?.[lang] || ''
     const excerptCached = row.excerpt_i18n?.[lang] || ''
     const contentCached = row.content_i18n?.[lang] || ''
-    if (titleCached && excerptCached && contentCached) {
+    // 源文为空的字段视作「已完成」：否则摘要为空的文章永远走不到这条短路，
+    // 每次匿名请求都会白跑一遍下面的 invalidateContent()，清空全站 SSR 缓存并清 Cloudflare。
+    const done = (cached, source) => Boolean(cached) || !String(source || '').trim()
+    if (done(titleCached, row.title) && done(excerptCached, row.excerpt) && done(contentCached, row.content)) {
       return res.json({
         lang,
         title: titleCached,
@@ -275,25 +278,20 @@ postsRouter.post('/:slug/translate', async (req, res, next) => {
       return res.status(502).json({ error: '翻译失败：所有字段都未翻译成功' })
     }
 
-    // 写缓存：成功的字段写、失败的字段不写（保留「还没翻」状态，下次再点会重试）
-    // 不 await：缓存失败不影响用户体验，下次点再撞就行
-    if (titleTranslation && !titleCached) {
-      writePostTranslation(req.params.slug, 'title_i18n', lang, titleTranslation).catch((e) =>
-        console.error('[post translate] 写 title_i18n:', e?.message),
-      )
-    }
-    if (excerptTranslation && !excerptCached) {
-      writePostTranslation(req.params.slug, 'excerpt_i18n', lang, excerptTranslation).catch((e) =>
-        console.error('[post translate] 写 excerpt_i18n:', e?.message),
-      )
-    }
-    if (contentTranslation && !contentCached) {
-      writePostTranslation(req.params.slug, 'content_i18n', lang, contentTranslation).catch((e) =>
-        console.error('[post translate] 写 content_i18n:', e?.message),
-      )
-    }
-
-    invalidateContent()
+    // 写缓存：成功的字段写、失败的字段不写（保留「还没翻」状态，下次再点会重试）。
+    // 写完再清缓存：以前写入不 await，清缓存可能先于写入落库，边缘又缓存回旧页面。
+    const writes = []
+    if (titleTranslation && !titleCached) writes.push(['title_i18n', titleTranslation])
+    if (excerptTranslation && !excerptCached) writes.push(['excerpt_i18n', excerptTranslation])
+    if (contentTranslation && !contentCached) writes.push(['content_i18n', contentTranslation])
+    const results = await Promise.allSettled(
+      writes.map(([column, value]) => writePostTranslation(req.params.slug, column, lang, value)),
+    )
+    results.forEach((r, i) => {
+      if (r.status === 'rejected') console.error(`[post translate] 写 ${writes[i][0]}:`, r.reason?.message)
+    })
+    // 只有真的落了新译文才清缓存（全站 SSR + Cloudflare HTML），不能让匿名请求随手清站
+    if (results.some((r) => r.status === 'fulfilled')) invalidateContent()
 
     res.json({
       lang,

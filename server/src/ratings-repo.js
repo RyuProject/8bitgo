@@ -206,7 +206,10 @@ export async function applyRating(run, { gameId, userId = null, anonId = null, a
 /** 撤销一票。没有这一票时什么都不做，返回 false */
 export async function removeRating({ gameId, userId = null, anonId = null, anonIp = null }) {
   return withTransaction(async (run) => {
-    const existing = await findRating(run, gameId, { userId, anonId, anonIp }, true)
+    // 撤分只认确切身份（user_id / anon_id），不走 anon_ip 兜底：同一出口 IP（CGNAT、校园网）
+    // 下的另一个人随手伪造一个 anonId，就能删掉别人的那一票。
+    void anonIp
+    const existing = await findRating(run, gameId, { userId, anonId }, true)
     if (!existing) return false
     await run('DELETE FROM game_ratings WHERE id = ?', [existing.id])
     await run(recomputeSql(1), [gameId])

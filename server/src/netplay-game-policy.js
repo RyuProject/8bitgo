@@ -15,7 +15,7 @@ export async function resolveGameRoomPolicy({ gameSlug, gameId } = {}) {
   const expectedGameId = netplayGameId(slug)
   if (gameId !== undefined && gameId !== null && String(gameId) !== String(expectedGameId)) return null
 
-  const row = await queryOne('SELECT slug, players, multiplayer, hidden FROM games WHERE slug = ? LIMIT 1', [slug])
+  const row = await loadPolicyRow(slug)
   if (!row || Number(row.hidden) === 1) return null
 
   // 只看 players 会绕过后台的「是否支持联机」开关；只看 multiplayer 又会把一人脏数据
@@ -23,4 +23,35 @@ export async function resolveGameRoomPolicy({ gameSlug, gameId } = {}) {
   if (!gameSupportsNetplay(row.multiplayer, row.players)) return null
   const maxPlayers = normalizeGamePlayers(row.players)
   return { gameSlug: String(row.slug), gameId: netplayGameId(row.slug), maxPlayers }
+}
+
+/*
+  每次开房都要查一次 games 表，走的是全站共用的 10 连接池；刷开房的脚本会把 SSR 也拖慢。
+  按 slug 缓存 30 秒（含「查无此游戏」）：后台改人数 / 下架最多晚 30 秒生效，开房已有的房间不受影响。
+  同一 slug 并发的查询合并成一次。
+*/
+const POLICY_TTL_MS = 30_000
+const POLICY_CACHE_MAX = 2000
+const policyCache = new Map()
+
+async function loadPolicyRow(slug) {
+  const hit = policyCache.get(slug)
+  if (hit && Date.now() - hit.at < POLICY_TTL_MS) return hit.row
+  if (hit?.pending) return hit.pending
+  const pending = queryOne('SELECT slug, players, multiplayer, hidden FROM games WHERE slug = ? LIMIT 1', [slug])
+  policyCache.set(slug, { at: 0, pending })
+  try {
+    const row = await pending
+    if (policyCache.size > POLICY_CACHE_MAX) policyCache.delete(policyCache.keys().next().value)
+    policyCache.set(slug, { at: Date.now(), row })
+    return row
+  } catch (error) {
+    policyCache.delete(slug)
+    throw error
+  }
+}
+
+/** 测试与后台写入后可调用，立刻作废缓存。 */
+export function clearGameRoomPolicyCache() {
+  policyCache.clear()
 }

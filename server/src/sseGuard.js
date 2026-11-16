@@ -63,6 +63,25 @@ export const SSE_HEARTBEAT_MS = num(process.env.SSE_HEARTBEAT_MS, 10_000)
  */
 export const SSE_HEARTBEAT_FRAME = 'event: ping\ndata: 1\n\n'
 
+/** 单条流允许积压在内核 / Node 缓冲里的字节数。超过说明客户端已经读不动了。 */
+export const SSE_MAX_BUFFERED = num(process.env.SSE_MAX_BUFFERED, 256 * 1024)
+
+/**
+ * 带背压保护的 SSE 写入。res.write 的返回值以前全被丢掉：一个卡住的客户端会把每一次
+ * 房间列表推送都攒在内存里，直到 30 分钟寿命上限。积压超限就直接断开 ——
+ * EventSource 会自己重连，并在重连时拿到一份完整快照，不会丢状态。
+ * 返回 false 表示这条流已经不能用了（调用方应把它从订阅集合里摘掉）。
+ */
+export function sseWrite(res, chunk) {
+  if (res.destroyed || res.writableEnded) return false
+  if (res.writableLength > SSE_MAX_BUFFERED) {
+    res.destroy()
+    return false
+  }
+  res.write(chunk)
+  return true
+}
+
 /**
  * 爬虫 UA。命中就不给开流。
  *

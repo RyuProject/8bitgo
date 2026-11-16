@@ -166,7 +166,8 @@ check('⚠️ 第三方/验证码首次登录不再被并发建号竞态打成 5
   const start = route.indexOf('async function findOrCreateByEmail')
   const end = route.indexOf('/* ---------------- 密码登录', start)
   const body = route.slice(start, end)
-  assert.match(body, /ON DUPLICATE KEY UPDATE email = VALUES\(email\)/, '并发首登仍然会撞 uniq_email')
+  // id = id 是空操作：撞 uniq_email 不报错，又不会在随机 id 偶然撞上老账号时改掉对方的邮箱
+  assert.match(body, /ON DUPLICATE KEY UPDATE id = id/, '并发首登仍然会撞 uniq_email')
   assert.match(body, /SELECT \* FROM users WHERE email = \?/, '输掉插入竞态后没有按邮箱读取赢家账号')
 })
 

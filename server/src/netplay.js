@@ -2,7 +2,7 @@ import express from 'express'
 import { createHash, randomBytes } from 'node:crypto'
 import { Server } from 'socket.io'
 import { watchPresence, clientIpFrom, UNKNOWN_PRESENCE } from './presence.js'
-import { admitSse, SSE_HEARTBEAT_FRAME, SSE_HEARTBEAT_MS } from './sseGuard.js'
+import { admitSse, sseWrite, SSE_HEARTBEAT_FRAME, SSE_HEARTBEAT_MS } from './sseGuard.js'
 import { resolveGameRoomPolicy } from './netplay-game-policy.js'
 import { NETPLAY_MAX_PLAYERS, normalizeGamePlayers } from '../../shared/netplay-players.js'
 import { guardSocketArgs } from './socket-guard.js'
@@ -193,8 +193,11 @@ function notifyRooms() {
     const payload = `event: rooms\ndata: ${JSON.stringify(list)}\n\n`
     for (const w of watchers) {
       try {
-        w.res.write(payload)
-        if (w.watch) w.res.write(roomEvent(w.watch))
+        if (!sseWrite(w.res, payload)) {
+          watchers.delete(w)
+          continue
+        }
+        if (w.watch) sseWrite(w.res, roomEvent(w.watch))
       } catch {
         watchers.delete(w)
       }
@@ -666,6 +669,9 @@ export function attachNetplay(httpServer, app, origins = ['*'], { resolveGamePol
       } finally {
         socket.data.netplayOpening = false
       }
+      // 查库期间连接可能已经断了：disconnect 那时 socketRoom 里还没有它，removeSocket 什么也清不掉。
+      // 再往下建房就会留下一个房主永远不在、永远不会被回收的幽灵房，占着 MAX_ROOMS / 每 IP 名额。
+      if (!socket.connected) return ack?.('disconnected')
       const authoritativeMax = normalizeGamePlayers(gamePolicy?.maxPlayers)
       if (!gamePolicy || authoritativeMax < 2) {
         return ack?.('game does not support multiplayer')

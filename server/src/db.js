@@ -1,5 +1,10 @@
 import mysql from 'mysql2/promise'
 
+function positiveInt(value, fallback) {
+  const n = Number(value)
+  return Number.isInteger(n) && n > 0 ? n : fallback
+}
+
 /**
  * MySQL 连接池。凭据全部来自环境变量（server/.env），不写死在代码里。
  * 与数据库同机时 DB_HOST 用 127.0.0.1，不依赖防火墙对外放行。
@@ -11,7 +16,13 @@ export const pool = mysql.createPool({
   password: process.env.DB_PASSWORD || '',
   database: process.env.DB_NAME || '8bitgo',
   waitForConnections: true,
-  connectionLimit: 10,
+  connectionLimit: positiveInt(process.env.DB_POOL_SIZE, 10),
+  /*
+    排队上限。默认值 0 = 无限排队：几条锁等待把 10 条连接占满后，全站 SSR / API / 联机开房
+    全部无声地排在后面，站点「挂住」却没有任何报错。有上限时超出的请求立刻失败（500），
+    看门狗和日志都能马上看到，数据库恢复后也不会背着一长串积压。
+  */
+  queueLimit: positiveInt(process.env.DB_QUEUE_LIMIT, 200),
   charset: 'utf8mb4',
   // JSON 列自动解析为 JS 对象/数组
   typeCast: true,
@@ -35,9 +46,15 @@ export const pool = mysql.createPool({
   connectTimeout: 10_000,
 })
 
+/**
+ * 单条查询的超时（毫秒）。超时后 mysql2 会销毁这条连接并让池子补新的，
+ * 一条卡死的查询不会永远占着 10 条连接里的一条。迁移等离线脚本走自己的连接，不受影响。
+ */
+const QUERY_TIMEOUT_MS = positiveInt(process.env.DB_QUERY_TIMEOUT_MS, 30_000)
+
 /** 简单封装：查询并返回行数组 */
 export async function query(sql, params) {
-  const [rows] = await pool.query(sql, params)
+  const [rows] = await pool.query(typeof sql === 'string' ? { sql, timeout: QUERY_TIMEOUT_MS } : sql, params)
   return rows
 }
 

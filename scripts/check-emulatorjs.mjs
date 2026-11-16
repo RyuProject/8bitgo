@@ -118,6 +118,7 @@ for (const [needle, what, why] of [
   ['this.toggleMainLoop(0),setTimeout(()=>{try{this.Module.abort()}', '退出时不卸载 /data/saves', '卸载后排队的 autoPersist 会把 IndexedDB 里所有游戏的电池存档（.srm）清空，刷新 / 切游戏就丢档'],
   ['FS.writeFile(`/${t}`,e,{canOwn:!0})', '游戏文件写 MEMFS 不复制', '开局那一刻 ROM 在 JS 侧多一整份；2GB 手机开 64MB NDS ROM 时核心的 WASM 堆因此长不动，只报 Aborted()'],
   ['core:{name:"Core",dontCache:!1,cdnFallback:!1}', '核心不回落官方 CDN', 'cdn.emulatorjs.org/4.3.0-pre 的核心起不来（AGENTS §2.4），只会多等几十秒再报 Error loading EmulatorJS runtime'],
+  ['["pcsx_rearmed","pcsx_rearmed-lowmem","genesis_plus_gx"', 'PS1 低内存核心沿用 PCSX 的 CUE 处理', '内存不足换到 pcsx_rearmed-lowmem 后，cue+bin 压缩包会按另一套规则挑文件，和默认 PCSX 不一致'],
 ]) {
   if (!js.includes(needle)) fail(`emulator.min.js 缺「${what}」补丁 —— ${why}`, 'npm run ejspatch，然后换 EJS_RUNTIME_GENERATION')
 }

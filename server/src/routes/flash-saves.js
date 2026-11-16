@@ -460,6 +460,10 @@ flashSavesRouter.post('/:gameSlug/delete-slot', requireFlashSession, async (req,
     if (isAgi2 ? !target : target === null) {
       return fail(res, 400, 'invalid_request', isAgi2 ? '存档键不合法' : '存档位只能是 0、1、2')
     }
+    // 带了 expectedRevision 的删档也要比代次：另一台设备刚写了新档时，旧标签页的删除不能把它删掉。
+    // 不带的旧桥照旧放行（和写入同一条兼容规则）。
+    const options = parseFlashSaveOptions(req.body || {})
+    if (!options.ok) return fail(res, options.status, options.code, options.message)
     /*
       删除也进事务，并在锁住用户行之后**重新验一次会话**。
       中间件确实已经验过，但那是事务外的一次读：账号注销 / 被封 / 令牌被吊销（token_version 变了）
@@ -470,6 +474,9 @@ flashSavesRouter.post('/:gameSlug/delete-slot', requireFlashSession, async (req,
       const user = users[0]
       if (!user || user.status === 'banned' || tokenVersionOf(user) !== tokenVersion) {
         throw new HttpProblem(401, 'invalid_session', '在线存档会话已失效')
+      }
+      if (options.expectedRevision !== null) {
+        await checkSaveWrite(run, { userId, gameSlug, saveKey: seqKeyOf(target), opId: null, expectedRevision: options.expectedRevision })
       }
       await run(
         isAgi2

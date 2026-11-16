@@ -1,8 +1,20 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
 import { newStartupId, recordStartupEvent } from '@/services/startupFunnel'
-import { moduleLinkFailure, repairAssets, repairFixedSomething, resolveChunkUrl, summarizeRepair } from '@/services/moduleLinkRecovery'
+import {
+  assetsFromCnEdge,
+  lazyFailure,
+  moduleLinkFailure,
+  onOriginAssetsPage,
+  originAssetsUrl,
+  repairAssets,
+  repairFixedSomething,
+  repairLoadInfo,
+  resolveChunkUrl,
+  summarizeRepair,
+} from '@/services/moduleLinkRecovery'
 
 const CHUNK_RELOAD_PREFIX = '8bitgo.chunk-reload:'
+const ORIGIN_RELOAD_PREFIX = '8bitgo.chunk-origin-reload:'
 const CHUNK_RELOAD_COOLDOWN_MS = 60_000
 
 /**
@@ -12,28 +24,51 @@ const CHUNK_RELOAD_COOLDOWN_MS = 60_000
  */
 const STALE_CHUNK = /Loading chunk|ChunkLoadError|Failed to fetch dynamically imported module|Importing a module script failed/i
 
-/** 一分钟内同一页只自动刷新一次，防止真正的发布故障被无限刷新藏起来。 */
-function reloadOnce(): boolean {
+/** 一分钟内同一页每种自动刷新只做一次，防止真正的发布故障被无限刷新藏起来。 */
+function claimReload(prefix: string): boolean {
   try {
-    const key = `${CHUNK_RELOAD_PREFIX}${location.pathname}`
+    const key = `${prefix}${location.pathname}`
     const previous = Number(sessionStorage.getItem(key) || 0)
     const now = Date.now()
     if (now - previous < CHUNK_RELOAD_COOLDOWN_MS) return false
     sessionStorage.setItem(key, String(now))
-    location.reload()
     return true
   } catch {
     return false
   }
 }
 
+function reloadOnce(): boolean {
+  if (!claimReload(CHUNK_RELOAD_PREFIX)) return false
+  // 退到主站资源之后再刷新也留在主站：普通 reload 会回到地址栏里那份（已去掉参数的）EdgeOne 页面
+  if (onOriginAssetsPage()) location.replace(originAssetsUrl(location))
+  else location.reload()
+  return true
+}
+
+/**
+ * 入口在大陆加速入口（cn.<裸域>/_cn/assets/）上时，改用主站资源整页重新载入。
+ *
+ * 懒加载 chunk 按「相对引用方」解析（vite.config.ts 的 renderBuiltUrl），入口从 EdgeOne 来，整张模块图就都在 EdgeOne 上；
+ * 入口脚本有 onerror 退回主站，懒加载 chunk 没有。也不能只把失败的那个文件换到主站：页面 chunk 会反过来 import
+ * 入口（`./index-<哈希>.js`），换了目录的 chunk 会按主站地址再拉一份入口，入口重复执行、React 出现两份。
+ * 所以带 `__assets=origin` 整页重新载入，服务端这次吐一份全部指向主站的 HTML（shared/cover-cdn-hint.js）。
+ */
+function claimOriginReload(edge: boolean): boolean {
+  return edge && claimReload(ORIGIN_RELOAD_PREFIX)
+}
+
 /**
  * chunk 没加载上（404 / 网络）或者加载上了却解析 / 链接失败（字节坏了，2026-11-15 PK / TH 的
- * `does not provide an export named`）：先让 public/assets/asset-repair-v2.js 按构建时的 SHA-256 清单核对本页
+ * `does not provide an export named`）：先让 public/assets/asset-repair-v3.js 按构建时的 SHA-256 清单核对本页
  * 用过的 chunk，坏的绕过缓存重取 —— 普通刷新只会从一年 immutable 的缓存里拿回同一份坏字节。
  *
- * - 修好了：上报（带上修了哪些文件）再刷新一次；
- * - 没发现坏文件、但这是 404 那类旧 chunk：照旧刷新一次，不算故障；
+ * 2026-11-16 诊断包 #761（微信 iOS，cn.8bitgo.com/_cn/assets/ 上懒加载 GameDetailPage 报
+ * `Importing a module script failed`，自动刷新后再失败）之后：
+ * - Safari 这句错误不带地址，懒加载失败的 chunk 由 lazyNamed 挂在错误上，作为点名文件交给修复脚本；
+ * - 大陆加速入口取不下来、主站正常（edgeOnly）：上报，改用主站资源整页重新载入；
+ * - 修好了（缓存坏副本 / 偶发取不下来）：上报再刷新一次；
+ * - 没发现坏文件、但这是 404 那类旧 chunk：照旧刷新一次，不算故障；一分钟内又坏了，在加速入口上就换主站再试一次；
  * - 其余：上报，停在兜底页。
  * 修复脚本是首页内联钩子按需加载的；钩子不在（旧模板）时退回原来的行为。
  */
@@ -42,18 +77,37 @@ function recoverBrokenAsset(error: unknown, info: ErrorInfo): boolean {
   const stale = STALE_CHUNK.test(message)
   const syntax = error instanceof Error && error.name === 'SyntaxError'
   if (!stale && !syntax) return false
+  const entrySrc = currentEntrySrc()
   const failure = moduleLinkFailure(message)
-  const named = failure?.specifier ? resolveChunkUrl(failure.specifier, currentEntrySrc()) : null
-  const pending = repairAssets({ reason: message.slice(0, 300), urls: named ? [named] : [] })
+  const lazy = lazyFailure(error)
+  const named = [
+    failure?.specifier ? resolveChunkUrl(failure.specifier, entrySrc) : null,
+    lazy?.file ? resolveChunkUrl(`./${lazy.file}`, entrySrc) : null,
+  ].filter((url): url is string => Boolean(url))
+  const pending = repairAssets({ reason: message.slice(0, 300), urls: named })
   if (!pending) return stale ? reloadOnce() : false
   void pending.then((result) => {
+    const note = [lazy ? `懒加载：${lazy.file ?? lazy.name}` : '', summarizeRepair(result, repairLoadInfo())]
+      .filter(Boolean).join('；')
+    const edge = stale && assetsFromCnEdge(entrySrc, location.origin)
+    const toOrigin = () => location.replace(originAssetsUrl(location))
+    if (edge && result?.edgeOnly?.length && claimOriginReload(edge)) {
+      reportRenderCrash(error, info, `${note}；已改用主站资源重新载入`)
+      toOrigin()
+      return
+    }
     if (repairFixedSomething(result)) {
-      reportRenderCrash(error, info, summarizeRepair(result))
-      reloadOnce()
+      reportRenderCrash(error, info, note)
+      if (!reloadOnce() && claimOriginReload(edge)) toOrigin()
       return
     }
     if (stale && reloadOnce()) return
-    reportRenderCrash(error, info, summarizeRepair(result))
+    if (claimOriginReload(edge)) {
+      reportRenderCrash(error, info, `${note}；刷新后仍失败，已改用主站资源重新载入`)
+      toOrigin()
+      return
+    }
+    reportRenderCrash(error, info, note)
   })
   return true
 }

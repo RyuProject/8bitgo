@@ -102,7 +102,11 @@ export function coreOptionsFor(platform: string): Array<{ id: string; label: str
  */
 export const MELONDSDS_VERSION = '1.4.0'
 
-export const SELF_BUILT_CORES = new Set<string>(['mame-current', 'melondsds', 'mednafen_psx', 'fbneo-lowmem'])
+/*
+  pcsx_rearmed-lowmem 不进后台下拉（它是 PS1 内存不足时的自动退路，见 src/emulator/psxLowmem.ts），
+  但必须列在这里：npm run ejscores 会清空 cores/ 再复制，不在名单里的派生核心会被悄悄删掉。
+*/
+export const SELF_BUILT_CORES = new Set<string>(['mame-current', 'melondsds', 'mednafen_psx', 'fbneo-lowmem', 'pcsx_rearmed-lowmem'])
 
 /** 后台已承诺这些核心可用，缺任意一份产物都会让相应游戏无法启动。 */
-export const REQUIRED_SELF_BUILT_CORES = new Set<string>(['mame-current', 'melondsds', 'mednafen_psx', 'fbneo-lowmem'])
+export const REQUIRED_SELF_BUILT_CORES = new Set<string>(['mame-current', 'melondsds', 'mednafen_psx', 'fbneo-lowmem', 'pcsx_rearmed-lowmem'])

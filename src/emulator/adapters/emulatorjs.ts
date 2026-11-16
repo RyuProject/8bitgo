@@ -64,6 +64,8 @@ import { MAME_AUDIO_LATENCY_MS, RETROARCH_CFG_PATH, raiseAudioLatency } from '..
 import { ndsAudioLatencyMs } from '../ndsAudio'
 import { disposeNdsWfcRuntime, installNdsWfcRuntime, isWorldAtWarNdsRomHeader, loadNdsWfcSettings, ndsWfcMacAddress, prepareNdsWfcSession, saveNdsWfcSettings } from '../ndsWfc'
 import { FBNEO_LOWMEM_CORE } from '../fbneoLowmem'
+import { PSX_LOWMEM_CORE } from '../psxLowmem'
+import { canAllocateWasmMemory, preflightPagesFor, WASM_PAGE_BYTES } from '../ejsCoreMemory'
 import {
   NDS_PERFORMANCE_SAMPLE_MS,
   NDS_PERFORMANCE_SLOW_FPS,
@@ -158,7 +160,7 @@ import { findDipOptions, planDipChanges, type DipPlan } from '../dipPlan'
 import { diagLog, watchFramePerformance } from '@/services/startupDiagnostics'
 import { browserBitness, probeBrowserBitness } from '../browserBitness'
 import { createBatterySync, type BatteryFs, type BatterySync } from '../batterySync'
-import { batterySaveGameName, describeBootState, guardIdbfsPersist, migrateEngineSettingsKey, migrateLegacyBatterySaves, type IdbfsLike, type SaveFsLike } from '../ejsSaveFs'
+import { batterySaveGameName, copyEngineSettingsToSystem, describeBootState, guardIdbfsPersist, migrateEngineSettingsKey, migrateLegacyBatterySaves, type IdbfsLike, type SaveFsLike } from '../ejsSaveFs'
 
 /**
  * 站点语言 → EmulatorJS 自带的界面语言包（data/localization/*.json）。
@@ -3006,10 +3008,17 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     */
     if (isOutOfMemoryText(`${line}\n${recent}`)) {
       const bits = browserBitness()
-      logEngine(`[memory] 分配不出 WASM 内存；浏览器位数 ${bits ?? '未知'}；核心 ${core}`)
       /*
-        默认 FBNeo 起步就要一整块 128 MiB：先让播放器换起步 72 MiB 的低内存核心重开（fbneoLowmem.ts），
-        32 位浏览器也先试这一步 —— 那个核心就是为它们做的。播放器接手了就不再报 onError。
+        失败这一刻实测还能划出多大一块（memoryRecovery.ts）。以前只有低内存核心失败时才测，
+        2026-11-16 PS1 那两份现场（#780 / #783，pcsx_rearmed）就只剩一句「分配不出」，分不清是整个进程都给不出、
+        还是只差核心起步那 512 MiB。核心声明的起步内存一起记，下一份现场直接对得上差多少。
+      */
+      const ceiling = probeWasmMemoryCeilingMB()
+      const declaredPages = preflightPagesFor(emulatorJsCoreFileFor(core))
+      logEngine(`[memory] 分配不出 WASM 内存；浏览器位数 ${bits ?? '未知'}；核心 ${core}${declaredPages ? `（起步 ${declaredPages * WASM_PAGE_BYTES / 1048576}MB）` : ''}；此刻还能新建约 ${ceiling === null ? '未知' : `${ceiling}MB`}`)
+      /*
+        默认 FBNeo 起步就要一整块 128 MiB、默认 PCSX 要 512 MiB：先让播放器换低内存核心重开（fbneoLowmem.ts /
+        psxLowmem.ts），32 位浏览器也先试这一步 —— 那两个核心就是为它们做的。播放器接手了就不再报 onError。
       */
       if (!destroyed && !started && !loadFailed && !crashReported && options.onOutOfMemory?.(core, line)) {
         loadFailed = true
@@ -3018,15 +3027,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       }
       if (bits === '32') return failLoad(rt.ejsOutOfMemory32bit, 'config')
       /*
-        低内存核心（起步 72 MiB）也分配不出：这是浏览器 / 设备环境给不出地址空间，原地重试同一个核心
+        低内存核心（FBNeo 起步 72 MiB / PCSX 起步 64 MiB）也分配不出：这是浏览器 / 设备环境给不出地址空间，原地重试同一个核心
         只是再等十秒撞同一个错（2026-11-14 大陆 Chrome 114 / Android 12、8GB 内存《拳皇97》：两轮都在
         instantiate 报 Out of memory）。'config'：不自动重试、不换 ROM，告诉玩家更新或换浏览器；手动重试仍可点。
       */
-      if (core === FBNEO_LOWMEM_CORE) {
-        // 失败这一刻实测还能划出多大一块：分清「整个进程都给不出」和「只是这一刻被占碎」（memoryRecovery.ts）
-        const ceiling = probeWasmMemoryCeilingMB()
+      if (core === FBNEO_LOWMEM_CORE || core === PSX_LOWMEM_CORE) {
         const vendor = vendorBrowserName(navigator.userAgent || '')
-        logEngine(`[memory] 低内存核心也失败；此刻还能新建的 WASM 内存约 ${ceiling === null ? '未知' : `${ceiling}MB`}；厂商浏览器 ${vendor ?? '否'}`)
+        logEngine(`[memory] 低内存核心也失败；厂商浏览器 ${vendor ?? '否'}`)
         return failLoad(lowmemOomMessage(vendor), 'config')
       }
       // 'runtime'：可以原地重试一次（别的标签页可能刚释放了内存），但换 ROM / 换语言版本毫无意义
@@ -3106,6 +3113,53 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     // WASM 已经 trap，不可能靠继续等画面恢复；即使 onGameStart 抢先报了 ready 也必须终止这局。
     if (options.onCoreCrash) options.onCoreCrash(core, line)
     else options.onError?.(line, 'runtime')
+  }
+  /**
+   * 开局前按核心声明的起步内存先分配一次（ejsCoreMemory.ts），给不出就别再下 ROM、别再拉引擎。
+   *
+   * 2026-11-16 大陆 3G 1.35Mbps《生化危机 3》（诊断包 #780）：358MB 的 PS1 镜像下了 15 分钟，
+   * 引擎随后实例化 pcsx_rearmed 才报内存不足 —— 引擎永远在 ROM 交过去之前实例化核心，而我们的预下载
+   * 排在引擎之前，失败只能在最后才暴露。`new WebAssembly.Memory` 与实例化走同一条分配路径，同规格一试就知道。
+   *
+   * 分两处调：下载 ROM 之前（按这局当前的核心）；CHD 读到头、定下最终核心之后（可能从 PCSX 换成 Beetle）。
+   * 给不出时：
+   *   1. 播放器同意原地换（inPlaceMemoryFallback，PS1 → pcsx_rearmed-lowmem，存档档位不变）就本局直接换，
+   *      已经下好、解好的 ROM 原样接着用 —— 不重挂，内存下载模式下也不用把几百 MB 再下一遍；
+   *   2. 否则问能不能重挂换核心（onOutOfMemory）；
+   *   3. 都不行就按内存不足报，'config'：同一刻原地重试只会再撞一次（V8 在分配失败前已经做过一轮 GC 重试），
+   *      播放器只做一次干净页面重开。
+   * 返回 false = 已经重挂或报错，调用方停手。
+   */
+  let preflightPassedCore: string | null = null
+  const preflightCoreMemory = (stage: 'before-rom' | 'before-engine'): boolean => {
+    if (destroyed || started || loadFailed || crashReported) return false
+    /*
+      同一个核心只预检一次：探针建的那块内存要等 GC 才还，正常机器上连着两块 512 MiB 再加核心自己那块，
+      临界的机器反而可能被探针挤爆。下载期间内存被占走的情况交给实例化失败后的 onOutOfMemory（ROM 已在缓存里）。
+    */
+    if (stage === 'before-engine' && core === preflightPassedCore) return true
+    const pages = preflightPagesFor(emulatorJsCoreFileFor(core))
+    if (pages === null || canAllocateWasmMemory(pages) !== false) {
+      preflightPassedCore = core
+      return true
+    }
+    const bits = browserBitness()
+    const ceiling = probeWasmMemoryCeilingMB()
+    const reason = `开局预检（${stage === 'before-rom' ? '下载 ROM 前' : '加载引擎前'}）：${core} 起步要 ${pages * WASM_PAGE_BYTES / 1048576}MB WASM 内存，此刻分配不出；浏览器位数 ${bits ?? '未知'}；此刻还能新建约 ${ceiling === null ? '未知' : `${ceiling}MB`}`
+    logEngine(`[memory] ${reason}`)
+    const replacement = options.inPlaceMemoryFallback?.(core)
+    if (replacement && replacement !== core) {
+      logEngine(`[memory] 本局原地换成 ${replacement}（起步内存小、按需增长；即时存档档位不变）`)
+      core = replacement
+      return preflightCoreMemory(stage)
+    }
+    if (options.onOutOfMemory?.(core, reason)) {
+      loadFailed = true
+      window.clearInterval(startWatch)
+      return false
+    }
+    failLoad(bits === '32' ? rt.ejsOutOfMemory32bit : rt.ejsOutOfMemory, 'config')
+    return false
   }
   // 本地文件转成 blob: URL（同源 iframe 可直接访问）；gameName 用原始文件名以保留扩展名
   const isFile = typeof options.game !== 'string'
@@ -4399,6 +4453,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
     void (async () => {
       try {
+        // 核心起步内存给不出就别先下几百 MB 的 ROM（preflightCoreMemory 的注释）
+        if (!preflightCoreMemory('before-rom')) return
         // WFC 会话和大 ROM 下载并行请求；服务不可用不能拖慢或阻断单机开局。
         const localWfcRom = isFile && options.platform === 'nds' &&
           isWorldAtWarNdsRomHeader(new Uint8Array(await (options.game as File).slice(0, 16).arrayBuffer()))
@@ -4863,12 +4919,16 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           ? preparedPsxRange?.head ?? await readDiscHead(isFile ? options.game as File : gameUrl)
           : null
         const discCore = preparedPsxRange?.multiDisc
-          ? PSX_CHD_COMPAT_CORE
+          // 低内存版就是 PCSX，多盘照样由它读（psxLowmem.ts）
+          ? (core === PSX_LOWMEM_CORE ? PSX_LOWMEM_CORE : PSX_CHD_COMPAT_CORE)
           : psxCoreForPreparedName(options.platform, core, engineGameName, chdHead)
         if (discCore !== core) {
           console.info(`[emulatorjs] CHD 光盘切换核心：${core} → ${discCore}（压缩器 ${chdCompressors(chdHead)?.join('/') || '未知'}）`)
           core = discCore
         }
+        // 核心定稿后若与下载前预检过的不同（CHD 刚从 PCSX 换成 Beetle），再预检一次；
+        // 这一步在拉引擎、解 7z、编译核心之前，给不出就省掉那十几秒并换低内存核心 / 照实报错。
+        if (!preflightCoreMemory('before-engine')) return
 
 
         /**
@@ -4939,6 +4999,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           if (missing) {
             failLoad(fmt(rt.ejsMameDiskMissing, { board: detectedMameMedia.board, disk: missing.name }), 'config')
             return
+          }
+        }
+
+        // 低内存 PCSX 在引擎眼里是另一个「系统」，设置键跟着变；把默认 PCSX（系统 psx）那份带过来（ejsSaveFs.ts）
+        if (core === PSX_LOWMEM_CORE) {
+          try {
+            copyEngineSettingsToSystem(window.localStorage, gameId, engineGameName, 'psx', PSX_LOWMEM_CORE)
+          } catch {
+            /* localStorage 不可用：设置本来也存不下 */
           }
         }
 

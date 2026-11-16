@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { coverCdnProbeUrl, reportCoverCdnFailure, selectedCoverCdn, startCoverCdnProbe, subscribeCoverCdn } from '../src/services/coverCdn.ts'
-import { coverCdnHint, stripCoverCdnQuery } from '../shared/cover-cdn-hint.js'
+import { ASSETS_ORIGIN_QUERY, coverCdnHint, stripCoverCdnQuery, stripQueryParam } from '../shared/cover-cdn-hint.js'
 import { readFileSync } from 'node:fs'
 
 const main = 'https://image.8bitgo.com'
@@ -81,12 +81,21 @@ assert.deepEqual(stripCoverCdnQuery('/games?page=2&__cdn=cn'), { url: '/games?pa
 assert.deepEqual(stripCoverCdnQuery('/games?&__cdn=cn'), { url: '/games', value: 'cn' })
 assert.deepEqual(stripCoverCdnQuery('/games?page=2'), { url: '/games?page=2', value: '' })
 assert.deepEqual(stripCoverCdnQuery('/games'), { url: '/games', value: '' })
+assert.deepEqual(stripCoverCdnQuery('/games?__cdn=%E0%A4'), { url: '/games', value: '' }, '坏的百分号编码不能让中间件抛错')
+
+// 兜底页「改用主站资源重新载入」的参数（2026-11-16 诊断包 #761）：和 __cdn 一起剥，顺序无关
+assert.equal(ASSETS_ORIGIN_QUERY, '__assets')
+assert.deepEqual(stripQueryParam('/games/x?__assets=origin&__cdn=cn', ASSETS_ORIGIN_QUERY), { url: '/games/x?__cdn=cn', value: 'origin' })
+assert.deepEqual(stripQueryParam('/games?page=2&__assets=origin', ASSETS_ORIGIN_QUERY), { url: '/games?page=2', value: 'origin' })
+assert.deepEqual(stripQueryParam('/games?page=2', ASSETS_ORIGIN_QUERY), { url: '/games?page=2', value: '' })
 
 // 接线：参数在 normalizeUrl 之前剥掉，SSR 写 meta，客户端读同一个 meta
 const index = readFileSync(new URL('../server/src/index.js', import.meta.url), 'utf8')
 assert.ok(index.indexOf('stripCoverCdnQuery(req.url)') < index.indexOf('app.use(normalizeUrl)'), '__cdn 必须在 normalizeUrl 之前剥掉')
+assert.ok(index.indexOf('stripQueryParam(req.url, ASSETS_ORIGIN_QUERY)') < index.indexOf('app.use(normalizeUrl)'), '__assets 必须在 normalizeUrl 之前剥掉')
 const ssr = readFileSync(new URL('../server/src/ssr.js', import.meta.url), 'utf8')
 assert.match(ssr, /coverCdnHint\(\{[\s\S]*?queryValue: req\.coverCdnQuery/)
+assert.match(ssr, /if \(coverHint === 'cn' && !cnSite && !req\.assetsFromOrigin\) page = retargetStaticToCnEdge\(/, '带 __assets=origin 的这次不改写到 EdgeOne')
 assert.match(ssr, /COVER_CDN_META/)
 const cnHost = readFileSync(new URL('../src/services/cnHost.ts', import.meta.url), 'utf8')
 assert.match(cnHost, /meta\[name="\$\{COVER_CDN_META\}"\]/)

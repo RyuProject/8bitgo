@@ -630,6 +630,11 @@ const ja: Translation = {
     emailNew: '新しいメール',
     emailNewPlaceholder: '新しいメールアドレスを入力',
     emailCodeHint: '認証コードは新しいアドレスに届きます。受け取れることが、そのメールボックスがあなたのものである証明になります。',
+    reauthTitle: "まずご本人確認をお願いします",
+    reauthHintPassword: "アカウント保護のため、まず現在のパスワードを入力してください。",
+    reauthHintCode: "アカウント保護のため、まず現在のアドレス {email} に認証コードを送ります。",
+    reauthContinue: "続ける",
+    reauthExpired: "確認の有効期限が切れました。もう一度ご本人確認をしてください。",
     emailChanged: 'メールを変更しました。他の端末は再ログインが必要です。',
     sameEmail: 'それは現在のメールアドレスです',
 

@@ -1,6 +1,17 @@
 import { Router } from 'express'
 import { query, queryOne, withTransaction } from '../db.js'
-import { requireUser, hashPassword, verifyPassword, signToken, tokenVersionOf, passwordValidationError } from '../auth.js'
+import {
+  requireUser,
+  hashPassword,
+  verifyPassword,
+  signToken,
+  tokenVersionOf,
+  passwordValidationError,
+  signReauthToken,
+  reauthTokenValid,
+  REAUTH_TTL_SECONDS,
+} from '../auth.js'
+import { sendEmailChangedNotice } from '../mail.js'
 import { userRowToPublic } from '../mappers.js'
 import { favIds, recentIds, gameIdBySlug, recordRecent } from '../userdata.js'
 // ⚠️ 2026-09-11：这两个在 DELETE /api/me 里用着，但一直没 import ——
@@ -8,6 +19,7 @@ import { favIds, recentIds, gameIdBySlug, recordRecent } from '../userdata.js'
 // 而且每试一次白费一封验证码邮件。
 import { recomputeSql } from '../ratings-repo.js'
 import { issueCode, verifyCode, sendCodeError } from '../codes.js'
+import { take } from '../rateLimit.js'
 import { checkAdultBirthDate } from '../../../shared/age.js'
 import { isEmail } from '../../../shared/email.js'
 import { normalizeAvatar } from '../../../shared/avatar.js'
@@ -210,6 +222,51 @@ async function rotateToken(userId) {
   return { row, token: signToken(userId, tokenVersionOf(row)) }
 }
 
+/* ---------------- 再确认一次是本人（reauth） ---------------- */
+
+/** 往**当前**邮箱发一封 reauth 验证码 */
+meRouter.post('/reauth/request-code', async (req, res, next) => {
+  try {
+    const email = String(req.user.email || '').trim().toLowerCase()
+    if (!isEmail(email)) return res.status(400).json({ error: '账号没有可用的邮箱' })
+    res.json({ ok: true, ...(await issueCode(req, email, 'reauth', req.user.id)) })
+  } catch (e) {
+    sendCodeError(res, next, e)
+  }
+})
+
+/**
+ * 报出当前密码或当前邮箱收到的验证码，换一张 10 分钟的 reauth 凭证。
+ * 换绑邮箱、首次设置密码都要它（见 auth.js 的 signReauthToken）。
+ * 拆成单独一步，是为了让「新邮箱验证码填错」不会顺带把旧邮箱那张码也用掉。
+ */
+meRouter.post('/reauth', async (req, res, next) => {
+  try {
+    const gate = take(`me:reauth:${req.user.id}`, 10, 15 * 60_000)
+    if (!gate.ok) return res.status(429).json({ error: '尝试次数过多，请稍后再试', retryAfter: gate.retryAfter })
+    const password = String(req.body?.currentPassword || '')
+    const code = String(req.body?.code || '').trim()
+    if (password) {
+      if (!req.user.password_hash || !(await verifyPassword(password, req.user.password_hash))) {
+        return res.status(401).json({ error: '当前密码不正确' })
+      }
+    } else if (code) {
+      await verifyCode(String(req.user.email).trim().toLowerCase(), 'reauth', code, req.user.id)
+    } else {
+      return res.status(400).json({ error: '请填写当前密码或邮箱验证码' })
+    }
+    res.json({ reauthToken: signReauthToken(req.user.id, tokenVersionOf(req.user)), expiresIn: REAUTH_TTL_SECONDS })
+  } catch (e) {
+    sendCodeError(res, next, e)
+  }
+})
+
+function requireReauth(req, res) {
+  if (reauthTokenValid(String(req.body?.reauthToken || ''), req.user)) return true
+  res.status(403).json({ error: '请先确认是你本人操作', code: 'reauth_required' })
+  return false
+}
+
 /**
  * 换绑邮箱第一步：往**新**邮箱发验证码。
  *
@@ -245,6 +302,8 @@ meRouter.post('/email', async (req, res, next) => {
   try {
     const email = String(req.body.email || '').trim().toLowerCase()
     if (!isEmail(email)) return res.status(400).json({ error: '邮箱格式不正确' })
+    // 只证明了能收新邮箱还不够：偷到令牌的人收得到他自己的邮箱。必须先证明拥有旧邮箱或密码。
+    if (!requireReauth(req, res)) return
     await verifyCode(email, 'bind', String(req.body.code || ''), req.user.id)
 
     // 验码这十分钟里可能有别人注册了同一个邮箱，所以这里必须再查一次。
@@ -253,8 +312,12 @@ meRouter.post('/email', async (req, res, next) => {
     const taken = await queryOne('SELECT id FROM users WHERE email = ?', [email])
     if (taken && taken.id !== req.user.id) return res.status(409).json({ error: '这个邮箱已经注册过了' })
 
+    const oldEmail = String(req.user.email || '').trim().toLowerCase()
     await query('UPDATE users SET email = ? WHERE id = ?', [email, req.user.id])
     const { row, token } = await rotateToken(req.user.id)
+    if (isEmail(oldEmail) && oldEmail !== email) {
+      sendEmailChangedNotice(oldEmail, email).catch((e) => console.error('[me] 换绑通知旧邮箱失败：', e?.message))
+    }
     res.json({ token, user: await publicWithData(row) })
   } catch (e) {
     sendCodeError(res, next, e)
@@ -264,8 +327,8 @@ meRouter.post('/email', async (req, res, next) => {
 /**
  * 设置 / 修改登录密码。
  *
- * 验证码登录的账号 password_hash 是空串，这种情况下允许直接设 ——
- * 能拿着有效令牌走到这里，说明他刚刚已经用邮箱验证码证明过身份了。
+ * 验证码登录的账号 password_hash 是空串：首次设置要先拿一张 reauth 凭证
+ * （当前邮箱验证码），只凭登录令牌不够 —— 令牌可能是偷来的。
  * 已经有密码的则必须报出旧密码：只凭一张令牌就能改密码的话，
  * 一台没锁屏的电脑就足够让别人把账号彻底接管过去。
  */
@@ -275,7 +338,14 @@ meRouter.put('/password', async (req, res, next) => {
     const passwordError = passwordValidationError(password)
     if (passwordError) return res.status(400).json({ error: passwordError })
 
+    // bcrypt 是纯 JS、会占住事件循环；也防止拿着偷来的令牌无限猜当前密码。
+    const gate = take(`me:password:${req.user.id}`, 10, 3600_000)
+    if (!gate.ok) return res.status(429).json({ error: '操作过于频繁，请稍后再试', retryAfter: gate.retryAfter })
+
     const hasPassword = Boolean(req.user.password_hash)
+    // 第一次设密码同样要先确认本人：否则偷到令牌的人先设个密码，再拿密码去换绑邮箱，
+    // 换绑那一道 reauth 就被绕过去了。
+    if (!hasPassword && !requireReauth(req, res)) return
     if (hasPassword) {
       const current = String(req.body.currentPassword || '')
       if (!current) return res.status(400).json({ error: '请先填写当前密码' })

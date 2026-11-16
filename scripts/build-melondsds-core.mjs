@@ -213,8 +213,86 @@ function patchPathGetSizeAbi(coreDir) {
   if (left.length) throw new Error(`melonDS DS 仍直接调用 path_get_size（会被链成 unreachable）：\n${left.join('\n')}`)
 }
 
+/**
+ * 开局时 WASM 堆里同时有三份完整 ROM：RetroArch 的内容缓冲（melonDS DS 声明了 nds / gba 的
+ * persistent_data，前端会一直留着它）、retro::GameInfo 构造时 memcpy 的一份、melonDS ParseROM
+ * 补成 2 的幂再复制的一份。2026-11-16《侠盗猎车手：血战唐人街》（128MiB ROM，大陆 Chrome 132 /
+ * Windows 连续 4 次 `Aborted()`）本机实测：堆 128 → 262MiB（前两份）→ 470MiB（第三份），
+ * 第三份那一步要把堆撑到约 422MiB；任何一步扩容被拒都是不带原因的 Aborted() ——GameInfo
+ * 的构造函数是 noexcept，make_unique 拿不到内存只能 terminate。
+ *
+ * 中间那份纯属重复：RetroArch（EmulatorJS 1eb5edf 的 tasks/task_content.c）传给核心的 data 就是
+ * 它保存的 persistent 缓冲本身，content_deinit 要等 CMD_EVENT_CORE_DEINIT（retro_unload_game +
+ * retro_deinit）之后才释放。所以在 InitContent 里经 GET_GAME_INFO_EXT 逐项确认前端确实留着这块
+ * 缓冲（persistent_data、指针、长度都对上）才只借用；前端不支持或确认不了就照旧复制。
+ * 重置 / 改核心选项后重建主机时 LoadNdsCart 读的仍是这块缓冲。省下一整份 ROM：128MiB ROM
+ * 开局需要的堆约从 422MiB 降到 294MiB。ParseROM 那份不能省（melonDS 会就地解密 secure area）。
+ */
+function patchBorrowPersistentRom(coreDir) {
+  const info = join(coreDir, 'src/libretro/retro/info.hpp')
+  replaceOnce(
+    info,
+    '        GameInfo(const retro_game_info& info) noexcept;',
+    '        // 8BitGo: borrowData 只在前端确认缓冲区 persistent_data 时为 true（见 core.cpp InitContent）\n'
+      + '        GameInfo(const retro_game_info& info, bool borrowData = false) noexcept;',
+  )
+  replaceOnce(info, '            return std::span(_data.get(), _size);', '            return std::span(_view, _size);')
+  replaceOnce(
+    info,
+    '        std::unique_ptr<std::byte[]> _data;\n',
+    '        std::unique_ptr<std::byte[]> _data;\n        const std::byte* _view = nullptr;\n',
+  )
+  replaceOnce(
+    join(coreDir, 'src/libretro/retro/info.cpp'),
+    `retro::GameInfo::GameInfo(const retro_game_info& info) noexcept :
+    _path(info.path ? info.path : ""),
+    _data(info.data && info.size ? std::make_unique<std::byte[]>(info.size) : nullptr),
+    _size(info.size),
+    _meta(info.meta ? info.meta : "")
+{
+    if (_data) {
+        memcpy(_data.get(), info.data, info.size);
+    }
+}`,
+    `retro::GameInfo::GameInfo(const retro_game_info& info, bool borrowData) noexcept :
+    _path(info.path ? info.path : ""),
+    _data(info.data && info.size && !borrowData ? std::make_unique<std::byte[]>(info.size) : nullptr),
+    _size(info.size),
+    _meta(info.meta ? info.meta : "")
+{
+    if (_data) {
+        memcpy(_data.get(), info.data, info.size);
+        _view = _data.get();
+    } else if (borrowData && info.data && info.size) {
+        // 8BitGo: 前端保证这块缓冲活到 retro_unload_game 之后，不再整份复制 ROM
+        _view = static_cast<const std::byte*>(info.data);
+    }
+}`,
+  )
+  const core = join(coreDir, 'src/libretro/core/core.cpp')
+  replaceOnce(
+    core,
+    'void MelonDsDs::CoreState::InitContent(unsigned type, std::span<const retro_game_info> game) {\n    ZoneScopedN(TracyFunction);\n',
+    `void MelonDsDs::CoreState::InitContent(unsigned type, std::span<const retro_game_info> game) {
+    ZoneScopedN(TracyFunction);
+    // 8BitGo: RetroArch 把 persistent_data 内容的缓冲留到 retro_unload_game / retro_deinit 之后才释放；
+    // 逐项确认后 GameInfo 只借用，开局少一整份 ROM。前端不支持这个查询时照旧复制。
+    const retro_game_info_ext* gameInfoExt = nullptr;
+    if (!retro::environment(RETRO_ENVIRONMENT_GET_GAME_INFO_EXT, &gameInfoExt)) gameInfoExt = nullptr;
+    const auto frontendKeepsData = [&](size_t i) noexcept {
+        return gameInfoExt != nullptr && i < game.size() && game[i].data != nullptr
+            && gameInfoExt[i].persistent_data && gameInfoExt[i].data == game[i].data
+            && gameInfoExt[i].size == game[i].size;
+    };
+`,
+  )
+  replaceOnce(core, '                _gbaInfo = game[1];', '                _gbaInfo.emplace(game[1], frontendKeepsData(1));')
+  replaceOnce(core, '                _ndsInfo = game[0];', '                _ndsInfo.emplace(game[0], frontendKeepsData(0));')
+}
+
 function patchCore(coreDir) {
   patchPathGetSizeAbi(coreDir)
+  patchBorrowPersistentRom(coreDir)
   /*
     RetroArch 读取 `.opt` 时只接受核心预先声明过的选项值。单纯写入随机 MAC 虽然能在
     文件里回读到，实际上会被回退成 firmware，全站仍共享同一默认地址。melonDS DS
@@ -535,6 +613,8 @@ function packageCore(args, coreDir, startedAt) {
     patch: 'emulatorjs-save-state-glue-v3',
     // GPU::VRAMCaptureBlockFlags 已零初始化（否则部分 ROM 开局 RuntimeError: null function）
     gpuCaptureFlagsInit: true,
+    // GameInfo 借用 RetroArch 的 persistent ROM 缓冲，开局堆里少一整份 ROM
+    borrowsPersistentRom: true,
     // melonDS DS 前端以 -fexceptions 构建，开局错误会显示核心自己的错误画面
     cxxExceptions: 'frontend',
     options: {

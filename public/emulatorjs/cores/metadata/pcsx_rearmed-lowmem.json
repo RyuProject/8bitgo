@@ -1,0 +1,37 @@
+{
+  "core": "pcsx_rearmed-lowmem",
+  "buildStart": "2025-06-14T18:34:16+00:00",
+  "buildEnd": "2025-06-14T18:38:00+00:00",
+  "options": {
+    "defaultWebGL2": true
+  },
+  "derivedFrom": "pcsx_rearmed",
+  "derivation": "wasm memory section initial pages only; code, data, glue and save-state format unchanged",
+  "sha256": "53db2c6b516df42071d821c761e837c90129c2c318e3d51dc23a18a27b6eee72",
+  "variants": [
+    {
+      "file": "pcsx_rearmed-lowmem-wasm.data",
+      "sha256": "53db2c6b516df42071d821c761e837c90129c2c318e3d51dc23a18a27b6eee72",
+      "sourceFile": "pcsx_rearmed-wasm.data",
+      "sourceSha256": "fe5515f6c29f093f0e8c01824b213804f1f76eb9cb4c97c72fe2cc17606bfbc2",
+      "sourceWasmSha256": "ce204a800ee0914cabddefe88448dfaa2b43864039c4f39a32d4872c1037b9ed",
+      "wasmSha256": "fb75ae4d5b7a40f35bf6fc627bb08164e7d39bd91b5cd4c7adbf0803cc36a551",
+      "staticTopBytes": 5631456
+    },
+    {
+      "file": "pcsx_rearmed-lowmem-legacy-wasm.data",
+      "sha256": "4cf189ce22dd94b72c0987c79ea6dde7fdaced9f9934ce971f26b83757b88bdf",
+      "sourceFile": "pcsx_rearmed-legacy-wasm.data",
+      "sourceSha256": "88faee73d06c597a68a8b78e5621d97feefca134c64b623e65f0a900037456da",
+      "sourceWasmSha256": "fc2b803ed940fb63faa89de394d31003f9e4106ee009c2f6798551a3c5fb518f",
+      "wasmSha256": "b906b8d29d0caa30cc729cf29e9e9cb40603ef0cb3fb2be3af0283716543bcf9",
+      "staticTopBytes": 5631136
+    }
+  ],
+  "memory": {
+    "initialBytes": 67108864,
+    "maximumBytes": 2147483648,
+    "sourceInitialBytes": 536870912,
+    "allowMemoryGrowth": true
+  }
+}

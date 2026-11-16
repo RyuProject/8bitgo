@@ -654,6 +654,50 @@ function acceptSession(r: { token: string; user: PublicUser }) {
   setCurrentUser(r.user)
 }
 
+/**
+ * 「确认是本人」第一步：往**当前**邮箱发一封验证码。
+ * 换绑邮箱、首次设置密码之前都要先确认 —— 只凭登录令牌不够，令牌可能是偷来的。
+ */
+export async function requestReauthCode(): Promise<RequestCodeResult> {
+  if (apiEnabled()) {
+    const r = (await api.post('/api/me/reauth/request-code')) as { cooldown?: number } | null
+    return { cooldown: Number(r?.cooldown) > 0 ? Number(r?.cooldown) : CODE_COOLDOWN }
+  }
+  // 本地演示模式只有一个浏览器、一个账号，没有「令牌被偷」这回事：直接给个演示码
+  const user = requireLocalUser()
+  const code = genCode()
+  const list = readPendingCodes().filter((c) => c.email !== user.email)
+  list.push({ email: user.email, code, expires: Date.now() + CODE_TTL_MS })
+  writePendingCodes(list)
+  return { cooldown: CODE_COOLDOWN, devCode: code }
+}
+
+/**
+ * 「确认是本人」第二步：报当前密码或当前邮箱收到的验证码，换一张 10 分钟的短期凭证。
+ * 返回的凭证交给 changeEmail / setPassword。
+ */
+export async function reauthenticate(proof: { currentPassword?: string; code?: string }): Promise<string> {
+  const code = proof.code?.trim()
+  if (code !== undefined && !/^\d{6}$/.test(code)) throw new Error(getT().errors.codeFormat)
+  if (apiEnabled()) {
+    const r = await api.post<{ reauthToken: string }>('/api/me/reauth', {
+      ...(proof.currentPassword ? { currentPassword: proof.currentPassword } : {}),
+      ...(code ? { code } : {}),
+    })
+    return r.reauthToken
+  }
+  if (code) {
+    const user = requireLocalUser()
+    const list = readPendingCodes()
+    const rec = list.find((x) => x.email === user.email)
+    if (!rec) throw new Error(getT().errors.codeMissing)
+    if (Date.now() > rec.expires) throw new Error(getT().errors.codeExpired)
+    if (rec.code !== code) throw new Error(getT().errors.codeWrong)
+    writePendingCodes(list.filter((x) => x.email !== user.email))
+  }
+  return 'local'
+}
+
 /** 换绑邮箱第一步：往**新**邮箱发验证码（收得到才说明那个邮箱真是他的） */
 export async function requestEmailChangeCode(email: string): Promise<RequestCodeResult> {
   const e = email.trim().toLowerCase()
@@ -676,13 +720,13 @@ export async function requestEmailChangeCode(email: string): Promise<RequestCode
 }
 
 /** 换绑邮箱第二步：验码并落库。会把其它设备踢下线，当前设备换新令牌。 */
-export async function changeEmail(email: string, code: string): Promise<PublicUser> {
+export async function changeEmail(email: string, code: string, reauthToken: string): Promise<PublicUser> {
   const e = email.trim().toLowerCase()
   const c = code.trim()
   if (!/^\d{6}$/.test(c)) throw new Error(getT().errors.codeFormat)
 
   if (apiEnabled()) {
-    const r = await api.post<{ token: string; user: PublicUser }>('/api/me/email', { email: e, code: c })
+    const r = await api.post<{ token: string; user: PublicUser }>('/api/me/email', { email: e, code: c, reauthToken })
     acceptSession(r)
     return r.user
   }
@@ -704,13 +748,15 @@ export async function changeEmail(email: string, code: string): Promise<PublicUs
  * 已经有密码的必须报出旧密码 —— 只凭一张令牌就能改密码的话，
  * 一台没锁屏的电脑就足够让别人把账号彻底接管过去。
  */
-export async function setPassword(password: string, currentPassword?: string): Promise<void> {
+export async function setPassword(password: string, currentPassword?: string, reauthToken?: string): Promise<void> {
   if (password.length < 6) throw new Error(getT().errors.passwordShort)
 
   if (apiEnabled()) {
     const r = await api.put<{ token: string; user: PublicUser }>('/api/me/password', {
       password,
       ...(currentPassword ? { currentPassword } : {}),
+      // 第一次设置密码（账号还没有密码）时，服务端要这张「确认是本人」的凭证
+      ...(reauthToken ? { reauthToken } : {}),
     })
     acceptSession(r)
     return

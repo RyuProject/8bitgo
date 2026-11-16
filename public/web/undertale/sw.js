@@ -1,4 +1,4 @@
-const CACHE = '8bitgo-undertale-shell-2026-11-16-8'
+const CACHE = '8bitgo-undertale-shell-2026-11-16-10'
 const BASE = '/web/undertale/'
 const CORE = [
   BASE,

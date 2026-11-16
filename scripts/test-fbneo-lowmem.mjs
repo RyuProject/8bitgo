@@ -38,7 +38,8 @@ assert.equal(report.memory.initialHeapBytes, 72 * 1024 * 1024, '低内存核心�
 
 // 接线：适配器把内存不足交给播放器，播放器换核心重开并记住；存档档位与个人页对得上
 const player = read('src/emulator/EmulatorPlayer.tsx')
-assert.match(player, /onOutOfMemory: \(failedCore: string, reason: string\) => \{[\s\S]{0,600}fbneoMemoryFallbackCore\([\s\S]{0,400}rememberFbneoMemoryFailure\(\)[\s\S]{0,200}coreOverride: nextCore/)
+// 同一个回调里还有 PS1 低内存核心的分支（test:psx-lowmem），所以中间的距离放宽
+assert.match(player, /onOutOfMemory: \(failedCore: string, reason: string\) => \{[\s\S]{0,600}fbneoMemoryFallbackCore\([\s\S]{0,900}if \(fbneoCore\) rememberFbneoMemoryFailure\(\)[\s\S]{0,200}coreOverride: nextCore/)
 assert.match(player, /prefersFbneoLowmem\(\)\s*\?\s*FBNEO_LOWMEM_CORE/)
 assert.match(player, /coreOverride === FBNEO_LOWMEM_CORE && coreSaveSlug\s*\?\s*fbneoLowmemSaveSlug\(coreSaveSlug\)/)
 assert.match(read('src/components/profile/CloudSaves.tsx'), /parseFbneoLowmemSaveSlug\(s\.gameSlug\)/)
@@ -102,7 +103,8 @@ assert.equal(r.isLowMemoryAbort('RuntimeError: unreachable', 2, null), false, '�
 
 // 接线：适配器在低内存核心失败时实测、点名浏览器、按 config 报；播放器只做一次干净页面重开
 const adapterSrc = read('src/emulator/adapters/emulatorjs.ts')
-assert.match(adapterSrc, /if \(core === FBNEO_LOWMEM_CORE\) \{[\s\S]{0,600}probeWasmMemoryCeilingMB\(\)[\s\S]{0,400}failLoad\(lowmemOomMessage\(vendor\), 'config'\)/)
+// 2026-11-16 起任何核心内存不足都先实测余量再决定换不换核心（PS1 现场以前只剩一句「分配不出」）
+assert.match(adapterSrc, /const ceiling = probeWasmMemoryCeilingMB\(\)[\s\S]{0,2400}if \(core === FBNEO_LOWMEM_CORE \|\| core === PSX_LOWMEM_CORE\) \{[\s\S]{0,300}failLoad\(lowmemOomMessage\(vendor\), 'config'\)/)
 assert.match(player, /isMemoryPressureMessage\(failureReason\)[\s\S]{0,200}cleanPageRetryUrl\(window\.location\.href\)[\s\S]{0,120}takeCleanPageRetry\(/)
 assert.match(read('src/pages/GameDetailPage.tsx'), /searchParams\.get\('autoplay'\) === '1'/, '详情页仍认 ?autoplay=1')
 

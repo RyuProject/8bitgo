@@ -36,10 +36,23 @@ export function coverCdnHint({ cnSite = false, queryValue = '', country = '' } =
 }
 
 /**
- * 从原始 URL 里拿掉 `__cdn` 参数。返回 { url, value }；没有这个参数时原样返回。
+ * 页面带 `__assets=origin` 时，SSR 不把 JS / CSS / 字体改写到大陆加速入口（retargetStaticToCnEdge），整页从主站取。
+ *
+ * 2026-11-16 诊断包 #761：微信 iOS 从 cn.8bitgo.com/_cn/assets/ 懒加载 GameDetailPage 报
+ * `Importing a module script failed`，自动刷新后同一处再失败。入口脚本有 onerror 退回主站，懒加载 chunk 没有：
+ * 它们按「相对引用方」解析（vite.config.ts 的 renderBuiltUrl），入口在 EdgeOne 上，整张模块图就都在 EdgeOne 上。
+ * 也不能只把失败的那个文件换到主站：页面 chunk 会反过来 import 入口（`./index-<哈希>.js`），换了目录的 chunk
+ * 会按主站地址再拉一份入口，入口重复执行、React 出现两份。所以兜底页（AppErrorBoundary）带这个参数整页重新载入，
+ * 由服务端吐一份全部指向主站的 HTML；首页内联钩子在 React 读地址之前把参数去掉。
+ * 参数进 Cloudflare 缓存键（和 `__cdn` 一样），这份「主站资源」页面单独缓存，不会串给别人。
+ */
+export const ASSETS_ORIGIN_QUERY = '__assets'
+
+/**
+ * 从原始 URL 里拿掉一个查询参数。返回 { url, value }；没有这个参数时原样返回、value 为空串。
  * 只动这一个参数，其余查询串顺序保持不变。
  */
-export function stripCoverCdnQuery(rawUrl) {
+export function stripQueryParam(rawUrl, param) {
   const url = String(rawUrl || '')
   const cut = url.indexOf('?')
   if (cut < 0) return { url, value: '' }
@@ -52,14 +65,23 @@ export function stripCoverCdnQuery(rawUrl) {
     if (!part) continue
     const eq = part.indexOf('=')
     const name = eq < 0 ? part : part.slice(0, eq)
-    if (name === COVER_CDN_QUERY) {
-      value = eq < 0 ? '' : decodeURIComponent(part.slice(eq + 1))
+    if (name === param) {
+      try {
+        value = eq < 0 ? '' : decodeURIComponent(part.slice(eq + 1))
+      } catch {
+        value = ''
+      }
       continue
     }
     kept.push(part)
   }
   if (kept.length === query.split('&').filter(Boolean).length) return { url, value: '' }
   return { url: url.slice(0, cut) + (kept.length ? `?${kept.join('&')}` : '') + hash, value }
+}
+
+/** 从原始 URL 里拿掉 `__cdn` 参数（见 stripQueryParam） */
+export function stripCoverCdnQuery(rawUrl) {
+  return stripQueryParam(rawUrl, COVER_CDN_QUERY)
 }
 
 /*

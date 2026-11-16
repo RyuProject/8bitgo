@@ -292,6 +292,8 @@ export const EJS_WEBGL2_DEFAULT_CORES: ReadonlySet<string> = new Set([
   'melondsds',
   'mupen64plus_next',
   'pcsx_rearmed',
+  // 从 pcsx_rearmed 派生，报告照抄 defaultWebGL2（scripts/build-pcsx-lowmem-core.mjs）
+  'pcsx_rearmed-lowmem',
   // 引擎 requiresWebGL2 名单（不看报告，强制非 legacy）
   'ppsspp',
   'azahar',

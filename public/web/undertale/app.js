@@ -1,4 +1,4 @@
-const APP_VERSION = '2026.11.16.8'
+const APP_VERSION = '2026.11.16.10'
 const OPFS_ROOT = '8bitgo-undertale'
 // 旧版固定写 library-v1；新版每次导入写独立目录，成功后才切换，失败或取消时旧副本照常可玩。
 const LIBRARY_DIR = 'library-v1'
@@ -38,8 +38,6 @@ const progressValue = $('#progress-value')
 const message = $('#message')
 const stateDot = $('#state-dot')
 const runtimeState = $('#runtime-state')
-const gameStatus = $('#game-status')
-const audioGate = $('#audio-gate')
 const cancelImportButton = $('#cancel-import')
 const importCard = $('#import-card')
 
@@ -866,7 +864,6 @@ async function startGame() {
   setRuntimeState('正在启动本机游戏…')
   launcher.hidden = true
   gameView.hidden = false
-  gameStatus.textContent = '正在读取本机游戏文件…'
   canvas.focus({ preventScroll: true })
 
   try {
@@ -879,9 +876,7 @@ async function startGame() {
       '--disable-log-colours',
       wadPath,
     ])
-    gameStatus.textContent = '运行中 · 方向键 / Z / X / C · 标准手柄可用'
     setRuntimeState('游戏正在本机运行', 'ok')
-    audioGate.hidden = false
     await activeRun
   } catch (error) {
     console.error(error)
@@ -896,16 +891,6 @@ async function startGame() {
     setBusy(false)
     setRuntimeState('开源运行端已就绪', 'ok')
   }
-}
-
-async function stopGame() {
-  if (!activeRun || !moduleInstance) return
-  gameStatus.textContent = '正在安全退出并保存…'
-  releaseAllKeys()
-  moduleInstance._requestRunnerExit()
-  await activeRun.catch(() => {})
-  // 启动页没有第二个按钮；退出后回主站，避免停在满格但无法再次操作的空页。
-  location.assign('/')
 }
 
 async function startAuthorizedGame() {
@@ -1094,19 +1079,24 @@ clearLibraryButton.addEventListener('click', async () => {
     setBusy(false)
   }
 })
-$('#back-to-launcher').addEventListener('click', stopGame)
-$('#fullscreen').addEventListener('click', async () => {
-  if (document.fullscreenElement) await document.exitFullscreen()
-  else await gameView.requestFullscreen()
-})
-audioGate.addEventListener('click', () => {
-  audioGate.hidden = true
-  canvas.focus({ preventScroll: true })
-})
 canvasStage.addEventListener('pointerdown', () => {
-  audioGate.hidden = true
   canvas.focus({ preventScroll: true })
 })
+
+function unlockGameAudio() {
+  const audio = window.miniaudio
+  if (typeof audio?.unlock !== 'function') return
+  try {
+    // 游戏启动时先尝试自动播放；被浏览器拦下时，首个真实输入就在用户手势栈内恢复声音。
+    audio.unlock()
+  } catch (error) {
+    console.warn('[8bitgo] 音频仍等待浏览器手势', error)
+  }
+}
+
+for (const eventName of ['pointerdown', 'touchend', 'keydown', 'click']) {
+  document.addEventListener(eventName, unlockGameAudio, true)
+}
 
 // 在页面启动时先改好 WebGL 入口：运行端会并行预热，避免冷启动先创建着色器再安装兼容层。
 installFogUniformPrecisionCompat()

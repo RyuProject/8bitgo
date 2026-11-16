@@ -245,7 +245,7 @@ async function sweep() {
  *
  * @param {import('express').Request} req 取客户端 IP 用
  * @param {string} email   收件地址（已 trim + 小写）
- * @param {'login'|'bind'|'delete'} purpose
+ * @param {'login'|'bind'|'reauth'|'delete'} purpose
  * @param {string|null} [userId] 换绑 / 注销时绑定到这个用户，校验时必须对得上
  */
 export async function issueCode(req, email, purpose, userId = null) {
@@ -334,7 +334,7 @@ export async function issueCode(req, email, purpose, userId = null) {
  * 校验并**消费**一个验证码。通过就直接返回，不通过抛 CodeError。
  *
  * @param {string} email
- * @param {'login'|'bind'|'delete'} purpose
+ * @param {'login'|'bind'|'reauth'|'delete'} purpose
  * @param {string} code
  * @param {string|null} [userId] 签发时绑过用户的话必须对得上 —— 否则 A 能拿自己那封
  *                               「换绑到 x@y」的码，去把 B 的账号换绑成 x@y

@@ -689,6 +689,11 @@ export const zhHans = {
     emailNew: '新邮箱',
     emailNewPlaceholder: '输入新的邮箱地址',
     emailCodeHint: '验证码会发到新邮箱 —— 收得到才说明这个邮箱真是你的。',
+    reauthTitle: "先确认是你本人",
+    reauthHintPassword: "为了账号安全，请先输入当前密码。",
+    reauthHintCode: "为了账号安全，先给你当前的邮箱 {email} 发一个验证码。",
+    reauthContinue: "继续",
+    reauthExpired: "确认已过期，请重新确认是你本人。",
     emailChanged: '邮箱已更换，其它设备需要重新登录',
     sameEmail: '这已经是你当前的邮箱了',
 

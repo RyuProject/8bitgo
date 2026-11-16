@@ -1,6 +1,7 @@
 import { Suspense, lazy, type ComponentType, type ReactNode } from 'react'
 import { trackPageLoad } from '@/services/progress'
 import { PageSkeleton } from '@/components/ui/PageSkeleton'
+import { lazyChunkFile, tagLazyFailure } from '@/services/moduleLinkRecovery'
 
 /**
  * 按需加载一个具名导出的组件。
@@ -8,12 +9,20 @@ import { PageSkeleton } from '@/components/ui/PageSkeleton'
  * 为什么要包一层 trackPageLoad：chunk 本身也要下载，第一次进后台时
  * 这一下往往比取数还慢。不挂上去的话，点了「后台」之后顶部进度条不动、
  * 页面也不变，看起来就像点了没反应。
+ *
+ * 失败时把 chunk 文件名挂在错误上：Safari 的 `Importing a module script failed` 不带地址，
+ * 兜底页（AppErrorBoundary）靠它点名要核对的文件（2026-11-16 诊断包 #761）。
  */
 export function lazyNamed<K extends string, P extends object>(
   load: () => Promise<Record<K, ComponentType<P>>>,
   name: K,
 ) {
-  return lazy(() => trackPageLoad(load()).then((m) => ({ default: m[name] })))
+  return lazy(() => trackPageLoad(load())
+    .catch((error: unknown) => {
+      tagLazyFailure(error, lazyChunkFile(load), name)
+      throw error
+    })
+    .then((m) => ({ default: m[name] })))
 }
 
 /**

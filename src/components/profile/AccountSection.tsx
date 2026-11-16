@@ -10,7 +10,15 @@ import type { PublicUser } from '@/types'
 import { Button, buttonClasses } from '@/components/ui/Button'
 import { useT, fmt } from '@/services/i18n'
 import { useLang } from '@/services/lang'
-import { changeEmail, logoutAllDevices, requestEmailChangeCode, setPassword } from '@/services/auth'
+import {
+  changeEmail,
+  logoutAllDevices,
+  reauthenticate,
+  requestEmailChangeCode,
+  requestReauthCode,
+  setPassword,
+} from '@/services/auth'
+import { ApiError } from '@/services/api'
 import { BirthDateForm, formatBirthDate } from '@/components/game/AgeGate'
 import { isAdultByBirthDate } from '@/lib/age'
 import { CodeInput, Notice, Panel, inputClass, useCooldown } from './shared'
@@ -40,6 +48,113 @@ export function AccountSection({ user }: { user: PublicUser }) {
   )
 }
 
+/* ---------------- 先确认是本人 ---------------- */
+
+/** 服务端说「确认已过期 / 没确认」：凭证 10 分钟有效，过期就退回确认那一步 */
+function isReauthRequired(err: unknown) {
+  return err instanceof ApiError && err.status === 403
+}
+
+/**
+ * 换绑邮箱、第一次设置密码之前的「确认是本人」一步。
+ * 有密码的报当前密码；没有密码的收一封发往**当前**邮箱的验证码。
+ * 只凭登录状态不够：登录令牌被偷的人，能先改邮箱、再设密码，把原主人永久锁在门外。
+ */
+function ReauthStep({ user, onVerified, onCancel }: { user: PublicUser; onVerified: (token: string) => void; onCancel: () => void }) {
+  const t = useT()
+  const hasPassword = Boolean(user.hasPassword)
+  const [password, setPw] = useState('')
+  const [code, setCode] = useState('')
+  const [devCode, setDevCode] = useState<string | null>(null)
+  const [sending, setSending] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const { cooldown, start, startFromError } = useCooldown()
+
+  const ready = hasPassword ? password.length > 0 : /^\d{6}$/.test(code)
+
+  const send = async () => {
+    if (sending || cooldown > 0) return
+    setError(null)
+    setSending(true)
+    try {
+      const r = await requestReauthCode()
+      setDevCode(r.devCode ?? null)
+      start(r.cooldown)
+    } catch (err) {
+      startFromError(err)
+      setError(err instanceof Error ? err.message : t.auth.sendFailed)
+    } finally {
+      setSending(false)
+    }
+  }
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault()
+    if (busy || !ready) return
+    setError(null)
+    setBusy(true)
+    try {
+      onVerified(await reauthenticate(hasPassword ? { currentPassword: password } : { code }))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t.profile.saveFailed)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <form onSubmit={submit} className="space-y-3">
+      <div>
+        <p className="text-xs font-semibold text-fg">{t.account.reauthTitle}</p>
+        <p className="mt-1 break-all text-xs leading-relaxed text-dim">
+          {hasPassword ? t.account.reauthHintPassword : fmt(t.account.reauthHintCode, { email: user.email })}
+        </p>
+      </div>
+      {hasPassword ? (
+        <Labeled id="acct-reauth-pw" label={t.account.currentPassword}>
+          <input
+            id="acct-reauth-pw"
+            type="password"
+            autoComplete="current-password"
+            className={inputClass}
+            value={password}
+            onChange={(e) => setPw(e.target.value)}
+          />
+        </Labeled>
+      ) : (
+        <>
+          <button
+            type="button"
+            onClick={send}
+            disabled={sending || cooldown > 0}
+            className={buttonClasses('secondary', 'sm', 'whitespace-nowrap')}
+          >
+            {sending ? t.account.sending : cooldown > 0 ? fmt(t.account.resendIn, { n: cooldown }) : t.account.sendCode}
+          </button>
+          <CodeInput id="acct-reauth-code" label={t.account.code} placeholder={t.account.codePlaceholder} value={code} onChange={setCode} />
+          {devCode && (
+            <button type="button" onClick={() => setCode(devCode)} className="text-xs text-muted hover:text-brand-hover">
+              {fmt(t.account.devCodeHint, { code: devCode })}
+            </button>
+          )}
+        </>
+      )}
+
+      {error && <Notice text={error} />}
+
+      <div className="flex gap-2">
+        <Button size="sm" type="submit" disabled={busy || !ready}>
+          {busy ? t.account.saving : t.account.reauthContinue}
+        </Button>
+        <Button size="sm" variant="ghost" onClick={onCancel}>
+          {t.common.cancel}
+        </Button>
+      </div>
+    </form>
+  )
+}
+
 /* ---------------- 登录邮箱 ---------------- */
 
 function EmailPanel({ user }: { user: PublicUser }) {
@@ -52,6 +167,7 @@ function EmailPanel({ user }: { user: PublicUser }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState(false)
+  const [reauthToken, setReauthToken] = useState<string | null>(null)
   const { cooldown, start, startFromError } = useCooldown()
 
   const emailValid = EMAIL_RE.test(email.trim()) && email.trim().toLowerCase() !== user.email.toLowerCase()
@@ -62,6 +178,7 @@ function EmailPanel({ user }: { user: PublicUser }) {
     setCode('')
     setDevCode(null)
     setError(null)
+    setReauthToken(null)
   }
 
   const send = async () => {
@@ -82,14 +199,19 @@ function EmailPanel({ user }: { user: PublicUser }) {
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
-    if (busy || !emailValid || !/^\d{6}$/.test(code)) return
+    if (busy || !reauthToken || !emailValid || !/^\d{6}$/.test(code)) return
     setError(null)
     setBusy(true)
     try {
-      await changeEmail(email, code)
+      await changeEmail(email, code, reauthToken)
       reset()
       setDone(true)
     } catch (err) {
+      if (isReauthRequired(err)) {
+        setReauthToken(null)
+        setError(t.account.reauthExpired)
+        return
+      }
       setError(err instanceof Error ? err.message : t.profile.saveFailed)
     } finally {
       setBusy(false)
@@ -106,6 +228,11 @@ function EmailPanel({ user }: { user: PublicUser }) {
           <Button size="sm" variant="secondary" onClick={() => { setDone(false); setOpen(true) }}>
             {t.account.emailChange}
           </Button>
+        </div>
+      ) : !reauthToken ? (
+        <div className="mt-4 space-y-3">
+          {error && <Notice text={error} />}
+          <ReauthStep user={user} onVerified={(token) => { setError(null); setReauthToken(token) }} onCancel={reset} />
         </div>
       ) : (
         <form onSubmit={submit} className="mt-4 space-y-3">
@@ -181,9 +308,12 @@ function PasswordPanel({ user }: { user: PublicUser }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState(false)
+  // 第一次设置密码（账号还没有密码）之前要先确认是本人；已有密码的照旧报旧密码
+  const [reauthToken, setReauthToken] = useState<string | null>(null)
 
   const reset = () => {
     setOpen(false)
+    setReauthToken(null)
     setCurrent('')
     setNext('')
     setAgain('')
@@ -198,10 +328,15 @@ function PasswordPanel({ user }: { user: PublicUser }) {
     setError(null)
     setBusy(true)
     try {
-      await setPassword(next, hasPassword ? current : undefined)
+      await setPassword(next, hasPassword ? current : undefined, hasPassword ? undefined : reauthToken ?? undefined)
       reset()
       setDone(true)
     } catch (err) {
+      if (!hasPassword && isReauthRequired(err)) {
+        setReauthToken(null)
+        setError(t.account.reauthExpired)
+        return
+      }
       setError(err instanceof Error ? err.message : t.profile.saveFailed)
     } finally {
       setBusy(false)
@@ -216,6 +351,11 @@ function PasswordPanel({ user }: { user: PublicUser }) {
           <Button size="sm" variant="secondary" onClick={() => { setDone(false); setOpen(true) }}>
             {hasPassword ? t.account.passwordChange : t.account.passwordCreate}
           </Button>
+        </div>
+      ) : !hasPassword && !reauthToken ? (
+        <div className="space-y-3">
+          {error && <Notice text={error} />}
+          <ReauthStep user={user} onVerified={(token) => { setError(null); setReauthToken(token) }} onCancel={reset} />
         </div>
       ) : (
         <form onSubmit={submit} className="space-y-3">

@@ -11,7 +11,7 @@ import { isEmail } from '../../../shared/email.js'
  * 上限存在的理由不是格式校验，是**外呼放大**：见 /google 里那段注释。
  */
 const MAX_GOOGLE_CREDENTIAL = 2048
-import { clientKey, isMeaningfulIp, take } from '../rateLimit.js'
+import { clientKey, isMeaningfulIp, take, takeAnonymous } from '../rateLimit.js'
 import { userRowToPublic } from '../mappers.js'
 import { favIds, recentIds } from '../userdata.js'
 import { issueCode, verifyCode, sendCodeError } from '../codes.js'
@@ -50,7 +50,7 @@ async function findOrCreateByEmail(email, nickname) {
     */
     await query(
       `INSERT INTO users (id, email, nickname, avatar, password_hash, coins, role, status, created_at)
-       VALUES (?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE email = VALUES(email)`,
+       VALUES (?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE id = id`,
       [id, email, nickname, '🕹️', '', WELCOME_COINS, 'user', 'active', createdAt],
     )
     row = await queryOne('SELECT * FROM users WHERE email = ?', [email])
@@ -203,6 +203,9 @@ authRouter.post('/email/verify', async (req, res, next) => {
   try {
     const email = String(req.body.email || '').trim().toLowerCase()
     if (!isEmail(email)) return res.status(400).json({ error: '邮箱格式不正确' })
+    // 每个邮箱各自有尝试上限，但攻击者可以换随机邮箱无限打库：再加一道按 IP / 全站的闸。
+    const gate = takeAnonymous(req, 'code-verify', { perIp: 30, global: 600 })
+    if (!gate.ok) return res.status(429).json({ error: '尝试次数过多，请稍后再试', retryAfter: gate.retryAfter })
     await verifyCode(email, 'login', String(req.body.code || ''))
     const row = await findOrCreateByEmail(email, nicknameFromEmail(email))
     if (row.status === 'banned') return res.status(403).json({ error: '该账号已被封禁，请联系管理员' })

@@ -7,7 +7,7 @@ import cors from 'cors'
 import { ping } from './db.js'
 import { ssrAvailable, renderPage, CLIENT_DIR } from './ssr.js'
 import { normalizeUrl } from './url-normalize.js'
-import { stripCoverCdnQuery } from '../../shared/cover-cdn-hint.js'
+import { ASSETS_ORIGIN_QUERY, stripCoverCdnQuery, stripQueryParam } from '../../shared/cover-cdn-hint.js'
 import { createCnEdgeMiddleware } from './cn-edge.js'
 import { tvRobots } from './tv-robots.js'
 import { playShell } from './routes/play.js'
@@ -390,6 +390,13 @@ if (ssrAvailable()) {
       req.url = url
       req.originalUrl = stripCoverCdnQuery(req.originalUrl).url
       req.coverCdnQuery = value
+    }
+    // 兜底页带 `__assets=origin` 重新载入：这次整页资源从主站取（shared/cover-cdn-hint.js），同样不能写进 301
+    const assets = stripQueryParam(req.url, ASSETS_ORIGIN_QUERY)
+    if (assets.url !== req.url) {
+      req.url = assets.url
+      req.originalUrl = stripQueryParam(req.originalUrl, ASSETS_ORIGIN_QUERY).url
+      req.assetsFromOrigin = assets.value === 'origin'
     }
     next()
   })

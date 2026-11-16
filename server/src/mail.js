@@ -281,6 +281,13 @@ const TEMPLATES = {
     lead: '用这个验证码把 8BitGo 账号换绑到当前邮箱：',
     tail: '10 分钟内有效。如果你没有在 8BitGo 申请更换邮箱，请忽略此邮件 —— 你的账号不会有任何变化。',
   },
+  reauth: {
+    subject: '确认是你本人在操作 8BitGo 账号',
+    lead: '你正在更改 8BitGo 账号的登录方式（换绑邮箱或设置密码），验证码：',
+    tail:
+      '10 分钟内有效。如果这不是你本人操作，说明有人可能拿到了你的登录状态：' +
+      '请不要把验证码告诉任何人，并在个人中心「退出所有设备」。',
+  },
   delete: {
     subject: '确认注销你的 8BitGo 账号',
     lead: '你正在申请**注销** 8BitGo 账号，验证码：',
@@ -309,7 +316,7 @@ function codeMail(code, purpose) {
  *
  * @param {string} email   收件地址
  * @param {string} code    六位验证码
- * @param {'login'|'bind'|'delete'} [purpose] 用途，决定信里的文案。默认登录。
+ * @param {'login'|'bind'|'reauth'|'delete'} [purpose] 用途，决定信里的文案。默认登录。
  */
 export async function sendLoginCode(email, code, purpose = 'login') {
   const mail = codeMail(code, purpose)
@@ -462,4 +469,33 @@ export async function sendRawMail({ to, subject, text, html, attachments = [], r
   }
 
   return sendViaSmtp({ subject, text, html, attachments, replyTo }, to)
+}
+
+/** a***@example.com：通知旧邮箱时只露出能认出来的部分，不把新地址完整交给收件方 */
+export function maskEmail(email) {
+  const [local = '', domain = ''] = String(email || '').split('@')
+  const head = local.slice(0, Math.min(2, Math.max(1, local.length - 1)))
+  return `${head}${'*'.repeat(Math.max(1, Math.min(6, local.length - head.length)))}@${domain}`
+}
+
+/**
+ * 换绑成功后通知**旧**邮箱。令牌被盗时，这是原主人唯一能及时发现的信号 ——
+ * 新邮箱那封验证码是攻击者自己收的。失败只记日志，不影响已经完成的换绑。
+ */
+export async function sendEmailChangedNotice(oldEmail, newEmail) {
+  const masked = maskEmail(newEmail)
+  const text =
+    `你的 8BitGo 账号登录邮箱刚刚从本地址改成了 ${masked}，其它设备上的登录已全部失效。\n\n` +
+    '如果是你本人操作，请忽略此邮件。\n' +
+    '如果不是你本人操作，你的账号可能已被他人控制，请尽快回复此邮件或联系站点管理员找回账号。'
+  await sendRawMail({
+    to: oldEmail,
+    subject: '你的 8BitGo 登录邮箱已更改',
+    text,
+    html: text
+      .split('\n')
+      .map((line) => line && `<p>${line.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c])}</p>`)
+      .join(''),
+    provider: mailProvider(),
+  })
 }

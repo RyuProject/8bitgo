@@ -1,3 +1,5 @@
+import { PSX_LOWMEM_CORE } from './psxLowmem'
+
 /** HW 版在浏览器会触发 WASM 表陷阱；实机验证通过的软件版保留 CHD 能力且不整盘预缓存。 */
 export const PSX_CHD_CORE = 'mednafen_psx'
 /** 此核心走引擎的 legacy 分支；预热同一份文件，避免悬停和开局各下载一遍。 */
@@ -63,18 +65,24 @@ export function psxChdCoreForCodecs(codecs: readonly string[] | null | undefined
  * （带 cdfl），实际会落到 PCSX，所以预拉它；服务端转出的纯 cdzl 盘会多拉约 1MB 的 PCSX。
  */
 export function psxCoreForTransfer(platform: string, core: string | null | undefined, url: string): string | null | undefined {
+  // 低内存版就是 PCSX（只改了起步内存），CHD / 多盘都照样由它读，不能在这里换回 512 MiB 的默认核心
+  const compat = core === PSX_LOWMEM_CORE ? PSX_LOWMEM_CORE : PSX_CHD_COMPAT_CORE
   // 多盘 M3U 会在虚拟文件系统里同时挂载多张 CHD；PCSX 的 CD 解码器覆盖全部本站支持的压缩格式。
-  if (platform === 'psx' && /\.m3u(?:[?#]|$)/i.test(url)) return PSX_CHD_COMPAT_CORE
-  return platform === 'psx' && isPsxChdTransfer(url) ? PSX_CHD_COMPAT_CORE : core
+  if (platform === 'psx' && /\.m3u(?:[?#]|$)/i.test(url)) return compat
+  return platform === 'psx' && isPsxChdTransfer(url) ? compat : core
 }
 
 /**
  * 必须在 8BG 解包后用真正的内层文件名判断，不能把一个伪装成 CHD 的 ISO 交错核心；
  * 是 CHD 时再按头里的压缩器挑核心（见 psxChdCoreForCodecs）。
+ *
+ * 这一局已经换成低内存 PCSX 时，本来会落到 PCSX 的盘继续用低内存版；会落到 Beetle 的盘仍交给 Beetle ——
+ * CHD 的即时存档档位不分核心（psxChdSaveSlug），两种核心的状态格式不通用，混写会让同一档位两边都读不出。
  */
 export function psxCoreForPreparedName(platform: string, core: string, name: string, head?: Uint8Array | null): string {
   if (platform !== 'psx' || !/\.chd$/i.test(pathWithoutQuery(name))) return core
-  return psxChdCoreForCodecs(chdCompressors(head))
+  const chosen = psxChdCoreForCodecs(chdCompressors(head))
+  return chosen === PSX_CHD_COMPAT_CORE && core === PSX_LOWMEM_CORE ? PSX_LOWMEM_CORE : chosen
 }
 
 /** 软件版与旧 HW 版快照不混用，避免 ABI/渲染状态差异损坏既有存档。 */

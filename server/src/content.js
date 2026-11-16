@@ -18,6 +18,7 @@ import { listPublicFriendLinks } from './friend-links.js'
 import { loadVisibleNotice } from './site-notice.js'
 import { isolatedRuntimeRoute } from '../../shared/isolated-runtime-platforms.js'
 import { schedulePurge } from './edge-purge.js'
+import { clearGameRoomPolicyCache } from './netplay-game-policy.js'
 import { WASM_FREE_GAME_SLUGS, WASM_FREE_PLATFORM_IDS } from '../../shared/wasm-free-platforms.js'
 
 const TTL = Number(process.env.SSR_CACHE_MS || 60_000)
@@ -39,6 +40,8 @@ export function invalidateContent() {
   cache.clear()
   // 后台写入后，新请求不能复用写入前还在飞的旧查询；否则首个访客仍会看到旧数据。
   inflight.clear()
+  // 联机开房的人数 / 下架判断也有 30 秒缓存，后台改了游戏要立刻生效
+  clearGameRoomPolicyCache()
   // 进程内缓存清了，边缘上的 HTML 也要清（长缓存靠它才不会一天内都是旧的）
   schedulePurge()
 }
@@ -59,7 +62,13 @@ const INFLIGHT_MAX_MS = Number(process.env.SSR_INFLIGHT_MAX_MS || 15_000)
 
 export async function cached(key, loader) {
   const hit = cache.get(key)
-  if (hit && hit.generation === generation && Date.now() - hit.at < TTL) return hit.data
+  if (hit && hit.generation === generation && Date.now() - hit.at < TTL) {
+    // 命中后挪到队尾（LRU）：淘汰按插入顺序，不刷新的话爬虫扫一遍长尾游戏页
+    // 就会把首页、平台列表这些最热的 key 先挤出去。
+    cache.delete(key)
+    cache.set(key, hit)
+    return hit.data
+  }
   const flying = inflight.get(key)
   if (flying) {
     // 挂太久的那次不再复用：宁可多发一次查询，也不要让整个路由永久挂起

@@ -288,8 +288,9 @@ export async function renderPage(req, res, next) {
     const { html, head, lang, notFound, coverBase } = await render({ url, data, tvHost, cnSite, coverHint })
 
     let page = retargetCoverHints(getTemplate(), originOf(coverBaseUrl()), originOf(coverBase))
-    // 8bitgo.com 上的大陆访客：JS / CSS / 字体也从 EdgeOne 取（cn-edge.js）；大陆入口本身已经同源
-    if (coverHint === 'cn' && !cnSite) page = retargetStaticToCnEdge(page, cnEdgeOrigin(publicSiteUrl()))
+    // 8bitgo.com 上的大陆访客：JS / CSS / 字体也从 EdgeOne 取（cn-edge.js）；大陆入口本身已经同源。
+    // 带 __assets=origin 的是兜底页在 EdgeOne 取不下来 chunk 后的重新载入：这次整页留在主站（shared/cover-cdn-hint.js）
+    if (coverHint === 'cn' && !cnSite && !req.assetsFromOrigin) page = retargetStaticToCnEdge(page, cnEdgeOrigin(publicSiteUrl()))
     // 只给 200 页面发：Cloudflare 只从 200 HTML 学 Link，404 页带着也白带
     const earlyHints = notFound ? '' : earlyHintsFor(page)
 

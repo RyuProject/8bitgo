@@ -221,6 +221,32 @@ export function migrateEngineSettingsKey(
 }
 
 /**
+ * 同一款游戏换了核心、引擎认的「系统」也跟着变时，把设置复制过去（目标已有就不动，旧键保留）。
+ *
+ * 键里的系统是引擎 getCore(true)：默认 PCSX 在引擎别名表的 psx 组里，算出来是 `psx`；
+ * 低内存版 pcsx_rearmed-lowmem 不在任何一组里，算出来就是核心名本身（psxLowmem.ts）。
+ * 不复制的话，换到低内存版的玩家改过的按键、金手指、核心选项看起来「全没了」。
+ * 不把低内存版塞进引擎的 psx 组：那样引擎会优先读设置里存着的 retroarch_core，玩家存过一次设置
+ * 就会被它换回 512 MiB 的默认核心，等于白换。
+ */
+export function copyEngineSettingsToSystem(
+  storage: KeyedStorage | null | undefined,
+  gameId: number | undefined,
+  gameName: string | undefined,
+  fromSystem: string,
+  toSystem: string,
+): boolean {
+  if (!storage || !gameName || fromSystem === toSystem) return false
+  const prefix = `ejs-${gameId || 1}-`
+  const target = `${prefix}${toSystem}-${gameName}-settings`
+  if (storage.getItem(target) !== null) return false
+  const value = storage.getItem(`${prefix}${fromSystem}-${gameName}-settings`)
+  if (value === null) return false
+  storage.setItem(target, value)
+  return true
+}
+
+/**
  * 开机那一刻跟「这个玩家」有关的状态，写进诊断包。
  * 2026-11-13 一例《火红》开局 `table index is out of bounds`、自动重试同样失败，诊断包里却看不出
  * 开机时有没有电池存档、有没有存过引擎设置 / 金手指 —— 这几样都会在 callMain 里被核心读进去，

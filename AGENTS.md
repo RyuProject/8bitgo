@@ -568,6 +568,24 @@ JS 侧少一整份 ROM（64MB ROM 就是 64MB），所有 EmulatorJS 平台受�
 可新建的 WASM 地址空间；连 512 MiB 都分配不出时走内存提示与一次干净页面恢复。设备内存和浏览器位数正常、未检测到明显内存压力时，
 仍允许本局切旧核心，但**不保存偏好**；unreachable / 越界 / 空函数等确定陷阱仍可记住。偏好键升到 v2，让旧逻辑写入的错误记录失效。
 回归：`npm run test:nds-crash && npm run test:fbneo-lowmem`。
+这份 ROM 是 128MiB（头部记录 127.7MB 有效数据，只有 6.5MB 填充，裁剪没意义）。本机复现时，melonDS DS 开局时 WASM 堆的变化是：
+
+- 开局前 128MiB；
+- 读入内容后 262MiB：RetroArch 的 persistent 缓冲加 `retro::GameInfo` 的 memcpy；
+- 进卡带前 470MiB：`ParseROM` 再复制一份，这一步实际要约 422MiB。
+
+把扩容上限压到 263MiB，就能原样得到 `Aborted()` → `Failed to start game RuntimeError: Aborted()`。
+`GameInfo` 的构造函数是 noexcept，`make_unique` 拿不到内存只能 terminate，所以前端开了 `-fexceptions` 也没有错误画面。
+兼容核心 melonds 也要撑到约 361MiB，换它省不了内存。
+
+`build:melondsds` 的 `patchBorrowPersistentRom` 去掉中间那份：前端经 `GET_GAME_INFO_EXT` 确认 `persistent_data`、指针和长度都对上时，
+`GameInfo` 只借用 RetroArch 的缓冲，否则照旧复制。RetroArch 在 `retro_unload_game` / `retro_deinit` 之后才 `content_deinit`，借用是安全的。
+预计开局需要的堆降到约 294MiB；报告里出现 `borrowsPersistentRom: true` 才是带这项修复的包。
+⚠️ 这项修复**还没出包**：2026-11-16 本机磁盘只剩 2GB，装不下 emsdk 和构建目录。出包后要用同一份 ROM 复测堆峰值，
+并抽测几款 NDS 的开局、即时存档 / 读档、重置。
+复现方法：裸 EmulatorJS 页必须同时给 `system_directory`（见 `configureNdsSystemDirectory`）和 `melonds_sysfile_mode=builtin`。
+少了任何一项，核心就停在 `No system directory is available` / RetroArch 菜单，堆只到 315MiB，看起来“省了内存”，其实游戏根本没加载。
+用 `getState()` 能取到约 19MB 的状态，才算真的开机了。
 
 NDS ROM 由适配器自己按 **8MB Range** 顺序下载；每片完成后写进独立的
 `8bitgo-rom-downloads` IndexedDB，所以刷新页面、浏览器崩溃或断网重开后会只补缺失片。
@@ -1123,6 +1141,16 @@ Content-Range 全部吻合的公开请求才可入边缘缓存；任意短 Range
 卡片预览视频 `videos/*.mp4|webm` 没有版本号、播放器只发 Range（2026-11-16 实测大陆首字节 16 秒、无边缘缓存）：
 Worker 按封面同一条 s-maxage=600 缓存整份 200，Range 命中时在 Worker 里切片，未命中照常回 R2 并后台填一份；
 超过 32MB 或带 `Content-Encoding` / 条件头的不缓存。回归在 `worker/tests/rom.test.mjs` 的 preview video 两节。
+切片是**流式**的（`sliceStream`）：不准退回 `hit.arrayBuffer()`，每个 Range 都把 32MB 读进内存，几路并发就撞 128MB 隔离上限。
+取消 tee 出来的缓存正文**不能 await**（另一支没结束时 cancel 永不落定，请求会挂住）。
+
+⚠️ **Worker 内存与浏览器缓存的四条规矩（2026-11-16）**：
+- 整份 200 写边缘缓存只收 ≤64MB 且有 Content-Length 的对象（`EDGE_FULL_PUT_MAX_BYTES`）。`response.clone()` 的两支速度不同，
+  差额攒在 Worker 内存里，慢速玩家拉大文件会把隔离撑爆；大文件本来就走 8MB Range 分片缓存。
+- `ALLOWED_ORIGINS=*` 时**不发 `Vary: Origin`**：响应与来源无关，带上它会让浏览器把 fetch 预热（带 Origin）和
+  `<img>` / 引擎请求（不带）存成两份，同一份 ROM / 封面下两遍。按来源白名单反射时才发。
+- 缺失封面负缓存 60 秒（缩略图回退要依次找 4 个位置），管理员补传后最多晚 60 秒生效。
+- 下载域名的明文转发：等响应头最多 30 秒，超时回 504；源站的 `Set-Cookie` 一律剥掉。
 
 ⚠️ **网络层失败要多熬一会儿，并且能换线路**（2026-11-10 墨西哥玩家《合金弹头 3》两次「Failed to fetch」，
 第二次 8.4 秒就放弃）。`fetchBlobWithProgress` 对 fetch 抛出的 TypeError 按 `NETWORK_RETRIES`（5 次，
@@ -2853,9 +2881,10 @@ Butterscotch 的键盘接口。当前 Web 构建依赖 WebAssembly JSPI、OPFS �
 
 2026-11-16 现场反馈：开场按 Esc 后回到 100% 进度条。复现为 Butterscotch 标题画面将长按 Esc 映射成退出，
 `_startRunner()` 因此正常结束；`startGame()` 的 `finally` 随后切回启动页，满格进度条让人误以为又在加载。
-页面键盘适配现在将 Esc 映射为 Z（确认 / 继续），退出仍使用画面上的“返回 8BitGo”按钮；不要把原始 27
-传给运行端。ScriptProcessorNode 弃用提示与未手势解锁的 AudioContext 提示不会终止 runner；声音门按钮通过
-点击 / 触摸解锁音频。Esc 回归需确认仍处于游戏画布、开场继续推进且没有回到启动页。
+页面键盘适配现在将 Esc 映射为 Z（确认 / 继续），离开游戏用浏览器自身的返回 / 关闭操作；不要把原始 27
+传给运行端。ScriptProcessorNode 弃用提示与未手势解锁的 AudioContext 提示不会终止 runner；声音自动尝试启动，
+浏览器若拦截自动播放，则在首个键盘、指针或触摸手势里无提示解锁，不额外显示声音门按钮。Esc 回归需确认仍处于游戏画布、
+开场继续推进且没有回到启动页。
 
 上游构建与许可证由 `runtime-manifest.json` 固定哈希；换版时必须同步提交号、归档 SHA-256、两个
 运行时文件哈希和 MPL 许可证。替换授权分发包时同步更新资源清单、包版本和 ZIP CRC-32，并先验证远端每个路径、长度及精确 CORS 来源。
@@ -3692,15 +3721,17 @@ PK / TH 两份现场：`The requested module './live-Cqhc9j-k.js' does not provi
 - **正常访问**：`index.html` 里一段 ES5 内联钩子，不发请求。只在 localStorage `8bitgo.asset-remap` 有未过期记录时插一张 import map；
   定义 `window.__8bitgoAssetRepair`，并监听 window 的 `SyntaxError`（入口模块链接失败时 React 起不来，兜底页接不住）。
   钩子必须排在任何模块脚本之前，import map 才来得及生效。
-- **出错时**：才加载 `public/assets/asset-repair-v2.js`（文件名即代次，长期缓存；改逻辑新建 v3）。首页按入口脚本所在资源域加载，
-  所以大陆入口 `cn.8bitgo.com/_cn/assets/` 的自修复也走 EdgeOne；该路超时或失败后再回主站 `/assets/` 重试。
-  2026-11-15 WeChat iOS 27 的单份现场在 `/_cn/assets/` 加载 React chunk 失败，旧钩子却从主站根路径取修复脚本，
-  诊断只记到「修复脚本没有运行（加载失败或超时）」，无法区分网络失败和超时。只核对本页 Resource Timing 里用过的
+- **出错时**：才加载 `public/assets/asset-repair-v3.js`（文件名即代次，长期缓存；改逻辑新建 v4，旧版留给已打开的旧页面）。
+  首页按入口脚本所在资源域加载，所以大陆入口 `cn.8bitgo.com/_cn/assets/` 的自修复也走 EdgeOne；该路 5 秒超时或失败后再回主站
+  `/assets/` 重试，每次的地址 / 结果 / 耗时记在 `window.__8bitgoAssetRepairLoad`，诊断包写成「加载失败 812ms」「5 秒超时」
+  「已加载、核对 20 秒内没有结束」。只核对本页 Resource Timing 里用过的
   chunk 和错误点名的那个，先 `cache: 'force-cache'` 读浏览器缓存算 SHA-256，三种结果：
   浏览器缓存坏了 → `cache: 'reload'` 重取（同时覆盖缓存里的坏副本）→ 刷新一次；
   重取还是坏（CDN 边缘那份坏了）→ 带 `?asset-repair=1` 直接回源核对，好的话记进 `8bitgo.asset-remap`（7 天）、
   `POST /api/asset-repair` 请服务端清 Cloudflare 上那个 URL → 刷新后 import map 把它改指到回源地址；
   回源也坏（部署本身坏了）→ 不刷新，留在兜底页并上报。一分钟内同一页最多自动刷新一次。
+  取不下来（网络错误 / HTTP 错误，v3）→ 绕过缓存重试一次，好了记 `recovered`；还不行且文件在大陆加速入口上，取主站同名文件对照，
+  主站正常记 `edgeOnly`，主站也不行记 `failed`。`trace` 记三次结果（HTTP 502 / 网络错误 / 超时）。
 - 用 SHA-256 不用 MD5：`crypto.subtle` 只有 SHA 系列，原生实现比 JS 版 MD5 快。没上全量 SRI：那要把约 110 个哈希塞进每份 HTML。
 - `AppErrorBoundary` 对 SyntaxError 与旧 chunk 404 都先走修复：修好了先上报（诊断包带「资源核对：…」一行）再刷新；
   没发现坏文件的 404 照旧刷新一次；其余上报。诊断包里的那一行分得清浏览器缓存坏、CDN 边缘坏、源站坏。
@@ -3710,7 +3741,49 @@ PK / TH 两份现场：`The requested module './live-Cqhc9j-k.js' does not provi
 - 本地复现：静态服务 `dist/client`，把某个懒加载 chunk 末尾的 `export{…}` 去掉再回给浏览器（立即 immutable 缓存）。
   2026-11-15 已在 Chrome 里实测三条路径：缓存坏（/blog 的 posts chunk）→ 重取后自动恢复；边缘坏（/games 的 Pagination）→
   回源地址 + import map 后恢复；入口模块链接失败 → window 收到 SyntaxError，钩子解析出导入方和被导入方。
-- 回归：`npm run test:asset-repair`。
+- 回归：`npm run test:asset-repair`。⚠️ 测试桩里 `__8bitgoAssetRepairRun` 必须在「脚本加载成功」时才定义：
+  2026-11-16 以前预先定义好它，钩子直接运行、不加载脚本，「出错时跟随入口资源域加载修复脚本」那条断言从 168e2e4 起就没过过。
+
+**诊断包 #761（微信 iOS 27，CN，《超级玛丽》详情页，`TypeError: Importing a module script failed.`）：旧 build，但根因当时没修。**
+
+- **为什么是旧 build**：现场 `index-BuArTvEC.js`、2026-11-15T21:11Z；改「按入口资源域加载修复脚本」的 168e2e4 在 11-16T04:50Z，
+  线上 `asset-repair-v2.js` 修改时间 05:25Z。旧钩子从主站根路径取 `/asset-repair-v1.js`（经 Cloudflare 洛杉矶），所以只有一句
+  「修复脚本没有运行（加载失败或超时）」。
+- **失败的是哪个 chunk（证据）**：组件栈 `Lazy@unknown:0:0 < vt@…react-vendor-Igr6niNW.js:11:4269 < Mt@…:11:7818`。
+  Playwright WebKit 26.6 让 EdgeOne 上的 `GameDetailPage-*.js` 回 502，报出同一句错误、同样的偏移：是 `/games/:slug`
+  直接挂的 `GameDetailPage` 路由 chunk（`<Route element={<GameDetailPage />}>`，vt / Mt 是 react-router）。
+  会上报说明一分钟内已经自动刷新过一次（`stale && reloadOnce()` 成功时不上报），即同一处**连续失败两次**。
+- **没查清的（推断，未验证）**：EdgeOne 那一路对这位访客返回了错误或断流。11-16 从一处网络逐个核对两版构建在
+  `/_cn/assets/` 上的 317 个文件，状态码 / MIME / CORS / SHA-256 全对；别的 EdgeOne 节点、微信 WebView 自身的因素都没法在本地复现。
+- **旧版为什么救不回来**：懒加载 chunk 按「相对引用方」解析（`renderBuiltUrl`），入口在 EdgeOne 上，整张模块图就在 EdgeOne 上。
+  入口脚本有 `onerror` 退回主站，懒加载 chunk 没有；v2 对「取不下来」只记失败，普通刷新又回到同一条 EdgeOne 路。
+- **现在**：
+  - `lazyNamed` 失败时从加载函数的源码里取出 chunk 文件名（产物里是 ``import(`./GameDetailPage-xxx.js`)``）挂在错误上。
+    Safari 这句错误不带地址，全靠它点名。
+  - 兜底页按核对结果决定下一步：
+    - `edgeOnly` → 上报，带 `__assets=origin` 整页重新载入；
+    - 修好了 → 普通刷新；
+    - 没证据 → 先普通刷新，一分钟内又坏才换主站；
+    - 两种刷新各自每分钟一次，第三次停在兜底页。
+  - 服务端在 `normalizeUrl` 之前剥掉 `__assets`，SSR 这次不调用 `retargetStaticToCnEdge`。
+  - 入口（`entry-client.tsx`）在渲染前去掉参数，之后的刷新也留在主站。
+- ⚠️ **不能只把失败的文件或目录用 import map 换到主站**：页面 chunk 会反过来 import 入口 `./index-<哈希>.js`。
+  换了目录的 chunk 会按主站地址再拉一份入口，入口重复执行、React 出现两份。只能整页换。
+- ⚠️ **去 `__assets` 参数不能放进首页内联钩子**：钩子后面的语言跳转脚本和 `edge-route-v2.js` 用 `location.search` 拼跳转地址，
+  先去掉的话一跳就丢了「改用主站」。
+- ⚠️ **依赖 Cloudflare 改写规则保留原查询串**（11-16 实测大陆请求 `?page=2` 拿到 `canonical …?page=2` 和 `cover-cdn=cn`）。
+  规则哪天改成整段替换，`__assets` 会被吃掉，兜底退化成「再坏一次就停」。服务端和前端要同一次部署。
+- ⚠️ 主站兜底对大陆访客很慢：11-16 从大陆经洛杉矶取一份 180KB 的页面 90 秒没下完。所以只在有证据或普通刷新已失败时才用，不能当默认。
+- 诊断包：
+  - 服务端 `scrub()` 的邮箱规则以前把 Safari 栈帧 `vt@https://cn.8bitgo.com/...` 整段吞成 `[邮箱]`（网址先被缩短成 `vt@cn.8bitgo.com/…`），
+    现在邮箱后面紧跟路径或 `:行号` 的不算邮箱。
+  - 页面崩溃（runtime `page`）的资源列表改从页面打开起算。以前从上报那一刻算，#761 一条请求都没有。
+- 端到端（11-16，Playwright Chromium 153 / WebKit 26.6，`127.0.0.1` 当主站、`localhost/_cn/` 当 EdgeOne，真实构建产物）：
+  - EdgeOne 502 → 主站恢复；
+  - 修复脚本在 EdgeOne 上也 502 → 改从主站取修复脚本，结论相同；
+  - 只坏第一次 → 普通刷新恢复；
+  - 两边都坏 → 两次自动刷新后停在兜底页，两份上报都带经过。
+  - 微信 iOS 本身没有验证。
 
 ## 3. 常用命令
 

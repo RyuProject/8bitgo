@@ -103,7 +103,8 @@ const adminSource = readFileSync(fileURLToPath(new URL('../src/admin/GameForm.ts
 const ejsRuntime = readFileSync(fileURLToPath(new URL('../public/emulatorjs/emulator.min.js', import.meta.url)), 'utf8')
 const pcsxWasm = execFileSync('7z', ['x', '-so', fileURLToPath(new URL('../public/emulatorjs/cores/pcsx_rearmed-wasm.data', import.meta.url)), 'pcsx_rearmed_libretro.wasm'], { maxBuffer: 64 * 1024 * 1024 })
 assert.match(runtimeSource, /preparePsxRangePlaylist\(/, '播放器接入 M3U Range 预备')
-assert.match(runtimeSource, /preparedPsxRange\?\.multiDisc\s*\?\s*PSX_CHD_COMPAT_CORE/, '多盘组固定选 codec 完整的 PCSX 核心')
+// 低内存 PCSX（src/emulator/psxLowmem.ts）就是同一份 PCSX，多盘照样由它读
+assert.match(runtimeSource, /preparedPsxRange\?\.multiDisc[\s\S]{0,80}\? \(core === PSX_LOWMEM_CORE \? PSX_LOWMEM_CORE : PSX_CHD_COMPAT_CORE\)/, '多盘组固定选 codec 完整的 PCSX 核心')
 assert.match(runtimeSource, /streaming:\s*true/, 'Range 进度标记为流式而非整盘已下载')
 assert.match(adminSource, /upload 双盘 \/ 多盘组|上传双盘 \/ 多盘组/, '后台提供多盘上传入口')
 assert.ok(ejsRuntime.includes('getDiskCount()>1') && ejsRuntime.includes('"m3u"===this.fileName.split'), 'EmulatorJS 包含 M3U 盘片切换菜单')

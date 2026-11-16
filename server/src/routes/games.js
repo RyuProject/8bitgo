@@ -552,14 +552,19 @@ gamesRouter.post('/:slug/translate-description', async (req, res, next) => {
 
     // 写库失败也得先把译文回给前端：UI 已经更新了，DB 写失败只是下次还得再请求上游。
     // 不能让用户点完了界面上不变还得翻个网络错误。
+    // 写入带上翻译时的源文做条件：翻译期间后台改了简介（会清空 i18n），旧源文的译文不能再写回去。
+    let written = false
     try {
-      await writeDescriptionTranslation(req.params.slug, lang, translated)
+      written = await writeDescriptionTranslation(req.params.slug, lang, translated, {
+        description: game.description,
+        descriptionEn: game.descriptionEn,
+      })
     } catch (e) {
       console.error('[translate] 写 description_i18n 失败：', e?.message)
     }
 
-    // 简介变了 —— 详情页是 SSR，缓存要刷，否则下一个访客拿到的是旧 HTML（带着无翻译的页面）。
-    invalidateContent()
+    // 简介变了 —— 详情页是 SSR，缓存要刷；没写进去就不清，免得匿名请求随手清全站缓存。
+    if (written) invalidateContent()
 
     res.json({ lang, text: translated, cached: false })
   } catch (e) {

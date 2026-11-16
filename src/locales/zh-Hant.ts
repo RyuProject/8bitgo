@@ -647,6 +647,11 @@ const zhHant: Translation = {
     emailNew: '新信箱',
     emailNewPlaceholder: '輸入新的信箱地址',
     emailCodeHint: '驗證碼會寄到新信箱 —— 收得到才代表這個信箱真的是你的。',
+    reauthTitle: "先確認是你本人",
+    reauthHintPassword: "為了帳號安全，請先輸入目前的密碼。",
+    reauthHintCode: "為了帳號安全，先寄一組驗證碼到你目前的信箱 {email}。",
+    reauthContinue: "繼續",
+    reauthExpired: "確認已過期，請重新確認是你本人。",
     emailChanged: '信箱已更換，其他裝置需要重新登入',
     sameEmail: '這已經是你目前的信箱了',
 

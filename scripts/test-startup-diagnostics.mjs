@@ -30,6 +30,14 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   assert.equal(scrub('https://8bitgo.com/emulatorjs/cores/fceumm-wasm.data?v=1'), '8bitgo.com/emulatorjs/…/fceumm-wasm.data')
   assert.doesNotMatch(scrub('Authorization: Bearer abc.def.ghi token=SECRET123'), /abc\.def|SECRET123/, '令牌必须抹掉')
   assert.equal(scrub('peer 203.0.113.9 / 2001:db8:85a3::8a2e:370:7334 mail a@b.com'), 'peer [IP] / [IP] mail [邮箱]')
+  // 2026-11-16 诊断包 #761：Safari 调用栈 `vt@https://cn.8bitgo.com/...` 缩短后整段被当成邮箱，函数名和域名都丢了
+  assert.equal(
+    scrub('组件：Lazy@unknown:0:0 < vt@https://cn.8bitgo.com/_cn/assets/react-vendor-Igr6niNW.js:11:4269'),
+    '组件：Lazy@unknown:0:0 < vt@cn.8bitgo.com/_cn/…/react-vendor-Igr6niNW.js:11:4269',
+  )
+  assert.equal(scrub('Mt@cn.8bitgo.com/_cn/…/react-vendor-Igr6niNW.js:11:7818'), 'Mt@cn.8bitgo.com/_cn/…/react-vendor-Igr6niNW.js:11:7818', '前端已缩短过的栈帧也不是邮箱')
+  assert.equal(scrub('联系 a.b+c@mail.example.co.uk。或 x@y.com, 或 z@w.cn.'), '联系 [邮箱]。或 [邮箱], 或 [邮箱].', '真邮箱照样抹掉（含句末标点）')
+  assert.equal(scrub('to: user@example.com: 发信失败'), 'to: [邮箱]: 发信失败')
   assert.equal(scrub('PPSSPP 流式读盘失败： \u001b[0m \u001b[91midle0 E[LOADER]: x [0m'), 'PPSSPP 流式读盘失败： idle0 E[LOADER]: x', '终端颜色码去掉')
   assert.equal(scrub('at 18:15:39 std::bad_alloc error::Fatal fe80::1'), 'at 18:15:39 std::bad_alloc error::Fatal [IP]', '时间和 C++ 名字不能被当成 IPv6')
 
@@ -194,7 +202,7 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
 {
   const funnel = read('src/services/startupFunnel.ts')
   assert.match(funnel, /DIAGNOSTIC_EVENTS = new Set<StartupEventName>\(\['failed', 'timeout', 'slow_start'\]\)/)
-  assert.match(funnel, /collectStartupDiagnostics\(payload\.attemptId, payload\.detail\)/)
+  assert.match(funnel, /collectStartupDiagnostics\(payload\.attemptId, payload\.detail, \{\s*resourcesSincePageStart: payload\.runtime === 'page',/, '页面崩溃带上页面打开以来的资源请求（诊断包 #761 的资源列表是空的）')
   const games = read('server/src/routes/games.js')
   assert.match(games, /if \(result\.recorded && req\.body\?\.diagnostics\n/, '只在漏斗事件首次入库时写诊断包')
   // 诊断包一份最多 32KB，必须有自己的闸，不能只靠漏斗那道每分钟 12000 的总量
@@ -274,7 +282,7 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   assert.match(boundary, /games\\\/\(\[\^\/\?#\]\+\)/, '只在游戏详情页上报')
   assert.match(boundary, /<details/, '兜底页把错误原文摆出来')
   assert.match(ejs, /if \(bits === '32'\) return failLoad\(rt\.ejsOutOfMemory32bit, 'config'\)/, '32 位浏览器内存不足：换浏览器提示，不原地重试')
-  assert.match(ejs, /if \(core === FBNEO_LOWMEM_CORE\) \{[\s\S]{0,600}return failLoad\(lowmemOomMessage\(vendor\), 'config'\)/, '低内存核心也内存不足：不再原地重试同一个核心')
+  assert.match(ejs, /if \(core === FBNEO_LOWMEM_CORE \|\| core === PSX_LOWMEM_CORE\) \{[\s\S]{0,600}return failLoad\(lowmemOomMessage\(vendor\), 'config'\)/, '低内存核心（FBNeo / PS1）也内存不足：不再原地重试同一个核心')
   assert.match(ejs, /probeWasmMemoryCeilingMB\(\)/, '失败时实测还能分配多少 WASM 内存，写进诊断包')
   assert.match(ejs, /\|\| isLowmemOomMessage\(message\)/, '低内存核心的内存不足同样不把大陆加速入口判坏')
   for (const lang of ['zh-Hans', 'zh-Hant', 'en', 'es', 'de', 'it', 'fr', 'ja']) {

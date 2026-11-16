@@ -636,6 +636,11 @@ const fr: Translation = {
     emailNew: 'Nouvel e-mail',
     emailNewPlaceholder: 'Saisissez la nouvelle adresse e-mail',
     emailCodeHint: "Le code part vers la nouvelle adresse — le recevoir prouve que cette boîte est bien la vôtre.",
+    reauthTitle: "Confirmez d'abord que c'est bien vous",
+    reauthHintPassword: "Pour protéger votre compte, saisissez d'abord votre mot de passe actuel.",
+    reauthHintCode: "Pour protéger votre compte, nous envoyons d'abord un code à votre adresse actuelle {email}.",
+    reauthContinue: "Continuer",
+    reauthExpired: "La confirmation a expiré. Confirmez de nouveau que c'est bien vous.",
     emailChanged: 'E-mail modifié. Les autres appareils doivent se reconnecter.',
     sameEmail: "C'est déjà votre adresse actuelle",
 

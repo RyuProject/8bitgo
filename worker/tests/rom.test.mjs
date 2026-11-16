@@ -699,3 +699,64 @@ test('preview video requests with conditional headers bypass the slicing cache',
     else globalThis.caches = previous
   }
 })
+
+test('wildcard CORS does not send Vary: Origin (one browser cache entry per URL); allow-lists still do', async () => {
+  const e = environment(); e.ROMS.seed('covers/a.webp', 'img')
+  const open = await worker.fetch(req('/covers/a.webp'), e)
+  assert.equal(open.headers.get('Vary'), null)
+  const listed = await worker.fetch(new Request('https://assets.example/covers/a.webp', { headers: { Origin: 'https://8bitgo.com' } }), { ...e, ALLOWED_ORIGINS: 'https://8bitgo.com' })
+  assert.equal(listed.headers.get('Vary'), 'Origin')
+  assert.equal(listed.headers.get('Access-Control-Allow-Origin'), 'https://8bitgo.com')
+})
+
+test('full-object edge puts are skipped above the size cap so a slow client cannot pin the whole file in memory', async () => {
+  const previous = globalThis.caches
+  let puts = 0
+  globalThis.caches = { default: { async match() {}, async put(_r, response) { puts += 1; await response.arrayBuffer() } } }
+  const waits = []
+  const context = { waitUntil(p) { waits.push(p) } }
+  try {
+    const e = environment(); e.ROMS.seed('roms/nes/small.nes', 'abc')
+    const small = await worker.fetch(req('/roms/nes/small.nes?romv=v1'), e, context)
+    await small.arrayBuffer(); await Promise.all(waits)
+    assert.equal(puts, 1)
+    // 真的放一个刚超过上限的对象（只是零字节填充的 Uint8Array，测试结束即释放）
+    e.ROMS.seed('roms/dos/big.zip', new Uint8Array(64 * 1024 * 1024 + 1))
+    const big = await worker.fetch(req('/roms/dos/big.zip?romv=v1'), e, context)
+    assert.equal(big.status, 200)
+    assert.equal(big.headers.get('X-8BitGo-Edge-Cache'), null)
+    await big.arrayBuffer(); await Promise.all(waits)
+    assert.equal(puts, 1, '超过上限的整份对象不应写边缘缓存')
+  } finally {
+    if (previous === undefined) delete globalThis.caches
+    else globalThis.caches = previous
+  }
+})
+
+test('missing covers are negative-cached briefly instead of hitting R2 on every view', async () => {
+  const previous = globalThis.caches
+  const store = new Map()
+  globalThis.caches = { default: {
+    async match(request) { return store.get(request.url)?.clone() },
+    async put(request, response) { store.set(request.url, new Response(await response.arrayBuffer(), { status: response.status, headers: response.headers })) },
+  } }
+  const waits = []
+  const context = { waitUntil(p) { waits.push(p) } }
+  try {
+    const e = environment()
+    const first = await worker.fetch(req('/covers/missing.webp'), e, context)
+    assert.equal(first.status, 404)
+    await first.arrayBuffer(); await Promise.all(waits)
+    const stored = store.get('https://assets.example/covers/missing.webp') || [...store.values()][0]
+    assert.ok(stored, '404 应该写进边缘缓存')
+    assert.match(stored.headers.get('Cache-Control'), /s-maxage=60/)
+    const gets = count(e.ROMS, 'get')
+    const second = await worker.fetch(req('/covers/missing.webp'), e, context)
+    assert.equal(second.status, 404)
+    assert.equal(second.headers.get('X-8BitGo-Edge-Cache'), 'HIT')
+    assert.equal(count(e.ROMS, 'get'), gets)
+  } finally {
+    if (previous === undefined) delete globalThis.caches
+    else globalThis.caches = previous
+  }
+})
