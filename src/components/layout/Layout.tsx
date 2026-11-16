@@ -123,7 +123,7 @@ function Shell() {
         aria-hidden={mobileNavigationOpen || undefined}
         inert={mobileNavigationOpen}
         className={cx(
-          'flex min-h-dvh flex-col transition-[padding] duration-300 ease-out',
+          'flex min-h-dvh flex-col bg-white transition-[padding] duration-300 ease-out',
           immersive ? 'lg:pl-0' : 'lg:pl-60',
           !immersive && !isTvRoute && !isAdminRoute && 'pb-[calc(4rem+env(safe-area-inset-bottom))] lg:pb-0',
         )}
