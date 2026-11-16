@@ -230,6 +230,7 @@ export const ENV_MANIFEST = [
   { name: 'RESEND_API_BASE', group: '发信', kind: 'config', file: 'mail.js', note: '测试用来指向本地 mock，线上不该配' },
   { name: 'RESEND_API_KEY', group: '发信', kind: 'secret', file: 'mail.js' },
   { name: 'ROM_BASE_URL', group: '服务与地址', kind: 'config', file: 'site-urls.js' },
+  { name: 'ROM_DOWNLOAD_BASE_URL', group: '服务与地址', kind: 'config', file: 'site-urls.js', note: '开放平台明文 ROM 的优选下载域；默认 download.8bitgo.com' },
   { name: 'ROM_PACK_KEY_ID', group: 'ROM / J2ME / IPX', kind: 'config', file: 'rom-pack-key.js', note: '当前新包使用的密钥代次；轮换后旧代密钥必须继续保留' },
   { name: 'ROM_PACK_SECRET', group: 'ROM / J2ME / IPX', kind: 'secret', file: 'rom-pack-key.js', note: '8BG 当前代根密钥，至少 32 字节；丢失后对应 ROM 无法恢复' },
   { name: 'ROM_PREFIX', group: 'ROM / J2ME / IPX', kind: 'config', file: 'j2me.js' },

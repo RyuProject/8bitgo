@@ -33,7 +33,7 @@ import { romCacheDelete, romCacheGetBlob, romCacheKey, romCachePutBlob } from '.
 import { focusFrame, frameGamepads } from '../frameFocus'
 import { installAudioTap, type AudioTap } from '../audioTap'
 import { getT, fmt } from '@/services/i18n'
-import { alternateRomUrl } from '@/services/romHosts'
+import { alternateRomUrls, reachableRomAssetUrl } from '@/services/romHosts'
 import { getLang } from '@/services/lang'
 import type { Lang } from '@/config/languages'
 import { guardPreConnectDisconnect, installIoHook, withSignalTimeout } from '../netplaySocketHook'
@@ -1151,6 +1151,7 @@ function fetchBiosBytes(
     phase: 'assets',
     maxBytes: BIOS_MAX_BYTES,
     signal,
+    alternateUrls: alternateRomUrls(url),
     onProgress: (p) => {
       onBeat()
       emit(p)
@@ -1221,7 +1222,7 @@ function fetchMameDiskBytes(
     }
     const blob = await fetchBlobWithProgress(disk.url, {
       phase: 'rom',
-      alternateUrl: alternateRomUrl(disk.url),
+    alternateUrls: alternateRomUrls(disk.url),
       maxBytes: Math.min(MAME_CHD_MAX_BYTES, disk.storedBytes),
       signal,
       // 内容寻址（两组 SHA-1 + 字节数），是全站最安全的断点续传键：断网 / 卡死后只补缺片，不再从 0 重下 160MB
@@ -2121,7 +2122,7 @@ export async function prepareRemoteArcadeRom(
     phase: 'rom',
     onProgress,
     signal,
-    alternateUrl: alternateRomUrl(url),
+    alternateUrls: alternateRomUrls(url),
     // 街机大包与 NDS 共用 8MB Range 断点续传。romCacheKey 只对带 romv /
     // 归档版本的内容生成；无版本 URL 可能原地换包，不许拼入旧分片。
     resumeKey: mode === 'resume' ? cacheKey || undefined : undefined,
@@ -2292,7 +2293,7 @@ export async function prepareRemoteDiscRom(
     phase: 'rom',
     onProgress,
     signal,
-    alternateUrl: alternateRomUrl(url),
+    alternateUrls: alternateRomUrls(url),
     maxBytes: options.maxBytes,
     // 只在明确要求且 URL 带内容版本时落临时分片。无版本地址原地换包后会混入旧片，宁可重下。
     resumeKey: mode === 'resume' && options.resumeAcrossRefresh ? cacheKey : undefined,
@@ -4442,6 +4443,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           // 必须留痕：将来这款游戏报「缺文件」时，第一件事就是确认平台 BIOS 是被这条规则
           // 主动跳过的 —— 后台「BIOS 包（系统名）」填错了系统名会走到这里
           console.info(`[emulatorjs] 跳过平台级 BIOS（${platformBiosName}.zip）：这款游戏要的是 ${gameBiosName}.zip`)
+        }
+        if (engineBiosUrl) {
+          const preferredBiosUrl = await reachableRomAssetUrl(engineBiosUrl, prepareAbort.signal)
+          if (preferredBiosUrl !== engineBiosUrl) {
+            console.warn('[emulatorjs] 下载优选域暂不可读，平台 BIOS 改走备用资源域')
+            engineBiosUrl = preferredBiosUrl
+          }
         }
 
         /*

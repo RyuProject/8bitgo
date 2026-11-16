@@ -45,7 +45,7 @@ import {
 } from './pack-guards.js'
 
 const BASE = '/rodir/'
-const ASSET_VERSION = '20261019-room-perf2'
+const ASSET_VERSION = '20261116-dlhost'
 // 清单返回后会换成当前地图的真实压缩体积；这里仅用于清单到达前，避免进度条跳满。
 let expectedProgressBytes = 128 * 1024 * 1024
 // 引擎、客户端库、BOT、字体和 extras 实发约 15MB；留一点余量，别在资源写完时还显示 70%。
@@ -144,12 +144,36 @@ const ASSET_ROOT = new URL(Q.get('root') || './', PAGE_ROOT).href.replace(/\/$/,
  * ?packsroot= 可验收临时桶，?packformat=gzip 保留旧包应急通道。
  */
 const productionHost = location.hostname === '8bitgo.com' || location.hostname.endsWith('.8bitgo.com')
-const DEFAULT_ZSTD_ROOT = productionHost
-  ? 'https://assets.8bitgo.com/web/cs16/zstd-v1/'
-  : new URL('./packs/zstd-v1/', PAGE_ROOT).href
-const PACKS_ROOT = Q.get('packsroot')
-  ? new URL(Q.get('packsroot'), PAGE_ROOT).href.replace(/\/?$/, '/')
-  : DEFAULT_ZSTD_ROOT
+/*
+ * 生产先走 download.8bitgo.com：它是 DNS-only CNAME 到第三方优选 IP 的同一个 Worker，
+ * 整包下载吞吐更好；但它依赖别人的优选域名，所以 assets.8bitgo.com 永远留作回退。
+ * 两边读的是同一个 R2 对象，每片都校验 SHA-256，混用两条线路取到的分片是安全的。
+ * 优选线路一次失败（含 10 秒无响应）后，本页剩余请求都改走 assets，不再来回试。
+ */
+const DOWNLOAD_ZSTD_ROOT = 'https://download.8bitgo.com/web/cs16/zstd-v1/'
+const ASSETS_ZSTD_ROOT = 'https://assets.8bitgo.com/web/cs16/zstd-v1/'
+const PACKS_ROOTS = Q.get('packsroot')
+  ? [new URL(Q.get('packsroot'), PAGE_ROOT).href.replace(/\/?$/, '/')]
+  : productionHost
+    ? [DOWNLOAD_ZSTD_ROOT, ASSETS_ZSTD_ROOT]
+    : [new URL('./packs/zstd-v1/', PAGE_ROOT).href]
+const PACKS_ROOT = PACKS_ROOTS[PACKS_ROOTS.length - 1]
+const PREFERRED_ROOT_TIMEOUT_MS = 10_000
+let packRootIndex = 0
+function currentPackRoot() {
+  return PACKS_ROOTS[packRootIndex]
+}
+/** 只有当前首选线路失败才换下一条；迟到的旧失败不会把已经换好的线路再往后推。 */
+function markPackRootFailed(root, error) {
+  if (root !== PACKS_ROOTS[packRootIndex] || packRootIndex >= PACKS_ROOTS.length - 1) return
+  packRootIndex += 1
+  window.__probe.info.packRoot = PACKS_ROOTS[packRootIndex]
+  window.__probe.info.packRootFallback = String(error)
+  log(`⚠️ ${new URL(root).host} unavailable, switching to ${new URL(PACKS_ROOTS[packRootIndex]).host}: ${error}`, 'err')
+}
+function packRootTimeout(root) {
+  return root !== PACKS_ROOTS[PACKS_ROOTS.length - 1] ? { timeoutMs: PREFERRED_ROOT_TIMEOUT_MS } : {}
+}
 const LEGACY_PACKS_ROOT = Q.get('legacyroot')
   ? new URL(Q.get('legacyroot'), PAGE_ROOT).href.replace(/\/?$/, '/')
   : new URL('./packs/', PAGE_ROOT).href
@@ -175,6 +199,7 @@ window.__probe = {
   info: {
     performanceProfile: PERFORMANCE_PROFILE.id,
     maxDevicePixelRatio: maximumDevicePixelRatio(),
+    packRoot: PACKS_ROOTS[0],
   },
   xash: null,
   net: { total: 0, byUrl: {}, startedAt: 0, lastByteAt: 0 },
@@ -299,13 +324,14 @@ function setRoomStatus(room, message) {
 }
 
 async function fetchRequired(url, label, options = {}) {
+  const { timeoutMs = 30_000, ...fetchOptions } = options
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 30_000)
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
   let res
   try {
-    res = await fetch(url, { ...options, signal: controller.signal })
+    res = await fetch(url, { ...fetchOptions, signal: controller.signal })
   } catch (error) {
-    throw new Error(`${label} connection failed: ${error instanceof Error && error.name === 'AbortError' ? 'no response within 30s' : error}`)
+    throw new Error(`${label} connection failed: ${error instanceof Error && error.name === 'AbortError' ? `no response within ${Math.round(timeoutMs / 1000)}s` : error}`)
   } finally {
     clearTimeout(timer)
   }
@@ -428,12 +454,14 @@ async function getPackCatalog() {
     catalogPromise = (async () => {
       let lastError
       for (let attempt = 0; attempt < 3; attempt += 1) {
-        const url = new URL('catalog.json', PACKS_ROOT)
+        const root = currentPackRoot()
+        const url = new URL('catalog.json', root)
         url.searchParams.set('v', ASSET_VERSION)
         if (attempt) url.searchParams.set('retry', String(attempt))
         try {
           const bytes = await fetchBytes(url.href, 'CS1.6 chunk manifest', {
             maxBytes: MAX_CATALOG_BYTES,
+            ...packRootTimeout(root),
             ...(attempt ? { cache: 'reload' } : {}),
           })
           let catalog
@@ -441,6 +469,7 @@ async function getPackCatalog() {
           return validatePackCatalog(catalog)
         } catch (error) {
           lastError = error
+          markPackRootFailed(root, error)
           if (attempt < 2) log(`⚠️ CS1.6 chunk manifest failed, retrying ${attempt + 2}/3: ${error}`, 'err')
         }
       }
@@ -492,19 +521,26 @@ async function decompressChunk(compressed, chunk, label) {
 }
 
 async function fetchCompressedChunkOnce(chunk, label, attempt) {
-  const chunkUrl = new URL(chunk.path, PACKS_ROOT)
+  const root = currentPackRoot()
+  const chunkUrl = new URL(chunk.path, root)
   // Worker 也按查询串识别不可变对象；哈希既在路径里又在 v 里，换内容必然换 URL。
   chunkUrl.searchParams.set('v', chunk.compressedSha256)
   // cache:reload 只约束浏览器缓存；重试换查询串还能绕开偶发的边缘坏缓存。
   if (attempt) chunkUrl.searchParams.set('retry', String(attempt))
   const url = chunkUrl.href
-  const compressed = await fetchBytes(url, label, {
-    ...(attempt ? { cache: 'reload' } : {}),
-    maxBytes: MAX_ZSTD_CHUNK_COMPRESSED_BYTES,
-  })
-  if (compressed.byteLength !== chunk.compressedBytes) throw new Error(`${label} download length mismatch`)
-  if (await digestHex(compressed) !== chunk.compressedSha256) throw new Error(`${label} SHA-256 mismatch`)
-  return compressed
+  try {
+    const compressed = await fetchBytes(url, label, {
+      ...packRootTimeout(root),
+      ...(attempt ? { cache: 'reload' } : {}),
+      maxBytes: MAX_ZSTD_CHUNK_COMPRESSED_BYTES,
+    })
+    if (compressed.byteLength !== chunk.compressedBytes) throw new Error(`${label} download length mismatch`)
+    if (await digestHex(compressed) !== chunk.compressedSha256) throw new Error(`${label} SHA-256 mismatch`)
+    return compressed
+  } catch (error) {
+    markPackRootFailed(root, error)
+    throw error
+  }
 }
 
 async function fetchCompressedChunk(chunk, label) {

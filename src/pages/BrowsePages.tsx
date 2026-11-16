@@ -87,7 +87,7 @@ const DEVELOPER_GRID = 'mt-8 adaptive-developer-grid'
  * 以后新开放、不在名单里的平台会兜底进「其它平台」，不会从页面上消失。
  */
 const PLATFORM_GROUPS: ReadonlyArray<{ titleKey: keyof Translation['browse']; ids: readonly PlatformId[] }> = [
-  { titleKey: 'platformGroupPinned', ids: ['flash', 'arcade', 'dos', 'java', 'html5'] },
+  { titleKey: 'platformGroupPinned', ids: ['flash', 'arcade', 'dos', 'java', 'html5', 'symbian'] },
   { titleKey: 'platformGroupNintendo', ids: ['gamecube', 'wii', 'nes', 'gba', 'gbc', 'gb'] },
 ]
 

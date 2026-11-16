@@ -184,62 +184,74 @@ export async function fetchWithProgress(
     maxBytes?: number
     /** 外站包装 ZIP 不应另留一份 HTTP 缓存，真正缓存的是解出的 ROM。 */
     cache?: RequestCache
+    /** 同一个本站 R2 对象的备用域名；只有当前来源失败时才依次尝试。 */
+    alternateUrls?: readonly string[]
     /** 覆盖「多久没字节算卡死」，只给测试用 */
     stallMs?: number
   } = {},
 ): Promise<ArrayBuffer> {
   const phase = opts.phase ?? 'rom'
-  const emit = throttleProgress(opts.onProgress)
-  const stallMs = opts.stallMs ?? STALL_MS
-  const guard = createStallGuard(opts.signal, stallMs)
-
-  emit({ phase, loaded: 0 }, true)
-  // 首字节也要有期限：连接建立不起来 / 服务端不回响应头，是和「传了一半停住」不同的病，
-  // 但症状一样 —— 永远等下去。所以进 fetch 之前就武装。
-  guard.touch()
-
-  try {
-    const res = await fetch(url, { signal: guard.signal, ...(opts.cache ? { cache: opts.cache } : {}) })
-    validateResponse(res, opts.check)
-
-    const encoded = Boolean(res.headers.get('content-encoding'))
-    const len = Number(res.headers.get('content-length'))
-    // 压缩过的响应，Content-Length 对不上解压后的字节数，直接当作未知总量
-    let total = !encoded && Number.isFinite(len) && len > 0 ? len : undefined
-    if (total !== undefined && total > (opts.maxBytes ?? Infinity)) {
-      void res.body?.cancel().catch(() => {})
-      // 已经超过硬上限，换节点重试只会再白下同样多字节；让调用方立刻止损。
-      throw new RangeError('文件过大，无法在浏览器内存中解包')
-    }
-
-    if (!res.body) {
-      const buf = await res.arrayBuffer()
-      if (buf.byteLength > (opts.maxBytes ?? Infinity)) throw new Error('文件过大，无法在浏览器内存中解包')
-      if (total !== undefined && buf.byteLength !== total) {
-        throw new Error(`下载不完整：应为 ${total} 字节，实际收到 ${buf.byteLength} 字节`)
-      }
-      emit({ phase, loaded: buf.byteLength, total: buf.byteLength, ratio: 1 }, true)
-      return buf
-    }
-
-    const { chunks, loaded } = await drain(res.body, phase, total, emit, opts.maxBytes, guard.touch)
-
-    // 拼成一整块。最后一帧用真实总量，进度条一定走到 100%
-    const out = new Uint8Array(loaded)
-    let at = 0
-    for (const c of chunks) {
-      out.set(c, at)
-      at += c.byteLength
-    }
-    emit({ phase, loaded, total: loaded, ratio: 1 }, true)
-    return out.buffer
-  } catch (error) {
-    // 卡死掐断的也表现为 AbortError，但那不是玩家取消 —— 必须换成能显示、能重试的错误
-    if (guard.stalled()) throw new Error(stallMessage(stallMs))
-    throw error
-  } finally {
-    guard.stop()
+  const progress = throttleProgress(opts.onProgress)
+  let highWater = 0
+  const emit = (value: LoadProgress, flush = false) => {
+    highWater = Math.max(highWater, value.loaded ?? 0)
+    return progress({ ...value, loaded: highWater, ratio: value.total ? Math.min(highWater / value.total, 1) : value.ratio }, flush)
   }
+  const stallMs = opts.stallMs ?? STALL_MS
+  const candidates = [url, ...new Set((opts.alternateUrls ?? []).filter((candidate) => candidate && candidate !== url))]
+  emit({ phase, loaded: 0 }, true)
+
+  for (let index = 0; index < candidates.length; index++) {
+    const candidate = candidates[index]
+    const guard = createStallGuard(opts.signal, stallMs)
+    // 首字节也要有期限：连接建立不起来 / 服务端不回响应头，是和「传一半停住」不同的病。
+    guard.touch()
+    try {
+      const res = await fetch(candidate, { signal: guard.signal, ...(opts.cache ? { cache: opts.cache } : {}) })
+      validateResponse(res, opts.check)
+
+      const encoded = Boolean(res.headers.get('content-encoding'))
+      const len = Number(res.headers.get('content-length'))
+      // 压缩过的响应，Content-Length 对不上解压后的字节数，直接当作未知总量
+      const total = !encoded && Number.isFinite(len) && len > 0 ? len : undefined
+      if (total !== undefined && total > (opts.maxBytes ?? Infinity)) {
+        void res.body?.cancel().catch(() => {})
+        // 已经超过硬上限，换节点重试只会再白下同样多字节；让调用方立刻止损。
+        throw new RangeError('文件过大，无法在浏览器内存中解包')
+      }
+
+      if (!res.body) {
+        const buf = await res.arrayBuffer()
+        if (buf.byteLength > (opts.maxBytes ?? Infinity)) throw new RangeError('文件过大，无法在浏览器内存中解包')
+        if (total !== undefined && buf.byteLength !== total) {
+          throw new Error(`下载不完整：应为 ${total} 字节，实际收到 ${buf.byteLength} 字节`)
+        }
+        emit({ phase, loaded: buf.byteLength, total: buf.byteLength, ratio: 1 }, true)
+        return buf
+      }
+
+      const { chunks, loaded } = await drain(res.body, phase, total, emit, opts.maxBytes, guard.touch)
+      const out = new Uint8Array(loaded)
+      let at = 0
+      for (const c of chunks) {
+        out.set(c, at)
+        at += c.byteLength
+      }
+      emit({ phase, loaded, total: loaded, ratio: 1 }, true)
+      return out.buffer
+    } catch (error) {
+      if (guard.stalled()) error = new Error(stallMessage(stallMs))
+      if (opts.signal?.aborted || error instanceof RangeError || index === candidates.length - 1) throw error
+      const host = (value: string) => {
+        try { return new URL(value, typeof location === 'undefined' ? 'https://8bitgo.invalid' : location.href).host }
+        catch { return value }
+      }
+      console.warn(`[download] ${host(candidate)} 下载失败，切换到 ${host(candidates[index + 1])}：`, error)
+    } finally {
+      guard.stop()
+    }
+  }
+  throw new Error('没有可用的下载来源')
 }
 
 /**
@@ -329,6 +341,8 @@ export interface BlobFetchOptions {
    * 且备用线路实测快 15%，或当前线路重试用尽时，整局改用这里；断点分片按 resumeKey 存，已下的片不重下。
    */
   alternateUrl?: string
+  /** 同一本站 R2 对象的额外备用域名；alternateUrl 仍作为兼容的单线路备用。 */
+  alternateUrls?: readonly string[]
   /** 外站 ZIP 的完整归档不留 HTTP 副本；续传片由独立 IndexedDB 管。 */
   cache?: RequestCache
   /**
@@ -683,21 +697,24 @@ export async function fetchBlobWithProgress(url: string, opts: BlobFetchOptions 
     至少仍会自动再试，而不是让 fetch 永久挂住。退避与普通分片一致。
   */
   let currentUrl = url
-  let alternate = opts.alternateUrl && opts.alternateUrl !== url ? opts.alternateUrl : ''
+  let alternates = [...new Set([...(opts.alternateUrls ?? []), opts.alternateUrl ?? ''].filter((candidate) => candidate && candidate !== url))]
+  const useNextRoute = () => {
+    currentUrl = alternates.shift()!
+  }
   for (let attempt = 0; ; attempt++) {
     const guard = createStallGuard(opts.signal, stallMs)
     guard.touch()
     let failure: unknown = null
     let switchForSpeed = false
     try {
-      const blob = await blobWithProgressGuarded(currentUrl, { ...guardedOpts, alternateUrl: alternate }, guard)
+      const blob = await blobWithProgressGuarded(currentUrl, { ...guardedOpts, alternateUrl: alternates[0] ?? '' }, guard)
       if (currentUrl !== url) rememberRomHostForUrl(currentUrl)
       return blob
     } catch (error) {
       if (opts.signal?.aborted || isAbort(error) && !guard.stalled()) throw error
       // 超过上限是这个对象本身的问题，换线路也一样
       if (error instanceof RangeError) throw error
-      if (error instanceof SlowRomRouteError && alternate) {
+      if (error instanceof SlowRomRouteError && alternates.length) {
         failure = error
         switchForSpeed = true
       } else if (!guard.stalled() || attempt >= retries) {
@@ -706,24 +723,22 @@ export async function fetchBlobWithProgress(url: string, opts: BlobFetchOptions 
     } finally {
       guard.stop()
     }
-    if (switchForSpeed && alternate) {
+    if (switchForSpeed && alternates.length) {
       const slowRoute = failure as SlowRomRouteError
-      diagLog('download', 'warn', `ROM 首段 ${slowRoute.sampledMbps.toFixed(1)} Mbps，备用线路 ${slowRoute.alternateMbps.toFixed(1)} Mbps，切换：`, currentUrl, '→', alternate)
-      currentUrl = alternate
-      alternate = ''
+      diagLog('download', 'warn', `ROM 首段 ${slowRoute.sampledMbps.toFixed(1)} Mbps，备用线路 ${slowRoute.alternateMbps.toFixed(1)} Mbps，切换：`, currentUrl, '→', alternates[0])
+      useNextRoute()
       attempt = -1
       continue
     }
     if (failure) {
-      if (!alternate) throw failure
+      if (!alternates.length) throw failure
       /*
-        这条线路用光了重试：同一个对象换另一条 CDN 整套再来（只换一次）。两边是同一个 R2 对象、
-        同一个 romv，断点分片按 resumeKey 续，已下的片不重下。
+        这条线路用光了重试：同一个对象依次换其余 CDN。相同 R2 对象有同一个 romv，
+        断点分片按 resumeKey 续，已下的片不重下。
       */
-      console.warn(`[download] ${new URL(currentUrl).host} 下载失败，改走 ${new URL(alternate).host}：`,
+      console.warn(`[download] ${new URL(currentUrl).host} 下载失败，改走 ${new URL(alternates[0]).host}：`,
         failure instanceof Error ? failure.message : failure)
-      currentUrl = alternate
-      alternate = ''
+      useNextRoute()
       attempt = -1
       continue
     }

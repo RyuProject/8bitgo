@@ -51,7 +51,7 @@ export const ENABLED_PLATFORM_IDS = Object.freeze([
     ⚠️ 三个核心的分工别搞混（详见 [EmulatorJS 核心的发布与选择]）：melonDS DS 是默认，
     desmume 有帧跳和内部分辨率可以调，定位是「按游戏兜底」不是「提速」。
   */
-  'nds',
+  'nds', 'symbian',
 ])
 
 export function isPlatformEnabledId(id) {

@@ -7,6 +7,7 @@
  */
 export const VERSIONED_RUNTIME_DIRS = Object.freeze([
   'dolphin',
+  'eka2l1',
   'ppsspp',
 ])
 

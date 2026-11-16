@@ -487,6 +487,21 @@ export const platforms: Platform[] = [
     icon: '☕',
     description: '功能机时代的回忆：狂野飙车 3、钻石狂潮、弹跳小球。',
   },
+  {
+    id: 'symbian',
+    name: 'Symbian / Nokia N-Gage',
+    shortName: 'SYMBIAN',
+    nameZh: '塞班 / 诺基亚 N-Gage',
+    manufacturer: 'Nokia / Symbian',
+    year: 1998,
+    // EKA2L1 有自己的完整设备安装流程，需要用户导入授权固件；不能接进通用 ROM 播放器。
+    runtime: null,
+    core: null,
+    romExtensions: ['.sis', '.sisx', '.n-gage'],
+    color: '#1a8c8c',
+    icon: '📱',
+    description: '在浏览器中体验塞班与 N-Gage 游戏；通过 EKA2L1 导入你有权使用的设备固件和游戏安装包。',
+  },
 ]
 
 export const platformMap: Record<string, Platform> = Object.fromEntries(

@@ -81,6 +81,8 @@ export const WEB_GAME_PAGES = Object.freeze({
     runtime: '',
     // 上游开发服务器依赖这两项；保留隔离头，避免未来线程版 WASM 静默退化。
     isolated: true,
+    // 只有这一个固定对象会经本站同源路由读取；不开放任意 R2 key 代理。
+    r2ArchiveKey: 'web/gta-vc/revcdoseng.7z',
     html: [['index.html', '.start-container']],
   }),
   undertale: Object.freeze({
@@ -88,7 +90,7 @@ export const WEB_GAME_PAGES = Object.freeze({
     domain: 'undertale.8bitgo.com',
     sourceDir: 'undertale',
     entry: '/web/undertale/',
-    title: 'UNDERTALE · Local-only runner',
+    title: 'UNDERTALE · Auto-launch runner',
     runtime: '',
     // Butterscotch 当前 Web 构建使用 JSPI 与 OPFS，不使用 SharedArrayBuffer，隔离头反而会限制外链说明页。
     isolated: false,

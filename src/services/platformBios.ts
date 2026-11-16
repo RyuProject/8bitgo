@@ -12,7 +12,7 @@ import { useEffect, useState } from 'react'
 import type { PlatformId } from '@/types'
 import { api, apiEnabled } from './api'
 import { romUrlForKey } from './roms'
-import { routeRomAssetUrl } from './romHosts'
+import { downloadRomUrl, routeRomAssetUrl } from './romHosts'
 import { coverCdnHint } from './cnHost'
 import { psxBiosObjectKey, type PsxBiosRegion } from '@/emulator/psxBiosRegion'
 
@@ -33,11 +33,11 @@ export type PlatformBiosMap = Partial<Record<PlatformId, string>> & Partial<Reco
  * ⚠️ 名字在这里**统一收口**成小写去空格：库里存的、后台填的、页面手输的都从这儿过一遍。
  * 不归一化的话 `' PGM '` 查不到 `bios:pgm`，而失败是静默的（就是"没绑定"）。
  */
-/*
- * BIOS 也走开局前测好的线路（主域 / EdgeOne 镜像，见 romHosts.ts）。还没测出来时大陆访客默认镜像。
- * EmulatorJS 按 URL 缓存 BIOS，换线路最多让这一份（几百 KB 到 1.5MB）重下一次。
- */
-const biosUrlForKey = (key: string) => routeRomAssetUrl(romUrlForKey(key), coverCdnHint() === 'cn' ? 'mirror' : 'primary')
+/* EmulatorJS 只接受一个平台 BIOS URL；优先给下载域，适配器会在开局前探测并回退到已有资源域。 */
+const biosUrlForKey = (key: string) => {
+  const routed = routeRomAssetUrl(romUrlForKey(key), coverCdnHint() === 'cn' ? 'mirror' : 'primary')
+  return downloadRomUrl(routed) || routed
+}
 
 export function biosSetKey(name: string): `bios:${string}` {
   return `bios:${String(name).trim().toLowerCase()}`

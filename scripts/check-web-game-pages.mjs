@@ -53,29 +53,33 @@ for (const name of selected) {
       }
     }
     if (name === 'gtavc') {
-      assert.match(html, /\/web\/gta-vc\/runtime-config\.js/, 'GTA VC 没有先加载独立归档配置')
+      assert.match(html, /<meta name="robots" content="noindex,nofollow" \/>/, 'GTA VC 运行端不得被收录')
       assert.match(html, /\/web\/gta-vc\/manifest\.json/, 'GTA VC PWA 清单路径没有带 Pages 基址')
       assert.doesNotMatch(html, /\/gta-vice-city-wasm\//, 'GTA VC 仍引用上游 GitHub Pages 路径')
+      assert.match(html, /gta-vc-7z-import\.js/, 'GTA VC 缺少 .7z 与 R2 导入脚本')
     }
     if (name === 'undertale') {
-      assert.match(html, /本站不提供或上传游戏内容/, 'UNDERTALE Pages 必须明确本地文件边界')
-      assert.match(html, /webkitdirectory/, 'UNDERTALE Pages 必须从玩家本机安装目录导入')
+      assert.match(html, /aria-label="游戏加载进度"/, 'UNDERTALE 首页必须只显示自动启动进度条')
+      assert.doesNotMatch(html, /下载授权版并启动|选择游戏文件夹/, 'UNDERTALE 首页不得要求玩家手动点击启动')
     }
   }
 
   if (name === 'gtavc') {
-    const runtimeConfig = readFileSync(resolve(root, 'web/gta-vc/runtime-config.js'), 'utf8')
-    const extractor = readFileSync(resolve(root, 'web/gta-vc/extract-worker.js'), 'utf8')
-    assert.doesNotMatch(runtimeConfig, /https?:\/\//, 'GTA VC 不得发布未经核验的游戏归档地址')
-    assert.match(extractor, /file\.stream\(\)/, 'GTA VC Pages 包丢失流式归档读取')
-    assert.match(extractor, /DecompressionStream\(["']gzip["']\)/, 'GTA VC Pages 包丢失流式 gzip 解压')
-    assert.ok(!files.some((file) => /(?:^|\/)game\.tar\.gz$/i.test(relative(root, file).replaceAll('\\', '/'))),
-      'GTA VC Pages 包不得包含游戏数据归档')
+    assert.ok(existsSync(resolve(root, 'web/gta-vc/engine/vc-sky-en-v6.wasm')), 'GTA VC Pages 包缺少引擎')
+    assert.ok(readdirSync(resolve(root, 'web/gta-vc/assets')).some((file) => /^worker-[\w-]+\.js$/.test(file)),
+      'GTA VC Pages 包缺少 PC 安装目录转换 Worker')
+    assert.ok(existsSync(resolve(root, 'web/gta-vc/7z-extractor.worker.js')), 'GTA VC Pages 包缺少 7z 解包 Worker')
+    assert.ok(existsSync(resolve(root, 'web/gta-vc/vendor/un7z-opfs/dist/7zz.wasm')), 'GTA VC Pages 包缺少 7z WASM')
+    assert.ok(!files.some((file) => /(?:^|\/)(?:game\.tar\.gz|gta3\.img|[^/]+\.(?:7z|rar))$/i.test(relative(root, file).replaceAll('\\', '/'))),
+      'GTA VC Pages 包不得包含游戏数据')
   }
   if (name === 'undertale') {
     const app = readFileSync(resolve(root, 'web/undertale/app.js'), 'utf8')
+    const distribution = JSON.parse(readFileSync(resolve(root, 'web/undertale/distribution-manifest.json'), 'utf8'))
     assert.match(app, /navigator\.storage\.getDirectory/, 'UNDERTALE Pages 丢失 OPFS 本地存储')
     assert.match(app, /file\.stream\(\)\.getReader\(\)/, 'UNDERTALE Pages 丢失流式本地导入')
+    assert.deepEqual(distribution.allowedPageOrigins, ['https://8bitgo.com', 'https://*.8bitgo.com'], '授权包只允许本站 HTTPS 主域与子域读取')
+    assert.match(app, /host === '8bitgo\.com' \|\| host\.endsWith\('\.8bitgo\.com'\)/, '非本站 Pages 域名必须禁用授权包下载')
     assert.ok(!files.some((file) => /(?:^|\/)(?:data\.win|game\.(?:unx|ios|droid)|[^/]+\.(?:ogg|rar|7z))$/i
       .test(relative(root, file).replaceAll('\\', '/'))), 'UNDERTALE Pages 不得包含商业游戏内容')
   }
@@ -235,6 +239,30 @@ for (const name of selected) {
         globalThis.WebSocket = NativeWebSocket
         globalThis.WebSocketPair = NativeWebSocketPair
       }
+    }
+    if (name === 'gtavc') {
+      const pagesDevReads = fetched.length
+      const blockedHost = await worker.fetch(new Request('https://8bitgo-gta-vc.pages.dev/web/gta-vc/'), { ASSETS: assets })
+      assert.equal(blockedHost.status, 403, 'GTA VC 必须拒绝非 8bitgo.com Pages 主机')
+      assert.equal(fetched.length, pagesDevReads, '被拒绝的 pages.dev 请求不得继续读取静态或 R2 资源')
+
+      const response = await worker.fetch(new Request(`https://${config.domain}/game-data/revcdoseng.7z`, {
+        headers: { Range: 'bytes=0-1023' },
+      }), { ASSETS: assets, RUNTIME_ASSET_BASE_URL: 'https://assets.example.com', RUNTIME_UNUSED: 'ignored' })
+      assert.equal(response.status, 200)
+      assert.equal(fetched.at(-1).url, 'https://download.8bitgo.com/web/gta-vc/revcdoseng.7z')
+      assert.equal(fetched.at(-1).headers.get('range'), 'bytes=0-1023')
+      assert.equal(fetched.at(-1).headers.get('accept-encoding'), 'identity')
+      assert.equal(response.headers.get('content-type'), 'application/x-7z-compressed')
+      assert.equal(response.headers.get('access-control-allow-origin'), null, '资源代理不应开放跨域读取')
+
+      const rejected = await worker.fetch(new Request(`https://${config.domain}/game-data/revcdoseng.7z`, {
+        method: 'POST',
+      }), { ASSETS: assets })
+      assert.equal(rejected.status, 405)
+
+      const arbitrary = await worker.fetch(new Request(`https://${config.domain}/game-data/other.7z`), { ASSETS: assets })
+      assert.equal(arbitrary.headers.get('x-content-type-options'), 'nosniff', 'Pages 不得把任意 R2 key 作为代理参数')
     }
   } finally {
     globalThis.fetch = originalFetch

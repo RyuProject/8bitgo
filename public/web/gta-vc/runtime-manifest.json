@@ -1,69 +1,77 @@
 {
   "format": "8bitgo.gta-vc-runtime.v1",
   "source": "https://github.com/joncodeofficial/gta-vice-city-wasm",
-  "commit": "10dd677cc55574da98e9be2433a3c5c668b39954",
+  "commit": "5c6cccc56c1df5c3717c0b39953d5fe833f97b73",
   "base": "/web/gta-vc/",
   "gameDataIncluded": false,
   "files": {
-    "assets/index-vjx_VSZd.css": {
-      "bytes": 68647,
-      "sha256": "f7ac0326d722e9a383daefd3685ac7d56cce1893e3df2b6759ba7436d535c51e"
+    "7z-extractor.worker.js": {
+      "bytes": 11298,
+      "sha256": "a5d317aefdcc59250d7e66943bd4e324b791f27f21b2b3476475b3dd4ca28a9d"
     },
-    "assets/index-Z_C_cSJf.js": {
-      "bytes": 127112,
-      "sha256": "7a90e07efe8ac1c9ca9a1b2361bf0358e1bac1f4deaaca21c1cdd9873115f8c2"
+    "assets/index-BDkgUKWu.css": {
+      "bytes": 68849,
+      "sha256": "3d9eb9b8e5976fdf8e1ede8382292cec89e7835c3cfbd9b12e13dcfa05822c72"
     },
-    "cover.png": {
-      "bytes": 271719,
-      "sha256": "ae20d221a66ef249594e00174a5b28fe26226c22234e1075d6c475bebda83c0a"
+    "assets/index-c791a75f89.js": {
+      "bytes": 139155,
+      "sha256": "c791a75f8955a3615a40488bc85af6039982da5666fa3cd1f6be834b37112482"
+    },
+    "assets/worker-7afda0f459.js": {
+      "bytes": 247743,
+      "sha256": "7afda0f459f3f9a3a3e24d1a3c5885e8bd4a50ca18c2a0631fdb1ec1671c82fc"
+    },
+    "controllers.js": {
+      "bytes": 8071,
+      "sha256": "471ed7934a608a5aa8812f15e3e8c198f285516353ddde57185b114d3994b02e"
     },
     "demo.webp": {
       "bytes": 130454,
       "sha256": "eef0508cda962153176a684d9a29bd98445070b2354eb528a88ba978ff0d8d00"
     },
-    "extract-worker.js": {
-      "bytes": 13690,
-      "sha256": "f8302a12c53fdf9436c61f46e45fcb0dd3d4decdd2522fe42daa8821329e33a0"
+    "engine/vc-sky-en-v6.wasm": {
+      "bytes": 7625877,
+      "sha256": "db6aa7b9169a638e06b17f7bed5a6b3e473e00ae7bbb47354729fa94b971ebf2"
     },
     "game.js": {
-      "bytes": 16587,
-      "sha256": "4b89ddd9447b4feebac58a3dacba23d8fff69bd325858a3cae989b7135e920cd"
+      "bytes": 18023,
+      "sha256": "f53e1588631794096c28a1904db96b45f348168e3d0533f376f1302586c1ed1a"
     },
     "GamepadEmulator.js": {
-      "bytes": 35435,
-      "sha256": "98fb1bab2a5e593f21e5195bf1cf93e9a5e4b8649f6abc05bb2a953fdb1a1819"
+      "bytes": 35115,
+      "sha256": "aaa88fbdc4dbfca60b5e302b54653c4f0923d33dc97b66c6489db69c1d94c7cf"
     },
-    "icon.webp": {
-      "bytes": 60066,
-      "sha256": "556d2189a269d4e6ef5078a19fada6975c72660c22c3e3999b95795f9fb611b0"
+    "gta-vc-7z-import.js": {
+      "bytes": 8933,
+      "sha256": "abe220e4736a7e9964b3b6e961a990322bb783c8bf4560b732e5b6b1282a8bcf"
+    },
+    "icon.svg": {
+      "bytes": 582,
+      "sha256": "d10034f6bf863f476750509e9b523357c1ba5f98410aa571dde17430532b85b1"
     },
     "icons/icon-192.png": {
-      "bytes": 10999,
-      "sha256": "2830ad165e99909876f4d77050e6ccb60df5f2b81b0d736b7bbd84df6b58c33e"
+      "bytes": 22393,
+      "sha256": "49b80881907ae93d96211de1b232584d24e86ce4b60d602b71f21f581431c1e4"
     },
     "icons/icon-512.png": {
-      "bytes": 43273,
-      "sha256": "960b225f6ec050af3d402ec1a3b03be8e7ec93566529c2516383f796c5e82db4"
+      "bytes": 83879,
+      "sha256": "aaf9edc433b5abfc70874a027ed8ddf80c45d5aa7257bcdd5df8c6a1e1d009db"
     },
     "icons/icon-maskable-512.png": {
-      "bytes": 21347,
-      "sha256": "035c19640166be5eb8bfc8eacd6398bc65da6c499d77b419120781a280c10ee3"
+      "bytes": 48188,
+      "sha256": "60c309c97307bf32390cc57f7327f0c85041dfba74f8262d4c1a7c6e0f3e856a"
     },
     "idbfs.js": {
-      "bytes": 7815,
-      "sha256": "90f12cd8e2e9c37b9410fb5b6c57122e366761491229827f2f0cf4804d6f5f4e"
+      "bytes": 7962,
+      "sha256": "31e900d5c3b83f5895fa0e087950ef4dd7ee2a5b75a22d90892263ce0d9a68fb"
     },
     "index.html": {
-      "bytes": 13547,
-      "sha256": "05d964989b470b0da8b17de6660a634146672d69906d577129b7cbbca5a38f37"
+      "bytes": 16641,
+      "sha256": "aed843a5a1a187153628e6448f60a916ce1fa7bca080f8e88cfe19f330c26821"
     },
     "index.js": {
-      "bytes": 1022,
-      "sha256": "21b834b0424d19ff89ea048444a53196eab0a74af942c4da972bf66d4c2a5901"
-    },
-    "intro.mp4": {
-      "bytes": 8019046,
-      "sha256": "d77620000a4b1a93a3d1bed13b71ef7a4678c2f80b3c6faadacb77486d219140"
+      "bytes": 988,
+      "sha256": "0f64370a99114f3bc7e4e0bdd7b0ea42c5d7484e16a43d589e69c16b425e4e5e"
     },
     "LICENSE.upstream.txt": {
       "bytes": 1461,
@@ -82,8 +90,8 @@
       "sha256": "6e6fabeaee78a23f3147b6d4397228d44a0a67278d6adc77b250a4b48e5976dd"
     },
     "modules/cheats.js": {
-      "bytes": 67709,
-      "sha256": "a91d364c8b55b8cdf5e9049dbdf1b8dc832dda1cbad243106446b5d528faad8f"
+      "bytes": 69254,
+      "sha256": "f6dd5845ef90f9553776d0d5c1955beacf63ecd2f526f5d179b1f9cd9e8b9d1b"
     },
     "modules/events.js": {
       "bytes": 54881,
@@ -102,28 +110,80 @@
       "sha256": "6fe5512c1c0ce0da59d4006cbc46acaae32bc2f9891a0aed072d2041709fadcf"
     },
     "modules/loader.js": {
-      "bytes": 9469,
-      "sha256": "f61c1f15cfb7c1155948718a6bb9737002b770955435c61725a6ad3ff4b1073d"
+      "bytes": 5907,
+      "sha256": "10df0048bd1580153fa1ca77109d364eb46694ea20961bbbfa98b5fd132726c0"
     },
     "modules/main.js": {
       "bytes": 37,
       "sha256": "44a846ce7b899d7de6c1004496bef38731c5ba5e708dce0b36cf7695b8fa9ce1"
     },
-    "modules/packages/en.js": {
-      "bytes": 243191,
-      "sha256": "cdc311e3a7d72ebc151410bfb2a44d39891d7e55f86cc03b0f8538ac7334ec8e"
-    },
     "modules/runtime.js": {
-      "bytes": 95190,
-      "sha256": "a0d31b4ff5e892a858a68dee97db8d3eeaeb61d81b124d050a1c6c29f043a6cb"
+      "bytes": 95085,
+      "sha256": "c5805b89ae83e4e58cb0a41369f10d2bd623cd51cdb654c980a6036671c507e0"
     },
     "modules/syscalls.js": {
       "bytes": 16459,
       "sha256": "2afbfa6155f81aea33731867d0c33d8f0d50b01149062ea8bfae43befbcc78fb"
     },
-    "runtime-config.js": {
-      "bytes": 146,
-      "sha256": "117a2a9ea5bbf8ed92764608cd49f20ea805885bceb38dcf370bf5ecf4f843e0"
+    "revc/audio/sound.cache": {
+      "bytes": 4896,
+      "sha256": "40055a73b9f0e79a01563748ee0b256ace82bfc8ef619e479ed2e53977167ddf"
+    },
+    "revc/data/freeroam_miami.scm": {
+      "bytes": 38197,
+      "sha256": "3bf53e996439584372d5c3d455466865bf146366349d63d0ea3f8dcb496f2e58"
+    },
+    "revc/fonts/sansation.ttf": {
+      "bytes": 78464,
+      "sha256": "c0770982633d933a09da349cf0dde6cfd70d6f9d91f1df436410c4d014a3216d"
+    },
+    "revc/gamecontrollerdb.txt": {
+      "bytes": 252151,
+      "sha256": "8eb7a47be692dc541987181bfd575d1e614f0c74bf03ae4643620f2c6487b05a"
+    },
+    "revc/models/fonts_r.txd": {
+      "bytes": 524584,
+      "sha256": "f3e26d23073542776ee0a5608d239b9988b71f51e63ecbc3d5287f9fb83201a5"
+    },
+    "revc/models/frontend_ds2.txd": {
+      "bytes": 329976,
+      "sha256": "a31fa6cfc15487b8c6ca35a9736689fb26639a370a5a7b13ac67931338edb354"
+    },
+    "revc/models/frontend_ds3.txd": {
+      "bytes": 524968,
+      "sha256": "44a48411df6756de17afc8dd0f4da707d2c746a219524839760dd47eb11d3bc5"
+    },
+    "revc/models/frontend_ds4.txd": {
+      "bytes": 524968,
+      "sha256": "7fd8e784af0703c17a63494247a926408a05266aefdfa9bcc20299da955f3d44"
+    },
+    "revc/models/frontend_nsw.txd": {
+      "bytes": 2360104,
+      "sha256": "4b75d4962bdc43305f33d257b7a25f91e153b1fad7c2a1bbc11b73fddf967c87"
+    },
+    "revc/models/frontend_x360.txd": {
+      "bytes": 524968,
+      "sha256": "8c8e3f9179c6ca25767d2fc5431ee85d8ebd0323c7cc9f10136fc81a8c45f49f"
+    },
+    "revc/models/frontend_xone.txd": {
+      "bytes": 524968,
+      "sha256": "54d5e8edc94dfd758774dd325361d02650c7db5456c047db681d46a36519bff6"
+    },
+    "revc/models/nswbtns.txd": {
+      "bytes": 528424,
+      "sha256": "9cb2dbca5111d5cda143fc158361fd11b2f22042f023b693b5f984c2622f6652"
+    },
+    "revc/models/ps3btns.txd": {
+      "bytes": 528424,
+      "sha256": "348f416374458c677a46ed7ab9d468671af3eb1e2df7ba7823e0facc8471bdd0"
+    },
+    "revc/models/x360btns.txd": {
+      "bytes": 528424,
+      "sha256": "8049a0baedf226c369836461d5d8b8661ad0375eb4508d9cef991cce2559254a"
+    },
+    "revc/revc.ini": {
+      "bytes": 2640,
+      "sha256": "02ac1a4f018359492a272be89cae9eafa550f303e86e3d24b28bc5d883978bce"
     },
     "saves.js": {
       "bytes": 8726,
@@ -142,8 +202,44 @@
       "sha256": "a9d6ec1b6fef4bb6b795d5f0f874f06a68d08977a73d7edc995791030498fdad"
     },
     "UPSTREAM.md": {
-      "bytes": 1406,
-      "sha256": "f39ab16399b9070216c5118a129e066ba192bbd17cfaf1b8f6d23fb6759eaec8"
+      "bytes": 2795,
+      "sha256": "94764a825cf8098f4fdcfc4410ba28cfe82393a1db39f73377d6451acd8b324e"
+    },
+    "vendor/un7z-opfs/dist/7zz.js": {
+      "bytes": 87379,
+      "sha256": "3bfa00a3202fe6cfd53fa4f336bc0b1e6e08896ef9fe99ff535df443da164378"
+    },
+    "vendor/un7z-opfs/dist/7zz.wasm": {
+      "bytes": 1133664,
+      "sha256": "573156f2f220f2b60a2458a6e4d93e1f8990d743832f13941013028a60cbcc81"
+    },
+    "vendor/un7z-opfs/index.d.ts": {
+      "bytes": 1211,
+      "sha256": "bdd652f613ade89f45c817a79231f4cb620e6f2fbe4fa876c35a36e6c24772e9"
+    },
+    "vendor/un7z-opfs/License.txt": {
+      "bytes": 1876,
+      "sha256": "e42b72f0cbfb98bd6393fe5b5f18ef0fb02256fb9db4dca5ef61f5551665057e"
+    },
+    "vendor/un7z-opfs/package.json": {
+      "bytes": 958,
+      "sha256": "dcf5e4dd70ec0d9bf24fa72b4df50d8b1041c5c4cb25c8e47d338255c52ee024"
+    },
+    "vendor/un7z-opfs/patches/7zz-emcc.patch": {
+      "bytes": 2849,
+      "sha256": "63a20fd5ef053d827810ece33050adc4016f212082b47c982a0ee8df571f7f1a"
+    },
+    "vendor/un7z-opfs/README.md": {
+      "bytes": 12063,
+      "sha256": "d9971ec606d91bc0363ab293340ec251d21561a4e60fc4af3d2b2494e2f72b9c"
+    },
+    "vendor/un7z-opfs/src-glue/opfs_fs.js": {
+      "bytes": 10605,
+      "sha256": "80ddafb55358131058e0d94b99039a526318d3803041ea6287b27444dcd66260"
+    },
+    "vendor/un7z-opfs/worker/opfs-extractor.js": {
+      "bytes": 4673,
+      "sha256": "23bb0b5a2c0c027d9224b3add4d8e65c5e289d406f9ad5f0809fe9a330d2c726"
     }
   }
 }

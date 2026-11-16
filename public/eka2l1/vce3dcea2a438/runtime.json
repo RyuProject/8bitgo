@@ -1,0 +1,139 @@
+{
+  "runtime": "EKA2L1-WEB",
+  "buildId": "ce3dcea2a438",
+  "upstreamBuildId": "3888b6830c73",
+  "upstream": "https://github.com/zixing131/EKA2L1-WEB",
+  "commit": "e727af5df7afd6a45e1aea198e0fc81a0ee9bfe1",
+  "license": "AGPL-3.0",
+  "emscripten": "emcc (Emscripten gcc/clang-like replacement + linker emulating GNU ld) 7.0.0 (777e6e5db7b4990bcaeb1b9998ed642cc84e6629)",
+  "patches": [
+    "network-relay-off",
+    "locale-fallback-english",
+    "no-service-worker-library",
+    "no-service-worker-player",
+    "watcher-vector-include",
+    "exclusive-monitor-algorithm-include",
+    "page-table-algorithm-include",
+    "container-type-traits-include",
+    "pvrt-dec-cstdlib-include",
+    "ini-cstdlib-include",
+    "identity-container-iterator-equality",
+    "capstone-cmake4",
+    "fmt-wasm-consteval",
+    "yaml-cpp-wasm-locale"
+  ],
+  "files": {
+    "css/app.css": {
+      "bytes": 22844,
+      "sha256": "aff8a58831f3bbecaf84ffd8194f45328d50f4576dd585dc69606b8e1dd6886d"
+    },
+    "eka2l1.data": {
+      "bytes": 4829746,
+      "sha256": "c82ab387f6de4d902fad6f33624ea92732dc2c5f0a4326fb543d5154986dc59b"
+    },
+    "eka2l1.js": {
+      "bytes": 304959,
+      "sha256": "9360cb9a4c48f448ee09d2f5188000bc4adf757c7918aeacd7053d911532c92c"
+    },
+    "eka2l1.wasm": {
+      "bytes": 11288680,
+      "sha256": "3eb188c0b1209602d4a7946ffaaa66badbf543d474c9bcb7be297e3c86e82777"
+    },
+    "icons/icon-192.png": {
+      "bytes": 3336,
+      "sha256": "9b54159435bdbd77c2940b9bac71d39fcd886637134d7e9dc844fc2f6501f4ca"
+    },
+    "icons/icon-512.png": {
+      "bytes": 7336,
+      "sha256": "9a76c9b638da842b3936bc3ba4a36205230fb0c6428bc6f6ea84a52b97ceb5d7"
+    },
+    "icons/icon-maskable.svg": {
+      "bytes": 821,
+      "sha256": "3e2e80fda936a2a26f3fc2f65b91bdb939b15fe5972e412eb41ba23714759d5b"
+    },
+    "icons/icon.svg": {
+      "bytes": 998,
+      "sha256": "a54e3811737cff7e8bfd01c7bc66bde002b07b8b880f08010a3fe2f27fc759af"
+    },
+    "index.html": {
+      "bytes": 27129,
+      "sha256": "97e78c2dce316f3deef7d250ad0a3b13d5292025715ff1e46f8566e2dd64810c"
+    },
+    "js/boot.js": {
+      "bytes": 47618,
+      "sha256": "e0384a483fbc41ba2378f7de7ab899412f18988103cd8e4e65db708d8573dbd8"
+    },
+    "js/build_id.js": {
+      "bytes": 39,
+      "sha256": "a32646ac35f99301af2a4ee63295f157b72d2ccd897d1f370235995bb36b5307"
+    },
+    "js/i18n.js": {
+      "bytes": 5270,
+      "sha256": "0e23aa5b8f48e6752e4741cb9c5dafa6f8652cb64bbc64340129f7279b10d89d"
+    },
+    "js/i18n/en-US.js": {
+      "bytes": 22911,
+      "sha256": "776c1dd97bd369836968d0b8329028c1603c672a143c1842d6a8756d26121efe"
+    },
+    "js/i18n/zh-CN.js": {
+      "bytes": 22359,
+      "sha256": "79d7a8ce71475fec3359ff3c522a2335e3a3c858e3442a21d60813de1c54f19a"
+    },
+    "js/index.js": {
+      "bytes": 53541,
+      "sha256": "79cb0a7f173e65c3b4765fcaafe86157cf4ffc5b2e3830b828d32286c4b041fc"
+    },
+    "js/run.js": {
+      "bytes": 24465,
+      "sha256": "f58304044bbdd59c58fb611e0934b3b943bbac1795a392c5b8985686e0e2699f"
+    },
+    "LICENSE": {
+      "bytes": 34512,
+      "sha256": "342109d207b205494d49352b3535a80dadeffe69f894c5ca6ff79b8e3bf630ee"
+    },
+    "manifest.json": {
+      "bytes": 1352,
+      "sha256": "022bccf09ad1d7614724e7c72dae53f30a8bd4c258e7cd9c3d6928cc83f9a334"
+    },
+    "run.html": {
+      "bytes": 16015,
+      "sha256": "f84961cd22762eef94205c014f120a10d28a82a34d9e3e685a0b587764cfa7b8"
+    },
+    "SOURCE.md": {
+      "bytes": 4223,
+      "sha256": "f34619796d25c94e542850b754c8f75dd152375621dacdc4bdfa55bf926cb082"
+    },
+    "source/patches/external/capstone-wasm.patch": {
+      "bytes": 670,
+      "sha256": "7300d89e1df564098abd7276dfd4562e66ee3aabab5dd699567bc97491374395"
+    },
+    "source/patches/external/fmt-wasm.patch": {
+      "bytes": 1963,
+      "sha256": "0a0211504c44fbdf16906c91d7524f5bca835c311aefc830e38ea729b115b690"
+    },
+    "source/patches/external/README.md": {
+      "bytes": 1779,
+      "sha256": "a2843e883e22f36f9148733dbd229dab888ac0883787fe3195e1d8ace2e70ffd"
+    },
+    "source/patches/external/yaml-cpp-wasm.patch": {
+      "bytes": 2725,
+      "sha256": "af3928a2901ab2bcd538e71e6d41a2784ab9a3dc6ba5d8e69b5fc9c8eac22095"
+    },
+    "source/scripts/build-eka2l1-web.mjs": {
+      "bytes": 13360,
+      "sha256": "a8443724fd343839163d762875cc77a776c480c0bf4aa60129c24f0f94f7d543"
+    },
+    "source/scripts/lib/eka2l1-patches.mjs": {
+      "bytes": 6630,
+      "sha256": "a261145a3e0a41defb04a136847d47556fcdeb524beb178726ea15c8d3d6db69"
+    },
+    "js/8bitgo-default-firmware.js": {
+      "bytes": 11117,
+      "sha256": "269af553f2335482305383edb801e64197f9ea4b70b3db0de7c679f6238e4800"
+    },
+    "source/scripts/eka2l1-default-firmware.js": {
+      "bytes": 11117,
+      "sha256": "269af553f2335482305383edb801e64197f9ea4b70b3db0de7c679f6238e4800"
+    }
+  }
+}

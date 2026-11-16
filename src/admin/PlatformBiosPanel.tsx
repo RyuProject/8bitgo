@@ -39,6 +39,10 @@ import { Card, btnClass, inputClass } from './ui'
  * arcade_bios 的游戏）唯一的 BIOS 来源。删了它，所有 Neo Geo 游戏当天全部起不来。
  */
 const NEED_BIOS: Array<{ id: PlatformId; hint: string }> = [
+  {
+    id: 'symbian',
+    hint: 'EKA2L1 的诺基亚 N-Gage QD（S60v1 / RH-29）设备 ROM。请上传从设备导出的 .rom / SYM.ROM；首次打开塞班模拟器时会自动安装到玩家当前浏览器。RPKG 是另一份 Z 盘系统文件包，不属于此项。',
+  },
   { id: 'psx', hint: '旧版 / PCSX 平台级回退 BIOS。Beetle PSX 会优先使用下方对应区域 BIOS；日版通常需要 scph5500.bin，单独 scph1001.bin 不能替代。' },
   { id: 'segaCD', hint: '必须提供对应区域的 Mega CD / Sega CD BIOS；多区域可打包成 ZIP，文件放在根目录' },
   { id: 'pce', hint: 'HuCard 不需要；运行 PC Engine CD 游戏时需要 System Card 3（syscard3.pce）' },
@@ -133,6 +137,7 @@ function BiosRow({
   registerFileInput,
   onPickFile,
   coveredBy,
+  accept,
 }: {
   title: ReactNode
   hint: string
@@ -153,6 +158,8 @@ function BiosRow({
    * 有它就说明「未绑定」是假警报，见下面徽标那一段。
    */
   coveredBy?: string
+  /** 个别平台只接受特定固件格式；默认沿用通用 BIOS 文件类型。 */
+  accept?: string
 }) {
   const status = value
     ? probe === 'missing'
@@ -207,7 +214,7 @@ function BiosRow({
         <input
           ref={registerFileInput}
           type="file"
-          accept=".zip,.bin,.rom,.img,.pce"
+          accept={accept ?? '.zip,.bin,.rom,.img,.pce'}
           hidden
           onChange={(e) => {
             const f = e.target.files?.[0]
@@ -307,7 +314,9 @@ export function PlatformBiosPanel() {
     setBusy(id)
     setMsg(null)
     try {
-      if (id === 'bios:namcoc76') {
+      if (id === 'symbian' && !/\.rom$/i.test(file.name)) {
+        throw new Error('诺基亚 N-Gage QD 固件必须是 .rom 文件（常见文件名为 SYM.ROM）。')
+      } else if (id === 'bios:namcoc76') {
         const entries = await assertValidZipBlob(file, 'Namco C76 BIOS')
         const problem = namcoC76BiosProblem(entries)
         if (problem) throw new Error(problem)
@@ -369,6 +378,9 @@ export function PlatformBiosPanel() {
     setBusy(id)
     setMsg(null)
     try {
+      if (id === 'symbian' && key.trim() && !keyFileName(key.trim()).endsWith('.rom')) {
+        throw new Error('诺基亚 N-Gage QD 固件地址必须指向 .rom 文件（常见文件名为 SYM.ROM）。')
+      }
       const requiredFileName = psxBiosFileNameForBinding(id) ?? arcadeBiosFileNameForBinding(id)
       if (key.trim() && requiredFileName && keyFileName(key.trim()) !== requiredFileName) {
         const reason = id.startsWith('bios:') ? '街机核心按 BIOS set 文件名查找它' : 'Beetle PSX 按区域查找它'
@@ -504,13 +516,21 @@ export function PlatformBiosPanel() {
                   <BiosRow
                     key={r.id}
                     title={
-                      <>
-                        <span className="text-base" aria-hidden>{r.platform!.icon}</span>
-                        <span className="font-semibold">{r.platform!.nameZh}</span>
-                      </>
+                      r.id === 'symbian' ? (
+                        <>
+                          <span className="text-base" aria-hidden>📱</span>
+                          <span className="font-semibold">诺基亚 N-Gage QD 固件</span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="text-base" aria-hidden>{r.platform!.icon}</span>
+                          <span className="font-semibold">{r.platform!.nameZh}</span>
+                        </>
+                      )
                     }
                     hint={r.hint}
                     placeholder="/bios/文件名 或对象存储 key"
+                    accept={r.id === 'symbian' ? '.rom' : undefined}
                     {...rowProps(r.id)}
                   />
                 ))}

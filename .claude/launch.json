@@ -24,6 +24,32 @@
         "--strictPort"
       ],
       "port": 5180
+    },
+    {
+      "name": "undertale-pages",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "wrangler",
+        "pages",
+        "dev",
+        ".cloudflare-pages/undertale",
+        "--port",
+        "8796"
+      ],
+      "port": 8796
+    },
+    {
+      "name": "gtavc-pages",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "wrangler",
+        "pages",
+        "dev",
+        ".cloudflare-pages/gtavc",
+        "--port",
+        "8797"
+      ],
+      "port": 8797
     }
   ]
 }

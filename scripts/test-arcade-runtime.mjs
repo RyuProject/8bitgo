@@ -263,9 +263,9 @@ await check('开局预热排在 ROM 预下载之前，且平台 BIOS 判定只�
   assert.ok(warmAt > loadAt && warmAt < arcadeAt, '核心预热没有和 ROM 下载并行')
   assert.equal(source.split(/(?:const|let) engineBiosUrl =/).length - 1, 1, 'engineBiosUrl 被算了两遍，预热和真正开局可能不一致')
   assert.ok(source.search(/(?:const|let) engineBiosUrl =/) < warmAt, '预热时还不知道要不要下平台 BIOS')
-  // 之后唯一允许的改写是「CRC 认出 Namco 板子 → 不要平台 BIOS」，只能清空、不能换成别的地址
+  // 后续可因优选资源域不可读而切到备用域，也可由 romset 判定不需 BIOS 后清空。
   const later = [...source.matchAll(/\n\s*engineBiosUrl = ([^\n]+)/g)].map((m) => m[1].trim())
-  assert.deepEqual(later, ["''"], '平台 BIOS 只能在识别出不需要它时被清空')
+  assert.deepEqual(later, ['preferredBiosUrl', "''"], 'BIOS 只可切备用资源域，或在确认不需要时清空')
 })
 
 await check('DIP 组名带连字符时保留完整组名', () => {

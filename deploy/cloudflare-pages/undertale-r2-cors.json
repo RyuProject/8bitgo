@@ -1,0 +1,24 @@
+{
+  "rules": [
+    {
+      "allowed": {
+        "origins": [
+          "https://8bitgo.com",
+          "https://*.8bitgo.com"
+        ],
+        "methods": [
+          "GET",
+          "HEAD"
+        ],
+        "headers": [
+          "*"
+        ]
+      },
+      "exposeHeaders": [
+        "ETag",
+        "Content-Length"
+      ],
+      "maxAgeSeconds": 3000
+    }
+  ]
+}

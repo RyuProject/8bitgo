@@ -113,7 +113,7 @@ export const CACHE = {
 export function isRuntimeHtmlShell(filePath) {
   const p = String(filePath || '').replace(/\\/g, '/')
   if (!/\.html?$/i.test(p)) return false
-  return /\/(?:web|ppsspp|dolphin|j2me)\//i.test(p)
+  return /\/(?:web|ppsspp|dolphin|eka2l1|j2me)\//i.test(p)
 }
 
 /** 请求 URL 带非空的 `v` 查询参数（express.static 的 setHeaders 只给文件路径，URL 要从 res.req 取） */
@@ -176,6 +176,22 @@ export function staticCacheHeaders(res, filePath) {
     // 回退响应，immutable 会让 iframe 长期显示 ERR_BLOCKED_BY_RESPONSE；核心二进制仍可
     // 长缓存，只有这不足 2KB 的外壳每次重新校验。
     if (/\/ppsspp\/[^/]+\/v\d+\/index\.html$/i.test(p)) return set(CACHE.engine)
+    return set(CACHE.engineVersioned)
+  }
+
+  /*
+    EKA2L1（塞班）同样是 pthread 构建：页面、胶水（同时是 pthread Worker 入口）、wasm、data
+    必须处在同一个跨源隔离上下文，每一层都要自己声明 COEP。目录名是内容哈希代次
+    （/eka2l1/v<12位hex>/，scripts/build-eka2l1-web.mjs 生成，换构建就换目录），所以二进制
+    可以长期缓存；index.html / run.html 是入口，仍每次校验。
+  */
+  if (/\/eka2l1\/v[0-9a-f]{12}\//.test(p)) {
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin')
+    res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
+    res.setHeader('Cross-Origin-Resource-Policy', res.req?.cnEdge ? 'cross-origin' : 'same-origin')
+    // 游戏内摄像头仅在本页、麦克风一律不给；与上游部署一致。
+    res.setHeader('Permissions-Policy', 'camera=(self), microphone=()')
+    if (/\.html$/i.test(p)) return set(CACHE.engine)
     return set(CACHE.engineVersioned)
   }
 

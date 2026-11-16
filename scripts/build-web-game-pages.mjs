@@ -8,6 +8,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statS
 import { dirname, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { WEB_GAME_PAGES, webGamePage } from '../deploy/cloudflare-pages/web-games-config.js'
+import { copyGtaVc7zRuntime } from './copy-gta-vc-7z.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const repo = resolve(here, '..')
@@ -107,6 +108,9 @@ for (const name of selected) {
         !rel.endsWith('.DS_Store')
     },
   })
+  if (name === 'gtavc') {
+    copyGtaVc7zRuntime(resolve(output, 'web', 'gta-vc', 'vendor', 'un7z-opfs'))
+  }
   mkdirSync(resolve(output, 'html5-api'), { recursive: true })
   cpSync(bridgeSource, resolve(output, 'html5-api/8bitgo-runtime-bridge.js'))
 
@@ -126,6 +130,7 @@ for (const name of selected) {
     runtime: config.runtime,
     isolated: config.isolated,
     apiOrigin: config.apiOrigin || '',
+    r2ArchiveKey: config.r2ArchiveKey || '',
   })
   writeFileSync(resolve(output, '_worker.js'), workerTemplate.replace('/*__GAME_CONFIG__*/ null', workerConfig))
   writeFileSync(resolve(output, 'index.html'), rootPage(config))

@@ -209,3 +209,6 @@ public/**/*.wasm.br
 public/**/*.wasm.br.json
 public/emulatorjs/emulator.min.js.br
 public/emulatorjs/emulator.min.js.br.json
+# EKA2L1 的 data 预压缩同样由 precompress-runtimes 在构建时生成
+public/eka2l1/**/*.data.br
+public/eka2l1/**/*.data.br.json

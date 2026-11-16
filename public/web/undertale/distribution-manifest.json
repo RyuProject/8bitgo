@@ -1,0 +1,1107 @@
+{
+  "format": "8bitgo.undertale.distribution.v1",
+  "packageVersion": "authorized-v1.08-2026-11-16",
+  "sourceArchiveSha256": "3a1c3d10773016a4100d571e378ebaeef6d70156bc824599ef0939cad1b38639",
+  "resourceBase": "https://html5.8bitgo.com/undertale/",
+  "allowedPageOrigins": [
+    "https://8bitgo.com",
+    "https://*.8bitgo.com"
+  ],
+  "wadPath": "data.win",
+  "files": [
+    {
+      "path": "abc_123_a.ogg",
+      "bytes": 41445,
+      "crc32": "f2651d45"
+    },
+    {
+      "path": "credits.txt",
+      "bytes": 12162,
+      "crc32": "73c558fe"
+    },
+    {
+      "path": "data.win",
+      "bytes": 62921978,
+      "crc32": "d3d27c56"
+    },
+    {
+      "path": "mus_a2.ogg",
+      "bytes": 190508,
+      "crc32": "4dc73783"
+    },
+    {
+      "path": "mus_alphysfix.ogg",
+      "bytes": 37336,
+      "crc32": "c6feddbc"
+    },
+    {
+      "path": "mus_amalgam.ogg",
+      "bytes": 925215,
+      "crc32": "3dae3124"
+    },
+    {
+      "path": "mus_ambientwater.ogg",
+      "bytes": 25226,
+      "crc32": "9933a06f"
+    },
+    {
+      "path": "mus_anothermedium.ogg",
+      "bytes": 1631371,
+      "crc32": "a31e43a6"
+    },
+    {
+      "path": "mus_bad.ogg",
+      "bytes": 15367,
+      "crc32": "57e85b82"
+    },
+    {
+      "path": "mus_barrier.ogg",
+      "bytes": 294861,
+      "crc32": "525caf2e"
+    },
+    {
+      "path": "mus_battle1.ogg",
+      "bytes": 658044,
+      "crc32": "383ecfd6"
+    },
+    {
+      "path": "mus_battle2.ogg",
+      "bytes": 723437,
+      "crc32": "68458596"
+    },
+    {
+      "path": "mus_bergentruckung.ogg",
+      "bytes": 138547,
+      "crc32": "c2395ddd"
+    },
+    {
+      "path": "mus_bgflameA.ogg",
+      "bytes": 55087,
+      "crc32": "91765ed8"
+    },
+    {
+      "path": "mus_birdnoise.ogg",
+      "bytes": 339872,
+      "crc32": "e8af33ed"
+    },
+    {
+      "path": "mus_birdsong.ogg",
+      "bytes": 257060,
+      "crc32": "ff40ba0e"
+    },
+    {
+      "path": "mus_boss1.ogg",
+      "bytes": 1268539,
+      "crc32": "d489b7ea"
+    },
+    {
+      "path": "mus_cast_1.ogg",
+      "bytes": 421829,
+      "crc32": "582d2e4f"
+    },
+    {
+      "path": "mus_cast_2.ogg",
+      "bytes": 218377,
+      "crc32": "81330f85"
+    },
+    {
+      "path": "mus_cast_3.ogg",
+      "bytes": 419039,
+      "crc32": "50c3b65c"
+    },
+    {
+      "path": "mus_cast_4.ogg",
+      "bytes": 543714,
+      "crc32": "9286b1ec"
+    },
+    {
+      "path": "mus_cast_5.ogg",
+      "bytes": 835097,
+      "crc32": "d4153ba2"
+    },
+    {
+      "path": "mus_cast_6.ogg",
+      "bytes": 213067,
+      "crc32": "ea35c233"
+    },
+    {
+      "path": "mus_cast_7.ogg",
+      "bytes": 188078,
+      "crc32": "08f9d51e"
+    },
+    {
+      "path": "mus_chokedup.ogg",
+      "bytes": 1663093,
+      "crc32": "1e0f042d"
+    },
+    {
+      "path": "mus_churchbell.ogg",
+      "bytes": 78897,
+      "crc32": "9f30dec2"
+    },
+    {
+      "path": "mus_computer.ogg",
+      "bytes": 18155,
+      "crc32": "14d4c6db"
+    },
+    {
+      "path": "mus_confession.ogg",
+      "bytes": 215747,
+      "crc32": "213475e7"
+    },
+    {
+      "path": "mus_coolbeat.ogg",
+      "bytes": 24348,
+      "crc32": "59be8a58"
+    },
+    {
+      "path": "mus_core.ogg",
+      "bytes": 2019126,
+      "crc32": "ad9c5284"
+    },
+    {
+      "path": "mus_core_ambience.ogg",
+      "bytes": 62347,
+      "crc32": "6a01edaa"
+    },
+    {
+      "path": "mus_coretransition.ogg",
+      "bytes": 122526,
+      "crc32": "7bbbea9f"
+    },
+    {
+      "path": "mus_creepy_ambience.ogg",
+      "bytes": 142854,
+      "crc32": "ad1c2471"
+    },
+    {
+      "path": "mus_crickets.ogg",
+      "bytes": 522004,
+      "crc32": "fbd67ff9"
+    },
+    {
+      "path": "mus_cymbal.ogg",
+      "bytes": 54298,
+      "crc32": "6d7e745f"
+    },
+    {
+      "path": "mus_dance_of_dog.ogg",
+      "bytes": 115895,
+      "crc32": "2618e41b"
+    },
+    {
+      "path": "mus_date.ogg",
+      "bytes": 1315019,
+      "crc32": "44073be0"
+    },
+    {
+      "path": "mus_date_fight.ogg",
+      "bytes": 389822,
+      "crc32": "e59987bf"
+    },
+    {
+      "path": "mus_date_tense.ogg",
+      "bytes": 294740,
+      "crc32": "18c368ed"
+    },
+    {
+      "path": "mus_deeploop2.ogg",
+      "bytes": 72441,
+      "crc32": "fa42f890"
+    },
+    {
+      "path": "mus_disturbing.ogg",
+      "bytes": 84660,
+      "crc32": "c22f9493"
+    },
+    {
+      "path": "mus_dogappear.ogg",
+      "bytes": 25150,
+      "crc32": "5c9624a2"
+    },
+    {
+      "path": "mus_dogmeander.ogg",
+      "bytes": 88021,
+      "crc32": "76e2f352"
+    },
+    {
+      "path": "mus_dogroom.ogg",
+      "bytes": 353905,
+      "crc32": "b2a41d2d"
+    },
+    {
+      "path": "mus_dogshrine_1.ogg",
+      "bytes": 569729,
+      "crc32": "041538a4"
+    },
+    {
+      "path": "mus_dogshrine_2.ogg",
+      "bytes": 179728,
+      "crc32": "67d0c7db"
+    },
+    {
+      "path": "mus_dogsong.ogg",
+      "bytes": 386793,
+      "crc32": "aa118d40"
+    },
+    {
+      "path": "mus_dontgiveup.ogg",
+      "bytes": 1424917,
+      "crc32": "3475225a"
+    },
+    {
+      "path": "mus_doorclose.ogg",
+      "bytes": 13942,
+      "crc32": "7e483a0a"
+    },
+    {
+      "path": "mus_dooropen.ogg",
+      "bytes": 9233,
+      "crc32": "04864758"
+    },
+    {
+      "path": "mus_drone.ogg",
+      "bytes": 20373,
+      "crc32": "e74d483d"
+    },
+    {
+      "path": "mus_dummybattle.ogg",
+      "bytes": 1637070,
+      "crc32": "6797a2b4"
+    },
+    {
+      "path": "mus_dununnn.ogg",
+      "bytes": 16185,
+      "crc32": "08804aed"
+    },
+    {
+      "path": "mus_elevator.ogg",
+      "bytes": 21671,
+      "crc32": "930aa67a"
+    },
+    {
+      "path": "mus_elevator_last.ogg",
+      "bytes": 90308,
+      "crc32": "d865cbe0"
+    },
+    {
+      "path": "mus_endarea_parta.ogg",
+      "bytes": 2188141,
+      "crc32": "6025956d"
+    },
+    {
+      "path": "mus_endarea_partb.ogg",
+      "bytes": 2134581,
+      "crc32": "d8eec5d9"
+    },
+    {
+      "path": "mus_endingexcerpt1.ogg",
+      "bytes": 295592,
+      "crc32": "3ce1dffd"
+    },
+    {
+      "path": "mus_endingexcerpt2.ogg",
+      "bytes": 594893,
+      "crc32": "03405d3e"
+    },
+    {
+      "path": "mus_express_myself.ogg",
+      "bytes": 1724516,
+      "crc32": "0f8a91e1"
+    },
+    {
+      "path": "mus_f_6s_1.ogg",
+      "bytes": 166063,
+      "crc32": "dd6d7bf4"
+    },
+    {
+      "path": "mus_f_6s_2.ogg",
+      "bytes": 300803,
+      "crc32": "cb09367c"
+    },
+    {
+      "path": "mus_f_6s_3.ogg",
+      "bytes": 172921,
+      "crc32": "80f6a429"
+    },
+    {
+      "path": "mus_f_6s_4.ogg",
+      "bytes": 289982,
+      "crc32": "1e6a54e0"
+    },
+    {
+      "path": "mus_f_6s_5.ogg",
+      "bytes": 346516,
+      "crc32": "c2a73850"
+    },
+    {
+      "path": "mus_f_6s_6.ogg",
+      "bytes": 151223,
+      "crc32": "686cf36c"
+    },
+    {
+      "path": "mus_f_alarm.ogg",
+      "bytes": 20542,
+      "crc32": "f7a3ae4a"
+    },
+    {
+      "path": "mus_f_destroyed.ogg",
+      "bytes": 64749,
+      "crc32": "795388bf"
+    },
+    {
+      "path": "mus_f_destroyed2.ogg",
+      "bytes": 76088,
+      "crc32": "be3a797b"
+    },
+    {
+      "path": "mus_f_destroyed3.ogg",
+      "bytes": 36313,
+      "crc32": "3fa0c9cb"
+    },
+    {
+      "path": "mus_f_finale_1.ogg",
+      "bytes": 129927,
+      "crc32": "1f2e7fc7"
+    },
+    {
+      "path": "mus_f_finale_1_l.ogg",
+      "bytes": 231568,
+      "crc32": "a0d47265"
+    },
+    {
+      "path": "mus_f_finale_2.ogg",
+      "bytes": 503821,
+      "crc32": "c4fe2fe0"
+    },
+    {
+      "path": "mus_f_finale_3.ogg",
+      "bytes": 719807,
+      "crc32": "5457632a"
+    },
+    {
+      "path": "mus_f_intro.ogg",
+      "bytes": 202626,
+      "crc32": "84a6f6bb"
+    },
+    {
+      "path": "mus_f_newlaugh.ogg",
+      "bytes": 37700,
+      "crc32": "e4b2b529"
+    },
+    {
+      "path": "mus_f_newlaugh_low.ogg",
+      "bytes": 73118,
+      "crc32": "9ab4a1a7"
+    },
+    {
+      "path": "mus_f_part1.ogg",
+      "bytes": 359060,
+      "crc32": "f0499788"
+    },
+    {
+      "path": "mus_f_part2.ogg",
+      "bytes": 328637,
+      "crc32": "481e551d"
+    },
+    {
+      "path": "mus_f_part3.ogg",
+      "bytes": 315539,
+      "crc32": "f1d9b3ab"
+    },
+    {
+      "path": "mus_f_saved.ogg",
+      "bytes": 58182,
+      "crc32": "89a6f82b"
+    },
+    {
+      "path": "mus_f_wind1.ogg",
+      "bytes": 295335,
+      "crc32": "6fa97200"
+    },
+    {
+      "path": "mus_f_wind2.ogg",
+      "bytes": 224153,
+      "crc32": "b8d78c54"
+    },
+    {
+      "path": "mus_fallendown2.ogg",
+      "bytes": 1520179,
+      "crc32": "67c3e525"
+    },
+    {
+      "path": "mus_fearsting.ogg",
+      "bytes": 13207,
+      "crc32": "806e14a3"
+    },
+    {
+      "path": "mus_flowey.ogg",
+      "bytes": 188451,
+      "crc32": "d81a01e2"
+    },
+    {
+      "path": "mus_gameover.ogg",
+      "bytes": 367721,
+      "crc32": "175ccd78"
+    },
+    {
+      "path": "mus_ghostbattle.ogg",
+      "bytes": 563673,
+      "crc32": "301ff76a"
+    },
+    {
+      "path": "mus_harpnoise.ogg",
+      "bytes": 33633,
+      "crc32": "b79ef323"
+    },
+    {
+      "path": "mus_hereweare.ogg",
+      "bytes": 1607956,
+      "crc32": "7eaae7ec"
+    },
+    {
+      "path": "mus_hotel.ogg",
+      "bytes": 968920,
+      "crc32": "79115d7f"
+    },
+    {
+      "path": "mus_hotel_battle.ogg",
+      "bytes": 766125,
+      "crc32": "7b4f0d47"
+    },
+    {
+      "path": "mus_house1.ogg",
+      "bytes": 1188342,
+      "crc32": "f0fd8863"
+    },
+    {
+      "path": "mus_house2.ogg",
+      "bytes": 1311196,
+      "crc32": "bec3d814"
+    },
+    {
+      "path": "mus_intronoise.ogg",
+      "bytes": 39671,
+      "crc32": "46839d43"
+    },
+    {
+      "path": "mus_kingdescription.ogg",
+      "bytes": 697389,
+      "crc32": "cb635a84"
+    },
+    {
+      "path": "mus_lab.ogg",
+      "bytes": 955109,
+      "crc32": "821a271a"
+    },
+    {
+      "path": "mus_leave.ogg",
+      "bytes": 907150,
+      "crc32": "84b85afc"
+    },
+    {
+      "path": "mus_menu0.ogg",
+      "bytes": 204293,
+      "crc32": "d52d5f0f"
+    },
+    {
+      "path": "mus_menu1.ogg",
+      "bytes": 227547,
+      "crc32": "06cada60"
+    },
+    {
+      "path": "mus_menu2.ogg",
+      "bytes": 360118,
+      "crc32": "34dafeaa"
+    },
+    {
+      "path": "mus_menu3.ogg",
+      "bytes": 374733,
+      "crc32": "462abfa3"
+    },
+    {
+      "path": "mus_menu4.ogg",
+      "bytes": 388076,
+      "crc32": "13749e3f"
+    },
+    {
+      "path": "mus_menu5.ogg",
+      "bytes": 376086,
+      "crc32": "9b252b57"
+    },
+    {
+      "path": "mus_menu6.ogg",
+      "bytes": 383516,
+      "crc32": "3a954805"
+    },
+    {
+      "path": "mus_mett_applause.ogg",
+      "bytes": 69155,
+      "crc32": "16486526"
+    },
+    {
+      "path": "mus_mett_cheer.ogg",
+      "bytes": 55195,
+      "crc32": "114d7d33"
+    },
+    {
+      "path": "mus_mettafly.ogg",
+      "bytes": 79860,
+      "crc32": "01a06a85"
+    },
+    {
+      "path": "mus_mettaton_ex.ogg",
+      "bytes": 1634836,
+      "crc32": "ce080214"
+    },
+    {
+      "path": "mus_mettaton_neo.ogg",
+      "bytes": 319346,
+      "crc32": "f78f65ca"
+    },
+    {
+      "path": "mus_mettaton_pretransform.ogg",
+      "bytes": 180281,
+      "crc32": "f9ef8cb6"
+    },
+    {
+      "path": "mus_mettatonbattle.ogg",
+      "bytes": 583328,
+      "crc32": "8596ebb9"
+    },
+    {
+      "path": "mus_mettmusical1.ogg",
+      "bytes": 163603,
+      "crc32": "53ace032"
+    },
+    {
+      "path": "mus_mettmusical2.ogg",
+      "bytes": 160930,
+      "crc32": "57ca46ec"
+    },
+    {
+      "path": "mus_mettmusical3.ogg",
+      "bytes": 149776,
+      "crc32": "b0173a78"
+    },
+    {
+      "path": "mus_mettmusical4.ogg",
+      "bytes": 156332,
+      "crc32": "e01bcb34"
+    },
+    {
+      "path": "mus_mettsad.ogg",
+      "bytes": 1005973,
+      "crc32": "6b49bbe2"
+    },
+    {
+      "path": "mus_mode.ogg",
+      "bytes": 28974,
+      "crc32": "a5a70a7a"
+    },
+    {
+      "path": "mus_mtgameshow.ogg",
+      "bytes": 563936,
+      "crc32": "327c7f56"
+    },
+    {
+      "path": "mus_muscle.ogg",
+      "bytes": 277334,
+      "crc32": "108b60ba"
+    },
+    {
+      "path": "mus_musicbox.ogg",
+      "bytes": 752037,
+      "crc32": "78f8220d"
+    },
+    {
+      "path": "mus_myemeow.ogg",
+      "bytes": 7881,
+      "crc32": "fb5b6e73"
+    },
+    {
+      "path": "mus_mysteriousroom2.ogg",
+      "bytes": 164686,
+      "crc32": "b26bebba"
+    },
+    {
+      "path": "mus_mystery.ogg",
+      "bytes": 201444,
+      "crc32": "ad75e02d"
+    },
+    {
+      "path": "mus_napstachords.ogg",
+      "bytes": 481190,
+      "crc32": "9efa04cc"
+    },
+    {
+      "path": "mus_napstahouse.ogg",
+      "bytes": 103046,
+      "crc32": "d0b5416d"
+    },
+    {
+      "path": "mus_news.ogg",
+      "bytes": 174060,
+      "crc32": "3fe6f942"
+    },
+    {
+      "path": "mus_news_battle.ogg",
+      "bytes": 574242,
+      "crc32": "966126bb"
+    },
+    {
+      "path": "mus_ohyes.ogg",
+      "bytes": 55969,
+      "crc32": "31c0d1fb"
+    },
+    {
+      "path": "mus_oogloop.ogg",
+      "bytes": 140074,
+      "crc32": "956578f2"
+    },
+    {
+      "path": "mus_operatile.ogg",
+      "bytes": 369368,
+      "crc32": "66c7a440"
+    },
+    {
+      "path": "mus_options_fall.ogg",
+      "bytes": 582100,
+      "crc32": "c6a45d0e"
+    },
+    {
+      "path": "mus_options_summer.ogg",
+      "bytes": 304325,
+      "crc32": "8ab45234"
+    },
+    {
+      "path": "mus_options_winter.ogg",
+      "bytes": 166565,
+      "crc32": "cd26cffb"
+    },
+    {
+      "path": "mus_papyrus.ogg",
+      "bytes": 271164,
+      "crc32": "fd150068"
+    },
+    {
+      "path": "mus_papyrusboss.ogg",
+      "bytes": 637752,
+      "crc32": "83c22f6d"
+    },
+    {
+      "path": "mus_piano.ogg",
+      "bytes": 233861,
+      "crc32": "98bfe0c5"
+    },
+    {
+      "path": "mus_prebattle1.ogg",
+      "bytes": 131921,
+      "crc32": "2f092746"
+    },
+    {
+      "path": "mus_predummy.ogg",
+      "bytes": 63364,
+      "crc32": "a17a5eb1"
+    },
+    {
+      "path": "mus_race.ogg",
+      "bytes": 497216,
+      "crc32": "edbd6426"
+    },
+    {
+      "path": "mus_rain.ogg",
+      "bytes": 98059,
+      "crc32": "05088854"
+    },
+    {
+      "path": "mus_rain_deep.ogg",
+      "bytes": 95924,
+      "crc32": "459b1d3d"
+    },
+    {
+      "path": "mus_repeat_1.ogg",
+      "bytes": 66334,
+      "crc32": "84fe04af"
+    },
+    {
+      "path": "mus_repeat_2.ogg",
+      "bytes": 67502,
+      "crc32": "22071f9c"
+    },
+    {
+      "path": "mus_reunited.ogg",
+      "bytes": 3032892,
+      "crc32": "e468db0e"
+    },
+    {
+      "path": "mus_rimshot.ogg",
+      "bytes": 20847,
+      "crc32": "3c850961"
+    },
+    {
+      "path": "mus_ruins.ogg",
+      "bytes": 1043131,
+      "crc32": "8e91a78f"
+    },
+    {
+      "path": "mus_ruinspiano.ogg",
+      "bytes": 654602,
+      "crc32": "a3aa317d"
+    },
+    {
+      "path": "mus_sansdate.ogg",
+      "bytes": 2155251,
+      "crc32": "b7c333e1"
+    },
+    {
+      "path": "mus_sfx_a_grab.ogg",
+      "bytes": 11623,
+      "crc32": "3b2b1d23"
+    },
+    {
+      "path": "mus_sfx_chainsaw.ogg",
+      "bytes": 36071,
+      "crc32": "b9e2f508"
+    },
+    {
+      "path": "mus_sfx_hypergoner_charge.ogg",
+      "bytes": 145003,
+      "crc32": "54365be6"
+    },
+    {
+      "path": "mus_sfx_hypergoner_laugh.ogg",
+      "bytes": 35374,
+      "crc32": "1749a4c2"
+    },
+    {
+      "path": "mus_sfx_rainbowbeam_hold.ogg",
+      "bytes": 24775,
+      "crc32": "503ed10e"
+    },
+    {
+      "path": "mus_shop.ogg",
+      "bytes": 505692,
+      "crc32": "7c210df6"
+    },
+    {
+      "path": "mus_sigh_of_dog.ogg",
+      "bytes": 228860,
+      "crc32": "f5f032e6"
+    },
+    {
+      "path": "mus_silence.ogg",
+      "bytes": 4037,
+      "crc32": "22dcc3e1"
+    },
+    {
+      "path": "mus_smallshock.ogg",
+      "bytes": 77774,
+      "crc32": "85143a9d"
+    },
+    {
+      "path": "mus_smile.ogg",
+      "bytes": 734622,
+      "crc32": "c2f9a02e"
+    },
+    {
+      "path": "mus_snoresymphony.ogg",
+      "bytes": 336887,
+      "crc32": "81aa36f3"
+    },
+    {
+      "path": "mus_snowwalk.ogg",
+      "bytes": 148063,
+      "crc32": "b1ca536a"
+    },
+    {
+      "path": "mus_snowy.ogg",
+      "bytes": 1016656,
+      "crc32": "e4fd2d32"
+    },
+    {
+      "path": "mus_spider.ogg",
+      "bytes": 1076361,
+      "crc32": "264ffb60"
+    },
+    {
+      "path": "mus_spoopy.ogg",
+      "bytes": 187771,
+      "crc32": "b0fff09a"
+    },
+    {
+      "path": "mus_spoopy_holiday.ogg",
+      "bytes": 109375,
+      "crc32": "14da47b4"
+    },
+    {
+      "path": "mus_spoopy_wave.ogg",
+      "bytes": 263510,
+      "crc32": "aeb671b2"
+    },
+    {
+      "path": "mus_st_happytown.ogg",
+      "bytes": 14348,
+      "crc32": "0bc5305d"
+    },
+    {
+      "path": "mus_st_him.ogg",
+      "bytes": 164073,
+      "crc32": "81b8d604"
+    },
+    {
+      "path": "mus_st_meatfactory.ogg",
+      "bytes": 29761,
+      "crc32": "fd3801e0"
+    },
+    {
+      "path": "mus_st_troubledingle.ogg",
+      "bytes": 13248,
+      "crc32": "c3b5e3fc"
+    },
+    {
+      "path": "mus_star.ogg",
+      "bytes": 425637,
+      "crc32": "5dd96729"
+    },
+    {
+      "path": "mus_sticksnap.ogg",
+      "bytes": 24291,
+      "crc32": "2eb97401"
+    },
+    {
+      "path": "mus_story.ogg",
+      "bytes": 664113,
+      "crc32": "9f68ace8"
+    },
+    {
+      "path": "mus_story_stuck.ogg",
+      "bytes": 5057,
+      "crc32": "c5b2d538"
+    },
+    {
+      "path": "mus_temshop.ogg",
+      "bytes": 333418,
+      "crc32": "e75fb48e"
+    },
+    {
+      "path": "mus_temvillage.ogg",
+      "bytes": 666763,
+      "crc32": "8e832e2c"
+    },
+    {
+      "path": "mus_tension.ogg",
+      "bytes": 79758,
+      "crc32": "b42c8e5f"
+    },
+    {
+      "path": "mus_tone2.ogg",
+      "bytes": 21403,
+      "crc32": "01740b0e"
+    },
+    {
+      "path": "mus_tone3.ogg",
+      "bytes": 13723,
+      "crc32": "e680e2f9"
+    },
+    {
+      "path": "mus_toomuch.ogg",
+      "bytes": 468735,
+      "crc32": "6fa2075a"
+    },
+    {
+      "path": "mus_toriel.ogg",
+      "bytes": 378887,
+      "crc32": "da58af09"
+    },
+    {
+      "path": "mus_town.ogg",
+      "bytes": 879498,
+      "crc32": "346cd824"
+    },
+    {
+      "path": "mus_tv.ogg",
+      "bytes": 104730,
+      "crc32": "02759dd9"
+    },
+    {
+      "path": "mus_undyneboss.ogg",
+      "bytes": 1327244,
+      "crc32": "a92cf20a"
+    },
+    {
+      "path": "mus_undynefast.ogg",
+      "bytes": 228138,
+      "crc32": "b3ec4e6d"
+    },
+    {
+      "path": "mus_undynepiano.ogg",
+      "bytes": 62937,
+      "crc32": "8f556ead"
+    },
+    {
+      "path": "mus_undynescary.ogg",
+      "bytes": 150736,
+      "crc32": "530286f2"
+    },
+    {
+      "path": "mus_undynetheme.ogg",
+      "bytes": 432991,
+      "crc32": "6c6feae8"
+    },
+    {
+      "path": "mus_undynetruetheme.ogg",
+      "bytes": 957792,
+      "crc32": "ac086c66"
+    },
+    {
+      "path": "mus_vsasgore.ogg",
+      "bytes": 1757194,
+      "crc32": "29b52006"
+    },
+    {
+      "path": "mus_waterfall.ogg",
+      "bytes": 1479629,
+      "crc32": "bebe79d2"
+    },
+    {
+      "path": "mus_waterquiet.ogg",
+      "bytes": 242873,
+      "crc32": "7f51a863"
+    },
+    {
+      "path": "mus_wawa.ogg",
+      "bytes": 37985,
+      "crc32": "5156e76d"
+    },
+    {
+      "path": "mus_whoopee.ogg",
+      "bytes": 56851,
+      "crc32": "f988b24f"
+    },
+    {
+      "path": "mus_wind.ogg",
+      "bytes": 90923,
+      "crc32": "46be2faa"
+    },
+    {
+      "path": "mus_woofenstein.ogg",
+      "bytes": 94782,
+      "crc32": "c337a46a"
+    },
+    {
+      "path": "mus_woofenstein_loop.ogg",
+      "bytes": 76883,
+      "crc32": "42c09fb1"
+    },
+    {
+      "path": "mus_wrongnumbersong.ogg",
+      "bytes": 70778,
+      "crc32": "2c5c360e"
+    },
+    {
+      "path": "mus_wrongworld.ogg",
+      "bytes": 637481,
+      "crc32": "59b16f9a"
+    },
+    {
+      "path": "mus_x_undyne.ogg",
+      "bytes": 1839786,
+      "crc32": "7d13b1da"
+    },
+    {
+      "path": "mus_x_undyne_pre.ogg",
+      "bytes": 173968,
+      "crc32": "c0b7be00"
+    },
+    {
+      "path": "mus_xpart.ogg",
+      "bytes": 2070525,
+      "crc32": "ae541231"
+    },
+    {
+      "path": "mus_xpart_2.ogg",
+      "bytes": 1253912,
+      "crc32": "92adeda0"
+    },
+    {
+      "path": "mus_xpart_a.ogg",
+      "bytes": 708242,
+      "crc32": "1bdef7ca"
+    },
+    {
+      "path": "mus_xpart_b.ogg",
+      "bytes": 508539,
+      "crc32": "e0b09bf3"
+    },
+    {
+      "path": "mus_xpart_back.ogg",
+      "bytes": 198691,
+      "crc32": "e8dbe840"
+    },
+    {
+      "path": "mus_yourbestfriend_3.ogg",
+      "bytes": 395020,
+      "crc32": "185b79fe"
+    },
+    {
+      "path": "mus_z_ending.ogg",
+      "bytes": 2115643,
+      "crc32": "5f0113f7"
+    },
+    {
+      "path": "mus_zz_megalovania.ogg",
+      "bytes": 1867146,
+      "crc32": "32bc968d"
+    },
+    {
+      "path": "mus_zzz_c.ogg",
+      "bytes": 94797,
+      "crc32": "e9ee4a86"
+    },
+    {
+      "path": "mus_zzz_c2.ogg",
+      "bytes": 57136,
+      "crc32": "a6ca4196"
+    },
+    {
+      "path": "options.ini",
+      "bytes": 97,
+      "crc32": "2a2852ff"
+    },
+    {
+      "path": "snd_ballchime.ogg",
+      "bytes": 36248,
+      "crc32": "ff028de8"
+    },
+    {
+      "path": "snd_curtgunshot.ogg",
+      "bytes": 5853,
+      "crc32": "86aa22b6"
+    },
+    {
+      "path": "snd_mushroomdance.ogg",
+      "bytes": 14007,
+      "crc32": "b1d56a0d"
+    }
+  ],
+  "totalBytes": 156744130,
+  "excludedFiles": [
+    {
+      "path": "D3DX9_43.dll",
+      "reason": "桌面版可执行程序或系统依赖；浏览器运行端不读取"
+    },
+    {
+      "path": "splash.png",
+      "reason": "桌面版启动画面；远端未分发且 data.win 未引用"
+    },
+    {
+      "path": "steam_api.dll",
+      "reason": "桌面版可执行程序或系统依赖；浏览器运行端不读取"
+    },
+    {
+      "path": "UNDERTALE.exe",
+      "reason": "桌面版可执行程序或系统依赖；浏览器运行端不读取"
+    }
+  ]
+}

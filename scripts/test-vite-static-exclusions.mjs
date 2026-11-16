@@ -8,7 +8,7 @@ import { CACHE, staticCacheHeaders } from '../server/src/cache.js'
 
 const root = resolve(import.meta.dirname, '..')
 const publicDir = join(root, 'public')
-const expectedVersioned = ['dolphin', 'ppsspp']
+const expectedVersioned = ['dolphin', 'eka2l1', 'ppsspp']
 
 assert.deepEqual([...VERSIONED_RUNTIME_DIRS].sort(), expectedVersioned)
 for (const directory of VERSIONED_RUNTIME_DIRS) {
@@ -38,5 +38,23 @@ for (const snapshot of ['jsdos', 'ruffle']) {
 const viteConfig = readFileSync(join(root, 'vite.config.ts'), 'utf8')
 assert.match(viteConfig, /import \{ HUGE_STATIC_DIRS \} from '\.\/scripts\/lib\/vite-static-exclusions\.mjs'/)
 assert.match(viteConfig, /const HUGE_STATIC = HUGE_STATIC_DIRS/)
+
+// EKA2L1 的版本目录在 public/ 与 dist/client/ 间软链；页面壳需短缓存，pthread 资源需隔离头。
+for (const [file, expectedCache] of [
+  ['/dist/client/eka2l1/v0123456789ab/index.html', CACHE.engine],
+  ['/dist/client/eka2l1/v0123456789ab/eka2l1.wasm', CACHE.engineVersioned],
+]) {
+  const headers = new Map()
+  staticCacheHeaders({ setHeader: (name, value) => headers.set(name, value) }, file)
+  assert.equal(headers.get('Cache-Control'), expectedCache, `${file} 缓存策略错误`)
+  assert.equal(headers.get('Cross-Origin-Opener-Policy'), 'same-origin', `${file} 缺 COOP`)
+  assert.equal(headers.get('Cross-Origin-Embedder-Policy'), 'require-corp', `${file} 缺 COEP`)
+  assert.equal(headers.get('Cross-Origin-Resource-Policy'), 'same-origin', `${file} 缺 CORP`)
+}
+{
+  const headers = new Map()
+  staticCacheHeaders({ setHeader: (name, value) => headers.set(name, value) }, '/dist/client/eka2l1/v0123456789ab/run.html')
+  assert.equal(headers.get('X-Robots-Tag'), 'noindex, nofollow', '模拟器运行页不应成为搜索落地页')
+}
 console.log(`✅ Vite 只软链不可变版本化静态运行时：${VERSIONED_RUNTIME_DIRS.join('、')}`)
 console.log('✅ EmulatorJS、js-dos、Ruffle 与含可变入口的网页游戏仍保留 dist 快照')

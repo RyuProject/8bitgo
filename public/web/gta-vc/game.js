@@ -16,7 +16,11 @@ const configurableMode = params.get('configurable') === "1";
 
 // Settings that can be configured via URL or UI
 let autoFullScreen = params.get('fullscreen') !== "0";
-let cheatsEnabled = params.get('cheats') === "1" || configurableMode;
+// The setup switch is remembered; ?cheats=1 still turns cheats on regardless.
+const CHEATS_KEY = 'vcsky.cheats';
+let cheatsEnabled = params.get('cheats') === "1" || configurableMode || (() => {
+    try { return localStorage.getItem(CHEATS_KEY) === '1'; } catch { return false; }
+})();
 let maxFPS = parseInt(params.get('max_fps')) || 0;
 
 const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
@@ -24,7 +28,12 @@ let isTouch = isMobile && window.matchMedia('(pointer: coarse)').matches;
 
 document.body.dataset.isTouch = isTouch ? 1 : 0;
 
-const dataSize = 130 * 1024 * 1024;
+// The engine asks for pointer lock once it is fullscreen. On touch that freezes
+// every pointer at 0,0, so drags measure zero and the sticks/menu swipes die.
+if (isTouch) {
+    Element.prototype.requestPointerLock = () => {};
+}
+
 const textDecoder = new TextDecoder();
 let haveOriginalGame = true;
 
@@ -53,9 +62,18 @@ async function resumeAudioContexts() {
 }
 // The game data is English-only; the UI language (src/i18n) does not change it.
 data_content = `${replaceBR}vc-sky-en-v6.data`;
-wasm_content = `${replaceBR}vc-sky-en-v6.wasm`;
+const data_index = `${replaceBR}vc-sky-en-v6.json`;
+wasm_content = 'engine/vc-sky-en-v6.wasm';
 
 async function loadData() {
+    // Package index, written by the importer.
+    const indexResponse = await fetch(data_index, { cache: 'no-store' });
+    if (!indexResponse.ok) {
+        throw new Error(`Failed to load data index: ${indexResponse.status} ${indexResponse.url}`);
+    }
+    window.DATA_PACKAGE = await indexResponse.json();
+    const dataSize = window.DATA_PACKAGE.remote_package_size;
+
     const response = await fetch(data_content, { cache: 'no-store' });
     if (!response.ok) {
         throw new Error(`Failed to load data package: ${response.status} ${response.url}`);
@@ -86,6 +104,7 @@ async function loadData() {
 
 async function startGame(e) {
     e.stopPropagation();
+    await window.vcController?.connect();
     await resumeAudioContexts();
 
     if (isTouch && document.documentElement.requestFullscreen) {
@@ -96,31 +115,15 @@ async function startGame(e) {
     document.querySelector('.disclaimer').style.display = 'none';
     document.querySelector('.developed-by').style.display = 'none';
 
-    const intro = document.querySelector('.intro');
-    const introContainer = document.querySelector('.intro-container');
-    const loaderContainer = document.querySelector('.loader-container');
+    const loadingScreen = document.querySelector('.loading-screen');
     document.querySelector('.click-to-play').style.display = 'none';
-    loaderContainer.style.display = "flex";
-    introContainer.hidden = false;
-    intro.play();
+    document.querySelector('.loader-container').style.display = "flex";
+    loadingScreen.hidden = false;
 
     await window.vcUserData?.prepareLaunch();
     const dataBuffer = await loadData();
-    spinnerElement.hidden = true;
-    setStatus(t("loader.clickToContinue"));
-    introContainer.hidden = false;
-    introContainer.style.cursor = 'pointer';
-    const clickHandler = () => {
-        resumeAudioContexts();
-        intro.pause();
-        introContainer.style.display = 'none';
-        loadGame(dataBuffer);
-    };
-    if (isMobile) {
-        window.addEventListener('pointerup', clickHandler, { once: true });
-    } else {
-        window.addEventListener('click', clickHandler, { once: true });
-    }
+    loadingScreen.hidden = true;
+    loadGame(dataBuffer);
 }
 
 function setStatus(text) {
@@ -148,11 +151,14 @@ function setStatus(text) {
 };
 
 async function loadGame(data) {
+    // Only a fresh ini gets the pad-friendly control method; a saved one keeps the player's choice.
+    const useClassicControls = revc_ini === revc_iniDefault && window.vcController?.connected;
+    const gameIni = useClassicControls ? revc_ini.replace(/^Method=\d+$/m, 'Method=1') : revc_ini;
     var Module = {
         mainCalled: () => {
             try {
                 Module.FS.unlink("/vc-assets/local/revc.ini");
-                Module.FS.createDataFile("/vc-assets/local/revc.ini", 0, revc_ini, revc_ini.length);
+                Module.FS.createDataFile("/vc-assets/local/revc.ini", 0, gameIni, gameIni.length);
             } catch (e) {
                 console.error('mainCalled error:', e);
             }
@@ -229,7 +235,9 @@ async function loadGame(data) {
     document.body.classList.add('gameIsStarted');
 
     const emulator = new GamepadEmulator();
-    const gamepad = emulator.AddEmulatedGamepad(null, true);
+    window.vcController?.attach(emulator);
+    if (!isTouch) return;
+    const gamepad = emulator.AddEmulatedGamepad(0, true);
     const gamepadEmulatorConfig = {
         directions: { up: true, down: true, left: true, right: true },
         dragDistance: isTouch ? 85 : 100,
@@ -260,6 +268,18 @@ async function loadGame(data) {
         lockTargetWhilePressed: false,
         tapTarget: document.querySelector('.touch-control.menu'),
     }]);
+    // Opening the menu leaves fullscreen so the browser bars are reachable again.
+    document.querySelector('.touch-control.menu').addEventListener('pointerdown', () => {
+        if (document.fullscreenElement) {
+            document.exitFullscreen().catch(() => {});
+        }
+    });
+    // Back in the game after the menu: return to fullscreen.
+    new MutationObserver(() => {
+        if (isTouch && document.body.dataset.stateMenu === '0' && !document.fullscreenElement) {
+            document.documentElement.requestFullscreen?.().catch(() => {});
+        }
+    }).observe(document.body, { attributes: true, attributeFilter: ['data-state-menu'] });
     emulator.AddDisplayButtonEventListeners(0, [{
         buttonIndex: 3,
         lockTargetWhilePressed: false,
@@ -334,6 +354,7 @@ if (enableCheatsCheckbox) {
     enableCheatsCheckbox.checked = cheatsEnabled;
     enableCheatsCheckbox.addEventListener('change', (e) => {
         cheatsEnabled = e.target.checked;
+        try { localStorage.setItem(CHEATS_KEY, cheatsEnabled ? '1' : '0'); } catch {}
     });
 }
 
@@ -492,25 +513,25 @@ if (configurableMode) {
     const configCheats = document.getElementById('config-cheats');
     const configFullscreen = document.getElementById('config-fullscreen');
     const configMaxFps = document.getElementById('config-max-fps');
-
+    
     if (configPanel && configCheats && configFullscreen && configMaxFps) {
         // Show config panel
         configPanel.style.display = 'block';
-
+        
         // Set initial values from URL params
         configCheats.checked = cheatsEnabled;
         configFullscreen.checked = autoFullScreen;
         configMaxFps.value = maxFPS;
-
+        
         // Update settings when changed
         configCheats.addEventListener('change', (e) => {
             cheatsEnabled = e.target.checked;
         });
-
+        
         configFullscreen.addEventListener('change', (e) => {
             autoFullScreen = e.target.checked;
         });
-
+        
         configMaxFps.addEventListener('input', (e) => {
             maxFPS = parseInt(e.target.value) || 0;
         });

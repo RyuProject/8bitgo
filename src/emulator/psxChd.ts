@@ -12,7 +12,7 @@ function pathWithoutQuery(value: string): string {
   try { return decodeURIComponent(path) } catch { return path }
 }
 
-/** 上传时可包 8BG；这只影响下载/续传判断，不代表核心能直接读取外层容器。 */
+/** 历史对象可包 8BG；这只影响下载/续传判断，不代表核心能直接读取外层容器。 */
 export function isPsxChdTransfer(value: string): boolean {
   return /\.chd(?:\.8bg)?$/i.test(pathWithoutQuery(value))
 }

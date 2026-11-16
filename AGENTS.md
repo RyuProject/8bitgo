@@ -13,7 +13,7 @@
 |---|---|
 | 前端 | Vite + React 19 + TypeScript，带 SSR（`vite.config.server.ts` → `dist/server`） |
 | 后端 | `server/`，Express + MySQL，和前端**同源**（一个进程同时提供 `/api` 和静态资源） |
-| 存储 | Cloudflare R2 + Worker（`worker/`），公开读走 `assets.8bitgo.com` |
+| 存储 | Cloudflare R2 + Worker（`worker/`），普通公开读取走 `assets.8bitgo.com`，明文 ROM 下载优选 `download.8bitgo.com` |
 | 部署 | 生产机 **38.76.186.225**，服务器上 `git pull && npm install && npm run build && systemctl restart 8bitgo`，前面挂 Cloudflare（部署形态见 §2.30） |
 | 模拟器 | EmulatorJS（主机/掌机/街机）、Ruffle（Flash）、js-dos、jsnes、webretro、FreeJ2ME、Play!（PS2） |
 | 登录 | 邮箱验证码（**Resend** 发信）/ 密码 / Google，JWT 30 天，见 §2.13–2.14 |
@@ -1340,15 +1340,19 @@ Play.js 的模块请求与第一次 Range 探测并行；正式顺序读取维�
 Play! 浏览器版仍是实验性支持：90 秒内没有产生首帧就提示该镜像可能不兼容。不要为了让某个
 商业游戏通过而查找或分发 ROM；只测试站长有权使用的备份、自制程序或开源镜像。
 
-### 2.20 新 ROM 用 8BG 容器，不要把 Zstd 写死进数据库
+### 2.20 新 ROM 以明文发布；旧 8BG 容器继续兼容
 
-除 PS2、HTML5 目录和多文件 Flash 包外，后台新上传的单文件 ROM 会先按 8MB 原文分块，
-每块 **Zstd 19 + AES-256-GCM**，再上传成 `<原 key>.8bg`。文件头保存原文件名、codec、
-codecVersion、keyId 和每块 SHA-256；播放器解包后仍把 `.zip` / `.nes` / `.nds` 等原名交给核心。
+从 2026-11-16 起，后台新上传的 ROM 直接保存成原始对象 key，并由 `download.8bitgo.com` 提供。
+开放平台拿到明文 ROM 后会在校验短期凭据后 302 到下载域，文件正文不经应用服务器；浏览器播放器也优先探明文，
+旧 8BG 仅作回退。旧对象需要逐步用明文重新上传，才会享有同一条直链；**不要因此删除解包能力或密钥**，
+线上仍有旧 8BG 绑定，云联机同步和 `delivery=plain` 的旧包转码也继续依赖它。
+
+历史 8BG 格式按 8MB 原文分块，每块 **Zstd 19 + AES-256-GCM**（已压缩文件只加密），对象名为
+`<原 key>.8bg`。文件头保存原文件名、codec、codecVersion、keyId 和每块 SHA-256；播放器解包后仍把 `.zip` / `.nes` / `.nds` 等原名交给核心。
 Zstd 解码前还必须核对 frame 自报的 content size 与分块表完全一致；只在解压后比大小挡不住
 恶意 frame 先诱导 WASM 申请几十 GB 内存。校验在 `assertZstdFrameContentSize()`，不要绕过。
 
-浏览器打包不是单 Worker 串行：`packRomForUpload()` 按逻辑 CPU、设备内存和真实分块数启动 1–4 个
+旧包维护工具 `packRomForUpload()` 不是单 Worker 串行：按逻辑 CPU、设备内存和真实分块数启动 1–4 个
 Worker，并行完成 Zstd、SHA-256 与 AES-GCM；每个 Worker 同时只持有一块，低内存设备自动降到 1–2 路。
 SHA-256 会在同步 Zstd 前先提交给 Web Crypto，以便和压缩重叠；`store` 路径不得再复制一份 8MB 原文。
 并行结果必须按原块号组装，AAD / IV 与现有 v1 容器完全一致，不能为了提速改格式导致旧播放器失兼容。
@@ -1357,23 +1361,21 @@ SHA-256 会在同步 Zstd 前先提交给 Web Crypto，以便和压缩重叠；`
 若重新随机生成 packageId / IV，表面是“同一个 ROM”，实际密文已变，旧分片绝不能混用。上传确认成功后
 立即释放这个缓存，且只留单槽，避免后台长期占住 GB 级 Blob。
 
-这里故意用自己的版本化容器，而不是直接上传 `.zst` 或 `.7z`：以后切 LZMA2 时只需在
+旧包使用自己的版本化容器，而不是直接存 `.zst` 或 `.7z`：维护 codec 时切 LZMA2 只需在
 `scripts/pack-rom.mjs`、`scripts/unpack-rom.mjs`、`src/workers/romPackWorker.ts` 和 `src/services/romPack.ts` 的 codec
 分发表增加实现。文件头会写 `codec: lzma2`，现有 `codec: zstd` 的包继续读取；数据库只存对象
 key，所以**不用改表，也不用同一晚重压整个库**。不要把默认 codec 变成“旧包也按新算法解”。
 
-密钥根放 `server/.env` 的 `ROM_PACK_SECRET`（至少 32 字节）。轮换时保留旧密钥：
+历史 8BG 包的密钥根放 `server/.env` 的 `ROM_PACK_SECRET`（至少 32 字节）。轮换时保留旧密钥：
 `ROM_PACK_KEY_ID=v2` + `ROM_PACK_SECRET_V1` + `ROM_PACK_SECRET_V2`。匿名试玩意味着浏览器最终会拿到
-单包数据密钥，这层加密用于阻止 R2 对象被直接离线批量读取，不应宣传成不可破解 DRM。
+单包数据密钥；这层历史加密不能当作 DRM，也不再用于后台新上传。
 
-旧 ROM URL 完全兼容；数据库仍绑定 `a.zip` 时也会先探同目录 `a.zip.8bg`、再回退 `a.zip`，
-所以批量转换只需把新对象放在旧对象旁边，不必同时批量改库。没有数据库绑定的游戏会先探
-`<slug>.<ext>.8bg`，再探历史文件。
-后台第一次把旧对象重传成 8BG 时会保留旧对象并填入同语言备用槽，确认线上能玩后再清理。
+旧 ROM URL 完全兼容；数据库绑定 `a.zip` 时先探明文 `a.zip`，再回退同目录 `a.zip.8bg`；没有数据库绑定的游戏也先探
+`<slug>.<ext>`，再探历史 8BG 文件。重传旧槽时新对象 key 应是明文原名，8BG 留作兼容回退直至确认后清理。
 cloud-game 的 libretro 不认识 8BG；`deploy/cloudgame/sync-roms.sh` 会先在隔离暂存目录解密，
 全部成功后才替换 `games/`。云联机机的 `.env` 必须保留同一套 `ROM_PACK_SECRET[_Vn]`，
 否则同步应失败并继续使用上一份游戏库，不能把密文直接交给核心。
-本地打包与往返测试：
+历史 8BG 的本地打包与解包工具仍保留，用于兼容校验和云联机同步：
 
 ```bash
 npm run rompack -- ./game.nes             # 输出 ./game.nes.8bg
@@ -2395,9 +2397,23 @@ npm run cs16:upload -- --bucket <R2桶名>
 上传器先放所有内容寻址分片，最后才替换 `catalog.json`，避免清单短暂指向 404。分片必须设
 `Content-Type: application/zstd` 和一年 immutable，**绝不能设 `Content-Encoding: zstd`**；否则
 浏览器网络层会先动字节，应用层 SHA 校验和兼容解码都会失效。`catalog.json` 设 `no-cache`。
-生产默认根是 `https://assets.8bitgo.com/web/cs16/zstd-v1/`，localhost 默认本地；`?packsroot=`
+生产先走 `https://download.8bitgo.com/web/cs16/zstd-v1/`，失败回退 `https://assets.8bitgo.com/web/cs16/zstd-v1/`（见下条），localhost 默认本地；`?packsroot=`
 可指临时域名，`?packformat=gzip` 只用于旧包应急。R2 CORS、Cache Everything 和验收步骤见
 `public/web/cs16/PACKS.md`。
+
+**CS1.5 / CS1.6 数据包先走优选线路（2026-11-16）。** `download.8bitgo.com` 是 DNS-only CNAME 到第三方优选 IP
+（`youxuan.cf.090227.xyz`），挂的是同一个 ROM Worker，`web/cs15/`、`web/cs16/` 照样读 `8bitgo-webgame` 桶。两个加载器
+都把它排第一、`assets.8bitgo.com` 排第二：优选线路 10 秒无响应头、30 秒无新字节、HTTP 错误或 SHA / CRC 不符，本页
+剩余请求全部改走 assets（`__probe.info.packRoot` / `packRootFallback` 记录现场），不来回试。两边是同一 R2 对象、
+内容校验不变，混用安全；边缘缓存按完整 URL 存，download 上是另一份缓存。它依赖别人的优选域名，**不能去掉 assets 回退**。
+PvZ 的 `html5.8bitgo.com` 是 R2 自定义域（必须开代理），且 Pages 版经同源 `/pvz-data/` 在服务端取数，给它做优选 CNAME 无效。
+
+**优选 CNAME 自动换线（2026-11-16）。** `rom.8bitgo.com` 与 `download.8bitgo.com` 同构（DNS-only CNAME 到优选域名，
+Worker 路由 `rom.8bitgo.com/*`），目前站内代码还没有引用它。两条记录的 CNAME 目标由生产机上的
+`8bitgo-cname-optimizer.timer`（`deploy/cname-optimizer/`）每 5 分钟体检：AliDNS DoH 带大陆三网 ECS 解析、
+连每个 IP 以我们的 Host 取 64KB 探针并核对 ETag；连续 3 次不健康才从 BestCF 列表 + 内置保底里换一个健康的，
+健康时不因源站测速而换（源站在香港，代表不了大陆）。别手改这两条记录的目标后忘了它会被换掉；
+要固定某个目标就停掉 timer。回归：`npm run test:cname-optimizer`。
 
 ### 2.28.4.1 CS1.6 首局性能：PK3 要 Deflate，YaPB `.vis` 不能每局重算
 
@@ -2772,23 +2788,33 @@ npm run test:celeste                                       # 纯函数回归 + �
 npm run celeste:upload -- --bucket <R2桶名> --src .celeste-framework   # q11 预压 + 原始回退
 ```
 
-### 2.28.9 /web/gta-vc：只发布开源运行端，游戏归档必须由玩家合法自备
+### 2.28.9 /web/gta-vc：只发布运行端与引擎，游戏素材来自玩家自己的 PC 版安装
 
-2026-10-19 接入 [joncodeofficial/gta-vice-city-wasm](https://github.com/joncodeofficial/gta-vice-city-wasm)
-提交 `10dd677cc55574da98e9be2433a3c5c668b39954`，专用 Pages 项目是 `8bitgo-gta-vc`，入口
-`/web/gta-vc/`。它比 reVCDOS 更适合纯静态托管：玩家导入一次 `game.tar.gz` 后，文件写入本机
-OPFS，Service Worker 从 `/vcsky/` 与 `/vcbr/` 提供给 WASM，之后不重复下载。
+[joncodeofficial/gta-vice-city-wasm](https://github.com/joncodeofficial/gta-vice-city-wasm)，2026-11-16
+升级到提交 `5c6cccc56c1df5c3717c0b39953d5fe833f97b73`，专用 Pages 项目 `8bitgo-gta-vc`，入口
+`https://gta-vc.8bitgo.com/web/gta-vc/`（DNS 是单独的 CNAME → `8bitgo-gta-vc.pages.dev`；没有它会被
+`*.8bitgo.com` 泛解析送到源站，返回 404）。玩家选择自己 PC 版的**安装目录或它的 `.zip`**，上游转换
+Worker 在浏览器里读出素材写进 OPFS，Service Worker 再从 `/vcsky/` 与 `/vcbr/` 提供给 WASM。
+站点托管 `engine/vc-sky-en-v6.wasm`（DOS Zone 团队的 reVC 移植）和上游 `revc/` 的少量 reVC 文件，
+不托管任何 Rockstar / Take-Two 素材。旧版的 `game.tar.gz` 导入、`runtime-config.js` 和本站自写的
+`extract-worker.js` 已随上游移除；上游 ZIP 读取按中央目录懒读、大成员流式解压到 OPFS，不会整包进内存。
 
-⚠️ **`game.tar.gz` 绝不能进 Git、Pages、R2 或本站代理。** 运行端的 MIT 许可证不覆盖 Rockstar /
-Take-Two 的游戏数据；DOS Zone 的 Vice City 页面已列入其 DMCA 移除清单，公开 CDN 只有 reVCDOS
-使用的分文件目录，并没有可核实授权的官方 `game.tar.gz`。`public/web/gta-vc/runtime-config.js` 默认
-必须为空；只有拿到权利方或来源方明确允许本站使用的 HTTPS 归档地址，核对授权、长期可用性和下载
-文件后，才允许填写。不能热链示例站的私有 Worker、伪造 Origin、镜像或绕过访问限制。
+⚠️ **只有本段明确列出的授权副本可以进固定 R2 对象；其他游戏素材仍不能进 Git、Pages 静态文件或本站代理。** 用户于
+2026-11-16 明确授权自托管其获得的 `revcdoseng.7z`，由用户自行放入 R2 key
+`web/gta-vc/revcdoseng.7z`。GTA VC Pages 只提供固定同源地址 `/game-data/revcdoseng.7z`，Worker
+只代理这个 key，转发 Range，不开放任意 R2 key，也不加跨域读取头；不要由代码上传该素材。
+2026-11-16 取证：reVCDOS 默认的
+`cdn.dos.zone/vcsky/`、`br.cdn.dos.zone/vcsky/` 全部 404 `NoSuchKey`；dos.zone 现在用 WebTorrent
+（`revcdoseng.2.torrent`，860MB，只有 `wss://cloud.dos.zone:8444` tracker、无 HTTP 种子）和
+`archive.dos.zone/revcdoseng.7z`（571MB）+ `br.cdn.dos.zone/vcsky/v16.wasm.br`，后两者的 CORS 只放行
+`https://dos.zone`。从本站来源连他们的 tracker 能握手，但 70 秒内 0 个 peer。除非对方把本站加进 CORS
+白名单，否则不能直接接；不准伪造 Origin 来绕过。本站固定 R2 路由是用户明确批准的独立例外。
+v16 引擎的 glue 与文件布局（OPFS `/vc-assets/local/…`、`gta3.img` 拆成目录）和 v6 不同，
+换引擎要连 glue 一起移植；当前转换器额外兼容 `.7z`、已展开的 `gta3.img` / `cuts.img` 和 `sfx.raw/`，
+并直接复制这份包里用 `.wav` 扩展名保存的 ID3/MP3 音效。
 
-上游导入器原先会把约 668MB gzip 与完整解压 TAR 同时留在 JS 堆，再写一份 OPFS，峰值可能超过
-2GB。本站的 `extract-worker.js` 改成单遍流式解压与逐文件写盘，并在就绪标记前校验 TAR checksum、
-路径、文件数、压缩/解压体积和三份必需文件；失败会删掉标记和半成品，不能把两代资源混成“可玩”。
-更新上游时不能用原版导入器覆盖回来。回归：
+升级步骤见 `public/web/gta-vc/UPSTREAM.md`（`vite build --base /web/gta-vc/`，补回 `noindex`，
+改 `check-gta-vc-web.mjs` 的提交号后 `--write-manifest`）。回归：
 
 ```bash
 npm run gta-vc:check
@@ -2796,25 +2822,41 @@ npm run pages:web-games:build -- gtavc
 npm run pages:web-games:check -- gtavc
 ```
 
-### 2.28.10 /web/undertale：公开站只放 MPL 运行端，正版安装目录只进浏览器 OPFS
+### 2.28.10 /web/undertale：授权分发包只从 8bitgo.com 直达浏览器 OPFS
 
 2026-10-19 接入 [Butterscotch](https://github.com/ButterscotchRunner/Butterscotch) Web 构建提交
 `54e10ec4e4a5713130675c7719dda7c437b4f849`，专用 Pages 项目是 `8bitgo-undertale`，入口
 `/web/undertale/`。Butterscotch 是 MPL-2.0 的 GameMaker Runner 重实现，上游把 UNDERTALE v1.08 /
 WAD 16 列为兼容目标，但仍明确标注早期开发；本站页面必须保留“实验性”提示，不能宣称官方支持。
 
-⚠️ **任何 UNDERTALE 游戏数据都不准进 Git、Pages、R2、Worker 代理或 Service Worker。** 包括
-`data.win` / `game.unx`、OGG 音乐、贴图、拆分分卷与任何第三方重打包归档。玩家用
-`webkitdirectory` 选择自己合法取得的完整安装目录；`app.js` 先验证 WAD 名称和 `FORM` 文件头，再按
-ReadableStream 分片直接写浏览器私有 OPFS。不要改成整包 `arrayBuffer()`，也不要新增远端 URL 导入。
+2026-11-16 运营确认 UNDERTALE 获得分发授权，资源包放在 `https://html5.8bitgo.com/undertale/`。
+`public/web/undertale/distribution-manifest.json` 只记录资源路径、长度和 ZIP CRC-32，不含游戏字节。
+清单也记录被排除的桌面版 `.exe` / `.dll` 与未上传、且 `data.win` 未引用的 `splash.png`。
+启动器从 `https://8bitgo.com` 或其 HTTPS 子域直接跨域读取；R2 CORS 只允许 `https://8bitgo.com` 与
+`https://*.8bitgo.com`（Cloudflare 的通配符不包含主域，且可匹配多级子域），不能用 `*` 或放行 `pages.dev`。
+启动器本身再次校验 HTTPS 与 `.8bitgo.com` 主机边界，其它来源不能开始远端下载。R2 自定义域 CORS 变更后清理
+`html5.8bitgo.com` 缓存。策略源文件为 `deploy/cloudflare-pages/undertale-r2-cors.json`；应用变更后还要刷新
+`undertale.8bitgo.com/web/undertale/` 页面缓存。不要经本站 API、Worker 或 Service Worker 代理游戏资源。
+
+⚠️ **游戏字节仍不得进入 Git、Pages 构建包或 Service Worker 缓存。** 只允许从上述授权分发主机直达浏览器，
+流式写入当前浏览器私有 OPFS；大文件按 8 MiB HTTP Range 分段并在每段落盘，CRC-32 对齐授权包后才算就绪，
+中断后可接着已完成的部分下载。资源请求不带本站 Cookie，也没有上传请求。首页自动下载并只显示一条进度条，
+授权资源齐备后自动启动；专用 Pages 子域 `https://undertale.8bitgo.com` 也在白名单内，可从它或主站打开。
 
 OPFS 的 `library-v1` 与 `saves` 故意分开：重新导入或点“清除本机游戏副本”只删游戏库，不删存档。
-运行时预编译与本地复制并行，第二次访问直接从 OPFS 启动；键盘、标准手柄与触屏最终都汇入
+运行时预编译与资源下载并行，第二次访问从 OPFS 读取并启动；键盘、标准手柄与触屏最终都汇入
 Butterscotch 的键盘接口。当前 Web 构建依赖 WebAssembly JSPI、OPFS 和 WebGL 2，不满足时必须在
-导入前拦截，不能让玩家复制完几百 MB 才发现浏览器不兼容。
+下载前拦截，不能让玩家先等几百 MB 才发现浏览器不兼容。
+
+2026-11-16 现场反馈：开场按 Esc 后回到 100% 进度条。复现为 Butterscotch 标题画面将长按 Esc 映射成退出，
+`_startRunner()` 因此正常结束；`startGame()` 的 `finally` 随后切回启动页，满格进度条让人误以为又在加载。
+页面键盘适配现在将 Esc 映射为 Z（确认 / 继续），退出仍使用画面上的“返回 8BitGo”按钮；不要把原始 27
+传给运行端。ScriptProcessorNode 弃用提示与未手势解锁的 AudioContext 提示不会终止 runner；声音门按钮通过
+点击 / 触摸解锁音频。Esc 回归需确认仍处于游戏画布、开场继续推进且没有回到启动页。
 
 上游构建与许可证由 `runtime-manifest.json` 固定哈希；换版时必须同步提交号、归档 SHA-256、两个
-运行时文件哈希和 MPL 许可证。回归：
+运行时文件哈希和 MPL 许可证。替换授权分发包时同步更新资源清单、包版本和 ZIP CRC-32，并先验证远端每个路径、长度及精确 CORS 来源。
+Service Worker 只可缓存运行端和小型资源清单，永远不能缓存游戏数据。回归：
 
 ```bash
 npm run undertale:check

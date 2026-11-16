@@ -1129,23 +1129,9 @@ await check('明文交付是显式选项，并且短期凭据绑定所选端点'
   const wrongRoute = await api('/api/open/v1/rom/' + grant, { redirect: 'manual' })
   assert.equal(wrongRoute.status, 403, 'plain 凭据可被换路径改成对象跳转')
   assert.equal((await wrongRoute.json()).error, 'invalid_grant')
-  const nativeFetch = globalThis.fetch
-  globalThis.fetch = async (input, init) => {
-    if (String(input).startsWith('https://assets.8bitgo.com/')) {
-      return new Response('ROMDATA', {
-        status: 200,
-        headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': '7', 'Accept-Ranges': 'bytes' },
-      })
-    }
-    return nativeFetch(input, init)
-  }
-  try {
-    const downloaded = await api('/api/open/v1/rom-plain/' + grant)
-    assert.equal(downloaded.status, 200, 'plain 凭据不能兑现成明文流')
-    assert.equal(await downloaded.text(), 'ROMDATA', '明文端点没有透传原生 ROM 字节')
-  } finally {
-    globalThis.fetch = nativeFetch
-  }
+  const downloaded = await api('/api/open/v1/rom-plain/' + grant, { redirect: 'manual' })
+  assert.equal(downloaded.status, 302, '明文 ROM 应直接跳转到对象下载域')
+  assert.equal(downloaded.headers.get('location'), 'https://download.8bitgo.com/roms/contra.zip')
   const invalid = await api('/api/open/v1/games/contra/rom?delivery=download', {
     headers: { Authorization: 'Bearer ' + access_token },
   })
@@ -1196,7 +1182,7 @@ await check('合法凭据 302 到资源地址，且不许被缓存', async () =>
   const grant = url.split('/api/open/v1/rom/')[1]
   const r = await api(`/api/open/v1/rom/${grant}`, { redirect: 'manual' })
   assert.equal(r.status, 302)
-  assert.equal(r.headers.get('location'), 'https://assets.8bitgo.com/roms/contra.zip')
+  assert.equal(r.headers.get('location'), 'https://download.8bitgo.com/roms/contra.zip')
   assert.match(String(r.headers.get('cache-control')), /no-store/)
 })
 
@@ -1214,7 +1200,7 @@ await check('多文件 Flash 凭据返回完整相对资源清单，并按白名
 
   const asset = await api(new URL(body.assets[1].url).pathname, { redirect: 'manual' })
   assert.equal(asset.status, 302)
-  assert.equal(asset.headers.get('location'), 'https://assets.8bitgo.com/roms/flash/multi-swf/game/audio/intro.mp3')
+  assert.equal(asset.headers.get('location'), 'https://download.8bitgo.com/roms/flash/multi-swf/game/audio/intro.mp3')
   const main = await api(`/api/open/v1/rom/${new URL(body.url).pathname.split('/bundle/')[1].split('/')[0]}`, { redirect: 'manual' })
   assert.equal(main.status, 403, '多文件票可以绕过白名单直接兑换成原始入口对象')
   const missing = await api(`/api/open/v1/bundle/${new URL(body.url).pathname.split('/bundle/')[1].split('/')[0]}/unlisted.swf`, { redirect: 'manual' })
@@ -1227,19 +1213,9 @@ await check('多文件 Flash 凭据返回完整相对资源清单，并按白名
   const wrongDelivery = await api(`/api/open/v1/bundle/${plainGrant}/game/ui.swf`, { redirect: 'manual' })
   assert.equal(wrongDelivery.status, 403, '明文流凭据不应切换成 302 交付')
 
-  const nativeFetch = globalThis.fetch
-  globalThis.fetch = async (input, init) => {
-    const url = String(typeof input === 'string' ? input : input?.url ?? input)
-    if (url.startsWith('https://assets.8bitgo.com/')) return new Response(Buffer.from('FLASH-ASSET'))
-    return nativeFetch(input, init)
-  }
-  try {
-    const streamed = await api(new URL(plainBody.assets[0].url).pathname)
-    assert.equal(streamed.status, 200)
-    assert.equal(await streamed.text(), 'FLASH-ASSET', 'bundle-plain 没有流式返回依赖文件')
-  } finally {
-    globalThis.fetch = nativeFetch
-  }
+  const streamed = await api(new URL(plainBody.assets[0].url).pathname, { redirect: 'manual' })
+  assert.equal(streamed.status, 302)
+  assert.equal(streamed.headers.get('location'), 'https://download.8bitgo.com/roms/flash/multi-swf/game/ui.swf')
 })
 
 await check('⚠️ 一张 ROM 凭据不能被无限兑现（它是唯一一条既没令牌、原先也没配额的路）', async () => {

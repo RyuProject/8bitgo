@@ -18179,7 +18179,7 @@ function validatePackCatalog(catalog) {
 
 // public/web/cs16/cs16.js
 var BASE = "/rodir/";
-var ASSET_VERSION = "20261019-room-perf2";
+var ASSET_VERSION = "20261116-dlhost";
 var expectedProgressBytes = 128 * 1024 * 1024;
 var AUXILIARY_PROGRESS_BYTES = 16 * 1024 * 1024;
 var Q = new URLSearchParams(location.search);
@@ -18255,8 +18255,25 @@ var USE_NEW_LIBS = Q.get("client") === "new";
 var PAGE_ROOT = new URL("./", document.baseURI);
 var ASSET_ROOT = new URL(Q.get("root") || "./", PAGE_ROOT).href.replace(/\/$/, "");
 var productionHost = location.hostname === "8bitgo.com" || location.hostname.endsWith(".8bitgo.com");
-var DEFAULT_ZSTD_ROOT = productionHost ? "https://assets.8bitgo.com/web/cs16/zstd-v1/" : new URL("./packs/zstd-v1/", PAGE_ROOT).href;
-var PACKS_ROOT = Q.get("packsroot") ? new URL(Q.get("packsroot"), PAGE_ROOT).href.replace(/\/?$/, "/") : DEFAULT_ZSTD_ROOT;
+var DOWNLOAD_ZSTD_ROOT = "https://download.8bitgo.com/web/cs16/zstd-v1/";
+var ASSETS_ZSTD_ROOT = "https://assets.8bitgo.com/web/cs16/zstd-v1/";
+var PACKS_ROOTS = Q.get("packsroot") ? [new URL(Q.get("packsroot"), PAGE_ROOT).href.replace(/\/?$/, "/")] : productionHost ? [DOWNLOAD_ZSTD_ROOT, ASSETS_ZSTD_ROOT] : [new URL("./packs/zstd-v1/", PAGE_ROOT).href];
+var PACKS_ROOT = PACKS_ROOTS[PACKS_ROOTS.length - 1];
+var PREFERRED_ROOT_TIMEOUT_MS = 1e4;
+var packRootIndex = 0;
+function currentPackRoot() {
+  return PACKS_ROOTS[packRootIndex];
+}
+function markPackRootFailed(root, error) {
+  if (root !== PACKS_ROOTS[packRootIndex] || packRootIndex >= PACKS_ROOTS.length - 1) return;
+  packRootIndex += 1;
+  window.__probe.info.packRoot = PACKS_ROOTS[packRootIndex];
+  window.__probe.info.packRootFallback = String(error);
+  log(`\u26A0\uFE0F ${new URL(root).host} unavailable, switching to ${new URL(PACKS_ROOTS[packRootIndex]).host}: ${error}`, "err");
+}
+function packRootTimeout(root) {
+  return root !== PACKS_ROOTS[PACKS_ROOTS.length - 1] ? { timeoutMs: PREFERRED_ROOT_TIMEOUT_MS } : {};
+}
 var LEGACY_PACKS_ROOT = Q.get("legacyroot") ? new URL(Q.get("legacyroot"), PAGE_ROOT).href.replace(/\/?$/, "/") : new URL("./packs/", PAGE_ROOT).href;
 var FORCE_GZIP = Q.get("packformat") === "gzip";
 var FORCE_GZIP_ROOT = Q.has("packsroot") ? PACKS_ROOT : LEGACY_PACKS_ROOT;
@@ -18274,7 +18291,8 @@ window.__probe = {
   errors: [],
   info: {
     performanceProfile: PERFORMANCE_PROFILE.id,
-    maxDevicePixelRatio: maximumDevicePixelRatio()
+    maxDevicePixelRatio: maximumDevicePixelRatio(),
+    packRoot: PACKS_ROOTS[0]
   },
   xash: null,
   net: { total: 0, byUrl: {}, startedAt: 0, lastByteAt: 0 }
@@ -18391,13 +18409,14 @@ function setRoomStatus(room, message) {
   }, 4e3);
 }
 async function fetchRequired(url, label, options = {}) {
+  const { timeoutMs = 3e4, ...fetchOptions } = options;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 3e4);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   let res;
   try {
-    res = await fetch(url, { ...options, signal: controller.signal });
+    res = await fetch(url, { ...fetchOptions, signal: controller.signal });
   } catch (error) {
-    throw new Error(`${label} connection failed: ${error instanceof Error && error.name === "AbortError" ? "no response within 30s" : error}`);
+    throw new Error(`${label} connection failed: ${error instanceof Error && error.name === "AbortError" ? `no response within ${Math.round(timeoutMs / 1e3)}s` : error}`);
   } finally {
     clearTimeout(timer);
   }
@@ -18517,12 +18536,14 @@ async function getPackCatalog() {
     catalogPromise = (async () => {
       let lastError;
       for (let attempt = 0; attempt < 3; attempt += 1) {
-        const url = new URL("catalog.json", PACKS_ROOT);
+        const root = currentPackRoot();
+        const url = new URL("catalog.json", root);
         url.searchParams.set("v", ASSET_VERSION);
         if (attempt) url.searchParams.set("retry", String(attempt));
         try {
           const bytes = await fetchBytes(url.href, "CS1.6 chunk manifest", {
             maxBytes: MAX_CATALOG_BYTES,
+            ...packRootTimeout(root),
             ...attempt ? { cache: "reload" } : {}
           });
           let catalog;
@@ -18534,6 +18555,7 @@ async function getPackCatalog() {
           return validatePackCatalog(catalog);
         } catch (error) {
           lastError = error;
+          markPackRootFailed(root, error);
           if (attempt < 2) log(`\u26A0\uFE0F CS1.6 chunk manifest failed, retrying ${attempt + 2}/3: ${error}`, "err");
         }
       }
@@ -18574,17 +18596,24 @@ async function decompressChunk(compressed, chunk, label) {
   return raw;
 }
 async function fetchCompressedChunkOnce(chunk, label, attempt) {
-  const chunkUrl = new URL(chunk.path, PACKS_ROOT);
+  const root = currentPackRoot();
+  const chunkUrl = new URL(chunk.path, root);
   chunkUrl.searchParams.set("v", chunk.compressedSha256);
   if (attempt) chunkUrl.searchParams.set("retry", String(attempt));
   const url = chunkUrl.href;
-  const compressed = await fetchBytes(url, label, {
-    ...attempt ? { cache: "reload" } : {},
-    maxBytes: MAX_ZSTD_CHUNK_COMPRESSED_BYTES
-  });
-  if (compressed.byteLength !== chunk.compressedBytes) throw new Error(`${label} download length mismatch`);
-  if (await digestHex(compressed) !== chunk.compressedSha256) throw new Error(`${label} SHA-256 mismatch`);
-  return compressed;
+  try {
+    const compressed = await fetchBytes(url, label, {
+      ...packRootTimeout(root),
+      ...attempt ? { cache: "reload" } : {},
+      maxBytes: MAX_ZSTD_CHUNK_COMPRESSED_BYTES
+    });
+    if (compressed.byteLength !== chunk.compressedBytes) throw new Error(`${label} download length mismatch`);
+    if (await digestHex(compressed) !== chunk.compressedSha256) throw new Error(`${label} SHA-256 mismatch`);
+    return compressed;
+  } catch (error) {
+    markPackRootFailed(root, error);
+    throw error;
+  }
 }
 async function fetchCompressedChunk(chunk, label) {
   const key2 = chunk.compressedSha256;

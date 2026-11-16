@@ -17133,8 +17133,35 @@ var BOTS_ENABLED = Q.get("bots") !== "0";
 var PAGE_ROOT = new URL("./", document.baseURI);
 var ASSET_ROOT = new URL(Q.get("root") || "./", PAGE_ROOT).href.replace(/\/$/, "");
 var LOCAL_PACK_HOSTS = /* @__PURE__ */ new Set(["localhost", "127.0.0.1", "::1"]);
-var DEFAULT_PACKS_ROOT = LOCAL_PACK_HOSTS.has(location.hostname) ? ASSET_ROOT + "/packs" : "https://assets.8bitgo.com/web/cs15/packs";
-var PACKS_ROOT = (Q.get("packsroot") ? new URL(Q.get("packsroot"), PAGE_ROOT).href : DEFAULT_PACKS_ROOT).replace(/\/$/, "");
+var DOWNLOAD_PACKS_ROOT = "https://download.8bitgo.com/web/cs15/packs";
+var ASSETS_PACKS_ROOT = "https://assets.8bitgo.com/web/cs15/packs";
+var PACKS_ROOTS = (Q.get("packsroot") ? [new URL(Q.get("packsroot"), PAGE_ROOT).href] : LOCAL_PACK_HOSTS.has(location.hostname) ? [ASSET_ROOT + "/packs"] : [DOWNLOAD_PACKS_ROOT, ASSETS_PACKS_ROOT]).map((root) => root.replace(/\/$/, ""));
+var PREFERRED_ROOT_HEADER_TIMEOUT_MS = 1e4;
+var PREFERRED_ROOT_STALL_MS = 3e4;
+var packRootIndex = 0;
+var currentPackRoot = () => PACKS_ROOTS[packRootIndex];
+var isPreferredRoot = (root) => root !== PACKS_ROOTS[PACKS_ROOTS.length - 1];
+function markPackRootFailed(root, error) {
+  if (root !== PACKS_ROOTS[packRootIndex] || packRootIndex >= PACKS_ROOTS.length - 1) return false;
+  packRootIndex += 1;
+  window.__probe.info.packRoot = PACKS_ROOTS[packRootIndex];
+  window.__probe.info.packRootFallback = String(error);
+  log(`\u26A0\uFE0F ${new URL(root).host} \u4E0D\u53EF\u7528\uFF0C\u6539\u8D70 ${new URL(PACKS_ROOTS[packRootIndex]).host}\uFF1A${error?.message || error}`, "err");
+  return true;
+}
+async function fetchFromPackRoot(root, path, options = {}) {
+  if (!isPreferredRoot(root)) return fetch(`${root}/${path}`, options);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PREFERRED_ROOT_HEADER_TIMEOUT_MS);
+  try {
+    return await fetch(`${root}/${path}`, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (error?.name === "AbortError") throw new Error(`${PREFERRED_ROOT_HEADER_TIMEOUT_MS / 1e3} \u79D2\u6CA1\u6709\u54CD\u5E94`);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 var MAP_OPTIONS = {
   cs: [
     ["de_dust2", "de_dust2"],
@@ -17151,7 +17178,7 @@ var MAP_OPTIONS = {
 var $ = (id) => document.getElementById(id);
 var t0 = performance.now();
 var marks = {};
-window.__probe = { marks, log: [], errors: [], info: {}, xash: null, net: { total: 0, byUrl: {} } };
+window.__probe = { marks, log: [], errors: [], info: { packRoot: PACKS_ROOTS[0] }, xash: null, net: { total: 0, byUrl: {} } };
 window.__probe.keys = [];
 window.addEventListener("keydown", (e) => {
   const rec = { t: "down", key: e.key, code: e.code, keyCode: e.keyCode, defaultPrevented: e.defaultPrevented };
@@ -17310,15 +17337,29 @@ function isGzip(bytes) {
 function isZip(bytes) {
   return bytes.length >= 4 && bytes[0] === 80 && bytes[1] === 75 && bytes[2] === 3 && bytes[3] === 4;
 }
-function prependChunk(head, reader) {
+function prependChunk(head, reader, stallMs = 0) {
   return new ReadableStream({
     start(controller) {
       controller.enqueue(head);
     },
     async pull(controller) {
-      const { done, value } = await reader.read();
-      if (done) controller.close();
-      else controller.enqueue(value);
+      let timer;
+      try {
+        const { done, value } = stallMs ? await Promise.race([
+          reader.read(),
+          new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error(`${stallMs / 1e3} \u79D2\u6CA1\u6709\u65B0\u6570\u636E`)), stallMs);
+          })
+        ]) : await reader.read();
+        if (done) controller.close();
+        else controller.enqueue(value);
+      } catch (error) {
+        void reader.cancel(error).catch(() => {
+        });
+        controller.error(error);
+      } finally {
+        clearTimeout(timer);
+      }
     },
     cancel(reason) {
       return reader.cancel(reason);
@@ -17369,14 +17410,14 @@ function packPlan(index, game, map) {
   if (index?.maps?.[map]) legacy.push({ name: `map-${map}.zip`, file: `map-${map}.zip.gz` });
   return legacy;
 }
-async function openPackStream(file, packName) {
-  const res = await fetch(`${PACKS_ROOT}/${file}?v=${encodeURIComponent(ASSET_VERSION)}`);
+async function openPackStream(root, file, packName) {
+  const res = await fetchFromPackRoot(root, `${file}?v=${encodeURIComponent(ASSET_VERSION)}`);
   if (!res.ok) throw new Error(`\u53D6\u4E0D\u5230 ${packName}\uFF08HTTP ${res.status}\uFF09`);
   if (!res.body) throw new Error("\u5F53\u524D\u6D4F\u89C8\u5668\u4E0D\u652F\u6301\u6D41\u5F0F\u8BFB\u53D6\uFF0C\u65E0\u6CD5\u5B89\u5168\u52A0\u8F7D\u5927\u578B\u8D44\u6E90\u5305");
   const reader = res.body.getReader();
   const head = await readStreamHead(reader);
   if (!head.length) throw new Error(`${packName} \u662F\u7A7A\u6587\u4EF6`);
-  let stream = prependChunk(head, reader);
+  let stream = prependChunk(head, reader, isPreferredRoot(root) ? PREFERRED_ROOT_STALL_MS : 0);
   if (isGzip(head)) {
     if (typeof DecompressionStream === "undefined") {
       throw new Error("\u5F53\u524D\u6D4F\u89C8\u5668\u4E0D\u652F\u6301 gzip \u6D41\u5F0F\u89E3\u538B\uFF0C\u8BF7\u5347\u7EA7 Chrome\u3001Edge \u6216 Safari");
@@ -17393,14 +17434,22 @@ async function openPackStream(file, packName) {
   return stream;
 }
 async function loadPack(xash, pack) {
-  let stream;
-  try {
-    stream = await openPackStream(pack.file, pack.name);
-  } catch (primaryError) {
-    if (!pack.fallback) throw primaryError;
-    log(`\u26A0\uFE0F ${pack.name} \u7684 Brotli \u4E3B\u5305\u4E0D\u53EF\u7528\uFF0C\u6539\u7528 gzip \u515C\u5E95`, "err");
-    stream = await openPackStream(pack.fallback, `${pack.name}\uFF08gzip \u515C\u5E95\uFF09`);
+  let primaryError;
+  for (; ; ) {
+    const root = currentPackRoot();
+    try {
+      return await unpackPack(xash, await openPackStream(root, pack.file, pack.name), pack);
+    } catch (error) {
+      primaryError = error;
+      if (!markPackRootFailed(root, error)) break;
+    }
   }
+  if (!pack.fallback) throw primaryError;
+  log(`\u26A0\uFE0F ${pack.name} \u7684 Brotli \u4E3B\u5305\u4E0D\u53EF\u7528\uFF0C\u6539\u7528 gzip \u515C\u5E95`, "err");
+  const stream = await openPackStream(currentPackRoot(), pack.fallback, `${pack.name}\uFF08gzip \u515C\u5E95\uFF09`);
+  return unpackPack(xash, stream, pack);
+}
+function unpackPack(xash, stream, pack) {
   const FS2 = xash.em.FS;
   return unpackStoredZipStream(stream, {
     mkdir(name2) {
@@ -17715,9 +17764,18 @@ async function start2() {
   mark("\u5F15\u64CE\u521D\u59CB\u5316\u5B8C\u6210");
   await placeLibs(xash, libFilesFor(libs));
   mark("\u5F15\u64CE\u52A8\u6001\u5E93\u5C31\u4F4D");
-  const indexResponse = await fetch(PACKS_ROOT + "/index.json?v=" + ASSET_VERSION, { cache: "no-store" });
-  if (!indexResponse.ok) throw new Error(`\u53D6\u4E0D\u5230\u8D44\u6E90\u7D22\u5F15\uFF08HTTP ${indexResponse.status}\uFF09`);
-  const index = await indexResponse.json();
+  let index;
+  for (; ; ) {
+    const root = currentPackRoot();
+    try {
+      const indexResponse = await fetchFromPackRoot(root, "index.json?v=" + ASSET_VERSION, { cache: "no-store" });
+      if (!indexResponse.ok) throw new Error(`\u53D6\u4E0D\u5230\u8D44\u6E90\u7D22\u5F15\uFF08HTTP ${indexResponse.status}\uFF09`);
+      index = await indexResponse.json();
+      break;
+    } catch (error) {
+      if (!markPackRootFailed(root, error)) throw error;
+    }
+  }
   window.__probe.info.packIndex = index;
   const wanted = packPlan(index, game, map);
   if (wanted.length === 1 && game !== "hl") log(`\uFF08\u6CA1\u6709 ${map} \u7684\u72EC\u7ACB\u5730\u56FE\u5305\uFF0C\u56FE\u5728\u57FA\u7840\u5305\u5185\uFF09`);

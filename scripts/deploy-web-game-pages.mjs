@@ -17,6 +17,11 @@ const run = (command, args) => {
   if (result.status !== 0) process.exit(result.status || 1)
 }
 
+if (name === 'gtavc') {
+  run(process.execPath, ['scripts/patch-gta-vc-7z.mjs'])
+  run(process.execPath, ['scripts/copy-gta-vc-7z.mjs'])
+  run(process.execPath, ['scripts/check-gta-vc-web.mjs'])
+}
 run(process.execPath, ['scripts/build-web-game-pages.mjs', name])
 run(process.execPath, ['scripts/check-web-game-pages.mjs', name])
 const output = resolve(repo, '.cloudflare-pages', name)

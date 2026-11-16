@@ -1,0 +1,11 @@
+[Unit]
+Description=每 5 分钟体检一次优选 CNAME
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+RandomizedDelaySec=30s
+Unit=8bitgo-cname-optimizer.service
+
+[Install]
+WantedBy=timers.target

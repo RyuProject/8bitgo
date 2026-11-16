@@ -1,0 +1,13 @@
+[Unit]
+Description=8BitGo 优选 CNAME 体检与自动换线（download / rom）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/8bitgo/cname-optimizer.env
+# node 路径按机器改（README 里有一行命令自动替换成 8bitgo.service 正在用的那个 node）。
+ExecStart=/usr/local/bin/node /var/www/8bitgo/deploy/cname-optimizer/cname-optimizer.mjs
+StateDirectory=8bitgo-cname-optimizer
+Environment=CNAME_OPT_STATE_FILE=/var/lib/8bitgo-cname-optimizer/state.json
+TimeoutStartSec=5min

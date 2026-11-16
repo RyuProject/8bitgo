@@ -20,7 +20,7 @@ import express, { Router } from 'express'
 import { listGames, recordPlay as recordGamePlay } from '../games-repo.js'
 import { ping, query } from '../db.js'
 import { take, isMeaningfulIp } from '../rateLimit.js'
-import { assetPublicUrl, publicSiteUrl } from '../site-urls.js'
+import { assetPublicUrl, downloadPublicUrl, publicSiteUrl } from '../site-urls.js'
 import { CACHE } from '../cache.js'
 import { clientIpFrom } from '../presence.js'
 import { trustedProxyClientIp } from '../download-proxy.js'
@@ -1004,7 +1004,9 @@ openRouter.get('/v1/games/:slug/rom', requireApp('games.rom'), async (req, res, 
       expires_in: ROM_GRANT_TTL_SEC,
       lang_requested: want || null,
       lang_actual: hit.lang,
-      filename: hit.key.split('/').pop(),
+      filename: requestedDelivery === 'plain'
+        ? (hit.key.split('/').pop() || '').replace(/\.8bg$/i, '')
+        : hit.key.split('/').pop(),
       delivery: requestedDelivery,
       // null 表示尚未核实；不能把它当成「SWF 已经自包含」。
       requires_network: row.requires_network == null ? null : Number(row.requires_network) === 1,
@@ -1078,7 +1080,7 @@ async function redeemRomGrant(req, res, expectedDelivery, { bundle = false } = {
     const byIp = take(`open:romdl:ip:${ip}`, bundle ? 600 : 60, 60_000)
     if (!byIp.ok) { rateLimited(res, byIp); return null }
   }
-  const target = assetPublicUrl(v.key)
+  const target = downloadPublicUrl(v.key)
   if (!target) { fail(res, 404, 'not_found', 'ROM 不可用'); return null }
   return { v, target }
 }
@@ -1117,7 +1119,7 @@ async function redeemBundleAsset(req, res, delivery) {
     fail(res, 404, 'not_found', 'Flash 包目录无效')
     return null
   }
-  const target = assetPublicUrl(`${base}/${path}`)
+  const target = downloadPublicUrl(`${base}/${path}`)
   if (!target) {
     fail(res, 404, 'not_found', 'Flash 资源不可用')
     return null
@@ -1137,7 +1139,8 @@ const bundlePlainHandler = async (req, res, next) => {
   try {
     const redeemed = await redeemBundleAsset(req, res, 'plain')
     if (!redeemed) return
-    await streamRomPlain({ req, res, target: redeemed.target, limits: romTranscodeLimits() })
+    // Flash 包内资源本来就是独立明文对象；直接跳到优选域可让首字节不经过应用服务器。
+    res.set('Cache-Control', 'private, no-store').redirect(302, redeemed.target)
   } catch (error) { next(error) }
 }
 
@@ -1172,15 +1175,15 @@ openRouter.get('/v1/rom/:grant', async (req, res, next) => {
 })
 
 /**
- * `GET /v1/rom-plain/:grant` —— 服务端转码后的明文 ROM（中间件）。
+ * `GET /v1/rom-plain/:grant` —— 明文对象直达下载域；旧 8BG 才由服务端转码。
  *
- * 和 /v1/rom/:grant 用同一张凭据，但**不 302**：服务端取回 8BG 对象、逐块解密解压，
- * 把原生 ROM 流式吐给设备。给没有 zstd / AES-256-GCM 解码能力的低端设备用。
+ * 和 /v1/rom/:grant 用同一张凭据。普通对象校验后 302 到 download 域，让对象存储直接回首字节；
+ * 旧 8BG 暂时保留原来的服务端流式转码，给没有 zstd / AES-256-GCM 解码能力的低端设备用。
  *
  * 特性：
  *   · 支持 Range 断点续传：按 8BG 分块索引映射，只解密解压命中的块。低端设备 WiFi 不稳，
  *     几十上百 MB 的 ROM 断网重来一次等于白烧一遍服务端 CPU，所以必须能续。
- *   · 非 8BG 对象（明文 ROM）直接透传，行为和 /v1/rom/:grant 等价（只是流而非 302）。
+ *   · 非 8BG 对象由路由直接 302，不占转码并发槽。
  *   · 单 ROM 大小上限、全局并发闸、按 AppID/IP 限流，超额拒服务（见 romTranscodeLimits）。
  *   · 不落盘；当前打包器按 8MB 原文分块，内存随活动转码数和单块密文大小有界。
  */
@@ -1188,8 +1191,13 @@ openRouter.get('/v1/rom-plain/:grant', async (req, res, next) => {
   try {
     const redeemed = await redeemRomGrant(req, res, 'plain')
     if (!redeemed) return
+    if (!/\.8bg$/i.test(redeemed.v.key)) {
+      // 已明文发布的 ROM 只需校验短期凭据；文件体直接从优选下载域提供。
+      res.set('Cache-Control', 'private, no-store').redirect(302, redeemed.target)
+      return
+    }
     const limits = romTranscodeLimits()
-    // 先判断是不是 8BG；明文 ROM 只透传，不应占用真正解密解压的并发槽。
+    // 此处只会转码旧 8BG；明文对象已在上面跳转，不占转码并发槽。
     await streamRomPlain({ req, res, target: redeemed.target, limits })
   } catch (e) {
     next(e)

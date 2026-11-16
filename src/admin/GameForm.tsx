@@ -13,6 +13,7 @@ import {
   deleteRomObjectsExactly,
   dirOfKey,
   getRomConfig,
+  guessUploadType,
   isBundleKey,
   keepsOriginalFileName,
   listRomObjects,
@@ -79,7 +80,7 @@ import { extractGameKeywordsFromDescriptions } from './gameKeywords'
 import { normalizeDosStartupCommands } from '../../shared/dos-startup-commands.js'
 import { isVersionedSockdriveDirectory } from '../../shared/sockdrive-url.js'
 import { probeRange } from '@/emulator/remoteDisc'
-import { isRomPackBytes, isRomPackUrl, packRomForUpload, recommendedRomPackCodec, releasePackedRomUpload, romPackKey, unpackRomPackBlob, verifyRomPackBlob } from '@/services/romPack'
+import { isRomPackBytes, packRomForUpload, recommendedRomPackCodec, releasePackedRomUpload, romPackKey, unpackRomPackBlob } from '@/services/romPack'
 import { isStreamingDiscPlatform } from '../../shared/streaming-disc-platforms.js'
 import { getUploadActivity, subscribeUploadActivity, trackUploadActivity } from '@/services/uploadActivity'
 import { flashCompatibilityIssue } from '@/emulator/flashCompatibility'
@@ -3338,8 +3339,10 @@ function RomField({
   const isHtml5 = platform === 'html5'
   const isStreamingDisc = isStreamingDiscPlatform(platform)
   const isPlayArcadeBundle = platform === 'arcade' && runtime === 'play'
-  /** PS1 的 CHD 也必须保持裸文件才能按 Range 读盘；旧 8BG 仍允许上传作兼容回退。 */
-  const shouldPack = !isStreamingDisc && !isHtml5 && platform !== 'psx' && !isPlayArcadeBundle
+  /** 新上传直接发布明文；旧 8BG 导入后会解包，仍可用于逐步迁移旧对象。 */
+  const acceptsPackedRom = !isStreamingDisc && !isHtml5 && platform !== 'psx' && !isPlayArcadeBundle
+  /** 新对象一律明文；旧 8BG 允许导入，但会先解包成原始文件再上传。 */
+  const shouldPack = false
   const oneClickSockdrive = platform === 'dos' && Boolean(lang && autoSockdrive && !autoSockdrive.hasExtras)
   /** 街机的 ROM key 保留原文件名 —— FBNeo 靠压缩包名认 romset，见 roms.ts 的 FILENAME_IS_IDENTITY */
   const isArcade = keepsOriginalFileName(platform)
@@ -3347,7 +3350,7 @@ function RomField({
   // 「玩本地 ROM」和格式识别，混进 zip 会让玩家以为拖个 zip 进播放器也能玩
   const accept = [
     ...(isFlash ? ['.swf', '.zip'] : (platformMap[platform]?.romExtensions ?? ['.zip'])),
-    ...(shouldPack || platform === 'psx' ? ['.8bg'] : []),
+    ...(acceptsPackedRom || platform === 'psx' ? ['.8bg'] : []),
   ].join(',')
   const defKey = (fileName: string) => (lang ? defaultRomKeyForLang(platform, slug, lang, fileName) : defaultKeyFor(platform, slug, fileName))
   const exampleName = platform === 'gamecube' || platform === 'wii'
@@ -3615,7 +3618,7 @@ function RomField({
   }
 
   /**
-   * 完整 8BG 回退包发布成功后，复用管理员刚选的原始 ZIP 创建逐语言 Sockdrive。
+   * 完整明文回退包发布成功后，复用管理员刚选的原始 ZIP 创建逐语言 Sockdrive。
    * 这会产生第二次上行流量，但只需选择一次文件；服务端最终用事务把完整包、EXE 与流式盘一起绑定。
    */
   const publishLanguageSockdrive = async (file: File, targetRomKey: string, expectedRomKey: string) => {
@@ -3826,26 +3829,32 @@ function RomField({
         return
       }
     }
-    // CLI 生成的 8BG 可以直接上传；再包一层会让播放器只拆掉外层，最终把 8BG 密文交给模拟器。
-    // 但四字节魔数不够：普通 ROM 可能碰巧以 8BG1 开头，半截包也照样有魔数。现成包在上传前
-    // 要把每一块解密、解压和校验一遍，同时确认它使用的是当前服务端仍保留的密钥。
-    const hasPackMagic = (shouldPack || platform === 'psx') && isRomPackBytes(await file.slice(0, 4).arrayBuffer())
+    // 旧版 CLI 生成的 8BG 仍允许导入，但对象存储不再保留密文。
+    // 四字节魔数不够：普通 ROM 可能碰巧以 8BG1 开头；完整解包会逐块校验，再以头里的原名上传明文。
+    const hasPackMagic = (acceptsPackedRom || platform === 'psx') && isRomPackBytes(await file.slice(0, 4).arrayBuffer())
     let alreadyPacked = false
+    let importedPacked = false
     let packedOriginalName = ''
+    let unpackedPackedBlob: Blob | null = null
+    let uploadSourceFile = file
     if (hasPackMagic) {
       setMsg({ ok: true, text: `正在校验已有 8BG 容器 ${file.name}…` })
       try {
         const onPackProgress = ({ loaded, total }: { loaded: number; total: number }) => {
           setProgress(Math.min(49, Math.round((loaded / Math.max(1, total)) * 50)))
         }
-        let header: Awaited<ReturnType<typeof verifyRomPackBlob>>
+        let header: Awaited<ReturnType<typeof unpackRomPackBlob>>['header']
         if (platform === 'flash') {
           // 已加密的 8BG 也要验内层 SWF；只验证容器认证码会放过容器里原本就截断的影片。
           const unpacked = await unpackRomPackBlob(file, onPackProgress)
           await assertSwfBlob(unpacked.blob)
+          unpackedPackedBlob = unpacked.blob
           header = unpacked.header
         } else {
-          header = await verifyRomPackBlob(file, onPackProgress)
+          // 解包器逐块校验容器；复用这份明文，避免为大包再读一遍密文。
+          const unpacked = await unpackRomPackBlob(file, onPackProgress)
+          unpackedPackedBlob = unpacked.blob
+          header = unpacked.header
         }
         alreadyPacked = true
         packedOriginalName = header.originalName
@@ -3860,23 +3869,52 @@ function RomField({
         return
       }
     }
+    if (alreadyPacked) {
+      const plainBlob = unpackedPackedBlob
+      if (!plainBlob) {
+        setMsg({ ok: false, text: '旧 8BG 容器没有解出明文；为避免继续发布密文，已取消上传' })
+        setProgress(null)
+        if (inputRef.current) inputRef.current.value = ''
+        return
+      }
+      uploadSourceFile = new File([plainBlob], packedOriginalName, {
+        type: file.type && file.type !== 'application/octet-stream' ? file.type : guessUploadType(packedOriginalName),
+        lastModified: file.lastModified,
+      })
+      alreadyPacked = false
+      importedPacked = true
+    }
     // 上面的 0–49% 只是本地校验；真正上传还没开始，确认弹窗期间不能留一条假进度。
     setProgress(null)
-    // 街机：遇到子目录成员时在本地安全拍平；压缩数据只切片复用，不做整包解压/重压缩。
-    // 现成 8BG 已在上面完整验证过，不把密文误当 ZIP；其包名来自容器头的 originalName。
-    let uploadSourceFile = file
+    if (importedPacked) {
+      // 8BG 的文件扩展名属于容器；盘片检查要针对解出的真实文件。
+      if (platform === 'psx' && /\.iso$/i.test(uploadSourceFile.name)) {
+        const problem = await psxIsoValidationProblem(uploadSourceFile).catch(() => '读取 ISO 目录失败')
+        if (problem) {
+          setMsg({ ok: false, text: problem })
+          if (inputRef.current) inputRef.current.value = ''
+          return
+        }
+      }
+      if (!(await confirmDiscImage(platform, uploadSourceFile))) {
+        if (inputRef.current) inputRef.current.value = ''
+        return
+      }
+      setMsg({ ok: true, text: `已从旧 8BG 容器解出 ${uploadSourceFile.name}；接下来上传明文对象` })
+    }
+    // 街机：遇到子目录成员时在本地安全拍平；原始 ZIP 无需重新压缩。
     let flattenedArcadeFiles = 0
     let arcadeEntries: ZipFileEntry[] | undefined
-    if (isArcade && !alreadyPacked && !isPlayArcadeBundle) {
+    if (isArcade && !isPlayArcadeBundle) {
       setMsg({ ok: true, text: '正在读取街机 ZIP 目录与 CRC；不会解压整包…' })
       try {
-        arcadeEntries = await assertValidZipBlob(file, '街机 ROM')
-        const flattened = await flattenArcadeZipBlob(file, arcadeEntries)
+        arcadeEntries = await assertValidZipBlob(uploadSourceFile, '街机 ROM')
+        const flattened = await flattenArcadeZipBlob(uploadSourceFile, arcadeEntries)
         if (flattened.flattenedCount) {
           flattenedArcadeFiles = flattened.flattenedCount
-          uploadSourceFile = new File([flattened.blob], file.name, {
-            type: file.type || 'application/zip',
-            lastModified: file.lastModified,
+          uploadSourceFile = new File([flattened.blob], uploadSourceFile.name, {
+            type: uploadSourceFile.type || 'application/zip',
+            lastModified: uploadSourceFile.lastModified,
           })
           setMsg({ ok: true, text: `已检测到 ${flattenedArcadeFiles} 个街机 ROM 成员在子目录中，已自动拍平；正在识别 romset…` })
         }
@@ -3888,25 +3926,9 @@ function RomField({
     }
     let sniffed: string | null
     try {
-      /*
-        现成 8BG 街机包以前跳过了全部街机检查（层级、CRC 识别、核心 / BIOS 自动填）——
-        2026-09-20 那次「成员套在子目录里」的事故恰恰就藏在这种包的内层 zip 里。
-        这里把内层解出来照常识别；识别出的标准包名和头里写的不一致就拦下，让管理员换原始 ZIP 上传。
-      */
-      if (alreadyPacked && isArcade && !isPlayArcadeBundle) {
-        setMsg({ ok: true, text: `正在检查 8BG 内层街机 ZIP ${packedOriginalName}…` })
-        const inner = await unpackRomPackBlob(file)
-        const innerFile = new File([inner.blob], inner.name, { type: 'application/zip' })
-        const found = await sniffArcade(innerFile)
-        if (found && found.toLowerCase() !== packedOriginalName.split('/').pop()!.toLowerCase()) {
-          throw new Error(`8BG 内层包名是 ${packedOriginalName}，而 ROM 内容是 ${found}；核心按包名认游戏，请改用原始 ZIP 上传（会自动改名）。`)
-        }
-      }
-      sniffed = alreadyPacked
-        ? (platform === 'arcade' ? packedOriginalName : null)
-        : isPlayArcadeBundle
-          ? uploadSourceFile.name
-          : await sniffArcade(uploadSourceFile, uploadSourceFile === file ? arcadeEntries : undefined)
+      sniffed = isPlayArcadeBundle
+        ? uploadSourceFile.name
+        : await sniffArcade(uploadSourceFile, uploadSourceFile === file ? arcadeEntries : undefined)
     } catch (err) {
       setMsg({ ok: false, text: err instanceof Error ? err.message : '街机 ROM 校验失败' })
       if (inputRef.current) inputRef.current.value = ''
@@ -3922,26 +3944,24 @@ function RomField({
     // 共用 ZIP 时，本槽重传必须另存为自己的语言 key；复用旧 key 会把其他语言一起覆盖。
     // 光盘核心靠扩展名选容器。旧槽是 .cso/.chd、这次选的是 .iso 时绝不能“原地复用”旧名字，
     // 否则能力降级路径会把 ISO 字节写进 .chd/.cso，播放器只会得到一份看似存在的坏文件。
-    const sameStoredFormat = canReuseRomObjectKey(oldKey, alreadyPacked ? packedOriginalName : uploadSourceFile.name, shouldPack)
+    const sameStoredFormat = canReuseRomObjectKey(oldKey, uploadSourceFile.name, shouldPack)
     const reusable = oldKey && sameStoredFormat && allBoundKeys.filter((bound) => bound === oldKey).length <= 1 && !/^https?:/i.test(oldKey) && !oldKey.startsWith('/') && !isBundleKey(oldKey)
-    // 现成容器的外层文件名可能只是 output.8bg；对象 key 必须按头里的 game.nds / game.zip
-    // 生成，运行时选择在下载文件头之前就要靠这层扩展名判断，不能等解密后才知道。
-    const plainKey = sniffed ? defKey(sniffed) : reusable ? oldKey : defKey(alreadyPacked ? packedOriginalName : uploadSourceFile.name)
-    const key = shouldPack || alreadyPacked ? romPackKey(plainKey) : plainKey
+    const plainKey = sniffed ? defKey(sniffed) : reusable ? oldKey : defKey(uploadSourceFile.name)
+    const key = shouldPack ? romPackKey(plainKey) : plainKey
     let pspIsoToChd = false
     let psxIsoToChd = false
     let finalKey = key
-    if (platform === 'psx' && /\.iso$/i.test(file.name)) {
+    if (platform === 'psx' && /\.iso$/i.test(uploadSourceFile.name)) {
       let unavailable = lang ? '' : '未选择 ROM 语言槽'
       try {
         if (lang) {
           const capability = await psxConversionCapability()
-          if (!capability.available || file.size > capability.maxIsoBytes) {
+          if (!capability.available || uploadSourceFile.size > capability.maxIsoBytes) {
             unavailable = capability.reason || `ISO 超过后台上限 ${human(capability.maxIsoBytes)}`
           } else {
             psxIsoToChd = true
             // 旧槽可能是 .chd.8bg；自动转换后的成品是直存 .chd，不能复用旧后缀。
-            finalKey = psxChdKey(defKey(file.name))
+            finalKey = psxChdKey(defKey(uploadSourceFile.name))
           }
         }
       } catch (error) {
@@ -3955,11 +3975,11 @@ function RomField({
         return
       }
     }
-    if (platform === 'psp' && /\.iso$/i.test(file.name)) {
+    if (platform === 'psp' && /\.iso$/i.test(uploadSourceFile.name)) {
       let unavailable = ''
       try {
         const capability = await pspConversionCapability()
-        if (capability.available && file.size <= capability.maxIsoBytes) {
+        if (capability.available && uploadSourceFile.size <= capability.maxIsoBytes) {
           pspIsoToChd = true
           finalKey = pspChdKey(key)
         } else {
@@ -4004,7 +4024,7 @@ function RomField({
         if ((pspIsoToChd || psxIsoToChd) && lang) {
           const stagingKey = psxIsoToChd ? psxStagingKey() : pspStagingKey()
           setMsg({ ok: true, text: `正在断点上传临时 ISO；上传后服务器会自动转为 ${finalKey}` })
-          await uploadRom(file, stagingKey, (pct, at) => {
+          await uploadRom(uploadSourceFile, stagingKey, (pct, at) => {
             // 临时 ISO 上传占前 45%，服务器下载 / 转换 / 校验 / 发布占后 55%。
             setProgress(Math.round(pct * 0.45))
             if (at) setStage(at)
@@ -4015,7 +4035,7 @@ function RomField({
           const request = {
             sourceKey: stagingKey,
             targetKey: finalKey,
-            sourceSize: file.size,
+            sourceSize: uploadSourceFile.size,
             // 新建表单里的 slug 还没入库，可能正好撞到一款旧游戏；只给真实存在的编辑对象做自动绑定。
             ...(persistedSlug ? { gameSlug: persistedSlug, lang, expectedCurrentKey: oldKey } : {}),
             // 只有确实看到了目标并得到确认，才允许任务覆盖；探测时不存在就保持禁止覆盖。
@@ -4093,31 +4113,24 @@ function RomField({
         // 已经确认 R2 收到完整对象，马上释放可能很大的重试缓存；只有失败才需要把它留给下一次。
         if (packedBlob) releasePackedRomUpload(packedBlob)
         onChange(result.key)
-        const migrationBackup = shouldPack && oldKey && oldKey !== result.key && !isRomPackUrl(oldKey)
-        if (migrationBackup && !backupValue.trim()) onBackupChange(oldKey)
-        // 第一次从明文/ZIP 迁到 8BG 时先留着旧对象。若备用栏空，就自动绑成回退地址；
-        // 等线上确认新包可玩后再由管理员删，不能在第一次上传成功时就把唯一退路抹掉。
-        const removed = migrationBackup ? null : await cleanupSuperseded(oldKey, result.key, allBoundKeys)
+        const removed = await cleanupSuperseded(oldKey, result.key, allBoundKeys)
         let streamSuffix = ''
         let streamFailure = ''
-        if (oneClickSockdrive && !alreadyPacked) {
+        if (oneClickSockdrive) {
           try {
-            streamSuffix = await publishLanguageSockdrive(file, result.key, oldKey)
+            streamSuffix = await publishLanguageSockdrive(uploadSourceFile, result.key, oldKey)
           } catch (error) {
             streamFailure = error instanceof Error ? error.message : '流式盘转换没有启动'
           }
-        } else if (oneClickSockdrive && alreadyPacked) {
-          streamFailure = '选择的是现成 8BG，缺少制作流式盘所需的原始 ZIP；完整包已正常上传'
         }
         setMsg({
           ok: !streamFailure,
           text:
             `已上传到 R2：${result.key}（${human(result.size)}）` +
-            (needsPacking ? `；${packCodecLabel}` : alreadyPacked ? '；沿用已有 8BG 容器' : '') +
+            (needsPacking ? `；${packCodecLabel}` : importedPacked ? '；已解开旧 8BG 容器并以明文上传' : '') +
             (sniffed ? `；已按识别结果命名为 ${sniffed}` : '') +
             (isArcade && sniffed && oldKey !== result.key ? '；当前语言已改绑到标准 romset 对象，请保存游戏条目' : '') +
             (flattenedArcadeFiles ? `；已自动拍平 ${flattenedArcadeFiles} 个子目录 ROM 文件` : '') +
-            (migrationBackup ? `；旧文件 ${oldKey} 已保留${backupValue.trim() ? '' : '为备用地址'}` : '') +
             (removed ? `；旧文件 ${removed} 已删除` : '') +
             streamSuffix +
             (streamFailure ? `；完整回退包可用，但流式盘未完成：${streamFailure}` : ''),
@@ -4254,7 +4267,7 @@ function RomField({
                 ? `这一槽绑的是多 SWF 包里的 ${value.trim().split('/').pop()}；再传一个 zip 会原地更新 ${dirOfKey(value.trim())}/`
                 : `再次上传会原地覆盖已绑定的 ${value.trim()}；想换存放位置就先改这里的 key 或清空`
               : oneClickSockdrive
-                ? `选择一次原始 ZIP：先生成并上传同语言 8BG 完整回退包，再上传私有源文件，由服务器制作版本化 Sockdrive 并原子绑定`
+              ? `选择一次原始 ZIP：先上传明文完整回退包，再上传私有源文件，由服务器制作版本化 Sockdrive 并原子绑定`
               : isArcade
               ? `街机 ROM 会**自动识别 romset**：按 ZIP 中央目录的文件名和 CRC 核验。已支持的 MAME 专用包会自动选核心/BIOS；FBNeo 命中后按 romset 短名存（如 ${defKey('kof97.zip')}）。未知或不完整包不会猜名`
               : isFlash
@@ -4264,8 +4277,8 @@ function RomField({
                 : isStreamingDisc
                   ? `直接上传镜像会存到 ${defKey(exampleName)} 这样的位置并自动绑定；不要套 ZIP。也可手填支持 HTTP Range 的完整 URL`
                 : platform === 'psx'
-                  ? `单数据轨 ISO 优先在服务器转成可 Range 流式游玩的 CD CHD；现成 CHD 可按需读盘。双盘 / 多盘请选择下方入口，按盘片顺序选择 2–${PSX_M3U_MAX_DISCS} 张 CHD，系统会生成 M3U 并在全部盘上传后才绑定。带 CD 音轨的原盘请先从 BIN/CUE 转 CHD，单独 ISO 无法保留音乐`
-                : `新上传会先做 Zstd 19 + AES-256-GCM，再存到 ${romPackKey(defKey(exampleName))} 并自动绑定；旧 ZIP/ROM 仍可直接填写和运行`
+                  ? `单数据轨 ISO 优先在服务器转成可 Range 流式游玩的 CD CHD；现成 CHD 可按需读盘。旧 8BG 导入后会先解包再上传明文。双盘 / 多盘请选择下方入口，按盘片顺序选择 2–${PSX_M3U_MAX_DISCS} 张 CHD，系统会生成 M3U 并在全部盘上传后才绑定。带 CD 音轨的原盘请先从 BIN/CUE 转 CHD，单独 ISO 无法保留音乐`
+                : `新上传会以明文存到 ${defKey(exampleName)} 并自动绑定；旧 8BG 导入后也会解包成明文对象`
             : isHtml5
               ? '填写你有权嵌入的 HTTPS 游戏网址；目标站点必须允许 iframe 嵌入。单文件上传需先配置 Worker'
               : '手填对象 key 或完整 URL；要直接上传，请先在「ROM 存储」页配置 Worker 地址与口令'

@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+    <meta name="theme-color" content="#000000">
+    <!-- PWA -->
+    <link rel="manifest" href="manifest.json?v=af90b7d1d031">
+    <link rel="apple-touch-icon" href="icons/icon-192.png">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="EKA2L1">
+    <meta name="mobile-web-app-capable" content="yes">
+    <title data-i18n="page.run.title">EKA2L1 — 运行</title>
+    <link rel="stylesheet" href="css/app.css?v=af90b7d1d031">
+    <!-- i18n dictionaries + engine must load before any UI script -->
+    <script src="js/i18n/zh-CN.js?v=af90b7d1d031"></script>
+    <script src="js/i18n/en-US.js?v=af90b7d1d031"></script>
+    <script src="js/i18n.js?v=af90b7d1d031"></script>
+</head>
+<body class="player-body">
+
+<!-- Top bar -->
+<header class="player-bar">
+    <button class="icon-btn" onclick="goBack()" title="返回程序库" data-i18n-title="player.title">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="15 18 9 12 15 6"/>
+        </svg>
+    </button>
+    <div class="player-title" id="playerTitle">EKA2L1</div>
+    <div class="player-fps" id="fpsLabel">-- FPS</div>
+    <button class="icon-btn" id="btnPause" onclick="togglePause()" title="暂停 / 继续" data-i18n-title="player.togglePause">
+        <svg id="iconPause" width="19" height="19" viewBox="0 0 24 24" fill="currentColor">
+            <rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/>
+        </svg>
+        <svg id="iconPlay" width="19" height="19" viewBox="0 0 24 24" fill="currentColor" style="display:none">
+            <polygon points="6 3 21 12 6 21"/>
+        </svg>
+    </button>
+    <button class="icon-btn" onclick="manualSave()" title="保存存档到浏览器" data-i18n-title="player.save">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+            <polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>
+        </svg>
+    </button>
+    <button class="icon-btn" onclick="rotateScreen(-90)" title="向左旋转屏幕" data-i18n-title="player.rotateLeft">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M2.5 2v6h6"/><path d="M2.66 15.57a10 10 0 1 0 .57-8.38"/>
+        </svg>
+    </button>
+    <button class="icon-btn" onclick="rotateScreen(90)" title="向右旋转屏幕" data-i18n-title="player.rotateRight">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21.5 2v6h-6"/><path d="M21.34 15.57a10 10 0 1 1-.57-8.38"/>
+        </svg>
+    </button>
+    <button class="icon-btn" onclick="toggleKeypad()" title="虚拟按键" data-i18n-title="player.keypad">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="6" width="20" height="12" rx="2"/>
+            <line x1="6" y1="10" x2="6" y2="10.01"/><line x1="10" y1="10" x2="10" y2="10.01"/><line x1="14" y1="10" x2="14" y2="10.01"/><line x1="18" y1="10" x2="18" y2="10.01"/>
+            <line x1="8" y1="14" x2="16" y2="14"/>
+        </svg>
+    </button>
+    <button class="icon-btn" onclick="toggleFullscreen()" title="全屏" data-i18n-title="player.fullscreen">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>
+        </svg>
+    </button>
+</header>
+
+<!-- Stage -->
+<main class="player-stage" id="stage">
+    <canvas id="canvas" tabindex="0"></canvas>
+
+    <div class="stage-overlay" id="bootOverlay">
+        <div class="spinner" id="overlaySpinner"></div>
+        <div class="overlay-title" id="overlayTitle" data-i18n="player.loading">正在加载模拟器…</div>
+        <div class="overlay-text" id="overlayText"></div>
+        <div class="overlay-progress"><div class="bar" id="overlayBar"></div></div>
+        <div class="player-error-actions" id="overlayActions" style="display:none">
+            <button class="btn btn-primary" onclick="goBack()" data-i18n="player.backToLibrary">回到程序库</button>
+            <button class="btn" onclick="location.reload()" data-i18n="player.retry">重试</button>
+        </div>
+    </div>
+</main>
+
+<!-- Virtual keypad. T9 is the classic S60 pad; E72 follows the real handset:
+     control deck under the screen, then QWERTY. Bottom row is Fn Shift Sym @
+     space ? ! ' Ctrl, matching the E72 (smaller space, two extra keys). -->
+<footer class="keypad hidden" id="keypad">
+    <div class="keypad-switch" role="tablist">
+        <button type="button" class="keypad-choice" data-layout-choice="t9" data-i18n="player.layoutT9" data-i18n-title="player.layoutT9Title">T9</button>
+        <button type="button" class="keypad-choice" data-layout-choice="e72" data-i18n="player.layoutE72" data-i18n-title="player.layoutE72Title">E72</button>
+    </div>
+    <div class="keypad-board" data-layout="t9">
+        <div class="keypad-grid">
+            <button class="key key-soft" data-key="LSK" data-i18n="player.keySoftLeft">左软键</button>
+            <button class="key" data-key="UP">▲</button>
+            <button class="key key-soft" data-key="RSK" data-i18n="player.keySoftRight">右软键</button>
+            <button class="key" data-key="LEFT">◀</button>
+            <button class="key key-accent" data-key="OK">OK</button>
+            <button class="key" data-key="RIGHT">▶</button>
+            <button class="key key-soft" data-key="CALL" data-i18n="player.keyCall">拨号</button>
+            <button class="key" data-key="DOWN">▼</button>
+            <button class="key key-soft key-red" data-key="END" data-i18n="player.keyEnd">挂断</button>
+            <button class="key key-soft" data-key="CLEAR">C</button>
+            <button class="key key-accent" data-key="MENU" data-i18n="player.keyMenu">主菜单</button>
+            <span></span>
+        </div>
+        <div class="keypad-grid">
+            <button class="key" data-key="D1">1</button>
+            <button class="key" data-key="D2">2</button>
+            <button class="key" data-key="D3">3</button>
+            <button class="key" data-key="D4">4</button>
+            <button class="key" data-key="D5">5</button>
+            <button class="key" data-key="D6">6</button>
+            <button class="key" data-key="D7">7</button>
+            <button class="key" data-key="D8">8</button>
+            <button class="key" data-key="D9">9</button>
+            <button class="key" data-key="STAR">＊</button>
+            <button class="key" data-key="D0">0</button>
+            <button class="key" data-key="HASH">＃</button>
+        </div>
+    </div>
+    <div class="keypad-board" data-layout="e72" hidden>
+        <div class="e72-deck">
+            <div class="e72-cluster">
+                <button class="key key-soft" data-key="LSK" data-i18n="player.keySoftLeft">左软键</button>
+                <button class="key key-green" data-key="CALL" data-i18n="player.keyCall">拨号</button>
+                <button class="key key-soft" data-key="MENU" data-i18n="player.keyHome">主页</button>
+                <button class="key key-soft" data-scan="181" data-i18n="player.keyCalendar">日历</button>
+            </div>
+            <div class="e72-dpad" aria-hidden="false">
+                <button class="key e72-up" data-key="UP">▲</button>
+                <button class="key e72-left" data-key="LEFT">◀</button>
+                <button class="key key-accent e72-ok" data-key="OK">OK</button>
+                <button class="key e72-right" data-key="RIGHT">▶</button>
+                <button class="key e72-down" data-key="DOWN">▼</button>
+            </div>
+            <div class="e72-cluster">
+                <button class="key key-soft" data-scan="182" data-i18n="player.keyContacts">通讯录</button>
+                <button class="key key-soft" data-scan="183" data-i18n="player.keyMail">邮件</button>
+                <button class="key key-red" data-key="END" data-i18n="player.keyEnd">挂断</button>
+                <button class="key key-soft" data-key="RSK" data-i18n="player.keySoftRight">右软键</button>
+            </div>
+        </div>
+        <div class="e72-row">
+            <button class="key e72-key" data-code="Q" data-fn="1"><span class="e72-alt">1</span><span class="e72-main">Q</span></button>
+            <button class="key e72-key" data-code="W" data-fn="2"><span class="e72-alt">2</span><span class="e72-main">W</span></button>
+            <button class="key e72-key" data-code="E" data-fn="3"><span class="e72-alt">3</span><span class="e72-main">E</span></button>
+            <button class="key e72-key" data-code="R" data-fn="4"><span class="e72-alt">4</span><span class="e72-main">R</span></button>
+            <button class="key e72-key" data-code="T" data-fn="5"><span class="e72-alt">5</span><span class="e72-main">T</span></button>
+            <button class="key e72-key" data-code="Y" data-fn="6"><span class="e72-alt">6</span><span class="e72-main">Y</span></button>
+            <button class="key e72-key" data-code="U" data-fn="7"><span class="e72-alt">7</span><span class="e72-main">U</span></button>
+            <button class="key e72-key" data-code="I" data-fn="8"><span class="e72-alt">8</span><span class="e72-main">I</span></button>
+            <button class="key e72-key" data-code="O" data-fn="9"><span class="e72-alt">9</span><span class="e72-main">O</span></button>
+            <button class="key e72-key" data-code="P" data-fn="0"><span class="e72-alt">0</span><span class="e72-main">P</span></button>
+        </div>
+        <div class="e72-row">
+            <button class="key e72-key" data-code="A" data-fn="*"><span class="e72-alt">*</span><span class="e72-main">A</span></button>
+            <button class="key e72-key" data-code="S" data-fn="+"><span class="e72-alt">+</span><span class="e72-main">S</span></button>
+            <button class="key e72-key" data-code="D" data-fn="-"><span class="e72-alt">-</span><span class="e72-main">D</span></button>
+            <button class="key e72-key" data-code="F" data-fn="="><span class="e72-alt">=</span><span class="e72-main">F</span></button>
+            <button class="key e72-key" data-code="G" data-fn="("><span class="e72-alt">(</span><span class="e72-main">G</span></button>
+            <button class="key e72-key" data-code="H" data-fn=")"><span class="e72-alt">)</span><span class="e72-main">H</span></button>
+            <button class="key e72-key" data-code="J" data-fn="/"><span class="e72-alt">/</span><span class="e72-main">J</span></button>
+            <button class="key e72-key" data-code="K" data-fn="#"><span class="e72-alt">#</span><span class="e72-main">K</span></button>
+            <button class="key e72-key" data-code="L" data-fn="&amp;"><span class="e72-alt">&amp;</span><span class="e72-main">L</span></button>
+            <button class="key e72-key e72-mod" data-scan="1" data-i18n-title="player.keyBackspace">⌫</button>
+        </div>
+        <div class="e72-row">
+            <button class="key e72-key" data-code="Z" data-fn="!"><span class="e72-alt">!</span><span class="e72-main">Z</span></button>
+            <button class="key e72-key" data-code="X" data-fn="&quot;"><span class="e72-alt">&quot;</span><span class="e72-main">X</span></button>
+            <button class="key e72-key" data-code="C" data-fn="'"><span class="e72-alt">'</span><span class="e72-main">C</span></button>
+            <button class="key e72-key" data-code="V" data-fn=":"><span class="e72-alt">:</span><span class="e72-main">V</span></button>
+            <button class="key e72-key" data-code="B" data-fn=";"><span class="e72-alt">;</span><span class="e72-main">B</span></button>
+            <button class="key e72-key" data-code="N" data-fn="?"><span class="e72-alt">?</span><span class="e72-main">N</span></button>
+            <button class="key e72-key" data-code="M" data-fn=","><span class="e72-alt">,</span><span class="e72-main">M</span></button>
+            <button class="key e72-key" data-code=","><span class="e72-main">,</span></button>
+            <button class="key e72-key" data-code="."><span class="e72-main">.</span></button>
+            <button class="key e72-key e72-mod" data-scan="3" data-i18n-title="player.keyEnter">↵</button>
+        </div>
+        <div class="e72-row">
+            <button class="key e72-key e72-mod" data-special="fn" data-i18n-title="player.keyFn">Fn</button>
+            <button class="key e72-key e72-mod" data-special="shift" data-mod="18" data-i18n-title="player.keyShift">⇧</button>
+            <button class="key e72-key e72-mod" data-special="sym" data-mod="19" data-i18n-title="player.keySym">Sym</button>
+            <button class="key e72-key" data-code="@"><span class="e72-main">@</span></button>
+            <button class="key e72-key e72-space" data-scan="5" data-i18n-title="player.keySpace"></button>
+            <button class="key e72-key" data-code="?"><span class="e72-main">?</span></button>
+            <button class="key e72-key" data-code="!"><span class="e72-main">!</span></button>
+            <button class="key e72-key" data-code="'"><span class="e72-main">'</span></button>
+            <button class="key e72-key e72-mod" data-special="ctrl" data-mod="22" data-i18n-title="player.keyCtrl">Ctrl</button>
+        </div>
+    </div>
+</footer>
+
+<div class="toast" id="toast"></div>
+
+<script src="js/build_id.js?v=af90b7d1d031"></script>
+<script src="eka2l1.js?v=af90b7d1d031"></script>
+<script src="js/boot.js?v=af90b7d1d031"></script>
+<script src="js/run.js?v=af90b7d1d031"></script>
+
+<script>
+// Service Worker 注册（PWA 离线支持 + COOP/COEP 头注入）
+if (false && 'serviceWorker' in navigator) { // 8BitGo：不注册 SW
+    // Activating a worker must not interrupt a live install or game. The next
+    // navigation fetches current HTML; stamped URLs keep this page consistent.
+    navigator.serviceWorker.addEventListener('message', function (ev) {
+        if (ev.data && ev.data.type === 'eka2l1-sw-updated' &&
+                ev.data.version !== window.EKA2L1_BUILD_ID) {
+            console.info('[SW] Update ready; it will apply on the next navigation.');
+        }
+    });
+    window.addEventListener('load', function () {
+        var buildId = (window.EKA2L1_BUILD_ID || 'dev');
+        var swUrl = './sw.js?v=' + encodeURIComponent(buildId);
+        navigator.serviceWorker.register(swUrl, { scope: './' })
+            .then(function (reg) {
+                return reg.update().catch(function () { /* ignore update race */ });
+            })
+            .catch(function (err) {
+                console.warn('[SW] 注册失败，尝试清除旧 SW:', err);
+                navigator.serviceWorker.getRegistrations().then(function (regs) {
+                    return Promise.all(regs.map(function (r) { return r.unregister(); }));
+                }).then(function () {
+                    console.info('[SW] Cleared old worker; retry on the next navigation.');
+                }).catch(function () {});
+            });
+    });
+}
+</script>
+</body>
+</html>

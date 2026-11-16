@@ -36,7 +36,7 @@ import { GP, hasGamepadApi, startGamepadBridge, type GamepadBridge } from '../ga
 import { canvasToBlob } from '../recorder'
 import { fetchBlobWithProgress, fetchWithProgress } from '../loadProgress'
 import { romCacheKey } from '../romCache'
-import { alternateRomUrl, rememberRomHostForUrl } from '@/services/romHosts'
+import { alternateRomUrls, rememberRomHostForUrl } from '@/services/romHosts'
 import { diagLog } from '@/services/startupDiagnostics'
 import { inspectPlayArcadeBundle, PLAY_ARCADE_BUNDLE_MAX_BYTES, type PlayArcadeBundle } from '@/lib/playArcadeBundle'
 
@@ -384,7 +384,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           signal: requestController.signal,
           maxBytes: PLAY_ARCADE_BUNDLE_MAX_BYTES,
           resumeKey: romCacheKey(options.game) || undefined,
-          alternateUrl: alternateRomUrl(options.game),
+          alternateUrls: alternateRomUrls(options.game),
           check: (res) => {
             if (/text\/html|application\/xhtml/i.test(res.headers.get('content-type') ?? '')) throw new Error('Play! 街机 ROM 地址返回了网页')
           },
@@ -403,6 +403,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           onProgress: options.onProgress,
           signal: requestController.signal,
           maxBytes: PLAY_ELF_MAX_BYTES,
+          alternateUrls: alternateRomUrls(options.game),
           check: (res) => {
             if (/text\/html|application\/xhtml/i.test(res.headers.get('content-type') ?? '')) {
               throw new Error('Play! ELF 地址返回了网页，不是可执行文件')
@@ -413,18 +414,21 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         assertPlayElf(elfBytes)
       } else {
         let discUrl = options.game
-        let alternateDiscUrl = alternateRomUrl(discUrl)
-        let probe = await probeRange(discUrl, requestController.signal, alternateDiscUrl ? 5_000 : undefined)
-        if ((!probe.rangeSupported || !probe.size) && alternateDiscUrl && !requestController.signal.aborted) {
+        const routeCandidates = [discUrl, ...alternateRomUrls(discUrl)]
+        let probe = await probeRange(discUrl, requestController.signal, routeCandidates.length > 1 ? 5_000 : undefined)
+        let alternateDiscUrls = routeCandidates.slice(1)
+        if ((!probe.rangeSupported || !probe.size) && routeCandidates.length > 1 && !requestController.signal.aborted) {
           const failedUrl = discUrl
-          const retryUrl = alternateDiscUrl
-          const alternateProbe = await probeRange(retryUrl, requestController.signal, 5_000)
-          if (alternateProbe.rangeSupported && alternateProbe.size) {
-            discUrl = retryUrl
-            alternateDiscUrl = failedUrl
-            probe = alternateProbe
-            rememberRomHostForUrl(discUrl)
-            diagLog('download', 'warn', 'Play! Range 探测切换线路：', failedUrl, '→', discUrl)
+          for (const retryUrl of routeCandidates.slice(1)) {
+            const alternateProbe = await probeRange(retryUrl, requestController.signal, 5_000)
+            if (alternateProbe.rangeSupported && alternateProbe.size) {
+              discUrl = retryUrl
+              alternateDiscUrls = routeCandidates.filter((candidate) => candidate !== retryUrl)
+              probe = alternateProbe
+              rememberRomHostForUrl(discUrl)
+              diagLog('download', 'warn', 'Play! Range 探测切换线路：', failedUrl, '→', discUrl)
+              break
+            }
           }
         }
         if (destroyed) return
@@ -437,7 +441,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         diagLog('download', 'info', 'Play! 光盘线路：', new URL(discUrl, window.location.href).origin)
         disc = new RemoteDisc({
           size: probe.size,
-          fetchRange: httpRangeFetcher(discUrl, requestController.signal, undefined, alternateDiscUrl),
+          fetchRange: httpRangeFetcher(discUrl, requestController.signal, undefined, alternateDiscUrls),
         })
         source = disc
         // 盘是按需读的，没有「下载完成」这一说 —— 直接把 rom 阶段推满，

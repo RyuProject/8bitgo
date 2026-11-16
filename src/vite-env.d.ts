@@ -28,6 +28,8 @@ interface ImportMetaEnv {
   readonly VITE_ROM_BASE_URL?: string
   /** ROM 加速镜像（EdgeOne），大文件开局前与主域测速择优（见 services/roms.ts romMirrorUrl） */
   readonly VITE_ROM_MIRROR_URL?: string
+  /** 下载优选域；与 ROM 主域指向同一 Worker / R2 对象，仅在失败或测速更快时选用。 */
+  readonly VITE_ROM_DOWNLOAD_URL?: string
   readonly VITE_COVER_URL?: string
   /** 页面开在 cn.8bitgo.com 时改用的封面域（EdgeOne，见 shared/cn-host.js） */
   readonly VITE_CN_COVER_URL?: string

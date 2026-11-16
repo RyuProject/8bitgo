@@ -23,6 +23,7 @@ import { isRomPackUrl, romPackKey } from '../../shared/rom-pack-format.js'
 import { isStreamingDiscPlatform } from '../../shared/streaming-disc-platforms.js'
 import { builtinWebGameFor } from '../../shared/builtin-web-games.js'
 import { chooseFasterRomRoute, chooseRomHost, ROM_ROUTE_RACE_MIN_BYTES, type RomHost } from './romRoute'
+import { alternateRomUrls, downloadRomUrl } from './romHosts'
 import { diagLog } from './startupDiagnostics'
 import { coverCdnHint } from './cnHost'
 import { reportCoverCdnFailure, selectedCoverCdn, startCoverCdnProbe, subscribeCoverCdn } from './coverCdn'
@@ -292,7 +293,11 @@ export function romUrlForKey(key: string, base = getRomBase()): string {
   // 封面走独立的 image 桶（image.8bitgo.com），和 ROM 主桶隔离缓存命名空间，
   // 免得大 ROM 下载把高频小封面从边缘缓存顶掉。新桶缺图时由 Worker 透明回退老桶。
   const useBase = key.startsWith('covers/') ? getCoverBase() || base : base
-  return useBase ? `${useBase}/${encodeKey(key)}` : ''
+  if (!useBase) return ''
+  const url = `${useBase}/${encodeKey(key)}`
+  // 明文 ROM 优先走独立下载域；后台改过存储根地址时不能把自定义桶误送到生产域。
+  // 历史 8BG 密文仍走原线路，只有主机故障时才由备用链尝试其它域。
+  return key.startsWith('covers/') || isRomPackUrl(key) ? url : downloadRomUrl(url) || url
 }
 
 export type GameMediaKind = 'cover' | 'video'
@@ -385,7 +390,7 @@ export function explicitRomUrl(game: Game): string {
   return game.rom ? romUrlForKey(game.rom) : ''
 }
 
-/** 约定 key：先探新的 <slug>.<ext>.8bg，再探历史 <slug>.<ext>，zip 优先。 */
+/** 约定 key：先探明文 <slug>.<ext>，再探旧的 <slug>.<ext>.8bg；zip 优先。 */
 export function conventionalKeys(game: Game): string[] {
   const prefix = getRomPrefix()
   const at = (name: string) => `${prefix ? `${prefix}/` : ''}${game.platform}/${name}`
@@ -409,12 +414,12 @@ export function conventionalKeys(game: Game): string[] {
   const streamingDisc = isStreamingDiscPlatform(game.platform)
   const ordered = streamingDisc ? exts.filter((e) => e !== '.zip') : ['.zip', ...exts.filter((e) => e !== '.zip')]
   const legacy = ordered.map((ext) => at(`${game.slug}${ext}`))
-  // 没有数据库绑定的老游戏也能原地把对象换成 .8bg；流式光盘明确不走浏览器解包路径。
+  // 新内容优先用可直接流式读取的明文对象，历史 8BG 只作兼容回退；流式光盘不走浏览器解包。
   // PS1 的新 ROM 已改为直接绑定裸盘（CHD 还要走 Range），因此约定探测也先查裸文件，
   // 只有历史对象确实不存在时才回退到旧 8BG；否则会对每个现存 CHD 先制造一个 404。
   if (streamingDisc) return legacy
   if (game.platform === 'psx') return [...legacy, ...legacy.map((key) => `${key}.8bg`)]
-  return [...legacy.map((key) => `${key}.8bg`), ...legacy]
+  return [...legacy, ...legacy.map((key) => `${key}.8bg`)]
 }
 
 /** key 自带完整地址（外链或站内绝对路径），不需要根地址就能探 */
@@ -712,8 +717,7 @@ export function romCandidates(game: Pick<Game, 'rom' | 'roms' | 'romBackups'>, l
 }
 
 /**
- * 真正用于播放探测的候选。数据库无需同步改 key：把 `a.zip.8bg` 放到 `a.zip` 旁边，
- * 玩家就会优先命中新包；没生成、损坏或密钥错则继续用原对象。完整外链不擅自改 URL，
+ * 真正用于播放探测的候选。明文原件优先，旧 8BG 仍是后备；完整外链不擅自改 URL，
  * 流式光盘 / HTML5 也明确不走浏览器解包。
  */
 export function playbackRomCandidates(game: Pick<Game, 'platform' | 'rom' | 'roms' | 'romBackups' | 'runtime'>, lang: Lang, prefer?: RomSlotLang | null): RomCandidate[] {
@@ -726,16 +730,16 @@ export function playbackRomCandidates(game: Pick<Game, 'platform' | 'rom' | 'rom
   const out: RomCandidate[] = []
   const seen = new Set<string>()
   for (const candidate of raw) {
+    if (!seen.has(candidate.key)) {
+      seen.add(candidate.key)
+      out.push(candidate)
+    }
     if (!selfContainedKey(candidate.key) && !isRomPackUrl(candidate.key)) {
       const packed = romPackKey(candidate.key)
       if (!seen.has(packed)) {
         seen.add(packed)
         out.push({ ...candidate, key: packed, derivedPacked: true })
       }
-    }
-    if (!seen.has(candidate.key)) {
-      seen.add(candidate.key)
-      out.push(candidate)
     }
   }
   return out
@@ -1000,10 +1004,19 @@ export function probeRom(
 
   const generation = probeCacheGeneration
   const run = async () => {
-    let outcome = await probeOnce(url, timeoutMs, allowHtml, options.signal)
+    const probeCandidates = async (): Promise<ProbeOutcome> => {
+      let outcome = await probeOnce(url, timeoutMs, allowHtml, options.signal)
+      if (outcome.url || outcome.certain || outcome.reason === 'aborted') return outcome
+      for (const alternate of alternateRomUrls(url)) {
+        outcome = await probeOnce(alternate, timeoutMs, allowHtml, options.signal)
+        if (outcome.url || outcome.certain || outcome.reason === 'aborted') return outcome
+      }
+      return outcome
+    }
+    let outcome = await probeCandidates()
     if (!outcome.certain && outcome.reason !== 'aborted' && options.retry !== false) {
       const ready = await waitForProbeRetry(options.signal)
-      if (ready) outcome = await probeOnce(url, timeoutMs, allowHtml, options.signal)
+      if (ready) outcome = await probeCandidates()
     }
     // 上传 / 删除 / 手动重试可能在 HEAD 飞行期间清过缓存；旧请求回来后不能把旧结论塞回去。
     if (outcome.certain && generation === probeCacheGeneration) probeResults.set(cacheKey, outcome)

@@ -102,7 +102,7 @@ export function romsetsNeedNoBios(keys, lookup = defaultRomsetLookup()) {
 /**
  * 对象 key → romset 短名。`roms/arcade/kof97.zip.8bg` → `kof97`
  *
- * 两种后缀都要剥：8BG 容器（新上传的单文件 ROM 会被包成 `<原 key>.8bg`）和 `.zip`、
+ * 两种后缀都要剥：历史 8BG 容器 `<原 key>.8bg` 和 `.zip`、
  * 以及 key 上可能带的 `?romv=` 缓存戳。
  */
 export function romsetNameFromKey(key) {

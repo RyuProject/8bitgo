@@ -1,10 +1,11 @@
-const CACHE = '8bitgo-undertale-shell-2026-10-19-1'
+const CACHE = '8bitgo-undertale-shell-2026-11-16-8'
 const BASE = '/web/undertale/'
 const CORE = [
   BASE,
   `${BASE}index.html`,
   `${BASE}styles.css`,
   `${BASE}app.js`,
+  `${BASE}distribution-manifest.json`,
   `${BASE}runtime/butterscotch.mjs`,
   `${BASE}runtime/butterscotch.wasm`,
 ]
@@ -25,6 +26,15 @@ self.addEventListener('fetch', (event) => {
   const request = event.request
   const url = new URL(request.url)
   if (request.method !== 'GET' || url.origin !== self.location.origin || !url.pathname.startsWith(BASE)) return
+
+  if (url.pathname === `${BASE}distribution-manifest.json`) {
+    // 包版本可以独立更新：联网时先拿最新版，断网时才退回上次缓存的清单。
+    event.respondWith(fetch(request).then((response) => {
+      if (response.ok) caches.open(CACHE).then((cache) => cache.put(request, response.clone()))
+      return response
+    }).catch(() => caches.match(request)))
+    return
+  }
 
   if (request.mode === 'navigate' || url.pathname.endsWith('.html')) {
     event.respondWith(fetch(request).then((response) => {

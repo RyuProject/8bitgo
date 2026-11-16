@@ -43,9 +43,10 @@ export const RUNTIME_PRECOMPRESS_PATTERNS = Object.freeze([
   /^play\/(?:[^/]+\/)?Play\.wasm$/,
   /^ppsspp\/v[0-9a-f]+\/v\d+\/PPSSPPSDL\.wasm$/,
   /^emulatorjs\/emulator\.min\.js$/,
+  /^eka2l1\/v[0-9a-f]{12}\/eka2l1\.(?:wasm|data)$/,
 ])
 
-const SCAN_DIRS = ['ruffle', 'jsdos', 'dolphin', 'play', 'ppsspp', 'emulatorjs']
+const SCAN_DIRS = ['ruffle', 'jsdos', 'dolphin', 'play', 'ppsspp', 'emulatorjs', 'eka2l1']
 const MIN_SAVING = 0.05
 
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex')

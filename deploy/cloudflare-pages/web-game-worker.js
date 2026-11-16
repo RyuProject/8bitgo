@@ -6,6 +6,8 @@
 const GAME = /*__GAME_CONFIG__*/ null
 
 const ASSET_BASE_DEFAULT = 'https://assets.8bitgo.com'
+// GTA VC 的大资源走专用下载域，让 CNAME 优选把玩家送到合适的资源入口。
+const GTA_VC_DOWNLOAD_BASE_DEFAULT = 'https://download.8bitgo.com'
 const PVZ_DATA_BASE_DEFAULT = 'https://html5.8bitgo.com/PvZ/properties'
 const SAFE_FILE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
 const SAFE_DIABLO_CORE = /^(?:Diablo|DiabloSpawn|MpqCmp)\.[a-f0-9]{8}\.wasm$/
@@ -118,6 +120,63 @@ function apiOrigin(value) {
   } catch {
     return ''
   }
+}
+
+function fixedAssetBase(value) {
+  try {
+    const url = new URL(String(value || ASSET_BASE_DEFAULT))
+    if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) return ''
+    return url.href.replace(/\/+$/, '')
+  } catch {
+    return ''
+  }
+}
+
+async function proxyGtaVcArchive(request, objectKey) {
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    return new Response('method not allowed', { status: 405, headers: { Allow: 'GET, HEAD' } })
+  }
+  if (objectKey !== 'web/gta-vc/revcdoseng.7z') {
+    return new Response('GTA VC archive is not configured', { status: 503 })
+  }
+
+  const base = fixedAssetBase(GTA_VC_DOWNLOAD_BASE_DEFAULT)
+  if (!base) return new Response('GTA VC R2 origin is not configured', { status: 503 })
+  const headers = new Headers({ 'Accept-Encoding': 'identity' })
+  for (const name of ['Range', 'If-Range', 'If-None-Match', 'If-Modified-Since']) {
+    const value = request.headers.get(name)
+    if (value) headers.set(name, value)
+  }
+
+  let upstream
+  try {
+    upstream = await fetch(`${base}/${objectKey}`, {
+      method: request.method,
+      headers,
+      redirect: 'follow',
+    })
+  } catch {
+    return new Response('GTA VC archive upstream unavailable', { status: 502 })
+  }
+
+  const responseHeaders = new Headers({
+    'Content-Type': 'application/x-7z-compressed',
+    'Content-Disposition': 'attachment; filename="revcdoseng.7z"',
+    'Cross-Origin-Resource-Policy': 'same-origin',
+    'X-Content-Type-Options': 'nosniff',
+  })
+  for (const name of [
+    'content-length', 'content-range', 'accept-ranges', 'etag', 'last-modified', 'cache-control',
+  ]) {
+    const value = upstream.headers.get(name)
+    if (value) responseHeaders.set(name, value)
+  }
+  if (!responseHeaders.has('Cache-Control')) responseHeaders.set('Cache-Control', 'public, max-age=300')
+  return new Response(request.method === 'HEAD' ? null : upstream.body, {
+    status: upstream.status,
+    statusText: upstream.statusText,
+    headers: responseHeaders,
+  })
 }
 
 function forwardedCloseCode(value) {
@@ -383,10 +442,17 @@ export default {
   async fetch(request, env) {
     if (!GAME) return new Response('Pages Worker 尚未构建', { status: 503 })
     const url = new URL(request.url)
+    if (GAME.name === 'gtavc' && url.hostname !== '8bitgo.com' && !url.hostname.endsWith('.8bitgo.com')) {
+      return new Response('Forbidden', { status: 403, headers: { 'Cache-Control': 'no-store' } })
+    }
     if (url.pathname === '/') return Response.redirect(new URL(GAME.entry, url), 302)
 
     if (GAME.name === 'cs16' && url.pathname.startsWith('/api/cs16/')) {
       return proxyCs16Api(request, env.CS16_API_ORIGIN || GAME.apiOrigin)
+    }
+
+    if (GAME.name === 'gtavc' && url.pathname === '/game-data/revcdoseng.7z') {
+      return proxyGtaVcArchive(request, GAME.r2ArchiveKey)
     }
 
     if (GAME.name === 'pvz') {

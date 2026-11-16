@@ -886,12 +886,12 @@ const DOC_ENDPOINT_GROUPS: { title: string; items: DocEndpoint[] }[] = [
     items: [
       { method: 'POST', path: '/v1/token', access: 'AppID + AppKey', desc: '换 15 分钟访问令牌', detail: 'JSON 或 application/x-www-form-urlencoded；凭据可放 HTTP Basic，也可放 client_id/client_secret 字段。grant_type=client_credentials 取应用令牌，响应含 access_token/token_type/expires_in/scope/rom_access；用户数据不能用此流。它也承接 device_code 的轮询换令牌。' },
       { method: 'GET', path: '/v1/me', access: '有效令牌', desc: '自查令牌和权限', detail: '成功返回 {client_id,kind,user_id,scope,expires_at}。应用令牌的 kind=app、user_id=null；用户令牌的 kind=user。遇其他接口 401/403 时可先确认拿的是哪类令牌、是否有需要的 scope。' },
-      { method: 'GET', path: '/v1/games/:slug/rom', access: 'games.rom', desc: '领取 ROM 下载凭据', detail: '沙箱只允许 /v1/rom-samples 所列游戏，其余返回 403 sandbox_resource_only；审核通过可访问全库。可传 lang 和 delivery=redirect|plain。单文件响应含 url；多文件 Flash 响应另含 bundle=true、entry、assets、asset_count，url 指向入口，assets 是包内相对路径及对应短期地址。把 url 交给 Flash 播放器加载；入口及依赖地址都经过白名单授权。plain 会由服务端流式解密 / 解压。响应含 requires_network；null 表示尚未核实。' },
+      { method: 'GET', path: '/v1/games/:slug/rom', access: 'games.rom', desc: '领取 ROM 下载凭据', detail: '沙箱只允许 /v1/rom-samples 所列游戏，其余返回 403 sandbox_resource_only；审核通过可访问全库。可传 lang 和 delivery=redirect|plain。单文件响应含 url；多文件 Flash 响应另含 bundle=true、entry、assets、asset_count，url 指向入口，assets 是包内相对路径及对应短期地址。把 url 交给 Flash 播放器加载；入口及依赖地址都经过白名单授权。明文对象经 302 直达 download.8bitgo.com；旧 8BG 包暂由服务端解密 / 解压。响应含 requires_network；null 表示尚未核实。' },
       { method: 'GET', path: '/v1/rom/:grant', access: '下载凭据', desc: '兑现 ROM 凭据（302）', detail: '上一步返回的 url 就是此端点；不再带 Bearer，跟随 302 跳转到对象存储下载。凭据 5 分钟过期，每张票最多兑现 10 次，并受每 IP 60 次/分钟限制。' },
       { method: 'GET', path: '/v1/bundle/:grant/{asset_path}', access: '下载凭据', desc: '兑现多文件 Flash 入口或依赖（302）', detail: '多文件 Flash 专用。asset_path 是 ZIP 包内登记的相对路径，可含多级目录；入口也可经此路由请求。入口 URL 的相对资源请求会继续落在同一 grant 下。每次请求重新校验短期凭据、游戏仍绑定的入口和资源白名单；目录遍历与未登记路径返回 404 asset_not_found。无需 Bearer，成功 302 到 R2 资源。' },
-      { method: 'GET', path: '/v1/bundle-plain/:grant/{asset_path}', access: '下载凭据', desc: '流式兑现多文件 Flash 资源', detail: '与 /v1/bundle 使用相同白名单和短期凭据，但由站点代理资源，不跳转到 R2；适合不能直接访问对象存储或需要明文响应的客户端。支持 Range 分段请求；无需 Bearer。' },
-      { method: 'GET', path: '/v1/rom-plain/:grant', access: '下载凭据', desc: '兑现并流式返回明文 ROM', detail: 'delivery=plain 领到的凭据专用于此端点；旧版未选择 delivery 的凭据仍兼容两种路径。不需 Bearer。8BG 包由服务端按需解密、解压后流式返回；普通 ROM 直接透传。支持 HEAD 与单段 Range/If-Range 断点续传。存在单文件大小、并发数与超时限制；过载会返回 503 server_busy，超限 413 payload_too_large。' },
-      { method: 'HEAD', path: '/v1/rom-plain/:grant', access: '下载凭据', desc: '查询明文 ROM 元信息', detail: '与明文 GET 共用凭据和限流，不返回 ROM 正文；用于先读取 Content-Length、Accept-Ranges、ETag 等响应头。Express 由同一路由处理 HEAD。' },
+      { method: 'GET', path: '/v1/bundle-plain/:grant/{asset_path}', access: '下载凭据', desc: '兑现多文件 Flash 资源', detail: '与 /v1/bundle 使用相同白名单和短期凭据；验证后 302 到 download.8bitgo.com 上的明文对象，避免文件体绕经应用服务器。目标支持 Range；无需 Bearer。' },
+      { method: 'GET', path: '/v1/rom-plain/:grant', access: '下载凭据', desc: '兑现明文 ROM', detail: 'delivery=plain 领到的凭据专用于此端点；旧版未选择 delivery 的凭据仍兼容两种路径。不需 Bearer。明文对象验证凭据后 302 到 download.8bitgo.com，ROM 字节由对象域直接返回；尚未迁移的 8BG 包仍由服务端按需解密、解压。旧 8BG 路径支持 HEAD 与单段 Range/If-Range 断点续传，并受大小、并发数与超时限制。' },
+      { method: 'HEAD', path: '/v1/rom-plain/:grant', access: '下载凭据', desc: '查询明文 ROM 元信息', detail: '与明文 GET 共用凭据和限流。明文对象返回到 download.8bitgo.com 的 302，客户端跟随后可读取 Content-Length、Accept-Ranges、ETag；旧 8BG 包由应用服务器生成元信息。' },
       { method: 'GET', path: '/v1/games/:slug/embed', access: 'games.read', desc: '获取嵌入播放器地址', detail: '路径参数 slug，可选 lang；返回 {url,expires_in,allow}，签名地址默认有效 1 小时。当前嵌入页未强制验证签名，因此该地址不是安全边界，也不应当作访问控制。' },
     ],
   },
@@ -1115,7 +1115,7 @@ function DocsPanel() {
             <DocSection title="下载 ROM · 两步，凭据短时有效">
               <p className="text-muted">第一步用带 <code className="text-fg">games.rom</code> 的 Bearer 领取凭据；沙箱 slug 必须来自 <code className="text-fg">/v1/rom-samples</code>。</p>
               <DocCode code='curl -H "Authorization: Bearer ACCESS_TOKEN" "https://8bitgo.com/api/open/v1/games/contra/rom?lang=ja&delivery=plain"' />
-              <p className="text-muted">默认 <code className="text-fg">delivery=redirect</code>，第二步会 302 到原对象；不支持 8BG 解码的客户端传 <code className="text-fg">delivery=plain</code>，返回的 <code className="text-fg">url</code> 会直接指向服务端解密 / 解压后的 ROM 流，支持 HEAD 和 Range 续传。<code className="text-fg">requires_network</code> 是站点核实过的游戏依赖提示；<code className="text-fg">null</code> 表示未知，不代表已打包所有资源。</p>
+              <p className="text-muted">默认 <code className="text-fg">delivery=redirect</code>，第二步会 302 到 <code className="text-fg">download.8bitgo.com</code> 上的对象；不支持 8BG 解码的客户端传 <code className="text-fg">delivery=plain</code>。已发布明文的 ROM 会直接 302 到下载域，数据首字节不经过应用服务器，并支持 Range 续传；尚未迁移的旧 8BG 包暂由服务端解密 / 解压。<code className="text-fg">requires_network</code> 是站点核实过的游戏依赖提示；<code className="text-fg">null</code> 表示未知，不代表已打包所有资源。</p>
             </DocSection>
             <DocSection title="第三步 · 读取玩家数据">
               <p className="text-muted">应用级令牌没有玩家身份。设备先向 <code className="text-fg">POST /v1/device/code</code> 申请码，玩家在 <code className="text-fg">/open/device</code> 同意后，设备轮询 <code className="text-fg">POST /v1/token</code> 换用户令牌。</p>

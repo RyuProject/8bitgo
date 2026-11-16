@@ -39,6 +39,7 @@ export type PlatformId =
   | 'flash'
   | 'html5'
   | 'java'
+  | 'symbian'
 
 /** js-dos 可选核心：普通 DOS 用 DOSBox，Windows 客体镜像用 DOSBox-X。 */
 export type DosBackend = 'dosbox' | 'dosboxX'

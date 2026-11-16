@@ -20,10 +20,19 @@ export const DEFAULT_SITE_URL = 'https://8bitgo.com'
  * 这个默认值和 j2me.js 原来那个私有常量是同一个，现在统一到这里。
  */
 export const DEFAULT_ASSET_BASE_URL = 'https://assets.8bitgo.com'
+export const DEFAULT_DOWNLOAD_BASE_URL = 'https://download.8bitgo.com'
 export const DEFAULT_COVER_BASE_URL = 'https://image.8bitgo.com'
 
 export function assetBaseUrl(env = process.env) {
   return String(env.ROM_BASE_URL || DEFAULT_ASSET_BASE_URL).trim().replace(/\/+$/, '')
+}
+
+/** 面向开放平台下载的优选域；明文 ROM 直接从这里读取，不穿过应用服务器。 */
+export function downloadBaseUrl(env = process.env) {
+  const configured = String(env.ROM_DOWNLOAD_BASE_URL || '').trim()
+  if (configured) return configured.replace(/\/+$/, '')
+  // 管理员改用自定义 ROM 桶时，不可把同名 key 错发到本站生产下载域。
+  return assetBaseUrl(env) === DEFAULT_ASSET_BASE_URL ? DEFAULT_DOWNLOAD_BASE_URL : assetBaseUrl(env)
 }
 
 export function coverBaseUrl(env = process.env) {
@@ -49,6 +58,15 @@ function encodeAssetKey(key) {
  * 拼不出来时返回空串，让调用方跳过 —— 输出一个必然 404 的 URL 比不输出更糟。
  */
 export function assetPublicUrl(key, siteUrl = publicSiteUrl(), base = assetBaseUrl()) {
+  const raw = String(key || '').trim()
+  if (!raw) return ''
+  if (/^https?:\/\//i.test(raw)) return raw
+  if (raw.startsWith('/')) return new URL(raw, `${siteUrl}/`).href
+  return base ? `${base}/${encodeAssetKey(raw)}` : ''
+}
+
+/** ROM key 的公开优选下载地址；外链与站内路径仍按原逻辑解析。 */
+export function downloadPublicUrl(key, siteUrl = publicSiteUrl(), base = downloadBaseUrl()) {
   const raw = String(key || '').trim()
   if (!raw) return ''
   if (/^https?:\/\//i.test(raw)) return raw

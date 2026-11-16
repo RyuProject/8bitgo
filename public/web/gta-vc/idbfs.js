@@ -21,7 +21,7 @@ function wrapIDBFS(logger) {
             (async function () {
                 const tx = db.transaction([instance.DB_STORE_NAME], "readwrite");
                 const store = tx.objectStore(instance.DB_STORE_NAME);
-
+                
                 for (const entry of entries) {
                     await new Promise((resolveStore, rejectStore) => {
                         instance.storeRemoteEntry(store, entry.path, entry, (err) => {
@@ -46,7 +46,7 @@ function wrapIDBFS(logger) {
         const db = await getDB(instance, mount);
         const tx = db.transaction([instance.DB_STORE_NAME], "readwrite");
         const store = tx.objectStore(instance.DB_STORE_NAME);
-
+        
         await new Promise((resolve, reject) => {
             const req = store.clear();
             req.onsuccess = () => resolve();
@@ -64,9 +64,9 @@ function wrapIDBFS(logger) {
     }
 
     function readInt32(buffer, offset) {
-        return (buffer[offset] & 255) |
-               ((buffer[offset + 1] << 8) & 65280) |
-               ((buffer[offset + 2] << 16) & 16711680) |
+        return (buffer[offset] & 255) | 
+               ((buffer[offset + 1] << 8) & 65280) | 
+               ((buffer[offset + 2] << 16) & 16711680) | 
                ((buffer[offset + 3] << 24) & 4278190080);
     }
 
@@ -91,16 +91,16 @@ function wrapIDBFS(logger) {
             offset += 4;
             const path = textDecoder.decode(buffer.subarray(offset, offset + pathLen));
             offset += pathLen;
-
+            
             const timestamp = readInt64(buffer, offset);
             offset += 8;
-
+            
             const mode = readInt32(buffer, offset);
             offset += 4;
-
+            
             const hasContents = buffer[offset] === 1;
             offset += 1;
-
+            
             let contents;
             if (hasContents) {
                 const contentLen = readInt32(buffer, offset);
@@ -108,7 +108,7 @@ function wrapIDBFS(logger) {
                 contents = buffer.subarray(offset, offset + contentLen);
                 offset += contentLen;
             }
-
+            
             entries.push({
                 path: path,
                 timestamp: new Date(timestamp),
@@ -134,18 +134,18 @@ function wrapIDBFS(logger) {
 
         const buffer = new Uint8Array(size);
         let offset = 0;
-
+        
         for (const entry of processedEntries) {
             offset = writeInt32(buffer, entry.key.length, offset);
             buffer.set(entry.key, offset);
             offset += entry.key.length;
-
+            
             offset = writeInt64(buffer, entry.time, offset);
             offset = writeInt32(buffer, entry.mode, offset);
-
+            
             buffer[offset] = entry.contents ? 1 : 0;
             offset += 1;
-
+            
             if (entry.contents) {
                 offset = writeInt32(buffer, entry.contents.length, offset);
                 buffer.set(entry.contents, offset);
@@ -195,7 +195,7 @@ function wrapIDBFS(logger) {
 
             originalSync((err) => {
                 callback(err);
-
+                
                 (async function () {
                     if (!populate) {
                         let cachedData = null;

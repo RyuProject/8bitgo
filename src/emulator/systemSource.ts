@@ -31,6 +31,7 @@ import { fetchWithProgress } from './loadProgress'
 import type { LoadProgress } from './types'
 import { romCacheDelete, romCacheGet, romCacheKey, romCachePut } from './romCache'
 import { versionedRomUrl } from '@/services/roms'
+import { downloadRomUrl } from '@/services/romHosts'
 import { fetchPublicSystemImageSettings, type PublicSystemImageSettings } from '@/services/systemImageSources'
 import { DOS_SYSTEM_IMAGE_CATALOG } from '../../shared/dos-system-images.js'
 
@@ -176,6 +177,8 @@ function publicMirrorsFor(file: string): PublicMirror[] {
 /** 主资源域始终保留；已校验外链参与测速；同源 R2 代理仍固定在链路里且不可配置删除。 */
 export function systemSourcesFor(primaryUrl: string): SystemSource[] {
   const list: SystemSource[] = [{ url: primaryUrl, label: '主源' }]
+  const downloadUrl = downloadRomUrl(primaryUrl)
+  if (downloadUrl && downloadUrl !== primaryUrl) list.push({ url: downloadUrl, label: '下载优选域' })
   let path = ''
   try {
     path = new URL(primaryUrl, typeof window === 'undefined' ? 'https://x/' : window.location.href).pathname
@@ -558,7 +561,12 @@ export async function loadSystemBytes(
           2. 浏览器 HTTP 缓存也按完整 URL 建键，顺带多一层命中。
         游戏 ROM 那条路（probeRomUrl → 播放地址）本来就是这么做的。
       */
-      const fetchUrl = source.url === primaryUrl && cacheUrl ? cacheUrl : source.url
+      const downloadCacheUrl = cacheUrl ? downloadRomUrl(cacheUrl) : ''
+      const fetchUrl = source.url === primaryUrl && cacheUrl
+        ? cacheUrl
+        : source.url === downloadRomUrl(primaryUrl) && downloadCacheUrl
+          ? downloadCacheUrl
+          : source.url
       const data = await fetchWithProgress(fetchUrl, {
         phase: 'assets',
         signal: guard.signal,

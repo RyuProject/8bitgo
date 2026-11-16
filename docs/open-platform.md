@@ -470,7 +470,7 @@ Flash 多文件包会额外返回 `bundle: true`、入口 `entry` 和依赖 `ass
 }
 ```
 
-播放器应直接把 `url` 作为入口 SWF 地址加载；它保留了入口在包目录中的原相对位置，因此 Ruffle 的 `loadMovie("ui.swf")`、`sound/intro.mp3` 等请求会自然落到同一 `/v1/bundle/{grant}/...` 路径。`assets` 是完整清单，适合非浏览器客户端预下载或校验。每个资源请求都复核当前入口绑定和依赖白名单；没有登记的文件、路径穿越或已换包资源会拒绝。单文件游戏的响应形状与原来相同。`delivery=plain` 使用 `/v1/bundle-plain/{grant}/...`，可流式转发并支持 Range。
+播放器应直接把 `url` 作为入口 SWF 地址加载；它保留了入口在包目录中的原相对位置，因此 Ruffle 的 `loadMovie("ui.swf")`、`sound/intro.mp3` 等请求会自然落到同一 `/v1/bundle/{grant}/...` 路径。`assets` 是完整清单，适合非浏览器客户端预下载或校验。每个资源请求都复核当前入口绑定和依赖白名单；没有登记的文件、路径穿越或已换包资源会拒绝。单文件游戏的响应形状与原来相同。`delivery=plain` 使用 `/v1/bundle-plain/{grant}/...`，验证后 302 到 `download.8bitgo.com` 上的明文对象，支持 Range，资源正文不经过应用服务器。
 
 后台通过多 SWF ZIP 上传会自动保存入口相对路径与依赖清单；已经上传在 R2 的旧包可在 ROM 槽中点“扫描并登记同目录资源”，核对后保存。ZIP 上传最多为单包登记 512 个依赖文件；扫描只登记网页资源文件，不会将 EXE、DLL、压缩包等加入清单。
 
@@ -485,8 +485,10 @@ Flash 多文件包会额外返回 `bundle: true`、入口 `entry` 和依赖 `ass
 | 随机串 `n` | 同一分钟反复领票也各不相同，便于按票追踪单次下载 |
 
 兑现地址 `GET /v1/rom/{grant}` **不要求 Bearer**：凭据自己就是授权，而下载多半发生在
-浏览器或 curl 里，带不上 Authorization 头。兑现时 302 到存储地址（几十上百 MB 的东西
-没必要全走源站带宽），响应带 `Cache-Control: private, no-store`。
+浏览器或 curl 里，带不上 Authorization 头。兑现时 302 到 `download.8bitgo.com`
+（几十上百 MB 的东西没必要全走源站带宽），响应带 `Cache-Control: private, no-store`。
+新上传 ROM 以明文对象发布。`delivery=plain` 遇到明文对象时也直接 302 到下载域，首字节由
+对象域返回；尚未迁移的旧 `.8bg` 包仍暂由应用服务器解密 / 解压。
 
 **ROM 的语言不做跨语言回退**：要日文、没有日文，就给通用件（`*`）或者 404，
 **绝不悄悄发一份别的语言的**。玩家开进去是另一套文字，而接入方无从得知 ——

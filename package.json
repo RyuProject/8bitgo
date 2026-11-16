@@ -4,7 +4,7 @@
   "version": "0.9.18",
   "type": "module",
   "scripts": {
-    "predev": "node scripts/copy-ruffle.mjs --if-missing && node scripts/copy-jsdos.mjs --if-missing --with-dosbox-x && node scripts/setup-j2me.mjs --if-missing && npm run j2me-web:build && node scripts/setup-qemu-wasm.mjs --if-missing",
+    "predev": "node scripts/copy-ruffle.mjs --if-missing && node scripts/copy-jsdos.mjs --if-missing --with-dosbox-x && node scripts/setup-j2me.mjs --if-missing && npm run j2me-web:build && node scripts/setup-qemu-wasm.mjs --if-missing && node scripts/patch-gta-vc-7z.mjs && node scripts/copy-gta-vc-7z.mjs",
     "dev": "node scripts/dev.mjs",
     "dev:web": "vite",
     "dev:server": "npm --prefix server start",
@@ -27,7 +27,7 @@
     "cs16:zstd": "node scripts/pack-cs16-zstd.mjs",
     "cs16:upload": "node scripts/upload-cs16-r2.mjs",
     "cs16:manifest": "node scripts/check-cs16.mjs --write-manifest",
-    "prebuild": "node scripts/copy-ruffle.mjs --if-missing && node scripts/copy-jsdos.mjs --if-missing --with-dosbox-x && node scripts/setup-j2me.mjs --if-missing && npm run j2me-web:build && node scripts/setup-qemu-wasm.mjs --if-missing && node scripts/check-ruffle.mjs && node scripts/check-jsdos.mjs && node scripts/test-sockdrive-readahead.mjs && node scripts/check-cs15.mjs && node scripts/check-cs16.mjs && node scripts/check-pvz.mjs && node scripts/check-gamblers-table.mjs && node scripts/check-diabloweb.mjs && node scripts/check-terraria-web.mjs && node scripts/check-celeste-web.mjs && node scripts/check-gta-vc-web.mjs && node scripts/check-undertale-web.mjs && node scripts/sync-emulatorjs-core-metadata.mjs && node scripts/check-emulatorjs.mjs && node scripts/check-play.mjs && node scripts/check-dolphin.mjs && node scripts/check-ppsspp.mjs --source-only && node scripts/precompress-runtimes.mjs && node scripts/check-flash-save-bridge.mjs && node server/scripts/check-schema-drift.mjs && npm run test:ejs-cores && npm run test:psx-state && npm run test:nds-crash && npm run test:arcade-runtime && npm run test:mame-arcade-media && npm run test:mame-chd-warm && node scripts/prepare-pvzge.mjs && node scripts/check-pvzge.mjs && node scripts/gen-sitemap.mjs",
+    "prebuild": "node scripts/copy-ruffle.mjs --if-missing && node scripts/copy-jsdos.mjs --if-missing --with-dosbox-x && node scripts/setup-j2me.mjs --if-missing && npm run j2me-web:build && node scripts/setup-qemu-wasm.mjs --if-missing && node scripts/patch-gta-vc-7z.mjs && node scripts/copy-gta-vc-7z.mjs && node scripts/check-ruffle.mjs && node scripts/check-jsdos.mjs && node scripts/test-sockdrive-readahead.mjs && node scripts/check-cs15.mjs && node scripts/check-cs16.mjs && node scripts/check-pvz.mjs && node scripts/check-gamblers-table.mjs && node scripts/check-diabloweb.mjs && node scripts/check-terraria-web.mjs && node scripts/check-celeste-web.mjs && node scripts/check-gta-vc-web.mjs && node scripts/check-undertale-web.mjs && node scripts/sync-emulatorjs-core-metadata.mjs && node scripts/check-emulatorjs.mjs && node scripts/check-play.mjs && node scripts/check-dolphin.mjs && node scripts/check-ppsspp.mjs --source-only && node scripts/precompress-runtimes.mjs && node scripts/check-flash-save-bridge.mjs && node server/scripts/check-schema-drift.mjs && npm run test:ejs-cores && npm run test:psx-state && npm run test:nds-crash && npm run test:arcade-runtime && npm run test:mame-arcade-media && npm run test:mame-chd-warm && node scripts/prepare-pvzge.mjs && node scripts/check-pvzge.mjs && node scripts/gen-sitemap.mjs",
     "build": "tsc -b && npm run build:client && npm run build:server",
     "lint": "oxlint src server/src server/scripts shared scripts worker",
     "preview": "vite preview",
@@ -115,10 +115,10 @@
     "test:pvz": "node scripts/test-pvz.mjs",
     "test:pvz-real": "node scripts/test-pvz-real.mjs",
     "test:gamblers-table": "node scripts/check-gamblers-table.mjs",
-    "pages:web-games:build": "node scripts/build-web-game-pages.mjs",
+    "pages:web-games:build": "node scripts/patch-gta-vc-7z.mjs && node scripts/copy-gta-vc-7z.mjs && node scripts/check-gta-vc-web.mjs && node scripts/build-web-game-pages.mjs",
     "pages:web-games:check": "node scripts/check-web-game-pages.mjs",
     "pages:web-game:deploy": "node scripts/deploy-web-game-pages.mjs",
-    "gta-vc:check": "node scripts/check-gta-vc-web.mjs && node scripts/test-gta-vc-extractor.mjs",
+    "gta-vc:check": "node scripts/patch-gta-vc-7z.mjs && node scripts/copy-gta-vc-7z.mjs && node scripts/check-gta-vc-web.mjs",
     "undertale:check": "node scripts/check-undertale-web.mjs",
     "test:html5-pages-bridge": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-html5-pages-bridge.mjs",
     "test:i18n-content": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-i18n-content.mjs",
@@ -216,6 +216,9 @@
     "ppsspp:build": "node scripts/build-ppsspp.mjs",
     "ppsspp:precompress": "node scripts/precompress-ppsspp-data.mjs",
     "runtimes:precompress": "node scripts/precompress-runtimes.mjs",
+    "eka2l1:build": "node scripts/build-eka2l1-web.mjs",
+    "eka2l1:repackage": "node scripts/repackage-eka2l1-web.mjs",
+    "eka2l1:check": "node scripts/check-eka2l1-web.mjs",
     "ppsspp:refresh-js": "node scripts/refresh-ppsspp-js-runtime.mjs",
     "ppsspp:check": "node scripts/check-ppsspp.mjs",
     "test:ppsspp": "node scripts/check-ppsspp.mjs --source-only && node scripts/test-ppsspp-read-ahead.mjs && node scripts/test-ppsspp-prefetch-worker.mjs && node scripts/test-ppsspp-audio-worklet.mjs && node scripts/test-ppsspp-local-disc.mjs && node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-ppsspp-range.mjs && node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-ppsspp-full-download.mjs",
@@ -228,8 +231,9 @@
     "test:nds-layout": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-nds-layout.mjs",
     "test:worker": "npm --prefix worker test",
     "test:r2-upload-client": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-r2-upload-client.mjs",
+    "prebuild:client": "node scripts/check-eka2l1-web.mjs --if-present",
     "build:client": "vite build",
-    "postbuild:client": "node scripts/check-ruffle.mjs --dist && node scripts/check-jsdos.mjs --dist && node scripts/check-cs15.mjs --dist && node scripts/check-cs16.mjs --dist && node scripts/check-pvz.mjs --dist && node scripts/check-gamblers-table.mjs --dist && node scripts/check-diabloweb.mjs --dist && node scripts/check-terraria-web.mjs --dist && node scripts/check-celeste-web.mjs --dist && node scripts/check-gta-vc-web.mjs --dist && node scripts/check-undertale-web.mjs --dist && node scripts/check-emulatorjs.mjs --dist && node scripts/check-play.mjs --dist && node scripts/check-dolphin.mjs --dist && node scripts/check-ppsspp.mjs --dist --source-only && node scripts/precompress-runtimes.mjs --check dist/client && node scripts/check-flash-save-bridge.mjs --dist && node scripts/check-pvzge.mjs --dist && node scripts/test-browser-compat.mjs --dist && node scripts/check-asset-integrity.mjs",
+    "postbuild:client": "node scripts/check-ruffle.mjs --dist && node scripts/check-jsdos.mjs --dist && node scripts/check-cs15.mjs --dist && node scripts/check-cs16.mjs --dist && node scripts/check-pvz.mjs --dist && node scripts/check-gamblers-table.mjs --dist && node scripts/check-diabloweb.mjs --dist && node scripts/check-terraria-web.mjs --dist && node scripts/check-celeste-web.mjs --dist && node scripts/check-gta-vc-web.mjs --dist && node scripts/check-undertale-web.mjs --dist && node scripts/check-emulatorjs.mjs --dist && node scripts/check-play.mjs --dist && node scripts/check-dolphin.mjs --dist && node scripts/check-ppsspp.mjs --dist --source-only && node scripts/precompress-runtimes.mjs --check dist/client && node scripts/check-eka2l1-web.mjs --dist --if-present && node scripts/check-flash-save-bridge.mjs --dist && node scripts/check-pvzge.mjs --dist && node scripts/test-browser-compat.mjs --dist && node scripts/check-asset-integrity.mjs",
     "build:server": "vite build --config vite.config.server.ts",
     "start:ssr": "npm --prefix server start",
     "j2me": "node scripts/setup-j2me.mjs",
@@ -273,7 +277,8 @@
     "test:jsdos-asset-lock": "node scripts/test-jsdos-asset-lock.mjs",
     "test:smoke-start": "node scripts/test-smoke-start.mjs",
     "smoke:start": "node scripts/smoke-start.mjs",
-    "test:translator-dom-guard": "node --experimental-strip-types scripts/test-translator-dom-guard.mjs"
+    "test:translator-dom-guard": "node --experimental-strip-types scripts/test-translator-dom-guard.mjs",
+    "test:cname-optimizer": "node scripts/test-cname-optimizer.mjs"
   },
   "dependencies": {
     "@bokuweb/zstd-wasm": "^0.0.27",
@@ -284,7 +289,8 @@
     "jsnes": "^2.1.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "react-router-dom": "^7.18.2"
+    "react-router-dom": "^7.18.2",
+    "un7z-opfs": "1.0.2"
   },
   "devDependencies": {
     "@ruffle-rs/ruffle": "^0.7.1",

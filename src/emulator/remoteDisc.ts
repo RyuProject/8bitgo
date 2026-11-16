@@ -253,10 +253,11 @@ export function httpRangeFetcher(
   url: string,
   signal?: AbortSignal,
   stallMs = RANGE_STALL_TIMEOUT_MS,
-  alternateUrl = '',
+  alternateUrl: string | readonly string[] = '',
 ): RangeFetcher {
   let activeUrl = url
-  let alternate = alternateUrl && alternateUrl !== url ? alternateUrl : ''
+  const configuredAlternates = typeof alternateUrl === 'string' ? [alternateUrl] : [...alternateUrl]
+  let alternates = [...new Set(configuredAlternates.filter((candidate) => candidate && candidate !== url))]
   const measureAlternateRange = async (target: string, total: number): Promise<number | null> => {
     const sampleBytes = Math.min(64 * 1024, CHUNK_BYTES, total)
     const sampleEnd = Math.min(CHUNK_BYTES, total) - 1
@@ -420,18 +421,28 @@ export function httpRangeFetcher(
     if (!Number.isSafeInteger(start) || !Number.isSafeInteger(endInclusive) || start < 0 || expected <= 0) {
       throw new RangeError('读盘失败：Range 偏移无效')
     }
-    try {
-      return await fetchOnce(activeUrl, start, endInclusive, alternate)
-    } catch (error) {
-      if (signal?.aborted || !alternate) throw error
-      const failedUrl = activeUrl
-      activeUrl = alternate
-      alternate = ''
-      diagLog('download', 'warn', 'Play! 读盘切换线路：', failedUrl, '→', activeUrl, error)
-      const bytes = await fetchOnce(activeUrl, start, endInclusive, '')
-      rememberRomHostForUrl(activeUrl)
-      diagLog('download', 'info', 'Play! 读盘已切到：', activeUrl)
-      return bytes
+    const candidates = [activeUrl, ...alternates.filter((candidate) => candidate !== activeUrl)]
+    let lastError: unknown
+    for (let index = 0; index < candidates.length; index++) {
+      const candidate = candidates[index]
+      try {
+        const bytes = await fetchOnce(candidate, start, endInclusive, candidates[index + 1] ?? '')
+        if (candidate !== activeUrl) {
+          const failedUrl = activeUrl
+          activeUrl = candidate
+          alternates = candidates.filter((value) => value !== candidate)
+          rememberRomHostForUrl(activeUrl)
+          diagLog('download', 'warn', 'Play! 读盘切换线路：', failedUrl, '→', activeUrl)
+        }
+        return bytes
+      } catch (error) {
+        if (signal?.aborted) throw error
+        lastError = error
+        if (index < candidates.length - 1) {
+          diagLog('download', 'warn', 'Play! 读盘线路失败，继续尝试备用源：', candidate, error)
+        }
+      }
     }
+    throw lastError
   }
 }

@@ -573,7 +573,7 @@
         "parameters": [
           { "name": "slug", "in": "path", "required": true, "schema": { "type": "string" } },
           { "name": "lang", "in": "query", "schema": { "type": "string" }, "description": "要的 ROM 语言，默认通用件；精确→通用件，不跨语言回退" },
-          { "name": "delivery", "in": "query", "schema": { "type": "string", "enum": ["redirect", "plain"], "default": "redirect" }, "description": "redirect = 302 到原对象；plain = 服务端流式解密 / 解压 8BG 后直返 ROM 字节，URL 直接指向 /v1/rom-plain/。未指定时兼容旧客户端的两种兑现路径。" }
+          { "name": "delivery", "in": "query", "schema": { "type": "string", "enum": ["redirect", "plain"], "default": "redirect" }, "description": "redirect = 302 到 download.8bitgo.com 上的对象；plain = 明文对象也直达下载域，未迁移的旧 8BG 才由服务端解密 / 解压。URL 指向 /v1/rom-plain/。未指定时兼容旧客户端的两种兑现路径。" }
         ],
         "responses": {
           "200": {
@@ -641,16 +641,15 @@
     "/v1/bundle-plain/{grant}/{asset_path}": {
       "get": {
         "tags": ["games"],
-        "summary": "流式兑现多文件 Flash 包中的资源",
-        "description": "与 /v1/bundle/{grant}/{asset_path} 使用同一类短期凭据与白名单，但由站点转发并支持 Range。供需要明文交付的客户端使用；无需 Authorization。",
+        "summary": "兑现多文件 Flash 包中的明文资源",
+        "description": "与 /v1/bundle/{grant}/{asset_path} 使用同一类短期凭据与白名单；校验后 302 到 download.8bitgo.com 上的明文对象，正文不经过应用服务器。目标对象支持 Range；无需 Authorization。",
         "parameters": [
           { "name": "grant", "in": "path", "required": true, "schema": { "type": "string" } },
           { "name": "asset_path", "in": "path", "required": true, "schema": { "type": "string" }, "description": "包目录内的相对路径，可包含 /" },
           { "name": "Range", "in": "header", "required": false, "schema": { "type": "string" } }
         ],
         "responses": {
-          "200": { "description": "资源完整内容", "content": { "application/octet-stream": { "schema": { "type": "string", "format": "binary" } } } },
-          "206": { "description": "Range 部分内容", "content": { "application/octet-stream": { "schema": { "type": "string", "format": "binary" } } } },
+          "302": { "description": "跳转到下载域的明文资源", "headers": { "Location": { "schema": { "type": "string" } } } },
           "403": { "description": "凭据无效或资源不在白名单中", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "404": { "description": "入口已变更、游戏已下架或资源未登记", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "410": { "description": "凭据过期", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
@@ -661,16 +660,17 @@
     "/v1/rom-plain/{grant}": {
       "get": {
         "tags": ["games"],
-        "summary": "兑现 ROM 凭据并返回原生明文 ROM（服务端解密 8BG）",
-        "description": "与 /v1/rom/{grant} 共用短期凭据，不要求 Authorization。8BG 文件由服务端逐块解密、解压并校验；普通 ROM 原样透传。支持单段 Range 续传和无正文的 HEAD 元信息请求。",
+        "summary": "兑现 ROM 凭据并跳转到明文对象",
+        "description": "与 /v1/rom/{grant} 共用短期凭据，不要求 Authorization。已发布明文的 ROM 校验后 302 到 download.8bitgo.com，ROM 正文由对象域返回；尚未迁移的旧 8BG 文件仍由服务端逐块解密、解压并校验。明文目标支持 Range；旧 8BG 路径支持单段 Range 和无正文的 HEAD 请求。",
         "parameters": [
           { "name": "grant", "in": "path", "required": true, "schema": { "type": "string" } },
           { "name": "Range", "in": "header", "required": false, "schema": { "type": "string", "example": "bytes=0-1048575" }, "description": "单段字节范围；8BG 只读取覆盖该范围的加密分块" },
           { "name": "If-Range", "in": "header", "required": false, "schema": { "type": "string" }, "description": "与服务端 ETag 匹配时继续 Range；不匹配时返回完整文件" }
         ],
         "responses": {
-          "200": { "description": "完整的原生 ROM", "content": { "application/octet-stream": { "schema": { "type": "string", "format": "binary" } } }, "headers": { "Content-Disposition": { "schema": { "type": "string" } }, "Content-Length": { "schema": { "type": "integer" } }, "ETag": { "schema": { "type": "string" } } } },
-          "206": { "description": "Range 请求成功，返回原生 ROM 的一段", "content": { "application/octet-stream": { "schema": { "type": "string", "format": "binary" } } }, "headers": { "Content-Range": { "schema": { "type": "string", "example": "bytes 0-1048575/8388608" } } } },
+          "302": { "description": "跳转到 download.8bitgo.com 上的明文 ROM", "headers": { "Location": { "schema": { "type": "string" } } } },
+          "200": { "description": "旧 8BG 对象解包后的完整 ROM", "content": { "application/octet-stream": { "schema": { "type": "string", "format": "binary" } } }, "headers": { "Content-Disposition": { "schema": { "type": "string" } }, "Content-Length": { "schema": { "type": "integer" } }, "ETag": { "schema": { "type": "string" } } } },
+          "206": { "description": "旧 8BG 对象解包后的 Range 数据", "content": { "application/octet-stream": { "schema": { "type": "string", "format": "binary" } } }, "headers": { "Content-Range": { "schema": { "type": "string", "example": "bytes 0-1048575/8388608" } } } },
           "403": { "description": "凭据无效、应用已停用或权限已撤销", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "410": { "description": "凭据已过期", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "501": { "description": "ROM 服务未启用或必要密钥未配置", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },

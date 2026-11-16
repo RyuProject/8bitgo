@@ -107,7 +107,7 @@ export function requestHostname(req) {
 }
 
 /** 这些目录里的 index.html 是 iframe / 网页游戏真入口，不是站点页面的重复 URL。 */
-const RUNTIME_INDEX_ROOTS = new Set(['dolphin', 'j2me', 'ppsspp', 'web'])
+const RUNTIME_INDEX_ROOTS = new Set(['dolphin', 'eka2l1', 'j2me', 'ppsspp', 'web'])
 function isRuntimeIndexPath(pathname) {
   const parts = pathname.replace(/^\/+/, '').split('/')
   return RUNTIME_INDEX_ROOTS.has(parts[0]) && /^index\.html$/i.test(parts.at(-1) || '')

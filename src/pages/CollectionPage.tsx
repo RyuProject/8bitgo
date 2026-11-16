@@ -250,30 +250,48 @@ export function PlatformPage() {
   const list = state.data?.list
   const name = platformLabel(t, platform.id, platform.name)
   return (
-    <Collection
-      kind="platform"
-      heading={fmt(t.seo.platformH1, { platform: name })}
-      intro={platformDesc(t, platform.id, platform.description)}
-      article={t.seo.platformIntro[platform.id as keyof typeof t.seo.platformIntro] || ''}
-      articleTitle={fmt(t.seo.platformArticle, { platform: name })}
-      // 收录数量还没到时先写 0：真正读 description 的爬虫拿的是服务端渲染的 HTML，
-      // 那一份里 list 一定是有值的
-      description={fmt(t.seo.platformDesc, { platform: name, n: list?.total ?? 0 })}
-      parent={{ name: t.browse.platformsTitle, path: '/platforms' }}
-      basePath={`/platforms/${platform.id}`}
-      list={list}
-      more={more}
-      page={page}
-      error={state.status === 'error' ? state.error : undefined}
-      onRetry={state.status === 'error' ? state.retry : undefined}
-      onPage={(p) => {
-        const next = new URLSearchParams(params)
-        if (p <= 1) next.delete('page')
-        else next.set('page', String(p))
-        setParams(next)
-      }}
-      filterHref={`/games?platform=${platform.id}`}
-    />
+    <>
+      {platform.id === 'symbian' && (
+        <div className="container-x pt-8">
+          <div className="flex flex-wrap items-center justify-between gap-4 rounded-card border border-line bg-surface p-5">
+            <div className="max-w-2xl">
+              <h2 className="font-bold">{t.browse.symbianTitle}</h2>
+              <p className="mt-1 text-sm leading-relaxed text-muted">{t.browse.symbianPageIntro}</p>
+            </div>
+            <Button to="/symbian" variant="primary" size="sm">{t.browse.symbianOpen}</Button>
+          </div>
+        </div>
+      )}
+      <Collection
+        kind="platform"
+        heading={fmt(t.seo.platformH1, { platform: name })}
+        intro={platform.id === 'symbian' ? t.browse.symbianPageIntro : platformDesc(t, platform.id, platform.description)}
+        article={platform.id === 'symbian'
+          ? t.browse.symbianSteps
+          : t.seo.platformIntro[platform.id as keyof typeof t.seo.platformIntro] || ''}
+        articleTitle={platform.id === 'symbian'
+          ? t.browse.symbianStepsTitle
+          : fmt(t.seo.platformArticle, { platform: name })}
+        // 塞班走独立 EKA2L1 页面，需要用户导入授权固件，不能套用「点开即玩」的通用 SEO 描述。
+        description={platform.id === 'symbian'
+          ? t.browse.symbianPageIntro
+          : fmt(t.seo.platformDesc, { platform: name, n: list?.total ?? 0 })}
+        parent={{ name: t.browse.platformsTitle, path: '/platforms' }}
+        basePath={`/platforms/${platform.id}`}
+        list={list}
+        more={more}
+        page={page}
+        error={state.status === 'error' ? state.error : undefined}
+        onRetry={state.status === 'error' ? state.retry : undefined}
+        onPage={(p) => {
+          const next = new URLSearchParams(params)
+          if (p <= 1) next.delete('page')
+          else next.set('page', String(p))
+          setParams(next)
+        }}
+        filterHref={`/games?platform=${platform.id}`}
+      />
+    </>
   )
 }
 

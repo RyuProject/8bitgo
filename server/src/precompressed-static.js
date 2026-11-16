@@ -35,6 +35,8 @@ export const PRECOMPRESSED_STATIC_PATTERNS = Object.freeze([
   /^\/play\/(?:[^/]+\/)?Play\.wasm$/,
   /^\/ppsspp\/v[0-9a-f]+\/v\d+\/PPSSPPSDL\.wasm$/,
   /^\/emulatorjs\/emulator\.min\.js$/,
+  // EKA2L1：octet-stream 的 data（字体 / 着色器 / HLE 补丁）Cloudflare 不压，wasm 现场压也比 Brotli 11 大
+  /^\/eka2l1\/v[0-9a-f]{12}\/eka2l1\.(?:wasm|data)$/,
 ])
 
 /** 提交在运行时目录里、没有旁注的历史 .br（由各自的检查脚本保证一致） */

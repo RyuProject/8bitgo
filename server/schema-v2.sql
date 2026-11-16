@@ -352,7 +352,7 @@ CREATE TABLE IF NOT EXISTS sockdrive_conversion_jobs (
   expected_executable VARCHAR(500) NOT NULL DEFAULT '',
   -- 语言槽在转换期间换了完整回退包时拒绝自动绑定，避免新 ROM 误配旧流式盘。
   expected_object_key VARCHAR(500) NOT NULL DEFAULT '',
-  -- 浏览器已经上传并校验过的完整 8BG 回退包；完成时与流式盘一起原子绑定。
+  -- 浏览器已经上传并校验过的完整 ROM 回退包（新内容为明文，历史包可仍是 8BG）；完成时与流式盘一起原子绑定。
   target_object_key   VARCHAR(500) NOT NULL DEFAULT '',
   version             VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   target_prefix       VARCHAR(500) NOT NULL,

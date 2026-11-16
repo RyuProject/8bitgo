@@ -10,7 +10,7 @@ import {
   DevelopersPage, GenresPage, PlatformsPage, GenrePage, PlatformPage, ComingSoonPage,
   NotFoundPage, BlogPage, PostPage, LoginPage, ProfilePage, AboutPage, SubmitGamePage,
   EmbedPage, AppsPage, OAuthCallbackPage, OpenPlatformPage, OpenDevicePage,
-  OpenAuthorizePage, TvPage,
+  OpenAuthorizePage, TvPage, SymbianPage,
 } from '@/routes/Pages'
 import { TermsPage } from '@/pages/TermsPage'
 import { PrivacyPage } from '@/pages/PrivacyPage'
@@ -62,6 +62,7 @@ export function AppRoutes() {
           <Route path="/games/:slug" element={<GameDetailPage />} />
           <Route path="/platforms" element={<PlatformsPage />} />
           <Route path="/platforms/:id" element={<PlatformPage />} />
+          <Route path="/symbian" element={<SymbianPage />} />
           <Route path="/genres" element={<GenresPage />} />
           <Route path="/genres/:id" element={<GenrePage />} />
           <Route path="/developers" element={<DevelopersPage />} />

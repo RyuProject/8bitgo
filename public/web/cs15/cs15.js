@@ -41,12 +41,44 @@ const ASSET_ROOT = new URL(Q.get('root') || './', PAGE_ROOT).href.replace(/\/$/,
 // v2 主包是 Brotli 11 + HTTP Content-Encoding: br，浏览器网络层会原生流式解码成 store ZIP；
 // 若 R2 元数据/代理配置错误，清单里的 gzip 包会自动兜底，不把玩家留在黑屏里。
 const LOCAL_PACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1'])
-const DEFAULT_PACKS_ROOT = LOCAL_PACK_HOSTS.has(location.hostname)
-  ? ASSET_ROOT + '/packs'
-  : 'https://assets.8bitgo.com/web/cs15/packs'
-const PACKS_ROOT = (Q.get('packsroot')
-  ? new URL(Q.get('packsroot'), PAGE_ROOT).href
-  : DEFAULT_PACKS_ROOT).replace(/\/$/, '')
+// 生产先走 download.8bitgo.com（DNS-only CNAME 到第三方优选 IP，同一个 Worker、同一个 R2 对象），
+// 整包下载吞吐更好；它依赖别人的优选域名，所以 assets.8bitgo.com 永远留作回退。
+// 优选线路一次失败（含 10 秒无响应头、30 秒无新字节）后，本页剩余请求都改走 assets。
+const DOWNLOAD_PACKS_ROOT = 'https://download.8bitgo.com/web/cs15/packs'
+const ASSETS_PACKS_ROOT = 'https://assets.8bitgo.com/web/cs15/packs'
+const PACKS_ROOTS = (Q.get('packsroot')
+  ? [new URL(Q.get('packsroot'), PAGE_ROOT).href]
+  : LOCAL_PACK_HOSTS.has(location.hostname)
+    ? [ASSET_ROOT + '/packs']
+    : [DOWNLOAD_PACKS_ROOT, ASSETS_PACKS_ROOT]).map((root) => root.replace(/\/$/, ''))
+const PREFERRED_ROOT_HEADER_TIMEOUT_MS = 10_000
+const PREFERRED_ROOT_STALL_MS = 30_000
+let packRootIndex = 0
+const currentPackRoot = () => PACKS_ROOTS[packRootIndex]
+const isPreferredRoot = (root) => root !== PACKS_ROOTS[PACKS_ROOTS.length - 1]
+/** 只在当前首选线路失败时换下一条；返回 true 表示换了线路、值得用新线路重试同一个包。 */
+function markPackRootFailed(root, error) {
+  if (root !== PACKS_ROOTS[packRootIndex] || packRootIndex >= PACKS_ROOTS.length - 1) return false
+  packRootIndex += 1
+  window.__probe.info.packRoot = PACKS_ROOTS[packRootIndex]
+  window.__probe.info.packRootFallback = String(error)
+  log(`⚠️ ${new URL(root).host} 不可用，改走 ${new URL(PACKS_ROOTS[packRootIndex]).host}：${error?.message || error}`, 'err')
+  return true
+}
+
+async function fetchFromPackRoot(root, path, options = {}) {
+  if (!isPreferredRoot(root)) return fetch(`${root}/${path}`, options)
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), PREFERRED_ROOT_HEADER_TIMEOUT_MS)
+  try {
+    return await fetch(`${root}/${path}`, { ...options, signal: controller.signal })
+  } catch (error) {
+    if (error?.name === 'AbortError') throw new Error(`${PREFERRED_ROOT_HEADER_TIMEOUT_MS / 1000} 秒没有响应`)
+    throw error
+  } finally {
+    clearTimeout(timer)
+  }
+}
 
 const MAP_OPTIONS = {
   cs: [
@@ -65,7 +97,7 @@ const MAP_OPTIONS = {
 const $ = (id) => document.getElementById(id)
 const t0 = performance.now()
 const marks = {}
-window.__probe = { marks, log: [], errors: [], info: {}, xash: null, net: { total: 0, byUrl: {} } }
+window.__probe = { marks, log: [], errors: [], info: { packRoot: PACKS_ROOTS[0] }, xash: null, net: { total: 0, byUrl: {} } }
 window.__probe.keys = []
 // 键盘探针：确认数字键/字母键的按键事件到底有没有进到页面。
 // 关游戏控制台后，在浏览器 devtools Console 里看 KEY 日志；同时最近 30 个键会存到 __probe.keys。
@@ -239,13 +271,28 @@ function isZip(bytes) {
 }
 
 /** 把探测格式时先读出的首块重新放回流里。 */
-function prependChunk(head, reader) {
+function prependChunk(head, reader, stallMs = 0) {
   return new ReadableStream({
     start(controller) { controller.enqueue(head) },
     async pull(controller) {
-      const { done, value } = await reader.read()
-      if (done) controller.close()
-      else controller.enqueue(value)
+      let timer
+      try {
+        const { done, value } = stallMs
+          ? await Promise.race([
+            reader.read(),
+            new Promise((_, reject) => {
+              timer = setTimeout(() => reject(new Error(`${stallMs / 1000} 秒没有新数据`)), stallMs)
+            }),
+          ])
+          : await reader.read()
+        if (done) controller.close()
+        else controller.enqueue(value)
+      } catch (error) {
+        void reader.cancel(error).catch(() => {})
+        controller.error(error)
+      } finally {
+        clearTimeout(timer)
+      }
     },
     cancel(reason) { return reader.cancel(reason) },
   })
@@ -298,15 +345,15 @@ function packPlan(index, game, map) {
   return legacy
 }
 
-async function openPackStream(file, packName) {
-  const res = await fetch(`${PACKS_ROOT}/${file}?v=${encodeURIComponent(ASSET_VERSION)}`)
+async function openPackStream(root, file, packName) {
+  const res = await fetchFromPackRoot(root, `${file}?v=${encodeURIComponent(ASSET_VERSION)}`)
   if (!res.ok) throw new Error(`取不到 ${packName}（HTTP ${res.status}）`)
   if (!res.body) throw new Error('当前浏览器不支持流式读取，无法安全加载大型资源包')
 
   const reader = res.body.getReader()
   const head = await readStreamHead(reader)
   if (!head.length) throw new Error(`${packName} 是空文件`)
-  let stream = prependChunk(head, reader)
+  let stream = prependChunk(head, reader, isPreferredRoot(root) ? PREFERRED_ROOT_STALL_MS : 0)
   if (isGzip(head)) {
     if (typeof DecompressionStream === 'undefined') {
       throw new Error('当前浏览器不支持 gzip 流式解压，请升级 Chrome、Edge 或 Safari')
@@ -323,15 +370,24 @@ async function openPackStream(file, packName) {
 }
 
 async function loadPack(xash, pack) {
-  let stream
-  try {
-    stream = await openPackStream(pack.file, pack.name)
-  } catch (primaryError) {
-    if (!pack.fallback) throw primaryError
-    log(`⚠️ ${pack.name} 的 Brotli 主包不可用，改用 gzip 兜底`, 'err')
-    stream = await openPackStream(pack.fallback, `${pack.name}（gzip 兜底）`)
+  // 优选线路中途断流时整包重来：FS.open(..., 'w') 会覆盖已写出的同名文件，ZIP 逐项 CRC 仍会校验。
+  let primaryError
+  for (;;) {
+    const root = currentPackRoot()
+    try {
+      return await unpackPack(xash, await openPackStream(root, pack.file, pack.name), pack)
+    } catch (error) {
+      primaryError = error
+      if (!markPackRootFailed(root, error)) break
+    }
   }
+  if (!pack.fallback) throw primaryError
+  log(`⚠️ ${pack.name} 的 Brotli 主包不可用，改用 gzip 兜底`, 'err')
+  const stream = await openPackStream(currentPackRoot(), pack.fallback, `${pack.name}（gzip 兜底）`)
+  return unpackPack(xash, stream, pack)
+}
 
+function unpackPack(xash, stream, pack) {
   const FS = xash.em.FS
   return unpackStoredZipStream(stream, {
     mkdir(name) { FS.mkdirTree(BASE + name) },
@@ -648,9 +704,18 @@ async function start() {
   mark('引擎动态库就位')
 
   // index.json 很小且负责把内容哈希文件名指向当前版本；禁止浏览器拿旧清单拼新代码。
-  const indexResponse = await fetch(PACKS_ROOT + '/index.json?v=' + ASSET_VERSION, { cache: 'no-store' })
-  if (!indexResponse.ok) throw new Error(`取不到资源索引（HTTP ${indexResponse.status}）`)
-  const index = await indexResponse.json()
+  let index
+  for (;;) {
+    const root = currentPackRoot()
+    try {
+      const indexResponse = await fetchFromPackRoot(root, 'index.json?v=' + ASSET_VERSION, { cache: 'no-store' })
+      if (!indexResponse.ok) throw new Error(`取不到资源索引（HTTP ${indexResponse.status}）`)
+      index = await indexResponse.json()
+      break
+    } catch (error) {
+      if (!markPackRootFailed(root, error)) throw error
+    }
+  }
   window.__probe.info.packIndex = index
   const wanted = packPlan(index, game, map)
   if (wanted.length === 1 && game !== 'hl') log(`（没有 ${map} 的独立地图包，图在基础包内）`)

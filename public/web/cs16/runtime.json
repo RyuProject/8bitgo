@@ -1,5 +1,5 @@
 {
-  "assetVersion": "20261019-room-perf2",
+  "assetVersion": "20261116-dlhost",
   "files": [
     {
       "name": "PACKS.md",
@@ -13,13 +13,13 @@
     },
     {
       "name": "cs16.bundle.js",
-      "size": 1133472,
-      "sha256": "3b47b400955c652cdaf40729a37f64e53f3e1176fa2ac859d98488be7a61088d"
+      "size": 1134697,
+      "sha256": "01596e9e4be21c7ac07a335ca0bd909a013ffea96214201d5d675e8412c57975"
     },
     {
       "name": "cs16.js",
-      "size": 75804,
-      "sha256": "6f29a7012404498f207f3f253f13c28620ba8735757a63a69f6f17ac475a1b49"
+      "size": 77593,
+      "sha256": "2b0f6f070c7601e46d358d8141686703678b049901407dd70447ef2918b52b32"
     },
     {
       "name": "engine/dist/constants.js",
@@ -123,8 +123,8 @@
     },
     {
       "name": "index.html",
-      "size": 23039,
-      "sha256": "f23aa9d7f551bdffd57224b9177209a6c09b70989f395905dfd0bd3cf940a8e9"
+      "size": 23112,
+      "sha256": "f835bfd23f478452fdb695f63fc9359c64b45763404e3739e30e13da45cf4dc3"
     },
     {
       "name": "lib-new/cstrike/cl_dlls/client_emscripten_wasm32.wasm",

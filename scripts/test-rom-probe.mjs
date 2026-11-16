@@ -283,11 +283,11 @@ assert.equal(isolatedEmbedFor('diablo'), undefined, 'Diablo 不需要 COOP/COEP�
   assert.match(route, /const HOST_PROBE_TIMEOUT_MS = 8000/, '探针上限要能熬过详情页刚打开时的连接争抢')
 }
 
-/* ---------- 8BG 约定地址：新容器优先，旧对象继续回退 ---------- */
+/* ---------- ROM 约定地址：明文优先，历史 8BG 继续回退 ---------- */
 {
   const keys = conventionalKeys({ platform: 'nes', slug: 'demo' })
-  assert.equal(keys[0], 'roms/nes/demo.zip.8bg', '未绑定游戏先探新的 8BG 容器')
-  assert.ok(keys.includes('roms/nes/demo.zip'), '旧 ROM 约定地址必须继续保留')
+  assert.equal(keys[0], 'roms/nes/demo.zip', '未绑定游戏先探明文 ROM')
+  assert.ok(keys.indexOf('roms/nes/demo.zip.8bg') > keys.indexOf('roms/nes/demo.zip'), '历史 8BG 约定地址仍作为回退')
   assert.equal(slugFromKey('roms/nes/super-mario-bros.nes.8bg'), 'super-mario-bros', '自动匹配要剥掉容器和 ROM 两层扩展名')
   assert.equal(slugFromKey('roms/nds/rhythm-heaven.srl'), 'rhythm-heaven', 'NDS 的 .srl 上传后也要能自动匹配游戏')
 }
@@ -561,13 +561,13 @@ assert.equal(isolatedEmbedFor('diablo'), undefined, 'Diablo 不需要 COOP/COEP�
     playback.slice(0, 4).map(({ key, derivedPacked, backup }) => ({ key, derivedPacked: Boolean(derivedPacked), backup: Boolean(backup) })),
     [
       { key: 'https://primary.example.com/game.zip', derivedPacked: false, backup: false },
-      { key: 'roms/nes/game.zh-Hans.zip.8bg', derivedPacked: true, backup: true },
       { key: 'roms/nes/game.zh-Hans.zip', derivedPacked: false, backup: true },
-      { key: 'roms/nes/game.en.zip.8bg', derivedPacked: true, backup: false },
+      { key: 'roms/nes/game.zh-Hans.zip.8bg', derivedPacked: true, backup: true },
+      { key: 'roms/nes/game.en.zip', derivedPacked: false, backup: false },
     ],
-    '对象 key 自动先探旁边的 .8bg；完整外链保持原样，旧对象紧跟着兜底',
+    '对象 key 自动先探明文原件，旁边的 .8bg 保留为回退；完整外链保持原样',
   )
-  assert.equal(shouldTryRomCandidateAfterUncertain(playback[1], playback[2]), true, '派生 .8bg 超时也必须尝试原对象')
+  assert.equal(shouldTryRomCandidateAfterUncertain(playback[1], playback[2]), true, '明文备用源超时后仍应尝试它的 8BG 回退')
   assert.equal(
     nextRomCandidateKey(candidates.map((candidate) => candidate.key), candidates[0].key, new Set()),
     candidates[1].key,

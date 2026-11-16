@@ -8,7 +8,7 @@
 import type { LoadProgress } from './types'
 import { downloadResumeStore } from './downloadResume'
 import { fetchBlobWithProgress, withResumeTimeout } from './loadProgress'
-import { alternateRomUrl } from '@/services/romHosts'
+import { alternateRomUrls } from '@/services/romHosts'
 import { romCacheDelete, romCacheGetBlob, romCacheKey, romCachePutBlob } from './romCache'
 import { isReadyJsdosBundleBlob } from '@/lib/jsdosBundle'
 import { isBlobReadError, isRomPackBytes, isRomPackUrl, prewarmRomPackDecoder, unpackRomPackBlob } from '@/services/romPack'
@@ -93,7 +93,7 @@ export async function prepareRemoteDosBundle(
     phase: 'rom',
     onProgress,
     signal,
-    alternateUrl: alternateRomUrl(url),
+    alternateUrls: alternateRomUrls(url),
     // URL 没有 romv 时可能被后台原地替换，绝不能把两代分片拼成一个“完整”坏包。
     resumeKey: resume ? cacheKey || undefined : undefined,
     check: (response) => {

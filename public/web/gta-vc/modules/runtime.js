@@ -1088,8 +1088,6 @@ function initDependencies() {
     if (typeof FS !== "undefined") {
     }
     createContext = (...args) => Browser.createContext(...args);
-// FS.createPreloadedFile = FS_createPreloadedFile;
-// FS.preloadFile = FS_preloadFile;
 Module["requestAnimationFrame"] = MainLoop.requestAnimationFrame;
 Module["pauseMainLoop"] = MainLoop.pause;
 Module["resumeMainLoop"] = MainLoop.resume;
@@ -1104,7 +1102,6 @@ var miniTempWebGLIntBuffersStorage = new Int32Array(288);
 for (var i = 0; i <= 288; ++i) {
     miniTempWebGLIntBuffers[i] = miniTempWebGLIntBuffersStorage.subarray(0, i)
 }
-// Fetch.init();
 }
 {
     if (Module["noExitRuntime"]) noExitRuntime = Module["noExitRuntime"];

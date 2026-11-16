@@ -1,9 +1,9 @@
 /**
- * 主域（assets.<裸域>，Cloudflare）与加速镜像（cn-assets.<裸域>，EdgeOne）之间的地址换算。
+ * ROM 主域（assets）、大陆镜像（cn-assets）与下载优选域（download）之间的地址换算。
  *
- * 两个域名回源同一个 R2 桶，同一路径就是同一个对象，所以凡是**拿 URL 当身份**的地方
- * （ROM / 系统盘的 IndexedDB 缓存键、Sockdrive 存档键）都必须先换回主域写法，否则换一次线路
- * 就当成另一份文件：缓存全部重下、Sockdrive 存档读不回来。
+ * 三个域名读同一 R2 对象，所以凡是**拿 URL 当身份**的地方（ROM / 系统盘的 IndexedDB 缓存键、
+ * Sockdrive 存档键）都必须先换回主域写法，否则换一次线路就当成另一份文件：缓存全部重下、
+ * Sockdrive 存档读不回来。
  *
  * 只读构建期配置（不读管理员本机覆盖），也不 import 任何业务模块，romCache 等底层模块可以放心引用。
  */
@@ -17,11 +17,27 @@ const trim = (value: string | undefined) => {
 
 export const ENV_ROM_BASE = trim(import.meta.env.VITE_ROM_BASE_URL)
 export const ENV_ROM_MIRROR = trim(import.meta.env.VITE_ROM_MIRROR_URL)
+export const ENV_ROM_DOWNLOAD = trim(import.meta.env.VITE_ROM_DOWNLOAD_URL)
 
-/** 镜像地址换回主域写法；其它地址原样返回 */
+/** 将本站 R2 对象改写到下载优选域；外站和自定义存储地址保持原样。 */
+export function downloadRomUrl(url: string, base = ENV_ROM_BASE, mirror = ENV_ROM_MIRROR, download = ENV_ROM_DOWNLOAD): string {
+  if (!url || !download) return ''
+  for (const source of [base, mirror]) {
+    if (source && source !== download && url.startsWith(`${source}/`)) {
+      return `${download}${url.slice(source.length)}`
+    }
+  }
+  return ''
+}
+
+/** 镜像或下载域地址换回主域写法；其它地址原样返回 */
 export function canonicalRomUrl(url: string, base = ENV_ROM_BASE, mirror = ENV_ROM_MIRROR): string {
-  if (!url || !base || !mirror || base === mirror) return url
-  return url.startsWith(`${mirror}/`) ? `${base}${url.slice(mirror.length)}` : url
+  if (!url || !base) return url
+  if (mirror && base !== mirror && url.startsWith(`${mirror}/`)) return `${base}${url.slice(mirror.length)}`
+  if (ENV_ROM_DOWNLOAD && base !== ENV_ROM_DOWNLOAD && url.startsWith(`${ENV_ROM_DOWNLOAD}/`)) {
+    return `${base}${url.slice(ENV_ROM_DOWNLOAD.length)}`
+  }
+  return url
 }
 
 /** 主域地址换成镜像写法；不在主域上的地址返回空串 */
@@ -31,16 +47,82 @@ export function mirrorRomUrl(url: string, base = ENV_ROM_BASE, mirror = ENV_ROM_
 }
 
 /**
- * 同一个对象在另一条线路上的地址（主域 ↔ 镜像）；不在这两个域上的地址返回空串。
+ * 同一个对象的下一条备用线路；不在本站资源域上的地址返回空串。
  *
- * 下载器在一条线路上测到首段过慢或重试用光后改走另一条（loadProgress.ts 的 alternateUrl）：两个域回源同一个
- * R2 桶，带同一个 romv 就是同一份字节，断点分片按 canonical 键存，换线路也能接着补。
+ * 下载器在首段测速或当前线路重试失败后切换（loadProgress.ts）：三条线路读取同一个 R2 桶，
+ * 带同一个 romv 就是同一份字节，断点分片按 canonical 键存，换线路也能接着补。
  * 2026-11-10 墨西哥玩家《合金弹头 3》两次「Failed to fetch」：那条线路对他不通，而另一条从没试过。
  */
 export function alternateRomUrl(url: string, base = ENV_ROM_BASE, mirror = ENV_ROM_MIRROR): string {
-  if (!url || !base || !mirror || base === mirror) return ''
-  if (url.startsWith(`${mirror}/`)) return canonicalRomUrl(url, base, mirror)
-  return mirrorRomUrl(url, base, mirror)
+  return alternateRomUrls(url, base, mirror)[0] ?? ''
+}
+
+/** 同一 R2 对象的备用线路：先试下载优选域，再保留原有主域 / EdgeOne 作为兜底。 */
+export function alternateRomUrls(url: string, base = ENV_ROM_BASE, mirror = ENV_ROM_MIRROR): string[] {
+  if (!url) return []
+  const candidates: string[] = []
+  const downloadUrl = downloadRomUrl(url, base, mirror)
+  if (downloadUrl) candidates.push(downloadUrl)
+  if (mirror && url.startsWith(`${mirror}/`)) candidates.push(canonicalRomUrl(url, base, mirror))
+  else if (base && url.startsWith(`${base}/`)) {
+    const mirrorUrl = mirrorRomUrl(url, base, mirror)
+    if (mirrorUrl) candidates.push(mirrorUrl)
+  } else if (ENV_ROM_DOWNLOAD && url.startsWith(`${ENV_ROM_DOWNLOAD}/`)) {
+    candidates.push(canonicalRomUrl(url, base, mirror))
+  }
+  // 下载域作为当前线路时，原线路和 EdgeOne 都可接着兜底。
+  if (ENV_ROM_DOWNLOAD && url.startsWith(`${ENV_ROM_DOWNLOAD}/`)) {
+    const canonical = canonicalRomUrl(url, base, mirror)
+    const mirrorUrl = mirrorRomUrl(canonical, base, mirror)
+    if (canonical) candidates.push(canonical)
+    if (mirrorUrl) candidates.push(mirrorUrl)
+  }
+  return [...new Set(candidates.filter((candidate) => candidate && candidate !== url))]
+}
+
+const reachableRomOrigins = new Map<string, { reachable: boolean; expiresAt: number }>()
+
+/** 给只接受单个 URL 的引擎（EmulatorJS 的 EJS_biosUrl）挑一个当前可读的同对象域名。 */
+export async function reachableRomAssetUrl(url: string, signal?: AbortSignal): Promise<string> {
+  if (!url || typeof fetch !== 'function') return url
+  const candidates = [url, ...alternateRomUrls(url)]
+  for (const candidate of candidates) {
+    if (signal?.aborted) return url
+    let origin = ''
+    try { origin = new URL(candidate, typeof location === 'undefined' ? 'https://8bitgo.invalid' : location.href).origin }
+    catch { continue }
+    const cached = reachableRomOrigins.get(origin)
+    if (cached && cached.expiresAt > Date.now()) {
+      if (cached.reachable) return candidate
+      continue
+    }
+
+    const controller = new AbortController()
+    const relayAbort = () => controller.abort(signal?.reason)
+    signal?.addEventListener('abort', relayAbort, { once: true })
+    const timer = setTimeout(() => controller.abort(), 1800)
+    let reachable = false
+    try {
+      const response = await fetch(candidate, {
+        method: 'GET',
+        mode: 'cors',
+        credentials: 'omit',
+        cache: 'no-store',
+        headers: { Range: 'bytes=0-0' },
+        signal: controller.signal,
+      })
+      reachable = response.ok
+      void response.body?.cancel().catch(() => {})
+    } catch {
+      reachable = false
+    } finally {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', relayAbort)
+    }
+    reachableRomOrigins.set(origin, { reachable, expiresAt: Date.now() + (reachable ? 60_000 : 8_000) })
+    if (reachable) return candidate
+  }
+  return url
 }
 
 /** 已在 ROM / 光盘的真实 Range 请求中验证或回退成功的线路，短时供下一局和系统资源复用。 */

@@ -3,7 +3,7 @@
     // Touch device detection
     const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
     const isTouch = isMobile && window.matchMedia('(pointer: coarse)').matches;
-
+    
     const style = document.createElement('style');
     style.textContent = `
         #cheat-engine-ui {
@@ -27,7 +27,7 @@
             box-shadow: -10px 0 30px rgba(0,0,0,0.8);
             box-sizing: border-box;
         }
-
+        
         /* Touch toggle button */
         #cheat-toggle-btn {
             display: ${isTouch ? 'flex' : 'none'};
@@ -56,7 +56,7 @@
         #cheat-toggle-btn.active {
             background: rgba(255, 0, 255, 0.6);
         }
-
+        
         /* Airbreak touch controls */
         #airbreak-touch-controls {
             display: none;
@@ -211,7 +211,7 @@
             color: #0ff !important;
             background: rgba(0, 255, 255, 0.1) !important;
         }
-
+        
         /* Close button for touch */
         #cheat-close-btn {
             display: ${isTouch ? 'flex' : 'none'};
@@ -297,7 +297,7 @@
         input:checked + .slider:before {
             transform: translateX(16px);
         }
-
+        
         /* Money Button */
         .money-btn {
             width: 100%;
@@ -352,7 +352,7 @@
     ui.innerHTML = `
         <div id="cheat-close-btn">✕</div>
         <h1>Cheat Engine</h1>
-
+        
         <div class="ce-section">
             <div class="ce-label">Scanner</div>
             <div style="display: flex; gap: 4px;">
@@ -391,7 +391,7 @@
 
         <div class="ce-section">
             <div class="ce-label">Quick Actions</div>
-
+            
             <div class="switch-container">
                 <span class="switch-label">AirBreak (RShift)</span>
                 <label class="switch">
@@ -399,7 +399,7 @@
                     <span class="slider"></span>
                 </label>
             </div>
-
+            
             <div class="switch-container">
                 <span class="switch-label">GodMode (Inf HP)</span>
                 <label class="switch">
@@ -409,7 +409,7 @@
             </div>
 
             <button id="ce-add-money" class="money-btn">+$9999999 MONEY</button>
-
+            
             <div style="display: flex; gap: 4px; margin-top: 4px; align-items: center;">
                 <span style="font-size: 10px; color: #888;">Fly Speed:</span>
                 <input type="number" id="ce-fly-speed" value="2.0" step="0.5" min="0.1" max="50" style="width: 60px;">
@@ -420,7 +420,7 @@
 
         <div class="ce-section">
             <div class="ce-label">Cheats</div>
-
+            
             <div class="cheat-cat">Weapons & Health</div>
             <div class="cheat-grid">
                 <button class="cheat-btn" onclick="typeCheat('THUGSTOOLS')">Thug Tools</button>
@@ -509,7 +509,7 @@
     let isSearching = false;
     let menuOpen = false;
     let lastBuffer = null; // Track buffer for detachment detection
-
+    
     // AirBreak state
     let airbreakEnabled = false;        // Whether currently flying
     let airbreakConfigured = false;
@@ -598,7 +598,7 @@
         menuOpen = !menuOpen;
         ui.style.display = menuOpen ? 'flex' : 'none';
         toggleBtn.classList.toggle('active', menuOpen);
-
+        
         if (menuOpen) {
             if (document.pointerLockElement) document.exitPointerLock();
             document.body.style.cursor = 'default';
@@ -625,7 +625,7 @@
     let toggleBtnInitialLeft = 0;
     let toggleBtnInitialTop = 0;
     const dragThreshold = 10; // pixels to move before considered a drag
-
+    
     // Load saved position from localStorage
     const savedPos = localStorage.getItem('cheat-toggle-pos');
     if (savedPos) {
@@ -636,7 +636,7 @@
             toggleBtn.style.top = pos.top + 'px';
         } catch(e) {}
     }
-
+    
     toggleBtn.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -644,56 +644,56 @@
             toggleMenu();
         }
     });
-
+    
     if (isTouch) {
         toggleBtn.addEventListener('touchstart', (e) => {
             e.preventDefault();
             e.stopPropagation();
             toggleBtnDragging = false;
-
+            
             const touch = e.touches[0];
             toggleBtnStartX = touch.clientX;
             toggleBtnStartY = touch.clientY;
-
+            
             // Get current position
             const rect = toggleBtn.getBoundingClientRect();
             toggleBtnInitialLeft = rect.left;
             toggleBtnInitialTop = rect.top;
         }, { passive: false });
-
+        
         toggleBtn.addEventListener('touchmove', (e) => {
             e.preventDefault();
             e.stopPropagation();
-
+            
             const touch = e.touches[0];
             const deltaX = touch.clientX - toggleBtnStartX;
             const deltaY = touch.clientY - toggleBtnStartY;
-
+            
             // Check if we've moved enough to consider it a drag
             if (Math.abs(deltaX) > dragThreshold || Math.abs(deltaY) > dragThreshold) {
                 toggleBtnDragging = true;
             }
-
+            
             if (toggleBtnDragging) {
                 let newLeft = toggleBtnInitialLeft + deltaX;
                 let newTop = toggleBtnInitialTop + deltaY;
-
+                
                 // Clamp to screen bounds
                 const btnWidth = toggleBtn.offsetWidth;
                 const btnHeight = toggleBtn.offsetHeight;
                 newLeft = Math.max(0, Math.min(window.innerWidth - btnWidth, newLeft));
                 newTop = Math.max(0, Math.min(window.innerHeight - btnHeight, newTop));
-
+                
                 toggleBtn.style.right = 'auto';
                 toggleBtn.style.left = newLeft + 'px';
                 toggleBtn.style.top = newTop + 'px';
             }
         }, { passive: false });
-
+        
         toggleBtn.addEventListener('touchend', (e) => {
             e.preventDefault();
             e.stopPropagation();
-
+            
             if (toggleBtnDragging) {
                 // Save position
                 const rect = toggleBtn.getBoundingClientRect();
@@ -705,11 +705,11 @@
                 // It was a tap, not a drag - toggle menu
                 toggleMenu();
             }
-
+            
             toggleBtnDragging = false;
         }, { passive: false });
     }
-
+    
     // Close button handler (works for both touch and click)
     const closeBtn = document.getElementById('cheat-close-btn');
     if (closeBtn) {
@@ -718,7 +718,7 @@
             e.stopPropagation();
             toggleMenu();
         });
-
+        
         if (isTouch) {
             closeBtn.addEventListener('touchstart', (e) => {
                 e.preventDefault();
@@ -740,7 +740,7 @@
     window.addEventListener('mousedown', (e) => {
         if (menuOpen && ui.contains(e.target)) e.stopPropagation();
     }, true);
-
+    
     // Touch event handling for menu
     window.addEventListener('touchstart', (e) => {
         if (menuOpen && ui.contains(e.target)) e.stopPropagation();
@@ -786,16 +786,16 @@
                     // Check all types with tolerance
                     const i32 = view.getInt32(addr, true);
                     if (Math.abs(i32 - val) <= tolerance) return 'i32';
-
+                    
                     const f32 = view.getFloat32(addr, true);
                     if (isFinite(f32) && Math.abs(f32 - val) <= tolerance) return 'f32';
-
+                    
                     const i16 = view.getInt16(addr, true);
                     if (Math.abs(i16 - val) <= tolerance) return 'i16';
-
+                    
                     const i8 = view.getInt8(addr);
                     if (Math.abs(i8 - val) <= tolerance) return 'i8';
-
+                    
                     return false;
             }
         } catch(e) {}
@@ -807,7 +807,7 @@
         const valStr = document.getElementById('ce-value').value;
         const type = document.getElementById('ce-type').value;
         const val = parseFloat(valStr);
-
+        
         if (isNaN(val)) {
             updateStatus("Invalid value");
             return;
@@ -821,12 +821,12 @@
             // Always get fresh buffer
             const view = getView();
             const bufferLen = view.buffer.byteLength;
-
+            
             console.log(`[CheatEngine] New search: value=${val}, type=${type}, bufferLen=${bufferLen}`);
-
+            
             // Use step 4 for aligned types, step 1 only for i8
             const step = (type === 'i8') ? 1 : 4;
-
+            
             for (let i = 0; i < bufferLen - 8; i += step) {
                 const matchType = checkMatch(view, i, type, val);
                 if (matchType) {
@@ -869,29 +869,29 @@
         const bufLen = view.buffer.byteLength;
 
         console.log(`[CheatEngine] Next search: value=${val}, checking ${results.length} addresses`);
-
+        
         let skipped = 0;
         let checked = 0;
-
+        
         for (const res of results) {
             // Skip out of bounds addresses
             if (res.addr < 0 || res.addr >= bufLen - 8) {
                 skipped++;
                 continue;
             }
-
+            
             checked++;
             const currentVal = readValue(view, res.addr, res.type);
-
+            
             if (currentVal === null) {
                 skipped++;
                 continue;
             }
-
+            
             // Use tolerance for matching
             const tolerance = 0.5;
             const matches = Math.abs(currentVal - val) <= tolerance;
-
+            
             if (matches) {
                 res.lastVal = currentVal;
                 newResults.push(res);
@@ -899,7 +899,7 @@
         }
 
         console.log(`[CheatEngine] Checked: ${checked}, Skipped: ${skipped}, Found: ${newResults.length}`);
-
+        
         results = newResults;
         updateStatus(`Found ${results.length}/${startCount} addresses`);
         displayResults();
@@ -909,7 +909,7 @@
     function displayResults() {
         const container = document.getElementById('ce-results');
         container.innerHTML = '';
-
+        
         const limit = Math.min(results.length, 100);
         const view = getView();
         for (let i = 0; i < limit; i++) {
@@ -919,7 +919,7 @@
             div.style.justifyContent = 'space-between';
             div.style.marginBottom = '2px';
             div.style.borderBottom = '1px solid #333';
-
+            
             let currentVal;
             try {
                 switch(res.type) {
@@ -943,7 +943,7 @@
     window.editAddr = function(addr, type) {
         const newVal = prompt(`Enter new value for 0x${addr.toString(16)} (${type}):`);
         if (newVal === null) return;
-
+        
         const view = getView();
         try {
             switch(type) {
@@ -969,7 +969,7 @@
         }
         isSearching = true;
         updateStatus("Filtering...");
-
+        
         const newResults = [];
         const view = getView();
         const bufLen = view.buffer.byteLength;
@@ -977,12 +977,12 @@
         for (const res of results) {
             // Skip if address is out of bounds (buffer might have changed)
             if (res.addr < 0 || res.addr >= bufLen - 8) continue;
-
+            
             const oldVal = res.lastVal;
             const newVal = readValue(view, res.addr, res.type);
-
+            
             if (newVal === null) continue;
-
+            
             // Handle case where lastVal wasn't set
             if (oldVal === undefined || oldVal === null) {
                 // Can't compare - just update lastVal for next time
@@ -1012,7 +1012,7 @@
         const addr = parseInt(addrStr, 16);
         const view = getView();
         const bufLen = view.buffer.byteLength;
-
+        
         if (isNaN(addr) || addr < 0 || addr >= bufLen - 8) {
             alert("Invalid address (out of range: 0 - 0x" + (bufLen - 8).toString(16) + ")");
             return;
@@ -1022,7 +1022,7 @@
         container.style.display = 'block';
         container.innerHTML = '';
         const types = ['i8', 'i16', 'i32', 'f32', 'f64'];
-
+        
         types.forEach(type => {
             let val;
             try {
@@ -1033,7 +1033,7 @@
                     case 'f32': val = view.getFloat32(addr, true).toFixed(4); break;
                     case 'f64': val = view.getFloat64(addr, true).toFixed(4); break;
                 }
-
+                
                 const div = document.createElement('div');
                 div.style.display = 'flex';
                 div.style.justifyContent = 'space-between';
@@ -1064,10 +1064,10 @@
     window.typeCheat = async function(code) {
         console.log("Typing cheat:", code);
         updateStatus("Entering cheat...");
-
+        
         if (typeof JSEvents === 'undefined' || !JSEvents.eventHandlers) return;
 
-        const handlers = JSEvents.eventHandlers.filter(h =>
+        const handlers = JSEvents.eventHandlers.filter(h => 
             h.eventTypeString === 'keydown' || h.eventTypeString === 'keypress' || h.eventTypeString === 'keyup'
         );
 
@@ -1076,7 +1076,7 @@
         for (let i = 0; i < code.length; i++) {
             const char = code[i].toUpperCase();
             const keyCode = char.charCodeAt(0);
-
+            
             const fillBuffer = () => {
                 for (let j = 0; j < 160; j++) HEAPU8[eventDataPtr + j] = 0;
                 HEAPF64[eventDataPtr >> 3] = performance.now();
@@ -1103,16 +1103,16 @@
             for (const h of handlers) {
                 if (h.eventTypeString === 'keyup') getWasmTableEntry(h.callbackfunc)(h.eventTypeId, eventDataPtr, h.userData);
             }
-
+            
             await new Promise(r => setTimeout(r, 5));
         }
-
+        
         _free(eventDataPtr);
         updateStatus("Cheat entered: " + code);
     };
 
     // ========== AIRBREAK FUNCTIONALITY ==========
-
+    
     // GTA VC structure offsets:
     // CPed +0x354 = health (f32)
     // Heading (rotation) = healthAddr + 0x24 (f32, radians)
@@ -1125,7 +1125,7 @@
     //          Z = X + 0x8
     //          heading = healthAddr + 0x24
     //          moveSpeedX = healthAddr - 0x2E0, Y = +0x4, Z = +0x8
-
+    
     let positionAddr = 0;   // X position address (Y at +4, Z at +8)
     let headingAddr = 0;    // Heading/rotation address
     let healthAddr = 0;     // Health address for locking
@@ -1134,7 +1134,7 @@
     let lockedHealth = 100; // Locked health value
     let godModeEnabled = false;
     let moneyAddr = 0;      // Money address
-
+    
     // Static addresses for GTA VC
     // Money handle: EN=0x361c50, RU=0x361c60
     // PED_ADDR = read_I32(money_handle - 0xA0)
@@ -1142,28 +1142,28 @@
     function getStaticAddresses() {
         const view = getView();
         const bufLen = view.buffer.byteLength;
-
+        
         const moneyHandleAddr = 0x361c50;
-
+        
         if (moneyHandleAddr >= bufLen - 4) return null;
-
+        
         // Money is at moneyHandleAddr
         moneyAddr = moneyHandleAddr;
-
+        
         // PED_ADDR = read_I32(money_handle - 0xA0)
         const pedPtrAddr = moneyHandleAddr - 0xA0;
         if (pedPtrAddr < 0 || pedPtrAddr >= bufLen - 4) return null;
-
+        
         const pedAddr = view.getInt32(pedPtrAddr, true);
         if (pedAddr <= 0 || pedAddr >= bufLen - 0x400) return null;
-
+        
         // Health = PED_ADDR + 0x350
         const hpAddr = pedAddr + 0x350;
         if (hpAddr < 0 || hpAddr >= bufLen - 4) return null;
-
+        
         return { pedAddr, healthAddr: hpAddr, moneyAddr: moneyHandleAddr };
     }
-
+    
     function setupAirbreak() {
         const addrs = getStaticAddresses();
         if (!addrs) {
@@ -1171,54 +1171,54 @@
             document.getElementById('ce-airbreak-status').style.color = '#f00';
             return false;
         }
-
+        
         healthAddr = addrs.healthAddr;
         const view = getView();
         const bufLen = view.buffer.byteLength;
-
+        
         // Calculate addresses:
         // Position: healthAddr - 0x354 + 0x04 + 0x34 = healthAddr - 0x31C
         // Heading: healthAddr + 0x24
-
+        
         const HEALTH_OFFSET = 0x354;
         const MATRIX_OFFSET = 0x04;
         const X_IN_MATRIX = 0x34;
         const HEADING_OFFSET = 0x24;  // Relative to health address
         const MOVESPEED_OFFSET = 0x74;  // MoveSpeed from CEntity base
-
+        
         const entityBase = healthAddr - HEALTH_OFFSET;
         positionAddr = entityBase + MATRIX_OFFSET + X_IN_MATRIX;  // = healthAddr - 0x31C
         headingAddr = healthAddr + HEADING_OFFSET;
         moveSpeedAddr = entityBase + MOVESPEED_OFFSET;  // = healthAddr - 0x2E0
-
+        
         console.log(`[AirBreak] Health addr: 0x${healthAddr.toString(16)}`);
         console.log(`[AirBreak] Entity base: 0x${entityBase.toString(16)}`);
         console.log(`[AirBreak] Position addr: 0x${positionAddr.toString(16)}`);
         console.log(`[AirBreak] Heading addr: 0x${headingAddr.toString(16)}`);
         console.log(`[AirBreak] MoveSpeed addr: 0x${moveSpeedAddr.toString(16)}`);
-
+        
         // Validate addresses
         if (positionAddr < 0 || positionAddr >= bufLen - 12 ||
             headingAddr < 0 || headingAddr >= bufLen - 4) {
             document.getElementById('ce-airbreak-status').textContent = 'Address out of range';
             return;
         }
-
+        
         // Read current values
         const x = view.getFloat32(positionAddr, true);
         const y = view.getFloat32(positionAddr + 4, true);
         const z = view.getFloat32(positionAddr + 8, true);
         const heading = view.getFloat32(headingAddr, true);
         const health = view.getFloat32(healthAddr, true);
-
+        
         console.log(`[AirBreak] Position: X=${x.toFixed(2)}, Y=${y.toFixed(2)}, Z=${z.toFixed(2)}`);
         console.log(`[AirBreak] Heading: ${heading.toFixed(2)} rad (${(heading * 180 / Math.PI).toFixed(1)}°)`);
         console.log(`[AirBreak] Health: ${health.toFixed(2)}`);
-
+        
         // Store current Z and health for locking
         lockedZ = z;
         lockedHealth = health;
-
+        
         // Sanity check
         if (!isFinite(x) || !isFinite(y) || !isFinite(z) ||
             Math.abs(x) > 5000 || Math.abs(y) > 5000 || z < -50 || z > 1000) {
@@ -1230,19 +1230,19 @@
                 `Ready! [RShift to fly] H:${(heading * 180 / Math.PI).toFixed(0)}°`;
             document.getElementById('ce-airbreak-status').style.color = '#0f0';
         }
-
+        
         // Store for compatibility
         playerMatrixAddr = positionAddr;
         airbreakConfigured = true;
-
+        
         updatePositionDisplay();
         return true;
     }
-
+    
     // Toggle GodMode
     function toggleGodMode(e) {
         const checkbox = document.getElementById('ce-toggle-godmode');
-
+        
         // If triggered by event, use checkbox state
         if (e && e.target === checkbox) {
             godModeEnabled = checkbox.checked;
@@ -1263,7 +1263,7 @@
             }
             return;
         }
-
+        
         // If disabling GodMode, reset HP from 999 to 100
         if (!godModeEnabled) {
             const view = getView();
@@ -1271,24 +1271,24 @@
                 view.setFloat32(addrs.healthAddr, 100.0, true);
             } catch(e) {}
         }
-
+        
         document.getElementById('ce-airbreak-status').textContent = godModeEnabled ? 'GodMode ON - Infinite HP' : 'GodMode OFF (HP reset to 100)';
         document.getElementById('ce-airbreak-status').style.color = godModeEnabled ? '#0f0' : '#888';
     }
-
+    
     // GodMode tick - runs constantly to keep HP at max
     function godModeTick() {
         if (!godModeEnabled) return;
-
+        
         const addrs = getStaticAddresses();
         if (!addrs) return;
-
+        
         const view = getView();
         try {
             view.setFloat32(addrs.healthAddr, 999.0, true);
         } catch(e) {}
     }
-
+    
     // Add money
     function addMoney() {
         const addrs = getStaticAddresses();
@@ -1297,7 +1297,7 @@
             document.getElementById('ce-airbreak-status').style.color = '#f00';
             return;
         }
-
+        
         const view = getView();
         try {
             const currentMoney = view.getInt32(addrs.moneyAddr, true);
@@ -1309,11 +1309,11 @@
             document.getElementById('ce-airbreak-status').style.color = '#f00';
         }
     }
-
+    
     // Toggle AirBrake availability (whether RShift can trigger it)
     function toggleAirBrake(e) {
         const checkbox = document.getElementById('ce-toggle-airbreak');
-
+        
         // If triggered by event, use checkbox state
         if (e && e.target === checkbox) {
             airbreakShiftAllowed = checkbox.checked;
@@ -1322,7 +1322,7 @@
             airbreakShiftAllowed = !airbreakShiftAllowed;
             checkbox.checked = airbreakShiftAllowed;
         }
-
+        
         // If disabling, also stop flying
         if (!airbreakShiftAllowed && airbreakEnabled) {
             airbreakEnabled = false;
@@ -1340,78 +1340,78 @@
             document.getElementById('ce-airbreak-status').style.color = '#888';
         }
     }
-
+    
     // Toggle actual flying state (called by RShift)
     function toggleFlying() {
         if (!airbreakShiftAllowed) return false;
-
+        
         if (!airbreakConfigured) {
             if (!setupAirbreak()) {
                 return false;
             }
         }
-
+        
         airbreakEnabled = !airbreakEnabled;
-
+        
         if (airbreakEnabled) {
             const view = getView();
             lockedZ = view.getFloat32(positionAddr + 8, true);
             lockedHealth = view.getFloat32(healthAddr, true);
         }
-
+        
         document.getElementById('ce-airbreak-status').textContent = airbreakEnabled ?
             `FLYING! Z=${lockedZ.toFixed(1)}` : 'AirBreak enabled (RShift to fly)';
         document.getElementById('ce-airbreak-status').style.color = airbreakEnabled ? '#ff0' : '#0f0';
-
+        
         return true;
     }
-
+    
     function updatePositionDisplay() {
         if (!airbreakConfigured || positionAddr === 0) return;
-
+        
         const view = getView();
         const bufLen = view.buffer.byteLength;
-
+        
         if (positionAddr < 0 || positionAddr >= bufLen - 12) return;
-
+        
         try {
             const x = view.getFloat32(positionAddr, true);
             const y = view.getFloat32(positionAddr + 4, true);
             const z = view.getFloat32(positionAddr + 8, true);
             const heading = view.getFloat32(headingAddr, true);
             const hp = view.getFloat32(healthAddr, true);
-
+            
             document.getElementById('ce-pos-display').textContent =
                 `X:${x.toFixed(1)} Y:${y.toFixed(1)} Z:${z.toFixed(1)} H:${(heading * 180 / Math.PI).toFixed(0)}° HP:${hp.toFixed(0)}` +
                 (airbreakEnabled ? ' [FLY]' : '');
         } catch(e) {}
     }
-
+    
     function airbreakTick() {
         if (!airbreakEnabled || !airbreakConfigured || positionAddr === 0) return;
-
+        
         const view = getView();
         const bufLen = view.buffer.byteLength;
-
+        
         if (positionAddr < 0 || positionAddr >= bufLen - 12) return;
-
+        
         try {
             // Read current position
             let x = view.getFloat32(positionAddr, true);
             let y = view.getFloat32(positionAddr + 4, true);
             let z = view.getFloat32(positionAddr + 8, true);
-
+            
             // Read heading (rotation in radians)
             const headingRaw = view.getFloat32(headingAddr, true);
             // In GTA heading is inverted (360 - h), so we negate it
             const heading = -headingRaw;
-
+            
             const speed = parseFloat(document.getElementById('ce-fly-speed').value) || 2.0;
-
+            
             // Calculate forward/backward direction based on heading
             const sinH = Math.sin(heading);
             const cosH = Math.cos(heading);
-
+            
             // Movement relative to player heading
             if (keysPressed.w) {  // Forward
                 x += sinH * speed;
@@ -1429,7 +1429,7 @@
                 x += cosH * speed;
                 y -= sinH * speed;
             }
-
+            
             // Z only changes on Space/LShift, otherwise lock it
             if (keysPressed.space) {
                 lockedZ += speed;
@@ -1438,26 +1438,26 @@
                 lockedZ -= speed;
             }
             z = lockedZ;  // Always use locked Z
-
+            
             // Write new position
             view.setFloat32(positionAddr, x, true);
             view.setFloat32(positionAddr + 4, y, true);
             view.setFloat32(positionAddr + 8, z, true);
-
+            
             // Lock health
             view.setFloat32(healthAddr, lockedHealth, true);
-
+            
             // Zero out moveSpeed (velocity) on all axes to prevent falling/drifting
             view.setFloat32(moveSpeedAddr, 0, true);      // X
             view.setFloat32(moveSpeedAddr + 4, 0, true);  // Y
             view.setFloat32(moveSpeedAddr + 8, 0, true);  // Z
-
+            
             updatePositionDisplay();
         } catch(e) {
             console.warn('[AirBreak] Tick error:', e);
         }
     }
-
+    
     // Track movement keys for airbreak (works even when menu closed)
     window.addEventListener('keydown', (e) => {
         if (e.key === 'ShiftRight' || (e.key === 'Shift' && e.location === 2)) {
@@ -1466,9 +1466,9 @@
             toggleFlying();
             return;
         }
-
+        
         if (!airbreakEnabled) return;
-
+        
         // Track movement keys using e.code (works regardless of keyboard layout)
         const code = e.code;
         if (code === 'KeyW') keysPressed.w = true;
@@ -1478,7 +1478,7 @@
         if (code === 'Space') keysPressed.space = true;
         if (code === 'ShiftLeft') keysPressed.shift = true;
     }, true);
-
+    
     window.addEventListener('keyup', (e) => {
         const code = e.code;
         if (code === 'KeyW') keysPressed.w = false;
@@ -1488,12 +1488,12 @@
         if (code === 'Space') keysPressed.space = false;
         if (code === 'ShiftLeft') keysPressed.shift = false;
     }, true);
-
+    
     // AirBreak update loop
     setInterval(airbreakTick, 16); // ~60fps
     setInterval(godModeTick, 100); // GodMode tick
     setInterval(updatePositionDisplay, 100);
-
+    
     // Toggle button handlers
     document.getElementById('ce-toggle-airbreak').onchange = toggleAirBrake;
     document.getElementById('ce-toggle-godmode').onchange = toggleGodMode;
@@ -1503,20 +1503,20 @@
     };
 
     // ========== TOUCH CONTROLS FOR AIRBREAK ==========
-
+    
     if (isTouch) {
         const joystick = document.getElementById('airbreak-joystick');
         const joystickKnob = document.getElementById('airbreak-joystick-knob');
         const upBtn = document.getElementById('airbreak-up-btn');
         const downBtn = document.getElementById('airbreak-down-btn');
         const verticalBtns = document.getElementById('airbreak-vertical-btns');
-
+        
         let joystickActive = false;
         let joystickCenterX = 0;
         let joystickCenterY = 0;
         const joystickRadius = 60; // Half of the joystick width
         const deadzone = 15;
-
+        
         // Update visibility of touch controls based on airbreak state
         function updateTouchControlsVisibility() {
             // Hide all touch controls when menu is open
@@ -1526,7 +1526,7 @@
                 flyToggleBtn.classList.remove('visible');
                 return;
             }
-
+            
             if (airbreakConfigured && airbreakEnabled && airbreakShiftAllowed) {
                 airbreakTouchControls.classList.add('active');
                 verticalBtns.style.display = 'flex';
@@ -1534,7 +1534,7 @@
                 airbreakTouchControls.classList.remove('active');
                 verticalBtns.style.display = 'none';
             }
-
+            
             // Show fly toggle button only when airbreak is allowed (toggle is ON)
             if (airbreakConfigured && airbreakShiftAllowed) {
                 flyToggleBtn.classList.add('visible');
@@ -1544,14 +1544,14 @@
                 flyToggleBtn.classList.remove('visible');
             }
         }
-
+        
         // Fly toggle button with drag support
         let flyBtnDragging = false;
         let flyBtnStartX = 0;
         let flyBtnStartY = 0;
         let flyBtnInitialRight = 0;
         let flyBtnInitialBottom = 0;
-
+        
         // Load saved fly button position
         const savedFlyPos = localStorage.getItem('cheat-fly-pos');
         if (savedFlyPos) {
@@ -1561,54 +1561,54 @@
                 flyToggleBtn.style.bottom = pos.bottom + 'px';
             } catch(e) {}
         }
-
+        
         flyToggleBtn.addEventListener('touchstart', (e) => {
             e.preventDefault();
             e.stopPropagation();
             flyBtnDragging = false;
-
+            
             const touch = e.touches[0];
             flyBtnStartX = touch.clientX;
             flyBtnStartY = touch.clientY;
-
+            
             // Get current position (calculate from right/bottom)
             const rect = flyToggleBtn.getBoundingClientRect();
             flyBtnInitialRight = window.innerWidth - rect.right;
             flyBtnInitialBottom = window.innerHeight - rect.bottom;
         }, { passive: false });
-
+        
         flyToggleBtn.addEventListener('touchmove', (e) => {
             e.preventDefault();
             e.stopPropagation();
-
+            
             const touch = e.touches[0];
             const deltaX = touch.clientX - flyBtnStartX;
             const deltaY = touch.clientY - flyBtnStartY;
-
+            
             // Check if we've moved enough to consider it a drag
             if (Math.abs(deltaX) > dragThreshold || Math.abs(deltaY) > dragThreshold) {
                 flyBtnDragging = true;
             }
-
+            
             if (flyBtnDragging) {
                 let newRight = flyBtnInitialRight - deltaX;
                 let newBottom = flyBtnInitialBottom - deltaY;
-
+                
                 // Clamp to screen bounds
                 const btnWidth = flyToggleBtn.offsetWidth;
                 const btnHeight = flyToggleBtn.offsetHeight;
                 newRight = Math.max(0, Math.min(window.innerWidth - btnWidth, newRight));
                 newBottom = Math.max(0, Math.min(window.innerHeight - btnHeight, newBottom));
-
+                
                 flyToggleBtn.style.right = newRight + 'px';
                 flyToggleBtn.style.bottom = newBottom + 'px';
             }
         }, { passive: false });
-
+        
         flyToggleBtn.addEventListener('touchend', (e) => {
             e.preventDefault();
             e.stopPropagation();
-
+            
             if (flyBtnDragging) {
                 // Save position
                 const rect = flyToggleBtn.getBoundingClientRect();
@@ -1620,40 +1620,40 @@
                 // It was a tap, not a drag - toggle fly mode
                 if (airbreakConfigured) {
                     airbreakEnabled = !airbreakEnabled;
-
+                    
                     if (airbreakEnabled) {
                         const view = getView();
                         lockedZ = view.getFloat32(positionAddr + 8, true);
                         lockedHealth = view.getFloat32(healthAddr, true);
                         console.log(`[AirBreak Touch] ENABLED - Locked Z=${lockedZ.toFixed(2)}, HP=${lockedHealth.toFixed(2)}`);
                     }
-
+                    
                     document.getElementById('ce-airbreak-status').textContent =
                         airbreakEnabled ?
                         `FLYING! Z=${lockedZ.toFixed(1)} HP=${lockedHealth.toFixed(0)}` :
                         `Ready! [Tap FLY]`;
                     document.getElementById('ce-airbreak-status').style.color = airbreakEnabled ? '#ff0' : '#0f0';
-
+                    
                     updateTouchControlsVisibility();
                 }
             }
-
+            
             flyBtnDragging = false;
         }, { passive: false });
-
+        
         // Joystick touch handling
         joystick.addEventListener('touchstart', (e) => {
             e.preventDefault();
             e.stopPropagation();
             joystickActive = true;
-
+            
             const rect = joystick.getBoundingClientRect();
             joystickCenterX = rect.left + rect.width / 2;
             joystickCenterY = rect.top + rect.height / 2;
-
+            
             handleJoystickMove(e.touches[0]);
         }, { passive: false });
-
+        
         joystick.addEventListener('touchmove', (e) => {
             e.preventDefault();
             e.stopPropagation();
@@ -1661,21 +1661,21 @@
                 handleJoystickMove(e.touches[0]);
             }
         }, { passive: false });
-
+        
         joystick.addEventListener('touchend', (e) => {
             e.preventDefault();
             joystickActive = false;
-
+            
             // Reset knob position
             joystickKnob.style.transform = 'translate(-50%, -50%)';
-
+            
             // Reset movement
             keysPressed.w = false;
             keysPressed.s = false;
             keysPressed.a = false;
             keysPressed.d = false;
         }, { passive: false });
-
+        
         joystick.addEventListener('touchcancel', (e) => {
             joystickActive = false;
             joystickKnob.style.transform = 'translate(-50%, -50%)';
@@ -1684,59 +1684,59 @@
             keysPressed.a = false;
             keysPressed.d = false;
         });
-
+        
         function handleJoystickMove(touch) {
             let deltaX = touch.clientX - joystickCenterX;
             let deltaY = touch.clientY - joystickCenterY;
-
+            
             // Clamp to radius
             const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
             if (distance > joystickRadius) {
                 deltaX = (deltaX / distance) * joystickRadius;
                 deltaY = (deltaY / distance) * joystickRadius;
             }
-
+            
             // Move knob
             joystickKnob.style.transform = `translate(calc(-50% + ${deltaX}px), calc(-50% + ${deltaY}px))`;
-
+            
             // Apply movement (with deadzone)
             keysPressed.w = deltaY < -deadzone;
             keysPressed.s = deltaY > deadzone;
             keysPressed.a = deltaX < -deadzone;
             keysPressed.d = deltaX > deadzone;
         }
-
+        
         // Up/Down buttons for vertical movement
         upBtn.addEventListener('touchstart', (e) => {
             e.preventDefault();
             e.stopPropagation();
             keysPressed.space = true;
         }, { passive: false });
-
+        
         upBtn.addEventListener('touchend', (e) => {
             e.preventDefault();
             keysPressed.space = false;
         }, { passive: false });
-
+        
         upBtn.addEventListener('touchcancel', () => {
             keysPressed.space = false;
         });
-
+        
         downBtn.addEventListener('touchstart', (e) => {
             e.preventDefault();
             e.stopPropagation();
             keysPressed.shift = true;
         }, { passive: false });
-
+        
         downBtn.addEventListener('touchend', (e) => {
             e.preventDefault();
             keysPressed.shift = false;
         }, { passive: false });
-
+        
         downBtn.addEventListener('touchcancel', () => {
             keysPressed.shift = false;
         });
-
+        
         // Update controls visibility periodically
         setInterval(updateTouchControlsVisibility, 500);
     }

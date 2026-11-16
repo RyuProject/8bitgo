@@ -974,7 +974,7 @@ class GamepadEmulator {
 					get: () => EmulationMode.real
 				});
 
-				delete this.realGpadToPatchedIndexMap[cloned.index];
+				delete this.realGpadToPatchedIndexMap[gamepad.index];
 				delete this.patchedGpadToRealIndexMap[patchedIndex];
 
 				const newEvent = new Event(event.type || "gamepaddisconnected");
@@ -1127,19 +1127,3 @@ class GamepadEmulator {
 }
 
 definePublicProperty(GamepadEmulator, "instanceRunning", false);
-
-// export default GamepadEmulator;
-// export {
-// 	setTransformOriginToCenter,
-// 	DEFAULT_BUTTON_COUNT,
-// 	GamepadStateTracker,
-// 	DEFAULT_AXIS_COUNT,
-// 	GamepadButton,
-// 	TAP_TARGET_NAMES,
-// 	Direction,
-// 	DIAGONAL_DPAD_MAPPING,
-// 	ControlType,
-// 	GamepadElementClass,
-// 	EmulationMode,
-// 	GamepadAxis
-// };
