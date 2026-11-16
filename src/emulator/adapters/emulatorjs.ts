@@ -43,7 +43,7 @@ import { normalizeHostSync } from '../netplaySyncGuard'
 import { assertValidZipBlob, extractZipEntryFromBlob, type ZipFileEntry } from '@/lib/unzip'
 import { romArchiveRef } from '@/lib/romArchiveUrl'
 import { loadRemoteArchiveRom } from '../remoteArchive'
-import { matchArcadeHack, type ArcadeHack } from '@/data/arcadeHacks'
+import { matchArcadeHack, romScopedHackForData, romScopedHackForName, type ArcadeHack } from '@/data/arcadeHacks'
 import { deriveArcadeHackBytes } from '../arcadeHack'
 import { biosNameOfUrl, planBiosFiles } from '../biosPlan'
 import { ensureParentDir } from '../fsWrite'
@@ -2384,7 +2384,16 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   // 先收窄成确定的 string 再允许 RomData 纠正它；否则 TypeScript 会因为变量可变而丢掉上面的空值判定。
   let core: string = resolvedCore
   if (options.platform === 'arcade') {
-    const corrected = arcadeCoreForRomData(core, options.arcadeRomData)
+    const scopedHack = romScopedHackForData(options.arcadeRomData)
+    const selectedRomName = typeof options.game === 'string' ? arcadeRomsetName(options.game) : options.game.name
+    const selectedRomset = selectedRomName.replace(/\.8bg$/i, '').replace(/\.zip$/i, '').toLowerCase()
+    const selectedScopedHack = romScopedHackForName(selectedRomset)
+    // 只让名字对应的 ROM 槽提前选 FBNeo；远端清单是否可用仍要等 CRC 指纹确认后再决定。
+    const scopedRomNameMatches = Boolean(scopedHack && selectedRomset === scopedHack.zipName)
+    const romDataForCore = scopedHack && !scopedRomNameMatches ? undefined : options.arcadeRomData
+    const corrected = selectedScopedHack && !isFbneoCore(core)
+      ? 'fbneo'
+      : arcadeCoreForRomData(core, romDataForCore)
     if (corrected !== core) {
       console.warn(`[arcade] ${core} 不支持 FBNeo RomData，已自动切换为 ${corrected}，避免必然出现 Romset is unknown`)
       core = corrected
@@ -3242,8 +3251,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let discRomPrepared = false
   /** 外层 ZIP 解包错误要原样报给玩家，不能误指向 EmulatorJS 资源。 */
   let archiveRomPrepared = false
-  /** 按指纹认出来、由 data/arcadeHacks.ts 提供的 RomData。管理员填了的话不会用到 */
+  /** 按指纹认出来的内置 RomData；游戏级配置可覆盖，ROM 专属配置始终只跟命中的包走。 */
   let builtInRomData = ''
+  /** 当前下载的街机包指纹，供 ROM 专属 RomData 做隔离判断。 */
+  let preparedArcadeHack: ArcadeHack | null = null
 
   /**
    * 开 / 加入房间。两个入口：
@@ -4856,25 +4867,25 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           engineGameName = prepared.name
           arcadeRomPrepared = true
           detectedMameMedia = prepared.mameMedia
+          preparedArcadeHack = prepared.hack
 
           /**
-           * 后台没填 RomData，而这个包按指纹认出来是已知改版包 → 用内置的那份。
+           * 按已知改版包的范围选择 RomData：
+           *   · 游戏级配置保留人工优先；没填时才用内置值；
+           *   · ROM 专属配置只在当前 ZIP 的 CRC 指纹命中后使用内置值，不能从共享字段串到其它语言。
            *
-           * 为什么要有这条：改版包（汉化版 / 修改版）不在 FBNeo 的驱动表里，没有 dat
-           * 一定报 Romset is unknown。以前这份 dat 只有两个来源 —— 管理员在后台手贴，
-           * 或者玩家走「运行我的 ROM」时由 arcadeHack.ts 现认。同一张指纹表
-           * （data/arcadeHacks.ts）两条路只接了一条，库里的游戏全靠人不忘记贴。
-           *
-           * **管理员填了就以他为准**：他可能针对这一份包改过清单，自动的不该盖掉。
-           *
-           * 包名也要跟着换成 dat 里的 ZipName —— 核心会 BurnDrvSetZipName(ZipName)
-           * 然后去找**那个名字**的包，对不上等于没配。只在走自动这一路时改，
-           * 手写 dat 的 ZipName 是管理员自己定的，不能替他改。
+           * 这些包不在 FBNeo 驱动表里，没有 dat 会报 Romset is unknown。包名也要换成
+           * dat 的 ZipName，核心才会按正确短名找 ROM。
            */
-          if (!options.arcadeRomData?.trim() && prepared.hack?.romData) {
+          if (prepared.hack?.romData && (
+            prepared.hack.romDataScope === 'rom' || !options.arcadeRomData?.trim()
+          )) {
             builtInRomData = prepared.hack.romData
             engineGameName = `${prepared.hack.zipName}.zip`
-            const corrected = arcadeCoreForRomData(core, builtInRomData)
+            // ROM 专属改版只在指纹命中本包后切核，不能把共享字段里的设置带给别的语言 ROM。
+            const corrected = prepared.hack.romDataScope === 'rom'
+              ? (isFbneoCore(core) ? core : 'fbneo')
+              : arcadeCoreForRomData(core, builtInRomData)
             if (corrected !== core) {
               console.warn(`[arcade] 改版包需要 RomData，${core} 不会读取，已自动切换为 ${corrected}`)
               core = corrected
@@ -5139,7 +5150,26 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         const injections: FsInjection[] = []
 
         // 文件名必须和 ROM 同名（wofcn.zip → /wofcn.dat），这是核心自己的查找规则。
-        const romData = options.arcadeRomData?.trim() || builtInRomData
+        const configuredRomData = options.arcadeRomData?.trim() || ''
+        const configuredScopedHack = romScopedHackForData(configuredRomData)
+        const currentRomName = engineGameName.replace(/\.[^.]*$/, '').toLowerCase()
+        const configuredScopedHackMatches = Boolean(configuredScopedHack && (
+          preparedArcadeHack === configuredScopedHack ||
+          (!arcadeRomPrepared && currentRomName === configuredScopedHack.zipName)
+        ))
+        let romData: string
+        if (preparedArcadeHack?.romDataScope === 'rom') {
+          // 指纹命中时只用这条 ROM 自己的内置清单，不接受游戏级字段覆盖。
+          romData = preparedArcadeHack.romData || builtInRomData
+        } else if (configuredScopedHack) {
+          // 历史上若曾把 wofcn 的清单存进游戏级字段，其它语言版本也会读到；只在当前 ROM 确认匹配时使用。
+          romData = configuredScopedHackMatches ? configuredRomData : ''
+          if (!configuredScopedHackMatches) {
+            console.warn(`[arcade] 已跳过仅适用于 ${configuredScopedHack.zipName}.zip 的 RomData，当前 ROM 指纹不匹配`)
+          }
+        } else {
+          romData = configuredRomData || builtInRomData
+        }
         if (romData && supportsFbneoRomData(core)) {
           injections.push({ path: `/${engineGameName.replace(/\.[^.]*$/, '')}.dat`, bytes: `${romData}\n` })
         }

@@ -66,6 +66,8 @@ export interface ArcadeHack {
    * 留空表示「认得出但还没有可用的加载方案」—— 界面上要如实说，别假装能跑。
    */
   romData?: string
+  /** RomData 是游戏级字段还是只属于命中的 ROM；多语言游戏的专用包必须选 rom。 */
+  romDataScope?: 'game' | 'rom'
   /** 需要先合成新 ROM 的话放这里。romData 里引用的合成产物必须由它产出 */
   derive?: ArcadeHackDerive
 }
@@ -215,6 +217,8 @@ export const ARCADE_HACKS: ArcadeHack[] = [
     platform: 'arcade',
     title: '吞食天地II 赤壁之战（中文版）',
     note: 'HBMAME: tk2h5 — Tenchi wo Kurau II (Edition Chinese)',
+    // 这是单独一份汉化 ROM。数据库 arcade_romdata 是游戏级共享，不能写进去污染其他语言槽。
+    romDataScope: 'rom',
     // 换掉的程序 ROM + 两块新增的中文字库，三个一起出现才算它
     fingerprint: [0xe1dd01d8, 0xec6e8689, 0x722787df],
     romData: WOFCN_ROMDATA,
@@ -233,4 +237,19 @@ export function matchArcadeHack(crcs: Iterable<number>): ArcadeHack | null {
     if (hack.fingerprint.every((c) => have.has(c >>> 0))) return hack
   }
   return null
+}
+
+/** 找出只属于特定 ROM 的 RomData，防止它被游戏级字段带到其它语言版本。 */
+export function romScopedHackForData(romData: string | undefined): ArcadeHack | null {
+  if (!romData?.trim()) return null
+  const zipName = /^\s*ZipName\s+(\S+)/im.exec(romData)?.[1]?.toLowerCase()
+  if (!zipName) return null
+  return romScopedHackForName(zipName)
+}
+
+/** 按已规范化的 ZIP 短名找到 ROM 专属改版；用于开局前只对当前语言槽选择兼容核心。 */
+export function romScopedHackForName(zipName: string | undefined): ArcadeHack | null {
+  if (!zipName?.trim()) return null
+  const normalized = zipName.trim().replace(/\.zip$/i, '').toLowerCase()
+  return ARCADE_HACKS.find((hack) => hack.romDataScope === 'rom' && hack.zipName.toLowerCase() === normalized) ?? null
 }

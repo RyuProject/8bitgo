@@ -1940,7 +1940,10 @@ export function GameForm({
               allBoundKeys={allBoundKeys}
               onDeleteRom={deleteBoundRom}
               deletingRom={romDeleteBusy}
-              onHackFound={(hack) => applyHack(hack, true)}
+              onHackFound={(hack) => {
+                // wofcn 的 RomData 只属于这份 ROM；arcade_romdata 是游戏级字段，不能写入后污染其它语言槽。
+                if (hack.romDataScope !== 'rom') applyHack(hack, true)
+              }}
               onApplyHack={(hack) => applyHack(hack)}
               onArcadeIdentityReset={resetAutoArcadeFields}
               // 只填空的（或上次自动填的）：管理员手填过就听他的（汉化版借用别的驱动时人比表准）
@@ -3585,8 +3588,11 @@ function RomField({
       */
       if (found.hack) {
         onHackFound?.(found.hack)
-        const recommendation = detectArcadeCore({ supportedFbneoRomData: Boolean(found.hack.romData) })
-        if (recommendation) onCoreFound?.(recommendation.core)
+        // 已知单 ROM 改版只在玩家选择到这份 ROM 后切核；不要把 FBNeo 写进整款游戏的 core 字段。
+        if (found.hack.romDataScope !== 'rom') {
+          const recommendation = detectArcadeCore({ supportedFbneoRomData: Boolean(found.hack.romData) })
+          if (recommendation) onCoreFound?.(recommendation.core)
+        }
         return `${found.hack.zipName}.zip`
       }
 
@@ -4882,7 +4888,11 @@ function RomsetHint({
             <span className="font-mono"> {hack.driver} </span>驱动运行
             {hack.note && <span>（{hack.note}）</span>}。
           </p>
-          {hack.romData ? (
+          {hack.romData && hack.romDataScope === 'rom' ? (
+            <p className="mt-1 text-dim">
+              这份 ROM 会按内容指纹自动套用专属 RomData 和图形补丁；配置不会写进游戏共用字段，因此不会影响其它语言版本。
+            </p>
+          ) : hack.romData ? (
             <p className="mt-1">
               <button
                 type="button"

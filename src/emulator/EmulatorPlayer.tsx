@@ -42,6 +42,7 @@ import { SEAT_TTL_MS } from './coopSeat'
 import type { Broadcast } from './broadcast'
 import { matchLocalArcadeHack } from './arcadeHack'
 import { arcadeCoreForRomData } from './arcadeCore'
+import { romScopedHackForData } from '@/data/arcadeHacks'
 import type { DosExtraSource } from '@/lib/dosExtras'
 import type { LiveSession } from './adapters/liveview'
 import type { NetplaySession, SeatEvent } from './adapters/emulatorjs'
@@ -1744,11 +1745,13 @@ export function EmulatorPlayer({
   const supported = Boolean(pageRuntime) || onlineOk
   /** js-dos 预热必须知道最终后端，否则会把普通 DOS 的 1.4 MB 核心当成 Win95 的 7.5 MB 核心。 */
   const requestedPrewarmCore = core ?? platform.core
+  // 单 ROM 汉化包不能把整款游戏的预热核心改成 FBNeo；玩家选中并识别该包后再单独切核。
+  const prewarmRomData = romScopedHackForData(arcadeRomDataRef.current) ? undefined : arcadeRomDataRef.current
   const prewarmCore = pageRuntime?.id === 'jsdos' && (dosPc98 || effectiveDosSystemUrl || dosBackend === 'dosboxX')
     ? 'dosboxX'
     : platform.id === 'arcade' && requestedPrewarmCore
       // RomData 只有 FBNeo 会读；悬停时也必须用最终核心，否则会白下 mame-current 的 35MB。
-      ? arcadeCoreForRomData(requestedPrewarmCore, arcadeRomDataRef.current)
+      ? arcadeCoreForRomData(requestedPrewarmCore, prewarmRomData)
       : requestedPrewarmCore
   // 云端联机连不上时的本地兜底（用 ref，避免挂载 effect 捕获到旧值）
   const localFallbackRef = useRef<{ url?: string; runtime?: Runtime }>({})

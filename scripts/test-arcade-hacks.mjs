@@ -11,7 +11,7 @@
  * 用法：npm run test:arcade-hacks
  */
 import assert from 'node:assert/strict'
-import { ARCADE_HACKS, matchArcadeHack } from '../src/data/arcadeHacks.ts'
+import { ARCADE_HACKS, matchArcadeHack, romScopedHackForData, romScopedHackForName } from '../src/data/arcadeHacks.ts'
 import { crc32, appendZipEntries, listZipEntries, extractZipEntry } from '../src/lib/unzip.ts'
 
 /**
@@ -79,6 +79,11 @@ console.log('── 指纹识别 ──')
 const hack = matchArcadeHack(WOFCN_ZIP.map(([, , crc]) => crc))
 ok(hack?.zipName === 'wofcn', '真包能认出来，是 wofcn')
 ok(hack.driver === 'wofj', `借的是日版 wofj 驱动（不是 wof / wofch），实际 ${hack.driver}`)
+ok(hack.romDataScope === 'rom', 'wofcn 的 RomData 标记为 ROM 专属，不写入游戏级共享字段')
+ok(romScopedHackForData(hack.romData)?.zipName === 'wofcn', '从 wofcn 的 ZipName 能还原 ROM 专属配置')
+ok(romScopedHackForName('wofcn.zip') === hack, '只在当前 ROM 槽名为 wofcn.zip 时预选专属核心')
+ok(romScopedHackForName('wof') === null, '其他地区包名不命中 wofcn 的 ROM 专属核心')
+ok(romScopedHackForData('ZipName kof97\nDrvName kof97') === null, '普通 kof97 配置不被误判为 ROM 专属')
 
 // 少一个指纹就不认 —— 指纹必须全中，宁可交回给覆盖率那套去猜
 for (const missing of hack.fingerprint) {

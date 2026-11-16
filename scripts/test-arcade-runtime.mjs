@@ -119,7 +119,20 @@ await check('大核心只在真实鼠标悬停且网络允许时预拉', async (
 
 await check('RomData 游戏预热最终的 FBNeo，不白下错误的 MAME 大核心', async () => {
   const source = await readFile(new URL('../src/emulator/EmulatorPlayer.tsx', import.meta.url), 'utf8')
-  assert.match(source, /arcadeCoreForRomData\(requestedPrewarmCore, arcadeRomDataRef\.current\)/)
+  assert.match(source, /const prewarmRomData = romScopedHackForData\(arcadeRomDataRef\.current\) \? undefined : arcadeRomDataRef\.current/)
+  assert.match(source, /arcadeCoreForRomData\(requestedPrewarmCore, prewarmRomData\)/)
+})
+
+await check('wofcn 的运行配置只跟随 CRC 命中的 ROM，不污染其他语言槽', async () => {
+  const adapter = await readFile(new URL('../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8')
+  const form = await readFile(new URL('../src/admin/GameForm.tsx', import.meta.url), 'utf8')
+  assert.match(adapter, /prepared\.hack\.romDataScope === 'rom'/)
+  assert.match(adapter, /romScopedHackForName\(selectedRomset\)/)
+  assert.match(adapter, /romScopedHackForData\(configuredRomData\)/)
+  assert.match(adapter, /preparedArcadeHack === configuredScopedHack/)
+  assert.match(adapter, /当前 ROM 指纹不匹配/)
+  assert.match(form, /if \(hack\.romDataScope !== 'rom'\) applyHack\(hack, true\)/)
+  assert.match(form, /不要把 FBNeo 写进整款游戏的 core 字段/)
 })
 
 await check('自托管核心下载失败会立即终止，不回落到已知损坏的 CDN', () => {
