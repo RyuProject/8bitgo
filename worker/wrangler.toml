@@ -11,11 +11,11 @@ routes = [
   { pattern = "assets.8bitgo.com/*", zone_name = "8bitgo.com" },
   # 封面独立域名也必须经过同一个 Worker，才能带 CORS / CORP 并读取 COVERS 桶。
   { pattern = "image.8bitgo.com/*", zone_name = "8bitgo.com" },
-  # 明文 ROM 与整包下载的专用域名：新上传对象直接原样读取；DNS 不走代理、CNAME 到第三方优选域名。
-  # 浏览器 ROM 请求会优先用它；和 assets 共用同一个 Worker，私有前缀保护、
-  # romv 校验、Range 边缘缓存都照常生效；边缘缓存按完整 URL 存，和 assets 各存一份。
+  # 开放平台凭据下载与旧 8BG 对象的域名；DNS 不走代理、CNAME 到第三方优选域名。
+  # 和 assets 共用同一个 Worker，私有前缀保护、romv 校验、Range 边缘缓存都照常生效。
   { pattern = "download.8bitgo.com/*", zone_name = "8bitgo.com" },
-  # 第二条优选线路，和 download 同构（DNS-only CNAME 到优选域名）。两者的 CNAME 目标由
+  # 站内播放器读取明文 ROM / BIOS / 系统镜像的专用域名，与 download 共用 R2 对象和 Worker。
+  # DNS-only CNAME 到优选域名；两者的 CNAME 目标由
   # deploy/cname-optimizer 定时体检、失效时自动换成别的优选域名。
   { pattern = "rom.8bitgo.com/*", zone_name = "8bitgo.com" },
   # 这两个自定义域名原先只存在于 Cloudflare 控制台。Wrangler 部署会用本文件覆盖远端

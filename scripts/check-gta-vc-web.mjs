@@ -56,7 +56,13 @@ assert.equal(manifest.format, '8bitgo.gta-vc-runtime.v1')
 assert.equal(manifest.commit, upstreamCommit)
 assert.equal(manifest.base, '/web/gta-vc/')
 assert.equal(manifest.gameDataIncluded, false)
-assert.deepEqual(currentFiles(), manifest.files, 'GTA VC 运行时文件与哈希清单不一致')
+const actualFiles = currentFiles()
+// dist/client 是线上服务目录，Vite 故意不清空它，以免旧页面延迟加载的哈希资源在部署时 404。
+// 因此 --dist 会包含早期版本留下的文件；只核对当前清单中的资源，public 源目录仍要求完全一致。
+const filesToCompare = dist
+  ? Object.fromEntries(Object.entries(actualFiles).filter(([name]) => Object.hasOwn(manifest.files, name)))
+  : actualFiles
+assert.deepEqual(filesToCompare, manifest.files, 'GTA VC 运行时文件与哈希清单不一致')
 
 const index = readFileSync(resolve(root, 'index.html'), 'utf8')
 const serviceWorker = readFileSync(resolve(root, 'sw.js'), 'utf8')
