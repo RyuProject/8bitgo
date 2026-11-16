@@ -40,7 +40,7 @@ export async function resolve(specifier, context, next) {
   if (STUBS[specifier]) return { url: 'stub:' + specifier, shortCircuit: true }
   if (specifier.startsWith('@/')) {
     const base = pathToFileURL(SRC + specifier.slice(2)).href
-    for (const suffix of ['.ts', '.tsx', '/index.ts']) {
+    for (const suffix of ['.ts', '.tsx', '/index.ts', '.js']) {
       if (existsSync(fileURLToPath(base + suffix))) return next(base + suffix, context)
     }
     return next(base + '.ts', context)
@@ -51,7 +51,7 @@ export async function resolve(specifier, context, next) {
     不存在就原样交回默认解析器，免得把 './data.json' 这类也误伤。
   */
   if ((specifier.startsWith('./') || specifier.startsWith('../')) && !/\.[a-z]+$/i.test(specifier) && context.parentURL) {
-    for (const suffix of ['.ts', '.tsx', '/index.ts']) {
+    for (const suffix of ['.ts', '.tsx', '/index.ts', '.js']) {
       const candidate = new URL(specifier + suffix, context.parentURL)
       if (existsSync(fileURLToPath(candidate))) return next(candidate.href, context)
     }

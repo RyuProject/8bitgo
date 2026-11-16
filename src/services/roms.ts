@@ -25,7 +25,7 @@ import { builtinWebGameFor } from '../../shared/builtin-web-games.js'
 import { chooseFasterRomRoute, chooseRomHost, ROM_ROUTE_RACE_MIN_BYTES, type RomHost } from './romRoute'
 import { alternateRomUrls, downloadRomUrl } from './romHosts'
 import { diagLog } from './startupDiagnostics'
-import { coverCdnHint } from './cnHost'
+import { coverCdnHint, type CoverCdnHint } from './cnHost'
 import { reportCoverCdnFailure, selectedCoverCdn, startCoverCdnProbe, subscribeCoverCdn } from './coverCdn'
 import { trackUploadActivity } from './uploadActivity'
 import type { UploadActivityOptions } from './uploadActivity'
@@ -325,8 +325,31 @@ export function gameMediaUrl(
 ): string {
   const value = String(game[kind] || '').trim()
   if (!value) return ''
-  if (!/^https?:\/\//i.test(value)) return romUrlForKey(value)
+  if (!/^https?:\/\//i.test(value)) {
+    if (kind === 'video') return cnPreviewVideoUrl(value, coverCdnHint(), getRomMirrorBase()) || romUrlForKey(value)
+    return romUrlForKey(value)
+  }
   return `/api/games/${encodeURIComponent(game.slug)}/media/${kind}?v=${mediaVersion(value)}`
+}
+
+/**
+ * 大陆访客的卡片预览视频改走 ROM 加速镜像（cn-assets，EdgeOne 香港节点，回源 assets 的同一个 Worker）。
+ * 只改 R2 对象 key；站内路径、外链代理照旧。边缘没判成大陆、没配镜像、后台覆盖过根地址
+ * （getRomMirrorBase 此时为空）都返回空串，调用方退回原地址。
+ * 判定用 coverCdnHint：服务端渲染和 hydrate 读的是同一个值，不会出现 src 对不上。
+ * 加载失败由 GameCover 退回 gameVideoFallbackUrl。
+ */
+export function cnPreviewVideoUrl(key: string, hint: CoverCdnHint, mirror: string): string {
+  if (hint !== 'cn' || !mirror || !key || key.startsWith('/') || /^https?:\/\//i.test(key)) return ''
+  return `${mirror}/${encodeKey(key)}`
+}
+
+/** 预览视频的备用地址：镜像失败时换回主线路；和当前地址相同则返回空串 */
+export function gameVideoFallbackUrl(game: { slug: string; video?: string }, current: string): string {
+  const value = String(game.video || '').trim()
+  if (!value || /^https?:\/\//i.test(value)) return ''
+  const primary = romUrlForKey(value)
+  return primary && primary !== current ? primary : ''
 }
 
 /**

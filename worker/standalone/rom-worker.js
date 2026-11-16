@@ -547,6 +547,16 @@ function cacheValue(env, name, fallback) {
  * 本来就进不了这条整份 200 的缓存路径。
  */
 const COVER_IMAGE_PATH = /^\/covers\/.+\.(?:png|jpe?g|webp|avif|gif)$/i
+/*
+ * 卡片预览视频（videos/<slug>.mp4）没有版本号，播放器又只发 Range 请求：既不满足上面的「带版本」
+ * 条件，也不在 /roms/ 分片缓存里，于是每次播放都穿透到 R2（大陆实测首字节 16 秒）。
+ * 它们和封面一样是可替换的小文件，按同一条 s-maxage=600 短策略缓存整份 200：
+ * 完整 GET 走普通边缘缓存；Range 请求命中整份副本就在 Worker 里切片，未命中照常回 R2，
+ * 同时在后台把整份写进缓存。超过上限的大视频不缓存，避免把几十 MB 读进 Worker 内存。
+ */
+const PREVIEW_VIDEO_PATH = /^\/videos\/[^/]+\.(?:mp4|webm)$/i
+const PREVIEW_VIDEO_CACHE_MAX_BYTES = 32 * 1024 * 1024
+const previewVideoFills = new Set()
 export function edgeCacheEligible(request, url, cors) {
   if (request.method !== 'GET' || cors['Access-Control-Allow-Origin'] !== '*') return false
   // Cache API 的普通 URL 键只存整份 200；分片必须走下面独立的、带范围的私有键。
@@ -563,7 +573,7 @@ export function edgeCacheEligible(request, url, cors) {
    * 且不依赖 HTTP 内容编码还原语义的 CS16 Zstd 分片。
    */
   const immutablePath = /^\/web\/cs16\/zstd-v1\/chunks\/[a-f0-9]{64}\.zst$/.test(url.pathname)
-  return versioned || immutablePath || COVER_IMAGE_PATH.test(url.pathname)
+  return versioned || immutablePath || COVER_IMAGE_PATH.test(url.pathname) || PREVIEW_VIDEO_PATH.test(url.pathname)
 }
 
 /**
@@ -643,6 +653,57 @@ function rangeCacheResponse(response, contentRange) {
   headers.delete('Content-Range')
   headers.set(RANGE_CACHE_HEADER, contentRange)
   return new Response(response.clone().body, r2BodyResponseInit(headers))
+}
+
+/** 预览视频的 Range 请求：只收简单单段 Range，带条件头 / 认证 / no-cache 的一律直达 R2 */
+function previewVideoRangeKey(request, url, cors) {
+  if (request.method !== 'GET' || cors['Access-Control-Allow-Origin'] !== '*') return null
+  if (!PREVIEW_VIDEO_PATH.test(url.pathname) || !request.headers.has('Range')) return null
+  if (!/^bytes=\d*-\d*$/.test((request.headers.get('Range') || '').trim())) return null
+  if (request.headers.has('Authorization') || ['If-Range', 'If-Match', 'If-None-Match', 'If-Modified-Since', 'If-Unmodified-Since'].some(name => request.headers.has(name))) return null
+  if (/\b(?:no-cache|no-store)\b/i.test(request.headers.get('Cache-Control') || '')) return null
+  return new Request(url.toString(), { method: 'GET' })
+}
+
+function cacheablePreviewVideo(response) {
+  if (response.status !== 200 || !response.body || response.headers.get('Content-Encoding') || response.headers.has('Content-Range')) return false
+  const length = Number(response.headers.get('Content-Length'))
+  return Number.isSafeInteger(length) && length > 0 && length <= PREVIEW_VIDEO_CACHE_MAX_BYTES
+}
+
+/** 用缓存里的整份视频回答 Range；副本不可用时返回 null，调用方回 R2 */
+async function slicedPreviewVideo(hit, rangeHeader) {
+  if (!cacheablePreviewVideo(hit)) { await hit.body?.cancel().catch(() => {}); return null }
+  const bytes = new Uint8Array(await hit.arrayBuffer())
+  const range = parseRange(rangeHeader, bytes.byteLength)
+  const headers = new Headers(hit.headers)
+  headers.set('Accept-Ranges', 'bytes')
+  if (!range || range.unsatisfiable) {
+    headers.set('Content-Range', `bytes */${bytes.byteLength}`)
+    headers.set('Content-Length', '0')
+    return edgeCacheHeader(new Response(null, r2BodyResponseInit(headers, 416)), 'HIT')
+  }
+  const end = range.offset + range.length - 1
+  headers.set('Content-Range', `bytes ${range.offset}-${end}/${bytes.byteLength}`)
+  headers.set('Content-Length', String(range.length))
+  return edgeCacheHeader(new Response(bytes.slice(range.offset, end + 1), r2BodyResponseInit(headers, 206)), 'HIT')
+}
+
+/** 后台把整份预览视频写进边缘缓存；同一隔离环境里同一地址只填一次 */
+function fillPreviewVideo(edgeCache, key, env, cors, context) {
+  if (previewVideoFills.has(key.url)) return
+  previewVideoFills.add(key.url)
+  context.waitUntil((async () => {
+    try {
+      const full = await handle(key, env, new URL(key.url), cors)
+      if (cacheablePreviewVideo(full)) await edgeCache.put(key, full)
+      else await full.body?.cancel().catch(() => {})
+    } catch (error) {
+      console.warn('[video-cache] fill failed', error instanceof Error ? error.message : String(error))
+    } finally {
+      previewVideoFills.delete(key.url)
+    }
+  })())
 }
 
 function edgeCacheHeader(response, value) {
@@ -962,6 +1023,18 @@ export default {
         return json({ error: 'upstream unavailable' }, cors, 502)
       }
     }
+    const videoRangeKey = previewVideoRangeKey(request, url, cors)
+    const videoCache = videoRangeKey && context?.waitUntil ? globalThis.caches?.default : null
+    if (videoCache) {
+      try {
+        const hit = await videoCache.match(videoRangeKey)
+        const sliced = hit && await slicedPreviewVideo(hit, request.headers.get('Range'))
+        if (sliced) return sliced
+      } catch (error) {
+        console.warn('[video-cache] edge match failed', error instanceof Error ? error.message : String(error))
+      }
+      fillPreviewVideo(videoCache, videoRangeKey, env, cors, context)
+    }
     const rangePlan = romRangeCachePlan(request, url, cors)
     let edgeCache = (edgeCacheEligible(request, url, cors) || rangePlan) && context?.waitUntil
       ? globalThis.caches?.default
@@ -997,7 +1070,8 @@ export default {
     // 分片上传允许封面带 Content-Encoding；Cache API 会丢掉这个头却保留压缩字节（见上面
     // Sockdrive 那段），这种封面宁可每次回 R2，也不能让 HIT 吐出一张解不开的图。
     const encodedCover = COVER_IMAGE_PATH.test(url.pathname) && response.headers.has('Content-Encoding')
-    if (edgeCache && response.status === 200 && response.body && !response.headers.has('Content-Range') && !encodedCover) {
+    const uncacheableVideo = PREVIEW_VIDEO_PATH.test(url.pathname) && !cacheablePreviewVideo(response)
+    if (edgeCache && response.status === 200 && response.body && !response.headers.has('Content-Range') && !encodedCover && !uncacheableVideo) {
       // clone 后立刻回玩家；75 MB 的 NDS ROM 写边缘缓存不能挡住首包。
       const cacheKey = new Request(request.url, { method: 'GET' })
       context.waitUntil(

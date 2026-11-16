@@ -1120,6 +1120,9 @@ Worker 的 Range Cache 覆盖整个版本化 `/roms/<平台>/…`：完整下载
 GameCube、Wii 的按需读盘缓存 2MB 块。只有带真实 R2 ETag `romv`、严格对齐且响应长度 / ETag /
 Content-Range 全部吻合的公开请求才可入边缘缓存；任意短 Range、未版本化或条件不一致仍直达 R2。
 不要再把规则缩回某几个扩展名，否则 NDS / PS1 / DOS 和流式光盘会让每位玩家重复穿透存储。
+卡片预览视频 `videos/*.mp4|webm` 没有版本号、播放器只发 Range（2026-11-16 实测大陆首字节 16 秒、无边缘缓存）：
+Worker 按封面同一条 s-maxage=600 缓存整份 200，Range 命中时在 Worker 里切片，未命中照常回 R2 并后台填一份；
+超过 32MB 或带 `Content-Encoding` / 条件头的不缓存。回归在 `worker/tests/rom.test.mjs` 的 preview video 两节。
 
 ⚠️ **网络层失败要多熬一会儿，并且能换线路**（2026-11-10 墨西哥玩家《合金弹头 3》两次「Failed to fetch」，
 第二次 8.4 秒就放弃）。`fetchBlobWithProgress` 对 fetch 抛出的 TypeError 按 `NETWORK_RETRIES`（5 次，

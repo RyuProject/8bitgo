@@ -7,6 +7,7 @@ import {
   coverSrcSet,
   coverThumbKey,
   gameMediaUrl,
+  gameVideoFallbackUrl,
   romUrlForKey,
   startCoverCdnSelection,
   subscribeCoverCdnSelection,
@@ -101,8 +102,11 @@ const iconSizes = {
  *
  * 另外尊重「减少动态效果」的系统设置：开了就不自动播，仍然可以悬停播放。
  */
-function CoverVideo({ src, poster }: { src: string; poster?: string }) {
+function CoverVideo({ src: primarySrc, fallbackSrc, poster }: { src: string; fallbackSrc?: string; poster?: string }) {
   const ref = useRef<HTMLVideoElement>(null)
+  // 大陆加速镜像（EdgeOne）取不到时退回主线路，只换一次；换了视频就重新从首选地址开始
+  const [failedSrc, setFailedSrc] = useState('')
+  const src = failedSrc === primarySrc && fallbackSrc ? fallbackSrc : primarySrc
 
   useEffect(() => {
     const v = ref.current
@@ -183,6 +187,9 @@ function CoverVideo({ src, poster }: { src: string; poster?: string }) {
       playsInline
       // 一律从 none 开始；桌面端进入视口或悬停后再拉，移动端永远只用 poster。
       preload="none"
+      onError={() => {
+        if (fallbackSrc && src === primarySrc) setFailedSrc(primarySrc)
+      }}
       className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-105"
       // 悬停仍然生效：自动播被系统设置或省电模式拦下时，这是兜底
       onMouseEnter={() => void ref.current?.play().catch(() => {})}
@@ -272,7 +279,7 @@ export function GameCover({
     >
       {/* 背景层：视频 / 封面图 / 程序化封面 */}
       {videoSrc ? (
-        <CoverVideo src={videoSrc} poster={coverSrc || undefined} />
+        <CoverVideo src={videoSrc} fallbackSrc={gameVideoFallbackUrl(game, videoSrc) || undefined} poster={coverSrc || undefined} />
       ) : coverSrc ? (
         <img
           ref={coverImageRef}

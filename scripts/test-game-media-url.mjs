@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { coverSrcSet, gameMediaUrl } from '../src/services/roms.ts'
+import { cnPreviewVideoUrl, coverSrcSet, gameMediaUrl } from '../src/services/roms.ts'
 import { isCnHost, isCnRequest } from '../shared/cn-host.js'
 
 // 测试运行时没有 Vite 注入的对象存储根地址；站内路径仍足以钉住“不误走代理”。
@@ -47,5 +47,14 @@ assert.equal(isCnHost('cn.8bitgo.com', ''), false)
 assert.equal(isCnRequest({ hostname: '8bitgo.com', siteHostname: '8bitgo.com', siteHeader: 'cn' }), true)
 assert.equal(isCnRequest({ hostname: '8bitgo.com', siteHostname: '8bitgo.com', siteHeader: '' }), false)
 assert.equal(isCnRequest({ hostname: '8bitgo.com', siteHostname: '8bitgo.com', siteHeader: 'tv' }), false)
+
+// 大陆访客的预览视频走 cn-assets；其它访客、站内路径、外链、没配镜像一律不改
+const mirror = 'https://cn-assets.8bitgo.com'
+assert.equal(cnPreviewVideoUrl('videos/kof 97.mp4', 'cn', mirror), `${mirror}/videos/kof%2097.mp4`)
+assert.equal(cnPreviewVideoUrl('videos/kof.mp4', 'main', mirror), '')
+assert.equal(cnPreviewVideoUrl('videos/kof.mp4', '', mirror), '')
+assert.equal(cnPreviewVideoUrl('videos/kof.mp4', 'cn', ''), '')
+assert.equal(cnPreviewVideoUrl('/videos/kof.mp4', 'cn', mirror), '')
+assert.equal(cnPreviewVideoUrl('https://x.test/clip.mp4', 'cn', mirror), '')
 
 console.log('game media URL tests passed')

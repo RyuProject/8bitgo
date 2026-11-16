@@ -643,3 +643,59 @@ for(const [path,method] of [['/a?partNumber=1','PUT'],['/a?uploads','DELETE'],['
   const r=await worker.fetch(req(path,method,method==='PUT'?'one-part':undefined,{},true),e)
   assert.equal(r.status,400);assert.equal(new TextDecoder().decode(e.ROMS.objects.get('a').data),'original-complete-file')
 })
+test('preview video Range requests fill the edge cache once and are then sliced from it', async () => {
+  const previous = globalThis.caches
+  const store = new Map()
+  const waits = []
+  globalThis.caches = { default: {
+    async match(request) { return store.get(request.url)?.clone() },
+    async put(request, response) { assert.equal(request.headers.has('Range'), false); store.set(request.url, new Response(await response.arrayBuffer(), { status: response.status, headers: response.headers })) },
+  } }
+  const context = { waitUntil(promise) { waits.push(promise) } }
+  try {
+    const e = environment(); e.ROMS.seed('videos/kof.mp4', '0123456789')
+    const first = await worker.fetch(req('/videos/kof.mp4', 'GET', undefined, { Range: 'bytes=0-3' }), e, context)
+    assert.equal(first.status, 206)
+    assert.equal(await first.text(), '0123')
+    await Promise.all(waits)
+    assert.equal(store.size, 1)
+    const gets = count(e.ROMS, 'get')
+
+    const second = await worker.fetch(req('/videos/kof.mp4', 'GET', undefined, { Range: 'bytes=4-' }), e, context)
+    assert.equal(second.status, 206)
+    assert.equal(second.headers.get('X-8BitGo-Edge-Cache'), 'HIT')
+    assert.equal(second.headers.get('Content-Range'), 'bytes 4-9/10')
+    assert.equal(second.headers.get('Content-Length'), '6')
+    assert.equal(await second.text(), '456789')
+
+    const tail = await worker.fetch(req('/videos/kof.mp4', 'GET', undefined, { Range: 'bytes=-2' }), e, context)
+    assert.equal(await tail.text(), '89')
+    const beyond = await worker.fetch(req('/videos/kof.mp4', 'GET', undefined, { Range: 'bytes=20-' }), e, context)
+    assert.equal(beyond.status, 416)
+    assert.equal(beyond.headers.get('Content-Range'), 'bytes */10')
+
+    const full = await worker.fetch(req('/videos/kof.mp4'), e, context)
+    assert.equal(full.headers.get('X-8BitGo-Edge-Cache'), 'HIT')
+    assert.equal(await full.text(), '0123456789')
+    assert.equal(count(e.ROMS, 'get'), gets)
+  } finally {
+    if (previous === undefined) delete globalThis.caches
+    else globalThis.caches = previous
+  }
+})
+test('preview video requests with conditional headers bypass the slicing cache', async () => {
+  const previous = globalThis.caches
+  let calls = 0
+  globalThis.caches = { default: { async match() { calls += 1 }, async put() { calls += 1 } } }
+  const context = { waitUntil() { throw new Error('conditional range must not schedule a cache fill') } }
+  try {
+    const e = environment(); e.ROMS.seed('videos/kof.mp4', '0123456789')
+    const r = await worker.fetch(req('/videos/kof.mp4', 'GET', undefined, { Range: 'bytes=0-3', 'If-Range': '"x"' }), e, context)
+    assert.ok([200, 206].includes(r.status))
+    await r.arrayBuffer()
+    assert.equal(calls, 0)
+  } finally {
+    if (previous === undefined) delete globalThis.caches
+    else globalThis.caches = previous
+  }
+})
