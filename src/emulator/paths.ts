@@ -117,7 +117,7 @@ export function markEjsEdgeFailed(): void {
   2026-11-13：fbneo-lowmem 也必须保留街机 ZIP（patch-emulatorjs.mjs）；引擎文件名不带哈希，
   所以即使已有 fbneolowmem 代号，也要再换一代让边缘与浏览器取到这次更新。
 */
-export const EJS_RUNTIME_GENERATION = '20261027-melondsds-ff33abb1-psxrange1-corecompat1-stateglue3-mameglue3-ejsperf1-cnedge1-dlguard3-srmkeep1-fbneozip1-memfsown1-fbneolowmem-1548ccb5'
+export const EJS_RUNTIME_GENERATION = '20261116-melondsds-fcb8e141-psxrange1-corecompat1-stateglue3-mameglue3-ejsperf1-cnedge1-dlguard3-srmkeep1-fbneozip1-memfsown1-fbneolowmem-1548ccb5'
 /*
   2026-11-15：引擎入口（emulator.min.js / css、loader.js、extract7z.js、语言包）也按**内容**取版本，
   和核心一张表（ejsCoreVersionsData.ts，`npm run ejspatch` 会自动重新生成）。
