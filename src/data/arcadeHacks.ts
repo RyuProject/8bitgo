@@ -81,26 +81,23 @@ export interface ArcadeHack {
    （tk2j23c → tk2j23ccn，差异 6619 字节 / 22 段，全是脚本和文本渲染），
    另外**新增**两块带中文字库的图形 ROM。
 
-   ── 那两块中文字库到底是什么（2026-09-04 逐字节逆向，已实测确认）──────────
+   ── 两块中文字库如何接入四个图形通道 ────────────────────────────────────
 
-   各 512KB，但数据只在 `0x010000..0x019BFF`（0x9C00 = 39936 字节），其余全零。
+   HBMAME 的 tk2h5 定义把 gfx5 的后两段分别续载到 64-bit 图形区偏移
+   `0x400000`、`0x400002`，gfx6 的两段续载到 `0x400004`、`0x400006`。
+   后面有两条注释掉的 ROM_COPY，说明这块 4 通道数据原本打算复制到游戏字库区。
+   FBNeo 的 CPS1_TILES 每四条清单项组成一组，顺序对应 gfx1、gfx3、gfx2、gfx4；
+   因此不能把两颗芯片各自当成一条完整位平面，也不能只替换前两个通道。
 
-     tk2_gfx5cn.rom   每个 16-bit 字都是 (S,S) —— 字节成对重复
-     tk2_gfx6cn.rom   每个字是 (S,T) —— 偶字节和 gfx5 完全相同，奇字节是另一条流
+   运行时按 HBMAME 的续载顺序还原这四条通道，并将每条写入对应 ROM 的字库窗口：
 
-   去掉冗余只有**两条位平面流** S、T，各 19968 字节。位级统计：`S=0 且 T=1`
-   出现 0 次（T 的零集严格包含 S 的零集），于是只有三态 —— 这正好对上
-   CpsLoadTiles 的前两条清单项（都写 Tile+0 的左 8 列，nShift 分别是 0 和 2），
-   得到 plane0=plane1=plane2=S、plane3=T，像素值 `7S + 8T`：
+     gfx1 ← gfx5[0x10000..0x17fff]
+     gfx3 ← gfx5[0x18000..0x1ffff]
+     gfx2 ← gfx6[0x10000..0x17fff]
+     gfx4 ← gfx6[0x18000..0x1ffff]
 
-     S=1 T=1 → 色号 15（CPS1 的透明色，背景）
-     S=1 T=0 → 色号 7 （描边）
-     S=0 T=0 → 色号 0 （字身）
-
-   几何：每字节 = 8 个横向像素（CpsLoadOne 每 2 字节出一行 8 像素），8 字节 =
-   一个 8x8 图块，图块按 **16 块宽（128px）的贴图表**排列共 156 行，一个汉字
-   = 2x2 图块，合计 **624 个简体汉字**（第一个是「的」）。
-   字 c 的四个单元下标：`u = 32*(c/8) + 2*(c%8)`，四象限 = `u, u+1, u+16, u+17`。
+   每条通道覆盖目标 ROM 的 `0x010000..0x017fff`，这是 scroll1 图块号 `0x1000`
+   起始位置在原始图形 ROM 中对应的窗口。其余原图形字节保留。
 
    ── 装到哪：0x040000，不是 0x400000 ──────────────────────────────────────
 
@@ -122,57 +119,58 @@ export interface ArcadeHack {
      第一组图形基址是 0，CpsLoadOne 每 2 ROM 字节推进 8 字节
      → ROM 文件偏移 = 0x040000 / 4 = 0x010000   ← 正好是中文数据所在的位置
 
-   所以那两块「新增」ROM 其实是 **tk2_gfx1.rom（清单第 0 条，左半边 plane 0/1）和
-   tk2_gfx3.rom（第 1 条，左半边 plane 2/3）的窗口补丁片**，整块装载时数据自然
-   落到 0x040000。HBMAME 那句 “The load procedure for the chinese language is
-   unknown” 底下用 ROM_CONTINUE / ROM_IGNORE，就是为了**只把这个窗口盖上去**。
+   所以那两块「新增」ROM 是四条图形通道的补丁来源。ROM_CONTINUE 将每颗芯片的
+   数据拆成两段送到不同通道；只把整段数据覆盖进 gfx1 / gfx3 会使通道错位。
 
    ── 为什么必须离线合并，不能直接把中文 ROM 列进 dat ────────────────────────
 
    两个原因，各自都是致命的：
    1. `CpsLoadOne` 写入用 `*((UINT32 *)pt) |= Pix`，是 **OR 不是覆盖**。原图形在
-      那个窗口里不是零，OR 上去只会得到两张图叠在一起。
-   2. 中文 ROM 窗口之外全是零。真拿它当第 0 条清单项，第一组图形其余部分的
-      plane 0/1 左半边会被整片抹平 —— 画面直接废。
-   包里又没有第二份原始 gfx1 可用，所以只能在递给核心之前把窗口合并好，
-   合成两块新 ROM（下面 WOFCN_DERIVE），dat 里引用合成产物。
+      那个窗口里不是零，直接把中文补丁片当 ROM 会叠出错误图形。
+   2. 中文 ROM 窗口之外全是零。真拿它当完整图形 ROM，会把对应通道其余图形清空。
+   所以递给核心之前要把四条通道分别合并回各自原图形 ROM，dat 再按 FBNeo 的顺序引用。
    **玩家上传的原始包一个字节都不用改。**
 
    ── 代价 ────────────────────────────────────────────────────────────────
-   单元 0x1000..0x19BF 那段原图形的**左半边**被换成了字库（右半边还是
-   tk2_gfx2 / tk2_gfx4 的原内容）。真机上这个 Hack 就是这么干的，属于改版包
-   自带的取舍，不是我们引入的。 */
+   单元 0x1000..0x17FF 的原图形窗口被字库覆盖，这是改版 ROM 自带的映射。 */
 
-/** 中文字库在两块补丁片里的字节窗口 —— 也就是要盖到原图形 ROM 上的那一段 */
-const WOFCN_FONT_WINDOW = { start: 0x010000, end: 0x019c00 } as const
+/** 字库映射到每条 CPS1 图形通道的窗口。 */
+const WOFCN_FONT_WINDOW = { start: 0x010000, end: 0x018000 } as const
 
 const WOFCN_DERIVE: ArcadeHackDerive = {
-  inputs: ['tk2_gfx1.rom', 'tk2_gfx3.rom', 'tk2_gfx5cn.rom', 'tk2_gfx6cn.rom'],
-  outputs: ['tk2_gfx1cn.rom', 'tk2_gfx3cn.rom'],
+  inputs: [
+    'tk2_gfx1.rom', 'tk2_gfx3.rom', 'tk2_gfx2.rom', 'tk2_gfx4.rom',
+    'tk2_gfx5cn.rom', 'tk2_gfx6cn.rom',
+  ],
+  // 用独立名字，避免玩家之前已上传旧版两通道预处理包时出现 ZIP 同名项歧义。
+  outputs: ['tk2h5_gfx1.rom', 'tk2h5_gfx3.rom', 'tk2h5_gfx2.rom', 'tk2h5_gfx4.rom'],
   run(inputs) {
     const { start, end } = WOFCN_FONT_WINDOW
-    // (原图形, 中文补丁片, 合成后的名字) —— 顺序对应清单第 0、1 条
-    const pairs: [string, string, string][] = [
-      ['tk2_gfx1.rom', 'tk2_gfx5cn.rom', 'tk2_gfx1cn.rom'],
-      ['tk2_gfx3.rom', 'tk2_gfx6cn.rom', 'tk2_gfx3cn.rom'],
+    // 顺序严格对应 HBMAME ROM_CONTINUE 的 4 条 64-bit lane，以及 FBNeo dat 的四项顺序。
+    const lanes: [string, string, number, string][] = [
+      ['tk2_gfx1.rom', 'tk2_gfx5cn.rom', 0x10000, 'tk2h5_gfx1.rom'],
+      ['tk2_gfx3.rom', 'tk2_gfx5cn.rom', 0x18000, 'tk2h5_gfx3.rom'],
+      ['tk2_gfx2.rom', 'tk2_gfx6cn.rom', 0x10000, 'tk2h5_gfx2.rom'],
+      ['tk2_gfx4.rom', 'tk2_gfx6cn.rom', 0x18000, 'tk2h5_gfx4.rom'],
     ]
-    return pairs.map(([baseName, patchName, outName]) => {
+    return lanes.map(([baseName, patchName, sourceStart, outName]) => {
       const base = inputs[baseName]
       const patch = inputs[patchName]
       if (!base || !patch) throw new Error(`wofcn: 合成字库缺少 ${!base ? baseName : patchName}`)
-      if (base.length < end || patch.length < end) throw new Error(`wofcn: ${baseName} / ${patchName} 长度不足`)
+      if (base.length < end || patch.length < sourceStart + (end - start)) {
+        throw new Error(`wofcn: ${baseName} / ${patchName} 长度不足`)
+      }
       const out = new Uint8Array(base) // 复制一份，别改调用方的 buffer
-      out.set(patch.subarray(start, end), start)
+      out.set(patch.subarray(sourceStart, sourceStart + (end - start)), start)
       return { name: outName, data: out }
     })
   },
 }
 
 const WOFCN_ROMDATA = `// Tenchi wo Kurau II (Edition Chinese) —— HBMAME 的 tk2h5，基础驱动是日版 wofj
-// tk2_gfx1cn.rom / tk2_gfx3cn.rom 是**合成产物**：原 tk2_gfx1 / tk2_gfx3 的
-// 0x010000..0x019BFF 换成 tk2_gfx5cn / tk2_gfx6cn 的同一段（中文字库）。
-// 见 arcadeHacks.ts 里的推导 —— 字库要落在 scroll1 图块号 0x1000（CpsGfx+0x040000），
-// 而 TK263B 的 mapper 只有两个 bank，0x400000 以上取不到，所以没有第三组图形。
+// 四个 tk2h5_gfx*.rom 是**合成产物**：按 HBMAME 的 ROM_CONTINUE 顺序拆分两颗中文字库，
+// 盖入 gfx1 / gfx3 / gfx2 / gfx4 的 0x010000..0x017FFF 字库窗口。
+// 字库对应 scroll1 图块号 0x1000（CpsGfx+0x040000）；TK263B mapper 没有第三组图形。
 // 顺序有意义：程序 → 图形（8 条）→ Z80 → QSound → PLD，中间不能插别的类型。
 // FullName 必须加引号：romdata.cpp 用 strqtoken 按空格、制表、换行、逗号、%:|{} 切词。
 
@@ -183,11 +181,11 @@ FullName   "Tenchi wo Kurau II (Edition Chinese)"
 tk2j23ccn.bin        0x080000   0xe1dd01d8   BRF_ESS BRF_PRG CPS1_68K_PROGRAM_NO_BYTESWAP
 tk2j22c.bin          0x080000   0xb74b09ac   BRF_ESS BRF_PRG CPS1_68K_PROGRAM_NO_BYTESWAP
 
-// 第 0 条 = 左半边 plane 0/1，第 1 条 = 左半边 plane 2/3 —— 中文字库只占这两条
-tk2_gfx1cn.rom       0x080000   0x6842b51b   BRF_GRA CPS1_TILES
-tk2_gfx3cn.rom       0x080000   0x338eb7c9   BRF_GRA CPS1_TILES
-tk2_gfx2.rom         0x080000   0xc5ca2460   BRF_GRA CPS1_TILES
-tk2_gfx4.rom         0x080000   0xe349551c   BRF_GRA CPS1_TILES
+// 顺序要和 HBMAME 四条 64-bit lane 一致，不能将 gfx5/gfx6 当成两条连续 plane
+tk2h5_gfx1.rom       0x080000   0x6421077b   BRF_GRA CPS1_TILES
+tk2h5_gfx3.rom       0x080000   0x2239f6eb   BRF_GRA CPS1_TILES
+tk2h5_gfx2.rom       0x080000   0xe54a0562   BRF_GRA CPS1_TILES
+tk2h5_gfx4.rom       0x080000   0x9315de77   BRF_GRA CPS1_TILES
 tk205.bin            0x080000   0xe4a44d53   BRF_GRA CPS1_TILES
 tk206.bin            0x080000   0x58066ba8   BRF_GRA CPS1_TILES
 tk207.bin            0x080000   0xd706568e   BRF_GRA CPS1_TILES
