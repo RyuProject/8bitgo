@@ -144,17 +144,30 @@
           var pending = null
           var loadLog = w.__8bitgoAssetRepairLoad = []
           var repairScriptUrls = function () {
-            var urls = []
+            var primary = ''
+            var fallback = ''
             try {
               var entry = document.querySelector('script[type="module"][src*="/assets/index-"]')
-              if (entry && entry.src) urls.push(new URL('asset-repair-v3.js', entry.src).href)
+              if (entry && entry.src) primary = new URL('asset-repair-v4.js', entry.src).href
             } catch (e) {}
             try {
-              var fallback = new URL('/assets/asset-repair-v3.js', w.location.href).href
-              if (urls.indexOf(fallback) < 0) urls.push(fallback)
+              fallback = new URL('/assets/asset-repair-v4.js', w.location.href).href
             } catch (e) {
-              if (urls.indexOf('/assets/asset-repair-v3.js') < 0) urls.push('/assets/asset-repair-v3.js')
+              fallback = '/assets/asset-repair-v4.js'
             }
+            var urls = []
+            if (primary) urls.push(primary)
+            if (fallback && urls.indexOf(fallback) < 0) urls.push(fallback)
+            /*
+              主站地址也可能被浏览器 / CDN 缓存成失败响应（诊断包 #872：Safari 1ms 即 onerror）。
+              先试入口对应的地址与主站，再给主站和入口各一次带随机查询串的机会；缓存键包含查询串时可绕开坏副本。
+            */
+            var nonce = Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
+            var cacheBust = function (url) {
+              return url + (url.indexOf('?') < 0 ? '?' : '&') + 'asset-repair-script=' + nonce
+            }
+            if (fallback && fallback !== primary) urls.push(cacheBust(fallback))
+            if (primary) urls.push(cacheBust(primary))
             return urls
           }
           w.__8bitgoAssetRepair = function (opts) {

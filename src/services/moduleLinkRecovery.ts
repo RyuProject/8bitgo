@@ -1,5 +1,5 @@
 /**
- * React 侧接入「坏 chunk 自修复」（public/assets/asset-repair-v3.js）。
+ * React 侧接入「坏 chunk 自修复」（public/assets/asset-repair-v4.js）。
  *
  * 2026-11-15 PK / TH 两位玩家打开详情页就崩：
  * `SyntaxError: The requested module './live-Cqhc9j-k.js' does not provide an export named 'x'`。
@@ -150,7 +150,7 @@ export function onOriginAssetsPage(): boolean {
 
 /* ---------- 修复脚本 ---------- */
 
-/** 与 public/assets/asset-repair-v3.js 的返回值一致（v3 新增的几项在旧脚本里没有，所以是可选的） */
+/** 与 public/assets/asset-repair-v4.js 的返回值一致（新字段在旧脚本里没有，所以是可选的） */
 export interface AssetRepairResult {
   manifest: boolean
   checked: number
@@ -159,7 +159,7 @@ export interface AssetRepairResult {
   repaired: string[]
   /** 错误点名的文件，缓存里那份看着没问题，仍强制重取覆盖了一遍 */
   refreshed: string[]
-  /** CDN 边缘那份就是坏的：改用回源地址（下次开页由 import map 生效），并已通知服务端清边缘缓存 */
+  /** 普通地址异常但查询串回源正常：临时改用该地址（下次开页由 import map 生效），并已通知服务端清边缘缓存 */
   remapped: string[]
   /** 回源那份也对不上：多半是部署本身的问题 */
   bad: string[]
@@ -274,7 +274,7 @@ export function summarizeRepair(result: AssetRepairResult | null, load?: RepairL
   if (result.repaired.length) parts.push(`浏览器缓存里的坏副本已重取：${list(result.repaired)}`)
   if (result.refreshed.length) parts.push(`已强制重取：${list(result.refreshed)}`)
   if (result.recovered?.length) parts.push(`取不下来、重试后正常：${list(result.recovered)}`)
-  if (result.remapped.length) parts.push(`CDN 边缘副本是坏的，已改走回源地址并请求清缓存：${list(result.remapped)}`)
+  if (result.remapped.length) parts.push(`普通地址异常、查询串回源正常，已改走回源地址并请求清缓存：${list(result.remapped)}`)
   if (result.edgeOnly?.length) parts.push(`大陆加速入口取不下来、主站正常：${list(result.edgeOnly)}`)
   if (result.bad.length) parts.push(`回源也对不上：${list(result.bad)}`)
   if (result.failed.length) parts.push(`取不下来：${list(result.failed)}`)

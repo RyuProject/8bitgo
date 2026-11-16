@@ -3727,7 +3727,7 @@ PK / TH 两份现场：`The requested module './live-Cqhc9j-k.js' does not provi
 - **正常访问**：`index.html` 里一段 ES5 内联钩子，不发请求。只在 localStorage `8bitgo.asset-remap` 有未过期记录时插一张 import map；
   定义 `window.__8bitgoAssetRepair`，并监听 window 的 `SyntaxError`（入口模块链接失败时 React 起不来，兜底页接不住）。
   钩子必须排在任何模块脚本之前，import map 才来得及生效。
-- **出错时**：才加载 `public/assets/asset-repair-v3.js`（文件名即代次，长期缓存；改逻辑新建 v4，旧版留给已打开的旧页面）。
+- **出错时**：才加载 `public/assets/asset-repair-v4.js`（文件名即代次，长期缓存；改逻辑新建 v5，旧版留给已打开的旧页面）。
   首页按入口脚本所在资源域加载，所以大陆入口 `cn.8bitgo.com/_cn/assets/` 的自修复也走 EdgeOne；该路 5 秒超时或失败后再回主站
   `/assets/` 重试，每次的地址 / 结果 / 耗时记在 `window.__8bitgoAssetRepairLoad`，诊断包写成「加载失败 812ms」「5 秒超时」
   「已加载、核对 20 秒内没有结束」。只核对本页 Resource Timing 里用过的
@@ -3736,8 +3736,9 @@ PK / TH 两份现场：`The requested module './live-Cqhc9j-k.js' does not provi
   重取还是坏（CDN 边缘那份坏了）→ 带 `?asset-repair=1` 直接回源核对，好的话记进 `8bitgo.asset-remap`（7 天）、
   `POST /api/asset-repair` 请服务端清 Cloudflare 上那个 URL → 刷新后 import map 把它改指到回源地址；
   回源也坏（部署本身坏了）→ 不刷新，留在兜底页并上报。一分钟内同一页最多自动刷新一次。
-  取不下来（网络错误 / HTTP 错误，v3）→ 绕过缓存重试一次，好了记 `recovered`；还不行且文件在大陆加速入口上，取主站同名文件对照，
-  主站正常记 `edgeOnly`，主站也不行记 `failed`。`trace` 记三次结果（HTTP 502 / 网络错误 / 超时）。
+  取不下来（网络错误 / HTTP 错误）→ 绕过缓存重试一次，好了记 `recovered`；仍失败时再带 `?asset-repair=1` 回源核对，
+  回源正常就记 `remapped`、请服务端清 Cloudflare；仍不可达且文件在大陆加速入口上，再取主站同名文件对照，主站正常记 `edgeOnly`，
+  主站也不行记 `failed`。`trace` 记录每一步的 HTTP 状态 / 网络错误 / 超时。
 - 用 SHA-256 不用 MD5：`crypto.subtle` 只有 SHA 系列，原生实现比 JS 版 MD5 快。没上全量 SRI：那要把约 110 个哈希塞进每份 HTML。
 - `AppErrorBoundary` 对 SyntaxError 与旧 chunk 404 都先走修复：修好了先上报（诊断包带「资源核对：…」一行）再刷新；
   没发现坏文件的 404 照旧刷新一次；其余上报。诊断包里的那一行分得清浏览器缓存坏、CDN 边缘坏、源站坏。
@@ -3749,6 +3750,19 @@ PK / TH 两份现场：`The requested module './live-Cqhc9j-k.js' does not provi
   回源地址 + import map 后恢复；入口模块链接失败 → window 收到 SyntaxError，钩子解析出导入方和被导入方。
 - 回归：`npm run test:asset-repair`。⚠️ 测试桩里 `__8bitgoAssetRepairRun` 必须在「脚本加载成功」时才定义：
   2026-11-16 以前预先定义好它，钩子直接运行、不加载脚本，「出错时跟随入口资源域加载修复脚本」那条断言从 168e2e4 起就没过过。
+
+**诊断包 #850 / #851（Chrome 145，《合金弹头2》详情页）：懒加载播放器失败，内部 `live-*.js` 连续 HTTP 500。**
+
+- 现场能确认是依赖脚本请求返回 500；资源清单里 55/57 正常，不能据此断定 500 是源站还是边缘节点产生。
+- v3 对 HTTP 错误只在原 URL `cache: 'reload'` 重取；连续失败且入口本来就在主站时直接记 `failed`，不会走已存在的查询串回源分支。
+- v4 在连续错误后也试 `?asset-repair=1`：回源正常就记 import map remap 并请求清 Cloudflare；回源仍失败才结束诊断。详情页、播放器及其它懒加载页面共用该恢复路径。
+
+**诊断包 #872（Safari 27 / iOS 18，MA，《拳皇2001》详情页）：懒加载页 chunk 与修复脚本均加载失败。**
+
+- 现场确认 `GameDetailPage-*.js` 动态模块导入失败，随后同源 `/assets/asset-repair-v3.js` 在 1ms 内触发加载错误；没有 HTTP 状态、响应体或资源耗时，不能据此断言 chunk 或修复脚本具体在哪一层损坏。
+- v3 首页钩子对主站 URL 去重后只尝试一次；修复脚本本身也失败时，React 兜底页只能刷新同一份页面，仍会拿到原来的缓存副本。
+- 首页钩子现在先试入口资源域、再试主站；两条都失败时，对主站地址和入口地址各追加一次随机查询串重试。此逻辑不依赖外部修复脚本，详情页、其它懒加载页和播放器共享同一路径。
+- 查询串重试仍失败时保留原错误兜底与诊断记录；它可绕过按完整 URL 缓存的失败副本，但无法修复源站持续不可达或浏览器策略拦截。
 
 **诊断包 #761（微信 iOS 27，CN，《超级玛丽》详情页，`TypeError: Importing a module script failed.`）：旧 build，但根因当时没修。**
 

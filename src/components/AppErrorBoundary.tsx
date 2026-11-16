@@ -59,8 +59,8 @@ function claimOriginReload(edge: boolean): boolean {
 }
 
 /**
- * chunk 没加载上（404 / 网络）或者加载上了却解析 / 链接失败（字节坏了，2026-11-15 PK / TH 的
- * `does not provide an export named`）：先让 public/assets/asset-repair-v3.js 按构建时的 SHA-256 清单核对本页
+ * chunk 没加载上（404 / 网络 / HTTP 错误）或者加载上了却解析 / 链接失败（字节坏了，2026-11-15 PK / TH 的
+ * `does not provide an export named`）：先让 public/assets/asset-repair-v4.js 按构建时的 SHA-256 清单核对本页
  * 用过的 chunk，坏的绕过缓存重取 —— 普通刷新只会从一年 immutable 的缓存里拿回同一份坏字节。
  *
  * 2026-11-16 诊断包 #761（微信 iOS，cn.8bitgo.com/_cn/assets/ 上懒加载 GameDetailPage 报
