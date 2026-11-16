@@ -48,6 +48,7 @@ import { ruffleRendererPreference, type RuffleRendererPreference } from '../flas
 import { flashLegacyBundleRules, type FlashUrlRewriteRule } from '../flashLegacyBundle'
 import { installFlashLegacyLoginRedirect } from '../flashLegacyLogin'
 import { installRuffleCrashGuard } from '../ruffleCrash'
+import { installRuffleWordShortcutGuard } from '../ruffleWordShortcutGuard'
 import { warmRuffleCore } from '../prewarm'
 import { diagLog, registerDiagnosticSnapshot, watchFramePerformance } from '@/services/startupDiagnostics'
 
@@ -501,6 +502,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let cancelLegacyLoginRedirect = () => {}
   let cancelFlashSaveAuthRefresh = () => {}
   let cancelCrashGuard = () => {}
+  let cancelWordShortcutGuard = () => {}
 
   const cancelFocusRetry = () => {
     if (focusRaf) cancelAnimationFrame(focusRaf)
@@ -690,6 +692,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       setEnginePaused(true)
       options.onError?.(fmt(rt.flashLoadFailed, { msg: detail }), 'runtime')
     })
+    cancelWordShortcutGuard()
+    cancelWordShortcutGuard = installRuffleWordShortcutGuard(win, doc)
 
     const script = doc.createElement('script')
     script.src = `${ruffleRoot}ruffle.js`
@@ -1380,6 +1384,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       cancelLegacyLoginRedirect()
       cancelFlashSaveAuthRefresh()
       cancelCrashGuard()
+      cancelWordShortcutGuard()
       cancelFocusRetry()
       if (canvasCapsTimer) window.clearTimeout(canvasCapsTimer)
       canvasCapsTimer = 0
