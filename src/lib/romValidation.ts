@@ -118,6 +118,8 @@ export const MAX_NDS_ROM_BYTES = 512 * 1024 * 1024
 export interface NdsBlobValidation {
   /** ZIP 包里唯一的 ROM 路径；裸 ROM 没有。适配器用它绕过 EmulatorJS“取第一个文件”的兜底。 */
   archiveEntry?: string
+  /** 同一项的中央目录信息（偏移、压缩方式、大小），供适配器在外层直接解出裸 ROM。 */
+  archive?: ZipFileEntry
 }
 
 /**
@@ -158,7 +160,7 @@ export async function assertNdsRomBlob(blob: Blob): Promise<NdsBlobValidation> {
     }
     if (roms[0].uncompressedSize < 0x200) throw new Error('NDS ZIP 内的 ROM 文件过短')
     if (roms[0].uncompressedSize > MAX_NDS_ROM_BYTES) throw new Error('NDS ZIP 解开后超过 512MB，疑似损坏或解压炸弹')
-    return { archiveEntry: roms[0].name }
+    return { archiveEntry: roms[0].name, archive: roms[0] }
   }
 
   if (blob.size > MAX_NDS_ROM_BYTES) throw new Error('NDS ROM 超过 512MB，不是有效的 DS 卡带镜像')

@@ -265,6 +265,53 @@ export async function extractZipEntry(buf: ArrayBuffer, entry: ZipFileEntry, max
 }
 
 /**
+ * 从 Blob 里的 ZIP 解出一项，结果仍是 Blob（交给 collect 决定落成真 Blob 还是内存块）。
+ *
+ * 只读本地头和这一项的压缩数据，不把整个压缩包变成 ArrayBuffer。entry 必须来自
+ * assertValidZipBlob（它已核对本地头与数据范围都在文件内）。解出的字节数必须与中央目录一致：
+ * deflate-raw 不校验 CRC，至少挡住截断和元信息说谎。
+ */
+export async function extractZipEntryFromBlob(
+  blob: Blob,
+  entry: ZipFileEntry,
+  collect: (stream: ReadableStream<Uint8Array>) => Promise<Blob>,
+  maxBytes = Infinity,
+): Promise<Blob> {
+  if (entry.uncompressedSize > maxBytes) throw new Error('zip: 解包后的 ROM 过大')
+  const header = await blob.slice(entry.offset, entry.offset + 30).arrayBuffer()
+  const local = new DataView(header)
+  if (header.byteLength !== 30 || local.getUint32(0, true) !== 0x04034b50) throw new Error('zip: 本地文件头损坏')
+  const dataStart = entry.offset + 30 + local.getUint16(26, true) + local.getUint16(28, true)
+  if (dataStart + entry.compressedSize > blob.size) throw new Error('zip: 压缩数据超出文件范围')
+  const raw = blob.slice(dataStart, dataStart + entry.compressedSize)
+  let source: ReadableStream<Uint8Array>
+  if (entry.method === 0) {
+    source = typeof raw.stream === 'function'
+      ? raw.stream()
+      : new Blob([await raw.arrayBuffer()]).stream()
+  } else if (entry.method === 8) {
+    if (typeof DecompressionStream === 'undefined') throw new Error('zip: 浏览器不支持 DecompressionStream')
+    // 内存 ROM 替身没有 stream()（见 memoryRom.ts），只能先取出这一段压缩数据。
+    const input = typeof raw.stream === 'function' ? raw : new Uint8Array(await raw.arrayBuffer())
+    source = rawDeflateStream(input, entry.crc32, entry.uncompressedSize)
+  } else {
+    throw new Error(`zip: 不支持的压缩方式 ${entry.method}`)
+  }
+  let extracted = 0
+  const limiter = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      extracted += chunk.byteLength
+      if (extracted > maxBytes || extracted > entry.uncompressedSize) throw new Error('zip: 解包后的大小与目录不符')
+      controller.enqueue(chunk)
+    },
+    flush() {
+      if (extracted !== entry.uncompressedSize) throw new Error('zip: 解包后的大小与目录不符')
+    },
+  })
+  return collect(source.pipeThrough(limiter))
+}
+
+/**
  * 解 raw deflate（ZIP 成员的格式）。
  *
  * `DecompressionStream('deflate-raw')` 要 Chrome 103 / Safari 16.4 / Firefox 113；更老但已有
@@ -273,8 +320,8 @@ export async function extractZipEntry(buf: ArrayBuffer, entry: ZipFileEntry, max
  * 它们都支持 'gzip'，而 gzip 就是「10 字节头 + 同一份 raw deflate + CRC-32 + 原长」：ZIP 中央目录
  * 正好给了这两个值，所以原样包一层就能解，结尾的校验和还白送一次完整性检查。
  */
-export function rawDeflateStream(raw: Uint8Array, crc32: number, uncompressedSize: number): ReadableStream<Uint8Array> {
-  const source = () => new Blob([raw as BlobPart]).stream()
+export function rawDeflateStream(raw: Uint8Array | Blob, crc32: number, uncompressedSize: number): ReadableStream<Uint8Array> {
+  const source = () => (raw instanceof Blob ? raw : new Blob([raw as BlobPart])).stream()
   try {
     return source().pipeThrough(new DecompressionStream('deflate-raw'))
   } catch {

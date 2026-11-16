@@ -40,7 +40,7 @@ import { guardPreConnectDisconnect, installIoHook, withSignalTimeout } from '../
 import { ICE_SERVERS, NETPLAY_URL, fetchIceConfig, gameIdFor, netplayUrlForFrame, socketIoScriptUrl, uploadState } from '@/services/netplay'
 import { guardInputChannel } from '../netplayGuard'
 import { normalizeHostSync } from '../netplaySyncGuard'
-import { assertValidZipBlob, type ZipFileEntry } from '@/lib/unzip'
+import { assertValidZipBlob, extractZipEntryFromBlob, type ZipFileEntry } from '@/lib/unzip'
 import { romArchiveRef } from '@/lib/romArchiveUrl'
 import { loadRemoteArchiveRom } from '../remoteArchive'
 import { matchArcadeHack, type ArcadeHack } from '@/data/arcadeHacks'
@@ -1883,6 +1883,47 @@ async function arcadeBlobFrom(
 }
 
 /**
+ * NDS ZIP 在外层解成裸 ROM 再交给引擎。
+ *
+ * 交 ZIP 时 RetroArch 在 WASM 堆里解包：压缩包本身、解出的整份 ROM、核心自己的 ROM 副本同时在堆里。
+ * 2026-11-16《血战唐人街》汉化版（128 MiB ROM，ZIP 70MB）实测堆峰值 470 MB；交裸 .nds 只要 315 MB。
+ * WASM 堆只涨不缩，长不动时 melonDS 的 new 失败 → 不带原因的 Aborted()，RetroArch 自己的 malloc 失败则静默
+ * 落到 RetroArch 主菜单（把增长上限卡在 400 MB 实测两种都出现）。大陆 Chrome 132 / Windows 8GB 的玩家
+ * 两个核心都在开机时 Aborted()，所以把解包挪到外层，堆里只留核心真正要的那份。
+ *
+ * 输入是内存 ROM 替身（Blob 存储坏了）时输出也留在内存里，不新建真 Blob。
+ */
+export async function inflateNdsZipRom(blob: Blob, entry: ZipFileEntry): Promise<Blob> {
+  const inMemory = Boolean(memoryRomOf(blob))
+  const raw = await extractZipEntryFromBlob(blob, entry, async (stream) => {
+    if (!inMemory) return new Response(stream).blob()
+    const parts: Uint8Array<ArrayBuffer>[] = []
+    const reader = stream.getReader()
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      parts.push(value as Uint8Array<ArrayBuffer>)
+    }
+    return memoryRomBlob(parts)
+  }, MAX_NDS_ROM_BYTES)
+  // 解出来的必须是裸 DS 卡带（文件头 + 程序段范围），否则还是交 ZIP 给引擎。
+  const check = await assertNdsRomBlob(raw)
+  if (check.archive) throw new Error('NDS ZIP 里套着另一个 ZIP')
+  return raw
+}
+
+/**
+ * 外层解出的裸 ROM 的引擎文件名：保住 ZIP 时代的电池存档名。
+ * RetroArch 对 `x.nds.zip` 的存档叫 `x.nds.srm`（去掉 .zip），对 `y.nds` 叫 `y.srm`（去掉最后一个扩展名）；
+ * 所以新名字 = ZIP 名去掉 .zip + 成员扩展名，`x.nds.zip` → `x.nds.nds`，存档仍是 `x.nds.srm`。
+ */
+export function inflatedNdsGameName(zipName: string, entryName: string): string {
+  const base = (zipName.split('/').pop() || zipName).replace(/\.zip$/i, '')
+  const ext = /\.([A-Za-z0-9]{1,8})$/.exec(entryName)?.[1]?.toLowerCase() || 'nds'
+  return `${base}.${ext}`
+}
+
+/**
  * 交给引擎的 blob: 地址。内存 ROM 不是真 Blob、建不了 URL：给一个空占位地址，
  * 引擎取它时由 installBlobFetchShortcut 用内存块回应。
  */
@@ -3088,13 +3129,51 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let namcoSet: NamcoMameMatch | null = null
   /** NDS ZIP 内唯一的 ROM；开局前强制使用，绕过引擎“扩展名不认识就取第一个文件”的兜底。 */
   let ndsArchiveEntry = ''
+  /** 同一项的中央目录信息；外层解包（inflateNdsZipRom）要用 */
+  let ndsArchive: ZipFileEntry | undefined
+  /** 远端 NDS ZIP 已在外层解开：沿用 ZIP 时代的存档名，不再按 slug 改名（旧名是内容哈希，迁移规则认不出） */
+  let ndsInflatedFromZip = false
   let ndsRomValidated = options.platform !== 'nds'
   const validateNds = options.platform === 'nds'
     ? async (blob: Blob) => {
-        ndsArchiveEntry = (await assertNdsRomBlob(blob)).archiveEntry ?? ''
+        const result = await assertNdsRomBlob(blob)
+        ndsArchiveEntry = result.archiveEntry ?? ''
+        ndsArchive = result.archive
         ndsRomValidated = true
       }
     : undefined
+  /**
+   * 远端 NDS ZIP 下载完后在外层解成裸 ROM（见 inflateNdsZipRom）。成功时换掉交给引擎的地址和名字，
+   * 并把引擎设置键迁过去；失败只记一行，照旧交 ZIP（和以前一样）。返回 false 表示会话已销毁。
+   */
+  const inflatePreparedNds = async (): Promise<boolean> => {
+    if (options.platform !== 'nds' || !ndsArchive || !preparedRomBlob) return true
+    const zipName = engineGameName
+    try {
+      beat()
+      const raw = await inflateNdsZipRom(preparedRomBlob, ndsArchive)
+      if (destroyed) return false
+      URL.revokeObjectURL(preparedArcadeBlobUrl)
+      preparedRomBlob = raw
+      preparedArcadeBlobUrl = objectUrlForEngine(raw)
+      gameUrl = preparedArcadeBlobUrl
+      engineGameName = inflatedNdsGameName(zipName, ndsArchiveEntry)
+      logEngine(`[nds] ZIP 已在外层解开：${zipName} → ${engineGameName}（${Math.round(raw.size / 1048576)}MB）`)
+      try {
+        migrateEngineSettingsKey(window.localStorage, gameId, zipName, engineGameName)
+      } catch {
+        /* localStorage 不可用：设置本来也存不下 */
+      }
+      // 引擎拿到的已是裸 ROM，不能再把文件名改回包内路径
+      ndsArchiveEntry = ''
+      ndsArchive = undefined
+      ndsInflatedFromZip = true
+    } catch (error) {
+      if (destroyed) return false
+      console.warn('[emulatorjs] NDS ZIP 外层解包失败，照旧交 ZIP 给引擎：', error)
+    }
+    return true
+  }
   /** 远程街机 ROM 的预下载可以随会话销毁立刻取消，避免切游戏后还在后台吞几十 MB。 */
   const prepareAbort = new AbortController()
   /** 预下载生成的 blob:。引擎通常会自行回收，销毁时再兜一次是幂等的。 */
@@ -4602,12 +4681,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           preparedRomBlob = prepared.blob
           gameUrl = prepared.url
           engineGameName = prepared.name || discNameFor(remoteGameUrl.replace(/\.8bg(?=\?|$)/i, ''), options.gameName)
+          if (!await inflatePreparedNds()) return
           /*
             电池存档（.srm）按内容文件名命名，而 prepared.name 是管理员本机的文件名（线上大量
             「德文.gba」「日文.gba」），不同游戏会共用、互相覆盖同一份存档。改按存档 slug 命名，
             旧名字下的存档在开局前迁一次（见 ejsSaveFs.ts 的 batterySaveGameName）。
           */
-          const batteryName = batterySaveGameName(options.gameSlug, engineGameName)
+          const batteryName = ndsInflatedFromZip ? undefined : batterySaveGameName(options.gameSlug, engineGameName)
           if (batteryName && batteryName !== engineGameName) {
             legacyBatteryName = engineGameName
             engineGameName = batteryName
@@ -4659,6 +4739,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
               喂错名字核心会当成裸镜像去解析（理由同 discNameFor 的注释）。
             */
             engineGameName = prepared.name || discNameFor(remoteGameUrl, options.gameName)
+            if (!await inflatePreparedNds()) return
           } catch (error) {
             // 真的被取消了（换游戏 / 退出播放器）就到此为止，别接着往下开局
             if (destroyed || prepareAbort.signal.aborted) return
