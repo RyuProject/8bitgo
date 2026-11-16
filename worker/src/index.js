@@ -5,7 +5,7 @@
  */
 import {
   HttpError, json, encoder, positiveInt, declaredLength, readJson, writeBody,
-  corsHeaders, authorized, listAcross, storageFailure,
+  corsHeaders, authorized, listAcross, storageFailure, isMissingMultipartUpload,
 } from './common.js'
 import { parseRange, r2BodyResponseInit, serveObject } from './http.js'
 
@@ -532,9 +532,8 @@ async function abortMultipart(env, key, uploadId, marker, cors) {
   try {
     await bucketForWrite(env, key).resumeMultipartUpload(key, uploadId).abort()
   } catch (error) {
-    // A failure is not evidence of absence. Retain the marker unless explicitly NoSuchUpload.
-    const message = error instanceof Error ? error.message : String(error)
-    if (error?.code !== 'NoSuchUpload' && !/\bNoSuchUpload\b/i.test(message)) {
+    // 只有 R2 明确表示 uploadId 不存在时才继续清标记；其它错误可能仍有分片可续。
+    if (!isMissingMultipartUpload(error)) {
       return json({ ok: false, key, aborted: false, markerRemoved: false, fatal: false, retryable: true, error: '中止未确认成功，续传标记已保留，请重试' }, cors, 503, { 'Retry-After': '2' })
     }
   }

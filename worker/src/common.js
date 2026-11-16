@@ -223,13 +223,20 @@ function logStorageFailure(error, operation) {
   console.warn('[r2-storage-failure]', JSON.stringify({ operation, error: storageErrorDetails(error) }))
 }
 
+/** Workers R2 有时只在异常消息里带 10024，而不会设置 NoSuchUpload code 属性。 */
+export function isMissingMultipartUpload(error) {
+  const code = String(error?.code ?? '').toLowerCase()
+  const message = error instanceof Error ? error.message : String(error)
+  return code === 'nosuchupload' || code === '10024' ||
+    /\b(?:NoSuchUpload|10024)\b/i.test(message) ||
+    /specified multipart upload does not exist/i.test(message)
+}
+
 /** Unknown/transient R2 failures MUST NOT invalidate a client's resumable upload. */
 export function storageFailure(error, cors, operation = 'storage') {
   if (error instanceof HttpError) return json({ error: error.message, code: error.code }, cors, error.status)
-  const message = error instanceof Error ? error.message : String(error)
   logStorageFailure(error, operation)
-  // Recognize only explicit NoSuchUpload. Generic 400/409/messages are not evidence.
-  const gone = error?.code === 'NoSuchUpload' || /\bNoSuchUpload\b/i.test(message)
-  if (gone) return json({ error: '分片会话不存在或已结束', code: 'upload_gone', fatal: true, retryable: false }, cors, 409)
+  // 只有明确的 R2 10024 / NoSuchUpload 才作废续传；其它未知故障仍保留上传账本。
+  if (isMissingMultipartUpload(error)) return json({ error: '分片会话不存在或已结束', code: 'upload_gone', fatal: true, retryable: false }, cors, 409)
   return json({ error: `${operation} 暂时失败，请保留续传信息后重试`, code: 'storage_unavailable', fatal: false, retryable: true }, cors, 503, { 'Retry-After': '2' })
 }
