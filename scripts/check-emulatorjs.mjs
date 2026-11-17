@@ -108,6 +108,7 @@ for (const [needle, what, why] of [
   ['Z=new Uint8Array(i);let __8bgOffset=0;for(const __8bgChunk of n){Z.set(__8bgChunk,__8bgOffset)', '核心响应直接拼接 Uint8Array', '避免对已读出的核心响应再做 Blob → ArrayBuffer 回读'],
   ['response stream read failed', '核心响应阶段诊断', '如果浏览器仍在读 HTTP 流时失败，诊断包必须保留原始异常对象'],
   ['改用 XHR arraybuffer 重新下载', '核心响应流读失败改走 XHR', '华为浏览器这类读不出 HTTP 流（NotReadableError）的环境没有别的读法，核心下载一失败整局就停'],
+  ['XHR fallback incomplete response: HTTP ', 'XHR 兜底完整性校验', 'Android 16 大陆现场的 XHR 以 HTTP 200 返回 121KB 截断核心，必须在解压和写缓存前拒收'],
   ['return Promise.race([this.storageCache.put(n)', '引擎缓存读写有时限', 'IndexedDB 卡住时核心下完也交不出去，停在 100%'],
   ['n.onblocked=()=>e(),n.onsuccess=()=>{try{let i=n.result.transaction(', '引擎缓存读写有时限', '表不存在 / 库正在关闭时 transaction() 同步抛错，Promise 永远不 settle'],
   ['this.storageCache&&!this.__8bgCacheDead&&(I=await (()=>{let __8bgT;return Promise.race(', '缓存挂死一次就停用', 'Safari 的 IndexedDB 挂死时每局连等两次缓存查询，停在「下载游戏核心」（没有百分比）被判卡住'],

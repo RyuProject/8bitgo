@@ -202,6 +202,9 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
   控制台出现「改用 XHR arraybuffer 重新下载」。⚠️ 那段代码块里 `t` 被 Content-Length 遮蔽，重取地址必须用 `y.url`。
   XHR 也失败才 reject，错误带原始 NotReadableError，适配器照旧按本机环境错误停止。回归：`npm run test:ejs-download`。
 
+- **XHR 兜底必须确认拿到整份核心**（2026-11-17 大陆 Android 16 Chrome 143《明星三缺一》，诊断包 #949）：Fetch 已读到约 24.3MB 后断流，XHR 却以 HTTP 200 返回 121KB；旧逻辑只看状态码，仍把它记成下载成功，随后引擎报 `EJS_Runtime is not defined`。兜底现在要求 HTTP 200、非空、字节数不短于已读流；响应未编码时还要匹配 Content-Length，并拒绝 HTML / JSON 错误页。核心缓存代次必须同步更新，清掉旧逻辑可能留下的工件。
+- **核心启动看门狗不计后台时间**（同一现场）：手机浏览器将游戏页放后台约 278 秒后冻结轮询与 WASM 解压 / 编译；旧适配器仍用墙钟判断 120 秒无活动，回来时立即误报「下载游戏核心 100% 卡住」。隐藏时暂停轮询，回到前台重置心跳并恢复完整预算；若前台仍无活动，之后照常报错。
+
 - **「Cannot allocate Wasm memory」先看是不是 32 位浏览器**（2026-11-11 大陆 Chrome 109 / Windows，8GB、4 核，
   《合金弹头 2》《1941》各一次，核心编译完在 instantiate 时报）。FBNeo 核心起步 128MB、最大 2GB，V8 分配失败会自己
   逐级缩到起步值再试，64 位浏览器不会连 128MB 都给不出；Chrome 109 是 Win7 / 8.1 的最后一版，这批机器常装 32 位版。

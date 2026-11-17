@@ -220,7 +220,7 @@ const EJS_LANG: Record<Lang, string> = {
  * 存档在另一个库（EmulatorJS-states）和我们自己的云存档里，不碰。
  */
 // 旧 NDS 核心把双倍物理画布当成 1 倍指针坐标；换代才能让玩家实际拿到触屏修正版。
-const EJS_CACHE_GENERATION = '2026-10-25.melondsds-wfc-sourceport.touch-dpr.psx-range.melondsds-core-ff33abb1.corecompat1.stateglue3.mameglue3'
+const EJS_CACHE_GENERATION = '2026-11-17.ejs-xhr-full-response.bg-visible-stall'
 // 浏览器实测已能按片读取，但现有 Beetle WASM 在该样本的完整下载路径也会崩溃；未确认可玩前不能让生产自动进入实验链路。
 const PSX_RANGE_ENABLED = import.meta.env.VITE_PSX_RANGE_ENABLED === '1'
 const EJS_CACHE_PURGED_KEY = '8bitgo.ejs.cachePurged'
@@ -2499,6 +2499,14 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   /** 开局标志：EJS_onGameStart 与兜底轮询谁先到都行，但只放行一次 */
   let started = false
   let startWatch = 0
+  let startWatchVisibility: (() => void) | null = null
+  /** 后台冻结会让轮询的墙钟超时远超真实前台等待；隐藏时停表，回来后给正在解压 / 编译的核心完整预算。 */
+  const stopStartWatch = () => {
+    window.clearInterval(startWatch)
+    startWatch = 0
+    if (startWatchVisibility) document.removeEventListener('visibilitychange', startWatchVisibility)
+    startWatchVisibility = null
+  }
   /** mame-current 实际加载的 romset（开机自检快进按它查表，见 mameBootSkip.ts） */
   let mameBootRomset = ''
   let cancelBootFastForward: (() => void) | null = null
@@ -2979,7 +2987,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     // onError，否则播放器会对同一次崩溃再做一轮重试 + 换语言 ROM。
     if (destroyed || started || loadFailed || crashReported) return
     loadFailed = true
-    window.clearInterval(startWatch)
+    stopStartWatch()
     // 开局前报错时大陆加速入口可能是原因：自动重试改走同源（paths.ts 的 ejsBase）。
     // 「卡住」除外：大陆走 Cloudflare 取 8bitgo.com 的大文件实测只有几 KB/s（paths.ts 注释），
     // 卡住多半是慢网或冷编译，退回同源只会让重试必然再卡一次。入口脚本真加载不了另有一处标记。
@@ -3031,7 +3039,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       */
       if (!destroyed && !started && !loadFailed && !crashReported && options.onOutOfMemory?.(core, line)) {
         loadFailed = true
-        window.clearInterval(startWatch)
+        stopStartWatch()
         return
       }
       if (bits === '32') return failLoad(rt.ejsOutOfMemory32bit, 'config')
@@ -3111,7 +3119,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       }
     }
     crashReported = true
-    window.clearInterval(startWatch)
+    stopStartWatch()
     logEngine(`[core-crash] ${core}: ${line}`)
     // 强制刷新后仍然发生同一陷阱：本轮下载的密文不留在 ROM 缓存，下一次访问会再向源站取一份。
     if (options.platform === 'gba' && options.forceRomRefresh &&
@@ -3164,7 +3172,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
     if (options.onOutOfMemory?.(core, reason)) {
       loadFailed = true
-      window.clearInterval(startWatch)
+      stopStartWatch()
       return false
     }
     failLoad(bits === '32' ? rt.ejsOutOfMemory32bit : rt.ejsOutOfMemory, 'config')
@@ -4340,7 +4348,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const finishStart = (win: Window & Record<string, unknown>) => {
     if (started || destroyed) return
     started = true
-    window.clearInterval(startWatch)
+    stopStartWatch()
     // 默认配置会在引擎建菜单时应用一次；这里在核心与 shader 文件系统都就绪后再核对一次，
     // 同时压过历史版本可能留下的 EmulatorJS 通用 shader 设置。
     if (options.platform === 'gba') applyGbaVideoMode(win.EJS_emulator as EjsEmulator | undefined, gbaVideoMode)
@@ -4420,15 +4428,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     // 预下载（几十 MB 的 romset 在慢网上要几十秒）—— 不重置的话第一拍就判成「卡住了」，
     // 白白下完的 ROM 被扔掉重来
     beat()
-    startWatch = window.setInterval(() => {
+    const pollStart = () => {
       if (destroyed || started) {
-        window.clearInterval(startWatch)
+        stopStartWatch()
         return
       }
       const doc = iframe.contentDocument
       const msg = doc?.querySelector('.ejs_error_text')?.textContent?.trim()
       if (msg) {
-        window.clearInterval(startWatch)
+        stopStartWatch()
         reportEngineError(msg)
         return
       }
@@ -4451,7 +4459,21 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         ? MAME_CURRENT_STALL_MS
         : options.platform === 'arcade' ? ARCADE_CORE_START_STALL_MS : STALL_MS
       if (Date.now() - lastBeat > stallBudget) failLoad(fmt(rt.ejsStalled, { stage: lastStage || core }))
-    }, 400)
+    }
+    startWatchVisibility = () => {
+      if (document.visibilityState === 'hidden') {
+        window.clearInterval(startWatch)
+        startWatch = 0
+        return
+      }
+      // 移动端切后台数分钟后，浏览器会冻结轮询和 WASM 编译；隐藏时间不能吃掉核心的卡死预算。
+      beat()
+      if (!destroyed && !started && !loadFailed && !crashReported && !startWatch) {
+        startWatch = window.setInterval(pollStart, 400)
+      }
+    }
+    document.addEventListener('visibilitychange', startWatchVisibility)
+    if (document.visibilityState !== 'hidden') startWatch = window.setInterval(pollStart, 400)
   }
 
   iframe.addEventListener('load', () => {
@@ -5740,7 +5762,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     preparedPsxRange?.dispose()
     window.clearInterval(playersTimer)
     window.clearInterval(stateTimer)
-    window.clearInterval(startWatch)
+    stopStartWatch()
     window.clearInterval(saveFlushTimer)
     window.clearInterval(wfcSettingsTimer)
     // 退出前最后抄一次：刚在游戏里完成首次 WFC 建号就关页面时，ID 也不能丢。

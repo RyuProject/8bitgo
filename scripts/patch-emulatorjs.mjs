@@ -293,7 +293,7 @@ const ARRAYBUFFER_BLOB_TO =
  * arraybuffer 响应既不走流也不走 Blob，是最后一条与 fetch 读法不同的路。只对没有请求体（GET）且不是我们自己
  * 20 秒失速中止的下载回退一次；回退请求同样 20 秒无进度就中止，失败原样交回引擎（适配器按原规则处理）。
  */
-const BODY_READ_FALLBACK_TO =
+const BODY_READ_FALLBACK_FROM =
   'try{for(;;){__8bgArm();const{done:s,value:o}=await e.read();if(s)break;n.push(o),i+=o.length,r&&t&&r("downloading",Math.floor(i/t*100),i,t)}}catch(__8bgReadError){console.warn("[EJS Download] response stream read failed",__8bgReadError);' +
   'if(f.signal.aborted||o)throw __8bgReadError;clearTimeout(__8bgStall);console.warn("[EJS Download] 改用 XHR arraybuffer 重新下载："+S);' +
   'const __8bgBuf=await new Promise((__8bgOk,__8bgFail)=>{const __8bgX=new XMLHttpRequest;let __8bgXT=0;const __8bgXArm=()=>{clearTimeout(__8bgXT),__8bgXT=setTimeout(()=>{console.warn("[EJS Download] XHR 20 秒没有新数据，中止："+S),__8bgX.abort()},2e4)};' +
@@ -302,6 +302,16 @@ const BODY_READ_FALLBACK_TO =
   '__8bgX.onload=()=>{clearTimeout(__8bgXT),__8bgX.status>=200&&__8bgX.status<300&&__8bgX.response?__8bgOk(__8bgX.response):__8bgFail(new Error("XHR fallback HTTP "+__8bgX.status))};' +
   '__8bgX.onerror=()=>{clearTimeout(__8bgXT),__8bgFail(new Error("XHR fallback network error after "+__8bgReadError))};__8bgX.onabort=()=>{clearTimeout(__8bgXT),__8bgFail(new Error("XHR fallback stalled after "+__8bgReadError))};' +
   '__8bgXArm(),__8bgX.send()});console.warn("[EJS Download] XHR arraybuffer 重新下载成功："+S+" "+__8bgBuf.byteLength+" 字节");n=[new Uint8Array(__8bgBuf)],i=__8bgBuf.byteLength}finally{clearTimeout(__8bgStall)}'
+/**
+ * 2026-11-17 明星三缺一现场：Fetch 已读到 24.3MB 后断流，XHR 却拿到 121KB 的 HTTP 200，旧逻辑仍报成功，
+ * 把错误响应交给解压器后引擎报 EJS_Runtime is not defined。XHR 只有完整、非错误页的响应才可进入缓存。
+ * Content-Length 在 Content-Encoding 下是压缩长度，不能与浏览器解码后的 ArrayBuffer 长度硬比；此时至少
+ * 要保证不短于已由 Fetch 收到的字节。没有编码时，同时核对原 Response 或 XHR 声明长度。
+ */
+const BODY_READ_FALLBACK_TO = BODY_READ_FALLBACK_FROM.replace(
+  '__8bgX.onload=()=>{clearTimeout(__8bgXT),__8bgX.status>=200&&__8bgX.status<300&&__8bgX.response?__8bgOk(__8bgX.response):__8bgFail(new Error("XHR fallback HTTP "+__8bgX.status))};',
+  '__8bgX.onload=()=>{clearTimeout(__8bgXT);const __8bgBody=__8bgX.response,__8bgBytes=__8bgBody?.byteLength||0,__8bgXHeader=__8bgName=>__8bgX.getResponseHeader?.(__8bgName)||"",__8bgEncoding=(y.headers.get("Content-Encoding")||__8bgXHeader("Content-Encoding")||"").trim(),__8bgLength=__8bgEncoding?0:Number(t)||Number(__8bgXHeader("Content-Length"))||0,__8bgType=__8bgXHeader("Content-Type").trim(),__8bgTextError=/^(?:text/html|application/(?:json|xml))\\b/i.test(__8bgType);if(__8bgX.status===200&&__8bgBody&&__8bgBytes>0&&__8bgBytes>=i&&(!__8bgLength||__8bgBytes===__8bgLength)&&!__8bgTextError)__8bgOk(__8bgBody);else __8bgFail(new Error("XHR fallback incomplete response: HTTP "+__8bgX.status+", received "+__8bgBytes+" bytes, expected at least "+i+(__8bgLength?" / "+__8bgLength:"")+(__8bgTextError?" ("+__8bgType+")":"")))};'
+)
 const CACHE_PUT_FROM = '!1===u&&await this.storageCache.put(n),c(n)'
 const CACHE_PUT_TO =
   '!1===u&&await Promise.race([this.storageCache.put(n).catch(t=>console.warn("[EJS Cache] put failed",t)),' +
@@ -543,9 +553,10 @@ const GROUPS = [
   {
     name: '核心响应流读失败改走 XHR',
     patches: [[BODY_READ_DIAGNOSTICS_TO, BODY_READ_FALLBACK_TO]],
+    legacy: () => BODY_READ_FALLBACK_FROM,
     hint: [
       '在「核心响应直接拼接 Uint8Array」那段 catch 里：只对无请求体（o 为空）、非失速中止的下载，用 XHR arraybuffer 重下一次，',
-      '结果写回分块数组 n 与总长 i，后面的 Uint8Array 拼接照常。',
+      '校验响应状态、声明长度、已收字节下限与错误页类型后，才写回分块数组 n 与总长 i；截断响应不得进入 IndexedDB。',
     ],
   },
   {
@@ -622,8 +633,9 @@ const GROUPS = [
 
 // 被后面各节在原地改写过的补丁：值是所有更新的写法
 const SUPERSEDED = new Map([
-  [BODY_READ_TO, [BODY_READ_DIAGNOSTICS_TO, BODY_READ_FALLBACK_TO]],
-  [BODY_READ_DIAGNOSTICS_TO, [BODY_READ_FALLBACK_TO]],
+  [BODY_READ_TO, [BODY_READ_DIAGNOSTICS_TO, BODY_READ_FALLBACK_FROM, BODY_READ_FALLBACK_TO]],
+  [BODY_READ_DIAGNOSTICS_TO, [BODY_READ_FALLBACK_FROM, BODY_READ_FALLBACK_TO]],
+  [BODY_READ_FALLBACK_FROM, [BODY_READ_FALLBACK_TO]],
   [CACHE_GET_TO, [CACHE_GET_DEAD_TO, CACHE_GET_CLEAR_TO]],
   [CACHE_PUT_TO, [CACHE_PUT_DEAD_TO, CACHE_PUT_CLEAR_TO]],
   [CACHE_GET_DEAD_TO, [CACHE_GET_CLEAR_TO]],
