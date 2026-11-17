@@ -54,8 +54,23 @@ assert.match(source, /BRANCH="\$\{BRANCH:-\$\(git -C "\$REPO_DIR" symbolic-ref -
   assert.match(smoke, /SMOKE_TEST:-1/, '开局冒烟默认打开')
   assert.match(smoke, /smoke_once; SMOKE_RC=\$\?\n\s*if \[ "\$SMOKE_RC" = "1" \]; then[\s\S]*?smoke_once; SMOKE_RC=\$\?/, '失败先重试一次')
   assert.match(smoke, /SMOKE_ROLLBACK:-1[\s\S]*?rollback\n\s*exit 1/, '两次失败默认回滚')
-  assert.match(smoke, /2\) log "⚠️⚠️ 开局冒烟没有运行/, '没有 Chrome 时必须响亮地告警，而不是悄悄跳过')
+  assert.match(smoke, /2\)\n\s*log "⚠️⚠️ 开局冒烟没有运行[^\n]*\n\s*notify "⚠️ 部署完成，但开局冒烟没能运行"/, '没有 Chrome 时必须响亮地告警（日志 + 飞书），而不是悄悄跳过')
   assert.ok(source.indexOf('# 开局冒烟：') > source.indexOf('health_ok && ps2_headers_ok'), '冒烟在重启 + 健康检查之后')
+}
+{
+  // 2026-11-18：故障要能主动通知到人（飞书），部署与定时巡检互斥
+  assert.match(source, /notify\(\) \{[\s\S]*?notify-lark\.mjs[\s\S]*?\|\| true\n\}/, '通知失败绝不能让部署脚本失败')
+  assert.match(source, /die\(\)  \{ log "❌ \$\*"; notify "❌ 部署中止"/, '部署中止要通知')
+  const rollbackFn = source.slice(source.indexOf('rollback() {'), source.indexOf('# ───────────── 记录起点'))
+  for (const title of ['⚠️ 部署失败，已自动回滚', '🔴 回滚后线上仍不健康', '🔴 回滚失败，需人工介入']) {
+    assert.ok(rollbackFn.includes(title), `回滚结局「${title}」要通知`)
+  }
+  for (const reason of ['构建失败，且线上 dist 已被部分改写', '开局冒烟两次失败', '重启后健康检查或 PS2 隔离响应头未通过']) {
+    assert.ok(source.includes(`ROLLBACK_REASON="${reason}`), `回滚原因要带进通知：${reason}`)
+  }
+  assert.match(source, /flock -w 900 8 \|\| die/, '部署要拿部署锁（等定时巡检跑完）')
+  assert.ok(source.indexOf('flock -w 900 8') < source.indexOf('步骤 1/7'), '拿锁要在任何改动之前')
+  assert.match(source, /smoke-start\.mjs[^\n]*\) 2>&1 8>&- \|/, '冒烟的 Chrome 不能继承部署锁')
 }
 
 const tmp = mkdtempSync(join(tmpdir(), '8bitgo-redeploy-'))

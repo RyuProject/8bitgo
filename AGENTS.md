@@ -155,6 +155,15 @@ loader.js 的 `import()` 失败，NES / SFC / GBA / 街机 / PS1 …… 所有 E
 5. **现场**：loader.js 把 `[EJS] import <文件> failed: <异常>` 写进控制台，适配器在最终失败日志里带上它，诊断包一眼能分出
    「语法错误」和「网络断了」。这一行的措辞不能撞上 `FATAL_PHRASES`，否则会抢断回退流程（`test:ejs-failure-reasons` 守着）。
 
+6. **告警（2026-11-18）**：事故持续几个小时没人知道——聚集报警只发邮件，而生产上邮箱根本没配。现在统一发飞书机器人
+   （`server/src/lark-notify.js`，webhook 在 `server/.env` 的 `ALERT_LARK_WEBHOOK`，不进 git）：玩家启动失败按特征聚集
+   （`diag-alert.js`，邮件 / 飞书任一通道成功即算报出）、部署中止 / 自动回滚（`redeploy.sh`）、**每 15 分钟的公网开局巡检**
+   （`deploy/smoke-watch/`，systemd timer，走 `https://8bitgo.com` 真实路径，失败复核一次再报、持续故障 2 小时提醒一次、恢复再报）、
+   看门狗重启 / 停手。shell 统一调 `server/scripts/notify-lark.mjs`（`--dedupe` 去重，发不出去永远不拖垮调用方）。
+   部署与巡检共用 `/run/lock/8bitgo-deploy.lock`：部署中巡检跳过，巡检在跑时部署等它。生产机的 Chrome 是 Google 官方 `.deb`
+   （snap 版的私有 `/tmp` 读不到 DevTools 端口）；`smoke-start.mjs` 退出前必须等 Chrome 退出并删掉 profile（以前每次留 76MB）。
+   看门狗是装在 `/usr/local/bin` 的副本，改了 `deploy/watchdog/8bitgo-watchdog.sh` 要重新 install。
+
 **`npm test` 不能长期红着**：事故当天 main 上有 28 套测试是红的，本该报警的那套就混在里面。改了产品行为就同步改测试断言；
 测试红了先修，别带着红灯发布。
 

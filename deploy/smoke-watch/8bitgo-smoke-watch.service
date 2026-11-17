@@ -1,0 +1,15 @@
+[Unit]
+Description=8BitGo 定时开局巡检（无头 Chrome 把游戏跑到首帧，失败发飞书）
+Documentation=file:///var/www/8bitgo/deploy/smoke-watch/README.md
+After=network-online.target 8bitgo.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# 直接跑仓库里的脚本：部署更新后自动用新版；与 redeploy.sh 共用部署锁，部署中不会被替换
+ExecStart=/var/www/8bitgo/deploy/smoke-watch/8bitgo-smoke-watch.sh
+# 让线上服务优先：巡检是后台活
+Nice=10
+IOSchedulingClass=idle
+# 两款游戏各最多 150 秒，失败复核再来一轮，留足余量
+TimeoutStartSec=15min

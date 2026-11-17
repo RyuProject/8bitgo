@@ -128,17 +128,26 @@ async function launchChrome(chrome) {
   for (let i = 0; i < 100 && !existsSync(portFile); i++) await sleep(100)
   if (!existsSync(portFile)) {
     proc.kill('SIGKILL')
+    rmSync(profile, { recursive: true, force: true })
     throw new Error('Chrome 没有启动 DevTools（10 秒）')
   }
   const [port, path] = readFileSync(portFile, 'utf8').trim().split('\n')
   return {
     url: `ws://127.0.0.1:${port}${path}`,
-    close() {
-      proc.kill('SIGTERM')
-      setTimeout(() => {
-        try { proc.kill('SIGKILL') } catch { /* 已退出 */ }
-        rmSync(profile, { recursive: true, force: true })
-      }, 1000).unref()
+    /*
+      必须等 Chrome 真退出、再同步删 profile，然后调用方才能 process.exit。
+      以前是 unref 的 1 秒定时器：进程马上 exit，定时器根本不跑，每次在 /tmp 留下几十 MB 的 profile
+      （生产机实测 76MB）。定时巡检每 15 分钟一次的话，一天就是好几 GB，系统盘只有 20GB。
+    */
+    async close() {
+      const exited = proc.exitCode !== null || proc.signalCode !== null
+        ? Promise.resolve()
+        : new Promise((resolve) => proc.once('exit', resolve))
+      try { proc.kill('SIGTERM') } catch { /* 已退出 */ }
+      await Promise.race([exited, sleep(3000)])
+      try { proc.kill('SIGKILL') } catch { /* 已退出 */ }
+      await Promise.race([exited, sleep(2000)])
+      rmSync(profile, { recursive: true, force: true })
     },
   }
 }
@@ -227,7 +236,7 @@ async function main() {
     }
   } finally {
     cdp.close()
-    browser.close()
+    await browser.close()
   }
   process.exit(failed ? 1 : 0)
 }

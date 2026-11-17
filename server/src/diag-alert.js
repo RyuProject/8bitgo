@@ -7,7 +7,8 @@
  * **不同访问**就发一封邮件给运营。
  *
  * 约束：
- * - 没配 DIAG_ALERT_EMAIL 就什么都不做（也不查库）；
+ * - 邮件（DIAG_ALERT_EMAIL）和飞书机器人（ALERT_LARK_WEBHOOK，lark-notify.js）两个通道，都没配就什么都不做（也不查库）。
+ *   2026-11-17 全站 EmulatorJS 事故时生产上没配邮箱，这条报警一直是关着的，故障几个小时没人知道；
  * - 只看不同 visit_id 数：一个玩家狂点重试不该触发报警；
  * - 每个特征最多每 DIAG_ALERT_COOLDOWN_HOURS 小时报一次。冷却记在 site_settings
  *   （`diag.alert.<特征>` = 上次发送的毫秒时间戳），用一条带条件的 UPSERT 抢占：
@@ -17,6 +18,7 @@
  * - 邮件里只有已经脱敏入库的东西（特征文本、游戏 slug、浏览器 / 系统归类），不含 IP、UA 原文。
  */
 import { query } from './db.js'
+import { larkConfig, sendLark } from './lark-notify.js'
 import { mailProvider, sendRawMail } from './mail.js'
 
 const num = (v, d) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : d)
@@ -25,6 +27,7 @@ export function alertConfig(env = process.env) {
   const to = String(env.DIAG_ALERT_EMAIL || '').trim()
   return {
     to: /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to) ? to : '',
+    lark: larkConfig(env),
     minVisits: num(env.DIAG_ALERT_MIN_VISITS, 10),
     windowMinutes: num(env.DIAG_ALERT_WINDOW_MIN, 60),
     cooldownMs: num(env.DIAG_ALERT_COOLDOWN_HOURS, 6) * 3_600_000,
@@ -73,9 +76,11 @@ export function renderAlert(signature, summary, cfg) {
  */
 export async function maybeAlertSignature(signature, deps = {}) {
   const cfg = deps.config ?? alertConfig()
-  if (!cfg.to || !/^[\da-f]{16}$/.test(String(signature ?? ''))) return 'disabled'
+  const larkOn = Boolean(cfg.lark?.webhook)
+  if ((!cfg.to && !larkOn) || !/^[\da-f]{16}$/.test(String(signature ?? ''))) return 'disabled'
   const run = deps.query ?? query
   const send = deps.send ?? sendRawMail
+  const sendIm = deps.sendLark ?? sendLark
   const now = deps.now ?? Date.now()
   const checked = lastChecked.get(signature)
   if (checked && now - checked < CHECK_THROTTLE_MS) return 'throttled'
@@ -106,10 +111,21 @@ export async function maybeAlertSignature(signature, deps = {}) {
       envs: tally((r) => `${r.browser} / ${r.os}`),
     }
     const { subject, text } = renderAlert(signature, summary, cfg)
-    // 配了 Resend 就固定走它（纯文本告警不需要 SUBMIT_MAIL_PROVIDER 那条 SMTP 附件通路）。
-    // 通路判定只问 mail.js，不在这里另读 RESEND_API_KEY：后台配置页按「实际读取位置」列这个密钥。
-    await send({ to: cfg.to, subject, text, provider: mailProvider() === 'resend' ? 'resend' : undefined })
-    console.log(`[diag-alert] 已报警 ${signature}（${summary.visits} 个访问）`)
+    // 两个通道各发各的：一个失败不拖累另一个；全都失败才算这次没报出去（下面会撤销冷却）。
+    const attempts = []
+    if (cfg.to) {
+      // 配了 Resend 就固定走它（纯文本告警不需要 SUBMIT_MAIL_PROVIDER 那条 SMTP 附件通路）。
+      // 通路判定只问 mail.js，不在这里另读 RESEND_API_KEY：后台配置页按「实际读取位置」列这个密钥。
+      attempts.push(['邮件', send({ to: cfg.to, subject, text, provider: mailProvider() === 'resend' ? 'resend' : undefined })])
+    }
+    if (larkOn) attempts.push(['飞书', sendIm({ title: subject.replace(/^\[8BitGo\]\s*/, ''), text }, { config: cfg.lark })])
+    const results = await Promise.allSettled(attempts.map(([, p]) => p))
+    const sent = attempts.filter((_, i) => results[i].status === 'fulfilled').map(([name]) => name)
+    results.forEach((r, i) => {
+      if (r.status === 'rejected') console.warn(`[diag-alert] ${attempts[i][0]}发送失败：`, r.reason?.message || r.reason)
+    })
+    if (!sent.length) throw new Error('所有告警通道都发送失败')
+    console.log(`[diag-alert] 已报警 ${signature}（${summary.visits} 个访问，通道：${sent.join('、')}）`)
     // 冷却记录只需要活过冷却期；顺手清掉一周前的，site_settings 不会被特征越攒越多
     await run(`DELETE FROM site_settings WHERE name LIKE 'diag.alert.%' AND updated_at < NOW() - INTERVAL 7 DAY`).catch(() => {})
     return 'sent'

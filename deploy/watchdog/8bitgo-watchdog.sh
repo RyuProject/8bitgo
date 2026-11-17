@@ -43,6 +43,10 @@ FRONT_UNIT="${FRONT_UNIT:-}"         # 例如 nginx.service，留空则自动探
 CLIENT_CERT="${CLIENT_CERT:-}"
 CLIENT_KEY="${CLIENT_KEY:-}"
 
+# 飞书告警：看门狗动手 / 救不回来 / 停手时发（webhook 在 server/.env 的 ALERT_LARK_WEBHOOK）。
+# 本脚本是装到 /usr/local/bin 的副本，通知脚本走仓库里的那份；找不到就只写日志。
+NOTIFY_SCRIPT="${NOTIFY_SCRIPT:-/var/www/8bitgo/server/scripts/notify-lark.mjs}"
+
 DRY_RUN=0
 STATUS_ONLY=0
 for a in "$@"; do
@@ -68,6 +72,16 @@ log() {
     tail -c $((LOG_MAX_BYTES / 2)) "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
   fi
   echo "$line" >> "$LOG" 2>/dev/null
+}
+
+# $1 = 去重 key  $2 = 冷却秒数  $3 = 标题  $4 = 正文。看门狗每分钟一跑，必须去重，否则故障期间每分钟一条
+notify() {
+  [ "$DRY_RUN" = 1 ] && return 0
+  [ -f "$NOTIFY_SCRIPT" ] || return 0
+  local node_bin; node_bin="$(command -v node 2>/dev/null || true)"
+  [ -n "$node_bin" ] || for c in /usr/local/bin/node /usr/bin/node; do [ -x "$c" ] && { node_bin="$c"; break; }; done
+  [ -n "$node_bin" ] || { log "⚠️ 找不到 node，告警没发出去"; return 0; }
+  "$node_bin" "$NOTIFY_SCRIPT" --dedupe "watchdog-$1" --cooldown "$2" --title "$3" --text "$4" >> "$LOG" 2>&1 || true
 }
 
 # 同一时刻只允许一个实例（重启期间探测必然失败，重入会连环重启）
@@ -200,6 +214,8 @@ can_restart() {  # $1 = 层名
   [ "$d" != "$day" ] && count=0
   if [ "$count" -ge "$MAX_PER_DAY" ]; then
     log "[$layer] ⚠️ 今天已经重启 $count 次（上限 $MAX_PER_DAY），停手。这不是抖动，是真故障，去查根因"
+    notify "$layer-maxed" 21600 "🔴 看门狗停手：$layer 今天已重启 $count 次" "$DOMAIN 的 $layer 今天已经被看门狗重启 $count 次（上限 $MAX_PER_DAY），不再自动重启。这不是抖动，是真故障，需要人工排查。
+日志：$LOG"
     return 1
   fi
   return 0
@@ -227,6 +243,8 @@ restart_front() {
     if ! nginx -t >/dev/null 2>&1; then
       log "[front] ⚠️ nginx -t 不过，**不敢重启**（重启会彻底起不来）。配置错在："
       nginx -t 2>&1 | sed 's/^/          /' | tee -a "$LOG"
+      notify front-nginx-t 3600 "🔴 前置代理故障且 nginx 配置有错，看门狗不敢重启" "$DOMAIN 的 TLS 探测失败（$TLS_DETAIL），但 nginx -t 不通过，重启会彻底起不来。需要人工修配置。
+$(nginx -t 2>&1 | tail -3)"
       return 1
     fi
   fi
@@ -235,14 +253,21 @@ restart_front() {
   systemctl reload "$unit" 2>&1 | sed 's/^/          /' | tee -a "$LOG"
   sleep 3
   if probe_tls; then
-    mark_restart front; log "[front] ✅ reload 后 TLS 恢复"; return 0
+    mark_restart front; log "[front] ✅ reload 后 TLS 恢复"
+    notify front-recovered 1800 "⚠️ 前置代理故障，看门狗 reload 后已恢复" "$DOMAIN 的 TLS 探测连续失败（$TLS_DETAIL），reload $unit 后恢复。
+日志：$LOG"
+    return 0
   fi
   log "[front] reload 没救回来，改 restart"
   systemctl restart "$unit" 2>&1 | sed 's/^/          /' | tee -a "$LOG"
   mark_restart front
   sleep 5
-  probe_tls && { log "[front] ✅ restart 后 TLS 恢复"; return 0; }
+  probe_tls && { log "[front] ✅ restart 后 TLS 恢复"; notify front-recovered 1800 "⚠️ 前置代理故障，看门狗重启后已恢复" "$DOMAIN 的 TLS 探测连续失败，restart $unit 后恢复。
+日志：$LOG"; return 0; }
   log "[front] ❌ restart 后仍然失败：$TLS_DETAIL"
+  notify front-down 1800 "🔴 前置代理重启后仍然失败" "$DOMAIN 的 TLS 探测失败，restart $unit 也没救回来：$TLS_DETAIL
+源站证书：$(cert_note)
+日志：$LOG"
   return 1
 }
 
@@ -262,9 +287,16 @@ restart_backend() {
 
   for i in 1 2 3 4 5 6 7 8 9 10; do
     sleep 3
-    probe_backend && { log "[backend] ✅ 起来了（等了 $((i * 3))s）"; return 0; }
+    probe_backend && {
+      log "[backend] ✅ 起来了（等了 $((i * 3))s）"
+      notify backend-recovered 1800 "⚠️ 后端挂了，看门狗重启后已恢复" "$DOMAIN 后端（:$BACKEND_PORT$HEALTH_PATH）连续 $FAIL_STREAK 次以上探测失败，看门狗重启（$how）后 $((i * 3)) 秒恢复。
+日志：$LOG"
+      return 0
+    }
   done
   log "[backend] ❌ 30s 内没起来：$BACKEND_DETAIL"
+  notify backend-down 1800 "🔴 后端重启后 30 秒仍没起来，站点可能整站不可用" "$DOMAIN 后端（:$BACKEND_PORT$HEALTH_PATH）重启（$how）后仍失败：$BACKEND_DETAIL
+日志：$LOG；服务日志：journalctl -u 8bitgo -n 100"
   return 1
 }
 

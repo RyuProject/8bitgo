@@ -280,6 +280,7 @@
     "test:redeploy": "node scripts/test-redeploy.mjs",
     "test:jsdos-asset-lock": "node scripts/test-jsdos-asset-lock.mjs",
     "test:smoke-start": "node scripts/test-smoke-start.mjs",
+    "test:smoke-watch": "node scripts/test-smoke-watch.mjs",
     "smoke:start": "node scripts/smoke-start.mjs",
     "test:translator-dom-guard": "node --experimental-strip-types scripts/test-translator-dom-guard.mjs",
     "test:cname-optimizer": "node scripts/test-cname-optimizer.mjs"

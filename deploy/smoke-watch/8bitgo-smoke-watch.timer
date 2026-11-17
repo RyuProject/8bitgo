@@ -1,0 +1,11 @@
+[Unit]
+Description=每 15 分钟跑一次 8BitGo 开局巡检
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+RandomizedDelaySec=60
+Unit=8bitgo-smoke-watch.service
+
+[Install]
+WantedBy=timers.target
