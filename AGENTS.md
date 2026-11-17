@@ -152,6 +152,10 @@ loader.js 的 `import()` 失败，NES / SFC / GBA / 街机 / PS1 …… 所有 E
    重启后默认跑 `smoke-start.mjs`（一款 NES + 一款 CPS1 跑到首帧），失败重试一次，仍失败回滚。
    **生产机必须装 Chromium**，否则冒烟只能告警跳过（日志里是 `⚠️⚠️ 开局冒烟没有运行`）。确认是 CDN / ROM 故障而非代码问题时
    用 `SMOKE_TEST=0` 强行发布修复。回滚改为 `git reset --hard`（留在分支上），分支名用 `symbolic-ref`，游离 HEAD 不再污染下次部署。
+   ⚠️ 退出码 2 也包括「脚本自身出错」，不只是没有 Chrome。2026-11-18 生产两次部署：两款游戏都到了首帧，随后删 Chrome profile
+   报 `ENOTEMPTY`（渲染 / GPU 子进程还在写），退出码 2 → 记成「冒烟没有运行」、发飞书告警、/tmp 每次留下约 30MB。
+   现在 Chrome 以 `detached` 自成进程组、关闭时整组发信号，删 profile 带重试且只告警不抛错，定时巡检再兜底清 30 分钟前的残留。
+   收尾的任何错误都不能改冒烟结论（`test:smoke-start` 守着）。
 5. **现场**：loader.js 把 `[EJS] import <文件> failed: <异常>` 写进控制台，适配器在最终失败日志里带上它，诊断包一眼能分出
    「语法错误」和「网络断了」。这一行的措辞不能撞上 `FATAL_PHRASES`，否则会抢断回退流程（`test:ejs-failure-reasons` 守着）。
 

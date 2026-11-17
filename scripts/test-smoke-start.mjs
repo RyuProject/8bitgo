@@ -24,6 +24,21 @@ assert.match(src, /urlPattern: '\*\/api\/games\/\*\/startup\*'/, '启动漏斗�
 assert.match(src, /urlPattern: '\*\/api\/games\/\*\/play\*'/, '游玩次数也不能被冒烟刷高')
 assert.match(src, /Fetch\.fulfillRequest/)
 
+/*
+  收尾不能改写冒烟结论（2026-11-18 生产两次部署：两款游戏都到了首帧，删 Chrome profile 报 ENOTEMPTY，
+  退出码变成 2，redeploy 记成「冒烟没有运行」、发飞书告警、/tmp 留下 30MB）。
+*/
+const launch = src.slice(src.indexOf('async function launchChrome'), src.indexOf('async function smokeOne'))
+assert.match(launch, /\{ stdio: 'ignore', detached: true \}/, 'Chrome 必须 detached 自成进程组，整组才能一起停')
+assert.match(launch, /process\.kill\(-proc\.pid, signal\)/, '关 Chrome 时按进程组发信号，渲染 / GPU 子进程一起停')
+const remove = launch.slice(launch.indexOf('const removeProfile'), launch.indexOf('const portFile'))
+assert.match(remove, /try \{\s*rmSync\(profile, \{[^}]*maxRetries: \d+[^}]*\}\)\s*\} catch/, '删 profile 要带重试，并且吞掉错误')
+const close = launch.slice(launch.indexOf('async close()'))
+assert.doesNotMatch(close, /^\s*rmSync\(/m, '关 Chrome 时不能直接 rmSync：抛错会冒到 main().catch 变成退出码 2')
+assert.match(close, /killGroup\('SIGKILL'\)[\s\S]*removeProfile\(\)/, '整组 SIGKILL 之后再删目录')
+const watch = readFileSync(new URL('../deploy/smoke-watch/8bitgo-smoke-watch.sh', import.meta.url), 'utf8')
+assert.match(watch, /-name '8bitgo-smoke-\*' -mmin \+\d+ -exec rm -rf/, '定时巡检兜底清掉以前没删掉的 profile')
+
 const redeploy = readFileSync(new URL('../deploy/redeploy.sh', import.meta.url), 'utf8')
 // 2026-11-17 全站 EmulatorJS 事故后改成默认打开、失败重试一次、仍失败回滚（健康检查 200 拦不住「游戏全打不开」）。
 // 细节断言在 test-redeploy.mjs；这里只钉住与本脚本退出码的约定：2 = 环境不满足，只告警不回滚。
