@@ -1,4 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react'
+import { importWithRetry, lazyChunkFile, tagLazyFailure } from '@/services/moduleLinkRecovery'
 import { useNavigate } from 'react-router-dom'
 import type { ArcadeButtonCount, DosBackend, DosWindowsVersion, FlashControls, Game, GenreId, Platform, PlatformId } from '@/types'
 import { platformMap } from '@/data/platforms'
@@ -131,7 +132,16 @@ type Channel = 'p2p' | 'cloud'
  * 桌面端以及 EmulatorJS 自带触控的游戏不应为它下载一整套按键/改键 UI。
  */
 const loadTouchPad = () => import('./TouchPad')
-const LazyTouchPad = lazy(() => loadTouchPad().then(({ TouchPad }) => ({ default: TouchPad })))
+// 和路由 chunk 一样就地重试、失败时点名文件（2026-11-17 诊断包 #761 复查：触屏会话正是移动端微信 / Safari，
+// 这个 chunk 取不下来时以前直接抛进错误边界，既不重试、兜底页也不知道该核对哪个文件）。
+// 不走 lazyNamed：那会顺带拨动顶部的页面加载进度条，而这里只是播放器里的一块控件。
+const touchPadChunk = lazyChunkFile(loadTouchPad)
+const LazyTouchPad = lazy(() => importWithRetry(loadTouchPad, touchPadChunk, import.meta.url)
+  .catch((error: unknown) => {
+    tagLazyFailure(error, touchPadChunk, 'TouchPad')
+    throw error
+  })
+  .then(({ TouchPad }) => ({ default: TouchPad })))
 
 /**
  * 大到值得在加载界面上专门说一句「本局需下载 XXX」的门槛。

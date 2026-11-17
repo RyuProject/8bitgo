@@ -282,3 +282,107 @@ export function summarizeRepair(result: AssetRepairResult | null, load?: RepairL
   parts.push(`${result.ms}ms`)
   return parts.join('；')
 }
+
+/* ---------- 懒加载就地重试 ---------- */
+
+/**
+ * 网络层导入失败（chunk 取不下来）才值得重试；SyntaxError（字节坏了、缺导出）重试同一份缓存没用，交给修复脚本。
+ * 措辞覆盖 Chrome（Failed to fetch dynamically imported module）、Firefox（error loading dynamically imported module）、
+ * Safari（Importing a module script failed）。
+ */
+const RETRYABLE_IMPORT = /Failed to fetch dynamically imported module|error loading dynamically imported module|Importing a module script failed|Loading chunk|ChunkLoadError|Unable to preload|NetworkError|Load failed/i
+
+export function retryableImportError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false
+  const err = error as { name?: unknown; message?: unknown }
+  if (err.name === 'SyntaxError') return false
+  return RETRYABLE_IMPORT.test(`${String(err.name ?? '')}: ${String(err.message ?? '')}`)
+}
+
+/** 重试间隔：第二次立刻小退避，第三次换带查询串的地址（绕开浏览器 / 边缘按 URL 记住的失败）。 */
+export const LAZY_RETRY_DELAYS_MS: readonly number[] = [500, 1800]
+/** 离线时最多等多久「恢复联网」再重试；等不到也照样试一次，交给错误边界。 */
+const OFFLINE_WAIT_MS = 20_000
+
+export interface RetryEnv {
+  sleep: (ms: number) => Promise<void>
+  /** 浏览器明确报告离线时，等 online 事件（或超时） */
+  waitOnline: (maxMs: number) => Promise<void>
+  online: () => boolean
+  /** 按 URL 导入（第三次尝试用带查询串的地址） */
+  importUrl: (url: string) => Promise<unknown>
+}
+
+function defaultRetryEnv(): RetryEnv {
+  return {
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    online: () => {
+      try {
+        return typeof navigator === 'undefined' || navigator.onLine !== false
+      } catch {
+        return true
+      }
+    },
+    waitOnline: (maxMs) => new Promise<void>((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const done = () => {
+        clearTimeout(timer)
+        window.removeEventListener('online', done)
+        resolve()
+      }
+      timer = setTimeout(done, maxMs)
+      window.addEventListener('online', done)
+    }),
+    importUrl: (url) => import(/* @vite-ignore */ url),
+  }
+}
+
+/**
+ * 带查询串的 chunk 地址：与入口同目录（chunk 之间都是 `./x.js` 相对引用，查询串不会传给它的依赖，
+ * 依赖仍按原地址命中同一个模块实例，不会出现两份 React）。
+ */
+export function bustedChunkUrl(file: string, base: string, nonce: string): string | null {
+  if (!/^[\w.-]+\.js$/.test(file) || !base) return null
+  try {
+    const url = new URL(`./${file}`, base)
+    url.searchParams.set('chunk-retry', nonce)
+    return url.href
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 懒加载就地重试（2026-11-16 诊断包 #872：iOS Safari《拳皇2001》详情页 GameDetailPage chunk
+ * `Importing a module script failed`，紧接着同主机的修复脚本 1ms 就加载失败 —— 那一刻整台设备连不上网，
+ * 页面本身来自缓存）。以前懒加载一失败就直接进错误边界、刷新一次，网络还没恢复，第二次照样失败停在兜底页。
+ *
+ * 现在先在页面里重试：小退避后再调一次原加载函数（它连同 CSS / 依赖预加载一起重走）；仍失败就换带查询串的地址，
+ * 绕开浏览器模块表、HTTP 缓存或边缘按完整 URL 记住的失败。浏览器明确报告离线时先等恢复联网再试。
+ * 全部失败才把最后一个错误抛给错误边界（那里还有修复脚本和整页刷新）。
+ */
+export async function importWithRetry<T>(
+  load: () => Promise<T>,
+  file: string | null,
+  base: string,
+  env: RetryEnv = defaultRetryEnv(),
+): Promise<T> {
+  let lastError: unknown
+  const attempts = LAZY_RETRY_DELAYS_MS.length + 1
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (attempt > 0) {
+      if (!env.online()) await env.waitOnline(OFFLINE_WAIT_MS)
+      else await env.sleep(LAZY_RETRY_DELAYS_MS[attempt - 1])
+    }
+    try {
+      const busted = attempt === attempts - 1 && file
+        ? bustedChunkUrl(file, base, `${Date.now().toString(36)}${attempt}`)
+        : null
+      return busted ? await (env.importUrl(busted) as Promise<T>) : await load()
+    } catch (error) {
+      lastError = error
+      if (!retryableImportError(error)) break
+    }
+  }
+  throw lastError
+}

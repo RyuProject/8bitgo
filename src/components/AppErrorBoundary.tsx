@@ -38,6 +38,22 @@ function claimReload(prefix: string): boolean {
   }
 }
 
+function browserOffline(): boolean {
+  try {
+    return typeof navigator !== 'undefined' && navigator.onLine === false
+  } catch {
+    return false
+  }
+}
+
+function reloadWhenOnline(): void {
+  const reload = () => {
+    if (onOriginAssetsPage()) location.replace(originAssetsUrl(location))
+    else location.reload()
+  }
+  window.addEventListener('online', reload, { once: true })
+}
+
 function reloadOnce(): boolean {
   if (!claimReload(CHUNK_RELOAD_PREFIX)) return false
   // 退到主站资源之后再刷新也留在主站：普通 reload 会回到地址栏里那份（已去掉参数的）EdgeOne 页面
@@ -77,6 +93,12 @@ function recoverBrokenAsset(error: unknown, info: ErrorInfo): boolean {
   const stale = STALE_CHUNK.test(message)
   const syntax = error instanceof Error && error.name === 'SyntaxError'
   if (!stale && !syntax) return false
+  // 设备离线（诊断包 #872 那种：chunk 和修复脚本都 1ms 失败）：现在核对、刷新都只会再失败一次，
+  // 还会白白用掉一分钟一次的自动刷新。等恢复联网再刷新，不算故障、不上报。
+  if (stale && browserOffline()) {
+    reloadWhenOnline()
+    return true
+  }
   const entrySrc = currentEntrySrc()
   const failure = moduleLinkFailure(message)
   const lazy = lazyFailure(error)

@@ -1,7 +1,7 @@
 import { Suspense, lazy, type ComponentType, type ReactNode } from 'react'
 import { trackPageLoad } from '@/services/progress'
 import { PageSkeleton } from '@/components/ui/PageSkeleton'
-import { lazyChunkFile, tagLazyFailure } from '@/services/moduleLinkRecovery'
+import { importWithRetry, lazyChunkFile, tagLazyFailure } from '@/services/moduleLinkRecovery'
 
 /**
  * 按需加载一个具名导出的组件。
@@ -12,14 +12,18 @@ import { lazyChunkFile, tagLazyFailure } from '@/services/moduleLinkRecovery'
  *
  * 失败时把 chunk 文件名挂在错误上：Safari 的 `Importing a module script failed` 不带地址，
  * 兜底页（AppErrorBoundary）靠它点名要核对的文件（2026-11-16 诊断包 #761）。
+ *
+ * 网络层失败先就地重试两次（第二次换带查询串的地址、离线时等恢复联网），见 importWithRetry
+ * （2026-11-16 诊断包 #872）。chunk 与本模块同在 /assets/ 目录，所以用 import.meta.url 当基准。
  */
 export function lazyNamed<K extends string, P extends object>(
   load: () => Promise<Record<K, ComponentType<P>>>,
   name: K,
 ) {
-  return lazy(() => trackPageLoad(load())
+  const file = lazyChunkFile(load)
+  return lazy(() => trackPageLoad(importWithRetry(load, file, import.meta.url))
     .catch((error: unknown) => {
-      tagLazyFailure(error, lazyChunkFile(load), name)
+      tagLazyFailure(error, file, name)
       throw error
     })
     .then((m) => ({ default: m[name] })))

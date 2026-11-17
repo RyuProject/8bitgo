@@ -35,6 +35,9 @@ import {
   resolveChunkUrl,
   summarizeRepair,
   tagLazyFailure,
+  importWithRetry,
+  retryableImportError,
+  bustedChunkUrl,
 } from '../src/services/moduleLinkRecovery.ts'
 
 // express 装在 server/ 下，根目录没有
@@ -568,7 +571,11 @@ assert.equal(parseRepairRequest({ build: '../../etc', files: ['a.js'] }), null)
   assert.match(boundary, /if \(onOriginAssetsPage\(\)\) location\.replace\(originAssetsUrl\(location\)\)/, '退到主站之后再刷新也留在主站')
 
   const lazy = read('src/routes/lazy.tsx')
-  assert.match(lazy, /tagLazyFailure\(error, lazyChunkFile\(load\), name\)/, 'lazyNamed 失败时把 chunk 文件名挂在错误上')
+  assert.match(lazy, /const file = lazyChunkFile\(load\)/)
+  assert.match(lazy, /tagLazyFailure\(error, file, name\)/, 'lazyNamed 失败时把 chunk 文件名挂在错误上')
+  assert.match(lazy, /importWithRetry\(load, file, import\.meta\.url\)/, '诊断包 #872：懒加载先就地重试')
+  // 诊断包 #872：离线时不刷新、不上报，等恢复联网
+  assert.match(boundary, /if \(stale && browserOffline\(\)\) \{\s*reloadWhenOnline\(\)\s*return true/)
 
   assert.deepEqual(moduleLinkFailure("SyntaxError: The requested module './live-Cqhc9j-k.js' does not provide an export named 'x'"), { specifier: './live-Cqhc9j-k.js', exportName: 'x' })
   assert.deepEqual(moduleLinkFailure('SyntaxError: import not found: x'), { specifier: null, exportName: 'x' })
@@ -630,6 +637,83 @@ assert.equal(parseRepairRequest({ build: '../../etc', files: ['a.js'] }), null)
   }
   assert.match(read('index.html'), /asset-repair-v4\.js/, '首页钩子加载 v4')
   assert.doesNotMatch(read('index.html'), /asset-repair-v2\.js/)
+}
+
+/* ---------- 懒加载就地重试（诊断包 #872） ---------- */
+{
+  const netErr = () => Object.assign(new TypeError('Importing a module script failed.'))
+  assert.equal(retryableImportError(netErr()), true)
+  assert.equal(retryableImportError(new TypeError('Failed to fetch dynamically imported module: x')), true)
+  assert.equal(retryableImportError(new SyntaxError("The requested module './a.js' does not provide an export named 'x'")), false, '字节坏了不重试')
+  assert.equal(retryableImportError(new Error('boom')), false)
+  assert.equal(bustedChunkUrl('GameDetailPage-a.js', 'https://8bitgo.com/assets/index-x.js', 'n1'), 'https://8bitgo.com/assets/GameDetailPage-a.js?chunk-retry=n1')
+  assert.equal(bustedChunkUrl('../x.js', 'https://8bitgo.com/assets/index-x.js', 'n1'), null)
+
+  const makeEnv = (onlineSeq = []) => {
+    const log = []
+    return {
+      log,
+      env: {
+        sleep: async (ms) => { log.push(`sleep ${ms}`) },
+        waitOnline: async () => { log.push('waitOnline') },
+        online: () => (onlineSeq.length ? onlineSeq.shift() : true),
+        importUrl: async (url) => { log.push(`url ${url}`); return { ok: 'busted' } },
+      },
+    }
+  }
+  // 第二次就好了
+  {
+    let n = 0
+    const { env, log } = makeEnv()
+    const result = await importWithRetry(async () => { if (n++ === 0) throw netErr(); return { ok: 'load' } }, 'G-a.js', ENTRY, env)
+    assert.deepEqual(result, { ok: 'load' })
+    assert.deepEqual(log, ['sleep 500'])
+  }
+  // 原地址两次都失败 → 第三次换带查询串的地址
+  {
+    const { env, log } = makeEnv()
+    const result = await importWithRetry(async () => { throw netErr() }, 'G-a.js', ENTRY, env)
+    assert.deepEqual(result, { ok: 'busted' })
+    assert.equal(log.length, 3)
+    assert.match(log[2], /^url https:\/\/8bitgo\.com\/assets\/G-a\.js\?chunk-retry=/)
+  }
+  // 离线：先等恢复联网
+  {
+    let n = 0
+    const { env, log } = makeEnv([false])
+    await importWithRetry(async () => { if (n++ === 0) throw netErr(); return 1 }, null, ENTRY, env)
+    assert.deepEqual(log, ['waitOnline'])
+  }
+  // 认不出文件名（开发环境）：三次都走原加载函数，最后抛出原错误
+  {
+    let n = 0
+    const { env } = makeEnv()
+    await assert.rejects(importWithRetry(async () => { n++; throw netErr() }, null, ENTRY, env), /Importing a module script failed/)
+    assert.equal(n, 3)
+  }
+  // SyntaxError 不重试
+  {
+    let n = 0
+    const { env } = makeEnv()
+    await assert.rejects(importWithRetry(async () => { n++; throw new SyntaxError('bad') }, 'G-a.js', ENTRY, env), SyntaxError)
+    assert.equal(n, 1)
+  }
+}
+
+// 所有渲染路径上的 React.lazy 都必须就地重试并点名 chunk（诊断包 #761 复查：播放器的触屏手柄 chunk 曾漏掉）
+{
+  const { readdirSync, statSync } = await import('node:fs')
+  const walk = (dir) => readdirSync(dir).flatMap((n) => {
+    const p = path.join(dir, n)
+    return statSync(p).isDirectory() ? walk(p) : /\.tsx?$/.test(n) ? [p] : []
+  })
+  const srcDir = new URL('../src', import.meta.url).pathname
+  for (const file of walk(srcDir)) {
+    const text = readFileSync(file, 'utf8')
+    for (const m of text.matchAll(/(?<![\w.])lazy\(\s*\(\)\s*=>([^\n]*)/g)) {
+      assert.match(m[1], /importWithRetry\(/, `${path.relative(srcDir, file)}：lazy() 要经 importWithRetry（或改用 lazyNamed）`)
+    }
+  }
 }
 
 console.log('✔ 坏 chunk 自修复：构建清单、内联钩子（加载经过）、去 __assets 参数、缓存坏 / 边缘坏 / 源站坏 / EdgeOne 取不下来、清边缘接口、兜底页接线')

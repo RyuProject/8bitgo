@@ -3763,6 +3763,9 @@ PK / TH 两份现场：`The requested module './live-Cqhc9j-k.js' does not provi
 - v3 首页钩子对主站 URL 去重后只尝试一次；修复脚本本身也失败时，React 兜底页只能刷新同一份页面，仍会拿到原来的缓存副本。
 - 首页钩子现在先试入口资源域、再试主站；两条都失败时，对主站地址和入口地址各追加一次随机查询串重试。此逻辑不依赖外部修复脚本，详情页、其它懒加载页和播放器共享同一路径。
 - 查询串重试仍失败时保留原错误兜底与诊断记录；它可绕过按完整 URL 缓存的失败副本，但无法修复源站持续不可达或浏览器策略拦截。
+- 复查（2026-11-17）：#872 的构建是 `index-LISdmsjV.js`（v3 钩子），chunk 与修复脚本都在 1ms 内失败、且一分钟内的自动刷新已用掉（才会上报），最像设备那一刻整体连不上网，页面来自缓存。旧 `lazyNamed` 一失败就进错误边界，刷新时网络还没回来，第二次照样失败。
+- 现在 `lazyNamed` 经 `importWithRetry`（`moduleLinkRecovery.ts`）就地重试：0.5 秒后再调原加载函数（连同依赖预加载），1.8 秒后换 `?chunk-retry=<随机>` 地址绕开按完整 URL 记住的失败；`navigator.onLine === false` 时先等 `online`（最多 20 秒）。SyntaxError 不重试，仍交修复脚本。查询串只加在顶层 chunk 上，它的 `./x.js` 依赖按原地址解析，不会出现两份 React。
+- 错误边界在离线时不核对、不刷新、不上报，挂 `online` 一次性监听后再刷新，不占用一分钟一次的自动刷新名额。回归：`npm run test:asset-repair`（含重试顺序、离线等待、SyntaxError 不重试）。本地用前两次回 503 的静态服务实测：第三次请求带 `?chunk-retry=` 成功，页面正常渲染，未进兜底页。
 
 **诊断包 #761（微信 iOS 27，CN，《超级玛丽》详情页，`TypeError: Importing a module script failed.`）：旧 build，但根因当时没修。**
 
@@ -3804,6 +3807,7 @@ PK / TH 两份现场：`The requested module './live-Cqhc9j-k.js' does not provi
   - 只坏第一次 → 普通刷新恢复；
   - 两边都坏 → 两次自动刷新后停在兜底页，两份上报都带经过。
   - 微信 iOS 本身没有验证。
+- 2026-11-17 复查：播放器触屏手柄 `LazyTouchPad` 还是裸 `lazy()`（移动端会话必下），没有就地重试、也不点名 chunk。现已改走 `importWithRetry` + `tagLazyFailure`；`test:asset-repair` 扫描 `src/` 里所有 `lazy(() => …)`，不经 `importWithRetry`（或 `lazyNamed`）就失败。
 
 ## 3. 常用命令
 
