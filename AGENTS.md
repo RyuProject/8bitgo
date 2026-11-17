@@ -3533,6 +3533,10 @@ EdgeOne 只能用境外（香港）节点。主站、ROM、Pages 子域都不受
       报成卡在 `fceumm`，播放器还会把同一个引擎故障误判为英文 ROM 失败并切西语 ROM。现在把入口失败纳入致命错误，归类 `runtime`，
       立即标记当前 EdgeOne 线路失败并让播放器用同一 ROM 从主站重试。现场没有记录失败请求的 HTTP 状态，故只能确认入口加载链失败，
       不能仅凭这份样本断言是 EdgeOne 缓存、瞬时链路还是浏览器拦截。
+    - **主入口的第一次失败不是最终失败**（2026-11-17，诊断包 #1094–#1104）：Chrome / Safari、Android / iOS / ChromeOS、多个地区都在
+      `Failed to load emulator.min.js` 后紧接着尝试回退；适配器此前在第一条日志就拆掉 iframe，抢断回退流程。并且上游默认回退到未发布的
+      `src/emulator.js`。现在只在 loader.js 发出最终 `EmulatorJS failed to load` 后报致命错误；`EJS_paths` 把回退入口指向同一引擎构建的独立
+      `?fallback=1` URL，绕过失败的动态 import URL / 边缘缓存键。现场没留原始异常与失败状态，具体是哪一跳首次失败仍无法断言。
   - **Ruffle（Flash）与 js-dos（DOS）同理**（2026-11-08）：`ruffleBase()` / `jsdosBase()` 与 `ejsBase()` 共用
     `paths.ts` 的 `runtimeBase`。线路**每页只定一次**（预热与正式加载必须同一个 URL）；大陆访客一律走 EdgeOne。
     入口脚本取不到当场换同源；开局前报错标记失败，自动重试走同源（EmulatorJS 的「卡住」不算）。

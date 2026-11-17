@@ -171,6 +171,13 @@ export function emulatorJsRuntimePaths(core: string, language?: string): Record<
       ? { [language]: ejsRuntimeAsset(`localization/${language}.json`) }
       : {}),
     'emulator.min.js': ejsRuntimeAsset('emulator.min.js'),
+    /*
+      loader.js 在 emulator.min.js 的动态导入失败后会固定尝试 emulator.js。
+      上游默认把它拼成不存在的 src/emulator.js；映射到同一自托管构建的独立 URL，
+      让瞬时断流或某个边缘缓存键上的坏响应还有一次重新取回的机会。
+      查询参数必须不同：浏览器会缓存失败的动态 import，同一个 URL 再 import 仍会直接拒绝。
+    */
+    'emulator.js': `${ejsRuntimeAsset('emulator.min.js')}&fallback=1`,
     'emulator.min.css': ejsRuntimeAsset('emulator.min.css'),
     /*
       核心是 7z 包，引擎首次解压前要先取 compression/extract7z.js（274KB）。它是引擎自己拼的地址、

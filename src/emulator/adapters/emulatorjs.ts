@@ -3022,9 +3022,19 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       return
     }
     const lowLine = line.toLowerCase()
-    if (/failed to load emulator(?:\.min)?\.js|emulatorjs failed to load\. check for missing files/.test(lowLine)) {
-      // loader.js 把动态导入异常吞掉后只打日志；这是引擎入口故障，不是核心或 ROM 故障。
-      // 以 runtime 归类会标记失效的 EdgeOne 线路，并让播放器用同一 ROM 从主站重试。
+    if (/failed to load emulator\.min\.js/.test(lowLine)) {
+      // 这只是 loader.js 的首选入口失败；它接下来会尝试 EJS_paths 里的 emulator.js 备用 URL。
+      // 不能此时拆 iframe，否则瞬时网络错误会被我们自己升级成整局失败。
+      logEngine(`[entry] EmulatorJS 主入口加载失败，正在尝试备用入口；当前线路：${usedEjsEdge ? 'EdgeOne' : '同源'}`)
+      return
+    }
+    if (/failed to load emulator\.js/.test(lowLine)) {
+      // 备用 URL 也失败时先等 loader.js 发出最终错误，避免把正常的回退过程截断。
+      logEngine('[entry] EmulatorJS 备用入口加载失败，等待引擎完成失败确认')
+      return
+    }
+    if (/emulatorjs failed to load\. check for missing files/.test(lowLine)) {
+      // 只有 loader.js 确认主入口与备用入口都不可用后才终止；这是运行时故障，不是 ROM / 核心错误。
       logEngine(`[entry] EmulatorJS 入口脚本加载失败；当前线路：${usedEjsEdge ? 'EdgeOne' : '同源'}`)
       return failLoad(fmt(rt.ejsLoadFailed, { path: EJS_PATH }), 'runtime')
     }
