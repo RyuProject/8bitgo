@@ -354,8 +354,9 @@ export function bustedChunkUrl(file: string, base: string, nonce: string): strin
 
 /**
  * 懒加载就地重试（2026-11-16 诊断包 #872：iOS Safari《拳皇2001》详情页 GameDetailPage chunk
- * `Importing a module script failed`，紧接着同主机的修复脚本 1ms 就加载失败 —— 那一刻整台设备连不上网，
- * 页面本身来自缓存）。以前懒加载一失败就直接进错误边界、刷新一次，网络还没恢复，第二次照样失败停在兜底页。
+ * `Importing a module script failed`，紧接着修复脚本也在 1ms 内加载失败。现场没有 HTTP 状态、响应体、
+ * Resource Timing 或 navigator.onLine，能确认的是两次资源请求都没完成；短暂断网只是可能原因，具体网络层未知。
+ * 旧页面遇到第一次懒加载失败就进错误边界并刷新一次；如果资源链路还没恢复，第二次也会失败停在兜底页。
  *
  * 现在先在页面里重试：小退避后再调一次原加载函数（它连同 CSS / 依赖预加载一起重走）；仍失败就换带查询串的地址，
  * 绕开浏览器模块表、HTTP 缓存或边缘按完整 URL 记住的失败。浏览器明确报告离线时先等恢复联网再试。

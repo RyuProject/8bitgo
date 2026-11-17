@@ -93,8 +93,9 @@ function recoverBrokenAsset(error: unknown, info: ErrorInfo): boolean {
   const stale = STALE_CHUNK.test(message)
   const syntax = error instanceof Error && error.name === 'SyntaxError'
   if (!stale && !syntax) return false
-  // 设备离线（诊断包 #872 那种：chunk 和修复脚本都 1ms 失败）：现在核对、刷新都只会再失败一次，
-  // 还会白白用掉一分钟一次的自动刷新。等恢复联网再刷新，不算故障、不上报。
+  // 设备明确报告离线时，核对、刷新只会再失败一次，还会白白用掉一分钟一次的自动刷新。
+  // 诊断包 #872 的 chunk 和修复脚本都在 1ms 内失败，但现场没有记录 onLine 状态，不能据此断言设备离线。
+  // 等浏览器报告恢复联网再刷新，不算故障、不上报。
   if (stale && browserOffline()) {
     reloadWhenOnline()
     return true

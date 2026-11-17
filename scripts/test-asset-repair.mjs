@@ -516,7 +516,7 @@ assert.equal(parseRepairRequest({ build: '../../etc', files: ['a.js'] }), null)
     now: () => clock,
     log: { warn: (m) => logs.push(m), error: (m) => logs.push(m) },
   }))
-  const server = app.listen(0)
+  const server = app.listen(0, '127.0.0.1')
   await new Promise((resolve, reject) => {
     server.once('listening', resolve)
     server.once('error', reject)
