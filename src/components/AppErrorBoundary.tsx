@@ -84,6 +84,8 @@ function claimOriginReload(edge: boolean): boolean {
  * - Safari 这句错误不带地址，懒加载失败的 chunk 由 lazyNamed 挂在错误上，作为点名文件交给修复脚本；
  * - 大陆加速入口取不下来、主站正常（edgeOnly）：上报，改用主站资源整页重新载入；
  * - 修好了（缓存坏副本 / 偶发取不下来）：上报再刷新一次；
+ * - 若被点名的懒加载 chunk 在 EdgeOne 上字节已校验正确、强制重取后仍无法动态导入，直接改用主站资源整页重载；
+ *   这表示文件内容本身没坏，继续刷新同一资源域可能重复遇到浏览器 / 边缘链路问题（诊断包 #951）；
  * - 没发现坏文件、但这是 404 那类旧 chunk：照旧刷新一次，不算故障；一分钟内又坏了，在加速入口上就换主站再试一次；
  * - 其余：上报，停在兜底页。
  * 修复脚本是首页内联钩子按需加载的；钩子不在（旧模板）时退回原来的行为。
@@ -116,6 +118,12 @@ function recoverBrokenAsset(error: unknown, info: ErrorInfo): boolean {
     const toOrigin = () => location.replace(originAssetsUrl(location))
     if (edge && result?.edgeOnly?.length && claimOriginReload(edge)) {
       reportRenderCrash(error, info, `${note}；已改用主站资源重新载入`)
+      toOrigin()
+      return
+    }
+    // #951：文件 SHA-256 正确但模块加载仍失败时，同一 EdgeOne 地址重载无法改变响应链路；整页换主站资源。
+    if (edge && lazy?.file && result?.refreshed.includes(lazy.file) && claimOriginReload(edge)) {
+      reportRenderCrash(error, info, `${note}；模块内容校验正常但导入仍失败，已改用主站资源重新载入`)
       toOrigin()
       return
     }
