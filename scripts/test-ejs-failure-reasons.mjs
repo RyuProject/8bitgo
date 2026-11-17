@@ -56,6 +56,9 @@ const stripTypes = (code) => code
 
 // 坏核心缓存：下次开局前强制清
 assert.match(adapter, /error loading emulatorjs runtime\/i\.test\(line\)\) \{\s*try \{ localStorage\.removeItem\(EJS_CACHE_PURGED_KEY\)/)
+// loader.js 的两个引擎入口都失败后只写 console.error；必须立即归为运行时错误，触发一次重试并避开 120 秒看门狗
+assert.match(adapter, /const FATAL_PHRASES = \[[\s\S]{0,1800}'emulatorjs failed to load'/)
+assert.match(adapter, /'emulatorjs failed to load'[\s\S]{0,240}'failed to start game'/)
 assert.match(adapter, /if \(isOutOfMemoryText\(`\$\{line\}\\n\$\{recent\}`\)\) \{[\s\S]{0,900}options\.onOutOfMemory\?\.\(core, line\)/)
 assert.match(adapter, /if \(bits === '32'\) return failLoad\(rt\.ejsOutOfMemory32bit, 'config'\)/)
 assert.match(adapter, /core === FBNEO_LOWMEM_CORE \|\| core === PSX_LOWMEM_CORE[\s\S]{0,300}failLoad\(lowmemOomMessage\(vendor\), 'config'\)/)

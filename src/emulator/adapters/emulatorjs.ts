@@ -937,6 +937,8 @@ const FATAL_PHRASES = [
   'required files are missing',
   // 引擎自己：运行时没加载上 / startGame 抛了
   'error loading emulatorjs',
+  // loader.js 的 minified 与未压缩入口都失败后只写 console.error；不接管会等满 120 秒看门狗。
+  'emulatorjs failed to load',
   'failed to start game',
   // melonDS DS：这几句之后核心只会退回 RetroArch 的 No Items，不会再给 ready/error 事件。
   'loaded an empty file as content, please load a valid nintendo ds rom',
