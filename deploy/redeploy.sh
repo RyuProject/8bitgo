@@ -277,7 +277,7 @@ if health_ok && ps2_headers_ok; then
     case "$SMOKE_RC" in
       0) log "开局冒烟通过" ;;
       2)
-        log "⚠️⚠️ 开局冒烟没有运行（本机没有 Chrome / Chromium）：这次发布没有经过「游戏能开局」验证。装上 Chromium 才能自动拦住打不开的版本"
+        log "⚠️⚠️ 开局冒烟没有运行完（没有 Chrome / Chromium，或冒烟脚本自身出错，见上面的输出）：这次发布没有经过「游戏能开局」验证"
         notify "⚠️ 部署完成，但开局冒烟没能运行" "这次发布没有经过「游戏能开局」验证（Chrome 不见了或冒烟脚本出错）。"$'\n'"$(deploy_context)"
         ;;
       *)

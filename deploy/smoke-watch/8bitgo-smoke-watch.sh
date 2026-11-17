@@ -59,6 +59,9 @@ if ! flock -n 9; then
   exit 0
 fi
 
+# 兜底：清掉半小时以前的 Chrome 临时 profile（正常每次都会删；万一某次没删掉也不会越攒越多，系统盘只有 20GB）
+find "${TMPDIR:-/tmp}" -maxdepth 1 -name '8bitgo-smoke-*' -mmin +30 -exec rm -rf {} + 2>/dev/null
+
 RUN_OUT="$STATE_DIR/last-run.txt"
 run_smoke() {
   # 9>&- ：Chrome 等子进程不继承部署锁，万一有残留进程也不会把下一次部署卡住
