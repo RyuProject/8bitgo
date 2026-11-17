@@ -4,8 +4,8 @@
  * 为什么（2026-11-15，PK / TH 两位访客）：详情页懒加载 EmulatorPlayer 时报
  * `The requested module './live-Cqhc9j-k.js' does not provide an export named 'x'`。源站那份文件明明有这个导出，
  * 构建也是确定性的 —— 浏览器手里那份字节和源站不一样（某一跳缓存给了坏内容）。文件名带哈希、一年 immutable，
- * 普通刷新拿回的还是同一份坏字节。修复脚本（public/assets/asset-repair-v4.js）出错时才读这份清单，
- * 逐个核对本页已经用过的 chunk，坏的绕过缓存重取。
+ * 普通刷新拿回的还是同一份坏字节。修复脚本（public/assets/asset-repair-v5.js）出错时才读这份清单，
+ * 逐个核对本页已经用过的 chunk 与报错 chunk 的静态依赖，坏的绕过缓存重取。
  *
  * 几条约束：
  * - **正常加载不读它**：清单只在出错时才下载，不往 HTML 里塞任何东西，不拖慢首屏。
@@ -20,7 +20,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync, renameSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 
-export const INTEGRITY_MANIFEST_VERSION = 1
+export const INTEGRITY_MANIFEST_VERSION = 2
 
 /** 入口文件名 → 清单文件名（不带目录）；不是现代版入口返回 null */
 export function integrityManifestName(entryFileName) {
@@ -39,11 +39,18 @@ export function isIntegrityTarget(fileName) {
   return /^assets\/[^/]+\.(?:js|mjs|css|wasm)$/.test(fileName) && !fileName.startsWith('assets/integrity-')
 }
 
-export function buildIntegrityManifest(entryFileName, files) {
+export function buildIntegrityManifest(entryFileName, files, imports = {}) {
   const sorted = Object.keys(files).sort()
   const out = {}
   for (const name of sorted) out[name] = files[name]
-  return { v: INTEGRITY_MANIFEST_VERSION, alg: 'sha256', entry: path.basename(entryFileName), files: out }
+  const graph = {}
+  for (const name of Object.keys(imports).sort()) {
+    if (!out[name] || !name.endsWith('.js')) continue
+    graph[name] = [...new Set(imports[name]
+      .map((dependency) => path.basename(dependency))
+      .filter((dependency) => dependency.endsWith('.js') && out[dependency]))].sort()
+  }
+  return { v: INTEGRITY_MANIFEST_VERSION, alg: 'sha256', entry: path.basename(entryFileName), files: out, imports: graph }
 }
 
 export function assetIntegrityPlugin() {
@@ -58,13 +65,18 @@ export function assetIntegrityPlugin() {
       if (!entry) return
       const manifestName = integrityManifestName(entry.fileName)
       const files = {}
+      const imports = {}
       for (const fileName of Object.keys(bundle)) {
         if (!isIntegrityTarget(fileName)) continue
         files[path.basename(fileName)] = sha256Base64(readFileSync(path.join(dir, fileName)))
       }
+      for (const item of Object.values(bundle)) {
+        if (item.type !== 'chunk' || !files[path.basename(item.fileName)]) continue
+        imports[path.basename(item.fileName)] = item.imports || []
+      }
       const target = path.join(dir, 'assets', manifestName)
       const tmp = `${target}.${process.pid}.tmp`
-      writeFileSync(tmp, JSON.stringify(buildIntegrityManifest(entry.fileName, files)))
+      writeFileSync(tmp, JSON.stringify(buildIntegrityManifest(entry.fileName, files, imports)))
       renameSync(tmp, target)
     },
   }

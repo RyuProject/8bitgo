@@ -2,8 +2,8 @@
 /**
  * 构建后核对坏 chunk 自修复要用的两样东西（postbuild:client）：
  *   1. dist/client/index.html 入口对应的 assets/integrity-<入口哈希>.json 存在，
- *      里面每个文件都在磁盘上、SHA-256 对得上，且入口和它静态引用的 chunk 都在清单里；
- *   2. 修复脚本 assets/asset-repair-v4.js 已经复制进 dist，和 public/ 那份逐字节一致。
+ *      里面每个文件都在磁盘上、SHA-256 对得上，且静态依赖图里的每个 chunk 都在清单里；
+ *   2. 修复脚本 assets/asset-repair-v5.js 已经复制进 dist，和 public/ 那份逐字节一致。
  * 清单错了的后果是「好文件被判成坏的」：修复脚本会反复重取、刷新，还会请求清边缘缓存，所以宁可构建失败。
  */
 import { createHash } from 'node:crypto'
@@ -14,7 +14,7 @@ import { integrityManifestName } from './lib/vite-asset-integrity.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const dist = path.join(root, 'dist', 'client')
-const REPAIR_SCRIPT = 'asset-repair-v4.js'
+const REPAIR_SCRIPT = 'asset-repair-v5.js'
 
 function fail(message) {
   console.error(`✗ 资源校验清单：${message}`)
@@ -29,7 +29,7 @@ if (!manifestName) fail(`认不出入口文件名 ${entry}`)
 const manifestPath = path.join(dist, 'assets', manifestName)
 if (!existsSync(manifestPath)) fail(`缺 assets/${manifestName}（vite.config.ts 的 assetIntegrityPlugin 没跑？）`)
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
-if (manifest.v !== 1 || manifest.alg !== 'sha256' || manifest.entry !== entry) fail(`${manifestName} 的版本 / 算法 / 入口不对`)
+if (manifest.v !== 2 || manifest.alg !== 'sha256' || manifest.entry !== entry) fail(`${manifestName} 的版本 / 算法 / 入口不对`)
 
 const names = Object.keys(manifest.files)
 for (const name of names) {
@@ -42,6 +42,13 @@ if (!manifest.files[entry]) fail(`入口 ${entry} 不在清单里`)
 const entrySource = readFileSync(path.join(dist, 'assets', entry), 'utf8')
 for (const m of entrySource.matchAll(/from"\.\/([^"]+\.js)"/g)) {
   if (!manifest.files[m[1]]) fail(`入口静态引用的 ${m[1]} 不在清单里`)
+}
+if (!manifest.imports || typeof manifest.imports !== 'object') fail(`${manifestName} 缺静态依赖图`)
+for (const [name, dependencies] of Object.entries(manifest.imports)) {
+  if (!/^[\w.-]+\.js$/.test(name) || !manifest.files[name] || !Array.isArray(dependencies)) fail(`${name} 的静态依赖记录格式不对`)
+  for (const dependency of dependencies) {
+    if (!/^[\w.-]+\.js$/.test(dependency) || !manifest.files[dependency]) fail(`${name} 的静态依赖 ${dependency} 不在清单里`)
+  }
 }
 
 const repairDist = path.join(dist, 'assets', REPAIR_SCRIPT)

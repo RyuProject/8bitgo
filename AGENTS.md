@@ -3730,11 +3730,11 @@ PK / TH 两份现场：`The requested module './live-Cqhc9j-k.js' does not provi
 - **正常访问**：`index.html` 里一段 ES5 内联钩子，不发请求。只在 localStorage `8bitgo.asset-remap` 有未过期记录时插一张 import map；
   定义 `window.__8bitgoAssetRepair`，并监听 window 的 `SyntaxError`（入口模块链接失败时 React 起不来，兜底页接不住）。
   钩子必须排在任何模块脚本之前，import map 才来得及生效。
-- **出错时**：才加载 `public/assets/asset-repair-v4.js`（文件名即代次，长期缓存；改逻辑新建 v5，旧版留给已打开的旧页面）。
+- **出错时**：才加载 `public/assets/asset-repair-v5.js`（文件名即代次，长期缓存；改逻辑新建 v6，旧版留给已打开的旧页面）。
   首页按入口脚本所在资源域加载，所以大陆入口 `cn.8bitgo.com/_cn/assets/` 的自修复也走 EdgeOne；该路 5 秒超时或失败后再回主站
   `/assets/` 重试，每次的地址 / 结果 / 耗时记在 `window.__8bitgoAssetRepairLoad`，诊断包写成「加载失败 812ms」「5 秒超时」
   「已加载、核对 20 秒内没有结束」。只核对本页 Resource Timing 里用过的
-  chunk 和错误点名的那个，先 `cache: 'force-cache'` 读浏览器缓存算 SHA-256，三种结果：
+  chunk、点名 chunk 的静态 JS 依赖和错误点名的那个，先 `cache: 'force-cache'` 读浏览器缓存算 SHA-256，三种结果：
   浏览器缓存坏了 → `cache: 'reload'` 重取（同时覆盖缓存里的坏副本）→ 刷新一次；
   重取还是坏（CDN 边缘那份坏了）→ 带 `?asset-repair=1` 直接回源核对，好的话记进 `8bitgo.asset-remap`（7 天）、
   `POST /api/asset-repair` 请服务端清 Cloudflare 上那个 URL → 刷新后 import map 把它改指到回源地址；
@@ -3767,8 +3767,15 @@ PK / TH 两份现场：`The requested module './live-Cqhc9j-k.js' does not provi
 - 首页钩子现在先试入口资源域、再试主站；两条都失败时，对主站地址和入口地址各追加一次随机查询串重试。此逻辑不依赖外部修复脚本，详情页、其它懒加载页和播放器共享同一路径。
 - 查询串重试仍失败时保留原错误兜底与诊断记录；它可绕过按完整 URL 缓存的失败副本，但无法修复源站持续不可达或浏览器策略拦截。
 - 复查（2026-11-17）：#872 的构建是 `index-LISdmsjV.js`（v3 钩子），chunk 与修复脚本都在 1ms 内失败、且一分钟内的自动刷新已用掉（才会上报），最像设备那一刻整体连不上网，页面来自缓存。旧 `lazyNamed` 一失败就进错误边界，刷新时网络还没回来，第二次照样失败。
-- 现在 `lazyNamed` 经 `importWithRetry`（`moduleLinkRecovery.ts`）就地重试：0.5 秒后再调原加载函数（连同依赖预加载），1.8 秒后换 `?chunk-retry=<随机>` 地址绕开按完整 URL 记住的失败；`navigator.onLine === false` 时先等 `online`（最多 20 秒）。SyntaxError 不重试，仍交修复脚本。查询串只加在顶层 chunk 上，它的 `./x.js` 依赖按原地址解析，不会出现两份 React。
-- 错误边界在离线时不核对、不刷新、不上报，挂 `online` 一次性监听后再刷新，不占用一分钟一次的自动刷新名额。回归：`npm run test:asset-repair`（含重试顺序、离线等待、SyntaxError 不重试）。本地用前两次回 503 的静态服务实测：第三次请求带 `?chunk-retry=` 成功，页面正常渲染，未进兜底页。
+- 现在 `lazyNamed` 经 `importWithRetry`（`moduleLinkRecovery.ts`）就地重试：首次用原 URL，0.5 秒和 1.8 秒后分别用唯一 `?chunk-retry=<随机>` 地址；不再重复导入可能已被模块表记成失败的原 URL。`navigator.onLine === false` 时先等 `online`（最多 20 秒）。SyntaxError 不重试，仍交修复脚本。查询串只加在顶层 chunk 上，它的 `./x.js` 依赖按原地址解析，不会出现两份 React。
+- 错误边界在离线时不核对、不刷新、不上报，挂 `online` 一次性监听后再刷新，不占用一分钟一次的自动刷新名额。回归：`npm run test:asset-repair`（含每次使用新 URL、静态依赖图修复、离线等待、SyntaxError 不重试）。
+
+**诊断包 #917（Chrome 150 / Linux / 3G，《哈利波特与魔法石》）：播放器懒加载失败。**
+
+- 现场清单核对 57 项、55 项正常；被点名的 `EmulatorPlayer-*.js` 在日志里重复强制重取两次，`failed` 与 `trace` 都为空。随后线上同名 chunk 返回 200，且 SHA-256 与该 build 的清单一致。证据不支持持续的发布缺文件 / 错字节；无法从现场分辨当时是瞬时网络、边缘响应还是静态依赖链接失败。
+- 发现恢复逻辑有两个缺口：懒加载先用同一个 ESM URL 重试两次，浏览器可能已把这个 URL 的失败模块结果记在模块表里；修复器只核对错误点名 chunk 和 Resource Timing 记录，没有构建时静态依赖图，某个失败子模块可能不会被检查。第三次 `chunk-retry` URL 又和原 URL 被当作两个目标，弱网下同一个播放器会被诊断重复下载。
+- v5 改为每次网络重试都用唯一 `chunk-retry` URL；完整性清单升为 v2，记录每个 JS chunk 的静态 imports，出错时只递归核对点名 chunk 的依赖图。诊断按原始构建文件去重，但保留 `asset-repair=1` 等有意义的查询参数。旧 v4 留给已打开的页面；生产构建检查清单版本、依赖引用与修复脚本逐字节一致。
+- 回归：`npm run test:asset-repair`（依赖损坏修复、重复重试去重、唯一 URL 重试、旧 manifest / 服务端接口兼容）。
 
 **诊断包 #761（微信 iOS 27，CN，《超级玛丽》详情页，`TypeError: Importing a module script failed.`）：旧 build，但根因当时没修。**
 

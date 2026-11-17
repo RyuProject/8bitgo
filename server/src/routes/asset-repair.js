@@ -1,7 +1,7 @@
 /**
  * POST /api/asset-repair  { build, files: [文件名] }
  *
- * 坏 chunk 自修复（public/assets/asset-repair-v4.js）发现「普通地址异常、带查询串回源正常」时调这里：
+ * 坏 chunk 自修复（public/assets/asset-repair-v5.js）发现「普通地址异常、带查询串回源正常」时调这里：
  * Cloudflare 边缘可能缓存了坏字节或 HTTP 错误响应，
  * 而这些文件一年 immutable，不清的话那个节点的所有访客都会一直拿到坏的。
  *
@@ -51,7 +51,7 @@ export function createAssetRepairRouter({
     let data = null
     try {
       data = JSON.parse(await readFile(join(clientDir, 'assets', `integrity-${build}.json`), 'utf8'))
-      if (!data || data.v !== 1 || !data.files) data = null
+      if (!data || (data.v !== 1 && data.v !== 2) || !data.files) data = null
     } catch {
       data = null
     }

@@ -1,5 +1,5 @@
 /**
- * React 侧接入「坏 chunk 自修复」（public/assets/asset-repair-v4.js）。
+ * React 侧接入「坏 chunk 自修复」（public/assets/asset-repair-v5.js）。
  *
  * 2026-11-15 PK / TH 两位玩家打开详情页就崩：
  * `SyntaxError: The requested module './live-Cqhc9j-k.js' does not provide an export named 'x'`。
@@ -150,7 +150,7 @@ export function onOriginAssetsPage(): boolean {
 
 /* ---------- 修复脚本 ---------- */
 
-/** 与 public/assets/asset-repair-v4.js 的返回值一致（新字段在旧脚本里没有，所以是可选的） */
+/** 与 public/assets/asset-repair-v5.js 的返回值一致（新字段在旧脚本里没有，所以是可选的） */
 export interface AssetRepairResult {
   manifest: boolean
   checked: number
@@ -299,17 +299,23 @@ export function retryableImportError(error: unknown): boolean {
   return RETRYABLE_IMPORT.test(`${String(err.name ?? '')}: ${String(err.message ?? '')}`)
 }
 
-/** 重试间隔：第二次立刻小退避，第三次换带查询串的地址（绕开浏览器 / 边缘按 URL 记住的失败）。 */
+/** 重试间隔：逐步拉长，避免弱网 / 后台页立刻重复争抢连接。 */
 export const LAZY_RETRY_DELAYS_MS: readonly number[] = [500, 1800]
 /** 离线时最多等多久「恢复联网」再重试；等不到也照样试一次，交给错误边界。 */
 const OFFLINE_WAIT_MS = 20_000
+let chunkRetrySequence = 0
+
+function nextChunkRetryNonce(attempt: number): string {
+  chunkRetrySequence = (chunkRetrySequence + 1) % Number.MAX_SAFE_INTEGER
+  return `${Date.now().toString(36)}-${chunkRetrySequence.toString(36)}-${attempt.toString(36)}`
+}
 
 export interface RetryEnv {
   sleep: (ms: number) => Promise<void>
   /** 浏览器明确报告离线时，等 online 事件（或超时） */
   waitOnline: (maxMs: number) => Promise<void>
   online: () => boolean
-  /** 按 URL 导入（第三次尝试用带查询串的地址） */
+  /** 按 URL 导入（重试时用带唯一查询串的地址） */
   importUrl: (url: string) => Promise<unknown>
 }
 
@@ -358,8 +364,9 @@ export function bustedChunkUrl(file: string, base: string, nonce: string): strin
  * Resource Timing 或 navigator.onLine，能确认的是两次资源请求都没完成；短暂断网只是可能原因，具体网络层未知。
  * 旧页面遇到第一次懒加载失败就进错误边界并刷新一次；如果资源链路还没恢复，第二次也会失败停在兜底页。
  *
- * 现在先在页面里重试：小退避后再调一次原加载函数（它连同 CSS / 依赖预加载一起重走）；仍失败就换带查询串的地址，
- * 绕开浏览器模块表、HTTP 缓存或边缘按完整 URL 记住的失败。浏览器明确报告离线时先等恢复联网再试。
+ * 现在先在页面里重试：网络型错误可能被浏览器模块表按原 URL 缓存为失败，重复调用原加载函数只会得到同一个拒绝；
+ * 因此每次重试都换唯一查询串，让浏览器和边缘重新取入口 chunk。静态依赖仍保持原 URL 和同一个 React 实例；
+ * 如果失败在静态依赖，asset-repair-v5 会按构建依赖图核对它，再刷新页面清掉失败模块表。明确离线时先等恢复联网。
  * 全部失败才把最后一个错误抛给错误边界（那里还有修复脚本和整页刷新）。
  */
 export async function importWithRetry<T>(
@@ -376,8 +383,8 @@ export async function importWithRetry<T>(
       else await env.sleep(LAZY_RETRY_DELAYS_MS[attempt - 1])
     }
     try {
-      const busted = attempt === attempts - 1 && file
-        ? bustedChunkUrl(file, base, `${Date.now().toString(36)}${attempt}`)
+      const busted = attempt > 0 && file
+        ? bustedChunkUrl(file, base, nextChunkRetryNonce(attempt))
         : null
       return busted ? await (env.importUrl(busted) as Promise<T>) : await load()
     } catch (error) {

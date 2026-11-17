@@ -7,5 +7,6 @@ export declare function isIntegrityTarget(fileName: string): boolean
 export declare function buildIntegrityManifest(
   entryFileName: string,
   files: Record<string, string>,
-): { v: number; alg: 'sha256'; entry: string; files: Record<string, string> }
+  imports?: Record<string, string[]>,
+): { v: number; alg: 'sha256'; entry: string; files: Record<string, string>; imports: Record<string, string[]> }
 export declare function assetIntegrityPlugin(): Plugin
