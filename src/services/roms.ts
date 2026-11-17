@@ -21,6 +21,7 @@ import { useLang } from '@/services/lang'
 import { romArchiveRef } from '@/lib/romArchiveUrl'
 import { isRomPackUrl, romPackKey } from '../../shared/rom-pack-format.js'
 import { isStreamingDiscPlatform } from '../../shared/streaming-disc-platforms.js'
+import { html5EntryProblem, isHtml5EntryUrl, normalizeHtml5Entry } from '@/emulator/html5Entry'
 import { builtinWebGameFor } from '../../shared/builtin-web-games.js'
 import { chooseFasterRomRoute, chooseRomHost, ROM_ROUTE_RACE_MIN_BYTES, type RomHost } from './romRoute'
 import { alternateRomUrls, downloadRomUrl } from './romHosts'
@@ -424,12 +425,10 @@ export function conventionalKeys(game: Game): string[] {
    */
   if (game.platform === 'flash') return [at(`${game.slug}.swf`), at(`${game.slug}/root.swf`)]
   // HTML5 游戏通常是一整套网站文件；约定把入口放在独立目录的 index.html，
-  // 同时兼容只有一个 HTML 文件的小作品。
+  // 内置页保留站内入口；其它 HTML5 游戏必须由后台绑定网页 URL，不按 ROM key 猜文件。
   if (game.platform === 'html5') {
     const builtin = builtinWebGameFor(game.slug)
-    return builtin
-      ? [builtin.entry]
-      : [at(`${game.slug}/index.html`), at(`${game.slug}.html`)]
+    return builtin ? [builtin.entry] : []
   }
   const exts = platformMap[game.platform]?.romExtensions ?? ['.zip']
   // 流式光盘运行时需要直接看到容器并按后缀选解析器；外层 ZIP 即使能探到也一定启动不了。
@@ -462,7 +461,7 @@ const selfContainedKey = (key: string) => /^https?:\/\//i.test(key) || key.start
  */
 export function romProbeExpected(game: Game | undefined, lang: Lang, prefer?: RomSlotLang | null): boolean {
   if (!game) return false
-  const explicit = romCandidates(game, lang, prefer).map((c) => c.key)
+  const explicit = (game.platform === 'html5' ? playbackRomCandidates(game, lang, prefer) : romCandidates(game, lang, prefer)).map((c) => c.key)
   const conventional = conventionalKeys(game)
   // 外链 / 站内绝对路径不依赖根地址；内置网页游戏正是后一种，不能被空 ROM_BASE 挡掉。
   if (explicit.some(selfContainedKey) || conventional.some(selfContainedKey)) return true
@@ -749,7 +748,13 @@ export function playbackRomCandidates(game: Pick<Game, 'platform' | 'rom' | 'rom
   if (game.platform === 'arcade' && game.runtime === 'play') return raw
   // PS1 后台允许显式绑定旧 8BG，但不能从裸 CHD/ISO 再派生 `.8bg` 地址：
   // 新上传的原始 CHD 必须直接命中，否则会先请求不存在的 `.chd.8bg`，还会绕过 Range 流式读取。
-  if (isStreamingDiscPlatform(game.platform) || game.platform === 'psx' || game.platform === 'html5') return raw
+  if (game.platform === 'html5') {
+    // 旧数据里可能只填了裸域名；规范成网页地址后直接交给 iframe，避免被拼成 download.8bitgo.com 的 ROM key。
+    return raw
+      .map((candidate) => ({ ...candidate, key: normalizeHtml5Entry(candidate.key) }))
+      .filter((candidate) => !html5EntryProblem(candidate.key))
+  }
+  if (isStreamingDiscPlatform(game.platform) || game.platform === 'psx') return raw
   const out: RomCandidate[] = []
   const seen = new Set<string>()
   for (const candidate of raw) {
@@ -1482,7 +1487,7 @@ export function useRomUrl(game: Game | undefined, prefer?: RomSlotLang | null): 
         const pending: Array<Promise<CandidateProbe>> = entries.map(async ({ candidate, url }) => {
           // iframe 导航不受 fetch CORS 限制；外站可以允许嵌入、同时拒绝跨域 HEAD。
           // 仍放在有序 Promise 队列里，避免备用外链越过排在前面的站内主地址。
-          const directHtml = game.platform === 'html5' && /^https?:\/\//i.test(candidate.key)
+          const directHtml = game.platform === 'html5' && isHtml5EntryUrl(candidate.key)
           return {
             candidate,
             url,
@@ -1576,7 +1581,7 @@ export function useRomUrl(game: Game | undefined, prefer?: RomSlotLang | null): 
       if ((!base && !hasSelfContainedConvention) || !isPlayable(game.platform)) {
         // 这是配置问题（根地址没配、平台不支持），重试一万次也一样，不进重试。
         // 「平台还不支持」是正常状态（未上线的平台），不值得报；根地址空着是真的配错了。
-        if (!base && isPlayable(game.platform)) {
+        if (!base && isPlayable(game.platform) && game.platform !== 'html5') {
           console.warn(
             `[8bitgo/rom] 没有配置 ROM 根地址（VITE_ROM_BASE_URL 或 localStorage['${ROM_BASE_KEY}']），` +
               `${game.slug} 这类没绑过语言槽的游戏只能靠约定文件名探测，现在一个都探不了。`,
@@ -1587,7 +1592,7 @@ export function useRomUrl(game: Game | undefined, prefer?: RomSlotLang | null): 
       }
 
       // 内置 / 外链 HTML5 入口直接交给 iframe；HEAD 的 CORS 规则和“能否嵌入”不是一回事。
-      const directConventionalHtml = conventional.find((key) => game.platform === 'html5' && /^https?:\/\//i.test(key))
+      const directConventionalHtml = conventional.find((key) => game.platform === 'html5' && isHtml5EntryUrl(key))
       if (directConventionalHtml) {
         const url = romUrlForKey(directConventionalHtml, base)
         probeController.abort()

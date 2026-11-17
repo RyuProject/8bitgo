@@ -82,6 +82,7 @@ import { isVersionedSockdriveDirectory } from '../../shared/sockdrive-url.js'
 import { probeRange } from '@/emulator/remoteDisc'
 import { isRomPackBytes, packRomForUpload, recommendedRomPackCodec, releasePackedRomUpload, romPackKey, unpackRomPackBlob } from '@/services/romPack'
 import { isStreamingDiscPlatform } from '../../shared/streaming-disc-platforms.js'
+import { html5EntryProblem, normalizeHtml5Entry } from '@/emulator/html5Entry'
 import { getUploadActivity, subscribeUploadActivity, trackUploadActivity } from '@/services/uploadActivity'
 import { flashCompatibilityIssue } from '@/emulator/flashCompatibility'
 import { assertSwf, assertSwfBlob } from '@/lib/romValidation'
@@ -1071,19 +1072,37 @@ export function GameForm({
     const cleanedRomAssets: Record<string, string[]> = {}
     const cleanedRomBundleEntries: Record<string, string> = {}
     for (const l of allRomLangs) {
-      const v = form.roms?.[l]?.trim()
+      const raw = form.roms?.[l]?.trim()
+      if (form.platform === 'html5' && raw) {
+        const problem = html5EntryProblem(raw)
+        if (problem) return setError(`${romLanguageLabel(l)}：${problem}`)
+      }
+      const v = raw ? (form.platform === 'html5' ? normalizeHtml5Entry(raw) : raw) : ''
       if (v) cleanedRoms[l] = v
       const assets = form.romAssets?.[l]
       if (v && Array.isArray(assets) && assets.length) cleanedRomAssets[l] = [...new Set(assets)]
       const entry = form.romBundleEntries?.[l]?.trim()
       if (v && entry) cleanedRomBundleEntries[l] = entry
-      const backup = form.romBackups?.[l]?.trim()
+      const rawBackup = form.romBackups?.[l]?.trim()
+      if (form.platform === 'html5' && rawBackup) {
+        const problem = html5EntryProblem(rawBackup)
+        if (problem) return setError(`${romLanguageLabel(l)}备用地址：${problem}`)
+      }
+      const backup = rawBackup ? (form.platform === 'html5' ? normalizeHtml5Entry(rawBackup) : rawBackup) : ''
       if (!backup) continue
       if (!v) return setError(`${romLanguageLabel(l)} 填了备用地址，但还没有主地址`)
       if (backup === v) return setError(`${romLanguageLabel(l)} 的备用地址不能和主地址相同`)
       cleanedRomBackups[l] = backup
     }
-    for (const value of [form.rom?.trim(), ...Object.values(cleanedRoms), ...Object.values(cleanedRomBackups)]) {
+    const rawGenericRom = form.rom?.trim() ?? ''
+    if (form.platform === 'html5' && rawGenericRom) {
+      const problem = html5EntryProblem(rawGenericRom)
+      if (problem) return setError(`通用入口：${problem}`)
+    }
+    const cleanedGenericRom = rawGenericRom
+      ? (form.platform === 'html5' ? normalizeHtml5Entry(rawGenericRom) : rawGenericRom)
+      : ''
+    for (const value of [cleanedGenericRom, ...Object.values(cleanedRoms), ...Object.values(cleanedRomBackups)]) {
       if (!value) continue
       if (value.length > 500) return setError('ROM 地址过长（数据库上限 500 字符）')
       const ref = romArchiveRef(value)
@@ -1108,7 +1127,7 @@ export function GameForm({
       developer: normalizeDevelopers(form.developer) || '未知',
       cover: form.cover?.trim() || undefined,
       video: form.video?.trim() || undefined,
-      rom: form.rom?.trim() || undefined,
+      rom: cleanedGenericRom || undefined,
       roms: Object.keys(cleanedRoms).length ? cleanedRoms : undefined,
       // 显式提交空对象：解绑入口 / 改成单文件时必须清除旧的多文件授权清单。
       romAssets: form.platform === 'flash' ? cleanedRomAssets : {},
@@ -3430,8 +3449,8 @@ function RomField({
    * 两个源并行探，避免主站超时四秒后才开始等备用站；播放器实际启动时仍按主→备顺序选择。
    */
   const checkHealth = async () => {
-    const primaryUrl = value.trim() ? romUrlForKey(value.trim()) : ''
-    const backupUrl = backupValue.trim() ? romUrlForKey(backupValue.trim()) : ''
+    const primaryUrl = value.trim() ? (isHtml5 ? normalizeHtml5Entry(value) : romUrlForKey(value.trim())) : ''
+    const backupUrl = backupValue.trim() ? (isHtml5 ? normalizeHtml5Entry(backupValue) : romUrlForKey(backupValue.trim())) : ''
     const urls = [primaryUrl, backupUrl].filter(Boolean)
     if (!urls.length) return
     clearRomProbeCache(urls)
@@ -3801,6 +3820,11 @@ function RomField({
 
   const onFile = async (file: File | undefined) => {
     if (!file) return
+    if (isHtml5) {
+      setMsg({ ok: false, text: 'HTML5 游戏通过网页入口运行，请部署完整游戏站点后填写 HTTPS 网址' })
+      if (inputRef.current) inputRef.current.value = ''
+      return
+    }
     if (isFlash && /\.zip$/i.test(file.name)) {
       await openBundle(file)
       if (inputRef.current) inputRef.current.value = ''
@@ -4291,9 +4315,11 @@ function RomField({
   return (
     <div className="space-y-2">
       <Field
-        label={label ?? 'ROM 文件'}
+        label={label ?? (isHtml5 ? '网页入口 URL' : 'ROM 文件')}
         hint={
-          canUpload
+          isHtml5
+            ? '只填写你有权嵌入的 HTTPS 游戏网址；裸域名会自动补 HTTPS。带 JS、WASM、图片等素材的项目请先完整部署，再填 index.html 地址'
+            : canUpload
             ? value.trim() && !/^https?:/i.test(value)
               ? isArcade
                 ? '街机 ZIP 会先按成员 CRC 认 romset。识别到标准包名时会绑定到正确的 romset 对象（而非把新内容写进当前可能错误的文件名）；只有当前 key 本来就是该标准名时才原地覆盖。上传成功后请保存游戏条目。'
@@ -4308,16 +4334,12 @@ function RomField({
               ? `街机 ROM 会**自动识别 romset**：按 ZIP 中央目录的文件名和 CRC 核验。已支持的 MAME 专用包会自动选核心/BIOS；FBNeo 命中后按 romset 短名存（如 ${defKey('kof97.zip')}）。未知或不完整包不会猜名`
               : isFlash
                 ? `单个 .swf 存成 ${defKey('x.swf')}；多 SWF 的游戏直接选 .zip，整包会传到 ${bundleDirFor(platform, slug, lang)}/ 下`
-                : isHtml5
-                  ? `可填写你有权嵌入的 HTTPS 游戏网址；单文件作品也可上传 .html。带 JS、WASM、图片等素材的项目请先完整部署，再填写它的 index.html 地址`
                 : isStreamingDisc
                   ? `直接上传镜像会存到 ${defKey(exampleName)} 这样的位置并自动绑定；不要套 ZIP。也可手填支持 HTTP Range 的完整 URL`
                 : platform === 'psx'
                   ? `单数据轨 ISO 优先在服务器转成可 Range 流式游玩的 CD CHD；现成 CHD 可按需读盘。旧 8BG 导入后会先解包再上传明文。双盘 / 多盘请选择下方入口，按盘片顺序选择 2–${PSX_M3U_MAX_DISCS} 张 CHD，系统会生成 M3U 并在全部盘上传后才绑定。带 CD 音轨的原盘请先从 BIN/CUE 转 CHD，单独 ISO 无法保留音乐`
                 : `新上传会以明文存到 ${defKey(exampleName)} 并自动绑定；旧 8BG 导入后也会解包成明文对象`
-            : isHtml5
-              ? '填写你有权嵌入的 HTTPS 游戏网址；目标站点必须允许 iframe 嵌入。单文件上传需先配置 Worker'
-              : '手填对象 key 或完整 URL；要直接上传，请先在「ROM 存储」页配置 Worker 地址与口令'
+            : '手填对象 key 或完整 URL；要直接上传，请先在「ROM 存储」页配置 Worker 地址与口令'
         }
       >
         <div className="flex gap-2">
@@ -4327,18 +4349,22 @@ function RomField({
             onChange={(e) => onChange(e.target.value)}
             placeholder={isHtml5 ? 'https://game.example.com/' : defKey(isFlash ? 'x.swf' : exampleName)}
           />
-          <input ref={inputRef} type="file" accept={accept} className="hidden" onChange={(e) => void onFile(e.target.files?.[0])} />
-          <button
-            type="button"
-            className={cx(btnClass.secondary, 'shrink-0 whitespace-nowrap')}
-            disabled={!canUpload || progress !== null || bundleAt !== null}
-            onClick={() => inputRef.current?.click()}
-            title={canUpload ? (oneClickSockdrive ? '选择原始 ZIP，同时发布完整回退包和当前语言流式盘' : isFlash ? '选择 .swf，或选 .zip 上传多 SWF 整包' : isHtml5 ? '上传单文件 HTML 作品' : isStreamingDisc ? '选择平台支持的单文件光盘镜像并上传到 R2' : '选择文件并上传到 R2') : '需要先配置 Worker'}
-          >
-            {progress === null ? (oneClickSockdrive ? '☁️ 完整包 + 流式盘' : isFlash ? '☁️ 上传 SWF / ZIP' : isHtml5 ? '☁️ 上传 HTML' : '☁️ 上传到 R2') : `处理中 ${progress}%`}
-          </button>
+          {!isHtml5 && (
+            <>
+              <input ref={inputRef} type="file" accept={accept} className="hidden" onChange={(e) => void onFile(e.target.files?.[0])} />
+              <button
+                type="button"
+                className={cx(btnClass.secondary, 'shrink-0 whitespace-nowrap')}
+                disabled={!canUpload || progress !== null || bundleAt !== null}
+                onClick={() => inputRef.current?.click()}
+                title={canUpload ? (oneClickSockdrive ? '选择原始 ZIP，同时发布完整回退包和当前语言流式盘' : isFlash ? '选择 .swf，或选 .zip 上传多 SWF 整包' : isStreamingDisc ? '选择平台支持的单文件光盘镜像并上传到 R2' : '选择文件并上传到 R2') : '需要先配置 Worker'}
+              >
+                {progress === null ? (oneClickSockdrive ? '☁️ 完整包 + 流式盘' : isFlash ? '☁️ 上传 SWF / ZIP' : '☁️ 上传到 R2') : `处理中 ${progress}%`}
+              </button>
+            </>
+          )}
           {value && !progress && (
-            <a href={romUrlForKey(value)} target="_blank" rel="noreferrer" className={cx(btnClass.secondary, 'shrink-0')} title="在新标签页打开文件地址">
+            <a href={isHtml5 ? normalizeHtml5Entry(value) : romUrlForKey(value)} target="_blank" rel="noreferrer" className={cx(btnClass.secondary, 'shrink-0')} title={isHtml5 ? '在新标签页打开网页入口' : '在新标签页打开文件地址'}>
               打开
             </a>
           )}
