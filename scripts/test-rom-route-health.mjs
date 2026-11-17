@@ -95,24 +95,38 @@ await check('没有记录时保持调用方的原顺序', async () => {
 await check('一次故障排到后面，连续两次熔断，任何一次成功立即恢复', async () => {
   const A = 'https://a.test/r.zip'
   const B = 'https://b.test/r.zip'
-  health.recordRomRouteFailure(A, 'network')
-  assert.equal(health.isRomRouteOpen(A), false)
-  assert.deepEqual(health.rankRomRoutes([A, B]), [B, A])
-  health.recordRomRouteFailure(A, 'timeout')
-  assert.equal(health.isRomRouteOpen(A), true, '连续两次故障熔断')
-  assert.deepEqual(health.rankRomRoutes([A, B]), [B, A])
-  health.recordRomRouteTransfer(A, 1 << 20, 100)
-  assert.equal(health.isRomRouteOpen(A), false, '成功一次就恢复')
+  const t = Date.now()
+  health.recordRomRouteFailure(A, 'network', t)
+  assert.equal(health.isRomRouteOpen(A, t), false)
+  assert.deepEqual(health.rankRomRoutes([A, B], t), [B, A])
+  health.recordRomRouteFailure(A, 'timeout', t + 6000)
+  assert.equal(health.isRomRouteOpen(A, t + 6000), true, '连续两次故障熔断')
+  assert.deepEqual(health.rankRomRoutes([A, B], t + 6000), [B, A])
+  health.recordRomRouteTransfer(A, 1 << 20, 100, t + 6000)
+  assert.equal(health.isRomRouteOpen(A, t + 6000), false, '成功一次就恢复')
+})
+
+await check('同一批请求一起失败只算一次（2026-11-18 明文 + 8BG 两个 HEAD 同时超时，一次开页就熔断）', async () => {
+  const A = 'https://a.test/r.zip'
+  const t = Date.now()
+  health.recordRomRouteFailure(A, 'timeout', t)
+  health.recordRomRouteFailure(A, 'timeout', t + 1)
+  health.recordRomRouteFailure(A, 'network', t + 4000)
+  assert.equal(health.isRomRouteOpen(A, t + 4000), false, '5 秒内的几次失败合成一次')
+  health.recordRomRouteFailure(A, 'timeout', t + 5000)
+  assert.equal(health.isRomRouteOpen(A, t + 5000), true, '窗口从第一次失败算起、不顺延：5 秒后的再一次照常累计')
 })
 
 await check('熔断只是排到最后，不从候选里删掉', async () => {
   const A = 'https://a.test/r.zip'
   const B = 'https://b.test/r.zip'
+  const t = Date.now()
   for (const url of [A, B]) {
-    health.recordRomRouteFailure(url, 'network')
-    health.recordRomRouteFailure(url, 'network')
+    health.recordRomRouteFailure(url, 'network', t - 6000)
+    health.recordRomRouteFailure(url, 'network', t)
+    assert.equal(health.isRomRouteOpen(url, t), true)
   }
-  assert.deepEqual(health.rankRomRoutes([A, B]), [A, B], '全部熔断时仍按原顺序全部给出')
+  assert.deepEqual(health.rankRomRoutes([A, B], t), [A, B], '全部熔断时仍按原顺序全部给出')
 })
 
 await check('真实吞吐快 15% 以上才越过排在前面的线路', async () => {
@@ -243,8 +257,9 @@ await check('省流量模式：不为同一段字节同时问两条线路', asyn
 })
 
 await check('记分板认定原线路熔断：开局就改走另一条', async () => {
+  health.recordRomRouteFailure('https://a.test/', 'network', Date.now() - 6000)
   health.recordRomRouteFailure('https://a.test/', 'network')
-  health.recordRomRouteFailure('https://a.test/', 'network')
+  assert.equal(health.isRomRouteOpen('https://a.test/'), true)
   const urls = []
   const fetchImpl = async (url, init) => {
     urls.push(String(url))
@@ -356,7 +371,7 @@ await check('BIOS：排第一的线路刚有真实下载就直接用，不发探
 await check('主域 / 镜像：记分板有结论时不跑 64KB 小探针', async () => {
   let calls = 0
   const counting = async () => { calls++; throw new Error('不该探测') }
-  health.recordRomRouteFailure('https://cn-assets.example.com/', 'network')
+  health.recordRomRouteFailure('https://cn-assets.example.com/', 'network', Date.now() - 6000)
   health.recordRomRouteFailure('https://cn-assets.example.com/', 'network')
   const opts = { fetchImpl: counting, cacheResults: true, storage: null }
   assert.equal(await chooseRomHost('https://download.example.com', 'https://cn-assets.example.com', { ...opts, prefer: 'mirror' }), 'primary', '镜像熔断：大陆访客也走主域')

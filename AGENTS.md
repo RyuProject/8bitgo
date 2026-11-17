@@ -1215,7 +1215,7 @@ RangeError（超大小上限）和用户取消不换线路。街机、光盘 / N
 download.8bitgo.com（0.17 秒）；首段测速把握手和约 1 秒首字节算进吞吐，Chrome 又报 effectiveType=3g（实测单连接 9.5Mbps），
 并发被压成 1 路，21.9MB 三片串行约 20 秒。现在：
 - `src/services/romRouteHealth.ts` 按 origin 记**响应头之后**的正文吞吐（EWMA，≥64KiB 样本，30 分钟）与网络 / 超时 / 5xx / 失速故障；
-  连续 2 次熔断 1～5 分钟，成功即恢复。熔断只排到最后、不删候选。404 不算线路的错。HEAD、BIOS（`reachableRomAssetUrl`）、
+  连续 2 次熔断 1～5 分钟（5 秒内同一批请求一起失败只算一次），成功即恢复。熔断只排到最后、不删候选。404 不算线路的错。HEAD、BIOS（`reachableRomAssetUrl`）、
   `chooseRomHost`（有真实数据时不跑 64KB 探针）、下载器、PSP / Dolphin / PS2 的光盘候选都读同一份排序。
 - HEAD 存在性检查（`roms.ts` 的 `hedgedProbe`）：1 秒没答复或答不上来就同时问下一条；原地址的 404 是终论，备用线路的 404 要等其余线路答完。
 - `fetchBlobWithProgress`：吞吐从响应头算起；有真实样本时 effectiveType=3g 不再强制单路。**只有路径与查询串（含 romv）完全相同**的线路
