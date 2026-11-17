@@ -3606,6 +3606,7 @@ EmulatorJS 引擎日志与加载阶段文字（`diagLog`）、下载器的重试
   的线路上，物理上就要 35～60 秒；诊断包却只有 start_click → slow_start 和一条第 0 片，后续分片还没进 Resource Timing）。
   `startupProgressTrace.ts` 记下最后进度：slow_start 的原因原文带上阶段（后台归组时两类自然分开），快照行带字节数与平均速率。
   ROM Worker 发 `Timing-Allow-Origin`，否则跨源请求的传输量恒为 0；边缘已缓存的旧响应要等过期才带上。
+- **诊断归组要给出可审阅的判断，不要把相关性写成根因**（2026-11-18）：前端持续观察 Resource Timing，缓冲区写满时先保留慢 / 大 / 失败候选，再逐步扩容且不清除历史记录（页面资源自修复和 J2ME 看门狗也读取该列表）；资源型 `error` 事件另外记录失败的脚本 / 样式 / 媒体入口，避免快速失败不进性能表。服务端 `diagnoseStartupFailure()` 用脱敏后的现场按固定规则标出类别、阶段、把握度与安全的核心名；明确区分 ROM 下载、ROM 内容、街机 ROM 集 / BIOS、引擎资源、WebGL、内存、存储、输入权限和核心运行时错误。`table index` 等运行时陷阱只标「待确认」，不能仅凭一条错误断言 ROM 损坏。后台现场和「复制给 AI」同时展示分类与把握度；新增字段必须在 `normalizeDiagnostics()` 白名单和隐私政策中同步维护。
 - 回归：`npm run test:startup-diagnostics`。
 - **聚集报警**（2026-11-15，`server/src/diag-alert.js`）：同一特征 60 分钟内来自 ≥10 个不同访问就给 `DIAG_ALERT_EMAIL` 发一封
   （复用 Resend），同一特征 6 小时内不重复，冷却记在 `site_settings` 的 `diag.alert.<特征>`。没配邮箱完全不启用。

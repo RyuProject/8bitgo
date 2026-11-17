@@ -10,6 +10,15 @@ export type DiagnosticEvent = 'failed' | 'timeout' | 'slow_start'
 
 export interface DiagnosticCount { name: string; count: number }
 
+export interface DiagnosticDiagnosis {
+  code: string
+  label: string
+  phase: string
+  confidence: 'high' | 'medium' | 'low'
+  signals: string[]
+  artifact?: string
+}
+
 export interface DiagnosticGroup {
   signature: string
   text: string
@@ -36,6 +45,7 @@ export interface DiagnosticPayload {
   v: 1
   build: string
   reason: string
+  diagnosis?: DiagnosticDiagnosis
   env: {
     mem: number | null
     cores: number | null
@@ -94,6 +104,46 @@ export const fmtBytes = (n: number): string => {
   return `${n}B`
 }
 
+const DIAGNOSIS_SIGNAL_LABEL: Record<string, string> = {
+  'environment.offline': '浏览器报告离线',
+  'error.wasm_memory': '日志出现 WebAssembly 内存分配错误',
+  'error.webgl': '日志出现 WebGL 初始化错误',
+  'error.storage': '日志出现浏览器存储或 Blob 读写错误',
+  'error.gamepad_permission': '日志出现手柄权限错误',
+  'error.engine_asset': '日志指向模拟器引擎入口资源',
+  'error.engine_load': '错误摘要报告模拟器整体加载失败',
+  'stage.engine_assets': '最后阶段文字指向模拟器依赖资源',
+  'error.lazy_module': '日志指向页面懒加载模块导入失败',
+  'error.page_asset': '日志指向页面脚本或样式资源',
+  'error.romset_or_bios': '日志出现街机 ROM 集或 BIOS 错误',
+  'error.runtime_trap': '日志出现模拟器运行时陷阱',
+  'error.rom_format': '日志出现 ROM 格式或映射错误',
+  'error.core_download': '日志指向模拟器核心下载 / 加载',
+  'error.wasm_runtime': '日志指向 WebAssembly 核心初始化 / 运行',
+  'resource.rom_http_status': 'ROM 请求返回 HTTP 错误状态',
+  'resource.core_http_status': '模拟器核心请求返回 HTTP 错误状态',
+  'resource.page_asset_status': '页面脚本或样式请求返回 HTTP 错误状态',
+  'resource.http_status': '资源请求返回 HTTP 错误状态',
+  'error.rom_download': '日志或请求指向 ROM 下载 / 读取',
+  'error.network': '日志出现网络请求错误',
+  'stage.rom': '最后阶段文字指向 ROM 下载 / 读取',
+  'stage.core': '最后阶段文字指向核心下载 / 解压',
+  'event.timeout': '启动事件或错误文字报告超时',
+  'error.unsupported': '日志出现不支持的功能 / 格式',
+  no_specific_signal: '没有命中具体错误规则',
+}
+
+export const diagnosisSignalLabel = (signal: string): string => DIAGNOSIS_SIGNAL_LABEL[signal] ?? signal
+
+const DIAGNOSIS_PHASE_LABEL: Record<string, string> = {
+  network: '网络', graphics: '图形初始化', browser: '浏览器功能', engine_asset: '模拟器资源',
+  page_asset: '页面资源', content_config: '街机 ROM / BIOS 配置', engine: '模拟器加载', runtime: '模拟器运行时',
+  content: '游戏文件', core_download: '核心下载 / 解压', rom_download: 'ROM 下载 / 读取',
+  core_init: '核心启动', startup: '启动流程', configuration: '兼容性配置', unknown: '未定位',
+}
+
+export const diagnosisPhaseLabel = (phase: string): string => DIAGNOSIS_PHASE_LABEL[phase] ?? phase
+
 const counts = (items: DiagnosticCount[]): string => items.map((i) => `${i.name}×${i.count}`).join('、') || '—'
 
 export function formatEnvironment(sample: DiagnosticSample): string {
@@ -126,13 +176,18 @@ export function formatSample(sample: DiagnosticSample, index?: number): string {
   }
   lines.push(`- 部署版本：${d.build || '未知'}；本次访问第 ${d.attempt.index} 次开局`)
   if (d.reason) lines.push(`- 失败原因原文：${d.reason}`)
+  if (d.diagnosis) {
+    const certainty = d.diagnosis.confidence === 'high' ? '高' : d.diagnosis.confidence === 'medium' ? '中' : '低'
+    lines.push(`- 自动识别：${d.diagnosis.label}；阶段 ${diagnosisPhaseLabel(d.diagnosis.phase)}；把握 ${certainty}${d.diagnosis.artifact ? `；对象 ${d.diagnosis.artifact}` : ''}`)
+    if (d.diagnosis.signals.length) lines.push(`- 识别依据：${d.diagnosis.signals.map(diagnosisSignalLabel).join('；')}`)
+  }
   if (d.timeline.length) {
     lines.push('', '阶段时间线（距点击开始）：', '```')
     for (const row of d.timeline) lines.push(`${fmtMs(row.t).padStart(7)}  ${row.e}`)
     lines.push('```')
   }
   if (d.logs.length) {
-    lines.push('', '日志（page=外层页面，ejs=EmulatorJS 引擎，stage=加载阶段文字，download=下载器，adapter=适配器）：', '```')
+    lines.push('', '日志（page=外层页面，resource=浏览器捕获的失败资源，ejs=EmulatorJS 引擎，stage=加载阶段文字，download=下载器，adapter=适配器）：', '```')
     for (const row of d.logs) lines.push(`${fmtMs(row.t).padStart(7)} [${row.s}/${row.l}] ${row.m}`)
     lines.push('```')
   }
