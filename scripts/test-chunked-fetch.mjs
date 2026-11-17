@@ -826,9 +826,11 @@ await check('下载好的 ROM 读不出：记下 Blob 存储已坏并改内存�
   assert.equal(ctx.f(700 << 20, true), 'fresh', '放不进内存的大光盘照旧整包重下')
   assert.equal(ctx.f(700 << 20, false), null)
   assert.equal(marks.length, 4, '每次都要记下 Blob 存储已坏（3 天内直接内存下载）')
-  assert.match(ejs, /const firstDownloadMode = \(\): 'preemptive-memory' \| 'resume' => \(romBlobStorageBroken \? 'preemptive-memory' : 'resume'\)/)
+  // romBlobBrokenNow() = 本机 Blob 存储坏过 || AI 临时修补 memory_rom（shared/hotfix.js）
+  assert.match(ejs, /const romBlobBrokenNow = \(\): boolean => romBlobStorageBroken \|\| hotfixFlags\(\)\.memoryRom/)
+  assert.match(ejs, /const firstDownloadMode = \(\): 'preemptive-memory' \| 'resume' => \(romBlobBrokenNow\(\) \? 'preemptive-memory' : 'resume'\)/)
   assert.match(ejs, /let stored = await download\(firstDownloadMode\(\)\)/, '街机第一次下载就要看 Blob 存储是否坏过')
-  assert.match(ejs, /let blob = await download\(romBlobStorageBroken \? 'preemptive-memory'/, '光盘 / NDS 同理')
+  assert.match(ejs, /let blob = await download\(romBlobBrokenNow\(\) \? 'preemptive-memory'/, '光盘 / NDS 同理')
   assert.equal((ejs.match(/inMemoryUpTo: memoryLimitFor\(mode\)/g) ?? []).length, 2)
   // 先发制人的那次按设备内存收着；确认读不出之后才放到最大
   const limitFn = ejs.match(/function preemptiveMemoryRomBytes[\s\S]*?\n\}/)?.[0]

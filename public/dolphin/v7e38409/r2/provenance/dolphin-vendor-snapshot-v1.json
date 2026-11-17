@@ -1,0 +1,1063 @@
+{
+  "schemaVersion": 1,
+  "normalization": "git-blob-lf",
+  "root": {
+    "baseCommit": "e22551eae1c84a7e4d0b6a5c519ef4ed4ef69df1",
+    "resultTree": "dd6f5548aa13de585ec9988130f98aa9d0ce1982",
+    "changedPathCount": 113,
+    "records": [
+      {
+        "path": "CMakeLists.txt",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "f07566c044d537f0e9ead63cfc0ba4a024e9858d",
+        "resultBlob": "1250fdd71ec7fdf9269c6620931668a797a4114f",
+        "size": 32797,
+        "sha256": "c94d5efe44a42c92b2c3fe844eb07aaa52b001bc6a56eabc1f7229c4d23acaf2"
+      },
+      {
+        "path": "Externals/glslang/CMakeLists.txt",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "b3e311560d9b2967f1ce9354f8111391d8f42665",
+        "resultBlob": "09c1642917cad81f9f33f701ed9b29aa52d0f2a3",
+        "size": 1403,
+        "sha256": "282444fbeb5fc2016b0fab07e4b16cbd52d641eb3659ee6e85979b1f4d215568"
+      },
+      {
+        "path": "Source/Core/AudioCommon/AudioCommon.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "73e1094a6935bb5607d14dae8f3ae48cecd36efb",
+        "resultBlob": "332f2e522fe47a3ce95829682c5f4c6ebcc68d2b",
+        "size": 10400,
+        "sha256": "950fce777bb78b1c1d1ee9ce685bdb29d35adef5c1986624fb8a4be1bce26c57"
+      },
+      {
+        "path": "Source/Core/AudioCommon/CMakeLists.txt",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "04ad9672344ce903dcf2efb9c8676ead1a63f51c",
+        "resultBlob": "b7f924866052f428252136b22f52e6f8b50a5bd3",
+        "size": 2624,
+        "sha256": "24711d65660d56f0f6281084fb8564ce51728478b3b777d62795bd49f82b0dfc"
+      },
+      {
+        "path": "Source/Core/AudioCommon/WebAudioStream.cpp",
+        "status": "A",
+        "mode": "100644",
+        "baseBlob": null,
+        "resultBlob": "6c2a51a425b9ab066bb5e2ad384f1a5331e35012",
+        "size": 1280,
+        "sha256": "0580cb1f8857616d5c17ff0984c0819e91641a1f4ab1e9d094b4a8086c33cac5"
+      },
+      {
+        "path": "Source/Core/AudioCommon/WebAudioStream.h",
+        "status": "A",
+        "mode": "100644",
+        "baseBlob": null,
+        "resultBlob": "c07dd188620372c907f3457febdc05499b43838a",
+        "size": 562,
+        "sha256": "9b6e3f4cc79ea2a7acb852bc348d917e9dcddd8e6d29d281b92f9bd0c4c77e6d"
+      },
+      {
+        "path": "Source/Core/Common/CMakeLists.txt",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "894fd38128742c0a665911d67224a2ea40b9b481",
+        "resultBlob": "1fbe54675a39f5312e97e83e4538f88f7b15a143",
+        "size": 8410,
+        "sha256": "23e80777a440f6252f81f4850b646301c076c29cc2c270697ed5bb46bae6d790"
+      },
+      {
+        "path": "Source/Core/Common/FileUtil.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "9f17a586752286440c8524752d99a89046133ef7",
+        "resultBlob": "f83cd74856d2ec64df84c55218cbdb1b3fb1b373",
+        "size": 34625,
+        "sha256": "3f083b03df8ab102ebc4a302927679d08ca261dac834c6e263063594dc03fe5e"
+      },
+      {
+        "path": "Source/Core/Common/FilesystemWatcher.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "94970232b2dd28d01ec60b644f79a1237e7cc138",
+        "resultBlob": "83b78088c15e9e1c3005dc8fb479f2fee473b1b1",
+        "size": 2517,
+        "sha256": "1a6ed9fea71cfd0e44e359935e249c37f15dc83a416db44eff56a6d621bb66b3"
+      },
+      {
+        "path": "Source/Core/Common/GL/GLContext.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "eef689616e85bd2d6ee1d69b8f018b442412fa04",
+        "resultBlob": "bb8da27d8eddc654f518e0519cd517579656e9c6",
+        "size": 2751,
+        "sha256": "8910063ae7595430d3adba84a9672b840cfad1f16c44c75960d599419ba38906"
+      },
+      {
+        "path": "Source/Core/Common/GL/GLInterface/Emscripten.cpp",
+        "status": "A",
+        "mode": "100644",
+        "baseBlob": null,
+        "resultBlob": "13d05a5d4d51d8fd8c785958208c9554452d9ff3",
+        "size": 16773,
+        "sha256": "ca78f411234b558a2361530defaedd30b6e714f417f98fb0554ba94940b37449"
+      },
+      {
+        "path": "Source/Core/Common/GL/GLInterface/Emscripten.h",
+        "status": "A",
+        "mode": "100644",
+        "baseBlob": null,
+        "resultBlob": "7e6264c0692d48d294bfe4209351a1e805448046",
+        "size": 1306,
+        "sha256": "9149c8f784e1b8b07ec64897dd52dead84e16f6c682c29ea9779deb6217a0197"
+      },
+      {
+        "path": "Source/Core/Common/MemoryUtil.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "0d66890d2b85a1fcbb9764c92955936fbd40119b",
+        "resultBlob": "659f9a8adba2ff7c60e3c922c77ffab47b995036",
+        "size": 8082,
+        "sha256": "eceaadc2eb271b6afd63f2f1c877a5e9ab435ecbc722c504e7892803fdddfe0d"
+      },
+      {
+        "path": "Source/Core/Common/Thread.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "258559bc4f7a196c5181d0d24e118fd897f8b18f",
+        "resultBlob": "2efd1a44841a8d2b470091629441b57828884640",
+        "size": 5373,
+        "sha256": "36a9f520b23624543bdd02df54c68467c56b84bc4bb6ed44bd176d8c9e5b4a1b"
+      },
+      {
+        "path": "Source/Core/Common/Timer.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "957073426b264f9af793b8a5aeacad57d71c481b",
+        "resultBlob": "f570a55471cb4a93ce3556921aafb17ed0be3e57",
+        "size": 6795,
+        "sha256": "d29faf38f0cfa72fbae81bcd035635efda4bb67f3b3d7b5fbfefd6654e4d44c9"
+      },
+      {
+        "path": "Source/Core/Core/Boot/Boot.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "2ddadfec720b59ff28f0cf91f8c099be060a9501",
+        "resultBlob": "f8652922464d731a4328a62e3acbfec7cdc2347f",
+        "size": 25082,
+        "sha256": "82b23515c489187e15925a08bc00567bb23001b4339eb76040fe6e6c8a2a28bb"
+      },
+      {
+        "path": "Source/Core/Core/Boot/Boot_BS2Emu.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "a44796dd4f7819648011289d2a53afc232a0bd7a",
+        "resultBlob": "6f18ed585a15bd617005b4102abd665482c2e7f0",
+        "size": 25677,
+        "sha256": "614f3e3dfa4025a106ca439129593692c77ecd0849c165bfceeee7549a46c6a1"
+      },
+      {
+        "path": "Source/Core/Core/CMakeLists.txt",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "e411239d1774c945782e599ee48c375db65ee5c6",
+        "resultBlob": "1bde8d4e7b5823fd48b77d87edc49b0c670702df",
+        "size": 31117,
+        "sha256": "84cfdcc87f60d37919ca6de427cd679c1c3d1de369a5fc5ee3039f5629743a07"
+      },
+      {
+        "path": "Source/Core/Core/Core.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "cebcc748ec4b2dc235828c3474a9d32ffb1fdf11",
+        "resultBlob": "9918a1945d158f31c7a86f563e556280678cf435",
+        "size": 38509,
+        "sha256": "bc427e1510080a1152d3302d6e948bc983c4795ed50aef4eae8f794e0e400063"
+      },
+      {
+        "path": "Source/Core/Core/CoreTiming.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "1fa39d74486b5c652078c7fba67891c1e13c194f",
+        "resultBlob": "68eefc8937bc8a7131537fc27eaf888abb2a0b63",
+        "size": 26921,
+        "sha256": "b35328bba8af93eded862464a27783e8f4abe171901e5b93022e7b0097b3405d"
+      },
+      {
+        "path": "Source/Core/Core/HW/DVD/AMMediaboard.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "e20698e717b7344679fddd77d5bfb36c4e71c99d",
+        "resultBlob": "a6718bc8df219ccc5e50e0138f0067226189f0df",
+        "size": 78221,
+        "sha256": "88c8a3bd2d675c9e5d4e4871cbaa2b61e5faa2ff99050641cda5b2bdeccd0211"
+      },
+      {
+        "path": "Source/Core/Core/HW/DVD/DVDThread.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "e7b40fa629e40fb05a10c16c04cba6249ddbdfc2",
+        "resultBlob": "35b63454c394b8118f0ff5c0a5e935cd939e675d",
+        "size": 13046,
+        "sha256": "ca169d5aecb6491ba1274defc8e79be1d98b0dca240b67ad71833d632909cd0c"
+      },
+      {
+        "path": "Source/Core/Core/HW/EXI/BBA/TAPServerConnection.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "d70e3eadb2b0dec3f3779935d679ba75276f1268",
+        "resultBlob": "9f7fddb2d26704134b08d1e8edb4e637149d423e",
+        "size": 11097,
+        "sha256": "34cc97b1945072e97f2196f02b46583c75a990567e54196fc364a848c49decf9"
+      },
+      {
+        "path": "Source/Core/Core/HW/EXI/EXI_DeviceEthernet.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "c49c6e32b9c03fbbf6d7385c6905f04b7a50858e",
+        "resultBlob": "3dbf3e22a449ffbdc1cf8e2b1f49daad42ced6be",
+        "size": 18584,
+        "sha256": "8cbd7f28c60a1955984d32f2f14c4c6a41066257da81d5f84040f7a7b433bb3a"
+      },
+      {
+        "path": "Source/Core/Core/HW/EXI/EXI_DeviceEthernet.h",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "00d0fcb84eea8313a253decbb71e2425dbbd2911",
+        "resultBlob": "d0576f211bfee74aa95fb359d28a8240742ad9ab",
+        "size": 12547,
+        "sha256": "58fae8fa63c53fced8445ab8134b3f541e687596ed9980d9c6690ef2ff4e620c"
+      },
+      {
+        "path": "Source/Core/Core/HW/EXI/EXI_DeviceMemoryCard.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "73ff1d616c5df5c5a5464b0dec8482f258e102a9",
+        "resultBlob": "7cddbee872da31140711f8f89c5edc2076d5b95f",
+        "size": 16913,
+        "sha256": "d13a35180542854f23cd2bc90a3cf9d475af2a0ea1664caf58f696c5fbc4986e"
+      },
+      {
+        "path": "Source/Core/Core/HW/GCPad.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "188882c58aff05400801110c182966c9bf090921",
+        "resultBlob": "0673f91cac3901b477a6a1b5e4748d1fa8210b53",
+        "size": 1917,
+        "sha256": "8e46fa08236f8eae0d644e67cd2b7f96c67c2042b9d791d26070cfd653ea86af"
+      },
+      {
+        "path": "Source/Core/Core/HW/Triforce/ICCardReader.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "b438992fb40bc7340ef6c171dfceb958509280ae",
+        "resultBlob": "736a72de88636ab42d180356cb1d78a521fc9277",
+        "size": 21132,
+        "sha256": "39871ee3f33030808d350cb0030e50be44f95782aab872bfd898a3a03de3cda5"
+      },
+      {
+        "path": "Source/Core/Core/HW/Triforce/ICCardReader.h",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "7f4911c85df39125766ae5de4bdbf5f270435644",
+        "resultBlob": "ad8c43d0c9568d108cf491abf373add3c9020605",
+        "size": 2679,
+        "sha256": "0b110ea70e2e1aeaa28ed0406b4c0a8d0e416b42e2ddce620cc3e6575cc2b8eb"
+      },
+      {
+        "path": "Source/Core/Core/HW/VideoInterface.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "42e0f350ba133ed466cefa0fd102f71bd0f7c880",
+        "resultBlob": "2fa67037f14895d8976ee454e0d19deed4baea29",
+        "size": 43120,
+        "sha256": "9827badf3f1a2aea477b747d0ea70c19e0756822a40f8333143dad9794b8f061"
+      },
+      {
+        "path": "Source/Core/Core/IOS/Network/Socket.h",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "4f07612799b2420cb5ee7b38d254ef44cfec93b0",
+        "resultBlob": "8d68c748912ea8d0e0636d6cf258775d6d88fce9",
+        "size": 6466,
+        "sha256": "969bc46e2584b8a570e7fbad338669f43be90f7d1570dd1450b03eb92af732a0"
+      },
+      {
+        "path": "Source/Core/Core/IOS/USB/Emulated/Microphone.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "4a21c7659636009baffcf539aaf6f3073caa3515",
+        "resultBlob": "d6530b1c727a6cbdf487358a32ebc584ef7ff76d",
+        "size": 10209,
+        "sha256": "66702e5cbd946a05681b6feca7f602a1a1593eaec51cf35af71090beda09393b"
+      },
+      {
+        "path": "Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "3ec24a30162d97c99c2454af6af89d480d90c29d",
+        "resultBlob": "be158643a9ea59db3bdfb8fa4f391006463d6c31",
+        "size": 443188,
+        "sha256": "1ecd1d239434e73e4eaf8949043b0445585c98a824efa980edc326e2b3354b78"
+      },
+      {
+        "path": "Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.h",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "dd940e89a2fe1ce7bc6a4a0038a4be8fa112e67e",
+        "resultBlob": "3b7577ab6b9f9d87d611320d3030cd55c22a35da",
+        "size": 13801,
+        "sha256": "45ecb8392edd94c516950c03a276a364117334709439eb4db52e54a741fd4635"
+      },
+      {
+        "path": "Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreterBlockCache.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "3b4c4a0637fef2555e2628386fff370a9b31d348",
+        "resultBlob": "94bea0a9c116011bf4e0a2f72e89fe7a5bd18ec8",
+        "size": 1547,
+        "sha256": "7c8af6daa71d5dc19e482e84adc980c8b39e616f5e312e15b33d30508d956ace"
+      },
+      {
+        "path": "Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreterBlockCache.h",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "5b34a9cfc947c15e49f9f33da93f7e263b94b61c",
+        "resultBlob": "f37b75cc6d4a6b392c56b27059527e4bb6670632",
+        "size": 1174,
+        "sha256": "72849bd2ca8bd9cda2800253520c34e94889103fb1ce23a6d6fc1e705c2804a2"
+      },
+      {
+        "path": "Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreterLink.h",
+        "status": "A",
+        "mode": "100644",
+        "baseBlob": null,
+        "resultBlob": "fe2099d1c1124daf86329fcf05810b1924d9f2c4",
+        "size": 8550,
+        "sha256": "c93f02134a741e8c583e85d9134dbd535c57a54084aae5fb4b0000be9c84dd2c"
+      },
+      {
+        "path": "Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter_Disassembler.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "665329729eb6b90d95aac910244fb60976d634b4",
+        "resultBlob": "2185ae96d9517aee5ca191433e140312dd1bcb02",
+        "size": 16182,
+        "sha256": "8122d046d12e71bee89a238311addcd133c1b3db91290c7af502b2dca748c673"
+      },
+      {
+        "path": "Source/Core/Core/PowerPC/CachedInterpreter/WasmDeferredCompileQueue.h",
+        "status": "A",
+        "mode": "100644",
+        "baseBlob": null,
+        "resultBlob": "ae423e835429dfb6cd3357f8c83260fe2d68bfa6",
+        "size": 2020,
+        "sha256": "479adaab31231cac5d3caf1e9e967098ed1195720d23b8bdb2047f1ef2121fb7"
+      },
+      {
+        "path": "Source/Core/Core/PowerPC/JitCommon/JitCache.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "4eecedc321e2be392a223a696e8350c5abd5b3fc",
+        "resultBlob": "4152d433d432c71be9bf5c8b008f6ab930eef47d",
+        "size": 18587,
+        "sha256": "a659a7a5cfc3ac1cc477e4d5c3d39435e46b2c32fec2dc325fcd5e673ec8df95"
+      },
+      {
+        "path": "Source/Core/Core/PowerPC/JitCommon/JitCache.h",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "4b5ac6fd80a5d35436b3db25c8ebb88bfd6982d0",
+        "resultBlob": "6c600035a11f7224b5c0dbd1221a8d3bb01eea09",
+        "size": 10129,
+        "sha256": "265c81a5cce4546902c3127dd55f9a96853cffd31c431842ce1a53ae76b7eeae"
+      },
+      {
+        "path": "Source/Core/Core/State.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "1d7ff9eb6acb1e9853f69edcd34a722cad487747",
+        "resultBlob": "55abd8a89bc3396f0ac8c349738f7629369ce92e",
+        "size": 32875,
+        "sha256": "31b27ee86f36f77449285dd81289a91a706e02ac782dffc4e0dcfd1fd556f0f2"
+      },
+      {
+        "path": "Source/Core/Core/State.h",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "1c4eeb05547d6fad2f9c2561a52d375c92e02718",
+        "resultBlob": "614dd889d0bf806896a4b48c76377935c42fcae5",
+        "size": 3517,
+        "sha256": "e664e3c5ddc84ee6515c62d98b905b24cffe88242d7fb95e4e6bac4d944a498f"
+      },
+      {
+        "path": "Source/Core/Core/WasmTimingProfile.h",
+        "status": "A",
+        "mode": "100644",
+        "baseBlob": null,
+        "resultBlob": "7cedebe6a47d68382bccf9af078a0ce8a6f686e0",
+        "size": 27971,
+        "sha256": "30ee704955a2b46be836cf0c4778c15055423ced2b2712a4f7190848635271d2"
+      },
+      {
+        "path": "Source/Core/DiscIO/CMakeLists.txt",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "bfec96dd9d7dc9ccd2064b9511e0f143bffd67cf",
+        "resultBlob": "cb13e4929061fdc7276bc4297834880e17390a0b",
+        "size": 3023,
+        "sha256": "8d3945a1248a7bc469eaa2a632c9b5f12baa0c19a11f23150eb63776f84fcf5a"
+      },
+      {
+        "path": "Source/Core/InputCommon/CMakeLists.txt",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "0e5612f353ef50ce8900a52113b31c9d162d2956",
+        "resultBlob": "64febf2efcd4d24a93ba57fbda95d17458a1c2be",
+        "size": 6438,
+        "sha256": "e96845b85611eaf464e3d2f9357186fa0e30cbea59110bc29889f7bde62e554f"
+      },
+      {
+        "path": "Source/Core/InputCommon/GCAdapter.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "e11d95d68f942f1bac3e6f6d106b39498daf89b5",
+        "resultBlob": "e68a0293f6957ca6c4002d5499bb03faf1df303d",
+        "size": 32593,
+        "sha256": "6357ea6d0fe48a509dfb33a1f0c56f9e41d53d82992cd235543577a8f5c83cbe"
+      },
+      {
+        "path": "Source/Core/VideoBackends/CMakeLists.txt",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "9d20d6d2b5a7ced3b73e88af314476fc77cb75d8",
+        "resultBlob": "adcf4e0433c184c0bbe2e1248e216ec2c4f93ef6",
+        "size": 644,
+        "sha256": "c0a8935e8a9454027325673933b04bcd96cec4be5a2af7bfa0183fadb389cb57"
+      },
+      {
+        "path": "Source/Core/VideoBackends/OGL/OGLConfig.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "ce1b7a5b783b1fb656fcd4b31646e8686dc5c7c8",
+        "resultBlob": "64ec994018bce1d473c8e92b301de037ed888617",
+        "size": 32763,
+        "sha256": "5e562f50bca341442b39412cc154382fa4040da06e1704f68c914b3924ec176f"
+      },
+      {
+        "path": "Source/Core/VideoBackends/OGL/OGLGfx.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "ff5402ba03b7d16f23bbf5aab4e62a64728d8784",
+        "resultBlob": "cc13ddf672aa88eb769bba4a221bac6315c49d10",
+        "size": 23374,
+        "sha256": "fdfd4fa133125c099298e0735ec2ea5e02dadeaae85b33b2f300102912c1e71d"
+      },
+      {
+        "path": "Source/Core/VideoBackends/OGL/OGLMain.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "df0c28a21c924afbbe350477512e06f7e61ed88d",
+        "resultBlob": "be4d7753a8ef3d73311d27eb8c58f7de0dcd31c1",
+        "size": 9605,
+        "sha256": "1c7652d7c81bec3bd46674a01848da1480574760ed3e143f92f9ad311c04f6da"
+      },
+      {
+        "path": "Source/Core/VideoBackends/OGL/OGLNativeVertexFormat.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "921ef61b4033d0ad664f354d8e4985cee2e0f8aa",
+        "resultBlob": "2262fe35b4756b698f6271f91d6d330fa16f8125",
+        "size": 3924,
+        "sha256": "4faf6a6a77d9bb5c407279fde04b96387fd052d15a496c82e0921c31a9c8e930"
+      },
+      {
+        "path": "Source/Core/VideoBackends/OGL/OGLStreamBuffer.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "2eec58418c7bdc65493f4c13fdfcd3650df9d09a",
+        "resultBlob": "0958e212298661312e774a245dad9f707d550103",
+        "size": 13126,
+        "sha256": "fcd2fbe58edee0887b75353eb6c5804d5f22f3b789788a83a9a3d1f243dd89dc"
+      },
+      {
+        "path": "Source/Core/VideoBackends/OGL/OGLTexture.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "003a7ec4420f3c9400aae2dfc83353e4bf4f0266",
+        "resultBlob": "965f5485ecddb7f94ee4dfef50e6c57385f74010",
+        "size": 28421,
+        "sha256": "a6096ee5e293b0ec1d22a3692e7109736a086814b3cb84d3bad851e0ce86d7f8"
+      },
+      {
+        "path": "Source/Core/VideoBackends/Software/CMakeLists.txt",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "acf152da8b181f3c69ebc4f8916384250df5ad21",
+        "resultBlob": "bdfbf9e459b14c5699ded035ed6b05b623528a4f",
+        "size": 866,
+        "sha256": "4055db040cc3e8d94ccb554ccb9afc6bd21f4cb19414f78b57e5d1ae9de36b25"
+      },
+      {
+        "path": "Source/Core/VideoBackends/Software/Rasterizer.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "2839e05b7392206a2e73a61672765a3a4bb0fca3",
+        "resultBlob": "919d2ddc8284ad18f015d659d7102c6fefe0777a",
+        "size": 18288,
+        "sha256": "c313ab95e83b2968eed81e043ada2b18fbebdb71e5a8f987ecd3e637dc856e89"
+      },
+      {
+        "path": "Source/Core/VideoBackends/Software/Rasterizer.h",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "d9cd4a6b1167d1ba12f1e3857bb4c24e6c8dcce1",
+        "resultBlob": "dd5ddfdda24f666a63ee851b9ad608e7eaf0f313",
+        "size": 800,
+        "sha256": "94ed19d45daa76b7e8f12e9e9a6a077bf1424dd4279cb6401f42bd49bc163a8c"
+      },
+      {
+        "path": "Source/Core/VideoBackends/Software/SWEfbInterface.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "7797b1da20abd355fdf64e88db3cd53216a702fe",
+        "resultBlob": "ed7349c841c84d9cbc0f7da03db7a64faef2fe3f",
+        "size": 26177,
+        "sha256": "b88017172b11810592f05a9f0b076f96f0dea09ea6c0717ab57b406265ac77d3"
+      },
+      {
+        "path": "Source/Core/VideoBackends/Software/SWGfx.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "7004c508644c92aa43cb753cd8b813e29ebc6355",
+        "resultBlob": "386bd6653089cc3e0e0c1e1ba8bd48ce9946dae4",
+        "size": 4872,
+        "sha256": "6556eef0a68c2c7937760d179620856d0d3dda9d8d74701676e772924aebdf76"
+      },
+      {
+        "path": "Source/Core/VideoBackends/Software/SWOGLWindow.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "a002e3e5198068a6fc07fa57720f600159b65c12",
+        "resultBlob": "7f2b5f0f31eeaec994ec08727659ed68d52b5e8b",
+        "size": 3908,
+        "sha256": "3eaca30e5877c3d1b05644cb4d79eeda1259db938a6d8a8f690b97c178bcf76b"
+      },
+      {
+        "path": "Source/Core/VideoBackends/Software/SWVertexLoader.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "8759de597afc2eee04a327bf71c7ff00b3129f47",
+        "resultBlob": "d2eaffa53e3b765b831580a16599abe638e0ffb3",
+        "size": 8911,
+        "sha256": "85fa6d76882a383f8b6c7b8b0c330ce0c59b8f49f3ae4e9ffea33133664492d2"
+      },
+      {
+        "path": "Source/Core/VideoBackends/Software/Tev.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "7b254cb490d73c771104a6ff5a84041245820ad8",
+        "resultBlob": "807bf979052b1f905f08595c967efff19576d1d5",
+        "size": 32724,
+        "sha256": "7c415f6e4055d46bbe2a9ce71f40ad4d3b2c6398a07ea13cf822ab2d92ee01b8"
+      },
+      {
+        "path": "Source/Core/VideoBackends/Software/Tev.h",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "c6b6f878512c3435586678b10bdf250cb6d94b03",
+        "resultBlob": "2155f35fffc4a5fdecb727feff547dd90c523a4f",
+        "size": 8092,
+        "sha256": "b403133cab56045bbef69be136f81fdec7e7b084f50becf8d3de1244e88a4081"
+      },
+      {
+        "path": "Source/Core/VideoBackends/Software/TevHotCase.h",
+        "status": "A",
+        "mode": "100644",
+        "baseBlob": null,
+        "resultBlob": "580beb29793efe813405ddf7aaa5baf10983bcbd",
+        "size": 2707,
+        "sha256": "def4d1cf22dfb39e02239448430c18dcfb5855b35b31e556f494c9630ff46f11"
+      },
+      {
+        "path": "Source/Core/VideoBackends/Software/TextureSampler.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "000dfc632bcfcfd5646c8e878be28679c3613a54",
+        "resultBlob": "7397093ec5d9381ef63acc2824b867bfee978b5e",
+        "size": 12174,
+        "sha256": "d16b50cdbb2f7eb98ec0556cfcb2b823dfe6b300391824fe74e15686e39a1934"
+      },
+      {
+        "path": "Source/Core/VideoBackends/Software/TextureSamplerHotCase.h",
+        "status": "A",
+        "mode": "100644",
+        "baseBlob": null,
+        "resultBlob": "2a8056daf9ce27417f87cc5ce4498ef4d9b3328c",
+        "size": 9814,
+        "sha256": "6483cc9c2eee23dd3cfe541c462f56b1a80083b0886d24698d79148199a33e0d"
+      },
+      {
+        "path": "Source/Core/VideoBackends/WebGPU/CMakeLists.txt",
+        "status": "A",
+        "mode": "100644",
+        "baseBlob": null,
+        "resultBlob": "9acc9c20bff9c8642be6f803668f4ef3d28be13d",
+        "size": 1433,
+        "sha256": "2c82a5eaac60754916d36cc5b1fcc384ae5969b6d3aed6a3de86016ea76d4a9b"
+      },
+      {
+        "path": "Source/Core/VideoBackends/WebGPU/PerfQuery.h",
+        "status": "A",
+        "mode": "100644",
+        "baseBlob": null,
+        "resultBlob": "e327c68e9c64ca6f8519162376b38e2338971a45",
+        "size": 756,
+        "sha256": "1cdb23e14616dbc34bbd97ef4d62eae27299c0bcbe1ddea498bc03f19255f19a"
+      },
+      {
+        "path": "Source/Core/VideoBackends/WebGPU/TextureCache.h",
+        "status": "A",
+        "mode": "100644",
+        "baseBlob": null,
+        "resultBlob": "636b5ff35daff44e70852b300a270bd83b71b7da",
+        "size": 1593,
+        "sha256": "885ed6d3abd83d66963df3ae8cff42d28ad6ed2c1cbdd308829080b7b79d6433"
+      },
+      {
+        "path": "Source/Core/VideoBackends/WebGPU/VideoBackend.cpp",
+        "status": "A",
+        "mode": "100644",
+        "baseBlob": null,
+        "resultBlob": "358640fae0ef2176312f4e8022505b1aceb86f9c",
+        "size": 17251,
+        "sha256": "ebbf77d360559f537740991655e1a636f1da3cf4b6855665628e15ee9ec9098c"
+      },
+      {
+        "path": "Source/Core/VideoBackends/WebGPU/VideoBackend.h",
+        "status": "A",
+        "mode": "100644",
+        "baseBlob": null,
+        "resultBlob": "265222536398c3a1dff11d8916e4c8d938763dd3",
+        "size": 1564,
+        "sha256": "8e891b84e125d34d977faf4d9fcf92b8d1604aedfed490eadf5e5c05b1a15fa6"
+      },
+      {
+        "path": "Source/Core/VideoBackends/WebGPU/WebGPUBoundingBox.h",
+        "status": "A",
+        "mode": "100644",
+        "baseBlob": null,
+        "resultBlob": "cfa8c16a2c6dcbfa20b5bc14abec1dff34d3d1d8",
+        "size": 691,
+        "sha256": "b8ec2cc731dc5a7b26c6a0bd792d4139cf9f7d61befea84ccaca38b4b74d8ddb"
+      },
+      {
+        "path": "Source/Core/VideoBackends/WebGPU/WebGPUCommandStream.cpp",
+        "status": "A",
+        "mode": "100644",
+        "baseBlob": null,
+        "resultBlob": "f1ecf610fe0e1517525931eb99f2bab354430546",
+        "size": 62186,
+        "sha256": "5bdab726bc978d653c914c1458a8190101c2bf1dff8683775cc25749c9b603ed"
+      },
+      {
+        "path": "Source/Core/VideoBackends/WebGPU/WebGPUCommandStream.h",
+        "status": "A",
+        "mode": "100644",
+        "baseBlob": null,
+        "resultBlob": "7564fc15d82abd9713b72d77b7078ca790a3824c",
+        "size": 26000,
+        "sha256": "b53e0e41afedcecad7bc873f8fcfeaa974728feb892ab54f350eeed945a69e0f"
+      },
+      {
+        "path": "Source/Core/VideoBackends/WebGPU/WebGPUGfx.cpp",
+        "status": "A",
+        "mode": "100644",
+        "baseBlob": null,
+        "resultBlob": "b4410ed7074dd8d4b240e4d984b7eb777f799073",
+        "size": 109251,
+        "sha256": "da43b6411de33fa0ca6ffcb83b51f93ad3e257d7525fd2b994584356e3c999fb"
+      },
+      {
+        "path": "Source/Core/VideoBackends/WebGPU/WebGPUGfx.h",
+        "status": "A",
+        "mode": "100644",
+        "baseBlob": null,
+        "resultBlob": "bf7cda7978f25cf7e6a7ded67cdc3bab43d115a0",
+        "size": 15991,
+        "sha256": "793f2bfcffd802f1fed8f3909ac875faa97e33cd2e41cb79cafb09468da752b8"
+      },
+      {
+        "path": "Source/Core/VideoBackends/WebGPU/WebGPUShaderTranslator.cpp",
+        "status": "A",
+        "mode": "100644",
+        "baseBlob": null,
+        "resultBlob": "5c6e73008e9c5fe1a3d7a6d462b7ce7aff088521",
+        "size": 8598,
+        "sha256": "57394057bc1cc3bc0ab6d372070672ef7602187674ed26d272c208193fb908cf"
+      },
+      {
+        "path": "Source/Core/VideoBackends/WebGPU/WebGPUShaderTranslator.h",
+        "status": "A",
+        "mode": "100644",
+        "baseBlob": null,
+        "resultBlob": "18282a14c0e68c9f265a2975edb85b297aeceba6",
+        "size": 2333,
+        "sha256": "a43868e5af2fc6fdf2c5f6362cd598a4d6c0b0925d3484869eec17ac29c281be"
+      },
+      {
+        "path": "Source/Core/VideoBackends/WebGPU/WebGPUTexture.cpp",
+        "status": "A",
+        "mode": "100644",
+        "baseBlob": null,
+        "resultBlob": "2a52e7dec80e35c6cd32ca9e9d612c8d6d1d99c6",
+        "size": 11716,
+        "sha256": "5d0165b16e0dbc7352bb38bd78bd4bfffbde04cbeeb7b0640388b8936362f6b7"
+      },
+      {
+        "path": "Source/Core/VideoBackends/WebGPU/WebGPUTexture.h",
+        "status": "A",
+        "mode": "100644",
+        "baseBlob": null,
+        "resultBlob": "396fe8e3e9696eecb359a229770d60b254b5a8f0",
+        "size": 3717,
+        "sha256": "60c7e29ea8c67260c63a049fba69a61c344926b51051f1197f8ede9db76445c5"
+      },
+      {
+        "path": "Source/Core/VideoBackends/WebGPU/WebGPUUboPacket.h",
+        "status": "A",
+        "mode": "100644",
+        "baseBlob": null,
+        "resultBlob": "a570493662aa2f36e003af73ff616b6f414c99a7",
+        "size": 3073,
+        "sha256": "f226a3c2d8bbe74fea0e887dde9d88fcd936de0e56014bba9a79e8dda61fff6c"
+      },
+      {
+        "path": "Source/Core/VideoBackends/WebGPU/WebGPUVertexManager.cpp",
+        "status": "A",
+        "mode": "100644",
+        "baseBlob": null,
+        "resultBlob": "0935c196ce3ba4d85a53f92b120a5da550c60efb",
+        "size": 43738,
+        "sha256": "c2242e7b9eebdc3e94c90ffa310a3d7d2f184606b48ecab01f31617d82642583"
+      },
+      {
+        "path": "Source/Core/VideoBackends/WebGPU/WebGPUVertexManager.h",
+        "status": "A",
+        "mode": "100644",
+        "baseBlob": null,
+        "resultBlob": "ff4f8aacfa0f6146bd0e3e2ecfef5b28cde3eac0",
+        "size": 5295,
+        "sha256": "593a7b8b04fc0ed4a2288be194f14e92b4eb092788c27839d73dc5da98d6f8c4"
+      },
+      {
+        "path": "Source/Core/VideoCommon/AbstractGfx.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "851dc485fd2a02c033bb7bc561b8acdfb9cae502",
+        "resultBlob": "cbf5fb1c0b322787a8120f9788b6205df33ebb75",
+        "size": 7261,
+        "sha256": "51d7c9e47806ce5738c03f32705c087bd9dde91e9951737ff3c1631e47602207"
+      },
+      {
+        "path": "Source/Core/VideoCommon/AsyncShaderCompiler.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "83eaa2e23e8342933401aa9305be202ea5baaecc",
+        "resultBlob": "60b861b464842267b1bb8b076706b87ffc8e0218",
+        "size": 6333,
+        "sha256": "df92965cb8a387772d5bb89cef3ebdb2893f7a957b2b54299faf7191eddb5cfa"
+      },
+      {
+        "path": "Source/Core/VideoCommon/CMakeLists.txt",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "69a0968e4d883105ae108ffb3466bbf2d72cc91e",
+        "resultBlob": "c7fbe232d08915d08bda00c8b0b6e6c7d148a873",
+        "size": 7329,
+        "sha256": "f4f4c02345cc2db7951fb5c92d1178ee70d904e6441155f6cc598e08be76b83e"
+      },
+      {
+        "path": "Source/Core/VideoCommon/CommandProcessor.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "1dbf466f1c9f72a7498c0fd0711a297e16698e80",
+        "resultBlob": "514be35358668c871f1fa0b7360b3a76fcf44fda",
+        "size": 30315,
+        "sha256": "0766806cef9f837e34e7e79f3b0bf54fd90fed4eb931fa863861b72db9769ab8"
+      },
+      {
+        "path": "Source/Core/VideoCommon/DriverDetails.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "b657d7721ca37d3637e96fc9203c099a1465e1e5",
+        "resultBlob": "2fb809cf735a94f55cd7cd6ee4c21a9acfb82ba4",
+        "size": 15131,
+        "sha256": "28644290e454a209ead61ff737b05c26d05a6759b24255ce7454ac514c153304"
+      },
+      {
+        "path": "Source/Core/VideoCommon/EFBInterface.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "c38774d669a4784d40ea9ede97e19c0746eda10e",
+        "resultBlob": "dfada5741053f9dff284219e9b451f6d1df4dfa2",
+        "size": 5417,
+        "sha256": "7f6d4d68bcad465c6266e264039746306aecd6b4af9112949ab4e10ad9c1fd3b"
+      },
+      {
+        "path": "Source/Core/VideoCommon/Fifo.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "f183c9365514cc908bbc3641d55ff8db8c3acfe9",
+        "resultBlob": "b44544f10225c8b6f670c0cf6a4095efa489b808",
+        "size": 26167,
+        "sha256": "5ecc0251aff884fbe699c03df128cdeaa67482babce9097f28cfdca0ca9819d3"
+      },
+      {
+        "path": "Source/Core/VideoCommon/FramebufferManager.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "6277598d9292fa57dc6cddb14e8700b6169424cb",
+        "resultBlob": "c798b9032519d38fb34078b38b80d85750a71f9c",
+        "size": 43369,
+        "sha256": "fbf10ddee89981af0d8542c41a93ce61a0a2e4329e4b380ae7d63f81dd1f7210"
+      },
+      {
+        "path": "Source/Core/VideoCommon/FramebufferManager.h",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "9f10918ac227caf2126d00367f907c46e56f86b9",
+        "resultBlob": "f8af1cafab409b00c6d306ce7333f0ed3af9a72c",
+        "size": 9118,
+        "sha256": "70e07900d2166de471e9e1dc3939c50e016b65e158cff245f08578c4eb96395a"
+      },
+      {
+        "path": "Source/Core/VideoCommon/FramebufferShaderGen.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "248146e2b6f9a5d3e829118dff332462dda97185",
+        "resultBlob": "48e6b14224e51b98e0a9db8a9c9a95c26dd4a238",
+        "size": 22535,
+        "sha256": "2ef5fd52637a323da4226eb3e72b89e25d28bd20c022df1b0ca267c84156b60f"
+      },
+      {
+        "path": "Source/Core/VideoCommon/PixelShaderGen.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "5ce120e9ff58c164e3dfc5468d9df3680e07ee9a",
+        "resultBlob": "da364dd8cf6d9b93e4739688dbb74f16ffa8e635",
+        "size": 90265,
+        "sha256": "1bb64ea6868542b58c2ab6e55afa59ea9ce4053bddc94fecb21ff3ed97235c68"
+      },
+      {
+        "path": "Source/Core/VideoCommon/PostProcessing.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "92f7c1f99c2804f23ce3b9c2b4b95d9b0f01180d",
+        "resultBlob": "21f4c4bf3b2ea2b2ee93367909de2031f064dd5c",
+        "size": 36835,
+        "sha256": "e331957bb2e4fa2d5dce29bd20f768306db73a2db15292e44b931017b4c1c3b6"
+      },
+      {
+        "path": "Source/Core/VideoCommon/Present.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "0691323c545c12839b77b5c243b11c5e4373e347",
+        "resultBlob": "462c1f6fc59ba1b43bd92e4a967f4771846d113b",
+        "size": 35419,
+        "sha256": "6841f755575f4b0cb423874557c9b0d18f254b564a05bbbb5c6ff6c0ac844dcf"
+      },
+      {
+        "path": "Source/Core/VideoCommon/ShaderCache.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "2627656d0d8c20dbd17381babc858671ae17eca9",
+        "resultBlob": "d54946b0938305008b709602f6cfcf5d6835bd01",
+        "size": 54851,
+        "sha256": "5469f05d7d9434415ecdfe5b8265f139b101acffb28ee56298a7a4c93351cd82"
+      },
+      {
+        "path": "Source/Core/VideoCommon/ShaderGenCommon.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "e848beb6934b30a3061d6f9b065aecd722ca1195",
+        "resultBlob": "cf9793efccf7cdaf57486d655b31b10c92d6e9af",
+        "size": 15161,
+        "sha256": "5d2514d167829d85a17ca49b02c20f1ecbbaf958cba92283862558a5bb6fb468"
+      },
+      {
+        "path": "Source/Core/VideoCommon/TextureConversionShader.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "f18f63ef8cf44fb16a74c03a33401adcf8559ee9",
+        "resultBlob": "63b9cace86de7c15854eef0c9b44a42a366d6e25",
+        "size": 43367,
+        "sha256": "7cc5b374b04bce9a0a8dffde31853115df02d1943c5d27f9840c25d5440bb3ed"
+      },
+      {
+        "path": "Source/Core/VideoCommon/TextureConverterShaderGen.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "a8827fdc6f6d0826292392c43ebbb2e87dca0172",
+        "resultBlob": "083f41482f01c0bb1bcc3200ddcb9817acd2ca45",
+        "size": 9963,
+        "sha256": "866196cfeababb3fd1b6f035277b7286296e31120ecd69bcaa87939b144e79a9"
+      },
+      {
+        "path": "Source/Core/VideoCommon/UberShaderCommon.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "f605081481da3a1806d3de0ffd0f6f82e14c0df3",
+        "resultBlob": "e897d6d5b2191952b68439f845b212845760e8ab",
+        "size": 8303,
+        "sha256": "2051c73dacce4a47652d674e76f109efcba50c8f84710e52c4f5c5ab2eba46cc"
+      },
+      {
+        "path": "Source/Core/VideoCommon/UberShaderPixel.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "3370f878adc20f96b53a30ccaee3e152893d3408",
+        "resultBlob": "ba9d9f0f152594105eb61353506eb299df32fa10",
+        "size": 60741,
+        "sha256": "f4a5cd75772793d9ad1c11d9d83c9fd4918e5ac90f74382983db7b08c4bf0309"
+      },
+      {
+        "path": "Source/Core/VideoCommon/UberShaderVertex.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "6f79564eddaa87de3dd49956cb408402f750df08",
+        "resultBlob": "b306080c6a3eaede72e08de41089e97ee5256246",
+        "size": 33079,
+        "sha256": "a2c8cf85f5de1eaa1961534fd9ac665cd1df7f5496809f30337a2296f4eac854"
+      },
+      {
+        "path": "Source/Core/VideoCommon/VertexManagerBase.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "2bc6d586d78c34507eb3041790b6df0299dc46b2",
+        "resultBlob": "bc9eceb70958cdb2ce0a43f2a729f1c0955409df",
+        "size": 41624,
+        "sha256": "b002e30937875ef7054a606bc4b7ccb1db9a8648c332731250bb8384f390fa63"
+      },
+      {
+        "path": "Source/Core/VideoCommon/VertexManagerBase.h",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "715dbee6925b40d2aedc08b207c4422a63894bd2",
+        "resultBlob": "734c696c68f469f7b9dbd658130e5e47c9baca03",
+        "size": 9244,
+        "sha256": "061e585ab6835a003440a42df29dad94fffd6218e7d21686cd4dffdc5c17adc4"
+      },
+      {
+        "path": "Source/Core/VideoCommon/VertexShaderGen.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "837c30c55625f0bf600b3fca44fade3c05980c27",
+        "resultBlob": "8c37785355f0cfe925f81246adb405a096d1a8b4",
+        "size": 36176,
+        "sha256": "d10267e3dda679c66e44f143cbd7e84238097d2e4b61637465bb9baf70745442"
+      },
+      {
+        "path": "Source/Core/VideoCommon/VideoBackendBase.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "7eeefb718782a57de56a4873624e539d42cbe49b",
+        "resultBlob": "749052e5e8f371f15b66ad5dc02be5c90be2b15e",
+        "size": 15763,
+        "sha256": "96f1b1e7f7575f5c693ddd2b8aec866318aaf4ba86d0c759728720318c8d63d4"
+      },
+      {
+        "path": "Source/Core/VideoCommon/VideoConfig.cpp",
+        "status": "M",
+        "mode": "100644",
+        "baseBlob": "d2cacd727624272b9b8601477696647868e45cd7",
+        "resultBlob": "c2e06f6deb9cc66591f2137f00d1e8a451e2df11",
+        "size": 18454,
+        "sha256": "67933a1263d910d81c22c3f70c7b1b4226aa80f3055228762c3e8666aedbc9c7"
+      },
+      {
+        "path": "Source/Core/VideoCommon/WasmWebGpuDrawProfile.h",
+        "status": "A",
+        "mode": "100644",
+        "baseBlob": null,
+        "resultBlob": "dcb88b228a063bbe7d0d163d92acf0a71bfd154b",
+        "size": 5726,
+        "sha256": "527974fccb1c9e5076ca85e612c98d7a22e87e1746a4d8dd131fc78c8e5b66f9"
+      },
+      {
+        "path": "Source/Core/VideoCommon/WasmWebGpuProducerProfile.h",
+        "status": "A",
+        "mode": "100644",
+        "baseBlob": null,
+        "resultBlob": "e6a7e80cb9099a4fb4e8aa3f2ef2cf41430bbc2b",
+        "size": 3459,
+        "sha256": "92c80e01b00c24414d8f7252a625d37d01120a72c829a07987f708e4167e37b0"
+      },
+      {
+        "path": "Source/Core/VideoCommon/WasmWebGpuUniformFastPath.h",
+        "status": "A",
+        "mode": "100644",
+        "baseBlob": null,
+        "resultBlob": "8c1e840f486136a628c5633127a66e9ddb2c1f3a",
+        "size": 939,
+        "sha256": "56cf3ea1fea08ffee64a345781f96afa6618a658cefb2c5ac03153ce3a990692"
+      },
+      {
+        "path": "Source/Core/VideoCommon/WasmWgpuDeepDiagnostics.h",
+        "status": "A",
+        "mode": "100644",
+        "baseBlob": null,
+        "resultBlob": "efe3921a81c45bf9a5da7c390622b1aebfa5cc80",
+        "size": 455,
+        "sha256": "d685c3ffaf3b03a9cf35cabb1161897ef2d960f7fb45afeb8f61825b5218cf96"
+      },
+      {
+        "path": "Source/Core/VideoCommon/WasmWgpuIdleFifoTailGate.h",
+        "status": "A",
+        "mode": "100644",
+        "baseBlob": null,
+        "resultBlob": "ffb521dee50bd58d8873ba1aa3c38c7827c26dad",
+        "size": 1928,
+        "sha256": "9cff20bf9318d96222dc8fa46101a216882af7fb6ece71e2f2f0dc9a977d148e"
+      }
+    ]
+  },
+  "submodules": [
+    {
+      "cwd": "Externals/SFML/SFML",
+      "baseCommit": "0fa201c969e48ecc253581c5841ce73f44d42f49",
+      "resultTree": "daee38afd8ced2f4d13ae8ee6971eab454448755",
+      "records": [
+        {
+          "path": "include/SFML/Config.hpp",
+          "status": "M",
+          "mode": "100644",
+          "baseBlob": "36a8b1a3725403b9b47f5716202a7ae00d780759",
+          "resultBlob": "c5a8fd7d4e1775dad3a67e76dd127f8373da91b4",
+          "size": 4466,
+          "sha256": "c67d9f05de82049cf3bb9ad84e7f7c7869e2c9bb1243d133d8b29faf7c0ead44"
+        }
+      ]
+    },
+    {
+      "cwd": "Externals/xxhash/xxHash",
+      "baseCommit": "e626a72bc2321cd320e953a0ccf1584cad60f363",
+      "resultTree": "e2f65868f5f3a0d719df4864c4ad8fb428810498",
+      "records": [
+        {
+          "path": "xxhash.h",
+          "status": "M",
+          "mode": "100644",
+          "baseBlob": "78fc2e8dbf6db809650fbb59762c5566a71677ca",
+          "resultBlob": "6dc8258f6933c126cfafcc15fa53feadcaa62b9a",
+          "size": 268382,
+          "sha256": "7ecb0c147c61bd01baa3b39bc7ba65bed22012a15fea69bdb07f3e21b60e1d34"
+        }
+      ]
+    }
+  ],
+  "contentSha256": "40fd280c77363ec774d077f92880cfc334dfc38c36129455cafb15258ee53878"
+}

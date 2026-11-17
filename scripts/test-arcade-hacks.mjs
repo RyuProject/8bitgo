@@ -1,12 +1,9 @@
 /**
  * 已知街机改版包（src/data/arcadeHacks.ts）的自检。
  *
- * 这张表里最容易悄悄坏掉的不是指纹，是**那份内置 dat 和真包对不对得上**：
- * RomData 会把 ROM 清单整个替换掉，写错一个文件名或 CRC，核心不会说"你写错了"，
- * 只会说 "Romset is unknown" 或者少装一块图形，看起来像是包的问题。
- *
- * 所以这里拿一份**真包的成员表**（wofcn.zip 的中央目录，25 项）当基准，
- * 正反两个方向都对一遍；带 derive 的条目还要多对一层「合成产物和 dat 是否咬合」。
+ * 这里用一份真实的 wofcn.zip 成员指纹核对识别结果。
+ * 中文字库的加载映射尚未验证，因此测试还守住一条底线：不能为它保留未经画面验证的
+ * RomData 或图形合成方案，否则会把已确认乱码的补丁重新交给玩家。
  *
  * 用法：npm run test:arcade-hacks
  */
@@ -17,7 +14,7 @@ import { crc32, appendZipEntries, listZipEntries, extractZipEntry } from '../src
 /**
  * wofcn.zip 的真实成员表（name / 未压缩大小 / CRC-32），2026-09-04 从玩家给的包里读的。
  * 这就是 HBMAME 的 tk2h5「Tenchi wo Kurau II (Edition Chinese)」——
- * 基于**日版 wofj** 的中文 Hack，不是 wofch 的残缺版（覆盖率那套曾经就是这么判错的，
+ * HBMAME 父驱动为 **wof** 的中文 Hack，不是 wofj，也不是 wofch 的残缺版（覆盖率那套曾经就是这么判错的，
  * 见 arcadeHacks.ts 头注释）。
  */
 const WOFCN_ZIP = [
@@ -78,10 +75,11 @@ function romLines(dat) {
 console.log('── 指纹识别 ──')
 const hack = matchArcadeHack(WOFCN_ZIP.map(([, , crc]) => crc))
 ok(hack?.zipName === 'wofcn', '真包能认出来，是 wofcn')
-ok(hack.driver === 'wofj', `借的是日版 wofj 驱动（不是 wof / wofch），实际 ${hack.driver}`)
-ok(hack.romDataScope === 'rom', 'wofcn 的 RomData 标记为 ROM 专属，不写入游戏级共享字段')
-ok(romScopedHackForData(hack.romData)?.zipName === 'wofcn', '从 wofcn 的 ZipName 能还原 ROM 专属配置')
-ok(romScopedHackForName('wofcn.zip') === hack, '只在当前 ROM 槽名为 wofcn.zip 时预选专属核心')
+ok(hack.driver === 'wof', `借 HBMAME tk2h5 的父驱动 wof（不是 wofj / wofch），实际 ${hack.driver}`)
+ok(hack.romDataScope === 'rom', 'wofcn 保持 ROM 专属标记，可拦截游戏级旧 RomData')
+ok(!hack.romData && !hack.derive, '未验证字库映射前不自动注入 RomData 或图形补丁')
+ok(romScopedHackForData('ZipName wofcn\nDrvName wof') === hack, '即使没有加载方案仍能识别旧版 wofcn 专属配置')
+ok(romScopedHackForName('wofcn.zip') === hack, '只在当前 ROM 槽名为 wofcn.zip 时识别专属设置范围')
 ok(romScopedHackForName('wof') === null, '其他地区包名不命中 wofcn 的 ROM 专属核心')
 ok(romScopedHackForData('ZipName kof97\nDrvName kof97') === null, '普通 kof97 配置不被误判为 ROM 专属')
 
@@ -91,68 +89,6 @@ for (const missing of hack.fingerprint) {
   ok(matchArcadeHack(partial) === null, `少了指纹 0x${missing.toString(16)} 就不认（不会误判）`)
 }
 ok(matchArcadeHack([]) === null, '空包不认')
-
-console.log('\n── 合成 ROM（derive）──')
-/**
- * 合成用真包跑不了（仓库里不放 ROM），所以这里只验**机制**：
- * 输出必须是「原 ROM 原样 + 只有那个窗口换成补丁片」。
- * 窗口或四通道顺序一旦改动，dat 里的合成产物 CRC 就必须重新从真包计算。
- */
-const SIZE = 0x080000
-const WINDOW = [0x010000, 0x018000]
-const fill = (byte) => new Uint8Array(SIZE).fill(byte)
-const derived = hack.derive.run({
-  'tk2_gfx1.rom': fill(0x11), 'tk2_gfx3.rom': fill(0x33),
-  'tk2_gfx2.rom': fill(0x22), 'tk2_gfx4.rom': fill(0x44),
-  'tk2_gfx5cn.rom': fill(0x55), 'tk2_gfx6cn.rom': fill(0x66),
-})
-ok(derived.length === 4, `产出 4 条合成图形通道：${derived.map((d) => d.name).join(', ')}`)
-for (const [i, base] of [0x11, 0x33, 0x22, 0x44].entries()) {
-  const patch = i < 2 ? 0x55 : 0x66
-  const d = derived[i].data
-  ok(d.length === SIZE, `${derived[i].name}: 长度还是 0x${SIZE.toString(16)}`)
-  ok(d.subarray(0, WINDOW[0]).every((b) => b === base), `${derived[i].name}: 窗口之前是原 ROM 的内容`)
-  ok(d.subarray(WINDOW[0], WINDOW[1]).every((b) => b === patch), `${derived[i].name}: 窗口内换成了补丁片`)
-  ok(d.subarray(WINDOW[1]).every((b) => b === base), `${derived[i].name}: 窗口之后还是原 ROM 的内容`)
-}
-// 合成不能改调用方的 buffer —— 上面那些 fill() 如果被就地改了，第二次调用结果就不对
-const again = hack.derive.run({
-  'tk2_gfx1.rom': fill(0x11), 'tk2_gfx3.rom': fill(0x33),
-  'tk2_gfx2.rom': fill(0x22), 'tk2_gfx4.rom': fill(0x44),
-  'tk2_gfx5cn.rom': fill(0x55), 'tk2_gfx6cn.rom': fill(0x66),
-})
-ok(crc32(again[0].data) === crc32(derived[0].data), '合成是纯函数，同样输入同样输出')
-
-console.log('\n── 内置 dat 和真包 + 合成产物对得上 ──')
-const rows = romLines(hack.romData)
-const byName = new Map(WOFCN_ZIP.map(([name, size, crc]) => [name, { size, crc }]))
-const derivedNames = new Set(derived.map((d) => d.name))
-const deriveInputs = new Set(hack.derive.inputs)
-ok(rows.length > 0, `dat 里解析出 ${rows.length} 条 ROM 行`)
-
-const missing = rows.filter((r) => !byName.has(r.name) && !derivedNames.has(r.name))
-ok(missing.length === 0, `dat 里的每个文件要么在真包里、要么是合成产物${missing.length ? '：缺 ' + missing.map((r) => r.name).join(', ') : ''}`)
-
-const wrong = rows.filter((r) => byName.has(r.name) && (byName.get(r.name).crc !== r.crc || byName.get(r.name).size !== r.size))
-ok(wrong.length === 0, `真包里那些的大小和 CRC 全部吻合${wrong.length ? '：' + wrong.map((r) => r.name).join(', ') : ''}`)
-
-// 合成产物在 dat 里必须写成和原 ROM 一样的长度 —— derive 只换窗口，不改长度
-const badSize = rows.filter((r) => derivedNames.has(r.name) && r.size !== SIZE)
-ok(badSize.length === 0, `合成产物在 dat 里写的长度是 0x${SIZE.toString(16)}${badSize.length ? '：' + badSize.map((r) => r.name).join(', ') : ''}`)
-
-// derive 的输入被合成产物取代了，dat 里不能再直接引用 —— 引用了就等于把补丁片
-// 或者未打补丁的原图形装进去，中文一定不显示
-const stillReferenced = rows.filter((r) => deriveInputs.has(r.name) && !derivedNames.has(r.name))
-const replaced = new Set(['tk2_gfx1.rom', 'tk2_gfx3.rom', 'tk2_gfx5cn.rom', 'tk2_gfx6cn.rom'])
-ok(
-  stillReferenced.every((r) => !replaced.has(r.name)),
-  `被合成取代的原 ROM 没有再出现在 dat 里${stillReferenced.length ? '：' + stillReferenced.map((r) => r.name).join(', ') : ''}`,
-)
-
-// 反过来：包里有、dat 没提、也不是合成输入的文件 = 那块 ROM 永远不会被装载
-const referenced = new Set(rows.map((r) => r.name))
-const orphan = WOFCN_ZIP.map(([name]) => name).filter((name) => !referenced.has(name) && !deriveInputs.has(name))
-ok(orphan.length === 0, `包里每个文件要么 dat 用上了、要么是合成输入${orphan.length ? '：漏了 ' + orphan.join(', ') : ''}`)
 
 console.log('\n── 往包里追加成员（appendZipEntries）──')
 // 空 zip = 只有一条 EOCD，是合法的；从它开始追加最能单独验证写出来的结构
@@ -213,35 +149,60 @@ for (const h of ARCADE_HACKS) {
 
   // derive 的产出和 dat 必须咬合
   if (h.derive) {
-    const outNames = new Set(h.derive.run(Object.fromEntries(h.derive.inputs.map((k) => [k, fill(0)]))).map((d) => d.name))
+    const outNames = new Set(h.derive.run(Object.fromEntries(h.derive.inputs.map((k) => [k, new Uint8Array(0x200000)]))).map((d) => d.name))
     const names = new Set(romLines(dat).map((r) => r.name))
     ok([...outNames].every((x) => names.has(x)), `${h.zipName}: 每个合成产物 dat 里都引用了（${[...outNames].join(', ')}）`)
   }
 }
 
-/* ---------------- 入库的包也必须跑合成 ---------------- */
+/* ---------------- 合成加载方案两条路径都必须接通 ---------------- */
 {
-  console.log('\n── 合成这一步两条路都要接上 ──')
+  console.log('\n── 改版包加载路径守卫 ──')
   const { readFileSync } = await import('node:fs')
   const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '')
 
-  /*
-    病史：合成（derive）以前**只有「玩本地 ROM」那条路接了**。入库的游戏那条只做两件事 ——
-    套 hack.romData、把包名改成 hack.zipName —— 而 dat 里引用的偏偏是合成产物
-    （wofcn 的中文字库要先合成进原图形 ROM）。包里没有这些合成通道，
-    核心按 dat 去找就是两条 missing，游戏必死，而后台界面还绿字写着「✓ 识别为已知改版包」。
-  */
   const adapter = strip(readFileSync(new URL('../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8'))
   ok(
     /deriveArcadeHackBytes\(/.test(adapter),
-    '⭐ prepareRemoteArcadeRom 这条路会跑合成（入库的改版包不能只套 dat 不合成）',
+    '远程 ROM 的改版合成仍走统一处理函数',
   )
   ok(
     !/new Blob\(\[data\], \{ type: 'application\/zip' \}\)/.test(adapter),
     '⭐ 不许再直接拿原始字节建 blob —— 必须过 arcadeBlobFrom，它才会合成',
   )
   const local = strip(readFileSync(new URL('../src/emulator/arcadeHack.ts', import.meta.url), 'utf8'))
-  ok(/deriveArcadeHackBytes\(/.test(local), '本地那条路也走同一个函数（同一张表、同一套合成）')
+  ok(/deriveArcadeHackBytes\(/.test(local), '本地 ROM 的改版合成也走同一个函数')
+
+  ok(
+    /configuredScopedHackMatches\s*&&\s*configuredScopedHack\.romData\s*\?\s*configuredRomData\s*:\s*''/.test(adapter),
+    '无已验证 RomData 的 ROM 专属改版不会重新注入历史错误清单',
+  )
+  ok(
+    /selectedScopedHack\?\.romData\s*&&\s*!isFbneoCore\(core\)/.test(adapter),
+    '没有已验证 RomData 时不会仅凭包名把游戏强切到 FBNeo',
+  )
+
+  const player = strip(readFileSync(new URL('../src/emulator/EmulatorPlayer.tsx', import.meta.url), 'utf8'))
+  ok(
+    /if\s*\(matched\?\.hack\)\s*\{\s*setError\(fmt\(t\.player\.arcadeHackNoPlan/.test(player),
+    '本地玩家上传识别到但没有加载方案的改版包时会提示并停止开局',
+  )
+  ok(
+    /prepared\.hack\?\.romDataScope === 'rom' && !prepared\.hack\.romData[\s\S]{0,220}failLoad\(fmt\(getT\(\)\.player\.arcadeHackNoPlan[\s\S]{0,100}, 'config'\)/.test(adapter),
+    '远端 wofcn 也会在没有验证过的字库方案时明确停止，不误送基础 wof 驱动',
+  )
+
+  const localPage = strip(readFileSync(new URL('../src/pages/PlayLocalPage.tsx', import.meta.url), 'utf8'))
+  ok(
+    !/ZipName\s+wofcn[\s\S]{0,100}DrvName\s+wofj/.test(localPage),
+    '本地试玩页不再把未经验证的 wofcn → wofj 当成可用示例',
+  )
+  ok(/wofcn[\s\S]{0,80}尚未验证/.test(localPage), '本地试玩页明确提示 wofcn 字库方案尚未验证')
+
+  const generator = readFileSync(new URL('../scripts/make-romdata.mjs', import.meta.url), 'utf8')
+  ok(!/wofcn\.zip\s+--drv\s+wofj/.test(generator), 'RomData 生成器不再指导 wofcn 借用错误的 wofj 驱动')
+  const mapper = readFileSync(new URL('../server/src/mappers.js', import.meta.url), 'utf8')
+  ok(!/DrvName（借用的驱动，如 wofj）/.test(mapper), '后台校验错误不再建议错误的 wofj 驱动')
 
   // outputs 必须和 run() 的实际产出、以及 romData 里引用的名字三者一致
   for (const hack of ARCADE_HACKS) {

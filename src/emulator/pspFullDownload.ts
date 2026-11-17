@@ -1,5 +1,6 @@
 /** PSP 整盘模式：只在浏览器私有磁盘里组装镜像，绝不把 GB 级 ROM 拼进 JS 内存。 */
 import type { LoadProgress } from './types'
+import { canonicalRomUrl } from '@/services/romHosts'
 
 const PART_BYTES = 8 * 1024 * 1024
 const STALL_MS = 30_000
@@ -14,12 +15,13 @@ function exactRange(value: string | null, start: number, end: number, total: num
 }
 
 async function downloadPart(
-  url: string, start: number, end: number, total: number, signal: AbortSignal,
+  urls: readonly string[], start: number, end: number, total: number, signal: AbortSignal,
   validator: { etag?: string; modified?: string },
 ): Promise<{ bytes: Uint8Array<ArrayBuffer>; etag?: string; modified?: string }> {
   let lastError: unknown
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     if (signal.aborted) throw signal.reason ?? new Error('下载已取消')
+    const url = urls[attempt % urls.length]
     const controller = new AbortController()
     const cancel = () => controller.abort(signal.reason)
     signal.addEventListener('abort', cancel, { once: true })
@@ -36,7 +38,11 @@ async function downloadPart(
       const response = await fetch(url, { headers, signal: controller.signal, cache: 'no-store' })
       if (response.status !== 206 || !exactRange(response.headers.get('content-range'), start, end, total)) {
         void response.body?.cancel().catch(() => {})
-        throw new Error(`镜像分片响应无效（HTTP ${response.status}）`)
+        const error = new Error(`镜像分片响应无效（HTTP ${response.status}）`)
+        if (response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500) {
+          error.name = 'PspRangeNetworkError'
+        } else error.name = 'PspRangeRouteError'
+        throw error
       }
       const etag = response.headers.get('etag') || undefined
       const modified = response.headers.get('last-modified') || undefined
@@ -67,7 +73,8 @@ async function downloadPart(
       lastError = error
       if (signal.aborted) throw signal.reason ?? error
       // 版本变化或不支持 Range 不能靠重试修好；继续只会反复下载错误响应。
-      if (error instanceof Error && /版本发生变化|响应无效|超出声明长度/.test(error.message)) throw error
+      if (error instanceof Error && /版本发生变化/.test(error.message)) throw error
+      if (error instanceof Error && error.name === 'PspRangeRouteError' && urls.length === 1) throw error
       await new Promise((resolve) => setTimeout(resolve, Math.min(3000, 400 * 2 ** attempt)))
     } finally {
       if (timer) clearTimeout(timer)
@@ -80,15 +87,17 @@ async function downloadPart(
 
 export async function downloadPspDisc(
   url: string, name: string, size: number, signal: AbortSignal,
-  onProgress?: (progress: LoadProgress) => void,
+  onProgress?: (progress: LoadProgress) => void, alternateUrls: readonly string[] = [],
 ): Promise<File> {
   if (!Number.isSafeInteger(size) || size <= 0) throw new Error('无法确定 PSP 镜像大小')
   if (!navigator.storage?.getDirectory || !globalThis.crypto?.subtle) {
     throw new PspDiscStorageError('当前浏览器不支持大文件本地存储，请改用流式传输')
   }
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(url))
+  // 同一个 R2 对象在主站 / 镜像 / 下载域只有一个本地盘缓存，换线路也不应再占一份磁盘空间。
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(canonicalRomUrl(url)))
   const key = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
-  const work = () => downloadPspDiscUnlocked(url, name, size, key, signal, onProgress)
+  const urls = [...new Set([url, ...alternateUrls].filter(Boolean))]
+  const work = () => downloadPspDiscUnlocked(urls, name, size, key, signal, onProgress)
   // 同一镜像被两个标签页同时下载时，不能让第二个标签页删掉第一个正在写的文件。
   // Web Locks 可用时把“查缓存→写盘→落完成标记”整体串起来；不支持时仍靠完成标记防误读。
   return navigator.locks?.request
@@ -97,9 +106,10 @@ export async function downloadPspDisc(
 }
 
 async function downloadPspDiscUnlocked(
-  url: string, name: string, size: number, key: string, signal: AbortSignal,
+  urls: readonly string[], name: string, size: number, key: string, signal: AbortSignal,
   onProgress?: (progress: LoadProgress) => void,
 ): Promise<File> {
+  const url = urls[0]
   // 空 romv 不是内容版本；若把它当稳定键，源站同路径换盘后会直接复用旧的完整镜像。
   const versioned = Boolean(new URL(url, location.href).searchParams.get('romv')?.trim())
   const root = await navigator.storage.getDirectory()
@@ -141,7 +151,7 @@ async function downloadPspDiscUnlocked(
   try {
     onProgress?.({ phase: 'rom', loaded: 0, total: size, ratio: 0 })
     const firstEnd = Math.min(size, PART_BYTES) - 1
-    const first = await downloadPart(url, 0, firstEnd, size, controller.signal, {})
+    const first = await downloadPart(urls, 0, firstEnd, size, controller.signal, {})
     // 没有 ETag / Last-Modified 的外链无法证明多个 Range 属于同一代内容；带 romv 的
     // 站内链接由 R2 Worker 逐次验证版本，其余链接要拒绝，不能拼出一张隐性损坏的盘。
     if (!versioned && !first.etag && !first.modified) throw new Error('镜像没有版本校验信息，无法安全下载整包')
@@ -156,7 +166,7 @@ async function downloadPspDiscUnlocked(
         const start = index * PART_BYTES
         const end = Math.min(size, start + PART_BYTES) - 1
         try {
-          const part = await downloadPart(url, start, end, size, controller.signal, validator)
+          const part = await downloadPart(urls, start, end, size, controller.signal, validator)
           // OPFS 单个 writer 的写操作必须串行；网络并发不代表可以同时改写文件游标。
           writeTail = writeTail.then(() => writer.write({ type: 'write', position: start, data: part.bytes }))
           await writeTail

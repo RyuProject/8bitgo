@@ -223,11 +223,9 @@ export function PlayLocalPage() {
                     value={romData}
                     onChange={(e) => setRomData(e.target.value)}
                     spellCheck={false}
-                    placeholder={`ZipName    wofcn
-DrvName    wofj
-FullName   Tenchi wo Kurau II (Edition Chinese)
-
-tk2j23ccn.bin   0x080000   0xe1dd01d8   BRF_ESS BRF_PRG CPS1_68K_PROGRAM_NO_BYTESWAP`}
+                    placeholder={`// 这里只说明字段结构，不代表 wofcn 已支持；它的中文字库映射尚未验证。
+// ZipName 必须与包短名一致，DrvName 必须是已确认的 FBNeo 驱动。
+// 请粘贴完整 ROM 清单，并核对每项的长度、CRC 和类型。`}
                   />
                   <p className="mt-1 text-[11px] leading-relaxed text-dim">{t.playLocal.romDataHint}</p>
                 </div>

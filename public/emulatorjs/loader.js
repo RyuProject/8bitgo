@@ -32,7 +32,7 @@ async function loadScript(file) {
         const module = await import(script);
         return module.default;
     } catch(e) {
-        if (debug) console.error(e);
+        console.warn(`Failed to import ${file}; trying the unminified fallback`, e);
         const module = await filesMissing(file);
         return module;
     }

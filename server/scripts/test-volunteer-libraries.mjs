@@ -10,10 +10,12 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ROLE_ABILITIES } from '../../shared/roles.js'
+import { gameApiToPartialRow, gameApiToRow } from '../src/mappers.js'
 import {
   normalizeVolunteerGame,
   normalizeVolunteerPost,
   pageVolunteerGames,
+  buildVolunteerGameListQueries,
 } from '../src/volunteer-libraries.js'
 
 const serverRoot = fileURLToPath(new URL('..', import.meta.url))
@@ -50,6 +52,19 @@ assert.deepEqual(game.genres, ['action'])
 assert.deepEqual(game.tags, ['测试'])
 assert.equal(game.roms?.zh, 'roms/nes/personal.nes')
 
+assert.throws(
+  () => gameApiToRow({ slug: 'long-title', title: 'x'.repeat(201), platform: 'nes' }),
+  /英文标题不能超过 200 个字符/,
+)
+assert.throws(
+  () => gameApiToRow({ slug: 'long-description', title: 'Text', platform: 'nes', description: '😀'.repeat(16_384) }),
+  /中文简介不能超过 65535 字节/,
+)
+assert.throws(
+  () => gameApiToPartialRow({ cover: 'x'.repeat(501) }),
+  /封面地址不能超过 500 个字符/,
+)
+
 const other = normalizeVolunteerGame('other', {
   title: 'Hidden Other',
   platform: 'snes',
@@ -59,6 +74,19 @@ const other = normalizeVolunteerGame('other', {
 })
 assert.deepEqual(pageVolunteerGames([game, other], { status: 'visible' }).items.map((g) => g.slug), ['same-slug'])
 assert.deepEqual(pageVolunteerGames([game, other], { q: 'second' }).items.map((g) => g.slug), ['other'])
+
+const listQueries = buildVolunteerGameListQueries('trusted-owner-id', {
+  platform: 'arcade', status: 'hidden', home: true, q: "%' OR 1=1 --", sort: 'popular', pageSize: 999,
+})
+assert.match(listQueries.countSql, /owner_id = \?/)
+assert.match(listQueries.countSql, /JSON_EXTRACT\(payload, '\$\.platform'\)/)
+assert.match(listQueries.countSql, /JSON_EXTRACT\(payload, '\$\.hidden'\)/)
+assert.match(listQueries.countSql, /LOCATE\(LOWER\(\?\)/)
+assert.deepEqual(listQueries.countParams, ['trusted-owner-id', 'arcade', "%' OR 1=1 --"])
+assert.match(listQueries.pageSql, /ORDER BY CAST\(COALESCE\(JSON_UNQUOTE\(JSON_EXTRACT\(payload, '\$\.plays'\)/)
+assert.match(listQueries.pageSql, /LIMIT \? OFFSET \?$/)
+assert.deepEqual(listQueries.pageParams, listQueries.countParams)
+assert.doesNotMatch(listQueries.countSql, /OR 1=1/)
 
 const post = normalizeVolunteerPost('same-post', {
   slug: 'ignored-post',
@@ -85,6 +113,9 @@ assert.ok(gamesRoute.includes("requireAbility('games:edit')"))
 assert.ok(gamesRoute.includes("req.staffRole === 'volunteer'"))
 assert.ok(gamesRoute.includes('saveVolunteerGame(ownerId, slug, req.body)'))
 assert.ok(gamesRoute.includes('deleteVolunteerGame(ownerId, req.params.slug)'))
+assert.match(librarySource, /SELECT COUNT\(\*\) AS total FROM volunteer_games WHERE/)
+assert.match(librarySource, /pageSql: `SELECT \$\{filters\.summary/)
+assert.match(librarySource, /WHERE \$\{whereSql\} ORDER BY \$\{orderBy\} LIMIT \? OFFSET \?`/)
 
 const postsRoute = read('server/src/routes/posts.js')
 assert.ok(postsRoute.includes("requireAbility('posts:edit')"))

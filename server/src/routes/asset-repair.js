@@ -1,7 +1,7 @@
 /**
  * POST /api/asset-repair  { build, files: [文件名] }
  *
- * 坏 chunk 自修复（public/assets/asset-repair-v5.js）发现「普通地址异常、带查询串回源正常」时调这里：
+ * 坏 chunk 自修复（public/assets/asset-repair-v6.js）发现「普通地址导入失败、带查询串地址校验正常」时调这里：
  * Cloudflare 边缘可能缓存了坏字节或 HTTP 错误响应，
  * 而这些文件一年 immutable，不清的话那个节点的所有访客都会一直拿到坏的。
  *

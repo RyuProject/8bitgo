@@ -427,10 +427,12 @@ export interface ResolveContext {
    * GB/GBC 改走 binjgb 的纯 JavaScript 构建（public/binjgb/binjgb-js.js，scripts/build-binjgb-js.mjs）。
    */
   wasmUnavailable?: boolean
-  /** GBA 无 WebAssembly 时改走必须有平台 BIOS 的纯 JavaScript IodineGBA。 */
+  /** GBA 无 WebAssembly 或无 WebGL 时改走必须有平台 BIOS 的 Canvas 2D IodineGBA。 */
   gbaWasmUnavailable?: boolean
-  /** 这个浏览器不能使用 EmulatorJS 所需的画面 / 运行时能力；NES 改走 jsnes，GB/GBC 改走 binjgb。 */
+  /** 这个浏览器不能使用 EmulatorJS 所需的画面能力；NES 改走 jsnes，GB/GBC 改走 binjgb。 */
   webglUnavailable?: boolean
+  /** GBA 的 EmulatorJS 画面不可用时改走 Canvas 2D 的 IodineGBA。 */
+  gbaWebglUnavailable?: boolean
   /**
    * Flash 这一局改用 AwayFL（纯 JavaScript）：没有 WebAssembly 且游戏在验证名单里，或地址带 ?awayfl=1。
    * 由 awayflPolicy.ts 在 effect 里判断后传进来；它比逐游戏的 runtime 覆盖优先（Ruffle 本来就跑不了）。

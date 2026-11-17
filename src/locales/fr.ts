@@ -377,6 +377,12 @@ const fr: Translation = {
     translateRetry: 'Réessayer la traduction',
     translateFailed: 'Échec de la traduction',
     translatedJustNow: 'Traduit',
+    /** AI 临时修补给玩家的提示（shared/hotfix.js 的 player_notice 模板） */
+    hotfixNotice: {
+      unstable: 'Certains joueurs ont récemment eu du mal à lancer ce jeu. Nous corrigeons le problème et avons temporairement modifié son chargement.',
+      try_other_browser: 'Ce jeu risque de ne pas démarrer dans votre navigateur actuel. Si le chargement échoue, essayez la dernière version de Chrome, Edge ou Firefox.',
+      try_later: 'Le service de jeu rencontre des perturbations temporaires. Si le chargement échoue, réessayez plus tard.',
+    },
     year: 'Année de sortie',
     developer: 'Développeur',
     players: 'Joueurs',
@@ -1603,7 +1609,7 @@ const fr: Translation = {
     ruffleNoApi: 'API du lecteur Ruffle introuvable',
     flashLoadFailed: 'Échec du chargement du contenu Flash : {msg}',
     ejsNoCore: "EmulatorJS n'a pas de cœur pour {platform}",
-    ejsFsInjectFailed: 'Impossible d\'installer les fichiers correctifs dans l\'émulateur (RomData et les paquets BIOS supplémentaires passent par ce chemin) — le jeu démarrera avec la configuration d\'origine : {msg}',
+    ejsFsInjectFailed: 'Impossible d\'écrire un fichier injecté dans l\'émulateur : {msg}',
     ejsInitFailed: "Impossible d'initialiser le conteneur de l'émulateur",
     ejsEngineError: "Erreur de l'émulateur : {msg}",
     ejsOutOfMemory: 'Pas assez de mémoire pour démarrer l’émulateur. Ferme les autres onglets ou applis puis appuie sur « Réessayer », ou essaie un appareil avec plus de mémoire.',

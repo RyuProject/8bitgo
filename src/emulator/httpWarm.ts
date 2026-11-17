@@ -17,6 +17,7 @@
 
 /** 正在预热或已预热的 URL。同一个页面里重复调用只发一次请求。 */
 const warmed = new Map<string, Promise<boolean>>()
+const WARM_STALL_MS = 30_000
 
 /**
  * 预热一个同源（或带 CORS 的跨源）资源。
@@ -46,18 +47,35 @@ export function warmHttpCache(url: string): Promise<boolean> {
  * 「ROM 与核心并行」实际上仍是串行。这里逐块读完丢弃，字节只落进浏览器缓存，不占 JS 内存。
  */
 async function drainIntoHttpCache(url: string): Promise<void> {
-  const res = await fetch(url, { cache: 'force-cache', credentials: 'same-origin' })
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  const reader = res.body?.getReader()
-  if (!reader) throw new Error('预热资源响应没有正文')
-  let received = false
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) {
-      if (!received) throw new Error('预热资源正文为空')
-      return
+  const controller = new AbortController()
+  let timedOut = false
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+  const touch = () => {
+    if (timer !== undefined) clearTimeout(timer)
+    timer = setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, WARM_STALL_MS)
+  }
+  try {
+    touch()
+    const res = await fetch(url, { cache: 'force-cache', credentials: 'same-origin', signal: controller.signal })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    reader = res.body?.getReader()
+    if (!reader) throw new Error('预热资源响应没有正文')
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) return
+      if (value?.byteLength) touch()
     }
-    if (value?.byteLength) received = true
+  } catch (error) {
+    if (timedOut) throw new Error(`预热资源 ${Math.round(WARM_STALL_MS / 1000)} 秒没有收到数据`)
+    throw error
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+    if (controller.signal.aborted) void reader?.cancel().catch(() => {})
+    try { reader?.releaseLock() } catch { /* 流已由浏览器关闭 */ }
   }
 }
 

@@ -3,7 +3,7 @@ import { withTransaction } from '../db.js'
 import { requireAdmin, requireAbility, roleOfRequest } from '../auth.js'
 import { ROLE_ABILITIES, isStaff } from '../../../shared/roles.js'
 import { postApiToRow, buildUpsert } from '../mappers.js'
-import { upsertGame, adminStats } from '../games-repo.js'
+import { upsertGamesInTransaction, adminStats } from '../games-repo.js'
 import { invalidateContent } from '../content.js'
 import { queueGameSearchPush, queuePostSearchPush } from '../search-push.js'
 import { startupStats } from '../startup-metrics.js'
@@ -56,14 +56,28 @@ adminRouter.post('/import', requireAdmin, async (req, res, next) => {
     const { error, gameList, postList } = validateAdminImportPayload(req.body)
     if (error) return res.status(400).json({ error })
 
-    // 游戏要连关联表一起写，逐条走 upsertGame（它内部各自开事务）。
-    // 文章只有一张标签表，量也小，放在一个事务里。
-    for (const g of gameList) await upsertGame(String(g.slug), g)
+    // 游戏、文章和关联表放进同一事务；验证已在第一条写库之前完成。
     await withTransaction(async (run) => {
+      await upsertGamesInTransaction(run, gameList)
       for (const p of postList) {
-        const { sql, values } = buildUpsert('posts', postApiToRow(p), 'slug')
+        const row = postApiToRow(p)
+        const beforeRows = await run(
+          'SELECT id, title, excerpt, content FROM posts WHERE slug = ? FOR UPDATE',
+          [p.slug],
+        )
+        const { sql, values } = buildUpsert('posts', row, 'slug')
         await run(sql, values)
         const [{ id }] = await run('SELECT id FROM posts WHERE slug = ?', [p.slug])
+        if (beforeRows.length) {
+          const before = beforeRows[0]
+          const dirty = []
+          if (before.title !== row.title) dirty.push('title_i18n')
+          if ((before.excerpt ?? '') !== (row.excerpt ?? '')) dirty.push('excerpt_i18n')
+          if ((before.content ?? '') !== (row.content ?? '')) dirty.push('content_i18n')
+          if (dirty.length) {
+            await run(`UPDATE posts SET ${dirty.map((column) => `\`${column}\` = NULL`).join(', ')} WHERE id = ?`, [id])
+          }
+        }
         await run('DELETE FROM post_tags WHERE post_id = ?', [id])
         const tags = [...new Set((p.tags ?? []).map((t) => String(t).trim()).filter(Boolean))]
         if (tags.length) {
@@ -77,14 +91,30 @@ adminRouter.post('/import', requireAdmin, async (req, res, next) => {
     const result = { games: gameList.length, posts: postList.length }
 
     // 批量导入后让 SSR 缓存立即失效，前台不用等 60 秒
-    invalidateContent()
+    try {
+      invalidateContent()
+    } catch (error) {
+      console.error('[admin/import] 数据已提交，但清理内容缓存失败：', error?.message || error)
+    }
     // 一次导入可能有上百款，统一进入队列后由各自的批量接口合并提交。
     // ⚠️ 百度普通收录有每日配额（新站常见 10~100 条），批量导入几乎必然会把它推满；
     // 剩下的靠每日兜底任务（cd server && npm run baidu）按天补交。
-    for (const game of gameList) queueGameSearchPush(game)
+    for (const game of gameList) {
+      try {
+        queueGameSearchPush(game)
+      } catch (error) {
+        console.error(`[admin/import] ${game.slug} 已导入，但加入游戏搜索推送队列失败：`, error?.message || error)
+      }
+    }
     // 文章同样要推。这里只推已发布的：导入包里常常混着草稿。
     for (const post of postList) {
-      if (post.published !== false) queuePostSearchPush(post)
+      if (post.published !== false) {
+        try {
+          queuePostSearchPush(post)
+        } catch (error) {
+          console.error(`[admin/import] ${post.slug} 已导入，但加入文章搜索推送队列失败：`, error?.message || error)
+        }
+      }
     }
     res.json({ ok: true, ...result })
   } catch (e) {

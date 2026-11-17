@@ -18,6 +18,10 @@ import {
 
 export const postsRouter = Router()
 
+function logPostCommitFailure(action, error) {
+  console.error(`[posts] 数据已提交，但${action}失败：`, error?.message || error)
+}
+
 /** 给一批文章装配标签（批量，不做 N+1） */
 export async function attachPostTags(rows) {
   if (!rows.length) return []
@@ -435,18 +439,49 @@ postsRouter.put('/:slug', requireAbility('posts:edit'), async (req, res, next) =
         }
       }
     })
-    invalidateContent()
-    const saved = await queryOne('SELECT * FROM posts WHERE slug = ?', [slug])
-    const [post] = await attachPostTags([saved])
+    try {
+      invalidateContent()
+    } catch (error) {
+      logPostCommitFailure('清理内容缓存', error)
+    }
+    // 写库已提交；读回和外部队列失败时仍返回成功，避免管理员重试覆盖已保存内容。
+    let post = postRowToApi({
+      ...postApiToRow({ ...req.body, slug }),
+      published: dbFlag(before?.published),
+      title_i18n: null,
+      excerpt_i18n: null,
+      content_i18n: null,
+      updated_at: new Date(),
+    }, {
+      tags: [...new Set((Array.isArray(req.body.tags) ? req.body.tags : []).map((tag) => String(tag).trim()).filter(Boolean))],
+    })
+    try {
+      const saved = await queryOne('SELECT * FROM posts WHERE slug = ?', [slug])
+      if (saved) [post] = await attachPostTags([saved])
+    } catch (error) {
+      logPostCommitFailure('回读文章', error)
+    }
     /**
      * 只在这个 URL 对搜索引擎「可见过」时才推：
      *   - 现在是已发布 → 新发或改动，要推
      *   - 之前已发布、现在撤下 → URL 变成 404，更要推，否则搜索结果里会长期挂着死链
      *   - 草稿改草稿 → 从来没被收录过，推它只是白耗百度那点每日配额
      */
-    if (post.published || dbFlag(before?.published)) queuePostSearchPush(post)
+    if (post.published || dbFlag(before?.published)) {
+      try {
+        queuePostSearchPush(post)
+      } catch (error) {
+        logPostCommitFailure('加入搜索推送队列', error)
+      }
+    }
     // 已发布才补译（草稿翻了白花钱）。异步、失败只记日志，见 queuePostTranslations。
-    if (post.published) queuePostTranslations(slug)
+    if (post.published) {
+      try {
+        queuePostTranslations(slug)
+      } catch (error) {
+        logPostCommitFailure('安排文章翻译', error)
+      }
+    }
     res.status(createOnly ? 201 : 200).json(post)
   } catch (e) {
     if (req.query.create === '1' && e?.code === 'ER_DUP_ENTRY') {
@@ -474,14 +509,40 @@ postsRouter.patch('/:slug/published', requireAbility('posts:edit'), async (req, 
       return res.json(saved)
     }
 
-    const before = await queryOne('SELECT published FROM posts WHERE slug = ?', [slug])
+    let before
+    await withTransaction(async (run) => {
+      const rows = await run('SELECT published FROM posts WHERE slug = ? FOR UPDATE', [slug])
+      before = rows[0]
+      if (!before) return
+      await run('UPDATE posts SET published = ? WHERE slug = ?', [req.body.published ? 1 : 0, slug])
+    })
     if (!before) return res.status(404).json({ error: '文章不存在' })
-    await query('UPDATE posts SET published = ? WHERE slug = ?', [req.body.published ? 1 : 0, slug])
-    invalidateContent()
-    const row = await queryOne('SELECT * FROM posts WHERE slug = ?', [slug])
-    const [post] = await attachPostTags([row])
-    if (post.published || dbFlag(before.published)) queuePostSearchPush(post)
-    if (post.published) queuePostTranslations(slug)
+    try {
+      invalidateContent()
+    } catch (error) {
+      logPostCommitFailure('清理内容缓存', error)
+    }
+    let post = { slug, published: req.body.published }
+    try {
+      const row = await queryOne('SELECT * FROM posts WHERE slug = ?', [slug])
+      if (row) [post] = await attachPostTags([row])
+    } catch (error) {
+      logPostCommitFailure('回读文章', error)
+    }
+    if (post.published || dbFlag(before.published)) {
+      try {
+        queuePostSearchPush(post)
+      } catch (error) {
+        logPostCommitFailure('加入搜索推送队列', error)
+      }
+    }
+    if (post.published) {
+      try {
+        queuePostTranslations(slug)
+      } catch (error) {
+        logPostCommitFailure('安排文章翻译', error)
+      }
+    }
     res.json(post)
   } catch (e) {
     next(e)
@@ -500,13 +561,30 @@ postsRouter.delete('/:slug', requireAbility('posts:edit'), async (req, res, next
       return res.json({ ok: true })
     }
     // 删之前先看一眼发布状态：删完就查不到了，而「这篇是否被收录过」决定要不要推送。
-    const before = await queryOne('SELECT published FROM posts WHERE slug = ?', [slug])
-    // post_tags 有外键级联，跟着一起删
-    const r = await query('DELETE FROM posts WHERE slug = ?', [slug])
-    if (!r.affectedRows) return res.status(404).json({ error: '文章不存在' })
-    invalidateContent()
+    let before
+    let deleted = false
+    await withTransaction(async (run) => {
+      const rows = await run('SELECT published FROM posts WHERE slug = ? FOR UPDATE', [slug])
+      before = rows[0]
+      if (!before) return
+      // post_tags 有外键级联，跟着一起删
+      const result = await run('DELETE FROM posts WHERE slug = ?', [slug])
+      deleted = result.affectedRows > 0
+    })
+    if (!deleted) return res.status(404).json({ error: '文章不存在' })
+    try {
+      invalidateContent()
+    } catch (error) {
+      logPostCommitFailure('清理内容缓存', error)
+    }
     // 已发布的文章被删除，详情页变 404、博客列表也少了一条，两个都要让搜索引擎重抓。
-    if (dbFlag(before?.published)) queuePostSearchPush({ slug })
+    if (dbFlag(before?.published)) {
+      try {
+        queuePostSearchPush({ slug })
+      } catch (error) {
+        logPostCommitFailure('加入搜索推送队列', error)
+      }
+    }
     res.json({ ok: true })
   } catch (e) {
     next(e)

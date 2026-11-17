@@ -17,6 +17,7 @@
  */
 
 import { browserBitness } from '@/emulator/browserBitness'
+import { activeHotfixIds } from './hotfixFlags'
 
 const LOG_LIMIT = 80
 const LOG_LINE_MAX = 300
@@ -79,6 +80,8 @@ export interface StartupDiagnostics {
     index: number
     sinceStartMs: number
   }
+  /** 这一局生效着的 AI 临时修补 id（services/hotfixFlags.ts）；服务端据此统计效果、自动撤销 */
+  hotfixes?: string[]
   timeline: Array<{ t: number; e: string }>
   logs: DiagnosticLogLine[]
   resources: DiagnosticResource[]
@@ -380,6 +383,7 @@ export function collectStartupDiagnostics(
       reason: scrubDiagnosticText(reason, 600),
       env: environment(start, now),
       attempt: { index: state.index, sinceStartMs: now - start },
+      hotfixes: activeHotfixIds().slice(0, 8),
       timeline: state.timeline.map(({ at, e }) => ({ t: at - start, e })),
       logs: logs.filter((line) => line.at >= start - 5000).slice(-(BUNDLE_LOG_MAX - Math.min(4, snapshotProviders.size)))
         .map(({ at, s, l, m }) => ({ t: at - start, s, l, m }))

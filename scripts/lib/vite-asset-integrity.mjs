@@ -4,7 +4,7 @@
  * 为什么（2026-11-15，PK / TH 两位访客）：详情页懒加载 EmulatorPlayer 时报
  * `The requested module './live-Cqhc9j-k.js' does not provide an export named 'x'`。源站那份文件明明有这个导出，
  * 构建也是确定性的 —— 浏览器手里那份字节和源站不一样（某一跳缓存给了坏内容）。文件名带哈希、一年 immutable，
- * 普通刷新拿回的还是同一份坏字节。修复脚本（public/assets/asset-repair-v5.js）出错时才读这份清单，
+ * 普通刷新拿回的还是同一份坏字节。修复脚本（public/assets/asset-repair-v6.js）出错时才读这份清单，
  * 逐个核对本页已经用过的 chunk 与报错 chunk 的静态依赖，坏的绕过缓存重取。
  *
  * 几条约束：

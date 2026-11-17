@@ -79,8 +79,8 @@ export function resolveRuntime(target: PlatformId | ResolveContext): Runtime | u
     if (fallback?.available() && fallback.supports(platform)) return fallback
   }
 
-  // IodineGBA 是 GBA 在无 WebAssembly 浏览器中的纯 JS 退路，不能被逐游戏固定的 EmulatorJS 覆盖拦回去。
-  if (platform === 'gba' && ctx.gbaWasmUnavailable) {
+  // IodineGBA 是 GBA 在无 WebAssembly / WebGL 浏览器中的 Canvas 2D 退路，不能被逐游戏固定的 EmulatorJS 覆盖拦回去。
+  if (platform === 'gba' && (ctx.gbaWasmUnavailable || ctx.gbaWebglUnavailable)) {
     const fallback = getRuntime('iodinegba')
     if (fallback?.available() && fallback.supports(platform)) return fallback
   }

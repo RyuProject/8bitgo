@@ -24,6 +24,7 @@ import { PrivacyPage } from '@/pages/PrivacyPage'
 const AdminLayout = lazyNamed(() => import('@/admin/AdminLayout'), 'AdminLayout')
 const AdminOverview = lazyNamed(() => import('@/admin/AdminOverview'), 'AdminOverview')
 const AdminDiagnostics = lazyNamed(() => import('@/admin/AdminDiagnostics'), 'AdminDiagnostics')
+const AdminAi = lazyNamed(() => import('@/admin/AdminAi'), 'AdminAi')
 const AdminGames = lazyNamed(() => import('@/admin/AdminGames'), 'AdminGames')
 const AdminPosts = lazyNamed(() => import('@/admin/AdminPosts'), 'AdminPosts')
 const AdminUsers = lazyNamed(() => import('@/admin/AdminUsers'), 'AdminUsers')
@@ -133,6 +134,7 @@ export function AppRoutes() {
           */}
           <Route index element={<RouteChunk><AdminOverview /></RouteChunk>} />
           <Route path="diagnostics" element={<RouteChunk><AdminDiagnostics /></RouteChunk>} />
+          <Route path="ai" element={<RouteChunk><AdminAi /></RouteChunk>} />
           <Route path="games" element={<RouteChunk><AdminGames /></RouteChunk>} />
           <Route path="posts" element={<RouteChunk><AdminPosts /></RouteChunk>} />
           <Route path="developers" element={<RouteChunk><AdminDevelopers /></RouteChunk>} />

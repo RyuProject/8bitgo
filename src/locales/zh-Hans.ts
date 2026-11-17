@@ -439,6 +439,12 @@ export const zhHans = {
     translateFailed: '翻译失败',
     /** 翻译完成后 1.5 秒的反馈提示；之后按钮直接消失，因为下次渲染 needsTranslation() 返回 false */
     translatedJustNow: '已翻译',
+    /** AI 临时修补给玩家的提示（shared/hotfix.js 的 player_notice 模板） */
+    hotfixNotice: {
+      unstable: '这款游戏最近有部分玩家打不开，我们正在修复，已临时调整了加载方式。',
+      try_other_browser: '这款游戏在你当前的浏览器上可能打不开。如果加载失败，请换用最新版 Chrome、Edge 或 Firefox。',
+      try_later: '游戏服务暂时有波动，如果加载失败，请稍后再试。',
+    },
     year: '发行年份',
     developer: '开发商',
     players: '玩家人数',
@@ -1620,7 +1626,7 @@ export const zhHans = {
     ruffleNoApi: '未找到 Ruffle 播放器 API',
     flashLoadFailed: 'Flash 内容加载失败：{msg}',
     ejsNoCore: 'EmulatorJS 没有 {platform} 平台的核心',
-    ejsFsInjectFailed: '补丁文件没写进模拟器（RomData / BIOS 包都走这条通道），游戏会按原始配置启动：{msg}',
+    ejsFsInjectFailed: '模拟器文件注入失败：{msg}',
     ejsInitFailed: '无法初始化模拟器容器',
     ejsLoadFailed: '模拟器没能加载。请检查网络后点「重试」；一直不行请反馈给我们',
     ejsEngineError: '引擎报错：{msg}',

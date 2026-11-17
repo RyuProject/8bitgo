@@ -347,7 +347,11 @@ export function httpRangeFetcher(
       })
       if (res.status !== 206) {
         cancelResponse(res)
-        throw new Error(`读盘失败：期望 206，实际 ${res.status}`)
+        const error = new Error(`读盘失败：期望 206，实际 ${res.status}`)
+        if (res.status === 408 || res.status === 425 || res.status === 429 || res.status >= 500) {
+          error.name = 'RangeNetworkError'
+        }
+        throw error
       }
       if (res.headers.get('content-encoding')) {
         cancelResponse(res)
@@ -424,7 +428,17 @@ export function httpRangeFetcher(
       }
       return bytes.buffer
     } catch (error) {
-      if (timedOut) throw new Error(`读盘卡住：${Math.round(Math.max(1, stallMs) / 1000)} 秒没有收到数据`)
+      if (timedOut) {
+        const stalled = new Error(`读盘卡住：${Math.round(Math.max(1, stallMs) / 1000)} 秒没有收到数据`)
+        stalled.name = 'RangeNetworkError'
+        throw stalled
+      }
+      // fetch / reader 因连接断开抛 TypeError；把它与 Range 内容不匹配区分开，后者无需原地重试。
+      if (!signal?.aborted && (error instanceof TypeError || (error instanceof Error && error.name === 'AbortError'))) {
+        const network = new Error(error instanceof Error ? error.message : '读盘网络连接失败')
+        network.name = 'RangeNetworkError'
+        throw network
+      }
       throw error
     } finally {
       if (timer !== undefined) clearTimeout(timer)
@@ -441,22 +455,28 @@ export function httpRangeFetcher(
     let lastError: unknown
     for (let index = 0; index < candidates.length; index++) {
       const candidate = candidates[index]
-      try {
-        const bytes = await fetchOnce(candidate, start, endInclusive, candidates[index + 1] ?? '')
-        if (candidate !== activeUrl) {
-          const failedUrl = activeUrl
-          activeUrl = candidate
-          alternates = candidates.filter((value) => value !== candidate)
-          rememberRomHostForUrl(activeUrl)
-          diagLog('download', 'warn', 'Play! 读盘切换线路：', failedUrl, '→', activeUrl)
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const bytes = await fetchOnce(candidate, start, endInclusive, candidates[index + 1] ?? '')
+          if (candidate !== activeUrl) {
+            const failedUrl = activeUrl
+            activeUrl = candidate
+            alternates = candidates.filter((value) => value !== candidate)
+            rememberRomHostForUrl(activeUrl)
+            diagLog('download', 'warn', 'Play! 读盘切换线路：', failedUrl, '→', activeUrl)
+          }
+          return bytes
+        } catch (error) {
+          if (signal?.aborted) throw error
+          lastError = error
+          const retryable = error instanceof Error && error.name === 'RangeNetworkError'
+          if (!retryable || attempt === 1) break
+          diagLog('download', 'warn', `Play! Range 当前线路临时失败，${350 * (attempt + 1)}ms 后重试：`, candidate, error)
+          await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)))
         }
-        return bytes
-      } catch (error) {
-        if (signal?.aborted) throw error
-        lastError = error
-        if (index < candidates.length - 1) {
-          diagLog('download', 'warn', 'Play! 读盘线路失败，继续尝试备用源：', candidate, error)
-        }
+      }
+      if (index < candidates.length - 1) {
+        diagLog('download', 'warn', 'Play! 读盘线路失败，继续尝试备用源：', candidate, lastError)
       }
     }
     throw lastError

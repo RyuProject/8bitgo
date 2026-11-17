@@ -408,7 +408,7 @@ export function arcadeRomDataOf(v) {
 
   if (!has(['zipname', 'romname']) || !has(['drvname', 'parent'])) {
     const error = new Error(
-      'RomData 必须同时写明 ZipName（包名，如 wofcn）和 DrvName（借用的驱动，如 wofj），否则核心会忽略整份 dat',
+      'RomData 必须同时写明 ZipName（改版包短名）和 DrvName（已确认的 FBNeo 驱动短名），否则核心会忽略整份 dat',
     )
     error.status = 400
     error.expose = true
@@ -508,6 +508,14 @@ const badGameField = (message) => {
   error.status = 400
   error.expose = true
   throw error
+}
+
+/** 在到达 MySQL 前校验 VARCHAR 字符数与 TEXT 字节数，避免无效后台输入变成 500。 */
+function boundedGameText(value, label, max, { bytes = false } = {}) {
+  const text = String(value ?? '')
+  const length = bytes ? Buffer.byteLength(text, 'utf8') : Array.from(text).length
+  if (length > max) badGameField(`${label}不能超过 ${max}${bytes ? ' 字节' : ' 个字符'}`)
+  return text
 }
 
 function flashControlsObject(v, strict = true) {
@@ -765,22 +773,25 @@ export function gameRowToApi(r, rel = {}) {
 }
 
 /** API 游戏对象 -> games 表的字段字典（不含关联表） */
-export function gameApiToRow(g) {
+export function gameApiToRow(g, { enforceColumnLimits = true } = {}) {
+  const text = (value, label, max, options) => enforceColumnLimits
+    ? boundedGameText(value, label, max, options)
+    : String(value ?? '')
   return {
-    slug: String(g.slug),
-    title: String(g.title ?? ''),
-    title_zh: g.titleZh ?? null,
-    platform: String(g.platform ?? ''),
+    slug: text(g.slug, 'slug', 120),
+    title: text(g.title, '英文标题', 200),
+    title_zh: g.titleZh == null || g.titleZh === '' ? null : text(g.titleZh, '中文译名', 200),
+    platform: text(g.platform, '平台', 20),
     year: Number(g.year) || 0,
-    developer: developersText(g.developer),
+    developer: text(developersText(g.developer), '开发商', 200),
     players: normalizeGamePlayers(g.players),
     multiplayer: g.multiplayer ? 1 : 0,
     coin_reward: Number(g.coinReward) || 0,
-    icon: String(g.icon ?? '🎮'),
-    cover: g.cover || null,
-    video: g.video || null,
-    description: String(g.description ?? ''),
-    description_en: g.descriptionEn ? String(g.descriptionEn) : null,
+    icon: text(g.icon ?? '🎮', '封面 emoji', 16),
+    cover: g.cover ? text(g.cover, '封面地址', 500) : null,
+    video: g.video ? text(g.video, '卡片视频地址', 500) : null,
+    description: text(g.description, '中文简介', 65_535, { bytes: true }),
+    description_en: g.descriptionEn ? text(g.descriptionEn, '英文简介', 65_535, { bytes: true }) : null,
     // 省略字段表示“旧客户端 / 种子脚本不知道这项配置”，不要因此抹掉已人工校对的简介；
     // 后台编辑表单会显式提交空对象，所以管理员仍可有意清空。
     ...(Object.prototype.hasOwnProperty.call(g ?? {}, 'descriptionLocalized')
@@ -822,19 +833,19 @@ export function gameApiToRow(g) {
  * plays 不在这里 —— 它由游玩计数接口自增，不接受整体覆盖。
  */
 const FIELD_TO_COLUMN = {
-  title: ['title', (v) => String(v ?? '')],
-  titleZh: ['title_zh', (v) => (v == null || v === '' ? null : String(v))],
-  platform: ['platform', (v) => String(v ?? '')],
+  title: ['title', (v) => boundedGameText(v, '英文标题', 200)],
+  titleZh: ['title_zh', (v) => (v == null || v === '' ? null : boundedGameText(v, '中文译名', 200))],
+  platform: ['platform', (v) => boundedGameText(v, '平台', 20)],
   year: ['year', (v) => Number(v) || 0],
-  developer: ['developer', developersText],
+  developer: ['developer', (v) => boundedGameText(developersText(v), '开发商', 200)],
   players: ['players', normalizeGamePlayers],
   multiplayer: ['multiplayer', (v) => (v ? 1 : 0)],
   coinReward: ['coin_reward', (v) => Number(v) || 0],
-  icon: ['icon', (v) => String(v ?? '🎮')],
-  cover: ['cover', (v) => (v == null || v === '' ? null : String(v))],
-  video: ['video', (v) => (v == null || v === '' ? null : String(v))],
-  description: ['description', (v) => String(v ?? '')],
-  descriptionEn: ['description_en', (v) => (v == null || v === '' ? null : String(v))],
+  icon: ['icon', (v) => boundedGameText(v ?? '🎮', '封面 emoji', 16)],
+  cover: ['cover', (v) => (v == null || v === '' ? null : boundedGameText(v, '封面地址', 500))],
+  video: ['video', (v) => (v == null || v === '' ? null : boundedGameText(v, '卡片视频地址', 500))],
+  description: ['description', (v) => boundedGameText(v, '中文简介', 65_535, { bytes: true })],
+  descriptionEn: ['description_en', (v) => (v == null || v === '' ? null : boundedGameText(v, '英文简介', 65_535, { bytes: true }))],
   descriptionLocalized: ['description_localized', localizedDescriptionsOf],
   bodyControl: ['body_control', (v) => (v ? 1 : 0)],
   adult: ['adult', (v) => (v ? 1 : 0)],

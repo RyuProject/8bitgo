@@ -40,7 +40,8 @@ import { guardPreConnectDisconnect, installIoHook, withSignalTimeout } from '../
 import { ICE_SERVERS, NETPLAY_URL, fetchIceConfig, gameIdFor, netplayUrlForFrame, socketIoScriptUrl, uploadState } from '@/services/netplay'
 import { guardInputChannel } from '../netplayGuard'
 import { normalizeHostSync } from '../netplaySyncGuard'
-import { assertValidZipBlob, extractZipEntryFromBlob, type ZipFileEntry } from '@/lib/unzip'
+import { extractZipEntryFromBlob, type ZipFileEntry } from '@/lib/unzip'
+import { prepareArcadeArchive } from '@/lib/arcadeArchive'
 import { romArchiveRef } from '@/lib/romArchiveUrl'
 import { loadRemoteArchiveRom } from '../remoteArchive'
 import { matchArcadeHack, romScopedHackForData, romScopedHackForName, type ArcadeHack } from '@/data/arcadeHacks'
@@ -161,6 +162,7 @@ import { diagLog, watchFramePerformance } from '@/services/startupDiagnostics'
 import { browserBitness, probeBrowserBitness } from '../browserBitness'
 import { createBatterySync, type BatteryFs, type BatterySync } from '../batterySync'
 import { batterySaveGameName, copyEngineSettingsToSystem, describeBootState, guardIdbfsPersist, migrateEngineSettingsKey, migrateLegacyBatterySaves, type IdbfsLike, type SaveFsLike } from '../ejsSaveFs'
+import { hotfixFlags } from '@/services/hotfixFlags'
 
 /**
  * 站点语言 → EmulatorJS 自带的界面语言包（data/localization/*.json）。
@@ -219,8 +221,8 @@ const EJS_LANG: Record<Lang, string> = {
  * 里面只有可重新下载的工件（核心/ROM/BIOS 的副本），删了不丢任何用户数据；
  * 存档在另一个库（EmulatorJS-states）和我们自己的云存档里，不碰。
  */
-// 旧 NDS 核心把双倍物理画布当成 1 倍指针坐标；换代才能让玩家实际拿到触屏修正版。
-const EJS_CACHE_GENERATION = '2026-10-25.melondsds-wfc-sourceport.touch-dpr.psx-range.corecompat1.stateglue3.mameglue3.melondsds-core-fcb8e141'
+// 2026-11-17：核心 XHR 兜底曾接受过截断响应；换代会清掉可能写入 IndexedDB 的坏核心工件。
+const EJS_CACHE_GENERATION = '2026-11-17.ejs-xhr-full-response.bg-visible-stall'
 // 浏览器实测已能按片读取，但现有 Beetle WASM 在该样本的完整下载路径也会崩溃；未确认可玩前不能让生产自动进入实验链路。
 const PSX_RANGE_ENABLED = import.meta.env.VITE_PSX_RANGE_ENABLED === '1'
 const EJS_CACHE_PURGED_KEY = '8bitgo.ejs.cachePurged'
@@ -239,6 +241,8 @@ export function engineCacheStalledRecently(raw: string | null, now = Date.now())
 }
 
 function readEngineCacheStall(): boolean {
+  // AI 临时修补 disable_engine_cache（shared/hotfix.js）：和「库挂死过」走同一条关缓存的路
+  if (hotfixFlags().disableEngineCache) return true
   try {
     return engineCacheStalledRecently(localStorage.getItem(EJS_IDB_STALL_KEY))
   } catch {
@@ -1895,6 +1899,20 @@ export function arcadeRomsetName(url: string): string {
 
 class InvalidArcadeArchiveError extends Error {}
 
+async function prepareArcadeArchiveForEngine(
+  blob: Blob,
+  name: string,
+  knownEntries?: readonly ZipFileEntry[],
+): Promise<{ blob: Blob; entries: ZipFileEntry[] }> {
+  try {
+    const prepared = await prepareArcadeArchive(blob, knownEntries)
+    return { blob: prepared.blob, entries: prepared.entries }
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    throw new InvalidArcadeArchiveError(`${name}：${reason}`)
+  }
+}
+
 /**
  * 拿包里的 CRC 认一个已知改版包（data/arcadeHacks.ts）。
  *
@@ -1926,11 +1944,8 @@ function hackOfEntries(entries: readonly ZipFileEntry[]): ArcadeHack | null {
  * 认指纹、必要时把合成 ROM 补进包，产出交给引擎的 blob 地址。
  *
  * ⚠️ **合成这一步以前只有「玩本地 ROM」那条路接了，入库的游戏这条没接。**
- * 入库这条当时只做两件事：套 `hack.romData`、把包名改成 `hack.zipName` ——
- * 而 dat 里引用的 `tk2_gfx1cn.rom` / `tk2_gfx3cn.rom` 偏偏是**合成产物**
- * （原图形 ROM 的一个字节窗口被中文补丁片盖过）。包里根本没有这两块，
- * 核心按 dat 去找就是两条 missing → FATAL → 游戏必死，
- * 而后台界面还绿字写着「✓ 识别为已知改版包，已填好 RomData」。
+ * 如果 RomData 引用了合成产物，只改包名而不追加产物，核心就会报 missing files。
+ * 因此本地和远程 ROM 都必须走同一个处理函数。
  *
  * 两条路现在都走这里，同一张指纹表、同一套合成。
  */
@@ -1951,7 +1966,7 @@ async function arcadeBlobFrom(
     const merged = await deriveArcadeHackBytes(data, entries, hack)
     if (merged) {
       // Blob 存储坏掉的浏览器上合成结果也留在内存，不再建一个必然读不出的 Blob
-      output = memoryRomOf(blob) || romBlobStorageBroken
+      output = memoryRomOf(blob) || romBlobBrokenNow()
         ? memoryRomBlob([merged as Uint8Array<ArrayBuffer>], 'application/zip')
         : new Blob([merged as BlobPart], { type: 'application/zip' })
       console.info(`[arcade] ${hack.title}：已现场合成 ${hack.derive.outputs.join(' / ')} 并补进包里`)
@@ -2069,6 +2084,8 @@ function readRomBlobBroken(): boolean {
 }
 
 let romBlobStorageBroken = readRomBlobBroken()
+/** 这一局要不要把 ROM 放内存：本机 Blob 存储坏过，或 AI 临时修补 memory_rom 要求 */
+const romBlobBrokenNow = (): boolean => romBlobStorageBroken || hotfixFlags().memoryRom
 /** 内存退路的上限：DS 卡带最大 512MB，再大的光盘镜像放进 JS 内存只会让标签页被杀，宁可照实报错。 */
 const MEMORY_ROM_MAX_BYTES = 520 * 1024 * 1024
 
@@ -2098,8 +2115,8 @@ async function unpackRomPackForEngine(stored: Blob, onProgress: MountOptions['on
   // 输入本身就是内存替身（内存下载）：结果也只能在内存；调用方不再用这份密文（不缓存、失败整包重下），
   // 解一块放一块，峰值不再是「整份密文 + 整份明文」
   if (memoryRomOf(stored)) return toMemory(true)
-  if (romBlobStorageBroken) {
-    diagLog('adapter', 'info', '这个浏览器的 Blob 存储近期读不出解开的 ROM，本局直接解包到内存')
+  if (romBlobBrokenNow()) {
+    diagLog('adapter', 'info', '这个浏览器的 Blob 存储近期读不出解开的 ROM（或 AI 临时修补要求），本局直接解包到内存')
     return toMemory()
   }
   try {
@@ -2162,7 +2179,7 @@ function preemptiveMemoryRomBytes(): number {
 }
 
 /** 本局第一次下载：Blob 存储近期坏过就直接内存下载（超过上限的下载器会自己退回 Blob）。 */
-const firstDownloadMode = (): 'preemptive-memory' | 'resume' => (romBlobStorageBroken ? 'preemptive-memory' : 'resume')
+const firstDownloadMode = (): 'preemptive-memory' | 'resume' => (romBlobBrokenNow() ? 'preemptive-memory' : 'resume')
 
 /** 下载模式对应的内存上限：确认读不出之后才放到最大，先发制人的那次按设备内存收着。 */
 const memoryLimitFor = (mode: 'resume' | 'fresh' | 'memory' | 'preemptive-memory'): number | undefined =>
@@ -2190,8 +2207,8 @@ export async function prepareRemoteArcadeRom(
     const extracted = await loadRemoteArchiveRom(url, onProgress, signal)
     if (signal.aborted) throw new DOMException('已取消', 'AbortError')
     if (!/\.zip$/i.test(extracted.name)) throw new InvalidArcadeArchiveError(extracted.name)
-    const entries = await assertValidZipBlob(extracted.blob, '街机 ROM')
-    return arcadeBlobFrom(extracted.blob, extracted.name, entries)
+    const prepared = await prepareArcadeArchiveForEngine(extracted.blob, extracted.name)
+    return arcadeBlobFrom(prepared.blob, extracted.name, prepared.entries)
   }
   const name = arcadeRomsetName(url)
   if (!name || (!/\.zip$/i.test(name) && !isRomPackUrl(url))) throw new InvalidArcadeArchiveError(name || 'ROM')
@@ -2222,11 +2239,13 @@ export async function prepareRemoteArcadeRom(
       // 缓存这一路也要认一遍：第二次玩同一款改版包不能因为走了缓存就少了 dat、也不能少了合成
       try {
         const decoded = await decodedArcade(cached)
-        const entries = await assertValidZipBlob(decoded.blob, '街机 ROM')
+        const prepared = await prepareArcadeArchiveForEngine(decoded.blob, decoded.name)
         // 两个标签页并发下载时，慢的那个可能在完整缓存写好后又留下几片；命中完整包时顺手收尾。
         void downloadResumeStore.clear(cacheKey).catch(() => {})
-        return arcadeBlobFrom(decoded.blob, decoded.name, entries)
+        return arcadeBlobFrom(prepared.blob, decoded.name, prepared.entries)
       } catch (error) {
+        // ZIP 结构有效但不能安全拍平（例如成员重名）时，重下不会改变内容，直接给出原因。
+        if (error instanceof InvalidArcadeArchiveError) throw error
         // 旧密钥被移除或缓存写到一半时，当场删掉并回网络；抛给播放器会触发备用源，
         // 让一份完全正常的远端新包因为本机旧缓存而被本轮永久跳过。
         await romCacheDelete(cacheKey).catch(() => {})
@@ -2265,15 +2284,14 @@ export async function prepareRemoteArcadeRom(
     stored = await download(retry)
     decoded = await decodedArcade(stored)
   }
-  // 只读 Blob 的尾部和目录；截断包会被拦住，但普通大包不再复制成连续 ArrayBuffer。
-  let entries: ZipFileEntry[]
-  try { entries = await assertValidZipBlob(decoded.blob, '街机 ROM') } catch { throw new InvalidArcadeArchiveError(name) }
+  // 校验完整 ZIP，并与后台保持一致地拍平安全目录；普通大包仍只读元数据，不复制整份 ROM。
+  const prepared = await prepareArcadeArchiveForEngine(decoded.blob, decoded.name)
 
   // 不 await：Blob 不可变，写盘慢也不耽误开局；8BG 缓存的仍是密文，避免扩大磁盘占用。
   // 内存下载的那份不是真 Blob（这台浏览器的 Blob 存储也写不进），不缓存。
   if (cacheKey && !memoryRomOf(stored)) void romCachePutBlob(cacheKey, stored).catch(() => {})
 
-  return arcadeBlobFrom(decoded.blob, decoded.name, entries)
+  return arcadeBlobFrom(prepared.blob, decoded.name, prepared.entries)
 }
 
 /**
@@ -2424,7 +2442,7 @@ export async function prepareRemoteDiscRom(
     },
   })
 
-  let blob = await download(romBlobStorageBroken ? 'preemptive-memory' : options.forceRomRefresh ? 'fresh' : 'resume')
+  let blob = await download(romBlobBrokenNow() ? 'preemptive-memory' : options.forceRomRefresh ? 'fresh' : 'resume')
   // 8BG 要先确认能解密解压再入缓存；否则一次坏响应会被钉在这台浏览器上，重试永远失败。
   let prepared: { url: string; bytes: number; name?: string; blob: Blob }
   try {
@@ -2464,10 +2482,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     const selectedRomName = typeof options.game === 'string' ? arcadeRomsetName(options.game) : options.game.name
     const selectedRomset = selectedRomName.replace(/\.8bg$/i, '').replace(/\.zip$/i, '').toLowerCase()
     const selectedScopedHack = romScopedHackForName(selectedRomset)
-    // 只让名字对应的 ROM 槽提前选 FBNeo；远端清单是否可用仍要等 CRC 指纹确认后再决定。
+    // 只有 ROM 名称对应且加载方案已验证时才提前选 FBNeo；远端清单还要等 CRC 指纹确认后使用。
     const scopedRomNameMatches = Boolean(scopedHack && selectedRomset === scopedHack.zipName)
-    const romDataForCore = scopedHack && !scopedRomNameMatches ? undefined : options.arcadeRomData
-    const corrected = selectedScopedHack && !isFbneoCore(core)
+    const romDataForCore = scopedHack && (!scopedRomNameMatches || !scopedHack.romData)
+      ? undefined
+      : options.arcadeRomData
+    const corrected = selectedScopedHack?.romData && !isFbneoCore(core)
       ? 'fbneo'
       : arcadeCoreForRomData(core, romDataForCore)
     if (corrected !== core) {
@@ -2575,6 +2595,14 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   /** 开局标志：EJS_onGameStart 与兜底轮询谁先到都行，但只放行一次 */
   let started = false
   let startWatch = 0
+  let startWatchVisibility: (() => void) | null = null
+  /** 后台冻结会让轮询的墙钟超时远超真实前台等待；隐藏时停表，回来后给正在解压 / 编译的核心完整预算。 */
+  const stopStartWatch = () => {
+    window.clearInterval(startWatch)
+    startWatch = 0
+    if (startWatchVisibility) document.removeEventListener('visibilitychange', startWatchVisibility)
+    startWatchVisibility = null
+  }
   /** mame-current 实际加载的 romset（开机自检快进按它查表，见 mameBootSkip.ts） */
   let mameBootRomset = ''
   let cancelBootFastForward: (() => void) | null = null
@@ -3070,7 +3098,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     // onError，否则播放器会对同一次崩溃再做一轮重试 + 换语言 ROM。
     if (destroyed || started || loadFailed || crashReported) return
     loadFailed = true
-    window.clearInterval(startWatch)
+    stopStartWatch()
     // 开局前报错时大陆加速入口可能是原因：自动重试改走同源（paths.ts 的 ejsBase）。
     // 「卡住」除外：大陆走 Cloudflare 取 8bitgo.com 的大文件实测只有几 KB/s（paths.ts 注释），
     // 卡住多半是慢网或冷编译，退回同源只会让重试必然再卡一次。入口脚本真加载不了另有一处标记。
@@ -3122,7 +3150,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       */
       if (!destroyed && !started && !loadFailed && !crashReported && options.onOutOfMemory?.(core, line)) {
         loadFailed = true
-        window.clearInterval(startWatch)
+        stopStartWatch()
         return
       }
       if (bits === '32') return failLoad(rt.ejsOutOfMemory32bit, 'config')
@@ -3202,7 +3230,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       }
     }
     crashReported = true
-    window.clearInterval(startWatch)
+    stopStartWatch()
     logEngine(`[core-crash] ${core}: ${line}`)
     // 强制刷新后仍然发生同一陷阱：本轮下载的密文不留在 ROM 缓存，下一次访问会再向源站取一份。
     if (options.platform === 'gba' && options.forceRomRefresh &&
@@ -3255,7 +3283,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
     if (options.onOutOfMemory?.(core, reason)) {
       loadFailed = true
-      window.clearInterval(startWatch)
+      stopStartWatch()
       return false
     }
     failLoad(bits === '32' ? rt.ejsOutOfMemory32bit : rt.ejsOutOfMemory, 'config')
@@ -4431,7 +4459,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const finishStart = (win: Window & Record<string, unknown>) => {
     if (started || destroyed) return
     started = true
-    window.clearInterval(startWatch)
+    stopStartWatch()
     // 默认配置会在引擎建菜单时应用一次；这里在核心与 shader 文件系统都就绪后再核对一次，
     // 同时压过历史版本可能留下的 EmulatorJS 通用 shader 设置。
     if (options.platform === 'gba') applyGbaVideoMode(win.EJS_emulator as EjsEmulator | undefined, gbaVideoMode)
@@ -4511,15 +4539,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     // 预下载（几十 MB 的 romset 在慢网上要几十秒）—— 不重置的话第一拍就判成「卡住了」，
     // 白白下完的 ROM 被扔掉重来
     beat()
-    startWatch = window.setInterval(() => {
+    const pollStart = () => {
       if (destroyed || started) {
-        window.clearInterval(startWatch)
+        stopStartWatch()
         return
       }
       const doc = iframe.contentDocument
       const msg = doc?.querySelector('.ejs_error_text')?.textContent?.trim()
       if (msg) {
-        window.clearInterval(startWatch)
+        stopStartWatch()
         reportEngineError(msg)
         return
       }
@@ -4543,7 +4571,19 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         : options.platform === 'arcade' ? ARCADE_CORE_START_STALL_MS : STALL_MS
       // 引擎这一段（核心下载 / 解压 / 编译）卡住与 ROM 内容无关：按运行时故障，原地重试一次但不换语言 ROM
       if (Date.now() - lastBeat > stallBudget) failLoad(fmt(rt.ejsStalled, { stage: lastStage || core }), 'runtime')
-    }, 400)
+    }
+    startWatchVisibility = () => {
+      if (document.visibilityState === 'hidden') {
+        window.clearInterval(startWatch)
+        startWatch = 0
+        return
+      }
+      // 移动端切后台数分钟后，浏览器会冻结轮询和 WASM 编译；隐藏时间不能吃掉核心的卡死预算。
+      beat()
+      if (!destroyed && !started && !loadFailed && !startWatch) startWatch = window.setInterval(pollStart, 400)
+    }
+    document.addEventListener('visibilitychange', startWatchVisibility)
+    if (document.visibilityState !== 'hidden') startWatch = window.setInterval(pollStart, 400)
   }
 
   iframe.addEventListener('load', () => {
@@ -4962,6 +5002,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           detectedMameMedia = prepared.mameMedia
           preparedArcadeHack = prepared.hack
 
+          if (prepared.hack?.romDataScope === 'rom' && !prepared.hack.romData) {
+            // 在线与本地入口一致：只认出 wofcn 指纹、但没有验证过字库映射时，不能假装启动成功。
+            // 让 FBNeo 用基础 wof 驱动硬读 wofcn.zip 会报 unknown set，也可能被外层误判成可换语言 ROM。
+            failLoad(fmt(getT().player.arcadeHackNoPlan, { title: prepared.hack.title }), 'config')
+            return
+          }
+
           /**
            * 按已知改版包的范围选择 RomData：
            *   · 游戏级配置保留人工优先；没填时才用内置值；
@@ -5256,9 +5303,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           romData = preparedArcadeHack.romData || builtInRomData
         } else if (configuredScopedHack) {
           // 历史上若曾把 wofcn 的清单存进游戏级字段，其它语言版本也会读到；只在当前 ROM 确认匹配时使用。
-          romData = configuredScopedHackMatches ? configuredRomData : ''
+          // 如果这个包目前没有经过画面验证的加载方案，也要忽略旧库里残留的错误清单。
+          romData = configuredScopedHackMatches && configuredScopedHack.romData ? configuredRomData : ''
           if (!configuredScopedHackMatches) {
             console.warn(`[arcade] 已跳过仅适用于 ${configuredScopedHack.zipName}.zip 的 RomData，当前 ROM 指纹不匹配`)
+          } else if (!configuredScopedHack.romData && configuredRomData) {
+            console.warn(`[arcade] ${configuredScopedHack.zipName} 尚无经过验证的 RomData 加载方案，已跳过历史清单`)
           }
         } else {
           romData = configuredRomData || builtInRomData
@@ -5632,13 +5682,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         }
         {
           installFsInjector(win, injections, (path, msg) => {
-            /*
-              写失败**不拦着开局**（和 installFsInjector 的注释一致）：没了改版 dat，
-              核心还能按原始 romset 试一把，比直接红字强。以前这里走 onError —— 而 onReady 之后的
-              onError 等于拆掉这一局（第一轮体检的铁律），一个可选的补丁没写进去就把游戏关了。
-              真缺文件的话核心自己会报「缺 xxx」，那条走 errorTap，比这里更准。
-            */
-            if (!destroyed) console.warn(`[emulatorjs] ${path || '待注入文件'} 没写进虚拟文件系统，按原始配置继续：`, fmt(rt.ejsFsInjectFailed, { msg }))
+            // RomData / BIOS 失败可降级；required 的 MAME CHD 则会由 onRequiredFailure 阻止开局。
+            // 这里用中性措辞，避免把必需 CHD 失败说成“仍继续启动”。
+            if (!destroyed) console.warn(`[emulatorjs] ${path || '待注入文件'} 没写进虚拟文件系统：`, fmt(rt.ejsFsInjectFailed, { msg }))
           }, (emu) => {
                 // 顺序有讲究：先保护存档库，再处理内容/BIOS，再准备核心专属目录与选项，最后调音频窗口。
                 guardSaveFs(emu)
@@ -5839,7 +5885,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     preparedPsxRange?.dispose()
     window.clearInterval(playersTimer)
     window.clearInterval(stateTimer)
-    window.clearInterval(startWatch)
+    stopStartWatch()
     window.clearInterval(saveFlushTimer)
     window.clearInterval(wfcSettingsTimer)
     // 退出前最后抄一次：刚在游戏里完成首次 WFC 建号就关页面时，ID 也不能丢。

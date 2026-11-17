@@ -20,6 +20,7 @@ import { platformMap } from '@/data/platforms'
 import { NETPLAY_URL } from '@/services/roomFlags'
 import { EJS_CORE_VERSIONS } from './ejsCoreVersionsData'
 import { cnEdgeApiBase } from '@/services/cnHost'
+import { hotfixFlags } from '@/services/hotfixFlags'
 
 /** 末尾补上斜杠；空值原样返回（空 = 没配置 = 该引擎不可用） */
 const asDir = (raw: string | undefined, fallback = ''): string => {
@@ -80,7 +81,8 @@ function cnRuntimeEdge(): string {
 }
 
 function runtimeBase(kind: RuntimeEdgeKind, path: string): string {
-  if (!path.startsWith('/') || runtimeEdgeFailed.has(kind)) return path
+  // AI 临时修补 runtime_origin（shared/hotfix.js）：加速入口出了问题时，这款游戏的运行时全部回同源
+  if (!path.startsWith('/') || runtimeEdgeFailed.has(kind) || hotfixFlags().runtimeOrigin) return path
   const edge = cnRuntimeEdge()
   return edge ? `${edge}${path}` : path
 }
@@ -375,7 +377,7 @@ export function playWasmUsingEdge(): boolean {
 }
 
 function fileUsesCnEdgePlayWasm(): boolean {
-  return !playWasmEdgeFailed && PLAY_PATH.startsWith('/') && Boolean(cnEdgeApiBase())
+  return !playWasmEdgeFailed && !hotfixFlags().runtimeOrigin && PLAY_PATH.startsWith('/') && Boolean(cnEdgeApiBase())
 }
 
 export function markPlayWasmEdgeFailed(): void {
@@ -408,8 +410,9 @@ export const PPSSPP_PATH: string = asDir(import.meta.env.VITE_PPSSPP_PATH)
   2026-11-15 v20：现场发现实际 canvas 可随视口扩到 1533×777，且 3G 高延迟设备仍选高性能档；慢网现限制真实绘图缓冲到 480×272，并采集 worker 错误栈。
   2026-11-15 v21：QQ Browser 固定为 480×272 稳定档，运行时崩溃时先等待 IDBFS 冲刷存档（最多 1.5 秒）。
   2026-11-15 v22：移动/弱网/低配设备使用 480×272，普通设备 640×360，明确高配桌面设备最高 720×408。
+  2026-11-17 v23：PSP 远程盘 Range 请求在当前线路断流时依次切换已验证的备用 ROM 域名。
 */
-export const PPSSPP_RUNTIME_GENERATION = 'v22'
+export const PPSSPP_RUNTIME_GENERATION = 'v23'
 export const PPSSPP_RUNTIME_PATH: string = PPSSPP_PATH
   ? asDir(`${PPSSPP_PATH}${PPSSPP_RUNTIME_GENERATION}`)
   : ''
@@ -443,7 +446,10 @@ export const ppssppFrameUrl = (): string =>
  * 运行时文件互相用相对路径 import，升级时必须整目录换代，不能让边缘缓存拼出新旧混合物。
  */
 export const DOLPHIN_VERSION = '7e38409'
-export const DOLPHIN_PATH: string = asDir(import.meta.env.VITE_DOLPHIN_PATH, `/dolphin/v${DOLPHIN_VERSION}/`)
+/** 代码仍锁定同一上游提交；r2 是本站 Range Worker 修复的不可变静态资源代次。 */
+export const DOLPHIN_RUNTIME_REVISION = 'r2'
+const DOLPHIN_BASE_PATH = asDir(import.meta.env.VITE_DOLPHIN_PATH, `/dolphin/v${DOLPHIN_VERSION}`)
+export const DOLPHIN_PATH: string = asDir(`${DOLPHIN_BASE_PATH}${DOLPHIN_RUNTIME_REVISION}`)
 
 /** 云联机服务器地址。空 = 云联机整块功能隐藏 */
 export const CLOUDGAME_URL: string = (import.meta.env.VITE_CLOUDGAME_URL || '').replace(/\/+$/, '')

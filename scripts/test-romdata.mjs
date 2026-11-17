@@ -24,31 +24,32 @@ import { arcadeBiosOf, arcadeDipOf, arcadeRomDataOf, gameApiToRow, gameApiToPart
 import { loadBiosByName, romsetNameFromKey } from '../server/src/arcade-bios-index.js'
 import { biosNameOfUrl, planBiosFiles } from '../src/emulator/biosPlan.ts'
 
-const OK = 'ZipName wofcn\nDrvName wofj\nFullName Warriors of Fate (Chinese)\ntk2_01.3a 0x080000 0x0d9cb9bf BRF_GRA CPS1_TILES'
+// 字段校验用的合成样例，不代表任何真实 ROM 的可运行清单。
+const OK = 'ZipName examplehack\nDrvName kof97\nFullName Example patched set\nexample_p1.bin 0x080000 0x12345678 BRF_ESS BRF_PRG'
 
 assert.equal(arcadeRomDataOf(OK), OK)
 assert.equal(arcadeRomDataOf(null), null)
 assert.equal(arcadeRomDataOf('   '), null)
 
 // CRLF 统一成 LF，控制字符清掉，但制表符保留（dat 的分隔符里就有 \t）
-assert.equal(arcadeRomDataOf('ZipName\twofcn\r\nDrvName\twofj\r\n'), 'ZipName\twofcn\nDrvName\twofj')
-assert.ok(!arcadeRomDataOf('ZipName wofcn\nDrvName wofj').includes(''))
+assert.equal(arcadeRomDataOf('ZipName\texamplehack\r\nDrvName\tkof97\r\n'), 'ZipName\texamplehack\nDrvName\tkof97')
+assert.ok(!arcadeRomDataOf('ZipName examplehack\nDrvName kof97').includes(''))
 
 // 别名也认：RomName / Parent 是 FBNeo 接受的同义词
-assert.equal(arcadeRomDataOf('RomName wofcn\nParent wofj'), 'RomName wofcn\nParent wofj')
+assert.equal(arcadeRomDataOf('RomName examplehack\nParent kof97'), 'RomName examplehack\nParent kof97')
 // 大小写不敏感，和核心的 _tcsicmp 一致
-assert.equal(arcadeRomDataOf('zipname wofcn\ndrvname wofj'), 'zipname wofcn\ndrvname wofj')
+assert.equal(arcadeRomDataOf('zipname examplehack\ndrvname kof97'), 'zipname examplehack\ndrvname kof97')
 
 // 缺任一必填项都要当场 400，而不是留到玩家点开游戏才发现
-assert.throws(() => arcadeRomDataOf('ZipName wofcn\ntk2_01.3a 0x80000 0x0d9cb9bf BRF_GRA'), /ZipName/)
-assert.throws(() => arcadeRomDataOf('DrvName wofj\n'), /ZipName/)
+assert.throws(() => arcadeRomDataOf('ZipName examplehack\nexample_p1.bin 0x80000 0x12345678 BRF_ESS BRF_PRG'), /ZipName/)
+assert.throws(() => arcadeRomDataOf('DrvName kof97\n'), /ZipName/)
 // 只在注释里出现不算数
-assert.throws(() => arcadeRomDataOf('// DrvName wofj\nZipName wofcn'), /ZipName/)
-assert.throws(() => arcadeRomDataOf('ZipName wofcn\nDrvName wofj\n' + 'x'.repeat(40000)), /太长/)
+assert.throws(() => arcadeRomDataOf('// DrvName kof97\nZipName examplehack'), /ZipName/)
+assert.throws(() => arcadeRomDataOf('ZipName examplehack\nDrvName kof97\n' + 'x'.repeat(40000)), /太长/)
 
 for (const fn of [arcadeRomDataOf]) {
   try {
-    fn('ZipName wofcn')
+    fn('ZipName examplehack')
     assert.fail('应该抛错')
   } catch (e) {
     assert.equal(e.status, 400)
@@ -56,9 +57,9 @@ for (const fn of [arcadeRomDataOf]) {
   }
 }
 
-assert.equal(gameRowToApi({ slug: 'wofcn', arcade_romdata: OK }).arcadeRomData, OK)
+assert.equal(gameRowToApi({ slug: 'example-hack', arcade_romdata: OK }).arcadeRomData, OK)
 assert.equal(gameRowToApi({ slug: 'kof97' }).arcadeRomData, undefined)
-assert.equal(gameApiToRow({ slug: 'wofcn', arcadeRomData: OK }).arcade_romdata, OK)
+assert.equal(gameApiToRow({ slug: 'example-hack', arcadeRomData: OK }).arcade_romdata, OK)
 assert.equal(gameApiToRow({ slug: 'kof97' }).arcade_romdata, null)
 // 清空要写成 NULL，否则会留下一份空 dat
 assert.deepEqual(gameApiToPartialRow({ arcadeRomData: '' }), { arcade_romdata: null })
@@ -272,4 +273,3 @@ assert.doesNotMatch(biosFn, /[^h]fetch\(/, 'BIOS 下载里出现了裸 fetch —
 assert.match(biosFn, /onBeat\(\)/, '下载过程中要拍心跳')
 
 console.log('街机 RomData / BIOS 映射与索引数据测试通过')
-

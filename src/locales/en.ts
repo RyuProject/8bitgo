@@ -376,6 +376,12 @@ const en: Translation = {
     translateRetry: 'Retry translation',
     translateFailed: 'Translation failed',
     translatedJustNow: 'Translated',
+    /** AI 临时修补给玩家的提示（shared/hotfix.js 的 player_notice 模板） */
+    hotfixNotice: {
+      unstable: 'Some players have had trouble starting this game recently. We are fixing it and have temporarily adjusted how it loads.',
+      try_other_browser: 'This game may not start in your current browser. If loading fails, please try the latest Chrome, Edge or Firefox.',
+      try_later: 'Our game service is having temporary issues. If loading fails, please try again later.',
+    },
     year: 'Release year',
     developer: 'Developer',
     players: 'Players',
@@ -1597,7 +1603,7 @@ const en: Translation = {
     ruffleNoApi: 'Ruffle player API not found',
     flashLoadFailed: 'Flash content failed to load: {msg}',
     ejsNoCore: 'EmulatorJS has no core for {platform}',
-    ejsFsInjectFailed: 'Could not install the patch files into the emulator (both RomData and extra BIOS packages go through this path) — the game will boot with the plain configuration: {msg}',
+    ejsFsInjectFailed: 'Could not write an injected file into the emulator: {msg}',
     ejsInitFailed: 'Could not initialize the emulator container',
     ejsEngineError: 'Emulator error: {msg}',
     ejsOutOfMemory: 'Not enough memory to start the emulator. Close other tabs or apps and press Retry, or try a device with more memory.',

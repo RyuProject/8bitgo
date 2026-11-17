@@ -18,6 +18,7 @@ assert.deepEqual(validateAdminImportPayload({ games: [validGame] }), {
 })
 assert.match(validateAdminImportPayload({ games: [{ ...validGame, slug: '../escape' }] }).error, /slug/)
 assert.match(validateAdminImportPayload({ games: [{ ...validGame, slug: '' }] }).error, /缺少 slug/)
+assert.match(validateAdminImportPayload({ games: [{ ...validGame, title: 'x'.repeat(201) }] }).error, /英文标题不能超过 200 个字符/)
 assert.match(validateAdminImportPayload({ games: [{ ...validGame, multiplayer: true, players: 1 }] }).error, /最大玩家数/)
 assert.match(
   validateAdminImportPayload({ games: [validGame, { ...validGame, title: 'Duplicate' }] }).error,
@@ -77,6 +78,15 @@ assert.match(adminGames, /if \(savingRef\.current\) return/)
 assert.match(adminGames, /if \(rowActionRef\.current \|\| batchActionRef\.current\) return/)
 assert.match(gameForm, /window\.addEventListener\('beforeunload'/)
 assert.match(gameForm, /<fieldset disabled=\{submitting \|\| romDeleteBusy\}/)
+const platformChange = gameForm.slice(gameForm.indexOf('<Field label="平台 *">'), gameForm.indexOf('</Field>', gameForm.indexOf('<Field label="平台 *">')))
+assert.match(platformChange, /manualCoreChoice\.current = false/)
+assert.match(platformChange, /set\('core', undefined\)/)
+assert.match(adminGames, /if \(editorOperationBusy\) \{\s*setToast\('上传和自动保存完成前，请先恢复当前编辑器'\)/)
+assert.match(adminGames, /const editorOperationBusy = Boolean\(editing && \(editorMinimized \|\| autoSaveAfterUpload \|\| uploadActivity\.active\.length \|\| saving\)\)/)
+assert.match(adminGames, /disabled=\{editorOperationBusy \|\| loadingEditor \|\| Boolean\(rowAction\) \|\| Boolean\(batchProgress\)\}/)
+assert.match(adminGames, /await fetchAdminGame\(next\.game\.slug\)/)
+assert.match(store, /sp\.set\('summary', '1'\)/)
+assert.match(gamesRoute, /card: wantAll/)
 
 // ROM 存储页的对象绑定、删除必须共用单飞锁，避免绑定请求和删除请求交错后留下悬空 key。
 const romBindBlock = adminRoms.slice(adminRoms.indexOf('const bind = async'), adminRoms.indexOf('const requireCompleteReferences'))
@@ -111,7 +121,14 @@ assert.match(usersRoute, /nickname LIKE \? OR email LIKE \?/)
 
 // 导入必须在第一条写库之前完成整批校验，避免第 N 条坏数据留下半批覆盖结果。
 const validationAt = adminRoute.indexOf('validateAdminImportPayload(req.body)')
-const writeAt = adminRoute.indexOf('for (const g of gameList)')
+const writeAt = adminRoute.indexOf('upsertGamesInTransaction(run, gameList)')
 assert.ok(validationAt > 0 && writeAt > validationAt)
+assert.match(adminRoute, /await withTransaction\(async \(run\) => \{\s*await upsertGamesInTransaction\(run, gameList\)/)
+assert.match(repo, /export async function upsertGamesInTransaction\(run, games\)/)
+assert.match(gamesRoute, /保存后回读失败，返回本次提交内容/)
+assert.match(gamesRoute, /删除后清理内容缓存失败/)
+assert.match(postsRoute, /logPostCommitFailure\('回读文章', error\)/)
+const postDeleteRoute = postsRoute.slice(postsRoute.indexOf("postsRouter.delete('/:slug'"))
+assert.match(postDeleteRoute, /logPostCommitFailure\('清理内容缓存', error\)/)
 
 console.log('✅ 后台安全与操作保护：全部通过')

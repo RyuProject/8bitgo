@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const VERSION = '0dbfaca'
-const RUNTIME_GENERATION = 'v22'
+const RUNTIME_GENERATION = 'v23'
 const useDist = process.argv.includes('--dist')
 const sourceOnly = process.argv.includes('--source-only')
 const publicDir = join(root, 'public', 'ppsspp', `v${VERSION}`, RUNTIME_GENERATION)
@@ -66,10 +66,13 @@ for (const marker of [
 }
 
 if (!/<script src="host\.js"><\/script>/.test(need(join(runtimeDir, 'index.html')).toString('utf8'))) {
-  fail('v22 index.html 没有引用同一实体目录里的 host.js')
+  fail('v23 index.html 没有引用同一实体目录里的 host.js')
 }
-if (!/PPSSPP_RUNTIME_GENERATION = 'v22'/.test(paths) || !/PPSSPP_FRAME_REVISION = '4'/.test(paths) || !/ppssppFrameUrl/.test(adapter)) {
-  fail('PPSSPP iframe 没有使用 v22 实体目录；查询串不能穿透当前 Cloudflare 缓存键')
+if (!/PPSSPP_RUNTIME_GENERATION = 'v23'/.test(paths) || !/PPSSPP_FRAME_REVISION = '4'/.test(paths) || !/ppssppFrameUrl/.test(adapter)) {
+  fail('PPSSPP iframe 没有使用 v23 实体目录；查询串不能穿透当前 Cloudflare 缓存键')
+}
+if (!host.includes('__8bitgoPspRangeUrls') || !adapter.includes('alternateRomUrls')) {
+  fail('PPSSPP 远程光盘没有在 Range 探测和核心读取阶段配置备用线路')
 }
 if (/fetch\s*\(\s*(?:remote(?:\?\.)?\.url|gamePath)/.test(host)) {
   fail('host.js 出现整盘下载代码；远程镜像只能把 URL 交给 C++ Range loader')
@@ -80,10 +83,10 @@ if (!/arguments:\s*\[[\s\S]*?'--windowed'[\s\S]*?'--xres'[\s\S]*?'--yres'/.test(
 }
 if (!host.includes('slowNetwork') || !host.includes('qq-compat') || !host.includes('mobileDevice') ||
   !host.includes('highEndDesktop') || !host.includes('diagnostics') || !host.includes('error?.stack')) {
-  fail('v22 缺少慢网/移动/高配桌面分档、QQ 浏览器兼容档或运行时 worker 调用栈')
+  fail('v23 缺少慢网/移动/高配桌面分档、QQ 浏览器兼容档或运行时 worker 调用栈')
 }
 if (!host.includes('flushDeadline') || !host.includes('Promise.race([syncSaves(), flushDeadline])')) {
-  fail('v22 运行时错误没有先冲刷 PPSSPP 电池存档')
+  fail('v23 运行时错误没有先冲刷 PPSSPP 电池存档')
 }
 for (const marker of [
   '--appendconfig=${PERFORMANCE_CONFIG_PATH}',
@@ -110,13 +113,13 @@ if (!/FS\.stat\(path\)[\s\S]*?FS\.writeFile\(path, new Uint8Array\(\)\)/.test(ho
   fail('host.js 没有保留已有控制器配置并只在首次启动补空 controls.ini')
 }
 if (host.includes('核心没有 Range 遥测回调，使用首帧兼容判据')) {
-  fail('v22 仍会在没有真实读盘时把空画布误报成游戏已启动')
+  fail('v23 仍会在没有真实读盘时把空画布误报成游戏已启动')
 }
 if (!/gameBootConfirmed/.test(host) || !/BOOTED_LOG_PATTERN = \/\\bBooted\\s\+\.\+\\\.\\\.\\\.\//.test(host)) {
-  fail('v22 没有等待 PPSSPP 的 Booted 日志；Range 遥测跨线程丢失时会再次超时')
+  fail('v23 没有等待 PPSSPP 的 Booted 日志；Range 遥测跨线程丢失时会再次超时')
 }
 if (!/print\(text\)[\s\S]*?observeCoreLog\(message\)[\s\S]*?printErr\(text\)[\s\S]*?observeCoreLog\(message\)/.test(host)) {
-  fail('v22 没有同时观察 stdout/stderr；不同 Emscripten 日志路由下会漏掉 Booted')
+  fail('v23 没有同时观察 stdout/stderr；不同 Emscripten 日志路由下会漏掉 Booted')
 }
 if (/FS\.mount\([^\n]*WORKERFS|FS\.createLazyFile\(/.test(host)) {
   fail('本地 PSP 镜像不能在主线程挂 WORKERFS 或用同步 XHR 的 LazyFile')
@@ -218,6 +221,9 @@ if (manifest.runtimeErrorSaveFlush !== 'idbfs-flush-before-report-1500ms-v1') {
   fail('runtime.json 没有声明运行时故障前冲刷 PPSSPP 电池存档')
 }
 if (manifest.runtimeGeneration !== RUNTIME_GENERATION) fail('runtime.json 的实体目录代次不正确')
+if (manifest.rangeAlternateRouteProfile !== 'probe-and-sync-failover-v1') {
+  fail('runtime.json 没有声明 PSP 远程盘 Range 备用线路方案')
+}
 if (manifest.localDiscProfile !== 'service-worker-range-v1') fail('runtime.json 没有声明本地镜像按需读盘方案')
 const localDiscBytes = need(join(runtimeDir, 'local-disc-sw.js'))
 const localDiscArtifact = manifest.artifacts?.['local-disc-sw.js']
@@ -313,11 +319,12 @@ if (installed) {
     !runtimeScript.includes('var mobileDevice=') || !runtimeScript.includes('var highEndDesktop=') ||
     !runtimeScript.includes('maxWidth=qqBrowser||mobileDevice||slow||low?480:highEndDesktop?720:640') ||
     !runtimeScript.includes('e.error?.stack')) {
-    fail('v22 核心缺少实际画布自适应上限、QQ/移动档或 pthread worker 错误栈采集')
+    fail('v23 核心缺少实际画布自适应上限、QQ/移动档或 pthread worker 错误栈采集')
   }
+  if (!runtimeScript.includes('__8bitgoPspRangeUrls')) fail('v23 核心没有在同步 Range 失败后切换备用 ROM 线路')
   const readAheadSource = need(join(root, 'vendor', 'ppsspp', 'range-read-ahead.js')).toString('utf8').trimEnd()
   if (!runtimeScript.includes(readAheadSource)) {
-    fail('v22 发布脚本与预读源码不一致；改源码后必须生成新实体运行时')
+    fail('v23 发布脚本与预读源码不一致；改源码后必须生成新实体运行时')
   }
   if (!runtimeScript.includes('if(fetched?.then){fetched=await fetched}else if(!fetched){fetched=await fetchPromise}')) {
     fail('PPSSPPSDL.js 没有等待异步核心资源重试 Promise，真机解包会报 bad input')

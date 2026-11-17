@@ -371,6 +371,12 @@ const ja: Translation = {
     translateRetry: '翻訳を再試行',
     translateFailed: '翻訳に失敗しました',
     translatedJustNow: '翻訳済み',
+    /** AI 临时修补给玩家的提示（shared/hotfix.js 的 player_notice 模板） */
+    hotfixNotice: {
+      unstable: '最近このゲームを起動できないプレイヤーがいます。修正中のため、読み込み方法を一時的に変更しています。',
+      try_other_browser: 'このゲームは現在のブラウザでは起動できない可能性があります。読み込みに失敗する場合は、最新版の Chrome、Edge、Firefox をお試しください。',
+      try_later: 'ゲームサービスが一時的に不安定です。読み込みに失敗する場合は、しばらくしてから再度お試しください。',
+    },
     year: '発売年',
     developer: '開発会社',
     players: 'プレイ人数',
@@ -1535,7 +1541,7 @@ const ja: Translation = {
     ruffleNoApi: 'Ruffle プレイヤーの API が見つかりません',
     flashLoadFailed: 'Flash コンテンツの読み込みに失敗しました：{msg}',
     ejsNoCore: 'EmulatorJS に {platform} 用のコアがありません',
-    ejsFsInjectFailed: 'パッチファイルをエミュレータに書き込めませんでした（RomData と追加 BIOS パッケージは同じ経路です）。ゲームは元の構成で起動します：{msg}',
+    ejsFsInjectFailed: 'エミュレータへのファイル注入に失敗しました：{msg}',
     ejsInitFailed: 'エミュレーターのコンテナを初期化できません',
     ejsEngineError: 'エミュレーターのエラー：{msg}',
     ejsOutOfMemory: 'メモリが足りずエミュレーターを起動できませんでした。ほかのタブやアプリを閉じて「再試行」を押すか、メモリの多い端末でお試しください。',

@@ -5,6 +5,7 @@
  * 测速读取每个来源开头的一小段并立即取消响应；默认只有大文件才测，调用方可用 minBytes 放开（见 roms.ts）。
  */
 
+import { hotfixFlags, hotfixesSettled } from './hotfixFlags'
 import { isRomRouteOpen, romRouteRate } from './romRouteHealth'
 
 // 128 KiB 已足够把 DNS/TLS/TTFB 和明显带宽差拉开；旧值 256 KiB 会让“检查版本”
@@ -358,6 +359,16 @@ function hostFromRouteHealth(primaryBase: string, mirrorBase: string, prefer: Ro
 export async function chooseRomHost(primaryBase: string, mirrorBase: string, options: RomHostOptions = {}): Promise<RomHost> {
   const prefer = options.prefer ?? 'primary'
   if (!mirrorBase || !primaryBase || routeId(primaryBase) === routeId(mirrorBase)) return 'primary'
+  /*
+    AI 临时修补 rom_host（shared/hotfix.js）：某条线路正在出事时把这款游戏钉到另一条。
+    详情页的修补和 ROM 探测同时开始拉，这里最多等 1.2 秒；不写缓存，修补撤销后下一局照常测速。
+    测试注入了 fetchImpl 的调用不看修补（它们测的是测速本身）。
+  */
+  if (!options.fetchImpl) {
+    await hotfixesSettled()
+    const forced = hotfixFlags().romHost
+    if (forced) return forced
+  }
   const cacheResults = options.cacheResults ?? !options.fetchImpl
   const storage = cacheResults ? (options.storage === undefined ? browserStorage() : options.storage) : null
   const pair = `${routeId(primaryBase)}|${routeId(mirrorBase)}`

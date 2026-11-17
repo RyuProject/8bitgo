@@ -12,9 +12,11 @@ import type { Capability, CaptureSources, MountOptions, RuntimeHandle } from '..
 import { focusFrame, frameGamepads } from '../frameFocus'
 import { captureCanvasScreenshot } from '../recorder'
 import { PPSSPP_VERSION, ppssppFrameUrl } from '../paths'
-import { probeRange } from '../remoteDisc'
+import { probeRange, type ProbeResult } from '../remoteDisc'
 import { isRomContentFailure, isRomNetworkFailure, markRomContentFailure, markRomNetworkFailure } from '../loadProgress'
 import { downloadPspDisc } from '../pspFullDownload'
+import { alternateRomUrls, rememberRomHostForUrl } from '@/services/romHosts'
+import { rankRomRoutes } from '@/services/romRouteHealth'
 import { fmt, getT } from '@/services/i18n'
 import { diagLog, registerDiagnosticSnapshot, watchFramePerformance } from '@/services/startupDiagnostics'
 
@@ -46,6 +48,7 @@ interface RemoteDiscDescriptor {
   url: string
   name: string
   size: number
+  alternateUrls?: string[]
 }
 
 interface PPSSPPFrameWindow extends Window {
@@ -81,8 +84,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let hostTimer = 0
   let fatalReported = false
   const probeController = new AbortController()
-  let remoteProbe: ReturnType<typeof probeRange> | null = null
+  let remoteProbe: Promise<{ url: string; result: ProbeResult }> | null = null
   let speculativeProbe = false
+  let remoteDiscUrl = ''
+  let remoteDiscAlternates: string[] = []
   /** 远程流式：探测到的镜像总字节。核心资源下载完、开始读盘时才把它作为 rom 阶段报出去 */
   let streamDiscSize = 0
   let romPhaseReported = false
@@ -154,9 +159,41 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     failSession(fmt(rt.ppssppLoadFailed, { msg: message }), message, scope)
   }
 
-  function startRemoteProbe(game: string): ReturnType<typeof probeRange> {
+  function startRemoteProbe(game: string): Promise<{ url: string; result: ProbeResult }> {
     if (!remoteProbe) {
-      remoteProbe = probeRange(game, probeController.signal)
+      // 按线路记分板排序（services/romRouteHealth.ts）：熔断中 / 明显更慢的线路排到后面，不再每局先撞它
+      const candidates = rankRomRoutes([game, ...alternateRomUrls(game)])
+      remoteProbe = (async () => {
+        let networkFailure = false
+        let missingResource = false
+        let lastResult: ProbeResult = { rangeSupported: false, size: 0 }
+        for (const candidate of candidates) {
+          const result = await probeRange(candidate, probeController.signal, candidates.length > 1 ? 5_000 : undefined)
+          lastResult = result
+          networkFailure ||= Boolean(result.networkFailure)
+          missingResource ||= Boolean(result.missingResource)
+          if (result.rangeSupported && result.size) {
+            remoteDiscUrl = candidate
+            remoteDiscAlternates = candidates.filter((url) => url !== candidate)
+            if (candidate !== game) {
+              rememberRomHostForUrl(candidate)
+              diagLog('download', 'warn', 'PPSSPP Range 探测切换线路：', game, '→', candidate)
+            }
+            return { url: candidate, result }
+          }
+          if (probeController.signal.aborted) break
+        }
+        return {
+          url: game,
+          result: {
+            ...lastResult,
+            rangeSupported: false,
+            size: 0,
+            ...(networkFailure ? { networkFailure: true } : {}),
+            ...(missingResource ? { missingResource: true } : {}),
+          },
+        }
+      })()
       // 冷启动时探测会早于 iframe 的 host-ready 完成；先接住拒绝，等 boot 消费原始错误。
       void remoteProbe.catch(() => {})
     }
@@ -184,11 +221,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       probeTimedOut = true
       probeController.abort()
     }, RANGE_PROBE_TIMEOUT_MS)
-    let probe: Awaited<ReturnType<typeof probeRange>>
+    let probe: ProbeResult
     let probeNetworkFailure = false
     let probeMissingResource = false
     try {
-      probe = await startRemoteProbe(options.game)
+      let selected = await startRemoteProbe(options.game)
+      probe = selected.result
       probeNetworkFailure = Boolean(probe.networkFailure)
       probeMissingResource = Boolean(probe.missingResource)
       // 提前探测可能刚好撞上短暂断网；iframe 下载的这段时间网络已恢复时，不能把那次
@@ -196,7 +234,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       if (speculativeProbe && !probe.rangeSupported && !probeController.signal.aborted) {
         speculativeProbe = false
         remoteProbe = null
-        probe = await startRemoteProbe(options.game)
+        selected = await startRemoteProbe(options.game)
+        probe = selected.result
         probeNetworkFailure ||= Boolean(probe.networkFailure)
         probeMissingResource ||= Boolean(probe.missingResource)
       }
@@ -210,18 +249,20 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
     if (options.pspLoadMode === 'download') {
       return downloadPspDisc(
-        options.game,
+        remoteDiscUrl || options.game,
         discNameOf(options.game, options.gameName),
         probe.size,
         probeController.signal,
         options.onProgress,
+        remoteDiscAlternates,
       )
     }
     streamDiscSize = probe.size
     return {
-      url: options.game,
+      url: remoteDiscUrl || options.game,
       name: discNameOf(options.game, options.gameName),
       size: probe.size,
+      alternateUrls: remoteDiscAlternates,
     }
   }
 

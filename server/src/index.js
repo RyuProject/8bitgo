@@ -35,6 +35,7 @@ import { pageRouter } from './routes/page.js'
 import { platformBiosRouter } from './routes/platform-bios.js'
 import { systemImageSourcesRouter, adminSystemImageSourcesRouter } from './system-image-sources.js'
 import { siteNoticeRouter, adminSiteNoticeRouter } from './routes/site-notice.js'
+import { hotfixPublicRouter, adminAiRouter } from './routes/ai-hotfix.js'
 import { createAssetRepairRouter } from './routes/asset-repair.js'
 import { developersRouter } from './routes/developers.js'
 import { friendLinksRouter } from './routes/friend-links.js'
@@ -243,6 +244,8 @@ app.use('/api/admin/psp-conversions', pspConversionsRouter)
 // 已有 PSP 地址保持兼容；新的中性入口让 PS1 不必依赖一个名字写死为 PSP 的 URL。
 app.use('/api/admin/disc-conversions', pspConversionsRouter)
 app.use('/api/admin/sockdrive-conversions', sockdriveConversionsRouter)
+// AI 临时修补的后台（MiniMax 配置、修补记录）。同理排在 /api/admin 之前，免得 /ai/... 被通配 id 吞掉。
+app.use('/api/admin/ai', adminAiRouter)
 
 app.use('/api/auth', authRouter)
 app.use('/api/rom-pack', romPackRouter)
@@ -263,6 +266,8 @@ app.use('/api/page', pageRouter)
 app.use('/api/platform-bios', platformBiosRouter)
 app.use('/api/system-image-sources', systemImageSourcesRouter)
 app.use('/api/site-notice', siteNoticeRouter)
+// 生效中的 AI 临时修补（浏览器开局前读；30 秒缓存，见 routes/ai-hotfix.js）
+app.use('/api/hotfixes', hotfixPublicRouter)
 // 坏 chunk 自修复：访客发现 Cloudflare 边缘缓存了坏的 /assets/ 文件时，按清单核对后清那几个 URL
 app.use('/api/asset-repair', createAssetRepairRouter({ clientDir: CLIENT_DIR, siteOrigin: originOfSite() }))
 app.use('/api/admin/site-notice', adminSiteNoticeRouter)
@@ -442,7 +447,7 @@ if (ssrAvailable()) {
    */
   app.get('/ppsspp/v0dbfaca', (_req, res) => {
     res.set('Cache-Control', CACHE.none)
-    res.redirect(302, '/ppsspp/v0dbfaca/v22/index.html?embed=1&frame=4')
+    res.redirect(302, '/ppsspp/v0dbfaca/v23/index.html?embed=1&frame=4')
   })
 
   /**

@@ -12,9 +12,12 @@
 import type { Capability, MountOptions, RuntimeHandle } from '../types'
 import { DOLPHIN_PATH, DOLPHIN_VERSION } from '../paths'
 import { dolphinVersionSaveSlug } from '../dolphinSave'
-import { probeRange } from '../remoteDisc'
+import { probeRange, type ProbeResult } from '../remoteDisc'
 import { isRomContentFailure, isRomNetworkFailure, markRomContentFailure, markRomNetworkFailure } from '../loadProgress'
 import { getT, fmt } from '@/services/i18n'
+import { alternateRomUrls, rememberRomHostForUrl } from '@/services/romHosts'
+import { rankRomRoutes } from '@/services/romRouteHealth'
+import { diagLog } from '@/services/startupDiagnostics'
 
 const BRIDGE_SOURCE = '8bitgo-dolphin-bridge'
 const BRIDGE_VERSION = 1
@@ -37,6 +40,7 @@ interface RemoteDiscDescriptor {
   url: string
   name: string
   size: number
+  alternateUrls?: string[]
 }
 
 function discNameOf(game: File | string, fallback: string): string {
@@ -60,8 +64,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let hostTimer = 0
   let remoteTotal = 0
   const probeController = new AbortController()
-  let remoteProbe: ReturnType<typeof probeRange> | null = null
+  let remoteProbe: Promise<{ url: string; result: ProbeResult }> | null = null
   let speculativeProbe = false
+  let runtimeFailureReported = false
   const pending = new Map<number, {
     resolve: (value: unknown) => void
     reject: (error: Error) => void
@@ -100,6 +105,44 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     })
   }
 
+  function startRemoteProbe(game: string): Promise<{ url: string; result: ProbeResult }> {
+    if (!remoteProbe) {
+      // 按线路记分板排序（services/romRouteHealth.ts）：熔断中 / 明显更慢的线路排到后面，不再每局先撞它
+      const candidates = rankRomRoutes([game, ...alternateRomUrls(game)])
+      remoteProbe = (async () => {
+        let networkFailure = false
+        let missingResource = false
+        let lastResult: ProbeResult = { rangeSupported: false, size: 0 }
+        for (const candidate of candidates) {
+          const result = await probeRange(candidate, probeController.signal, candidates.length > 1 ? 5_000 : undefined)
+          lastResult = result
+          networkFailure ||= Boolean(result.networkFailure)
+          missingResource ||= Boolean(result.missingResource)
+          if (result.rangeSupported && result.size) {
+            if (candidate !== game) {
+              rememberRomHostForUrl(candidate)
+              diagLog('download', 'warn', 'Dolphin Range 探测切换线路：', game, '→', candidate)
+            }
+            return { url: candidate, result }
+          }
+          if (probeController.signal.aborted) break
+        }
+        return {
+          url: game,
+          result: {
+            ...lastResult,
+            rangeSupported: false,
+            size: 0,
+            ...(networkFailure ? { networkFailure: true } : {}),
+            ...(missingResource ? { missingResource: true } : {}),
+          },
+        }
+      })()
+      void remoteProbe.catch(() => {})
+    }
+    return remoteProbe
+  }
+
   async function prepareGame(): Promise<File | RemoteDiscDescriptor> {
     if (options.game instanceof File) {
       options.onProgress?.({
@@ -113,14 +156,16 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
 
     options.onProgress?.({ phase: 'rom', loaded: 0 })
-    let probe = await (remoteProbe ?? probeRange(options.game, probeController.signal))
+    let selected = await startRemoteProbe(options.game)
+    let probe = selected.result
     let probeNetworkFailure = Boolean(probe.networkFailure)
     let probeMissingResource = Boolean(probe.missingResource)
     // iframe 下载期间的提前探测若撞上瞬时断网，正式挂盘时再补一次，不能永久记住一次失败。
     if (speculativeProbe && !probe.rangeSupported && !probeController.signal.aborted) {
       speculativeProbe = false
-      remoteProbe = probeRange(options.game, probeController.signal)
-      probe = await remoteProbe
+      remoteProbe = null
+      selected = await startRemoteProbe(options.game)
+      probe = selected.result
       probeNetworkFailure ||= Boolean(probe.networkFailure)
       probeMissingResource ||= Boolean(probe.missingResource)
     }
@@ -138,9 +183,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       total: probe.size,
     })
     return {
-      url: options.game,
+      url: selected.url,
       name: discNameOf(options.game, options.gameName),
       size: probe.size,
+      alternateUrls: [selected.url, ...alternateRomUrls(options.game)]
+        .filter((url, index, all) => url !== selected.url && all.indexOf(url) === index),
     }
   }
 
@@ -199,7 +246,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         const loaded = Math.min(remoteTotal, Math.round(Number(streamed[1]) * 1024 * 1024))
         options.onProgress?.({ phase: 'rom', loaded, total: remoteTotal, ratio: loaded / remoteTotal })
       }
-      if (message.tone === 'error' && ready) console.warn('[dolphin]', message.message)
+      if (message.tone === 'error' && message.message?.startsWith('REMOTE_DISC_RANGE_ERROR:') && !runtimeFailureReported) {
+        runtimeFailureReported = true
+        const detail = String(message.message ?? '').replace(/^REMOTE_DISC_RANGE_ERROR:\s*/, '')
+        console.error('[dolphin] 远程读盘发生错误：', detail)
+        options.onError?.(fmt(rt.dolphinLoadFailed, { msg: detail || '远程光盘读取失败' }), 'runtime')
+      }
       return
     }
     if (message.type !== 'response' || !Number.isInteger(message.requestId)) return
@@ -222,12 +274,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   container.textContent = ''
   container.appendChild(iframe)
   // 入口代次绕开旧的“删 index.html”301 边缘缓存；核心目录本身已经带构建版本。
-  iframe.src = `${DOLPHIN_PATH}index.html?embed=1&r=1`
+  iframe.src = `${DOLPHIN_PATH}index.html?embed=1&r=2`
   // 核心页面和远端光盘探测互不依赖；提前发出真实 Range，把一轮 CDN 往返藏在 iframe 启动里。
   if (typeof options.game === 'string' && globalThis.crossOriginIsolated) {
     speculativeProbe = true
-    remoteProbe = probeRange(options.game, probeController.signal)
-    void remoteProbe.catch(() => {})
+    remoteProbe = null
+    remoteProbe = startRemoteProbe(options.game)
   }
   hostTimer = window.setTimeout(() => {
     if (!destroyed && !ready) options.onError?.(rt.dolphinStartTimeout, 'runtime')

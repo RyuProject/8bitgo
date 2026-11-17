@@ -51,7 +51,8 @@ const cleanList = (value) => [...new Set((Array.isArray(value) ? value : []).map
  */
 export function normalizeVolunteerGame(slug, input, createdAt = new Date()) {
   const source = { ...(input && typeof input === 'object' ? input : {}), slug: String(slug) }
-  const row = gameApiToRow(source)
+  // 个人库把内容保存在 JSON payload，可容纳上限与主库 VARCHAR / TEXT 不同。
+  const row = gameApiToRow(source, { enforceColumnLimits: false })
   const relationRows = romRelationRows(source)
   const rel = {
     genres: cleanList(source.genres),
@@ -110,7 +111,7 @@ function gameSearchText(game) {
     .toLocaleLowerCase()
 }
 
-/** 纯函数：个人库数量小，在内存里筛选能保证 total / 分页与实际完全一致。 */
+/** 纯函数：用于固定筛选 / 排序语义的轻量回归检查。 */
 export function pageVolunteerGames(items, filters = {}) {
   const needle = String(filters.q ?? '').trim().toLocaleLowerCase()
   let list = items.filter((game) => {
@@ -146,12 +147,68 @@ function rowPayload(row) {
   return row ? parsedPayload(row.payload) : null
 }
 
+/**
+ * 志愿者列表必须在数据库分页：payload 可达 2MB，整库读进 Node 再筛选会让一个账号
+ * 的历史内容放大成每次列表请求的内存、CPU 和网络开销。owner_id 永远由登录态传入，
+ * 所有用户筛选值仍是绑定参数，排序只接受固定映射。
+ */
+export function buildVolunteerGameListQueries(ownerId, filters = {}) {
+  const where = ['owner_id = ?']
+  const params = [ownerId]
+  if (filters.platform && filters.platform !== 'all') {
+    where.push("JSON_UNQUOTE(JSON_EXTRACT(payload, '$.platform')) = ?")
+    params.push(String(filters.platform))
+  }
+  if (filters.status === 'visible') {
+    where.push("COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.hidden')), 'false') <> 'true'")
+  } else if (filters.status === 'hidden') {
+    where.push("JSON_UNQUOTE(JSON_EXTRACT(payload, '$.hidden')) = 'true'")
+  }
+  if (filters.home === true) {
+    where.push("CAST(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.homeRank')), '0') AS DECIMAL(20, 4)) <> 0")
+  } else if (filters.home === false) {
+    where.push("CAST(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.homeRank')), '0') AS DECIMAL(20, 4)) = 0")
+  }
+  const needle = String(filters.q ?? '').trim().slice(0, 160)
+  if (needle) {
+    where.push(`LOCATE(LOWER(?), LOWER(CONCAT_WS(CHAR(10), slug,
+      JSON_UNQUOTE(JSON_EXTRACT(payload, '$.title')),
+      JSON_UNQUOTE(JSON_EXTRACT(payload, '$.titleZh')),
+      JSON_UNQUOTE(JSON_EXTRACT(payload, '$.developer')),
+      CAST(JSON_EXTRACT(payload, '$.tags') AS CHAR)))) > 0`)
+    params.push(needle)
+  }
+
+  const stamp = 'updated_at DESC, slug ASC'
+  const orderBy = filters.sort === 'name'
+    ? `COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.titleZh')), ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.title')), ''), slug) COLLATE utf8mb4_unicode_ci ASC, ${stamp}`
+    : filters.sort === 'popular'
+      ? `CAST(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.plays')), '0') AS DECIMAL(20, 4)) DESC, ${stamp}`
+      : filters.sort === 'rating'
+        ? `CAST(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.rating')), '0') AS DECIMAL(20, 4)) DESC, ${stamp}`
+        : filters.sort === 'home'
+          ? `CASE WHEN CAST(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.homeRank')), '0') AS DECIMAL(20, 4)) = 0 THEN 65536 ELSE CAST(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.homeRank')) AS DECIMAL(20, 4)) END ASC, ${stamp}`
+          : stamp
+  const whereSql = where.join(' AND ')
+  return {
+    countSql: `SELECT COUNT(*) AS total FROM volunteer_games WHERE ${whereSql}`,
+    countParams: params,
+    pageSql: `SELECT ${filters.summary
+      ? "JSON_REMOVE(payload, '$.description', '$.descriptionEn', '$.descriptionI18n', '$.descriptionLocalized', '$.romAssets', '$.romBundleEntries', '$.dosExecutables', '$.dosStartupCommands', '$.dosSockdrives', '$.dosExtras', '$.dosboxConfig', '$.arcadeRomData')"
+      : 'payload'} AS payload FROM volunteer_games WHERE ${whereSql} ORDER BY ${orderBy} LIMIT ? OFFSET ?`,
+    pageParams: params,
+  }
+}
+
 export async function listVolunteerGames(ownerId, filters = {}) {
-  const rows = await query(
-    'SELECT payload FROM volunteer_games WHERE owner_id = ? ORDER BY updated_at DESC, slug',
-    [ownerId],
-  )
-  return pageVolunteerGames(rows.map(rowPayload).filter(Boolean), filters)
+  const { countSql, countParams, pageSql, pageParams } = buildVolunteerGameListQueries(ownerId, filters)
+  const countRow = await queryOne(countSql, countParams)
+  const total = Math.max(0, Number(countRow?.total) || 0)
+  const pageSize = Math.min(MAX_PAGE_SIZE, pageNumber(filters.pageSize, 24))
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+  const page = Math.min(pageNumber(filters.page, 1), totalPages)
+  const rows = await query(pageSql, [...pageParams, pageSize, (page - 1) * pageSize])
+  return { items: rows.map(rowPayload).filter(Boolean), total, page, pageSize, totalPages }
 }
 
 export async function getVolunteerGame(ownerId, slug) {

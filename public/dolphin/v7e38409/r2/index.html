@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>wasm-dolphin</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="./src/styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <span class="mark" aria-hidden="true"></span>
+          <div>
+            <h1>wasm-dolphin</h1>
+            <p id="coreLabel">WebAssembly host</p>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <span class="status-pill" id="statusPill">Booting</span>
+          <button class="icon-button" id="overlayToggle" type="button" title="Toggle FPS overlay" aria-pressed="true">FPS</button>
+          <button class="icon-button" id="debugToggle" type="button" title="Toggle diagnostics" aria-expanded="false" aria-controls="debugPanel">DBG</button>
+          <button class="icon-button tip" id="panelToggle" type="button"
+                  data-tip="Show or hide the side panel" aria-expanded="true"
+                  aria-controls="controlPanel" aria-label="Hide side panel">PANEL</button>
+          <button class="icon-button" id="fullscreenButton" type="button" title="Fullscreen" aria-label="Fullscreen">[]</button>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <section class="play-area" aria-label="Emulator">
+          <div class="crt-set" id="dropZone">
+            <!-- LCD strip in the bezel. Carries the game identity that used to
+                 live in the side panel, so the panel can be hidden entirely
+                 without losing what is loaded. -->
+            <div class="lcd-strip" aria-hidden="true">
+              <span class="lcd-title" id="lcdTitle">NO DISC</span>
+              <span class="lcd-meta" id="lcdMeta"></span>
+            </div>
+            <div class="crt-bezel">
+              <div class="screen-viewport">
+                <canvas id="screen" width="640" height="480" aria-label="Emulator screen"></canvas>
+                <div class="blank-probe-notice" id="blankProbeNotice" role="status" hidden></div>
+                <div class="screen-osd" id="screenHud">
+                  <span><strong id="hudFps">0</strong> present</span>
+                  <span><strong id="hudVisualFps">0</strong> visual</span>
+                  <span><strong id="hudSpeed">0%</strong> speed</span>
+                  <span><strong id="hudLatency">0f</strong> lag</span>
+                  <span><strong id="hudJit">JIT off</strong></span>
+                  <span id="hudResolution">640x480</span>
+                  <span><strong id="hudCoreFps">0</strong> core</span>
+                  <span><strong id="hudFrame">0</strong> frame</span>
+                  <span><strong id="hudGlSwap">0</strong> gl</span>
+                  <span><strong id="hudMode">-</strong></span>
+                  <span><strong id="hudWatchdog">0/0</strong> wd</span>
+                  <span><strong id="hudGap">0/0</strong>ms gap</span>
+                  <span><strong id="hudGlError">0x0</strong> glerr</span>
+                  <span><strong id="hudDraw">0/0</strong> draw</span>
+                  <span><strong id="hudNz">0</strong> nz</span>
+                  <span><strong id="hudUnderDrop">0/0</strong> u/d</span>
+                  <span><strong id="hudQueue">0/0</strong> q</span>
+                  <span><strong id="hudJitCache">0/0</strong> jitc</span>
+                  <span><strong id="hudRunloop">-/-</strong>us runloop</span>
+                  <span><strong id="hudWgx">-</strong> wgx</span>
+                  <span id="hudStatus" style="opacity:.7"></span>
+                </div>
+                <div class="drop-badge" id="dropBadge">Drop disc</div>
+                <div class="scanlines" aria-hidden="true"></div>
+              </div>
+            </div>
+            <div class="crt-footer">
+              <span class="power-light"></span>
+              <div class="transport" aria-label="Playback controls">
+                <label class="file-button tip" data-tip="Open a GameCube disc image">
+                  <span class="glyph" aria-hidden="true">&#x23CF;</span>
+                  <span class="btn-text">Open disc</span>
+                  <input id="romInput" type="file" accept=".iso,.gcm,.rvz,.wbfs,.wad,.dol,.elf">
+                </label>
+                <button id="runButton" class="tip" type="button" data-tip="Pause or resume emulation" aria-label="Pause">
+                  <span class="glyph" aria-hidden="true">&#x23F8;</span>
+                </button>
+                <button id="resetButton" class="tip" type="button" data-tip="Reset the console" aria-label="Reset">
+                  <span class="glyph" aria-hidden="true">&#x21BB;</span>
+                </button>
+                <button id="muteButton" class="tip" type="button" data-tip="Mute or unmute audio" aria-label="Muted">
+                  <span class="glyph" aria-hidden="true">&#x1F507;</span>
+                </button>
+                <span class="transport-sep" aria-hidden="true"></span>
+                <button id="saveButton" class="tip" type="button" data-tip="Save state to a slot" aria-label="Save state">
+                  <span class="glyph" aria-hidden="true">&#x1F4BE;</span>
+                </button>
+                <button id="loadButton" class="tip" type="button" data-tip="Load state from a slot" aria-label="Load state">
+                  <span class="glyph" aria-hidden="true">&#x21BA;</span>
+                </button>
+                <button id="dlStateButton" class="tip" type="button" data-tip="Download the current save state" aria-label="Download state">
+                  <span class="glyph" aria-hidden="true">&#x2B07;</span>
+                </button>
+                <label class="file-button tip" data-tip="Upload a save state file" aria-label="Upload state">
+                  <span class="glyph" aria-hidden="true">&#x2B06;</span>
+                  <input id="ulStateInput" type="file" accept=".sav">
+                </label>
+              </div>
+                            <label class="aspect-select tip" data-tip="Screen aspect ratio">
+                <span class="sr-only">Aspect ratio</span>
+                <select id="aspectSelect">
+                  <option value="4:3">4:3</option>
+                  <option value="16:9">16:9</option>
+                </select>
+              </label>
+              <span class="volume-dial tip" data-tip="Volume">
+                            <input id="volumeDial" type="range" min="0" max="100" value="100"
+                            aria-label="Volume" orient="vertical">
+                            <span class="dial-face" aria-hidden="true"><i></i></span>
+                            </span>
+                            </div>
+                            </div>
+                            
+                            <div class="touch-controls" aria-label="Touch controls">
+                            <div class="touch-dpad">
+                            <button data-touch-button="D_UP" aria-label="D-pad up">Up</button>
+                            <button data-touch-button="D_LEFT" aria-label="D-pad left">Left</button>
+                            <button data-touch-button="D_RIGHT" aria-label="D-pad right">Right</button>
+                            <button data-touch-button="D_DOWN" aria-label="D-pad down">Down</button>
+                            </div>
+                            <div class="touch-face">
+                            <button data-touch-button="B" aria-label="B">B</button>
+                            <button data-touch-button="A" aria-label="A">A</button>
+                            </div>
+                            </div>
+                            </section>
+                            
+                            <aside class="control-panel" id="controlPanel" aria-label="Emulator controls">
+                            <section class="panel-block game-block">
+                            <div class="section-heading">
+                            <h2>Game</h2>
+                            <span id="gameSize">No file</span>
+                            </div>
+                            <p class="game-title" id="gameTitle">Demo scene</p>
+                            <p class="muted" id="mountNote">Demo WASM core active</p>
+                            </section>
+                            
+                            <form class="settings-panel" id="settingsForm">
+                            <div class="section-heading">
+                            <h2>Settings</h2>
+                            <span id="settingsSummary">Startup</span>
+                            </div>
+                            
+                            <div class="setting-grid">
+                            <label>
+                              <span>Core</span>
+                              <select id="settingCore">
+                              <option value="native">Native</option>
+                              <option value="upstream">Upstream</option>
+                              </select>
+                            </label>
+                            
+                            <label>
+                              <span>Renderer</span>
+                              <select id="settingVideo">
+                              <option value="software">Software</option>
+                              <option value="wgpu">WebGPU hardware (experimental)</option>
+                              <option value="ogl">OpenGL GPU</option>
+                              <option value="null">Null video</option>
+                              </select>
+                            </label>
+                            
+                            <label>
+                              <span>GPU path</span>
+                              <select id="settingOglProxy">
+                              <option value="proxy">Compatible GL</option>
+                              <option value="worker">Direct worker GL</option>
+                              <option value="main">Main thread GL</option>
+                              <option value="readback">Readback debug</option>
+                              </select>
+                            </label>
+                            
+                            <label>
+                              <span>Resolution</span>
+                              <select id="settingResolution">
+                              <option value="full">Full 640x480</option>
+                              <option value="0.75">75% present</option>
+                              <option value="half">Half 320x240</option>
+                              </select>
+                            </label>
+                            
+                            <label>
+                              <span>Speed</span>
+                              <select id="settingSpeed">
+                              <option value="0.5">0.5x</option>
+                              <option value="0.75">0.75x</option>
+                              <option value="1">1x</option>
+                              <option value="1.25">1.25x</option>
+                              <option value="1.5">1.5x</option>
+                              <option value="unlimited">Unlimited</option>
+                              </select>
+                            </label>
+                            
+                            <label>
+                              <span>CPU</span>
+                              <select id="settingCpu">
+                              <option value="auto">Auto</option>
+                              <option value="single">Single thread</option>
+                              <option value="dual">Dual core</option>
+                              </select>
+                            </label>
+                            
+                            <label>
+                              <span>Presenter</span>
+                              <select id="settingPresenter">
+                              <option value="webgpu">WebGPU</option>
+                              <option value="webgl">WebGL</option>
+                              <option value="2d">Canvas 2D</option>
+                              </select>
+                            </label>
+                            
+                            <label>
+                              <span>Frame queue</span>
+                              <select id="settingQueue">
+                              <option value="2">2 frames</option>
+                              <option value="4">4 frames</option>
+                              <option value="8">8 frames</option>
+                              <option value="12">12 frames</option>
+                              </select>
+                            </label>
+                            
+                            <label>
+                              <span>Pacing</span>
+                              <select id="settingPacing">
+                              <option value="tick">Tick</option>
+                              <option value="smooth">Smooth</option>
+                              <option value="direct">Direct</option>
+                              </select>
+                            </label>
+                            
+                            <label>
+                              <span>Raster quality</span>
+                              <select id="settingFastSw">
+                              <option value="0">Full quality</option>
+                              <option value="1">Balanced</option>
+                              <option value="2">Emergency speed</option>
+                              </select>
+                            </label>
+                            
+                            <label>
+                              <span>JIT tier</span>
+                              <select id="settingJitTier">
+                              <option value="guarded">Guarded</option>
+                              <option value="mixed">Mixed experimental</option>
+                              </select>
+                            </label>
+                            </div>
+                            
+                            <div class="toggle-row">
+                            <label class="switch-line">
+                              <input id="settingWasmJit" type="checkbox">
+                              <span>WASM JIT</span>
+                            </label>
+                            <label class="switch-line">
+                              <input id="settingForceJit" type="checkbox">
+                              <span>Force JIT</span>
+                            </label>
+                            <label class="switch-line">
+                              <input id="settingMetrics" type="checkbox">
+                              <span>Collect Metrics</span>
+                            </label>
+                            <label class="switch-line tip" data-tip="Pick the renderer from measured per-game results">
+                              <input id="settingAutoProfile" type="checkbox" checked>
+                              <span>Auto per-game</span>
+                            </label>
+                            </div>
+                            
+                            <div class="settings-actions">
+                            <button id="settingsApplyButton" type="submit">Apply restart</button>
+                            <button id="settingsPresetButton" type="button">Melee preset</button>
+                            </div>
+                            </form>
+                            
+                            <section class="debug-panel" id="debugPanel" aria-label="Diagnostics" hidden>
+                            <section class="panel-block">
+                            <div class="section-heading">
+                            <h2>Boot</h2>
+                            <span id="bootStatus">No disc</span>
+                            </div>
+                            <div class="metric-row">
+                            <span>Apploader</span>
+                            <strong id="bootApploader">-</strong>
+                            </div>
+                            <div class="metric-row">
+                            <span>Boot DOL</span>
+                            <strong id="bootDol">-</strong>
+                            </div>
+                            <div class="metric-row">
+                            <span>FST</span>
+                            <strong id="bootFst">-</strong>
+                            </div>
+                            <div class="metric-row">
+                            <span>Image</span>
+                            <strong id="bootImage">-</strong>
+                            </div>
+                            <div class="metric-row">
+                            <span>Entry</span>
+                            <strong id="bootEntry">-</strong>
+                            </div>
+                            <p class="muted compact" id="bootBlocker">No boot attempt</p>
+                            <div class="root-entry-list" id="rootEntryList" aria-label="Disc root entries"></div>
+                            </section>
+                            
+                            <section class="panel-block">
+                            <div class="section-heading">
+                            <h2>Runtime</h2>
+                            <span id="coreMode">Demo</span>
+                            </div>
+                            <div class="metric-row">
+                            <span>Frame</span>
+                            <strong id="frameCounter">0</strong>
+                            </div>
+                            <div class="metric-row">
+                            <span>Present FPS</span>
+                            <strong id="fpsCounter">0</strong>
+                            </div>
+                            <div class="metric-row">
+                            <span>Visual FPS</span>
+                            <strong id="visualFpsCounter">0</strong>
+                            </div>
+                            <div class="metric-row">
+                            <span>UI FPS</span>
+                            <strong id="uiFpsCounter">0</strong>
+                            </div>
+                            <div class="metric-row">
+                            <span>Core FPS</span>
+                            <strong id="coreFpsCounter">0</strong>
+                            </div>
+                            <div class="metric-row">
+                            <span>Game Speed</span>
+                            <strong id="gameSpeedCounter">0%</strong>
+                            </div>
+                            <div class="metric-row">
+                            <span>Frame Gap</span>
+                            <strong id="presentationGapCounter">0 ms</strong>
+                            </div>
+                            <div class="metric-row">
+                            <span>Latency</span>
+                            <strong id="presentationLagCounter">0f / 0 ms</strong>
+                            </div>
+                            <div class="metric-row">
+                            <span>Audio</span>
+                            <strong id="audioStatus">Audio off</strong>
+                            </div>
+                            <div class="metric-row">
+                            <span>Ticks</span>
+                            <strong id="coreTicks">0</strong>
+                            </div>
+                            <div class="metric-row">
+                            <span>PPC PC</span>
+                            <strong id="ppcPc">-</strong>
+                            </div>
+                            <div class="metric-row">
+                            <span>CPU</span>
+                            <strong id="cpuCoreName">-</strong>
+                            </div>
+                            <div class="metric-row">
+                            <span>WASM JIT exp</span>
+                            <strong id="ppcWasmJit">0 / 0</strong>
+                            </div>
+                            <div class="metric-row">
+                            <span>WASM Helper</span>
+                            <strong id="ppcWasmHelperStats">-</strong>
+                            </div>
+                            <div class="metric-row">
+                            <span>Frame Profile</span>
+                            <strong id="frameProfileStats">-</strong>
+                            </div>
+                            <div class="metric-row">
+                            <span>Adapter</span>
+                            <strong id="adapterStatus">Fallback</strong>
+                            </div>
+                            </section>
+                            
+                            <section class="panel-block">
+                            <div class="section-heading">
+                            <h2>Input</h2>
+                            <span id="inputSource">Keyboard</span>
+                            </div>
+                            <div class="control-grid" id="controlGrid"></div>
+                            </section>
+                            
+                            <section class="panel-block">
+                            <div class="section-heading">
+                            <h2>Core Slot</h2>
+                            <span>cores/dolphin</span>
+                            </div>
+                            <p class="muted compact">Emscripten Dolphin bundles load from <code>cores/dolphin</code>.</p>
+                            </section>
+                            </section>
+                            </aside>
+                            </main>
+                            </div>
+                            
+                            <script type="module" src="./src/bootstrap.js"></script>
+                            </body>
+                            </html>
+                            

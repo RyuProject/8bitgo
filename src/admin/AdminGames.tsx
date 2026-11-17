@@ -8,7 +8,7 @@ import { genreMap } from '@/data/genres'
 import { cx, formatCount } from '@/lib/format'
 import { apiEnabled } from '@/services/api'
 import { useAdminData } from './AdminLayout'
-import { deleteGame, fetchAdminGames, setGameHidden, upsertGame } from '@/services/store'
+import { deleteGame, fetchAdminGame, fetchAdminGames, setGameHidden, upsertGame } from '@/services/store'
 import { romKeysOf } from '@/services/roms'
 import { trackPageLoad } from '@/services/progress'
 import { GameForm } from './GameForm'
@@ -53,6 +53,7 @@ export function AdminGames() {
   const uploadActivity = useSyncExternalStore(subscribeUploadActivity, getUploadActivity, getUploadActivity)
   const [toast, setToast] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [loadingEditor, setLoadingEditor] = useState(false)
   /** 同一时刻只做一个行操作，避免双击产生两次相反的上下架或重复删除。 */
   const [rowAction, setRowAction] = useState<{ slug: string; kind: 'visibility' | 'delete' } | null>(null)
   const [selectedSlugs, setSelectedSlugs] = useState<Set<string>>(() => new Set())
@@ -61,12 +62,15 @@ export function AdminGames() {
   const savingRef = useRef(false)
   const rowActionRef = useRef(false)
   const batchActionRef = useRef(false)
+  const loadingEditorRef = useRef(false)
 
   const [paged, setPaged] = useState<Paged<Game> | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   /** 增删改之后 +1，用来重新拉当前页（列表不再有全局 store 会自己推送变化） */
   const [tick, setTick] = useState(0)
+  // 编辑器最小化、上传仍在跑或自动保存期间，不允许列表操作改动同一批游戏资料。
+  const editorOperationBusy = Boolean(editing && (editorMinimized || autoSaveAfterUpload || uploadActivity.active.length || saving))
 
   useEffect(() => {
     if (!toast) return
@@ -181,10 +185,28 @@ export function AdminGames() {
     })
   }
 
-  const openEditor = (next: Exclude<Editing, null>) => {
+  const openEditor = async (next: Exclude<Editing, null>) => {
+    if (editorOperationBusy) {
+      setToast('上传和自动保存完成前，请先恢复当前编辑器')
+      return
+    }
     setEditorMinimized(false)
     setAutoSaveAfterUpload(false)
-    setEditing(next)
+    if (next.mode === 'add') {
+      setEditing(next)
+      return
+    }
+    if (loadingEditorRef.current) return
+    loadingEditorRef.current = true
+    setLoadingEditor(true)
+    try {
+      setEditing({ mode: 'edit', game: await fetchAdminGame(next.game.slug) })
+    } catch (error) {
+      setToast(error instanceof Error ? `读取游戏完整资料失败：${error.message}` : '读取游戏完整资料失败')
+    } finally {
+      loadingEditorRef.current = false
+      setLoadingEditor(false)
+    }
   }
 
   const restoreEditor = useCallback((message?: string | null) => {
@@ -225,6 +247,7 @@ export function AdminGames() {
    * 保留对象最多产生可审计的孤儿；误删共享对象会让别的游戏立刻 404，代价完全不对称。
    */
   const remove = async (g: Game) => {
+    if (editorOperationBusy || loadingEditor) return
     const scope = personalLibrary
       ? '只会从你的独立游戏库移除，不影响主游戏库、其他志愿者或 ROM 文件。'
       : '此操作会从主数据库中移除该游戏；R2 文件会保留，避免误删被其他游戏共用的资源。'
@@ -246,6 +269,7 @@ export function AdminGames() {
   }
 
   const toggleHidden = async (g: Game) => {
+    if (editorOperationBusy || loadingEditor) return
     if (rowActionRef.current || batchActionRef.current) return
     rowActionRef.current = true
     setRowAction({ slug: g.slug, kind: 'visibility' })
@@ -263,6 +287,7 @@ export function AdminGames() {
 
   /** 批量操作限 4 路并发，单条失败不会中断其他游戏；失败项保留勾选方便重试。 */
   const setSelectedVisibility = async (hidden: boolean) => {
+    if (editorOperationBusy || loadingEditor) return
     if (batchActionRef.current || rowActionRef.current) return
     const selected = rows.filter((game) => selectedSlugs.has(game.slug))
     const pending = selected.filter((game) => game.hidden !== hidden)
@@ -320,7 +345,7 @@ export function AdminGames() {
                   : `共 ${total} 款（含已下架）。修改直接写入数据库，前台立即生效。`}
           </p>
         </div>
-        <button type="button" className={btnClass.primary} onClick={() => openEditor({ mode: 'add' })} disabled={!apiEnabled() || Boolean(batchProgress)}>
+        <button type="button" className={btnClass.primary} onClick={() => void openEditor({ mode: 'add' })} disabled={!apiEnabled() || Boolean(batchProgress) || editorOperationBusy || loadingEditor}>
           ＋ 新增游戏
         </button>
       </div>
@@ -395,10 +420,10 @@ export function AdminGames() {
               )}
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <button type="button" className={btnClass.small} onClick={() => void setSelectedVisibility(false)} disabled={Boolean(batchProgress) || Boolean(rowAction)}>
+              <button type="button" className={btnClass.small} onClick={() => void setSelectedVisibility(false)} disabled={editorOperationBusy || loadingEditor || Boolean(batchProgress) || Boolean(rowAction)}>
                 {personalLibrary ? '批量显示' : '批量上架'}
               </button>
-              <button type="button" className={btnClass.small} onClick={() => void setSelectedVisibility(true)} disabled={Boolean(batchProgress) || Boolean(rowAction)}>
+              <button type="button" className={btnClass.small} onClick={() => void setSelectedVisibility(true)} disabled={editorOperationBusy || loadingEditor || Boolean(batchProgress) || Boolean(rowAction)}>
                 {personalLibrary ? '批量隐藏' : '批量下架'}
               </button>
               <button type="button" className={cx(btnClass.small, 'text-muted')} onClick={() => setSelectedSlugs(new Set())} disabled={Boolean(batchProgress)}>
@@ -427,7 +452,7 @@ export function AdminGames() {
                   onChange={togglePageSelection}
                   aria-label="选择当前页全部游戏"
                   title="只选择当前页"
-                  disabled={!rows.length || Boolean(batchProgress)}
+                  disabled={!rows.length || editorOperationBusy || Boolean(batchProgress)}
                   className="h-4 w-4 accent-[var(--color-brand)]"
                 />
               </th>
@@ -455,7 +480,7 @@ export function AdminGames() {
                       checked={selectedSlugs.has(g.slug)}
                       onChange={(event) => toggleGameSelection(g.slug, event.target.checked)}
                       aria-label={`选择${g.titleZh ?? g.title}`}
-                      disabled={Boolean(batchProgress)}
+                      disabled={editorOperationBusy || Boolean(batchProgress)}
                       className="h-4 w-4 accent-[var(--color-brand)]"
                     />
                   </td>
@@ -511,8 +536,8 @@ export function AdminGames() {
                       // 编辑弹窗只填「按语言的 ROM」（roms），以前这里只看 g.rom，
                       // 结果配好了语言 ROM 的游戏在列表里一律显示未绑定
                       const keys = romKeysOf(g)
-                      return keys.length ? (
-                        <span className="rounded bg-online/15 px-1.5 py-0.5 text-xs text-online" title={keys.join('\n')}>
+                      return keys.length || g.playable ? (
+                        <span className="rounded bg-online/15 px-1.5 py-0.5 text-xs text-online" title={keys.join('\n') || '已绑定 ROM'}>
                           ☁️ 已绑定{keys.length > 1 ? ` ×${keys.length}` : ''}
                         </span>
                       ) : (
@@ -529,20 +554,20 @@ export function AdminGames() {
                   </td>
                   <td className="px-3 py-2">
                     <div className="flex justify-end gap-1">
-                      <button type="button" disabled={Boolean(rowAction) || Boolean(batchProgress)} className={cx(btnClass.small, 'text-brand-hover hover:bg-brand-soft')} onClick={() => openEditor({ mode: 'edit', game: g })}>
+                      <button type="button" disabled={editorOperationBusy || loadingEditor || Boolean(rowAction) || Boolean(batchProgress)} className={cx(btnClass.small, 'text-brand-hover hover:bg-brand-soft')} onClick={() => void openEditor({ mode: 'edit', game: g })}>
                         编辑
                       </button>
                       <button
                         type="button"
                         className={cx(btnClass.small, 'text-muted hover:bg-black/5 hover:text-fg')}
-                        disabled={Boolean(rowAction) || Boolean(batchProgress)}
+                        disabled={editorOperationBusy || loadingEditor || Boolean(rowAction) || Boolean(batchProgress)}
                         onClick={() => void toggleHidden(g)}
                       >
                         {rowAction?.slug === g.slug && rowAction.kind === 'visibility'
                           ? '处理中…'
                           : personalLibrary ? (g.hidden ? '显示' : '隐藏') : (g.hidden ? '上架' : '下架')}
                       </button>
-                      <button type="button" disabled={Boolean(rowAction) || Boolean(batchProgress)} className={cx(btnClass.small, 'text-live hover:bg-live/15')} onClick={() => void remove(g)}>
+                      <button type="button" disabled={editorOperationBusy || loadingEditor || Boolean(rowAction) || Boolean(batchProgress)} className={cx(btnClass.small, 'text-live hover:bg-live/15')} onClick={() => void remove(g)}>
                         {rowAction?.slug === g.slug && rowAction.kind === 'delete' ? '删除中…' : '删除'}
                       </button>
                     </div>
@@ -671,6 +696,12 @@ export function AdminGames() {
             </aside>
           )}
         </>
+      )}
+
+      {loadingEditor && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4" role="status" aria-live="polite">
+          <div className="rounded-xl border border-line bg-surface px-5 py-4 text-sm shadow-xl">正在读取游戏完整资料…</div>
+        </div>
       )}
 
       {toast && (

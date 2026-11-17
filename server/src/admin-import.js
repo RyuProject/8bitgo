@@ -1,7 +1,8 @@
 import { gameSupportsNetplay } from '../../shared/netplay-players.js'
 import { dosGameConfigError } from './dos-game-config.js'
+import { gameApiToRow, romRelationRows } from './mappers.js'
 
-/** 单次导入封顶，避免一个后台请求长时间占着连接并串行开启数千个事务。 */
+/** 单次导入封顶，避免一次后台事务持锁处理无限量内容。 */
 export const MAX_ADMIN_IMPORT_ITEMS = 2000
 
 const own = (value, key) => Object.prototype.hasOwnProperty.call(value ?? {}, key)
@@ -31,7 +32,7 @@ function duplicateSlugProblem(list, label) {
 /**
  * 批量导入先完整校验、再开始写库。
  *
- * 游戏写入跨多次事务，若第 700 条才发现形状错误，前 699 条已经不可逆地覆盖完成。
+ * 若第 700 条才发现形状错误，前 699 条已经开始写入；先在纯数据阶段扫完整批。
  * 所以能在纯数据阶段发现的问题必须一次扫完；返回的列表同时把 slug 两端空白收掉，
  * 避免校验的是一个值、真正写入的却是另一个值。
  */
@@ -75,7 +76,15 @@ export function validateAdminImportPayload(body) {
     }
     const dosError = dosGameConfigError(game)
     if (dosError) return { error: `${label}：${dosError}`, gameList: [], postList: [] }
-    gameList.push({ ...game, slug: game.slug.trim() })
+    const normalized = { ...game, slug: game.slug.trim() }
+    try {
+      // 一并跑数据库字段边界和 ROM 关联归一化；超长简介、媒体地址或坏关联在事务前拒绝。
+      gameApiToRow(normalized)
+      romRelationRows(normalized)
+    } catch (error) {
+      return { error: `${label}：${error instanceof Error ? error.message : '游戏字段无效'}`, gameList: [], postList: [] }
+    }
+    gameList.push(normalized)
   }
 
   const postList = []

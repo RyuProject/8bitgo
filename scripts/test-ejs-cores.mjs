@@ -213,6 +213,22 @@ check('固定名核心与悬停预热共用版本化 URL，不会把两代核心
     'KOF97 实际选到 legacy 核心时也必须走版本化 URL',
   )
   assert.equal(fbneoPaths['emulator.min.js'], ejsRuntimeAsset('emulator.min.js'))
+  const emulatorJsPlatforms = platforms.filter((platform) => platform.runtime === 'emulatorjs')
+  assert.ok(emulatorJsPlatforms.length > 0, '必须有 EmulatorJS 平台参与共享入口校验')
+  for (const platform of emulatorJsPlatforms) {
+    const runtimePaths = emulatorJsRuntimePaths(platform.core)
+    assert.equal(
+      runtimePaths['emulator.min.js'],
+      ejsRuntimeAsset('emulator.min.js'),
+      `${platform.id} 必须使用统一、内容版本化的 EmulatorJS 引擎入口`,
+    )
+  }
+  const adapterSource = readFileSync(join(root, 'src/emulator/adapters/emulatorjs.ts'), 'utf8')
+  assert.match(
+    adapterSource,
+    /injectScript\(doc, ejsRuntimeAsset\('loader\.js'\)\)/,
+    '所有 EmulatorJS 平台必须由同一适配器加载内容版本化的共享 loader',
+  )
   // 2026-11-15：引擎入口也按内容取版本，不再靠手换 EJS_RUNTIME_GENERATION
   for (const name of ['emulator.min.js', 'emulator.min.css', 'loader.js', 'compression/extract7z.js', 'localization/zh.json']) {
     const engineFile = join(root, 'public/emulatorjs', name)

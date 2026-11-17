@@ -14,6 +14,7 @@ import { dosGameConfigError } from './dos-game-config.js'
 
 /** 会随版本增加的列。新增迁移时同步往这里加一条 */
 export const EXPECTED_COLUMNS = [
+  { table: 'game_startup_diagnostics', column: 'hotfix_ids', why: '诊断包记录生效中的 AI 修补；缺列时诊断照存，但修补效果统计与自动撤销暂停' },
   { table: 'games', column: 'home_rank', why: '首页精选位' },
   { table: 'games', column: 'core', why: '按游戏覆盖模拟器核心' },
   { table: 'games', column: 'description_localized', why: '逐语言人工简介；缺列会导致后台 SEO 文案保存失败' },
@@ -97,6 +98,7 @@ export const EXPECTED_TABLES = [
   { table: 'game_plays', why: '游玩去重名单；缺了 POST /api/games/:slug/play 会 500，游玩数永远是 0' },
   { table: 'game_startup_events', why: '第一方启动漏斗；缺了详情页到首帧/首次操作的性能统计会全部 500' },
   { table: 'game_startup_diagnostics', why: '启动诊断包；缺了失败现场不入库，后台「错误诊断」页 503' },
+  { table: 'ai_hotfixes', why: 'AI 临时修补记录；缺了 MiniMax 分诊不运行、/api/hotfixes 返回空、后台「AI 修补」页 503' },
   { table: 'game_roms', why: '按语言分槽的 ROM' },
   { table: 'psp_conversion_jobs', why: 'PSP / PS1 ISO → CHD 后台压缩队列；缺了上传 ISO 后无法创建转换任务' },
   { table: 'sockdrive_conversion_jobs', why: '大型 DOS / Windows ZIP → Sockdrive 后台队列；缺了后台上传后无法自动转换' },

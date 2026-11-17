@@ -129,6 +129,8 @@ export const ENV_MANIFEST = [
   { name: 'DIAG_ALERT_EMAIL', group: '诊断告警', kind: 'config', file: 'diag-alert.js', note: '错误聚集告警收件人；留空时不查询、不发送' },
   { name: 'DIAG_ALERT_MIN_VISITS', group: '诊断告警', kind: 'config', file: 'diag-alert.js', note: '告警前所需的最少独立访问数，默认 10' },
   { name: 'DIAG_ALERT_WINDOW_MIN', group: '诊断告警', kind: 'config', file: 'diag-alert.js', note: '计算错误聚集的时间窗口，默认 60 分钟' },
+  { name: 'DIAG_LARK_COOLDOWN_MINUTES', group: '诊断告警', kind: 'config', file: 'diag-lark.js', note: '同一加载失败特征的 Lark 通知冷却时间，默认 10 分钟' },
+  { name: 'DIAG_LARK_WEBHOOK_URL', group: '诊断告警', kind: 'secret', file: 'diag-lark.js', note: '加载失败与启动超时诊断的 Lark 群机器人 webhook' },
   { name: 'DOWNLOAD_PROXY_SECRET', group: '安全', kind: 'secret', file: 'download-proxy.js', note: '校验 ROM Worker 转发的真实客户端 IP；两端必须一致' },
   { name: 'EDGE_PURGE_DELAY_MS', group: '缓存', kind: 'config', file: 'edge-purge.js', note: '后台写入后延迟清 Cloudflare HTML 缓存，默认 3 秒' },
   { name: 'GOOGLE_CLIENT_ID', group: '第三方登录', kind: 'config', file: 'routes/auth.js', note: '公开值，和前端 VITE_GOOGLE_CLIENT_ID 必须同一个' },

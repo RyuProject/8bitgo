@@ -144,6 +144,7 @@ gamesRouter.get('/', async (req, res, next) => {
           sort: req.query.sort,
           page: req.query.page,
           pageSize: req.query.pageSize,
+          summary: req.query.summary === '1',
         }))
       }
       // 管理员的「我的库」就是主库；普通用户不能借这个参数看草稿。
@@ -167,6 +168,8 @@ gamesRouter.get('/', async (req, res, next) => {
       status: wantAll ? req.query.status : undefined,
       // 后台「只看首页位」筛选。home=1 只看钦点的，home=0 只看没钦点的
       home: wantAll && req.query.home != null ? truthy(req.query.home) : undefined,
+      // 后台表格只展示摘要；完整编辑资料由 /:slug 按需读取。
+      card: wantAll,
     })
     // 只有公开视角能缓存：管理员视角带着身份，缓存下来等于把下架游戏发给所有人
     if (!wantAll) publicApi(res)
@@ -624,8 +627,8 @@ gamesRouter.put('/:slug', requireAbility('games:edit'), async (req, res, next) =
       return res.status(400).json({ error: 'slug 只能使用小写字母、数字和连字符' })
     }
     if (slug.length > 120) return res.status(400).json({ error: 'slug 不能超过 120 个字符' })
-    if (!req.body?.title) return res.status(400).json({ error: '缺少标题' })
-    if (!req.body?.platform) return res.status(400).json({ error: '缺少平台' })
+    if (typeof req.body?.title !== 'string' || !req.body.title.trim()) return res.status(400).json({ error: '请填写英文标题' })
+    if (typeof req.body?.platform !== 'string' || !req.body.platform.trim()) return res.status(400).json({ error: '请选择游戏平台' })
     const netplayError = netplayGameConfigError(req.body)
     if (netplayError) return res.status(400).json({ error: netplayError })
     const dosError = dosGameConfigError(req.body)
@@ -714,6 +717,12 @@ gamesRouter.patch('/:slug', requireAbility('games:edit'), async (req, res, next)
     }
     const current = await getGameBySlug(slug)
     if (!current) return res.status(404).json({ error: '游戏不存在' })
+    if (Object.hasOwn(req.body ?? {}, 'title') && (typeof req.body.title !== 'string' || !req.body.title.trim())) {
+      return res.status(400).json({ error: '英文标题不能为空' })
+    }
+    if (Object.hasOwn(req.body ?? {}, 'platform') && (typeof req.body.platform !== 'string' || !req.body.platform.trim())) {
+      return res.status(400).json({ error: '游戏平台不能为空' })
+    }
     const candidate = mergeGamePatchForDosValidation(current, req.body)
     const netplayError = netplayGameConfigError(candidate)
     if (netplayError) return res.status(400).json({ error: netplayError })
@@ -728,9 +737,24 @@ gamesRouter.patch('/:slug', requireAbility('games:edit'), async (req, res, next)
     }
     const id = await patchGame(slug, patchRow, relations, req.body)
     if (!id) return res.status(404).json({ error: '游戏不存在' })
-    invalidateContent()
-    const saved = await getGameBySlug(slug)
-    queueGameSearchPush(saved)
+    try {
+      invalidateContent()
+    } catch (error) {
+      console.error('[games] 保存后清理内容缓存失败：', error?.message || error)
+    }
+    // 数据库事务已经提交；读回 / 缓存 / 搜索队列故障不能让客户端误以为保存失败，
+    // 否则后台重试会覆盖其他管理员刚完成的编辑。
+    let saved = candidate
+    try {
+      saved = await getGameBySlug(slug) ?? candidate
+    } catch (error) {
+      console.error('[games] 保存后回读失败，返回本次提交内容：', error?.message || error)
+    }
+    try {
+      queueGameSearchPush(saved)
+    } catch (error) {
+      console.error('[games] 保存后加入搜索推送队列失败：', error?.message || error)
+    }
     res.json(saved)
   } catch (e) {
     next(e)
@@ -757,8 +781,16 @@ gamesRouter.delete('/:slug', requireAbility('games:edit'), async (req, res, next
     // 删除前先保留平台 / 类型，删除后除了详情 404，聚合页的内容和数量也发生了变化。
     const previous = await getGameBySlug(req.params.slug)
     if (!(await deleteGame(req.params.slug))) return res.status(404).json({ error: '游戏不存在' })
-    invalidateContent()
-    queueGameSearchPush(previous)
+    try {
+      invalidateContent()
+    } catch (error) {
+      console.error('[games] 删除后清理内容缓存失败：', error?.message || error)
+    }
+    try {
+      queueGameSearchPush(previous)
+    } catch (error) {
+      console.error('[games] 删除后加入搜索推送队列失败：', error?.message || error)
+    }
     res.json({ ok: true })
   } catch (e) {
     next(e)

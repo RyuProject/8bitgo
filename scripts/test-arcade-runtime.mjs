@@ -7,13 +7,14 @@
  */
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
+import { unzipSync, zipSync } from 'fflate'
 import { arcadeCoreForRomData, supportsFbneoRomData } from '../src/emulator/arcadeCore.ts'
 import {
   emulatorJsDownloadPhase,
   isCriticalEmulatorJsDownload,
 } from '../src/emulator/emulatorjsDownload.ts'
 import { writeFsInjections } from '../src/emulator/fsInjection.ts'
-import { arcadeArchiveLayoutProblem } from '../src/lib/arcadeArchive.ts'
+import { arcadeArchiveLayoutProblem, prepareArcadeArchive } from '../src/lib/arcadeArchive.ts'
 import { REQUIRED_SELF_BUILT_CORES } from '../src/config/emulators.ts'
 import { readdir } from 'node:fs/promises'
 import { EJS_WEBGL2_DEFAULT_CORES, emulatorJsCoreDataFile } from '../src/emulator/paths.ts'
@@ -84,9 +85,31 @@ await check('一份下载 promise 失败后也不会中断后续注入', async (
   assert.deepEqual(written, ['/neogeo.zip'])
 })
 
-await check('嵌套目录的街机 ZIP 会在上传前被拦下', () => {
+await check('街机 ZIP 目录规则仍能识别必须拍平的成员', () => {
   assert.equal(arcadeArchiveLayoutProblem([{ name: 'v-102tw.u39' }]), null)
   assert.match(arcadeArchiveLayoutProblem([{ name: 'mxsqy102tw/v-102tw.u39' }]) ?? '', /只读取 ZIP 根目录/)
+})
+
+await check('本地与旧远端街机 ZIP 会安全拍平后再交给核心', async () => {
+  const source = new Uint8Array([1, 2, 3, 4])
+  const input = new Blob([zipSync({ 'folder/kof97.rom': source })])
+  const prepared = await prepareArcadeArchive(input)
+  assert.equal(prepared.flattenedCount, 1)
+  assert.deepEqual(prepared.entries.map((entry) => entry.name), ['kof97.rom'])
+  assert.deepEqual(unzipSync(new Uint8Array(await prepared.blob.arrayBuffer()))['kof97.rom'], source)
+})
+
+await check('拍平时发生文件名冲突会拒绝，避免覆盖 ROM 成员', async () => {
+  const input = new Blob([zipSync({
+    'parent/tiles.rom': new Uint8Array([1]),
+    'clone/tiles.rom': new Uint8Array([2]),
+  })])
+  await assert.rejects(prepareArcadeArchive(input), /重名/)
+})
+
+await check('街机 ZIP 的路径穿越成员在本地和远端加载前拒绝', async () => {
+  const input = new Blob([zipSync({ '../outside.rom': new Uint8Array([1]) })])
+  await assert.rejects(prepareArcadeArchive(input), /不安全路径/)
 })
 
 await check('mame-current 产物缺失会阻断发布', () => {
@@ -105,11 +128,10 @@ await check('后台校验不再把整个大 ZIP 读成 ArrayBuffer', async () =>
 
 await check('本地街机包只有真需要合成 ROM 时才读全份字节', async () => {
   const source = await readFile(new URL('../src/emulator/arcadeHack.ts', import.meta.url), 'utf8')
-  const inspectAt = source.indexOf('assertValidZipBlob(file')
-  const deriveAt = source.indexOf('const buf = await file.arrayBuffer()', inspectAt)
-  const fastReturnAt = source.indexOf('return { hack, file: renamed }', inspectAt)
-  assert.ok(inspectAt >= 0, '本地包没有走 Blob 中央目录校验')
-  assert.ok(fastReturnAt > inspectAt && deriveAt > fastReturnAt, '普通包仍在快速返回前读了全文件')
+  const inspectAt = source.indexOf('prepareArcadeArchive(file)')
+  const deriveAt = source.indexOf('const buf = await prepared.blob.arrayBuffer()', inspectAt)
+  assert.ok(inspectAt >= 0, '本地包没有走统一 ZIP 校验与目录拍平')
+  assert.ok(deriveAt > inspectAt && /if \(hack\?\.derive\)/.test(source), '只有需合成的改版包才读取整份文件')
 })
 
 await check('大核心只在真实鼠标悬停且网络允许时预拉', async () => {

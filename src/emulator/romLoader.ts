@@ -53,6 +53,56 @@ export interface LoadedGameBytes {
   fromCache?: boolean
 }
 
+const BLOB_READ_TIMEOUT_MS = 30_000
+
+/** Blob.arrayBuffer 没有取消接口；FileReader 可在存储读取卡死时真正中止并放弃这一局。 */
+function readBlobArrayBuffer(blob: Blob, signal?: AbortSignal): Promise<ArrayBuffer> {
+  if (signal?.aborted) return Promise.reject(new DOMException('已取消', 'AbortError'))
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    let settled = false
+    let timedOut = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const cleanup = () => {
+      if (timer !== undefined) clearTimeout(timer)
+      signal?.removeEventListener('abort', abort)
+      reader.onload = null
+      reader.onerror = null
+      reader.onabort = null
+    }
+    const finish = (error?: Error, data?: ArrayBuffer) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      if (error) reject(error)
+      else resolve(data!)
+    }
+    const abort = () => {
+      try { reader.abort() } catch { /* 尚未进入读取状态 */ }
+      finish(new DOMException('已取消', 'AbortError'))
+    }
+    timer = setTimeout(() => {
+      timedOut = true
+      try { reader.abort() } catch { /* 读取可能刚结束 */ }
+      finish(new Error(`本地 ROM 缓存读取超过 ${Math.round(BLOB_READ_TIMEOUT_MS / 1000)} 秒`))
+    }, BLOB_READ_TIMEOUT_MS)
+    signal?.addEventListener('abort', abort, { once: true })
+    reader.onload = () => {
+      if (reader.result instanceof ArrayBuffer) finish(undefined, reader.result)
+      else finish(new Error('浏览器未能读取 ROM 缓存'))
+    }
+    reader.onerror = () => finish(reader.error ?? new Error('浏览器读取 ROM 缓存失败'))
+    reader.onabort = () => finish(timedOut
+      ? new Error(`本地 ROM 缓存读取超过 ${Math.round(BLOB_READ_TIMEOUT_MS / 1000)} 秒`)
+      : new DOMException('已取消', 'AbortError'))
+    try {
+      reader.readAsArrayBuffer(blob)
+    } catch (error) {
+      finish(error instanceof Error ? error : new Error(String(error)))
+    }
+  })
+}
+
 /** 地址本身就指向 8BG 容器（`….swf.8bg?romv=…`）。只看路径，查询串和片段不算。 */
 export function isRomPackUrl(url: string): boolean {
   try {
@@ -80,7 +130,7 @@ export async function loadGameBytes(
   if (typeof game !== 'string') {
     // File.size 可在读盘前取得；先挡住异常大的 SWF，避免 arrayBuffer() 一次申请整块内存。
     assertSizeLimit(game.size, limits.maxBytes, '游戏文件')
-    const data = await game.arrayBuffer()
+    const data = await readBlobArrayBuffer(game, signal)
     assertSizeLimit(data.byteLength, limits.maxBytes, '游戏文件')
     onProgress?.({ phase: 'rom', loaded: data.byteLength, total: data.byteLength, ratio: 1 })
     assertNotHtml(data)
@@ -97,11 +147,11 @@ export async function loadGameBytes(
       : async (blob: Blob) => {
           assertSizeLimit(blob.size, limits.maxUnpackedBytes, '游戏文件')
           if (limits.validateBlob) await limits.validateBlob(blob)
-          else if (limits.validate) limits.validate(await blob.arrayBuffer())
+          else if (limits.validate) limits.validate(await readBlobArrayBuffer(blob, signal))
         }
     const extracted = await loadRemoteArchiveRom(game, onProgress, signal, validateExtracted, limits.maxUnpackedBytes)
     assertSizeLimit(extracted.blob.size, limits.maxUnpackedBytes, '游戏文件')
-    const data = await extracted.blob.arrayBuffer()
+    const data = await readBlobArrayBuffer(extracted.blob, signal)
     if (signal?.aborted) throw new DOMException('已取消', 'AbortError')
     return { name: extracted.name, data, remoteUrl: game, fromCache: extracted.fromCache }
   }
@@ -118,8 +168,9 @@ export async function loadGameBytes(
     if (cachedBlob) {
       try {
         assertSizeLimit(cachedBlob.size, limits.maxBytes, '游戏文件')
-        cached = await cachedBlob.arrayBuffer()
+        cached = await readBlobArrayBuffer(cachedBlob, signal)
       } catch {
+        if (signal?.aborted) throw new DOMException('已取消', 'AbortError')
         // 超限的历史缓存不能盖住正常网络回源；删除后继续按本局安全上限重新下载。
         await romCacheDelete(cacheKey).catch(() => {})
       }

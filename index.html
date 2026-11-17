@@ -148,12 +148,12 @@
             var fallback = ''
             try {
               var entry = document.querySelector('script[type="module"][src*="/assets/index-"]')
-              if (entry && entry.src) primary = new URL('asset-repair-v5.js', entry.src).href
+              if (entry && entry.src) primary = new URL('asset-repair-v6.js', entry.src).href
             } catch (e) {}
             try {
-              fallback = new URL('/assets/asset-repair-v5.js', w.location.href).href
+              fallback = new URL('/assets/asset-repair-v6.js', w.location.href).href
             } catch (e) {
-              fallback = '/assets/asset-repair-v5.js'
+              fallback = '/assets/asset-repair-v6.js'
             }
             var urls = []
             if (primary) urls.push(primary)

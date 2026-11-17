@@ -11,39 +11,75 @@
 
 export const REMOTE_DISC_CHUNK_BYTES = 2 * 1024 * 1024;
 export const REMOTE_DISC_CACHE_BYTES = 192 * 1024 * 1024;
+const REMOTE_DISC_TIMEOUT_MS = 20_000;
+const REMOTE_DISC_RETRIES = 1;
 
-function defaultFetchRange(url, start, endInclusive) {
-  const xhr = new XMLHttpRequest();
-  xhr.open("GET", url, false);
-  xhr.responseType = "arraybuffer";
-  xhr.setRequestHeader("Range", `bytes=${start}-${endInclusive}`);
-  xhr.send(null);
-
-  if (xhr.status !== 206) {
-    throw new Error(`Remote disc requires HTTP 206 Range responses; received ${xhr.status || "network error"}`);
+function sleepSync(ms) {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    // 这段代码只在隔离的 Dolphin Worker 中运行；少数浏览器不允许等待时仍立即换线路。
   }
-  const bytes = new Uint8Array(xhr.response);
+}
+
+function defaultFetchRange(urls, start, endInclusive, total) {
   const expected = endInclusive - start + 1;
-  if (bytes.byteLength !== expected) {
-    throw new Error(`Remote disc block is incomplete: expected ${expected} bytes, received ${bytes.byteLength}`);
+  let lastError;
+  const routes = [...new Set(urls.filter(Boolean))];
+  for (const url of routes) {
+    for (let attempt = 0; attempt <= REMOTE_DISC_RETRIES; attempt += 1) {
+      const xhr = new XMLHttpRequest();
+      let retryable = false;
+      try {
+        xhr.open("GET", url, false);
+        xhr.responseType = "arraybuffer";
+        // 同步 XHR 在 Worker 内允许 timeout；必须限制等待，否则一次断流会永久卡住模拟线程。
+        try { xhr.timeout = REMOTE_DISC_TIMEOUT_MS; } catch { /* 旧浏览器可能不支持同步 Worker XHR 超时 */ }
+        xhr.setRequestHeader("Range", `bytes=${start}-${endInclusive}`);
+        xhr.send(null);
+        if (xhr.status !== 206) {
+          retryable = xhr.status === 0 || xhr.status === 408 || xhr.status === 425 || xhr.status === 429 || xhr.status >= 500;
+          throw new Error(`Remote disc requires HTTP 206 Range responses; received ${xhr.status || "network error"}`);
+        }
+        const range = new RegExp(`^bytes ${start}-${endInclusive}/${total}$`, "i");
+        if (!range.test(xhr.getResponseHeader("content-range") || "")) {
+          throw new Error("Remote disc returned a mismatched Content-Range");
+        }
+        const bytes = new Uint8Array(xhr.response);
+        if (bytes.byteLength !== expected) {
+          throw new Error(`Remote disc block is incomplete: expected ${expected} bytes, received ${bytes.byteLength}`);
+        }
+        return { bytes, url };
+      } catch (error) {
+        lastError = error;
+        retryable ||= error?.name === "TimeoutError" || error?.name === "NetworkError";
+        // Range 格式、长度或 4xx 错误是确定结果，不用在同一地址重复等。
+        if (!retryable || attempt === REMOTE_DISC_RETRIES) break;
+        sleepSync(300 * (attempt + 1));
+      }
+    }
   }
-  return bytes;
+  throw lastError || new Error("Remote disc Range request failed");
 }
 
 export class RangeBackedFile {
   constructor({
     url,
+    alternateUrls = [],
     name,
     size,
     chunkBytes = REMOTE_DISC_CHUNK_BYTES,
     cacheBytes = REMOTE_DISC_CACHE_BYTES,
     fetchRange = defaultFetchRange,
-    onFetch = () => {}
+    onFetch = () => {},
+    onError = () => {}
   }) {
     if (!url || !Number.isSafeInteger(size) || size <= 0) {
       throw new Error("Remote disc descriptor is missing a valid URL or size");
     }
     this.url = url;
+    this.activeUrl = url;
+    this.alternateUrls = [...new Set(alternateUrls.filter((candidate) => candidate && candidate !== url))];
     this.name = name || "disc.iso";
     this.size = size;
     this.type = "application/octet-stream";
@@ -53,6 +89,7 @@ export class RangeBackedFile {
     this.cacheBytes = cacheBytes;
     this.fetchRange = fetchRange;
     this.onFetch = onFetch;
+    this.onError = onError;
     this.cache = new Map();
     this.cachedBytes = 0;
     this.stats = { requests: 0, hits: 0, bytesFetched: 0 };
@@ -89,8 +126,23 @@ export class RangeBackedFile {
 
     const start = index * this.chunkBytes;
     const endInclusive = Math.min(this.size, start + this.chunkBytes) - 1;
-    const raw = this.fetchRange(this.url, start, endInclusive);
-    const bytes = raw instanceof Uint8Array ? raw : new Uint8Array(raw);
+    let raw;
+    try {
+      raw = this.fetchRange === defaultFetchRange
+        ? defaultFetchRange([this.activeUrl, ...this.alternateUrls], start, endInclusive, this.size)
+        : this.fetchRange(this.url, start, endInclusive);
+    } catch (error) {
+      this.onError(error);
+      throw error;
+    }
+    const bytes = raw?.bytes instanceof Uint8Array
+      ? raw.bytes
+      : raw instanceof Uint8Array ? raw : new Uint8Array(raw);
+    if (raw?.url && raw.url !== this.activeUrl) {
+      this.activeUrl = raw.url;
+      this.alternateUrls = [this.url, ...this.alternateUrls].filter((candidate) => candidate !== raw.url);
+      console.warn(`[dolphin] Remote disc switched route: ${this.url} → ${raw.url}`);
+    }
     const expected = endInclusive - start + 1;
     if (bytes.byteLength !== expected) {
       throw new Error(`Remote disc block is incomplete: expected ${expected} bytes, received ${bytes.byteLength}`);

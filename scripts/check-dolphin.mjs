@@ -10,7 +10,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { dirname, join, posix } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const VERSION = 'v7e38409'
+const VERSION = 'v7e38409/r2'
 const CORE_SHA256 = 'd7395b3a94080f5b7d08a0522f59096007419d117b7b0eb868246429adee6f5c'
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const publicDir = join(root, 'public', 'dolphin', VERSION)
@@ -45,7 +45,7 @@ for (const relative of required) {
   const file = join(runtimeDir, relative)
   if (!existsSync(file) || readFileSync(file).byteLength === 0) fail(`缺少 ${relative}`)
 }
-if (!/index\.html\?embed=1&r=1/.test(adapter)) {
+if (!/index\.html\?embed=1&r=2/.test(adapter)) {
   fail('Dolphin iframe 入口缺内容代次，旧 301/HTML 会继续被边缘缓存命中')
 }
 if (!/saveArchiveKey:[\s\S]{0,120}dolphinVersionSaveSlug\(options\.gameSlug, DOLPHIN_VERSION\)/.test(adapter)) {
@@ -70,6 +70,10 @@ for (const marker of ['8bitgo-dolphin-bridge', 'mount-remote', 'host-ready', 'sa
 if (!worker.includes('RangeBackedFile') || !worker.includes('mountRemote')) fail('Worker 没有远程光盘挂载接口')
 if (!worker.includes('saveStateFile') || !worker.includes('loadStateFile')) fail('Worker 没有即时存 / 读档接口')
 if (!range.includes('Range') || !range.includes('206') || !range.includes('XMLHttpRequest')) fail('远程光盘不是 HTTP Range 随机读取实现')
+if (!range.includes('REMOTE_DISC_TIMEOUT_MS') || !range.includes('alternateUrls') || !range.includes('REMOTE_DISC_RETRIES')) {
+  fail('远程光盘 Range Worker 缺少有限时限、重试或备用线路')
+}
+if (!range.includes('onError') || !worker.includes('REMOTE_DISC_RANGE_ERROR')) fail('运行期间的远程光盘读取错误没有回传播放器')
 
 if (useDist) {
   const mismatched = []

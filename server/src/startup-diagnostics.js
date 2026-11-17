@@ -12,6 +12,8 @@
 import { createHash } from 'node:crypto'
 import { query } from './db.js'
 import { maybeAlertSignature } from './diag-alert.js'
+import { notifyLarkFailure } from './diag-lark.js'
+import { classifyUserAgent } from '../../shared/user-agent.js'
 
 export const DIAGNOSTIC_EVENTS = new Set(['failed', 'timeout', 'slow_start'])
 export const DIAGNOSTICS_RETENTION_DAYS = 30
@@ -111,6 +113,8 @@ export function normalizeDiagnostics(raw) {
       index: int(attempt.index, 0, 1000),
       sinceStartMs: int(attempt.sinceStartMs, 0),
     },
+    // 这一局生效着的 AI 临时修补 id（shared/hotfix.js）。自动撤销与「修补后还失败多少」靠它统计
+    hotfixes: [...new Set(arr(raw.hotfixes, 8).map((id) => String(id ?? '')).filter((id) => /^\d{1,12}$/.test(id)))],
     timeline: arr(raw.timeline, 40).map((row) => ({
       t: int(row?.t),
       e: scrub(row?.e, 24).replace(/[^\w-]/g, ''),
@@ -142,61 +146,10 @@ export function normalizeDiagnostics(raw) {
 
 /**
  * 从 User-Agent 归出「浏览器 + 大版本」「系统」「设备类型」三个粗粒度字段，原始 UA 不落库。
- * 顺序有讲究：Edge / Opera / 三星 / 微信 的 UA 里都带 Chrome，Chrome 的 UA 里又带 Safari。
+ * 实现挪到 shared/user-agent.js：AI 临时修补（shared/hotfix.js）要在浏览器里按同一套规则判断
+ * 「这条修补管不管我」，两边各写一份迟早会分家。这里保留导出，旧的 import 与测试照常用。
  */
-export function classifyUserAgent(ua = '') {
-  const s = String(ua)
-  const major = (re) => s.match(re)?.[1] ?? ''
-  let browser = 'Other'
-  let version = ''
-  const rules = [
-    ['WeChat', /MicroMessenger\/(\d+)/],
-    ['QQ', /\bQQ(?:Browser)?\/(\d+)/],
-    ['UC', /UCBrowser\/(\d+)/],
-    // 国内手机自带 / 应用内浏览器都是 Chromium 改的，UA 照样写 Chrome/xxx，不先认出来就一律成了「Chrome」，
-    // 内存不足这类按浏览器分的故障就查不清（2026-11-14 大陆 Chrome 114 / Android 12《拳皇97》）
-    ['Quark', /Quark\/(\d+)/],
-    ['Huawei Browser', /HuaweiBrowser\/(\d+)/],
-    ['Mi Browser', /MiuiBrowser\/(\d+)/],
-    ['OPPO Browser', /(?:HeyTapBrowser|OppoBrowser)\/(\d+)/],
-    ['vivo Browser', /VivoBrowser\/(\d+)/],
-    ['Baidu', /(?:baiduboxapp|BaiduBrowser)\/(\d+)/],
-    ['360', /QihooBrowser\/(\d+)/],
-    ['Sogou', /SogouMobileBrowser\/(\d+)/],
-    ['Samsung', /SamsungBrowser\/(\d+)/],
-    ['Edge', /Edg(?:e|A|iOS)?\/(\d+)/],
-    ['Opera', /(?:OPR|Opera)\/(\d+)/],
-    ['Firefox', /(?:Firefox|FxiOS)\/(\d+)/],
-    // 其它 App 内嵌的 Android WebView（抖音、B 站 …）：UA 带「; wv)」
-    ['Android WebView', /; wv\).*?Chrome\/(\d+)/],
-    ['Chrome', /(?:Chrome|CriOS)\/(\d+)/],
-    ['Safari', /Version\/(\d+)[\d.]* (?:Mobile\/\w+ )?Safari\//],
-  ]
-  for (const [name, re] of rules) {
-    const v = major(re)
-    if (v) {
-      browser = name
-      version = v
-      break
-    }
-  }
-  if (browser === 'Other' && /AppleWebKit/.test(s) && /\b(?:iPhone|iPad|iPod)\b/.test(s)) browser = 'iOS WebView'
-
-  let os = 'Other'
-  const ios = s.match(/\b(?:iPhone|iPad|iPod)\b.*? OS (\d+)/)
-  const android = s.match(/Android (\d+)/)
-  if (ios) os = `iOS ${ios[1]}`
-  else if (android) os = `Android ${android[1]}`
-  else if (/Windows NT/.test(s)) os = 'Windows'
-  else if (/CrOS/.test(s)) os = 'ChromeOS'
-  else if (/Mac OS X|Macintosh/.test(s)) os = 'macOS'
-  else if (/Linux/.test(s)) os = 'Linux'
-
-  const device = /\b(?:iPad|Tablet)\b/.test(s) || (/Android/.test(s) && !/Mobile/.test(s))
-    ? 'tablet'
-    : /Mobi|iPhone|iPod|Android/.test(s) ? 'mobile' : 'desktop'
-  return { browser: version ? `${browser} ${version}` : browser, os, device }
-}
+export { classifyUserAgent } from '../../shared/user-agent.js'
 
 /**
  * 归类用的「错误特征」：把会变的部分（数字、百分比、引号里的内容、十六进制）抹掉，
@@ -231,6 +184,7 @@ function scheduleCleanup() {
 }
 
 let missingTableWarned = false
+let hotfixColumnMissing = false
 
 /**
  * 写一份诊断包。调用方已经写好了漏斗事件（同一个 visit/attempt/event 唯一键挡重放）。
@@ -242,26 +196,77 @@ export async function recordStartupDiagnostics(slug, event, rawDiagnostics, { co
   if (!diagnostics) return false
   const { browser, os, device } = classifyUserAgent(userAgent)
   const { signature, text } = errorSignature({ ...event, diagnostics })
+  const hotfixIds = diagnostics.hotfixes.join(',')
+  const values = [
+    event.visitId, event.attemptId, event.event, event.runtime, event.platform,
+    /^[A-Z]{2}$/.test(country) ? country : 'XX', event.elapsedMs,
+    signature, text, browser.slice(0, 40), os.slice(0, 40), device,
+    JSON.stringify(diagnostics),
+  ]
   try {
-    const result = await query(
-      `INSERT IGNORE INTO game_startup_diagnostics
-         (game_id, visit_id, attempt_id, event, runtime, platform, country, elapsed_ms,
-          signature, signature_text, browser, os, device, payload)
-       SELECT id, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-         FROM games
-        WHERE slug = ? AND hidden = 0
-        LIMIT 1`,
-      [
-        event.visitId, event.attemptId, event.event, event.runtime, event.platform,
-        /^[A-Z]{2}$/.test(country) ? country : 'XX', event.elapsedMs,
-        signature, text, browser.slice(0, 40), os.slice(0, 40), device,
-        JSON.stringify(diagnostics), slug,
-      ],
-    )
+    let result
+    if (!hotfixColumnMissing) {
+      try {
+        result = await query(
+          `INSERT IGNORE INTO game_startup_diagnostics
+             (game_id, visit_id, attempt_id, event, runtime, platform, country, elapsed_ms,
+              signature, signature_text, browser, os, device, payload, hotfix_ids)
+           SELECT id, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+             FROM games
+            WHERE slug = ? AND hidden = 0
+            LIMIT 1`,
+          [...values, hotfixIds, slug],
+        )
+      } catch (error) {
+        // 先上代码、后跑迁移：缺 hotfix_ids 列时退回旧写法，诊断包照存（只是统计不到修补效果）
+        if (error?.code !== 'ER_BAD_FIELD_ERROR') throw error
+        hotfixColumnMissing = true
+        console.warn('[startup] game_startup_diagnostics 缺 hotfix_ids 列，AI 修补的效果统计 / 自动撤销暂停 —— cd server && npm run migrate')
+      }
+    }
+    if (!result) {
+      result = await query(
+        `INSERT IGNORE INTO game_startup_diagnostics
+           (game_id, visit_id, attempt_id, event, runtime, platform, country, elapsed_ms,
+            signature, signature_text, browser, os, device, payload)
+         SELECT id, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+           FROM games
+          WHERE slug = ? AND hidden = 0
+          LIMIT 1`,
+        [...values, slug],
+      )
+    }
     scheduleCleanup()
     const inserted = Number(result?.affectedRows ?? 0) > 0
     // 同一特征短时间内聚集就发邮件（没配 DIAG_ALERT_EMAIL 时立即返回）；不 await，不拖慢接口
     if (inserted) void maybeAlertSignature(signature)
+    // 新加载失败立即通知 Lark；诊断仍先入库，通知失败或超时不影响玩家接口
+    if (inserted && (event.event === 'failed' || event.event === 'timeout')) {
+      void notifyLarkFailure({
+        event: event.event,
+        signature,
+        signatureText: text,
+        slug,
+        runtime: event.runtime,
+        platform: event.platform,
+        country,
+        browser,
+        os,
+        device,
+        elapsedMs: event.elapsedMs,
+      })
+    }
+    /*
+      AI 临时修补（ai-hotfix.js）：聚集了就让 MiniMax 分诊；带着修补还失败就数一数、够多自动撤销。
+      动态 import：ai-hotfix.js 反过来要用这里的 diagnosticSamples / scrub，静态互相 import 会成环。
+      都不 await，任何失败只在那边记日志。
+    */
+    if (inserted) {
+      void import('./ai-hotfix.js').then((m) => {
+        void m.maybeTriageSignature(signature, event.event)
+        if (diagnostics.hotfixes.length && event.event !== 'slow_start') void m.noteHotfixFailure(diagnostics.hotfixes)
+      }).catch((error) => console.warn('[startup] 加载 AI 修补模块失败：', error?.message || error))
+    }
     return inserted
   } catch (error) {
     if (error?.code === 'ER_NO_SUCH_TABLE') {

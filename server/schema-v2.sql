@@ -452,12 +452,44 @@ CREATE TABLE IF NOT EXISTS game_startup_diagnostics (
   os VARCHAR(40) NOT NULL DEFAULT '',
   device VARCHAR(16) NOT NULL DEFAULT '',
   payload MEDIUMTEXT NOT NULL,
+  hotfix_ids VARCHAR(120) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '',
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uniq_startup_diag (visit_id, attempt_id, event),
   KEY idx_diag_time (created_at),
   KEY idx_diag_sig_time (signature, created_at),
   KEY idx_diag_game_time (game_id, created_at),
   CONSTRAINT fk_startup_diag_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ---------- AI 临时修补（server/src/ai-hotfix.js） ----------
+-- MiniMax 对聚集的启动故障分诊后，只能从 shared/hotfix.js 的白名单里挑退路（换核心、改走主站、关引擎缓存……）；
+-- 动作与作用范围存 JSON 文本，生效中的由 /api/hotfixes 下发给浏览器。到期 / 撤销 / 已固化都留着记录。
+CREATE TABLE IF NOT EXISTS ai_hotfixes (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  signature CHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '',
+  signature_text VARCHAR(200) NOT NULL DEFAULT '',
+  source VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'ai',
+  status VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  risk VARCHAR(8) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'safe',
+  confidence DECIMAL(3,2) NULL,
+  scope TEXT NULL,
+  actions TEXT NULL,
+  diagnosis TEXT NULL,
+  permanent_fix TEXT NULL,
+  player_impact VARCHAR(400) NULL,
+  dropped TEXT NULL,
+  model VARCHAR(64) NULL,
+  error VARCHAR(400) NULL,
+  ttl_hours SMALLINT UNSIGNED NOT NULL DEFAULT 24,
+  visits_at_trigger INT UNSIGNED NOT NULL DEFAULT 0,
+  status_note VARCHAR(400) NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  applied_at TIMESTAMP NULL DEFAULT NULL,
+  expires_at TIMESTAMP NULL DEFAULT NULL,
+  closed_at TIMESTAMP NULL DEFAULT NULL,
+  KEY idx_hotfix_status (status, expires_at),
+  KEY idx_hotfix_sig (signature, created_at),
+  KEY idx_hotfix_time (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ---------- 合集浏览量（多少人看过，按人去重） ----------

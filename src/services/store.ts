@@ -46,7 +46,13 @@ export async function fetchAdminGames(q: AdminGameQuery = {}, signal?: AbortSign
   else if (q.home === 'unpicked') sp.set('home', '0')
   if (q.page) sp.set('page', String(q.page))
   if (q.pageSize) sp.set('pageSize', String(q.pageSize))
+  sp.set('summary', '1')
   return api.get<Paged<Game>>(`/api/games?${sp.toString()}`, true, signal)
+}
+
+/** 后台点编辑时再取完整资料，列表请求不传简介、ROM 附件和运行配置。 */
+export async function fetchAdminGame(slug: string): Promise<Game> {
+  return api.get<Game>(`/api/games/${encodeURIComponent(slug)}?library=mine`, true)
 }
 
 /**

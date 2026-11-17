@@ -188,12 +188,13 @@ const stalledBody = (bytes) => new ReadableStream({
 }
 
 // 核心响应流读到一半报 NotReadableError（华为浏览器 17）：改走 XHR arraybuffer 再取一次
-function fakeXhr({ status = 200, bytes, fail = false }) {
+function fakeXhr({ status = 200, bytes, fail = false, responseHeaders = {} }) {
   const opened = []
   class X {
     constructor() { this.headers = {} }
     open(method, url) { opened.push([method, url]) }
     setRequestHeader(k, v) { this.headers[k] = v }
+    getResponseHeader(name) { return responseHeaders[name.toLowerCase()] ?? null }
     send() {
       setTimeout(() => {
         if (fail) return this.onerror?.()
@@ -207,13 +208,13 @@ function fakeXhr({ status = 200, bytes, fail = false }) {
   }
   return { X, opened }
 }
-const unreadableResponse = (url) => {
+const unreadableResponse = (url, headers = { 'Content-Length': '4' }) => {
   const res = new Response(new ReadableStream({
     start(controller) {
       controller.enqueue(new Uint8Array([1, 2]))
-      controller.error(new DOMException('The requested file could not be read', 'NotReadableError'))
+      setTimeout(() => controller.error(new DOMException('The requested file could not be read', 'NotReadableError')))
     },
-  }), { status: 200, headers: { 'Content-Length': '4' } })
+  }), { status: 200, headers })
   Object.defineProperty(res, 'url', { value: url })
   return res
 }
@@ -225,6 +226,44 @@ const unreadableResponse = (url) => {
   const item = await downloader.downloadFile(url, 'Core', 'GET', {}, null, null, null, 30000, 'arraybuffer')
   assert.deepEqual(xhr.opened, [['GET', url]], 'XHR 必须用响应地址重取（块内的 t 是 Content-Length，不是 URL）')
   assert.deepEqual([...item.files[0].bytes], [4, 3, 2, 1], 'XHR 拿到的整份字节交给引擎，不能拼上流里读到的前半段')
+}
+{
+  const url = 'https://8bitgo.test/emulatorjs/cores/melondsds-wasm.data?v=1'
+  const xhr = fakeXhr({ bytes: new Uint8Array([4, 3]) })
+  const { __classes } = makeContext({ fetchImpl: async () => unreadableResponse(url), indexedDB: undefined, XMLHttpRequest: xhr.X })
+  const downloader = new __classes.Downloader(null, null)
+  await assert.rejects(
+    downloader.downloadFile(url, 'Core', 'GET', {}, null, null, null, 30000, 'arraybuffer'),
+    /XHR fallback incomplete response: HTTP 200, received 2 bytes, expected at least 2 \/ 4/,
+    'HTTP 200 的截断核心不得被当成成功交给解压器或写入缓存',
+  )
+}
+{
+  const url = 'https://8bitgo.test/emulatorjs/cores/melondsds-wasm.data?v=1'
+  const xhr = fakeXhr({
+    bytes: new Uint8Array([60, 104, 116, 109]),
+    responseHeaders: { 'content-type': 'text/html; charset=utf-8' },
+  })
+  const { __classes } = makeContext({ fetchImpl: async () => unreadableResponse(url), indexedDB: undefined, XMLHttpRequest: xhr.X })
+  const downloader = new __classes.Downloader(null, null)
+  await assert.rejects(
+    downloader.downloadFile(url, 'Core', 'GET', {}, null, null, null, 30000, 'arraybuffer'),
+    /XHR fallback incomplete response: HTTP 200, received 4 bytes, expected at least 2 \/ 4 \(text\/html; charset=utf-8\)/,
+    'CDN 返回完整长度的 HTML 错误页也不得作为 WASM 核心缓存',
+  )
+}
+{
+  // Content-Length 描述压缩传输长度，XHR 返回的是已解码字节，二者不能直接比较。
+  const url = 'https://8bitgo.test/emulatorjs/cores/melondsds-wasm.data?v=1'
+  const xhr = fakeXhr({
+    bytes: new Uint8Array([4, 3, 2, 1]),
+    responseHeaders: { 'content-encoding': 'br', 'content-length': '2' },
+  })
+  const response = unreadableResponse(url, { 'Content-Length': '2', 'Content-Encoding': 'br' })
+  const { __classes } = makeContext({ fetchImpl: async () => response, indexedDB: undefined, XMLHttpRequest: xhr.X })
+  const downloader = new __classes.Downloader(null, null)
+  const item = await downloader.downloadFile(url, 'Core', 'GET', {}, null, null, null, 30000, 'arraybuffer')
+  assert.deepEqual([...item.files[0].bytes], [4, 3, 2, 1], '压缩响应按流已读字节下限校验，不误用传输长度拒收解码后的完整数据')
 }
 {
   const url = 'https://8bitgo.test/emulatorjs/cores/melondsds-wasm.data?v=1'
@@ -258,4 +297,4 @@ const unreadableResponse = (url) => {
   assert.ok(engineCore, '核心下载失败不能回落 cdn.emulatorjs.org（那里的 4.3.0-pre 核心起不来）')
 }
 
-console.log('✔ EmulatorJS 下载器：包体卡住 20 秒中止、缓存卡住不挡开局且只等一次、缓存正常时不误判挂死、报告包体与 HEAD 复验有时限、IndexedDB 同步异常可收敛、核心不回落官方 CDN、核心流读失败改走 XHR')
+console.log('✔ EmulatorJS 下载器：包体与缓存时限、IndexedDB 异常收敛、核心不回落官方 CDN、XHR 兜底拒绝截断与错误页并兼容压缩响应')

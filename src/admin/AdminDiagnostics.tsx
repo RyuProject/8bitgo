@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { ApiError, api, apiEnabled } from '@/services/api'
 import { cx } from '@/lib/format'
 import { Card, btnClass, inputClass } from './ui'
@@ -154,6 +154,25 @@ function GroupCard({ group }: { group: DiagnosticGroup }) {
     if (!samples) void loadSamples(10)
   }
 
+  const [triage, setTriage] = useState<{ busy: boolean; text: string; tone: 'ok' | 'error' } | null>(null)
+  /** 让 MiniMax 立即分诊这一组（server/src/ai-hotfix.js）；结果和修补记录在「AI 修补」页 */
+  const runTriage = async () => {
+    setTriage({ busy: true, text: 'AI 正在分析，通常 10～60 秒…', tone: 'ok' })
+    try {
+      const r = await api.post<{ pending?: boolean; item?: { id: string; status: string; diagnosis: string; actions: unknown[] } }>(
+        '/api/admin/ai/triage', { signature: group.signature }, true,
+      )
+      if (!r.item) {
+        setTriage({ busy: false, tone: 'ok', text: 'AI 还在分析（超过 50 秒），结果会出现在「AI 修补」页。' })
+        return
+      }
+      const verb = r.item.status === 'active' ? '已临时修补并生效' : r.item.status === 'proposed' ? '给出了修补，等你批准' : '已记录诊断（没有对症的白名单动作）'
+      setTriage({ busy: false, tone: 'ok', text: `#${r.item.id} ${verb}：${r.item.diagnosis.slice(0, 160)}` })
+    } catch (e) {
+      setTriage({ busy: false, tone: 'error', text: e instanceof Error ? e.message : '分诊失败' })
+    }
+  }
+
   const copyForAi = async () => {
     const items = samples && samples.length >= Math.min(AI_SAMPLE_COUNT, group.count) ? samples : await loadSamples(10)
     if (!items) return
@@ -193,9 +212,18 @@ function GroupCard({ group }: { group: DiagnosticGroup }) {
           <button type="button" className={btnClass.secondary} onClick={() => void copyForAi()} disabled={loading}>
             {copied || '复制给 AI'}
           </button>
+          <button type="button" className={btnClass.secondary} onClick={() => void runTriage()} disabled={triage?.busy}>
+            {triage?.busy ? '分诊中…' : 'AI 分诊'}
+          </button>
         </div>
       </div>
       {error && <p className="mt-2 text-xs text-live">{error}</p>}
+      {triage && (
+        <p className={cx('mt-2 text-xs', triage.tone === 'error' ? 'text-live' : 'text-muted')}>
+          {triage.text}
+          {!triage.busy && triage.tone === 'ok' && <Link to="/admin/ai" className="ml-2 text-brand-hover hover:underline">去 AI 修补页</Link>}
+        </p>
+      )}
       {open && (
         <div className="mt-3 space-y-2">
           {loading && !samples && <p className="text-xs text-muted">正在读取…</p>}
@@ -210,8 +238,10 @@ function GroupCard({ group }: { group: DiagnosticGroup }) {
 export function AdminDiagnostics() {
   const [days, setDays] = useState(7)
   const [event, setEvent] = useState<'' | DiagnosticEvent>('')
-  const [query, setQuery] = useState('')
-  const [search, setSearch] = useState('')
+  // 「AI 修补」页的「查看诊断」带 ?q= 过来
+  const [params] = useSearchParams()
+  const [query, setQuery] = useState(() => params.get('q') ?? '')
+  const [search, setSearch] = useState(() => (params.get('q') ?? '').trim())
   const [data, setData] = useState<DiagnosticGroupsResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')

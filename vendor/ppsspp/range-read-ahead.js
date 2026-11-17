@@ -488,6 +488,7 @@
       this._method = String(method || 'GET').toUpperCase()
       this._async = async !== false
       this.url_ = String(url)
+      this._activeRouteUrl = this.url_
       this._openArgs = [method, url, async, username, password]
       this._inner.open(method, url, async, username, password)
     }
@@ -508,7 +509,9 @@
     /** 换一个全新的原生 XHR，按原样重放 open / 头 / 属性（失败过的 XHR 不能再 send） */
     _reopen() {
       const inner = new NativeXMLHttpRequest()
-      inner.open(...this._openArgs)
+      const openArgs = [...this._openArgs]
+      if (this._activeRouteUrl) openArgs[1] = this._activeRouteUrl
+      inner.open(...openArgs)
       if (this._responseType) inner.responseType = this._responseType
       if (this._timeout) inner.timeout = this._timeout
       if (this._withCredentials) inner.withCredentials = true
@@ -521,6 +524,11 @@
     _sendSyncWithRetry(data, requested) {
       const startedAt = Date.now()
       let lastTimedOut = false
+      const configuredRoutes = Array.isArray(globalThis.__8bitgoPspRangeUrls)
+        ? globalThis.__8bitgoPspRangeUrls.filter((url) => typeof url === 'string' && /^https?:\/\//i.test(url))
+        : []
+      const routes = [...new Set([this.url_, ...configuredRoutes])]
+      let routeIndex = Math.max(0, routes.indexOf(this._activeRouteUrl || this.url_))
       for (let attempt = 0; ; attempt++) {
         const budget = lastTimedOut ? SYNC_TIMEOUT_BUDGET_MS : SYNC_RETRY_BUDGET_MS
         const final = attempt >= SYNC_RETRY_DELAYS_MS.length || Date.now() - startedAt > budget
@@ -556,6 +564,12 @@
         if (timedOut) {
           syncTimeouts++
           this._timeout = Math.min(Math.max(this._timeout || 30_000, 30_000) * 2, SYNC_TIMEOUT_MAX_MS)
+        }
+        if (routes.length > 1) {
+          const failedRoute = this._activeRouteUrl || this.url_
+          routeIndex = (routeIndex + 1) % routes.length
+          this._activeRouteUrl = routes[routeIndex]
+          console.warn(`[ppsspp] Range 线路失败，尝试备用源：${failedRoute} → ${this._activeRouteUrl}`)
         }
         console.warn(`[ppsspp] Range ${this.__8bitgoHeaders.get('range') || ''} ${timedOut ? '超时' : '网络失败'}，${SYNC_RETRY_DELAYS_MS[attempt]}ms 后第 ${attempt + 1} 次重试${timedOut ? `（时限放宽到 ${this._timeout / 1000} 秒）` : ''}`)
         sleepSync(SYNC_RETRY_DELAYS_MS[attempt])

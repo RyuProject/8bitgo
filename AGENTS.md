@@ -134,7 +134,7 @@ grep -c 'this.functions.saveStateInfo()' public/emulatorjs/emulator.min.js   # �
 CRC-32（不用解压），比对 `public/arcade-romsets.bin`（9377 个 romset / 13.8 万条 CRC，含跨行 ROM 宏展开）。
 完全命中才自动改名；部分命中只列候选——拿父集的名字去套残缺包只会换来 missing files。
 完整性校验走 `assertValidZipBlob()`，只读文件尾部 / 中央目录 / 本地头，不再把整个大包
-复制成 ArrayBuffer；ZIP 成员套子目录会在上传前直接拦下，因为街机核心只读根目录。
+复制成 ArrayBuffer；街机 ZIP 的安全子目录会在上传前拍平，不重压 ROM 数据；同名冲突 / 不安全路径拒绝处理，准确识别的 Namco System 11/12 克隆包保留原结构。玩家本地 ROM 和旧远端对象也必须走 `prepareArcadeArchive()`，拍平后重读目录偏移，不能只修后台上传入口。
 玩家下载带 `romv` / 归档版本的街机大包时与 NDS 共用 8MB Range 断点续传；无版本 URL
 不留分片，避免 R2 原地换包后把两代 ROM 拼在一起。
 
@@ -152,6 +152,8 @@ CRC-32（不用解压），比对 `public/arcade-romsets.bin`（9377 个 romset 
 EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`），
 所以 `/wofcn.zip` 配 `/wofcn.dat` 就够了 —— 不必打开 `fbneo-allow-patched-romsets`，
 也不必先加载原版 romset 再去核心选项里勾（那是 RetroArch 的交互，网页上没法要求玩家做）。
+
+⚠️ **这个路径示例不代表 `wofcn` 已可正常显示中文。** HBMAME 的 `tk2h5` 虽挂在 `wof` 父驱动下，源码仍将中文字库加载方式标为未知；没有通过游戏画面验证前，不得用旧的 `wofj` 示例或推测的图形合成方案给玩家注入 RomData。
 
 落地在三处：后台 `games.arcade_romdata` 列存 dat 文本；
 `src/emulator/adapters/emulatorjs.ts` 的 `installFsInjector()` 在 loader.js 之前给
@@ -201,6 +203,9 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
   作为第二道防线，流读取本身抛错时（非我们的 20 秒失速中止、无请求体）下载器改用 **XHR arraybuffer** 重取一次——不走流也不走 Blob，
   控制台出现「改用 XHR arraybuffer 重新下载」。⚠️ 那段代码块里 `t` 被 Content-Length 遮蔽，重取地址必须用 `y.url`。
   XHR 也失败才 reject，错误带原始 NotReadableError，适配器照旧按本机环境错误停止。回归：`npm run test:ejs-download`。
+
+- **XHR 兜底必须确认拿到整份核心**（2026-11-17 大陆 Android 16 Chrome 143《明星三缺一》，诊断包 #949）：Fetch 已读到约 24.3MB 后断流，XHR 却以 HTTP 200 返回 121KB；旧逻辑只看状态码，仍把它记成下载成功，随后引擎报 `EJS_Runtime is not defined`。兜底现在要求 HTTP 200、非空、字节数不短于已读流；响应未编码时还要匹配 Content-Length，并拒绝 HTML / JSON 错误页。核心缓存代次必须同步更新，清掉旧逻辑可能留下的工件。
+- **核心启动看门狗不计后台时间**（同一现场）：手机浏览器将游戏页放后台约 278 秒后冻结轮询与 WASM 解压 / 编译；旧适配器仍用墙钟判断 120 秒无活动，回来时立即误报「下载游戏核心 100% 卡住」。隐藏时暂停轮询，回到前台重置心跳并恢复完整预算；若前台仍无活动，之后照常报错。
 
 - **「Cannot allocate Wasm memory」先看是不是 32 位浏览器**（2026-11-11 大陆 Chrome 109 / Windows，8GB、4 核，
   《合金弹头 2》《1941》各一次，核心编译完在 instantiate 时报）。FBNeo 核心起步 128MB、最大 2GB，V8 分配失败会自己
@@ -1720,6 +1725,12 @@ Ruffle 要把 `assertSwf` / `assertSwfBlob` 通过 `loadGameBytes` 的校验回�
 Ruffle 0.7.1 的 `EditText::set_selection()` 会把选区裁到当前文本长度，但 ActionScript 缩短文本并触发 `relayout()` 时没有重新裁选区；随后按词移动 / 删除把旧光标位置交给单词边界计算，`&text[..pos]` 越界会 panic `string indices out of bounds`。玩家现场的 SWF、WASM、首帧都已成功，约 44 秒后才报错，因此这不是下载或 SWF 完整性故障。
 
 本站补丁 `patches/ruffle/v0.7.1-edittext-selection-clamp.patch` 在 `relayout()` 前重新调用 `set_selection()`，并在按词移动的前后边界计算中把位置限制在当前文本长度内。修补后的运行时必须发布到新路径 `public/ruffle/v0.7.1-8bitgo.1/`，不能覆盖已缓存一年的 `v0.7.1`。重编时按 Ruffle 上游 `web/README.md` 构建流程，在 v0.7.1 源码应用补丁并运行 `npm run build:dual-wasm`；随后用 `node scripts/copy-ruffle.mjs --source <packages/selfhosted/dist> --source-version 0.7.1 --version 0.7.1-8bitgo.1` 发布。`check-ruffle.mjs` 和性能回归都必须同时核对自定义运行时代次与当前 npm 上游版本。
+
+### 2.24.0e 弱网故障必须保留错误归因（2026-11-17）
+
+Ruffle 的远程 SWF 由 `loadGameBytes()` 下载，它已经把断流、HTTP 5xx、超时等标成网络故障。适配器不能把整个启动链 catch 一律标为内容错误：播放器会误切语言 ROM，导致同一坏线路上重复下载。SWF 下载网络错误标 `network`，格式校验 / 已知站点锁才标内容或确定性错误；Ruffle 自己的资源加载失败要允许线路故障触发同源重试，运行时设施错误不能污染 ROM 失败集。WASM 崩溃可能同时经 `console.error` 与 `load()` rejection 到达，必须保留异常对象的 `name` 并由适配器合并成一次失败通知。
+
+Ruffle 核心预热只有在清单选中的 core JS 与 WASM 都读到结束后才算成功。预热失败要从 URL 去重表移除、允许下一局重试，并在诊断包标明失败；不能把“失败后放弃”记录成“预热完成”。大核心的悬停预热按省流量、网络类型、吞吐与 RTT 门控；玩家点击开始后仍与 SWF 并行预热核心。回归：`npm run test:ruffle-runtime && npm run test:ruffle-saves && npm run test:game-controls && npm run test:keymap`。
 
 ### 2.24.0 Ruffle 存档要跟着游戏走；舞台按显示尺寸渲染
 
@@ -3623,6 +3634,37 @@ EmulatorJS 引擎日志与加载阶段文字（`diagLog`）、下载器的重试
   （复用 Resend），同一特征 6 小时内不重复，冷却记在 `site_settings` 的 `diag.alert.<特征>`。没配邮箱完全不启用。
   阈值见 `server/.env.example` 的 `DIAG_ALERT_*`。回归：`cd server && npm run test:diag-alert`。
 
+### 2.36.1.1 AI 临时修补：MiniMax 只能「选开关」，不能写代码（2026-11-18）
+
+后台「AI 修补」（`/admin/ai`）填 MiniMax API Key。同一启动故障特征（只看加载失败 / 启动超时，慢启动可选）在窗口内来自
+≥ minVisits 个不同访问时，`server/src/ai-hotfix.js` 把聚合信息 + 最近 3 份脱敏诊断包交给 MiniMax 分诊，结果存 `ai_hotfixes`：
+诊断、临时修补、固化建议。生效中的修补由 `/api/hotfixes`（30 秒缓存）下发，详情页开局前套用；每条都能「复制给 Claude」导出
+Markdown 交给人做永久修复，修好后点「已固化」。错误诊断页每组有「AI 分诊」按钮可手动触发。
+
+- ⚠️ **AI 的输出永远是数据，不是代码**。诊断包的 reason / 日志来自玩家浏览器，可以伪造；让 AI 写代码再下发，等于开了
+  「伪造诊断包 → 全站执行任意 JS」的口子。AI 只能从 `shared/hotfix.js` 的白名单里挑**播放器早就有的退路**：
+  `runtime_origin`（运行时不走 cn 加速入口）、`rom_host`、`disable_engine_cache`、`memory_rom`、`player_notice`（八种语言模板，不收自由文本）、
+  `set_core`（按平台限定的核心表）、`set_runtime`（目前只有 NES jsnes ↔ emulatorjs）。服务端校验一次、浏览器再校验一次；
+  `scope.games` 只能是这个特征的诊断包里真出现过的游戏 —— 伪造的诊断包最多影响它自己报上来的那款游戏。
+  **加新动作 = 改 `shared/hotfix.js` + `src/services/hotfixes.ts` 的执行 + 测试**，不要放宽成「AI 给参数就照做」。
+- 档位：`safe`（默认）只自动生效 safe 档动作，`set_core` / `set_runtime` 等批准；`all` 全部自动；`off` 只建议。低于 minConfidence 一律等批准。
+  有效期最长 72 小时，到期自动 `expired`。诊断包带上生效中的修补 id（`hotfix_ids` 列）：同特征仍失败 ≥ revokeAfterVisits 个访问、
+  或带修补的失败总数 ≥ 3 倍时自动撤销（提示条不参与）。同一特征分诊后 6 小时内不再自动分诊，每小时预算 maxCallsPerHour。
+- 浏览器端：`useGameHotfix`（`src/services/hotfixes.ts`）最多等 1.5 秒；**ready 之前详情页把 ROM 当「检查中」**，不让一局开到一半被换核心。
+  开关放在零依赖的 `src/services/hotfixFlags.ts`，`paths.ts`（runtimeBase / Play wasm）、EmulatorJS 适配器（`readEngineCacheStall` / `romBlobBrokenNow`）、
+  `romRoute.ts`（`chooseRomHost`，最多等 1.2 秒）、诊断包都读它。目前只接了游戏详情页；嵌入页 / TV / 隔离页（PS2 等）不套用修补。
+- Key：`server/src/secret-box.js` 用 `AI_SETTINGS_SECRET`（没配用 `JWT_SECRET`）HKDF 派生的 AES-256-GCM 加密后存 `site_settings` 的 `ai.minimax`；
+  后台只显示末四位，`publicAiConfig` 永不含 Key。只允许国际站 / 国内站两个官方入口，不收任意 URL。env 默认 `MINIMAX_API_KEY` / `MINIMAX_REGION` / `MINIMAX_MODEL`。
+- 隐私：发给 MiniMax 的是已脱敏的诊断包（不含 IP、完整 UA、账号、ROM 地址、visit id）。隐私政策三种语言已在「不登录」「第三方」「保存期限」三节写明（`test:legal` 的 `ai-fault-analysis*` 三条守着）；已结束的修补记录保留 365 天（`AI_HOTFIX_RETENTION_DAYS`），改其一要同步另一处。
+- 手动分诊接口等 50 秒没结果就回 202（nginx 默认 60 秒读超时），分析在后台继续落库。
+- 部署要 `cd server && npm run migrate`（新表 `ai_hotfixes`、新列 `game_startup_diagnostics.hotfix_ids`）；缺列时诊断包照存，只是统计不到修补效果。
+- **代码层边界**（`applyBoundaryGuards`，任何档位都生效）：runtime 为 `page` 的页面崩溃动作全部作废，只记录；错误原文命中 romset / CRC / BIOS / CHD 等 ROM 数据特征时 `set_core` / `set_runtime` 作废 —— 换核心修不了数据，只会把能玩的人也弄坏。
+- **冷却期内故障变大会重新分诊**（`triageGate`）：玩家侧看门狗超时的原文统一是「连续 120 秒没有启动进度或可玩信号」，所有原因归成同一个特征；
+  只按「6 小时一次」会让前半夜几次弱网超时挡住后半夜的大故障。访问数涨到上次分诊时的 3 倍且至少多 3 个、距上次 ≥ 1 小时就再分诊。
+- **安全档位下混合提案拆开**（`planApplication`）：安全动作立即生效，换核心 / 换运行时拆成 `source = 'ai-split'` 的待批准记录（不占每小时预算）。
+- 故障面分析（哪类问题 AI 看得到、修得了）、最近三起故障的推演与完整边界见 `docs/ai-hotfix.md`。
+- 回归：`npm run test:ai-hotfix`。
+
 ### 2.36.2 download.8bitgo.com 与 rom.8bitgo.com：授权下载和站内明文资源的优选线路（2026-11-16）
 
 DNS 是**不走代理**的 CNAME，指向 BestCF 名单里的 `youxuan.cf.090227.xyz`（CMLiussss 维护，按三网分别解析）。
@@ -3747,7 +3789,7 @@ PK / TH 两份现场：`The requested module './live-Cqhc9j-k.js' does not provi
 - **正常访问**：`index.html` 里一段 ES5 内联钩子，不发请求。只在 localStorage `8bitgo.asset-remap` 有未过期记录时插一张 import map；
   定义 `window.__8bitgoAssetRepair`，并监听 window 的 `SyntaxError`（入口模块链接失败时 React 起不来，兜底页接不住）。
   钩子必须排在任何模块脚本之前，import map 才来得及生效。
-- **出错时**：才加载 `public/assets/asset-repair-v5.js`（文件名即代次，长期缓存；改逻辑新建 v6，旧版留给已打开的旧页面）。
+- **出错时**：才加载 `public/assets/asset-repair-v6.js`（文件名即代次，长期缓存；改逻辑新建 v7，旧版留给已打开的旧页面）。
   首页按入口脚本所在资源域加载，所以大陆入口 `cn.8bitgo.com/_cn/assets/` 的自修复也走 EdgeOne；该路 5 秒超时或失败后再回主站
   `/assets/` 重试，每次的地址 / 结果 / 耗时记在 `window.__8bitgoAssetRepairLoad`，诊断包写成「加载失败 812ms」「5 秒超时」
   「已加载、核对 20 秒内没有结束」。只核对本页 Resource Timing 里用过的
@@ -3793,6 +3835,12 @@ PK / TH 两份现场：`The requested module './live-Cqhc9j-k.js' does not provi
 - 发现恢复逻辑有两个缺口：懒加载先用同一个 ESM URL 重试两次，浏览器可能已把这个 URL 的失败模块结果记在模块表里；修复器只核对错误点名 chunk 和 Resource Timing 记录，没有构建时静态依赖图，某个失败子模块可能不会被检查。第三次 `chunk-retry` URL 又和原 URL 被当作两个目标，弱网下同一个播放器会被诊断重复下载。
 - v5 改为每次网络重试都用唯一 `chunk-retry` URL；完整性清单升为 v2，记录每个 JS chunk 的静态 imports，出错时只递归核对点名 chunk 的依赖图。诊断按原始构建文件去重，但保留 `asset-repair=1` 等有意义的查询参数。旧 v4 留给已打开的页面；生产构建检查清单版本、依赖引用与修复脚本逐字节一致。
 - 回归：`npm run test:asset-repair`（依赖损坏修复、重复重试去重、唯一 URL 重试、旧 manifest / 服务端接口兼容）。
+
+**诊断包 #1108（Chrome 150 / Linux / US / 3G，《黄金矿工》）：播放器懒加载失败。**
+
+- 清单查了 56 项、55 项正常；点名的 `EmulatorPlayer-*.js` 强制重取后 SHA-256 正确，`failed` / `trace` 为空。现场只能确认动态模块请求失败后，普通 URL 的文件字节可取且正确；具体是瞬时网络、CDN 响应头还是浏览器模块加载路径，现有数据分不出来。
+- 旧恢复在普通 URL 内容正确后直接整页刷新。Chrome 仍会沿同一个 CDN URL 重试，若故障在该 URL 的边缘缓存 / 请求路径，刷新可能重复失败。v6 在同源懒加载失败且普通 URL 已校验正确时，额外用 5 秒上限核对 `?asset-repair=1` 地址；只有查询串副本也与 SHA-256 清单一致，才保存 import map remap、请求清 Cloudflare，并刷新到该副本。查询串未通过时维持原恢复行为。
+- 回归：`npm run test:asset-repair`。
 
 **诊断包 #761（微信 iOS 27，CN，《超级玛丽》详情页，`TypeError: Importing a module script failed.`）：旧 build，但根因当时没修。**
 

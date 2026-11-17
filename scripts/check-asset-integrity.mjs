@@ -3,7 +3,7 @@
  * 构建后核对坏 chunk 自修复要用的两样东西（postbuild:client）：
  *   1. dist/client/index.html 入口对应的 assets/integrity-<入口哈希>.json 存在，
  *      里面每个文件都在磁盘上、SHA-256 对得上，且静态依赖图里的每个 chunk 都在清单里；
- *   2. 修复脚本 assets/asset-repair-v5.js 已经复制进 dist，和 public/ 那份逐字节一致。
+ *   2. 修复脚本 assets/asset-repair-v6.js 已经复制进 dist，和 public/ 那份逐字节一致。
  * 清单错了的后果是「好文件被判成坏的」：修复脚本会反复重取、刷新，还会请求清边缘缓存，所以宁可构建失败。
  */
 import { createHash } from 'node:crypto'
@@ -14,7 +14,7 @@ import { integrityManifestName } from './lib/vite-asset-integrity.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const dist = path.join(root, 'dist', 'client')
-const REPAIR_SCRIPT = 'asset-repair-v5.js'
+const REPAIR_SCRIPT = 'asset-repair-v6.js'
 
 function fail(message) {
   console.error(`✗ 资源校验清单：${message}`)

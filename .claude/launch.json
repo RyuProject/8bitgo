@@ -63,6 +63,15 @@
       "port": 8799
     },
     {
+      "name": "ejs-fix-prodapi",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": [
+        "-c",
+        "cd /Users/zhangwenyu/Documents/GitHub/8bitgo-ejs-syntax-fix && BACKEND_URL=https://8bitgo.com exec npx vite --port 5181 --strictPort"
+      ],
+      "port": 5181
+    },
+    {
       "name": "vite-web-prodroutes",
       "runtimeExecutable": "env",
       "runtimeArgs": [

@@ -376,6 +376,12 @@ const es: Translation = {
     translateRetry: 'Reintentar traducción',
     translateFailed: 'Error de traducción',
     translatedJustNow: 'Traducido',
+    /** AI 临时修补给玩家的提示（shared/hotfix.js 的 player_notice 模板） */
+    hotfixNotice: {
+      unstable: 'Algunos jugadores han tenido problemas para iniciar este juego. Lo estamos solucionando y hemos ajustado temporalmente la forma de cargarlo.',
+      try_other_browser: 'Es posible que este juego no se inicie en tu navegador actual. Si falla la carga, prueba la última versión de Chrome, Edge o Firefox.',
+      try_later: 'El servicio de juegos tiene problemas temporales. Si falla la carga, inténtalo de nuevo más tarde.',
+    },
     year: 'Año de lanzamiento',
     developer: 'Desarrolladora',
     players: 'Jugadores',
@@ -1597,7 +1603,7 @@ const es: Translation = {
     ruffleNoApi: 'No se encontró la API del reproductor de Ruffle',
     flashLoadFailed: 'No se pudo cargar el contenido Flash: {msg}',
     ejsNoCore: 'EmulatorJS no tiene un núcleo para {platform}',
-    ejsFsInjectFailed: 'No se pudieron instalar los archivos de parche en el emulador (tanto RomData como los paquetes de BIOS adicionales usan esta vía): el juego arrancará con la configuración original: {msg}',
+    ejsFsInjectFailed: 'No se pudo escribir un archivo inyectado en el emulador: {msg}',
     ejsInitFailed: 'No se pudo inicializar el contenedor del emulador',
     ejsEngineError: 'Error del emulador: {msg}',
     ejsOutOfMemory: 'No hay memoria suficiente para iniciar el emulador. Cierra otras pestañas o apps y pulsa «Reintentar», o prueba con un dispositivo con más memoria.',

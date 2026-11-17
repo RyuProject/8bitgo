@@ -41,7 +41,7 @@ import { MatchChatPanel } from './MatchChatPanel'
 import { sendChatWithAck } from './chatSend'
 import { SEAT_TTL_MS } from './coopSeat'
 import type { Broadcast } from './broadcast'
-import { matchLocalArcadeHack } from './arcadeHack'
+import { matchLocalArcadeHack, type ArcadeHackMatch } from './arcadeHack'
 import { arcadeCoreForRomData } from './arcadeCore'
 import { romScopedHackForData } from '@/data/arcadeHacks'
 import type { DosExtraSource } from '@/lib/dosExtras'
@@ -1730,16 +1730,16 @@ export function EmulatorPlayer({
     () => ({ platform: platform.id, ready: false, unavailable: false }),
   )
   const webglProbeReady = !shouldProbeNoWebgl || (webglProbe.platform === platform.id && webglProbe.ready)
-  const webglUnavailable = webglProbe.platform === platform.id && webglProbe.unavailable && platform.id !== 'gba'
+  const webglUnavailable = webglProbe.platform === platform.id && webglProbe.unavailable
   useEffect(() => {
     if (!shouldProbeNoWebgl) return
     // NES 在太旧的浏览器上也改走 jsnes：EmulatorJS 的引擎和核心语法都跑不动（browserSupport.ts）
-    const noWebgl = platform.id !== 'gba' && !canCreateWebgl()
-    // NES：太旧或没有 WebAssembly 都改走 jsnes；GB/GBC：没有 WebAssembly 改走 binjgb（它自己换纯 JS 构建）
+    const noWebgl = !canCreateWebgl()
+    // NES：太旧或没有 WebAssembly 都改走 jsnes；GB/GBC：没有 WebAssembly改走 binjgb；GBA 无 WebGL / WASM 改走 IodineGBA。
     const noModernRuntime = platform.id === 'nes'
       ? !modernRuntimeSyntaxSupported() || !webAssemblyAvailable()
       : !webAssemblyAvailable()
-    const missing = platform.id === 'gba' ? !webAssemblyAvailable() : noWebgl || noModernRuntime
+    const missing = platform.id === 'gba' ? noWebgl || !webAssemblyAvailable() : noWebgl || noModernRuntime
     if (missing) {
       const fallback = platform.id === 'nes' ? 'jsnes' : platform.id === 'gba' ? 'IodineGBA（纯 JavaScript）' : !webAssemblyAvailable() ? 'binjgb（纯 JavaScript 构建）' : 'binjgb'
       const why = noWebgl ? '建不出 WebGL' : !webAssemblyAvailable() ? '没有 WebAssembly' : '太旧（不支持类字段 / ?. / ??）'
@@ -1764,6 +1764,7 @@ export function EmulatorPlayer({
       jsnesCompatible,
       webglUnavailable,
       gbaWasmUnavailable: platform.id === 'gba' && !webAssemblyAvailable(),
+      gbaWebglUnavailable: platform.id === 'gba' && webglUnavailable,
       flashAwayfl: awayflChoice.use,
     })
   }, [platform.id, runtime, romUrl, shouldProbeNes, currentNesProbe?.ready, jsnesNetplay, jsnesCompatible, webglUnavailable, awayflChoice.ready, awayflChoice.use])
@@ -1816,6 +1817,13 @@ export function EmulatorPlayer({
       startedAt?: number
     },
   ) => {
+    // PPSSPP 与 Play! 没有 Canvas 2D 后备；在创建 iframe、拉 ROM 或初始化大核心前先结束，免得弱设备白等。
+    if ((runtime.id === 'ppsspp' || runtime.id === 'play') && !canCreateWebgl()) {
+      console.warn(`[8bitgo/runtime] 浏览器不能创建 WebGL，${runtime.id} 无法运行`)
+      setError(t.runtime.ejsWebglUnavailable)
+      setStatus('error')
+      return
+    }
     /*
       模拟器运行时是原样发布的第三方产物，最低要 Chrome 80 / Safari 14 / Firefox 74（browserSupport.ts）。
       更老的浏览器页面能打开，点开始后会在 iframe / Worker 里静默语法错误、等满看门狗才报超时：
@@ -3269,16 +3277,25 @@ export function EmulatorPlayer({
         能拿到同一份加载方案。
       */
       if (targetPlatform === 'arcade') {
-        const matched = await matchLocalArcadeHack(picked)
+        let matched: ArcadeHackMatch | null
+        try {
+          matched = await matchLocalArcadeHack(picked)
+        } catch (error) {
+          if (superseded()) return
+          setLocalRomData(undefined)
+          const reason = error instanceof Error ? error.message : String(error)
+          setError(fmt(t.runtime.ejsArcadeRomInvalid, { name: reason }))
+          return
+        }
         if (superseded()) return
-        if (matched?.hack.romData) {
+        if (matched) picked = matched.file
+        if (matched?.hack?.romData) {
           setLocalRomData(matched.hack.romData)
           setNotice(fmt(t.player.arcadeHackFound, { title: matched.hack.title, driver: matched.hack.driver }))
-          picked = matched.file
         } else {
           // 普通包或没有方案的改版都不能带着上一局的 dat 继续开，避免串包。
           setLocalRomData(undefined)
-          if (matched) {
+          if (matched?.hack) {
             setError(fmt(t.player.arcadeHackNoPlan, { title: matched.hack.title }))
             return
           }
@@ -3299,10 +3316,11 @@ export function EmulatorPlayer({
         jsnesCompatible: localJsnesCompatible,
         // 本地 ROM 不以详情页 slug 作为验证依据；只有显式调试参数能强制它走 AwayFL。
         flashAwayfl: targetPlatform === 'flash' && awayflForcedByUrl(),
-        webglUnavailable: ((targetPlatform === 'nes' || targetPlatform === 'gb' || targetPlatform === 'gbc') && !canCreateWebgl()) ||
+        webglUnavailable: ((targetPlatform === 'nes' || targetPlatform === 'gb' || targetPlatform === 'gbc' || targetPlatform === 'gba') && !canCreateWebgl()) ||
           (targetPlatform === 'nes' && (!modernRuntimeSyntaxSupported() || !webAssemblyAvailable())),
         wasmUnavailable: (targetPlatform === 'gb' || targetPlatform === 'gbc') && !webAssemblyAvailable(),
         gbaWasmUnavailable: targetPlatform === 'gba' && !webAssemblyAvailable(),
+        gbaWebglUnavailable: targetPlatform === 'gba' && !canCreateWebgl(),
       })
       if (!runtime) {
         if (debugRef.current) {
@@ -4101,6 +4119,8 @@ export function EmulatorPlayer({
    */
   const prewarmPrimaryAction = (aggressive: boolean) => {
     if (online) return
+    // 这两个独立运行时没有无 WebGL 后备；不为无法启动的局提前下载几十 MB 核心。
+    if ((pageRuntime?.id === 'ppsspp' || pageRuntime?.id === 'play') && !canCreateWebgl()) return
     // 预热与真正开局必须选同一个核心，否则玩家悬停时会白下载已知会崩溃的新版 WASM。
     const selectedCore = platform.id === 'nds' && pageRuntime?.id === 'emulatorjs' && romUrl &&
       emulatorJsCoreForGame('nds', prewarmCore ?? 'nds') === 'melondsds'

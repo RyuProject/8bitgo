@@ -356,6 +356,12 @@ const zhHant: Translation = {
     translateRetry: '重試翻譯',
     translateFailed: '翻譯失敗',
     translatedJustNow: '已翻譯',
+    /** AI 临时修补给玩家的提示（shared/hotfix.js 的 player_notice 模板） */
+    hotfixNotice: {
+      unstable: '這款遊戲最近有部分玩家打不開，我們正在修復，已臨時調整了載入方式。',
+      try_other_browser: '這款遊戲在你目前的瀏覽器上可能打不開。如果載入失敗，請改用最新版 Chrome、Edge 或 Firefox。',
+      try_later: '遊戲服務暫時有波動，如果載入失敗，請稍後再試。',
+    },
     year: '發行年份',
     developer: '開發商',
     players: '玩家人數',
@@ -1542,7 +1548,7 @@ const zhHant: Translation = {
     ruffleNoApi: '找不到 Ruffle 播放器 API',
     flashLoadFailed: 'Flash 內容載入失敗：{msg}',
     ejsNoCore: 'EmulatorJS 沒有 {platform} 平台的核心',
-    ejsFsInjectFailed: '補丁檔案沒寫進模擬器（RomData / BIOS 包都走這條通道），遊戲會按原始設定啟動：{msg}',
+    ejsFsInjectFailed: '模擬器檔案注入失敗：{msg}',
     ejsInitFailed: '無法初始化模擬器容器',
     ejsLoadFailed: '模擬器沒能載入。請檢查網路後點「重試」；一直不行請回報給我們',
     ejsEngineError: '引擎報錯：{msg}',

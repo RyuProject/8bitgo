@@ -49,6 +49,7 @@ import { isolatedEmbedFor } from '../../shared/isolated-embeds.js'
 import { isIsolatedRuntimePlatform } from '../../shared/isolated-runtime-platforms.js'
 import { splitDevelopers } from '@/lib/developers'
 import { newStartupId, recordStartupEvent } from '@/services/startupFunnel'
+import { useGameHotfix } from '@/services/hotfixes'
 
 export function GameDetailPage() {
   const { slug = '' } = useParams<{ slug: string }>()
@@ -228,6 +229,12 @@ export function GameDetailPage() {
     : game && isIsolatedRuntimePlatform(game.platform) ? game.platform : undefined
   const requiresIsolation = Boolean(isolatedEmbed) || requiresIsolatedRuntime
   const usesIsolatedLaunchCard = requiresIsolation && game?.platform !== 'psp'
+  /*
+    AI 临时修补（后台「AI 修补」，shared/hotfix.js）：这款游戏在这个浏览器上有没有生效的退路。
+    ready 之前把 ROM 当成「检查中」，开始按钮晚一点出现，也不让一局开到一半被换核心。
+    拉取和 ROM 探测并行，最多 1.5 秒；看直播的观众不跑模拟器，不需要。
+  */
+  const hotfix = useGameHotfix(game?.slug, game?.platform, Boolean(game) && !usesIsolatedLaunchCard && !liveInvite)
   /**
    * 从游戏列表经 React Router 进入 PSP 页时，浏览器沿用原文档，不会重新请求 SSR 的隔离头。
    * 自动完整刷新一次，让当前 URL 真正变成带 COOP/COEP 的顶层文档；sessionStorage 与导航类型
@@ -379,7 +386,7 @@ export function GameDetailPage() {
     resolveRuntime({
       platform: platform.id,
       ext: rom.status === 'found' ? extOf(rom.url) : undefined,
-      runtimeOverride: game.runtime,
+      runtimeOverride: (hotfix.runtime as typeof game.runtime | undefined) ?? game.runtime,
     }) ?? runtimesFor(platform.id)[0] ?? resolveRuntime(platform.id)!
   // 「支持语言」格：从 game.roms 里读出真正绑了哪些语言槽，直接显示语言名。
   // 这既让玩家不用猜 CN / JP，也让 SSR 的正文明确说出哪些语言 ROM 真正可选。
@@ -413,6 +420,11 @@ export function GameDetailPage() {
           'w-full',
           twoColumn ? 'lg:col-span-8' : immersive ? 'lg:col-span-12' : 'lg:col-span-12 xl:col-span-9',
         )}>
+          {hotfix.notice && (
+            <p role="status" className={cx('mb-3 rounded-lg border border-coin/50 bg-coin/15 px-3 py-2 text-sm text-fg', stageCap)}>
+              {t.game.hotfixNotice[hotfix.notice]}
+            </p>
+          )}
           <GameAgeGuard
                 /*
                   门卫拦下来时画的也是个 16:9 的框，得和播放器一样宽 ——
@@ -465,7 +477,7 @@ export function GameDetailPage() {
                   platform={platform}
                   gameName={game.title}
                   gameSlug={game.slug}
-                  runtime={game.runtime}
+                  runtime={(hotfix.runtime as typeof game.runtime | undefined) ?? game.runtime}
                   startupVisitId={startupVisitId}
                   maxPlayers={game.multiplayer ? game.players : 1}
                   invite={invite}
@@ -478,7 +490,7 @@ export function GameDetailPage() {
                 onMatchPlayerChange={setMatchPlayer}
                   icon={game.icon}
                   // 这一款指定的核心（街机尤其需要），以及平台级 BIOS（Neo Geo 缺了起不来）
-                  core={game.core}
+                  core={hotfix.core ?? game.core}
                   genres={game.genres}
                   arcadeRomData={game.arcadeRomData}
                   arcadeMameDisks={game.arcadeMameDisks}
@@ -500,8 +512,8 @@ export function GameDetailPage() {
                   dosboxConfig={game.dosboxConfig}
                   dosSaveHint={game.dosSaveHint}
                   biosUrl={biosUrl || undefined}
-                  romUrl={rom.status === 'found' ? rom.url : undefined}
-                  romChecking={rom.status === 'checking'}
+                  romUrl={rom.status === 'found' && hotfix.ready ? rom.url : undefined}
+                  romChecking={rom.status === 'checking' || (rom.status === 'found' && !hotfix.ready)}
                   romUnavailable={rom.status === 'missing'}
                   romUnreachable={rom.unreachable}
                   onRetryRom={rom.retry}

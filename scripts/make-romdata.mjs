@@ -22,11 +22,11 @@
  * 就只有人知道它替换的是哪一块。
  *
  * ── 用法 ─────────────────────────────────────────────────────
- *   npm run romdata -- wofcn.zip --drv wofj --name "Warriors of Fate (Chinese)"
- *   npm run romdata -- wofcn.zip --drv wofj --fbneo /tmp/fbn/src/burn/drv
+ *   npm run romdata -- example.zip --drv kof97 --name "Example patched set"
+ *   npm run romdata -- example.zip --drv kof97 --fbneo /tmp/fbn/src/burn/drv
  *
- *   --drv <短名>     基础驱动，必填（如 wofj）
- *   --zip-name <名>  romset 包名，默认取 zip 的文件名（wofcn.zip → wofcn）
+ *   --drv <短名>     已确认的基础驱动，必填（例如 kof97；仅适用于确实基于该驱动的包）
+ *   --zip-name <名>  romset 包名，默认取 zip 的文件名（example.zip → example）
  *   --name "<全名>"  dat 里的 FullName，默认用包名
  *   --fbneo <目录>   FBNeo 的 src/burn/drv，给了就自动填类型（强烈建议给）
  *   --out <文件>     写到文件，默认打到标准输出

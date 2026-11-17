@@ -829,28 +829,30 @@ async function reindexGame(run, gameId, game) {
  * 两边都可能先读到不存在，后到的那次就会静默覆盖先到者。让数据库唯一索引裁决 INSERT，
  * 才能把这类竞态稳定地变成 409，而不是数据丢失。
  */
+async function persistGameWithRun(run, slug, game, createOnly) {
+  const row = gameApiToRow({ ...game, slug })
+  const cols = Object.keys(row)
+  const insert = `INSERT INTO games (${cols.map((c) => `\`${c}\``).join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`
+  if (createOnly) {
+    await run(insert, cols.map((c) => row[c]))
+  } else {
+    const updates = cols.filter((c) => c !== 'slug').map((c) => `\`${c}\` = VALUES(\`${c}\`)`).join(', ')
+    await run(`${insert} ON DUPLICATE KEY UPDATE ${updates}`, cols.map((c) => row[c]))
+  }
+  // 拿不到 insertId 时（走了 UPDATE 分支）再查一次
+  const [{ id }] = await run('SELECT id FROM games WHERE slug = ?', [slug])
+  // 整体覆盖：description / description_en 必然都重新写入了，按需缓存全部作废。
+  // 不在这里清的话，玩家点过翻译的多语言版本会和新的基准对不上，但前端看不出来。
+  await run('UPDATE games SET title_i18n = NULL, description_i18n = NULL WHERE id = ?', [id])
+  await writeRelations(run, id, game)
+  // 联机人数在 ROM 绑定写完之后重算（auto 模式按 ROM 推断，见 netplay-auto.js）
+  await syncNetplayDerived(run, id, { mode: netplayModeFromInput(game) })
+  await reindexGame(run, id, { ...game, slug })
+  return id
+}
+
 async function persistGame(slug, game, createOnly) {
-  return withTransaction(async (run) => {
-    const row = gameApiToRow({ ...game, slug })
-    const cols = Object.keys(row)
-    const insert = `INSERT INTO games (${cols.map((c) => `\`${c}\``).join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`
-    if (createOnly) {
-      await run(insert, cols.map((c) => row[c]))
-    } else {
-      const updates = cols.filter((c) => c !== 'slug').map((c) => `\`${c}\` = VALUES(\`${c}\`)`).join(', ')
-      await run(`${insert} ON DUPLICATE KEY UPDATE ${updates}`, cols.map((c) => row[c]))
-    }
-    // 拿不到 insertId 时（走了 UPDATE 分支）再查一次
-    const [{ id }] = await run('SELECT id FROM games WHERE slug = ?', [slug])
-    // 整体覆盖：description / description_en 必然都重新写入了，按需缓存全部作废。
-    // 不在这里清的话，玩家点过翻译的多语言版本会和新的基准对不上，但前端看不出来。
-    await run('UPDATE games SET title_i18n = NULL, description_i18n = NULL WHERE id = ?', [id])
-    await writeRelations(run, id, game)
-    // 联机人数在 ROM 绑定写完之后重算（auto 模式按 ROM 推断，见 netplay-auto.js）
-    await syncNetplayDerived(run, id, { mode: netplayModeFromInput(game) })
-    await reindexGame(run, id, { ...game, slug })
-    return id
-  })
+  return withTransaction((run) => persistGameWithRun(run, slug, game, createOnly))
 }
 
 /** 原子新增：slug 已存在时由唯一索引拒绝，绝不覆盖旧游戏。 */
@@ -864,6 +866,18 @@ export async function createGame(slug, game) {
  */
 export async function upsertGame(slug, game) {
   return persistGame(slug, game, false)
+}
+
+/**
+ * 后台首次导入与文章一并提交，避免第 N 款游戏写库失败后留下半批内容。
+ * 调用方须先完整验证输入，再在一个事务中调用本函数。
+ */
+export async function upsertGamesInTransaction(run, games) {
+  const ids = []
+  for (const game of games) {
+    ids.push(await persistGameWithRun(run, String(game.slug), game, false))
+  }
+  return ids
 }
 
 /** 局部更新（PATCH）。只动请求里带到的列和关联表。 */

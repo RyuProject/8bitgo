@@ -1140,6 +1140,46 @@ const patches = [
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`),
   },
   {
+    name: 'ai_hotfixes（AI 临时修补：MiniMax 分诊结果、生效中的白名单退路、留给人固化的记录）',
+    table: null,
+    skip: async () => (!(await hasTable('game_roms')) ? '不是 v2 数据库' : null),
+    needed: async () => !(await hasTable('ai_hotfixes')),
+    run: () => conn.query(`CREATE TABLE IF NOT EXISTS ai_hotfixes (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      signature CHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '',
+      signature_text VARCHAR(200) NOT NULL DEFAULT '',
+      source VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'ai',
+      status VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+      risk VARCHAR(8) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'safe',
+      confidence DECIMAL(3,2) NULL,
+      scope TEXT NULL,
+      actions TEXT NULL,
+      diagnosis TEXT NULL,
+      permanent_fix TEXT NULL,
+      player_impact VARCHAR(400) NULL,
+      dropped TEXT NULL,
+      model VARCHAR(64) NULL,
+      error VARCHAR(400) NULL,
+      ttl_hours SMALLINT UNSIGNED NOT NULL DEFAULT 24,
+      visits_at_trigger INT UNSIGNED NOT NULL DEFAULT 0,
+      status_note VARCHAR(400) NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      applied_at TIMESTAMP NULL DEFAULT NULL,
+      expires_at TIMESTAMP NULL DEFAULT NULL,
+      closed_at TIMESTAMP NULL DEFAULT NULL,
+      KEY idx_hotfix_status (status, expires_at),
+      KEY idx_hotfix_sig (signature, created_at),
+      KEY idx_hotfix_time (created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`),
+  },
+  {
+    name: 'game_startup_diagnostics.hotfix_ids（这一局生效着哪些 AI 修补；效果统计与自动撤销用）',
+    table: 'game_startup_diagnostics',
+    skip: async () => (!(await hasTable('game_startup_diagnostics')) ? '缺 game_startup_diagnostics 表' : null),
+    needed: async () => !(await hasColumn('game_startup_diagnostics', 'hotfix_ids')),
+    run: () => conn.query("ALTER TABLE `game_startup_diagnostics` ADD COLUMN `hotfix_ids` VARCHAR(120) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '' AFTER `payload`"),
+  },
+  {
     name: 'psp_conversion_jobs（PSP ISO → CHD 后台压缩队列）',
     table: null,
     skip: async () => (!(await hasTable('game_roms')) ? '不是 v2 数据库' : null),
@@ -1340,7 +1380,7 @@ const patches = [
   },
 ]
 
-const TABLES = ['games', 'posts', 'users', 'volunteer_games', 'volunteer_posts', 'favorites', 'recents', 'saves', 'flash_save_slots', 'flash_save_kv', 'flash_save_seqs', 'login_codes', 'platform_bios', 'game_plays', 'game_startup_events', 'game_startup_diagnostics', 'psp_conversion_jobs', 'sockdrive_conversion_jobs', 'developers', 'friend_links', 'friend_link_hits', 'game_comments', 'game_ratings', 'oauth_apps', 'open_rom_samples']
+const TABLES = ['games', 'posts', 'users', 'volunteer_games', 'volunteer_posts', 'favorites', 'recents', 'saves', 'flash_save_slots', 'flash_save_kv', 'flash_save_seqs', 'login_codes', 'platform_bios', 'game_plays', 'game_startup_events', 'game_startup_diagnostics', 'ai_hotfixes', 'psp_conversion_jobs', 'sockdrive_conversion_jobs', 'developers', 'friend_links', 'friend_link_hits', 'game_comments', 'game_ratings', 'oauth_apps', 'open_rom_samples']
 
 try {
   /*

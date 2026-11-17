@@ -1,5 +1,5 @@
 /**
- * React 侧接入「坏 chunk 自修复」（public/assets/asset-repair-v5.js）。
+ * React 侧接入「坏 chunk 自修复」（public/assets/asset-repair-v6.js）。
  *
  * 2026-11-15 PK / TH 两位玩家打开详情页就崩：
  * `SyntaxError: The requested module './live-Cqhc9j-k.js' does not provide an export named 'x'`。
@@ -150,7 +150,7 @@ export function onOriginAssetsPage(): boolean {
 
 /* ---------- 修复脚本 ---------- */
 
-/** 与 public/assets/asset-repair-v5.js 的返回值一致（新字段在旧脚本里没有，所以是可选的） */
+/** 与 public/assets/asset-repair-v6.js 的返回值一致（新字段在旧脚本里没有，所以是可选的） */
 export interface AssetRepairResult {
   manifest: boolean
   checked: number
@@ -366,7 +366,7 @@ export function bustedChunkUrl(file: string, base: string, nonce: string): strin
  *
  * 现在先在页面里重试：网络型错误可能被浏览器模块表按原 URL 缓存为失败，重复调用原加载函数只会得到同一个拒绝；
  * 因此每次重试都换唯一查询串，让浏览器和边缘重新取入口 chunk。静态依赖仍保持原 URL 和同一个 React 实例；
- * 如果失败在静态依赖，asset-repair-v5 会按构建依赖图核对它，再刷新页面清掉失败模块表。明确离线时先等恢复联网。
+ * 如果失败在静态依赖，asset-repair-v6 会按构建依赖图核对它，再刷新页面清掉失败模块表。明确离线时先等恢复联网。
  * 全部失败才把最后一个错误抛给错误边界（那里还有修复脚本和整页刷新）。
  */
 export async function importWithRetry<T>(

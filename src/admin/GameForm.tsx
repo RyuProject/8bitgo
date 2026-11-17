@@ -1276,10 +1276,10 @@ export function GameForm({
         </header>
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="英文标题 *">
-          <input className={inputClass} value={form.title} onChange={(e) => set('title', e.target.value)} placeholder="Super Mario Bros." required />
+          <input className={inputClass} value={form.title} onChange={(e) => set('title', e.target.value)} placeholder="Super Mario Bros." maxLength={200} required />
         </Field>
         <Field label="中文译名">
-          <input className={inputClass} value={form.titleZh ?? ''} onChange={(e) => set('titleZh', e.target.value)} placeholder="超级马力欧兄弟" />
+          <input className={inputClass} value={form.titleZh ?? ''} onChange={(e) => set('titleZh', e.target.value)} placeholder="超级马力欧兄弟" maxLength={200} />
         </Field>
         <Field label="slug（URL 标识）" hint={isEdit ? '编辑时不可修改' : '留空则根据英文标题自动生成'}>
           <input
@@ -1297,6 +1297,9 @@ export function GameForm({
           <select className={inputClass} value={form.platform} onChange={(e) => {
             set('platform', e.target.value as PlatformId)
             set('runtime', undefined)
+            // 模拟器核心是平台专属配置；切平台后必须重新按新平台自动推断。
+            manualCoreChoice.current = false
+            set('core', undefined)
           }}>
             {platforms.map((p) => (
               <option key={p.id} value={p.id}>
@@ -1335,7 +1338,7 @@ export function GameForm({
           <input type="number" className={inputClass} value={form.year || ''} onChange={(e) => set('year', Number(e.target.value))} />
         </Field>
         <Field label="开发商" hint="多个开发商用逗号分隔">
-          <input className={inputClass} value={form.developer} onChange={(e) => set('developer', e.target.value)} placeholder="Nintendo, HAL Laboratory" />
+          <input className={inputClass} value={form.developer} onChange={(e) => set('developer', e.target.value)} placeholder="Nintendo, HAL Laboratory" maxLength={200} />
         </Field>
         <Field
           label="最大玩家数"
@@ -1686,7 +1689,7 @@ export function GameForm({
                   value={form.arcadeRomData ?? ''}
                   onChange={(e) => set('arcadeRomData', e.target.value || undefined)}
                   spellCheck={false}
-                  placeholder={'// 三国志2 中文版\nZipName   wofcn\nDrvName   wofj\nFullName  Warriors of Fate (Chinese)\n\ntk2j_23c.8f  0x080000  0x9b215a68  BRF_ESS BRF_PRG CPS1_68K_PROGRAM_NO_BYTESWAP'}
+                  placeholder={'// wofcn 的中文字库映射尚未验证，目前没有可运行的 RomData 方案。\n// 其它改版包请填写与实际 ROM 完全匹配的 ZipName、DrvName 和完整 ROM 清单。'}
                 />
                 <p className="mt-1 text-[11px] text-dim">
                   仅给不在 FBNeo 驱动表里的包用。必须同时写 <code>ZipName</code> 和 <code>DrvName</code>；已识别的改版包会在上传结果中提供一键填入。
@@ -1960,7 +1963,7 @@ export function GameForm({
               onDeleteRom={deleteBoundRom}
               deletingRom={romDeleteBusy}
               onHackFound={(hack) => {
-                // wofcn 的 RomData 只属于这份 ROM；arcade_romdata 是游戏级字段，不能写入后污染其它语言槽。
+                // wofcn 的识别结果只属于这份 ROM；arcade_romdata 是游戏级字段，不能写入后影响其它语言槽。
                 if (hack.romDataScope !== 'rom') applyHack(hack, true)
               }}
               onApplyHack={(hack) => applyHack(hack)}
@@ -2052,6 +2055,7 @@ export function GameForm({
           className={cx(inputClass, 'h-24 resize-y py-2')}
           value={form.description}
           onChange={(e) => set('description', e.target.value)}
+          maxLength={16_000}
           placeholder="一两句话介绍这款游戏"
         />
       </Field>
@@ -2061,6 +2065,7 @@ export function GameForm({
           className={cx(inputClass, 'h-24 resize-y py-2')}
           value={form.descriptionEn ?? ''}
           onChange={(e) => updateEnglishDescription(e.target.value)}
+          maxLength={16_000}
           placeholder="One or two sentences about this game"
         />
         <p className="mt-1 text-[11px] text-dim">
@@ -2736,6 +2741,7 @@ function SystemImageField({
           className={cx(inputClass, 'font-mono')}
           value={value}
           onChange={(e) => onChange(e.target.value)}
+          maxLength={500}
           placeholder="systems/dos/system-win95-v1.jsdos"
         />
         <select
@@ -4875,6 +4881,7 @@ function MediaField({
           className={cx(inputClass, 'font-mono')}
           value={value}
           onChange={(e) => onChange(e.target.value)}
+          maxLength={500}
           placeholder={defaultMediaKey(kind, slug || '<slug>', kind === 'videos' ? 'x.mp4' : 'x.jpg')}
         />
         <input ref={inputRef} type="file" accept={accept} className="hidden" onChange={(e) => onFile(e.target.files?.[0])} />

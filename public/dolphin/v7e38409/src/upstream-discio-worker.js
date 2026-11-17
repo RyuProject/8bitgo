@@ -2471,7 +2471,10 @@ async function mountRemote(remote) {
       if (requests === 1 || requests % 8 === 0) {
         postStatus(`Remote disc: ${requests} blocks / ${(bytesFetched / 1048576).toFixed(1)} MiB fetched`);
       }
-    }
+    },
+    onError: (error) => {
+      postStatus(`REMOTE_DISC_RANGE_ERROR: ${error instanceof Error ? error.message : String(error)}`, "error");
+    },
   });
   return mountFileLike(mountedRemoteFile);
 }
