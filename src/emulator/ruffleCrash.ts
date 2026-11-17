@@ -11,6 +11,7 @@ const FATAL_TEXT = [
   /ruffle has panicked/i,
   /panicked at/i,
   /webassembly\.runtimeerror/i,
+  /\bRuntimeError\b/i,
   /memory access out of bounds/i,
   /out of bounds memory access/i,
   /call_indirect.*null table entry/i,
@@ -71,7 +72,17 @@ export function installRuffleCrashGuard(win: CrashWindow, onFatal: (detail: stri
   let wrappedError: Console['error'] | null = null
   if (consoleObject && typeof nativeError === 'function') {
     const candidate: Console['error'] = (...args: unknown[]) => {
-      try { report(args.map((arg) => errorText(arg).message).join(' ')) } catch { /* 诊断不能反过来弄挂游戏 */ }
+      try {
+        // 保留异常对象本身：压成 message 会丢掉 RuntimeError 类型，某些 WASM trap 只写
+        // `unreachable`，既不含 panic 文本也不含 WebAssembly 前缀，黑屏后就会漏报。
+        for (const arg of args) {
+          report(arg)
+          if (reported) break
+        }
+        // Ruffle 有时把错误类型放在前一个参数、panic 细节放在后一个参数；逐个检查后
+        // 再检查组合文本，仍然只会由 report 的一次性闸门上报一回。
+        if (!reported) report(args.map((arg) => errorText(arg).message).join(' '))
+      } catch { /* 诊断不能反过来弄挂游戏 */ }
       nativeError.apply(consoleObject, args)
     }
     try {

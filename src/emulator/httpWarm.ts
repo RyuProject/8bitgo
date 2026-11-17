@@ -16,7 +16,7 @@
  */
 
 /** 正在预热或已预热的 URL。同一个页面里重复调用只发一次请求。 */
-const warmed = new Map<string, Promise<void>>()
+const warmed = new Map<string, Promise<boolean>>()
 
 /**
  * 预热一个同源（或带 CORS 的跨源）资源。
@@ -24,13 +24,14 @@ const warmed = new Map<string, Promise<void>>()
  * `cache: 'force-cache'` 的语义是「有缓存就直接用，没有就正常请求」——
  * 对我们来说两种情况都对：没请求过就下载进缓存，已经新鲜就什么都不做。
  */
-export function warmHttpCache(url: string): Promise<void> {
-  if (!url) return Promise.resolve()
+export function warmHttpCache(url: string): Promise<boolean> {
+  if (!url) return Promise.resolve(false)
   const existing = warmed.get(url)
   if (existing) return existing
-  const pending = drainIntoHttpCache(url).catch(() => {
+  const pending = drainIntoHttpCache(url).then(() => true).catch(() => {
     // 预热失败不能惊动玩家，也不该占着 warmed 不放 —— 允许下一次再试
     warmed.delete(url)
+    return false
   })
   warmed.set(url, pending)
   return pending
@@ -48,10 +49,15 @@ async function drainIntoHttpCache(url: string): Promise<void> {
   const res = await fetch(url, { cache: 'force-cache', credentials: 'same-origin' })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   const reader = res.body?.getReader()
-  if (!reader) return
+  if (!reader) throw new Error('预热资源响应没有正文')
+  let received = false
   for (;;) {
-    const { done } = await reader.read()
-    if (done) return
+    const { done, value } = await reader.read()
+    if (done) {
+      if (!received) throw new Error('预热资源正文为空')
+      return
+    }
+    if (value?.byteLength) received = true
   }
 }
 

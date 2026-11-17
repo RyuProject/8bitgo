@@ -48,8 +48,13 @@ export function flashCompatibilityIssueForFingerprint(bytes: number, sha256: str
  */
 export async function flashCompatibilityIssue(data: ArrayBuffer): Promise<FlashCompatibilityIssue | null> {
   if (!SITE_LOCKED_SWFS.some((entry) => entry.bytes === data.byteLength)) return null
-  const subtle = globalThis.crypto?.subtle
-  if (!subtle) return null
-  const digest = hex(await subtle.digest('SHA-256', data))
-  return flashCompatibilityIssueForFingerprint(data.byteLength, digest)
+  try {
+    const subtle = globalThis.crypto?.subtle
+    if (!subtle) return null
+    const digest = hex(await subtle.digest('SHA-256', data))
+    return flashCompatibilityIssueForFingerprint(data.byteLength, digest)
+  } catch {
+    // 摘要 API 在旧 WebView / 隐私模式中可能在调用时才拒绝；兼容扫描不能让整款 Flash 无法开局。
+    return null
+  }
 }

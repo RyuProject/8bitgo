@@ -50,7 +50,7 @@ try {
   const base = 'https://cn.example.test/_cn/ruffle/v9/'
   const warm = await warmRuffleCore(base)
   assert.ok(warm.wasm === 'aaa.wasm' || warm.wasm === 'bbb.wasm', '必须选出一套核心')
-  await warm.done
+  assert.equal(await warm.done, true, '两个核心文件都完整读完才算预热完成')
   const variantJs = warm.wasm === 'aaa.wasm' ? 'core.ruffle.a.js' : 'core.ruffle.b.js'
   assert.deepEqual(new Set(requests), new Set([`${base}bootstrap.json`, `${base}${variantJs}`, `${base}${warm.wasm}`]),
     '只预热一套核心，不能把两份 wasm 都拉下来')
@@ -67,6 +67,42 @@ try {
   globalThis.fetch = async () => { retried++; return new Response('nope', { status: 404 }) }
   await warmRuffleCore('https://other.test/ruffle/')
   assert.equal(retried, 1, '失败的预热不能被缓存成永远不再尝试')
+
+  // bootstrap 成功、核心断流时也必须报告预热失败并允许下一局重试；否则诊断会假报完成。
+  const assetFailureBase = 'https://asset-failure.test/ruffle/'
+  let assetRequests = 0
+  globalThis.fetch = async (url) => {
+    if (String(url).endsWith('bootstrap.json')) {
+      return new Response(JSON.stringify({ bootstrap: { modern: ['core.js', 'core.wasm'], fallback: ['fallback.js', 'fallback.wasm'] } }), { status: 200 })
+    }
+    assetRequests++
+    return new Response('temporary network failure', { status: 503 })
+  }
+  const assetFailure = await warmRuffleCore(assetFailureBase)
+  assert.equal(await assetFailure.done, false, '任一核心文件失败都不能记作预热完成')
+  const assetRetry = await warmRuffleCore(assetFailureBase)
+  assert.notEqual(assetRetry, assetFailure, '核心文件失败后下一局必须重新读取清单并重试')
+  assert.equal(await assetRetry.done, false)
+  assert.equal(assetRequests, 4, '两次预热都应请求核心 JS 与 WASM')
+
+  // bootstrap 本身无响应时也不能把单页预热句柄永久卡在 pending。
+  const realSetTimeout = globalThis.setTimeout
+  let bootstrapAborted = false
+  globalThis.setTimeout = (callback, delay, ...args) => realSetTimeout(callback, delay === 8_000 ? 0 : delay, ...args)
+  globalThis.fetch = async (_url, { signal }) => new Promise((_resolve, reject) => {
+    signal.addEventListener('abort', () => {
+      bootstrapAborted = true
+      reject(new DOMException('timed out', 'AbortError'))
+    }, { once: true })
+  })
+  try {
+    const stalledBootstrap = await warmRuffleCore('https://bootstrap-stall.test/ruffle/')
+    assert.equal(stalledBootstrap.wasm, null)
+    assert.equal(await stalledBootstrap.done, false)
+    assert.equal(bootstrapAborted, true, 'bootstrap 预热必须能被时限中止')
+  } finally {
+    globalThis.setTimeout = realSetTimeout
+  }
 } finally {
   globalThis.fetch = realFetch
 }

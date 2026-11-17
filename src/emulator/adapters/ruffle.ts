@@ -10,6 +10,7 @@
 import type { CaptureSources, Capability, MountOptions, PadButton, RuntimeHandle } from '../types'
 import { flashKeysFor, keyDesc, type KeyDesc } from '../flashKeys'
 import { loadGameBytes } from '../romLoader'
+import { isRomNetworkFailure } from '../loadProgress'
 import { assertSwf, assertSwfBlob, MAX_SWF_BYTES } from '@/lib/romValidation'
 import { captureCanvasScreenshot } from '../recorder'
 import { usableVideoSize } from '../videoTuning'
@@ -296,11 +297,17 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   */
   let coreWarmFile: string | null = null
   let coreWarmMs = -1
+  let coreWarmFailed = false
   void warmRuffleCore(ruffleRoot).then((warm) => {
     coreWarmFile = warm.wasm
-    return warm.done.then(() => {
-      coreWarmMs = Date.now() - mountedAt
-      if (!destroyed && warm.wasm) diagLog('ruffle', 'info', `核心 ${warm.wasm} 预热完成 (+${coreWarmMs}ms)`)
+    return warm.done.then((succeeded) => {
+      if (succeeded) {
+        coreWarmMs = Date.now() - mountedAt
+        if (!destroyed && warm.wasm) diagLog('ruffle', 'info', `核心 ${warm.wasm} 预热完成 (+${coreWarmMs}ms)`)
+      } else {
+        coreWarmFailed = true
+        if (!destroyed) diagLog('ruffle', 'warn', 'Ruffle 核心预热未完成；正式加载仍由播放器重试')
+      }
     })
   })
   let swfInfo = ''
@@ -312,7 +319,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       `挂载后 ${Math.round((now - mountedAt) / 100) / 10}s`,
       `线路 ${ruffleRoot === RUFFLE_PATH ? '同源' : '加速'}`,
       `SWF ${swfInfo || '未到'}`,
-      `核心预热 ${coreWarmMs >= 0 ? `${coreWarmMs}ms` : coreWarmFile ? '进行中' : '未开始/失败'}`,
+      `核心预热 ${coreWarmMs >= 0 ? `${coreWarmMs}ms` : coreWarmFailed ? '失败；正式加载仍会重试' : coreWarmFile ? '进行中' : '未开始/失败'}`,
       `页面${document.hidden ? '在后台' : '在前台'}`,
     ].join('，')
   })
@@ -458,6 +465,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   // 127.0.0.1/flash-frames/smoke/save-smoke.swf/slot1；旧版则是 /srcdoc/slot1。
 
   let destroyed = false
+  let runtimeFatalReported = false
+  let ruffleLoadStarted = false
+  let gameBytesFailureScope: 'network' | 'content' | null = null
   let manuallyPaused = false
   let backgroundPlaybackRequired = false
   let visibilityPaused = false
@@ -490,6 +500,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     swfInfo = `${kb(loaded.data.byteLength)}${loaded.fromCache ? '（本地缓存）' : ''}`
     diagLog('ruffle', 'info', `SWF 就绪 ${swfInfo} (+${Date.now() - mountedAt}ms)`)
     return loaded
+  }, (error) => {
+    // 下载器已区分断流 / HTTP 故障与内容校验错误；保留这条归因，避免弱网时误切语言 ROM。
+    gameBytesFailureScope = isRomNetworkFailure(error) ? 'network' : 'content'
+    throw error
   })
   void gameBytes.catch(() => {})
   /** Ruffle 会在 load() resolve 后继续换内部节点；焦点补刷必须可取消，避免旧会话回头抢焦点。 */
@@ -688,6 +702,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     cancelCrashGuard()
     cancelCrashGuard = installRuffleCrashGuard(win, (detail) => {
       if (destroyed) return
+      runtimeFatalReported = true
       console.warn('[ruffle] 运行时发生致命异常：', detail)
       setEnginePaused(true)
       options.onError?.(fmt(rt.flashLoadFailed, { msg: detail }), 'runtime')
@@ -746,7 +761,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           当成确定性坏 ROM，立即走同款游戏的其它语言版本，而不是宣布 ready 后永久黑屏。
         */
         const compatibilityIssue = await flashCompatibilityIssue(loaded.data)
-        if (compatibilityIssue) throw new Error(compatibilityIssue.message)
+        if (compatibilityIssue) {
+          if (!destroyed) options.onError?.(compatibilityIssue.message, 'deterministic')
+          return
+        }
         const bundleBaseUrl = typeof options.game === 'string'
           ? new URL('.', new URL(options.game, location.href)).href
           : null
@@ -1028,8 +1046,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
          * 先把元数据监听挂好，再在微任务里调用 load，避免极快 SWF 抢先发事件。
          * 两条 Promise 必须由同一个 Promise.all 持有：若 load 同步失败后玩家马上离开，独立的
          * metadataReady 会在 abort 时形成无人接收的 rejection，污染全局错误上报。
-         */
+        */
         markStage('Ruffle load()', `核心预热${coreWarmMs >= 0 ? '已完成' : '未完成'}`)
+        ruffleLoadStarted = true
         await Promise.all([
           Promise.resolve().then(() => api!.load(loadOptions)).then(() => {
             // load() 回来 = 核心已下载编译、SWF 已交给 WASM；之后的等待是 SWF 自己的首帧
@@ -1109,7 +1128,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         // 销毁之后的报错不再上报：否则玩家刚拖进来的新游戏会被上一个的错误顶掉，
         // 画面消失、只剩一条红色提示，而新的模拟器其实还在后台出声
         if (destroyed) return
-        options.onError?.(fmt(rt.flashLoadFailed, { msg: err instanceof Error ? err.message : String(err) }), 'content')
+        // WASM fatal guard 和 load() 可能同时观察到同一次崩溃；前者已经通知播放器时不能
+        // 再把同一故障当作 ROM 损坏上报，否则会触发重复重试 / 备用 ROM 切换。
+        if (runtimeFatalReported) return
+        const errorScope = gameBytesFailureScope ?? (ruffleLoadStarted
+          ? isRomNetworkFailure(err) ? 'network' : 'content'
+          : 'runtime')
+        options.onError?.(fmt(rt.flashLoadFailed, { msg: err instanceof Error ? err.message : String(err) }), errorScope)
       }
     }
     doc.head.appendChild(script)

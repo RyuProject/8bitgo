@@ -22,6 +22,18 @@ assert.equal(flashCompatibilityIssueForFingerprint(4_443_526, '0'.repeat(64)), n
 
 console.log('── 普通 SWF 快速放行 ──')
 assert.equal(await flashCompatibilityIssue(new Uint8Array([0x46, 0x57, 0x53, 0x0e]).buffer), null)
+const cryptoDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'crypto')
+try {
+  Object.defineProperty(globalThis, 'crypto', {
+    configurable: true,
+    value: { subtle: { digest: async () => { throw new Error('digest unavailable') } } },
+  })
+  assert.equal(await flashCompatibilityIssue(new ArrayBuffer(4_443_526)), null,
+    '设备摘要 API 拒绝时不能把已知尺寸的 SWF 整体挡在启动外')
+} finally {
+  if (cryptoDescriptor) Object.defineProperty(globalThis, 'crypto', cryptoDescriptor)
+  else delete globalThis.crypto
+}
 
 console.log('── 森林冰火人 4 的离线 Spil SDK ──')
 const legacyRules = flashLegacyBundleRulesForFingerprint({

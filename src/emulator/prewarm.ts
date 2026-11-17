@@ -20,6 +20,7 @@ import {
 } from './paths'
 import { CHEERPJ_ORIGIN, j2meWarmTargets } from './j2meUrl'
 import { preconnectOrigin, warmHttpCache } from './httpWarm'
+import { allowsSpeculativePlayerPreload, type NetworkHint } from './preloadPolicy'
 import { ejsCachedUrls } from './ejsStartWarm'
 import { supportsRuffleWasmExtensions } from './rufflePerformance'
 import { jspiEnabled } from './jspiFlag'
@@ -65,22 +66,23 @@ interface RuffleBootstrapManifest {
   }
 }
 
-/** 流量节省模式和 2G 网络不为一次悬停预拉 14 MB；真正点击后仍由 Ruffle 正常下载。 */
+/** 弱网、较高 RTT 或省流量模式不为一次悬停预拉大核心；真正点击后仍正常下载。 */
 function allowsLargeHoverPrewarm(): boolean {
   const connection = (navigator as Navigator & {
-    connection?: { saveData?: boolean; effectiveType?: string }
+    connection?: NetworkHint
   }).connection
-  return !connection?.saveData && connection?.effectiveType !== 'slow-2g' && connection?.effectiveType !== '2g'
+  return allowsSpeculativePlayerPreload(connection)
 }
 
 export interface RuffleCoreWarm {
   /** 本局预热的核心 wasm 文件名；清单取不到时为 null */
   wasm: string | null
-  /** 核心 JS + wasm 都已进 HTTP 缓存（或失败放弃）的时刻 */
-  done: Promise<void>
+  /** 核心 JS + wasm 是否都完整进入 HTTP 缓存；false 时 Ruffle 正式请求仍会照常尝试 */
+  done: Promise<boolean>
 }
 
 let ruffleCoreWarm: { base: string; warm: Promise<RuffleCoreWarm> } | null = null
+const RUFFLE_BOOTSTRAP_TIMEOUT_MS = 8_000
 
 /**
  * 把 Ruffle 这台浏览器真会选的那一套核心（core JS + 约 3.4MB br 的 wasm）送进 HTTP 缓存。
@@ -93,10 +95,16 @@ let ruffleCoreWarm: { base: string; warm: Promise<RuffleCoreWarm> } | null = nul
  */
 export function warmRuffleCore(base = ruffleBase()): Promise<RuffleCoreWarm> {
   if (ruffleCoreWarm?.base === base) return ruffleCoreWarm.warm
-  const entry = { base, warm: Promise.resolve<RuffleCoreWarm>({ wasm: null, done: Promise.resolve() }) }
+  const entry = { base, warm: Promise.resolve<RuffleCoreWarm>({ wasm: null, done: Promise.resolve(false) }) }
   entry.warm = (async (): Promise<RuffleCoreWarm> => {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), RUFFLE_BOOTSTRAP_TIMEOUT_MS)
     try {
-      const response = await fetch(`${base}bootstrap.json`, { cache: 'force-cache', credentials: 'same-origin' })
+      const response = await fetch(`${base}bootstrap.json`, {
+        cache: 'force-cache',
+        credentials: 'same-origin',
+        signal: controller.signal,
+      })
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const manifest = await response.json() as RuffleBootstrapManifest
       const variant = supportsRuffleWasmExtensions() ? manifest.bootstrap?.modern : manifest.bootstrap?.fallback
@@ -104,12 +112,19 @@ export function warmRuffleCore(base = ruffleBase()): Promise<RuffleCoreWarm> {
       if (!Array.isArray(variant) || variant.length !== 2 || !variant.every((name) => /^[\w.-]+$/.test(name))) {
         throw new Error('bootstrap.json 格式不对')
       }
-      const done = Promise.all(variant.map((name) => warmHttpCache(`${base}${name}`))).then(() => {})
+      const done = Promise.all(variant.map((name) => warmHttpCache(`${base}${name}`))).then((results) => {
+        const succeeded = results.every(Boolean)
+        // 核心预热遇到断流时允许下一局重试；失败只影响并行优化，不影响 Ruffle 正式下载。
+        if (!succeeded && ruffleCoreWarm === entry) ruffleCoreWarm = null
+        return succeeded
+      })
       return { wasm: variant.find((name) => name.endsWith('.wasm')) ?? null, done }
     } catch {
       // 预热失败不能影响正式启动；ruffle.js 仍会走自己的兼容选择与错误处理。允许下次再试。
       if (ruffleCoreWarm === entry) ruffleCoreWarm = null
-      return { wasm: null, done: Promise.resolve() }
+      return { wasm: null, done: Promise.resolve(false) }
+    } finally {
+      clearTimeout(timer)
     }
   })()
   ruffleCoreWarm = entry

@@ -17,6 +17,7 @@ import {
 import { RUFFLE_MAX_RENDER_AREA, ruffleStageRenderPlan, ruffleStageScale, ruffleStageSize } from '../src/emulator/ruffleStageFit.ts'
 import { isRuffleFrameReady, RUFFLE_FRAME_HTML } from '../src/emulator/ruffleFrame.ts'
 import { installRuffleCrashGuard, ruffleFatalDetail } from '../src/emulator/ruffleCrash.ts'
+import { allowsSpeculativePlayerPreload } from '../src/emulator/preloadPolicy.ts'
 import { isSfsGame } from '../shared/sfs-games.js'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -357,6 +358,7 @@ console.log('── Ruffle 致命异常接管 ──')
 assert.equal(ruffleFatalDetail({ name: 'AbortError', message: 'The operation was aborted' }), null)
 assert.equal(ruffleFatalDetail(new Error('普通 ActionScript 异常')), null)
 assert.equal(ruffleFatalDetail({ name: 'RuntimeError', message: 'unreachable' }), 'unreachable')
+assert.equal(ruffleFatalDetail('RuntimeError: unreachable'), 'RuntimeError: unreachable', '浏览器只给异常文本时仍要识别 WASM trap')
 assert.equal(ruffleFatalDetail('Ruffle has panicked! panicked at renderer.rs:42'), 'Ruffle has panicked! panicked at renderer.rs:42')
 const crashListeners = new Map()
 const nativeConsoleError = () => {}
@@ -384,6 +386,17 @@ const cancelFrozenGuard = installRuffleCrashGuard(frozenConsoleWin, (detail) => 
 frozenListeners.get('error')({ error: { name: 'RuntimeError', message: 'unreachable' } })
 assert.deepEqual(frozenReports, ['unreachable'], 'console 只读时仍要靠 error 事件接住 WASM 崩溃')
 assert.doesNotThrow(cancelFrozenGuard, '加固 WebView 的只读 console 不能阻断会话销毁')
+const loggedRuntimeListeners = new Map()
+const loggedRuntimeReports = []
+const loggedRuntimeWin = {
+  console: { error: nativeConsoleError },
+  addEventListener(type, listener) { loggedRuntimeListeners.set(type, listener) },
+  removeEventListener(type, listener) { loggedRuntimeListeners.delete(type) },
+}
+const cancelLoggedRuntimeGuard = installRuffleCrashGuard(loggedRuntimeWin, (detail) => loggedRuntimeReports.push(detail))
+loggedRuntimeWin.console.error(new WebAssembly.RuntimeError('unreachable'))
+assert.deepEqual(loggedRuntimeReports, ['unreachable'], 'console.error 必须保留 RuntimeError 类型，不能漏掉只有 unreachable 文本的 WASM trap')
+cancelLoggedRuntimeGuard()
 
 console.log('── 启动链与按实测负载自适应渲染 ──')
 const adapter = read('src/emulator/adapters/ruffle.ts')
@@ -483,9 +496,17 @@ for (const variant of ['modern', 'fallback']) {
   for (const target of bootstrap.bootstrap[variant]) assert.ok(files.has(target), `${variant} 指向未发布文件`)
 }
 const prewarm = read('src/emulator/prewarm.ts')
-assert.match(prewarm, /saveData/)
+assert.match(prewarm, /allowsSpeculativePlayerPreload\(connection\)/)
 assert.match(prewarm, /supportsRuffleWasmExtensions/)
 assert.match(prewarm, /bootstrap\.json/)
+assert.equal(allowsSpeculativePlayerPreload({ saveData: true }), false, '省流量设备不做大核心悬停预热')
+assert.equal(allowsSpeculativePlayerPreload({ effectiveType: '2g' }), false, '2G 网络不做大核心悬停预热')
+assert.equal(allowsSpeculativePlayerPreload({ downlink: 1.5 }), false, '低吞吐网络不做大核心悬停预热')
+assert.equal(allowsSpeculativePlayerPreload({ rtt: 450 }), false, '高 RTT 网络不做大核心悬停预热')
+assert.equal(allowsSpeculativePlayerPreload({ effectiveType: '4g', downlink: 12, rtt: 40 }), true)
+assert.match(adapter, /gameBytesFailureScope = isRomNetworkFailure\(error\) \? 'network' : 'content'/,
+  'SWF 网络失败必须只切同语言备用线路，不能误判为 ROM 内容损坏')
+assert.match(adapter, /if \(runtimeFatalReported\) return/, '运行时崩溃与 load 拒绝同时到达时只能上报一次')
 assert.equal(isSfsGame('sas3'), true)
 assert.equal(isSfsGame('infectonator-2'), false)
 
