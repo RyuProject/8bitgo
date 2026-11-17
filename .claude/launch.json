@@ -61,6 +61,22 @@
         "8799"
       ],
       "port": 8799
+    },
+    {
+      "name": "vite-web-prodroutes",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "BACKEND_URL=https://8bitgo.com",
+        "VITE_ROM_BASE_URL=https://download.8bitgo.com",
+        "VITE_ROM_MIRROR_URL=https://cn-assets.8bitgo.com",
+        "VITE_ROM_DOWNLOAD_URL=https://rom.8bitgo.com",
+        "npx",
+        "vite",
+        "--port",
+        "5182",
+        "--strictPort"
+      ],
+      "port": 5182
     }
   ]
 }

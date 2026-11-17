@@ -25,6 +25,7 @@ import { html5EntryProblem, isHtml5EntryUrl, normalizeHtml5Entry } from '@/emula
 import { builtinWebGameFor } from '../../shared/builtin-web-games.js'
 import { chooseFasterRomRoute, chooseRomHost, ROM_ROUTE_RACE_MIN_BYTES, type RomHost } from './romRoute'
 import { alternateRomUrls, downloadRomUrl } from './romHosts'
+import { rankRomRoutes, recordRomRouteFailure, recordRomRouteSuccess, romRouteOrigin } from './romRouteHealth'
 import { diagLog } from './startupDiagnostics'
 import { coverCdnHint, type CoverCdnHint } from './cnHost'
 import { reportCoverCdnFailure, selectedCoverCdn, startCoverCdnProbe, subscribeCoverCdn } from './coverCdn'
@@ -991,6 +992,100 @@ async function probeOnce(
   }
 }
 
+/** 一条线路这次的答复写进线路记分板：答上来算成功，网络层失败 / 超时 / 5xx 算线路故障 */
+function noteProbeRoute(route: string, outcome: ProbeOutcome, signal?: AbortSignal): void {
+  if (outcome.url || outcome.reason === 'html' || (outcome.reason === 'http' && outcome.certain)) {
+    recordRomRouteSuccess(route)
+  } else if (outcome.reason === 'timeout') {
+    recordRomRouteFailure(route, 'timeout')
+  } else if (outcome.reason === 'network' && !signal?.aborted) {
+    recordRomRouteFailure(route, 'network')
+  } else if (outcome.reason === 'http' && ((outcome.status ?? 0) >= 500 || outcome.status === 429)) {
+    recordRomRouteFailure(route, 'server')
+  }
+}
+
+/** 第一条线路这么久还没答复，就同时问下一条（毫秒） */
+export const ROM_PROBE_HEDGE_MS = 1000
+
+/**
+ * 几条线路问同一个对象在不在：按记分板排好的顺序先问第一条，ROM_PROBE_HEDGE_MS 内没答复、
+ * 或答复不算数（超时 / 断网 / 5xx），立即追问下一条；谁先答「在」用谁，其余立刻中止。
+ *
+ * 为什么（2026-11-18《西游释厄传》浏览器实测）：rom.8bitgo.com 的 HEAD 等满 4 秒超时，才轮到
+ * download.8bitgo.com，后者 0.17 秒就回了。逐条串行时最坏要 3 × 4 秒；现在约 1 秒 + 最快那条。
+ *
+ * 结论的分量不对称：
+ *   - 调用方给的原地址答「没有」（404 等）就是最终结论，和以前一样；
+ *   - 备用线路答「没有」先记着，等其余线路都答完、谁也没答「在」才用它。几条线路读同一个 R2 桶，
+ *     本来不该有分歧；但万一某条线路的 Worker 配置落后，一条线路的 404 不能抢在原地址的答复前面定案。
+ */
+async function hedgedProbe(
+  url: string,
+  alternates: readonly string[],
+  timeoutMs: number,
+  allowHtml: boolean,
+  signal?: AbortSignal,
+): Promise<{ outcome: ProbeOutcome; route: string }> {
+  const routes = rankRomRoutes([url, ...alternates])
+  if (routes[0] !== url) {
+    diagLog('download', 'info', `ROM 存在性检查：${romRouteOrigin(url)} 近期不稳定，先问 ${romRouteOrigin(routes[0])}`)
+  }
+  return new Promise((resolve) => {
+    const controllers: AbortController[] = []
+    const results: Array<ProbeOutcome | undefined> = []
+    let launched = 0
+    let settled = false
+    let hedgeTimer = 0
+    const finish = (outcome: ProbeOutcome, route: string) => {
+      if (settled) return
+      settled = true
+      window.clearTimeout(hedgeTimer)
+      signal?.removeEventListener('abort', onAbort)
+      for (const controller of controllers) controller.abort()
+      resolve({ outcome, route })
+    }
+    function onAbort() {
+      finish({ url: '', certain: false, reason: 'aborted' }, url)
+    }
+    const settleIfDone = () => {
+      if (settled || launched < routes.length || results.filter(Boolean).length < routes.length) return
+      const primaryIndex = routes.indexOf(url)
+      const primary = results[primaryIndex]!
+      if (primary.certain) return finish(primary, url)
+      const certainIndex = results.findIndex((outcome) => outcome?.certain)
+      if (certainIndex >= 0) return finish(results[certainIndex]!, routes[certainIndex])
+      finish(primary, url)
+    }
+    const launch = () => {
+      if (settled || launched >= routes.length) return
+      const index = launched++
+      const route = routes[index]
+      const controller = new AbortController()
+      controllers.push(controller)
+      window.clearTimeout(hedgeTimer)
+      if (launched < routes.length) hedgeTimer = window.setTimeout(launch, ROM_PROBE_HEDGE_MS)
+      void probeOnce(route, timeoutMs, allowHtml, controller.signal).then((outcome) => {
+        // 被我们自己中止的输家（别的线路已经答了）不算这条线路的错，也不再参与结论
+        if (settled) return
+        noteProbeRoute(route, outcome, controller.signal)
+        results[index] = outcome
+        if (outcome.url) {
+          if (route !== url) diagLog('download', 'info', `ROM 存在性检查：${romRouteOrigin(route)} 先答复，改用它`)
+          return finish(outcome, route)
+        }
+        if (outcome.certain && route === url) return finish(outcome, route)
+        // 这条答不上来（或备用线路说没有）：不等对冲延时，立即问下一条
+        launch()
+        settleIfDone()
+      })
+    }
+    if (signal?.aborted) return onAbort()
+    signal?.addEventListener('abort', onAbort, { once: true })
+    launch()
+  })
+}
+
 export interface ProbeRomOptions {
   /** 页面离开时终止真实网络请求，而不是只丢弃 setState。 */
   signal?: AbortSignal
@@ -1049,15 +1144,14 @@ export function probeRom(
     let viaAlternate = false
     const probeCandidates = async (): Promise<ProbeOutcome> => {
       viaAlternate = false
-      let outcome = await probeOnce(url, timeoutMs, allowHtml, options.signal)
-      if (outcome.url || outcome.certain || outcome.reason === 'aborted') return outcome
-      for (const alternate of alternateRomUrls(url)) {
-        outcome = await probeOnce(alternate, timeoutMs, allowHtml, options.signal)
-        if (outcome.url || outcome.certain || outcome.reason === 'aborted') {
-          viaAlternate = true
-          return outcome
-        }
+      const alternates = alternateRomUrls(url)
+      if (!alternates.length) {
+        const outcome = await probeOnce(url, timeoutMs, allowHtml, options.signal)
+        noteProbeRoute(url, outcome, options.signal)
+        return outcome
       }
+      const { outcome, route } = await hedgedProbe(url, alternates, timeoutMs, allowHtml, options.signal)
+      viaAlternate = route !== url
       return outcome
     }
     let outcome = await probeCandidates()

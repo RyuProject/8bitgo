@@ -1,0 +1,386 @@
+/**
+ * ROM 多线路：线路记分板 / 存在性检查对冲 / 分片按线路分配 + 慢片对冲 + 失败换线 / BIOS 可读线路。
+ *
+ *   npm run test:rom-route-health
+ *
+ * 2026-11-18《西游释厄传》浏览器实测：rom.8bitgo.com 的 HEAD 等满 4 秒超时才轮到 download.8bitgo.com（0.17 秒）；
+ * 首段测速把握手和首字节算进吞吐，256KB 样本不到 3Mbps，三个 8MB 分片被压成串行下了 20 秒。
+ * 这里锁住修法：几条线路读同一个 R2 对象（带同一个 romv），谁快用谁、谁坏绕开谁，但绝不把不同版本的字节拼在一起。
+ */
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+
+globalThis.__viteEnv = {
+  VITE_ROM_BASE_URL: 'https://download.example.com',
+  VITE_ROM_MIRROR_URL: 'https://cn-assets.example.com',
+  VITE_ROM_DOWNLOAD_URL: 'https://rom.example.com',
+}
+globalThis.window = { setTimeout: setTimeout.bind(globalThis), clearTimeout: clearTimeout.bind(globalThis) }
+
+const health = await import('../src/services/romRouteHealth.ts')
+const { fetchBlobWithProgress, sameObjectRoutes } = await import('../src/emulator/loadProgress.ts')
+const { probeRom, clearRomProbeCache, ROM_PROBE_HEDGE_MS } = await import('../src/services/roms.ts')
+const { reachableRomAssetUrl } = await import('../src/services/romHosts.ts')
+const { chooseRomHost } = await import('../src/services/romRoute.ts')
+
+let failed = 0
+const check = async (name, fn) => {
+  health.resetRomRouteHealth()
+  try {
+    await fn()
+    console.log(`  ✅ ${name}`)
+  } catch (e) {
+    failed++
+    console.error(`  ❌ ${name}\n     ${e.stack ?? e.message}`)
+  }
+}
+
+const abortError = () => new DOMException('已取消', 'AbortError')
+const headers = (map) => ({ get: (k) => map[k.toLowerCase()] ?? null })
+const byteAt = (i) => i % 251
+const bodyFor = (start, end) => {
+  const out = new Uint8Array(end - start + 1)
+  for (let i = 0; i < out.length; i++) out[i] = byteAt(start + i)
+  return out
+}
+const delay = (ms, signal) => new Promise((resolve, reject) => {
+  const timer = setTimeout(resolve, ms)
+  signal?.addEventListener('abort', () => { clearTimeout(timer); reject(abortError()) }, { once: true })
+})
+/** 一直不回响应头，直到被中止 */
+const hang = (signal) => new Promise((_, reject) => {
+  if (signal?.aborted) return reject(abortError())
+  signal?.addEventListener('abort', () => reject(abortError()), { once: true })
+})
+/** 一个 206 回应；pieceDelay > 0 时正文分 4 段慢慢给，且能被中止 */
+function rangeResponse(size, range, { pieceDelay = 0, signal } = {}) {
+  const m = /bytes=(\d+)-(\d+)/.exec(range)
+  const start = Number(m[1])
+  const end = Math.min(Number(m[2]), size - 1)
+  const bytes = bodyFor(start, end)
+  const step = Math.ceil(bytes.length / 4)
+  let at = 0
+  const body = new ReadableStream({
+    async pull(controller) {
+      if (pieceDelay) await delay(pieceDelay, signal)
+      if (signal?.aborted) throw abortError()
+      if (at >= bytes.length) return controller.close()
+      controller.enqueue(bytes.subarray(at, at + step))
+      at += step
+    },
+  })
+  return {
+    ok: true,
+    status: 206,
+    headers: headers({ 'content-range': `bytes ${start}-${end}/${size}`, 'content-length': String(end - start + 1) }),
+    body,
+  }
+}
+const readAll = async (blob) => new Uint8Array(await blob.arrayBuffer())
+const expectExact = (bytes, size) => {
+  assert.equal(bytes.length, size, '总长度')
+  for (let i = 0; i < size; i++) if (bytes[i] !== byteAt(i)) assert.fail(`第 ${i} 字节错位`)
+}
+const hostOf = (url) => new URL(url).host
+
+console.log('\n一、线路记分板')
+
+await check('没有记录时保持调用方的原顺序', async () => {
+  const A = 'https://a.test/r.zip?romv=1'
+  const B = 'https://b.test/r.zip?romv=1'
+  const C = 'https://c.test/r.zip?romv=1'
+  assert.deepEqual(health.rankRomRoutes([A, B, C]), [A, B, C])
+})
+
+await check('一次故障排到后面，连续两次熔断，任何一次成功立即恢复', async () => {
+  const A = 'https://a.test/r.zip'
+  const B = 'https://b.test/r.zip'
+  health.recordRomRouteFailure(A, 'network')
+  assert.equal(health.isRomRouteOpen(A), false)
+  assert.deepEqual(health.rankRomRoutes([A, B]), [B, A])
+  health.recordRomRouteFailure(A, 'timeout')
+  assert.equal(health.isRomRouteOpen(A), true, '连续两次故障熔断')
+  assert.deepEqual(health.rankRomRoutes([A, B]), [B, A])
+  health.recordRomRouteTransfer(A, 1 << 20, 100)
+  assert.equal(health.isRomRouteOpen(A), false, '成功一次就恢复')
+})
+
+await check('熔断只是排到最后，不从候选里删掉', async () => {
+  const A = 'https://a.test/r.zip'
+  const B = 'https://b.test/r.zip'
+  for (const url of [A, B]) {
+    health.recordRomRouteFailure(url, 'network')
+    health.recordRomRouteFailure(url, 'network')
+  }
+  assert.deepEqual(health.rankRomRoutes([A, B]), [A, B], '全部熔断时仍按原顺序全部给出')
+})
+
+await check('真实吞吐快 15% 以上才越过排在前面的线路', async () => {
+  const A = 'https://a.test/r.zip'
+  const B = 'https://b.test/r.zip'
+  health.recordRomRouteTransfer(A, 1_000_000, 1000)
+  health.recordRomRouteTransfer(B, 1_100_000, 1000)
+  assert.deepEqual(health.rankRomRoutes([A, B]), [A, B], '只快 10%：不换')
+  health.resetRomRouteHealth()
+  health.recordRomRouteTransfer(A, 1_000_000, 1000)
+  health.recordRomRouteTransfer(B, 4_000_000, 1000)
+  assert.deepEqual(health.rankRomRoutes([A, B]), [B, A])
+})
+
+await check('太小的样本和过期的吞吐都不算数', async () => {
+  const A = 'https://a.test/r.zip'
+  health.recordRomRouteTransfer(A, 1000, 50)
+  assert.equal(health.romRouteRate(A), undefined, '1KB 主要是调度抖动')
+  const now = Date.now()
+  health.recordRomRouteTransfer(A, 1 << 20, 100, now - health.ROUTE_RATE_TTL_MS - 1000)
+  assert.equal(health.romRouteRate(A, now), undefined, '半小时前的吞吐不再可信')
+  health.recordRomRouteTransfer(A, 1 << 20, 100, now)
+  assert.ok(health.romRouteRate(A, now) > 10_000)
+})
+
+console.log('\n二、哪些线路可以混着取分片')
+
+await check('只有路径与查询串（含 romv）完全相同的线路才进分片池', async () => {
+  const A = 'https://a.test/roms/arcade/x.zip?romv=etag1'
+  assert.deepEqual(sameObjectRoutes(A, [
+    'https://b.test/roms/arcade/x.zip?romv=etag1',
+    'https://c.test/roms/arcade/x.zip?romv=etag2',
+    'https://d.test/roms/arcade/y.zip?romv=etag1',
+    'https://a.test/roms/arcade/x.zip?romv=etag1',
+  ]), [A, 'https://b.test/roms/arcade/x.zip?romv=etag1'])
+  assert.deepEqual(sameObjectRoutes('https://a.test/x.zip', ['https://b.test/x.zip']), ['https://a.test/x.zip'], '不带 romv 绝不混片')
+})
+
+console.log('\n三、分片下载')
+
+const SIZE = 4 * 65536
+const CHUNK = 65536
+
+await check('响应头迟迟不来：另一条线路同时请求，先回的赢，内容逐字节正确', async () => {
+  const urls = []
+  const fetchImpl = async (url, init) => {
+    urls.push(String(url))
+    if (hostOf(url) === 'a.test') return hang(init.signal)
+    return rangeResponse(SIZE, init.headers.Range, { signal: init.signal })
+  }
+  const started = Date.now()
+  const blob = await fetchBlobWithProgress('https://a.test/x.zip?romv=1', {
+    fetchImpl, chunkBytes: CHUNK, routeHealth: true, routeHedgeMs: 30, maxConcurrency: 2,
+    alternateUrls: ['https://b.test/x.zip?romv=1'], networkHints: {},
+  })
+  expectExact(await readAll(blob), SIZE)
+  assert.ok(Date.now() - started < 3000, '不能等满看门狗')
+  assert.ok(urls.some((url) => hostOf(url) === 'b.test'))
+  assert.ok(health.romRouteRate('https://a.test/') === undefined)
+})
+
+await check('一片在一条线路上断了：换另一条重下这一片，不整局失败', async () => {
+  const urls = []
+  const fetchImpl = async (url, init) => {
+    urls.push(`${hostOf(url)} ${init.headers.Range}`)
+    if (hostOf(url) === 'a.test' && init.headers.Range.startsWith(`bytes=${CHUNK}-`)) throw new TypeError('Failed to fetch')
+    return rangeResponse(SIZE, init.headers.Range, { signal: init.signal })
+  }
+  const blob = await fetchBlobWithProgress('https://a.test/x.zip?romv=1', {
+    fetchImpl, chunkBytes: CHUNK, routeHealth: true, routeHedgeMs: 5000, maxConcurrency: 1, retries: 2,
+    alternateUrls: ['https://b.test/x.zip?romv=1'], networkHints: {},
+  })
+  expectExact(await readAll(blob), SIZE)
+  assert.ok(urls.includes(`b.test bytes=${CHUNK}-${2 * CHUNK - 1}`), `第二片应在 b.test 上重下：${urls.join(', ')}`)
+})
+
+await check('尾部对冲：一条线路上的片下得特别慢，空出来的一路去另一条线路重下，先完的落盘', async () => {
+  const requests = []
+  const fetchImpl = async (url, init) => {
+    const range = init.headers.Range
+    requests.push(`${hostOf(url)} ${range}`)
+    // a.test 首片正常，之后的片正文每段要等 300ms（整片 1.2 秒）
+    const slow = hostOf(url) === 'a.test' && !range.startsWith('bytes=0-')
+    return rangeResponse(SIZE, range, { pieceDelay: slow ? 300 : 0, signal: init.signal })
+  }
+  const started = Date.now()
+  const blob = await fetchBlobWithProgress('https://a.test/x.zip?romv=1', {
+    fetchImpl, chunkBytes: CHUNK, routeHealth: true, routeHedgeMs: 40, maxConcurrency: 2,
+    alternateUrls: ['https://b.test/x.zip?romv=1'], networkHints: { downlinkMbps: 100 },
+  })
+  expectExact(await readAll(blob), SIZE)
+  const elapsed = Date.now() - started
+  const slowOnA = requests.filter((r) => r.startsWith('a.test') && !r.includes('bytes=0-')).map((r) => r.split(' ')[1])
+  assert.ok(slowOnA.length > 0, `测试前提：至少有一片分给了 a.test（${requests.join(', ')}）`)
+  for (const range of slowOnA) assert.ok(requests.includes(`b.test ${range}`), `a.test 上的慢片 ${range} 应在 b.test 上对冲`)
+  assert.ok(elapsed < 1000, `对冲后不必等满慢片的 1.2 秒（实际 ${elapsed}ms）`)
+})
+
+await check('不带 romv 的地址：不跨线路取分片、也不对冲', async () => {
+  const urls = []
+  const fetchImpl = async (url, init) => {
+    urls.push(String(url))
+    if (hostOf(url) === 'a.test') await delay(80, init.signal)
+    return rangeResponse(SIZE, init.headers.Range, { signal: init.signal })
+  }
+  const blob = await fetchBlobWithProgress('https://a.test/x.zip', {
+    fetchImpl, chunkBytes: CHUNK, routeHealth: true, routeHedgeMs: 10, maxConcurrency: 2,
+    alternateUrls: ['https://b.test/x.zip'], networkHints: {},
+  })
+  expectExact(await readAll(blob), SIZE)
+  assert.ok(urls.every((url) => hostOf(url) === 'a.test'), urls.join(', '))
+})
+
+await check('省流量模式：不为同一段字节同时问两条线路', async () => {
+  const urls = []
+  const fetchImpl = async (url, init) => {
+    urls.push(String(url))
+    if (hostOf(url) === 'a.test') await delay(80, init.signal)
+    return rangeResponse(SIZE, init.headers.Range, { signal: init.signal })
+  }
+  const blob = await fetchBlobWithProgress('https://a.test/x.zip?romv=1', {
+    fetchImpl, chunkBytes: CHUNK, routeHealth: true, routeHedgeMs: 10, maxConcurrency: 1,
+    alternateUrls: ['https://b.test/x.zip?romv=1'], networkHints: { saveData: true },
+  })
+  expectExact(await readAll(blob), SIZE)
+  const ranges = urls.length
+  assert.equal(ranges, SIZE / CHUNK, `每片只请求一次（${urls.join(', ')}）`)
+})
+
+await check('记分板认定原线路熔断：开局就改走另一条', async () => {
+  health.recordRomRouteFailure('https://a.test/', 'network')
+  health.recordRomRouteFailure('https://a.test/', 'network')
+  const urls = []
+  const fetchImpl = async (url, init) => {
+    urls.push(String(url))
+    return rangeResponse(SIZE, init.headers.Range, { signal: init.signal })
+  }
+  const blob = await fetchBlobWithProgress('https://a.test/x.zip', {
+    fetchImpl, chunkBytes: CHUNK, routeHealth: true, maxConcurrency: 1,
+    alternateUrls: ['https://b.test/x.zip'], networkHints: {},
+  })
+  expectExact(await readAll(blob), SIZE)
+  assert.equal(hostOf(urls[0]), 'b.test')
+})
+
+await check('首段吞吐从响应头算起，握手和首字节不压低并发', async () => {
+  const src = readFileSync(new URL('../src/emulator/loadProgress.ts', import.meta.url), 'utf8')
+  assert.match(src, /const sampleStartedAt = answer\.headersAt/)
+  assert.match(src, /startedAt = monotonicNow\(\)\n      validateResponse\(res, opts\.check\)/, '备用线路采样同一口径')
+})
+
+console.log('\n四、ROM 存在性检查（HEAD）')
+
+const ROM = 'https://rom.example.com/roms/nes/x.nes'
+const headOk = (etag) => ({ ok: true, status: 200, headers: headers({ etag, 'content-length': '1024', 'content-type': 'application/octet-stream' }) })
+
+await check('第一条线路不答复：约 1 秒后同时问下一条，先答「在」的赢，输家被中止', async () => {
+  clearRomProbeCache()
+  let romAborted = false
+  globalThis.fetch = async (url, init) => {
+    if (hostOf(url) === 'rom.example.com') {
+      init.signal.addEventListener('abort', () => { romAborted = true }, { once: true })
+      return hang(init.signal)
+    }
+    return headOk('"e1"')
+  }
+  const started = Date.now()
+  const outcome = await probeRom(ROM, 4000, false, { retry: false })
+  const elapsed = Date.now() - started
+  assert.equal(outcome.url, 'https://download.example.com/roms/nes/x.nes?romv=e1')
+  assert.ok(elapsed >= ROM_PROBE_HEDGE_MS - 50 && elapsed < ROM_PROBE_HEDGE_MS + 1500, `不必等满 4 秒（实际 ${elapsed}ms）`)
+  assert.ok(romAborted, '赢家出现后输家立刻中止')
+})
+
+await check('原地址答「没有」就是最终结论，不再问别的线路', async () => {
+  clearRomProbeCache()
+  const asked = []
+  globalThis.fetch = async (url) => {
+    asked.push(hostOf(url))
+    return { ok: false, status: 404, headers: headers({}) }
+  }
+  const outcome = await probeRom(ROM, 4000, false, { retry: false })
+  assert.equal(outcome.url, '')
+  assert.equal(outcome.certain, true)
+  assert.deepEqual(asked, ['rom.example.com'])
+})
+
+await check('备用线路答「没有」不抢先定案：继续问其余线路', async () => {
+  clearRomProbeCache()
+  globalThis.fetch = async (url, init) => {
+    const host = hostOf(url)
+    if (host === 'rom.example.com') return hang(init.signal)
+    if (host === 'download.example.com') return { ok: false, status: 404, headers: headers({}) }
+    return headOk('"e2"')
+  }
+  const outcome = await probeRom(ROM, 1500, false, { retry: false })
+  assert.equal(outcome.url, 'https://cn-assets.example.com/roms/nes/x.nes?romv=e2')
+})
+
+await check('超时过一次的线路排到后面：下一次检查先问别的线路', async () => {
+  const asked = []
+  globalThis.fetch = async (url, init) => {
+    asked.push(hostOf(url))
+    if (hostOf(url) === 'rom.example.com') return hang(init.signal)
+    return headOk('"e3"')
+  }
+  clearRomProbeCache()
+  await probeRom(ROM, 300, false, { retry: false })
+  assert.equal(health.rankRomRoutes([ROM, 'https://download.example.com/roms/nes/x.nes'])[0], 'https://download.example.com/roms/nes/x.nes')
+  clearRomProbeCache()
+  asked.length = 0
+  const started = Date.now()
+  const outcome = await probeRom(ROM, 4000, false, { retry: false })
+  assert.equal(asked[0], 'download.example.com')
+  assert.ok(outcome.url.startsWith('https://download.example.com/'))
+  assert.ok(Date.now() - started < 500, '不再先撞熔断中的线路')
+})
+
+console.log('\n五、BIOS / 线路选择也读记分板')
+
+await check('BIOS：第一条线路不答复时 600ms 后同时问下一条', async () => {
+  globalThis.fetch = async (url, init) => {
+    if (hostOf(url) === 'download.example.com') return hang(init.signal)
+    return { ok: true, status: 206, headers: headers({}), body: null }
+  }
+  const started = Date.now()
+  const url = await reachableRomAssetUrl('https://download.example.com/roms/bios/neogeo.zip')
+  assert.equal(hostOf(url), 'rom.example.com')
+  assert.ok(Date.now() - started < 1500)
+})
+
+await check('BIOS：排第一的线路刚有真实下载就直接用，不发探测', async () => {
+  let calls = 0
+  globalThis.fetch = async () => { calls++; throw new Error('不该探测') }
+  health.recordRomRouteTransfer('https://download.example.com/', 8 << 20, 1000)
+  const url = await reachableRomAssetUrl('https://download.example.com/roms/bios/pgm.zip')
+  assert.equal(hostOf(url), 'download.example.com')
+  assert.equal(calls, 0)
+})
+
+await check('主域 / 镜像：记分板有结论时不跑 64KB 小探针', async () => {
+  let calls = 0
+  const counting = async () => { calls++; throw new Error('不该探测') }
+  health.recordRomRouteFailure('https://cn-assets.example.com/', 'network')
+  health.recordRomRouteFailure('https://cn-assets.example.com/', 'network')
+  const opts = { fetchImpl: counting, cacheResults: true, storage: null }
+  assert.equal(await chooseRomHost('https://download.example.com', 'https://cn-assets.example.com', { ...opts, prefer: 'mirror' }), 'primary', '镜像熔断：大陆访客也走主域')
+  health.resetRomRouteHealth()
+  health.recordRomRouteTransfer('https://download.example.com/', 1 << 20, 1000)
+  health.recordRomRouteTransfer('https://cn-assets.example.com/', 8 << 20, 1000)
+  assert.equal(await chooseRomHost('https://download.example.com', 'https://cn-assets.example.com', opts), 'mirror', '镜像真实吞吐快得多')
+  assert.equal(calls, 0)
+})
+
+await check('光盘候选（PSP / Dolphin / PS2）都按记分板排序', async () => {
+  for (const file of ['ppsspp', 'dolphin']) {
+    const src = readFileSync(new URL(`../src/emulator/adapters/${file}.ts`, import.meta.url), 'utf8')
+    // 这两处的多线路逐条探测上线后，候选必须经过记分板排序
+    if (/alternateRomUrls\(game\)/.test(src)) {
+      assert.match(src, /const candidates = rankRomRoutes\(\[game, \.\.\.alternateRomUrls\(game\)\]\)/, file)
+    }
+  }
+  const play = readFileSync(new URL('../src/emulator/adapters/play.ts', import.meta.url), 'utf8')
+  assert.match(play, /rankRomRoutes\(\[options\.game, \.\.\.alternateRomUrls\(options\.game\)\]\)/)
+})
+
+if (failed) {
+  console.error(`\n${failed} 项失败`)
+  process.exit(1)
+}
+console.log('\n全部通过 ✅')
