@@ -5,6 +5,8 @@
  * 测速读取每个来源开头的一小段并立即取消响应；默认只有大文件才测，调用方可用 minBytes 放开（见 roms.ts）。
  */
 
+import { isRomRouteOpen, romRouteRate } from './romRouteHealth'
+
 // 128 KiB 已足够把 DNS/TLS/TTFB 和明显带宽差拉开；旧值 256 KiB 会让“检查版本”
 // 在移动网下额外等更久、还为两个源各付一份流量。真正下载开始后仍会用 8 MiB 实测自适应并发。
 export const ROM_ROUTE_SAMPLE_BYTES = 128 * 1024
@@ -328,6 +330,18 @@ async function raceHosts(primaryBase: string, mirrorBase: string, prefer: RomHos
   }
 }
 
+/** 记分板能给出结论就返回它：一边熔断走另一边；两边都有新近吞吐，另一边要快 15% 才换。否则 null */
+function hostFromRouteHealth(primaryBase: string, mirrorBase: string, prefer: RomHost): RomHost | null {
+  const other: RomHost = prefer === 'primary' ? 'mirror' : 'primary'
+  const base = (host: RomHost) => (host === 'primary' ? primaryBase : mirrorBase)
+  const preferOpen = isRomRouteOpen(base(prefer))
+  if (preferOpen !== isRomRouteOpen(base(other))) return preferOpen ? other : prefer
+  const preferRate = romRouteRate(base(prefer))
+  const otherRate = romRouteRate(base(other))
+  if (!preferRate || !otherRate) return null
+  return otherRate > preferRate * FASTER_MARGIN ? other : prefer
+}
+
 /**
  * 这次开局走主域还是加速镜像。同一对域名同时只测一次，探针结论缓存 30 分钟；
  * 调用方被取消时不影响别人在等的同一轮测速（两次 64KB，很便宜）。
@@ -338,6 +352,14 @@ export async function chooseRomHost(primaryBase: string, mirrorBase: string, opt
   const cacheResults = options.cacheResults ?? !options.fetchImpl
   const storage = cacheResults ? (options.storage === undefined ? browserStorage() : options.storage) : null
   const pair = `${routeId(primaryBase)}|${routeId(mirrorBase)}`
+  /*
+    线路记分板（romRouteHealth.ts）里有真实下载的吞吐、或某一边正在熔断时，以它为准，不跑 64KB 小探针：
+    探针量的是延迟、量不出吞吐（见下面大陆访客那段），只配当冷启动时的先验。
+  */
+  if (cacheResults) {
+    const observed = hostFromRouteHealth(primaryBase, mirrorBase, prefer)
+    if (observed) return observed
+  }
   /*
     大陆访客（边缘判定的 prefer=mirror）不跑小探针，默认走镜像（2026-11-14）。
     64KB 探针量的是延迟：Cloudflare 往大陆的首包常常比 EdgeOne 快，探针就判主域赢，可真实吞吐

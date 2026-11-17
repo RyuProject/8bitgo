@@ -14,6 +14,16 @@
 import { diagLog } from '@/services/startupDiagnostics'
 import { memoryRomBlob, memoryRomOf } from '@/services/memoryRom'
 import { rememberRomHostForUrl } from '@/services/romHosts'
+import {
+  isRomRouteOpen,
+  rankRomRoutes,
+  recordRomRouteFailure,
+  recordRomRouteTransfer,
+  romRouteHealthSummary,
+  romRouteOrigin,
+  romRouteRate,
+  ROUTE_MIN_SAMPLE_BYTES,
+} from '@/services/romRouteHealth'
 import type { PlatformId } from '@/types'
 import type { LoadPhase, LoadProgress, RuntimeId } from './types'
 import {
@@ -105,18 +115,33 @@ const ALTERNATE_ROUTE_SAMPLE_TIMEOUT_MS = 1_500
 const SLOW_ROUTE_MIN_FILE_BYTES = 512 * 1024
 /** 和自适应并发的弱网档位保持一致；2G / 省流量设备不触发额外线路请求。 */
 const SLOW_ROUTE_MIN_MBPS = 3
+/**
+ * 一个分片请求这么久还没回响应头，就在另一条线路上同时请求同一个 Range，谁的响应头先到用谁。
+ * 2026-11-18《西游释厄传》浏览器实测：rom.8bitgo.com 建连卡了 11.4 秒，同一时刻 download.8bitgo.com 0.17 秒。
+ * 实际延时取「这个值、6×RTT 提示、3×本次已见响应头耗时」中最大的，高 RTT 网络上不会每片都白发一份。
+ */
+const ROUTE_HEADERS_HEDGE_MS = 2_500
+/** 尾部对冲：空出来的一路每隔这么久看一眼还在下的片 */
+const TAIL_HEDGE_POLL_MS = 400
+/** 预计还要这么久以上才下完的片才值得在另一条线路上重下 */
+const TAIL_HEDGE_MIN_REMAINING_MS = 2_000
+/** 比已知最快线路慢这么多的线路，不再分新片给它（对冲和失败换线仍可用它兜底） */
+const SLOW_ROUTE_SHARE = 0.4
 
 class SlowRomRouteError extends Error {
   readonly sampledMbps: number
   readonly elapsedMs: number
   readonly alternateMbps: number
+  /** 实测更快的那条线路；外层整局换到它 */
+  readonly route: string
 
-  constructor(sampledMbps: number, elapsedMs: number, alternateMbps: number) {
+  constructor(sampledMbps: number, elapsedMs: number, alternateMbps: number, route = '') {
     super(`首段吞吐 ${sampledMbps.toFixed(1)} Mbps，备用线路 ${alternateMbps.toFixed(1)} Mbps`)
     this.name = 'SlowRomRouteError'
     this.sampledMbps = sampledMbps
     this.elapsedMs = elapsedMs
     this.alternateMbps = alternateMbps
+    this.route = route
   }
 }
 
@@ -126,7 +151,14 @@ interface StallGuard {
   touch(): void
   /** 这次中止是「卡死」引起的吗（用来把 AbortError 换成玩家看得懂的话） */
   stalled(): boolean
+  /** 只停计时、摘掉父 signal 的监听；成功返回时用，不打断任何请求 */
   stop(): void
+  /**
+   * 失败收尾用：中止这只看门狗名下仍在跑的请求（首片测速后抢先发出的后续分片等）。
+   * 只调 stop() 的话，这些请求既不会再被卡死计时掐掉，也收不到调用方的 abort（父监听已摘），
+   * 首片永久失败后还会在后台把几片 8MB 下完。不算「卡死」，stalled() 仍是 false。
+   */
+  abort(): void
 }
 
 /**
@@ -166,6 +198,10 @@ function createStallGuard(parent: AbortSignal | undefined, stallMs: number): Sta
     stop: () => {
       clear()
       parent?.removeEventListener('abort', abortFromParent)
+    },
+    abort: () => {
+      clear()
+      controller.abort()
     },
   }
 }
@@ -369,6 +405,44 @@ export interface BlobFetchOptions {
   maxConcurrency?: number
   /** 注入浏览器网络提示，只给纯函数回归与不实现 Network Information API 的测试环境使用。 */
   networkHints?: ChunkNetworkHints
+  /**
+   * 线路记分板（services/romRouteHealth.ts）：记下每条线路的真实吞吐与故障，开局按它选线路；
+   * 带 romv 的同一对象还会按它把分片分到几条线路上、慢片换线路对冲、失败片换线路重试。
+   * 默认开；注入 fetchImpl 的测试默认关，免得假域名写进记分板、打乱测试固定的请求顺序。
+   */
+  routeHealth?: boolean
+  /** 覆盖「响应头多久没到就去另一条线路」，同时缩短尾部对冲的判定门槛；只给测试用 */
+  routeHedgeMs?: number
+}
+
+/** 外层交给每一轮下载的线路池（当前线路 + 尚未放弃的备用线路），不对外暴露 */
+type GuardedFetchOptions = BlobFetchOptions & { routePool?: readonly string[] }
+
+/**
+ * 同一对象的几种线路写法里，哪些可以**混着取分片**：路径和查询串（含 romv）完全一样、只差域名。
+ * romv 是对象 ETag，Worker 对版本不符的请求回 412，所以带 romv 的几条线路给出的字节必然一致；
+ * 不带 romv 的地址绝不混片（R2 原地换包时会把两代 ROM 拼在一起），只做整局换线路。
+ */
+export function sameObjectRoutes(url: string, candidates: readonly string[]): string[] {
+  const identity = (value: string) => {
+    try {
+      const parsed = new URL(value)
+      return parsed.searchParams.get('romv') ? `${parsed.pathname}${parsed.search}` : ''
+    } catch {
+      return ''
+    }
+  }
+  const self = identity(url)
+  if (!self) return [url]
+  const seen = new Set([romRouteOrigin(url)])
+  const pool = [url]
+  for (const candidate of candidates) {
+    const origin = romRouteOrigin(candidate)
+    if (!origin || seen.has(origin) || identity(candidate) !== self) continue
+    seen.add(origin)
+    pool.push(candidate)
+  }
+  return pool
 }
 
 export interface ChunkNetworkHints {
@@ -590,7 +664,14 @@ export function adaptiveChunkConcurrency(
   const rtt = Number.isFinite(hints.rttMs) ? Math.max(0, hints.rttMs ?? 0) : 0
 
   let concurrency = 2
-  if (effectiveType === '3g' || (mbps > 0 && mbps < 3)) concurrency = 1
+  /*
+    有真实样本时以样本为准，浏览器的 effectiveType 只在没测到时兜底（2026-11-18《西游释厄传》实测）：
+    Chrome 报 effectiveType=3g、downlink=1.25，同一时刻单连接正文实测约 9.5 Mbps —— 它是按历史请求粗估的，
+    一个慢请求就能拖低。以前只要报 3g 就压成单路，21.9MB 的 ROM 三个分片串行下了约 20 秒。
+    省流量 / 2G 仍在上面直接单路，不受样本影响。
+  */
+  const slowHint = sampledMbps > 0 ? false : effectiveType === '3g'
+  if (slowHint || (mbps > 0 && mbps < 3)) concurrency = 1
   // Firefox / Safari 没有 Network Information API，rtt=0 代表“未知”而不是“很差”。
   // 已经拿到首个真实分片的高速样本时，不能因为缺这一条提示永远卡在三路。
   else if (mbps >= 24 && (rtt === 0 || rtt < 180)) concurrency = 4
@@ -698,8 +779,22 @@ export async function fetchBlobWithProgress(url: string, opts: BlobFetchOptions 
   */
   let currentUrl = url
   let alternates = [...new Set([...(opts.alternateUrls ?? []), opts.alternateUrl ?? ''].filter((candidate) => candidate && candidate !== url))]
-  const useNextRoute = () => {
-    currentUrl = alternates.shift()!
+  const trackHealth = opts.routeHealth ?? !opts.fetchImpl
+  /*
+    记分板认定原地址那条线路正在熔断、或真实吞吐明显更慢时，开局就换到排第一的那条（整局换，不混片，
+    所以不带 romv 的地址也可以）。以前要等这一局首段测速或重试用光才换，每一局都先撞一次坏线路。
+  */
+  if (trackHealth && alternates.length) {
+    const ranked = rankRomRoutes([url, ...alternates])
+    if (ranked[0] !== url) {
+      diagLog('download', 'info', `ROM 线路按记分板改走 ${romRouteOrigin(ranked[0])}（${romRouteHealthSummary() || '无记录'}）`)
+      currentUrl = ranked[0]
+      alternates = ranked.slice(1)
+    }
+  }
+  const useNextRoute = (preferred = '') => {
+    const at = preferred ? alternates.indexOf(preferred) : -1
+    currentUrl = at >= 0 ? alternates.splice(at, 1)[0] : alternates.shift()!
   }
   for (let attempt = 0; ; attempt++) {
     const guard = createStallGuard(opts.signal, stallMs)
@@ -707,10 +802,18 @@ export async function fetchBlobWithProgress(url: string, opts: BlobFetchOptions 
     let failure: unknown = null
     let switchForSpeed = false
     try {
-      const blob = await blobWithProgressGuarded(currentUrl, { ...guardedOpts, alternateUrl: alternates[0] ?? '' }, guard)
+      const blob = await blobWithProgressGuarded(
+        currentUrl,
+        { ...guardedOpts, alternateUrl: alternates[0] ?? '', routePool: [currentUrl, ...alternates] },
+        guard,
+      )
       if (currentUrl !== url) rememberRomHostForUrl(currentUrl)
       return blob
     } catch (error) {
+      // 这一轮失败了：先掐掉看门狗名下还在跑的请求（首片失败后仍在下的提前分片），
+      // 再决定重试 / 换线路 / 抛出。成功路径不走这里，不会误伤。
+      guard.abort()
+      if (trackHealth && guard.stalled()) recordRomRouteFailure(currentUrl, 'stall')
       if (opts.signal?.aborted || isAbort(error) && !guard.stalled()) throw error
       // 超过上限是这个对象本身的问题，换线路也一样
       if (error instanceof RangeError) throw error
@@ -725,8 +828,9 @@ export async function fetchBlobWithProgress(url: string, opts: BlobFetchOptions 
     }
     if (switchForSpeed && alternates.length) {
       const slowRoute = failure as SlowRomRouteError
-      diagLog('download', 'warn', `ROM 首段 ${slowRoute.sampledMbps.toFixed(1)} Mbps，备用线路 ${slowRoute.alternateMbps.toFixed(1)} Mbps，切换：`, currentUrl, '→', alternates[0])
-      useNextRoute()
+      const target = slowRoute.route && alternates.includes(slowRoute.route) ? slowRoute.route : alternates[0]
+      diagLog('download', 'warn', `ROM 首段 ${slowRoute.sampledMbps.toFixed(1)} Mbps，备用线路 ${slowRoute.alternateMbps.toFixed(1)} Mbps，切换：`, currentUrl, '→', target)
+      useNextRoute(target)
       attempt = -1
       continue
     }
@@ -748,7 +852,7 @@ export async function fetchBlobWithProgress(url: string, opts: BlobFetchOptions 
 }
 
 /** 真正的实现。看门狗由上面的 fetchBlobWithProgress 持有，这里只负责「收到字节就 touch」 */
-async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guard: StallGuard): Promise<Blob> {
+async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, guard: StallGuard): Promise<Blob> {
   const phase = opts.phase ?? 'rom'
   const type = opts.type ?? 'application/octet-stream'
   const chunkBytes = opts.chunkBytes ?? CHUNK_BYTES
@@ -871,7 +975,8 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
       timedOut = true
       controller.abort()
     }, ALTERNATE_ROUTE_SAMPLE_TIMEOUT_MS)
-    const startedAt = monotonicNow()
+    // 与当前线路的首段采样同一口径：从响应头到达算起，握手和首字节不算
+    let startedAt = monotonicNow()
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
     let loaded = 0
     try {
@@ -879,6 +984,7 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
         headers: { Range: `bytes=0-${candidateEnd}` }, signal: controller.signal,
         cache: opts.cache ?? 'default',
       })
+      startedAt = monotonicNow()
       validateResponse(res, opts.check)
       if (res.status !== 206 || !res.body) {
         void res.body?.cancel().catch(() => {})
@@ -951,6 +1057,167 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
   )) : 1
   const resumed = await loadResume()
 
+  /* ── 线路池：同一版本对象的几条线路（见 sameObjectRoutes），按记分板给每个请求选线路 ── */
+  const trackHealth = opts.routeHealth ?? !opts.fetchImpl
+  const routePool = trackHealth ? sameObjectRoutes(url, opts.routePool ?? []) : [url]
+  const hintedType = String(networkHints.effectiveType ?? '').toLowerCase()
+  const conserveTraffic = Boolean(networkHints.saveData) || hintedType === 'slow-2g' || hintedType === '2g'
+  /** 能不能为同一段字节同时问两条线路：要有第二条线路，且不在省流量 / 2G 下多花流量 */
+  const canHedgeRoutes = routePool.length > 1 && !conserveTraffic
+  /** 每条线路上本局的在途请求数，选线路时用来分摊 */
+  const routeLoad = new Map<string, number>()
+  const loadRoute = (route: string, delta: number) =>
+    routeLoad.set(route, Math.max(0, (routeLoad.get(route) ?? 0) + delta))
+  /** 本局最近几次「发出请求 → 响应头到达」的耗时 */
+  const headerSamples: number[] = []
+  const medianHeaderMs = () => {
+    if (!headerSamples.length) return 0
+    const sorted = [...headerSamples].sort((a, b) => a - b)
+    return sorted[Math.floor(sorted.length / 2)]
+  }
+  /** 本局最快的一片的吞吐（字节 / 毫秒），不设样本下限；记分板还一片都没记下时，尾部对冲拿它估算 */
+  let fastestLocalRate = 0
+  const noteTransfer = (route: string, bytes: number, elapsedMs: number) => {
+    if (bytes > 0) fastestLocalRate = Math.max(fastestLocalRate, bytes / Math.max(1, elapsedMs))
+    if (trackHealth) recordRomRouteTransfer(route, bytes, elapsedMs)
+  }
+  /** 只记线路自己的错：网络层失败、5xx、429。404 是对象不在，换线路也一样，不算线路的账 */
+  const noteRouteFailure = (route: string, error: unknown) => {
+    if (!trackHealth || isAbort(error)) return
+    const status = /^HTTP (\d{3})$/.exec(String((error as Error | undefined)?.message ?? ''))
+    if (status) {
+      const code = Number(status[1])
+      if (code >= 500 || code === 429) recordRomRouteFailure(route, 'server')
+    } else if (isNetworkFetchError(error)) {
+      recordRomRouteFailure(route, 'network')
+    }
+  }
+  /** 一条线路输给了另一条：读到的字节够一个样本就记吞吐，否则（连响应头 / 几十 KB 都没等到）记一次失速 */
+  const noteLoser = (route: string, loaded: number, headersAt: number) => {
+    if (!trackHealth) return
+    if (headersAt && loaded >= ROUTE_MIN_SAMPLE_BYTES) recordRomRouteTransfer(route, loaded, monotonicNow() - headersAt)
+    else recordRomRouteFailure(route, 'stall')
+  }
+  const bestKnownRate = () => {
+    const rates = routePool.map((route) => romRouteRate(route) ?? 0)
+    return Math.max(0, ...rates)
+  }
+  /**
+   * 给下一个请求挑线路：先按记分板排序，跳过熔断中的和 avoid（刚失败 / 正慢的那条）；再按
+   * 「吞吐 ÷ (本局在途请求 + 1)」分摊 —— 一样快的线路各分一路连接，明显慢的（不到最快的 40%）不再分新片。
+   * 没测过的线路按「和已知最快的一样快」算，让它这一局就被测到；排序结果只取决于记分板，确定可复现。
+   */
+  const pickRoute = (avoid = ''): string => {
+    if (routePool.length < 2) return url
+    const usable = rankRomRoutes(routePool).filter((route) => route !== avoid)
+    const healthy = usable.filter((route) => !isRomRouteOpen(route))
+    const choices = healthy.length ? healthy : usable
+    if (!choices.length) return avoid || url
+    const rates = choices.map((route) => romRouteRate(route))
+    const known = rates.filter((rate): rate is number => Boolean(rate))
+    const top = known.length ? Math.max(...known) : 1
+    let chosen = choices[0]
+    let chosenScore = -1
+    choices.forEach((route, order) => {
+      const rate = rates[order] ?? top
+      if (order > 0 && rate < top * SLOW_ROUTE_SHARE) return
+      const score = rate / (1 + (routeLoad.get(route) ?? 0))
+      if (score > chosenScore) {
+        chosen = route
+        chosenScore = score
+      }
+    })
+    return chosen
+  }
+  const headersHedgeDelay = () => {
+    const rtt = Number.isFinite(networkHints.rttMs) ? Math.max(0, networkHints.rttMs ?? 0) : 0
+    return Math.max(opts.routeHedgeMs ?? ROUTE_HEADERS_HEDGE_MS, rtt * 6, medianHeaderMs() * 3)
+  }
+  type RangeAnswer = { res: Response; route: string; headersAt: number }
+  /**
+   * 发一个 Range 请求。可对冲时：headersHedgeDelay() 内响应头还没到、或这条直接网络失败，就在另一条线路上
+   * 同时请求同一个 Range，谁的响应头先到用谁，另一条立刻中止（正文还没开始流，几乎不费流量）。
+   * headersAt 是响应头到达的时刻：吞吐一律从这里算起，握手和首字节不算。
+   */
+  const fetchRange = (
+    route: string,
+    start: number,
+    end: number,
+    cache: RequestCache,
+    signal: AbortSignal,
+    hedge = true,
+  ): Promise<RangeAnswer> => {
+    const sentAt = monotonicNow()
+    const request = (target: string, laneSignal: AbortSignal) =>
+      Promise.resolve().then(() => doFetch(target, { headers: { Range: `bytes=${start}-${end}` }, signal: laneSignal, cache }))
+    const answered = (res: Response, target: string): RangeAnswer => {
+      const headersAt = monotonicNow()
+      headerSamples.push(headersAt - sentAt)
+      if (headerSamples.length > 8) headerSamples.shift()
+      return { res, route: target, headersAt }
+    }
+    const backup = hedge && canHedgeRoutes ? pickRoute(route) : ''
+    if (!backup || backup === route) {
+      return request(route, signal).then((res) => answered(res, route), (error) => {
+        if (!signal.aborted) noteRouteFailure(route, error)
+        throw error
+      })
+    }
+    return new Promise<RangeAnswer>((resolve, reject) => {
+      const lanes: Array<{ route: string; controller: AbortController; failed: boolean; error?: unknown }> = []
+      let settled = false
+      let timer: ReturnType<typeof setTimeout> | undefined
+      // 不在 resolve 时摘掉：调用方之后中止（对冲赢了 / 整局失败）时，正在读正文的那一路也要跟着停
+      const onAbort = () => {
+        clearTimeout(timer)
+        for (const lane of lanes) lane.controller.abort()
+        if (!settled) {
+          settled = true
+          reject(signal.reason ?? new DOMException('已取消', 'AbortError'))
+        }
+      }
+      const launch = (target: string) => {
+        const lane: (typeof lanes)[number] = { route: target, controller: new AbortController(), failed: false }
+        lanes.push(lane)
+        request(target, lane.controller.signal).then((res) => {
+          if (settled) {
+            void res.body?.cancel().catch(() => {})
+            return
+          }
+          settled = true
+          clearTimeout(timer)
+          for (const other of lanes) if (other !== lane) other.controller.abort()
+          const answer = answered(res, target)
+          if (target !== route) {
+            // 原线路过了对冲延时还没回响应头，另一条先回：记一次失速，后面的片少分给它（连续两次就熔断）
+            if (trackHealth && !lanes[0].failed) recordRomRouteFailure(route, 'stall')
+            diagLog('download', 'info', `Range ${start}-${end}：${romRouteOrigin(route)} ${Math.round(answer.headersAt - sentAt)}ms 未回响应头，改用 ${romRouteOrigin(target)}`)
+          }
+          resolve(answer)
+        }, (error) => {
+          lane.failed = true
+          lane.error = error
+          if (settled) return
+          if (!lane.controller.signal.aborted) noteRouteFailure(target, error)
+          if (lanes.length < 2) {
+            // 第一条直接失败：不必等对冲延时
+            clearTimeout(timer)
+            launch(backup)
+          } else if (lanes.every((item) => item.failed)) {
+            settled = true
+            reject(lanes[0].error)
+          }
+        })
+      }
+      if (signal.aborted) return onAbort()
+      signal.addEventListener('abort', onAbort, { once: true })
+      launch(route)
+      timer = setTimeout(() => {
+        if (!settled && lanes.length < 2) launch(backup)
+      }, headersHedgeDelay())
+    })
+  }
+
   if (resumed) {
     total = resumed.total
     const count = Math.ceil(total / chunkBytes)
@@ -998,24 +1265,195 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
   }
 
   /*
+    每片的在途字节分两路记：主请求，和尾部对冲时在另一条线路上重下的那一路。
+    进度取两路的较大值 —— 下的是同一段字节，相加就算重了。
+  */
+  const mainLoaded = new Map<number, number>()
+  const hedgeLoaded = new Map<number, number>()
+  const inFlightLoaded = new Map<number, number>()
+  let inFlightBytes = 0
+  const activeControllers = new Map<number, AbortController>()
+  const hedgeControllers = new Map<number, AbortController>()
+  /** 主请求的现场：尾部对冲按它估算这一片还要多久 */
+  const runningParts = new Map<number, { route: string; startedAt: number; headersAt: number }>()
+  const hedges = new Map<number, Promise<void>>()
+  let wholeResponse: Response | null = null
+  let fatalError: unknown
+
+  const abortActive = (except = -1) => {
+    for (const [index, controller] of activeControllers) {
+      if (index !== except) controller.abort()
+    }
+    for (const controller of hedgeControllers.values()) controller.abort()
+  }
+
+  /** 只维护字节差值；每个 64KB 网络块都展开 Map 再 reduce 会把四路下载的统计成本压回主线程。 */
+  const refreshInFlight = (index: number) => {
+    const loaded = Math.max(mainLoaded.get(index) ?? 0, hedgeLoaded.get(index) ?? 0)
+    const previous = inFlightLoaded.get(index) ?? 0
+    if (loaded) inFlightLoaded.set(index, loaded)
+    else inFlightLoaded.delete(index)
+    inFlightBytes += loaded - previous
+  }
+  const setInFlight = (index: number, loaded: number, lane: 'main' | 'hedge') => {
+    ;(lane === 'main' ? mainLoaded : hedgeLoaded).set(index, loaded)
+    refreshInFlight(index)
+  }
+  const clearInFlight = (index: number, lane: 'main' | 'hedge') => {
+    ;(lane === 'main' ? mainLoaded : hedgeLoaded).delete(index)
+    refreshInFlight(index)
+  }
+
+  /**
+   * 一片下完：先到的那一路落进 parts，另一路（主请求或对冲）立刻停掉。返回 false = 另一路已经先到。
+   * 对冲赢了时，把主请求那条线路此刻有多慢记进记分板，后面的片少分给它。
+   */
+  const commitPart = (index: number, part: Blob, lane: 'main' | 'hedge'): boolean => {
+    if (parts[index] || wholeResponse) return false
+    if (lane === 'hedge') {
+      const running = runningParts.get(index)
+      if (running) noteLoser(running.route, mainLoaded.get(index) ?? 0, running.headersAt)
+    }
+    parts[index] = part
+    mainLoaded.delete(index)
+    hedgeLoaded.delete(index)
+    refreshInFlight(index)
+    completed += part.size
+    emitTotal(completed + firstRangeInFlight + inFlightBytes, total, true)
+    activeControllers.get(index)?.abort()
+    hedgeControllers.get(index)?.abort()
+    return true
+  }
+
+  /**
+   * 下一片。early = 首片还在读时提前开下的那几片（首片测速通过后）：只试一次，失败不抛 ——
+   * 池子轮到这一片时再按常规重试重下。它和普通分片一样登记在 runningParts 里，慢了也能被尾部对冲。
+   */
+  const downloadPart = async (index: number, early = false) => {
+    const start = index * chunkBytes
+    const end = Math.min(start + chunkBytes, total) - 1
+    const expect = end - start + 1
+    /** 上一次失败在哪条线路上：重试换一条（同一版本对象有第二条线路时） */
+    let avoidRoute = ''
+    for (let attempt = 0; ; attempt++) {
+      if (parts[index]) return
+      const route = pickRoute(avoidRoute)
+      const controller = new AbortController()
+      const abortFromGuard = () => controller.abort()
+      if (guard.signal.aborted) controller.abort()
+      else guard.signal.addEventListener('abort', abortFromGuard, { once: true })
+      activeControllers.set(index, controller)
+      const running = { route, startedAt: monotonicNow(), headersAt: 0 }
+      runningParts.set(index, running)
+      loadRoute(route, 1)
+      try {
+        guard.touch()
+        const answer = await fetchRange(
+          route, start, end,
+          // 浏览器磁盘缓存里的 206 若底层文件失效，重试必须绕过同一条坏缓存记录。
+          attempt > 0 ? 'reload' : (opts.cache ?? 'default'),
+          controller.signal,
+        )
+        const res = answer.res
+        running.route = answer.route
+        running.headersAt = answer.headersAt
+        validateResponse(res, opts.check)
+        if (early && res.status !== 206) {
+          // 提前分片不替首片做「服务器不认 Range」的决定：丢掉这条回应，交给池子按常规重下
+          void res.body?.cancel().catch(() => {})
+          return
+        }
+        if (res.status !== 206) {
+          /*
+            CDN 若在下载途中突然不认 Range，只能采用一份完整 200，绝不能让其它并发请求的局部字节
+            同时继续落盘。先停兄弟请求，等它们真正退出后再读完整响应，清理续传现场的顺序才可靠。
+          */
+          if (!wholeResponse) {
+            wholeResponse = res
+            abortActive(index)
+          } else {
+            void res.body?.cancel().catch(() => {})
+          }
+          return
+        }
+        assertContentRange(res, start, end, total)
+        const part = await takePartWithConcurrentProgress(res, expect, index, 'main')
+        if (wholeResponse) return
+        noteTransfer(running.route, part.size, monotonicNow() - running.headersAt)
+        if (!commitPart(index, part, 'main')) return
+        await queuePartSave(total, index, part)
+        return
+      } catch (error) {
+        clearInFlight(index, 'main')
+        // 尾部对冲那一路已经先下完，本路是被它停掉的
+        if (parts[index]) return
+        if (wholeResponse && isAbort(error)) return
+        if (early) {
+          if (!guard.stalled() && !opts.signal?.aborted && !isAbort(error)) {
+            if (running.headersAt) noteRouteFailure(running.route, error)
+            diagLog('download', 'warn', '首片期间的提前分片失败，后续会按常规重试：', error, running.route)
+          }
+          return
+        }
+        // 卡死不是「这一次没成」：重试只会再等一整个看门狗周期，直接抛
+        if (guard.stalled()) throw error
+        // 取消是用户意图，不是失败，别在这儿空转重试
+        if (error instanceof RangeError) throw error
+        if (isAbort(error) || opts.signal?.aborted) throw error
+        // 响应头之前的失败 fetchRange 已经记过；之后的（读正文断流、5xx）在这里记
+        if (running.headersAt) noteRouteFailure(running.route, error)
+        avoidRoute = running.route
+        // 对冲那一路还在下同一片：等它的结果，不另起一路
+        const hedge = hedges.get(index)
+        if (hedge) {
+          await hedge
+          if (parts[index]) return
+        }
+        if (attempt >= (isNetworkFetchError(error) ? networkRetries : retries)) throw error
+        diagLog('download', 'warn', `分片 ${index} 第 ${attempt + 1} 次失败（${romRouteOrigin(running.route)}），重试：`, error, url)
+        // 退避：0.5s / 1s / 2s（网络层失败最多到 8s）。切网络那一下往往要一两秒才恢复；
+        // 有另一条线路可换时只稍等一下 —— 坏的多半是那条线路，不是这台设备的网络
+        const switching = routePool.length > 1 && pickRoute(avoidRoute) !== avoidRoute
+        await sleep(switching ? 200 : 500 * 2 ** attempt, opts.signal)
+      } finally {
+        loadRoute(route, -1)
+        guard.signal.removeEventListener('abort', abortFromGuard)
+        if (activeControllers.get(index) === controller) activeControllers.delete(index)
+        if (runningParts.get(index) === running) runningParts.delete(index)
+      }
+    }
+  }
+
+  /** 并发片的局部进度要相加；继续沿用 completed 会让多路互相覆盖，看起来像进度停住。 */
+  async function takePartWithConcurrentProgress(res: Response, expect: number, index: number, lane: 'main' | 'hedge'): Promise<Blob> {
+    const relay = (p: LoadProgress) => {
+      setInFlight(index, p.loaded ?? 0, lane)
+      emitTotal(completed + firstRangeInFlight + inFlightBytes, total)
+    }
+    if (!res.body) {
+      const blob = await bodylessPart(res, total)
+      if (blob.size !== expect) throw new Error(`分片不完整：应为 ${expect} 字节，实际 ${blob.size}`)
+      setInFlight(index, blob.size, lane)
+      return blob
+    }
+    // 并发片同样要按实际读入字节止损，不能信 CDN 宣称的 Content-Range。
+    const { chunks } = await drain(res.body, phase, expect, relay, expect, guard.touch)
+    return makePart(chunks, total)
+  }
+
+  /*
     第一片的 Content-Range 已经说出了整份大小，必须在读完前就赋给 total：
     旧代码等首片下载完才赋值，8MB 期间只能走渐近映射，《主题医院》150MB 开局 6 秒进度就到 67%，
     后面真实比例 5%→85% 都输给它。现在首片开始就用总量算进度，也能在测速后提前启动下一片。
   */
   let probedTotal = 0
+  /** 首片正在读的字节（首片读完归零）。首片期间提前开下的分片走池子，计在 inFlightBytes 里 */
   let firstRangeInFlight = 0
-  let earlyRangeInFlight = 0
-  const earlyRangeLoaded = new Map<number, number>()
-  const earlyChunkTasks: Array<{ index: number; promise: Promise<Blob | null> }> = []
-  let earlyChunkError: unknown
   let earlyPrefetchStarted = false
-  const setEarlyRangeLoaded = (index: number, loaded: number) => {
-    const previous = earlyRangeLoaded.get(index) ?? 0
-    earlyRangeLoaded.set(index, loaded)
-    earlyRangeInFlight += loaded - previous
-  }
+  /** 首片期间提前开下的分片（index → 任务）；池子里轮到它们时等这里的结果，失败的再按常规重下 */
+  const earlyTasks = new Map<number, Promise<void>>()
   const emitInitialRangeProgress = (flush = false) =>
-    emitTotal(completed + firstRangeInFlight + earlyRangeInFlight, total || probedTotal || undefined, flush)
+    emitTotal(completed + firstRangeInFlight + inFlightBytes, total || probedTotal || undefined, flush)
   /** 把分片内的字节换算成“已经完整落盘的分片 + 当前片”的整份进度。 */
   const takePart = async (res: Response, expect: number, onLoaded?: (loaded: number) => void | Promise<void>) => {
     const relay = async (p: LoadProgress) => {
@@ -1035,37 +1473,6 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
     return makePart(chunks, total)
   }
 
-  /** 首片测速通过后抢先取后续块；仍用完整 8 MiB Range，不破坏边缘缓存的对齐规则。 */
-  const fetchEarlyChunk = async (index: number, expectedTotal: number): Promise<Blob | null> => {
-    const start = index * chunkBytes
-    const end = Math.min(start + chunkBytes, expectedTotal) - 1
-    if (end < start) return null
-    try {
-      guard.touch()
-      const res = await doFetch(url, {
-        headers: { Range: `bytes=${start}-${end}` }, signal: guard.signal,
-        cache: opts.cache ?? 'default',
-      })
-      validateResponse(res, opts.check)
-      if (res.status !== 206) {
-        void res.body?.cancel().catch(() => {})
-        return null
-      }
-      assertContentRange(res, start, end, expectedTotal)
-      const part = await takePart(res, end - start + 1, (loaded) => setEarlyRangeLoaded(index, loaded))
-      await queuePartSave(expectedTotal, index, part)
-      return part
-    } catch (error) {
-      setEarlyRangeLoaded(index, 0)
-      emitInitialRangeProgress()
-      if (guard.stalled() || opts.signal?.aborted) earlyChunkError = error
-      if (!guard.stalled() && !opts.signal?.aborted) {
-        diagLog('download', 'warn', '首片期间的提前分片失败，后续会按常规重试：', error, url)
-      }
-      return null
-    }
-  }
-
   /* 没有续传现场时，第一个请求同时探测 Range 支持并取得整份大小。 */
   if (total === 0) {
     /*
@@ -1074,14 +1481,28 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
       重试留给了更不容易失败的部分。把“请求 + 响应头校验 + 读完整片”整体放进同一规则，
       截断的首片也不会被误当成一次不可恢复的整局失败。
     */
+    /** 首片上一次失败在哪条线路上：重试换一条（有的话） */
+    let failedFirstRoute = ''
     for (let attempt = 0; ; attempt++) {
+      let firstRoute = failedFirstRoute ? pickRoute(failedFirstRoute) : url
+      let firstHeadersAt = 0
+      // 首片也占线路：提前分片按负载分摊时才会落到别的线路上
+      const loadedRoute = firstRoute
+      loadRoute(loadedRoute, 1)
       try {
         guard.touch()
-        const sampleStartedAt = monotonicNow()
-        const first = await doFetch(url, {
-          headers: { Range: `bytes=0-${chunkBytes - 1}` }, signal: guard.signal,
-          cache: attempt > 0 ? 'reload' : (opts.cache ?? 'default'),
-        })
+        const answer = await fetchRange(
+          firstRoute, 0, chunkBytes - 1, attempt > 0 ? 'reload' : (opts.cache ?? 'default'), guard.signal,
+        )
+        const first = answer.res
+        firstRoute = answer.route
+        firstHeadersAt = answer.headersAt
+        /*
+          吞吐从响应头到达算起（2026-11-18《西游释厄传》浏览器实测）：以前从发请求算，样本里含 TLS 握手和约 1 秒的
+          首字节，256KB 的样本怎么算都不到 3Mbps，自适应并发被压成 1 路，3 个 8MB 分片串行下了 20 秒。
+          并发要藏的是单连接的拥塞窗口和 RTT，衡量它该看正文流速；握手慢由 fetchRange 的响应头对冲去管。
+        */
+        const sampleStartedAt = answer.headersAt
         validateResponse(first, opts.check)
         if (first.status !== 206) return takeWhole(first)
 
@@ -1109,17 +1530,20 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
             sampleBytes = Math.min(loaded, firstEnd + 1)
             sampleElapsedMs = Math.max(1, monotonicNow() - sampleStartedAt)
             const sampledMbps = (sampleBytes * 8) / (sampleElapsedMs * 1000)
-            const alternateExists = Boolean(opts.alternateUrl && opts.alternateUrl !== url)
+            // 同一版本对象有线路池时从池里挑；否则是外层给的那一条整局备用线路
+            const alternateRoute = routePool.length > 1 ? pickRoute(firstRoute) : (opts.alternateUrl ?? '')
+            const alternateExists = Boolean(alternateRoute && alternateRoute !== firstRoute)
             const effectiveType = String(networkHints.effectiveType ?? '').toLowerCase()
             const conserveTraffic = networkHints.saveData || effectiveType === 'slow-2g' || effectiveType === '2g'
             if (alternateExists && firstTotal >= SLOW_ROUTE_MIN_FILE_BYTES && !conserveTraffic) {
-              diagLog('download', 'info', `ROM 首段 ${sampleBytes} 字节 / ${sampleElapsedMs}ms（${sampledMbps.toFixed(1)} Mbps）：`, url)
+              diagLog('download', 'info', `ROM 首段 ${sampleBytes} 字节 / ${sampleElapsedMs.toFixed(0)}ms（${sampledMbps.toFixed(1)} Mbps，不含握手与首字节）：`, firstRoute)
               if (sampledMbps < SLOW_ROUTE_MIN_MBPS) {
-                const alternateMbps = await measureAlternateRomRange(opts.alternateUrl!, firstTotal)
+                const alternateMbps = await measureAlternateRomRange(alternateRoute, firstTotal)
                 if (alternateMbps !== null && alternateMbps > sampledMbps * 1.15) {
-                  throw new SlowRomRouteError(sampledMbps, sampleElapsedMs, alternateMbps)
+                  noteTransfer(firstRoute, sampleBytes, sampleElapsedMs)
+                  throw new SlowRomRouteError(sampledMbps, sampleElapsedMs, alternateMbps, alternateRoute)
                 }
-                diagLog('download', 'info', `备用 ROM 线路没有明显更快（${alternateMbps?.toFixed(1) ?? '未测出'} Mbps），继续当前线路：`, url)
+                diagLog('download', 'info', `备用 ROM 线路没有明显更快（${alternateMbps?.toFixed(1) ?? '未测出'} Mbps），继续当前线路：`, firstRoute)
               }
             }
             const earlyConcurrency = Math.min(
@@ -1127,14 +1551,10 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
               adaptiveChunkConcurrency(sampleBytes, sampleElapsedMs, networkHints),
               Math.ceil(firstTotal / chunkBytes),
             )
+            // 首片测速通过后抢先取后续块；仍用完整 8 MiB Range，不破坏边缘缓存的对齐规则
             if (!earlyPrefetchStarted && earlyConcurrency > 1) {
               earlyPrefetchStarted = true
-              for (let index = 1; index < earlyConcurrency; index++) {
-                earlyChunkTasks.push({
-                  index,
-                  promise: fetchEarlyChunk(index, firstTotal),
-                })
-              }
+              for (let index = 1; index < earlyConcurrency; index++) earlyTasks.set(index, downloadPart(index, true))
             }
           }
         }
@@ -1143,22 +1563,13 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
           sampleBytes = firstPart.size
           sampleElapsedMs = Math.max(1, monotonicNow() - sampleStartedAt)
         }
+        // 整片 8MB 才是像样的吞吐样本（256KB 采样只用来尽早定并发）
+        noteTransfer(firstRoute, firstPart.size, monotonicNow() - sampleStartedAt)
         firstRangeInFlight = 0
         parts[0] = firstPart
-        completed = firstPart.size
+        // 提前分片可能先于首片下完，completed 里已经有它们
+        completed += firstPart.size
         emitInitialRangeProgress(true)
-        if (earlyChunkTasks.length) {
-          const earlyParts = await Promise.all(earlyChunkTasks.map(async ({ index, promise }) => ({ index, part: await promise })))
-          if (guard.stalled() && earlyChunkError) throw earlyChunkError
-          for (const { index, part } of earlyParts) {
-            if (part) {
-              setEarlyRangeLoaded(index, 0)
-              parts[index] = part
-              completed += part.size
-              emitInitialRangeProgress(true)
-            }
-          }
-        }
         // 整份不足一片时已经完整，落临时库再立刻删只会拖慢几百 KB 的小游戏开局。
         if (firstTotal > chunkBytes) await queuePartSave(total, 0, firstPart)
         break
@@ -1168,9 +1579,14 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
         if (guard.stalled()) throw error
         if (error instanceof RangeError) throw error
         if (isAbort(error) || opts.signal?.aborted) throw error
+        // 响应头之前的失败 fetchRange 已经记过；之后的（读正文断流、5xx）在这里记
+        if (firstHeadersAt) noteRouteFailure(firstRoute, error)
+        if (routePool.length > 1) failedFirstRoute = firstRoute
         if (attempt >= (isNetworkFetchError(error) ? networkRetries : retries)) throw error
-        diagLog('download', 'warn', `首片第 ${attempt + 1} 次失败，重试：`, error, url)
+        diagLog('download', 'warn', `首片第 ${attempt + 1} 次失败，重试：`, error, firstRoute)
         await sleep(500 * 2 ** attempt, opts.signal)
+      } finally {
+        loadRoute(loadedRoute, -1)
       }
     }
   }
@@ -1180,122 +1596,131 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
     adaptiveChunkConcurrency(sampleBytes, sampleElapsedMs, networkHints),
   )
   const pending = parts.map((part, index) => part ? -1 : index).filter((index) => index >= 0)
-  const inFlightLoaded = new Map<number, number>()
-  let inFlightBytes = 0
-  const activeControllers = new Map<number, AbortController>()
-  let cursor = 0
-  let wholeResponse: Response | null = null
-  let fatalError: unknown
-
-  const abortActive = (except = -1) => {
-    for (const [index, controller] of activeControllers) {
-      if (index !== except) controller.abort()
+  /*
+    尾部对冲：整份文件什么时候下完由最慢的那一片决定（2026-11-18 实测 21.9MB ROM：三片分三条线路并发
+    7.3～7.6 秒，同一线路并发 5～10 秒，波动全在最后一片）。没有新片可取时空出来的那一路去帮最慢的一片：
+    在另一条线路上重下同一个 Range，先下完的落盘、另一路立刻停。只用空出来的那几路，总并发不超过
+    concurrency；每片最多对冲一次；省流量 / 2G、只有一路、或没有第二条同版本线路时不做。
+  */
+  const hedgeEnabled = canHedgeRoutes && concurrency > 1
+  const tailMinRemainingMs = opts.routeHedgeMs ?? TAIL_HEDGE_MIN_REMAINING_MS
+  const tailPollMs = Math.min(TAIL_HEDGE_POLL_MS, Math.max(5, tailMinRemainingMs / 4))
+  /** 挑预计最晚下完、而且换一条线路从头下也能明显更早下完的那一片 */
+  const pickStraggler = (): { index: number; route: string } | null => {
+    const now = monotonicNow()
+    const best = bestKnownRate() || fastestLocalRate
+    const headerMs = medianHeaderMs() || 1000
+    let target: { index: number; route: string } | null = null
+    let worst = tailMinRemainingMs
+    for (const [index, running] of runningParts) {
+      if (parts[index] || hedges.has(index)) continue
+      const expect = Math.min(chunkBytes, total - index * chunkBytes)
+      const loaded = mainLoaded.get(index) ?? 0
+      let remainingMs: number
+      if (!running.headersAt) {
+        // 响应头迟迟不来（fetchRange 自己的对冲也没救回来）：当它卡住了
+        remainingMs = now - running.startedAt > headersHedgeDelay() ? Infinity : 0
+      } else {
+        const elapsed = Math.max(1, now - running.headersAt)
+        remainingMs = loaded > 0
+          ? ((expect - loaded) * elapsed) / loaded
+          : elapsed > tailMinRemainingMs ? Infinity : 0
+      }
+      if (remainingMs <= worst) continue
+      const route = pickRoute(running.route)
+      if (route === running.route) continue
+      const rate = romRouteRate(route) ?? best
+      const freshMs = headerMs + (rate > 0 ? expect / rate : Infinity)
+      if (remainingMs !== Infinity && remainingMs < freshMs * 1.3) continue
+      worst = remainingMs
+      target = { index, route }
     }
+    return target
   }
 
-  /** 只维护字节差值；每个 64KB 网络块都展开 Map 再 reduce 会把四路下载的统计成本压回主线程。 */
-  const setInFlight = (index: number, loaded: number) => {
-    const previous = inFlightLoaded.get(index) ?? 0
-    inFlightLoaded.set(index, loaded)
-    inFlightBytes += loaded - previous
-  }
-  const clearInFlight = (index: number) => {
-    inFlightBytes -= inFlightLoaded.get(index) ?? 0
-    inFlightLoaded.delete(index)
-  }
-
-  const downloadPart = async (index: number) => {
+  /** 在另一条线路上重下同一片。失败不算整局失败：主请求还在，交给它的重试 */
+  const runHedge = async (index: number, route: string) => {
     const start = index * chunkBytes
     const end = Math.min(start + chunkBytes, total) - 1
     const expect = end - start + 1
-    for (let attempt = 0; ; attempt++) {
-      const controller = new AbortController()
-      const abortFromGuard = () => controller.abort()
-      if (guard.signal.aborted) controller.abort()
-      else guard.signal.addEventListener('abort', abortFromGuard, { once: true })
-      activeControllers.set(index, controller)
-      try {
-        guard.touch()
-        const res = await doFetch(url, {
-          headers: { Range: `bytes=${start}-${end}` }, signal: controller.signal,
-          // 浏览器磁盘缓存里的 206 若底层文件失效，重试必须绕过同一条坏缓存记录。
-          cache: attempt > 0 ? 'reload' : (opts.cache ?? 'default'),
-        })
-        validateResponse(res, opts.check)
-        if (res.status !== 206) {
-          /*
-            CDN 若在下载途中突然不认 Range，只能采用一份完整 200，绝不能让其它并发请求的局部字节
-            同时继续落盘。先停兄弟请求，等它们真正退出后再读完整响应，清理续传现场的顺序才可靠。
-          */
-          if (!wholeResponse) {
-            wholeResponse = res
-            abortActive(index)
-          } else {
-            void res.body?.cancel().catch(() => {})
-          }
-          return
-        }
-        assertContentRange(res, start, end, total)
-        const part = await takePartWithConcurrentProgress(res, expect, index)
-        if (wholeResponse) return
-        await queuePartSave(total, index, part)
-        if (wholeResponse) return
-        parts[index] = part
-        clearInFlight(index)
-        completed += part.size
-        emitTotal(completed + inFlightBytes, total, true)
+    const controller = new AbortController()
+    const abortFromGuard = () => controller.abort()
+    if (guard.signal.aborted) controller.abort()
+    else guard.signal.addEventListener('abort', abortFromGuard, { once: true })
+    hedgeControllers.set(index, controller)
+    loadRoute(route, 1)
+    const slowRoute = runningParts.get(index)?.route ?? ''
+    diagLog('download', 'info', `分片 ${index} 在 ${romRouteOrigin(slowRoute)} 上偏慢，同时从 ${romRouteOrigin(route)} 重下`)
+    let served = route
+    let headersAt = 0
+    try {
+      const answer = await fetchRange(route, start, end, opts.cache ?? 'default', controller.signal, false)
+      served = answer.route
+      headersAt = answer.headersAt
+      validateResponse(answer.res, opts.check)
+      if (answer.res.status !== 206) {
+        void answer.res.body?.cancel().catch(() => {})
         return
-      } catch (error) {
-        clearInFlight(index)
-        if (wholeResponse && isAbort(error)) return
-        // 卡死不是「这一次没成」：重试只会再等一整个看门狗周期，直接抛
-        if (guard.stalled()) throw error
-        // 取消是用户意图，不是失败，别在这儿空转重试
-        if (error instanceof RangeError) throw error
-        if (isAbort(error) || opts.signal?.aborted) throw error
-        if (attempt >= (isNetworkFetchError(error) ? networkRetries : retries)) throw error
-        diagLog('download', 'warn', `分片 ${index} 第 ${attempt + 1} 次失败，重试：`, error, url)
-        // 退避：0.5s / 1s / 2s（网络层失败最多到 8s）。切网络那一下往往要一两秒才恢复
-        await sleep(500 * 2 ** attempt, opts.signal)
-      } finally {
-        guard.signal.removeEventListener('abort', abortFromGuard)
-        if (activeControllers.get(index) === controller) activeControllers.delete(index)
       }
+      assertContentRange(answer.res, start, end, total)
+      const part = await takePartWithConcurrentProgress(answer.res, expect, index, 'hedge')
+      if (wholeResponse) return
+      noteTransfer(served, part.size, monotonicNow() - headersAt)
+      if (!commitPart(index, part, 'hedge')) return
+      diagLog('download', 'info', `分片 ${index} 由 ${romRouteOrigin(served)} 先下完`)
+      await queuePartSave(total, index, part)
+    } catch (error) {
+      if (headersAt) noteRouteFailure(served, error)
+    } finally {
+      clearInFlight(index, 'hedge')
+      loadRoute(route, -1)
+      guard.signal.removeEventListener('abort', abortFromGuard)
+      if (hedgeControllers.get(index) === controller) hedgeControllers.delete(index)
     }
   }
 
-  /** 并发片的局部进度要相加；继续沿用 completed 会让多路互相覆盖，看起来像进度停住。 */
-  async function takePartWithConcurrentProgress(res: Response, expect: number, index: number): Promise<Blob> {
-    const relay = (p: LoadProgress) => {
-      setInFlight(index, p.loaded ?? 0)
-      emitTotal(completed + inFlightBytes, total)
-    }
-    if (!res.body) {
-      const blob = await bodylessPart(res, total)
-      if (blob.size !== expect) throw new Error(`分片不完整：应为 ${expect} 字节，实际 ${blob.size}`)
-      setInFlight(index, blob.size)
-      return blob
-    }
-    // 并发片同样要按实际读入字节止损，不能信 CDN 宣称的 Content-Range。
-    const { chunks } = await drain(res.body, phase, expect, relay, expect, guard.touch)
-    return makePart(chunks, total)
-  }
-
+  let cursor = 0
   const worker = async () => {
     while (!wholeResponse && fatalError === undefined) {
       const at = cursor++
-      if (at >= pending.length) return
+      if (at >= pending.length) break
+      const index = pending[at]
       try {
-        await downloadPart(pending[at])
+        // 首片期间已经开下的那几片：等它的结果（它慢了，空着的一路会去对冲）；失败了才按常规重下
+        const early = earlyTasks.get(index)
+        if (early) await early
+        const hedge = hedges.get(index)
+        if (hedge && !parts[index]) await hedge
+        if (!parts[index]) await downloadPart(index)
       } catch (error) {
         if (fatalError === undefined && !wholeResponse) fatalError = error
         abortActive()
         return
       }
     }
+    while (hedgeEnabled && !wholeResponse && fatalError === undefined && runningParts.size) {
+      const straggler = pickStraggler()
+      if (!straggler) {
+        try {
+          await sleep(tailPollMs, guard.signal)
+        } catch {
+          return
+        }
+        continue
+      }
+      const task = runHedge(straggler.index, straggler.route)
+      hedges.set(straggler.index, task)
+      await task
+    }
   }
 
-  await Promise.all(Array.from({ length: Math.min(concurrency, pending.length) }, () => worker()))
+  // 可以对冲时至少开两路：只剩一片也有一路空着，它慢了就能去另一条线路帮它
+  const workerCount = pending.length
+    ? Math.min(concurrency, hedgeEnabled ? Math.max(pending.length, 2) : pending.length)
+    : 0
+  await Promise.all(Array.from({ length: workerCount }, () => worker()))
+  // 整局失败时提前分片已被中止；等它们真正退出，免得之后还往 parts / 续传库里写
+  if (earlyTasks.size) await Promise.all(earlyTasks.values())
   if (fatalError !== undefined) throw fatalError
   if (wholeResponse) return takeWhole(wholeResponse)
 

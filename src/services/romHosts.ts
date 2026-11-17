@@ -8,6 +8,15 @@
  * 只读构建期配置（不读管理员本机覆盖），也不 import 任何业务模块，romCache 等底层模块可以放心引用。
  */
 import { readCachedRomHost, rememberRomHostFromDownload, type RomHost } from './romRoute'
+import { hedgedRequest } from './hedgedRequest'
+import {
+  isRomRouteOpen,
+  rankRomRoutes,
+  recordRomRouteFailure,
+  recordRomRouteSuccess,
+  romRouteOrigin,
+  romRouteRate,
+} from './romRouteHealth'
 
 const trim = (value: string | undefined) => {
   const raw = String(value ?? '').trim().replace(/\/+$/, '')
@@ -80,49 +89,57 @@ export function alternateRomUrls(url: string, base = ENV_ROM_BASE, mirror = ENV_
   return [...new Set(candidates.filter((candidate) => candidate && candidate !== url))]
 }
 
-const reachableRomOrigins = new Map<string, { reachable: boolean; expiresAt: number }>()
+/** 刚确认可读的线路（origin → 到期时间）。「不可达」不在这里记：交给线路记分板，别处也看得见 */
+const reachableRomOrigins = new Map<string, number>()
+/** 第一条线路这么久没答复就同时问下一条 */
+const REACHABLE_HEDGE_MS = 600
+const REACHABLE_TIMEOUT_MS = 1800
 
-/** 给只接受单个 URL 的引擎（EmulatorJS 的 EJS_biosUrl）挑一个当前可读的同对象域名。 */
+/**
+ * 给只接受单个 URL 的引擎（EmulatorJS 的 EJS_biosUrl）挑一个当前可读的同对象域名。
+ *
+ * 候选按线路记分板（romRouteHealth.ts）排序：排第一的线路刚有真实下载、或 60 秒内探过可读，就直接用；
+ * 否则发 1 字节 Range 探测，第一条 600ms 没答复就同时问下一条，谁先答可读用谁。
+ * 以前逐条串行、每条 1.8 秒，不可达结论只在这里记 8 秒，ROM 下载那边看不见。
+ */
 export async function reachableRomAssetUrl(url: string, signal?: AbortSignal): Promise<string> {
   if (!url || typeof fetch !== 'function') return url
-  const candidates = [url, ...alternateRomUrls(url)]
-  for (const candidate of candidates) {
-    if (signal?.aborted) return url
-    let origin = ''
-    try { origin = new URL(candidate, typeof location === 'undefined' ? 'https://8bitgo.invalid' : location.href).origin }
-    catch { continue }
-    const cached = reachableRomOrigins.get(origin)
-    if (cached && cached.expiresAt > Date.now()) {
-      if (cached.reachable) return candidate
-      continue
-    }
-
-    const controller = new AbortController()
-    const relayAbort = () => controller.abort(signal?.reason)
-    signal?.addEventListener('abort', relayAbort, { once: true })
-    const timer = setTimeout(() => controller.abort(), 1800)
-    let reachable = false
-    try {
-      const response = await fetch(candidate, {
-        method: 'GET',
-        mode: 'cors',
-        credentials: 'omit',
-        cache: 'no-store',
-        headers: { Range: 'bytes=0-0' },
-        signal: controller.signal,
-      })
-      reachable = response.ok
-      void response.body?.cancel().catch(() => {})
-    } catch {
-      reachable = false
-    } finally {
-      clearTimeout(timer)
-      signal?.removeEventListener('abort', relayAbort)
-    }
-    reachableRomOrigins.set(origin, { reachable, expiresAt: Date.now() + (reachable ? 60_000 : 8_000) })
-    if (reachable) return candidate
+  const candidates = rankRomRoutes([url, ...alternateRomUrls(url)])
+  const top = candidates[0] ?? url
+  if (!isRomRouteOpen(top) && ((reachableRomOrigins.get(romRouteOrigin(top)) ?? 0) > Date.now() || romRouteRate(top))) {
+    return top
   }
-  return url
+  try {
+    return await hedgedRequest(candidates, async (candidate, attemptSignal) => {
+      let response: Response
+      try {
+        response = await fetch(candidate, {
+          method: 'GET',
+          mode: 'cors',
+          credentials: 'omit',
+          cache: 'no-store',
+          headers: { Range: 'bytes=0-0' },
+          signal: attemptSignal,
+        })
+      } catch (error) {
+        // 超时算这条线路的账；被对冲的另一条抢先、或调用方取消，不算
+        const reason = (attemptSignal.reason as { name?: string } | undefined)?.name
+        if (!attemptSignal.aborted) recordRomRouteFailure(candidate, 'network')
+        else if (reason === 'TimeoutError') recordRomRouteFailure(candidate, 'timeout')
+        throw error
+      }
+      void response.body?.cancel().catch(() => {})
+      if (!response.ok) {
+        if (response.status >= 500 || response.status === 429) recordRomRouteFailure(candidate, 'server')
+        throw new Error(`HTTP ${response.status}`)
+      }
+      recordRomRouteSuccess(candidate)
+      reachableRomOrigins.set(romRouteOrigin(candidate), Date.now() + 60_000)
+      return candidate
+    }, { hedgeDelayMs: REACHABLE_HEDGE_MS, attemptTimeoutMs: REACHABLE_TIMEOUT_MS, signal })
+  } catch {
+    return url
+  }
 }
 
 /** 已在 ROM / 光盘的真实 Range 请求中验证或回退成功的线路，短时供下一局和系统资源复用。 */

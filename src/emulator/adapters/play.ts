@@ -37,6 +37,7 @@ import { canvasToBlob } from '../recorder'
 import { fetchBlobWithProgress, fetchWithProgress } from '../loadProgress'
 import { romCacheKey } from '../romCache'
 import { alternateRomUrls, rememberRomHostForUrl } from '@/services/romHosts'
+import { rankRomRoutes } from '@/services/romRouteHealth'
 import { diagLog } from '@/services/startupDiagnostics'
 import { inspectPlayArcadeBundle, PLAY_ARCADE_BUNDLE_MAX_BYTES, type PlayArcadeBundle } from '@/lib/playArcadeBundle'
 
@@ -413,8 +414,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         elfBytes = new Uint8Array(bytes)
         assertPlayElf(elfBytes)
       } else {
-        let discUrl = options.game
-        const routeCandidates = [discUrl, ...alternateRomUrls(discUrl)]
+        // 按线路记分板排序（services/romRouteHealth.ts）：熔断中 / 明显更慢的线路排到后面，不再每局先撞它
+        const routeCandidates = rankRomRoutes([options.game, ...alternateRomUrls(options.game)])
+        let discUrl = routeCandidates[0] ?? options.game
         let probe = await probeRange(discUrl, requestController.signal, routeCandidates.length > 1 ? 5_000 : undefined)
         let alternateDiscUrls = routeCandidates.slice(1)
         if ((!probe.rangeSupported || !probe.size) && routeCandidates.length > 1 && !requestController.signal.aborted) {

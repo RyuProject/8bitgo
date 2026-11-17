@@ -1211,6 +1211,19 @@ Worker 按封面同一条 s-maxage=600 缓存整份 200，Range 命中时在 Wor
 RangeError（超大小上限）和用户取消不换线路。街机、光盘 / NDS、MAME CHD、DOS 包、通用 ROM 加载都已接上。
 回归：`npm run test:chunked-fetch` 第八节。
 
+⚠️ **ROM 线路记分板 + 多线路分片（2026-11-18《西游释厄传》）**：rom.8bitgo.com 的 HEAD 等满 4 秒超时才轮到
+download.8bitgo.com（0.17 秒）；首段测速把握手和约 1 秒首字节算进吞吐，Chrome 又报 effectiveType=3g（实测单连接 9.5Mbps），
+并发被压成 1 路，21.9MB 三片串行约 20 秒。现在：
+- `src/services/romRouteHealth.ts` 按 origin 记**响应头之后**的正文吞吐（EWMA，≥64KiB 样本，30 分钟）与网络 / 超时 / 5xx / 失速故障；
+  连续 2 次熔断 1～5 分钟，成功即恢复。熔断只排到最后、不删候选。404 不算线路的错。HEAD、BIOS（`reachableRomAssetUrl`）、
+  `chooseRomHost`（有真实数据时不跑 64KB 探针）、下载器、PSP / Dolphin / PS2 的光盘候选都读同一份排序。
+- HEAD 存在性检查（`roms.ts` 的 `hedgedProbe`）：1 秒没答复或答不上来就同时问下一条；原地址的 404 是终论，备用线路的 404 要等其余线路答完。
+- `fetchBlobWithProgress`：吞吐从响应头算起；有真实样本时 effectiveType=3g 不再强制单路。**只有路径与查询串（含 romv）完全相同**的线路
+  （`sameObjectRoutes`）才混着取分片：按「吞吐 ÷ 在途数」分到各线路，响应头 2.5 秒（≥6×RTT、≥3×本局中位）没到就在另一条线路发同一 Range，
+  失败片换线重试，空出来的一路对最慢的片做尾部对冲（先完的落盘、另一路中止，每片一次）。首片期间提前开的分片也走池子，能被对冲。
+  不带 romv 绝不混片；省流量 / 2G 不对冲。注入 `fetchImpl` 的测试默认 `routeHealth: false`，保持固定请求顺序。
+- 浏览器实测（同一 ROM、同一网络）：19.4 秒 → 6.8 秒。回归：`npm run test:rom-route-health && npm run test:chunked-fetch`。
+
 1. R2 要求**除最后一片外所有片等大**、最小 5MB、最多 10000 片 —— 改 `PART_SIZE` 会让旧的续传记录作废；续传还校验文件名、字节数、修改时间和头/中/尾内容指纹，防止把同名的另一份文件拼进旧分片
 2. binding **没有 `listParts`**：complete 时必须把每片的 `{partNumber, etag}` 全报回去，所以这份账只能记在前端 —— **换浏览器就续不上**
 3. binding 也**没有 `listMultipartUploads`**：没合并的分片在 R2 默认 7 天自动中止之前仍占用存储；自定义生命周期可能改变期限。Worker 在 `_uploads/` 下写标记对象，后台「ROM 存储」页靠它列出并清理残留；R2 自动中止后标记对象仍需手动清理

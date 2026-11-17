@@ -1389,16 +1389,25 @@ function installErrorTap(
    * 不接的话 `engineLog()` 里连「引擎当时到底说了什么」都没有，排查街机起不来只能靠猜。
    */
   const c = win.console as Console | undefined
+  // 三个原生方法先全部拿到手：例行行要转给原生 log，调已经包过的 c.log 会把同一行再记一遍
+  const natives = { error: c?.error, warn: c?.warn, log: c?.log }
   for (const level of ['error', 'warn', 'log'] as const) {
-    const native = c?.[level]
+    const native = natives[level]
     if (typeof native !== 'function' || !c) continue
     c[level] = (...args: unknown[]) => {
+      let forward = native
       try {
-        push(level, args.map((a) => (typeof a === 'string' ? a : safeStr(a))).join(' '), args.find((a) => isNdsWasmCrash('', a)))
+        const text = args.map((a) => (typeof a === 'string' ? a : safeStr(a))).join(' ')
+        push(level, text, args.find((a) => isNdsWasmCrash('', a)))
+        // 只改交给浏览器控制台的级别；上面的诊断缓冲与 FATAL 判定照旧按 warn 收
+        if (level === 'warn' && typeof natives.log === 'function' && isRoutineCoreLine(text) &&
+          !FATAL_PHRASES.some((h) => text.toLowerCase().includes(h))) {
+          forward = natives.log
+        }
       } catch {
         /* 记日志本身不能把游戏搞挂 */
       }
-      native.apply(c, args as [])
+      forward.apply(c, args as [])
     }
   }
   win.addEventListener('error', (e) => {
@@ -1458,6 +1467,30 @@ export { canCreateWebgl }
  */
 export function isOutdatedGraphicsDriverText(text: string): boolean {
   return /outdated graphics driver|显卡驱动已过时|pilote graphique obsolète|controlador de gráficos obsoleto/i.test(text)
+}
+
+/**
+ * 核心 stderr 里的例行输出：交给浏览器控制台时降成普通 `console.log`。
+ *
+ * `scripts/patch-emulatorjs.mjs` 把 printErr 改成了无条件 `console.warn`（FATAL 判定要靠它拿到核心原文），
+ * 副作用是 RetroArch 每局两百来行 `[INFO]` 全成了黄色警告、每行再挂一整串调用栈。
+ * 2026-11-18《西游释厄传 Super》（olds，FBNeo）玩家把整页控制台当成报错发来，游戏其实已经正常开机。
+ *
+ * 降级只影响浏览器控制台：`installErrorTap` 的诊断缓冲、engineLog、FATAL 判定照旧按 warn 收。
+ * 例外清单只放网页版 RetroArch 每局都会打、和游戏能不能跑无关的几句（那局正常开机时全部出现）；
+ * 核心自己的 `[libretro WARN]` / `[libretro ERROR]` 不在里面，照样是警告。
+ */
+export function isRoutineCoreLine(text: string): boolean {
+  if (/^\s*\[(?:libretro )?(?:INFO|DEBUG)\]/.test(text)) return true
+  const low = text.toLowerCase()
+  return [
+    'cannot push null or empty core path into the playlist',
+    'shader not supported, falling back to stock glsl',
+    '[emscripten]: could not get screen dimensions',
+    'gles implementation does not have bgra8888 extension',
+    '[gl]: 32-bit path will require conversion',
+    'stock glsl shaders will be used',
+  ].some((line) => low.includes(line))
 }
 
 /** 浏览器分配不出 WASM / ArrayBuffer 内存时各家的说法 */

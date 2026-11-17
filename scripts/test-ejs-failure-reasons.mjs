@@ -237,3 +237,32 @@ console.log('✔ 启动失败原因：跨 realm 错误原文、内存不足、�
   assert.ok(adapter.includes("return failLoad(fmt(rt.ejsEngineError, { msg: line }), 'runtime')"))
   console.log('✓ 预下载 ROM 由 Blob 直接交给引擎，其余请求放行')
 }
+
+// 核心 stderr 的例行输出只在浏览器控制台降成 log（2026-11-18《西游释厄传 Super》：两百来行 [INFO] 全是黄色警告带调用栈，
+// 玩家把正常开机的控制台当报错发来）。诊断缓冲与 FATAL 判定仍按 warn 收。
+{
+  const context = {}
+  vm.runInNewContext(`${stripTypes(fnSource('isRoutineCoreLine'))};globalThis.f=isRoutineCoreLine`, context)
+  for (const text of [
+    '[INFO] [Config]: Looking for config in: "/home/web_user/.config/retroarch/retroarch.cfg".',
+    '[libretro INFO] [FBNeo] Driver olds was successfully started',
+    '[libretro DEBUG] something',
+    '[ERROR] Cannot push NULL or empty core path into the playlist.',
+    '[ERROR] [GL]: none shader not supported, falling back to stock GLSL',
+    '[ERROR] [EMSCRIPTEN]: Could not get screen dimensions!',
+    '[WARN] [GL]: GLES implementation does not have BGRA8888 extension.',
+    '[GL]: 32-bit path will require conversion.',
+    '[WARN] [GL]: Stock GLSL shaders will be used.',
+  ]) assert.equal(context.f(text), true, text)
+  for (const text of [
+    '[libretro WARN] [FBNeo] Imperfect Protection Emulation',
+    '[libretro ERROR] [FBNeo] Romset is unknown',
+    'Failed to start game RuntimeError: unreachable',
+    '[WARN] [Environ]: SYSTEM DIR is empty, assume CONTENT DIR /olds.zip',
+  ]) assert.equal(context.f(text), false, text)
+  // 例行行要交给原生 log（拿包装前的那个，否则同一行会被缓冲记两遍）；致命整句即使带 INFO 也保持警告
+  assert.match(adapter, /const natives = \{ error: c\?\.error, warn: c\?\.warn, log: c\?\.log \}/)
+  assert.match(adapter, /push\(level, text,[\s\S]{0,260}level === 'warn'[\s\S]{0,80}isRoutineCoreLine\(text\)[\s\S]{0,40}!FATAL_PHRASES\.some[\s\S]{0,120}forward = natives\.log/)
+  assert.match(adapter, /forward\.apply\(c, args as \[\]\)/)
+  console.log('✓ 核心例行输出在浏览器控制台降成 log，致命行与诊断照旧')
+}

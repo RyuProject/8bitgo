@@ -147,12 +147,23 @@ export function socketScriptUrl(): string {
  *
  * 站点没有设 CSP，`new Function` 可用；真哪天加了 `unsafe-eval` 限制，
  * 或者 API 在别的域上没开 CORS，就退回下面那条老路子。
+ *
+ * ⚠️ 凭证模式保持默认的 `same-origin`，**不能写 `omit`**（2026-11-18《西游释厄传 Super》现场）：
+ * 同源请求带 `omit` 时 Chrome 走另一个不带凭证的连接池，页面已经热着的 HTTP/2 连接用不上，
+ * 要重新 DNS + TCP + TLS（空闲时实测 1.9 秒，其中握手 1.2 秒）。开局那几秒网络正忙，
+ * 这次新建连接拖满 8 秒被 abort，控制台留下「取 socket.io 源码失败 … AbortError」，
+ * 随后的 `<script>` 回退复用老连接 371ms 就拿到了。跨域时 `same-origin` 同样不带 Cookie，
+ * 对 CORS 的要求和 `omit` 一样。
  */
 async function loadIoAsModule(url: string): Promise<IoFactory> {
   const controller = new AbortController()
-  const timer = window.setTimeout(() => controller.abort(), IO_ASSET_TIMEOUT_MS)
+  // 带上原因：不带的话浏览器只报「signal is aborted without reason」，看不出是超时
+  const timer = window.setTimeout(
+    () => controller.abort(new Error(`${url} 加载超时（${IO_ASSET_TIMEOUT_MS}ms）`)),
+    IO_ASSET_TIMEOUT_MS,
+  )
   try {
-    const res = await fetch(url, { credentials: 'omit', signal: controller.signal })
+    const res = await fetch(url, { credentials: 'same-origin', signal: controller.signal })
     if (!res.ok) throw new Error(`${url} → HTTP ${res.status}`)
     const exported = runAsCommonJs(await res.text())
     if (!looksLikeSocketIo(exported)) throw new Error(`${url} 跑完没导出 io()：${describeExport(exported)}`)

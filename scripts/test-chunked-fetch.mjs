@@ -399,6 +399,14 @@ await check('快网最多四路，省流量与 2G 始终单路', () => {
   assert.equal(adaptiveChunkConcurrency(8 * 1024 * 1024, 500, { effectiveType: '2g' }), 1)
 })
 
+await check('有真实样本时不因浏览器报 3g 压成单路（2026-11-18《西游释厄传》：报 3g，实测 9.5 Mbps）', () => {
+  const hints = { effectiveType: '3g', downlinkMbps: 1.25, rttMs: 250 }
+  // 256KB 正文 220ms ≈ 9.5 Mbps
+  assert.equal(adaptiveChunkConcurrency(256 * 1024, 220, hints), 3)
+  assert.equal(adaptiveChunkConcurrency(256 * 1024, 2000, hints), 1, '样本本身慢（约 1 Mbps）仍单路')
+  assert.equal(adaptiveChunkConcurrency(0, 0, hints), 1, '还没测到时按浏览器提示兜底')
+})
+
 await check('低内存或双核设备把并发封顶为两路', () => {
   assert.equal(adaptiveChunkConcurrency(8 * 1024 * 1024, 500, { deviceMemoryGb: 2 }), 2)
   assert.equal(adaptiveChunkConcurrency(8 * 1024 * 1024, 500, { hardwareConcurrency: 2 }), 2)
