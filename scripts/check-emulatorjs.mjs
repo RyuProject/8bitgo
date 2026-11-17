@@ -124,6 +124,19 @@ for (const [needle, what, why] of [
   if (!js.includes(needle)) fail(`emulator.min.js 缺「${what}」补丁 —— ${why}`, 'npm run ejspatch，然后换 EJS_RUNTIME_GENERATION')
 }
 
+// 上面只查补丁字符串在不在。2026-11-17 补丁写进去一个没转义 `/` 的正则，字符串全都在、构建全绿，
+// 引擎却整份解析不了：loader 的 import() 失败，所有 EmulatorJS 平台报「Failed to load emulator.min.js」。
+{
+  const { moduleSyntaxError } = await import('./lib/js-module-syntax.mjs')
+  const syntaxError = moduleSyntaxError(js)
+  if (syntaxError) {
+    fail(
+      `emulator.min.js 不是合法的 ES 模块（${syntaxError}），loader 的 import() 会失败，所有 EmulatorJS 平台都起不来`,
+      '检查 scripts/patch-emulatorjs.mjs 刚改的补丁字符串（正则字面量里的 `/` 要转义），修好后 npm run ejspatch',
+    )
+  }
+}
+
 if (!existsSync(join(dir, 'cores', 'fbneo-wasm.data'))) {
   fail(
     'public/emulatorjs/cores/ 里没有核心（至少 fbneo-wasm.data 该在）',
