@@ -3533,6 +3533,10 @@ EdgeOne 只能用境外（香港）节点。主站、ROM、Pages 子域都不受
     modulepreload 会解析回 8bitgo.com，同一个 chunk 被下两遍。**Worker 例外**（文件名 `*Worker-<hash>.js`）：
     浏览器禁止跨源启动 Worker，所以它们固定用 `self.location.origin + /assets/...`；新增 Worker 时文件名要带 `Worker`。
   - 兜底：入口脚本 / 样式表 `onerror` 退回同源；API 网络错误或 502–504 退回同源，网络错误后本次会话不再走加速入口。
+  - ⚠️ **主站不发 Early Hints 的 `Link`**（2026-11-18 /rooms）：Cloudflare 按浏览器看到的地址缓存 Early Hints，
+    `__cdn=cn` 不进它的键，大陆 / 非大陆两份资源写法互相覆盖。大陆访客收到的 103 从 8bitgo.com 预载入口包，HTML 却从
+    EdgeOne 取，下两遍还报「preloaded … but not used」。`ssr.js` 在有大陆加速入口时（`cnEdgeOrigin` 非空、非 cnSite）
+    不发 Link；已缓存的旧 103 要在 Cloudflare 关掉 `early_hints` 或清缓存才消失。回归：`npm run test:seo-performance`。
     写操作、后台请求、socket.io、SSE、OAuth 跳转都留在同源。
   - **EmulatorJS 引擎与核心也在内**（2026-11-08，《合金弹头 2》大陆玩家反馈加载极慢）：ROM 早已走 cn-assets，
     loader / emulator.min.js / FBNeo 8MB 核心却还从 Cloudflare 洛杉矶取。`paths.ts` 的 `ejsBase()` 给大陆访客返回

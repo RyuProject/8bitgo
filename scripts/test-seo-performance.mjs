@@ -111,6 +111,9 @@ check('Early Hints：从构建模板提取入口 JS / CSS / 本地字体和封�
   assert.equal(earlyHintLinks('<html><head></head></html>'), '')
   const src = read('server/src/ssr.js')
   assert.match(src, /Link: earlyHints/, 'SSR 200 响应没有带 Early Hints 的 Link 头')
+  // 2026-11-18 /rooms：Cloudflare 的 Early Hints 不分大陆 / 非大陆两份资源写法，主站有大陆加速入口时不能发 Link
+  assert.match(src, /const assetVariants = !cnSite && Boolean\(cnEdgeOrigin\(publicSiteUrl\(\)\)\)/)
+  assert.match(src, /const earlyHints = notFound \|\| assetVariants \? '' : earlyHintsFor\(page\)/)
 })
 
 check('大陆入口：封面 preconnect / dns-prefetch 换成 EdgeOne 封面域，其余不动', () => {
