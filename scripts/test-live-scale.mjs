@@ -288,7 +288,7 @@ check('看直播或联机时播放器缩到 8 列，自己玩时满宽 12 列', 
   )
   assert.match(
     GDP,
-    /cx\('w-full', twoColumn \? 'lg:col-span-8' : 'lg:col-span-12'\)/,
+    /twoColumn \? 'lg:col-span-8' : immersive \? 'lg:col-span-12' : 'lg:col-span-12 xl:col-span-9'/,
     '播放器那一层的列宽不对',
   )
 })
@@ -298,7 +298,7 @@ check('⚠️ 侧栏要显式排到第 9 列、第 1 行、跨两行', () => {
     不写这一条的话自动排版是：播放器 8 列落第 1 行 → 资料区 8 列放不下落第 2 行 →
     侧栏补到第 2 行右边。结果侧栏和**标题**齐平，比播放器矮一整行 —— 正是参考图里没有的样子。
   */
-  assert.match(GDP, /twoColumn && 'lg:col-start-9 lg:row-start-1 lg:row-span-2'/, '侧栏没有显式定位')
+  assert.match(GDP, /twoColumn\s*\? 'lg:col-span-4 lg:col-start-9 lg:row-start-1 lg:row-span-2'/, '侧栏没有显式定位')
 })
 
 check('⚠️ 播放器只能有一处 JSX —— 两套版面绝不能写成两套 JSX', () => {

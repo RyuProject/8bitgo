@@ -46,11 +46,16 @@ check('每个平台都声明了 runtime —— 一个 null 都不许有', () => 
   const nulls = found.filter((p) => p.runtime === 'null').map((p) => p.id)
   assert.deepEqual(
     nulls,
-    [],
+    ['symbian'],
     `${nulls.join('、')} 的 runtime 是 null。` +
       '这会让 ROM 探测回来之前 resolveRuntime 返回 undefined，页面谎报「该平台暂不支持在线运行」，' +
-      '探完又变回能玩。引擎有没有部署交给 available() 判，别用 null 表达。',
+      '探完又变回能玩。引擎有没有部署交给 available() 判，别用 null 表达。Symbian 是独立设备导入页面，不接通用播放器。',
   )
+})
+
+check('Symbian 必须留在自有固件导入页，不接通用播放器', () => {
+  assert.match(readFileSync(new URL('../src/AppRoutes.tsx', import.meta.url), 'utf8'), /path="\/symbian" element=\{<SymbianPage \/>\}/)
+  assert.match(src, /id: 'symbian',[\s\S]*?runtime: null/)
 })
 
 check('java 走 j2me（这条是上面那个 bug 的原案发地）', () => {

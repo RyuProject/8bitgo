@@ -581,8 +581,11 @@ JS 侧少一整份 ROM（64MB ROM 就是 64MB），所有 EmulatorJS 平台受�
 `build:melondsds` 的 `patchBorrowPersistentRom` 去掉中间那份：前端经 `GET_GAME_INFO_EXT` 确认 `persistent_data`、指针和长度都对上时，
 `GameInfo` 只借用 RetroArch 的缓冲，否则照旧复制。RetroArch 在 `retro_unload_game` / `retro_deinit` 之后才 `content_deinit`，借用是安全的。
 预计开局需要的堆降到约 294MiB；报告里出现 `borrowsPersistentRom: true` 才是带这项修复的包。
-⚠️ 这项修复**还没出包**：2026-11-16 本机磁盘只剩 2GB，装不下 emsdk 和构建目录。出包后要用同一份 ROM 复测堆峰值，
-并抽测几款 NDS 的开局、即时存档 / 读档、重置。
+这项修复已按锁定的上游提交出包：`public/emulatorjs/cores/reports/melondsds.json` 的
+`borrowsPersistentRom: true`、`sha256` 与 `src/emulator/ndsCorePreference.ts` 必须一致；每次重编后重跑
+`npm run test:melondsds-abi`、`npm run test:ejs-cores` 和 `npm run test:nds-crash`，再用同一份 ROM 复测堆峰值，
+并抽测几款 NDS 的开局、即时存档 / 读档、重置。ROM 借用只省掉前端 `GameInfo` 的一整份复制，不代表所有裸 `Aborted()`
+都已根除；内存探针和干净页面恢复仍要保留。
 复现方法：裸 EmulatorJS 页必须同时给 `system_directory`（见 `configureNdsSystemDirectory`）和 `melonds_sysfile_mode=builtin`。
 少了任何一项，核心就停在 `No system directory is available` / RetroArch 菜单，堆只到 315MiB，看起来“省了内存”，其实游戏根本没加载。
 用 `getState()` 能取到约 19MB 的状态，才算真的开机了。

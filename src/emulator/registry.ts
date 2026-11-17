@@ -86,7 +86,7 @@ export function resolveRuntime(target: PlatformId | ResolveContext): Runtime | u
   }
 
   // 逐游戏覆盖优先：但必须可用且支持本平台，否则回落默认逻辑。
-  // 后台固定的 EmulatorJS 在 NES / GB / GBC 上都依赖 WebGL；无 WebGL 时已在上面先选 2D 备用运行时。
+  // 后台固定的 EmulatorJS 在 NES / GB / GBC 上也必须满足各自的画面与运行时要求；能力不足时已先选备用运行时。
   const overrideNeedsWebgl = (platform === 'nes' || platform === 'gb' || platform === 'gbc') &&
     ctx.webglUnavailable && ctx.runtimeOverride === 'emulatorjs'
   if (ctx.runtimeOverride && !overrideNeedsWebgl) {

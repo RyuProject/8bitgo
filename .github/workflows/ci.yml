@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+
+      - name: Install root dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Install server dependencies
+        run: npm ci --prefix server --no-audit --no-fund
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type-check
+        run: npx tsc -b --pretty false
+
+      - name: Run emulator and ROM recovery regressions
+        run: |
+          npm run test:load-progress
+          npm run test:gamepad
+          npm run test:remote-disc
+          npm run test:nes-mapper
+          npm run test:play-arcade
+          npm run test:ejs-download
+          npm run test:startup-diagnostics
+
+      - name: Run security regressions
+        run: |
+          node server/scripts/test-playcount.mjs
+          npm --prefix server run test:openapi
+          npm --prefix server run test:ratings
+          npm --prefix server run test:save-quota
+          npm --prefix server run test:diag-alert
+          npm --prefix server run test:config
+          npm --prefix server run test:cn-edge
+          npm --prefix server run test:live
+          npm run test:sse
+
+      - name: Check Cloudflare Worker sources
+        run: npm --prefix worker run check
+
+      - name: Build standalone Worker
+        run: npm --prefix worker run build:standalone
+
+      - name: Parse standalone Worker bundles
+        run: node --check worker/standalone/rom-worker.js && node --check worker/standalone/embed-worker.js
+
+      - name: Check generated Worker is in sync
+        run: git diff --exit-code -- worker/standalone/rom-worker.js worker/standalone/embed-worker.js
+
+      - name: Test Cloudflare Worker
+        run: npm --prefix worker test

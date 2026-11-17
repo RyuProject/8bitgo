@@ -241,8 +241,8 @@ for (const m of [0, 25, 256, 555, 4095]) {
   assert.equal(preferredNesRuntime({ webglUnavailable: true, jsnesCompatible: true }), 'jsnes')
   assert.equal(
     preferredNesRuntime({ webglUnavailable: true, jsnesCompatible: false }),
-    'emulatorjs',
-    '明确不支持的 mapper 仍交给 EmulatorJS（由它报 WebGL 原因），不硬塞给必败的 jsnes',
+    'jsnes',
+    '明确不支持的 mapper 也不能退回必败的 EmulatorJS；jsnes 启动检查会显示格式限制',
   )
   {
     const { readFileSync } = await import('node:fs')

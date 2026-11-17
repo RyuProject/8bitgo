@@ -17,9 +17,12 @@ assert.ok(
     && startNetplay.indexOf('await fetchIceConfig()') < startNetplay.indexOf('np.openRoom('),
   '建 PeerConnection 前必须先等短期 TURN 凭证刷新完成',
 )
+const slugHookAt = adapter.indexOf('const addSlug = Boolean(options.gameSlug')
+const slugHookEnd = adapter.indexOf('return realEmit(event, ...emitArgs)', slugHookAt)
+assert.ok(slugHookAt >= 0 && slugHookEnd > slugHookAt, '必须能定位最后一刻的房间身份补丁')
 assert.match(
-  adapter,
-  /const roomEvent = event === 'open-room' \|\| event === 'join-room'[\s\S]{0,1500}if \(addSlug && roomEvent[\s\S]{0,500}game_slug: options\.gameSlug/,
+  adapter.slice(slugHookAt, slugHookEnd),
+  /event === 'open-room' \|\| event === 'join-room'[\s\S]*?game_slug: options\.gameSlug/,
   '开房和加房都必须带稳定 slug，不能只靠可能碰撞的 32 位 gameId',
 )
 

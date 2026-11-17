@@ -56,7 +56,8 @@ assert.match(adapter, /flashLegacyBundleRules\([\s\S]*loaded\.data/, 'Ruffle 必
 assert.match(adapter, /new frameGlobal\.RegExp\(from\.source, from\.flags\)/,
   '正则必须在 Ruffle iframe realm 重建，否则 instanceof RegExp 会失效')
 assert.match(player, /Flash 站点锁/, '站点锁是确定性坏 ROM，不能先原样重试')
-assert.match(singleUpload, /flashCompatibilityIssue\(await file\.arrayBuffer\(\)\)/, '单 SWF 上传必须拦截已知坏包')
-assert.match(bundleUpload, /flashCompatibilityIssue\(new Uint8Array\(mainData\)\.buffer\)/, '多 SWF 包必须在上传前检查主文件')
+assert.match(singleUpload, /flashCompatibilityIssue\(data\)/, '单 SWF 上传必须拦截已知坏包')
+assert.match(singleUpload, /const issue = await flashCompatibilityIssue\(data\)/, '单 SWF 上传必须在上传前完成校验')
+assert.match(bundleUpload, /const mainBuffer = new Uint8Array\(mainData\)\.buffer[\s\S]*flashCompatibilityIssue\(mainBuffer\)/, '多 SWF 包必须在上传前检查主文件')
 
 console.log('Flash 站点锁兼容性测试全部通过。')

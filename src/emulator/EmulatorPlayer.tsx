@@ -2243,7 +2243,11 @@ export function EmulatorPlayer({
         // 已经跑起来了就不管了：这时候换引擎等于把玩家的进度扔掉，而游戏明明在跑
         if (ready) return
         const ruledOut = [...(session.ruledOut ?? []), session.runtime.id]
-        const next = runtimesFor(session.platform).find((r) => !ruledOut.includes(r.id))
+        // NES 的 EmulatorJS 必须有 WebGL。jsnes 明确拒绝 ROM 后，若当前环境没有 WebGL，
+        // 通用候选表里的 EmulatorJS 只是注定失败的第二跳；直接报告环境限制，避免循环重开。
+        const next = runtimesFor(session.platform).find((r) =>
+          !ruledOut.includes(r.id) && !(session.platform === 'nes' && webglUnavailable && r.id === 'emulatorjs'),
+        )
         console.warn(
           `[8bitgo/runtime] ${session.runtime.id} 跑不了这份 ROM（${reason}）` +
             (next ? `，换 ${next.id} 重来` : '，而且没有别的引擎可用了'),
@@ -2257,7 +2261,7 @@ export function EmulatorPlayer({
           }
           reportStartupFailure(reason)
           endSession()
-          setError(reason)
+          setError(session.platform === 'nes' && webglUnavailable ? t.runtime.ejsWebglUnavailable : reason)
           setStatus('error')
           return
         }
@@ -2399,8 +2403,7 @@ export function EmulatorPlayer({
         */
         const canFailoverRom = () =>
           !ready &&
-          errorScope !== 'runtime' &&
-          errorScope !== 'config' &&
+          (errorScope === 'content' || errorScope === 'network' || errorScope === 'deterministic') &&
           typeof session.game === 'string' &&
           canRestartInPlace(session) &&
           Boolean(onRomLoadFailed?.(message, errorScope === 'network' ? 'network' : 'content'))

@@ -432,7 +432,7 @@ const JSDOS = strip(readFileSync(new URL('../src/emulator/adapters/jsdos.ts', im
 await check('⚠️ 只有主源那一份写缓存', () => {
   assert.match(
     SRC,
-    /if \(key && i === 0\) void romCachePut\(/,
+    /if \(key && source\.url === primaryUrl\) void romCachePut\(/,
     '备用源的内容按主源的 key 存进去 = 把一个可能不同的 Windows 永久钉在玩家本地，主源好了也换不回来',
   )
 })

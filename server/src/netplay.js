@@ -203,7 +203,7 @@ function notifyRooms() {
           watchers.delete(w)
           continue
         }
-        if (w.watch) sseWrite(w.res, roomEvent(w.watch))
+        if (w.watch && !sseWrite(w.res, roomEvent(w.watch))) watchers.delete(w)
       } catch {
         watchers.delete(w)
       }
@@ -1034,8 +1034,14 @@ export function attachNetplay(
     watchers.add(w)
 
     const list = netplayRooms()
-    res.write(`event: rooms\ndata: ${JSON.stringify(list)}\n\n`)
-    if (watch) res.write(roomEvent(watch))
+    if (!sseWrite(res, `event: rooms\ndata: ${JSON.stringify(list)}\n\n`)) {
+      watchers.delete(w)
+      return
+    }
+    if (watch && !sseWrite(res, roomEvent(watch))) {
+      watchers.delete(w)
+      return
+    }
 
     const beat = setInterval(() => {
       try {

@@ -115,10 +115,10 @@ assert.deepEqual(log, ['+a', '+left', '-a'])
 throwOnce = true
 tick()
 assert.ok(frame, '抛异常之后必须仍然排了下一拍 —— 这就是 jsnes 那个 bug')
+assert.deepEqual(log, ['+a', '+left', '-a', '-left'], '读不到快照时按空手柄释放旧按键，避免把按键卡在按下状态')
 pads = [pad([9])] // START
 tick()
-// 顺序按 ALL 的次序走（start 在 left 前面），只要求一帧内该发的都发了
-assert.deepEqual(log, ['+a', '+left', '-a', '+start', '-left'], '抛异常之后仍然照常工作')
+assert.deepEqual(log, ['+a', '+left', '-a', '-left', '+start'], '异常后轮询继续，新的手柄状态能正常输入')
 
 /* ---------------- stop 要把按着的键松开 ---------------- */
 

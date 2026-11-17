@@ -11,6 +11,7 @@ const built = await build({
     resolveDir: process.cwd(), sourcefile: 'remote-archive-test-entry.ts', loader: 'ts',
   },
   bundle: true, write: false, platform: 'node', format: 'esm', logLevel: 'silent',
+  define: { 'import.meta.env': '{}' },
   plugins: [{
     name: 'memory-cache',
     setup(buildApi) {

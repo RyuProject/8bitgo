@@ -13,7 +13,8 @@ import { focusFrame, frameGamepads } from '../frameFocus'
 import { captureCanvasScreenshot } from '../recorder'
 import { PPSSPP_VERSION, ppssppFrameUrl } from '../paths'
 import { probeRange } from '../remoteDisc'
-import { downloadPspDisc, PspDiscStorageError } from '../pspFullDownload'
+import { isRomContentFailure, isRomNetworkFailure, markRomContentFailure, markRomNetworkFailure } from '../loadProgress'
+import { downloadPspDisc } from '../pspFullDownload'
 import { fmt, getT } from '@/services/i18n'
 import { diagLog, registerDiagnosticSnapshot, watchFramePerformance } from '@/services/startupDiagnostics'
 
@@ -134,7 +135,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     pending.clear()
   }
 
-  const failSession = (message: string, pendingMessage = 'PPSSPP 会话启动失败', scope?: 'runtime' | 'content') => {
+  const failSession = (message: string, pendingMessage = 'PPSSPP 会话启动失败', scope: 'runtime' | 'content' | 'config' | 'network' = 'runtime') => {
     if (destroyed || fatalReported) return
     fatalReported = true
     window.clearTimeout(hostTimer)
@@ -143,7 +144,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     options.onError?.(message, scope)
   }
 
-  const reportFatal = (message: string, scope?: 'runtime' | 'content') => {
+  const reportFatal = (message: string, scope: 'runtime' | 'content' | 'config' | 'network' = 'runtime') => {
     // 2026-11-02 后台：沙特玩家《初音未来》两次「Out of memory」。PSP 核心是 512MB 起步的共享内存，
     // 再加 96MB 读盘缓存，手机上长不动就 abort；重试同一台机器前要先腾出内存，直说比一串英文管用。
     if (/out of memory|could not allocate memory|cannot allocate wasm memory/i.test(message)) {
@@ -178,21 +179,35 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (options.pspLoadMode === 'download') options.onProgress?.({ phase: 'rom', loaded: 0 })
     // host-ready 只说明 iframe 的桥已经加载，不能拿它当网络超时。旧实现会在一个永不返回的
     // Range 探测上无限挂住，而且 destroy 后请求仍继续占连接；这里给探测独立的截止时间。
-    const probeTimer = window.setTimeout(() => probeController.abort(), RANGE_PROBE_TIMEOUT_MS)
+    let probeTimedOut = false
+    const probeTimer = window.setTimeout(() => {
+      probeTimedOut = true
+      probeController.abort()
+    }, RANGE_PROBE_TIMEOUT_MS)
     let probe: Awaited<ReturnType<typeof probeRange>>
+    let probeNetworkFailure = false
+    let probeMissingResource = false
     try {
       probe = await startRemoteProbe(options.game)
+      probeNetworkFailure = Boolean(probe.networkFailure)
+      probeMissingResource = Boolean(probe.missingResource)
       // 提前探测可能刚好撞上短暂断网；iframe 下载的这段时间网络已恢复时，不能把那次
       // 失败永久当成“服务器不支持 Range”。正式挂盘前只补探一次，仍受同一个截止时间约束。
       if (speculativeProbe && !probe.rangeSupported && !probeController.signal.aborted) {
         speculativeProbe = false
         remoteProbe = null
         probe = await startRemoteProbe(options.game)
+        probeNetworkFailure ||= Boolean(probe.networkFailure)
+        probeMissingResource ||= Boolean(probe.missingResource)
       }
     } finally {
       window.clearTimeout(probeTimer)
     }
-    if (!probe.rangeSupported || !probe.size) throw new Error(rt.ppssppNoRange)
+    if (!probe.rangeSupported || !probe.size) {
+      if (probeNetworkFailure || probeTimedOut) throw markRomNetworkFailure(new Error('PPSSPP 光盘 Range 探测网络失败'))
+      if (probeMissingResource) throw markRomContentFailure(new Error('PPSSPP 光盘 ROM 返回 HTTP 404/410'))
+      throw new Error(rt.ppssppNoRange)
+    }
     if (options.pspLoadMode === 'download') {
       return downloadPspDisc(
         options.game,
@@ -302,11 +317,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     // 而 host 只允许 start 一次，外层就会把真实成功误报成失败。
     if (bootStarted || destroyed || fatalReported) return
     bootStarted = true
+    let romPrepared = false
     try {
       if (!globalThis.crossOriginIsolated || typeof SharedArrayBuffer === 'undefined') {
         throw new Error(rt.ppssppNeedsIsolation)
       }
       const game = await prepareGame()
+      romPrepared = true
       if (destroyed || fatalReported) return
       // 存档包必须带站内游戏身份，不能只信 PPSSPP 盘内文件名：同一游戏的地区版/汉化版
       // 可能共享标题，读错状态的结果通常不是明确报错，而是几分钟后随机崩溃。
@@ -346,8 +363,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       if (!destroyed) {
         reportFatal(
           error instanceof Error ? error.message : String(error),
-          error instanceof PspDiscStorageError || (error instanceof Error && error.name === 'QuotaExceededError')
-            ? 'runtime' : undefined,
+          !romPrepared && isRomNetworkFailure(error)
+            ? 'network'
+            : isRomContentFailure(error)
+              ? 'content'
+              : error instanceof Error && (error.message === rt.ppssppNeedsIsolation || error.message === rt.ppssppNoRange)
+                ? 'config'
+                : 'runtime',
         )
       }
     }

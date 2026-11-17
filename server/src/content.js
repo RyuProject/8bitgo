@@ -107,7 +107,7 @@ const HOME_SIZE = 12
  * 首页「最多人玩」那一栏最多取 12 款，供桌面 6 列 × 2 行使用；窄屏由前端按列数少显示几款。
  * 必须 ≤ HOME_SIZE —— 它是从那次查询的结果里切出来的，不另跑一次 SQL。
  */
-const HOT_SIZE = 12
+const HOT_SIZE = 10
 
 /** 首页「分类网格」下面那几栏各列几款游戏 */
 const GENRE_COLUMNS = ['action', 'adventure', 'rpg', 'puzzle']

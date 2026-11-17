@@ -226,14 +226,21 @@ function logStorageFailure(error, operation) {
   console.warn('[r2-storage-failure]', JSON.stringify({ operation, error: storageErrorDetails(error) }))
 }
 
+/** Workers R2 有时只在异常消息里带 10024，而不会设置 NoSuchUpload code 属性。 */
+function isMissingMultipartUpload(error) {
+  const code = String(error?.code ?? '').toLowerCase()
+  const message = error instanceof Error ? error.message : String(error)
+  return code === 'nosuchupload' || code === '10024' ||
+    /\b(?:NoSuchUpload|10024)\b/i.test(message) ||
+    /specified multipart upload does not exist/i.test(message)
+}
+
 /** Unknown/transient R2 failures MUST NOT invalidate a client's resumable upload. */
 function storageFailure(error, cors, operation = 'storage') {
   if (error instanceof HttpError) return json({ error: error.message, code: error.code }, cors, error.status)
-  const message = error instanceof Error ? error.message : String(error)
   logStorageFailure(error, operation)
-  // Recognize only explicit NoSuchUpload. Generic 400/409/messages are not evidence.
-  const gone = error?.code === 'NoSuchUpload' || /\bNoSuchUpload\b/i.test(message)
-  if (gone) return json({ error: '分片会话不存在或已结束', code: 'upload_gone', fatal: true, retryable: false }, cors, 409)
+  // 只有明确的 R2 10024 / NoSuchUpload 才作废续传；其它未知故障仍保留上传账本。
+  if (isMissingMultipartUpload(error)) return json({ error: '分片会话不存在或已结束', code: 'upload_gone', fatal: true, retryable: false }, cors, 409)
   return json({ error: `${operation} 暂时失败，请保留续传信息后重试`, code: 'storage_unavailable', fatal: false, retryable: true }, cors, 503, { 'Retry-After': '2' })
 }
 
@@ -314,9 +321,9 @@ function exactByteRange(value) {
   const length = end - offset + 1
   return Number.isSafeInteger(length) ? { offset, length } : null
 }
-async function locatePinnedRange(env, key, etag, range) {
+async function locatePinnedRange(env, key, etag, range, thumbFallback = true) {
   const buckets = readBuckets(env, key)
-  const base = thumbBaseKey(key)
+  const base = thumbFallback ? thumbBaseKey(key) : null
   for (const servedKey of base ? [key, base] : [key]) {
     for (const bucket of buckets) {
       const object = await bucket.get(servedKey, { onlyIf: { etagMatches: etag }, range })
@@ -325,9 +332,9 @@ async function locatePinnedRange(env, key, etag, range) {
   }
   return null
 }
-async function locate(env, key, method) {
+async function locate(env, key, method, thumbFallback = true) {
   const buckets = readBuckets(env, key)
-  const base = thumbBaseKey(key)
+  const base = thumbFallback ? thumbBaseKey(key) : null
   for (const servedKey of base ? [key, base] : [key]) {
     for (const bucket of buckets) {
       const object = await bucket[method](servedKey)
@@ -336,20 +343,24 @@ async function locate(env, key, method) {
   }
   return null
 }
-function objectHeaders(object, servedKey, cors, policy, guessType) {
+function objectHeaders(object, servedKey, cors, policy, guessType, disposition = true) {
   const headers = new Headers(cors)
   object.writeHttpMetadata(headers)
   headers.set('ETag', object.httpEtag)
   headers.set('Last-Modified', new Date(object.uploaded).toUTCString())
   headers.set('Accept-Ranges', 'bytes')
-  headers.set('Cache-Control', policy)
+  // policy 为空时保留对象自己的 Cache-Control（html5 主机名复刻 R2 自定义域就靠这个）。
+  if (policy) headers.set('Cache-Control', policy)
   headers.set('X-Content-Type-Options', 'nosniff')
   // 这些对象本来就是公开读取且 CORS=*；显式允许跨源嵌入后，启用 COEP 的 PSP 详情页
   // 仍能显示 image.8bitgo.com 的封面/视频，而不会被 require-corp 当场拦掉。
   headers.set('Cross-Origin-Resource-Policy', 'cross-origin')
   if (!headers.has('Content-Type')) headers.set('Content-Type', guessType(servedKey))
-  const filename = encodeURIComponent(servedKey.split('/').pop() || 'rom')
-  headers.set('Content-Disposition', `inline; filename="${filename}"; filename*=UTF-8''${filename}`)
+  // disposition=false 时只保留对象自己的 contentDisposition 元数据（R2 自定义域的行为）。
+  if (disposition) {
+    const filename = encodeURIComponent(servedKey.split('/').pop() || 'rom')
+    headers.set('Content-Disposition', `inline; filename="${filename}"; filename*=UTF-8''${filename}`)
+  }
   return headers
 }
 
@@ -372,14 +383,28 @@ async function cancelBody(object) {
     try { await object.body.cancel() } catch { /* response already closed */ }
   }
 }
-async function serveObject(request, env, key, cors, policy, guessType, expectedVersion = '') {
+/**
+ * options.thumbFallback：缺 `foo-96.png` 时回退 `foo.png`（封面缩略图用）；html5 主机名要关掉，
+ *   R2 自定义域没有这个行为，缺文件就该 404。
+ * options.disposition：补 `Content-Disposition: inline; filename=…`；html5 关掉，原样用对象元数据。
+ */
+async function serveObject(request, env, key, cors, policy, guessType, expectedVersion = '', options = {}) {
+  const thumbFallback = options.thumbFallback !== false
+  const disposition = options.disposition !== false
+  const headersFor = (object, servedKey) => objectHeaders(object, servedKey, cors, policy, guessType, disposition)
   const h = request.headers
   const conditional = ['If-Match', 'If-None-Match', 'If-Modified-Since', 'If-Unmodified-Since'].some(n => h.has(n))
   const needsMetadata = request.method === 'HEAD' || conditional || h.has('Range')
   if (!needsMetadata) {
-    const found = await locate(env, key, 'get')
+    const found = await locate(env, key, 'get', thumbFallback)
     if (!found) return json({ error: 'not found' }, cors, 404)
-    const headers = objectHeaders(found.object, found.servedKey, cors, policy, guessType)
+    const headers = headersFor(found.object, found.servedKey)
+    // romv 已把 URL 钉在某一代 ETag 上：对象被替换后整份 GET 同样回 412，不能把新字节
+    // 交给旧版本地址（否则浏览器与边缘都会把新内容长期缓存在旧 URL 下）。
+    if (expectedVersion && etagVersion(found.object.httpEtag) !== expectedVersion) {
+      await cancelBody(found.object)
+      return new Response(null, { status: 412, headers })
+    }
     headers.set('Content-Length', String(found.object.size))
     return new Response(found.object.body, r2BodyResponseInit(headers))
   }
@@ -396,10 +421,10 @@ async function serveObject(request, env, key, cors, policy, guessType, expectedV
     if (h.has('If-Match') && !matches(h.get('If-Match'), expectedHttpEtag, false)) {
       return new Response(null, { status: 412, headers: new Headers(cors) })
     }
-    const found = await locatePinnedRange(env, key, expectedVersion, pinnedRange)
+    const found = await locatePinnedRange(env, key, expectedVersion, pinnedRange, thumbFallback)
     if (!found) return json({ error: 'not found' }, cors, 404)
     const { object, servedKey } = found
-    const headers = objectHeaders(object, servedKey, cors, policy, guessType)
+    const headers = headersFor(object, servedKey)
     if (!object.body || etagVersion(object.httpEtag) !== expectedVersion) {
       await cancelBody(object)
       return new Response(null, { status: 412, headers })
@@ -421,10 +446,10 @@ async function serveObject(request, env, key, cors, policy, guessType, expectedV
   // Pin head->get to the ETag. If a concurrent overwrite happens, retry metadata,
   // never combine the previous object's size/validator with new object bytes.
   for (let attempt = 0; attempt < 3; attempt++) {
-    const found = await locate(env, key, 'head')
+    const found = await locate(env, key, 'head', thumbFallback)
     if (!found) return json({ error: h.has('If-Match') ? 'precondition failed' : 'not found' }, cors, h.has('If-Match') ? 412 : 404)
     const { object: metadata, bucket, servedKey } = found
-    const headers = objectHeaders(metadata, servedKey, cors, policy, guessType)
+    const headers = headersFor(metadata, servedKey)
     // Range v1 的旧 PPSSPP 核心还不会发 If-Match，但播放 URL 已带对象 ETag。
     // Worker 在这里补上代次校验，宁可 412 明确中止，也不能在同一局里混读新旧光盘扇区。
     if (expectedVersion && etagVersion(metadata.httpEtag) !== expectedVersion) {
@@ -449,7 +474,7 @@ async function serveObject(request, env, key, cors, policy, guessType, expectedV
       await cancelBody(object)
       continue
     }
-    const finalHeaders = objectHeaders(object, servedKey, cors, policy, guessType)
+    const finalHeaders = headersFor(object, servedKey)
     if (range) {
       finalHeaders.set('Content-Range', `bytes ${range.offset}-${range.offset + range.length - 1}/${object.size}`)
       finalHeaders.set('Content-Length', String(range.length))
@@ -457,6 +482,200 @@ async function serveObject(request, env, key, cors, policy, guessType, expectedV
     return new Response(object.body, r2BodyResponseInit(finalHeaders, range ? 206 : 200))
   }
   throw new HttpError(503, '文件正在被并发更新，请重试', 'object_changed')
+}
+
+
+// ===== src/html5.js =====
+/**
+ * html5.8bitgo.com：网页游戏素材（PvZ、Undertale 授权包…）的只读公开域名，整桶读 WEBGAMES。
+ *
+ * 以前它是 8bitgo-webgame 桶的 R2 自定义域。NS 迁出 Cloudflare 后，R2 自定义域只能挂在本区域，
+ * 而 Cloudflare for SaaS 区域（8bitgo.top）上的 custom hostname 只能经 Worker 读桶，所以这里
+ * 原样复刻 R2 自定义域的对外行为（见 deploy/saas/README.md）：
+ *
+ * - 只读：GET / HEAD / OPTIONS。这个主机名上**绝不能**走 index.js 的管理接口（PUT / DELETE /
+ *   list / multipart），否则公开素材域名就多出一条写入口，哪怕要口令也不该在这里出现。
+ * - CORS 白名单与桶上的 R2 CORS 策略一致（deploy/cloudflare-pages/undertale-r2-cors.json）：
+ *   只认 HTML5_ALLOWED_ORIGINS，按来源反射 ACAO；预检不通过回 403。它只限制浏览器脚本读取，
+ *   不是鉴权：素材仍是公开 GET；若内容需要访问控制，必须另加服务端授权或短期签名 URL。
+ * - Cache-Control 用对象自己的元数据（PvZ 的内容寻址包是 immutable），没有才给默认的短缓存。
+ * - 整份 200 进 Cache API；存进去的副本**不带 CORS 头**，每次按当前请求的 Origin 重新补，
+ *   否则 A 来源的 ACAO 会被缓存后发给 B 来源。
+ * - 缓存键**去掉查询串**：对象只按路径取，查询串不改变内容；保留它的话任何人用随机 `?x=` 就能
+ *   让每个请求都读一次 R2 再写一份最多 64MB 的缓存。代价是 `?v=` 不能再拿来绕开本 Worker 的
+ *   边缘缓存（对象被原地替换后最多晚 s-maxage 生效）；需要即时换内容的素材应换路径（PvZ 已是内容寻址）。
+ * - 命中缓存时按缓存副本的 ETag / Last-Modified 自己判 If-None-Match / If-Modified-Since，回 304；
+ *   默认策略是 must-revalidate，浏览器每 5 分钟都会带条件头来问，不能每次回整份。
+ * - 不做封面缩略图回退（缺 foo-96.png 就是 404），也不补 Content-Disposition：R2 自定义域都没有这两样。
+ */
+const HTML5_METHODS = 'GET, HEAD'
+const HTML5_PREFLIGHT_MAX_AGE = '3000'
+const HTML5_EXPOSE_HEADERS = 'ETag, Content-Length, Content-Range, Accept-Ranges'
+const HTML5_CORS_HEADER_NAMES = [
+  'Access-Control-Allow-Origin', 'Access-Control-Expose-Headers', 'Timing-Allow-Origin',
+]
+// 和 index.js 的整份缓存上限一致：clone() 两路速度不同，差额攒在 Worker 内存里。
+const HTML5_CACHE_MAX_BYTES = 64 * 1024 * 1024
+const HTML5_DEFAULT_CACHE_CONTROL = 'public, max-age=300, s-maxage=600, must-revalidate'
+const HTML5_FIXED_HOSTS = ['html5.8bitgo.com']
+
+function html5List(value) {
+  return String(value || '').split(',').map((s) => s.trim()).filter(Boolean)
+}
+
+function html5Host(url, env) {
+  // 固定公开域名即使漏配变量也必须进入只读处理；不能因此掉进通用 ROM 管理路由。
+  return [...HTML5_FIXED_HOSTS, ...html5List(env.HTML5_HOSTS)]
+    .map((h) => h.toLowerCase()).includes(url.hostname.toLowerCase())
+}
+
+/** 与 R2 CORS 相同的匹配：精确来源，或 `https://*.example.com` 匹配任意层级子域（不含裸域）。 */
+function html5OriginAllowed(origin, env) {
+  if (!origin) return false
+  let parsed
+  try { parsed = new URL(origin) } catch { return false }
+  if (parsed.origin !== origin) return false
+  for (const rule of html5List(env.HTML5_ALLOWED_ORIGINS)) {
+    if (rule === origin) return true
+    const wildcard = /^(https?):\/\/\*\.([a-z0-9.-]+)$/i.exec(rule)
+    if (wildcard && parsed.protocol === `${wildcard[1].toLowerCase()}:` &&
+      parsed.hostname.toLowerCase().endsWith(`.${wildcard[2].toLowerCase()}`) && !parsed.port) return true
+  }
+  return false
+}
+
+function html5Cors(request, env) {
+  const origin = request.headers.get('Origin') || ''
+  const headers = { Vary: 'Origin' }
+  if (html5OriginAllowed(origin, env)) {
+    headers['Access-Control-Allow-Origin'] = origin
+    headers['Access-Control-Expose-Headers'] = HTML5_EXPOSE_HEADERS
+    headers['Timing-Allow-Origin'] = origin
+  }
+  return headers
+}
+
+function html5WithCors(response, cors, extra = {}) {
+  const headers = new Headers(response.headers)
+  for (const name of HTML5_CORS_HEADER_NAMES) headers.delete(name)
+  for (const [name, value] of Object.entries({ ...cors, ...extra })) headers.set(name, value)
+  return new Response(response.body, r2BodyResponseInit(headers, response.status, response.statusText))
+}
+
+function html5Preflight(request, env) {
+  const origin = request.headers.get('Origin') || ''
+  const method = (request.headers.get('Access-Control-Request-Method') || '').toUpperCase()
+  if (!html5OriginAllowed(origin, env) || (method && !['GET', 'HEAD'].includes(method))) {
+    return new Response(null, { status: 403, headers: { Vary: 'Origin' } })
+  }
+  const headers = {
+    'Access-Control-Allow-Origin': origin,
+    'Access-Control-Allow-Methods': HTML5_METHODS,
+    'Access-Control-Max-Age': HTML5_PREFLIGHT_MAX_AGE,
+    Vary: 'Origin',
+  }
+  const requested = request.headers.get('Access-Control-Request-Headers')
+  if (requested) headers['Access-Control-Allow-Headers'] = requested
+  return new Response(null, { status: 204, headers })
+}
+
+function html5Key(url) {
+  let key
+  try { key = decodeURIComponent(url.pathname.replace(/^\/+/, '')) } catch { return null }
+  if (!key || key.length > 1024 || key.endsWith('/') || key.includes('..') || key.includes('\\') ||
+    /[\x00-\x1f\x7f]/.test(key)) return null
+  return key
+}
+
+/** Cache API 键：只要路径，查询串一律去掉（见文件头）。 */
+function html5CacheKey(url) {
+  const key = new URL(url)
+  key.search = ''
+  key.hash = ''
+  return new Request(key.toString(), { method: 'GET' })
+}
+
+/** 缓存命中时自己判条件请求；只发和 304 有关的头，正文丢弃。 */
+function html5NotModified(hit, request, cors) {
+  const etag = hit.headers.get('ETag')
+  const lastModified = hit.headers.get('Last-Modified')
+  if (!etag && !lastModified) return null
+  if (conditionStatus(request.headers, { httpEtag: etag || '', uploaded: lastModified || NaN }) !== 304) return null
+  const headers = new Headers(cors)
+  for (const name of ['ETag', 'Last-Modified', 'Cache-Control', 'Expires', 'Content-Location']) {
+    const value = hit.headers.get(name)
+    if (value) headers.set(name, value)
+  }
+  headers.set('X-8BitGo-Edge-Cache', 'HIT')
+  return new Response(null, { status: 304, headers })
+}
+
+function html5Cacheable(request) {
+  const h = request.headers
+  return request.method === 'GET' && !h.has('Range') && !h.has('Authorization') &&
+    !h.has('If-Match') && !h.has('If-Unmodified-Since') && !h.has('If-Range') &&
+    !/\b(?:no-cache|no-store)\b/i.test(h.get('Cache-Control') || '') &&
+    !/\bno-cache\b/i.test(h.get('Pragma') || '')
+}
+
+function html5ResponseCacheable(response) {
+  const cacheControl = response.headers.get('Cache-Control') || ''
+  // Cache API 不会像浏览器 HTTP 缓存那样自动按 Vary 选择变体；未知 Vary 必须绕过，
+  // 否则 R2 上带 Accept-Encoding 等变化维度的对象可能把一个请求的表示发给另一个请求。
+  return !response.headers.has('Set-Cookie') && !response.headers.has('Vary') &&
+    !/\b(?:private|no-store|no-cache)\b/i.test(cacheControl) &&
+    !/\b(?:s-maxage|max-age)=\s*0\b/i.test(cacheControl)
+}
+
+async function handleHtml5(request, env, url, context) {
+  if (request.method === 'OPTIONS') return html5Preflight(request, env)
+  const cors = html5Cors(request, env)
+  if (!['GET', 'HEAD'].includes(request.method)) {
+    return json({ error: 'method not allowed' }, cors, 405, { Allow: `${HTML5_METHODS}, OPTIONS` })
+  }
+  if (!env.WEBGAMES) return json({ error: 'WEBGAMES 绑定缺失' }, cors, 503)
+  const key = html5Key(url)
+  if (!key) return json({ error: 'not found' }, cors, 404)
+
+  const cache = html5Cacheable(request) && context?.waitUntil ? globalThis.caches?.default : null
+  const cacheKey = cache ? html5CacheKey(url) : null
+  if (cache) {
+    try {
+      const hit = await cache.match(cacheKey)
+      if (hit) {
+        const notModified = html5NotModified(hit, request, cors)
+        if (notModified) {
+          // 不能 await：tee 出来的正文在另一支没结束前 cancel 永不落定（同 index.js 的预览视频）。
+          hit.body?.cancel().catch(() => {})
+          return notModified
+        }
+        return html5WithCors(hit, cors, { 'X-8BitGo-Edge-Cache': 'HIT' })
+      }
+    } catch (error) {
+      console.warn('[html5-cache] match failed', error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  // 只读这一个桶：readBuckets 对 ROMS 以外的绑定一概不看，CS 回退、封面桶都不会被牵进来。
+  const response = await serveObject(request, { ROMS: env.WEBGAMES }, key, {}, null, () => 'application/octet-stream', '',
+    { thumbFallback: false, disposition: false })
+  const headers = new Headers(response.headers)
+  if (response.ok && !headers.has('Cache-Control')) headers.set('Cache-Control', HTML5_DEFAULT_CACHE_CONTROL)
+  const base = new Response(response.body, r2BodyResponseInit(headers, response.status, response.statusText))
+
+  const length = Number(base.headers.get('Content-Length'))
+  if (cache && base.status === 200 && base.body && !base.headers.has('Content-Encoding') && html5ResponseCacheable(base) &&
+    Number.isSafeInteger(length) && length <= HTML5_CACHE_MAX_BYTES) {
+    context.waitUntil(cache.put(cacheKey, base.clone()).catch((error) => {
+      console.warn('[html5-cache] put failed', error instanceof Error ? error.message : String(error))
+    }))
+    return html5WithCors(base, cors, { 'X-8BitGo-Edge-Cache': 'MISS' })
+  }
+  if (request.method === 'HEAD' && base.body) {
+    await base.body.cancel().catch(() => {})
+    return html5WithCors(new Response(null, { status: base.status, headers: base.headers }), cors)
+  }
+  return html5WithCors(base, cors)
 }
 
 
@@ -620,6 +839,21 @@ function missingCoverResponse(response) {
   headers.set('Cache-Control', `public, max-age=0, s-maxage=${MISSING_COVER_TTL_SECONDS}`)
   return new Response('{"error":"not found"}', { status: 404, headers })
 }
+/**
+ * romv 只有长得像 R2 ETag（md5 hex，分片上传带 `-N`）时才算内容版本：这种 URL 由
+ * versionedRomUrl 按对象 ETag 拼出，Worker 能逐字核对；别的值核对不了，不给长缓存。
+ */
+const ROMV_ETAG = /^[a-f0-9]{32}(?:-\d+)?$/i
+export function romvVersion(url) {
+  const romv = url?.searchParams?.get('romv') || ''
+  return ROMV_ETAG.test(romv) ? romv : ''
+}
+function responseMatchesRomv(response, url) {
+  const romv = url.searchParams.get('romv')
+  if (!romv) return true
+  const etag = String(response.headers.get('ETag') || '').replace(/^W\//, '').replaceAll('"', '').trim()
+  return Boolean(romvVersion(url)) && etag === romv
+}
 const PREVIEW_VIDEO_PATH = /^\/videos\/[^/]+\.(?:mp4|webm)$/i
 const PREVIEW_VIDEO_CACHE_MAX_BYTES = 32 * 1024 * 1024
 const previewVideoFills = new Set()
@@ -631,7 +865,8 @@ export function edgeCacheEligible(request, url, cors) {
   if (request.headers.has('Authorization')) return false
   if (request.headers.has('If-Match') || request.headers.has('If-Unmodified-Since') || request.headers.has('If-Range')) return false
   if (/\b(?:no-cache|no-store)\b/i.test(request.headers.get('Cache-Control') || '')) return false
-  const versioned = Boolean(url.searchParams.get('romv') || url.searchParams.get('v'))
+  // romv 只在形如 ETag 时算版本（且 fetch 写缓存前还要核对响应 ETag 与它一致）。
+  const versioned = Boolean(romvVersion(url) || url.searchParams.get('v'))
   /*
    * Sockdrive 不能进 Cache API。线上实测 Cloudflare 在 cache.put/cache.match 后会丢掉 R2 的
    * Content-Encoding，却保留原始 Brotli 字节：MISS 能解码，HIT 则把压缩字节当 JSON / 磁盘块，
@@ -843,7 +1078,7 @@ export function cachePolicy(env, url) {
   ) {
     return cacheValue(env, 'IMMUTABLE_CACHE_CONTROL', IMMUTABLE_CACHE_CONTROL)
   }
-  const versioned = Boolean(url?.searchParams?.get('romv') || url?.searchParams?.get('v'))
+  const versioned = Boolean(romvVersion(url) || url?.searchParams?.get('v'))
   return versioned
     ? cacheValue(env, 'VERSIONED_CACHE_CONTROL', VERSIONED_CACHE_CONTROL)
     : cacheValue(env, 'OBJECT_CACHE_CONTROL', DEFAULT_CACHE_CONTROL)
@@ -989,9 +1224,8 @@ async function abortMultipart(env, key, uploadId, marker, cors) {
   try {
     await bucketForWrite(env, key).resumeMultipartUpload(key, uploadId).abort()
   } catch (error) {
-    // A failure is not evidence of absence. Retain the marker unless explicitly NoSuchUpload.
-    const message = error instanceof Error ? error.message : String(error)
-    if (error?.code !== 'NoSuchUpload' && !/\bNoSuchUpload\b/i.test(message)) {
+    // 只有 R2 明确表示 uploadId 不存在时才继续清标记；其它错误可能仍有分片可续。
+    if (!isMissingMultipartUpload(error)) {
       return json({ ok: false, key, aborted: false, markerRemoved: false, fatal: false, retryable: true, error: '中止未确认成功，续传标记已保留，请重试' }, cors, 503, { 'Retry-After': '2' })
     }
   }
@@ -1122,14 +1356,23 @@ async function handle(request, env, url, cors) {
   }
   if (request.method === 'DELETE') return deleteResponse(env, [key], cors, false)
   if (!['GET', 'HEAD'].includes(request.method)) return methodNotAllowed(cors, 'GET, HEAD, PUT, POST, DELETE, OPTIONS')
-  // 只把 romv 当 Range 对象版本锁；普通 GET 的 v/romv 还可能是人工发布号或内容哈希。
-  const rangeVersion = request.headers.has('Range') ? (url.searchParams.get('romv') || '') : ''
-  return serveObject(request, env, key, cors, cachePolicy(env, url), guessType, rangeVersion)
+  /*
+   * romv 是对象版本锁。Range 请求一向按 romv 核对；整份 GET / HEAD 只在 romv 形如 ETag 时核对
+   * （v 可能是人工发布号或内容哈希，不核）。以前整份 GET 不核：对象替换后 ?romv=旧 拿到新字节，
+   * 还按 30 天写进旧版本地址的边缘缓存。
+   */
+  const objectVersion = request.headers.has('Range') ? (url.searchParams.get('romv') || '') : romvVersion(url)
+  return serveObject(request, env, key, cors, cachePolicy(env, url), guessType, objectVersion)
 }
 export default {
   async fetch(request, env, context) {
-    const cors = corsHeaders(request, env)
     const url = new URL(request.url)
+    // 只读素材域名：独立 CORS、只读 WEBGAMES，绝不落进下面的管理接口（见 html5.js）。
+    if (html5Host(url, env)) {
+      try { return await handleHtml5(request, env, url, context) }
+      catch (error) { return storageFailure(error, html5Cors(request, env), 'html5') }
+    }
+    const cors = corsHeaders(request, env)
     // 必须排在边缘缓存之前：明文是按凭据交付的，绝不能被 Cache API 存下来给下一个人。
     if (plainProxyHost(url, env) && url.pathname.startsWith('/api/')) {
       try { return await proxyPlainDownload(request, env, url, cors) }
@@ -1204,7 +1447,8 @@ export default {
       )
       return response
     }
-    if (edgeCache && response.status === 200 && response.body && !response.headers.has('Content-Range') && !encodedCover && !uncacheableVideo && !tooLargeForFullPut) {
+    if (edgeCache && response.status === 200 && response.body && !response.headers.has('Content-Range') && !encodedCover && !uncacheableVideo && !tooLargeForFullPut &&
+      responseMatchesRomv(response, url)) {
       // clone 后立刻回玩家；75 MB 的 NDS ROM 写边缘缓存不能挡住首包。
       const cacheKey = new Request(request.url, { method: 'GET' })
       context.waitUntil(

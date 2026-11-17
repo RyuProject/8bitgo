@@ -218,7 +218,7 @@ check('⚠️ 服务端心跳必须是具名事件（注释行 `: ping` 浏览�
   for (const rel of ['server/src/index.js', 'server/src/netplay.js']) {
     const code = readFileSync(path.join(ROOT, rel), 'utf8')
     assert.doesNotMatch(code, /res\.write\(': ping/, `${rel} 还在发注释心跳`)
-    assert.match(code, /res\.write\(SSE_HEARTBEAT_FRAME\)/, `${rel} 没用具名心跳`)
+    assert.match(code, /sseWrite\(res, SSE_HEARTBEAT_FRAME\)/, `${rel} 没通过背压保护发送具名心跳`)
   }
 })
 

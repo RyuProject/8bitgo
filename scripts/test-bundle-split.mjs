@@ -158,6 +158,9 @@ const ADAPTERS = [
   'play',
   'ppsspp',
   'dolphin',
+  'binjgb',
+  'iodinegba',
+  'awayfl',
   'cloudgame',
   'liveview',
 ]

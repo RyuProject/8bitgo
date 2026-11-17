@@ -8,7 +8,7 @@
 
 `src/index.js` 是 ROM Worker 入口，同时依赖 `src/common.js`、`src/http.js`；必须一起部署。`embed-vc/` 是独立的游戏静态托管/反代 Worker，不要将两个入口混用。
 
-使用 Wrangler 时保留整个工程。使用控制台单文件编辑器时，使用完整的 `standalone/rom-worker.js`；它由上述三个模块生成，没有外部 import。`standalone/embed-worker.js` 对应另一个 Worker，但仍需要配置 `ASSETS`、变量和静态资源。不要在控制台直接只粘贴模块化 `src/index.js`。
+使用 Wrangler 时保留整个工程。使用控制台单文件编辑器时，使用完整的 `standalone/rom-worker.js`；它由 `src/common.js`、`src/http.js`、`src/html5.js`、`src/index.js` 生成，没有外部 import。`standalone/embed-worker.js` 对应另一个 Worker，但仍需要配置 `ASSETS`、变量和静态资源。不要在控制台直接只粘贴模块化 `src/index.js`。
 
 ## 本地检查
 
@@ -41,6 +41,13 @@ npx wrangler deploy
 当前配置为 `ROMS → 8bitgo`、`COVERS → 8bitgo-image`、`WEBGAMES → 8bitgo-webgame`，`compatibility_date = "2026-01-01"`。`/web/cs15/`、`/web/cs16/` 公开读取优先查 WEBGAMES，缺对象或旧部署未绑定时回退 ROMS；管理接口仍只管理 ROMS/COVERS。部署前核对控制台已有变量、Secret、路由和桶名称，不要把生产 ADMIN_TOKEN 写到公开仓库、前台构建变量或请求 URL。
 
 网站可继续把 ROM Worker 地址用作 `VITE_ROM_BASE_URL` 或后台 ROM 存储服务地址。公开读取仍无需口令；修改、列表和上传仍只接受 `Authorization: Bearer <ADMIN_TOKEN>`。CORS 不是权限控制，不阻止非浏览器请求。
+
+## HTML5 游戏素材域名
+
+`html5.8bitgo.com` 通过独立的 `WEBGAMES` 绑定只读游戏素材，不进入 ROM 上传、删除或管理接口。
+部署需在 SaaS 区域把该主机路由到此 Worker，并设置 `HTML5_HOSTS` 与 `HTML5_ALLOWED_ORIGINS`；
+允许来源只会收到浏览器读取素材所需的 CORS 响应头。素材是公开 GET，CORS 不是鉴权，不能用它保护私有文件。
+对象默认短缓存；需要立即更新的素材应换对象路径。缓存副本不保存来源专属 CORS 头，存储读取异常会返回带正确 CORS 的 503。
 
 ## 接口（原有路径保留）
 

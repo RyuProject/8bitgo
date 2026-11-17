@@ -74,7 +74,7 @@ assert.doesNotMatch(adminOverview, /useAllUsers|fetchAllPosts/)
 
 // 大表单保存和行操作都必须单飞；有改动时关页 / 取消要提醒。
 assert.match(adminGames, /if \(savingRef\.current\) return/)
-assert.match(adminGames, /if \(rowActionRef\.current\) return/)
+assert.match(adminGames, /if \(rowActionRef\.current \|\| batchActionRef\.current\) return/)
 assert.match(gameForm, /window\.addEventListener\('beforeunload'/)
 assert.match(gameForm, /<fieldset disabled=\{submitting \|\| romDeleteBusy\}/)
 
@@ -100,7 +100,7 @@ assert.doesNotMatch(objectRow, /games\.map\(\(g\) => \(/, '不能在每一行重
 // R2 删除只有拿到全库引用后才允许；共享 key 要保留所有引用，不能只记第一款游戏。
 assert.match(adminRoms, /const bindingsByRom = useMemo/)
 assert.match(adminRoms, /if \(allGamesLoaded\) return true/)
-assert.match(adminRoms, /await unbindKeys\(keys\)/)
+assert.match(adminRoms, /await unbindKeys\(keys, freshGames\)/)
 assert.match(gameForm, /原文件会保留/)
 
 // 用户页只取收藏 / 最近数量，不能把上百万条关联明细拖进 Node；搜索在数据库里完成。

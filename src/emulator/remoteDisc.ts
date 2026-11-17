@@ -185,6 +185,10 @@ export interface ProbeResult {
   rangeSupported: boolean
   /** 盘的字节数；拿不到 Content-Length 时是 0 */
   size: number
+  /** 探测因连接失败、超时或临时服务端错误而中断；与服务器明确不支持 Range 分开。 */
+  networkFailure?: boolean
+  /** 对象明确不存在；不能误报成服务器不支持 Range，否则播放器不会试 ROM 备用版本。 */
+  missingResource?: boolean
 }
 
 /** 两字节 Range 探测不应让启动界面永远等响应头。 */
@@ -215,13 +219,24 @@ export async function probeRange(
   const controller = new AbortController()
   const abortFromParent = () => controller.abort()
   signal?.addEventListener('abort', abortFromParent, { once: true })
-  const timer = setTimeout(() => controller.abort(), Math.max(1, timeoutMs))
+  let timedOut = false
+  const timer = setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, Math.max(1, timeoutMs))
   let res: Response | null = null
   try {
     res = await fetch(url, { headers: { Range: 'bytes=0-1' }, signal: controller.signal })
     if (!res.ok) {
+      const networkFailure = res.status === 408 || res.status === 425 || res.status === 429 || res.status >= 500
+      const missingResource = res.status === 404 || res.status === 410
       cancelResponse(res)
-      return { rangeSupported: false, size: 0 }
+      return {
+        rangeSupported: false,
+        size: 0,
+        ...(networkFailure ? { networkFailure: true } : {}),
+        ...(missingResource ? { missingResource: true } : {}),
+      }
     }
     // Range 偏移必须对应磁盘原始字节；代理若 gzip/br 后再回 206，浏览器解码会让偏移失真。
     if (res.headers.get('content-encoding')) {
@@ -241,7 +256,8 @@ export async function probeRange(
     const len = Number(res.headers.get('content-length'))
     return { rangeSupported: false, size: Number.isFinite(len) && len > 0 ? len : 0 }
   } catch {
-    return { rangeSupported: false, size: 0 }
+    // 父会话主动取消不是线路故障；适配器自己的探测超时则应允许同语言备用源接手。
+    return { rangeSupported: false, size: 0, ...(timedOut || !signal?.aborted ? { networkFailure: true } : {}) }
   } finally {
     clearTimeout(timer)
     signal?.removeEventListener('abort', abortFromParent)

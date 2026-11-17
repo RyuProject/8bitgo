@@ -331,7 +331,8 @@ check('⚠️ 首屏数据在渲染期间只能 peek，提交后才清（否则�
   // useState 初始化函数可能因渲染被丢弃而重跑：读完即清会让第二遍拿到 loading，文字和服务端 HTML 对不上
   assert.match(hook, /useState<PageState<T>>\(\(\) => \{\s*const boot = peekBootstrap\(\)/, 'usePageData 首帧必须 peekBootstrap')
   assert.doesNotMatch(hook, /takeBootstrap\(\)/, 'usePageData 渲染期间不能 takeBootstrap（读完即清）')
-  assert.match(hook, /useEffect\(releaseBootstrap, \[\]\)/, '首屏数据要在提交后的 effect 里释放')
+  assert.match(hook, /useEffect\(\(\) => \{[\s\S]{0,240}releaseBootstrap\(\)[\s\S]{0,40}\}, \[\]\)/,
+    '首屏数据要在提交后的 effect 里释放，且先把当前数据写入页面缓存')
 })
 
 check('⚠️ jsnes 房间上限的环境变量填错时不能变成无上限', () => {

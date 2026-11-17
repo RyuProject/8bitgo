@@ -172,11 +172,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const live = options.live
 
   if (!liveEnabled()) {
-    options.onError?.(rt.liveNotConfigured)
+    options.onError?.(rt.liveNotConfigured, 'config')
     return deadHandle()
   }
   if (!live?.roomId) {
-    options.onError?.(rt.liveNoRoom)
+    options.onError?.(rt.liveNoRoom, 'config')
     return deadHandle()
   }
 
@@ -367,7 +367,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const watchdog = window.setTimeout(() => {
     if (!destroyed && !watching) {
       live.onState?.('error')
-      options.onError?.(diagnose())
+      options.onError?.(diagnose(), 'runtime')
     }
   }, CONNECT_BUDGET_MS)
 
@@ -380,7 +380,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     window.clearTimeout(disconnectTimer)
     disconnectTimer = 0
     live.onState?.('error')
-    options.onError?.(msg)
+    options.onError?.(msg, 'runtime')
   }
 
   /**
@@ -1204,7 +1204,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         if (destroyed) return
         window.clearTimeout(rewatchTimer)
         live.onState?.('ended')
-        options.onError?.(rt.liveEnded)
+        options.onError?.(rt.liveEnded, 'runtime')
       }) as (...args: never[]) => void)
 
       s.on('disconnect', (() => {

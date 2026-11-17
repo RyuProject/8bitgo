@@ -35,6 +35,7 @@ import { GP, hasGamepadApi, startGamepadBridge, type GamepadBridge } from '../ga
 import { assertJar } from '@/lib/romValidation'
 import { focusFrame, frameGamepads } from '../frameFocus'
 import { loadGameBytes } from '../romLoader'
+import { isRomNetworkFailure } from '../loadProgress'
 import { isRomPackUrl } from '@/services/romPack'
 import { warmHttpCache } from '../httpWarm'
 import { diagLog, registerDiagnosticSnapshot, watchFramePerformance } from '@/services/startupDiagnostics'
@@ -279,7 +280,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
   if (!J2ME_PATH) {
     console.warn('[j2me] VITE_J2ME_PATH is not configured')
-    options.onError?.(rt.j2meNotConfigured)
+    options.onError?.(rt.j2meNotConfigured, 'config')
     return deadHandle()
   }
 
@@ -291,7 +292,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let needsTempJar = isFile || (typeof options.game === 'string' && isRomPackUrl(options.game))
   // 本地文件和 8BG 都要先变回普通 JAR 再放进临时目录，这需要后端存在。
   if (needsTempJar && !apiEnabled()) {
-    options.onError?.(rt.j2meLocalUnsupported)
+    options.onError?.(rt.j2meLocalUnsupported, 'config')
     return deadHandle()
   }
 
@@ -735,6 +736,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   window.addEventListener('pagehide', onPageHide)
 
   void (async () => {
+    let startupPhase: 'rom' | 'runtime' = 'rom'
     try {
       let name = ''
       if (packedName) {
@@ -765,6 +767,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         const data = loaded.data
         // 后端还会独立再验一次；前端先验是为了不上传明显损坏的包，也能立刻给玩家准确提示。
         assertJar(data)
+        // ROM 已经完整读出并通过校验；后面的临时盘上传和 CheerpJ 启动属于站点运行设施。
+        startupPhase = 'runtime'
         name = await uploadTempJar(data)
         if (destroyed) {
           // 上传期间已经被卸载了，直接把刚传上去的删掉
@@ -780,6 +784,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         name = directName ?? j2meFileName(options.game as string)
       }
       jarName = name
+      startupPhase = 'runtime'
       maybeStartJ2meWebFallback()
       if (destroyed || failed || fallbackActive) return
       /*
@@ -876,7 +881,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     } catch (e) {
       if (destroyed || failed) return
       const msg = e instanceof Error ? e.message : String(e)
-      options.onError?.(fmt(rt.j2meUploadFailed, { msg }))
+      const scope = startupPhase === 'rom'
+        ? isRomNetworkFailure(e) ? 'network' : 'content'
+        : 'runtime'
+      options.onError?.(fmt(rt.j2meUploadFailed, { msg }), scope)
     }
   })()
 

@@ -14,6 +14,7 @@ import { getT, fmt } from '@/services/i18n'
 import { extractRomFromZip, isZip } from '@/lib/unzip'
 import { assertNesRom } from '@/lib/romValidation'
 import { loadGameBytes } from '../romLoader'
+import { isRomNetworkFailure } from '../loadProgress'
 import { analyzeJsnesCompatibility } from '../nesMapper'
 import { installJsnesSafeStop, probeJsnesStartup } from '../jsnesCompat'
 import { startGamepadInput, type GamepadInput } from '../gamepadInput'
@@ -56,6 +57,16 @@ const RAF_STALE_MS = 250
 const AUDIO_CUSHION_MS = 64
 /** 静音垫最多这么频繁补一次，避免抖动时刷成一串 postMessage */
 const CUSHION_REFILL_MS = 250
+
+class JsnesStartupError extends Error {
+  readonly scope: 'runtime' | 'content' | 'network'
+
+  constructor(message: string, scope: 'runtime' | 'content' | 'network') {
+    super(message)
+    this.name = 'JsnesStartupError'
+    this.scope = scope
+  }
+}
 
 /** 把二进制转成 jsnes 需要的「binary string」（每个字符一个字节） */
 function toBinaryString(buf: ArrayBuffer): string {
@@ -751,7 +762,17 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   void (async () => {
     try {
       options.onProgress?.({ phase: 'engine' })
-      const [{ Browser, NES }, buf] = await Promise.all([import('jsnes'), readRom(options.game, options.onProgress, aborter.signal)])
+      const [{ Browser, NES }, buf] = await Promise.all([
+        import('jsnes').catch((error: unknown) => {
+          throw new JsnesStartupError(error instanceof Error ? error.message : String(error), 'runtime')
+        }),
+        readRom(options.game, options.onProgress, aborter.signal).catch((error: unknown) => {
+          throw new JsnesStartupError(
+            error instanceof Error ? error.message : String(error),
+            isRomNetworkFailure(error) ? 'network' : 'content',
+          )
+        }),
+      ])
       options.onProgress?.({ phase: 'starting', ratio: 1 })
       if (destroyed) return
 
@@ -799,7 +820,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             console.warn('[jsnes] 运行期错误（不拆会话）', err)
             return
           }
-          options.onError?.(fmt(rt.jsnesRunFailed, { msg: err.message }))
+          options.onError?.(fmt(rt.jsnesRunFailed, { msg: err.message }), 'runtime')
         },
       }) as unknown as JsnesBrowser
 
@@ -868,7 +889,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     } catch (e) {
       if (destroyed) return
       const msg = e instanceof Error ? e.message : String(e)
-      options.onError?.(fmt(rt.jsnesLoadFailed, { msg }))
+      options.onError?.(fmt(rt.jsnesLoadFailed, { msg }), e instanceof JsnesStartupError ? e.scope : 'runtime')
     }
   })()
 

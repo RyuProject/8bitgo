@@ -14,9 +14,9 @@ export function preferredNesRuntime({
   jsnesCompatible?: boolean
   webglUnavailable?: boolean
 }): 'jsnes' | 'emulatorjs' {
-  // 浏览器建不出 WebGL 时 EmulatorJS 必败；jsnes 画 2D canvas，除非 mapper 已明确不支持就让它来。
-  // jsnes 开局后若发现跑不了还会 onUnsupported 退回 EmulatorJS，最坏不比原来差。
-  if (webglUnavailable && jsnesCompatible !== false) return 'jsnes'
+  // EmulatorJS 因 WebGL / WASM / 浏览器语法能力不可用时，只能先试纯 Canvas 的 jsnes。
+  // 即使 mapper 已知不兼容，也不能选回必败的 EmulatorJS；jsnes 的启动检查会交给播放器显示限制。
+  if (webglUnavailable) return 'jsnes'
   // jsnes 邀请链接只能由 jsnes 接；但已经明确不支持的 mapper 不能强行钉到必败引擎。
   if (jsnesNetplay && jsnesCompatible !== false) return 'jsnes'
   // 未探明、非 iNES、容器包都走兼容面更宽的 EmulatorJS；后台仍可用 runtime 显式覆盖。

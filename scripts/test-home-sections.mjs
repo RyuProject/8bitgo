@@ -77,7 +77,7 @@ check('⚠️ 没有为这一栏新增一次全库排序查询', () => {
   assert.equal(calls.length, 1, `按热度排的整库查询跑了 ${calls.length} 次 —— 首页是访问量最大的一页，切一下就够了`)
 })
 
-check('⚠️ HOT_SIZE 不能大于 HOME_SIZE（大了 slice 会静默少给）', () => {
+check('⚠️ HOT_SIZE 不能大于 HOME_SIZE，且桌面五列不留下孤行', () => {
   const home_ = Number(content.match(/const HOME_SIZE = (\d+)/)?.[1])
   const hot = Number(content.match(/const HOT_SIZE = (\d+)/)?.[1])
   assert.ok(Number.isFinite(home_) && Number.isFinite(hot), '两个常量至少有一个读不出来了')

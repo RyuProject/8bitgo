@@ -69,8 +69,17 @@ assert.match(sent[0].text, /kof97/)
 assert.match(sent[0].text, /Chrome 132 \/ Windows/)
 assert.match(sent[0].text, /\/admin\/diagnostics/)
 
+// 不同错误文本与伪造 visitId 也不能绕过全站发送上限。
+const floodSignature = '0123456789abcdef'
+resetAlertThrottleForTest()
+assert.equal(await maybeAlertSignature(floodSignature, {
+  config, query: db.query, send, now: now + 60_000,
+}), 'global-cap')
+assert.equal(sent.length, 1, '全站十分钟内最多发送一封')
+assert.equal(db.settings.has(`diag.alert.${floodSignature}`), false, '被全站限额挡住时不占用特征冷却')
+
 // 一分钟内同一特征不再查库（失败刷屏时不给库加压）
-assert.equal(await maybeAlertSignature(SIG, { config, query: () => { throw new Error('不该查库') }, send, now: now + 30_000 }), 'throttled')
+assert.equal(await maybeAlertSignature(floodSignature, { config, query: () => { throw new Error('不该查库') }, send, now: now + 90_000 }), 'throttled')
 // 冷却期内（重置进程内节流，模拟另一个进程 / 重启后）：抢不到，不重复发
 resetAlertThrottleForTest()
 assert.equal(await maybeAlertSignature(SIG, { config, query: db.query, send, now: now + 3_600_000 }), 'cooldown')

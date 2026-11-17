@@ -291,6 +291,32 @@ export function getDefaultKeymap(
     }
   }
 
+  // GB/GBC 的 binjgb 与无 WebAssembly 的 IodineGBA 同样走本站键盘映射；
+  // 它们没有 EmulatorJS 的改键菜单，按引擎默认键显示会把玩家指向不存在的按钮。
+  if (runtimeId === 'binjgb' || runtimeId === 'iodinegba') {
+    const map = getPadKeys()
+    const keyLabel = (action: PadAction): string => {
+      const code = padKeyFor(bindingOf(0, action), map)
+      if (!code) return ''
+      if (code === 'ControlRight') return t.keymap.rightCtrl
+      if (code.startsWith('Numpad')) return `${t.keymap.numpad} ${code.slice('Numpad'.length)}`
+      return padKeyLabel(code)
+    }
+    const dpadParts = (['up', 'down', 'left', 'right'] as PadAction[]).map((action) => keyLabel(action) || '—')
+    const rows = ([
+      { button: t.keymap.dpad, key: dpadParts.join(' '), slot: 'dpad', parts: dpadParts },
+      { button: 'A', key: keyLabel('a'), slot: 'a' },
+      { button: 'B', key: keyLabel('b'), slot: 'b' },
+      { button: 'Start', key: keyLabel('start'), slot: 'start' },
+      { button: 'Select', key: keyLabel('select'), slot: 'select' },
+    ] as KeymapRow[]).filter((row) => row.key)
+    if (runtimeId === 'iodinegba') {
+      // GBA 的肩键由 Iodine 适配器固定接到 Q / E，不经过可改的 PadAction 映射。
+      rows.splice(3, 0, { button: 'L', key: 'Q', slot: 'l' }, { button: 'R', key: 'E', slot: 'r' })
+    }
+    return { rows, note: '', rebind: 'none', quickSave, pad: true, touch: 'all' }
+  }
+
   /**
    * 键盘直通的那几种：DOS、Flash、第三方 HTML5 游戏页。
    * 键位是游戏自己定的，我们给不出一张表 —— 与其编一张，不如说清楚去哪儿找。

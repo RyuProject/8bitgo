@@ -978,16 +978,16 @@ const CONTENT_FATAL_PHRASES = [
 
 /**
  * ROM 预下载 / 解包失败的性质：下载器认定的网络层失败（重试和备用线路都用完）标 'network'，
- * 播放器只切同语言备用源；其余（坏包、404、格式不对）保持默认的内容错误，可换别的 ROM。
+ * 播放器只切同语言备用源；其余（坏包、404、格式不对）明确归为内容错误。
  */
-function romFailureScope(error: unknown): LoadErrorScope | undefined {
-  return isRomNetworkFailure(error) ? 'network' : undefined
+function romFailureScope(error: unknown): LoadErrorScope {
+  return isRomNetworkFailure(error) ? 'network' : 'content'
 }
 
 /** 引擎致命行的性质：内容相关的保持默认（可换 ROM），其余按运行时故障（不换 ROM）。 */
-export function engineErrorScope(line: string): LoadErrorScope | undefined {
+export function engineErrorScope(line: string): LoadErrorScope {
   const low = line.toLowerCase()
-  return CONTENT_FATAL_PHRASES.some((phrase) => low.includes(phrase)) ? undefined : 'runtime'
+  return CONTENT_FATAL_PHRASES.some((phrase) => low.includes(phrase)) ? 'content' : 'runtime'
 }
 
 /**
@@ -2419,7 +2419,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   // 拳皇 / 街霸 / 老板子各要各的核心，光靠平台默认值盖不住
   const resolvedCore = emulatorJsCoreForGame(options.platform, options.core)
   if (!resolvedCore) {
-    options.onError?.(fmt(rt.ejsNoCore, { platform: options.platform }))
+    options.onError?.(fmt(rt.ejsNoCore, { platform: options.platform }), 'config')
     return { destroy: () => {}, caps: new Set<Capability>() }
   }
   // 先收窄成确定的 string 再允许 RomData 纠正它；否则 TypeScript 会因为变量可变而丢掉上面的空值判定。
@@ -3135,7 +3135,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     // 街机的两类根因给玩家能看懂的话；同一个包重下一遍不会变好，跳过原地重试，直接让播放器试备用 ROM
     const arcadeFatal = options.platform === 'arcade' ? arcadeFatalKind(line) : null
     if (arcadeFatal === 'unknown-set') return failLoad(fmt(rt.ejsArcadeUnknownSet, { msg: line }), 'deterministic')
-    if (arcadeFatal === 'missing-files') return failLoad(fmt(rt.ejsArcadeMissingFiles, { msg: line }))
+    if (arcadeFatal === 'missing-files') return failLoad(fmt(rt.ejsArcadeMissingFiles, { msg: line }), 'content')
     /*
       引擎读预下载 ROM 时 Blob 读不出（Chromium 走 new Response(blob) 后，NotReadableError 只出现在引擎的
       「Failed to fetch non-http URL」那一行，上报的却是「网络错误」）：同样记下 Blob 存储已坏，按运行时故障
@@ -5653,6 +5653,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
               // 回落到已知不兼容的 4.3.0-pre CDN 地址并把坏核心写进 IndexedDB。
               ? rt.ejsLoadFailed
               : fmt(rt.ejsRomFailed, { status: String(status), url }),
+            phase === 'engine'
+              ? 'runtime'
+              : status === 408 || status === 425 || status === 429 || status >= 500
+                ? 'network'
+                : 'content',
           ),
         })
 
@@ -5667,7 +5672,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             if (destroyed) return
             logEngine(`[netplay] socket.io 脚本加载失败：${socketIoScriptUrl()}`)
             if (netplay) {
-              failLoad(fmt(rt.netplaySignalUnreachable, { url: socketIoScriptUrl() }))
+              failLoad(fmt(rt.netplaySignalUnreachable, { url: socketIoScriptUrl() }), 'runtime')
               return
             }
           }
@@ -5742,7 +5747,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         // 加载过程中被销毁的，别再往新会话上报错
         if (destroyed) return
         if (error instanceof InvalidArcadeArchiveError) {
-          failLoad(fmt(rt.ejsArcadeRomInvalid, { name: error.message }), undefined, { keepEdge: true })
+          failLoad(fmt(rt.ejsArcadeRomInvalid, { name: error.message }), 'content', { keepEdge: true })
           return
         }
         if (error instanceof DOMException && error.name === 'AbortError') return

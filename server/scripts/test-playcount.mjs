@@ -30,8 +30,9 @@ const check = (name, fn) => {
 }
 
 /** 造一个最小的 req：只有 playcount.js 真正读到的那几个字段 */
-const req = ({ user, cf, xff, socket } = {}) => ({
+const req = ({ user, ip, cf, xff, socket } = {}) => ({
   user,
+  ...(ip ? { ip } : {}),
   headers: { ...(cf ? { 'cf-connecting-ip': cf } : {}), ...(xff ? { 'x-forwarded-for': xff } : {}) },
   socket: { remoteAddress: socket },
 })
@@ -39,32 +40,32 @@ const req = ({ user, cf, xff, socket } = {}) => ({
 console.log('一、身份指纹')
 
 check('已登录 -> kind=u', () => {
-  assert.equal(playIdentity(req({ user: { id: 'u_abc' }, cf: '1.2.3.4' })).kind, 'u')
+  assert.equal(playIdentity(req({ user: { id: 'u_abc' }, ip: '1.2.3.4' })).kind, 'u')
 })
 
 check('登录后换 IP 仍是同一个身份（跨设备不重复计数）', () => {
-  const a = playIdentity(req({ user: { id: 'u_abc' }, cf: '1.2.3.4' }))
-  const b = playIdentity(req({ user: { id: 'u_abc' }, cf: '9.9.9.9' }))
+  const a = playIdentity(req({ user: { id: 'u_abc' }, ip: '1.2.3.4' }))
+  const b = playIdentity(req({ user: { id: 'u_abc' }, ip: '9.9.9.9' }))
   assert.equal(a.identity, b.identity)
 })
 
 check('开放设备的用户令牌与站内登录生成同一枚账号指纹', () => {
-  const site = playIdentity(req({ user: { id: 'u_abc' }, cf: '1.2.3.4' }))
+  const site = playIdentity(req({ user: { id: 'u_abc' }, ip: '1.2.3.4' }))
   const device = playIdentityForUser('u_abc')
   assert.deepEqual(device, site)
   assert.equal(playIdentityForUser(''), null)
 })
 
 check('同一 IP 下的两个账号是两个身份（宿舍/公司不互相顶掉）', () => {
-  const a = playIdentity(req({ user: { id: 'u_abc' }, cf: '1.2.3.4' }))
-  const b = playIdentity(req({ user: { id: 'u_xyz' }, cf: '1.2.3.4' }))
+  const a = playIdentity(req({ user: { id: 'u_abc' }, ip: '1.2.3.4' }))
+  const b = playIdentity(req({ user: { id: 'u_xyz' }, ip: '1.2.3.4' }))
   assert.notEqual(a.identity, b.identity)
 })
 
 check('未登录 -> kind=i，同 IP 同身份、不同 IP 不同身份', () => {
-  const a = playIdentity(req({ cf: '1.2.3.4' }))
-  const b = playIdentity(req({ cf: '1.2.3.4' }))
-  const c = playIdentity(req({ cf: '5.6.7.8' }))
+  const a = playIdentity(req({ ip: '1.2.3.4' }))
+  const b = playIdentity(req({ ip: '1.2.3.4' }))
+  const c = playIdentity(req({ ip: '5.6.7.8' }))
   assert.equal(a.kind, 'i')
   assert.equal(a.identity, b.identity)
   assert.notEqual(a.identity, c.identity)
@@ -72,14 +73,14 @@ check('未登录 -> kind=i，同 IP 同身份、不同 IP 不同身份', () => {
 
 check('账号身份和 IP 身份不会撞（kind 分开 + 摘要前缀不同）', () => {
   const u = playIdentity(req({ user: { id: 'abc' } }))
-  const i = playIdentity(req({ cf: 'abc' }))
+  const i = playIdentity(req({ ip: '203.0.113.1' }))
   assert.notEqual(`${u.kind}${u.identity}`, `${i.kind}${i.identity}`)
 })
 
-check('IP 取值优先级：cf-connecting-ip > x-forwarded-for 第一段 > socket', () => {
-  assert.equal(clientIp(req({ cf: '1.1.1.1', xff: '2.2.2.2', socket: '3.3.3.3' })), '1.1.1.1')
-  assert.equal(clientIp(req({ xff: '2.2.2.2, 10.0.0.1', socket: '3.3.3.3' })), '2.2.2.2')
-  assert.equal(clientIp(req({ socket: '3.3.3.3' })), '3.3.3.3')
+check('计数使用 Express / 可信代理解析结果，不信任客户端自带的 Cloudflare 头', () => {
+  assert.equal(clientIp(req({ ip: '3.3.3.3', cf: '1.1.1.1', xff: '2.2.2.2', socket: '4.4.4.4' })), '3.3.3.3')
+  assert.equal(clientIp(req({ cf: '1.1.1.1', socket: '3.3.3.3' })), '3.3.3.3', '直连请求忽略伪造头')
+  assert.equal(clientIp(req({ xff: '10.0.0.1, 2.2.2.2', socket: '127.0.0.1' })), '2.2.2.2', '可信本地反代走安全解析')
 })
 
 check('既没登录又拿不到 IP -> null（不把这类请求塞进同一个身份）', () => {
@@ -87,13 +88,13 @@ check('既没登录又拿不到 IP -> null（不把这类请求塞进同一个�
 })
 
 check('摘要是 43 字符 base64url，正好塞得进 CHAR(43)', () => {
-  const { identity } = playIdentity(req({ cf: '1.2.3.4' }))
+  const { identity } = playIdentity(req({ ip: '1.2.3.4' }))
   assert.equal(identity.length, 43, `长度 ${identity.length}`)
   assert.match(identity, /^[A-Za-z0-9_-]{43}$/, '出现了 base64url 之外的字符')
 })
 
 check('不存明文 IP：摘要里找不到原地址', () => {
-  assert.ok(!playIdentity(req({ cf: '203.0.113.7' })).identity.includes('203.0.113'))
+  assert.ok(!playIdentity(req({ ip: '203.0.113.7' })).identity.includes('203.0.113'))
 })
 
 console.log('\n二、去重语义（内存 SQLite，语句与 games-repo.js 同形）')

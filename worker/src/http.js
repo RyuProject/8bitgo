@@ -75,9 +75,9 @@ function exactByteRange(value) {
   const length = end - offset + 1
   return Number.isSafeInteger(length) ? { offset, length } : null
 }
-async function locatePinnedRange(env, key, etag, range) {
+async function locatePinnedRange(env, key, etag, range, thumbFallback = true) {
   const buckets = readBuckets(env, key)
-  const base = thumbBaseKey(key)
+  const base = thumbFallback ? thumbBaseKey(key) : null
   for (const servedKey of base ? [key, base] : [key]) {
     for (const bucket of buckets) {
       const object = await bucket.get(servedKey, { onlyIf: { etagMatches: etag }, range })
@@ -86,9 +86,9 @@ async function locatePinnedRange(env, key, etag, range) {
   }
   return null
 }
-async function locate(env, key, method) {
+async function locate(env, key, method, thumbFallback = true) {
   const buckets = readBuckets(env, key)
-  const base = thumbBaseKey(key)
+  const base = thumbFallback ? thumbBaseKey(key) : null
   for (const servedKey of base ? [key, base] : [key]) {
     for (const bucket of buckets) {
       const object = await bucket[method](servedKey)
@@ -97,20 +97,24 @@ async function locate(env, key, method) {
   }
   return null
 }
-function objectHeaders(object, servedKey, cors, policy, guessType) {
+function objectHeaders(object, servedKey, cors, policy, guessType, disposition = true) {
   const headers = new Headers(cors)
   object.writeHttpMetadata(headers)
   headers.set('ETag', object.httpEtag)
   headers.set('Last-Modified', new Date(object.uploaded).toUTCString())
   headers.set('Accept-Ranges', 'bytes')
-  headers.set('Cache-Control', policy)
+  // policy 为空时保留对象自己的 Cache-Control（html5 主机名复刻 R2 自定义域就靠这个）。
+  if (policy) headers.set('Cache-Control', policy)
   headers.set('X-Content-Type-Options', 'nosniff')
   // 这些对象本来就是公开读取且 CORS=*；显式允许跨源嵌入后，启用 COEP 的 PSP 详情页
   // 仍能显示 image.8bitgo.com 的封面/视频，而不会被 require-corp 当场拦掉。
   headers.set('Cross-Origin-Resource-Policy', 'cross-origin')
   if (!headers.has('Content-Type')) headers.set('Content-Type', guessType(servedKey))
-  const filename = encodeURIComponent(servedKey.split('/').pop() || 'rom')
-  headers.set('Content-Disposition', `inline; filename="${filename}"; filename*=UTF-8''${filename}`)
+  // disposition=false 时只保留对象自己的 contentDisposition 元数据（R2 自定义域的行为）。
+  if (disposition) {
+    const filename = encodeURIComponent(servedKey.split('/').pop() || 'rom')
+    headers.set('Content-Disposition', `inline; filename="${filename}"; filename*=UTF-8''${filename}`)
+  }
   return headers
 }
 
@@ -133,15 +137,24 @@ async function cancelBody(object) {
     try { await object.body.cancel() } catch { /* response already closed */ }
   }
 }
-export async function serveObject(request, env, key, cors, policy, guessType, expectedVersion = '') {
+/**
+ * options.thumbFallback：缺 `foo-96.png` 时回退 `foo.png`（封面缩略图用）；html5 主机名要关掉，
+ *   R2 自定义域没有这个行为，缺文件就该 404。
+ * options.disposition：补 `Content-Disposition: inline; filename=…`；html5 关掉，原样用对象元数据。
+ */
+export async function serveObject(request, env, key, cors, policy, guessType, expectedVersion = '', options = {}) {
+  const thumbFallback = options.thumbFallback !== false
+  const disposition = options.disposition !== false
+  const headersFor = (object, servedKey) => objectHeaders(object, servedKey, cors, policy, guessType, disposition)
   const h = request.headers
   const conditional = ['If-Match', 'If-None-Match', 'If-Modified-Since', 'If-Unmodified-Since'].some(n => h.has(n))
   const needsMetadata = request.method === 'HEAD' || conditional || h.has('Range')
   if (!needsMetadata) {
-    const found = await locate(env, key, 'get')
+    const found = await locate(env, key, 'get', thumbFallback)
     if (!found) return json({ error: 'not found' }, cors, 404)
-    const headers = objectHeaders(found.object, found.servedKey, cors, policy, guessType)
-    // romv 绑定了旧对象版本时，整份 GET 也要拒绝新对象，避免旧 URL 缓存新字节。
+    const headers = headersFor(found.object, found.servedKey)
+    // romv 已把 URL 钉在某一代 ETag 上：对象被替换后整份 GET 同样回 412，不能把新字节
+    // 交给旧版本地址（否则浏览器与边缘都会把新内容长期缓存在旧 URL 下）。
     if (expectedVersion && etagVersion(found.object.httpEtag) !== expectedVersion) {
       await cancelBody(found.object)
       return new Response(null, { status: 412, headers })
@@ -162,10 +175,10 @@ export async function serveObject(request, env, key, cors, policy, guessType, ex
     if (h.has('If-Match') && !matches(h.get('If-Match'), expectedHttpEtag, false)) {
       return new Response(null, { status: 412, headers: new Headers(cors) })
     }
-    const found = await locatePinnedRange(env, key, expectedVersion, pinnedRange)
+    const found = await locatePinnedRange(env, key, expectedVersion, pinnedRange, thumbFallback)
     if (!found) return json({ error: 'not found' }, cors, 404)
     const { object, servedKey } = found
-    const headers = objectHeaders(object, servedKey, cors, policy, guessType)
+    const headers = headersFor(object, servedKey)
     if (!object.body || etagVersion(object.httpEtag) !== expectedVersion) {
       await cancelBody(object)
       return new Response(null, { status: 412, headers })
@@ -187,10 +200,10 @@ export async function serveObject(request, env, key, cors, policy, guessType, ex
   // Pin head->get to the ETag. If a concurrent overwrite happens, retry metadata,
   // never combine the previous object's size/validator with new object bytes.
   for (let attempt = 0; attempt < 3; attempt++) {
-    const found = await locate(env, key, 'head')
+    const found = await locate(env, key, 'head', thumbFallback)
     if (!found) return json({ error: h.has('If-Match') ? 'precondition failed' : 'not found' }, cors, h.has('If-Match') ? 412 : 404)
     const { object: metadata, bucket, servedKey } = found
-    const headers = objectHeaders(metadata, servedKey, cors, policy, guessType)
+    const headers = headersFor(metadata, servedKey)
     // Range v1 的旧 PPSSPP 核心还不会发 If-Match，但播放 URL 已带对象 ETag。
     // Worker 在这里补上代次校验，宁可 412 明确中止，也不能在同一局里混读新旧光盘扇区。
     if (expectedVersion && etagVersion(metadata.httpEtag) !== expectedVersion) {
@@ -215,7 +228,7 @@ export async function serveObject(request, env, key, cors, policy, guessType, ex
       await cancelBody(object)
       continue
     }
-    const finalHeaders = objectHeaders(object, servedKey, cors, policy, guessType)
+    const finalHeaders = headersFor(object, servedKey)
     if (range) {
       finalHeaders.set('Content-Range', `bytes ${range.offset}-${range.offset + range.length - 1}/${object.size}`)
       finalHeaders.set('Content-Length', String(range.length))

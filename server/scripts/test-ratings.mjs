@@ -154,13 +154,16 @@ await check('同一浏览器改分：一行，不是两行', async () => {
   assert.equal(Number(agg().rating_sum), 2 * WEIGHT_ANON)
 })
 
-await check('清了本地存储换个 anon_id，同 IP 仍然认领原来那一票', async () => {
+await check('同 IP 的另一个 anon_id 不能接管别人那一票（IP 只防刷、不认人）', async () => {
   reset()
   await vote({ gameId: 1, anonId: A, anonIp: '1.1.1.1', score: 5 })
-  const r = await vote({ gameId: 1, anonId: B, anonIp: '1.1.1.1', score: 1 })
-  assert.equal(r.created, false)
+  await assert.rejects(() => vote({ gameId: 1, anonId: B, anonIp: '1.1.1.1', score: 1 }), (e) => e?.code === 'RATING_IP_TAKEN')
   assert.equal(count(), 1)
-  assert.equal(one('SELECT anon_id FROM game_ratings WHERE game_id = 1').anon_id, B, '这一行应该被新的 anon_id 认领')
+  const row = one('SELECT anon_id, score FROM game_ratings WHERE game_id = 1')
+  assert.equal(row.anon_id, A, 'A 的票不能被 B 认领')
+  assert.equal(Number(row.score), 5, 'A 的分不能被 B 改掉')
+  // 「我的分」只按 anon_id 查：B 看不到 A 的分
+  assert.equal(await findRating(run, 1, { anonId: B, anonIp: '1.1.1.1' }), null)
 })
 
 await check('同一浏览器换网络：按 anon_id 找回自己那票，不新增', async () => {
@@ -231,11 +234,11 @@ await check('findRating：登录只认 user_id，不会被同 IP 的匿名票串
   assert.equal(mine, null)
 })
 
-await check('findRating：匿名先按 anon_id、再按 IP', async () => {
+await check('findRating：匿名只认 anon_id，不按 IP 把别人的票当成自己的', async () => {
   reset()
   await vote({ gameId: 1, anonId: A, anonIp: '1.1.1.1', score: 5 })
   assert.equal(Number((await findRating(run, 1, { anonId: A, anonIp: null })).score), 5)
-  assert.equal(Number((await findRating(run, 1, { anonId: C, anonIp: '1.1.1.1' })).score), 5)
+  assert.equal(await findRating(run, 1, { anonId: C, anonIp: '1.1.1.1' }), null)
   assert.equal(await findRating(run, 1, { anonId: C, anonIp: '9.9.9.9' }), null)
 })
 

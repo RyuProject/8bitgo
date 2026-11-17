@@ -167,6 +167,7 @@ const APP3 = {
 }
 const APP_SECRET = 'test-secret-value'
 let SECRET_HASH = ''
+let fakeUserTokenVersion = 0
 
 /* ---------- 用户数据的假行。只有设备码换来的**用户级**令牌读得到 ---------- */
 const USER_ID = 'u_device_owner'
@@ -207,6 +208,15 @@ function listVisible(s, params = []) {
 globalThis.__fakeDb = {
   async query(sql, params = []) {
     const s = sql.replace(/\s+/g, ' ').trim()
+    if (s.startsWith('SELECT id, status, token_version FROM users WHERE id = ?')) {
+      return params[0] === USER_ID ? [{ id: USER_ID, status: 'active', token_version: fakeUserTokenVersion }] : []
+    }
+    if (s.startsWith('SELECT status, token_version FROM users WHERE id = ?')) {
+      return params[0] === USER_ID ? [{ status: 'active', token_version: fakeUserTokenVersion }] : []
+    }
+    if (s.startsWith('SELECT id, status FROM oauth_apps WHERE id = ?')) {
+      return [APP, APP2, APP3].filter((a) => a.id === params[0])
+    }
     // authenticateApp 用的是另一套列（id, name, client_type, status, ...），和 getApp 不是一句 SQL
     if (s.startsWith('SELECT id, name, client_type, status, approved_scopes')) {
       return [APP, APP2, APP3].filter((a) => a.id === params[0])
@@ -375,6 +385,7 @@ const { FORBIDDEN_OUT_KEYS } = await import('../src/open/mapper.js')
 const { flashBundleAssetPaths, romRelationRows } = await import('../src/mappers.js')
 const { isOpenPath, openErrorFor, openErrorMiddleware } = await import('../src/open/errors.js')
 const device = await import('../src/open/device.js')
+const { resetRevocationCache } = await import('../src/open/revocation.js')
 const { pickDescription, pickTitle } = await import('../src/open/i18n.js')
 const jwtLib = (await import('jsonwebtoken')).default
 SECRET_HASH = await hashSecret(APP_SECRET)
@@ -1786,6 +1797,8 @@ await check('游玩写接口不能用来探测下架、成人或不存在的游�
 })
 
 await check('Linux / 外部设备能用 live.write 换用途单一的长时段开播凭证', async () => {
+  fakeUserTokenVersion = 4
+  resetRevocationCache()
   const access = await userToken('live.write')
   const r = await postAsUser('/api/open/v1/live/publish-token', access)
   assert.equal(r.status, 200)
@@ -1804,8 +1817,29 @@ await check('Linux / 外部设备能用 live.write 换用途单一的长时段�
   })
   assert.equal(claims?.userId, USER_ID)
   assert.equal(claims?.appId, APP.id)
+  assert.equal(claims?.tv, 4, '发布凭证没有带签发时的 token_version')
   // 这枚票只能开播；REST access-token 验证器必须明确拒绝它。
   assert.equal(verifyOpenToken(body.publisher_token, { publicKey, issuer: 'https://8bitgo.com' }), null)
+  fakeUserTokenVersion = 0
+  resetRevocationCache()
+})
+
+await check('开放平台令牌在退出所有设备或应用停用后失效', async () => {
+  const access = await userToken('library.read')
+  assert.equal((await asUser('/api/open/v1/me', access)).status, 200)
+  fakeUserTokenVersion += 1
+  resetRevocationCache()
+  assert.equal((await asUser('/api/open/v1/me', access)).status, 401, 'token_version 变化后旧用户令牌仍能用')
+  fakeUserTokenVersion = 0
+  resetRevocationCache()
+
+  const { access_token: appAccess } = await getToken('games.read')
+  APP.status = 'suspended'
+  resetRevocationCache()
+  assert.equal((await api('/api/open/v1/games', { headers: { Authorization: `Bearer ${appAccess}` } })).status, 401,
+    '停用应用签出的令牌仍能访问')
+  APP.status = 'live'
+  resetRevocationCache()
 })
 
 await check('开播凭证必须由带 live.write 的用户令牌领取', async () => {

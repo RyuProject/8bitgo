@@ -14,6 +14,7 @@ process.env.SAVE_MAX_TOTAL_BYTES = String(10 * MB)
 const {
   saveCoords,
   saveDeleteRevisionHeader,
+  isSaveReplay,
   saveQuotaError,
   saveRevisionHeaders,
   slugOk,
@@ -85,6 +86,18 @@ ok(
   saveRevisionHeaders({ 'x-save-revision': 'none', 'x-save-parent-revision': 'old' }).ok === false,
   '新版本不能冒充保留哨兵',
 )
+ok(
+  saveRevisionHeaders({ 'x-save-revision': 'same', 'x-save-parent-revision': 'same' }).ok === false,
+  '版本不能以自身作为父版本',
+)
+const replayBytes = Buffer.from([1, 2, 3])
+const replayRow = { revision: 'client-a:2', parent_revision: 'client-a:1', data: replayBytes }
+ok(isSaveReplay(replayRow, { versioned: true, revision: 'client-a:2', parent: 'client-a:1' }, Buffer.from(replayBytes)),
+  '重试仅在版本、父版本与内容都相同时幂等')
+ok(!isSaveReplay(replayRow, { versioned: true, revision: 'client-a:2', parent: 'client-a:0' }, Buffer.from(replayBytes)),
+  '同版本但父版本不同不能跳过')
+ok(!isSaveReplay(replayRow, { versioned: true, revision: 'client-a:2', parent: 'client-a:1' }, Buffer.from([1, 2, 4])),
+  '同版本但内容不同不能跳过')
 ok(saveDeleteRevisionHeader({}).revision === null, '旧客户端不带删除版本头仍兼容')
 ok(
   saveDeleteRevisionHeader({ 'x-save-delete-revision': 'device-a:2' }).revision === 'device-a:2',

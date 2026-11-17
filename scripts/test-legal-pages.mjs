@@ -249,7 +249,9 @@ check('⭐ index.html 里的每个外部主机都在披露白名单里，而且�
   const html = read('index.html')
   const own = /(^|\.)8bitgo\.com$/
   const found = new Set(
-    [...html.matchAll(/https?:\/\/([a-z0-9.-]+)/gi)].map((m) => m[1].toLowerCase()).filter((h) => !own.test(h)),
+    [...html.matchAll(/https?:\/\/([a-z0-9.-]+)/gi)]
+      .map((m) => m[1].toLowerCase().replace(/\.$/, ''))
+      .filter((h) => !own.test(h)),
   )
   for (const h of found) {
     assert.ok(

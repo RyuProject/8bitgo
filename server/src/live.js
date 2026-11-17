@@ -675,7 +675,7 @@ export function subscribeLiveRooms(res, { includeAdult = false } = {}) {
   const watcher = { res, includeAdult: Boolean(includeAdult), lastJson: json }
   listWatchers.add(watcher)
   try {
-    res.write(`event: rooms\ndata: ${json}\n\n`)
+    if (!sseWrite(res, `event: rooms\ndata: ${json}\n\n`)) listWatchers.delete(watcher)
   } catch {
     listWatchers.delete(watcher)
   }

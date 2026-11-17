@@ -106,7 +106,7 @@ assert.match(runtimeSource, /preparePsxRangePlaylist\(/, '播放器接入 M3U Ra
 // 低内存 PCSX（src/emulator/psxLowmem.ts）就是同一份 PCSX，多盘照样由它读
 assert.match(runtimeSource, /preparedPsxRange\?\.multiDisc[\s\S]{0,80}\? \(core === PSX_LOWMEM_CORE \? PSX_LOWMEM_CORE : PSX_CHD_COMPAT_CORE\)/, '多盘组固定选 codec 完整的 PCSX 核心')
 assert.match(runtimeSource, /streaming:\s*true/, 'Range 进度标记为流式而非整盘已下载')
-assert.match(adminSource, /upload 双盘 \/ 多盘组|上传双盘 \/ 多盘组/, '后台提供多盘上传入口')
+assert.match(adminSource, /选择双盘 \/ 多盘组/, '后台提供多盘上传入口')
 assert.ok(ejsRuntime.includes('getDiskCount()>1') && ejsRuntime.includes('"m3u"===this.fileName.split'), 'EmulatorJS 包含 M3U 盘片切换菜单')
 assert.ok(pcsxWasm.includes(Buffer.from('.m3u')) && pcsxWasm.includes(Buffer.from('SET_DISK_CONTROL_EXT_INTERFACE')), '发布的 PCSX wasm 支持 M3U 与 libretro 扩展盘片控制接口')
 

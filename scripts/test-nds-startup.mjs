@@ -143,7 +143,7 @@ check('适配器在 callMain 前建目录、写 cfg 与核心选项，并接入�
   assert.match(code, /selectNdsArchiveRom\?\.\(emu\)/)
   assert.match(code, /assertNdsRomBlob\(blob\)/)
   assert.match(code, /configureNdsStartup\?\.\(emu\)/)
-  assert.match(code, /resumeKey:\s*options\.resumeAcrossRefresh\s*\?\s*cacheKey\s*:\s*undefined/)
+  assert.match(code, /resumeKey:\s*mode === 'resume' && options\.resumeAcrossRefresh\s*\?\s*cacheKey\s*:\s*undefined/)
   assert.match(code, /resumeAcrossRefresh:\s*true/)
 })
 

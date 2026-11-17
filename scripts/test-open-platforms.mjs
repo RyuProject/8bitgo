@@ -64,6 +64,12 @@ for (const field of ['runtime', 'core', 'romExtensions']) {
     for (const p of OPEN_PLATFORMS) {
       const site = byId.get(p.id)
       if (!site) continue // id 集合那条已经报过了
+      // Symbian 的第三方 API 描述其专用 EKA2L1-WEB 页面；前端 runtime=null 表示它不能接通用播放器。
+      if (field === 'runtime' && p.id === 'symbian') {
+        assert.equal(p[field], 'eka2l1-web')
+        assert.equal(site[field], null)
+        continue
+      }
       const a = JSON.stringify(p[field] ?? null)
       const b = JSON.stringify(site[field] ?? null)
       if (a !== b) bad.push(`${p.id}: 镜像=${a} 前端=${b}`)
@@ -135,7 +141,7 @@ check('romExtensions 都是小写、带点、不重复', () => {
   for (const p of OPEN_PLATFORMS) {
     assert.ok(p.romExtensions.length > 0, `${p.id} 没有扩展名`)
     for (const e of p.romExtensions) {
-      assert.match(e, /^\.[a-z0-9]+$/, `${p.id} 的扩展名 ${e} 形状不对`)
+      assert.match(e, /^\.[a-z0-9]+(?:-[a-z0-9]+)*$/, `${p.id} 的扩展名 ${e} 形状不对`)
     }
     assert.equal(new Set(p.romExtensions).size, p.romExtensions.length, `${p.id} 的扩展名有重复`)
   }

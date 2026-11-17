@@ -34,7 +34,7 @@ import { getT, fmt } from '@/services/i18n'
 import { RemoteDisc, httpRangeFetcher, probeRange, type DiscSource } from '../remoteDisc'
 import { GP, hasGamepadApi, startGamepadBridge, type GamepadBridge } from '../gamepad'
 import { canvasToBlob } from '../recorder'
-import { fetchBlobWithProgress, fetchWithProgress } from '../loadProgress'
+import { fetchBlobWithProgress, fetchWithProgress, isRomNetworkFailure, markRomNetworkFailure } from '../loadProgress'
 import { romCacheKey } from '../romCache'
 import { alternateRomUrls, rememberRomHostForUrl } from '@/services/romHosts'
 import { diagLog } from '@/services/startupDiagnostics'
@@ -334,7 +334,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    * onReady 后的一般 stderr 不能直接拆会话，避免把无关警告当成崩溃；但 Range 读盘失败会让
    * wasm 永久轮询未完成状态，fatalRuntime 必须通知播放器停掉这局，不能把「不打断玩家」变成死锁。
    */
-  const fail = (message: string, fatalRuntime = false) => {
+  const fail = (message: string, fatalRuntime = false, scope: 'runtime' | 'content' | 'network' = 'runtime') => {
     if (destroyed) return
     if (readyFired) {
       if (fatalRuntime) options.onError?.(message, 'runtime')
@@ -343,17 +343,17 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
     window.clearInterval(readyPoll)
     window.clearTimeout(readyTimeout)
-    options.onError?.(message)
+    options.onError?.(message, scope)
   }
 
   const boot = async () => {
     if (!PLAY_PATH) {
-      options.onError?.(rt.playNotDeployed)
+      options.onError?.(rt.playNotDeployed, 'config')
       return
     }
     if (!globalThis.crossOriginIsolated || typeof SharedArrayBuffer === 'undefined') {
       // 官方构建固定创建两个 pthread；普通详情页没有 COOP/COEP，创建共享内存时必崩。
-      options.onError?.(rt.playNeedsIsolation)
+      options.onError?.(rt.playNeedsIsolation, 'config')
       return
     }
 
@@ -416,11 +416,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         let discUrl = options.game
         const routeCandidates = [discUrl, ...alternateRomUrls(discUrl)]
         let probe = await probeRange(discUrl, requestController.signal, routeCandidates.length > 1 ? 5_000 : undefined)
+        let probeNetworkFailure = Boolean(probe.networkFailure)
+        let probeMissingResource = Boolean(probe.missingResource)
         let alternateDiscUrls = routeCandidates.slice(1)
         if ((!probe.rangeSupported || !probe.size) && routeCandidates.length > 1 && !requestController.signal.aborted) {
           const failedUrl = discUrl
           for (const retryUrl of routeCandidates.slice(1)) {
             const alternateProbe = await probeRange(retryUrl, requestController.signal, 5_000)
+            probeNetworkFailure ||= Boolean(alternateProbe.networkFailure)
+            probeMissingResource ||= Boolean(alternateProbe.missingResource)
             if (alternateProbe.rangeSupported && alternateProbe.size) {
               discUrl = retryUrl
               alternateDiscUrls = routeCandidates.filter((candidate) => candidate !== retryUrl)
@@ -433,9 +437,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         }
         if (destroyed) return
         if (!probe.rangeSupported || !probe.size) {
+          if (probeNetworkFailure) throw markRomNetworkFailure(new Error('Play! 光盘 Range 探测网络失败'))
+          if (probeMissingResource) throw new Error('Play! 光盘 ROM 返回 HTTP 404/410')
           // 整份下载不是退路：PS2 一张盘几 GB，下不下来也存不下。
           // 与其让玩家等十分钟再失败，不如现在就说清楚是服务器不支持 Range。
-          options.onError?.(rt.playNoRange)
+          options.onError?.(rt.playNoRange, 'config')
           return
         }
         diagLog('download', 'info', 'Play! 光盘线路：', new URL(discUrl, window.location.href).origin)
@@ -471,7 +477,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       factory = await factoryPromise
       if (destroyed) return
     } catch (e) {
-      if (!destroyed) options.onError?.(fmt(rt.playLoadFailed, { msg: e instanceof Error ? e.message : String(e) }))
+      if (!destroyed) options.onError?.(fmt(rt.playLoadFailed, { msg: e instanceof Error ? e.message : String(e) }), 'runtime')
       return
     }
 
@@ -555,7 +561,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           () => module,
           source,
           // 读盘失败后核心会一直轮询 isDone；必须结束会话并展示错误，不能只留一条控制台警告。
-          (e) => fail(fmt(rt.playDiscFailed, { msg: e.message }), true),
+          (e) => fail(fmt(rt.playDiscFailed, { msg: e.message }), true, isRomNetworkFailure(e) ? 'network' : 'content'),
         )
       }
       instance.ccall('initVm', null, [], [])
@@ -617,7 +623,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     } catch (e) {
       window.clearInterval(readyPoll)
       window.clearTimeout(readyTimeout)
-      if (!destroyed) options.onError?.(fmt(rt.playLoadFailed, { msg: e instanceof Error ? e.message : String(e) }))
+      if (!destroyed) options.onError?.(fmt(rt.playLoadFailed, { msg: e instanceof Error ? e.message : String(e) }), 'runtime')
     }
   }
 
@@ -626,7 +632,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   void boot().catch((e: unknown) => {
     window.clearInterval(readyPoll)
     window.clearTimeout(readyTimeout)
-    if (!destroyed) options.onError?.(fmt(rt.playLoadFailed, { msg: e instanceof Error ? e.message : String(e) }))
+    if (!destroyed) options.onError?.(
+      fmt(rt.playLoadFailed, { msg: e instanceof Error ? e.message : String(e) }),
+      isRomNetworkFailure(e) ? 'network' : 'content',
+    )
   })
 
   return {

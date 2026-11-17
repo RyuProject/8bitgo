@@ -429,7 +429,7 @@ export interface ResolveContext {
   wasmUnavailable?: boolean
   /** GBA 无 WebAssembly 时改走必须有平台 BIOS 的纯 JavaScript IodineGBA。 */
   gbaWasmUnavailable?: boolean
-  /** 这个浏览器建不出 WebGL（见 webglSupport.ts）。NES 改走 jsnes，GB/GBC 改走 binjgb。 */
+  /** 这个浏览器不能使用 EmulatorJS 所需的画面 / 运行时能力；NES 改走 jsnes，GB/GBC 改走 binjgb。 */
   webglUnavailable?: boolean
   /**
    * Flash 这一局改用 AwayFL（纯 JavaScript）：没有 WebAssembly 且游戏在验证名单里，或地址带 ?awayfl=1。

@@ -41,6 +41,7 @@
 import type { Capability, CaptureSources, MountOptions, RuntimeHandle } from '../types'
 import { getT, fmt } from '@/services/i18n'
 import { loadGameBytes } from '../romLoader'
+import { isRomNetworkFailure } from '../loadProgress'
 import { focusFrame, frameGamepads } from '../frameFocus'
 import { prepareNdsRom } from '@/lib/romValidation'
 
@@ -130,13 +131,13 @@ function mountRaw(container: HTMLElement, options: MountOptions): RawMount {
   const rt = getT().runtime
 
   if (!WEBRETRO_PATH) {
-    options.onError?.(rt.webretroNotConfigured)
+    options.onError?.(rt.webretroNotConfigured, 'config')
     return { destroy: () => {} }
   }
 
   const core = coreFor(options.platform)
   if (!core) {
-    options.onError?.(fmt(rt.webretroUnsupportedPlatform, { platform: options.platform }))
+    options.onError?.(fmt(rt.webretroUnsupportedPlatform, { platform: options.platform }), 'config')
     return { destroy: () => {} }
   }
 
@@ -249,16 +250,18 @@ function mountRaw(container: HTMLElement, options: MountOptions): RawMount {
     }, POLL_MS)
   })
   iframe.addEventListener('error', () => {
-    if (!destroyed) options.onError?.(fmt(rt.webretroLoadFailed, { path: WEBRETRO_PATH }))
+    if (!destroyed) options.onError?.(fmt(rt.webretroLoadFailed, { path: WEBRETRO_PATH }), 'runtime')
   })
   container.appendChild(iframe)
 
   void (async () => {
+    let romPrepared = false
     try {
       // webretro 原本在 iframe 里直接下载，外层既看不到完整字节，也没法判断 CDN 是否只回了
       // 半个 ZIP。改成先在父页面完整下载并验 NDS 头，再用 blob: 交给同源 iframe；只下载一次。
       const loaded = await loadGameBytes(options.game, options.onProgress, abort.signal)
       const rom = await prepareNdsRom(loaded.data, loaded.name || 'rom.nds')
+      romPrepared = true
       if (destroyed) return
       objectUrl = URL.createObjectURL(new Blob([rom.data], { type: 'application/octet-stream' }))
       srcSet = true
@@ -278,7 +281,7 @@ function mountRaw(container: HTMLElement, options: MountOptions): RawMount {
     } catch (e) {
       if (destroyed || (e instanceof DOMException && e.name === 'AbortError')) return
       const msg = e instanceof Error ? e.message : String(e)
-      options.onError?.(fmt(rt.webretroLoadFailed, { path: msg }))
+      options.onError?.(fmt(rt.webretroLoadFailed, { path: msg }), romPrepared ? 'runtime' : isRomNetworkFailure(e) ? 'network' : 'content')
     }
   })()
 

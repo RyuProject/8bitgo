@@ -83,8 +83,8 @@ test('a Worker deployment without WEBGAMES keeps serving legacy CS assets', asyn
       否则「换了封面，玩家半个月看到的还是旧图」
 */
 test('versioned URL gets the long-lived policy, unversioned does not', async () => {
-  const e=environment(); e.ROMS.seed('a.zip','abcdef')
-  const versioned=await worker.fetch(req('/a.zip?romv=deadbeef'),e)
+  const e=environment(); const o=e.ROMS.seed('a.zip','abcdef')
+  const versioned=await worker.fetch(req(`/a.zip?romv=${o.etag}`),e)
   assert.equal(versioned.headers.get('Cache-Control'),'public, max-age=86400, s-maxage=2592000, stale-while-revalidate=86400')
   const covers=environment(); covers.ROMS.seed('covers/g.webp','x')
   const plain=await worker.fetch(req('/covers/g.webp'),covers)
@@ -102,15 +102,15 @@ test('versioned public GET is stored in edge cache without blocking the response
   } }
   const context = { waitUntil(promise) { waits.push(promise) } }
   try {
-    const e = environment(); e.ROMS.seed('a.zip', 'abcdef')
-    const first = await worker.fetch(req('/a.zip?romv=etag-1'), e, context)
+    const e = environment(); const o = e.ROMS.seed('a.zip', 'abcdef')
+    const first = await worker.fetch(req(`/a.zip?romv=${o.etag}`), e, context)
     assert.equal(first.headers.get('X-8BitGo-Edge-Cache'), 'MISS')
     assert.equal(await first.text(), 'abcdef')
     await Promise.all(waits)
     assert.equal(puts, 1)
     assert.equal(count(e.ROMS, 'get'), 1)
 
-    const second = await worker.fetch(req('/a.zip?romv=etag-1'), e, context)
+    const second = await worker.fetch(req(`/a.zip?romv=${o.etag}`), e, context)
     assert.equal(second.headers.get('X-8BitGo-Edge-Cache'), 'HIT')
     assert.equal(await second.text(), 'abcdef')
     assert.equal(count(e.ROMS, 'get'), 1)
@@ -242,10 +242,10 @@ test('versioned Sockdrive keeps immutable browser caching but bypasses Cache API
   }
 })
 test('cache policy is overridable per class without a code change', async () => {
-  const e=environment(); e.ROMS.seed('a.zip','abcdef')
+  const e=environment(); const o=e.ROMS.seed('a.zip','abcdef')
   e.OBJECT_CACHE_CONTROL='public, max-age=60'; e.VERSIONED_CACHE_CONTROL='public, max-age=600'
   assert.equal((await worker.fetch(req('/a.zip'),e)).headers.get('Cache-Control'),'public, max-age=60')
-  assert.equal((await worker.fetch(req('/a.zip?romv=1'),e)).headers.get('Cache-Control'),'public, max-age=600')
+  assert.equal((await worker.fetch(req(`/a.zip?romv=${o.etag}`),e)).headers.get('Cache-Control'),'public, max-age=600')
 })
 test('uploads record the revalidating policy in object metadata', async () => {
   const e=environment(); await worker.fetch(req('/a.zip','PUT','abcdef',{'Content-Encoding':'gzip'},true),e)
@@ -716,13 +716,13 @@ test('full-object edge puts are skipped above the size cap so a slow client cann
   const waits = []
   const context = { waitUntil(p) { waits.push(p) } }
   try {
-    const e = environment(); e.ROMS.seed('roms/nes/small.nes', 'abc')
-    const small = await worker.fetch(req('/roms/nes/small.nes?romv=v1'), e, context)
+    const e = environment(); const so = e.ROMS.seed('roms/nes/small.nes', 'abc')
+    const small = await worker.fetch(req(`/roms/nes/small.nes?romv=${so.etag}`), e, context)
     await small.arrayBuffer(); await Promise.all(waits)
     assert.equal(puts, 1)
     // 真的放一个刚超过上限的对象（只是零字节填充的 Uint8Array，测试结束即释放）
-    e.ROMS.seed('roms/dos/big.zip', new Uint8Array(64 * 1024 * 1024 + 1))
-    const big = await worker.fetch(req('/roms/dos/big.zip?romv=v1'), e, context)
+    const bo = e.ROMS.seed('roms/dos/big.zip', new Uint8Array(64 * 1024 * 1024 + 1))
+    const big = await worker.fetch(req(`/roms/dos/big.zip?romv=${bo.etag}`), e, context)
     assert.equal(big.status, 200)
     assert.equal(big.headers.get('X-8BitGo-Edge-Cache'), null)
     await big.arrayBuffer(); await Promise.all(waits)
@@ -755,6 +755,49 @@ test('missing covers are negative-cached briefly instead of hitting R2 on every 
     assert.equal(second.status, 404)
     assert.equal(second.headers.get('X-8BitGo-Edge-Cache'), 'HIT')
     assert.equal(count(e.ROMS, 'get'), gets)
+  } finally {
+    if (previous === undefined) delete globalThis.caches
+    else globalThis.caches = previous
+  }
+})
+
+/* 整份 GET 也按 romv 核对代次：对象替换后 ?romv=旧 不能拿到新字节，更不能被写进旧地址的边缘缓存。 */
+test('full GET with a stale ETag-shaped romv is 412 and never edge-cached', async () => {
+  const previous = globalThis.caches
+  let puts = 0
+  globalThis.caches = { default: { async match() {}, async put(_r, response) { puts += 1; await response.arrayBuffer() } } }
+  const waits = []
+  const context = { waitUntil(p) { waits.push(p) } }
+  try {
+    const e = environment()
+    const old = e.ROMS.seed('roms/nes/a.nes', 'old-bytes')
+    e.ROMS.seed('roms/nes/a.nes', 'new-bytes')
+    const stale = await worker.fetch(req(`/roms/nes/a.nes?romv=${old.etag}`), e, context)
+    assert.equal(stale.status, 412)
+    assert.equal(await stale.text(), '')
+    const head = await worker.fetch(req(`/roms/nes/a.nes?romv=${old.etag}`, 'HEAD'), e, context)
+    assert.equal(head.status, 412)
+    await Promise.all(waits)
+    assert.equal(puts, 0)
+  } finally {
+    if (previous === undefined) delete globalThis.caches
+    else globalThis.caches = previous
+  }
+})
+test('non-ETag romv is served but gets neither the long policy nor an edge put', async () => {
+  const previous = globalThis.caches
+  let puts = 0
+  globalThis.caches = { default: { async match() {}, async put(_r, response) { puts += 1; await response.arrayBuffer() } } }
+  const waits = []
+  const context = { waitUntil(p) { waits.push(p) } }
+  try {
+    const e = environment(); e.ROMS.seed('roms/nes/a.nes', 'bytes')
+    const r = await worker.fetch(req('/roms/nes/a.nes?romv=release-7'), e, context)
+    assert.equal(r.status, 200)
+    assert.equal(await r.text(), 'bytes')
+    assert.equal(r.headers.get('Cache-Control'), 'public, max-age=300, s-maxage=600, must-revalidate')
+    await Promise.all(waits)
+    assert.equal(puts, 0)
   } finally {
     if (previous === undefined) delete globalThis.caches
     else globalThis.caches = previous

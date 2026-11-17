@@ -22,6 +22,19 @@ routes = [
   # 路由，若不一并声明，后台上传/PSP 转换使用的 roms 域名会在一次正常发布后消失。
   { pattern = "roms.8bitgo.com", custom_domain = true },
   { pattern = "image.8bitgo.com", custom_domain = true },
+  # Cloudflare for SaaS 预备（2026-11-17）：NS 迁出 Cloudflare 后，8bitgo.com 的这些主机名以
+  # custom hostname 身份挂在 SaaS 区域 8bitgo.top 上，Worker 路由也必须建在那个区域。
+  # 迁移前两套并存：主机名在 8bitgo.com 区域有效时只走上面那组。迁移后删掉上面**整组**，即
+  # zone_name = "8bitgo.com" 的四条 **以及** 两条没写 zone_name 的 custom_domain 路由
+  # （roms.8bitgo.com、image.8bitgo.com）——后者同样挂在 8bitgo.com 区域，NS 迁走后留着会让
+  # `wrangler deploy` 失败（Worker 自定义域只能建在本区域，SaaS 上用下面的普通路由代替）。
+  { pattern = "assets.8bitgo.com/*", zone_name = "8bitgo.top" },
+  { pattern = "image.8bitgo.com/*", zone_name = "8bitgo.top" },
+  { pattern = "download.8bitgo.com/*", zone_name = "8bitgo.top" },
+  { pattern = "rom.8bitgo.com/*", zone_name = "8bitgo.top" },
+  { pattern = "roms.8bitgo.com/*", zone_name = "8bitgo.top" },
+  # html5 迁移前是 8bitgo-webgame 桶的 R2 自定义域，迁移后由 src/html5.js 只读接管。
+  { pattern = "html5.8bitgo.com/*", zone_name = "8bitgo.top" },
 ]
 
 [[r2_buckets]]
@@ -47,6 +60,10 @@ ALLOWED_ORIGINS = "*"
 # 的 PLAIN_PROXY_PATH）。凭据校验、限流、解密都在源站；留空任一项即关闭转发。
 PLAIN_PROXY_HOSTS = "download.8bitgo.com"
 PLAIN_PROXY_ORIGIN = "https://8bitgo.com"
+
+# html5.8bitgo.com：只读整桶 WEBGAMES，CORS 与桶上的 R2 CORS 策略保持一致（src/html5.js）。
+HTML5_HOSTS = "html5.8bitgo.com"
+HTML5_ALLOWED_ORIGINS = "https://8bitgo.com,https://*.8bitgo.com"
 
 # 以下上限单位为 MiB，只约束单次 PUT；不能绕过平台入口大小上限。
 MAX_UPLOAD_MB = "512"

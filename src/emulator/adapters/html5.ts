@@ -218,7 +218,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (signal.type === 'first-frame') markFirstFrame()
     else if (signal.type === 'game-playable') markPlayable()
     else if (signal.type === 'first-interaction') options.onFirstInteraction?.()
-    else options.onError?.(signal.detail || 'HTML5 游戏报告启动失败')
+    else options.onError?.(signal.detail || 'HTML5 游戏报告启动失败', 'runtime')
   }
   window.addEventListener('message', onRuntimeBridgeMessage)
 
@@ -362,7 +362,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   iframe.addEventListener('focus', () => options.onFirstInteraction?.())
   iframe.addEventListener('error', () => {
     if (destroyed) return
-    options.onError?.('HTML5 游戏页面加载失败。请检查入口地址，以及目标站点是否允许被 iframe 嵌入。')
+    options.onError?.('HTML5 游戏页面加载失败。请检查入口地址，以及目标站点是否允许被 iframe 嵌入。', 'runtime')
   })
 
   options.onCaps?.(caps)

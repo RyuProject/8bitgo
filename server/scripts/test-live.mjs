@@ -33,6 +33,7 @@ const http = createServer()
 const server = new Server(http, { cors: { origin: true } })
 const { list: lst } = attachLive(server, {
   findUser: async (_sql, params) => {
+    if (_sql.includes('FROM oauth_apps') && params?.[0] === 'app_linux') return { status: 'active' }
     if (params?.[0] === 'u_linux') return { nickname: 'Linux 玩家', status: 'active', birth_date: '1990-01-01', token_version: 0 }
     if (params?.[0] === 'u_other') return { nickname: '另一位玩家', status: 'active', token_version: 0 }
     if (params?.[0] === 'u_adult') return { nickname: '成年玩家', status: 'active', birth_date: '1990-01-01', token_version: 0 }
@@ -249,6 +250,7 @@ const linuxLive = await call(linuxHost, 'go-live', {
   hostName: '客户端伪造的名字',
 })
 check('外部设备能正式开播', !linuxLive.err && Boolean(linuxLive.data?.roomId), linuxLive.err || '')
+if (!linuxLive.data?.roomId) throw new Error(`外部设备开播未返回房间数据：${linuxLive.err || 'ack 数据为空'}`)
 const linuxRoom = linuxLive.data.roomId
 check('设备主播昵称由服务端账号决定', liveRoom(linuxRoom)?.hostName === 'Linux 玩家')
 check('公开房间快照不泄露发布应用和用户 id', !JSON.stringify(liveRoom(linuxRoom)).includes('app_linux'))

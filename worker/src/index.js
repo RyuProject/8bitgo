@@ -8,6 +8,7 @@ import {
   corsHeaders, authorized, listAcross, storageFailure, isMissingMultipartUpload,
 } from './common.js'
 import { parseRange, r2BodyResponseInit, serveObject } from './http.js'
+import { handleHtml5, html5Cors, html5Host } from './html5.js'
 
 const RESERVED = new Set(['', 'ping', 'list', 'multipart', 'bulk'])
 const MULTIPART_PREFIX = '_uploads/'
@@ -690,8 +691,13 @@ async function handle(request, env, url, cors) {
 }
 export default {
   async fetch(request, env, context) {
-    const cors = corsHeaders(request, env)
     const url = new URL(request.url)
+    // 只读素材域名：独立 CORS、只读 WEBGAMES，绝不落进下面的管理接口（见 html5.js）。
+    if (html5Host(url, env)) {
+      try { return await handleHtml5(request, env, url, context) }
+      catch (error) { return storageFailure(error, html5Cors(request, env), 'html5') }
+    }
+    const cors = corsHeaders(request, env)
     // 必须排在边缘缓存之前：明文是按凭据交付的，绝不能被 Cache API 存下来给下一个人。
     if (plainProxyHost(url, env) && url.pathname.startsWith('/api/')) {
       try { return await proxyPlainDownload(request, env, url, cors) }

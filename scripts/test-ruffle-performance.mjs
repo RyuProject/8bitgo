@@ -467,8 +467,8 @@ assert.match(vite, /flashFrame[\s\S]*?Cross-Origin-Embedder-Policy', 'require-co
   '开发服务器必须让跨源隔离的 play-local 可以内嵌 Flash 播放壳')
 assert.match(serverCache, /flash-frame\.html'[\s\S]*?Cross-Origin-Embedder-Policy', 'require-corp'[\s\S]*?Cross-Origin-Resource-Policy', 'same-origin'/,
   '生产静态服务不能把 Flash 播放壳拦成 chrome-error 黑屏')
-assert.match(player, /errorScope !== 'runtime'[\s\S]*onRomLoadFailed\?\.\(message\)/,
-  '运行时故障不得触发 ROM 语言/备用地址切换')
+assert.match(player, /errorScope === 'content' \|\| errorScope === 'network' \|\| errorScope === 'deterministic'[\s\S]*onRomLoadFailed\?\.\(message/,
+  '只有明确的内容、网络或确定性 ROM 故障才允许切换备用地址')
 
 console.log('── 大核心预热与旁路门控 ──')
 const manifest = JSON.parse(read(`public/ruffle/v${RUFFLE_VERSION}/runtime.json`))

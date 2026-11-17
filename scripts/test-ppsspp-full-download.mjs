@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { downloadPspDisc } from '../src/emulator/pspFullDownload.ts'
+import { isRomNetworkFailure } from '../src/emulator/loadProgress.ts'
 
 class MemoryDirectory {
   constructor() {
@@ -68,6 +69,13 @@ const progress = []
 const url = 'https://assets.8bitgo.test/roms/psp/test.chd?romv=v1'
 const file = await downloadPspDisc(url, 'test.chd', size, new AbortController().signal, (p) => progress.push(p))
 assert.equal(file.name, 'test.chd', '本地盘必须保留 PSP 可识别的扩展名')
+
+assert.equal(isRomNetworkFailure(new Error('镜像分片响应无效（HTTP 503）')), true,
+  '整包 PSP 读盘遇临时 503 应归为网络故障，播放器才能停止错误内容回退')
+assert.equal(isRomNetworkFailure(new Error('镜像分片响应无效（HTTP 404）')), false,
+  '整包 PSP 读盘遇 404 应保留为内容缺失')
+assert.equal(isRomNetworkFailure(new Error('下载连接长时间没有数据')), true,
+  '整包 PSP Range 分片停滞超时应归为网络故障')
 assert.equal(file.size, size)
 assert.deepEqual(requests, [[0, 8 * 1024 * 1024 - 1], [8 * 1024 * 1024, 16 * 1024 * 1024 - 1], [16 * 1024 * 1024, size - 1]])
 assert.equal(progress.at(-1).ratio, 1)

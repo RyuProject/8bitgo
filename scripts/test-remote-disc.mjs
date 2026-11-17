@@ -243,7 +243,7 @@ await check('网络错误 -> 不支持，不抛异常', async () => {
   const r = await withFetch(async () => {
     throw new Error('boom')
   }, () => probeRange('https://example.com/game.iso'))
-  assert.deepEqual(r, { rangeSupported: false, size: 0 })
+  assert.deepEqual(r, { rangeSupported: false, size: 0, networkFailure: true })
 })
 
 await check('探测请求悬住时会在超时后解除，不永久挡住开局', async () => {
@@ -251,13 +251,14 @@ await check('探测请求悬住时会在超时后解除，不永久挡住开局'
   const r = await withFetch(async (_url, init) => new Promise((_resolve, reject) => {
     init.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })
   }), () => probeRange('https://example.test/disc.iso', undefined, 10))
-  assert.deepEqual(r, { rangeSupported: false, size: 0 })
+  assert.deepEqual(r, { rangeSupported: false, size: 0, networkFailure: true })
   assert.ok(Date.now() - started < 1000, '10ms 探测超时不应拖成秒级')
 })
 
 await check('404 -> 不支持', async () => {
   const r = await withFetch(async () => res(404, {}), () => probeRange('https://example.com/game.iso'))
   assert.equal(r.rangeSupported, false)
+  assert.equal(r.missingResource, true, '404 要与 Range 不支持区分，播放器才能换备用 ROM')
 })
 
 await check('206 却只给了错误偏移，不能把这张盘判成可流式读取', async () => {

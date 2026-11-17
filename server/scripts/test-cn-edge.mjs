@@ -47,7 +47,7 @@ const dir = mkdtempSync(path.join(tmpdir(), 'cn-edge-'))
 mkdirSync(path.join(dir, 'assets'))
 writeFileSync(path.join(dir, 'assets', 'index-C.css'), `@font-face{src:url(/fonts/a.woff2)}`)
 const mw = createCnEdgeMiddleware({ clientDir: dir, siteOrigin: 'https://8bitgo.com' })
-function run(url, method = 'GET') {
+function run(url, method = 'GET', requestHeaders = {}) {
   return new Promise((resolve) => {
     const headers = {}
     const res = {
@@ -60,7 +60,7 @@ function run(url, method = 'GET') {
       send(b) { resolve({ status: this.statusCode, headers, body: b, next: false }) },
       end() { resolve({ status: this.statusCode, headers, body: '', next: false }) },
     }
-    const req = { url, method, originalUrl: url }
+    const req = { url, method, originalUrl: url, headers: requestHeaders }
     mw(req, res, () => resolve({ next: true, req, headers }))
   })
 }
@@ -73,6 +73,12 @@ assert.equal(r.headers['cross-origin-resource-policy'], 'cross-origin')
 r = await run('/_cn/api/games?x=1')
 assert.equal(r.req.url, '/api/games?x=1')
 assert.equal(r.headers.vary, 'Origin')
+r = await run('/_cn/api/me', 'GET', { authorization: 'Bearer private-token' })
+assert.equal(r.status, 400); assert.match(r.headers['cache-control'], /no-store/)
+r = await run('/_cn/api/me', 'GET', { cookie: 'session=private-token' })
+assert.equal(r.status, 400)
+r = await run('/_cn/api/games', 'OPTIONS', { 'access-control-request-headers': 'authorization' })
+assert.equal(r.next, true, '预检没有真实凭据，应继续走 CORS')
 r = await run('/_cn/emulatorjs/cores/fbneo-legacy-wasm.data?v=x')
 assert.equal(r.next, true); assert.equal(r.req.url, '/emulatorjs/cores/fbneo-legacy-wasm.data?v=x')
 assert.equal(r.headers.vary, undefined, '静态文件不带 Vary: Origin，预热与 <script> 共用一条缓存')
@@ -130,7 +136,7 @@ assert.match(paths, /export const jsdosBase = \(\): string => runtimeBase\('jsdo
 assert.match(paths, /`\$\{ejsBase\(\)\}\$\{name\}\?v=/)
 assert.match(paths, /`\$\{ejsBase\(\)\}\$\{relativePath\}\?v=/)
 const ejs = readFileSync(new URL('../../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8')
-assert.match(ejs, /const stalled = message\.startsWith\(rt\.ejsStalled\.split\('\{stage\}'\)\[0\]\)\s*if \(usedEjsEdge && !stalled\) markEjsEdgeFailed\(\)/, 'EmulatorJS 卡住不退回同源，避免重试走更慢的 Cloudflare')
+assert.match(ejs, /usedEjsEdge && !stalled && !outOfMemory && scope !== 'config' && !opts\.keepEdge\) markEjsEdgeFailed\(\)/, '卡住、内存不足、配置错误或显式保留线路时不能误判 Edge 故障')
 assert.match(ejs, /EJS_pathtodata: ejsBase\(\)/)
 assert.match(ejs, /if \(usedEjsEdge\) markEjsEdgeFailed\(\)\s*console\.warn/, '入口资源加载失败后自动重试退回同源')
 const ruffle = readFileSync(new URL('../../src/emulator/adapters/ruffle.ts', import.meta.url), 'utf8')

@@ -91,7 +91,7 @@ assert.match(schema, /disc_platform\s+VARCHAR\(8\)/)
 assert.match(migration, /ADD COLUMN `disc_platform`/)
 assert.match(server, /\/api\/admin\/disc-conversions/)
 assert.match(form, /createPsxConversion\(request\)/)
-assert.match(form, /psxChdKey\(defKey\(file\.name\)\)/)
+assert.match(form, /psxChdKey\(defKey\(uploadSourceFile\.name\)\)/)
 assert.match(form, /confirmConvertedUpload\(finalKey\)/, '覆盖授权必须来自明确探测和确认')
 assert.match(form, /overwrite: allowOverwrite/, '不能像普通上传一样无条件允许覆盖')
 

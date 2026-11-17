@@ -76,7 +76,7 @@ await assert.rejects(inspectPlayArcadeBundle(new Blob([pack(manifest, definition
 console.log('✅ 未实现的 Play! 驱动被拒绝')
 
 assert.match(playAdapter, /if \(fatalRuntime\) options\.onError\?\.\(message, 'runtime'\)/, '游戏中 Range 读盘失败必须进入可见错误状态，不能让核心永久轮询')
-assert.match(playAdapter, /fail\(fmt\(rt\.playDiscFailed, \{ msg: e\.message \}\), true\)/, '流式盘读失败必须标记为致命运行时错误')
+assert.match(playAdapter, /fail\(fmt\(rt\.playDiscFailed, \{ msg: e\.message \}\), true, isRomNetworkFailure\(e\) \? 'network' : 'content'\)/, '流式盘读取故障必须标记为致命 ROM 错误并区分网络与内容')
 assert.match(playAdapter, /signal: requestController\.signal,[\s\S]*?maxBytes: PLAY_ARCADE_BUNDLE_MAX_BYTES/, '离开页面时必须取消街机包下载')
 console.log('✅ PS2 流式读盘失败可见且可收场；离开页面会取消 ROM 请求')
 

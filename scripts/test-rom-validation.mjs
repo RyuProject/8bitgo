@@ -73,6 +73,23 @@ try {
     format: 'esm',
     outfile,
     logLevel: 'silent',
+    plugins: [{
+      name: 'rom-validation-test-dependencies',
+      setup(api) {
+        api.onResolve({ filter: /^@\/services\/(startupDiagnostics|memoryRom|romHosts)$/ }, (args) => ({
+          path: args.path.split('/').at(-1),
+          namespace: 'rom-validation-test',
+        }))
+        api.onLoad({ filter: /.*/, namespace: 'rom-validation-test' }, (args) => ({
+          loader: 'js',
+          contents: args.path === 'startupDiagnostics'
+            ? 'export const diagLog = () => {}'
+            : args.path === 'memoryRom'
+              ? 'export const memoryRomBlob = (parts, type = "") => new Blob(parts, { type }); export const memoryRomOf = () => undefined'
+              : 'export const rememberRomHostForUrl = () => {}',
+        }))
+      },
+    }],
   })
   const {
     assertValidZip,
@@ -149,11 +166,9 @@ try {
   assert.equal(prepared.name, 'folder/game.nds')
   assert.equal(prepared.data.byteLength, nds.length)
   assert.deepEqual(await assertNdsRomBlob(new Blob([nds])), {})
-  assert.deepEqual(
-    await assertNdsRomBlob(new Blob([zip([['README.txt', 'help'], ['folder/game.srl', nds]])])),
-    { archiveEntry: 'folder/game.srl' },
-    'ZIP 里 README 排在 .srl 前面时也必须点名真正的 ROM',
-  )
+  const selectedNds = await assertNdsRomBlob(new Blob([zip([['README.txt', 'help'], ['folder/game.srl', nds]])]))
+  assert.equal(selectedNds.archiveEntry, 'folder/game.srl', 'ZIP 里 README 排在 .srl 前面时也必须点名真正的 ROM')
+  assert.equal(selectedNds.archive?.name, 'folder/game.srl', '返回目录项以便解压时复用已核验条目')
   await assert.rejects(
     () => assertNdsRomBlob(new Blob([zip([['a.nds', nds], ['b.nds', nds]])])),
     /多个 ROM/,

@@ -120,9 +120,9 @@ check('restartSession 走 canRestartInPlace 判定，没有另写一份', () => 
 })
 
 /*
-  「哪些会话不能重挂引擎」这个判断，播放器里有六处要用：工具栏重开、加载失败后的自动重试、
+  「哪些会话不能重挂引擎」这个判断，播放器里有七处要用：工具栏重开、加载失败后的自动重试、
   ROM 迁移期间切备用文件、GBA table trap 后清缓存重取、NDS 新核心崩溃后切兼容核心、
-  FBNeo 内存不足后切低内存核心。六处必须是同一份。
+  FBNeo 内存不足后切低内存核心、PSX 内存不足后切低内存核心。七处必须是同一份。
 
   以前自动重试那儿手写着 `!session.netplay && !session.cloud && !session.live`。
   留着它才是真正的风险：以后新增一种「游戏不在本机跑」的会话，
@@ -131,13 +131,13 @@ check('restartSession 走 canRestartInPlace 判定，没有另写一份', () => 
 */
 check('自动重试和读档共用同一份会话判断，没有第二份手写的', () => {
   const hits = player.match(/canRestartInPlace\(session\)/g) ?? []
-  assert.equal(hits.length, 6, `canRestartInPlace(session) 用了 ${hits.length} 处，应该是重开、自动重试、两类 ROM 故障恢复、NDS 与 FBNeo 核心回退六处`)
+  assert.equal(hits.length, 7, `canRestartInPlace(session) 用了 ${hits.length} 处，应该是重开、自动重试、ROM 故障恢复、NDS / FBNeo / PSX 核心回退七处`)
   assert.match(player, /ndsCrashFallbackCore\(crashedCore, canRestartInPlace\(session\)/)
-  assert.match(player, /fbneoMemoryFallbackCore\([^\n]*canRestartInPlace\(session\)/)
+  assert.match(player, /const restartable = canRestartInPlace\(session\) && !session\.coreOverride[\s\S]{0,160}?fbneoMemoryFallbackCore\([^\n]*restartable\)/)
   assert.match(player, /isRomPackUrl\(session\.game\)[\s\S]{0,100}?canRestartInPlace\(session\)/)
   assert.match(player, /typeof session\.game === 'string'[\s\S]{0,160}?canRestartInPlace\(session\)/)
   // 2026-10 起中间多了一道「重试也没用」的判断（配置错误、确定性错误），会话判断仍须走 canRestartInPlace
-  assert.match(player, /if \(!ready && (?:!retryUseless && )?canRestartInPlace\(session\) && attempt < AUTO_RETRY_LIMIT\)/)
+  assert.match(player, /if \(!ready && !retryUseless && canRestartInPlace\(session\) && attempt < AUTO_RETRY_LIMIT &&/)
   assert.doesNotMatch(
     player,
     /!session\.netplay && !session\.cloud && !session\.live/,

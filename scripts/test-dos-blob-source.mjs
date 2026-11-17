@@ -33,12 +33,13 @@ const built = await build({
       fake(/^\.\/romCache$/, 'cache')
       fake(/^@\/lib\/jsdosBundle$/, 'bundle')
       fake(/^@\/services\/romPack$/, 'pack')
+      fake(/^@\/services\/romHosts$/, 'hosts')
       api.onLoad({ filter: /.*/, namespace: 'dos-blob-test' }, (args) => ({
         loader: 'js',
         contents: args.path === 'resume'
-          ? `export const downloadResumeStore = { clear: async k => { globalThis.__dosBlobResumeClears.push(k) } }`
-          : args.path === 'progress'
-            ? `export const fetchBlobWithProgress = async (u, o) => { globalThis.__dosBlobFetches.push({ u, resumeKey: o.resumeKey }); return globalThis.__dosBlobStored }`
+              ? `export const downloadResumeStore = { clear: async k => { globalThis.__dosBlobResumeClears.push(k) } }`
+              : args.path === 'progress'
+                ? `export const fetchBlobWithProgress = async (u, o) => { globalThis.__dosBlobFetches.push({ u, resumeKey: o.resumeKey }); return globalThis.__dosBlobStored }; export const withResumeTimeout = p => p`
             : args.path === 'cache'
               ? `export const romCacheKey = u => /[?&]romv=/.test(u) ? u : '';
                  export const romCacheGetBlob = async k => globalThis.__dosBlobCache.get(k) ?? null;
@@ -46,7 +47,12 @@ const built = await build({
                  export const romCacheDelete = async k => { globalThis.__dosBlobDeletes.push(k); globalThis.__dosBlobCache.delete(k) };`
               : args.path === 'bundle'
                 ? `export const isReadyJsdosBundleBlob = async () => globalThis.__dosBlobReady`
-                : `export const isRomPackBytes = b => b[0] === 0x38 && b[1] === 0x42 && b[2] === 0x47 && b[3] === 0x31;
+                : args.path === 'hosts'
+                  ? `export const alternateRomUrls = () => []`
+                  : `export const isBlobReadError = () => false;
+                   export const isRomPackUrl = u => /\\.8bg(?:[?#]|$)/i.test(u);
+                   export const prewarmRomPackDecoder = () => {};
+                   export const isRomPackBytes = b => b[0] === 0x38 && b[1] === 0x42 && b[2] === 0x47 && b[3] === 0x31;
                    export const unpackRomPackBlob = async () => {
                      if (globalThis.__dosBlobFailDecode) { globalThis.__dosBlobFailDecode = false; throw new Error('bad cached key') }
                      return { name: 'fallout.en.zip', blob: globalThis.__dosBlobPlain, header: {} }

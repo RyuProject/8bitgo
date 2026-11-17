@@ -55,7 +55,7 @@ export class Bucket {
   view(stored, body = false, range = null) {
     const { data, ...meta } = stored
     const result = { ...meta, customMetadata: { ...meta.customMetadata }, writeHttpMetadata(headers) {
-      const names = { contentType: 'Content-Type', cacheControl: 'Cache-Control', contentEncoding: 'Content-Encoding', contentDisposition: 'Content-Disposition' }
+      const names = { contentType: 'Content-Type', cacheControl: 'Cache-Control', contentEncoding: 'Content-Encoding', contentDisposition: 'Content-Disposition', vary: 'Vary' }
       for (const [key,value] of Object.entries(meta.httpMetadata || {})) if (names[key]) headers.set(names[key], value)
     } }
     if (range) result.range = range

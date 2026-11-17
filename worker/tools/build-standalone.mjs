@@ -2,7 +2,7 @@
 import fs from 'node:fs/promises'
 const root = new URL('../',import.meta.url)
 const sources = []
-for (const path of ['src/common.js','src/http.js','src/index.js']) {
+for (const path of ['src/common.js','src/http.js','src/html5.js','src/index.js']) {
   let source=await fs.readFile(new URL(path,root),'utf8')
   source=source.replace(/^import\s+[\s\S]*?\sfrom\s+['"][^'"]+['"]\s*\n/gm,'')
   if (path!=='src/index.js')source=source.replace(/^export /gm,'')

@@ -155,11 +155,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
   if (!CLOUDGAME_URL) {
     console.warn('[cloudgame] VITE_CLOUDGAME_URL is not configured')
-    options.onError?.(rt.cloudNotConfigured)
+    options.onError?.(rt.cloudNotConfigured, 'config')
     return deadHandle()
   }
   if (!cloud) {
-    options.onError?.(rt.cloudNoSession)
+    options.onError?.(rt.cloudNoSession, 'config')
     return deadHandle()
   }
 
@@ -191,7 +191,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     peerDisconnectTimer = 0
     if (destroyed || terminal) return
     terminal = true
-    options.onError?.(msg)
+    options.onError?.(msg, 'runtime')
   }
 
   // 握手看门狗：连不上 / 服务器不回应时给出明确错误，而不是永远转圈
@@ -610,4 +610,3 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     },
   }
 }
-

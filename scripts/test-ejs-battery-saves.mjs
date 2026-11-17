@@ -193,7 +193,7 @@ await check('迁移：新名字已有存档时不覆盖；通用旧名（可能�
 
 await check('适配器：8BG 解包名改成存档 slug 名，并在开局前迁移旧存档', () => {
   const adapter = readFileSync(new URL('../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8')
-  assert.match(adapter, /const batteryName = batterySaveGameName\(options\.gameSlug, engineGameName\)/)
+  assert.match(adapter, /const batteryName = ndsInflatedFromZip \? undefined : batterySaveGameName\(options\.gameSlug, engineGameName\)/)
   assert.match(adapter, /migrateLegacyBatterySaves\(fs as unknown as SaveFsLike, legacyBatteryName, engineGameName, options\.gameSlug\)/)
 })
 

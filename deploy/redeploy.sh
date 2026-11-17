@@ -18,7 +18,7 @@
 #
 # 两个开关（环境变量，timer 里可设）：
 #   PULL_LATEST=1  拉取最新并部署（默认）；=0 只做「重启 + 备份」，当纯安全网用
-#   RUN_TESTS=1    CI 卡点额外跑 npm test（需要可用的测试库），默认关
+#   RUN_TESTS=1    部署前跑完整本地回归测试（真实数据库 / SMTP 测试仍由 npm test 跳过），默认关以免占用生产机资源
 set -uo pipefail
 
 # ───────────── 可调参数（环境变量覆盖）─────────────
@@ -173,7 +173,7 @@ log "── 步骤 4/7  CI 卡点：oxlint + tsc ──"
 ( cd "$REPO_DIR" && npx tsc -b ) || die "tsc 不过，停下"
 if [ "$RUN_TESTS" = "1" ]; then
   ( cd "$REPO_DIR" && npm test ) || die "npm test 不过，停下"
-  fi
+fi
 
   # ── 4.5 同步 /web/Minecraft 的 Eaglercraft 客户端（可选）──
   # eaglercraft/ 含反编译重编译的 Minecraft 1.8 逻辑与玩家资源，按版权红线不进 git

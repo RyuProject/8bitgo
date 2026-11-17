@@ -13,6 +13,7 @@ import type { Capability, MountOptions, RuntimeHandle } from '../types'
 import { DOLPHIN_PATH, DOLPHIN_VERSION } from '../paths'
 import { dolphinVersionSaveSlug } from '../dolphinSave'
 import { probeRange } from '../remoteDisc'
+import { isRomContentFailure, isRomNetworkFailure, markRomContentFailure, markRomNetworkFailure } from '../loadProgress'
 import { getT, fmt } from '@/services/i18n'
 
 const BRIDGE_SOURCE = '8bitgo-dolphin-bridge'
@@ -113,13 +114,21 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
     options.onProgress?.({ phase: 'rom', loaded: 0 })
     let probe = await (remoteProbe ?? probeRange(options.game, probeController.signal))
+    let probeNetworkFailure = Boolean(probe.networkFailure)
+    let probeMissingResource = Boolean(probe.missingResource)
     // iframe 下载期间的提前探测若撞上瞬时断网，正式挂盘时再补一次，不能永久记住一次失败。
     if (speculativeProbe && !probe.rangeSupported && !probeController.signal.aborted) {
       speculativeProbe = false
       remoteProbe = probeRange(options.game, probeController.signal)
       probe = await remoteProbe
+      probeNetworkFailure ||= Boolean(probe.networkFailure)
+      probeMissingResource ||= Boolean(probe.missingResource)
     }
-    if (!probe.rangeSupported || !probe.size) throw new Error(rt.dolphinNoRange)
+    if (!probe.rangeSupported || !probe.size) {
+      if (probeNetworkFailure) throw markRomNetworkFailure(new Error('Dolphin 光盘 Range 探测网络失败'))
+      if (probeMissingResource) throw markRomContentFailure(new Error('Dolphin 光盘 ROM 返回 HTTP 404/410'))
+      throw new Error(rt.dolphinNoRange)
+    }
     remoteTotal = probe.size
     // 远程盘没有“整份下载完成”这一刻。只把探测实际读取的两个字节报出去；
     // ratio / cached 若写成 1 / true，加载层会谎称“整盘已缓存”，而真正的块还没开始取。
@@ -136,11 +145,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   }
 
   async function boot(): Promise<void> {
+    let configurationFailure = false
+    let romPrepared = false
     try {
       if (!globalThis.crossOriginIsolated || typeof SharedArrayBuffer === 'undefined') {
+        configurationFailure = true
         throw new Error(rt.dolphinNeedsIsolation)
       }
       const game = await prepareGame()
+      romPrepared = true
       if (destroyed) return
       if (game instanceof File) await request('mount-local', { file: game })
       else await request('mount-remote', { remote: game })
@@ -158,7 +171,14 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       iframe.contentWindow?.focus()
     } catch (error) {
       if (!destroyed) {
-        options.onError?.(fmt(rt.dolphinLoadFailed, { msg: error instanceof Error ? error.message : String(error) }))
+        const scope = !romPrepared && isRomNetworkFailure(error)
+          ? 'network'
+          : isRomContentFailure(error)
+            ? 'content'
+            : configurationFailure || (error instanceof Error && error.message === rt.dolphinNoRange)
+              ? 'config'
+              : 'runtime'
+        options.onError?.(fmt(rt.dolphinLoadFailed, { msg: error instanceof Error ? error.message : String(error) }), scope)
       }
     }
   }
@@ -193,7 +213,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   window.addEventListener('message', onMessage)
 
   iframe.addEventListener('error', () => {
-    if (!destroyed) options.onError?.(fmt(rt.dolphinLoadFailed, { msg: '运行时页面加载失败' }))
+    if (!destroyed) options.onError?.(fmt(rt.dolphinLoadFailed, { msg: '运行时页面加载失败' }), 'runtime')
   })
 
   options.onCaps?.(caps)
@@ -210,7 +230,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     void remoteProbe.catch(() => {})
   }
   hostTimer = window.setTimeout(() => {
-    if (!destroyed && !ready) options.onError?.(rt.dolphinStartTimeout)
+    if (!destroyed && !ready) options.onError?.(rt.dolphinStartTimeout, 'runtime')
   }, HOST_TIMEOUT_MS)
 
   return {

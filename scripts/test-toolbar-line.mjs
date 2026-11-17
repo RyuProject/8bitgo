@@ -105,8 +105,11 @@ check('⭐ 三段长度不定的文字全都在区块**里面**', () => {
 })
 
 check('⭐ 工具栏的直接子节点里不许再出现 truncate', () => {
-  // 出现 truncate 就说明有人以为自己在做截断，而实际拿到的是折行
-  const stray = [...outside.matchAll(/\btruncate\b/g)]
+  // 直接子项出现 truncate 就会在 flex-wrap 判定时折行；盘片菜单内部的单行标签有自己的限宽盒。
+  const nestedDiscLabel = '{label && <span className="min-w-0 flex-1 truncate text-muted" title={label}>{label}</span>}'
+  assert.equal(outside.split(nestedDiscLabel).length - 1, 1, '盘片菜单标签的截断必须留在菜单项内部')
+  const direct = outside.replace(nestedDiscLabel, '')
+  const stray = [...direct.matchAll(/\btruncate\b/g)]
   assert.equal(
     stray.length,
     0,

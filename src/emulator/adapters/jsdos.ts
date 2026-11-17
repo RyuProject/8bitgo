@@ -44,6 +44,7 @@ import { imageDataToBlob } from '../recorder'
 import { GP, startGamepadBridge, hasGamepadApi, type GamepadBridge } from '../gamepad'
 import { deleteSave, pullSave, pushSave } from '@/services/saves'
 import { loadGameBytes } from '../romLoader'
+import { isRomNetworkFailure } from '../loadProgress'
 import { inspectRemoteRomPack, isRomPackUrl, ROM_PACK_ARRAY_BUFFER_LIMIT } from '@/services/romPack'
 import { prepareRemoteDosBundle } from '../dosBundleSource'
 import {
@@ -1426,7 +1427,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       },
     )
   }
-  const failLoad = (message: string) => {
+  const failLoad = (message: string, scope: 'runtime' | 'content' | 'config' | 'network' = 'runtime') => {
     if (destroyed || terminalErrorSent) return
     terminalErrorSent = true
     // 开局前失败可能是加速入口造成的：自动重试改走同源（paths.ts 的 jsdosBase）
@@ -1437,7 +1438,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     cancelWindowsLaunch?.()
     cancelWindowsLaunch = null
     if (!abort.signal.aborted) abort.abort(new Error(message))
-    options.onError?.(message)
+    options.onError?.(message, scope)
   }
   const markReady = () => {
     if (destroyed || readySent || terminalErrorSent) return
@@ -1456,6 +1457,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   container.appendChild(host)
 
   void (async () => {
+    let startupPhase: 'config' | 'resources' | 'runtime' = 'config'
+    let concurrentFailure: unknown = null
+    let concurrentFailureScope: 'runtime' | 'content' | 'network' = 'runtime'
     try {
       if (pc98 && streamingGame) {
         throw new Error('PC-98 软盘模式不能同时使用 Sockdrive；请上传单个 .fdi ROM')
@@ -1493,15 +1497,21 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       // js-dos 入口脚本由 loadJsDos() 用 <script> 拉，没有字节进度，只能先报核心阶段；
       // 系统镜像和 ROM 是我们自己 fetch 的，后两段都有真实进度。
       options.onProgress?.({ phase: 'engine' })
+      startupPhase = 'resources'
       let engineDone = false
       let systemDone = !systemUrl
       let latestSystemProgress: LoadProgress | undefined
       let latestRomProgress: LoadProgress | undefined
-      let concurrentFailure: unknown = null
-      const settled = <T,>(promise: Promise<T>) => promise.then(
+      const settled = <T,>(
+        promise: Promise<T>,
+        scopeForError: (error: unknown) => 'runtime' | 'content' | 'network' = () => 'runtime',
+      ) => promise.then(
         (value) => ({ value, error: null as unknown }),
         (error: unknown) => {
-          concurrentFailure ??= error
+          if (concurrentFailure === null) {
+            concurrentFailure = error
+            concurrentFailureScope = scopeForError(error)
+          }
           // ROM / 资料片已经确定失败时，系统镜像继续下载没有任何价值；让错误立刻出现在界面上。
           if (!abort.signal.aborted) abort.abort(error)
           return { value: null as T | null, error }
@@ -1534,7 +1544,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             abort.signal,
             Boolean(systemUrl),
             preferReadyBundleBlob,
-          ))
+          ),
+        (error) => isRomNetworkFailure(error) ? 'network' : 'content',
+      )
       const extrasTask = settled(streamingGame
         ? options.dosExtras?.length
           ? Promise.reject(new Error('流式游戏盘不能现场合并 DOS 附加文件，请重新生成 Sockdrive'))
@@ -1563,10 +1575,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       try {
         Dos = await engineTask
       } catch (e) {
+        if (concurrentFailure === null) {
+          concurrentFailure = e
+          concurrentFailureScope = 'runtime'
+        }
+        startupPhase = 'runtime'
         // 核心脚本失败时把三路下载一起停掉；settled 会把它们的拒绝接住，避免控制台再冒未处理异常。
         abort.abort(e)
         await Promise.all([romTask, extrasTask, sockdriveTask, systemTask])
-        throw e
+        throw concurrentFailure ?? e
       }
       engineDone = true
       options.onProgress?.({ phase: 'engine', ratio: 1 })
@@ -1595,6 +1612,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       if (extrasResult.error) throw extrasResult.error
       const extras = extrasResult.value ?? []
       if (streamingGame) options.onProgress?.({ phase: 'rom', ratio: 1 })
+      startupPhase = 'runtime'
       options.onProgress?.({ phase: 'starting' })
       if (destroyed) return
       let primaryUrl = ''
@@ -2100,7 +2118,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       }
     } catch (e) {
       if (destroyed) return
-      failLoad(fmt(rt.jsdosLoadFailed, { msg: e instanceof Error ? e.message : String(e) }))
+      const failure = concurrentFailure ?? e
+      const scope = concurrentFailure !== null
+        ? concurrentFailureScope
+        : startupPhase === 'config'
+          ? 'config'
+          : 'runtime'
+      failLoad(fmt(rt.jsdosLoadFailed, { msg: failure instanceof Error ? failure.message : String(failure) }), scope)
     }
   })()
 

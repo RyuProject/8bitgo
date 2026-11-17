@@ -188,19 +188,31 @@ function createStallGuard(parent: AbortSignal | undefined, stallMs: number): Sta
   调用方据此把错误标成 'network'，播放器只允许切同语言的备用源。
 */
 const networkFailures = new WeakSet<object>()
+const romContentFailures = new WeakSet<object>()
 const NETWORK_FAILURE_TEXT = /failed to fetch|networkerror|network error|load failed|fetch failed|network connection was lost|err_[a-z_]*(?:network|connection|internet|timed_out|http2)|^HTTP (?:408|425|429|5\d\d)\b|^下载不完整：/i
 
-function markNetworkFailure<T>(error: T): T {
+export function markRomNetworkFailure<T>(error: T): T {
   if (error && typeof error === 'object') networkFailures.add(error as object)
   return error
 }
 
-/** 这个错误是下载器认定的网络层失败吗（见上）。代码 bug 抛的 TypeError 不算，免得把内容错误误判成断网。 */
+export function markRomContentFailure<T>(error: T): T {
+  if (error && typeof error === 'object') romContentFailures.add(error as object)
+  return error
+}
+
+export function isRomContentFailure(error: unknown): boolean {
+  return Boolean(error && typeof error === 'object' && romContentFailures.has(error as object))
+}
+
+/** 这个错误是 ROM 传输的网络层失败吗（见上）；文本兜底兼容跨 iframe / 下载器包装后丢掉原异常类型的情况。 */
 export function isRomNetworkFailure(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false
   if (networkFailures.has(error)) return true
   const message = String((error as { message?: unknown }).message ?? '')
-  if ((error as { name?: unknown }).name === 'TypeError' && NETWORK_FAILURE_TEXT.test(message)) return true
+  if (/\bHTTP (?:408|425|429|5\d\d)\b|读盘失败：期望 206，实际 (?:408|425|429|5\d\d)\b/i.test(message)) return true
+  if (/下载连接长时间没有数据/i.test(message)) return true
+  if (NETWORK_FAILURE_TEXT.test(message)) return true
   return message.startsWith(STALL_MESSAGE_PREFIX)
 }
 
@@ -275,8 +287,8 @@ export async function fetchWithProgress(
       emit({ phase, loaded, total: loaded, ratio: 1 }, true)
       return out.buffer
     } catch (error) {
-      if (guard.stalled()) error = markNetworkFailure(new Error(stallMessage(stallMs)))
-      else if (isNetworkFetchError(error) && NETWORK_FAILURE_TEXT.test(String((error as Error).message))) markNetworkFailure(error)
+      if (guard.stalled()) error = markRomNetworkFailure(new Error(stallMessage(stallMs)))
+      else if (isNetworkFetchError(error) && NETWORK_FAILURE_TEXT.test(String((error as Error).message))) markRomNetworkFailure(error)
       if (opts.signal?.aborted || error instanceof RangeError || index === candidates.length - 1) throw error
       const host = (value: string) => {
         try { return new URL(value, typeof location === 'undefined' ? 'https://8bitgo.invalid' : location.href).host }
@@ -761,8 +773,8 @@ export async function fetchBlobWithProgress(url: string, opts: BlobFetchOptions 
         failure = error
         switchForSpeed = true
       } else if (!guard.stalled() || attempt >= retries) {
-        failure = guard.stalled() ? markNetworkFailure(new Error(stallMessage(stallMs))) : error
-        if (isNetworkFetchError(failure) && NETWORK_FAILURE_TEXT.test(String((failure as Error).message))) markNetworkFailure(failure)
+        failure = guard.stalled() ? markRomNetworkFailure(new Error(stallMessage(stallMs))) : error
+        if (isNetworkFetchError(failure) && NETWORK_FAILURE_TEXT.test(String((failure as Error).message))) markRomNetworkFailure(failure)
       }
     } finally {
       guard.stop()
