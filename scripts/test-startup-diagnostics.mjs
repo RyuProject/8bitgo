@@ -136,6 +136,65 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
     diagnostics: { resources: [{ n: '8bitgo.com/emulatorjs/…/mgba-wasm.data' }] },
   })
   assert.notEqual(trapOtherCore.signature, trapMgbaCore.signature, '不同核心的运行时陷阱不能合成一组')
+
+  // 慢启动按进度快照区分「还在动」与「停住」（2026-11-18 诊断包 #1155 / #1156 都被误标成停滞）
+  const slow = (snapshot, extra = []) => ({
+    event: 'slow_start',
+    runtime: 'jsdos',
+    platform: 'dos',
+    detail: '等待 game_playable 已超过 20 秒（仍在下载 ROM：71.6MB/108.9MB，平均 31.1Mbps）',
+    diagnostics: { logs: [...extra, { t: 20_000, s: 'snapshot', l: 'info', m: snapshot }] },
+  })
+  const mdkLive = diagnoseStartupFailure(slow('加载进度：阶段 rom，ROM 71.6MB/108.9MB，ROM 起于 0.6s，平均 31.1Mbps，最后进度 19.9s', [
+    { t: 1000, s: 'download', l: 'info', m: 'ROM 首段 409582 字节 / 425ms（7.7 Mbps）： download.8bitgo.com/roms/…/[ROM].en.zip.8bg' },
+  ]))
+  assert.deepEqual(
+    { code: mdkLive.code, signal: mdkLive.signals[0], artifact: mdkLive.artifact, confidence: mdkLive.confidence },
+    { code: 'rom_download', signal: 'progress.rom_downloading', artifact: 'rom-64-256mb', confidence: 'high' },
+    '上报前 0.1 秒还在以 31 Mbps 下载的 109MB 整包不是停滞（#1155《MDK》）',
+  )
+  assert.match(mdkLive.label, /未停滞/)
+  const mdkStalled = diagnoseStartupFailure(slow('加载进度：阶段 rom，ROM 31.0MB/108.9MB，ROM 起于 0.6s，平均 12.4Mbps，最后进度 9.0s'))
+  assert.deepEqual({ code: mdkStalled.code, signal: mdkStalled.signals[0] }, { code: 'rom_download', signal: 'stage.rom' },
+    '进度 11 秒没动仍然按停滞归类')
+  assert.match(mdkStalled.label, /停滞/)
+  assert.doesNotMatch(mdkStalled.label, /未停滞/)
+  assert.equal(diagnoseStartupFailure(slow('加载进度：阶段 rom，ROM 42.0MB（流式），ROM 起于 0.6s，平均 12.4Mbps，最后进度 19.9s')).signals[0],
+    'stage.rom', '流式读盘没有「下完」这回事，不套用正常下载的判断')
+  assert.equal(diagnoseStartupFailure({ ...slow('加载进度：阶段 rom，ROM 71.6MB/108.9MB，ROM 起于 0.6s，平均 31.1Mbps，最后进度 19.9s'), event: 'timeout' }).signals[0],
+    'stage.rom', '超时 / 失败有自己的原文，进度快照不能把它们改判成「没停」')
+  assert.notEqual(
+    errorSignature(slow('加载进度：阶段 rom，ROM 71.6MB/108.9MB，ROM 起于 0.6s，平均 31.1Mbps，最后进度 19.9s')).signature,
+    errorSignature(slow('加载进度：阶段 rom，ROM 31.0MB/108.9MB，ROM 起于 0.6s，平均 12.4Mbps，最后进度 9.0s')).signature,
+    '还在下载和真停住不能合成一组',
+  )
+  assert.notEqual(
+    errorSignature(slow('加载进度：阶段 rom，ROM 71.6MB/108.9MB，ROM 起于 0.6s，平均 31.1Mbps，最后进度 19.9s')).signature,
+    errorSignature(slow('加载进度：阶段 rom，ROM 3.1MB/6.2MB，ROM 起于 0.6s，平均 1.3Mbps，最后进度 19.9s')).signature,
+    '大包和小包慢网按体积分组',
+  )
+
+  const xiyou = (snapshot) => diagnoseStartupFailure({
+    event: 'slow_start', runtime: 'emulatorjs', platform: 'arcade', detail: '等待 game_playable 已超过 20 秒（仍在加载资源）',
+    diagnostics: {
+      logs: [
+        { t: 19_700, s: 'adapter', l: 'warn', m: '[netplay] socket.io 脚本加载失败：/socket.io/socket.io.js' },
+        { t: 19_900, s: 'ejs', l: 'log', m: '[EJS Core] Downloading core: fbneo-legacy-wasm.data' },
+        { t: 20_000, s: 'snapshot', l: 'info', m: snapshot },
+      ],
+    },
+  })
+  const xiyouDominated = xiyou('加载进度：阶段 assets，ROM 20.9MB/20.9MB，ROM 起于 0.3s，ROM 完成于 19.7s，平均 9.0Mbps，最后进度 20.0s')
+  assert.deepEqual(
+    { code: xiyouDominated.code, signal: xiyouDominated.signals[0], artifact: xiyouDominated.artifact },
+    { code: 'rom_download', signal: 'progress.rom_dominated', artifact: 'rom-16-64mb' },
+    'ROM 下了 19.4 秒、assets 才开始 0.3 秒，慢在 ROM 不在依赖资源（#1156《西游释厄传》）',
+  )
+  const assetsReallySlow = xiyou('加载进度：阶段 assets，ROM 20.9MB/20.9MB，ROM 起于 0.3s，ROM 完成于 5.0s，平均 36.0Mbps，最后进度 5.2s')
+  assert.deepEqual({ code: assetsReallySlow.code, signal: assetsReallySlow.signals[0] }, { code: 'engine_assets', signal: 'stage.engine_assets' },
+    'ROM 5 秒就下完、之后 15 秒卡在资源阶段，仍按依赖资源停滞归类')
+  assert.equal(xiyou('加载进度：阶段 assets，ROM 20.9MB/20.9MB（缓存），ROM 起于 0.3s，ROM 完成于 0.4s，最后进度 0.4s').signals[0],
+    'stage.engine_assets', 'ROM 命中缓存时慢在别处')
 }
 
 /* ---------- 前端采集 ---------- */

@@ -127,6 +127,8 @@ const DIAGNOSIS_SIGNAL_LABEL: Record<string, string> = {
   'error.rom_download': '日志或请求指向 ROM 下载 / 读取',
   'error.network': '日志出现网络请求错误',
   'stage.rom': '最后阶段文字指向 ROM 下载 / 读取',
+  'progress.rom_downloading': '上报时 ROM 仍在下载且进度刚刷新过（不是停滞）',
+  'progress.rom_dominated': 'ROM 下载用掉了大半启动时间，后续阶段刚开始',
   'stage.core': '最后阶段文字指向核心下载 / 解压',
   'event.timeout': '启动事件或错误文字报告超时',
   'error.unsupported': '日志出现不支持的功能 / 格式',

@@ -3653,6 +3653,14 @@ EmulatorJS 引擎日志与加载阶段文字（`diagLog`）、下载器的重试
   `startupProgressTrace.ts` 记下最后进度：slow_start 的原因原文带上阶段（后台归组时两类自然分开），快照行带字节数与平均速率。
   ROM Worker 发 `Timing-Allow-Origin`，否则跨源请求的传输量恒为 0；边缘已缓存的旧响应要等过期才带上。
 - **诊断归组要给出可审阅的判断，不要把相关性写成根因**（2026-11-18）：前端持续观察 Resource Timing，缓冲区写满时先保留慢 / 大 / 失败候选，再逐步扩容且不清除历史记录（页面资源自修复和 J2ME 看门狗也读取该列表）；资源型 `error` 事件另外记录失败的脚本 / 样式 / 媒体入口，避免快速失败不进性能表。服务端 `diagnoseStartupFailure()` 用脱敏后的现场按固定规则标出类别、阶段、把握度与安全的核心名；明确区分 ROM 下载、ROM 内容、街机 ROM 集 / BIOS、引擎资源、WebGL、内存、存储、输入权限和核心运行时错误。`table index` 等运行时陷阱只标「待确认」，不能仅凭一条错误断言 ROM 损坏。后台现场和「复制给 AI」同时展示分类与把握度；新增字段必须在 `normalizeDiagnostics()` 白名单和隐私政策中同步维护。
+- **慢启动先看进度快照还在不在动，别一律标「停滞」**（2026-11-18 诊断包 #1155 / #1156）：slow_start 只是「20 秒还没出画面」的时间点。
+  #1155《MDK》iOS Safari：114MB 普通 DOS 整包（无 Sockdrive），第 19.9 秒仍以 31 Mbps 在下，被标成「ROM 下载或流式读取停滞」；
+  #1156《西游释厄传》：21MB ROM 被 `effectiveType=3g` 压成单路串行下了 19.4 秒，第 19.7 秒进 assets、0.3 秒后上报，被标成「模拟器依赖资源加载停滞」。
+  `diagnoseSlowStartProgress()` 读 snapshot 行（`readProgressSnapshot`，行的 t 即上报时刻）：最后进度在上报前 3 秒内、ROM 未下完 →
+  `progress.rom_downloading`「ROM 仍在下载，进度正常」；ROM 刚下完且下载用掉一半以上时间 → `progress.rom_dominated`。两者都带体积分档
+  artifact（`rom-64-256mb` 等），大包和小包慢网分开归组。流式读盘、命中缓存、进度几秒没动、下完很久仍卡在后面阶段，维持原「停滞」归类；
+  只作用于 slow_start，失败 / 超时有自己的原文。改 `startupProgressTrace.ts` 的 snapshot 格式要同步这个解析器。
+  这类「未停滞」组的行动方向是：大 DOS / Windows 包做 Sockdrive（§2.8.7），小包慢网查下载并发与线路，而不是找卡死点。
 - 回归：`npm run test:startup-diagnostics`。
 - **聚集报警**（2026-11-15，`server/src/diag-alert.js`）：同一特征 60 分钟内来自 ≥10 个不同访问就给 `DIAG_ALERT_EMAIL` 发一封
   （复用 Resend），同一特征 6 小时内不重复，冷却记在 `site_settings` 的 `diag.alert.<特征>`。没配邮箱完全不启用。

@@ -86,6 +86,73 @@ const DIAGNOSIS_CODES = new Set([
 ])
 
 /**
+ * 最后一次加载进度离上报时刻在这个秒数以内，就算「还在动」。播放器每收到一份下载进度都会刷新它，
+ * 8 MiB 分片在 3 Mbps 上也是几十毫秒就报一次，3 秒没动静才像停住。
+ */
+const LIVE_PROGRESS_S = 3
+
+/**
+ * 解析 startupProgressTrace（src/emulator/startupProgressTrace.ts）写的 snapshot 行。只取数字和标记，不保留原文。
+ * 格式：「加载进度：阶段 rom，ROM 71.6MB/108.9MB，ROM 起于 0.6s，ROM 完成于 19.7s，平均 31.1Mbps，最后进度 19.9s」；
+ * 这一行的 t 就是打包（上报）时刻。别的运行时也会往 snapshot 写现场，按前缀挑。
+ */
+export function readProgressSnapshot(logs) {
+  const row = [...(Array.isArray(logs) ? logs : [])].reverse()
+    .find((item) => item?.s === 'snapshot' && String(item?.m ?? '').startsWith('加载进度：阶段 '))
+  if (!row) return null
+  const text = String(row.m)
+  const seconds = (label) => {
+    const match = new RegExp(`${label} (\\d+(?:\\.\\d+)?)s`).exec(text)
+    return match ? Number(match[1]) : null
+  }
+  const rom = /ROM (\d+(?:\.\d+)?)MB(?:\/(\d+(?:\.\d+)?)MB)?/.exec(text)
+  return {
+    phase: /^加载进度：阶段 (\w+)/.exec(text)?.[1] ?? '',
+    atS: Number(row.t) / 1000,
+    loadedMb: rom ? Number(rom[1]) : 0,
+    totalMb: rom?.[2] ? Number(rom[2]) : 0,
+    cached: text.includes('（缓存）'),
+    streaming: text.includes('（流式）'),
+    romStartS: seconds('ROM 起于'),
+    romDoneS: seconds('ROM 完成于'),
+    lastS: seconds('最后进度'),
+  }
+}
+
+/** ROM 体积分档写进归组：大包（该做流式盘）和小包慢网（线路 / 并发问题）不是一类事 */
+function romSizeArtifact(totalMb) {
+  if (!(totalMb > 0)) return 'rom-size-unknown'
+  if (totalMb < 16) return 'rom-lt16mb'
+  if (totalMb < 64) return 'rom-16-64mb'
+  if (totalMb < 256) return 'rom-64-256mb'
+  return 'rom-ge256mb'
+}
+
+/**
+ * 慢启动（20 秒还没出画面）只是一个时间点，不等于卡住。按进度快照区分三种情况
+ * （2026-11-18 两份现场都被误标成「停滞」）：
+ * - ROM 还在下、最后进度就在上报前一刻 → 没停，耗时由体积和带宽决定（诊断包 #1155：《MDK》114MB 普通 DOS 整包，
+ *   第 19.9 秒仍以 31 Mbps 在下，却归进了「ROM 下载或流式读取停滞」）；
+ * - ROM 刚下完、下载占了大半个 20 秒 → 慢的是 ROM 下载，后面的阶段才刚开始（#1156：《西游释厄传》21MB ROM
+ *   单路串行下了 19.4 秒，第 19.7 秒进 assets，0.3 秒后上报，却归进了「模拟器依赖资源加载停滞」）；
+ * - 其它（进度几秒没动、流式读盘、下完很久还在后面阶段）→ 维持原来按阶段的「停滞」归类。
+ * 只看 slow_start：失败 / 超时的现场有自己的错误原文，不能被「还在动」盖掉。
+ */
+function diagnoseSlowStartProgress(event, logs, hit) {
+  if (event !== 'slow_start') return null
+  const progress = readProgressSnapshot(logs)
+  if (!progress || !Number.isFinite(progress.atS) || progress.atS <= 0 || progress.cached || progress.streaming) return null
+  const { phase, atS, loadedMb, totalMb, romStartS, romDoneS, lastS } = progress
+  if (phase === 'rom' && lastS !== null && atS - lastS <= LIVE_PROGRESS_S && (!totalMb || loadedMb < totalMb)) {
+    return { ...hit('rom_download', 'ROM 仍在下载，进度正常（未停滞，耗时取决于体积与带宽）', 'rom_download', 'high', 'progress.rom_downloading'), artifact: romSizeArtifact(totalMb) }
+  }
+  if (phase !== 'rom' && romStartS !== null && romDoneS !== null && atS - romDoneS <= LIVE_PROGRESS_S && romDoneS - romStartS >= atS / 2) {
+    return { ...hit('rom_download', 'ROM 下载占去大半启动时间，后续阶段刚开始（未停滞）', 'rom_download', 'medium', 'progress.rom_dominated'), artifact: romSizeArtifact(totalMb) }
+  }
+  return null
+}
+
+/**
  * 从一份已脱敏现场提取最可能的故障类别。只保存规则编号和固定标签，不把额外原文复制进诊断结论，
  * 避免归类字段绕开日志的脱敏边界；顺序按更具体、可行动的错误优先。
  */
@@ -146,6 +213,8 @@ export function diagnoseStartupFailure({ event, platform, detail, diagnostics })
   if (has(/error loading emulatorjs runtime|runtimeerror|compileerror|ejs_runtime|instantiate(?:streaming)?|wasm.*(?:error|failed|unavailable|memory|instantiate)|(?:error|failed|unavailable).*wasm/)) {
     return withCore(hit('wasm_runtime', '模拟器核心初始化或运行时异常', 'core_init', 'medium', 'error.wasm_runtime'))
   }
+  const slowProgress = diagnoseSlowStartProgress(event, logs, hit)
+  if (slowProgress) return slowProgress
   if (has(/加载进度：阶段 rom|loading progress: phase rom/)) {
     return hit('rom_download', 'ROM 下载或流式读取停滞', 'rom_download', 'medium', 'stage.rom')
   }
