@@ -140,7 +140,13 @@ async function request<T>(
     写操作留在同源 —— 频率低，且不值得让它们多一种失败方式。
     加速入口网络出错（不是 HTTP 错误码）就本次会话退回同源，并立刻用同源重发这一次。
   */
-  const edgeBase = SAME_ORIGIN && method === 'GET' && !admin ? cnEdgeApiBase() : ''
+  /*
+    带登录令牌的请求也留在同源（2026-11-17，管理员后台控制台报 by-slugs 的 CORS 预检失败）：
+    Authorization 不在 CORS 安全名单里，每次都要先发 OPTIONS 预检，EdgeOne 这一跳一出岔子就整条被拦；
+    更要紧的是令牌不该经过会缓存内容的第三方边缘，按用户变化的响应也不该有机会进那份共享缓存。
+  */
+  const hasAuth = 'Authorization' in (init.headers as Record<string, string>)
+  const edgeBase = SAME_ORIGIN && method === 'GET' && !admin && !hasAuth ? cnEdgeApiBase() : ''
   let res: Response
   if (edgeBase) {
     try {
