@@ -291,8 +291,16 @@ export async function renderPage(req, res, next) {
     // 8bitgo.com 上的大陆访客：JS / CSS / 字体也从 EdgeOne 取（cn-edge.js）；大陆入口本身已经同源。
     // 带 __assets=origin 的是兜底页在 EdgeOne 取不下来 chunk 后的重新载入：这次整页留在主站（shared/cover-cdn-hint.js）
     if (coverHint === 'cn' && !cnSite && !req.assetsFromOrigin) page = retargetStaticToCnEdge(page, cnEdgeOrigin(publicSiteUrl()))
-    // 只给 200 页面发：Cloudflare 只从 200 HTML 学 Link，404 页带着也白带
-    const earlyHints = notFound ? '' : earlyHintsFor(page)
+    /*
+      只给 200 页面发：Cloudflare 只从 200 HTML 学 Link，404 页带着也白带。
+      主站上同一个地址有两份资源写法（大陆访客的 JS / CSS 走 cn.<裸域>/_cn，见上），而 Cloudflare 的 Early Hints
+      按浏览器看到的地址缓存 Link —— 国家改写追加的 __cdn=cn 不进它的键，两份互相覆盖、谁后来谁说了算。
+      2026-11-18 /rooms 实测：大陆访客收到的 103 让浏览器从 8bitgo.com（洛杉矶）预载 index / react-vendor / CSS，
+      HTML 却从 EdgeOne 取，入口包下了两遍，控制台报「preloaded using link preload in Early Hints but not used」。
+      所以主站有大陆加速入口时不发 Link（HTML 里的 modulepreload 照旧）；大陆入口本身不经过 Cloudflare，照发。
+    */
+    const assetVariants = !cnSite && Boolean(cnEdgeOrigin(publicSiteUrl()))
+    const earlyHints = notFound || assetVariants ? '' : earlyHintsFor(page)
 
     // <html lang> 跟随当前语言
     page = page.replace(/<html([^>]*)\slang="[^"]*"/, `<html$1 lang="${lang}"`)
