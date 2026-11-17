@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 register('data:text/javascript,' + encodeURIComponent(`
   export async function resolve(specifier, context, nextResolve) {
     if (specifier.endsWith('/db.js')) return { url: 'data:text/javascript,export async function query(){throw new Error("应注入")}', shortCircuit: true }
-    if (specifier.endsWith('/mail.js')) return { url: 'data:text/javascript,export async function sendRawMail(){throw new Error("应注入")}', shortCircuit: true }
+    if (specifier.endsWith('/mail.js')) return { url: 'data:text/javascript,export async function sendRawMail(){throw new Error("应注入")};export function mailProvider(){return "none"}', shortCircuit: true }
     return nextResolve(specifier, context)
   }
 `))

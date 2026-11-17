@@ -82,8 +82,15 @@ check('⚠️ HOT_SIZE 不能大于 HOME_SIZE（大了 slice 会静默少给）'
   const hot = Number(content.match(/const HOT_SIZE = (\d+)/)?.[1])
   assert.ok(Number.isFinite(home_) && Number.isFinite(hot), '两个常量至少有一个读不出来了')
   assert.ok(hot <= home_, `HOT_SIZE=${hot} 超过了 HOME_SIZE=${home_}，那一栏会静默少几张卡`)
-  // 5 列 × 整行：摆不满一行的尾巴看着像少了几款
-  assert.equal(hot % 5, 0, `HOT_SIZE=${hot} 不是 5 的整数倍，最后一行会缺口`)
+  /*
+    2026-11-16 起网格随正文宽度 2～6 列，每一档都只摆两行（窄屏用 CSS 藏掉多出来的卡）。
+    所以 HOT_SIZE 要正好是「最宽那档列数 × 2」：少了宽屏第二行缺口，多了永远藏着、白传数据。
+  */
+  const css = read('src/index.css')
+  const cols = [...css.matchAll(/\.adaptive-game-grid\b[^{]*\{[^}]*grid-template-columns:\s*repeat\((\d+),/g)].map((m) => Number(m[1]))
+  assert.ok(cols.length, 'index.css 里读不出 adaptive-game-grid 的列数')
+  const maxCols = Math.max(...cols)
+  assert.equal(hot, maxCols * 2, `HOT_SIZE=${hot}，但最宽一档是 ${maxCols} 列 × 2 行 = ${maxCols * 2}，最后一行会缺口或多出藏起来的卡`)
 })
 
 check('⚠️ 字段名还叫 hottest（改名 = 所有没更新的前端整栏消失）', () => {
@@ -166,6 +173,20 @@ check('游戏榜单跟随正文宽度自适应，宽屏至少 5 列且窄屏不�
   assert.match(css, /\.adaptive-game-grid\s*\{[^}]*grid-template-columns:\s*repeat\(2,/s, '窄屏至少两列')
   assert.match(css, /@container page-content \(min-width: 72rem\)[\s\S]*?\.adaptive-game-grid\s*\{\s*grid-template-columns:\s*repeat\(5,/s, '宽屏至少五列')
   assert.match(css, /@container page-content \(min-width: 90rem\)[\s\S]*?\.adaptive-game-grid\s*\{\s*grid-template-columns:\s*repeat\(6,/s, '超宽屏应利用额外空间展示六列')
+})
+
+check('⚠️ 热门榜每一档列数都正好露出两行（窄屏藏掉多的，宽屏逐档补回）', () => {
+  const css = read('src/index.css')
+  const grid = bodyOf('MostPlayedSection').match(/<div className="([^"]*adaptive-game-grid[^"]*)"/)?.[1] ?? ''
+  assert.match(grid, /\badaptive-ranked-grid\b/, '榜单没挂 adaptive-ranked-grid，窄屏会露出第三、四行')
+  const cols = [...new Set([...css.matchAll(/\.adaptive-game-grid\b[^{]*\{[^}]*grid-template-columns:\s*repeat\((\d+),/g)].map((m) => Number(m[1])))].sort((a, b) => a - b)
+  const min = cols[0]
+  assert.match(css, new RegExp(`\\.adaptive-ranked-grid > :nth-child\\(n \\+ ${min * 2 + 1}\\)\\s*\\{\\s*display:\\s*none`),
+    `最窄 ${min} 列时应只露 ${min * 2} 张`)
+  for (const c of cols.slice(1)) {
+    assert.match(css, new RegExp(`\\.adaptive-ranked-grid > :nth-child\\(n \\+ ${(c - 1) * 2 + 1}\\):nth-child\\(-n \\+ ${c * 2}\\)\\s*\\{\\s*display:\\s*flex`),
+      `${c} 列那档没把第 ${(c - 1) * 2 + 1}～${c * 2} 张放出来，第二行会缺口`)
+  }
 })
 
 check('⚠️ 封面占满卡片宽度（缩成固定小宽度就「看不见 cover 上是什么」）', () => {

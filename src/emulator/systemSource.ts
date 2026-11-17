@@ -584,8 +584,14 @@ export async function loadSystemBytes(
         const actualSha256 = await sha256Hex(data)
         if (actualSha256 !== source.expectedSha256) throw new Error('镜像内容与 R2 原件的 SHA-256 不一致')
       }
-      // 只有主源进缓存（上面那段注释）。写失败一律不管，缓存只是加速
-      if (key && source.url === primaryUrl) void romCachePut(key, data).catch(() => {})
+      /*
+        只有「缓存 key 对应的那个带版本号地址」下到的内容才进缓存，写失败一律不管，缓存只是加速。
+        主源的 cacheUrl，和它换到下载优选域的同一地址（downloadRomUrl(cacheUrl)：同一 R2 对象、同一 romv，
+        由同一个 Worker 校验版本）都算；外部镜像、MIRRORS 等内容可能不同的备用源一律不进。
+        以前只认主源：测速选中下载优选域的玩家每次开局都要整盘重下 20–46MB 的 Windows 镜像。
+      */
+      const sameVersionedObject = fetchUrl === cacheUrl || Boolean(downloadCacheUrl && fetchUrl === downloadCacheUrl)
+      if (key && sameVersionedObject) void romCachePut(key, data).catch(() => {})
       return { data, url: source.url, label: source.label, usedFallback: source.url !== primaryUrl, fromCache: false }
     } catch (e) {
       // 玩家自己取消：立刻出去，别把剩下的源也试一遍

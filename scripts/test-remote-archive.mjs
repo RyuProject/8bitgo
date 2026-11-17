@@ -11,6 +11,9 @@ const built = await build({
     resolveDir: process.cwd(), sourcefile: 'remote-archive-test-entry.ts', loader: 'ts',
   },
   bundle: true, write: false, platform: 'node', format: 'esm', logLevel: 'silent',
+  // 依赖链里的 romHosts.ts 在模块顶层读 import.meta.env.VITE_*；node 里没有这个对象，
+  // 不替换就在 import 时直接 TypeError。给空对象，地址走源码默认值，不随本机 .env 漂移。
+  define: { 'import.meta.env': '{}' },
   plugins: [{
     name: 'memory-cache',
     setup(buildApi) {

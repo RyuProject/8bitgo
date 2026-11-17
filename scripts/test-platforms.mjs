@@ -42,8 +42,20 @@ check('平台表解析出来了', () => {
   assert.ok(found.length >= 14, `只解析到 ${found.length} 个平台，platforms.ts 的写法变了，这个测试要跟着改`)
 })
 
-check('每个平台都声明了 runtime —— 一个 null 都不许有', () => {
-  const nulls = found.filter((p) => p.runtime === 'null').map((p) => p.id)
+/*
+  唯一的例外：根本不走通用播放器、只有独立页面的平台。
+  2026-11-16（481af52）加的塞班 / N-Gage 走 /symbian 的 EKA2L1 专用页，要玩家先导入授权固件，
+  platforms.ts 里写明了「不能接进通用 ROM 播放器」。它的 runtime 写 null 表达的是「通用播放器里
+  确实没有任何引擎」，不是「引擎还没部署」—— 和上面 java 那次的语义不一样。
+  ⚠️ 例外不是白给的：闪烁 bug 的前提是「ROM 探测回来后有引擎能按扩展名接手」，下面那条检查
+  逐项钉住这个前提对它不成立；名单外的平台照旧一个 null 都不许有。
+*/
+const DEDICATED_PAGE_PLATFORMS = { symbian: '/symbian' }
+
+check('每个平台都声明了 runtime —— 除独立页面平台外一个 null 都不许有', () => {
+  const nulls = found
+    .filter((p) => p.runtime === 'null' && !Object.hasOwn(DEDICATED_PAGE_PLATFORMS, p.id))
+    .map((p) => p.id)
   assert.deepEqual(
     nulls,
     [],
@@ -51,6 +63,24 @@ check('每个平台都声明了 runtime —— 一个 null 都不许有', () => 
       '这会让 ROM 探测回来之前 resolveRuntime 返回 undefined，页面谎报「该平台暂不支持在线运行」，' +
       '探完又变回能玩。引擎有没有部署交给 available() 判，别用 null 表达。',
   )
+})
+
+check('⚠️ 独立页面平台在通用播放器里始终没有引擎（不会闪），且独立入口真的存在', () => {
+  const meta = stripComments(readFileSync(new URL('../src/emulator/runtimeMeta.ts', import.meta.url), 'utf8'))
+  const routes = readFileSync(new URL('../src/AppRoutes.tsx', import.meta.url), 'utf8')
+  const plain = stripComments(src)
+  for (const [id, route] of Object.entries(DEDICATED_PAGE_PLATFORMS)) {
+    const entry = found.find((p) => p.id === id)
+    assert.ok(entry, `${id} 平台不见了 —— 不再需要例外的话把它从 DEDICATED_PAGE_PLATFORMS 里删掉`)
+    assert.equal(entry.runtime, 'null', `${id} 已经有通用运行时了，从例外名单里删掉，按普通平台验收`)
+    const at = plain.indexOf(`id: '${id}',`)
+    const block = plain.slice(at, plain.indexOf('\n  },', at))
+    // EmulatorJS 的 supports 只看 core：core 非空它就会在探测回来后接手，又闪回「能玩」。
+    assert.match(block, /\bcore: null,/, `${id} 配了 core，EmulatorJS 会在 ROM 探测后接手`)
+    assert.ok(!meta.includes(`'${id}'`), `runtimeMeta.ts 里有运行时声明支持 ${id}，通用播放器会在探测后改口`)
+    assert.doesNotMatch(detect, new RegExp(`: '${id}',`), `detect.ts 把某个扩展名映射到了 ${id}`)
+    assert.ok(routes.includes(`path="${route}"`), `${id} 的独立页面路由 ${route} 不见了，玩家没有任何入口`)
+  }
 })
 
 check('java 走 j2me（这条是上面那个 bug 的原案发地）', () => {

@@ -429,12 +429,24 @@ const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm,
 const SRC = strip(readFileSync(new URL('../src/emulator/systemSource.ts', import.meta.url), 'utf8'))
 const JSDOS = strip(readFileSync(new URL('../src/emulator/adapters/jsdos.ts', import.meta.url), 'utf8'))
 
-await check('⚠️ 只有主源那一份写缓存', () => {
+await check('⚠️ 只有缓存 key 对应的带版本号地址下到的内容才写缓存', () => {
+  /*
+    54c1044 起各源先测速再按快慢排序（fastestSystemSources），循环下标 0 不再等于主源，
+    所以判据只能是「这一份的地址就是主源地址」，不能退回按下标判断。
+    同时钉住全文件只有这一处写缓存，别处再加一个 romCachePut 就绕过了这道闸。
+  */
+  /*
+    2026-11-18：判据从「主源」收窄为「下到的就是缓存 key 那个带版本号地址」——主源的 cacheUrl，或它换到
+    下载优选域的同一地址（同一 R2 对象、同一 romv）。外部镜像 / MIRRORS 用的是各自的 source.url，永远进不来。
+  */
   assert.match(
     SRC,
-    /if \(key && i === 0\) void romCachePut\(/,
+    /const sameVersionedObject = fetchUrl === cacheUrl \|\| Boolean\(downloadCacheUrl && fetchUrl === downloadCacheUrl\)\s*\n\s*if \(key && sameVersionedObject\) void romCachePut\(/,
     '备用源的内容按主源的 key 存进去 = 把一个可能不同的 Windows 永久钉在玩家本地，主源好了也换不回来',
   )
+  assert.match(SRC, /const downloadCacheUrl = cacheUrl \? downloadRomUrl\(cacheUrl\) : ''/, '下载优选域那份必须由带版本号的 cacheUrl 换域名得到，不能是不带版本的 source.url')
+  assert.match(SRC, /: source\.url === downloadRomUrl\(primaryUrl\) && downloadCacheUrl\s*\n\s*\? downloadCacheUrl/, '只有下载优选域这条才会改用带版本号的地址')
+  assert.equal(SRC.match(/romCachePut\(/g)?.length, 1, '系统镜像只能有一处写缓存，而且必须是上面那条判断')
 })
 
 await check('⚠️ 缓存命中要先验是不是合法镜像，坏的要删掉再走网络', () => {

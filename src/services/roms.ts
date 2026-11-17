@@ -676,9 +676,15 @@ export interface RomCandidate {
 
 /** 网络类失败本来会停止整条回退链；唯一例外是紧跟主地址的同语言备用源。 */
 export function shouldTryRomCandidateAfterUncertain(current: RomCandidate, next?: RomCandidate): boolean {
-  // 派生的 .8bg 只是旧对象旁边的一条影子路径；它问不出来时必须仍给原对象机会，
-  // 否则“渐进迁移”反而会让所有尚未转换的游戏被一次 HEAD/CORS 波动挡住。
-  if (current.derivedPacked && next && current.lang === next.lang && current.backup === next.backup) return true
+  // 明文原件和旁边派生的 .8bg 是同一个对象的两种形态，必须当成一组：一个问不出来时仍给另一个机会，
+  // 否则“渐进迁移”会让尚未转换（或已经转换）的游戏被一次 HEAD/CORS 波动挡住。
+  // 481af52 起顺序改成「明文在前、8BG 回退在后」，所以两个方向都要放行，不能只认 current 是派生项。
+  if (
+    next
+    && (current.derivedPacked || next.derivedPacked)
+    && current.lang === next.lang
+    && current.backup === next.backup
+  ) return true
   return !current.backup && Boolean(next?.backup && next.lang === current.lang)
 }
 
@@ -1408,7 +1414,9 @@ export function useRomUrl(game: Game | undefined, prefer?: RomSlotLang | null): 
             url,
             outcome: directHtml
               ? { url, certain: true }
-              : await probeRom(url, candidate.derivedPacked ? 2500 : 4000, game.platform === 'html5', {
+              // 2026-11-16 起明文在前、.8bg 在后，库里大多数游戏的 .8bg 才是真正存在的对象，不再是「影子路径」；
+              // 同组候选并行探测，给 .8bg 同样的 4 秒对快网络没有代价，慢网络上不会把真对象误判成网络错误。
+              : await probeRom(url, 4000, game.platform === 'html5', {
                   signal: probeController.signal,
                   // useRomUrl 自己有退避；这里再重试一次会把 4 秒超时嵌套放大成几十秒。
                   retry: false,
@@ -1527,7 +1535,8 @@ export function useRomUrl(game: Game | undefined, prefer?: RomSlotLang | null): 
           return {
             key,
             url,
-            outcome: await probeRom(url, key.endsWith('.8bg') ? 2500 : 4000, game.platform === 'html5', {
+            // 历史 8BG 是未绑定游戏的真实对象，和明文同样给 4 秒（见上面 candidate 那处）
+            outcome: await probeRom(url, 4000, game.platform === 'html5', {
               signal: probeController.signal,
               retry: false,
             }),

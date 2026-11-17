@@ -112,13 +112,41 @@ assert.deepEqual(log, ['+a', '+left', '-a'])
 
 /* ---------------- 读手柄抛异常不能停掉循环 ---------------- */
 
+/*
+  1) getGamepads() 本身抛错（权限策略挡住，见 gamepadAccess.ts）：轮询走 readGamepadsSafe，读不到就当
+     没有手柄 —— 和拔掉手柄一样，按着的键当帧松开。被挡住时它是每帧都抛的，要是还沿用上一帧的状态，
+     左键就永远松不开，角色一直往左走。
+*/
 throwOnce = true
 tick()
-assert.ok(frame, '抛异常之后必须仍然排了下一拍 —— 这就是 jsnes 那个 bug')
+assert.ok(frame, '读手柄抛错之后必须仍然排了下一拍')
+assert.deepEqual(log, ['+a', '+left', '-a', '-left'], '读不到手柄 = 没有手柄，按着的键必须松开')
 pads = [pad([9])] // START
 tick()
-// 顺序按 ALL 的次序走（start 在 left 前面），只要求一帧内该发的都发了
-assert.deepEqual(log, ['+a', '+left', '-a', '+start', '-left'], '抛异常之后仍然照常工作')
+assert.deepEqual(log, ['+a', '+left', '-a', '-left', '+start'], '读手柄抛错之后仍然照常工作')
+
+/*
+  2) 读到了手柄、映射时却抛异常（快照对象本身坏掉）：这一层由 loop 的 try 兜住。
+     jsnes 那个循环是 `poll(); requestAnimationFrame(loop)`，抛一次就再也不排下一拍。
+*/
+const broken = {
+  id: 'broken pad',
+  connected: true,
+  mapping: 'standard',
+  axes: [0, 0],
+  get buttons() {
+    throw new Error('boom')
+  },
+}
+pads = [broken]
+tick()
+assert.ok(frame, '抛异常之后必须仍然排了下一拍 —— 这就是 jsnes 那个 bug')
+assert.deepEqual(log, ['+a', '+left', '-a', '-left', '+start'], '抛异常那一帧不能乱发按键（START 照旧按着）')
+pads = [pad([9, 15])] // START 不放，再按右
+tick()
+pads = [pad([9])] // 松开右
+tick()
+assert.deepEqual(log, ['+a', '+left', '-a', '-left', '+start', '+right', '-right'], '抛异常之后仍然照常工作')
 
 /* ---------------- stop 要把按着的键松开 ---------------- */
 

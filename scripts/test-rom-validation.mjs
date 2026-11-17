@@ -73,6 +73,14 @@ try {
     format: 'esm',
     outfile,
     logLevel: 'silent',
+    /*
+      loadProgress.ts 起改用 `@/` 别名引 services；esbuild 只在显式给了 tsconfig 时才认
+      tsconfig.app.json 里的 paths（根 tsconfig.json 只有 references），否则整份打包失败。
+      romHosts.ts 在模块顶层读 import.meta.env.VITE_*，node 里没有这个对象 ——
+      换成空对象，让地址走源码里的默认值，测试结果不随本机 .env 漂移。
+    */
+    tsconfig: 'tsconfig.app.json',
+    define: { 'import.meta.env': '{}' },
   })
   const {
     assertValidZip,
@@ -149,10 +157,22 @@ try {
   assert.equal(prepared.name, 'folder/game.nds')
   assert.equal(prepared.data.byteLength, nds.length)
   assert.deepEqual(await assertNdsRomBlob(new Blob([nds])), {})
+  /*
+    c482813 起校验结果还带 `archive`（中央目录项）：适配器靠它的偏移 / 压缩方式 / 大小
+    在页面里直接解出裸 ROM，不再把 ZIP 交给引擎在 WASM 堆里解。所以除了点名，
+    还得核对这一项真的指向 .srl 的本地头（README 30+10+4 字节之后），而不是第一个成员。
+  */
+  const ndsInZip = await assertNdsRomBlob(new Blob([zip([['README.txt', 'help'], ['folder/game.srl', nds]])]))
+  assert.equal(ndsInZip.archiveEntry, 'folder/game.srl', 'ZIP 里 README 排在 .srl 前面时也必须点名真正的 ROM')
   assert.deepEqual(
-    await assertNdsRomBlob(new Blob([zip([['README.txt', 'help'], ['folder/game.srl', nds]])])),
-    { archiveEntry: 'folder/game.srl' },
-    'ZIP 里 README 排在 .srl 前面时也必须点名真正的 ROM',
+    {
+      name: ndsInZip.archive?.name,
+      method: ndsInZip.archive?.method,
+      offset: ndsInZip.archive?.offset,
+      uncompressedSize: ndsInZip.archive?.uncompressedSize,
+    },
+    { name: 'folder/game.srl', method: 0, offset: 44, uncompressedSize: nds.length },
+    '外层解包用的中央目录项必须就是被点名的那个 ROM',
   )
   await assert.rejects(
     () => assertNdsRomBlob(new Blob([zip([['a.nds', nds], ['b.nds', nds]])])),

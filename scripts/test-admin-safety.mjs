@@ -74,7 +74,14 @@ assert.doesNotMatch(adminOverview, /useAllUsers|fetchAllPosts/)
 
 // 大表单保存和行操作都必须单飞；有改动时关页 / 取消要提醒。
 assert.match(adminGames, /if \(savingRef\.current\) return/)
-assert.match(adminGames, /if \(rowActionRef\.current\) return/)
+// 后来加了批量上下架（4 路并发），行操作与批量操作必须互斥：任一在飞时另一种直接返回，
+// 否则删除 / 上下架的请求会和批量请求交错，列表刷新拿到半截状态。
+for (const fn of ['const remove = async', 'const toggleHidden = async', 'const setSelectedVisibility = async']) {
+  const at = adminGames.indexOf(fn)
+  assert.ok(at > 0, `找不到 ${fn}`)
+  const body = adminGames.slice(at, adminGames.indexOf('\n  }\n', at))
+  assert.match(body, /if \((?:rowActionRef\.current \|\| batchActionRef\.current|batchActionRef\.current \|\| rowActionRef\.current)\) return/, `${fn} 没有同时检查行操作与批量操作的单飞锁`)
+}
 assert.match(gameForm, /window\.addEventListener\('beforeunload'/)
 assert.match(gameForm, /<fieldset disabled=\{submitting \|\| romDeleteBusy\}/)
 
@@ -100,7 +107,19 @@ assert.doesNotMatch(objectRow, /games\.map\(\(g\) => \(/, '不能在每一行重
 // R2 删除只有拿到全库引用后才允许；共享 key 要保留所有引用，不能只记第一款游戏。
 assert.match(adminRoms, /const bindingsByRom = useMemo/)
 assert.match(adminRoms, /if \(allGamesLoaded\) return true/)
-assert.match(adminRoms, /await unbindKeys\(keys\)/)
+// adb8e59 起删除前还会重新读完整游戏库与平台 BIOS（页面打开后别人可能刚绑了同一对象），
+// 解绑用的是这份新快照，而且必须先解绑、后删对象，否则解绑失败会留下指向已删文件的 key。
+assert.match(adminRoms, /if \(fresh\.items\.length !== fresh\.total\) throw new Error/, '删除前的引用检查必须拿到完整游戏库')
+for (const [fn, unbind, del] of [
+  ['const removeObject = async', 'await unbindKeys([o.key], freshGames)', 'await deleteRom(o.key)'],
+  ['const removeBundle = async', 'await unbindKeys(keys, freshGames)', 'await deleteRomObjectsExactly(keys)'],
+]) {
+  const body = adminRoms.slice(adminRoms.indexOf(fn), adminRoms.indexOf('\n  }\n', adminRoms.indexOf(fn)))
+  assert.match(body, /const freshGames = await loadSafeDeleteGames\(/, `${fn} 删除前没有重新读引用`)
+  const unbindAt = body.indexOf(unbind)
+  const deleteAt = body.indexOf(del)
+  assert.ok(unbindAt > 0 && deleteAt > unbindAt, `${fn} 必须先按新快照解绑、再删 R2 对象`)
+}
 assert.match(gameForm, /原文件会保留/)
 
 // 用户页只取收藏 / 最近数量，不能把上百万条关联明细拖进 Node；搜索在数据库里完成。

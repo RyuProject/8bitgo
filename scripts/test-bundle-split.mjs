@@ -160,6 +160,10 @@ const ADAPTERS = [
   'dolphin',
   'cloudgame',
   'liveview',
+  // 无 WebAssembly 浏览器的纯 JS / Canvas 2D 退路（AGENTS §2.8.0.1、§2.24.0b、§2.38）
+  'binjgb',
+  'iodinegba',
+  'awayfl',
 ]
 
 // 目录里有几个适配器，名单里就该有几个 —— 这一条才真的挡得住「新加的忘了登记」

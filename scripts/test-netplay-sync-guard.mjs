@@ -19,7 +19,9 @@ assert.ok(
 )
 assert.match(
   adapter,
-  /const roomEvent = event === 'open-room' \|\| event === 'join-room'[\s\S]{0,1500}if \(addSlug && roomEvent[\s\S]{0,500}game_slug: options\.gameSlug/,
+  // ebb8156 起同一处还要给观众进房补 role: 'spectator'，条件变成 (addSlug || asSpectator)，
+  // 中间多了回执 / 握手轨迹的包装；slug 仍只看 addSlug，开房与加房两种事件都要带。
+  /const roomEvent = event === 'open-room' \|\| event === 'join-room'[\s\S]{0,3000}if \(\(addSlug \|\| asSpectator\) && roomEvent[\s\S]{0,800}\.\.\.\(addSlug \? \{ game_slug: options\.gameSlug \} : \{\}\)/,
   '开房和加房都必须带稳定 slug，不能只靠可能碰撞的 32 位 gameId',
 )
 

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { createReadStream, readFileSync } from 'node:fs'
+import { createReadStream, existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { Readable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
@@ -77,6 +77,16 @@ await assert.rejects(
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const packDir = join(root, 'public/web/cs16/packs')
+/*
+  packs/ 被 Git 忽略（几百 MB 的游戏数据走 R2，见 AGENTS §2.28.3 / PACKS.md），只在打包机上存在；
+  生产机和干净的检出里根本没有它。所以「真实包」这一半只在目录存在时跑，否则只锁解析器与清单守卫。
+  ⚠️ 只按整个 packs/ 目录在不在来判断：目录在、却缺了某个分片或清单，说明生成到一半，必须照样失败。
+  打包机上想强制要求真实包在场：CS16_REQUIRE_PACKS=1 npm run test:cs16。
+*/
+const hasRealPacks = existsSync(packDir)
+if (!hasRealPacks && process.env.CS16_REQUIRE_PACKS === '1') {
+  throw new Error(`CS16_REQUIRE_PACKS=1，但 ${packDir} 不存在：先 npm run cs16:repack && npm run cs16:zstd`)
+}
 const maps = [
   'de_dust2', 'de_dust', 'de_inferno', 'de_nuke', 'de_aztec', 'de_train',
   'de_cbble', 'cs_office', 'cs_italy', 'cs_assault', 'cs_militia', 'de_vertigo',
@@ -99,12 +109,50 @@ async function gzipRawSha256(file) {
 }
 
 const zstdRoot = join(packDir, 'zstd-v1')
-const catalog = JSON.parse(readFileSync(join(zstdRoot, 'catalog.json'), 'utf8'))
+
+/** 没有真实包时用的最小合法清单：形状与 cs16:zstd 产物一致，只为让守卫测试有东西可改。 */
+function syntheticCatalog() {
+  const hex = (seed) => createHash('sha256').update(seed).digest('hex')
+  const chunk = (seed, index, rawBytes, compressedBytes) => {
+    const compressedSha256 = hex(`${seed}:z`)
+    return { index, path: `chunks/${compressedSha256}.zst`, compressedBytes, rawBytes, compressedSha256, rawSha256: hex(`${seed}:raw`) }
+  }
+  const pack = (key, chunks) => ({
+    key,
+    rawBytes: chunks.reduce((sum, c) => sum + c.rawBytes, 0),
+    compressedBytes: chunks.reduce((sum, c) => sum + c.compressedBytes, 0),
+    rawSha256: hex(`${key}:pack`),
+    chunks,
+  })
+  return {
+    format: '8bitgo.cs16.zstd-chunks.v1',
+    tarFormat: 'ustar',
+    compression: { algorithm: 'zstd', level: 22, chunkRawBytes: 16 * 1024 * 1024 },
+    packs: {
+      base: pack('base', [chunk('base-0', 0, 16 * 1024 * 1024, 6_000_000), chunk('base-1', 1, 9_000_000, 3_000_000)]),
+      'maps/de_dust2': pack('maps/de_dust2', [chunk('de_dust2-0', 0, 4_000_000, 2_000_000)]),
+    },
+  }
+}
+
+const catalog = hasRealPacks
+  ? JSON.parse(readFileSync(join(zstdRoot, 'catalog.json'), 'utf8'))
+  : syntheticCatalog()
 validatePackCatalog(catalog)
 assert.equal(catalog.format, '8bitgo.cs16.zstd-chunks.v1')
 assert.equal(catalog.compression.level, 22)
 assert.equal(catalog.compression.chunkRawBytes, 16 * 1024 * 1024)
-await init()
+
+// 守卫本身：误传 / 被篡改的清单不能指挥浏览器去下几 GB 再 OOM
+const wrongChunkSize = structuredClone(catalog)
+wrongChunkSize.compression.chunkRawBytes = 32 * 1024 * 1024
+await assert.rejects(async () => validatePackCatalog(wrongChunkSize), /Incompatible compression parameters/)
+const traversalKey = structuredClone(catalog)
+traversalKey.packs['maps/../base'] = traversalKey.packs.base
+await assert.rejects(async () => validatePackCatalog(traversalKey), /Invalid pack name/)
+const wrongTotal = structuredClone(catalog)
+wrongTotal.packs.base.rawBytes -= 1
+await assert.rejects(async () => validatePackCatalog(wrongTotal), /Total length mismatch for base/)
 
 const oversizedCatalog = structuredClone(catalog)
 oversizedCatalog.packs.base.rawBytes = 161 * 1024 * 1024
@@ -153,6 +201,12 @@ async function inspectZstdPack(key) {
   assert.equal(compressedBytes, pack.compressedBytes)
   return { names, result, rawSha256: pack.rawSha256 }
 }
+
+if (!hasRealPacks) {
+  console.log('CS16 流式 TAR / 清单守卫测试通过；未发现 public/web/cs16/packs（被 Git 忽略、只在打包机上有），跳过真实包核对')
+  process.exit(0)
+}
+await init()
 
 /* 单元样本能锁解析器，真实包检查再锁住「瘦身时没有把全部地图装回公共包」。 */
 const base = await inspectPack(join(packDir, 'base.tar.gz'))

@@ -17,7 +17,7 @@
  * - 邮件里只有已经脱敏入库的东西（特征文本、游戏 slug、浏览器 / 系统归类），不含 IP、UA 原文。
  */
 import { query } from './db.js'
-import { sendRawMail } from './mail.js'
+import { mailProvider, sendRawMail } from './mail.js'
 
 const num = (v, d) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : d)
 
@@ -106,7 +106,9 @@ export async function maybeAlertSignature(signature, deps = {}) {
       envs: tally((r) => `${r.browser} / ${r.os}`),
     }
     const { subject, text } = renderAlert(signature, summary, cfg)
-    await send({ to: cfg.to, subject, text, provider: process.env.RESEND_API_KEY ? 'resend' : undefined })
+    // 配了 Resend 就固定走它（纯文本告警不需要 SUBMIT_MAIL_PROVIDER 那条 SMTP 附件通路）。
+    // 通路判定只问 mail.js，不在这里另读 RESEND_API_KEY：后台配置页按「实际读取位置」列这个密钥。
+    await send({ to: cfg.to, subject, text, provider: mailProvider() === 'resend' ? 'resend' : undefined })
     console.log(`[diag-alert] 已报警 ${signature}（${summary.visits} 个访问）`)
     // 冷却记录只需要活过冷却期；顺手清掉一周前的，site_settings 不会被特征越攒越多
     await run(`DELETE FROM site_settings WHERE name LIKE 'diag.alert.%' AND updated_at < NOW() - INTERVAL 7 DAY`).catch(() => {})

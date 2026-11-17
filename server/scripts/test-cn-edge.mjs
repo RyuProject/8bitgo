@@ -129,7 +129,10 @@ assert.match(paths, /export const jsdosBase = \(\): string => runtimeBase\('jsdo
 assert.match(paths, /`\$\{ejsBase\(\)\}\$\{name\}\?v=/)
 assert.match(paths, /`\$\{ejsBase\(\)\}\$\{relativePath\}\?v=/)
 const ejs = readFileSync(new URL('../../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8')
-assert.match(ejs, /const stalled = message\.startsWith\(rt\.ejsStalled\.split\('\{stage\}'\)\[0\]\)\s*if \(usedEjsEdge && !stalled\) markEjsEdgeFailed\(\)/, 'EmulatorJS 卡住不退回同源，避免重试走更慢的 Cloudflare')
+// 后来又补了「内存不足」「配置 / 本地读取错误」两类不退回同源的例外（3ee587b / c3b9ece），
+// 这里只钉住卡住那一条仍在：标记前必须先判 !stalled。
+assert.match(ejs, /const stalled = message\.startsWith\(rt\.ejsStalled\.split\('\{stage\}'\)\[0\]\)[\s\S]{0,400}?if \(usedEjsEdge && !stalled\b[^)\n]*\) markEjsEdgeFailed\(\)/, 'EmulatorJS 卡住不退回同源，避免重试走更慢的 Cloudflare')
+assert.match(ejs, /if \(usedEjsEdge && !stalled && !outOfMemory && scope !== 'config'\) markEjsEdgeFailed\(\)/, '内存不足、配置 / 本地读取错误与线路无关，也不退回同源')
 assert.match(ejs, /EJS_pathtodata: ejsBase\(\)/)
 assert.match(ejs, /if \(usedEjsEdge\) markEjsEdgeFailed\(\)\s*console\.warn/, '入口资源加载失败后自动重试退回同源')
 const ruffle = readFileSync(new URL('../../src/emulator/adapters/ruffle.ts', import.meta.url), 'utf8')

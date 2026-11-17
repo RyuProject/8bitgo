@@ -58,12 +58,28 @@ check('⚠️ 两边的平台 id 集合完全相同', () => {
   runtime 决定它属于哪一类、core 决定用哪个模拟器核心、romExtensions 决定怎么喂文件。
   别的字段（name / year / manufacturer）错了只是显示难看，这三个错了是跑不起来。
 */
+/** 前端通用播放器真实在用的运行时 id；独立页面平台的镜像值绝不能和它们撞名 */
+const GENERIC_RUNTIMES = new Set(SITE_PLATFORMS.map((p) => p.runtime).filter(Boolean))
+
 for (const field of ['runtime', 'core', 'romExtensions']) {
   check(`⚠️ 每个平台的 ${field} 和前端一致`, () => {
     const bad = []
     for (const p of OPEN_PLATFORMS) {
       const site = byId.get(p.id)
       if (!site) continue // id 集合那条已经报过了
+      /*
+        唯一允许的差异：前端 runtime 为 null 的「独立页面平台」（481af52 起的塞班，走 /symbian 的
+        EKA2L1 专用页，不进通用播放器）。前端的 null 是给 resolveRuntime 看的「通用播放器里没有引擎」；
+        而 openapi.json 的 Platform.runtime 是必填字符串，镜像只能写专用运行时的名字（eka2l1-web）。
+        为了不让这个口子变成漂移的掩护：镜像值不能冒充任何通用运行时（否则第三方会拿 emulatorjs
+        之类去跑），并且必须明说本地跑不了。
+      */
+      if (field === 'runtime' && site.runtime === null) {
+        if (typeof p.runtime !== 'string' || !p.runtime || GENERIC_RUNTIMES.has(p.runtime) || p.native.runnable !== false) {
+          bad.push(`${p.id}: 前端无通用运行时（独立页面），镜像=${JSON.stringify(p.runtime)} runnable=${p.native.runnable} —— 应写专用运行时名且 runnable=false`)
+        }
+        continue
+      }
       const a = JSON.stringify(p[field] ?? null)
       const b = JSON.stringify(site[field] ?? null)
       if (a !== b) bad.push(`${p.id}: 镜像=${a} 前端=${b}`)
@@ -71,6 +87,15 @@ for (const field of ['runtime', 'core', 'romExtensions']) {
     assert.deepEqual(bad, [], '\n     ' + bad.join('\n     '))
   })
 }
+
+check('⚠️ 镜像的 runtime 一律是非空字符串（openapi.json 里 Platform.runtime 必填且为 string）', () => {
+  const spec = JSON.parse(readFileSync(new URL('../server/openapi.json', import.meta.url), 'utf8'))
+  const schema = spec.components.schemas.Platform
+  assert.ok(schema.required.includes('runtime') && schema.properties.runtime.type === 'string',
+    'openapi.json 里 runtime 的契约变了 —— 这条要跟着改')
+  const bad = OPEN_PLATFORMS.filter((p) => typeof p.runtime !== 'string' || !p.runtime).map((p) => p.id)
+  assert.deepEqual(bad, [], `${bad.join('、')} 的 runtime 不是非空字符串，第三方按契约解析会出错`)
+})
 
 console.log('\n── enabled：站上并不是每个平台都开着 ──')
 
@@ -134,8 +159,14 @@ check('⚠️ 整张表是深冻结的（它是每个请求共用的单例）', 
 check('romExtensions 都是小写、带点、不重复', () => {
   for (const p of OPEN_PLATFORMS) {
     assert.ok(p.romExtensions.length > 0, `${p.id} 没有扩展名`)
+    /*
+      N-Gage 2.0 的游戏包真实扩展名就是 `.n-gage`，所以独立页面平台允许中间带连字符。
+      通用播放器的平台不行：registry.ts 的 extOf 只认 `.[A-Za-z0-9]+` 结尾，带连字符的扩展名
+      在那里取不出来，按扩展名选引擎会悄悄失效。
+    */
+    const shape = byId.get(p.id)?.runtime === null ? /^\.[a-z0-9]+(?:-[a-z0-9]+)*$/ : /^\.[a-z0-9]+$/
     for (const e of p.romExtensions) {
-      assert.match(e, /^\.[a-z0-9]+$/, `${p.id} 的扩展名 ${e} 形状不对`)
+      assert.match(e, shape, `${p.id} 的扩展名 ${e} 形状不对`)
     }
     assert.equal(new Set(p.romExtensions).size, p.romExtensions.length, `${p.id} 的扩展名有重复`)
   }

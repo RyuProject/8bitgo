@@ -193,7 +193,12 @@ await check('迁移：新名字已有存档时不覆盖；通用旧名（可能�
 
 await check('适配器：8BG 解包名改成存档 slug 名，并在开局前迁移旧存档', () => {
   const adapter = readFileSync(new URL('../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8')
-  assert.match(adapter, /const batteryName = batterySaveGameName\(options\.gameSlug, engineGameName\)/)
+  /*
+    远端 NDS ZIP 在外层解成裸 ROM 后（c482813）沿用 ZIP 时代的存档名：那个旧名是内容哈希，
+    迁移规则认不出，按 slug 改名会让玩家已有的 .srm 找不到。其它 8BG 解包名照旧按存档 slug 改名。
+  */
+  assert.match(adapter, /const batteryName = ndsInflatedFromZip \? undefined : batterySaveGameName\(options\.gameSlug, engineGameName\)/)
+  assert.match(adapter, /ndsInflatedFromZip = true/, '外层解包成功时必须打上标记，否则会误按 slug 改名')
   assert.match(adapter, /migrateLegacyBatterySaves\(fs as unknown as SaveFsLike, legacyBatteryName, engineGameName, options\.gameSlug\)/)
 })
 

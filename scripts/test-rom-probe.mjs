@@ -119,7 +119,9 @@ assert.equal(isolatedEmbedFor('diablo'), undefined, 'Diablo 不需要 COOP/COEP�
   let routeCalls = 0
   const routeFetch = async (requestUrl) => {
     routeCalls++
-    const delay = String(requestUrl).includes('backup.example.com') ? 2 : 20
+    // 快慢两边拉开到 2ms / 300ms：npm test 并行时事件循环会被堵几十毫秒，2 对 20 会在同一轮里一起触发、
+    // 量出来几乎一样快，断言随机变红。下面的 timeoutMs 也相应放宽，保证慢的一边不是被超时判输的。
+    const delay = String(requestUrl).includes('backup.example.com') ? 2 : 300
     const bytes = new Uint8Array(1024)
     return {
       ok: true,
@@ -137,7 +139,7 @@ assert.equal(isolatedEmbedFor('diablo'), undefined, 'Diablo 不需要 COOP/COEP�
   const chosen = await chooseFasterRomRoute(
     { url: 'https://primary.example.com/large.zip', size: 64 * 1024 * 1024 },
     { url: 'https://backup.example.com/large.zip', size: 64 * 1024 * 1024 },
-    { fetchImpl: routeFetch, sampleBytes: 1024, timeoutMs: 100, cacheResults: false },
+    { fetchImpl: routeFetch, sampleBytes: 1024, timeoutMs: 2000, cacheResults: false },
   )
   assert.equal(chosen, 'backup', '备用域名样本明显更快时应整份改走备用源')
   assert.equal(routeCalls, 2, '两个不同域名各取一份小样本')
@@ -173,11 +175,17 @@ assert.equal(isolatedEmbedFor('diablo'), undefined, 'Diablo 不需要 COOP/COEP�
     calls++
     const fast = url.includes('mirror')
     const bytes = new Uint8Array(512)
+    /*
+      慢的一边给 300ms 而不是 40ms：npm test 并行跑几十套时事件循环常被堵住几十毫秒，
+      两个定时器会在同一轮里一起触发，量出来的速度几乎相等（镜像赢不了 15% 的门槛），
+      这条断言就随机变红。拉开差距后结论只取决于被测逻辑，不取决于机器忙不忙。
+      下面「一边挂住」那条要求 1 秒内定局，300ms 仍在预算之内。
+    */
     return {
       ok: true,
       status: 206,
       body: new ReadableStream({
-        start(c) { setTimeout(() => { c.enqueue(bytes); c.close() }, fast ? 1 : 40) },
+        start(c) { setTimeout(() => { c.enqueue(bytes); c.close() }, fast ? 1 : 300) },
       }),
     }
   }
@@ -196,7 +204,7 @@ assert.equal(isolatedEmbedFor('diablo'), undefined, 'Diablo 不需要 COOP/COEP�
     await chooseFasterRomRoute(
       { url: 'https://assets.example.com/roms/nes/a.zip', ...small },
       { url: 'https://mirror.example.com/roms/nes/a.zip', ...small },
-      { fetchImpl: smallFetch, cacheResults: false, minBytes: 0, timeoutMs: 500 },
+      { fetchImpl: smallFetch, cacheResults: false, minBytes: 0, timeoutMs: 2000 },
     ),
     'backup',
     'minBytes: 0 时小 ROM 也测速，镜像更快就整局走镜像',
@@ -218,7 +226,9 @@ assert.equal(isolatedEmbedFor('diablo'), undefined, 'Diablo 不需要 COOP/COEP�
     ),
     'primary',
   )
-  assert.ok(Date.now() - t0 < 1000, `主域先取完样本就应定局，不等镜像 3 秒超时（实际 ${Date.now() - t0}ms）`)
+  // 主域那份样本本身就要 300ms（见 smallFetch）；上限取 2 秒：仍远小于 3 秒超时，足以证明没在等镜像，
+  // 又不会因为 npm test 并行时机器一时卡顿就误报。
+  assert.ok(Date.now() - t0 < 2000, `主域先取完样本就应定局，不等镜像 3 秒超时（实际 ${Date.now() - t0}ms）`)
 }
 
 /* ---------- 主域 / 加速镜像的线路选择：固定小探针、有先验、可缓存 ---------- */
@@ -239,18 +249,23 @@ assert.equal(isolatedEmbedFor('diablo'), undefined, 'Diablo 不需要 COOP/COEP�
     return new Response(new Uint8Array(1024))
   }
   const base = { cacheResults: false, hints: {} }
-
-  assert.equal(await chooseRomHost(primary, mirror, { ...base, fetchImpl: timedFetch({ primary: 80, mirror: 10 }) }), 'mirror', '镜像明显更快就走镜像')
+  /*
+    探针用真定时器模拟延迟：npm test 并行跑时事件循环会被堵几十毫秒，快慢两边若只差几十毫秒，
+    会在同一轮里一起触发、量出来一样快。所以「明显更快」拉开到 10 / 400ms；
+    「快不到 15%」保持 46:50 的比例但放大到 184 / 200ms，给计时抖动留出余量。
+  */
+  assert.equal(await chooseRomHost(primary, mirror, { ...base, fetchImpl: timedFetch({ primary: 400, mirror: 10 }) }), 'mirror', '镜像明显更快就走镜像')
   assert.ok(seen.every((url) => url.endsWith(ROM_ROUTE_PROBE_PATH)), '测的是固定探针，不是 ROM 本身')
-  assert.equal(await chooseRomHost(primary, mirror, { ...base, fetchImpl: timedFetch({ primary: 50, mirror: 46 }) }), 'primary', '默认主域时镜像要快 15% 才赢')
+  assert.equal(await chooseRomHost(primary, mirror, { ...base, fetchImpl: timedFetch({ primary: 200, mirror: 184 }) }), 'primary', '默认主域时镜像要快 15% 才赢')
   assert.equal(await chooseRomHost(primary, mirror, { ...base, prefer: 'mirror', fetchImpl: timedFetch({ primary: 46, mirror: 50 }) }), 'mirror', '大陆访客默认镜像')
   assert.equal(await chooseRomHost(primary, mirror, { ...base, prefer: 'mirror', fetchImpl: timedFetch({ primary: 5, mirror: 80 }) }), 'mirror', '大陆访客不测速：主域探针再快也走镜像（探针量不出吞吐）')
   assert.equal(await chooseRomHost(primary, mirror, { ...base, prefer: 'mirror', fetchImpl: timedFetch({ primary: Infinity, mirror: Infinity }), timeoutMs: 100 }), 'mirror', '两边都测不出就用默认')
-  assert.equal(await chooseRomHost(primary, mirror, { ...base, fetchImpl: timedFetch({ primary: Infinity, mirror: 20 }), timeoutMs: 300 }), 'mirror', '主域挂住、镜像能到就走镜像')
+  assert.equal(await chooseRomHost(primary, mirror, { ...base, fetchImpl: timedFetch({ primary: Infinity, mirror: 20 }), timeoutMs: 2000 }), 'mirror', '主域挂住、镜像能到就走镜像')
 
   const t0 = Date.now()
   assert.equal(await chooseRomHost(primary, mirror, { ...base, fetchImpl: timedFetch({ primary: 10, mirror: Infinity }) }), 'primary')
-  assert.ok(Date.now() - t0 < 500, '默认方先到就定局，不等另一边超时')
+  // 探针默认超时是 8 秒（HOST_PROBE_TIMEOUT_MS）；2 秒内定局就说明没在等镜像，留出并行跑测试时的卡顿余量。
+  assert.ok(Date.now() - t0 < 2000, `默认方先到就定局，不等另一边 8 秒超时（实际 ${Date.now() - t0}ms）`)
 
   let fetched = 0
   const counting = async () => { fetched++; return new Response(new Uint8Array(8)) }
@@ -262,7 +277,7 @@ assert.equal(isolatedEmbedFor('diablo'), undefined, 'Diablo 不需要 COOP/COEP�
   const store = new Map()
   const storage = { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, v) }
   const cached = { cacheResults: true, storage, hints: {} }
-  assert.equal(await chooseRomHost(primary, mirror, { ...cached, fetchImpl: timedFetch({ primary: 80, mirror: 10 }) }), 'mirror')
+  assert.equal(await chooseRomHost(primary, mirror, { ...cached, fetchImpl: timedFetch({ primary: 400, mirror: 10 }) }), 'mirror')
   fetched = 0
   assert.equal(await chooseRomHost(primary, mirror, { ...cached, fetchImpl: counting }), 'mirror', '30 分钟内复用结论')
   assert.equal(fetched, 0, '复用结论不再发探针')
