@@ -25,8 +25,13 @@ assert.match(src, /urlPattern: '\*\/api\/games\/\*\/play\*'/, '游玩次数也�
 assert.match(src, /Fetch\.fulfillRequest/)
 
 const redeploy = readFileSync(new URL('../deploy/redeploy.sh', import.meta.url), 'utf8')
-assert.match(redeploy, /SMOKE_TEST:-0/, '默认关闭')
+// 2026-11-17 全站 EmulatorJS 事故后改成默认打开、失败重试一次、仍失败回滚（健康检查 200 拦不住「游戏全打不开」）。
+// 细节断言在 test-redeploy.mjs；这里只钉住与本脚本退出码的约定：2 = 环境不满足，只告警不回滚。
+assert.match(redeploy, /SMOKE_TEST:-1/, '默认打开')
 const smokeAt = redeploy.indexOf('scripts/smoke-start.mjs')
 assert.ok(smokeAt > redeploy.indexOf('if health_ok && ps2_headers_ok'), '健康检查通过之后才冒烟')
-assert.doesNotMatch(redeploy.slice(smokeAt, redeploy.indexOf('部署完成', smokeAt)), /rollback|die /, '冒烟失败只告警，不回滚、不中止')
-console.log('✔ 开局冒烟：判据、找 Chrome、拦截统计、redeploy 只在 SMOKE_TEST=1 时告警式运行')
+const smokeBlock = redeploy.slice(smokeAt, redeploy.indexOf('部署完成', smokeAt))
+assert.match(smokeBlock, /2\) log "⚠️⚠️ 开局冒烟没有运行/, '退出码 2（没有 Chrome / 脚本自身出错）只告警，不能回滚')
+assert.match(smokeBlock, /\*\)\n\s*if \[ "\$\{SMOKE_ROLLBACK:-1\}" = "1" \]; then[\s\S]*?rollback/, '只有真的跑了且失败（退出码 1）才回滚')
+assert.doesNotMatch(smokeBlock, /\bdie /, '冒烟失败走回滚，不是 die（die 不回滚，会把坏版本留在线上）')
+console.log('✔ 开局冒烟：判据、找 Chrome、拦截统计、redeploy 默认运行且失败回滚、没有 Chrome 只告警')

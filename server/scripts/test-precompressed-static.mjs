@@ -6,6 +6,7 @@
  * Vary: Accept-Encoding、跨源隔离与缓存头和原文件一致、白名单外的路径不碰、路径穿越不出根目录。
  */
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { request } from 'node:http'
 import { tmpdir } from 'node:os'
@@ -14,6 +15,7 @@ import { brotliCompressSync, brotliDecompressSync } from 'node:zlib'
 import express from 'express'
 import { staticCacheHeaders } from '../src/cache.js'
 import { precompressedStatic, PRECOMPRESSED_STATIC_PATTERNS } from '../src/precompressed-static.js'
+import { contentHashOfVersion, runtimeVersionGuard } from '../src/runtime-version-guard.js'
 
 let failed = 0
 const check = async (name, fn) => {
@@ -41,17 +43,44 @@ const wasm = Buffer.concat([Buffer.from([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0]), Buff
 const ruffleDir = join(root, 'ruffle', 'v0.7.1')
 mkdirSync(ruffleDir, { recursive: true })
 writeFileSync(join(ruffleDir, 'core.wasm'), wasm)
-writeFileSync(join(ruffleDir, 'core.wasm.br'), brotliCompressSync(wasm))
-writeFileSync(join(ruffleDir, 'core.wasm.br.json'), JSON.stringify({ bytes: wasm.length, sha256: 'x', brBytes: 0 }))
+const sha = (b) => createHash('sha256').update(b).digest('hex')
+const sidecar = (original, encoded) => JSON.stringify({ bytes: original.length, sha256: sha(original), brBytes: encoded.length })
+const wasmBr = brotliCompressSync(wasm)
+writeFileSync(join(ruffleDir, 'core.wasm.br'), wasmBr)
+writeFileSync(join(ruffleDir, 'core.wasm.br.json'), sidecar(wasm, wasmBr))
 // 旁注字节数对不上（原文件换过、压缩版过期）：不能吐
 writeFileSync(join(ruffleDir, 'stale.wasm'), wasm)
 writeFileSync(join(ruffleDir, 'stale.wasm.br'), brotliCompressSync(Buffer.from('old')))
 writeFileSync(join(ruffleDir, 'stale.wasm.br.json'), JSON.stringify({ bytes: 3, sha256: 'x', brBytes: 0 }))
+// ⚠️ 原文件改了、长度却没变（补丁改一个字符）：旁注字节数照样对得上，只有 sha256 能拦住过期压缩版
+const sameSizeOld = Buffer.from(wasm)
+sameSizeOld[sameSizeOld.length - 1] ^= 1
+const sameSizeOldBr = brotliCompressSync(sameSizeOld)
+writeFileSync(join(ruffleDir, 'samesize.wasm'), wasm)
+writeFileSync(join(ruffleDir, 'samesize.wasm.br'), sameSizeOldBr)
+writeFileSync(join(ruffleDir, 'samesize.wasm.br.json'), sidecar(sameSizeOld, sameSizeOldBr))
+// .br 文件本身被换过（字节数与旁注的 brBytes 不符）：不能吐
+writeFileSync(join(ruffleDir, 'brswap.wasm'), wasm)
+writeFileSync(join(ruffleDir, 'brswap.wasm.br'), brotliCompressSync(Buffer.concat([wasm, Buffer.from('x')])))
+writeFileSync(join(ruffleDir, 'brswap.wasm.br.json'), sidecar(wasm, wasmBr))
+// EmulatorJS：同一路径、版本只在查询串（?v=<sha256 前 16 位>.e1）
+const engine = Buffer.from('export default class EmulatorJS {}\n'.repeat(2048))
+const engineBr = brotliCompressSync(engine)
+const ejsDir = join(root, 'emulatorjs')
+mkdirSync(ejsDir, { recursive: true })
+writeFileSync(join(ejsDir, 'emulator.min.js'), engine)
+writeFileSync(join(ejsDir, 'emulator.min.js.br'), engineBr)
+writeFileSync(join(ejsDir, 'emulator.min.js.br.json'), sidecar(engine, engineBr))
+writeFileSync(join(ejsDir, 'loader.js'), 'var x = 1\n')
+const ENGINE_V = sha(engine).slice(0, 16)
 // 没有旁注：不能吐
 writeFileSync(join(ruffleDir, 'bare.wasm'), wasm)
 writeFileSync(join(ruffleDir, 'bare.wasm.br'), brotliCompressSync(wasm))
 
 const app = express()
+const guardLog = []
+// 与 server/src/index.js 的注册顺序一致：版本守卫 → 预压缩 → express.static
+app.use(runtimeVersionGuard(root, { log: (line) => guardLog.push(line) }))
 app.use(precompressedStatic(root, { setHeaders: staticCacheHeaders }))
 app.use(express.static(root, { index: false, redirect: false, setHeaders: staticCacheHeaders }))
 const server = app.listen(0)
@@ -142,12 +171,53 @@ await check('⚠️ wasm 压缩版：Content-Type 必须是 application/wasm（�
   assert.deepEqual(brotliDecompressSync(r.body), wasm)
 })
 
-await check('旁注字节数对不上 / 没有旁注：退回原文件', async () => {
-  for (const name of ['stale.wasm', 'bare.wasm']) {
+await check('旁注字节数对不上 / 没有旁注 / ⚠️ 等长但内容变了 / .br 被换过：退回原文件', async () => {
+  for (const name of ['stale.wasm', 'bare.wasm', 'samesize.wasm', 'brswap.wasm']) {
     const r = await get(`/ruffle/v0.7.1/${name}`, { 'accept-encoding': 'br' })
     assert.equal(r.headers['content-encoding'], undefined, name)
     assert.deepEqual(r.body, wasm, name)
   }
+})
+
+await check('⚠️ EmulatorJS 版本号与内容一致：immutable 长缓存（预压缩与原文件两条路都是）', async () => {
+  for (const enc of ['br', 'identity']) {
+    const r = await get(`/emulatorjs/emulator.min.js?v=${ENGINE_V}.e1`, { 'accept-encoding': enc })
+    assert.equal(r.status, 200)
+    assert.match(String(r.headers['cache-control']), /immutable/, enc)
+    assert.equal(r.headers['cdn-cache-control'], undefined, enc)
+  }
+})
+
+await check('⚠️ EmulatorJS 版本号与内容不一致：照常给当前文件，但 no-store，边缘与浏览器都不许缓存', async () => {
+  const wrong = '0123456789abcdef'
+  for (const [enc, v] of [['br', `${wrong}.e1`], ['identity', `${wrong}.e1`], ['br', `${wrong}.e1&fallback=1`], ['identity', wrong]]) {
+    const r = await get(`/emulatorjs/emulator.min.js?v=${v}`, { 'accept-encoding': enc })
+    assert.equal(r.status, 200, `${enc} ${v}`)
+    assert.equal(r.headers['cache-control'], 'no-store', `${enc} ${v}`)
+    assert.equal(r.headers['cdn-cache-control'], 'no-store', `${enc} ${v}`)
+    assert.equal(r.headers['cloudflare-cdn-cache-control'], 'no-store', `${enc} ${v}`)
+    const body = r.headers['content-encoding'] === 'br' ? brotliDecompressSync(r.body) : r.body
+    assert.deepEqual(body, engine, '仍然返回当前文件（可用性优先）')
+  }
+  assert.ok(guardLog.some((line) => line.includes(wrong)), '要在服务端日志里留一行，部署窗口外出现说明版本表过期')
+})
+
+await check('EmulatorJS 不是内容哈希格式的版本号 / 没有 v：保持原来的缓存档位', async () => {
+  const legacy = await get('/emulatorjs/loader.js?v=r27', { 'accept-encoding': 'identity' })
+  assert.match(String(legacy.headers['cache-control']), /immutable/)
+  const bare = await get('/emulatorjs/loader.js', { 'accept-encoding': 'identity' })
+  assert.doesNotMatch(String(bare.headers['cache-control']), /immutable|no-store/)
+  assert.equal(contentHashOfVersion('1183825bab02ab07.e1'), '1183825bab02ab07')
+  assert.equal(contentHashOfVersion('1183825BAB02AB07'), '1183825bab02ab07')
+  assert.equal(contentHashOfVersion('r27'), '')
+  assert.equal(contentHashOfVersion('1183825bab02ab07.e1.x'), '')
+})
+
+await check('版本守卫不出根目录、只管 /emulatorjs/', async () => {
+  const r = await get('/emulatorjs/../ruffle/v0.7.1/core.wasm?v=0123456789abcdef', { 'accept-encoding': 'identity' })
+  assert.notEqual(r.headers['cache-control'], 'no-store')
+  const other = await get('/ruffle/v0.7.1/core.wasm?v=0123456789abcdef', { 'accept-encoding': 'identity' })
+  assert.notEqual(other.headers['cache-control'], 'no-store')
 })
 
 await check('构建脚本与中间件的名单一一对应', async () => {

@@ -124,6 +124,39 @@ grep -c 'this.functions.saveStateInfo()' public/emulatorjs/emulator.min.js   # �
   适配器现在仅对远端 8BG GBA 的启动期 table trap 清理 ROM 缓存与续传片、强制网络重取一次；刷新后仍失败则删除刚写入的缓存并停止，不循环重试。新增恢复只依赖 `isWasmRuntimeCrash` 识别真实 RuntimeError，不看核心普通日志。
   本地已实测排除 SRAM / Flash 存档（含错尺寸、乱码）、金手指、mGBA 全部核心选项、回退 / 快进 / 旋转、LCD shader；再出现先看诊断包里的 `describeBootState` 行和 `[core-crash]` / ROM 刷新日志。
 
+### 2.7.2 🔴 共享引擎坏一处 = 全站游戏打不开：五道防线不准拆（2026-11-17 事故）
+
+**经过**：79be63d 给 `patch-emulatorjs.mjs` 加了一段 XHR 兜底，补丁字符串里写了正则 `/^(?:text/html|…)\b/i`。
+字面量里的 `/` 没转义，`/^(?:text/` 就结束了，`html` 被当成 flag —— **整份 emulator.min.js 无法解析**。
+loader.js 的 `import()` 失败，NES / SFC / GBA / 街机 / PS1 …… 所有 EmulatorJS 平台同时报
+`Failed to load emulator.min.js because it's likely that the minified files are missing`。
+补丁检查只查「字符串在不在」，tsc / lint / 构建全绿；本该拦住它的 `test:ejs-download` 当时是红的，没人跑。
+上游 loader 又只在 debug 时打印真实异常，诊断包 #1094–#1104 被误判成网络 / 边缘缓存问题，94c4876 加的「备用入口」
+指向的还是同一份坏文件。修复：15e6830。
+
+**现在的防线，每一道都对应这次的一个漏洞，不准为了让构建变绿而拆掉**：
+
+1. **生成时**：`patch-emulatorjs.mjs` 写盘前按 ES 模块解析一遍（`scripts/lib/js-module-syntax.mjs`），解析不了不写。
+   往补丁字符串里写正则时，字面量里的 `/` 一律转义，能用字符串比较就别用正则。
+2. **构建前 / 后**：`check-emulatorjs.mjs` 解析 emulator.min.js，并在 Node 里**真 import 一次**
+   （`scripts/lib/ejs-engine-import-smoke.mjs`，宽容 DOM 桩，只求值模块顶层），要求默认导出是带关键方法的 EmulatorJS 类；
+   loader.js 必须是合法经典脚本，且保留打印 import 异常那一行。
+   `check-runtime-syntax.mjs`（prebuild + postbuild `--dist`）对**所有**自托管运行时 JS 与 HTML 内联脚本做同样的解析门禁
+   ——js-dos、PPSSPP、Dolphin、J2ME、PvZ、CS1.6 的补丁脚本都可能以同样方式打挂一整个平台。新增不经浏览器加载的构建期源码
+   要放进它的 `SKIP_PREFIXES` 并写明原因，别用「整个目录跳过」偷懒。`test:ejs-download` / `test:ejs-failure-reasons` 也挂在 prebuild 上。
+3. **源站**：`/emulatorjs/` 是「同一路径 + `?v=<内容哈希>`」，静态中间件忽略查询串。`runtime-version-guard.js`
+   按内容（sha256 前 16 位，按 size+mtime 缓存）核对 `?v=`，对不上的响应 **no-store**（含 CDN-Cache-Control）。
+   否则部署构建窗口、构建失败、回滚期间，旧版本号会被缓存成新内容一年 —— **回滚也救不回来**。
+   `precompressed-static.js` 的 `.br` 旁注同样按 sha256 + brBytes 校验，不再只比字节数（等长修改会把旧引擎挂在新版本号下）。
+4. **部署**：`redeploy.sh` 构建失败且 `dist/` 已被改写时回滚（Vite 直接写线上目录，只 die 会留下半新文件）；
+   重启后默认跑 `smoke-start.mjs`（一款 NES + 一款 CPS1 跑到首帧），失败重试一次，仍失败回滚。
+   **生产机必须装 Chromium**，否则冒烟只能告警跳过（日志里是 `⚠️⚠️ 开局冒烟没有运行`）。确认是 CDN / ROM 故障而非代码问题时
+   用 `SMOKE_TEST=0` 强行发布修复。回滚改为 `git reset --hard`（留在分支上），分支名用 `symbolic-ref`，游离 HEAD 不再污染下次部署。
+5. **现场**：loader.js 把 `[EJS] import <文件> failed: <异常>` 写进控制台，适配器在最终失败日志里带上它，诊断包一眼能分出
+   「语法错误」和「网络断了」。这一行的措辞不能撞上 `FATAL_PHRASES`，否则会抢断回退流程（`test:ejs-failure-reasons` 守着）。
+
+**`npm test` 不能长期红着**：事故当天 main 上有 28 套测试是红的，本该报警的那套就混在里面。改了产品行为就同步改测试断言；
+测试红了先修，别带着红灯发布。
 
 ### 2.8 街机靠**压缩包文件名**认游戏
 

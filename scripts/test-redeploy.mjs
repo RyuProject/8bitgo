@@ -36,6 +36,28 @@ assert.ok(source.indexOf('trap finish_backup_upload EXIT') < source.indexOf('--u
 assert.match(source, /BACKUP_ASYNC_UPLOAD:-1/, '保留退回同步上传的开关')
 assert.ok(source.indexOf('--local-only') < step2, '本地备份必须在拉代码之前完成')
 
+// 2026-11-17 全站 EmulatorJS 事故后的部署加固
+assert.match(source, /BRANCH="\$\{BRANCH:-\$\(git -C "\$REPO_DIR" symbolic-ref --short -q HEAD/, '分支名不能取 abbrev-ref：游离 HEAD 时会得到字面量 HEAD')
+{
+  const rollbackFn = source.slice(source.indexOf('rollback() {'), source.indexOf('# ───────────── 记录起点'))
+  assert.match(rollbackFn, /git reset --hard --quiet "\$BEFORE_COMMIT"/, '回滚要留在分支上（reset），不能 checkout 成游离 HEAD')
+  assert.doesNotMatch(rollbackFn, /git checkout --quiet "\$BEFORE_COMMIT"/)
+}
+{
+  const step5 = source.slice(source.indexOf('步骤 5/7'), source.indexOf('步骤 6/7'))
+  assert.match(step5, /BUILD_MARK="\$\(mktemp\)"/, '构建前打时间戳')
+  assert.match(step5, /find "\$REPO_DIR\/dist" -type f -newer "\$BUILD_MARK"/, '构建失败时要看 dist 是否已被部分改写')
+  assert.match(step5, /rollback\n\s*exit 1/, 'dist 已被改写的构建失败必须回滚，不能只 die（线上正在发半新文件）')
+}
+{
+  const smoke = source.slice(source.indexOf('# 开局冒烟：'), source.indexOf('log "✅ 部署完成'))
+  assert.match(smoke, /SMOKE_TEST:-1/, '开局冒烟默认打开')
+  assert.match(smoke, /smoke_once; SMOKE_RC=\$\?\n\s*if \[ "\$SMOKE_RC" = "1" \]; then[\s\S]*?smoke_once; SMOKE_RC=\$\?/, '失败先重试一次')
+  assert.match(smoke, /SMOKE_ROLLBACK:-1[\s\S]*?rollback\n\s*exit 1/, '两次失败默认回滚')
+  assert.match(smoke, /2\) log "⚠️⚠️ 开局冒烟没有运行/, '没有 Chrome 时必须响亮地告警，而不是悄悄跳过')
+  assert.ok(source.indexOf('# 开局冒烟：') > source.indexOf('health_ok && ps2_headers_ok'), '冒烟在重启 + 健康检查之后')
+}
+
 const tmp = mkdtempSync(join(tmpdir(), '8bitgo-redeploy-'))
 try {
   const bin = join(tmp, 'bin')

@@ -3035,7 +3035,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
     if (/emulatorjs failed to load\. check for missing files/.test(lowLine)) {
       // 只有 loader.js 确认主入口与备用入口都不可用后才终止；这是运行时故障，不是 ROM / 核心错误。
-      logEngine(`[entry] EmulatorJS 入口脚本加载失败；当前线路：${usedEjsEdge ? 'EdgeOne' : '同源'}`)
+      // 带上 loader.js 记下的真实 import 异常（2026-11-17：SyntaxError 被当成网络问题查了半天）
+      const importCause = (errorTap?.lines ?? []).filter((l) => /\[ejs\] import \S+ failed:/i.test(l)).slice(-1)[0]
+      logEngine(`[entry] EmulatorJS 入口脚本加载失败；当前线路：${usedEjsEdge ? 'EdgeOne' : '同源'}${importCause ? `；原因：${importCause.slice(0, 300)}` : ''}`)
       return failLoad(fmt(rt.ejsLoadFailed, { path: EJS_PATH }), 'runtime')
     }
     const recent = (errorTap?.lines ?? []).slice(-12).join('\n')

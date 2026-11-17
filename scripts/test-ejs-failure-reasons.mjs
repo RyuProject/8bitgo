@@ -66,8 +66,27 @@ for (const entryFailure of [
   'failed to load emulator.js',
   'emulatorjs failed to load. check for missing files',
 ]) assert.ok(adapter.includes(`'${entryFailure}'`), `入口失败日志未纳入致命错误：${entryFailure}`)
-assert.match(adapter, /if \(\/failed to load emulator\(\?:\\\.min\)\?\\\.js\|emulatorjs failed to load\\\. check for missing files\/\.test\(lowLine\)\) \{[\s\S]{0,500}failLoad\(fmt\(rt\.ejsLoadFailed, \{ path: EJS_PATH \}\), 'runtime'\)/,
-  'EmulatorJS 入口失败必须按 runtime 处理，让同一 ROM 从主站重试')
+// 2026-11-17（94c4876）：主入口 / 备用入口的单次失败只记日志、等 loader.js 走完回退；
+// 只有最终那句「EmulatorJS failed to load」才按 runtime 失败，让同一 ROM 从主站重试。
+{
+  const minFail = adapter.search(/if \(\/failed to load emulator\\\.min\\\.js\/\.test\(lowLine\)\) \{/)
+  const fallbackFail = adapter.search(/if \(\/failed to load emulator\\\.js\/\.test\(lowLine\)\) \{/)
+  const finalFail = adapter.search(/if \(\/emulatorjs failed to load\\\. check for missing files\/\.test\(lowLine\)\) \{/)
+  assert.ok(minFail > 0 && fallbackFail > minFail && finalFail > fallbackFail, '入口失败的三段判定都要在、且按主入口 → 备用入口 → 最终失败的顺序')
+  const firstTwo = adapter.slice(minFail, finalFail)
+  assert.doesNotMatch(firstTwo, /failLoad\(/, '主入口 / 备用入口的单次失败不能直接拆 iframe，否则会抢断 loader.js 的回退')
+  assert.match(firstTwo, /logEngine\(/, '单次失败要留日志')
+  assert.match(adapter.slice(finalFail, finalFail + 900), /failLoad\(fmt\(rt\.ejsLoadFailed, \{ path: EJS_PATH \}\), 'runtime'\)/,
+    'EmulatorJS 入口最终失败必须按 runtime 处理，让同一 ROM 从主站重试')
+  // loader.js 把 import 的真实异常写进控制台（[EJS] import … failed: SyntaxError …），最终失败日志要带上它
+  assert.match(adapter.slice(finalFail, finalFail + 900), /\\\[ejs\\\] import \\S\+ failed:/, '最终失败日志要带上 loader.js 记下的 import 异常')
+  const loader = readFileSync(new URL('../public/emulatorjs/loader.js', import.meta.url), 'utf8')
+  const loaderLine = /console\.error\("\[EJS\] import " \+ file \+ " failed: "[^\n]*/.exec(loader)?.[0] || ''
+  assert.ok(loaderLine, 'loader.js 要把 import 异常写进控制台')
+  for (const phrase of ['failed to load emulator.min.js', 'failed to load emulator.js', 'emulatorjs failed to load']) {
+    assert.ok(!`[EJS] import emulator.min.js failed: SyntaxError: x`.toLowerCase().includes(phrase), `loader 的异常日志不能撞上致命短语「${phrase}」`)
+  }
+}
 // 错误级的内存不足要直接走 onFatal：7z Worker 报 DataCloneError out of memory 后引擎不会再发任何事件
 assert.match(adapter, /level === 'error' && isOutOfMemoryText\(text\)\)\)\) \{\n\s*onFatal\(text\.trim\(\)\)/)
 
