@@ -56,10 +56,18 @@ const stripTypes = (code) => code
 
 // 坏核心缓存：下次开局前强制清
 assert.match(adapter, /error loading emulatorjs runtime\/i\.test\(line\)\) \{\s*try \{ localStorage\.removeItem\(EJS_CACHE_PURGED_KEY\)/)
-assert.match(adapter, /if \(isOutOfMemoryText\(`\$\{line\}\\n\$\{recent\}`\)\) \{[\s\S]{0,1500}failLoad\(rt\.ejsOutOfMemory, 'runtime'\)/)
+assert.match(adapter, /if \(isOutOfMemoryText\(`\$\{line\}\\n\$\{recent\}`\)\) \{[\s\S]{0,2500}failLoad\(rt\.ejsOutOfMemory, 'runtime'\)/)
 // 默认 FBNeo 内存不足先交给播放器换低内存核心；内存不足不能把大陆加速入口判坏
 assert.match(adapter, /options\.onOutOfMemory\?\.\(core, line\)\) \{\s*loadFailed = true/)
-assert.match(adapter, /usedEjsEdge && !stalled && !outOfMemory\) markEjsEdgeFailed\(\)/)
+assert.match(adapter, /usedEjsEdge && !stalled && !outOfMemory && scope !== 'config'\) markEjsEdgeFailed\(\)/)
+// loader.js 吞掉 emulator.min.js 的动态导入异常后只写控制台；必须立即归为运行时故障，不能等看门狗误报核心卡死。
+for (const entryFailure of [
+  'failed to load emulator.min.js',
+  'failed to load emulator.js',
+  'emulatorjs failed to load. check for missing files',
+]) assert.ok(adapter.includes(`'${entryFailure}'`), `入口失败日志未纳入致命错误：${entryFailure}`)
+assert.match(adapter, /if \(\/failed to load emulator\(\?:\\\.min\)\?\\\.js\|emulatorjs failed to load\\\. check for missing files\/\.test\(lowLine\)\) \{[\s\S]{0,500}failLoad\(fmt\(rt\.ejsLoadFailed, \{ path: EJS_PATH \}\), 'runtime'\)/,
+  'EmulatorJS 入口失败必须按 runtime 处理，让同一 ROM 从主站重试')
 // 错误级的内存不足要直接走 onFatal：7z Worker 报 DataCloneError out of memory 后引擎不会再发任何事件
 assert.match(adapter, /level === 'error' && isOutOfMemoryText\(text\)\)\)\) \{\n\s*onFatal\(text\.trim\(\)\)/)
 
@@ -89,6 +97,8 @@ for (const lang of ['zh-Hans', 'zh-Hant', 'en', 'es', 'fr', 'de', 'it', 'ja']) {
 // 启动看门狗只数前台时间：后台被节流的开机（Win95 客体、CheerpJ）不能记成「超时」
 {
   const player = readFileSync(new URL('../src/emulator/EmulatorPlayer.tsx', import.meta.url), 'utf8')
+  assert.match(player, /errorScope !== 'runtime'[\s\S]{0,300}onRomLoadFailed\?\.\(message\)/,
+    '运行时入口故障不得触发 ROM 语言/备用地址切换')
   assert.match(player, /if \(document\.visibilityState === 'hidden'\) return\s*timeoutTimer = window\.setTimeout/)
   assert.match(player, /document\.addEventListener\('visibilitychange', onStartupVisibility\)/)
   assert.match(player, /document\.removeEventListener\('visibilitychange', onStartupVisibility\)/)
@@ -202,6 +212,9 @@ console.log('✔ 启动失败原因：跨 realm 错误原文、内存不足、�
   assert.match(adapter, /installBlobFetchShortcut\(win, preparedArcadeBlobUrl, preparedRomBlob, \(error\) => \{/)
   assert.equal((adapter.match(/preparedRomBlob = (prepared|extracted)\.blob/g) ?? []).length, 5, '每处预下载 ROM 都要记下 Blob')
   // Chromium 走 Blob 回应时，NotReadableError 只在引擎的 non-http 那一行里：也要记 Blob 存储已坏、按运行时重试
-  assert.match(adapter, /isNativeBlobReadMessage\(`\$\{line\}\\n\$\{recent\}`\)\) \{\s+markRomBlobStorageBroken\('引擎读 ROM '\)\s+return failLoad\(fmt\(rt\.ejsEngineError, \{ msg: line \}\), 'runtime'\)/)
+  assert.ok(adapter.includes('const nativeBlobReadError = isNativeBlobReadMessage(`${line}\\n${recent}`)'))
+  assert.ok(adapter.includes('if (preparedRomBlob && !memoryRomOf(preparedRomBlob) && nativeBlobReadError) {'))
+  assert.ok(adapter.includes("markRomBlobStorageBroken('引擎读 ROM ')"))
+  assert.ok(adapter.includes("return failLoad(fmt(rt.ejsEngineError, { msg: line }), 'runtime')"))
   console.log('✓ 预下载 ROM 由 Blob 直接交给引擎，其余请求放行')
 }

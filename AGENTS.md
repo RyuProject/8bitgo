@@ -3528,6 +3528,11 @@ EdgeOne 只能用境外（香港）节点。主站、ROM、Pages 子域都不受
     自动重试退回同源。引擎 IndexedDB 核心缓存以 URL 为键，大陆老访客换线路后会重下一次核心。
     ⚠️ `/_cn` 下的静态文件**不能带 `Vary: Origin`**（cors 中间件会加，cn-edge 对非 API 路径删掉）：预热 fetch 带 Origin、
     `<script>` / `<link>` 不带，Vary 会让同一 URL 存两条缓存、预热白做。EdgeOne 已缓存过带这个头的副本，所以换过一代 `-cnedge1`。
+    - **EmulatorJS 主入口导入失败要按运行时线路故障处理**（2026-11-17，诊断包 #1012，《忍者龟 3》）：`loader.js` 捕获
+      `emulator.min.js` 动态导入失败后只写控制台，并继续请求本站不发布的 `emulator.js`；适配器若漏掉这两条错误，启动看门狗会等约 30 秒，
+      报成卡在 `fceumm`，播放器还会把同一个引擎故障误判为英文 ROM 失败并切西语 ROM。现在把入口失败纳入致命错误，归类 `runtime`，
+      立即标记当前 EdgeOne 线路失败并让播放器用同一 ROM 从主站重试。现场没有记录失败请求的 HTTP 状态，故只能确认入口加载链失败，
+      不能仅凭这份样本断言是 EdgeOne 缓存、瞬时链路还是浏览器拦截。
   - **Ruffle（Flash）与 js-dos（DOS）同理**（2026-11-08）：`ruffleBase()` / `jsdosBase()` 与 `ejsBase()` 共用
     `paths.ts` 的 `runtimeBase`。线路**每页只定一次**（预热与正式加载必须同一个 URL）；大陆访客一律走 EdgeOne。
     入口脚本取不到当场换同源；开局前报错标记失败，自动重试走同源（EmulatorJS 的「卡住」不算）。

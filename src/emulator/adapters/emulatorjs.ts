@@ -934,6 +934,10 @@ const FATAL_PHRASES = [
   // 引擎自己：运行时没加载上 / startGame 抛了
   'error loading emulatorjs',
   'failed to start game',
+  // loader.js 捕获 emulator.min.js 动态导入失败后只写控制台，并会再试本站不发布的 emulator.js；不能等看门狗把它算成核心卡死
+  'failed to load emulator.min.js',
+  'failed to load emulator.js',
+  'emulatorjs failed to load. check for missing files',
   // melonDS DS：这几句之后核心只会退回 RetroArch 的 No Items，不会再给 ready/error 事件。
   'loaded an empty file as content, please load a valid nintendo ds rom',
   'failed to load the content data, the frontend may have a bug',
@@ -3016,6 +3020,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (started) {
       logEngine(`[engine] ${line}`)
       return
+    }
+    const lowLine = line.toLowerCase()
+    if (/failed to load emulator(?:\.min)?\.js|emulatorjs failed to load\. check for missing files/.test(lowLine)) {
+      // loader.js 把动态导入异常吞掉后只打日志；这是引擎入口故障，不是核心或 ROM 故障。
+      // 以 runtime 归类会标记失效的 EdgeOne 线路，并让播放器用同一 ROM 从主站重试。
+      logEngine(`[entry] EmulatorJS 入口脚本加载失败；当前线路：${usedEjsEdge ? 'EdgeOne' : '同源'}`)
+      return failLoad(fmt(rt.ejsLoadFailed, { path: EJS_PATH }), 'runtime')
     }
     const recent = (errorTap?.lines ?? []).slice(-12).join('\n')
     // 浏览器给不出 WASM 内存：重下多少遍都一样，告诉玩家关掉别的标签页
