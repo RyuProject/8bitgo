@@ -26,8 +26,9 @@ export const OPEN_TOKEN_TYP = 'at+jwt'
 
 /**
  * access token 的寿命。
- * 15 分钟不是随便写的：**被封禁的用户、被撤销的授权，最长要过这么久才真正失效**
- * （中间没有任何查库动作，令牌是自包含的）。想更快只能缩短它或者加吊销表查询。
+ * 15 分钟不是随便写的：令牌自包含，验签不查库。2026-11-17 起 routes/open.js 的 requireApp
+ * 另外经 open/revocation.js 查用户（封号 / 删号 / token_version）和应用（停用），缓存 ≤ 30 秒，
+ * 所以这些情况最长 30 秒内失效；「撤销对某个应用的授权」仍要等令牌自然过期。
  */
 export const OPEN_ACCESS_TTL_SEC = 900
 
@@ -67,9 +68,14 @@ export function issueAppToken(opts) {
   return sign({ ...opts, sub: opts.appId, kind: 'app' })
 }
 
-/** 用户级令牌（授权码换来的）。`sub` = users.id */
-export function issueUserToken(opts) {
-  return sign({ ...opts, kind: 'user' })
+/**
+ * 用户级令牌（授权码换来的）。`sub` = users.id
+ *
+ * `tv` 是签发时的 users.token_version：用户「退出所有设备」/ 改密码之后版本 +1，
+ * 这枚令牌就在 revocation.js 那道检查里失效，不必等满 15 分钟。
+ */
+export function issueUserToken({ tv, ...opts }) {
+  return sign({ ...opts, kind: 'user', extra: { ...(opts.extra || {}), tv: Number(tv) || 0 } })
 }
 
 /**
@@ -103,6 +109,8 @@ export function verifyOpenToken(token, { publicKey, issuer, now } = {}) {
     kind: payload.kind,
     scopes: String(payload.scope || '').split(/\s+/).filter(Boolean),
     exp: Number(payload.exp) || 0,
+    // 老令牌没有 tv，按 0（和站内 JWT 的兼容规则一致）
+    tv: Number(payload.tv) || 0,
   }
 }
 

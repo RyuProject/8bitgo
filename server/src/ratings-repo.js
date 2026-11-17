@@ -102,26 +102,39 @@ export async function gamesRatedBy(userId) {
 }
 
 /**
- * 找「某个身份在某款游戏上的那一票」。
- * 登录只认 user_id；匿名先按 anon_id，再按 anon_ip 兜底（见 routes/ratings.js 的说明）。
+ * 找「某个身份在某款游戏上的那一票」。登录只认 user_id；匿名只认 anon_id。
+ *
+ * ⚠️ 2026-11-17 起**不再按 anon_ip 兜底认人**。以前同一出口 IP（家庭、宿舍、CGNAT）下的
+ * 第二个访客会被当成第一个人：GET 时把 A 的分当成「我的分」显示给 B，提交时直接改掉
+ * A 的分并把 anon_id 换成 B 的 —— 等于任何同网的人都能接管别人那一票。
+ * IP 现在只用来防刷（见 applyRating 里的 RatingIpTakenError），不再当身份。
+ * 第四个参数里的 anonIp 保留只是为了调用方不用改形状，这里刻意不用。
  *
  * @param {(sql: string, params: any[]) => Promise<any[]>} run 事务里传 withTransaction 的 run，事务外直接传 query
  * @param {boolean} lock 事务里要加 FOR UPDATE，否则并发提交会各自读到对方之前的明细
  */
-export async function findRating(run, gameId, { userId, anonId, anonIp }, lock = false) {
+export async function findRating(run, gameId, { userId, anonId }, lock = false) {
   const forUpdate = lock ? ' FOR UPDATE' : ''
   if (userId) {
     return (await run(`SELECT * FROM game_ratings WHERE game_id = ? AND user_id = ?${forUpdate}`, [gameId, userId]))[0] ?? null
   }
   if (anonId) {
-    const byId = (await run(`SELECT * FROM game_ratings WHERE game_id = ? AND anon_id = ?${forUpdate}`, [gameId, anonId]))[0]
-    if (byId) return byId
-  }
-  if (anonIp) {
-    const byIp = (await run(`SELECT * FROM game_ratings WHERE game_id = ? AND anon_ip = ?${forUpdate}`, [gameId, anonIp]))[0]
-    if (byIp) return byIp
+    return (await run(`SELECT * FROM game_ratings WHERE game_id = ? AND anon_id = ?${forUpdate}`, [gameId, anonId]))[0] ?? null
   }
   return null
+}
+
+/**
+ * 这个 IP 已经有别人（另一个 anon_id）的匿名票了。
+ * 路由层翻成 409：同网的第二个人匿名评不了，登录即可（登录票不看 IP）。
+ * 不能「顶掉」那一票，那是别人的；也不能另插一行，否则换 anon_id 就能无限刷票。
+ */
+export class RatingIpTakenError extends Error {
+  constructor() {
+    super('这个网络下已经有人匿名评过分了，登录后即可评分')
+    this.name = 'RatingIpTakenError'
+    this.code = 'RATING_IP_TAKEN'
+  }
 }
 
 /**
@@ -160,8 +173,17 @@ export async function applyRating(run, { gameId, userId = null, anonId = null, a
     await run('DELETE FROM game_ratings WHERE game_id = ? AND anon_id = ? AND user_id IS NULL', [gameId, anonId])
   }
 
-  const existing = await findRating(run, gameId, { userId, anonId, anonIp }, true)
+  const existing = await findRating(run, gameId, { userId, anonId }, true)
   const weight = userId ? WEIGHT_USER : WEIGHT_ANON
+
+  /*
+    匿名的**新**票：这个 IP 上已经有另一个 anon_id 的票时拒绝（IP 只防刷，不认人）。
+    已经有自己那一票（按 anon_id 找到了）的人换到别的网络改分不受影响，走下面的「让出 IP」。
+  */
+  if (!userId && !existing && anonIp) {
+    const other = (await run('SELECT id FROM game_ratings WHERE game_id = ? AND anon_ip = ? FOR UPDATE', [gameId, anonIp]))[0]
+    if (other) throw new RatingIpTakenError()
+  }
 
   /**
    * 匿名票要换 IP 之前，先把这个 IP 从**别人**那一行上摘掉。

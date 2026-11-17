@@ -28,6 +28,7 @@
  *    老玩家的指纹对不上，每个人都会被重新算一次。
  */
 import { createHmac } from 'node:crypto'
+import { clientIpFrom } from './presence.js'
 
 /**
  * 摘要用的密钥。默认复用 JWT_SECRET，这样不加任何配置就能用；
@@ -36,14 +37,12 @@ import { createHmac } from 'node:crypto'
 const SECRET = process.env.PLAY_HASH_SECRET || process.env.JWT_SECRET || ''
 let warnedNoSecret = false
 
-/** 取真实客户端 IP：站点前面有 Cloudflare / Nginx，直接读 socket 拿到的是代理的地址 */
+/**
+ * 取 Express 按 trust proxy 配置算出的客户端 IP；测试或非 Express 调用方再走 presence 的安全解析。
+ * 不直接读 cf-connecting-ip：EdgeOne 会透传客户端自己带的同名头，攻击者可随机改值刷计数。
+ */
 export function clientIp(req) {
-  return (
-    req.headers['cf-connecting-ip'] ||
-    String(req.headers['x-forwarded-for'] || '').split(',')[0].trim() ||
-    req.socket?.remoteAddress ||
-    ''
-  )
+  return String(req?.ip || clientIpFrom(req?.socket?.remoteAddress, req?.headers || {}) || '').trim()
 }
 
 function digest(raw) {

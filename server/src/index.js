@@ -642,7 +642,12 @@ if (ssrAvailable()) {
  */
 app.use(openErrorMiddleware(publicSiteUrl))
 
-app.use((err, _req, res, _next) => {
+app.use((err, req, res, _next) => {
+  // 静态 chunk 的 500 会让浏览器只显示「动态模块加载失败」；记录不含查询串的路径，
+  // 线上才能把玩家报告的文件名和源站错误对应起来（查询串可能带凭据，不能记）。
+  if (req.path?.startsWith('/assets/')) {
+    console.error('[static asset error]', req.method, req.path, err?.code || err?.name || 'Error', err?.message || '')
+  }
   if (res.headersSent || res.destroyed || res.writableEnded) {
     // 代理/下载的响应体已经开始后，只能掐断连接；再发送 JSON 会抛 ERR_HTTP_HEADERS_SENT。
     if (!res.destroyed && !res.writableEnded) res.destroy(err)

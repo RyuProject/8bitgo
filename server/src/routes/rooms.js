@@ -2,7 +2,8 @@ import { Router } from 'express'
 import { randomBytes } from 'node:crypto'
 import { optionalUser } from '../auth.js'
 import { takeAnonymous } from '../rateLimit.js'
-import { presenceFromRequest, UNKNOWN_PRESENCE } from '../presence.js'
+import { presenceFromRequest, UNKNOWN_PRESENCE, isPrivateIp, normalizeIp } from '../presence.js'
+import { adultLiveAccessError, canAccessAdultLive } from '../live.js'
 import { resolveGameRoomPolicy } from '../netplay-game-policy.js'
 import { NETPLAY_MAX_PLAYERS, normalizeGamePlayers } from '../../../shared/netplay-players.js'
 import { envNumber } from '../resource-limits.js'
@@ -26,6 +27,13 @@ const MEMBER_TTL = 30_000
 /** 房间数上限。心跳是公开接口，roomId 客户端随便填 —— 不设上限的话一个循环就能把内存刷爆 */
 // NaN 会让 `rooms.size >= MAX_ROOMS` 永远为假；配置写错不能把公开接口的内存上限整个关掉。
 const MAX_ROOMS = envNumber('ROOMS_MAX', 1000, { max: 10_000 })
+/**
+ * 单个 IP 同时能挂的房间数。MAX_ROOMS 只防内存，防不了一个人开满整站：
+ * roomId 客户端随便填、每 IP 每分钟 120 次心跳，十几个 IP 就能把 1000 个名额占光，
+ * 之后全站谁也开不了房。和 live.js / netplay.js 的 MAX_ROOMS_PER_IP 是同一条闸。
+ * 内网 / 回环地址不计数（同 live.js）：那是反代没把真实 IP 传进来，计数会让全站共用一个额度。
+ */
+const MAX_ROOMS_PER_IP = envNumber('ROOMS_MAX_PER_IP', 8, { max: 1000 })
 
 /**
  * 成员令牌。
@@ -42,7 +50,10 @@ const MAX_ROOMS = envNumber('ROOMS_MAX', 1000, { max: 10_000 })
 const newToken = () => randomBytes(24).toString('base64url')
 /** 令牌可以走请求头，也可以放在 body 里 —— 前端的 api 助手不支持自定义头 */
 const tokenOf = (req) => str(req.get('x-room-token'), 64) || str(req.body?.token, 64)
-const rooms = new Map() // roomId -> { roomId, gameSlug, createdAt, members: Map<memberId, member> }
+const rooms = new Map() // roomId -> { roomId, gameSlug, adult, creatorIp, createdAt, members: Map<memberId, member> }
+
+/** 请求方 IP：req.ip 已按 index.js 的 trust proxy 算好，不读客户端能伪造的头 */
+const requestIp = (req) => normalizeIp(req.ip) || normalizeIp(req.socket?.remoteAddress) || ''
 
 function prune(now = Date.now()) {
   for (const [id, room] of rooms) {
@@ -53,6 +64,9 @@ function prune(now = Date.now()) {
   }
 }
 setInterval(prune, 10_000).unref()
+
+/** 成人游戏的房间只给通过年龄门的登录用户看（§2.23）；adult 是内部权限位，不进 publicRoom */
+const visibleTo = (room, includeAdult) => includeAdult || !room.adult
 
 function publicRoom(room) {
   const members = [...room.members.values()].sort((a, b) => a.playerIndex - b.playerIndex)
@@ -103,19 +117,29 @@ async function softUser(req, res, next) {
   next()
 }
 
-export function createRoomsRouter({ resolveGamePolicy = resolveGameRoomPolicy } = {}) {
+export function createRoomsRouter({
+  resolveGamePolicy = resolveGameRoomPolicy,
+  maxRoomsPerIp = MAX_ROOMS_PER_IP,
+  ipOf = requestIp,
+} = {}) {
   const router = Router()
 
-  router.get('/', (_req, res) => {
+  router.get('/', softUser, (req, res) => {
     prune()
-    const list = [...rooms.values()].map(publicRoom).sort((a, b) => b.createdAt - a.createdAt)
+    const includeAdult = canAccessAdultLive(req.user)
+    const list = [...rooms.values()]
+      .filter((room) => visibleTo(room, includeAdult))
+      .map(publicRoom)
+      .sort((a, b) => b.createdAt - a.createdAt)
+    res.set('Cache-Control', 'private, no-store')
     res.json(list)
   })
 
-  router.get('/:roomId', (req, res) => {
+  router.get('/:roomId', softUser, (req, res) => {
     prune()
     const room = rooms.get(req.params.roomId)
-    if (!room) return res.status(404).json({ error: 'room not found' })
+    res.set('Cache-Control', 'private, no-store')
+    if (!room || !visibleTo(room, canAccessAdultLive(req.user))) return res.status(404).json({ error: 'room not found' })
     res.json(publicRoom(room))
   })
 
@@ -153,6 +177,14 @@ export function createRoomsRouter({ resolveGamePolicy = resolveGameRoomPolicy } 
     const authoritativeMax = normalizeGamePlayers(gamePolicy?.maxPlayers)
     if (!gamePolicy || authoritativeMax < 2) return res.status(409).json({ error: 'game does not support multiplayer' })
     if (playerIndex >= authoritativeMax) return res.status(409).json({ error: 'player slot is disabled' })
+    // 成人游戏：心跳就是「进房」，要求通过年龄门的登录用户（与直播、P2P 同一条规则）
+    if (gamePolicy.adult) {
+      const accessError = adultLiveAccessError(req.user)
+      if (accessError) return res.status(403).json({ error: accessError })
+    }
+    // 后台的规范 slug；客户端换个大小写（MySQL 查询不区分大小写）也是同一款游戏
+    const canonicalSlug = gamePolicy.gameSlug || gameSlug
+    const ip = ipOf(req)
 
     let room = rooms.get(roomId)
     if (!room) {
@@ -160,14 +192,30 @@ export function createRoomsRouter({ resolveGamePolicy = resolveGameRoomPolicy } 
         prune(now)
         if (rooms.size >= MAX_ROOMS) return res.status(503).json({ error: 'too many rooms' })
       }
+      if (ip && !isPrivateIp(ip) && maxRoomsPerIp > 0) {
+        let mine = 0
+        for (const r of rooms.values()) if (r.creatorIp === ip) mine++
+        if (mine >= maxRoomsPerIp) return res.status(429).json({ error: 'too many rooms from your network' })
+      }
       // resolveGamePolicy 上面有 await；回来后要重取一次，防止两次并发心跳各建一间同名房。
       room = rooms.get(roomId)
     }
     if (!room) {
-      room = { roomId, gameSlug: gamePolicy.gameSlug || gameSlug, maxPlayers: authoritativeMax, createdAt: now, members: new Map() }
+      room = {
+        roomId,
+        gameSlug: canonicalSlug,
+        adult: Boolean(gamePolicy.adult),
+        creatorIp: ip,
+        maxPlayers: authoritativeMax,
+        createdAt: now,
+        members: new Map(),
+      }
       rooms.set(roomId, room)
     }
-    if (room.gameSlug !== gameSlug) return res.status(409).json({ error: 'room belongs to another game' })
+    // 两边都是规范 slug 再比，不区分大小写：以前存的是规范写法、比的是客户端原样传来的，
+    // 大小写不同的同一款游戏会被当成「别的游戏」，房间卡在 409 里
+    if (room.gameSlug.toLowerCase() !== canonicalSlug.toLowerCase()) return res.status(409).json({ error: 'room belongs to another game' })
+    room.adult = Boolean(gamePolicy.adult)
     room.maxPlayers = authoritativeMax
     const existing = room.members.get(memberId)
 

@@ -860,6 +860,14 @@ export function defaultKeyFor(platform: string, slug: string, fileName: string):
   只有 certain=true 才进 probeResults，网络抖动永远不会被钉死在整个 SPA 会话里。
 */
 const probeResults = new Map<string, ProbeOutcome>()
+/**
+ * 部分结论只短期有效：主地址这次没问出来、由备用域名探到的结论（无论「存在」还是「没有」）。
+ * 主域可能只是一次瞬时超时；把备用域的地址当成主地址的结论记满整个 SPA 会话，
+ * 之后每一局都绕开已经恢复的主域。到期后重新问一次主地址。
+ */
+const probeResultExpiry = new Map<string, number>()
+/** 备用域结论的有效期（毫秒） */
+export const ALTERNATE_PROBE_TTL_MS = 5 * 60_000
 const probeInflight = new Map<string, Promise<ProbeOutcome>>()
 /** 清缓存时让更早启动、但更晚返回的 HEAD 失去写回资格，避免旧 404 覆盖刚上传的新对象。 */
 let probeCacheGeneration = 0
@@ -1017,6 +1025,11 @@ export function probeRom(
 ): Promise<ProbeOutcome> {
   // 同一个 URL 作为 ROM 时必须拒绝 HTML，作为 HTML5 入口时又必须接受；缓存键要把两种语义分开。
   const cacheKey = `${allowHtml ? 'html' : 'rom'}:${url}`
+  const expiresAt = probeResultExpiry.get(cacheKey)
+  if (expiresAt !== undefined && Date.now() >= expiresAt) {
+    probeResults.delete(cacheKey)
+    probeResultExpiry.delete(cacheKey)
+  }
   const cached = probeResults.get(cacheKey)
   if (cached) return Promise.resolve(cached)
   // 带 signal 的请求归当前页面所有，不能和别的页面共享生命周期；无 signal 的后台检查仍合并在途请求。
@@ -1027,12 +1040,18 @@ export function probeRom(
 
   const generation = probeCacheGeneration
   const run = async () => {
+    /** 结论是不是来自备用域（主地址这一轮没问出来） */
+    let viaAlternate = false
     const probeCandidates = async (): Promise<ProbeOutcome> => {
+      viaAlternate = false
       let outcome = await probeOnce(url, timeoutMs, allowHtml, options.signal)
       if (outcome.url || outcome.certain || outcome.reason === 'aborted') return outcome
       for (const alternate of alternateRomUrls(url)) {
         outcome = await probeOnce(alternate, timeoutMs, allowHtml, options.signal)
-        if (outcome.url || outcome.certain || outcome.reason === 'aborted') return outcome
+        if (outcome.url || outcome.certain || outcome.reason === 'aborted') {
+          viaAlternate = true
+          return outcome
+        }
       }
       return outcome
     }
@@ -1042,7 +1061,11 @@ export function probeRom(
       if (ready) outcome = await probeCandidates()
     }
     // 上传 / 删除 / 手动重试可能在 HEAD 飞行期间清过缓存；旧请求回来后不能把旧结论塞回去。
-    if (outcome.certain && generation === probeCacheGeneration) probeResults.set(cacheKey, outcome)
+    if (outcome.certain && generation === probeCacheGeneration) {
+      probeResults.set(cacheKey, outcome)
+      if (viaAlternate) probeResultExpiry.set(cacheKey, Date.now() + ALTERNATE_PROBE_TTL_MS)
+      else probeResultExpiry.delete(cacheKey)
+    }
     return outcome
   }
   const promise = run()
@@ -1075,12 +1098,15 @@ export function clearRomProbeCache(urls?: string[]): void {
   probeCacheGeneration += 1
   if (!urls) {
     probeResults.clear()
+    probeResultExpiry.clear()
     probeInflight.clear()
     return
   }
   for (const url of urls) {
     probeResults.delete(`rom:${url}`)
     probeResults.delete(`html:${url}`)
+    probeResultExpiry.delete(`rom:${url}`)
+    probeResultExpiry.delete(`html:${url}`)
     probeInflight.delete(`rom:${url}`)
     probeInflight.delete(`html:${url}`)
   }
@@ -1112,7 +1138,30 @@ export interface RomResolution {
    * 文件存在但实际下载、解密或启动失败时跳过当前对象，继续探下一个候选。
    * 返回 true 表示已经接管；播放器应等待新的 url，而不是继续显示当前文件的错误。
    */
-  failover: (reason?: string) => boolean
+  failover: (reason?: string, scope?: RomFailoverScope) => boolean
+}
+
+/**
+ * failover 的失败性质。'network' = 下载器重试和备用线路都用完的网络层失败（断网、连接重置、卡死）：
+ * 换别的语言走的是同一条网络，只会把整条语言链逐个白下一遍（AGENTS §2.35），
+ * 所以只允许切到**同一语言槽**里还没试过的地址（备用源、派生包 / 原包）。其余按内容错误处理，照旧走整条链。
+ */
+export type RomFailoverScope = 'content' | 'network'
+
+/**
+ * 纯函数：当前 key 失败后下一个该试的 key。network 只在同语言槽里找
+ * （通用 rom 的 lang 为 undefined，和它的备用源同样相等）。
+ */
+export function nextFailoverKey(
+  chain: ReadonlyArray<{ key: string; lang?: RomSlotLang }>,
+  failed: ReadonlySet<string>,
+  current: { key: string; lang?: RomSlotLang },
+  scope: RomFailoverScope = 'content',
+): string | undefined {
+  if (scope === 'network') {
+    return chain.find((entry) => entry.lang === current.lang && !failed.has(entry.key))?.key
+  }
+  return chain.find((entry) => !failed.has(entry.key))?.key
 }
 
 /** 启动入口必须跟随实际命中的语言槽；多个槽共用同一 ZIP 时不能靠对象 key 反推语言。 */
@@ -1283,7 +1332,7 @@ export function useRomUrl(game: Game | undefined, prefer?: RomSlotLang | null): 
     setAttempt((n) => n + 1)
   }, [game, lang, prefer])
 
-  const failover = useCallback((reason?: string): boolean => {
+  const failover = useCallback((reason?: string, scope: RomFailoverScope = 'content'): boolean => {
     if (!game || state.status !== 'found' || !state.key) return false
     /*
       镜像坏了不等于这个 ROM 坏了：同一个对象回主域再来一次，不能把 key 记进失败集，
@@ -1299,26 +1348,32 @@ export function useRomUrl(game: Game | undefined, prefer?: RomSlotLang | null): 
       return true
     }
     const bound = playbackRomCandidatesForSelection(game, lang, prefer)
-    const chain = bound.length ? bound.map((candidate) => candidate.key) : conventionalKeys(game)
+    const chain = bound.length
+      ? bound.map((candidate) => ({ key: candidate.key, lang: candidate.lang }))
+      : conventionalKeys(game).map((key) => ({ key, lang: undefined }))
+    // 约定 key 是按 slug 猜出来的不同文件，不是同一份内容的备用源：网络失败时一个都不换
+    if (scope === 'network' && !bound.length) return false
     runtimeFailures.current.add(state.key)
     /*
       自动测速可能先选中排在主地址后面的备用源；它若在真实下载时失败，回退不能只“往后找”，
       否则明明健康的主源永远没有机会。失败集合已经保证每个 key 一轮只试一次，所以从头找安全且不会循环。
+      网络层失败只在同语言槽里找（见 RomFailoverScope）。
     */
-    const next = chain.find((key) => !runtimeFailures.current.has(key))
+    const currentLang = bound.find((candidate) => candidate.key === state.key)?.lang ?? state.lang
+    const next = nextFailoverKey(chain, runtimeFailures.current, { key: state.key, lang: currentLang }, scope)
     if (!next) return false
 
     // 当前 URL 的 HEAD 结论仍然是“存在”，无需抹掉；失败集才是这轮解析真正要看的信息。
     // 留一行诊断，线上能直接看出是主包坏了后切备用，而不是误以为语言回退选错。
     console.warn(
-      `[8bitgo/rom] ${game.slug} 的 ${state.key} 实际加载失败，跳过后尝试 ${next}` +
+      `[8bitgo/rom] ${game.slug} 的 ${state.key} 实际加载${scope === 'network' ? '时网络失败' : '失败'}，跳过后尝试 ${next}` +
         (reason ? `：${reason}` : ''),
     )
     autoRetries.current = 0
     setState({ status: 'checking', url: '' })
     setAttempt((n) => n + 1)
     return true
-  }, [game, lang, prefer, state.status, state.key])
+  }, [game, lang, prefer, state.status, state.key, state.lang])
 
   /*
     换游戏 / 换语言时把自动重试的次数清零。
@@ -1354,19 +1409,44 @@ export function useRomUrl(game: Game | undefined, prefer?: RomSlotLang | null): 
       两边回源同一个桶、同一个 romv，所以换域不换内容；分片绝不跨域混用，Range 断点续传也只认这一个地址。
       镜像在真实下载中失败时 failover 会把这一局拉回主域（mirrorFailed）。
     */
-    const hostChoice = !mirrorFailed.current && getRomMirrorBase()
-      ? chooseRomHost(getRomBase(), getRomMirrorBase(), { prefer: coverCdnHint() === 'cn' ? 'mirror' : 'primary' })
-      : null
+    /*
+      只有候选里真有「主域上、能换到镜像」的地址才测速。明文 ROM 走独立下载域（romUrlForKey），
+      romMirrorUrl 对它返回空串；以前照测不误，每款游戏 / 每次重试都白发两次 64KB 探针再扔掉结论。
+      测速带 routeController 的 signal：切游戏 / 切语言 / 卸载时真停下，被取消的一轮不写缓存。
+    */
+    let hostChoice: Promise<RomHost> | null = null
+    const startHostChoice = (): Promise<RomHost> | null => {
+      if (!hostChoice && !mirrorFailed.current && getRomMirrorBase()) {
+        hostChoice = chooseRomHost(getRomBase(), getRomMirrorBase(), {
+          prefer: coverCdnHint() === 'cn' ? 'mirror' : 'primary',
+          signal: routeController.signal,
+        })
+      }
+      return hostChoice
+    }
+    if (!mirrorFailed.current && getRomMirrorBase()) {
+      const mirrorable = [
+        ...playbackRomCandidatesForSelection(game, lang, prefer).map((candidate) => candidate.key),
+        ...conventionalKeys(game),
+      ].some((key) => Boolean(romMirrorUrl(romUrlForKey(key))))
+      // 和 HEAD 探测同时开始，HEAD 回来时通常已经有结论
+      if (mirrorable) startHostChoice()
+    }
     const preferFasterHost = async (url: string): Promise<string> => {
-      if (mirrorFailed.current || !hostChoice) return url
+      if (mirrorFailed.current) return url
       const mirror = romMirrorUrl(url)
       if (!mirror) return url
-      // 测速只多等一小会儿；没测完就先用默认那边，测速继续在后台跑完并缓存给下一局
+      const choice = startHostChoice()
+      if (!choice) return url
+      // 测速只多等一小会儿；没测完就先用默认那边（带缓存的结论下一局直接用）
       const fallback: RomHost = coverCdnHint() === 'cn' ? 'mirror' : 'primary'
+      let waitTimer = 0
       const host = await Promise.race([
-        hostChoice,
-        new Promise<RomHost>((resolve) => window.setTimeout(() => resolve(fallback), ROM_HOST_WAIT_MS)),
+        choice,
+        new Promise<RomHost>((resolve) => { waitTimer = window.setTimeout(() => resolve(fallback), ROM_HOST_WAIT_MS) }),
       ])
+      // 测速先回来时等待计时器还挂着；清掉，免得每次开局都留一个空转的定时器
+      window.clearTimeout(waitTimer)
       // 记进启动诊断：慢启动时一眼看出 ROM 走的是哪条线路（2026-11-14 大陆《仙剑》报告里看不出）
       diagLog('download', 'info', `ROM 线路：${host === 'mirror' ? '加速镜像' : '主域'} ${new URL(host === 'mirror' ? mirror : url).origin}`)
       return host === 'mirror' ? mirror : url

@@ -69,6 +69,7 @@ export const EXPECTED_COLUMNS = [
   { table: 'games', column: 'netplay_mode', why: '联机人数 auto / on / off 意图；缺列时写游戏 500' },
   { table: 'games', column: 'players_inferred', why: '自动推断的联机人数；缺列时写游戏 500' },
   { table: 'saves', column: 'revision', why: '云存档条件写入代次；缺列时 /api/saves 写入 500' },
+  { table: 'saves', column: 'parent_revision', why: '云存档幂等重放需核对父版本；缺列时 /api/saves 写入 500' },
   { table: 'oauth_apps', column: 'review_state', why: '开放平台应用审核状态；缺列时 /open 控制台 500' },
   { table: 'oauth_apps', column: 'requested_scopes', why: '应用申请的权限范围；缺列时提交审核 500' },
   { table: 'oauth_apps', column: 'review_note', why: '审核备注；缺列时后台审核页 500' },

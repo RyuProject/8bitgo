@@ -44,7 +44,7 @@ export function saveRevisionHeaders(headers) {
   const revision = String(headers?.['x-save-revision'] || '').trim()
   const parent = String(headers?.['x-save-parent-revision'] || '').trim()
   if (!revision && !parent) return { ok: true, versioned: false, revision: randomUUID(), parent: null }
-  if (!REVISION_RE.test(revision) || !REVISION_RE.test(parent) || revision === 'none' || revision === 'legacy') {
+  if (!REVISION_RE.test(revision) || !REVISION_RE.test(parent) || revision === 'none' || revision === 'legacy' || revision === parent) {
     return { ok: false }
   }
   return { ok: true, versioned: true, revision, parent }
@@ -64,6 +64,19 @@ export function saveDeleteRevisionHeader(headers) {
 
 /** 旧行还没有 revision；用稳定哨兵让第一次新版覆盖同样能做条件写。 */
 const currentRevision = (row) => row ? String(row.revision || 'legacy') : 'none'
+
+/**
+ * 同版本重试只有在「父版本也相同、字节也完全相同」时才是幂等重放。
+ * 只看 revision 会让请求复用当前版本号却改写内容，或伪造不同父版本后绕过乐观锁。
+ */
+export function isSaveReplay(existing, revisions, data) {
+  return Boolean(
+    existing && revisions?.versioned &&
+    String(existing.revision || 'legacy') === revisions.revision &&
+    String(existing.parent_revision || '') === revisions.parent &&
+    Buffer.isBuffer(existing.data) && Buffer.isBuffer(data) && existing.data.equals(data),
+  )
+}
 
 /**
  * 存档的 key 是 slug；本地文件没有 slug，前端会给个 `local:文件名` 的形式 ——
@@ -276,13 +289,13 @@ savesRouter.put(
 
         // 份数 + 总字节一起查，判定交给 saveQuotaError（纯函数，规则写在它头上）
         const existing = (await run(
-          'SELECT size, revision FROM saves WHERE user_id = ? AND runtime = ? AND game_slug = ? AND slot = ?',
+          'SELECT size, revision, parent_revision, data FROM saves WHERE user_id = ? AND runtime = ? AND game_slug = ? AND slot = ?',
           [req.user.id, c.runtime, c.slug, c.slot],
         ))[0]
         const current = currentRevision(existing)
         if (revisions.versioned) {
           // 响应丢失后的同版本重试必须幂等；否则客户端会把“其实已经成功”误报成冲突。
-          if (revisions.revision === current) {
+          if (isSaveReplay(existing, revisions, req.body)) {
             return { denied: null, revision: current, idempotent: true, size: Number(existing?.size ?? req.body.length) }
           }
           if (revisions.parent !== current) {
@@ -309,12 +322,13 @@ savesRouter.put(
          * 界面上的「最后存档时间」跟着一起卡住。
          */
         await run(
-          `INSERT INTO saves (user_id, runtime, game_slug, slot, size, data, revision)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+          `INSERT INTO saves (user_id, runtime, game_slug, slot, size, data, revision, parent_revision)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
            ON DUPLICATE KEY UPDATE size = VALUES(size), data = VALUES(data),
                                    revision = VALUES(revision),
+                                   parent_revision = VALUES(parent_revision),
                                    updated_at = CURRENT_TIMESTAMP`,
-          [req.user.id, c.runtime, c.slug, c.slot, req.body.length, req.body, revisions.revision],
+          [req.user.id, c.runtime, c.slug, c.slot, req.body.length, req.body, revisions.revision, revisions.parent],
         )
         return { denied: null, revision: revisions.revision, size: req.body.length }
       })

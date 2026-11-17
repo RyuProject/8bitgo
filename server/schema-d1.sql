@@ -295,6 +295,7 @@ CREATE TABLE IF NOT EXISTS saves (
   size       INTEGER NOT NULL,
   data       BLOB    NOT NULL,
   revision   TEXT    NULL,
+  parent_revision TEXT NULL,
   created_at TEXT    NOT NULL DEFAULT (CURRENT_TIMESTAMP),
   updated_at TEXT    NOT NULL DEFAULT (CURRENT_TIMESTAMP),
   PRIMARY KEY (user_id, runtime, game_slug, slot)

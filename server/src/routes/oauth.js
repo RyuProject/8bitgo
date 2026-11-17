@@ -27,7 +27,8 @@ import { issueUserToken, OPEN_ACCESS_TTL_SEC } from '../open/tokens.js'
 import { OPEN_SCOPES, parseScopes, missingScopes } from '../open/scopes.js'
 import { parseUriList } from '../open/review.js'
 import { requireUser } from '../auth.js'
-import { query, withTransaction } from '../db.js'
+import { query, queryOne, withTransaction } from '../db.js'
+import { tokenVersionOf } from '../auth.js'
 import { publicSiteUrl } from '../site-urls.js'
 import { take } from '../rateLimit.js'
 import { clientIpFrom } from '../presence.js'
@@ -287,6 +288,11 @@ oauthRouter.post(
     if (decision === 'deny') {
       return redirectWithCode(res, v.redirectUri, v.state, null, 'access_denied')
     }
+    /*
+      ⚠️ 只认明确的 'approve'。以前是「不是 deny 就当同意」：
+      漏传字段、拼错、或者某个表单把 decision 丢了，都会静默变成授权 —— 授权必须是用户的明确动作。
+    */
+    if (decision !== 'approve') return fail(res, 400, 'invalid_request', 'decision 必须是 approve 或 deny')
     const code = await issueAuthCode({
       appId: v.app.id,
       userId: req.user.id,
@@ -367,12 +373,17 @@ oauthRouter.post('/token', tokenBody, async (req, res, next) => {
       return fail(res, status, r.error, r.error === 'expired_token' ? '授权码已过期，请重新发起授权' : '授权码无效')
     }
 
+    // 用户批准后仍可能被封、注销或退出所有设备；授权码兑换时绑定当前账号版本。
+    const user = await queryOne('SELECT status, token_version FROM users WHERE id = ?', [r.userId])
+    if (!user || user.status === 'banned') return fail(res, 400, 'access_denied', '用户授权已失效')
+
     const access_token = issueUserToken({
       privateKey: cfg.privateKey,
       kid: cfg.kid,
       issuer: cfg.issuer,
       appId: app.id,
       sub: r.userId,
+      tv: tokenVersionOf(user),
       scopes: r.scopes,
       ttl: OPEN_ACCESS_TTL_SEC,
     })

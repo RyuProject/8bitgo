@@ -18,11 +18,13 @@
  */
 import express, { Router } from 'express'
 import { listGames, recordPlay as recordGamePlay } from '../games-repo.js'
-import { ping, query } from '../db.js'
+import { ping, query, queryOne } from '../db.js'
 import { take, isMeaningfulIp } from '../rateLimit.js'
 import { assetPublicUrl, downloadPublicUrl, publicSiteUrl } from '../site-urls.js'
 import { CACHE } from '../cache.js'
 import { clientIpFrom } from '../presence.js'
+import { tokenVersionOf } from '../auth.js'
+import { openClaimsStillValid } from '../open/revocation.js'
 import { trustedProxyClientIp } from '../download-proxy.js'
 import { openConfig } from '../open/config.js'
 import { authenticateApp, readClientCredentials } from '../open/apps.js'
@@ -363,12 +365,16 @@ openRouter.post('/v1/token', tokenBody, async (req, res, next) => {
           ...(r.error === 'slow_down' ? { interval: DEVICE_POLL_INTERVAL_SEC } : {}),
         })
       }
+      // 用户批准设备后仍可能被封、注销或退出所有设备；兑现时重新读取当前账号版本。
+      const user = await queryOne('SELECT status, token_version FROM users WHERE id = ?', [r.userId])
+      if (!user || user.status === 'banned') return fail(res, 400, 'access_denied', '用户授权已失效')
       const access_token = issueUserToken({
         privateKey: cfg.privateKey,
         kid: cfg.kid,
         issuer: cfg.issuer,
         appId: app.id,
         sub: r.userId,
+        tv: tokenVersionOf(user),
         scopes: r.scopes,
         ttl: OPEN_ACCESS_TTL_SEC,
       })
@@ -467,13 +473,16 @@ function anonGate(req) {
  * 那一行会把两套令牌重新打通，等于把文件头第 1 条作废。
  */
 function requireApp(scope) {
-  return (req, res, next) => {
+  return async (req, res, next) => {
+    try {
     const cfg = openConfig()
     if (!cfg) return fail(res, 501, 'temporarily_unavailable', '开放平台未启用')
     const h = String(req.headers.authorization || '')
     const token = h.startsWith('Bearer ') ? h.slice(7).trim() : ''
     const claims = verifyOpenToken(token, { publicKey: cfg.publicKey, issuer: cfg.issuer })
     if (!claims) return fail(res, 401, 'invalid_token', '令牌无效或已过期')
+    // JWT 验签不够：退出所有设备、封号、删号或停用应用后，旧票最多 30 秒内失效。
+    if (!(await openClaimsStillValid(claims))) return fail(res, 401, 'invalid_token', '令牌已撤销或账号 / 应用已停用')
     if (scope && !hasScope(claims.scopes, scope)) {
       return fail(res, 403, 'insufficient_scope', `需要 ${scope}`, { scope })
     }
@@ -495,6 +504,9 @@ function requireApp(scope) {
     const gate = take(`open:api:${claims.appId}`, 3600, 3600_000)
     if (!gate.ok) return rateLimited(res, gate)
     next()
+    } catch (error) {
+      next(error)
+    }
   }
 }
 
@@ -794,6 +806,7 @@ openRouter.post('/v1/live/publish-token', requireUserScope('live.write'), (req, 
     issuer: cfg.issuer,
     appId: req.openClaims.appId,
     userId: req.openClaims.userId,
+    tokenVersion: req.openClaims.tv,
   })
   const base = publicSiteUrl()
   res.set('Cache-Control', 'private, no-store').json({

@@ -276,6 +276,17 @@ const TEMPLATES = {
     lead: '你的 8BitGo 登录验证码：',
     tail: '10 分钟内有效。若非本人操作请忽略此邮件。',
   },
+  /*
+    注册码。文案故意兼顾「这个邮箱其实已经注册过」的情况：注册接口对已注册的邮箱也照发这封
+    （否则「发了 / 没发」本身就能拿来枚举谁注册过），所以信里要告诉真正的主人可以直接登录。
+  */
+  register: {
+    subject: '完成你的 8BitGo 注册',
+    lead: '你的 8BitGo 注册验证码：',
+    tail:
+      '10 分钟内有效。如果这个邮箱已经注册过 8BitGo，直接用邮箱验证码登录即可。' +
+      '如果你没有在 8BitGo 注册，请忽略此邮件。',
+  },
   bind: {
     subject: '确认你的新 8BitGo 邮箱',
     lead: '用这个验证码把 8BitGo 账号换绑到当前邮箱：',
@@ -316,7 +327,7 @@ function codeMail(code, purpose) {
  *
  * @param {string} email   收件地址
  * @param {string} code    六位验证码
- * @param {'login'|'bind'|'reauth'|'delete'} [purpose] 用途，决定信里的文案。默认登录。
+ * @param {'login'|'register'|'bind'|'reauth'|'delete'} [purpose] 用途，决定信里的文案。默认登录。
  */
 export async function sendLoginCode(email, code, purpose = 'login') {
   const mail = codeMail(code, purpose)

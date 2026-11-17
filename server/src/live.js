@@ -4,7 +4,7 @@ import { verifyToken, tokenVersionOf } from './auth.js'
 import { queryOne } from './db.js'
 import { isNetplayPlayer, resolveRoomId } from './netplay.js'
 import { openConfig } from './open/config.js'
-import { verifyLivePublisherToken } from './open/live-publisher.js'
+import * as livePublisherModule from './open/live-publisher.js'
 import { dateOnly, dbFlag } from './mappers.js'
 import { isAdultByBirthDate } from '../../shared/age.js'
 import { guardSocketArgs } from './socket-guard.js'
@@ -121,6 +121,28 @@ const MAX_ROOMS = Number(process.env.LIVE_MAX_ROOMS || 200)
  */
 const MAX_ROOMS_PER_IP = Number(process.env.LIVE_MAX_ROOMS_PER_IP || 20)
 let warnedPrivateIp = false
+/**
+ * 同一条 socket 开播 / 续播的频率上限（令牌桶：容量 OPEN_BURST，每 OPEN_REFILL_MS 补一枚）。
+ *
+ * 每 IP 房间上限只管「同时有几间」，管不了「一条连接每秒 go-live → stop-live 几千次」：
+ * 每一轮都要查库（findGame / liveAccount）、建房、通知大厅，脚本一条 socket 就能把 10 连接的
+ * MySQL 池和大厅 SSE 推送一起压住。正常客户端开播最多补试 3 次、续播按秒级退避，
+ * 容量 10 / 每 6 秒一枚绰绰有余。和联机 open-room 的 netplayOpening 一样挡在查库之前；
+ * 「已经是这间房的主播」那条补回原结果的捷径不消耗令牌（它不查库，也是 ack 丢失后的正规重试）。
+ */
+const OPEN_BURST = Number(process.env.LIVE_OPEN_BURST || 10)
+const OPEN_REFILL_MS = Number(process.env.LIVE_OPEN_REFILL_MS || 6_000)
+function takeOpenToken(socket) {
+  if (!(OPEN_BURST > 0)) return true
+  const now = Date.now()
+  const bucket = socket.data?.liveOpenBucket ?? { tokens: OPEN_BURST, at: now }
+  bucket.tokens = Math.min(OPEN_BURST, bucket.tokens + Math.max(0, now - bucket.at) / Math.max(1, OPEN_REFILL_MS))
+  bucket.at = now
+  if (socket.data) socket.data.liveOpenBucket = bucket
+  if (bucket.tokens < 1) return false
+  bucket.tokens -= 1
+  return true
+}
 /** 单场直播的观众上限，见上面关于上行带宽的说明 */
 const MAX_VIEWERS = Number(process.env.LIVE_MAX_VIEWERS || 12)
 /**
@@ -214,10 +236,11 @@ async function liveAccount(socket, findUser) {
 
   let row = null
   if (publisher?.userId) {
-    row = await findUser(
+    const found = await findUser(
       'SELECT id, nickname, status, birth_date, token_version FROM users WHERE id = ?',
       [publisher.userId],
     )
+    if (found && found.status !== 'banned' && (await publisherStillValid(publisher, found, findUser))) row = found
   } else if (siteToken) {
     const payload = verifyToken(siteToken)
     if (payload?.uid) {
@@ -236,6 +259,28 @@ async function liveAccount(socket, findUser) {
     socket.data.liveAccountAt = Date.now()
   }
   return row
+}
+
+/**
+ * 设备发布凭证签出去之后是否还算数（凭证最长 24 小时，必须能被撤销）。
+ *
+ *   · 用户「退出所有设备」/ 改密码会把 users.token_version +1：凭证里的 tv 对不上就作废，
+ *     和网页 JWT 同一条规则（§2.14）。没带 tv 的旧凭证按 0 处理 —— 只有从没轮换过版本的账号能继续用，
+ *     轮换过的账号要重新换一张；
+ *   · 签发凭证的开放平台应用被停用（oauth_apps.status = 'suspended'）或已删除：它签出去的直播凭证
+ *     一并失效，否则停用应用只挡得住新授权、挡不住已经在播的设备。
+ * 优先用 open/live-publisher.js 导出的同名校验（与签发方放在一起维护）；还没有时用这里的同等实现。
+ */
+async function publisherStillValid(claims, userRow, findUser) {
+  if (typeof livePublisherModule.publisherClaimsStillValid === 'function') {
+    return Boolean(await livePublisherModule.publisherClaimsStillValid(claims, userRow))
+  }
+  if ((Number(claims?.tv) || 0) !== tokenVersionOf(userRow)) return false
+  if (claims?.appId) {
+    const app = await findUser('SELECT status FROM oauth_apps WHERE id = ?', [String(claims.appId)])
+    if (!app || app.status === 'suspended') return false
+  }
+  return true
 }
 
 /**
@@ -912,7 +957,7 @@ function leave(nsp, socket) {
  */
 export function attachLive(io, options = {}) {
   const findUser = options.findUser || queryOne
-  const findGame = options.findGame || ((slug) => queryOne('SELECT adult FROM games WHERE slug = ? LIMIT 1', [slug]))
+  const findGame = options.findGame || ((slug) => queryOne('SELECT slug, adult, hidden FROM games WHERE slug = ? LIMIT 1', [slug]))
   // 和 findUser / findGame 同理：测试可以不起整套联机服务，只替换「是不是那间联机房的玩家」这一问
   const netplayPlayer = options.isNetplayPlayer || isNetplayPlayer
   const nsp = io.of('/live')
@@ -926,7 +971,7 @@ export function attachLive(io, options = {}) {
     if (!token) return next()
     const cfg = openConfig()
     if (!cfg) return next(publisherAuthError('publisher authorization unavailable', 'publisher_auth_unavailable'))
-    const claims = verifyLivePublisherToken(token, { publicKey: cfg.publicKey, issuer: cfg.issuer })
+    const claims = livePublisherModule.verifyLivePublisherToken(token, { publicKey: cfg.publicKey, issuer: cfg.issuer })
     if (!claims) return next(publisherAuthError('invalid or expired publisher token', 'invalid_publisher_token'))
     socket.data.livePublisher = claims
     next()
@@ -947,18 +992,53 @@ export function attachLive(io, options = {}) {
       return room?.hostSocketId === socket.id ? room : null
     }
 
+    // 发布票可能活 12 小时，不能只在握手 / 开播时检查一次。单条发布连接每 15 秒复核；
+    // liveAccount 自带 30 秒缓存，所以数据库最多每 30 秒查一次。停用应用、封号或退出所有设备后，
+    // 现有直播也会在半分钟内关掉。计时器绑在 socket 生命周期上，不随 go-live / stop-live 累积。
+    if (socket.data?.livePublisher) {
+      const publisherCheck = setInterval(() => {
+        void liveAccount(socket, findUser).then((account) => {
+          if (account || !socket.connected) return
+          const room = boundHostRoom()
+          if (room) closeRoom(nsp, room, 'publisher-revoked')
+          socket.disconnect(true)
+        }).catch((error) => {
+          // 数据库短暂不可用时保留连接，下一轮重试；可读到停用状态时上面的路径会立即收房。
+          console.warn('[live] 定期复核发布凭证失败：', error?.message || error)
+        })
+      }, 15_000)
+      publisherCheck.unref?.()
+      socket.once('disconnect', () => clearInterval(publisherCheck))
+    }
+
     socket.on('go-live', async (payload, ack) => {
       const existing = boundHostRoom()
       if (existing) return ack?.(null, { roomId: existing.id, token: existing.token })
       if (membership.has(socket.id)) return ack?.('already in a room')
       if (socket.data.liveOpening) return ack?.('already opening a room')
+      if (!takeOpenToken(socket)) return ack?.('rate limited')
       socket.data.liveOpening = true
       try {
-        const gameSlug = str(payload?.gameSlug, 120)
-        // 本地 ROM / 尚未入库的游戏查不到，沿用既有的普通直播；库里明确标成成人的必须走年龄门。
-        // 不能采信 payload.adult —— 客户端自己报「不是成人」就能绕过，等于没有校验。
-        const game = gameSlug ? await findGame(gameSlug) : null
-        const adult = dbFlag(game?.adult)
+        const requestedSlug = str(payload?.gameSlug, 120)
+        /*
+          成人位只能来自数据库，不能采信 payload.adult。gameSlug 也是客户端给的，所以：
+            · 空 slug / `local:` 开头：玩家自己的本地 ROM，库里没有这款游戏，按普通直播处理；
+            · 其余 slug 必须对上一款**存在且未下架**的游戏，否则拒绝。以前查不到就当「非成人」放行，
+              主播把成人游戏的 slug 改成一串不存在的字符就能绕过年龄门、出现在公开大厅；
+            · 房间里存数据库返回的规范 slug，大小写变体（MySQL 排序规则不区分大小写）不会混进来。
+          ⚠️ 剩下的口子：服务端看不到画面内容。网页端在本地 ROM 页（local:）或另一款普通游戏的页面上
+          推一路成人画面，这里无从分辨 —— 年龄门约束的是「本站标成成人的游戏」，不是画面审核。
+        */
+        let gameSlug = ''
+        let adult = false
+        if (requestedSlug && !requestedSlug.startsWith('local:')) {
+          const game = await findGame(requestedSlug)
+          if (!game || dbFlag(game.hidden)) return ack?.('unknown game')
+          gameSlug = typeof game.slug === 'string' && game.slug ? game.slug : requestedSlug
+          adult = dbFlag(game.adult)
+        } else {
+          gameSlug = requestedSlug
+        }
         let publisher = null
         const claims = socket.data.livePublisher
         if (claims) {
@@ -1092,6 +1172,7 @@ export function attachLive(io, options = {}) {
       }
       if (membership.has(socket.id)) return ack?.('already in a room')
       if (socket.data.liveResuming) return ack?.('already resuming')
+      if (!takeOpenToken(socket)) return ack?.('rate limited')
       socket.data.liveResuming = true
       try {
         const room = rooms.get(requestedRoomId)

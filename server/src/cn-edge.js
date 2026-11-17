@@ -57,6 +57,14 @@ export function createCnEdgeMiddleware({ clientDir, siteOrigin }) {
       if (rest.startsWith('/api/')) res.setHeader('Vary', 'Origin')
       else res.removeHeader('Vary')
     }
+    // /_cn/api 只承载公开只读请求。浏览器守前端不够：任意客户端都能手工带登录态打到 EdgeOne，
+    // 令牌可能进边缘日志或缓存链；服务端必须把带凭据的请求挡回去。OPTIONS 预检不带真实凭据。
+    if (
+      req.method !== 'OPTIONS' && rest.startsWith('/api/') &&
+      (req.headers?.authorization || req.headers?.cookie)
+    ) {
+      return res.status(400).set('Cache-Control', 'no-store').type('text/plain').send('Authenticated requests must use the primary API')
+    }
     res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
     // J2ME 的请求经 SW 跨源取回再交给 CheerpJ：它要读 Content-Range 判断 Range 生效，没暴露就只看得到安全名单里的头
     if (rest.startsWith('/j2me/')) {

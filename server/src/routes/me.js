@@ -282,9 +282,12 @@ meRouter.post('/email/request-code', async (req, res, next) => {
     if (email === String(req.user.email).toLowerCase()) {
       return res.status(400).json({ error: '这已经是你当前的邮箱了' })
     }
-    // 先查一次占用。等验证码填完才说「这个邮箱已被注册」，等于白发一封信、白等一分钟
-    const taken = await queryOne('SELECT id FROM users WHERE email = ?', [email])
-    if (taken) return res.status(409).json({ error: '这个邮箱已经注册过了' })
+    /*
+      ⚠️ 这里**不再**先查占用并回 409（2026-11-17）：那样任何登录用户都能拿这条接口
+      逐个探测「某个邮箱有没有在本站注册」—— 而注册账号是免费的。
+      现在一律照发；「已被占用」留到第二步、他证明了自己收得到这个邮箱之后再说，
+      那时这句话只说给邮箱的主人听。代价是占用的情况下要多等一封信，可以接受。
+    */
     res.json({ ok: true, ...(await issueCode(req, email, 'bind', req.user.id)) })
   } catch (e) {
     sendCodeError(res, next, e)
@@ -313,7 +316,13 @@ meRouter.post('/email', async (req, res, next) => {
     if (taken && taken.id !== req.user.id) return res.status(409).json({ error: '这个邮箱已经注册过了' })
 
     const oldEmail = String(req.user.email || '').trim().toLowerCase()
-    await query('UPDATE users SET email = ? WHERE id = ?', [email, req.user.id])
+    try {
+      await query('UPDATE users SET email = ? WHERE id = ?', [email, req.user.id])
+    } catch (e) {
+      // 上面查过没人占，到这里之间被另一条路（注册 / 验证码登录建号）抢先了：撞 uniq_email 不是 500
+      if (e?.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: '这个邮箱已经注册过了' })
+      throw e
+    }
     const { row, token } = await rotateToken(req.user.id)
     if (isEmail(oldEmail) && oldEmail !== email) {
       sendEmailChangedNotice(oldEmail, email).catch((e) => console.error('[me] 换绑通知旧邮箱失败：', e?.message))

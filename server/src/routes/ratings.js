@@ -9,9 +9,11 @@
  *   - anon_id：浏览器本地长期保存的随机串。它的作用是让同一个人**能改自己的分**，
  *     不是防刷 —— 前端存的东西，清一下就换一个。
  *   - anon_ip：真正的去重底线，一个 IP 对一款游戏只留一张匿名票。
- *     所以 anon_id 换了但 IP 没换时，会**认领**原来那一行而不是新插一行。
+ *     ⚠️ 它**只防刷、不认人**（2026-11-17）：以前 anon_id 对不上时按 IP 认领原来那一行，
+ *     结果同一出口 IP 下的第二个人能直接改掉第一个人的分、还会在 GET 里看到别人的分当成自己的。
+ *     现在同 IP 已有别人的匿名票时，第二个人的匿名提交回 409（ratings-repo.js 的 RatingIpTakenError）。
  *
- * 副作用是同一个出口 IP 下的第二个人评分会覆盖第一个人的（家庭、宿舍、公司）。
+ * 副作用是同一个出口 IP 下的第二个人匿名评不了分（家庭、宿舍、公司）。
  * 这是明知的取舍：匿名票只有 0.5 权重，误伤的代价远小于放开 IP 让脚本随便灌。
  * 真在意自己那一票的人登录即可 —— 登录票只按 user_id 去重，完全不看 IP。
  *
@@ -105,7 +107,7 @@ ratingsRouter.get('/', optionalUser, async (req, res, next) => {
     // 汇总与「我的分」只依赖 game.id，并行查（每个详情页都会请求这条）
     const [stats, mine] = await Promise.all([
       ratingStats(game.id),
-      identity.userId || identity.anonId || identity.anonIp ? findRating(query, game.id, identity) : null,
+      identity.userId || identity.anonId ? findRating(query, game.id, identity) : null,
     ])
     res.json({ ...stats, mine: mineOf(mine) })
   } catch (e) {
@@ -173,6 +175,7 @@ ratingsRouter.post('/', optionalUser, async (req, res, next) => {
     // 两个请求同时给同一个身份插第一票时会撞唯一键。这不是错误，是竞态 ——
     // 对用户来说「我的分已经记上了」，回 409 让前端重新拉一次汇总即可
     if (e?.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: '评分正在处理，请重试' })
+    if (e?.code === 'RATING_IP_TAKEN') return res.status(409).json({ error: e.message, code: 'rating_ip_taken' })
     next(e)
   }
 })

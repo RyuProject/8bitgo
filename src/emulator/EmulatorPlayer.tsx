@@ -155,6 +155,12 @@ const LazyTouchPad = lazy(() => importWithRetry(loadTouchPad, touchPadChunk, imp
 const DISC_NOTICE_BYTES = 64 * 1024 * 1024
 /** 自动重试只做一次：网络抖动能自愈，坏 ROM 也不会陷入无限刷新。 */
 const AUTO_RETRY_LIMIT = 1
+/**
+ * 同一次开局（同一个 startupAttemptId）里原地重试的总预算。换核心（内存不足 → 低内存版、NDS 崩溃 → 兼容核心）
+ * 会把 retryAttempt 清零、给新核心一次重试，但不能让「每换一次核心再多一次重试」无限叠加：
+ * 每次重试都可能重下几十到几百 MB 的 ROM。换核心本身各自仍只允许一次（由各自的判定保证）。
+ */
+const AUTO_RETRY_TOTAL_LIMIT = 2
 /** 连续两分钟没有任何启动活动，漏斗记一次 watchdog 结果；运行时自己的重试/错误处理照常继续。 */
 const STARTUP_TIMEOUT_MS = 120_000
 /**
@@ -218,8 +224,10 @@ interface ActiveSession {
   cloud?: CloudSession
   /** 看直播：本机不跑游戏，画面来自主播的浏览器 */
   live?: LiveSession
-  /** 当前这次加载已经自动重试了几次；只在启动失败时递增。 */
+  /** 当前这次加载已经自动重试了几次；只在启动失败时递增。换核心时清零。 */
   retryAttempt?: number
+  /** 同一次开局里一共原地重试 / 刷新重开了几次；换核心也不清零（AUTO_RETRY_TOTAL_LIMIT）。 */
+  totalRetries?: number
   /** 只属于这一局的核心覆盖；崩溃兜底不能改后台配置或污染下一次主动启动。 */
   coreOverride?: string
   /** GBA 启动陷阱后已执行过一次远端 ROM 强制刷新；防止同一坏输入循环下载。 */
@@ -395,7 +403,7 @@ interface Props {
    * HEAD 能确认文件存在、但真实下载/解密/启动失败时，让父层跳到备用 ROM。
    * 返回 true 表示父层已经开始解析下一个地址，播放器不再展示当前文件的终态错误。
    */
-  onRomLoadFailed?: (reason: string) => boolean
+  onRomLoadFailed?: (reason: string, scope?: 'content' | 'network') => boolean
   /**
    * 这款游戏绑了哪几种语言的 ROM。少于两种时不显示切换入口 ——
    * 只有一份 ROM 的话「切换语言」是个假选项。
@@ -1800,6 +1808,7 @@ export function EmulatorPlayer({
       netplay?: NetplaySession
       cloud?: CloudSession
       retryAttempt?: number
+      totalRetries?: number
       coreOverride?: string
       forceRomRefresh?: boolean
       ruledOut?: RuntimeId[]
@@ -2256,6 +2265,8 @@ export function EmulatorPlayer({
         setNotice(fmt(t.player.runtimeFellBack, { runtime: next.name }))
         begin(session.game, session.platform, next, {
           ruledOut,
+          totalRetries: session.totalRetries,
+          forceRomRefresh: session.forceRomRefresh,
           startupAttemptId: session.startupAttemptId,
           startedAt: session.startedAt,
         })
@@ -2271,8 +2282,12 @@ export function EmulatorPlayer({
           // 普通重试会再次使用同一份已解包 ROM；这类现场之后曾在新访问重下 ROM 后恢复，因此清缓存并重取一次。
           console.warn(`[8bitgo/gba] ${crashedCore} 启动时发生 WASM table trap，刷新 8BG ROM 后重开一次：${reason}`)
           setError(null)
+          // 保留本局的核心覆盖 / 已排除引擎：只是重取 ROM，不能顺手把兜底核心换回默认核心
           begin(session.game, session.platform, session.runtime, {
             retryAttempt: (session.retryAttempt ?? 0) + 1,
+            totalRetries: (session.totalRetries ?? 0) + 1,
+            coreOverride: session.coreOverride,
+            ruledOut: session.ruledOut,
             forceRomRefresh: true,
             startupAttemptId: session.startupAttemptId,
             startedAt: session.startedAt,
@@ -2291,8 +2306,12 @@ export function EmulatorPlayer({
           if (shouldRememberNdsCoreFailure(reason)) rememberNdsCoreFailure(session.game)
           setError(null)
           setNotice(t.player.ndsCoreFellBack)
+          // 换核心给新核心一次原地重试（retryAttempt 清零），但总预算跟着这次开局走
           begin(session.game, session.platform, session.runtime, {
             coreOverride: nextCore,
+            totalRetries: session.totalRetries,
+            ruledOut: session.ruledOut,
+            forceRomRefresh: session.forceRomRefresh,
             startupAttemptId: session.startupAttemptId,
             startedAt: session.startedAt,
           })
@@ -2327,8 +2346,12 @@ export function EmulatorPlayer({
         if (fbneoCore) rememberFbneoMemoryFailure()
         else rememberPsxMemoryFailure()
         setError(null)
+        // 同 NDS 换核心：retryAttempt 清零，totalRetries 保留
         begin(session.game, session.platform, session.runtime, {
           coreOverride: nextCore,
+          totalRetries: session.totalRetries,
+          ruledOut: session.ruledOut,
+          forceRomRefresh: session.forceRomRefresh,
           startupAttemptId: session.startupAttemptId,
           startedAt: session.startedAt,
         })
@@ -2346,7 +2369,7 @@ export function EmulatorPlayer({
         rememberPsxMemoryFailure()
         return nextCore
       },
-      onError: (message: string, errorScope?: 'runtime' | 'content' | 'config' | 'deterministic') => {
+      onError: (message: string, errorScope?: 'runtime' | 'content' | 'config' | 'deterministic' | 'network') => {
         if (!isCurrent()) return
         // Sockdrive 起不来时解除这块盘的线路绑定，下一次按最新测速结果重选（镜像故障时会回到主域）
         if (session.runtime.id === 'jsdos' && dosSockdriveUrlRef.current) clearSockdrivePin(dosSockdriveUrlRef.current)
@@ -2370,13 +2393,17 @@ export function EmulatorPlayer({
         // ⚠️ 「哪些会话不能重挂」和读档那边是**同一个**判断，所以共用 canRestartInPlace ——
         // 以前这里手写了一遍，两份分叉的表现只会在联机时出现，而且不报错。
         const attempt = session.retryAttempt ?? 0
+        /*
+          网络层失败（下载器的重试和备用线路都用完）只许切同语言槽的备用源：换别的语言走同一条网络，
+          只会把整条语言链逐个白下一遍（AGENTS §2.35）。父层的 failover 按 scope 收窄候选。
+        */
         const canFailoverRom = () =>
           !ready &&
           errorScope !== 'runtime' &&
           errorScope !== 'config' &&
           typeof session.game === 'string' &&
           canRestartInPlace(session) &&
-          Boolean(onRomLoadFailed?.(message))
+          Boolean(onRomLoadFailed?.(message, errorScope === 'network' ? 'network' : 'content'))
 
         /*
           运行时基础设施故障（例如 Ruffle 播放壳没有初始化）与 ROM 无关。旧逻辑在同一份
@@ -2399,18 +2426,29 @@ export function EmulatorPlayer({
         // CheerpJ 的 runtime 错误也不重试：同一个官方 CDN / 浏览器环境再走一遍只会重复数分钟等待。
         const retryUseless = errorScope === 'config' || errorScope === 'deterministic' ||
           (session.runtime.id === 'j2me' && errorScope === 'runtime')
-        if (!ready && !retryUseless && canRestartInPlace(session) && attempt < AUTO_RETRY_LIMIT) {
+        const totalRetries = session.totalRetries ?? 0
+        if (!ready && !retryUseless && canRestartInPlace(session) && attempt < AUTO_RETRY_LIMIT &&
+            totalRetries < AUTO_RETRY_TOTAL_LIMIT) {
           setError(null)
+          // 原地重试沿用本局上下文：已排除的引擎、核心覆盖、GBA 已强制刷新过 ROM（防同一坏输入循环重下）
           begin(session.game, session.platform, session.runtime, {
             retryAttempt: attempt + 1,
+            totalRetries: totalRetries + 1,
             coreOverride: session.coreOverride,
+            ruledOut: session.ruledOut,
+            forceRomRefresh: session.forceRomRefresh,
             startupAttemptId: session.startupAttemptId,
             startedAt: session.startedAt,
           })
           return
         }
 
-        // 普通网络/核心加载错误先按原规则重试一次；仍失败再尝试下一个 ROM 候选。
+        /*
+          内容错误（坏包、404、格式不对）原地重试一次后仍失败，就交给父层试下一个 ROM 候选（含其它语言）；
+          这是有意的：另一种语言的包可能是好的。网络层失败（scope 'network'）同样先原地重试，
+          但 failover 只切同语言的备用源，不再拿别的语言重下 —— 网络不通时换内容修不好（AGENTS §2.35）。
+          runtime / config 不进这里（见 canFailoverRom）。
+        */
         if (canFailoverRom()) {
           restartAfterRomFailureRef.current = true
           endSession()

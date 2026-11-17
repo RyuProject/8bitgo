@@ -22,7 +22,9 @@ export async function resolveGameRoomPolicy({ gameSlug, gameId } = {}) {
   // 宣传成可联机。两列必须同时成立，和公开 API / 页面使用同一条规则。
   if (!gameSupportsNetplay(row.multiplayer, row.players)) return null
   const maxPlayers = normalizeGamePlayers(row.players)
-  return { gameSlug: String(row.slug), gameId: netplayGameId(row.slug), maxPlayers }
+  // adult：成人游戏的联机房只对通过年龄门的登录用户可见 / 可进（§2.23，与直播同一条规则），
+  // 由各房间注册表在列表与进房时按它过滤。
+  return { gameSlug: String(row.slug), gameId: netplayGameId(row.slug), maxPlayers, adult: Number(row.adult) === 1 }
 }
 
 /*
@@ -38,7 +40,7 @@ async function loadPolicyRow(slug) {
   const hit = policyCache.get(slug)
   if (hit && Date.now() - hit.at < POLICY_TTL_MS) return hit.row
   if (hit?.pending) return hit.pending
-  const pending = queryOne('SELECT slug, players, multiplayer, hidden FROM games WHERE slug = ? LIMIT 1', [slug])
+  const pending = queryOne('SELECT slug, players, multiplayer, hidden, adult FROM games WHERE slug = ? LIMIT 1', [slug])
   policyCache.set(slug, { at: 0, pending })
   try {
     const row = await pending

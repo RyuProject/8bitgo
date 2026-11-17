@@ -19,7 +19,7 @@ export const LIVE_PUBLISHER_TTL_SEC = Math.max(
 
 const nowSec = (now) => Math.floor((now ?? Date.now()) / 1000)
 
-export function issueLivePublisherToken({ privateKey, kid, issuer, appId, userId, ttl, now }) {
+export function issueLivePublisherToken({ privateKey, kid, issuer, appId, userId, tokenVersion = 0, ttl, now }) {
   if (!privateKey) throw new Error('缺少 OPEN_JWT_PRIVATE_KEY')
   if (!appId || !userId) throw new Error('缺少开播身份')
   const iat = nowSec(now)
@@ -30,6 +30,8 @@ export function issueLivePublisherToken({ privateKey, kid, issuer, appId, userId
       sub: String(userId),
       aud: LIVE_PUBLISHER_AUDIENCE,
       cid: String(appId),
+      // 退出所有设备 / 改密码时随 users.token_version 递增，旧直播票随之失效。
+      tv: Number(tokenVersion) || 0,
       kind: 'live-publisher',
       scope: 'live.write',
       iat,
@@ -69,6 +71,7 @@ export function verifyLivePublisherToken(token, { publicKey, issuer, now } = {})
   return {
     appId: String(payload.cid),
     userId: String(payload.sub),
+    tv: Number(payload.tv) || 0,
     exp: Number(payload.exp) || 0,
   }
 }

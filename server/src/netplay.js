@@ -6,6 +6,10 @@ import { admitSse, sseWrite, SSE_HEARTBEAT_FRAME, SSE_HEARTBEAT_MS } from './sse
 import { resolveGameRoomPolicy } from './netplay-game-policy.js'
 import { NETPLAY_MAX_PLAYERS, normalizeGamePlayers } from '../../shared/netplay-players.js'
 import { guardSocketArgs } from './socket-guard.js'
+import { optionalUser, tokenVersionOf, verifyToken } from './auth.js'
+import { queryOne } from './db.js'
+// ⚠️ live.js 也 import 本文件（循环依赖）。这里只在请求时调用这两个函数声明，模块求值阶段不碰，所以安全。
+import { adultLiveAccessError, canAccessAdultLive } from './live.js'
 
 /**
  * P2P 联机信令服务器（EmulatorJS netplay）+ 房主迁移。
@@ -189,7 +193,9 @@ function notifyRooms() {
   if (notifyTimer || watchers.size === 0) return
   notifyTimer = setTimeout(() => {
     notifyTimer = null
-    const list = [...rooms.values()].map(detailedRoom).sort((a, b) => b.createdAt - a.createdAt)
+    // SSE 是匿名的（EventSource 带不了 Authorization，§2.23），成人房一律不进这条流；
+    // 通过年龄门的登录用户由前端改走带 JWT 的 /api/netplay/rooms 轮询拿到它们。
+    const list = netplayRooms()
     const payload = `event: rooms\ndata: ${JSON.stringify(list)}\n\n`
     for (const w of watchers) {
       try {
@@ -210,6 +216,13 @@ function notifyRooms() {
 function roomEvent(askedId) {
   const room = getRoom(askedId)
   if (!room) return `event: room-gone\ndata: ${JSON.stringify({ roomId: askedId })}\n\n`
+  /*
+    成人房的详情（成员昵称、地区）不能发给匿名的 SSE 订阅者；但也绝不能回 room-gone ——
+    房间里的玩家自己也在订阅它，收到 gone 会以为房主走了。改发一个不带内容的 room-restricted，
+    新前端据此换成带 JWT 的轮询（services/netplay.ts 的 watchNetplayRoom）；老前端不认识这个事件，
+    只是收不到更新。
+  */
+  if (room.adult) return `event: room-restricted\ndata: ${JSON.stringify({ roomId: askedId })}\n\n`
   const out = detailedRoom(room)
   if (room.id !== askedId) out.migratedTo = room.id
   return `event: room\ndata: ${JSON.stringify(out)}\n\n`
@@ -287,18 +300,23 @@ function detailedRoom(room) {
  * 公开的 P2P 房间快照。站内 `/api/netplay/rooms` 与开放平台必须读同一份内存表，
  * 否则一边显示房间、另一边查不到，而且进程重启前都不会自愈。
  */
-export function netplayRooms({ gameId } = {}) {
+export function netplayRooms({ gameId, includeAdult = false } = {}) {
+  /*
+    includeAdult 默认 false（同 live.js 的 liveRooms）：开放平台和以后新加的调用方忘了鉴权时，
+    成人游戏的联机房也不会漏出去。只有 HTTP 层已经核实年龄的请求才显式传 true。
+  */
   return [...rooms.values()]
+    .filter((room) => includeAdult || !room.adult)
     .filter((room) => gameId === undefined || String(room.gameId) === String(gameId))
     .map(detailedRoom)
     .sort((a, b) => b.createdAt - a.createdAt)
 }
 
 /** 单个公开房间；顺着房主迁移留下的别名查，老邀请链接仍然有效。 */
-export function netplayRoom(roomId) {
+export function netplayRoom(roomId, { includeAdult = false } = {}) {
   const asked = str(roomId, 64)
   const room = getRoom(asked)
-  if (!room) return null
+  if (!room || (room.adult && !includeAdult)) return null
   const out = detailedRoom(room)
   if (room.id !== asked) out.migratedTo = room.id
   return out
@@ -590,13 +608,56 @@ function playerIndexOf(room, socketId) {
 }
 
 /**
+ * 这次 HTTP 请求能不能看成人游戏的房间。
+ * 走 auth.js 的 optionalUser（含 token_version 校验），封禁 / 未登录 / 没填生日 / 未满 18 岁都算不能。
+ * 数据库抖了就当游客：房间列表是内存功能，不能因为查不了账号而 500。
+ */
+async function adultViewer(req, res) {
+  if (!req.get('authorization')) return false
+  try {
+    await optionalUser(req, res, (e) => {
+      if (e) console.error('[netplay] 解析登录态失败，按游客处理：', e)
+    })
+  } catch (e) {
+    console.error('[netplay] 解析登录态失败，按游客处理：', e)
+    return false
+  }
+  return canAccessAdultLive(req.user)
+}
+
+/**
+ * 进成人房的那条 socket 是不是通过年龄门的登录用户。返回空串表示放行，否则是拒绝原因。
+ * 结论按令牌缓存 30 秒（同 live.js 的 liveAccount），反复 join 不会每次都查库。
+ */
+async function netplayAdultAccessError(socket, extra, findUser) {
+  const token = str(socket.handshake?.auth?.token, 512) || str(extra?.auth_token, 512)
+  if (!token) return 'adult login required'
+  const cached = socket.data?.netplayAdult
+  if (cached?.token === token && Date.now() - cached.at < 30_000) return cached.error
+  let user = null
+  const payload = verifyToken(token)
+  if (payload?.uid) {
+    const found = await findUser('SELECT id, status, birth_date, token_version FROM users WHERE id = ?', [String(payload.uid)])
+    if (found && (Number(payload.tv) || 0) === tokenVersionOf(found)) user = found
+  }
+  const error = adultLiveAccessError(user)
+  if (socket.data) socket.data.netplayAdult = { token, at: Date.now(), error }
+  return error
+}
+
+/**
  * 挂到已有的 http server 与 express app 上。
  * @param httpServer node http server（app.listen 返回的那个不行，要用 createServer(app)）
  * @param app express app
  * @param origins CORS 白名单，与主服务保持一致
  * @param options.resolveGamePolicy 测试可替换数据库查询；生产默认只认 games.players
  */
-export function attachNetplay(httpServer, app, origins = ['*'], { resolveGamePolicy = resolveGameRoomPolicy } = {}) {
+export function attachNetplay(
+  httpServer,
+  app,
+  origins = ['*'],
+  { resolveGamePolicy = resolveGameRoomPolicy, findUser = queryOne } = {},
+) {
   const io = new Server(httpServer, {
     // EmulatorJS 客户端用默认的 /socket.io 路径连接，并把 URL 里的 /netplay 当命名空间
     cors: {
@@ -695,6 +756,8 @@ export function attachNetplay(httpServer, app, origins = ['*'], { resolveGamePol
         id: roomId,
         gameId: gamePolicy.gameId,
         gameSlug: gamePolicy.gameSlug,
+        /** 内部权限位（库里 games.adult），不进任何列表输出；见 netplayRooms / join-room */
+        adult: Boolean(gamePolicy.adult),
         domain: str(extra.domain, 200),
         roomName: str(extra.room_name, 60) || 'Room',
         maxPlayers: authoritativeMax,
@@ -730,11 +793,34 @@ export function attachNetplay(httpServer, app, origins = ['*'], { resolveGamePol
       notifyRooms()
     })
 
-    socket.on('join-room', (payload, ack) => {
+    socket.on('join-room', async (payload, ack) => {
       const extra = payload?.extra && typeof payload.extra === 'object' ? payload.extra : {}
-      const room = getRoom(str(extra.sessionid, 64))
+      let room = getRoom(str(extra.sessionid, 64))
       const userid = str(extra.userid, 64)
       if (!room) return ack?.('room not found')
+      /*
+        成人游戏的房间：玩家和观众都要是通过年龄门的登录用户（§2.23，与直播同一条规则）。
+        列表里藏起来不是权限边界 —— 房号在邀请链接里，脚本可以直接 join。
+        身份来自 socket 握手的 auth.token，或 join-room 的 extra.auth_token（pickExtra 不会把它
+        存进成员表、也不会广播）。查库期间这条连接可能断开、房间可能已经解散，回来后全部重新取。
+      */
+      if (room.adult) {
+        if (socket.data.netplayJoining) return ack?.('room is opening')
+        socket.data.netplayJoining = true
+        let accessError
+        try {
+          accessError = await netplayAdultAccessError(socket, extra, findUser)
+        } catch (error) {
+          console.error('[netplay] 成人房年龄校验失败：', error)
+          accessError = 'adult check failed'
+        } finally {
+          socket.data.netplayJoining = false
+        }
+        if (accessError) return ack?.(accessError)
+        if (!socket.connected) return ack?.('disconnected')
+        room = getRoom(str(extra.sessionid, 64))
+        if (!room) return ack?.('room not found')
+      }
       if (!SAFE_ID.test(userid) || UNSAFE_OBJECT_IDS.has(userid)) return ack?.('bad request')
       if (isIndexLike(userid)) return ack?.('bad userid')
       /**
@@ -924,6 +1010,7 @@ export function attachNetplay(httpServer, app, origins = ['*'], { resolveGamePol
     const out = {}
     for (const [id, room] of rooms) {
       if (room.awaitingHost) continue // 正在换房主，先别让人进来
+      if (room.adult) continue // 引擎自带的列表请求带不了登录态，成人房一律不列（§2.23）
       if (domain && room.domain && room.domain !== domain) continue
       if (gameId !== undefined && String(room.gameId) !== String(gameId)) continue
       if (playerCount(room) >= room.maxPlayers) continue
@@ -952,11 +1039,13 @@ export function attachNetplay(httpServer, app, origins = ['*'], { resolveGamePol
 
     const beat = setInterval(() => {
       try {
-        res.write(SSE_HEARTBEAT_FRAME)
+        // 走 sseWrite 而不是裸 res.write：读不动的客户端积压超限就断开，不能让心跳一直往缓冲里攒
+        if (sseWrite(res, SSE_HEARTBEAT_FRAME)) return
       } catch {
-        clearInterval(beat)
-        watchers.delete(w)
+        /* 下面统一清理 */
       }
+      clearInterval(beat)
+      watchers.delete(w)
     }, SSE_HEARTBEAT_MS)
     beat.unref?.()
 
@@ -968,16 +1057,20 @@ export function attachNetplay(httpServer, app, origins = ['*'], { resolveGamePol
   })
 
   /** 本站自己的房间列表（不按游戏过滤，侧边栏要显示所有正在玩的房间） */
-  app.get('/api/netplay/rooms', (_req, res) => {
-    res.json(netplayRooms())
+  app.get('/api/netplay/rooms', async (req, res) => {
+    // 带 JWT 且通过年龄门的登录用户才能看到成人游戏的房间；其余人（含 SSE）一律看不到
+    res.set('Cache-Control', 'private, no-store')
+    res.json(netplayRooms({ includeAdult: await adultViewer(req, res) }))
   })
 
   /**
    * 单个房间。顺着别名走，所以房主迁移之后老邀请链接依然能查到房间；
    * 查到的房间 id 变了就在 migratedTo 里告诉客户端，让它跟过去。
    */
-  app.get('/api/netplay/rooms/:roomId', (req, res) => {
-    const room = netplayRoom(req.params.roomId)
+  app.get('/api/netplay/rooms/:roomId', async (req, res) => {
+    res.set('Cache-Control', 'private, no-store')
+    // 成人房对没通过年龄门的人和「不存在」一样回 404，不暴露房间是否存在
+    const room = netplayRoom(req.params.roomId, { includeAdult: await adultViewer(req, res) })
     if (!room) return res.status(404).json({ error: 'room not found' })
     res.json(room)
   })
@@ -1024,7 +1117,9 @@ export function attachNetplay(httpServer, app, origins = ['*'], { resolveGamePol
      * （EmulatorPlayer 调 downloadState 时传的是 `claim || roomTokenRef.current`），
      * 过渡期结束，收紧成强制。
      */
-    const token = str(req.get('x-netplay-token'), 64) || str(req.query.t, 64)
+    // 只认请求头。以前还收 ?t= 查询串 —— 令牌会进访问日志、Referer 和浏览器历史；
+    // 前端（services/netplay.ts 的 downloadState）一直走的是 x-netplay-token 头，查询串已无调用方。
+    const token = str(req.get('x-netplay-token'), 64)
     // 认领令牌也行：认领人重新挂载引擎之后已经不是成员了，但存档正是这时候要
     const claimed = Boolean(token) && room.claim?.token === token
     if (!token || (!claimed && !memberByToken(room, token))) return res.status(403).json({ error: 'not a member' })

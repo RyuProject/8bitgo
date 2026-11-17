@@ -83,6 +83,94 @@ const HOUR = 3_600_000
  * ⚠️ 拿不到真实 IP 时跳过按 IP 那道，只留其余的 —— 同 codes.js：反代没透传时
  * 所有人塌缩成一个地址，按 IP 限会把真实用户全锁在门外。
  */
+/* ---------------- 按账号的密码失败计数（2026-11-17 改） ---------------- */
+
+/**
+ * ⚠️ 为什么不再用 `take('auth:login:email:<邮箱>')`。
+ *
+ * 那个桶**每次尝试都计数、成功也不清零**，而且不分来源：任何人对着受害者的邮箱随手打
+ * 10 次错密码，真正的主人在接下来 15 分钟里**输对密码也进不来** —— 这本身就是一个
+ * 「把任意用户锁在门外」的按钮，攻击者连密码都不用猜。
+ *
+ * 现在的设计（目标：仍然挡住爆破，但别人没法拿它锁住主人）：
+ *   1. 只记**失败**；成功一次把这个（邮箱 + IP）的失败清零，并把这个 IP 记成该账号「登录成功过的地方」。
+ *   2. 第一道按（邮箱 + IP）：同一个来源 15 分钟错 10 次就只挡这个来源 ——
+ *      攻击者在自己的 IP 上把自己锁住，碰不到主人。
+ *   3. 第二道按邮箱汇总（所有来源）：15 分钟错 30 次说明有人在换着 IP 爆破，
+ *      此时只放行最近 30 天在这个账号上**成功登录过**的 IP，其余来源一律 429，
+ *      并提示改用邮箱验证码登录（验证码路线不受这道闸影响，主人永远有路可走）。
+ *   拿不到真实 IP（反代没透传）时 ip 塌缩成同一个值，第一道退化成「按邮箱」，
+ *   第二道的「成功过的 IP」也就是那一个值 —— 不比原来更松，只是不会更好。
+ *
+ * 状态在进程内存里（多实例时各算各的，和 rateLimit.js 一样）。条目数有上限，
+ * 满了先丢最早插入的，不会被换邮箱刷爆内存。
+ */
+const LOGIN_FAIL_WINDOW_MS = 15 * 60_000
+const LOGIN_FAIL_PER_SOURCE = 10
+const LOGIN_FAIL_PER_ACCOUNT = 30
+const TRUSTED_SOURCE_MS = 30 * 24 * HOUR
+const LOGIN_TRACK_MAX = 50_000
+/** key -> 升序的失败时间戳 */
+const loginFailures = new Map()
+/** `${email}|${ip}` -> 最近一次成功登录的时刻 */
+const loginTrusted = new Map()
+
+function boundedSet(map, key, value) {
+  if (!map.has(key) && map.size >= LOGIN_TRACK_MAX) {
+    const oldest = map.keys().next().value
+    if (oldest !== undefined) map.delete(oldest)
+  }
+  map.set(key, value)
+}
+
+function recentFailures(key, now) {
+  const hits = loginFailures.get(key)
+  if (!hits) return []
+  const fresh = hits.filter((t) => t > now - LOGIN_FAIL_WINDOW_MS)
+  if (!fresh.length) loginFailures.delete(key)
+  else if (fresh.length !== hits.length) loginFailures.set(key, fresh)
+  return fresh
+}
+
+/** 被挡时返回 { retryAfter }，放行返回 null。不产生任何计数 */
+function loginFailureGate(email, ip) {
+  const now = Date.now()
+  const retry = (hits) => ({ retryAfter: Math.max(1, Math.ceil((hits[0] + LOGIN_FAIL_WINDOW_MS - now) / 1000)) })
+  const bySource = recentFailures(`s:${email}|${ip}`, now)
+  if (bySource.length >= LOGIN_FAIL_PER_SOURCE) return retry(bySource)
+  const byAccount = recentFailures(`a:${email}`, now)
+  if (byAccount.length >= LOGIN_FAIL_PER_ACCOUNT) {
+    const trustedAt = loginTrusted.get(`${email}|${ip}`) || 0
+    if (now - trustedAt > TRUSTED_SOURCE_MS) return retry(byAccount)
+  }
+  return null
+}
+
+function recordLoginFailure(email, ip) {
+  const now = Date.now()
+  for (const key of [`s:${email}|${ip}`, `a:${email}`]) {
+    const hits = recentFailures(key, now)
+    hits.push(now)
+    // 只留够判断用的那几条，避免一个桶无限变长
+    boundedSet(loginFailures, key, hits.slice(-LOGIN_FAIL_PER_ACCOUNT))
+  }
+}
+
+function recordLoginSuccess(email, ip) {
+  loginFailures.delete(`s:${email}|${ip}`)
+  boundedSet(loginTrusted, `${email}|${ip}`, Date.now())
+}
+
+/**
+ * 账号不存在 / 没设密码时也跑一次 bcrypt，让这三种情况和「密码错」耗时一样 ——
+ * 否则响应快慢本身就能拿来判断一个邮箱有没有注册、有没有设密码。
+ */
+let dummyHashPromise = null
+function dummyHash() {
+  dummyHashPromise ??= hashPassword(crypto.randomBytes(18).toString('base64url'))
+  return dummyHashPromise
+}
+
 function authGateOk(req, res, { email = '', kind }) {
   const ip = clientKey(req)
   /*
@@ -100,10 +188,14 @@ function authGateOk(req, res, { email = '', kind }) {
     }
   }
   if (kind === 'login' && email) {
-    // 按邮箱：挡住「盯着一个账号慢慢试」——单 IP 闸对换着 IP 的攻击者没用
-    const perEmail = take(`auth:login:email:${email}`, 10, 15 * 60_000)
-    if (!perEmail.ok) {
-      res.status(429).json({ error: '该账号尝试次数过多，请稍后再试', retryAfter: perEmail.retryAfter })
+    // 按邮箱：挡住「盯着一个账号慢慢试」——单 IP 闸对换着 IP 的攻击者没用。
+    // 只看**失败**次数，见下面 loginFailureGate 的说明。
+    const blocked = loginFailureGate(email, ip)
+    if (blocked) {
+      res.status(429).json({
+        error: '该账号密码错误次数过多，请稍后再试，或改用邮箱验证码登录',
+        retryAfter: blocked.retryAfter,
+      })
       return false
     }
   }
@@ -116,33 +208,73 @@ function authGateOk(req, res, { email = '', kind }) {
   return true
 }
 
+/**
+ * 注册第一步：往邮箱发注册验证码。
+ *
+ * ⚠️ 2026-11-17 起注册必须先证明邮箱归你。以前 /register 不验邮箱就建一个带密码的账号，
+ * 而验证码 / Google / Microsoft / Apple 登录都按邮箱合并到同一行（findOrCreateByEmail）——
+ * 攻击者先用受害者的邮箱注册并设好密码，受害者之后无论用哪种方式登录，进的都是这个账号，
+ * 攻击者手里那份密码一直有效，能看到并改动受害者的一切。
+ *
+ * ⚠️ 这一步**不告诉调用方邮箱有没有注册过**：已注册的邮箱照样发一封注册码
+ * （信里写明「已注册的话直接验证码登录」）。回 409 的话，这个接口就是一台注册邮箱探测器。
+ * 「已注册」只在第二步、也就是已经证明了邮箱归你之后才说。
+ */
+authRouter.post('/register/request-code', async (req, res, next) => {
+  try {
+    const email = String(req.body.email || '').trim().toLowerCase()
+    if (!isEmail(email)) return res.status(400).json({ error: '邮箱格式不正确' })
+    res.json({ ok: true, ...(await issueCode(req, email, 'register')) })
+  } catch (e) {
+    sendCodeError(res, next, e)
+  }
+})
+
+/** 注册第二步：带上注册验证码、昵称和密码建号 */
 authRouter.post('/register', async (req, res, next) => {
   try {
     const email = String(req.body.email || '').trim().toLowerCase()
     const nickname = String(req.body.nickname || '').trim()
     const password = String(req.body.password || '')
+    const code = String(req.body.code || '').trim()
     if (!isEmail(email)) return res.status(400).json({ error: '邮箱格式不正确' })
     if (nickname.length < 2 || nickname.length > 16) return res.status(400).json({ error: '昵称需要 2–16 个字符' })
     const passwordError = passwordValidationError(password)
     if (passwordError) return res.status(400).json({ error: passwordError })
+    if (!code) return res.status(400).json({ error: '请先获取并填写邮箱验证码' })
     if (!authGateOk(req, res, { kind: 'register' })) return
 
+    // 先验码再查库：验过之后才能说「这个邮箱已注册」，那时说给的是邮箱的主人自己
+    await verifyCode(email, 'register', code)
+
     const exists = await queryOne('SELECT id FROM users WHERE email = ?', [email])
-    if (exists) return res.status(409).json({ error: '该邮箱已注册，请直接登录' })
+    if (exists) return res.status(409).json({ error: '该邮箱已注册，请直接用验证码或密码登录' })
 
     const id = newId()
     const hash = await hashPassword(password)
     const createdAt = new Date().toISOString().slice(0, 10)
-    await query(
-      'INSERT INTO users (id, email, nickname, avatar, password_hash, coins, role, status, created_at) VALUES (?,?,?,?,?,?,?,?,?)',
-      [id, email, nickname, '🕹️', hash, WELCOME_COINS, 'user', 'active', createdAt],
-    )
+    try {
+      await query(
+        'INSERT INTO users (id, email, nickname, avatar, password_hash, coins, role, status, created_at) VALUES (?,?,?,?,?,?,?,?,?)',
+        [id, email, nickname, '🕹️', hash, WELCOME_COINS, 'user', 'active', createdAt],
+      )
+    } catch (e) {
+      // 查过不存在、插入时却撞了 uniq_email：同一时刻另一条路（验证码 / 第三方登录）先建了号。
+      // 不是服务器故障，别让兜底处理器翻成 500
+      if (e?.code === 'ER_DUP_ENTRY') {
+        return res.status(409).json({ error: '该邮箱已注册，请直接用验证码或密码登录' })
+      }
+      throw e
+    }
     const row = await queryOne('SELECT * FROM users WHERE id = ?', [id])
     res.json({ token: signToken(id, tokenVersionOf(row)), user: await publicWithData(row) })
   } catch (e) {
-    next(e)
+    sendCodeError(res, next, e)
   }
 })
+
+/** 密码登录失败的唯一文案。没设过密码的账号也是这一句，见 /login 里的说明 */
+const GENERIC_LOGIN_ERROR = '邮箱或密码不正确（用验证码或第三方登录注册的账号还没有密码，请改用邮箱验证码登录）'
 
 authRouter.post('/login', async (req, res, next) => {
   try {
@@ -159,22 +291,26 @@ authRouter.post('/login', async (req, res, next) => {
 
       格式不对时故意回和「密码错」**同一句话**：区分开就成了账号枚举器。
     */
-    if (!isEmail(email)) return res.status(401).json({ error: '邮箱或密码不正确' })
+    if (!isEmail(email)) return res.status(401).json({ error: GENERIC_LOGIN_ERROR })
     // 闸在查库和 bcrypt 之前 —— 那两步才是攻击者真正想让我们花的钱
     if (!authGateOk(req, res, { email, kind: 'login' })) return
+    const ip = clientKey(req)
     const row = await queryOne('SELECT * FROM users WHERE email = ?', [email])
-    if (!row) return res.status(401).json({ error: '邮箱或密码不正确' })
     /**
-     * 验证码 / Google 创建的账号 password_hash 是空串。
-     * 直接扔给 bcrypt.compare 的话它对着一个非法哈希返回 false，用户看到的是
-     * 「邮箱或密码不正确」—— 他会以为自己记错了密码，反复试一个从来不存在的东西。
-     * 这里单独说清楚：这个账号还没有密码，走验证码就能进，进去之后可以在个人中心设一个。
+     * 账号不存在、没设过密码（验证码 / 第三方登录建的号）、密码错 —— 三种情况**同一句话、同样耗时**。
+     *
+     * 以前「没设密码」单独回一句提示，结果它成了账号枚举器：一句话就能分辨出
+     * 「这个邮箱注册过、而且是用验证码 / Google 注册的」。现在把提示并进通用文案里，
+     * 真正没设过密码的人照样知道该去用验证码登录。
      */
-    if (!row.password_hash) {
-      return res.status(401).json({ error: '这个账号还没有设置密码，请用邮箱验证码登录（登录后可在个人中心设置密码）' })
+    const ok = row?.password_hash
+      ? await verifyPassword(password, row.password_hash)
+      : (await verifyPassword(password, await dummyHash()), false)
+    if (!ok) {
+      recordLoginFailure(email, ip)
+      return res.status(401).json({ error: GENERIC_LOGIN_ERROR })
     }
-    const ok = await verifyPassword(password, row.password_hash)
-    if (!ok) return res.status(401).json({ error: '邮箱或密码不正确' })
+    recordLoginSuccess(email, ip)
     if (row.status === 'banned') return res.status(403).json({ error: '该账号已被封禁，请联系管理员' })
     res.json({ token: signToken(row.id, tokenVersionOf(row)), user: await publicWithData(row) })
   } catch (e) {

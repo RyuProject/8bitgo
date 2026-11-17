@@ -259,9 +259,10 @@ export interface MountOptions {
   /**
    * scope：'runtime' = 运行时设施故障（可原地重试一次，但不许判坏 ROM）；'content' = ROM 本身的问题；
    * 'config' = 后台配置错误（重试 / 换 ROM 都没用，直接报）；'deterministic' = 这份 ROM 必然起不来
-   * （如包名不是任何驱动），跳过原地重试、直接试备用 ROM。
+   * （如包名不是任何驱动），跳过原地重试、直接试备用 ROM；'network' = ROM 下载在重试和备用线路都用完后
+   * 仍是网络层失败（断网 / 连接重置 / 卡死），可原地重试，之后只许切同语言的备用源，不走其它语言。
    */
-  onError?: (message: string, scope?: 'runtime' | 'content' | 'config' | 'deterministic') => void
+  onError?: (message: string, scope?: 'runtime' | 'content' | 'config' | 'deterministic' | 'network') => void
   /** EmulatorJS 核心发生 WASM 陷阱；NDS 用于兼容核心回退，GBA 8BG 用于一次缓存刷新恢复。 */
   onCoreCrash?: (core: string, message: string) => void
   /** NDS 持续掉帧但当前核心没有已验证的运行时降档项时，提示玩家下次开局尝试性能核心。 */

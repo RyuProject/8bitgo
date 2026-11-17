@@ -224,6 +224,11 @@ export interface RomHostOptions {
   /** 测试注入：不读写真实 localStorage / 内存缓存 */
   cacheResults?: boolean
   storage?: Pick<Storage, 'getItem' | 'setItem'> | null
+  /**
+   * 调用方的取消信号（切游戏 / 切语言 / 卸载）：中止这一轮两边的探针。
+   * 被取消的一轮不写缓存；带 signal 的调用也不和别人共用在途测速，免得一方取消连累另一方。
+   */
+  signal?: AbortSignal
 }
 
 const hostChoices = new Map<string, StoredHostChoice>()
@@ -300,10 +305,13 @@ async function raceHosts(primaryBase: string, mirrorBase: string, prefer: RomHos
   const other: RomHost = prefer === 'primary' ? 'mirror' : 'primary'
   const base = (host: RomHost) => (host === 'primary' ? primaryBase : mirrorBase)
   const controllers = { primary: new AbortController(), mirror: new AbortController() }
-  const deadline = setTimeout(() => {
+  const abortBoth = () => {
     controllers.primary.abort()
     controllers.mirror.abort()
-  }, options.timeoutMs ?? HOST_PROBE_TIMEOUT_MS)
+  }
+  if (options.signal?.aborted) return null
+  options.signal?.addEventListener('abort', abortBoth, { once: true })
+  const deadline = setTimeout(abortBoth, options.timeoutMs ?? HOST_PROBE_TIMEOUT_MS)
   let graceTimer: ReturnType<typeof setTimeout> | undefined
   const now = options.now ?? (() => typeof performance !== 'undefined' ? performance.now() : Date.now())
   const startedAt = now()
@@ -325,12 +333,13 @@ async function raceHosts(primaryBase: string, mirrorBase: string, prefer: RomHos
   } finally {
     clearTimeout(deadline)
     clearTimeout(graceTimer)
+    options.signal?.removeEventListener('abort', abortBoth)
   }
 }
 
 /**
  * 这次开局走主域还是加速镜像。同一对域名同时只测一次，探针结论缓存 30 分钟；
- * 调用方被取消时不影响别人在等的同一轮测速（两次 64KB，很便宜）。
+ * 不带 signal 的调用共用同一轮在途测速；带 signal 的调用（播放器）各测各的，取消即停。
  */
 export async function chooseRomHost(primaryBase: string, mirrorBase: string, options: RomHostOptions = {}): Promise<RomHost> {
   const prefer = options.prefer ?? 'primary'
@@ -360,14 +369,15 @@ export async function chooseRomHost(primaryBase: string, mirrorBase: string, opt
   if (hints.saveData || effectiveType === 'slow-2g' || effectiveType === '2g') return prefer
 
   const key = `${pair}|${prefer}`
-  const running = cacheResults ? hostInflight.get(key) : undefined
+  const shareInflight = cacheResults && !options.signal
+  const running = shareInflight ? hostInflight.get(key) : undefined
   if (running) return running
   const run = raceHosts(primaryBase, mirrorBase, prefer, options).then((winner) => {
-    // 两边都没测出来：这次用默认，不写缓存，下一局再测
-    if (winner && cacheResults) writeHostChoice(pair, winner, storage)
+    // 两边都没测出来、或这一轮被调用方取消：这次用默认，不写缓存，下一局再测
+    if (winner && cacheResults && !options.signal?.aborted) writeHostChoice(pair, winner, storage)
     return winner ?? prefer
   })
-  if (cacheResults) {
+  if (shareInflight) {
     hostInflight.set(key, run)
     void run.finally(() => hostInflight.delete(key))
   }

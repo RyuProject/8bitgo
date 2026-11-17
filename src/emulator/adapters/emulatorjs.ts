@@ -26,7 +26,7 @@ import type { ArcadeButtonCount, PlatformId } from '@/types'
 import { arcadeButtonIdsFor, EJS_ARCADE_DEFAULT_CONTROLS, EJS_DEFAULT_CONTROLS, EJS_P2_KEYS } from '@/lib/keymapData'
 import type { Capability, CaptureSources, LoadPhase, LoadProgress, MameArcadeDiskSource, MountOptions, RuntimeHandle, StageMode } from '../types'
 import { canCreateWebgl, canCreateWebgl2 } from '../webglSupport'
-import { fetchBlobWithProgress, fetchWithProgress, throttleProgress, withResumeTimeout } from '../loadProgress'
+import { fetchBlobWithProgress, fetchWithProgress, isRomNetworkFailure, throttleProgress, withResumeTimeout } from '../loadProgress'
 import { emulatorJsDownloadPhase, isCriticalEmulatorJsDownload } from '../emulatorjsDownload'
 import { downloadResumeStore, mameChdResumeStore } from '../downloadResume'
 import { romCacheDelete, romCacheGetBlob, romCacheKey, romCachePutBlob } from '../romCache'
@@ -950,8 +950,45 @@ const FATAL_PHRASES = [
   'no driver loaded',
 ]
 
-/** 开局失败的性质：决定播放器要不要原地重试、要不要换备用 ROM（见 EmulatorPlayer 的 onError） */
-type LoadErrorScope = 'runtime' | 'content' | 'config' | 'deterministic'
+/**
+ * 开局失败的性质：决定播放器要不要原地重试、要不要换备用 ROM（见 EmulatorPlayer 的 onError）。
+ * 'network' = ROM 下载重试与备用线路都用完的网络层失败：原地重试一次后只许切同语言备用源。
+ */
+type LoadErrorScope = 'runtime' | 'content' | 'config' | 'deterministic' | 'network'
+
+/**
+ * FATAL_PHRASES 里指向「这份内容 / 这个包」的那几句：换一份 ROM（备用源、别的语言）可能就好了。
+ * 其余致命行（「Error loading EmulatorJS runtime」、核心目录建不出、引擎界面自己的报错等）是引擎设施故障，
+ * 换多少份 ROM 都一样：以前不带 scope，播放器按内容错误把整条语言链逐个重下一遍。
+ */
+const CONTENT_FATAL_PHRASES = [
+  'romset is unknown',
+  '[fbneo] rom at index',
+  'none of those archives was found',
+  'driver not found:',
+  'track numbers bad',
+  'required files are missing',
+  'failed to start game',
+  'loaded an empty file as content, please load a valid nintendo ds rom',
+  'failed to load the content data, the frontend may have a bug',
+  'error parsing system name',
+  'error parsing parent path',
+  'no driver loaded',
+]
+
+/**
+ * ROM 预下载 / 解包失败的性质：下载器认定的网络层失败（重试和备用线路都用完）标 'network'，
+ * 播放器只切同语言备用源；其余（坏包、404、格式不对）保持默认的内容错误，可换别的 ROM。
+ */
+function romFailureScope(error: unknown): LoadErrorScope | undefined {
+  return isRomNetworkFailure(error) ? 'network' : undefined
+}
+
+/** 引擎致命行的性质：内容相关的保持默认（可换 ROM），其余按运行时故障（不换 ROM）。 */
+export function engineErrorScope(line: string): LoadErrorScope | undefined {
+  const low = line.toLowerCase()
+  return CONTENT_FATAL_PHRASES.some((phrase) => low.includes(phrase)) ? undefined : 'runtime'
+}
 
 /**
  * 街机致命行的分类。`unknown-set` 是包名 / 驱动对不上 —— 同一个文件重下一万遍也一样；
@@ -2989,7 +3026,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   /** 开局前的致命错误：报上去并停掉轮询（播放器收到 onError 会把这局拆掉） */
   /** 这一局的引擎是不是从大陆加速入口取的（挂载时定下，失败后标记，下一局退回同源） */
   const usedEjsEdge = ejsUsingEdge()
-  const failLoad = (message: string, scope?: LoadErrorScope) => {
+  /**
+   * keepEdge：这次失败与引擎从哪条线路取无关（ROM 下载 / ROM 内容 / iframe 没建出来），不要把
+   * 大陆加速入口标成坏的 —— 否则下一局引擎退回同源，大陆走 Cloudflare 取 8MB 核心只有几 KB/s。
+   */
+  const failLoad = (message: string, scope?: LoadErrorScope, opts: { keepEdge?: boolean } = {}) => {
     // 核心陷阱已经走 onCoreCrash（换兼容核心）时，紧随其后的 FATAL 文本（Failed to start game）不能再报
     // onError，否则播放器会对同一次崩溃再做一轮重试 + 换语言 ROM。
     if (destroyed || started || loadFailed || crashReported) return
@@ -3002,7 +3043,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     // 内存不足同理：浏览器给不出地址空间，和从哪条线路取的引擎无关
     const outOfMemory = message === rt.ejsOutOfMemory || message === rt.ejsOutOfMemory32bit || isLowmemOomMessage(message)
     // 配置 / 浏览器本地读取错误与边缘线路无关；尤其核心 arraybuffer 的 NotReadableError 不能让整页退回慢线路。
-    if (usedEjsEdge && !stalled && !outOfMemory && scope !== 'config') markEjsEdgeFailed()
+    if (usedEjsEdge && !stalled && !outOfMemory && scope !== 'config' && !opts.keepEdge) markEjsEdgeFailed()
     // 引擎读预下载好的 ROM Blob 读不出：这台浏览器的 Blob 存储坏了，自动重试 / 换语言 ROM 改走内存
     if (scope !== 'config' && preparedRomBlob && !memoryRomOf(preparedRomBlob) && isNativeBlobReadMessage(message)) {
       markRomBlobStorageBroken('引擎读 ROM ')
@@ -3104,7 +3145,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       markRomBlobStorageBroken('引擎读 ROM ')
       return failLoad(fmt(rt.ejsEngineError, { msg: line }), 'runtime')
     }
-    failLoad(fmt(rt.ejsEngineError, { msg: line }))
+    failLoad(fmt(rt.ejsEngineError, { msg: line }), engineErrorScope(line))
   }
   const reportCoreCrash = (line: string) => {
     if (destroyed || crashReported || loadFailed) return
@@ -4465,7 +4506,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       const stallBudget = isMameCurrentCore(core)
         ? MAME_CURRENT_STALL_MS
         : options.platform === 'arcade' ? ARCADE_CORE_START_STALL_MS : STALL_MS
-      if (Date.now() - lastBeat > stallBudget) failLoad(fmt(rt.ejsStalled, { stage: lastStage || core }))
+      // 引擎这一段（核心下载 / 解压 / 编译）卡住与 ROM 内容无关：按运行时故障，原地重试一次但不换语言 ROM
+      if (Date.now() - lastBeat > stallBudget) failLoad(fmt(rt.ejsStalled, { stage: lastStage || core }), 'runtime')
     }, 400)
   }
 
@@ -4474,7 +4516,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     const win = iframe.contentWindow as (Window & Record<string, unknown>) | null
     const doc = iframe.contentDocument
     if (!win || !doc) {
-      options.onError?.(rt.ejsInitFailed)
+      // 走 failLoad：置上 loadFailed 闩，免得看门狗之后再报第二次
+      failLoad(rt.ejsInitFailed, 'runtime', { keepEdge: true })
       return
     }
     void (async () => {
@@ -4827,7 +4870,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             if (destroyed || prepareAbort.signal.aborted) return
             const message = error instanceof Error ? error.message : String(error)
             console.warn('[emulatorjs] ROM 分片下载失败，保留已完成分片并交给播放器重试：', error)
-            options.onError?.(message)
+            failLoad(message, romFailureScope(error), { keepEdge: true })
             return
           }
         } else if (preparedPsxRange) {
@@ -5699,42 +5742,43 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         // 加载过程中被销毁的，别再往新会话上报错
         if (destroyed) return
         if (error instanceof InvalidArcadeArchiveError) {
-          options.onError?.(fmt(rt.ejsArcadeRomInvalid, { name: error.message }))
+          failLoad(fmt(rt.ejsArcadeRomInvalid, { name: error.message }), undefined, { keepEdge: true })
           return
         }
         if (error instanceof DOMException && error.name === 'AbortError') return
         if (!isFile && romArchiveRef(remoteGameUrl) && !archiveRomPrepared && options.platform !== 'arcade') {
-          options.onError?.(error instanceof Error ? error.message : String(error))
+          failLoad(error instanceof Error ? error.message : String(error), romFailureScope(error), { keepEdge: true })
           return
         }
         // 非街机的 8BG 在预处理阶段失败时，把“密钥不匹配 / 第几块损坏”原样告诉玩家和运维；
         // 归成笼统的“引擎资源加载失败”会把排查方向带到完全无关的 EmulatorJS 文件上。
         if (!isFile && isRomPackUrl(remoteGameUrl) && options.platform !== 'arcade') {
-          options.onError?.(error instanceof Error ? error.message : String(error))
+          failLoad(error instanceof Error ? error.message : String(error), romFailureScope(error), { keepEdge: true })
           return
         }
         // 远程街机 ROM 的预下载也在这条链路里；把真实网络错误带出来，
         // 不要一律误报成「EmulatorJS 资源加载失败」。
         if (!isFile && options.platform === 'arcade' && !arcadeRomPrepared) {
           const message = error instanceof Error ? error.message : String(error)
-          options.onError?.(fmt(rt.ejsArcadeRomDownloadFailed, { msg: message }))
+          failLoad(fmt(rt.ejsArcadeRomDownloadFailed, { msg: message }), romFailureScope(error), { keepEdge: true })
           return
         }
         if (!isFile && isDiscPlatform(options.platform) && !discRomPrepared) {
           const message = error instanceof Error ? error.message : String(error)
-          options.onError?.(fmt(rt.ejsDiscDownloadFailed, { msg: message }))
+          failLoad(fmt(rt.ejsDiscDownloadFailed, { msg: message }), romFailureScope(error), { keepEdge: true })
           return
         }
         // 本地 NDS 不走预下载分支；格式校验失败时必须原样报，不能误说成 EmulatorJS 资源坏了。
         if (options.platform === 'nds' && !ndsRomValidated) {
-          options.onError?.(error instanceof Error ? error.message : String(error))
+          failLoad(error instanceof Error ? error.message : String(error), romFailureScope(error), { keepEdge: true })
           return
         }
         // 给运维看的细节进控制台；红字只说玩家能理解的那句
         const failedBase = ejsBase()
         if (usedEjsEdge) markEjsEdgeFailed()
         console.warn(`[emulatorjs] failed to load runtime from ${failedBase} — check the network or set VITE_EJS_PATH to a self-hosted copy`)
-        options.onError?.(fmt(rt.ejsLoadFailed, { path: EJS_PATH }))
+        // 入口脚本取不到是引擎设施故障，与 ROM 无关：不换语言 ROM。上面已显式标记线路，failLoad 不再重复标
+        failLoad(fmt(rt.ejsLoadFailed, { path: EJS_PATH }), 'runtime', { keepEdge: true })
       }
     })()
   })

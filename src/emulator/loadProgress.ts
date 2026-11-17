@@ -126,7 +126,14 @@ interface StallGuard {
   touch(): void
   /** 这次中止是「卡死」引起的吗（用来把 AbortError 换成玩家看得懂的话） */
   stalled(): boolean
+  /** 只停计时、摘掉父 signal 的监听；成功返回时用，不打断任何请求 */
   stop(): void
+  /**
+   * 失败收尾用：中止这只看门狗名下仍在跑的请求（首片测速后抢先发出的后续分片等）。
+   * 只调 stop() 的话，这些请求既不会再被卡死计时掐掉，也收不到调用方的 abort（父监听已摘），
+   * 首片永久失败后还会在后台把几片 8MB 下完。不算「卡死」，stalled() 仍是 false。
+   */
+  abort(): void
 }
 
 /**
@@ -167,11 +174,39 @@ function createStallGuard(parent: AbortSignal | undefined, stallMs: number): Sta
       clear()
       parent?.removeEventListener('abort', abortFromParent)
     },
+    abort: () => {
+      clear()
+      controller.abort()
+    },
   }
 }
 
+/*
+  ROM 下载的「网络层失败」（断网、连接被重置、DNS / TLS 失败、卡死没字节）：
+  重试和备用线路都用完了才会抛到调用方。它和「文件坏了 / 404 / 格式不对」是两回事 ——
+  换另一种语言的 ROM 走的是同一条网络，只会把整条语言链逐个白下一遍（AGENTS §2.35）。
+  调用方据此把错误标成 'network'，播放器只允许切同语言的备用源。
+*/
+const networkFailures = new WeakSet<object>()
+const NETWORK_FAILURE_TEXT = /failed to fetch|networkerror|network error|load failed|fetch failed|network connection was lost|err_[a-z_]*(?:network|connection|internet|timed_out|http2)|^HTTP (?:408|425|429|5\d\d)\b|^下载不完整：/i
+
+function markNetworkFailure<T>(error: T): T {
+  if (error && typeof error === 'object') networkFailures.add(error as object)
+  return error
+}
+
+/** 这个错误是下载器认定的网络层失败吗（见上）。代码 bug 抛的 TypeError 不算，免得把内容错误误判成断网。 */
+export function isRomNetworkFailure(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false
+  if (networkFailures.has(error)) return true
+  const message = String((error as { message?: unknown }).message ?? '')
+  if ((error as { name?: unknown }).name === 'TypeError' && NETWORK_FAILURE_TEXT.test(message)) return true
+  return message.startsWith(STALL_MESSAGE_PREFIX)
+}
+
 /** 卡死时统一这条文案：说清楚是「一个字节都没再来」，而不是笼统的网络错误 */
-const stallMessage = (stallMs: number) => `下载卡住了：${Math.round(stallMs / 1000)} 秒没有收到任何数据`
+const STALL_MESSAGE_PREFIX = '下载卡住了：'
+const stallMessage = (stallMs: number) => `${STALL_MESSAGE_PREFIX}${Math.round(stallMs / 1000)} 秒没有收到任何数据`
 export async function fetchWithProgress(
   url: string,
   opts: {
@@ -240,7 +275,8 @@ export async function fetchWithProgress(
       emit({ phase, loaded, total: loaded, ratio: 1 }, true)
       return out.buffer
     } catch (error) {
-      if (guard.stalled()) error = new Error(stallMessage(stallMs))
+      if (guard.stalled()) error = markNetworkFailure(new Error(stallMessage(stallMs)))
+      else if (isNetworkFetchError(error) && NETWORK_FAILURE_TEXT.test(String((error as Error).message))) markNetworkFailure(error)
       if (opts.signal?.aborted || error instanceof RangeError || index === candidates.length - 1) throw error
       const host = (value: string) => {
         try { return new URL(value, typeof location === 'undefined' ? 'https://8bitgo.invalid' : location.href).host }
@@ -523,8 +559,12 @@ export const CHUNK_RETRIES = 3
  * 三次 3.5 秒的退避连一次线路抖动都熬不过。只在调用方没指定 retries 时生效。
  */
 export const NETWORK_RETRIES = 5
-const isNetworkFetchError = (error: unknown): boolean =>
-  Boolean(error && typeof error === 'object' && (error as { name?: unknown }).name === 'TypeError')
+const isNetworkFetchError = (error: unknown): boolean => {
+  if (!error || typeof error !== 'object') return false
+  if ((error as { name?: unknown }).name === 'TypeError') return true
+  // 服务端暂时不可用与传输中断一样，不该被当成坏 ROM 去切其它语言；让同对象的线路重试耗尽后停止。
+  return NETWORK_FAILURE_TEXT.test(String((error as { message?: unknown }).message ?? ''))
+}
 
 const MAX_CHUNK_CONCURRENCY = 4
 /**
@@ -711,6 +751,9 @@ export async function fetchBlobWithProgress(url: string, opts: BlobFetchOptions 
       if (currentUrl !== url) rememberRomHostForUrl(currentUrl)
       return blob
     } catch (error) {
+      // 这一轮失败了：先掐掉看门狗名下还在跑的请求（首片失败后仍在下的提前分片），
+      // 再决定重试 / 换线路 / 抛出。成功路径不走这里，不会误伤。
+      guard.abort()
       if (opts.signal?.aborted || isAbort(error) && !guard.stalled()) throw error
       // 超过上限是这个对象本身的问题，换线路也一样
       if (error instanceof RangeError) throw error
@@ -718,7 +761,8 @@ export async function fetchBlobWithProgress(url: string, opts: BlobFetchOptions 
         failure = error
         switchForSpeed = true
       } else if (!guard.stalled() || attempt >= retries) {
-        failure = guard.stalled() ? new Error(stallMessage(stallMs)) : error
+        failure = guard.stalled() ? markNetworkFailure(new Error(stallMessage(stallMs))) : error
+        if (isNetworkFetchError(failure) && NETWORK_FAILURE_TEXT.test(String((failure as Error).message))) markNetworkFailure(failure)
       }
     } finally {
       guard.stop()

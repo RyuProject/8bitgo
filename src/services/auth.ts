@@ -219,16 +219,41 @@ export interface RegisterInput {
   email: string
   nickname: string
   password: string
+  /** 注册验证码（先调 requestRegisterCode 发到这个邮箱）。服务端不验邮箱就不建号，见 routes/auth.js */
+  code: string
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
-export async function register({ email, nickname, password }: RegisterInput): Promise<PublicUser> {
+/**
+ * 注册第一步：发注册验证码。
+ * 服务端对已注册的邮箱也回「已发送」（不让这个接口变成注册探测器），所以这里拿不到「已注册」，
+ * 要到 register() 那一步、证明了邮箱归你之后才会知道。
+ */
+export async function requestRegisterCode(email: string): Promise<RequestCodeResult> {
+  const e = email.trim().toLowerCase()
+  if (!EMAIL_RE.test(e)) throw new Error(getT().errors.emailInvalid)
+  if (apiEnabled()) {
+    const r = (await api.post('/api/auth/register/request-code', { email: e })) as { cooldown?: number } | null
+    return { cooldown: Number(r?.cooldown) > 0 ? Number(r?.cooldown) : CODE_COOLDOWN }
+  }
+  // 本地演示模式：和登录码共用同一份待验证列表
+  return requestEmailCode(e)
+}
+
+export async function register({ email, nickname, password, code }: RegisterInput): Promise<PublicUser> {
   const e = email.trim().toLowerCase()
   const n = nickname.trim()
+  const c = code.trim()
+  if (!/^\d{6}$/.test(c)) throw new Error(getT().errors.codeFormat)
 
   if (apiEnabled()) {
-    const r = await api.post<{ token: string; user: PublicUser }>('/api/auth/register', { email: e, nickname: n, password })
+    const r = await api.post<{ token: string; user: PublicUser }>('/api/auth/register', {
+      email: e,
+      nickname: n,
+      password,
+      code: c,
+    })
     setToken(r.token)
     setCurrentUser(r.user)
     return r.user
@@ -237,6 +262,12 @@ export async function register({ email, nickname, password }: RegisterInput): Pr
   if (!EMAIL_RE.test(e)) throw new Error(getT().errors.emailInvalid)
   if (n.length < 2 || n.length > 16) throw new Error(getT().errors.nicknameLength)
   if (password.length < 6) throw new Error(getT().errors.passwordShort)
+  const pending = readPendingCodes()
+  const rec = pending.find((x) => x.email === e)
+  if (!rec) throw new Error(getT().errors.codeMissing)
+  if (Date.now() > rec.expires) throw new Error(getT().errors.codeExpired)
+  if (rec.code !== c) throw new Error(getT().errors.codeWrong)
+  writePendingCodes(pending.filter((x) => x.email !== e))
   if (usersStore.load().some((u) => u.email === e)) throw new Error(getT().errors.emailTaken)
 
   const salt = makeSalt()

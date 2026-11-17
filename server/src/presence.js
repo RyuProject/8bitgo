@@ -72,7 +72,7 @@ export function deviceFromUa(ua) {
 /* ---------------- IP ---------------- */
 
 /** `::ffff:1.2.3.4` / `[::1]:443` / `1.2.3.4:5678` 都收拾成纯地址 */
-function normalizeIp(raw) {
+export function normalizeIp(raw) {
   let ip = String(raw || '').trim()
   if (!ip) return ''
   // `[::1]:443` —— 方括号里才是地址
@@ -379,7 +379,28 @@ export const UNKNOWN_PRESENCE = { device: 'unknown', country: null, net: 'unknow
  * 给一个 socket 建一张会自己更新的名片。
  * 设备和国家握手时就定了（不会变），只有 RTT 是活的，所以返回的是个取快照的函数。
  */
+/**
+ * 每条 socket 只建一张名片。
+ *
+ * trackRtt 每调一次就往 engine.io 连接上多挂两个监听器、多起两个定时器；直播主播在同一条 socket 上
+ * 反复 go-live / stop-live / resume-live 时，bindHost 每次都会再调一遍 watchPresence ——
+ * 以前这样能把一条连接的监听器刷到成千上万（2026-11 安全复查）。名片的内容（设备 / 国家 / RTT）
+ * 本来就只跟连接有关，复用同一张没有任何损失。WeakMap 跟着 socket 一起被回收，不用手动清。
+ */
+const presenceBySocket = new WeakMap()
+
 export function watchPresence(socket) {
+  if (socket && typeof socket === 'object') {
+    const cached = presenceBySocket.get(socket)
+    if (cached) return cached
+    const created = buildPresence(socket)
+    presenceBySocket.set(socket, created)
+    return created
+  }
+  return buildPresence(socket)
+}
+
+function buildPresence(socket) {
   const headers = socket?.handshake?.headers || {}
   const device = deviceFromUa(headers['user-agent'])
   // 先按真实 IP 查库，查不到用网关的国家头兜底（见 resolveCountry）

@@ -97,6 +97,26 @@ function hashCode(email, purpose, code) {
   return crypto.createHash('sha256').update(`${email} ${purpose} ${code}`).digest('hex')
 }
 
+/**
+ * 存储层用的「用途键」（落在 login_codes.purpose 列，VARCHAR(16)）。
+ *
+ * ⚠️ 换绑邮箱（bind）的码**按用户分开存**。以前主键只有 (email, purpose)：
+ * A 给自己申请「换绑到 x@y」后，B 也申请换绑到 x@y，就会用 ON DUPLICATE KEY 把 A 那条
+ * 待验证的码整条覆盖（冷却、错误次数一起清零）；B 再拿错码去校验，user_id 对不上时
+ * 还会把 A 的记录直接删掉 —— 任何登录用户都能无限期地让别人换不成邮箱。
+ * 改成 `b:` + sha256(userId) 前 14 位：恰好 16 个字符，不用改表；碰撞要 2^56 量级，
+ * 而且碰撞了也只是两人共用一条记录，校验时 user_id 照样要对得上。
+ *
+ * 登录 / 注册本来就是「谁收得到这个邮箱谁说了算」，没有用户可分；reauth / delete 的邮箱
+ * 是当前用户自己的（唯一索引保证只有一个人），也不会被别人碰到。
+ */
+function storagePurpose(purpose, userId) {
+  if (purpose === 'bind' && userId) {
+    return 'b:' + crypto.createHash('sha256').update(String(userId)).digest('hex').slice(0, 14)
+  }
+  return purpose
+}
+
 /** 定长十六进制串的恒定时间比较。用 === 比的话，比较耗时会泄露前缀对了几位 */
 function sameHash(a, b) {
   const x = Buffer.from(String(a), 'utf8')
@@ -245,10 +265,12 @@ async function sweep() {
  *
  * @param {import('express').Request} req 取客户端 IP 用
  * @param {string} email   收件地址（已 trim + 小写）
- * @param {'login'|'bind'|'reauth'|'delete'} purpose
+ * @param {'login'|'register'|'bind'|'reauth'|'delete'} purpose
  * @param {string|null} [userId] 换绑 / 注销时绑定到这个用户，校验时必须对得上
  */
-export async function issueCode(req, email, purpose, userId = null) {
+export async function issueCode(req, email, mailPurpose, userId = null) {
+  // 存储键与「信里写什么」分开：bind 的存储键按用户分开（见 storagePurpose）
+  const purpose = storagePurpose(mailPurpose, userId)
   // 1. 同一个（邮箱 + 用途）的冷却。retryAfter 一并回给前端 ——
   //    以前只在文案里写秒数，前端拿不到数字，只能用它自己那份 60 秒常量倒计时。
   const rec = await readRec(email, purpose)
@@ -302,7 +324,7 @@ export async function issueCode(req, email, purpose, userId = null) {
    * 配额和配置问题是我们自己的事，别让用户以为是他填错了。
    */
   try {
-    await sendLoginCode(email, code, purpose)
+    await sendLoginCode(email, code, mailPurpose)
   } catch (e) {
     await dropRec(email, purpose)
     switch (e?.kind) {
@@ -334,12 +356,13 @@ export async function issueCode(req, email, purpose, userId = null) {
  * 校验并**消费**一个验证码。通过就直接返回，不通过抛 CodeError。
  *
  * @param {string} email
- * @param {'login'|'bind'|'reauth'|'delete'} purpose
+ * @param {'login'|'register'|'bind'|'reauth'|'delete'} purpose
  * @param {string} code
  * @param {string|null} [userId] 签发时绑过用户的话必须对得上 —— 否则 A 能拿自己那封
  *                               「换绑到 x@y」的码，去把 B 的账号换绑成 x@y
  */
-export async function verifyCode(email, purpose, code, userId = null) {
+export async function verifyCode(email, mailPurpose, code, userId = null) {
+  const purpose = storagePurpose(mailPurpose, userId)
   if (!/^\d{6}$/.test(String(code || '').trim())) {
     throw new CodeError(400, '验证码是 6 位数字')
   }
@@ -359,9 +382,9 @@ export async function verifyCode(email, purpose, code, userId = null) {
     await dropRec(email, purpose)
     throw new CodeError(400, '验证码已过期，请重新获取')
   }
-  // 签发时绑了用户，校验时就必须是同一个人
+  // 签发时绑了用户，校验时就必须是同一个人。
+  // ⚠️ 对不上时**不删记录**：那条记录属于别人，删掉就等于让任何人都能作废别人待验证的码。
   if (rec.userId && rec.userId !== userId) {
-    await dropRec(email, purpose)
     throw new CodeError(400, '验证码与当前账号不匹配，请重新获取')
   }
   if (!sameHash(rec.hash, hashCode(email, purpose, String(code).trim()))) {

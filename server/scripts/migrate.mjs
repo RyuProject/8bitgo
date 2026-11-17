@@ -535,6 +535,12 @@ const patches = [
     run: () => conn.query('ALTER TABLE `saves` ADD COLUMN `revision` VARCHAR(80) NULL AFTER `data`'),
   },
   {
+    name: 'saves.parent_revision（验证幂等重放的父版本）',
+    table: 'saves',
+    needed: async () => !(await hasColumn('saves', 'parent_revision')),
+    run: () => conn.query('ALTER TABLE `saves` ADD COLUMN `parent_revision` VARCHAR(80) NULL AFTER `revision`'),
+  },
+  {
     name: 'flash_save_slots（Flash 游戏内部的在线存档槽）',
     table: null,
     // profile/data 必须原子覆盖；拆成两行会让游戏读到一半新、一半旧的坏档。

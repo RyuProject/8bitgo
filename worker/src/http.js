@@ -141,6 +141,11 @@ export async function serveObject(request, env, key, cors, policy, guessType, ex
     const found = await locate(env, key, 'get')
     if (!found) return json({ error: 'not found' }, cors, 404)
     const headers = objectHeaders(found.object, found.servedKey, cors, policy, guessType)
+    // romv 绑定了旧对象版本时，整份 GET 也要拒绝新对象，避免旧 URL 缓存新字节。
+    if (expectedVersion && etagVersion(found.object.httpEtag) !== expectedVersion) {
+      await cancelBody(found.object)
+      return new Response(null, { status: 412, headers })
+    }
     headers.set('Content-Length', String(found.object.size))
     return new Response(found.object.body, r2BodyResponseInit(headers))
   }

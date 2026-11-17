@@ -33,17 +33,20 @@ export function alertConfig(env = process.env) {
 }
 
 const CHECK_THROTTLE_MS = 60_000
+// 来自不同地址的伪造 visitId / 错误文本可以不断制造新特征；签名冷却挡不住这种分散刷信。
+// 全站持久冷却跨进程共享，最多每十分钟发一封（每小时最多六封）。
+const GLOBAL_ALERT_COOLDOWN_MS = 10 * 60_000
 const lastChecked = new Map()
 
 /**
  * 抢占冷却：成功（之前没报过 / 已过冷却）返回 true。
  * ON DUPLICATE KEY UPDATE 只在旧值早于阈值时才改写；affectedRows：1 = 新插入，2 = 改写，0 = 仍在冷却。
  */
-async function claimCooldown(run, signature, now, cooldownMs) {
+async function claimCooldown(run, key, now, cooldownMs) {
   const result = await run(
     `INSERT INTO site_settings (name, value) VALUES (?, ?)
      ON DUPLICATE KEY UPDATE value = IF(CAST(value AS UNSIGNED) <= ?, VALUES(value), value)`,
-    [`diag.alert.${signature}`, String(now), now - cooldownMs],
+    [`diag.alert.${key}`, String(now), now - cooldownMs],
   )
   return Number(result?.affectedRows ?? 0) > 0
 }
@@ -69,7 +72,7 @@ export function renderAlert(signature, summary, cfg) {
 
 /**
  * 诊断包入库后调用（不要 await）。deps 只给测试注入。
- * @returns {Promise<'disabled'|'throttled'|'below'|'cooldown'|'sent'|'error'>}
+ * @returns {Promise<'disabled'|'throttled'|'below'|'cooldown'|'global-cap'|'sent'|'error'>}
  */
 export async function maybeAlertSignature(signature, deps = {}) {
   const cfg = deps.config ?? alertConfig()
@@ -81,18 +84,26 @@ export async function maybeAlertSignature(signature, deps = {}) {
   if (checked && now - checked < CHECK_THROTTLE_MS) return 'throttled'
   lastChecked.set(signature, now)
   if (lastChecked.size > 2000) lastChecked.clear()
-  let claimedCooldown = false
+  let claimedSignatureCooldown = false
+  let claimedGlobalCooldown = false
   try {
     const rows = await run(
       `SELECT d.visit_id AS visitId, d.signature_text AS text, g.slug AS slug, d.browser, d.os
          FROM game_startup_diagnostics d JOIN games g ON g.id = d.game_id
-        WHERE d.signature = ? AND d.created_at >= NOW() - INTERVAL ? MINUTE`,
+        WHERE d.signature = ? AND d.created_at >= UTC_TIMESTAMP() - INTERVAL ? MINUTE`,
       [signature, cfg.windowMinutes],
     )
     const visits = new Set(rows.map((r) => r.visitId))
     if (visits.size < cfg.minVisits) return 'below'
     if (!(await claimCooldown(run, signature, now, cfg.cooldownMs))) return 'cooldown'
-    claimedCooldown = true
+    claimedSignatureCooldown = true
+    if (!(await claimCooldown(run, 'global', now, GLOBAL_ALERT_COOLDOWN_MS))) {
+      // 不占用该特征的长冷却：全站告警槽空出来后，新诊断仍可补报。
+      await run('DELETE FROM site_settings WHERE name = ? AND value = ?', [`diag.alert.${signature}`, String(now)])
+        .catch(() => {})
+      return 'global-cap'
+    }
+    claimedGlobalCooldown = true
     const tally = (key) => {
       const m = new Map()
       for (const r of rows) m.set(key(r), (m.get(key(r)) ?? 0) + 1)
@@ -109,14 +120,20 @@ export async function maybeAlertSignature(signature, deps = {}) {
     await send({ to: cfg.to, subject, text, provider: process.env.RESEND_API_KEY ? 'resend' : undefined })
     console.log(`[diag-alert] 已报警 ${signature}（${summary.visits} 个访问）`)
     // 冷却记录只需要活过冷却期；顺手清掉一周前的，site_settings 不会被特征越攒越多
-    await run(`DELETE FROM site_settings WHERE name LIKE 'diag.alert.%' AND updated_at < NOW() - INTERVAL 7 DAY`).catch(() => {})
+    await run(`DELETE FROM site_settings WHERE name LIKE 'diag.alert.%' AND updated_at < UTC_TIMESTAMP() - INTERVAL 7 DAY`).catch(() => {})
     return 'sent'
   } catch (error) {
     // 发信失败不能把这次告警静默压住整个冷却期；仅撤销自己刚写入的那条时间戳，避免覆盖并发的新主张。
-    if (claimedCooldown) {
+    if (claimedSignatureCooldown) {
       await run(
         'DELETE FROM site_settings WHERE name = ? AND value = ?',
         [`diag.alert.${signature}`, String(now)],
+      ).catch(() => {})
+    }
+    if (claimedGlobalCooldown) {
+      await run(
+        'DELETE FROM site_settings WHERE name = ? AND value = ?',
+        ['diag.alert.global', String(now)],
       ).catch(() => {})
     }
     console.warn('[diag-alert] 报警检查失败：', error?.message || error)

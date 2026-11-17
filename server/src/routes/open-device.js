@@ -82,16 +82,20 @@ openDeviceRouter.post('/:code', async (req, res, next) => {
     const row = findByUserCode(req.params.code)
     if (!row) return res.status(404).json({ error: '这串码无效或已过期' })
 
+    const app = await getApp(row.appId)
+    if (!app) return res.status(404).json({ error: '这串码无效或已过期' })
+    /*
+      同上：同意页必须过这一关，而且要在真正写 userId **之前**。
+      ⚠️ 拒绝也要先过这一关：以前 deny 排在它前面，任何登录用户（不是这个沙箱应用能授权的人）
+      只要猜到 / 看到一串用户码，就能把别人正在进行的设备授权直接作废。
+    */
+    if (!(await canAuthorize(app, req.user.id))) {
+      return res.status(403).json({ error: '这个应用还在沙箱阶段，不能授权给这个账号' })
+    }
+
     if (!approve) {
       denyDeviceAuth(req.params.code)
       return res.json({ ok: true, approved: false })
-    }
-
-    const app = await getApp(row.appId)
-    if (!app) return res.status(404).json({ error: '这串码无效或已过期' })
-    // 同上：同意页必须过这一关，而且要在真正写 userId **之前**
-    if (!(await canAuthorize(app, req.user.id))) {
-      return res.status(403).json({ error: '这个应用还在沙箱阶段，不能授权给这个账号' })
     }
 
     /*

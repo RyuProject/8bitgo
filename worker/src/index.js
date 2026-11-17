@@ -163,6 +163,21 @@ function missingCoverResponse(response) {
   headers.set('Cache-Control', `public, max-age=0, s-maxage=${MISSING_COVER_TTL_SECONDS}`)
   return new Response('{"error":"not found"}', { status: 404, headers })
 }
+/**
+ * romv 只有长得像 R2 ETag（md5 hex，分片上传带 `-N`）时才算内容版本：这种 URL 由
+ * versionedRomUrl 按对象 ETag 拼出，Worker 能逐字核对；别的值核对不了，不给长缓存。
+ */
+const ROMV_ETAG = /^[a-f0-9]{32}(?:-\d+)?$/i
+export function romvVersion(url) {
+  const romv = url?.searchParams?.get('romv') || ''
+  return ROMV_ETAG.test(romv) ? romv : ''
+}
+function responseMatchesRomv(response, url) {
+  const romv = url.searchParams.get('romv')
+  if (!romv) return true
+  const etag = String(response.headers.get('ETag') || '').replace(/^W\//, '').replaceAll('"', '').trim()
+  return Boolean(romvVersion(url)) && etag === romv
+}
 const PREVIEW_VIDEO_PATH = /^\/videos\/[^/]+\.(?:mp4|webm)$/i
 const PREVIEW_VIDEO_CACHE_MAX_BYTES = 32 * 1024 * 1024
 const previewVideoFills = new Set()
@@ -174,7 +189,8 @@ export function edgeCacheEligible(request, url, cors) {
   if (request.headers.has('Authorization')) return false
   if (request.headers.has('If-Match') || request.headers.has('If-Unmodified-Since') || request.headers.has('If-Range')) return false
   if (/\b(?:no-cache|no-store)\b/i.test(request.headers.get('Cache-Control') || '')) return false
-  const versioned = Boolean(url.searchParams.get('romv') || url.searchParams.get('v'))
+  // romv 只在形如 ETag 时算版本（且 fetch 写缓存前还要核对响应 ETag 与它一致）。
+  const versioned = Boolean(romvVersion(url) || url.searchParams.get('v'))
   /*
    * Sockdrive 不能进 Cache API。线上实测 Cloudflare 在 cache.put/cache.match 后会丢掉 R2 的
    * Content-Encoding，却保留原始 Brotli 字节：MISS 能解码，HIT 则把压缩字节当 JSON / 磁盘块，
@@ -386,7 +402,7 @@ export function cachePolicy(env, url) {
   ) {
     return cacheValue(env, 'IMMUTABLE_CACHE_CONTROL', IMMUTABLE_CACHE_CONTROL)
   }
-  const versioned = Boolean(url?.searchParams?.get('romv') || url?.searchParams?.get('v'))
+  const versioned = Boolean(romvVersion(url) || url?.searchParams?.get('v'))
   return versioned
     ? cacheValue(env, 'VERSIONED_CACHE_CONTROL', VERSIONED_CACHE_CONTROL)
     : cacheValue(env, 'OBJECT_CACHE_CONTROL', DEFAULT_CACHE_CONTROL)
@@ -664,9 +680,13 @@ async function handle(request, env, url, cors) {
   }
   if (request.method === 'DELETE') return deleteResponse(env, [key], cors, false)
   if (!['GET', 'HEAD'].includes(request.method)) return methodNotAllowed(cors, 'GET, HEAD, PUT, POST, DELETE, OPTIONS')
-  // 只把 romv 当 Range 对象版本锁；普通 GET 的 v/romv 还可能是人工发布号或内容哈希。
-  const rangeVersion = request.headers.has('Range') ? (url.searchParams.get('romv') || '') : ''
-  return serveObject(request, env, key, cors, cachePolicy(env, url), guessType, rangeVersion)
+  /*
+   * romv 是对象版本锁。Range 请求一向按 romv 核对；整份 GET / HEAD 只在 romv 形如 ETag 时核对
+   * （v 可能是人工发布号或内容哈希，不核）。以前整份 GET 不核：对象替换后 ?romv=旧 拿到新字节，
+   * 还按 30 天写进旧版本地址的边缘缓存。
+   */
+  const objectVersion = request.headers.has('Range') ? (url.searchParams.get('romv') || '') : romvVersion(url)
+  return serveObject(request, env, key, cors, cachePolicy(env, url), guessType, objectVersion)
 }
 export default {
   async fetch(request, env, context) {
@@ -746,7 +766,8 @@ export default {
       )
       return response
     }
-    if (edgeCache && response.status === 200 && response.body && !response.headers.has('Content-Range') && !encodedCover && !uncacheableVideo && !tooLargeForFullPut) {
+    if (edgeCache && response.status === 200 && response.body && !response.headers.has('Content-Range') && !encodedCover && !uncacheableVideo && !tooLargeForFullPut &&
+      responseMatchesRomv(response, url)) {
       // clone 后立刻回玩家；75 MB 的 NDS ROM 写边缘缓存不能挡住首包。
       const cacheKey = new Request(request.url, { method: 'GET' })
       context.waitUntil(
