@@ -41,6 +41,13 @@ export const ROUTE_RATE_TTL_MS = 30 * 60 * 1000
 /** 连续故障记录的有效期：十分钟没再出事就当它好了 */
 const FAILURE_TTL_MS = 10 * 60 * 1000
 const OPEN_AFTER_FAILURES = 2
+/**
+ * 同一条线路在这么短的时间里接连失败只算一次。2026-11-18 线上实测：一个详情页同时向一条线路问明文和 8BG 两个候选，
+ * 线路慢时两个 HEAD 一起超时，记成两次故障，一次开页就熔断；第二次开页累计到 4 次，熔断 4 分钟。
+ * 同一批请求一起失败说明的是同一件事。窗口从这一批的第一次失败算起、不随后续失败顺延，
+ * 否则持续每几秒失败一次的线路永远只记一次。
+ */
+const FAILURE_COALESCE_MS = 5_000
 const OPEN_BASE_MS = 60 * 1000
 const OPEN_MAX_MS = 5 * 60 * 1000
 /** 有效吞吐样本的下限：太小的样本主要是调度抖动 */
@@ -155,7 +162,9 @@ export function recordRomRouteFailure(url: string, _kind: RomRouteFailure, now =
   const origin = romRouteOrigin(url)
   if (!origin) return
   const stat = statFor(origin)
-  const recent = stat.failedAt !== undefined && now - stat.failedAt < FAILURE_TTL_MS
+  const sinceLast = stat.failedAt === undefined ? Infinity : now - stat.failedAt
+  if (stat.failures > 0 && sinceLast >= 0 && sinceLast < FAILURE_COALESCE_MS) return
+  const recent = sinceLast < FAILURE_TTL_MS
   stat.failures = (recent ? stat.failures : 0) + 1
   stat.failedAt = now
   if (stat.failures >= OPEN_AFTER_FAILURES) {
