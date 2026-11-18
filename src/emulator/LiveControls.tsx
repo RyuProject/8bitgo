@@ -226,6 +226,9 @@ async function shareTab(cropTo: HTMLElement | null): Promise<MediaStream> {
 /** 画布要等引擎把第一帧挂上来才有，开局那一下取不到是正常的 */
 const RETRY_MS = 600
 const RETRY_MAX = 15
+// 跨源网页游戏要等自己的 SDK 找到真实画布后才能给父页采集。PvZ 的自动下载阶段
+// 可能超过普通引擎的九秒重试窗；与运行桥的两分钟启动预算对齐，避免游戏刚可玩就退回手动分享。
+const REMOTE_SDK_RETRY_MAX = 200
 /**
  * 画布有了但声音还没有：再等几轮。
  * 推流是一次性拼好的（broadcast.ts 的 buildStream），开播之后声音节点再出现也接不进去。
@@ -468,8 +471,9 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
         // 跨源 Pages 游戏的 SDK 可能还在初始化；除此之外别让人对着「连接中…」白等九秒。
         const waitingForRemoteSdk = remoteLiveState === null
         const hopeless = !handle.captureSources || (handle.captureBlocked?.() === true && !waitingForRemoteSdk && remoteLiveState !== true)
-        // 还没有画面：再等一会儿。等不到就算了 —— 这个引擎大概抓不出画面
-        if (!hopeless && n < RETRY_MAX) timer = window.setTimeout(() => void attempt(n + 1, audioN), RETRY_MS)
+        // 还没有画面：普通引擎只等九秒；跨源 SDK 则等完整启动窗口，因为游戏资源下载完后才会有真实画布。
+        const retryMax = waitingForRemoteSdk ? REMOTE_SDK_RETRY_MAX : RETRY_MAX
+        if (!hopeless && n < retryMax) timer = window.setTimeout(() => void attempt(n + 1, audioN), RETRY_MS)
         else {
           // 等不到就别让按钮永远停在「连接中」上骗人。抓不到画面的游戏（跨源 HTML5、
           // 没有 canvas 的页面）还有一条路：玩家点一下分享标签页
