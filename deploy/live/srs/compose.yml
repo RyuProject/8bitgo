@@ -6,9 +6,12 @@ services:
     environment:
       SRS_PUBLIC_IP: ${SRS_PUBLIC_IP:?set the server public IPv4 address}
       SRS_HOOK_SECRET: ${SRS_HOOK_SECRET:?generate a dedicated hook secret}
+      SRS_HOOK_ORIGIN: ${SRS_HOOK_ORIGIN:-host.docker.internal:8788}
+      SRS_HTTP_API_LISTEN: ${SRS_HTTP_API_LISTEN:-1985}
     entrypoint: ["/bin/sh", "-ec"]
     command: >-
-      sed "s/__SRS_PUBLIC_IP__/$$SRS_PUBLIC_IP/g; s/__SRS_HOOK_SECRET__/$$SRS_HOOK_SECRET/g"
+      sed "s|__SRS_PUBLIC_IP__|$$SRS_PUBLIC_IP|g; s|__SRS_HOOK_SECRET__|$$SRS_HOOK_SECRET|g;
+      s|__SRS_HOOK_ORIGIN__|$$SRS_HOOK_ORIGIN|g; s|__SRS_HTTP_API_LISTEN__|$$SRS_HTTP_API_LISTEN|g"
       /etc/srs/srs.conf.template > /tmp/srs.conf;
       exec /usr/local/srs/objs/srs -c /tmp/srs.conf
     extra_hosts:

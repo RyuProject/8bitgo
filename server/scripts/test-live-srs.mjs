@@ -29,6 +29,7 @@ process.env.LIVE_RESUME_GRACE_MS = '800'
 process.env.LIVE_MAX_ROOMS = '10'
 process.env.LIVE_MAX_ROOMS_PER_IP = '0'
 process.env.LIVE_SRS_ENABLED = 'true'
+process.env.LIVE_SRS_REQUIRED = 'true'
 process.env.LIVE_SRS_INTERNAL_API_ORIGIN = `http://127.0.0.1:${fakeSrs.address().port}`
 process.env.LIVE_SRS_TOKEN_SECRET = 'srs-token-secret-for-tests-2026-11'
 process.env.LIVE_SRS_HOOK_SECRET = 'srs-hook-secret-for-tests-2026-11'
@@ -158,12 +159,24 @@ try {
   process.env.LIVE_SRS_INTERNAL_API_ORIGIN = 'http://127.0.0.1:1'
   const hostFallback = await connect()
   const fallback = await call(hostFallback, 'go-live', { gameSlug: 'game-c', gameName: 'C' })
-  assert.equal(fallback.err, null)
-  assert.equal(fallback.data.transport, 'p2p', 'SRS 健康检查失败时新房间必须回退 P2P')
+  assert.equal(fallback.err, 'SRS service unavailable', 'SRS 已启用但健康检查失败时必须拒绝开播')
+  assert.equal(fallback.data, undefined, 'SRS 故障时不得创建 P2P 房间绕过 SFU')
+
+  process.env.LIVE_SRS_ENABLED = 'false'
+  process.env.LIVE_SRS_REQUIRED = 'false'
+  const hostDisabled = await connect()
+  const disabled = await call(hostDisabled, 'go-live', { gameSlug: 'game-d', gameName: 'D' })
+  assert.equal(disabled.err, null)
+  assert.equal(disabled.data.transport, 'p2p', '仅在显式关闭 SRS 的开发 / 回滚配置下允许 P2P')
+
+  process.env.LIVE_SRS_REQUIRED = 'true'
+  const hostRequired = await connect()
+  const required = await call(hostRequired, 'go-live', { gameSlug: 'game-e', gameName: 'E' })
+  assert.equal(required.err, 'SRS service unavailable', '生产锁必须防止误关启用项后退回 P2P')
 
   for (const socket of sockets) socket.close()
   await new Promise((resolve) => setTimeout(resolve, 80))
-  console.log('✅ SRS 健康回退、hook 密钥、WHIP/WHEP 代理、成员绑定、房间及全局容量均通过')
+  console.log('✅ SRS 故障 fail-closed、关闭时 P2P、hook 密钥、WHIP/WHEP 代理、成员绑定与容量均通过')
 } catch (error) {
   console.error(error)
   process.exitCode = 1

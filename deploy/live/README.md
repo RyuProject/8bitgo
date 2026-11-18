@@ -34,8 +34,8 @@ SRS 模式下，主播只上行一份媒体，SRS 复制给观众；旧的 `/liv
     主播 ──一路 WebRTC 音视频──► SRS ──转发──► 观众 × N
       └────点对点 DataChannel──────┴────点对点 DataChannel─────┘
 
-SRS 没配置时新房间继续使用旧 P2P 模式；配置启用后新房间才使用 SRS，房间创建时固定传输方式。
-这使 SRS 部署与应用发布可以分两步进行。SRS 是 SFU，不做转码：主播端编码能力和上行画质仍决定源流质量，
+开发环境未配置 SRS 时新房间继续使用旧 P2P 模式；生产配置启用 SRS 后，新直播间必须使用 SRS，
+健康检查失败会拒绝开播，不会静默切回主播直连。房间创建时固定传输方式；SRS 是 SFU，不做转码：主播端编码能力和上行画质仍决定源流质量，
 但增加观众不会再把主播上行按人数成倍放大。
 
 ## 部署
@@ -210,17 +210,27 @@ SRS 配好并启用后，媒体走 SFU：
 
 ## 部署 SRS
 
-仓库提供独立配置：[deploy/live/srs](./srs)，镜像固定在 SRS 6.0.195。SRS HTTP API 只绑定本机 `127.0.0.1:1985`，由 8BitGo 后端代理；
-回调通过 Docker 的 `host.docker.internal` 到本机 `8788`。浏览器媒体直接连 SRS 的公网候选地址。
+仓库提供固定 SRS 6.0.195 的部署配置：[deploy/live/srs](./srs)。生产机没有 Docker 时，推荐在仓库根目录以 root 运行：
+
+```bash
+bash deploy/live/srs/install-native.sh 38.76.186.225
+```
+
+脚本会校验官方二进制发布摘要、安装受 systemd 保护的原生服务、生成独立密钥、把 SRS 管理 API 限制在 `127.0.0.1:1985`、
+只开放 WebRTC 所需的 UDP/TCP `8000`，然后启用应用的强制 SRS 配置并做服务健康检查。应用健康检查失败会恢复原环境文件。
+Docker Compose 配置仍可用于有 Docker 的独立媒体机；API 应只映射到宿主机回环，SRS 回调地址按容器网络设置。
+
+SRS HTTP API 只由 8BitGo 后端通过本机访问；回调访问本机 `8788`。浏览器媒体直接连 SRS 的公网候选地址，不能把媒体端口代理到 Cloudflare 普通 HTTP 代理后面。
 
 1. 服务器防火墙开放 **UDP 8000 和 TCP 8000**。不要开放 HTTP API 1985 或 RTMP 1935。
-2. 将 `deploy/live/srs` 放到服务器，复制 `.env.example` 为 `.env`，填服务器公网 IPv4；
-   生成一把独立随机 hook 密钥，并把同一值写进应用的 `LIVE_SRS_HOOK_SECRET`。
-3. 在该目录启动 Compose 服务，确认 `8bitgo-live-srs` 正常运行，且本机 `127.0.0.1:1985` 有响应。
+2. Compose 部署时，将 `deploy/live/srs` 放到服务器，复制 `.env.example` 为 `.env`，填服务器公网 IPv4；
+   生成独立 hook 密钥，并把同一值写进应用的 `LIVE_SRS_HOOK_SECRET`。
+3. 启动 Compose 服务，确认 SRS 容器正常运行，且本机 `127.0.0.1:1985` 有响应。
 4. 在 `server/.env` 填写下列服务端配置。两把应用密钥要彼此独立，均用 `openssl rand -hex 32` 生成：
 
    ```dotenv
    LIVE_SRS_ENABLED=true
+   LIVE_SRS_REQUIRED=true
    LIVE_SRS_INTERNAL_API_ORIGIN=http://127.0.0.1:1985
    LIVE_SRS_TOKEN_SECRET=<独立随机密钥>
    LIVE_SRS_HOOK_SECRET=<与 SRS Compose .env 相同的 hook 密钥>
@@ -229,7 +239,7 @@ SRS 配好并启用后，媒体走 SFU：
    ```
 
 5. 重启 8BitGo 服务后，**新建**直播间才会使用 SRS。服务端会短时缓存 `/api/v1/versions` 健康检查；
-   SRS API 不可达时新房间自动保留 P2P 模式。每间房在创建时选定模式，不会在一次观看中途悄悄换协议。
+   `LIVE_SRS_ENABLED=true` 时 SRS API 不可达会拒绝新开直播，避免某些房间绕过 SRS；`LIVE_SRS_REQUIRED=true` 进一步防止启用项被误关后退回直连。每间房在创建时选定模式，不会在一次观看中途悄悄换协议。
 
 SRS 的 `candidate` 必须是观众可直连的公网 IP；防火墙同时放行 UDP/TCP 8000。配置使用 IP 而非域名，
 可避免 Firefox 不接受域名 ICE candidate 的兼容问题。UDP 不通时协商仍会尝试 TCP candidate。

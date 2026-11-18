@@ -2081,6 +2081,21 @@ Cloudflare 凭证单独缓存，默认有效 15 分钟；接口另有单 IP / �
 `npm run test:broadcast-signal`、`npm run test:watch-panel`、`cd server && npm run test:live`、
 `cd server && npm run test:netplay:hardening`。
 
+### 2.25.4 生产直播媒体必须经 SRS；故障时拒绝开播，不回退主播直连
+
+生产的新直播房间音视频走 SRS SFU：主播只向 SRS 发布一路，观众从 SRS 拉流；`/live` Socket.IO
+仍管理房间、弹幕和续播。直播里的 2P 按键协作仍走主播与观众之间的 DataChannel，这不是媒体流。
+
+生产环境同时设 `LIVE_SRS_ENABLED=true` 和 `LIVE_SRS_REQUIRED=true`。前者要求新房间探测 SRS 健康并选用
+SRS；后者是部署保护锁，即使启用项被误关，SRS 不可用也拒绝 `go-live`。不可把 API 故障、缺配置或
+容量异常静默转为 `transport=p2p`，否则观众数增加时主播上行会按人数放大，而且绕过 SRS 容量预算。
+房间创建时固定传输方式，生产部署重启会清掉旧内存房间；新房只会按这两个开关选定传输。
+
+主机部署用 `deploy/live/srs/install-native.sh <公网 IPv4>`：版本固定、摘要校验、systemd 非 root 运行，
+只开放 WebRTC UDP/TCP 8000；HTTP API 1985 必须仅监听 loopback，RTMP 1935 不开放公网。密钥只存
+`/etc/8bitgo-live-srs/` 和 `server/.env`，不得提交。改动 SRS 发布 / 播放、hook、房间准入或部署时，
+回归 `cd server && npm run test:live-srs && npm run test:live`，并做真实浏览器媒体发布、播放和重连检查。
+
 生产机是从 `dist/client` 现场服务，所以 `vite.config.ts` 的 `emptyOutDir` 必须是 `false`。
 2026-09-25 日志已取证到构建期 `dist/client/index.html` 短暂不存在，SSR 当场 500。
 旧哈希资源留着也能保证已打开的观众页在部署期间继续懒加载；`ssr.js` 在模板

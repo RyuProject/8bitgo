@@ -4,7 +4,7 @@ srs_log_tank        console;
 
 http_api {
     enabled on;
-    listen 1985;
+    listen __SRS_HTTP_API_LISTEN__;
 }
 
 http_server {
@@ -28,9 +28,9 @@ vhost __defaultVhost__ {
     }
     http_hooks {
         enabled on;
-        on_publish http://host.docker.internal:8788/api/live/srs-hook?key=__SRS_HOOK_SECRET__;
-        on_unpublish http://host.docker.internal:8788/api/live/srs-hook?key=__SRS_HOOK_SECRET__;
-        on_play http://host.docker.internal:8788/api/live/srs-hook?key=__SRS_HOOK_SECRET__;
-        on_stop http://host.docker.internal:8788/api/live/srs-hook?key=__SRS_HOOK_SECRET__;
+        on_publish http://__SRS_HOOK_ORIGIN__/api/live/srs-hook?key=__SRS_HOOK_SECRET__;
+        on_unpublish http://__SRS_HOOK_ORIGIN__/api/live/srs-hook?key=__SRS_HOOK_SECRET__;
+        on_play http://__SRS_HOOK_ORIGIN__/api/live/srs-hook?key=__SRS_HOOK_SECRET__;
+        on_stop http://__SRS_HOOK_ORIGIN__/api/live/srs-hook?key=__SRS_HOOK_SECRET__;
     }
 }

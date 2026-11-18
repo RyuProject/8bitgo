@@ -1,0 +1,35 @@
+[Unit]
+Description=8BitGo SRS WebRTC SFU
+Wants=network-online.target
+After=network-online.target 8bitgo.service
+
+[Service]
+Type=simple
+User=srs
+Group=srs
+EnvironmentFile=/etc/8bitgo-live-srs/srs.env
+RuntimeDirectory=8bitgo-live-srs
+RuntimeDirectoryMode=0750
+WorkingDirectory=/opt/8bitgo-live-srs/current
+ExecStartPre=/usr/local/libexec/8bitgo-live-srs-render-config
+ExecStart=/opt/8bitgo-live-srs/current/objs/srs -c /run/8bitgo-live-srs/srs.conf
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=20s
+LimitNOFILE=65536
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=8bitgo-live-srs
+
+[Install]
+WantedBy=multi-user.target

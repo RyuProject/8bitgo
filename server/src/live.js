@@ -480,7 +480,7 @@ const membership = new Map()
 const matchChatKey = (roomId) => `match:${roomId}`
 
 /**
- * SRS 在没有完整部署配置时保持关闭，房间继续使用原有 P2P。
+ * SRS 在没有完整部署配置时保持关闭，开发环境可继续使用原有 P2P；显式启用 SRS 后必须 fail closed。
  * API 端口只给本机 8BitGo 服务访问；浏览器只拿到短时授权，不接触 SRS 管理 API。
  */
 function srsConfig() {
@@ -502,12 +502,17 @@ function srsRequested() {
   return String(process.env.LIVE_SRS_ENABLED || '').toLowerCase() === 'true'
 }
 
+/** 生产可以额外锁定 SRS，避免有人误删启用开关后悄悄把直播退回主播直连。 */
+function srsMandatory() {
+  return String(process.env.LIVE_SRS_REQUIRED || '').toLowerCase() === 'true'
+}
+
 let srsHealth = { internalApi: '', checkedAt: 0, available: false }
 const SRS_HEALTH_CACHE_MS = 3_000
 
 /**
- * 配置齐全不代表 SRS 进程或内网 API 正常。只在创建新房间前做短时探测；失败时保留 P2P，
- * 避免服务重启窗口里新开的房间直接变成永远没有画面的 SRS 房间。
+ * 配置齐全不代表 SRS 进程或内网 API 正常。只在创建新房间前做短时探测；显式启用 SRS 后，
+ * 探测失败必须拒绝开播，不能悄悄把媒体改成主播直连，否则流量和容量会绕过 SFU 保护。
  */
 async function srsServiceAvailable() {
   const config = srsConfig()
@@ -535,7 +540,7 @@ async function srsServiceAvailable() {
   srsHealth = { internalApi: config.internalApi, checkedAt: Date.now(), available }
   if (!wasKnown || available !== wasAvailable) {
     if (available) console.info('[live] SRS 健康检查通过，新直播间可使用 SRS')
-    else console.warn('[live] SRS 健康检查失败，新直播间回退到 P2P')
+    else console.warn('[live] SRS 健康检查失败；SRS 模式已启用，新直播间将拒绝开播')
   }
   return available
 }
@@ -1353,11 +1358,14 @@ export function attachLive(io, options = {}) {
         }
 
         // 健康检查有一个短 await 窗口；重新核实 socket、房间和 IP 配额，避免并发开播挤过容量闸。
-        const useSrs = await srsServiceAvailable()
+        const srsRequired = srsRequested() || srsMandatory()
+        const useSrs = srsRequested() ? await srsServiceAvailable() : false
         if (!socket.connected) return ack?.('disconnected')
         const openedAfterProbe = boundHostRoom()
         if (openedAfterProbe) return ack?.(null, srsHostAck(openedAfterProbe))
         if (membership.has(socket.id)) return ack?.('already in a room')
+        // 生产显式启用 SRS 时不能静默退回主播直连；否则观众一多，上行仍按人数放大。
+        if (srsRequired && !useSrs) return ack?.('SRS service unavailable')
         if (rooms.size >= MAX_ROOMS) return ack?.('server is full')
         if (ip && !isPrivateIp(ip) && MAX_ROOMS_PER_IP > 0) {
           let mine = 0
