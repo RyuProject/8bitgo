@@ -187,6 +187,7 @@ export const ENV_MANIFEST = [
   { name: 'LIVE_SRS_INTERNAL_API_ORIGIN', group: '直播', kind: 'config', file: 'live.js', note: '后端访问 SRS HTTP API 的内网地址，不下发给浏览器' },
   { name: 'LIVE_SRS_MAX_TOTAL_VIEWERS', group: '直播', kind: 'config', file: 'live.js', note: '所有 SRS 房间合计的观看人数上限；按出口带宽预算调整' },
   { name: 'LIVE_SRS_MAX_VIEWERS', group: '直播', kind: 'config', file: 'live.js', note: '单个 SRS 直播间观看人数上限' },
+  { name: 'LIVE_SRS_ORPHAN_GRACE_MS', group: '直播', kind: 'config', file: 'live.js', note: '观众离房后 SRS 拉流保留多久（毫秒，默认 45000）等同一观众换 socket 回来认领，到点经回环 API 踢掉' },
   { name: 'LIVE_SRS_TOKEN_SECRET', group: '直播', kind: 'secret', file: 'live.js', note: '签发短时 SRS 发布 / 观看授权的独立密钥' },
   { name: 'AI_SETTINGS_SECRET', group: '安全', kind: 'secret', file: 'secret-box.js', note: '加密后台保存的 MiniMax Key；未配置时回退到 JWT_SECRET 派生密钥' },
   { name: 'MAIL_FROM', group: '发信', kind: 'config', file: 'index.js' },
