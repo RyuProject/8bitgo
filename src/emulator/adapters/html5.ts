@@ -18,7 +18,7 @@ const SAVE_BRIDGE_TIMEOUT_MS = 15_000
 const GAME_SDK_SOURCE = '8bitgo-game-sdk'
 const GAME_SDK_VERSION = 1
 const GAME_SDK_TIMEOUT_MS = 15_000
-const PVZ_SHELL_VERSION = '20261118-live2'
+const PVZ_SHELL_VERSION = '20261118-live3'
 const LEGACY_PAGES_ENTRIES = [
   ['/web/PvZ', 'https://pvz.8bitgo.com'],
   ['/web/diablo', 'https://diablo.8bitgo.com'],
@@ -322,6 +322,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
   }
 
+  const isManagedGameSdkEntry = () =>
+    isManagedPvzEntry() || isManagedMinecraftEntry() || isManagedCs16Entry()
+
   const clearRemoteLiveCanvas = () => {
     remoteLiveSession = ''
     remoteLiveFrameId = 0
@@ -354,6 +357,21 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       }, gameSdkOrigin)
     } catch {
       // 超时会在游戏页停止采集；不能因收尾确认失败中断模拟器。
+    }
+  }
+
+  const sendGameSdkInit = (): void => {
+    if (!gameSdkOrigin || !iframe.contentWindow) return
+    if (!gameSdkToken) gameSdkToken = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+    try {
+      iframe.contentWindow.postMessage({
+        source: '8bitgo-host',
+        version: GAME_SDK_VERSION,
+        type: 'init',
+        token: gameSdkToken,
+      }, gameSdkOrigin)
+    } catch {
+      // 页面还在跨域导航时先不发；新文档的 hello 会再次触发初始化。
     }
   }
 
@@ -425,15 +443,19 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
     if (message.type === 'hello') {
       console.info('[live][html5-sdk] 收到游戏页握手')
-      if (!gameSdkToken) gameSdkToken = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
-      try {
-        iframe.contentWindow?.postMessage({ source: '8bitgo-host', version: GAME_SDK_VERSION, type: 'init', token: gameSdkToken }, gameSdkOrigin)
-      } catch {
-        // 不支持精确目标来源的浏览器会保留原有 iframe 能力，不影响游戏启动。
+      sendGameSdkInit()
+      return
+    }
+    if (!gameSdkToken || message.token !== gameSdkToken) {
+      if (isManagedPvzEntry()) {
+        console.warn('[live][html5-sdk] 忽略 SDK 消息：握手令牌不匹配', {
+          type: message.type,
+          hostTokenReady: Boolean(gameSdkToken),
+          messageTokenReady: typeof message.token === 'string' && Boolean(message.token),
+        })
       }
       return
     }
-    if (!gameSdkToken || message.token !== gameSdkToken) return
     if (message.type === 'unready') {
       void stopRemoteLiveCapture()
       gameSdkReady = false
@@ -450,12 +472,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       const width = Number(message.detail?.width)
       const height = Number(message.detail?.height)
       const usable = Number.isFinite(width) && Number.isFinite(height) && width >= 16 && height >= 16 && width * height <= 16_777_216
-      // 同源页面由播放器直接验证；只对主动接入 SDK 的跨源页面启用远程能力。
-      if (!frameDocument()) {
+      // 截图/录制由同源播放器自行验证；直播可用本站受信任的 SDK 能力，避免 iframe 文档访问状态干扰。
+      const sameOrigin = Boolean(frameDocument())
+      if (!sameOrigin) {
         changed = setMediaCapability('screenshot', usable && Boolean(capabilities?.screenshot)) || changed
         changed = setMediaCapability('record', usable && Boolean(capabilities?.record)) || changed
-        gameSdkLiveCapable = usable && Boolean(capabilities?.live)
       }
+      if (!sameOrigin || isManagedGameSdkEntry()) gameSdkLiveCapable = usable && Boolean(capabilities?.live)
       console.info('[live][html5-sdk] 游戏页已就绪', {
         width,
         height,
@@ -642,6 +665,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let loaded = false
   iframe.addEventListener('load', () => {
     if (destroyed) return
+    if (isManagedPvzEntry()) console.info('[live][html5-sdk] 游戏 iframe 加载完成', { repeated: loaded })
     // 门户页跳进真正游戏页也会再次 load；就绪只报一次，媒体来源却必须跟着换到新文档。
     startMediaMonitoring()
     if (loaded) {
@@ -658,6 +682,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         pending.reject(new Error('网页游戏页面已跳转'))
       }
       pendingGameSdkRequests.clear()
+      // 子页会在脚本执行时先发 hello，load 随后才到。令牌刚建立就清掉会让它的 ready 被丢弃；
+      // 在新文档 load 后立即发新令牌，让 SDK 就绪后再报告一次画布与能力。
+      sendGameSdkInit()
     }
     /**
      * 只认第一次 load。
@@ -815,7 +842,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       return result as Blob
     },
     async startRemoteLiveCapture() {
-      if ((!isManagedPvzEntry() && !isManagedMinecraftEntry() && !isManagedCs16Entry()) || frameDocument()) return false
+      if (!isManagedGameSdkEntry()) return false
       if (remoteLiveSession && remoteLiveCanvas && remoteLiveCanvas.width >= 16) return true
       if (!gameSdkReady) return null
       if (!gameSdkLiveCapable) {
