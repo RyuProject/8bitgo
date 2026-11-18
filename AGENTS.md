@@ -2096,6 +2096,13 @@ SRS；后者是部署保护锁，即使启用项被误关，SRS 不可用也拒�
 `/etc/8bitgo-live-srs/` 和 `server/.env`，不得提交。改动 SRS 发布 / 播放、hook、房间准入或部署时，
 回归 `cd server && npm run test:live-srs && npm run test:live`，并做真实浏览器媒体发布、播放和重连检查。
 
+⚠️ WHIP/WHEP 的单次 SDP 不能靠 trickle 补发后续候选；但也不能硬等所有 STUN 服务器都结束：
+只要一台失联，Chrome 可能在已有公网映射候选后仍保持 `iceGatheringState=gathering`，10 秒后
+主播超时、观众只有黑屏。`src/services/liveIceGathering.ts` 在首条 `srflx` / `relay` 后再收集 250ms
+就把当前 SDP 交给 SRS；到期仍没有可路由候选才失败，绝不能把 host-only SDP 当作公网 UDP 可达。
+`npm run test:live-ice` 固定这些分支；浏览器验收必须确认 PeerConnection `connected` 且观众视频帧数增长，
+只看到房间 / `srsReady` 不算 WebRTC 端到端通过。
+
 生产机是从 `dist/client` 现场服务，所以 `vite.config.ts` 的 `emptyOutDir` 必须是 `false`。
 2026-09-25 日志已取证到构建期 `dist/client/index.html` 短暂不存在，SSR 当场 500。
 旧哈希资源留着也能保证已打开的观众页在部署期间继续懒加载；`ssr.js` 在模板

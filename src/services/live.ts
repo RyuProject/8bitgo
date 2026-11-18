@@ -21,6 +21,7 @@ import type { Presence } from './presence'
 import type { UserRole } from '@/types'
 import { describeExport, looksLikeSocketIo, runAsCommonJs, umdGlobals } from '@/lib/umd'
 import { liveEnabled } from './roomFlags'
+import { waitForLiveIceGathering } from './liveIceGathering'
 
 export interface LiveRoomInfo {
   roomId: string
@@ -398,36 +399,7 @@ export async function liveStunServers(): Promise<RTCIceServer[]> {
   return servers.length ? servers : [{ urls: 'stun:stun.l.google.com:19302' }]
 }
 
-/** WHIP/WHEP 以一次 SDP 请求协商，不支持依赖之后的 trickle ICE 补候选。 */
-export function waitForLiveIceGathering(pc: RTCPeerConnection, timeoutMs = 10_000): Promise<void> {
-  if (pc.iceGatheringState === 'complete') return Promise.resolve()
-  return new Promise((resolve, reject) => {
-    let settled = false
-    const cleanup = () => {
-      window.clearTimeout(timer)
-      pc.removeEventListener('icegatheringstatechange', onGatheringStateChange)
-      pc.removeEventListener('connectionstatechange', onConnectionStateChange)
-    }
-    const finish = (error?: Error) => {
-      if (settled) return
-      settled = true
-      cleanup()
-      if (error) reject(error)
-      else resolve()
-    }
-    const onGatheringStateChange = () => {
-      if (pc.iceGatheringState === 'complete') finish()
-    }
-    const onConnectionStateChange = () => {
-      if (pc.connectionState === 'closed') finish(new Error('SRS ICE gathering was closed'))
-    }
-    const timer = window.setTimeout(() => finish(new Error('SRS ICE gathering timed out')), timeoutMs)
-    pc.addEventListener('icegatheringstatechange', onGatheringStateChange)
-    pc.addEventListener('connectionstatechange', onConnectionStateChange)
-    // Gathering may finish between the initial state check and listener installation.
-    onGatheringStateChange()
-  })
-}
+export { waitForLiveIceGathering }
 
 /** 观看链接：朋友打开即是观众 */
 export function liveLink(gameSlug: string, roomId: string): string {
