@@ -389,6 +389,10 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   const ejs = read('src/emulator/adapters/emulatorjs.ts')
   assert.match(ejs, /diagLog\('ejs'/, '引擎日志进诊断包')
   assert.match(ejs, /diagLog\('stage', 'info', stage\)/, '加载阶段进诊断包')
+  assert.match(ejs, /const beat = \(\) => \{[\s\S]{0,240}options\.onStartupActivity\?\.\(\)/,
+    'EmulatorJS 活动同步给播放器外层启动看门狗')
+  assert.match(read('src/emulator/EmulatorPlayer.tsx'), /onStartupActivity: \(\) => \{[\s\S]{0,100}noteStartupActivity\(\)/,
+    '播放器收到引擎活动后刷新启动看门狗')
   assert.match(ejs, /stopFramePerf = watchFramePerformance\(win\)/, 'iframe 的网络记录（核心下载）进诊断包')
   assert.match(read('server/src/cn-edge.js'), /res\.setHeader\('Timing-Allow-Origin', siteOrigin\)/, '加速入口要让诊断包看得到传输字节')
   const psp = read('src/emulator/adapters/ppsspp.ts')

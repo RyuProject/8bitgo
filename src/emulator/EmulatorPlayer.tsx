@@ -2203,6 +2203,11 @@ export function EmulatorPlayer({
         }
         // accept() 会在真实进度跑满阶段时推进状态机；此处只负责记录开局漏斗事件。
       },
+      // EmulatorJS 的阶段文字变化 / 内部网络活动不会总带来新的字节进度；这些活动仍应刷新外层启动超时。
+      onStartupActivity: () => {
+        if (!isCurrent()) return
+        noteStartupActivity()
+      },
       onReady: () => {
         if (!isCurrent() || ready) return
         ready = true

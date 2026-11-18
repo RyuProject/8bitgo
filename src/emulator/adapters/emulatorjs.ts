@@ -2648,6 +2648,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let lastStage = ''
   const beat = () => {
     lastBeat = Date.now()
+    // 外层播放器也要知道核心下载 / 解压 / 编译仍在推进，不能只喂本适配器的卡死检测。
+    if (!started && !loadFailed && !destroyed) options.onStartupActivity?.()
   }
   let audioTap: AudioTap | null = null
   let volume = 0.6
