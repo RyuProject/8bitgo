@@ -18,7 +18,7 @@ const SAVE_BRIDGE_TIMEOUT_MS = 15_000
 const GAME_SDK_SOURCE = '8bitgo-game-sdk'
 const GAME_SDK_VERSION = 1
 const GAME_SDK_TIMEOUT_MS = 15_000
-const PVZ_SHELL_VERSION = '20261118-live1'
+const PVZ_SHELL_VERSION = '20261118-live2'
 const LEGACY_PAGES_ENTRIES = [
   ['/web/PvZ', 'https://pvz.8bitgo.com'],
   ['/web/diablo', 'https://diablo.8bitgo.com'],
