@@ -554,6 +554,33 @@ Tekken/System 11 父集才允许保留原 ZIP 上传；MAME 使用 `tekken.zip` 
 `effectiveArcadeButtons` 需要按 slug 推断四键，并同时用于键位说明、手柄图和触屏虚拟手柄；
 后台明确配置仍优先。否则页面会误画按键 5 / 6，手机上也会多出无效按键。
 
+### 2.8.3.2 Sega Model 2（Dead or Alive / doaae 等）：按 MAME 源码目录认包，merged 包自动重组（2026-11-18）
+
+FBNeo 没有 Model 2，只能走 mame-current（全量 MAME 0.289 核心里 90 个 Model 2 set 全在，已逐个核对）。
+网上的 Model 2 包几乎都是 **merged 包**：`doa.zip` 里装着 doa / doab / doaa / doaab / doaae 五个版本，
+克隆集里和父集同 CRC 的 ROM 只存一份、用父集的芯片位置名（doaae 的 `mpr-19318.10` 在包里叫 `mpr-19318.11`）。
+所以识别**按 CRC + 长度**，不按文件名。
+
+- **数据**：`src/lib/mameSetCatalogData.ts` 由 `node scripts/gen-mame-set-catalog.mjs <MAME 源码根目录>` 生成，勿手改。
+  生成器展开 ROM 宏（`MODEL2_CPU_BOARD` / `MODEL2A_VID_BOARD`）、只取默认 BIOS 的 ROM，并沿机台配置把**设备 ROM**解析出来
+  （含 `set_default_bios_tag` 改写：Daytona 的 model1io 用 epr14869c，Virtua Cop 的 model1io2 用 epr17181 + HD44780）。
+  认不出的设备宏直接失败，不当成「没有 ROM」。核心换 MAME 版本要重新生成。约 80KB，只在需要时动态加载。
+- **后台上传**（`GameForm.tsx`）：在拍平**之前**按目录识别。merged 包里凑得齐多个版本且文件名不是其中一个短名时，
+  弹窗让管理员选（不替他猜：2A / 2B 是不同板子）。选中的版本用 `rewriteZipEntries`（`src/lib/zipRewrite.ts`，拍平器也用它）
+  按 MAME 原名重组为 `<romset>.zip` 单集：只改 ZIP 头，压缩数据原样引用，不重压。自动选 mame-current，按 MAME 输入定义填动作键数
+  （DOA 三键 → 4 键布局）。
+- **设备 ROM**：Model 2A/2B/2C 都要 Sega Billboard 的 `epr-18022.ic2`（CRC 0ca70f80）。MAME 找设备 ROM 的顺序是
+  `[segabill, 游戏 set, 父集]`：包里自带就一并放进单集；没有就自动填「BIOS 包（系统名）」= `segabill`，
+  需要在「ROM 存储 → 街机 BIOS 包」上传 `segabill.zip`（上传时按目录核对 CRC）。「BIOS 包」只有一格，缺两组设备 ROM 的
+  （Virtua Cop）要把它们放进游戏 ZIP。
+- **播放器**：远端街机包的 ROM 名像 Sega（epr- / mpr- / opr-）才加载目录；认出后强制 mame-current、按 CRC 结果命名、
+  跳过用不上的平台 BIOS（neogeo.zip）。本地「玩本地 ROM」不走这条路（与 Namco 现状相同）。
+- **2026-11-18 实测**（无游戏数据，用名字 / 长度 / CRC 对得上的全零占位 ROM）：`/roms/doaae.zip` 带 `epr-18022.ic2` 时
+  MAME 进入机器、i960 开始执行（随后因全零程序报 `I960: 0: Unhandled 00`，符合预期）；去掉这颗 ROM 则机器不启动。
+  **真实游戏的速度没有验证**：Model 2 是 3D 板，i960 + TGP 在 WASM 里解释执行，手机多半跑不满速；
+  MAME 源码 TODO 还写着 doa / doaa 声音会花、逐渐无声。上架前在目标设备上实测到正式对战。
+- 回归：`npm run test:mame-set-catalog`（真实目录 + 合成 merged 包 + 字节级重组 + 接线断言）。
+
 ### 2.8.4 NDS：默认 melonDS DS 1.4.0，WASM 崩溃时旧核心兜底
 
 本站 NDS 默认核心是自构建 `melondsds-wasm.data`（上游 melonDS DS v1.4.0），
@@ -2096,12 +2123,22 @@ SRS；后者是部署保护锁，即使启用项被误关，SRS 不可用也拒�
 `/etc/8bitgo-live-srs/` 和 `server/.env`，不得提交。改动 SRS 发布 / 播放、hook、房间准入或部署时，
 回归 `cd server && npm run test:live-srs && npm run test:live`，并做真实浏览器媒体发布、播放和重连检查。
 
-⚠️ WHIP/WHEP 的单次 SDP 不能靠 trickle 补发后续候选；但也不能硬等所有 STUN 服务器都结束：
-只要一台失联，Chrome 可能在已有公网映射候选后仍保持 `iceGatheringState=gathering`，10 秒后
-主播超时、观众只有黑屏。`src/services/liveIceGathering.ts` 在首条 `srflx` / `relay` 后再收集 250ms
-就把当前 SDP 交给 SRS；到期仍没有可路由候选才失败，绝不能把 host-only SDP 当作公网 UDP 可达。
-`npm run test:live-ice` 固定这些分支；浏览器验收必须确认 PeerConnection `connected` 且观众视频帧数增长，
-只看到房间 / `srsReady` 不算 WebRTC 端到端通过。
+⚠️ **SRS 是 ICE-lite，浏览器 offer 不需要任何候选**（2026-11-18 修正）：SRS 从不主动探测客户端候选，
+只回应浏览器打到 `公网IP:8000` 的 STUN 绑定请求、按来源地址回包，官方 SDK 也是 offer 落地即 POST。
+曾经的「等到 srflx 才提交、收不到就失败」是把 P2P 规则套到 SFU 上：默认 STUN 是 Google 的，
+大陆网络拿不到 srflx，直播整片拉不起来，而 SRS 本身直连可达。现在 `src/services/liveSrsIce.ts`：
+SRS 连接默认 `iceServers: []` + `max-bundle`、不等候选；**从没连上就 failed** 才带站点自建 TURN
+（只取 turn:/turns:，绝不带 Cloudflare）重来，覆盖封了 8000 端口的网络。别再加回候选等待。
+`npm run test:live-ice` 守着；浏览器验收仍须确认 PeerConnection `connected` 且观众视频帧数增长。
+
+SRS 会话的账（`server/src/live.js` 的 `kickSrsClient` 一段）：SRS 只要客户端一直回 STUN 就一直转发，
+和我们的房间成员关系无关。按 hook 的 `client_id` 记账、经回环 API `DELETE /api/v1/clients/<id>` 踢人：
+同一观众新开拉流踢旧的；观众离房宽限 `LIVE_SRS_ORPHAN_GRACE_MS`（默认 45 秒，同 key 换 socket 回来可认领）
+后踢；主播重新 WHIP 前先踢旧上行（否则 stream busy 要等 stun_timeout 30 秒，全房黑屏）；下播全踢。
+hook 只收本机 / Docker 网桥、且不带任何反代头的请求（密钥泄露也不能从公网伪造 on_publish）。
+观众换播放票走 `srs-play-grant`（不走 watch，watch 会让主播重建协作连接）；SRS 房里点对点协作通道
+只在这一局有 2P 位时才建、最多 16 条，它失败只重试两次、**绝不**让视频观看报错。
+回归：`cd server && npm run test:live-srs`、`npm run test:broadcast-idle`。
 
 生产机是从 `dist/client` 现场服务，所以 `vite.config.ts` 的 `emptyOutDir` 必须是 `false`。
 2026-09-25 日志已取证到构建期 `dist/client/index.html` 短暂不存在，SSR 当场 500。

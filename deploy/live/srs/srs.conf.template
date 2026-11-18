@@ -1,4 +1,5 @@
-listen              1935;
+# RTMP 只给本机：直播只走 WebRTC，1935 不该出现在公网（防火墙之外再加一道，Docker 下也不对外发布）。
+listen              127.0.0.1:1935;
 max_connections     1000;
 daemon              off;
 pid                 /run/8bitgo-live-srs/srs.pid;

@@ -101,7 +101,8 @@ let lastVideoTrack = null
 const senders = []
 const peerConnections = []
 class FakeRTCPeerConnection {
-  constructor() {
+  constructor(config) {
+    this.config = config
     this.connectionState = 'new'
     this._senders = []
     peerConnections.push(this)
@@ -309,10 +310,29 @@ console.log('\n── 停播 ──')
 console.log('\n── SRS 视频不能依赖点对点协作通道 ──')
 {
   globalThis.__fakeLiveTransport = 'srs'
+  // 没有 2P 位的游戏（绝大多数）：SRS 房里一条点对点连接都不该建
+  const before = peerConnections.length
+  const plain = await startBroadcast({
+    sources: { canvas },
+    meta: { gameSlug: 'kof98', gameName: 'KOF 98', platform: 'arcade', title: 'x', hostName: 'y' },
+  })
+  fire('viewer-joined', { viewerId: 'srs-plain-viewer' })
+  fire('viewers', { count: 1 })
+  await sleep(40)
+  const plainConnections = peerConnections.slice(before)
+  ok(plainConnections.length === 1 && plainConnections[0].getSenders().length > 0, '⭐ 没有 2P 位时只建 SRS 上行，不给观众建点对点协作连接')
+  ok(plainConnections[0].config?.iceServers?.length === 0 && plainConnections[0].config?.bundlePolicy === 'max-bundle', '⭐ SRS 上行默认不配 ICE 服务器（ICE-lite 不需要，也不被墙外 STUN 卡住）')
+  fire('viewer-left', { viewerId: 'srs-plain-viewer' })
+  fire('viewers', { count: 0 })
+  await sleep(3_100)
+  plain.stop()
+
+  // 有 2P 位：协作通道照建，但它失败不能连累视频
   const firstConnection = peerConnections.length
   const srsLive = await startBroadcast({
     sources: { canvas },
-    meta: { gameSlug: 'kof98', gameName: 'KOF 98', platform: 'arcade', title: 'x', hostName: 'y' },
+    meta: { gameSlug: 'fireboy', gameName: 'Fireboy', platform: 'flash', title: 'x', hostName: 'y' },
+    coopButtons: () => ['left', 'right', 'up'],
   })
   fire('viewer-joined', { viewerId: 'srs-viewer' })
   fire('viewers', { count: 1 })

@@ -25,7 +25,7 @@
  * （见 peers 的注释）。
  */
 import type { CaptureSources, PadButton } from './types'
-import { type LiveChatMessage, connectLive, exchangeLiveSrsSdp, liveIceConfig, liveStunServers, waitForLiveIceGathering, preferLiveSrsCodecs, type LiveSocket } from '@/services/live'
+import { type LiveChatMessage, connectLive, exchangeLiveSrsSdp, liveIceConfig, liveSrsErrorStatus, liveSrsIceServers, preferLiveSrsCodecs, srsOfferSdp, srsPeerConfiguration, type LiveSocket } from '@/services/live'
 // 弹幕的清洗 / 限流 / ack 都在 chatSend.ts 里（两条发送路径共用一份，见那边的文件头）
 import { sendChatWithAck, type ChatSendResult } from './chatSend'
 import { applyTuning, fpsForViewers, sizeOfTrack, tuningFor, usableVideoSize } from './videoTuning'
@@ -79,6 +79,18 @@ const MAX_PENDING_ICE = 64
 const RESUME_RETRY_MS = 2_000
 /** ICE 的 disconnected 可能瞬时自愈，但也可能永远不进 failed；到点就收掉这路空编码。 */
 const PEER_DISCONNECTED_GRACE_MS = 12_000
+/**
+ * SRS 上行的 disconnected 宽限。SRS 是 ICE-lite、不支持 ICE restart，断了只能重建会话；
+ * 而这一路断着的时候**全房观众一起黑屏**，等 12 秒太久。服务端会先踢掉旧上行再接新 WHIP，
+ * 重建只要一两个 RTT，所以这里收得比点对点那一路更紧。
+ */
+const SRS_DISCONNECTED_GRACE_MS = 8_000
+/**
+ * SRS 房里「上场当 2P」的点对点协作连接最多建这么多条。
+ * 视频走 SRS 之后观众能上百人，而每条点对点连接都要在主播的游戏页里跑一套 ICE + DTLS + SCTP；
+ * 2P 座位只有一个，给前面这些人留着入口足够了，后面的人照样看直播，只是看不到「申请上场」。
+ */
+const MAX_SRS_COOP_PEERS = 16
 
 export type BroadcastState = 'connecting' | 'live' | 'reconnecting' | 'ended' | 'error'
 
@@ -329,8 +341,20 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
   let srsRetryCount = 0
   let srsRetryTimer = 0
   let srsDisconnectTimer = 0
+  /** 当前推流票被服务端拒过（403），没换到新票之前别再拿它去协商 */
+  let srsGrantStale = false
   let srsSentBytes: number | undefined
   let srsSentAt: number | undefined
+  /**
+   * 直连 SRS 从没连上就 failed 过一次：这台机器的网络多半封了 UDP/TCP 8000，之后改带自建 TURN。
+   * 整场直播保持（见 services/liveSrsIce.ts）。
+   */
+  let srsRelay = false
+  /** SRS 房里服务端告诉过我们的观众 id。2P 位晚到 / 中途出现时，靠它给已经在看的人补建协作通道 */
+  const srsViewerIds = new Set<string>()
+  /** 上一次看到的「这一局有没有 2P 位」，只在变化时补建协作通道 */
+  let srsCoopOpen = false
+  const coopAvailable = () => (options.coopButtons?.().length ?? 0) > 0
 
   const tuneSrsSender = (sender: RTCRtpSender) => {
     tuneSender(
@@ -373,9 +397,11 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     const generation = ++srsGeneration
     let pc: RTCPeerConnection | null = null
     try {
-      const iceServers = await liveStunServers()
+      // 默认不配任何 ICE 服务器、不等候选：SRS 是 ICE-lite，只认浏览器打过去的 STUN 来源地址
+      const iceServers = await liveSrsIceServers({ relay: srsRelay })
       if (stopped || transport !== 'srs' || !srsGrant || !hasLiveViewers() || generation !== srsGeneration) return
-      const publisherPc = new RTCPeerConnection({ iceServers })
+      const publisherPc = new RTCPeerConnection(srsPeerConfiguration(iceServers))
+      let everConnected = false
       pc = publisherPc
       srsPc = publisherPc
       for (const track of media.stream.getTracks()) {
@@ -387,6 +413,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
       const checkState = () => {
         if (srsPc !== publisherPc || stopped) return
         if (publisherPc.connectionState === 'connected') {
+          everConnected = true
           window.clearTimeout(srsDisconnectTimer)
           srsDisconnectTimer = 0
           srsRetryCount = 0
@@ -394,8 +421,13 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
           srsDisconnectTimer = window.setTimeout(() => {
             srsDisconnectTimer = 0
             if (srsPc === publisherPc && publisherPc.connectionState === 'disconnected') scheduleSrsRestart()
-          }, PEER_DISCONNECTED_GRACE_MS)
+          }, SRS_DISCONNECTED_GRACE_MS)
         } else if (publisherPc.connectionState === 'failed' || publisherPc.connectionState === 'closed') {
+          // 一次都没连上就失败：直连这条路不通（封了 8000），下一轮带上自建中继
+          if (!everConnected && publisherPc.connectionState === 'failed' && !srsRelay) {
+            srsRelay = true
+            console.warn('[live] 直连 SRS 失败，之后改经自建 TURN 中继推流')
+          }
           scheduleSrsRestart()
         }
       }
@@ -403,10 +435,8 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
       publisherPc.oniceconnectionstatechange = checkState
       const offer = await publisherPc.createOffer()
       await publisherPc.setLocalDescription(offer)
-      await waitForLiveIceGathering(publisherPc)
-      const localSdp = publisherPc.localDescription?.sdp
-      if (!localSdp) throw new Error('SRS publisher offer missing SDP')
-      const answer = await exchangeLiveSrsSdp('publish', roomId, srsGrant, localSdp)
+      // offer 落地就提交，不等候选（原因见 services/liveSrsIce.ts）
+      const answer = await exchangeLiveSrsSdp('publish', roomId, srsGrant, srsOfferSdp(publisherPc))
       if (stopped || srsPc !== publisherPc || generation !== srsGeneration) return
       await publisherPc.setRemoteDescription(answer)
       console.info('[live] SRS 上行已完成 SDP 协商')
@@ -415,6 +445,8 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
         srsPc = null
         try { pc?.close() } catch { /* ignore */ }
         console.warn('[live] SRS 上行协商失败，保留游戏并安排重试：', error)
+        // 403：票过期了或者我已经不是主播（续播还没落地）。下一轮重试前先向服务端换票
+        if (liveSrsErrorStatus(error) === 403) srsGrantStale = true
         scheduleSrsRestart()
       }
     } finally {
@@ -445,10 +477,16 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
         if (socket.connected && roomId && token) {
           try {
             const grant = await call<{ srsGrant?: string }>(socket, 'srs-publish-grant', { roomId, token })
-            if (grant.srsGrant) srsGrant = grant.srsGrant
+            if (grant.srsGrant) {
+              srsGrant = grant.srsGrant
+              srsGrantStale = false
+            }
           } catch {
             /* 信令也断了时沿用当前票；resume 成功会再发一张新票 */
           }
+        } else if (srsGrantStale) {
+          // 票已经被拒过、信令又没连着：再拿旧票去敲 SRS 只会再被拒，等 resume 发新票
+          return
         }
         if (stopped || !hasLiveViewers()) {
           releaseIfIdle()
@@ -589,6 +627,12 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
   /** 等 ICE 配置的建连也要记账：观众离开或重新 watch 时，迟到的旧请求不能再开一条编码路。 */
   const viewerRequests = new Map<string, number>()
   let viewerRequestCounter = 0
+  /** 已建好 + 正在建的协作连接数（addViewer 在等 ICE 配置时还没进 peers，只按 peers 数会超额） */
+  const coopSlotsUsed = () => {
+    let used = peers.size
+    for (const id of viewerRequests.keys()) if (!peers.has(id)) used++
+    return used
+  }
   let viewers = 0
   /** SRS 视频消费者由服务端名单决定；P2P 房间则由实际媒体 PeerConnection 决定。 */
   const hasLiveViewers = () => transport === 'srs' ? viewers > 0 : peers.size > 0
@@ -638,6 +682,23 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
   /** 把闸交回来的「要松开的键」真的松掉。收座 / 断线 / 停播都靠这一句 */
   const release = (keys: PadButton[]) => {
     for (const b of keys) options.onGuestInput?.(b, false)
+  }
+
+  /**
+   * SRS 房：2P 位刚出现（句柄比开播晚到、或者中途换了支持双打的游戏）时，给已经在看的人补建协作通道。
+   * 观众进场那一刻没有 2P 位就不会建（见 addViewer），不补的话他们永远看不到「申请上场」。
+   * 2P 位消失时不拆：空闲通道几乎不花钱，观众重连时自然不再建。
+   */
+  const syncSrsCoop = () => {
+    if (stopped || dormant || transport !== 'srs' || !socket.connected || !roomId) return
+    const open = coopAvailable()
+    if (open === srsCoopOpen) return
+    srsCoopOpen = open
+    if (!open) return
+    for (const id of srsViewerIds) {
+      if (coopSlotsUsed() >= MAX_SRS_COOP_PEERS) break
+      if (!peers.has(id) && !viewerRequests.has(id)) void addViewer(id, false)
+    }
   }
 
   /** 告诉某个观众他现在有没有 2P 位。通道没开就算了 —— 他重连时会重新收到 hello */
@@ -811,6 +872,29 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
    */
   const addViewer = async (viewerId: string, force: boolean, coopRecoveryAttempt = 0, cloudflareFallback = false) => {
     if (stopped) return
+    if (transport === 'srs') {
+      /*
+        SRS 房的视频走 SFU，和这条点对点连接无关：先确保唯一那一路上行在推，再决定要不要协作通道。
+        以前每位观众都会建一条只装 DataChannel 的点对点连接 —— 上百个观众就是上百套 ICE / DTLS / SCTP
+        跑在主播的游戏页里，配了 TURN 时每条还要占两份中继分配，而绝大多数游戏根本没有 2P 位。
+      */
+      srsViewerIds.add(viewerId)
+      const media = ensureStream()
+      if (!media) {
+        if (socket.connected && roomId && !dormant) {
+          socket.emit('signal', { target: viewerId, data: { error: 'no-source', gen: ++genCounter } satisfies SignalData })
+        }
+        return
+      }
+      void startSrsPublisher(media)
+      const current = peers.get(viewerId)
+      if (!coopAvailable()) {
+        // 观众要求重来但这一局已经没有 2P 位：旧协作连接收掉；平时留着它，空闲连接几乎不花钱
+        if (current && force) cancelViewer(viewerId)
+        return
+      }
+      if (!current && !viewerRequests.has(viewerId) && coopSlotsUsed() >= MAX_SRS_COOP_PEERS) return
+    }
     const existing = peers.get(viewerId)
     if (existing) {
       if (!force && alive(existing.pc)) return
@@ -1022,6 +1106,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     */
     reportCoop()
     if (transport === 'srs') {
+      syncSrsCoop()
       if (stopped || !srsPc || statsInFlight) return
       statsInFlight = true
       try {
@@ -1258,7 +1343,8 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
    * 只在有观众、真在抓屏的时候查：没人看时抓屏本来就是放掉的。
    */
   const sourceTick = () => {
-    if (stopped || !built || peers.size === 0) return
+    // SRS 房的视频消费者在服务端名单上，不在 peers 里（那里只有 2P 协作连接，可能一条都没有）
+    if (stopped || !built || !hasLiveViewers()) return
     if (built.check()) console.info('[live] 采集源已更换（画布被重建或换掉），观众那头无缝接上')
   }
 
@@ -1279,6 +1365,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
       visibilityBound = false
     }
     for (const id of Array.from(peers.keys())) dropPeer(id)
+    srsViewerIds.clear()
     releaseStream()
     seedFrame?.close()
     seedFrame = null
@@ -1345,11 +1432,14 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
       viewers = 0
       options.onViewers?.(0)
       coopReported = ''
+      srsViewerIds.clear()
+      srsCoopOpen = false
     }
     roomId = data.roomId
     token = data.token
     transport = data.transport === 'srs' ? 'srs' : 'p2p'
     srsGrant = data.srsGrant || ''
+    srsGrantStale = false
     if (transport === 'srs' && !srsGrant) throw new Error('SRS publish grant is missing')
     options.onRoom?.(roomId)
     // 新房间在服务端总是从 false/false 开始，不能拿上一间房的去重键跳过首次上报。
@@ -1379,8 +1469,13 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
       const data = await call<{ roomId: string; viewers?: string[]; transport?: 'p2p' | 'srs'; srsGrant?: string }>(socket, 'resume-live', { roomId, token })
       transport = data.transport === 'srs' ? 'srs' : 'p2p'
       srsGrant = data.srsGrant || ''
+      srsGrantStale = false
       if (transport === 'srs' && !srsGrant) throw new Error('SRS publish grant is missing')
       const current = new Set(data.viewers ?? [])
+      if (transport === 'srs') {
+        srsViewerIds.clear()
+        for (const id of current) srsViewerIds.add(id)
+      }
       for (const id of viewerRequests.keys()) if (!current.has(id)) viewerRequests.delete(id)
       // 名单上没有的观众已经走了（宽限期里它们 disconnect 时主播不在，没收到 viewer-left）
       for (const id of Array.from(peers.keys())) if (!current.has(id)) dropPeer(id)
@@ -1454,6 +1549,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
      * 那条连接要是已经死了 / 我们这边压根没有，就按新观众处理，给它一轮 offer。
      */
     if (!payload?.from || !payload.to || payload.from === payload.to) return
+    if (srsViewerIds.delete(payload.from)) srsViewerIds.add(payload.to)
     const p = peers.get(payload.from)
     if (p && alive(p.pc)) {
       peers.delete(payload.from)
@@ -1473,7 +1569,9 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
   }) as (...args: never[]) => void)
 
   socket.on('viewer-left', ((payload: { viewerId?: string }) => {
-    if (payload?.viewerId) cancelViewer(payload.viewerId)
+    if (!payload?.viewerId) return
+    srsViewerIds.delete(payload.viewerId)
+    cancelViewer(payload.viewerId)
   }) as (...args: never[]) => void)
 
   socket.on('live-ended', ((payload: { roomId?: string; reason?: string }) => {
@@ -1482,6 +1580,8 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     viewerRequests.clear()
     for (const id of Array.from(peers.keys())) dropPeer(id)
     releaseStream()
+    srsViewerIds.clear()
+    srsCoopOpen = false
     roomId = ''
     token = ''
     viewers = 0

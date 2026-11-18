@@ -53,6 +53,13 @@ import { fastForwardBoot, mameBootFastForwardFrames } from '../mameBootSkip'
 import { ejsInputDefaultOptions, nesVirtualPad, repairEjsSeats, restoredButtonIds } from '../ejsSeats'
 import { identifyKnownMameArcadeMedia, mameDiskSatisfies, readMameChdHeader, type MameArcadeDiskProfile } from '@/lib/mameArcadeMedia'
 import { identifyNamcoMameSet, type NamcoMameMatch } from '@/lib/namcoMameSets'
+import {
+  identifyMameCatalogSets,
+  loadMameSetCatalog,
+  mayContainMameCatalogSet,
+  pickMameCatalogSetForPlayback,
+  type MameCatalogMatch,
+} from '@/lib/mameSetCatalog'
 import { combinedRomProgress, gateProgressUntilRomComplete } from '../romProgress'
 import { chdCompressors, psxCoreForPreparedName, psxCoreForTransfer, PSX_CHD_AUDIO_LATENCY_MS, PSX_CHD_COMPAT_CORE, PSX_CHD_CORE } from '../psxChd'
 import { canStreamPsxChd, preparePsxRangeDisc, preparePsxRangePlaylist, type PsxRangeMedia, type PsxRangeFs } from '../psxRangeDisc'
@@ -1953,6 +1960,23 @@ function hackOfEntries(entries: readonly ZipFileEntry[]): ArcadeHack | null {
  *
  * 两条路现在都走这里，同一张指纹表、同一套合成。
  */
+/**
+ * Sega Model 2 等只有 MAME 能跑的板子（数据表 mameSetCatalogData，约 80KB，按需加载）。
+ *
+ * 只有 Sega 式 ROM 名（epr- / mpr- / opr-）的包才去加载数据表：绝大多数街机游戏走 FBNeo，
+ * 不能为它们在开局关键路径上多一次请求。数据表取不到就当没认出来 —— 识别是锦上添花，
+ * 不能让本来能跑的游戏因此起不来。
+ */
+async function identifyRuntimeMameCatalogSet(entries: readonly ZipFileEntry[], name: string): Promise<MameCatalogMatch | null> {
+  if (!mayContainMameCatalogSet(entries)) return null
+  try {
+    return pickMameCatalogSetForPlayback(identifyMameCatalogSets(await loadMameSetCatalog(), entries, name))
+  } catch (err) {
+    console.warn('[arcade] MAME set 目录加载失败，按原文件名继续：', err)
+    return null
+  }
+}
+
 async function arcadeBlobFrom(
   blob: Blob,
   name: string,
@@ -1962,6 +1986,7 @@ async function arcadeBlobFrom(
   const mameMedia = identifyKnownMameArcadeMedia(entries, name)
   // FBNeo 索引没有的 Namco System 11/12：按 MAME 源码 CRC 精确认出来，播放器据此纠正核心与包名
   const namcoSet = hack ? null : identifyNamcoMameSet(entries, name)
+  const mameCatalogSet = hack || namcoSet ? null : await identifyRuntimeMameCatalogSet(entries, name)
   let output = blob
   if (hack?.derive) {
     // 只有确实需要现场合成的少数改版包才申请整块内存；普通 romset 全程保持 Blob。
@@ -1976,7 +2001,7 @@ async function arcadeBlobFrom(
       console.info(`[arcade] ${hack.title}：已现场合成 ${hack.derive.outputs.join(' / ')} 并补进包里`)
     }
   }
-  return { url: objectUrlForEngine(output), name, hack, mameMedia, namcoSet, blob: output }
+  return { url: objectUrlForEngine(output), name, hack, mameMedia, namcoSet, mameCatalogSet, blob: output }
 }
 
 /**
@@ -2059,6 +2084,8 @@ interface PreparedArcadeRom {
   hack: ArcadeHack | null
   mameMedia: MameArcadeDiskProfile | null
   namcoSet: NamcoMameMatch | null
+  /** Sega Model 2 等 MAME 专属 set（merged 包按文件名 / 父集挑出一个） */
+  mameCatalogSet: MameCatalogMatch | null
 }
 
 
@@ -3329,6 +3356,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let detectedMameMedia: MameArcadeDiskProfile | null = null
   /** 远端街机包按 CRC 认出的 Namco System 11/12 set（决定核心、包名、平台 BIOS 与按键数） */
   let namcoSet: NamcoMameMatch | null = null
+  /** 远端街机包按 MAME 源码目录认出的 Sega Model 2 等 set（决定核心、包名、平台 BIOS 与按键数） */
+  let mameCatalogSet: MameCatalogMatch | null = null
   /** NDS ZIP 内唯一的 ROM；开局前强制使用，绕过引擎“扩展名不认识就取第一个文件”的兜底。 */
   let ndsArchiveEntry = ''
   /** 同一项的中央目录信息；外层解包（inflateNdsZipRom）要用 */
@@ -5059,6 +5088,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             真实短名，不再靠文件名启发式（canonicalMameRomset 会把 `Tekken 3 (Japan).zip` 收成
             System 11 的 `tekken`、`Soul Calibur.zip` 收成 `soul`，MAME 随即静默回菜单）。
           */
+          /** 认出的板子用不上平台级 BIOS 时的原因（Namco / Model 2 共用一处清空，见下） */
+          let unneededPlatformBios = ''
           if (prepared.namcoSet) {
             namcoSet = prepared.namcoSet
             if (!isMameCurrentCore(core)) {
@@ -5071,12 +5102,36 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
               System 11 只要 namcoc76。照下的话白占一份下载、还要被 relocateMameBios 镜像进 /roms。
             */
             if (engineBiosUrl && platformBiosName !== (namcoSet.bios ?? '')) {
-              console.info(`[emulatorjs] 跳过平台级 BIOS（${platformBiosName || engineBiosUrl}）：${namcoSet.board} ${namcoSet.bios ? `只需要 ${namcoSet.bios}.zip` : '不需要 BIOS'}`)
-              engineBiosUrl = ''
+              unneededPlatformBios = `${namcoSet.board} ${namcoSet.bios ? `只需要 ${namcoSet.bios}.zip` : '不需要 BIOS'}`
             }
             if (namcoSet.bios && gameBiosName !== namcoSet.bios) {
               console.warn(`[arcade] ${namcoSet.romset} 需要 BIOS 包 ${namcoSet.bios}.zip，但后台「BIOS 包（系统名）」${gameBiosName ? `填的是 ${gameBiosName}` : '是空的'}；缺它 MAME 会报 required files are missing`)
             }
+          }
+          /*
+            Sega Model 2 等同理：FBNeo 没有这些板子。按 CRC 认出的短名覆盖文件名（merged 包 doa.zip
+            选中的是哪个版本就叫哪个名字，MAME 按 CRC 在包里找得到各版本的 ROM）。
+            设备 ROM（segabill …）包里没有时要靠「BIOS 包」那一档；平台级 neogeo.zip 对它们毫无用处。
+          */
+          if (prepared.mameCatalogSet) {
+            mameCatalogSet = prepared.mameCatalogSet
+            if (!isMameCurrentCore(core)) {
+              console.warn(`[arcade] ${mameCatalogSet.board}（${mameCatalogSet.romset}）只能用 MAME 运行，${core} 没有这块板子的驱动，已自动切换为 mame-current`)
+              core = 'mame-current'
+            }
+            engineGameName = `${mameCatalogSet.romset}.zip`
+            const neededBios = mameCatalogSet.missingDevices.map((device) => device.shortname)
+            if (engineBiosUrl && !neededBios.includes(platformBiosName)) {
+              unneededPlatformBios = `${mameCatalogSet.board} ${neededBios.length ? `需要的是 ${neededBios.join(' / ')}.zip` : '的设备 ROM 已在游戏包里'}`
+            }
+            for (const bios of neededBios) {
+              if (bios === gameBiosName || bios === platformBiosName) continue
+              console.warn(`[arcade] ${mameCatalogSet.romset} 需要设备 ROM 包 ${bios}.zip，但后台「BIOS 包（系统名）」${gameBiosName ? `填的是 ${gameBiosName}` : '是空的'}；缺它 MAME 会报 required files are missing`)
+            }
+          }
+          if (unneededPlatformBios) {
+            console.info(`[emulatorjs] 跳过平台级 BIOS（${platformBiosName || engineBiosUrl}）：${unneededPlatformBios}`)
+            engineBiosUrl = ''
           }
           // MAME（mame-current）按 romset 文件名认驱动：上传文件名不标准时纠正成真实 romset 名。
           // 路径前缀（roms/）不在这里加 —— 统一在下面 Object.assign 之前做一次，覆盖所有来源。
@@ -5228,7 +5283,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           ...(options.platform === 'arcade'
             ? {
                 EJS_VirtualGamepadSettings: arcadeVirtualPad(
-                  effectiveArcadeButtons(options.arcadeButtons ?? namcoSet?.buttons, options.biosSet?.name, options.gameSlug),
+                  effectiveArcadeButtons(options.arcadeButtons ?? namcoSet?.buttons ?? mameCatalogSet?.buttons, options.biosSet?.name, options.gameSlug),
                   core,
                 ),
               }

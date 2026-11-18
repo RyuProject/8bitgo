@@ -21,7 +21,7 @@ import type { Presence } from './presence'
 import type { UserRole } from '@/types'
 import { describeExport, looksLikeSocketIo, runAsCommonJs, umdGlobals } from '@/lib/umd'
 import { liveEnabled } from './roomFlags'
-import { waitForLiveIceGathering } from './liveIceGathering'
+import { rankSrsCodecs, relayOnlyIceServers, srsJitterTargetMs, srsOfferSdp, srsPeerConfiguration } from './liveSrsIce'
 
 export interface LiveRoomInfo {
   roomId: string
@@ -120,6 +120,16 @@ export interface LiveSocket {
   close: () => void
 }
 
+/** SDP 代理的失败。status 让调用方分清「票过期了换张票」（403）、「主播还没推上来」（409）和「歇一会儿」（429）。 */
+export class LiveSrsError extends Error {
+  readonly status: number
+  constructor(message: string, status: number) {
+    super(message)
+    this.name = 'LiveSrsError'
+    this.status = status
+  }
+}
+
 /** 通过本站后端代理 SRS 的 HTTP SDP 协商，避免把 SRS 管理 API 暴露给浏览器。 */
 export async function exchangeLiveSrsSdp(
   mode: 'publish' | 'play',
@@ -138,27 +148,54 @@ export async function exchangeLiveSrsSdp(
       signal: controller.signal,
     })
     const payload = (await response.json().catch(() => null)) as { sdp?: string; error?: string } | null
-    if (!response.ok || !payload?.sdp) throw new Error(payload?.error || `SRS ${mode} negotiation failed`)
+    if (!response.ok || !payload?.sdp) throw new LiveSrsError(payload?.error || `SRS ${mode} negotiation failed`, response.status || 0)
     return { type: 'answer', sdp: payload.sdp }
   } finally {
     window.clearTimeout(timer)
   }
 }
 
-/** SRS 6 以 H.264 / Opus 作为最稳妥的 WebRTC 组合；把它们放在首选位置，避免浏览器先选了不兼容编码。 */
+/** 拿出 HTTP 状态码；网络错误 / 超时没有状态码，返回 0 */
+export function liveSrsErrorStatus(error: unknown): number {
+  return error instanceof LiveSrsError ? error.status : 0
+}
+
+/**
+ * SRS 6 以 H.264 / Opus 作为最稳妥的 WebRTC 组合；把它们放在首选位置，避免浏览器先选了不兼容编码。
+ *
+ * 按规范 setCodecPreferences 要用**接收端**能力校验（recvonly 拉流尤其如此）；拿发送端能力去设，
+ * 某些 H.264 profile 不在接收能力里就会整个抛错、首选失效。所以先试接收端，再退回发送端。
+ */
 export function preferLiveSrsCodecs(transceiver: RTCRtpTransceiver, kind: 'audio' | 'video'): void {
   if (typeof transceiver.setCodecPreferences !== 'function') return
-  try {
-    const senderCapabilities = typeof RTCRtpSender === 'undefined' ? undefined : RTCRtpSender.getCapabilities?.(kind)
-    const receiverCapabilities = typeof RTCRtpReceiver === 'undefined' ? undefined : RTCRtpReceiver.getCapabilities?.(kind)
-    const codecs = (senderCapabilities ?? receiverCapabilities)?.codecs
-    if (!codecs?.length) return
-    const preferredMime = kind === 'video' ? 'video/h264' : 'audio/opus'
-    const preferred = codecs.filter((codec) => codec.mimeType.toLowerCase() === preferredMime)
-    if (!preferred.length) return
-    transceiver.setCodecPreferences([...preferred, ...codecs.filter((codec) => !preferred.includes(codec))])
-  } catch {
-    /* 有的浏览器声明支持但尚未实现；保持浏览器默认协商，不让播放器因此失败。 */
+  const sources = [
+    typeof RTCRtpReceiver === 'undefined' ? undefined : RTCRtpReceiver.getCapabilities?.(kind)?.codecs,
+    typeof RTCRtpSender === 'undefined' ? undefined : RTCRtpSender.getCapabilities?.(kind)?.codecs,
+  ]
+  for (const codecs of sources) {
+    if (!codecs?.length) continue
+    const ranked = rankSrsCodecs(codecs, kind)
+    if (!ranked) continue
+    try {
+      transceiver.setCodecPreferences(ranked)
+      return
+    } catch {
+      /* 这份能力表被拒了就换另一份；都不行就保持浏览器默认协商，不让播放器因此失败。 */
+    }
+  }
+}
+
+/** 给 SRS 拉流的接收端设抖动缓冲（见 srsJitterTargetMs）。不支持的浏览器静默跳过 */
+export function tuneLiveSrsJitter(pc: RTCPeerConnection, sample: { loss: number; rttMs?: number }): void {
+  const target = srsJitterTargetMs(sample)
+  for (const receiver of pc.getReceivers()) {
+    const r = receiver as RTCRtpReceiver & { jitterBufferTarget?: number | null }
+    if (!('jitterBufferTarget' in r)) continue
+    try {
+      if (r.jitterBufferTarget !== target) r.jitterBufferTarget = target
+    } catch {
+      /* 超出浏览器允许的范围：保持原值 */
+    }
   }
 }
 type IoFactory = (uri: string, opts?: Record<string, unknown>) => LiveSocket
@@ -388,18 +425,24 @@ export async function liveIceConfig({ cloudflareFallback = false }: { cloudflare
   }
 }
 
-/** SRS 媒体走公网直连；只带 STUN 候选，不把协作通道的 TURN 中继成本带进视频链路。 */
-export async function liveStunServers(): Promise<RTCIceServer[]> {
-  const config = await liveIceConfig()
-  const servers = config.iceServers.flatMap((server) => {
-    const urls = Array.isArray(server.urls) ? server.urls : [server.urls]
-    const stunUrls = urls.filter((url) => /^stuns?:/i.test(String(url)))
-    return stunUrls.length ? [{ urls: stunUrls.length === 1 ? stunUrls[0] : stunUrls }] : []
-  })
-  return servers.length ? servers : [{ urls: 'stun:stun.l.google.com:19302' }]
+/**
+ * SRS 连接用的 ICE 服务器（为什么默认一个都不要，见 liveSrsIce.ts 文件头）。
+ *
+ * relay=true 只在「直连从没连上就 failed」之后用：只带站点自建的 TURN 中继，绝不带 Cloudflare
+ * （那是 P2P 观众的付费末级兜底，见 netplay.ts）。取不到配置就返回空 —— 和直连一样，不会更差。
+ */
+export async function liveSrsIceServers({ relay = false }: { relay?: boolean } = {}): Promise<RTCIceServer[]> {
+  if (!relay) return []
+  try {
+    const config = await liveIceConfig()
+    if (config.turnSources?.includes('cloudflare')) return []
+    return relayOnlyIceServers(config.iceServers)
+  } catch {
+    return []
+  }
 }
 
-export { waitForLiveIceGathering }
+export { srsOfferSdp, srsPeerConfiguration }
 
 /** 观看链接：朋友打开即是观众 */
 export function liveLink(gameSlug: string, roomId: string): string {
