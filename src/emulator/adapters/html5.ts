@@ -322,6 +322,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
   }
 
+  const isManagedGameSdkEntry = () =>
+    isManagedPvzEntry() || isManagedMinecraftEntry() || isManagedCs16Entry()
+
   const clearRemoteLiveCanvas = () => {
     remoteLiveSession = ''
     remoteLiveFrameId = 0
@@ -469,12 +472,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       const width = Number(message.detail?.width)
       const height = Number(message.detail?.height)
       const usable = Number.isFinite(width) && Number.isFinite(height) && width >= 16 && height >= 16 && width * height <= 16_777_216
-      // 同源页面由播放器直接验证；只对主动接入 SDK 的跨源页面启用远程能力。
-      if (!frameDocument()) {
+      // 截图/录制由同源播放器自行验证；直播可用本站受信任的 SDK 能力，避免 iframe 文档访问状态干扰。
+      const sameOrigin = Boolean(frameDocument())
+      if (!sameOrigin) {
         changed = setMediaCapability('screenshot', usable && Boolean(capabilities?.screenshot)) || changed
         changed = setMediaCapability('record', usable && Boolean(capabilities?.record)) || changed
-        gameSdkLiveCapable = usable && Boolean(capabilities?.live)
       }
+      if (!sameOrigin || isManagedGameSdkEntry()) gameSdkLiveCapable = usable && Boolean(capabilities?.live)
       console.info('[live][html5-sdk] 游戏页已就绪', {
         width,
         height,
@@ -838,7 +842,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       return result as Blob
     },
     async startRemoteLiveCapture() {
-      if ((!isManagedPvzEntry() && !isManagedMinecraftEntry() && !isManagedCs16Entry()) || frameDocument()) return false
+      if (!isManagedGameSdkEntry()) return false
       if (remoteLiveSession && remoteLiveCanvas && remoteLiveCanvas.width >= 16) return true
       if (!gameSdkReady) return null
       if (!gameSdkLiveCapable) {
