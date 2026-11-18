@@ -160,6 +160,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let remoteLiveAudioTrack: MediaStreamTrack | null = null
   let remoteLiveStream: MediaStream | null = null
   let remoteLiveFrameId = 0
+  let remoteLiveFirstFrameLogged = false
   const pendingGameSdkRequests = new Map<number, {
     operation: string
     resolve: (value: unknown) => void
@@ -391,6 +392,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       }
       remoteLiveContext.drawImage(bitmap, 0, 0, width, height)
       remoteLiveFrameId = message.frameId as number
+      if (!remoteLiveFirstFrameLogged) {
+        remoteLiveFirstFrameLogged = true
+        console.info('[live][html5-sdk] 播放器已收到游戏画面', { width, height })
+      }
     } catch {
       void stopRemoteLiveCapture()
     } finally {
@@ -405,10 +410,21 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    * 每条消息同时核对 frame、精确 origin、协议版本和请求编号，避免其它窗口伪造结果。
    */
   const onGameSdkMessage = (event: MessageEvent) => {
-    if (destroyed || !gameSdkOrigin || event.source !== iframe.contentWindow || event.origin !== gameSdkOrigin) return
+    if (destroyed || !gameSdkOrigin || event.source !== iframe.contentWindow) return
     const message = event.data as GameSdkMessage | null
-    if (!message || message.source !== GAME_SDK_SOURCE || message.version !== GAME_SDK_VERSION) return
+    if (event.origin !== gameSdkOrigin) {
+      if (message?.source === GAME_SDK_SOURCE) {
+        console.warn('[live][html5-sdk] 忽略 SDK 消息：来源不匹配', { expected: gameSdkOrigin, received: event.origin })
+      }
+      return
+    }
+    if (!message || message.source !== GAME_SDK_SOURCE) return
+    if (message.version !== GAME_SDK_VERSION) {
+      console.warn('[live][html5-sdk] 忽略 SDK 消息：协议不匹配', { source: message?.source, version: message?.version, type: message?.type })
+      return
+    }
     if (message.type === 'hello') {
+      console.info('[live][html5-sdk] 收到游戏页握手')
       if (!gameSdkToken) gameSdkToken = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
       try {
         iframe.contentWindow?.postMessage({ source: '8bitgo-host', version: GAME_SDK_VERSION, type: 'init', token: gameSdkToken }, gameSdkOrigin)
@@ -440,6 +456,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         changed = setMediaCapability('record', usable && Boolean(capabilities?.record)) || changed
         gameSdkLiveCapable = usable && Boolean(capabilities?.live)
       }
+      console.info('[live][html5-sdk] 游戏页已就绪', {
+        width,
+        height,
+        usable,
+        live: Boolean(capabilities?.live),
+        enabled: gameSdkLiveCapable,
+      })
       if (changed) options.onCaps?.(caps)
       return
     }
@@ -795,9 +818,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       if ((!isManagedPvzEntry() && !isManagedMinecraftEntry() && !isManagedCs16Entry()) || frameDocument()) return false
       if (remoteLiveSession && remoteLiveCanvas && remoteLiveCanvas.width >= 16) return true
       if (!gameSdkReady) return null
-      if (!gameSdkLiveCapable) return false
+      if (!gameSdkLiveCapable) {
+        console.warn('[live][html5-sdk] SDK 已就绪但未报告直播能力')
+        return false
+      }
       const sessionId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
       clearRemoteLiveCanvas()
+      remoteLiveFirstFrameLogged = false
       remoteLiveSession = sessionId
       let started = false
       try {
@@ -805,6 +832,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       } catch {
         started = false
       }
+      console.info('[live][html5-sdk] 游戏页直播请求结束', {
+        started,
+        receivedFrame: Boolean(remoteLiveCanvas && remoteLiveCanvas.width >= 16),
+      })
       if (!started || remoteLiveSession !== sessionId || !remoteLiveCanvas || remoteLiveCanvas.width < 16) {
         if (remoteLiveSession === sessionId) clearRemoteLiveCanvas()
         return false
