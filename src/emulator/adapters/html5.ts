@@ -357,6 +357,21 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
   }
 
+  const sendGameSdkInit = (): void => {
+    if (!gameSdkOrigin || !iframe.contentWindow) return
+    if (!gameSdkToken) gameSdkToken = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+    try {
+      iframe.contentWindow.postMessage({
+        source: '8bitgo-host',
+        version: GAME_SDK_VERSION,
+        type: 'init',
+        token: gameSdkToken,
+      }, gameSdkOrigin)
+    } catch {
+      // 页面还在跨域导航时先不发；新文档的 hello 会再次触发初始化。
+    }
+  }
+
   const drawRemoteLiveFrame = (message: GameSdkMessage): void => {
     const bitmap = message.bitmap
     const width = Number(bitmap?.width) || 0
@@ -425,20 +440,17 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
     if (message.type === 'hello') {
       console.info('[live][html5-sdk] 收到游戏页握手')
-      if (!gameSdkToken) gameSdkToken = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
-      try {
-        iframe.contentWindow?.postMessage({ source: '8bitgo-host', version: GAME_SDK_VERSION, type: 'init', token: gameSdkToken }, gameSdkOrigin)
-      } catch {
-        // 不支持精确目标来源的浏览器会保留原有 iframe 能力，不影响游戏启动。
-      }
+      sendGameSdkInit()
       return
     }
     if (!gameSdkToken || message.token !== gameSdkToken) {
-      console.warn('[live][html5-sdk] 忽略 SDK 消息：握手令牌不匹配', {
-        type: message.type,
-        hostTokenReady: Boolean(gameSdkToken),
-        messageTokenReady: typeof message.token === 'string' && Boolean(message.token),
-      })
+      if (isManagedPvzEntry()) {
+        console.warn('[live][html5-sdk] 忽略 SDK 消息：握手令牌不匹配', {
+          type: message.type,
+          hostTokenReady: Boolean(gameSdkToken),
+          messageTokenReady: typeof message.token === 'string' && Boolean(message.token),
+        })
+      }
       return
     }
     if (message.type === 'unready') {
@@ -649,7 +661,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let loaded = false
   iframe.addEventListener('load', () => {
     if (destroyed) return
-    console.info('[live][html5-sdk] 游戏 iframe 加载完成', { repeated: loaded })
+    if (isManagedPvzEntry()) console.info('[live][html5-sdk] 游戏 iframe 加载完成', { repeated: loaded })
     // 门户页跳进真正游戏页也会再次 load；就绪只报一次，媒体来源却必须跟着换到新文档。
     startMediaMonitoring()
     if (loaded) {
@@ -666,6 +678,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         pending.reject(new Error('网页游戏页面已跳转'))
       }
       pendingGameSdkRequests.clear()
+      // 子页会在脚本执行时先发 hello，load 随后才到。令牌刚建立就清掉会让它的 ready 被丢弃；
+      // 在新文档 load 后立即发新令牌，让 SDK 就绪后再报告一次画布与能力。
+      sendGameSdkInit()
     }
     /**
      * 只认第一次 load。
