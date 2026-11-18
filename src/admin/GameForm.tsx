@@ -41,6 +41,16 @@ import {
 } from '@/lib/mameArcadeMedia'
 import { mameChdProfileForRomFileName } from '@/lib/mameChdSets'
 import { flattenArcadeZipBlob } from '@/lib/flattenArcadeZip'
+import {
+  buildMameCatalogSetZip,
+  describeMameCatalogDevice,
+  identifyMameCatalogSets,
+  loadMameSetCatalog,
+  mameCatalogBiosName,
+  mameCatalogStatusNote,
+  mayContainMameCatalogSet,
+  type MameCatalogMatch,
+} from '@/lib/mameSetCatalog'
 import { detectArcadeCore, type ArcadeCoreId } from '@/lib/arcadeCoreDetection'
 import { assertRomArchiveRef, impliedRomName, romArchiveRef } from '@/lib/romArchiveUrl'
 import {
@@ -3349,6 +3359,8 @@ function RomField({
   const [romset, setRomset] = useState<RomsetIdentification | null>(null)
   /** FBNeo 索引没有覆盖的、按 MAME 源码 CRC 精确识别的街机 set */
   const [mameRomset, setMameRomset] = useState<NamcoMameMatch | null>(null)
+  /** 按 MAME 源码目录认出的 Sega Model 2 等 set；rebuiltFrom 是重组前的原包名（merged 包） */
+  const [mameCatalogSet, setMameCatalogSet] = useState<(MameCatalogMatch & { rebuiltFrom?: string }) | null>(null)
   /** 需要额外 CHD 的 MAME 识别结果留在上传位旁边，管理员不必滚到表单底部才知道下一步。 */
   const [mameMedia, setMameMedia] = useState<MameArcadeDiskProfile | null>(null)
   /** 同一个语言槽只恢复一次；父表单每次 setForm 都会重绘，不能因此启动第二条轮询。 */
@@ -3541,6 +3553,41 @@ function RomField({
     }
   }
 
+  /** 重组 merged 包时记下原包名，识别面板据此说明「从哪个包里抽出来的」 */
+  const pendingRebuiltFrom = useRef<string | undefined>(undefined)
+
+  /** MAME 源码目录识别：不像 Sega 的包不加载数据表；数据表加载失败不挡普通上传 */
+  const identifyCatalogSet = async (entries: readonly ZipFileEntry[], fileName: string): Promise<MameCatalogMatch | null> => {
+    if (!mayContainMameCatalogSet(entries)) return null
+    try {
+      return identifyMameCatalogSets(await loadMameSetCatalog(), entries, fileName).chosen
+    } catch (err) {
+      console.warn('[mame-catalog] 数据表加载失败，按普通街机包继续：', err)
+      return null
+    }
+  }
+
+  /**
+   * merged 包里凑得齐好几个 set（doa.zip 里有 doa / doab / doaa / doaab / doaae）时让管理员挑一个。
+   * 不能替他猜：Model 2A 和 2B 是两块不同的板子，地区、版本也不同，猜错了上架的就是另一个游戏。
+   * 返回 null = 取消上传。
+   */
+  const chooseCatalogSet = (candidates: readonly MameCatalogMatch[], fileName: string): MameCatalogMatch | null => {
+    const parentIndex = candidates.findIndex((candidate) => !candidate.parent)
+    const lines = candidates.map((candidate, index) => (
+      `${index + 1}. ${candidate.romset} — ${candidate.title}（${candidate.board}${candidate.parent ? '' : '，父集'}）`
+    ))
+    const answer = window.prompt(
+      `${fileName} 是 MAME merged 包，里面凑得齐 ${candidates.length} 个版本：\n\n${lines.join('\n')}\n\n` +
+      '输入要上架的编号。系统会只抽出这个版本的 ROM（含包里自带的设备 ROM），以 MAME 原名重组成单集 ZIP 再上传，不重新压缩。',
+      String((parentIndex >= 0 ? parentIndex : 0) + 1),
+    )
+    if (answer == null) return null
+    const picked = candidates[Number.parseInt(answer.trim(), 10) - 1]
+    if (!picked) window.alert(`没有编号 ${answer.trim()}；已取消上传。`)
+    return picked ?? null
+  }
+
   /**
    * 街机包的自动识别：先检查已核实的 MAME 专用指纹，再比对 FBNeo 驱动表认出 romset。
    *
@@ -3558,6 +3605,7 @@ function RomField({
   const sniffArcade = async (file: File, knownEntries?: readonly ZipFileEntry[]): Promise<string | null> => {
     setRomset(null)
     setMameRomset(null)
+    setMameCatalogSet(null)
     setMameMedia(null)
     // 同一张表单可能重新上传另一款街机；不清掉上一次的识别结果会把旧 CHD 误绑定到新 ROM。
     onMameMediaFound?.(null)
@@ -3583,6 +3631,21 @@ function RomField({
       const recommendation = detectArcadeCore({ exactMameBoard: true })
       if (recommendation) onCoreFound?.(recommendation.core)
       return `${mameMatch.romset}.zip`
+    }
+    /*
+      Sega Model 2 等 FBNeo 没有的板子：按 MAME 源码目录的 CRC 认。上传流程在这之前已经把
+      merged 包重组成 `<romset>.zip` 单集，所以这里按文件名就能落定唯一候选。
+    */
+    const catalogSet = await identifyCatalogSet(entries, file.name)
+    if (catalogSet) {
+      setMameCatalogSet((prior) => ({ ...catalogSet, rebuiltFrom: prior?.rebuiltFrom ?? pendingRebuiltFrom.current }))
+      pendingRebuiltFrom.current = undefined
+      // 设备 ROM 已打进 ZIP 时传空串：撤掉上一款游戏自动填的 BIOS（手填的不动）
+      onBiosFound?.(mameCatalogBiosName(catalogSet))
+      if (catalogSet.buttons) onButtonsFound?.(catalogSet.buttons)
+      const recommendation = detectArcadeCore({ exactMameBoard: true })
+      if (recommendation) onCoreFound?.(recommendation.core)
+      return `${catalogSet.romset}.zip`
     }
     let found: RomsetIdentification | null = null
     try {
@@ -3971,21 +4034,63 @@ function RomField({
     // 街机：遇到子目录成员时在本地安全拍平；原始 ZIP 无需重新压缩。
     let flattenedArcadeFiles = 0
     let arcadeEntries: ZipFileEntry[] | undefined
+    /** arcadeEntries 对应的是哪一份文件（拍平 / 重组后换了文件，旧目录偏移就作废） */
+    let arcadeEntriesOf: File | null = null
+    let rebuiltMameSet = ''
+    pendingRebuiltFrom.current = undefined
     if (isArcade && !isPlayArcadeBundle) {
       setMsg({ ok: true, text: '正在读取街机 ZIP 目录与 CRC；不会解压整包…' })
       try {
         arcadeEntries = await assertValidZipBlob(uploadSourceFile, '街机 ROM')
-        const flattened = await flattenArcadeZipBlob(uploadSourceFile, arcadeEntries)
-        if (flattened.flattenedCount) {
-          flattenedArcadeFiles = flattened.flattenedCount
-          uploadSourceFile = new File([flattened.blob], uploadSourceFile.name, {
-            type: uploadSourceFile.type || 'application/zip',
-            lastModified: uploadSourceFile.lastModified,
+        arcadeEntriesOf = uploadSourceFile
+        /*
+          MAME 专属板子（Sega Model 2 …）的 merged / 命名不规范的包：先按 CRC 认出完整的 set，
+          抽出目标版本重组成 `<romset>.zip` 单集。必须排在拍平之前 —— merged 包里克隆集的
+          同名异 CRC 文件放在子目录，拍平会因为重名拒绝整包。
+        */
+        let catalog: Awaited<ReturnType<typeof loadMameSetCatalog>> | null = null
+        if (mayContainMameCatalogSet(arcadeEntries)) {
+          catalog = await loadMameSetCatalog().catch((err) => {
+            console.warn('[mame-catalog] 数据表加载失败，按普通街机包继续：', err)
+            return null
           })
-          setMsg({ ok: true, text: `已检测到 ${flattenedArcadeFiles} 个街机 ROM 成员在子目录中，已自动拍平；正在识别 romset…` })
+        }
+        const identification = catalog ? identifyMameCatalogSets(catalog, arcadeEntries, uploadSourceFile.name) : null
+        let pick = identification?.chosen ?? null
+        if (identification && !pick && identification.candidates.length > 1) {
+          pick = chooseCatalogSet(identification.candidates, uploadSourceFile.name)
+          if (!pick) {
+            setMsg(null)
+            if (inputRef.current) inputRef.current.value = ''
+            return
+          }
+        }
+        if (pick) {
+          const targetName = `${pick.romset}.zip`
+          if (!pick.exact || uploadSourceFile.name !== targetName) {
+            const rebuilt = await buildMameCatalogSetZip(uploadSourceFile, pick)
+            if (!pick.exact) {
+              pendingRebuiltFrom.current = uploadSourceFile.name
+              rebuiltMameSet = `；已从 ${uploadSourceFile.name} 抽出 ${pick.romset}（${pick.items.length} 个 ROM，丢弃 ${pick.droppedEntries} 个其它版本 / 无关成员）并重组为单集`
+            }
+            uploadSourceFile = new File([rebuilt], targetName, { type: 'application/zip', lastModified: uploadSourceFile.lastModified })
+            arcadeEntries = rebuilt === arcadeEntriesOf ? arcadeEntries : await assertValidZipBlob(uploadSourceFile, '重组后的街机 ROM')
+            arcadeEntriesOf = uploadSourceFile
+          }
+          setMsg({ ok: true, text: `已识别 ${pick.board} · ${pick.romset}（${pick.title}）；正在核对…` })
+        } else {
+          const flattened = await flattenArcadeZipBlob(uploadSourceFile, arcadeEntries)
+          if (flattened.flattenedCount) {
+            flattenedArcadeFiles = flattened.flattenedCount
+            uploadSourceFile = new File([flattened.blob], uploadSourceFile.name, {
+              type: uploadSourceFile.type || 'application/zip',
+              lastModified: uploadSourceFile.lastModified,
+            })
+            setMsg({ ok: true, text: `已检测到 ${flattenedArcadeFiles} 个街机 ROM 成员在子目录中，已自动拍平；正在识别 romset…` })
+          }
         }
       } catch (err) {
-        setMsg({ ok: false, text: err instanceof Error ? err.message : '无法安全拍平街机 ZIP；文件未上传' })
+        setMsg({ ok: false, text: err instanceof Error ? err.message : '无法安全拍平 / 重组街机 ZIP；文件未上传' })
         if (inputRef.current) inputRef.current.value = ''
         return
       }
@@ -3994,7 +4099,7 @@ function RomField({
     try {
       sniffed = isPlayArcadeBundle
         ? uploadSourceFile.name
-        : await sniffArcade(uploadSourceFile, uploadSourceFile === file ? arcadeEntries : undefined)
+        : await sniffArcade(uploadSourceFile, uploadSourceFile === arcadeEntriesOf ? arcadeEntries : undefined)
     } catch (err) {
       setMsg({ ok: false, text: err instanceof Error ? err.message : '街机 ROM 校验失败' })
       if (inputRef.current) inputRef.current.value = ''
@@ -4197,6 +4302,7 @@ function RomField({
             (sniffed ? `；已按识别结果命名为 ${sniffed}` : '') +
             (isArcade && sniffed && oldKey !== result.key ? '；当前语言已改绑到标准 romset 对象，请保存游戏条目' : '') +
             (flattenedArcadeFiles ? `；已自动拍平 ${flattenedArcadeFiles} 个子目录 ROM 文件` : '') +
+            rebuiltMameSet +
             (removed ? `；旧文件 ${removed} 已删除` : '') +
             streamSuffix +
             (streamFailure ? `；完整回退包可用，但流式盘未完成：${streamFailure}` : ''),
@@ -4587,6 +4693,35 @@ function RomField({
             found={romset}
             onApplyHack={onApplyHack}
           />
+        )}
+        {mameCatalogSet && (
+          <div className="rounded-md border border-online/30 bg-online/5 p-2 text-xs text-muted">
+            <p className="font-semibold text-online">
+              ✓ 已精确识别：{mameCatalogSet.board} · {mameCatalogSet.romset}.zip · {mameCatalogSet.title}（{mameCatalogSet.year}，{mameCatalogSet.roms.length} 个 ROM 按 CRC 匹配{mameCatalogSet.parent ? `，克隆集，父集 ${mameCatalogSet.parent}` : ''}）
+            </p>
+            <p className="mt-1">
+              建议使用 MAME 当前版（已自动选择，手动选过的核心不会被改）。
+              {mameCatalogSet.rebuiltFrom
+                ? ` 原包 ${mameCatalogSet.rebuiltFrom} 是 merged / 非标准包，已只抽出这个版本的 ROM，按 MAME 原名重组为 ${mameCatalogSet.romset}.zip（压缩数据原样复用，不重压）。`
+                : ''}
+              {mameCatalogSet.bundledDevices.length
+                ? ` 包里自带的设备 ROM（${mameCatalogSet.bundledDevices.map((device) => device.shortname).join('、')}）已一并放进 ZIP，不需要另挂 BIOS 包。`
+                : ''}
+              {mameCatalogSet.missingDevices.length === 1
+                ? <> 还需要设备 ROM <code>{describeMameCatalogDevice(mameCatalogSet.missingDevices[0])}</code>：「BIOS 包（系统名）」已自动填 <code>{mameCatalogSet.missingDevices[0].shortname}</code>，请在“ROM 存储 → 街机 BIOS 包”上传并绑定 <code>{mameCatalogSet.missingDevices[0].shortname}.zip</code>，否则 MAME 报 required files are missing。</>
+                : ''}
+              {mameCatalogSet.buttons ? ` 已按 MAME 输入定义把「街机动作键」设为 ${mameCatalogSet.buttons} 键。` : ''}
+            </p>
+            {mameCatalogStatusNote(mameCatalogSet) && (
+              <p className="mt-1 text-live">⚠️ {mameCatalogStatusNote(mameCatalogSet)}</p>
+            )}
+            {mameCatalogSet.board.startsWith('Sega Model 2') && (
+              <p className="mt-1 text-live">
+                ⚠️ Model 2 是 3D 板：MAME 在浏览器里逐条解释执行 i960 主 CPU 和几何协处理器，比 2D 街机重得多。
+                桌面端新机器可能接近满速，手机和老电脑大概率掉帧；上架前请在目标设备上实测到正式对战。
+              </p>
+            )}
+          </div>
         )}
         {mameRomset && (
           <div className="rounded-md border border-online/30 bg-online/5 p-2 text-xs text-muted">

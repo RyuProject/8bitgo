@@ -554,6 +554,33 @@ Tekken/System 11 父集才允许保留原 ZIP 上传；MAME 使用 `tekken.zip` 
 `effectiveArcadeButtons` 需要按 slug 推断四键，并同时用于键位说明、手柄图和触屏虚拟手柄；
 后台明确配置仍优先。否则页面会误画按键 5 / 6，手机上也会多出无效按键。
 
+### 2.8.3.2 Sega Model 2（Dead or Alive / doaae 等）：按 MAME 源码目录认包，merged 包自动重组（2026-11-18）
+
+FBNeo 没有 Model 2，只能走 mame-current（全量 MAME 0.289 核心里 90 个 Model 2 set 全在，已逐个核对）。
+网上的 Model 2 包几乎都是 **merged 包**：`doa.zip` 里装着 doa / doab / doaa / doaab / doaae 五个版本，
+克隆集里和父集同 CRC 的 ROM 只存一份、用父集的芯片位置名（doaae 的 `mpr-19318.10` 在包里叫 `mpr-19318.11`）。
+所以识别**按 CRC + 长度**，不按文件名。
+
+- **数据**：`src/lib/mameSetCatalogData.ts` 由 `node scripts/gen-mame-set-catalog.mjs <MAME 源码根目录>` 生成，勿手改。
+  生成器展开 ROM 宏（`MODEL2_CPU_BOARD` / `MODEL2A_VID_BOARD`）、只取默认 BIOS 的 ROM，并沿机台配置把**设备 ROM**解析出来
+  （含 `set_default_bios_tag` 改写：Daytona 的 model1io 用 epr14869c，Virtua Cop 的 model1io2 用 epr17181 + HD44780）。
+  认不出的设备宏直接失败，不当成「没有 ROM」。核心换 MAME 版本要重新生成。约 80KB，只在需要时动态加载。
+- **后台上传**（`GameForm.tsx`）：在拍平**之前**按目录识别。merged 包里凑得齐多个版本且文件名不是其中一个短名时，
+  弹窗让管理员选（不替他猜：2A / 2B 是不同板子）。选中的版本用 `rewriteZipEntries`（`src/lib/zipRewrite.ts`，拍平器也用它）
+  按 MAME 原名重组为 `<romset>.zip` 单集：只改 ZIP 头，压缩数据原样引用，不重压。自动选 mame-current，按 MAME 输入定义填动作键数
+  （DOA 三键 → 4 键布局）。
+- **设备 ROM**：Model 2A/2B/2C 都要 Sega Billboard 的 `epr-18022.ic2`（CRC 0ca70f80）。MAME 找设备 ROM 的顺序是
+  `[segabill, 游戏 set, 父集]`：包里自带就一并放进单集；没有就自动填「BIOS 包（系统名）」= `segabill`，
+  需要在「ROM 存储 → 街机 BIOS 包」上传 `segabill.zip`（上传时按目录核对 CRC）。「BIOS 包」只有一格，缺两组设备 ROM 的
+  （Virtua Cop）要把它们放进游戏 ZIP。
+- **播放器**：远端街机包的 ROM 名像 Sega（epr- / mpr- / opr-）才加载目录；认出后强制 mame-current、按 CRC 结果命名、
+  跳过用不上的平台 BIOS（neogeo.zip）。本地「玩本地 ROM」不走这条路（与 Namco 现状相同）。
+- **2026-11-18 实测**（无游戏数据，用名字 / 长度 / CRC 对得上的全零占位 ROM）：`/roms/doaae.zip` 带 `epr-18022.ic2` 时
+  MAME 进入机器、i960 开始执行（随后因全零程序报 `I960: 0: Unhandled 00`，符合预期）；去掉这颗 ROM 则机器不启动。
+  **真实游戏的速度没有验证**：Model 2 是 3D 板，i960 + TGP 在 WASM 里解释执行，手机多半跑不满速；
+  MAME 源码 TODO 还写着 doa / doaa 声音会花、逐渐无声。上架前在目标设备上实测到正式对战。
+- 回归：`npm run test:mame-set-catalog`（真实目录 + 合成 merged 包 + 字节级重组 + 接线断言）。
+
 ### 2.8.4 NDS：默认 melonDS DS 1.4.0，WASM 崩溃时旧核心兜底
 
 本站 NDS 默认核心是自构建 `melondsds-wasm.data`（上游 melonDS DS v1.4.0），

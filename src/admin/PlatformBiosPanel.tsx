@@ -17,6 +17,7 @@ import { biosNameOfUrl } from '@/emulator/biosPlan'
 import { assertValidZipBlob } from '@/lib/unzip'
 import { namcoC76BiosProblem } from '@/lib/namcoSystem11'
 import { arcadeArchiveLayoutProblem } from '@/lib/arcadeArchive'
+import { loadMameSetCatalog, mameCatalogDeviceBiosProblem } from '@/lib/mameSetCatalog'
 import { Card, btnClass, inputClass } from './ui'
 
 /**
@@ -78,6 +79,10 @@ const ARCADE_BIOS_SETS: Array<{ name: string; hint: string }> = [
   {
     name: 'namcoc76',
     hint: 'Namco System 11（如 Tekken）；上传前会校验 ZIP 根目录中的 c76.bin（16 KiB / CRC 399faac7），对象会固定保存为 namcoc76.zip。',
+  },
+  {
+    name: 'segabill',
+    hint: 'Sega Model 2A / 2B / 2C 的 Billboard 设备 ROM（Dead or Alive、VR 战士 2 等 61 款，MAME 当前版）；上传前会校验根目录的 epr-18022.ic2（CRC 0ca70f80），对象固定保存为 segabill.zip。',
   },
 ]
 
@@ -328,6 +333,15 @@ export function PlatformBiosPanel() {
         const entries = await assertValidZipBlob(file, '街机 BIOS')
         const problem = arcadeArchiveLayoutProblem(entries)
         if (problem) throw new Error(problem)
+        /*
+          MAME 设备 ROM 包（segabill / model1io …）按 MAME 源码目录核对内容：版本传错，
+          所有用这块设备的游戏开局都是 required files are missing。不是目录里的设备名返回 null。
+        */
+        if (id.startsWith('bios:')) {
+          const catalog = await loadMameSetCatalog().catch(() => null)
+          const deviceProblem = catalog ? mameCatalogDeviceBiosProblem(catalog, id.slice('bios:'.length), entries) : null
+          if (deviceProblem) throw new Error(deviceProblem)
+        }
       }
       // 已经绑过 BIOS 就复用同一个 key —— 原来无条件按文件名重算，
       // 传完 bios.bin 再传 bios.zip 会在 R2 里留下两份，旧的那份永远没人引用
