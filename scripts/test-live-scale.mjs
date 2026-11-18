@@ -280,28 +280,33 @@ check('⚠️ 沉浸模式优先：那时侧栏是收起的，播放器该吃满
   assert.match(GDP, /const watchLayout = Boolean\(liveInvite\) && !matchPlayer && !immersive/, '沉浸模式下还在按 8 列排')
 })
 
-check('看直播或联机时播放器缩到 8 列，自己玩时 lg 满宽、超宽屏让出 3 列给侧栏', () => {
+check('看直播或联机时播放器缩到 8 列；自己玩时播放器整行、下面资料 + 341px 右栏（2026-11 新版设计稿）', () => {
   assert.match(
     GDP,
     /const twoColumn = watchLayout \|\| matchLayout/,
     '两种侧栏布局必须共用同一判断',
   )
-  // 6cd126f 起自己玩时超宽屏（xl）也把侧栏抬到播放器旁边：播放器 9 列、侧栏 3 列；沉浸模式仍满宽
+  // 看直播 / 联机仍是 12 列里的 8/4；自己玩时网格换成「正文 + 341px 右栏」，播放器跨两列整行
   assert.match(
     GDP,
-    /cx\(\s*'w-full',\s*twoColumn \? 'lg:col-span-8' : immersive \? 'lg:col-span-12' : 'lg:col-span-12 xl:col-span-9',?\s*\)/,
+    /twoColumn \? 'gap-8 lg:grid-cols-12' : 'gap-x-6 gap-y-5 xl:grid-cols-\[minmax\(0,1fr\)_341px\]'/,
+    '网格两种形态的列定义不对',
+  )
+  assert.match(
+    GDP,
+    /cx\('w-full min-w-0', twoColumn \? 'lg:col-span-8' : 'xl:col-span-2'\)/,
     '播放器那一层的列宽不对',
   )
 })
 
-check('⚠️ 侧栏要显式排到第 9 列、第 1 行、跨两行', () => {
+check('⚠️ 看直播 / 联机时侧栏要显式排到第 9 列、第 1 行、跨两行', () => {
   /*
     不写这一条的话自动排版是：播放器 8 列落第 1 行 → 资料区 8 列放不下落第 2 行 →
     侧栏补到第 2 行右边。结果侧栏和**标题**齐平，比播放器矮一整行 —— 正是参考图里没有的样子。
   */
   assert.match(
     GDP,
-    /twoColumn\s*\?\s*'lg:col-span-4 lg:col-start-9 lg:row-start-1 lg:row-span-2'\s*:\s*'xl:col-span-3 xl:col-start-10 xl:row-start-1 xl:row-span-2'/,
+    /twoColumn\s*\?\s*'lg:col-span-4 lg:col-start-9 lg:row-start-1 lg:row-span-2'/,
     '侧栏没有显式定位',
   )
 })
@@ -315,16 +320,16 @@ check('⚠️ 播放器只能有一处 JSX —— 两套版面绝不能写成两
   assert.equal(hits.length, 1, `<EmulatorPlayer> 出现了 ${hits.length} 处`)
 })
 
-check('⚠️ 播放器和侧栏在**同一个** 12 列网格里', () => {
-  // 两者之间再开一个 grid 的话，「顶边齐」是做不到的 —— col-start / row-start 只对同一个网格生效
-  // grid-cols-1 是窄屏的显式基础列（防止长名字把隐式 auto 列撑出横向滚动），不改变网格结构
-  const at = GDP.search(/<div className="grid (?:grid-cols-1 )?gap-8 lg:grid-cols-12">/)
+check('⚠️ 播放器和侧栏在**同一个**网格元素里（版面切换只换类名）', () => {
+  // 两者之间再开一个 grid 的话，「顶边齐」是做不到的 —— col-start / row-start 只对同一个网格生效；
+  // 把两种版面写成两个网格元素的话，切换时 <EmulatorPlayer> 会被卸载（直播断流 / 进度丢失）
+  const at = GDP.search(/<div\s+data-game-detail-grid\b/)
   const player = GDP.search(/<EmulatorPlayer\s/)
   const aside = GDP.search(/<aside\b/)
   assert.ok(at > 0 && at < player, '合并后的网格不在播放器之前')
   assert.ok(player < aside, '播放器应当排在侧栏之前')
   const between = GDP.slice(player, aside)
-  assert.ok(!between.includes('lg:grid-cols-12'), '播放器和侧栏之间又开了一个网格')
+  assert.ok(!/grid-cols-12|grid-cols-\[/.test(between), '播放器和侧栏之间又开了一个网格')
 })
 
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')

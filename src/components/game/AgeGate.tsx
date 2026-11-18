@@ -215,6 +215,15 @@ interface GuardProps {
    * 16:9 算高度然后被裁掉，居中那张卡会被推出视野。见 screenAspect.ts 的 stageHeightCap。
    */
   className?: string
+  /**
+   * 「确认中」那一帧画什么。不传就是默认的压暗 16:9 框。
+   *
+   * 详情页（新版设计稿）给的是和播放器空闲态同版位的占位（2:1 + 弹幕栏，见 PlayerChunk 的 DetailStagePlaceholder）：
+   * SSR 首屏就是这一帧，版位不一样的话确认一结束整页往上跳一截。
+   * ⚠️ 只替换 checking：要登录 / 填生日 / 未成年 / 出错这几种拦截照旧画门卫自己的框，
+   * 成人游戏也照旧拦得住 —— 这个属性改的只是「还在等接口」时的样子，不改放行条件。
+   */
+  checkingFallback?: ReactNode
   children: ReactNode
 }
 
@@ -224,7 +233,7 @@ interface GuardProps {
  * 详情页可能来自 CDN 旧缓存，因此 markedAdult=false 时不能直接挂载播放器，先走 no-store
  * 接口确认。接口同时给出「这个人现在能不能玩」：登录、填了出生日期都会让它重新问一次。
  */
-export function GameAgeGuard({ slug, markedAdult, backdrop, loginAction, className, children }: GuardProps) {
+export function GameAgeGuard({ slug, markedAdult, backdrop, loginAction, className, checkingFallback, children }: GuardProps) {
   const t = useT()
   const user = useCurrentUser()
   const [access, setAccess] = useState<{ slug: string; status: AccessStatus }>(() => ({ slug, status: 'checking' }))
@@ -296,6 +305,7 @@ export function GameAgeGuard({ slug, markedAdult, backdrop, loginAction, classNa
   // 路由切换后的第一帧不能沿用上一款游戏的 open，否则邀请链接可能抢在 effect 前自动启动。
   const status = access.slug === slug ? access.status : 'checking'
   if (status === 'open') return children
+  if (status === 'checking' && checkingFallback) return checkingFallback
 
   // className 一路传到内层那个 16:9 上，理由见 GuardProps.className
   if (status === 'login' || status === 'birthDate' || status === 'underage') {

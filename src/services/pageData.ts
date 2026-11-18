@@ -86,7 +86,13 @@ export interface HomeData {
   total: number
 }
 export interface GamesData { route: 'games'; list: Paged<Game>; facets: Facets }
-export interface GameData { route: 'game'; game: Game | null; related?: Game[] }
+export interface GameData {
+  route: 'game'
+  game: Game | null
+  related?: Game[]
+  /** 开发商名 → 后台「开发公司」页填的 logo 对象 key（只有填过的才有；见 content.js 的 loadDeveloperLogos） */
+  developerLogos?: Record<string, string>
+}
 export interface PlatformsData { route: 'platforms'; facets: Facets }
 export interface PlatformData { route: 'platform'; id: string; list: Paged<Game> }
 export interface GenresData { route: 'genres'; facets: Facets }

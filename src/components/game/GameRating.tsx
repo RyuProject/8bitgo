@@ -20,6 +20,8 @@ import { fmt, useT } from '@/services/i18n'
 import { getLang } from '@/services/lang'
 import { clearRating, fetchRating, ratingsAvailable, submitRating, subscribeRating } from '@/services/ratings'
 import { Stars, StarPicker } from './StarRating'
+import { cx } from '@/lib/format'
+import { SkeletonBlock } from '@/components/ui/PageSkeleton'
 
 /** 标题旁的紧凑评分摘要；百分比按 4–5 星的好评票数计算。 */
 export function GameRatingBadge({ gameSlug }: { gameSlug: string }) {
@@ -66,12 +68,30 @@ export function GameRatingBadge({ gameSlug }: { gameSlug: string }) {
   )
 }
 
-export function GameRating({ gameSlug }: { gameSlug: string }) {
+/** 好评率：4–5 星的票数占比（和标题旁的 GameRatingBadge 同一个口径）。没人评分时是 null。 */
+function positivePercent(data: RatingSummary): number | null {
+  if (!(data.count > 0)) return null
+  const positive = (Number(data.distribution['4']) || 0) + (Number(data.distribution['5']) || 0)
+  return Math.round((positive / data.count) * 100)
+}
+
+/**
+ * variant="card"：游戏详情页新版设计稿右栏那一块（嵌在「游玩数据」卡片的下半截，自己不带外框）：
+ *   玩家评分 / 红色好评率方块 + 「喜欢这个游戏 · N 评分」/ 一行打分星星。
+ *
+ * 设计稿在打分星星的位置画的是「好玩 / 上瘾 / 挑战性…」评分标签，后端还没有这套数据（2026-11 决定先不做），
+ * 而全站给游戏打分**只有这一个入口**（评论区刻意不带打分，见 Comments.tsx）——
+ * 所以这一格放打分入口，用和标签同一种浅底圆角样式，等标签上线再把它们排在下面。
+ */
+export function GameRating({ gameSlug, variant = 'default' }: { gameSlug: string; variant?: 'default' | 'card' }) {
   const t = useT()
   const r = t.ratings
   const user = useCurrentUser()
+  const card = variant === 'card'
 
   const [data, setData] = useState<RatingSummary | null>(null)
+  /** 卡片版要在取数期间占住版位（右栏首屏可见，不能等数据到了才把评论区往下推） */
+  const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   /**
@@ -89,13 +109,17 @@ export function GameRating({ gameSlug }: { gameSlug: string }) {
       if (slugRef.current === gameSlug && loadSeq.current === seq) setData(next)
     } catch {
       // 汇总拉不到就整块不显示。评分不是主内容，为它在详情页上挂一条报错反而更碍事
+      // （卡片版保留版位、显示「暂不可用」，免得右栏在接口出错时整块塌掉）
       if (slugRef.current === gameSlug && loadSeq.current === seq) setData(null)
+    } finally {
+      if (slugRef.current === gameSlug && loadSeq.current === seq) setLoading(false)
     }
   }, [gameSlug])
 
   useEffect(() => {
     slugRef.current = gameSlug
     setData(null)
+    setLoading(true)
     setError('')
     setBusy(false)
     void load()
@@ -133,6 +157,69 @@ export function GameRating({ gameSlug }: { gameSlug: string }) {
     } finally {
       if (slugRef.current === slug) setBusy(false)
     }
+  }
+
+  if (card) {
+    const lang = getLang()
+    const percent = data ? positivePercent(data) : null
+    const mine = data?.mine?.score ?? 0
+    const showLoading = loading && ratingsAvailable()
+    const available = ratingsAvailable() && Boolean(data)
+    return (
+      <section className="px-[18px] pb-5 pt-[15px]" aria-label={r.cardTitle} aria-busy={showLoading || undefined}>
+        <h2 className="text-base font-semibold leading-[21px] tracking-[-0.31px] text-[#40485b]">{r.cardTitle}</h2>
+        <div className="mt-4 flex items-center gap-3">
+          {showLoading ? (
+            <SkeletonBlock className="h-[60px] w-[77px] shrink-0 rounded-[15px]" />
+          ) : (
+            <span
+              className={cx(
+                'grid h-[60px] min-w-[77px] shrink-0 place-items-center rounded-[15px] px-[13px] text-2xl font-semibold leading-[21px] tracking-[-0.31px] tabular-nums',
+                percent === null ? 'bg-[#f2f4f8] text-[#858891]' : 'bg-[#f44527] text-white',
+              )}
+            >
+              {percent === null ? '—' : `${percent}%`}
+            </span>
+          )}
+          <div className="min-w-0 text-base font-semibold leading-[21px] tracking-[-0.31px]">
+            {showLoading ? (
+              <>
+                <SkeletonBlock className="h-4 w-24" />
+                <SkeletonBlock className="mt-1.5 h-4 w-14" />
+              </>
+            ) : !available ? (
+              <p className="text-sm font-normal text-[#858891]">{r.unavailable}</p>
+            ) : (
+              <>
+                <p className="text-[#40485b]">{percent === null ? r.none : r.likeThis}</p>
+                <p className="text-[#858891]">
+                  {data && data.count > 0 ? fmt(r.compactCount, { n: data.count.toLocaleString(lang) }) : r.beFirst}
+                </p>
+              </>
+            )}
+          </div>
+        </div>
+        {available && data && (
+          <>
+            <div
+              className="mt-5 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 rounded-[10px] border border-[#dfe4ea] bg-[#f2f4f8] py-1 pl-2 pr-1"
+              title={user ? undefined : r.anonNote}
+            >
+              <span className="text-sm font-semibold leading-[21px] tracking-[-0.31px] text-[#40485b]">
+                {busy ? r.saving : mine ? fmt(r.yourScore, { n: mine }) : r.rate}
+              </span>
+              <StarPicker value={mine} onPick={(n) => void pick(n)} disabled={busy} size="md" />
+            </div>
+            {!user && <p className="mt-1.5 text-[11px] leading-4 text-dim">{r.loginNote}</p>}
+          </>
+        )}
+        {error && (
+          <p className="mt-2 text-xs text-live" role="alert">
+            {error}
+          </p>
+        )}
+      </section>
+    )
   }
 
   if (!ratingsAvailable()) return null
