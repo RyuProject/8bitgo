@@ -1,10 +1,13 @@
 /** SRS 直播的服务端回归：用轻量假 API 覆盖准入、授权、容量和协商边界。 */
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { Server } from 'socket.io'
 import { io as client } from 'socket.io-client'
 
 const fakeSrsRequests = []
+const srsUnit = await readFile(new URL('../../deploy/live/srs/8bitgo-live-srs.service', import.meta.url), 'utf8')
+assert.match(srsUnit, /^RestrictAddressFamilies=.*\bAF_NETLINK\b/m, 'SRS 沙箱必须允许通过 rtnetlink 枚举接口地址')
 const fakeSrs = createServer(async (req, res) => {
   if (req.url === '/api/v1/versions') {
     res.writeHead(200, { 'content-type': 'application/json' })

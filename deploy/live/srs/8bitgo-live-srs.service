@@ -2,6 +2,8 @@
 Description=8BitGo SRS WebRTC SFU
 Wants=network-online.target
 After=network-online.target 8bitgo.service
+StartLimitIntervalSec=60s
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -14,7 +16,7 @@ WorkingDirectory=/opt/8bitgo-live-srs/current
 ExecStartPre=/usr/local/libexec/8bitgo-live-srs-render-config
 ExecStart=/opt/8bitgo-live-srs/current/objs/srs -c /run/8bitgo-live-srs/srs.conf
 Restart=on-failure
-RestartSec=2s
+RestartSec=5s
 TimeoutStopSec=20s
 LimitNOFILE=65536
 NoNewPrivileges=true
@@ -25,7 +27,8 @@ ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
 LockPersonality=true
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# SRS 用 getifaddrs() 枚举本机地址；glibc 通过 rtnetlink 查询接口，缺少 AF_NETLINK 会让服务启动即退出。
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK AF_UNIX
 SystemCallArchitectures=native
 StandardOutput=journal
 StandardError=journal

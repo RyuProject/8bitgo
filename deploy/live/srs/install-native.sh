@@ -154,7 +154,9 @@ if ! ufw status | grep -Eq '^8000/udp[[:space:]]'; then
 fi
 
 systemctl daemon-reload
-systemctl enable --now 8bitgo-live-srs
+systemctl enable 8bitgo-live-srs
+# enable --now 不会重启已存在的服务；重装/升级时必须加载刚写入的沙箱策略。
+systemctl restart 8bitgo-live-srs || true
 
 healthy=false
 for _ in $(seq 1 20); do
@@ -175,6 +177,8 @@ PY
   sleep 1
 done
 if [[ "$healthy" != true ]]; then
+  # 启动失败时停止 systemd 重试循环，避免无效进程和日志持续增长。
+  systemctl stop 8bitgo-live-srs || true
   systemctl status --no-pager 8bitgo-live-srs >&2 || true
   journalctl -u 8bitgo-live-srs -n 50 --no-pager >&2 || true
   echo "SRS API 未通过本机健康检查，未启用应用的强制 SRS 配置。" >&2
