@@ -32,6 +32,10 @@ const STUBS = {
     'export const connectLive=async()=>globalThis.__fakeLiveSocket;' +
     'export const liveIceServers=async()=>await (globalThis.__fakeLiveIceServers?.() ?? []);' +
     'export const liveIceConfig=async(options={})=>await (globalThis.__fakeLiveIceConfig?.(options) ?? {iceServers:await (globalThis.__fakeLiveIceServers?.() ?? []),hasTurn:false,expiry:0});' +
+    'export const liveStunServers=async()=>await (globalThis.__fakeLiveIceServers?.() ?? []);' +
+    'export const waitForLiveIceGathering=async()=>{};' +
+    'export const exchangeLiveSrsSdp=async()=>({type:"answer",sdp:"v=0\\r\\n"});' +
+    'export const preferLiveSrsCodecs=()=>{};' +
     'export const liveEnabled=()=>true;' +
     'export const refreshLiveRooms=()=>{};',
 }

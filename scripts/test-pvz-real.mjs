@@ -45,7 +45,7 @@ const context = await browser.newContext({ viewport: { width: 1200, height: 900 
 const page = await context.newPage()
 const pageErrors = []
 page.on('pageerror', (error) => pageErrors.push(error.message))
-await page.route('https://html5.8bitgo.com/**', async (route) => {
+await page.route('https://download.8bitgo.com/**', async (route) => {
   const pathname = new URL(route.request().url()).pathname
   let file
   if (pathname.endsWith('/main.pak')) file = mainPak

@@ -18,7 +18,9 @@ const assetPath = (url) => url.origin === self.location.origin && (
   url.pathname === '/do%20NOT%20readme.txt' ||
   url.pathname === '/LICENSE.md' ||
   url.pathname === '/CHANGELOG.md' ||
-  url.pathname === '/html5-api/8bitgo-runtime-bridge.js'
+  url.pathname === '/html5-api/8bitgo-runtime-bridge.js' ||
+  url.pathname === '/html5-api/8bitgo-game-sdk.min.js' ||
+  url.pathname === '/html5-api/8bitgo-media-bridge.js'
 )
 
 const canCache = (request, response) => {

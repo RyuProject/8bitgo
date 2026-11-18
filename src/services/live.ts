@@ -5,7 +5,8 @@
  * 直播只需要主播那边的画布和声音，任何引擎都能拿到（Runtime 的 captureSources）。
  * 所以 GBA、DOS、Flash、J2ME 这些没有联机能力的核心，照样能开播。
  *
- * 画面和声音走 WebRTC 直连，不经过服务器；服务器只转发握手包（server/src/live.js）。
+ * 新房间优先经 SRS 转发音视频，旧房间继续兼容 P2P；Socket.IO 管理房间和协作输入，
+ * SDP 由本站后端校验短时授权后代理给 SRS（server/src/live.js）。
  *
  * socket.io 客户端不打进前端包，而是从自家后端 /socket.io/socket.io.js 现取 ——
  * 这样版本永远和服务端一致，也省下几十 KB 的首屏体积。模拟器 iframe 里那套联机
@@ -31,6 +32,10 @@ export interface LiveRoomInfo {
   viewers: number
   maxViewers: number
   startedAt: number
+  /** 直播媒体走 SRS；缺省兼容旧服务端的 P2P 房间。 */
+  transport?: 'p2p' | 'srs'
+  /** SRS 已收到主播上行；观众据此决定何时发起拉流协商。 */
+  srsReady?: boolean
   /** 主播断线了、房间在宽限期里等它回来（server/src/live.js 的「主播掉线」一节） */
   hostAway?: boolean
   /** 主播切到后台了：画面冻着不是断了（server/src/live.js 的 host-visibility）。大厅卡片据此提示，别让人点进去对着冻住的画面猜 */
@@ -112,6 +117,48 @@ export interface LiveSocket {
   on: (event: string, handler: (...args: never[]) => void) => void
   off: (event: string, handler?: (...args: never[]) => void) => void
   close: () => void
+}
+
+/** 通过本站后端代理 SRS 的 HTTP SDP 协商，避免把 SRS 管理 API 暴露给浏览器。 */
+export async function exchangeLiveSrsSdp(
+  mode: 'publish' | 'play',
+  roomId: string,
+  grant: string,
+  sdp: string,
+): Promise<RTCSessionDescriptionInit> {
+  const controller = new AbortController()
+  const timer = window.setTimeout(() => controller.abort(), 15_000)
+  try {
+    const response = await fetch(`${apiBase()}/api/live/srs/${mode}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ roomId, grant, sdp }),
+      cache: 'no-store',
+      signal: controller.signal,
+    })
+    const payload = (await response.json().catch(() => null)) as { sdp?: string; error?: string } | null
+    if (!response.ok || !payload?.sdp) throw new Error(payload?.error || `SRS ${mode} negotiation failed`)
+    return { type: 'answer', sdp: payload.sdp }
+  } finally {
+    window.clearTimeout(timer)
+  }
+}
+
+/** SRS 6 以 H.264 / Opus 作为最稳妥的 WebRTC 组合；把它们放在首选位置，避免浏览器先选了不兼容编码。 */
+export function preferLiveSrsCodecs(transceiver: RTCRtpTransceiver, kind: 'audio' | 'video'): void {
+  if (typeof transceiver.setCodecPreferences !== 'function') return
+  try {
+    const senderCapabilities = typeof RTCRtpSender === 'undefined' ? undefined : RTCRtpSender.getCapabilities?.(kind)
+    const receiverCapabilities = typeof RTCRtpReceiver === 'undefined' ? undefined : RTCRtpReceiver.getCapabilities?.(kind)
+    const codecs = (senderCapabilities ?? receiverCapabilities)?.codecs
+    if (!codecs?.length) return
+    const preferredMime = kind === 'video' ? 'video/h264' : 'audio/opus'
+    const preferred = codecs.filter((codec) => codec.mimeType.toLowerCase() === preferredMime)
+    if (!preferred.length) return
+    transceiver.setCodecPreferences([...preferred, ...codecs.filter((codec) => !preferred.includes(codec))])
+  } catch {
+    /* 有的浏览器声明支持但尚未实现；保持浏览器默认协商，不让播放器因此失败。 */
+  }
 }
 type IoFactory = (uri: string, opts?: Record<string, unknown>) => LiveSocket
 
@@ -338,6 +385,48 @@ export async function liveIceConfig({ cloudflareFallback = false }: { cloudflare
       retryAt: Math.floor(Date.now() / 1000) + 60,
     }
   }
+}
+
+/** SRS 媒体走公网直连；只带 STUN 候选，不把协作通道的 TURN 中继成本带进视频链路。 */
+export async function liveStunServers(): Promise<RTCIceServer[]> {
+  const config = await liveIceConfig()
+  const servers = config.iceServers.flatMap((server) => {
+    const urls = Array.isArray(server.urls) ? server.urls : [server.urls]
+    const stunUrls = urls.filter((url) => /^stuns?:/i.test(String(url)))
+    return stunUrls.length ? [{ urls: stunUrls.length === 1 ? stunUrls[0] : stunUrls }] : []
+  })
+  return servers.length ? servers : [{ urls: 'stun:stun.l.google.com:19302' }]
+}
+
+/** WHIP/WHEP 以一次 SDP 请求协商，不支持依赖之后的 trickle ICE 补候选。 */
+export function waitForLiveIceGathering(pc: RTCPeerConnection, timeoutMs = 10_000): Promise<void> {
+  if (pc.iceGatheringState === 'complete') return Promise.resolve()
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const cleanup = () => {
+      window.clearTimeout(timer)
+      pc.removeEventListener('icegatheringstatechange', onGatheringStateChange)
+      pc.removeEventListener('connectionstatechange', onConnectionStateChange)
+    }
+    const finish = (error?: Error) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      if (error) reject(error)
+      else resolve()
+    }
+    const onGatheringStateChange = () => {
+      if (pc.iceGatheringState === 'complete') finish()
+    }
+    const onConnectionStateChange = () => {
+      if (pc.connectionState === 'closed') finish(new Error('SRS ICE gathering was closed'))
+    }
+    const timer = window.setTimeout(() => finish(new Error('SRS ICE gathering timed out')), timeoutMs)
+    pc.addEventListener('icegatheringstatechange', onGatheringStateChange)
+    pc.addEventListener('connectionstatechange', onConnectionStateChange)
+    // Gathering may finish between the initial state check and listener installation.
+    onGatheringStateChange()
+  })
 }
 
 /** 观看链接：朋友打开即是观众 */

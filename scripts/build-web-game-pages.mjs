@@ -4,19 +4,28 @@
  * Minecraft 的合法自建客户端按版权规则不进 Git，因此这里从 operator 当前机器复制；
  * 这也是这些项目不能交给 Cloudflare Git 自动构建、而要本地 Direct Upload 的原因。
  */
+import { createHash } from 'node:crypto'
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { WEB_GAME_PAGES, webGamePage } from '../deploy/cloudflare-pages/web-games-config.js'
 import { copyGtaVc7zRuntime } from './copy-gta-vc-7z.mjs'
+import { buildGameSdk } from './build-8bitgo-game-sdk.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const repo = resolve(here, '..')
 const outputRoot = resolve(repo, '.cloudflare-pages')
+const bridgeSource = resolve(repo, 'public/html5-api/8bitgo-runtime-bridge.js')
+const mediaBridgeSource = resolve(repo, 'public/html5-api/8bitgo-media-bridge.js')
+const gameSdkMinSource = resolve(repo, 'public/html5-api/8bitgo-game-sdk.min.js')
+const bridgeVersion = createHash('sha256').update(readFileSync(bridgeSource)).digest('hex').slice(0, 16)
+const mediaBridgeVersion = createHash('sha256').update(readFileSync(mediaBridgeSource)).digest('hex').slice(0, 16)
 const names = process.argv.slice(2).filter((value) => !value.startsWith('-'))
 const selected = names.length ? names : Object.keys(WEB_GAME_PAGES)
 const maxFileBytes = 25 * 1024 * 1024
 const maxFiles = 20_000
+buildGameSdk()
+const gameSdkVersion = createHash('sha256').update(readFileSync(gameSdkMinSource)).digest('hex').slice(0, 16)
 
 for (const name of selected) {
   if (!webGamePage(name)) throw new Error(`未知 Pages 游戏：${name}`)
@@ -37,14 +46,84 @@ const walk = (root) => {
 
 function injectRuntimeBridge(path, selector) {
   let html = readFileSync(path, 'utf8')
-  if (html.includes('/html5-api/8bitgo-runtime-bridge.js')) return
-  const attribute = selector
-    ? ` data-ready-selector=${JSON.stringify(selector)}`
-    : ''
-  const script = `<script src="/html5-api/8bitgo-runtime-bridge.js"${attribute}></script>`
+  const bridgeUrl = `/html5-api/8bitgo-runtime-bridge.js?v=${bridgeVersion}`
+  const existingScript = /<script\b[^>]*\ssrc=(["'])[^"']*html5-api\/8bitgo-runtime-bridge\.js(?:\?[^"']*)?\1[^>]*>/i
+  const match = html.match(existingScript)
+  const escapeAttribute = (value) => String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('"', '&quot;')
+    .replaceAll('<', '&lt;')
+  const readyAttribute = selector ? ` data-ready-selector="${escapeAttribute(selector)}"` : ''
+  if (match) {
+    let tag = match[0].replace(/\ssrc=(["'])[^"']*html5-api\/8bitgo-runtime-bridge\.js(?:\?[^"']*)?\1/i, ` src="${bridgeUrl}"`)
+    if (selector) {
+      const currentAttribute = /\sdata-ready-selector=(["']).*?\1/i
+      tag = currentAttribute.test(tag)
+        ? tag.replace(currentAttribute, readyAttribute)
+        : tag.replace(/>$/, `${readyAttribute}>`)
+    }
+    html = html.replace(match[0], tag)
+    writeFileSync(path, html)
+    return
+  }
+  const script = `<script src="${bridgeUrl}"${readyAttribute}></script>`
   if (!/<\/body>/i.test(html)) throw new Error(`${path} 没有 </body>，无法安全注入运行桥`)
   html = html.replace(/<\/body>/i, `${script}</body>`)
   writeFileSync(path, html)
+}
+
+/** 只给明确支持直播的 Pages 游戏主动接入 SDK；其它游戏仍由各自页面决定是否启用。 */
+function injectGameSdk(path, selector, runtimeScriptPattern) {
+  let html = readFileSync(path, 'utf8')
+  const script = `<script src="/html5-api/8bitgo-game-sdk.min.js?v=${gameSdkVersion}" data-canvas-selector="${selector}"></script>`
+  const mediaScript = `<script src="/html5-api/8bitgo-media-bridge.js?v=${mediaBridgeVersion}"></script>`
+  const existingScript = /<script\b[^>]*\ssrc=(['"])[^'"]*html5-api\/8bitgo-game-sdk\.min\.js(?:\?[^'"]*)?\1[^>]*><\/script>/i
+  const existingMediaScript = /<script\b[^>]*\ssrc=(['"])[^'"]*html5-api\/8bitgo-media-bridge\.js(?:\?[^'"]*)?\1[^>]*><\/script>/i
+  if (existingScript.test(html)) html = html.replace(existingScript, script)
+  else {
+    if (!/<\/body>/i.test(html)) throw new Error(`${path} 没有 </body>，无法安全接入 8BitGo 游戏 SDK`)
+    html = html.replace(/<\/body>/i, `${script}</body>`)
+  }
+  if (existingMediaScript.test(html)) html = html.replace(existingMediaScript, mediaScript)
+  else {
+    const runtimeScript = runtimeScriptPattern && html.match(runtimeScriptPattern)
+    if (runtimeScript) html = html.replace(runtimeScript[0], `${mediaScript}\n${runtimeScript[0]}`)
+    else {
+      if (!/<\/head>/i.test(html)) throw new Error(`${path} 没有 </head>，无法在游戏音频初始化前安装媒体桥`)
+      html = html.replace(/<\/head>/i, `${mediaScript}</head>`)
+    }
+  }
+  writeFileSync(path, html)
+}
+
+function injectPvzGameSdk(path) {
+  injectGameSdk(path, 'body.game-mode canvas#canvas', /<script\b[^>]*\bsrc=(['"])[^'"]*pvz-wasm-loader\.js(?:\?[^'"]*)?\1[^>]*>/i)
+}
+
+function injectMinecraftGameSdk(path) {
+  // Eaglercraft 在 classes.js 初始化时创建 WebAudio；媒体桥必须先于它安装。
+  injectGameSdk(path, 'body#game_frame canvas', /<script\b[^>]*\bsrc=(['"])[^'"]*classes\.js(?:\?[^'"]*)?\1[^>]*>/i)
+}
+
+function injectCs16GameSdk(path) {
+  // Xash 在模块脚本执行时创建 WebGL 与 WebAudio；媒体桥要先于引擎，SDK 则绑定唯一游戏画布。
+  injectGameSdk(path, '#canvas', /<script\b[^>]*\bsrc=(['"])[^'"]*cs16\.bundle\.js(?:\?[^'"]*)?\1[^>]*>/i)
+}
+
+function versionSubwaySdk(htmlPath, bootstrapPath) {
+  let html = readFileSync(htmlPath, 'utf8')
+  const mediaUrl = `/html5-api/8bitgo-media-bridge.js?v=${mediaBridgeVersion}`
+  const mediaScript = '<script src="/html5-api/8bitgo-media-bridge.js"></script>'
+  if (html.split(mediaScript).length !== 2) throw new Error(`${htmlPath} 的 8BitGo 媒体桥标签数量不正确`)
+  html = html.replace(mediaScript, `<script src="${mediaUrl}"></script>`)
+  writeFileSync(htmlPath, html)
+
+  let bootstrap = readFileSync(bootstrapPath, 'utf8')
+  const sdkUrl = "var sdkUrl = '/html5-api/8bitgo-game-sdk.min.js';"
+  const versionedSdkUrl = `var sdkUrl = '/html5-api/8bitgo-game-sdk.min.js?v=${gameSdkVersion}';`
+  if (bootstrap.split(sdkUrl).length !== 2) throw new Error(`${bootstrapPath} 的 8BitGo SDK 地址数量不正确`)
+  bootstrap = bootstrap.replace(sdkUrl, versionedSdkUrl)
+  writeFileSync(bootstrapPath, bootstrap)
 }
 
 /**
@@ -62,12 +141,12 @@ function allowPvzPagesHost(path) {
 }
 
 /**
- * html5.8bitgo.com 的历史自定义域能读对象却没有 CORS 响应头，浏览器直连会在拿到 200 后仍
- * 报 Failed to fetch。Pages 包改走同源 Worker；源站副本继续保留真实 R2 地址，避免改变主站行为。
+ * PvZ 大资源统一从 download.8bitgo.com 获取。Pages 包仍走同源 Worker，以保留 Range / ETag
+ * 转发能力；Worker 的上游也指向下载域，源站副本则由页面直接请求下载域。
  */
 function usePvzPagesDataProxy(path) {
   let html = readFileSync(path, 'utf8')
-  const before = "window.PVZ_DATA_BASE='https://html5.8bitgo.com/PvZ/properties/';"
+  const before = "window.PVZ_DATA_BASE='https://download.8bitgo.com/PvZ/properties/';"
   // 加载器会把它作为 new URL(relative, base) 的 base，必须给出绝对 URL，不能只写根相对路径。
   const after = "window.PVZ_DATA_BASE=location.origin+'/pvz-data/';"
   const hits = html.split(before).length - 1
@@ -85,7 +164,6 @@ function rootPage(config) {
 
 mkdirSync(outputRoot, { recursive: true })
 const workerTemplate = readFileSync(resolve(repo, 'deploy/cloudflare-pages/web-game-worker.js'), 'utf8')
-const bridgeSource = resolve(repo, 'public/html5-api/8bitgo-runtime-bridge.js')
 
 for (const name of selected) {
   const config = WEB_GAME_PAGES[name]
@@ -113,6 +191,8 @@ for (const name of selected) {
   }
   mkdirSync(resolve(output, 'html5-api'), { recursive: true })
   cpSync(bridgeSource, resolve(output, 'html5-api/8bitgo-runtime-bridge.js'))
+  cpSync(resolve(repo, 'public/html5-api/8bitgo-game-sdk.min.js'), resolve(output, 'html5-api/8bitgo-game-sdk.min.js'))
+  cpSync(mediaBridgeSource, resolve(output, 'html5-api/8bitgo-media-bridge.js'))
 
   for (const [file, selector] of config.html) {
     const path = resolve(output, 'web', config.sourceDir, file)
@@ -122,6 +202,12 @@ for (const name of selected) {
       if (file === 'cn/index.html' || file === 'en/index.html') usePvzPagesDataProxy(path)
     }
     injectRuntimeBridge(path, selector)
+    if (name === 'pvz' && (file === 'cn/index.html' || file === 'en/index.html')) injectPvzGameSdk(path)
+    if (name === 'minecraft' && file === 'eaglercraft/index.html') injectMinecraftGameSdk(path)
+    if (name === 'cs16' && file === 'index.html') injectCs16GameSdk(path)
+    if (name === 'subway' && file === 'index.html') {
+      versionSubwaySdk(path, resolve(output, 'web', config.sourceDir, 'js/8bitgo.js'))
+    }
   }
 
   const workerConfig = JSON.stringify({

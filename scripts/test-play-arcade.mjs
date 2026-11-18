@@ -25,6 +25,16 @@ assert.equal(playHeaders.get('Cross-Origin-Embedder-Policy'), 'require-corp')
 assert.equal(playHeaders.get('Cache-Control'), CACHE.engineVersioned, '版本化 Play! JS 必须可长期缓存且保留 pthread 响应头')
 const wasmHeaders = headersFor('/play/20261026-system2x6-v1/Play.wasm', '/srv/public/play/20261026-system2x6-v1/Play.wasm')
 assert.equal(wasmHeaders.get('Cache-Control'), CACHE.engineVersioned, '版本化 Play! WASM 与胶水文件必须一同换代')
+const runtimeBridgeHeaders = headersFor(
+  '/html5-api/8bitgo-runtime-bridge.js?v=0123456789abcdef',
+  '/srv/public/html5-api/8bitgo-runtime-bridge.js',
+)
+assert.equal(runtimeBridgeHeaders.get('Cache-Control'), CACHE.engineVersioned, '内容指纹化的运行桥可长期缓存')
+const unversionedBridgeHeaders = headersFor(
+  '/html5-api/8bitgo-runtime-bridge.js',
+  '/srv/public/html5-api/8bitgo-runtime-bridge.js',
+)
+assert.notEqual(unversionedBridgeHeaders.get('Cache-Control'), CACHE.engineVersioned, '未指纹化的运行桥不能被永久缓存')
 
 function makeZip(files) {
   const empty = new Uint8Array(22)

@@ -76,7 +76,7 @@ try {
     plugins: [{
       name: 'rom-validation-test-dependencies',
       setup(api) {
-        api.onResolve({ filter: /^@\/services\/(startupDiagnostics|memoryRom|romHosts)$/ }, (args) => ({
+        api.onResolve({ filter: /^@\/services\/(startupDiagnostics|memoryRom|romHosts|romRouteHealth)$/ }, (args) => ({
           path: args.path.split('/').at(-1),
           namespace: 'rom-validation-test',
         }))
@@ -86,7 +86,9 @@ try {
             ? 'export const diagLog = () => {}'
             : args.path === 'memoryRom'
               ? 'export const memoryRomBlob = (parts, type = "") => new Blob(parts, { type }); export const memoryRomOf = () => undefined'
-              : 'export const rememberRomHostForUrl = () => {}',
+              : args.path === 'romHosts'
+                ? 'export const rememberRomHostForUrl = () => {}'
+                : 'export const isRomRouteOpen = () => false; export const rankRomRoutes = (routes) => routes; export const recordRomRouteFailure = () => {}; export const recordRomRouteTransfer = () => {}; export const romRouteHealthSummary = () => ""; export const romRouteOrigin = (url) => url; export const romRouteRate = () => 0; export const ROUTE_MIN_SAMPLE_BYTES = 32768',
         }))
       },
     }],

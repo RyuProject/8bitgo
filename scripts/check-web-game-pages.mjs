@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { dirname, relative, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -7,6 +8,12 @@ import { WEB_GAME_PAGES } from '../deploy/cloudflare-pages/web-games-config.js'
 const here = dirname(fileURLToPath(import.meta.url))
 const repo = resolve(here, '..')
 const outputRoot = resolve(repo, '.cloudflare-pages')
+const bridgeSource = readFileSync(resolve(repo, 'public/html5-api/8bitgo-runtime-bridge.js'))
+const gameSdkSource = readFileSync(resolve(repo, 'public/html5-api/8bitgo-game-sdk.min.js'))
+const mediaBridgeSource = readFileSync(resolve(repo, 'public/html5-api/8bitgo-media-bridge.js'))
+const bridgeVersion = createHash('sha256').update(bridgeSource).digest('hex').slice(0, 16)
+const gameSdkVersion = createHash('sha256').update(gameSdkSource).digest('hex').slice(0, 16)
+const mediaBridgeVersion = createHash('sha256').update(mediaBridgeSource).digest('hex').slice(0, 16)
 const names = process.argv.slice(2).filter((value) => !value.startsWith('-'))
 const selected = names.length ? names : Object.keys(WEB_GAME_PAGES)
 
@@ -31,6 +38,10 @@ for (const name of selected) {
   assert.ok(existsSync(resolve(root, config.entry.replace(/^\//, ''), 'index.html')) ||
     existsSync(resolve(root, config.entry.replace(/^\//, '').replace(/\/$/, '/index.html'))), `${name} 入口缺失`)
   assert.ok(existsSync(resolve(root, '_worker.js')), `${name} 缺少 _worker.js`)
+  assert.deepEqual(readFileSync(resolve(root, 'html5-api/8bitgo-runtime-bridge.js')), bridgeSource, `${name} 运行桥与主仓库版本不一致`)
+  assert.deepEqual(readFileSync(resolve(root, 'html5-api/8bitgo-game-sdk.min.js')), gameSdkSource, `${name} 压缩游戏 SDK 与主仓库版本不一致`)
+  assert.deepEqual(readFileSync(resolve(root, 'html5-api/8bitgo-media-bridge.js')), mediaBridgeSource, `${name} 媒体桥与主仓库版本不一致`)
+  assert.ok(gameSdkSource.toString('utf8').includes('window.EightBitGoGameSDK'), `${name} 游戏包缺少 8BitGo SDK API`)
   assert.ok(!existsSync(resolve(root, 'web', config.sourceDir, '_framework')), `${name} 错把超大 _framework 打进 Pages`)
   for (const excluded of config.excludeDirs || []) {
     assert.ok(!existsSync(resolve(root, 'web', config.sourceDir, excluded)), `${name} 错把 ${excluded} 打进 Pages`)
@@ -44,13 +55,31 @@ for (const name of selected) {
 
   for (const [file] of config.html) {
     const html = readFileSync(resolve(root, 'web', config.sourceDir, file), 'utf8')
-    assert.match(html, /\/html5-api\/8bitgo-runtime-bridge\.js/, `${name}/${file} 没有 Pages 运行桥`)
+    assert.ok(html.includes(`/html5-api/8bitgo-runtime-bridge.js?v=${bridgeVersion}`), `${name}/${file} 没有当前内容指纹的 Pages 运行桥`)
     if (name === 'pvz') {
       assert.match(html, /h==='8bitgo-pvz\.pages\.dev'/, `${name}/${file} 没有放行自己的固定 Pages 域名`)
       if (file === 'cn/index.html' || file === 'en/index.html') {
         assert.match(html, /PVZ_DATA_BASE=location\.origin\+'\/pvz-data\/'/, `${name}/${file} 没有使用 Pages 同源数据代理`)
-        assert.doesNotMatch(html, /PVZ_DATA_BASE='https:\/\/html5\.8bitgo\.com/, `${name}/${file} 仍在浏览器直连无 CORS 的 R2 域名`)
+        assert.doesNotMatch(html, /PVZ_DATA_BASE='https:\/\/download\.8bitgo\.com/, `${name}/${file} 未使用 Pages 同源数据代理`)
+        assert.ok(html.includes(`/html5-api/8bitgo-game-sdk.min.js?v=${gameSdkVersion}`), `${name}/${file} 没有加载当前版本 8BitGo SDK`)
+        assert.match(html, /data-canvas-selector="body\.game-mode canvas#canvas"/, `${name}/${file} 没有把 PvZ 主画布登记给 SDK`)
+        assert.ok(html.indexOf('8bitgo-media-bridge.js?v=') >= 0 && html.indexOf('8bitgo-media-bridge.js?v=') < html.indexOf('pvz-wasm-loader.js'), `${name}/${file} 必须在 PvZ 音频运行时前安装媒体桥`)
       }
+    } else if (name === 'minecraft') {
+      assert.ok(html.includes(`/html5-api/8bitgo-game-sdk.min.js?v=${gameSdkVersion}`), `${name}/${file} 没有加载当前版本 8BitGo SDK`)
+      assert.match(html, /data-canvas-selector="body#game_frame canvas"/, `${name}/${file} 没有把 Minecraft 画布登记给 SDK`)
+      assert.ok(html.indexOf('8bitgo-media-bridge.js?v=') >= 0 && html.indexOf('8bitgo-media-bridge.js?v=') < html.indexOf('src="classes.js"'), `${name}/${file} 必须在 Eaglercraft 初始化前安装媒体桥`)
+    } else if (name === 'cs16') {
+      assert.ok(html.includes(`/html5-api/8bitgo-game-sdk.min.js?v=${gameSdkVersion}`), `${name}/${file} 没有加载当前版本 8BitGo SDK`)
+      assert.match(html, /data-canvas-selector="#canvas"/, `${name}/${file} 没有把 CS1.6 主画布登记给 SDK`)
+      assert.ok(html.indexOf('8bitgo-media-bridge.js?v=') >= 0 && html.indexOf('8bitgo-media-bridge.js?v=') < html.indexOf('cs16.bundle.js'), `${name}/${file} 必须在 Xash 初始化前安装媒体桥`)
+    } else if (name === 'subway') {
+      const bootstrap = readFileSync(resolve(root, 'web/subway-surfers/js/8bitgo.js'), 'utf8')
+      assert.ok(bootstrap.includes(`/html5-api/8bitgo-game-sdk.min.js?v=${gameSdkVersion}`), `${name}/${file} 没有加载当前版本 8BitGo SDK`)
+      assert.ok(html.includes(`/html5-api/8bitgo-media-bridge.js?v=${mediaBridgeVersion}`), `${name}/${file} 没有加载当前版本 8BitGo 媒体桥`)
+      assert.ok(html.indexOf('8bitgo-media-bridge.js?v=') < html.indexOf('src="js/boot.js"'), `${name}/${file} 必须在游戏引擎前安装媒体桥`)
+    } else {
+      assert.doesNotMatch(html, /\/html5-api\/8bitgo-game-sdk\.min\.js\?v=/, `${name}/${file} 不应被 PvZ SDK 改动影响`)
     }
     if (name === 'gtavc') {
       assert.match(html, /<meta name="robots" content="noindex,nofollow" \/>/, 'GTA VC 运行端不得被收录')
@@ -82,6 +111,13 @@ for (const name of selected) {
     assert.match(app, /host === '8bitgo\.com' \|\| host\.endsWith\('\.8bitgo\.com'\)/, '非本站 Pages 域名必须禁用授权包下载')
     assert.ok(!files.some((file) => /(?:^|\/)(?:data\.win|game\.(?:unx|ios|droid)|[^/]+\.(?:ogg|rar|7z))$/i
       .test(relative(root, file).replaceAll('\\', '/'))), 'UNDERTALE Pages 不得包含商业游戏内容')
+  }
+  if (name === 'subway') {
+    const textFiles = files.filter((file) => /\.(?:html|js|json|webmanifest)$/i.test(file))
+    for (const file of textFiles) assert.doesNotMatch(readFileSync(file, 'utf8'), /ggemu/i, `${relative(root, file)} 不得包含旧游戏平台引用`)
+    const bootstrap = readFileSync(resolve(root, 'web/subway-surfers/js/8bitgo.js'), 'utf8')
+    assert.match(bootstrap, /EightBitGoGameSDK/, 'Subway Surfers 必须接入 8BitGo Game SDK')
+    assert.doesNotMatch(bootstrap, /https:\/\/8bitgo\.com\/html5-api\//, 'Subway Surfers SDK 应从 Pages 同源加载')
   }
 
   const workerUrl = `${pathToFileURL(resolve(root, '_worker.js')).href}?check=${Date.now()}`
@@ -137,7 +173,7 @@ for (const name of selected) {
         headers: { Range: 'bytes=0-2097151' },
       }), { ASSETS: assets })
       assert.equal(response.status, 200)
-      assert.equal(fetched.at(-1).url, 'https://html5.8bitgo.com/PvZ/properties/packs/reanim-test.pvzpack.gz')
+      assert.equal(fetched.at(-1).url, 'https://download.8bitgo.com/PvZ/properties/packs/reanim-test.pvzpack.gz')
       assert.equal(fetched.at(-1).headers.get('range'), 'bytes=0-2097151')
       assert.equal(fetched.at(-1).headers.get('accept-encoding'), 'identity')
       assert.equal(response.headers.get('access-control-allow-origin'), '*')

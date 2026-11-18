@@ -687,6 +687,12 @@ export interface RuntimeHandle {
   screenshot?: () => Promise<Blob | null>
   /** 录制用的画面 / 声音来源 */
   captureSources?: () => CaptureSources | null
+  /** 跨源网页游戏由游戏页内的 8BitGo SDK 在本地录制；媒体 Blob 只回传给当前播放器。 */
+  startRemoteRecording?: () => Promise<boolean>
+  stopRemoteRecording?: () => Promise<Blob | null>
+  /** 受信任的跨源 Pages 游戏由 8BitGo SDK 按需转移画帧；null 表示 SDK 仍在初始化，false 表示当前浏览器不支持。 */
+  startRemoteLiveCapture?: () => Promise<boolean | null>
+  stopRemoteLiveCapture?: () => Promise<void>
   /**
    * 画面**永远**抓不到（比如跨源的 iframe，浏览器不让读里面的东西）。
    * 直播那边靠它少等九秒：captureSources 返回 null 分两种 —— 「还没有第一帧」和「永远不会有」，

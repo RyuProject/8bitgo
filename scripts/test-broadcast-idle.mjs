@@ -99,10 +99,12 @@ let lastCaptureFps = 0
 let lastVideoTrack = null
 
 const senders = []
+const peerConnections = []
 class FakeRTCPeerConnection {
   constructor() {
     this.connectionState = 'new'
     this._senders = []
+    peerConnections.push(this)
   }
   addTrack(track) {
     const sender = {
@@ -116,6 +118,9 @@ class FakeRTCPeerConnection {
   }
   getSenders() {
     return this._senders
+  }
+  getTransceivers() {
+    return this._senders.map((sender) => ({ sender, setCodecPreferences() {} }))
   }
   async createOffer() {
     return { type: 'offer', sdp: 'v=0' }
@@ -143,7 +148,10 @@ const fakeSocket = {
   off() {},
   emit(event, payload, ack) {
     if (typeof ack === 'function') {
-      if (event === 'go-live') ack(null, { roomId: 'r1', token: 't1' })
+      if (event === 'go-live') {
+        const transport = globalThis.__fakeLiveTransport || 'p2p'
+        ack(null, { roomId: 'r1', token: 't1', transport, ...(transport === 'srs' ? { srsGrant: 'test-grant' } : {}) })
+      }
       else ack(null, {})
     }
   },
@@ -296,6 +304,36 @@ console.log('\n── 停播 ──')
   live.stop()
   await sleep(30)
   ok(liveTracks.size === 0, '停播把抓屏轨全放掉')
+}
+
+console.log('\n── SRS 视频不能依赖点对点协作通道 ──')
+{
+  globalThis.__fakeLiveTransport = 'srs'
+  const firstConnection = peerConnections.length
+  const srsLive = await startBroadcast({
+    sources: { canvas },
+    meta: { gameSlug: 'kof98', gameName: 'KOF 98', platform: 'arcade', title: 'x', hostName: 'y' },
+  })
+  fire('viewer-joined', { viewerId: 'srs-viewer' })
+  fire('viewers', { count: 1 })
+  await sleep(40)
+  const connections = peerConnections.slice(firstConnection)
+  const coopPc = connections.find((pc) => pc.getSenders().length === 0)
+  const publisherPc = connections.find((pc) => pc.getSenders().length > 0)
+  ok(Boolean(coopPc && publisherPc), 'SRS 视频上行与 2P 协作连接各自建立')
+
+  // 模拟观众只建不起点对点协作通道；SRS 视频仍有一个真实消费者，不能跟着被释放。
+  coopPc.connectionState = 'failed'
+  coopPc.onconnectionstatechange?.()
+  await sleep(3_100)
+  ok(liveTracks.size === 1 && publisherPc.connectionState !== 'closed', '⭐ 协作通道失败不会停掉仍有观众的 SRS 视频')
+
+  fire('viewer-left', { viewerId: 'srs-viewer' })
+  fire('viewers', { count: 0 })
+  await sleep(3_100)
+  ok(liveTracks.size === 0 && publisherPc.connectionState === 'closed', '最后一位 SRS 观众离开后延迟释放视频轨与上行')
+  srsLive.stop()
+  delete globalThis.__fakeLiveTransport
 }
 
 console.log(`\n✅ 直播抓屏测试通过（${n} 项）`)

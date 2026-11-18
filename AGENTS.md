@@ -2221,7 +2221,7 @@ npm run audit:rom-langs -- --slug=pokemon-ruby   # 单款（清理时用）
 内容寻址对象的记录在 `public/web/PvZ/pvz-pack.json`。
 
 ⚠️ **路径按 `PVZ_DATA_BASE + r2` 计算。** 当前 DATA_BASE 已经是
-`https://html5.8bitgo.com/PvZ/properties/`，所以清单只能写 `main.pak` / `en-main.pak` /
+`https://download.8bitgo.com/PvZ/properties/`，所以清单只能写 `main.pak` / `en-main.pak` /
 `packs/...`。旧生成脚本又加了一层 `properties/`，请求会变成
 `PvZ/properties/properties/main.pak`；`scripts/pvz-pack-data.sh` 已修正。
 
@@ -2268,10 +2268,9 @@ npm run pvz:check-assets              # 线上 HEAD + CORS 验收
 同步 bump `SHELL_VERSION`、`src/emulator/adapters/html5.ts` 的 `PVZ_SHELL_VERSION`，再运行
 `npm run pvz:sync-snippet`，否则 Pages / iframe 可能继续命中旧 CSS。
 
-⚠️ Pages 里的中英文入口不能直接使用上面的 `html5.8bitgo.com`：该 R2 自定义域能返回 200，
-但没有 `Access-Control-Allow-Origin`，浏览器最终只报 `Failed to fetch`，加载画面随后按设计退回
-资源选择页。`scripts/build-web-game-pages.mjs` 会把 Pages 产物的 `PVZ_DATA_BASE` 改成同源
-`/pvz-data/`，再由 `deploy/cloudflare-pages/web-game-worker.js` 保留 Range / ETag 流式转发到 R2。
+PvZ 中英文入口从 `https://download.8bitgo.com/PvZ/properties/` 获取游戏资源；下载域 Worker
+会将 `PvZ/properties/` 路径映射到网页游戏资源桶。Pages 构建仍把 `PVZ_DATA_BASE` 改成同源
+`/pvz-data/`，再由 `deploy/cloudflare-pages/web-game-worker.js` 从下载域流式转发并保留 Range / ETag。
 本地验收必须用 `wrangler pages dev .cloudflare-pages/pvz`，普通静态服务器不会执行这条代理。
 
 ⚠️ 清单里的 `properties/` 是可选覆盖配置，全部 404 时允许使用引擎内置默认值；`main.pak` 和

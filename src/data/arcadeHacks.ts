@@ -74,13 +74,102 @@ export interface ArcadeHack {
    吞食天地II 赤壁之战中文版（HBMAME: tk2h5）
    ══════════════════════════════════════════════════════════════════════════
 
-   HBMAME 将 tk2h5 挂在世界版 `wof` 父驱动下。此包替换了程序 ROM，并新增两块中文字库 ROM。
-   HBMAME 源码仍将中文字库加载过程标为未知，源码中的 ROM_COPY 也处于注释状态。
+   HBMAME 将 tk2h5 挂在世界版 `wof` 父驱动下，并在源码里标注了两块字库 ROM 的 ROM_COPY
+   目标：CPS1 图形区 0x040000（开场）和 0x380000（人物介绍）。FBNeo 的 CPS1_TILES
+   不是 MAME 的交错图形区，所以运行时先按 ROMX_LOAD 的 64-bit lane 顺序重建这两段，
+   再拆回 FBNeo 的四路图形 ROM。只有准确命中程序和两颗字库的 CRC 才会合成；WOF 其它语言
+   继续用各自原始图形 ROM，不会继承这份汉化覆盖。
 
-   我在 FBNeo / EmulatorJS 中实测过多种拼接和位序转换：虽然能启动，但中文区域仍乱码，
-   且会破坏开场图形。因此当前只记录确定的包指纹和父驱动，不自动注入未经验证的 RomData
-   或图形补丁。等找到正确映射并验证游戏内文字与背景都正常后，再增加加载方案。
+   HBMAME 给该改版保留 MACHINE_IMPERFECT_GRAPHICS 标记；这条支持路径复现其注释中的
+   ROM_COPY，不会改动原始上传包，也不宣称补齐 HBMAME 尚未确认的硬件细节。
 */
+
+const WOFCN_INPUTS = [
+  'tk2_gfx1.rom', 'tk2_gfx3.rom', 'tk2_gfx2.rom', 'tk2_gfx4.rom',
+  'tk205.bin', 'tk206.bin', 'tk207.bin', 'tk208.bin',
+  'tk2_gfx5cn.rom', 'tk2_gfx6cn.rom',
+] as const
+
+const WOFCN_OUTPUTS = [
+  'wofcn_intro_gfx1.rom', 'wofcn_intro_gfx3.rom', 'wofcn_intro_gfx2.rom', 'wofcn_intro_gfx4.rom',
+  'wofcn_actor_gfx1.rom', 'wofcn_actor_gfx2.rom', 'wofcn_actor_gfx3.rom', 'wofcn_actor_gfx4.rom',
+] as const
+
+/** 将 HBMAME 的两颗 CPS1 字库芯片还原为 ROM_COPY 写入的四路 FBNeo 图形数据。 */
+function deriveWofcnGraphics(inputs: Record<string, Uint8Array>) {
+  const files = WOFCN_INPUTS.map((name) => {
+    const data = inputs[name]
+    if (!data || data.length !== 0x80000) {
+      throw new Error(`wofcn 字库转换需要完整的 ${name}（512 KiB）`)
+    }
+    return data
+  })
+  const font5 = files[8]
+  const font6 = files[9]
+  const fontWindow = new Uint8Array(0x20000)
+
+  // ROM_CONTINUE 会将每颗芯片的两段 0x8000 字节分别放到 64-bit 总线的相邻 word lane。
+  for (let group = 0; group < 0x4000; group++) {
+    const dst = group * 8
+    const src = group * 2
+    fontWindow.set(font5.subarray(0x10000 + src, 0x10002 + src), dst)
+    fontWindow.set(font5.subarray(0x18000 + src, 0x18002 + src), dst + 2)
+    fontWindow.set(font6.subarray(0x10000 + src, 0x10002 + src), dst + 4)
+    fontWindow.set(font6.subarray(0x18000 + src, 0x18002 + src), dst + 6)
+  }
+
+  const plans = [
+    { source: 0, output: WOFCN_OUTPUTS[0], offset: 0x10000, lane: 0 },
+    { source: 1, output: WOFCN_OUTPUTS[1], offset: 0x10000, lane: 1 },
+    { source: 2, output: WOFCN_OUTPUTS[2], offset: 0x10000, lane: 2 },
+    { source: 3, output: WOFCN_OUTPUTS[3], offset: 0x10000, lane: 3 },
+    { source: 4, output: WOFCN_OUTPUTS[4], offset: 0x60000, lane: 0 },
+    { source: 5, output: WOFCN_OUTPUTS[5], offset: 0x60000, lane: 1 },
+    { source: 6, output: WOFCN_OUTPUTS[6], offset: 0x60000, lane: 2 },
+    { source: 7, output: WOFCN_OUTPUTS[7], offset: 0x60000, lane: 3 },
+  ]
+
+  return plans.map(({ source, output, offset, lane }) => {
+    const data = new Uint8Array(files[source])
+    for (let group = 0; group < 0x4000; group++) {
+      const src = group * 8 + lane * 2
+      data.set(fontWindow.subarray(src, src + 2), offset + group * 2)
+    }
+    return { name: output, data }
+  })
+}
+
+const WOFCN_ROM_DATA = `ZipName wofcn
+DrvName wof
+FullName "Tenchi wo Kurau II (Edition Chinese)"
+
+tk2j23ccn.bin 0x080000 0xe1dd01d8 BRF_ESS BRF_PRG CPS1_68K_PROGRAM_NO_BYTESWAP
+tk2j22c.bin 0x080000 0xb74b09ac BRF_ESS BRF_PRG CPS1_68K_PROGRAM_NO_BYTESWAP
+
+wofcn_intro_gfx1.rom 0x080000 0x6421077b BRF_GRA CPS1_TILES
+wofcn_intro_gfx3.rom 0x080000 0x2239f6eb BRF_GRA CPS1_TILES
+wofcn_intro_gfx2.rom 0x080000 0xe54a0562 BRF_GRA CPS1_TILES
+wofcn_intro_gfx4.rom 0x080000 0x9315de77 BRF_GRA CPS1_TILES
+wofcn_actor_gfx1.rom 0x080000 0x4a96ae89 BRF_GRA CPS1_TILES
+wofcn_actor_gfx2.rom 0x080000 0x58c8412b BRF_GRA CPS1_TILES
+wofcn_actor_gfx3.rom 0x080000 0x91993928 BRF_GRA CPS1_TILES
+wofcn_actor_gfx4.rom 0x080000 0x11111d7c BRF_GRA CPS1_TILES
+
+tk2_qa.rom 0x020000 0xc9183a0d BRF_PRG CPS1_Z80_PROGRAM
+
+tk2_q1.rom 0x080000 0x611268cf BRF_SND CPS1_QSOUND_SAMPLES
+tk2_q2.rom 0x080000 0x20f55ca9 BRF_SND CPS1_QSOUND_SAMPLES
+tk2_q3.rom 0x080000 0xbfcf6f52 BRF_SND CPS1_QSOUND_SAMPLES
+tk2_q4.rom 0x080000 0x36642e88 BRF_SND CPS1_QSOUND_SAMPLES
+
+buf1 0x000117 0xeb122de7 BRF_OPT
+ioa1 0x000117 0x59c7ee3b BRF_OPT
+prg2 0x000117 0x4386879a BRF_OPT
+rom1 0x000117 0x41dc73b9 BRF_OPT
+tk263b.1a 0x000117 0xc4b0349b BRF_OPT
+iob1.12d 0x000117 0x3abc0700 BRF_OPT
+bprg1.11d 0x000117 0x31793da7 BRF_OPT
+ioc1.ic1 0x000117 0x0d182081 BRF_OPT`
 
 export const ARCADE_HACKS: ArcadeHack[] = [
   {
@@ -88,11 +177,17 @@ export const ARCADE_HACKS: ArcadeHack[] = [
     driver: 'wof',
     platform: 'arcade',
     title: '吞食天地II 赤壁之战（中文版）',
-    note: 'HBMAME tk2h5；中文字库加载映射尚未验证，暂不自动套用图形补丁',
+    note: 'HBMAME tk2h5；按程序与两颗字库 ROM 指纹合成 CPS1 字形，仅作用于 wofcn.zip',
     // 保留 ROM 专属标记，以便忽略可能遗留在游戏级字段中的旧版错误 RomData。
     romDataScope: 'rom',
     // 换掉的程序 ROM + 两块新增中文字库，三个一起出现才算它。
     fingerprint: [0xe1dd01d8, 0xec6e8689, 0x722787df],
+    romData: WOFCN_ROM_DATA,
+    derive: {
+      inputs: [...WOFCN_INPUTS],
+      outputs: [...WOFCN_OUTPUTS],
+      run: deriveWofcnGraphics,
+    },
   },
 ]
 

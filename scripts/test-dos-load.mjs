@@ -64,6 +64,7 @@ const player = strip(read('src/emulator/EmulatorPlayer.tsx'))
 const jsdos = strip(read('src/emulator/adapters/jsdos.ts'))
 const windowsLaunch = strip(read('src/emulator/windowsLaunch.ts'))
 const prewarm = strip(read('src/emulator/prewarm.ts'))
+const preloadPolicy = strip(read('src/emulator/preloadPolicy.ts'))
 
 /**
  * 全部跑完再汇总，不在第一条就退出。
@@ -331,8 +332,9 @@ check('Win95 / PC-98 悬停时预热正确的 DOSBox-X 核心和系统盘版本�
   assert.match(player, /prewarmSystemCache\(effectiveDosSystemUrl\)/)
   assert.match(prewarm, /jspiEnabled\(\) \? 'wdosbox-x-jspi' : 'wdosbox-x'/)
   assert.match(prewarm, /warmHttpCache\(`\$\{emulatorRoot\}\$\{stem\}\.wasm`\)/)
-  assert.match(prewarm, /connection\?\.saveData/)
-  assert.match(prewarm, /effectiveType !== '2g'/)
+  assert.match(prewarm, /return allowsSpeculativePlayerPreload\(connection\)/, '大核心预热必须统一经过网络预算门')
+  assert.match(preloadPolicy, /if \(connection\.saveData\) return false/, '省流量模式不能预拉大核心')
+  assert.match(preloadPolicy, /connection\.effectiveType && connection\.effectiveType !== '4g'/, '非 4G 网络不能预拉大核心')
 })
 
 check('配置流式目录后不再下载整包 ROM', () => {

@@ -16,8 +16,10 @@ import {
 import { dirname, relative, resolve, sep } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { buildGameSdk } from './build-8bitgo-game-sdk.mjs'
 
 const STREAM_VERSION = 'v0.8.6-ee9d492-stream9'
+buildGameSdk()
 const MAX_PAGES_FILE = 25 * 1024 * 1024
 const WEB_TITLE_ATTRACT_DELAY_SECONDS = 300
 const ASSET_LIBRARIES = ['songs', 'shared', 'videos', 'tutorial', 'week1', 'week2', 'week3', 'week4', 'week5', 'week6', 'week7', 'weekend1', 'sserafim']
@@ -262,13 +264,19 @@ writeLibraryManifest('art', [
 ])
 
 mkdirSync(resolve(output, 'html5-api'), { recursive: true })
-copyFileSync(resolve(repo, 'public/html5-api/8bitgo-runtime-bridge.js'), resolve(output, 'html5-api/8bitgo-runtime-bridge.js'))
+const runtimeBridgePath = resolve(repo, 'public/html5-api/8bitgo-runtime-bridge.js')
+copyFileSync(runtimeBridgePath, resolve(output, 'html5-api/8bitgo-runtime-bridge.js'))
+copyFileSync(resolve(repo, 'public/html5-api/8bitgo-game-sdk.min.js'), resolve(output, 'html5-api/8bitgo-game-sdk.min.js'))
+copyFileSync(resolve(repo, 'public/html5-api/8bitgo-media-bridge.js'), resolve(output, 'html5-api/8bitgo-media-bridge.js'))
 
 // 主程序经过网页兼容补丁后内容会变化，缓存键必须取最终产物，避免旧访客沿用上一版脚本。
 const mainVersion = sha256(resolve(output, 'Funkin.js')).slice(0, 16)
+// 服务工作线程会按完整 URL 缓存运行桥；独立指纹换代时不必重下整份 Funkin 游戏资源。
+const bridgeVersion = sha256(runtimeBridgePath).slice(0, 16)
 const replacements = {
   '__STREAM_VERSION__': STREAM_VERSION,
   '__MAIN_JS_VERSION__': mainVersion,
+  '__BRIDGE_VERSION__': bridgeVersion,
 }
 for (const template of ['index.html', '8bitgo-streaming.js', 'sw.js', '_worker.js']) renderTemplate(template, replacements)
 

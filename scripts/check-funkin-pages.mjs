@@ -8,6 +8,9 @@ const root = resolve(process.argv[index + 1])
 const libraries = ['songs', 'shared', 'videos', 'tutorial', 'week1', 'week2', 'week3', 'week4', 'week5', 'week6', 'week7', 'weekend1', 'sserafim', 'art']
 const required = [
   'index.html',
+  'html5-api/8bitgo-runtime-bridge.js',
+  'html5-api/8bitgo-game-sdk.min.js',
+  'html5-api/8bitgo-media-bridge.js',
   'Funkin.js',
   '8bitgo-streaming.js',
   'sw.js',
@@ -30,6 +33,9 @@ const loader = readFileSync(resolve(root, '8bitgo-streaming.js'), 'utf8')
 const sw = readFileSync(resolve(root, 'sw.js'), 'utf8')
 const worker = readFileSync(resolve(root, '_worker.js'), 'utf8')
 const main = readFileSync(resolve(root, 'Funkin.js'), 'utf8')
+const runtimeBridge = readFileSync(resolve(root, 'html5-api/8bitgo-runtime-bridge.js'))
+const gameSdk = readFileSync(resolve(root, 'html5-api/8bitgo-game-sdk.min.js'))
+const mediaBridge = readFileSync(resolve(root, 'html5-api/8bitgo-media-bridge.js'))
 const manifest = JSON.parse(readFileSync(resolve(root, 'funkin-prefetch-manifest.json'), 'utf8'))
 
 const assert = (condition, message) => {
@@ -37,6 +43,11 @@ const assert = (condition, message) => {
 }
 
 assert(!html.includes('__STREAM_VERSION__') && !html.includes('__MAIN_JS_VERSION__'), '入口仍含未替换的版本占位符')
+assert(!html.includes('__BRIDGE_VERSION__'), '入口仍含运行桥版本占位符')
+const bridgeHash = createHash('sha256').update(runtimeBridge).digest('hex').slice(0, 16)
+assert(html.includes(`/html5-api/8bitgo-runtime-bridge.js?v=${bridgeHash}`), '运行桥 URL 指纹与实际产物不一致')
+assert(gameSdk.toString('utf8').includes('window.EightBitGoGameSDK'), '游戏包缺少 8BitGo SDK API')
+assert(mediaBridge.toString('utf8').includes('8bitgo-media-bridge'), '媒体桥不属于当前 8BitGo 协议')
 assert(!loader.includes('__STREAM_VERSION__') && !loader.includes('__MAIN_JS_VERSION__'), '流式脚本仍含未替换的版本占位符')
 const mainHash = createHash('sha256').update(readFileSync(resolve(root, 'Funkin.js'))).digest('hex').slice(0, 16)
 assert(loader.includes(`./Funkin.js?v=${mainHash}`), '主程序缓存指纹不是最终修补产物的哈希')

@@ -95,7 +95,7 @@ assert.match(src('src/components/layout/Layout.tsx'), /<NoWasmNotice \/>/, '没�
 assert.match(src('src/locales/zh-Hans.ts'), /noWasmNotice: '当前浏览器不支持或者禁用了WebAssembly，无法显示全部游戏。'/)
 // 名单要和播放器的纯 JS 退路一致：NES → jsnes，GB/GBC → binjgb-js，GBA → IodineGBA。
 assert.match(src('src/emulator/registry.ts'), /\(platform === 'gb' \|\| platform === 'gbc'\) && \(ctx\.webglUnavailable \|\| ctx\.wasmUnavailable\)/)
-assert.match(src('src/emulator/registry.ts'), /platform === 'gba' && ctx\.gbaWasmUnavailable/)
+assert.match(src('src/emulator/registry.ts'), /platform === 'gba' && \(ctx\.gbaWasmUnavailable \|\| ctx\.gbaWebglUnavailable\)/)
 assert.match(src('src/emulator/EmulatorPlayer.tsx'), /flashAwayfl: awayflChoice\.use/)
 
 console.log('✔ nowasm 列表过滤：SQL、平台计数、缓存隔离与前端接线都对')

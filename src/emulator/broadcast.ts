@@ -1,16 +1,14 @@
 /**
- * 主播侧：把当前运行时的画面和声音推给 N 个观众。
+ * 主播侧：把当前运行时的画面和声音发布到 SRS；旧房间仍可走 P2P 兼容路径。
  *
  * 输入就是 Runtime 句柄给出的 CaptureSources —— 也就是录像用的同一份东西。
  * 所以任何能录像的引擎都能开播，不需要引擎本身支持联机：
  * GBA（EmulatorJS）、DOS（js-dos）、Flash（Ruffle）、Java（FreeJ2ME）都一样。
  *
- * 没有 SFU，是「主播直连每个观众」的星型结构：
- *   上行 = 单路码率 × 观众数。家宽大概到十来路就满了，服务端也按这个数封顶。
- *   真要做大场子，得在中间加一层转发（主播只推一路，服务器扇出）。
+ * SRS 模式下一路媒体由服务器扇出；点对点连接只承载「观众上场当 2P」的少量控制消息。
  *
  * ── 断线 ──────────────────────────────────────────────────
- * 信令 socket 断了不等于直播断了：画面走的是点对点的 WebRTC，服务器只管握手。
+ * 信令 socket 断了不等于直播断了：媒体走 SRS 或点对点，房间服务负责恢复与重新授权。
  * 所以这里的原则是**能接回去就接回去，接不回去就重开，绝不因为信令抖一下就散场**：
  *
  *   socket 重连成功 → resume-live（凭开播时发的 token）
@@ -27,7 +25,7 @@
  * （见 peers 的注释）。
  */
 import type { CaptureSources, PadButton } from './types'
-import { type LiveChatMessage, connectLive, liveIceConfig, type LiveSocket } from '@/services/live'
+import { type LiveChatMessage, connectLive, exchangeLiveSrsSdp, liveIceConfig, liveStunServers, waitForLiveIceGathering, preferLiveSrsCodecs, type LiveSocket } from '@/services/live'
 // 弹幕的清洗 / 限流 / ack 都在 chatSend.ts 里（两条发送路径共用一份，见那边的文件头）
 import { sendChatWithAck, type ChatSendResult } from './chatSend'
 import { applyTuning, fpsForViewers, sizeOfTrack, tuningFor, usableVideoSize } from './videoTuning'
@@ -323,6 +321,144 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
   let seedFrame: VideoFrame | null = null
   /** 观众走光之后延迟放手，免得断线重连那几秒里反复停/建抓屏 */
   let idleTimer = 0
+  let transport: 'p2p' | 'srs' = 'p2p'
+  let srsGrant = ''
+  let srsPc: RTCPeerConnection | null = null
+  let srsPublishInFlight = false
+  let srsGeneration = 0
+  let srsRetryCount = 0
+  let srsRetryTimer = 0
+  let srsDisconnectTimer = 0
+  let srsSentBytes: number | undefined
+  let srsSentAt: number | undefined
+
+  const tuneSrsSender = (sender: RTCRtpSender) => {
+    tuneSender(
+      sender,
+      options.maxBitrate ?? MAX_BITRATE_OVERRIDE,
+      cappedFps,
+      built?.videoSize(),
+      dualScreenSource,
+      options.native?.() ?? null,
+      'high',
+      qualityPreference,
+      options.preserveResolution?.() ?? false,
+    )
+  }
+
+  /** SRS 只占主播一路编码；观众协作通道仍由下方的点对点连接承载。 */
+  const stopSrsPublisher = () => {
+    window.clearTimeout(srsRetryTimer)
+    window.clearTimeout(srsDisconnectTimer)
+    srsRetryTimer = 0
+    srsDisconnectTimer = 0
+    srsGeneration++
+    srsPublishInFlight = false
+    srsRetryCount = 0
+    const old = srsPc
+    srsPc = null
+    if (!old) return
+    old.onconnectionstatechange = null
+    old.oniceconnectionstatechange = null
+    try {
+      old.close()
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const startSrsPublisher = async (media: CaptureFeed) => {
+    if (stopped || transport !== 'srs' || !srsGrant || !hasLiveViewers() || srsPc || srsPublishInFlight) return
+    srsPublishInFlight = true
+    const generation = ++srsGeneration
+    let pc: RTCPeerConnection | null = null
+    try {
+      const iceServers = await liveStunServers()
+      if (stopped || transport !== 'srs' || !srsGrant || !hasLiveViewers() || generation !== srsGeneration) return
+      const publisherPc = new RTCPeerConnection({ iceServers })
+      pc = publisherPc
+      srsPc = publisherPc
+      for (const track of media.stream.getTracks()) {
+        const sender = publisherPc.addTrack(track, media.stream)
+        const transceiver = publisherPc.getTransceivers().find((item) => item.sender === sender)
+        if (transceiver) preferLiveSrsCodecs(transceiver, track.kind === 'video' ? 'video' : 'audio')
+        if (track.kind === 'video') tuneSrsSender(sender)
+      }
+      const checkState = () => {
+        if (srsPc !== publisherPc || stopped) return
+        if (publisherPc.connectionState === 'connected') {
+          window.clearTimeout(srsDisconnectTimer)
+          srsDisconnectTimer = 0
+          srsRetryCount = 0
+        } else if (publisherPc.connectionState === 'disconnected' && !srsDisconnectTimer) {
+          srsDisconnectTimer = window.setTimeout(() => {
+            srsDisconnectTimer = 0
+            if (srsPc === publisherPc && publisherPc.connectionState === 'disconnected') scheduleSrsRestart()
+          }, PEER_DISCONNECTED_GRACE_MS)
+        } else if (publisherPc.connectionState === 'failed' || publisherPc.connectionState === 'closed') {
+          scheduleSrsRestart()
+        }
+      }
+      publisherPc.onconnectionstatechange = checkState
+      publisherPc.oniceconnectionstatechange = checkState
+      const offer = await publisherPc.createOffer()
+      await publisherPc.setLocalDescription(offer)
+      await waitForLiveIceGathering(publisherPc)
+      const localSdp = publisherPc.localDescription?.sdp
+      if (!localSdp) throw new Error('SRS publisher offer missing SDP')
+      const answer = await exchangeLiveSrsSdp('publish', roomId, srsGrant, localSdp)
+      if (stopped || srsPc !== publisherPc || generation !== srsGeneration) return
+      await publisherPc.setRemoteDescription(answer)
+      console.info('[live] SRS 上行已完成 SDP 协商')
+    } catch (error) {
+      if (srsPc === pc && generation === srsGeneration) {
+        srsPc = null
+        try { pc?.close() } catch { /* ignore */ }
+        console.warn('[live] SRS 上行协商失败，保留游戏并安排重试：', error)
+        scheduleSrsRestart()
+      }
+    } finally {
+      if (generation === srsGeneration) srsPublishInFlight = false
+    }
+  }
+
+  const scheduleSrsRestart = () => {
+    if (stopped || transport !== 'srs' || !hasLiveViewers() || srsRetryTimer) return
+    srsRetryCount++
+    const baseDelay = Math.min(30_000, 1_000 * 2 ** Math.min(srsRetryCount - 1, 5))
+    // 同一场直播的观众通常同时感知断流；加随机散布，避免它们一起打回 SRS API。
+    const delay = Math.round(baseDelay * (0.8 + Math.random() * 0.4))
+    console.warn(`[live] SRS 推流中断，${Math.ceil(delay / 1000)} 秒后重连（第 ${srsRetryCount} 次）`)
+    srsRetryTimer = window.setTimeout(() => {
+      srsRetryTimer = 0
+      void (async () => {
+        srsGeneration++
+        srsPublishInFlight = false
+        const old = srsPc
+        srsPc = null
+        if (old) {
+          old.onconnectionstatechange = null
+          old.oniceconnectionstatechange = null
+          try { old.close() } catch { /* ignore */ }
+        }
+        if (stopped || !hasLiveViewers() || !built) return
+        if (socket.connected && roomId && token) {
+          try {
+            const grant = await call<{ srsGrant?: string }>(socket, 'srs-publish-grant', { roomId, token })
+            if (grant.srsGrant) srsGrant = grant.srsGrant
+          } catch {
+            /* 信令也断了时沿用当前票；resume 成功会再发一张新票 */
+          }
+        }
+        if (stopped || !hasLiveViewers()) {
+          releaseIfIdle()
+          return
+        }
+        const media = ensureStream()
+        if (media) void startSrsPublisher(media)
+      })()
+    }, delay)
+  }
 
   /*
     开播前先探一次「这个源到底抓不抓得出画面」。
@@ -355,6 +491,10 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
       if (built) {
         // 没有 Insertable Streams 的浏览器：换源换的是轨，得挨个 sender 换过去（不用重新协商）
         built.onVideoTrackReplaced = (track) => {
+          if (transport === 'srs' && srsPc) {
+            const sender = srsPc.getSenders().find((item) => item.track?.kind === 'video')
+            if (sender) void sender.replaceTrack(track).then(() => tuneSrsSender(sender)).catch(() => scheduleSrsRestart())
+          }
           for (const peer of peers.values()) {
             const { pc } = peer
             for (const sender of pc.getSenders()) {
@@ -380,6 +520,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
   const releaseStream = () => {
     window.clearTimeout(idleTimer)
     idleTimer = 0
+    stopSrsPublisher()
     const keep = built?.release() ?? null
     built = null
     // 只留最新的一帧
@@ -390,10 +531,10 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
   }
   /** 没人看了：3 秒后放掉抓屏。给「观众只是抖了一下重连」留个窗口 */
   const releaseIfIdle = () => {
-    if (built === null || idleTimer) return
+    if (built === null || idleTimer || hasLiveViewers()) return
     idleTimer = window.setTimeout(() => {
       idleTimer = 0
-      if (!stopped && peers.size === 0) releaseStream()
+      if (!stopped && !hasLiveViewers()) releaseStream()
     }, 3_000)
   }
 
@@ -449,6 +590,8 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
   const viewerRequests = new Map<string, number>()
   let viewerRequestCounter = 0
   let viewers = 0
+  /** SRS 视频消费者由服务端名单决定；P2P 房间则由实际媒体 PeerConnection 决定。 */
+  const hasLiveViewers = () => transport === 'srs' ? viewers > 0 : peers.size > 0
   let stopped = false
   /**
    * 我们主动施加的帧率上限。两个来源取更小的那个：
@@ -742,9 +885,13 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
         dropPeer(entry.id)
         return
       }
-      for (const track of media.stream.getTracks()) {
-        const sender = pc.addTrack(track, media.stream)
-        if (track.kind === 'video') tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, media.videoSize(), dualScreenSource, options.native?.() ?? null, entry.quality.tier, qualityPreference, options.preserveResolution?.() ?? false)
+      if (transport === 'srs') {
+        void startSrsPublisher(media)
+      } else {
+        for (const track of media.stream.getTracks()) {
+          const sender = pc.addTrack(track, media.stream)
+          if (track.kind === 'video') tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, media.videoSize(), dualScreenSource, options.native?.() ?? null, entry.quality.tier, qualityPreference, options.preserveResolution?.() ?? false)
+        }
       }
 
       // ⚠️ 必须在 createOffer 之前：通道要进 SDP，否则得多走一轮重新协商
@@ -816,6 +963,10 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
         if (sender.track?.kind === 'video') tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, built?.videoSize(), dualScreenSource, options.native?.() ?? null, peer.quality.tier, qualityPreference, options.preserveResolution?.() ?? false)
       }
     }
+    if (srsPc) {
+      const sender = srsPc.getSenders().find((item) => item.track?.kind === 'video')
+      if (sender) tuneSrsSender(sender)
+    }
     /**
      * ⚠️ 抓屏帧率必须跟着一起降，不然这个降档等于白降。
      *
@@ -837,7 +988,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
    * 观众进出时都要调一次 —— 前馈那一档是**可逆**的：人走了就该自动放回去，
    * 不用等 getStats 攒够几轮干净采样。
    */
-  const retuneFps = () => applyFpsCap(Math.min(statsCap, fpsForViewers(viewers, captureFps)))
+  const retuneFps = () => applyFpsCap(transport === 'srs' ? statsCap : Math.min(statsCap, fpsForViewers(viewers, captureFps)))
 
   /** 只重调一位观众；不重建 PeerConnection、不换轨，因此不会黑屏或打断声音。 */
   /** 带宽估计爬坡期，见统计循环里 bandwidthLimited 那条 */
@@ -870,6 +1021,58 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
       这里也顺带覆盖「句柄比开播晚到」和「中途换了游戏」两种情况。
     */
     reportCoop()
+    if (transport === 'srs') {
+      if (stopped || !srsPc || statsInFlight) return
+      statsInFlight = true
+      try {
+        const report = await srsPc.getStats()
+        let reason: QualityInfo['reason'] = 'none'
+        let cpuLimited = false
+        let fps = 0
+        let kbps = 0
+        let width = 0
+        let height = 0
+        report.forEach((stat) => {
+          const s = stat as RTCStats & { qualityLimitationReason?: string; framesPerSecond?: number; bytesSent?: number; frameWidth?: number; frameHeight?: number }
+          if (!isVideoRtpStat(s, 'outbound-rtp')) return
+          if (s.qualityLimitationReason === 'cpu') { reason = 'cpu'; cpuLimited = true }
+          else if (reason === 'none' && s.qualityLimitationReason === 'bandwidth') reason = 'bandwidth'
+          if (typeof s.framesPerSecond === 'number') fps = Math.round(s.framesPerSecond)
+          if (typeof s.frameWidth === 'number') width = s.frameWidth
+          if (typeof s.frameHeight === 'number') height = s.frameHeight
+          if (typeof s.bytesSent === 'number') {
+            const now = Date.now()
+            if (srsSentBytes !== undefined && s.bytesSent >= srsSentBytes) {
+              kbps = Math.round(((s.bytesSent - srsSentBytes) * 8) / Math.max(1, now - (srsSentAt ?? now)))
+            }
+            srsSentBytes = s.bytesSent
+            srsSentAt = now
+          }
+        })
+        if (cpuLimited) {
+          degradeStreak++
+          recoverStreak = 0
+          if (degradeStreak >= DEGRADE_AFTER) {
+            degradeStreak = 0
+            const next = Math.max(10, Math.round(statsCap / 2))
+            if (next < statsCap) { statsCap = next; retuneFps() }
+          }
+        } else {
+          degradeStreak = 0
+          if (statsCap < captureFps && ++recoverStreak >= RECOVER_AFTER) {
+            recoverStreak = 0
+            statsCap = Math.min(captureFps, statsCap * 2)
+            retuneFps()
+          }
+        }
+        options.onQuality?.({ reason, fps, kbps, cappedFps, viewers, tier: 'high', width, height })
+      } catch {
+        /* SRS 链路统计失败不影响发布；下一轮继续采样 */
+      } finally {
+        statsInFlight = false
+      }
+      return
+    }
     if (stopped || peers.size === 0 || statsInFlight) return
     statsInFlight = true
     try {
@@ -1114,7 +1317,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
       platform: options.meta.platform,
       hostName: options.meta.hostName,
     }
-    let data: { roomId: string; token: string } | null = null
+    let data: { roomId: string; token: string; transport?: 'p2p' | 'srs'; srsGrant?: string } | null = null
     let lastError: unknown = null
     /**
      * 首次开播也会丢 ack：服务端房间已经建好，客户端却在 10 秒后当失败收摊。
@@ -1134,8 +1337,20 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
       }
     }
     if (!data) throw lastError instanceof Error ? lastError : new Error(String(lastError ?? 'go-live failed'))
+    if (roomId && roomId !== data.roomId) {
+      // 续播宽限期已过时服务端会删旧房再开新房；旧 SRS PC 仍可能活着，必须先释放，否则新房永远发不出上行。
+      viewerRequests.clear()
+      for (const id of Array.from(peers.keys())) dropPeer(id)
+      releaseStream()
+      viewers = 0
+      options.onViewers?.(0)
+      coopReported = ''
+    }
     roomId = data.roomId
     token = data.token
+    transport = data.transport === 'srs' ? 'srs' : 'p2p'
+    srsGrant = data.srsGrant || ''
+    if (transport === 'srs' && !srsGrant) throw new Error('SRS publish grant is missing')
     options.onRoom?.(roomId)
     // 新房间在服务端总是从 false/false 开始，不能拿上一间房的去重键跳过首次上报。
     coopReported = ''
@@ -1161,7 +1376,10 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     window.clearTimeout(resumeTimer)
     resumeTimer = 0
     try {
-      const data = await call<{ roomId: string; viewers?: string[] }>(socket, 'resume-live', { roomId, token })
+      const data = await call<{ roomId: string; viewers?: string[]; transport?: 'p2p' | 'srs'; srsGrant?: string }>(socket, 'resume-live', { roomId, token })
+      transport = data.transport === 'srs' ? 'srs' : 'p2p'
+      srsGrant = data.srsGrant || ''
+      if (transport === 'srs' && !srsGrant) throw new Error('SRS publish grant is missing')
       const current = new Set(data.viewers ?? [])
       for (const id of viewerRequests.keys()) if (!current.has(id)) viewerRequests.delete(id)
       // 名单上没有的观众已经走了（宽限期里它们 disconnect 时主播不在，没收到 viewer-left）
@@ -1178,6 +1396,12 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
       }
       viewers = current.size
       options.onViewers?.(viewers)
+      if (transport === 'srs') {
+        if (viewers > 0) {
+          const media = ensureStream()
+          if (media) void startSrsPublisher(media)
+        } else releaseIfIdle()
+      }
       retuneFps()
       options.onState?.('live')
       relink()
@@ -1287,6 +1511,13 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
   socket.on('viewers', ((payload: { count?: number }) => {
     viewers = payload?.count ?? 0
     options.onViewers?.(viewers)
+    if (transport === 'srs') {
+      if (viewers > 0) {
+        // SRS 视频不依赖 2P DataChannel；用服务端名单启动/保活唯一的一路媒体上行。
+        const media = ensureStream()
+        if (media) void startSrsPublisher(media)
+      } else releaseIfIdle()
+    }
     // 观众数一变就重算帧率 —— 「编码路数 × 帧率」是主播 CPU 的真实负担，
     // 这个不用等 getStats 事后发现，人进来的那一刻就能算出来
     retuneFps()
@@ -1370,6 +1601,10 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
       if (stopped || qualityPreference === preference) return
       qualityPreference = preference
       for (const peer of peers.values()) retunePeer(peer)
+      if (srsPc) {
+        const sender = srsPc.getSenders().find((item) => item.track?.kind === 'video')
+        if (sender) tuneSrsSender(sender)
+      }
     },
     /** 见接口注释。socket 没连上就悄悄跳过 —— 重连之后 LiveControls 会再报一次 */
     linkNetplay(roomId: string | null, token = '') {

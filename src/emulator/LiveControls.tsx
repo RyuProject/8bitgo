@@ -378,6 +378,7 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
     */
     liveRef.current?.stop()
     liveRef.current = null
+    void handleRef.current?.stopRemoteLiveCapture?.()
     setLive(null)
     setRoomId('')
     setReconnecting(false)
@@ -451,11 +452,22 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
      */
     const attempt = async (n: number, audioN = 0) => {
       if (cancelled || liveRef.current) return
-      const sources = handle.captureSources?.()
+      let sources = handle.captureSources?.()
+      let remoteLiveState: boolean | null | undefined
+      if ((!sources || !canBroadcast(sources)) && handle.startRemoteLiveCapture) {
+        try {
+          remoteLiveState = await handle.startRemoteLiveCapture()
+        } catch {
+          remoteLiveState = false
+        }
+        if (cancelled || liveRef.current) return
+        sources = handle.captureSources?.()
+      }
       if (!sources || !canBroadcast(sources)) {
         // 运行时压根没有抓画面的能力（webretro），或者明说了永远抓不到（跨源 iframe）：
-        // 别让人对着「连接中…」白等九秒，直接落到手动分享那条路
-        const hopeless = !handle.captureSources || handle.captureBlocked?.() === true
+        // 跨源 Pages 游戏的 SDK 可能还在初始化；除此之外别让人对着「连接中…」白等九秒。
+        const waitingForRemoteSdk = remoteLiveState === null
+        const hopeless = !handle.captureSources || (handle.captureBlocked?.() === true && !waitingForRemoteSdk && remoteLiveState !== true)
         // 还没有画面：再等一会儿。等不到就算了 —— 这个引擎大概抓不出画面
         if (!hopeless && n < RETRY_MAX) timer = window.setTimeout(() => void attempt(n + 1, audioN), RETRY_MS)
         else {
@@ -468,7 +480,8 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
       }
       setNeedsManual(false)
       const hasAudio = Boolean(sources.stream?.getAudioTracks().length || (sources.audioNode && sources.audioContext))
-      if (!hasAudio && audioN < AUDIO_WAIT_MAX) {
+      // 跨域 SDK 帧桥没有音轨时也没有可晚到的父页 AudioNode，不要空等九秒。
+      if (!hasAudio && remoteLiveState !== true && audioN < AUDIO_WAIT_MAX) {
         timer = window.setTimeout(() => void attempt(n, audioN + 1), RETRY_MS)
         return
       }

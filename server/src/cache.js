@@ -228,6 +228,9 @@ export function staticCacheHeaders(res, filePath) {
   if (/\/edge-route-v\d+\.js$/i.test(p)) return set(CACHE.engineVersioned)
   // 坏 chunk 自修复脚本同理：只在出错时加载，文件名就是代次，改逻辑新建 asset-repair-vN.js
   if (/\/asset-repair-v\d+\.js$/i.test(p)) return set(CACHE.engineVersioned)
+  // Pages 构建器按桥脚本内容生成 ?v= 指纹；版本变化即换 URL，可免去每次启动的回源校验。
+  if (p.endsWith('/html5-api/8bitgo-runtime-bridge.js') && isVersionedRequest(res)) return set(CACHE.engineVersioned)
+  if (/\/html5-api\/8bitgo-(?:game-sdk(?:\.min)?|media-bridge)\.js$/i.test(p) && isVersionedRequest(res)) return set(CACHE.engineVersioned)
   if (/\/(?:ruffle|jsdos|awayfl)\/v[^/]+\//.test(p) || /\/awayfl\/host-v\d+\//.test(p)) return set(CACHE.engineVersioned)
   /*
     EmulatorJS 的文件名不带哈希，但播放器交给引擎的入口、样式、核心与核心报告全部经

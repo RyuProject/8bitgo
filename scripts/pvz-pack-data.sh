@@ -7,7 +7,7 @@
 #   - reanim/ 是动画资源，中英文通用，两份清单共用同一批，只上传一份。
 #
 # ⚠️ 目标路径 = 页面里的 PVZ_DATA_BASE + 清单里的 r2，不是「/PvZ/ 前缀」这么简单。
-#    当前 DATA_BASE = https://html5.8bitgo.com/PvZ/properties/（注意末尾的 properties/），
+#    当前 DATA_BASE = https://download.8bitgo.com/PvZ/properties/（注意末尾的 properties/），
 #    所以 reanim/ 要落在 PvZ/properties/reanim/ 下 —— 早期版本这里写的是 PvZ/reanim/，
 #    与页面实际请求差一层，结果 2117 个动画文件全部 404、游戏根本起不来（2026-09-23 事故）。
 #    上传完务必跑 `npm run pvz:check-assets` 自检一遍。
@@ -43,7 +43,7 @@ echo "清单已写入："
 echo "  $CN_MANIFEST  (FS main.pak <- R2 main.pak，中文)"
 echo "  $EN_MANIFEST  (FS main.pak <- R2 en-main.pak，英文)"
 echo
-echo "下一步：把以下数据上传到 html5.8bitgo.com（与引擎页同源，无需 CORS）。"
+echo "下一步：把以下数据上传到网页游戏资源桶，由 download.8bitgo.com/PvZ/properties/ 提供读取。"
 echo "⚠️ 目标路径 = 页面 PVZ_DATA_BASE + 清单 r2；当前 DATA_BASE 是 .../PvZ/properties/："
 echo "  - $SRC/main.pak (英文)     ->  PvZ/properties/en-main.pak"
 echo "  - $SRC/reanim/ 整个目录     ->  PvZ/properties/reanim/   （中英文共用，只传一份）"

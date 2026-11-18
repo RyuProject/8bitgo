@@ -18,7 +18,7 @@ import { loadAiConfig } from './ai-config.js'
 import { minimaxChat, extractJsonObject } from './minimax.js'
 import { diagnosticSamples, scrub } from './startup-diagnostics.js'
 import { alertConfig } from './diag-alert.js'
-import { sendRawMail } from './mail.js'
+import { mailProvider, sendRawMail } from './mail.js'
 import {
   HOTFIX_ACTIONS,
   HOTFIX_CORE_CHOICES,
@@ -478,7 +478,7 @@ async function notifyHotfix(row, deps = {}, held = null) {
         '',
         `后台查看 / 批准 / 撤销：${cfg.siteUrl}/admin/ai`,
       ].filter((l) => l !== null).join('\n'),
-      provider: process.env.RESEND_API_KEY ? 'resend' : undefined,
+      provider: mailProvider() === 'resend' ? 'resend' : undefined,
     })
   } catch (error) {
     console.warn('[ai-hotfix] 通知邮件发送失败：', error?.message || error)

@@ -39,6 +39,7 @@
     "test:flash-saves": "node scripts/test-flash-saves.mjs",
     "test:live": "node scripts/test-live.mjs",
     "test:live-identity": "node scripts/test-live-identity.mjs",
+    "test:live-srs": "node scripts/test-live-srs.mjs",
     "test:sse-guard": "node scripts/test-sse-guard.mjs",
     "test:j2me-lifecycle": "node --test scripts/test-j2me-lifecycle.mjs",
     "test:j2me-range": "node scripts/test-j2me-range.mjs",

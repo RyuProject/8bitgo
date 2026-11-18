@@ -7,6 +7,27 @@ import { loadGameBytes } from '../src/emulator/romLoader.ts'
 
 const mib = 1024 * 1024
 
+// 浏览器用 FileReader 才能中止卡住的 IndexedDB Blob；Node 的测试进程没有它，用轻量适配器模拟读取回调。
+if (typeof globalThis.FileReader === 'undefined') {
+  globalThis.FileReader = class TestFileReader {
+    result = null
+    error = null
+    onload = null
+    onerror = null
+    onabort = null
+    readAsArrayBuffer(blob) {
+      Promise.resolve(blob.arrayBuffer()).then((value) => {
+        this.result = value
+        this.onload?.()
+      }, (error) => {
+        this.error = error
+        this.onerror?.()
+      })
+    }
+    abort() { this.onabort?.() }
+  }
+}
+
 const compressed = Buffer.alloc(8)
 compressed.write('CWS', 0, 'ascii')
 compressed.writeUInt32LE(MAX_SWF_BYTES + 1, 4)

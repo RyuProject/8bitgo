@@ -15,7 +15,10 @@ import { html5CanvasHasFrame, html5RuntimeSignal } from '../html5Lifecycle'
 const SAVE_BRIDGE_SOURCE = '8bitgo-save-bridge'
 const SAVE_BRIDGE_VERSION = 1
 const SAVE_BRIDGE_TIMEOUT_MS = 15_000
-const PVZ_SHELL_VERSION = '20261017-loading2'
+const GAME_SDK_SOURCE = '8bitgo-game-sdk'
+const GAME_SDK_VERSION = 1
+const GAME_SDK_TIMEOUT_MS = 15_000
+const PVZ_SHELL_VERSION = '20261118-live1'
 const LEGACY_PAGES_ENTRIES = [
   ['/web/PvZ', 'https://pvz.8bitgo.com'],
   ['/web/diablo', 'https://diablo.8bitgo.com'],
@@ -56,7 +59,7 @@ export function html5SaveBridgeOrigin(value: string | Blob, base = location.href
  * 后台游戏详情同样有边缘缓存：即使数据库已经换成带版本号的地址，详情接口仍可能短暂
  * 返回不带查询串的旧地址。播放器在最后一跳补上发布代次，避免新增的存档按钮再次被旧壳吞掉。
  *
- * 只改本站精确的中英文入口；第三方 HTML5 游戏和 PvZ 的资源子路径都保持原样。
+ * 只迁移本站登记过的旧 Pages 入口；第三方 HTML5 游戏和 Pages 游戏的资源子路径都保持原样。
  */
 export function versionHtml5Entry(value: string, base = location.href): string {
   try {
@@ -68,9 +71,25 @@ export function versionHtml5Entry(value: string, base = location.href): string {
       if (legacy) {
         const [path, origin] = legacy
         const suffix = url.pathname.slice(path.length)
-        url.href = `${origin}${path}${suffix}${url.search}${url.hash}`
+        // Minecraft 的旧入口是会再次导航的启动壳；直接进游戏页才能让 SDK 看到主站父页来源。
+        const target = path === '/web/Minecraft' && (suffix === '' || suffix === '/')
+          ? '/web/Minecraft/eaglercraft/index.html'
+          : `${path}${suffix}`
+        url.href = `${origin}${target}${url.search}${url.hash}`
         migrated = true
       }
+    }
+    // 数据库也可能已经写成 Pages 自定义域的旧启动壳；从播放器嵌入时仍要直达游戏文档。
+    const managedMinecraftHost = url.protocol === 'https:' &&
+      ['minecraft.8bitgo.com', '8bitgo-minecraft.pages.dev'].includes(url.hostname.toLowerCase())
+    const minecraftShell = url.pathname === '/' || [
+      '/web/Minecraft',
+      '/web/Minecraft/',
+      '/web/Minecraft/index.html',
+    ].includes(url.pathname)
+    if (managedMinecraftHost && minecraftShell) {
+      url.pathname = '/web/Minecraft/eaglercraft/index.html'
+      migrated = true
     }
     const managedPvz = url.protocol === 'https:' && ['pvz.8bitgo.com', '8bitgo-pvz.pages.dev'].includes(url.hostname.toLowerCase())
     if ((url.origin !== baseUrl.origin && !managedPvz) || !/^\/web\/PvZ\/(?:cn|en)\/?$/.test(url.pathname)) return migrated ? url.href : value
@@ -91,6 +110,26 @@ interface SaveBridgeMessage {
   error?: string
 }
 
+interface GameSdkMessage {
+  source?: string
+  version?: number
+  type?: string
+  token?: string
+  requestId?: number
+  operation?: string
+  ok?: boolean
+  result?: unknown
+  sessionId?: string
+  frameId?: number
+  bitmap?: ImageBitmap
+  audioTrack?: MediaStreamTrack
+  detail?: {
+    capabilities?: { screenshot?: boolean; record?: boolean; live?: boolean }
+    width?: number
+    height?: number
+  }
+}
+
 export function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const caps = new Set<Capability>()
   // PvZ 返回 ZIP；Digiverse 直接交换它原生的 JSON，扩展名和 MIME 不能再冒充 ZIP。
@@ -104,11 +143,34 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   // 但存档桥仍只接受主站 origin，表现为游戏能玩却永远没有云存档按钮。
   const frameEntry = typeof options.game === 'string' ? versionHtml5Entry(options.game) : null
   const saveBridgeOrigin = html5SaveBridgeOrigin(frameEntry ?? options.game)
+  let gameSdkOrigin = ''
+  try {
+    if (frameEntry) gameSdkOrigin = new URL(frameEntry, location.href).origin
+  } catch {
+    // 非法地址继续沿用 iframe 原有错误路径，不给它开放消息桥。
+  }
   let saveRequestId = 0
+  let gameSdkRequestId = 0
+  let gameSdkReady = false
+  let gameSdkLiveCapable = false
+  let gameSdkToken = ''
+  let remoteLiveSession = ''
+  let remoteLiveCanvas: HTMLCanvasElement | null = null
+  let remoteLiveContext: CanvasRenderingContext2D | null = null
+  let remoteLiveAudioTrack: MediaStreamTrack | null = null
+  let remoteLiveStream: MediaStream | null = null
+  let remoteLiveFrameId = 0
+  const pendingGameSdkRequests = new Map<number, {
+    operation: string
+    resolve: (value: unknown) => void
+    reject: (error: Error) => void
+    timer: number
+  }>()
   let mediaObserver: MutationObserver | null = null
   let mediaPollTimer = 0
   let firstFrame = false
   let playable = false
+  let firstInteractionReported = false
   let canvasProbeScheduled = false
   const mediaTaps = new WeakMap<Window, AudioTap>()
   const liveMediaTaps = new Set<AudioTap>()
@@ -206,6 +268,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     options.onReady?.()
   }
 
+  const reportFirstInteraction = () => {
+    if (destroyed || firstInteractionReported) return
+    firstInteractionReported = true
+    options.onFirstInteraction?.()
+  }
+
   /**
    * 跨域网页不能读 DOM，所以给愿意配合的游戏一条极小的 postMessage 协议。
    * 不校验 origin 是有意的：入口可能部署在独立域；event.source 已经把消息锁死到当前 iframe，
@@ -217,10 +285,222 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (!signal) return
     if (signal.type === 'first-frame') markFirstFrame()
     else if (signal.type === 'game-playable') markPlayable()
-    else if (signal.type === 'first-interaction') options.onFirstInteraction?.()
+    else if (signal.type === 'first-interaction') reportFirstInteraction()
     else options.onError?.(signal.detail || 'HTML5 游戏报告启动失败', 'runtime')
   }
   window.addEventListener('message', onRuntimeBridgeMessage)
+
+  const isManagedPvzEntry = () => {
+    if (!frameEntry) return false
+    try {
+      const url = new URL(frameEntry, location.href)
+      return ['pvz.8bitgo.com', '8bitgo-pvz.pages.dev'].includes(url.hostname.toLowerCase()) && /^\/web\/PvZ\/(?:cn|en)\/?$/.test(url.pathname)
+    } catch {
+      return false
+    }
+  }
+
+  const isManagedMinecraftEntry = () => {
+    if (!frameEntry) return false
+    try {
+      const url = new URL(frameEntry, location.href)
+      const managedHost = ['minecraft.8bitgo.com', '8bitgo-minecraft.pages.dev'].includes(url.hostname.toLowerCase())
+      return managedHost && /^\/web\/Minecraft\/eaglercraft(?:\/index\.html)?\/?$/.test(url.pathname)
+    } catch {
+      return false
+    }
+  }
+
+  const isManagedCs16Entry = () => {
+    if (!frameEntry) return false
+    try {
+      const url = new URL(frameEntry, location.href)
+      return url.protocol === 'https:' && url.hostname.toLowerCase() === 'cs16.8bitgo.com' && /^\/web\/cs16\/?$/.test(url.pathname)
+    } catch {
+      return false
+    }
+  }
+
+  const clearRemoteLiveCanvas = () => {
+    remoteLiveSession = ''
+    remoteLiveFrameId = 0
+    remoteLiveContext = null
+    const tracks = remoteLiveStream?.getTracks() ?? []
+    if (remoteLiveAudioTrack && !tracks.includes(remoteLiveAudioTrack)) tracks.push(remoteLiveAudioTrack)
+    for (const track of tracks) {
+      try { track.stop() } catch { /* 播放器已释放这条轨 */ }
+    }
+    remoteLiveStream = null
+    remoteLiveAudioTrack = null
+    if (remoteLiveCanvas) {
+      // 释放 backing store；主播停播或页面换代后不该让 800×600 画布继续占显存。
+      remoteLiveCanvas.width = 0
+      remoteLiveCanvas.height = 0
+    }
+  }
+
+  const acknowledgeRemoteLiveFrame = (message: GameSdkMessage): void => {
+    if (!gameSdkToken || message.sessionId !== remoteLiveSession || !Number.isInteger(message.frameId) || !iframe.contentWindow) return
+    try {
+      // 父页处理完当前画面再回 ACK，游戏页才继续抓帧，避免跨源消息队列持有一串大位图。
+      iframe.contentWindow.postMessage({
+        source: '8bitgo-host',
+        version: GAME_SDK_VERSION,
+        type: 'live-frame-ack',
+        token: gameSdkToken,
+        sessionId: message.sessionId,
+        frameId: message.frameId,
+      }, gameSdkOrigin)
+    } catch {
+      // 超时会在游戏页停止采集；不能因收尾确认失败中断模拟器。
+    }
+  }
+
+  const drawRemoteLiveFrame = (message: GameSdkMessage): void => {
+    const bitmap = message.bitmap
+    const width = Number(bitmap?.width) || 0
+    const height = Number(bitmap?.height) || 0
+    if (!remoteLiveSession || message.sessionId !== remoteLiveSession || !bitmap || !Number.isInteger(message.frameId) || (message.frameId as number) <= remoteLiveFrameId) {
+      bitmap?.close?.()
+      acknowledgeRemoteLiveFrame(message)
+      return
+    }
+    if (width < 16 || height < 16 || width > 8192 || height > 8192 || width * height > 16_777_216) {
+      bitmap.close?.()
+      void stopRemoteLiveCapture()
+      return
+    }
+    try {
+      if (message.audioTrack?.kind === 'audio' && message.audioTrack.readyState !== 'ended') {
+        if (remoteLiveAudioTrack && remoteLiveAudioTrack !== message.audioTrack) remoteLiveAudioTrack.stop()
+        remoteLiveAudioTrack = message.audioTrack
+        if (remoteLiveStream && !remoteLiveStream.getTracks().includes(remoteLiveAudioTrack)) remoteLiveStream.addTrack(remoteLiveAudioTrack)
+      }
+      if (!remoteLiveCanvas) remoteLiveCanvas = document.createElement('canvas')
+      if (!remoteLiveContext) {
+        remoteLiveContext = remoteLiveCanvas.getContext('2d', { alpha: false, desynchronized: true })
+          ?? remoteLiveCanvas.getContext('2d')
+      }
+      if (!remoteLiveContext) throw new Error('浏览器无法创建直播画布')
+      if (remoteLiveCanvas.width !== width || remoteLiveCanvas.height !== height) {
+        remoteLiveCanvas.width = width
+        remoteLiveCanvas.height = height
+        // 改 Canvas 尺寸会结束旧的 captureStream 轨；重建流时要把 SDK 送来的音轨接回去。
+        remoteLiveStream?.getVideoTracks().forEach((track) => track.stop())
+        remoteLiveStream = null
+      }
+      remoteLiveContext.drawImage(bitmap, 0, 0, width, height)
+      remoteLiveFrameId = message.frameId as number
+    } catch {
+      void stopRemoteLiveCapture()
+    } finally {
+      bitmap.close?.()
+      acknowledgeRemoteLiveFrame(message)
+    }
+  }
+
+  /**
+   * 跨源游戏的画布不能由父页直接读取。只有游戏页主动加载 8BitGo SDK 后，
+   * 才允许它在自己的 origin 内截图 / 录制，再把有限大小的 Blob 回给当前 iframe。
+   * 每条消息同时核对 frame、精确 origin、协议版本和请求编号，避免其它窗口伪造结果。
+   */
+  const onGameSdkMessage = (event: MessageEvent) => {
+    if (destroyed || !gameSdkOrigin || event.source !== iframe.contentWindow || event.origin !== gameSdkOrigin) return
+    const message = event.data as GameSdkMessage | null
+    if (!message || message.source !== GAME_SDK_SOURCE || message.version !== GAME_SDK_VERSION) return
+    if (message.type === 'hello') {
+      if (!gameSdkToken) gameSdkToken = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+      try {
+        iframe.contentWindow?.postMessage({ source: '8bitgo-host', version: GAME_SDK_VERSION, type: 'init', token: gameSdkToken }, gameSdkOrigin)
+      } catch {
+        // 不支持精确目标来源的浏览器会保留原有 iframe 能力，不影响游戏启动。
+      }
+      return
+    }
+    if (!gameSdkToken || message.token !== gameSdkToken) return
+    if (message.type === 'unready') {
+      void stopRemoteLiveCapture()
+      gameSdkReady = false
+      gameSdkLiveCapable = false
+      const removedShot = setMediaCapability('screenshot', false)
+      const removedRecord = setMediaCapability('record', false)
+      if (removedShot || removedRecord) options.onCaps?.(caps)
+      return
+    }
+    if (message.type === 'ready') {
+      gameSdkReady = true
+      const capabilities = message.detail?.capabilities
+      let changed = false
+      const width = Number(message.detail?.width)
+      const height = Number(message.detail?.height)
+      const usable = Number.isFinite(width) && Number.isFinite(height) && width >= 16 && height >= 16 && width * height <= 16_777_216
+      // 同源页面由播放器直接验证；只对主动接入 SDK 的跨源页面启用远程能力。
+      if (!frameDocument()) {
+        changed = setMediaCapability('screenshot', usable && Boolean(capabilities?.screenshot)) || changed
+        changed = setMediaCapability('record', usable && Boolean(capabilities?.record)) || changed
+        gameSdkLiveCapable = usable && Boolean(capabilities?.live)
+      }
+      if (changed) options.onCaps?.(caps)
+      return
+    }
+    if (message.type === 'live-frame') {
+      drawRemoteLiveFrame(message)
+      return
+    }
+    if (message.type !== 'response' || !Number.isInteger(message.requestId)) return
+    const pending = pendingGameSdkRequests.get(message.requestId as number)
+    if (!pending) return
+    if (message.operation !== pending.operation) return
+    pendingGameSdkRequests.delete(message.requestId as number)
+    window.clearTimeout(pending.timer)
+    if (message.ok) pending.resolve(message.result)
+    else pending.reject(new Error(typeof message.result === 'string' ? message.result : '网页游戏 SDK 请求失败'))
+  }
+  window.addEventListener('message', onGameSdkMessage)
+
+  const requestGameSdk = (
+    type: 'request-screenshot' | 'record-start' | 'record-stop' | 'live-start' | 'live-stop',
+    options?: Record<string, unknown>,
+  ): Promise<unknown> => {
+    if (destroyed || !gameSdkReady || !gameSdkOrigin || !iframe.contentWindow) {
+      return Promise.reject(new Error('网页游戏没有接入 8BitGo SDK'))
+    }
+    const requestId = ++gameSdkRequestId
+    const operation = type === 'request-screenshot' ? 'screenshot' : type
+    return new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        pendingGameSdkRequests.delete(requestId)
+        reject(new Error('网页游戏 SDK 响应超时'))
+      }, GAME_SDK_TIMEOUT_MS)
+      pendingGameSdkRequests.set(requestId, { operation, resolve, reject, timer })
+      try {
+        iframe.contentWindow?.postMessage({
+          source: '8bitgo-host',
+          version: GAME_SDK_VERSION,
+          type,
+          token: gameSdkToken,
+          requestId,
+          options,
+        }, gameSdkOrigin)
+      } catch (error) {
+        pendingGameSdkRequests.delete(requestId)
+        window.clearTimeout(timer)
+        reject(error instanceof Error ? error : new Error(String(error)))
+      }
+    })
+  }
+
+  async function stopRemoteLiveCapture(): Promise<void> {
+    const sessionId = remoteLiveSession
+    if (!sessionId) return
+    clearRemoteLiveCanvas()
+    if (!gameSdkReady) return
+    try {
+      await requestGameSdk('live-stop', { sessionId })
+    } catch {
+      // 页面已跳转或关闭时，浏览器会随文档一起回收它的帧循环。
+    }
+  }
 
   /**
    * 没接公开桥的普通同源页面也尽量补一个探针。
@@ -341,6 +621,21 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (destroyed) return
     // 门户页跳进真正游戏页也会再次 load；就绪只报一次，媒体来源却必须跟着换到新文档。
     startMediaMonitoring()
+    if (loaded) {
+      // 游戏页整页跳转时废弃旧文档的能力令牌与未完成请求，迟到消息不能冒充新一局。
+      gameSdkReady = false
+      gameSdkLiveCapable = false
+      gameSdkToken = ''
+      clearRemoteLiveCanvas()
+      const removedShot = setMediaCapability('screenshot', false)
+      const removedRecord = setMediaCapability('record', false)
+      if (removedShot || removedRecord) options.onCaps?.(caps)
+      for (const pending of pendingGameSdkRequests.values()) {
+        window.clearTimeout(pending.timer)
+        pending.reject(new Error('网页游戏页面已跳转'))
+      }
+      pendingGameSdkRequests.clear()
+    }
     /**
      * 只认第一次 load。
      *
@@ -359,7 +654,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     options.onSurfaceReady?.()
   })
   // 跨域 iframe 读不到内部事件；用户亲手点进去时浏览器会把焦点交给 iframe，这仍是可靠的首次操作信号。
-  iframe.addEventListener('focus', () => options.onFirstInteraction?.())
+  iframe.addEventListener('focus', reportFirstInteraction)
   iframe.addEventListener('error', () => {
     if (destroyed) return
     options.onError?.('HTML5 游戏页面加载失败。请检查入口地址，以及目标站点是否允许被 iframe 嵌入。', 'runtime')
@@ -405,15 +700,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
      *   同源（游戏部署在自家域名下，或走 server/src/routes/play.js 那条整页路由）
      *     → 能读到 iframe 的文档，把里面的 <canvas> 拿出来交给上层 captureStream，
      *       和别的引擎走的是同一条路。
-     *   跨源（游戏是第三方独立部署的）
-     *     → 浏览器不让读 contentDocument。真要抓只剩 getDisplayMedia，
-     *       那需要玩家点一次并亲手选中标签页 —— 和「玩就是播」的静默前提冲突，
-     *       所以这里老实返回 null，上层重试几次拿不到就安静地不开播。
+     *   跨源（游戏是独立部署的）
+     *     → 浏览器不让读 contentDocument。明确接入 SDK 的 Pages 游戏会在开播时以限帧 ImageBitmap
+     *       把画面交给本页；其它跨源游戏仍返回 null，保留分享标签页兜底。
      *
-     * **只给画面不给声音**：游戏的 AudioContext 是在 iframe 自己的 realm 里 new 出来的，
-     * 想接一根线出来必须赶在它的脚本跑起来**之前**把 AudioContext 构造函数换掉，
-     * 而我们拿到 contentWindow 的时候游戏早就在加载了。和 Ruffle 是同一个坑
-     * （见 adapters/ruffle.ts 里的长注释），先按静音处理。
+     * **跨源 SDK 优先转移可用音轨**：已接入的 Pages 游戏会在运行前装媒体桥；浏览器不支持
+     * MediaStreamTrack 转移时只推画面，不能让音频能力拖垮游戏或整个直播。
      *
      * 纯 DOM/CSS 做的游戏（压根没有 canvas）同样抓不到 —— 这类占比很小，
      * 不值得为它上 html2canvas 那种逐帧重绘的方案。
@@ -434,6 +726,17 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     },
     captureSources(): CaptureSources | null {
       if (destroyed) return null
+      if (remoteLiveCanvas && remoteLiveCanvas.width >= 16 && remoteLiveCanvas.height >= 16) {
+        if (!remoteLiveStream && typeof remoteLiveCanvas.captureStream === 'function') {
+          try {
+            remoteLiveStream = remoteLiveCanvas.captureStream(30)
+            if (remoteLiveAudioTrack?.readyState === 'live') remoteLiveStream.addTrack(remoteLiveAudioTrack)
+          } catch {
+            remoteLiveStream = null
+          }
+        }
+        return remoteLiveStream ? { stream: remoteLiveStream } : { canvas: remoteLiveCanvas }
+      }
       const canvas = currentCanvas()
       if (!html5CanvasCapabilities(canvas).screenshot || !canvas) return null
 
@@ -454,7 +757,14 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     },
     async screenshot() {
       const canvas = currentCanvas()
-      if (!html5CanvasCapabilities(canvas).screenshot || !canvas) return null
+      if (!canvas) {
+        if (!gameSdkReady) return null
+        const remote = await requestGameSdk('request-screenshot')
+        return remote && typeof remote === 'object' && Number((remote as Blob).size) > 0 && Number((remote as Blob).size) <= 24 * 1024 * 1024 && typeof (remote as Blob).arrayBuffer === 'function'
+          ? remote as Blob
+          : null
+      }
+      if (!html5CanvasCapabilities(canvas).screenshot) return null
 
       const bridge = html5MediaBridge(canvas.ownerDocument.defaultView)
       if (bridge?.screenshot) {
@@ -470,11 +780,64 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       }
       return captureCanvasScreenshot(canvas)
     },
+    async startRemoteRecording() {
+      // 同源游戏优先继续使用播放器原有的采集 / 录制链路。
+      if (frameDocument() || !gameSdkReady) return false
+      return (await requestGameSdk('record-start')) === true
+    },
+    async stopRemoteRecording() {
+      if (!gameSdkReady) return null
+      const result = await requestGameSdk('record-stop')
+      if (!result || typeof result !== 'object' || Number((result as Blob).size) <= 0 || Number((result as Blob).size) > 96 * 1024 * 1024 || typeof (result as Blob).arrayBuffer !== 'function') return null
+      return result as Blob
+    },
+    async startRemoteLiveCapture() {
+      if ((!isManagedPvzEntry() && !isManagedMinecraftEntry() && !isManagedCs16Entry()) || frameDocument()) return false
+      if (remoteLiveSession && remoteLiveCanvas && remoteLiveCanvas.width >= 16) return true
+      if (!gameSdkReady) return null
+      if (!gameSdkLiveCapable) return false
+      const sessionId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+      clearRemoteLiveCanvas()
+      remoteLiveSession = sessionId
+      let started = false
+      try {
+        started = await requestGameSdk('live-start', { sessionId, fps: 30 }) === true
+      } catch {
+        started = false
+      }
+      if (!started || remoteLiveSession !== sessionId || !remoteLiveCanvas || remoteLiveCanvas.width < 16) {
+        if (remoteLiveSession === sessionId) clearRemoteLiveCanvas()
+        return false
+      }
+      return true
+    },
+    stopRemoteLiveCapture,
     destroy() {
+      if (remoteLiveSession && gameSdkReady && gameSdkOrigin) {
+        try {
+          iframe.contentWindow?.postMessage({
+            source: '8bitgo-host',
+            version: GAME_SDK_VERSION,
+            type: 'live-stop',
+            token: gameSdkToken,
+            requestId: ++gameSdkRequestId,
+            options: { sessionId: remoteLiveSession },
+          }, gameSdkOrigin)
+        } catch {
+          /* iframe 随后会导航，失败时浏览器也会回收该文档 */
+        }
+      }
+      clearRemoteLiveCanvas()
       destroyed = true
       stopMediaMonitoring(false)
       window.removeEventListener('message', onSaveBridgeMessage)
       window.removeEventListener('message', onRuntimeBridgeMessage)
+      window.removeEventListener('message', onGameSdkMessage)
+      for (const pending of pendingGameSdkRequests.values()) {
+        window.clearTimeout(pending.timer)
+        pending.reject(new Error('网页游戏已关闭'))
+      }
+      pendingGameSdkRequests.clear()
       for (const pending of pendingSaveRequests.values()) {
         window.clearTimeout(pending.timer)
         pending.reject(new Error('网页游戏已关闭'))

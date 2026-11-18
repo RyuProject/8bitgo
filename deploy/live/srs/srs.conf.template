@@ -1,0 +1,36 @@
+listen              1935;
+max_connections     1000;
+srs_log_tank        console;
+
+http_api {
+    enabled on;
+    listen 1985;
+}
+
+http_server {
+    enabled off;
+}
+
+rtc_server {
+    enabled on;
+    listen 8000;
+    protocol all;
+    candidate __SRS_PUBLIC_IP__;
+    tcp {
+        enabled on;
+        listen 8000;
+    }
+}
+
+vhost __defaultVhost__ {
+    rtc {
+        enabled on;
+    }
+    http_hooks {
+        enabled on;
+        on_publish http://host.docker.internal:8788/api/live/srs-hook?key=__SRS_HOOK_SECRET__;
+        on_unpublish http://host.docker.internal:8788/api/live/srs-hook?key=__SRS_HOOK_SECRET__;
+        on_play http://host.docker.internal:8788/api/live/srs-hook?key=__SRS_HOOK_SECRET__;
+        on_stop http://host.docker.internal:8788/api/live/srs-hook?key=__SRS_HOOK_SECRET__;
+    }
+}

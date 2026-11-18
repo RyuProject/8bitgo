@@ -10,8 +10,7 @@
   if (LOCALE) console.log('[PvZ] 当前语言：' + LOCALE);
 
   // ===== 配置（可在引用本段前用 window.PVZ_DATA_BASE / PVZ_MANIFEST_URL / PVZ_DATA_VERSION 覆盖）=====
-  // DATA_BASE：资源基址。当前页面在 8bitgo.com、数据在 html5.8bitgo.com，属于跨源请求，
-  //   R2 必须给 https://8bitgo.com 返回 Access-Control-Allow-Origin。
+  // DATA_BASE：页面入口提供资源基址；PvZ 大资源通过 download.8bitgo.com 的公开读取路由获取。
   // MANIFEST_URL：资源清单（JSON），相对页面目录。每项：
   //   { "r2": "存储端相对路径", "fs": "写入 WASM 虚拟文件系统的目标路径", "size": 字节数(可选) }
   //   也支持纯字符串（此时 r2 === fs）。

@@ -214,7 +214,7 @@ async function makePage(browser, options = {}) {
       body: mockWasm.subarray(start, end + 1),
     })
   })
-  await page.route('https://html5.8bitgo.com/**', (route) => {
+  await page.route('https://download.8bitgo.com/**', (route) => {
     const path = new URL(route.request().url()).pathname
     if (options.missingReanim && path.includes('/packs/')) {
       return route.fulfill({ status: 404, headers: { 'access-control-allow-origin': '*' }, body: 'missing' })

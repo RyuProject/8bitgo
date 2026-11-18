@@ -348,6 +348,9 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
   const [recording, setRecording] = useState(false)
   const [elapsed, setElapsed] = useState(0)
   const recRef = useRef<Recorder | null>(null)
+  const remoteRecordingRef = useRef(false)
+  const remoteRecordStartedAt = useRef(0)
+  const recordStartPending = useRef(false)
   const fileRef = useRef<HTMLInputElement>(null)
   const msgTimer = useRef(0)
   /** 现有存档的落点和时间，用来在读档按钮上显示「云端 · 3 分钟前」 */
@@ -407,6 +410,12 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
     return () => {
       recRef.current?.cancel()
       recRef.current = null
+      if (remoteRecordingRef.current) {
+        const stopping = handle?.stopRemoteRecording?.()
+        if (stopping) void stopping.catch(() => {})
+      }
+      remoteRecordingRef.current = false
+      recordStartPending.current = false
       setRecording(false)
       window.clearTimeout(msgTimer.current)
     }
@@ -480,9 +489,13 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
   // 录像计时（同时也是 60 秒上限的进度显示）
   useEffect(() => {
     if (!recording) return
-    const timer = window.setInterval(() => setElapsed(recRef.current?.elapsed() ?? 0), 200)
+    const timer = window.setInterval(() => {
+      const current = recRef.current?.elapsed() ?? (remoteRecordingRef.current ? performance.now() - remoteRecordStartedAt.current : 0)
+      setElapsed(current)
+      if (current >= MAX_RECORD_MS) void finishRecording(tt.recAuto)
+    }, 200)
     return () => window.clearInterval(timer)
-  }, [recording])
+  }, [recording, tt.recAuto])
 
   const applyVolume = (v: number, mute: boolean) => {
     setVolume(v)
@@ -966,12 +979,35 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
   }
 
   const finishRecording = async (prefix?: string) => {
+    if (remoteRecordingRef.current) {
+      remoteRecordingRef.current = false
+      setRecording(false)
+      setElapsed(0)
+      try {
+        const blob = await handle.stopRemoteRecording?.()
+        if (!blob || blob.size === 0) {
+          say(tt.recFail)
+          return
+        }
+        downloadBlob(blob, mediaFileName(gameName, blob.type.includes('mp4') ? 'mp4' : 'webm'))
+        say(prefix ? `${prefix} · ${tt.recOk}` : tt.recOk)
+      } catch {
+        say(tt.recFail)
+      }
+      return
+    }
     const rec = recRef.current
     recRef.current = null
     setRecording(false)
     setElapsed(0)
     if (!rec) return
-    const out = await rec.stop()
+    let out
+    try {
+      out = await rec.stop()
+    } catch {
+      say(tt.recFail)
+      return
+    }
     if (!out) {
       say(tt.recFail)
       return
@@ -980,10 +1016,26 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
     say(prefix ? `${prefix} · ${tt.recOk}` : tt.recOk)
   }
 
-  const toggleRecord = () => {
-    if (recRef.current) {
+  const toggleRecord = async () => {
+    if (recRef.current || remoteRecordingRef.current) {
       void finishRecording()
       return
+    }
+    if (recordStartPending.current) return
+    recordStartPending.current = true
+    try {
+      if (handle.startRemoteRecording && await handle.startRemoteRecording()) {
+        remoteRecordingRef.current = true
+        remoteRecordStartedAt.current = performance.now()
+        setElapsed(0)
+        setRecording(true)
+        say(tt.recHint)
+        return
+      }
+    } catch {
+      // 跨源 SDK 失败时继续试本页原有采集路径；其余游戏没有这个远程方法。
+    } finally {
+      recordStartPending.current = false
     }
     const sources = handle.captureSources?.()
     if (!sources || !canRecord(sources)) {

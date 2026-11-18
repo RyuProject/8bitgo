@@ -19,7 +19,7 @@ const emulatorToolsPath = resolve(repo, 'src/emulator/EmulatorTools.tsx')
 const snippet = readFileSync(resolve(repo, 'scripts/pvz-web/autoplay-snippet.html'), 'utf8')
 const START = '<!-- PvZ_AUTOPLAY_START -->'
 const END = '<!-- PvZ_AUTOPLAY_INJECTED -->'
-const SHELL_VERSION = '20261017-loading2'
+const SHELL_VERSION = '20261118-live1'
 const WASM_SHA256 = '851072d991cc7f5770244b9be7204ed03ff5ee769101446987bbd3e1329ec3a6'
 
 const errors = []

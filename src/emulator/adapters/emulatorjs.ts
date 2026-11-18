@@ -5003,8 +5003,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           preparedArcadeHack = prepared.hack
 
           if (prepared.hack?.romDataScope === 'rom' && !prepared.hack.romData) {
-            // 在线与本地入口一致：只认出 wofcn 指纹、但没有验证过字库映射时，不能假装启动成功。
-            // 让 FBNeo 用基础 wof 驱动硬读 wofcn.zip 会报 unknown set，也可能被外层误判成可换语言 ROM。
+            // 在线与本地入口一致：ROM 专属改版没有可用清单时，不能让基础驱动误读未知包。
             failLoad(fmt(getT().player.arcadeHackNoPlan, { title: prepared.hack.title }), 'config')
             return
           }

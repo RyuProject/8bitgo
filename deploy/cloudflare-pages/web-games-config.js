@@ -1,5 +1,5 @@
 /**
- * 八个独立 Cloudflare Pages 项目的唯一配置来源。
+ * 九个独立 Cloudflare Pages 项目的唯一配置来源。
  *
  * 入口仍保留 `/web/<游戏>/`，不是为了迁就 Pages，而是这些上游产物内部有大量
  * 根绝对路径。保留路径可以避免重写压缩后的脚本，也让源站与 Pages 能平滑回退。
@@ -14,7 +14,7 @@ export const WEB_GAME_PAGES = Object.freeze({
     runtime: '',
     isolated: false,
     html: [
-      ['index.html', ''],
+      ['index.html', '.cards'],
       ['cn/index.html', 'body.game-mode canvas#canvas'],
       ['en/index.html', 'body.game-mode canvas#canvas'],
     ],
@@ -95,6 +95,16 @@ export const WEB_GAME_PAGES = Object.freeze({
     // Butterscotch 当前 Web 构建使用 JSPI 与 OPFS，不使用 SharedArrayBuffer，隔离头反而会限制外链说明页。
     isolated: false,
     html: [['index.html', '#canvas']],
+  }),
+  subway: Object.freeze({
+    project: '8bitgo-subway-surfers',
+    domain: 'subway-surfers.8bitgo.com',
+    sourceDir: 'subway-surfers',
+    entry: '/web/subway-surfers/',
+    title: 'Subway Surfers',
+    runtime: '',
+    isolated: false,
+    html: [['index.html', '']],
   }),
 })
 

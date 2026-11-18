@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto'
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import { watchPresence, clientIpFrom, isPrivateIp, UNKNOWN_PRESENCE } from './presence.js'
 import { verifyToken, tokenVersionOf } from './auth.js'
 import { queryOne } from './db.js'
@@ -33,14 +33,13 @@ import {
  * 任何引擎都拿得到（见 emulator/types.ts 的 captureSources）。
  * 所以 GBA、DOS、Flash、J2ME 这些没有联机能力的引擎，一样能开播。
  *
- * 画面和声音**不经过服务器**，这里只转发 SDP / ICE：
+ * 房间控制仍走本服务的 Socket.IO。SRS 房间把音视频交给独立 SFU，旧房间继续兼容 P2P：
  *
- *   浏览器(主播) ──WebRTC 音视频──► 浏览器(观众) × N
- *          └──── 只有握手信息经过这里 ────┘
+ *   P2P：浏览器(主播) ──WebRTC 音视频──► 浏览器(观众) × N
+ *   SRS：浏览器(主播) ──一路 WebRTC──► SRS ──转发──► 浏览器(观众) × N
  *
- * 代价是主播要给每个观众各推一份，上行 = 单路码率 × 人数。
- * 家宽上行大概到十来路就满了，所以有 MAX_VIEWERS 兜着。
- * 要做几十上百人得在中间加 SFU（主播只推一路，服务器扇出）。
+ * SRS API 只由服务端通过 loopback 访问，短时签名票同时约束房间、流名和发布 / 播放角色。
+ * 观众 2P 输入仍经主播与观众之间的独立 DataChannel，不让按键依赖媒体转发。
  *
  * ── socket.io 命名空间 /live ──────────────────────────────
  *   外部设备主播握手 auth.publisherToken = `POST /api/open/v1/live/publish-token` 返回的专用票。
@@ -143,8 +142,19 @@ function takeOpenToken(socket) {
   bucket.tokens -= 1
   return true
 }
-/** 单场直播的观众上限，见上面关于上行带宽的说明 */
+/** P2P 单场上限；SRS 使用独立上限，但仍需考虑每位观众的协作 DataChannel。 */
 const MAX_VIEWERS = Number(process.env.LIVE_MAX_VIEWERS || 12)
+/** SRS 把一路上行扇出给观众；上限仍保守设置，避免观众数反过来压垮信令和协作通道。 */
+const configuredSrsViewers = Number(process.env.LIVE_SRS_MAX_VIEWERS || 100)
+const MAX_SRS_VIEWERS = Number.isSafeInteger(configuredSrsViewers) && configuredSrsViewers > 0
+  ? Math.min(configuredSrsViewers, 500)
+  : 100
+/** 单房上限挡不住多房间同时挤满；全局观众预算用来保护 SRS 出口带宽与会话数。 */
+const configuredSrsTotalViewers = Number(process.env.LIVE_SRS_MAX_TOTAL_VIEWERS || 50)
+const MAX_SRS_TOTAL_VIEWERS = Number.isSafeInteger(configuredSrsTotalViewers) && configuredSrsTotalViewers > 0
+  // SRS 的 max_connections=1000 还要容纳每间活跃房的一条发布连接，故应用层总观众最多 400。
+  ? Math.min(configuredSrsTotalViewers, 400)
+  : 50
 /**
  * 主播断线后房间保留多久。socket.io 判掉线本身要 pingInterval + pingTimeout（约 30 秒），
  * 这个数是在那之后再等的。太长会让大厅挂着一堆「主播不在」的房间，太短又护不住一次 4G 切换。
@@ -470,6 +480,151 @@ const membership = new Map()
 const matchChatKey = (roomId) => `match:${roomId}`
 
 /**
+ * SRS 在没有完整部署配置时保持关闭，房间继续使用原有 P2P。
+ * API 端口只给本机 8BitGo 服务访问；浏览器只拿到短时授权，不接触 SRS 管理 API。
+ */
+function srsConfig() {
+  if (!srsRequested()) return null
+  const internalApi = String(process.env.LIVE_SRS_INTERNAL_API_ORIGIN || 'http://127.0.0.1:1985').trim()
+  const tokenSecret = String(process.env.LIVE_SRS_TOKEN_SECRET || '')
+  const hookSecret = String(process.env.LIVE_SRS_HOOK_SECRET || '')
+  try {
+    const internal = new URL(internalApi)
+    if (!['http:', 'https:'].includes(internal.protocol) || internal.username || internal.password || tokenSecret.length < 32 || hookSecret.length < 32 || tokenSecret === hookSecret) return null
+    return { internalApi: internal.origin, tokenSecret, hookSecret }
+  } catch {
+    return null
+  }
+}
+
+/** 启动日志也从这里读开关，避免同一个 .env 键在多个文件里各自解释。 */
+function srsRequested() {
+  return String(process.env.LIVE_SRS_ENABLED || '').toLowerCase() === 'true'
+}
+
+let srsHealth = { internalApi: '', checkedAt: 0, available: false }
+const SRS_HEALTH_CACHE_MS = 3_000
+
+/**
+ * 配置齐全不代表 SRS 进程或内网 API 正常。只在创建新房间前做短时探测；失败时保留 P2P，
+ * 避免服务重启窗口里新开的房间直接变成永远没有画面的 SRS 房间。
+ */
+async function srsServiceAvailable() {
+  const config = srsConfig()
+  if (!config) return false
+  const now = Date.now()
+  if (srsHealth.internalApi === config.internalApi && now - srsHealth.checkedAt < SRS_HEALTH_CACHE_MS) {
+    return srsHealth.available
+  }
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 1_200)
+  let available = false
+  try {
+    const response = await fetch(`${config.internalApi}/api/v1/versions`, { signal: controller.signal })
+    const payload = await response.json()
+    // 不同 SRS 6 小版本的 versions 响应有的带 code，有的只返回版本字段。
+    const version = payload?.data?.version ?? payload?.version
+    available = response.ok && (payload?.code === 0 || (typeof version === 'string' && version.length > 0))
+  } catch {
+    available = false
+  } finally {
+    clearTimeout(timer)
+  }
+  const wasKnown = srsHealth.internalApi === config.internalApi && srsHealth.checkedAt > 0
+  const wasAvailable = wasKnown && srsHealth.available
+  srsHealth = { internalApi: config.internalApi, checkedAt: Date.now(), available }
+  if (!wasKnown || available !== wasAvailable) {
+    if (available) console.info('[live] SRS 健康检查通过，新直播间可使用 SRS')
+    else console.warn('[live] SRS 健康检查失败，新直播间回退到 P2P')
+  }
+  return available
+}
+
+/** SRS 同时在线观众数很小，逐房求和比维护易漂移的重复计数更可靠。 */
+function activeSrsViewerCount() {
+  let count = 0
+  for (const room of rooms.values()) if (room.transport === 'srs') count += room.viewers.size
+  return count
+}
+
+const srsNegotiations = new Map()
+const SRS_NEGOTIATION_WINDOW_MS = 60_000
+const SRS_NEGOTIATION_LIMIT = 8
+
+/** 一张短票不能被反复兑换成无限个 SRS 会话；每个发布者 / 观众每分钟最多 8 次，且单飞。 */
+function beginSrsNegotiation(key) {
+  const now = Date.now()
+  let state = srsNegotiations.get(key)
+  if (!state || now - state.startedAt >= SRS_NEGOTIATION_WINDOW_MS) {
+    state = { startedAt: now, count: 0, inFlight: false }
+  }
+  if (state.inFlight || state.count >= SRS_NEGOTIATION_LIMIT) return null
+  state.count++
+  state.inFlight = true
+  srsNegotiations.set(key, state)
+  return () => {
+    if (srsNegotiations.get(key) === state) state.inFlight = false
+  }
+}
+
+function clearSrsNegotiations(roomId) {
+  const prefix = `${roomId}:`
+  for (const key of srsNegotiations.keys()) if (key.startsWith(prefix)) srsNegotiations.delete(key)
+}
+
+function clearSrsNegotiation(roomId, role, memberId) {
+  srsNegotiations.delete(`${roomId}:${role}:${memberId}`)
+}
+
+function srsToken(config, claims, ttlMs) {
+  const body = Buffer.from(JSON.stringify({ ...claims, exp: Date.now() + ttlMs })).toString('base64url')
+  const signature = createHmac('sha256', config.tokenSecret).update(body).digest('base64url')
+  return `${body}.${signature}`
+}
+
+function verifySrsToken(config, token) {
+  if (typeof token !== 'string' || token.length > 4096) return null
+  const [body, signature, extra] = token.split('.')
+  if (!body || !signature || extra) return null
+  const expected = createHmac('sha256', config.tokenSecret).update(body).digest()
+  let actual
+  try {
+    actual = Buffer.from(signature, 'base64url')
+  } catch {
+    return null
+  }
+  if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) return null
+  try {
+    const claims = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'))
+    if (!claims || !Number.isFinite(claims.exp) || claims.exp <= Date.now()) return null
+    return claims
+  } catch {
+    return null
+  }
+}
+
+function srsGrant(room, role, memberId = '') {
+  const config = srsConfig()
+  if (!config || room.transport !== 'srs') return null
+  return srsToken(config, { roomId: room.id, stream: room.srsStream, role, ...(memberId ? { memberId } : {}) }, role === 'publish' ? 8 * 60 * 60_000 : 2 * 60_000)
+}
+
+function srsHostAck(room) {
+  return {
+    roomId: room.id,
+    token: room.token,
+    transport: room.transport,
+    ...(room.transport === 'srs' ? { srsGrant: srsGrant(room, 'publish', room.hostSocketId || '') } : {}),
+  }
+}
+
+function sameSecret(left, right) {
+  const a = Buffer.from(String(left || ''))
+  const b = Buffer.from(String(right || ''))
+  return a.length === b.length && a.length > 0 && timingSafeEqual(a, b)
+}
+
+/**
  * 一条纯联机弹幕房多久没人就可以回收。
  *
  * 比 MEMBER_TTL 那类值大得多是故意的：玩家断线重连、页面刷新都会让 players
@@ -509,7 +664,9 @@ function publicRoom(room) {
     platform: room.platform,
     hostName: room.hostName,
     viewers: room.viewers.size,
-    maxViewers: MAX_VIEWERS,
+    maxViewers: room.transport === 'srs' ? MAX_SRS_VIEWERS : MAX_VIEWERS,
+    transport: room.transport || 'p2p',
+    srsReady: Boolean(room.srsReady),
     startedAt: room.startedAt,
     /** 主播断线、房间在宽限期里等它回来 */
     hostAway: room.hostSocketId === null,
@@ -744,6 +901,7 @@ function closeRoom(nsp, room, reason) {
   }
   // 散场时把这条直播绑过的联机弹幕房一起收掉：房间都没了，那段历史没人再看得到
   if (room.netplayRoomId) matchChats.delete(matchChatKey(resolveRoomId(room.netplayRoomId)))
+  clearSrsNegotiations(room.id)
   rooms.delete(room.id)
   notifyRoomList()
 }
@@ -910,6 +1068,7 @@ function leave(nsp, socket) {
     return
   }
   if (!room) return
+  clearSrsNegotiation(room.id, info.role === 'host' ? 'publish' : 'play', socket.id)
 
 
   if (info.role === 'host') {
@@ -962,6 +1121,113 @@ export function attachLive(io, options = {}) {
   const netplayPlayer = options.isNetplayPlayer || isNetplayPlayer
   const nsp = io.of('/live')
 
+  const srsExchange = async (req, res) => {
+    const config = srsConfig()
+    if (!config) return res.status(503).json({ error: 'SRS live is not configured' })
+    const mode = req.params?.mode === 'publish' ? 'publish' : req.params?.mode === 'play' ? 'play' : ''
+    if (!mode) return res.status(404).json({ error: 'not found' })
+    const roomId = str(req.body?.roomId, 64)
+    const grant = str(req.body?.grant, 4096)
+    const sdp = typeof req.body?.sdp === 'string' ? req.body.sdp : ''
+    // ICE 完整 SDP 通常远小于 256KB；拒绝超大正文，避免握手代理成为内存放大入口。
+    if (!roomId || !grant || !sdp || sdp.length > 256_000) return res.status(400).json({ error: 'invalid request' })
+    const claims = verifySrsToken(config, grant)
+    const role = mode === 'publish' ? 'publish' : 'play'
+    const room = rooms.get(roomId)
+    if (!claims || claims.roomId !== roomId || claims.role !== role || !room || room.transport !== 'srs' || claims.stream !== room.srsStream) {
+      return res.status(403).json({ error: 'invalid or expired SRS grant' })
+    }
+    if (!claims.memberId) return res.status(403).json({ error: 'grant is not bound to a room member' })
+    if (mode === 'publish' && room.hostSocketId !== claims.memberId) {
+      return res.status(403).json({ error: 'publisher is no longer the room host' })
+    }
+    if (mode === 'play' && (!claims.memberId || !room.viewers.has(claims.memberId) || membership.get(claims.memberId)?.roomId !== roomId)) {
+      return res.status(403).json({ error: 'viewer is no longer in this room' })
+    }
+    if (mode === 'play' && !room.srsReady) return res.status(409).json({ error: 'SRS publisher is not ready' })
+    const finishNegotiation = beginSrsNegotiation(`${roomId}:${role}:${claims.memberId}`)
+    if (!finishNegotiation) return res.status(429).json({ error: 'too many SRS negotiations' })
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 12_000)
+    try {
+      const endpoint = mode === 'publish' ? 'whip' : 'whep'
+      const url = new URL(`${config.internalApi}/rtc/v1/${endpoint}/`)
+      url.searchParams.set('app', 'live')
+      url.searchParams.set('stream', room.srsStream)
+      url.searchParams.set('token', grant)
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/sdp', accept: 'application/sdp' },
+        body: sdp,
+        signal: controller.signal,
+      })
+      const answer = await response.text().catch(() => '')
+      if (!response.ok || !answer.trimStart().startsWith('v=0')) {
+        console.warn(`[live] SRS ${mode} 协商失败：HTTP ${response.status}`)
+        return res.status(502).json({ error: 'SRS negotiation failed' })
+      }
+      // SDP 往返期间观众可能离房、房主可能被接管；迟到的成功响应也不能再发给旧成员。
+      if (rooms.get(roomId) !== room || (mode === 'publish'
+          ? room.hostSocketId !== claims.memberId
+          : !room.viewers.has(claims.memberId) || membership.get(claims.memberId)?.roomId !== roomId)) {
+        return res.status(403).json({ error: 'room membership changed during negotiation' })
+      }
+      return res.json({ sdp: answer })
+    } catch (error) {
+      console.warn(`[live] SRS ${mode} API 不可用：`, error?.name || error?.message || error)
+      return res.status(502).json({ error: 'SRS service unavailable' })
+    } finally {
+      clearTimeout(timer)
+      finishNegotiation()
+    }
+  }
+
+  const srsHook = (req, res) => {
+    const config = srsConfig()
+    if (!config) return res.status(503).send('SRS disabled')
+    if (!sameSecret(req.query?.key, config.hookSecret)) return res.status(403).send('forbidden')
+    const action = str(req.body?.action, 40)
+    const stream = str(req.body?.stream, 160)
+    const clientId = str(req.body?.client_id, 128)
+    const room = Array.from(rooms.values()).find((candidate) => candidate.transport === 'srs' && candidate.srsStream === stream)
+    if (!room) return res.status(404).send('unknown stream')
+    if (action === 'on_publish' || action === 'on_play') {
+      let token = ''
+      const param = typeof req.body?.param === 'string' ? req.body.param : ''
+      try {
+        token = new URL(param, 'http://srs.invalid').searchParams.get('token') || new URLSearchParams(param.replace(/^\?/, '')).get('token') || ''
+      } catch {
+        token = ''
+      }
+      const claims = verifySrsToken(config, token)
+      const role = action === 'on_publish' ? 'publish' : 'play'
+      if (!claims || claims.roomId !== room.id || claims.stream !== room.srsStream || claims.role !== role) {
+        return res.status(403).send('invalid grant')
+      }
+      if (role === 'publish' && (!claims.memberId || room.hostSocketId !== claims.memberId)) {
+        return res.status(403).send('publisher is no longer the room host')
+      }
+      if (role === 'play' && (!claims.memberId || !room.viewers.has(claims.memberId) || membership.get(claims.memberId)?.roomId !== room.id)) {
+        return res.status(403).send('viewer is no longer in this room')
+      }
+      if (action === 'on_play' && !room.srsReady) return res.status(403).send('publisher not ready')
+      if (action === 'on_publish') {
+        room.srsPublisherClient = clientId
+        if (!room.srsReady) {
+          room.srsReady = true
+          nsp.to(room.id).emit('srs-state', { ready: true })
+          notifyRoomList()
+        }
+      }
+    } else if (action === 'on_unpublish' && room.srsReady && clientId && room.srsPublisherClient === clientId) {
+      room.srsReady = false
+      room.srsPublisherClient = ''
+      nsp.to(room.id).emit('srs-state', { ready: false })
+      notifyRoomList()
+    }
+    return res.status(200).send('0')
+  }
+
   /**
    * 不带 publisherToken 的网页主播和普通观众保持原样；带了就必须验过，不能失败后悄悄
    * 降级成匿名主播。正式设备客户端据 connect_error.data.code 区分过期和服务未配置。
@@ -1013,7 +1279,7 @@ export function attachLive(io, options = {}) {
 
     socket.on('go-live', async (payload, ack) => {
       const existing = boundHostRoom()
-      if (existing) return ack?.(null, { roomId: existing.id, token: existing.token })
+      if (existing) return ack?.(null, srsHostAck(existing))
       if (membership.has(socket.id)) return ack?.('already in a room')
       if (socket.data.liveOpening) return ack?.('already opening a room')
       if (!takeOpenToken(socket)) return ack?.('rate limited')
@@ -1068,7 +1334,7 @@ export function attachLive(io, options = {}) {
         if (!socket.connected) return ack?.('disconnected')
         // 查用户期间同一条连接可能被别的事件放进房间；await 后必须再确认一次。
         const opened = boundHostRoom()
-        if (opened) return ack?.(null, { roomId: opened.id, token: opened.token })
+        if (opened) return ack?.(null, srsHostAck(opened))
         if (membership.has(socket.id)) return ack?.('already in a room')
         if (rooms.size >= MAX_ROOMS) return ack?.('server is full')
         const ip = hostIp(socket)
@@ -1086,11 +1352,28 @@ export function attachLive(io, options = {}) {
           if (mine >= MAX_ROOMS_PER_IP) return ack?.('too many rooms')
         }
 
+        // 健康检查有一个短 await 窗口；重新核实 socket、房间和 IP 配额，避免并发开播挤过容量闸。
+        const useSrs = await srsServiceAvailable()
+        if (!socket.connected) return ack?.('disconnected')
+        const openedAfterProbe = boundHostRoom()
+        if (openedAfterProbe) return ack?.(null, srsHostAck(openedAfterProbe))
+        if (membership.has(socket.id)) return ack?.('already in a room')
+        if (rooms.size >= MAX_ROOMS) return ack?.('server is full')
+        if (ip && !isPrivateIp(ip) && MAX_ROOMS_PER_IP > 0) {
+          let mine = 0
+          for (const r of rooms.values()) if (r.hostIp === ip) mine++
+          if (mine >= MAX_ROOMS_PER_IP) return ack?.('too many rooms')
+        }
+
         const id = randomBytes(9).toString('base64url')
         const room = {
           id,
           // 续播凭证：主播断线重连后凭它 resume-live。观众看不到（publicRoom 不带它）
           token: randomBytes(24).toString('base64url'),
+          transport: useSrs ? 'srs' : 'p2p',
+          srsStream: randomBytes(18).toString('base64url'),
+          srsReady: false,
+          srsPublisherClient: '',
           title: str(payload?.title, 80) || str(payload?.gameName, 80) || 'Live',
           gameSlug,
           /** 内部权限位，不进 publicRoom；列表和详情在序列化之前按它过滤。 */
@@ -1152,7 +1435,7 @@ export function attachLive(io, options = {}) {
         }
         rooms.set(id, room)
         bindHost(nsp, room, socket)
-        ack?.(null, { roomId: id, token: room.token })
+        ack?.(null, srsHostAck(room))
       } catch (e) {
         console.warn('[live] 开播权限检查失败：', e)
         ack?.('failed')
@@ -1168,7 +1451,7 @@ export function attachLive(io, options = {}) {
       if (already) {
         if (already.id !== requestedRoomId) return ack?.('already in a room')
         if (!requestedToken || requestedToken !== already.token) return ack?.('forbidden')
-        return ack?.(null, { roomId: already.id, viewers: Array.from(already.viewers) })
+        return ack?.(null, { ...srsHostAck(already), viewers: Array.from(already.viewers) })
       }
       if (membership.has(socket.id)) return ack?.('already in a room')
       if (socket.data.liveResuming) return ack?.('already resuming')
@@ -1197,13 +1480,14 @@ export function attachLive(io, options = {}) {
         const resumed = boundHostRoom()
         if (resumed) {
           if (resumed.id !== room.id || requestedToken !== resumed.token) return ack?.('already in a room')
-          return ack?.(null, { roomId: resumed.id, viewers: Array.from(resumed.viewers) })
+          return ack?.(null, { ...srsHostAck(resumed), viewers: Array.from(resumed.viewers) })
         }
         if (membership.has(socket.id)) return ack?.('already in a room')
 
         // 接管：旧 socket 还挂着（没到 ping 超时）的话，把它从房间里请出去
         const old = room.hostSocketId
         if (old && old !== socket.id) {
+          clearSrsNegotiation(room.id, 'publish', old)
           membership.delete(old)
           nsp.sockets.get(old)?.leave(room.id)
         }
@@ -1211,13 +1495,20 @@ export function attachLive(io, options = {}) {
         // 观众要知道主播的新 id（它们的 signal 其实由服务端路由，但 from 过滤用得上）
         socket.to(room.id).emit('host-back', { roomId: room.id, hostId: socket.id })
         // 把当前观众名单交给主播：哪条 PeerConnection 还活着它自己知道，死了的重新 offer
-        ack?.(null, { roomId: room.id, viewers: Array.from(room.viewers) })
+        ack?.(null, { ...srsHostAck(room), viewers: Array.from(room.viewers) })
       } catch (e) {
         console.warn('[live] 续播权限检查失败：', e)
         ack?.('failed')
       } finally {
         socket.data.liveResuming = false
       }
+    })
+
+    socket.on('srs-publish-grant', (payload, ack) => {
+      const room = boundHostRoom()
+      if (!room || room.transport !== 'srs') return ack?.('not an SRS host')
+      if (str(payload?.roomId, 64) !== room.id || str(payload?.token, 64) !== room.token) return ack?.('forbidden')
+      ack?.(null, { srsGrant: srsGrant(room, 'publish', socket.id) })
     })
 
     socket.on('watch', async (payload, ack) => {
@@ -1256,7 +1547,11 @@ export function attachLive(io, options = {}) {
           }
         }
       }
-      if (!again && !previous && room.viewers.size >= MAX_VIEWERS) return ack?.('full')
+      const maxViewers = room.transport === 'srs' ? MAX_SRS_VIEWERS : MAX_VIEWERS
+      if (!again && !previous && room.viewers.size >= maxViewers) return ack?.('full')
+      if (!again && !previous && room.transport === 'srs' && activeSrsViewerCount() >= MAX_SRS_TOTAL_VIEWERS) {
+        return ack?.('server full')
+      }
 
       if (previous) {
         room.viewers.delete(previous)
@@ -1276,7 +1571,13 @@ export function attachLive(io, options = {}) {
       // 带上最近几条弹幕：中途进来的观众不该面对一片空白。
       // 只在 watch 的 ack 里给，不进 publicRoom —— 那个是大厅列表用的，
       // 每张卡片都驮着 30 条弹幕纯属白费流量
-      ack?.(null, { ...publicRoom(room), hostId: room.hostSocketId, chat: room.chat, rebound: Boolean(previous) })
+      ack?.(null, {
+        ...publicRoom(room),
+        hostId: room.hostSocketId,
+        chat: room.chat,
+        rebound: Boolean(previous),
+        ...(room.transport === 'srs' ? { srsGrant: srsGrant(room, 'play', socket.id) } : {}),
+      })
       // 由主播发起 offer：它才知道自己有几条轨、什么编码。
       // 主播不在就先不发，它 resume 回来时会拿到观众名单自己补
       if (room.hostSocketId) {
@@ -1566,7 +1867,14 @@ export function attachLive(io, options = {}) {
   }, GHOST_SWEEP_MS)
   ghostTimer.unref?.()
 
-  return { nsp, list: () => liveRooms() }
+  return {
+    nsp,
+    list: () => liveRooms(),
+    srsExchange,
+    srsHook,
+    srsEnabled: () => Boolean(srsConfig()),
+    srsRequested,
+  }
 }
 
 /**

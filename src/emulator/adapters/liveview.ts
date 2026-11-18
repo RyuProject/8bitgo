@@ -1,12 +1,12 @@
 /**
  * 观众侧：只看不玩。
  *
- * 主播那边把画布和声音经 WebRTC 直推过来（见 emulator/broadcast.ts），
- * 这里就是收下来塞进一个 <video>。没有模拟器在跑，所以既不能暂停也没有存档 ——
+ * 主播把画布和声音经 SRS WebRTC 推过来（旧房间兼容 P2P，见 emulator/broadcast.ts），
+ * 这里就是收下来塞进一个 <video>。2P 输入仍使用独立的点对点 DataChannel。没有模拟器在跑，所以既不能暂停也没有存档 ——
  * 但音量、截图、录像都还在（都是对着这条流做的）。
  *
  * 和 cloudgame 的区别：cloudgame 的画面来自服务器上跑的游戏（要花钱），
- * 这里的画面来自另一个玩家的浏览器（零服务器成本，只借道信令）。
+ * 这里的画面来自另一个玩家的浏览器；SRS 模式下服务器只做 SFU 转发，不运行游戏。
  *
  * ── 断线 ──────────────────────────────────────────────────
  * 三样东西各自会断，处理方式不同：
@@ -25,11 +25,11 @@
  * 而主播可能几秒后就回来了；socket 断了则干脆什么都不做，画面冻着直到天荒地老。
  *
  * 一个特殊情形：服务器重启，内存里的房间全没了，重新 watch 会回 not found ——
- * 但如果画面还在流（P2P 不经过服务器），那就静默继续看，别拿遮罩盖掉一场好好的直播。
+ * 但如果媒体连接还在流，那就静默继续看，别拿遮罩盖掉一场好好的直播。
  */
 import type { Capability, CaptureSources, MountOptions, PadButton, RuntimeHandle } from '../types'
 import { getT, fmt } from '@/services/i18n'
-import { connectLive, liveEnabled, liveIceConfig, type LiveChatMessage, type LiveSocket, type LiveViewerEntry } from '@/services/live'
+import { connectLive, exchangeLiveSrsSdp, liveEnabled, liveIceConfig, liveStunServers, waitForLiveIceGathering, preferLiveSrsCodecs, type LiveChatMessage, type LiveSocket, type LiveViewerEntry } from '@/services/live'
 import { sendChatWithAck, type ChatSendResult } from '../chatSend'
 import { usableVideoSize } from '../videoTuning'
 import { COOP_CHANNEL, encode as encodeCoop, parse as parseCoop } from '../coopSeat'
@@ -108,6 +108,9 @@ type WatchAck = {
   hostName: string
   gameName: string
   viewers: number
+  transport?: 'p2p' | 'srs'
+  srsReady?: boolean
+  srsGrant?: string
   /** 配对的联机房号。中途进来的观众靠它，不用等 netplay-linked 那一下 */
   netplayRoomId?: string | null
   /** 最近几条弹幕。同理：中途进来的人靠它，不然面对一片空白 */
@@ -183,6 +186,16 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let destroyed = false
   let socket: LiveSocket | null = null
   let pc: RTCPeerConnection | null = null
+  let srsPc: RTCPeerConnection | null = null
+  let transport: 'p2p' | 'srs' = 'p2p'
+  let srsGrant = ''
+  let srsReady = false
+  let srsPlayInFlight = false
+  let srsPlayGeneration = 0
+  let srsRetryCount = 0
+  let srsRetryTimer = 0
+  let srsTracks = new Set<MediaStreamTrack>()
+  const mediaConnectionState = () => (transport === 'srs' ? srsPc : pc)?.connectionState
   /** 当前这条 pc 对应主播那边的代号；不匹配的 ICE 候选是上一轮的，扔掉 */
   let pcGen: number | undefined
   /** 这条 pc 已经吃过一个 offer 了 —— 再来一个就是新一轮，得换连接 */
@@ -351,7 +364,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     const vt = stream.getVideoTracks()[0]
     // 走到 diagnose() 就说明一帧都没画出来（看门狗只在 !watching 时叫它），所以这里不用再看 gotFrame。
     // ⚠️ 别拿 track.muted 当判据：实测源曾经出过帧再静止时，后进观众的轨可能报 muted=false 却一帧没有。
-    if (pc?.connectionState === 'connected' && vt) {
+    if (mediaConnectionState() === 'connected' && vt) {
       console.warn(`[live] 已连上主播（轨 muted=${vt.muted}），但对方一帧都没发出来（游戏暂停 / 静止画面 / 主播浏览器不出帧）`)
       return rt.liveHostIdle
     }
@@ -379,6 +392,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     window.clearTimeout(rewatchTimer)
     window.clearTimeout(disconnectTimer)
     disconnectTimer = 0
+    closeSrsPlayer()
     live.onState?.('error')
     options.onError?.(msg, 'runtime')
   }
@@ -502,12 +516,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    * 网络早就好了，读数还挂在高位 —— 观众看到的就是一句永远不消失的「你的网络不稳」。
    */
   const sampleLink = async () => {
-    if (destroyed || !pc || !gotFrame || linkStatsInFlight) return
+    const activePc = transport === 'srs' ? srsPc : pc
+    if (destroyed || !activePc || !gotFrame || linkStatsInFlight) return
     linkStatsInFlight = true
     try {
-      const activePc = pc
       const report = await activePc.getStats()
-      if (destroyed || pc !== activePc || !gotFrame) return
+      if (destroyed || (transport === 'srs' ? srsPc !== activePc : pc !== activePc) || !gotFrame) return
       let fps = 0
       let received = 0
       let lost = 0
@@ -567,7 +581,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
       // 每位观众只把自己的质量回给主播；主播据此只调这一条 sender。
       // 走已有 DataChannel，不经过信令服务器，也不会让弱网观众拖累全房。
-      sendCoop({ t: 'q', loss, rtt: rttMs, fps: Math.round(fps), kbps })
+      if (transport !== 'srs') sendCoop({ t: 'q', loss, rtt: rttMs, fps: Math.round(fps), kbps })
 
       const verdict: LinkQuality['verdict'] =
         loss >= LOSS_BAD ? 'local' : fps > 0 && fps < ASSUMED_HOST_FPS * HOST_SLOW_RATIO ? 'host' : 'ok'
@@ -585,6 +599,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     window.clearTimeout(watchdog)
     window.clearTimeout(rewatchTimer)
     rewatchCount = 0
+    srsRetryCount = 0
     if (!watching) {
       watching = true
       options.onStart?.()
@@ -599,6 +614,140 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     // 立即只读一次作为基线；否则首个 5 秒样本会把握手和首帧等待期的累计丢包算进来。
     void sampleLink()
     live.onState?.(hostFrozen ? 'host-away' : 'watching')
+  }
+
+  const closeSrsPlayer = () => {
+    window.clearTimeout(srsRetryTimer)
+    srsRetryTimer = 0
+    srsPlayGeneration++
+    srsPlayInFlight = false
+    const old = srsPc
+    srsPc = null
+    if (old) {
+      old.ontrack = null
+      old.onconnectionstatechange = null
+      old.oniceconnectionstatechange = null
+      try { old.close() } catch { /* ignore */ }
+    }
+    for (const track of srsTracks) {
+      track.onended = null
+      stream.removeTrack(track)
+    }
+    srsTracks.clear()
+  }
+
+  const scheduleSrsRetry = () => {
+    if (destroyed || transport !== 'srs' || srsRetryTimer) return
+    if (srsRetryCount >= REWATCH_MAX) {
+      if (!gotFrame) fail(rt.liveLost)
+      return
+    }
+    const baseDelay = Math.min(12_000, 1_000 * 2 ** srsRetryCount++)
+    // 一场直播的观众会同时收到同一个恢复事件；错开 WHEP 重试能压低瞬时握手峰值。
+    const delay = Math.round(baseDelay * (0.8 + Math.random() * 0.4))
+    live.onState?.(gotFrame ? 'reconnecting' : 'connecting')
+    srsRetryTimer = window.setTimeout(() => {
+      srsRetryTimer = 0
+      if (destroyed || !socket?.connected || hostAway || hostFrozen) return
+      void (async () => {
+        await watch(true)
+        if (!destroyed && srsReady && srsGrant) void startSrsPlayer(srsGrant)
+      })()
+    }, delay)
+  }
+
+  const startSrsPlayer = async (grant: string) => {
+    if (destroyed || transport !== 'srs' || !srsReady || !grant || srsPlayInFlight) return
+    if (srsPc?.connectionState === 'connected') return
+    closeSrsPlayer()
+    const generation = ++srsPlayGeneration
+    srsPlayInFlight = true
+    let next: RTCPeerConnection
+    try {
+      const iceServers = await liveStunServers()
+      if (generation !== srsPlayGeneration) return
+      if (destroyed || transport !== 'srs' || !srsReady || srsGrant !== grant) {
+        srsPlayInFlight = false
+        if (!destroyed && transport === 'srs' && srsReady && srsGrant && srsGrant !== grant) void startSrsPlayer(srsGrant)
+        return
+      }
+      next = new RTCPeerConnection({ iceServers })
+    } catch (error) {
+      if (generation === srsPlayGeneration) {
+        srsPlayInFlight = false
+        console.warn('[live] 当前浏览器无法创建 SRS 播放连接：', error)
+        scheduleSrsRetry()
+      }
+      return
+    }
+    srsPc = next
+    next.ontrack = (event) => {
+      if (destroyed || srsPc !== next) return
+      const tracks = event.streams[0]?.getTracks() ?? [event.track]
+      for (const track of tracks) {
+        if (srsTracks.has(track)) continue
+        for (const old of srsTracks) {
+          if (old.kind !== track.kind) continue
+          old.onended = null
+          stream.removeTrack(old)
+          srsTracks.delete(old)
+        }
+        srsTracks.add(track)
+        stream.addTrack(track)
+        if (track.kind === 'video') {
+          track.onended = () => {
+            if (destroyed || srsPc !== next || !srsTracks.has(track)) return
+            gotFrame = false
+            frameWaiter?.()
+            if (hostFrozen || hostAway) live.onState?.('host-away')
+            else scheduleSrsRetry()
+          }
+          waitForFirstFrame(markWatching)
+        }
+      }
+      const receiver = next.getReceivers().find((item) => tracks.includes(item.track)) as (RTCRtpReceiver & { jitterBufferTarget?: number }) | undefined
+      if (receiver && 'jitterBufferTarget' in receiver) receiver.jitterBufferTarget = 300
+      tryPlay()
+    }
+    const stateChanged = () => {
+      if (destroyed || srsPc !== next) return
+      if (next.connectionState === 'connected') {
+        srsRetryCount = 0
+        if (gotFrame) live.onState?.(hostFrozen ? 'host-away' : 'watching')
+      } else if (next.connectionState === 'failed' || next.connectionState === 'closed') {
+        gotFrame = false
+        scheduleSrsRetry()
+      } else if (next.connectionState === 'disconnected') {
+        live.onState?.(hostAway ? 'host-away' : 'reconnecting')
+        window.setTimeout(() => {
+          if (!destroyed && srsPc === next && next.connectionState === 'disconnected') scheduleSrsRetry()
+        }, DISCONNECTED_GRACE_MS)
+      }
+    }
+    next.onconnectionstatechange = stateChanged
+    next.oniceconnectionstatechange = stateChanged
+    try {
+      const audio = next.addTransceiver('audio', { direction: 'recvonly' })
+      const video = next.addTransceiver('video', { direction: 'recvonly' })
+      preferLiveSrsCodecs(audio, 'audio')
+      preferLiveSrsCodecs(video, 'video')
+      const offer = await next.createOffer()
+      await next.setLocalDescription(offer)
+      await waitForLiveIceGathering(next)
+      const localSdp = next.localDescription?.sdp
+      if (!localSdp) throw new Error('SRS player offer missing SDP')
+      const answer = await exchangeLiveSrsSdp('play', live.roomId, grant, localSdp)
+      if (destroyed || srsPc !== next) return
+      await next.setRemoteDescription(answer)
+    } catch (error) {
+      if (!destroyed && srsPc === next) {
+        console.warn('[live] SRS 拉流协商失败，稍后重试：', error)
+        closeSrsPlayer()
+        scheduleSrsRetry()
+      }
+    } finally {
+      if (generation === srsPlayGeneration && srsPc === next) srsPlayInFlight = false
+    }
   }
 
   /* ---------------- 「上场当 2P」：访客这一端 ---------------- */
@@ -828,6 +977,22 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     next.onconnectionstatechange = () => {
       if (destroyed || pc !== next) return
       const s = next.connectionState
+      if (transport === 'srs') {
+        if (s === 'connected') {
+          window.clearTimeout(disconnectTimer)
+          disconnectTimer = 0
+          if (gotFrame) live.onState?.(hostFrozen ? 'host-away' : 'watching')
+        } else if (s === 'disconnected' && !disconnectTimer) {
+          live.onState?.(srsPc?.connectionState === 'connected' && gotFrame ? 'watching' : hostAway ? 'host-away' : 'reconnecting')
+          disconnectTimer = window.setTimeout(() => {
+            disconnectTimer = 0
+            if (!destroyed && pc === next && next.connectionState === 'disconnected' && socket?.connected) void rewatch()
+          }, DISCONNECTED_GRACE_MS)
+        } else if (s === 'failed') {
+          void rewatch()
+        }
+        return
+      }
       if (s === 'connected') {
         window.clearTimeout(disconnectTimer)
         disconnectTimer = 0
@@ -909,7 +1074,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     } catch (e) {
       if (destroyed) return false
       const msg = e instanceof Error ? e.message : String(e)
-      if (joined && msg === 'not found' && pc && pc.connectionState === 'connected') {
+      const mediaConnected = transport === 'srs' ? srsPc?.connectionState === 'connected' : pc?.connectionState === 'connected'
+      if (joined && msg === 'not found' && mediaConnected) {
         // 服务器重启把房间忘了，但画面还在点对点地流：静默继续，别打断一场好好的直播
         orphan = true
         live.onState?.('watching')
@@ -929,6 +1095,17 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       return false
     }
     if (destroyed) return false
+
+    const nextTransport = info.transport === 'srs' ? 'srs' : 'p2p'
+    if (transport !== nextTransport) closeSrsPlayer()
+    transport = nextTransport
+    srsGrant = info.srsGrant || ''
+    srsReady = transport === 'srs' && Boolean(info.srsReady)
+    if (transport === 'srs' && srsReady && srsGrant) void startSrsPlayer(srsGrant)
+    else if (transport === 'srs' && !srsReady && (srsPc || srsPlayInFlight)) {
+      gotFrame = false
+      closeSrsPlayer()
+    }
 
     hostId = info.hostId
     hostAway = !info.hostId || Boolean(info.hostAway)
@@ -966,7 +1143,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (hostAway) window.clearTimeout(watchdog)
     // WebRTC 显示 connected 只说明 ICE 通了，不代表视频已经有帧；误报 watching 会撤掉加载态，
     // 留给观众一块没有任何恢复动作的黑屏。
-    live.onState?.(hostAway ? 'host-away' : pc?.connectionState === 'connected' && gotFrame ? 'watching' : 'connecting')
+    const mediaConnected = transport === 'srs' ? srsPc?.connectionState === 'connected' : pc?.connectionState === 'connected'
+    live.onState?.(hostAway ? 'host-away' : mediaConnected && gotFrame ? 'watching' : 'connecting')
     return true
   }
 
@@ -998,7 +1176,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
     thawRewatch = false
     window.clearTimeout(rewatchTimer)
-    if (rewatchCount >= REWATCH_MAX) return fail(joined && watching ? rt.liveLost : diagnose())
+    if (rewatchCount >= REWATCH_MAX) {
+      if (transport === 'srs' && gotFrame) {
+        console.warn('[live] SRS 画面仍可用，但观众输入通道已达到自动恢复上限')
+        return
+      }
+      return fail(joined && watching ? rt.liveLost : diagnose())
+    }
     rewatchCount += 1
     live.onState?.('reconnecting')
     recoveryInFlight = true
@@ -1049,7 +1233,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     try {
       await refreshIce()
       if (destroyed) return
-      const connected = pc?.connectionState === 'connected'
+      const connected = mediaConnectionState() === 'connected'
       const ok = await watch(!connected)
       if (!ok) {
         if (lastWatchRetryable && !destroyed && socket?.connected && !hostAway && !hostFrozen) armRewatch(FIRST_OFFER_MS)
@@ -1142,6 +1326,18 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         // list 是 09-11 加的；老服务端没有这个字段，那就报空名单（界面退回只显示人数）
         live.onRoster?.(Array.isArray(p?.list) ? p.list : [])
       }) as (...args: never[]) => void)
+      s.on('srs-state', ((p: { ready?: boolean }) => {
+        if (destroyed || transport !== 'srs') return
+        srsReady = Boolean(p?.ready)
+        if (srsReady && srsGrant) {
+          void startSrsPlayer(srsGrant)
+        } else {
+          gotFrame = false
+          frameWaiter?.()
+          closeSrsPlayer()
+          live.onState?.(hostAway || hostFrozen ? 'host-away' : 'reconnecting')
+        }
+      }) as (...args: never[]) => void)
       /**
        * 主播刚把这一局开成了联机房（传 null 就是刚关掉）。
        * 已经在看的人就是靠这一下多出「加入联机」按钮的 —— 他们不会再去刷大厅。
@@ -1182,7 +1378,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         if (destroyed) return
         hostAway = true
         // 画面还连着就不惊动人（只是主播的信令断了，WebRTC 不经过服务器）；断了才亮「主播不在」
-        if (pc?.connectionState !== 'connected') live.onState?.('host-away')
+        if (mediaConnectionState() !== 'connected') live.onState?.('host-away')
       }) as (...args: never[]) => void)
 
       s.on('host-back', ((p: { hostId?: string }) => {
@@ -1191,7 +1387,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         if (p?.hostId) hostId = p.hostId
         // 主播回来会对照名单重新 offer。它那边要是还以为这条连接活着（两边判断有时差），
         // offer 就不会来。只有「连接还在且真见过帧」才算恢复；其余情况必须主动自愈。
-        const connected = pc?.connectionState === 'connected'
+        const connected = mediaConnectionState() === 'connected'
         if (connected && gotFrame) return live.onState?.('watching')
         live.onState?.('connecting')
         rewatchCount = 0
@@ -1203,6 +1399,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       s.on('live-ended', (() => {
         if (destroyed) return
         window.clearTimeout(rewatchTimer)
+        closeSrsPlayer()
         live.onState?.('ended')
         options.onError?.(rt.liveEnded, 'runtime')
       }) as (...args: never[]) => void)
@@ -1210,7 +1407,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       s.on('disconnect', (() => {
         if (destroyed) return
         // 服务器把我们从房间里踢了、也通知了主播拆连接。socket.io 会自动重连，连上再进一次
-        live.onState?.(pc?.connectionState === 'connected' ? 'watching' : 'reconnecting')
+        live.onState?.(mediaConnectionState() === 'connected' ? 'watching' : 'reconnecting')
       }) as (...args: never[]) => void)
 
       // connectLive 已经消费掉首连的 connect，这里只在**重连**时触发
@@ -1310,6 +1507,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       disconnectTimer = 0
       host.removeEventListener('click', onClick)
       video.removeEventListener('resize', reportSize)
+      closeSrsPlayer()
       closePc()
       try {
         socket?.close()

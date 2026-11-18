@@ -33,7 +33,7 @@ const has = (name) => argv.includes('--' + name)
 const LOCALES = opt('locale', null) ? [opt('locale', null)] : ['cn', 'en']
 const LIMIT = has('all') ? Infinity : Number(opt('limit', 30)) || 30
 const CONCURRENCY = Math.max(1, Number(opt('conc', 10)) || 10)
-// 浏览器实际走 Pages 同源代理；直接检查 html5.8bitgo.com 会因缺 CORS 得到误导性的失败结果。
+// 默认检查 Pages 同源代理；它会从 download.8bitgo.com 取对象并保留 Range / ETag。
 const publicDataUrl = new URL(opt('base', 'https://pvz.8bitgo.com/pvz-data/'))
 publicDataUrl.pathname = publicDataUrl.pathname.replace(/\/*$/, '/')
 const PUBLIC_DATA_BASE = publicDataUrl.href

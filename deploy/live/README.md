@@ -9,7 +9,7 @@
 |---|---|---|---|
 | netplay（P2P 联机） | 房主浏览器 | 能（有手柄位） | 只转发握手 |
 | cloud-game | 服务器 | 能 | 高（跑游戏 + 转流） |
-| **live（直播）** | 主播浏览器 | **不能，只看** | 只转发握手 |
+| **live（直播）** | 主播浏览器 | **不能，只看** | SRS 转发媒体；联机输入另走点对点 |
 
 ## 它不依赖 EmulatorJS 的 netplay
 
@@ -24,14 +24,19 @@ netplay 需要自建 EmulatorJS **4.3.0-pre**（CDN 上的 stable 还是 4.2.3�
     server/src/live.js            信令（socket.io 命名空间 /live）+ 房间登记
     server/scripts/test-live.mjs  信令的端到端测试（18 项）
     src/services/live.ts          客户端：连信令、ICE、观看链接、房间列表
-    src/emulator/broadcast.ts     主播侧：captureStream -> N 条 RTCPeerConnection
-    src/emulator/adapters/liveview.ts  观众侧：收流塞进 <video>（一个普通 Runtime）
+    src/emulator/broadcast.ts     主播侧：captureStream -> SRS 一路媒体 + 点对点协作通道
+    src/emulator/adapters/liveview.ts  观众侧：SRS 收音视频、点对点通道发 2P 输入
     src/emulator/LiveControls.tsx 播放器工具栏里的开播按钮
 
-画面和声音**不经过服务器**，只有 SDP / ICE 借道：
+SRS 模式下，主播只上行一份媒体，SRS 复制给观众；旧的 `/live` Socket.IO 仍管理房间、名单、弹幕、重连，
+并代理 WHIP/WHEP 的 SDP。观众的 2P 操作仍走点对点 DataChannel，避免把按键消息塞进媒体服务器：
 
-    浏览器(主播) ──WebRTC 音视频──► 浏览器(观众) × N
-           └──── 只有握手信息经过 /live ────┘
+    主播 ──一路 WebRTC 音视频──► SRS ──转发──► 观众 × N
+      └────点对点 DataChannel──────┴────点对点 DataChannel─────┘
+
+SRS 没配置时新房间继续使用旧 P2P 模式；配置启用后新房间才使用 SRS，房间创建时固定传输方式。
+这使 SRS 部署与应用发布可以分两步进行。SRS 是 SFU，不做转码：主播端编码能力和上行画质仍决定源流质量，
+但增加观众不会再把主播上行按人数成倍放大。
 
 ## 部署
 
@@ -161,14 +166,15 @@ Authenticated Origin Pulls / cloudflared）。不锁的话 `CF-Connecting-IP` �
 
 ### STUN / TURN：观众连不上主播，九成是这里没配
 
-TURN 和 netplay 共用 `/api/netplay/ice`（后端现签短期凭证，密码不进前端包），
+P2P 联机和直播协作通道共用 `/api/netplay/ice`（后端现签短期凭证，密码不进前端包），
 配法见 [deploy/netplay/README.md 第四节](../netplay/README.md#四stun--turn不配的话很多人根本连不上)。
 
-直播比联机更依赖它：联机的人多半是朋友之间对着邀请链接连，直播是**随便谁点进来都要连得上**。
+SRS 视频直接连接媒体服务器，不走 TURN；SRS 未启用时的旧房间和同屏 2P DataChannel 仍依赖 STUN/TURN。
 
-⚠️ 内置的默认 STUN 是 Google / Twilio 的，部分地区不可达 —— 那种情况下浏览器
+⚠️ 内置的默认 STUN 是 Google / Twilio 的，部分地区不可达 —— P2P 模式下浏览器
 连自己的公网地址都问不出来，只剩局域网候选，**除非两个人在同一个路由器下面否则必然连不上**。
-典型症状：观众等满超时报「连不上主播」，而主播那边完全正常、显示 0 人在看。
+典型症状：P2P 房间的观众等满超时报「连不上主播」，而主播那边完全正常、显示 0 人在看；
+SRS 模式下同屏协作通道仍可能因此建不起来，但不影响视频拉流。
 一条 `STUN_URLS=stun:turn.你的域名:3478` 就能解决，别让它拖着。
 
 自查：`curl -s http://127.0.0.1:8788/api/netplay/ice | jq '{hasTurn, turnCount, expiry}'`。
@@ -180,7 +186,9 @@ TURN 和 netplay 共用 `/api/netplay/ice`（后端现签短期凭证，密码�
 ```bash
 LIVE_MAX_ROOMS=200          # 同时在播的房间上限
 LIVE_MAX_ROOMS_PER_IP=20    # 同一个出口 IP 同时能开几间（见下面）
-LIVE_MAX_VIEWERS=12         # 单场观众上限，见下面「上行」
+LIVE_MAX_VIEWERS=12         # P2P 模式单场观众上限
+LIVE_SRS_MAX_VIEWERS=100    # SRS 模式单场观众上限；需按服务器能力调整
+LIVE_SRS_MAX_TOTAL_VIEWERS=50 # 所有 SRS 房间合计上限；应用硬上限 400
 VITE_LIVE_MAX_BITRATE=1500000  # 单路视频码率上限
 ```
 
@@ -192,14 +200,43 @@ VITE_LIVE_MAX_BITRATE=1500000  # 单路视频码率上限
 
 ## 上行是唯一的硬约束
 
-没有 SFU，是「主播直连每个观众」的星型结构：
+SRS 配好并启用后，媒体走 SFU：
 
-    主播上行 = 单路码率 × 观众数
+    主播上行 = 一路源流；SRS 下行 = 一路源流 × 观众数
 
-GBA 才 240×160，1.5 Mbps 已经很宽裕，但 10 个观众就是 15 Mbps ——
-家宽上行大概到十来路就满了，所以 `LIVE_MAX_VIEWERS` 默认给 12。
-真要做几十上百人，得在中间加一层转发（主播只推一路，服务器扇出到 N 路），
-mediasoup / LiveKit 都行；或者干脆走 cloud-game 那条路，游戏本来就在服务器上。
+默认单房最多 100 名观众、全站 SRS 合计最多 50 名（应用硬上限 400）；后者先保护总出口预算。按 `VITE_LIVE_MAX_BITRATE=1.5 Mbps` 估算，
+50 人约需 75 Mbps 出口（还应为协议开销与峰值留余量）。即使没有媒体上行复制，每人仍有一条小型点对点协作通道，
+所以要结合服务器带宽、CPU、并发连接和真实流量再调高。SRS 本身只转发，不为不同观众转码出多档画质。
+
+## 部署 SRS
+
+仓库提供独立配置：[deploy/live/srs](./srs)，镜像固定在 SRS 6.0.195。SRS HTTP API 只绑定本机 `127.0.0.1:1985`，由 8BitGo 后端代理；
+回调通过 Docker 的 `host.docker.internal` 到本机 `8788`。浏览器媒体直接连 SRS 的公网候选地址。
+
+1. 服务器防火墙开放 **UDP 8000 和 TCP 8000**。不要开放 HTTP API 1985 或 RTMP 1935。
+2. 将 `deploy/live/srs` 放到服务器，复制 `.env.example` 为 `.env`，填服务器公网 IPv4；
+   生成一把独立随机 hook 密钥，并把同一值写进应用的 `LIVE_SRS_HOOK_SECRET`。
+3. 在该目录启动 Compose 服务，确认 `8bitgo-live-srs` 正常运行，且本机 `127.0.0.1:1985` 有响应。
+4. 在 `server/.env` 填写下列服务端配置。两把应用密钥要彼此独立，均用 `openssl rand -hex 32` 生成：
+
+   ```dotenv
+   LIVE_SRS_ENABLED=true
+   LIVE_SRS_INTERNAL_API_ORIGIN=http://127.0.0.1:1985
+   LIVE_SRS_TOKEN_SECRET=<独立随机密钥>
+   LIVE_SRS_HOOK_SECRET=<与 SRS Compose .env 相同的 hook 密钥>
+   LIVE_SRS_MAX_VIEWERS=100
+   LIVE_SRS_MAX_TOTAL_VIEWERS=50
+   ```
+
+5. 重启 8BitGo 服务后，**新建**直播间才会使用 SRS。服务端会短时缓存 `/api/v1/versions` 健康检查；
+   SRS API 不可达时新房间自动保留 P2P 模式。每间房在创建时选定模式，不会在一次观看中途悄悄换协议。
+
+SRS 的 `candidate` 必须是观众可直连的公网 IP；防火墙同时放行 UDP/TCP 8000。配置使用 IP 而非域名，
+可避免 Firefox 不接受域名 ICE candidate 的兼容问题。UDP 不通时协商仍会尝试 TCP candidate。
+HTTPS 页面不需要向浏览器公开 SRS 管理 API，SDP 由 8BitGo 后端通过内网 API 转发。
+
+部署后先用一场测试直播核对 Chrome、Firefox、Safari 和移动端浏览器的首帧、音频、刷新重连与主播断线恢复；
+同时确认 2P 请求、按键、收座仍通过 DataChannel 正常工作。再按 SRS 主机的公网带宽和 CPU 调整 `LIVE_SRS_MAX_VIEWERS`。
 
 ## 用法
 

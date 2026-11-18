@@ -8,7 +8,7 @@ const GAME = /*__GAME_CONFIG__*/ null
 const ASSET_BASE_DEFAULT = 'https://assets.8bitgo.com'
 // GTA VC 的大资源走专用下载域，让 CNAME 优选把玩家送到合适的资源入口。
 const GTA_VC_DOWNLOAD_BASE_DEFAULT = 'https://download.8bitgo.com'
-const PVZ_DATA_BASE_DEFAULT = 'https://html5.8bitgo.com/PvZ/properties'
+const PVZ_DATA_BASE_DEFAULT = 'https://download.8bitgo.com/PvZ/properties'
 const SAFE_FILE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
 const SAFE_DIABLO_CORE = /^(?:Diablo|DiabloSpawn|MpqCmp)\.[a-f0-9]{8}\.wasm$/
 const SAFE_PVZ_DATA_PATH = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,1023}$/

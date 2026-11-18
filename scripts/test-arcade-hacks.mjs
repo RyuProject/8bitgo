@@ -1,13 +1,11 @@
 /**
  * 已知街机改版包（src/data/arcadeHacks.ts）的自检。
  *
- * 这里用一份真实的 wofcn.zip 成员指纹核对识别结果。
- * 中文字库的加载映射尚未验证，因此测试还守住一条底线：不能为它保留未经画面验证的
- * RomData 或图形合成方案，否则会把已确认乱码的补丁重新交给玩家。
+ * 这里用一份真实的 wofcn.zip 成员指纹核对识别结果，并守住字库 ROM_COPY 到 FBNeo
+ * CPS1_TILES 的转换、CRC 清单和语言隔离，避免后续改动把汉化字库错套到其它语言 ROM。
  *
  * 用法：npm run test:arcade-hacks
  */
-import assert from 'node:assert/strict'
 import { ARCADE_HACKS, matchArcadeHack, romScopedHackForData, romScopedHackForName } from '../src/data/arcadeHacks.ts'
 import { crc32, appendZipEntries, listZipEntries, extractZipEntry } from '../src/lib/unzip.ts'
 
@@ -77,10 +75,11 @@ const hack = matchArcadeHack(WOFCN_ZIP.map(([, , crc]) => crc))
 ok(hack?.zipName === 'wofcn', '真包能认出来，是 wofcn')
 ok(hack.driver === 'wof', `借 HBMAME tk2h5 的父驱动 wof（不是 wofj / wofch），实际 ${hack.driver}`)
 ok(hack.romDataScope === 'rom', 'wofcn 保持 ROM 专属标记，可拦截游戏级旧 RomData')
-ok(!hack.romData && !hack.derive, '未验证字库映射前不自动注入 RomData 或图形补丁')
-ok(romScopedHackForData('ZipName wofcn\nDrvName wof') === hack, '即使没有加载方案仍能识别旧版 wofcn 专属配置')
+ok(Boolean(hack.romData && hack.derive), '真实中文字库方案已由 ROM 指纹限定后自动启用')
+ok(romScopedHackForData('ZipName wofcn\nDrvName wof') === hack, 'wofcn 专属配置仍被识别为 ROM 范围')
 ok(romScopedHackForName('wofcn.zip') === hack, '只在当前 ROM 槽名为 wofcn.zip 时识别专属设置范围')
 ok(romScopedHackForName('wof') === null, '其他地区包名不命中 wofcn 的 ROM 专属核心')
+ok(matchArcadeHack([0x0d708505, 0x608c17e3, 0x291f0f0b]) === null, '世界版 WOF 指纹不会启用 wofcn 字库')
 ok(romScopedHackForData('ZipName kof97\nDrvName kof97') === null, '普通 kof97 配置不被误判为 ROM 专属')
 
 // 少一个指纹就不认 —— 指纹必须全中，宁可交回给覆盖率那套去猜
@@ -136,7 +135,7 @@ for (const h of ARCADE_HACKS) {
 
   // 装载循环的下标是按位置算的：同类必须连续，中间不能插别的类型
   const kindOf = (r) =>
-    r.flags.find((f) => /^CPS1_/.test(f))?.replace(/^CPS1_/, '') ?? (r.flags.includes('BRF_OPT') ? 'OPT' : '?')
+    r.flags.find((f) => f.startsWith('CPS1_'))?.replace(/^CPS1_/, '') ?? (r.flags.includes('BRF_OPT') ? 'OPT' : '?')
   const seq = romLines(dat).map(kindOf)
   const firstIdx = new Map(); const lastIdx = new Map()
   seq.forEach((k, i) => { if (!firstIdx.has(k)) firstIdx.set(k, i); lastIdx.set(k, i) })
@@ -149,10 +148,58 @@ for (const h of ARCADE_HACKS) {
 
   // derive 的产出和 dat 必须咬合
   if (h.derive) {
-    const outNames = new Set(h.derive.run(Object.fromEntries(h.derive.inputs.map((k) => [k, new Uint8Array(0x200000)]))).map((d) => d.name))
+    const outNames = new Set(h.derive.run(Object.fromEntries(h.derive.inputs.map((k) => [k, new Uint8Array(0x80000)]))).map((d) => d.name))
     const names = new Set(romLines(dat).map((r) => r.name))
     ok([...outNames].every((x) => names.has(x)), `${h.zipName}: 每个合成产物 dat 里都引用了（${[...outNames].join(', ')}）`)
   }
+}
+
+console.log('\n── wofcn 字库转换范围 ──')
+{
+  const { inputs, outputs, run } = hack.derive
+  const fake = Object.fromEntries(inputs.map((name, i) => [name, new Uint8Array(0x80000).fill(i + 1)]))
+  // 四段 ROM_CONTINUE 是四条不同 word lane；首尾哨兵能抓住 lane 互换和窗口边界偏移。
+  for (const [name, offset, marker] of [
+    ['tk2_gfx5cn.rom', 0x10000, 0x40], ['tk2_gfx5cn.rom', 0x18000, 0x50],
+    ['tk2_gfx6cn.rom', 0x10000, 0x60], ['tk2_gfx6cn.rom', 0x18000, 0x70],
+  ]) {
+    fake[name].set([marker, marker + 1, marker + 2, marker + 3], offset)
+    fake[name].set([marker + 4, marker + 5], offset + 0x7ffe)
+  }
+  const made = run(fake)
+  ok(JSON.stringify(made.map((entry) => entry.name)) === JSON.stringify(outputs), '转换产物名称与声明顺序一致')
+  const plans = [
+    { source: 'tk2_gfx1.rom', output: 0, offset: 0x10000, font: 'tk2_gfx5cn.rom', fontOffset: 0x10000 },
+    { source: 'tk2_gfx3.rom', output: 1, offset: 0x10000, font: 'tk2_gfx5cn.rom', fontOffset: 0x18000 },
+    { source: 'tk2_gfx2.rom', output: 2, offset: 0x10000, font: 'tk2_gfx6cn.rom', fontOffset: 0x10000 },
+    { source: 'tk2_gfx4.rom', output: 3, offset: 0x10000, font: 'tk2_gfx6cn.rom', fontOffset: 0x18000 },
+    { source: 'tk205.bin', output: 4, offset: 0x60000, font: 'tk2_gfx5cn.rom', fontOffset: 0x10000 },
+    { source: 'tk206.bin', output: 5, offset: 0x60000, font: 'tk2_gfx5cn.rom', fontOffset: 0x18000 },
+    { source: 'tk207.bin', output: 6, offset: 0x60000, font: 'tk2_gfx6cn.rom', fontOffset: 0x10000 },
+    { source: 'tk208.bin', output: 7, offset: 0x60000, font: 'tk2_gfx6cn.rom', fontOffset: 0x18000 },
+  ]
+  // 街机驱动的第二组图形实际依次是 tk205/tk206/tk207/tk208，不能按命名里的 gfx2/gfx3 再交换。
+  for (const plan of plans) {
+    const output = made[plan.output].data
+    const end = plan.offset + 0x8000
+    ok(output.length === 0x80000, `${made[plan.output].name} 长度保持 512 KiB`)
+    ok(Buffer.compare(Buffer.from(output.subarray(0, plan.offset)), Buffer.from(fake[plan.source].subarray(0, plan.offset))) === 0,
+      `${made[plan.output].name} 的字库窗口之前原样保留`)
+    ok(Buffer.compare(Buffer.from(output.subarray(end)), Buffer.from(fake[plan.source].subarray(end))) === 0,
+      `${made[plan.output].name} 的字库窗口之后原样保留`)
+    const laneData = fake[plan.font]
+    const laneAt = plan.fontOffset
+    ok(
+      Buffer.compare(Buffer.from(output.subarray(plan.offset, plan.offset + 4)), Buffer.from(laneData.subarray(laneAt, laneAt + 4))) === 0 &&
+        Buffer.compare(Buffer.from(output.subarray(end - 2, end)), Buffer.from(laneData.subarray(laneAt + 0x7ffe, laneAt + 0x8000))) === 0,
+      `${made[plan.output].name} 的 ROM_COPY lane 与首尾边界正确`,
+    )
+  }
+  const rows = romLines(hack.romData)
+  const tileRows = rows.filter((r) => r.flags.includes('CPS1_TILES'))
+  ok(tileRows.length === 8, 'RomData 按 FBNeo 分组提供两组各四路 CPS1 图形')
+  ok(tileRows.every((r) => outputs.includes(r.name)), 'RomData 只引用本改版生成的图形文件')
+  ok(rows.every((r) => r.crc !== 0), 'RomData 的 ROM CRC 均明确填写')
 }
 
 /* ---------------- 合成加载方案两条路径都必须接通 ---------------- */
@@ -189,7 +236,7 @@ for (const h of ARCADE_HACKS) {
   )
   ok(
     /prepared\.hack\?\.romDataScope === 'rom' && !prepared\.hack\.romData[\s\S]{0,220}failLoad\(fmt\(getT\(\)\.player\.arcadeHackNoPlan[\s\S]{0,100}, 'config'\)/.test(adapter),
-    '远端 wofcn 也会在没有验证过的字库方案时明确停止，不误送基础 wof 驱动',
+    '远端 ROM 专属改版没有加载方案时会明确停止，不误送基础驱动',
   )
 
   const localPage = strip(readFileSync(new URL('../src/pages/PlayLocalPage.tsx', import.meta.url), 'utf8'))
@@ -197,7 +244,7 @@ for (const h of ARCADE_HACKS) {
     !/ZipName\s+wofcn[\s\S]{0,100}DrvName\s+wofj/.test(localPage),
     '本地试玩页不再把未经验证的 wofcn → wofj 当成可用示例',
   )
-  ok(/wofcn[\s\S]{0,80}尚未验证/.test(localPage), '本地试玩页明确提示 wofcn 字库方案尚未验证')
+  ok(/wofcn 已按 ROM 指纹自动匹配专属方案/.test(localPage), '本地试玩页说明 wofcn 字库配置只由 ROM 指纹触发')
 
   const generator = readFileSync(new URL('../scripts/make-romdata.mjs', import.meta.url), 'utf8')
   ok(!/wofcn\.zip\s+--drv\s+wofj/.test(generator), 'RomData 生成器不再指导 wofcn 借用错误的 wofj 驱动')
@@ -211,7 +258,7 @@ for (const h of ARCADE_HACKS) {
     ok(Array.isArray(outputs) && outputs.length > 0, `${hack.zipName}: derive 声明了 outputs`)
     // 拿够长的假数据跑一遍，只核名字
     const fake = {}
-    for (const name of inputs) fake[name] = new Uint8Array(0x200000)
+    for (const name of inputs) fake[name] = new Uint8Array(0x80000)
     const produced = run(fake).map((x) => x.name)
     ok(
       JSON.stringify(produced) === JSON.stringify(outputs),

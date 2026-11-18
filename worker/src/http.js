@@ -57,7 +57,8 @@ export function parseRange(value, size) {
   return { offset: a, length: end - a + 1 }
 }
 function isWebGameKey(key) {
-  return key.startsWith('web/cs15/') || key.startsWith('web/cs16/')
+  // PvZ 页面也使用下载域取大资源；它们和 CS 游戏一样存放在独立网页游戏桶。
+  return key.startsWith('web/cs15/') || key.startsWith('web/cs16/') || key.startsWith('PvZ/properties/')
 }
 function readBuckets(env, key) {
   // CS 的大包已经迁到独立桶。迁移期仍回退旧 ROM 桶，避免漏传一个对象就让线上整局黑屏；

@@ -1,0 +1,21 @@
+services:
+  srs:
+    image: ossrs/srs:6.0.195
+    container_name: 8bitgo-live-srs
+    restart: unless-stopped
+    environment:
+      SRS_PUBLIC_IP: ${SRS_PUBLIC_IP:?set the server public IPv4 address}
+      SRS_HOOK_SECRET: ${SRS_HOOK_SECRET:?generate a dedicated hook secret}
+    entrypoint: ["/bin/sh", "-ec"]
+    command: >-
+      sed "s/__SRS_PUBLIC_IP__/$$SRS_PUBLIC_IP/g; s/__SRS_HOOK_SECRET__/$$SRS_HOOK_SECRET/g"
+      /etc/srs/srs.conf.template > /tmp/srs.conf;
+      exec /usr/local/srs/objs/srs -c /tmp/srs.conf
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:1985:1985/tcp"
+      - "0.0.0.0:8000:8000/udp"
+      - "0.0.0.0:8000:8000/tcp"
+    volumes:
+      - ./srs.conf.template:/etc/srs/srs.conf.template:ro

@@ -13,6 +13,7 @@
 | Counter-Strike 1.6 | `8bitgo-cs16` | `cs16.8bitgo.com` |
 | GTA Vice City | `8bitgo-gta-vc` | `gta-vc.8bitgo.com` |
 | UNDERTALE | `8bitgo-undertale` | `undertale.8bitgo.com` |
+| Subway Surfers | `8bitgo-subway-surfers` | `subway-surfers.8bitgo.com` |
 
 ## 发布
 
@@ -36,11 +37,12 @@ npm run pages:web-game:deploy -- pvz
 - `cs16` → `8bitgo-cs16.pages.dev`
 - `gta-vc` → `8bitgo-gta-vc.pages.dev`
 - `undertale` → `8bitgo-undertale.pages.dev`
+- `subway-surfers` → `8bitgo-subway-surfers.pages.dev`
 
 Diablo、Celeste、Terraria 的大 WASM/.NET 文件不会复制进 Pages：各自的 `_worker.js` 会从 `https://assets.8bitgo.com` 取 R2 对象并同源转发。若以后更换 R2 域名，在对应 Pages 项目里设置 `RUNTIME_ASSET_BASE_URL`。
 
-PvZ 的 `main.pak` 和动画包仍存放在 `html5.8bitgo.com`，但该历史自定义域没有 CORS 响应头，
-浏览器不能直接读取。构建后的中英文页面会把数据基址改成同源 `/pvz-data/`，由 Pages Worker
+PvZ 的 `main.pak` 和动画包仍存放在网页游戏资源桶，玩家从 `download.8bitgo.com/PvZ/properties/`
+读取。构建后的中英文页面会把数据基址改成同源 `/pvz-data/`，由 Pages Worker 从下载域
 流式转发并保留 Range / ETag；可用 `PVZ_DATA_BASE_URL` 更换上游。Pages 静态包本身仍只承载网页
 外壳和约 7MB WASM。Minecraft 的 Pages 包只能由拥有合法自建产物的 operator 在本机生成和上传。
 

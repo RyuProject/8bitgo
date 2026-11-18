@@ -154,6 +154,10 @@ app.use((req, res, next) => {
 // 放在所有路由之前：它只剥掉 /_cn 前缀、补 CORS 头，后面照常由静态 / API 路由处理。
 app.use(createCnEdgeMiddleware({ clientDir: CLIENT_DIR, siteOrigin: originOfSite() }))
 
+// WHIP/WHEP 只传一段完整 SDP，不需要通用接口的 4MB 上限；先单独解析，减少大正文并发时的内存峰值。
+app.use('/api/live/srs', express.json({ limit: '512kb' }))
+// SRS hook 只有房间、客户端和票据字段，限制它的解析体积，避免外部请求先占用大块缓冲。
+app.use('/api/live/srs-hook', express.json({ limit: '64kb' }))
 app.use(express.json({ limit: '4mb' }))
 
 // /api 默认一律不缓存。公开只读接口（games / posts）会自己覆盖成短缓存 ——
@@ -186,7 +190,7 @@ app.get('/api/health', async (_req, res) => {
 
 /*
   开放平台 OpenAPI 规格自发现（仿 `/.well-known/openapi.json` 约定）。
-  公开、匿名、CORS 放开到任意 Origin，方便 agent / 代码生成器像发现 GGEMU 那样发现我们。
+  公开、匿名、CORS 放开到任意 Origin，方便 agent / 代码生成器发现本站。
   文件在 server/openapi.json（与 routes/open.js 对齐）。读不到就 404，不拖垮整个进程。
 */
 const OPENAPI_SPEC = (() => {
@@ -731,9 +735,11 @@ const PORT = Number(process.env.PORT || 8788)
 // P2P 联机信令：画面不经过服务器，这里只转发 WebRTC 握手（见 src/netplay.js）
 const httpServer = createServer(app)
 const io = attachNetplay(httpServer, app, origins)
-// 直播（一人玩多人看）。和 netplay 共用同一个 socket.io 服务，但走各自的命名空间。
-// 画面同样不经过服务器，这里只转发 WebRTC 握手（见 src/live.js）
-attachLive(io)
+// 直播（一人玩多人看）。和 netplay 共用 socket.io 服务但走独立命名空间；媒体由 SRS 或兼容 P2P 承载。
+// SDP 先经本站后端代理，SRS HTTP API 不直接暴露给浏览器（见 src/live.js）
+const live = attachLive(io)
+app.post('/api/live/srs/:mode', live.srsExchange)
+app.post('/api/live/srs-hook', live.srsHook)
 // jsnes 的 P2P 联机信令：与 EmulatorJS netplay 完全独立的一条路，走 /jsnes-netplay（见 jsnes-netplay.js）。
 // 同样只转发 WebRTC 握手，画面与输入都不经过服务器。
 attachJsnesNetplay(httpServer, app, origins)
@@ -817,6 +823,9 @@ httpServer.listen(PORT, () => {
   // 启动时对一遍，把话说在前面
   void checkSchema()
   console.log('P2P 联机信令已就绪：/netplay（socket.io）')
+  if (live.srsEnabled()) console.log('[live] SRS SFU 已启用；新直播间媒体走 SRS，协作输入保留点对点')
+  else if (live.srsRequested()) console.warn('[live] SRS 配置不完整，直播保留 P2P；请核对 SRS 内网 API 与两把密钥')
+  else console.log('[live] SRS 未启用；直播继续使用 P2P')
   /**
    * TURN 主动探活。
    *

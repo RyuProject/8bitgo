@@ -128,7 +128,7 @@ const tokenBody = express.urlencoded({ extended: false, limit: '16kb' })
 /**
  * `GET /v1/health` —— 服务存活 + 数据库连通性探测。
  *
- * 仿 GGEMU 的 `/api/health`：公开、匿名、CORS 放开，方便监控和第三方程序直接探。
+ * 公开、匿名并开放 CORS，方便监控和第三方程序直接探测本站。
  * 故意**不挂 requireApp**：健康检查如果被令牌限流挡住，就探不出真实的「服务挂了」。
  * 回的形状对齐 `/api/health`（`{ service, db }`）再多带一个 `timestamp`，
  * 便于调用方判断探测时差。
