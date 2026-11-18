@@ -2,6 +2,8 @@ import { Component, type ErrorInfo, type ReactNode } from 'react'
 import { newStartupId, recordStartupEvent } from '@/services/startupFunnel'
 import {
   assetsFromCnEdge,
+  failedLegacyChunkFile,
+  isSystemJsChunkLoadError,
   lazyFailure,
   moduleLinkFailure,
   onOriginAssetsPage,
@@ -92,7 +94,7 @@ function claimOriginReload(edge: boolean): boolean {
  */
 function recoverBrokenAsset(error: unknown, info: ErrorInfo): boolean {
   const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
-  const stale = STALE_CHUNK.test(message)
+  const stale = STALE_CHUNK.test(message) || isSystemJsChunkLoadError(error)
   const syntax = error instanceof Error && error.name === 'SyntaxError'
   if (!stale && !syntax) return false
   // 设备明确报告离线时，核对、刷新只会再失败一次，还会白白用掉一分钟一次的自动刷新。
@@ -105,6 +107,19 @@ function recoverBrokenAsset(error: unknown, info: ErrorInfo): boolean {
   const entrySrc = currentEntrySrc()
   const failure = moduleLinkFailure(message)
   const lazy = lazyFailure(error)
+  // integrity 清单只含现代 ES 产物；legacy 走 SystemJS，不能拿现代文件的清单声称旧 chunk 正常。
+  // 能从 SystemJS 错误里取到文件名时，懒加载层已用两个唯一查询串重试；仍失败先整页刷新，重复失败再切主站资源。
+  if (isSystemJsChunkLoadError(error) || lazy?.file?.includes('-legacy-')) {
+    if (reloadOnce()) return true
+    const edge = assetsFromCnEdge(entrySrc, location.origin)
+    if (claimOriginReload(edge)) {
+      const file = lazy?.file ?? failedLegacyChunkFile(error)
+      reportRenderCrash(error, info, `legacy 页面脚本${file ? ` ${file}` : ''}重复加载失败，已改用主站资源重新载入`)
+      location.replace(originAssetsUrl(location))
+      return true
+    }
+    return false
+  }
   const named = [
     failure?.specifier ? resolveChunkUrl(failure.specifier, entrySrc) : null,
     lazy?.file ? resolveChunkUrl(`./${lazy.file}`, entrySrc) : null,

@@ -59,7 +59,7 @@ const LAZY_FAILURE = '__8bitgoLazyChunk'
 /**
  * 从懒加载函数的源码里取出 chunk 文件名。
  *
- * 生产构建里 `lazyNamed(() => import('@/pages/GameDetailPage'), …)` 编出来是
+ * 现代生产构建里 `lazyNamed(() => import('@/pages/GameDetailPage'), …)` 编出来是
  * ``()=>h(()=>import(`./GameDetailPage-BfqMSSyK.js`),__vite__mapDeps([…]),import.meta.url)``，
  * 函数的源码文本里就有准确的文件名（与导出名无关，BrowsePages 这种一个文件多个页面也对）。
  * Safari 的 `Importing a module script failed` 不带地址，靠它才知道是哪个 chunk。
@@ -72,8 +72,30 @@ export function lazyChunkFile(load: unknown): string | null {
   } catch {
     return null
   }
-  const hit = /import\(\s*[`'"]\.\/([\w.-]+\.js)[`'"]\s*\)/.exec(source)
+  // 现代包里能看到 import('./x.js')；legacy 包经 plugin-legacy 转成 System.import，
+  // 有时再包一层 __vite__mapDeps，文件名会被移到运行时依赖表里，见下方的错误 URL 回退。
+  const hit = /\b(?:System\.)?import\(\s*[`'"]\.\/([\w.-]+\.js)[`'"]\s*\)/.exec(source)
   return hit ? hit[1] : null
+}
+
+const SYSTEMJS_LOAD_FAILURE = /SystemJS[^\n)]*errors\.md/i
+
+/** legacy 动态 chunk 的加载错误会把失败 URL 放进 SystemJS 的通用错误消息。 */
+export function failedLegacyChunkFile(error: unknown): string | null {
+  if (!error || (typeof error !== 'object' && typeof error !== 'string')) return null
+  let source = ''
+  try {
+    if (typeof error === 'string') source = error
+    else {
+      const value = error as { message?: unknown; stack?: unknown }
+      source = [value.message, value.stack].filter((part) => typeof part === 'string').join('\n')
+    }
+  } catch {
+    return null
+  }
+  if (!SYSTEMJS_LOAD_FAILURE.test(source)) return null
+  const hit = /(?:^|[\\/\s"'(])([\w.-]+-legacy-[\w.-]+\.js)(?=[?#,\s)'"\]]|$)/i.exec(source)
+  return hit?.[1] ?? null
 }
 
 /** 懒加载失败时把 chunk 文件名挂在错误对象上（React 会把同一个对象交给错误边界） */
@@ -288,15 +310,29 @@ export function summarizeRepair(result: AssetRepairResult | null, load?: RepairL
 /**
  * 网络层导入失败（chunk 取不下来）才值得重试；SyntaxError（字节坏了、缺导出）重试同一份缓存没用，交给修复脚本。
  * 措辞覆盖 Chrome（Failed to fetch dynamically imported module）、Firefox（error loading dynamically imported module）、
- * Safari（Importing a module script failed）。
+ * Safari（Importing a module script failed）和 legacy 包里的 SystemJS 脚本加载错误。
  */
 const RETRYABLE_IMPORT = /Failed to fetch dynamically imported module|error loading dynamically imported module|Importing a module script failed|Loading chunk|ChunkLoadError|Unable to preload|NetworkError|Load failed/i
+
+/**
+ * plugin-legacy 把懒加载改成 System.import；脚本请求失败时 SystemJS 抛出的错误只带资源 URL 和
+ * HTMLScriptElement 回调栈，不含现代浏览器的「动态模块加载失败」措辞。
+ */
+export function isSystemJsChunkLoadError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false
+  const err = error as { message?: unknown; stack?: unknown }
+  const message = String(err.message ?? '')
+  const stack = String(err.stack ?? '')
+  return /SystemJS\b[\s\S]{0,500}errors\.md/i.test(message)
+    && /HTMLScriptElement\.<anonymous>/i.test(`${message}\n${stack}`)
+}
 
 export function retryableImportError(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false
   const err = error as { name?: unknown; message?: unknown }
   if (err.name === 'SyntaxError') return false
-  return RETRYABLE_IMPORT.test(`${String(err.name ?? '')}: ${String(err.message ?? '')}`)
+  const message = `${String(err.name ?? '')}: ${String(err.message ?? '')}`
+  return RETRYABLE_IMPORT.test(message) || isSystemJsChunkLoadError(error)
 }
 
 /** 重试间隔：逐步拉长，避免弱网 / 后台页立刻重复争抢连接。 */
@@ -376,6 +412,7 @@ export async function importWithRetry<T>(
   env: RetryEnv = defaultRetryEnv(),
 ): Promise<T> {
   let lastError: unknown
+  let retryFile = file
   const attempts = LAZY_RETRY_DELAYS_MS.length + 1
   for (let attempt = 0; attempt < attempts; attempt++) {
     if (attempt > 0) {
@@ -383,13 +420,16 @@ export async function importWithRetry<T>(
       else await env.sleep(LAZY_RETRY_DELAYS_MS[attempt - 1])
     }
     try {
-      const busted = attempt > 0 && file
-        ? bustedChunkUrl(file, base, nextChunkRetryNonce(attempt))
+      const busted = attempt > 0 && retryFile
+        ? bustedChunkUrl(retryFile, base, nextChunkRetryNonce(attempt))
         : null
       return busted ? await (env.importUrl(busted) as Promise<T>) : await load()
     } catch (error) {
       lastError = error
       if (!retryableImportError(error)) break
+      // SystemJS 把加载失败统一包装成一条错误，但其中仍带着真实失败的 legacy chunk URL。
+      // 从这里补出文件名后，下一次用 System.import 的带查询串 URL，避开失败模块的缓存键。
+      retryFile ??= failedLegacyChunkFile(error)
     }
   }
   throw lastError

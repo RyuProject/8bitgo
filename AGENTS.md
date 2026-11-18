@@ -3961,6 +3961,8 @@ PK / TH 两份现场：`The requested module './live-Cqhc9j-k.js' does not provi
   - 两边都坏 → 两次自动刷新后停在兜底页，两份上报都带经过。
   - 微信 iOS 本身没有验证。
 - 2026-11-17 复查：播放器触屏手柄 `LazyTouchPad` 还是裸 `lazy()`（移动端会话必下），没有就地重试、也不点名 chunk。现已改走 `importWithRetry` + `tagLazyFailure`；`test:asset-repair` 扫描 `src/` 里所有 `lazy(() => …)`，不经 `importWithRetry`（或 `lazyNamed`）就失败。
+- **诊断包 #1196 / #1201（Chrome 97 / Android 15 / CN，《恐龙快打》）：legacy 懒加载 chunk 加载失败。** #1201 点名 `EmulatorPlayer-legacy-J-EQUy6G.js`，错误来自 SystemJS 的 `HTMLScriptElement` 加载回调；请求记录为 0 传输 / 0 内容。现有现场不能判断底层是瞬时网络、缓存还是 EdgeOne 响应，也不能从单次事件确认服务端缺文件。
+  Vite legacy 包把 `import()` 编成 `System.import()`；SystemJS 的通用错误不匹配现代 ESM 重试列表，失败 URL 也可能藏在 `__vite__mapDeps` 运行时映射里，旧 `lazyChunkFile()` 因此拿不到文件名。结果是只尝试原 URL 一次，错误边界也不把它当 chunk 加载失败。现在识别 SystemJS 加载错误，从错误 URL 取出 legacy chunk 文件名，用新的 `chunk-retry` 查询串通过 `System.import()` 重试；仍失败时先整页刷新，重复失败再从 CN 加速入口切到主站。legacy 产物不在现代版 SHA-256 清单中，不能用现代清单给它作完整性结论。
 
 ## 3. 常用命令
 

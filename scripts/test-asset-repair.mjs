@@ -27,6 +27,8 @@ import { createAssetRepairRouter, parseRepairRequest } from '../server/src/route
 import {
   assetsFromCnEdge,
   consumeOriginAssetsParam,
+  failedLegacyChunkFile,
+  isSystemJsChunkLoadError,
   lazyChunkFile,
   lazyFailure,
   moduleLinkFailure,
@@ -601,6 +603,9 @@ assert.equal(parseRepairRequest({ build: '../../etc', files: ['a.js'] }), null)
   assert.match(boundary, /if \(!recoverBrokenAsset\(error, info\)\) reportRenderCrash\(error, info\)/)
   assert.match(boundary, /if \(repairFixedSomething\(result\)\) \{\s*reportRenderCrash\(error, info, note\)\s*if \(!reloadOnce\(\) && claimOriginReload\(edge\)\) toOrigin\(\)/, '修好了：先上报再刷新；一分钟内又坏了才换主站')
   assert.match(boundary, /if \(stale && reloadOnce\(\)\) return/, '404 那类旧 chunk 照旧刷新一次，不算故障')
+  assert.match(boundary, /const stale = STALE_CHUNK\.test\(message\) \|\| isSystemJsChunkLoadError\(error\)/, 'SystemJS 脚本加载错误归入 chunk 恢复')
+  assert.match(boundary, /if \(isSystemJsChunkLoadError\(error\) \|\| lazy\?\.file\?\.includes\('-legacy-'\)\) \{\s*if \(reloadOnce\(\)\) return true/, 'legacy 不走只覆盖现代 ESM 的 SHA 清单；先刷新，重复失败才换主站')
+  assert.ok(boundary.indexOf('if (isSystemJsChunkLoadError(error)') < boundary.indexOf('const named = ['), 'legacy 恢复在现代资源核对之前分流')
   assert.match(boundary, /if \(!pending\) return stale \? reloadOnce\(\) : false/, '钩子不在时退回原来的行为')
   // 诊断包 #761：大陆加速入口取不下来、主站正常 → 先上报，再带 __assets=origin 整页重新载入
   assert.match(boundary, /if \(edge && result\?\.edgeOnly\?\.length && claimOriginReload\(edge\)\) \{\s*reportRenderCrash\([^;]+\)\s*toOrigin\(\)/)
@@ -613,7 +618,7 @@ assert.equal(parseRepairRequest({ build: '../../etc', files: ['a.js'] }), null)
 
   const lazy = read('src/routes/lazy.tsx')
   assert.match(lazy, /const file = lazyChunkFile\(load\)/)
-  assert.match(lazy, /tagLazyFailure\(error, file, name\)/, 'lazyNamed 失败时把 chunk 文件名挂在错误上')
+  assert.match(lazy, /tagLazyFailure\(error, file \?\? failedLegacyChunkFile\(error\), name\)/, 'legacy 错误 URL 也能补出 chunk 文件名')
   assert.match(lazy, /importWithRetry\(load, file, import\.meta\.url\)/, '诊断包 #872：懒加载先就地重试')
   // 诊断包 #872：离线时不刷新、不上报，等恢复联网
   assert.match(boundary, /if \(stale && browserOffline\(\)\) \{\s*reloadWhenOnline\(\)\s*return true/)
@@ -629,6 +634,7 @@ assert.equal(parseRepairRequest({ build: '../../etc', files: ['a.js'] }), null)
   const built = '()=>h(()=>import(`./GameDetailPage-BfqMSSyK.js`),__vite__mapDeps([28,1,2]),import.meta.url)'
   assert.equal(lazyChunkFile({ toString: () => built }), 'GameDetailPage-BfqMSSyK.js')
   assert.equal(lazyChunkFile({ toString: () => '()=>import("./BrowsePages-x1.js")' }), 'BrowsePages-x1.js')
+  assert.equal(lazyChunkFile({ toString: () => '()=>System.import("./EmulatorPlayer-legacy-J-EQUy6G.js")' }), 'EmulatorPlayer-legacy-J-EQUy6G.js', 'legacy System.import 静态路径也可点名')
   assert.equal(lazyChunkFile(() => import('@/pages/GameDetailPage')), null, '开发环境的源码路径认不出就算了')
   assert.equal(lazyChunkFile({ toString: () => '()=>import("https://evil.example/x.js")' }), null)
   const err = new TypeError('Importing a module script failed.')
@@ -637,6 +643,13 @@ assert.equal(parseRepairRequest({ build: '../../etc', files: ['a.js'] }), null)
   assert.equal(Object.keys(err).length, 0, '不可枚举，不污染错误对象的序列化')
   assert.equal(lazyFailure(new Error('x')), null)
   tagLazyFailure(Object.freeze(new Error('frozen')), 'a.js', 'A')
+
+  // 诊断包 #1201 的 SystemJS 错误：文件名在通用错误 URL 中，脚本元素栈帧在 polyfills 里。
+  const legacyError = new Error('https://cn.8bitgo.com/_cn/assets/EmulatorPlayer-legacy-J-EQUy6G.js, (SystemJS https://github.com/systemjs/systemjs/blob/main/docs/errors.md#3)')
+  legacyError.stack = `${legacyError.message}\n    at HTMLScriptElement.<anonymous> (https://cn.8bitgo.com/_cn/assets/polyfills-legacy-CkXxdkhe.js:20:2168)`
+  assert.equal(failedLegacyChunkFile(legacyError), 'EmulatorPlayer-legacy-J-EQUy6G.js')
+  assert.equal(isSystemJsChunkLoadError(legacyError), true)
+  assert.equal(retryableImportError(legacyError), true, 'SystemJS 脚本加载失败属于可重试网络错误')
 
   assert.equal(assetsFromCnEdge('https://cn.8bitgo.com/_cn/assets/index-a.js', 'https://8bitgo.com'), true)
   assert.equal(assetsFromCnEdge('https://8bitgo.com/assets/index-a.js', 'https://8bitgo.com'), false, '主站资源')
@@ -715,6 +728,24 @@ assert.equal(parseRepairRequest({ build: '../../etc', files: ['a.js'] }), null)
     assert.equal(n, 1, '失败的原 URL 不重复导入')
     assert.deepEqual(log.slice(0, 1), ['sleep 500'])
     assert.match(log[1], /^url https:\/\/8bitgo\.com\/assets\/G-a\.js\?chunk-retry=/)
+  }
+  // 诊断包 #1201：第一次由 legacy 的 System.import 原 URL 失败，重试从错误中提取 chunk 并换查询串。
+  {
+    const legacyError = new Error('https://cn.8bitgo.com/_cn/assets/EmulatorPlayer-legacy-J-EQUy6G.js, (SystemJS https://github.com/systemjs/systemjs/blob/main/docs/errors.md#3)')
+    legacyError.stack = `${legacyError.message}\n    at HTMLScriptElement.<anonymous> (https://cn.8bitgo.com/_cn/assets/polyfills-legacy-CkXxdkhe.js:20:2168)`
+    let loads = 0
+    const urls = []
+    const env = {
+      sleep: async () => {},
+      waitOnline: async () => {},
+      online: () => true,
+      importUrl: async (url) => { urls.push(url); return { ok: 'legacy retry' } },
+    }
+    const result = await importWithRetry(async () => { loads++; throw legacyError }, null, 'https://cn.8bitgo.com/_cn/assets/index-legacy-AbCd1234.js', env)
+    assert.deepEqual(result, { ok: 'legacy retry' })
+    assert.equal(loads, 1, '失败的 System.import 原 URL 不重复导入')
+    assert.equal(urls.length, 1)
+    assert.match(urls[0], /^https:\/\/cn\.8bitgo\.com\/_cn\/assets\/EmulatorPlayer-legacy-J-EQUy6G\.js\?chunk-retry=/)
   }
   // 唯一查询串仍失败时，再退避并换另一个 URL，最后才进入错误边界
   {
