@@ -10,6 +10,8 @@
  * ⚠️ 光有响应头还不够：Cloudflare 默认只缓存静态后缀，HTML 和 /api 是不缓存的。
  * 需要在控制台加一条 Cache Rule 才会生效，见 server/README.md 的「Cloudflare 缓存」一节。
  */
+import { applyNoStore } from './runtime-version-guard.js'
+
 const n = (v, d) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : d)
 
 /** SSR 页面在边缘的缓存秒数。后台改了内容最多这么久之后前台才会变（也可以手动清缓存） */
@@ -240,7 +242,11 @@ export function staticCacheHeaders(res, filePath) {
     串行叠成近一秒；引擎的 IndexedDB 核心缓存也按这个 max-age 记过期时间。
     不带 ?v 的（引擎自己拼的 compression/*.js、localization/*.json）仍走短缓存。
   */
-  if (p.includes('/emulatorjs/') && isVersionedRequest(res)) return set(CACHE.engineVersioned)
+  if (p.includes('/emulatorjs/') && isVersionedRequest(res)) {
+    // 版本号与磁盘内容对不上（部署窗口 / 回滚 / 版本表过期，见 runtime-version-guard.js）：绝不能 immutable 一年
+    if (res.locals?.runtimeVersionMismatch) return applyNoStore(res)
+    return set(CACHE.engineVersioned)
+  }
   if (p.includes('/binjgb/') && isVersionedRequest(res)) return set(CACHE.engineVersioned)
   if (p.includes('/iodinegba/') && isVersionedRequest(res)) return set(CACHE.engineVersioned)
   if (p.includes('/binjgb/') || p.includes('/iodinegba/') || p.includes('/ruffle/') || p.includes('/emulatorjs/') || p.includes('/j2me/') || p.includes('/jsdos/') || p.includes('/awayfl/') || p.includes('/webretro/') || p.includes('/qemu-wasm/')) return set(CACHE.engine)

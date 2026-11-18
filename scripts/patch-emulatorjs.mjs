@@ -310,19 +310,22 @@ const BODY_READ_FALLBACK_FROM =
  */
 const BODY_READ_FALLBACK_ONLOAD_FROM =
   '__8bgX.onload=()=>{clearTimeout(__8bgXT),__8bgX.status>=200&&__8bgX.status<300&&__8bgX.response?__8bgOk(__8bgX.response):__8bgFail(new Error("XHR fallback HTTP "+__8bgX.status))};'
-const BODY_READ_FALLBACK_ONLOAD_TO =
-  '__8bgX.onload=()=>{clearTimeout(__8bgXT);const __8bgBody=__8bgX.response,__8bgBytes=__8bgBody?.byteLength||0,__8bgXHeader=__8bgName=>__8bgX.getResponseHeader?.(__8bgName)||"",__8bgEncoding=(y.headers.get("Content-Encoding")||__8bgXHeader("Content-Encoding")||"").trim(),__8bgLength=__8bgEncoding?0:Number(t)||Number(__8bgXHeader("Content-Length"))||0,__8bgType=__8bgXHeader("Content-Type").trim(),__8bgMime=__8bgType.split(";")[0].trim().toLowerCase(),__8bgTextError=__8bgMime==="text/html"||__8bgMime==="application/json"||__8bgMime==="application/xml";if(__8bgX.status===200&&__8bgBody&&__8bgBytes>0&&__8bgBytes>=i&&(!__8bgLength||__8bgBytes===__8bgLength)&&!__8bgTextError)__8bgOk(__8bgBody);else __8bgFail(new Error("XHR fallback incomplete response: HTTP "+__8bgX.status+", received "+__8bgBytes+" bytes, expected at least "+i+(__8bgLength?" / "+__8bgLength:"")+(__8bgTextError?" ("+__8bgType+")":"")))};'
-/** 旧补丁生成了含未转义 MIME 斜杠的正则，导致整份入口模块无法解析；供幂等补丁识别并修复已生成产物。 */
+/**
+ * 2026-11-17 第一版（79be63d）写的是 /^(?:text/html|application/(?:json|xml))\b/i：正则字面量里的 `/` 没转义，
+ * `/^(?:text/` 就结束了，`html` 被当成 flag —— 整份 emulator.min.js 无法解析，loader 的 import() 失败，
+ * 所有 EmulatorJS 平台报「Failed to load emulator.min.js」（线上拳皇 97 现场）。留着这串只为让补丁认出坏产物并改正。
+ * 往补丁字符串里写正则一律别用字面量里的裸 `/`；这里干脆改成按 MIME 字符串比较。
+ */
 const BODY_READ_FALLBACK_ONLOAD_BROKEN =
   '__8bgX.onload=()=>{clearTimeout(__8bgXT);const __8bgBody=__8bgX.response,__8bgBytes=__8bgBody?.byteLength||0,__8bgXHeader=__8bgName=>__8bgX.getResponseHeader?.(__8bgName)||"",__8bgEncoding=(y.headers.get("Content-Encoding")||__8bgXHeader("Content-Encoding")||"").trim(),__8bgLength=__8bgEncoding?0:Number(t)||Number(__8bgXHeader("Content-Length"))||0,__8bgType=__8bgXHeader("Content-Type").trim(),__8bgTextError=/^(?:text/html|application/(?:json|xml))\\b/i.test(__8bgType);if(__8bgX.status===200&&__8bgBody&&__8bgBytes>0&&__8bgBytes>=i&&(!__8bgLength||__8bgBytes===__8bgLength)&&!__8bgTextError)__8bgOk(__8bgBody);else __8bgFail(new Error("XHR fallback incomplete response: HTTP "+__8bgX.status+", received "+__8bgBytes+" bytes, expected at least "+i+(__8bgLength?" / "+__8bgLength:"")+(__8bgTextError?" ("+__8bgType+")":"")))};'
-const BODY_READ_FALLBACK_TO = BODY_READ_FALLBACK_FROM.replace(
-  BODY_READ_FALLBACK_ONLOAD_FROM,
-  BODY_READ_FALLBACK_ONLOAD_TO,
+const BODY_READ_FALLBACK_ONLOAD_TO = BODY_READ_FALLBACK_ONLOAD_BROKEN.replace(
+  '__8bgTextError=/^(?:text/html|application/(?:json|xml))\\b/i.test(__8bgType);',
+  '__8bgMime=__8bgType.split(";")[0].trim().toLowerCase(),__8bgTextError=__8bgMime==="text/html"||__8bgMime==="application/json"||__8bgMime==="application/xml";',
 )
-const BODY_READ_FALLBACK_BROKEN = BODY_READ_FALLBACK_FROM.replace(
-  BODY_READ_FALLBACK_ONLOAD_FROM,
-  BODY_READ_FALLBACK_ONLOAD_BROKEN,
-)
+if (BODY_READ_FALLBACK_ONLOAD_TO === BODY_READ_FALLBACK_ONLOAD_BROKEN) throw new Error('XHR 兜底的 MIME 判断改写没命中')
+const BODY_READ_FALLBACK_TO = BODY_READ_FALLBACK_FROM.replace(BODY_READ_FALLBACK_ONLOAD_FROM, BODY_READ_FALLBACK_ONLOAD_TO)
+const BODY_READ_FALLBACK_BROKEN = BODY_READ_FALLBACK_FROM.replace(BODY_READ_FALLBACK_ONLOAD_FROM, BODY_READ_FALLBACK_ONLOAD_BROKEN)
+if (BODY_READ_FALLBACK_TO === BODY_READ_FALLBACK_FROM) throw new Error('XHR 兜底的 onload 改写没命中')
 const CACHE_PUT_FROM = '!1===u&&await this.storageCache.put(n),c(n)'
 const CACHE_PUT_TO =
   '!1===u&&await Promise.race([this.storageCache.put(n).catch(t=>console.warn("[EJS Cache] put failed",t)),' +
@@ -564,6 +567,7 @@ const GROUPS = [
   {
     name: '核心响应流读失败改走 XHR',
     patches: [[BODY_READ_DIAGNOSTICS_TO, BODY_READ_FALLBACK_TO]],
+    // 未打过本节的旧引擎，或 79be63d 打出的语法错误版本
     legacy: () => [BODY_READ_FALLBACK_FROM, BODY_READ_FALLBACK_BROKEN],
     hint: [
       '在「核心响应直接拼接 Uint8Array」那段 catch 里：只对无请求体（o 为空）、非失速中止的下载，用 XHR arraybuffer 重下一次，',
@@ -683,7 +687,17 @@ for (const group of GROUPS) {
   report.push(applied ? `${group.name}：新打 ${applied} 处，已存在 ${already} 处` : `${group.name}：已在位（${already} 处）`)
 }
 
-if (changed) writeFileSync(file, src)
+if (changed) {
+  // 写盘前真解析一遍：补丁字符串拼错（例如正则里裸 `/`）时引擎整份 import 失败，别把它写进 public/
+  const { moduleSyntaxError } = await import('./lib/js-module-syntax.mjs')
+  const syntaxError = moduleSyntaxError(src)
+  if (syntaxError) {
+    console.error(`✖ 打完补丁的 emulator.min.js 无法按 ES 模块解析：${syntaxError}`)
+    console.error('  没有写盘。检查本文件里刚改的补丁字符串。')
+    process.exit(1)
+  }
+  writeFileSync(file, src)
+}
 for (const line of report) console.log(`✔ ${line}`)
 
 /*

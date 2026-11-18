@@ -123,22 +123,46 @@ async function launchChrome(chrome) {
     '--window-size=1280,800',
     ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
     'about:blank',
-  ], { stdio: 'ignore' })
+    // detached：Chrome 自成一个进程组，收尾时整组终止 —— 只杀主进程的话，渲染 / GPU 子进程还会往 profile 里写一会儿，
+    // 删目录就撞上 ENOTEMPTY（2026-11-18 生产机实测：两款都到了首帧，却因此被报成「冒烟没能运行」）
+  ], { stdio: 'ignore', detached: true })
+  const killGroup = (signal) => {
+    try { process.kill(-proc.pid, signal) } catch { try { proc.kill(signal) } catch { /* 已退出 */ } }
+  }
+  const removeProfile = () => {
+    try {
+      rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+    } catch (error) {
+      // 收尾失败不能改写冒烟结论（通过 / 失败已经定了）；只留一句，下次巡检前的 /tmp 清理兜底
+      console.warn(`⚠️ Chrome 临时目录没删掉：${profile}（${error?.code || error?.message || error}）`)
+    }
+  }
   const portFile = join(profile, 'DevToolsActivePort')
   for (let i = 0; i < 100 && !existsSync(portFile); i++) await sleep(100)
   if (!existsSync(portFile)) {
-    proc.kill('SIGKILL')
+    killGroup('SIGKILL')
+    removeProfile()
     throw new Error('Chrome 没有启动 DevTools（10 秒）')
   }
   const [port, path] = readFileSync(portFile, 'utf8').trim().split('\n')
   return {
     url: `ws://127.0.0.1:${port}${path}`,
-    close() {
-      proc.kill('SIGTERM')
-      setTimeout(() => {
-        try { proc.kill('SIGKILL') } catch { /* 已退出 */ }
-        rmSync(profile, { recursive: true, force: true })
-      }, 1000).unref()
+    /*
+      必须等 Chrome 真退出、再同步删 profile，然后调用方才能 process.exit。
+      以前是 unref 的 1 秒定时器：进程马上 exit，定时器根本不跑，每次在 /tmp 留下几十 MB 的 profile
+      （生产机实测 76MB）。定时巡检每 15 分钟一次的话，一天就是好几 GB，系统盘只有 20GB。
+    */
+    async close() {
+      const exited = proc.exitCode !== null || proc.signalCode !== null
+        ? Promise.resolve()
+        : new Promise((resolve) => proc.once('exit', resolve))
+      killGroup('SIGTERM')
+      await Promise.race([exited, sleep(3000)])
+      killGroup('SIGKILL')
+      await Promise.race([exited, sleep(2000)])
+      // 主进程退了，组里的子进程可能还要一点时间才真正结束
+      await sleep(300)
+      removeProfile()
     },
   }
 }
@@ -227,7 +251,7 @@ async function main() {
     }
   } finally {
     cdp.close()
-    browser.close()
+    await browser.close()
   }
   process.exit(failed ? 1 : 0)
 }

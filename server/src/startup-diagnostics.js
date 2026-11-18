@@ -27,6 +27,9 @@ const IPV6_RE = /(?<![\w:])(?:(?:[\da-f]{1,4}:){7}[\da-f]{1,4}|(?:[\da-f]{1,4}:)
 function shortenUrl(raw) {
   try {
     const url = new URL(raw)
+    if (url.protocol === 'blob:') return 'blob:[本地文件]'
+    if (url.protocol === 'data:') return 'data:[内联]'
+    if (url.protocol === 'file:') return 'file:[本地文件]'
     const segments = url.pathname.split('/').filter(Boolean)
     let last = segments.at(-1) ?? ''
     try { last = decodeURIComponent(last) } catch { /* 保留原文 */ }
@@ -49,6 +52,7 @@ export function scrub(value, max = 300) {
     const code = char.codePointAt(0) ?? 0
     return code <= 31 || code === 127 || code === 0x2028 || code === 0x2029 ? ' ' : char
   }).join('')
+    .replace(/\b(?:blob|data|file):[^\s"'<>)\]]+/gi, (url) => shortenUrl(url))
     .replace(/(?:https?|wss?):\/\/[^\s"'<>)\]]+/gi, (url) => shortenUrl(url))
     .replace(/\b(bearer)\s+[^\s,;]+/gi, '$1 [已隐藏]')
     .replace(/\b(authorization|cookie|access[_-]?token|refresh[_-]?token|api[_-]?key|password|secret|token|key)\b(\s*[:=]\s*)[^\s,;&]+/gi, '$1$2[已隐藏]')
@@ -76,6 +80,188 @@ const int = (value, min = -3_600_000, max = 3_600_000) => {
 }
 const arr = (value, limit) => (Array.isArray(value) ? value.slice(0, limit) : [])
 const pick = (value, allowed, fallback) => (allowed.includes(value) ? value : fallback)
+
+const DIAGNOSIS_CODES = new Set([
+  'offline', 'network_http', 'network_failure', 'page_asset', 'engine_asset', 'engine_assets', 'engine_load', 'core_download', 'rom_download',
+  'rom_invalid', 'bios_romset', 'webgl', 'memory', 'storage', 'input_api', 'wasm_runtime', 'runtime_trap',
+  'timeout', 'unsupported', 'unknown',
+])
+
+/**
+ * 最后一次加载进度离上报时刻在这个秒数以内，就算「还在动」。播放器每收到一份下载进度都会刷新它，
+ * 8 MiB 分片在 3 Mbps 上也是几十毫秒就报一次，3 秒没动静才像停住。
+ */
+const LIVE_PROGRESS_S = 3
+
+/**
+ * 解析 startupProgressTrace（src/emulator/startupProgressTrace.ts）写的 snapshot 行。只取数字和标记，不保留原文。
+ * 格式：「加载进度：阶段 rom，ROM 71.6MB/108.9MB，ROM 起于 0.6s，ROM 完成于 19.7s，平均 31.1Mbps，最后进度 19.9s」；
+ * 这一行的 t 就是打包（上报）时刻。别的运行时也会往 snapshot 写现场，按前缀挑。
+ */
+export function readProgressSnapshot(logs) {
+  const row = [...(Array.isArray(logs) ? logs : [])].reverse()
+    .find((item) => item?.s === 'snapshot' && String(item?.m ?? '').startsWith('加载进度：阶段 '))
+  if (!row) return null
+  const text = String(row.m)
+  const seconds = (label) => {
+    const match = new RegExp(`${label} (\\d+(?:\\.\\d+)?)s`).exec(text)
+    return match ? Number(match[1]) : null
+  }
+  const rom = /ROM (\d+(?:\.\d+)?)MB(?:\/(\d+(?:\.\d+)?)MB)?/.exec(text)
+  return {
+    phase: /^加载进度：阶段 (\w+)/.exec(text)?.[1] ?? '',
+    atS: Number(row.t) / 1000,
+    loadedMb: rom ? Number(rom[1]) : 0,
+    totalMb: rom?.[2] ? Number(rom[2]) : 0,
+    cached: text.includes('（缓存）'),
+    streaming: text.includes('（流式）'),
+    romStartS: seconds('ROM 起于'),
+    romDoneS: seconds('ROM 完成于'),
+    lastS: seconds('最后进度'),
+  }
+}
+
+/** ROM 体积分档写进归组：大包（该做流式盘）和小包慢网（线路 / 并发问题）不是一类事 */
+function romSizeArtifact(totalMb) {
+  if (!(totalMb > 0)) return 'rom-size-unknown'
+  if (totalMb < 16) return 'rom-lt16mb'
+  if (totalMb < 64) return 'rom-16-64mb'
+  if (totalMb < 256) return 'rom-64-256mb'
+  return 'rom-ge256mb'
+}
+
+/**
+ * 慢启动（20 秒还没出画面）只是一个时间点，不等于卡住。按进度快照区分三种情况
+ * （2026-11-18 两份现场都被误标成「停滞」）：
+ * - ROM 还在下、最后进度就在上报前一刻 → 没停，耗时由体积和带宽决定（诊断包 #1155：《MDK》114MB 普通 DOS 整包，
+ *   第 19.9 秒仍以 31 Mbps 在下，却归进了「ROM 下载或流式读取停滞」）；
+ * - ROM 刚下完、下载占了大半个 20 秒 → 慢的是 ROM 下载，后面的阶段才刚开始（#1156：《西游释厄传》21MB ROM
+ *   单路串行下了 19.4 秒，第 19.7 秒进 assets，0.3 秒后上报，却归进了「模拟器依赖资源加载停滞」）；
+ * - 其它（进度几秒没动、流式读盘、下完很久还在后面阶段）→ 维持原来按阶段的「停滞」归类。
+ * 只看 slow_start：失败 / 超时的现场有自己的错误原文，不能被「还在动」盖掉。
+ */
+function diagnoseSlowStartProgress(event, logs, hit) {
+  if (event !== 'slow_start') return null
+  const progress = readProgressSnapshot(logs)
+  if (!progress || !Number.isFinite(progress.atS) || progress.atS <= 0 || progress.cached || progress.streaming) return null
+  const { phase, atS, loadedMb, totalMb, romStartS, romDoneS, lastS } = progress
+  if (phase === 'rom' && lastS !== null && atS - lastS <= LIVE_PROGRESS_S && (!totalMb || loadedMb < totalMb)) {
+    return { ...hit('rom_download', 'ROM 仍在下载，进度正常（未停滞，耗时取决于体积与带宽）', 'rom_download', 'high', 'progress.rom_downloading'), artifact: romSizeArtifact(totalMb) }
+  }
+  if (phase !== 'rom' && romStartS !== null && romDoneS !== null && atS - romDoneS <= LIVE_PROGRESS_S && romDoneS - romStartS >= atS / 2) {
+    return { ...hit('rom_download', 'ROM 下载占去大半启动时间，后续阶段刚开始（未停滞）', 'rom_download', 'medium', 'progress.rom_dominated'), artifact: romSizeArtifact(totalMb) }
+  }
+  return null
+}
+
+/**
+ * 从一份已脱敏现场提取最可能的故障类别。只保存规则编号和固定标签，不把额外原文复制进诊断结论，
+ * 避免归类字段绕开日志的脱敏边界；顺序按更具体、可行动的错误优先。
+ */
+export function diagnoseStartupFailure({ event, platform, detail, diagnostics }) {
+  const logs = Array.isArray(diagnostics?.logs) ? diagnostics.logs : []
+  const resources = Array.isArray(diagnostics?.resources) ? diagnostics.resources : []
+  const stage = [...logs].reverse().find((row) => row?.s === 'stage')?.m ?? ''
+  const text = [detail, diagnostics?.reason, ...logs.map((row) => row?.m), stage]
+    .filter(Boolean).join('\n').slice(-12_000).toLowerCase()
+  const combined = `${text}\n${resources.map((row) => row?.n).filter(Boolean).join('\n')}`
+  const has = (pattern) => pattern.test(text)
+  const hit = (code, label, phase, confidence, signal) => ({ code, label, phase, confidence, signals: [signal] })
+
+  // 内容名只从自托管核心包名提取；不会把任意错误原文写进归组标签。
+  const core = combined.match(/\b([a-z][a-z0-9_-]{0,30})-(?:legacy-)?wasm\.data\b/i)?.[1]?.toLowerCase() ?? ''
+  const withCore = (result) => core ? { ...result, artifact: core } : result
+
+  if (has(/out of memory|cannot allocate wasm|wasm memory.*(?:alloc|fail)|allocation failed|内存不足|无法分配.*内存/)) {
+    return withCore(hit('memory', 'WebAssembly 内存分配失败', 'runtime', 'high', 'error.wasm_memory'))
+  }
+  if (has(/glctx|webglcontextlost|webgl.*(?:unavailable|not supported|failed|error|could not|unable)|(?:failed|error|unable|cannot).*webgl|无法创建.*webgl|不支持.*webgl|webgl.*(?:失败|不可用)/)) {
+    return hit('webgl', 'WebGL 初始化失败或不可用', 'graphics', 'high', 'error.webgl')
+  }
+  if (has(/(?:indexeddb|idbfs).*(?:error|failed|blocked|denied|unavailable|timeout)|(?:error|failed|blocked|denied|unavailable|timeout).*?(?:indexeddb|idbfs)|quotaexceeded|notreadableerror|storageerror|blob.{0,30}(?:read|reading|decode|读取).{0,30}(?:fail|error|失败)|(?:fail|failed|error|unable|cannot).{0,30}(?:read|reading|decode).{0,30}blob|存储.*(?:失败|不可用)/)) {
+    return hit('storage', '浏览器存储或 Blob 读写失败', 'browser', 'high', 'error.storage')
+  }
+  if (has(/getgamepads|gamepad.*(?:securityerror|permission)|third-party iframes are not allowed|权限策略.*手柄/)) {
+    return hit('input_api', '手柄接口被浏览器权限限制', 'browser', 'high', 'error.gamepad_permission')
+  }
+  if (has(/failed to load (?:emulator(?:\.min)?\.js|loader\.js)|(?:emulator(?:\.min)?\.js|loader\.js).{0,40}(?:failed|not found|missing|404)|emulatorjs failed to load|failed to load emulatorjs/)) {
+    return hit('engine_asset', '模拟器引擎入口加载失败', 'engine_asset', 'high', 'error.engine_asset')
+  }
+  if (has(/the emulator failed to load|failed to load the emulator|模拟器没能加载|模拟器加载失败|no se pudo cargar el emulador|émulateur n.{0,12}a pas pu se charger|emulator konnte nicht geladen werden|emulatore non si è caricato|エミュレーターを読み込めませんでした/)) {
+    return hit('engine_load', '模拟器整体加载失败（具体环节待定位）', 'engine', 'low', 'error.engine_load')
+  }
+  if (has(/downloading engine files|download engine files|descargando archivos del motor|téléchargement des fichiers du moteur|engine-dateien werden geladen|download dei file del motore|エンジンのファイルをダウンロード|正在下载引擎资源|正在下載引擎資源/)) {
+    return hit('engine_assets', '模拟器依赖资源加载停滞', 'engine_asset', 'medium', 'stage.engine_assets')
+  }
+  if (has(/loading chunk .{0,80} failed|chunkloaderror|failed to fetch dynamically imported module|importing a module script failed|does not provide an export named|import not found:/)) {
+    return hit('page_asset', '页面懒加载模块导入失败', 'page_asset', 'high', 'error.lazy_module')
+  }
+  if (has(/(?:script|link) 加载失败/) && /\.(?:js|css)(?:\b|$)/i.test(combined)) {
+    return hit('page_asset', '页面脚本或样式资源加载失败', 'page_asset', 'high', 'error.page_asset')
+  }
+  if (has(/romset is unknown|missing bios|bios.*(?:missing|缺少)|缺少.*(?:bios|rom)|romdata.*(?:failed|error|missing)|(?:failed|error|missing).*romdata/)
+    || (platform === 'arcade' && has(/missing files|缺少文件/))) {
+    return hit('bios_romset', '街机 ROM 集、成员或 BIOS 不匹配', 'content_config', 'high', 'error.romset_or_bios')
+  }
+  if (has(/table index is out of bounds|runtimeerror:.*(?:out of bounds|unreachable)|index out of bounds/)) {
+    return withCore(hit('runtime_trap', '模拟器运行时陷阱（ROM / 核心原因待确认）', 'runtime', 'medium', 'error.runtime_trap'))
+  }
+  if (has(/invalid rom|corrupt rom|rom checksum|unknown mapper|unsupported mapper|rom.*(?:truncated|malformed)|rom.*(?:损坏|校验失败|格式错误)/)) {
+    return hit('rom_invalid', 'ROM 内容或映射格式异常', 'content', 'high', 'error.rom_format')
+  }
+  if (has(/failed to load.*(?:core|核心)|error downloading core|download game core|下载游戏核心|核心.*(?:下载|加载).*失败/)) {
+    return withCore(hit('core_download', '模拟器核心下载或加载失败', 'core_download', 'high', 'error.core_download'))
+  }
+  if (has(/error loading emulatorjs runtime|runtimeerror|compileerror|ejs_runtime|instantiate(?:streaming)?|wasm.*(?:error|failed|unavailable|memory|instantiate)|(?:error|failed|unavailable).*wasm/)) {
+    return withCore(hit('wasm_runtime', '模拟器核心初始化或运行时异常', 'core_init', 'medium', 'error.wasm_runtime'))
+  }
+  const slowProgress = diagnoseSlowStartProgress(event, logs, hit)
+  if (slowProgress) return slowProgress
+  if (has(/加载进度：阶段 rom|loading progress: phase rom/)) {
+    return hit('rom_download', 'ROM 下载或流式读取停滞', 'rom_download', 'medium', 'stage.rom')
+  }
+  if (has(/加载进度：阶段 (?:engine|assets)|loading progress: phase (?:engine|assets)/)) {
+    return hit('engine_assets', '模拟器依赖资源加载停滞', 'engine_asset', 'medium', 'stage.engine_assets')
+  }
+  if (has(/加载进度：阶段 starting|loading progress: phase starting/)) {
+    return withCore(hit('timeout', 'ROM 完成后模拟器启动停滞', 'core_init', 'medium', 'stage.starting'))
+  }
+  const failedResource = [...resources].reverse().find((row) => Number(row?.st) >= 400 && /^(?:fetch|xmlhttprequest|script|link|other)$/i.test(String(row?.i ?? '')))
+  if (failedResource && /\[ROM\]|\/roms\//i.test(String(failedResource.n ?? ''))) {
+    return { ...hit('rom_download', 'ROM 请求返回 HTTP 错误', 'rom_download', 'high', 'resource.rom_http_status'), artifact: `http-${Number(failedResource.st)}` }
+  }
+  if (failedResource && /emulatorjs|wasm\.data/i.test(String(failedResource.n ?? ''))) {
+    return withCore(hit('core_download', '模拟器核心请求返回 HTTP 错误', 'core_download', 'high', 'resource.core_http_status'))
+  }
+  if (failedResource && /^(?:script|link)$/i.test(String(failedResource.i ?? '')) && /\.(?:js|css)$/i.test(String(failedResource.n ?? ''))) {
+    return hit('page_asset', '页面脚本或样式资源请求返回 HTTP 错误', 'page_asset', 'high', 'resource.page_asset_status')
+  }
+  if (failedResource) {
+    return { ...hit('network_http', '资源请求返回 HTTP 错误（与本次故障的关系待确认）', 'network', 'medium', 'resource.http_status'), artifact: `http-${Number(failedResource.st)}` }
+  }
+  if (has(/\[rom\]|\/roms\/|rom download|rom.*(?:下载失败|线路失败|分片.*失败|仍在下载)|仍在下载 rom|正在下载(?: rom|游戏)|正在下載(?: rom|遊戲)|downloading (?:the )?(?:game|rom)|download(?:ing)? (?:del gioco|the game)|descargando (?:el )?(?:juego|la rom)|téléchargement (?:du jeu|de la rom)|spiel wird heruntergeladen|ゲームをダウンロード/)) {
+    return hit('rom_download', 'ROM 下载或读取失败', 'rom_download', 'medium', 'error.rom_download')
+  }
+  if (diagnostics?.env?.online === false) return hit('offline', '浏览器报告设备离线', 'network', 'medium', 'environment.offline')
+  if (has(/failed to fetch|networkerror|net::err_|connection reset|connection refused|dns_probe|request failed|网络请求失败|连接(?:超时|失败)/)) {
+    return hit('network_failure', '网络请求失败', 'network', 'medium', 'error.network')
+  }
+
+  const lastStage = stage.toLowerCase()
+  if (/rom/.test(lastStage) && /download|下载|讀取|读取|descarg|télécharg|herunterlad|ダウンロード/.test(lastStage)) {
+    return hit('rom_download', 'ROM 下载或读取停滞', 'rom_download', 'medium', 'stage.rom')
+  }
+  if (/core|核心|núcleo|noyau|kern|コア/.test(lastStage) && /download|下载|decompress|解压|descarg|télécharg|herunterlad|ダウンロード/.test(lastStage)) {
+    return withCore(hit('core_download', '模拟器核心下载或解压停滞', 'core_download', 'medium', 'stage.core'))
+  }
+  if (event === 'timeout' || has(/timeout|timed out|超时|stalled|卡住|没有启动进度|loading got stuck at|carga se ha quedado atascada|chargement est bloqué|das laden hängt|読み込みが.{0,12}止まり|載入在.{0,12}停住|加载在.{0,12}停住/)) {
+    return hit('timeout', '启动流程超时或停滞', 'startup', 'medium', 'event.timeout')
+  }
+  if (has(/unsupported|not supported|不支持|无法运行此格式/)) {
+    return hit('unsupported', '当前核心或浏览器不支持该功能', 'configuration', 'low', 'error.unsupported')
+  }
+  return hit('unknown', '原因未能自动识别', 'unknown', 'low', 'no_specific_signal')
+}
 
 /**
  * 按白名单重建整个诊断包：未知字段一律丢弃，字符串逐个脱敏截短，数组限长。
@@ -137,6 +323,19 @@ export function normalizeDiagnostics(raw) {
       p: scrub(row?.p, 12).replace(/[^\w./-]/g, ''),
     })).filter((row) => row.n),
   }
+  const diagnosis = raw.diagnosis && typeof raw.diagnosis === 'object' ? raw.diagnosis : null
+  if (diagnosis) {
+    out.diagnosis = {
+      code: pick(diagnosis.code, [...DIAGNOSIS_CODES], 'unknown'),
+      label: scrub(diagnosis.label, 80),
+      phase: scrub(diagnosis.phase, 24).replace(/[^\w-]/g, ''),
+      confidence: pick(diagnosis.confidence, ['high', 'medium', 'low'], 'low'),
+      signals: arr(diagnosis.signals, 6).map((signal) => scrub(signal, 40).replace(/[^\w.-]/g, '')).filter(Boolean),
+      ...(typeof diagnosis.artifact === 'string' && /^[a-z0-9_.-]{1,64}$/i.test(diagnosis.artifact)
+        ? { artifact: diagnosis.artifact.toLowerCase() }
+        : {}),
+    }
+  }
   while (JSON.stringify(out).length > PAYLOAD_MAX_BYTES && (out.logs.length || out.resources.length)) {
     if (out.logs.length > 10 || !out.resources.length) out.logs.shift()
     else out.resources.pop()
@@ -155,7 +354,18 @@ export { classifyUserAgent } from '../../shared/user-agent.js'
  * 归类用的「错误特征」：把会变的部分（数字、百分比、引号里的内容、十六进制）抹掉，
  * 同一类故障才能合并成一组。慢启动没有错误原文，用最后停在的加载阶段代替。
  */
-export function errorSignature({ event, runtime, detail, diagnostics }) {
+export function errorSignature({ event, runtime, platform, detail, diagnostics }) {
+  const diagnosis = diagnostics?.diagnosis ?? diagnoseStartupFailure({ event, runtime, platform, detail, diagnostics })
+  if (diagnosis.code !== 'unknown') {
+    const stage = event === 'slow_start'
+      ? scrub([...((diagnostics?.logs ?? []))].reverse().find((row) => row?.s === 'stage')?.m ?? '', 120)
+        .replace(/\d+(?:[.,]\d+)?/g, '#').replace(/\s+/g, ' ').trim()
+      : ''
+    const key = [diagnosis.artifact, stage ? `停在：${stage}` : ''].filter(Boolean).join(' · ')
+    const text = `${event} · ${runtime || 'unknown'} · ${diagnosis.label}${key ? ` · ${key}` : ''}`
+    const signature = createHash('sha1').update(`${event}|${runtime || 'unknown'}|${diagnosis.code}|${diagnosis.artifact ?? ''}|${stage}`).digest('hex').slice(0, 16)
+    return { signature, text: text.slice(0, 200) }
+  }
   let basis = String(detail ?? '')
   if (event === 'slow_start' || !basis) {
     const stage = [...(diagnostics?.logs ?? [])].reverse().find((row) => row.s === 'stage')?.m
@@ -165,11 +375,11 @@ export function errorSignature({ event, runtime, detail, diagnostics }) {
     .replace(/0x[\da-f]+/gi, '0x#')
     .replace(/\b[\da-f]{8,}\b/gi, '#')
     .replace(/[\d]+(?:[.,]\d+)?/g, '#')
-    .replace(/(["'«「“])[^"'»」”]{1,80}(["'»」”])/g, '$1…$2')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 180)
-  const text = `${event} · ${runtime || 'unknown'} · ${normalized}`
+  const safeNormalized = normalized.replace(/(["'«「“])[^"'»」”]{1,80}(["'»」”])/g, '$1…$2')
+  const text = `${event} · ${runtime || 'unknown'} · ${safeNormalized}`
   const signature = createHash('sha1').update(text).digest('hex').slice(0, 16)
   return { signature, text: text.slice(0, 200) }
 }
@@ -194,6 +404,12 @@ export async function recordStartupDiagnostics(slug, event, rawDiagnostics, { co
   if (!DIAGNOSTIC_EVENTS.has(event?.event)) return false
   const diagnostics = normalizeDiagnostics(rawDiagnostics)
   if (!diagnostics) return false
+  // 分类在服务端按白名单现场重算，避免客户端自行声明故障类型导致归组失真。
+  diagnostics.diagnosis = diagnoseStartupFailure({ ...event, runtime: event.runtime, diagnostics })
+  while (JSON.stringify(diagnostics).length > PAYLOAD_MAX_BYTES && (diagnostics.logs.length || diagnostics.resources.length)) {
+    if (diagnostics.logs.length > 10 || !diagnostics.resources.length) diagnostics.logs.shift()
+    else diagnostics.resources.pop()
+  }
   const { browser, os, device } = classifyUserAgent(userAgent)
   const { signature, text } = errorSignature({ ...event, diagnostics })
   const hotfixIds = diagnostics.hotfixes.join(',')
@@ -365,6 +581,10 @@ function shapeSample(row) {
   } catch {
     payload = null
   }
+  const diagnostics = normalizeDiagnostics(payload)
+  if (diagnostics && !diagnostics.diagnosis) {
+    diagnostics.diagnosis = diagnoseStartupFailure({ event: row.event, runtime: row.runtime, platform: row.platform, detail: diagnostics.reason, diagnostics })
+  }
   return {
     id: String(row.id),
     slug: row.slug,
@@ -381,7 +601,7 @@ function shapeSample(row) {
     signatureText: row.signatureText,
     createdAt: row.createdAt,
     // 历史数据也过一遍当前的白名单与脱敏规则
-    diagnostics: normalizeDiagnostics(payload),
+    diagnostics,
   }
 }
 

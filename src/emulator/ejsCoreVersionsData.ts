@@ -95,7 +95,7 @@ export const EJS_CORE_VERSIONS: Readonly<Record<string, string>> = Object.freeze
   "cores/metadata/vice_x64sc.json": "5c50bc4ff5546a2c",
   "emulator.min.js": "1183825bab02ab07",
   "emulator.min.css": "6c7b0ae656c00b8f",
-  "loader.js": "85469bef3336f07b",
+  "loader.js": "46732f171a0bb77e",
   "compression/extract7z.js": "4ac9933b995a516c",
   "localization/ar.json": "52922a619850556c",
   "localization/bn.json": "da706dbaeb0803cf",

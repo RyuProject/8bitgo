@@ -119,7 +119,6 @@ for (const name of selected) {
     assert.match(bootstrap, /EightBitGoGameSDK/, 'Subway Surfers 必须接入 8BitGo Game SDK')
     assert.doesNotMatch(bootstrap, /https:\/\/8bitgo\.com\/html5-api\//, 'Subway Surfers SDK 应从 Pages 同源加载')
   }
-
   const workerUrl = `${pathToFileURL(resolve(root, '_worker.js')).href}?check=${Date.now()}`
   const worker = (await import(workerUrl)).default
   const originalFetch = globalThis.fetch

@@ -448,7 +448,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   /** iframe 里已完成的请求数；跨源读不到时返回 -1（那时只按前台时间判）。 */
   const frameResourceCount = (): number => {
     try {
-      return iframe.contentWindow?.performance.getEntriesByType('resource').length ?? -1
+      const win = iframe.contentWindow as (Window & { __8bitgoResourceCount?: number }) | null
+      if (!win) return -1
+      const buffered = win.performance.getEntriesByType('resource').length
+      const observed = Number(win.__8bitgoResourceCount)
+      // 诊断观察器可能需要跨缓冲区上限继续计数；取单调计数与浏览器当前缓冲区长度的较大值。
+      return Number.isFinite(observed) ? Math.max(buffered, observed) : buffered
     } catch {
       return -1
     }

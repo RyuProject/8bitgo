@@ -221,7 +221,7 @@ const EJS_LANG: Record<Lang, string> = {
  * 里面只有可重新下载的工件（核心/ROM/BIOS 的副本），删了不丢任何用户数据；
  * 存档在另一个库（EmulatorJS-states）和我们自己的云存档里，不碰。
  */
-// 2026-11-17：核心 XHR 兜底曾接受过截断响应；换代会清掉可能写入 IndexedDB 的坏核心工件。
+// 2026-11-17：核心 XHR 兜底曾接受过截断响应；此代也包含 NDS 触屏坐标修正，统一清掉旧核心工件。
 const EJS_CACHE_GENERATION = '2026-11-17.ejs-xhr-full-response.bg-visible-stall'
 // 浏览器实测已能按片读取，但现有 Beetle WASM 在该样本的完整下载路径也会崩溃；未确认可玩前不能让生产自动进入实验链路。
 const PSX_RANGE_ENABLED = import.meta.env.VITE_PSX_RANGE_ENABLED === '1'
@@ -943,6 +943,10 @@ const FATAL_PHRASES = [
   'error loading emulatorjs',
   // loader.js 的 minified 与未压缩入口都失败后只写 console.error；不接管会等满 120 秒看门狗。
   'emulatorjs failed to load',
+  // loader.js 先尝试压缩入口、再尝试本站备用入口；前两句只记录，不立即终止回退。
+  'failed to load emulator.min.js',
+  'failed to load emulator.js',
+  'emulatorjs failed to load. check for missing files',
   'failed to start game',
   // melonDS DS：这几句之后核心只会退回 RetroArch 的 No Items，不会再给 ready/error 事件。
   'loaded an empty file as content, please load a valid nintendo ds rom',
@@ -3129,6 +3133,22 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       return
     }
     const recent = (errorTap?.lines ?? []).slice(-12).join('\n')
+    const lowLine = line.toLowerCase()
+    if (/failed to load emulator\.min\.js/.test(lowLine)) {
+      // 主入口失败后 loader.js 还会尝试备用入口；此时拆 iframe 会抢断正常回退。
+      logEngine(`[entry] EmulatorJS 主入口加载失败，正在尝试备用入口；当前线路：${usedEjsEdge ? 'EdgeOne' : '同源'}`)
+      return
+    }
+    if (/failed to load emulator\.js/.test(lowLine)) {
+      // 等待 loader.js 的最终错误，避免把一次可恢复的入口故障升级成整局失败。
+      logEngine('[entry] EmulatorJS 备用入口加载失败，等待引擎完成失败确认')
+      return
+    }
+    if (/emulatorjs failed to load\. check for missing files/.test(lowLine)) {
+      const importCause = (errorTap?.lines ?? []).filter((l) => /\[ejs\] import \S+ failed:/i.test(l)).slice(-1)[0]
+      logEngine(`[entry] EmulatorJS 入口脚本加载失败；当前线路：${usedEjsEdge ? 'EdgeOne' : '同源'}${importCause ? `；原因：${importCause.slice(0, 300)}` : ''}`)
+      return failLoad(fmt(rt.ejsLoadFailed, { path: EJS_PATH }), 'runtime')
+    }
     // 浏览器给不出 WASM 内存：重下多少遍都一样，告诉玩家关掉别的标签页
     /*
       32 位浏览器（Win7 / 8.1 上的 Chrome 109 常见）的渲染进程只有 2～4GB 地址空间，连核心起步的 128MB
@@ -4580,7 +4600,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       }
       // 移动端切后台数分钟后，浏览器会冻结轮询和 WASM 编译；隐藏时间不能吃掉核心的卡死预算。
       beat()
-      if (!destroyed && !started && !loadFailed && !startWatch) startWatch = window.setInterval(pollStart, 400)
+      if (!destroyed && !started && !loadFailed && !crashReported && !startWatch) {
+        startWatch = window.setInterval(pollStart, 400)
+      }
     }
     document.addEventListener('visibilitychange', startWatchVisibility)
     if (document.visibilityState !== 'hidden') startWatch = window.setInterval(pollStart, 400)

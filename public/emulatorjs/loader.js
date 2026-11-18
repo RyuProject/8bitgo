@@ -32,7 +32,11 @@ async function loadScript(file) {
         const module = await import(script);
         return module.default;
     } catch(e) {
-        console.warn(`Failed to import ${file}; trying the unminified fallback`, e);
+        // 8bitgo：真实异常必须进控制台（启动诊断包会收）。上游只在 debug 时打印，2026-11-17 引擎被补丁写坏
+        // （SyntaxError: Invalid regular expression flags）时，现场只剩下面那句「minified files are missing」，
+        // 被误判成网络 / 缓存问题。这一行的措辞不能含 FATAL_PHRASES 里的句子，否则会提前拆掉回退流程。
+        console.error("[EJS] import " + file + " failed: " + (e && e.name ? e.name + ": " : "") + (e && e.message ? e.message : String(e)));
+        try { window.EJS_lastImportError = { file: file, name: e && e.name, message: e && e.message }; } catch (_) {}
         const module = await filesMissing(file);
         return module;
     }

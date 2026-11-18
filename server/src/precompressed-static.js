@@ -18,13 +18,14 @@
 import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { acceptsBrotli } from './r2-runtime-proxy.js'
+import { fileSha256 } from './file-hash.js'
 
 /**
  * 只收这些路径。别放已经是压缩容器的文件（EmulatorJS 的 cores/*.data 是 7z）。
  *
  * PPSSPPSDL.data 的 .br 随运行时目录提交、由 scripts/check-ppsspp.mjs 校验；
  * 其余（2026-11-09 加）由 scripts/precompress-runtimes.mjs 在构建时生成，旁边带 `.br.json`
- * 记原文件字节数，这里字节数对不上就不吐（防过期的压缩版）。实测 Cloudflare 现场压 wasm
+ * 记原文件字节数与 sha256，这里内容对不上就不吐（防过期的压缩版，见 sidecarMatches）。实测 Cloudflare 现场压 wasm
  * 比 Brotli 11 大 25~30%：Ruffle 4.68MB → 3.26MB、Dolphin 4.59MB → 3.22MB。
  */
 export const PRECOMPRESSED_STATIC_PATTERNS = Object.freeze([
@@ -48,27 +49,41 @@ const CONTENT_TYPES = {
   '.data': 'application/octet-stream',
 }
 
-/** 原文件字节数与 `.br.json` 一致才算这份压缩版是当前的；同一文件只读一次旁注 */
+/**
+ * `.br` 是不是「当前原文件」的压缩版：旁注里的字节数、sha256 都要与磁盘上的原文件一致，
+ * `.br` 本身的字节数也要与旁注记录的 brBytes 一致。
+ *
+ * ⚠️ 以前只比字节数。原文件被改了、长度却没变（补丁改一个字符、换一个等长的标识符）时，
+ * 过期的 `.br` 会被当成当前版本发出去 —— 对 `/emulatorjs/emulator.min.js?v=<新内容哈希>` 来说，
+ * 就是把旧引擎挂在新版本号下面，再被边缘 immutable 缓存一年（和 2026-11-17 全站事故同一个后果）。
+ * sha256 按「路径 + 大小 + mtime」缓存（file-hash.js），每份文件每次部署只算一次。
+ */
 const sidecarCache = new Map()
-async function sidecarMatches(file) {
+async function sidecarMatches(file, encoded) {
   let source
+  let brInfo
   try {
-    source = await stat(file)
+    ;[source, brInfo] = await Promise.all([stat(file), stat(encoded)])
   } catch {
     return false
   }
-  const key = `${file}:${source.size}:${source.mtimeMs}`
+  const key = `${file}:${source.size}:${source.mtimeMs}:${brInfo.size}:${brInfo.mtimeMs}`
   if (sidecarCache.has(key)) return sidecarCache.get(key)
-  let ok = false
-  try {
-    const sidecar = JSON.parse(await readFile(`${file}.br.json`, 'utf8'))
-    ok = sidecar?.bytes === source.size
-  } catch {
-    ok = false
-  }
+  const pending = (async () => {
+    try {
+      const sidecar = JSON.parse(await readFile(`${file}.br.json`, 'utf8'))
+      if (sidecar?.bytes !== source.size) return false
+      if (typeof sidecar.brBytes === 'number' && sidecar.brBytes !== brInfo.size) return false
+      if (typeof sidecar.sha256 !== 'string') return false
+      const actual = await fileSha256(file)
+      return Boolean(actual) && actual.sha256 === sidecar.sha256
+    } catch {
+      return false
+    }
+  })()
   if (sidecarCache.size > 500) sidecarCache.clear()
-  sidecarCache.set(key, ok)
-  return ok
+  sidecarCache.set(key, pending)
+  return pending
 }
 
 function appendVary(res, token) {
@@ -103,7 +118,7 @@ export function precompressedStatic(root, { setHeaders, patterns = PRECOMPRESSED
     } catch {
       return next()
     }
-    if (!LEGACY_WITHOUT_SIDECAR.test(urlPath) && !(await sidecarMatches(file))) return next()
+    if (!LEGACY_WITHOUT_SIDECAR.test(urlPath) && !(await sidecarMatches(file, encoded))) return next()
 
     // 跨源隔离头与缓存策略按**原文件**的路径给，和 express.static 那条路完全一致
     setHeaders?.(res, file)

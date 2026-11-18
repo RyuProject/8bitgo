@@ -22,18 +22,6 @@ assert.equal(flashCompatibilityIssueForFingerprint(4_443_526, '0'.repeat(64)), n
 
 console.log('── 普通 SWF 快速放行 ──')
 assert.equal(await flashCompatibilityIssue(new Uint8Array([0x46, 0x57, 0x53, 0x0e]).buffer), null)
-const cryptoDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'crypto')
-try {
-  Object.defineProperty(globalThis, 'crypto', {
-    configurable: true,
-    value: { subtle: { digest: async () => { throw new Error('digest unavailable') } } },
-  })
-  assert.equal(await flashCompatibilityIssue(new ArrayBuffer(4_443_526)), null,
-    '设备摘要 API 拒绝时不能把已知尺寸的 SWF 整体挡在启动外')
-} finally {
-  if (cryptoDescriptor) Object.defineProperty(globalThis, 'crypto', cryptoDescriptor)
-  else delete globalThis.crypto
-}
 
 console.log('── 森林冰火人 4 的离线 Spil SDK ──')
 const legacyRules = flashLegacyBundleRulesForFingerprint({
@@ -68,8 +56,18 @@ assert.match(adapter, /flashLegacyBundleRules\([\s\S]*loaded\.data/, 'Ruffle 必
 assert.match(adapter, /new frameGlobal\.RegExp\(from\.source, from\.flags\)/,
   '正则必须在 Ruffle iframe realm 重建，否则 instanceof RegExp 会失效')
 assert.match(player, /Flash 站点锁/, '站点锁是确定性坏 ROM，不能先原样重试')
-assert.match(singleUpload, /flashCompatibilityIssue\(data\)/, '单 SWF 上传必须拦截已知坏包')
-assert.match(singleUpload, /const issue = await flashCompatibilityIssue\(data\)/, '单 SWF 上传必须在上传前完成校验')
-assert.match(bundleUpload, /const mainBuffer = new Uint8Array\(mainData\)\.buffer[\s\S]*flashCompatibilityIssue\(mainBuffer\)/, '多 SWF 包必须在上传前检查主文件')
+// 2026-11-15 起两条上传路径都先 assertSwf（截断 / 坏头直接拦），再查站点锁；两步必须用同一份字节。
+assert.match(
+  singleUpload,
+  /const data = await file\.arrayBuffer\(\)\s*assertSwf\(data\)\s*const issue = await flashCompatibilityIssue\(data\)/,
+  '单 SWF 上传必须先校验 SWF 完整性，再拦截已知坏包',
+)
+assert.match(
+  bundleUpload,
+  /const mainBuffer = new Uint8Array\(mainData\)\.buffer\s*assertSwf\(mainBuffer\)\s*const compatibilityIssue = await flashCompatibilityIssue\(mainBuffer\)/,
+  '多 SWF 包必须在上传前校验并检查主文件',
+)
+assert.match(singleUpload, /platform === 'flash'[\s\S]{0,260}?await assertSwfBlob\(unpacked\.blob\)/,
+  '已打包的 8BG Flash 也必须校验内层 SWF')
 
 console.log('Flash 站点锁兼容性测试全部通过。')

@@ -280,15 +280,16 @@ check('⚠️ 沉浸模式优先：那时侧栏是收起的，播放器该吃满
   assert.match(GDP, /const watchLayout = Boolean\(liveInvite\) && !matchPlayer && !immersive/, '沉浸模式下还在按 8 列排')
 })
 
-check('看直播或联机时播放器缩到 8 列，自己玩时满宽 12 列', () => {
+check('看直播或联机时播放器缩到 8 列，自己玩时 lg 满宽、超宽屏让出 3 列给侧栏', () => {
   assert.match(
     GDP,
     /const twoColumn = watchLayout \|\| matchLayout/,
     '两种侧栏布局必须共用同一判断',
   )
+  // 6cd126f 起自己玩时超宽屏（xl）也把侧栏抬到播放器旁边：播放器 9 列、侧栏 3 列；沉浸模式仍满宽
   assert.match(
     GDP,
-    /twoColumn \? 'lg:col-span-8' : immersive \? 'lg:col-span-12' : 'lg:col-span-12 xl:col-span-9'/,
+    /cx\(\s*'w-full',\s*twoColumn \? 'lg:col-span-8' : immersive \? 'lg:col-span-12' : 'lg:col-span-12 xl:col-span-9',?\s*\)/,
     '播放器那一层的列宽不对',
   )
 })
@@ -298,7 +299,11 @@ check('⚠️ 侧栏要显式排到第 9 列、第 1 行、跨两行', () => {
     不写这一条的话自动排版是：播放器 8 列落第 1 行 → 资料区 8 列放不下落第 2 行 →
     侧栏补到第 2 行右边。结果侧栏和**标题**齐平，比播放器矮一整行 —— 正是参考图里没有的样子。
   */
-  assert.match(GDP, /twoColumn\s*\? 'lg:col-span-4 lg:col-start-9 lg:row-start-1 lg:row-span-2'/, '侧栏没有显式定位')
+  assert.match(
+    GDP,
+    /twoColumn\s*\?\s*'lg:col-span-4 lg:col-start-9 lg:row-start-1 lg:row-span-2'\s*:\s*'xl:col-span-3 xl:col-start-10 xl:row-start-1 xl:row-span-2'/,
+    '侧栏没有显式定位',
+  )
 })
 
 check('⚠️ 播放器只能有一处 JSX —— 两套版面绝不能写成两套 JSX', () => {

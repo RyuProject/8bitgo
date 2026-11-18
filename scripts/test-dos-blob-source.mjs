@@ -8,6 +8,8 @@ globalThis.__dosBlobFetches = []
 globalThis.__dosBlobResumeClears = []
 globalThis.__dosBlobDeletes = []
 globalThis.__dosBlobFailDecode = false
+globalThis.__dosBlobUnreadable = false
+globalThis.__dosBlobPrewarms = []
 globalThis.__dosBlobReady = true
 globalThis.__dosBlobStored = new Blob([new Uint8Array([0x38, 0x42, 0x47, 0x31, 1, 2, 3])])
 globalThis.__dosBlobPlain = new Blob([new Uint8Array([0x50, 0x4b, 0x03, 0x04, 9, 8, 7])])
@@ -33,13 +35,17 @@ const built = await build({
       fake(/^\.\/romCache$/, 'cache')
       fake(/^@\/lib\/jsdosBundle$/, 'bundle')
       fake(/^@\/services\/romPack$/, 'pack')
+      // 换线路（assets ↔ cn-assets）由 romHosts 决定；这里只验证下载器确实拿到了备用地址。
       fake(/^@\/services\/romHosts$/, 'hosts')
       api.onLoad({ filter: /.*/, namespace: 'dos-blob-test' }, (args) => ({
         loader: 'js',
         contents: args.path === 'resume'
-              ? `export const downloadResumeStore = { clear: async k => { globalThis.__dosBlobResumeClears.push(k) } }`
-              : args.path === 'progress'
-                ? `export const fetchBlobWithProgress = async (u, o) => { globalThis.__dosBlobFetches.push({ u, resumeKey: o.resumeKey }); return globalThis.__dosBlobStored }; export const withResumeTimeout = p => p`
+          ? `export const downloadResumeStore = { clear: async k => { globalThis.__dosBlobResumeClears.push(k) } }`
+          : args.path === 'progress'
+            ? `export const fetchBlobWithProgress = async (u, o) => { globalThis.__dosBlobFetches.push({ u, resumeKey: o.resumeKey, alternateUrls: o.alternateUrls }); return globalThis.__dosBlobStored };
+               export const withResumeTimeout = async (task) => task;`
+            : args.path === 'hosts'
+              ? `export const alternateRomUrls = u => [u.replace('https://assets.example/', 'https://cn-assets.example/')]`
             : args.path === 'cache'
               ? `export const romCacheKey = u => /[?&]romv=/.test(u) ? u : '';
                  export const romCacheGetBlob = async k => globalThis.__dosBlobCache.get(k) ?? null;
@@ -47,13 +53,15 @@ const built = await build({
                  export const romCacheDelete = async k => { globalThis.__dosBlobDeletes.push(k); globalThis.__dosBlobCache.delete(k) };`
               : args.path === 'bundle'
                 ? `export const isReadyJsdosBundleBlob = async () => globalThis.__dosBlobReady`
-                : args.path === 'hosts'
-                  ? `export const alternateRomUrls = () => []`
-                  : `export const isBlobReadError = () => false;
+                : `export const isRomPackBytes = b => b[0] === 0x38 && b[1] === 0x42 && b[2] === 0x47 && b[3] === 0x31;
                    export const isRomPackUrl = u => /\\.8bg(?:[?#]|$)/i.test(u);
-                   export const prewarmRomPackDecoder = () => {};
-                   export const isRomPackBytes = b => b[0] === 0x38 && b[1] === 0x42 && b[2] === 0x47 && b[3] === 0x31;
+                   export const prewarmRomPackDecoder = u => { globalThis.__dosBlobPrewarms.push(u) };
+                   export const isBlobReadError = e => Boolean(e && e.name === 'NotReadableError');
                    export const unpackRomPackBlob = async () => {
+                     if (globalThis.__dosBlobUnreadable) {
+                       globalThis.__dosBlobUnreadable = false
+                       const e = new Error('blob store broken'); e.name = 'NotReadableError'; throw e
+                     }
                      if (globalThis.__dosBlobFailDecode) { globalThis.__dosBlobFailDecode = false; throw new Error('bad cached key') }
                      return { name: 'fallout.en.zip', blob: globalThis.__dosBlobPlain, header: {} }
                    };`,
@@ -74,6 +82,12 @@ assert.equal(first.ready, true)
 assert.equal(first.fromCache, false)
 assert.equal(globalThis.__dosBlobFetches.length, 1)
 assert.equal(globalThis.__dosBlobFetches[0].resumeKey, url, '版本化 URL 必须启用跨刷新分片续传')
+assert.deepEqual(
+  globalThis.__dosBlobFetches[0].alternateUrls,
+  ['https://cn-assets.example/roms/dos/fallout.en.zip.8bg?romv=v1'],
+  '当前线路重试用光后必须能换另一条 CDN 线路（AGENTS §2.12）',
+)
+assert.deepEqual(globalThis.__dosBlobPrewarms, [url], '8BG 包的解码器与密钥必须和下载并行预热（AGENTS §2.24.0c）')
 assert.ok(progress.some((value) => value.detail === 'rom-pack'), '下载完成后的解密/解包必须显示真实状态')
 await Promise.resolve()
 assert.equal(globalThis.__dosBlobCache.get(url), globalThis.__dosBlobStored, '缓存保持 8BG 密文，不落明文游戏包')
@@ -105,10 +119,28 @@ await prepareRemoteDosBundle(unversioned, undefined, new AbortController().signa
 assert.equal(globalThis.__dosBlobFetches.length, 4, '无版本 URL 不得缓存或续传，避免两代 ROM 拼包')
 assert.equal(globalThis.__dosBlobFetches.at(-1).resumeKey, undefined)
 
+// 续传片拼出的包读不出来（NotReadableError）：作废续传片，不带续传整包重下一次（AGENTS §2.8.4）。
+const url3 = 'https://assets.example/roms/dos/fallout.en.zip.8bg?romv=v3'
+globalThis.__dosBlobUnreadable = true
+const fetchesBefore = globalThis.__dosBlobFetches.length
+const clearsBefore = globalThis.__dosBlobResumeClears.length
+let reread
+try {
+  console.warn = () => {}
+  reread = await prepareRemoteDosBundle(url3, undefined, new AbortController().signal)
+} finally {
+  console.warn = originalWarn
+}
+assert.equal(reread.name, 'fallout.en.zip')
+assert.equal(globalThis.__dosBlobFetches.length, fetchesBefore + 2, '读不出来时必须重下一次')
+assert.equal(globalThis.__dosBlobFetches.at(-2).resumeKey, url3, '第一次仍带续传')
+assert.equal(globalThis.__dosBlobFetches.at(-1).resumeKey, undefined, '重下那次不能再拼旧续传片')
+assert.ok(globalThis.__dosBlobResumeClears.slice(clearsBefore).includes(url3), '重下前必须作废这组续传片')
+
 globalThis.__dosBlobStored = globalThis.__dosBlobPlain
 globalThis.__dosBlobReady = false
 const plain = await prepareRemoteDosBundle('https://assets.example/game.zip?romv=plain', undefined, new AbortController().signal)
 assert.equal(plain.name, 'game.zip')
 assert.equal(plain.ready, false, '没有 dosbox.conf 的普通 ZIP 必须回旧逻辑补配置')
 
-console.log('DOS Blob：分片续传、版本缓存、密文落盘、坏缓存自愈与普通 ZIP 回退通过')
+console.log('DOS Blob：分片续传、换线路、并行预热、版本缓存、密文落盘、坏缓存与读不出包自愈、普通 ZIP 回退通过')

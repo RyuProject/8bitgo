@@ -15,6 +15,7 @@ import {
 } from '../src/emulator/emulatorjsDownload.ts'
 import { writeFsInjections } from '../src/emulator/fsInjection.ts'
 import { arcadeArchiveLayoutProblem, prepareArcadeArchive } from '../src/lib/arcadeArchive.ts'
+import { matchLocalArcadeHack } from '../src/emulator/arcadeHack.ts'
 import { REQUIRED_SELF_BUILT_CORES } from '../src/config/emulators.ts'
 import { readdir } from 'node:fs/promises'
 import { EJS_WEBGL2_DEFAULT_CORES, emulatorJsCoreDataFile } from '../src/emulator/paths.ts'
@@ -99,6 +100,16 @@ await check('本地与旧远端街机 ZIP 会安全拍平后再交给核心', as
   assert.deepEqual(unzipSync(new Uint8Array(await prepared.blob.arrayBuffer()))['kof97.rom'], source)
 })
 
+await check('本地 arcade 入口会拍平安全目录并拒绝路径穿越 ZIP', async () => {
+  const nested = new File([zipSync({ 'folder/kof97.rom': new Uint8Array([1]) })], 'kof97.zip')
+  const prepared = await matchLocalArcadeHack(nested)
+  assert.ok(prepared)
+  assert.equal(prepared.hack, null)
+  assert.deepEqual(Object.keys(unzipSync(new Uint8Array(await prepared.file.arrayBuffer()))), ['kof97.rom'])
+  const unsafe = new File([zipSync({ '../outside.rom': new Uint8Array([1]) })], 'unsafe.zip')
+  await assert.rejects(matchLocalArcadeHack(unsafe), /不安全路径/)
+})
+
 await check('拍平时发生文件名冲突会拒绝，避免覆盖 ROM 成员', async () => {
   const input = new Blob([zipSync({
     'parent/tiles.rom': new Uint8Array([1]),
@@ -131,7 +142,7 @@ await check('本地街机包只有真需要合成 ROM 时才读全份字节', as
   const inspectAt = source.indexOf('prepareArcadeArchive(file)')
   const deriveAt = source.indexOf('const buf = await prepared.blob.arrayBuffer()', inspectAt)
   assert.ok(inspectAt >= 0, '本地包没有走统一 ZIP 校验与目录拍平')
-  assert.ok(deriveAt > inspectAt && /if \(hack\?\.derive\)/.test(source), '只有需合成的改版包才读取整份文件')
+  assert.ok(deriveAt > inspectAt && /if \(!hack\) return prepared\.flattenedCount/.test(source), '普通包只读 ZIP 元数据；只有需合成的改版包才读取整份文件')
 })
 
 await check('大核心只在真实鼠标悬停且网络允许时预拉', async () => {

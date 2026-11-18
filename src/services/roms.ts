@@ -676,9 +676,14 @@ export interface RomCandidate {
 
 /** 网络类失败本来会停止整条回退链；唯一例外是紧跟主地址的同语言备用源。 */
 export function shouldTryRomCandidateAfterUncertain(current: RomCandidate, next?: RomCandidate): boolean {
-  // 派生的 .8bg 只是同一语言槽、同一主/备用角色旁边的影子路径；任一侧探测不确定时，
-  // 都要允许试完这一对。否则主地址有 .8bg 但同语言备用明文超时，会把整条链误当成断网结束。
-  if ((current.derivedPacked || next?.derivedPacked) && next && current.lang === next.lang && current.backup === next.backup) return true
+  // 明文原件和旁边派生的 .8bg 是同一个对象的两种形态，必须当成一组：一个问不出来时仍给另一个机会，
+  // 否则渐进迁移期间一次 HEAD / CORS 波动就可能挡住尚未转换或已经转换的游戏。
+  if (
+    next
+    && (current.derivedPacked || next.derivedPacked)
+    && current.lang === next.lang
+    && current.backup === next.backup
+  ) return true
   return !current.backup && Boolean(next?.backup && next.lang === current.lang)
 }
 

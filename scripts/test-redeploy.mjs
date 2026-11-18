@@ -36,6 +36,43 @@ assert.ok(source.indexOf('trap finish_backup_upload EXIT') < source.indexOf('--u
 assert.match(source, /BACKUP_ASYNC_UPLOAD:-1/, '保留退回同步上传的开关')
 assert.ok(source.indexOf('--local-only') < step2, '本地备份必须在拉代码之前完成')
 
+// 2026-11-17 全站 EmulatorJS 事故后的部署加固
+assert.match(source, /BRANCH="\$\{BRANCH:-\$\(git -C "\$REPO_DIR" symbolic-ref --short -q HEAD/, '分支名不能取 abbrev-ref：游离 HEAD 时会得到字面量 HEAD')
+{
+  const rollbackFn = source.slice(source.indexOf('rollback() {'), source.indexOf('# ───────────── 记录起点'))
+  assert.match(rollbackFn, /git reset --hard --quiet "\$BEFORE_COMMIT"/, '回滚要留在分支上（reset），不能 checkout 成游离 HEAD')
+  assert.doesNotMatch(rollbackFn, /git checkout --quiet "\$BEFORE_COMMIT"/)
+}
+{
+  const step5 = source.slice(source.indexOf('步骤 5/7'), source.indexOf('步骤 6/7'))
+  assert.match(step5, /BUILD_MARK="\$\(mktemp\)"/, '构建前打时间戳')
+  assert.match(step5, /find "\$REPO_DIR\/dist" -type f -newer "\$BUILD_MARK"/, '构建失败时要看 dist 是否已被部分改写')
+  assert.match(step5, /rollback\n\s*exit 1/, 'dist 已被改写的构建失败必须回滚，不能只 die（线上正在发半新文件）')
+}
+{
+  const smoke = source.slice(source.indexOf('# 开局冒烟：'), source.indexOf('log "✅ 部署完成'))
+  assert.match(smoke, /SMOKE_TEST:-1/, '开局冒烟默认打开')
+  assert.match(smoke, /smoke_once; SMOKE_RC=\$\?\n\s*if \[ "\$SMOKE_RC" = "1" \]; then[\s\S]*?smoke_once; SMOKE_RC=\$\?/, '失败先重试一次')
+  assert.match(smoke, /SMOKE_ROLLBACK:-1[\s\S]*?rollback\n\s*exit 1/, '两次失败默认回滚')
+  assert.match(smoke, /2\)\n\s*log "⚠️⚠️ 开局冒烟没有运行[^\n]*\n\s*notify "⚠️ 部署完成，但开局冒烟没能运行"/, '没有 Chrome 时必须响亮地告警（日志 + 飞书），而不是悄悄跳过')
+  assert.ok(source.indexOf('# 开局冒烟：') > source.indexOf('health_ok && ps2_headers_ok'), '冒烟在重启 + 健康检查之后')
+}
+{
+  // 2026-11-18：故障要能主动通知到人（飞书），部署与定时巡检互斥
+  assert.match(source, /notify\(\) \{[\s\S]*?notify-lark\.mjs[\s\S]*?\|\| true\n\}/, '通知失败绝不能让部署脚本失败')
+  assert.match(source, /die\(\)  \{ log "❌ \$\*"; notify "❌ 部署中止"/, '部署中止要通知')
+  const rollbackFn = source.slice(source.indexOf('rollback() {'), source.indexOf('# ───────────── 记录起点'))
+  for (const title of ['⚠️ 部署失败，已自动回滚', '🔴 回滚后线上仍不健康', '🔴 回滚失败，需人工介入']) {
+    assert.ok(rollbackFn.includes(title), `回滚结局「${title}」要通知`)
+  }
+  for (const reason of ['构建失败，且线上 dist 已被部分改写', '开局冒烟两次失败', '重启后健康检查或 PS2 隔离响应头未通过']) {
+    assert.ok(source.includes(`ROLLBACK_REASON="${reason}`), `回滚原因要带进通知：${reason}`)
+  }
+  assert.match(source, /flock -w 900 8 \|\| die/, '部署要拿部署锁（等定时巡检跑完）')
+  assert.ok(source.indexOf('flock -w 900 8') < source.indexOf('步骤 1/7'), '拿锁要在任何改动之前')
+  assert.match(source, /smoke-start\.mjs[^\n]*\) 2>&1 8>&- \|/, '冒烟的 Chrome 不能继承部署锁')
+}
+
 const tmp = mkdtempSync(join(tmpdir(), '8bitgo-redeploy-'))
 try {
   const bin = join(tmp, 'bin')

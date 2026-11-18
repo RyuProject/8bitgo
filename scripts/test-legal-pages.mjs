@@ -249,9 +249,7 @@ check('⭐ index.html 里的每个外部主机都在披露白名单里，而且�
   const html = read('index.html')
   const own = /(^|\.)8bitgo\.com$/
   const found = new Set(
-    [...html.matchAll(/https?:\/\/([a-z0-9.-]+)/gi)]
-      .map((m) => m[1].toLowerCase().replace(/\.$/, ''))
-      .filter((h) => !own.test(h)),
+    [...html.matchAll(/https?:\/\/([a-z0-9.-]+)/gi)].map((m) => m[1].toLowerCase().replace(/\.+$/, '')).filter((h) => !own.test(h)),
   )
   for (const h of found) {
     assert.ok(
@@ -357,30 +355,6 @@ const FACTS = [
       zh: ['启动诊断包|啟動診斷包', '超过 20 秒|超過 20 秒', '完整的 User-Agent', '[ROM]'],
       en: ['Startup diagnostic bundles', 'longer than 20 seconds', 'full User-Agent string', '[ROM]'],
     },
-  },
-  {
-    id: 'ai-fault-analysis',
-    where: 'no-account',
-    doc: 'privacy',
-    what: '启动故障聚集（或手动排查）时，服务器把脱敏诊断包发给 MiniMax 分析；不含 IP、完整 UA、ROM 地址、账号；AI 不能改代码',
-    probe: ['server/src/ai-hotfix.js', 'minimaxChat'],
-    say: { zh: ['MiniMax', 'AI 故障分析'], en: ['MiniMax', 'AI fault analysis'] },
-  },
-  {
-    id: 'ai-fault-analysis-processor',
-    where: 'third-parties',
-    doc: 'privacy',
-    what: '第三方一节列出 MiniMax 及它拿到的东西',
-    probe: ['server/src/ai-config.js', 'api.minimax.io'],
-    say: { zh: ['MiniMax'], en: ['MiniMax'] },
-  },
-  {
-    id: 'ai-fault-analysis-retention',
-    where: 'retention',
-    doc: 'privacy',
-    what: '已结束的 AI 修补记录保留 365 天后由服务端清理',
-    probe: ['server/src/ai-hotfix.js', 'AI_HOTFIX_RETENTION_DAYS = 365'],
-    say: { zh: ['365 天'], en: ['365 days'] },
   },
   {
     id: 'startup-diagnostics-retention',

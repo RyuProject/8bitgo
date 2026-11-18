@@ -13,6 +13,7 @@ import { readFileSync } from 'node:fs'
 import {
   classifyUserAgent,
   DIAGNOSTICS_RETENTION_DAYS,
+  diagnoseStartupFailure,
   errorSignature,
   normalizeDiagnostics,
   scrub,
@@ -30,6 +31,7 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   assert.equal(scrub('https://8bitgo.com/emulatorjs/cores/fceumm-wasm.data?v=1'), '8bitgo.com/emulatorjs/…/fceumm-wasm.data')
   assert.doesNotMatch(scrub('Authorization: Bearer abc.def.ghi token=SECRET123'), /abc\.def|SECRET123/, '令牌必须抹掉')
   assert.equal(scrub('peer 203.0.113.9 / 2001:db8:85a3::8a2e:370:7334 mail a@b.com'), 'peer [IP] / [IP] mail [邮箱]')
+  assert.equal(scrub('data:text/plain,private-payload file:///Users/player/private.rom'), 'data:[内联] file:[本地文件]', '内联与本地文件地址不进入现场')
   // 2026-11-16 诊断包 #761：Safari 调用栈 `vt@https://cn.8bitgo.com/...` 缩短后整段被当成邮箱，函数名和域名都丢了
   assert.equal(
     scrub('组件：Lazy@unknown:0:0 < vt@https://cn.8bitgo.com/_cn/assets/react-vendor-Igr6niNW.js:11:4269'),
@@ -97,6 +99,102 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   const slowB = errorSignature({ event: 'slow_start', runtime: 'emulatorjs', detail: '等待 game_playable 已超过 20 秒', diagnostics: { logs: [{ s: 'stage', m: 'Decompress Game Core 12%' }] } })
   assert.notEqual(slowA.signature, slowB.signature, '慢启动按停在哪一步归组')
   assert.match(slowA.text, /停在：Download Game Core #%/)
+
+  const genericMissing = diagnoseStartupFailure({ event: 'failed', platform: 'nes', detail: 'Missing files while opening content' })
+  assert.notEqual(genericMissing.code, 'bios_romset', '非街机的通用 missing files 不能被判成街机 BIOS 故障')
+  assert.equal(diagnoseStartupFailure({ event: 'failed', platform: 'arcade', detail: 'Missing files for this romset' }).code, 'bios_romset')
+  assert.notEqual(diagnoseStartupFailure({ event: 'failed', platform: 'gba', detail: 'Failed to load ROM from blob URL' }).code, 'storage',
+    '普通 Blob URL 加载失败不能直接推断为浏览器存储故障')
+  assert.equal(diagnoseStartupFailure({ event: 'failed', platform: 'gba', detail: 'NotReadableError while reading Blob' }).code, 'storage')
+  assert.deepEqual(
+    { code: diagnoseStartupFailure({ event: 'failed', runtime: 'page', detail: 'TypeError: Importing a module script failed.' }).code,
+      signal: diagnoseStartupFailure({ event: 'failed', runtime: 'page', detail: 'TypeError: Importing a module script failed.' }).signals[0] },
+    { code: 'page_asset', signal: 'error.lazy_module' },
+    '懒加载 chunk 的导入失败不能被粗略归成网络错误',
+  )
+  assert.equal(diagnoseStartupFailure({
+    event: 'failed', runtime: 'page', diagnostics: { resources: [{ n: '8bitgo.com/assets/…/GameDetailPage.js', i: 'script', st: 404 }] },
+  }).code, 'page_asset', '脚本本身的 HTTP 失败按页面资源定位')
+  assert.equal(diagnoseStartupFailure({
+    event: 'failed', runtime: 'page', diagnostics: { resources: [{ n: 'stats.example/request', i: 'fetch', st: 404 }] },
+  }).confidence, 'medium', '无法确定关联的普通资源错误要显示中把握度')
+  const trap = diagnoseStartupFailure({
+    event: 'failed', platform: 'gba', detail: 'RuntimeError: table index is out of bounds',
+    diagnostics: { resources: [{ n: '8bitgo.com/emulatorjs/…/mgba-wasm.data' }] },
+  })
+  assert.deepEqual(
+    { code: trap.code, confidence: trap.confidence, artifact: trap.artifact },
+    { code: 'runtime_trap', confidence: 'medium', artifact: 'mgba' },
+    '运行时陷阱保留核心线索，但不把 ROM 写成已确认根因',
+  )
+  const trapOtherCore = errorSignature({
+    event: 'failed', runtime: 'emulatorjs', platform: 'gba', detail: 'RuntimeError: table index is out of bounds',
+    diagnostics: { resources: [{ n: '8bitgo.com/emulatorjs/…/melonds-wasm.data' }] },
+  })
+  const trapMgbaCore = errorSignature({
+    event: 'failed', runtime: 'emulatorjs', platform: 'gba', detail: 'RuntimeError: table index is out of bounds',
+    diagnostics: { resources: [{ n: '8bitgo.com/emulatorjs/…/mgba-wasm.data' }] },
+  })
+  assert.notEqual(trapOtherCore.signature, trapMgbaCore.signature, '不同核心的运行时陷阱不能合成一组')
+
+  // 慢启动按进度快照区分「还在动」与「停住」（2026-11-18 诊断包 #1155 / #1156 都被误标成停滞）
+  const slow = (snapshot, extra = []) => ({
+    event: 'slow_start',
+    runtime: 'jsdos',
+    platform: 'dos',
+    detail: '等待 game_playable 已超过 20 秒（仍在下载 ROM：71.6MB/108.9MB，平均 31.1Mbps）',
+    diagnostics: { logs: [...extra, { t: 20_000, s: 'snapshot', l: 'info', m: snapshot }] },
+  })
+  const mdkLive = diagnoseStartupFailure(slow('加载进度：阶段 rom，ROM 71.6MB/108.9MB，ROM 起于 0.6s，平均 31.1Mbps，最后进度 19.9s', [
+    { t: 1000, s: 'download', l: 'info', m: 'ROM 首段 409582 字节 / 425ms（7.7 Mbps）： download.8bitgo.com/roms/…/[ROM].en.zip.8bg' },
+  ]))
+  assert.deepEqual(
+    { code: mdkLive.code, signal: mdkLive.signals[0], artifact: mdkLive.artifact, confidence: mdkLive.confidence },
+    { code: 'rom_download', signal: 'progress.rom_downloading', artifact: 'rom-64-256mb', confidence: 'high' },
+    '上报前 0.1 秒还在以 31 Mbps 下载的 109MB 整包不是停滞（#1155《MDK》）',
+  )
+  assert.match(mdkLive.label, /未停滞/)
+  const mdkStalled = diagnoseStartupFailure(slow('加载进度：阶段 rom，ROM 31.0MB/108.9MB，ROM 起于 0.6s，平均 12.4Mbps，最后进度 9.0s'))
+  assert.deepEqual({ code: mdkStalled.code, signal: mdkStalled.signals[0] }, { code: 'rom_download', signal: 'stage.rom' },
+    '进度 11 秒没动仍然按停滞归类')
+  assert.match(mdkStalled.label, /停滞/)
+  assert.doesNotMatch(mdkStalled.label, /未停滞/)
+  assert.equal(diagnoseStartupFailure(slow('加载进度：阶段 rom，ROM 42.0MB（流式），ROM 起于 0.6s，平均 12.4Mbps，最后进度 19.9s')).signals[0],
+    'stage.rom', '流式读盘没有「下完」这回事，不套用正常下载的判断')
+  assert.equal(diagnoseStartupFailure({ ...slow('加载进度：阶段 rom，ROM 71.6MB/108.9MB，ROM 起于 0.6s，平均 31.1Mbps，最后进度 19.9s'), event: 'timeout' }).signals[0],
+    'stage.rom', '超时 / 失败有自己的原文，进度快照不能把它们改判成「没停」')
+  assert.notEqual(
+    errorSignature(slow('加载进度：阶段 rom，ROM 71.6MB/108.9MB，ROM 起于 0.6s，平均 31.1Mbps，最后进度 19.9s')).signature,
+    errorSignature(slow('加载进度：阶段 rom，ROM 31.0MB/108.9MB，ROM 起于 0.6s，平均 12.4Mbps，最后进度 9.0s')).signature,
+    '还在下载和真停住不能合成一组',
+  )
+  assert.notEqual(
+    errorSignature(slow('加载进度：阶段 rom，ROM 71.6MB/108.9MB，ROM 起于 0.6s，平均 31.1Mbps，最后进度 19.9s')).signature,
+    errorSignature(slow('加载进度：阶段 rom，ROM 3.1MB/6.2MB，ROM 起于 0.6s，平均 1.3Mbps，最后进度 19.9s')).signature,
+    '大包和小包慢网按体积分组',
+  )
+
+  const xiyou = (snapshot) => diagnoseStartupFailure({
+    event: 'slow_start', runtime: 'emulatorjs', platform: 'arcade', detail: '等待 game_playable 已超过 20 秒（仍在加载资源）',
+    diagnostics: {
+      logs: [
+        { t: 19_700, s: 'adapter', l: 'warn', m: '[netplay] socket.io 脚本加载失败：/socket.io/socket.io.js' },
+        { t: 19_900, s: 'ejs', l: 'log', m: '[EJS Core] Downloading core: fbneo-legacy-wasm.data' },
+        { t: 20_000, s: 'snapshot', l: 'info', m: snapshot },
+      ],
+    },
+  })
+  const xiyouDominated = xiyou('加载进度：阶段 assets，ROM 20.9MB/20.9MB，ROM 起于 0.3s，ROM 完成于 19.7s，平均 9.0Mbps，最后进度 20.0s')
+  assert.deepEqual(
+    { code: xiyouDominated.code, signal: xiyouDominated.signals[0], artifact: xiyouDominated.artifact },
+    { code: 'rom_download', signal: 'progress.rom_dominated', artifact: 'rom-16-64mb' },
+    'ROM 下了 19.4 秒、assets 才开始 0.3 秒，慢在 ROM 不在依赖资源（#1156《西游释厄传》）',
+  )
+  const assetsReallySlow = xiyou('加载进度：阶段 assets，ROM 20.9MB/20.9MB，ROM 起于 0.3s，ROM 完成于 5.0s，平均 36.0Mbps，最后进度 5.2s')
+  assert.deepEqual({ code: assetsReallySlow.code, signal: assetsReallySlow.signals[0] }, { code: 'engine_assets', signal: 'stage.engine_assets' },
+    'ROM 5 秒就下完、之后 15 秒卡在资源阶段，仍按依赖资源停滞归类')
+  assert.equal(xiyou('加载进度：阶段 assets，ROM 20.9MB/20.9MB（缓存），ROM 起于 0.3s，ROM 完成于 0.4s，最后进度 0.4s').signals[0],
+    'stage.engine_assets', 'ROM 命中缓存时慢在别处')
 }
 
 /* ---------- 前端采集 ---------- */
@@ -119,6 +217,7 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
 
   const hub = await import('../src/services/startupDiagnostics.ts')
   hub.resetStartupDiagnosticsForTest()
+  const originalWarn = console.warn
   const visit = 'visit-0001'
   hub.noteStartupEvent(visit, undefined, 'detail_view')
   console.warn('[emulatorjs] 早于点击的告警')
@@ -148,8 +247,34 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   assert.match(dl.m, /TypeError: Failed to fetch/)
   assert.match(dl.m, /\[ROM\]\.nes\.8bg/)
   assert.doesNotMatch(dl.m, /smb/, 'ROM 文件名不能出现')
+  assert.equal(hub.scrubDiagnosticText('peer 203.0.113.9 mail a.b+c@example.co.uk'), 'peer [IP] mail [邮箱]', '浏览器上报前先去掉 IP 与邮箱')
+  assert.equal(hub.scrubDiagnosticText('fn@cn.8bitgo.com/_cn/assets/chunk.js:11:42'), 'fn@cn.8bitgo.com/_cn/assets/chunk.js:11:42', '栈帧邮箱样式不能吞掉资源名')
   assert.ok(JSON.stringify(bundle).length <= 24_000)
   assert.equal(hub.collectStartupDiagnostics('unknown-attempt'), null, '没有这一局的记录就不发')
+  assert.equal(hub.shortenUrl('data:text/plain,private-payload'), 'data:[内联]')
+  assert.equal(hub.shortenUrl('file:///Users/player/private.rom'), 'file:[本地文件]')
+  const pageStarted = Date.now() - 1000
+  define('performance', {
+    timeOrigin: pageStarted,
+    getEntriesByType: () => [
+      ...Array.from({ length: 40 }, (_, i) => ({
+        name: `https://assets.8bitgo.com/assets/large-${i}.data`, initiatorType: 'fetch',
+        startTime: 990, duration: 900, transferSize: 600_000, decodedBodySize: 1_000_000,
+        responseStatus: 200, nextHopProtocol: 'h2',
+      })),
+      { name: 'https://download.8bitgo.com/roms/nes/private.nes.8bg', initiatorType: 'fetch',
+        startTime: 995, duration: 25, transferSize: 200, decodedBodySize: 0,
+        responseStatus: 404, nextHopProtocol: 'h2' },
+      { name: 'https://203.0.113.9/private/a.b+c@example.co.uk', initiatorType: 'fetch',
+        startTime: 996, duration: 250, transferSize: 0, decodedBodySize: 0,
+        responseStatus: 0, nextHopProtocol: 'h2' },
+    ],
+  })
+  const withFailedResource = hub.collectStartupDiagnostics('attempt-0001')
+  assert.ok(withFailedResource.resources.some((row) => row.st === 404 && row.n.includes('[ROM]')),
+    '大量慢资源不能把快速失败请求挤出诊断包')
+  assert.doesNotMatch(JSON.stringify(withFailedResource.resources), /203\.0\.113\.9|a\.b\+c@example\.co\.uk/,
+    '资源请求在浏览器本地就完成 IP / 邮箱脱敏')
 
   // 运行时现场快照：打包时调用，排在日志最后；注销后不再出现
   const stop = hub.registerDiagnosticSnapshot(() => 'PSP 现场：模式 stream，已读 12.0MB https://assets.8bitgo.com/roms/psp/gt.chd?romv=1')
@@ -168,6 +293,49 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   hub.noteStartupEvent(visit, 'attempt-0002', 'start_click')
   assert.equal(hub.collectStartupDiagnostics('attempt-0002').attempt.index, 2, '同一次访问的第二次开局')
   assert.equal(hub.shortenUrl('blob:https://8bitgo.com/1234'), 'blob:[本地文件]')
+
+  let observerCount = 0
+  let disconnectCount = 0
+  let bufferListenerAdds = 0
+  let bufferListenerRemoves = 0
+  let bufferListener
+  let clearTimingCalls = 0
+  const bufferSizes = []
+  const frameObservers = []
+  class FakePerformanceObserver {
+    constructor(callback) { observerCount += 1; this.callback = callback; frameObservers.push(this) }
+    observe() {}
+    disconnect() { disconnectCount += 1 }
+  }
+  const framePerf = {
+    timeOrigin: 0,
+    setResourceTimingBufferSize(size) { bufferSizes.push(size) },
+    getEntriesByType() { return [] },
+    addEventListener(_type, listener) { bufferListenerAdds += 1; bufferListener = listener },
+    removeEventListener() { bufferListenerRemoves += 1 },
+    clearResourceTimings() { clearTimingCalls += 1 },
+  }
+  const frameWin = { performance: framePerf, PerformanceObserver: FakePerformanceObserver }
+  const stopFrameA = hub.watchFramePerformance(frameWin)
+  const stopFrameB = hub.watchFramePerformance(frameWin)
+  assert.equal(observerCount, 1, '同一 iframe 的重复登记共用一个 PerformanceObserver')
+  frameObservers[0].callback({ getEntries: () => [{
+    name: 'https://cdn.example/core.data', initiatorType: 'fetch', startTime: 1, duration: 900,
+    transferSize: 600_000, decodedBodySize: 600_000, responseStatus: 200, nextHopProtocol: 'h2',
+  }] })
+  assert.equal(frameWin.__8bitgoResourceCount, 1, 'iframe 观察器提供单调递增的请求数')
+  bufferListener()
+  assert.equal(clearTimingCalls, 0, '诊断缓冲区扩容时不清除 Resource Timing 历史')
+  assert.deepEqual(bufferSizes, [1000, 2000], '缓冲区写满后扩容并保留已有记录')
+  stopFrameA()
+  stopFrameA()
+  assert.equal(disconnectCount, 0, '还有登记方使用时不能提前断开观察器')
+  stopFrameB()
+  assert.equal(disconnectCount, 1, '最后一个登记方退出时断开观察器')
+  assert.equal(bufferListenerAdds, 1)
+  assert.equal(bufferListenerRemoves, 1, 'iframe 拆除时移除缓冲区监听')
+  hub.resetStartupDiagnosticsForTest()
+  assert.equal(console.warn, originalWarn, '测试重置会还原全局 console 钩子')
 }
 
 /* ---------- 「复制给 AI」 ---------- */

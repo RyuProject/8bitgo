@@ -163,7 +163,8 @@ assert.match(gameForm, /detectArcadeCore\(\{ indexedFbneoSet: fbneoHasExactSet \
 assert.match(gameForm, /onBiosFound\?\.\(mameMatch\.bios \?\? ''\)/, '精确识别后必须填入对应 BIOS 系统名（System 12 传空串撤掉旧的自动值）')
 assert.match(gameForm, /identifyNamcoMameSet\(entries, file\.name\)/, '上传识别必须覆盖全部 Namco System 11/12 set，而不只是 Tekken')
 assert.match(gameForm, /layoutProblem && !mameMatch/, '仅已核验的 MAME set 可豁免子目录拦截')
-assert.match(gameForm, /if \(isArcade && !isPlayArcadeBundle\)[\s\S]*?assertValidZipBlob\(uploadSourceFile, '街机 ROM'\)[\s\S]*?flattenArcadeZipBlob\(uploadSourceFile, arcadeEntries\)/, '普通街机 ZIP 上传必须自动检查并拍平子目录成员，并复用已验证的目录；Play! 专用包保留其内部清单结构')
+// 旧 8BG 导入时先解出明文再上传（481af52），所以检查 / 拍平作用在解出的 uploadSourceFile 上，旧 8BG 包也不再豁免
+assert.match(gameForm, /if \(isArcade && !isPlayArcadeBundle\)[\s\S]*?assertValidZipBlob\(uploadSourceFile, '街机 ROM'\)[\s\S]*?flattenArcadeZipBlob\(uploadSourceFile, arcadeEntries\)/, '普通街机 ZIP 上传（含旧 8BG 解出的明文）必须自动检查并拍平子目录成员，并复用已验证的目录；Play! 专用包保留其内部清单结构')
 assert.match(gameForm, /自动拍平 \$\{flattenedArcadeFiles\} 个子目录 ROM 文件/, '上传完成后应说明自动拍平结果')
 assert.match(biosPanel, /namcoC76BiosProblem\(entries\)/, 'C76 BIOS 必须在上传前校验内容')
 assert.match(biosPanel, /arcadeBiosFileNameForBinding\(id\)/, '固定 BIOS 文件名必须用于上传和手工绑定校验')

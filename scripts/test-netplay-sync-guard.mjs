@@ -17,12 +17,11 @@ assert.ok(
     && startNetplay.indexOf('await fetchIceConfig()') < startNetplay.indexOf('np.openRoom('),
   '建 PeerConnection 前必须先等短期 TURN 凭证刷新完成',
 )
-const slugHookAt = adapter.indexOf('const addSlug = Boolean(options.gameSlug')
-const slugHookEnd = adapter.indexOf('return realEmit(event, ...emitArgs)', slugHookAt)
-assert.ok(slugHookAt >= 0 && slugHookEnd > slugHookAt, '必须能定位最后一刻的房间身份补丁')
 assert.match(
-  adapter.slice(slugHookAt, slugHookEnd),
-  /event === 'open-room' \|\| event === 'join-room'[\s\S]*?game_slug: options\.gameSlug/,
+  adapter,
+  // ebb8156 起同一处还要给观众进房补 role: 'spectator'，条件变成 (addSlug || asSpectator)，
+  // 中间多了回执 / 握手轨迹的包装；slug 仍只看 addSlug，开房与加房两种事件都要带。
+  /const roomEvent = event === 'open-room' \|\| event === 'join-room'[\s\S]{0,3000}if \(\(addSlug \|\| asSpectator\) && roomEvent[\s\S]{0,800}\.\.\.\(addSlug \? \{ game_slug: options\.gameSlug \} : \{\}\)/,
   '开房和加房都必须带稳定 slug，不能只靠可能碰撞的 32 位 gameId',
 )
 

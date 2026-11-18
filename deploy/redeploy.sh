@@ -31,13 +31,25 @@ PLAY_JS_CHECK_URL="${PLAY_JS_CHECK_URL:-http://127.0.0.1:8788/play/Play.js}"
 BACKUP_SCRIPT="${BACKUP_SCRIPT:-$REPO_DIR/deploy/backup/8bitgo-backup.sh}"
 LOG_DIR="${LOG_DIR:-/var/log}"
 LOG="$LOG_DIR/8bitgo-redeploy.log"
-BRANCH="${BRANCH:-$(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)}"
+# 游离 HEAD 时 `rev-parse --abbrev-ref` 返回字面量 "HEAD"，下一步会去 fetch / reset 一个叫 HEAD 的分支；
+# 只认真正的分支名，取不到就退回 main。
+BRANCH="${BRANCH:-$(git -C "$REPO_DIR" symbolic-ref --short -q HEAD 2>/dev/null || echo main)}"
 PULL_LATEST="${PULL_LATEST:-1}"
 RUN_TESTS="${RUN_TESTS:-0}"
 HEALTH_TRIES="${HEALTH_TRIES:-30}"   # 重启后最多轮询 30 次，每次 2s
 
 log()  { printf '%s  %s\n' "$(date '+%F %T')" "$*" | tee -a "$LOG" >&2; }
-die()  { log "❌ $*"; exit 1; }
+# 飞书告警（server/scripts/notify-lark.mjs，webhook 在 server/.env 的 ALERT_LARK_WEBHOOK）。
+# 发不出去绝不影响部署本身；node 还没进 PATH（最早那几道检查）时静默跳过。
+notify() {  # $1 = 标题  $2 = 正文
+  local script="${SERVER_DIR:-/var/www/8bitgo/server}/scripts/notify-lark.mjs"
+  [ -f "$script" ] && command -v node >/dev/null 2>&1 || return 0
+  node "$script" --title "$1" --text "$2" >> "$LOG" 2>&1 || true
+}
+deploy_context() {
+  printf '起点：%s\n当前：%s\n日志：%s' "${BEFORE_COMMIT:-?}" "$(git -C "$REPO_DIR" log -1 --format='%h %s' 2>/dev/null || echo ?)" "$LOG"
+}
+die()  { log "❌ $*"; notify "❌ 部署中止" "$*"$'\n'"$(deploy_context)"; exit 1; }
 
 [ "$(id -u)" -eq 0 ] || die "要 root：sudo -E ./redeploy.sh"
 [ -d "$REPO_DIR/.git" ] || die "不是 git 仓库：$REPO_DIR"
@@ -46,6 +58,14 @@ command -v systemctl >/dev/null || die "没有 systemctl"
 command -v curl >/dev/null || die "没有 curl"
 command -v git >/dev/null || die "没有 git"
 mkdir -p "$LOG_DIR"
+
+# 部署锁：同一时刻只允许一个部署；定时开局巡检（deploy/smoke-watch）拿同一把锁，部署中它会跳过，
+# 它在跑时这里等它结束（最多 15 分钟）—— 免得构建期间半新的 dist / 重启的几秒 502 被巡检误报。
+DEPLOY_LOCK_FILE="${DEPLOY_LOCK_FILE:-/run/lock/8bitgo-deploy.lock}"
+if command -v flock >/dev/null; then
+  exec 8>"$DEPLOY_LOCK_FILE" || die "打不开部署锁 $DEPLOY_LOCK_FILE"
+  flock -w 900 8 || die "等了 15 分钟还拿不到部署锁：另一个部署或开局巡检还在跑"
+fi
 
 # ───────────── 把 node/npm 塞进 PATH ─────────────
 # systemd 的 oneshot service 默认 PATH 很窄，Node 若是 nvm/volta 装的就找不到。
@@ -94,18 +114,21 @@ rollback() {
   # 注意：npm ci 已经在上面按「新提交」装过了，这里直接 checkout 旧提交 + 重建。
   # 若两个提交的依赖不同，旧源码可能和当前 node_modules 不完全匹配；
   # 真遇到这种情况，回滚后手动在 server/ 和根目录各跑一次 npm ci 即可。
-  git checkout --quiet "$BEFORE_COMMIT" || { log "⚠️ git checkout 失败，需人工介入"; return; }
-  ( cd "$REPO_DIR"  && npm run build ) || { log "⚠️ 回滚构建失败，需人工介入"; return; }
+  # reset 而不是 checkout：checkout 一个提交会让仓库停在游离 HEAD，下次部署按分支拉取时就对不上了
+  git reset --hard --quiet "$BEFORE_COMMIT" || { log "⚠️ git reset 失败，需人工介入"; notify "🔴 回滚失败，需人工介入" "git reset 到 ${BEFORE_COMMIT} 失败"$'\n'"$(deploy_context)"; return; }
+  ( cd "$REPO_DIR"  && npm run build ) || { log "⚠️ 回滚构建失败，需人工介入"; notify "🔴 回滚失败，需人工介入" "回滚到 ${BEFORE_COMMIT} 后重新构建失败，线上 dist 可能是半新的"$'\n'"$(deploy_context)"; return; }
   ( cd "$SERVER_DIR" && npm run migrate ) || log "⚠️ 回滚迁移失败（破坏性迁移无法自动还原）"
-  systemctl restart "$UNIT" || { log "⚠️ 回滚重启失败，需人工介入"; return; }
+  systemctl restart "$UNIT" || { log "⚠️ 回滚重启失败，需人工介入"; notify "🔴 回滚失败，需人工介入" "回滚后 systemctl restart $UNIT 失败"$'\n'"$(deploy_context)"; return; }
   if health_ok; then
     log "✅ 已回滚到 ${BEFORE_COMMIT}"
+    notify "⚠️ 部署失败，已自动回滚" "${ROLLBACK_REASON:-新版本没通过发布检查}"$'\n'"已回滚到 ${BEFORE_COMMIT}，线上恢复健康。"$'\n'"$(deploy_context)"
     # 失败的新版可能已经被边缘缓存了一些页面；旧提交里若有清缓存脚本就清一次
     if [ -f "$SERVER_DIR/scripts/purge-edge-html.mjs" ]; then
       ( cd "$SERVER_DIR" && node scripts/purge-edge-html.mjs ) || log "⚠️ 回滚后清 HTML 缓存失败"
     fi
   else
     log "❌ 回滚后仍不健康"
+    notify "🔴 回滚后线上仍不健康，需立即人工处理" "${ROLLBACK_REASON:-新版本没通过发布检查}"$'\n'"已回滚到 ${BEFORE_COMMIT}，但健康检查仍失败。"$'\n'"$(deploy_context)"
   fi
 }
 
@@ -207,7 +230,22 @@ fi
 
   # ── 5. 构建 ──
 log "── 步骤 5/7  构建（client + server 包）──"
-( cd "$REPO_DIR" && npm run build ) || die "构建失败"
+# ⚠️ Vite 直接写进线上正在服务的 dist/client（emptyOutDir=false，见 AGENTS §2.25.3），express.static 每次请求都读盘。
+# prebuild 的门禁失败时 dist 还没动，停下即可；可一旦 vite 已经开始写（postbuild 检查失败、server 包构建失败），
+# 新文件已经在对外提供，旧进程又不会重启 —— 必须回滚重建，不能只 die。
+BUILD_MARK="$(mktemp)"
+if ! ( cd "$REPO_DIR" && npm run build ); then
+  if [ -n "$(find "$REPO_DIR/dist" -type f -newer "$BUILD_MARK" -print -quit 2>/dev/null)" ]; then
+    rm -f "$BUILD_MARK"
+    log "❌ 构建失败，且 dist 已被部分改写（线上正在发半新文件），回滚到 ${BEFORE_COMMIT}"
+    ROLLBACK_REASON="构建失败，且线上 dist 已被部分改写"
+    rollback
+    exit 1
+  fi
+  rm -f "$BUILD_MARK"
+  die "构建失败（构建前门禁拦下，线上 dist 未改动）"
+fi
+rm -f "$BUILD_MARK"
 
 # ── 6. 迁移 ──
 log "── 步骤 6/7  数据库迁移 ──"
@@ -220,22 +258,46 @@ if health_ok && ps2_headers_ok; then
   # 页面在 Cloudflare 边缘缓存一天（见 server/src/edge-purge.js），新前端要靠这一步立刻生效。
   # 清失败不回滚：站点是好的，只是旧 HTML 要等过期（旧哈希资源仍保留在 dist，不会白屏）。
   ( cd "$SERVER_DIR" && npm run --silent purge:edge-html ) || log "⚠️ 清 Cloudflare HTML 缓存失败，新版要等边缘过期才全量生效"
-  # 可选：真把一款 NES、一款街机跑到首帧（scripts/smoke-start.mjs，需要本机有 Chrome / Chromium）。
-  # 默认关；SMOKE_TEST=1 打开。失败只告警、不回滚：站点进程是健康的，游戏打不开多半是
-  # 运行时 / ROM / CDN 的问题，回滚代码未必有用，需要人看诊断再决定。
-  if [ "${SMOKE_TEST:-0}" = "1" ]; then
-    log "── 开局冒烟（SMOKE_TEST=1）──"
-    ( cd "$REPO_DIR" && node scripts/smoke-start.mjs --base "${SMOKE_BASE_URL:-http://127.0.0.1:8788}" ) 2>&1 | tee -a "$LOG" >&2
-    case "${PIPESTATUS[0]}" in
+  # 开局冒烟：真把一款 NES、一款街机跑到首帧（scripts/smoke-start.mjs，需要本机有 Chrome / Chromium）。
+  # 2026-11-17 全站事故之后默认打开：健康检查 200 只说明进程活着，那次所有 EmulatorJS 游戏都打不开，
+  # 健康检查照样全绿。失败先重试一次（排除 CDN / ROM 线路的瞬时抖动），仍失败就回滚。
+  #   SMOKE_TEST=0       整个跳过（例如 CDN 正在出故障、需要强行发布修复时）
+  #   SMOKE_ROLLBACK=0   失败只告警、不回滚
+  # 没装 Chrome 时退出码 2：只能告警。生产机装上 Chromium 才有这道保险（apt / snap 均可，见 smoke-start.mjs 的候选路径）。
+  if [ "${SMOKE_TEST:-1}" = "1" ]; then
+    smoke_once() {
+      ( cd "$REPO_DIR" && node scripts/smoke-start.mjs --base "${SMOKE_BASE_URL:-http://127.0.0.1:8788}" ) 2>&1 8>&- | tee -a "$LOG" >&2
+      return "${PIPESTATUS[0]}"
+    }
+    log "── 开局冒烟 ──"
+    smoke_once; SMOKE_RC=$?
+    if [ "$SMOKE_RC" = "1" ]; then
+      log "⚠️ 开局冒烟失败，30 秒后重试一次（排除瞬时网络问题）"
+      sleep 30
+      smoke_once; SMOKE_RC=$?
+    fi
+    case "$SMOKE_RC" in
       0) log "开局冒烟通过" ;;
-      2) log "⚠️ 开局冒烟跳过（没有 Chrome / 环境不满足）" ;;
-      *) log "⚠️ 开局冒烟失败：站点已上线，但上面这些游戏没跑到首帧，请看后台「错误诊断」" ;;
+      2)
+        log "⚠️⚠️ 开局冒烟没有运行完（没有 Chrome / Chromium，或冒烟脚本自身出错，见上面的输出）：这次发布没有经过「游戏能开局」验证"
+        notify "⚠️ 部署完成，但开局冒烟没能运行" "这次发布没有经过「游戏能开局」验证（Chrome 不见了或冒烟脚本出错）。"$'\n'"$(deploy_context)"
+        ;;
+      *)
+        if [ "${SMOKE_ROLLBACK:-1}" = "1" ]; then
+          log "❌ 开局冒烟两次失败：新版本游戏跑不到首帧，回滚到 ${BEFORE_COMMIT}（确认是 CDN / ROM 故障而非代码问题时，可用 SMOKE_TEST=0 重新发布）"
+          ROLLBACK_REASON="开局冒烟两次失败：新版本游戏跑不到首帧（确认是 CDN / ROM 故障时可用 SMOKE_TEST=0 重新发布）"
+          rollback
+          exit 1
+        fi
+        log "⚠️ 开局冒烟失败（SMOKE_ROLLBACK=0，不回滚）：站点已上线，但这些游戏没跑到首帧，请看后台「错误诊断」"
+        ;;
     esac
   fi
   log "✅ 部署完成：$(git rev-parse --short HEAD)"
   exit 0
 fi
 log "⚠️ 健康检查或 PS2 隔离响应头未通过，回滚到 ${BEFORE_COMMIT}"
+ROLLBACK_REASON="重启后健康检查或 PS2 隔离响应头未通过"
 rollback
 log "❌ 部署失败且回滚后仍不健康，请立即人工处理"
 exit 1

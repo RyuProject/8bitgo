@@ -64,7 +64,6 @@ const player = strip(read('src/emulator/EmulatorPlayer.tsx'))
 const jsdos = strip(read('src/emulator/adapters/jsdos.ts'))
 const windowsLaunch = strip(read('src/emulator/windowsLaunch.ts'))
 const prewarm = strip(read('src/emulator/prewarm.ts'))
-const preloadPolicy = strip(read('src/emulator/preloadPolicy.ts'))
 
 /**
  * 全部跑完再汇总，不在第一条就退出。
@@ -123,7 +122,8 @@ check('restartSession 走 canRestartInPlace 判定，没有另写一份', () => 
 /*
   「哪些会话不能重挂引擎」这个判断，播放器里有七处要用：工具栏重开、加载失败后的自动重试、
   ROM 迁移期间切备用文件、GBA table trap 后清缓存重取、NDS 新核心崩溃后切兼容核心、
-  FBNeo 内存不足后切低内存核心、PSX 内存不足后切低内存核心。七处必须是同一份。
+  内存不足后切低内存核心（FBNeo 与 PS1 共用 onOutOfMemory 里算好的同一个 restartable），
+  以及 PS1 引擎加载前的内存预检在本局原地换低内存核心（inPlaceMemoryFallback）。七处必须是同一份。
 
   以前自动重试那儿手写着 `!session.netplay && !session.cloud && !session.live`。
   留着它才是真正的风险：以后新增一种「游戏不在本机跑」的会话，
@@ -132,13 +132,17 @@ check('restartSession 走 canRestartInPlace 判定，没有另写一份', () => 
 */
 check('自动重试和读档共用同一份会话判断，没有第二份手写的', () => {
   const hits = player.match(/canRestartInPlace\(session\)/g) ?? []
-  assert.equal(hits.length, 7, `canRestartInPlace(session) 用了 ${hits.length} 处，应该是重开、自动重试、ROM 故障恢复、NDS / FBNeo / PSX 核心回退七处`)
+  assert.equal(hits.length, 7, `canRestartInPlace(session) 用了 ${hits.length} 处，应该是重开、自动重试、两类 ROM 故障恢复、NDS 核心回退、内存不足换低内存核心、PS1 内存预检原地换核心七处`)
   assert.match(player, /ndsCrashFallbackCore\(crashedCore, canRestartInPlace\(session\)/)
-  assert.match(player, /const restartable = canRestartInPlace\(session\) && !session\.coreOverride[\s\S]{0,160}?fbneoMemoryFallbackCore\([^\n]*restartable\)/)
+  // 2026-11 起 onOutOfMemory 先算一次 restartable，FBNeo 与 PS1 两个低内存回退都只能用它，不许各自再手写一份
+  assert.match(player, /const restartable = canRestartInPlace\(session\) && !session\.coreOverride/)
+  assert.match(player, /fbneoMemoryFallbackCore\(session\.platform, failedCore, restartable\)/)
+  assert.match(player, /psxMemoryFallbackCore\(session\.platform, failedCore, restartable\)/)
+  assert.match(player, /inPlaceMemoryFallback:[\s\S]{0,240}?psxMemoryFallbackCore\([^\n]*canRestartInPlace\(session\)/)
   assert.match(player, /isRomPackUrl\(session\.game\)[\s\S]{0,100}?canRestartInPlace\(session\)/)
   assert.match(player, /typeof session\.game === 'string'[\s\S]{0,160}?canRestartInPlace\(session\)/)
   // 2026-10 起中间多了一道「重试也没用」的判断（配置错误、确定性错误），会话判断仍须走 canRestartInPlace
-  assert.match(player, /if \(!ready && !retryUseless && canRestartInPlace\(session\) && attempt < AUTO_RETRY_LIMIT &&/)
+  assert.match(player, /if \(!ready && (?:!retryUseless && )?canRestartInPlace\(session\) && attempt < AUTO_RETRY_LIMIT &&\s+totalRetries < AUTO_RETRY_TOTAL_LIMIT\)/)
   assert.doesNotMatch(
     player,
     /!session\.netplay && !session\.cloud && !session\.live/,
@@ -332,9 +336,9 @@ check('Win95 / PC-98 悬停时预热正确的 DOSBox-X 核心和系统盘版本�
   assert.match(player, /prewarmSystemCache\(effectiveDosSystemUrl\)/)
   assert.match(prewarm, /jspiEnabled\(\) \? 'wdosbox-x-jspi' : 'wdosbox-x'/)
   assert.match(prewarm, /warmHttpCache\(`\$\{emulatorRoot\}\$\{stem\}\.wasm`\)/)
-  assert.match(prewarm, /return allowsSpeculativePlayerPreload\(connection\)/, '大核心预热必须统一经过网络预算门')
-  assert.match(preloadPolicy, /if \(connection\.saveData\) return false/, '省流量模式不能预拉大核心')
-  assert.match(preloadPolicy, /connection\.effectiveType && connection\.effectiveType !== '4g'/, '非 4G 网络不能预拉大核心')
+  assert.match(prewarm, /allowsSpeculativePlayerPreload\(connection\)/)
+  assert.match(read('src/emulator/preloadPolicy.ts'), /if \(connection\.saveData\) return false/)
+  assert.match(read('src/emulator/preloadPolicy.ts'), /connection\.effectiveType !== '4g'/)
 })
 
 check('配置流式目录后不再下载整包 ROM', () => {

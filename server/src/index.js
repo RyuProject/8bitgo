@@ -19,6 +19,7 @@ import { ADMIN_AUTH_DISABLED, adminBackdoorFatal, authSecretsFatal, optionalUser
 import { CACHE, noStore, staticCacheHeaders } from './cache.js'
 import { gzipResponse } from './compress.js'
 import { precompressedStatic } from './precompressed-static.js'
+import { runtimeVersionGuard } from './runtime-version-guard.js'
 import { take, clientKey } from './rateLimit.js'
 import { authRouter } from './routes/auth.js'
 import { gamesRouter } from './routes/games.js'
@@ -542,6 +543,12 @@ if (ssrAvailable()) {
     PPSSPPSDL.data 这类 octet-stream 大文件 Cloudflare 不压：有预压缩的 `.br` 就由源站直接吐
     （19.4MB → 约 9.2MB）。必须在 express.static 之前；条件不满足时原样放行给它。
   */
+  /*
+    /emulatorjs/ 的版本只在查询串里（?v=<内容哈希>），而静态中间件忽略查询串。版本号与磁盘内容不一致的响应
+    标成 no-store，免得部署窗口 / 回滚期间把另一份引擎锁进边缘一年（runtime-version-guard.js）。
+    必须在下面两个静态中间件之前：它们的 setHeaders 读 res.locals.runtimeVersionMismatch。
+  */
+  app.use(runtimeVersionGuard(CLIENT_DIR))
   app.use(precompressedStatic(CLIENT_DIR, { setHeaders: staticCacheHeaders }))
 
   // 带哈希的构建产物可以长期缓存；index.html 不能缓存（每次都要走 SSR）

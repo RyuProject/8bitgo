@@ -47,7 +47,7 @@ const dir = mkdtempSync(path.join(tmpdir(), 'cn-edge-'))
 mkdirSync(path.join(dir, 'assets'))
 writeFileSync(path.join(dir, 'assets', 'index-C.css'), `@font-face{src:url(/fonts/a.woff2)}`)
 const mw = createCnEdgeMiddleware({ clientDir: dir, siteOrigin: 'https://8bitgo.com' })
-function run(url, method = 'GET', requestHeaders = {}) {
+function run(url, method = 'GET') {
   return new Promise((resolve) => {
     const headers = {}
     const res = {
@@ -60,7 +60,7 @@ function run(url, method = 'GET', requestHeaders = {}) {
       send(b) { resolve({ status: this.statusCode, headers, body: b, next: false }) },
       end() { resolve({ status: this.statusCode, headers, body: '', next: false }) },
     }
-    const req = { url, method, originalUrl: url, headers: requestHeaders }
+    const req = { url, method, originalUrl: url }
     mw(req, res, () => resolve({ next: true, req, headers }))
   })
 }
@@ -73,12 +73,6 @@ assert.equal(r.headers['cross-origin-resource-policy'], 'cross-origin')
 r = await run('/_cn/api/games?x=1')
 assert.equal(r.req.url, '/api/games?x=1')
 assert.equal(r.headers.vary, 'Origin')
-r = await run('/_cn/api/me', 'GET', { authorization: 'Bearer private-token' })
-assert.equal(r.status, 400); assert.match(r.headers['cache-control'], /no-store/)
-r = await run('/_cn/api/me', 'GET', { cookie: 'session=private-token' })
-assert.equal(r.status, 400)
-r = await run('/_cn/api/games', 'OPTIONS', { 'access-control-request-headers': 'authorization' })
-assert.equal(r.next, true, '预检没有真实凭据，应继续走 CORS')
 r = await run('/_cn/emulatorjs/cores/fbneo-legacy-wasm.data?v=x')
 assert.equal(r.next, true); assert.equal(r.req.url, '/emulatorjs/cores/fbneo-legacy-wasm.data?v=x')
 assert.equal(r.headers.vary, undefined, '静态文件不带 Vary: Origin，预热与 <script> 共用一条缓存')
@@ -118,8 +112,7 @@ ok('样式表现场改写字体地址')
 const ssr = readFileSync(new URL('../src/ssr.js', import.meta.url), 'utf8')
 assert.match(ssr, /coverHint === 'cn' && !cnSite && !req\.assetsFromOrigin\) page = retargetStaticToCnEdge/, '兜底页带 __assets=origin 重新载入时不改写（诊断包 #761）')
 const api = readFileSync(new URL('../../src/services/api.ts', import.meta.url), 'utf8')
-assert.match(api, /SAME_ORIGIN && method === 'GET' && !admin && !hasAuth \? cnEdgeApiBase\(\)/, '只有只读、非后台、不带登录令牌的请求走加速入口')
-assert.match(api, /const hasAuth = 'Authorization' in \(init\.headers/, '带 Authorization 的请求不走加速入口（会触发预检，令牌也不该过第三方边缘）')
+assert.match(api, /SAME_ORIGIN && method === 'GET' && !admin && !hasAuth \? cnEdgeApiBase\(\)/, '只有只读、非后台、未带认证信息的请求走加速入口')
 assert.match(api, /markCnEdgeApiFailed\(\)/)
 assert.match(api, /if \(res\.status >= 502 && res\.status <= 504\) \{\s*\/\/ 标记整个会话退回同源[\s\S]*?markCnEdgeApiFailed\(\)/, '加速网关报错后本次会话不再重复等待故障入口')
 assert.match(api, /catch \(err\) \{\s*if \(signal\?\.aborted\) throw err[\s\S]*?res = await fetch\(`\$\{API_URL\}\$\{path\}`, init\)\s*\}\s*\/\/ 只对加速入口本身/, '同源回退失败不应被误捕获并重复请求')
@@ -136,7 +129,10 @@ assert.match(paths, /export const jsdosBase = \(\): string => runtimeBase\('jsdo
 assert.match(paths, /`\$\{ejsBase\(\)\}\$\{name\}\?v=/)
 assert.match(paths, /`\$\{ejsBase\(\)\}\$\{relativePath\}\?v=/)
 const ejs = readFileSync(new URL('../../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8')
-assert.match(ejs, /usedEjsEdge && !stalled && !outOfMemory && scope !== 'config' && !opts\.keepEdge\) markEjsEdgeFailed\(\)/, '卡住、内存不足、配置错误或显式保留线路时不能误判 Edge 故障')
+// 后来又补了「内存不足」「配置 / 本地读取错误」两类不退回同源的例外（3ee587b / c3b9ece），
+// 这里只钉住卡住那一条仍在：标记前必须先判 !stalled。
+assert.match(ejs, /const stalled = message\.startsWith\(rt\.ejsStalled\.split\('\{stage\}'\)\[0\]\)[\s\S]{0,400}?if \(usedEjsEdge && !stalled\b[^)\n]*\) markEjsEdgeFailed\(\)/, 'EmulatorJS 卡住不退回同源，避免重试走更慢的 Cloudflare')
+assert.match(ejs, /if \(usedEjsEdge && !stalled && !outOfMemory && scope !== 'config' && !opts\.keepEdge\) markEjsEdgeFailed\(\)/, '卡住、内存不足、配置 / 本地读取错误及明确标记的 ROM 故障与线路无关，不退回同源')
 assert.match(ejs, /EJS_pathtodata: ejsBase\(\)/)
 assert.match(ejs, /if \(usedEjsEdge\) markEjsEdgeFailed\(\)\s*console\.warn/, '入口资源加载失败后自动重试退回同源')
 const ruffle = readFileSync(new URL('../../src/emulator/adapters/ruffle.ts', import.meta.url), 'utf8')

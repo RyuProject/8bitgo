@@ -124,6 +124,52 @@ grep -c 'this.functions.saveStateInfo()' public/emulatorjs/emulator.min.js   # �
   适配器现在仅对远端 8BG GBA 的启动期 table trap 清理 ROM 缓存与续传片、强制网络重取一次；刷新后仍失败则删除刚写入的缓存并停止，不循环重试。新增恢复只依赖 `isWasmRuntimeCrash` 识别真实 RuntimeError，不看核心普通日志。
   本地已实测排除 SRAM / Flash 存档（含错尺寸、乱码）、金手指、mGBA 全部核心选项、回退 / 快进 / 旋转、LCD shader；再出现先看诊断包里的 `describeBootState` 行和 `[core-crash]` / ROM 刷新日志。
 
+### 2.7.2 🔴 共享引擎坏一处 = 全站游戏打不开：五道防线不准拆（2026-11-17 事故）
+
+**经过**：79be63d 给 `patch-emulatorjs.mjs` 加了一段 XHR 兜底，补丁字符串里写了正则 `/^(?:text/html|…)\b/i`。
+字面量里的 `/` 没转义，`/^(?:text/` 就结束了，`html` 被当成 flag —— **整份 emulator.min.js 无法解析**。
+loader.js 的 `import()` 失败，NES / SFC / GBA / 街机 / PS1 …… 所有 EmulatorJS 平台同时报
+`Failed to load emulator.min.js because it's likely that the minified files are missing`。
+补丁检查只查「字符串在不在」，tsc / lint / 构建全绿；本该拦住它的 `test:ejs-download` 当时是红的，没人跑。
+上游 loader 又只在 debug 时打印真实异常，诊断包 #1094–#1104 被误判成网络 / 边缘缓存问题，94c4876 加的「备用入口」
+指向的还是同一份坏文件。修复：15e6830。
+
+**现在的防线，每一道都对应这次的一个漏洞，不准为了让构建变绿而拆掉**：
+
+1. **生成时**：`patch-emulatorjs.mjs` 写盘前按 ES 模块解析一遍（`scripts/lib/js-module-syntax.mjs`），解析不了不写。
+   往补丁字符串里写正则时，字面量里的 `/` 一律转义，能用字符串比较就别用正则。
+2. **构建前 / 后**：`check-emulatorjs.mjs` 解析 emulator.min.js，并在 Node 里**真 import 一次**
+   （`scripts/lib/ejs-engine-import-smoke.mjs`，宽容 DOM 桩，只求值模块顶层），要求默认导出是带关键方法的 EmulatorJS 类；
+   loader.js 必须是合法经典脚本，且保留打印 import 异常那一行。
+   `check-runtime-syntax.mjs`（prebuild + postbuild `--dist`）对**所有**自托管运行时 JS 与 HTML 内联脚本做同样的解析门禁
+   ——js-dos、PPSSPP、Dolphin、J2ME、PvZ、CS1.6 的补丁脚本都可能以同样方式打挂一整个平台。新增不经浏览器加载的构建期源码
+   要放进它的 `SKIP_PREFIXES` 并写明原因，别用「整个目录跳过」偷懒。`test:ejs-download` / `test:ejs-failure-reasons` 也挂在 prebuild 上。
+3. **源站**：`/emulatorjs/` 是「同一路径 + `?v=<内容哈希>`」，静态中间件忽略查询串。`runtime-version-guard.js`
+   按内容（sha256 前 16 位，按 size+mtime 缓存）核对 `?v=`，对不上的响应 **no-store**（含 CDN-Cache-Control）。
+   否则部署构建窗口、构建失败、回滚期间，旧版本号会被缓存成新内容一年 —— **回滚也救不回来**。
+   `precompressed-static.js` 的 `.br` 旁注同样按 sha256 + brBytes 校验，不再只比字节数（等长修改会把旧引擎挂在新版本号下）。
+4. **部署**：`redeploy.sh` 构建失败且 `dist/` 已被改写时回滚（Vite 直接写线上目录，只 die 会留下半新文件）；
+   重启后默认跑 `smoke-start.mjs`（一款 NES + 一款 CPS1 跑到首帧），失败重试一次，仍失败回滚。
+   **生产机必须装 Chromium**，否则冒烟只能告警跳过（日志里是 `⚠️⚠️ 开局冒烟没有运行`）。确认是 CDN / ROM 故障而非代码问题时
+   用 `SMOKE_TEST=0` 强行发布修复。回滚改为 `git reset --hard`（留在分支上），分支名用 `symbolic-ref`，游离 HEAD 不再污染下次部署。
+   ⚠️ 退出码 2 也包括「脚本自身出错」，不只是没有 Chrome。2026-11-18 生产两次部署：两款游戏都到了首帧，随后删 Chrome profile
+   报 `ENOTEMPTY`（渲染 / GPU 子进程还在写），退出码 2 → 记成「冒烟没有运行」、发飞书告警、/tmp 每次留下约 30MB。
+   现在 Chrome 以 `detached` 自成进程组、关闭时整组发信号，删 profile 带重试且只告警不抛错，定时巡检再兜底清 30 分钟前的残留。
+   收尾的任何错误都不能改冒烟结论（`test:smoke-start` 守着）。
+5. **现场**：loader.js 把 `[EJS] import <文件> failed: <异常>` 写进控制台，适配器在最终失败日志里带上它，诊断包一眼能分出
+   「语法错误」和「网络断了」。这一行的措辞不能撞上 `FATAL_PHRASES`，否则会抢断回退流程（`test:ejs-failure-reasons` 守着）。
+
+6. **告警（2026-11-18）**：事故持续几个小时没人知道——聚集报警只发邮件，而生产上邮箱根本没配。现在统一发飞书机器人
+   （`server/src/lark-notify.js`，webhook 在 `server/.env` 的 `ALERT_LARK_WEBHOOK`，不进 git）：玩家启动失败按特征聚集
+   （`diag-alert.js`，邮件 / 飞书任一通道成功即算报出）、部署中止 / 自动回滚（`redeploy.sh`）、**每 15 分钟的公网开局巡检**
+   （`deploy/smoke-watch/`，systemd timer，走 `https://8bitgo.com` 真实路径，失败复核一次再报、持续故障 2 小时提醒一次、恢复再报）、
+   看门狗重启 / 停手。shell 统一调 `server/scripts/notify-lark.mjs`（`--dedupe` 去重，发不出去永远不拖垮调用方）。
+   部署与巡检共用 `/run/lock/8bitgo-deploy.lock`：部署中巡检跳过，巡检在跑时部署等它。生产机的 Chrome 是 Google 官方 `.deb`
+   （snap 版的私有 `/tmp` 读不到 DevTools 端口）；`smoke-start.mjs` 退出前必须等 Chrome 退出并删掉 profile（以前每次留 76MB）。
+   看门狗是装在 `/usr/local/bin` 的副本，改了 `deploy/watchdog/8bitgo-watchdog.sh` 要重新 install。
+
+**`npm test` 不能长期红着**：事故当天 main 上有 28 套测试是红的，本该报警的那套就混在里面。改了产品行为就同步改测试断言；
+测试红了先修，别带着红灯发布。
 
 ### 2.8 街机靠**压缩包文件名**认游戏
 
@@ -3555,6 +3601,15 @@ EdgeOne 只能用境外（香港）节点。主站、ROM、Pages 子域都不受
     自动重试退回同源。引擎 IndexedDB 核心缓存以 URL 为键，大陆老访客换线路后会重下一次核心。
     ⚠️ `/_cn` 下的静态文件**不能带 `Vary: Origin`**（cors 中间件会加，cn-edge 对非 API 路径删掉）：预热 fetch 带 Origin、
     `<script>` / `<link>` 不带，Vary 会让同一 URL 存两条缓存、预热白做。EdgeOne 已缓存过带这个头的副本，所以换过一代 `-cnedge1`。
+    - **EmulatorJS 主入口导入失败要按运行时线路故障处理**（2026-11-17，诊断包 #1012，《忍者龟 3》）：`loader.js` 捕获
+      `emulator.min.js` 动态导入失败后只写控制台，并继续请求本站不发布的 `emulator.js`；适配器若漏掉这两条错误，启动看门狗会等约 30 秒，
+      报成卡在 `fceumm`，播放器还会把同一个引擎故障误判为英文 ROM 失败并切西语 ROM。现在把入口失败纳入致命错误，归类 `runtime`，
+      立即标记当前 EdgeOne 线路失败并让播放器用同一 ROM 从主站重试。现场没有记录失败请求的 HTTP 状态，故只能确认入口加载链失败，
+      不能仅凭这份样本断言是 EdgeOne 缓存、瞬时链路还是浏览器拦截。
+    - **主入口的第一次失败不是最终失败**（2026-11-17，诊断包 #1094–#1104）：Chrome / Safari、Android / iOS / ChromeOS、多个地区都在
+      `Failed to load emulator.min.js` 后紧接着尝试回退；适配器此前在第一条日志就拆掉 iframe，抢断回退流程。并且上游默认回退到未发布的
+      `src/emulator.js`。现在只在 loader.js 发出最终 `EmulatorJS failed to load` 后报致命错误；`EJS_paths` 把回退入口指向同一引擎构建的独立
+      `?fallback=1` URL，绕过失败的动态 import URL / 边缘缓存键。现场没留原始异常与失败状态，具体是哪一跳首次失败仍无法断言。
   - **Ruffle（Flash）与 js-dos（DOS）同理**（2026-11-08）：`ruffleBase()` / `jsdosBase()` 与 `ejsBase()` 共用
     `paths.ts` 的 `runtimeBase`。线路**每页只定一次**（预热与正式加载必须同一个 URL）；大陆访客一律走 EdgeOne。
     入口脚本取不到当场换同源；开局前报错标记失败，自动重试走同源（EmulatorJS 的「卡住」不算）。
@@ -3628,6 +3683,15 @@ EmulatorJS 引擎日志与加载阶段文字（`diagLog`）、下载器的重试
   的线路上，物理上就要 35～60 秒；诊断包却只有 start_click → slow_start 和一条第 0 片，后续分片还没进 Resource Timing）。
   `startupProgressTrace.ts` 记下最后进度：slow_start 的原因原文带上阶段（后台归组时两类自然分开），快照行带字节数与平均速率。
   ROM Worker 发 `Timing-Allow-Origin`，否则跨源请求的传输量恒为 0；边缘已缓存的旧响应要等过期才带上。
+- **诊断归组要给出可审阅的判断，不要把相关性写成根因**（2026-11-18）：前端持续观察 Resource Timing，缓冲区写满时先保留慢 / 大 / 失败候选，再逐步扩容且不清除历史记录（页面资源自修复和 J2ME 看门狗也读取该列表）；资源型 `error` 事件另外记录失败的脚本 / 样式 / 媒体入口，避免快速失败不进性能表。服务端 `diagnoseStartupFailure()` 用脱敏后的现场按固定规则标出类别、阶段、把握度与安全的核心名；明确区分 ROM 下载、ROM 内容、街机 ROM 集 / BIOS、引擎资源、WebGL、内存、存储、输入权限和核心运行时错误。`table index` 等运行时陷阱只标「待确认」，不能仅凭一条错误断言 ROM 损坏。后台现场和「复制给 AI」同时展示分类与把握度；新增字段必须在 `normalizeDiagnostics()` 白名单和隐私政策中同步维护。
+- **慢启动先看进度快照还在不在动，别一律标「停滞」**（2026-11-18 诊断包 #1155 / #1156）：slow_start 只是「20 秒还没出画面」的时间点。
+  #1155《MDK》iOS Safari：114MB 普通 DOS 整包（无 Sockdrive），第 19.9 秒仍以 31 Mbps 在下，被标成「ROM 下载或流式读取停滞」；
+  #1156《西游释厄传》：21MB ROM 被 `effectiveType=3g` 压成单路串行下了 19.4 秒，第 19.7 秒进 assets、0.3 秒后上报，被标成「模拟器依赖资源加载停滞」。
+  `diagnoseSlowStartProgress()` 读 snapshot 行（`readProgressSnapshot`，行的 t 即上报时刻）：最后进度在上报前 3 秒内、ROM 未下完 →
+  `progress.rom_downloading`「ROM 仍在下载，进度正常」；ROM 刚下完且下载用掉一半以上时间 → `progress.rom_dominated`。两者都带体积分档
+  artifact（`rom-64-256mb` 等），大包和小包慢网分开归组。流式读盘、命中缓存、进度几秒没动、下完很久仍卡在后面阶段，维持原「停滞」归类；
+  只作用于 slow_start，失败 / 超时有自己的原文。改 `startupProgressTrace.ts` 的 snapshot 格式要同步这个解析器。
+  这类「未停滞」组的行动方向是：大 DOS / Windows 包做 Sockdrive（§2.8.7），小包慢网查下载并发与线路，而不是找卡死点。
 - 回归：`npm run test:startup-diagnostics`。
 - **聚集报警**（2026-11-15，`server/src/diag-alert.js`）：同一特征 60 分钟内来自 ≥10 个不同访问就给 `DIAG_ALERT_EMAIL` 发一封
   （复用 Resend），同一特征 6 小时内不重复，冷却记在 `site_settings` 的 `diag.alert.<特征>`。没配邮箱完全不启用。

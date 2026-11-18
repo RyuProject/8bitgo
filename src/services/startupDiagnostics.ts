@@ -24,6 +24,8 @@ const LOG_LINE_MAX = 300
 const BUNDLE_LOG_MAX = 60
 const RESOURCE_MAX = 30
 const BUNDLE_BYTES_MAX = 24_000
+const RESOURCE_BUFFER_INITIAL = 1_000
+const RESOURCE_BUFFER_MAX = 10_000
 
 export interface DiagnosticLogLine {
   /** 距本局点击开始的毫秒数（打包时换算） */
@@ -100,11 +102,34 @@ const logs: RawLog[] = []
 const attempts = new Map<string, AttemptState>()
 const visitStarts = new Map<string, number>()
 const frameSources = new Set<Performance>()
+const frameWatchCounts = new Map<Performance, number>()
+const resourceBufferLimits = new WeakMap<Performance, number>()
 const frameSnapshots: RawResource[] = []
+const observedResources: RawResource[] = []
+const frameObservers = new Map<Performance, {
+  observer: PerformanceObserver
+  rows: RawResource[]
+  onBufferFull: EventListener
+}>()
+let resourceObserver: PerformanceObserver | null = null
 const snapshotProviders = new Set<() => string | null | undefined>()
 let hiddenSince: number | null = null
 const hiddenSpans: Array<[number, number]> = []
 let installed = false
+let installationCleanups: Array<() => void> = []
+
+function expandResourceTimingBuffer(perf: Performance): number {
+  const current = resourceBufferLimits.get(perf) ?? RESOURCE_BUFFER_INITIAL
+  const next = Math.min(RESOURCE_BUFFER_MAX, current * 2)
+  if (next > current) {
+    try {
+      if (typeof perf.setResourceTimingBufferSize !== 'function') return current
+      perf.setResourceTimingBufferSize(next)
+      resourceBufferLimits.set(perf, next)
+    } catch { /* 某些浏览器不允许运行时扩容；保留原请求列表 */ }
+  }
+  return resourceBufferLimits.get(perf) ?? current
+}
 
 /* ---------- 脱敏 ---------- */
 
@@ -118,6 +143,7 @@ export function shortenUrl(raw: string): string {
     const url = new URL(raw, typeof location !== 'undefined' ? location.href : 'https://8bitgo.com/')
     if (url.protocol === 'blob:') return 'blob:[本地文件]'
     if (url.protocol === 'data:') return 'data:[内联]'
+    if (url.protocol === 'file:') return 'file:[本地文件]'
     const segments = url.pathname.split('/').filter(Boolean)
     let last = decodeURIComponent(segments.at(-1) ?? '')
     if (segments.includes('roms') || segments.includes('_route-probe')) {
@@ -138,10 +164,13 @@ export function scrubDiagnosticText(value: unknown, max = LOG_LINE_MAX): string 
     .replace(/\u001b?\[\d{1,3}(?:;\d{1,3})*m/g, '')
     // oxlint-disable-next-line no-control-regex -- 就是要把控制字符换成空格
     .replace(/[\u0000-\u001f\u007f\u2028\u2029]/g, ' ')
-    .replace(/(?:https?|blob|wss?):\/\/[^\s"'<>)\]]+/gi, (url) => shortenUrl(url))
+    .replace(/\b(?:blob|data|file):[^\s"'<>)\]]+/gi, (url) => shortenUrl(url))
+    .replace(/(?:https?|wss?):\/\/[^\s"'<>)\]]+/gi, (url) => shortenUrl(url))
     .replace(/\b(bearer)\s+[^\s,;]+/gi, '$1 [已隐藏]')
     .replace(/\b(authorization|cookie|access[_-]?token|refresh[_-]?token|api[_-]?key|password|secret|token|key)\b(\s*[:=]\s*)[^\s,;&]+/gi, '$1$2[已隐藏]')
     .replace(/\beyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,}\b/g, '[令牌]')
+    // Safari / Firefox 栈帧可能写成 `function@host/path/file.js:12:34`；不吞掉后面的路径和行号。
+    .replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+(?![\w-]|\.[\w-]|[/:]\S)/g, '[邮箱]')
     .replace(IPV4_RE, '[IP]')
     .replace(IPV6_RE, '[IP]')
     .replace(/\s+/g, ' ')
@@ -187,22 +216,65 @@ function install(): void {
   if (installed || typeof window === 'undefined') return
   installed = true
   try {
-    performance.setResourceTimingBufferSize?.(1000)
+    performance.setResourceTimingBufferSize?.(RESOURCE_BUFFER_INITIAL)
+    resourceBufferLimits.set(performance, RESOURCE_BUFFER_INITIAL)
   } catch { /* 老浏览器没有 */ }
+  try {
+    if (typeof PerformanceObserver === 'function') {
+      resourceObserver = new PerformanceObserver((list) => {
+        const rows = (list.getEntries() as PerformanceResourceTiming[]).map((entry) => resourceRow(performance, entry))
+        retainInterestingResources(observedResources, rows, 500)
+      })
+      const observer = resourceObserver
+      installationCleanups.push(() => observer.disconnect())
+      try { resourceObserver.observe({ type: 'resource', buffered: true }) }
+      catch { resourceObserver.observe({ entryTypes: ['resource'] }) }
+    }
+  } catch {
+    resourceObserver?.disconnect()
+    resourceObserver = null
+  }
+  const onResourceBufferFull = () => {
+    // 页面自修复会读取完整的 Resource Timing 列表；扩容而不清空，避免丢掉它需要核对的旧 chunk。
+    retainInterestingResources(observedResources, readResources(performance), 500)
+    const next = expandResourceTimingBuffer(performance)
+    diagLog('page', 'warn', next > RESOURCE_BUFFER_INITIAL
+      ? `Resource Timing 缓冲区已扩至 ${next} 条，保留原始请求继续采样`
+      : `Resource Timing 缓冲区已达 ${next} 条；浏览器未能扩容，已保留候选请求`)
+  }
+  try { performance.addEventListener?.('resourcetimingbufferfull', onResourceBufferFull) } catch { /* 少数旧浏览器不支持事件 */ }
+  installationCleanups.push(() => performance.removeEventListener?.('resourcetimingbufferfull', onResourceBufferFull))
   for (const level of ['error', 'warn'] as const) {
     const native = console[level]
     if (typeof native !== 'function') continue
-    console[level] = (...args: unknown[]) => {
+    const wrapped = (...args: unknown[]) => {
       diagLog('page', level, ...args)
       native.apply(console, args as [])
     }
+    console[level] = wrapped
+    installationCleanups.push(() => {
+      if (console[level] === wrapped) console[level] = native
+    })
   }
-  window.addEventListener('error', (event) => {
-    diagLog('page', 'error', event.message || 'script error', event.error ?? '', event.filename ? `@${shortenUrl(event.filename)}:${event.lineno}` : '')
-  })
-  window.addEventListener('unhandledrejection', (event) => diagLog('page', 'error', 'unhandledrejection', event.reason))
+  const onWindowError = (event: Event) => {
+    // 资源加载错误不会冒泡成普通 ErrorEvent；尤其是入口脚本 404 / 被拦截时，只有 target 能说明是哪份资源没进来。
+    const target = event.target as (EventTarget & { tagName?: string; src?: string; href?: string }) | null
+    const tag = String(target?.tagName ?? '').toLowerCase()
+    if (target && target !== window && ['script', 'link', 'iframe', 'video', 'audio', 'source'].includes(tag)) {
+      const url = target.src || target.href || ''
+      diagLog('resource', 'error', `${tag} 加载失败`, url)
+      return
+    }
+    const error = event as ErrorEvent
+    diagLog('page', 'error', error.message || 'script error', error.error ?? '', error.filename ? `@${shortenUrl(error.filename)}:${error.lineno}` : '')
+  }
+  window.addEventListener('error', onWindowError, true)
+  installationCleanups.push(() => window.removeEventListener?.('error', onWindowError, true))
+  const onUnhandledRejection = (event: PromiseRejectionEvent) => diagLog('page', 'error', 'unhandledrejection', event.reason)
+  window.addEventListener('unhandledrejection', onUnhandledRejection)
+  installationCleanups.push(() => window.removeEventListener?.('unhandledrejection', onUnhandledRejection))
   if (document.visibilityState === 'hidden') hiddenSince = Date.now()
-  document.addEventListener('visibilitychange', () => {
+  const onVisibilityChange = () => {
     const now = Date.now()
     if (document.visibilityState === 'hidden') {
       hiddenSince = now
@@ -212,21 +284,37 @@ function install(): void {
       hiddenSince = null
     }
     diagLog('page', 'info', `visibility=${document.visibilityState}`)
-  })
+  }
+  document.addEventListener('visibilitychange', onVisibilityChange)
+  installationCleanups.push(() => document.removeEventListener?.('visibilitychange', onVisibilityChange))
+}
+
+function resourceRow(perf: Performance, entry: PerformanceResourceTiming): RawResource {
+  return {
+    // Resource Timing 不走日志格式化器；显式脱敏，避免 IP / 邮箱随诊断请求先发到服务端。
+    n: scrubDiagnosticText(shortenUrl(entry.name), 120),
+    i: String(entry.initiatorType || '').slice(0, 16),
+    atEpoch: perf.timeOrigin + entry.startTime,
+    d: Math.round(entry.duration),
+    tx: Math.round(entry.transferSize || 0),
+    sz: Math.round(entry.decodedBodySize || 0),
+    st: Math.round((entry as PerformanceResourceTiming & { responseStatus?: number }).responseStatus || 0),
+    p: String(entry.nextHopProtocol || '').slice(0, 12),
+  }
+}
+
+function interestingResource(row: RawResource): boolean {
+  return row.st >= 400 || row.d >= 800 || row.sz >= 512 * 1024 || (row.tx === 0 && row.sz === 0 && row.d >= 200)
+}
+
+function retainInterestingResources(target: RawResource[], rows: RawResource[], limit: number): void {
+  target.push(...rows.filter(interestingResource))
+  if (target.length > limit) target.splice(0, target.length - limit)
 }
 
 function readResources(perf: Performance): RawResource[] {
   try {
-    return (perf.getEntriesByType('resource') as PerformanceResourceTiming[]).map((entry) => ({
-      n: shortenUrl(entry.name),
-      i: String(entry.initiatorType || '').slice(0, 16),
-      atEpoch: perf.timeOrigin + entry.startTime,
-      d: Math.round(entry.duration),
-      tx: Math.round(entry.transferSize || 0),
-      sz: Math.round(entry.decodedBodySize || 0),
-      st: Math.round((entry as PerformanceResourceTiming & { responseStatus?: number }).responseStatus || 0),
-      p: String(entry.nextHopProtocol || '').slice(0, 12),
-    }))
+    return (perf.getEntriesByType('resource') as PerformanceResourceTiming[]).map((entry) => resourceRow(perf, entry))
   } catch {
     return []
   }
@@ -237,21 +325,82 @@ function readResources(perf: Performance): RawResource[] {
  * 外层页面看不到。适配器在 iframe 就绪后登记；返回的函数在销毁时调用：先把当时的记录拍下来，
  * 因为 iframe 被移除后就读不到了。
  */
-export function watchFramePerformance(win: Window | null | undefined): () => void {
+export function watchFramePerformance(
+  win: Window | null | undefined,
+): () => void {
   let perf: Performance | null = null
   try {
     perf = win?.performance ?? null
-    perf?.setResourceTimingBufferSize?.(1000)
   } catch {
     perf = null
   }
   if (!perf) return () => {}
-  frameSources.add(perf)
-  return () => {
-    if (!frameSources.delete(perf)) return
-    frameSnapshots.push(...readResources(perf))
-    if (frameSnapshots.length > 400) frameSnapshots.splice(0, frameSnapshots.length - 400)
+  const references = frameWatchCounts.get(perf) ?? 0
+  frameWatchCounts.set(perf, references + 1)
+  let released = false
+  const stopWatching = () => {
+    if (released) return
+    released = true
+    releaseFramePerformance(perf!)
   }
+  if (references > 0) {
+    return stopWatching
+  }
+  frameSources.add(perf)
+  try {
+    try { perf.setResourceTimingBufferSize?.(RESOURCE_BUFFER_INITIAL) }
+    catch { /* 观察器仍可工作，使用浏览器原有容量 */ }
+    resourceBufferLimits.set(perf, RESOURCE_BUFFER_INITIAL)
+    const Observer = (win as (Window & { PerformanceObserver?: typeof PerformanceObserver }) | null | undefined)?.PerformanceObserver
+    if (Observer) {
+      const rows: RawResource[] = []
+      const observer = new Observer((list) => {
+        const entries = list.getEntries() as PerformanceResourceTiming[]
+        try {
+          const frame = win as (Window & { __8bitgoResourceCount?: number }) | null | undefined
+          frame!.__8bitgoResourceCount = Math.max(0, Number(frame!.__8bitgoResourceCount) || 0) + entries.length
+        } catch { /* 只读 iframe 仍可从其 Resource Timing 缓冲区取样 */ }
+        retainInterestingResources(rows, entries.map((entry) => resourceRow(perf!, entry)), 500)
+      })
+      let onBufferFull: EventListener | null = null
+      try {
+        try { observer.observe({ type: 'resource', buffered: true }) }
+        catch { observer.observe({ entryTypes: ['resource'] }) }
+        onBufferFull = () => {
+          retainInterestingResources(rows, readResources(perf!), 500)
+          expandResourceTimingBuffer(perf!)
+        }
+        frameObservers.set(perf, { observer, rows, onBufferFull })
+        perf.addEventListener?.('resourcetimingbufferfull', onBufferFull)
+      } catch {
+        try { observer.disconnect() } catch { /* 观察器已损坏时仍继续清理登记 */ }
+        try {
+          if (onBufferFull) perf.removeEventListener?.('resourcetimingbufferfull', onBufferFull)
+        } catch { /* 老浏览器的 Performance 事件实现可能不完整 */ }
+        frameObservers.delete(perf)
+      }
+    }
+  } catch { /* 旧浏览器继续依赖 iframe 当前的 Resource Timing 缓冲区 */ }
+  return stopWatching
+}
+
+function releaseFramePerformance(perf: Performance): void {
+  const references = frameWatchCounts.get(perf) ?? 0
+  if (references > 1) {
+    frameWatchCounts.set(perf, references - 1)
+    return
+  }
+  frameWatchCounts.delete(perf)
+  if (!frameSources.delete(perf)) return
+  const observed = frameObservers.get(perf)
+  try { observed?.observer.disconnect() } catch { /* 清理钩子不能中断播放器销毁 */ }
+  try {
+    if (observed) perf.removeEventListener?.('resourcetimingbufferfull', observed.onBufferFull)
+  } catch { /* 老浏览器的 Performance 事件实现可能不完整 */ }
+  frameObservers.delete(perf)
+  if (observed) frameSnapshots.push(...observed.rows)
+  frameSnapshots.push(...readResources(perf))
+  if (frameSnapshots.length > 400) frameSnapshots.splice(0, frameSnapshots.length - 400)
 }
 
 /**
@@ -344,7 +493,7 @@ function environment(start: number, now: number): StartupDiagnostics['env'] {
  * 挑出这一局里值得看的请求：失败的、慢的、大的。命中缓存的小文件没信息量，挤掉它们给真问题留位置。
  */
 function pickResources(start: number, from = start - 2000): DiagnosticResource[] {
-  const all = [...readResources(performance), ...frameSnapshots, ...[...frameSources].flatMap(readResources)]
+  const all = [...readResources(performance), ...observedResources, ...frameSnapshots, ...[...frameSources].flatMap(readResources)]
   const seen = new Set<string>()
   const relevant = all.filter((r) => {
     if (r.atEpoch < from) return false
@@ -354,7 +503,8 @@ function pickResources(start: number, from = start - 2000): DiagnosticResource[]
     seen.add(key)
     return r.st >= 400 || r.d >= 800 || r.sz >= 512 * 1024 || (r.tx === 0 && r.sz === 0 && r.d >= 200)
   })
-  relevant.sort((a, b) => b.d - a.d)
+  // 失败请求即使很快也比大而慢的成功请求更能解释故障，先保留 HTTP 错误，再按耗时和体积挑选。
+  relevant.sort((a, b) => Number(b.st >= 400) - Number(a.st >= 400) || b.d - a.d || b.sz - a.sz)
   return relevant.slice(0, RESOURCE_MAX)
     .sort((a, b) => a.atEpoch - b.atEpoch)
     .map(({ atEpoch, ...rest }) => ({ ...rest, at: Math.round(atEpoch - start) }))
@@ -407,7 +557,20 @@ export function resetStartupDiagnosticsForTest(): void {
   attempts.clear()
   visitStarts.clear()
   frameSources.clear()
+  frameWatchCounts.clear()
   frameSnapshots.length = 0
+  observedResources.length = 0
+  for (const [perf, { observer, onBufferFull }] of frameObservers) {
+    try { observer.disconnect() } catch { /* 测试清理继续 */ }
+    try { perf.removeEventListener?.('resourcetimingbufferfull', onBufferFull) } catch { /* 测试清理继续 */ }
+  }
+  frameObservers.clear()
+  for (const cleanup of installationCleanups.splice(0)) {
+    try { cleanup() } catch { /* 测试清理不能掩盖实际断言 */ }
+  }
+  resourceObserver?.disconnect()
+  resourceObserver = null
+  installed = false
   snapshotProviders.clear()
   hiddenSpans.length = 0
   hiddenSince = null

@@ -452,6 +452,9 @@ check('⭐ 起不来的判定只数前台，且 iframe 每完成一个请求就�
   assert.match(adapterCode, /if \(count > seenResources\) \{\s+seenResources = count\s+stalledMs = 0/)
   assert.match(adapterCode, /stalledMs < stallLimit && foregroundMs < J2ME_READY_HARD_CAP_MS/)
   assert.match(adapterCode, /stopFramePerf = watchFramePerformance\(iframe\.contentWindow\)/, 'CheerpJ 在 iframe 里下的东西要进诊断包')
+  assert.match(adapterCode, /__8bitgoResourceCount/, '启动看门狗使用单调请求计数，不受 Resource Timing 上限影响')
+  assert.doesNotMatch(readFileSync(new URL('../src/services/startupDiagnostics.ts', import.meta.url), 'utf8'), /clearResourceTimings\(/,
+    '诊断采样不能清除自修复和运行时看门狗使用的 Resource Timing 历史')
   assert.match(adapterCode, /destroyed = true\s+probeAbort\.abort\(\)\s+stopReadyWatch\(\)\s+stopCdnSnapshot\(\)\s+stopFramePerf\?\.\(\)/, '销毁时收掉计时器、CDN 现场和诊断观察')
   assert.match(adapterCode, /const stopReadyWatch = \(\) => \{[\s\S]{0,200}?window\.clearInterval\(readyTimer\)[\s\S]{0,200}?removeEventListener\('visibilitychange', onReadyVisibilityChange\)/, 'stopReadyWatch 要同时收计时器和 visibilitychange 监听')
 })

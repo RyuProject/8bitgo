@@ -24,9 +24,29 @@ assert.match(src, /urlPattern: '\*\/api\/games\/\*\/startup\*'/, '启动漏斗�
 assert.match(src, /urlPattern: '\*\/api\/games\/\*\/play\*'/, '游玩次数也不能被冒烟刷高')
 assert.match(src, /Fetch\.fulfillRequest/)
 
+/*
+  收尾不能改写冒烟结论（2026-11-18 生产两次部署：两款游戏都到了首帧，删 Chrome profile 报 ENOTEMPTY，
+  退出码变成 2，redeploy 记成「冒烟没有运行」、发飞书告警、/tmp 留下 30MB）。
+*/
+const launch = src.slice(src.indexOf('async function launchChrome'), src.indexOf('async function smokeOne'))
+assert.match(launch, /\{ stdio: 'ignore', detached: true \}/, 'Chrome 必须 detached 自成进程组，整组才能一起停')
+assert.match(launch, /process\.kill\(-proc\.pid, signal\)/, '关 Chrome 时按进程组发信号，渲染 / GPU 子进程一起停')
+const remove = launch.slice(launch.indexOf('const removeProfile'), launch.indexOf('const portFile'))
+assert.match(remove, /try \{\s*rmSync\(profile, \{[^}]*maxRetries: \d+[^}]*\}\)\s*\} catch/, '删 profile 要带重试，并且吞掉错误')
+const close = launch.slice(launch.indexOf('async close()'))
+assert.doesNotMatch(close, /^\s*rmSync\(/m, '关 Chrome 时不能直接 rmSync：抛错会冒到 main().catch 变成退出码 2')
+assert.match(close, /killGroup\('SIGKILL'\)[\s\S]*removeProfile\(\)/, '整组 SIGKILL 之后再删目录')
+const watch = readFileSync(new URL('../deploy/smoke-watch/8bitgo-smoke-watch.sh', import.meta.url), 'utf8')
+assert.match(watch, /-name '8bitgo-smoke-\*' -mmin \+\d+ -exec rm -rf/, '定时巡检兜底清掉以前没删掉的 profile')
+
 const redeploy = readFileSync(new URL('../deploy/redeploy.sh', import.meta.url), 'utf8')
-assert.match(redeploy, /SMOKE_TEST:-0/, '默认关闭')
+// 2026-11-17 全站 EmulatorJS 事故后改成默认打开、失败重试一次、仍失败回滚（健康检查 200 拦不住「游戏全打不开」）。
+// 细节断言在 test-redeploy.mjs；这里只钉住与本脚本退出码的约定：2 = 环境不满足，只告警不回滚。
+assert.match(redeploy, /SMOKE_TEST:-1/, '默认打开')
 const smokeAt = redeploy.indexOf('scripts/smoke-start.mjs')
 assert.ok(smokeAt > redeploy.indexOf('if health_ok && ps2_headers_ok'), '健康检查通过之后才冒烟')
-assert.doesNotMatch(redeploy.slice(smokeAt, redeploy.indexOf('部署完成', smokeAt)), /rollback|die /, '冒烟失败只告警，不回滚、不中止')
-console.log('✔ 开局冒烟：判据、找 Chrome、拦截统计、redeploy 只在 SMOKE_TEST=1 时告警式运行')
+const smokeBlock = redeploy.slice(smokeAt, redeploy.indexOf('log "✅ 部署完成', smokeAt))
+assert.match(smokeBlock, /2\)\n\s*log "⚠️⚠️ 开局冒烟没有运行[^\n]*\n\s*notify [^\n]*\n\s*;;/, '退出码 2（没有 Chrome / 脚本自身出错）只告警，不能回滚')
+assert.match(smokeBlock, /\*\)\n\s*if \[ "\$\{SMOKE_ROLLBACK:-1\}" = "1" \]; then[\s\S]*?rollback/, '只有真的跑了且失败（退出码 1）才回滚')
+assert.doesNotMatch(smokeBlock, /\bdie /, '冒烟失败走回滚，不是 die（die 不回滚，会把坏版本留在线上）')
+console.log('✔ 开局冒烟：判据、找 Chrome、拦截统计、redeploy 默认运行且失败回滚、没有 Chrome 只告警')

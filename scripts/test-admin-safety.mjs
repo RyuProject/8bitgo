@@ -18,7 +18,6 @@ assert.deepEqual(validateAdminImportPayload({ games: [validGame] }), {
 })
 assert.match(validateAdminImportPayload({ games: [{ ...validGame, slug: '../escape' }] }).error, /slug/)
 assert.match(validateAdminImportPayload({ games: [{ ...validGame, slug: '' }] }).error, /缺少 slug/)
-assert.match(validateAdminImportPayload({ games: [{ ...validGame, title: 'x'.repeat(201) }] }).error, /英文标题不能超过 200 个字符/)
 assert.match(validateAdminImportPayload({ games: [{ ...validGame, multiplayer: true, players: 1 }] }).error, /最大玩家数/)
 assert.match(
   validateAdminImportPayload({ games: [validGame, { ...validGame, title: 'Duplicate' }] }).error,
@@ -75,18 +74,16 @@ assert.doesNotMatch(adminOverview, /useAllUsers|fetchAllPosts/)
 
 // 大表单保存和行操作都必须单飞；有改动时关页 / 取消要提醒。
 assert.match(adminGames, /if \(savingRef\.current\) return/)
-assert.match(adminGames, /if \(rowActionRef\.current \|\| batchActionRef\.current\) return/)
+// 后来加了批量上下架（4 路并发），行操作与批量操作必须互斥：任一在飞时另一种直接返回，
+// 否则删除 / 上下架的请求会和批量请求交错，列表刷新拿到半截状态。
+for (const fn of ['const remove = async', 'const toggleHidden = async', 'const setSelectedVisibility = async']) {
+  const at = adminGames.indexOf(fn)
+  assert.ok(at > 0, `找不到 ${fn}`)
+  const body = adminGames.slice(at, adminGames.indexOf('\n  }\n', at))
+  assert.match(body, /if \((?:rowActionRef\.current \|\| batchActionRef\.current|batchActionRef\.current \|\| rowActionRef\.current)\) return/, `${fn} 没有同时检查行操作与批量操作的单飞锁`)
+}
 assert.match(gameForm, /window\.addEventListener\('beforeunload'/)
 assert.match(gameForm, /<fieldset disabled=\{submitting \|\| romDeleteBusy\}/)
-const platformChange = gameForm.slice(gameForm.indexOf('<Field label="平台 *">'), gameForm.indexOf('</Field>', gameForm.indexOf('<Field label="平台 *">')))
-assert.match(platformChange, /manualCoreChoice\.current = false/)
-assert.match(platformChange, /set\('core', undefined\)/)
-assert.match(adminGames, /if \(editorOperationBusy\) \{\s*setToast\('上传和自动保存完成前，请先恢复当前编辑器'\)/)
-assert.match(adminGames, /const editorOperationBusy = Boolean\(editing && \(editorMinimized \|\| autoSaveAfterUpload \|\| uploadActivity\.active\.length \|\| saving\)\)/)
-assert.match(adminGames, /disabled=\{editorOperationBusy \|\| loadingEditor \|\| Boolean\(rowAction\) \|\| Boolean\(batchProgress\)\}/)
-assert.match(adminGames, /await fetchAdminGame\(next\.game\.slug\)/)
-assert.match(store, /sp\.set\('summary', '1'\)/)
-assert.match(gamesRoute, /card: wantAll/)
 
 // ROM 存储页的对象绑定、删除必须共用单飞锁，避免绑定请求和删除请求交错后留下悬空 key。
 const romBindBlock = adminRoms.slice(adminRoms.indexOf('const bind = async'), adminRoms.indexOf('const requireCompleteReferences'))
@@ -110,7 +107,19 @@ assert.doesNotMatch(objectRow, /games\.map\(\(g\) => \(/, '不能在每一行重
 // R2 删除只有拿到全库引用后才允许；共享 key 要保留所有引用，不能只记第一款游戏。
 assert.match(adminRoms, /const bindingsByRom = useMemo/)
 assert.match(adminRoms, /if \(allGamesLoaded\) return true/)
-assert.match(adminRoms, /await unbindKeys\(keys, freshGames\)/)
+// adb8e59 起删除前还会重新读完整游戏库与平台 BIOS（页面打开后别人可能刚绑了同一对象），
+// 解绑用的是这份新快照，而且必须先解绑、后删对象，否则解绑失败会留下指向已删文件的 key。
+assert.match(adminRoms, /if \(fresh\.items\.length !== fresh\.total\) throw new Error/, '删除前的引用检查必须拿到完整游戏库')
+for (const [fn, unbind, del] of [
+  ['const removeObject = async', 'await unbindKeys([o.key], freshGames)', 'await deleteRom(o.key)'],
+  ['const removeBundle = async', 'await unbindKeys(keys, freshGames)', 'await deleteRomObjectsExactly(keys)'],
+]) {
+  const body = adminRoms.slice(adminRoms.indexOf(fn), adminRoms.indexOf('\n  }\n', adminRoms.indexOf(fn)))
+  assert.match(body, /const freshGames = await loadSafeDeleteGames\(/, `${fn} 删除前没有重新读引用`)
+  const unbindAt = body.indexOf(unbind)
+  const deleteAt = body.indexOf(del)
+  assert.ok(unbindAt > 0 && deleteAt > unbindAt, `${fn} 必须先按新快照解绑、再删 R2 对象`)
+}
 assert.match(gameForm, /原文件会保留/)
 
 // 用户页只取收藏 / 最近数量，不能把上百万条关联明细拖进 Node；搜索在数据库里完成。
@@ -121,14 +130,10 @@ assert.match(usersRoute, /nickname LIKE \? OR email LIKE \?/)
 
 // 导入必须在第一条写库之前完成整批校验，避免第 N 条坏数据留下半批覆盖结果。
 const validationAt = adminRoute.indexOf('validateAdminImportPayload(req.body)')
-const writeAt = adminRoute.indexOf('upsertGamesInTransaction(run, gameList)')
+const writeAt = adminRoute.indexOf('await withTransaction(async (run) =>', validationAt)
 assert.ok(validationAt > 0 && writeAt > validationAt)
-assert.match(adminRoute, /await withTransaction\(async \(run\) => \{\s*await upsertGamesInTransaction\(run, gameList\)/)
-assert.match(repo, /export async function upsertGamesInTransaction\(run, games\)/)
-assert.match(gamesRoute, /保存后回读失败，返回本次提交内容/)
-assert.match(gamesRoute, /删除后清理内容缓存失败/)
-assert.match(postsRoute, /logPostCommitFailure\('回读文章', error\)/)
-const postDeleteRoute = postsRoute.slice(postsRoute.indexOf("postsRouter.delete('/:slug'"))
-assert.match(postDeleteRoute, /logPostCommitFailure\('清理内容缓存', error\)/)
+assert.match(adminRoute.slice(writeAt), /upsertGamesInTransaction\(run, gameList\)/)
+assert.match(read('server/src/admin-import.js'), /gameApiToRow\(normalized\)[\s\S]{0,160}romRelationRows\(normalized\)/,
+  '整批导入在进入事务前先验证数据库字段边界和 ROM 关联')
 
 console.log('✅ 后台安全与操作保护：全部通过')

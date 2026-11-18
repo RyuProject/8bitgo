@@ -124,6 +124,46 @@ for (const [needle, what, why] of [
   if (!js.includes(needle)) fail(`emulator.min.js 缺「${what}」补丁 —— ${why}`, 'npm run ejspatch，然后换 EJS_RUNTIME_GENERATION')
 }
 
+// 上面只查补丁字符串在不在。2026-11-17 补丁写进去一个没转义 `/` 的正则，字符串全都在、构建全绿，
+// 引擎却整份解析不了：loader 的 import() 失败，所有 EmulatorJS 平台报「Failed to load emulator.min.js」。
+{
+  const { moduleSyntaxError } = await import('./lib/js-module-syntax.mjs')
+  const syntaxError = moduleSyntaxError(js)
+  if (syntaxError) {
+    fail(
+      `emulator.min.js 不是合法的 ES 模块（${syntaxError}），loader 的 import() 会失败，所有 EmulatorJS 平台都起不来`,
+      '检查 scripts/patch-emulatorjs.mjs 刚改的补丁字符串（正则字面量里的 `/` 要转义），修好后 npm run ejspatch',
+    )
+  }
+  // 能解析还不够：模块顶层求值抛错（补丁引用了改名的变量等）时 import() 同样整份失败。真 import 一次。
+  const { spawnSync } = await import('node:child_process')
+  const smoke = spawnSync(process.execPath, [join(root, 'scripts', 'lib', 'ejs-engine-import-smoke.mjs'), join(dir, 'emulator.min.js')], {
+    encoding: 'utf8',
+    timeout: 60_000,
+  })
+  if (smoke.status !== 0) {
+    fail(
+      `emulator.min.js 在 Node 里 import 不成功（${String(smoke.stderr || smoke.error?.message || '').trim().split('\n')[0]}），浏览器里同样会失败`,
+      '检查 scripts/patch-emulatorjs.mjs 刚改的补丁（顶层代码、变量名），修好后 npm run ejspatch',
+    )
+  }
+  // loader.js 由适配器用 <script> 注入（依赖 document.currentScript），必须是合法的经典脚本
+  const vm = await import('node:vm')
+  const loader = readFileSync(join(dir, 'loader.js'), 'utf8')
+  try {
+    new vm.Script(loader, { filename: 'loader.js' })
+  } catch (error) {
+    fail(`loader.js 不是合法的经典脚本（${error?.name}: ${error?.message}），所有 EmulatorJS 平台都起不来`, '检查最近对 public/emulatorjs/loader.js 的改动')
+  }
+  // 上游 loader 只在 debug 时打印 import 的真实异常；换上游 loader 时这一处很容易被冲掉
+  if (!loader.includes('console.error("[EJS] import " + file + " failed: "')) {
+    fail(
+      'loader.js 没有把 emulator.min.js 的 import 异常写进控制台 —— 引擎坏了时现场只剩「minified files are missing」，诊断包看不出原因',
+      '把 loadScript 的 catch 恢复成 console.error("[EJS] import " + file + " failed: " + …)（见 git log public/emulatorjs/loader.js）',
+    )
+  }
+}
+
 if (!existsSync(join(dir, 'cores', 'fbneo-wasm.data'))) {
   fail(
     'public/emulatorjs/cores/ 里没有核心（至少 fbneo-wasm.data 该在）',

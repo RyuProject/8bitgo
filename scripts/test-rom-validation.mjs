@@ -68,6 +68,9 @@ try {
       sourcefile: 'rom-validation-test-entry.ts',
       loader: 'ts',
     },
+    // loadProgress.ts 经 @/ 别名引用浏览器地址配置；显式给 app tsconfig 和空环境，避免本机 .env 影响测试。
+    tsconfig: 'tsconfig.app.json',
+    define: { 'import.meta.env': '{}' },
     bundle: true,
     platform: 'node',
     format: 'esm',
@@ -171,6 +174,16 @@ try {
   const selectedNds = await assertNdsRomBlob(new Blob([zip([['README.txt', 'help'], ['folder/game.srl', nds]])]))
   assert.equal(selectedNds.archiveEntry, 'folder/game.srl', 'ZIP 里 README 排在 .srl 前面时也必须点名真正的 ROM')
   assert.equal(selectedNds.archive?.name, 'folder/game.srl', '返回目录项以便解压时复用已核验条目')
+  assert.deepEqual(
+    {
+      name: selectedNds.archive?.name,
+      method: selectedNds.archive?.method,
+      offset: selectedNds.archive?.offset,
+      uncompressedSize: selectedNds.archive?.uncompressedSize,
+    },
+    { name: 'folder/game.srl', method: 0, offset: 44, uncompressedSize: nds.length },
+    '外层解包用的中央目录项必须就是被点名的 ROM',
+  )
   await assert.rejects(
     () => assertNdsRomBlob(new Blob([zip([['a.nds', nds], ['b.nds', nds]])])),
     /多个 ROM/,

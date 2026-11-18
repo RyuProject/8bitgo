@@ -5,6 +5,8 @@ import { cx } from '@/lib/format'
 import { Card, btnClass, inputClass } from './ui'
 import {
   EVENT_LABEL,
+  diagnosisPhaseLabel,
+  diagnosisSignalLabel,
   fmtBytes,
   fmtMs,
   formatEnvironment,
@@ -87,6 +89,13 @@ function SampleView({ sample }: { sample: DiagnosticSample }) {
         <span className="text-dim">{shortDate(sample.createdAt)} · #{sample.id}</span>
       </div>
       <p className="text-muted">{formatEnvironment(sample)}</p>
+      {d?.diagnosis && (
+        <p className="text-brand-hover">
+          自动识别：{d.diagnosis.label} · 阶段 {diagnosisPhaseLabel(d.diagnosis.phase)} · 把握{d.diagnosis.confidence === 'high' ? '高' : d.diagnosis.confidence === 'medium' ? '中' : '低'}
+          {d.diagnosis.artifact ? ` · ${d.diagnosis.artifact}` : ''}
+        </p>
+      )}
+      {d?.diagnosis?.signals.length ? <p className="text-dim">依据：{d.diagnosis.signals.map(diagnosisSignalLabel).join('；')}</p> : null}
       {d?.reason && <p className="break-words text-fg">原因：{d.reason}</p>}
       {d && (
         <>
@@ -268,7 +277,7 @@ export function AdminDiagnostics() {
       <div>
         <h1 className="text-xl font-bold">错误诊断</h1>
         <p className="mt-1 text-sm text-muted">
-          真实玩家开局失败、超时或超过 20 秒时上报的现场，按错误特征归组，影响人数多的排前面。
+          真实玩家开局失败、超时或超过 20 秒时上报的现场，会结合错误类型、阶段、资源请求和运行日志识别并归组，影响人数多的排前面。
           「复制给 AI」会带上这一组的概况和最近 {AI_SAMPLE_COUNT} 份完整现场。保留 30 天，不含 IP、完整 User-Agent、账号或 ROM 地址。
         </p>
       </div>
