@@ -15,9 +15,10 @@ import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { brotliDecompressSync } from 'node:zlib'
 import {
-  EKA2L1_ALL_PATCHES, EKA2L1_EXTERNAL_PATCHES,
-  EKA2L1_UPSTREAM_COMMIT,
+  EKA2L1_ALL_PATCHES, EKA2L1_EXTERNAL_PATCHES, EKA2L1_GLUE_PATCHES, EKA2L1_PATCHES,
+  EKA2L1_UPSTREAM_COMMIT, eka2l1PublishedPagePath,
 } from './lib/eka2l1-patches.mjs'
+import { EKA2L1_SITE_SCRIPTS } from './lib/eka2l1-site-scripts.mjs'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const useDist = process.argv.includes('--dist')
@@ -48,7 +49,8 @@ if ((manifest.patches || []).join(',') !== expectPatches) fail(`运行时打的�
 for (const name of [
   'index.html', 'run.html', 'eka2l1.js', 'eka2l1.wasm', 'eka2l1.data', 'js/boot.js', 'js/build_id.js', 'LICENSE', 'SOURCE.md',
   'source/scripts/build-eka2l1-web.mjs', 'source/scripts/lib/eka2l1-patches.mjs',
-  'js/8bitgo-default-firmware.js', 'source/scripts/eka2l1-default-firmware.js',
+  'source/scripts/lib/eka2l1-site-scripts.mjs',
+  ...EKA2L1_SITE_SCRIPTS.flatMap((script) => [script.published, script.sourceCopy]),
   'source/patches/external/README.md',
   ...EKA2L1_EXTERNAL_PATCHES.map((patch) => `source/${patch.file}`),
 ]) {
@@ -71,8 +73,8 @@ if (!sourceDoc.includes(EKA2L1_UPSTREAM_COMMIT)) fail('SOURCE.md 没有标出对
 if (!sourceDoc.includes('source/scripts/lib/eka2l1-patches.mjs') || !sourceDoc.includes('source/scripts/build-eka2l1-web.mjs')) {
   fail('SOURCE.md 没有链接随包提供的本站补丁与构建脚本')
 }
-if (!sourceDoc.includes('source/scripts/eka2l1-default-firmware.js')) {
-  fail('SOURCE.md 没有说明本站默认固件引导脚本')
+for (const script of EKA2L1_SITE_SCRIPTS) {
+  if (!sourceDoc.includes(script.sourceCopy)) fail(`SOURCE.md 没有说明本站脚本 ${script.sourceCopy}`)
 }
 for (const patch of EKA2L1_ALL_PATCHES) {
   if (!sourceDoc.includes(patch.id)) fail(`SOURCE.md 缺少修改说明 ${patch.id}`)
@@ -89,16 +91,38 @@ const publishedPatches = readFileSync(join(dir, 'source/scripts/lib/eka2l1-patch
 if (!publishedPatches.includes("id: 'network-relay-off'") || !publishedPatches.includes("|| '';")) {
   fail('发布的对应源码没有关闭默认 TCP 中继')
 }
+// 改页面 / 改胶水的补丁：替换后的文本必须原样出现在发布文件里
+for (const patch of [...EKA2L1_PATCHES.filter((p) => eka2l1PublishedPagePath(p.file)), ...EKA2L1_GLUE_PATCHES]) {
+  const rel = eka2l1PublishedPagePath(patch.file) || patch.file
+  const text = readFileSync(join(dir, rel), 'utf8')
+  for (const [, to] of patch.replace) {
+    if (!text.includes(to)) fail(`${rel} 缺少补丁「${patch.id}」，需重新打包（npm run eka2l1:repackage）`)
+  }
+}
+// 2026-11-19：上游这行在 emcc 7 的胶水上必崩（FS.filesystems 不存在），玩家装固件第一步就失败
+if (readFileSync(join(dir, 'js/boot.js'), 'utf8').includes('mod.FS.mount(mod.FS.filesystems.IDBFS')) {
+  fail('js/boot.js 仍从 FS.filesystems 取 IDBFS，核心启动会报 reading \'IDBFS\'')
+}
+if (!glue.includes('Module["IDBFS"]=IDBFS')) fail('eka2l1.js 没有导出 Module.IDBFS，boot.js 挂载不了存储')
+
 for (const page of ['index.html', 'run.html']) {
   const html = readFileSync(join(dir, page), 'utf8')
   if (!html.includes("if (false && 'serviceWorker' in navigator)")) fail(`${page} 仍会注册 Service Worker`)
   if (!html.includes(`?v=${manifest.upstreamBuildId}`)) fail(`${page} 的资源引用没有带上游页面版本号`)
 }
-if (!readFileSync(join(dir, 'index.html'), 'utf8').includes('js/8bitgo-default-firmware.js')) {
-  fail('index.html 未加载本站 N-Gage QD 默认固件引导脚本')
+// 本站脚本：index.html 要加载它，发布版和随包源码都要和仓库里的一字不差（改了脚本就得重新打包换目录）
+const libraryHtml = readFileSync(join(dir, 'index.html'), 'utf8')
+for (const script of EKA2L1_SITE_SCRIPTS) {
+  if (!libraryHtml.includes(`<script src="${script.published}"></script>`)) fail(`index.html 未加载本站脚本 ${script.published}`)
+  const expected = readFileSync(join(root, script.source), 'utf8')
+  for (const rel of [script.published, script.sourceCopy]) {
+    if (readFileSync(join(dir, rel), 'utf8') !== expected) {
+      fail(`${rel} 与仓库里的 ${script.source} 不一致，需运行 npm run eka2l1:repackage`)
+    }
+  }
 }
-if (readFileSync(join(dir, 'js/8bitgo-default-firmware.js'), 'utf8') !== readFileSync(join(root, 'scripts', 'eka2l1-default-firmware.js'), 'utf8')) {
-  fail('发布目录里的默认固件引导脚本与仓库源码不一致')
+if (readFileSync(join(dir, 'source/scripts/lib/eka2l1-site-scripts.mjs'), 'utf8') !== readFileSync(join(root, 'scripts/lib/eka2l1-site-scripts.mjs'), 'utf8')) {
+  fail('随包的 eka2l1-site-scripts.mjs 与仓库不一致，需运行 npm run eka2l1:repackage')
 }
 
 // 预压缩：存在就必须与原文件一致（precompress-runtimes 生成；--dist 时由它的 --check 兜底）

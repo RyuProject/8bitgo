@@ -4008,6 +4008,47 @@ PK / TH 两份现场：`The requested module './live-Cqhc9j-k.js' does not provi
 - **诊断包 #1196 / #1201（Chrome 97 / Android 15 / CN，《恐龙快打》）：legacy 懒加载 chunk 加载失败。** #1201 点名 `EmulatorPlayer-legacy-J-EQUy6G.js`，错误来自 SystemJS 的 `HTMLScriptElement` 加载回调；请求记录为 0 传输 / 0 内容。现有现场不能判断底层是瞬时网络、缓存还是 EdgeOne 响应，也不能从单次事件确认服务端缺文件。
   Vite legacy 包把 `import()` 编成 `System.import()`；SystemJS 的通用错误不匹配现代 ESM 重试列表，失败 URL 也可能藏在 `__vite__mapDeps` 运行时映射里，旧 `lazyChunkFile()` 因此拿不到文件名。结果是只尝试原 URL 一次，错误边界也不把它当 chunk 加载失败。现在识别 SystemJS 加载错误，从错误 URL 取出 legacy chunk 文件名，用新的 `chunk-retry` 查询串通过 `System.import()` 重试；仍失败时先整页刷新，重复失败再从 CN 加速入口切到主站。legacy 产物不在现代版 SHA-256 清单中，不能用现代清单给它作完整性结论。
 
+### 2.40 塞班 / N-Gage：卡带转储 ZIP 由本站脚本导入 E 盘（2026-11-19）
+
+第一代 N-Gage 游戏的 No-Intro 转储是 MMC 卡上的原始目录（`game.id`、`nokia.dat`、`System/Apps/<代号>/…`），
+不是 `.sis` / `.n-gage` 安装包：「安装 SIS」装不上，「文件管理」只能把文件平铺进一个目录。桌面版 EKA2L1 的
+`system_impl::install_ngage_game_card` 网页版没有导出，所以 `scripts/eka2l1-ngage-card.js` 照它的规则用 JS 重做：
+以最浅的 `system/apps/` 定位卡带根；System/Apps 下只能有 `<代号>`，或 `<代号>` + `<代号>_1`（`_1` 的 `.app` 过了
+E32 头校验才运行它，否则运行 `<代号>`，不运行的那份不写 `.aif`，因为两份是同一个 UID）；整张卡复制到 `E:\`，
+`System/Libs`、`System/Programs` 再复制一份进 `E:\System\Apps\<代号>\`。目标路径一律小写（网页版虚拟盘区分大小写，
+客体只认小写物理名）。先全部解压进内存核对 CRC-32，不对就不落盘；落盘后用 `EKA2L1.savePaths` 只持久化这些文件，
+然后刷新页面 —— 应用列表服务只在核心启动时扫描 System\Apps。刷新后按 AIF 里的应用 UID 核对列表，没出现会明说。
+
+- 本站随附进运行时的脚本统一登记在 `scripts/lib/eka2l1-site-scripts.mjs`（完整构建、`npm run eka2l1:repackage`、
+  `npm run eka2l1:check` 共用）。**改了这些脚本必须重跑 `npm run eka2l1:repackage`**：运行时目录按内容哈希命名、长期缓存，
+  检查脚本会拦住「仓库里的脚本和发布目录不一致」。重复打包时删掉中途生成又没用上的 `v<哈希>` 目录。
+- 回归：`npm run test:eka2l1-ngage-card`（合成 ZIP 覆盖版本选择、外层文件夹、大小写、路径穿越、ZIP64、加密、CRC、
+  解压超量、只差大小写的重名、写盘冲突与持久化；设 `NGAGE_CARD_ZIP=<卡带 zip>` 时再跑真实转储）。
+- 2026-11-19 浏览器实测（真实 Emscripten FS、`EKA2L1.savePaths`、原生 DecompressionStream，《模拟人生：脱颖而出》15 MiB
+  转储）：50 个文件写进 E 盘并全部存进 IndexedDB，读回 CRC 与 ZIP 一致，旧 `_1` AIF 从 FS 和 IndexedDB 都删掉了。
+  本机没有 N-Gage 固件，**游戏能否出现在列表、能否运行都没有验证**；线上也没有配置 N-Gage QD 默认固件（`/api/platform-bios` 里没有 `symbian`）。
+### 2.40.1 🔴 EKA2L1 核心一启动就报 `reading 'IDBFS'`：新版 Emscripten 的胶水不兼容上游 boot.js（2026-11-19 修）
+
+**经过**：2026-11-16 起发布的运行时（含线上 `vce3dcea2a438`）全部起不来。玩家在「安装设备固件」里选好 ROM 点安装，
+立即报 `Cannot read properties of undefined (reading 'IDBFS')`，ROM 还没读就失败，整个 `/symbian` 走不到第一步
+（本地与 https://8bitgo.com 都复现）。上游 `js/boot.js` 按老 Emscripten 写：`mod.FS.mount(mod.FS.filesystems.IDBFS, …)`，
+`patchIDBFS` 还读 `IDBFS.DB_VERSION` / `IDBFS.DB_STORE_NAME`。本站用 emcc 7.0.0 构建，胶水里**没有 `FS.filesystems`**、
+**没有把 IDBFS 挂到 Module 上**，版本和存储名也成了模块常量（`IDBFS_DB_VERSION=21`、`IDBFS_DB_STORE_NAME="FILE_DATA"`）——
+就算只修挂载那一行，`patchIDBFS` 换上去的 `getDB` 也会不带版本号打开库、建出一个叫 `undefined` 的存储，存档全写不进去。
+
+**修法**（运行时 `vcfbeb38ddde3`）：补丁表新增两条，完整构建和 `npm run eka2l1:repackage` 走同一个 `applyReplacePatch`：
+- `idbfs-current-emscripten`（boot.js）：`idbfsOf(mod)` 优先取 `Module.IDBFS`，缺省版本 21、存储名 `FILE_DATA`，与胶水和 `savePaths` 一致；
+- `idbfs-module-export`（`EKA2L1_GLUE_PATCHES`，改链接产物 `eka2l1.js`）：在 `Module["FS"]=FS;` 旁边导出 `Module["IDBFS"]=IDBFS`。
+  完整构建在链接后对 `bin/eka2l1.js` 打；重新打包对已发布胶水打。
+
+重新打包现在会把所有「改页面 / 改胶水」的补丁打到已发布文件上（已在位的跳过，顺带复核），基准运行时缺的 C++ 补丁会当场要求完整重建；
+`check-eka2l1-web.mjs` 逐条核对这些补丁的替换文本在产物里，并单独拦住旧的 `mod.FS.mount(mod.FS.filesystems.IDBFS` 一行。
+**以后换 Emscripten 版本，先查胶水还剩哪些 `Module[...]` 导出、IDBFS 的常量是不是还叫这个名字**，别只看构建通过。
+
+验收（2026-11-19，本地浏览器）：用 1KB 假 ROM 走玩家的安装流程，核心正常启动、`/eka2l1` 挂成 IDBFS、库版本 21 且只有 `FILE_DATA`，
+最后报「ROM 文件损坏」（假 ROM 的正确结果）；写一份文件走 `syncfs`、再导入一张卡带走 `savePaths`，刷新后重新启动核心，两边都完整恢复。
+回归：`npm run test:eka2l1-patches`（拿仓库里出事那版 `vce3dcea2a438` 当修之前的样本）。真实固件下的完整开机与游戏运行仍未验证。
+
 ## 3. 常用命令
 
 ```bash

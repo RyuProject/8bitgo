@@ -24,9 +24,10 @@ import {
 import { join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  EKA2L1_ALL_PATCHES, EKA2L1_EXTERNAL_PATCHES, EKA2L1_PATCHES,
-  EKA2L1_UPSTREAM, EKA2L1_UPSTREAM_COMMIT,
+  EKA2L1_ALL_PATCHES, EKA2L1_EXTERNAL_PATCHES, EKA2L1_GLUE_PATCHES, EKA2L1_PATCHES,
+  EKA2L1_UPSTREAM, EKA2L1_UPSTREAM_COMMIT, applyReplacePatch,
 } from './lib/eka2l1-patches.mjs'
+import { EKA2L1_SITE_SCRIPTS, injectSiteScripts } from './lib/eka2l1-site-scripts.mjs'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const args = process.argv.slice(2)
@@ -95,12 +96,7 @@ for (const patch of EKA2L1_PATCHES) {
   const file = join(src, patch.file)
   const original = readFileSync(file, 'utf8')
   let text = original
-  for (const [from, to] of patch.replace) {
-    if (text.includes(to)) continue
-    const hits = text.split(from).length - 1
-    if (hits !== 1) fail(`补丁「${patch.id}」在 ${patch.file} 命中 ${hits} 次（应为 1）`)
-    text = text.replace(from, to)
-  }
+  try { text = applyReplacePatch(original, patch) } catch (err) { fail(err.message) }
   if (text !== original) {
     writeFileSync(file, text)
     console.log(`✓ 补丁 ${patch.id}`)
@@ -147,6 +143,17 @@ run('cmake', ['--build', buildDir, '--target', 'eka2l1_wasm', `-j${jobs}`])
 // 4. 收集产物并按最终发布字节生成版本号；上游 build_id 不包含 web_network.js，
 //    只用它做 URL 版本会让只改 relay 补丁的版本撞上旧的 immutable 缓存。
 const bin = join(buildDir, 'bin')
+
+// 链接产物上的文本补丁（与 repackage-eka2l1-web.mjs 共用同一份补丁和同一个 applyReplacePatch）
+for (const patch of EKA2L1_GLUE_PATCHES) {
+  const file = join(bin, patch.file)
+  if (!existsSync(file)) fail(`构建产物缺少 ${patch.file}，无法打补丁「${patch.id}」`)
+  const original = readFileSync(file, 'utf8')
+  let text = original
+  try { text = applyReplacePatch(original, patch) } catch (err) { fail(err.message) }
+  if (text !== original) writeFileSync(file, text)
+  console.log(`✓ 产物补丁 ${patch.id}`)
+}
 const buildIdJs = readFileSync(join(bin, 'js', 'build_id.js'), 'utf8')
 const upstreamBuildId = /EKA2L1_BUILD_ID='([0-9a-f]{12})'/.exec(buildIdJs)?.[1]
   ?? fail('build_id.js 里没有 12 位构建哈希')
@@ -178,8 +185,7 @@ const sourceDoc = [
   '',
   'Emscripten 子模块补丁原文和应用说明随包提供于 `source/patches/external/`。',
   '',
-  '8BitGo 还附带 `source/scripts/eka2l1-default-firmware.js`：从本站游戏页进入时，若当前浏览器尚无设备则先安装后台配置的 N-Gage QD ROM，再把选中的游戏包导入本机；`.n-gage` 包放入 E:\\n-gage，需在 Games 应用中完成安装。已有设备不会被默认固件覆盖；导入内容只保存在玩家自己的浏览器存储中。',
-  '',
+  ...EKA2L1_SITE_SCRIPTS.flatMap((script) => [script.doc, '']),
   '后台管理员配置的 N-Gage QD 默认 ROM 和站内游戏包会供玩家导入；其它固件（ROM / RPKG）由玩家自行提供。导入内容保存在玩家本机浏览器中，运行时发布包本身不包含任何固件或游戏文件。',
   '',
 ].join('\n')
@@ -200,27 +206,28 @@ for (const name of SHIP) {
     let data = readFileSync(file)
     if (rel === 'index.html') {
       const html = data.toString('utf8')
-      if (html.includes('js/8bitgo-default-firmware.js')) fail('上游 index.html 意外已包含本站固件引导脚本')
-      if (!html.includes('</body>')) fail('index.html 缺少 </body>，无法安装本站固件引导脚本')
-      data = Buffer.from(html.replace('</body>', '<script src="js/8bitgo-default-firmware.js"></script>\n</body>'))
+      for (const script of EKA2L1_SITE_SCRIPTS) {
+        if (html.includes(script.published)) fail(`上游 index.html 意外已包含本站脚本 ${script.published}`)
+      }
+      try { data = Buffer.from(injectSiteScripts(html)) } catch (err) { fail(err.message) }
       publishedOverrides.set(rel, data)
     }
     payload.set(rel, { bytes: data.length, sha256: createHash('sha256').update(data).digest('hex') })
   }
 }
-const firmwareBootstrap = readFileSync(join(root, 'scripts', 'eka2l1-default-firmware.js'))
-payload.set('js/8bitgo-default-firmware.js', {
-  bytes: firmwareBootstrap.length,
-  sha256: createHash('sha256').update(firmwareBootstrap).digest('hex'),
-})
-publishedOverrides.set('js/8bitgo-default-firmware.js', firmwareBootstrap)
+for (const script of EKA2L1_SITE_SCRIPTS) {
+  const bytes = readFileSync(join(root, script.source))
+  payload.set(script.published, { bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') })
+  publishedOverrides.set(script.published, bytes)
+}
 payload.set('LICENSE', { bytes: licenseBytes.length, sha256: createHash('sha256').update(licenseBytes).digest('hex') })
 const sourceBytes = Buffer.from(sourceDoc)
 payload.set('SOURCE.md', { bytes: sourceBytes.length, sha256: createHash('sha256').update(sourceBytes).digest('hex') })
 const sourceArtifacts = [
   ['source/scripts/build-eka2l1-web.mjs', join(root, 'scripts', 'build-eka2l1-web.mjs')],
   ['source/scripts/lib/eka2l1-patches.mjs', join(root, 'scripts', 'lib', 'eka2l1-patches.mjs')],
-  ['source/scripts/eka2l1-default-firmware.js', join(root, 'scripts', 'eka2l1-default-firmware.js')],
+  ['source/scripts/lib/eka2l1-site-scripts.mjs', join(root, 'scripts', 'lib', 'eka2l1-site-scripts.mjs')],
+  ...EKA2L1_SITE_SCRIPTS.map((script) => [script.sourceCopy, join(root, script.source)]),
   ['source/patches/external/README.md', join(src, 'patches/external/README.md')],
   ...EKA2L1_EXTERNAL_PATCHES.map((patch) => [`source/${patch.file}`, join(src, patch.file)]),
 ]
