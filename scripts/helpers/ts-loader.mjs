@@ -32,10 +32,13 @@ const STUBS = {
     'export const connectLive=async()=>globalThis.__fakeLiveSocket;' +
     'export const liveIceServers=async()=>await (globalThis.__fakeLiveIceServers?.() ?? []);' +
     'export const liveIceConfig=async(options={})=>await (globalThis.__fakeLiveIceConfig?.(options) ?? {iceServers:await (globalThis.__fakeLiveIceServers?.() ?? []),hasTurn:false,expiry:0});' +
-    'export const liveStunServers=async()=>await (globalThis.__fakeLiveIceServers?.() ?? []);' +
-    'export const waitForLiveIceGathering=async()=>{};' +
-    'export const exchangeLiveSrsSdp=async()=>({type:"answer",sdp:"v=0\\r\\n"});' +
+    'export const liveSrsIceServers=async(options={})=>await (globalThis.__fakeLiveSrsIceServers?.(options) ?? []);' +
+    'export const srsPeerConfiguration=(iceServers=[])=>({iceServers,bundlePolicy:"max-bundle",rtcpMuxPolicy:"require"});' +
+    'export const srsOfferSdp=(pc)=>{const sdp=pc.localDescription?.sdp;if(!sdp)throw new Error("SRS offer missing SDP");return sdp};' +
+    'export const exchangeLiveSrsSdp=async(...args)=>await (globalThis.__fakeLiveSrsExchange?.(...args) ?? {type:"answer",sdp:"v=0\\r\\n"});' +
+    'export const liveSrsErrorStatus=(e)=>typeof e?.status==="number"?e.status:0;' +
     'export const preferLiveSrsCodecs=()=>{};' +
+    'export const tuneLiveSrsJitter=()=>{};' +
     'export const liveEnabled=()=>true;' +
     'export const refreshLiveRooms=()=>{};',
 }

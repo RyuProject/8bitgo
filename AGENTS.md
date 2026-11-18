@@ -2096,12 +2096,22 @@ SRS；后者是部署保护锁，即使启用项被误关，SRS 不可用也拒�
 `/etc/8bitgo-live-srs/` 和 `server/.env`，不得提交。改动 SRS 发布 / 播放、hook、房间准入或部署时，
 回归 `cd server && npm run test:live-srs && npm run test:live`，并做真实浏览器媒体发布、播放和重连检查。
 
-⚠️ WHIP/WHEP 的单次 SDP 不能靠 trickle 补发后续候选；但也不能硬等所有 STUN 服务器都结束：
-只要一台失联，Chrome 可能在已有公网映射候选后仍保持 `iceGatheringState=gathering`，10 秒后
-主播超时、观众只有黑屏。`src/services/liveIceGathering.ts` 在首条 `srflx` / `relay` 后再收集 250ms
-就把当前 SDP 交给 SRS；到期仍没有可路由候选才失败，绝不能把 host-only SDP 当作公网 UDP 可达。
-`npm run test:live-ice` 固定这些分支；浏览器验收必须确认 PeerConnection `connected` 且观众视频帧数增长，
-只看到房间 / `srsReady` 不算 WebRTC 端到端通过。
+⚠️ **SRS 是 ICE-lite，浏览器 offer 不需要任何候选**（2026-11-18 修正）：SRS 从不主动探测客户端候选，
+只回应浏览器打到 `公网IP:8000` 的 STUN 绑定请求、按来源地址回包，官方 SDK 也是 offer 落地即 POST。
+曾经的「等到 srflx 才提交、收不到就失败」是把 P2P 规则套到 SFU 上：默认 STUN 是 Google 的，
+大陆网络拿不到 srflx，直播整片拉不起来，而 SRS 本身直连可达。现在 `src/services/liveSrsIce.ts`：
+SRS 连接默认 `iceServers: []` + `max-bundle`、不等候选；**从没连上就 failed** 才带站点自建 TURN
+（只取 turn:/turns:，绝不带 Cloudflare）重来，覆盖封了 8000 端口的网络。别再加回候选等待。
+`npm run test:live-ice` 守着；浏览器验收仍须确认 PeerConnection `connected` 且观众视频帧数增长。
+
+SRS 会话的账（`server/src/live.js` 的 `kickSrsClient` 一段）：SRS 只要客户端一直回 STUN 就一直转发，
+和我们的房间成员关系无关。按 hook 的 `client_id` 记账、经回环 API `DELETE /api/v1/clients/<id>` 踢人：
+同一观众新开拉流踢旧的；观众离房宽限 `LIVE_SRS_ORPHAN_GRACE_MS`（默认 45 秒，同 key 换 socket 回来可认领）
+后踢；主播重新 WHIP 前先踢旧上行（否则 stream busy 要等 stun_timeout 30 秒，全房黑屏）；下播全踢。
+hook 只收本机 / Docker 网桥、且不带任何反代头的请求（密钥泄露也不能从公网伪造 on_publish）。
+观众换播放票走 `srs-play-grant`（不走 watch，watch 会让主播重建协作连接）；SRS 房里点对点协作通道
+只在这一局有 2P 位时才建、最多 16 条，它失败只重试两次、**绝不**让视频观看报错。
+回归：`cd server && npm run test:live-srs`、`npm run test:broadcast-idle`。
 
 生产机是从 `dist/client` 现场服务，所以 `vite.config.ts` 的 `emptyOutDir` 必须是 `false`。
 2026-09-25 日志已取证到构建期 `dist/client/index.html` 短暂不存在，SSR 当场 500。

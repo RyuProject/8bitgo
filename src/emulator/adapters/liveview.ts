@@ -29,7 +29,7 @@
  */
 import type { Capability, CaptureSources, MountOptions, PadButton, RuntimeHandle } from '../types'
 import { getT, fmt } from '@/services/i18n'
-import { connectLive, exchangeLiveSrsSdp, liveEnabled, liveIceConfig, liveStunServers, waitForLiveIceGathering, preferLiveSrsCodecs, type LiveChatMessage, type LiveSocket, type LiveViewerEntry } from '@/services/live'
+import { connectLive, exchangeLiveSrsSdp, liveEnabled, liveIceConfig, liveSrsErrorStatus, liveSrsIceServers, preferLiveSrsCodecs, srsOfferSdp, srsPeerConfiguration, tuneLiveSrsJitter, type LiveChatMessage, type LiveSocket, type LiveViewerEntry } from '@/services/live'
 import { sendChatWithAck, type ChatSendResult } from '../chatSend'
 import { usableVideoSize } from '../videoTuning'
 import { COOP_CHANNEL, encode as encodeCoop, parse as parseCoop } from '../coopSeat'
@@ -147,6 +147,27 @@ const CONNECT_BUDGET_MS = 75_000
 /** offer 迟到时先来的 ICE 只保留有限条，避免恶意房主或坏脚本把观众标签页的内存堆满。 */
 const MAX_PENDING_ICE = 64
 
+/* ---------------- SRS 拉流的恢复节奏 ---------------- */
+
+/**
+ * SRS 拉流 disconnected 的宽限。SRS 是 ICE-lite、不支持 ICE restart，断了只能重拉；
+ * 重拉只要一次 HTTP 往返加 DTLS，比干等 Chromium 那个可能永远不来的 failed 划算。
+ */
+const SRS_DISCONNECTED_GRACE_MS = 8_000
+/** 重拉的退避上限。弱网下断流常常是十几秒的隧道 / 电梯，太快只会一直撞，太慢恢复后又白等 */
+const SRS_RETRY_MAX_DELAY_MS = 15_000
+/**
+ * 已经看到过画面之后，连续多久拉不回来才算这场直播对我断了。
+ * 以前是「重试 3 次」—— 1+2+4 秒，一次 10 秒的地铁隧道就让观众吃一个「连接断了」的错误，只能手动刷新。
+ */
+const SRS_RECOVER_BUDGET_MS = 3 * 60_000
+/** 播放票服务端只给 2 分钟；剩不到这么多就先换一张再协商，免得白跑一轮 403 */
+const SRS_GRANT_REFRESH_MS = 90_000
+/** 一条 SRS 拉流建起来后，最多给它这么久去出第一帧；超过就当这条卡死了重拉 */
+const SRS_PENDING_MAX_MS = 15_000
+/** SRS 房里点对点协作通道（只用于上场当 2P）连不上时最多重试几次；它失败绝不影响看直播 */
+const COOP_RETRY_MAX = 2
+
 /* ---------------- 观众端链路统计 ---------------- */
 
 /** 多久读一轮 inbound-rtp。和主播侧对齐，秒级足够 —— 编码器自己的自适应也是秒级的 */
@@ -195,6 +216,20 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let srsRetryCount = 0
   let srsRetryTimer = 0
   let srsTracks = new Set<MediaStreamTrack>()
+  /** 这张播放票是什么时候拿到的（服务端只给 2 分钟） */
+  let srsGrantAt = 0
+  /** 当前这条拉流是什么时候建的；连着却迟迟不出帧时按它判「卡死」 */
+  let srsPcStartedAt = 0
+  /** 画面从什么时候开始拉不回来（见 SRS_RECOVER_BUDGET_MS）；0 = 现在好好的 */
+  let srsLostAt = 0
+  /** 直连 SRS 从没连上就 failed 过：这条网络多半封了 8000 端口，之后带自建 TURN（见 services/liveSrsIce.ts） */
+  let srsRelay = false
+  /** 这一次挂载期间拉到过 SRS 画面没有；ready 再次到来时据此错开重拉 */
+  let srsEverWatched = false
+  /** 点对点协作通道的重试次数（SRS 房里它只承载 2P 输入） */
+  let coopRetryCount = 0
+  /** 观众端也有一条「整条流都断了」的判据：带声音的流连续这么多轮一个字节都没有 */
+  let srsSilentStreak = 0
   const mediaConnectionState = () => (transport === 'srs' ? srsPc : pc)?.connectionState
   /** 当前这条 pc 对应主播那边的代号；不匹配的 ICE 候选是上一轮的，扔掉 */
   let pcGen: number | undefined
@@ -367,6 +402,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (mediaConnectionState() === 'connected' && vt) {
       console.warn(`[live] 已连上主播（轨 muted=${vt.muted}），但对方一帧都没发出来（游戏暂停 / 静止画面 / 主播浏览器不出帧）`)
       return rt.liveHostIdle
+    }
+    if (transport === 'srs') {
+      // SRS 房：主播一直没推上来，和观众这边的网络无关；推上来了却拉不到，就是这条网络到不了媒体服务器
+      if (!srsReady) return rt.liveTimeout
+      if (srsPc || srsLostAt) return rt.liveNoRoute
+      return rt.liveTimeout
     }
     const outward = localCandidateTypes.has('srflx') || localCandidateTypes.has('relay')
     if (!outward) {
@@ -563,6 +604,23 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         （10 秒）零帧就是真卡死：当作断线重新要一轮 offer。没有心跳的房主（Safari / Firefox）
         画面一静止就合法地不出帧，不能这么判，否则暂停一下游戏观众就被反复重连到报错。
       */
+      /*
+        SRS 房另一条「整条流都死了」的判据：主播推的流带声音时，Opus 静音也照发包，
+        连续两轮（10 秒）一个字节都收不到就是 SFU 那一路断了（主播换了上行而 SRS 没把它接到我们这条拉流上、
+        或者链路静默失效）。不看视频帧：游戏暂停时视频合法地不出帧。
+      */
+      if (transport === 'srs' && activePc === srsPc && dBytes === 0 && stream.getAudioTracks().length > 0 && !hostFrozen && !hostAway && srsReady) {
+        srsSilentStreak += 1
+        if (srsSilentStreak >= STALL_SAMPLES) {
+          srsSilentStreak = 0
+          gotFrame = false
+          window.clearInterval(linkTimer)
+          linkTimer = 0
+          console.warn('[live] SRS 拉流 10 秒没有收到任何数据，重拉')
+          scheduleSrsRetry(true)
+          return
+        }
+      } else if (transport === 'srs') srsSilentStreak = 0
       if (dDecoded === 0 && hostKeepAlive && !hostFrozen && !hostAway && socket?.connected) {
         stallStreak += 1
         if (stallStreak >= STALL_SAMPLES) {
@@ -578,6 +636,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       if (dRecv + dLost < 50) return
       const loss = dLost / (dRecv + dLost)
       const kbps = Math.round((dBytes * 8) / elapsed)
+      // SFU 不能单给弱网观众降码率；能做的是让 NACK 重传赶得上播放（见 services/liveSrsIce.ts）
+      if (transport === 'srs' && activePc === srsPc) tuneLiveSrsJitter(activePc, { loss, rttMs })
 
       // 每位观众只把自己的质量回给主播；主播据此只调这一条 sender。
       // 走已有 DataChannel，不经过信令服务器，也不会让弱网观众拖累全房。
@@ -600,6 +660,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     window.clearTimeout(rewatchTimer)
     rewatchCount = 0
     srsRetryCount = 0
+    srsLostAt = 0
+    srsSilentStreak = 0
+    if (transport === 'srs') srsEverWatched = true
     if (!watching) {
       watching = true
       options.onStart?.()
@@ -621,6 +684,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     srsRetryTimer = 0
     srsPlayGeneration++
     srsPlayInFlight = false
+    srsPcStartedAt = 0
+    srsSilentStreak = 0
     const old = srsPc
     srsPc = null
     if (old) {
@@ -636,42 +701,107 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     srsTracks.clear()
   }
 
-  const scheduleSrsRetry = () => {
+  /** 这条拉流还值得留着吗：在握手、或者已经通了（卡死的判定另算，见 srsPlayerStuck） */
+  const srsPlayerAlive = () => {
+    const state = srsPc?.connectionState
+    return state === 'new' || state === 'connecting' || state === 'connected'
+  }
+
+  /** 建了太久还没出第一帧：协商成功了却一直没通，或者通了却一个关键帧都没等到 */
+  const srsPlayerStuck = () => Boolean(srsPc && !gotFrame && srsPcStartedAt && performance.now() - srsPcStartedAt > SRS_PENDING_MAX_MS)
+
+  /**
+   * 换一张播放票。走 `srs-play-grant`，不走 watch：watch 会让主播重建我的协作连接（viewer-joined），
+   * 而换票只是为了重拉视频。老服务端没有这个事件（ack 超时）时才退回 watch。
+   */
+  const refreshSrsGrant = async (): Promise<boolean> => {
+    const s = socket
+    if (destroyed || !s?.connected) return false
+    try {
+      const data = await new Promise<{ srsGrant?: string; srsReady?: boolean }>((resolve, reject) => {
+        const timer = window.setTimeout(() => reject(new Error('srs-play-grant timeout')), 5_000)
+        s.emit('srs-play-grant', {}, (err: string | null, payload: { srsGrant?: string; srsReady?: boolean }) => {
+          window.clearTimeout(timer)
+          if (err) reject(new Error(err))
+          else resolve(payload)
+        })
+      })
+      if (destroyed) return false
+      if (data?.srsGrant) {
+        srsGrant = data.srsGrant
+        srsGrantAt = Date.now()
+      }
+      srsReady = Boolean(data?.srsReady)
+      return Boolean(srsGrant)
+    } catch (e) {
+      if (destroyed) return false
+      // 不在名单里了（服务端重启 / 被当成离房）或老服务端：重新 watch 一次，顺带拿新票和 ready 状态
+      if (recoveryInFlight) return false
+      console.warn('[live] 换 SRS 播放票失败，改为重新进房：', e instanceof Error ? e.message : e)
+      recoveryInFlight = true
+      try {
+        return await watch(false)
+      } finally {
+        recoveryInFlight = false
+      }
+    }
+  }
+
+  /**
+   * 安排一次重拉。退避到 15 秒封顶、不设次数上限：
+   *   · 还没看到过画面 —— 由 75 秒的总看门狗决定什么时候放弃，这里只管一直试；
+   *   · 看到过画面 —— 连续 SRS_RECOVER_BUDGET_MS 拉不回来才报「断了」。
+   * 主播不在 / 切后台 / 信令断着时这里不动，由 host-back、host-frozen、connect 那几条路接着推进。
+   */
+  const scheduleSrsRetry = (immediate = false) => {
     if (destroyed || transport !== 'srs' || srsRetryTimer) return
-    if (srsRetryCount >= REWATCH_MAX) {
-      if (!gotFrame) fail(rt.liveLost)
+    if (!srsLostAt) srsLostAt = Date.now()
+    if (srsEverWatched && Date.now() - srsLostAt > SRS_RECOVER_BUDGET_MS) {
+      fail(rt.liveLost)
       return
     }
-    const baseDelay = Math.min(12_000, 1_000 * 2 ** srsRetryCount++)
+    const baseDelay = immediate ? 0 : Math.min(SRS_RETRY_MAX_DELAY_MS, 1_000 * 2 ** Math.min(srsRetryCount++, 4))
     // 一场直播的观众会同时收到同一个恢复事件；错开 WHEP 重试能压低瞬时握手峰值。
-    const delay = Math.round(baseDelay * (0.8 + Math.random() * 0.4))
-    live.onState?.(gotFrame ? 'reconnecting' : 'connecting')
+    const delay = Math.round(baseDelay * (0.8 + Math.random() * 0.4)) + (immediate ? Math.round(Math.random() * 400) : 0)
+    live.onState?.(gotFrame ? 'reconnecting' : srsEverWatched ? 'reconnecting' : 'connecting')
     srsRetryTimer = window.setTimeout(() => {
       srsRetryTimer = 0
       if (destroyed || !socket?.connected || hostAway || hostFrozen) return
       void (async () => {
-        await watch(true)
-        if (!destroyed && srsReady && srsGrant) void startSrsPlayer(srsGrant)
+        const fresh = await refreshSrsGrant()
+        if (destroyed || transport !== 'srs') return
+        // 主播的上行还没回来：等 srs-state ready，那一刻会自己重拉
+        if (!srsReady || !fresh) return
+        void startSrsPlayer(true)
       })()
     }, delay)
   }
 
-  const startSrsPlayer = async (grant: string) => {
-    if (destroyed || transport !== 'srs' || !srsReady || !grant || srsPlayInFlight) return
-    if (srsPc?.connectionState === 'connected') return
+  /**
+   * 建一条 SRS 拉流。
+   *
+   * ⚠️ force=false 时**还活着的拉流一律不动**。以前 watch / srs-state / 各种恢复路径都会调到这里，
+   * 而它只认 `connected`：一条正在握手的拉流（弱网下 DTLS 要好几秒）会被下一次 watch 当场拆掉重来，
+   * 越弱的网越连不上。只有确认坏了（failed / 断流 / 卡死）的路径才传 force=true。
+   */
+  const startSrsPlayer = async (force = false) => {
+    if (destroyed || transport !== 'srs' || !srsReady || !srsGrant || srsPlayInFlight) return
+    if (!force && srsPlayerAlive() && !srsPlayerStuck()) return
     closeSrsPlayer()
     const generation = ++srsPlayGeneration
     srsPlayInFlight = true
     let next: RTCPeerConnection
     try {
-      const iceServers = await liveStunServers()
+      // 票快过期就先换，免得协商白跑一轮 403
+      if (Date.now() - srsGrantAt > SRS_GRANT_REFRESH_MS) await refreshSrsGrant()
+      const iceServers = await liveSrsIceServers({ relay: srsRelay })
       if (generation !== srsPlayGeneration) return
-      if (destroyed || transport !== 'srs' || !srsReady || srsGrant !== grant) {
+      if (destroyed || transport !== 'srs' || !srsReady || !srsGrant) {
         srsPlayInFlight = false
-        if (!destroyed && transport === 'srs' && srsReady && srsGrant && srsGrant !== grant) void startSrsPlayer(srsGrant)
         return
       }
-      next = new RTCPeerConnection({ iceServers })
+      // 默认不配 ICE 服务器、不等候选：SRS 是 ICE-lite，只认我们打过去的 STUN 来源地址
+      next = new RTCPeerConnection(srsPeerConfiguration(iceServers))
     } catch (error) {
       if (generation === srsPlayGeneration) {
         srsPlayInFlight = false
@@ -681,6 +811,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       return
     }
     srsPc = next
+    srsPcStartedAt = performance.now()
+    let everConnected = false
     next.ontrack = (event) => {
       if (destroyed || srsPc !== next) return
       const tracks = event.streams[0]?.getTracks() ?? [event.track]
@@ -705,23 +837,39 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           waitForFirstFrame(markWatching)
         }
       }
-      const receiver = next.getReceivers().find((item) => tracks.includes(item.track)) as (RTCRtpReceiver & { jitterBufferTarget?: number }) | undefined
-      if (receiver && 'jitterBufferTarget' in receiver) receiver.jitterBufferTarget = 300
+      // 基线抖动缓冲；有丢包时 sampleLink 再按 RTT 放大（见 services/liveSrsIce.ts）
+      tuneLiveSrsJitter(next, { loss: 0 })
       tryPlay()
     }
+    let disconnectedTimer = 0
     const stateChanged = () => {
       if (destroyed || srsPc !== next) return
-      if (next.connectionState === 'connected') {
+      const state = next.connectionState
+      if (state !== 'disconnected' && disconnectedTimer) {
+        window.clearTimeout(disconnectedTimer)
+        disconnectedTimer = 0
+      }
+      if (state === 'connected') {
+        everConnected = true
         srsRetryCount = 0
         if (gotFrame) live.onState?.(hostFrozen ? 'host-away' : 'watching')
-      } else if (next.connectionState === 'failed' || next.connectionState === 'closed') {
+      } else if (state === 'failed' || state === 'closed') {
+        // 从没连上就失败：这条网络到不了 SRS 的 8000 端口，之后带自建中继再试
+        if (!everConnected && state === 'failed' && !srsRelay) {
+          srsRelay = true
+          console.warn('[live] 直连 SRS 失败，之后改经自建 TURN 中继拉流')
+        }
         gotFrame = false
         scheduleSrsRetry()
-      } else if (next.connectionState === 'disconnected') {
+      } else if (state === 'disconnected' && !disconnectedTimer) {
         live.onState?.(hostAway ? 'host-away' : 'reconnecting')
-        window.setTimeout(() => {
-          if (!destroyed && srsPc === next && next.connectionState === 'disconnected') scheduleSrsRetry()
-        }, DISCONNECTED_GRACE_MS)
+        disconnectedTimer = window.setTimeout(() => {
+          disconnectedTimer = 0
+          if (!destroyed && srsPc === next && next.connectionState === 'disconnected') {
+            gotFrame = false
+            scheduleSrsRetry(true)
+          }
+        }, SRS_DISCONNECTED_GRACE_MS)
       }
     }
     next.onconnectionstatechange = stateChanged
@@ -733,20 +881,85 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       preferLiveSrsCodecs(video, 'video')
       const offer = await next.createOffer()
       await next.setLocalDescription(offer)
-      await waitForLiveIceGathering(next)
-      const localSdp = next.localDescription?.sdp
-      if (!localSdp) throw new Error('SRS player offer missing SDP')
-      const answer = await exchangeLiveSrsSdp('play', live.roomId, grant, localSdp)
+      // offer 落地就提交，不等候选（原因见 services/liveSrsIce.ts）
+      const answer = await exchangeLiveSrsSdp('play', live.roomId, srsGrant, srsOfferSdp(next))
       if (destroyed || srsPc !== next) return
       await next.setRemoteDescription(answer)
     } catch (error) {
       if (!destroyed && srsPc === next) {
-        console.warn('[live] SRS 拉流协商失败，稍后重试：', error)
+        const status = liveSrsErrorStatus(error)
+        console.warn(`[live] SRS 拉流协商失败（${status || '网络'}），稍后重试：`, error)
         closeSrsPlayer()
-        scheduleSrsRetry()
+        // 403：票过期或我已不在名单上，下一轮先换票；409：主播的上行刚掉，等 srs-state ready
+        if (status === 403) srsGrantAt = 0
+        if (status === 409) srsReady = false
+        else scheduleSrsRetry()
       }
     } finally {
       if (generation === srsPlayGeneration && srsPc === next) srsPlayInFlight = false
+    }
+  }
+
+  /**
+   * SRS 房的「画面没有 / 断了，想办法」。和点对点那套 rewatch 分开：那套是向主播要一轮新 offer，
+   * 而 SRS 房的视频根本不经过主播的 offer —— 照搬只会让主播反复重建协作连接，视频一点没好。
+   */
+  const srsRecover = async () => {
+    if (destroyed || !socket?.connected || hostAway) return
+    if (hostFrozen) {
+      thawRewatch = true
+      return
+    }
+    thawRewatch = false
+    window.clearTimeout(rewatchTimer)
+    if (!srsReady) {
+      // 看过画面之后主播的上行一直没回来：按同一个预算判「断了」（首连由 75 秒看门狗管）
+      if (srsEverWatched) {
+        if (!srsLostAt) srsLostAt = Date.now()
+        if (Date.now() - srsLostAt > SRS_RECOVER_BUDGET_MS) return fail(rt.liveLost)
+      }
+      /*
+        主播的上行还没到 SRS。重新 watch 一次就是在催它：服务端会再发一条 viewer-joined，
+        主播那边据此检查上行（它可能刚好错过了人数广播）。催的次数有限，但闹钟一直上着，
+        上行一回来 srs-state 就会把画面接上。
+      */
+      if (!recoveryInFlight && rewatchCount < REWATCH_MAX) {
+        rewatchCount += 1
+        recoveryInFlight = true
+        try {
+          await watch(true)
+        } finally {
+          recoveryInFlight = false
+        }
+      }
+      if (!destroyed && !gotFrame && !hostAway && !srsReady) armRewatch()
+      return
+    }
+    if (gotFrame && srsPc?.connectionState === 'connected') return
+    if (srsPlayerAlive() && !srsPlayerStuck()) {
+      // 还在握手：再给它一点时间，到点仍没帧再来
+      armRewatch(SRS_PENDING_MAX_MS)
+      return
+    }
+    scheduleSrsRetry(true)
+    if (!gotFrame) armRewatch()
+  }
+
+  /**
+   * SRS 房里点对点协作通道（只承载上场当 2P）失败了：有限次重新要一轮 offer，**永远不报错**。
+   * 以前它和视频共用 rewatch 的次数：观众在对称 NAT 后、站点又没 TURN 时，这条通道注定连不上，
+   * 三次用完直接 fail() —— 一场 SRS 视频好好的直播被一个用不上的 2P 通道判了死刑。
+   */
+  const coopRecover = async () => {
+    if (destroyed || !socket?.connected || recoveryInFlight || hostAway || hostFrozen) return
+    if (coopRetryCount >= COOP_RETRY_MAX) return
+    coopRetryCount += 1
+    recoveryInFlight = true
+    try {
+      await refreshIce()
+      if (!destroyed) await watch(true)
+    } finally {
+      recoveryInFlight = false
     }
   }
 
@@ -978,18 +1191,21 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       if (destroyed || pc !== next) return
       const s = next.connectionState
       if (transport === 'srs') {
+        /*
+          SRS 房里这条点对点连接只装 2P 协作通道，视频状态一概不看它：画面好坏由 srsPc 说了算。
+          它连不上只影响「申请上场」，所以失败了走有限次的 coopRecover，绝不报错、也不碰视频。
+        */
         if (s === 'connected') {
           window.clearTimeout(disconnectTimer)
           disconnectTimer = 0
-          if (gotFrame) live.onState?.(hostFrozen ? 'host-away' : 'watching')
+          coopRetryCount = 0
         } else if (s === 'disconnected' && !disconnectTimer) {
-          live.onState?.(srsPc?.connectionState === 'connected' && gotFrame ? 'watching' : hostAway ? 'host-away' : 'reconnecting')
           disconnectTimer = window.setTimeout(() => {
             disconnectTimer = 0
-            if (!destroyed && pc === next && next.connectionState === 'disconnected' && socket?.connected) void rewatch()
+            if (!destroyed && pc === next && next.connectionState === 'disconnected' && socket?.connected) void coopRecover()
           }, DISCONNECTED_GRACE_MS)
         } else if (s === 'failed') {
-          void rewatch()
+          void coopRecover()
         }
         return
       }
@@ -1100,8 +1316,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (transport !== nextTransport) closeSrsPlayer()
     transport = nextTransport
     srsGrant = info.srsGrant || ''
+    if (srsGrant) srsGrantAt = Date.now()
     srsReady = transport === 'srs' && Boolean(info.srsReady)
-    if (transport === 'srs' && srsReady && srsGrant) void startSrsPlayer(srsGrant)
+    // 不带 force：还在握手或已经通了的拉流不能被一次（重新）进房拆掉
+    if (transport === 'srs' && srsReady && srsGrant) void startSrsPlayer()
     else if (transport === 'srs' && !srsReady && (srsPc || srsPlayInFlight)) {
       gotFrame = false
       closeSrsPlayer()
@@ -1168,6 +1386,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
   /** 要一轮新 offer；等不到就再要，几次都没用才算断 */
   const rewatch = async (requestCloudflareFallback = false) => {
+    // SRS 房的视频不靠主播 offer，恢复走自己那一套（见 srsRecover）
+    if (transport === 'srs') return srsRecover()
     if (destroyed || !socket?.connected || recoveryInFlight) return
     // 主播冻着的时候重来多少次都等不到帧，记一笔，等它 host-frozen:false 回来再补（见 thawRewatch）
     if (hostFrozen) {
@@ -1176,13 +1396,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
     thawRewatch = false
     window.clearTimeout(rewatchTimer)
-    if (rewatchCount >= REWATCH_MAX) {
-      if (transport === 'srs' && gotFrame) {
-        console.warn('[live] SRS 画面仍可用，但观众输入通道已达到自动恢复上限')
-        return
-      }
-      return fail(joined && watching ? rt.liveLost : diagnose())
-    }
+    if (rewatchCount >= REWATCH_MAX) return fail(joined && watching ? rt.liveLost : diagnose())
     rewatchCount += 1
     live.onState?.('reconnecting')
     recoveryInFlight = true
@@ -1330,12 +1544,21 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         if (destroyed || transport !== 'srs') return
         srsReady = Boolean(p?.ready)
         if (srsReady && srsGrant) {
-          void startSrsPlayer(srsGrant)
+          /*
+            还活着的拉流不动（SRS 会把新上行接到已有消费者上）；死了的才重拉。
+            上百个观众会在同一瞬间收到这条，看过画面的（也就是重连而不是首连）错开一点再发 WHEP。
+          */
+          if (srsEverWatched && !srsPlayerAlive()) {
+            window.setTimeout(() => { if (!destroyed && srsReady) void startSrsPlayer() }, Math.round(Math.random() * 800))
+          } else void startSrsPlayer()
         } else {
           gotFrame = false
           frameWaiter?.()
           closeSrsPlayer()
           live.onState?.(hostAway || hostFrozen ? 'host-away' : 'reconnecting')
+          // 上行掉了：开始计时，迟迟不回来就按预算报断（见 srsRecover）
+          if (srsEverWatched && !srsLostAt) srsLostAt = Date.now()
+          if (!hostAway && !hostFrozen) armRewatch()
         }
       }) as (...args: never[]) => void)
       /**

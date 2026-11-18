@@ -140,7 +140,7 @@
     "test:live-chat": "node scripts/test-live-chat.mjs",
     "test:live-io": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-live-io.mjs",
     "test:live-quality": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-live-quality.mjs",
-    "test:live-ice": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-live-ice-gathering.mjs",
+    "test:live-ice": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-live-srs-ice.mjs",
     "test:rom-probe": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-rom-probe.mjs",
     "test:rom-route-health": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-rom-route-health.mjs",
     "test:game-keywords": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-game-keywords.mjs",

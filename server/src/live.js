@@ -552,9 +552,138 @@ function activeSrsViewerCount() {
   return count
 }
 
+/** SRS 流名 → 房间。hook 每个会话都会来几次，按流名直查，不扫全部房间。 */
+const srsRooms = new Map()
+
 const srsNegotiations = new Map()
 const SRS_NEGOTIATION_WINDOW_MS = 60_000
 const SRS_NEGOTIATION_LIMIT = 8
+
+/**
+ * SRS 的会话**不随**我们的房间成员关系自动结束：浏览器只要不关 PeerConnection、一直回 STUN，
+ * SRS 就一直给它转发。只靠「每张票每分钟 8 次」挡不住两种放大：
+ *   · 同一个观众反复兑换播放票，每分钟多 8 路拉流、旧的不关，几十分钟就是几百路出口带宽；
+ *   · 观众断开信令（离房）但不关拉流，再换一个 socket 进房拿新票，名单上只占一席，SRS 里却越堆越多。
+ * 主播那边则相反：网络切换后旧上行在 SRS 眼里还活着（要等 stun_timeout，默认 30 秒），新上行会被
+ * 判成「stream busy」，所有观众要黑屏半分钟以上。
+ *
+ * 所以这里按 hook 给的 client_id 记账，并通过只监听回环的 HTTP API 主动踢掉被取代 / 已离房的会话：
+ *   · 同一成员新开播放会话 → 踢掉旧的（每位观众在 SRS 里最多一路）；
+ *   · 观众离房 → 宽限 SRS_ORPHAN_GRACE_MS 后再踢（信令抖一下、换 socket 回来时凭 key 认领，不打断画面）；
+ *   · 主播重新推流 → 先踢旧上行再转发 WHIP；
+ *   · 房间结束 → 全部踢掉。
+ * 踢人失败（旧版本 SRS、会话早已结束）只是退回 SRS 自己的超时，不影响主流程。
+ */
+const SRS_ORPHAN_GRACE_MS = Number(process.env.LIVE_SRS_ORPHAN_GRACE_MS || 45_000)
+const SRS_KICK_TIMEOUT_MS = 1_500
+/** client_id 会拼进 API 路径；只收 SRS 自己生成的那种短 id，杜绝路径注入。 */
+const SRS_CLIENT_ID = /^[A-Za-z0-9._:-]{1,96}$/
+
+async function kickSrsClient(clientId) {
+  const config = srsConfig()
+  if (!config || typeof clientId !== 'string' || !SRS_CLIENT_ID.test(clientId)) return false
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), SRS_KICK_TIMEOUT_MS)
+  try {
+    const response = await fetch(`${config.internalApi}/api/v1/clients/${encodeURIComponent(clientId)}`, {
+      method: 'DELETE',
+      signal: controller.signal,
+    })
+    await response.text().catch(() => '')
+    return response.ok
+  } catch {
+    return false
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** SRS 报告某个会话结束了：账上所有指向它的记录一并删掉，避免之后误踢同名的新会话。 */
+function forgetSrsClient(room, clientId) {
+  if (!clientId) return
+  for (const [member, id] of room.srsPlayers) if (id === clientId) room.srsPlayers.delete(member)
+  for (const [key, orphan] of room.srsOrphans) {
+    if (orphan.clientId !== clientId) continue
+    clearTimeout(orphan.timer)
+    room.srsOrphans.delete(key)
+  }
+}
+
+const srsOrphanKey = (memberId, viewerKey) => (viewerKey ? `key:${viewerKey}` : `member:${memberId}`)
+
+/** 观众离开名单：它在 SRS 里的拉流先挂起，宽限期内同一个人（同一 key）回来就交还，不回来再踢。 */
+function orphanSrsPlayer(room, memberId, viewerKey) {
+  if (room.transport !== 'srs' || !room.srsPlayers) return
+  const clientId = room.srsPlayers.get(memberId)
+  if (!clientId) return
+  room.srsPlayers.delete(memberId)
+  const key = srsOrphanKey(memberId, viewerKey)
+  const prior = room.srsOrphans.get(key)
+  if (prior) {
+    clearTimeout(prior.timer)
+    if (prior.clientId !== clientId) void kickSrsClient(prior.clientId)
+  }
+  const timer = setTimeout(() => {
+    if (room.srsOrphans.get(key)?.clientId !== clientId) return
+    room.srsOrphans.delete(key)
+    void kickSrsClient(clientId)
+  }, SRS_ORPHAN_GRACE_MS)
+  timer.unref?.()
+  room.srsOrphans.set(key, { clientId, timer })
+}
+
+/** 同一个观众换了 socket 回来（名单里已经没有旧 id）：认领挂起的拉流，画面不断。 */
+function reclaimSrsPlayer(room, memberId, viewerKey) {
+  if (room.transport !== 'srs' || !room.srsPlayers || !viewerKey) return
+  const key = srsOrphanKey(memberId, viewerKey)
+  const orphan = room.srsOrphans.get(key)
+  if (!orphan) return
+  clearTimeout(orphan.timer)
+  room.srsOrphans.delete(key)
+  const current = room.srsPlayers.get(memberId)
+  if (current && current !== orphan.clientId) void kickSrsClient(orphan.clientId)
+  else room.srsPlayers.set(memberId, orphan.clientId)
+}
+
+/** 观众信令换了 socket、画面还连着（viewer-rebound）：账跟着人走，不踢。 */
+function transferSrsPlayer(room, from, to) {
+  if (room.transport !== 'srs' || !room.srsPlayers) return
+  const clientId = room.srsPlayers.get(from)
+  if (!clientId) return
+  room.srsPlayers.delete(from)
+  const existing = room.srsPlayers.get(to)
+  if (existing && existing !== clientId) void kickSrsClient(existing)
+  room.srsPlayers.set(to, clientId)
+}
+
+/** 房间结束：上行、所有拉流和挂起的拉流一起踢掉，不留给 SRS 慢慢超时。 */
+function releaseSrsSessions(room) {
+  if (room.transport !== 'srs' || !room.srsPlayers) return
+  const ids = new Set()
+  if (room.srsPublisherClient) ids.add(room.srsPublisherClient)
+  for (const id of room.srsPlayers.values()) ids.add(id)
+  for (const orphan of room.srsOrphans.values()) {
+    clearTimeout(orphan.timer)
+    ids.add(orphan.clientId)
+  }
+  room.srsPlayers.clear()
+  room.srsOrphans.clear()
+  room.srsPublisherClient = ''
+  for (const id of ids) void kickSrsClient(id)
+}
+
+/**
+ * SRS 回调只应来自本机（原生安装）或 Docker 网桥（compose 安装），而且不经过任何反代。
+ * 走 nginx / Cloudflare / EdgeOne 进来的请求一定带转发头 —— 那条公网路径上即使有人拿到了 hook 密钥
+ * （日志、配置备份泄露），也不能借它把任意房间标成「已推流」或绕过拉流授权。
+ */
+const PROXY_HEADERS = ['x-forwarded-for', 'x-real-ip', 'forwarded', 'cf-connecting-ip', 'cf-ray', 'eo-connecting-ip', 'true-client-ip', 'x-8bitgo-edge']
+export function trustedSrsHookSource(req) {
+  const headers = req?.headers || {}
+  for (const name of PROXY_HEADERS) if (headers[name]) return false
+  const address = req?.socket?.remoteAddress || req?.connection?.remoteAddress || ''
+  return Boolean(address) && isPrivateIp(address)
+}
 
 /** 一张短票不能被反复兑换成无限个 SRS 会话；每个发布者 / 观众每分钟最多 8 次，且单飞。 */
 function beginSrsNegotiation(key) {
@@ -575,6 +704,13 @@ function beginSrsNegotiation(key) {
 function clearSrsNegotiations(roomId) {
   const prefix = `${roomId}:`
   for (const key of srsNegotiations.keys()) if (key.startsWith(prefix)) srsNegotiations.delete(key)
+}
+
+/** 长房间里观众来来去去，过了窗口又不在途的计数没有任何作用，挂在幽灵扫描上顺手清。 */
+function pruneSrsNegotiations(now = Date.now()) {
+  for (const [key, state] of srsNegotiations) {
+    if (!state.inFlight && now - state.startedAt >= SRS_NEGOTIATION_WINDOW_MS) srsNegotiations.delete(key)
+  }
 }
 
 function clearSrsNegotiation(roomId, role, memberId) {
@@ -744,9 +880,19 @@ function hostIp(socket) {
  * ⚠️ 名字是**异步**解析的（可能查一次库），所以刚进来的那一位可能还没有名字，
  * 这里就只占一个空位 `{}`。观众端按「还没拿到名字」画占位，不要显示成空白行。
  */
+/**
+ * 名单最多带这么多人。SRS 房能到上百人，每次有人进出都把整份名单发给房里每一个人是 O(N²) 的流量：
+ * 100 人的房一阵进场潮就是几十 MB 的 Socket.IO 下行，弱网观众的信令先被它挤爆。
+ * 人数（count）始终是准的，名单只是给面板显示用。
+ */
+const VIEWER_LIST_MAX = 100
+/** 进出场潮里的人数广播合并成一次；主播开推流晚这么一点没有感知。 */
+const VIEWERS_NOTIFY_MS = 100
+
 function viewerList(room) {
   const out = []
   for (const id of room.viewers) {
+    if (out.length >= VIEWER_LIST_MAX) break
     const who = room.viewerNames.get(id)
     if (who?.name) out.push({ name: who.name, role: who.role })
     else if (who?.guest) out.push({ guest: who.guest })
@@ -783,10 +929,16 @@ function resolveViewerName(nsp, room, socket) {
 
 /** 广播人数**和名单**给房间里所有人（主播 + 观众） */
 function notifyViewers(nsp, room) {
-  // count 保持原样单独给：观众席徽章只要这一个数，不该为了它去数数组
-  nsp.to(room.id).emit('viewers', { roomId: room.id, count: room.viewers.size, list: viewerList(room) })
-  // 人数变了 = 大厅那张卡片上的「N 人在看」也变了
-  notifyRoomList()
+  if (room.viewersTimer) return
+  room.viewersTimer = setTimeout(() => {
+    room.viewersTimer = null
+    if (rooms.get(room.id) !== room) return
+    // count 保持原样单独给：观众席徽章只要这一个数，不该为了它去数数组。名单在发出那一刻现算
+    nsp.to(room.id).emit('viewers', { roomId: room.id, count: room.viewers.size, list: viewerList(room) })
+    // 人数变了 = 大厅那张卡片上的「N 人在看」也变了
+    notifyRoomList()
+  }, VIEWERS_NOTIFY_MS)
+  room.viewersTimer.unref?.()
 }
 
 /* ---------------- 大厅列表的事件流（SSE） ---------------- */
@@ -890,7 +1042,11 @@ function clearFrozenTimers(room) {
 function closeRoom(nsp, room, reason) {
   if (room.awayTimer) clearTimeout(room.awayTimer)
   room.awayTimer = null
+  if (room.viewersTimer) clearTimeout(room.viewersTimer)
+  room.viewersTimer = null
   clearFrozenTimers(room)
+  if (room.srsStream && srsRooms.get(room.srsStream) === room) srsRooms.delete(room.srsStream)
+  releaseSrsSessions(room)
   nsp.to(room.id).emit('live-ended', { roomId: room.id, reason })
   for (const viewerId of room.viewers) {
     membership.delete(viewerId)
@@ -990,6 +1146,7 @@ function sweepGhostViewers(nsp, room) {
   const dead = ghostViewers(room, alive)
   if (!dead.length) return
   for (const id of dead) {
+    if (room.srsPlayers) orphanSrsPlayer(room, id, room.viewerKeys.get(id))
     room.viewers.delete(id)
     room.viewerKeys.delete(id)
     room.viewerNames.delete(id)
@@ -1094,6 +1251,8 @@ function leave(nsp, socket) {
     hostAway(nsp, room)
     return
   }
+  // 离房观众在 SRS 里的拉流不能留着白占出口带宽；先挂起，换 socket 回来时凭 key 认领
+  orphanSrsPlayer(room, socket.id, room.viewerKeys.get(socket.id))
   room.viewers.delete(socket.id)
   room.viewerKeys.delete(socket.id)
   room.viewerNames.delete(socket.id)
@@ -1135,7 +1294,8 @@ export function attachLive(io, options = {}) {
     const grant = str(req.body?.grant, 4096)
     const sdp = typeof req.body?.sdp === 'string' ? req.body.sdp : ''
     // ICE 完整 SDP 通常远小于 256KB；拒绝超大正文，避免握手代理成为内存放大入口。
-    if (!roomId || !grant || !sdp || sdp.length > 256_000) return res.status(400).json({ error: 'invalid request' })
+    // 不是 SDP 的正文也不转给 SRS：它的解析器是 C++ 写的，没必要把任意字节送进去。
+    if (!roomId || !grant || !sdp || sdp.length > 256_000 || !/^v=0\r?\n/.test(sdp)) return res.status(400).json({ error: 'invalid request' })
     const claims = verifySrsToken(config, grant)
     const role = mode === 'publish' ? 'publish' : 'play'
     const room = rooms.get(roomId)
@@ -1152,9 +1312,23 @@ export function attachLive(io, options = {}) {
     if (mode === 'play' && !room.srsReady) return res.status(409).json({ error: 'SRS publisher is not ready' })
     const finishNegotiation = beginSrsNegotiation(`${roomId}:${role}:${claims.memberId}`)
     if (!finishNegotiation) return res.status(429).json({ error: 'too many SRS negotiations' })
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), 12_000)
+    let timer = null
     try {
+      /*
+        主播重新推流（网络切换、PeerConnection failed 之后重建）时，SRS 往往还认为旧上行活着，
+        要等 stun_timeout（默认 30 秒）才放手；这期间新的 WHIP 只会拿到 stream busy，全房黑屏半分钟以上。
+        只有当前主播能走到这里（上面已核对 memberId），所以踢掉旧上行不会误伤别人。
+      */
+      if (mode === 'publish' && room.srsPublisherClient) {
+        const kicked = await kickSrsClient(room.srsPublisherClient)
+        // SRS 在下一轮协程里才真正回收旧会话；稍等一下，免得新 WHIP 正好撞上还没释放的流
+        if (kicked) await new Promise((resolve) => setTimeout(resolve, 150))
+        if (rooms.get(roomId) !== room || room.hostSocketId !== claims.memberId) {
+          return res.status(403).json({ error: 'room membership changed during negotiation' })
+        }
+      }
+      const controller = new AbortController()
+      timer = setTimeout(() => controller.abort(), 12_000)
       const endpoint = mode === 'publish' ? 'whip' : 'whep'
       const url = new URL(`${config.internalApi}/rtc/v1/${endpoint}/`)
       url.searchParams.set('app', 'live')
@@ -1182,7 +1356,7 @@ export function attachLive(io, options = {}) {
       console.warn(`[live] SRS ${mode} API 不可用：`, error?.name || error?.message || error)
       return res.status(502).json({ error: 'SRS service unavailable' })
     } finally {
-      clearTimeout(timer)
+      if (timer) clearTimeout(timer)
       finishNegotiation()
     }
   }
@@ -1190,12 +1364,16 @@ export function attachLive(io, options = {}) {
   const srsHook = (req, res) => {
     const config = srsConfig()
     if (!config) return res.status(503).send('SRS disabled')
+    if (!trustedSrsHookSource(req)) return res.status(403).send('forbidden')
     if (!sameSecret(req.query?.key, config.hookSecret)) return res.status(403).send('forbidden')
     const action = str(req.body?.action, 40)
     const stream = str(req.body?.stream, 160)
     const clientId = str(req.body?.client_id, 128)
-    const room = Array.from(rooms.values()).find((candidate) => candidate.transport === 'srs' && candidate.srsStream === stream)
-    if (!room) return res.status(404).send('unknown stream')
+    const app = str(req.body?.app, 64)
+    // 我们只往 live 这个 app 推拉流；别的 app 下同名流不属于任何房间
+    if (app && app !== 'live') return res.status(404).send('unknown app')
+    const room = srsRooms.get(stream)
+    if (!room || rooms.get(room.id) !== room || room.transport !== 'srs') return res.status(404).send('unknown stream')
     if (action === 'on_publish' || action === 'on_play') {
       let token = ''
       const param = typeof req.body?.param === 'string' ? req.body.param : ''
@@ -1216,19 +1394,44 @@ export function attachLive(io, options = {}) {
         return res.status(403).send('viewer is no longer in this room')
       }
       if (action === 'on_play' && !room.srsReady) return res.status(403).send('publisher not ready')
+      // client_id 要拼进踢人 API 的路径，格式不对的一律拒绝；SRS 没给 id 时照常放行，只是记不了账
+      if (clientId && !SRS_CLIENT_ID.test(clientId)) return res.status(403).send('invalid client')
       if (action === 'on_publish') {
+        const previousClient = room.srsPublisherClient
+        // 正常情况下 WHIP 代理已经先踢过旧上行；这里兜底「旧上行的 unpublish 还没到」的那种时序
+        if (clientId && previousClient && previousClient !== clientId) void kickSrsClient(previousClient)
         room.srsPublisherClient = clientId
-        if (!room.srsReady) {
-          room.srsReady = true
-          nsp.to(room.id).emit('srs-state', { ready: true })
-          notifyRoomList()
+        const wasReady = room.srsReady
+        room.srsReady = true
+        /*
+          换了一路上行也要再广播一次 ready：观众手里的拉流如果已经因为断流死掉，凭这一条立刻重拉；
+          还活着的拉流（SRS 会把新上行接到已有的消费者上）在客户端会被忽略，不会白白重建。
+        */
+        if (!wasReady || previousClient !== clientId) nsp.to(room.id).emit('srs-state', { ready: true })
+        if (!wasReady) notifyRoomList()
+      } else {
+        // 每位观众在 SRS 里只留最新的一路：同一成员又开了一路，就踢掉旧的
+        const prior = room.srsPlayers.get(claims.memberId)
+        if (clientId && prior && prior !== clientId) void kickSrsClient(prior)
+        if (clientId) room.srsPlayers.set(claims.memberId, clientId)
+        const key = room.viewerKeys.get(claims.memberId)
+        const orphanKey = key ? srsOrphanKey(claims.memberId, key) : ''
+        const orphan = orphanKey ? room.srsOrphans.get(orphanKey) : null
+        if (clientId && orphan && orphan.clientId !== clientId) {
+          clearTimeout(orphan.timer)
+          room.srsOrphans.delete(orphanKey)
+          void kickSrsClient(orphan.clientId)
         }
       }
-    } else if (action === 'on_unpublish' && room.srsReady && clientId && room.srsPublisherClient === clientId) {
-      room.srsReady = false
-      room.srsPublisherClient = ''
-      nsp.to(room.id).emit('srs-state', { ready: false })
-      notifyRoomList()
+    } else if (action === 'on_unpublish') {
+      if (room.srsReady && clientId && room.srsPublisherClient === clientId) {
+        room.srsReady = false
+        room.srsPublisherClient = ''
+        nsp.to(room.id).emit('srs-state', { ready: false })
+        notifyRoomList()
+      }
+    } else if (action === 'on_stop') {
+      forgetSrsClient(room, clientId)
     }
     return res.status(200).send('0')
   }
@@ -1382,6 +1585,12 @@ export function attachLive(io, options = {}) {
           srsStream: randomBytes(18).toString('base64url'),
           srsReady: false,
           srsPublisherClient: '',
+          /** 成员 socket.id → 它在 SRS 里的拉流 client_id（见 kickSrsClient 那段注释） */
+          srsPlayers: new Map(),
+          /** 已离房、宽限期内等认领的拉流：`key:<观众 key>` → { clientId, timer } */
+          srsOrphans: new Map(),
+          /** 合并人数广播的计时器（见 notifyViewers） */
+          viewersTimer: null,
           title: str(payload?.title, 80) || str(payload?.gameName, 80) || 'Live',
           gameSlug,
           /** 内部权限位，不进 publicRoom；列表和详情在序列化之前按它过滤。 */
@@ -1442,6 +1651,7 @@ export function attachLive(io, options = {}) {
           chatFlood: null,
         }
         rooms.set(id, room)
+        if (room.transport === 'srs') srsRooms.set(room.srsStream, room)
         bindHost(nsp, room, socket)
         ack?.(null, srsHostAck(room))
       } catch (e) {
@@ -1519,6 +1729,21 @@ export function attachLive(io, options = {}) {
       ack?.(null, { srsGrant: srsGrant(room, 'publish', socket.id) })
     })
 
+    /**
+     * 观众续一张 SRS 播放票。拉流断了要重拉时用它，而不是再发一次 watch：
+     * watch 会让主播重建这位观众的协作连接（viewer-joined），只为换一张 2 分钟的票不值得。
+     * 只发给当前名单里的观众，票仍绑定这条 socket，其余校验在兑换时照做。
+     */
+    socket.on('srs-play-grant', (_payload, ack) => {
+      const info = membership.get(socket.id)
+      if (info?.role !== 'viewer') return ack?.('not a viewer')
+      const room = rooms.get(info.roomId)
+      if (!room || !room.viewers.has(socket.id)) return ack?.('not found')
+      if (room.transport !== 'srs') return ack?.('not an SRS room')
+      if (!takeSignalToken(socket, { candidate: true }, 'viewer')) return ack?.('rate limited')
+      ack?.(null, { srsGrant: srsGrant(room, 'play', socket.id), srsReady: Boolean(room.srsReady) })
+    })
+
     socket.on('watch', async (payload, ack) => {
       if (socket.data.liveWatching) return ack?.('already watching')
       socket.data.liveWatching = true
@@ -1562,6 +1787,9 @@ export function attachLive(io, options = {}) {
       }
 
       if (previous) {
+        // 同一个人换了 socket：他在 SRS 里的拉流记到新 id 名下，不能当成「离房」去踢
+        transferSrsPlayer(room, previous, socket.id)
+        clearSrsNegotiation(room.id, 'play', previous)
         room.viewers.delete(previous)
         room.viewerKeys.delete(previous)
         room.viewerNames.delete(previous)
@@ -1571,6 +1799,8 @@ export function attachLive(io, options = {}) {
       if (!again) {
         room.viewers.add(socket.id)
         if (key) room.viewerKeys.set(socket.id, key)
+        // 旧 socket 的断线比新 socket 的 watch 先到：拉流正挂在宽限期里，凭 key 认领回来
+        if (!previous) reclaimSrsPlayer(room, socket.id, key)
         membership.set(socket.id, { roomId: room.id, role: 'viewer' })
         socket.join(room.id)
         // 有人来看了：后台 + 零观众那把收房的闹钟得撤
@@ -1872,6 +2102,7 @@ export function attachLive(io, options = {}) {
     // 顺手回收纯联机弹幕房（见 sweepMatchChats 的注释）。挂在同一个定时器上，
     // 不为它再开一个 interval —— 这种清扫线程多了，测试结束进程退不出去。
     sweepMatchChats()
+    pruneSrsNegotiations()
   }, GHOST_SWEEP_MS)
   ghostTimer.unref?.()
 
