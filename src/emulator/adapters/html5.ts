@@ -18,7 +18,7 @@ const SAVE_BRIDGE_TIMEOUT_MS = 15_000
 const GAME_SDK_SOURCE = '8bitgo-game-sdk'
 const GAME_SDK_VERSION = 1
 const GAME_SDK_TIMEOUT_MS = 15_000
-const PVZ_SHELL_VERSION = '20261118-live2'
+const PVZ_SHELL_VERSION = '20261118-live3'
 const LEGACY_PAGES_ENTRIES = [
   ['/web/PvZ', 'https://pvz.8bitgo.com'],
   ['/web/diablo', 'https://diablo.8bitgo.com'],
@@ -433,7 +433,14 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       }
       return
     }
-    if (!gameSdkToken || message.token !== gameSdkToken) return
+    if (!gameSdkToken || message.token !== gameSdkToken) {
+      console.warn('[live][html5-sdk] 忽略 SDK 消息：握手令牌不匹配', {
+        type: message.type,
+        hostTokenReady: Boolean(gameSdkToken),
+        messageTokenReady: typeof message.token === 'string' && Boolean(message.token),
+      })
+      return
+    }
     if (message.type === 'unready') {
       void stopRemoteLiveCapture()
       gameSdkReady = false
@@ -642,6 +649,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let loaded = false
   iframe.addEventListener('load', () => {
     if (destroyed) return
+    console.info('[live][html5-sdk] 游戏 iframe 加载完成', { repeated: loaded })
     // 门户页跳进真正游戏页也会再次 load；就绪只报一次，媒体来源却必须跟着换到新文档。
     startMediaMonitoring()
     if (loaded) {

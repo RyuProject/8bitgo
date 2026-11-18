@@ -138,6 +138,7 @@
       const capabilities = canvasCapabilities(canvas)
       sendParent({ type: 'ready', token: hostToken, detail: { capabilities, width, height } })
       announcedToken = hostToken
+      console.info('[8BitGo SDK] 已向播放器报告游戏能力', { width, height, live: capabilities.live })
     }
     return true
   }
@@ -546,6 +547,7 @@
     if (!message || message.source !== '8bitgo-host' || message.version !== VERSION) return
     if (message.type === 'init' && typeof message.token === 'string' && message.token.length > 0 && message.token.length <= 128) {
       hostToken = message.token
+      console.info('[8BitGo SDK] 已收到播放器握手')
       if (state.ready) reportReady()
       return
     }
