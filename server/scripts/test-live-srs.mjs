@@ -10,6 +10,7 @@ const srsUnit = await readFile(new URL('../../deploy/live/srs/8bitgo-live-srs.se
 const srsConfigTemplate = await readFile(new URL('../../deploy/live/srs/srs.conf.template', import.meta.url), 'utf8')
 assert.match(srsUnit, /^RestrictAddressFamilies=.*\bAF_NETLINK\b/m, 'SRS 沙箱必须允许通过 rtnetlink 枚举接口地址')
 assert.match(srsConfigTemplate, /^daemon\s+off;/m, 'systemd 必须以前台方式托管 SRS，禁止二次 daemonize')
+assert.match(srsConfigTemplate, /^pid\s+\/run\/8bitgo-live-srs\/srs\.pid;/m, 'SRS PID 文件必须放在 systemd 创建的可写运行目录')
 const fakeSrs = createServer(async (req, res) => {
   if (req.url === '/api/v1/versions') {
     res.writeHead(200, { 'content-type': 'application/json' })

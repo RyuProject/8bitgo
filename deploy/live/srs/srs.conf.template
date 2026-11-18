@@ -1,6 +1,7 @@
 listen              1935;
 max_connections     1000;
 daemon              off;
+pid                 /run/8bitgo-live-srs/srs.pid;
 srs_log_tank        console;
 
 http_api {
