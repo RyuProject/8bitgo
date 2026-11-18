@@ -260,6 +260,8 @@ export function GameCover({
    */
   const [transformFailed, setTransformFailed] = useState(false)
   useEffect(() => setTransformFailed(false), [coverSrc])
+  const [coverFailed, setCoverFailed] = useState(false)
+  useEffect(() => setCoverFailed(false), [coverSrc])
   const srcSet = imgSrc === coverSrc && !transformFailed ? coverSrcSet(coverSrc) : ''
 
   return (
@@ -280,7 +282,7 @@ export function GameCover({
       {/* 背景层：视频 / 封面图 / 程序化封面 */}
       {videoSrc ? (
         <CoverVideo src={videoSrc} fallbackSrc={gameVideoFallbackUrl(game, videoSrc) || undefined} poster={coverSrc || undefined} />
-      ) : coverSrc ? (
+      ) : coverSrc && !coverFailed ? (
         <img
           ref={coverImageRef}
           src={imgSrc}
@@ -302,6 +304,7 @@ export function GameCover({
             reportCoverLoadFailure(event.currentTarget.currentSrc || event.currentTarget.src)
             if (thumbSrc && !thumbFailed) setThumbFailed(true)
             else if (srcSet) setTransformFailed(true)
+            else setCoverFailed(true)
           }}
           className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-105"
         />

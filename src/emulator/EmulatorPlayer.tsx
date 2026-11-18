@@ -34,7 +34,7 @@ import { downloadBlob } from './recorder'
 import { PadDiagram } from './PadDiagram'
 import { LiveControls, type LiveControlsHandle } from './LiveControls'
 import { createPortal } from 'react-dom'
-import { connectLive, useLiveRooms, type LiveChatMessage, type LiveSocket, type LiveViewerEntry } from '@/services/live'
+import { connectLive, liveEnabled, useLiveRooms, type LiveChatMessage, type LiveSocket, type LiveViewerEntry } from '@/services/live'
 import { LiveChatBar, LiveChatLane, useLiveChat } from './LiveChat'
 import { LiveWatchPanel } from './LiveWatchPanel'
 import { MatchChatPanel } from './MatchChatPanel'
@@ -314,6 +314,16 @@ interface Props {
   onMatchPlayerChange?: (active: boolean) => void
   /** 空闲态背景（例如封面） */
   backdrop?: ReactNode
+  /** 详情页专用展示。仅调整空闲舞台的外观，不改变启动参数、ROM 名或存档身份。 */
+  pagePresentation?: boolean
+  /** 只用于详情页舞台上的可见标题；gameName 仍保留模拟器所需的原值。 */
+  displayTitle?: string
+  /** 详情页舞台中间的小封面，复用页面已经选择的缩略图。 */
+  stagePoster?: ReactNode
+  /** 详情页舞台中的分享入口。 */
+  onShare?: () => void
+  /** 游戏尚未启动时，从详情页下方的联机入口发起；播放器现有生命周期会接住请求。 */
+  onPageMatchRequest?: () => void
   /**
    * 出错时红字旁边那个「反馈这个问题」点了做什么。详情页传「滚到评论区并聚焦输入框」；
    * 不传就不画 —— 嵌入页没有评论区。
@@ -567,6 +577,11 @@ export function EmulatorPlayer({
   matchPanelSlot = null,
   onMatchPlayerChange,
   backdrop,
+  pagePresentation = false,
+  displayTitle,
+  stagePoster,
+  onShare,
+  onPageMatchRequest,
   onReport,
   className,
   romUrl,
@@ -3651,6 +3666,15 @@ export function EmulatorPlayer({
     输入框那边本来就会因为 onSend 为 null 而自己禁用。
   */
   const chatBarOn = liveChatOn || Boolean(liveCtl) || Boolean(matchCtl) || Boolean(coopCtl)
+  const pageStandby = pagePresentation && status !== 'loading' && status !== 'running'
+  const pageBarOn = pageStandby && (liveEnabled() || Boolean(onPageMatchRequest))
+  /*
+    详情页那个 3:1 的矮舞台只给「还没点开始」的那一屏。一点开始（loading 起）就退回平台原本的
+    舞台比例：运行中还压成 3:1 的话，1440 宽的屏上红白机只剩约 504×378；
+    触屏的游玩布局是 fixed inset-0，再套 3:1 会被压成一条，下面的页面露出来还能点。
+    在 loading 而不是 running 时切换，是为了让运行时挂载时量到的就是最终尺寸。
+  */
+  const pageStageCompact = pagePresentation && status === 'idle' && !fullscreen && !playMode
   const liveViewSend = handle?.liveChat
   const chatSend = liveSession
     ? (text: string) => liveSession.sendChat(text)
@@ -3690,7 +3714,7 @@ export function EmulatorPlayer({
    * 现在交给 PadDiagram 画，没有截断，那个取舍连同它的风险一起没了（详见那个文件的头）。
    * 键盘直通的运行时（DOS / Flash）键位表是空的，PadDiagram 自己返回 null。
    */
-  const showKeymap = !busy && !online && !touchDevice && Boolean(romUrl)
+  const showKeymap = !pagePresentation && !busy && !online && !touchDevice && Boolean(romUrl)
   const loadingLabel =
     loadDetail === 'rom-pack'
       ? t.player.loadingRomPack
@@ -4166,7 +4190,15 @@ export function EmulatorPlayer({
   */
   return (
     <>
-    <div data-testid="emulator-player" className={cx('overflow-hidden rounded-2xl border border-line bg-black', className)}>
+    <div
+      data-testid="emulator-player"
+      className={cx(
+        'overflow-hidden rounded-2xl border border-line bg-black',
+        pagePresentation && 'game-detail-player-mode',
+        pageStageCompact && 'game-detail-player-mode--standby',
+        className,
+      )}
+    >
       {/*
         桌面端：播放器整体固定 16:9，工具栏是框里的最后一行 —— 它在普通模式和全屏模式里
         都属于模拟器，不会额外撑高详情页；画面区让出工具栏的实际高度，也不会盖住
@@ -4457,9 +4489,15 @@ export function EmulatorPlayer({
 
           {!busy && (
             <div className="absolute inset-0">
-              <div className="absolute inset-0 opacity-60 blur-sm">{backdrop}</div>
-              <div className="scanlines absolute inset-0" aria-hidden />
-              <div className="absolute inset-0 bg-gradient-to-t from-black via-black/60 to-black/20" />
+              {pagePresentation ? (
+                <div className="absolute inset-0 bg-[linear-gradient(180deg,#414141_0%,#292929_55%,#090909_100%)]" aria-hidden />
+              ) : (
+                <>
+                  <div className="absolute inset-0 opacity-60 blur-sm">{backdrop}</div>
+                  <div className="scanlines absolute inset-0" aria-hidden />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black via-black/60 to-black/20" />
+                </>
+              )}
 
               {/*
                 内容容器。两条约束都是「手机上按钮不能被挤没」：
@@ -4479,6 +4517,16 @@ export function EmulatorPlayer({
                 </Button>
               ) : supported ? (
                 <>
+                  {pagePresentation && status === 'idle' && (
+                    <div className="flex flex-col items-center gap-2">
+                      {stagePoster && (
+                        <div className="h-16 w-20 overflow-hidden rounded-md border border-white/25 bg-black/30 shadow-xl shadow-black/40">
+                          {stagePoster}
+                        </div>
+                      )}
+                      {displayTitle && <h2 className="max-w-[min(80vw,36rem)] truncate text-base font-bold text-white sm:text-lg">{displayTitle}</h2>}
+                    </div>
+                  )}
                   {/*
                     桌面端按键图仍放在开始按钮上方；窄屏必须直接收掉。
                     触屏玩家开局后会看到屏幕手柄提示；把广告放到操作入口之后，按钮不再被广告挤出首屏。
@@ -4505,7 +4553,7 @@ export function EmulatorPlayer({
                     </p>
                   )}
                   <span
-                    className="inline-flex flex-wrap items-center justify-center gap-2"
+                    className={cx('inline-flex flex-wrap items-center justify-center gap-2', pagePresentation && 'game-detail-player-actions')}
                     onPointerEnter={() => prewarmPrimaryAction(true)}
                     onFocusCapture={() => prewarmPrimaryAction(false)}
                   >
@@ -4533,6 +4581,30 @@ export function EmulatorPlayer({
                                 : t.player.start
                               : t.player.pickRom}
                     </Button>
+                    {pagePresentation && onShare && (
+                      <button
+                        type="button"
+                        onClick={onShare}
+                        aria-label={t.game.share}
+                        title={t.game.share}
+                        className="inline-grid h-11 w-11 place-items-center rounded-xl border border-white/70 bg-white text-lg font-bold text-[#263329] shadow-sm transition hover:bg-white/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-black"
+                      >
+                        <span aria-hidden>↗</span>
+                      </button>
+                    )}
+                    {pagePresentation && !online && romUrl && (
+                      <button
+                        type="button"
+                        disabled={romDownloadBusy}
+                        aria-busy={romDownloadBusy}
+                        onClick={() => void downloadCurrentRom()}
+                        aria-label={romDownloadBusy ? t.player.downloadingRom : t.player.downloadRom}
+                        title={romDownloadBusy ? t.player.downloadingRom : t.player.downloadRom}
+                        className="inline-grid h-11 w-11 place-items-center rounded-xl border border-white/70 bg-white text-lg font-bold text-[#263329] shadow-sm transition hover:bg-white/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-black disabled:cursor-wait disabled:opacity-65"
+                      >
+                        <span aria-hidden>{romDownloadBusy ? '…' : '↓'}</span>
+                      </button>
+                    )}
                     {!online && romUrl && pageRuntime?.id === 'ppsspp' && (
                       <select
                         aria-label={t.player.pspLoadMode}
@@ -4599,6 +4671,19 @@ export function EmulatorPlayer({
                         </button>
                         {pageRuntime ? fmt(t.player.localInsteadHint, { runtime: pageRuntime.name }) : ''}
                       </>
+                    ) : romUrl && pagePresentation ? (
+                      <div className="flex flex-col items-center gap-2">
+                        {romDownloadError && <p role="alert" className="text-xs text-red-200">{t.player.downloadRomFailed}</p>}
+                        {onlineOk && (
+                          <button
+                            type="button"
+                            className="min-h-10 rounded-lg px-3 text-xs font-semibold text-white/70 underline-offset-4 transition hover:text-white hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-black"
+                            onClick={() => setMode('online')}
+                          >
+                            {t.player.onlineInstead}
+                          </button>
+                        )}
+                      </div>
                     ) : romUrl ? (
                       <div className="flex flex-col items-center gap-2.5">
                         <div className="w-full rounded-2xl border border-white/25 bg-black/45 px-4 py-3 text-center backdrop-blur">
@@ -5132,6 +5217,14 @@ export function EmulatorPlayer({
             表单控件在 flex 里**是会被压缩的**，而这几颗是主控件，宁可折行也不能被挤扁。
           */}
           <div className="ml-auto flex shrink-0 items-center gap-1.5">
+          {romLangs?.length === 1 && !inRoom && !session?.live && (
+            <span
+              title={t.player.romLangTitle}
+              className={buttonClasses('secondary', 'sm')}
+            >
+              {romLanguageLabel(romLangs[0])}
+            </span>
+          )}
           {/*
             ROM 语言切换。三个前提：
               1. 这款游戏确实有两种以上语言的 ROM —— 只有一种时切了也是它自己
@@ -5342,15 +5435,22 @@ export function EmulatorPlayer({
     {/*
       观众端和联机玩家在宽屏已有各自的右栏输入框，这里不能再画第二个入口。
     */}
-    {chatBarOn && !fullscreen && !playMode && !watchPanelOn && !matchPanelVisible && (
+    {(chatBarOn || pageBarOn) && !fullscreen && !playMode && !watchPanelOn && !matchPanelVisible && (
       <LiveChatBar
-        className="mt-2"
+        className={cx('mt-2', pagePresentation && 'game-detail-chat-bar')}
         /*
           主播走自己的推流会话，观众走 liveview 那一路的 handle。
           两个都没有 = 还没连上或者已经散场，传 null 让输入框禁用 ——
           让人打完一段字再告诉他发不出去是最差的一种。
         */
         onSend={chatSend}
+        pagePresentation={pagePresentation}
+        standbyLive={pageStandby && liveEnabled()
+          ? { label: t.player.tools.autoLivePending, hint: t.player.tools.autoLivePending }
+          : undefined}
+        standbyMatch={pageStandby && onPageMatchRequest
+          ? { label: t.player.match, onClick: onPageMatchRequest }
+          : undefined}
         /* 这两个只有主播有；观众那一路 liveCtl / matchCtl 都是 null，按钮不画 */
         live={liveCtl && { on: liveCtl.on, label: liveCtl.label, hint: liveCtl.hint, toggle: liveCtl.toggle, quality: liveCtl.quality }}
         match={matchCtl}
@@ -5361,7 +5461,7 @@ export function EmulatorPlayer({
           ⚠️ 上面那个 `!watchPanelOn` 的条件保证了这里不会和观众端右栏那段常驻列表打架：
           右栏在的时候这一行整块不画。
         */
-        history={chat.messages}
+        history={pageStandby ? undefined : chat.messages}
         historyHint={netplayOn && role === 'player' ? t.player.tools.watchHistory : undefined}
       />
     )}

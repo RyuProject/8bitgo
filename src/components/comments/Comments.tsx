@@ -47,15 +47,15 @@ import { SkeletonBlock } from '@/components/ui/PageSkeleton'
  * 拿它进 useCallback 依赖会让 load 每帧都变，重置 effect 跟着无限跑。
  * 所以下面一律拆成 kind / slug 两个原始值。
  */
-export function GameComments({ gameSlug }: { gameSlug: string }) {
-  return <CommentsPanel target={{ kind: 'game', slug: gameSlug }} />
+export function GameComments({ gameSlug, className }: { gameSlug: string; className?: string }) {
+  return <CommentsPanel target={{ kind: 'game', slug: gameSlug }} className={className} />
 }
 
 export function PostComments({ postSlug }: { postSlug: string }) {
   return <CommentsPanel target={{ kind: 'post', slug: postSlug }} />
 }
 
-function CommentsPanel({ target }: { target: CommentTarget }) {
+function CommentsPanel({ target, className }: { target: CommentTarget; className?: string }) {
   const { kind, slug } = target
   const showScore = kind === 'game'
   const t = useT()
@@ -109,13 +109,14 @@ function CommentsPanel({ target }: { target: CommentTarget }) {
           return [...prev, ...r.items.filter((x) => !seen.has(x.id))]
         })
         setStatus('ready')
-      } catch (e) {
+      } catch {
         if (stale()) return
         if (append) {
           // 加载更多失败不该伪装成「发言失败」；列表保留原样，并在分页按钮旁给出重试。
-          setLoadMoreError(e instanceof Error ? e.message : c.loadFailed)
+          // 接口的错误正文可能是代理 / 本地预览层的诊断文字，面向玩家只给可操作的通用提示。
+          setLoadMoreError(c.loadFailed)
         } else {
-          setLoadError(e instanceof Error ? e.message : c.loadFailed)
+          setLoadError(c.loadFailed)
           setStatus('error')
         }
       } finally {
@@ -198,7 +199,7 @@ function CommentsPanel({ target }: { target: CommentTarget }) {
 
   // id 给详情页「反馈问题」用：出错的玩家一键滚到这里留言
   return (
-    <section id="comments" className="rounded-2xl border border-line bg-surface p-5" aria-label={c.title}>
+    <section id="comments" className={cx('rounded-2xl border border-line bg-surface p-5', className)} aria-label={c.title}>
       <header className="flex items-baseline justify-between">
         <h2 className="text-sm font-bold">💬 {c.title}</h2>
         {total > 0 && <span className="text-xs text-muted">{fmt(c.count, { n: total })}</span>}

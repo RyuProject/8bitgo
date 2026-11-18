@@ -13,13 +13,15 @@
  *    打分是个「点一下就完事」的动作，等 200ms 才亮会让人以为没点上、再点一次。
  *    失败就整块回滚到请求前的状态，并把错误显示出来。
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import type { RatingSummary } from '@/types'
 import { useCurrentUser } from '@/services/auth'
 import { fmt, useT } from '@/services/i18n'
 import { getLang } from '@/services/lang'
 import { clearRating, fetchRating, ratingsAvailable, submitRating, subscribeRating } from '@/services/ratings'
 import { Stars, StarPicker } from './StarRating'
+import { cx } from '@/lib/format'
+import { SkeletonBlock } from '@/components/ui/PageSkeleton'
 
 /** 标题旁的紧凑评分摘要；百分比按 4–5 星的好评票数计算。 */
 export function GameRatingBadge({ gameSlug }: { gameSlug: string }) {
@@ -66,12 +68,25 @@ export function GameRatingBadge({ gameSlug }: { gameSlug: string }) {
   )
 }
 
-export function GameRating({ gameSlug }: { gameSlug: string }) {
+export function GameRating({
+  gameSlug,
+  className,
+  compact = false,
+  embedded = false,
+  children,
+}: {
+  gameSlug: string
+  className?: string
+  compact?: boolean
+  embedded?: boolean
+  children?: ReactNode
+}) {
   const t = useT()
   const r = t.ratings
   const user = useCurrentUser()
 
   const [data, setData] = useState<RatingSummary | null>(null)
+  const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   /**
@@ -88,14 +103,17 @@ export function GameRating({ gameSlug }: { gameSlug: string }) {
       const next = await fetchRating(gameSlug)
       if (slugRef.current === gameSlug && loadSeq.current === seq) setData(next)
     } catch {
-      // 汇总拉不到就整块不显示。评分不是主内容，为它在详情页上挂一条报错反而更碍事
+      // 评分摘要失败时不影响游戏与评论；紧凑卡片仍保留版位，避免侧栏结构随接口状态跳动。
       if (slugRef.current === gameSlug && loadSeq.current === seq) setData(null)
+    } finally {
+      if (slugRef.current === gameSlug && loadSeq.current === seq) setLoading(false)
     }
   }, [gameSlug])
 
   useEffect(() => {
     slugRef.current = gameSlug
     setData(null)
+    setLoading(true)
     setError('')
     setBusy(false)
     void load()
@@ -135,8 +153,47 @@ export function GameRating({ gameSlug }: { gameSlug: string }) {
     }
   }
 
-  if (!ratingsAvailable()) return null
-  if (!data) return null
+  if (!ratingsAvailable()) {
+    if (!compact) return null
+    return (
+      <section className={cx(embedded ? 'p-4' : 'rounded-2xl border border-line bg-surface p-4', className)} aria-label={r.title}>
+        <h2 className="text-sm font-bold">⭐ {r.title}</h2>
+        <div className="mt-3 flex items-center gap-3">
+          <span className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-surface-2 text-lg font-black text-muted" aria-hidden>—</span>
+          <p className="text-xs text-muted">{r.unavailable}</p>
+        </div>
+        {children}
+      </section>
+    )
+  }
+  if (!data) {
+    if (!compact) return null
+    if (!loading) {
+      return (
+        <section className={cx(embedded ? 'p-4' : 'rounded-2xl border border-line bg-surface p-4', className)} aria-label={r.title}>
+          <h2 className="text-sm font-bold">⭐ {r.title}</h2>
+          <div className="mt-3 flex items-center gap-3">
+            <span className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-surface-2 text-lg font-black text-muted" aria-hidden>—</span>
+            <p className="text-xs text-muted">{r.unavailable}</p>
+          </div>
+          {children}
+        </section>
+      )
+    }
+    return (
+      <section className={cx(embedded ? 'p-4' : 'rounded-2xl border border-line bg-surface p-4', className)} aria-label={r.title} aria-busy="true">
+        <h2 className="text-sm font-bold">⭐ {r.title}</h2>
+        <div className="mt-3 flex items-center gap-3">
+          <SkeletonBlock className="h-12 w-12 shrink-0 rounded-xl" />
+          <div className="flex-1">
+            <SkeletonBlock className="h-3 w-24" />
+            <SkeletonBlock className="mt-2 h-3 w-16" />
+          </div>
+        </div>
+        {children}
+      </section>
+    )
+  }
 
   const lang = getLang()
   const mine = data.mine?.score ?? 0
@@ -145,11 +202,29 @@ export function GameRating({ gameSlug }: { gameSlug: string }) {
   // 每根都只有 20% 高，看不出形状
   const peak = Math.max(1, ...[1, 2, 3, 4, 5].map((n) => data.distribution[n] ?? 0))
 
+  const positive = (Number(data.distribution['4']) || 0) + (Number(data.distribution['5']) || 0)
+  const positivePercent = data.count > 0 ? Math.round((positive / data.count) * 100) : null
+
   return (
-    <section className="rounded-2xl border border-line bg-surface p-5" aria-label={r.title}>
+    <section className={cx(embedded ? 'p-4' : 'rounded-2xl border border-line bg-surface p-5', compact && 'p-4', className)} aria-label={r.title}>
       <h2 className="text-sm font-bold">⭐ {r.title}</h2>
 
-      {rated ? (
+      {compact ? (
+        <div className="mt-3 flex items-center gap-3">
+          <span className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-brand text-lg font-black text-[#183500]">
+            {positivePercent === null ? '—' : `${positivePercent}%`}
+          </span>
+          <div className="min-w-0">
+            <p className="text-sm font-bold leading-tight">
+              {positivePercent === null ? r.none : r.likePercent.replace(/^%\s*/, '')}
+            </p>
+            <p className="mt-1 text-xs text-muted">
+              {data.count > 0 ? fmt(r.compactCount, { n: data.count.toLocaleString(lang) }) : r.beFirst}
+            </p>
+            {rated && <div className="mt-1"><Stars value={data.average!} size="sm" /></div>}
+          </div>
+        </div>
+      ) : rated ? (
         <div className="mt-3 flex items-start gap-4">
           <div className="shrink-0 text-center">
             <p className="text-3xl font-black leading-none text-fg">{data.average!.toFixed(1)}</p>
@@ -196,6 +271,8 @@ export function GameRating({ gameSlug }: { gameSlug: string }) {
           {busy ? r.saving : mine ? `${fmt(r.yourScore, { n: mine })} · ${r.clear}` : user ? '' : r.loginNote}
         </p>
       </div>
+
+      {children}
 
       {error && (
         <p className="mt-2 text-xs text-live" role="alert">

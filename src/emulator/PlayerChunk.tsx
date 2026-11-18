@@ -8,6 +8,7 @@ import type { ComponentProps } from 'react'
 import type { EmulatorPlayer as EmulatorPlayerType } from './EmulatorPlayer'
 import { useT } from '@/services/i18n'
 import { allowsSpeculativePlayerPreload, type NetworkHint } from './preloadPolicy'
+import { cx } from '@/lib/format'
 
 const loadPlayer = () => import('./EmulatorPlayer')
 const LazyPlayer = lazyNamed(loadPlayer, 'EmulatorPlayer')
@@ -43,7 +44,19 @@ type PlayerProps = ComponentProps<typeof EmulatorPlayerType>
  * 压暗的封面）—— 这三段是连着出现的，框一变形玩家就觉得页面在抽。以前这里是一块纯黑：
  * 门刚放行、chunk 没到的那几百毫秒里封面消失、变成黑板，看着像播放器坏了。
  */
-function PlayerFallback({ fill, backdrop }: { fill?: boolean; backdrop?: ReactNode }) {
+function PlayerFallback({
+  fill,
+  backdrop,
+  pagePresentation,
+  displayTitle,
+  stagePoster,
+}: {
+  fill?: boolean
+  backdrop?: ReactNode
+  pagePresentation?: boolean
+  displayTitle?: string
+  stagePoster?: ReactNode
+}) {
   const t = useT()
   const status = (
     <div role="status" aria-live="polite" className="flex flex-col items-center gap-3 text-center">
@@ -59,11 +72,22 @@ function PlayerFallback({ fill, backdrop }: { fill?: boolean; backdrop?: ReactNo
     )
   }
   return (
-    <div className="overflow-hidden rounded-2xl border border-line bg-black" aria-busy="true">
-      <div className="relative aspect-video w-full overflow-hidden bg-black">
-        {backdrop && <div className="absolute inset-0 opacity-25 blur-sm">{backdrop}</div>}
-        <div className="absolute inset-0 bg-black/80" />
-        <div className="absolute inset-0 flex items-center justify-center">{status}</div>
+    <div className={cx('overflow-hidden rounded-2xl border border-line bg-black', pagePresentation && 'game-detail-player-mode')} aria-busy="true">
+      {/* 和待机舞台共用 game-detail-stage-ratio：chunk 到达前后框的比例一致，不再 2:1 → 3:1 跳一下 */}
+      <div className={cx('relative aspect-video w-full overflow-hidden bg-black', pagePresentation && 'game-detail-stage-ratio')}>
+        {pagePresentation ? (
+          <div className="absolute inset-0 bg-[linear-gradient(180deg,#414141_0%,#292929_55%,#090909_100%)]" />
+        ) : (
+          <>
+            {backdrop && <div className="absolute inset-0 opacity-25 blur-sm">{backdrop}</div>}
+            <div className="absolute inset-0 bg-black/80" />
+          </>
+        )}
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2">
+          {pagePresentation && stagePoster && <div className="h-[4.75rem] w-[3.5rem] overflow-hidden rounded-md">{stagePoster}</div>}
+          {pagePresentation && displayTitle && <span className="max-w-[80%] truncate text-sm font-bold text-white">{displayTitle}</span>}
+          {status}
+        </div>
       </div>
     </div>
   )
@@ -71,7 +95,13 @@ function PlayerFallback({ fill, backdrop }: { fill?: boolean; backdrop?: ReactNo
 
 export function EmulatorPlayer(props: PlayerProps) {
   return (
-    <Suspense fallback={<PlayerFallback fill={props.fill} backdrop={props.backdrop} />}>
+      <Suspense fallback={<PlayerFallback
+        fill={props.fill}
+        backdrop={props.backdrop}
+        pagePresentation={props.pagePresentation}
+        displayTitle={props.displayTitle}
+        stagePoster={props.stagePoster}
+      />}>
       <LazyPlayer {...props} />
     </Suspense>
   )

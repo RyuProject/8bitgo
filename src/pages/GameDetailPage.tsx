@@ -23,11 +23,12 @@ import { useSeo, breadcrumbSchema, videoGameSchema, faqSchema } from '@/services
 import { useLang } from '@/services/lang'
 import { useT, fmt } from '@/services/i18n'
 import { getLang } from '@/services/lang'
-import { dosExtrasName, gameDescription, gameSeoLanguagePlan, gameSeoTitle, gameTitle, genreLabel, needsTranslation, platformDesc, platformLabel } from '@/services/i18nData'
+import { dosExtrasName, gameDescription, gameSeoLanguagePlan, gameSeoTitle, gameTitle, genreLabel, needsTranslation, platformLabel } from '@/services/i18nData'
 import { EmulatorPlayer, preloadPlayer } from '@/emulator/PlayerChunk'
 import { stageHeightCap } from '@/emulator/screenAspect'
 import { IsolatedPlayCard } from '@/components/game/IsolatedPlayCard'
 import { GameCover } from '@/components/game/GameCover'
+import { GameDetailLayout } from '@/components/game/GameDetailLayout'
 import { GameAgeGuard } from '@/components/game/AgeGate'
 import { GameComments } from '@/components/comments/Comments'
 import { GameRating } from '@/components/game/GameRating'
@@ -395,7 +396,7 @@ export function GameDetailPage() {
   ).join(' · ')
 
   return (
-    <div className="container-x py-6 sm:py-8">
+    <div className="container-x py-6 sm:py-8 lg:pt-0">
       {/*
         ⚠️ 可见的面包屑在 2026-09-07 按站长要求去掉了（这一页的主角是播放器，
         顶上那行小字只是把画面往下推）。
@@ -408,18 +409,14 @@ export function GameDetailPage() {
       */}
 
       {/*
-        普通游玩在超宽屏把播放器、游戏资料放左侧 9 列，平台信息、评分和评论放右侧 3 列，
-        让评论和玩家实际游玩的区域同时进入视线；相关游戏仍留在页面下方，原有入口不丢。
-        较窄桌面保留播放器整行、资料区与侧栏分列的排法，保证评论编辑区有可用宽度。
+        普通游戏页让播放器独占一行，资料与社区侧栏从播放器下方分列，和新稿的阅读顺序一致。
+        看直播和联机玩家继续用 8/4，并让右栏从播放器顶边开始，给实时面板留出空间。
 
-        看直播和联机玩家继续用 8/4，并让右栏从播放器顶边开始。布局只改同一组节点的网格类名，
-        `<EmulatorPlayer>` 不会因布局切换而卸载，避免直播断开或游戏状态丢失。
+        布局只改同一组节点的网格类名，`<EmulatorPlayer>` 不会因状态切换而卸载，
+        避免直播断开、联机重连或游戏状态丢失。
       */}
-      <div className="grid grid-cols-1 gap-8 lg:grid-cols-12">
-        <div className={cx(
-          'w-full',
-          twoColumn ? 'lg:col-span-8' : immersive ? 'lg:col-span-12' : 'lg:col-span-12 xl:col-span-9',
-        )}>
+      <GameDetailLayout sessionLayout={twoColumn} immersive={immersive}>
+        <section className="game-detail-layout__player w-full">
           {hotfix.notice && (
             <p role="status" className={cx('mb-3 rounded-lg border border-coin/50 bg-coin/15 px-3 py-2 text-sm text-fg', stageCap)}>
               {t.game.hotfixNotice[hotfix.notice]}
@@ -430,7 +427,7 @@ export function GameDetailPage() {
                   门卫拦下来时画的也是个 16:9 的框，得和播放器一样宽 ——
                   只给播放器不给门卫的话，「还在核对年龄」那一下框先宽一截、放行后又跳窄。
                 */
-                className={stageCap}
+                className={cx(stageCap, 'game-detail-stage-ratio')}
                 slug={game.slug}
                 markedAdult={Boolean(game.adult)}
                 // 背景那张是糊到底再压一层黑底的，96×96 完全够用，没必要下 300×300
@@ -441,7 +438,7 @@ export function GameDetailPage() {
                   暂时仍显示入口卡，再跳到 /play/<slug>。理由见 shared/isolated-embeds.js。
                 */}
                 {pspNeedsDocumentReload ? (
-                  <div className={cx('flex aspect-video w-full flex-col items-center justify-center gap-4 rounded-2xl border border-line bg-black px-6 text-center text-sm text-muted', stageCap)}>
+                  <div className={cx('flex aspect-video w-full flex-col items-center justify-center gap-4 rounded-2xl border border-line bg-black px-6 text-center text-sm text-muted', stageCap, 'game-detail-stage-ratio')}>
                     <p>{pspIsolationReloadFailed ? t.runtime.ppssppNeedsIsolation : t.player.loadingEngine}</p>
                     {pspIsolationReloadFailed && (
                       <Button
@@ -456,7 +453,7 @@ export function GameDetailPage() {
                   </div>
                 ) : usesIsolatedLaunchCard ? (
                   <IsolatedPlayCard
-                    frameClassName={stageCap}
+                    frameClassName={cx(stageCap, 'game-detail-stage-ratio')}
                     slug={game.slug}
                     gameName={game.title}
                     isolatedPlatform={isolatedRuntimePlatform}
@@ -474,6 +471,13 @@ export function GameDetailPage() {
                   */
                   className="w-full"
                   key={game.slug}
+                  pagePresentation
+                  displayTitle={gameTitle(game, lang)}
+                  stagePoster={<GameCover game={game} ratio="landscape" showTitle={false} showBadge={false} still priority thumb className="h-full w-full" />}
+                  onShare={() => setShareOpen(true)}
+                  onPageMatchRequest={game.multiplayer && (p2pPlayable(game.platform) || game.platform === 'dos')
+                    ? (game.platform === 'dos' ? requestIpxHost : requestMatch)
+                    : undefined}
                   platform={platform}
                   gameName={game.title}
                   gameSlug={game.slug}
@@ -548,15 +552,14 @@ export function GameDetailPage() {
                 : t.runtime.playExperimental}
             </p>
           )}
-        </div>
+        </section>
 
-          <div className={immersive ? 'lg:col-span-12' : twoColumn ? 'lg:col-span-8' : 'lg:col-span-8 xl:col-span-9'}>
-            {/* 标题与元信息 */}
-            <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-              <div>
+          <section className="game-detail-layout__main min-w-0">
+            <header className="game-detail-heading">
+              <div className="game-detail-heading__copy">
                 <h1 className="text-2xl font-extrabold tracking-tight sm:text-3xl">{seoTitle}</h1>
                 {seoTitle !== game.title && <p className="mt-1 text-sm text-muted">{game.title}</p>}
-                <div className="mt-3 flex flex-wrap items-center gap-2">
+                <div className="game-detail-chip-row mt-3">
                   <Link to={`/platforms/${platform.id}`}>
                     <Badge tone="brand" className="text-xs">
                       {platform.icon} {platformLabel(t, platform.id, platform.name)}
@@ -576,67 +579,47 @@ export function GameDetailPage() {
                   <CoinBadge amount={game.coinReward} className="text-xs" />
                 </div>
               </div>
-              {game.plays > 0 && (
-                <div className="flex shrink-0 flex-col items-start gap-2 sm:items-end">
-                  <span className="text-xs text-muted">{fmt(t.common.playsCount, { n: formatCount(game.plays) })}</span>
-                </div>
-              )}
-            </div>
-
-            {/* 动作按钮 */}
-            <div className="mt-5 flex flex-wrap gap-2">
-              {user ? (
-                <Button variant={isFav ? 'primary' : 'secondary'} size="sm" onClick={() => onToggleFavorite(game.slug)} disabled={favBusy} aria-pressed={isFav}>
-                  {isFav ? t.game.favorited : t.game.favorite}
-                </Button>
-              ) : (
-                <Button variant="secondary" size="sm" onClick={openAuthModal}>
-                  {t.game.favorite}
-                </Button>
-              )}
-              {/*
-                以前这个按钮点了只是把当前 URL 抄进剪贴板。现在改成开分享面板：
-                嵌入代码需要尺寸选择，而「跨站 iframe 存不了档、带不进登录态」这两句
-                必须有地方说出来，一个按钮给不了这些。见 components/game/ShareDialog.tsx。
-              */}
-              <Button variant="secondary" size="sm" onClick={() => setShareOpen(true)}>
-                {t.game.share}
-              </Button>
-              {/* 加入合集：没登录的先弹登录，别让他填完一轮才发现要登录 */}
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => (user ? setAddToCollection(true) : openAuthModal())}
-                title={user ? undefined : t.collections.loginToAdd}
-              >
-                📚 {t.collections.addTo}
-              </Button>
-              {/*
-                「创建联机房间」以前是 `to="/games?multiplayer=1"` —— 点了只是跳到游戏库
-                筛多人游戏，一个房也不建（用户报的就是这个）。现在它真的开房：
-                喊一声 requestMatch()，播放器接住（见 services/matchRequest.ts）——
-                游戏没开始就先开始，跑起来立刻在**这一局**上开房，不重开。
-
-                条件里加 p2pPlayable：光看 game.multiplayer 不够，那只说明这游戏支持多人，
-                不代表这个平台的模拟器能联机、也不代表信令配好了。画一个点了没反应的按钮
-                比不画更糟。
-              */}
-              {game.multiplayer && (p2pPlayable(game.platform) || game.platform === 'dos') && (
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={game.platform === 'dos' ? requestIpxHost : requestMatch}
+              <details className="game-detail-heading__actions relative">
+                <summary
+                  aria-label={t.common.more}
+                  title={t.common.more}
+                  className="grid h-9 w-9 cursor-pointer list-none place-items-center rounded-full border border-line bg-surface text-lg text-muted transition hover:border-brand hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
                 >
-                  {game.platform === 'dos' ? t.game.createIpxRoom : t.game.createRoom}
-                </Button>
-              )}
-              <Button variant="ghost" size="sm" onClick={reportProblem}>
-                {t.game.report}
-              </Button>
-            </div>
+                  ⋯
+                </summary>
+                <div className="absolute right-0 top-11 z-20 flex min-w-48 flex-col gap-1 rounded-xl border border-line bg-surface p-2 shadow-xl">
+                  {user ? (
+                    <Button variant={isFav ? 'primary' : 'secondary'} size="sm" className="justify-start" onClick={() => onToggleFavorite(game.slug)} disabled={favBusy} aria-pressed={isFav}>
+                      {isFav ? t.game.favorited : t.game.favorite}
+                    </Button>
+                  ) : (
+                    <Button variant="secondary" size="sm" className="justify-start" onClick={openAuthModal}>
+                      {t.game.favorite}
+                    </Button>
+                  )}
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="justify-start"
+                    onClick={() => (user ? setAddToCollection(true) : openAuthModal())}
+                    title={user ? undefined : t.collections.loginToAdd}
+                  >
+                    📚 {t.collections.addTo}
+                  </Button>
+                  {game.multiplayer && (p2pPlayable(game.platform) || game.platform === 'dos') && (
+                    <Button variant="secondary" size="sm" className="justify-start" onClick={game.platform === 'dos' ? requestIpxHost : requestMatch}>
+                      {game.platform === 'dos' ? t.game.createIpxRoom : t.game.createRoom}
+                    </Button>
+                  )}
+                  <Button variant="ghost" size="sm" className="justify-start" onClick={reportProblem}>
+                    {t.game.report}
+                  </Button>
+                </div>
+              </details>
+            </header>
 
             {/* 简介 */}
-            <section className="mt-8">
+            <section className="mt-6">
               <div className="flex items-start justify-between gap-4">
                 <h2 className="text-lg font-bold">{t.game.about}</h2>
                 {/* 「翻译」按钮：当前语言不是 zh-Hans / en 且该语言还没翻译过时挂一个。
@@ -649,24 +632,14 @@ export function GameDetailPage() {
                   />
                 )}
               </div>
-              <GameDescription
-                // 把译文塞进 key —— 一旦翻译结果改变，子组件全部状态重置，展开 / 收起重新计算
-                key={`${game.slug}:${lang}:${translatedDescription ?? ''}`}
-                description={translatedDescription ?? gameDescription(game, lang)}
-                showMore={t.game.showMore}
-                showLess={t.game.showLess}
-              />
-              <dl className="mt-5 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+              <dl className="game-detail-metadata mt-4">
                 {game.year > 0 && <Meta label={t.game.year} value={String(game.year)} />}
                 <Meta
                   label={t.game.developer}
                   value={splitDevelopers(game.developer).map((name, index) => (
                     <span key={name}>
                       {index > 0 && ', '}
-                      <InternalLink
-                        to={`/games?developer=${encodeURIComponent(name)}`}
-                        className="hover:text-brand-hover"
-                      >
+                      <InternalLink to={`/games?developer=${encodeURIComponent(name)}`} className="hover:text-brand-hover">
                         {name}
                       </InternalLink>
                     </span>
@@ -675,9 +648,16 @@ export function GameDetailPage() {
                 <Meta label={t.game.players} value={hasEmbeddedCs16Rooms ? '1–16' : formatPlayers(game.players)} />
                 <Meta label={t.game.supportedLanguages} value={supportedLangs || '—'} />
               </dl>
+              <GameDescription
+                // 把译文塞进 key —— 一旦翻译结果改变，子组件全部状态重置，展开 / 收起重新计算
+                key={`${game.slug}:${lang}:${translatedDescription ?? ''}`}
+                description={translatedDescription ?? gameDescription(game, lang)}
+                showMore={t.game.showMore}
+                showLess={t.game.showLess}
+              />
               {game.tags && game.tags.length > 0 && lang === 'zh-Hans' && (
                 <div className="mt-4 flex flex-wrap gap-2">
-                  {game.tags.map((t) => (
+                  {game.tags.slice(0, 6).map((t) => (
                     <InternalLink
                       key={t}
                       to={`/games?q=${encodeURIComponent(t)}`}
@@ -686,14 +666,45 @@ export function GameDetailPage() {
                         （nofollow 挡不住发现，见 lib/seoLinks.ts）。
                         可抓的同类入口在上面：/platforms/:id 和 /genres/:id 都已经链过。
                       */
-                      className="rounded-md border border-line px-2 py-1 text-xs text-muted transition hover:border-brand hover:text-fg"
+                      className="rounded-full bg-surface-2 px-3 py-1 text-[11px] text-muted transition hover:bg-brand-soft hover:text-fg"
                     >
-                      #{t}
+                      {t}
                     </InternalLink>
                   ))}
                 </div>
               )}
             </section>
+
+            <section className="mt-8" aria-label={t.game.communityContributors}>
+              <h2 className="text-sm font-bold">{t.game.communityContributors}</h2>
+              <p className="game-detail-contributors-empty mt-2">{t.game.communityContributorsEmpty}</p>
+            </section>
+
+            <section className="mt-8">
+              <div className="flex items-center justify-between gap-3">
+                <h2 className="text-base font-bold">💡 {t.game.guidesTitle}</h2>
+                <a
+                  href={`mailto:${CONTACT_EMAIL}?subject=${encodeURIComponent(`[8BitGo] ${game.title} guide`)}`}
+                  className="inline-flex min-h-9 items-center rounded-lg border border-line bg-surface px-3 text-xs font-semibold transition hover:border-brand hover:text-brand-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+                >
+                  ✎ {t.game.guidesSubmit}
+                </a>
+              </div>
+              <div className="game-detail-empty-state mt-3 min-h-28">
+                <p className="max-w-md text-sm">{t.game.guidesEmpty}</p>
+              </div>
+            </section>
+
+            {related.length > 0 && (
+              <section className="mt-8">
+                <SectionHeader title={t.game.relatedTitle} subtitle={t.game.relatedSubtitle} icon="💡" />
+                <div className="adaptive-game-grid mt-4">
+                  {related.map((g) => (
+                    <GameCard key={g.slug} game={g} coverRatio="landscape" showCoin={false} />
+                  ))}
+                </div>
+              </section>
+            )}
 
             {/* 常见问题：可见问答 + faqSchema 结构化数据，补足可被爬虫读懂的页面正文，
                 并争取「人们还问」/ 精选摘要的露出（faqSchema 在 useSeo 里按 faqItems 注入） */}
@@ -723,22 +734,10 @@ export function GameDetailPage() {
                 core={game.core}
               />
             </section>
-          </div>
+          </section>
 
           {/* 侧栏 */}
-          <aside
-            className={cx(
-              'space-y-6 lg:col-span-4',
-              /*
-                超宽屏普通游玩和直播 / 联机布局都要让侧栏从播放器顶边开始，并跨过资料行；
-                前者从第 10 列开始，后者从第 9 列开始。较窄桌面默认不指定行，侧栏仍在资料区旁边。
-              */
-              twoColumn
-                ? 'lg:col-span-4 lg:col-start-9 lg:row-start-1 lg:row-span-2'
-                : 'xl:col-span-3 xl:col-start-10 xl:row-start-1 xl:row-span-2',
-              immersive && 'hidden',
-            )}
-          >
+          <aside className="game-detail-layout__sidebar">
             {/*
               看直播时右栏**整块换掉**：平台卡 / 评分 / 评论对正在看直播的人没有意义，
               站长的原话是「观众端清除最右侧的内容，然后右侧放现在观看的联机+观众，
@@ -755,37 +754,51 @@ export function GameDetailPage() {
               <div ref={setMatchPanelSlot} className="lg:sticky lg:top-20" />
             ) : (
               <>
-              <div className="rounded-2xl border border-line bg-surface p-5">
-                <div className="flex items-center gap-3">
-                  <span
-                    className="grid h-12 w-12 place-items-center rounded-xl text-2xl"
-                    style={{ background: `${platform.color}22`, border: `1px solid ${platform.color}55` }}
-                    aria-hidden
+              {/*
+                详情接口提供的是去重后的游玩数和游戏支持人数，没有实时在线玩家数；
+                第二格明确显示支持人数，不能把它包装成「正在玩」以免误导玩家。
+              */}
+              <section
+                className="game-detail-card overflow-hidden"
+                aria-label={`${fmt(t.common.playsCount, { n: formatCount(game.plays) })} · ${t.game.currentlyPlaying}`}
+              >
+                <div className="grid grid-cols-2 divide-x divide-line border-b border-line px-3 py-3">
+                  <div
+                    role="group"
+                    aria-label={fmt(t.common.playsCount, { n: formatCount(game.plays) })}
+                    title={fmt(t.common.playsCount, { n: formatCount(game.plays) })}
+                    className="flex min-w-0 items-center gap-2 px-2 first:pl-0"
                   >
-                    {platform.icon}
-                  </span>
-                  <div>
-                    <p className="font-bold">{platformLabel(t, platform.id, platform.name)}</p>
-                    <p className="text-xs text-muted">
-                      {platform.manufacturer} · {platform.year}
-                    </p>
+                    <span className="text-lg" aria-hidden>🔥</span>
+                    <span className="min-w-0">
+                      <span className="block truncate text-lg font-extrabold tabular-nums">{formatCount(game.plays)}</span>
+                      <span className="block text-[11px] text-muted">{t.game.playCountLabel}</span>
+                    </span>
+                  </div>
+                  <div className="flex min-w-0 items-center gap-2 px-3">
+                    <span className="text-lg" aria-hidden>🎮</span>
+                    <span className="min-w-0">
+                      {/* 详情 API 没有实时在线人数；显示空值，支持人数已在简介元信息中展示。 */}
+                      <span className="block truncate text-lg font-extrabold tabular-nums">—</span>
+                      <span className="block truncate text-[11px] text-muted">{t.game.currentlyPlaying}</span>
+                    </span>
                   </div>
                 </div>
-                <p className="mt-3 text-sm leading-relaxed text-muted">{platformDesc(t, platform.id, platform.description)}</p>
-                <Button to={`/platforms/${platform.id}`} variant="secondary" size="sm" className="mt-4 w-full">
-                  {fmt(t.game.browsePlatform, { platform: platform.shortName })}
-                </Button>
-              </div>
+                {FEATURES.ratings && (
+                  <GameRating gameSlug={game.slug} compact embedded className="p-4">
+                    <div className="game-detail-chip-row mt-3 border-t border-line pt-3">
+                      {game.genres.slice(0, 6).map((id) => (
+                        <Link key={id} to={`/genres/${id}`} className="rounded-full bg-surface-2 px-2.5 py-1 text-[11px] text-muted transition hover:text-fg">
+                          {genreLabel(t, id, genreMap[id]?.name ?? id)}
+                        </Link>
+                      ))}
+                    </div>
+                  </GameRating>
+                )}
+              </section>
 
-              {/*
-                评分与评论。放在平台卡下面 —— 沉浸模式下整个侧栏是隐藏的（见 aside 的 className），
-                那时候玩家在全屏玩游戏，这两块跟着一起收起来是对的。
-
-                评分在评论上面：打个分是一秒钟的动作，写评论要斟酌半天。
-                把成本低的那个放在先看到的位置，参与率会差出一个数量级。
-              */}
-              {FEATURES.ratings && <GameRating gameSlug={game.slug} />}
-              {FEATURES.comments && <GameComments gameSlug={game.slug} />}
+              {/* 评论服务只在本来就启用时取数；布局本身不增加新的请求。 */}
+              {FEATURES.comments && <GameComments gameSlug={game.slug} className="game-detail-comments" />}
 
               {FEATURES.coins && (
               <div className="rounded-2xl border border-coin/30 bg-gradient-to-br from-coin/10 to-transparent p-5">
@@ -812,19 +825,7 @@ export function GameDetailPage() {
               </>
             )}
           </aside>
-      </div>
-
-      {/* 相关游戏 */}
-      {related.length > 0 && (
-        <section className="mt-14">
-          <SectionHeader title={t.game.relatedTitle} subtitle={t.game.relatedSubtitle} icon="💡" />
-          <div className="adaptive-game-grid">
-            {related.map((g) => (
-              <GameCard key={g.slug} game={g} />
-            ))}
-          </div>
-        </section>
-      )}
+      </GameDetailLayout>
 
       {addToCollection && <AddToCollectionDialog gameSlug={game.slug} onClose={() => setAddToCollection(false)} />}
 
@@ -915,9 +916,9 @@ function GameDescription({
 
 function Meta({ label, value, to }: { label: string; value: ReactNode; to?: string }) {
   return (
-    <div className="rounded-xl border border-line bg-surface px-3 py-2.5">
-      <dt className="text-[11px] text-muted">{label}</dt>
-      <dd className="mt-1 truncate font-semibold">
+    <div>
+      <dt>{label}</dt>
+      <dd>
         {to ? (
           <Link to={to} className="hover:text-brand-hover">
             {value}
@@ -946,43 +947,46 @@ function plainText(source: string): string {
  */
 function DetailSkeleton() {
   return (
-    <div className="container-x py-6 sm:py-8" aria-busy="true">
-      {/*
-        和真页面同一套版位：播放器整行**铺满内容列**、高度到视口就停，资料区在下面 ——
-        骨架和正文错位的话数据一到整页跳一下。
-        · 顶上那条面包屑占位跟着真页面一起去掉了（09-07）
-        · 限宽换成了限高（同 stageHeightCap），骨架不会进沉浸模式，所以只要非沉浸那一档
-      */}
-      <div className="w-full">
-        <SkeletonBlock className="aspect-[16/9] rounded-2xl border border-line lg:max-h-[calc(100dvh-10rem)]" />
-      </div>
-      <div className="mt-6 grid grid-cols-1 gap-8 lg:grid-cols-12">
-        <div className="lg:col-span-8">
+    <div className="container-x py-6 sm:py-8 lg:pt-0" aria-busy="true">
+      <div className="game-detail-layout" aria-busy="true">
+        <div className="game-detail-layout__player">
+          <SkeletonBlock className="aspect-video rounded-2xl border border-line sm:aspect-[3/1] lg:max-h-[calc(100dvh-10rem)]" />
+        </div>
+        <section className="game-detail-layout__main min-w-0">
           <SkeletonBlock className="h-8 w-2/3" />
           <div className="mt-3 flex gap-2">
-            <SkeletonBlock className="h-7 w-20 rounded-lg" />
-            <SkeletonBlock className="h-7 w-24 rounded-lg" />
-            <SkeletonBlock className="h-7 w-16 rounded-lg" />
+            <SkeletonBlock className="h-6 w-16 rounded-full" />
+            <SkeletonBlock className="h-6 w-20 rounded-full" />
+            <SkeletonBlock className="h-6 w-14 rounded-full" />
           </div>
-          <div className="mt-8 space-y-3">
+          <div className="game-detail-metadata mt-6">
+            {[0, 1, 2, 3].map((item) => <SkeletonBlock key={item} className="h-10" />)}
+          </div>
+          <div className="mt-6 space-y-3">
             <SkeletonBlock className="h-4 w-28" />
             <SkeletonBlock className="h-3 w-full" />
             <SkeletonBlock className="h-3 w-11/12" />
             <SkeletonBlock className="h-3 w-3/4" />
           </div>
-        </div>
-        <aside className="space-y-8 lg:col-span-4">
-          <div className="rounded-2xl border border-line bg-surface p-5">
-            <div className="flex gap-3">
-              <SkeletonBlock className="h-12 w-12 shrink-0 rounded-xl" />
-              <div className="flex-1 pt-1">
-                <SkeletonBlock className="h-4 w-2/3" />
-                <SkeletonBlock className="mt-2 h-3 w-1/2" />
+        </section>
+        <aside className="game-detail-layout__sidebar">
+          <div className="game-detail-card p-4">
+            <div className="grid grid-cols-2 divide-x divide-line">
+              <div className="px-2 first:pl-0">
+                <SkeletonBlock className="h-3 w-8" />
+                <SkeletonBlock className="mt-2 h-5 w-14" />
+              </div>
+              <div className="px-3">
+                <SkeletonBlock className="h-3 w-16" />
+                <SkeletonBlock className="mt-2 h-5 w-12" />
               </div>
             </div>
-            <SkeletonBlock className="mt-5 h-3 w-full" />
-            <SkeletonBlock className="mt-2 h-3 w-4/5" />
-            <SkeletonBlock className="mt-5 h-9 w-full rounded-xl" />
+            <SkeletonBlock className="mt-5 h-14 w-full rounded-xl" />
+          </div>
+          <div className="game-detail-card p-4">
+            <SkeletonBlock className="h-4 w-20" />
+            <SkeletonBlock className="mt-4 h-16 w-full rounded-xl" />
+            <SkeletonBlock className="mt-4 h-9 w-full rounded-xl" />
           </div>
         </aside>
       </div>

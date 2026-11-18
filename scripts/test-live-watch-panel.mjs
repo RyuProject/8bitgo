@@ -139,7 +139,7 @@ check('⚠️ 看直播时右栏整块换掉（平台卡/评分/评论不画）'
 
 check('⚠️ 面板开着时画面下方那条输入框不画（同一件事不能有两个入口）', () => {
   const src = code('src/emulator/EmulatorPlayer.tsx')
-  assert.match(src, /chatBarOn && !fullscreen && !playMode && !watchPanelOn/, '两个输入框会同时出现')
+  assert.match(src, /\(?chatBarOn(?: \|\| pageBarOn\))? && !fullscreen && !playMode && !watchPanelOn/, '两个输入框会同时出现')
 })
 
 check('⚠️ 面板只对观众开（主播端一个像素都不动）', () => {
