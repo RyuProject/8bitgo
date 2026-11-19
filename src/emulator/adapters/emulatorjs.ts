@@ -5313,6 +5313,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           ? (engineGameName.split('/').pop() ?? '').replace(/\.zip$/i, '').toLowerCase()
           : ''
         mameBootRomset = mameRomset
+        mahjongPanel = options.platform === 'arcade' && isMahjongPanelRomset(mameRomset)
         const mismatchedDisk = activeMameDisks.find((disk) => disk.romset !== mameRomset)
         if (mismatchedDisk) {
           failLoad(fmt(rt.ejsMameDiskMismatch, { disk: mismatchedDisk.name, expected: mismatchedDisk.romset, actual: mameRomset || '?' }), 'config')
@@ -5454,10 +5455,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         errorTap = installErrorTap(win, reportEngineError,
           options.platform === 'nds' || (options.platform === 'gba' && isRomPackUrl(remoteGameUrl))
             ? reportCoreCrash
-            : undefined,
-          () => {
-            if (!started && !loadFailed && !destroyed) beat()
-          })
+            : undefined)
         // 预下载好的 ROM：引擎取 blob: 地址时直接拿 Blob 回应，不走 Safari 的 blob URL 加载（见 installBlobFetchShortcut）
         if (preparedRomBlob && preparedArcadeBlobUrl && gameUrl === preparedArcadeBlobUrl) {
           installBlobFetchShortcut(win, preparedArcadeBlobUrl, preparedRomBlob, (error) => {
@@ -6057,6 +6055,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
   const destroy = () => {
     destroyed = true
+    mahjongGamepad?.stop()
+    mahjongGamepad = null
+    mahjongKeyboard?.dispose()
+    mahjongKeyboard = null
+    window.clearTimeout(mahjongHudTimer)
     stopFramePerf?.()
     stopFramePerf = null
     stopNdsPerformanceWatch?.()
