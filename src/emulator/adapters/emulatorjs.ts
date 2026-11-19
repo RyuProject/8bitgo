@@ -533,8 +533,9 @@ const SAVE_FLUSH_MS = 30_000
 /**
  * 多久没动静就认定「卡死了」。
  *
- * 「动静」= 有网络进度，或者引擎自己那行状态文字变了（解压、写文件系统这些阶段
- * 没有网络请求，只有那行字在变）。两样都停下来这么久，基本可以断定它不会自己好了：
+ * 「动静」= 有网络进度、引擎状态文字变化，或核心仍在输出常规启动日志（WASM / 图形
+ * 初始化阶段可能长时间没有网络请求，也不一定更新状态文字）。这些都停下来这么久，
+ * 基本可以断定它不会自己好了：
  * EmulatorJS 有好几处 promise 断在半路就再也不 resolve（见 installNetTap 的说明），
  * 没有这道闸，玩家就只能对着一根不动的进度条一直等下去。
  *
@@ -1412,6 +1413,7 @@ function installErrorTap(
   win: Window & Record<string, unknown>,
   onFatal: (line: string) => void,
   onCoreCrash?: (line: string) => void,
+  onStartupActivity?: () => void,
 ): { lines: string[] } {
   const lines: string[] = []
   const push = (level: string, text: string, error?: unknown) => {
@@ -1456,6 +1458,9 @@ function installErrorTap(
       try {
         const text = args.map((a) => (typeof a === 'string' ? a : safeStr(a))).join(' ')
         push(level, text, args.find((a) => isNdsWasmCrash('', a)))
+        // 街机核心启动时会连续输出 RetroArch / WebGL 初始化日志；这段没有网络或状态文案变化，
+        // 但仍是引擎活着的证据。只让已知常规行刷新启动看门狗，避免普通噪声掩盖真正卡死。
+        if (isRoutineCoreLine(text)) onStartupActivity?.()
         // 只改交给浏览器控制台的级别；上面的诊断缓冲与 FATAL 判定照旧按 warn 收
         if (level === 'warn' && typeof natives.log === 'function' && isRoutineCoreLine(text) &&
           !FATAL_PHRASES.some((h) => text.toLowerCase().includes(h))) {
@@ -5315,6 +5320,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           ? (engineGameName.split('/').pop() ?? '').replace(/\.zip$/i, '').toLowerCase()
           : ''
         mameBootRomset = mameRomset
+        mahjongPanel = options.platform === 'arcade' && isMahjongPanelRomset(mameRomset)
         const mismatchedDisk = activeMameDisks.find((disk) => disk.romset !== mameRomset)
         if (mismatchedDisk) {
           failLoad(fmt(rt.ejsMameDiskMismatch, { disk: mismatchedDisk.name, expected: mismatchedDisk.romset, actual: mameRomset || '?' }), 'config')
@@ -6059,6 +6065,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
   const destroy = () => {
     destroyed = true
+    mahjongGamepad?.stop()
+    mahjongGamepad = null
+    mahjongKeyboard?.dispose()
+    mahjongKeyboard = null
+    window.clearTimeout(mahjongHudTimer)
     stopFramePerf?.()
     stopFramePerf = null
     stopNdsPerformanceWatch?.()
