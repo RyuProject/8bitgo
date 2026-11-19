@@ -100,6 +100,35 @@ export function romsetsNeedNoBios(keys, lookup = defaultRomsetLookup()) {
 }
 
 /**
+ * 后台没填「BIOS 包（系统名）」时，按索引推出这款游戏要哪个系统包；推不出返回空串。
+ *
+ * 2026-11-18《圣魔世纪》（svg，PGM 板）：游戏当时没填 arcade_bios，播放器只下了平台那格的
+ * neogeo.zip，FBNeo 报「ROM at index 128 with name pgm_t01s.rom … is required」，连开两局都失败；
+ * 管理员一个多小时后补上 pgm 才好。bios:pgm 早就绑好了，缺的只是这个名字 —— 而索引里本来就写着。
+ *
+ * - 所有官方 ROM（含备用源）都得认得出、且指向**同一个**系统包，否则不下结论；
+ * - 不推 neogeo：平台那格就是 neogeo.zip，引擎本来就会下它，推出来什么也不改变，
+ *   反而会顺带改动 703 个 Neo Geo romset 的屏幕按键布局（effectiveArcadeButtons 按这个名字画四键）；
+ * - 推出来的名字没有对应的 bios:<名字> 绑定时，播放器只打一条「后台没绑」的提示，照常下平台 BIOS，
+ *   行为与不推导相同，所以 ym2608 / cchip 这类设备包名推出来也无害。
+ *
+ * @param {string[]} keys
+ * @param {{ biosByName: Map<string, string>, known: Set<string> } | null} lookup
+ */
+export function inferArcadeSystemBios(keys, lookup = defaultRomsetLookup()) {
+  if (!lookup || !keys.length) return ''
+  let bios = ''
+  for (const key of keys) {
+    const name = romsetNameFromKey(key)
+    const need = name && lookup.known.has(name) ? lookup.biosByName.get(name) : undefined
+    if (!need) return ''
+    if (bios && bios !== need) return ''
+    bios = need
+  }
+  return bios === 'neogeo' ? '' : bios
+}
+
+/**
  * 对象 key → romset 短名。`roms/arcade/kof97.zip.8bg` → `kof97`
  *
  * 两种后缀都要剥：历史 8BG 容器 `<原 key>.8bg` 和 `.zip`、

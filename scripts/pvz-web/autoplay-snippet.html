@@ -107,6 +107,9 @@
     if (splashFill) splashFill.style.width = (p * 100).toFixed(2) + '%';
     if (splashPercent) splashPercent.textContent = percent + '%';
     if (splashProgress) splashProgress.setAttribute('aria-valuenow', String(percent));
+    // 告诉 8BitGo 生命周期桥「还在加载」：慢网首次要下约 93MB，桥只在连续 120 秒没有进展时才判失败
+    var bridge = window.EightBitGoBridge;
+    if (bridge && typeof bridge.reportProgress === 'function') bridge.reportProgress(p);
   }
   // 页面后段的 startGame()（把资源写进 WASM FS 那一段）复用同一个进度条
   window.__pvzSetProgress = setProgress;

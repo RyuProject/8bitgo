@@ -86,6 +86,7 @@
     "test:psp-conversion": "node scripts/test-psp-conversion.mjs",
     "test:psx-conversion": "node scripts/test-psx-conversion.mjs",
     "test:platform-bios": "node scripts/test-platform-bios-key.mjs",
+    "test:arcade-bios-infer": "node scripts/test-arcade-bios-infer.mjs",
     "test:sockdrive-conversion": "node scripts/test-sockdrive-conversion.mjs",
     "test:game-media": "node --test scripts/test-game-media.mjs",
     "test:nowasm-lists": "node scripts/test-nowasm-lists.mjs",

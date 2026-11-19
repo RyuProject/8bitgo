@@ -12,8 +12,8 @@ assert.equal(html5SaveBridgeOrigin('https://example.com/game/', main), null)
 
 const versioned = new URL(versionHtml5Entry('https://pvz.8bitgo.com/web/PvZ/cn/', main))
 assert.equal(versioned.origin, 'https://pvz.8bitgo.com')
-assert.equal(versioned.searchParams.get('shell'), '20261118-live3')
-assert.equal(new URL(versionHtml5Entry('https://8bitgo-pvz.pages.dev/web/PvZ/cn/', main)).searchParams.get('shell'), '20261118-live3')
+assert.equal(versioned.searchParams.get('shell'), '20261119-progress1')
+assert.equal(new URL(versionHtml5Entry('https://8bitgo-pvz.pages.dev/web/PvZ/cn/', main)).searchParams.get('shell'), '20261119-progress1')
 assert.equal(versionHtml5Entry('https://example.com/web/PvZ/cn/', main), 'https://example.com/web/PvZ/cn/')
 
 const migrations = [

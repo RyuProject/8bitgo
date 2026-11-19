@@ -159,6 +159,12 @@ loader.js 的 `import()` 失败，NES / SFC / GBA / 街机 / PS1 …… 所有 E
 5. **现场**：loader.js 把 `[EJS] import <文件> failed: <异常>` 写进控制台，适配器在最终失败日志里带上它，诊断包一眼能分出
    「语法错误」和「网络断了」。这一行的措辞不能撞上 `FATAL_PHRASES`，否则会抢断回退流程（`test:ejs-failure-reasons` 守着）。
 
+5.1 **loader.js 不往页面全局写名字（2026-11-19，诊断包 #1331 / #1334）**：Chrome 111 / Windows 的玩家开《1942》0.6 秒报
+   `SyntaxError: Identifier 'debug' has already been declared`，卡在「fbneo」两分钟被看门狗判超时，重试一样。本站代码不在引擎 iframe
+   里声明 `debug`，推测是浏览器扩展往每个框架注入了全局 `var debug`；旧 loader 顶层的 `const debug` / `function loadScript` 等都在
+   realm 的全局作用域，撞上一个整份不执行。现在整份 loader 包在立即执行函数里，`check-emulatorjs.mjs` 先在 VM 里声明一批同名全局再跑一遍守着。
+   线上复现方法：在引擎 iframe 的**最终** srcdoc 文档里插 `<script>var debug=1</script>`（初始 about:blank 那份会随导航作废），
+   旧版必报这句错、卡在「正在准备模拟器」。改 loader.js 后跑 `node scripts/gen-ejs-core-versions.mjs`，URL 按内容换代。
 6. **告警（2026-11-18）**：事故持续几个小时没人知道——聚集报警只发邮件，而生产上邮箱根本没配。现在统一发飞书机器人
    （`server/src/lark-notify.js`，webhook 在 `server/.env` 的 `ALERT_LARK_WEBHOOK`，不进 git）：玩家启动失败按特征聚集
    （`diag-alert.js`，邮件 / 飞书任一通道成功即算报出）、部署中止 / 自动回滚（`redeploy.sh`）、**每 15 分钟的公网开局巡检**
@@ -369,6 +375,13 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
 别再写第二个注入器（`test:romdata` 有断言守着）。
 
 ⚠️ BIOS 包要**和核心同一批**的 romset：换一个版本的 `pgm.zip` 就是 CRC 对不上 → 缺文件。
+
+**没填系统名时服务端按索引补上（2026-11-19）**：2026-11-18《圣魔世纪》（svg）当时没填 `arcade_bios`，播放器只下了平台那格的
+`neogeo.zip`（现场那个 1.9MB 的 zip），FBNeo 报 `ROM at index 128 with name pgm_t01s.rom … is required`；管理员一个多小时后补上 pgm 才好。
+`bios:pgm` 早就绑好了，缺的只是名字。现在 `mappers.js` 对没填系统名、没 RomData、FBNeo 核心的街机游戏调
+`inferArcadeSystemBios()`：所有官方 ROM（含备用源）都认得出且指向同一个系统包才下发 `arcadeBios`；**不推 neogeo**（平台那格本来就是它，
+推了只会改动 703 个 Neo Geo romset 的屏幕按键布局）；推出来的名字没有 `bios:<名>` 绑定时播放器只打提示、照常下平台 BIOS。
+后台填的值始终优先。回归：`cd server && npm run test:arcade-bios-infer`。
 
 ### 2.8.1.1 街机冷启动：三条串行链已拆开（2026-10-25，《恐龙快打》实测）
 
@@ -2388,6 +2401,14 @@ npm run pvz:check-assets              # 线上 HEAD + CORS 验收
 - wasm 约 7MB，用 `<link rel=preload as=fetch crossorigin>` 与 js 并行下载；`moduleReadyPromise`
   有 120s 超时，脚本标签也有 `onerror`，不再永远卡在「Preparing WebAssembly runtime…」。
 - 根目录那份 `pvz-manifest.json` 没有任何代码引用；`cn` / `en` 只读各自的 v2 清单。
+
+**Pages 网页游戏的就绪预算是「连续 120 秒没有进展」（2026-11-19，诊断包 #1220）**：生命周期桥
+`public/html5-api/8bitgo-runtime-bridge.js` 以前从安装起固定给 120 秒。日本 6.8Mbps / RTT 300ms 的玩家首次要下约 93MB，
+下载途中就被判失败，播放器重试后又从头等 120 秒，248 秒时第二次失败。现在桥多了 `reportProgress(ratio)`：调一次就重新给满预算，
+并按秒节流给父页发 `progress`（适配器转成 `starting` 阶段的 onProgress，只喂播放器的启动看门狗，不推进度条）。
+PvZ 自动加载片段的 `setProgress()` 按下载字节调用它。没接进度的游戏行为不变。桥是随 Pages 构建复制进各游戏子域的，
+**改了桥必须重新构建并发布对应的 Pages 项目**（`npm run pages:web-games:build -- pvz` → 发布），只部署主站不生效。
+回归：`npm run test:html5-runtime-bridge`。
 
 首次自动加载使用 `public/web/PvZ/pvz-loading.css` + `pvz-loading-scene.webp` 的 4:3 游戏启动画面，
 进度木牌读取的仍是 `setProgress()` 的真实下载 / WASM 写盘比例，不准换成与下载脱节的假动画。

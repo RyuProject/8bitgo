@@ -34,7 +34,13 @@
     firstInteraction: false,
     failed: false,
   }
+  /*
+    预算是「连续多久没有任何进展」，不是从安装起的总时长：游戏调 reportProgress 就重新给满。
+    2026-11-18 植物大战僵尸（日本，6.8Mbps / RTT 300ms）首次要下约 93MB，旧的固定 120 秒在下载途中就判死，
+    播放器重试后又从头等 120 秒，两局都死在半路（诊断包 #1220）。没接进度的游戏行为不变。
+  */
   const READY_TIMEOUT_MS = 120_000
+  const PROGRESS_FORWARD_MS = 1_000
   let ready = false
   let observer = null
   let timeout = 0
@@ -45,6 +51,7 @@
   let visibilityListener = null
   let firstInteractionListener = null
   let inspectScheduled = false
+  let lastProgressForwardAt = -Infinity
 
   const send = (type, detail) => {
     try {
@@ -130,6 +137,19 @@
     send('first-interaction')
   }
 
+  /** 加载器还在推进（下载 / 解包 / 写盘）：重新给满就绪预算，并节流转告父页的启动看门狗 */
+  const reportProgress = (ratio) => {
+    if (state.playable || state.failed) return
+    pauseTimeout()
+    remainingTimeout = READY_TIMEOUT_MS
+    armTimeout()
+    const t = now()
+    if (t - lastProgressForwardAt < PROGRESS_FORWARD_MS) return
+    lastProgressForwardAt = t
+    const value = typeof ratio === 'number' && Number.isFinite(ratio) ? Math.min(1, Math.max(0, ratio)) : undefined
+    send('progress', value)
+  }
+
   const reportFailure = (detail) => {
     if (state.playable || state.failed) return
     ready = true
@@ -151,6 +171,7 @@
     reportFirstFrame,
     reportPlayable,
     reportFirstInteraction,
+    reportProgress,
     reportFailure,
   })
   window[installKey] = api
