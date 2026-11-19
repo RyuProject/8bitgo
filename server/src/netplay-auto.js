@@ -17,6 +17,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { normalizeGamePlayers, normalizeNetplayMode } from '../../shared/netplay-players.js'
 import { romsetNameFromKey } from './arcade-bios-index.js'
+import { isMahjongPanelRomset } from '../../shared/mahjong-panel-sets.js'
 
 /**
  * @param {string} file shared/arcade-players.json
@@ -63,8 +64,15 @@ export function romDataDriverName(romData) {
  * 也不让第三个人进一个按键没反应的房间。
  */
 export function inferNetplayPlayers({ platform, romKeys = [], romData = '' }, lookup = defaultArcadePlayers()) {
-  if (platform !== 'arcade' || !lookup) return null
+  if (platform !== 'arcade') return null
   const names = new Set(romKeys.map(romsetNameFromKey).filter(Boolean))
+  /*
+    麻将机（《龙虎争霸》这批，shared/mahjong-panel-sets.js）实机只有一块麻将面板，就是单人台。
+    FBNeo 驱动表里没有这些板子，以前一律落到「街机默认 2 人」：开出来的房间里 2P 按什么都没反应，
+    而且这类游戏的输入走键盘直通，EmulatorJS 联机只同步 RetroPad，房主打的牌对方根本收不到。
+  */
+  if ([...names].some((n) => isMahjongPanelRomset(n))) return 1
+  if (!lookup) return null
   const drv = romDataDriverName(romData)
   // RomData 游戏的包名是自定义的（wofcn），只有 DrvName 认得
   if (drv) names.add(drv)

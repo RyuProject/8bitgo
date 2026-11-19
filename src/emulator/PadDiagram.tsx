@@ -42,6 +42,8 @@ interface Props {
   arcadeBios?: string
   /** 街机核心：mame-current 的按键 5 / 6 与 FBNeo 对调 */
   core?: string
+  /** MAME 麻将机（mahjongPanel.ts 的 isMahjongPanelGame）：键位是麻将面板那一套 */
+  mahjongPanel?: boolean
   className?: string
 }
 
@@ -68,7 +70,7 @@ function Cap({ k, label, shape = 'square' }: { k: string; label?: string; shape?
   )
 }
 
-export function PadDiagram({ runtimeId, platform, gameSlug, arcadeButtons, arcadeBios, core, className }: Props) {
+export function PadDiagram({ runtimeId, platform, gameSlug, arcadeButtons, arcadeBios, core, mahjongPanel, className }: Props) {
   const [, bumpKeymap] = useState(0)
   // 引擎加载旧设置、改键或恢复默认后会发事件；下一帧直接重画，不要求玩家刷新页面。
   useEffect(() => onEmulatorJsKeymapChange(() => bumpKeymap((n) => n + 1)), [])
@@ -81,6 +83,7 @@ export function PadDiagram({ runtimeId, platform, gameSlug, arcadeButtons, arcad
     effectiveKeys,
     platform === 'arcade' ? effectiveArcadeButtons(arcadeButtons, arcadeBios, gameSlug) : undefined,
     core,
+    mahjongPanel,
   )
   if (!rows.length) return null
 

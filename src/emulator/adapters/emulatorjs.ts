@@ -79,7 +79,10 @@ import {
   NDS_PERFORMANCE_SLOW_FPS,
   NDS_PERFORMANCE_SLOW_WINDOWS,
 } from '../ndsAdaptivePerformance'
-import { guardFrameGamepads } from '../gamepadAccess'
+import { guardFrameGamepads, readGamepadsSafe } from '../gamepadAccess'
+import { isTyping } from '../hotkeyBridge'
+import { installMahjongKeyboard, startMahjongGamepad, type MahjongGamepad, type MahjongKeyboard, type MahjongTileKey } from '../mahjongPanel'
+import { isMahjongPanelRomset } from '../../../shared/mahjong-panel-sets.js'
 import { isLowMemoryAbort, isLowmemOomMessage, lowmemOomMessage, probeWasmMemoryCeilingMB, vendorBrowserName } from '../memoryRecovery'
 import { isNdsBareAbort, isNdsWasmCrash, isWasmRuntimeCrash } from '../ndsCrash'
 import {
@@ -2636,6 +2639,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   }
   /** mame-current 实际加载的 romset（开机自检快进按它查表，见 mameBootSkip.ts） */
   let mameBootRomset = ''
+  /**
+   * 这一局是只有麻将面板的 MAME 麻将机（shared/mahjong-panel-sets.js）。按**最终**加载的
+   * romset 定，开局后由 installMahjongInput 接管键盘 / 手柄 / 屏幕面板，见 mahjongPanel.ts。
+   */
+  let mahjongPanel = false
+  let mahjongKeyboard: MahjongKeyboard | null = null
+  let mahjongGamepad: MahjongGamepad | null = null
+  let mahjongHud: HTMLElement | null = null
+  let mahjongHudTimer = 0
   let cancelBootFastForward: (() => void) | null = null
   /** 最近一次「引擎还在动」的时刻，卡死检测用 */
   // 本局开局时读一次：库挂死过就整局关掉引擎缓存（读 / 写 / 预热探测都不碰 IndexedDB）
@@ -4440,6 +4452,19 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     const coarse = typeof win.matchMedia === 'function' && win.matchMedia('(any-pointer:coarse)').matches
     if (!emu.isMobile && !emu.hasTouchScreen && !coarse) return
 
+    /*
+      麻将机：引擎那套街机按键（摇杆 + 按键 1–6）在这里一颗都用不上 —— MAME 的麻将键只认键盘。
+      收掉它，换成播放器画的麻将面板（MahjongPad，caps 'mahjongPad' 在 installMahjongInput 里声明）。
+      两套同时出现的话，玩家先按到的是没反应的那套。
+    */
+    if (mahjongPanel) {
+      emu.toggleVirtualGamepad?.(false)
+      padAvailable = false
+      padShown = false
+      syncTouchCaps()
+      return
+    }
+
     // 这台机器本身就是靠戳屏幕玩的 → 画布必须收得到指针事件
     pointerFirst = POINTER_FIRST.has(options.platform)
     if (pointerFirst) setCanvasPointer(emu, true)
@@ -4484,6 +4509,84 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
   }
 
+  /**
+   * 麻将机的输入（为什么见 mahjongPanel.ts 的文件头）。三条路汇到同一座键盘桥：
+   *   键盘 —— 打开引擎的「键盘直通」；白名单外的键（MAME 的 P 暂停、Tab 菜单、Esc …）在桥里拦下
+   *   手柄 —— 左右选牌、A 出牌，其余见 MAHJONG_GAMEPAD_MAP；Start / Select 仍由引擎走 RetroPad
+   *   触屏 —— MahjongPad 调 handle.mahjongPress
+   *
+   * 键盘直通只写 allSettings（第三参 true），不进玩家存下来的引擎设置：别的街机游戏照旧是
+   * 「键盘 → RetroPad」，玩家也不用自己去引擎菜单里翻这一项。
+   * ⚠️ 必须在开局之后：设置菜单（changeSettingOption 的回调）和 gameManager 都是 startGame 里才建好的。
+   */
+  const installMahjongInput = (win: Window & Record<string, unknown>) => {
+    const emu = win.EJS_emulator as EjsEmulator | undefined
+    const parent = emu?.elements?.parent
+    if (!emu || !parent || mahjongKeyboard) return
+    try {
+      emu.changeSettingOption?.('keyboardInput', 'enabled', true)
+      // 碰（左 Alt）/ Last Chance（右 Alt）：引擎默认把 Alt 挡在核心外面
+      emu.changeSettingOption?.('altKeyboardInput', 'enabled', true)
+    } catch (error) {
+      diagLog('mahjong', 'warn', `打开键盘直通失败：${error instanceof Error ? error.message : String(error)}`)
+      return
+    }
+    mahjongKeyboard = installMahjongKeyboard(parent, win, {
+      // 引擎自己的弹窗（改键 / 金手指 / 联机输入框）开着时完全让开，同 hotkeyBridge 的 busy
+      passThrough: (e) => isTyping(e.target) || emu.isPopupOpen?.() === true,
+    })
+    mahjongGamepad = startMahjongGamepad(
+      mahjongKeyboard,
+      // 焦点在 iframe 里，手柄只对这个文档可见（见 frameFocus.ts）；被权限策略挡住时读成空
+      () => readGamepadsSafe(win.navigator) as unknown as readonly (Gamepad | null)[],
+      (tile) => showMahjongCursor(parent, tile),
+    )
+    // 引擎的改键面板只改 RetroPad，麻将键根本不经过它 —— 留着入口只会让人改了白改
+    caps.delete('remapKeys')
+    caps.add('mahjongPad')
+    options.onCaps?.(caps)
+    diagLog('mahjong', 'info', `麻将面板接管键盘 / 手柄（${mameBootRomset}）`)
+  }
+
+  /** 手柄选牌光标的提示。实机牌下印着 A–N，这里只说「选中的是哪个字母」，不必知道牌的位置 */
+  const showMahjongCursor = (parent: HTMLElement, tile: MahjongTileKey) => {
+    if (!mahjongHud) {
+      const hud = parent.ownerDocument.createElement('div')
+      hud.setAttribute('role', 'status')
+      hud.style.cssText =
+        'position:absolute;left:50%;top:10px;transform:translateX(-50%);z-index:5;pointer-events:none;' +
+        'padding:4px 12px;border-radius:999px;background:rgba(0,0,0,.75);color:#fff;' +
+        'font:600 14px/1.5 system-ui,sans-serif;border:1px solid rgba(255,255,255,.35);transition:opacity .2s'
+      parent.appendChild(hud)
+      mahjongHud = hud
+    }
+    mahjongHud.textContent = fmt(getT().runtime.mahjongCursor, { tile: tile.toUpperCase() })
+    mahjongHud.style.opacity = '1'
+    window.clearTimeout(mahjongHudTimer)
+    mahjongHudTimer = window.setTimeout(() => {
+      if (mahjongHud) mahjongHud.style.opacity = '0'
+    }, 2500)
+  }
+
+  /**
+   * 把焦点交给引擎：先给 iframe，再给引擎的 parent 元素。
+   *
+   * ⚠️ 光 focusFrame(iframe) 不够（2026-11-19《龙虎争霸1》用 Playwright 逐条记 focusin / focusout 实测）：
+   * 引擎在 startGame 末尾已经 `elements.parent.focus()` 过，可外层再调 iframe.focus() 时 Chrome 会把
+   * iframe 里的焦点重置回 <body>（focusout ejs_parent，栈顶就是 focusFrame）。而引擎的 keyChange、
+   * RetroArch 的键盘回调（`!parent`）都挂在 parent 上，<body> 上的 keydown 谁也收不到 ——
+   * 玩家点完「开始游戏」按键盘没反应，非得先点一下画面。工具栏操作完调 handle.focus() 也是同一个坑。
+   * parent 自带 tabindex=-1，focus 得上；preventScroll 同 focusFrame 的理由。
+   */
+  const focusEngine = () => {
+    focusFrame(iframe)
+    try {
+      emuOf()?.elements?.parent?.focus({ preventScroll: true })
+    } catch {
+      /* 引擎还没建好或已经拆了：焦点至少在 iframe 上，手柄照样读得到 */
+    }
+  }
+
   /** 工具栏那个「屏幕按键」开关走这里。引擎压根没画出按键时是空操作 */
   const setEnginePad = (show: boolean) => {
     if (!padAvailable) return
@@ -4521,6 +4624,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     applyTouchInput(win)
     const emuForKeys = emuOf()
     if (emuForKeys) hookControlPersistence(emuForKeys)
+    if (mahjongPanel) installMahjongInput(win)
     /*
       街机 DIP 开关（后台那一栏 → 核心的核心选项，见 applyArcadeDipDefault）。
 
@@ -4561,7 +4665,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       引擎在里面读 navigator.getGamepads() 只能读到一串 null（手柄按下的那一刻
       哪个文档有焦点才给哪个），键盘监听也收不到 keydown。见 frameFocus.ts。
     */
-    focusFrame(iframe)
+    focusEngine()
     // 电池存档的补刷：定时 + 转入后台。两者都只在开局之后才有意义
     saveFlushTimer = window.setInterval(flushSaveFiles, SAVE_FLUSH_MS)
     document.addEventListener('visibilitychange', onVisibility)
@@ -5350,7 +5454,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         errorTap = installErrorTap(win, reportEngineError,
           options.platform === 'nds' || (options.platform === 'gba' && isRomPackUrl(remoteGameUrl))
             ? reportCoreCrash
-            : undefined)
+            : undefined,
+          () => {
+            if (!started && !loadFailed && !destroyed) beat()
+          })
         // 预下载好的 ROM：引擎取 blob: 地址时直接拿 Blob 回应，不走 Safari 的 blob URL 加载（见 installBlobFetchShortcut）
         if (preparedRomBlob && preparedArcadeBlobUrl && gameUrl === preparedArcadeBlobUrl) {
           installBlobFetchShortcut(win, preparedArcadeBlobUrl, preparedRomBlob, (error) => {
@@ -6106,8 +6213,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         }
       : {}),
     engineLog: () => errorTap?.lines.slice() ?? [],
-    focus: () => focusFrame(iframe),
+    focus: () => focusEngine(),
     gamepads: () => frameGamepads(iframe),
+    // 只有麻将机会话装了键盘桥；别的游戏 caps 里没有 'mahjongPad'，播放器根本不会调
+    mahjongPress: (key, down) => mahjongKeyboard?.press(key, down, 'pad'),
     setEnginePad,
     /** 见 RuntimeHandle.openControls 的注释：把引擎自带改键面板的入口补回来 */
     openControls() {

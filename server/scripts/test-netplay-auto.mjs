@@ -65,6 +65,14 @@ await check('RomData 汉化包按 DrvName 推断', () => {
   assert.equal(inferNetplayPlayers({ platform: 'arcade', romKeys: ['roms/arcade/wofcn.zip'], romData: dat }, lookup), 3)
 })
 
+await check('麻将机（只有麻将面板）推断为 1 人：不开联机房', () => {
+  assert.equal(inferNetplayPlayers({ platform: 'arcade', romKeys: ['roms/arcade/lhzb.zip'] }, lookup), 1)
+  assert.equal(inferNetplayPlayers({ platform: 'arcade', romKeys: ['roms/arcade/lhzb2a.zip.8bg?romv=x'] }, null), 1)
+  assert.deepEqual(resolveNetplay({ mode: 'auto', platform: 'arcade', players: 2, multiplayer: 1, inferred: 1 }), { players: 1, multiplayer: 0 })
+  // 靠 DIP 切摇杆 / 麻将的不算（出厂是摇杆档），仍按驱动表或默认值
+  assert.notEqual(inferNetplayPlayers({ platform: 'arcade', romKeys: ['roms/arcade/sdmg2.zip'] }, lookup), 1)
+})
+
 await check('非街机、认不出的街机都返回 null', () => {
   assert.equal(inferNetplayPlayers({ platform: 'nes', romKeys: ['roms/nes/dino.nes'] }, lookup), null)
   assert.equal(inferNetplayPlayers({ platform: 'arcade', romKeys: ['roms/arcade/tekken-root-flat.zip'] }, lookup), null)

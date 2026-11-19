@@ -581,6 +581,29 @@ FBNeo 没有 Model 2，只能走 mame-current（全量 MAME 0.289 核心里 90 �
   MAME 源码 TODO 还写着 doa / doaa 声音会花、逐渐无声。上架前在目标设备上实测到正式对战。
 - 回归：`npm run test:mame-set-catalog`（真实目录 + 合成 merged 包 + 字节级重组 + 接线断言）。
 
+### 2.8.3.3 MAME 麻将机（《龙虎争霸》lhzb 等）：键盘直通 + 白名单，触屏换麻将面板（2026-11-19）
+
+只有麻将面板的 IGS 麻将机（名单在 `shared/mahjong-panel-sets.js`，按 MAME 0.289 源码沿 PORT_INCLUDE 展开得出；
+靠 DIP 切摇杆的 sdmg2 / mgcs / tarzan 故意不收）在 MAME 里全是 `IPT_MAHJONG_*`，默认**只绑键盘**。本站 EmulatorJS
+默认是「键盘 → RetroPad」，于是能投币开局、进了牌局一张牌都打不出去。`src/emulator/mahjongPanel.ts` 接管三条输入：
+
+- **键盘**：开局后 `changeSettingOption('keyboardInput' / 'altKeyboardInput', 'enabled', true)`（第三参 true，不写进玩家设置），
+  RetroArch 的键盘回调挂在引擎 `elements.parent`（`!parent`）上；桥装在 parent 的**捕获阶段**做白名单：面板键（A–N、空格吃、
+  左 Alt 碰、左 Ctrl 杠、左 Shift 听、Z 胡、3 押注、右 Ctrl 得分、右 Shift 比倍、Enter 大、Backspace 小、1 开始、5 投币）放行，
+  别名 V→投币、P→碰、S→得分换成原生键码重发，其余一律不让 MAME 看见 —— MAME 自己认 P 暂停、Tab 菜单、Esc、F2 测试、F3 复位。
+  站内 F2 / F4 在 iframe document 捕获阶段，早于桥，不受影响。实测 RetroArch 自己的键盘热键（H 复位、K 帧步进）在这个构建里不生效。
+- **手柄**：十字键左右在 A–N 间挪光标（画面顶部提示「选牌 X」），A 出牌，B/X/Y/LB/RB = 吃碰杠听胡，LT 押注、RT 得分、L3 比倍、↑↓ 大小；
+  Start / Select 仍由引擎走 RetroPad（libretro-mame 的 JOYCODE_START / SELECT）。
+- **触屏**：收掉引擎的街机虚拟手柄，声明 `mahjongPad`，播放器画 `MahjongPad.tsx`。屏幕面板 / 手柄的短按至少按住 70ms，
+  否则按下和松开落在同一帧里核心看不到（PORT_IMPULSE 的投币最明显）。
+
+联机人数：`netplay-auto.js` 把名单里的板子推断成 1 人（一块面板就是单人台；键盘直通也不在 EmulatorJS 联机同步范围内）。
+存量游戏要 `cd server && npm run migrate`（会全库重算）或在后台重存一次才更新。
+
+⚠️ **焦点**：引擎在 startGame 末尾 `elements.parent.focus()`，适配器随后 `focusFrame(iframe)` 会把 iframe 里的焦点重置回 `<body>`，
+而引擎 keyChange 和 RetroArch 都只听 parent —— 所有 EmulatorJS 游戏点完「开始游戏」键盘都没反应、得先点一下画面。
+现在 `focusEngine()` 先给 iframe 再给 parent，开局和 `handle.focus()` 都走它。回归：`npm run test:mahjong-panel`。
+
 ### 2.8.4 NDS：默认 melonDS DS 1.4.0，WASM 崩溃时旧核心兜底
 
 本站 NDS 默认核心是自构建 `melondsds-wasm.data`（上游 melonDS DS v1.4.0），

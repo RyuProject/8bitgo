@@ -1658,6 +1658,8 @@ const de: Translation = {
     ejsArcadeUnknownSet: 'Der Emulator erkennt dieses Arcade-Paket nicht ({msg}). Die ZIP-Datei muss wie ihr Romset heißen (z. B. kof97.zip, tekken3.zip) und eine vollständige Version enthalten.',
     ejsArcadeMissingFiles: 'Dem Arcade-Paket fehlen benötigte Dateien ({msg}). Häufige Ursachen: BIOS-Paket nicht verknüpft, einem Clone fehlen die Parent-ROMs oder die ROM-Version passt nicht zum Emulator.',
     ejsMameDiskMismatch: 'MAME-Mediendisk falsch konfiguriert: {disk}.chd gehört zu {expected}, diese ROM ist aber {actual}.',
+    /** 麻将机手柄选牌光标的提示（adapters/emulatorjs.ts 的 showMahjongCursor） */
+    mahjongCursor: 'Stein {tile} · A zum Abwerfen',
     ejsMameDiskMissing: 'Diesem {board}-Spiel fehlt die benötigte Mediendisk {disk}.chd; es kann noch nicht starten.',
     ejsMameDiskFailed: 'Die MAME-Mediendisk {disk}.chd konnte nicht geladen werden: {msg}',
     ejsArcadeRomDownloadFailed: 'Die Arcade-Datei konnte nicht geladen werden: {msg}',
@@ -1707,6 +1709,24 @@ const de: Translation = {
     player2NoteEjs: '2P liegt auf dem Ziffernblock (NumLock muss an sein); ein zweites Gamepad wird automatisch 2P. Kein Ziffernblock? Unter 🎮 → Tasten belegen zu Spieler 2 wechseln und andere Tasten wählen.',
     quickSave: 'Schnellspeichern',
     quickLoad: 'Schnellladen',
+    leftCtrl: 'Linke Strg',
+    leftAlt: 'Linke Alt',
+    leftShift: 'Linke Umschalt',
+    rightShift: 'Rechte Umschalt',
+    space: 'Leertaste',
+    /** MAME 麻将机（mahjongPanel.ts）的面板键名与说明 */
+    mjTiles: 'Steine',
+    mjChi: 'Chi',
+    mjPon: 'Pon',
+    mjKan: 'Kan',
+    mjReach: 'Reach',
+    mjRon: 'Ron',
+    mjBet: 'Setzen',
+    mjScore: 'Punkte nehmen',
+    mjDouble: 'Verdoppeln',
+    mjBig: 'Groß',
+    mjSmall: 'Klein',
+    mjNote: 'Das ist ein Mahjong-Automat: MAME liest die Tastatur direkt, A–N werfen den Stein ab, unter dem auf dem Bildschirm derselbe Buchstabe steht. Ohne rechte Strg-Taste (Mac, die meisten Laptops) nimmst du mit S die Punkte; Pon geht auch mit P. Gamepad: Steuerkreuz links/rechts wählt einen Stein, A wirft ihn ab; B Chi, X Pon, Y Kan, LB Reach, RB Ron, LT setzen, RT Punkte nehmen, L3 verdoppeln, ↑ groß, ↓ klein, Select Münze, Start Start.',
   },
 
   /* ---------------- SEO-Beschreibungen ---------------- */

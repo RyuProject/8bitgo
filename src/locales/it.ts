@@ -1658,6 +1658,8 @@ const it: Translation = {
     ejsArcadeUnknownSet: 'L’emulatore non riconosce questo pacchetto arcade ({msg}). Lo ZIP deve avere il nome del suo romset (es. kof97.zip, tekken3.zip) e contenere una versione completa.',
     ejsArcadeMissingFiles: 'Al pacchetto arcade mancano file necessari ({msg}). Cause comuni: BIOS non collegato, a un clone mancano le ROM del set padre, oppure la versione della ROM non corrisponde all’emulatore.',
     ejsMameDiskMismatch: 'Disco multimediale MAME configurato male: {disk}.chd appartiene a {expected}, ma questa ROM è {actual}.',
+    /** 麻将机手柄选牌光标的提示（adapters/emulatorjs.ts 的 showMahjongCursor） */
+    mahjongCursor: 'Tessera {tile} · A per scartare',
     ejsMameDiskMissing: 'A questo gioco {board} manca il disco multimediale obbligatorio {disk}.chd e non può ancora avviarsi.',
     ejsMameDiskFailed: 'Impossibile caricare il disco multimediale MAME {disk}.chd: {msg}',
     ejsArcadeRomDownloadFailed: 'Impossibile scaricare il file arcade: {msg}',
@@ -1707,6 +1709,24 @@ const it: Translation = {
     player2NoteEjs: 'Il 2P usa il tastierino numerico con NumLock attivo; un secondo controller diventa il 2P in automatico. Niente tastierino? In 🎮 → Rimappa i tasti passa al Giocatore 2 e scegli altri tasti.',
     quickSave: 'Salvataggio rapido',
     quickLoad: 'Caricamento rapido',
+    leftCtrl: 'Ctrl sinistro',
+    leftAlt: 'Alt sinistro',
+    leftShift: 'Maiusc sinistro',
+    rightShift: 'Maiusc destro',
+    space: 'Spazio',
+    /** MAME 麻将机（mahjongPanel.ts）的面板键名与说明 */
+    mjTiles: 'Tessere',
+    mjChi: 'Chi',
+    mjPon: 'Pon',
+    mjKan: 'Kan',
+    mjReach: 'Reach',
+    mjRon: 'Ron',
+    mjBet: 'Punta',
+    mjScore: 'Incassa',
+    mjDouble: 'Raddoppia',
+    mjBig: 'Alto',
+    mjSmall: 'Basso',
+    mjNote: 'È un cabinato di mahjong: MAME legge direttamente la tastiera e A–N scartano la tessera contrassegnata da quella lettera sullo schermo. Senza Ctrl destro (Mac, gran parte dei portatili) premi S per incassare; anche P vale come Pon. Gamepad: croce sinistra/destra sceglie la tessera, A la scarta; B Chi, X Pon, Y Kan, LB Reach, RB Ron, LT punta, RT incassa, L3 raddoppia, ↑ alto, ↓ basso, Select gettone, Start avvio.',
   },
 
   /* ---------------- Descrizioni SEO ---------------- */

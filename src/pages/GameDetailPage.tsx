@@ -57,6 +57,7 @@ import { isolatedEmbedFor } from '../../shared/isolated-embeds.js'
 import { isIsolatedRuntimePlatform } from '../../shared/isolated-runtime-platforms.js'
 import { newStartupId, recordStartupEvent } from '@/services/startupFunnel'
 import { useGameHotfix } from '@/services/hotfixes'
+import { isMahjongPanelGame } from '@/emulator/mahjongPanel'
 
 export function GameDetailPage() {
   const { slug = '' } = useParams<{ slug: string }>()
@@ -736,6 +737,7 @@ export function GameDetailPage() {
                 arcadeButtons={game.arcadeButtons}
                 arcadeBios={game.arcadeBios}
                 core={game.core}
+                mahjongPanel={isMahjongPanelGame(platform.id, game.core, Object.values(game.roms ?? {}))}
               />
             </section>
           </div>

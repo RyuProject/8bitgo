@@ -1663,6 +1663,8 @@ const fr: Translation = {
     ejsArcadeUnknownSet: 'L’émulateur ne reconnaît pas ce paquet arcade ({msg}). Le ZIP doit porter le nom de son romset (p. ex. kof97.zip, tekken3.zip) et contenir une version complète.',
     ejsArcadeMissingFiles: 'Il manque au paquet arcade des fichiers nécessaires ({msg}). Causes fréquentes : BIOS non liée, ROM du set parent absentes d’un clone, ou version de ROM différente de celle de l’émulateur.',
     ejsMameDiskMismatch: 'Disque média MAME mal configuré : {disk}.chd appartient à {expected}, mais cette ROM est {actual}.',
+    /** 麻将机手柄选牌光标的提示（adapters/emulatorjs.ts 的 showMahjongCursor） */
+    mahjongCursor: 'Tuile {tile} · A pour défausser',
     ejsMameDiskMissing: 'Ce jeu {board} n’a pas son disque média obligatoire {disk}.chd et ne peut pas encore démarrer.',
     ejsMameDiskFailed: 'Impossible de charger le disque média MAME {disk}.chd : {msg}',
     ejsArcadeRomDownloadFailed: "Échec du téléchargement du fichier d'arcade : {msg}",
@@ -1712,6 +1714,24 @@ const fr: Translation = {
     player2NoteEjs: 'Le 2P utilise le pavé numérique avec NumLock activé ; une deuxième manette devient le 2P automatiquement. Pas de pavé numérique ? Dans 🎮 → Redéfinir les touches, passez au Joueur 2 et choisissez d’autres touches.',
     quickSave: 'Sauvegarde rapide',
     quickLoad: 'Chargement rapide',
+    leftCtrl: 'Ctrl gauche',
+    leftAlt: 'Alt gauche',
+    leftShift: 'Maj gauche',
+    rightShift: 'Maj droite',
+    space: 'Espace',
+    /** MAME 麻将机（mahjongPanel.ts）的面板键名与说明 */
+    mjTiles: 'Tuiles',
+    mjChi: 'Chi',
+    mjPon: 'Pon',
+    mjKan: 'Kan',
+    mjReach: 'Reach',
+    mjRon: 'Ron',
+    mjBet: 'Miser',
+    mjScore: 'Encaisser',
+    mjDouble: 'Doubler',
+    mjBig: 'Grand',
+    mjSmall: 'Petit',
+    mjNote: 'C’est une borne de mahjong : MAME lit directement le clavier, et A–N défaussent la tuile marquée de cette lettre à l’écran. Sans touche Ctrl droite (Mac, la plupart des portables), appuyez sur S pour encaisser ; P fonctionne aussi pour Pon. Manette : gauche/droite sur la croix choisissent une tuile, A la défausse ; B Chi, X Pon, Y Kan, LB Reach, RB Ron, LT miser, RT encaisser, L3 doubler, ↑ grand, ↓ petit, Select crédit, Start départ.',
   },
 
   /* ---------------- Descriptions SEO ---------------- */

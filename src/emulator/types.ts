@@ -42,6 +42,7 @@ import type { NetplaySession } from './adapters/emulatorjs'
 import type { LiveSession } from './adapters/liveview'
 import type { ChatSendResult } from './chatSend'
 import type { GbaVideoMode } from './gbaVideo'
+import type { MahjongKey } from './mahjongPanel'
 import type { SaveArchiveDetails } from './saveEnvelope'
 
 export type RuntimeId = 'emulatorjs' | 'ruffle' | 'awayfl' | 'html5' | 'jsnes' | 'binjgb' | 'iodinegba' | 'j2me' | 'jsdos' | 'webretro' | 'play' | 'ppsspp' | 'dolphin' | 'cloudgame' | 'liveview'
@@ -480,6 +481,11 @@ export type Capability =
   | 'remapKeys'
   /** M3U 多盘游戏可由站内工具栏选盘，不必打开模拟器菜单。 */
   | 'discControl'
+  /**
+   * MAME 麻将机（mahjongPanel.ts）：触屏上画麻将面板（MahjongPad），按下走 mahjongPress。
+   * 和 touchpad 互斥 —— 十字键 + A/B 在麻将机上一张牌都打不出去。
+   */
+  | 'mahjongPad'
 
 /**
  * 屏幕手柄能按的键。取 NES/FC 的键位作最小公约数 —— 手机屏上再多按键也放不下，
@@ -640,6 +646,11 @@ export interface RuntimeHandle {
    * （冒险游戏输名字、策略游戏按数字选单位、F1–F12 热键等）。
    */
   sendKey?: (glfw: number, down: boolean) => void
+  /**
+   * 麻将面板上的一颗键（手牌 A–N、吃碰杠听胡、押注 / 得分 / 比倍 / 大小 …）。
+   * 只有声明了 'mahjongPad' 能力的会话才有意义，见 mahjongPanel.ts。
+   */
+  mahjongPress?: (key: MahjongKey, down: boolean) => void
   /** 设置绝对鼠标坐标（0~1）。给触屏鼠标模式用，专门服务《主题医院》这类点选 DOS 游戏。 */
   sendMouseMove?: (x: number, y: number) => void
   /** 发相对鼠标位移（用于 FPS 瞄准）。触屏鼠标模式 / 手柄右摇杆都会用到。 */

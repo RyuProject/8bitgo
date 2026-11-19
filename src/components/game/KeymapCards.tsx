@@ -27,12 +27,14 @@ interface Props {
   arcadeBios?: string
   /** 街机核心：mame-current 的按键 5 / 6 与 FBNeo 对调 */
   core?: string
+  /** MAME 麻将机（mahjongPanel.ts 的 isMahjongPanelGame）：键位是麻将面板那一套 */
+  mahjongPanel?: boolean
   /** 'sm' 是给窄栏用的（PlayLocalPage 的侧列） */
   size?: 'md' | 'sm'
   className?: string
 }
 
-export function KeymapCards({ runtimeId, platform, gameSlug, arcadeButtons, arcadeBios, core, size = 'md', className }: Props) {
+export function KeymapCards({ runtimeId, platform, gameSlug, arcadeButtons, arcadeBios, core, mahjongPanel, size = 'md', className }: Props) {
   const t = useT()
   const [, bump] = useState(0)
   // 玩家在播放器里改了存读档快捷键或红白机键位，这张表得立刻跟上，不能还写着旧的
@@ -49,6 +51,7 @@ export function KeymapCards({ runtimeId, platform, gameSlug, arcadeButtons, arca
     effectiveKeys,
     platform === 'arcade' ? effectiveArcadeButtons(arcadeButtons, arcadeBios, gameSlug) : undefined,
     core,
+    mahjongPanel,
   )
   const hotkeys = getHotkeys()
   /*

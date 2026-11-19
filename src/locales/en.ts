@@ -1657,6 +1657,8 @@ const en: Translation = {
     ejsArcadeUnknownSet: 'The emulator does not recognise this arcade package ({msg}). The ZIP must be named after its romset (e.g. kof97.zip, tekken3.zip) and contain one complete version.',
     ejsArcadeMissingFiles: 'The arcade package is missing files the game needs ({msg}). Common causes: the BIOS package is not linked, a clone set lacks its parent ROMs, or the ROM version does not match the emulator.',
     ejsMameDiskMismatch: 'MAME media disc misconfigured: {disk}.chd belongs to {expected}, but this ROM is {actual}.',
+    /** 麻将机手柄选牌光标的提示（adapters/emulatorjs.ts 的 showMahjongCursor） */
+    mahjongCursor: 'Tile {tile} · press A to discard',
     ejsMameDiskMissing: 'This {board} game is missing its required media disc {disk}.chd and cannot start yet.',
     ejsMameDiskFailed: 'The MAME media disc {disk}.chd could not be loaded: {msg}',
     ejsArcadeRomDownloadFailed: 'Could not download the arcade game file: {msg}',
@@ -1706,6 +1708,24 @@ const en: Translation = {
     player2NoteEjs: '2P uses the numeric keypad with NumLock on; a second gamepad becomes 2P automatically. No numpad? Open 🎮 → Remap keys, switch to Player 2 and pick other keys.',
     quickSave: 'Quick save',
     quickLoad: 'Quick load',
+    leftCtrl: 'Left Ctrl',
+    leftAlt: 'Left Alt',
+    leftShift: 'Left Shift',
+    rightShift: 'Right Shift',
+    space: 'Space',
+    /** MAME 麻将机（mahjongPanel.ts）的面板键名与说明 */
+    mjTiles: 'Tiles',
+    mjChi: 'Chi',
+    mjPon: 'Pon',
+    mjKan: 'Kan',
+    mjReach: 'Reach',
+    mjRon: 'Ron',
+    mjBet: 'Bet',
+    mjScore: 'Take score',
+    mjDouble: 'Double up',
+    mjBig: 'Big',
+    mjSmall: 'Small',
+    mjNote: 'This is a mahjong cabinet: MAME reads the keyboard directly, and A–N discard the tile labelled with that letter on screen. Keyboards without Right Ctrl (Macs, most laptops) can press S to take score; P also works for Pon. Gamepad: D-pad left/right picks a tile and A discards it; B Chi, X Pon, Y Kan, LB Reach, RB Ron, LT Bet, RT Take score, L3 Double up, ↑ Big, ↓ Small, Select inserts a coin, Start starts.',
   },
 
   /* ---------------- SEO descriptions ---------------- */
