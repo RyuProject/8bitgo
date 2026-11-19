@@ -544,6 +544,59 @@ const SAVE_FLUSH_MS = 30_000
  * 被误判卡死并自动重下 ROM / 核心。
  */
 const STALL_MS = 30_000
+
+/** 截屏每一步最多等这么久。引擎的 RetroArch 截图是死循环轮询文件，核心不出图时不会自己结束 */
+const SCREENSHOT_TIMEOUT_MS = 4000
+
+/** 给一个可能永远不结束的 Promise 套上时限；超时以 reject 结束，调用方走下一条路 */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('timeout')), ms)
+    promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (error: unknown) => {
+        clearTimeout(timer)
+        reject(error)
+      },
+    )
+  })
+}
+
+/**
+ * 在 iframe 的 requestAnimationFrame 里把 WebGL 画布拷进 2D 画布再出 PNG。
+ *
+ * 只有在 rAF 里拷才拷得到东西：核心在同一轮 rAF 里刚画完，浏览器还没合成、缓冲区还没被清。
+ * 抽样确认不是整张透明 / 纯黑 —— 拷早了或拷晚了都是空帧，空帧当成功交出去就是又一张「白图」。
+ */
+async function captureCanvasFrame(canvas: HTMLCanvasElement, win: Window | null): Promise<Blob | null> {
+  const raf = win?.requestAnimationFrame?.bind(win) ?? requestAnimationFrame
+  const doc = canvas.ownerDocument
+  const copy = await withTimeout(new Promise<HTMLCanvasElement | null>((resolve) => {
+    raf(() => {
+      try {
+        const out = doc.createElement('canvas')
+        out.width = canvas.width
+        out.height = canvas.height
+        const ctx = out.getContext('2d', { alpha: false })
+        if (!ctx || !out.width || !out.height) return resolve(null)
+        ctx.drawImage(canvas, 0, 0)
+        const data = ctx.getImageData(0, 0, out.width, out.height).data
+        let lit = 0
+        // 抽样约 2000 个像素；alpha:false 的画布透明处读出来是纯黑，所以看亮度而不是 alpha
+        const step = Math.max(4, Math.floor(data.length / 4 / 2000) * 4)
+        for (let i = 0; i < data.length; i += step) if (data[i] + data[i + 1] + data[i + 2] > 24) lit++
+        resolve(lit > 0 ? out : null)
+      } catch {
+        resolve(null)
+      }
+    })
+  }), SCREENSHOT_TIMEOUT_MS).catch(() => null)
+  if (!copy) return null
+  return await new Promise<Blob | null>((resolve) => copy.toBlob(resolve, 'image/png'))
+}
 /**
  * mame-current 的 wasm 解压后约 242MB：7z 解压、写 IndexedDB、编译这三步都没有网络进度，
  * 那行状态文字也常常不变；低端手机上一步就能超过 30 秒，误报「卡住」后还会触发一次整局重来。
@@ -664,8 +717,11 @@ interface EjsGameManager {
   toggleFastForward?: (on: number) => void
   setFastForwardRatio?: (ratio: number) => void
   loadState: (state: Uint8Array) => void
-  /** 新版本才有；没有就退回读画布 */
-  screenshot?: () => Uint8Array
+  /**
+   * 让 RetroArch 往 /screenshot.png 写一张**核心原生像素**的截图。当前引擎返回 Promise（轮询那个文件，
+   * 文件一直不出现就一直等）；更老的版本直接返回字节。见 handle.screenshot 为什么只拿它兜底。
+   */
+  screenshot?: () => Uint8Array | Promise<Uint8Array>
   /** 核心当前输出的几何（cwrap get_video_dimensions）：'width' / 'height' / 'aspect'，取不到是 -1 */
   getVideoDimensions?: (what: string) => number
   /** 核心自报支不支持快照存档（cwrap supports_states）；街机的一些驱动就是不支持 */
@@ -786,6 +842,11 @@ interface EjsEmulator {
   stopAllAutofire?: () => void
   /** 引擎自己有没有开着弹窗（改键 / 金手指 / 联机 / 输入框）。给 hotkeyBridge 让路用 */
   isPopupOpen?: () => boolean
+  /**
+   * 引擎自己的截图（底部栏那颗相机用的就是它）。source 'canvas' 在 requestAnimationFrame 里、核心刚画完
+   * 这一帧时把 WebGL 画布拷进 2D 画布，并按核心报的宽高比裁掉两侧黑边；upscale 1 = 按画布原尺寸。
+   */
+  takeScreenshot?: (source?: string, format?: string, upscale?: number) => Promise<{ screenshot: Uint8Array; format: string }>
   /**
    * 引擎判断「要不要显示虚拟手柄」用的标志。只有玩家用手指点了「开始游戏」按钮才置 true
    * —— 我们设了 EJS_startOnLoaded，那个按钮根本不由玩家点。见 showVirtualGamepad。
@@ -5460,7 +5521,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         errorTap = installErrorTap(win, reportEngineError,
           options.platform === 'nds' || (options.platform === 'gba' && isRomPackUrl(remoteGameUrl))
             ? reportCoreCrash
-            : undefined)
+            : undefined,
+          () => {
+            if (!started && !loadFailed && !destroyed) beat()
+          })
         // 预下载好的 ROM：引擎取 blob: 地址时直接拿 Blob 回应，不走 Safari 的 blob URL 加载（见 installBlobFetchShortcut）
         if (preparedRomBlob && preparedArcadeBlobUrl && gameUrl === preparedArcadeBlobUrl) {
           installBlobFetchShortcut(win, preparedArcadeBlobUrl, preparedRomBlob, (error) => {
@@ -6294,14 +6358,49 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         throw e
       }
     },
+    /*
+      ⚠️ 绝不能直接 canvas.toBlob：EmulatorJS 的画布是 WebGL2、没开 preserveDrawingBuffer，浏览器合成完一帧
+      缓冲区就清空了，任何时候 toBlob 拿到的都是一张**全透明**的 PNG —— 看图软件里是一整张白
+      （2026-11-19《龙虎争霸1》玩家反馈「截图是白屏」；Playwright 实测 974×548、不透明像素 0）。
+      以前这里先调 gameManager.screenshot() 并按「返回字节」判断，可当前引擎它返回的是 Promise，
+      `shot?.length` 恒为 undefined，于是**每一款** EmulatorJS 游戏都掉进了 toBlob 那条死路。
+
+      现在的顺序：
+        1. 引擎的 takeScreenshot('canvas')：在 rAF 里趁这一帧还在缓冲区时拷出来，按核心宽高比裁黑边 ——
+           就是玩家眼里那一帧（带 shader、比例对）。实测 730×548，正常。
+        2. 引擎太老没有它：自己在 iframe 的 rAF 里拷一次，并抽样确认不是空帧。
+        3. RetroArch 的原生截图兜底：像素最干净，但它是核心原始分辨率、没按显示比例拉伸
+           （lhzb 是 512×240，4:3 的画面会被压扁），所以排最后。
+      全都拿不到就返回 null，工具栏提示「截屏失败」—— 一张白图比一句失败更让人困惑。
+    */
     async screenshot() {
       const canvas = canvasOf()
       if (!canvas) return null
-      // EmulatorJS 的画布是 WebGL 且没开 preserveDrawingBuffer，
-      // 直接 toBlob 多半是黑的，优先用它自己的截图接口
-      const shot = emuOf()?.gameManager?.screenshot?.()
-      if (shot?.length) return new Blob([new Uint8Array(shot).slice().buffer], { type: 'image/png' })
-      return await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'))
+      const emu = emuOf()
+      const png = (bytes: Uint8Array) => new Blob([bytes.slice().buffer as ArrayBuffer], { type: 'image/png' })
+
+      if (typeof emu?.takeScreenshot === 'function') {
+        try {
+          const shot = await withTimeout(emu.takeScreenshot('canvas', 'png', 1), SCREENSHOT_TIMEOUT_MS)
+          if (shot?.screenshot?.length) return png(shot.screenshot)
+        } catch {
+          /* 引擎内部出错 / 超时：往下走 */
+        }
+      }
+
+      const frameShot = await captureCanvasFrame(canvas, iframe.contentWindow)
+      if (frameShot) return frameShot
+
+      const gm = emu?.gameManager
+      if (typeof gm?.screenshot === 'function') {
+        try {
+          const bytes = await withTimeout(Promise.resolve(gm.screenshot()), SCREENSHOT_TIMEOUT_MS)
+          if (bytes?.length) return png(bytes)
+        } catch {
+          /* 核心不支持截图（文件一直不出现）：只能报失败 */
+        }
+      }
+      return null
     },
     captureSources(): CaptureSources | null {
       const canvas = canvasOf()
