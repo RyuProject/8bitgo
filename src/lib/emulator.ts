@@ -361,6 +361,31 @@ export function getDefaultKeymap(
     }
   }
 
+  /**
+   * 塞班 / N-Gage（详情页内嵌的 EKA2L1）：键盘在 iframe 播放页里映射成手机按键，见 scripts/eka2l1-player.js
+   * 的 KEYBOARD / PAD，改那边要同步这里。N-Gage 游戏的主要动作键是 5 和 7，摇杆中键是 OK。
+   */
+  if (runtimeId === 'eka2l1') {
+    return {
+      rows: [
+        { button: t.keymap.dpad, key: '↑ ↓ ← →', slot: 'dpad', parts: ['↑', '↓', '←', '→'] },
+        { button: t.keymap.j2meConfirm, key: 'Enter / Space', slot: 'start' },
+        { button: '5', key: '5', slot: 'a' },
+        { button: '7', key: '7', slot: 'b' },
+        { button: t.keymap.j2meNum, key: '0 – 9' },
+        { button: t.keymap.j2meSoftL, key: 'Q / F1', slot: 'select' },
+        { button: t.keymap.j2meSoftR, key: 'E / F2' },
+        { button: '* / #', key: 'X / C' },
+        { button: 'C', key: 'Backspace' },
+      ],
+      note: '',
+      rebind: 'none',
+      quickSave,
+      pad: true,
+      touch: 'all',
+    }
+  }
+
   /** PS2：对照 Play! Source/ui_js/Main.cpp；标准手柄与触屏也由适配器翻成这些固定键位。 */
   if (runtimeId === 'play') {
     return {

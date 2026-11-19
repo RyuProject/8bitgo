@@ -4049,7 +4049,26 @@ E32 头校验才运行它，否则运行 `<代号>`，不运行的那份不写 `
   解压超量、只差大小写的重名、写盘冲突与持久化；设 `NGAGE_CARD_ZIP=<卡带 zip>` 时再跑真实转储）。
 - 2026-11-19 浏览器实测（真实 Emscripten FS、`EKA2L1.savePaths`、原生 DecompressionStream，《模拟人生：脱颖而出》15 MiB
   转储）：50 个文件写进 E 盘并全部存进 IndexedDB，读回 CRC 与 ZIP 一致，旧 `_1` AIF 从 FS 和 IndexedDB 都删掉了。
-  本机没有 N-Gage 固件，**游戏能否出现在列表、能否运行都没有验证**；线上也没有配置 N-Gage QD 默认固件（`/api/platform-bios` 里没有 `symbian`）。
+  线上没有配置 N-Gage QD 默认固件（`/api/platform-bios` 里没有 `symbian`）。
+- 同日用原版 N-Gage（NEM-4，V 4.03）的 SYM.ROM 本地实测：固件 2 秒装好，导入后游戏出现在程序列表、刷新后的 UID 核对提示正确，
+  游戏能开机、过片头、进主菜单、跑演示画面（窗格可见时约 25 FPS）。站内文案写的是 N-Gage QD，但原版 N-Gage 的 ROM 同样能用。
+- **《模拟人生：脱颖而出》（6RAK）在没有存档的设备上，标题画面报「Game deck memory full」**（2026-11-19 查清并绕开）：
+  用带日志的诊断核心确认，存档 `C:\System\Apps\6RAK\THESIMS.SAV` 不存在时，游戏走「新建存档」那条路，让 ESTLIB 从
+  `0x40FEAC` 起一块 1024 字节地写。这段地址是这个线程 64KB 栈（`0x400000–0x410000`，chunk 预留 1MB 只是按 1MB 对齐）的顶部，
+  内容是栈帧；再往上是没提交的页，Posix 服务的 `valid_guest_range` 拒绝，返回 EFAULT，存档只剩 0 字节。
+  **排除过的方向**：目录在不在（预建目录后照样失败）；GGEMU 往 Z: 放的 `100058ec.ini`（那是「常规设置」，放了照样失败）；
+  客体内存跨 chunk 不连续（尾页根本没映射，拆分拷贝帮不上）；把未映射尾部补 0（第一块能写，游戏接着从 `0x4102AC` 写下一块，
+  整块都在未映射区）。是游戏这条路径上的指针指进了栈区，模拟器层面没有干净的通用修法。
+  **已有存档（哪怕 0 字节）时**游戏改从堆上的缓冲每次写 8 字节，存档正常写成 6176 字节（`ASIE0000` 开头），标题显示
+  「Press 5 to start」，主菜单正常 —— 以前「目录已存在就能用」的观察，其实是那台设备上已经留着一个 0 字节存档。
+  **修法**：卡带导入（`scripts/eka2l1-ngage-card.js` 的 `KNOWN_EMPTY_SAVES`）给已知游戏在 `C:\System\Apps\<代号>\` 放一个空存档，
+  已有同名文件（不论大小写和内容）一律不动；程序库页和详情页播放器共用这段代码。目前名单只有 `6RAK → THESIMS.SAV`，
+  别的游戏遇到同样的报错，先用诊断核心看 Posix 写入参数，确认是同一类再加进名单。
+  诊断核心的做法：在本机构建目录的 `posix.cpp` 里临时加 `LOG_WARN`，`cmake --build build_wasm_8bitgo --target eka2l1_wasm` 增量约 1 分钟，
+  把 `bin/eka2l1.wasm` + `eka2l1.js` 放进 `public/eka2l1/` 下的临时目录测（胶水要手动补 `Module["IDBFS"]=IDBFS`），用完删掉、源码恢复原样。
+- 实测要点：按键要按住约 1 秒以上，游戏按帧采样键状态，低帧率下短按会丢；内置浏览器窗格隐藏时 rAF 可能完全停住，
+  模拟器卡在「Symbian 系统引导中」后报启动超时，这不是运行时的毛病。完整 SVC/IPC 追踪可在播放页控制台调
+  `EKA2L1.module.ccall('wasm_set_trace_logging', null, ['number'], [1])` 打开（极慢、日志量很大，用完关掉）。
 ### 2.40.1 🔴 EKA2L1 核心一启动就报 `reading 'IDBFS'`：新版 Emscripten 的胶水不兼容上游 boot.js（2026-11-19 修）
 
 **经过**：2026-11-16 起发布的运行时（含线上 `vce3dcea2a438`）全部起不来。玩家在「安装设备固件」里选好 ROM 点安装，
@@ -4057,6 +4076,7 @@ E32 头校验才运行它，否则运行 `<代号>`，不运行的那份不写 `
 （本地与 https://8bitgo.com 都复现）。上游 `js/boot.js` 按老 Emscripten 写：`mod.FS.mount(mod.FS.filesystems.IDBFS, …)`，
 `patchIDBFS` 还读 `IDBFS.DB_VERSION` / `IDBFS.DB_STORE_NAME`。本站用 emcc 7.0.0 构建，胶水里**没有 `FS.filesystems`**、
 **没有把 IDBFS 挂到 Module 上**，版本和存储名也成了模块常量（`IDBFS_DB_VERSION=21`、`IDBFS_DB_STORE_NAME="FILE_DATA"`）——
+  ⚠️ 重新打包以 `eka2l1Runtime.ts` 里**当前**的 `EKA2L1_BUILD_ID` 目录为基准：先打包、再删旧目录；先删了就把常量改回上一个已提交的目录再打。
 就算只修挂载那一行，`patchIDBFS` 换上去的 `getDB` 也会不带版本号打开库、建出一个叫 `undefined` 的存储，存档全写不进去。
 
 **修法**（运行时 `vcfbeb38ddde3`）：补丁表新增两条，完整构建和 `npm run eka2l1:repackage` 走同一个 `applyReplacePatch`：
@@ -4084,6 +4104,38 @@ npm run test:play      # Play! JS / WASM / 许可证完整性与接口特征
 npm run rompack -- <ROM> [输出.8bg]  # 制作 Zstd 19 + AES-GCM 的 8BG 容器
 npm run test:rompack   # 8BG 打包、解密、解压与摘要往返
 npm run test:flash-online-save # AGI 桥完整性 + Flash 在线存档契约
+### 2.40.2 塞班 / N-Gage：游戏详情页内嵌播放器，点开始就玩（2026-11-19）
+
+照 GGEMU 的做法：玩家不用自备固件、不用进 /symbian 程序库装机，详情页点「开始游戏」就开局。
+
+- **形态**：平台 `symbian` 的运行时是 `eka2l1`（`src/emulator/adapters/eka2l1.ts`），收 `.zip`（N-Gage 卡带转储）、`.sis`
+  （老塞班安装包）。`.sisx` / `.n-gage` 识别得出来，但开局前以 `config` 报 S60 第三版不支持。适配器建一个**同源 iframe**
+  `${EKA2L1_RUNTIME_DIR}play.html`，由它加载 `eka2l1.js` + `js/boot.js` + 卡带导入脚本 + `js/8bitgo-player.js`
+  （源码 `scripts/eka2l1-player.html` / `scripts/eka2l1-player.js`，登记在 `eka2l1-site-scripts.mjs`，`inject: false`，不进程序库页）。
+- **每局在内存里装机**：播放页把 `createEKA2L1Module` 包一层，让 `FS.mount('/eka2l1')` 变成空操作，整台机器都在 MEMFS 里，
+  不碰程序库页的 IndexedDB 设备。顺序不能乱：卡带文件必须在 `initDevice` **之前**写进 E:（EKA1 固件装好就激活，
+  应用列表只在激活时扫描一次）；SIS 在装机之后 `installPackage`，再比较前后的应用列表找出新装的那个。
+- **固件**：来自后台平台 BIOS 的 `symbian` 键（`options.biosUrl`），游戏来自 ROM 地址，下载、缓存、8BG 解包都走 `loadGameBytes`
+  （固件上限 128MiB、游戏 256MiB，和 SWF 一样并行下载）。**线上还没配 `symbian` 的平台 BIOS**，没配时以 `config` 报 `eka2l1NoFirmware`，
+  不下载游戏。站内文案写的是 N-Gage QD 固件；原版 N-Gage（NEM-4）的 SYM.ROM 实测同样能用。
+- **跨源隔离**：pthread 构建要 SharedArrayBuffer。详情页内嵌隔离的平台名单在 `shared/inline-isolated-platforms.js`（psp、symbian），
+  SSR 的隔离头和详情页「SPA 跳转进来先整页刷新一次」都读它，新增平台只改这一处。
+- **存档**：开局后给 C: / E: 拍一份快照，之后游戏新建或改过的文件打成一个小包（magic `8BGSYM1\0`，上限 2MB / 4096 个文件；
+  系统服务自己改写的位置排除，见 `EXCLUDED_PREFIXES`）。包存在 localStorage `8bitgo.eka2l1.save.v1:<slug>`，登录后经 `batterySync`
+  同步云端（emulatorjs / slug / slot 9，与 GB / GBA 电池存档同一套）。每 30 秒、切后台、离页、销毁时保存；开局在启动游戏前写回。
+  读档时拒绝越界路径、Z: / D: 路径和只差大小写的重名。
+- **按键**：方向键 / Enter·空格（OK）/ Q·F1（左软键）/ E·F2（右软键）/ 0–9 / X·C（* #）/ Backspace（C 键），按下保持、松开才放，
+  带修饰键的不接管。手柄：a = 5、b = 7、select = 左软键、start = OK（N-Gage 游戏多用 5 / 7 当动作键）。操作说明在 `src/lib/emulator.ts`，
+  测试会核对它和播放页键位一致。
+- **画面里那行 `Build / Commit / Channel`**：上游 `src/emu/web/src/protection.cpp` 画进窗口右下角的构建水印，注释写明 Release 构建
+  不能关掉（用来追泄露的构建）。窗口每帧都被 `sync_canvas_to_screen` 强制成游戏画面的原始尺寸，所以水印必然压在游戏画面底部
+  （176×208 的 N-Gage 画面会被盖住底部约 24 像素）。不重编核心就挪不开；要不要改是运营的决定，别擅自删。
+- **2026-11-19 本地实测**（Vite 开发服务器、真实 `adapters/eka2l1.ts`、原版 N-Gage SYM.ROM、《模拟人生》卡带 ZIP）：页面已跨源隔离，
+  挂载到出画面 0.7 秒（wasm 已在缓存）/ 7.6 秒（换了运行时地址、要重新下载）；EA / Maxis 片头正常，截图 PNG、音量、暂停、
+  手柄按键、本地存档都可用。加了空存档的绕法后（见 §2.40），全新一局写出 6176 字节存档、标题显示「Press 5 to start」、能进主菜单，存档被打进存档包。片头要按一下键才往下走。SIS 那条路还没有用真实安装包测过。
+- 回归：`npm run test:eka2l1-player`（包类型识别、存档包格式与安全校验、快照比较、键位、接线），另跑 `test:eka2l1-ngage-card`、
+  `test:eka2l1-patches`、`eka2l1:check`。
+
 
 npm run ejspatch       # 重打 blob 文件名补丁（升级引擎后必跑，幂等）
 npm run ejscores       # 重新复制核心（仅升级核心时）

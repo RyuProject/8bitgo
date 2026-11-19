@@ -1398,7 +1398,7 @@ const de: Translation = {
     },
     symbian: {
       name: 'Symbian / Nokia N-Gage',
-      desc: 'Spiele Symbian- und N-Gage-Spiele mit EKA2L1-WEB im Browser. Firmware und Spiele musst du selbst mitbringen und verwenden dürfen.',
+      desc: 'Spiele Symbian- und N-Gage-Spiele im Browser: Start drücken, und EKA2L1 führt das Spiel direkt auf der Seite aus.',
     },
   },
 
@@ -1586,6 +1586,14 @@ const de: Translation = {
     ppssppNeedsIsolation: 'PPSSPP hat die für SharedArrayBuffer nötige Browser-Isolation nicht erhalten. Lade diese Spielseite neu.',
     ppssppStartTimeout: 'PPSSPP war nach zwei Minuten noch nicht bereit. Verwende einen aktuellen Chromium-Browser mit WebAssembly-Threads.',
     ppssppExperimental: 'PSP verwendet PPSSPP im Browser. Große Abbilder werden bei Bedarf gelesen; der erste Start kann dauern und die Leistung hängt vom Gerät ab.',
+    eka2l1Desc: 'WebAssembly-Browserport von EKA2L1; jede Sitzung richtet ein N-Gage-Gerät und das Spiel im Speicher ein',
+    eka2l1NoFirmware: 'Auf dieser Seite ist noch keine N-Gage-Geräte-Firmware eingerichtet, daher können Symbian-Spiele nicht starten.',
+    eka2l1NeedsS60v3: 'Dieses Spiel ist ein S60-3rd-Edition-Paket (.sisx); die nötige Firmware ist auf dieser Seite noch nicht eingerichtet.',
+    eka2l1UnknownPackage: 'Diese Symbian-Spieldatei wird nicht erkannt. Unterstützt werden nur .sis-Pakete und N-Gage-Spielkarten-Dumps (.zip).',
+    eka2l1LoadFailed: 'Der Symbian-Emulator konnte nicht starten: {msg}',
+    eka2l1AppExited: 'Das Spiel wurde beim Start beendet ({detail}). Es ist möglicherweise noch nicht kompatibel.',
+    eka2l1NeedsIsolation: 'Der Symbian-Emulator hat die für SharedArrayBuffer nötige Browser-Isolation nicht erhalten. Bitte lade diese Spielseite neu.',
+    eka2l1StartTimeout: 'Das Spielbild ist innerhalb von zwei Minuten nicht erschienen. Wenn das Browserfenster im Hintergrund ist, hole es nach vorn und versuche es erneut.',
     dolphinExperimental: 'GameCube / Wii ist experimentell und braucht einen schnellen Desktop mit Chromium. Wii-Remote-Eingabe fehlt; praktisch sind nur wenige Wii-Spiele mit klassischer Steuerung.',
     ejsDiscDownloadFailed: 'Download des Disc-Abbilds fehlgeschlagen: {msg}',
     discNeedDownload: '{size} zu laden',

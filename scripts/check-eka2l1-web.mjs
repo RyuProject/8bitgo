@@ -42,6 +42,9 @@ if (!existsSync(join(dir, 'runtime.json'))) fail(`缺少 ${dir}/runtime.json`)
 const manifest = JSON.parse(readFileSync(join(dir, 'runtime.json'), 'utf8'))
 if (manifest.buildId !== buildId) fail(`runtime.json 的 buildId=${manifest.buildId}，期望 ${buildId}`)
 if (!/^[0-9a-f]{12}$/.test(manifest.upstreamBuildId || '')) fail('runtime.json 缺少上游页面版本号')
+if (!constants.includes(`EKA2L1_UPSTREAM_BUILD_ID = '${manifest.upstreamBuildId}'`)) {
+  fail('eka2l1Runtime.ts 的 EKA2L1_UPSTREAM_BUILD_ID 与 runtime.json 不一致，详情页预热会打不中缓存')
+}
 if (manifest.commit !== EKA2L1_UPSTREAM_COMMIT) fail('runtime.json 的上游提交与补丁表不一致，需重新构建')
 const expectPatches = EKA2L1_ALL_PATCHES.map((p) => p.id).join(',')
 if ((manifest.patches || []).join(',') !== expectPatches) fail(`运行时打的补丁是 [${manifest.patches}]，补丁表是 [${expectPatches}]，需重新构建`)
@@ -113,12 +116,25 @@ for (const page of ['index.html', 'run.html']) {
 // 本站脚本：index.html 要加载它，发布版和随包源码都要和仓库里的一字不差（改了脚本就得重新打包换目录）
 const libraryHtml = readFileSync(join(dir, 'index.html'), 'utf8')
 for (const script of EKA2L1_SITE_SCRIPTS) {
-  if (!libraryHtml.includes(`<script src="${script.published}"></script>`)) fail(`index.html 未加载本站脚本 ${script.published}`)
+  if (script.inject !== false && !libraryHtml.includes(`<script src="${script.published}"></script>`)) {
+    fail(`index.html 未加载本站脚本 ${script.published}`)
+  }
   const expected = readFileSync(join(root, script.source), 'utf8')
   for (const rel of [script.published, script.sourceCopy]) {
     if (readFileSync(join(dir, rel), 'utf8') !== expected) {
       fail(`${rel} 与仓库里的 ${script.source} 不一致，需运行 npm run eka2l1:repackage`)
     }
+  }
+}
+// 详情页播放页：必须加载运行时、卡带导入和播放器脚本（顺序：胶水 → boot → 导入 → 播放器）
+{
+  const player = readFileSync(join(dir, 'play.html'), 'utf8')
+  const order = ['src="eka2l1.js"', 'src="js/boot.js"', 'src="js/8bitgo-ngage-card.js"', 'src="js/8bitgo-player.js"']
+  let last = -1
+  for (const needle of order) {
+    const at = player.indexOf(needle)
+    if (at < 0 || at < last) fail(`play.html 没有按顺序加载 ${needle}`)
+    last = at
   }
 }
 if (readFileSync(join(dir, 'source/scripts/lib/eka2l1-site-scripts.mjs'), 'utf8') !== readFileSync(join(root, 'scripts/lib/eka2l1-site-scripts.mjs'), 'utf8')) {

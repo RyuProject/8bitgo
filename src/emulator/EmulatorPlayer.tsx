@@ -5247,17 +5247,10 @@ export function EmulatorPlayer({
             表单控件在 flex 里**是会被压缩的**，而这几颗是主控件，宁可折行也不能被挤扁。
           */}
           <div className="ml-auto flex shrink-0 items-center gap-1.5">
-          {romLangs?.length === 1 && !inRoom && !session?.live && (
-            <span
-              title={t.player.romLangTitle}
-              className={buttonClasses('secondary', 'sm')}
-            >
-              {romLanguageLabel(romLangs[0])}
-            </span>
-          )}
           {/*
             ROM 语言切换。三个前提：
-              1. 这款游戏确实有两种以上语言的 ROM —— 只有一种时切了也是它自己
+              1. 这款游戏确实有两种以上语言的 ROM —— 只有一种时什么都不显示：一颗点不动、
+                 长得像按钮的语言标签只会让人以为能切（2026-11-19 去掉了单语言时的那个标签）
               2. 不在联机房里 —— 房主和访客必须跑同一份 ROM，中途换语言这局就废了
               3. **不是在看直播** —— 游戏跑在主播的浏览器里，这台机器一帧都没跑过。
                  切了会怎样：switchRomLang 把会话拆掉、按新语言的 ROM 自己开一局，

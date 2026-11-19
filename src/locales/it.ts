@@ -1398,7 +1398,7 @@ const it: Translation = {
     },
     symbian: {
       name: 'Symbian / Nokia N-Gage',
-      desc: 'Esegui giochi Symbian e N-Gage nel browser con EKA2L1-WEB. Prepara firmware e pacchetti che hai diritto di usare.',
+      desc: 'Gioca ai titoli Symbian e N-Gage nel browser: premi avvia ed EKA2L1 esegue il gioco direttamente nella pagina.',
     },
   },
 
@@ -1586,6 +1586,14 @@ const it: Translation = {
     ppssppNeedsIsolation: 'PPSSPP non ha ottenuto l’isolamento richiesto da SharedArrayBuffer. Ricarica questa pagina di gioco.',
     ppssppStartTimeout: 'PPSSPP non era pronto dopo due minuti. Usa un Chromium recente con thread WebAssembly.',
     ppssppExperimental: 'PSP usa PPSSPP nel browser. Le immagini grandi vengono lette su richiesta; il primo avvio può essere lento e le prestazioni dipendono dal dispositivo.',
+    eka2l1Desc: 'Porting WebAssembly di EKA2L1 per browser; ogni sessione prepara in memoria un dispositivo N-Gage e il gioco',
+    eka2l1NoFirmware: 'Questo sito non ha ancora configurato il firmware del dispositivo N-Gage, quindi i giochi Symbian non possono avviarsi.',
+    eka2l1NeedsS60v3: 'Questo gioco è un pacchetto S60 3rd Edition (.sisx) e il firmware necessario non è ancora configurato su questo sito.',
+    eka2l1UnknownPackage: 'File di gioco Symbian non riconosciuto. Sono supportati solo pacchetti .sis e dump delle schede di gioco N-Gage (.zip).',
+    eka2l1LoadFailed: 'Avvio dell’emulatore Symbian non riuscito: {msg}',
+    eka2l1AppExited: 'Il gioco si è chiuso all’avvio ({detail}). Potrebbe non essere ancora compatibile.',
+    eka2l1NeedsIsolation: 'L’emulatore Symbian non ha ottenuto l’isolamento del browser richiesto da SharedArrayBuffer. Ricarica questa pagina del gioco.',
+    eka2l1StartTimeout: 'La schermata del gioco non è comparsa entro due minuti. Se la finestra del browser è in background, riportala in primo piano e riprova.',
     dolphinExperimental: 'GameCube / Wii è sperimentale e richiede un Chromium desktop potente. Wii Remote non è ancora implementato; su Wii sono pratici solo alcuni giochi con controlli classici.',
     ejsDiscDownloadFailed: 'Download dell’immagine disco non riuscito: {msg}',
     discNeedDownload: '{size} da scaricare',

@@ -29,6 +29,7 @@
     entries: 20000,
   });
   const E_ROOT = '/eka2l1/drives/e/';
+  const C_ROOT = '/eka2l1/drives/c';
   const APPS = 'system/apps/';
   const LIB_DIRS = ['system/libs/', 'system/programs/'];
   const IMPORTED_KEY = '8bitgo.eka2l1.ngageCardImported';
@@ -382,11 +383,15 @@
       try { title = cleanTitle(await readEntryData(blob, gameId.entry)); } catch { title = ''; }
     }
 
+    // C 盘存档目录用卡上的代号（大写，与游戏自己建出来的一致），两个版本都建，空目录无害
+    const saveFolders = [...new Set([libs, run].map((name) => folders.get(name).toUpperCase()))];
+
     return {
       prefix,
       gameFolder: run,
       dropFolder: drop,
       libsFolder: libs,
+      saveFolders,
       dropAif,
       appUid,
       title,
@@ -406,6 +411,70 @@
   }
 
   function dirname(path) { return path.slice(0, path.lastIndexOf('/')); }
+
+  /** parent 下按大小写不敏感找 name；没有就按给定大小写新建。被同名文件挡住返回 null */
+  function ensureDirCaseInsensitive(FS, parent, name, created) {
+    let entries = [];
+    try { entries = FS.readdir(parent); } catch { return null; }
+    const match = entries.find((e) => e !== '.' && e !== '..' && e.toLowerCase() === name.toLowerCase());
+    if (match) {
+      const existing = parent + '/' + match;
+      return pathKind(FS, existing) === 'dir' ? existing : null;
+    }
+    const path = parent + '/' + name;
+    FS.mkdir(path);
+    created.push(path);
+    return path;
+  }
+
+  /**
+   * 存档文件不存在时走不通的游戏：导入时在 C:\System\Apps\<代号>\ 放一个空文件，游戏就走「已有存档」那条路。
+   * 键是卡上的代号（大写），值是存档文件名。已有同名文件（不论大小写、不论内容）一律不动。
+   *
+   * 《模拟人生：脱颖而出》（6RAK）：2026-11-19 用带日志的诊断核心确认，存档不存在时游戏的「新建存档」路径让 ESTLIB
+   * 从 0x40FEAC 起连续写 1024 字节一块的数据，这段地址在模拟器里是这个线程 64KB 栈（0x400000–0x410000）的顶部，
+   * 再往上是没有提交的页，Posix 服务按 EFAULT 拒绝，存档只剩 0 字节，标题画面报「Game deck memory full」。
+   * 把没映射的尾部按 0 补上也没用：游戏接着从 0x4102AC 写下一块，整块都在未映射区 —— 是游戏这条路径上的指针
+   * 指进了栈区，模拟器层面没有干净的通用修法。已有存档（哪怕 0 字节）时游戏从堆上的缓冲每次写 8 字节，存档正常写出
+   * 6176 字节，标题显示「Press 5 to start」，主菜单正常。
+   */
+  const KNOWN_EMPTY_SAVES = Object.freeze({
+    '6RAK': Object.freeze(['THESIMS.SAV']),
+  });
+
+  /**
+   * 预先建出 C:\System\Apps\<代号>\（游戏第一次启动自己逐级 mkdir 也行，预建无害），并为 KNOWN_EMPTY_SAVES 里的游戏
+   * 放好空存档。C 盘保留原大小写，已有目录不论大小写一律复用，不另建一份。失败不影响卡带导入本身。
+   */
+  function prepareSaveFolders(FS, folders) {
+    const created = [];
+    const seeded = [];
+    const blocked = [];
+    for (const folder of folders) {
+      try {
+        let dir = pathKind(FS, C_ROOT) === 'dir' ? C_ROOT : null;
+        for (const name of ['System', 'Apps', folder]) {
+          if (dir) dir = ensureDirCaseInsensitive(FS, dir, name, created);
+        }
+        if (!dir) {
+          blocked.push(folder);
+          continue;
+        }
+        const saves = KNOWN_EMPTY_SAVES[folder.toUpperCase()] || [];
+        if (!saves.length) continue;
+        const existing = new Set(FS.readdir(dir).map((e) => e.toLowerCase()));
+        for (const name of saves) {
+          if (existing.has(name.toLowerCase())) continue;
+          const path = dir + '/' + name;
+          FS.writeFile(path, new Uint8Array(0));
+          seeded.push(path);
+        }
+      } catch {
+        blocked.push(folder);
+      }
+    }
+    return { created, seeded, blocked };
+  }
 
   /**
    * deps: { FS, savePaths(paths, onProgress), deletePathPrefixes(prefixes), estimate(), onStage(stage, info) }
@@ -462,10 +531,15 @@
       FS.writeFile(b.path, b.data, { canOwn: true });
     }
     const paths = buffers.map((b) => b.path);
+    const saveFolders = prepareSaveFolders(FS, plan.saveFolders || []);
+    if (saveFolders.blocked.length) {
+      console.warn('[8BitGo] 没能在 C 盘预建存档目录（有同名文件挡着）：', saveFolders.blocked.join(', '));
+    }
+    const persistPaths = [...paths, ...saveFolders.created, ...saveFolders.seeded];
 
-    stage('persist', { total: paths.length });
+    stage('persist', { total: persistPaths.length });
     try {
-      await deps.savePaths(paths, (written, total, bytes) => stage('persist', { written, total, bytes }));
+      await deps.savePaths(persistPaths, (written, total, bytes) => stage('persist', { written, total, bytes }));
     } catch (err) {
       throw new CardError('persist', (err && (err.message || err.name)) || String(err));
     }
@@ -481,17 +555,18 @@
       }
     }
 
-    return { plan, paths, removedStale };
+    return { plan, paths, removedStale, saveFolders };
   }
 
   const api = Object.freeze({
-    LIMITS, E_ROOT, IMPORTED_KEY, CardError,
+    LIMITS, E_ROOT, IMPORTED_KEY, KNOWN_EMPTY_SAVES, CardError,
     crc32, checkedUidMatches, e32Loadable, aifLooksValid,
     readZipDirectory, normalizeEntryPath, findCardRoot, readEntryData, planCard, installCard,
   });
   root.EightBitGoNgageCard = api;
 
-  if (typeof document === 'undefined') return;
+  // 只在程序库页（index.html）接按钮；详情页的播放页（play.html）只用上面的纯逻辑
+  if (typeof document === 'undefined' || !document.getElementById('sisInput')) return;
 
   // ---- 页面接线 --------------------------------------------------------------
 

@@ -60,7 +60,15 @@ sourceDoc = sourceDoc.replace(
 )
 // 每个本站脚本一段说明，接在前一段后面（第一段接在外部补丁说明之后）
 let anchor = 'Emscripten 子模块补丁原文和应用说明随包提供于 `source/patches/external/`。'
-for (const script of EKA2L1_SITE_SCRIPTS) {
+for (const script of EKA2L1_SITE_SCRIPTS.filter((s) => s.doc)) {
+  // 已有这段说明但文字过时：整段换成清单里的最新说明（段落以空行分隔）
+  const lead = `8BitGo 还附带 \`${script.sourceCopy}\``
+  const at = sourceDoc.indexOf(lead)
+  if (at >= 0) {
+    const end = sourceDoc.indexOf('\n\n', at)
+    const paragraph = sourceDoc.slice(at, end < 0 ? undefined : end)
+    if (paragraph !== script.doc) sourceDoc = sourceDoc.replace(paragraph, () => script.doc)
+  }
   if (!sourceDoc.includes(script.sourceCopy)) {
     if (!sourceDoc.includes(anchor)) throw new Error(`SOURCE.md 里找不到插入位置：${anchor.slice(0, 40)}…`)
     sourceDoc = sourceDoc.replace(anchor, `${anchor}\n\n${script.doc}`)
@@ -137,6 +145,8 @@ writeFileSync(constantsFile, [
   '// 由 scripts/build-eka2l1-web.mjs 或 scripts/repackage-eka2l1-web.mjs 生成。换构建 = 换目录，旧目录保留给已打开的页面。',
   `export const EKA2L1_BUILD_ID = '${buildId}'`,
   `export const EKA2L1_RUNTIME_DIR = '/eka2l1/v${buildId}/'`,
+  '// boot.js 给 wasm / data 加的 ?v=（上游 build_id.js），预热要用同一个地址才命中缓存',
+  `export const EKA2L1_UPSTREAM_BUILD_ID = '${manifest.upstreamBuildId}'`,
   '',
 ].join('\n'))
 

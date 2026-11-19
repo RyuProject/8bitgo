@@ -185,7 +185,7 @@ const sourceDoc = [
   '',
   'Emscripten 子模块补丁原文和应用说明随包提供于 `source/patches/external/`。',
   '',
-  ...EKA2L1_SITE_SCRIPTS.flatMap((script) => [script.doc, '']),
+  ...EKA2L1_SITE_SCRIPTS.filter((script) => script.doc).flatMap((script) => [script.doc, '']),
   '后台管理员配置的 N-Gage QD 默认 ROM 和站内游戏包会供玩家导入；其它固件（ROM / RPKG）由玩家自行提供。导入内容保存在玩家本机浏览器中，运行时发布包本身不包含任何固件或游戏文件。',
   '',
 ].join('\n')
@@ -277,6 +277,8 @@ writeFileSync(join(root, 'src', 'emulator', 'eka2l1Runtime.ts'), [
   '// 由 scripts/build-eka2l1-web.mjs 生成，勿手改。换构建 = 换目录，旧目录保留给已打开的页面。',
   `export const EKA2L1_BUILD_ID = '${buildId}'`,
   `export const EKA2L1_RUNTIME_DIR = '/eka2l1/v${buildId}/'`,
+  '// boot.js 给 wasm / data 加的 ?v=（上游 build_id.js），预热要用同一个地址才命中缓存',
+  `export const EKA2L1_UPSTREAM_BUILD_ID = '${upstreamBuildId}'`,
   '',
 ].join('\n'))
 

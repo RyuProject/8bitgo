@@ -1336,7 +1336,7 @@ const ja: Translation = {
     dos: { name: 'DOS パソコンゲーム', desc: 'コマンドライン時代の PC 名作。DOOM、プリンス・オブ・ペルシャ、ディアブロ、デューン II。' },
     ws: { name: 'ワンダースワン', desc: '横井軍平の遺作。乾電池 1 本で数十時間遊べ、ファイナルファンタジーやワンピースなどの佳作も揃いました。' },
     java: { name: 'Java ケータイゲーム', desc: 'フィーチャーフォン時代の思い出。アスファルト 3、ダイヤモンドラッシュ、バウンス。' },
-    symbian: { name: 'Symbian / Nokia N-Gage', desc: 'EKA2L1-WEB で Symbian / N-Gage ゲームをブラウザーで実行できます。使用権のあるファームウェアとゲームをご用意ください。' },
+    symbian: { name: 'Symbian / Nokia N-Gage', desc: 'Symbian / N-Gage のゲームをブラウザーで遊べます。開始を押すと、EKA2L1 がページ上でそのままゲームを動かします。' },
   },
 
   /* ---------------- よくある質問 ---------------- */
@@ -1523,6 +1523,14 @@ const ja: Translation = {
     ppssppNeedsIsolation: 'PPSSPP が SharedArrayBuffer に必要なブラウザー分離を取得できませんでした。このゲームページを再読み込みしてください。',
     ppssppStartTimeout: '2 分経っても PPSSPP の準備が完了しませんでした。WebAssembly スレッド対応の新しい Chromium を使用してください。',
     ppssppExperimental: 'PSP はブラウザー版 PPSSPP を使用します。大容量イメージは必要な部分だけ読み込みます。初回起動には時間がかかる場合があり、速度は端末性能に左右されます。',
+    eka2l1Desc: 'EKA2L1 のブラウザー向け WebAssembly 版。毎回メモリー上に N-Gage 端末とゲームを用意して起動します',
+    eka2l1NoFirmware: 'このサイトにはまだ N-Gage 端末のファームウェアが設定されていないため、Symbian ゲームを起動できません。',
+    eka2l1NeedsS60v3: 'このゲームは S60 第 3 版（.sisx）のパッケージで、必要なファームウェアはまだこのサイトに設定されていません。',
+    eka2l1UnknownPackage: 'この Symbian ゲームファイルを認識できません。対応しているのは .sis パッケージと N-Gage ゲームカードのダンプ（.zip）のみです。',
+    eka2l1LoadFailed: 'Symbian エミュレーターの起動に失敗しました：{msg}',
+    eka2l1AppExited: 'ゲームが起動中に終了しました（{detail}）。まだ対応していない可能性があります。',
+    eka2l1NeedsIsolation: 'Symbian エミュレーターが SharedArrayBuffer に必要なブラウザーの分離環境を得られませんでした。このゲームページを再読み込みしてください。',
+    eka2l1StartTimeout: '2 分経ってもゲーム画面が表示されませんでした。ブラウザーのウィンドウがバックグラウンドにある場合は、前面に戻してからやり直してください。',
     dolphinExperimental: 'GameCube / Wii は実験的対応で、高性能なデスクトップ版 Chromium が必要です。Wii リモコン入力は未実装のため、Wii はクラシック操作対応の一部タイトルに限られます。',
     ejsDiscDownloadFailed: 'ディスクイメージのダウンロードに失敗しました：{msg}',
     discNeedDownload: 'ダウンロード {size}',

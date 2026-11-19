@@ -1397,7 +1397,7 @@ const en: Translation = {
     },
     symbian: {
       name: 'Symbian / Nokia N-Gage',
-      desc: 'Run Symbian and N-Gage games in EKA2L1-WEB. Bring firmware and game packages you are entitled to use.',
+      desc: 'Play Symbian and N-Gage games in the browser: press start and EKA2L1 runs the game right on the page.',
     },
   },
 
@@ -1585,6 +1585,14 @@ const en: Translation = {
     ppssppNeedsIsolation: 'PPSSPP did not get the browser isolation required for SharedArrayBuffer. Reload this game page.',
     ppssppStartTimeout: 'PPSSPP was not ready after two minutes. Use a current Chromium browser with WebAssembly threads.',
     ppssppExperimental: 'PSP uses PPSSPP in the browser. Large images are streamed on demand; first startup may be slow, and performance depends on the device.',
+    eka2l1Desc: 'Browser WebAssembly port of EKA2L1; each session sets up an N-Gage device and the game in memory',
+    eka2l1NoFirmware: 'No N-Gage device firmware is configured on this site yet, so Symbian games cannot start.',
+    eka2l1NeedsS60v3: 'This game is an S60 3rd Edition (.sisx) package, and the firmware it needs is not configured on this site yet.',
+    eka2l1UnknownPackage: 'This Symbian game file is not recognized. Only .sis packages and N-Gage game card dumps (.zip) are supported.',
+    eka2l1LoadFailed: 'The Symbian emulator failed to start: {msg}',
+    eka2l1AppExited: 'The game exited during startup ({detail}). It may not be compatible yet.',
+    eka2l1NeedsIsolation: 'The Symbian emulator did not get the browser isolation SharedArrayBuffer needs. Please reload this game page.',
+    eka2l1StartTimeout: 'The game screen did not appear within two minutes. If the browser window is in the background, bring it back and try again.',
     dolphinExperimental: 'GameCube / Wii support is experimental and needs a fast desktop Chromium browser. Wii Remote input is not implemented, so only a small set of Wii games with classic controls are practical.',
     ejsDiscDownloadFailed: 'Disc image download failed: {msg}',
     discNeedDownload: '{size} to download',

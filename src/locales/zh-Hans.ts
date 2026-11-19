@@ -1413,7 +1413,7 @@ export const zhHans = {
     dos: { name: 'DOS 电脑', desc: '命令行时代的 PC 经典：毁灭战士、波斯王子、暗黑破坏神、沙丘 2。' },
     ws: { name: '神奇天鹅', desc: '横井军平的遗作，一节电池玩几十小时，收录了最终幻想与海贼王等佳作。' },
     java: { name: 'Java 手机', desc: '功能机时代的回忆：狂野飙车 3、钻石狂潮、弹跳小球。' },
-    symbian: { name: '塞班 / 诺基亚 N-Gage', desc: '通过 EKA2L1 在浏览器中体验塞班与 N-Gage 游戏；需自行准备有权使用的固件和安装包。' },
+    symbian: { name: '塞班 / 诺基亚 N-Gage', desc: '在浏览器里玩塞班与 N-Gage 游戏：点开始，EKA2L1 模拟器直接在网页里运行游戏。' },
   },
 
   /* ---------------- 常见问题 ---------------- */
@@ -1608,6 +1608,14 @@ export const zhHans = {
     ppssppNeedsIsolation: 'PPSSPP 没有获得 SharedArrayBuffer 所需的浏览器隔离环境。请刷新当前游戏页。',
     ppssppStartTimeout: 'PPSSPP 运行时两分钟仍未就绪；请使用支持 WebAssembly 线程的新版 Chromium。',
     ppssppExperimental: 'PSP 使用 PPSSPP 浏览器版：大型镜像按需读取；首次启动可能较慢，兼容性和速度取决于设备性能。',
+    eka2l1Desc: 'EKA2L1 的浏览器 WebAssembly 移植；每局在内存里装好 N-Gage 设备与游戏后启动',
+    eka2l1NoFirmware: '本站还没有配置 N-Gage 设备固件，塞班游戏暂时无法启动。',
+    eka2l1NeedsS60v3: '这款游戏是 S60 第三版（.sisx）安装包，所需的设备固件本站还没有配置。',
+    eka2l1UnknownPackage: '无法识别这个塞班游戏文件：目前只支持 .sis 安装包和 N-Gage 卡带转储（.zip）。',
+    eka2l1LoadFailed: '塞班模拟器启动失败：{msg}',
+    eka2l1AppExited: '游戏启动后退出了（{detail}），这款游戏可能暂不兼容。',
+    eka2l1NeedsIsolation: '塞班模拟器没有获得 SharedArrayBuffer 所需的浏览器隔离环境。请刷新当前游戏页。',
+    eka2l1StartTimeout: '游戏画面两分钟都没有出现。如果浏览器窗口在后台，请切回来后重试。',
     dolphinExperimental: 'GameCube / Wii 是实验性支持：需要性能较强的桌面 Chromium；Wii Remote 尚未实现，Wii 只适合支持传统手柄的少数游戏。',
     ejsDiscDownloadFailed: '光盘镜像下载失败：{msg}',
     discNeedDownload: '本局需下载 {size}',

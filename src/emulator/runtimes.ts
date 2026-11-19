@@ -18,6 +18,7 @@ const LOADERS: Record<RuntimeId, () => Promise<RuntimeMount>> = {
   webretro: () => import('./adapters/webretro').then((module) => module.mount),
   play: () => import('./adapters/play').then((module) => module.mount),
   ppsspp: () => import('./adapters/ppsspp').then((module) => module.mount),
+  eka2l1: () => import('./adapters/eka2l1').then((module) => module.mount),
   dolphin: () => import('./adapters/dolphin').then((module) => module.mount),
   cloudgame: () => import('./adapters/cloudgame').then((module) => module.mount),
   liveview: () => import('./adapters/liveview').then((module) => module.mount),

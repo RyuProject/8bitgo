@@ -20,6 +20,7 @@ const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const scriptFile = join(root, 'scripts', 'eka2l1-ngage-card.js')
 vm.runInThisContext(readFileSync(scriptFile, 'utf8'), { filename: scriptFile })
 const C = globalThis.EightBitGoNgageCard
+const C_ = C
 assert.ok(C, '脚本没有导出 EightBitGoNgageCard')
 
 let passed = 0
@@ -190,6 +191,24 @@ class FakeFS {
     if (!this.nodes.has(path)) throw this.errno('ENOENT')
     this.nodes.delete(path)
   }
+  readdir(path) {
+    const node = this.nodes.get(path)
+    if (!node || !this.isDir(node.mode)) throw this.errno('ENOTDIR')
+    const prefix = path === '/' ? '/' : path + '/'
+    const names = new Set()
+    for (const p of this.nodes.keys()) {
+      if (p !== path && p.startsWith(prefix)) names.add(p.slice(prefix.length).split('/')[0])
+    }
+    return ['.', '..', ...names]
+  }
+  mkdir(path) {
+    const parent = path.slice(0, path.lastIndexOf('/')) || '/'
+    const p = this.nodes.get(parent)
+    if (!p || !this.isDir(p.mode)) throw this.errno('ENOENT')
+    if (this.nodes.has(path)) throw this.errno('EEXIST')
+    this.nodes.set(path, { mode: DIR })
+  }
+  dirs() { return [...this.nodes].filter(([, n]) => this.isDir(n.mode)).map(([p]) => p).sort() }
   files() { return [...this.nodes].filter(([, n]) => !this.isDir(n.mode)).map(([p]) => p).sort() }
 }
 
@@ -234,6 +253,7 @@ await test('两个版本、_1 是存根：运行 <代号>，不写 _1 的 AIF，
   assert.equal(plan.libsFolder, '6rak')
   assert.equal(plan.appUid, 0x101FD3DE)
   assert.equal(plan.title, 'Test Card 1.0')
+  assert.deepEqual(plan.saveFolders, ['6RAK'])
   const dests = plan.writes.map((w) => w.dest).sort()
   assert.deepEqual(dests, [
     'game.id', 'nokia.dat',
@@ -250,6 +270,7 @@ await test('_1 能加载时运行 _1，去掉 <代号> 的 AIF，Libs 仍进 <�
   assert.equal(plan.gameFolder, '6rak_1')
   assert.equal(plan.dropFolder, '6rak')
   assert.equal(plan.dropAif, 'system/apps/6rak/6rak.aif')
+  assert.deepEqual(plan.saveFolders, ['6RAK', '6RAK_1'])
   assert.ok(plan.writes.some((w) => w.dest === 'system/apps/6rak_1/6rak_1.aif'))
   assert.ok(!plan.writes.some((w) => w.dest === 'system/apps/6rak/6rak.aif'))
   assert.ok(plan.writes.some((w) => w.dest === 'system/apps/6rak/cryptoshim.dll'))
@@ -359,6 +380,51 @@ await test('installCard：写进 E 盘、只持久化这些文件、清掉以前
   for (const s of ['read', 'extract', 'write', 'persist']) assert.ok(stages.includes(s), `缺少阶段 ${s}`)
 })
 
+await test('installCard：在 C 盘预建存档目录并放好已知游戏的空存档（首次启动 memory full 的绕法），沿用已有目录的大小写', async () => {
+  const C = '/eka2l1/drives/c'
+  const fs = new FakeFS()
+  fs.mkdirTree(C + '/System')
+  const { deps: d, calls } = deps(fs)
+  const result = await C_.installCard(makeZip(simsLikeCard()), d)
+  assert.deepEqual(result.saveFolders, {
+    created: [C + '/System/Apps', C + '/System/Apps/6RAK'],
+    seeded: [C + '/System/Apps/6RAK/THESIMS.SAV'],
+    blocked: [],
+  })
+  assert.ok(fs.dirs().includes(C + '/System/Apps/6RAK'))
+  assert.equal(fs.nodes.get(C + '/System/Apps/6RAK/THESIMS.SAV').data.length, 0, '预放的存档必须是空文件')
+  for (const p of [...result.saveFolders.created, ...result.saveFolders.seeded]) {
+    assert.ok(calls.saved.includes(p), `${p} 没有存进浏览器存储`)
+  }
+
+  // 已有任意大小写的同名目录：复用，不另建一份
+  const fs2 = new FakeFS()
+  fs2.mkdirTree(C + '/SYSTEM/apps/6rak')
+  const r2 = await C_.installCard(makeZip(simsLikeCard()), deps(fs2).deps)
+  assert.deepEqual(r2.saveFolders, { created: [], seeded: [C + '/SYSTEM/apps/6rak/THESIMS.SAV'], blocked: [] })
+  assert.deepEqual(fs2.dirs().filter((p) => p.startsWith(C + '/')), [C + '/SYSTEM', C + '/SYSTEM/apps', C + '/SYSTEM/apps/6rak'])
+
+  // 已有存档（不论大小写、不论内容）绝不覆盖
+  const fs4 = new FakeFS()
+  fs4.mkdirTree(C + '/System/Apps/6RAK')
+  fs4.writeFile(C + '/System/Apps/6RAK/thesims.sav', Buffer.from('ASIE0000 real save'))
+  const r4 = await C_.installCard(makeZip(simsLikeCard()), deps(fs4).deps)
+  assert.deepEqual(r4.saveFolders.seeded, [])
+  assert.equal(Buffer.from(fs4.nodes.get(C + '/System/Apps/6RAK/thesims.sav').data).toString(), 'ASIE0000 real save')
+  assert.ok(!fs4.files().includes(C + '/System/Apps/6RAK/THESIMS.SAV'))
+
+  // 不在名单里的游戏只建目录、不放文件
+  assert.deepEqual(Object.keys(C_.KNOWN_EMPTY_SAVES), ['6RAK'])
+
+  // 被同名文件挡住：跳过这一步，卡带照样导入
+  const fs3 = new FakeFS()
+  fs3.mkdirTree(C + '/System')
+  fs3.writeFile(C + '/System/Apps', Buffer.from('not a folder'))
+  const r3 = await C_.installCard(makeZip(simsLikeCard()), deps(fs3).deps)
+  assert.deepEqual(r3.saveFolders.blocked, ['6RAK'])
+  assert.ok(fs3.files().includes(E + 'system/apps/6rak/6rak.app'))
+})
+
 await test('installCard：任何一项不对都不落盘', async () => {
   const badCrc = simsLikeCard().map((f) => (f.name.endsWith('thesims.dat') ? { ...f, crc: 123 } : f))
   const fs1 = new FakeFS()
@@ -399,7 +465,10 @@ await test('构建接线：清单登记了导入脚本，注入幂等，当前�
   const html = '<html><body></body></html>'
   const once = injectSiteScripts(html)
   assert.equal(injectSiteScripts(once), once)
-  for (const s of EKA2L1_SITE_SCRIPTS) assert.ok(once.includes(`<script src="${s.published}"></script>`))
+  for (const s of EKA2L1_SITE_SCRIPTS) {
+    // play.html / 播放器脚本只由详情页的播放页加载，不注入程序库页
+    assert.equal(once.includes(`<script src="${s.published}"></script>`), s.inject !== false, s.published)
+  }
   const constants = readFileSync(join(root, 'src/emulator/eka2l1Runtime.ts'), 'utf8')
   const buildId = /EKA2L1_BUILD_ID = '([0-9a-f]{12})'/.exec(constants)?.[1]
   if (!buildId) return

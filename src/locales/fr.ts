@@ -1402,7 +1402,7 @@ const fr: Translation = {
     },
     symbian: {
       name: 'Symbian / Nokia N-Gage',
-      desc: 'Lancez des jeux Symbian et N-Gage dans le navigateur avec EKA2L1-WEB. Préparez un firmware et des jeux que vous avez le droit d’utiliser.',
+      desc: 'Jouez aux jeux Symbian et N-Gage dans le navigateur : appuyez sur démarrer et EKA2L1 lance le jeu directement dans la page.',
     },
   },
 
@@ -1590,6 +1590,14 @@ const fr: Translation = {
     ppssppNeedsIsolation: 'PPSSPP n’a pas obtenu l’isolation requise pour SharedArrayBuffer. Rechargez cette page de jeu.',
     ppssppStartTimeout: 'PPSSPP n’était toujours pas prêt après deux minutes. Utilisez une version récente de Chromium avec les threads WebAssembly.',
     ppssppExperimental: 'La PSP utilise PPSSPP dans le navigateur. Les grandes images sont lues à la demande ; le premier démarrage peut être lent et les performances dépendent de l’appareil.',
+    eka2l1Desc: 'Portage WebAssembly d’EKA2L1 pour navigateur ; chaque session prépare en mémoire un appareil N-Gage et le jeu',
+    eka2l1NoFirmware: 'Aucun firmware d’appareil N-Gage n’est encore configuré sur ce site : les jeux Symbian ne peuvent pas démarrer.',
+    eka2l1NeedsS60v3: 'Ce jeu est un paquet S60 3e édition (.sisx) et le firmware nécessaire n’est pas encore configuré sur ce site.',
+    eka2l1UnknownPackage: 'Ce fichier de jeu Symbian n’est pas reconnu. Seuls les paquets .sis et les dumps de cartes de jeu N-Gage (.zip) sont pris en charge.',
+    eka2l1LoadFailed: 'L’émulateur Symbian n’a pas pu démarrer : {msg}',
+    eka2l1AppExited: 'Le jeu s’est fermé au démarrage ({detail}). Il n’est peut-être pas encore compatible.',
+    eka2l1NeedsIsolation: 'L’émulateur Symbian n’a pas obtenu l’isolation du navigateur nécessaire à SharedArrayBuffer. Rechargez cette page de jeu.',
+    eka2l1StartTimeout: 'L’écran du jeu n’est pas apparu en deux minutes. Si la fenêtre du navigateur est en arrière-plan, revenez-y et réessayez.',
     dolphinExperimental: 'GameCube / Wii est expérimental et demande un Chromium de bureau puissant. La Wiimote n’est pas implémentée ; seuls quelques jeux Wii à commandes classiques sont pratiques.',
     ejsDiscDownloadFailed: 'Échec du téléchargement de l’image disque : {msg}',
     discNeedDownload: '{size} à télécharger',

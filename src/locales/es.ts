@@ -1397,7 +1397,7 @@ const es: Translation = {
     },
     symbian: {
       name: 'Symbian / Nokia N-Gage',
-      desc: 'Ejecuta juegos Symbian y N-Gage en el navegador con EKA2L1-WEB. Aporta firmware y paquetes que tengas derecho a usar.',
+      desc: 'Juega a juegos de Symbian y N-Gage en el navegador: pulsa iniciar y EKA2L1 ejecuta el juego en la propia página.',
     },
   },
 
@@ -1585,6 +1585,14 @@ const es: Translation = {
     ppssppNeedsIsolation: 'PPSSPP no obtuvo el aislamiento necesario para SharedArrayBuffer. Recarga esta página del juego.',
     ppssppStartTimeout: 'PPSSPP no estuvo listo tras dos minutos. Usa un Chromium reciente con hilos WebAssembly.',
     ppssppExperimental: 'PSP usa PPSSPP en el navegador. Las imágenes grandes se leen bajo demanda; el primer inicio puede tardar y el rendimiento depende del dispositivo.',
+    eka2l1Desc: 'Versión de EKA2L1 para navegador en WebAssembly; cada sesión prepara en memoria un dispositivo N-Gage y el juego',
+    eka2l1NoFirmware: 'Este sitio aún no tiene configurado el firmware del dispositivo N-Gage, así que los juegos de Symbian no pueden iniciarse.',
+    eka2l1NeedsS60v3: 'Este juego es un paquete de S60 3.ª edición (.sisx) y el firmware que necesita aún no está configurado en este sitio.',
+    eka2l1UnknownPackage: 'No se reconoce este archivo de juego de Symbian. Solo se admiten paquetes .sis y volcados de tarjetas de juego de N-Gage (.zip).',
+    eka2l1LoadFailed: 'El emulador de Symbian no pudo iniciarse: {msg}',
+    eka2l1AppExited: 'El juego se cerró al iniciarse ({detail}). Puede que aún no sea compatible.',
+    eka2l1NeedsIsolation: 'El emulador de Symbian no obtuvo el aislamiento del navegador que necesita SharedArrayBuffer. Recarga esta página del juego.',
+    eka2l1StartTimeout: 'La pantalla del juego no apareció en dos minutos. Si la ventana del navegador está en segundo plano, vuelve a ella e inténtalo de nuevo.',
     dolphinExperimental: 'GameCube / Wii es experimental y requiere un Chromium de escritorio potente. Wii Remote aún no está implementado; en Wii solo resultan prácticos algunos juegos con controles clásicos.',
     ejsDiscDownloadFailed: 'Fallo al descargar la imagen de disco: {msg}',
     discNeedDownload: '{size} por descargar',
