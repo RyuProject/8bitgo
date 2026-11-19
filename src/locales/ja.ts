@@ -1565,6 +1565,8 @@ const ja: Translation = {
     ejsArcadeUnknownSet: 'エミュレーターがこのアーケードパッケージを認識できません（{msg}）。ZIP のファイル名を正しい romset 名（例：kof97.zip、tekken3.zip）にし、同じバージョンの完全な内容にしてください。',
     ejsArcadeMissingFiles: 'アーケードパッケージに起動に必要なファイルが足りません（{msg}）。よくある原因：BIOS パッケージ未設定、クローンセットに親セットの ROM がない、ROM のバージョンがエミュレーターと合わない。',
     ejsMameDiskMismatch: 'MAME メディアディスクの設定エラー：{disk}.chd は {expected} 用ですが、現在の ROM は {actual} です。',
+    /** 麻将机手柄选牌光标的提示（adapters/emulatorjs.ts 的 showMahjongCursor） */
+    mahjongCursor: '選択中 {tile} · A で捨て牌',
     ejsMameDiskMissing: 'この {board} のゲームには必須のメディアディスク {disk}.chd がないため、まだ起動できません。',
     ejsMameDiskFailed: 'MAME メディアディスク {disk}.chd を読み込めません：{msg}',
     ejsArcadeRomDownloadFailed: 'アーケードゲームのファイルをダウンロードできませんでした：{msg}',
@@ -1614,6 +1616,24 @@ const ja: Translation = {
     player2NoteEjs: '2P はテンキーを使います（NumLock をオンにしてください）。2 台目のゲームパッドは自動で 2P になります。テンキーがない場合は 🎮 →「キー設定」でプレイヤー 2 に切り替えて別のキーを割り当ててください。',
     quickSave: 'クイックセーブ',
     quickLoad: 'クイックロード',
+    leftCtrl: '左 Ctrl',
+    leftAlt: '左 Alt',
+    leftShift: '左 Shift',
+    rightShift: '右 Shift',
+    space: 'スペース',
+    /** MAME 麻将机（mahjongPanel.ts）的面板键名与说明 */
+    mjTiles: '手牌',
+    mjChi: 'チー',
+    mjPon: 'ポン',
+    mjKan: 'カン',
+    mjReach: 'リーチ',
+    mjRon: 'ロン',
+    mjBet: 'ベット',
+    mjScore: 'スコア取得',
+    mjDouble: 'ダブルアップ',
+    mjBig: 'ビッグ',
+    mjSmall: 'スモール',
+    mjNote: '麻雀筐体です。MAME がキーボードを直接読み取り、A～N で画面の牌の下に書かれた同じ文字の牌を捨てます。右 Ctrl のないキーボード（Mac・多くのノート PC）は S でスコア取得、ポンは P でも押せます。ゲームパッド：十字キー左右で牌を選び A で捨て牌、B チー・X ポン・Y カン・LB リーチ・RB ロン、LT ベット・RT スコア取得・L3 ダブルアップ・↑ ビッグ・↓ スモール、Select でクレジット、Start でスタート。',
   },
 
   /* ---------------- SEO 用の説明文 ---------------- */

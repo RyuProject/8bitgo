@@ -1651,6 +1651,8 @@ export const zhHans = {
     ejsArcadeUnknownSet: '模拟器不认识这个街机包（{msg}）。请确认 ZIP 文件名是正确的 romset 短名（如 kof97.zip、tekken3.zip），且内容是完整的同一版本。',
     ejsArcadeMissingFiles: '街机包缺少运行所需的文件（{msg}）。常见原因：BIOS 包没有绑定、克隆集缺父集 ROM，或 ROM 版本与模拟器不一致。',
     ejsMameDiskMismatch: 'MAME 媒体盘配置错误：{disk}.chd 属于 {expected}，当前 ROM 是 {actual}。',
+    /** 麻将机手柄选牌光标的提示（adapters/emulatorjs.ts 的 showMahjongCursor） */
+    mahjongCursor: '选牌 {tile} · 按 A 出牌',
     ejsMameDiskMissing: '这款 {board} 游戏缺少必需的媒体盘 {disk}.chd，暂时无法启动。',
     ejsMameDiskFailed: 'MAME 媒体盘 {disk}.chd 无法加载：{msg}',
     ejsArcadeRomDownloadFailed: '街机游戏文件下载失败：{msg}',
@@ -1700,6 +1702,24 @@ export const zhHans = {
     player2NoteEjs: '2P 走小键盘，要先打开 NumLock；第二个手柄插上会自动当 2P。没有小键盘的话，在 🎮 →「改键」里切到玩家 2，改到别的键上。',
     quickSave: '快速存档',
     quickLoad: '快速读档',
+    leftCtrl: '左 Ctrl',
+    leftAlt: '左 Alt',
+    leftShift: '左 Shift',
+    rightShift: '右 Shift',
+    space: '空格',
+    /** MAME 麻将机（mahjongPanel.ts）的面板键名与说明 */
+    mjTiles: '手牌',
+    mjChi: '吃',
+    mjPon: '碰',
+    mjKan: '杠',
+    mjReach: '听牌',
+    mjRon: '胡',
+    mjBet: '押注',
+    mjScore: '得分',
+    mjDouble: '比倍',
+    mjBig: '大',
+    mjSmall: '小',
+    mjNote: '这是麻将机：MAME 直接读键盘，A～N 打出画面上牌下面印着同一个字母的那张牌。没有右 Ctrl 的键盘（Mac、多数笔记本）按 S 得分；碰也可以按 P。手柄：十字键左右选牌、A 出牌，B 吃、X 碰、Y 杠、LB 听、RB 胡，LT 押注、RT 得分、L3 比倍、↑ 大、↓ 小，Select 投币、Start 开始。',
   },
 
   /* ---------------- SEO 页面描述 ---------------- */

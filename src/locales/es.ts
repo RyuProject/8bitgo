@@ -1627,6 +1627,8 @@ const es: Translation = {
     ejsArcadeUnknownSet: 'El emulador no reconoce este paquete arcade ({msg}). El ZIP debe llamarse como su romset (p. ej. kof97.zip, tekken3.zip) y contener una versión completa.',
     ejsArcadeMissingFiles: 'Al paquete arcade le faltan archivos necesarios ({msg}). Causas habituales: la BIOS no está vinculada, a un clon le faltan las ROM del set padre o la versión de la ROM no coincide con el emulador.',
     ejsMameDiskMismatch: 'Disco de medios MAME mal configurado: {disk}.chd pertenece a {expected}, pero esta ROM es {actual}.',
+    /** 麻将机手柄选牌光标的提示（adapters/emulatorjs.ts 的 showMahjongCursor） */
+    mahjongCursor: 'Ficha {tile} · pulsa A para descartar',
     ejsMameDiskMissing: 'A este juego de {board} le falta el disco de medios obligatorio {disk}.chd y todavía no puede iniciarse.',
     ejsMameDiskFailed: 'No se pudo cargar el disco de medios MAME {disk}.chd: {msg}',
     ejsArcadeRomDownloadFailed: 'No se pudo descargar el archivo de arcade: {msg}',
@@ -1676,6 +1678,24 @@ const es: Translation = {
     player2NoteEjs: 'El 2P usa el teclado numérico con NumLock activado; un segundo mando pasa a ser el 2P automáticamente. ¿Sin teclado numérico? En 🎮 → Reasignar teclas, cambia a Jugador 2 y elige otras teclas.',
     quickSave: 'Guardado rápido',
     quickLoad: 'Carga rápida',
+    leftCtrl: 'Ctrl izquierdo',
+    leftAlt: 'Alt izquierdo',
+    leftShift: 'Mayús izquierda',
+    rightShift: 'Mayús derecha',
+    space: 'Espacio',
+    /** MAME 麻将机（mahjongPanel.ts）的面板键名与说明 */
+    mjTiles: 'Fichas',
+    mjChi: 'Chi',
+    mjPon: 'Pon',
+    mjKan: 'Kan',
+    mjReach: 'Reach',
+    mjRon: 'Ron',
+    mjBet: 'Apostar',
+    mjScore: 'Cobrar',
+    mjDouble: 'Doblar',
+    mjBig: 'Mayor',
+    mjSmall: 'Menor',
+    mjNote: 'Es una máquina de mahjong: MAME lee el teclado directamente y A–N descartan la ficha marcada con esa letra en pantalla. Si tu teclado no tiene Ctrl derecho (Mac, la mayoría de portátiles), pulsa S para cobrar; P también sirve para Pon. Mando: izquierda/derecha en la cruceta eligen ficha y A la descarta; B Chi, X Pon, Y Kan, LB Reach, RB Ron, LT apostar, RT cobrar, L3 doblar, ↑ mayor, ↓ menor, Select moneda, Start empezar.',
   },
 
   /* ---------------- Descripciones SEO ---------------- */

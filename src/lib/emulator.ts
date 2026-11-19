@@ -20,6 +20,7 @@ import {
 import { bindingOf, getPadKeys, padKeyFor, padKeyLabel, type PadAction, type Seat } from '@/services/padKeys'
 import { EJS_P2_KEY_OFFSET } from '@/services/emulatorjsKeymap'
 import { emulatorJsCoreForGame } from '@/emulator/paths'
+import { MAHJONG_ACTION_KEYS, MAHJONG_FLOW_KEYS, mahjongKeyCodes, type MahjongKey } from '@/emulator/mahjongPanel'
 export { EJS_PATH, RUFFLE_PATH } from '@/emulator'
 
 
@@ -179,6 +180,8 @@ export function getDefaultKeymap(
   arcadeButtons?: ArcadeButtonCount,
   /** 街机核心：mame-current 的按键 5 / 6 和 FBNeo 对调（见 keymapData 的 ARCADE_MAME_CURRENT_BUTTONS） */
   arcadeCore?: string | null,
+  /** 只有麻将面板的 MAME 麻将机（isMahjongPanelGame）。键盘直通给 MAME，键位是麻将面板那一套 */
+  mahjongPanel?: boolean,
 ): KeymapInfo {
   const t = getT()
   const quickSave = Boolean(runtimeId && QUICK_SAVE.has(runtimeId))
@@ -419,6 +422,58 @@ export function getDefaultKeymap(
    * 拳皇的 A/B/C/D 就是 1~4，合金弹头只用 1/2/4，吃豆人一个都不用。
    * 三拳三脚的六键格斗（街霸 II 这类）核心会自动换成另一套，写在 note 里。
    */
+  /**
+   * MAME 麻将机。键位来自 MAME 的默认麻将键 + 本站的三个别名（mahjongPanel.ts），
+   * 和引擎的 RetroPad 键位毫无关系 —— 这一局键盘是直通给核心的，WASD / UIJK 那张表摆出来全是死键。
+   * 引擎的改键面板也只改 RetroPad，所以 rebind 是 'none'；2P 不存在（面板只有一块）。
+   */
+  if (platform === 'arcade' && mahjongPanel) {
+    const codeName = (code: string): string => {
+      switch (code) {
+        case 'ControlLeft': return t.keymap.leftCtrl
+        case 'ControlRight': return t.keymap.rightCtrl
+        case 'AltLeft': return t.keymap.leftAlt
+        case 'ShiftLeft': return t.keymap.leftShift
+        case 'ShiftRight': return t.keymap.rightShift
+        case 'Space': return t.keymap.space
+        default:
+          return code.replace(/^(Key|Digit)/, '')
+      }
+    }
+    const keysFor = (key: MahjongKey) => mahjongKeyCodes(key).map(codeName).join(' / ')
+    const label: Record<(typeof MAHJONG_ACTION_KEYS)[number] | (typeof MAHJONG_FLOW_KEYS)[number], string> = {
+      chi: t.keymap.mjChi,
+      pon: t.keymap.mjPon,
+      kan: t.keymap.mjKan,
+      reach: t.keymap.mjReach,
+      ron: t.keymap.mjRon,
+      coin: t.keymap.coin,
+      start: 'Start',
+      bet: t.keymap.mjBet,
+      score: t.keymap.mjScore,
+      double: t.keymap.mjDouble,
+      big: t.keymap.mjBig,
+      small: t.keymap.mjSmall,
+    }
+    return {
+      rows: [
+        { button: t.keymap.mjTiles, key: 'A – N' },
+        ...MAHJONG_ACTION_KEYS.map((k) => ({ button: label[k], key: keysFor(k) })),
+        ...MAHJONG_FLOW_KEYS.map((k) => ({
+          button: label[k],
+          key: keysFor(k),
+          // 手柄图只认得投币 / 开始这两个槽位；其余没有固定位置，画成键帽
+          ...(k === 'coin' ? { slot: 'select' as const } : k === 'start' ? { slot: 'start' as const } : {}),
+        })),
+      ],
+      note: t.keymap.mjNote,
+      rebind: 'none',
+      quickSave,
+      pad: true,
+      touch: 'all',
+    }
+  }
+
   if (platform === 'arcade') {
     const f = ARCADE_FIGHTER_BUTTONS
     return {

@@ -32,6 +32,7 @@ import { biosSetUrlSync, platformBiosUrlSync } from '@/services/platformBios'
 import { EmulatorTools } from './EmulatorTools'
 import { downloadBlob } from './recorder'
 import { PadDiagram } from './PadDiagram'
+import { isMahjongPanelGame } from './mahjongPanel'
 import { LiveControls, type LiveControlsHandle } from './LiveControls'
 import { createPortal } from 'react-dom'
 import { connectLive, liveEnabled, useLiveRooms, type LiveChatMessage, type LiveSocket, type LiveViewerEntry } from '@/services/live'
@@ -142,6 +143,16 @@ const LazyTouchPad = lazy(() => importWithRetry(loadTouchPad, touchPadChunk, imp
     throw error
   })
   .then(({ TouchPad }) => ({ default: TouchPad })))
+
+/** 麻将机的屏幕面板（mahjongPanel.ts）。只有触屏 + 适配器声明了 'mahjongPad' 才下载 */
+const loadMahjongPad = () => import('./MahjongPad')
+const mahjongPadChunk = lazyChunkFile(loadMahjongPad)
+const LazyMahjongPad = lazy(() => importWithRetry(loadMahjongPad, mahjongPadChunk, import.meta.url)
+  .catch((error: unknown) => {
+    tagLazyFailure(error, mahjongPadChunk, 'MahjongPad')
+    throw error
+  })
+  .then(({ MahjongPad }) => ({ default: MahjongPad })))
 
 /**
  * 大到值得在加载界面上专门说一句「本局需下载 XXX」的门槛。
@@ -3936,6 +3947,8 @@ export function EmulatorPlayer({
    *  · 运行时声明了 'touchpad'（EmulatorJS 自带手柄，不声明这个能力）
    */
   const showPad = status === 'running' && touchDevice && caps.has('touchpad')
+  /** 麻将机：十字键手柄换成麻将面板（MahjongPad）。适配器保证两种能力不会同时声明 */
+  const showMahjongPad = status === 'running' && touchDevice && caps.has('mahjongPad')
   /** 手机竖屏且不在全屏里 —— 这时手柄放画面下面，别压着画面 */
   const padInline = narrow && !fullscreen
   /**
@@ -3947,7 +3960,8 @@ export function EmulatorPlayer({
    * 那种情况下说一句「手柄在下面」只会让玩家白找一圈，宁可不说。
    */
   const hasOnscreenPad =
-    status === 'running' && touchDevice && (caps.has('touchpad') || caps.has('enginePad') || caps.has('enginePointer'))
+    status === 'running' && touchDevice &&
+    (caps.has('touchpad') || caps.has('mahjongPad') || caps.has('enginePad') || caps.has('enginePointer'))
   /**
    * 这台机器本身就是戳屏幕玩的（NDS 下屏）。
    * 提示要说的话完全不一样 —— 不是「按键在哪儿」，而是「画面就能点」。
@@ -4331,6 +4345,11 @@ export function EmulatorPlayer({
               <LazyTouchPad handle={handle} onInput={dismissPadHint} highlight={padHint} />
             </Suspense>
           )}
+          {showMahjongPad && !padInline && (
+            <Suspense fallback={null}>
+              <LazyMahjongPad handle={handle} onInput={dismissPadHint} highlight={padHint} />
+            </Suspense>
+          )}
 
           {/*
             开局提示气泡。玩家的视线在画面里，所以提示画在画面里，然后把他引到按键那儿去。
@@ -4544,6 +4563,7 @@ export function EmulatorPlayer({
                       arcadeButtons={arcadeButtons}
                       arcadeBios={arcadeBios}
                       core={session?.coreOverride ?? core}
+                      mahjongPanel={isMahjongPanelGame(platform.id, session?.coreOverride ?? core, [romUrl])}
                       className="mb-1 max-sm:hidden"
                     />
                   )}
@@ -4917,6 +4937,11 @@ export function EmulatorPlayer({
         {showPad && padInline && (
           <Suspense fallback={null}>
             <LazyTouchPad handle={handle} layout="inline" onInput={dismissPadHint} highlight={padHint} />
+          </Suspense>
+        )}
+        {showMahjongPad && padInline && (
+          <Suspense fallback={null}>
+            <LazyMahjongPad handle={handle} layout="inline" onInput={dismissPadHint} highlight={padHint} />
           </Suspense>
         )}
 
