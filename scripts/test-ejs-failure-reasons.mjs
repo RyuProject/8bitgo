@@ -269,7 +269,9 @@ console.log('✔ 启动失败原因：跨 realm 错误原文、内存不足、�
   ]) assert.equal(context.f(text), false, text)
   // 例行行要交给原生 log（拿包装前的那个，否则同一行会被缓冲记两遍）；致命整句即使带 INFO 也保持警告
   assert.match(adapter, /const natives = \{ error: c\?\.error, warn: c\?\.warn, log: c\?\.log \}/)
-  assert.match(adapter, /push\(level, text,[\s\S]{0,260}level === 'warn'[\s\S]{0,80}isRoutineCoreLine\(text\)[\s\S]{0,40}!FATAL_PHRASES\.some[\s\S]{0,120}forward = natives\.log/)
+  // 中间多了一段「例行日志刷新启动看门狗」（onStartupActivity），所以第一段放宽到 520
+  assert.match(adapter, /push\(level, text,[\s\S]{0,520}level === 'warn'[\s\S]{0,80}isRoutineCoreLine\(text\)[\s\S]{0,40}!FATAL_PHRASES\.some[\s\S]{0,120}forward = natives\.log/)
+  assert.match(adapter, /if \(isRoutineCoreLine\(text\)\) onStartupActivity\?\.\(\)/, '例行日志要能刷新启动看门狗')
   assert.match(adapter, /forward\.apply\(c, args as \[\]\)/)
   console.log('✓ 核心例行输出在浏览器控制台降成 log，致命行与诊断照旧')
 }
