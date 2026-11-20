@@ -310,6 +310,41 @@ export async function pullSave(runtime: SaveRuntime, gameSlug: string, slot = 0)
 }
 
 /**
+ * PvZ 自动同步开局时使用的严格读取。
+ *
+ * 普通 pullSave 会把网络错误当成本地回退；自动同步不能这么做：若把“云端没读到”误判成
+ * “云端没有存档”，随后就可能用本地旧档覆盖另一台设备刚写的新档。先保留本站待同步档，
+ * 再严格读取云端；遇到冲突 / 配额阻塞时让游戏继续使用自己的 IDBFS，并暂停自动上传。
+ */
+export async function prepareCloudSaveAutoSync(
+  runtime: SaveRuntime,
+  gameSlug: string,
+  slot = 0,
+): Promise<{ enabled: boolean; data: Uint8Array | null; paused: boolean; reason?: string }> {
+  if (getSaveTarget() !== 'cloud' || !cloudSavesEnabled()) {
+    return { enabled: false, data: null, paused: false }
+  }
+
+  const local = await idbGet(localKey(runtime, gameSlug, slot))
+  const visibleLocal = localVisibleToCurrentAccount(local) ? local : null
+  if (visibleLocal?.dirty) {
+    if (visibleLocal.syncBlocked) {
+      return {
+        enabled: true,
+        data: null,
+        paused: true,
+        reason: visibleLocal.syncBlocked,
+      }
+    }
+    return { enabled: true, data: visibleLocal.data, paused: false }
+  }
+
+  // 404 才能确认云端确实没有存档；网络错误原样抛给调用方，避免把旧本地档推上去覆盖云端。
+  const cloud = await fetchCloudSaveStrict(runtime, gameSlug, slot)
+  return { enabled: true, data: cloud?.data ?? null, paused: false }
+}
+
+/**
  * 只取云端那份，取不到就是取不到。
  *
  * 个人页的「我的云存档 → 下载」用这个：那个列表是从服务器拉的，
@@ -349,6 +384,8 @@ export interface PushedSave {
   ok: boolean
   where: SaveWhere | null
   error?: string
+  /** 自动同步据此暂停有确定性问题的版本，不能让后续游戏内保存绕过冲突保护。 */
+  blocked?: 'conflict' | 'too-large' | 'quota'
   /**
    * 玩家是登录状态、本该进云端，但云端这一路失败了（超配额、令牌过期、断网）。
    * 界面必须把这件事说出来 —— 光说「已存在这个浏览器里」，
@@ -564,7 +601,7 @@ async function uploadCloudEntry(
     const archive = await encodeSaveArchive(data, coordinate, metadata, stamp)
     if (archive.length > MAX_SAVE_BYTES) {
       await idbMark(key, true, stamp, revision, { cloudRevision: parent, syncBlocked: 'too-large' })
-      return { ok: true, where: 'local', error: 'too-large', cloudFailed: true }
+      return { ok: true, where: 'local', error: 'too-large', cloudFailed: true, blocked: 'too-large' }
     }
 
     const res = await fetch(cloudUrl(runtime, coordinate.gameSlug, coordinate.slot), {
@@ -596,7 +633,7 @@ async function uploadCloudEntry(
     if (res.status === 409 && response.code === 'save_conflict') {
       const current = rememberCloudRevision(key, response.currentRevision || parent)
       await idbMark(key, true, stamp, revision, { cloudRevision: current, syncBlocked: 'conflict' })
-      return { ok: true, where: 'local', error: response.error || 'conflict', cloudFailed: true }
+      return { ok: true, where: 'local', error: response.error || 'conflict', cloudFailed: true, blocked: 'conflict' }
     }
 
     const blocked = res.status === 413
@@ -611,6 +648,7 @@ async function uploadCloudEntry(
       where: 'local',
       error: response.error || `HTTP ${res.status}`,
       cloudFailed: true,
+      blocked,
     }
   } catch {
     schedulePendingSaveSync()
@@ -630,13 +668,14 @@ export async function pushSave(
    */
   target: Exclude<SaveTarget, 'download'> = effectiveSaveTarget(),
   metadata?: SaveArchiveDetails,
+  options: { automatic?: boolean } = {},
 ): Promise<PushedSave> {
   if (data.length === 0) return { ok: false, where: null, error: 'empty' }
   const localLimit = localSaveByteLimit(runtime)
-  if (data.length > localLimit) return { ok: false, where: null, error: 'too-large' }
+  if (data.length > localLimit) return { ok: false, where: null, error: 'too-large', blocked: 'too-large' }
 
   const key = localKey(runtime, gameSlug, slot)
-  return serializePush(key, () => pushOne(key, runtime, gameSlug, data, slot, target, metadata))
+  return serializePush(key, () => pushOne(key, runtime, gameSlug, data, slot, target, metadata, options.automatic === true))
 }
 
 async function pushOne(
@@ -647,6 +686,7 @@ async function pushOne(
   slot: number,
   target: Exclude<SaveTarget, 'download'>,
   metadata?: SaveArchiveDetails,
+  automatic = false,
 ): Promise<PushedSave> {
   // 选了云端但此刻没登录（退出 / 令牌过期）就只能落本地，界面会照实说
   const toCloud = target === 'cloud' && cloudSavesEnabled()
@@ -678,8 +718,21 @@ async function pushOne(
   const localOk = await idbPut(key, data, stamp, toCloud || wantedCloud, revision, {
     cloudRevision,
     cloudOwner,
+    syncBlocked: automatic ? previous?.syncBlocked : undefined,
     saveMetadata: metadataForStorage(metadata),
   })
+
+  // 后台待补传可能刚检测到另一设备更新；后续游戏内存档仍保在本地，但不能趁新 revision
+  // 自动越过冲突保护。只有玩家再次手动选择云端保存，才允许确认覆盖。
+  if (automatic && previous?.syncBlocked) {
+    return {
+      ok: localOk,
+      where: localOk ? 'local' : null,
+      error: previous.syncBlocked,
+      cloudFailed: true,
+      blocked: previous.syncBlocked,
+    }
+  }
 
   if (!toCloud) {
     if (wantedCloud) schedulePendingSaveSync()

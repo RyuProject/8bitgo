@@ -24,12 +24,24 @@ let saveSyncQueued = false;
 let lastSaveSyncAt = 0;
 let saveFsReadyPromise = null;
 let runtimeReloadScheduled = false;
+let autoCloudSaveEnabled = false;
+let autoCloudSavePaused = false;
+let autoSaveCheckTimer = 0;
+let autoSaveCheckInFlight = null;
+let autoSaveCheckQueued = false;
+let autoSaveRequestId = 0;
+let lastAutoSaveFingerprint = "";
+let lastBuiltSaveFingerprint = "";
+const pendingAutoSaveRequests = new Map();
 
 const MB = 1024 * 1024;
 const SAVE_SYNC_INTERVAL_MS = 5000;
 const SAVE_CLOSE_WARNING_MS = 7000;
 const MODULE_READY_TIMEOUT_MS = 120000;
-const EXIT_SAVE_TIMEOUT_MS = 10000;
+const EXIT_SAVE_TIMEOUT_MS = 22000;
+const AUTO_SAVE_DEBOUNCE_MS = 1400;
+const AUTO_SAVE_BRIDGE_TIMEOUT_MS = 20000;
+const AUTO_CLOUD_PAUSE_KEY = "8bitgo.pvz.cloudSavePaused.v1";
 const RESOURCE_IMPORT_LIMITS = { maxArchive: 256 * MB, maxExpanded: 384 * MB, maxFile: 160 * MB, maxFiles: 10000 };
 const SAVE_IMPORT_LIMITS = { maxArchive: 64 * MB, maxExpanded: 128 * MB, maxFile: 32 * MB, maxFiles: 4096 };
 const SAVE_BRIDGE_SOURCE = "8bitgo-save-bridge";
@@ -510,6 +522,7 @@ function persistSavesOnce() {
     Module.FS.syncfs(false, (error) => {
       if (error) { reject(error); return; }
       lastSaveSyncAt = Date.now();
+      if (gameStarted) schedulePvzAutoSaveCheck();
       resolve();
     });
   });
@@ -583,6 +596,7 @@ async function startGame() {
 
     if (window.__pvzSetProgress) window.__pvzSetProgress(1);
     await ensureSaveFsReady();
+    await initializePvzAutoSave();
     document.body.classList.remove("upload-mode");
     document.body.classList.add("game-mode");
     document.getElementById("upload-screen").style.display = "none";
@@ -592,6 +606,7 @@ async function startGame() {
     loadStatus.style.display = "none";
     gameStarted = true;
     startSaveAutosync();
+    if (autoCloudSaveEnabled && !autoCloudSavePaused) schedulePvzAutoSaveCheck(0);
     gameCanvas.focus();
     refreshMobileSoftKeyboard();
 
@@ -649,14 +664,70 @@ function clearSaveTree(path, removeRoot) {
   if (removeRoot) Module.FS.rmdir(path);
 }
 
-async function buildSaveArchive() {
-  await ensureSaveFsReady();
-  await syncSaves();
-  const files = collectSaveFiles("/saves/userdata");
-  if (!files.length) throw new Error("No save data found.");
+function captureSaveEntries() {
+  return collectSaveFiles("/saves/userdata").sort().map((path) => ({
+    path: path.replace(/^\/saves\//, ""),
+    bytes: new Uint8Array(Module.FS.readFile(path)),
+  }));
+}
+
+async function fingerprintSaveEntries(entries) {
+  if (!entries.length) return "";
+  const subtle = window.crypto && window.crypto.subtle;
+  if (subtle) {
+    try {
+      const manifest = [];
+      for (const entry of entries) {
+        const digest = new Uint8Array(await subtle.digest("SHA-256", entry.bytes));
+        const hex = Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
+        manifest.push(entry.path.length + ":" + entry.path + ":" + entry.bytes.byteLength + ":" + hex);
+      }
+      const bytes = new TextEncoder().encode(manifest.join("\n"));
+      const digest = new Uint8Array(await subtle.digest("SHA-256", bytes));
+      return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
+    } catch (error) {
+      console.warn("PvZ 存档指纹改用本地快速校验：", error);
+    }
+  }
+
+  // 指纹只用于本机变更去重，不承担存档完整性校验；两个独立滚动值避免依赖 WebCrypto。
+  let first = 0x811c9dc5;
+  let second = 0x9e3779b9;
+  const mix = (value) => {
+    first = Math.imul(first ^ value, 0x01000193);
+    second = Math.imul(second ^ value, 0x85ebca6b);
+  };
+  for (const entry of entries) {
+    for (let index = 0; index < entry.path.length; index++) mix(entry.path.charCodeAt(index) & 0xff);
+    mix(0);
+    for (const byte of entry.bytes) mix(byte);
+    mix(entry.bytes.byteLength & 0xff);
+  }
+  return (first >>> 0).toString(16) + "-" + (second >>> 0).toString(16);
+}
+
+async function generateSaveArchive(entries) {
   const zip = new JSZip();
-  for (const path of files) zip.file(path.replace(/^\/saves\//, ""), Module.FS.readFile(path));
+  for (const entry of entries) {
+    // 固定 ZIP 时间戳，玩家重复保存同一内容时不会因当前时间而制造假变更。
+    zip.file(entry.path, entry.bytes, { date: new Date(1980, 0, 1) });
+  }
   return zip.generateAsync({ type: "uint8array", compression: "DEFLATE", compressionOptions: { level: 6 } });
+}
+
+async function buildSaveArchiveSnapshot(persistFirst) {
+  await ensureSaveFsReady();
+  if (persistFirst !== false) await syncSaves();
+  const entries = captureSaveEntries();
+  if (!entries.length) throw new Error("No save data found.");
+  const fingerprint = await fingerprintSaveEntries(entries);
+  const bytes = await generateSaveArchive(entries);
+  lastBuiltSaveFingerprint = fingerprint;
+  return { bytes, fingerprint };
+}
+
+async function buildSaveArchive() {
+  return (await buildSaveArchiveSnapshot(true)).bytes;
 }
 
 async function exportSaves() {
@@ -727,12 +798,128 @@ async function applySaveArchive(input) {
   }
 }
 
+function requestPvzAutoSaveBridge(type, fields, transfer) {
+  if (!saveBridgeHostOrigin) return Promise.reject(new Error("8BitGo 存档桥未连接"));
+  const requestId = ++autoSaveRequestId;
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      pendingAutoSaveRequests.delete(requestId);
+      reject(new Error("云存档自动同步响应超时"));
+    }, AUTO_SAVE_BRIDGE_TIMEOUT_MS);
+    pendingAutoSaveRequests.set(requestId, { resolve, reject, timer });
+    postSaveBridge(Object.assign({ type, requestId }, fields || {}), transfer || []);
+  });
+}
+
+function schedulePvzAutoSaveCheck(delay) {
+  if (!gameStarted || !autoCloudSaveEnabled || autoCloudSavePaused) return;
+  window.clearTimeout(autoSaveCheckTimer);
+  autoSaveCheckTimer = window.setTimeout(() => {
+    autoSaveCheckTimer = 0;
+    void checkPvzAutoSaveNow(false);
+  }, Number.isFinite(delay) ? delay : AUTO_SAVE_DEBOUNCE_MS);
+}
+
+async function checkPvzAutoSaveNow(force) {
+  if ((!gameStarted && !force) || !autoCloudSaveEnabled || autoCloudSavePaused) return;
+  if (autoSaveCheckInFlight) {
+    if (force) return autoSaveCheckInFlight.then(() => checkPvzAutoSaveNow(true));
+    autoSaveCheckQueued = true;
+    return autoSaveCheckInFlight;
+  }
+  autoSaveCheckInFlight = (async () => {
+    try {
+      const entries = captureSaveEntries();
+      if (!entries.length) return;
+      const fingerprint = await fingerprintSaveEntries(entries);
+      if (!fingerprint || fingerprint === lastAutoSaveFingerprint) return;
+      const bytes = await generateSaveArchive(entries);
+      const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      const response = await requestPvzAutoSaveBridge("auto-snapshot-request", { data: buffer }, [buffer]);
+      const status = response && response.status;
+      if (status === "saved" || status === "queued") {
+        lastAutoSaveFingerprint = fingerprint;
+        return;
+      }
+      if (status === "conflict" || status === "blocked") {
+        lastAutoSaveFingerprint = fingerprint;
+        autoCloudSavePaused = true;
+        autoCloudSaveEnabled = false;
+        try { localStorage.setItem(AUTO_CLOUD_PAUSE_KEY, "1"); } catch {}
+        console.warn("PvZ 云存档自动同步已暂停：", status);
+        return;
+      }
+      if (status === "disabled") {
+        autoCloudSaveEnabled = false;
+        return;
+      }
+      // 上传失败时保留旧指纹；下一次本地持久化会重试这份内容。
+      console.warn("PvZ 云存档自动同步未确认，稍后重试：", status || "unknown");
+    } catch (error) {
+      // 本地 IDBFS 已先写入；云端暂不可用时下次持久化再补传。
+      console.warn("PvZ 云存档自动同步失败，稍后重试：", error);
+    }
+  })().finally(() => {
+    autoSaveCheckInFlight = null;
+    if (autoSaveCheckQueued) {
+      autoSaveCheckQueued = false;
+      schedulePvzAutoSaveCheck(0);
+    }
+  });
+  return autoSaveCheckInFlight;
+}
+
+async function initializePvzAutoSave() {
+  if (!saveBridgeInstalled) return;
+  try {
+    if (localStorage.getItem(AUTO_CLOUD_PAUSE_KEY) === "1") {
+      autoCloudSavePaused = true;
+      autoCloudSaveEnabled = false;
+      return;
+    }
+  } catch {}
+  try {
+    let localSaveBytes = 0;
+    try {
+      localSaveBytes = (await buildSaveArchiveSnapshot(false)).bytes.byteLength;
+    } catch {
+      // 新游戏没有 userdata 时没有本地快照；保留 0，让站点照常检查云端。
+    }
+    const response = await requestPvzAutoSaveBridge("auto-restore-request", { localSaveBytes });
+    if (response && response.paused) {
+      autoCloudSavePaused = true;
+      autoCloudSaveEnabled = false;
+      try { localStorage.setItem(AUTO_CLOUD_PAUSE_KEY, "1"); } catch {}
+      return;
+    }
+    if (!response || response.enabled !== true) return;
+    if (response.data instanceof ArrayBuffer && response.data.byteLength > 0) {
+      await applySaveArchive(new Uint8Array(response.data));
+      const entries = captureSaveEntries();
+      lastAutoSaveFingerprint = await fingerprintSaveEntries(entries);
+      lastBuiltSaveFingerprint = lastAutoSaveFingerprint;
+    } else {
+      lastAutoSaveFingerprint = "";
+    }
+    autoCloudSaveEnabled = true;
+    autoCloudSavePaused = false;
+  } catch (error) {
+    // 云端读取不确定时继续用浏览器里的 IDBFS，本局暂停自动上传以免拿旧档覆盖远端。
+    autoCloudSavePaused = true;
+    autoCloudSaveEnabled = false;
+    console.warn("PvZ 云存档读取失败，继续使用本地存档并暂停自动上传：", error);
+  }
+}
+
 async function importSaves(file, button) {
   button.disabled = true;
   const oldText = button.textContent;
   button.textContent = "⏳ Importing…";
   try {
     await applySaveArchive(file);
+    if (saveBridgeInstalled) {
+      try { localStorage.setItem(AUTO_CLOUD_PAUSE_KEY, "1"); } catch {}
+    }
     return true;
   } catch (error) {
     console.error("Import failed:", error);
@@ -783,8 +970,33 @@ function installSaveBridge() {
   window.addEventListener("message", (event) => {
     if (event.source !== window.parent || event.origin !== saveBridgeHostOrigin) return;
     const message = event.data;
-    if (!message || message.source !== SAVE_BRIDGE_SOURCE || message.version !== SAVE_BRIDGE_VERSION ||
-        !Number.isInteger(message.requestId)) return;
+    if (!message || message.source !== SAVE_BRIDGE_SOURCE || message.version !== SAVE_BRIDGE_VERSION) return;
+    if (message.type === "auto-mode") {
+      window.clearTimeout(autoSaveCheckTimer);
+      autoSaveCheckTimer = 0;
+      autoCloudSaveEnabled = message.enabled === true;
+      autoCloudSavePaused = message.paused === true;
+      if (autoCloudSavePaused) {
+        try { localStorage.setItem(AUTO_CLOUD_PAUSE_KEY, "1"); } catch {}
+      } else if (message.enabled === true || message.clearPaused === true) {
+        try { localStorage.removeItem(AUTO_CLOUD_PAUSE_KEY); } catch {}
+      }
+      if (autoCloudSaveEnabled && !autoCloudSavePaused) {
+        // buildSaveArchive 在玩家刚完成的手动云保存时记录了同一份 IDBFS 指纹。
+        lastAutoSaveFingerprint = lastBuiltSaveFingerprint;
+        if (gameStarted) schedulePvzAutoSaveCheck(0);
+      }
+      return;
+    }
+    if (!Number.isInteger(message.requestId)) return;
+    if (message.type === "auto-restore-response" || message.type === "auto-snapshot-response") {
+      const pending = pendingAutoSaveRequests.get(message.requestId);
+      if (!pending) return;
+      pendingAutoSaveRequests.delete(message.requestId);
+      window.clearTimeout(pending.timer);
+      pending.resolve(message);
+      return;
+    }
     if (message.type !== "export" && message.type !== "import") return;
 
     void (async () => {
@@ -830,6 +1042,9 @@ async function importSaveDirectory(files, button) {
       Module.FS.writeFile(path, new Uint8Array(await file.arrayBuffer()));
     }
     await syncSaves();
+    if (saveBridgeInstalled) {
+      try { localStorage.setItem(AUTO_CLOUD_PAUSE_KEY, "1"); } catch {}
+    }
   } catch (error) {
     console.error("Save folder import failed:", error);
     alert("Save folder import failed: " + error.message);
@@ -871,6 +1086,7 @@ async function clearSaves(button) {
     }
     removeDirectories("/saves");
     await syncSaves();
+    try { localStorage.removeItem(AUTO_CLOUD_PAUSE_KEY); } catch {}
     alert("All save data has been cleared.");
   } catch (error) {
     console.error("Clear failed:", error);
@@ -896,6 +1112,8 @@ async function handleGameExit(reason) {
   runtimeReloadScheduled = true;
   const hadStarted = gameStarted;
   gameStarted = false;
+  window.clearTimeout(autoSaveCheckTimer);
+  autoSaveCheckTimer = 0;
   if (saveSyncIntervalId !== null) {
     window.clearInterval(saveSyncIntervalId);
     saveSyncIntervalId = null;
@@ -914,7 +1132,10 @@ async function handleGameExit(reason) {
 
   if (hadStarted) {
     try {
-      await withTimeout(syncSaves(), EXIT_SAVE_TIMEOUT_MS, "存档写入超时");
+      await withTimeout((async () => {
+        await syncSaves();
+        await checkPvzAutoSaveNow(true);
+      })(), EXIT_SAVE_TIMEOUT_MS, "存档写入超时");
     } catch (error) {
       console.error("Final save sync failed:", error);
       showRuntimeMessage("游戏已退出，但最新存档尚未写入浏览器（" + (error.message || error) + "）。请先不要刷新页面。", true);
@@ -1051,10 +1272,16 @@ uploadSaveImportDirInput.addEventListener("change", async (event) => {
 uploadSaveClearBtn.addEventListener("click", () => { void clearSaves(uploadSaveClearBtn); });
 
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden") void syncSaves().catch((error) => console.warn("IDBFS persist error:", error));
+  if (document.visibilityState === "hidden") {
+    void syncSaves()
+      .then(() => checkPvzAutoSaveNow(true))
+      .catch((error) => console.warn("IDBFS persist error:", error));
+  }
 });
 window.addEventListener("pagehide", () => {
-  void syncSaves().catch((error) => console.warn("IDBFS persist error:", error));
+  void syncSaves()
+    .then(() => checkPvzAutoSaveNow(true))
+    .catch((error) => console.warn("IDBFS persist error:", error));
 });
 window.addEventListener("beforeunload", (event) => {
   if (!gameStarted) return;
