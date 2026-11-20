@@ -48,6 +48,9 @@ for (const name of selected) {
   for (const excluded of config.excludeDirs || []) {
     assert.ok(!existsSync(resolve(root, 'web', config.sourceDir, excluded)), `${name} 错把 ${excluded} 打进 Pages`)
   }
+  for (const excluded of config.excludeFiles || []) {
+    assert.ok(!existsSync(resolve(root, 'web', config.sourceDir, excluded)), `${name} 错把 ${excluded} 打进 Pages`)
+  }
 
   const files = walk(root)
   assert.ok(files.length <= 20_000, `${name} 文件数超过 Pages 免费版上限`)
@@ -189,6 +192,31 @@ for (const name of selected) {
         method: 'POST',
       }), { ASSETS: assets })
       assert.equal(rejected.status, 405)
+    }
+    if (name === 'gamblers-table') {
+      for (const file of ['index.pck', 'index.wasm']) {
+        const source = resolve(repo, 'public/web/gamblers-table', file)
+        assert.ok(existsSync(source), `Gamblers Table 主站缺少需代理的 ${file}`)
+        assert.ok(statSync(source).size > 25 * 1024 * 1024, `Gamblers Table ${file} 不再超过 Pages 上限；重新评估代理配置`)
+      }
+      for (const file of ['index.pck', 'index.wasm']) {
+        const response = await worker.fetch(new Request(`https://${config.domain}/web/gamblers-table/${file}`, {
+          headers: { Range: 'bytes=0-1023' },
+        }), { ASSETS: assets })
+        assert.equal(response.status, 200)
+        assert.equal(fetched.at(-1).url, `https://8bitgo.com/web/gamblers-table/${file}`)
+        assert.equal(fetched.at(-1).headers.get('range'), 'bytes=0-1023')
+        assert.equal(fetched.at(-1).headers.get('accept-encoding'), 'identity')
+        assert.equal(response.headers.get('accept-ranges'), 'bytes')
+      }
+      const requestsBeforeUnlistedPath = fetched.length
+      const rejected = await worker.fetch(new Request(`https://${config.domain}/web/gamblers-table/other.pck`), { ASSETS: assets })
+      assert.equal(rejected.status, 200)
+      assert.equal(fetched.length, requestsBeforeUnlistedPath, 'Worker 不得代理未列入白名单的大文件路径')
+      const methodRejected = await worker.fetch(new Request(`https://${config.domain}/web/gamblers-table/index.pck`, {
+        method: 'POST',
+      }), { ASSETS: assets })
+      assert.equal(methodRejected.status, 405)
     }
     if (name === 'cs16') {
       const response = await worker.fetch(new Request(`https://${config.domain}/api/cs16/servers`, {

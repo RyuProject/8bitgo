@@ -2204,7 +2204,8 @@ export function EmulatorPlayer({
       },
       onHtml5AutoSaveRestore: async (localSave) => {
         const saveGameSlug = saveSlugOf(session)
-        if (session.runtime.id !== 'html5' || !['plants-vs-zombies', 'gamblers-table'].includes(saveGameSlug || '') ||
+        if (session.runtime.id !== 'html5' ||
+          (saveGameSlug !== 'plants-vs-zombies' && saveGameSlug !== 'gamblers-table') ||
           getSaveTarget() !== 'cloud' || !cloudSavesEnabled()) {
           return { enabled: false, data: null }
         }
@@ -2235,7 +2236,8 @@ export function EmulatorPlayer({
       },
       onHtml5AutoSaveSnapshot: async (data) => {
         const saveGameSlug = saveSlugOf(session)
-        if (!isCurrent() || session.runtime.id !== 'html5' || !['plants-vs-zombies', 'gamblers-table'].includes(saveGameSlug || '') ||
+        if (!isCurrent() || session.runtime.id !== 'html5' ||
+          (saveGameSlug !== 'plants-vs-zombies' && saveGameSlug !== 'gamblers-table') ||
           getSaveTarget() !== 'cloud' || !cloudSavesEnabled()) {
           return 'disabled'
         }

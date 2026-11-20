@@ -27,6 +27,8 @@ export const WEB_GAME_PAGES = Object.freeze({
     title: 'Gamblers Table',
     runtime: '',
     isolated: false,
+    // Godot 的 PCK 和 WASM 都超过 Pages 单文件上限；文件仍由主站发布，Pages Worker 仅代理这两个固定路径。
+    excludeFiles: ['index.pck', 'index.wasm'],
     html: [['index.html', '#canvas']],
   }),
   diablo: Object.freeze({

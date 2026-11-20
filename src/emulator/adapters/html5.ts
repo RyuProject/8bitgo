@@ -113,6 +113,7 @@ interface SaveBridgeMessage {
   reason?: string
   status?: 'saved' | 'queued' | 'conflict' | 'blocked' | 'disabled' | 'failed'
   localSaveBytes?: number
+  pausedByUserChoice?: boolean
 }
 
 interface GameSdkMessage {

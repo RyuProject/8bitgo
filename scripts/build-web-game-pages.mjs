@@ -185,6 +185,7 @@ for (const name of selected) {
       const segments = rel.split('/')
       return !segments.includes('_framework') &&
         !(config.excludeDirs || []).some((name) => segments.includes(name)) &&
+        !(config.excludeFiles || []).includes(rel) &&
         !rel.endsWith('.DS_Store')
     },
   })

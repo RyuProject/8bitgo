@@ -9,6 +9,7 @@ const ASSET_BASE_DEFAULT = 'https://assets.8bitgo.com'
 // GTA VC 的大资源走专用下载域，让 CNAME 优选把玩家送到合适的资源入口。
 const GTA_VC_DOWNLOAD_BASE_DEFAULT = 'https://download.8bitgo.com'
 const PVZ_DATA_BASE_DEFAULT = 'https://download.8bitgo.com/PvZ/properties'
+const GAMBLERS_TABLE_ORIGIN = 'https://8bitgo.com/web/gamblers-table'
 const SAFE_FILE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
 const SAFE_DIABLO_CORE = /^(?:Diablo|DiabloSpawn|MpqCmp)\.[a-f0-9]{8}\.wasm$/
 const SAFE_PVZ_DATA_PATH = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,1023}$/
@@ -373,6 +374,50 @@ async function proxyPvzData(request, relativePath, configuredBase) {
   })
 }
 
+async function proxyGamblersTableRuntime(request, file) {
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    return new Response('method not allowed', { status: 405, headers: { Allow: 'GET, HEAD' } })
+  }
+  if (file !== 'index.pck' && file !== 'index.wasm') {
+    return new Response('Gamblers Table runtime file is not configured', { status: 404 })
+  }
+
+  const headers = new Headers({ 'Accept-Encoding': 'identity' })
+  for (const name of ['Range', 'If-Range', 'If-None-Match', 'If-Modified-Since']) {
+    const value = request.headers.get(name)
+    if (value) headers.set(name, value)
+  }
+
+  let upstream
+  try {
+    upstream = await fetch(`${GAMBLERS_TABLE_ORIGIN}/${file}`, {
+      method: request.method,
+      headers,
+      redirect: 'follow',
+    })
+  } catch {
+    return new Response('Gamblers Table runtime upstream unavailable', { status: 502 })
+  }
+
+  const responseHeaders = new Headers({
+    'Content-Type': file === 'index.wasm' ? 'application/wasm' : 'application/octet-stream',
+    'Cross-Origin-Resource-Policy': 'same-origin',
+    'X-Content-Type-Options': 'nosniff',
+  })
+  for (const name of [
+    'content-length', 'content-range', 'accept-ranges', 'etag', 'last-modified', 'cache-control',
+  ]) {
+    const value = upstream.headers.get(name)
+    if (value) responseHeaders.set(name, value)
+  }
+  if (!responseHeaders.has('Cache-Control')) responseHeaders.set('Cache-Control', 'public, max-age=300')
+  return new Response(request.method === 'HEAD' ? null : upstream.body, {
+    status: upstream.status,
+    statusText: upstream.statusText,
+    headers: responseHeaders,
+  })
+}
+
 async function proxyRuntime(request, asset) {
   const requestHeaders = new Headers()
   requestHeaders.set('Accept-Encoding', 'identity')
@@ -459,6 +504,13 @@ export default {
       const dataPath = pvzDataPath(url.pathname)
       if (dataPath === null) return new Response('bad path', { status: 400 })
       if (dataPath) return proxyPvzData(request, dataPath, env.PVZ_DATA_BASE_URL)
+    }
+
+    if (GAME.name === 'gamblers-table' && url.pathname.startsWith('/web/gamblers-table/')) {
+      const file = url.pathname.slice('/web/gamblers-table/'.length)
+      if (file === 'index.pck' || file === 'index.wasm') {
+        return proxyGamblersTableRuntime(request, file)
+      }
     }
 
     const base = String(env.RUNTIME_ASSET_BASE_URL || ASSET_BASE_DEFAULT).replace(/\/+$/, '')
