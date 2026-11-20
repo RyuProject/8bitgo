@@ -248,7 +248,7 @@ export default defineConfig(({ mode }) => {
     }),
     tailwindcss(),
     skipHugeStatic(),
-    // /assets/ 产物的 SHA-256 清单：只在 chunk 出错时由 public/assets/asset-repair-v4.js 读取，正常加载不碰它
+    // /assets/ 产物的 SHA-256 清单：只在 chunk 出错时由 public/assets/asset-repair-v7.js 读取，正常加载不碰它
     assetIntegrityPlugin(),
     /*
       Cloudflare Rocket Loader 会把所有 <script> 推迟到 window load 之后（等完封面图和 beacon）：

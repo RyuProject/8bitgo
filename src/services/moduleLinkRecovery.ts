@@ -1,5 +1,5 @@
 /**
- * React 侧接入「坏 chunk 自修复」（public/assets/asset-repair-v6.js）。
+ * React 侧接入「坏 chunk 自修复」（public/assets/asset-repair-v7.js）。
  *
  * 2026-11-15 PK / TH 两位玩家打开详情页就崩：
  * `SyntaxError: The requested module './live-Cqhc9j-k.js' does not provide an export named 'x'`。
@@ -102,16 +102,148 @@ export function failedLegacyChunkFile(error: unknown): string | null {
 export function tagLazyFailure(error: unknown, file: string | null, name: string): void {
   if (!error || typeof error !== 'object') return
   try {
-    Object.defineProperty(error, LAZY_FAILURE, { value: { file, name }, configurable: true })
+    const graph = importEvidence(error)
+    Object.defineProperty(error, LAZY_FAILURE, { value: graph ? { file, name, graph } : { file, name }, configurable: true })
   } catch {
     /* 冻结的错误对象：拿不到点名，修复脚本仍会按 Resource Timing 核对 */
   }
 }
 
-export function lazyFailure(error: unknown): { file: string | null; name: string } | null {
+export interface LazyFailureTag {
+  file: string | null
+  name: string
+  /** importWithRetry 第一次失败时从 Resource Timing / SystemJS 错误里看到的模块图证据 */
+  graph?: ImportGraphEvidence | null
+}
+
+export function lazyFailure(error: unknown): LazyFailureTag | null {
   if (!error || typeof error !== 'object') return null
-  const tag = (error as Record<string, unknown>)[LAZY_FAILURE] as { file: string | null; name: string } | undefined
+  const tag = (error as Record<string, unknown>)[LAZY_FAILURE] as LazyFailureTag | undefined
   return tag && typeof tag.name === 'string' ? tag : null
+}
+
+/* ---------- 模块图证据：失败的是懒加载入口本身，还是它的静态依赖 ---------- */
+
+/**
+ * 2026-11-19 诊断包 #1285 / #1368 / #1393（以及更早的 #917 / #1108）的现场都是：
+ * `Failed to fetch dynamically imported module: …/GameDetailPage-*.js`，换两个查询串重试仍失败，
+ * 修复脚本随后用 fetch() 取原 URL、强制重取、查询串副本，SHA-256 全对。
+ *
+ * 本地用 Chromium 153 与 WebKit 26.6 复现（scripts/test-asset-repair.mjs 记了实验结论）：
+ *   - 懒加载入口的**静态依赖**取不下来（404 / 错误 MIME / 请求被中止 / window.stop()）时，
+ *     Chrome 报错里写的仍是**入口**的地址，Safari 的「Importing a module script failed」干脆不带地址；
+ *   - 失败的依赖被这一份文档的模块表记住：换查询串重新导入入口，依赖仍按原地址解析，直接拿到同一个失败，
+ *     连请求都不再发；只有整页刷新（新文档、新模块表）才会重新取；
+ *   - 同一时刻 fetch() 这些文件全都正常。
+ * 所以「原 URL 内容正常但导入失败」不说明 CDN 上那份有问题，v6 据此改走回源地址、请求清边缘缓存是误判。
+ *
+ * 能不能在页面里分辨：Resource Timing 里入口那条已经完整下载（有正文、不是错误状态）就说明失败在依赖里，
+ * 再换查询串重试入口只会白下一遍入口（3G 上就是几百 KB 和两秒多），直接交给错误边界整页刷新。
+ * 依赖请求失败时 Chrome 也会留一条 responseStatus 为 0 / ≥400、没有正文的记录，可以点名；WebKit 不记失败的请求。
+ * legacy 的 SystemJS 错误本身就写着失败的那个 URL，和入口文件名一比就知道。
+ */
+export interface ImportGraphEvidence {
+  /** ok：入口已完整下载，失败在依赖；failed：入口自己没下下来；unknown：看不出（跨源无 TAO、开发环境） */
+  top: 'ok' | 'failed' | 'unknown'
+  /** 同目录下这次导入期间失败的 JS 请求（文件名），最多 6 个 */
+  failed: string[]
+}
+
+/** 只用到 Resource Timing 的这几个字段；测试里可以直接给普通对象 */
+export interface ResourceTimingLike {
+  name: string
+  responseStart?: number
+  transferSize?: number
+  decodedBodySize?: number
+  /** Chrome 109+；Safari / Firefox 没有 */
+  responseStatus?: number
+}
+
+const IMPORT_EVIDENCE = '__8bitgoImportEvidence'
+
+function tagImportEvidence(error: unknown, evidence: ImportGraphEvidence): void {
+  if (!error || typeof error !== 'object') return
+  try {
+    Object.defineProperty(error, IMPORT_EVIDENCE, { value: evidence, configurable: true })
+  } catch { /* 冻结的错误对象：没有证据，兜底页照常核对 */ }
+}
+
+function importEvidence(error: unknown): ImportGraphEvidence | null {
+  if (!error || typeof error !== 'object') return null
+  const value = (error as Record<string, unknown>)[IMPORT_EVIDENCE] as ImportGraphEvidence | undefined
+  return value && typeof value.top === 'string' ? value : null
+}
+
+const MAX_FAILED_DEPS = 6
+
+/**
+ * 读模块图证据。不按时间筛：悬停预取（PlayerChunk.preloadPlayer）或更早的页面早就可能把某个依赖取失败了，
+ * 被模块表记住之后，这一次导入拿到的正是那个旧失败 —— 它恰恰是原因。
+ */
+export function importGraphEvidence(
+  file: string,
+  base: string,
+  error: unknown,
+  entries: readonly ResourceTimingLike[],
+  pageOrigin: string,
+): ImportGraphEvidence {
+  // legacy：SystemJS 先装好入口才去取它的依赖，错误里写的是真正失败的那个文件
+  const legacyFailed = isSystemJsChunkLoadError(error) ? failedLegacyChunkFile(error) : null
+  if (legacyFailed) return { top: legacyFailed === file ? 'failed' : 'ok', failed: [legacyFailed] }
+
+  let dir = ''
+  try {
+    dir = new URL('./', base).href
+  } catch {
+    return { top: 'unknown', failed: [] }
+  }
+  const rows = entries.filter((entry) => {
+    const url = String(entry.name || '')
+    return url.startsWith(dir) && /^[\w.-]+\.js(?:[?#]|$)/.test(url.slice(dir.length))
+  })
+  const fileName = (url: string) => url.slice(dir.length).split(/[?#]/)[0]
+  const status = (entry: ResourceTimingLike) => (typeof entry.responseStatus === 'number' ? entry.responseStatus : 0)
+  const loaded = (entry: ResourceTimingLike) => (entry.decodedBodySize ?? 0) > 0 && (status(entry) === 0 || (status(entry) >= 200 && status(entry) < 300))
+  // 跨源（大陆加速入口）没有 Timing-Allow-Origin 时，成功的请求也是全 0；同源或这个源有成功记录（TAO 在）才看得出失败
+  const originOf = (url: string) => {
+    try {
+      return new URL(url).origin
+    } catch {
+      return ''
+    }
+  }
+  const visible = new Set<string>([pageOrigin])
+  for (const entry of rows) if (loaded(entry) || (entry.responseStart ?? 0) > 0) visible.add(originOf(entry.name))
+  const failedRow = (entry: ResourceTimingLike) => status(entry) >= 400
+    || (status(entry) === 0 && !(entry.decodedBodySize ?? 0) && !(entry.transferSize ?? 0) && !(entry.responseStart ?? 0) && visible.has(originOf(entry.name)))
+
+  // 入口本身：原地址的记录（不论早晚，悬停预取 / modulepreload 也算）
+  const own = rows.filter((entry) => fileName(entry.name) === file && !/[?&]chunk-retry=/.test(entry.name))
+  const top = own.some(loaded) ? 'ok' : own.some(failedRow) ? 'failed' : 'unknown'
+  const failed: string[] = []
+  for (const entry of rows) {
+    if (!failedRow(entry)) continue
+    const name = fileName(entry.name)
+    if (name !== file && !failed.includes(name) && failed.length < MAX_FAILED_DEPS) failed.push(name)
+  }
+  return { top, failed }
+}
+
+function readResourceTimings(): ResourceTimingLike[] {
+  try {
+    return typeof performance === 'undefined' ? [] : (performance.getEntriesByType('resource') as unknown as ResourceTimingLike[])
+  } catch {
+    return []
+  }
+}
+
+/** 写进诊断包的一句话：失败在入口还是依赖 */
+export function describeImportEvidence(evidence: ImportGraphEvidence | null | undefined): string {
+  if (!evidence) return ''
+  const deps = evidence.failed.length ? `，失败的请求：${evidence.failed.join('、')}` : ''
+  if (evidence.top === 'ok') return `模块图：入口已完整下载、失败在静态依赖（被本页模块表记住，只有整页刷新能重取）${deps}`
+  if (evidence.top === 'failed') return `模块图：入口本身没下下来${deps}`
+  return deps ? `模块图：看不出入口是否下完${deps}` : ''
 }
 
 /* ---------- 大陆加速入口 ---------- */
@@ -172,7 +304,7 @@ export function onOriginAssetsPage(): boolean {
 
 /* ---------- 修复脚本 ---------- */
 
-/** 与 public/assets/asset-repair-v6.js 的返回值一致（新字段在旧脚本里没有，所以是可选的） */
+/** 与 public/assets/asset-repair-v7.js 的返回值一致（新字段在旧脚本里没有，所以是可选的） */
 export interface AssetRepairResult {
   manifest: boolean
   checked: number
@@ -181,6 +313,8 @@ export interface AssetRepairResult {
   repaired: string[]
   /** 错误点名的文件，缓存里那份看着没问题，仍强制重取覆盖了一遍 */
   refreshed: string[]
+  /** v7：点名文件的普通地址字节、类型都正常 —— 导入失败发生在浏览器这一份文档里，整页刷新即可，不改地址、不清边缘 */
+  inDocument?: string[]
   /** 普通地址异常但查询串回源正常：临时改用该地址（下次开页由 import map 生效），并已通知服务端清边缘缓存 */
   remapped: string[]
   /** 回源那份也对不上：多半是部署本身的问题 */
@@ -265,7 +399,8 @@ export function repairLoadInfo(): RepairLoadInfo {
 }
 
 export function repairFixedSomething(result: AssetRepairResult | null): boolean {
-  return Boolean(result && result.repaired.length + result.refreshed.length + result.remapped.length + (result.recovered?.length ?? 0) > 0)
+  return Boolean(result && result.repaired.length + result.refreshed.length + result.remapped.length
+    + (result.recovered?.length ?? 0) + (result.inDocument?.length ?? 0) > 0)
 }
 
 const LOAD_OUTCOME: Record<string, string> = {
@@ -296,6 +431,7 @@ export function summarizeRepair(result: AssetRepairResult | null, load?: RepairL
   if (result.repaired.length) parts.push(`浏览器缓存里的坏副本已重取：${list(result.repaired)}`)
   if (result.refreshed.length) parts.push(`已强制重取：${list(result.refreshed)}`)
   if (result.recovered?.length) parts.push(`取不下来、重试后正常：${list(result.recovered)}`)
+  if (result.inDocument?.length) parts.push(`文件字节与类型都正常，导入失败发生在本页模块表里（整页刷新即可，不改地址、不清边缘）：${list(result.inDocument)}`)
   if (result.remapped.length) parts.push(`普通地址异常、查询串回源正常，已改走回源地址并请求清缓存：${list(result.remapped)}`)
   if (result.edgeOnly?.length) parts.push(`大陆加速入口取不下来、主站正常：${list(result.edgeOnly)}`)
   if (result.bad.length) parts.push(`回源也对不上：${list(result.bad)}`)
@@ -306,6 +442,18 @@ export function summarizeRepair(result: AssetRepairResult | null, load?: RepairL
 }
 
 /* ---------- 懒加载就地重试 ---------- */
+
+/** 懒加载成功时通知谁（services/pageRecovery.ts 等着确认「刷新后那个 chunk 加载上了」） */
+let chunkLoadedListener: ((file: string) => void) | null = null
+export function onLazyChunkLoaded(listener: ((file: string) => void) | null): void {
+  chunkLoadedListener = listener
+}
+function notifyChunkLoaded(file: string | null): void {
+  if (!file || !chunkLoadedListener) return
+  try {
+    chunkLoadedListener(file)
+  } catch { /* 回报出错不能让页面加载失败 */ }
+}
 
 /**
  * 网络层导入失败（chunk 取不下来）才值得重试；SyntaxError（字节坏了、缺导出）重试同一份缓存没用，交给修复脚本。
@@ -353,10 +501,19 @@ export interface RetryEnv {
   online: () => boolean
   /** 按 URL 导入（重试时用带唯一查询串的地址） */
   importUrl: (url: string) => Promise<unknown>
+  /** Resource Timing 与当前页面的源，读模块图证据用；测试可以不给（等于看不出） */
+  resources?: () => readonly ResourceTimingLike[]
+  pageOrigin?: string
 }
 
 function defaultRetryEnv(): RetryEnv {
+  let pageOrigin = ''
+  try {
+    pageOrigin = typeof location === 'undefined' ? '' : location.origin
+  } catch { /* 拿不到就只认同源以外看不出 */ }
   return {
+    resources: readResourceTimings,
+    pageOrigin,
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     online: () => {
       try {
@@ -402,8 +559,12 @@ export function bustedChunkUrl(file: string, base: string, nonce: string): strin
  *
  * 现在先在页面里重试：网络型错误可能被浏览器模块表按原 URL 缓存为失败，重复调用原加载函数只会得到同一个拒绝；
  * 因此每次重试都换唯一查询串，让浏览器和边缘重新取入口 chunk。静态依赖仍保持原 URL 和同一个 React 实例；
- * 如果失败在静态依赖，asset-repair-v6 会按构建依赖图核对它，再刷新页面清掉失败模块表。明确离线时先等恢复联网。
+ * 如果失败在静态依赖，asset-repair 会按构建依赖图核对它，再刷新页面清掉失败模块表。明确离线时先等恢复联网。
  * 全部失败才把最后一个错误抛给错误边界（那里还有修复脚本和整页刷新）。
+ *
+ * 2026-11-19：第一次失败后先看模块图证据（importGraphEvidence）。入口已经完整下载、失败在静态依赖时，
+ * 换查询串重试入口必然拿到同一个被记住的失败（Chromium 153 / WebKit 26.6 实测），不再白下两遍入口，直接交给错误边界。
+ * 证据挂在错误上，兜底页写进诊断包、把失败的依赖点名交给修复脚本。
  */
 export async function importWithRetry<T>(
   load: () => Promise<T>,
@@ -423,10 +584,17 @@ export async function importWithRetry<T>(
       const busted = attempt > 0 && retryFile
         ? bustedChunkUrl(retryFile, base, nextChunkRetryNonce(attempt))
         : null
-      return busted ? await (env.importUrl(busted) as Promise<T>) : await load()
+      const loaded = busted ? await (env.importUrl(busted) as Promise<T>) : await load()
+      notifyChunkLoaded(file)
+      return loaded
     } catch (error) {
       lastError = error
       if (!retryableImportError(error)) break
+      if (attempt === 0 && file && env.resources) {
+        const evidence = importGraphEvidence(file, base, error, env.resources(), env.pageOrigin ?? '')
+        tagImportEvidence(error, evidence)
+        if (evidence.top === 'ok') break
+      }
       // SystemJS 把加载失败统一包装成一条错误，但其中仍带着真实失败的 legacy chunk URL。
       // 从这里补出文件名后，下一次用 System.import 的带查询串 URL，避开失败模块的缓存键。
       retryFile ??= failedLegacyChunkFile(error)

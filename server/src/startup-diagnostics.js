@@ -14,8 +14,13 @@ import { query } from './db.js'
 import { maybeAlertSignature } from './diag-alert.js'
 import { notifyLarkFailure } from './diag-lark.js'
 import { classifyUserAgent } from '../../shared/user-agent.js'
+import { isCrawlerUa } from './sseGuard.js'
 
-export const DIAGNOSTIC_EVENTS = new Set(['failed', 'timeout', 'slow_start'])
+/**
+ * recovered：详情页崩溃后自动刷新、刷新后的页面把同一个 chunk 加载上了（src/services/pageRecovery.ts）。
+ * 漏斗不算失败；诊断页单独一组，不发飞书、不触发聚集报警与 AI 分诊。
+ */
+export const DIAGNOSTIC_EVENTS = new Set(['failed', 'timeout', 'slow_start', 'recovered'])
 export const DIAGNOSTICS_RETENTION_DAYS = 30
 const PAYLOAD_MAX_BYTES = 32_000
 
@@ -80,6 +85,49 @@ const int = (value, min = -3_600_000, max = 3_600_000) => {
 }
 const arr = (value, limit) => (Array.isArray(value) ? value.slice(0, limit) : [])
 const pick = (value, allowed, fallback) => (allowed.includes(value) ? value : fallback)
+
+/** 浏览器自己报的自动化特征（src/services/startupDiagnostics.ts 的 automationHints） */
+const AUTOMATION_HINTS = ['webdriver', 'no-outer', 'no-languages']
+const RECOVERY_OUTCOMES = ['recovered', 'unconfirmed', 'failed_again']
+/** 服务端判出的访问来源：'' 普通访客；bot 确认是自动化；suspect 疑似（启发式） */
+export const COHORTS = ['', 'bot', 'suspect']
+
+/**
+ * 判断这份现场是不是自动化客户端发来的。
+ *
+ * 2026-11-17～19 的「页面懒加载模块导入失败」里，#917 / #1108 / #1285 / #1368 / #1393 是同一个画像：
+ * Chrome 150 / Linux / desktop、90 个逻辑核、32GB、1440x900、zh-CN、US，网络报 3G（0.4～1.45Mbps、rtt 300～350），
+ * 上报时页面在后台，三天里换着游戏、换着部署反复出现。90 核不是任何桌面 CPU 的线程数（云主机切出来的 CPU 集），
+ * 数据中心出口又不可能只有 0.4Mbps —— 这是一台跑在美国机房、开着网络限速的抓取 / 测试机。
+ * 它的模块请求被自己中止或拦下（同一时刻 fetch() 全都正常，见 src/services/moduleLinkRecovery.ts 的模块图证据），
+ * 不是我们能修的故障，却每次都进了「加载失败」、发了飞书。
+ *
+ *   - bot（确认）：navigator.webdriver 为 true，或 UA 是爬虫 / 无头浏览器 / Lighthouse（与 SSE 拒绝爬虫是同一张表）；
+ *   - suspect（疑似）：桌面设备报 64 个以上逻辑核（服务器 CPU）；窗口外框 0×0；语言列表为空。
+ * 不看 IP、地区或语言：那些会误伤真人。疑似只是分组和不报警，现场照样保留，后台一个开关就能看到。
+ */
+export function classifyAutomation(diagnostics, { userAgent = '', device = '' } = {}) {
+  const env = diagnostics?.env ?? {}
+  const hints = Array.isArray(env.auto) ? env.auto : []
+  const confirmed = []
+  const suspected = []
+  if (hints.includes('webdriver')) confirmed.push('automation.webdriver')
+  if (isCrawlerUa(userAgent)) confirmed.push('automation.crawler_ua')
+  if (device === 'desktop' && Number(env.cores) > 64) suspected.push('automation.server_cpu')
+  if (hints.includes('no-outer')) suspected.push('automation.no_window')
+  if (hints.includes('no-languages')) suspected.push('automation.no_languages')
+  if (confirmed.length) return { cohort: 'bot', signals: [...confirmed, ...suspected] }
+  if (suspected.length) return { cohort: 'suspect', signals: suspected }
+  return { cohort: '', signals: [] }
+}
+
+/** 这份现场要不要叫人：自动化客户端、已自动恢复、刷新后结果未确认的都不发飞书、不报警、不让 AI 分诊 */
+export function needsAttention(event, diagnostics) {
+  if (event === 'recovered') return false
+  if (diagnostics?.automation?.cohort) return false
+  if (diagnostics?.recovery?.outcome === 'unconfirmed') return false
+  return true
+}
 
 const DIAGNOSIS_CODES = new Set([
   'offline', 'network_http', 'network_failure', 'page_asset', 'engine_asset', 'engine_assets', 'engine_load', 'core_download', 'rom_download',
@@ -294,6 +342,7 @@ export function normalizeDiagnostics(raw) {
       online: env.online !== false,
       hiddenMs: int(env.hiddenMs, 0),
       visible: env.visible !== false,
+      auto: [...new Set(arr(env.auto, 6).filter((hint) => AUTOMATION_HINTS.includes(hint)))],
     },
     attempt: {
       index: int(attempt.index, 0, 1000),
@@ -322,6 +371,23 @@ export function normalizeDiagnostics(raw) {
       st: int(row?.st, 0, 999),
       p: scrub(row?.p, 12).replace(/[^\w./-]/g, ''),
     })).filter((row) => row.n),
+  }
+  const recovery = raw.recovery && typeof raw.recovery === 'object' ? raw.recovery : null
+  if (recovery && RECOVERY_OUTCOMES.includes(recovery.outcome)) {
+    out.recovery = {
+      outcome: recovery.outcome,
+      via: pick(recovery.via, ['reload', 'origin'], 'reload'),
+      afterMs: int(recovery.afterMs, 0),
+      ...(recovery.previous ? { previous: scrub(recovery.previous, 200) } : {}),
+    }
+  }
+  // 服务端判的来源；入库时 recordStartupDiagnostics 会按现场重算覆盖，这里只是读回历史数据时保留
+  const automation = raw.automation && typeof raw.automation === 'object' ? raw.automation : null
+  if (automation && COHORTS.includes(automation.cohort)) {
+    out.automation = {
+      cohort: automation.cohort,
+      signals: arr(automation.signals, 6).map((signal) => scrub(signal, 40).replace(/[^\w.-]/g, '')).filter(Boolean),
+    }
   }
   const diagnosis = raw.diagnosis && typeof raw.diagnosis === 'object' ? raw.diagnosis : null
   if (diagnosis) {
@@ -354,7 +420,32 @@ export { classifyUserAgent } from '../../shared/user-agent.js'
  * 归类用的「错误特征」：把会变的部分（数字、百分比、引号里的内容、十六进制）抹掉，
  * 同一类故障才能合并成一组。慢启动没有错误原文，用最后停在的加载阶段代替。
  */
+const COHORT_TEXT = { bot: '自动化客户端', suspect: '疑似自动化' }
+const RECOVERY_TEXT = { unconfirmed: '自动刷新后未确认', failed_again: '自动刷新后再次失败' }
+
+/**
+ * 归组时把「来源」「刷新后结论」也算进特征：自动化客户端、刷新后未确认、刷新后又坏的现场各成一组，
+ * 不和第一次就停在兜底页的真实玩家混在一起（2026-11-19）。普通访客的特征与以前完全一样，历史分组不受影响。
+ */
+function signatureQualifiers(diagnostics) {
+  const cohort = diagnostics?.automation?.cohort ?? ''
+  const outcome = diagnostics?.recovery?.outcome ?? ''
+  const key = [cohort && `cohort:${cohort}`, RECOVERY_TEXT[outcome] ? `recovery:${outcome}` : ''].filter(Boolean).join('|')
+  const text = [COHORT_TEXT[cohort], RECOVERY_TEXT[outcome]].filter(Boolean).join(' · ')
+  return { key, text }
+}
+
 export function errorSignature({ event, runtime, platform, detail, diagnostics }) {
+  const qualifiers = signatureQualifiers(diagnostics)
+  const base = baseErrorSignature({ event, runtime, platform, detail, diagnostics })
+  if (!qualifiers.key) return base
+  return {
+    signature: createHash('sha1').update(`${base.signature}|${qualifiers.key}`).digest('hex').slice(0, 16),
+    text: `${base.text} · ${qualifiers.text}`.slice(0, 200),
+  }
+}
+
+function baseErrorSignature({ event, runtime, platform, detail, diagnostics }) {
   const diagnosis = diagnostics?.diagnosis ?? diagnoseStartupFailure({ event, runtime, platform, detail, diagnostics })
   if (diagnosis.code !== 'unknown') {
     const stage = event === 'slow_start'
@@ -395,6 +486,7 @@ function scheduleCleanup() {
 
 let missingTableWarned = false
 let hotfixColumnMissing = false
+let cohortColumnMissing = false
 
 /**
  * 写一份诊断包。调用方已经写好了漏斗事件（同一个 visit/attempt/event 唯一键挡重放）。
@@ -406,13 +498,18 @@ export async function recordStartupDiagnostics(slug, event, rawDiagnostics, { co
   if (!diagnostics) return false
   // 分类在服务端按白名单现场重算，避免客户端自行声明故障类型导致归组失真。
   diagnostics.diagnosis = diagnoseStartupFailure({ ...event, runtime: event.runtime, diagnostics })
+  const { browser, os, device } = classifyUserAgent(userAgent)
+  // 来源同样由服务端判：原始 UA 只在这一刻用来认爬虫，不落库
+  diagnostics.automation = classifyAutomation(diagnostics, { userAgent, device })
+  // 刷新后的结论只认兜底页那一类（runtime page）；别的运行时不会带，带了也不信
+  if (event.runtime !== 'page') delete diagnostics.recovery
   while (JSON.stringify(diagnostics).length > PAYLOAD_MAX_BYTES && (diagnostics.logs.length || diagnostics.resources.length)) {
     if (diagnostics.logs.length > 10 || !diagnostics.resources.length) diagnostics.logs.shift()
     else diagnostics.resources.pop()
   }
-  const { browser, os, device } = classifyUserAgent(userAgent)
   const { signature, text } = errorSignature({ ...event, diagnostics })
   const hotfixIds = diagnostics.hotfixes.join(',')
+  const cohort = diagnostics.automation.cohort
   const values = [
     event.visitId, event.attemptId, event.event, event.runtime, event.platform,
     /^[A-Z]{2}$/.test(country) ? country : 'XX', event.elapsedMs,
@@ -421,7 +518,26 @@ export async function recordStartupDiagnostics(slug, event, rawDiagnostics, { co
   ]
   try {
     let result
-    if (!hotfixColumnMissing) {
+    if (!cohortColumnMissing && !hotfixColumnMissing) {
+      try {
+        result = await query(
+          `INSERT IGNORE INTO game_startup_diagnostics
+             (game_id, visit_id, attempt_id, event, runtime, platform, country, elapsed_ms,
+              signature, signature_text, browser, os, device, payload, hotfix_ids, cohort)
+           SELECT id, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+             FROM games
+            WHERE slug = ? AND hidden = 0
+            LIMIT 1`,
+          [...values, hotfixIds, cohort, slug],
+        )
+      } catch (error) {
+        // 先上代码、后跑迁移：缺 cohort 列时退回上一版写法（来源仍在 payload 里，只是后台默认不能按它过滤）
+        if (error?.code !== 'ER_BAD_FIELD_ERROR') throw error
+        cohortColumnMissing = true
+        console.warn('[startup] game_startup_diagnostics 缺 cohort 列，后台暂时不能默认隐藏自动化客户端 —— cd server && npm run migrate')
+      }
+    }
+    if (!result && !hotfixColumnMissing) {
       try {
         result = await query(
           `INSERT IGNORE INTO game_startup_diagnostics
@@ -454,10 +570,12 @@ export async function recordStartupDiagnostics(slug, event, rawDiagnostics, { co
     }
     scheduleCleanup()
     const inserted = Number(result?.affectedRows ?? 0) > 0
+    // 自动化客户端、已自动恢复、刷新后未确认：照常入库归组，但不叫人（needsAttention）
+    const attention = inserted && needsAttention(event.event, diagnostics)
     // 同一特征短时间内聚集就发邮件（没配 DIAG_ALERT_EMAIL 时立即返回）；不 await，不拖慢接口
-    if (inserted) void maybeAlertSignature(signature)
+    if (attention) void maybeAlertSignature(signature)
     // 新加载失败立即通知 Lark；诊断仍先入库，通知失败或超时不影响玩家接口
-    if (inserted && (event.event === 'failed' || event.event === 'timeout')) {
+    if (attention && (event.event === 'failed' || event.event === 'timeout')) {
       void notifyLarkFailure({
         event: event.event,
         signature,
@@ -477,7 +595,7 @@ export async function recordStartupDiagnostics(slug, event, rawDiagnostics, { co
       动态 import：ai-hotfix.js 反过来要用这里的 diagnosticSamples / scrub，静态互相 import 会成环。
       都不 await，任何失败只在那边记日志。
     */
-    if (inserted) {
+    if (attention) {
       void import('./ai-hotfix.js').then((m) => {
         void m.maybeTriageSignature(signature, event.event)
         if (diagnostics.hotfixes.length && event.event !== 'slow_start') void m.noteHotfixFailure(diagnostics.hotfixes)
@@ -501,14 +619,40 @@ const clampDays = (raw) => Math.max(1, Math.min(DIAGNOSTICS_RETENTION_DAYS, Math
 const topN = (map, n = 5) => [...map.entries()].sort((a, b) => b[1] - a[1]).slice(0, n).map(([name, count]) => ({ name, count }))
 const bump = (map, key) => map.set(key, (map.get(key) ?? 0) + 1)
 
-/** 按错误特征归组：次数最多的排前面，每组带涉及的游戏 / 浏览器 / 系统 / 地区分布 */
-export async function diagnosticGroups(rawDays = 7, rawQuery = '', rawEvent = '') {
+/**
+ * 「噪音」：已自动恢复的现场与自动化客户端的现场。默认不列，只数个数；showNoise 时原样保留。
+ * 老数据库没有 cohort 列时 cohort 全是空串，只能按 event 认出已恢复的那部分。
+ */
+export function partitionNoise(rows, showNoise = false) {
+  const hidden = { recovered: 0, automation: 0 }
+  const kept = []
+  for (const row of rows) {
+    const cohort = COHORTS.includes(row.cohort) ? row.cohort : ''
+    if (!showNoise && (row.event === 'recovered' || cohort)) {
+      if (row.event === 'recovered') hidden.recovered++
+      else hidden.automation++
+      continue
+    }
+    kept.push({ ...row, cohort })
+  }
+  return { kept, hidden }
+}
+
+/**
+ * 按错误特征归组：次数最多的排前面，每组带涉及的游戏 / 浏览器 / 系统 / 地区分布。
+ *
+ * 默认不列「噪音」：已自动恢复（event recovered）和自动化客户端（cohort bot / suspect）的现场，
+ * 只在 hidden 里给出数量；后台点「显示」（noise=show）或选「已自动恢复」时才列出来（2026-11-19）。
+ */
+export async function diagnosticGroups(rawDays = 7, rawQuery = '', rawEvent = '', rawNoise = '') {
   const days = clampDays(rawDays)
   const search = scrub(rawQuery, 80)
   const event = DIAGNOSTIC_EVENTS.has(rawEvent) ? rawEvent : ''
-  const rows = await query(
+  const showNoise = rawNoise === 'show' || event === 'recovered'
+  const groupQuery = (cohortColumn) => query(
     `SELECT d.id, d.signature, d.signature_text AS signatureText, d.event, d.runtime, d.platform,
             d.country, d.browser, d.os, d.device, d.elapsed_ms AS elapsedMs, d.visit_id AS visitId,
+            ${cohortColumn ? 'd.cohort' : "''"} AS cohort,
             d.created_at AS createdAt, g.slug, COALESCE(NULLIF(g.title_zh, ''), g.title) AS title
        FROM game_startup_diagnostics d
        JOIN games g ON g.id = d.game_id
@@ -519,14 +663,25 @@ export async function diagnosticGroups(rawDays = 7, rawQuery = '', rawEvent = ''
       LIMIT 20000`,
     [days, event, event, search, `%${search}%`],
   )
+  let rows
+  try {
+    rows = await groupQuery(!cohortColumnMissing)
+  } catch (error) {
+    if (error?.code !== 'ER_BAD_FIELD_ERROR' || cohortColumnMissing) throw error
+    cohortColumnMissing = true
+    rows = await groupQuery(false)
+  }
+  const { kept, hidden } = partitionNoise(rows, showNoise)
   const groups = new Map()
-  for (const row of rows) {
+  for (const row of kept) {
+    const cohort = row.cohort
     let group = groups.get(row.signature)
     if (!group) {
       group = {
         signature: row.signature,
         text: row.signatureText,
         event: row.event,
+        cohort,
         runtime: row.runtime,
         count: 0,
         visits: new Set(),
@@ -553,6 +708,8 @@ export async function diagnosticGroups(rawDays = 7, rawQuery = '', rawEvent = ''
   return {
     days,
     total: rows.length,
+    hidden,
+    noiseShown: showNoise,
     groups: [...groups.values()]
       .sort((a, b) => b.visits.size - a.visits.size || b.count - a.count)
       .slice(0, 200)
@@ -560,6 +717,7 @@ export async function diagnosticGroups(rawDays = 7, rawQuery = '', rawEvent = ''
         signature: g.signature,
         text: g.text,
         event: g.event,
+        cohort: g.cohort,
         runtime: g.runtime,
         count: g.count,
         visits: g.visits.size,

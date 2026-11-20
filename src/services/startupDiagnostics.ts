@@ -55,6 +55,14 @@ export interface DiagnosticResource {
   p: string
 }
 
+/** 页面崩溃自动刷新之后的结论（services/pageRecovery.ts）；只有兜底页的报告才有 */
+export interface StartupRecovery {
+  outcome: 'recovered' | 'unconfirmed' | 'failed_again'
+  via: 'reload' | 'origin'
+  afterMs: number
+  previous?: string
+}
+
 export interface StartupDiagnostics {
   v: 1
   /** 入口脚本的内容哈希名，等于「哪一次部署」 */
@@ -76,7 +84,15 @@ export interface StartupDiagnostics {
     /** 这一局里页面处于后台的累计毫秒数 */
     hiddenMs: number
     visible: boolean
+    /**
+     * 浏览器自己暴露的自动化特征（2026-11-19：同一个 90 核、页面在后台、3G 的 Linux Chrome 150 反复出现在
+     * 「页面懒加载模块导入失败」里）：webdriver = navigator.webdriver 为 true（Selenium / Puppeteer / Playwright 默认）；
+     * no-outer = 窗口外框 0×0（旧版无头浏览器）；no-languages = 语言列表为空。只是几个开关，不含任何标识符。
+     */
+    auto?: string[]
   }
+  /** 页面崩溃自动刷新后的结论；见 services/pageRecovery.ts */
+  recovery?: StartupRecovery
   attempt: {
     /** 本次访问里的第几次开局（1 起） */
     index: number
@@ -462,6 +478,20 @@ function buildId(): string {
   }
 }
 
+function automationHints(): string[] {
+  const hints: string[] = []
+  try {
+    if ((navigator as Navigator & { webdriver?: boolean }).webdriver === true) hints.push('webdriver')
+  } catch { /* 读不到就不算 */ }
+  try {
+    if (window.outerWidth === 0 && window.outerHeight === 0) hints.push('no-outer')
+  } catch { /* 读不到就不算 */ }
+  try {
+    if (Array.isArray(navigator.languages) && navigator.languages.length === 0) hints.push('no-languages')
+  } catch { /* 读不到就不算 */ }
+  return hints
+}
+
 function environment(start: number, now: number): StartupDiagnostics['env'] {
   const nav = navigator as Navigator & {
     deviceMemory?: number
@@ -486,6 +516,7 @@ function environment(start: number, now: number): StartupDiagnostics['env'] {
     online: nav.onLine !== false,
     hiddenMs: hiddenMsSince(start, now),
     visible: document.visibilityState !== 'hidden',
+    auto: automationHints(),
   }
 }
 

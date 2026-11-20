@@ -11,13 +11,17 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import {
+  classifyAutomation,
   classifyUserAgent,
   DIAGNOSTICS_RETENTION_DAYS,
   diagnoseStartupFailure,
   errorSignature,
+  needsAttention,
   normalizeDiagnostics,
+  partitionNoise,
   scrub,
 } from '../server/src/startup-diagnostics.js'
+import { normalizeStartupEvent } from '../server/src/startup-metrics.js'
 
 const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
 
@@ -369,7 +373,7 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
 /* ---------- 接线 ---------- */
 {
   const funnel = read('src/services/startupFunnel.ts')
-  assert.match(funnel, /DIAGNOSTIC_EVENTS = new Set<StartupEventName>\(\['failed', 'timeout', 'slow_start'\]\)/)
+  assert.match(funnel, /DIAGNOSTIC_EVENTS = new Set<StartupEventName>\(\['failed', 'timeout', 'slow_start', 'recovered'\]\)/)
   assert.match(funnel, /collectStartupDiagnostics\(payload\.attemptId, payload\.detail, \{\s*resourcesSincePageStart: payload\.runtime === 'page',/, '页面崩溃带上页面打开以来的资源请求（诊断包 #761 的资源列表是空的）')
   const games = read('server/src/routes/games.js')
   assert.match(games, /if \(result\.recorded && req\.body\?\.diagnostics\n/, '只在漏斗事件首次入库时写诊断包')
@@ -398,6 +402,99 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   assert.match(psp, /diagLog\('stage', 'info', text\)/, 'PSP 桥的阶段文字进诊断包')
   assert.match(psp, /message\.type === 'performance'/)
   assert.match(psp, /stopSnapshot\(\)/, '销毁时注销快照')
+}
+
+/* ---------- 已自动恢复 / 自动化客户端 / 真实失败分开（2026-11-19 #1285 / #1368 / #1393 / #1201） ---------- */
+{
+  const LINUX_CHROME_150 = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36'
+  const lazyReason = 'TypeError: Failed to fetch dynamically imported module: https://8bitgo.com/assets/GameDetailPage-AbCd1234.js'
+  // #1393 / #1368 / #1285 与 #917 / #1108 的同一画像：90 核、32GB、1440x900、zh-CN、3G、上报时页面在后台
+  const crawlerEnv = { mem: 32, cores: 90, net: { type: '3g', downlink: 0.4, rtt: 350, saveData: false }, screen: '1440x900@1', touch: 0, lang: 'zh-CN', coi: false, sab: true, online: true, hiddenMs: 18_000, visible: false }
+  const bundle = (env, extra = {}) => normalizeDiagnostics({ build: 'index-JjUktQWI.js', reason: lazyReason, env, attempt: { index: 1, sinceStartMs: 1 }, timeline: [], logs: [], resources: [], ...extra })
+  const ua = classifyUserAgent(LINUX_CHROME_150)
+  assert.deepEqual(ua, { browser: 'Chrome 150', os: 'Linux', device: 'desktop' })
+
+  const crawler = bundle(crawlerEnv)
+  assert.deepEqual(classifyAutomation(crawler, { userAgent: LINUX_CHROME_150, device: ua.device }), { cohort: 'suspect', signals: ['automation.server_cpu'] }, '桌面 90 核 = 服务器 CPU，疑似自动化')
+  assert.deepEqual(classifyAutomation(bundle({ ...crawlerEnv, auto: ['webdriver'] }), { userAgent: LINUX_CHROME_150, device: 'desktop' }).cohort, 'bot', 'navigator.webdriver 为 true 就是自动化')
+  assert.equal(classifyAutomation(bundle({ ...crawlerEnv, cores: 8 }), { userAgent: LINUX_CHROME_150.replace('Chrome/', 'HeadlessChrome/'), device: 'desktop' }).cohort, 'bot', '无头 Chrome 的 UA')
+  assert.equal(classifyAutomation(bundle({ ...crawlerEnv, cores: 8 }), { userAgent: 'Mozilla/5.0 (Linux; Android 11; moto g power (2022)) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Mobile Safari/537.36 Chrome-Lighthouse', device: 'mobile' }).cohort, 'bot', 'PageSpeed / Lighthouse')
+  assert.equal(classifyAutomation(bundle({ ...crawlerEnv, cores: 16, hiddenMs: 0, visible: true }), { userAgent: LINUX_CHROME_150, device: 'desktop' }).cohort, '', '普通桌面不算')
+  assert.equal(classifyAutomation(bundle({ ...crawlerEnv, cores: 128 }), { userAgent: 'Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 Chrome/97.0 Mobile Safari/537.36', device: 'mobile' }).cohort, '', '核数规则只看桌面')
+  // #1201：Chrome 97 / Android 15 / 4G / 中国，是真实玩家
+  const android = bundle({ mem: 4, cores: 8, net: { type: '4g', downlink: 10, rtt: 100, saveData: false }, screen: '393x873@2.75', touch: 5, lang: 'zh-CN', online: true, hiddenMs: 0, visible: true })
+  assert.equal(classifyAutomation(android, { userAgent: 'Mozilla/5.0 (Linux; Android 15; V2309A) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/97.0.4692.98 Mobile Safari/537.36', device: 'mobile' }).cohort, '')
+  assert.deepEqual(bundle({ ...crawlerEnv, auto: ['webdriver', 'no-outer', 'evil<script>', 'webdriver'] }).env.auto, ['webdriver', 'no-outer'], '自动化特征只收白名单、去重')
+  assert.deepEqual(bundle(crawlerEnv).env.auto, [], '旧前端不发也没关系')
+
+  // 刷新结论：只收白名单字段
+  const recovered = bundle(crawlerEnv, { recovery: { outcome: 'recovered', via: 'reload', afterMs: 2345.6, previous: 'x https://evil.example/a?token=1', junk: 1 } })
+  assert.deepEqual(recovered.recovery, { outcome: 'recovered', via: 'reload', afterMs: 2346, previous: 'x evil.example/a' })
+  assert.equal(bundle(crawlerEnv, { recovery: { outcome: 'whatever' } }).recovery, undefined)
+  // 服务端判的来源读回历史数据时保留（入库时由 recordStartupDiagnostics 重算覆盖）
+  assert.deepEqual(bundle(crawlerEnv, { automation: { cohort: 'suspect', signals: ['automation.server_cpu'] } }).automation, { cohort: 'suspect', signals: ['automation.server_cpu'] })
+  assert.equal(bundle(crawlerEnv, { automation: { cohort: 'admin' } }).automation, undefined)
+
+  // 归组：普通访客的特征和以前一样；自动化、刷新后未确认、刷新后又坏各成一组
+  const withDiagnosis = (d) => ({ ...d, diagnosis: diagnoseStartupFailure({ event: 'failed', runtime: 'page', detail: lazyReason, diagnostics: d }) })
+  const plainSig = errorSignature({ event: 'failed', runtime: 'page', detail: lazyReason, diagnostics: withDiagnosis(bundle(crawlerEnv)) })
+  const suspectSig = errorSignature({ event: 'failed', runtime: 'page', detail: lazyReason, diagnostics: withDiagnosis({ ...bundle(crawlerEnv), automation: { cohort: 'suspect', signals: [] } }) })
+  const againSig = errorSignature({ event: 'failed', runtime: 'page', detail: lazyReason, diagnostics: withDiagnosis({ ...bundle(crawlerEnv), recovery: { outcome: 'failed_again', via: 'reload', afterMs: 1 } }) })
+  const unconfirmedSig = errorSignature({ event: 'failed', runtime: 'page', detail: lazyReason, diagnostics: withDiagnosis({ ...bundle(crawlerEnv), recovery: { outcome: 'unconfirmed', via: 'reload', afterMs: 1 } }) })
+  const recoveredSig = errorSignature({ event: 'recovered', runtime: 'page', detail: lazyReason, diagnostics: withDiagnosis({ ...bundle(crawlerEnv), recovery: { outcome: 'recovered', via: 'reload', afterMs: 1 } }) })
+  assert.equal(plainSig.text, 'failed · page · 页面懒加载模块导入失败')
+  assert.equal(new Set([plainSig, suspectSig, againSig, unconfirmedSig, recoveredSig].map((x) => x.signature)).size, 5, '五种现场五个组')
+  assert.equal(suspectSig.text, 'failed · page · 页面懒加载模块导入失败 · 疑似自动化')
+  assert.equal(againSig.text, 'failed · page · 页面懒加载模块导入失败 · 自动刷新后再次失败')
+  assert.equal(recoveredSig.text, 'recovered · page · 页面懒加载模块导入失败', 'recovered 本身就是事件名，不再重复')
+  assert.equal(
+    errorSignature({ event: 'failed', runtime: 'page', detail: lazyReason, diagnostics: withDiagnosis({ ...bundle(crawlerEnv), automation: { cohort: '', signals: [] } }) }).signature,
+    plainSig.signature,
+    '普通访客显式带空来源也是同一组（历史分组不变）',
+  )
+
+  // 叫不叫人：只有普通访客、确实没恢复的才报警 / 发飞书 / 让 AI 分诊
+  assert.equal(needsAttention('failed', bundle(crawlerEnv)), true)
+  assert.equal(needsAttention('failed', { ...bundle(crawlerEnv), automation: { cohort: 'suspect', signals: [] } }), false)
+  assert.equal(needsAttention('failed', { ...bundle(crawlerEnv), automation: { cohort: 'bot', signals: [] } }), false)
+  assert.equal(needsAttention('recovered', bundle(crawlerEnv)), false)
+  assert.equal(needsAttention('failed', { ...bundle(crawlerEnv), recovery: { outcome: 'unconfirmed', via: 'reload', afterMs: 1 } }), false)
+  assert.equal(needsAttention('failed', { ...bundle(crawlerEnv), recovery: { outcome: 'failed_again', via: 'reload', afterMs: 1 } }), true, '刷新后又坏是真故障')
+
+  // 后台默认不列噪音，只数个数
+  const rows = [
+    { signature: 'a', event: 'failed', cohort: '' },
+    { signature: 'b', event: 'failed', cohort: 'suspect' },
+    { signature: 'c', event: 'recovered', cohort: '' },
+    { signature: 'd', event: 'failed', cohort: 'bot' },
+    { signature: 'e', event: 'timeout', cohort: 'weird' },
+  ]
+  const hiddenNoise = partitionNoise(rows)
+  assert.deepEqual(hiddenNoise.kept.map((r) => [r.signature, r.cohort]), [['a', ''], ['e', '']], '未知来源当普通访客')
+  assert.deepEqual(hiddenNoise.hidden, { recovered: 1, automation: 2 })
+  assert.equal(partitionNoise(rows, true).kept.length, 5)
+
+  // 漏斗收 recovered 事件
+  assert.equal(normalizeStartupEvent({ event: 'recovered', visitId: 'visit-12345678', attemptId: 'attempt-12345678', runtime: 'page' }).event, 'recovered')
+
+  // 接线
+  const server = read('server/src/startup-diagnostics.js')
+  assert.match(server, /diagnostics\.automation = classifyAutomation\(diagnostics, \{ userAgent, device \}\)/, '来源在服务端按原始 UA 当场判，UA 不落库')
+  assert.match(server, /const attention = inserted && needsAttention\(event\.event, diagnostics\)/)
+  assert.match(server, /if \(attention\) void maybeAlertSignature\(signature\)/)
+  assert.match(server, /if \(attention && \(event\.event === 'failed' \|\| event\.event === 'timeout'\)\)/, '飞书只报普通访客的真失败')
+  assert.match(server, /if \(attention\) \{\s*void import\('\.\/ai-hotfix\.js'\)/, 'AI 分诊同理')
+  assert.match(server, /if \(event\.runtime !== 'page'\) delete diagnostics\.recovery/, '刷新结论只认兜底页的报告')
+  assert.match(read('server/src/routes/admin.js'), /diagnosticGroups\(req\.query\.days, req\.query\.q, req\.query\.event, req\.query\.noise\)/)
+  assert.match(read('server/scripts/migrate.mjs'), /ADD COLUMN `cohort` VARCHAR\(12\)/)
+  assert.match(read('server/schema-v2.sql'), /cohort VARCHAR\(12\)/)
+  assert.match(read('server/src/schema-check.js'), /table: 'game_startup_diagnostics', column: 'cohort'/)
+  const client = read('src/services/startupDiagnostics.ts')
+  assert.match(client, /navigator as Navigator & \{ webdriver\?: boolean \}\)\.webdriver === true\) hints\.push\('webdriver'\)/)
+  assert.match(client, /auto: automationHints\(\)/)
+  const page = read('src/admin/AdminDiagnostics.tsx')
+  assert.match(page, /if \(showNoise\) params\.set\('noise', 'show'\)/, '后台默认隐藏噪音，点了才显示')
+  assert.match(page, /\{ id: 'recovered', label: '已自动恢复' \}/)
 }
 
 /* ---------- 慢启动要看得出卡在下载还是启动 ---------- */
@@ -444,7 +541,7 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   assert.match(ejs, /void probeBrowserBitness\(\)/, '开局先发高熵查询')
   // 详情页渲染崩溃（兜底页）也进「错误诊断」：只在 /games/<slug>，旧 chunk 自救刷新的不报
   const boundary = read('src/components/AppErrorBoundary.tsx')
-  assert.match(boundary, /if \(!recoverBrokenAsset\(error, info\)\) reportRenderCrash\(error, info\)/)
+  assert.match(boundary, /const previous = takeRecoveryForFailure\(\)\s*if \(!recoverBrokenAsset\(error, info, previous\)\) reportRenderCrash\(error, info, '', previous\)/)
   // 坏 chunk（缺具名导出 / 404）先核对修复再决定刷新还是上报，细节见 scripts/test-asset-repair.mjs
   assert.match(boundary, /event: 'failed',\s*runtime: 'page'/)
   assert.match(boundary, /games\\\/\(\[\^\/\?#\]\+\)/, '只在游戏详情页上报')

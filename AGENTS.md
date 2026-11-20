@@ -3955,7 +3955,7 @@ PK / TH 两份现场：`The requested module './live-Cqhc9j-k.js' does not provi
 - **正常访问**：`index.html` 里一段 ES5 内联钩子，不发请求。只在 localStorage `8bitgo.asset-remap` 有未过期记录时插一张 import map；
   定义 `window.__8bitgoAssetRepair`，并监听 window 的 `SyntaxError`（入口模块链接失败时 React 起不来，兜底页接不住）。
   钩子必须排在任何模块脚本之前，import map 才来得及生效。
-- **出错时**：才加载 `public/assets/asset-repair-v6.js`（文件名即代次，长期缓存；改逻辑新建 v7，旧版留给已打开的旧页面）。
+- **出错时**：才加载 `public/assets/asset-repair-v7.js`（文件名即代次，长期缓存；改逻辑新建 v8，旧版留给已打开的旧页面）。
   首页按入口脚本所在资源域加载，所以大陆入口 `cn.8bitgo.com/_cn/assets/` 的自修复也走 EdgeOne；该路 5 秒超时或失败后再回主站
   `/assets/` 重试，每次的地址 / 结果 / 耗时记在 `window.__8bitgoAssetRepairLoad`，诊断包写成「加载失败 812ms」「5 秒超时」
   「已加载、核对 20 秒内没有结束」。只核对本页 Resource Timing 里用过的
@@ -3967,9 +3967,12 @@ PK / TH 两份现场：`The requested module './live-Cqhc9j-k.js' does not provi
   取不下来（网络错误 / HTTP 错误）→ 绕过缓存重试一次，好了记 `recovered`；仍失败时再带 `?asset-repair=1` 回源核对，
   回源正常就记 `remapped`、请服务端清 Cloudflare；仍不可达且文件在大陆加速入口上，再取主站同名文件对照，主站正常记 `edgeOnly`，
   主站也不行记 `failed`。`trace` 记录每一步的 HTTP 状态 / 网络错误 / 超时。
+  v7 起 `.js` 还核对 Content-Type（不是 JavaScript 记「类型错误」，按字节不符处理）；点名文件字节和类型都对时只记 `inDocument`，
+  不改地址、不清边缘（见本节末 #1285 / #1368 / #1393）。
 - 用 SHA-256 不用 MD5：`crypto.subtle` 只有 SHA 系列，原生实现比 JS 版 MD5 快。没上全量 SRI：那要把约 110 个哈希塞进每份 HTML。
-- `AppErrorBoundary` 对 SyntaxError 与旧 chunk 404 都先走修复：修好了先上报（诊断包带「资源核对：…」一行）再刷新；
-  没发现坏文件的 404 照旧刷新一次；其余上报。诊断包里的那一行分得清浏览器缓存坏、CDN 边缘坏、源站坏。
+- `AppErrorBoundary` 对 SyntaxError 与旧 chunk 404 都先走修复：修好了刷新一次（2026-11-19 起报告留到刷新后再发，
+  好了记 `recovered`、又坏了并成一份 `failed_again`，见本节末）；没发现坏文件的 404 照旧静默刷新一次；其余上报。
+  诊断包里的「资源核对：…」一行分得清浏览器缓存坏、CDN 边缘坏、源站坏、失败只在本页模块表里。
 - `/api/asset-repair` 不用登录：只认磁盘上这一版清单里、且磁盘 SHA-256 与清单一致的文件，按 IP 6 次 / 小时、全站 60 次 / 小时、
   同一文件 15 分钟一次。只清 Cloudflare；大陆入口 EdgeOne 没有清缓存通道，靠客户端 import map 绕过。
   没配 `CF_ZONE_ID` / `CF_PURGE_API_TOKEN` 时只打日志（`[asset-repair]`）。
@@ -4006,6 +4009,7 @@ PK / TH 两份现场：`The requested module './live-Cqhc9j-k.js' does not provi
 
 - 清单查了 56 项、55 项正常；点名的 `EmulatorPlayer-*.js` 强制重取后 SHA-256 正确，`failed` / `trace` 为空。现场只能确认动态模块请求失败后，普通 URL 的文件字节可取且正确；具体是瞬时网络、CDN 响应头还是浏览器模块加载路径，现有数据分不出来。
 - 旧恢复在普通 URL 内容正确后直接整页刷新。Chrome 仍会沿同一个 CDN URL 重试，若故障在该 URL 的边缘缓存 / 请求路径，刷新可能重复失败。v6 在同源懒加载失败且普通 URL 已校验正确时，额外用 5 秒上限核对 `?asset-repair=1` 地址；只有查询串副本也与 SHA-256 清单一致，才保存 import map remap、请求清 Cloudflare，并刷新到该副本。查询串未通过时维持原恢复行为。
+- ⚠️ 2026-11-19 复查：v6 的前提不成立，它清的是健康文件；v7 已撤掉这一支。见本节末 #1285 / #1368 / #1393。
 - 回归：`npm run test:asset-repair`。
 
 **诊断包 #761（微信 iOS 27，CN，《超级玛丽》详情页，`TypeError: Importing a module script failed.`）：旧 build，但根因当时没修。**
@@ -4051,6 +4055,57 @@ PK / TH 两份现场：`The requested module './live-Cqhc9j-k.js' does not provi
 - 2026-11-17 复查：播放器触屏手柄 `LazyTouchPad` 还是裸 `lazy()`（移动端会话必下），没有就地重试、也不点名 chunk。现已改走 `importWithRetry` + `tagLazyFailure`；`test:asset-repair` 扫描 `src/` 里所有 `lazy(() => …)`，不经 `importWithRetry`（或 `lazyNamed`）就失败。
 - **诊断包 #1196 / #1201（Chrome 97 / Android 15 / CN，《恐龙快打》）：legacy 懒加载 chunk 加载失败。** #1201 点名 `EmulatorPlayer-legacy-J-EQUy6G.js`，错误来自 SystemJS 的 `HTMLScriptElement` 加载回调；请求记录为 0 传输 / 0 内容。现有现场不能判断底层是瞬时网络、缓存还是 EdgeOne 响应，也不能从单次事件确认服务端缺文件。
   Vite legacy 包把 `import()` 编成 `System.import()`；SystemJS 的通用错误不匹配现代 ESM 重试列表，失败 URL 也可能藏在 `__vite__mapDeps` 运行时映射里，旧 `lazyChunkFile()` 因此拿不到文件名。结果是只尝试原 URL 一次，错误边界也不把它当 chunk 加载失败。现在识别 SystemJS 加载错误，从错误 URL 取出 legacy chunk 文件名，用新的 `chunk-retry` 查询串通过 `System.import()` 重试；仍失败时先整页刷新，重复失败再从 CN 加速入口切到主站。legacy 产物不在现代版 SHA-256 清单中，不能用现代清单给它作完整性结论。
+  2026-11-19 复核：#1201 就是 6b23db2（11-18 17:04 +0800）据以修复的那份现场，构建 `index-Co6eB-5S.js` 早于修复，当时没有任何重试。
+  当前构建产物里 legacy 懒加载编成 ``()=>_(()=>t.import(`./GameDetailPage-legacy-….js`),void 0,t.meta.url)``，`lazyChunkFile` 认得出；
+  重试走 `t.import(url)`（SystemJS 上下文导入），`import.meta.url` 编成 `t.meta.url`，查询串只加在入口上，依赖仍按原地址解析 —— 修复是完整的。
+  同时出错的 `lf1-cdn-tos.bytegoofy.com/…/push.js`（头条推送脚本）说明那一刻设备整体断流，不是我们一个文件的问题。
+  补充：SystemJS 失败的加载也会留在注册表里（`load.er`），和原生模块表一样；SystemJS 错误点名的文件不是懒加载入口时说明失败在依赖，
+  就地重试入口同样没用，现在按模块图证据直接交给兜底页刷新（下一条）。
+
+**诊断包 #1285 / #1368 / #1393（2026-11-18～19，Chrome 150 / Linux / desktop / US，`Failed to fetch dynamically imported module: …/GameDetailPage-*.js`）：不是 CDN 坏，是自动化客户端 + 静态依赖失败被模块表记住。**
+
+- **画像**：三份与 #917 / #1108 一模一样 —— 90 个逻辑核、32GB、1440x900、zh-CN、美国、网络报 3G（0.4～1.45Mbps、rtt 300～350ms）、
+  上报时页面在后台，三天里换游戏（三国志 3、狂野飙车 6、FIFA 97、黄金矿工……）、换部署反复出现。90 不是任何桌面 CPU 的线程数（云主机切出来的 CPU 集），
+  数据中心出口不会只有 0.4Mbps（开着网络限速），版本停在 Chrome 150（自动化集群常钉旧版浏览器）、页面在后台（多标签抓取）。
+  结论：一台跑在美国机房、按中文内容配置的抓取 / 测试机。诊断包不存 IP / ASN / 完整 UA，所以只能从这些特征推断，不能百分之百确认；
+  以前也没采 `navigator.webdriver`，现在采了（下面）。
+- **为什么「原 URL 内容正常、查询串副本正常，但 import() 失败」**：2026-11-19 用 Chromium 153 与 WebKit 26.6 的最小复现
+  （入口 `Page.js` 静态 import `dep.js`；`dep.js` 404 / 错误 MIME / 被 `route.abort` 中止 / `window.stop()` 一次）实测：
+  1. Chrome 报 `Failed to fetch dynamically imported module: …/Page.js` —— **写的是入口，不是真正失败的依赖**；Safari 只有 `Importing a module script failed.`。
+  2. 失败的依赖被**这一份文档的模块表**记住：换查询串重导入口（`?chunk-retry=1`、`=2`）、原地址重导都失败，依赖请求根本不再发；
+     整页刷新（新文档）后导入成功。入口自己失败（503）时换查询串重导就能好 —— 就地重试只对这种情况有用。SystemJS 也一样（`load.er`）。
+  3. 同一时刻 `fetch()` 入口、依赖、查询串副本全是 200。
+  所以 v6 看到的「入口字节对、查询串副本对」恰恰是这个机制，不是边缘缓存坏了；它写 import map、请求清 Cloudflare，清的是健康的
+  `GameDetailPage-*.js`（每次都让全球边缘回源一遍）。#1368 的 `gradients-*.js`（1KB 的 `src/lib/gradients.ts`）连修复脚本的 fetch、
+  强制重取、查询串回源都取不下来，只能是那台客户端自己拦 / 中止了请求；另外 6 个「改走回源」的文件同理是误判。
+  依赖第一次为什么失败，在我们这边查不到（客户端中止、拦截或它自己的代理），不是我们能修的。
+- **改动**：
+  - `importWithRetry` 第一次失败后读**模块图证据**（`importGraphEvidence`）：Resource Timing 里入口原地址那条已完整下载（有正文、非错误状态）
+    就说明失败在依赖，不再换查询串白下两遍入口（3G 上就是几百 KB、两秒多），直接交给兜底页刷新；Chrome 会给失败的依赖留一条
+    `responseStatus` 0 / ≥400、无正文的记录，据此点名（WebKit 不记失败请求，只能判入口下完了）。跨源无 TAO 时看不出，照旧重试。
+    legacy 看 SystemJS 错误里的文件是不是入口。证据挂在错误上，兜底页写进诊断包（「模块图：入口已完整下载、失败在静态依赖…」），
+    失败的依赖也交给修复脚本强制重取。不按时间筛：悬停预取（`preloadPlayer`）更早失败的依赖正是被记住的那个。
+  - `asset-repair-v7.js`：撤掉 v6 的「点名文件正常 → 查询串副本 → remap + 清 Cloudflare」，改记 `inDocument`；多核对 `.js` 的 Content-Type，
+    边缘把错误类型挂在 `.js` 上（fetch 拿得到字节、模块会被拒）才算地址本身异常，走查询串回源 / remap —— 这才是 v6 想覆盖的故障。
+    依赖真取不下来时不标 `inDocument`（入口只是被连累）。`check-asset-integrity.mjs` 改核 v7。
+  - **报告留到刷新后**（`src/services/pageRecovery.ts`）：兜底页要自动刷新时不再「先上报」，把报告（诊断包当场采）存进 sessionStorage，
+    刷新后的页面：同一个 chunk（按去哈希的名字比）加载上了 → 补报 `recovered`（漏斗新事件，不算 failures）；没点名 chunk、20 秒没再崩也算；
+    又崩了 → 那份报告带 `recovery.outcome = failed_again` 和「刷新前：…」，一次故障只记一行；换了页 / 等不到点名 chunk → `failed` + `unconfirmed`。
+    不跟刷新的自动化客户端、刷新前就关了标签页的，这份就不报了（少一份噪音）。sessionStorage 不可用时退回先报再刷新。
+    静默刷新（旧 chunk 404）好了照旧不报，只留前情。`importWithRetry` 成功时经 `onLazyChunkLoaded` 通知，路由与触屏手柄都覆盖。
+  - **来源分组**（`server/src/startup-diagnostics.js`）：前端多采 `env.auto`（`navigator.webdriver`、窗口外框 0×0、语言列表为空，几个开关、无标识符）；
+    服务端 `classifyAutomation` 当场用原始 UA（`isCrawlerUa`，与 SSE 拒爬虫同一张表）判 `bot`，桌面报 >64 核等判 `suspect`；不看 IP / 地区 / 语言。
+    `cohort` 存新列（`npm run migrate`；缺列时退回旧写法），也进特征：自动化、刷新后未确认、刷新后又坏各成一组，普通访客的特征与以前完全一样。
+    `needsAttention` 挡掉自动化 / `recovered` / `unconfirmed`：不发飞书、不聚集报警、不触发 AI 分诊、不计入 AI 修补的失败统计。
+    后台「错误诊断」默认不列已恢复和自动化（只数个数），点「显示」才列；类型筛选多了「已自动恢复」。隐私政策三种语言已写明新增的开关与刷新后补报。
+- **各样本结论**：#1285 / #1368 / #1393 = 疑似自动化客户端（`suspect`，桌面 90 核），自愈与否原现场不可知（旧版先报后刷）；
+  按新代码它们会进单独一组、不叫人。#1201 = 真实玩家、旧构建、已由 6b23db2 覆盖。
+- **端到端**（2026-11-19，Playwright Chromium 153 + 真实构建产物 + 只给 `/startup` 打桩的静态服务器，`route.abort` 让 `GameDetailPage` 的静态依赖 `AgeGate-*.js` 失败）：
+  - 失败一次 → 0 个 `chunk-retry` 请求、0 次清缓存、不写 import map，刷新一次后补报一份 `recovered`（带模块图证据；`env.auto` 是 `webdriver`）；
+  - 只有普通地址一直失败 → 查询串回源正常 → remap + 请求清缓存，刷新后经 import map 恢复，补报 `recovered`；
+  - 所有地址都失败 → 刷新一次后停在兜底页，只有一份 `failed` + `failed_again`，带刷新前的经过。
+- 回归：`npm run test:asset-repair`（模块图证据按两家浏览器的真实 Resource Timing 形状、证据驱动的重试、v7 的 inDocument / MIME、刷新后补报）、
+  `npm run test:startup-diagnostics`（来源分类、特征分组、噪音分区、`recovered` 事件），`cd server && npm run test:diag-alert && npm run test:diag-lark`。
 
 ## 3. 常用命令
 

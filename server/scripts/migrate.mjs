@@ -1180,6 +1180,13 @@ const patches = [
     run: () => conn.query("ALTER TABLE `game_startup_diagnostics` ADD COLUMN `hotfix_ids` VARCHAR(120) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '' AFTER `payload`"),
   },
   {
+    name: 'game_startup_diagnostics.cohort（自动化客户端 / 疑似自动化；后台默认隐藏、不报警）',
+    table: 'game_startup_diagnostics',
+    skip: async () => (!(await hasTable('game_startup_diagnostics')) ? '缺 game_startup_diagnostics 表' : null),
+    needed: async () => !(await hasColumn('game_startup_diagnostics', 'cohort')),
+    run: () => conn.query("ALTER TABLE `game_startup_diagnostics` ADD COLUMN `cohort` VARCHAR(12) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '' AFTER `hotfix_ids`"),
+  },
+  {
     name: 'psp_conversion_jobs（PSP ISO → CHD 后台压缩队列）',
     table: null,
     skip: async () => (!(await hasTable('game_roms')) ? '不是 v2 数据库' : null),
