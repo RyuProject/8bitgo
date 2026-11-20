@@ -1,5 +1,5 @@
 /**
- * 主站 / 亚洲 CDN 首次选路回归（public/edge-route-v3.js）。
+ * 主站 / 亚洲 CDN 首次选路回归（public/edge-route-v4.js）。
  *
  * 直接执行：node scripts/test-edge-route.mjs
  *
@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url'
 import { createContext, runInContext } from 'node:vm'
 
 const root = new URL('..', import.meta.url)
-const source = readFileSync(fileURLToPath(new URL('public/edge-route-v3.js', root)), 'utf8')
+const source = readFileSync(fileURLToPath(new URL('public/edge-route-v4.js', root)), 'utf8')
 const HOST_MAIN = '8bitgo.com'
 const HOST_ASIA = 'cn.8bitgo.com'
 
@@ -182,10 +182,12 @@ await check('两个节点都不返回时，探测按 180ms 上限收敛且释放
   assert.equal(result.document.cookie, `8bitgo.edge=${HOST_MAIN}:1000000; Domain=.8bitgo.com; Path=/; Max-Age=7200; SameSite=Lax; Secure`)
 })
 
-await check('从亚洲边缘首访且两边都测不出时，不猜主站、不跨域重载', async () => {
+await check('从亚洲边缘首访：不测速、不跨域，也不写 cookie', async () => {
   const result = await run({ host: HOST_ASIA, timings: { [HOST_MAIN]: 'hang', [HOST_ASIA]: 'hang' } })
   assert.equal(result.redirected, null)
-  assert.equal(result.document.cookie, `8bitgo.edge=${HOST_ASIA}:1000000; Domain=.8bitgo.com; Path=/; Max-Age=7200; SameSite=Lax; Secure`)
+  assert.equal(result.requests.length, 0)
+  assert.equal(result.document.cookie, '')
+  assert.equal(result.pendingTimeouts, 0)
 })
 
 console.log('\n二、跨域会话与缓存选择')
@@ -230,9 +232,21 @@ await check('同一节点的有效选择无需探测', async () => {
   assert.equal(result.requests.length, 0)
 })
 
-await check('从亚洲边缘访问时，主站明显更快也能切回', async () => {
+await check('从亚洲边缘访问时，主站探针更快也不切回（2026-11-20 大陆直连：探针 0.45 秒判主站赢，主站 HTML 却要 4～25 秒）', async () => {
   const result = await run({ host: HOST_ASIA, timings: { [HOST_MAIN]: 40, [HOST_ASIA]: 300 } })
-  assert.equal(result.redirected, `https://${HOST_MAIN}/games/test`)
+  assert.equal(result.redirected, null)
+  assert.equal(result.requests.length, 0)
+})
+
+await check('亚洲边缘上记着「主站」的旧 cookie 也不理（v2 / v3 的测速记下的）', async () => {
+  const result = await run({ host: HOST_ASIA, cookie: `8bitgo.edge=8bitgo.com:${1_000_000 - 60_000}`, timings: { [HOST_MAIN]: 40 } })
+  assert.equal(result.redirected, null)
+  assert.equal(result.requests.length, 0)
+})
+
+await check('亚洲边缘上的语言跳转照常完成', async () => {
+  const result = await run({ host: HOST_ASIA, path: '/games/x', target: '/ja/games/x' })
+  assert.equal(result.redirected, '/ja/games/x')
 })
 
 console.log('\n三、SEO 与错误保护')
@@ -247,7 +261,7 @@ await check('错误 target 不能变成外站跳转', async () => {
   assert.equal(result.redirected, 'https://cn.8bitgo.com/games/test')
 })
 
-console.log('\n四、按 Cloudflare 的地域结论选路（v3）')
+console.log('\n四、按 Cloudflare 的地域结论选路（v3 起）')
 const ASIA_COOKIE = `8bitgo.edge=${HOST_ASIA}:1000000; Domain=.8bitgo.com; Path=/; Max-Age=7200; SameSite=Lax; Secure`
 const SLOW = { [HOST_MAIN]: 1000, [HOST_ASIA]: 1600 } // 大陆直连实测量级：180ms 的测速永远超时
 
@@ -368,9 +382,17 @@ await check('海外访客的语言跳转照常完成', async () => {
   assert.equal(result.redirected, '/ja/games/x')
 })
 
-await check('大陆入口上的 cn 不是地域结论：仍按测速，主站明显更快也能切回', async () => {
+await check('大陆入口上的 cn 不是地域结论，也不测速：留在 cn', async () => {
   const result = await run({ host: HOST_ASIA, hint: 'cn', timings: { [HOST_MAIN]: 40, [HOST_ASIA]: 300 } })
-  assert.equal(result.redirected, `https://${HOST_MAIN}/games/test`)
+  assert.equal(result.redirected, null)
+  assert.equal(result.requests.length, 0)
+})
+
+await check('主站送过来的大陆访客到了 cn 不会被送回（不再三次加载）', async () => {
+  const onMain = await run({ hint: 'cn', timings: SLOW })
+  assert.equal(onMain.redirected, 'https://cn.8bitgo.com/games/test')
+  const onAsia = await run({ host: HOST_ASIA, hint: 'cn', cookie: onMain.document.cookie.split(';')[0], timings: { [HOST_MAIN]: 40, [HOST_ASIA]: 300 } })
+  assert.equal(onAsia.redirected, null)
 })
 
 if (failed) process.exitCode = 1

@@ -3699,7 +3699,7 @@ EdgeOne 只能用境外（香港）节点。主站、ROM、Pages 子域都不受
   同一份「大陆页面」缓存里，SSR 把模板的 `/assets/`、`/fonts/` 改指 `https://cn.8bitgo.com/_cn/...`；
   `api.ts` 的非后台 GET 走 `https://cn.8bitgo.com/_cn/api/...`。地址栏不变，只剩 HTML 本身还去 Cloudflare。
   - ⚠️ 必须带 `/_cn` 前缀：EdgeOne 已缓存过大陆入口同源请求的 `/assets/*`（**没有** CORS 头），缓存键不看 Origin，
-- **主站上的大陆访客整页送到 cn.8bitgo.com**（2026-11-20，`public/edge-route-v3.js`）：以前的 `edge-route-v2.js` 用两个 180ms 测速探针决定去留，
+- **主站上的大陆访客整页送到 cn.8bitgo.com**（2026-11-20，`public/edge-route-v3.js` → 当前 `edge-route-v4.js`）：以前的 `edge-route-v2.js` 用两个 180ms 测速探针决定去留，
   从大陆直连实测探已连上的 8bitgo.com 要 1.0 秒、第一次连 cn.8bitgo.com（含握手）要 1.4～3.2 秒，两个探针永远超时、按规则留在原地 ——
   上线以来没把一个大陆访客送去 EdgeOne。同一时刻经 Cloudflare 美国节点：首页 HTML 2.4～4.2 秒（偶尔 60 秒无响应）、入口 JS 7.9 秒、
   一张封面 15.3 秒；经 EdgeOne：JS 1.5 秒、封面 3.1 秒。v3 改看 Cloudflare 已给的地域结论：SSR 把 `coverHint` 写进
@@ -3708,12 +3708,15 @@ EdgeOne 只能用境外（香港）节点。主站、ROM、Pages 子域都不受
     缓存库以外的任何 IndexedDB）、cn.8bitgo.com 的 favicon 3 秒内取得到、用户还没点过 / 按过键，才 `location.replace` 过去。
     不比快慢；探针带凭据，跳转能复用那条已握手的连接。查不了 IndexedDB（报错 / 卡住）按「有存档」留下。
   - 主站 + `main`：不测速、不跨域（v2 每两小时对海外访客多开一条到香港的冷连接）。
-  - 大陆入口上一律写 `cn`，那不是地域结论，照旧走 v2 的测速；没有结论（本地开发、规则没配）也照旧。
+  - **大陆入口上不测速、不跨域，一律留下**（v4）。v3 在这里还走 v2 的 180ms 测速：2026-11-20 大陆直连（出口 CN、Cloudflare LAX）
+    打开 cn.8bitgo.com，探针约 0.45 秒就判主站赢、整页送回 8bitgo.com —— 小请求只量握手（Cloudflare TLS 约 0.5 秒、EdgeOne 0.6～2.6 秒），
+    量不出丢包：同一时刻主站首页 HTML 已 HIT 仍要 4～25 秒、经 EdgeOne 2.5～3.5 秒；被送回的访客又被主站按地域送回 cn，三次加载。
+    代价：从分享链接直接打开 cn.8bitgo.com 的海外访客也留在 EdgeOne。主站上没有结论（本地开发、规则没配）时照旧走 v2 的测速。
   - 带 `__assets=origin`（EdgeOne 取不下 chunk 后改从主站整页载入）的这一页留下，并写 `8bitgo.edge.pin` 钉在主站两小时，
     否则下一次整页加载又被按地域送回同一条坏线路。
   - ⚠️ 已经在主站上玩过的访客会一直留在主站（本地存档跨不了域）；没做迁移。第一次访问要多加载一次页面（主站 HTML + 跳转后的大陆入口 HTML），
     之后站内跳转都在 cn.8bitgo.com 上；从搜索结果回到 8bitgo.com 时再走一遍判断。
-  - `edge-route-vN.js` 按版本号长期缓存（`cache.js`）：改逻辑必须新建 v4，v2 / v3 留给边缘缓存里的旧 HTML。
+  - `edge-route-vN.js` 按版本号长期缓存（`cache.js`）：改逻辑必须新建 v5，v2 / v3 / v4 留给边缘缓存里的旧 HTML。
     回归：`npm run test:edge-route && npm run test:cover-cdn`。
     我们又清不了 EdgeOne。换前缀等于一组新缓存键，源站对它固定发 `Access-Control-Allow-Origin: https://8bitgo.com`
     和 CORP。同理 CSS 里写死的 `url(/fonts/...)` 由 cn-edge.js 现场改成 `/_cn/fonts/`。
