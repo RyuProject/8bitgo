@@ -1217,7 +1217,6 @@ const de: Translation = {
       gbaVideoLcdDesc: 'Leichtes LCD-Raster und GBA-Farbton',
       chatPlaceholder: 'Sag was… (Enter zum Senden)',
       chatSend: 'Senden',
-      autoLivePending: 'Auto-Stream beim Start',
       autoLiveOnHint: 'Sobald das Spiel startet, wird es öffentlich gestreamt und andere können es in der Lobby ansehen. Klicke, um diese Runde privat zu halten.',
       autoLiveOffHint: 'Diese Runde bleibt nach dem Start privat. Klicke, um wieder automatisch zu streamen.',
       liveNow: 'Live',

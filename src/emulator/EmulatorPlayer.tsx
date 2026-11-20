@@ -336,16 +336,6 @@ interface Props {
   onMatchPlayerChange?: (active: boolean) => void
   /** 空闲态背景（例如封面） */
   backdrop?: ReactNode
-  /** 详情页专用展示。仅调整空闲舞台的外观，不改变启动参数、ROM 名或存档身份。 */
-  pagePresentation?: boolean
-  /** 只用于详情页舞台上的可见标题；gameName 仍保留模拟器所需的原值。 */
-  displayTitle?: string
-  /** 详情页舞台中间的小封面，复用页面已经选择的缩略图。 */
-  stagePoster?: ReactNode
-  /** 详情页舞台中的分享入口。 */
-  onShare?: () => void
-  /** 游戏尚未启动时，从详情页下方的联机入口发起；播放器现有生命周期会接住请求。 */
-  onPageMatchRequest?: () => void
   /**
    * 游戏详情页的展示形态（2026-11 新版详情页设计稿）。只改**外观**：
    *   - 桌面端舞台 2:1（原来 16:9），空闲态中间是封面 + 标题 + 开始 / 分享 / 下载；

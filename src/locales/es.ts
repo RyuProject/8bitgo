@@ -1216,7 +1216,6 @@ const es: Translation = {
       gbaVideoLcdDesc: 'Rejilla LCD ligera y color de GBA',
       chatPlaceholder: 'Di algo… (Intro para enviar)',
       chatSend: 'Enviar',
-      autoLivePending: 'Directo auto al empezar',
       autoLiveOnHint: 'La partida se emitirá en público al empezar y otros podrán verla en la sala. Haz clic para que esta partida sea privada.',
       autoLiveOffHint: 'Esta partida será privada al empezar. Haz clic para volver a emitir automáticamente.',
       liveNow: 'En directo',

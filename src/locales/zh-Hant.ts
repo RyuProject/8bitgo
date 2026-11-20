@@ -1215,7 +1215,6 @@ const zhHant: Translation = {
       gbaVideoLcdDesc: '輕量 LCD 網格與 GBA 色調',
       chatPlaceholder: '說點什麼…（Enter 發送）',
       chatSend: '發送',
-      autoLivePending: '開局自動直播',
       autoLiveOnHint: '開始遊戲後會自動公開直播，其他人能在大廳看到並觀看。點一下，這一局改成不公開。',
       autoLiveOffHint: '這一局開始後不公開直播。點一下恢復自動直播。',
       liveNow: '正在直播',

@@ -1202,7 +1202,6 @@ const ja: Translation = {
       gbaVideoLcdDesc: '軽い LCD グリッドと GBA の色合い',
       chatPlaceholder: 'なにか書く…（Enter で送信）',
       chatSend: '送信',
-      autoLivePending: '開始時に自動配信',
       autoLiveOnHint: 'ゲームを始めると自動で公開配信され、ロビーで他の人が視聴できます。クリックするとこの回は非公開にします。',
       autoLiveOffHint: 'この回は開始後も非公開です。クリックすると自動配信に戻します。',
       liveNow: '配信中',

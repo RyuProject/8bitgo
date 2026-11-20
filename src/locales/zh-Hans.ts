@@ -1272,7 +1272,6 @@ export const zhHans = {
       gbaVideoLcdDesc: '轻量 LCD 网格与 GBA 色调',
       chatPlaceholder: '说点什么…（回车发送）',
       chatSend: '发送',
-      autoLivePending: '开局自动直播',
       autoLiveOnHint: '开始游戏后会自动公开直播，别人能在大厅看到并观看。点一下，这一局改成不公开。',
       autoLiveOffHint: '这一局开始后不公开直播。点一下恢复自动直播。',
       liveNow: '正在直播',

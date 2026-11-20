@@ -1216,7 +1216,6 @@ const en: Translation = {
       gbaVideoLcdDesc: 'Light LCD grid and GBA color tone',
       chatPlaceholder: 'Say something… (Enter to send)',
       chatSend: 'Send',
-      autoLivePending: 'Auto-stream on start',
       autoLiveOnHint: 'This game will be streamed publicly once it starts, so others can find and watch it in the lobby. Click to keep this game private.',
       autoLiveOffHint: 'This game will stay private once it starts. Click to stream it automatically again.',
       liveNow: 'Live now',
