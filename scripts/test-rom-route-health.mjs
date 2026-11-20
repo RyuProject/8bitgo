@@ -20,12 +20,13 @@ globalThis.window = { setTimeout: setTimeout.bind(globalThis), clearTimeout: cle
 const health = await import('../src/services/romRouteHealth.ts')
 const { fetchBlobWithProgress, sameObjectRoutes } = await import('../src/emulator/loadProgress.ts')
 const { probeRom, clearRomProbeCache, ROM_PROBE_HEDGE_MS } = await import('../src/services/roms.ts')
-const { reachableRomAssetUrl } = await import('../src/services/romHosts.ts')
+const { reachableRomAssetUrl, clearReachableRomOrigins } = await import('../src/services/romHosts.ts')
 const { chooseRomHost } = await import('../src/services/romRoute.ts')
 
 let failed = 0
 const check = async (name, fn) => {
   health.resetRomRouteHealth()
+  clearReachableRomOrigins()
   try {
     await fn()
     console.log(`  ✅ ${name}`)
@@ -357,6 +358,44 @@ await check('BIOS：第一条线路不答复时 600ms 后同时问下一条', as
   const url = await reachableRomAssetUrl('https://download.example.com/roms/bios/neogeo.zip')
   assert.equal(hostOf(url), 'rom.example.com')
   assert.ok(Date.now() - started < 1500)
+})
+
+// 2026-11-20《实况足球 2000》大陆实测：优选域响应头秒回、正文 7 KB/s，1 字节探测选中它，512KB 的 PS1 BIOS 下了 74 秒
+await check('BIOS：响应头秒回、正文很慢的线路输给先读完样本的线路', async () => {
+  const BIOS = 512 * 1024
+  globalThis.fetch = async (url, init) => {
+    const slow = hostOf(url) === 'rom.example.com'
+    return rangeResponse(BIOS, init.headers.Range, { pieceDelay: slow ? 1500 : 10, signal: init.signal })
+  }
+  const started = Date.now()
+  const url = await reachableRomAssetUrl('https://rom.example.com/roms/bios/scph1001.bin')
+  assert.notEqual(hostOf(url), 'rom.example.com', '不能只看响应头')
+  assert.ok(Date.now() - started < 1500, '对冲后快线路先读完')
+  assert.ok((health.romRouteRate(url) ?? 0) > 0, '样本吞吐记进记分板，下一局和 ROM 下载也看得见')
+})
+
+await check('BIOS：排第一的线路测过但很慢，不免探测', async () => {
+  // 只有它测过（约 7 字节/毫秒）、别的没测过：排序把没测过的当成一样快，它仍排第一
+  health.recordRomRouteTransfer('https://rom.example.com/', 64 * 1024, 9000)
+  let calls = 0
+  globalThis.fetch = async (url, init) => {
+    calls++
+    const slow = hostOf(url) === 'rom.example.com'
+    return rangeResponse(512 * 1024, init.headers.Range, { pieceDelay: slow ? 1500 : 10, signal: init.signal })
+  }
+  const url = await reachableRomAssetUrl('https://rom.example.com/roms/bios/scph1001.bin')
+  assert.ok(calls > 0, '慢线路不能免探测直接用')
+  assert.notEqual(hostOf(url), 'rom.example.com')
+})
+
+await check('BIOS：探测只读 64KB 样本，不把整份 BIOS 拖下来', async () => {
+  const ranges = []
+  globalThis.fetch = async (url, init) => {
+    ranges.push(init.headers.Range)
+    return rangeResponse(4 << 20, init.headers.Range, { pieceDelay: 10, signal: init.signal })
+  }
+  await reachableRomAssetUrl('https://rom.example.com/roms/bios/neogeo.zip')
+  assert.deepEqual([...new Set(ranges)], ['bytes=0-65535'])
 })
 
 await check('BIOS：排第一的线路刚有真实下载就直接用，不发探测', async () => {

@@ -13,7 +13,7 @@ import {
   isRomRouteOpen,
   rankRomRoutes,
   recordRomRouteFailure,
-  recordRomRouteSuccess,
+  recordRomRouteTransfer,
   romRouteOrigin,
   romRouteRate,
 } from './romRouteHealth'
@@ -91,49 +91,84 @@ export function alternateRomUrls(url: string, base = ENV_ROM_BASE, mirror = ENV_
 
 /** 刚确认可读的线路（origin → 到期时间）。「不可达」不在这里记：交给线路记分板，别处也看得见 */
 const reachableRomOrigins = new Map<string, number>()
-/** 第一条线路这么久没答复就同时问下一条 */
+/** 测试用：清掉「刚探过可读」的短时结论 */
+export function clearReachableRomOrigins(): void {
+  reachableRomOrigins.clear()
+}
+/** 第一条线路这么久没读完样本就同时问下一条 */
 const REACHABLE_HEDGE_MS = 600
-const REACHABLE_TIMEOUT_MS = 1800
+/** 每条线路读完样本的时限（含响应头）。要读正文，比只等响应头宽一些 */
+const REACHABLE_TIMEOUT_MS = 3000
+/**
+ * 探测读的正文量。量的是吞吐，不是延迟：2026-11-20 大陆实测，优选域 rom / download.8bitgo.com 的响应头
+ * 照样秒回，正文却只有 7 KB/s；1 字节探测于是选中了它，《实况足球 2000》开局等这份 512KB 的 PS1 BIOS 等了 74 秒
+ * （CHD 早在第 39 秒就挂好了），同一时刻 cn-assets 读 8MB 只要 3～5 秒。64KB 在慢线路上要好几秒，
+ * 对冲 600ms 后快线路先读完、先赢。比它小的 BIOS（GBA 16KB）整份读完就是了。
+ */
+const REACHABLE_SAMPLE_BYTES = 64 * 1024
+/**
+ * 记分板上排第一的线路吞吐至少这么快，才免探测直接用（字节 / 毫秒，约 2Mbps）。
+ * 只有它测过、别的都没测过时，排序会把没测过的当成「和它一样快」，慢线路照样排第一 ——
+ * 以前只要有吞吐记录就直接用，测出来再慢也一样。
+ */
+const REACHABLE_TRUSTED_RATE = 256
 
 /**
- * 给只接受单个 URL 的引擎（EmulatorJS 的 EJS_biosUrl）挑一个当前可读的同对象域名。
+ * 给只接受单个 URL 的引擎（EmulatorJS 的 EJS_biosUrl）挑一个当前读得快的同对象域名。
+ * 引擎自己只会对着这一个地址下，不会换线路，所以这里选错了整局都要等它。
  *
- * 候选按线路记分板（romRouteHealth.ts）排序：排第一的线路刚有真实下载、或 60 秒内探过可读，就直接用；
- * 否则发 1 字节 Range 探测，第一条 600ms 没答复就同时问下一条，谁先答可读用谁。
- * 以前逐条串行、每条 1.8 秒，不可达结论只在这里记 8 秒，ROM 下载那边看不见。
+ * 候选按线路记分板（romRouteHealth.ts）排序：排第一的线路吞吐够快、或 60 秒内刚探过，就直接用；
+ * 否则每条读 64KB 样本，第一条 600ms 没读完就同时问下一条，谁先读完用谁，样本吞吐记进记分板。
  */
 export async function reachableRomAssetUrl(url: string, signal?: AbortSignal): Promise<string> {
   if (!url || typeof fetch !== 'function') return url
   const candidates = rankRomRoutes([url, ...alternateRomUrls(url)])
   const top = candidates[0] ?? url
-  if (!isRomRouteOpen(top) && ((reachableRomOrigins.get(romRouteOrigin(top)) ?? 0) > Date.now() || romRouteRate(top))) {
+  if (!isRomRouteOpen(top) && ((reachableRomOrigins.get(romRouteOrigin(top)) ?? 0) > Date.now() || (romRouteRate(top) ?? 0) >= REACHABLE_TRUSTED_RATE)) {
     return top
   }
   try {
     return await hedgedRequest(candidates, async (candidate, attemptSignal) => {
-      let response: Response
+      let bytes = 0
+      let headersAt = 0
       try {
-        response = await fetch(candidate, {
+        const response = await fetch(candidate, {
           method: 'GET',
           mode: 'cors',
           credentials: 'omit',
           cache: 'no-store',
-          headers: { Range: 'bytes=0-0' },
+          headers: { Range: `bytes=0-${REACHABLE_SAMPLE_BYTES - 1}` },
           signal: attemptSignal,
         })
+        if (!response.ok) {
+          void response.body?.cancel().catch(() => {})
+          if (response.status >= 500 || response.status === 429) recordRomRouteFailure(candidate, 'server')
+          throw new Error(`HTTP ${response.status}`)
+        }
+        headersAt = Date.now()
+        const reader = response.body?.getReader()
+        if (reader) {
+          for (;;) {
+            const { done, value } = await reader.read()
+            if (done) break
+            bytes += value?.byteLength ?? 0
+            // 不支持 Range、回了整份 200 的源：读够样本就停，不把大文件整个拖下来
+            if (bytes >= REACHABLE_SAMPLE_BYTES) {
+              void reader.cancel().catch(() => {})
+              break
+            }
+          }
+        }
       } catch (error) {
-        // 超时算这条线路的账；被对冲的另一条抢先、或调用方取消，不算
+        if (/^HTTP \d{3}$/.test((error as Error | undefined)?.message ?? '')) throw error
+        // 超时算这条线路的账（包括正文读得太慢）；被对冲的另一条抢先、或调用方取消，不算
         const reason = (attemptSignal.reason as { name?: string } | undefined)?.name
         if (!attemptSignal.aborted) recordRomRouteFailure(candidate, 'network')
-        else if (reason === 'TimeoutError') recordRomRouteFailure(candidate, 'timeout')
+        else if (reason === 'TimeoutError') recordRomRouteFailure(candidate, headersAt ? 'stall' : 'timeout')
         throw error
       }
-      void response.body?.cancel().catch(() => {})
-      if (!response.ok) {
-        if (response.status >= 500 || response.status === 429) recordRomRouteFailure(candidate, 'server')
-        throw new Error(`HTTP ${response.status}`)
-      }
-      recordRomRouteSuccess(candidate)
+      // 样本够大就记一笔吞吐（太小的记分板自己会忽略，只算一次成功）
+      recordRomRouteTransfer(candidate, bytes, headersAt ? Date.now() - headersAt : 0)
       reachableRomOrigins.set(romRouteOrigin(candidate), Date.now() + 60_000)
       return candidate
     }, { hedgeDelayMs: REACHABLE_HEDGE_MS, attemptTimeoutMs: REACHABLE_TIMEOUT_MS, signal })

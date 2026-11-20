@@ -4949,7 +4949,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         if (engineBiosUrl) {
           const preferredBiosUrl = await reachableRomAssetUrl(engineBiosUrl, prepareAbort.signal)
           if (preferredBiosUrl !== engineBiosUrl) {
-            console.warn('[emulatorjs] 下载优选域暂不可读，平台 BIOS 改走备用资源域')
+            console.warn(`[emulatorjs] 平台 BIOS 改走读得更快的资源域：${new URL(preferredBiosUrl, location.href).host}`)
             engineBiosUrl = preferredBiosUrl
           }
         }
