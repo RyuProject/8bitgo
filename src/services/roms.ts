@@ -462,9 +462,10 @@ const selfContainedKey = (key: string) => /^https?:\/\//i.test(key) || key.start
  */
 export function romProbeExpected(game: Game | undefined, lang: Lang, prefer?: RomSlotLang | null): boolean {
   if (!game) return false
+  if (game.platform === 'html5' && builtinWebGameFor(game.slug)?.externalLaunchUrl) return false
   const explicit = (game.platform === 'html5' ? playbackRomCandidates(game, lang, prefer) : romCandidates(game, lang, prefer)).map((c) => c.key)
   const conventional = conventionalKeys(game)
-  // 外链 / 站内绝对路径不依赖根地址；内置网页游戏正是后一种，不能被空 ROM_BASE 挡掉。
+  // 需要播放器加载的外链 / 站内绝对路径不依赖根地址；内置网页游戏正是后一种。
   if (explicit.some(selfContainedKey) || conventional.some(selfContainedKey)) return true
   // 根地址没配就是没接云端 ROM，这时老实显示「选择本地 ROM」，不要空转一帧
   if (!BUILTIN.base()) return false
@@ -1495,6 +1496,11 @@ export function useRomUrl(game: Game | undefined, prefer?: RomSlotLang | null): 
     if (!game) return
     let cancelled = false
     let timer = 0
+    if (game.platform === 'html5' && builtinWebGameFor(game.slug)?.externalLaunchUrl) {
+      // 外开游戏不经播放器下载或探测入口；点击卡片时直接导航到游戏方顶层页面。
+      setState({ status: 'idle', url: '' })
+      return
+    }
     const streamed = configuredStreamedRom(game, lang, prefer)
     if (streamed) {
       // Sockdrive 自己会在真正开局时校验；不要让完全不会被读取的整包 HEAD 挡住开始按钮。

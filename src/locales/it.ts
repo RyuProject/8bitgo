@@ -1113,6 +1113,7 @@ const it: Translation = {
     cancelLoad: 'Annulla il caricamento',
     keymapMore: 'tutti i comandi più in basso',
     isolatedHint: 'Questo gioco gira in una pagina intera dedicata (lo richiede il browser). Puoi tornare indietro da lì in qualsiasi momento.',
+    externalGameHint: 'Il gioco si aprirà in una nuova scheda; accesso e salvataggi sono gestiti dal sito del gioco.',
     loading: 'Caricamento di {runtime}…',
     loadingEngine: 'Preparazione dell’emulatore…',
     loadingAssets: 'Download dei file del motore…',

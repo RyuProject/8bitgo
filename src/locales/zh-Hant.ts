@@ -1111,6 +1111,7 @@ const zhHant: Translation = {
     cancelLoad: '取消載入',
     keymapMore: '完整鍵位見下方「操作說明」',
     isolatedHint: '這款遊戲會在獨立的整頁裡執行（瀏覽器要求如此），隨時可以從那一頁返回。',
+    externalGameHint: '將在新分頁開啟；登入與遊戲存檔由遊戲方頁面處理。',
     loading: '正在載入 {runtime}…',
     loadingEngine: '少女祈禱中 · 正在準備模擬器…',
     loadingAssets: '少女祈禱中 · 正在下載引擎資源…',

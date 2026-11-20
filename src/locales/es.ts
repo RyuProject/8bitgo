@@ -1112,6 +1112,7 @@ const es: Translation = {
     cancelLoad: 'Cancelar la carga',
     keymapMore: 'controles completos más abajo',
     isolatedHint: 'Este juego se ejecuta en su propia página completa (lo exige el navegador). Puedes volver desde allí en cualquier momento.',
+    externalGameHint: 'El juego se abrirá en una pestaña nueva; el inicio de sesión y las partidas guardadas los gestiona el sitio del juego.',
     loading: 'Cargando {runtime}…',
     loadingEngine: 'Preparando el emulador…',
     loadingAssets: 'Descargando archivos del motor…',
