@@ -306,6 +306,9 @@ export async function renderPage(req, res, next) {
 
     // <html lang> 跟随当前语言
     page = page.replace(/<html([^>]*)\slang="[^"]*"/, `<html$1 lang="${lang}"`)
+    // 边缘路由（public/edge-route-v3.js）在 <head> 里同步运行，要当场知道 Cloudflare 判定的地域；
+    // 下面写在 </head> 前的 <meta name="8bitgo-cover-cdn"> 那时还没解析到。值只会是 cn / main。
+    if (coverHint) page = page.replace(/<html\b/, `<html data-8bitgo-cdn="${coverHint}"`)
 
     // 用本页真实的 head 覆盖模板里的默认值：
     // 先删掉模板里会重复的那几项，再插入渲染出来的标签。
