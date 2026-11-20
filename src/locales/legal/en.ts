@@ -27,7 +27,7 @@ import type { LegalDocCopy } from './types'
 
 const CONTACT = 'yeahcore@yeah.net'
 const UPDATED = '2026-09-23'
-const PRIVACY_UPDATED = '2026-11-17'
+const PRIVACY_UPDATED = '2026-11-20'
 
 export const termsEnglish: LegalDocCopy = {
   seoTitle: 'Terms of Service',
@@ -585,7 +585,7 @@ Clearing this site's data removes all of the above (your browser's "clear site d
 ### Only when you trigger it
 
 - **Microsoft Clarity behavioural analytics** — loaded from clarity.ms only after you explicitly allow it in the consent panel. It records page visits, clicks, scrolling, page content and device/browser information to produce session replays, heatmaps and aggregate metrics; Microsoft also receives the IP address inherent in the network request. The site does not call Clarity's identify API, does not send an account ID or email, and explicitly denies ad storage. You can withdraw permission through “Analytics settings” in the footer.
-- **Google / Microsoft / Apple sign-in** — loaded or redirected to only when you click the matching button. Credentials are sent to the relevant provider during verification.
+- **Google / Microsoft / Apple sign-in** — when you open the sign-in window, your browser loads Google's sign-in button from Google (Google therefore receives your IP address and browser information, and may read its own cookies); Microsoft and Apple are redirected to only when you click their button. Credentials are sent to the relevant provider during verification.
 - **Hole punching and relay** — multiplayer and streaming need to traverse networks. Cloudflare's service is used by default; where it is not configured, the fallback is the public hole-punching servers of **Google** and **Twilio**. When relaying is engaged, the media passes through **Cloudflare** relay nodes (Cloudflare states that it does not retain relayed content; their policy governs).
 - **DOS multiplayer** — uses the third-party net.dos.zone as the peer server by default.
 - **Java (J2ME) mobile games** — these run a Java virtual machine in your browser through a third party, **CheerpJ**. Its runtime and engine files are downloaded from leaningtech's CDN (cjrtnc.leaningtech.com), which therefore receives your IP address and browser information. We start pre-downloading those files (about 4 MB in total) as soon as you move the pointer over, or tap, the Play button, so that clicking it does not mean waiting.

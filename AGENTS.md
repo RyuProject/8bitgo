@@ -1318,6 +1318,25 @@ download.8bitgo.com（0.17 秒）；首段测速把握手和约 1 秒首字节�
 的 `acceptSession()` 就是干这个的，新增这类接口时别忘了走它。
 老令牌没有 `tv`，按 0 处理，所以这套东西上线时不会把所有人踢下线。
 
+### 2.14.1 Google 登录的客户端 ID 只配服务端一份；游戏框里的第三方 Google 登录必然 403（2026-11-20）
+
+- **本站 Google 按钮**：前端以前只认构建期 `VITE_GOOGLE_CLIENT_ID`，它从没进过 `.env.production`（§2.1 同类坑）。
+  服务端 `GOOGLE_CLIENT_ID` 早就配好，线上按钮却一直报「管理员尚未配置」，Vite 还把整段 GIS 代码当死代码删了。
+  现在前端没有构建期值时向 `GET /api/auth/google/config` 要（公开值，5 分钟缓存，不像 Google 客户端 ID 的值回 null），
+  服务端 `.env` 的 `GOOGLE_CLIENT_ID` 是唯一来源。Google Cloud Console 里这个客户端的「已获授权的 JavaScript 来源」
+  必须有 `https://8bitgo.com` 和 `https://cn.8bitgo.com`，否则 `accounts.google.com/gsi/status` 回 403、One Tap 不弹。
+- 登录窗口一打开就用 `renderGoogleButton()` 画 Google **官方按钮**（`renderButton`，FedCM 按钮模式，不支持的浏览器 GIS 自己退回弹窗），
+  独占一行（官方按钮最窄 200px）。只靠 One Tap `prompt()` 不行：浏览器里没登 Google、或关过 One Tap 进了冷却期，Google 根本不弹。
+  画不出来（没配客户端 ID、大陆网络加载不到 GIS（10 秒上限）、PSP / 塞班隔离页的 COEP 挡住 accounts.google.com）时
+  原来的按钮留着、点它走 One Tap；`prompt()` 必须接时刻通知（按 `getMomentType()` 分流），否则按钮永远停在「处理中」。
+  GIS 的 `initialize` 整页只调一次，凭证交给栈顶那一方（One Tap 进行中归它，否则归官方按钮），别再各自 initialize。
+  隐私政策「你主动触发才会发生的」一节写明了打开登录窗口就会从 Google 加载按钮，改加载时机要同步三种语言。
+- **游戏框里的「用 Google 登录」**（《Pokecatch》玩家报的 403）：第三方 HTML5 游戏把**自己的框**跳到
+  accounts.google.com，Google 对 `Sec-Fetch-Dest: iframe` 一律回 403（顶层 200，curl 可复现）；Discord 授权页
+  发 `frame-ancestors 'none'`。父页面拦不住跨源框架的导航，也修不了。详情页按入口主机名提示玩家去新标签页登录，
+  登记表在 `src/emulator/html5EmbedLogin.ts`。
+- 回归：`npm run test:google-login && npm run test:html5-embed-login && cd server && npm run test:oauth`。
+
 ### 2.15 `saves` 表以前只在 v1 的 schema 里
 
 `schema.sql`（v1）有它，`schema-v2.sql` 漏了。按 v2 建的新库压根没有这张表，

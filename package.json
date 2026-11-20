@@ -171,6 +171,8 @@
     "test:audio-tap": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-audio-tap.mjs",
     "test:html5-media": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-html5-media.mjs",
     "test:arcade-hacks": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-arcade-hacks.mjs",
+    "test:html5-embed-login": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-html5-embed-login.mjs",
+    "test:google-login": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-google-login.mjs",
     "test:room-merge": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-room-merge.mjs",
     "test:netplay-guard": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-netplay-guard.mjs",
     "test:netplay-game-config": "node scripts/test-netplay-game-config.mjs",

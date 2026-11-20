@@ -16,7 +16,7 @@ import type { LegalDocCopy } from './types'
 
 const CONTACT = 'yeahcore@yeah.net'
 const UPDATED = '2026-09-23'
-const PRIVACY_UPDATED = '2026-11-17'
+const PRIVACY_UPDATED = '2026-11-20'
 
 export const termsZhHant: LegalDocCopy = {
   seoTitle: '服務條款',
@@ -574,7 +574,7 @@ export const privacyZhHant: LegalDocCopy = {
 ### 你主動觸發才會發生的
 
 - **Microsoft Clarity 行為分析** —— 只有你在授權面板中明確同意後才會從 clarity.ms 載入。它記錄頁面造訪、點擊、捲動、頁面與裝置／瀏覽器資訊，用於產生工作階段回放、熱圖與彙總指標；Microsoft 也會接觸到網路請求本身帶有的 IP 位址。本站不呼叫 Clarity 的 identify 介面，不向它傳送帳號 ID 或電子郵件，並明確拒絕廣告儲存。你可以透過頁尾「分析設定」撤回授權。
-- **Google／Microsoft／Apple 登入** —— 只在你點擊對應按鈕時載入或轉向。登入驗證過程中，憑證會傳送給相應服務商。
+- **Google／Microsoft／Apple 登入** —— 你打開登入視窗時，瀏覽器會從 Google 載入它的登入按鈕（Google 因此會收到你的 IP 位址與瀏覽器資訊，並可能讀取它自己的 Cookie）；Microsoft 與 Apple 只在你點擊對應按鈕時轉向。登入驗證過程中，憑證會傳送給相應服務商。
 - **打洞與中繼服務** —— 連線對戰與直播需要穿透網路。預設使用 Cloudflare 的打洞／中繼服務；在未設定的情況下會回退到 **Google** 與 **Twilio** 的公用打洞伺服器。啟用中繼時，影音會經由 **Cloudflare** 的中繼節點轉送（Cloudflare 聲明不留存轉送內容，具體以其政策為準）。
 - **DOS 遊戲連線對戰** —— 預設使用第三方的 net.dos.zone 作為對等連線伺服器。
 - **Java（J2ME）手機遊戲** —— 這類遊戲靠第三方的 **CheerpJ** 在瀏覽器裡跑一個 Java 虛擬機器，執行環境與引擎檔案從 leaningtech 的 CDN（cjrtnc.leaningtech.com）下載，對方會收到你的 IP 與瀏覽器資訊。滑鼠移到「開始遊戲」上（手機上則是點到它）時，我們就會開始預先下載這幾個檔案（共約 4 MB），好讓你點下去時不必再等。

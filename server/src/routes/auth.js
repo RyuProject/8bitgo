@@ -16,6 +16,7 @@ import { userRowToPublic } from '../mappers.js'
 import { favIds, recentIds } from '../userdata.js'
 import { issueCode, verifyCode, sendCodeError } from '../codes.js'
 import { fetchJson, verifyIdToken } from '../oidc.js'
+import { publicApi } from '../cache.js'
 
 export const authRouter = Router()
 
@@ -352,6 +353,28 @@ authRouter.post('/email/verify', async (req, res, next) => {
 })
 
 /* ---------------- Google 登录 ---------------- */
+
+/** Google OAuth 客户端 ID 的形状：数字项目号 + 随机串 + 固定后缀。不像的就当没配，免得把乱填的值交给 GIS */
+const GOOGLE_CLIENT_ID_RE = /^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$/
+
+/** 只给前端「要不要、用哪个客户端」，改了 .env 重启后最多晚这么久生效 */
+const GOOGLE_CONFIG_CACHE = 'public, max-age=300, s-maxage=300'
+
+/*
+  前端初始化 Google Identity Services 要的客户端 ID。它是**公开值**（本来就写在每个访客的浏览器里），
+  而且必须和下面 /google 校验 aud 用的是同一个。
+
+  ⚠️ 2026-11-20：以前前端只认构建期的 VITE_GOOGLE_CLIENT_ID，可它从来没进过 .env.production
+  （AGENTS.md §2.1 同一类坑）—— 服务端早就配好了 GOOGLE_CLIENT_ID，线上 Google 按钮却一直报
+  「管理员尚未配置」，Vite 还把整段登录代码当死代码删掉了。两处各存一份迟早再漂开，
+  所以前端没有构建期值时向这里要，服务端这一份是唯一来源。
+*/
+authRouter.get('/google/config', (_req, res) => {
+  const raw = (process.env.GOOGLE_CLIENT_ID || '').trim()
+  publicApi(res, GOOGLE_CONFIG_CACHE)
+  res.json({ clientId: GOOGLE_CLIENT_ID_RE.test(raw) ? raw : null })
+})
+
 // 前端用 Google Identity Services 拿到 ID token（credential），这里校验后签发本站 JWT。
 authRouter.post('/google', async (req, res, next) => {
   try {

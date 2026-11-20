@@ -434,55 +434,241 @@ export async function loginWithEmailCode(email: string, code: string): Promise<P
 
 /* -------- Google 登录 -------- */
 
+/**
+ * One Tap 的「时刻」通知。浏览器走 FedCM 之后 Google 去掉了一部分方法（isNotDisplayed 等），
+ * 同一份代码要兼容新旧两种模式，所以全部按可选方法调用。
+ */
+interface GooglePromptMoment {
+  getMomentType?: () => 'display' | 'skipped' | 'dismissed' | string
+  isNotDisplayed?: () => boolean
+  getDismissedReason?: () => string
+}
+
+/** renderButton 的外观参数，名字照 GIS 文档原样写（下划线是它的） */
+interface GoogleButtonOptions {
+  type: 'standard' | 'icon'
+  theme: 'outline' | 'filled_blue' | 'filled_black'
+  size: 'large' | 'medium' | 'small'
+  text: 'signin_with' | 'signup_with' | 'continue_with' | 'signin'
+  shape: 'rectangular' | 'pill' | 'circle' | 'square'
+  logo_alignment: 'left' | 'center'
+  width: number
+  locale: string
+}
+
 interface GoogleIdApi {
   accounts?: {
     id?: {
-      initialize: (o: { client_id: string; callback: (r: { credential?: string }) => void }) => void
-      prompt: () => void
+      initialize: (o: {
+        client_id: string
+        callback: (r: { credential?: string }) => void
+        use_fedcm_for_button?: boolean
+        use_fedcm_for_prompt?: boolean
+      }) => void
+      prompt: (listener?: (moment: GooglePromptMoment) => void) => void
+      renderButton: (parent: HTMLElement, options: GoogleButtonOptions) => void
     }
   }
 }
 
+/**
+ * Google OAuth 客户端 ID。构建期的 VITE_GOOGLE_CLIENT_ID 优先；没有就向服务端要
+ * （/api/auth/google/config，和服务端校验 aud 用的是同一个 GOOGLE_CLIENT_ID）。
+ *
+ * ⚠️ 不能只认构建期变量：它从没进过 .env.production，线上 Google 按钮因此一直报「未配置」，
+ * 而服务端那份早就配好了（2026-11-20 查明，AGENTS.md §2.1 同类坑）。
+ * 拿到的结果整页复用；网络失败不缓存，下次点还会重新问。
+ */
+let googleClientIdPromise: Promise<string> | null = null
+export function googleClientId(): Promise<string> {
+  const built = ((import.meta.env as Record<string, string | undefined>).VITE_GOOGLE_CLIENT_ID || '').trim()
+  if (built) return Promise.resolve(built)
+  googleClientIdPromise ??= api
+    .get<{ clientId?: unknown }>('/api/auth/google/config')
+    .then((r) => (typeof r?.clientId === 'string' ? r.clientId.trim() : ''))
+    .catch((e: unknown) => {
+      googleClientIdPromise = null
+      throw e
+    })
+  return googleClientIdPromise
+}
+
+/**
+ * GIS 脚本的加载上限。大陆网络里 accounts.google.com 常常既不成功也不报错，一直挂着；
+ * 不设上限的话，备用按钮点下去就永远停在「处理中」。
+ */
+const GIS_LOAD_TIMEOUT_MS = 10_000
+
+const googleIdOf = () => (window as unknown as { google?: GoogleIdApi }).google?.accounts?.id
+
 let gisLoader: Promise<void> | null = null
 function loadGis(): Promise<void> {
+  if (googleIdOf()) return Promise.resolve()
   if (gisLoader) return gisLoader
   gisLoader = new Promise<void>((resolve, reject) => {
     const s = document.createElement('script')
     s.src = 'https://accounts.google.com/gsi/client'
     s.async = true
     s.defer = true
-    s.onload = () => resolve()
-    s.onerror = () => reject(new Error(getT().errors.googleLoadFailed))
+    const timer = setTimeout(() => fail(), GIS_LOAD_TIMEOUT_MS)
+    // 失败或超时都清掉 gisLoader：网络恢复后下一次打开登录窗口还能再试，不把一次失败钉死一整页
+    const fail = () => {
+      clearTimeout(timer)
+      gisLoader = null
+      reject(new Error(getT().errors.googleLoadFailed))
+    }
+    s.onload = () => {
+      clearTimeout(timer)
+      resolve()
+    }
+    s.onerror = fail
     document.head.appendChild(s)
   })
   return gisLoader
 }
 
-async function getGoogleCredential(clientId: string): Promise<string> {
+/**
+ * 谁在等 Google 给的凭证。GIS 的 initialize 整页只该调一次（多调会被它在控制台警告，回调也会被覆盖），
+ * 所以回调固定成一个分发器，交给栈顶那一方：登录窗口里渲染的官方按钮登记一个，
+ * 备用按钮走 One Tap 时临时压一个，结束就弹掉。
+ */
+type GoogleCredentialHandler = (credential: string) => void
+const googleCredentialHandlers: GoogleCredentialHandler[] = []
+function pushGoogleCredentialHandler(handler: GoogleCredentialHandler): () => void {
+  googleCredentialHandlers.push(handler)
+  return () => {
+    const i = googleCredentialHandlers.lastIndexOf(handler)
+    if (i >= 0) googleCredentialHandlers.splice(i, 1)
+  }
+}
+
+let googleInitializedFor = ''
+async function readyGoogleId(clientId: string): Promise<NonNullable<NonNullable<GoogleIdApi['accounts']>['id']>> {
   await loadGis()
-  const g = (window as unknown as { google?: GoogleIdApi }).google
-  const id = g?.accounts?.id
+  const id = googleIdOf()
   if (!id) throw new Error(getT().errors.googleUnavailable)
-  return new Promise<string>((resolve, reject) => {
+  if (googleInitializedFor !== clientId) {
     id.initialize({
       client_id: clientId,
-      callback: (r) => (r.credential ? resolve(r.credential) : reject(new Error(getT().errors.googleCancelled))),
+      callback: (r) => {
+        const handler = googleCredentialHandlers[googleCredentialHandlers.length - 1]
+        if (r?.credential && handler) handler(r.credential)
+      },
+      /*
+        按钮走 FedCM 的按钮模式：浏览器里还没登 Google 的人也能在浏览器自己的窗口里登，
+        不靠弹出窗口（弹窗要 window.opener，详情页有些是 COOP: same-origin 的隔离页，会断）。
+        不支持 FedCM 的浏览器（Safari / Firefox）GIS 自动退回弹窗。
+      */
+      use_fedcm_for_button: true,
+      use_fedcm_for_prompt: true,
     })
-    id.prompt()
+    googleInitializedFor = clientId
+  }
+  return id
+}
+
+async function getGoogleCredential(clientId: string): Promise<string> {
+  const id = await readyGoogleId(clientId)
+  return new Promise<string>((resolve, reject) => {
+    let settled = false
+    let release = () => {}
+    const finish = (settle: () => void) => {
+      if (settled) return
+      settled = true
+      release()
+      settle()
+    }
+    release = pushGoogleCredentialHandler((credential) => finish(() => resolve(credential)))
+    /*
+      Google 决定不弹（浏览器里没登 Google、玩家关过 One Tap 进了冷却期、第三方登录被拦）时
+      callback 永远不会来；不接这条通知，弹窗按钮会一直停在「处理中」。
+      dismissed 且原因是 credential_returned 是正常拿到凭证，由上面的 callback 收尾。
+
+      先按 getMomentType 分流：FedCM 模式只发 skipped / dismissed，isNotDisplayed 这类旧方法一调
+      GIS 就在控制台报弃用警告；旧模式（不支持 FedCM 的浏览器）没显示时只发 display 时刻，才需要它。
+      FedCM 在浏览器里没有 Google 账号时要过几秒才报 skipped（浏览器故意延迟，防探测），不是卡住。
+    */
+    id.prompt((moment) => {
+      const type = moment.getMomentType?.()
+      if (type === 'skipped' || (type === 'display' && moment.isNotDisplayed?.())) {
+        finish(() => reject(new Error(getT().errors.googleNotShown)))
+      } else if (type === 'dismissed' && moment.getDismissedReason?.() !== 'credential_returned') {
+        finish(() => reject(new Error(getT().errors.googleCancelled)))
+      }
+    })
   })
 }
 
-/** 使用 Google 账号登录。 */
-export async function loginWithGoogle(): Promise<PublicUser> {
-  const clientId = (import.meta.env as Record<string, string | undefined>).VITE_GOOGLE_CLIENT_ID
+/** 拿 Google 给的 ID token 换本站会话。官方按钮和备用按钮最后都走这里。 */
+export async function exchangeGoogleCredential(credential: string): Promise<PublicUser> {
+  const r = await api.post<{ token: string; user: PublicUser }>('/api/auth/google', { credential })
+  setToken(r.token)
+  setCurrentUser(r.user)
+  return r.user
+}
 
+/** GIS 认的界面语言写法 */
+const GOOGLE_BUTTON_LOCALE: Record<string, string> = {
+  'zh-Hans': 'zh_CN',
+  'zh-Hant': 'zh_TW',
+  en: 'en',
+  es: 'es',
+  fr: 'fr',
+  de: 'de',
+  it: 'it',
+  ja: 'ja',
+}
+
+/**
+ * 在 el 里画 Google 官方的「使用 Google 账号继续」按钮。
+ *
+ * 为什么不再只用自己画的按钮 + One Tap：One Tap 对浏览器里没登 Google 的人、关过它进了冷却期的人
+ * 根本不弹，点了只能报「没有完成」（2026-11-20 本地实测）。官方按钮走 FedCM 按钮模式或弹窗，
+ * 这些人也能在 Google 自己的界面里登录。
+ *
+ * 返回清理函数；没配客户端 ID、演示模式、脚本加载不出来（大陆网络、隔离页的 COEP）或者没画出东西时
+ * 返回 null，调用方继续显示自己的备用按钮。
+ */
+export async function renderGoogleButton(
+  el: HTMLElement,
+  options: { width: number; lang: string; onCredential: GoogleCredentialHandler },
+): Promise<(() => void) | null> {
+  if (!apiEnabled()) return null
+  try {
+    const clientId = await googleClientId()
+    if (!clientId) return null
+    const id = await readyGoogleId(clientId)
+    if (!el.isConnected) return null
+    el.replaceChildren()
+    id.renderButton(el, {
+      type: 'standard',
+      theme: 'outline',
+      size: 'large',
+      text: 'continue_with',
+      shape: 'pill',
+      logo_alignment: 'center',
+      // GIS 只认 200～400 像素；弹窗再窄也不能让它自己猜成默认的窄版
+      width: Math.max(200, Math.min(400, Math.floor(options.width))),
+      locale: GOOGLE_BUTTON_LOCALE[options.lang] ?? 'en',
+    })
+    if (!el.firstElementChild) return null
+    const release = pushGoogleCredentialHandler(options.onCredential)
+    return () => {
+      release()
+      el.replaceChildren()
+    }
+  } catch {
+    return null
+  }
+}
+
+/** 使用 Google 账号登录（备用按钮：官方按钮还没画出来、或画不出来时用 One Tap）。 */
+export async function loginWithGoogle(): Promise<PublicUser> {
   if (apiEnabled()) {
+    const clientId = await googleClientId()
     if (!clientId) throw new Error(getT().errors.googleNotConfigured)
     const credential = await getGoogleCredential(clientId)
-    const r = await api.post<{ token: string; user: PublicUser }>('/api/auth/google', { credential })
-    setToken(r.token)
-    setCurrentUser(r.user)
-    return r.user
+    return exchangeGoogleCredential(credential)
   }
 
   // 本地演示：创建 / 登录一个演示 Google 账户，便于在无后端时体验流程

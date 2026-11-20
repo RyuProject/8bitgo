@@ -53,6 +53,7 @@ import { splitDevelopers } from '@/lib/developers'
 import { newStartupId, recordStartupEvent } from '@/services/startupFunnel'
 import { useGameHotfix } from '@/services/hotfixes'
 import { isMahjongPanelGame } from '@/emulator/mahjongPanel'
+import { html5EmbedLoginFor } from '@/emulator/html5EmbedLogin'
 
 export function GameDetailPage() {
   const { slug = '' } = useParams<{ slug: string }>()
@@ -391,6 +392,16 @@ export function GameDetailPage() {
       ext: rom.status === 'found' ? extOf(rom.url) : undefined,
       runtimeOverride: (hotfix.runtime as typeof game.runtime | undefined) ?? game.runtime,
     }) ?? runtimesFor(platform.id)[0] ?? resolveRuntime(platform.id)!
+  /*
+    外链 HTML5 游戏自带账号登录只能在顶层页面完成时，给玩家一条「去新标签页登录」的提示。
+    地址解析出来前（SSR 与水合首帧都是 checking）先看 game.roms 里登记的入口，
+    这样提示随首屏 HTML 一起出来，水合后换成实际选中的那条也不会让版面跳一下。
+  */
+  const embedLogin = platform.id !== 'html5'
+    ? null
+    : rom.status === 'found'
+      ? html5EmbedLoginFor(rom.url)
+      : Object.values(game.roms ?? {}).map((entry) => html5EmbedLoginFor(entry)).find(Boolean) ?? null
   // 「支持语言」格：从 game.roms 里读出真正绑了哪些语言槽，直接显示语言名。
   // 这既让玩家不用猜 CN / JP，也让 SSR 的正文明确说出哪些语言 ROM 真正可选。
   const supportedLangs = Array.from(
@@ -556,6 +567,25 @@ export function GameDetailPage() {
               ⚠️ {platform.runtime === 'dolphin'
                 ? t.runtime.dolphinExperimental
                 : t.runtime.playExperimental}
+            </p>
+          )}
+
+          {/*
+            第三方 HTML5 游戏自带的 Google / Discord 登录在游戏框里一定被对方拒绝（Google 回 403），
+            本站拦不住、也代替不了，见 src/emulator/html5EmbedLogin.ts。和上面那条一样，
+            要在玩家点游戏里那颗按钮**之前**就看得到，所以不等开局。
+          */}
+          {embedLogin && (
+            <p role="note" className="mt-3 rounded-xl border border-coin/40 bg-coin-soft px-3 py-2 text-xs text-muted">
+              {fmt(t.game.embedLoginNotice, { providers: embedLogin.providers.join(' / ') })}{' '}
+              <a
+                href={embedLogin.url}
+                target="_blank"
+                rel="noopener"
+                className="font-semibold text-brand-hover underline underline-offset-2 hover:text-fg"
+              >
+                {t.game.embedLoginOpen} ↗
+              </a>
             </p>
           )}
         </section>
