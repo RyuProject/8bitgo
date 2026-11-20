@@ -9,6 +9,7 @@ import { builtinWebGameFor } from './shared/builtin-web-games.js'
 import { HUGE_STATIC_DIRS } from './scripts/lib/vite-static-exclusions.mjs'
 import { optOutRocketLoader } from './shared/rocket-loader-optout.js'
 import { assetIntegrityPlugin } from './scripts/lib/vite-asset-integrity.mjs'
+import { resilientPreloadPlugin } from './scripts/lib/vite-resilient-preload.mjs'
 
 /**
  * 把几个「又大又不需要加工」的静态目录排除在产物复制之外。
@@ -250,6 +251,8 @@ export default defineConfig(({ mode }) => {
     skipHugeStatic(),
     // /assets/ 产物的 SHA-256 清单：只在 chunk 出错时由 public/assets/asset-repair-v4.js 读取，正常加载不碰它
     assetIntegrityPlugin(),
+    // Chromium 懒加载依赖先暖 HTTP 缓存并重试，避免一次依赖抖动污染当前文档的模块表。
+    resilientPreloadPlugin(),
     /*
       Cloudflare Rocket Loader 会把所有 <script> 推迟到 window load 之后（等完封面图和 beacon）：
       2026-11-06 实测 React 晚开跑 3 秒多。必须排在 legacy() 之后的 post 阶段，

@@ -4153,6 +4153,8 @@ PK / TH 两份现场：`The requested module './live-Cqhc9j-k.js' does not provi
 - **诊断包 #1196 / #1201（Chrome 97 / Android 15 / CN，《恐龙快打》）：legacy 懒加载 chunk 加载失败。** #1201 点名 `EmulatorPlayer-legacy-J-EQUy6G.js`，错误来自 SystemJS 的 `HTMLScriptElement` 加载回调；请求记录为 0 传输 / 0 内容。现有现场不能判断底层是瞬时网络、缓存还是 EdgeOne 响应，也不能从单次事件确认服务端缺文件。
   Vite legacy 包把 `import()` 编成 `System.import()`；SystemJS 的通用错误不匹配现代 ESM 重试列表，失败 URL 也可能藏在 `__vite__mapDeps` 运行时映射里，旧 `lazyChunkFile()` 因此拿不到文件名。结果是只尝试原 URL 一次，错误边界也不把它当 chunk 加载失败。现在识别 SystemJS 加载错误，从错误 URL 取出 legacy chunk 文件名，用新的 `chunk-retry` 查询串通过 `System.import()` 重试；仍失败时先整页刷新，重复失败再从 CN 加速入口切到主站。legacy 产物不在现代版 SHA-256 清单中，不能用现代清单给它作完整性结论。
 
+**同一问题的另一条路径（2026-11-19）：懒加载依赖失败一次会污染当前页面的模块表。** Chromium 上由 `scripts/lib/vite-resilient-preload.mjs` 包装 Vite 助手：先把懒加载 JS 依赖完整读进 HTTP 缓存，网络错误 / 5xx 重试一次，404 等确定性错误不重试；整组预热失败时不调用 `import()`，再由 `importWithRetry` 重走原加载函数。只有所有失败依赖都是确定性错误才标记永久失败；混合 404 和网络错误仍允许重新预热。Safari、Firefox、legacy 和 fetch 从未成功的页面保持原 Vite 路径。`scripts/check-lazy-imports.mjs` 构建后检查当前现代与 legacy 懒加载目标；现代包只读本次 SHA-256 清单，legacy 从当前 HTML 入口递归扫描，避免旧哈希文件误报或漏报。回归 `npm run test:lazy-imports`；真浏览器构建故障注入为手动验收 `npm run test:lazy-imports-browser`（需 Playwright Chromium + WebKit）。
+
 ### 2.40 塞班 / N-Gage：卡带转储 ZIP 由本站脚本导入 E 盘（2026-11-19）
 
 第一代 N-Gage 游戏的 No-Intro 转储是 MMC 卡上的原始目录（`game.id`、`nokia.dat`、`System/Apps/<代号>/…`），

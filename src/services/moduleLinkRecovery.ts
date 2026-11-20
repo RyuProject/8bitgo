@@ -335,6 +335,20 @@ export function retryableImportError(error: unknown): boolean {
   return RETRYABLE_IMPORT.test(message) || isSystemJsChunkLoadError(error)
 }
 
+/** 预加载助手给出的「依赖暖缓存失败」信息；这种失败尚未进入浏览器模块表，可以安全重走原加载函数。 */
+const PRELOAD_FAILURE = '__8bitgoPreloadFailure'
+const MAX_PRELOAD_FAILED_DEPS = 6
+
+export function preloadFailure(error: unknown): { failed: string[]; permanent?: true } | null {
+  if (!error || typeof error !== 'object') return null
+  const value = (error as Record<string, unknown>)[PRELOAD_FAILURE] as { failed?: unknown; permanent?: unknown } | undefined
+  if (!value || !Array.isArray(value.failed)) return null
+  const failed = value.failed
+    .filter((name): name is string => typeof name === 'string' && /^[\w.-]+\.js$/.test(name))
+    .slice(0, MAX_PRELOAD_FAILED_DEPS)
+  return { failed, ...(value.permanent === true ? { permanent: true as const } : {}) }
+}
+
 /** 重试间隔：逐步拉长，避免弱网 / 后台页立刻重复争抢连接。 */
 export const LAZY_RETRY_DELAYS_MS: readonly number[] = [500, 1800]
 /** 离线时最多等多久「恢复联网」再重试；等不到也照样试一次，交给错误边界。 */
@@ -413,6 +427,7 @@ export async function importWithRetry<T>(
 ): Promise<T> {
   let lastError: unknown
   let retryFile = file
+  let viaLoad = false
   const attempts = LAZY_RETRY_DELAYS_MS.length + 1
   for (let attempt = 0; attempt < attempts; attempt++) {
     if (attempt > 0) {
@@ -420,13 +435,18 @@ export async function importWithRetry<T>(
       else await env.sleep(LAZY_RETRY_DELAYS_MS[attempt - 1])
     }
     try {
-      const busted = attempt > 0 && retryFile
+      const busted = attempt > 0 && retryFile && !viaLoad
         ? bustedChunkUrl(retryFile, base, nextChunkRetryNonce(attempt))
         : null
       return busted ? await (env.importUrl(busted) as Promise<T>) : await load()
     } catch (error) {
       lastError = error
       if (!retryableImportError(error)) break
+      const warmFailure = preloadFailure(error)
+      viaLoad = Boolean(warmFailure)
+      if (warmFailure?.permanent) break
+      // 预热失败发生在 import() 前，模块表尚未记住错误；再走加载函数才能重新预热依赖。
+      if (warmFailure) continue
       // SystemJS 把加载失败统一包装成一条错误，但其中仍带着真实失败的 legacy chunk URL。
       // 从这里补出文件名后，下一次用 System.import 的带查询串 URL，避开失败模块的缓存键。
       retryFile ??= failedLegacyChunkFile(error)
