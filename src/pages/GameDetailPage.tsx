@@ -409,12 +409,6 @@ export function GameDetailPage() {
     : rom.status === 'found'
       ? html5EmbedLoginFor(rom.url)
       : Object.values(game.roms ?? {}).map((entry) => html5EmbedLoginFor(entry)).find(Boolean) ?? null
-  // 「支持语言」格：从 game.roms 里读出真正绑了哪些语言槽，直接显示语言名。
-  // 这既让玩家不用猜 CN / JP，也让 SSR 的正文明确说出哪些语言 ROM 真正可选。
-  const supportedLangs = Array.from(
-    new Set(romLangs.map((l) => romLanguageLabel(l))),
-  ).join(' · ')
-
   /*
     标题下面那一句「电脑、手机和平板」。和页面下方「操作说明」用同一份判断（getDefaultKeymap 的 touch）：
     运行时会在手机上画屏幕按键的才说手机能玩；只有部分游戏有（Flash / AwayFL）就说部分支持；
