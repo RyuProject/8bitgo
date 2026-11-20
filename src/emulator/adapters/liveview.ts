@@ -26,10 +26,22 @@
  *
  * 一个特殊情形：服务器重启，内存里的房间全没了，重新 watch 会回 not found ——
  * 但如果媒体连接还在流，那就静默继续看，别拿遮罩盖掉一场好好的直播。
+ *
+ * ── SRS 房的观众不开 socket.io（2026-11-20）──────────────────
+ * 进房先走事件流（services/liveStream.ts）：一条 POST 拿到房间快照和播放票就开始 WHEP，
+ * 弹幕 / 人数 / 主播状态从同一个响应体里推下来，换票、催主播、发弹幕各一个小 POST。
+ * 省掉的是 socket.io 那次 WebSocket 握手 —— 大陆线路上首连 4～8 秒。
+ *
+ * 只有两种情形才连 socket.io：
+ *   · 老的点对点房、老服务端、事件流名额满、浏览器读不了流式响应 —— 整条退回原来的 socket 路径；
+ *   · 这一局有 2P 位（welcome.coopOpen 或 coop 事件）—— 协作通道的 SDP / ICE 要服务器转发，
+ *     带同一把 key 改连 socket 再 watch 一次，服务端把事件流换成 socket，SRS 拉流不断（switchToSocket）。
+ * 事件流断了按退避重连（同一把 key，45 秒内服务端把拉流认领回来），画面照常不受影响。
  */
 import type { Capability, CaptureSources, MountOptions, PadButton, RuntimeHandle } from '../types'
 import { getT, fmt } from '@/services/i18n'
 import { connectLive, exchangeLiveSrsSdp, liveEnabled, liveIceConfig, liveSrsErrorStatus, liveSrsIceServers, preferLiveSrsCodecs, srsOfferSdp, srsPeerConfiguration, tuneLiveSrsJitter, type LiveChatMessage, type LiveSocket, type LiveViewerEntry } from '@/services/live'
+import { LiveStreamCallError, LiveStreamRefused, liveStreamChat, liveStreamGrant, liveStreamNudge, openLiveStream, type LiveStreamConnection } from '@/services/liveStream'
 import { sendChatWithAck, type ChatSendResult } from '../chatSend'
 import { usableVideoSize } from '../videoTuning'
 import { COOP_CHANNEL, encode as encodeCoop, parse as parseCoop } from '../coopSeat'
@@ -99,8 +111,11 @@ export interface LinkQuality {
 }
 
 type SignalData = { sdp?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit; gen?: number; error?: 'no-source' }
-type WatchAck = {
-  hostId: string | null
+/**
+ * 一份房间快照：socket 的 watch ack 和事件流的 welcome 都是它（两条路共用 applyRoomInfo，
+ * 免得一条补了字段另一条漏掉）。
+ */
+type RoomSnapshot = {
   hostAway?: boolean
   /** 主播切后台了，画面冻着。中途进来的观众只能从这里知道 —— host-frozen 那条推送早发过了 */
   hostFrozen?: boolean
@@ -115,7 +130,12 @@ type WatchAck = {
   netplayRoomId?: string | null
   /** 最近几条弹幕。同理：中途进来的人靠它，不然面对一片空白 */
   chat?: LiveChatMessage[]
+  /** 观众名单（事件流的 welcome 带；socket 那边随后的 viewers 事件补） */
+  list?: LiveViewerEntry[]
+  /** 这一局有 2P 位（事件流观众据此改连 socket 去申请上场） */
+  coopOpen?: boolean
 }
+type WatchAck = RoomSnapshot & { hostId: string | null }
 
 /**
  * 首次等 offer 的时间。
@@ -206,6 +226,22 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
   let destroyed = false
   let socket: LiveSocket | null = null
+  /* ---- 事件流观众（SRS 房默认这条，见文件头） ---- */
+  /** 当前用事件流而不是 socket.io 收房间事件 */
+  let streamMode = false
+  /** 当前那条事件流；断了 / 换掉了就是 null */
+  let streamConn: LiveStreamConnection | null = null
+  /** 事件流的会话令牌（换票 / 催主播 / 发弹幕都要带它） */
+  let streamSession = ''
+  /** 每开一条流 +1；回调对不上号的是已经作废的旧流，一律忽略 */
+  let streamGen = 0
+  let streamRetryTimer = 0
+  let streamRetryCount = 0
+  let streamConnecting = false
+  /** 正在改连 socket.io（上场当 2P / 事件流走不通） */
+  let switchingToSocket = false
+  let upgradeTimer = 0
+  let upgradeAttempts = 0
   let pc: RTCPeerConnection | null = null
   let srsPc: RTCPeerConnection | null = null
   let transport: 'p2p' | 'srs' = 'p2p'
@@ -231,6 +267,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   /** 观众端也有一条「整条流都断了」的判据：带声音的流连续这么多轮一个字节都没有 */
   let srsSilentStreak = 0
   const mediaConnectionState = () => (transport === 'srs' ? srsPc : pc)?.connectionState
+  /** 信令（不论是事件流还是 socket.io）此刻连着：换票、催主播、各种恢复动作都要它 */
+  const signalingUp = () => (streamMode ? Boolean(streamConn && streamSession) : Boolean(socket?.connected))
   /** 当前这条 pc 对应主播那边的代号；不匹配的 ICE 候选是上一轮的，扔掉 */
   let pcGen: number | undefined
   /** 这条 pc 已经吃过一个 offer 了 —— 再来一个就是新一轮，得换连接 */
@@ -427,12 +465,29 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
   const caps = new Set<Capability>(['volume', 'screenshot', 'record'])
 
+  /**
+   * 收掉事件流，之后它的回调一律不算数。直播结束 / 报错 / 销毁 / 已经改连 socket 时用：
+   * 不收的话服务端随后关流，onEnd 会当成断线去重连，重连回一个 not found，把「直播已结束」盖成「不存在」。
+   */
+  const stopStream = () => {
+    streamGen++
+    window.clearTimeout(streamRetryTimer)
+    streamRetryTimer = 0
+    window.clearTimeout(upgradeTimer)
+    upgradeTimer = 0
+    const conn = streamConn
+    streamConn = null
+    streamSession = ''
+    conn?.close()
+  }
+
   const fail = (msg: string) => {
     if (destroyed) return
     window.clearTimeout(watchdog)
     window.clearTimeout(rewatchTimer)
     window.clearTimeout(disconnectTimer)
     disconnectTimer = 0
+    stopStream()
     closeSrsPlayer()
     live.onState?.('error')
     options.onError?.(msg, 'runtime')
@@ -621,7 +676,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           return
         }
       } else if (transport === 'srs') srsSilentStreak = 0
-      if (dDecoded === 0 && hostKeepAlive && !hostFrozen && !hostAway && socket?.connected) {
+      if (dDecoded === 0 && hostKeepAlive && !hostFrozen && !hostAway && signalingUp()) {
         stallStreak += 1
         if (stallStreak >= STALL_SAMPLES) {
           stallStreak = 0
@@ -715,6 +770,23 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    * 而换票只是为了重拉视频。老服务端没有这个事件（ack 超时）时才退回 watch。
    */
   const refreshSrsGrant = async (): Promise<boolean> => {
+    if (streamMode) {
+      const session = streamSession
+      if (destroyed || !session) return false
+      try {
+        const data = await liveStreamGrant(live.roomId, session)
+        if (destroyed || !streamMode) return false
+        srsGrant = data.srsGrant
+        srsGrantAt = Date.now()
+        srsReady = data.srsReady
+        return true
+      } catch (e) {
+        if (destroyed || !streamMode) return false
+        // 404：会话不认了（流其实已经断了、服务端把我当离房）—— 重新进房，welcome 里会带新票
+        if (e instanceof LiveStreamCallError && e.status === 404 && streamSession === session) restartStream()
+        return false
+      }
+    }
     const s = socket
     if (destroyed || !s?.connected) return false
     try {
@@ -766,7 +838,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     live.onState?.(gotFrame ? 'reconnecting' : srsEverWatched ? 'reconnecting' : 'connecting')
     srsRetryTimer = window.setTimeout(() => {
       srsRetryTimer = 0
-      if (destroyed || !socket?.connected || hostAway || hostFrozen) return
+      // 信令断着：等它连回来（socket 的 connect → rejoin / 事件流的 welcome）时会接着拉。
+      // 事件流没有自动重连之外的推手，画面也断了就别等退避，马上去进房
+      if (!destroyed && streamMode && !streamConn) scheduleStreamReconnect(true)
+      if (destroyed || !signalingUp() || hostAway || hostFrozen) return
       void (async () => {
         const fresh = await refreshSrsGrant()
         if (destroyed || transport !== 'srs') return
@@ -905,7 +980,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    * 而 SRS 房的视频根本不经过主播的 offer —— 照搬只会让主播反复重建协作连接，视频一点没好。
    */
   const srsRecover = async () => {
-    if (destroyed || !socket?.connected || hostAway) return
+    if (destroyed || !signalingUp() || hostAway) return
     if (hostFrozen) {
       thawRewatch = true
       return
@@ -922,12 +997,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         主播的上行还没到 SRS。重新 watch 一次就是在催它：服务端会再发一条 viewer-joined，
         主播那边据此检查上行（它可能刚好错过了人数广播）。催的次数有限，但闹钟一直上着，
         上行一回来 srs-state 就会把画面接上。
+        事件流观众没有 watch 可重发，走 nudge：服务端把人数再发给主播一次，效果一样，
+        还不会让主播重建任何连接。
       */
       if (!recoveryInFlight && rewatchCount < REWATCH_MAX) {
         rewatchCount += 1
         recoveryInFlight = true
         try {
-          await watch(true)
+          if (streamMode) await nudgeHost()
+          else await watch(true)
         } finally {
           recoveryInFlight = false
         }
@@ -1125,27 +1203,34 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   /** 换一条新连接。主播每轮 offer 都是新建的 PeerConnection，旧的那条接不了 */
   const freshPc = (gen: number | undefined) => {
     closePc()
-    // 旧连接的等待器不能留着：它盯的是同一个 <video>，会把上一轮的残帧当成新连接通了
-    frameWaiter?.()
     pcGen = gen
     pcOffered = false
     pendingIce = []
     // 这是“这一条连接”的诊断证据。若不清，上一轮见过 relay 会掩盖新一轮只有 host 的真实故障。
     localCandidateTypes.clear()
-    /**
-     * ⚠️ 换连接就要重新证明有画面。
-     *
-     * gotFrame 以前只置位不复位，于是第一帧之后所有「等不到画面」的恢复逻辑全成了死代码：
-     * ontrack 不再装等待器、connectionState 一到 connected 就报「在看」、
-     * armRewatch 的 `!gotFrame` 永远为假。表现是画面停在上一路连接的最后一帧，
-     * 状态却写着「📡 在看」，没有超时、没有提示、永远不会自愈。
-     */
-    gotFrame = false
-    tinyFrame = false
-    // 新 PeerConnection 的累计计数从零开始，不能拿上条连接的包数做差。
-    lastPkts = { received: 0, lost: 0, bytes: 0, decoded: 0, at: 0 }
-    stallStreak = 0
-    linkBaselineReady = false
+    /*
+      SRS 房里这条点对点连接只装 2P 协作通道，画面在 srsPc 上：换它不能动画面的状态。
+      以前这里不分房型，于是每次协作通道重来一轮 offer（coopRecover、观众从事件流改连 socket）
+      都把 gotFrame 清掉 —— 20 秒后 srsRecover 看见「没帧又建了很久」，把一条好好的 SRS 拉流拆掉重拉，画面黑一下。
+    */
+    if (transport !== 'srs') {
+      // 旧连接的等待器不能留着：它盯的是同一个 <video>，会把上一轮的残帧当成新连接通了
+      frameWaiter?.()
+      /**
+       * ⚠️ 换连接就要重新证明有画面。
+       *
+       * gotFrame 以前只置位不复位，于是第一帧之后所有「等不到画面」的恢复逻辑全成了死代码：
+       * ontrack 不再装等待器、connectionState 一到 connected 就报「在看」、
+       * armRewatch 的 `!gotFrame` 永远为假。表现是画面停在上一路连接的最后一帧，
+       * 状态却写着「📡 在看」，没有超时、没有提示、永远不会自愈。
+       */
+      gotFrame = false
+      tinyFrame = false
+      // 新 PeerConnection 的累计计数从零开始，不能拿上条连接的包数做差。
+      lastPkts = { received: 0, lost: 0, bytes: 0, decoded: 0, at: 0 }
+      stallStreak = 0
+      linkBaselineReady = false
+    }
     const next = new RTCPeerConnection({ iceServers })
     pc = next
     // 房主在他那边建的输入通道，随 SDP 过来（我们不建，见 coopDc 的注释）
@@ -1311,7 +1396,16 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       return false
     }
     if (destroyed) return false
+    hostId = info.hostId
+    applyRoomInfo(info, Boolean(info.hostId))
+    return true
+  }
 
+  /**
+   * 应用一份房间快照（socket 的 watch ack / 事件流的 welcome）。
+   * `hostPresent`：主播此刻连着没有 —— socket 那边看 ack 里的 hostId，事件流那边只有 hostAway。
+   */
+  const applyRoomInfo = (info: RoomSnapshot, hostPresent: boolean) => {
     const nextTransport = info.transport === 'srs' ? 'srs' : 'p2p'
     if (transport !== nextTransport) closeSrsPlayer()
     transport = nextTransport
@@ -1325,8 +1419,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       closeSrsPlayer()
     }
 
-    hostId = info.hostId
-    hostAway = !info.hostId || Boolean(info.hostAway)
+    hostAway = !hostPresent || Boolean(info.hostAway)
     // 主播在我进来之前就切后台了：host-frozen 那条推送早发过，只能从 ack 里补
     if (Boolean(info.hostFrozen) !== hostFrozen) {
       hostFrozen = Boolean(info.hostFrozen)
@@ -1357,13 +1450,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       options.onReady?.()
     }
     live.onViewers?.(info.viewers)
+    if (Array.isArray(info.list)) live.onRoster?.(info.list)
     // 主播不在：首连的看门狗别叫 —— 等多久由服务器的宽限期决定，到点它会发 live-ended
     if (hostAway) window.clearTimeout(watchdog)
     // WebRTC 显示 connected 只说明 ICE 通了，不代表视频已经有帧；误报 watching 会撤掉加载态，
     // 留给观众一块没有任何恢复动作的黑屏。
     const mediaConnected = transport === 'srs' ? srsPc?.connectionState === 'connected' : pc?.connectionState === 'connected'
     live.onState?.(hostAway ? 'host-away' : mediaConnected && gotFrame ? 'watching' : 'connecting')
-    return true
   }
 
   /** 等一轮 offer；到点画面还没通就重新 watch 要一次 */
@@ -1461,183 +1554,211 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
   }
 
-  void (async () => {
+  /* ---------------- 房间事件：socket.io 和事件流共用同一组处理 ---------------- */
+
+  /**
+   * 主播这一刻抓不到画面。不当场报错 —— 画布可能只是在重建（Ruffle 读档那 700ms）——
+   * 隔几秒再要一轮；几轮都这样，rewatch 撞满 REWATCH_MAX 之后 diagnose() 会把这句话原样报出来。
+   * socket 观众由主播直接 signal 过来；事件流观众没有点对点信令，由服务端转一句 no-source。
+   */
+  const onNoSource = () => {
+    if (destroyed) return
+    noSource = true
+    console.warn('[live] 主播报告抓不到画面（画布没了或废了），稍后重试')
+    live.onState?.('connecting')
+    window.clearTimeout(rewatchTimer)
+    rewatchTimer = window.setTimeout(() => {
+      if (!destroyed && !gotFrame) void rewatch()
+    }, NO_SOURCE_RETRY_MS)
+  }
+
+  /**
+   * 弹幕。服务端广播给房间里所有人，自己发的那条也会回来 ——
+   * 所以这里收到什么就显示什么，本地不做乐观回显：
+   * 每个观众看到的顺序都是服务端定的那一个。
+   */
+  const onChatEvent = (msg: LiveChatMessage) => {
+    if (!destroyed && msg?.text) live.onChat?.(msg)
+  }
+
+  const onViewersEvent = (p: { count?: number; list?: LiveViewerEntry[] }) => {
+    if (destroyed) return
+    live.onViewers?.(p?.count ?? 0)
+    // list 是 09-11 加的；老服务端没有这个字段，那就报空名单（界面退回只显示人数）
+    live.onRoster?.(Array.isArray(p?.list) ? p.list : [])
+  }
+
+  const onSrsState = (p: { ready?: boolean }) => {
+    if (destroyed || transport !== 'srs') return
+    srsReady = Boolean(p?.ready)
+    if (srsReady && srsGrant) {
+      /*
+        还活着的拉流不动（SRS 会把新上行接到已有消费者上）；死了的才重拉。
+        上百个观众会在同一瞬间收到这条，看过画面的（也就是重连而不是首连）错开一点再发 WHEP。
+      */
+      if (srsEverWatched && !srsPlayerAlive()) {
+        window.setTimeout(() => { if (!destroyed && srsReady) void startSrsPlayer() }, Math.round(Math.random() * 800))
+      } else void startSrsPlayer()
+    } else {
+      gotFrame = false
+      frameWaiter?.()
+      closeSrsPlayer()
+      live.onState?.(hostAway || hostFrozen ? 'host-away' : 'reconnecting')
+      // 上行掉了：开始计时，迟迟不回来就按预算报断（见 srsRecover）
+      if (srsEverWatched && !srsLostAt) srsLostAt = Date.now()
+      if (!hostAway && !hostFrozen) armRewatch()
+    }
+  }
+
+  /**
+   * 主播刚把这一局开成了联机房（传 null 就是刚关掉）。
+   * 已经在看的人就是靠这一下多出「加入联机」按钮的 —— 他们不会再去刷大厅。
+   */
+  const onNetplayLinked = (p: { roomId?: string | null }) => {
+    if (!destroyed) live.onNetplay?.(p?.roomId || null)
+  }
+
+  /**
+   * 主播切到后台了：浏览器不给后台标签页出帧，画面就冻在那儿。
+   * 不是断线、不用重连 —— 只要告诉观众一声，别让他以为是自己网的问题。
+   */
+  const onHostFrozen = (p: { frozen?: boolean }) => {
+    if (destroyed) return
+    const was = hostFrozen
+    hostFrozen = Boolean(p?.frozen)
+    live.onFrozen?.(hostFrozen)
+    if (watching) live.onState?.(hostFrozen ? 'host-away' : 'watching')
+    /*
+      主播回来了，而我还没见过一帧（进来的时候他就冻着）—— 现在才是该等画面的时候。
+      冻着期间闹钟是被 armRewatch 的守卫挡住的，不在这里重新起一次的话，
+      就再也没有人来喊「怎么还没画面」，观众会一直黑着。
+    */
+    if (was && !hostFrozen) {
+      if (thawRewatch) {
+        // 冻着期间连接就已经断了（见 thawRewatch）：现在立刻去要，别再等 20 秒
+        thawRewatch = false
+        rewatchCount = 0
+        void rewatch()
+      } else if (!gotFrame) {
+        armRewatch()
+      }
+    }
+  }
+
+  const onHostAway = () => {
+    if (destroyed) return
+    hostAway = true
+    // 画面还连着就不惊动人（只是主播的信令断了，WebRTC 不经过服务器）；断了才亮「主播不在」
+    if (mediaConnectionState() !== 'connected') live.onState?.('host-away')
+  }
+
+  const onHostBack = (p: { hostId?: string }) => {
+    if (destroyed) return
+    hostAway = false
+    if (p?.hostId) hostId = p.hostId
+    // 主播回来会对照名单重新 offer。它那边要是还以为这条连接活着（两边判断有时差），
+    // offer 就不会来。只有「连接还在且真见过帧」才算恢复；其余情况必须主动自愈。
+    const connected = mediaConnectionState() === 'connected'
+    if (connected && gotFrame) return live.onState?.('watching')
+    live.onState?.('connecting')
+    rewatchCount = 0
+    // 旧连接已经断了就立刻要新 offer；连接还在但没帧，给主播的主动 offer 留一个短窗口。
+    if (connected) armRewatch(FIRST_OFFER_MS)
+    else void rewatch()
+  }
+
+  const onLiveEnded = () => {
+    if (destroyed) return
+    window.clearTimeout(rewatchTimer)
+    // 服务端随后会关掉事件流；先收掉，免得 onEnd 当成断线去重连、把「已结束」盖成「不存在」
+    stopStream()
+    closeSrsPlayer()
+    live.onState?.('ended')
+    options.onError?.(rt.liveEnded, 'runtime')
+  }
+
+  /* ---------------- socket.io 观众（点对点房 / 退路 / 上场当 2P） ---------------- */
+
+  /**
+   * 挂上 socket 的事件。每个处理先认一下「还是不是当前这条 socket」：
+   * 改连失败时那条 socket 会被收掉，它之后的 disconnect 之类不能再改观众的状态。
+   */
+  const bindSocket = (s: LiveSocket) => {
+    const current = () => !destroyed && socket === s
+    s.on('signal', ((payload: { from?: string; data?: SignalData }) => {
+      if (!current() || !payload?.data) return
+      // from 必须是当前主播；主播重连后 id 换了，host-back 会更新 hostId
+      if (!hostId || payload.from !== hostId) return
+      const { sdp, candidate, gen, error } = payload.data
+      if (error === 'no-source') return onNoSource()
+      if (sdp) {
+        noSource = false
+        if (sdp.type && sdp.type !== 'offer') return // 主播只发 offer
+        // 新一轮：代号变了，或者这条连接已经吃过 offer。主播每轮都是新建的 PeerConnection
+        const stale = !pc || pcOffered || (gen !== undefined && pcGen !== undefined && gen !== pcGen)
+        const cur: RTCPeerConnection = stale ? freshPc(gen) : (pc as RTCPeerConnection)
+        pcGen = gen
+        pcOffered = true
+        /*
+          offer 到了，说明主播那边在建连：首连的 8 秒闹钟是给「offer 丢了」用的，
+          不是给 ICE + DTLS + 首个关键帧的。跨洋 TURN（RTT 700ms 级）光 ICE 就要 6 秒，
+          以前闹钟照响 → 重新 watch → 主播把快通的连接拆掉重来，首帧被拖到 20 秒以上。
+        */
+        if (!gotFrame) armRewatch(REWATCH_TIMEOUT_MS)
+        void (async () => {
+          await cur.setRemoteDescription(new RTCSessionDescription(sdp))
+          for (const c of pendingIce.splice(0)) await cur.addIceCandidate(new RTCIceCandidate(c)).catch(() => {})
+          const answer = await cur.createAnswer()
+          await cur.setLocalDescription(answer)
+          if (pc === cur && s.connected && hostId) {
+            s.emit('signal', { target: hostId, data: { sdp: cur.localDescription ?? answer, gen } satisfies SignalData })
+          }
+        })().catch((e) => {
+          if (!destroyed && pc === cur) fail(fmt(rt.liveFailed, { msg: e instanceof Error ? e.message : String(e) }))
+        })
+      } else if (candidate) {
+        if (!pc) return
+        if (gen !== undefined && pcGen !== undefined && gen !== pcGen) return // 上一轮的候选
+        if (pc.remoteDescription) void pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => {})
+        else if (pendingIce.length < MAX_PENDING_ICE) pendingIce.push(candidate)
+      }
+    }) as (...args: never[]) => void)
+
+    s.on('chat', ((msg: LiveChatMessage) => { if (current()) onChatEvent(msg) }) as (...args: never[]) => void)
+    s.on('viewers', ((p: { count?: number; list?: LiveViewerEntry[] }) => { if (current()) onViewersEvent(p) }) as (...args: never[]) => void)
+    s.on('srs-state', ((p: { ready?: boolean }) => { if (current()) onSrsState(p) }) as (...args: never[]) => void)
+    s.on('netplay-linked', ((p: { roomId?: string | null }) => { if (current()) onNetplayLinked(p) }) as (...args: never[]) => void)
+    s.on('host-frozen', ((p: { frozen?: boolean }) => { if (current()) onHostFrozen(p) }) as (...args: never[]) => void)
+    s.on('host-away', (() => { if (current()) onHostAway() }) as (...args: never[]) => void)
+    s.on('host-back', ((p: { hostId?: string }) => { if (current()) onHostBack(p) }) as (...args: never[]) => void)
+    s.on('live-ended', (() => { if (current()) onLiveEnded() }) as (...args: never[]) => void)
+
+    s.on('disconnect', (() => {
+      if (!current()) return
+      // 服务器把我们从房间里踢了、也通知了主播拆连接。socket.io 会自动重连，连上再进一次
+      live.onState?.(mediaConnectionState() === 'connected' ? 'watching' : 'reconnecting')
+    }) as (...args: never[]) => void)
+
+    // connectLive 已经消费掉首连的 connect，这里只在**重连**时触发。
+    // 还在事件流模式说明这条 socket 正在改连途中，由 switchToSocket 自己收尾
+    s.on('connect', (() => {
+      if (!current() || !joined || streamMode) return
+      void rejoin()
+    }) as (...args: never[]) => void)
+  }
+
+  /** 原来的 socket.io 观看路径：点对点房、老服务端、事件流进不了房时整条走它 */
+  const startSocketViewer = async () => {
     try {
-      live.onState?.('connecting')
-      socket = await connectLive()
-      if (destroyed) return socket.close()
+      const s = await connectLive()
+      if (destroyed) return s.close()
+      socket = s
       await refreshIce()
-      if (destroyed) return socket.close()
-      const s = socket
+      if (destroyed) return
 
       // 一条空连接先立着，等主播的第一个 offer；ICE 候选在 offer 之前到的话有地方攒
       freshPc(undefined)
-
-      s.on('signal', ((payload: { from?: string; data?: SignalData }) => {
-        if (destroyed || !payload?.data) return
-        // from 必须是当前主播；主播重连后 id 换了，host-back 会更新 hostId
-        if (!hostId || payload.from !== hostId) return
-        const { sdp, candidate, gen, error } = payload.data
-        if (error === 'no-source') {
-          /**
-           * 主播这一刻抓不到画面。不当场报错 —— 画布可能只是在重建（Ruffle 读档那 700ms）——
-           * 隔几秒再要一轮；几轮都这样，rewatch 撞满 REWATCH_MAX 之后 diagnose() 会把这句话原样报出来。
-           */
-          noSource = true
-          console.warn('[live] 主播报告抓不到画面（画布没了或废了），稍后重试')
-          live.onState?.('connecting')
-          window.clearTimeout(rewatchTimer)
-          rewatchTimer = window.setTimeout(() => {
-            if (!destroyed && !gotFrame) void rewatch()
-          }, NO_SOURCE_RETRY_MS)
-          return
-        }
-        if (sdp) {
-          noSource = false
-          if (sdp.type && sdp.type !== 'offer') return // 主播只发 offer
-          // 新一轮：代号变了，或者这条连接已经吃过 offer。主播每轮都是新建的 PeerConnection
-          const stale = !pc || pcOffered || (gen !== undefined && pcGen !== undefined && gen !== pcGen)
-          const cur: RTCPeerConnection = stale ? freshPc(gen) : (pc as RTCPeerConnection)
-          pcGen = gen
-          pcOffered = true
-          /*
-            offer 到了，说明主播那边在建连：首连的 8 秒闹钟是给「offer 丢了」用的，
-            不是给 ICE + DTLS + 首个关键帧的。跨洋 TURN（RTT 700ms 级）光 ICE 就要 6 秒，
-            以前闹钟照响 → 重新 watch → 主播把快通的连接拆掉重来，首帧被拖到 20 秒以上。
-          */
-          if (!gotFrame) armRewatch(REWATCH_TIMEOUT_MS)
-          void (async () => {
-            await cur.setRemoteDescription(new RTCSessionDescription(sdp))
-            for (const c of pendingIce.splice(0)) await cur.addIceCandidate(new RTCIceCandidate(c)).catch(() => {})
-            const answer = await cur.createAnswer()
-            await cur.setLocalDescription(answer)
-            if (pc === cur && s.connected && hostId) {
-              s.emit('signal', { target: hostId, data: { sdp: cur.localDescription ?? answer, gen } satisfies SignalData })
-            }
-          })().catch((e) => {
-            if (!destroyed && pc === cur) fail(fmt(rt.liveFailed, { msg: e instanceof Error ? e.message : String(e) }))
-          })
-        } else if (candidate) {
-          if (!pc) return
-          if (gen !== undefined && pcGen !== undefined && gen !== pcGen) return // 上一轮的候选
-          if (pc.remoteDescription) void pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => {})
-          else if (pendingIce.length < MAX_PENDING_ICE) pendingIce.push(candidate)
-        }
-      }) as (...args: never[]) => void)
-
-      /**
-       * 弹幕。服务端广播给房间里所有人，自己发的那条也会回来 ——
-       * 所以这里收到什么就显示什么，本地不做乐观回显：
-       * 每个观众看到的顺序都是服务端定的那一个。
-       */
-      s.on('chat', ((msg: LiveChatMessage) => {
-        if (msg?.text) live.onChat?.(msg)
-      }) as (...args: never[]) => void)
-
-
-      s.on('viewers', ((p: { count?: number; list?: LiveViewerEntry[] }) => {
-        live.onViewers?.(p?.count ?? 0)
-        // list 是 09-11 加的；老服务端没有这个字段，那就报空名单（界面退回只显示人数）
-        live.onRoster?.(Array.isArray(p?.list) ? p.list : [])
-      }) as (...args: never[]) => void)
-      s.on('srs-state', ((p: { ready?: boolean }) => {
-        if (destroyed || transport !== 'srs') return
-        srsReady = Boolean(p?.ready)
-        if (srsReady && srsGrant) {
-          /*
-            还活着的拉流不动（SRS 会把新上行接到已有消费者上）；死了的才重拉。
-            上百个观众会在同一瞬间收到这条，看过画面的（也就是重连而不是首连）错开一点再发 WHEP。
-          */
-          if (srsEverWatched && !srsPlayerAlive()) {
-            window.setTimeout(() => { if (!destroyed && srsReady) void startSrsPlayer() }, Math.round(Math.random() * 800))
-          } else void startSrsPlayer()
-        } else {
-          gotFrame = false
-          frameWaiter?.()
-          closeSrsPlayer()
-          live.onState?.(hostAway || hostFrozen ? 'host-away' : 'reconnecting')
-          // 上行掉了：开始计时，迟迟不回来就按预算报断（见 srsRecover）
-          if (srsEverWatched && !srsLostAt) srsLostAt = Date.now()
-          if (!hostAway && !hostFrozen) armRewatch()
-        }
-      }) as (...args: never[]) => void)
-      /**
-       * 主播刚把这一局开成了联机房（传 null 就是刚关掉）。
-       * 已经在看的人就是靠这一下多出「加入联机」按钮的 —— 他们不会再去刷大厅。
-       */
-      s.on(
-        'netplay-linked',
-        ((p: { roomId?: string | null }) => live.onNetplay?.(p?.roomId || null)) as (...args: never[]) => void,
-      )
-
-      /**
-       * 主播切到后台了：浏览器不给后台标签页出帧，画面就冻在那儿。
-       * 不是断线、不用重连 —— 只要告诉观众一声，别让他以为是自己网的问题。
-       */
-      s.on('host-frozen', ((p: { frozen?: boolean }) => {
-        if (destroyed) return
-        const was = hostFrozen
-        hostFrozen = Boolean(p?.frozen)
-        live.onFrozen?.(hostFrozen)
-        if (watching) live.onState?.(hostFrozen ? 'host-away' : 'watching')
-        /*
-          主播回来了，而我还没见过一帧（进来的时候他就冻着）—— 现在才是该等画面的时候。
-          冻着期间闹钟是被 armRewatch 的守卫挡住的，不在这里重新起一次的话，
-          就再也没有人来喊「怎么还没画面」，观众会一直黑着。
-        */
-        if (was && !hostFrozen) {
-          if (thawRewatch) {
-            // 冻着期间连接就已经断了（见 thawRewatch）：现在立刻去要，别再等 20 秒
-            thawRewatch = false
-            rewatchCount = 0
-            void rewatch()
-          } else if (!gotFrame) {
-            armRewatch()
-          }
-        }
-      }) as (...args: never[]) => void)
-
-      s.on('host-away', (() => {
-        if (destroyed) return
-        hostAway = true
-        // 画面还连着就不惊动人（只是主播的信令断了，WebRTC 不经过服务器）；断了才亮「主播不在」
-        if (mediaConnectionState() !== 'connected') live.onState?.('host-away')
-      }) as (...args: never[]) => void)
-
-      s.on('host-back', ((p: { hostId?: string }) => {
-        if (destroyed) return
-        hostAway = false
-        if (p?.hostId) hostId = p.hostId
-        // 主播回来会对照名单重新 offer。它那边要是还以为这条连接活着（两边判断有时差），
-        // offer 就不会来。只有「连接还在且真见过帧」才算恢复；其余情况必须主动自愈。
-        const connected = mediaConnectionState() === 'connected'
-        if (connected && gotFrame) return live.onState?.('watching')
-        live.onState?.('connecting')
-        rewatchCount = 0
-        // 旧连接已经断了就立刻要新 offer；连接还在但没帧，给主播的主动 offer 留一个短窗口。
-        if (connected) armRewatch(FIRST_OFFER_MS)
-        else void rewatch()
-      }) as (...args: never[]) => void)
-
-      s.on('live-ended', (() => {
-        if (destroyed) return
-        window.clearTimeout(rewatchTimer)
-        closeSrsPlayer()
-        live.onState?.('ended')
-        options.onError?.(rt.liveEnded, 'runtime')
-      }) as (...args: never[]) => void)
-
-      s.on('disconnect', (() => {
-        if (destroyed) return
-        // 服务器把我们从房间里踢了、也通知了主播拆连接。socket.io 会自动重连，连上再进一次
-        live.onState?.(mediaConnectionState() === 'connected' ? 'watching' : 'reconnecting')
-      }) as (...args: never[]) => void)
-
-      // connectLive 已经消费掉首连的 connect，这里只在**重连**时触发
-      s.on('connect', (() => {
-        if (destroyed || !joined) return
-        void rejoin()
-      }) as (...args: never[]) => void)
+      bindSocket(s)
 
       const ok = await watch()
       /**
@@ -1653,6 +1774,229 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       if (destroyed) return
       fail(e instanceof Error ? e.message : String(e))
     }
+  }
+
+  /* ---------------- 事件流观众（SRS 房默认走这条，见文件头） ---------------- */
+
+  /** 事件流里的一个事件 → 和 socket 同一组处理 */
+  const onStreamEvent = (event: string, data: unknown) => {
+    const p = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>
+    switch (event) {
+      case 'viewers':
+        return onViewersEvent(p as { count?: number; list?: LiveViewerEntry[] })
+      case 'chat':
+        return onChatEvent(p as unknown as LiveChatMessage)
+      case 'srs-state':
+        return onSrsState(p as { ready?: boolean })
+      case 'netplay-linked':
+        return onNetplayLinked(p as { roomId?: string | null })
+      case 'host-frozen':
+        return onHostFrozen(p as { frozen?: boolean })
+      case 'host-away':
+        return onHostAway()
+      case 'host-back':
+        return onHostBack(p as { hostId?: string })
+      case 'live-ended':
+        return onLiveEnded()
+      case 'no-source':
+        // 服务端是对全房的事件流观众转的这一句；已经有画面的人不用理它
+        if (!gotFrame) onNoSource()
+        return
+      case 'coop':
+        // 2P 位刚出现：改连 socket，才收得到主播的协作通道
+        if (p.open) void switchToSocket('coop')
+        return
+      default:
+      // ping：只用来喂静默看门狗；replaced：openLiveStream 记下了，onEnd 里看
+    }
+  }
+
+  /** 开一条事件流，welcome 里应用房间快照。失败抛 LiveStreamRefused（浏览器缺接口时是普通错误） */
+  const connectStream = async () => {
+    const gen = ++streamGen
+    await openLiveStream(live.roomId, viewerKey, {
+      onWelcome: (welcome, conn) => {
+        if (destroyed || gen !== streamGen) return conn.close()
+        streamConn = conn
+        streamSession = welcome.session
+        streamMode = true
+        streamRetryCount = 0
+        rewatchCount = 0
+        // 断流重连时服务端凭 key 把 SRS 拉流认领回来（45 秒宽限），还活着的拉流 applyRoomInfo 不会去动
+        applyRoomInfo(welcome as unknown as RoomSnapshot, !welcome.hostAway)
+        if (!hostAway && !hostFrozen && !gotFrame) armRewatch(FIRST_OFFER_MS)
+        // 这一局有 2P 位：协作通道的 SDP / ICE 要服务器转发，改连 socket
+        if (welcome.coopOpen) void switchToSocket('coop')
+      },
+      onEvent: (event, data) => {
+        if (!destroyed && gen === streamGen) onStreamEvent(event, data)
+      },
+      onEnd: (reason, replaced) => {
+        if (!destroyed && gen === streamGen) onStreamEnd(reason, replaced)
+      },
+    })
+  }
+
+  /** 事件流自己断了（服务端到寿命收尾 / 网络断 / 静默超时） */
+  const onStreamEnd = (reason: 'closed' | 'error' | 'silent', replaced: boolean) => {
+    streamConn = null
+    streamSession = ''
+    // 同一把 key 的新连接接手了（正在改连 socket）：不重连；改连失败时 switchToSocket 会把流接回来
+    if (replaced || !streamMode) return
+    console.warn(`[live] 观众事件流断了（${reason}），稍后重连`)
+    // 画面还在流就不惊动观众：断的只是弹幕 / 人数这条推送
+    if (!(mediaConnectionState() === 'connected' && gotFrame) && !hostAway && !hostFrozen) live.onState?.('reconnecting')
+    scheduleStreamReconnect()
+  }
+
+  const scheduleStreamReconnect = (immediate = false) => {
+    if (destroyed || !streamMode || streamRetryTimer || streamConnecting || streamConn) return
+    // 0.5 → 1 → 2 → 4 → 8 → 15 秒封顶，加抖动：服务端重启时全房观众同一刻断，别同一刻撞回去
+    const base = immediate ? 0 : Math.min(15_000, 500 * 2 ** Math.min(streamRetryCount++, 5))
+    const delay = Math.round(base * (0.8 + Math.random() * 0.4)) + (immediate ? Math.round(Math.random() * 300) : 0)
+    streamRetryTimer = window.setTimeout(() => {
+      streamRetryTimer = 0
+      void reconnectStream()
+    }, delay)
+  }
+
+  const reconnectStream = async () => {
+    if (destroyed || !streamMode || streamConn || streamConnecting) return
+    streamConnecting = true
+    try {
+      await connectStream()
+    } catch (e) {
+      if (destroyed || !streamMode) return
+      const err = e instanceof LiveStreamRefused ? e : null
+      if (err?.code === 'room-not-found') {
+        /*
+          服务器重启把房间忘了，但画面还在流：静默继续看，别拿遮罩盖掉一场好好的直播。
+          画面一断，SRS 的重试会再来这里，那时拿到同一句才算真的结束。
+        */
+        if (srsPc?.connectionState === 'connected' && gotFrame) {
+          orphan = true
+          return
+        }
+        return fail(rt.liveGone)
+      }
+      if (err?.code === 'full') return fail(rt.liveFull)
+      if (err?.code === 'adult') return fail(fmt(rt.liveFailed, { msg: err.message }))
+      // 事件流名额满了 / 服务端不认这条路了：改连 socket.io，照样能看
+      if (err?.code === 'busy' || err?.code === 'unsupported' || err?.code === 'p2p-room') {
+        void switchToSocket('fallback')
+        return
+      }
+      scheduleStreamReconnect()
+    } finally {
+      streamConnecting = false
+    }
+  }
+
+  /** 服务端已经不认这条流的会话了（换票 / 催主播回 404）：收掉它，马上重新进房 */
+  const restartStream = () => {
+    if (destroyed || !streamMode) return
+    streamGen++
+    const conn = streamConn
+    streamConn = null
+    streamSession = ''
+    conn?.close()
+    scheduleStreamReconnect(true)
+  }
+
+  /** 催主播检查一下上行（事件流观众版的「重新 watch 一次」） */
+  const nudgeHost = async () => {
+    const session = streamSession
+    if (!session) return
+    try {
+      const status = await liveStreamNudge(live.roomId, session)
+      if (status === 404 && !destroyed && streamSession === session) restartStream()
+    } catch {
+      /* 催不到就算了：闹钟还上着，srs-state 一到画面自己会接上 */
+    }
+  }
+
+  /**
+   * 从事件流改连 socket.io（见文件头）。
+   *   'coop'      这一局有 2P 位：协作通道的 SDP / ICE 要服务器转发；
+   *   'fallback'  事件流这条路走不通了（名额满 / 服务端不认）。
+   * 同一把 key 再 watch 一次，服务端认出同一个人：事件流收到 replaced 关掉，SRS 拉流记到新 id 名下、不断。
+   */
+  const switchToSocket = async (reason: 'coop' | 'fallback') => {
+    if (destroyed || !streamMode || switchingToSocket) return
+    switchingToSocket = true
+    window.clearTimeout(upgradeTimer)
+    upgradeTimer = 0
+    let s: LiveSocket | null = null
+    try {
+      s = await connectLive()
+      if (destroyed || !streamMode) {
+        s.close()
+        return
+      }
+      socket = s
+      // 协作通道是点对点的，要 ICE 配置；只看画面的退路用不上
+      if (reason === 'coop') await refreshIce()
+      if (destroyed) return
+      freshPc(undefined)
+      bindSocket(s)
+      // reoffer：让主播为这个新 id 建协作连接（viewer-joined）。只是退路的话主播那边建不建都无所谓
+      const ok = await watch(reason === 'coop')
+      if (destroyed) return
+      if (ok) {
+        streamMode = false
+        stopStream()
+        upgradeAttempts = 0
+        console.info(`[live] 观众改连 socket.io（${reason === 'coop' ? '这一局有 2P 位' : '事件流走不通'}）`)
+        return
+      }
+      // watch 报了不可恢复的错（not found / full / 年龄门）：fail 已经处理过了
+      if (!lastWatchRetryable) return
+      throw new Error('watch did not complete')
+    } catch (e) {
+      if (destroyed) return
+      console.warn('[live] 改连 socket.io 失败，继续用事件流：', e instanceof Error ? e.message : e)
+      if (s && socket === s) {
+        socket = null
+        closePc()
+      }
+      try {
+        s?.close()
+      } catch {
+        /* ignore */
+      }
+      if (!streamMode) return
+      // 服务端可能已经按这次 watch 把事件流换掉了（ack 丢了）：流没了就重新进房
+      if (!streamConn) scheduleStreamReconnect()
+      // 2P 位还在等人：过一会儿再试，次数有限。退路改连失败就继续靠事件流重连
+      if (reason === 'coop' && upgradeAttempts++ < 2) {
+        upgradeTimer = window.setTimeout(() => {
+          upgradeTimer = 0
+          void switchToSocket('coop')
+        }, 15_000)
+      }
+    } finally {
+      switchingToSocket = false
+    }
+  }
+
+  void (async () => {
+    live.onState?.('connecting')
+    try {
+      await connectStream()
+      if (!destroyed) options.onCaps?.(caps)
+      return
+    } catch (e) {
+      if (destroyed) return
+      const err = e instanceof LiveStreamRefused ? e : null
+      // 房间不存在 / 满员 / 年龄门：换成 socket 结果一样，直接报
+      if (err && !err.fallback) {
+        fail(err.code === 'room-not-found' ? rt.liveGone : err.code === 'full' ? rt.liveFull : fmt(rt.liveFailed, { msg: err.message }))
+        return
+      }
+      // 点对点房本来就走 socket；其余是事件流这条路不通，照旧用 socket 看
+      if (err?.code !== 'p2p-room') console.warn('[live] 事件流进房失败，改用 socket.io：', e instanceof Error ? e.message : e)
+    }
+    await startSocketViewer()
   })()
 
   options.onCaps?.(caps)
@@ -1667,6 +2011,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
      */
     liveChat(text: string) {
       if (destroyed) return Promise.resolve('dropped' as ChatSendResult)
+      // 事件流观众发弹幕是一个小 POST；流正在重连（没有会话）时照实说没发出去
+      if (streamMode) return liveStreamChat(live.roomId, streamSession, text)
       return sendChatWithAck(socket, text)
     },
     /**
@@ -1730,6 +2076,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       disconnectTimer = 0
       host.removeEventListener('click', onClick)
       video.removeEventListener('resize', reportSize)
+      stopStream()
       closeSrsPlayer()
       closePc()
       try {

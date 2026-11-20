@@ -160,6 +160,8 @@ app.use(createCnEdgeMiddleware({ clientDir: CLIENT_DIR, siteOrigin: originOfSite
 app.use('/api/live/srs', express.json({ limit: '512kb' }))
 // SRS hook 只有房间、客户端和票据字段，限制它的解析体积，避免外部请求先占用大块缓冲。
 app.use('/api/live/srs-hook', express.json({ limit: '64kb' }))
+// 事件流观众的几个 POST 只带 key / 会话令牌 / 一条弹幕；单独限小，别吃全局那份 4MB
+app.use('/api/live/rooms', express.json({ limit: '16kb' }))
 app.use(express.json({ limit: '4mb' }))
 
 // /api 默认一律不缓存。公开只读接口（games / posts）会自己覆盖成短缓存 ——
@@ -763,6 +765,12 @@ const io = attachNetplay(httpServer, app, origins)
 // SDP 先经本站后端代理，SRS HTTP API 不直接暴露给浏览器（见 src/live.js）
 const live = attachLive(io)
 app.post('/api/live/srs/:mode', live.srsExchange)
+// SRS 房的观众不开 socket.io：进房这条 POST 的响应就是他的事件流，换票 / 催主播 / 发弹幕各一个小 POST
+// （见 live.js「不走 socket.io 的 SRS 观众」）。会话令牌放在请求体里，不进 URL。
+app.post('/api/live/rooms/:roomId/watch', live.streamWatch)
+app.post('/api/live/rooms/:roomId/grant', live.streamGrant)
+app.post('/api/live/rooms/:roomId/nudge', live.streamNudge)
+app.post('/api/live/rooms/:roomId/chat', live.streamChat)
 app.post('/api/live/srs-hook', live.srsHook)
 // jsnes 的 P2P 联机信令：与 EmulatorJS netplay 完全独立的一条路，走 /jsnes-netplay（见 jsnes-netplay.js）。
 // 同样只转发 WebRTC 握手，画面与输入都不经过服务器。

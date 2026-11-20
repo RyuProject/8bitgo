@@ -1466,15 +1466,20 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     window.clearTimeout(resumeTimer)
     resumeTimer = 0
     try {
-      const data = await call<{ roomId: string; viewers?: string[]; transport?: 'p2p' | 'srs'; srsGrant?: string }>(socket, 'resume-live', { roomId, token })
+      const data = await call<{ roomId: string; viewers?: string[]; streamViewers?: string[]; transport?: 'p2p' | 'srs'; srsGrant?: string }>(socket, 'resume-live', { roomId, token })
       transport = data.transport === 'srs' ? 'srs' : 'p2p'
       srsGrant = data.srsGrant || ''
       srsGrantStale = false
       if (transport === 'srs' && !srsGrant) throw new Error('SRS publish grant is missing')
       const current = new Set(data.viewers ?? [])
+      /*
+        事件流观众（服务端 live.js「不走 socket.io 的 SRS 观众」）只计人数：他们没有 socket，
+        给他们发 offer 永远到不了，还会占掉 2P 协作连接的名额。要上场的那位会改连 socket 再来（viewer-rebound）。
+      */
+      const streamOnly = new Set(data.streamViewers ?? [])
       if (transport === 'srs') {
         srsViewerIds.clear()
-        for (const id of current) srsViewerIds.add(id)
+        for (const id of current) if (!streamOnly.has(id)) srsViewerIds.add(id)
       }
       for (const id of viewerRequests.keys()) if (!current.has(id)) viewerRequests.delete(id)
       // 名单上没有的观众已经走了（宽限期里它们 disconnect 时主播不在，没收到 viewer-left）
@@ -1484,6 +1489,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
        * 但服务端 membership 尚未恢复的窗口里断掉；把它当“活着”会永远不重发 offer。
        */
       for (const id of current) {
+        if (streamOnly.has(id)) continue
         const peer = peers.get(id)
         if (peer?.pc.connectionState === 'connected') continue
         cancelViewer(id)
@@ -1616,6 +1622,11 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
         // SRS 视频不依赖 2P DataChannel；用服务端名单启动/保活唯一的一路媒体上行。
         const media = ensureStream()
         if (media) void startSrsPublisher(media)
+        /*
+          有人在看、手里却没有能推的画面：告诉服务端，由它转给事件流观众（他们没有 socket，
+          收不到 addViewer 里那条点对点的 no-source）。服务端按房间限频，这里不用再节流。
+        */
+        else if (socket.connected && roomId && !dormant) socket.emit('source-missing')
       } else releaseIfIdle()
     }
     // 观众数一变就重算帧率 —— 「编码路数 × 帧率」是主播 CPU 的真实负担，

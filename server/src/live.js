@@ -8,7 +8,7 @@ import * as livePublisherModule from './open/live-publisher.js'
 import { dateOnly, dbFlag } from './mappers.js'
 import { isAdultByBirthDate } from '../../shared/age.js'
 import { guardSocketArgs } from './socket-guard.js'
-import { sseWrite } from './sseGuard.js'
+import { admitSse, sseWrite, SSE_HEARTBEAT_FRAME, SSE_HEARTBEAT_MS } from './sseGuard.js'
 import {
   CHAT_ACK_EMPTY,
   CHAT_ACK_FAILED,
@@ -474,10 +474,109 @@ const rooms = new Map()
  * 所以每条记一个 lastAt，由清扫按「没人 + 够久」回收（见 MATCH_CHAT_TTL_MS）。
  */
 const matchChats = new Map()
-/** socket.id -> {roomId, role} */
+/** socket.id（或事件流观众的 id，见下）-> {roomId, role} */
 const membership = new Map()
 
 const matchChatKey = (roomId) => `match:${roomId}`
+
+/* ---------------- 不走 socket.io 的 SRS 观众（事件流观众） ---------------- */
+
+/**
+ * SRS 房的观众只看不玩时，**不开 socket.io**：一次 POST 进房，响应体就是这个人专属的 SSE 事件流
+ * （欢迎快照 + 播放票 + 之后的人数 / 弹幕 / 推流状态），换票、发弹幕、催主播各是一个小 POST。
+ *
+ * 为什么（2026-11-20）：8bitgo.com 上的大陆观众连 socket.io 要走 Cloudflare 洛杉矶 —— WebSocket 要另起一条
+ * TCP + TLS，再走 engine.io 握手、命名空间连接、watch 的 ack，首连实测 4～8 秒；而这条 POST 复用页面已有的
+ * HTTP/2 连接，一个往返就拿到播放票。同类网站（ggemu）的观众页也是「拿票 → WHEP → SSE 收弹幕」，没有长连接。
+ *
+ * 长连接只留给主播和「上场当 2P」：2P 输入走主播与观众之间的 DataChannel，SDP / ICE 要服务器转发，
+ * 所以有 2P 位时观众端会带同一把 key 改连 socket.io 再 watch 一次 —— 服务端按 key 认出同一个人，
+ * 把事件流换成 socket（见 watch 里的 previous），SRS 拉流不断。
+ *
+ * 身份和 socket 观众同一套：成员 id 记进 room.viewers / membership（播放票、SRS hook、名单、人数
+ * 全部原样复用），只是这个 id 不对应任何 socket。凡是拿「nsp.sockets 里有没有」判活的地方都要认它
+ * （幽灵扫描），凡是给房间广播的地方都要顺带写一份到事件流（toRoom）。
+ */
+const STREAM_ID_PREFIX = 'sv_'
+/** 成员 id -> 事件流观众 */
+const streamViewers = new Map()
+/** 会话令牌 -> 事件流观众。令牌只走请求体，不进 URL（URL 会落进访问日志、浏览历史和 Referer） */
+const streamSessions = new Map()
+/** roomId -> Set<事件流观众>。广播时按房间直取，不扫全部观众 */
+const roomStreams = new Map()
+/** 催主播（重发一次人数给主播）每位观众最短间隔 */
+const STREAM_NUDGE_MIN_MS = 3_000
+/** 主播报「抓不到画面」转给事件流观众的最短间隔（按房间） */
+const SOURCE_MISSING_MIN_MS = 2_000
+
+const isStreamViewer = (id) => typeof id === 'string' && streamViewers.has(id)
+
+/**
+ * 给事件流观众用的「伪 socket」：chatIdentity / liveAccount / 各种令牌桶只读 id、handshake.auth.token、data，
+ * 给它一个形状相同的对象，就不用为事件流另写一套身份与限流逻辑（两套迟早不一致）。
+ */
+function streamPseudoSocket(id, token) {
+  return { id, connected: true, handshake: { auth: { token: token || '' } }, data: {} }
+}
+
+function streamFrame(event, payload) {
+  return `event: ${event}\ndata: ${JSON.stringify(payload ?? {})}\n\n`
+}
+
+/** 写一帧给某位事件流观众；写不进去（客户端读不动了 / 已断开）返回 false */
+function writeStream(viewer, event, payload) {
+  if (viewer.closed) return false
+  try {
+    return sseWrite(viewer.res, streamFrame(event, payload))
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 只关掉事件流本身、摘掉索引，**不动**房间名单。用于两种情形：
+ *   · 同一把 key 换了新连接（事件流重连 / 升级成 socket）—— 名单已经转到新 id 名下；
+ *   · 房间散场 —— 名单随房间一起没了。
+ * 真正「这位观众走了」走 leaveStream。
+ */
+function detachStream(viewer, finalEvent = null, finalPayload = null) {
+  if (viewer.closed) return
+  if (finalEvent) writeStream(viewer, finalEvent, finalPayload)
+  viewer.closed = true
+  if (viewer.beat) clearInterval(viewer.beat)
+  viewer.beat = null
+  streamViewers.delete(viewer.id)
+  streamSessions.delete(viewer.session)
+  const set = roomStreams.get(viewer.roomId)
+  if (set) {
+    set.delete(viewer)
+    if (set.size === 0) roomStreams.delete(viewer.roomId)
+  }
+  try {
+    if (!viewer.res.writableEnded) viewer.res.end()
+  } catch {
+    /* 连接早就没了 */
+  }
+}
+
+/** 给这间房的所有事件流观众推一条。写失败的那几位当作已离开（下一轮幽灵扫描也会兜底） */
+function streamBroadcast(nsp, roomId, event, payload) {
+  const set = roomStreams.get(roomId)
+  if (!set || set.size === 0) return
+  const dead = []
+  for (const viewer of set) if (!writeStream(viewer, event, payload)) dead.push(viewer)
+  for (const viewer of dead) leaveStream(nsp, viewer)
+}
+
+/**
+ * 给房间广播：socket.io 房间里的人一份，事件流观众一份。
+ * `except` 是要排除的那条 socket（原来写 socket.to(room.id) 的地方）；事件流观众从来不是主播，照发。
+ */
+function toRoom(nsp, roomId, event, payload, except = null) {
+  if (except) except.to(roomId).emit(event, payload)
+  else nsp.to(roomId).emit(event, payload)
+  streamBroadcast(nsp, roomId, event, payload)
+}
 
 /**
  * SRS 在没有完整部署配置时保持关闭，开发环境可继续使用原有 P2P；显式启用 SRS 后必须 fail closed。
@@ -759,6 +858,17 @@ function srsHostAck(room) {
   }
 }
 
+/**
+ * 续播的确认：srsHostAck + 观众名单。
+ * `viewers` 仍是**全部**成员（老版本主播拿它的长度当人数，决定要不要推 SRS 上行；少算会把唯一一路上行停掉），
+ * `streamViewers` 单独列出其中的事件流观众：新版本主播只给剩下的人建 2P 协作连接 —— 事件流观众没有 socket，
+ * 给它们发 offer 只会占满协作连接的名额。
+ */
+function hostResumeAck(room) {
+  const viewers = Array.from(room.viewers)
+  return { ...srsHostAck(room), viewers, streamViewers: viewers.filter(isStreamViewer) }
+}
+
 function sameSecret(left, right) {
   const a = Buffer.from(String(left || ''))
   const b = Buffer.from(String(right || ''))
@@ -911,9 +1021,9 @@ function viewerList(room) {
  * 甚至已经换过一次 socket。所以落库前必须重新确认「这个 id 还在这个房间的名单里」——
  * 不确认的话会把已经走掉的人重新写回 viewerNames，而那份 Map 再没有别的地方会清它。
  */
-function resolveViewerName(nsp, room, socket) {
+function resolveViewerName(nsp, room, socket, findUser = queryOne) {
   const viewerId = socket.id
-  void chatIdentity(socket)
+  void chatIdentity(socket, findUser)
     .then((identity) => {
       if (rooms.get(room.id) !== room || !room.viewers.has(viewerId)) return
       room.viewerNames.set(viewerId, identity)
@@ -934,7 +1044,7 @@ function notifyViewers(nsp, room) {
     room.viewersTimer = null
     if (rooms.get(room.id) !== room) return
     // count 保持原样单独给：观众席徽章只要这一个数，不该为了它去数数组。名单在发出那一刻现算
-    nsp.to(room.id).emit('viewers', { roomId: room.id, count: room.viewers.size, list: viewerList(room) })
+    toRoom(nsp, room.id, 'viewers', { roomId: room.id, count: room.viewers.size, list: viewerList(room) })
     // 人数变了 = 大厅那张卡片上的「N 人在看」也变了
     notifyRoomList()
   }, VIEWERS_NOTIFY_MS)
@@ -1040,6 +1150,9 @@ function clearFrozenTimers(room) {
 }
 
 function closeRoom(nsp, room, reason) {
+  if (room.closed) return
+  // 散场期间给事件流写 live-ended 可能写失败，失败那位的离场处理（leaveStream）不能再回头收这间房
+  room.closed = true
   if (room.awayTimer) clearTimeout(room.awayTimer)
   room.awayTimer = null
   if (room.viewersTimer) clearTimeout(room.viewersTimer)
@@ -1047,7 +1160,9 @@ function closeRoom(nsp, room, reason) {
   clearFrozenTimers(room)
   if (room.srsStream && srsRooms.get(room.srsStream) === room) srsRooms.delete(room.srsStream)
   releaseSrsSessions(room)
-  nsp.to(room.id).emit('live-ended', { roomId: room.id, reason })
+  toRoom(nsp, room.id, 'live-ended', { roomId: room.id, reason })
+  // 事件流观众：上面那帧已经写出去了，这里把连接收掉（名单随房间一起没，不走 leaveStream）
+  for (const viewer of [...(roomStreams.get(room.id) ?? [])]) detachStream(viewer)
   for (const viewerId of room.viewers) {
     membership.delete(viewerId)
     nsp.sockets.get(viewerId)?.leave(room.id)
@@ -1087,7 +1202,7 @@ function hostAway(nsp, room) {
    * 还活着的直播（宽限期内主播随时可能回来），去连一个已经不存在的房间：
    * 直播没了，联机也没进去，两头空。
    */
-  if (hadNetplay) nsp.to(room.id).emit('netplay-linked', { roomId: null })
+  if (hadNetplay) toRoom(nsp, room.id, 'netplay-linked', { roomId: null })
   room.awaySince = Date.now()
   if (room.awayTimer) clearTimeout(room.awayTimer)
   room.awayTimer = setTimeout(() => {
@@ -1095,7 +1210,7 @@ function hostAway(nsp, room) {
     const cur = rooms.get(room.id)
     if (cur && cur.hostSocketId === null) closeRoom(nsp, cur, 'host-left')
   }, RESUME_GRACE_MS)
-  nsp.to(room.id).emit('host-away', { roomId: room.id })
+  toRoom(nsp, room.id, 'host-away', { roomId: room.id })
   notifyRoomList()
 }
 
@@ -1137,7 +1252,8 @@ export function ghostViewers(room, alive) {
 }
 
 function sweepGhostViewers(nsp, room) {
-  const alive = (id) => nsp.sockets.has(id)
+  // 事件流观众没有 socket：它的「还活着」就是那条流还登记着（流一断 leaveStream 会把它摘掉）
+  const alive = (id) => nsp.sockets.has(id) || isStreamViewer(id)
   for (const id of [...room.matchPlayers]) {
     if (alive(id)) continue
     room.matchPlayers.delete(id)
@@ -1251,14 +1367,21 @@ function leave(nsp, socket) {
     hostAway(nsp, room)
     return
   }
-  // 离房观众在 SRS 里的拉流不能留着白占出口带宽；先挂起，换 socket 回来时凭 key 认领
-  orphanSrsPlayer(room, socket.id, room.viewerKeys.get(socket.id))
-  room.viewers.delete(socket.id)
-  room.viewerKeys.delete(socket.id)
-  room.viewerNames.delete(socket.id)
-  // 告诉主播可以把这条 PeerConnection 拆了，别留着占上行
+  removeViewer(nsp, room, socket.id)
+}
+
+/**
+ * 一位观众（socket 观众或事件流观众）离开名单。调用方负责先把 membership 删掉。
+ */
+function removeViewer(nsp, room, viewerId) {
+  // 离房观众在 SRS 里的拉流不能留着白占出口带宽；先挂起，换连接回来时凭 key 认领
+  orphanSrsPlayer(room, viewerId, room.viewerKeys.get(viewerId))
+  room.viewers.delete(viewerId)
+  room.viewerKeys.delete(viewerId)
+  room.viewerNames.delete(viewerId)
+  // 告诉主播可以把这条 PeerConnection 拆了，别留着占上行（事件流观众没有，主播那边是空操作）
   if (room.hostSocketId) {
-    nsp.to(room.hostSocketId).emit('viewer-left', { viewerId: socket.id })
+    nsp.to(room.hostSocketId).emit('viewer-left', { viewerId })
     // 最后一个观众走了、主播还在后台：上收房的闹钟
     if (room.hostFrozen) scheduleFrozenClose(nsp, room)
   } else if (room.viewers.size === 0) {
@@ -1267,6 +1390,18 @@ function leave(nsp, socket) {
     return
   }
   notifyViewers(nsp, room)
+}
+
+/** 事件流断开 = 这位观众走了（和 socket 断线同一条规则：SRS 拉流先挂起，宽限期内同一把 key 回来就认领） */
+function leaveStream(nsp, viewer) {
+  if (viewer.closed) return
+  const room = rooms.get(viewer.roomId)
+  detachStream(viewer)
+  if (membership.get(viewer.id)?.roomId === viewer.roomId) membership.delete(viewer.id)
+  // 名单已经转给同一个人的新连接（事件流重连 / 升级成 socket），或者房间正在散场：这里什么都不用做
+  if (!room || room.closed || !room.viewers.has(viewer.id)) return
+  clearSrsNegotiation(room.id, 'play', viewer.id)
+  removeViewer(nsp, room, viewer.id)
 }
 
 /**
@@ -1407,7 +1542,7 @@ export function attachLive(io, options = {}) {
           换了一路上行也要再广播一次 ready：观众手里的拉流如果已经因为断流死掉，凭这一条立刻重拉；
           还活着的拉流（SRS 会把新上行接到已有的消费者上）在客户端会被忽略，不会白白重建。
         */
-        if (!wasReady || previousClient !== clientId) nsp.to(room.id).emit('srs-state', { ready: true })
+        if (!wasReady || previousClient !== clientId) toRoom(nsp, room.id, 'srs-state', { ready: true })
         if (!wasReady) notifyRoomList()
       } else {
         // 每位观众在 SRS 里只留最新的一路：同一成员又开了一路，就踢掉旧的
@@ -1427,13 +1562,205 @@ export function attachLive(io, options = {}) {
       if (room.srsReady && clientId && room.srsPublisherClient === clientId) {
         room.srsReady = false
         room.srsPublisherClient = ''
-        nsp.to(room.id).emit('srs-state', { ready: false })
+        toRoom(nsp, room.id, 'srs-state', { ready: false })
         notifyRoomList()
       }
     } else if (action === 'on_stop') {
       forgetSrsClient(room, clientId)
     }
     return res.status(200).send('0')
+  }
+
+  /* ---------------- 事件流观众的 HTTP 入口（见文件前面「不走 socket.io 的 SRS 观众」） ---------------- */
+
+  /** Authorization 头里的站内 JWT（可选）。只用于成人房年龄核对和弹幕署名，验不过就当游客 */
+  const bearerToken = (req) => {
+    const header = typeof req.headers?.authorization === 'string' ? req.headers.authorization : ''
+    const match = /^Bearer\s+(.+)$/i.exec(header)
+    return match ? str(match[1], 512) : ''
+  }
+
+  /**
+   * 进房，响应体是这位观众的事件流。第一帧 `welcome` 带房间快照、最近弹幕、名单、播放票和会话令牌；
+   * 之后是 viewers / chat / srs-state / host-frozen / host-away / host-back / netplay-linked / coop / no-source / live-ended，
+   * 被同一把 key 的新连接取代时收到 `replaced`，每 SSE_HEARTBEAT_MS 一帧 ping。
+   *
+   * 拒绝都在开流之前用普通 JSON 回（带 code，客户端据此决定报错还是退回 socket）：
+   *   404 room-not-found / 409 p2p-room（老的点对点房只能走 socket）/ 409 full / 403 adult。
+   */
+  const streamWatch = async (req, res) => {
+    const roomId = str(req.params?.roomId, 64)
+    const room = rooms.get(roomId)
+    if (!room) return res.status(404).json({ error: 'not found', code: 'room-not-found' })
+    if (room.transport !== 'srs') return res.status(409).json({ error: 'p2p room', code: 'p2p-room' })
+    const key = str(req.body?.key, 64)
+    const id = `${STREAM_ID_PREFIX}${randomBytes(12).toString('base64url')}`
+    const sock = streamPseudoSocket(id, bearerToken(req))
+    if (room.adult) {
+      try {
+        const accessError = adultLiveAccessError(await liveAccount(sock, findUser))
+        if (accessError) return res.status(403).json({ error: accessError, code: 'adult' })
+      } catch (e) {
+        console.warn('[live] 观看权限检查失败：', e)
+        return res.status(500).json({ error: 'failed' })
+      }
+      // 查账号期间浏览器已经走了 / 房间已经散了：不能再登记一个永远不会走的观众
+      if (res.destroyed || res.writableEnded || req.socket?.destroyed) return
+      if (rooms.get(room.id) !== room || room.closed) return res.status(404).json({ error: 'not found', code: 'room-not-found' })
+    }
+
+    // 同一把 key 的上一条连接（事件流重连）：不占人数、不被自己挤出满员的房间，SRS 拉流记到新 id 名下
+    let previous = null
+    if (key) {
+      for (const [viewerId, viewerKey] of room.viewerKeys) {
+        if (viewerKey === key && viewerId !== id) {
+          previous = viewerId
+          break
+        }
+      }
+    }
+    if (!previous && room.viewers.size >= MAX_SRS_VIEWERS) return res.status(409).json({ error: 'full', code: 'full' })
+    if (!previous && activeSrsViewerCount() >= MAX_SRS_TOTAL_VIEWERS) return res.status(409).json({ error: 'server full', code: 'full' })
+
+    // 准入闸：爬虫、per-IP / 总量上限、最长寿命。通过后响应头已经写好，从这里起是事件流
+    if (!admitSse(req, res)) return
+
+    if (previous) {
+      transferSrsPlayer(room, previous, id)
+      clearSrsNegotiation(room.id, 'play', previous)
+      room.viewers.delete(previous)
+      room.viewerKeys.delete(previous)
+      room.viewerNames.delete(previous)
+      membership.delete(previous)
+      const oldStream = streamViewers.get(previous)
+      if (oldStream) detachStream(oldStream, 'replaced', {})
+      else {
+        // 上一条是 socket（客户端不会从 socket 降回事件流，这里只是兜底）：请它离开，主播拆掉那条协作连接
+        nsp.sockets.get(previous)?.leave(room.id)
+        if (room.hostSocketId) nsp.to(room.hostSocketId).emit('viewer-left', { viewerId: previous })
+      }
+    }
+
+    const viewer = {
+      id,
+      session: randomBytes(24).toString('base64url'),
+      roomId: room.id,
+      res,
+      sock,
+      closed: false,
+      beat: null,
+      nudgeAt: 0,
+    }
+    streamViewers.set(id, viewer)
+    streamSessions.set(viewer.session, viewer)
+    let set = roomStreams.get(room.id)
+    if (!set) {
+      set = new Set()
+      roomStreams.set(room.id, set)
+    }
+    set.add(viewer)
+    room.viewers.add(id)
+    if (key) room.viewerKeys.set(id, key)
+    // 上一条连接的断开比这一次进房先到：拉流正挂在宽限期里，凭 key 认领回来
+    if (!previous) reclaimSrsPlayer(room, id, key)
+    membership.set(id, { roomId: room.id, role: 'viewer' })
+    if (room.hostFrozen) scheduleFrozenClose(nsp, room)
+    res.once('close', () => leaveStream(nsp, viewer))
+
+    const welcome = {
+      ...publicRoom(room),
+      session: viewer.session,
+      chat: room.chat,
+      list: viewerList(room),
+      rebound: Boolean(previous),
+      srsGrant: srsGrant(room, 'play', id),
+    }
+    if (!writeStream(viewer, 'welcome', welcome)) {
+      leaveStream(nsp, viewer)
+      return
+    }
+    viewer.beat = setInterval(() => {
+      if (viewer.closed) return
+      try {
+        if (sseWrite(res, SSE_HEARTBEAT_FRAME)) return
+      } catch {
+        /* 下面统一离场 */
+      }
+      leaveStream(nsp, viewer)
+    }, SSE_HEARTBEAT_MS)
+    viewer.beat.unref?.()
+    resolveViewerName(nsp, room, sock, findUser)
+    // 换连接不算人数变化：一个人还是一个人
+    if (!previous) notifyViewers(nsp, room)
+  }
+
+  /** 请求体里的会话令牌 → 这间房当前名单上的事件流观众 */
+  const streamMember = (req) => {
+    const roomId = str(req.params?.roomId, 64)
+    const viewer = streamSessions.get(str(req.body?.session, 64))
+    if (!viewer || viewer.closed || viewer.roomId !== roomId) return null
+    const room = rooms.get(roomId)
+    if (!room || room.closed || !room.viewers.has(viewer.id) || room.transport !== 'srs') return null
+    return { viewer, room }
+  }
+
+  /** 续一张 SRS 播放票（同 socket 的 srs-play-grant：拉流断了要重拉时用，不惊动主播） */
+  const streamGrant = (req, res) => {
+    const found = streamMember(req)
+    if (!found) return res.status(404).json({ error: 'not a viewer', code: 'session' })
+    const { viewer, room } = found
+    if (!takeSignalToken(viewer.sock, { candidate: true }, 'viewer')) return res.status(429).json({ error: 'rate limited' })
+    res.json({ srsGrant: srsGrant(room, 'play', viewer.id), srsReady: Boolean(room.srsReady) })
+  }
+
+  /**
+   * 催一下主播：把人数和名单再发给主播一次。主播收到 `viewers` 会检查自己那一路 SRS 上行，没在推就开推
+   * —— 和 socket 观众「重新 watch 一次」催主播是同一个效果，只是不让主播重建协作连接。
+   */
+  const streamNudge = (req, res) => {
+    const found = streamMember(req)
+    if (!found) return res.status(404).json({ error: 'not a viewer', code: 'session' })
+    const { viewer, room } = found
+    const now = Date.now()
+    if (now - viewer.nudgeAt < STREAM_NUDGE_MIN_MS) return res.status(429).json({ error: 'rate limited' })
+    viewer.nudgeAt = now
+    if (room.hostSocketId) {
+      nsp.to(room.hostSocketId).emit('viewers', { roomId: room.id, count: room.viewers.size, list: viewerList(room) })
+    }
+    res.status(204).end()
+  }
+
+  /**
+   * 发一条弹幕。规则与 socket 的 chat 完全一致（同一套清洗、两道限流、服务端派生署名），
+   * 回包用同一组 ack 码，客户端用 chatSendOutcome 统一翻译。房间号只认会话令牌，不收请求里的。
+   */
+  const streamChat = (req, res) => {
+    const found = streamMember(req)
+    if (!found) return res.json({ error: CHAT_ACK_NO_ROOM })
+    const { viewer, room } = found
+    const text = sanitizeChatText(req.body?.text)
+    if (!text) return res.json({ error: CHAT_ACK_EMPTY })
+    // 中途登录 / 退出：署名跟着这一次请求的令牌走，旧缓存作废
+    const token = bearerToken(req)
+    if (token !== viewer.sock.handshake.auth.token) {
+      viewer.sock.handshake.auth.token = token
+      delete viewer.sock.data.chatIdentity
+    }
+    if (!takeChatToken(viewer.sock)) return res.json({ error: CHAT_ACK_TOO_FAST })
+    if (!takeRoomChatToken(room)) return res.json({ error: CHAT_ACK_TOO_FAST })
+    void chatIdentity(viewer.sock, findUser).then((identity) => {
+      if (rooms.get(room.id) !== room || room.closed || viewer.closed || !room.viewers.has(viewer.id)) {
+        return res.json({ error: CHAT_ACK_NO_ROOM })
+      }
+      const msg = { id: randomBytes(8).toString('base64url'), at: Date.now(), ...identity, host: false, text }
+      room.chat.push(msg)
+      if (room.chat.length > CHAT_HISTORY_SIZE) room.chat.splice(0, room.chat.length - CHAT_HISTORY_SIZE)
+      toRoom(nsp, room.id, 'chat', msg)
+      res.json({ id: msg.id })
+    }).catch((e) => {
+      console.warn('[live] 弹幕广播失败：', e)
+      if (!res.headersSent) res.json({ error: CHAT_ACK_FAILED })
+    })
   }
 
   /**
@@ -1669,7 +1996,7 @@ export function attachLive(io, options = {}) {
       if (already) {
         if (already.id !== requestedRoomId) return ack?.('already in a room')
         if (!requestedToken || requestedToken !== already.token) return ack?.('forbidden')
-        return ack?.(null, { ...srsHostAck(already), viewers: Array.from(already.viewers) })
+        return ack?.(null, hostResumeAck(already))
       }
       if (membership.has(socket.id)) return ack?.('already in a room')
       if (socket.data.liveResuming) return ack?.('already resuming')
@@ -1698,7 +2025,7 @@ export function attachLive(io, options = {}) {
         const resumed = boundHostRoom()
         if (resumed) {
           if (resumed.id !== room.id || requestedToken !== resumed.token) return ack?.('already in a room')
-          return ack?.(null, { ...srsHostAck(resumed), viewers: Array.from(resumed.viewers) })
+          return ack?.(null, hostResumeAck(resumed))
         }
         if (membership.has(socket.id)) return ack?.('already in a room')
 
@@ -1711,9 +2038,9 @@ export function attachLive(io, options = {}) {
         }
         bindHost(nsp, room, socket)
         // 观众要知道主播的新 id（它们的 signal 其实由服务端路由，但 from 过滤用得上）
-        socket.to(room.id).emit('host-back', { roomId: room.id, hostId: socket.id })
+        toRoom(nsp, room.id, 'host-back', { roomId: room.id, hostId: socket.id }, socket)
         // 把当前观众名单交给主播：哪条 PeerConnection 还活着它自己知道，死了的重新 offer
-        ack?.(null, { ...srsHostAck(room), viewers: Array.from(room.viewers) })
+        ack?.(null, hostResumeAck(room))
       } catch (e) {
         console.warn('[live] 续播权限检查失败：', e)
         ack?.('failed')
@@ -1795,6 +2122,9 @@ export function attachLive(io, options = {}) {
         room.viewerNames.delete(previous)
         membership.delete(previous)
         nsp.sockets.get(previous)?.leave(room.id)
+        // 上一条是事件流（观众要上场当 2P，改连 socket）：把那条流收掉，之后的事件只走 socket
+        const stream = streamViewers.get(previous)
+        if (stream) detachStream(stream, 'replaced', {})
       }
       if (!again) {
         room.viewers.add(socket.id)
@@ -1963,7 +2293,7 @@ export function attachLive(io, options = {}) {
        * 这正是「看着看着就能上场」这件事成立的前提。
        * 后进来的观众不用管，watch 的 ack 里带着 publicRoom，本来就有这个字段。
        */
-      nsp.to(room.id).emit('netplay-linked', { roomId: next })
+      toRoom(nsp, room.id, 'netplay-linked', { roomId: next })
       notifyRoomList()
     })
 
@@ -1984,9 +2314,28 @@ export function attachLive(io, options = {}) {
       const taken = Boolean(payload?.taken)
       // 没变就别惊动大厅：主播那边是在 5 秒一轮的统计循环里顺手报的，绝大多数轮次没变化
       if (room.coopOpen === open && room.coopTaken === taken) return
+      const opened = open && !room.coopOpen
       room.coopOpen = open
       room.coopTaken = taken
+      // 事件流观众没有 DataChannel，听不到主播的 hello：2P 位刚出现时告诉他们，好改连 socket 去申请上场
+      if (opened) streamBroadcast(nsp, room.id, 'coop', { open: true })
       notifyRoomList()
+    })
+
+    /**
+     * 主播报「这一刻抓不到画面」（新版本主播在人数变化时、手里没有可推的源才发）。
+     * socket 观众早有这条（主播 addViewer 时直接 signal 给他），事件流观众没有 socket，由服务端转一句。
+     * 只有房主能发、按房间限频：它只是给观众一句更准确的诊断，丢几次无所谓。
+     */
+    socket.on('source-missing', () => {
+      const info = membership.get(socket.id)
+      if (info?.role !== 'host') return
+      const room = rooms.get(info.roomId)
+      if (!room || room.hostSocketId !== socket.id) return
+      const now = Date.now()
+      if (now - (room.sourceMissingAt || 0) < SOURCE_MISSING_MIN_MS) return
+      room.sourceMissingAt = now
+      streamBroadcast(nsp, room.id, 'no-source', {})
     })
 
     socket.on('stop-live', () => {
@@ -2016,7 +2365,7 @@ export function attachLive(io, options = {}) {
       room.hostFrozen = frozen
       if (frozen) armFrozen(nsp, room)
       else clearFrozenTimers(room)
-      socket.to(room.id).emit('host-frozen', { roomId: room.id, frozen })
+      toRoom(nsp, room.id, 'host-frozen', { roomId: room.id, frozen }, socket)
       // 回前台的房要重新出现在大厅里；刚切后台的还不摘（到点 hideTimer 会叫）
       if (!frozen) notifyRoomList()
     })
@@ -2072,7 +2421,7 @@ export function attachLive(io, options = {}) {
         if (room.chat.length > CHAT_HISTORY_SIZE) room.chat.splice(0, room.chat.length - CHAT_HISTORY_SIZE)
         // 清扫靠 lastAt 判断「还在聊吗」，纯联机房没有房间对象可看，只能在这里记一笔
         if (matchChats.get(room.id) === room) room.lastAt = Date.now()
-        nsp.to(room.id).emit('chat', msg)
+        toRoom(nsp, room.id, 'chat', msg)
         ack?.(null, { id: msg.id })
       }).catch((e) => {
         console.warn('[live] 弹幕广播失败：', e)
@@ -2113,6 +2462,10 @@ export function attachLive(io, options = {}) {
     srsHook,
     srsEnabled: () => Boolean(srsConfig()),
     srsRequested,
+    streamWatch,
+    streamGrant,
+    streamNudge,
+    streamChat,
   }
 }
 

@@ -2180,6 +2180,36 @@ hook 只收本机 / Docker 网桥、且不带任何反代头的请求（密钥�
 2026-09-25 日志已取证到构建期 `dist/client/index.html` 短暂不存在，SSR 当场 500。
 旧哈希资源留着也能保证已打开的观众页在部署期间继续懒加载；`ssr.js` 在模板
 短暂读不到时要继续用内存里已有的完整模板。回归：`npm run test:watch-panel` +
+**SRS 房的观众不开 socket.io（2026-11-20）**：以前观众要先连上 socket.io 再 watch，大陆线路首连 4～8 秒。
+现在进房是 `POST /api/live/rooms/:roomId/watch`（请求体 `{key}`），**响应体就是这位观众的事件流**
+（`server/src/live.js`「不走 socket.io 的 SRS 观众」、`src/services/liveStream.ts`）：第一帧 `welcome` 带房间快照、
+播放票和会话令牌，之后推 viewers / chat / srs-state / host-frozen / host-away / host-back / netplay-linked /
+coop / no-source / live-ended，每 10 秒一帧 ping。换票、催主播、发弹幕各一个小 POST（`grant` / `nudge` / `chat`），
+会话令牌在请求体里。几条硬规则：
+- **用 fetch 读流，不用 EventSource**：EventSource 带不了请求头，登录令牌（成人房年龄门、弹幕署名）只能进 URL。
+  令牌只走 `Authorization` 头，会话令牌只走请求体（§2.23）。
+- 服务端的成员 id 是 `sv_…`，记进 `room.viewers` / `membership`，播放票、SRS hook、名单、人数原样复用。
+  凡是拿「`nsp.sockets` 里有没有」判活的地方都要认 `isStreamViewer`，凡是给房间广播的地方都要走 `toRoom`
+  （socket.io 房间一份、事件流一份）。新加房间事件时别直接写 `nsp.to(room.id).emit`，事件流观众会收不到。
+- 主播收不到事件流观众的 `viewer-joined`（他们没有 socket，建不了协作连接），只收人数；人数 > 0 就开推上行。
+  主播 `resume-live` 拿到的 `streamViewers` 不建点对点连接。主播手里没有画面时发 `source-missing`，服务端转成 `no-source`。
+- **只有两种情况才连 socket.io**：点对点老房 / 老服务端 / 事件流名额满（503）/ 浏览器读不了流式响应，整条退回原 socket 路径；
+  这一局有 2P 位（`welcome.coopOpen` 或 `coop` 事件），带同一把 key 改连 socket 再 `watch(reoffer)`。
+  服务端凭 key 把事件流换成 socket（旧流收到 `replaced`），SRS 拉流转到新 id、不断，主播收到带 `replaces` 的 viewer-joined。
+  房间不存在 / 满员 / 年龄门换 socket 结果一样，直接报错。
+- 事件流断了（`SSE_MAX_LIFETIME_MS` 到期、网络断、25 秒没有字节）按 0.5～15 秒退避、同一把 key 重连。
+  服务端在断开时立刻按离房处理，SRS 拉流挂进 45 秒宽限，重连时凭 key 认领回来。所以每 30 分钟寿命到期时人数会闪一下，画面不受影响。
+  散场、报错、销毁都要先 `stopStream()`：不收的话服务端关流后客户端会去重连，拿到 not found，把「已结束」盖成「不存在」。
+- SRS 房里那条点对点连接只装 2P 协作通道。`freshPc` 换它时**不能**清画面状态（`gotFrame`），否则每次协作通道重来一轮，
+  20 秒后 `srsRecover` 会把好好的拉流拆掉重拉。
+- 事件流观众也受 `sseGuard` 的总量 / 单 IP 名额约束（600 / 20）。超了回 503，客户端改走 socket，照样能看。
+
+回归：`cd server && npm run test:live-stream`（真 HTTP + socket.io 主播）、`npm run test:live-stream-client`
+（解析器、拒绝归类、小请求；端到端用浏览器那份客户端代码连真服务端；liveview 接线）。
+2026-11-20 本地浏览器验收用的是真 `live.js`、假 SRS 和脚本化主播，经 Vite 代理验了：进房一个 POST 约 30ms、
+8 秒没画面先 nudge、srs-state 一到就发 WHEP、弹幕收发、冻结、流寿命到期自动重连、2P 位改连 socket、散场、点对点房退回 socket。
+**真实 SRS 的音视频拉流没有在本地验证**（这部分代码没改，只是播放票的来源换了），上线后要在生产实看一场。
+
 `npm run test:capture-worker` + `npm run test:capture-feed` + `npm run test:broadcast-signal`。
 
 Vite 的静态目录排除清单在 `scripts/lib/vite-static-exclusions.mjs`。除了大数据包，Dolphin 与

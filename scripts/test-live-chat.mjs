@@ -45,16 +45,23 @@ const check = (name, fn) => {
 
 check('⚠️ 弹幕要广播给整个房间，不能漏掉发送者自己', () => {
   const src = code('server/src/live.js')
+  /*
+    2026-11-20 起房间广播统一走 toRoom(nsp, roomId, …)：socket.io 房间一份、事件流观众一份
+    （见 live.js「不走 socket.io 的 SRS 观众」）。不带 except 时内部就是 nsp.to(roomId)，发送者自己也收得到。
+  */
   assert.match(
     src,
-    /nsp\.to\(room\.id\)\.emit\('chat'/,
-    "弹幕必须 nsp.to(room.id)：写成 socket.to(room.id) 就把发送者自己排除了，" +
-      '而客户端不做本地回显 —— 他会看到自己那条消息凭空消失',
+    /toRoom\(nsp, room\.id, 'chat', msg\)/,
+    "弹幕必须 toRoom(nsp, room.id, 'chat', msg)（不带 except）：排除了发送者，而客户端不做本地回显 —— " +
+      '他会看到自己那条消息凭空消失；只写 nsp.to 的话事件流观众收不到',
   )
   assert.ok(
-    !/socket\.to\([^)]*\)\.emit\('chat'/.test(src),
-    "socket.to(...).emit('chat') 会跳过发送者自己",
+    !/socket\.to\([^)]*\)\.emit\('chat'/.test(src) && !/toRoom\([^)]*'chat'[^)]*,\s*socket\)/.test(src),
+    "socket.to(...).emit('chat') / toRoom(…, 'chat', …, socket) 会跳过发送者自己",
   )
+  const helper = src.slice(src.indexOf('function toRoom'), src.indexOf('function toRoom') + 400)
+  assert.match(helper, /nsp\.to\(roomId\)\.emit\(event, payload\)/, 'toRoom 不带 except 时必须发给整个 socket.io 房间')
+  assert.match(helper, /streamBroadcast\(nsp, roomId, event, payload\)/, 'toRoom 必须顺带发给事件流观众')
 })
 
 check('⚠️ 主播必须真的在房间里（不然 nsp.to(room) 送不到他）', () => {
@@ -87,9 +94,12 @@ check('观众 join 房间（watch）', () => {
 
 check('⚠️ 观众侧要有收弹幕的入口', () => {
   const src = code('src/emulator/adapters/liveview.ts')
-  const i = src.search(/\bs\.on\('chat'/)
-  assert.ok(i > 0, "liveview 里没有 s.on('chat') —— 观众连别人的弹幕都看不到")
-  assert.match(src.slice(i, i + 200), /live\.onChat\?\.\(/, '收到要往上报，否则收了也没人显示')
+  // socket 观众和事件流观众（SRS 房默认）共用同一个处理：两条路都得接上
+  const handler = src.indexOf('const onChatEvent')
+  assert.ok(handler > 0, 'liveview 里没有弹幕处理（onChatEvent）')
+  assert.match(src.slice(handler, handler + 200), /live\.onChat\?\.\(/, '收到要往上报，否则收了也没人显示')
+  assert.match(src, /\bs\.on\('chat',[^\n]*onChatEvent\(/, "socket 观众没有接 s.on('chat') —— 连别人的弹幕都看不到")
+  assert.match(src, /case 'chat':\s*return onChatEvent\(/, '事件流观众没有接 chat 事件 —— SRS 房的观众看不到弹幕')
 })
 
 check('⚠️ 主播侧要有收弹幕的入口', () => {
