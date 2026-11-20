@@ -36,7 +36,8 @@ const base = checkDist ? join(root, 'dist', 'client') : join(root, 'public')
 export const STRICT_MODES = Object.freeze({
   'emulatorjs/emulator.min.js': 'module', // loader.js 用 import() 加载
   'emulatorjs/loader.js': 'script', // 适配器用 <script> 注入，依赖 document.currentScript
-  'edge-route-v2.js': 'script', // index.html 的 <script src>
+  'edge-route-v2.js': 'script', // 旧 HTML 仍引用（边缘缓存里的页面），保留
+  'edge-route-v3.js': 'script', // index.html 的 <script src>
 })
 
 /** 不是我们发的、也不经补丁的大目录（gitignored 的第三方整站 / 运营方自备客户端） */

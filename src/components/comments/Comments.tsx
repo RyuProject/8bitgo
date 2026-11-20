@@ -115,13 +115,14 @@ function CommentsPanel({ target, variant = 'default' }: { target: CommentTarget;
           return [...prev, ...r.items.filter((x) => !seen.has(x.id))]
         })
         setStatus('ready')
-      } catch (e) {
+      } catch {
         if (stale()) return
         if (append) {
           // 加载更多失败不该伪装成「发言失败」；列表保留原样，并在分页按钮旁给出重试。
-          setLoadMoreError(e instanceof Error ? e.message : c.loadFailed)
+          // 接口的错误正文可能是代理 / 本地预览层的诊断文字，面向玩家只给可操作的通用提示。
+          setLoadMoreError(c.loadFailed)
         } else {
-          setLoadError(e instanceof Error ? e.message : c.loadFailed)
+          setLoadError(c.loadFailed)
           setStatus('error')
         }
       } finally {

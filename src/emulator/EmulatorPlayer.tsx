@@ -336,6 +336,16 @@ interface Props {
   onMatchPlayerChange?: (active: boolean) => void
   /** 空闲态背景（例如封面） */
   backdrop?: ReactNode
+  /** 详情页专用展示。仅调整空闲舞台的外观，不改变启动参数、ROM 名或存档身份。 */
+  pagePresentation?: boolean
+  /** 只用于详情页舞台上的可见标题；gameName 仍保留模拟器所需的原值。 */
+  displayTitle?: string
+  /** 详情页舞台中间的小封面，复用页面已经选择的缩略图。 */
+  stagePoster?: ReactNode
+  /** 详情页舞台中的分享入口。 */
+  onShare?: () => void
+  /** 游戏尚未启动时，从详情页下方的联机入口发起；播放器现有生命周期会接住请求。 */
+  onPageMatchRequest?: () => void
   /**
    * 游戏详情页的展示形态（2026-11 新版详情页设计稿）。只改**外观**：
    *   - 桌面端舞台 2:1（原来 16:9），空闲态中间是封面 + 标题 + 开始 / 分享 / 下载；
@@ -2244,6 +2254,11 @@ export function EmulatorPlayer({
           reportStartup('download_complete')
         }
         // accept() 会在真实进度跑满阶段时推进状态机；此处只负责记录开局漏斗事件。
+      },
+      // EmulatorJS 的阶段文字变化 / 内部网络活动不会总带来新的字节进度；这些活动仍应刷新外层启动超时。
+      onStartupActivity: () => {
+        if (!isCurrent()) return
+        noteStartupActivity()
       },
       onReady: () => {
         if (!isCurrent() || ready) return
@@ -4584,9 +4599,15 @@ export function EmulatorPlayer({
 
           {!busy && (
             <div className="absolute inset-0">
-              <div className="absolute inset-0 opacity-60 blur-sm">{backdrop}</div>
-              <div className="scanlines absolute inset-0" aria-hidden />
-              <div className="absolute inset-0 bg-gradient-to-t from-black via-black/60 to-black/20" />
+              {pagePresentation ? (
+                <div className="absolute inset-0 bg-[linear-gradient(180deg,#414141_0%,#292929_55%,#090909_100%)]" aria-hidden />
+              ) : (
+                <>
+                  <div className="absolute inset-0 opacity-60 blur-sm">{backdrop}</div>
+                  <div className="scanlines absolute inset-0" aria-hidden />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black via-black/60 to-black/20" />
+                </>
+              )}
 
               {/*
                 内容容器。两条约束都是「手机上按钮不能被挤没」：
@@ -4606,6 +4627,16 @@ export function EmulatorPlayer({
                 </Button>
               ) : supported ? (
                 <>
+                  {pagePresentation && status === 'idle' && (
+                    <div className="flex flex-col items-center gap-2">
+                      {stagePoster && (
+                        <div className="h-16 w-20 overflow-hidden rounded-md border border-white/25 bg-black/30 shadow-xl shadow-black/40">
+                          {stagePoster}
+                        </div>
+                      )}
+                      {displayTitle && <h2 className="max-w-[min(80vw,36rem)] truncate text-base font-bold text-white sm:text-lg">{displayTitle}</h2>}
+                    </div>
+                  )}
                   {/*
                     详情页新版设计稿：封面 + 标题压在开始按钮上方（设计稿 111px 封面、30px 标题）。
                     只在普通空闲态画：出错时要把位置让给错误提示，进邀请链接时下面有一段说明文字。
@@ -5356,7 +5387,8 @@ export function EmulatorPlayer({
           <div className="ml-auto flex shrink-0 items-center gap-1.5">
           {/*
             ROM 语言切换。三个前提：
-              1. 这款游戏确实有两种以上语言的 ROM —— 只有一种时切了也是它自己
+              1. 这款游戏确实有两种以上语言的 ROM —— 只有一种时什么都不显示：一颗点不动、
+                 长得像按钮的语言标签只会让人以为能切（2026-11-19 去掉了单语言时的那个标签）
               2. 不在联机房里 —— 房主和访客必须跑同一份 ROM，中途换语言这局就废了
               3. **不是在看直播** —— 游戏跑在主播的浏览器里，这台机器一帧都没跑过。
                  切了会怎样：switchRomLang 把会话拆掉、按新语言的 ROM 自己开一局，
@@ -5603,7 +5635,7 @@ export function EmulatorPlayer({
           ⚠️ 上面那个 `!watchPanelOn` 的条件保证了这里不会和观众端右栏那段常驻列表打架：
           右栏在的时候这一行整块不画。
         */
-        history={chat.messages}
+        history={pageStandby ? undefined : chat.messages}
         historyHint={netplayOn && role === 'player' ? t.player.tools.watchHistory : undefined}
       />
     )}

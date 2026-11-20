@@ -153,11 +153,22 @@ function PlayerFallback({
     )
   }
   return (
-    <div className="overflow-hidden rounded-2xl border border-line bg-black" aria-busy="true">
-      <div className="relative aspect-video w-full overflow-hidden bg-black">
-        {backdrop && <div className="absolute inset-0 opacity-25 blur-sm">{backdrop}</div>}
-        <div className="absolute inset-0 bg-black/80" />
-        <div className="absolute inset-0 flex items-center justify-center">{status}</div>
+    <div className={cx('overflow-hidden rounded-2xl border border-line bg-black', pagePresentation && 'game-detail-player-mode')} aria-busy="true">
+      {/* 和待机舞台共用 game-detail-stage-ratio：chunk 到达前后框的比例一致，不再 2:1 → 3:1 跳一下 */}
+      <div className={cx('relative aspect-video w-full overflow-hidden bg-black', pagePresentation && 'game-detail-stage-ratio')}>
+        {pagePresentation ? (
+          <div className="absolute inset-0 bg-[linear-gradient(180deg,#414141_0%,#292929_55%,#090909_100%)]" />
+        ) : (
+          <>
+            {backdrop && <div className="absolute inset-0 opacity-25 blur-sm">{backdrop}</div>}
+            <div className="absolute inset-0 bg-black/80" />
+          </>
+        )}
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2">
+          {pagePresentation && stagePoster && <div className="h-[4.75rem] w-[3.5rem] overflow-hidden rounded-md">{stagePoster}</div>}
+          {pagePresentation && displayTitle && <span className="max-w-[80%] truncate text-sm font-bold text-white">{displayTitle}</span>}
+          {status}
+        </div>
       </div>
     </div>
   )

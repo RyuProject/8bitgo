@@ -308,7 +308,8 @@ check('⚠️ 提示文案里引用的按钮名，必须就是按钮上的字', 
 
 check('⚠️ 主播端那一行接了 history，观众端右栏不接（否则同一段列表两个入口）', () => {
   const player = code('src/emulator/EmulatorPlayer.tsx')
-  assert.match(player, /history=\{chat\.messages\}/, '播放器那一行没把弹幕传给历史按钮')
+  // 详情页待机屏（还没开局）没有弹幕可看，允许传 undefined；开局后必须是 chat.messages
+  assert.match(player, /history=\{(?:pageStandby \? undefined : )?chat\.messages\}/, '播放器那一行没把弹幕传给历史按钮')
   const panel = code('src/emulator/LiveWatchPanel.tsx')
   assert.match(panel, /<LiveChatHistory messages=\{messages\}/, '观众端右栏的常驻列表没了')
   assert.doesNotMatch(panel, /<LiveChatBar[^>]*history=/, '观众端右栏的输入框又多了一颗历史按钮，和旁边的常驻列表重了')

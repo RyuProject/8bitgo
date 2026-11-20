@@ -1260,6 +1260,10 @@ Worker 按封面同一条 s-maxage=600 缓存整份 200，Range 命中时在 Wor
 超过 32MB 或带 `Content-Encoding` / 条件头的不缓存。回归在 `worker/tests/rom.test.mjs` 的 preview video 两节。
 切片是**流式**的（`sliceStream`）：不准退回 `hit.arrayBuffer()`，每个 Range 都把 32MB 读进内存，几路并发就撞 128MB 隔离上限。
 取消 tee 出来的缓存正文**不能 await**（另一支没结束时 cancel 永不落定，请求会挂住）。
+浏览器这一侧（`src/components/game/GameCover.tsx` 的 `CoverVideo`，2026-11-20）：桌面端预览视频的自动拉流要等页面 `load`
+之后、浏览器第一次空闲（`whenPageSettled`，rIC 最晚 3 秒放行），而且只在网络明显宽裕时做（复用 `preloadPolicy.ts` 的
+`allowsSpeculativePlayerPreload`：省流量、非 4G、低于 3Mbps、RTT 超过 300ms 都不自动拉）。首页实测两段预览共 3.5MB 在水合后
+3.3 秒就开始下载，和 32 张封面抢带宽，最后一张封面拖到 11.9 秒。悬停播放不受限制；移动端仍只显示 poster。回归：`npm run test:seo-performance`。
 
 ⚠️ **Worker 内存与浏览器缓存的四条规矩（2026-11-16）**：
 - 整份 200 写边缘缓存只收 ≤64MB 且有 Content-Length 的对象（`EDGE_FULL_PUT_MAX_BYTES`）。`response.clone()` 的两支速度不同，
@@ -3716,6 +3720,22 @@ EdgeOne 只能用境外（香港）节点。主站、ROM、Pages 子域都不受
   同一份「大陆页面」缓存里，SSR 把模板的 `/assets/`、`/fonts/` 改指 `https://cn.8bitgo.com/_cn/...`；
   `api.ts` 的非后台 GET 走 `https://cn.8bitgo.com/_cn/api/...`。地址栏不变，只剩 HTML 本身还去 Cloudflare。
   - ⚠️ 必须带 `/_cn` 前缀：EdgeOne 已缓存过大陆入口同源请求的 `/assets/*`（**没有** CORS 头），缓存键不看 Origin，
+- **主站上的大陆访客整页送到 cn.8bitgo.com**（2026-11-20，`public/edge-route-v3.js`）：以前的 `edge-route-v2.js` 用两个 180ms 测速探针决定去留，
+  从大陆直连实测探已连上的 8bitgo.com 要 1.0 秒、第一次连 cn.8bitgo.com（含握手）要 1.4～3.2 秒，两个探针永远超时、按规则留在原地 ——
+  上线以来没把一个大陆访客送去 EdgeOne。同一时刻经 Cloudflare 美国节点：首页 HTML 2.4～4.2 秒（偶尔 60 秒无响应）、入口 JS 7.9 秒、
+  一张封面 15.3 秒；经 EdgeOne：JS 1.5 秒、封面 3.1 秒。v3 改看 Cloudflare 已给的地域结论：SSR 把 `coverHint` 写进
+  `<html data-8bitgo-cdn>`（`<meta name="8bitgo-cover-cdn">` 在 `</head>` 前，路由脚本运行时还没解析到）。
+  - 主站 + `cn`：没有登录态、没有本地游玩痕迹（`8bitgo.recents`、`ejs-*`、各类电池存档键、Ruffle 的 `/flash-frames/` 键、
+    缓存库以外的任何 IndexedDB）、cn.8bitgo.com 的 favicon 3 秒内取得到、用户还没点过 / 按过键，才 `location.replace` 过去。
+    不比快慢；探针带凭据，跳转能复用那条已握手的连接。查不了 IndexedDB（报错 / 卡住）按「有存档」留下。
+  - 主站 + `main`：不测速、不跨域（v2 每两小时对海外访客多开一条到香港的冷连接）。
+  - 大陆入口上一律写 `cn`，那不是地域结论，照旧走 v2 的测速；没有结论（本地开发、规则没配）也照旧。
+  - 带 `__assets=origin`（EdgeOne 取不下 chunk 后改从主站整页载入）的这一页留下，并写 `8bitgo.edge.pin` 钉在主站两小时，
+    否则下一次整页加载又被按地域送回同一条坏线路。
+  - ⚠️ 已经在主站上玩过的访客会一直留在主站（本地存档跨不了域）；没做迁移。第一次访问要多加载一次页面（主站 HTML + 跳转后的大陆入口 HTML），
+    之后站内跳转都在 cn.8bitgo.com 上；从搜索结果回到 8bitgo.com 时再走一遍判断。
+  - `edge-route-vN.js` 按版本号长期缓存（`cache.js`）：改逻辑必须新建 v4，v2 / v3 留给边缘缓存里的旧 HTML。
+    回归：`npm run test:edge-route && npm run test:cover-cdn`。
     我们又清不了 EdgeOne。换前缀等于一组新缓存键，源站对它固定发 `Access-Control-Allow-Origin: https://8bitgo.com`
     和 CORP。同理 CSS 里写死的 `url(/fonts/...)` 由 cn-edge.js 现场改成 `/_cn/fonts/`。
   - ⚠️ `vite.config.ts` 的 `renderBuiltUrl` 让 JS / CSS 里的产物引用相对引用方解析；去掉它，懒加载 chunk 的
@@ -4096,6 +4116,67 @@ PK / TH 两份现场：`The requested module './live-Cqhc9j-k.js' does not provi
 - **诊断包 #1196 / #1201（Chrome 97 / Android 15 / CN，《恐龙快打》）：legacy 懒加载 chunk 加载失败。** #1201 点名 `EmulatorPlayer-legacy-J-EQUy6G.js`，错误来自 SystemJS 的 `HTMLScriptElement` 加载回调；请求记录为 0 传输 / 0 内容。现有现场不能判断底层是瞬时网络、缓存还是 EdgeOne 响应，也不能从单次事件确认服务端缺文件。
   Vite legacy 包把 `import()` 编成 `System.import()`；SystemJS 的通用错误不匹配现代 ESM 重试列表，失败 URL 也可能藏在 `__vite__mapDeps` 运行时映射里，旧 `lazyChunkFile()` 因此拿不到文件名。结果是只尝试原 URL 一次，错误边界也不把它当 chunk 加载失败。现在识别 SystemJS 加载错误，从错误 URL 取出 legacy chunk 文件名，用新的 `chunk-retry` 查询串通过 `System.import()` 重试；仍失败时先整页刷新，重复失败再从 CN 加速入口切到主站。legacy 产物不在现代版 SHA-256 清单中，不能用现代清单给它作完整性结论。
 
+### 2.40 塞班 / N-Gage：卡带转储 ZIP 由本站脚本导入 E 盘（2026-11-19）
+
+第一代 N-Gage 游戏的 No-Intro 转储是 MMC 卡上的原始目录（`game.id`、`nokia.dat`、`System/Apps/<代号>/…`），
+不是 `.sis` / `.n-gage` 安装包：「安装 SIS」装不上，「文件管理」只能把文件平铺进一个目录。桌面版 EKA2L1 的
+`system_impl::install_ngage_game_card` 网页版没有导出，所以 `scripts/eka2l1-ngage-card.js` 照它的规则用 JS 重做：
+以最浅的 `system/apps/` 定位卡带根；System/Apps 下只能有 `<代号>`，或 `<代号>` + `<代号>_1`（`_1` 的 `.app` 过了
+E32 头校验才运行它，否则运行 `<代号>`，不运行的那份不写 `.aif`，因为两份是同一个 UID）；整张卡复制到 `E:\`，
+`System/Libs`、`System/Programs` 再复制一份进 `E:\System\Apps\<代号>\`。目标路径一律小写（网页版虚拟盘区分大小写，
+客体只认小写物理名）。先全部解压进内存核对 CRC-32，不对就不落盘；落盘后用 `EKA2L1.savePaths` 只持久化这些文件，
+然后刷新页面 —— 应用列表服务只在核心启动时扫描 System\Apps。刷新后按 AIF 里的应用 UID 核对列表，没出现会明说。
+
+- 本站随附进运行时的脚本统一登记在 `scripts/lib/eka2l1-site-scripts.mjs`（完整构建、`npm run eka2l1:repackage`、
+  `npm run eka2l1:check` 共用）。**改了这些脚本必须重跑 `npm run eka2l1:repackage`**：运行时目录按内容哈希命名、长期缓存，
+  检查脚本会拦住「仓库里的脚本和发布目录不一致」。重复打包时删掉中途生成又没用上的 `v<哈希>` 目录。
+- 回归：`npm run test:eka2l1-ngage-card`（合成 ZIP 覆盖版本选择、外层文件夹、大小写、路径穿越、ZIP64、加密、CRC、
+  解压超量、只差大小写的重名、写盘冲突与持久化；设 `NGAGE_CARD_ZIP=<卡带 zip>` 时再跑真实转储）。
+- 2026-11-19 浏览器实测（真实 Emscripten FS、`EKA2L1.savePaths`、原生 DecompressionStream，《模拟人生：脱颖而出》15 MiB
+  转储）：50 个文件写进 E 盘并全部存进 IndexedDB，读回 CRC 与 ZIP 一致，旧 `_1` AIF 从 FS 和 IndexedDB 都删掉了。
+  线上没有配置 N-Gage QD 默认固件（`/api/platform-bios` 里没有 `symbian`）。
+- 同日用原版 N-Gage（NEM-4，V 4.03）的 SYM.ROM 本地实测：固件 2 秒装好，导入后游戏出现在程序列表、刷新后的 UID 核对提示正确，
+  游戏能开机、过片头、进主菜单、跑演示画面（窗格可见时约 25 FPS）。站内文案写的是 N-Gage QD，但原版 N-Gage 的 ROM 同样能用。
+- **《模拟人生：脱颖而出》（6RAK）在没有存档的设备上，标题画面报「Game deck memory full」**（2026-11-19 查清并绕开）：
+  用带日志的诊断核心确认，存档 `C:\System\Apps\6RAK\THESIMS.SAV` 不存在时，游戏走「新建存档」那条路，让 ESTLIB 从
+  `0x40FEAC` 起一块 1024 字节地写。这段地址是这个线程 64KB 栈（`0x400000–0x410000`，chunk 预留 1MB 只是按 1MB 对齐）的顶部，
+  内容是栈帧；再往上是没提交的页，Posix 服务的 `valid_guest_range` 拒绝，返回 EFAULT，存档只剩 0 字节。
+  **排除过的方向**：目录在不在（预建目录后照样失败）；GGEMU 往 Z: 放的 `100058ec.ini`（那是「常规设置」，放了照样失败）；
+  客体内存跨 chunk 不连续（尾页根本没映射，拆分拷贝帮不上）；把未映射尾部补 0（第一块能写，游戏接着从 `0x4102AC` 写下一块，
+  整块都在未映射区）。是游戏这条路径上的指针指进了栈区，模拟器层面没有干净的通用修法。
+  **已有存档（哪怕 0 字节）时**游戏改从堆上的缓冲每次写 8 字节，存档正常写成 6176 字节（`ASIE0000` 开头），标题显示
+  「Press 5 to start」，主菜单正常 —— 以前「目录已存在就能用」的观察，其实是那台设备上已经留着一个 0 字节存档。
+  **修法**：卡带导入（`scripts/eka2l1-ngage-card.js` 的 `KNOWN_EMPTY_SAVES`）给已知游戏在 `C:\System\Apps\<代号>\` 放一个空存档，
+  已有同名文件（不论大小写和内容）一律不动；程序库页和详情页播放器共用这段代码。目前名单只有 `6RAK → THESIMS.SAV`，
+  别的游戏遇到同样的报错，先用诊断核心看 Posix 写入参数，确认是同一类再加进名单。
+  诊断核心的做法：在本机构建目录的 `posix.cpp` 里临时加 `LOG_WARN`，`cmake --build build_wasm_8bitgo --target eka2l1_wasm` 增量约 1 分钟，
+  把 `bin/eka2l1.wasm` + `eka2l1.js` 放进 `public/eka2l1/` 下的临时目录测（胶水要手动补 `Module["IDBFS"]=IDBFS`），用完删掉、源码恢复原样。
+- 实测要点：按键要按住约 1 秒以上，游戏按帧采样键状态，低帧率下短按会丢；内置浏览器窗格隐藏时 rAF 可能完全停住，
+  模拟器卡在「Symbian 系统引导中」后报启动超时，这不是运行时的毛病。完整 SVC/IPC 追踪可在播放页控制台调
+  `EKA2L1.module.ccall('wasm_set_trace_logging', null, ['number'], [1])` 打开（极慢、日志量很大，用完关掉）。
+### 2.40.1 🔴 EKA2L1 核心一启动就报 `reading 'IDBFS'`：新版 Emscripten 的胶水不兼容上游 boot.js（2026-11-19 修）
+
+**经过**：2026-11-16 起发布的运行时（含线上 `vce3dcea2a438`）全部起不来。玩家在「安装设备固件」里选好 ROM 点安装，
+立即报 `Cannot read properties of undefined (reading 'IDBFS')`，ROM 还没读就失败，整个 `/symbian` 走不到第一步
+（本地与 https://8bitgo.com 都复现）。上游 `js/boot.js` 按老 Emscripten 写：`mod.FS.mount(mod.FS.filesystems.IDBFS, …)`，
+`patchIDBFS` 还读 `IDBFS.DB_VERSION` / `IDBFS.DB_STORE_NAME`。本站用 emcc 7.0.0 构建，胶水里**没有 `FS.filesystems`**、
+**没有把 IDBFS 挂到 Module 上**，版本和存储名也成了模块常量（`IDBFS_DB_VERSION=21`、`IDBFS_DB_STORE_NAME="FILE_DATA"`）——
+  ⚠️ 重新打包以 `eka2l1Runtime.ts` 里**当前**的 `EKA2L1_BUILD_ID` 目录为基准：先打包、再删旧目录；先删了就把常量改回上一个已提交的目录再打。
+就算只修挂载那一行，`patchIDBFS` 换上去的 `getDB` 也会不带版本号打开库、建出一个叫 `undefined` 的存储，存档全写不进去。
+
+**修法**（运行时 `vcfbeb38ddde3`）：补丁表新增两条，完整构建和 `npm run eka2l1:repackage` 走同一个 `applyReplacePatch`：
+- `idbfs-current-emscripten`（boot.js）：`idbfsOf(mod)` 优先取 `Module.IDBFS`，缺省版本 21、存储名 `FILE_DATA`，与胶水和 `savePaths` 一致；
+- `idbfs-module-export`（`EKA2L1_GLUE_PATCHES`，改链接产物 `eka2l1.js`）：在 `Module["FS"]=FS;` 旁边导出 `Module["IDBFS"]=IDBFS`。
+  完整构建在链接后对 `bin/eka2l1.js` 打；重新打包对已发布胶水打。
+
+重新打包现在会把所有「改页面 / 改胶水」的补丁打到已发布文件上（已在位的跳过，顺带复核），基准运行时缺的 C++ 补丁会当场要求完整重建；
+`check-eka2l1-web.mjs` 逐条核对这些补丁的替换文本在产物里，并单独拦住旧的 `mod.FS.mount(mod.FS.filesystems.IDBFS` 一行。
+**以后换 Emscripten 版本，先查胶水还剩哪些 `Module[...]` 导出、IDBFS 的常量是不是还叫这个名字**，别只看构建通过。
+
+验收（2026-11-19，本地浏览器）：用 1KB 假 ROM 走玩家的安装流程，核心正常启动、`/eka2l1` 挂成 IDBFS、库版本 21 且只有 `FILE_DATA`，
+最后报「ROM 文件损坏」（假 ROM 的正确结果）；写一份文件走 `syncfs`、再导入一张卡带走 `savePaths`，刷新后重新启动核心，两边都完整恢复。
+回归：`npm run test:eka2l1-patches`（拿仓库里出事那版 `vce3dcea2a438` 当修之前的样本）。真实固件下的完整开机与游戏运行仍未验证。
+
 ## 3. 常用命令
 
 ```bash
@@ -4108,6 +4189,38 @@ npm run test:play      # Play! JS / WASM / 许可证完整性与接口特征
 npm run rompack -- <ROM> [输出.8bg]  # 制作 Zstd 19 + AES-GCM 的 8BG 容器
 npm run test:rompack   # 8BG 打包、解密、解压与摘要往返
 npm run test:flash-online-save # AGI 桥完整性 + Flash 在线存档契约
+### 2.40.2 塞班 / N-Gage：游戏详情页内嵌播放器，点开始就玩（2026-11-19）
+
+照 GGEMU 的做法：玩家不用自备固件、不用进 /symbian 程序库装机，详情页点「开始游戏」就开局。
+
+- **形态**：平台 `symbian` 的运行时是 `eka2l1`（`src/emulator/adapters/eka2l1.ts`），收 `.zip`（N-Gage 卡带转储）、`.sis`
+  （老塞班安装包）。`.sisx` / `.n-gage` 识别得出来，但开局前以 `config` 报 S60 第三版不支持。适配器建一个**同源 iframe**
+  `${EKA2L1_RUNTIME_DIR}play.html`，由它加载 `eka2l1.js` + `js/boot.js` + 卡带导入脚本 + `js/8bitgo-player.js`
+  （源码 `scripts/eka2l1-player.html` / `scripts/eka2l1-player.js`，登记在 `eka2l1-site-scripts.mjs`，`inject: false`，不进程序库页）。
+- **每局在内存里装机**：播放页把 `createEKA2L1Module` 包一层，让 `FS.mount('/eka2l1')` 变成空操作，整台机器都在 MEMFS 里，
+  不碰程序库页的 IndexedDB 设备。顺序不能乱：卡带文件必须在 `initDevice` **之前**写进 E:（EKA1 固件装好就激活，
+  应用列表只在激活时扫描一次）；SIS 在装机之后 `installPackage`，再比较前后的应用列表找出新装的那个。
+- **固件**：来自后台平台 BIOS 的 `symbian` 键（`options.biosUrl`），游戏来自 ROM 地址，下载、缓存、8BG 解包都走 `loadGameBytes`
+  （固件上限 128MiB、游戏 256MiB，和 SWF 一样并行下载）。**线上还没配 `symbian` 的平台 BIOS**，没配时以 `config` 报 `eka2l1NoFirmware`，
+  不下载游戏。站内文案写的是 N-Gage QD 固件；原版 N-Gage（NEM-4）的 SYM.ROM 实测同样能用。
+- **跨源隔离**：pthread 构建要 SharedArrayBuffer。详情页内嵌隔离的平台名单在 `shared/inline-isolated-platforms.js`（psp、symbian），
+  SSR 的隔离头和详情页「SPA 跳转进来先整页刷新一次」都读它，新增平台只改这一处。
+- **存档**：开局后给 C: / E: 拍一份快照，之后游戏新建或改过的文件打成一个小包（magic `8BGSYM1\0`，上限 2MB / 4096 个文件；
+  系统服务自己改写的位置排除，见 `EXCLUDED_PREFIXES`）。包存在 localStorage `8bitgo.eka2l1.save.v1:<slug>`，登录后经 `batterySync`
+  同步云端（emulatorjs / slug / slot 9，与 GB / GBA 电池存档同一套）。每 30 秒、切后台、离页、销毁时保存；开局在启动游戏前写回。
+  读档时拒绝越界路径、Z: / D: 路径和只差大小写的重名。
+- **按键**：方向键 / Enter·空格（OK）/ Q·F1（左软键）/ E·F2（右软键）/ 0–9 / X·C（* #）/ Backspace（C 键），按下保持、松开才放，
+  带修饰键的不接管。手柄：a = 5、b = 7、select = 左软键、start = OK（N-Gage 游戏多用 5 / 7 当动作键）。操作说明在 `src/lib/emulator.ts`，
+  测试会核对它和播放页键位一致。
+- **画面里那行 `Build / Commit / Channel`**：上游 `src/emu/web/src/protection.cpp` 画进窗口右下角的构建水印，注释写明 Release 构建
+  不能关掉（用来追泄露的构建）。窗口每帧都被 `sync_canvas_to_screen` 强制成游戏画面的原始尺寸，所以水印必然压在游戏画面底部
+  （176×208 的 N-Gage 画面会被盖住底部约 24 像素）。不重编核心就挪不开；要不要改是运营的决定，别擅自删。
+- **2026-11-19 本地实测**（Vite 开发服务器、真实 `adapters/eka2l1.ts`、原版 N-Gage SYM.ROM、《模拟人生》卡带 ZIP）：页面已跨源隔离，
+  挂载到出画面 0.7 秒（wasm 已在缓存）/ 7.6 秒（换了运行时地址、要重新下载）；EA / Maxis 片头正常，截图 PNG、音量、暂停、
+  手柄按键、本地存档都可用。加了空存档的绕法后（见 §2.40），全新一局写出 6176 字节存档、标题显示「Press 5 to start」、能进主菜单，存档被打进存档包。片头要按一下键才往下走。SIS 那条路还没有用真实安装包测过。
+- 回归：`npm run test:eka2l1-player`（包类型识别、存档包格式与安全校验、快照比较、键位、接线），另跑 `test:eka2l1-ngage-card`、
+  `test:eka2l1-patches`、`eka2l1:check`。
+
 
 npm run ejspatch       # 重打 blob 文件名补丁（升级引擎后必跑，幂等）
 npm run ejscores       # 重新复制核心（仅升级核心时）

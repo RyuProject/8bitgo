@@ -113,7 +113,7 @@ export interface Platform {
    * 取值与 src/emulator/types.ts 的 RuntimeId 一致（cloudgame 不在这里选，
    * 它由用户在播放器里切到联机模式时才用）。
    */
-  runtime: 'emulatorjs' | 'ruffle' | 'html5' | 'jsnes' | 'j2me' | 'jsdos' | 'webretro' | 'play' | 'dolphin' | 'ppsspp' | null
+  runtime: 'emulatorjs' | 'ruffle' | 'html5' | 'jsnes' | 'j2me' | 'jsdos' | 'webretro' | 'play' | 'dolphin' | 'ppsspp' | 'eka2l1' | null
   /** EmulatorJS 核心名（仅 runtime 为 emulatorjs 时有意义） */
   core: string | null
   /** 接受的 ROM 文件后缀 */

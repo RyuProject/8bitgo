@@ -26,6 +26,7 @@ import { supportsRuffleWasmExtensions } from './rufflePerformance'
 import { jspiEnabled } from './jspiFlag'
 import { PSX_CHD_ARCHIVE, PSX_CHD_CORE } from './psxChd'
 import { prewarmMameChdMedia } from './mameChdWarm'
+import { EKA2L1_RUNTIME_DIR, EKA2L1_UPSTREAM_BUILD_ID } from './eka2l1Runtime'
 
 /**
  * 这台设备上「指针停在按钮上」和「点击」之间是否真的有提前量。
@@ -214,6 +215,21 @@ export function prewarmRuntime(runtime: RuntimeId | undefined, core?: string | n
       // 真正读盘在 pthread 建出的独立 Worker 上；悬停时先取这几 KB，可避免首块完成后
       // 再串行等一次脚本网络往返，触屏点击则不额外抢核心带宽。
       warmHttpCache(`${PPSSPP_RUNTIME_PATH}range-prefetch-worker.js`)
+    }
+    return
+  }
+  if (runtime === 'eka2l1') {
+    // 和 PSP 同一套策略：播放页与胶水很小，可以随时预热；11MB wasm + 5MB data 只在桌面真实悬停、
+    // 且不是省流 / 2G 时拉。运行目录按内容哈希命名、长期缓存，预热的就是点击后真正要用的那份。
+    if (!EKA2L1_RUNTIME_DIR) return
+    warmHttpCache(`${EKA2L1_RUNTIME_DIR}play.html`)
+    warmHttpCache(`${EKA2L1_RUNTIME_DIR}js/boot.js`)
+    warmHttpCache(`${EKA2L1_RUNTIME_DIR}js/8bitgo-player.js`)
+    if (aggressive && hasHoverIntent() && allowsLargeHoverPrewarm()) {
+      warmHttpCache(`${EKA2L1_RUNTIME_DIR}eka2l1.js`)
+      // boot.js 的 locateFile 给 wasm / data 带 ?v=<上游 build_id>，这里必须一字不差
+      warmHttpCache(`${EKA2L1_RUNTIME_DIR}eka2l1.wasm?v=${EKA2L1_UPSTREAM_BUILD_ID}`)
+      warmHttpCache(`${EKA2L1_RUNTIME_DIR}eka2l1.data?v=${EKA2L1_UPSTREAM_BUILD_ID}`)
     }
     return
   }

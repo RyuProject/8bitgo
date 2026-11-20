@@ -13,7 +13,7 @@
  *    打分是个「点一下就完事」的动作，等 200ms 才亮会让人以为没点上、再点一次。
  *    失败就整块回滚到请求前的状态，并把错误显示出来。
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import type { RatingSummary } from '@/types'
 import { useCurrentUser } from '@/services/auth'
 import { fmt, useT } from '@/services/i18n'
@@ -232,11 +232,29 @@ export function GameRating({ gameSlug, variant = 'default' }: { gameSlug: string
   // 每根都只有 20% 高，看不出形状
   const peak = Math.max(1, ...[1, 2, 3, 4, 5].map((n) => data.distribution[n] ?? 0))
 
+  const positive = (Number(data.distribution['4']) || 0) + (Number(data.distribution['5']) || 0)
+  const positivePercent = data.count > 0 ? Math.round((positive / data.count) * 100) : null
+
   return (
-    <section className="rounded-2xl border border-line bg-surface p-5" aria-label={r.title}>
+    <section className={cx(embedded ? 'p-4' : 'rounded-2xl border border-line bg-surface p-5', compact && 'p-4', className)} aria-label={r.title}>
       <h2 className="text-sm font-bold">⭐ {r.title}</h2>
 
-      {rated ? (
+      {compact ? (
+        <div className="mt-3 flex items-center gap-3">
+          <span className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-brand text-lg font-black text-[#183500]">
+            {positivePercent === null ? '—' : `${positivePercent}%`}
+          </span>
+          <div className="min-w-0">
+            <p className="text-sm font-bold leading-tight">
+              {positivePercent === null ? r.none : r.likePercent.replace(/^%\s*/, '')}
+            </p>
+            <p className="mt-1 text-xs text-muted">
+              {data.count > 0 ? fmt(r.compactCount, { n: data.count.toLocaleString(lang) }) : r.beFirst}
+            </p>
+            {rated && <div className="mt-1"><Stars value={data.average!} size="sm" /></div>}
+          </div>
+        </div>
+      ) : rated ? (
         <div className="mt-3 flex items-start gap-4">
           <div className="shrink-0 text-center">
             <p className="text-3xl font-black leading-none text-fg">{data.average!.toFixed(1)}</p>
@@ -283,6 +301,8 @@ export function GameRating({ gameSlug, variant = 'default' }: { gameSlug: string
           {busy ? r.saving : mine ? `${fmt(r.yourScore, { n: mine })} · ${r.clear}` : user ? '' : r.loginNote}
         </p>
       </div>
+
+      {children}
 
       {error && (
         <p className="mt-2 text-xs text-live" role="alert">

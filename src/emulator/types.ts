@@ -45,7 +45,7 @@ import type { GbaVideoMode } from './gbaVideo'
 import type { MahjongKey } from './mahjongPanel'
 import type { SaveArchiveDetails } from './saveEnvelope'
 
-export type RuntimeId = 'emulatorjs' | 'ruffle' | 'awayfl' | 'html5' | 'jsnes' | 'binjgb' | 'iodinegba' | 'j2me' | 'jsdos' | 'webretro' | 'play' | 'ppsspp' | 'dolphin' | 'cloudgame' | 'liveview'
+export type RuntimeId = 'emulatorjs' | 'ruffle' | 'awayfl' | 'html5' | 'jsnes' | 'binjgb' | 'iodinegba' | 'j2me' | 'jsdos' | 'webretro' | 'play' | 'ppsspp' | 'dolphin' | 'eka2l1' | 'cloudgame' | 'liveview'
 
 /**
  * jsnes 的 P2P 联机会话参数（见 adapters/jsnes.ts 与 emulator/jsnesNetplay.ts）。
@@ -208,6 +208,8 @@ export interface MountOptions {
    */
   debug?: boolean
   onProgress?: (progress: LoadProgress) => void
+  /** 引擎内部仍在推进启动阶段时通知播放器，避免外层无进度看门狗误判卡死。 */
+  onStartupActivity?: () => void
   /**
    * 旧 Flash 游戏的在线存档会话到期时间（毫秒）；0 = 游客模式 / 没拿到会话。
    *

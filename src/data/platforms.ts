@@ -494,13 +494,15 @@ export const platforms: Platform[] = [
     nameZh: '塞班 / 诺基亚 N-Gage',
     manufacturer: 'Nokia / Symbian',
     year: 1998,
-    // EKA2L1 有自己的完整设备安装流程，需要用户导入授权固件；不能接进通用 ROM 播放器。
-    runtime: null,
+    // 游戏详情页内嵌 EKA2L1（adapters/eka2l1.ts）：设备固件取后台平台 BIOS 的 symbian 键，每局在内存里装机。
+    // .zip 是第一代 N-Gage 卡带转储；.sisx（S60 第三版）与 .n-gage 安装包目前会给出明确的不支持提示。
+    // /symbian 程序库页（玩家自备固件、自己装游戏）照旧保留。
+    runtime: 'eka2l1',
     core: null,
-    romExtensions: ['.sis', '.sisx', '.n-gage'],
+    romExtensions: ['.sis', '.zip', '.sisx', '.n-gage'],
     color: '#1a8c8c',
     icon: '📱',
-    description: '在浏览器中体验塞班与 N-Gage 游戏；通过 EKA2L1 导入你有权使用的设备固件和游戏安装包。',
+    description: '在浏览器中体验塞班与 N-Gage 游戏：点开始即可游玩，由 EKA2L1 模拟器在网页里运行。',
   },
 ]
 

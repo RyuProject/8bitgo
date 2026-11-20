@@ -26,6 +26,7 @@ import { DetailStagePlaceholder, EmulatorPlayer, preloadPlayer } from '@/emulato
 import { stageHeightCap } from '@/emulator/screenAspect'
 import { IsolatedPlayCard } from '@/components/game/IsolatedPlayCard'
 import { GameCover } from '@/components/game/GameCover'
+import { GameDetailLayout } from '@/components/game/GameDetailLayout'
 import { GameAgeGuard } from '@/components/game/AgeGate'
 import { GameComments } from '@/components/comments/Comments'
 import { GameRating } from '@/components/game/GameRating'
@@ -237,7 +238,7 @@ export function GameDetailPage() {
     ? 'arcade'
     : game && isIsolatedRuntimePlatform(game.platform) ? game.platform : undefined
   const requiresIsolation = Boolean(isolatedEmbed) || requiresIsolatedRuntime
-  const usesIsolatedLaunchCard = requiresIsolation && game?.platform !== 'psp'
+  const usesIsolatedLaunchCard = requiresIsolation && !isInlineIsolatedPlatform(game?.platform)
   /*
     AI 临时修补（后台「AI 修补」，shared/hotfix.js）：这款游戏在这个浏览器上有没有生效的退路。
     ready 之前把 ROM 当成「检查中」，开始按钮晚一点出现，也不让一局开到一半被换核心。
@@ -245,16 +246,16 @@ export function GameDetailPage() {
   */
   const hotfix = useGameHotfix(game?.slug, game?.platform, Boolean(game) && !usesIsolatedLaunchCard && !liveInvite)
   /**
-   * 从游戏列表经 React Router 进入 PSP 页时，浏览器沿用原文档，不会重新请求 SSR 的隔离头。
+   * 从游戏列表经 React Router 进入 PSP / 塞班页时，浏览器沿用原文档，不会重新请求 SSR 的隔离头。
    * 自动完整刷新一次，让当前 URL 真正变成带 COOP/COEP 的顶层文档；sessionStorage 与导航类型
    * 双重挡住响应头配置错误时的无限刷新。刷新前先不挂播放器，免得 PPSSPP 在旧文档里白启动一次。
    */
   const pspNeedsDocumentReload = typeof window !== 'undefined'
-    && game?.platform === 'psp'
+    && isInlineIsolatedPlatform(game?.platform)
     && !window.crossOriginIsolated
   const [pspIsolationReloadFailed, setPspIsolationReloadFailed] = useState(false)
   useEffect(() => {
-    if (game?.platform !== 'psp' || typeof window === 'undefined') {
+    if (!isInlineIsolatedPlatform(game?.platform) || typeof window === 'undefined') {
       setPspIsolationReloadFailed(false)
       return
     }
@@ -465,7 +466,7 @@ export function GameDetailPage() {
                   门卫拦下来时画的也是个 16:9 的框，得和播放器一样宽 ——
                   只给播放器不给门卫的话，「还在核对年龄」那一下框先宽一截、放行后又跳窄。
                 */
-                className={stageCap}
+                className={cx(stageCap, 'game-detail-stage-ratio')}
                 slug={game.slug}
                 markedAdult={Boolean(game.adult)}
                 // 背景那张是糊到底再压一层黑底的，96×96 完全够用，没必要下 300×300
@@ -486,12 +487,16 @@ export function GameDetailPage() {
                 ) : undefined}
               >
                 {/*
-                  PSP 的普通详情页会自动换成隔离顶层文档；其余登记过的游戏与 PS2 / Dolphin
+                  PSP / 塞班的普通详情页会自动换成隔离顶层文档；其余登记过的游戏与 PS2 / Dolphin
                   暂时仍显示入口卡，再跳到 /play/<slug>。理由见 shared/isolated-embeds.js。
                 */}
                 {pspNeedsDocumentReload ? (
-                  <div className={cx('flex aspect-video w-full flex-col items-center justify-center gap-4 rounded-2xl border border-line bg-black px-6 text-center text-sm text-muted', stageCap)}>
-                    <p>{pspIsolationReloadFailed ? t.runtime.ppssppNeedsIsolation : t.player.loadingEngine}</p>
+                  <div className={cx('flex aspect-video w-full flex-col items-center justify-center gap-4 rounded-2xl border border-line bg-black px-6 text-center text-sm text-muted', stageCap, 'game-detail-stage-ratio')}>
+                    <p>
+                      {pspIsolationReloadFailed
+                        ? (game.platform === 'symbian' ? t.runtime.eka2l1NeedsIsolation : t.runtime.ppssppNeedsIsolation)
+                        : t.player.loadingEngine}
+                    </p>
                     {pspIsolationReloadFailed && (
                       <Button
                         onClick={() => {
@@ -505,7 +510,7 @@ export function GameDetailPage() {
                   </div>
                 ) : usesIsolatedLaunchCard ? (
                   <IsolatedPlayCard
-                    frameClassName={stageCap}
+                    frameClassName={cx(stageCap, 'game-detail-stage-ratio')}
                     slug={game.slug}
                     gameName={game.title}
                     isolatedPlatform={isolatedRuntimePlatform}
@@ -604,7 +609,7 @@ export function GameDetailPage() {
                 : t.runtime.playExperimental}
             </p>
           )}
-        </div>
+        </section>
 
           <div className={cx('min-w-0 space-y-7', twoColumn ? 'lg:col-span-8' : immersive ? 'xl:col-span-2' : undefined)}>
             <GameDetailHeading
@@ -740,7 +745,7 @@ export function GameDetailPage() {
                 mahjongPanel={isMahjongPanelGame(platform.id, game.core, Object.values(game.roms ?? {}))}
               />
             </section>
-          </div>
+          </section>
 
           {/* 侧栏 */}
           <aside

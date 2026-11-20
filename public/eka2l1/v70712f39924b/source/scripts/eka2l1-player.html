@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<!--
+  8BitGo：游戏详情页内嵌的塞班 / N-Gage 播放页（站点适配器 src/emulator/adapters/eka2l1.ts 用 iframe 打开它）。
+  只负责开机、装机、装游戏、启动和按键；固件与游戏字节由站点下载好交进来（见 js/8bitgo-player.js 的文件头）。
+  运行目录按内容哈希命名、长期缓存，这里的资源引用不需要再带版本号。
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="robots" content="noindex">
+<title>EKA2L1 Player</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  #canvas {
+    display: block;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    outline: none;
+    touch-action: none;
+  }
+</style>
+<script data-cfasync="false" src="js/i18n/zh-CN.js"></script>
+<script data-cfasync="false" src="js/i18n/en-US.js"></script>
+<script data-cfasync="false" src="js/i18n.js"></script>
+</head>
+<body>
+<canvas id="canvas" tabindex="0"></canvas>
+<script data-cfasync="false" src="js/build_id.js"></script>
+<script data-cfasync="false" src="eka2l1.js"></script>
+<script data-cfasync="false" src="js/boot.js"></script>
+<script data-cfasync="false" src="js/8bitgo-ngage-card.js"></script>
+<script data-cfasync="false" src="js/8bitgo-player.js"></script>
+</body>
+</html>

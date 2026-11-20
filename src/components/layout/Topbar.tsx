@@ -9,6 +9,7 @@ import { Logo } from './Logo'
 import { FEATURES } from '@/config/features'
 import { SearchBox, SearchIcon } from './SearchBox'
 import { ChatButton } from './ChatButton'
+import { stripLang } from '@/config/languages'
 
 /**
  * 顶栏：移动端菜单按钮 + 搜索 + 快捷操作（玩本地 ROM / G 币 / 通知 / 登录）
@@ -34,12 +35,13 @@ export function Topbar() {
   }, [searchOpen])
   const user = useCurrentUser()
   const location = useLocation()
+  const playerPage = /^\/games\/[^/]+$/.test(stripLang(location.pathname))
   const loginTo = `/login?next=${encodeURIComponent(location.pathname + location.search)}`
 
   if (immersive) return null
 
   return (
-    <header className="sticky top-0 z-30 bg-white backdrop-blur-xl">
+    <header className={cx('sticky top-0 z-30 bg-white backdrop-blur-xl', playerPage && 'lg:hidden')}>
       <div className="flex h-16 items-center gap-3 px-4 sm:px-6 lg:px-8">
         {/* 移动端：菜单 + Logo */}
         <button

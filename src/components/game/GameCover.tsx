@@ -14,6 +14,8 @@ import {
   reportCoverLoadFailure,
 } from '@/services/roms'
 import { cx } from '@/lib/format'
+import { whenIdle } from '@/lib/idle'
+import { allowsSpeculativePlayerPreload, type NetworkHint } from '@/emulator/preloadPolicy'
 import { useT, fmt } from '@/services/i18n'
 import { useLang } from '@/services/lang'
 import { gameTitle } from '@/services/i18nData'
@@ -89,6 +91,28 @@ const iconSizes = {
   lg: 'text-7xl sm:text-8xl',
 }
 
+let pageSettled: Promise<void> | null = null
+
+/**
+ * 页面 load 之后、浏览器第一次空闲时 resolve；整页只算一次，所有封面视频共用。
+ * 站内跳转时 readyState 早已是 complete，只等一次空闲。rIC 的 timeout 保证主线程一直忙也最晚 3 秒放行。
+ */
+function whenPageSettled(): Promise<void> {
+  if (pageSettled) return pageSettled
+  pageSettled = new Promise<void>((resolve) => {
+    const idle = () => void whenIdle(resolve, { timeout: 3000, fallbackMs: 1500 })
+    if (document.readyState === 'complete') idle()
+    else window.addEventListener('load', idle, { once: true })
+  })
+  return pageSettled
+}
+
+/** 网络明显宽裕才自动拉预览视频；没有 Network Information API 的浏览器（Safari）维持原行为 */
+function previewAutoplayAllowed(): boolean {
+  const connection = (navigator as Navigator & { connection?: NetworkHint }).connection
+  return allowsSpeculativePlayerPreload(connection)
+}
+
 /**
  * 封面视频：桌面端滚到能看见就自动播（静音、循环、行内），移出视口就暂停。
  *
@@ -101,6 +125,11 @@ const iconSizes = {
  * 手机上会明显发烫掉帧。只播看得见的那几张，代价就回到可接受范围。
  *
  * 另外尊重「减少动态效果」的系统设置：开了就不自动播，仍然可以悬停播放。
+ *
+ * 自动拉流还要等页面加载完、浏览器空闲（whenPageSettled），而且只在网络明显宽裕时做。
+ * 2026-11-20 首页实测（香港线路）：拳皇 97、恐龙快打两段预览共 3.5MB，水合后 3.3 秒就开始下载，
+ * 和 32 张封面抢带宽，最后一张封面拖到 11.9 秒才到。预览只是装饰，封面才是玩家要看的。
+ * 悬停播放不受这两条限制：那是玩家自己要看的。
  */
 function CoverVideo({ src: primarySrc, fallbackSrc, poster }: { src: string; fallbackSrc?: string; poster?: string }) {
   const ref = useRef<HTMLVideoElement>(null)
@@ -152,26 +181,39 @@ function CoverVideo({ src: primarySrc, fallbackSrc, poster }: { src: string; fal
     // 不支持 IntersectionObserver 的老浏览器：退回悬停播放，不做自动播
     if (typeof IntersectionObserver !== 'function') return () => v.removeEventListener('ended', onEnded)
 
+    // 省流量、3G 及以下、低于 3Mbps 或 RTT 超过 300ms：只留悬停播放
+    if (!previewAutoplayAllowed()) return () => v.removeEventListener('ended', onEnded)
+
+    let visible = false
+    let settled = false
+    let disposed = false
+    const start = () => {
+      // 到这一步才允许加载：在视口外时 preload="none"，不占带宽
+      if (v.preload === 'none') v.preload = 'auto'
+      // 播完停在末尾的那种：play() 会自动从头开始（规范就是这么定的），
+      // 所以滚出去再滚回来也能自愈
+      void v.play().catch(() => {
+        /* 自动播放被拦（比如省电模式）就算了，悬停仍然能播 */
+      })
+    }
     const io = new IntersectionObserver(
       ([entry]) => {
         if (!entry) return
-        if (entry.isIntersecting) {
-          // 到这一步才允许加载：在视口外时 preload="none"，不占带宽
-          if (v.preload === 'none') v.preload = 'auto'
-          // 播完停在末尾的那种：play() 会自动从头开始（规范就是这么定的），
-          // 所以滚出去再滚回来也能自愈
-          void v.play().catch(() => {
-            /* 自动播放被拦（比如省电模式）就算了，悬停仍然能播 */
-          })
-        } else {
-          v.pause()
-        }
+        visible = entry.isIntersecting
+        if (!visible) v.pause()
+        else if (settled) start()
       },
       // 一半以上露出来才播，免得横向轮播里边缘那张一闪一闪
       { threshold: 0.5 },
     )
     io.observe(v)
+    void whenPageSettled().then(() => {
+      if (disposed) return
+      settled = true
+      if (visible) start()
+    })
     return () => {
+      disposed = true
       v.removeEventListener('ended', onEnded)
       io.disconnect()
     }
@@ -260,6 +302,8 @@ export function GameCover({
    */
   const [transformFailed, setTransformFailed] = useState(false)
   useEffect(() => setTransformFailed(false), [coverSrc])
+  const [coverFailed, setCoverFailed] = useState(false)
+  useEffect(() => setCoverFailed(false), [coverSrc])
   const srcSet = imgSrc === coverSrc && !transformFailed ? coverSrcSet(coverSrc) : ''
 
   return (
@@ -280,7 +324,7 @@ export function GameCover({
       {/* 背景层：视频 / 封面图 / 程序化封面 */}
       {videoSrc ? (
         <CoverVideo src={videoSrc} fallbackSrc={gameVideoFallbackUrl(game, videoSrc) || undefined} poster={coverSrc || undefined} />
-      ) : coverSrc ? (
+      ) : coverSrc && !coverFailed ? (
         <img
           ref={coverImageRef}
           src={imgSrc}
@@ -302,6 +346,7 @@ export function GameCover({
             reportCoverLoadFailure(event.currentTarget.currentSrc || event.currentTarget.src)
             if (thumbSrc && !thumbFailed) setThumbFailed(true)
             else if (srcSet) setTransformFailed(true)
+            else setCoverFailed(true)
           }}
           className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-105"
         />

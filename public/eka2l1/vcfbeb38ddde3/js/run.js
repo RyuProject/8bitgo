@@ -1,0 +1,609 @@
+/* ============================================================================
+ * EKA2L1 Web — player page
+ *
+ * Boots the core with the visible canvas, activates the persisted device,
+ * launches the app given by ?uid=, and provides pause/save/keypad controls.
+ * ============================================================================ */
+
+(function () {
+    'use strict';
+
+    var params = new URLSearchParams(location.search);
+    var appUid = parseInt(params.get('uid'), 10);
+    var appName = params.get('name') || '';
+    var isJ2me = params.get('j2me') === '1';
+    var phoneMode = params.get('phone') === '1';
+
+    var paused = false;
+    var started = false;     // first emulated frame presented
+    var autosaveTimer = null;
+
+    document.getElementById('playerTitle').textContent = appName || (phoneMode ? 'Symbian 手机' : 'EKA2L1');
+    document.title = (appName ? appName + ' — ' : (phoneMode ? 'Symbian 手机 — ' : '')) + 'EKA2L1';
+
+    // ---- overlay -----------------------------------------------------------
+
+    function overlay(title, text, pct) {
+        document.getElementById('overlayTitle').textContent = title;
+        document.getElementById('overlayText').textContent = text || '';
+        if (typeof pct === 'number') {
+            document.getElementById('overlayBar').style.width = pct + '%';
+        }
+    }
+
+    function overlayError(title, text) {
+        overlay(title, text);
+        document.getElementById('overlaySpinner').style.display = 'none';
+        document.querySelector('.overlay-progress').style.display = 'none';
+        document.getElementById('overlayActions').style.display = '';
+    }
+
+    function hideOverlay() {
+        document.getElementById('bootOverlay').classList.add('hidden');
+    }
+
+    // ---- top bar actions -----------------------------------------------------
+
+    window.goBack = function () {
+        // Flush saves before leaving; navigate regardless of the outcome.
+        var go = function () { location.href = 'index.html'; };
+        if (EKA2L1.ready) {
+            EKA2L1.setPaused(true);
+            EKA2L1.save().then(go, go);
+            setTimeout(go, 2500); // failsafe if syncfs never calls back
+        } else {
+            go();
+        }
+    };
+
+    window.togglePause = function () {
+        if (!EKA2L1.ready) return;
+        paused = !paused;
+        EKA2L1.setPaused(paused);
+        document.getElementById('iconPause').style.display = paused ? 'none' : '';
+        document.getElementById('iconPlay').style.display = paused ? '' : 'none';
+        EKA2L1.toast(paused ? EKA2L1.t('toast.paused') : EKA2L1.t('toast.resumed'));
+        if (!paused) focusCanvas();
+    };
+
+    window.manualSave = function () {
+        if (!EKA2L1.ready) return;
+        EKA2L1.save().then(function () { EKA2L1.toast(EKA2L1.t('toast.saved')); },
+            function () { EKA2L1.toast(EKA2L1.t('toast.saveFailedSeeConsole'), 3500); });
+    };
+
+    window.toggleFullscreen = function () {
+        var stage = document.getElementById('stage');
+        if (document.fullscreenElement) document.exitFullscreen();
+        else if (stage.requestFullscreen) stage.requestFullscreen();
+    };
+
+    // ---- keypad --------------------------------------------------------------
+
+    var keypadEl = document.getElementById('keypad');
+
+    function keypadDefaultVisible() {
+        var pref = localStorage.getItem('eka2l1_keypad') || 'auto';
+        if (pref === 'on') return true;
+        if (pref === 'off') return false;
+        return ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+    }
+
+    window.toggleKeypad = function () {
+        keypadEl.classList.toggle('hidden');
+        fitCanvas();
+    };
+
+    keypadEl.classList.toggle('hidden', !keypadDefaultVisible());
+
+    // 0 off, 1 next key only, 2 locked. Fn, Shift, Sym and Ctrl all use this:
+    // one tap arms the next key, a second tap locks it, a third tap clears it.
+    // Fn swaps in the blue legend. The others are held down around that key.
+    var mods = {};
+    keypadEl.querySelectorAll('[data-special]').forEach(function (btn) {
+        mods[btn.dataset.special] = {
+            btn: btn,
+            scan: btn.dataset.mod ? parseInt(btn.dataset.mod, 10) : 0,
+            mode: 0,
+            held: false
+        };
+    });
+
+    function paintMod(m) {
+        m.btn.classList.toggle('latched', m.mode > 0);
+        m.btn.classList.toggle('locked', m.mode === 2);
+    }
+
+    function setMod(name, mode) {
+        var m = mods[name];
+        if (!m) return;
+        m.mode = mode;
+        paintMod(m);
+        if (mode === 0 && m.held) {
+            if (EKA2L1.ready) EKA2L1.sendKey(m.scan, 0);
+            m.held = false;
+        }
+    }
+
+    function cycleMod(name) {
+        var m = mods[name];
+        if (!m) return;
+        if (m.mode === 0) setMod(name, 1);
+        else if (m.mode === 1) setMod(name, 2);
+        else setMod(name, 0);
+    }
+
+    // Press every armed modifier that has a scancode. One-shot modifiers are
+    // returned so the caller can release them after the key itself goes up.
+    function pressArmedMods() {
+        var oneshot = [];
+        Object.keys(mods).forEach(function (name) {
+            var m = mods[name];
+            if (!m.mode || !m.scan) return;
+            if (!m.held && EKA2L1.ready) {
+                EKA2L1.sendKey(m.scan, 1);
+                m.held = true;
+            }
+            if (m.mode === 1) oneshot.push(m);
+        });
+        return oneshot;
+    }
+
+    function releaseOneshot(oneshot) {
+        for (var i = 0; i < oneshot.length; i++) {
+            var m = oneshot[i];
+            if (m.held && EKA2L1.ready) EKA2L1.sendKey(m.scan, 0);
+            m.held = false;
+            m.mode = 0;
+            paintMod(m);
+        }
+    }
+
+    function applyLayout(name) {
+        if (name !== 'e72') name = 't9';
+        localStorage.setItem('eka2l1_keylayout', name);
+        var boards = keypadEl.querySelectorAll('[data-layout]');
+        for (var i = 0; i < boards.length; i++) {
+            boards[i].hidden = boards[i].getAttribute('data-layout') !== name;
+        }
+        var choices = keypadEl.querySelectorAll('[data-layout-choice]');
+        for (var j = 0; j < choices.length; j++) {
+            choices[j].classList.toggle('active', choices[j].getAttribute('data-layout-choice') === name);
+        }
+        if (canvas) fitCanvas();
+    }
+
+    keypadEl.querySelectorAll('[data-layout-choice]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            applyLayout(btn.getAttribute('data-layout-choice'));
+        });
+    });
+    applyLayout(localStorage.getItem('eka2l1_keylayout') || 't9');
+
+    function resolveCode(spec) {
+        if (!spec) return 0;
+        if (EKA2L1.keys && EKA2L1.keys[spec]) return EKA2L1.keys[spec];
+        if (spec.length === 1) return spec.charCodeAt(0);
+        var n = parseInt(spec, 10);
+        return isFinite(n) ? n : 0;
+    }
+
+    // Pointer events so touch and mouse share one path; pointer capture keeps
+    // the release reliable even when the finger slides off the button.
+    keypadEl.querySelectorAll('.key').forEach(function (btn) {
+        if (btn.dataset.special) {
+            btn.addEventListener('pointerdown', function (e) {
+                e.preventDefault();
+                cycleMod(btn.dataset.special);
+                if (navigator.vibrate) navigator.vibrate(8);
+            });
+            btn.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+            return;
+        }
+
+        var base = btn.dataset.scan ? parseInt(btn.dataset.scan, 10)
+            : (btn.dataset.code ? resolveCode(btn.dataset.code) : (EKA2L1.keys[btn.dataset.key] || 0));
+        var alt = btn.dataset.fn ? resolveCode(btn.dataset.fn) : 0;
+        if (!base && !alt) return;
+
+        var down = false;
+        var sent = 0;
+        var oneshot = [];
+
+        btn.addEventListener('pointerdown', function (e) {
+            e.preventDefault();
+            btn.setPointerCapture(e.pointerId);
+            if (down || !EKA2L1.ready) return;
+            down = true;
+            var fn = mods.fn;
+            sent = (fn && fn.mode && alt) ? alt : base;
+            if (fn && fn.mode === 1 && alt) setMod('fn', 0);
+            oneshot = pressArmedMods();
+            btn.classList.add('pressed');
+            if (sent) EKA2L1.sendKey(sent, 1);
+            if (navigator.vibrate) navigator.vibrate(8);
+        });
+
+        var release = function (e) {
+            if (!down) return;
+            down = false;
+            btn.classList.remove('pressed');
+            if (EKA2L1.ready && sent) EKA2L1.sendKey(sent, 0);
+            releaseOneshot(oneshot);
+            oneshot = [];
+            sent = 0;
+        };
+
+        btn.addEventListener('pointerup', release);
+        btn.addEventListener('pointercancel', release);
+        // No click handler: everything goes through pointer events.
+        btn.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+    });
+
+    // ---- canvas sizing ---------------------------------------------------------
+
+    var canvas = document.getElementById('canvas');
+    var BASE_W = 360, BASE_H = 640; // initial SDL window size owned by the emulator
+
+    function fitCanvas() {
+        var scalePref = localStorage.getItem('eka2l1_scale') || 'fit';
+        var stage = document.getElementById('stage');
+        var sw = stage.clientWidth, sh = stage.clientHeight;
+
+        // The drawing buffer is the guest picture (no letterbox bars). Fitting
+        // that rectangle to the stage is what makes 适应窗口 larger than 1×.
+        var bw = canvas.width || BASE_W;
+        var bh = canvas.height || BASE_H;
+        var w, h;
+
+        if (scalePref === 'fit') {
+            var s = Math.min(sw / bw, sh / bh);
+            if (!isFinite(s) || s <= 0) s = 1;
+            w = Math.max(1, Math.floor(bw * s));
+            h = Math.max(1, Math.floor(bh * s));
+        } else {
+            var mult = parseFloat(scalePref);
+            if (!isFinite(mult) || mult <= 0) mult = 1;
+            w = Math.max(1, Math.round(bw * mult));
+            h = Math.max(1, Math.round(bh * mult));
+        }
+
+        canvas.style.width = w + 'px';
+        canvas.style.height = h + 'px';
+    }
+
+    window.addEventListener('resize', fitCanvas);
+    // SDL writes the guest size onto the canvas attributes once the screen
+    // mode is known, and again on rotate. Refit so 适应窗口 picks that up
+    // without waiting for a browser resize.
+    if (window.MutationObserver) {
+        new MutationObserver(fitCanvas).observe(canvas, {
+            attributes: true,
+            attributeFilter: ['width', 'height']
+        });
+    }
+
+    function focusCanvas() {
+        canvas.focus();
+    }
+
+    canvas.addEventListener('click', focusCanvas);
+
+    // ---- screen rotation -------------------------------------------------------
+
+    var rotKey = 'eka2l1_rot_' + appUid;
+    var rotation = parseInt(localStorage.getItem(rotKey), 10) || 0;
+
+    function applyRotation() {
+        if (!EKA2L1.ready || !started) return;
+        var beforeW = canvas.width;
+        var beforeH = canvas.height;
+        EKA2L1.setRotation(rotation);
+        // 90/270 swaps the drawing buffer. SDL usually updates the canvas
+        // attributes before returning; retry a few frames in case it lands late,
+        // then stop. A later tick must not keep changing the CSS size.
+        var tries = 0;
+        (function refit() {
+            fitCanvas();
+            var swapped = (rotation % 180) !== 0;
+            if (swapped && canvas.width === beforeW && canvas.height === beforeH && tries < 8) {
+                tries++;
+                setTimeout(refit, 32);
+                return;
+            }
+            focusCanvas();
+        })();
+    }
+
+    window.rotateScreen = function (delta) {
+        if (!started) return;
+        rotation = ((rotation + delta) % 360 + 360) % 360;
+        localStorage.setItem(rotKey, String(rotation));
+        applyRotation();
+        EKA2L1.toast(rotation ? EKA2L1.t('toast.screenRotated', { deg: rotation }) : EKA2L1.t('toast.screenReset'));
+    };
+
+    // ---- FPS ---------------------------------------------------------------
+
+    setInterval(function () {
+        if (!EKA2L1.ready || !started) return;
+        document.getElementById('fpsLabel').textContent = EKA2L1.fps() + ' FPS';
+    }, 1000);
+
+    // ---- autosave ------------------------------------------------------------
+
+    function startAutosave() {
+        if (autosaveTimer) return;
+        autosaveTimer = setInterval(function () {
+            if (EKA2L1.ready && !paused) {
+                EKA2L1.save().catch(function () {});
+            }
+        }, 60000);
+    }
+
+    document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState === 'hidden' && EKA2L1.ready) {
+            EKA2L1.save().catch(function () {});
+        }
+    });
+
+    // ---- OOM / crash surfacing ----------------------------------------------
+
+    function oomMessage() {
+        var dataMB = 0;
+        try { dataMB = Math.round(EKA2L1.dataBytes() / 1048576); } catch (e) {}
+        return EKA2L1.t('error.oom', { mb: dataMB || '?' });
+    }
+
+    // After the overlay is hidden a wasm abort (e.g. OOM during gameplay)
+    // surfaces as an uncaught error in the RAF loop — without this handler the
+    // canvas just freezes and the user sees nothing.
+    window.addEventListener('error', function (ev) {
+        if (!started) return;
+        var err = ev.error || ev.message;
+        if (EKA2L1.isOOMError(err)) {
+            document.getElementById('bootOverlay').classList.remove('hidden');
+            overlayError(EKA2L1.t('overlay.oomTitle'), oomMessage());
+        }
+    });
+
+    // ---- boot & launch ---------------------------------------------------------
+
+    if (!phoneMode && (!appUid || isNaN(appUid))) {
+        overlayError(EKA2L1.t('overlay.missingAppTitle'), EKA2L1.t('overlay.missingAppText'));
+        return;
+    }
+
+    overlay(EKA2L1.t('player.loading'), appName, 5);
+    fitCanvas();
+
+    EKA2L1.boot({
+        canvas: canvas,
+        onProgress: function (pct, text) { overlay(EKA2L1.t('player.loading'), text, pct); }
+    }).then(function () {
+        overlay(EKA2L1.t('overlay.startingDevice'), '', 94);
+
+        // Frame-rate cap / CPU budget / upscale filter from the Settings page.
+        // Applied before launch so a low-end device never burns full-rate CPU.
+        var lowPower = EKA2L1.applyPerfPrefs();
+        if (lowPower) console.log('[EKA2L1] low-power mode active (30fps cap)');
+
+        if (params.get('leaveprobe') === '1') EKA2L1.module.ccall('wasm_set_leave_probe', null, ['number'], [1]);
+        if (phoneMode) EKA2L1.setPhoneBootMode(true);
+        var result = EKA2L1.initDevice('', '');
+        if (result !== 0) {
+            overlayError(EKA2L1.t('overlay.noFirmwareTitle'), EKA2L1.t('overlay.noFirmwareText', {
+                reason: EKA2L1.decodeInstallError(result)
+            }));
+            return;
+        }
+
+        overlay(phoneMode ? EKA2L1.t('overlay.startingPhone') : EKA2L1.t('overlay.launchingApp', {
+            name: appName || EKA2L1.t('overlay.defaultAppName')
+        }), phoneMode ? EKA2L1.t('overlay.startingPhoneHint') : EKA2L1.t('overlay.launchingHint'), 97);
+
+        if (phoneMode) {
+            var phoneLaunch = EKA2L1.bootPhone();
+            if (phoneLaunch !== 0 && phoneLaunch !== 1) {
+                overlayError(EKA2L1.t('overlay.launchFailedTitle'),
+                    EKA2L1.t('overlay.launchFailedText', { code: phoneLaunch }));
+                return;
+            }
+            setTimeout(function finishStartup() {
+                var handoff = EKA2L1.finishPhoneStartup();
+                if (handoff === 1) {
+                    setTimeout(finishStartup, 500);
+                    return;
+                }
+                console.log('[EKA2L1] ROM startup hand-off: ' + handoff);
+            }, 12000);
+            beginFramePoll();
+            return;
+        }
+
+        if (isJ2me) {
+            // Pre-check: does the ROM ship a Java MIDlet launcher or runtime?
+            // If not, give an actionable message instead of a bare error code.
+            var diag = '';
+            try { diag = EKA2L1.checkMidletLaunch() || ''; } catch (e) {}
+            console.log('[EKA2L1] MIDlet launch capability check:\n' + diag);
+            if (diag.indexOf('LAUNCHER: missing') !== -1) {
+                overlayError(
+                    EKA2L1.t('overlay.launchFailedTitle'),
+                    EKA2L1.t('overlay.noJavaLauncher', { detail: diag })
+                );
+                return;
+            }
+            // Warn (but don't abort) if no MIDlet is registered in AppArc — the
+            // silent installer may not have completed. The launch will try the
+            // AppArc path first, then fall back to the direct launcher.
+            if (diag.indexOf('Java apps in AppArc: 0') !== -1) {
+                console.warn('[EKA2L1] No MIDlets registered in AppArc — the silent installer may have stalled.');
+            }
+        }
+
+        // AppArc UIDs can also identify Java apps. Keep the same entry point
+        // when AMS asks for a retry; launchMidlet only accepts virtual UIDs.
+        function launchSelectedApp() {
+            return isJ2me ? EKA2L1.launchMidlet(appUid) : EKA2L1.launchApp(appUid);
+        }
+        var launch = launchSelectedApp();
+
+        if (launch === -101) {
+            // SystemAMSCore -boot is running but !MIDP.SystemAMS.SystemAMS is
+            // not listening yet. Keep emulation going and retry launch.
+            EKA2L1.setPaused(false);
+            overlay(EKA2L1.t('overlay.startingJavaAms'), EKA2L1.t('overlay.startingJavaAmsHint'), 96);
+            var amsT0 = performance.now();
+            var amsPoll = setInterval(function () {
+                var elapsed = performance.now() - amsT0;
+                launch = launchSelectedApp();
+                if (launch === 0) {
+                    clearInterval(amsPoll);
+                    console.log('[EKA2L1] Java AMS ready, MIDlet launch succeeded');
+                    beginFramePoll();
+                    return;
+                }
+                if (launch === -101) {
+                    var secs = (elapsed / 1000) | 0;
+                    if (secs >= 2) {
+                        overlay(EKA2L1.t('overlay.startingJavaAms'),
+                            EKA2L1.t('overlay.startingJavaAmsHintSecs', { secs: secs }), 96);
+                    }
+                    if (elapsed > 45000) {
+                        clearInterval(amsPoll);
+                        overlayError(EKA2L1.t('overlay.launchTimeoutTitle'),
+                            EKA2L1.t('overlay.startingJavaAmsTimeout'));
+                    }
+                    return;
+                }
+                clearInterval(amsPoll);
+                if (launch === -100) {
+                    overlayError(EKA2L1.t('overlay.launchFailedTitle'),
+                        EKA2L1.t('overlay.reregisterFailed'));
+                } else {
+                    overlayError(EKA2L1.t('overlay.launchFailedTitle'),
+                        EKA2L1.t('overlay.launchFailedText', { code: launch }));
+                }
+            }, 400);
+            return;
+        }
+
+        if (launch === -100) {
+            // MIDlet not in AppArc (lost on restart). The silent installer was
+            // re-spawned to restore registration. Keep emulation running so the
+            // guest installer makes progress, poll for completion, then retry.
+            EKA2L1.setPaused(false);
+            overlay(EKA2L1.t('overlay.registeringMidlet'), EKA2L1.t('overlay.registeringHint'), 96);
+            var regT0 = performance.now();
+            var regPoll = setInterval(function () {
+                var st = EKA2L1.midletInstallStatus();
+                var elapsed = performance.now() - regT0;
+                if (st === 2) {
+                    clearInterval(regPoll);
+                    console.log('[EKA2L1] Reregister complete, retrying launch');
+                    launch = launchSelectedApp();
+                    if (launch !== 0) {
+                        if (launch === -100) {
+                            overlayError(EKA2L1.t('overlay.launchFailedTitle'),
+                                EKA2L1.t('overlay.reregisterFailed'));
+                        } else {
+                            overlayError(EKA2L1.t('overlay.launchFailedTitle'),
+                                EKA2L1.t('overlay.launchFailedText', { code: launch }));
+                        }
+                        return;
+                    }
+                    beginFramePoll();
+                } else if (st === -4) {
+                    clearInterval(regPoll);
+                    overlayError(EKA2L1.t('overlay.launchFailedTitle'),
+                        EKA2L1.t('overlay.reregisterFailed'));
+                } else if (elapsed > 90000) {
+                    clearInterval(regPoll);
+                    overlayError(EKA2L1.t('overlay.launchTimeoutTitle'),
+                        EKA2L1.t('overlay.launchTimeoutText'));
+                } else {
+                    var secs = (elapsed / 1000) | 0;
+                    if (secs >= 2) {
+                        overlay(EKA2L1.t('overlay.registeringMidlet'),
+                            EKA2L1.t('overlay.registeringHintSecs', { secs: secs }), 96);
+                    }
+                }
+            }, 500);
+            return;
+        }
+
+        if (launch !== 0) {
+            overlayError(EKA2L1.t('overlay.launchFailedTitle'),
+                EKA2L1.t('overlay.launchFailedText', { code: launch }));
+            return;
+        }
+
+        beginFramePoll();
+
+        function beginFramePoll() {
+            try { EKA2L1.syncLocation(); } catch (e) {}
+            EKA2L1.setPaused(false);
+            // First composed frame -> reveal the canvas.
+            var t0 = performance.now();
+        var poll = setInterval(function () {
+            var exited = EKA2L1.lastAppExit && EKA2L1.lastAppExit();
+            if (exited) {
+                clearInterval(poll);
+                var cat = exited.category || '?';
+                var reason = exited.reason;
+                var hint = '';
+                if (cat === 'AVKON' && reason === 61) {
+                    hint = EKA2L1.t('overlay.appExitedLayoutHint');
+                    if (exited.layoutDiag) {
+                        hint += ' [' + exited.layoutDiag + ']';
+                    }
+                }
+                overlayError(
+                    EKA2L1.t('overlay.appExitedTitle'),
+                    EKA2L1.t('overlay.appExitedText', {
+                        name: exited.name || '?',
+                        category: cat,
+                        reason: reason,
+                        hint: hint
+                    })
+                );
+                return;
+            }
+            var j9n = 0;
+            if (isJ2me) {
+                try { j9n = EKA2L1.j9PresentCount ? EKA2L1.j9PresentCount() : 0; } catch (e) { j9n = 0; }
+            }
+            // ROM J9 draws through WindowServer, without the legacy host-MIDP
+            // present counter. Accept a composed guest frame for Java as well.
+            var ready = EKA2L1.redrawCount() > 0 || j9n > 0;
+            if (ready) {
+                clearInterval(poll);
+                started = true;
+                hideOverlay();
+                focusCanvas();
+                fitCanvas();
+                if (rotation) applyRotation();
+                startAutosave();
+            } else if (performance.now() - t0 > 120000) {
+                clearInterval(poll);
+                overlayError(EKA2L1.t('overlay.launchTimeoutTitle'), EKA2L1.t('overlay.launchTimeoutText'));
+            } else {
+                var secs = ((performance.now() - t0) / 1000) | 0;
+                if (secs >= 3) {
+                    overlay(EKA2L1.t('overlay.launchingApp', { name: appName || EKA2L1.t('overlay.defaultAppName') }),
+                        EKA2L1.t('overlay.launchingHintSecs', { secs: secs }), 99);
+                }
+            }
+        }, 250);
+        }
+
+    }).catch(function (err) {
+        console.error('[EKA2L1] boot failed:', err);
+        if (EKA2L1.isOOMError(err)) {
+            overlayError(EKA2L1.t('overlay.oomTitle'), oomMessage());
+        } else {
+            overlayError(EKA2L1.t('overlay.bootFailedTitle'), String(err && err.message || err));
+        }
+    });
+})();
