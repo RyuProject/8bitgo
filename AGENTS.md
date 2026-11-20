@@ -1247,6 +1247,10 @@ Worker 按封面同一条 s-maxage=600 缓存整份 200，Range 命中时在 Wor
 超过 32MB 或带 `Content-Encoding` / 条件头的不缓存。回归在 `worker/tests/rom.test.mjs` 的 preview video 两节。
 切片是**流式**的（`sliceStream`）：不准退回 `hit.arrayBuffer()`，每个 Range 都把 32MB 读进内存，几路并发就撞 128MB 隔离上限。
 取消 tee 出来的缓存正文**不能 await**（另一支没结束时 cancel 永不落定，请求会挂住）。
+浏览器这一侧（`src/components/game/GameCover.tsx` 的 `CoverVideo`，2026-11-20）：桌面端预览视频的自动拉流要等页面 `load`
+之后、浏览器第一次空闲（`whenPageSettled`，rIC 最晚 3 秒放行），而且只在网络明显宽裕时做（复用 `preloadPolicy.ts` 的
+`allowsSpeculativePlayerPreload`：省流量、非 4G、低于 3Mbps、RTT 超过 300ms 都不自动拉）。首页实测两段预览共 3.5MB 在水合后
+3.3 秒就开始下载，和 32 张封面抢带宽，最后一张封面拖到 11.9 秒。悬停播放不受限制；移动端仍只显示 poster。回归：`npm run test:seo-performance`。
 
 ⚠️ **Worker 内存与浏览器缓存的四条规矩（2026-11-16）**：
 - 整份 200 写边缘缓存只收 ≤64MB 且有 Content-Length 的对象（`EDGE_FULL_PUT_MAX_BYTES`）。`response.clone()` 的两支速度不同，
