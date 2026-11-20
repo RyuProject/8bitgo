@@ -1106,6 +1106,7 @@ const en: Translation = {
     cancelLoad: 'Cancel loading',
     keymapMore: 'full controls below',
     isolatedHint: 'This game runs in its own full page (the browser requires it). You can come back from there at any time.',
+    externalGameHint: 'The game opens in a new tab; sign-in and game saves are handled by the game site.',
     loading: 'Loading {runtime}…',
     loadingEngine: 'Preparing the emulator…',
     loadingAssets: 'Downloading engine files…',

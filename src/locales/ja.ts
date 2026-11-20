@@ -1092,6 +1092,7 @@ const ja: Translation = {
     cancelLoad: '読み込みを中止',
     keymapMore: '操作方法の全体は下の「操作説明」に',
     isolatedHint: 'このゲームは独立したページ全体で動作します（ブラウザーの要件です）。そこからいつでも戻れます。',
+    externalGameHint: 'ゲームは新しいタブで開きます。ログインとセーブデータはゲーム側のサイトが管理します。',
     loading: '{runtime} を読み込んでいます…',
     loadingEngine: 'エミュレーターを準備しています…',
     loadingAssets: 'エンジンのファイルをダウンロードしています…',

@@ -1107,6 +1107,7 @@ const de: Translation = {
     cancelLoad: 'Laden abbrechen',
     keymapMore: 'alle Tasten weiter unten',
     isolatedHint: 'Dieses Spiel läuft auf einer eigenen ganzen Seite (der Browser verlangt das). Von dort kommst du jederzeit zurück.',
+    externalGameHint: 'Das Spiel öffnet sich in einem neuen Tab. Anmeldung und Spielstände verwaltet die Spieleseite.',
     loading: '{runtime} wird geladen…',
     loadingEngine: 'Emulator wird vorbereitet…',
     loadingAssets: 'Engine-Dateien werden geladen…',

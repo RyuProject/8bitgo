@@ -1157,6 +1157,7 @@ export const zhHans = {
     cancelLoad: '取消加载',
     keymapMore: '完整键位见下方「操作说明」',
     isolatedHint: '这款游戏会在独立的整页里运行（浏览器要求如此），随时可以从那一页返回。',
+    externalGameHint: '将在新标签页打开；登录与游戏存档由游戏方页面处理。',
     loading: '正在加载 {runtime}…',
     loadingEngine: '少女祈祷中 · 正在准备模拟器…',
     loadingAssets: '少女祈祷中 · 正在下载引擎资源…',

@@ -46,7 +46,7 @@ import {
   RelatedGamesSection,
 } from '@/components/game/GameDetailSections'
 import { getDefaultKeymap } from '@/lib/emulator'
-import { Button } from '@/components/ui/Button'
+import { Button, buttonClasses } from '@/components/ui/Button'
 import { SkeletonBlock } from '@/components/ui/PageSkeleton'
 import { NotFoundPage } from './NotFoundPage'
 import { useShell } from '@/components/layout/ShellContext'
@@ -58,6 +58,7 @@ import { isIsolatedRuntimePlatform } from '../../shared/isolated-runtime-platfor
 import { newStartupId, recordStartupEvent } from '@/services/startupFunnel'
 import { useGameHotfix } from '@/services/hotfixes'
 import { isMahjongPanelGame } from '@/emulator/mahjongPanel'
+import { builtinWebGameFor } from '../../shared/builtin-web-games.js'
 
 export function GameDetailPage() {
   const { slug = '' } = useParams<{ slug: string }>()
@@ -223,6 +224,10 @@ export function GameDetailPage() {
    * 命中的话详情页不内嵌模拟器，改成显示一个跳 /play/<slug> 的入口。
    */
   const isolatedEmbed = isolatedEmbedFor(game?.slug)
+  // 只有登记过的第三方 HTML5 游戏才从用户点击处打开新标签页。
+  const externalLaunchUrl = game?.platform === 'html5'
+    ? builtinWebGameFor(game.slug)?.externalLaunchUrl
+    : undefined
   /**
    * PPSSPP 也需要跨源隔离，但它不再跳到铺满视口的精简页：服务端会直接给 PSP 的
    * 正常详情页加 COOP/COEP，因此播放器、标题、资料与侧栏都可以和其它平台保持一致。
@@ -243,7 +248,7 @@ export function GameDetailPage() {
     ready 之前把 ROM 当成「检查中」，开始按钮晚一点出现，也不让一局开到一半被换核心。
     拉取和 ROM 探测并行，最多 1.5 秒；看直播的观众不跑模拟器，不需要。
   */
-  const hotfix = useGameHotfix(game?.slug, game?.platform, Boolean(game) && !usesIsolatedLaunchCard && !liveInvite)
+  const hotfix = useGameHotfix(game?.slug, game?.platform, Boolean(game) && !usesIsolatedLaunchCard && !externalLaunchUrl && !liveInvite)
   /**
    * 从游戏列表经 React Router 进入 PSP 页时，浏览器沿用原文档，不会重新请求 SSR 的隔离头。
    * 自动完整刷新一次，让当前 URL 真正变成带 COOP/COEP 的顶层文档；sessionStorage 与导航类型
@@ -286,8 +291,8 @@ export function GameDetailPage() {
     原先无条件预热会在玩家还没点击“开始游戏”时白白下载。
   */
   useEffect(() => {
-    if (game && !usesIsolatedLaunchCard) preloadPlayer()
-  }, [game?.slug, usesIsolatedLaunchCard])
+    if (game && !usesIsolatedLaunchCard && !externalLaunchUrl) preloadPlayer()
+  }, [game?.slug, usesIsolatedLaunchCard, externalLaunchUrl])
   const seoTitle = game ? gameTitle(game, lang) : ''
   const seoPlatform = game ? platformMap[game.platform] : undefined
   const seoPlatformName = seoPlatform ? platformLabel(t, seoPlatform.id, seoPlatform.name) : ''
@@ -503,6 +508,27 @@ export function GameDetailPage() {
                       </Button>
                     )}
                   </div>
+                ) : externalLaunchUrl ? (
+                  <div className={cx('overflow-hidden rounded-2xl border border-line bg-black', stageCap)}>
+                    <div className="relative flex aspect-video w-full items-center justify-center">
+                      <div className="absolute inset-0 opacity-60 blur-sm">{stageBackdrop}</div>
+                      <div className="scanlines absolute inset-0" aria-hidden />
+                      <div className="absolute inset-0 bg-gradient-to-t from-black via-black/60 to-black/20" />
+                      <div className="relative flex flex-col items-center gap-4 px-6 text-center">
+                        {game.icon && <span className="hidden text-6xl drop-shadow-[0_8px_16px_rgba(0,0,0,0.6)] sm:block sm:text-7xl" aria-hidden>{game.icon}</span>}
+                        <a
+                          href={externalLaunchUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className={buttonClasses('primary', 'lg')}
+                          aria-label={`${t.player.start} · ${game.title}`}
+                        >
+                          <span aria-hidden>▶</span> {t.player.start} ↗
+                        </a>
+                        <p className="max-w-sm text-xs text-muted">{t.player.externalGameHint}</p>
+                      </div>
+                    </div>
+                  </div>
                 ) : usesIsolatedLaunchCard ? (
                   <IsolatedPlayCard
                     frameClassName={stageCap}
@@ -602,6 +628,17 @@ export function GameDetailPage() {
               ⚠️ {platform.runtime === 'dolphin'
                 ? t.runtime.dolphinExperimental
                 : t.runtime.playExperimental}
+            </p>
+          )}
+          {slug === 'pokecatch' && (
+            <p role="note" className="mt-3 rounded-xl border border-line bg-surface-2 px-3 py-2 text-xs text-muted">
+              {lang.startsWith('zh')
+                ? '游戏会在新标签页打开，登录由游戏方处理。存档桥扩展可把游戏进度同步到 8BitGo；Safari 和 Android Chrome 可在这里手动导入或导出。登录游戏账号不等于同步到 8BitGo。'
+                : 'The game opens in a new tab and handles sign-in itself. The Save Bridge extension can sync its progress to 8BitGo; Safari and Android Chrome can import or export saves here. Signing in to the game does not sync it to 8BitGo.'}
+              {' '}
+              <InternalLink to="/pokecatch-save-sync" className="font-semibold text-brand-hover underline underline-offset-2 hover:text-fg">
+                {lang.startsWith('zh') ? '设置存档同步' : 'Set up save sync'}
+              </InternalLink>
             </p>
           )}
         </div>

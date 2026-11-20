@@ -1108,6 +1108,7 @@ const fr: Translation = {
     cancelLoad: 'Annuler le chargement',
     keymapMore: 'toutes les touches plus bas',
     isolatedHint: 'Ce jeu tourne dans sa propre page entière (le navigateur l’exige). Tu peux en revenir à tout moment.',
+    externalGameHint: 'Le jeu s’ouvrira dans un nouvel onglet ; le site du jeu gère la connexion et les sauvegardes.',
     loading: 'Chargement de {runtime}…',
     loadingEngine: 'Préparation de l’émulateur…',
     loadingAssets: 'Téléchargement des fichiers du moteur…',
