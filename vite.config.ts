@@ -374,6 +374,15 @@ export default defineConfig(({ mode }) => {
               name: 'react-vendor',
               test: /[\\/]node_modules[\\/](react|react-dom|scheduler|react-router|react-router-dom)[\\/]/,
             },
+            {
+              /*
+                直播信令的 socket.io 客户端（src/services/live.ts 按需 import）。只为起个认得出的名字：
+                不分组时它叫 esm-<哈希>.js，诊断包里点名「esm-xxx.js 取不下来」没人知道是什么。
+                这几个包只经那一处动态 import 进来，分组不会让它变成首屏加载。
+              */
+              name: 'socket-io-client',
+              test: /[\\/]node_modules[\\/](socket\.io-client|socket\.io-parser|engine\.io-client|engine\.io-parser|@socket\.io[\\/]component-emitter)[\\/]/,
+            },
           ],
         },
       },

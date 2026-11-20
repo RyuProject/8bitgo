@@ -14,10 +14,42 @@
  * 只放行 assets / fonts / api / emulatorjs / ruffle / jsdos / j2me 七个前缀、PSP 的 wasm / data 和 Play! 的 wasm，别的一律 404：这不是通用的反代入口。
  * j2me 是给 /j2me/edge-sw.js 用的：CheerpJ 只认同源，SW 拦下它的 Range 请求转到这里（见 scripts/j2me-web/edge-sw.js）。
  * 后三个给大陆访客取模拟器引擎与核心（src/emulator/paths.ts 的 runtimeBase：EmulatorJS、Flash、DOS）。
+ * 另外单独放行 socket.io 的浏览器客户端两份文件（见下面 SOCKET_IO_CLIENT）。
  */
 import { readFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import path from 'node:path'
 import { CN_EDGE_PREFIX } from '../../shared/cover-cdn-hint.js'
+
+/*
+  socket.io 的浏览器客户端。
+
+  2026-11-20 起直播（src/services/live.ts）已把 socket.io-client 打进前端包，不再取这两份文件；
+  留着给仍从后端取脚本的地方（模拟器 iframe 里的联机，src/services/netplay.ts 的 socketIoScriptUrl）
+  改走大陆加速入口用。确认没人用了再删。
+
+  2026-11-19 线上：8bitgo.com 上的大陆访客从同源 /socket.io/socket.io.js 取它要绕 Cloudflare 洛杉矶，
+  实测 26～30 秒（37KB gzip，max-age=0 每次都回源复验）；直播客户端 8 秒就放弃，于是这批访客
+  开播、看直播全部报「/socket.io/socket.io.js 加载超时」。同一时刻经 cn.8bitgo.com 只要 2 秒。
+
+  不能剥掉前缀交给后面：engine.io 只拦**原始**路径以 `/socket.io/` 开头的请求，`/_cn/socket.io/…`
+  已经过了它那一关，Express 里也没有路由接得住。所以这里直接发 socket.io 包里那份文件 ——
+  和同源 serveClient 发的是同一份字节，版本永远跟服务端一致。只放这两个文件，不放 .map / esm / msgpack。
+  缓存只给一小时：URL 不带版本号，EdgeOne 又清不了缓存，升级 socket.io 后最多旧一小时（同为 v4 协议，兼容）。
+*/
+const SOCKET_IO_CLIENT = /^\/socket\.io\/(socket\.io(?:\.min)?\.js)(?:\?|$)/
+const SOCKET_IO_CLIENT_CACHE = 'public, max-age=3600'
+
+/** socket.io 包里 client-dist 目录；装不上（理论上不会）就返回空串，请求按 404 处理 */
+function defaultSocketIoClientDir() {
+  try {
+    const require = createRequire(import.meta.url)
+    // exports 只开放了包入口和 package.json：入口在 dist/index.js，client-dist 与 dist 同级
+    return path.join(path.dirname(require.resolve('socket.io')), '..', 'client-dist')
+  } catch {
+    return ''
+  }
+}
 
 /*
   ppsspp 只放两份大文件（wasm / data）：入口、胶水 JS、Worker 必须和跨源隔离页同源，放出来也用不上，
@@ -33,13 +65,16 @@ export function rewriteCssFontUrls(css) {
   return css.replace(/url\((['"]?)\/fonts\//g, `url($1${CN_EDGE_PREFIX}/fonts/`)
 }
 
-export function createCnEdgeMiddleware({ clientDir, siteOrigin }) {
+export function createCnEdgeMiddleware({ clientDir, siteOrigin, socketIoClientDir = defaultSocketIoClientDir() }) {
   const cssCache = new Map()
+  /** 文件名 → { body, etag }；只有两份、内容随进程不变，读一次就够 */
+  const ioClientCache = new Map()
   return async function cnEdge(req, res, next) {
     const raw = req.url || ''
     if (raw !== CN_EDGE_PREFIX && !raw.startsWith(`${CN_EDGE_PREFIX}/`)) return next()
     const rest = raw.slice(CN_EDGE_PREFIX.length) || '/'
-    if (!ALLOWED.test(rest) && !PPSSPP_EDGE.test(rest) && !PLAY_WASM_EDGE.test(rest)) {
+    const ioClient = SOCKET_IO_CLIENT.exec(rest)?.[1] ?? ''
+    if (!ALLOWED.test(rest) && !PPSSPP_EDGE.test(rest) && !PLAY_WASM_EDGE.test(rest) && !ioClient) {
       return res.status(404).set('Cache-Control', 'public, max-age=60').type('text/plain').send('Not Found')
     }
     req.url = rest
@@ -69,6 +104,26 @@ export function createCnEdgeMiddleware({ clientDir, siteOrigin }) {
     // J2ME 的请求经 SW 跨源取回再交给 CheerpJ：它要读 Content-Range 判断 Range 生效，没暴露就只看得到安全名单里的头
     if (rest.startsWith('/j2me/')) {
       res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length, ETag, Last-Modified')
+    }
+
+    if (ioClient) {
+      if (req.method !== 'GET' && req.method !== 'HEAD') return res.status(405).set('Allow', 'GET, HEAD').end()
+      let entry = ioClientCache.get(ioClient)
+      if (!entry) {
+        try {
+          if (!socketIoClientDir) throw new Error('socket.io client-dist not found')
+          const body = await readFile(path.join(socketIoClientDir, ioClient), 'utf8')
+          const version = /Socket\.IO v([\w.-]+)/.exec(body)?.[1] ?? String(body.length)
+          entry = { body, etag: `"sio-${version}-${ioClient}"` }
+          ioClientCache.set(ioClient, entry)
+        } catch {
+          return res.status(404).set('Cache-Control', 'public, max-age=60').type('text/plain').send('Not Found')
+        }
+      }
+      res.set({ 'Content-Type': 'application/javascript; charset=utf-8', 'Cache-Control': SOCKET_IO_CLIENT_CACHE, ETag: entry.etag })
+      if (req.headers?.['if-none-match'] === entry.etag) return res.status(304).end()
+      res.status(200)
+      return req.method === 'HEAD' ? res.end() : res.send(entry.body)
     }
 
     const pathname = rest.split('?')[0]

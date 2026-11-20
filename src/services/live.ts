@@ -8,18 +8,17 @@
  * 新房间优先经 SRS 转发音视频，旧房间继续兼容 P2P；Socket.IO 管理房间和协作输入，
  * SDP 由本站后端校验短时授权后代理给 SRS（server/src/live.js）。
  *
- * socket.io 客户端不打进前端包，而是从自家后端 /socket.io/socket.io.js 现取 ——
- * 这样版本永远和服务端一致，也省下几十 KB 的首屏体积。模拟器 iframe 里那套联机
- * 用的也是同一个脚本。
+ * socket.io 客户端打进前端包（npm 的 socket.io-client，版本钉死与服务端一致），
+ * 连 /live 时才按需加载那个分块，见 loadIo。
  */
 import { useSyncExternalStore } from 'react'
 import { fallbackAfterErrors } from './sseFallback'
 import { getToken, apiBase, TOKEN_CHANGED_EVENT } from './api'
+import { importWithRetry, lazyChunkFile } from './moduleLinkRecovery'
 import { getT } from './i18n'
 import { fetchLiveIceConfig, type IceConfig } from './netplay'
 import type { Presence } from './presence'
 import type { UserRole } from '@/types'
-import { describeExport, looksLikeSocketIo, runAsCommonJs, umdGlobals } from '@/lib/umd'
 import { liveEnabled } from './roomFlags'
 import { rankSrsCodecs, relayOnlyIceServers, srsJitterTargetMs, srsOfferSdp, srsPeerConfiguration } from './liveSrsIce'
 
@@ -200,8 +199,7 @@ export function tuneLiveSrsJitter(pc: RTCPeerConnection, sample: { loss: number;
 }
 type IoFactory = (uri: string, opts?: Record<string, unknown>) => LiveSocket
 
-/** 直播首屏不能被静态 socket.io 脚本或容量预检无限期挂住。 */
-const IO_ASSET_TIMEOUT_MS = 8_000
+/** 直播首屏不能被容量预检无限期挂住。 */
 const LIVE_CAPACITY_TIMEOUT_MS = 4_000
 
 /**
@@ -216,124 +214,40 @@ function liveAuthHeaders(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
-/** socket.io 客户端脚本地址（后端 serveClient: true 会把它发出来） */
-export function socketScriptUrl(): string {
-  return `${apiBase()}/socket.io/socket.io.js`
-}
-
 /**
- * 首选路子：**取源码，当 CommonJS 模块跑一遍**。
+ * socket.io 客户端：打进前端包，连接时才按需加载这个分块。
  *
- * `module` / `exports` 是 `new Function` 的**形参**，只在这段代码里可见 ——
- * 全局一个字节都不动。于是：
- *  · 不看页面上有没有别人占了 define / module / exports（UMD 第一支必然命中）
- *  · 不碰 `window.io`，js-dos 那个泄漏的同名全局也就不用再存来存去
- *    （见 [js-dos 泄漏全局 io] 那条：反过来覆盖它，DOS 游戏本身会跑不起来）
+ * 2026-11-20 以前它不打包，而是运行时从后端 /socket.io/socket.io.min.js 现取（serveClient: true）。
+ * 那个地址是 `Cache-Control: max-age=0`，Cloudflare 每次都要回源站复验（cf-cache-status: REVALIDATED）；
+ * 8bitgo.com 上的大陆访客走洛杉矶，实测一份 15KB 的脚本 11～40 秒，8 秒超时一到就放弃，
+ * 开播、看直播全部失败。打包之后它和其它前端分块一样：文件名带内容哈希、一年 immutable，
+ * 边缘和浏览器都缓存，大陆访客跟着页面走 EdgeOne（renderBuiltUrl 让分块相对引用方解析）。
+ * 同类网站（ggemu）的观众页也是这样，没有任何运行时现取的脚本。
  *
- * 站点没有设 CSP，`new Function` 可用；真哪天加了 `unsafe-eval` 限制，
- * 或者 API 在别的域上没开 CORS，就退回下面那条老路子。
+ * 为什么是动态 import 而不是静态：本文件经 services/allRooms.ts 被侧栏房间数加载，几乎每个页面都有，
+ * 静态 import 会让所有页面多下约 14KB（gzip）；按需加载只在真正连 /live 时才取。
+ * 分块取不下来走 importWithRetry：就地重试，换带查询串的新地址，避开浏览器模块表里记住的失败。
  *
- * ⚠️ 凭证模式保持默认的 `same-origin`，**不能写 `omit`**（2026-11-18《西游释厄传 Super》现场）：
- * 同源请求带 `omit` 时 Chrome 走另一个不带凭证的连接池，页面已经热着的 HTTP/2 连接用不上，
- * 要重新 DNS + TCP + TLS（空闲时实测 1.9 秒，其中握手 1.2 秒）。开局那几秒网络正忙，
- * 这次新建连接拖满 8 秒被 abort，控制台留下「取 socket.io 源码失败 … AbortError」，
- * 随后的 `<script>` 回退复用老连接 371ms 就拿到了。跨域时 `same-origin` 同样不带 Cookie，
- * 对 CORS 的要求和 `omit` 一样。
+ * 版本必须和服务端的 socket.io 同一个 minor，scripts/test-live-io.mjs 会核对两边装的版本。
+ * 以前走全局 window.io 时被别的脚本抢过 define / module（UMD 分支）、被 js-dos 泄漏的同名全局顶掉过；
+ * 现在是 ES 模块导入，页面全局一个字节都不读，这两类问题都不存在了。
  */
-async function loadIoAsModule(url: string): Promise<IoFactory> {
-  const controller = new AbortController()
-  // 带上原因：不带的话浏览器只报「signal is aborted without reason」，看不出是超时
-  const timer = window.setTimeout(
-    () => controller.abort(new Error(`${url} 加载超时（${IO_ASSET_TIMEOUT_MS}ms）`)),
-    IO_ASSET_TIMEOUT_MS,
-  )
-  try {
-    const res = await fetch(url, { credentials: 'same-origin', signal: controller.signal })
-    if (!res.ok) throw new Error(`${url} → HTTP ${res.status}`)
-    const exported = runAsCommonJs(await res.text())
-    if (!looksLikeSocketIo(exported)) throw new Error(`${url} 跑完没导出 io()：${describeExport(exported)}`)
-    return exported as IoFactory
-  } finally {
-    window.clearTimeout(timer)
-  }
-}
+const loadSocketIoClient = () => import('socket.io-client')
+const socketIoClientChunk = lazyChunkFile(loadSocketIoClient)
 
-/** 退路：老老实实插一个 <script>，装完把 window.io 原样放回去 */
-function loadIoAsScript(url: string): Promise<IoFactory> {
-  return new Promise<IoFactory>((resolve, reject) => {
-    const win = window as unknown as { io?: unknown }
-    const had = 'io' in win
-    const prev = win.io
-    const restore = () => {
-      if (had) win.io = prev
-      else delete win.io
-    }
-    const script = document.createElement('script')
-    let settled = false
-    const cleanup = () => {
-      window.clearTimeout(timer)
-      script.onload = null
-      script.onerror = null
-      restore()
-      script.remove()
-    }
-    const fail = (error: Error) => {
-      if (settled) return
-      settled = true
-      cleanup()
-      reject(error)
-    }
-    const timer = window.setTimeout(
-      () => fail(new Error(`${url} 加载超时（${IO_ASSET_TIMEOUT_MS}ms）`)),
-      IO_ASSET_TIMEOUT_MS,
-    )
-    script.src = url
-    script.async = true
-    script.onload = () => {
-      if (settled) return
-      const loaded = win.io
-      if (!looksLikeSocketIo(loaded)) {
-        fail(new Error(`${url} 装上了却没暴露 io()：${describeExport(loaded)}；${umdGlobals()}`))
-        return
-      }
-      settled = true
-      cleanup()
-      resolve(loaded as IoFactory)
-    }
-    script.onerror = () => fail(new Error(`${url} 加载失败（网络或反代）`))
-    try {
-      document.head.appendChild(script)
-    } catch (e) {
-      fail(e instanceof Error ? e : new Error(String(e)))
-    }
-  })
-}
-
-/** 拿到手的工厂自己收着，不再回头读全局 —— 后面再有脚本也夺不走 */
+/** 拿到手的工厂自己收着，后面每次连接直接用 */
 let ioFactory: IoFactory | null = null
 let ioLoading: Promise<IoFactory> | null = null
 function loadIo(): Promise<IoFactory> {
   if (ioFactory) return Promise.resolve(ioFactory)
   if (ioLoading) return ioLoading
-  const url = socketScriptUrl()
-  const win = window as unknown as { io?: unknown }
-  // 别人已经把正牌 socket.io 放在全局了就直接用，省一次请求
-  if (looksLikeSocketIo(win.io)) {
-    ioFactory = win.io as IoFactory
-    return Promise.resolve(ioFactory)
-  }
-  ioLoading = loadIoAsModule(url)
-    .catch((e) => {
-      // 走到这儿多半是 CORS 或者 CSP 禁了 eval。留一行，别把原因吞掉
-      console.warn('[live] 取 socket.io 源码失败，改用 <script> 装', e)
-      return loadIoAsScript(url)
-    })
-    .then((f) => {
-      ioFactory = f
-      return f
+  ioLoading = importWithRetry(loadSocketIoClient, socketIoClientChunk, import.meta.url)
+    .then((m) => {
+      ioFactory = m.io as unknown as IoFactory
+      return ioFactory
     })
     .catch((e) => {
-      ioLoading = null // 允许下次重试（比如反代刚修好）
+      ioLoading = null // 允许下次重试（网络恢复后再开播）
       throw e
     })
   return ioLoading
