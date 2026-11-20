@@ -155,6 +155,35 @@ for (const [needle, what, why] of [
   } catch (error) {
     fail(`loader.js 不是合法的经典脚本（${error?.name}: ${error?.message}），所有 EmulatorJS 平台都起不来`, '检查最近对 public/emulatorjs/loader.js 的改动')
   }
+  /*
+    loader.js 的名字不能进页面全局（2026-11-19，诊断包 #1331 / #1334，Chrome 111《1942》）：页面里先有一个
+    全局 `var debug`（推测是扩展注入），旧 loader 顶层的 `const debug` 当场 SyntaxError，整份不执行，
+    引擎卡两分钟。这里先声明一批同名全局，再真跑一遍 loader 的同步部分（异步的 import / 样式加载都失败也无所谓）。
+  */
+  {
+    const ctx = { console: { log() {}, warn() {}, error() {}, info() {} }, Intl, URL, setTimeout, clearTimeout, Promise }
+    ctx.window = ctx
+    ctx.EJS_pathtodata = '/emulatorjs/'
+    ctx.document = {
+      baseURI: 'https://8bitgo.com/',
+      currentScript: { src: 'https://8bitgo.com/emulatorjs/loader.js' },
+      createElement: () => ({ setAttribute() {}, style: {} }),
+      head: { appendChild(el) { setTimeout(() => el.onerror && el.onerror(new Error('stub')), 0) } },
+    }
+    vm.createContext(ctx)
+    vm.runInContext(
+      'var debug = true; var config = {}; var scriptPath = ""; function folderPath() {} function loadScript() {} function resolvePath() {}',
+      ctx,
+    )
+    try {
+      vm.runInContext(loader, ctx, { filename: 'loader.js' })
+    } catch (error) {
+      fail(
+        `页面里已有同名全局时 loader.js 跑不起来（${error?.name}: ${error?.message}）：扩展注入一个 var debug 就能让所有 EmulatorJS 平台卡死`,
+        '把 loader.js 的顶层声明包进立即执行函数（见文件开头的说明），别再往全局写 const / let / function',
+      )
+    }
+  }
   // 上游 loader 只在 debug 时打印 import 的真实异常；换上游 loader 时这一处很容易被冲掉
   if (!loader.includes('console.error("[EJS] import " + file + " failed: "')) {
     fail(

@@ -13,6 +13,18 @@ export function listCollections(page = 1, pageSize = 24): Promise<CollectionPage
   return api.get<CollectionPage>(`/api/collections?page=${page}&pageSize=${pageSize}`)
 }
 
+/**
+ * 游戏详情页「推荐合集」：收录了这款游戏的公开合集（按最近有动静排）。
+ * 服务端只认公开游戏，下架游戏回空列表（见 collections.js 的 ?game=）。
+ */
+export function listGameCollections(gameSlug: string, pageSize = 6, signal?: AbortSignal): Promise<CollectionPage> {
+  return api.get<CollectionPage>(
+    `/api/collections?game=${encodeURIComponent(gameSlug)}&pageSize=${pageSize}`,
+    false,
+    signal,
+  )
+}
+
 export function getCollection(id: number | string): Promise<CollectionDetail> {
   return api.get<CollectionDetail>(`/api/collections/${encodeURIComponent(String(id))}`)
 }

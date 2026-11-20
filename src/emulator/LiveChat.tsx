@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { usePrefersReducedMotion } from '@/lib/motion'
 import type { LiveChatMessage } from '@/services/live'
 import { cx } from '@/lib/format'
@@ -8,6 +8,9 @@ import { CHAT_MAX_LENGTH, chatTextLength, sanitizeChatText } from '../../shared/
 import type { ChatSendResult } from './chatSend'
 import type { LiveQualityPreference } from './liveAdaptiveQuality'
 import { appendChat } from './liveChatStore'
+// 详情页弹幕栏（设计稿）里的两枚图标：输入框左侧的「历史」、联机按钮
+import clockIcon from '@/assets/game-detail/clock.svg?no-inline'
+import netplayIcon from '@/assets/game-detail/netplay.svg?no-inline'
 
 /**
  * 直播弹幕。三块东西：
@@ -278,6 +281,20 @@ export interface ChatBarQualityControl {
   change: (value: LiveQualityPreference) => void
 }
 
+/**
+ * 直播开关额外带的两格状态，只有详情页那一版（variant="page"）用来决定样子：
+ * 设计稿上「正在直播」是红底红框 + 绿色信号格，开局前 / 不公开 / 没播成是中性的白底按钮。
+ * 默认那一版不看它们，照旧只认 on。
+ */
+export interface ChatBarLiveToggle extends ChatBarToggle {
+  quality?: ChatBarQualityControl
+  /** LiveControls 的阶段（starting / live / reconnecting / off / manual / hidden）；开局前没有 */
+  phase?: string
+  viewers?: number
+  /** 开局前的「开局后要不要公开」那一颗（详情页） */
+  standby?: boolean
+}
+
 export function LiveChatBar({
   onSend,
   live,
@@ -289,6 +306,7 @@ export function LiveChatBar({
   history,
   historyHint,
   className,
+  variant = 'default',
 }: {
   /**
    * null = 现在发不了（还没连上 / 已经散场）。这时输入框禁用，而不是让人白打一段字。
@@ -310,7 +328,7 @@ export function LiveChatBar({
    * 为什么放在这一行而不是工具栏：工具栏那排图标在 360pt 上已经要折行了，而这两个
    * 是**主播才用**的东西，跟观众无关；弹幕框本来就是主播的手停留的地方。
    */
-  live?: (ChatBarToggle & { quality?: ChatBarQualityControl }) | null
+  live?: ChatBarLiveToggle | null
   match?: ChatBarToggle | null
   /**
    * 「上场当 2P」（见 coopSeat.ts）。**这一颗两边都有**，只是语义相反：
@@ -332,6 +350,12 @@ export function LiveChatBar({
   /** 联机玩家的记录也有玩家发言，提示文案由上游换成中性的一句。 */
   historyHint?: string
   className?: string
+  /**
+   * 'page' = 游戏详情页新版设计稿：贴在画面正下方、和画面拼成一张卡（只留下圆角），
+   * 输入框左边是「弹幕记录」小钟、右边内嵌「发送」，直播 / 联机是两颗带底部实心阴影的按钮。
+   * 行为（发送、限流提示、还字、历史面板）两版完全共用，只换外观。
+   */
+  variant?: 'default' | 'page'
 }) {
   const t = useT()
   const tt = t.player.tools
@@ -405,24 +429,125 @@ export function LiveChatBar({
     </button>
   )
 
+  const onInputChange = (v: string) => {
+    // 按码点截断，和服务端同一套算法（shared/live-chat.js）
+    setText(chatTextLength(v) > CHAT_MAX_LENGTH ? Array.from(v).slice(0, CHAT_MAX_LENGTH).join('') : v)
+  }
+  const onInputKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key !== 'Enter') return
+    e.preventDefault()
+    // 输入法组字中途的回车是「上屏」，不是「发送」
+    if (e.nativeEvent.isComposing) return
+    send()
+  }
+  const noticeLine = notice && (
+    <p role="status" className="px-3 pb-2 text-[11px] leading-relaxed text-live">
+      {notice === 'too-fast' ? tt.chatTooFast : tt.chatDropped}
+    </p>
+  )
+  const historyPanel = history && historyOpen && (
+    <div id={historyId} className="border-t border-line px-3 py-2">
+      <LiveChatHistory messages={history} className="max-h-48" />
+    </div>
+  )
+
+  if (variant === 'page') {
+    /*
+      详情页那一版。小钟只有真的有东西可翻时才是按钮：开局前既发不了也没有记录，
+      做成可点的按钮只会展开一块空面板。还没开局时输入框禁用但**不变灰**（设计稿是正常态），
+      title 说明为什么打不了字 —— 光一个禁用光标不解释，玩家会以为坏了。
+    */
+    const historyUsable = Boolean(history) && (Boolean(onSend) || Boolean(history?.length))
+    return (
+      <div className={cx('rounded-b-2xl border border-t-0 border-[#dce3e8] bg-[#fcfcfc]', className)}>
+        <div className="flex items-center gap-2 px-2 py-2 sm:gap-3.5 sm:px-4">
+          {/* 发不了时的说明挂在外层：禁用的 <input> 在部分浏览器上不触发悬停，title 不会出现 */}
+          <div className="relative min-w-0 flex-1 sm:max-w-[576px]" title={onSend ? undefined : tt.chatIdleHint}>
+            {historyUsable ? (
+              <button
+                type="button"
+                onClick={() => setHistoryOpen((v) => !v)}
+                title={historyHint ?? tt.chatHistoryHint}
+                aria-label={tt.watchHistory}
+                aria-expanded={historyOpen}
+                aria-controls={historyId}
+                className={cx(
+                  'absolute left-[9px] top-1/2 z-10 grid size-6 -translate-y-1/2 place-items-center rounded-md transition hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand',
+                  historyOpen && 'bg-surface-2',
+                )}
+              >
+                <img src={clockIcon} alt="" width={17} height={17} draggable={false} />
+              </button>
+            ) : (
+              <img
+                src={clockIcon}
+                alt=""
+                aria-hidden
+                width={17}
+                height={17}
+                draggable={false}
+                className="pointer-events-none absolute left-[13px] top-1/2 z-10 -translate-y-1/2 opacity-80"
+              />
+            )}
+            <input
+              value={text}
+              onChange={(e) => onInputChange(e.target.value)}
+              onKeyDown={onInputKeyDown}
+              disabled={!onSend}
+              title={onSend ? undefined : tt.chatIdleHint}
+              aria-label={tt.chatPlaceholderPage}
+              placeholder={tt.chatPlaceholderPage}
+              className="h-10 w-full rounded-xl border border-[#dfe4ea] bg-white pl-10 pr-16 text-sm tracking-[-0.15px] text-fg placeholder:text-[#858891] focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/30 disabled:cursor-not-allowed"
+            />
+            {remaining < 20 && (
+              <span className="pointer-events-none absolute right-16 top-1/2 -translate-y-1/2 text-[11px] tabular-nums text-dim">{remaining}</span>
+            )}
+            <button
+              type="button"
+              onClick={send}
+              disabled={!onSend || !sanitizeChatText(text)}
+              title={onSend ? undefined : tt.chatIdleHint}
+              className="absolute right-2 top-1/2 -translate-y-1/2 rounded-[7px] border border-[#bcc1cb] bg-white px-2 py-1 text-[10px] leading-[15px] text-dim transition hover:border-brand hover:text-brand-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:hover:border-[#bcc1cb] disabled:hover:text-dim"
+            >
+              {tt.chatSend}
+            </button>
+          </div>
+
+          <div className="ml-auto flex shrink-0 items-center gap-2 sm:gap-3.5">
+            {live?.quality && (
+              <select
+                aria-label={live.quality.hint}
+                title={live.quality.hint}
+                value={live.quality.value}
+                onChange={(event) => live.quality?.change(event.currentTarget.value as LiveQualityPreference)}
+                className="h-8 max-w-24 shrink rounded-2xl border-2 border-[#dfe4ea] bg-white px-2 text-[11px] font-semibold text-muted focus:border-brand focus:outline-none"
+              >
+                {live.quality.options.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            )}
+            {live && <PageLiveButton t={live} liveNowLabel={tt.liveNow} />}
+            {match && (
+              <PageToggleButton t={match} icon={<img src={netplayIcon} alt="" width={13} height={12} draggable={false} />} />
+            )}
+            {coop && <PageToggleButton t={coop} icon={<span aria-hidden>👥</span>} />}
+          </div>
+        </div>
+        {noticeLine}
+        {historyPanel}
+      </div>
+    )
+  }
+
   return (
     <div className={cx('rounded-2xl border border-line bg-surface', className)}>
       {/* 只有这一行。消息列表在 2026-09-07 整块删掉了，理由见文件头 */}
       <div className="flex items-center gap-3 px-4 py-3">
         <input
           value={text}
-          onChange={(e) => {
-            // 按码点截断，和服务端同一套算法（shared/live-chat.js）
-            const v = e.target.value
-            setText(chatTextLength(v) > CHAT_MAX_LENGTH ? Array.from(v).slice(0, CHAT_MAX_LENGTH).join('') : v)
-          }}
-          onKeyDown={(e) => {
-            if (e.key !== 'Enter') return
-            e.preventDefault()
-            // 输入法组字中途的回车是「上屏」，不是「发送」
-            if (e.nativeEvent.isComposing) return
-            send()
-          }}
+          onChange={(e) => onInputChange(e.target.value)}
+          onKeyDown={onInputKeyDown}
           disabled={!onSend}
           placeholder={tt.chatPlaceholder}
           className="min-w-0 flex-1 rounded-xl border border-line bg-surface-2 px-2.5 py-1.5 text-sm text-fg placeholder:text-dim focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/30 disabled:opacity-50"
@@ -496,11 +621,7 @@ export function LiveChatBar({
         「这条没发出去」。role="status" 而不是 alert：读屏在原地播报，焦点不动
         —— 用户多半正要接着打下一句。
       */}
-      {notice && (
-        <p role="status" className="px-3 pb-2 text-[11px] leading-relaxed text-live">
-          {notice === 'too-fast' ? tt.chatTooFast : tt.chatDropped}
-        </p>
-      )}
+      {noticeLine}
 
       {/*
         展开的历史。放在输入框**下面**而不是上面：这一行贴在画面底下，
@@ -508,12 +629,84 @@ export function LiveChatBar({
         往下长只是把页面后面的内容推下去。
         max-h 是必须的 —— 100 条不封顶的话，展开就是一整屏。
       */}
-      {history && historyOpen && (
-        <div id={historyId} className="border-t border-line px-3 py-2">
-          <LiveChatHistory messages={history} className="max-h-48" />
-        </div>
-      )}
+      {historyPanel}
     </div>
+  )
+}
+
+/** 详情页弹幕栏按钮的公共底样式：32px 高、2px 描边、底部 4px 同色实心阴影，按下下沉（设计稿 Link 按钮） */
+const PAGE_BAR_BUTTON =
+  'inline-flex h-8 shrink-0 items-center justify-center gap-2 rounded-2xl border-2 px-2.5 text-xs font-bold transition-[transform,box-shadow,background-color] duration-100 active:translate-y-[3px] active:shadow-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 sm:px-3'
+const PAGE_BAR_NEUTRAL = 'border-[#dfe4ea] bg-white text-fg shadow-[0_4px_0_0_#dfe4ea] hover:bg-surface-2'
+/** 设计稿「正在直播」：#f44527 描边与字、白底叠 25% 同色、#c03921 阴影 */
+const PAGE_BAR_LIVE = 'border-[#f44527] bg-[#fdd1c9] text-[#f44527] shadow-[0_4px_0_0_#c03921] hover:bg-[#fcc3b8]'
+
+/**
+ * 详情页的直播按钮。
+ *
+ *   在播 / 重连中      红色「正在直播」+ 观众数（设计稿那一颗）
+ *   开局前、会自动播   红色，字是「开局自动直播」—— 让玩家开局前就知道会公开，并能先点掉
+ *   连接中             红框但不填底：还没真的播出去，不能和「正在直播」长得一样
+ *   不公开 / 没播成     中性白底，信号格变灰
+ *
+ * 文案一律用上游给的 label（它说的是此刻的真实状态）；只有「真的在播」时才换成「正在直播」，
+ * 免得开局前或断流时按钮上写着「正在直播」—— 那是在对玩家说谎。
+ */
+function PageLiveButton({ t, liveNowLabel }: { t: ChatBarLiveToggle; liveNowLabel: string }) {
+  const broadcasting = t.on && (t.phase === 'live' || t.phase === 'reconnecting')
+  const armed = t.standby ? t.on : broadcasting
+  const connecting = !t.standby && t.on && !broadcasting
+  const text = broadcasting ? liveNowLabel : t.label
+  return (
+    <button
+      type="button"
+      onClick={t.toggle}
+      disabled={t.busy}
+      title={t.hint}
+      aria-label={broadcasting ? `${liveNowLabel} · ${t.label}` : t.label}
+      aria-pressed={t.on}
+      className={cx(
+        PAGE_BAR_BUTTON,
+        armed ? PAGE_BAR_LIVE : connecting ? 'border-[#f44527]/60 bg-white text-[#f44527] shadow-[0_4px_0_0_#f4452766]' : PAGE_BAR_NEUTRAL,
+      )}
+    >
+      <span aria-hidden className="flex items-end gap-0.5">
+        {[5, 9, 12].map((h, i) => (
+          <span
+            key={h}
+            style={{ height: h }}
+            className={cx(
+              'w-[3px] rounded-[22px]',
+              armed || connecting ? 'bg-[#3cdf00]' : 'bg-[#bcc1cb]',
+              connecting && i > 0 && 'animate-pulse',
+            )}
+          />
+        ))}
+      </span>
+      <span className="hidden sm:inline">{text}</span>
+      {broadcasting && typeof t.viewers === 'number' && t.viewers > 0 && (
+        <span className="hidden tabular-nums opacity-80 sm:inline">{t.viewers}</span>
+      )}
+    </button>
+  )
+}
+
+/** 详情页的联机 / 上场按钮：中性白底，开着时换成和直播同一种红色强调 */
+function PageToggleButton({ t, icon }: { t: ChatBarToggle; icon: ReactNode }) {
+  return (
+    <button
+      type="button"
+      onClick={t.toggle}
+      disabled={t.busy}
+      title={t.hint}
+      aria-label={t.label}
+      aria-pressed={t.on}
+      className={cx(PAGE_BAR_BUTTON, t.on ? PAGE_BAR_LIVE : PAGE_BAR_NEUTRAL)}
+    >
+      <span aria-hidden className="grid place-items-center">{icon}</span>
+      {/* 正在切换时无论宽窄都显示文字 —— 是个在变的状态，光一个符号说不清（同默认那一版） */}
+      <span className={t.busy ? undefined : 'hidden sm:inline'}>{t.label}</span>
+    </button>
   )
 }
 

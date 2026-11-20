@@ -22,7 +22,7 @@ const SNIPPET = resolve(__dirname, 'autoplay-snippet.html')
 
 const START = '<!-- PvZ_AUTOPLAY_START -->'
 const END = '<!-- PvZ_AUTOPLAY_INJECTED -->'
-const SHELL_VERSION = '20261118-live3'
+const SHELL_VERSION = '20261119-progress1'
 const LOADING_STYLE = `<link rel=stylesheet href=pvz-loading.css?v=${SHELL_VERSION}>`
 const LOADING_MARKUP = `<div id=pvz-loading-scene role=status aria-live=polite aria-label="正在加载植物大战僵尸"><div class=pvz-loading-frame><img class=pvz-loading-art src=pvz-loading-scene.webp alt="" aria-hidden=true draggable=false><div class=pvz-loading-shade></div><div class=pvz-loading-logo aria-hidden=true><span class=plants>Plants</span><span class=versus>VS</span><span class=zombies>Zombies</span></div><div class=pvz-loading-board id=pvz-loading-progress role=progressbar aria-label="游戏加载进度" aria-valuemin=0 aria-valuemax=100 aria-valuenow=0><span class=pvz-loading-pips aria-hidden=true><i></i><i></i><i></i></span><div class=pvz-loading-copy><span>LOADING...</span><span id=pvz-loading-percent>0%</span></div><div class=pvz-loading-track aria-hidden=true><i id=pvz-loading-fill></i></div></div><span class=pvz-loading-note>8BitGo · Web Edition</span></div></div>`
 

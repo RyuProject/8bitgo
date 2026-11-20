@@ -93,7 +93,7 @@ import {
   pspVariantSaveSlug,
 } from './romLanguage'
 import { FEATURES } from '@/config/features'
-import { desktopScreenAspect, liveStageStyle, mobileScreenAspect, stableLiveGeometry, stageHeightCap } from './screenAspect'
+import { desktopScreenAspect, detailPageScreenAspect, liveStageStyle, mobileScreenAspect, stableLiveGeometry, stageHeightCap } from './screenAspect'
 import { recordPlay } from '@/services/store'
 import { newStartupId, recordStartupEvent, type StartupEventName } from '@/services/startupFunnel'
 import { registerDiagnosticSnapshot } from '@/services/startupDiagnostics'
@@ -122,6 +122,17 @@ import {
   type RoomRole,
 } from '@/services/netplay'
 import { freePlayerIndex, keepAlive, roomLink, roomsEnabled, useRoom, MAX_PLAYERS } from '@/services/rooms'
+// 详情页设计稿里的两枚图标（Figma 导出原件）。?no-inline：输出带哈希的独立文件走长缓存，不把 base64 塞进播放器分块
+import shareIcon from '@/assets/game-detail/share.svg?no-inline'
+import downloadIcon from '@/assets/game-detail/download.svg?no-inline'
+
+/**
+ * 详情页空闲态「分享 | 下载」两颗图标按钮的底样式（设计稿：白底、1.25px #c5d3c1 描边、
+ * 底部 4px 同色实心阴影、48px 高、左右 16px 内边距）。按下的下沉手感和全站 secondary 按钮一致。
+ * 圆角由调用方按「单颗 / 左半 / 右半」补，别写进这里。
+ */
+const PAGE_ICON_BUTTON =
+  'inline-grid h-12 place-items-center border-[1.25px] border-line-strong bg-white px-4 shadow-[0_4px_0_0_var(--color-line-strong)] transition-[transform,box-shadow,background-color] duration-100 hover:bg-surface-2 active:translate-y-[3px] active:shadow-none focus-visible:relative focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-black disabled:pointer-events-none disabled:opacity-65'
 
 type Status = 'idle' | 'loading' | 'running' | 'error'
 type Mode = 'local' | 'online'
@@ -325,15 +336,23 @@ interface Props {
   onMatchPlayerChange?: (active: boolean) => void
   /** 空闲态背景（例如封面） */
   backdrop?: ReactNode
-  /** 详情页专用展示。仅调整空闲舞台的外观，不改变启动参数、ROM 名或存档身份。 */
+  /**
+   * 游戏详情页的展示形态（2026-11 新版详情页设计稿）。只改**外观**：
+   *   - 桌面端舞台 2:1（原来 16:9），空闲态中间是封面 + 标题 + 开始 / 分享 / 下载；
+   *   - 弹幕栏在空闲态也常驻，和画面拼成一张卡（画面圆角只留上边）。
+   * 启动参数、ROM 名、存档身份、运行时选择一律不受它影响 —— 嵌入页 / TV 不传，保持原样。
+   */
   pagePresentation?: boolean
-  /** 只用于详情页舞台上的可见标题；gameName 仍保留模拟器所需的原值。 */
+  /** 详情页舞台上的可见标题（随界面语言）；gameName 仍是模拟器与直播要用的原名，两者不能混用。 */
   displayTitle?: string
-  /** 详情页舞台中间的小封面，复用页面已经选择的缩略图。 */
+  /** 详情页舞台中间那张小封面（详情页传 GameCover，和背景复用同一张图）。 */
   stagePoster?: ReactNode
-  /** 详情页舞台中的分享入口。 */
+  /** 详情页空闲态「分享」按钮。不传就不画。 */
   onShare?: () => void
-  /** 游戏尚未启动时，从详情页下方的联机入口发起；播放器现有生命周期会接住请求。 */
+  /**
+   * 详情页空闲态弹幕栏里的「联机」：游戏还没开时点它，走详情页原有的开房请求
+   * （requestMatch / requestIpxHost，播放器在挂载时已经订阅了它们）。不传 = 这款不能联机，不画。
+   */
   onPageMatchRequest?: () => void
   /**
    * 出错时红字旁边那个「反馈这个问题」点了做什么。详情页传「滚到评论区并聚焦输入框」；
@@ -1009,6 +1028,18 @@ export function EmulatorPlayer({
    * 把开关交上来（chromeless），按钮由 LiveChatBar 画。
    */
   const [liveCtl, setLiveCtl] = useState<LiveControlsHandle | null>(null)
+  /**
+   * 详情页弹幕栏上那颗直播按钮在**开局前**的选择：true = 这一局开起来后不公开。
+   *
+   * 开局时作为 LiveControls 的 initialHidden 交下去（只能当 useState 初值读，理由见那边的注释）；
+   * 开局后玩家在按钮上改了主意，下面那个 effect 把最新的选择同步回来，出错重开时沿用。
+   * 默认 false：新游戏默认开播（AGENTS.md §2.23.1）。播放器按 game.slug 作 key 挂载，
+   * 换一款游戏这个 state 跟着整个组件重建，不会把上一款的「不公开」带过去。
+   */
+  const [liveOptOut, setLiveOptOut] = useState(false)
+  useEffect(() => {
+    if (liveCtl) setLiveOptOut(liveCtl.phase === 'hidden')
+  }, [liveCtl])
   /* ---------------- 观众侧的「上场当 2P」（见 coopSeat.ts） ---------------- */
   /** 主播这一局给不给 2P 位。**由主播说**（通道一开他会发 hello），不能靠猜 */
   const [coopOffered, setCoopOffered] = useState(false)
@@ -3682,15 +3713,51 @@ export function EmulatorPlayer({
     输入框那边本来就会因为 onSend 为 null 而自己禁用。
   */
   const chatBarOn = liveChatOn || Boolean(liveCtl) || Boolean(matchCtl) || Boolean(coopCtl)
-  const pageStandby = pagePresentation && status !== 'loading' && status !== 'running'
-  const pageBarOn = pageStandby && (liveEnabled() || Boolean(onPageMatchRequest))
   /*
-    详情页那个 3:1 的矮舞台只给「还没点开始」的那一屏。一点开始（loading 起）就退回平台原本的
-    舞台比例：运行中还压成 3:1 的话，1440 宽的屏上红白机只剩约 504×378；
-    触屏的游玩布局是 fixed inset-0，再套 3:1 会被压成一条，下面的页面露出来还能点。
-    在 loading 而不是 running 时切换，是为了让运行时挂载时量到的就是最终尺寸。
+    详情页新版设计稿：弹幕栏和画面拼成一张卡，空闲态也常驻（不然开局那一下整页往下跳一截）。
+    其余宿主（嵌入页 / TV）照旧只在有直播 / 联机开关时才画。
+    观众右栏、联机右栏、全屏、手机游玩布局下一律不画 —— 理由见下面那条注释，两种形态共用同一组排除条件。
   */
-  const pageStageCompact = pagePresentation && status === 'idle' && !fullscreen && !playMode
+  /*
+    ⚠️ 来看直播的（详情页给了 livePanelSlot）不走常驻：观众的弹幕输入在右栏面板里，
+    画面下这条只会在「流还没连上」那几秒出现、连上后又被 watchPanelOn 收掉，整页跟着跳一下。
+  */
+  const pageChatBar = pagePresentation && !livePanelSlot
+  const chatBarVisible = pageChatBar
+    ? !fullscreen && !playMode && !watchPanelOn && !matchPanelVisible
+    : chatBarOn && !fullscreen && !playMode && !watchPanelOn && !matchPanelVisible
+  /**
+   * 详情页开局前（含加载中）那两颗按钮。开局后由 liveCtl / matchCtl 接手。
+   *
+   * 直播：玩就是播（AGENTS.md §2.23.1），开局前就让玩家看到「开局会自动公开」，并能先点成「不公开」——
+   * 选择存在 liveOptOut，开局时作为 LiveControls 的初值读，保证一帧都不推。
+   * 只在这一局真的会自动开播时才画：全站直播关了、进的是别人的联机房 / 云端房、来看直播的、选了联机开局，
+   * 这几种情况 LiveControls 根本不会挂（见它的 active 条件），画一颗按钮就是在许诺做不到的事。
+   *
+   * 联机：沿用详情页原来的开房请求（requestMatch / requestIpxHost），播放器会先开局再开房。
+   *
+   * HTML5 网页游戏不预告：它们多半是跨源 iframe，画面抓不到，要开局后玩家手动「分享标签页」
+   * （LiveControls 的 manual 阶段）。开局前写「开局自动直播」就是许诺做不到的事；开局后按钮照常出现、说实话。
+   */
+  const pageStandby = pageChatBar && status !== 'running'
+  const standbyLive = pageStandby && liveEnabled() && Boolean(gameSlug) && !joining && !liveInvite && !watch && !online && supported &&
+    pageRuntime?.id !== 'html5'
+    ? {
+        on: !liveOptOut,
+        label: liveOptOut ? t.player.tools.liveHidden : t.player.tools.autoLivePending,
+        hint: liveOptOut ? t.player.tools.autoLiveOffHint : t.player.tools.autoLiveOnHint,
+        toggle: () => setLiveOptOut((v) => !v),
+        standby: true,
+      }
+    : null
+  const standbyMatch = pageStandby && onPageMatchRequest && !joining && !liveInvite && !watch && supported
+    ? {
+        on: false,
+        label: t.player.match,
+        hint: fmt(t.player.matchHint, { max: String(slots) }),
+        toggle: onPageMatchRequest,
+      }
+    : null
   const liveViewSend = handle?.liveChat
   const chatSend = liveSession
     ? (text: string) => liveSession.sendChat(text)
@@ -3730,6 +3797,10 @@ export function EmulatorPlayer({
    * 现在交给 PadDiagram 画，没有截断，那个取舍连同它的风险一起没了（详见那个文件的头）。
    * 键盘直通的运行时（DOS / Flash）键位表是空的，PadDiagram 自己返回 null。
    */
+  /*
+    详情页新版设计稿把这块位置给了封面 + 标题，按键图改由页面下方「操作说明」那一节承担
+    （KeymapCards，同一套键位数据）。嵌入页 / TV 没有那一节，照旧在这里画。
+  */
   const showKeymap = !pagePresentation && !busy && !online && !touchDevice && Boolean(romUrl)
   const loadingLabel =
     loadDetail === 'rom-pack'
@@ -4213,8 +4284,8 @@ export function EmulatorPlayer({
       data-testid="emulator-player"
       className={cx(
         'overflow-hidden rounded-2xl border border-line bg-black',
-        pagePresentation && 'game-detail-player-mode',
-        pageStageCompact && 'game-detail-player-mode--standby',
+        // 详情页：下面紧贴着弹幕栏，两块拼成一张卡 —— 画面只留上圆角（设计稿 rounded-t-16）
+        pagePresentation && chatBarVisible && 'rounded-b-none',
         className,
       )}
     >
@@ -4273,7 +4344,12 @@ export function EmulatorPlayer({
                   */
                   liveCap
                     ? 'relative mx-auto'
-                    : cx('relative', desktopScreenAspect(platform.id, geometry), stageHeightCap(immersive)),
+                    : cx(
+                        'relative',
+                        // 详情页新版设计稿是 2:1；嵌入页 / TV 等其它宿主保持原来的 16:9
+                        pagePresentation ? detailPageScreenAspect(platform.id, geometry) : desktopScreenAspect(platform.id, geometry),
+                        stageHeightCap(immersive),
+                      ),
           dragging && 'ring-2 ring-brand ring-inset',
         )}
         onDragOver={(e) => {
@@ -4552,6 +4628,30 @@ export function EmulatorPlayer({
                     </div>
                   )}
                   {/*
+                    详情页新版设计稿：封面 + 标题压在开始按钮上方（设计稿 111px 封面、30px 标题）。
+                    只在普通空闲态画：出错时要把位置让给错误提示，进邀请链接时下面有一段说明文字。
+                    窄屏不画封面 —— 手机上画面框只有三百来像素高，开始按钮必须在第一屏里。
+                    标题用 <p> 不用标题标签：页面的 <h1> 在播放器下面，这里只是同名的装饰，
+                    再来一个 <h2> 会让文档大纲在 <h1> 之前多出一个同名标题。
+                  */}
+                  {pagePresentation && status === 'idle' && !joining && (stagePoster || displayTitle) && (
+                    <div className="flex max-w-full flex-col items-center gap-3 lg:mb-2 lg:gap-4">
+                      {stagePoster && (
+                        <div
+                          aria-hidden
+                          className="size-[72px] overflow-hidden rounded-[7px] drop-shadow-[0_4px_3.35px_rgba(0,0,0,0.1)] max-sm:hidden lg:size-[111px]"
+                        >
+                          {stagePoster}
+                        </div>
+                      )}
+                      {displayTitle && (
+                        <p className="max-w-full truncate text-xl font-extrabold leading-tight tracking-[-0.35px] text-[#f2f4f8] lg:text-[30px] lg:leading-9">
+                          {displayTitle}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                  {/*
                     桌面端按键图仍放在开始按钮上方；窄屏必须直接收掉。
                     触屏玩家开局后会看到屏幕手柄提示；把广告放到操作入口之后，按钮不再被广告挤出首屏。
                   */}
@@ -4578,7 +4678,7 @@ export function EmulatorPlayer({
                     </p>
                   )}
                   <span
-                    className={cx('inline-flex flex-wrap items-center justify-center gap-2', pagePresentation && 'game-detail-player-actions')}
+                    className={cx('inline-flex flex-wrap items-center justify-center', pagePresentation ? 'gap-4' : 'gap-2')}
                     onPointerEnter={() => prewarmPrimaryAction(true)}
                     onFocusCapture={() => prewarmPrimaryAction(false)}
                   >
@@ -4606,29 +4706,45 @@ export function EmulatorPlayer({
                                 : t.player.start
                               : t.player.pickRom}
                     </Button>
-                    {pagePresentation && onShare && (
-                      <button
-                        type="button"
-                        onClick={onShare}
-                        aria-label={t.game.share}
-                        title={t.game.share}
-                        className="inline-grid h-11 w-11 place-items-center rounded-xl border border-white/70 bg-white text-lg font-bold text-[#263329] shadow-sm transition hover:bg-white/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-black"
-                      >
-                        <span aria-hidden>↗</span>
-                      </button>
-                    )}
-                    {pagePresentation && !online && romUrl && (
-                      <button
-                        type="button"
-                        disabled={romDownloadBusy}
-                        aria-busy={romDownloadBusy}
-                        onClick={() => void downloadCurrentRom()}
-                        aria-label={romDownloadBusy ? t.player.downloadingRom : t.player.downloadRom}
-                        title={romDownloadBusy ? t.player.downloadingRom : t.player.downloadRom}
-                        className="inline-grid h-11 w-11 place-items-center rounded-xl border border-white/70 bg-white text-lg font-bold text-[#263329] shadow-sm transition hover:bg-white/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-black disabled:cursor-wait disabled:opacity-65"
-                      >
-                        <span aria-hidden>{romDownloadBusy ? '…' : '↓'}</span>
-                      </button>
+                    {/*
+                      详情页设计稿：开始按钮右侧一组「分享 | 下载」图标按钮（白底、1.25px 描边、底部 4px 实心阴影）。
+                      下载仍是原来那颗「下载 ROM」的同一个动作（downloadCurrentRom），只是从下面那个说明框挪上来；
+                      联机模式下没有本机 ROM 可下，不画。两颗都在时左右拼成一块，中间描边重叠 1px。
+                    */}
+                    {pagePresentation && (onShare || (!online && romUrl)) && (
+                      <span className="inline-flex items-stretch">
+                        {onShare && (
+                          <button
+                            type="button"
+                            onClick={onShare}
+                            aria-label={t.game.share}
+                            title={t.game.share}
+                            className={cx(PAGE_ICON_BUTTON, !online && romUrl ? '-mr-px rounded-l-2xl' : 'rounded-2xl')}
+                          >
+                            <img src={shareIcon} alt="" width={23} height={22} draggable={false} />
+                          </button>
+                        )}
+                        {!online && romUrl && (
+                          <button
+                            type="button"
+                            disabled={romDownloadBusy}
+                            aria-busy={romDownloadBusy}
+                            onClick={() => void downloadCurrentRom()}
+                            aria-label={romDownloadBusy ? t.player.downloadingRom : t.player.downloadRom}
+                            title={romDownloadBusy ? t.player.downloadingRom : `${t.player.downloadRom} · ${t.player.downloadRomHint}`}
+                            className={cx(PAGE_ICON_BUTTON, onShare ? 'rounded-r-2xl' : 'rounded-2xl', romDownloadBusy && 'cursor-wait')}
+                          >
+                            <img
+                              src={downloadIcon}
+                              alt=""
+                              width={20}
+                              height={20}
+                              draggable={false}
+                              className={romDownloadBusy ? 'animate-pulse' : undefined}
+                            />
+                          </button>
+                        )}
+                      </span>
                     )}
                     {!online && romUrl && pageRuntime?.id === 'ppsspp' && (
                       <select
@@ -4648,7 +4764,8 @@ export function EmulatorPlayer({
                       {t.player.pspDownloadHint}
                     </p>
                   )}
-                  <div className="w-full max-w-xl text-xs leading-relaxed text-white/80 sm:text-sm">
+                  {/* empty:hidden：详情页这一格常常什么都不放，空的 flex 子项也会吃掉一道 gap，把按钮组顶偏 */}
+                  <div className="w-full max-w-xl text-xs leading-relaxed text-white/80 empty:hidden sm:text-sm">
                     {joining && online ? (
                       <>
                         {inviteGone
@@ -4697,18 +4814,27 @@ export function EmulatorPlayer({
                         {pageRuntime ? fmt(t.player.localInsteadHint, { runtime: pageRuntime.name }) : ''}
                       </>
                     ) : romUrl && pagePresentation ? (
-                      <div className="flex flex-col items-center gap-2">
-                        {romDownloadError && <p role="alert" className="text-xs text-red-200">{t.player.downloadRomFailed}</p>}
-                        {onlineOk && (
-                          <button
-                            type="button"
-                            className="min-h-10 rounded-lg px-3 text-xs font-semibold text-white/70 underline-offset-4 transition hover:text-white hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-black"
-                            onClick={() => setMode('online')}
-                          >
-                            {t.player.onlineInstead}
-                          </button>
-                        )}
-                      </div>
+                      /*
+                        详情页：下载已经是开始按钮旁那颗图标，这里不再重复一整块说明框（设计稿没有这块）。
+                        下载失败的提示和「改成联机玩」的入口仍要留着 —— 前者不说的话点了没反应，
+                        后者是这一路唯一的联机开局入口。
+                      */
+                      (romDownloadError || onlineOk) ? (
+                        <div className="flex flex-col items-center gap-2">
+                          {romDownloadError && (
+                            <p role="alert" className="text-xs text-red-200">{t.player.downloadRomFailed}</p>
+                          )}
+                          {onlineOk && (
+                            <button
+                              type="button"
+                              className="min-h-10 rounded-lg px-3 text-xs font-semibold text-white/70 underline-offset-4 transition hover:text-white hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-black"
+                              onClick={() => setMode('online')}
+                            >
+                              {t.player.onlineInstead}
+                            </button>
+                          )}
+                        </div>
+                      ) : null
                     ) : romUrl ? (
                       <div className="flex flex-col items-center gap-2.5">
                         <div className="w-full rounded-2xl border border-white/25 bg-black/45 px-4 py-3 text-center backdrop-blur">
@@ -5233,6 +5359,8 @@ export function EmulatorPlayer({
             */
             nativeGeometry={geometry}
             chromeless
+            /* 开局前在详情页弹幕栏点了「不公开」：作为初值交下去，第一帧起就不推（见 liveOptOut） */
+            initialHidden={liveOptOut}
             onControls={setLiveCtl}
             onChat={chat.push}
             onSession={setLiveSession}
@@ -5278,6 +5406,19 @@ export function EmulatorPlayer({
                 ▾
               </span>
             </label>
+          )}
+          {/*
+            详情页设计稿在这里总有一颗语言标签。只绑了一种语言时没得切，只把它是哪种语言写出来
+            （不是按钮：没有底部阴影、不接点击，免得看着能点、点了没反应）。窄屏收起，给主控件让位。
+          */}
+          {pagePresentation && romLangs?.length === 1 && !inRoom && !session?.live && (
+            <span
+              title={t.player.romLangTitle}
+              className="inline-flex h-8 items-center rounded-2xl border-2 border-line-strong bg-surface px-3 text-xs font-bold text-fg max-sm:hidden"
+            >
+              <span className="sr-only">{t.player.romLang}: </span>
+              {romLanguageLabel(romLangs[0]!)}
+            </span>
           )}
           {status === 'running' && handle?.caps.has('discControl') && handle.discControl && !inRoom && !session?.live && (
             <div ref={discControlRef} className="relative">
@@ -5458,25 +5599,25 @@ export function EmulatorPlayer({
     {/*
       观众端和联机玩家在宽屏已有各自的右栏输入框，这里不能再画第二个入口。
     */}
-    {(chatBarOn || pageBarOn) && !fullscreen && !playMode && !watchPanelOn && !matchPanelVisible && (
+    {chatBarVisible && (
       <LiveChatBar
-        className={cx('mt-2', pagePresentation && 'game-detail-chat-bar')}
+        className={pagePresentation ? undefined : 'mt-2'}
+        variant={pagePresentation ? 'page' : 'default'}
         /*
           主播走自己的推流会话，观众走 liveview 那一路的 handle。
           两个都没有 = 还没连上或者已经散场，传 null 让输入框禁用 ——
           让人打完一段字再告诉他发不出去是最差的一种。
         */
         onSend={chatSend}
-        pagePresentation={pagePresentation}
-        standbyLive={pageStandby && liveEnabled()
-          ? { label: t.player.tools.autoLivePending, hint: t.player.tools.autoLivePending }
-          : undefined}
-        standbyMatch={pageStandby && onPageMatchRequest
-          ? { label: t.player.match, onClick: onPageMatchRequest }
-          : undefined}
-        /* 这两个只有主播有；观众那一路 liveCtl / matchCtl 都是 null，按钮不画 */
-        live={liveCtl && { on: liveCtl.on, label: liveCtl.label, hint: liveCtl.hint, toggle: liveCtl.toggle, quality: liveCtl.quality }}
-        match={matchCtl}
+        /*
+          这两个只有主播有；观众那一路 liveCtl / matchCtl 都是 null，按钮不画。
+          详情页开局前（pageStandby）换成「开局后要不要公开」与「开局并开联机房」两颗，
+          开局后自动交还给 LiveControls / matchCtl，同一个位置、同一种样子。
+        */
+        live={liveCtl
+          ? { on: liveCtl.on, label: liveCtl.label, hint: liveCtl.hint, toggle: liveCtl.toggle, quality: liveCtl.quality, phase: liveCtl.phase, viewers: liveCtl.viewers }
+          : standbyLive}
+        match={matchCtl ?? standbyMatch}
         /* 主播那一颗从 LiveControls 上来，观众那一颗是本地算的；一个人只可能占一边 */
         coop={liveCtl?.coop ?? coopCtl}
         /*

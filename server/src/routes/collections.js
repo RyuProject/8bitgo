@@ -44,6 +44,8 @@ const MAX_PER_USER = 100
 const MAX_ITEMS = 500
 const DEFAULT_PAGE_SIZE = 24
 const MAX_PAGE_SIZE = 48
+/** 按游戏反查合集时最多翻到第几页（详情页只取第一页，这里只是给未认证入口一个上界） */
+const MAX_GAME_FILTER_PAGE = 20
 
 const clean = (raw, max) =>
   String(raw ?? '')
@@ -308,6 +310,32 @@ collectionsRouter.get('/', optionalUser, async (req, res, next) => {
   try {
     const size = Math.min(MAX_PAGE_SIZE, Math.max(1, Number(req.query.pageSize) || DEFAULT_PAGE_SIZE))
     const page = Math.max(1, Number(req.query.page) || 1)
+    /*
+      ?game=<slug>：游戏详情页「推荐合集」——只列收录了这款游戏的公开合集。
+      走 collection_items 的 idx_ci_game 索引，只读、不改任何状态。
+
+      ⚠️ 只认**公开**游戏：下架游戏的 slug 不该还能反查出谁收藏过它，查不到一律回空列表，
+      和「这款游戏没进任何合集」长得一样，不额外暴露下架状态。
+      页码夹到 MAX_GAME_FILTER_PAGE：这条入口未认证，无界 OFFSET 会让一次请求扫很多行。
+    */
+    const gameSlug = typeof req.query.game === 'string' ? req.query.game.trim().slice(0, 128) : ''
+    if (gameSlug) {
+      const game = await queryOne('SELECT id FROM games WHERE slug = ? AND hidden = 0', [gameSlug])
+      if (!game) return res.json({ items: [], total: 0, page, pageSize: size })
+      const safePage = Math.min(page, MAX_GAME_FILTER_PAGE)
+      const [countRow, rows] = await Promise.all([
+        queryOne(
+          'SELECT COUNT(*) AS n FROM collections c JOIN collection_items ci ON ci.collection_id = c.id WHERE c.hidden = 0 AND ci.game_id = ?',
+          [game.id],
+        ),
+        query(
+          `${SELECT_WITH_AUTHOR} JOIN collection_items ci ON ci.collection_id = c.id WHERE c.hidden = 0 AND ci.game_id = ? ORDER BY c.updated_at DESC, c.id DESC LIMIT ? OFFSET ?`,
+          [game.id, size, (safePage - 1) * size],
+        ),
+      ])
+      const total = Number(countRow?.n) || 0
+      return res.json({ items: await decorate(rows, req.user?.id ?? null), total, page: safePage, pageSize: size })
+    }
     // 总数与本页互不依赖（页码不按总数夹），并行查
     const [countRow, rows] = await Promise.all([
       queryOne('SELECT COUNT(*) AS n FROM collections WHERE hidden = 0'),

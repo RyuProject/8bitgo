@@ -76,6 +76,15 @@ interface Props {
    */
   chromeless?: boolean
   /**
+   * 开局前玩家在详情页弹幕栏里就选了「不公开」（见 EmulatorPlayer 的 liveOptOut）。
+   *
+   * ⚠️ 只能作为 useState 的**初值**读：`on` 依赖 `!hidden`，初值是 true 时组件从第一帧起就不连信令、
+   * 不抓画面，一帧都不会推出去。若改成挂载后再 setHidden，第一轮 effect 已经开始连了 ——
+   * 那就是「选了不公开却先在大厅露了一下」的隐私事故（AGENTS.md §2.23.1 同一条理由）。
+   * 只影响这一局；新开一款游戏播放器整个重挂，自然回到默认开播。
+   */
+  initialHidden?: boolean
+  /**
    * 把开关和当前状态交出去，让别处（弹幕框）画那颗按钮。
    * 传 null = 现在没得可控（组件因为不满足开播条件而没挂）。
    */
@@ -244,6 +253,7 @@ const SEAT_WANT_TTL_MS = SEAT_TTL_MS
 export function LiveControls({ handle, gameName, gameSlug, platform, active = true, netplayRoomId = null, netplayToken = '', captureRef, className,
   nativeGeometry = null,
   chromeless = false,
+  initialHidden = false,
   onControls,
   onChat,
   onSession,
@@ -298,7 +308,8 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
     return () => handle?.setBackgroundPlaybackRequired?.(false)
   }, [handle, active, viewers])
   // 不公开只暂停当前这局；新开游戏必须重新默认开播，不能沿用旧浏览器里的隐私标记。
-  const [hidden, setHidden] = useState(false)
+  // initialHidden 是本局开局前在详情页选的那一下（同一局内的选择），不是持久化的标记。
+  const [hidden, setHidden] = useState(initialHidden)
   /**
    * 自动开播还在尝试。落定后无论成没成都置 false —— 界面靠它把「连接中…」和
    * 「未开播」分开。初值是 true：组件挂上来的那一刻尝试就已经开始了，

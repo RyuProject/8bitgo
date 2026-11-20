@@ -20,7 +20,7 @@ import { CACHE, noStore, staticCacheHeaders } from './cache.js'
 import { gzipResponse } from './compress.js'
 import { precompressedStatic } from './precompressed-static.js'
 import { runtimeVersionGuard } from './runtime-version-guard.js'
-import { take, clientKey } from './rateLimit.js'
+import { take, takeAnonymous, clientKey } from './rateLimit.js'
 import { authRouter } from './routes/auth.js'
 import { gamesRouter } from './routes/games.js'
 import { gameDescriptionPushRouter } from './routes/game-description-push.js'
@@ -48,7 +48,8 @@ import { checkSchema } from './schema-check.js'
 import { savesRouter } from './routes/saves.js'
 import { flashSavesRouter } from './routes/flash-saves.js'
 import { flashSaveConfigured, flashSaveConfigurationError } from './flash-save-token.js'
-import { attachNetplay } from './netplay.js'
+import { attachNetplay, netplayRooms } from './netplay.js'
+import { countPlayingNow } from './playing-now.js'
 import { attachJsnesNetplay } from './jsnes-netplay.js'
 import { attachLive, canAccessAdultLive, liveCapacity, liveRoom, liveRooms, subscribeLiveRooms } from './live.js'
 import { admitSse, sseWrite, SSE_HEARTBEAT_FRAME, SSE_HEARTBEAT_MS } from './sseGuard.js'
@@ -327,6 +328,22 @@ app.get('/api/live/rooms', optionalUser, (req, res) => {
     gameSlug: typeof req.query.game === 'string' ? req.query.game : undefined,
     includeAdult: canAccessAdultLive(req.user),
   }))
+})
+/*
+  游戏详情页「正在玩」：按该游戏此刻的直播间 + 联机房实时数人（下限，口径见 playing-now.js）。
+  只回一个数字，纯内存计算，不碰数据库。不进边缘缓存：成人游戏的结果随登录身份不同，
+  缓存一份会让未核实年龄的人读到核实过的人的数（/api 默认就是 no-store）。
+  每 IP 每分钟 30 次：前端一分钟只拉一次，限流只用来挡脚本刷。
+*/
+app.get('/api/live/playing', optionalUser, (req, res) => {
+  const slug = typeof req.query.game === 'string' ? req.query.game.trim().slice(0, 128) : ''
+  if (!slug) return res.status(400).json({ error: 'game required' })
+  const gate = takeAnonymous(req, 'live-playing', { perIp: 30, global: 30000 })
+  if (!gate.ok) return res.status(429).json({ error: 'too many requests', retryAfter: gate.retryAfter })
+  res.json({
+    game: slug,
+    playing: countPlayingNow(slug, { includeAdult: canAccessAdultLive(req.user), live: liveRooms, netplay: netplayRooms }),
+  })
 })
 app.get('/api/live/rooms/:roomId', optionalUser, (req, res) => {
   const room = liveRoom(req.params.roomId, { includeAdult: canAccessAdultLive(req.user) })

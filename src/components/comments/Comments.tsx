@@ -47,15 +47,21 @@ import { SkeletonBlock } from '@/components/ui/PageSkeleton'
  * 拿它进 useCallback 依赖会让 load 每帧都变，重置 effect 跟着无限跑。
  * 所以下面一律拆成 kind / slug 两个原始值。
  */
-export function GameComments({ gameSlug, className }: { gameSlug: string; className?: string }) {
-  return <CommentsPanel target={{ kind: 'game', slug: gameSlug }} className={className} />
+/**
+ * variant="card"：游戏详情页新版设计稿的样子 —— 白卡 + 浅阴影，上半是标题和输入框，
+ * 一条分隔线，下半是列表（空时只写一句「暂时空空」）。发言、编辑、审核、分页等行为两版完全相同。
+ * 文章页不传，保持原来的样子。
+ */
+export function GameComments({ gameSlug, variant = 'default' }: { gameSlug: string; variant?: 'default' | 'card' }) {
+  return <CommentsPanel target={{ kind: 'game', slug: gameSlug }} variant={variant} />
 }
 
 export function PostComments({ postSlug }: { postSlug: string }) {
   return <CommentsPanel target={{ kind: 'post', slug: postSlug }} />
 }
 
-function CommentsPanel({ target, className }: { target: CommentTarget; className?: string }) {
+function CommentsPanel({ target, variant = 'default' }: { target: CommentTarget; variant?: 'default' | 'card' }) {
+  const card = variant === 'card'
   const { kind, slug } = target
   const showScore = kind === 'game'
   const t = useT()
@@ -199,9 +205,20 @@ function CommentsPanel({ target, className }: { target: CommentTarget; className
 
   // id 给详情页「反馈问题」用：出错的玩家一键滚到这里留言
   return (
-    <section id="comments" className={cx('rounded-2xl border border-line bg-surface p-5', className)} aria-label={c.title}>
+    <section
+      id="comments"
+      className={cx(
+        card
+          ? 'overflow-hidden rounded-2xl border border-[#dce3e8] bg-white shadow-[0_4px_5px_rgba(0,0,0,0.05)]'
+          : 'rounded-2xl border border-line bg-surface p-5',
+      )}
+      aria-label={c.title}
+    >
+      <div className={card ? 'px-[18px] pb-4 pt-[19px]' : undefined}>
       <header className="flex items-baseline justify-between">
-        <h2 className="text-sm font-bold">💬 {c.title}</h2>
+        <h2 className={card ? 'text-base font-semibold leading-[21px] tracking-[-0.31px] text-[#40485b]' : 'text-sm font-bold'}>
+          {card ? c.title : `💬 ${c.title}`}
+        </h2>
         {total > 0 && <span className="text-xs text-muted">{fmt(c.count, { n: total })}</span>}
       </header>
 
@@ -210,7 +227,7 @@ function CommentsPanel({ target, className }: { target: CommentTarget; className
       ) : (
         <>
           {/* ---- 发表 ---- */}
-          <div className="mt-4">
+          <div className={card ? 'mt-3' : 'mt-4'}>
               {replyTo && (
                 <div className="mb-2 flex items-center justify-between gap-2 rounded-lg bg-surface-2 px-2.5 py-1.5 text-xs">
                   <span className="truncate text-muted">{fmt(c.replyingTo, { name: replyTo.author.nickname || c.guestAuthor })}</span>
@@ -233,9 +250,14 @@ function CommentsPanel({ target, className }: { target: CommentTarget; className
                 }}
                 rows={3}
                 maxLength={COMMENT_MAX_LENGTH}
-                aria-label={replyTo ? fmt(c.replyPlaceholder, { name: replyTo.author.nickname || c.guestAuthor }) : c.placeholder}
-                placeholder={replyTo ? fmt(c.replyPlaceholder, { name: replyTo.author.nickname || c.guestAuthor }) : c.placeholder}
-                className="w-full resize-y rounded-xl border border-line bg-surface-2 px-3 py-2 text-sm text-fg placeholder:text-dim focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/30"
+                aria-label={replyTo ? fmt(c.replyPlaceholder, { name: replyTo.author.nickname || c.guestAuthor }) : card ? c.placeholderCard : c.placeholder}
+                placeholder={replyTo ? fmt(c.replyPlaceholder, { name: replyTo.author.nickname || c.guestAuthor }) : card ? c.placeholderCard : c.placeholder}
+                className={
+                  card
+                    ? // 设计稿：105px 高的白底输入框、7px 圆角、#dfe4ea 描边、#bcc1cb 占位字
+                      'block h-[105px] min-h-[105px] w-full resize-y rounded-[7px] border border-[#dfe4ea] bg-white px-[11px] py-2 text-sm font-medium leading-[21px] tracking-[-0.31px] text-fg placeholder:text-[#bcc1cb] focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/30'
+                    : 'w-full resize-y rounded-xl border border-line bg-surface-2 px-3 py-2 text-sm text-fg placeholder:text-dim focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/30'
+                }
               />
               {!authReady && <p className="mt-1.5 text-[11px] text-dim">{c.authChecking}</p>}
               {authReady && !user && <p className="mt-1.5 text-[11px] text-dim">{c.guestHint}</p>}
@@ -246,13 +268,26 @@ function CommentsPanel({ target, className }: { target: CommentTarget; className
                 「发表」这一下到底改没改我的分就说不清了。
                 作者打过的分会显示在他每条评论的气泡上（见下面 comment.score 那一段）。
               */}
-              <div className="mt-2 flex items-center justify-between gap-2">
+              <div className={cx('flex items-center justify-between gap-2', card ? 'mt-[11px]' : 'mt-2')}>
                 <span className={cx('text-[11px]', remaining < 50 ? 'text-live' : 'text-dim')}>
                   {remaining < 200 ? fmt(c.remaining, { n: remaining }) : ''}
                 </span>
-                <Button size="md" onClick={() => void submit()} disabled={!text.trim() || sending || !authReady}>
-                  {sending ? c.submitting : c.submit}
-                </Button>
+                {card ? (
+                  /* 设计稿的「发表评论」：32px 高、2px #dfe4ea 描边、底部 4px 同色实心阴影 */
+                  <button
+                    type="button"
+                    onClick={() => void submit()}
+                    disabled={!text.trim() || sending || !authReady}
+                    className="inline-flex h-8 shrink-0 items-center gap-2 rounded-2xl border-2 border-[#dfe4ea] bg-white px-3 text-xs font-bold text-[#263329] shadow-[0_4px_0_0_#dfe4ea] transition-[transform,box-shadow,background-color] duration-100 hover:bg-surface-2 active:translate-y-[3px] active:shadow-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50"
+                  >
+                    <span aria-hidden>💬</span>
+                    {sending ? c.submitting : c.submitCard}
+                  </button>
+                ) : (
+                  <Button size="md" onClick={() => void submit()} disabled={!text.trim() || sending || !authReady}>
+                    {sending ? c.submitting : c.submit}
+                  </Button>
+                )}
               </div>
               {authReady && !user && (
                 <div className="mt-2 flex justify-end">
@@ -267,9 +302,14 @@ function CommentsPanel({ target, className }: { target: CommentTarget; className
             </p>
           )}
           {formNotice && <p className="mt-2 text-xs text-online" role="status">{formNotice}</p>}
+        </>
+      )}
+      </div>
 
-          {/* ---- 列表 ---- */}
-          <div className="mt-5">
+      {commentsAvailable() && (
+        <>
+          {/* ---- 列表 ---- 卡片版用一条分隔线把输入区和列表分开（设计稿上下两块） */}
+          <div className={card ? 'border-t border-[#dce3e8] px-[18px] py-4' : 'mt-5'}>
             {status === 'loading' && (
               <div className="space-y-4" aria-busy="true">
                 {[0, 1, 2].map((i) => (
@@ -298,7 +338,13 @@ function CommentsPanel({ target, className }: { target: CommentTarget; className
               </div>
             )}
 
-            {status === 'ready' && items.length === 0 && <p className="text-xs text-dim">{c.empty}</p>}
+            {status === 'ready' && items.length === 0 && (
+              card ? (
+                <p className="py-4 text-center text-sm leading-[18px] tracking-[-0.15px] text-[#8c92a4]">{c.emptyShort}</p>
+              ) : (
+                <p className="text-xs text-dim">{c.empty}</p>
+              )
+            )}
 
             {status === 'ready' && items.length > 0 && (
               <ul className="divide-y divide-line">

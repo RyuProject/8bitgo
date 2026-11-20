@@ -253,9 +253,46 @@ function loadGamePage(slug, platforms, gameSlugs) {
   return cached(`${platforms ? 'nw:' : ''}game:${slug}`, async () => {
     const game = await getGameBySlug(slug)
     if (!game || game.hidden) return { route: 'game', game: null }
-    const related = await loadRelatedGames(game, platforms, gameSlugs)
-    return { route: 'game', game, related }
+    const [related, developerLogos] = await Promise.all([
+      loadRelatedGames(game, platforms, gameSlugs),
+      loadDeveloperLogos(game.developer),
+    ])
+    return { route: 'game', game, related, ...(developerLogos ? { developerLogos } : {}) }
   })
+}
+
+/** 开发商名里最多看几家：后台通常只录 1–2 家，这里只是给 IN (...) 一个上界 */
+const MAX_DEVELOPER_LOGOS = 4
+
+/**
+ * 详情页「开发商」那一格的小 logo：developers 表里后台填过的才有。
+ *
+ * 和 /developers 页同一份数据（后台「开发公司」页维护），这里只读 name + logo 两列，
+ * 跟着 game:<slug> 一起进 60 秒的进程缓存，所以不会每次渲染多一次查询。
+ * 没填 logo 的开发商不进结果；一家都没有就返回 null，页面上只显示名字。
+ * 查询失败（例如表还没迁移）一律当作没有 logo —— 这只是装饰，不能让整个详情页 500。
+ */
+async function loadDeveloperLogos(developer) {
+  const names = [...new Set(String(developer || '').split(/[,，]/).map((s) => s.trim()).filter(Boolean))]
+    .slice(0, MAX_DEVELOPER_LOGOS)
+  if (!names.length) return null
+  try {
+    const rows = await query(
+      `SELECT name, logo FROM developers WHERE name IN (${names.map(() => '?').join(',')}) AND logo <> ''`,
+      names,
+    )
+    // name 列是 _ci 排序规则，大小写不同也会命中；键名换回游戏里写的那个原文，前端才对得上
+    const byLower = new Map(names.map((n) => [n.toLowerCase(), n]))
+    const out = {}
+    for (const r of rows) {
+      const key = byLower.get(String(r.name).toLowerCase())
+      if (key && r.logo) out[key] = r.logo
+    }
+    return Object.keys(out).length ? out : null
+  } catch (e) {
+    console.warn('[content] 读开发商 logo 失败，按没有处理：', e?.message || e)
+    return null
+  }
 }
 
 /**

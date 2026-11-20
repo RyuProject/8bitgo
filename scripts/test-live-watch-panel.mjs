@@ -151,10 +151,16 @@ console.log('五、公开边界与直播大厅意图')
 
 check('⚠️ 新游戏总是默认开播，不公开只作用于当前游戏', () => {
   const src = code('src/emulator/LiveControls.tsx')
-  assert.match(src, /const \[hidden, setHidden\] = useState\(false\)/, '新会话没有以公开直播作为默认状态')
+  // 开局前在详情页弹幕栏可以先选「这一局不公开」，作为 initialHidden 交给本局；默认必须仍是公开
+  assert.match(src, /const \[hidden, setHidden\] = useState\(initialHidden\)/, '本局的公开状态没有以开局前的选择为初值')
+  assert.match(src, /initialHidden = false,/, '新会话没有以公开直播作为默认状态')
   assert.doesNotMatch(src, /8bit\.live\.private|readPrivate|writePrivate/, '旧的持久化隐私偏好仍会让后续游戏默认不公开')
   const player = code('src/emulator/EmulatorPlayer.tsx')
   assert.match(player, /<LiveControls\s+key=\{gameSlug\}/, '切换到另一款游戏时没有重置本局隐私状态')
+  // 开局前那一下选择只在这一局（这一个播放器实例）里有效，默认公开，不能落任何存储
+  assert.match(player, /const \[liveOptOut, setLiveOptOut\] = useState\(false\)/, '开局前的公开选择默认值不是公开')
+  assert.match(player, /initialHidden=\{liveOptOut\}/, '开局前选的「不公开」没有交给本局的推流组件')
+  assert.doesNotMatch(player, /localStorage[^\n]*liveOptOut|liveOptOut[^\n]*localStorage/, '开局前的公开选择不能持久化')
   const toggleAt = src.indexOf('const toggleHidden = () =>')
   const phaseAt = src.indexOf('const phase: Phase', toggleAt)
   const toggle = src.slice(toggleAt, phaseAt)

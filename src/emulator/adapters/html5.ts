@@ -18,7 +18,7 @@ const SAVE_BRIDGE_TIMEOUT_MS = 15_000
 const GAME_SDK_SOURCE = '8bitgo-game-sdk'
 const GAME_SDK_VERSION = 1
 const GAME_SDK_TIMEOUT_MS = 15_000
-const PVZ_SHELL_VERSION = '20261118-live3'
+const PVZ_SHELL_VERSION = '20261119-progress1'
 const LEGACY_PAGES_ENTRIES = [
   ['/web/PvZ', 'https://pvz.8bitgo.com'],
   ['/web/diablo', 'https://diablo.8bitgo.com'],
@@ -284,7 +284,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (destroyed || event.source !== iframe.contentWindow) return
     const signal = html5RuntimeSignal(event.data)
     if (!signal) return
-    if (signal.type === 'first-frame') markFirstFrame()
+    if (signal.type === 'progress') {
+      // 子页还在下载 / 写盘：喂播放器的启动看门狗（starting 阶段的 ratio 不推动进度条，只证明还活着）
+      if (!playable) options.onProgress?.({ phase: 'starting', ...(signal.ratio === undefined ? {} : { ratio: signal.ratio }) })
+    } else if (signal.type === 'first-frame') markFirstFrame()
     else if (signal.type === 'game-playable') markPlayable()
     else if (signal.type === 'first-interaction') reportFirstInteraction()
     else options.onError?.(signal.detail || 'HTML5 游戏报告启动失败', 'runtime')

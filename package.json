@@ -123,6 +123,7 @@
     "pages:web-game:deploy": "node scripts/deploy-web-game-pages.mjs",
     "gta-vc:check": "node scripts/patch-gta-vc-7z.mjs && node scripts/copy-gta-vc-7z.mjs && node scripts/check-gta-vc-web.mjs",
     "undertale:check": "node scripts/check-undertale-web.mjs",
+    "test:html5-runtime-bridge": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-html5-runtime-bridge.mjs",
     "test:html5-pages-bridge": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-html5-pages-bridge.mjs",
     "test:i18n-content": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-i18n-content.mjs",
     "test:timefactor": "node scripts/test-time-factor.mjs",
