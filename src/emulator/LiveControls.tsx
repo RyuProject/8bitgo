@@ -20,9 +20,10 @@ import type { ChatBarQualityControl, ChatBarToggle } from './LiveChat'
 import { canBroadcast, startBroadcast, type Broadcast, type BroadcastOptions, type QualityInfo } from './broadcast'
 import type { LiveQualityPreference } from './liveAdaptiveQuality'
 import { SEAT_TTL_MS } from './coopSeat'
+import { AUTO_LIVE_RETRY_DELAYS_MS, autoLiveRetryable } from './autoLiveRetry'
 import { canAutoStartLive, liveEnabled, liveLink, refreshLiveRooms, type LiveChatMessage } from '@/services/live'
 import { playerName } from '@/services/netplay'
-import { useT, fmt } from '@/services/i18n'
+import { getT, useT, fmt } from '@/services/i18n'
 import { cx } from '@/lib/format'
 import { copyText } from '@/lib/clipboard'
 
@@ -439,6 +440,8 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
     if (!on || !handle || !gameSlug) return
     let cancelled = false
     let timer = 0
+    /** 开播这一步失败过几次（不含等画布 / 等声音那几轮），见 autoLiveRetry.ts */
+    let failures = 0
     const capacityAbort = new AbortController()
     // 重新开始尝试就回到「连接中」。已经在播的那一路（依赖变化引起的重跑）不动它
     if (!liveRef.current) setConnecting(true)
@@ -539,6 +542,22 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
         // 但按钮要落到「未开播」，不然玩家会一直以为还在连
         setConnecting(false)
         console.warn('[live] 自动开播失败', e)
+        /*
+          网络类失败（脚本 / 信令超时、SRS 暂时不可用）过一会儿多半就好，有限地补试；
+          以前一次失败就整局不再开播，这局游戏从此不出现在大厅里。确定的拒绝不试（autoLiveRetry.ts）。
+          玩家在等待期间自己点了开播或关播（两者都会推进 manualAttemptRef），就不再插手。
+        */
+        const delay = AUTO_LIVE_RETRY_DELAYS_MS[failures]
+        if (cancelled || delay === undefined || !autoLiveRetryable(e, getT().runtime.liveNoServer)) return
+        failures += 1
+        const manualAt = manualAttemptRef.current
+        console.info(`[live] ${Math.round(delay / 1000)} 秒后再试一次自动开播（第 ${failures} 次）`)
+        timer = window.setTimeout(() => {
+          if (cancelled || liveRef.current || manualAttemptRef.current !== manualAt) return
+          setConnecting(true)
+          // 声音该等的上一轮已经等过了，这次不再等
+          void attempt(0, AUDIO_WAIT_MAX)
+        }, delay)
       }
     }
 

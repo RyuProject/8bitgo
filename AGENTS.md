@@ -3676,6 +3676,20 @@ EdgeOne 只能用境外（香港）节点。主站、ROM、Pages 子域都不受
     EdgeOne 取，下两遍还报「preloaded … but not used」。`ssr.js` 在有大陆加速入口时（`cnEdgeOrigin` 非空、非 cnSite）
     不发 Link；已缓存的旧 103 要在 Cloudflare 关掉 `early_hints` 或清缓存才消失。回归：`npm run test:seo-performance`。
     写操作、后台请求、socket.io、SSE、OAuth 跳转都留在同源。
+  - **直播的 socket.io 客户端打进前端包**（2026-11-20；前一天的做法是从 EdgeOne 现取脚本，生产上始终没上线）：
+    以前 `src/services/live.ts` 运行时从后端取 `/socket.io/socket.io.min.js`（`serveClient: true`）。那个地址 `max-age=0`，
+    Cloudflare 每次回源复验（`cf-cache-status: REVALIDATED`），8bitgo.com 上的大陆访客走洛杉矶实测 11～40 秒，
+    客户端 8 秒就放弃，开播、看直播全部失败；同一台机器上带哈希的 `/assets/` 分块 3 秒、经 EdgeOne 1 秒。
+    现在用 npm 的 `socket.io-client`，**版本钉死**与 `server/` 的 socket.io 同一个 major.minor（`test:live-io` 核对两边装的版本，
+    升级服务端 socket.io 要一起升前端），`loadIo` 里 `import('socket.io-client')` 按需加载、走 `importWithRetry`。
+    不能改成静态 import：`live.ts` 经 `services/allRooms.ts` 被侧栏房间数带进几乎每个页面，静态引入等于全站多下约 13KB（gzip）。
+    `vite.config.ts` 的 `codeSplitting` 给它起名 `socket-io-client-<哈希>.js`，诊断包里一眼认得出。
+    页面全局一个字节都不读，以前被 UMD 分支（别人占了 define / module）和 js-dos 泄漏的同名 `io` 坑过的两类问题也就没了，
+    `src/lib/umd.ts` 已删。信令**连接**仍连同源（线上实测从大陆直连 2.5 秒连上 websocket）。
+    `cn-edge.js` 发 socket.io 客户端的那段路由留着，给仍从后端取脚本的模拟器 iframe 联机
+    （`netplay.ts` 的 `socketIoScriptUrl`，同样慢）以后改走加速入口用。
+    自动开播网络类失败 15 秒、45 秒后各补一次，满员 / 年龄门 / 未知游戏等确定拒绝不补（`src/emulator/autoLiveRetry.ts`）；
+    等待期间玩家自己开播或关播就不再插手。回归：`npm run test:live-io && cd server && npm run test:cn-edge`。
   - **EmulatorJS 引擎与核心也在内**（2026-11-08，《合金弹头 2》大陆玩家反馈加载极慢）：ROM 早已走 cn-assets，
     loader / emulator.min.js / FBNeo 8MB 核心却还从 Cloudflare 洛杉矶取。`paths.ts` 的 `ejsBase()` 给大陆访客返回
     `https://cn.<裸域>/_cn/emulatorjs/`，`ejsRuntimeAsset` / `ejsCoreAsset` / `EJS_pathtodata` 都走它；iframe 是不带 sandbox

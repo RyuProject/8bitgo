@@ -108,6 +108,53 @@ assert.equal(r.status, 200); assert.equal(r.body, '@font-face{src:url(/_cn/fonts
 assert.match(r.headers['cache-control'], /immutable/)
 ok('样式表现场改写字体地址')
 
+// 直播信令的 socket.io 客户端（2026-11-19：大陆访客经 Cloudflare 取同源那份要 26～30 秒，直播 8 秒就放弃）
+{
+  const real = readFileSync(new URL('../node_modules/socket.io/client-dist/socket.io.min.js', import.meta.url), 'utf8')
+  for (const name of ['socket.io.min.js', 'socket.io.js']) {
+    r = await run(`/_cn/socket.io/${name}`)
+    assert.equal(r.next, false, `${name} 在加速入口这里直接发，不交给后面的路由（engine.io 只认原始路径）`)
+    assert.equal(r.status, 200)
+    assert.match(r.headers['content-type'], /javascript/)
+    assert.equal(r.headers['access-control-allow-origin'], 'https://8bitgo.com', '前端按 CommonJS 取源码，跨域要 CORS')
+    assert.equal(r.headers['cross-origin-resource-policy'], 'cross-origin', 'PSP 那类 require-corp 隔离页也要能加载')
+    assert.equal(r.headers.vary, undefined, '不能带 Vary: Origin，否则 fetch 与 <script> 各存一份')
+    assert.match(r.headers['cache-control'], /max-age=3600/, 'URL 不带版本、EdgeOne 清不了缓存：只缓存一小时')
+    assert.match(r.headers.etag, /^"sio-\d+\.\d+\.\d+-socket\.io/)
+  }
+  r = await run('/_cn/socket.io/socket.io.min.js?v=1')
+  assert.equal(r.status, 200); assert.equal(r.body, real, '发的就是服务端 socket.io 包里那份客户端')
+  const etag = r.headers.etag
+  const r304 = await new Promise((resolve) => {
+    const headers = {}
+    const res = {
+      statusCode: 200,
+      setHeader: (k, v) => { headers[k.toLowerCase()] = v },
+      removeHeader: (k) => { delete headers[k.toLowerCase()] },
+      set(obj) { for (const [k, v] of Object.entries(obj)) headers[k.toLowerCase()] = v; return this },
+      status(c) { this.statusCode = c; return this },
+      type() { return this },
+      send(b) { resolve({ status: this.statusCode, body: b }) },
+      end() { resolve({ status: this.statusCode, body: '' }) },
+    }
+    mw({ url: '/_cn/socket.io/socket.io.min.js', method: 'GET', headers: { 'if-none-match': etag } }, res, () => resolve({ next: true }))
+  })
+  assert.equal(r304.status, 304, 'EdgeOne 复验命中 ETag 时不重发正文')
+  for (const bad of ['/_cn/socket.io/socket.io.js.map', '/_cn/socket.io/socket.io.esm.min.js', '/_cn/socket.io/?EIO=4&transport=polling', '/_cn/socket.io/../package.json']) {
+    r = await run(bad)
+    assert.equal(r.status, 404, `${bad} 不放行：这不是信令反代`)
+  }
+  r = await run('/_cn/socket.io/socket.io.min.js', 'POST')
+  assert.equal(r.status, 405)
+  const missing = createCnEdgeMiddleware({ clientDir: dir, siteOrigin: 'https://8bitgo.com', socketIoClientDir: '' })
+  const r404 = await new Promise((resolve) => {
+    const res = { statusCode: 200, setHeader() {}, removeHeader() {}, set() { return this }, status(c) { this.statusCode = c; return this }, type() { return this }, send() { resolve(this.statusCode) }, end() { resolve(this.statusCode) } }
+    missing({ url: '/_cn/socket.io/socket.io.min.js', method: 'GET', headers: {} }, res, () => resolve('next'))
+  })
+  assert.equal(r404, 404, '找不到 socket.io 包时回 404，前端退回同源')
+}
+ok('加速入口发 socket.io 浏览器客户端（带 CORS / CORP / ETag，只放两份文件）')
+
 // ── 接线 ──
 const ssr = readFileSync(new URL('../src/ssr.js', import.meta.url), 'utf8')
 assert.match(ssr, /coverHint === 'cn' && !cnSite && !req\.assetsFromOrigin\) page = retargetStaticToCnEdge/, '兜底页带 __assets=origin 重新载入时不改写（诊断包 #761）')
