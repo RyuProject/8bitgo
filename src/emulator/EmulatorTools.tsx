@@ -569,6 +569,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
       }
       // 「下载」不是存到哪儿，是不存、直接给他文件
       if (target === 'download') {
+        handle.setCloudAutoSaveMode?.(false)
         const downloadable = saveRuntime && archiveGameKey
           ? await encodeSaveArchiveBlob(
               blob,
@@ -599,6 +600,14 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
           target,
           handle.saveMetadata,
         )
+        // PvZ 在站点内持续监测 IDBFS；只有玩家明确选过云端后才开自动同步。
+        // 手动上传成功或进入待补传队列后，用刚导出的这份存档作为去重基线，避免重复写云端。
+        if (target === 'local') {
+          handle.setCloudAutoSaveMode?.(false)
+        } else if (target === 'cloud') {
+          const canContinue = Boolean(r.where === 'cloud' || (r.where === 'local' && r.cloudFailed && !r.blocked))
+          handle.setCloudAutoSaveMode?.(canContinue, Boolean(r.blocked || !canContinue), canContinue)
+        }
         if (r.ok && r.where) {
           sayStored(r.where, r.cloudFailed ? r.error : undefined)
           return
@@ -845,6 +854,10 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
         say(tt.saveLoadNothing)
         return
       }
+      // PvZ 读本地档后会重载 iframe；重载阶段暂停自动云端回填，避免刚选的本地档被云端盖回去。
+      // 手动读云端则清掉这个一次性暂停标记，重启后仍可正常自动同步。
+      if (from === 'local') handle.setCloudAutoSaveMode?.(false, true)
+      else handle.setCloudAutoSaveMode?.(false, false, true)
       // slice() 保证拿到的是一段独立的 buffer，不受原数组偏移影响
       const note = await handle.loadState(got.data.slice().buffer)
       setArchived({ where: from, updatedAt: got.updatedAt })
