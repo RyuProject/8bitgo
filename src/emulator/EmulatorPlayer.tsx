@@ -14,6 +14,7 @@ import { modernRuntimeSyntaxSupported, runtimeNeedsModernBrowser, runtimeRunsWit
 import { awayflForcedByUrl, useAwayflChoice } from './awayflPolicy'
 import { romArchiveRef } from '@/lib/romArchiveUrl'
 import { romUrlForKey } from '@/services/roms'
+import { MAX_SAVE_BYTES, cloudSavesEnabled, getSaveTarget, prepareCloudSaveAutoSync, pushSave } from '@/services/saves'
 import { clearSockdrivePin, pinnedSockdriveUrl, routeRomAssetUrl } from '@/services/romHosts'
 import { coverCdnHint } from '@/services/cnHost'
 import { isRomPackBytes, unpackRomPackBlob } from '@/services/romPack'
@@ -2200,6 +2201,70 @@ export function EmulatorPlayer({
       onSaveRequested: () => {
         if (!isCurrent()) return
         setSaveRequest((current) => current + 1)
+      },
+      onPvzAutoSaveRestore: async (localSave) => {
+        const saveGameSlug = saveSlugOf(session)
+        if (session.runtime.id !== 'html5' || saveGameSlug !== 'plants-vs-zombies' ||
+          getSaveTarget() !== 'cloud' || !cloudSavesEnabled()) {
+          return { enabled: false, data: null }
+        }
+        if ((localSave?.byteLength ?? 0) > MAX_SAVE_BYTES) {
+          const reason = '本机 PvZ 存档超过云端容量上限；已保留本机进度并暂停自动上传'
+          if (isCurrent()) setNotice(fmt(t.player.tools.saveCloudFailed, { msg: reason }))
+          return { enabled: false, data: null, paused: true, reason }
+        }
+        try {
+          const result = await prepareCloudSaveAutoSync('html5', saveGameSlug, 0)
+          if (result.paused && isCurrent()) {
+            const reason = result.reason === 'conflict'
+              ? '云存档在另一台设备上已有更新；本地进度已保留，请在存档面板手动处理'
+              : '云存档同步受限（' + (result.reason || 'blocked') + '）；本地进度已保留'
+            setNotice(fmt(t.player.tools.saveCloudFailed, { msg: reason }))
+          }
+          return result
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error)
+          if (isCurrent()) setNotice(fmt(t.player.tools.saveCloudFailed, { msg: reason }))
+          return { enabled: false, data: null, paused: true, reason }
+        }
+      },
+      onPvzAutoSaveSnapshot: async (data) => {
+        const saveGameSlug = saveSlugOf(session)
+        if (!isCurrent() || session.runtime.id !== 'html5' || saveGameSlug !== 'plants-vs-zombies' ||
+          getSaveTarget() !== 'cloud' || !cloudSavesEnabled()) {
+          return 'disabled'
+        }
+        try {
+          const result = await pushSave(
+            'html5',
+            saveGameSlug,
+            data,
+            0,
+            'cloud',
+            { core: 'html5-bridge', format: 'pvzsave.zip' },
+            { automatic: true },
+          )
+          if (result.where === 'cloud' && !result.cloudFailed) return 'saved'
+          if (result.blocked === 'conflict') {
+            const reason = result.error || '云存档在另一台设备上已有更新；本地进度已保留'
+            if (isCurrent()) setNotice(fmt(t.player.tools.saveCloudFailed, { msg: reason }))
+            return 'conflict'
+          }
+          if (result.blocked) {
+            if (isCurrent()) setNotice(fmt(t.player.tools.saveCloudFailed, { msg: result.error || result.blocked }))
+            return 'blocked'
+          }
+          if (result.ok && result.where === 'local' && result.cloudFailed) {
+            if (isCurrent()) setNotice(fmt(t.player.tools.saveCloudFailed, { msg: result.error || '网络暂不可用，已加入待同步队列' }))
+            return 'queued'
+          }
+          if (isCurrent()) setNotice(fmt(t.player.tools.saveCloudFailed, { msg: result.error || '存档无法写入' }))
+          return 'failed'
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error)
+          if (isCurrent()) setNotice(fmt(t.player.tools.saveCloudFailed, { msg: reason }))
+          return 'failed'
+        }
       },
       onIframeLoaded: () => {
         if (!isCurrent()) return

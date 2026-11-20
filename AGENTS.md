@@ -2505,6 +2505,21 @@ PvZ Portable 的 WASM 会在文字框打开时调用 `WasmStartSoftKeyboard()`�
 `PVZ_SHELL_VERSION` 和 `pvz-page.js?v=`，否则 Cloudflare 仍可能发旧脚本。回归：
 `npm run test:pvz` 的触控用例会验证按钮显隐、按钮聚焦和 Canvas 重聚焦。
 
+### 2.28.3 PvZ 云存档自动同步
+
+PvZ Portable 的游戏存档在跨源 iframe 的 IDBFS `/saves/userdata`。本地仍每 5 秒落 IndexedDB；
+站内云同步只在玩家已登录且存档落点明确选为「云端」时开启。由 `pvz-page.js` 对排序后的存档文件
+内容计算指纹，实际内容变化并短暂静稳后才打 ZIP，经精确来源的存档桥交给主站；不能把登录令牌传给
+PvZ 子页，也不能把每次 IDBFS 检查都当成一次游戏存档。
+
+开局先严格读云端：待补传的本地档优先；云端读失败不能伪装成“云端没有存档”。有版本冲突、
+配额阻塞或云端读取不确定时，保留游戏 iframe 的本地进度并暂停自动上传；手动确认覆盖成功后才恢复。
+玩家手动从文件 / 本地存档恢复后也要暂停云端回填，避免重启时刚导入的进度被云端盖掉；明确读取云端或
+手动云端保存成功后再清除暂停。自动上传使用通用 `pushSave()` 的 revision 条件写和待补传队列。
+改 `pvz-page.js` 或存档桥时同步提升
+`PVZ_SHELL_VERSION`、`scripts/pvz-web/inject-autoplay.mjs` / `scripts/check-pvz.mjs` 的版本以及
+中英文入口引用，并更新本节；`cn/` 与 `en/` 的运行脚本来自 `pvz-page.js`。
+
 **cs15（CS 1.5 网页移植，2026-09-21 接入中）**：只有 `public/web/cs15/packs/` **不进 git**
 （见 `.gitignore`）——`base.zip.gz` 是 550M 的 Valve 游戏数据，超 GitHub 单文件上限，也不能公开发布；
 数据包放 R2 / 服务器本地。加载器、引擎和开源 wasm 运行时必须跟踪，否则生产机执行

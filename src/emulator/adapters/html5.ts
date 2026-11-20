@@ -18,7 +18,7 @@ const SAVE_BRIDGE_TIMEOUT_MS = 15_000
 const GAME_SDK_SOURCE = '8bitgo-game-sdk'
 const GAME_SDK_VERSION = 1
 const GAME_SDK_TIMEOUT_MS = 15_000
-const PVZ_SHELL_VERSION = '20261119-progress1'
+const PVZ_SHELL_VERSION = '20261120-cloud-autosave1'
 const LEGACY_PAGES_ENTRIES = [
   ['/web/PvZ', 'https://pvz.8bitgo.com'],
   ['/web/diablo', 'https://diablo.8bitgo.com'],
@@ -108,6 +108,11 @@ interface SaveBridgeMessage {
   ok?: boolean
   data?: unknown
   error?: string
+  enabled?: boolean
+  paused?: boolean
+  reason?: string
+  status?: 'saved' | 'queued' | 'conflict' | 'blocked' | 'disabled' | 'failed'
+  localSaveBytes?: number
 }
 
 interface GameSdkMessage {
@@ -234,6 +239,73 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     // 保存和读取共用外层的三卡面板；区分消息名只是让游戏里的两个按钮语义明确。
     if (message.type === 'request-save' || message.type === 'request-load') {
       if (saveBridgeReady) options.onSaveRequested?.()
+      return
+    }
+    if (message.type === 'auto-restore-request' && Number.isInteger(message.requestId)) {
+      if (!saveBridgeReady || !isManagedPvzEntry()) return
+      void (async () => {
+        try {
+          const localSaveBytes = Number.isSafeInteger(message.localSaveBytes) &&
+            Number(message.localSaveBytes) >= 0 && Number(message.localSaveBytes) <= 256 * 1024 * 1024
+            ? Number(message.localSaveBytes)
+            : undefined
+          const result = await options.onPvzAutoSaveRestore?.({ byteLength: localSaveBytes ?? 0 }) ?? { enabled: false, data: null }
+          if (destroyed || !iframe.contentWindow) return
+          const data = result.data
+          let buffer: ArrayBuffer | null = null
+          if (data instanceof Uint8Array) {
+            buffer = new ArrayBuffer(data.byteLength)
+            new Uint8Array(buffer).set(data)
+          }
+          const response = {
+            source: SAVE_BRIDGE_SOURCE,
+            version: SAVE_BRIDGE_VERSION,
+            type: 'auto-restore-response',
+            requestId: message.requestId,
+            enabled: result.enabled,
+            paused: Boolean(result.paused),
+            reason: result.reason,
+            data: buffer,
+          }
+          iframe.contentWindow.postMessage(response, saveBridgeOrigin, buffer ? [buffer] : [])
+        } catch (error) {
+          if (destroyed || !iframe.contentWindow) return
+          iframe.contentWindow.postMessage({
+            source: SAVE_BRIDGE_SOURCE,
+            version: SAVE_BRIDGE_VERSION,
+            type: 'auto-restore-response',
+            requestId: message.requestId,
+            enabled: false,
+            paused: true,
+            reason: error instanceof Error ? error.message : String(error),
+          }, saveBridgeOrigin)
+        }
+      })()
+      return
+    }
+    if (message.type === 'auto-snapshot-request' && Number.isInteger(message.requestId)) {
+      if (!saveBridgeReady || !isManagedPvzEntry()) return
+      void (async () => {
+        let status: NonNullable<SaveBridgeMessage['status']> = 'disabled'
+        try {
+          if (!(message.data instanceof ArrayBuffer) || message.data.byteLength === 0 || message.data.byteLength > 64 * 1024 * 1024) {
+            status = 'blocked'
+          } else if (options.onPvzAutoSaveSnapshot) {
+            status = await options.onPvzAutoSaveSnapshot(new Uint8Array(message.data))
+          }
+        } catch (error) {
+          console.warn('[html5] PvZ 自动云存档失败', error)
+          status = 'failed'
+        }
+        if (destroyed || !iframe.contentWindow) return
+        iframe.contentWindow.postMessage({
+          source: SAVE_BRIDGE_SOURCE,
+          version: SAVE_BRIDGE_VERSION,
+          type: 'auto-snapshot-response',
+          requestId: message.requestId,
+          status,
+        }, saveBridgeOrigin)
+      })()
       return
     }
     if (message.type !== 'response' || !Number.isInteger(message.requestId)) return
@@ -735,6 +807,17 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       const data = await requestSaveBridge('export')
       if (!(data instanceof ArrayBuffer) || data.byteLength === 0) throw new Error('网页游戏返回了空存档')
       return new Blob([data], { type: saveFormat.mime })
+    },
+    setCloudAutoSaveMode(enabled, paused = false, clearPaused = false) {
+      if (!isManagedPvzEntry() || !saveBridgeReady || !saveBridgeOrigin || !iframe.contentWindow) return
+      iframe.contentWindow.postMessage({
+        source: SAVE_BRIDGE_SOURCE,
+        version: SAVE_BRIDGE_VERSION,
+        type: 'auto-mode',
+        enabled,
+        paused,
+        clearPaused,
+      }, saveBridgeOrigin)
     },
     async loadState(data: ArrayBuffer) {
       // 转移给 iframe 后这份 buffer 会被 detach；复制一份，别改掉调用方手里的云存档缓存。
