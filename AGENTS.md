@@ -4107,6 +4107,38 @@ PK / TH 两份现场：`The requested module './live-Cqhc9j-k.js' does not provi
 - 回归：`npm run test:asset-repair`（模块图证据按两家浏览器的真实 Resource Timing 形状、证据驱动的重试、v7 的 inDocument / MIME、刷新后补报）、
   `npm run test:startup-diagnostics`（来源分类、特征分组、噪音分区、`recovered` 事件），`cd server && npm run test:diag-alert && npm run test:diag-lark`。
 
+**懒加载导入系统性加固（2026-11-19，同一天的后续）：依赖失败一次不再拖垮整页。**
+
+- **问题规模**：详情页 chunk 在首屏之外还要 21 个 chunk（14 个不到 4KB），播放器 21 个，各运行时适配器 21～29 个。
+  Vite 的预加载助手（`\0vite/preload-helper.js`）给每个依赖插 `<link rel=modulepreload>`，不等、不重试；任何一个失败一次就被本页模块表记住。
+- **四种做法实测**（Chromium 153 / WebKit 26.6，入口 + 一个静态依赖，依赖第一次 503；数字是服务器收到的请求数）：
+
+  | 做法 | 不出错时 | 依赖 503 一次后 |
+  |---|---|---|
+  | modulepreload（Vite 默认） | 两家都 1 次 | 两家都导入失败（被记住） |
+  | `fetch()` 先暖缓存再 `import()` | Chromium 1 次；WebKit 有磁盘缓存 1 次、**临时会话 2 次** | 两家都恢复 |
+  | `<link rel=preload as=script crossorigin>` | 两家都 1 次（被模块加载器复用） | 两家都失败（失败的预加载也被复用，重试无效） |
+  | 合并小 chunk（codeSplitting 组） | 详情页扇出 21→10 | — 但首屏 644KB→1016KB、房间页被拖进 232KB 播放器代码，**否决** |
+
+- **现在**：`scripts/lib/vite-resilient-preload.mjs`（vite.config.ts 里 `resilientPreloadPlugin()`）用 transform 钩子把 Vite 助手的
+  `export const __vitePreload` 改名成 `__vitePreloadVite` 保留，接上包装：**Chromium 内核**（`navigator.userAgentData`）上，懒加载的 JS 依赖
+  （连同目标 chunk 本身）先 `fetch()` 完整读进 HTTP 缓存，网络错误 / 5xx 重试一次（600ms），404 等确定性错误不重试，响应头 15 秒、
+  正文停滞 15 秒中止；全部取到才交回 Vite（只剩 CSS）和真正的 `import()`，模块加载器读的全是缓存。还取不下来就抛带
+  `__8bitgoPreloadFailure` 标记的错误、**不碰模块表**，`importWithRetry` 见到它就再走一遍原加载函数（又会先暖缓存），不换查询串。
+  安全边：这一页 fetch() 从没成功过（策略 / 扩展拦了 fetch）时原样交回 Vite（含 modulepreload）；Safari / Firefox / legacy 完全不碰。
+  Safari 不开是因为无痕模式下每个依赖下两遍，弱网 iOS 多下一倍不划算；WebKit 依赖失败仍走上一条的「刷新一次 + 补报 recovered」。
+- **构建检查** `scripts/check-lazy-imports.mjs`（postbuild:client）：每个懒加载目标（现代 `import("./X.js")`、legacy `.import("./X-legacy-….js")`）
+  在磁盘上、现代目标连同静态依赖闭包都在 SHA-256 清单里；预加载助手确实进了现代包（Vite 升级冲掉补丁就红）；扇出预算 40 个 chunk、
+  首屏预算 820KB（未压缩；当前约 631KB、最大扇出 29）。预算是「明显变坏」的报警线，放宽要在提交里写原因。上面那次合并实验就会被首屏预算拦下。
+- **测试**：`npm run test:lazy-imports`（进 `npm test`：在 VM 里跑真助手代码——重试 / 404 不重试 / 去重 / 停滞中止 / 不碰模块表 / 非 Chromium 与 legacy 原样交回；
+  Vite 助手模板没变；importWithRetry 暖缓存失败后整套重来；构建检查的五种拦截）。
+  `npm run test:lazy-imports-browser [-- --dist <目录>]`（手动，要 Playwright 与构建产物，`PLAYWRIGHT_MODULE` / `WEBKIT_EXECUTABLE` 可指向本机已装的）：
+  真构建 + `route.abort` 让详情页的一个依赖失败，Chromium 失败一 / 两次在页面里就好（不刷新、不上报），WebKit 刷新一次后补报 `recovered`，
+  一直失败两家都停在兜底页只报一份 `failed_again`，不出错时每个懒加载依赖只下一次。拿 2026-11-19 之前的构建跑，Chromium「失败一次」那条会红。
+  ⚠️ Playwright 一开 `page.route` 就关 HTTP 缓存，「只下一次」只能在不拦截的那一轮量。
+- **升级 Vite 时**：`test:lazy-imports` 先核对 `node_modules/vite` 里助手模板（`export const ${preloadMethod} =`、`assetsURL`、`isCssPreloadUrl`）；
+  对不上就改 `vite-resilient-preload.mjs`，别删插件让懒加载退回「失败一次整页坏掉」。
+
 ## 3. 常用命令
 
 ```bash

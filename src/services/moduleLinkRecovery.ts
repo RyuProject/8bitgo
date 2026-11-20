@@ -143,8 +143,11 @@ export function lazyFailure(error: unknown): LazyFailureTag | null {
  * legacy 的 SystemJS 错误本身就写着失败的那个 URL，和入口文件名一比就知道。
  */
 export interface ImportGraphEvidence {
-  /** ok：入口已完整下载，失败在依赖；failed：入口自己没下下来；unknown：看不出（跨源无 TAO、开发环境） */
-  top: 'ok' | 'failed' | 'unknown'
+  /**
+   * ok：入口已完整下载，失败在依赖；failed：入口自己没下下来；unknown：看不出（跨源无 TAO、开发环境）；
+   * preload：预加载助手暖缓存时依赖就取不下来了（还没碰模块表）
+   */
+  top: 'ok' | 'failed' | 'unknown' | 'preload'
   /** 同目录下这次导入期间失败的 JS 请求（文件名），最多 6 个 */
   failed: string[]
 }
@@ -237,10 +240,24 @@ function readResourceTimings(): ResourceTimingLike[] {
   }
 }
 
+/**
+ * 预加载助手（scripts/lib/vite-resilient-preload.mjs）暖缓存重试过仍取不下来的依赖。
+ * 这种失败没碰模块表：再调一次原加载函数（又会先暖缓存）就能重新取，不必换查询串、更不必整页刷新。
+ */
+const PRELOAD_FAILURE = '__8bitgoPreloadFailure'
+
+export function preloadFailure(error: unknown): { failed: string[] } | null {
+  if (!error || typeof error !== 'object') return null
+  const value = (error as Record<string, unknown>)[PRELOAD_FAILURE] as { failed?: unknown } | undefined
+  if (!value || !Array.isArray(value.failed)) return null
+  return { failed: value.failed.filter((name): name is string => typeof name === 'string' && /^[\w.-]+\.js$/.test(name)).slice(0, MAX_FAILED_DEPS) }
+}
+
 /** 写进诊断包的一句话：失败在入口还是依赖 */
 export function describeImportEvidence(evidence: ImportGraphEvidence | null | undefined): string {
   if (!evidence) return ''
   const deps = evidence.failed.length ? `，失败的请求：${evidence.failed.join('、')}` : ''
+  if (evidence.top === 'preload') return `模块图：依赖暖缓存重试后仍取不下来（没进模块表，已整套重试）${deps}`
   if (evidence.top === 'ok') return `模块图：入口已完整下载、失败在静态依赖（被本页模块表记住，只有整页刷新能重取）${deps}`
   if (evidence.top === 'failed') return `模块图：入口本身没下下来${deps}`
   return deps ? `模块图：看不出入口是否下完${deps}` : ''
@@ -574,6 +591,9 @@ export async function importWithRetry<T>(
 ): Promise<T> {
   let lastError: unknown
   let retryFile = file
+  // 上一次是预加载助手暖缓存失败（模块表还干净）：再走一遍原加载函数，让助手重新暖缓存
+  let viaLoad = false
+  let checkedGraph = false
   const attempts = LAZY_RETRY_DELAYS_MS.length + 1
   for (let attempt = 0; attempt < attempts; attempt++) {
     if (attempt > 0) {
@@ -581,7 +601,7 @@ export async function importWithRetry<T>(
       else await env.sleep(LAZY_RETRY_DELAYS_MS[attempt - 1])
     }
     try {
-      const busted = attempt > 0 && retryFile
+      const busted = attempt > 0 && retryFile && !viaLoad
         ? bustedChunkUrl(retryFile, base, nextChunkRetryNonce(attempt))
         : null
       const loaded = busted ? await (env.importUrl(busted) as Promise<T>) : await load()
@@ -590,7 +610,15 @@ export async function importWithRetry<T>(
     } catch (error) {
       lastError = error
       if (!retryableImportError(error)) break
-      if (attempt === 0 && file && env.resources) {
+      const warmFailure = preloadFailure(error)
+      viaLoad = Boolean(warmFailure)
+      if (warmFailure) {
+        tagImportEvidence(error, { top: 'preload', failed: warmFailure.failed })
+        continue
+      }
+      // 模块加载器那一层的失败（第一次见到时）：看是入口还是依赖。依赖失败被模块表记住，换查询串重试入口没用
+      if (!checkedGraph && file && env.resources) {
+        checkedGraph = true
         const evidence = importGraphEvidence(file, base, error, env.resources(), env.pageOrigin ?? '')
         tagImportEvidence(error, evidence)
         if (evidence.top === 'ok') break
