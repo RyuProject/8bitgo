@@ -96,6 +96,7 @@
     "test:diag-alert": "node scripts/test-diag-alert.mjs",
     "test:lark-notify": "node scripts/test-lark-notify.mjs",
     "test:live-srs": "node scripts/test-live-srs.mjs",
+    "test:live-stream": "node scripts/test-live-stream.mjs",
     "test:diag-lark": "node scripts/test-diag-lark.mjs"
   },
   "dependencies": {

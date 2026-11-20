@@ -176,7 +176,10 @@ check('⚠️ 从直播大厅点 P2P 房必须强制进观众席', () => {
 
 check('⚠️ 主播回来后只有真的收到画面才可以报正在观看', () => {
   const src = code('src/emulator/adapters/liveview.ts')
-  const at = src.indexOf("s.on('host-back'")
+  // socket 与事件流共用一个 host-back 处理（onHostBack），两条路都得接上它
+  assert.match(src, /s\.on\('host-back',[^\n]*onHostBack\(/, 'socket 观众没有接 host-back')
+  assert.match(src, /case 'host-back':\s*return onHostBack\(/, '事件流观众没有接 host-back')
+  const at = src.indexOf('const onHostBack')
   assert.ok(at > 0, '找不到 host-back 恢复处理')
   const body = src.slice(at, at + 900)
   assert.match(body, /connected && gotFrame/, '只看 ICE connected 会把无帧黑屏误报成正在观看')
