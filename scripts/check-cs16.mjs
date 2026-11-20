@@ -396,7 +396,9 @@ if (!source.includes('requestAnimationFrame(renderProgress)') || !source.include
   fail('加载进度缺少逐帧节流、剩余时间或启动时测速归零')
 }
 
-/* 源码和 bundle 必须逐字节对应；只改 cs16.js 忘记重打包，是这类独立页最常见的线上漂移。 */
+/* 源码和 bundle 必须对应；只改 cs16.js 忘记重打包，是这类独立页最常见的线上漂移。
+ * esbuild 会把依赖模块的真实路径写进注释。工作树若把 node_modules 软链到主仓库，
+ * 注释会多出机器相关的相对路径；比较前只归一化这类注释，避免同一份代码在生产被误判为过期。 */
 const temp = mkdtempSync(join(tmpdir(), '8bitgo-cs16-check-'))
 try {
   const generated = join(temp, 'cs16.bundle.js')
@@ -409,7 +411,9 @@ try {
     '--loader:.wasm=binary',
     `--outfile=${generated}`,
   ], { stdio: 'pipe' })
-  if (!readFileSync(generated).equals(readFileSync(join(publicDir, 'cs16.bundle.js')))) {
+  const normalizeModulePathComments = (file) =>
+    readFileSync(file, 'utf8').replace(/^\/\/ .*\/node_modules\//gm, '// node_modules/')
+  if (normalizeModulePathComments(generated) !== normalizeModulePathComments(join(publicDir, 'cs16.bundle.js'))) {
     fail('cs16.bundle.js 落后于 cs16.js；运行 npm run cs16:bundle')
   }
 } finally {
