@@ -236,6 +236,7 @@
     "test:runtime-syntax": "node --experimental-vm-modules --no-warnings scripts/check-runtime-syntax.mjs",
     "test:ejs-engine-import": "node scripts/lib/ejs-engine-import-smoke.mjs public/emulatorjs/emulator.min.js",
     "test:ejs-failure-reasons": "node scripts/test-ejs-failure-reasons.mjs",
+    "test:ejs-script-conflict": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-ejs-script-conflict.mjs",
     "test:unzip-legacy": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-unzip-legacy-inflate.mjs",
     "test:j2me": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-j2me.mjs && node scripts/test-j2me-edge.mjs && node scripts/test-j2me-web.mjs",
     "test:ejs-cores": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-ejs-cores.mjs",

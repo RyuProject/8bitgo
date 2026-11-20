@@ -1659,6 +1659,7 @@ const fr: Translation = {
     ejsOutOfMemoryVendor: 'Tu utilises {browser}, qui n’accorde pas assez de mémoire aux pages web pour lancer cet émulateur (le mode mémoire réduite a déjà été essayé) ; réessayer ne servira à rien. Ouvre cette page dans Chrome, Edge ou Firefox. Si tu l’as ouverte dans une appli, choisis « Ouvrir dans le navigateur ».',
     memoryCleanRetry: 'Mémoire insuffisante. Réouverture dans une page vierge…',
     ejsWebglUnavailable: 'Ce navigateur ne peut pas créer de contexte WebGL. Active l’accélération matérielle ou utilise un navigateur ou appareil compatible WebGL.',
+    ejsScriptConflict: 'Un autre script du navigateur (souvent une extension) utilise le même nom global « {name} » que l’émulateur, qui ne peut donc pas démarrer. Désactive tes extensions ou ouvre cette page dans une fenêtre de navigation privée, puis réessaie.',
     ejsArcadeRomInvalid: "Le fichier d'arcade est incomplet ou n'est pas un ZIP valide : {name}",
     ejsArcadeUnknownSet: 'L’émulateur ne reconnaît pas ce paquet arcade ({msg}). Le ZIP doit porter le nom de son romset (p. ex. kof97.zip, tekken3.zip) et contenir une version complète.',
     ejsArcadeMissingFiles: 'Il manque au paquet arcade des fichiers nécessaires ({msg}). Causes fréquentes : BIOS non liée, ROM du set parent absentes d’un clone, ou version de ROM différente de celle de l’émulateur.',

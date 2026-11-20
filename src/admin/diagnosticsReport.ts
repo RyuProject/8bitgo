@@ -139,6 +139,8 @@ const DIAGNOSIS_SIGNAL_LABEL: Record<string, string> = {
   'error.storage': '日志出现浏览器存储或 Blob 读写错误',
   'error.gamepad_permission': '日志出现手柄权限错误',
   'error.engine_asset': '日志指向模拟器引擎入口资源',
+  'error.global_redeclaration': '引擎 iframe 里出现全局名重复声明（别的脚本先占了这个名字）',
+  'error.engine_script_syntax': '本站引擎脚本解析失败（整份没执行）',
   'error.engine_load': '错误摘要报告模拟器整体加载失败',
   'stage.engine_assets': '最后阶段文字指向模拟器依赖资源',
   'error.lazy_module': '日志指向页面懒加载模块导入失败',

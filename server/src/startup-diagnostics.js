@@ -130,7 +130,7 @@ export function needsAttention(event, diagnostics) {
 }
 
 const DIAGNOSIS_CODES = new Set([
-  'offline', 'network_http', 'network_failure', 'page_asset', 'engine_asset', 'engine_assets', 'engine_load', 'core_download', 'rom_download',
+  'offline', 'network_http', 'network_failure', 'page_asset', 'script_conflict', 'engine_asset', 'engine_assets', 'engine_load', 'core_download', 'rom_download',
   'rom_invalid', 'bios_romset', 'webgl', 'memory', 'storage', 'input_api', 'wasm_runtime', 'runtime_trap',
   'timeout', 'unsupported', 'unknown',
 ])
@@ -231,6 +231,16 @@ export function diagnoseStartupFailure({ event, platform, detail, diagnostics })
   }
   if (has(/getgamepads|gamepad.*(?:securityerror|permission)|third-party iframes are not allowed|权限策略.*手柄/)) {
     return hit('input_api', '手柄接口被浏览器权限限制', 'browser', 'high', 'error.gamepad_permission')
+  }
+  /*
+    引擎 iframe 里别的脚本（多为浏览器扩展）先占了全局名，本站经典脚本的顶层声明撞上，整份不执行（2026-11-19 #1331 / #1334 / #1343：
+    `Identifier 'debug' has already been declared`，旧 loader.js 的 const debug）。以前落到「启动流程超时」，看不出是环境冲突。
+  */
+  if (has(/identifier '[^']{1,60}' has already been declared|redeclaration of (?:let|const|var|class|function) |can't create duplicate (?:global )?variable|cannot declare a (?:let|const|class) variable twice/)) {
+    return hit('script_conflict', '引擎脚本与页面里其它脚本（多为浏览器扩展）全局名冲突', 'browser', 'high', 'error.global_redeclaration')
+  }
+  if (has(/\[engine-script\] .{0,80}解析失败/)) {
+    return hit('engine_asset', '模拟器引擎脚本解析失败', 'engine_asset', 'high', 'error.engine_script_syntax')
   }
   if (has(/failed to load (?:emulator(?:\.min)?\.js|loader\.js)|(?:emulator(?:\.min)?\.js|loader\.js).{0,40}(?:failed|not found|missing|404)|emulatorjs failed to load|failed to load emulatorjs/)) {
     return hit('engine_asset', '模拟器引擎入口加载失败', 'engine_asset', 'high', 'error.engine_asset')

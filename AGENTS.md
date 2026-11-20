@@ -165,6 +165,18 @@ loader.js 的 `import()` 失败，NES / SFC / GBA / 街机 / PS1 …… 所有 E
    realm 的全局作用域，撞上一个整份不执行。现在整份 loader 包在立即执行函数里，`check-emulatorjs.mjs` 先在 VM 里声明一批同名全局再跑一遍守着。
    线上复现方法：在引擎 iframe 的**最终** srcdoc 文档里插 `<script>var debug=1</script>`（初始 about:blank 那份会随导航作废），
    旧版必报这句错、卡在「正在准备模拟器」。改 loader.js 后跑 `node scripts/gen-ejs-core-versions.mjs`，URL 按内容换代。
+   **复核（2026-11-20，第三份 #1343：Chrome 156 / macOS / JP，同一句）**：三份都在 `index-jTkyAWT_.js` 上；修复 4b46d14 是 09:38:44 UTC 提交的，
+   #1343 是 09:40:38 UTC —— 还是旧部署。线上 `loader.js` 现已是包好的版本（内容哈希 968fa7e61032e49c 与仓库一致）。
+   引擎 iframe 里剩下的经典脚本也查过：socket.io 是 UMD 立即执行函数；核心 Emscripten 胶水（引擎用同源 blob 插进来）顶层只有
+   `var EJS_Runtime`、`var setImmediate`，只会和别人的 `let` / `const` 同名撞。
+   但这一句以前只进日志：loader 一行没执行，适配器等满 120 秒看门狗，播放器自动重试再撞再等 120 秒，三份都是 240 秒才报失败。
+   现在 `src/emulator/engineScriptErrors.ts` 认出「开局前、来自本站引擎脚本（`/emulatorjs/`、`/_cn/emulatorjs/`、本站源 blob）的 SyntaxError」，
+   适配器当场 failLoad：全局名重复声明按 `'config'`（`ejsScriptConflict`，提示停用扩展或换无痕窗口，不自动重试），其它语法错误按 `'runtime'`。
+   服务端诊断把这类日志归成 `script_conflict`（以前落到「启动流程超时或停滞」）。跨源无 crossorigin 的经典脚本报错会被抹成「Script error.」，
+   那种照旧靠看门狗。真浏览器复现（真构建 + 生产只读 API，《1942》自动开局，扩展式地在每个框架的 document_start 插 `<script>`）：
+   插 `var debug=1` 照常开局（loader 已包好）；插 `let EJS_Runtime=1`，新版开局 2.5 秒报冲突、旧版报含糊的「Error loading EmulatorJS runtime」并按引擎故障重试。
+   ⚠️ Playwright 的 addInitScript 里直接写 `let x` 不会成为页面全局，而且 document_start 时 documentElement 还是 null —— 要等它出现再插 `<script>`。
+   回归：`npm run test:ejs-script-conflict`。
 6. **告警（2026-11-18）**：事故持续几个小时没人知道——聚集报警只发邮件，而生产上邮箱根本没配。现在统一发飞书机器人
    （`server/src/lark-notify.js`，webhook 在 `server/.env` 的 `ALERT_LARK_WEBHOOK`，不进 git）：玩家启动失败按特征聚集
    （`diag-alert.js`，邮件 / 飞书任一通道成功即算报出）、部署中止 / 自动回滚（`redeploy.sh`）、**每 15 分钟的公网开局巡检**

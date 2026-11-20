@@ -25,6 +25,43 @@ export const MAX_ENTRY_CLOSURE_BYTES = 820 * 1024
 
 const MODERN_DYNAMIC_IMPORT = /\bimport\(\s*[`'"]\.\/([\w.-]+\.js)[`'"]\s*\)/g
 const LEGACY_DYNAMIC_IMPORT = /\.import\(\s*[`'"]\.\/([\w.-]+-legacy-[\w.-]+\.js)[`'"]\s*\)/g
+/** SystemJS 产物的静态依赖：System.register(["./a-legacy-x.js", …], …) */
+const LEGACY_STATIC_DEPS = /System\.register\(\s*\[([^\]]*)\]/g
+const LEGACY_FILE = /["'`]\.\/([\w.-]+-legacy-[\w.-]+\.js)["'`]/g
+
+/**
+ * legacy 产物不在 SHA-256 清单里（清单只管现代包）。生产目录又故意留着旧哈希文件（bdf1591），不能扫整个 assets/：
+ * 从 index.html 里本次的 legacy 入口出发，只沿静态依赖和懒加载走到本次构建真正用得到的文件。
+ */
+function walkLegacy(html, assets) {
+  const entry = /id="vite-legacy-entry"[^>]*data-src="\/assets\/([\w.-]+\.js)"/.exec(html)?.[1]
+    ?? /data-src="\/assets\/(index-legacy-[\w.-]+\.js)"/.exec(html)?.[1]
+  const targets = new Map()
+  const missing = []
+  if (!entry) return { entry: null, targets, missing }
+  const seen = new Set()
+  const queue = [{ name: entry, from: 'index.html' }]
+  while (queue.length) {
+    const { name, from } = queue.shift()
+    if (seen.has(name)) continue
+    seen.add(name)
+    const file = path.join(assets, name)
+    if (!existsSync(file)) {
+      missing.push({ name, from })
+      continue
+    }
+    const source = readFileSync(file, 'utf8')
+    for (const match of source.matchAll(LEGACY_DYNAMIC_IMPORT)) {
+      if (!targets.has(match[1])) targets.set(match[1], new Set())
+      targets.get(match[1]).add(name)
+      queue.push({ name: match[1], from: name })
+    }
+    for (const deps of source.matchAll(LEGACY_STATIC_DEPS)) {
+      for (const dep of deps[1].matchAll(LEGACY_FILE)) queue.push({ name: dep[1], from: name })
+    }
+  }
+  return { entry, targets, missing }
+}
 
 export function analyzeLazyImports(dist) {
   const assets = path.join(dist, 'assets')
@@ -52,20 +89,20 @@ export function analyzeLazyImports(dist) {
   }
 
   // 生产目录保留旧哈希资源，避免正在浏览的页面遇到旧 chunk 404；只检查本次入口清单覆盖的文件。
-  const jsFiles = Object.keys(files).filter((name) => name.endsWith('.js'))
+  // 清单里有、磁盘上却没有的文件不读（下面按依赖闭包报缺失），不能让检查自己因 ENOENT 崩掉。
+  const jsFiles = Object.keys(files).filter((name) => name.endsWith('.js') && existsSync(path.join(assets, name)))
   const modernTargets = new Map()
-  const legacyTargets = new Map()
   let helperFound = false
   for (const name of jsFiles) {
     const source = readFileSync(path.join(assets, name), 'utf8')
-    const legacy = name.includes('-legacy-')
-    if (!legacy && source.includes(RESILIENT_PRELOAD_MARKER) && source.includes(PRELOAD_FAILURE_PROP)) helperFound = true
-    for (const match of source.matchAll(legacy ? LEGACY_DYNAMIC_IMPORT : MODERN_DYNAMIC_IMPORT)) {
-      const map = legacy ? legacyTargets : modernTargets
-      if (!map.has(match[1])) map.set(match[1], new Set())
-      map.get(match[1]).add(name)
+    if (source.includes(RESILIENT_PRELOAD_MARKER) && source.includes(PRELOAD_FAILURE_PROP)) helperFound = true
+    for (const match of source.matchAll(MODERN_DYNAMIC_IMPORT)) {
+      if (!modernTargets.has(match[1])) modernTargets.set(match[1], new Set())
+      modernTargets.get(match[1]).add(name)
     }
   }
+  const legacy = walkLegacy(html, assets)
+  const legacyTargets = legacy.targets
   if (!helperFound) {
     problems.push('现代包里找不到抗失败的预加载助手（scripts/lib/vite-resilient-preload.mjs 没生效？Vite 升级改了助手写法？）')
   }
@@ -90,8 +127,9 @@ export function analyzeLazyImports(dist) {
     targets.push({ target, fanout, bytes: extra.reduce((sum, dep) => sum + size(dep), 0) })
     if (fanout > MAX_LAZY_FANOUT) problems.push(`${target} 在首屏之外要拉 ${fanout} 个 chunk，超过预算 ${MAX_LAZY_FANOUT}`)
   }
-  for (const [target, importers] of legacyTargets) {
-    if (!existsSync(path.join(assets, target))) problems.push(`legacy 懒加载目标 ${target} 不在磁盘上（${[...importers][0]} 引用）`)
+  if (!legacy.entry) problems.push('index.html 里找不到 legacy 入口（vite-legacy-entry）')
+  for (const { name, from } of legacy.missing) {
+    problems.push(legacyTargets.has(name) ? `legacy 懒加载目标 ${name} 不在磁盘上（${from} 引用）` : `legacy 文件 ${name} 不在磁盘上（${from} 引用）`)
   }
   if (!modernTargets.size) problems.push('现代包里一个懒加载目标都没找到：识别规则过期了？')
   targets.sort((a, b) => b.fanout - a.fanout)

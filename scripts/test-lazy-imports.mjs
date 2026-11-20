@@ -233,7 +233,8 @@ function fakeDist({ helper = true, dynamicTarget = 'Page-P.js', missing = [], ex
     'index-E.js': `${'x'.repeat(entryBytes)};const load=()=>X(()=>import("./${dynamicTarget}"),[],import.meta.url)${helper ? `;"${RESILIENT_PRELOAD_MARKER}";"${PRELOAD_FAILURE_PROP}"` : ''}`,
     'Page-P.js': 'import"./dep-D.js"',
     'dep-D.js': 'export{}',
-    'index-legacy-L.js': 'e.import("./Page-legacy-Q.js")',
+    'index-legacy-L.js': 'System.register(["./shared-legacy-S.js"],function(){});e.import("./Page-legacy-Q.js")',
+    'shared-legacy-S.js': '',
     'Page-legacy-Q.js': '',
   }
   const imports = { 'Page-P.js': ['dep-D.js'] }
@@ -243,7 +244,10 @@ function fakeDist({ helper = true, dynamicTarget = 'Page-P.js', missing = [], ex
   }
   for (const [name, body] of Object.entries(files)) if (!missing.includes(name)) writeFileSync(path.join(dir, 'assets', name), body)
   writeFileSync(path.join(dir, 'assets', 'integrity-E.json'), JSON.stringify({ v: 2, alg: 'sha256', files: Object.fromEntries(Object.keys(files).filter((n) => !n.includes('legacy')).map((n) => [n, 'x'])), imports }))
-  writeFileSync(path.join(dir, 'index.html'), '<script type="module" crossorigin src="/assets/index-E.js"></script>')
+  writeFileSync(path.join(dir, 'index.html'), '<script type="module" crossorigin src="/assets/index-E.js"></script><script nomodule crossorigin id="vite-legacy-entry" data-src="/assets/index-legacy-L.js">System.import(this.getAttribute("data-src"))</script>')
+  // 生产目录故意留着上一版的旧哈希文件（bdf1591）：它们引用的东西早就不在了，不能算进本次构建
+  writeFileSync(path.join(dir, 'assets', 'old-Page-OLD.js'), 'import("./gone-GONE.js")')
+  writeFileSync(path.join(dir, 'assets', 'old-legacy-OLD.js'), 'e.import("./gone-legacy-GONE.js")')
   return dir
 }
 {
@@ -254,6 +258,9 @@ function fakeDist({ helper = true, dynamicTarget = 'Page-P.js', missing = [], ex
   assert.match(analyzeLazyImports(fakeDist({ missing: ['dep-D.js'] })).problems.join(), /Page-P\.js 的静态依赖 dep-D\.js 缺失/)
   assert.match(analyzeLazyImports(fakeDist({ dynamicTarget: 'Gone-G.js' })).problems.join(), /懒加载目标 Gone-G\.js 不在磁盘上/)
   assert.match(analyzeLazyImports(fakeDist({ missing: ['Page-legacy-Q.js'] })).problems.join(), /legacy 懒加载目标 Page-legacy-Q\.js 不在磁盘上/)
+  assert.match(analyzeLazyImports(fakeDist({ missing: ['shared-legacy-S.js'] })).problems.join(), /legacy 文件 shared-legacy-S\.js 不在磁盘上（index-legacy-L\.js 引用）/)
+  assert.equal(good.legacyTargets, 1, '从 legacy 入口走到了懒加载目标')
+  assert.ok(!good.problems.some((p) => /gone/.test(p)), '旧哈希文件引用的东西不报')
   assert.match(analyzeLazyImports(fakeDist({ extraDeps: MAX_LAZY_FANOUT })).problems.join(), /超过预算 40/)
   assert.match(analyzeLazyImports(fakeDist({ entryBytes: MAX_ENTRY_CLOSURE_BYTES + 1 })).problems.join(), /首屏静态依赖闭包.*超过预算/)
 }
