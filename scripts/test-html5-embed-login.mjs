@@ -54,18 +54,26 @@ assert.match(block, /t\.game\.embedLoginOpen/)
 assert.match(block, /href=\{embedLogin\.url\}/)
 assert.match(block, /target="_blank"/)
 assert.match(block, /rel="noopener"/, '新标签页不能拿到本站窗口的 opener')
-ok('详情页在播放器下方渲染提示与「新标签页打开」链接')
+assert.match(block, /window\.confirm\(t\.game\.embedLoginOpenConfirm\)/, '打开前必须确认存档不会由本站复制或合并')
+assert.match(block, /event\.preventDefault\(\)/, '取消确认后不能打开新标签页')
+assert.match(block, /t\.game\.embedLoginSaveWarning/, '链接旁必须提示存档可能隔离')
+ok('详情页提示登录限制、存档隔离，并在新标签页打开前确认')
 
 // ── 八种语言 ──
 for (const lang of ['zh-Hans', 'zh-Hant', 'en', 'es', 'fr', 'de', 'it', 'ja']) {
   const src = readFileSync(new URL(`../src/locales/${lang}.ts`, import.meta.url), 'utf8')
   const notice = src.match(/^ {4}embedLoginNotice: (['"])(.+)\1,$/m)
   const open = src.match(/^ {4}embedLoginOpen: (['"])(.+)\1,$/m)
+  const saveWarning = src.match(/^ {4}embedLoginSaveWarning: (['"])(.+)\1,$/m)
+  const openConfirm = src.match(/^ {4}embedLoginOpenConfirm: (['"])(.+)\1,$/m)
   assert.ok(notice, `${lang} 缺 embedLoginNotice`)
   assert.ok(open, `${lang} 缺 embedLoginOpen`)
+  assert.ok(saveWarning, `${lang} 缺 embedLoginSaveWarning`)
+  assert.ok(openConfirm, `${lang} 缺 embedLoginOpenConfirm`)
   assert.match(notice[2], /\{providers\}/, `${lang} 的提示要带 {providers}`)
   assert.match(notice[2], /403/, `${lang} 的提示要提到玩家实际看到的 403，方便对上号`)
+  assert.match(saveWarning[2], /8BitGo|8bitgo/i, `${lang} 要说明本站不会代为复制存档`)
 }
-ok('八种语言都有提示与链接文案')
+ok('八种语言都有登录提示、存档隔离提醒和打开确认文案')
 
 console.log(`\nhtml5 embed login: ${passed} 项通过`)

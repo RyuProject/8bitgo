@@ -447,6 +447,8 @@ export const zhHans = {
     },
     embedLoginNotice: '这款游戏自带的 {providers} 登录无法在本页的游戏框里完成（对方不允许在嵌入框架中打开登录页，会显示 403）。需要登录时请在新标签页打开游戏。',
     embedLoginOpen: '在新标签页打开',
+    embedLoginSaveWarning: '注意：新标签页可能读不到本页这份存档，8BitGo 不会代为复制或合并；是否能同步取决于游戏自身。若要保住当前进度，请先不要在新页面开始新游戏或覆盖存档。',
+    embedLoginOpenConfirm: '8BitGo 不会把本页存档复制或合并到新标签页。游戏自身是否能同步取决于它的规则。仍要打开吗？',
     year: '发行年份',
     developer: '开发商',
     players: '玩家人数',

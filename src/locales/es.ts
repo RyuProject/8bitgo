@@ -384,6 +384,8 @@ const es: Translation = {
     },
     embedLoginNotice: 'El inicio de sesión con {providers} de este juego no funciona dentro del marco de esta página (esas páginas de acceso no se cargan en marcos incrustados y muestran un error 403). Para iniciar sesión, abre el juego en una pestaña nueva.',
     embedLoginOpen: 'Abrir en una pestaña nueva',
+    embedLoginSaveWarning: 'Es posible que la pestaña nueva no encuentre esta partida guardada. 8BitGo no la copiará ni combinará; la sincronización depende del propio juego. Para proteger tu progreso, no empieces una partida nueva ni sobrescribas una partida en la pestaña nueva.',
+    embedLoginOpenConfirm: '8BitGo no copiará ni combinará esta partida guardada en la pestaña nueva. La sincronización depende del propio juego. ¿Quieres continuar?',
     year: 'Año de lanzamiento',
     developer: 'Desarrolladora',
     players: 'Jugadores',

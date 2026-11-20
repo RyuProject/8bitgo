@@ -384,6 +384,8 @@ const de: Translation = {
     },
     embedLoginNotice: 'Die Anmeldung über {providers} in diesem Spiel funktioniert nicht im eingebetteten Spielfenster dieser Seite (diese Anmeldeseiten lassen sich nicht in eingebetteten Frames laden und zeigen einen 403-Fehler). Zum Anmelden öffne das Spiel in einem neuen Tab.',
     embedLoginOpen: 'In neuem Tab öffnen',
+    embedLoginSaveWarning: 'Der neue Tab kann diesen Spielstand möglicherweise nicht sehen. 8BitGo kopiert oder führt ihn nicht zusammen; eine Synchronisierung hängt vom Spiel selbst ab. Um deinen Fortschritt zu schützen, starte im neuen Tab kein neues Spiel und überschreibe keinen Spielstand.',
+    embedLoginOpenConfirm: '8BitGo kopiert diesen Spielstand nicht in den neuen Tab und führt ihn nicht zusammen. Eine Synchronisierung hängt vom Spiel selbst ab. Trotzdem öffnen?',
     year: 'Erscheinungsjahr',
     developer: 'Entwickler',
     players: 'Spieler',

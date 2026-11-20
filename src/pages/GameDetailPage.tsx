@@ -633,10 +633,14 @@ export function GameDetailPage() {
                 href={embedLogin.url}
                 target="_blank"
                 rel="noopener"
+                onClick={(event) => {
+                  if (!window.confirm(t.game.embedLoginOpenConfirm)) event.preventDefault()
+                }}
                 className="font-semibold text-brand-hover underline underline-offset-2 hover:text-fg"
               >
                 {t.game.embedLoginOpen} ↗
               </a>
+              <span className="mt-1 block">{t.game.embedLoginSaveWarning}</span>
             </p>
           )}
         </div>

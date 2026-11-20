@@ -364,6 +364,8 @@ const zhHant: Translation = {
     },
     embedLoginNotice: '這款遊戲內建的 {providers} 登入無法在本頁的遊戲框內完成（對方不允許在嵌入框架中開啟登入頁，會顯示 403）。需要登入時請在新分頁開啟遊戲。',
     embedLoginOpen: '在新分頁開啟',
+    embedLoginSaveWarning: '注意：新分頁可能讀不到本頁這份存檔，8BitGo 不會代為複製或合併；能否同步取決於遊戲本身。若要保留目前進度，請先不要在新頁面開始新遊戲或覆蓋存檔。',
+    embedLoginOpenConfirm: '8BitGo 不會把本頁存檔複製或合併到新分頁。遊戲本身能否同步取決於它的規則。仍要開啟嗎？',
     year: '發行年份',
     developer: '開發商',
     players: '玩家人數',

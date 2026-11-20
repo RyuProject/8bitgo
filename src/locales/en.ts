@@ -384,6 +384,8 @@ const en: Translation = {
     },
     embedLoginNotice: "This game's own {providers} sign-in can't be completed inside the game frame on this page (those sign-in pages refuse to load in embedded frames and show a 403). To sign in, open the game in a new tab.",
     embedLoginOpen: 'Open in new tab',
+    embedLoginSaveWarning: 'The new tab may not see this page’s save. 8BitGo will not copy or merge it; syncing depends on the game itself. To protect your progress, do not start a new game or overwrite a save in the new tab.',
+    embedLoginOpenConfirm: '8BitGo will not copy or merge this page’s save into the new tab. Any syncing depends on the game itself. Continue?',
     year: 'Release year',
     developer: 'Developer',
     players: 'Players',

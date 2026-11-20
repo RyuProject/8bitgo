@@ -385,6 +385,8 @@ const fr: Translation = {
     },
     embedLoginNotice: "La connexion {providers} intégrée à ce jeu ne fonctionne pas dans le cadre de cette page (ces pages de connexion refusent de s'afficher dans un cadre intégré et renvoient une erreur 403). Pour vous connecter, ouvrez le jeu dans un nouvel onglet.",
     embedLoginOpen: 'Ouvrir dans un nouvel onglet',
+    embedLoginSaveWarning: 'Le nouvel onglet risque de ne pas retrouver cette sauvegarde. 8BitGo ne la copiera ni ne la fusionnera ; la synchronisation dépend du jeu lui-même. Pour protéger votre progression, ne commencez pas une nouvelle partie et n’écrasez aucune sauvegarde dans le nouvel onglet.',
+    embedLoginOpenConfirm: '8BitGo ne copiera ni ne fusionnera cette sauvegarde dans le nouvel onglet. Toute synchronisation dépend du jeu lui-même. Continuer ?',
     year: 'Année de sortie',
     developer: 'Développeur',
     players: 'Joueurs',

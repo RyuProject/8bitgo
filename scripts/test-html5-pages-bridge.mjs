@@ -9,6 +9,8 @@ assert.equal(html5SaveBridgeOrigin('https://digiverse.8bitgo.com/web/gamblers-ta
 assert.equal(html5SaveBridgeOrigin('https://gamblers-table.8bitgo.com/web/gamblers-table/', main), 'https://gamblers-table.8bitgo.com')
 assert.equal(html5SaveBridgeOrigin('https://attacker.8bitgo.com/game/', main), null)
 assert.equal(html5SaveBridgeOrigin('https://example.com/game/', main), null)
+// PokeCatch 是未经本站管理、也未接入 postMessage 存档协议的第三方页面；不可开放云存档桥。
+assert.equal(html5SaveBridgeOrigin('https://pokecatch-online.netlify.app/', main), null)
 
 const versioned = new URL(versionHtml5Entry('https://pvz.8bitgo.com/web/PvZ/cn/', main))
 assert.equal(versioned.origin, 'https://pvz.8bitgo.com')

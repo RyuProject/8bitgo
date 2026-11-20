@@ -385,6 +385,8 @@ const it: Translation = {
     },
     embedLoginNotice: "L'accesso con {providers} di questo gioco non funziona nel riquadro di questa pagina (quelle pagine di accesso non si aprono in frame incorporati e mostrano un errore 403). Per accedere, apri il gioco in una nuova scheda.",
     embedLoginOpen: 'Apri in una nuova scheda',
+    embedLoginSaveWarning: 'La nuova scheda potrebbe non vedere questo salvataggio. 8BitGo non lo copierà né unirà; la sincronizzazione dipende dal gioco stesso. Per proteggere i progressi, non iniziare una nuova partita e non sovrascrivere un salvataggio nella nuova scheda.',
+    embedLoginOpenConfirm: '8BitGo non copierà né unirà questo salvataggio nella nuova scheda. La sincronizzazione dipende dal gioco stesso. Vuoi continuare?',
     year: 'Anno di uscita',
     developer: 'Sviluppatore',
     players: 'Giocatori',
