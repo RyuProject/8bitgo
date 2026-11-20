@@ -453,6 +453,8 @@ CREATE TABLE IF NOT EXISTS game_startup_diagnostics (
   device VARCHAR(16) NOT NULL DEFAULT '',
   payload MEDIUMTEXT NOT NULL,
   hotfix_ids VARCHAR(120) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '',
+  -- 来源：'' 普通访客；bot 确认是自动化客户端；suspect 疑似（server/src/startup-diagnostics.js classifyAutomation）
+  cohort VARCHAR(12) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '',
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uniq_startup_diag (visit_id, attempt_id, event),
   KEY idx_diag_time (created_at),

@@ -41,6 +41,7 @@ const NEEDS_SERVICE = {
 const MANUAL = {
   'test:pvz': '需单独安装 Playwright 与 Chromium，属于浏览器验收',
   'test:pvz-real': '需 Playwright，并显式提供 --main / --pack 本机合法资源',
+  'test:lazy-imports-browser': '需 Playwright（Chromium + WebKit）与一份构建产物，属于浏览器验收',
 }
 
 /** 是别的套件的聚合，跑了等于重复 */

@@ -15,6 +15,7 @@ import { dosGameConfigError } from './dos-game-config.js'
 /** 会随版本增加的列。新增迁移时同步往这里加一条 */
 export const EXPECTED_COLUMNS = [
   { table: 'game_startup_diagnostics', column: 'hotfix_ids', why: '诊断包记录生效中的 AI 修补；缺列时诊断照存，但修补效果统计与自动撤销暂停' },
+  { table: 'game_startup_diagnostics', column: 'cohort', why: '诊断包标记自动化客户端；缺列时诊断照存，但后台不能默认隐藏它们' },
   { table: 'games', column: 'home_rank', why: '首页精选位' },
   { table: 'games', column: 'core', why: '按游戏覆盖模拟器核心' },
   { table: 'games', column: 'description_localized', why: '逐语言人工简介；缺列会导致后台 SEO 文案保存失败' },

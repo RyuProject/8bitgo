@@ -160,7 +160,7 @@ adminRouter.get('/startup-stats', requireAbility('content:edit'), async (req, re
 adminRouter.get('/startup-diagnostics', requireAbility('content:edit'), async (req, res, next) => {
   try {
     res.setHeader('Cache-Control', 'no-store')
-    res.json(await diagnosticGroups(req.query.days, req.query.q, req.query.event))
+    res.json(await diagnosticGroups(req.query.days, req.query.q, req.query.event, req.query.noise))
   } catch (e) {
     if (e?.code === 'ER_NO_SUCH_TABLE') return res.status(503).json({ error: '缺少 game_startup_diagnostics 表：cd server && npm run migrate' })
     next(e)

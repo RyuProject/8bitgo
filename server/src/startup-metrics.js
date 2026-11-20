@@ -21,6 +21,8 @@ const EVENTS = new Set([
   'readiness_unobservable',
   'failed',
   'timeout',
+  // 详情页崩溃后自动刷新、刷新后好了（src/services/pageRecovery.ts）：单独一种事件，不算进 failures
+  'recovered',
 ])
 const ID_RE = /^[A-Za-z0-9_-]{8,64}$/
 const NAME_RE = /^[A-Za-z0-9_-]{0,32}$/
