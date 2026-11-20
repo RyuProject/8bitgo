@@ -13,7 +13,7 @@
  *      —— 2026-11-19 试过把懒加载的小共享模块合并，首屏从 644KB 涨到 1016KB，就是这一条要拦的。
  * 预算不是性能目标，只是「明显变坏」的报警线；真要放宽，改这里的常量并在提交里写清为什么。
  */
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { RESILIENT_PRELOAD_MARKER, PRELOAD_FAILURE_PROP } from './lib/vite-resilient-preload.mjs'
@@ -51,7 +51,8 @@ export function analyzeLazyImports(dist) {
     problems.push(`首屏静态依赖闭包 ${Math.round(entryBytes / 1024)}KB，超过预算 ${Math.round(MAX_ENTRY_CLOSURE_BYTES / 1024)}KB（懒加载才用的代码被拖进首屏了？）`)
   }
 
-  const jsFiles = readdirSync(assets).filter((name) => name.endsWith('.js'))
+  // 生产目录保留旧哈希资源，避免正在浏览的页面遇到旧 chunk 404；只检查本次入口清单覆盖的文件。
+  const jsFiles = Object.keys(files).filter((name) => name.endsWith('.js'))
   const modernTargets = new Map()
   const legacyTargets = new Map()
   let helperFound = false
