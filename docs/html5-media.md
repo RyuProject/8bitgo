@@ -87,6 +87,8 @@ window.EightBitGoGameSDK?.registerCaptureStream((canvas, fps) => canvas.captureS
 
 PvZ 的 Pages 中英文游戏入口和 Minecraft Eaglercraft Pages 游戏页会加载同一个 SDK，并在游戏音频初始化前安装媒体桥。Minecraft 从主站进入时直接嵌入 Eaglercraft 游戏页，避免中间启动壳的导航丢掉父页来源校验。用户开始游玩时，SDK 才以最高 30fps 将受限尺寸的 `ImageBitmap` 转给当前播放器；浏览器支持跨页音轨转移时也会带上游戏声音。播放器把它接入原有 8BitGo 直播推流。停播、页面跳转或播放器销毁时会停止帧循环并释放接收资源。浏览器不支持画帧传递或 Canvas 读取时，保留现有「分享标签页」兜底。其它游戏页面不会自动加载 SDK。
 
+本站托管的 Gamblers Table 在游戏页加载 `8bitgo-save-bridge.js`，把 Godot IDBFS 的 `/userfs` 编成版本化 JSON 快照，在开局前恢复、存档变化后上传。游戏页只访问本地 IndexedDB 和父页存档桥，不读取站点令牌；玩家选择「只存本地」时，播放器不会启用云端同步。
+
 消息同时核对当前 iframe、游戏页的精确来源、协议版本和请求编号。顶层单独打开 SDK 页面时不会建立父页通信；referrer 缺失或浏览器限制 Canvas 读取时，SDK 的可选能力会关闭，游戏本身仍可运行。
 
 ## 边界

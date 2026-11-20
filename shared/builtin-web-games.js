@@ -43,7 +43,7 @@ export const BUILTIN_WEB_GAMES = Object.freeze({
     title: 'Gamblers Table',
     // Godot 4 Web 导出，单线程（GODOT_THREADS_ENABLED=false），不依赖 SharedArrayBuffer，
     // 不需要 COOP/COEP 隔离壳；整目录自托管到 /web/gamblers-table/（同 diablo / minecraft / pvz2）。
-    // 注：Godot 版未实现 8BitGo 存档桥，本作暂无 JSON 云存档（仅本地进度）。
+    // Godot 的 /userfs 通过 IDBFS 快照接入 8BitGo 存档桥；自动云存档仍遵守玩家选定的本地 / 云端落点。
     isolated: false,
   }),
   'plants-vs-zombies': Object.freeze({

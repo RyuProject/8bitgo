@@ -600,7 +600,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
           target,
           handle.saveMetadata,
         )
-        // PvZ 在站点内持续监测 IDBFS；只有玩家明确选过云端后才开自动同步。
+        // 接入自动快照协议的 HTML5 页面监测自己的 IDBFS；只有玩家明确选过云端后才开自动同步。
         // 手动上传成功或进入待补传队列后，用刚导出的这份存档作为去重基线，避免重复写云端。
         if (target === 'local') {
           handle.setCloudAutoSaveMode?.(false)
@@ -854,7 +854,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
         say(tt.saveLoadNothing)
         return
       }
-      // PvZ 读本地档后会重载 iframe；重载阶段暂停自动云端回填，避免刚选的本地档被云端盖回去。
+      // HTML5 页面读本地档后会重载 iframe；重载阶段暂停自动云端回填，避免刚选的本地档被云端盖回去。
       // 手动读云端则清掉这个一次性暂停标记，重启后仍可正常自动同步。
       if (from === 'local') handle.setCloudAutoSaveMode?.(false, true)
       else handle.setCloudAutoSaveMode?.(false, false, true)

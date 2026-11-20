@@ -29,6 +29,7 @@ npm run pages:web-game:deploy -- pvz
 
 各域名的 CNAME 目标分别是：
 
+- `gamblers-table` → `8bitgo-gamblers-table.pages.dev`
 - `pvz` → `8bitgo-pvz.pages.dev`
 - `diablo` → `8bitgo-diablo.pages.dev`
 - `minecraft` → `8bitgo-minecraft.pages.dev`

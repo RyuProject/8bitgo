@@ -95,8 +95,9 @@ body {
 	z-index: 1;
 }
 		</style>
-		<link id="-gd-engine-icon" rel="icon" type="image/png" href="index.icon.png" />
+<link id="-gd-engine-icon" rel="icon" type="image/png" href="index.icon.png" />
 <link rel="apple-touch-icon" href="index.apple-touch-icon.png"/>
+		<script src="/html5-api/8bitgo-media-bridge.js"></script>
 
 	</head>
 	<body>
@@ -115,10 +116,12 @@ body {
 		</div>
 
 		<script src="index.js"></script>
+		<script src="8bitgo-save-bridge.js?v=e5818d2af5b370cd"></script>
 		<script>
 const GODOT_CONFIG = {"args":[],"canvasResizePolicy":2,"emscriptenPoolSize":8,"ensureCrossOriginIsolationHeaders":true,"executable":"index","experimentalVK":false,"fileSizes":{"index.pck":32702636,"index.wasm":37226755},"focusCanvas":true,"gdextensionLibs":[],"godotPoolSize":4};
 const GODOT_THREADS_ENABLED = false;
 const engine = new Engine(GODOT_CONFIG);
+window.gamblersTableEngine = engine;
 
 (function () {
 	const statusOverlay = document.getElementById('status');
@@ -204,7 +207,7 @@ const engine = new Engine(GODOT_CONFIG);
 		}
 	} else {
 		setStatusMode('progress');
-		engine.startGame({
+		Promise.resolve().then(() => window.GamblersTableCloudSave?.initializeBeforeStart()).then(() => engine.startGame({
 			'onProgress': function (current, total) {
 				if (current > 0 && total > 0) {
 					statusProgress.value = current;
@@ -214,12 +217,13 @@ const engine = new Engine(GODOT_CONFIG);
 					statusProgress.removeAttribute('max');
 				}
 			},
-		}).then(() => {
+		})).then(() => {
+			window.GamblersTableCloudSave?.markStarted();
 			setStatusMode('hidden');
 		}, displayFailureNotice);
 	}
 }());
 		</script>
+		<script src="/html5-api/8bitgo-game-sdk.min.js"></script>
 	</body>
 </html>
-

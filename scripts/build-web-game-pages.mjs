@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url'
 import { WEB_GAME_PAGES, webGamePage } from '../deploy/cloudflare-pages/web-games-config.js'
 import { copyGtaVc7zRuntime } from './copy-gta-vc-7z.mjs'
 import { buildGameSdk } from './build-8bitgo-game-sdk.mjs'
+import { patchGamblersTableRuntime } from './patch-gamblers-table.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const repo = resolve(here, '..')
@@ -30,6 +31,7 @@ const gameSdkVersion = createHash('sha256').update(readFileSync(gameSdkMinSource
 for (const name of selected) {
   if (!webGamePage(name)) throw new Error(`未知 Pages 游戏：${name}`)
 }
+if (selected.includes('gamblers-table')) patchGamblersTableRuntime()
 
 const walk = (root) => {
   const files = []
@@ -203,6 +205,7 @@ for (const name of selected) {
     }
     injectRuntimeBridge(path, selector)
     if (name === 'pvz' && (file === 'cn/index.html' || file === 'en/index.html')) injectPvzGameSdk(path)
+    if (name === 'gamblers-table' && file === 'index.html') injectGameSdk(path, '#canvas', /<script\b[^>]*\bsrc=(['"])[^'"]*index\.js(?:\?[^'"]*)?\1[^>]*>/i)
     if (name === 'minecraft' && file === 'eaglercraft/index.html') injectMinecraftGameSdk(path)
     if (name === 'cs16' && file === 'index.html') injectCs16GameSdk(path)
     if (name === 'subway' && file === 'index.html') {

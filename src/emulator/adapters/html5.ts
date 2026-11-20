@@ -141,6 +141,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const saveFormat = options.gameSlug === 'gamblers-table'
     ? { ext: 'gamblers.json', mime: 'application/json' }
     : { ext: 'pvzsave.zip', mime: 'application/zip' }
+  const saveFormatId = options.gameSlug === 'gamblers-table' ? '8bitgo-gamblers-table-idbfs-v1' : saveFormat.ext
   let destroyed = false
   let objectUrl = ''
   let saveBridgeReady = false
@@ -242,14 +243,17 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       return
     }
     if (message.type === 'auto-restore-request' && Number.isInteger(message.requestId)) {
-      if (!saveBridgeReady || !isManagedPvzEntry()) return
+      if (!saveBridgeReady || !isManagedAutoSaveEntry()) return
       void (async () => {
         try {
           const localSaveBytes = Number.isSafeInteger(message.localSaveBytes) &&
             Number(message.localSaveBytes) >= 0 && Number(message.localSaveBytes) <= 256 * 1024 * 1024
             ? Number(message.localSaveBytes)
             : undefined
-          const result = await options.onPvzAutoSaveRestore?.({ byteLength: localSaveBytes ?? 0 }) ?? { enabled: false, data: null }
+          const result = await options.onHtml5AutoSaveRestore?.({
+            byteLength: localSaveBytes ?? 0,
+            pausedByUserChoice: message.pausedByUserChoice === true,
+          }) ?? { enabled: false, data: null }
           if (destroyed || !iframe.contentWindow) return
           const data = result.data
           let buffer: ArrayBuffer | null = null
@@ -284,17 +288,17 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       return
     }
     if (message.type === 'auto-snapshot-request' && Number.isInteger(message.requestId)) {
-      if (!saveBridgeReady || !isManagedPvzEntry()) return
+      if (!saveBridgeReady || !isManagedAutoSaveEntry()) return
       void (async () => {
         let status: NonNullable<SaveBridgeMessage['status']> = 'disabled'
         try {
           if (!(message.data instanceof ArrayBuffer) || message.data.byteLength === 0 || message.data.byteLength > 64 * 1024 * 1024) {
             status = 'blocked'
-          } else if (options.onPvzAutoSaveSnapshot) {
-            status = await options.onPvzAutoSaveSnapshot(new Uint8Array(message.data))
+          } else if (options.onHtml5AutoSaveSnapshot) {
+            status = await options.onHtml5AutoSaveSnapshot(new Uint8Array(message.data))
           }
         } catch (error) {
-          console.warn('[html5] PvZ 自动云存档失败', error)
+          console.warn('[html5] HTML5 自动云存档失败', error)
           status = 'failed'
         }
         if (destroyed || !iframe.contentWindow) return
@@ -376,6 +380,21 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
   }
 
+  const isManagedGamblersTableEntry = () => {
+    if (!frameEntry) return false
+    try {
+      const url = new URL(frameEntry, location.href)
+      const host = url.hostname.toLowerCase()
+      const managedHost = ['gamblers-table.8bitgo.com', 'digiverse.8bitgo.com'].includes(host)
+      const mainSite = ['8bitgo.com', 'www.8bitgo.com', 'cn.8bitgo.com', 'tv.8bitgo.com'].includes(host)
+      return url.protocol === 'https:' && /^\/web\/gamblers-table\/?$/.test(url.pathname) && (managedHost || mainSite)
+    } catch {
+      return false
+    }
+  }
+
+  const isManagedAutoSaveEntry = () => isManagedPvzEntry() || isManagedGamblersTableEntry()
+
   const isManagedMinecraftEntry = () => {
     if (!frameEntry) return false
     try {
@@ -398,7 +417,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   }
 
   const isManagedGameSdkEntry = () =>
-    isManagedPvzEntry() || isManagedMinecraftEntry() || isManagedCs16Entry()
+    isManagedPvzEntry() || isManagedMinecraftEntry() || isManagedCs16Entry() || isManagedGamblersTableEntry()
 
   const clearRemoteLiveCanvas = () => {
     remoteLiveSession = ''
@@ -802,14 +821,14 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   return {
     caps,
     saveExt: saveFormat.ext,
-    saveMetadata: { core: 'html5-bridge', format: saveFormat.ext },
+    saveMetadata: { core: 'html5-bridge', format: saveFormatId },
     async saveState() {
       const data = await requestSaveBridge('export')
       if (!(data instanceof ArrayBuffer) || data.byteLength === 0) throw new Error('网页游戏返回了空存档')
       return new Blob([data], { type: saveFormat.mime })
     },
     setCloudAutoSaveMode(enabled, paused = false, clearPaused = false) {
-      if (!isManagedPvzEntry() || !saveBridgeReady || !saveBridgeOrigin || !iframe.contentWindow) return
+      if (!isManagedAutoSaveEntry() || !saveBridgeReady || !saveBridgeOrigin || !iframe.contentWindow) return
       iframe.contentWindow.postMessage({
         source: SAVE_BRIDGE_SOURCE,
         version: SAVE_BRIDGE_VERSION,
@@ -825,7 +844,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       saveBridgeReady = false
       caps.delete('saveState')
       options.onCaps?.(caps)
-      // PvZ 和 Digiverse 都只在启动时读取玩家资料；导入后原地重载才会使用新进度。
+      // PvZ、Digiverse 和 Godot 页面都只在启动时读取玩家存档；导入后原地重载才会使用新进度。
       iframe.contentWindow?.location.reload()
     },
     /**

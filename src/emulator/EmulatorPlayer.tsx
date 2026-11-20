@@ -2202,14 +2202,19 @@ export function EmulatorPlayer({
         if (!isCurrent()) return
         setSaveRequest((current) => current + 1)
       },
-      onPvzAutoSaveRestore: async (localSave) => {
+      onHtml5AutoSaveRestore: async (localSave) => {
         const saveGameSlug = saveSlugOf(session)
-        if (session.runtime.id !== 'html5' || saveGameSlug !== 'plants-vs-zombies' ||
+        if (session.runtime.id !== 'html5' || !['plants-vs-zombies', 'gamblers-table'].includes(saveGameSlug || '') ||
           getSaveTarget() !== 'cloud' || !cloudSavesEnabled()) {
           return { enabled: false, data: null }
         }
+        if (localSave?.pausedByUserChoice) {
+          const reason = '你上次选择了本地存档；云端自动同步已暂停，请在存档面板加载云端存档或手动云端保存后恢复'
+          if (isCurrent()) setNotice(fmt(t.player.tools.saveCloudFailed, { msg: reason }))
+          return { enabled: false, data: null, paused: true, reason }
+        }
         if ((localSave?.byteLength ?? 0) > MAX_SAVE_BYTES) {
-          const reason = '本机 PvZ 存档超过云端容量上限；已保留本机进度并暂停自动上传'
+          const reason = '本机游戏存档超过云端容量上限；已保留本机进度并暂停自动上传'
           if (isCurrent()) setNotice(fmt(t.player.tools.saveCloudFailed, { msg: reason }))
           return { enabled: false, data: null, paused: true, reason }
         }
@@ -2228,9 +2233,9 @@ export function EmulatorPlayer({
           return { enabled: false, data: null, paused: true, reason }
         }
       },
-      onPvzAutoSaveSnapshot: async (data) => {
+      onHtml5AutoSaveSnapshot: async (data) => {
         const saveGameSlug = saveSlugOf(session)
-        if (!isCurrent() || session.runtime.id !== 'html5' || saveGameSlug !== 'plants-vs-zombies' ||
+        if (!isCurrent() || session.runtime.id !== 'html5' || !['plants-vs-zombies', 'gamblers-table'].includes(saveGameSlug || '') ||
           getSaveTarget() !== 'cloud' || !cloudSavesEnabled()) {
           return 'disabled'
         }
@@ -2241,7 +2246,10 @@ export function EmulatorPlayer({
             data,
             0,
             'cloud',
-            { core: 'html5-bridge', format: 'pvzsave.zip' },
+            {
+              core: 'html5-bridge',
+              format: saveGameSlug === 'gamblers-table' ? '8bitgo-gamblers-table-idbfs-v1' : 'pvzsave.zip',
+            },
             { automatic: true },
           )
           if (result.where === 'cloud' && !result.cloudFailed) return 'saved'

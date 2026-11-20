@@ -14,6 +14,8 @@ const mediaBridgeSource = readFileSync(resolve(repo, 'public/html5-api/8bitgo-me
 const bridgeVersion = createHash('sha256').update(bridgeSource).digest('hex').slice(0, 16)
 const gameSdkVersion = createHash('sha256').update(gameSdkSource).digest('hex').slice(0, 16)
 const mediaBridgeVersion = createHash('sha256').update(mediaBridgeSource).digest('hex').slice(0, 16)
+const gamblersSaveBridgeSource = readFileSync(resolve(repo, 'public/web/gamblers-table/8bitgo-save-bridge.js'))
+const gamblersSaveBridgeVersion = createHash('sha256').update(gamblersSaveBridgeSource).digest('hex').slice(0, 16)
 const names = process.argv.slice(2).filter((value) => !value.startsWith('-'))
 const selected = names.length ? names : Object.keys(WEB_GAME_PAGES)
 
@@ -65,6 +67,11 @@ for (const name of selected) {
         assert.match(html, /data-canvas-selector="body\.game-mode canvas#canvas"/, `${name}/${file} 没有把 PvZ 主画布登记给 SDK`)
         assert.ok(html.indexOf('8bitgo-media-bridge.js?v=') >= 0 && html.indexOf('8bitgo-media-bridge.js?v=') < html.indexOf('pvz-wasm-loader.js'), `${name}/${file} 必须在 PvZ 音频运行时前安装媒体桥`)
       }
+    } else if (name === 'gamblers-table') {
+      assert.ok(html.includes(`/html5-api/8bitgo-game-sdk.min.js?v=${gameSdkVersion}`), `${name}/${file} 没有加载当前版本 8BitGo SDK`)
+      assert.match(html, /data-canvas-selector="#canvas"/, `${name}/${file} 没有把 Godot 主画布登记给 SDK`)
+      assert.ok(html.includes(`8bitgo-save-bridge.js?v=${gamblersSaveBridgeVersion}`), `${name}/${file} 没有加载当前版本 Godot IDBFS 云存档桥`)
+      assert.ok(html.indexOf('8bitgo-media-bridge.js?v=') >= 0 && html.indexOf('8bitgo-media-bridge.js?v=') < html.indexOf('src="index.js"'), `${name}/${file} 必须在 Godot 初始化前安装媒体桥`)
     } else if (name === 'minecraft') {
       assert.ok(html.includes(`/html5-api/8bitgo-game-sdk.min.js?v=${gameSdkVersion}`), `${name}/${file} 没有加载当前版本 8BitGo SDK`)
       assert.match(html, /data-canvas-selector="body#game_frame canvas"/, `${name}/${file} 没有把 Minecraft 画布登记给 SDK`)

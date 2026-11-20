@@ -1,12 +1,13 @@
 /*
   Gamblers Table（Godot 4 Web 导出）的发布完整性检查。
 
-  这是一款自托管的 Godot WASM 游戏，入口在站内 /web/gamblers-table/，
-  与早期 Vite / DOM 版的 Digiverse 实现不同：它没有 8BitGo 存档桥（即无 JSON 云存档），
-  因此这里只校验「入口是 Godot 加载器 + 资源齐全 + 完全自托管 + 没有泄露源码的 sourcemap
+  这是一款自托管的 Godot WASM 游戏，入口在站内 /web/gamblers-table/。
+  它用窄接口同步 Godot IDBFS 的 /userfs，并通过 8BitGo 存档桥交换 JSON 快照；
+  这里只校验「入口是 Godot 加载器 + 资源齐全 + 完全自托管 + 存档桥接口存在 + 没有泄露源码的 sourcemap
   + 内置游戏表与适配器把入口指向站内自托管」。不验证游戏内部逻辑（那是 Godot 引擎的事）。
 */
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -40,6 +41,18 @@ if (existsSync(indexPath)) {
   ok(html.includes('GODOT_CONFIG') || html.includes('new Engine('), '入口不是 Godot 加载器')
   ok(html.includes('index.js'), '入口没有加载 Godot 引擎脚本 index.js')
   ok(!/(?:src|href)=["']https?:\/\//i.test(html), '入口依赖外部运行资源，不是完整自托管')
+  const bridgePath = resolve(root, '8bitgo-save-bridge.js')
+  const bridgeVersion = existsSync(bridgePath)
+    ? createHash('sha256').update(readFileSync(bridgePath)).digest('hex').slice(0, 16)
+    : ''
+  ok(Boolean(bridgeVersion) && html.includes(`8bitgo-save-bridge.js?v=${bridgeVersion}`), '入口没有加载当前版本的 Gamblers Table 8BitGo 存档桥')
+  ok(html.includes('/html5-api/8bitgo-game-sdk.min.js'), '入口没有加载 8BitGo 游戏 SDK')
+  ok(html.includes('initializeBeforeStart') && html.includes('markStarted'), 'Godot 启动没有等待云存档恢复或启用自动同步')
+}
+
+const runtimePath = resolve(root, 'index.js')
+if (existsSync(runtimePath)) {
+  ok(text(runtimePath).includes('Module["8bitgoSyncPersistentFS"]=GodotFS.sync;'), 'Godot 运行时没有导出持久化 FS 同步接口')
 }
 
 // 生产目录不应发布可还原上游源码的 sourcemap（Godot 导出通常不生成，这里兜底拦一道）
@@ -60,6 +73,7 @@ const adapterPath = resolve(repo, 'src/emulator/adapters/html5.ts')
 if (existsSync(adapterPath)) {
   const adapter = text(adapterPath)
   ok(adapter.includes("options.gameSlug === 'gamblers-table'"), 'HTML5 适配器没有区分 Gamblers Table 存档格式')
+  ok(adapter.includes('isManagedGamblersTableEntry'), 'HTML5 适配器没有把 Gamblers Table 加入自动云存档 / SDK 精确白名单')
 }
 
 if (errors.length) {
