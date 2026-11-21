@@ -433,6 +433,30 @@ await check('光盘候选（PSP / Dolphin / PS2）都按记分板排序', async 
   assert.match(play, /rankRomRoutes\(\[options\.game, \.\.\.alternateRomUrls\(options\.game\)\]\)/)
 })
 
+await check('真实用户回报：只计托管的优选域名，合并掉的同批失败不重复计', async () => {
+  const report = await import('../src/services/romRouteReport.ts')
+  report.takeRouteReport()
+  const seen = []
+  health.setRomRouteListener((origin, ok) => {
+    seen.push([origin, ok])
+    report.noteRouteResult(origin, ok)
+  })
+  try {
+    const t = 5_000_000
+    health.recordRomRouteFailure('https://rom.8bitgo.com/roms/a.zip', 'network', t)
+    health.recordRomRouteFailure('https://rom.8bitgo.com/roms/a.zip.8bg', 'timeout', t + 100) // 同一批，合并
+    health.recordRomRouteTransfer('https://download.8bitgo.com/roms/a.zip', 128 * 1024, 100, t + 200)
+    health.recordRomRouteFailure('https://assets.8bitgo.com/roms/a.zip', 'network', t + 300) // 不托管
+    assert.equal(seen.length, 3)
+    const body = JSON.parse(report.takeRouteReport())
+    assert.deepEqual(body.r, [{ h: 'rom.8bitgo.com', ok: 0, fail: 1 }, { h: 'download.8bitgo.com', ok: 1, fail: 0 }])
+    assert.equal(report.takeRouteReport(), null, '取过一次就清空')
+    assert.equal(report.routeReportHost('http://rom.8bitgo.com'), '', '只认 https')
+  } finally {
+    health.setRomRouteListener(null)
+  }
+})
+
 if (failed) {
   console.error(`\n${failed} 项失败`)
   process.exit(1)

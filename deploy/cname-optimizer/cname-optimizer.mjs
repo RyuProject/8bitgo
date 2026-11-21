@@ -52,7 +52,24 @@ export const DEFAULTS = {
   ipsPerIsp: 2,
   probeTimeoutMs: 12000,
   failThreshold: 3,
-  stateFile: '/var/lib/8bitgo/cname-optimizer.json',
+  // 和 systemd 单元里的 CNAME_OPT_STATE_FILE 一致：手动跑和定时器跑看的是同一份状态
+  stateFile: '/var/lib/8bitgo-cname-optimizer/state.json',
+  // 大陆玩家的真实回报（server/src/route-report.js，只允许本机读）。留空则只看源站体检。
+  reportUrl: 'http://127.0.0.1:8788/api/internal/route-health',
+  // 至少这么多不同访客有数据才下结论；全失败访客占比 ≥ badShare 判坏，有成功访客占比 ≥ goodShare 判好。
+  reportMinVisitors: 5,
+  reportBadShare: 0.6,
+  reportGoodShare: 0.8,
+  // 换线后这段时间内的回报不算新目标的：DNS TTL 300 秒 + 运营商缓存，玩家还在连旧目标。
+  reportGraceMs: 10 * 60 * 1000,
+  // 因玩家回报换掉的目标，这么久内不再选回来（源站体检看它多半还是「健康」）。
+  userBadTtlMs: 6 * 60 * 60 * 1000,
+  // 同时体检几个候选域名（每个域名内部最多 3 运营商 × 2 IP 并行）
+  probeConcurrency: 4,
+  // 除了要换的域名数，再多找几个健康候选，留给 pickReplacement 挑快的 / 不重复的
+  spareCandidates: 2,
+  // 找过一次一个健康候选都没有，这么久之内不再全量体检（期间当前目标照常每轮体检）
+  noCandidateBackoffMs: 30 * 60 * 1000,
 }
 
 // https://www.cloudflare.com/ips-v4 （2026-11-16）
@@ -126,6 +143,64 @@ export function pickReplacement(judged, { exclude = [], inUseElsewhere = [] } = 
   return pool[0] || null
 }
 
+// 大陆玩家的真实回报 → good / bad / unknown。一人一票：只有失败、没有一次成功的访客才算「对他不通」。
+export function judgeUserReports(stats, { minVisitors = 5, badShare = 0.6, goodShare = 0.8 } = {}) {
+  const visitors = Number(stats?.visitors) || 0
+  if (visitors < minVisitors) return { verdict: 'unknown', reason: `大陆回报 ${visitors} 人，不足 ${minVisitors} 人` }
+  const failOnly = Number(stats.failOnlyVisitors) || 0
+  const ok = Number(stats.okVisitors) || 0
+  const desc = `大陆回报 ${visitors} 人：${ok} 人连上、${failOnly} 人全失败`
+  if (failOnly >= visitors * badShare) return { verdict: 'bad', reason: desc }
+  if (ok >= visitors * goodShare) return { verdict: 'good', reason: desc }
+  return { verdict: 'unknown', reason: desc }
+}
+
+// 源站体检 + 玩家回报 → 这一轮算不算健康。
+// - 玩家说坏：不健康（这正是源站看不到的「香港通、大陆不通」）。
+// - 源站说坏、玩家说好：解析到非 CF IP 这种硬伤照判不健康；其余（香港到这批 IP 的连通问题）听玩家的。
+export function combineVerdicts(probeVerdict, user) {
+  if (user?.verdict === 'bad') return { healthy: false, reason: `${user.reason}（源站体检：${probeVerdict.reason}）`, byUsers: true }
+  if (!probeVerdict.healthy && user?.verdict === 'good' && !/非 Cloudflare|解析不到/.test(probeVerdict.reason)) {
+    return { healthy: true, reason: `${user.reason}，忽略源站体检（${probeVerdict.reason}）`, byUsers: true }
+  }
+  return { healthy: probeVerdict.healthy, reason: probeVerdict.reason, byUsers: false }
+}
+
+// 回报从什么时候算起：目标换过（或第一次看到）就从那之后 + 宽限期，免得把旧目标的失败算到新目标头上。
+export function reportSince(hostState, currentTarget, nowMs, graceMs) {
+  const switchedAt = hostState?.target === currentTarget ? Date.parse(hostState?.switchedAt || '') : NaN
+  return Number.isFinite(switchedAt) ? switchedAt + graceMs : nowMs + graceMs
+}
+
+// 按顺序体检候选，限并发，凑够 want 个健康的就不再开新的。以前一次把全部候选（几十个域名 × 3 运营商 × 2 IP，
+// 每个 64KB）同时打出去：几百个并发 TLS 连接、二十多 MB 流量，香港小机器上整轮能占满几十秒。
+export async function findHealthy(names, examine, { concurrency = 4, want = 3 } = {}) {
+  const judged = []
+  let healthy = 0
+  let next = 0
+  const worker = async () => {
+    while (next < names.length && healthy < want) {
+      const c = await examine(names[next++])
+      judged.push(c)
+      if (c.verdict.healthy) healthy++
+    }
+  }
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, names.length)) }, worker))
+  return judged
+}
+
+// 同一个 CNAME 目标下只要有一个域名被玩家判坏，整个目标都算坏；否则各用各的结论。
+export function targetUserVerdicts(entries) {
+  const badByTarget = new Map()
+  for (const e of entries) if (e.user?.verdict === 'bad' && !badByTarget.has(e.target)) badByTarget.set(e.target, e)
+  const out = {}
+  for (const e of entries) {
+    const bad = badByTarget.get(e.target)
+    out[e.host] = bad && bad.host !== e.host ? { verdict: 'bad', reason: `同一目标的 ${bad.host}：${bad.user.reason}` } : e.user
+  }
+  return out
+}
+
 // 失败计数：健康清零；不健康 +1；到阈值才该换。
 export function nextFailureCount(prev, healthy) {
   return healthy ? 0 : (Number(prev) || 0) + 1
@@ -145,6 +220,9 @@ function loadConfig(env = process.env) {
     extraCandidates: list(env.CNAME_OPT_EXTRA, []),
     blocklist: [...DEFAULTS.blocklist, ...list(env.CNAME_OPT_BLOCKLIST, [])],
     failThreshold: Number(env.CNAME_OPT_FAIL_THRESHOLD) || DEFAULTS.failThreshold,
+    reportUrl: env.CNAME_OPT_REPORT_URL ?? DEFAULTS.reportUrl,
+    reportMinVisitors: Number(env.CNAME_OPT_REPORT_MIN_VISITORS) || DEFAULTS.reportMinVisitors,
+    probeConcurrency: Number(env.CNAME_OPT_PROBE_CONCURRENCY) || DEFAULTS.probeConcurrency,
     stateFile: env.CNAME_OPT_STATE_FILE || DEFAULTS.stateFile,
     zoneId: env.CF_ZONE_ID || '',
     token: env.CF_DNS_API_TOKEN || '',
@@ -181,63 +259,92 @@ async function resolveIsps(cfg, name) {
 }
 
 // 连指定 IP，SNI / Host 用我们的域名，取探针并核对长度与 ETag。
+// 两道时限：socket 空闲（每来一个字节重置）+ 整体硬时限 —— 只有前者的话，一条每几秒吐一个字节的慢连接
+// 能把整轮拖到 systemd 的 TimeoutStartSec 被杀，状态一次都存不下来。
+// expectEtag === null 表示「只取 ETag」（基线用）。
 function probeIp(cfg, ip, host, expectEtag) {
   return new Promise((resolve) => {
     const t0 = performance.now()
     let bytes = 0
-    const done = (ok, why) => resolve({ ip, ok, ms: Math.round(performance.now() - t0), why })
-    const req = https.request({
+    let settled = false
+    let req = null
+    const done = (ok, why, etag) => {
+      if (settled) return
+      settled = true
+      clearTimeout(hard)
+      if (req) req.destroy()
+      resolve({ ip, ok, ms: Math.round(performance.now() - t0), why, etag })
+    }
+    const hard = setTimeout(() => done(false, '超时'), cfg.probeTimeoutMs)
+    req = https.request({
       host: ip, servername: host, port: 443, method: 'GET', path: cfg.probePath,
-      headers: { host, 'user-agent': '8bitgo-cname-optimizer/1', 'cache-control': 'no-cache' },
+      headers: { host, 'user-agent': '8bitgo-cname-optimizer/2' },
       timeout: cfg.probeTimeoutMs,
     }, (res) => {
       if (res.statusCode !== 200) { res.resume(); return done(false, `HTTP ${res.statusCode}`) }
-      const etag = res.headers.etag
-      res.on('data', (c) => { bytes += c.length })
+      const etag = res.headers.etag || ''
+      res.on('data', (c) => {
+        bytes += c.length
+        // 超长就别再读了（对方回的不是探针）
+        if (bytes > cfg.probeBytes) done(false, `长度 >${cfg.probeBytes}`)
+      })
       res.on('end', () => {
         if (bytes !== cfg.probeBytes) return done(false, `长度 ${bytes}`)
         if (expectEtag && etag !== expectEtag) return done(false, `ETag ${etag}`)
-        done(true)
+        done(true, undefined, etag)
       })
       res.on('error', (e) => done(false, e.code || e.message))
+      res.on('aborted', () => done(false, '连接中断'))
     })
-    req.on('timeout', () => req.destroy(new Error('超时')))
+    req.on('timeout', () => done(false, '超时'))
     req.on('error', (e) => done(false, e.code || e.message))
     req.end()
   })
 }
 
-async function examine(cfg, name, host, expectEtag) {
+// 网络层失败（超时 / 重置）重试一次，单次抖动不算这个 IP 坏；HTTP 错误、长度 / ETag 不符不重试。
+async function probeWithRetry(cfg, ip, host, expectEtag) {
+  const first = await probeIp(cfg, ip, host, expectEtag)
+  return first.ok || /^HTTP |^长度|^ETag/.test(first.why) ? first : probeIp(cfg, ip, host, expectEtag)
+}
+
+// 一轮里的共享缓存：同一个 IP 常被多个优选域名 / 多个运营商同时解析到（实测 172.64.79.252 出现在两个候选里），
+// 每个 IP 一轮只测一次；同一个域名也只解析一次。
+function createRunContext(cfg, host, expectEtag) {
+  const probes = new Map()
+  const names = new Map()
+  const probe = (ip) => {
+    if (!probes.has(ip)) probes.set(ip, probeWithRetry(cfg, ip, host, expectEtag))
+    return probes.get(ip)
+  }
+  const examine = (name) => {
+    if (!names.has(name)) names.set(name, examineName(cfg, name, probe))
+    return names.get(name)
+  }
+  return { examine, probeCount: () => probes.size }
+}
+
+async function examineName(cfg, name, probe) {
   const resolved = await resolveIsps(cfg, name)
   const isps = {}
   await Promise.all(Object.entries(resolved).map(async ([isp, ips]) => {
     const uniq = [...new Set(ips)]
     const nonCloudflare = uniq.filter((ip) => !inCloudflare(ip))
-    const sample = uniq.filter((ip) => inCloudflare(ip)).slice(0, cfg.ipsPerIsp)
-    // 网络层失败（超时 / 重置）重试一次，单次抖动不算这个 IP 坏；HTTP 错误、长度 / ETag 不符不重试。
-    const probes = await Promise.all(sample.map(async (ip) => {
-      const first = await probeIp(cfg, ip, host, expectEtag)
-      return first.ok || /^HTTP |^长度|^ETag/.test(first.why) ? first : probeIp(cfg, ip, host, expectEtag)
-    }))
-    isps[isp] = { probes, nonCloudflare }
+    // 已经确定不健康（有非 CF IP）就不必再测连通性
+    const sample = nonCloudflare.length ? [] : uniq.filter((ip) => inCloudflare(ip)).slice(0, cfg.ipsPerIsp)
+    isps[isp] = { probes: await Promise.all(sample.map(probe)), nonCloudflare }
   }))
   const result = { name, isps }
   return { ...result, verdict: judgeCandidate(result) }
 }
 
+// 基线：直连 assets 取探针，拿到 ETag 作为后面所有比对的标准。用同一个带硬时限的探测函数，
+// 旧实现响应流出错时没有 error 监听，会直接把进程抛崩。
 async function baseline(cfg) {
-  const ips = await dns.resolve4(cfg.baselineHost)
-  for (const ip of ips.slice(0, 2)) {
-    const etag = await new Promise((resolve) => {
-      const req = https.request({ host: ip, servername: cfg.baselineHost, path: cfg.probePath, headers: { host: cfg.baselineHost }, timeout: cfg.probeTimeoutMs }, (res) => {
-        res.resume()
-        res.on('end', () => resolve(res.statusCode === 200 ? res.headers.etag || '' : null))
-      })
-      req.on('timeout', () => req.destroy())
-      req.on('error', () => resolve(null))
-      req.end()
-    })
-    if (etag !== null) return etag
+  const ips = (await dns.resolve4(cfg.baselineHost)).slice(0, 2)
+  for (const ip of ips) {
+    const r = await probeWithRetry(cfg, ip, cfg.baselineHost, null)
+    if (r.ok && r.etag) return r.etag
   }
   throw new Error(`基线 ${cfg.baselineHost} 取不到探针`)
 }
@@ -286,9 +393,42 @@ async function saveState(file, state) {
   await fs.rename(tmp, file)
 }
 
+// 读玩家回报：同一个 since 一轮只取一次；第一次就读不到（服务没起来）这一轮不再试，免得每个域名各等一次超时。
+function createReportReader(cfg) {
+  const cache = new Map()
+  let down = !cfg.reportUrl
+  return async (since) => {
+    if (down) return null
+    const key = Math.floor(since)
+    if (!cache.has(key)) {
+      cache.set(key, getJson(`${cfg.reportUrl}?since=${key}`, { timeoutMs: 5000 }).catch((e) => {
+        down = true
+        log(`[回报] 读不到玩家回报（${e.message}），本轮只看源站体检`)
+        return null
+      }))
+    }
+    return cache.get(key)
+  }
+}
+
 function describe(c) {
   const parts = Object.entries(c.isps).map(([isp, r]) => `${isp}:${r.probes.map((p) => (p.ok ? `${p.ip}✓${p.ms}ms` : `${p.ip}✗${p.why}`)).join(' ') || '无'}`)
   return `${c.name} ${c.verdict.healthy ? '健康' : '不健康'}（${c.verdict.reason}） ${parts.join(' | ')}`
+}
+
+async function loadCandidateNames(cfg, records) {
+  let listText = ''
+  if (cfg.candidateListUrl) {
+    try {
+      const r = await fetch(cfg.candidateListUrl, { signal: AbortSignal.timeout(10000) })
+      if (r.ok) listText = (await r.text()).slice(0, 256 * 1024)
+      else log(`[候选] 列表 HTTP ${r.status}，只用保底候选`)
+    } catch (e) { log(`[候选] 列表拉取失败（${e.message}），只用保底候选`) }
+  }
+  return buildCandidates({
+    listText, seeds: cfg.seedCandidates, extra: cfg.extraCandidates,
+    current: cfg.hosts.map((h) => records[h].target), blocklist: cfg.blocklist,
+  })
 }
 
 async function main(argv = process.argv.slice(2)) {
@@ -302,68 +442,108 @@ async function main(argv = process.argv.slice(2)) {
   const expectEtag = await baseline(cfg)
   const records = canWrite ? await readRecords(cfg) : await readCurrentViaDns(cfg)
   const state = await loadState(cfg.stateFile)
-  const probeHost = cfg.hosts[0]
+  state.hosts ||= {}
+  const run = createRunContext(cfg, cfg.hosts[0], expectEtag)
+  const readReports = createReportReader(cfg)
+  const nowMs = Date.now()
+  const now = new Date(nowMs).toISOString()
 
-  // 各域名的当前目标先体检（同一个目标只测一次）。
-  const cache = new Map()
-  const check = async (name) => {
-    if (!cache.has(name)) cache.set(name, examine(cfg, name, probeHost, expectEtag))
-    return cache.get(name)
-  }
+  // 1. 当前目标体检（同一个目标只测一次）+ 玩家回报
   const current = {}
-  for (const host of cfg.hosts) current[host] = await check(records[host].target)
-  for (const host of cfg.hosts) log(`[当前] ${host} → ${describe(current[host])}`)
+  const users = {}
+  for (const host of cfg.hosts) {
+    current[host] = await run.examine(records[host].target)
+    log(`[当前] ${host} → ${describe(current[host])}`)
+    const hs = state.hosts[host] || {}
+    const since = reportSince(hs, records[host].target, nowMs, cfg.reportGraceMs)
+    const reports = since < nowMs ? await readReports(since) : null
+    const user = reports
+      ? judgeUserReports(reports.hosts?.[host], { minVisitors: cfg.reportMinVisitors, badShare: cfg.reportBadShare, goodShare: cfg.reportGoodShare })
+      : { verdict: 'unknown', reason: since >= nowMs ? '目标刚生效，等宽限期过了再看大陆回报' : '没有大陆回报' }
+    users[host] = user
+  }
+  // 玩家回报是按「我们的域名」收的，坏的却是「CNAME 目标」：两个域名指向同一个目标时，
+  // 一个被大陆玩家判坏，另一个也一样坏（只是用的人少、凑不够票）。
+  const userByTarget = targetUserVerdicts(cfg.hosts.map((h) => ({ host: h, target: records[h].target, user: users[h] })))
+  const combined = {}
+  for (const host of cfg.hosts) {
+    const user = userByTarget[host]
+    combined[host] = combineVerdicts(current[host].verdict, user)
+    log(`[回报] ${host} → ${user.reason}；本轮判定：${combined[host].healthy ? '健康' : '不健康'}`)
+  }
 
-  const failing = cfg.hosts.filter((h) => !current[h].verdict.healthy)
+  // 被玩家判坏过、还在冷却期的目标不再选回来
+  const userBad = Object.fromEntries(Object.entries(state.userBad || {}).filter(([, until]) => Date.parse(until) > nowMs))
+  state.userBad = userBad
+
+  // 2. 要不要找替换候选：只有这一轮就会到阈值的域名才值得（以前第一次不健康就把全部候选测一遍，
+  //    而换线要等第三次 —— 前两轮的几百个连接全白测）。找过一次一个健康的都没有，冷却一段时间再找。
+  const failures = Object.fromEntries(cfg.hosts.map((h) => [h, nextFailureCount(state.hosts[h]?.failures, combined[h].healthy)]))
+  const due = cfg.hosts.filter((h) => failures[h] >= cfg.failThreshold)
+  const searchBlocked = !survey && Date.parse(state.noCandidateUntil || '') > nowMs
   let judged = []
-  if (survey || failing.length) {
-    let listText = ''
-    if (cfg.candidateListUrl) {
-      try {
-        const r = await fetch(cfg.candidateListUrl, { signal: AbortSignal.timeout(10000) })
-        if (r.ok) listText = await r.text()
-        else log(`[候选] 列表 HTTP ${r.status}，只用保底候选`)
-      } catch (e) { log(`[候选] 列表拉取失败（${e.message}），只用保底候选`) }
-    }
-    const names = buildCandidates({
-      listText, seeds: cfg.seedCandidates, extra: cfg.extraCandidates,
-      current: cfg.hosts.map((h) => records[h].target), blocklist: cfg.blocklist,
+  if (survey || (due.length && !searchBlocked)) {
+    const exclude = new Set([...due.map((h) => records[h].target), ...Object.keys(userBad)])
+    const names = (await loadCandidateNames(cfg, records)).filter((n) => survey || !exclude.has(n))
+    judged = await findHealthy(names, run.examine, {
+      concurrency: cfg.probeConcurrency,
+      want: survey ? Infinity : due.length + cfg.spareCandidates,
     })
-    judged = await Promise.all(names.map(check))
+    log(`[候选] 体检了 ${judged.length}/${names.length} 个候选，${judged.filter((c) => c.verdict.healthy).length} 个健康，共连了 ${run.probeCount()} 个 IP`)
     if (survey) {
       for (const c of [...judged].sort((a, b) => (b.verdict.healthy - a.verdict.healthy) || ((a.verdict.medianMs ?? 1e9) - (b.verdict.medianMs ?? 1e9)))) log(`[候选] ${describe(c)}`)
     }
+  } else if (due.length) {
+    log(`[候选] 上次没找到健康候选，${state.noCandidateUntil} 之前不再全量体检`)
   }
   if (statusOnly) return
 
-  const now = new Date().toISOString()
+  // 3. 记账 + 换线。每个域名单独 try：一个改 DNS 失败不能让另一个的计数和整份状态都丢掉。
+  let noCandidate = false
   for (const host of cfg.hosts) {
     const hs = state.hosts[host] || {}
-    const healthy = current[host].verdict.healthy
-    hs.target = records[host].target
-    hs.failures = nextFailureCount(hs.failures, healthy)
-    hs.lastCheck = now
-    hs.lastVerdict = current[host].verdict.reason
     state.hosts[host] = hs
-    if (healthy || hs.failures < cfg.failThreshold) {
-      if (!healthy) log(`[判定] ${host} 第 ${hs.failures}/${cfg.failThreshold} 次不健康，暂不换线`)
+    if (hs.target !== records[host].target || !hs.switchedAt) hs.switchedAt = now
+    hs.target = records[host].target
+    hs.failures = failures[host]
+    hs.lastCheck = now
+    hs.lastVerdict = combined[host].reason
+    if (combined[host].healthy || hs.failures < cfg.failThreshold) {
+      if (!combined[host].healthy) log(`[判定] ${host} 第 ${hs.failures}/${cfg.failThreshold} 次不健康，暂不换线`)
       continue
     }
+    if (searchBlocked) continue
     const inUseElsewhere = cfg.hosts.filter((h) => h !== host).map((h) => records[h].target)
-    const pick = pickReplacement(judged, { exclude: [records[host].target], inUseElsewhere })
-    if (!pick) { log(`[判定] ${host} 连续 ${hs.failures} 次不健康，但没有健康的候选，保持不动`); continue }
+    const pick = pickReplacement(judged, { exclude: [records[host].target, ...Object.keys(userBad)], inUseElsewhere })
+    if (!pick) {
+      noCandidate = true
+      log(`[判定] ${host} 连续 ${hs.failures} 次不健康，但没有健康的候选，保持不动`)
+      continue
+    }
     log(`[换线] ${host}: ${records[host].target} → ${pick.name}（${pick.verdict.reason}，源站中位 ${pick.verdict.medianMs}ms）${dryRun ? '［dry-run，未改 DNS］' : ''}`)
-    if (!dryRun) {
+    if (dryRun) continue
+    try {
       await cfApi(cfg, 'PATCH', `/zones/${cfg.zoneId}/dns_records/${records[host].id}`, {
         content: pick.name,
-        comment: `优选 CNAME，由 8bitgo-cname-optimizer 于 ${now} 自动切换（原 ${records[host].target}：${current[host].verdict.reason}）`,
+        // 免费套餐 DNS 记录备注上限 100 字符，超了整个 PATCH 会被拒
+        comment: `优选CNAME 自动切换 ${now.slice(0, 16)} 原${records[host].target}`.slice(0, 100),
       })
-      state.history = [...(state.history || []), { at: now, host, from: records[host].target, to: pick.name, reason: current[host].verdict.reason }].slice(-50)
-      records[host].target = pick.name
-      hs.target = pick.name
-      hs.failures = 0
+    } catch (e) {
+      log(`[错误] ${host} 改 DNS 失败：${e.message}`)
+      process.exitCode = 1
+      continue
     }
+    state.history = [...(state.history || []), { at: now, host, from: records[host].target, to: pick.name, reason: combined[host].reason }].slice(-50)
+    if (combined[host].byUsers) userBad[records[host].target] = new Date(nowMs + cfg.userBadTtlMs).toISOString()
+    records[host].target = pick.name
+    hs.target = pick.name
+    hs.switchedAt = now
+    hs.failures = 0
   }
+  // dry-run 不落状态：否则手动试跑一次就给定时器的失败计数 +1，可能让它提前换线
+  if (dryRun) return
+  if (noCandidate) state.noCandidateUntil = new Date(nowMs + cfg.noCandidateBackoffMs).toISOString()
+  else delete state.noCandidateUntil
   await saveState(cfg.stateFile, state)
 }
 

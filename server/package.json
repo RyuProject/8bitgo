@@ -14,6 +14,7 @@
     "test:edge-purge": "node scripts/test-edge-purge.mjs",
     "test:cn-edge": "node scripts/test-cn-edge.mjs",
     "test:download-proxy": "node scripts/test-download-proxy.mjs",
+    "test:route-report": "node scripts/test-route-report.mjs",
     "test:db": "node scripts/test-connection.mjs",
     "test:mail": "node scripts/test-mail.mjs",
     "test:submit": "node scripts/test-submit-game.mjs",

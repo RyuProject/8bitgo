@@ -357,6 +357,17 @@ const FACTS = [
     },
   },
   {
+    id: 'route-reports',
+    where: 'no-account',
+    doc: 'privacy',
+    what: '大陆访客回报优选下载线路的成败次数：只在内存按 IP 摘要区分访客、不存 IP、保留 30 分钟',
+    probe: ['server/src/route-report.js', 'REPORT_WINDOW_MS = 30 * 60 * 1000'],
+    say: {
+      zh: ['下载线路回报|下載線路回報', '不保存 IP', '30 分钟|30 分鐘'],
+      en: ['Download route reports', 'does not store the IP address', '30 minutes'],
+    },
+  },
+  {
     id: 'startup-diagnostics-retention',
     where: 'retention',
     doc: 'privacy',
