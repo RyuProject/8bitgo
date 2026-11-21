@@ -6,6 +6,8 @@
 const GAME = /*__GAME_CONFIG__*/ null
 
 const ASSET_BASE_DEFAULT = 'https://assets.8bitgo.com'
+// 网页游戏桶只读入口；Gamblers Table 的大 Godot 文件在此桶，不在 ROM 桶。
+const WEBGAME_ASSET_BASE_DEFAULT = 'https://html5.8bitgo.com'
 // GTA VC 的大资源走专用下载域，让 CNAME 优选把玩家送到合适的资源入口。
 const GTA_VC_DOWNLOAD_BASE_DEFAULT = 'https://download.8bitgo.com'
 const PVZ_DATA_BASE_DEFAULT = 'https://download.8bitgo.com/PvZ/properties'
@@ -473,7 +475,8 @@ export default {
       if (dataPath) return proxyPvzData(request, dataPath, env.PVZ_DATA_BASE_URL)
     }
 
-    const base = String(env.RUNTIME_ASSET_BASE_URL || ASSET_BASE_DEFAULT).replace(/\/+$/, '')
+    const defaultAssetBase = GAME.runtime === 'gamblers-table' ? WEBGAME_ASSET_BASE_DEFAULT : ASSET_BASE_DEFAULT
+    const base = String(env.RUNTIME_ASSET_BASE_URL || defaultAssetBase).replace(/\/+$/, '')
     const asset = runtimeAsset(url.pathname, base)
     if (asset === null) return new Response('bad name', { status: 400 })
     if (asset) return proxyRuntime(request, asset)

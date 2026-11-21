@@ -17,7 +17,7 @@ const arg = (name) => {
 const bucket = arg('bucket') || process.env.WEBGAME_R2_BUCKET || ''
 const prefix = (arg('prefix') || 'web/gamblers-table/runtime').replace(/^\/+|\/+$/g, '')
 const source = arg('src') || join(root, 'public/web/gamblers-table')
-const publicBase = (arg('public-base') || 'https://assets.8bitgo.com').replace(/\/+$/, '')
+const publicBase = (arg('public-base') || 'https://html5.8bitgo.com').replace(/\/+$/, '')
 const dryRun = process.argv.includes('--dry-run')
 const skipPublicCheck = process.argv.includes('--skip-public-check')
 

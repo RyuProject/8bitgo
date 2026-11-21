@@ -167,7 +167,7 @@ for (const name of selected) {
       }), { ASSETS: assets })
       assert.equal(response.status, 200)
       assert.equal(response.headers.get('content-type'), 'application/wasm')
-      assert.equal(fetched.at(-1).url, 'https://assets.8bitgo.com/web/gamblers-table/runtime/index.wasm')
+      assert.equal(fetched.at(-1).url, 'https://html5.8bitgo.com/web/gamblers-table/runtime/index.wasm')
       assert.equal(fetched.at(-1).headers.get('range'), 'bytes=0-1023')
     }
     if (config.runtime === 'diablo') {
