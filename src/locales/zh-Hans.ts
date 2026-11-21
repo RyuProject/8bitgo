@@ -1690,6 +1690,7 @@ export const zhHans = {
     ejsOutOfMemoryVendor: '你正在用 {browser} 打开，它给网页的内存不够启动这个模拟器（已经试过低内存模式），重试也不会好。请用 Chrome、Edge 或 Firefox 打开本页再玩；在应用里打开的，点右上角「在浏览器打开」。',
     memoryCleanRetry: '内存不够，正在换一个干净的页面重开一次…',
     ejsWebglUnavailable: '浏览器无法创建 WebGL 画面。请开启硬件加速，或换用支持 WebGL 的浏览器或设备',
+    ejsScriptConflict: '浏览器里有别的脚本（常见是浏览器扩展）和模拟器用了同一个全局名「{name}」，模拟器无法启动。请停用浏览器扩展，或在无痕窗口里打开再试',
     ejsArcadeRomInvalid: '街机游戏文件不完整或不是有效的 ZIP：{name}',
     ejsArcadeUnknownSet: '模拟器不认识这个街机包（{msg}）。请确认 ZIP 文件名是正确的 romset 短名（如 kof97.zip、tekken3.zip），且内容是完整的同一版本。',
     ejsArcadeMissingFiles: '街机包缺少运行所需的文件（{msg}）。常见原因：BIOS 包没有绑定、克隆集缺父集 ROM，或 ROM 版本与模拟器不一致。',

@@ -1,7 +1,9 @@
 /**
  * POST /api/asset-repair  { build, files: [文件名] }
  *
- * 坏 chunk 自修复（public/assets/asset-repair-v6.js）发现「普通地址导入失败、带查询串地址校验正常」时调这里：
+ * 坏 chunk 自修复（public/assets/asset-repair-v7.js）发现「普通地址取回的内容 / 类型不对或取不下来、带查询串地址校验正常」时调这里。
+ * v6 曾在「普通地址字节正常、只是导入失败」时也调 —— 2026-11-19 实验证明那是静态依赖失败被本页模块表记住，
+ * 文件本身是好的，v7 不再为它请求清缓存（AGENTS.md §2.39）：
  * Cloudflare 边缘可能缓存了坏字节或 HTTP 错误响应，
  * 而这些文件一年 immutable，不清的话那个节点的所有访客都会一直拿到坏的。
  *

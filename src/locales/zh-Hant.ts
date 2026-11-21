@@ -1612,6 +1612,7 @@ const zhHant: Translation = {
     ejsOutOfMemoryVendor: '你正在用 {browser} 開啟，它給網頁的記憶體不足以啟動這個模擬器（已經試過低記憶體模式），重試也不會好。請用 Chrome、Edge 或 Firefox 開啟本頁再玩；在應用程式裡開啟的，點右上角「在瀏覽器開啟」。',
     memoryCleanRetry: '記憶體不足，正在換一個乾淨的頁面重開一次…',
     ejsWebglUnavailable: '瀏覽器無法建立 WebGL 畫面。請開啟硬體加速，或改用支援 WebGL 的瀏覽器或裝置',
+    ejsScriptConflict: '瀏覽器裡有別的腳本（常見是瀏覽器擴充功能）和模擬器用了同一個全域名稱「{name}」，模擬器無法啟動。請停用擴充功能，或在無痕視窗中開啟再試',
     ejsArcadeRomInvalid: '街機遊戲檔案不完整或不是有效的 ZIP：{name}',
     ejsArcadeUnknownSet: '模擬器不認識這個街機包（{msg}）。請確認 ZIP 檔名是正確的 romset 短名（如 kof97.zip、tekken3.zip），且內容是完整的同一版本。',
     ejsArcadeMissingFiles: '街機包缺少執行所需的檔案（{msg}）。常見原因：BIOS 包沒有綁定、複製集缺少父集 ROM，或 ROM 版本與模擬器不一致。',

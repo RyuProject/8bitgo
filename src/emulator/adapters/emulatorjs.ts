@@ -81,6 +81,7 @@ import {
   NDS_PERFORMANCE_SLOW_WINDOWS,
 } from '../ndsAdaptivePerformance'
 import { guardFrameGamepads, readGamepadsSafe } from '../gamepadAccess'
+import { engineScriptName, engineScriptSyntaxError, type EngineScriptError } from '../engineScriptErrors'
 import { isTyping } from '../hotkeyBridge'
 import { installMahjongKeyboard, startMahjongGamepad, type MahjongGamepad, type MahjongKeyboard, type MahjongTileKey } from '../mahjongPanel'
 import { isMahjongPanelRomset } from '../../../shared/mahjong-panel-sets.js'
@@ -1476,6 +1477,7 @@ function installErrorTap(
   onFatal: (line: string) => void,
   onCoreCrash?: (line: string) => void,
   onStartupActivity?: () => void,
+  onScriptSyntaxError?: (error: EngineScriptError) => void,
 ): { lines: string[] } {
   const lines: string[] = []
   const push = (level: string, text: string, error?: unknown) => {
@@ -1537,6 +1539,9 @@ function installErrorTap(
   win.addEventListener('error', (e) => {
     const event = e as ErrorEvent
     push('error', event.message || 'script error', event.error)
+    // 本站引擎脚本解析失败：整份没执行，不会再有进展；不等 120 秒看门狗（engineScriptErrors.ts，诊断包 #1331 / #1334 / #1343）
+    const scriptError = onScriptSyntaxError ? engineScriptSyntaxError(event, window.location.origin) : null
+    if (scriptError) onScriptSyntaxError?.(scriptError)
   })
   win.addEventListener('unhandledrejection', (e) => {
     const r = (e as PromiseRejectionEvent).reason
@@ -5551,6 +5556,14 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             : undefined,
           () => {
             if (!started && !loadFailed && !destroyed) beat()
+          },
+          (scriptError) => {
+            if (started || loadFailed || destroyed) return
+            const name = engineScriptName(scriptError.file)
+            logEngine(`[engine-script] ${name} 解析失败，整份没执行：${scriptError.message}`)
+            // 重复声明：这台浏览器里别的脚本（常见是扩展）先占了同一个全局名，重试、换 ROM 都一样 —— 不自动重试
+            if (scriptError.redeclared) return failLoad(fmt(rt.ejsScriptConflict, { name: scriptError.redeclared }), 'config')
+            return failLoad(fmt(rt.ejsEngineError, { msg: `${name}: ${scriptError.message}` }), 'runtime')
           })
         // 预下载好的 ROM：引擎取 blob: 地址时直接拿 Blob 回应，不走 Safari 的 blob URL 加载（见 installBlobFetchShortcut）
         if (preparedRomBlob && preparedArcadeBlobUrl && gameUrl === preparedArcadeBlobUrl) {
