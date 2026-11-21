@@ -30,9 +30,10 @@ const check = (name, fn) => {
 console.log('一、URL 规则')
 
 check('本站 R2 的 8BG JAR 交给服务端解包，不再经浏览器上传', () => {
-  const bases = ['https://assets.8bitgo.com', 'https://cn-assets.8bitgo.com', 'https://rom.8bitgo.com']
+  const bases = ['https://assets.8bitgo.com', 'https://cn-assets.8bitgo.com', 'https://download.8bitgo.com', 'https://rom.8bitgo.com']
   assert.equal(packedJarProxyName('https://assets.8bitgo.com/roms/java/silent-hill-2.zh-Hans.jar.8bg?romv=abc', bases), 'silent-hill-2.zh-Hans.8bg.jar')
   assert.equal(packedJarProxyName('https://cn-assets.8bitgo.com/roms/java/sh2.jar.8bg', bases), 'sh2.8bg.jar', '大陆镜像也认')
+  assert.equal(packedJarProxyName('https://download.8bitgo.com/roms/java/age-of-empires-iii-the-asian-dynasties.en.jar.8bg?romv=abc', bases), 'age-of-empires-iii-the-asian-dynasties.en.8bg.jar', '旧 ROM 根域也走服务端解包')
   assert.equal(packedJarProxyName('https://rom.8bitgo.com/roms/java/age-of-empires-iii-the-asian-dynasties.en.jar.8bg?romv=abc', bases), 'age-of-empires-iii-the-asian-dynasties.en.8bg.jar', '下载优选域也要走服务端解包')
   assert.equal(packedJarProxyName('https://elsewhere.example/roms/java/sh2.jar.8bg', bases), '', '外链服务端代理不了，仍走上传')
   assert.equal(packedJarProxyName('https://assets.8bitgo.com/roms/java/sub/sh2.jar.8bg', bases), '', '子目录不认')
