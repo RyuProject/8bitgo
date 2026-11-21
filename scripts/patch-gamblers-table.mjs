@@ -11,6 +11,7 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const runtimePath = resolve(repo, 'public/web/gamblers-table/index.js')
 const htmlPath = resolve(repo, 'public/web/gamblers-table/index.html')
 const bridgePath = resolve(repo, 'public/web/gamblers-table/8bitgo-save-bridge.js')
+const sdkPath = resolve(repo, 'public/html5-api/8bitgo-game-sdk.min.js')
 const marker = 'Module["8bitgoSyncPersistentFS"]=GodotFS.sync;'
 const anchor = 'Module["initFS"]=GodotFS.init;Module["copyToFS"]=GodotFS.copy_to_fs;'
 
@@ -28,15 +29,26 @@ export function patchGamblersTableRuntime() {
     throw new Error(`Gamblers Table Godot 同步接口标记出现 ${markers} 次，无法安全补丁`)
   }
 
-  const html = readFileSync(htmlPath, 'utf8')
+  let html = readFileSync(htmlPath, 'utf8')
   const matches = html.match(/src=(["'])8bitgo-save-bridge\.js(?:\?v=[\da-f]+)?\1/g) || []
   if (matches.length !== 1) throw new Error(`Gamblers Table 存档桥脚本标签出现 ${matches.length} 次，无法安全版本化`)
   const version = createHash('sha256').update(readFileSync(bridgePath)).digest('hex').slice(0, 16)
   const versioned = `src="8bitgo-save-bridge.js?v=${version}"`
   if (matches[0] !== versioned) {
-    writeFileSync(htmlPath, html.replace(matches[0], versioned))
+    html = html.replace(matches[0], versioned)
     changed = true
   }
+
+  // SDK 本身没有文件名哈希；查询串必须随压缩产物变化，否则 CDN 会把旧协议留在自动开播页面上。
+  const sdkMatches = html.match(/<script\b[^>]*\ssrc=(["'])\/html5-api\/8bitgo-game-sdk\.min\.js(?:\?v=[\da-f]+)?\1[^>]*><\/script>/g) || []
+  if (sdkMatches.length !== 1) throw new Error(`Gamblers Table SDK 脚本标签出现 ${sdkMatches.length} 次，无法安全版本化`)
+  const sdkVersion = createHash('sha256').update(readFileSync(sdkPath)).digest('hex').slice(0, 16)
+  const versionedSdk = `<script src="/html5-api/8bitgo-game-sdk.min.js?v=${sdkVersion}" data-canvas-selector="#canvas"></script>`
+  if (sdkMatches[0] !== versionedSdk) {
+    html = html.replace(sdkMatches[0], versionedSdk)
+    changed = true
+  }
+  if (changed) writeFileSync(htmlPath, html)
   return changed
 }
 

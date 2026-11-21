@@ -46,7 +46,12 @@ if (existsSync(indexPath)) {
     ? createHash('sha256').update(readFileSync(bridgePath)).digest('hex').slice(0, 16)
     : ''
   ok(Boolean(bridgeVersion) && html.includes(`8bitgo-save-bridge.js?v=${bridgeVersion}`), '入口没有加载当前版本的 Gamblers Table 8BitGo 存档桥')
-  ok(html.includes('/html5-api/8bitgo-game-sdk.min.js'), '入口没有加载 8BitGo 游戏 SDK')
+  const sdkPath = resolve(repo, 'public/html5-api/8bitgo-game-sdk.min.js')
+  const sdkVersion = existsSync(sdkPath)
+    ? createHash('sha256').update(readFileSync(sdkPath)).digest('hex').slice(0, 16)
+    : ''
+  ok(Boolean(sdkVersion) && html.includes(`/html5-api/8bitgo-game-sdk.min.js?v=${sdkVersion}`), '入口没有加载当前版本的 8BitGo 游戏 SDK')
+  ok(html.indexOf('/html5-api/8bitgo-game-sdk.min.js') < html.indexOf('src="index.js"'), '游戏 SDK 必须在 Godot 运行时之前加载，自动开播才能及时握手')
   ok(html.includes('initializeBeforeStart') && html.includes('markStarted'), 'Godot 启动没有等待云存档恢复或启用自动同步')
 }
 
