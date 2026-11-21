@@ -11,3 +11,17 @@ ExecStart=/usr/local/bin/node /var/www/8bitgo/deploy/cname-optimizer/cname-optim
 StateDirectory=8bitgo-cname-optimizer
 Environment=CNAME_OPT_STATE_FILE=/var/lib/8bitgo-cname-optimizer/state.json
 TimeoutStartSec=5min
+# 后台小任务，别和网站抢 CPU / IO：低优先级、限额，出问题也拖不垮 8bitgo.service
+Nice=10
+IOSchedulingClass=idle
+CPUQuota=50%
+MemoryMax=256M
+# 只需要写自己的状态目录；其余一律只读（node 可能装在 /root/.nvm，所以 home 只读而不是隐藏）
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX

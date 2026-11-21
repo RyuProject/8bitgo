@@ -2782,6 +2782,11 @@ Worker 路由 `rom.8bitgo.com/*`），目前站内代码还没有引用它。两
 连每个 IP 以我们的 Host 取 64KB 探针并核对 ETag；连续 3 次不健康才从 BestCF 列表 + 内置保底里换一个健康的，
 健康时不因源站测速而换（源站在香港，代表不了大陆）。别手改这两条记录的目标后忘了它会被换掉；
 要固定某个目标就停掉 timer。回归：`npm run test:cname-optimizer`。
+**2026-11-22 起体检也看大陆玩家的真实回报**：浏览器线路记分板对这两个域名的成败经 `romRouteReport.ts` 每分钟（或离页）
+sendBeacon 到 `POST /api/route-health`，`server/src/route-report.js` 只收大陆访客、按 IP 的 HMAC 一人一票、只在内存留 30 分钟；
+优选任务从本机读 `GET /api/internal/route-health`（带任何反代头一律 404）。≥5 个访客且 ≥60% 只失败就判不健康（源站看不到的
+「香港通、大陆不通」），玩家都连得上则不因源站连通性抖动换线；因回报换掉的目标 6 小时不选回来。隐私政策「下载线路回报」一节写明了，
+改上报内容要同步三种语言（`test:legal` 的 `route-reports`）。回归：`cd server && npm run test:route-report && cd .. && npm run test:rom-route-health`。
 
 ### 2.28.4.1 CS1.6 首局性能：PK3 要 Deflate，YaPB `.vis` 不能每局重算
 

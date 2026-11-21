@@ -9,6 +9,7 @@ import { setLangForRender, syncHtmlLang } from '@/services/lang'
 import { langFromPath, langPrefix } from '@/config/languages'
 import { loadLocale } from '@/locales'
 import { initClarity } from '@/services/clarity'
+import { installRouteReport } from '@/services/romRouteReport'
 import { consumeOriginAssetsParam } from '@/services/moduleLinkRecovery'
 import { startPageRecoveryWatch } from '@/services/pageRecovery'
 
@@ -17,6 +18,8 @@ installTranslatorDomGuard()
 
 // 大陆加速入口取不下来 chunk 后，兜底页带 __assets=origin 改用主站资源重新载入；路由读地址之前去掉参数
 consumeOriginAssetsParam()
+// 大陆玩家连优选 ROM 线路的成败回报给优选任务（只发计数，见 romRouteReport.ts）
+installRouteReport()
 
 // 上一份文档崩溃后自动刷新过：等这一页把同一个 chunk 加载上再补报「已恢复」，又崩了就并进那份报告（pageRecovery.ts）
 startPageRecoveryWatch()

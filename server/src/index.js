@@ -38,6 +38,7 @@ import { systemImageSourcesRouter, adminSystemImageSourcesRouter } from './syste
 import { siteNoticeRouter, adminSiteNoticeRouter } from './routes/site-notice.js'
 import { hotfixPublicRouter, adminAiRouter } from './routes/ai-hotfix.js'
 import { createAssetRepairRouter } from './routes/asset-repair.js'
+import { createRouteReportRouter } from './route-report.js'
 import { developersRouter } from './routes/developers.js'
 import { friendLinksRouter } from './routes/friend-links.js'
 import { appsRouter } from './routes/apps.js'
@@ -278,6 +279,8 @@ app.use('/api/site-notice', siteNoticeRouter)
 app.use('/api/hotfixes', hotfixPublicRouter)
 // 坏 chunk 自修复：访客发现 Cloudflare 边缘缓存了坏的 /assets/ 文件时，按清单核对后清那几个 URL
 app.use('/api/asset-repair', createAssetRepairRouter({ clientDir: CLIENT_DIR, siteOrigin: originOfSite() }))
+// 大陆玩家连优选线路（rom / download）的成败回报；deploy/cname-optimizer 从本机读汇总，见 route-report.js
+app.use('/api', createRouteReportRouter())
 app.use('/api/admin/site-notice', adminSiteNoticeRouter)
 app.use('/api/developers', developersRouter)
 // 首页「特别鸣谢」的后台管理；公开列表跟着 /api/page 的首页数据返回
