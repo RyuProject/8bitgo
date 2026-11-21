@@ -69,6 +69,14 @@ export function verdictOf(event) {
   return ''
 }
 
+/** DevToolsActivePort 的内容 → ws 地址；没写完（空、缺路径、端口不对）返回空串 */
+export function devToolsUrlOf(text) {
+  const [port, path] = String(text || '').trim().split('\n').map((s) => s.trim())
+  if (!/^\d{1,5}$/.test(port || '') || Number(port) < 1 || Number(port) > 65535) return ''
+  if (!/^\/devtools\/browser\/\S+$/.test(path || '')) return ''
+  return `ws://127.0.0.1:${port}${path}`
+}
+
 class Cdp {
   constructor(url) {
     this.ws = new WebSocket(url)
@@ -138,15 +146,23 @@ async function launchChrome(chrome) {
     }
   }
   const portFile = join(profile, 'DevToolsActivePort')
-  for (let i = 0; i < 100 && !existsSync(portFile); i++) await sleep(100)
-  if (!existsSync(portFile)) {
+  /*
+    文件「存在」不等于「写完」：Chrome 先建文件再写端口和路径。2026-11-21 生产巡检读到空文件，
+    拼出 ws://127.0.0.1:undefined，WebSocket 报「TypeError: Invalid URL」，记成「冒烟没能运行」。
+    所以等到内容能解析成端口 + 路径才算启动好。
+  */
+  let url = ''
+  for (let i = 0; i < 100 && !url; i++) {
+    url = devToolsUrlOf(existsSync(portFile) ? readFileSync(portFile, 'utf8') : '')
+    if (!url) await sleep(100)
+  }
+  if (!url) {
     killGroup('SIGKILL')
     removeProfile()
     throw new Error('Chrome 没有启动 DevTools（10 秒）')
   }
-  const [port, path] = readFileSync(portFile, 'utf8').trim().split('\n')
   return {
-    url: `ws://127.0.0.1:${port}${path}`,
+    url,
     /*
       必须等 Chrome 真退出、再同步删 profile，然后调用方才能 process.exit。
       以前是 unref 的 1 秒定时器：进程马上 exit，定时器根本不跑，每次在 /tmp 留下几十 MB 的 profile
@@ -179,7 +195,9 @@ async function smokeOne(cdp, slug) {
     if (msg.sessionId !== sessionId) return
     if (msg.method === 'Fetch.requestPaused') {
       const { requestId, request } = msg.params
-      if (/\/startup(?:\?|$)/.test(new URL(request.url).pathname)) {
+      let pathname = ''
+      try { pathname = new URL(request.url).pathname } catch { /* 拦到的地址解析不了：当作不是漏斗请求，照样放过 */ }
+      if (/\/startup(?:\?|$)/.test(pathname)) {
         let body = request.postData
         if (!body && request.hasPostData) {
           body = (await cdp.send('Fetch.getRequestPostData', { requestId }, sessionId).catch(() => ({}))).postData

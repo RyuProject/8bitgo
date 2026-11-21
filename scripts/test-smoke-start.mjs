@@ -4,7 +4,7 @@
  */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { findChrome, startupEventOf, verdictOf, CHROME_CANDIDATES } from './smoke-start.mjs'
+import { findChrome, startupEventOf, verdictOf, devToolsUrlOf, CHROME_CANDIDATES } from './smoke-start.mjs'
 
 assert.equal(verdictOf('first_frame'), 'pass')
 assert.equal(verdictOf('failed'), 'fail')
@@ -36,6 +36,14 @@ assert.match(remove, /try \{\s*rmSync\(profile, \{[^}]*maxRetries: \d+[^}]*\}\)\
 const close = launch.slice(launch.indexOf('async close()'))
 assert.doesNotMatch(close, /^\s*rmSync\(/m, '关 Chrome 时不能直接 rmSync：抛错会冒到 main().catch 变成退出码 2')
 assert.match(close, /killGroup\('SIGKILL'\)[\s\S]*removeProfile\(\)/, '整组 SIGKILL 之后再删目录')
+// 2026-11-21 生产巡检：DevToolsActivePort 已建出、还没写内容就被读走 → ws://127.0.0.1:undefined → Invalid URL
+assert.equal(devToolsUrlOf(''), '', '空文件 = 还没写完')
+assert.equal(devToolsUrlOf('9222'), '', '只有端口、缺路径 = 还没写完')
+assert.equal(devToolsUrlOf('9222\n/devtools/bro'), '', '路径没写完')
+assert.equal(devToolsUrlOf('0\n/devtools/browser/abc'), '', '端口 0 不算')
+assert.equal(devToolsUrlOf('40123\n/devtools/browser/0f6e-1\n'), 'ws://127.0.0.1:40123/devtools/browser/0f6e-1')
+assert.doesNotMatch(src, /readFileSync\(portFile[^)]*\)\.trim\(\)\.split/, '不能文件一出现就直接拆端口')
+
 const watch = readFileSync(new URL('../deploy/smoke-watch/8bitgo-smoke-watch.sh', import.meta.url), 'utf8')
 assert.match(watch, /-name '8bitgo-smoke-\*' -mmin \+\d+ -exec rm -rf/, '定时巡检兜底清掉以前没删掉的 profile')
 
