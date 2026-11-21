@@ -208,11 +208,24 @@ function diagnoseSlowStartProgress(event, logs, hit) {
  * 从一份已脱敏现场提取最可能的故障类别。只保存规则编号和固定标签，不把额外原文复制进诊断结论，
  * 避免归类字段绕开日志的脱敏边界；顺序按更具体、可行动的错误优先。
  */
-export function diagnoseStartupFailure({ event, platform, detail, diagnostics }) {
+export function diagnoseStartupFailure({ event, platform, detail, elapsedMs, diagnostics }) {
   const logs = Array.isArray(diagnostics?.logs) ? diagnostics.logs : []
   const resources = Array.isArray(diagnostics?.resources) ? diagnostics.resources : []
-  const stage = [...logs].reverse().find((row) => row?.s === 'stage')?.m ?? ''
-  const text = [detail, diagnostics?.reason, ...logs.map((row) => row?.m), stage]
+  const stageRow = [...logs].reverse().find((row) => row?.s === 'stage')
+  const elapsedCandidate = elapsedMs ?? diagnostics?.attempt?.sinceStartMs
+  const startedAtMs = elapsedCandidate !== undefined && elapsedCandidate !== null && Number.isFinite(Number(elapsedCandidate))
+    ? Number(elapsedCandidate) : null
+  const stageAtMs = Number.isFinite(Number(stageRow?.t)) ? Number(stageRow.t) : null
+  // 失败包会带整局日志；旧的「下载核心」阶段不能代表十几分钟后的崩溃仍在下载。
+  // 缺少阶段时间戳的旧包仍按原行为兼容，只有能证明阶段过期时才丢弃它。
+  const stageIsFresh = startedAtMs === null || stageAtMs === null ||
+    (startedAtMs >= stageAtMs && startedAtMs - stageAtMs <= 30_000)
+  const stage = stageIsFresh ? stageRow?.m ?? '' : ''
+  const hasPlayableMilestone = event === 'failed' && Array.isArray(diagnostics?.timeline) &&
+    diagnostics.timeline.some((row) =>
+      (row?.e === 'game_playable' || row?.e === 'first_frame') &&
+      (startedAtMs === null || !Number.isFinite(Number(row?.t)) || Number(row.t) <= startedAtMs))
+  const text = [detail, diagnostics?.reason, ...logs.filter((row) => row?.s !== 'stage').map((row) => row?.m), stage]
     .filter(Boolean).join('\n').slice(-12_000).toLowerCase()
   const combined = `${text}\n${resources.map((row) => row?.n).filter(Boolean).join('\n')}`
   const has = (pattern) => pattern.test(text)
@@ -278,11 +291,12 @@ export function diagnoseStartupFailure({ event, platform, detail, diagnostics })
   if (has(/invalid rom|corrupt rom|rom checksum|unknown mapper|unsupported mapper|rom.*(?:truncated|malformed)|rom.*(?:损坏|校验失败|格式错误)/)) {
     return hit('rom_invalid', 'ROM 内容或映射格式异常', 'content', 'high', 'error.rom_format')
   }
-  if (has(/failed to load.*(?:core|核心)|error downloading core|download game core|下载游戏核心|核心.*(?:下载|加载).*失败/)) {
+  // 单独的「下载游戏核心」是阶段文字，不是错误；只认明确的失败措辞，避免旧 stage 污染晚发故障。
+  if (has(/(?:failed to (?:load|download)|error (?:downloading|loading)) (?:the )?(?:game )?core|failed to load.*核心|(?:core|核心).{0,24}(?:download|load|loading|下载|加载).{0,16}(?:failed|error|失败|错误)|(?:下载游戏核心|核心下载|核心加载).{0,12}(?:失败|错误)/)) {
     return withCore(hit('core_download', '模拟器核心下载或加载失败', 'core_download', 'high', 'error.core_download'))
   }
   if (has(/error loading emulatorjs runtime|runtimeerror|compileerror|ejs_runtime|instantiate(?:streaming)?|wasm.*(?:error|failed|unavailable|memory|instantiate)|(?:error|failed|unavailable).*wasm/)) {
-    return withCore(hit('wasm_runtime', '模拟器核心初始化或运行时异常', 'core_init', 'medium', 'error.wasm_runtime'))
+    return withCore(hit('wasm_runtime', '模拟器核心初始化或运行时异常', hasPlayableMilestone ? 'runtime' : 'core_init', 'medium', 'error.wasm_runtime'))
   }
   const slowProgress = diagnoseSlowStartProgress(event, logs, hit)
   if (slowProgress) return slowProgress

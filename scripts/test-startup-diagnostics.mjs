@@ -189,6 +189,36 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
     { code: 'runtime_trap', confidence: 'medium', artifact: 'mgba' },
     '运行时陷阱保留核心线索，但不把 ROM 写成已确认根因',
   )
+  const goldenSunLateAbort = diagnoseStartupFailure({
+    event: 'failed', runtime: 'emulatorjs', platform: 'gba', elapsedMs: 913_472,
+    detail: 'RuntimeError: Aborted(undefined). Build with -sASSERTIONS for more info.',
+    diagnostics: {
+      attempt: { sinceStartMs: 913_472 },
+      timeline: [
+        { t: 0, e: 'start_click' },
+        { t: 96_448, e: 'game_playable' },
+        { t: 96_450, e: 'first_frame' },
+        { t: 913_472, e: 'failed' },
+      ],
+      logs: [
+        { t: 94_674, s: 'stage', l: 'info', m: '下载游戏核心' },
+        { t: 94_716, s: 'ejs', l: 'log', m: '[EJS Core] Downloading core: mgba-legacy-wasm.data' },
+        { t: 913_472, s: 'adapter', l: 'warn', m: '[core-crash] mgba: RuntimeError: Aborted(undefined)' },
+      ],
+    },
+  })
+  assert.deepEqual(
+    { code: goldenSunLateAbort.code, phase: goldenSunLateAbort.phase, signal: goldenSunLateAbort.signals[0], artifact: goldenSunLateAbort.artifact },
+    { code: 'wasm_runtime', phase: 'runtime', signal: 'error.wasm_runtime', artifact: 'mgba-legacy' },
+    '首帧后发生的 WASM 崩溃不能被过期的「下载游戏核心」阶段误归为核心下载失败',
+  )
+  assert.equal(diagnoseStartupFailure({
+    event: 'failed', runtime: 'emulatorjs', platform: 'gba', detail: 'Error downloading core (mgba-legacy-wasm.data)',
+    diagnostics: { logs: [{ t: 100, s: 'stage', l: 'info', m: '下载游戏核心' }] },
+  }).code, 'core_download', '明确的核心下载失败仍保持原分类')
+  assert.equal(diagnoseStartupFailure({
+    event: 'failed', runtime: 'emulatorjs', platform: 'gba', detail: 'Error loading core (mgba-legacy-wasm.data)',
+  }).code, 'core_download', '明确的核心加载失败仍保持原分类')
   const trapOtherCore = errorSignature({
     event: 'failed', runtime: 'emulatorjs', platform: 'gba', detail: 'RuntimeError: table index is out of bounds',
     diagnostics: { resources: [{ n: '8bitgo.com/emulatorjs/…/melonds-wasm.data' }] },
