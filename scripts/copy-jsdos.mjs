@@ -185,6 +185,55 @@ function patchLifecycle(file) {
 }
 
 /**
+ * EdgeOne / 弱网下 emulators.js 请求失败后，上游会留下 `#emulators-js` 标签。
+ * 下一局只要看到标签就跳过加载，随后读 `emulators.version` 才报 ReferenceError，
+ * 同源重试也因此无法恢复。只有确认全局对象存在才算加载成功；失败时删掉标签，
+ * 让适配器切回同源后能重新请求。请求若一直 pending，7 秒超时要早于适配器的 8 秒兜底，
+ * 否则自动重开仍会等同一个挂起的 Promise。并发开局共用一个 in-flight Promise，避免误删正在下载的标签。
+ */
+function patchEmulatorsScriptRecovery(file) {
+  let code = readFileSync(file, 'utf8')
+  const loadingNeedle = 'let Ci=!1;function Si(e,t,n){'
+  const existingNeedle = 'if(null!==document.querySelector("#emulators-js"))return Promise.resolve();'
+  const promiseNeedle = 'return new Promise(((n,o)=>{const r=document.createElement("script");r.id="emulators-js",r.async=!0,r.type="text/javascript",r.src=e+"emulators.js"+t,'
+  const promiseEndNeedle = 'document.head.appendChild(r)}))'
+  const onloadNeedle = 'r.onload=()=>{emulators.pathPrefix=e,emulators.pathSuffix=t,n()}'
+  const onerrorNeedle = 'r.onerror=e=>{o(new Error("Unable to add emulators.js. Probably you should set the \'pathPrefix\' option to point to the js-dos folder."))}'
+  for (const [needle, label] of [
+    [loadingNeedle, '加载状态'],
+    [existingNeedle, '已有脚本判断'],
+    [promiseNeedle, '脚本 Promise'],
+    [promiseEndNeedle, '脚本 Promise 结尾'],
+    [onloadNeedle, '脚本加载成功回调'],
+    [onerrorNeedle, '脚本加载失败回调'],
+  ]) {
+    if (code.split(needle).length - 1 !== 1) fail(`上游 emulators.js ${label}结构变化，无法修复失败后重试`)
+  }
+  code = code.replace(loadingNeedle, 'var Ci=!1,__8bitgoEmulatorsLoading=null;function Si(e,t,n){')
+  code = code.replace(
+    existingNeedle,
+    'if(window.emulators){window.emulators.pathPrefix=e,window.emulators.pathSuffix=t;return Promise.resolve()}if(__8bitgoEmulatorsLoading)return __8bitgoEmulatorsLoading.then(()=>{window.emulators.pathPrefix=e,window.emulators.pathSuffix=t});const stale=document.querySelector("#emulators-js");stale&&stale.remove();',
+  )
+  code = code.replace(
+    promiseNeedle,
+    'return __8bitgoEmulatorsLoading=new Promise(((n,o)=>{const r=document.createElement("script"),timeout=setTimeout(()=>{clearTimeout(timeout),r.remove(),o(new Error("emulators.js load timed out"))},7000);r.id="emulators-js",r.async=!0,r.type="text/javascript",r.src=e+"emulators.js"+t,',
+  )
+  code = code.replace(
+    promiseEndNeedle,
+    'document.head.appendChild(r)})).finally(()=>{__8bitgoEmulatorsLoading=null})',
+  )
+  code = code.replace(
+    onloadNeedle,
+    'r.onload=()=>{clearTimeout(timeout);const a=window.emulators;if(!a){r.remove();return o(new Error("emulators.js loaded without window.emulators"))}a.pathPrefix=e,a.pathSuffix=t,n()}',
+  )
+  code = code.replace(
+    onerrorNeedle,
+    'r.onerror=e=>{clearTimeout(timeout),r.remove(),o(new Error("Unable to add emulators.js. Probably you should set the \'pathPrefix\' option to point to the js-dos folder."))}',
+  )
+  writeFileSync(file, code)
+}
+
+/**
  * Pointer Lock 的 unadjustedMovement 会绕过操作系统鼠标加速。网页外的鼠标是加速后的，
  * 进 DOS 画面却突然变成原始计数，用户感受到的就是速度完全不同。本站默认 0.5 正好是 1×，
  * 因此保留系统加速才最接近桌面手感；每款游戏的额外差异再由工具栏灵敏度补偿。
@@ -519,6 +568,7 @@ patchAdjustedPointerLock(mainJs)
 patchKeyboardLockRejection(mainJs)
 patchMinimalMouseCaptureUi(mainJs)
 patchLifecycle(mainJs)
+patchEmulatorsScriptRecovery(mainJs)
 wrapCssInLayer(join(out, 'js-dos.css'))
 wrapInIife(mainJs)
 patchSockdriveSequentialReadAhead(join(out, 'emulators', 'emulators.js'))
@@ -540,6 +590,7 @@ writeFileSync(
     mouseCaptureChromePatched: true,
     syncSleepTimedWait: true,
     int74CumulativeMickeys: true,
+    emulatorsScriptRecovery: true,
     sourceFingerprint,
     copyScriptSha256,
     files,

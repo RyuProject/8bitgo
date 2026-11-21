@@ -2017,6 +2017,7 @@ JSPI 开关真正的键是 `jsdos.8.jspi`。2026-10-26 以前 `jspiFlag.ts` 一�
 `?jspi=1` 才写 `jsdos.8.jspi=true` 做对照；`test:jspi` 会对着 `public/jsdos` 里的运行时核对前缀与读法。
 适配器在玩家点击开始的那一刻就调用 `warmJsdosCore()`，把与 `Dos({ backend })` 同一判断选出的核心
 并行送进 HTTP 缓存，触屏 / 键盘开局（没有悬停）也不再把核心压在关键路径末尾。
+**js-dos 依赖脚本失败后必须移除 script 标签**（2026-11-20，诊断包 #1518，《大富翁3》，Edge 157 / Windows / CN）：ROM 的 `download_complete` 已发生，随后 EdgeOne 上 `emulators.js` 请求超时；上游只看 `#emulators-js` 标签是否存在，失败标签留在 DOM 后，自动重试跳过加载并在读取 `emulators.version` 时抛 `ReferenceError: emulators is not defined`。具体为何 EdgeOne 首次请求超时，现场无法确认。`scripts/copy-jsdos.mjs` 现在只在 `window.emulators` 存在时复用加载结果，失败、onload 没有全局对象或 7 秒 pending 超时都会删标签并 reject，让播放器 8 秒兜底前释放请求、下一局切同源重试；并发调用共享 in-flight Promise，不误删仍在加载的标签，后开始的调用在共享请求完成后更新所选线路前缀。`test:jsdos-runtime` 从生成产物抽出实际加载器，覆盖错误 / 超时清理、同源重试、并发复用与无全局对象的 onload；`check-jsdos.mjs` 守住补丁特征。诊断归组按明确的 js-dos `emulators.js` 初始化错误优先于整页里残留的 ROM URL 日志，避免误报成 ROM 下载失败。改该补丁必须提升 `JSDOS_ASSET_VERSION`、重跑 `npm run jsdos`，并同步路径夹具。
 
 `ci-ready` 之后适配器清空交给 js-dos 的 `initFs` 数组并撤销 blob URL：js-dos 把每层按 4MB **复制**
 进 worker，主线程原件却挂在它保存的 `options.initFs` 上整局不放（帝国时代约 34MB 系统盘 + 重打的
