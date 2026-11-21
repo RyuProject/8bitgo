@@ -32,7 +32,7 @@ import { getVolcTranslationUsage } from '../translation-usage.js'
 import { takeAnonymous } from '../rateLimit.js'
 import { clientIpFrom, resolveCountry } from '../presence.js'
 import { isSlowStartup, normalizeStartupEvent, recordStartupEvent } from '../startup-metrics.js'
-import { recordStartupDiagnostics } from '../startup-diagnostics.js'
+import { DIAGNOSTIC_EVENTS, hasUsefulDiagnostics, recordStartupDiagnostics } from '../startup-diagnostics.js'
 import { dosGameConfigError, mergeGamePatchForDosValidation } from '../dos-game-config.js'
 import {
   createVolunteerGame,
@@ -428,16 +428,30 @@ gamesRouter.post('/:slug/startup', async (req, res, next) => {
     const ip = clientIpFrom(req.socket?.remoteAddress, req.headers)
     const result = await recordStartupEvent(req.params.slug, normalized, resolveCountry(ip, req.headers) || 'XX')
     if (!result.accepted) return res.status(404).json({ error: '游戏不存在' })
-    // 失败 / 超时 / 慢启动附带的诊断包。只在这一阶段第一次入库时写（重放不重复写），
-    // 浏览器只存粗粒度的「Safari 26 / macOS」，不存完整 UA；写失败不影响漏斗本身。
-    // 诊断包单独限流：一份最多 32KB，若只受漏斗那道闸（每 IP 360 / 全站 12000 每分钟），伪造的失败事件
-    // 每分钟能写进几百 MB。正常量一天约一百份，这道闸远够用；超了只丢诊断包，漏斗事件照常入库。
-    if (result.recorded && req.body?.diagnostics
-      && takeAnonymous(req, 'startup-diagnostics', { perIp: 6, global: 120 }).ok) {
-      await recordStartupDiagnostics(req.params.slug, result.event, req.body.diagnostics, {
-        country: result.country,
-        userAgent: req.headers['user-agent'],
-      })
+    // 失败 / 超时 / 慢启动附带完整现场；缺包、无效包或完整包限流时留一份不含浏览器环境的摘要，
+    // 避免漏斗有失败、后台却没有任何可排查记录。摘要限流更严，攻击者不能借兜底放大写库量。
+    if (result.recorded && DIAGNOSTIC_EVENTS.has(result.event.event)) {
+      const rawDiagnostics = req.body?.diagnostics
+      const usefulDiagnostics = hasUsefulDiagnostics(rawDiagnostics)
+      const fullAllowed = usefulDiagnostics
+        && takeAnonymous(req, 'startup-diagnostics', { perIp: 6, global: 120 }).ok
+      let saved = false
+      if (fullAllowed) {
+        saved = await recordStartupDiagnostics(req.params.slug, result.event, rawDiagnostics, {
+          country: result.country,
+          userAgent: req.headers['user-agent'],
+        })
+      }
+      if (!saved && takeAnonymous(req, 'startup-diagnostic-summary', { perIp: 12, global: 240 }).ok) {
+        const summaryNote = !rawDiagnostics ? 'missing'
+          : !usefulDiagnostics ? 'invalid'
+            : fullAllowed ? 'save_failed' : 'limited'
+        await recordStartupDiagnostics(req.params.slug, result.event, null, {
+          country: result.country,
+          userAgent: req.headers['user-agent'],
+          summaryNote,
+        })
+      }
     }
     if (isSlowStartup(result.event)) {
       console.warn('[startup] 启动超过 20 秒', {

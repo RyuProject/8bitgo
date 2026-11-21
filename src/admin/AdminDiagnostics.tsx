@@ -84,6 +84,7 @@ function Chips({ items }: { items: Array<{ name: string; count: number }> }) {
 
 function SampleView({ sample }: { sample: DiagnosticSample }) {
   const d = sample.diagnostics
+  const captureNote = ({ missing: '客户端未附详细诊断包', limited: '详细诊断包触发限流', invalid: '客户端诊断包无有效内容', save_failed: '详细诊断包保存失败', backfill: '历史漏斗记录回填' } as const)[d?.capture?.note as 'missing' | 'limited' | 'invalid' | 'save_failed' | 'backfill']
   return (
     <div className="space-y-2 rounded-xl border border-line bg-surface-2/40 p-3 text-xs">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
@@ -93,6 +94,11 @@ function SampleView({ sample }: { sample: DiagnosticSample }) {
         <span className="text-dim">{shortDate(sample.createdAt)} · #{sample.id}</span>
       </div>
       <p className="text-muted">{formatEnvironment(sample)}</p>
+      {d?.capture?.level === 'summary' && (
+        <p className="rounded-md border border-yellow-500/30 bg-yellow-500/5 px-2 py-1 text-yellow-300">
+          仅有安全摘要（{captureNote || '完整诊断包不可用'}）；浏览器详细环境、日志和网络请求未收到，不能从摘要还原。
+        </p>
+      )}
       {d?.diagnosis && (
         <p className="text-brand-hover">
           自动识别：{d.diagnosis.label} · 阶段 {diagnosisPhaseLabel(d.diagnosis.phase)} · 把握{d.diagnosis.confidence === 'high' ? '高' : d.diagnosis.confidence === 'medium' ? '中' : '低'}
@@ -107,7 +113,7 @@ function SampleView({ sample }: { sample: DiagnosticSample }) {
       {d?.reason && <p className="break-words text-fg">原因：{d.reason}</p>}
       {d && (
         <>
-          <p className="text-dim">部署 {d.build || '未知'} · 本次访问第 {d.attempt.index} 次开局 · 平台 {sample.platform} / {sample.runtime}</p>
+          <p className="text-dim">{d.capture?.level === 'summary' ? '' : `部署 ${d.build || '未知'} · 本次访问第 ${d.attempt.index} 次开局 · `}平台 {sample.platform} / {sample.runtime}</p>
           {d.timeline.length > 0 && (
             <p className="flex flex-wrap gap-x-3 text-muted">
               {d.timeline.map((row, i) => <span key={i}><span className="tabular-nums text-dim">{fmtMs(row.t)}</span> {row.e}</span>)}

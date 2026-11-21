@@ -16,6 +16,7 @@ import {
   DIAGNOSTICS_RETENTION_DAYS,
   diagnoseStartupFailure,
   errorSignature,
+  hasUsefulDiagnostics,
   needsAttention,
   normalizeDiagnostics,
   partitionNoise,
@@ -67,6 +68,20 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   assert.equal(big.timeline[1].e, 'download_complete')
   assert.equal(normalizeDiagnostics('nope'), null)
   assert.equal(normalizeDiagnostics([1]), null)
+  const summary = normalizeDiagnostics({
+    capture: { level: 'summary', note: 'missing', ignored: 'drop me' },
+    build: 'index-fake.js', reason: 'React error #185', env: { mem: 8, cores: 8 },
+    attempt: { index: 9 }, logs: [{ m: 'must not be retained' }], resources: [{ n: 'secret.example/path' }],
+  })
+  assert.deepEqual(summary.capture, { level: 'summary', note: 'missing' })
+  assert.equal(summary.env, null, '摘要不伪造详细环境')
+  assert.equal(summary.build, '', '摘要不伪造部署版本')
+  assert.deepEqual(summary.attempt, { index: 0, sinceStartMs: 0 }, '摘要不伪造开局序号')
+  assert.equal(summary.logs.length, 0, '摘要不包含未收到的日志')
+  assert.equal(summary.resources.length, 0, '摘要不包含未收到的网络请求')
+  assert.equal(hasUsefulDiagnostics({}), false, '空对象不能冒充完整现场')
+  assert.equal(hasUsefulDiagnostics({ build: 'index-current.js' }), false, '只有版本号不能冒充完整现场')
+  assert.equal(hasUsefulDiagnostics({ env: { mem: 8 } }), true, '有实测设备信息时视为完整现场')
   assert.equal(DIAGNOSTICS_RETENTION_DAYS, 30)
 }
 
@@ -387,7 +402,7 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
 
 /* ---------- 「复制给 AI」 ---------- */
 {
-  const { formatGroupForAi } = await import('../src/admin/diagnosticsReport.ts')
+  const { formatGroupForAi, formatSample } = await import('../src/admin/diagnosticsReport.ts')
   const group = {
     signature: '0123456789abcdef', text: 'failed · emulatorjs · 卡在下载核心', event: 'failed', runtime: 'emulatorjs',
     count: 3, visits: 2, games: [{ slug: 'super-mario-bros', title: '超级玛丽奥兄弟', count: 3 }],
@@ -411,6 +426,13 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   for (const needle of ['# 8BitGo 启动故障', 'AGENTS.md', 'Safari 26×3', 'SV×3', '超级玛丽奥兄弟（super-mario-bros）×3', '阶段时间线', '538ms  download_complete', '[stage/info] Descargando Núcleo del Juego', 'fceumm-wasm.data', '本次访问第 3 次开局', '内存 8GB']) {
     assert.ok(md.includes(needle), `复制给 AI 的文本缺「${needle}」`)
   }
+  const summaryMd = formatSample({
+    ...sample,
+    diagnostics: normalizeDiagnostics({ capture: { level: 'summary', note: 'missing' }, reason: 'React error #185' }),
+  })
+  assert.match(summaryMd, /现场级别：摘要/)
+  assert.match(summaryMd, /浏览器日志、网络请求和详细环境未收到/)
+  assert.doesNotMatch(summaryMd, /本次访问第|内存 8GB|index-Xy12AB/)
 }
 
 /* ---------- 接线 ---------- */
@@ -419,9 +441,11 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   assert.match(funnel, /DIAGNOSTIC_EVENTS = new Set<StartupEventName>\(\['failed', 'timeout', 'slow_start', 'recovered'\]\)/)
   assert.match(funnel, /collectStartupDiagnostics\(payload\.attemptId, payload\.detail, \{\s*resourcesSincePageStart: payload\.runtime === 'page',/, '页面崩溃带上页面打开以来的资源请求（诊断包 #761 的资源列表是空的）')
   const games = read('server/src/routes/games.js')
-  assert.match(games, /if \(result\.recorded && req\.body\?\.diagnostics\n/, '只在漏斗事件首次入库时写诊断包')
+  assert.match(games, /if \(result\.recorded && DIAGNOSTIC_EVENTS\.has\(result\.event\.event\)\)/, '首次漏斗事件总是进入诊断保存流程')
   // 诊断包一份最多 32KB，必须有自己的闸，不能只靠漏斗那道每分钟 12000 的总量
   assert.match(games, /takeAnonymous\(req, 'startup-diagnostics', \{ perIp: 6, global: 120 \}\)\.ok/)
+  assert.match(games, /startup-diagnostic-summary', \{ perIp: 12, global: 240 \}/, '缺少完整现场时仍有更严格的摘要限流兜底')
+  assert.match(games, /save_failed/, '完整现场写入失败时摘要需保留真实原因标记')
   assert.match(games, /userAgent: req\.headers\['user-agent'\]/)
   const admin = read('server/src/routes/admin.js')
   for (const path of ["'/startup-diagnostics'", "'/startup-diagnostics/samples'", "'/startup-diagnostics/:id'"]) {
@@ -527,7 +551,9 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   // 接线
   const server = read('server/src/startup-diagnostics.js')
   assert.match(server, /diagnostics\.automation = classifyAutomation\(diagnostics, \{ userAgent, device \}\)/, '来源在服务端按原始 UA 当场判，UA 不落库')
-  assert.match(server, /const attention = inserted && needsAttention\(event\.event, diagnostics\)/)
+  assert.match(server, /const attention = inserted && !suppressSideEffects && needsAttention\(event\.event, diagnostics\)/)
+  assert.match(server, /captureLevel === 'summary'/, '摘要不包含详细环境字段')
+  assert.match(server, /summaryDiagnosticsFor\(event, summaryNote\)/, '缺包和历史回填生成安全摘要')
   assert.match(server, /if \(attention\) void maybeAlertSignature\(signature\)/)
   assert.match(server, /if \(attention && \(event\.event === 'failed' \|\| event\.event === 'timeout'\)\)/, '飞书只报普通访客的真失败')
   assert.match(server, /if \(attention\) \{\s*void import\('\.\/ai-hotfix\.js'\)/, 'AI 分诊同理')
@@ -542,6 +568,8 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   const page = read('src/admin/AdminDiagnostics.tsx')
   assert.match(page, /if \(showNoise\) params\.set\('noise', 'show'\)/, '后台默认隐藏噪音，点了才显示')
   assert.match(page, /\{ id: 'recovered', label: '已自动恢复' \}/)
+  assert.match(page, /仅有安全摘要/)
+  assert.match(read('server/scripts/backfill-startup-diagnostics.mjs'), /if \(!apply\)/, '历史摘要回填默认只预览')
 }
 
 /* ---------- 慢启动要看得出卡在下载还是启动 ---------- */

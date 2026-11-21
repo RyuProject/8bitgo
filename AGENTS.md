@@ -3970,6 +3970,7 @@ EmulatorJS 引擎日志与加载阶段文字（`diagLog`）、下载器的重试
   没有日志」的状态，也走 snapshot。终端颜色码（`ESC[91m`）在前后端都会去掉。
 - 隐私边界写在隐私政策（`test:legal` 的 `startup-diagnostics` 两条）：不存 IP、完整 UA、ROM 地址、账号；
   ROM 文件名一律 `[ROM]`。加新字段先改白名单 `normalizeDiagnostics()`，否则服务端会直接丢掉。
+- **漏斗有失败但诊断包缺失时要留安全摘要**（2026-11-21）：生产近 7 天曾有 201 次失败、29 次超时没有关联诊断包；旧路由只在客户端带包且完整包限流通过时保存，缺包 / 限流会静默丢失现场。现在每个首次写入的 failed / timeout / slow_start / recovered 都尝试保存：完整包沿用每 IP 6 / 全站 120 每分钟；缺包、无效包、保存失败或被限流时，单独用每 IP 12 / 全站 240 的更严摘要闸，保留漏斗事件已有的安全错误摘要和阶段时间线。摘要 `capture.level=summary` 必须在后台明确显示「详细浏览器现场未收到」；设备能力等详细环境（`env`）、部署版本、开局序号、日志和资源都留空，数据库仍只存从请求头归纳的浏览器 / 系统 / 设备类别，不能把缺失信息编造出来。历史回填只生成同样的摘要，默认 dry-run，写库用 `cd server && npm run backfill-startup-diagnostics -- --days=7 --apply`，且禁止触发报警 / 飞书 / AI 分诊。回归：`npm run test:startup-diagnostics`。
 - 部署要 `cd server && npm run migrate`；缺表时漏斗照常，诊断包不入库，后台该页 503。
 - **慢启动要分清「还在下载」和「下载完卡在启动」**（2026-11-10 阿联酋《心灵之金》：42MB 的 NDS ROM 跑在 6～10Mbps
   的线路上，物理上就要 35～60 秒；诊断包却只有 start_click → slow_start 和一条第 0 片，后续分片还没进 Resource Timing）。

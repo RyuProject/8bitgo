@@ -94,7 +94,7 @@
     "test:asset-repair": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-asset-repair.mjs",
     "test:lazy-imports": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-lazy-imports.mjs",
     "test:lazy-imports-browser": "node scripts/test-lazy-imports-browser.mjs",
-    "test:startup-diagnostics": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-startup-diagnostics.mjs",
+    "test:startup-diagnostics": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-startup-diagnostics.mjs && node server/scripts/test-startup-diagnostics-write.mjs",
     "test:home-sections": "node scripts/test-home-sections.mjs",
     "diablo:build": "node scripts/build-diabloweb.mjs",
     "diablo:upload": "node scripts/upload-diablo-r2.mjs",

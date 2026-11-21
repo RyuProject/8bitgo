@@ -106,7 +106,7 @@ assert.ok(renderAlert(SIG, { visits: 3, count: 4, text: 'x', games: [], envs: []
 // 接线：诊断包入库后才触发，且不 await
 const { readFileSync } = await import('node:fs')
 const src = readFileSync(new URL('../src/startup-diagnostics.js', import.meta.url), 'utf8')
-// 2026-11-19：只有普通访客、确实没恢复的现场才报警（自动化客户端 / 已自动恢复不叫人，见 needsAttention）
-assert.match(src, /const attention = inserted && needsAttention\(event\.event, diagnostics\)/)
+// 只有实时入库的普通访客、确实没恢复的现场才报警；历史摘要回填必须静默。
+assert.match(src, /const attention = inserted && !suppressSideEffects && needsAttention\(event\.event, diagnostics\)/)
 assert.match(src, /if \(attention\) void maybeAlertSignature\(signature\)/)
 console.log('✔ 启动故障聚集报警：阈值按不同访问数、冷却跨进程、失败不抛、没配不启用')

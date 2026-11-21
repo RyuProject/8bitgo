@@ -50,6 +50,7 @@ export interface DiagnosticGroupsResponse {
 
 export interface DiagnosticPayload {
   v: 1
+  capture: { level: 'full' | 'summary'; note?: 'missing' | 'limited' | 'invalid' | 'save_failed' | 'backfill' }
   build: string
   reason: string
   diagnosis?: DiagnosticDiagnosis
@@ -67,7 +68,7 @@ export interface DiagnosticPayload {
     hiddenMs: number
     visible: boolean
     auto?: string[]
-  }
+  } | null
   recovery?: { outcome: 'recovered' | 'unconfirmed' | 'failed_again'; via: 'reload' | 'origin'; afterMs: number; previous?: string }
   automation?: { cohort: DiagnosticCohort; signals: string[] }
   attempt: { index: number; sinceStartMs: number }
@@ -214,7 +215,11 @@ export function formatSample(sample: DiagnosticSample, index?: number): string {
     lines.push('- （诊断包内容无法解析）')
     return lines.join('\n')
   }
-  lines.push(`- 部署版本：${d.build || '未知'}；本次访问第 ${d.attempt.index} 次开局`)
+  if (d.capture?.level === 'summary') {
+    lines.push('- 现场级别：摘要；完整浏览器日志、网络请求和详细环境未收到，无法从摘要还原。')
+  } else {
+    lines.push(`- 部署版本：${d.build || '未知'}；本次访问第 ${d.attempt.index} 次开局`)
+  }
   if (d.automation?.cohort) lines.push(`- 来源：${COHORT_LABEL[d.automation.cohort]}（${d.automation.signals.map(diagnosisSignalLabel).join('；')}）`)
   if (d.recovery) lines.push(`- 刷新结论：${formatRecovery(d.recovery)}`)
   if (d.reason) lines.push(`- 失败原因原文：${d.reason}`)

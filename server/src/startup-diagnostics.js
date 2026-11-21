@@ -134,6 +134,8 @@ const DIAGNOSIS_CODES = new Set([
   'rom_invalid', 'bios_romset', 'webgl', 'memory', 'storage', 'input_api', 'wasm_runtime', 'runtime_trap',
   'timeout', 'unsupported', 'unknown',
 ])
+const CAPTURE_LEVELS = ['full', 'summary']
+const SUMMARY_NOTES = ['missing', 'limited', 'invalid', 'save_failed', 'backfill']
 
 /**
  * 最后一次加载进度离上报时刻在这个秒数以内，就算「还在动」。播放器每收到一份下载进度都会刷新它，
@@ -350,14 +352,21 @@ export function diagnoseStartupFailure({ event, platform, detail, diagnostics })
  */
 export function normalizeDiagnostics(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const capture = raw.capture && typeof raw.capture === 'object' ? raw.capture : {}
+  const captureLevel = pick(capture.level, CAPTURE_LEVELS, 'full')
+  const summary = captureLevel === 'summary'
   const env = raw.env && typeof raw.env === 'object' ? raw.env : {}
   const net = env.net && typeof env.net === 'object' ? env.net : null
   const attempt = raw.attempt && typeof raw.attempt === 'object' ? raw.attempt : {}
   const out = {
     v: 1,
-    build: scrub(raw.build, 40).replace(/[^\w.-]/g, ''),
+    capture: {
+      level: captureLevel,
+      ...(summary && SUMMARY_NOTES.includes(capture.note) ? { note: capture.note } : {}),
+    },
+    build: summary ? '' : scrub(raw.build, 40).replace(/[^\w.-]/g, ''),
     reason: scrub(raw.reason, 600),
-    env: {
+    env: summary ? null : {
       mem: num(env.mem, 0, 1024),
       cores: num(env.cores, 0, 256),
       net: net ? {
@@ -377,7 +386,7 @@ export function normalizeDiagnostics(raw) {
       visible: env.visible !== false,
       auto: [...new Set(arr(env.auto, 6).filter((hint) => AUTOMATION_HINTS.includes(hint)))],
     },
-    attempt: {
+    attempt: summary ? { index: 0, sinceStartMs: 0 } : {
       index: int(attempt.index, 0, 1000),
       sinceStartMs: int(attempt.sinceStartMs, 0),
     },
@@ -388,13 +397,13 @@ export function normalizeDiagnostics(raw) {
       e: scrub(row?.e, 24).replace(/[^\w-]/g, ''),
     })).filter((row) => row.e),
     // 日志留最后 60 行：越靠近失败的越有用，运行时现场快照也在最后
-    logs: (Array.isArray(raw.logs) ? raw.logs.slice(-60) : []).map((row) => ({
+    logs: (summary ? [] : (Array.isArray(raw.logs) ? raw.logs.slice(-60) : [])).map((row) => ({
       t: int(row?.t),
       s: scrub(row?.s, 16).replace(/[^\w-]/g, ''),
       l: pick(row?.l, ['error', 'warn', 'log', 'info'], 'log'),
       m: scrub(row?.m, 300),
     })).filter((row) => row.m),
-    resources: arr(raw.resources, 30).map((row) => ({
+    resources: (summary ? [] : arr(raw.resources, 30)).map((row) => ({
       n: scrub(row?.n, 120),
       i: scrub(row?.i, 16).replace(/[^\w-]/g, ''),
       at: int(row?.at),
@@ -440,6 +449,49 @@ export function normalizeDiagnostics(raw) {
     else out.resources.pop()
   }
   return out
+}
+
+/** 空对象或只有默认值的包不算完整现场；路由应将其明确降级为摘要。 */
+export function hasUsefulDiagnostics(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false
+  if (typeof raw.reason === 'string' && raw.reason.trim()) return true
+  if (['timeline', 'logs', 'resources'].some((key) => Array.isArray(raw[key]) && raw[key].length > 0)) return true
+  const env = raw.env && typeof raw.env === 'object' ? raw.env : {}
+  return ['mem', 'cores', 'screen', 'lang', 'bits'].some((key) => env[key] !== null && env[key] !== undefined && env[key] !== '')
+    || Boolean(env.net && typeof env.net === 'object' && (env.net.type || env.net.downlink || env.net.rtt))
+}
+
+/** 失败现场缺失时只补漏斗事件已有的安全摘要，不伪造浏览器环境、版本或细节日志。 */
+async function summaryDiagnosticsFor(event, note) {
+  let timeline = []
+  try {
+    const rows = await query(
+      `SELECT event, elapsed_ms
+         FROM game_startup_events
+        WHERE visit_id = ? AND attempt_id = ?
+        ORDER BY elapsed_ms ASC, id ASC
+        LIMIT 40`,
+      [event.visitId, event.attemptId],
+    )
+    timeline = rows
+      .filter((row) => row.event && row.elapsed_ms !== null && row.elapsed_ms !== undefined)
+      .map((row) => ({ t: Number(row.elapsed_ms), e: String(row.event) }))
+  } catch (error) {
+    // 摘要仍可用漏斗事件本身入库；时间线查询失败不能让整个现场再次丢失。
+    console.warn('[startup] 摘要时间线读取失败：', error?.message || error)
+  }
+  if (!timeline.length && Number.isFinite(Number(event.elapsedMs))) {
+    timeline.push({ t: Number(event.elapsedMs), e: event.event })
+  }
+  return {
+    capture: { level: 'summary', note: SUMMARY_NOTES.includes(note) ? note : 'missing' },
+    reason: scrub(event.detail || '', 600),
+    env: null,
+    attempt: { index: 0, sinceStartMs: 0 },
+    timeline,
+    logs: [],
+    resources: [],
+  }
 }
 
 /**
@@ -525,9 +577,12 @@ let cohortColumnMissing = false
  * 写一份诊断包。调用方已经写好了漏斗事件（同一个 visit/attempt/event 唯一键挡重放）。
  * 任何失败都只记日志：诊断是锦上添花，不能让漏斗接口 500。
  */
-export async function recordStartupDiagnostics(slug, event, rawDiagnostics, { country = 'XX', userAgent = '' } = {}) {
+export async function recordStartupDiagnostics(slug, event, rawDiagnostics, {
+  country = 'XX', userAgent = '', summaryNote = '', suppressSideEffects = false,
+} = {}) {
   if (!DIAGNOSTIC_EVENTS.has(event?.event)) return false
-  const diagnostics = normalizeDiagnostics(rawDiagnostics)
+  const input = rawDiagnostics ?? (summaryNote ? await summaryDiagnosticsFor(event, summaryNote) : null)
+  const diagnostics = normalizeDiagnostics(input)
   if (!diagnostics) return false
   // 分类在服务端按白名单现场重算，避免客户端自行声明故障类型导致归组失真。
   diagnostics.diagnosis = diagnoseStartupFailure({ ...event, runtime: event.runtime, diagnostics })
@@ -604,7 +659,7 @@ export async function recordStartupDiagnostics(slug, event, rawDiagnostics, { co
     scheduleCleanup()
     const inserted = Number(result?.affectedRows ?? 0) > 0
     // 自动化客户端、已自动恢复、刷新后未确认：照常入库归组，但不叫人（needsAttention）
-    const attention = inserted && needsAttention(event.event, diagnostics)
+    const attention = inserted && !suppressSideEffects && needsAttention(event.event, diagnostics)
     // 同一特征短时间内聚集就发邮件（没配 DIAG_ALERT_EMAIL 时立即返回）；不 await，不拖慢接口
     if (attention) void maybeAlertSignature(signature)
     // 新加载失败立即通知 Lark；诊断仍先入库，通知失败或超时不影响玩家接口
