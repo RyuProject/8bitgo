@@ -51,9 +51,10 @@ if (
   manifest.assetVersion !== assetVersion ||
   manifest.withDosboxX !== true ||
   manifest.ipxPatched !== true ||
-  manifest.mouseCaptureChromePatched !== true
+  manifest.mouseCaptureChromePatched !== true ||
+  manifest.emulatorsScriptRecovery !== true
 ) {
-  fail('runtime.json 的版本或 DOSBox-X / IPX / 鼠标捕获界面补丁标记不正确')
+  fail('runtime.json 的版本或 DOSBox-X / IPX / 鼠标捕获 / 依赖脚本恢复补丁标记不正确')
 }
 if (manifest.copyScriptSha256 !== sha256(copyScript)) fail('复制补丁脚本已经变化，public 仍是旧产物；请运行 npm run jsdos')
 if (!Array.isArray(manifest.files) || !manifest.files.length) fail('runtime.json 没有文件清单')
@@ -135,6 +136,19 @@ if (js.includes('class:"absolute top-0 left-0 w-full h-full flex flex-col items-
 if (js.includes('i&&l&&zi("div",{class:"w-2 flex-shrink-0"})')) fail('kiosk 仍为鼠标侧栏保留空白边')
 if (!/requestPointerLock\(\)\}\}const \w+=\{capture:!0\};for\(const \w+ of \w+\.starters\)e\.addEventListener\(/.test(js)) {
   fail('找不到画布点击直接请求 Pointer Lock 的监听器')
+}
+for (const marker of [
+  'var Ci=!1,__8bitgoEmulatorsLoading=null;function Si(e,t,n){',
+  'const stale=document.querySelector("#emulators-js");stale&&stale.remove()',
+  'if(__8bitgoEmulatorsLoading)return __8bitgoEmulatorsLoading.then(()=>{window.emulators.pathPrefix=e,window.emulators.pathSuffix=t})',
+  'return __8bitgoEmulatorsLoading=new Promise(',
+  'timeout=setTimeout(()=>{clearTimeout(timeout),r.remove(),o(new Error("emulators.js load timed out"))},7000)',
+  '.finally(()=>{__8bitgoEmulatorsLoading=null})',
+  'r.onload=()=>{clearTimeout(timeout);const a=window.emulators;if(!a){r.remove();return o(new Error(',
+  'emulators.js loaded without window.emulators',
+  'r.onerror=e=>{clearTimeout(timeout),r.remove(),o(new Error(',
+]) {
+  if (!js.includes(marker)) fail(`emulators.js 失败后重试补丁缺关键特征 ${marker}`)
 }
 for (const type of ['fullscreenchange', 'pointerlockchange', 'visibilitychange']) {
   if (!js.includes(`__8bitgoListen("${type}",`)) fail(`${type} 监听没有纳入 stop() 清理`)

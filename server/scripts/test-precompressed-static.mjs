@@ -223,7 +223,7 @@ await check('版本守卫不出根目录、只管 /emulatorjs/', async () => {
 await check('构建脚本与中间件的名单一一对应', async () => {
   const { RUNTIME_PRECOMPRESS_PATTERNS } = await import('../../scripts/precompress-runtimes.mjs')
   const served = (p) => PRECOMPRESSED_STATIC_PATTERNS.some((r) => r.test(p))
-  for (const rel of ['ruffle/v0.7.1/172de42e6619eac8f371.wasm', 'jsdos/v8.5.3-8bitgo.4/emulators/wdosbox-x.wasm',
+  for (const rel of ['ruffle/v0.7.1/172de42e6619eac8f371.wasm', 'jsdos/v8.5.3-8bitgo.9/emulators/wdosbox-x.wasm',
     'dolphin/v7e38409/cores/dolphin/dolphin-core-upstream.wasm', 'play/20261026-system2x6-v1/Play.wasm', 'play/Play.wasm',
     'ppsspp/v0dbfaca/v19/PPSSPPSDL.wasm', 'emulatorjs/emulator.min.js', 'eka2l1/v0123456789ab/eka2l1.wasm',
     'eka2l1/v0123456789ab/eka2l1.data']) {
@@ -231,7 +231,7 @@ await check('构建脚本与中间件的名单一一对应', async () => {
     assert.ok(served(`/${rel}`), `中间件漏了 ${rel}`)
   }
   assert.ok(!served('/emulatorjs/cores/fbneo-legacy-wasm.data'), '7z 核心不预压')
-  assert.ok(!served('/jsdos/v8.5.3-8bitgo.4/emulators/wdosbox-x-dbg.wasm'), '调试版不用')
+  assert.ok(!served('/jsdos/v8.5.3-8bitgo.9/emulators/wdosbox-x-dbg.wasm'), '调试版不用')
 })
 
 await check('白名单只认实体运行时目录里的 PPSSPPSDL.data', () => {

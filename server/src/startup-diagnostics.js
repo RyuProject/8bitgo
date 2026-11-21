@@ -184,6 +184,10 @@ export function diagnoseStartupFailure({ event, platform, detail, diagnostics })
   if (has(/getgamepads|gamepad.*(?:securityerror|permission)|third-party iframes are not allowed|权限策略.*手柄/)) {
     return hit('input_api', '手柄接口被浏览器权限限制', 'browser', 'high', 'error.gamepad_permission')
   }
+  // DOS ROM 已下载日志会留在整页诊断缓冲里，不能盖过 js-dos 依赖脚本自身的明确初始化错误。
+  if (platform === 'dos' && has(/unable to init emulators\.js|unable to add emulators\.js|emulators is not defined/)) {
+    return hit('engine_asset', 'js-dos 运行时依赖加载失败', 'engine_asset', 'high', 'error.jsdos_emulators_asset')
+  }
   if (has(/failed to load (?:emulator(?:\.min)?\.js|loader\.js)|(?:emulator(?:\.min)?\.js|loader\.js).{0,40}(?:failed|not found|missing|404)|emulatorjs failed to load|failed to load emulatorjs/)) {
     return hit('engine_asset', '模拟器引擎入口加载失败', 'engine_asset', 'high', 'error.engine_asset')
   }
