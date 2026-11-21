@@ -82,7 +82,7 @@ const arr = (value, limit) => (Array.isArray(value) ? value.slice(0, limit) : []
 const pick = (value, allowed, fallback) => (allowed.includes(value) ? value : fallback)
 
 const DIAGNOSIS_CODES = new Set([
-  'offline', 'network_http', 'network_failure', 'page_asset', 'engine_asset', 'engine_assets', 'engine_load', 'core_download', 'rom_download',
+  'offline', 'network_http', 'network_failure', 'react_update_loop', 'page_asset', 'engine_asset', 'engine_assets', 'engine_load', 'core_download', 'rom_download',
   'rom_invalid', 'bios_romset', 'webgl', 'memory', 'storage', 'input_api', 'wasm_runtime', 'runtime_trap',
   'timeout', 'unsupported', 'unknown',
 ])
@@ -168,6 +168,11 @@ export function diagnoseStartupFailure({ event, platform, detail, diagnostics })
   const has = (pattern) => pattern.test(text)
   const hit = (code, label, phase, confidence, signal) => ({ code, label, phase, confidence, signals: [signal] })
 
+  // React #185 是最大更新深度超限；这是页面失败的直接异常，优先于整页缓冲里的旧资源 / 运行时日志。
+  if (has(/minified react error #185|maximum update depth exceeded|too many re-renders/i)) {
+    return hit('react_update_loop', 'React 页面更新循环', 'page_render', 'high', 'error.react_update_loop')
+  }
+
   // 内容名只从自托管核心包名提取；不会把任意错误原文写进归组标签。
   const core = combined.match(/\b([a-z][a-z0-9_-]{0,30})-(?:legacy-)?wasm\.data\b/i)?.[1]?.toLowerCase() ?? ''
   const withCore = (result) => core ? { ...result, artifact: core } : result
@@ -233,14 +238,25 @@ export function diagnoseStartupFailure({ event, platform, detail, diagnostics })
     }
     return withCore(hit('timeout', 'ROM 完成后模拟器启动停滞', 'core_init', 'medium', 'stage.starting'))
   }
-  const failedResource = [...resources].reverse().find((row) => Number(row?.st) >= 400 && /^(?:fetch|xmlhttprequest|script|link|other)$/i.test(String(row?.i ?? '')))
-  if (failedResource && /\[ROM\]|\/roms\//i.test(String(failedResource.n ?? ''))) {
+  /*
+    Resource Timing 是整页缓冲，不是本次点击专属。错误请求只有发生在开局附近才参与归因；
+    否则像 Clarity 数分钟前的 400 会盖过当前真正的 React / 引擎错误。近期第三方请求只能作中把握度线索，
+    不能冒充本站 ROM、核心或页面脚本的明确失败。
+  */
+  const failedResource = [...resources].reverse().find((row) => {
+    if (Number(row?.st) < 400 || !/^(?:fetch|xmlhttprequest|script|link|other)$/i.test(String(row?.i ?? ''))) return false
+    if (!Number.isFinite(Number(row?.at)) || Number(row.at) < -30_000) return false
+    return true
+  })
+  const failedHost = String(failedResource?.n ?? '').split('/')[0].toLowerCase()
+  const failedFirstParty = failedHost === '8bitgo.com' || failedHost.endsWith('.8bitgo.com')
+  if (failedResource && failedFirstParty && /\[ROM\]|\/roms\//i.test(String(failedResource.n ?? ''))) {
     return { ...hit('rom_download', 'ROM 请求返回 HTTP 错误', 'rom_download', 'high', 'resource.rom_http_status'), artifact: `http-${Number(failedResource.st)}` }
   }
-  if (failedResource && /emulatorjs|wasm\.data/i.test(String(failedResource.n ?? ''))) {
+  if (failedResource && failedFirstParty && /emulatorjs|wasm\.data/i.test(String(failedResource.n ?? ''))) {
     return withCore(hit('core_download', '模拟器核心请求返回 HTTP 错误', 'core_download', 'high', 'resource.core_http_status'))
   }
-  if (failedResource && /^(?:script|link)$/i.test(String(failedResource.i ?? '')) && /\.(?:js|css)$/i.test(String(failedResource.n ?? ''))) {
+  if (failedResource && failedFirstParty && /^(?:script|link)$/i.test(String(failedResource.i ?? '')) && /\.(?:js|css)$/i.test(String(failedResource.n ?? ''))) {
     return hit('page_asset', '页面脚本或样式资源请求返回 HTTP 错误', 'page_asset', 'high', 'resource.page_asset_status')
   }
   if (failedResource) {

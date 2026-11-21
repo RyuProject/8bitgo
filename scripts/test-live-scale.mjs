@@ -72,7 +72,9 @@ check('真正更大的画面与双屏等像素布局仍可更新，换场后能�
 
 check('观众端采用稳定几何，主播端仍然跟随核心上报的尺寸', () => {
   const src = code('src/emulator/EmulatorPlayer.tsx')
-  assert.match(src, /session\.live \? stableLiveGeometry\(current, next\) : next/)
+  assert.match(src, /session\.live \? stableLiveGeometry\(current, snapshot\) : snapshot/)
+  assert.match(src, /sameRuntimeGeometry\(current, geometry\) \? current : geometry/,
+    '核心重复上报相同尺寸时必须保留旧引用，避免播放器无意义重渲染')
   assert.match(src, /setGeometry\(null\)/, '换场必须清掉旧直播的尺寸')
 })
 

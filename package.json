@@ -49,6 +49,7 @@
     "test:page-data-cache": "node --experimental-strip-types scripts/test-page-data-cache.mjs",
     "test:player-lazy-controls": "node scripts/test-player-lazy-controls.mjs",
     "test:game-detail-stage": "node scripts/test-game-detail-stage.mjs",
+    "test:player-runtime-state": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-player-runtime-state.mjs",
     "test:rooms-page": "node scripts/test-rooms-page.mjs",
     "test:responsive-layout": "node scripts/test-responsive-layout.mjs",
     "test:game-media": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-game-media-url.mjs && npm --prefix server run test:game-media",

@@ -100,6 +100,7 @@ import { recordPlay } from '@/services/store'
 import { newStartupId, recordStartupEvent, type StartupEventName } from '@/services/startupFunnel'
 import { diagLog, registerDiagnosticSnapshot } from '@/services/startupDiagnostics'
 import { createStartupProgressTrace } from './startupProgressTrace'
+import { sameRuntimeCaps, sameRuntimeGeometry, sameRuntimeScreenLayout } from './playerRuntimeState'
 import { recordRecent } from '@/services/auth'
 import { openAuthModal } from '@/services/authModal'
 import { onMatchRequest } from '@/services/matchRequest'
@@ -2166,15 +2167,22 @@ export function EmulatorPlayer({
       // 有些引擎要等核心起来才知道自己支持什么，这里允许它后补
       onCaps: (next) => {
         if (!isCurrent()) return
-        setCaps(new Set(next))
+        // 有些适配器会在启动的多个阶段重复报告能力；相同集合保留旧引用，不让空更新重渲染整棵播放器。
+        const snapshot = new Set(next)
+        setCaps((current) => sameRuntimeCaps(current, snapshot) ? current : snapshot)
       },
       onGeometry: (next) => {
         if (!isCurrent()) return
-        setGeometry((current) => session.live ? stableLiveGeometry(current, next) : next)
+        const snapshot = { width: next.width, height: next.height }
+        setGeometry((current) => {
+          const geometry = session.live ? stableLiveGeometry(current, snapshot) : snapshot
+          return sameRuntimeGeometry(current, geometry) ? current : geometry
+        })
       },
       onScreenLayout: (next) => {
         if (!isCurrent()) return
-        setScreenLayout(next)
+        const snapshot = { key: next.key, current: next.current, values: [...next.values] }
+        setScreenLayout((current) => sameRuntimeScreenLayout(current, snapshot) ? current : snapshot)
       },
       /**
        * Flash 游戏在线存档会话状态。AGI2 登录后可原地启用，不必重启游戏；
