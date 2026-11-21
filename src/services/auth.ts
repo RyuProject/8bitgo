@@ -10,7 +10,7 @@
 import { useEffect, useSyncExternalStore } from 'react'
 import type { PublicUser, User, UserRole, UserStatus } from '@/types'
 import { createLocalStore, randomId } from './localStore'
-import { api, apiBase, apiEnabled, setToken, getToken } from './api'
+import { api, ApiError, apiBase, apiEnabled, setToken, getToken } from './api'
 import { pushGuestRecent } from './recents'
 import { getT } from './i18n'
 import { checkAdultBirthDate, isAdultByBirthDate } from '../../shared/age.js'
@@ -202,14 +202,141 @@ export async function hydrateAuth(): Promise<void> {
     setAuthReady()
     return
   }
+  showPendingPasswordResetNotice()
   try {
     const u = await api.get<PublicUser>('/api/auth/me')
     setCurrentUser(u)
-  } catch {
-    setToken(null)
-    setCurrentUser(null)
+  } catch (e) {
+    if (isSessionRejected(e)) {
+      setToken(null)
+      setCurrentUser(null)
+    } else {
+      /*
+        ⚠️ 以前任何错误都清令牌：断网、超时、部署时的 502，用户都会被当场登出、还得重新收验证码。
+        令牌本身没问题时留着它，界面继续用上次缓存的用户（8bitgo.session.user）；
+        等网络回来或过一会儿再问一次，真的失效了那次自然会拿到 401 再清。
+      */
+      scheduleAuthRetry()
+    }
   } finally {
     setAuthReady()
+  }
+}
+
+/**
+ * 服务端明确拒绝了这张令牌：401（过期 / 被作废 / 用户不存在），或我们自己的 403（封禁）。
+ * 403 只认带 JSON error 的 —— Cloudflare 的拦截页、反代的 403 是 HTML，不代表令牌坏了。
+ */
+function isSessionRejected(e: unknown): boolean {
+  if (!(e instanceof ApiError)) return false
+  if (e.status === 401) return true
+  return e.status === 403 && typeof (e.data as { error?: unknown } | null)?.error === 'string'
+}
+
+/** 开机换用户信息失败后的重试：网络恢复立刻试，另外按 15s / 60s / 5min 退避，最多三次 */
+const AUTH_RETRY_DELAYS = [15_000, 60_000, 300_000]
+let authRetryCount = 0
+let authRetryTimer: ReturnType<typeof setTimeout> | null = null
+let authRetryOnline: (() => void) | null = null
+
+function scheduleAuthRetry() {
+  if (typeof window === 'undefined' || authRetryTimer || authRetryOnline) return
+  if (authRetryCount >= AUTH_RETRY_DELAYS.length) return
+  const delay = AUTH_RETRY_DELAYS[authRetryCount++]
+  const run = () => {
+    if (authRetryTimer) clearTimeout(authRetryTimer)
+    if (authRetryOnline) window.removeEventListener('online', authRetryOnline)
+    authRetryTimer = null
+    authRetryOnline = null
+    void retryHydrateAuth()
+  }
+  authRetryOnline = run
+  window.addEventListener('online', run)
+  authRetryTimer = setTimeout(run, delay)
+}
+
+async function retryHydrateAuth() {
+  // 期间用户可能已经退出或换了号：没令牌就不用再问
+  const token = getToken()
+  if (!token) return
+  try {
+    const u = await api.get<PublicUser>('/api/auth/me')
+    if (getToken() === token) setCurrentUser(u)
+  } catch (e) {
+    if (getToken() !== token) return
+    if (isSessionRejected(e)) {
+      setToken(null)
+      setCurrentUser(null)
+    } else {
+      scheduleAuthRetry()
+    }
+  }
+}
+
+/* ---------------- 「密码已被重置」提示 ---------------- */
+
+/**
+ * 服务端在主人第一次验码 / 第三方登录时，会清掉 2026-11-17 前不验邮箱注册留下的密码
+ * （server/src/routes/auth.js 的 markEmailVerified），并在登录响应里带 passwordReset。
+ * 不提示的话本人下次用密码登录只会看到「密码不正确」。
+ *
+ * 用 sessionStorage 中转：第三方登录的回调页拿到令牌后会整页跳回原页面，提示要在跳转之后显示。
+ * 提示是一小块原生 DOM（全站没有通用 toast，登录流程又分散在好几个组件里）。
+ */
+const PASSWORD_RESET_KEY = '8bitgo.auth.passwordReset'
+
+function notePasswordReset(r: { passwordReset?: unknown }) {
+  if (r.passwordReset !== true) return
+  try {
+    sessionStorage.setItem(PASSWORD_RESET_KEY, '1')
+  } catch {
+    /* 无痕 / 禁用存储：直接显示，不跨页 */
+  }
+  showPendingPasswordResetNotice(true)
+}
+
+function showPendingPasswordResetNotice(force = false) {
+  if (typeof document === 'undefined') return
+  let pending = force
+  try {
+    pending = pending || sessionStorage.getItem(PASSWORD_RESET_KEY) === '1'
+    sessionStorage.removeItem(PASSWORD_RESET_KEY)
+  } catch {
+    /* ignore */
+  }
+  if (!pending || document.getElementById('auth-password-reset-notice')) return
+  const box = document.createElement('div')
+  box.id = 'auth-password-reset-notice'
+  box.setAttribute('role', 'status')
+  box.style.cssText =
+    'position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:2147483000;' +
+    'max-width:min(480px,calc(100vw - 32px));display:flex;gap:12px;align-items:flex-start;' +
+    'padding:12px 14px;border-radius:12px;border:1px solid #ffc800;background:#1d1d24;color:#fff;' +
+    'font-size:14px;line-height:1.5;box-shadow:0 8px 24px rgba(0,0,0,.35)'
+  const text = document.createElement('span')
+  text.textContent = getT().auth.passwordResetNotice
+  const close = document.createElement('button')
+  close.type = 'button'
+  close.textContent = '×'
+  close.setAttribute('aria-label', getT().auth.passwordResetDismiss)
+  close.style.cssText = 'flex:none;background:none;border:0;color:inherit;font-size:20px;line-height:1;cursor:pointer'
+  close.onclick = () => box.remove()
+  box.append(text, close)
+  document.body.appendChild(box)
+}
+
+/**
+ * 第三方（Microsoft / Apple）登录：服务端把标记放在回调地址的 # 里（&pwreset=1），
+ * 回调页一进来就抹掉 hash，所以在本模块加载时（早于回调页的 effect）先记下，登录成功后才生效。
+ * 被伪造也只是多显示一句提示。
+ */
+let oauthPasswordResetPending = false
+if (typeof window !== 'undefined') {
+  try {
+    const h = new URLSearchParams(window.location.hash.replace(/^#/, ''))
+    oauthPasswordResetPending = h.has('token') && h.get('pwreset') === '1'
+  } catch {
+    /* ignore */
   }
 }
 
@@ -417,9 +544,13 @@ export async function loginWithEmailCode(email: string, code: string): Promise<P
   if (!/^\d{6}$/.test(c)) throw new Error(getT().errors.codeFormat)
 
   if (apiEnabled()) {
-    const r = await api.post<{ token: string; user: PublicUser }>('/api/auth/email/verify', { email: e, code: c })
+    const r = await api.post<{ token: string; user: PublicUser; passwordReset?: boolean }>('/api/auth/email/verify', {
+      email: e,
+      code: c,
+    })
     setToken(r.token)
     setCurrentUser(r.user)
+    notePasswordReset(r)
     return r.user
   }
 
@@ -434,55 +565,242 @@ export async function loginWithEmailCode(email: string, code: string): Promise<P
 
 /* -------- Google 登录 -------- */
 
+/**
+ * One Tap 的「时刻」通知。浏览器走 FedCM 之后 Google 去掉了一部分方法（isNotDisplayed 等），
+ * 同一份代码要兼容新旧两种模式，所以全部按可选方法调用。
+ */
+interface GooglePromptMoment {
+  getMomentType?: () => 'display' | 'skipped' | 'dismissed' | string
+  isNotDisplayed?: () => boolean
+  getDismissedReason?: () => string
+}
+
+/** renderButton 的外观参数，名字照 GIS 文档原样写（下划线是它的） */
+interface GoogleButtonOptions {
+  type: 'standard' | 'icon'
+  theme: 'outline' | 'filled_blue' | 'filled_black'
+  size: 'large' | 'medium' | 'small'
+  text: 'signin_with' | 'signup_with' | 'continue_with' | 'signin'
+  shape: 'rectangular' | 'pill' | 'circle' | 'square'
+  logo_alignment: 'left' | 'center'
+  width: number
+  locale: string
+}
+
 interface GoogleIdApi {
   accounts?: {
     id?: {
-      initialize: (o: { client_id: string; callback: (r: { credential?: string }) => void }) => void
-      prompt: () => void
+      initialize: (o: {
+        client_id: string
+        callback: (r: { credential?: string }) => void
+        use_fedcm_for_button?: boolean
+        use_fedcm_for_prompt?: boolean
+      }) => void
+      prompt: (listener?: (moment: GooglePromptMoment) => void) => void
+      renderButton: (parent: HTMLElement, options: GoogleButtonOptions) => void
     }
   }
 }
 
+/**
+ * Google OAuth 客户端 ID。构建期的 VITE_GOOGLE_CLIENT_ID 优先；没有就向服务端要
+ * （/api/auth/google/config，和服务端校验 aud 用的是同一个 GOOGLE_CLIENT_ID）。
+ *
+ * ⚠️ 不能只认构建期变量：它从没进过 .env.production，线上 Google 按钮因此一直报「未配置」，
+ * 而服务端那份早就配好了（2026-11-20 查明，AGENTS.md §2.1 同类坑）。
+ * 拿到的结果整页复用；网络失败不缓存，下次点还会重新问。
+ */
+let googleClientIdPromise: Promise<string> | null = null
+export function googleClientId(): Promise<string> {
+  const built = ((import.meta.env as Record<string, string | undefined>).VITE_GOOGLE_CLIENT_ID || '').trim()
+  if (built) return Promise.resolve(built)
+  googleClientIdPromise ??= api
+    .get<{ clientId?: unknown }>('/api/auth/google/config')
+    .then((r) => (typeof r?.clientId === 'string' ? r.clientId.trim() : ''))
+    .catch((e: unknown) => {
+      googleClientIdPromise = null
+      throw e
+    })
+  return googleClientIdPromise
+}
+
+/**
+ * GIS 脚本的加载上限。大陆网络里 accounts.google.com 常常既不成功也不报错，一直挂着；
+ * 不设上限的话，备用按钮点下去就永远停在「处理中」。
+ */
+const GIS_LOAD_TIMEOUT_MS = 10_000
+
+const googleIdOf = () => (window as unknown as { google?: GoogleIdApi }).google?.accounts?.id
+
 let gisLoader: Promise<void> | null = null
 function loadGis(): Promise<void> {
+  if (googleIdOf()) return Promise.resolve()
   if (gisLoader) return gisLoader
   gisLoader = new Promise<void>((resolve, reject) => {
     const s = document.createElement('script')
     s.src = 'https://accounts.google.com/gsi/client'
     s.async = true
     s.defer = true
-    s.onload = () => resolve()
-    s.onerror = () => reject(new Error(getT().errors.googleLoadFailed))
+    const timer = setTimeout(() => fail(), GIS_LOAD_TIMEOUT_MS)
+    // 失败或超时都清掉 gisLoader：网络恢复后下一次打开登录窗口还能再试，不把一次失败钉死一整页
+    const fail = () => {
+      clearTimeout(timer)
+      gisLoader = null
+      reject(new Error(getT().errors.googleLoadFailed))
+    }
+    s.onload = () => {
+      clearTimeout(timer)
+      resolve()
+    }
+    s.onerror = fail
     document.head.appendChild(s)
   })
   return gisLoader
 }
 
-async function getGoogleCredential(clientId: string): Promise<string> {
+/**
+ * 谁在等 Google 给的凭证。GIS 的 initialize 整页只该调一次（多调会被它在控制台警告，回调也会被覆盖），
+ * 所以回调固定成一个分发器，交给栈顶那一方：登录窗口里渲染的官方按钮登记一个，
+ * 备用按钮走 One Tap 时临时压一个，结束就弹掉。
+ */
+type GoogleCredentialHandler = (credential: string) => void
+const googleCredentialHandlers: GoogleCredentialHandler[] = []
+function pushGoogleCredentialHandler(handler: GoogleCredentialHandler): () => void {
+  googleCredentialHandlers.push(handler)
+  return () => {
+    const i = googleCredentialHandlers.lastIndexOf(handler)
+    if (i >= 0) googleCredentialHandlers.splice(i, 1)
+  }
+}
+
+let googleInitializedFor = ''
+async function readyGoogleId(clientId: string): Promise<NonNullable<NonNullable<GoogleIdApi['accounts']>['id']>> {
   await loadGis()
-  const g = (window as unknown as { google?: GoogleIdApi }).google
-  const id = g?.accounts?.id
+  const id = googleIdOf()
   if (!id) throw new Error(getT().errors.googleUnavailable)
-  return new Promise<string>((resolve, reject) => {
+  if (googleInitializedFor !== clientId) {
     id.initialize({
       client_id: clientId,
-      callback: (r) => (r.credential ? resolve(r.credential) : reject(new Error(getT().errors.googleCancelled))),
+      callback: (r) => {
+        const handler = googleCredentialHandlers[googleCredentialHandlers.length - 1]
+        if (r?.credential && handler) handler(r.credential)
+      },
+      /*
+        按钮走 FedCM 的按钮模式：浏览器里还没登 Google 的人也能在浏览器自己的窗口里登，
+        不靠弹出窗口（弹窗要 window.opener，详情页有些是 COOP: same-origin 的隔离页，会断）。
+        不支持 FedCM 的浏览器（Safari / Firefox）GIS 自动退回弹窗。
+      */
+      use_fedcm_for_button: true,
+      use_fedcm_for_prompt: true,
     })
-    id.prompt()
+    googleInitializedFor = clientId
+  }
+  return id
+}
+
+async function getGoogleCredential(clientId: string): Promise<string> {
+  const id = await readyGoogleId(clientId)
+  return new Promise<string>((resolve, reject) => {
+    let settled = false
+    let release = () => {}
+    const finish = (settle: () => void) => {
+      if (settled) return
+      settled = true
+      release()
+      settle()
+    }
+    release = pushGoogleCredentialHandler((credential) => finish(() => resolve(credential)))
+    /*
+      Google 决定不弹（浏览器里没登 Google、玩家关过 One Tap 进了冷却期、第三方登录被拦）时
+      callback 永远不会来；不接这条通知，弹窗按钮会一直停在「处理中」。
+      dismissed 且原因是 credential_returned 是正常拿到凭证，由上面的 callback 收尾。
+
+      先按 getMomentType 分流：FedCM 模式只发 skipped / dismissed，isNotDisplayed 这类旧方法一调
+      GIS 就在控制台报弃用警告；旧模式（不支持 FedCM 的浏览器）没显示时只发 display 时刻，才需要它。
+      FedCM 在浏览器里没有 Google 账号时要过几秒才报 skipped（浏览器故意延迟，防探测），不是卡住。
+    */
+    id.prompt((moment) => {
+      const type = moment.getMomentType?.()
+      if (type === 'skipped' || (type === 'display' && moment.isNotDisplayed?.())) {
+        finish(() => reject(new Error(getT().errors.googleNotShown)))
+      } else if (type === 'dismissed' && moment.getDismissedReason?.() !== 'credential_returned') {
+        finish(() => reject(new Error(getT().errors.googleCancelled)))
+      }
+    })
   })
 }
 
-/** 使用 Google 账号登录。 */
-export async function loginWithGoogle(): Promise<PublicUser> {
-  const clientId = (import.meta.env as Record<string, string | undefined>).VITE_GOOGLE_CLIENT_ID
+/** 拿 Google 给的 ID token 换本站会话。官方按钮和备用按钮最后都走这里。 */
+export async function exchangeGoogleCredential(credential: string): Promise<PublicUser> {
+  const r = await api.post<{ token: string; user: PublicUser; passwordReset?: boolean }>('/api/auth/google', { credential })
+  setToken(r.token)
+  setCurrentUser(r.user)
+  notePasswordReset(r)
+  return r.user
+}
 
+/** GIS 认的界面语言写法 */
+const GOOGLE_BUTTON_LOCALE: Record<string, string> = {
+  'zh-Hans': 'zh_CN',
+  'zh-Hant': 'zh_TW',
+  en: 'en',
+  es: 'es',
+  fr: 'fr',
+  de: 'de',
+  it: 'it',
+  ja: 'ja',
+}
+
+/**
+ * 在 el 里画 Google 官方的「使用 Google 账号继续」按钮。
+ *
+ * 为什么不再只用自己画的按钮 + One Tap：One Tap 对浏览器里没登 Google 的人、关过它进了冷却期的人
+ * 根本不弹，点了只能报「没有完成」（2026-11-20 本地实测）。官方按钮走 FedCM 按钮模式或弹窗，
+ * 这些人也能在 Google 自己的界面里登录。
+ *
+ * 返回清理函数；没配客户端 ID、演示模式、脚本加载不出来（大陆网络、隔离页的 COEP）或者没画出东西时
+ * 返回 null，调用方继续显示自己的备用按钮。
+ */
+export async function renderGoogleButton(
+  el: HTMLElement,
+  options: { width: number; lang: string; onCredential: GoogleCredentialHandler },
+): Promise<(() => void) | null> {
+  if (!apiEnabled()) return null
+  try {
+    const clientId = await googleClientId()
+    if (!clientId) return null
+    const id = await readyGoogleId(clientId)
+    if (!el.isConnected) return null
+    el.replaceChildren()
+    id.renderButton(el, {
+      type: 'standard',
+      theme: 'outline',
+      size: 'large',
+      text: 'continue_with',
+      shape: 'pill',
+      logo_alignment: 'center',
+      // GIS 只认 200～400 像素；弹窗再窄也不能让它自己猜成默认的窄版
+      width: Math.max(200, Math.min(400, Math.floor(options.width))),
+      locale: GOOGLE_BUTTON_LOCALE[options.lang] ?? 'en',
+    })
+    if (!el.firstElementChild) return null
+    const release = pushGoogleCredentialHandler(options.onCredential)
+    return () => {
+      release()
+      el.replaceChildren()
+    }
+  } catch {
+    return null
+  }
+}
+
+/** 使用 Google 账号登录（备用按钮：官方按钮还没画出来、或画不出来时用 One Tap）。 */
+export async function loginWithGoogle(): Promise<PublicUser> {
   if (apiEnabled()) {
+    const clientId = await googleClientId()
     if (!clientId) throw new Error(getT().errors.googleNotConfigured)
     const credential = await getGoogleCredential(clientId)
-    const r = await api.post<{ token: string; user: PublicUser }>('/api/auth/google', { credential })
-    setToken(r.token)
-    setCurrentUser(r.user)
-    return r.user
+    return exchangeGoogleCredential(credential)
   }
 
   // 本地演示：创建 / 登录一个演示 Google 账户，便于在无后端时体验流程
@@ -572,6 +890,15 @@ export async function completeOAuthLogin(token: string, cst: string): Promise<Pu
   try {
     const user = await api.get<PublicUser>('/api/auth/me')
     setCurrentUser(user)
+    // 回调页随后整页跳转，提示留到新页面的 hydrateAuth 里显示
+    if (oauthPasswordResetPending) {
+      oauthPasswordResetPending = false
+      try {
+        sessionStorage.setItem(PASSWORD_RESET_KEY, '1')
+      } catch {
+        /* ignore */
+      }
+    }
     return user
   } catch (e) {
     // 令牌换不出用户就别把它留在本地：留着的话下次开机会顶着一个坏令牌，处处 401

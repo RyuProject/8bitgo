@@ -144,8 +144,8 @@ check('⚠️ 弹幕层要画在画面容器里（全屏 / 沉浸式也得看得
     ⚠️ 别把整串条件写死当锚点：09-11 那条条件加了 `!watchPanelOn`（观众端输入框搬去
     右栏面板了），写死的锚点当场对不上，而这条断言真正要钉的是**先后顺序**，不是条件长什么样。
   */
-  // 2026-11 起渲染条件收进了 chatBarVisible（详情页空闲态也常驻弹幕栏），要钉的仍是先后顺序
-  const bar = src.indexOf('{chatBarVisible && ')
+  // 详情页待机时输入框也会画（pageBarOn），条件因此可能写成 `(chatBarOn || pageBarOn) && …`
+  const bar = src.search(/\{\(?chatBarOn\b/)
   assert.ok(lane > 0 && bar > 0, '找不到弹幕层 / 输入框')
   assert.ok(
     lane < bar,
@@ -308,7 +308,8 @@ check('⚠️ 提示文案里引用的按钮名，必须就是按钮上的字', 
 
 check('⚠️ 主播端那一行接了 history，观众端右栏不接（否则同一段列表两个入口）', () => {
   const player = code('src/emulator/EmulatorPlayer.tsx')
-  assert.match(player, /history=\{chat\.messages\}/, '播放器那一行没把弹幕传给历史按钮')
+  // 详情页待机屏（还没开局）没有弹幕可看，允许传 undefined；开局后必须是 chat.messages
+  assert.match(player, /history=\{(?:pageStandby \? undefined : )?chat\.messages\}/, '播放器那一行没把弹幕传给历史按钮')
   const panel = code('src/emulator/LiveWatchPanel.tsx')
   assert.match(panel, /<LiveChatHistory messages=\{messages\}/, '观众端右栏的常驻列表没了')
   assert.doesNotMatch(panel, /<LiveChatBar[^>]*history=/, '观众端右栏的输入框又多了一颗历史按钮，和旁边的常驻列表重了')

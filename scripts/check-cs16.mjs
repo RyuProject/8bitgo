@@ -155,7 +155,9 @@ if (!index.includes('rel="preconnect" href="https://assets.8bitgo.com"') ||
   fail('启动页缺少资源域预连接、可访问进度条或桌面键鼠提示')
 }
 if (!detailSource.includes("game?.slug === 'counter-strike-16'") ||
-    !/hasEmbeddedCs16Rooms\s*\?\s*fmt\(t\.game\.playersUpTo, \{ n: '16' \}\)/.test(detailSource)) {
+    !/const effectiveMultiplayer = Boolean\(game\?\.multiplayer\) \|\| hasEmbeddedCs16Rooms/.test(detailSource) ||
+    !/multiplayer: effectiveMultiplayer/.test(detailSource) ||
+    !/hasEmbeddedCs16Rooms \? '1–16' : formatPlayers\(game\.players\)/.test(detailSource)) {
   fail('详情页仍会把自带 16 人房间的 CS1.6 标成单人游戏')
 }
 if (zhHansSource.includes('多数模拟器都支持即时存档') || englishSource.includes('Most emulators on 8BitGo support save states') ||

@@ -277,14 +277,23 @@ try {
     ].join('\n'),
     'utf8',
   )
+  // content.js 会拖进一整套内容缓存 / 边缘清理；这里只关心「写路径有没有调 invalidateContent()」
+  const fakeContent = path.join(temp, 'fake-content.mjs')
+  await writeFile(
+    fakeContent,
+    'export function invalidateContent() { globalThis.__invalidations = (globalThis.__invalidations || 0) + 1 }\n',
+    'utf8',
+  )
   const hooks = path.join(temp, 'hooks.mjs')
   await writeFile(
     hooks,
     [
       `const FAKE = ${JSON.stringify(pathToFileURL(fakeDb).href)}`,
+      `const FAKE_CONTENT = ${JSON.stringify(pathToFileURL(fakeContent).href)}`,
       'export async function resolve(specifier, context, next) {',
       '  const r = await next(specifier, context)',
       '  if (r.url.endsWith("/src/db.js")) return { ...r, url: FAKE, shortCircuit: true }',
+      '  if (r.url.endsWith("/src/content.js")) return { ...r, url: FAKE_CONTENT, shortCircuit: true }',
       '  return r',
       '}',
       '',
@@ -541,6 +550,25 @@ process.on('exit', () => {
   ok((await brokenGet.json()).collection.viewCount === 0, '数字按 0 处理')
   ok((await call('GET', '/')).status === 200, '列表也照常 —— decorate 里它和封面是并列的，一抛就是整份 500')
   viewsBroken = false
+
+  console.log('\n── 写路径清 SSR / 边缘缓存，浏览计数不清 ──')
+  reset()
+  const inv = () => globalThis.__invalidations || 0
+  const expectInvalidate = async (label, fn, want = true) => {
+    const before = inv()
+    const r = await fn()
+    ok((inv() > before) === want, `${want ? '⭐ ' : ''}${label}${want ? ' 要' : ' 不'}调 invalidateContent()（HTTP ${r.status}）`)
+  }
+  await expectInvalidate('新建合集', () => call('POST', '/', { as: AUTHOR, body: { title: '新合集' } }))
+  await expectInvalidate('改标题', () => call('PATCH', '/1', { as: AUTHOR, body: { title: '改名' } }))
+  await expectInvalidate('加游戏', () => call('POST', '/1/games', { as: AUTHOR, body: { gameSlug: 'contra' } }))
+  await expectInvalidate('重复加同一款（幂等、没改动）', () => call('POST', '/1/games', { as: AUTHOR, body: { gameSlug: 'contra' } }), false)
+  await expectInvalidate('排序', () => call('PATCH', '/1/order', { as: AUTHOR, body: { slugs: ['contra', 'metal-slug'] } }))
+  await expectInvalidate('移除游戏', () => call('DELETE', '/1/games/contra', { as: AUTHOR }))
+  await expectInvalidate('浏览计数', () => call('POST', '/1/view'), false)
+  await expectInvalidate('别人改不了，也不该清', () => call('PATCH', '/1', { as: OTHER, body: { title: 'x' } }), false)
+  await expectInvalidate('下架', () => call('PATCH', '/1/hidden', { as: ADMIN, body: { hidden: true } }))
+  await expectInvalidate('删除', () => call('DELETE', '/1', { as: ADMIN }))
 
   server.close()
   console.log(`\n✅ 合集接口权限测试通过（${n} 项）`)

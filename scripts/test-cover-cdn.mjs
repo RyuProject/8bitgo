@@ -97,6 +97,13 @@ const ssr = readFileSync(new URL('../server/src/ssr.js', import.meta.url), 'utf8
 assert.match(ssr, /coverCdnHint\(\{[\s\S]*?queryValue: req\.coverCdnQuery/)
 assert.match(ssr, /if \(coverHint === 'cn' && !cnSite && !req\.assetsFromOrigin\) page = retargetStaticToCnEdge\(/, '带 __assets=origin 的这次不改写到 EdgeOne')
 assert.match(ssr, /COVER_CDN_META/)
+// 边缘路由（public/edge-route-v4.js）在 <head> 里同步读 <html data-8bitgo-cdn>：meta 在 </head> 前，那时还没解析到
+assert.match(ssr, /if \(coverHint\) page = page\.replace\(\/<html\\b\/, `<html data-8bitgo-cdn="\$\{coverHint\}"`\)/)
+const edgeRoute = readFileSync(new URL('../public/edge-route-v4.js', import.meta.url), 'utf8')
+assert.match(edgeRoute, /var HINT_ATTR = 'data-8bitgo-cdn'/)
+const indexHtml = readFileSync(new URL('../index.html', import.meta.url), 'utf8')
+assert.match(indexHtml, /<script src="\/edge-route-v4\.js"><\/script>/)
+assert.ok(indexHtml.indexOf('<html') < indexHtml.indexOf('edge-route-v4.js'), '<html> 上的属性在路由脚本运行前就已解析')
 const cnHost = readFileSync(new URL('../src/services/cnHost.ts', import.meta.url), 'utf8')
 assert.match(cnHost, /meta\[name="\$\{COVER_CDN_META\}"\]/)
 

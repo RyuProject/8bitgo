@@ -20,6 +20,7 @@ import { CN_SITE_HEADER, isCnRequest } from '../../shared/cn-host.js'
 import { ROCKET_LOADER_OPT_OUT, optOutRocketLoader } from '../../shared/rocket-loader-optout.js'
 import { COVER_CDN_META, cnEdgeOrigin, coverCdnHint, retargetStaticToCnEdge } from '../../shared/cover-cdn-hint.js'
 import { isolatedRuntimeRoute } from '../../shared/isolated-runtime-platforms.js'
+import { isInlineIsolatedPlatform } from '../../shared/inline-isolated-platforms.js'
 
 const root = path.resolve(fileURLToPath(new URL('../..', import.meta.url)))
 const CLIENT_DIR = path.join(root, 'dist/client')
@@ -195,7 +196,7 @@ function isIsolatedRuntimeShellPath(pathname) {
 export async function renderPage(req, res, next) {
   const isolatedPlayRequest = isIsolatedPlayPath(req.path)
   const isolatedShellRequest = isIsolatedRuntimeShellPath(req.path)
-  // 数据取到后若确认是 PSP 详情页，即使 React SSR 随后失败，空壳也必须保留隔离头；
+  // 数据取到后若确认是 PSP / 塞班详情页，即使 React SSR 随后失败，空壳也必须保留隔离头；
   // 否则浏览器虽能客户端渲染出“开始游戏”，PPSSPP 却会因为没有 SharedArrayBuffer 必挂。
   let isolatedDocumentForFallback = isolatedPlayRequest
   try {
@@ -249,8 +250,9 @@ export async function renderPage(req, res, next) {
      * 所以玩家按“开始”后仍留在播放器、标题、资料与侧栏同在的页面里。
      * 这里只给 PSP 开；PS2 / Dolphin 仍保留独立页，避免一次改变所有实验运行时。
      */
-    const inlinePspPlayer = data?.route === 'game' && data.game?.platform === 'psp'
-    const isolatedDocument = isolatedPlay || inlinePspPlayer
+    // PSP / 塞班的播放器内嵌在详情页里，详情页本身要跨源隔离（shared/inline-isolated-platforms.js）
+    const inlineIsolatedPlayer = data?.route === 'game' && isInlineIsolatedPlatform(data.game?.platform)
+    const isolatedDocument = isolatedPlay || inlineIsolatedPlayer
     isolatedDocumentForFallback = isolatedDocument
 
     /*
@@ -304,6 +306,9 @@ export async function renderPage(req, res, next) {
 
     // <html lang> 跟随当前语言
     page = page.replace(/<html([^>]*)\slang="[^"]*"/, `<html$1 lang="${lang}"`)
+    // 边缘路由（public/edge-route-v4.js）在 <head> 里同步运行，要当场知道 Cloudflare 判定的地域；
+    // 下面写在 </head> 前的 <meta name="8bitgo-cover-cdn"> 那时还没解析到。值只会是 cn / main。
+    if (coverHint) page = page.replace(/<html\b/, `<html data-8bitgo-cdn="${coverHint}"`)
 
     // 用本页真实的 head 覆盖模板里的默认值：
     // 先删掉模板里会重复的那几项，再插入渲染出来的标签。
@@ -347,7 +352,7 @@ export async function renderPage(req, res, next) {
           ? {
               'Cross-Origin-Opener-Policy': 'same-origin',
               'Cross-Origin-Embedder-Policy': 'require-corp',
-              // `/play/<平台>/<slug>` 是重复外壳；/play-local 与 PSP 详情页都是正牌页面。
+              // `/play/<平台>/<slug>` 是重复外壳；/play-local 与 PSP / 塞班详情页都是正牌页面。
               ...(isolatedShell ? { 'X-Robots-Tag': 'noindex, follow' } : {}),
             }
           : {}),
@@ -384,7 +389,7 @@ export async function renderPage(req, res, next) {
             ? {
                 'Cross-Origin-Opener-Policy': 'same-origin',
                 'Cross-Origin-Embedder-Policy': 'require-corp',
-                // 正常 PSP 详情页和 /play-local 都可收录；只有重复的 /play 外壳需要 noindex。
+                // 正常 PSP / 塞班详情页和 /play-local 都可收录；只有重复的 /play 外壳需要 noindex。
                 ...(isolatedShellRequest ? { 'X-Robots-Tag': 'noindex, follow' } : {}),
               }
             : {}),

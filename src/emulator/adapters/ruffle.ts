@@ -289,6 +289,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     startupStage = name
     startupStageAt = now
     diagLog('stage', 'info', `${name}${detail ? ` · ${detail}` : ''} (+${now - mountedAt}ms)`)
+    // 外层播放器看不到 iframe 内的核心 / 元数据进度；阶段推进时刷新停滞看门狗。
+    options.onStartupActivity?.()
   }
   const kb = (n: number) => `${Math.round(n / 1024)}KB`
   /*

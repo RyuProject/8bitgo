@@ -20,6 +20,7 @@
     "test:mail:parse": "node scripts/test-mail-parsing.mjs",
     "test:mail:resend": "node scripts/test-mail-resend.mjs",
     "test:translate": "node scripts/test-translate.mjs",
+    "test:post-translation": "node scripts/test-post-translation.mjs",
     "test:game-description-push": "node --test scripts/test-game-description-push.mjs",
     "check:flash-keys": "node scripts/check-flash-keys.mjs",
     "test:zh-convert": "node scripts/test-zh-convert.mjs",
@@ -57,7 +58,8 @@
     "test:netplay:failover": "node scripts/test-host-failover.mjs",
     "test:netplay:spectator": "NETPLAY_SEAT_REQUEST_MS=300 NETPLAY_SEAT_REQUEST_COOLDOWN_MS=200 node scripts/test-spectator.mjs",
     "test:jsnes-netplay": "node scripts/test-jsnes-netplay.mjs",
-    "test:netplay:all": "npm run test:netplay && npm run test:netplay:hardening && npm run test:netplay:failover && npm run test:netplay:spectator && npm run test:jsnes-netplay && npm run test:rooms && npm run test:live",
+    "test:netplay:adult": "node scripts/test-netplay-adult.mjs",
+    "test:netplay:all": "npm run test:netplay && npm run test:netplay:adult && npm run test:netplay:hardening && npm run test:netplay:failover && npm run test:netplay:spectator && npm run test:jsnes-netplay && npm run test:rooms && npm run test:live",
     "test:play": "node scripts/test-playcount.mjs",
     "test:ratings": "node scripts/test-ratings.mjs",
     "gen-sql": "node scripts/gen-sql.mjs",
@@ -86,7 +88,6 @@
     "test:psp-conversion": "node scripts/test-psp-conversion.mjs",
     "test:psx-conversion": "node scripts/test-psx-conversion.mjs",
     "test:platform-bios": "node scripts/test-platform-bios-key.mjs",
-    "test:arcade-bios-infer": "node scripts/test-arcade-bios-infer.mjs",
     "test:sockdrive-conversion": "node scripts/test-sockdrive-conversion.mjs",
     "test:game-media": "node --test scripts/test-game-media.mjs",
     "test:nowasm-lists": "node scripts/test-nowasm-lists.mjs",
@@ -98,8 +99,7 @@
     "test:lark-notify": "node scripts/test-lark-notify.mjs",
     "test:live-srs": "node scripts/test-live-srs.mjs",
     "test:live-stream": "node scripts/test-live-stream.mjs",
-    "test:diag-lark": "node scripts/test-diag-lark.mjs",
-    "test:playing-now": "node scripts/test-playing-now.mjs"
+    "test:diag-lark": "node scripts/test-diag-lark.mjs"
   },
   "dependencies": {
     "@ip-location-db/geo-whois-asn-country-mmdb": "^2.3.2026061719",

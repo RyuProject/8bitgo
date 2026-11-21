@@ -96,44 +96,42 @@ ok(matchArcadeHack([]) === null, '空包不认')
 
 console.log('\n── 合成 ROM（derive）──')
 /**
- * 合成用真包跑不了（仓库里不放 ROM），所以这里只验**机制**：
- * 两组输出都必须是「原 ROM 原样 + 对应窗口换成补丁片」。
- * 窗口或四通道顺序一旦改动，dat 里的合成产物 CRC 就必须重新从真包计算。
+ * 合成用真包跑不了（仓库里不放 ROM），所以这里用字节标记验证 FBNeo 字库段顺序和 ROM 字节原样保留；
+ * 目标变化时 dat CRC 必须从真包重算。
  */
 const SIZE = 0x080000
-const WINDOWS = { intro: [0x010000, 0x018000], actor: [0x060000, 0x068000] }
-const fill = (byte) => new Uint8Array(SIZE).fill(byte)
+const FONT_SIZE = 0x008000
+const fill = (byte = 0) => new Uint8Array(SIZE).fill(byte)
+const gfx5 = fill()
+const gfx6 = fill()
+const fillWords = (buffer, start, end, high, low) => {
+  for (let i = start; i < end; i += 2) { buffer[i] = high; buffer[i + 1] = low }
+}
+fillWords(gfx5, 0x10000, 0x18000, 0x55, 0x5a)
+fillWords(gfx5, 0x18000, 0x20000, 0x56, 0x5b)
+fillWords(gfx6, 0x10000, 0x18000, 0x66, 0x6a)
+fillWords(gfx6, 0x18000, 0x20000, 0x67, 0x6b)
 const syntheticInputs = {
-  'tk2_gfx1.rom': fill(0x11), 'tk2_gfx3.rom': fill(0x33),
-  'tk2_gfx2.rom': fill(0x22), 'tk2_gfx4.rom': fill(0x44),
-  'tk205.bin': fill(0x71), 'tk206.bin': fill(0x72),
-  'tk207.bin': fill(0x73), 'tk208.bin': fill(0x74),
-  'tk2_gfx5cn.rom': fill(0x55), 'tk2_gfx6cn.rom': fill(0x66),
+  'tk2_gfx5cn.rom': gfx5,
+  'tk2_gfx6cn.rom': gfx6,
 }
 const derived = hack.derive.run(syntheticInputs)
-ok(derived.length === 8, `开场与人物两组共 8 条通道：${derived.map((d) => d.name).join(', ')}`)
+ok(derived.length === 4, `独立字库有 4 条 CPS1 通道：${derived.map((d) => d.name).join(', ')}`)
 const expected = [
-  ['tk2h5_intro_lane0.rom', 0x11, 0x55, 'intro'],
-  ['tk2h5_intro_lane2.rom', 0x33, 0x55, 'intro'],
-  ['tk2h5_intro_lane4.rom', 0x22, 0x66, 'intro'],
-  ['tk2h5_intro_lane6.rom', 0x44, 0x66, 'intro'],
-  ['tk2h5_actor_lane0.rom', 0x71, 0x55, 'actor'],
-  ['tk2h5_actor_lane2.rom', 0x72, 0x55, 'actor'],
-  ['tk2h5_actor_lane4.rom', 0x73, 0x66, 'actor'],
-  ['tk2h5_actor_lane6.rom', 0x74, 0x66, 'actor'],
+  ['tk2h5_cjk_fbneo_v5_lane0.rom', 0x55, 0x5a],
+  ['tk2h5_cjk_fbneo_v5_lane1.rom', 0x56, 0x5b],
+  ['tk2h5_cjk_fbneo_v5_lane2.rom', 0x66, 0x6a],
+  ['tk2h5_cjk_fbneo_v5_lane3.rom', 0x67, 0x6b],
 ]
-for (const [index, [name, base, patch, windowName]] of expected.entries()) {
+for (const [index, [name, first, second]] of expected.entries()) {
   const d = derived[index].data
-  const [start, end] = WINDOWS[windowName]
-  ok(d.length === SIZE, `${name}: 长度还是 0x${SIZE.toString(16)}`)
-  ok(
-    d.every((b, offset) => (offset >= start && offset < end ? b === patch : b === base)),
-    `${name}: 只替换 ${windowName} 窗口，其他字节不变`,
-  )
+  ok(d.length === FONT_SIZE, `${name}: 长度是单个 CPS1 通道的 0x${FONT_SIZE.toString(16)}`)
+  ok(d.every((b, i) => b === (i & 1 ? second : first)), `${name}: 按 FBNeo 左右半片组合顺序且保留字节`)
 }
-// 合成不能改调用方的 buffer —— 上面那些 fill() 如果被就地改了，第二次调用结果就不对
+// 合成不能改调用方的 buffer。
 const again = hack.derive.run(syntheticInputs)
 ok(crc32(again[0].data) === crc32(derived[0].data), '合成是纯函数，同样输入同样输出')
+ok(gfx5[0x10000] === 0x55 && gfx5[0x18000] === 0x56 && gfx6[0x18000] === 0x67, '合成没有改调用方的字库原始数据')
 
 console.log('\n── 内置 dat 和真包 + 合成产物对得上 ──')
 const rows = romLines(hack.romData)
@@ -141,10 +139,32 @@ const byName = new Map(WOFCN_ZIP.map(([name, size, crc]) => [name, { size, crc }
 const derivedNames = new Set(derived.map((d) => d.name))
 const deriveInputs = new Set(hack.derive.inputs)
 ok(rows.length > 0, `dat 里解析出 ${rows.length} 条 ROM 行`)
-const tileNames = rows.filter((r) => r.flags.includes('CPS1_TILES')).map((r) => r.name)
+const tileRows = rows.filter((r) => r.flags.includes('CPS1_TILES'))
+const extraTileRows = rows.filter((r) => r.flags.includes('CPS1_EXTRA_TILES_400000'))
+const tileNames = tileRows.map((r) => r.name)
+const extraTileNames = extraTileRows.map((r) => r.name)
 ok(
-  JSON.stringify(tileNames) === JSON.stringify(hack.derive.outputs),
-  'dat 里的八条图形 ROM 顺序和两组 lane 产物一致',
+  tileNames.length === 8 && JSON.stringify(extraTileNames) === JSON.stringify(hack.derive.outputs),
+  'dat 保留八块基础图形 ROM，并将四条字库通道标记为 FBNeo 扩展图形',
+)
+const rowNameIndex = new Map(rows.map((r, i) => [r.name, i]))
+const firstQsound = rowNameIndex.get('tk2_q1.rom')
+const lastQsound = rowNameIndex.get('tk2_q4.rom')
+const firstExtraTile = rowNameIndex.get(hack.derive.outputs[0])
+const lastExtraTile = rowNameIndex.get(hack.derive.outputs.at(-1))
+ok(
+  firstExtraTile === lastQsound + 1 && lastExtraTile === firstExtraTile + 3 && firstExtraTile > firstQsound,
+  '四条扩展图形 ROM 紧跟 QSound，符合 FBNeo loader 的读取顺序',
+)
+ok(
+  rows.slice(firstExtraTile, lastExtraTile + 1).every((r) => r.flags.includes('CPS1_EXTRA_TILES_400000')),
+  '扩展图形四通道连续，避免 loader 把 Z80 或 QSound 行当作字库',
+)
+const expectedLaneCrcs = [0x38d273a2, 0xedb8cfbb, 0x9c2ada91, 0x2a48eb5a]
+const laneRows = rows.filter((r) => hack.derive.outputs.includes(r.name))
+ok(
+  laneRows.length === 4 && laneRows.every((r, i) => r.size === FONT_SIZE && r.crc === expectedLaneCrcs[i]),
+  '四条通道按 FBNeo CpsLoadTiles 左右半片顺序组合，大小与真包 CRC 完全对应',
 )
 
 const missing = rows.filter((r) => !byName.has(r.name) && !derivedNames.has(r.name))
@@ -153,9 +173,9 @@ ok(missing.length === 0, `dat 里的每个文件要么在真包里、要么是�
 const wrong = rows.filter((r) => byName.has(r.name) && (byName.get(r.name).crc !== r.crc || byName.get(r.name).size !== r.size))
 ok(wrong.length === 0, `真包里那些的大小和 CRC 全部吻合${wrong.length ? '：' + wrong.map((r) => r.name).join(', ') : ''}`)
 
-// 合成产物在 dat 里必须写成和原 ROM 一样的长度 —— derive 只换窗口，不改长度
-const badSize = rows.filter((r) => derivedNames.has(r.name) && r.size !== SIZE)
-ok(badSize.length === 0, `合成产物在 dat 里写的长度是 0x${SIZE.toString(16)}${badSize.length ? '：' + badSize.map((r) => r.name).join(', ') : ''}`)
+// FBNeo 的额外图形 loader 只需要每条 0x8000 字节通道，专用核心会把解码结果复制到两个剧情 tile 窗口。
+const badSize = rows.filter((r) => derivedNames.has(r.name) && r.size !== FONT_SIZE)
+ok(badSize.length === 0, `合成产物在 dat 里写的长度是 0x${FONT_SIZE.toString(16)}${badSize.length ? '：' + badSize.map((r) => r.name).join(', ') : ''}`)
 
 // derive 的输入被合成产物取代了，dat 里不能再直接引用 —— 引用了就等于把补丁片
 // 或者未打补丁的原图形装进去，中文一定不显示
@@ -245,7 +265,7 @@ for (const h of ARCADE_HACKS) {
   /*
     病史：合成（derive）以前**只有「玩本地 ROM」那条路接了**。入库的游戏那条只做两件事 ——
     套 hack.romData、把包名改成 hack.zipName —— 而 dat 里引用的偏偏是合成产物
-    （wofcn 的中文字库要先合成进原图形 ROM）。包里没有这些合成通道，
+    （wofcn 的中文字库要先拆成四条扩展图形通道）。包里没有这些合成通道，
     核心按 dat 去找就是两条 missing，游戏必死，而后台界面还绿字写着「✓ 识别为已知改版包」。
   */
   const adapter = strip(readFileSync(new URL('../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8'))

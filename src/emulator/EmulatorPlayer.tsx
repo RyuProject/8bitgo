@@ -53,6 +53,7 @@ import { cleanPageRetryUrl, isMemoryPressureMessage, takeCleanPageRetry } from '
 import type { CloudSession, CloudState } from './adapters/cloudgame'
 import { p2pPlayable, cloudPlayable, emulatorJsCoreFileFor, emulatorJsCoreForGame, NDS_COMPAT_CORE, ndsCoreForWebgl2 } from './paths'
 import { FBNEO_LOWMEM_CORE, fbneoLowmemSaveSlug, fbneoMemoryFallbackCore, prefersFbneoLowmem, rememberFbneoMemoryFailure } from './fbneoLowmem'
+import { fbneoWofcnSaveSlug, FBNEO_WOFCN_CORE } from './wofcnCore'
 import { prefersPsxLowmem, psxLowmemCoreFor, psxMemoryFallbackCore, rememberPsxMemoryFailure } from './psxLowmem'
 import { ndsCrashFallbackCore, shouldRememberNdsCoreFailure } from './ndsCrash'
 import { rememberNdsCoreFailure, rememberedNdsCore } from './ndsCorePreference'
@@ -94,10 +95,10 @@ import {
   pspVariantSaveSlug,
 } from './romLanguage'
 import { FEATURES } from '@/config/features'
-import { desktopScreenAspect, detailPageScreenAspect, liveStageStyle, mobileScreenAspect, stableLiveGeometry, stageHeightCap } from './screenAspect'
+import { desktopScreenAspect, liveStageStyle, mobileScreenAspect, stableLiveGeometry, stageHeightCap } from './screenAspect'
 import { recordPlay } from '@/services/store'
 import { newStartupId, recordStartupEvent, type StartupEventName } from '@/services/startupFunnel'
-import { registerDiagnosticSnapshot } from '@/services/startupDiagnostics'
+import { diagLog, registerDiagnosticSnapshot } from '@/services/startupDiagnostics'
 import { createStartupProgressTrace } from './startupProgressTrace'
 import { recordRecent } from '@/services/auth'
 import { openAuthModal } from '@/services/authModal'
@@ -123,17 +124,6 @@ import {
   type RoomRole,
 } from '@/services/netplay'
 import { freePlayerIndex, keepAlive, roomLink, roomsEnabled, useRoom, MAX_PLAYERS } from '@/services/rooms'
-// 详情页设计稿里的两枚图标（Figma 导出原件）。?no-inline：输出带哈希的独立文件走长缓存，不把 base64 塞进播放器分块
-import shareIcon from '@/assets/game-detail/share.svg?no-inline'
-import downloadIcon from '@/assets/game-detail/download.svg?no-inline'
-
-/**
- * 详情页空闲态「分享 | 下载」两颗图标按钮的底样式（设计稿：白底、1.25px #c5d3c1 描边、
- * 底部 4px 同色实心阴影、48px 高、左右 16px 内边距）。按下的下沉手感和全站 secondary 按钮一致。
- * 圆角由调用方按「单颗 / 左半 / 右半」补，别写进这里。
- */
-const PAGE_ICON_BUTTON =
-  'inline-grid h-12 place-items-center border-[1.25px] border-line-strong bg-white px-4 shadow-[0_4px_0_0_var(--color-line-strong)] transition-[transform,box-shadow,background-color] duration-100 hover:bg-surface-2 active:translate-y-[3px] active:shadow-none focus-visible:relative focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-black disabled:pointer-events-none disabled:opacity-65'
 
 type Status = 'idle' | 'loading' | 'running' | 'error'
 type Mode = 'local' | 'online'
@@ -253,8 +243,17 @@ interface ActiveSession {
   totalRetries?: number
   /** 只属于这一局的核心覆盖；崩溃兜底不能改后台配置或污染下一次主动启动。 */
   coreOverride?: string
-  /** GBA 启动陷阱后已执行过一次远端 ROM 强制刷新；防止同一坏输入循环下载。 */
+  /**
+   * 一次性动作：**这一局**挂载时丢弃远端 ROM 的缓存与续传片、从网络重新下载。
+   * 只由请求刷新的那一次重开带上；之后的原地重试 / 换核心 / 换引擎都不再携带，
+   * 否则每一轮都会把刚下好的 ROM 扔掉重下（大 NDS / 街机包就是几十上百 MB 白下）。
+   */
   forceRomRefresh?: boolean
+  /**
+   * 持久标记：本次开局已经强制刷新过一次 ROM（GBA 启动陷阱恢复）。跟着后续所有重开走，
+   * 只用来防止同一坏输入再触发第二次刷新，不会让适配器再丢缓存。
+   */
+  romRefreshed?: boolean
   /**
    * 这一局已经试过、并且自己说「跑不了这份 ROM」的引擎（见 RuntimeHandle 那侧的 onUnsupported）。
    * 换引擎时要把它们排除掉，否则两个引擎可以来回踢皮球，永远转圈。
@@ -337,23 +336,15 @@ interface Props {
   onMatchPlayerChange?: (active: boolean) => void
   /** 空闲态背景（例如封面） */
   backdrop?: ReactNode
-  /**
-   * 游戏详情页的展示形态（2026-11 新版详情页设计稿）。只改**外观**：
-   *   - 桌面端舞台 2:1（原来 16:9），空闲态中间是封面 + 标题 + 开始 / 分享 / 下载；
-   *   - 弹幕栏在空闲态也常驻，和画面拼成一张卡（画面圆角只留上边）。
-   * 启动参数、ROM 名、存档身份、运行时选择一律不受它影响 —— 嵌入页 / TV 不传，保持原样。
-   */
+  /** 详情页专用展示。仅调整空闲舞台的外观，不改变启动参数、ROM 名或存档身份。 */
   pagePresentation?: boolean
-  /** 详情页舞台上的可见标题（随界面语言）；gameName 仍是模拟器与直播要用的原名，两者不能混用。 */
+  /** 只用于详情页舞台上的可见标题；gameName 仍保留模拟器所需的原值。 */
   displayTitle?: string
-  /** 详情页舞台中间那张小封面（详情页传 GameCover，和背景复用同一张图）。 */
+  /** 详情页舞台中间的小封面，复用页面已经选择的缩略图。 */
   stagePoster?: ReactNode
-  /** 详情页空闲态「分享」按钮。不传就不画。 */
+  /** 详情页舞台中的分享入口。 */
   onShare?: () => void
-  /**
-   * 详情页空闲态弹幕栏里的「联机」：游戏还没开时点它，走详情页原有的开房请求
-   * （requestMatch / requestIpxHost，播放器在挂载时已经订阅了它们）。不传 = 这款不能联机，不画。
-   */
+  /** 游戏尚未启动时，从详情页下方的联机入口发起；播放器现有生命周期会接住请求。 */
   onPageMatchRequest?: () => void
   /**
    * 出错时红字旁边那个「反馈这个问题」点了做什么。详情页传「滚到评论区并聚焦输入框」；
@@ -1030,12 +1021,8 @@ export function EmulatorPlayer({
    */
   const [liveCtl, setLiveCtl] = useState<LiveControlsHandle | null>(null)
   /**
-   * 详情页弹幕栏上那颗直播按钮在**开局前**的选择：true = 这一局开起来后不公开。
-   *
-   * 开局时作为 LiveControls 的 initialHidden 交下去（只能当 useState 初值读，理由见那边的注释）；
-   * 开局后玩家在按钮上改了主意，下面那个 effect 把最新的选择同步回来，出错重开时沿用。
-   * 默认 false：新游戏默认开播（AGENTS.md §2.23.1）。播放器按 game.slug 作 key 挂载，
-   * 换一款游戏这个 state 跟着整个组件重建，不会把上一款的「不公开」带过去。
+   * 开局前在详情页选择「这一局不公开」。只保留在当前播放器实例中，换游戏会重置；
+   * 开局时作为 LiveControls 初值交下去，避免公开画面先上传再收到隐私选择。
    */
   const [liveOptOut, setLiveOptOut] = useState(false)
   useEffect(() => {
@@ -1870,6 +1857,7 @@ export function EmulatorPlayer({
       totalRetries?: number
       coreOverride?: string
       forceRomRefresh?: boolean
+      romRefreshed?: boolean
       ruledOut?: RuntimeId[]
       startupAttemptId?: string
       startedAt?: number
@@ -1962,6 +1950,8 @@ export function EmulatorPlayer({
         ? `${coreSaveSlug}${NDS_ADAPTIVE_PERFORMANCE_SAVE_SUFFIX}`
       : coreOverride === FBNEO_LOWMEM_CORE && coreSaveSlug
         ? fbneoLowmemSaveSlug(coreSaveSlug)
+      : coreOverride === FBNEO_WOFCN_CORE && coreSaveSlug
+        ? fbneoWofcnSaveSlug(coreSaveSlug)
         : coreSaveSlug
     const plan = loadProgressPlan({
       runtime: runtime.id,
@@ -2095,8 +2085,12 @@ export function EmulatorPlayer({
     let mountCancelled = false
     void (async () => {
       try {
+        diagLog('stage', 'info', `${session.runtime.id} 运行时模块加载开始`)
+        noteStartupActivity()
         const mount = await loadMountOf(session.runtime.id)
         if (mountCancelled || !isCurrent()) return
+        diagLog('stage', 'info', `${session.runtime.id} 运行时模块加载完成`)
+        noteStartupActivity()
         handle = mount(host, {
       platform: session.platform,
       game: session.game,
@@ -2105,7 +2099,16 @@ export function EmulatorPlayer({
       // 按游戏覆盖核心 / 平台级 BIOS：都用 ref 读当前值，
       // 放进 effect 依赖会让「BIOS 异步到货」把正在跑的游戏重启一遍
       core: session.coreOverride ?? coreRef.current,
+      onCoreResolved: (resolvedCore, saveSuffix) => {
+        if (!isCurrent()) return
+        setSession((current) => current?.id === session.id ? {
+          ...current,
+          coreOverride: resolvedCore,
+          saveSlug: saveSuffix && current.saveSlug ? fbneoWofcnSaveSlug(current.saveSlug) : current.saveSlug,
+        } : current)
+      },
       forceRomRefresh: session.forceRomRefresh,
+      romRefreshed: session.romRefreshed,
       mouseCapture: shouldCaptureMouse(session.platform, genresRef.current),
       arcadeRomData: arcadeRomDataRef.current,
       arcadeMameDisks: arcadeMameDisksRef.current?.map((disk) => ({
@@ -2204,8 +2207,7 @@ export function EmulatorPlayer({
       },
       onHtml5AutoSaveRestore: async (localSave) => {
         const saveGameSlug = saveSlugOf(session)
-        if (session.runtime.id !== 'html5' ||
-          (saveGameSlug !== 'plants-vs-zombies' && saveGameSlug !== 'gamblers-table') ||
+        if (!saveGameSlug || session.runtime.id !== 'html5' || !['plants-vs-zombies', 'gamblers-table'].includes(saveGameSlug) ||
           getSaveTarget() !== 'cloud' || !cloudSavesEnabled()) {
           return { enabled: false, data: null }
         }
@@ -2236,8 +2238,12 @@ export function EmulatorPlayer({
       },
       onHtml5AutoSaveSnapshot: async (data) => {
         const saveGameSlug = saveSlugOf(session)
-        if (!isCurrent() || session.runtime.id !== 'html5' ||
-          (saveGameSlug !== 'plants-vs-zombies' && saveGameSlug !== 'gamblers-table') ||
+        /*
+          不看 isCurrent()：换局 / 拆播放器时适配器会请旧 iframe 交最后一份快照，那一刻会话代次已经前进；
+          这份快照属于被拆掉的那一局（session 是闭包里的旧会话、slug 下面还会核对），丢掉就是丢进度。
+          只有提示文字要看 isCurrent()，免得盖到新一局的界面上。
+        */
+        if (!saveGameSlug || session.runtime.id !== 'html5' || !['plants-vs-zombies', 'gamblers-table'].includes(saveGameSlug) ||
           getSaveTarget() !== 'cloud' || !cloudSavesEnabled()) {
           return 'disabled'
         }
@@ -2319,6 +2325,11 @@ export function EmulatorPlayer({
           reportStartup('download_complete')
         }
         // accept() 会在真实进度跑满阶段时推进状态机；此处只负责记录开局漏斗事件。
+      },
+      // EmulatorJS 的阶段文字变化 / 内部网络活动不会总带来新的字节进度；这些活动仍应刷新外层启动超时。
+      onStartupActivity: () => {
+        if (!isCurrent()) return
+        noteStartupActivity()
       },
       onReady: () => {
         if (!isCurrent() || ready) return
@@ -2410,7 +2421,7 @@ export function EmulatorPlayer({
         begin(session.game, session.platform, next, {
           ruledOut,
           totalRetries: session.totalRetries,
-          forceRomRefresh: session.forceRomRefresh,
+          romRefreshed: session.romRefreshed || session.forceRomRefresh,
           startupAttemptId: session.startupAttemptId,
           startedAt: session.startedAt,
         })
@@ -2421,7 +2432,7 @@ export function EmulatorPlayer({
         window.clearTimeout(playableTimer)
         const gbaRomTrap = !ready && session.platform === 'gba' && session.runtime.id === 'emulatorjs' &&
           /table index is out of bounds/i.test(reason) && typeof session.game === 'string' &&
-          isRomPackUrl(session.game) && !session.forceRomRefresh && canRestartInPlace(session)
+          isRomPackUrl(session.game) && !session.forceRomRefresh && !session.romRefreshed && canRestartInPlace(session)
         if (gbaRomTrap) {
           // 普通重试会再次使用同一份已解包 ROM；这类现场之后曾在新访问重下 ROM 后恢复，因此清缓存并重取一次。
           console.warn(`[8bitgo/gba] ${crashedCore} 启动时发生 WASM table trap，刷新 8BG ROM 后重开一次：${reason}`)
@@ -2432,7 +2443,9 @@ export function EmulatorPlayer({
             totalRetries: (session.totalRetries ?? 0) + 1,
             coreOverride: session.coreOverride,
             ruledOut: session.ruledOut,
+            // 只有这一次重开真的丢缓存重下；romRefreshed 跟着后续重开走，防止再刷第二次
             forceRomRefresh: true,
+            romRefreshed: true,
             startupAttemptId: session.startupAttemptId,
             startedAt: session.startedAt,
           })
@@ -2455,7 +2468,7 @@ export function EmulatorPlayer({
             coreOverride: nextCore,
             totalRetries: session.totalRetries,
             ruledOut: session.ruledOut,
-            forceRomRefresh: session.forceRomRefresh,
+            romRefreshed: session.romRefreshed || session.forceRomRefresh,
             startupAttemptId: session.startupAttemptId,
             startedAt: session.startedAt,
           })
@@ -2495,7 +2508,7 @@ export function EmulatorPlayer({
           coreOverride: nextCore,
           totalRetries: session.totalRetries,
           ruledOut: session.ruledOut,
-          forceRomRefresh: session.forceRomRefresh,
+          romRefreshed: session.romRefreshed || session.forceRomRefresh,
           startupAttemptId: session.startupAttemptId,
           startedAt: session.startedAt,
         })
@@ -2552,7 +2565,8 @@ export function EmulatorPlayer({
           运行时基础设施故障（例如 Ruffle 播放壳没有初始化）与 ROM 无关。旧逻辑在同一份
           引擎故障上先重试，再把英语、中文等候选 ROM 挨个判坏：一次 iframe 竞态最终放大成
           二十多次启动和整条语言链误切。runtime 仍保留一次原地重试用于网络抖动，但绝不污染
-          ROM 失败集；只有适配器明确/默认认定为内容故障时才允许 failover。
+          ROM 失败集；只有适配器明确标成 content / deterministic（可换任意候选）或 network（只换同语言备用源）
+          时才允许 failover，不带 scope 的错误一律不换 ROM。
         */
 
         // 完整性/密钥/codec 错误是确定性的，同一个包再下载一次不会变好。直接切数据库里保留的
@@ -2579,7 +2593,7 @@ export function EmulatorPlayer({
             totalRetries: totalRetries + 1,
             coreOverride: session.coreOverride,
             ruledOut: session.ruledOut,
-            forceRomRefresh: session.forceRomRefresh,
+            romRefreshed: session.romRefreshed || session.forceRomRefresh,
             startupAttemptId: session.startupAttemptId,
             startedAt: session.startedAt,
           })
@@ -2654,6 +2668,7 @@ export function EmulatorPlayer({
         stopProgressSnapshot()
         window.clearTimeout(playableTimer)
         const message = error instanceof Error ? error.message : String(error)
+        diagLog('stage', 'error', `${session.runtime.id} 运行时模块加载或挂载失败`, error)
         reportStartupFailure(message)
         setError(message)
         setStatus('error')
@@ -2684,7 +2699,9 @@ export function EmulatorPlayer({
       setScreenLayout(null)
       handle?.destroy()
     }
-  }, [session])
+  // 同一会话只会在适配器按 ROM CRC 确认专用核心后补写 coreOverride / saveSlug；
+  // 这时不能拆掉正在启动的 iframe。真正换局仍会分配新 id 并重新挂载。
+  }, [session?.id])
 
   // 云端联机期间向本站后端心跳（P2P 不需要：信令服务器本来就知道房间）
   useEffect(() => {
@@ -3783,51 +3800,25 @@ export function EmulatorPlayer({
     输入框那边本来就会因为 onSend 为 null 而自己禁用。
   */
   const chatBarOn = liveChatOn || Boolean(liveCtl) || Boolean(matchCtl) || Boolean(coopCtl)
-  /*
-    详情页新版设计稿：弹幕栏和画面拼成一张卡，空闲态也常驻（不然开局那一下整页往下跳一截）。
-    其余宿主（嵌入页 / TV）照旧只在有直播 / 联机开关时才画。
-    观众右栏、联机右栏、全屏、手机游玩布局下一律不画 —— 理由见下面那条注释，两种形态共用同一组排除条件。
-  */
-  /*
-    ⚠️ 来看直播的（详情页给了 livePanelSlot）不走常驻：观众的弹幕输入在右栏面板里，
-    画面下这条只会在「流还没连上」那几秒出现、连上后又被 watchPanelOn 收掉，整页跟着跳一下。
-  */
-  const pageChatBar = pagePresentation && !livePanelSlot
-  const chatBarVisible = pageChatBar
-    ? !fullscreen && !playMode && !watchPanelOn && !matchPanelVisible
-    : chatBarOn && !fullscreen && !playMode && !watchPanelOn && !matchPanelVisible
-  /**
-   * 详情页开局前（含加载中）那两颗按钮。开局后由 liveCtl / matchCtl 接手。
-   *
-   * 直播：玩就是播（AGENTS.md §2.23.1），开局前就让玩家看到「开局会自动公开」，并能先点成「不公开」——
-   * 选择存在 liveOptOut，开局时作为 LiveControls 的初值读，保证一帧都不推。
-   * 只在这一局真的会自动开播时才画：全站直播关了、进的是别人的联机房 / 云端房、来看直播的、选了联机开局，
-   * 这几种情况 LiveControls 根本不会挂（见它的 active 条件），画一颗按钮就是在许诺做不到的事。
-   *
-   * 联机：沿用详情页原来的开房请求（requestMatch / requestIpxHost），播放器会先开局再开房。
-   *
-   * HTML5 网页游戏不预告：它们多半是跨源 iframe，画面抓不到，要开局后玩家手动「分享标签页」
-   * （LiveControls 的 manual 阶段）。开局前写「开局自动直播」就是许诺做不到的事；开局后按钮照常出现、说实话。
-   */
-  const pageStandby = pageChatBar && status !== 'running'
+  const pageStandby = pagePresentation && status !== 'loading' && status !== 'running'
+  const pageBarOn = pageStandby && (liveEnabled() || Boolean(onPageMatchRequest))
   const standbyLive = pageStandby && liveEnabled() && Boolean(gameSlug) && !joining && !liveInvite && !watch && !online && supported &&
     pageRuntime?.id !== 'html5'
     ? {
         on: !liveOptOut,
         label: liveOptOut ? t.player.tools.liveHidden : t.player.tools.autoLivePending,
         hint: liveOptOut ? t.player.tools.autoLiveOffHint : t.player.tools.autoLiveOnHint,
-        toggle: () => setLiveOptOut((v) => !v),
+        toggle: () => setLiveOptOut((value) => !value),
         standby: true,
       }
     : null
-  const standbyMatch = pageStandby && onPageMatchRequest && !joining && !liveInvite && !watch && supported
-    ? {
-        on: false,
-        label: t.player.match,
-        hint: fmt(t.player.matchHint, { max: String(slots) }),
-        toggle: onPageMatchRequest,
-      }
-    : null
+  /*
+    详情页那个 3:1 的矮舞台只给「还没点开始」的那一屏。一点开始（loading 起）就退回平台原本的
+    舞台比例：运行中还压成 3:1 的话，1440 宽的屏上红白机只剩约 504×378；
+    触屏的游玩布局是 fixed inset-0，再套 3:1 会被压成一条，下面的页面露出来还能点。
+    在 loading 而不是 running 时切换，是为了让运行时挂载时量到的就是最终尺寸。
+  */
+  const pageStageCompact = pagePresentation && status === 'idle' && !fullscreen && !playMode
   const liveViewSend = handle?.liveChat
   const chatSend = liveSession
     ? (text: string) => liveSession.sendChat(text)
@@ -3867,10 +3858,6 @@ export function EmulatorPlayer({
    * 现在交给 PadDiagram 画，没有截断，那个取舍连同它的风险一起没了（详见那个文件的头）。
    * 键盘直通的运行时（DOS / Flash）键位表是空的，PadDiagram 自己返回 null。
    */
-  /*
-    详情页新版设计稿把这块位置给了封面 + 标题，按键图改由页面下方「操作说明」那一节承担
-    （KeymapCards，同一套键位数据）。嵌入页 / TV 没有那一节，照旧在这里画。
-  */
   const showKeymap = !pagePresentation && !busy && !online && !touchDevice && Boolean(romUrl)
   const loadingLabel =
     loadDetail === 'rom-pack'
@@ -4354,8 +4341,8 @@ export function EmulatorPlayer({
       data-testid="emulator-player"
       className={cx(
         'overflow-hidden rounded-2xl border border-line bg-black',
-        // 详情页：下面紧贴着弹幕栏，两块拼成一张卡 —— 画面只留上圆角（设计稿 rounded-t-16）
-        pagePresentation && chatBarVisible && 'rounded-b-none',
+        pagePresentation && 'game-detail-player-mode',
+        pageStageCompact && 'game-detail-player-mode--standby',
         className,
       )}
     >
@@ -4414,12 +4401,7 @@ export function EmulatorPlayer({
                   */
                   liveCap
                     ? 'relative mx-auto'
-                    : cx(
-                        'relative',
-                        // 详情页新版设计稿是 2:1；嵌入页 / TV 等其它宿主保持原来的 16:9
-                        pagePresentation ? detailPageScreenAspect(platform.id, geometry) : desktopScreenAspect(platform.id, geometry),
-                        stageHeightCap(immersive),
-                      ),
+                    : cx('relative', desktopScreenAspect(platform.id, geometry), stageHeightCap(immersive)),
           dragging && 'ring-2 ring-brand ring-inset',
         )}
         onDragOver={(e) => {
@@ -4659,9 +4641,15 @@ export function EmulatorPlayer({
 
           {!busy && (
             <div className="absolute inset-0">
-              <div className="absolute inset-0 opacity-60 blur-sm">{backdrop}</div>
-              <div className="scanlines absolute inset-0" aria-hidden />
-              <div className="absolute inset-0 bg-gradient-to-t from-black via-black/60 to-black/20" />
+              {pagePresentation ? (
+                <div className="absolute inset-0 bg-[linear-gradient(180deg,#414141_0%,#292929_55%,#090909_100%)]" aria-hidden />
+              ) : (
+                <>
+                  <div className="absolute inset-0 opacity-60 blur-sm">{backdrop}</div>
+                  <div className="scanlines absolute inset-0" aria-hidden />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black via-black/60 to-black/20" />
+                </>
+              )}
 
               {/*
                 内容容器。两条约束都是「手机上按钮不能被挤没」：
@@ -4681,28 +4669,14 @@ export function EmulatorPlayer({
                 </Button>
               ) : supported ? (
                 <>
-                  {/*
-                    详情页新版设计稿：封面 + 标题压在开始按钮上方（设计稿 111px 封面、30px 标题）。
-                    只在普通空闲态画：出错时要把位置让给错误提示，进邀请链接时下面有一段说明文字。
-                    窄屏不画封面 —— 手机上画面框只有三百来像素高，开始按钮必须在第一屏里。
-                    标题用 <p> 不用标题标签：页面的 <h1> 在播放器下面，这里只是同名的装饰，
-                    再来一个 <h2> 会让文档大纲在 <h1> 之前多出一个同名标题。
-                  */}
-                  {pagePresentation && status === 'idle' && !joining && (stagePoster || displayTitle) && (
-                    <div className="flex max-w-full flex-col items-center gap-3 lg:mb-2 lg:gap-4">
+                  {pagePresentation && status === 'idle' && (
+                    <div className="flex flex-col items-center gap-2">
                       {stagePoster && (
-                        <div
-                          aria-hidden
-                          className="size-[72px] overflow-hidden rounded-[7px] drop-shadow-[0_4px_3.35px_rgba(0,0,0,0.1)] max-sm:hidden lg:size-[111px]"
-                        >
+                        <div className="h-16 w-20 overflow-hidden rounded-md border border-white/25 bg-black/30 shadow-xl shadow-black/40">
                           {stagePoster}
                         </div>
                       )}
-                      {displayTitle && (
-                        <p className="max-w-full truncate text-xl font-extrabold leading-tight tracking-[-0.35px] text-[#f2f4f8] lg:text-[30px] lg:leading-9">
-                          {displayTitle}
-                        </p>
-                      )}
+                      {displayTitle && <h2 className="max-w-[min(80vw,36rem)] truncate text-base font-bold text-white sm:text-lg">{displayTitle}</h2>}
                     </div>
                   )}
                   {/*
@@ -4732,7 +4706,7 @@ export function EmulatorPlayer({
                     </p>
                   )}
                   <span
-                    className={cx('inline-flex flex-wrap items-center justify-center', pagePresentation ? 'gap-4' : 'gap-2')}
+                    className={cx('inline-flex flex-wrap items-center justify-center gap-2', pagePresentation && 'game-detail-player-actions')}
                     onPointerEnter={() => prewarmPrimaryAction(true)}
                     onFocusCapture={() => prewarmPrimaryAction(false)}
                   >
@@ -4760,45 +4734,29 @@ export function EmulatorPlayer({
                                 : t.player.start
                               : t.player.pickRom}
                     </Button>
-                    {/*
-                      详情页设计稿：开始按钮右侧一组「分享 | 下载」图标按钮（白底、1.25px 描边、底部 4px 实心阴影）。
-                      下载仍是原来那颗「下载 ROM」的同一个动作（downloadCurrentRom），只是从下面那个说明框挪上来；
-                      联机模式下没有本机 ROM 可下，不画。两颗都在时左右拼成一块，中间描边重叠 1px。
-                    */}
-                    {pagePresentation && (onShare || (!online && romUrl)) && (
-                      <span className="inline-flex items-stretch">
-                        {onShare && (
-                          <button
-                            type="button"
-                            onClick={onShare}
-                            aria-label={t.game.share}
-                            title={t.game.share}
-                            className={cx(PAGE_ICON_BUTTON, !online && romUrl ? '-mr-px rounded-l-2xl' : 'rounded-2xl')}
-                          >
-                            <img src={shareIcon} alt="" width={23} height={22} draggable={false} />
-                          </button>
-                        )}
-                        {!online && romUrl && (
-                          <button
-                            type="button"
-                            disabled={romDownloadBusy}
-                            aria-busy={romDownloadBusy}
-                            onClick={() => void downloadCurrentRom()}
-                            aria-label={romDownloadBusy ? t.player.downloadingRom : t.player.downloadRom}
-                            title={romDownloadBusy ? t.player.downloadingRom : `${t.player.downloadRom} · ${t.player.downloadRomHint}`}
-                            className={cx(PAGE_ICON_BUTTON, onShare ? 'rounded-r-2xl' : 'rounded-2xl', romDownloadBusy && 'cursor-wait')}
-                          >
-                            <img
-                              src={downloadIcon}
-                              alt=""
-                              width={20}
-                              height={20}
-                              draggable={false}
-                              className={romDownloadBusy ? 'animate-pulse' : undefined}
-                            />
-                          </button>
-                        )}
-                      </span>
+                    {pagePresentation && onShare && (
+                      <button
+                        type="button"
+                        onClick={onShare}
+                        aria-label={t.game.share}
+                        title={t.game.share}
+                        className="inline-grid h-11 w-11 place-items-center rounded-xl border border-white/70 bg-white text-lg font-bold text-[#263329] shadow-sm transition hover:bg-white/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-black"
+                      >
+                        <span aria-hidden>↗</span>
+                      </button>
+                    )}
+                    {pagePresentation && !online && romUrl && (
+                      <button
+                        type="button"
+                        disabled={romDownloadBusy}
+                        aria-busy={romDownloadBusy}
+                        onClick={() => void downloadCurrentRom()}
+                        aria-label={romDownloadBusy ? t.player.downloadingRom : t.player.downloadRom}
+                        title={romDownloadBusy ? t.player.downloadingRom : t.player.downloadRom}
+                        className="inline-grid h-11 w-11 place-items-center rounded-xl border border-white/70 bg-white text-lg font-bold text-[#263329] shadow-sm transition hover:bg-white/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-black disabled:cursor-wait disabled:opacity-65"
+                      >
+                        <span aria-hidden>{romDownloadBusy ? '…' : '↓'}</span>
+                      </button>
                     )}
                     {!online && romUrl && pageRuntime?.id === 'ppsspp' && (
                       <select
@@ -4818,8 +4776,7 @@ export function EmulatorPlayer({
                       {t.player.pspDownloadHint}
                     </p>
                   )}
-                  {/* empty:hidden：详情页这一格常常什么都不放，空的 flex 子项也会吃掉一道 gap，把按钮组顶偏 */}
-                  <div className="w-full max-w-xl text-xs leading-relaxed text-white/80 empty:hidden sm:text-sm">
+                  <div className="w-full max-w-xl text-xs leading-relaxed text-white/80 sm:text-sm">
                     {joining && online ? (
                       <>
                         {inviteGone
@@ -4868,27 +4825,18 @@ export function EmulatorPlayer({
                         {pageRuntime ? fmt(t.player.localInsteadHint, { runtime: pageRuntime.name }) : ''}
                       </>
                     ) : romUrl && pagePresentation ? (
-                      /*
-                        详情页：下载已经是开始按钮旁那颗图标，这里不再重复一整块说明框（设计稿没有这块）。
-                        下载失败的提示和「改成联机玩」的入口仍要留着 —— 前者不说的话点了没反应，
-                        后者是这一路唯一的联机开局入口。
-                      */
-                      (romDownloadError || onlineOk) ? (
-                        <div className="flex flex-col items-center gap-2">
-                          {romDownloadError && (
-                            <p role="alert" className="text-xs text-red-200">{t.player.downloadRomFailed}</p>
-                          )}
-                          {onlineOk && (
-                            <button
-                              type="button"
-                              className="min-h-10 rounded-lg px-3 text-xs font-semibold text-white/70 underline-offset-4 transition hover:text-white hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-black"
-                              onClick={() => setMode('online')}
-                            >
-                              {t.player.onlineInstead}
-                            </button>
-                          )}
-                        </div>
-                      ) : null
+                      <div className="flex flex-col items-center gap-2">
+                        {romDownloadError && <p role="alert" className="text-xs text-red-200">{t.player.downloadRomFailed}</p>}
+                        {onlineOk && (
+                          <button
+                            type="button"
+                            className="min-h-10 rounded-lg px-3 text-xs font-semibold text-white/70 underline-offset-4 transition hover:text-white hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-black"
+                            onClick={() => setMode('online')}
+                          >
+                            {t.player.onlineInstead}
+                          </button>
+                        )}
+                      </div>
                     ) : romUrl ? (
                       <div className="flex flex-col items-center gap-2.5">
                         <div className="w-full rounded-2xl border border-white/25 bg-black/45 px-4 py-3 text-center backdrop-blur">
@@ -5413,7 +5361,6 @@ export function EmulatorPlayer({
             */
             nativeGeometry={geometry}
             chromeless
-            /* 开局前在详情页弹幕栏点了「不公开」：作为初值交下去，第一帧起就不推（见 liveOptOut） */
             initialHidden={liveOptOut}
             onControls={setLiveCtl}
             onChat={chat.push}
@@ -5431,7 +5378,8 @@ export function EmulatorPlayer({
           <div className="ml-auto flex shrink-0 items-center gap-1.5">
           {/*
             ROM 语言切换。三个前提：
-              1. 这款游戏确实有两种以上语言的 ROM —— 只有一种时切了也是它自己
+              1. 这款游戏确实有两种以上语言的 ROM —— 只有一种时什么都不显示：一颗点不动、
+                 长得像按钮的语言标签只会让人以为能切（2026-11-19 去掉了单语言时的那个标签）
               2. 不在联机房里 —— 房主和访客必须跑同一份 ROM，中途换语言这局就废了
               3. **不是在看直播** —— 游戏跑在主播的浏览器里，这台机器一帧都没跑过。
                  切了会怎样：switchRomLang 把会话拆掉、按新语言的 ROM 自己开一局，
@@ -5459,19 +5407,6 @@ export function EmulatorPlayer({
                 ▾
               </span>
             </label>
-          )}
-          {/*
-            详情页设计稿在这里总有一颗语言标签。只绑了一种语言时没得切，只把它是哪种语言写出来
-            （不是按钮：没有底部阴影、不接点击，免得看着能点、点了没反应）。窄屏收起，给主控件让位。
-          */}
-          {pagePresentation && romLangs?.length === 1 && !inRoom && !session?.live && (
-            <span
-              title={t.player.romLangTitle}
-              className="inline-flex h-8 items-center rounded-2xl border-2 border-line-strong bg-surface px-3 text-xs font-bold text-fg max-sm:hidden"
-            >
-              <span className="sr-only">{t.player.romLang}: </span>
-              {romLanguageLabel(romLangs[0]!)}
-            </span>
           )}
           {status === 'running' && handle?.caps.has('discControl') && handle.discControl && !inRoom && !session?.live && (
             <div ref={discControlRef} className="relative">
@@ -5652,25 +5587,23 @@ export function EmulatorPlayer({
     {/*
       观众端和联机玩家在宽屏已有各自的右栏输入框，这里不能再画第二个入口。
     */}
-    {chatBarVisible && (
+    {(chatBarOn || pageBarOn) && !fullscreen && !playMode && !watchPanelOn && !matchPanelVisible && (
       <LiveChatBar
-        className={pagePresentation ? undefined : 'mt-2'}
-        variant={pagePresentation ? 'page' : 'default'}
+        className={cx('mt-2', pagePresentation && 'game-detail-chat-bar')}
         /*
           主播走自己的推流会话，观众走 liveview 那一路的 handle。
           两个都没有 = 还没连上或者已经散场，传 null 让输入框禁用 ——
           让人打完一段字再告诉他发不出去是最差的一种。
         */
         onSend={chatSend}
-        /*
-          这两个只有主播有；观众那一路 liveCtl / matchCtl 都是 null，按钮不画。
-          详情页开局前（pageStandby）换成「开局后要不要公开」与「开局并开联机房」两颗，
-          开局后自动交还给 LiveControls / matchCtl，同一个位置、同一种样子。
-        */
-        live={liveCtl
-          ? { on: liveCtl.on, label: liveCtl.label, hint: liveCtl.hint, toggle: liveCtl.toggle, quality: liveCtl.quality, phase: liveCtl.phase, viewers: liveCtl.viewers }
-          : standbyLive}
-        match={matchCtl ?? standbyMatch}
+        pagePresentation={pagePresentation}
+        standbyLive={standbyLive ?? undefined}
+        standbyMatch={pageStandby && onPageMatchRequest
+          ? { label: t.player.match, onClick: onPageMatchRequest }
+          : undefined}
+        /* 这两个只有主播有；观众那一路 liveCtl / matchCtl 都是 null，按钮不画 */
+        live={liveCtl && { on: liveCtl.on, label: liveCtl.label, hint: liveCtl.hint, toggle: liveCtl.toggle, quality: liveCtl.quality }}
+        match={matchCtl}
         /* 主播那一颗从 LiveControls 上来，观众那一颗是本地算的；一个人只可能占一边 */
         coop={liveCtl?.coop ?? coopCtl}
         /*
@@ -5678,7 +5611,7 @@ export function EmulatorPlayer({
           ⚠️ 上面那个 `!watchPanelOn` 的条件保证了这里不会和观众端右栏那段常驻列表打架：
           右栏在的时候这一行整块不画。
         */
-        history={chat.messages}
+        history={pageStandby ? undefined : chat.messages}
         historyHint={netplayOn && role === 'player' ? t.player.tools.watchHistory : undefined}
       />
     )}

@@ -520,5 +520,13 @@ await check('liveStream.ts：令牌只走请求头 / 请求体，不用 EventSou
   assert.ok(!/\?(session|token)=/.test(lib), '会话 / 登录令牌不能进 URL')
 })
 
+await check('liveview：事件流一次失败后仍会排下一轮重连（先放下 streamConnecting）', () => {
+  const body = view.slice(view.indexOf('const reconnectStream = async'), view.indexOf('const restartStream'))
+  assert.ok(body.length > 0, '找不到 reconnectStream')
+  // scheduleStreamReconnect 在 streamConnecting 为真时直接返回；catch 里排重连之前必须先清掉它
+  assert.match(body, /streamConnecting = false\s*\n\s*scheduleStreamReconnect\(\)/)
+  assert.match(view, /const scheduleStreamReconnect = [\s\S]*?streamConnecting/, '守卫仍在，避免并发重连')
+})
+
 console.log(failed ? `\n${failed} 项失败（${passed} 项通过）` : `\n全部通过 ✅（${passed} 项）`)
 process.exit(failed ? 1 : 0)

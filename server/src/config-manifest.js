@@ -135,7 +135,7 @@ export const ENV_MANIFEST = [
   { name: 'DIAG_LARK_WEBHOOK_URL', group: '诊断告警', kind: 'secret', file: 'diag-lark.js', note: '加载失败与启动超时诊断的 Lark 群机器人 webhook' },
   { name: 'DOWNLOAD_PROXY_SECRET', group: '开放平台', kind: 'secret', file: 'download-proxy.js', note: '与 ROM Worker 的 PLAIN_PROXY_SECRET 一致才采信 download 域转发的玩家 IP；留空 = 不采信' },
   { name: 'EDGE_PURGE_DELAY_MS', group: '缓存', kind: 'config', file: 'edge-purge.js', note: '后台写入后延迟清 Cloudflare HTML 缓存，默认 3 秒' },
-  { name: 'GOOGLE_CLIENT_ID', group: '第三方登录', kind: 'config', file: 'routes/auth.js', note: '公开值，和前端 VITE_GOOGLE_CLIENT_ID 必须同一个' },
+  { name: 'GOOGLE_CLIENT_ID', group: '第三方登录', kind: 'config', file: 'routes/auth.js', note: '公开值；经 /api/auth/google/config 下发给前端，前端 VITE_GOOGLE_CLIENT_ID 只是可选覆盖' },
   { name: 'GZIP_LEVEL', group: '缓存', kind: 'config', file: 'compress.js', note: '动态响应的 gzip 级别；越高越省带宽也越吃 CPU，默认 5' },
   { name: 'GZIP_MIN_BYTES', group: '缓存', kind: 'config', file: 'compress.js', note: '小于这个体积的动态响应不压缩，默认 1024' },
   { name: 'ICE_GLOBAL_PER_MIN', group: 'STUN / TURN', kind: 'config', file: 'routes/ice.js' },

@@ -306,7 +306,10 @@ console.log('\n── 发布文件与 WebGL 截图策略 ──')
   const loadHandler = adapterSource.split("iframe.addEventListener('load'")[1].split("iframe.addEventListener('error'")[0]
   ok(loadHandler.includes('options.onIframeLoaded?.()'), 'iframe load 只上报独立的 iframe_loaded 阶段')
   ok(loadHandler.includes('options.onReadinessVisibilityChange?.(Boolean(frameDocument()))'), '每次导航都更新 HTML5 的同源可观测状态')
-  ok(adapterSource.includes('let firstInteractionReported = false') && adapterSource.includes("iframe.addEventListener('focus', reportFirstInteraction)"), 'iframe 焦点与游戏桥共用一次性首次操作上报，避免重复统计')
+  ok(adapterSource.includes('let firstInteractionReported = false') &&
+    adapterSource.includes("iframe.addEventListener('pointerdown', onFramePointerInput)") &&
+    adapterSource.includes("signal.type === 'first-interaction') reportFirstInteraction()"),
+  '可信 iframe 指针输入与游戏桥共用一次性首次操作上报；单纯获得焦点不算玩家操作')
   const playerSource = readFileSync(new URL('../src/emulator/EmulatorPlayer.tsx', import.meta.url), 'utf8')
   ok(playerSource.includes("session.runtime.id === 'html5' ? 'unknown' : 'observable'"), 'HTML5 等待 iframe 首次导航时不误记慢启动')
   ok(playerSource.includes("readinessState === 'unobservable'"), '跨源页面超时会记录为无法观测，而非游戏失败')
@@ -316,7 +319,8 @@ console.log('\n── 发布文件与 WebGL 截图策略 ──')
   ok(recorderSource.includes('canvas.captureStream()'), '截图不强开 preserveDrawingBuffer，不给每一帧增加复制成本')
   ok(gameSdkSource.includes('window.EightBitGoGameSDK'), '独立游戏 SDK 发布 8BitGo API')
   ok(minifiedSdk === expectedMinifiedSdk && minifiedSdk.length < gameSdkSource.length, '发布压缩版与可维护源码一致且体积更小')
-  ok(!gameSdkSource.includes('createElement(\'script\')') && !gameSdkSource.includes('fetch('), '游戏 SDK 不下载或动态加载外部代码')
+  ok(!/createElement\s*\(\s*['\"]script/.test(gameSdkSource) && !/\bimport\s*\(/.test(gameSdkSource) && !/\beval\s*\(/.test(gameSdkSource), '游戏 SDK 不动态加载或执行外部代码')
+  ok(gameSdkSource.includes('fetch(`${base}${path}`') && gameSdkSource.includes('apiBaseUrl'), '游戏 SDK 只用 fetch 调用公开平台 API 以同步云存档')
   /*
     父页消息桥的来源校验按行为测，不按写法测：9b842b6 为排查 PvZ 握手把 origin 判断拆成单独一段
     （不匹配时打一行日志），原来那条整行字符串断言就红了，而校验本身没变。这里把适配器里真实的
@@ -363,7 +367,10 @@ console.log('\n── 发布文件与 WebGL 截图策略 ──')
     let capsReports = 0
     const scope = {
       destroyed: false,
+      saveBridgeClosed: false,
+      saveBridgeFinalizing: false,
       saveBridgeOrigin: 'https://pvz.8bitgo.com',
+      saveBridgeWindow: null,
       saveBridgeReady: false,
       iframe: { contentWindow: gameFrame },
       SAVE_BRIDGE_SOURCE: constOf('SAVE_BRIDGE_SOURCE'),

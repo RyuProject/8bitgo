@@ -303,6 +303,31 @@ let personalToken = null
   check('回传的是本站 JWT，uid 指向刚建的账号', payload.uid === users[0].id, String(payload.uid))
 }
 
+/* ---------- 10. Google 客户端 ID 由服务端下发（2026-11-20：前端构建期变量漏配，线上按钮一直报未配置） ---------- */
+{
+  const googleConfig = async () => {
+    const r = await realFetch(`${base}/api/auth/google/config`)
+    return { status: r.status, cache: r.headers.get('cache-control') || '', body: await r.json().catch(() => null) }
+  }
+  const GOOD_ID = '123456789012-abcdefghijklmnopqrstuvwxyz012345.apps.googleusercontent.com'
+
+  delete process.env.GOOGLE_CLIENT_ID
+  let c = await googleConfig()
+  check('没配 GOOGLE_CLIENT_ID：clientId 为 null，前端据此提示未配置', c.status === 200 && c.body?.clientId === null, JSON.stringify(c.body))
+
+  process.env.GOOGLE_CLIENT_ID = `  ${GOOD_ID}\n`
+  c = await googleConfig()
+  check('配了就原样（去空白）交给前端，和 /google 校验 aud 用同一个值', c.body?.clientId === GOOD_ID, JSON.stringify(c.body))
+  check('公开值可短时缓存，但不能长到改了 .env 半天不生效', /\bpublic\b/.test(c.cache) && /s-maxage=300\b/.test(c.cache), c.cache)
+
+  for (const junk of ['your-client-id', 'https://evil.example/x.apps.googleusercontent.com', '123-abc.apps.googleusercontent.com.evil.example']) {
+    process.env.GOOGLE_CLIENT_ID = junk
+    c = await googleConfig()
+    check(`不像 Google 客户端 ID 的值不下发：${junk}`, c.body?.clientId === null, JSON.stringify(c.body))
+  }
+  delete process.env.GOOGLE_CLIENT_ID
+}
+
 server.close()
 
 console.log('\n通过：')

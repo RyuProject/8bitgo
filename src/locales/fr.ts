@@ -214,6 +214,8 @@ const fr: Translation = {
     passwordPlaceholder: 'Saisissez votre mot de passe',
     submitPassword: 'Se connecter',
     noPasswordHint: "Pas encore de mot de passe ? Connectez-vous avec un code par e-mail, vous pourrez en définir un depuis votre profil.",
+    passwordResetNotice: 'Pour votre sécurité, le mot de passe défini auparavant sur ce compte a été supprimé et les autres appareils ont été déconnectés. Définissez-en un nouveau dans Profil → Compte et sécurité.',
+    passwordResetDismiss: 'Fermer',
   },
 
   /* ---------------- Accueil ---------------- */
@@ -440,6 +442,15 @@ const fr: Translation = {
       mobileQ: "{title} fonctionne-t-il sur mobile ?",
       mobileA: "Cela dépend du jeu. Consultez les commandes sur cette page : les jeux avec boutons à l'écran fonctionnent au tactile, tandis que les jeux au clavier et à la souris sont mieux adaptés à un ordinateur.",
     },
+    embedLoginNotice: "La connexion {providers} intégrée à ce jeu ne fonctionne pas dans le cadre de cette page (ces pages de connexion refusent de s'afficher dans un cadre intégré et renvoient une erreur 403). Pour vous connecter, ouvrez le jeu dans un nouvel onglet.",
+    embedLoginOpen: 'Ouvrir dans un nouvel onglet',
+    embedLoginSaveWarning: 'Le nouvel onglet risque de ne pas retrouver cette sauvegarde. 8BitGo ne la copiera ni ne la fusionnera ; la synchronisation dépend du jeu lui-même. Pour protéger votre progression, ne commencez pas une nouvelle partie et n’écrasez aucune sauvegarde dans le nouvel onglet.',
+    embedLoginOpenConfirm: '8BitGo ne copiera ni ne fusionnera cette sauvegarde dans le nouvel onglet. Toute synchronisation dépend du jeu lui-même. Continuer ?',
+    currentlyPlaying: 'En cours',
+    playCountLabel: 'parties',
+    communityContributors: 'Contributeurs',
+    communityContributorsEmpty: 'Aucun contributeur répertorié pour le moment.',
+    guidesSubmit: 'Écrire un guide',
   },
 
   /* ---------------- Commentaires ---------------- */
@@ -1494,6 +1505,7 @@ const fr: Translation = {
     oauthEmailUnverified: 'L’e-mail de ce compte n’est pas vérifié, il ne peut donc pas servir à se connecter ici',
     microsoftNickname: 'Joueur Microsoft',
     appleNickname: 'Joueur Apple',
+    googleNotShown: "La connexion Google n'a pas abouti. Si aucune fenêtre Google ne s'est affichée, connecte-toi d'abord à ton compte Google dans ce navigateur, ou utilise un code par e-mail.",
   },
 
   /* ---------------- Détection de ROM ---------------- */
@@ -1672,6 +1684,14 @@ const fr: Translation = {
     ejsRomFailed: 'Échec du téléchargement du fichier de jeu (HTTP {status}) : {url}',
     ejsStalled: 'Le chargement est bloqué à « {stage} ». Appuie sur « Réessayer » ; si ça continue, signale-le-nous',
     ejsLoadFailed: 'L’émulateur n’a pas pu se charger. Vérifie ta connexion et appuie sur « Réessayer » ; si ça continue, signale-le-nous',
+    eka2l1Desc: 'Portage WebAssembly d’EKA2L1 pour navigateur ; chaque session prépare en mémoire un appareil N-Gage et le jeu',
+    eka2l1NoFirmware: 'Aucun firmware d’appareil N-Gage n’est encore configuré sur ce site : les jeux Symbian ne peuvent pas démarrer.',
+    eka2l1NeedsS60v3: 'Ce jeu est un paquet S60 3e édition (.sisx) et le firmware nécessaire n’est pas encore configuré sur ce site.',
+    eka2l1UnknownPackage: 'Ce fichier de jeu Symbian n’est pas reconnu. Seuls les paquets .sis et les dumps de cartes de jeu N-Gage (.zip) sont pris en charge.',
+    eka2l1LoadFailed: 'L’émulateur Symbian n’a pas pu démarrer : {msg}',
+    eka2l1AppExited: 'Le jeu s’est fermé au démarrage ({detail}). Il n’est peut-être pas encore compatible.',
+    eka2l1NeedsIsolation: 'L’émulateur Symbian n’a pas obtenu l’isolation du navigateur nécessaire à SharedArrayBuffer. Rechargez cette page de jeu.',
+    eka2l1StartTimeout: 'L’écran du jeu n’est pas apparu en deux minutes. Si la fenêtre du navigateur est en arrière-plan, revenez-y et réessayez.',
   },
 
   /* ---------------- Nombres et unités ---------------- */

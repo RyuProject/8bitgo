@@ -42,7 +42,7 @@ const player = read('src/emulator/EmulatorPlayer.tsx')
 assert.match(player, /onOutOfMemory: \(failedCore: string, reason: string\) => \{[\s\S]{0,600}fbneoMemoryFallbackCore\([\s\S]{0,900}if \(fbneoCore\) rememberFbneoMemoryFailure\(\)[\s\S]{0,200}coreOverride: nextCore/)
 assert.match(player, /prefersFbneoLowmem\(\)\s*\?\s*FBNEO_LOWMEM_CORE/)
 assert.match(player, /coreOverride === FBNEO_LOWMEM_CORE && coreSaveSlug\s*\?\s*fbneoLowmemSaveSlug\(coreSaveSlug\)/)
-assert.match(read('src/components/profile/CloudSaves.tsx'), /parseFbneoLowmemSaveSlug\(s\.gameSlug\)/)
+assert.match(read('src/components/profile/CloudSaves.tsx'), /parseFbneoLowmemSaveSlug\((?:parseFbneoWofcnSaveSlug\()?s\.gameSlug\)/)
 assert.match(read('src/emulator/types.ts'), /onOutOfMemory\?: \(core: string, message: string\) => boolean/)
 
 /* ---------- 低内存核心也失败之后（src/emulator/memoryRecovery.ts） ---------- */

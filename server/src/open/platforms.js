@@ -434,13 +434,13 @@ const PLATFORM_ROWS = deepFreeze([
     nameZh: '塞班 / 诺基亚 N-Gage',
     manufacturer: 'Nokia / Symbian',
     year: 1998,
-    runtime: 'eka2l1-web',
+    runtime: 'eka2l1',
     core: null,
-    romExtensions: ['.sis', '.sisx', '.n-gage'],
+    romExtensions: ['.sis', '.zip', '.sisx', '.n-gage'],
     native: {
       runnable: false,
       emulator: '',
-      note: '8BitGo 使用需要玩家自备授权固件的 EKA2L1-WEB 专用页面；开放 API 不提供固件或游戏文件',
+      note: '8BitGo 在游戏页内嵌 EKA2L1-WEB，设备固件由站点配置（.zip 为第一代 N-Gage 卡带转储）；开放 API 不提供固件或游戏文件',
     },
   },
 ])

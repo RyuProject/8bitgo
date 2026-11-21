@@ -160,6 +160,7 @@ const ADAPTERS = [
   'dolphin',
   'binjgb',
   'iodinegba',
+  'eka2l1',
   'awayfl',
   'cloudgame',
   'liveview',

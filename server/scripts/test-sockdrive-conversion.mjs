@@ -139,4 +139,12 @@ assert.match(queue, /for \(let pass = 1; pass <= 2; pass\+\+\)/)
 assert.match(queue, /边缘缓存可能损坏/)
 
 assert.doesNotMatch(queue, /必须先配置 DOSBox-X 和共享 Windows 系统镜像/)
+// 重试与清扫器的竞态：重新排队必须在同一条 UPDATE 里核对源 ZIP 还在（发布已开始的除外），0 行要给出明确原因
+assert.match(retryBlock, /WHERE id = \? AND status = 'failed' AND \(publish_started = 1 OR source_deleted = 0\)/)
+assert.match(retryBlock, /临时 ZIP 正在清理或已经删除，不能重试/)
+// 失败提示要按库里的 publish_started（运行中才写入），不能读开工时那份 job
+const failBlock = queue.slice(queue.indexOf('const message = sockdriveFailureMessage(error)'), queue.indexOf('async function sweepStaleSources'))
+assert.match(failBlock, /SELECT publish_started FROM sockdrive_conversion_jobs WHERE id = \?/)
+assert.match(failBlock, /message: publishStarted \?/)
+assert.doesNotMatch(failBlock, /message: job\.publish_started/)
 console.log('✅ DOS / Windows ZIP → Sockdrive：参数守卫、持久队列、私有 staging 与后台接线通过')

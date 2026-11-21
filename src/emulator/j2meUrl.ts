@@ -127,7 +127,7 @@ export function j2meWarmTargets(base: string): string[] {
  *
  * 以前 8BG 要在玩家浏览器里下载、解密，再 POST 回本站临时目录（2026-11-10 大陆实测光上传就 23 秒，
  * 慢线路两分钟传不完）。现在 `/j2me/jar/X.8bg.jar` 由 server/src/j2me.js 从 R2 取回并解包。
- * 只认本站 ROM 根下 `roms/java/` 里的对象：外链 8BG 服务端无从代理，返回空串，仍走上传那条路。
+ * 只认本站主域、镜像和下载优选域下 `roms/java/` 里的对象：外链 8BG 服务端无从代理，返回空串，仍走上传那条路。
  *
  * @param url       播放地址（可能是主域或大陆镜像，带 `?romv=`）
  * @param romBases  本站 ROM 根地址（主域、镜像），不带结尾斜杠

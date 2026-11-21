@@ -39,7 +39,7 @@ import { isRomNetworkFailure } from '../loadProgress'
 import { isRomPackUrl } from '@/services/romPack'
 import { warmHttpCache } from '../httpWarm'
 import { diagLog, registerDiagnosticSnapshot, watchFramePerformance } from '@/services/startupDiagnostics'
-import { ENV_ROM_BASE, ENV_ROM_MIRROR } from '@/services/romHosts'
+import { ENV_ROM_BASE, ENV_ROM_MIRROR, ENV_ROM_DOWNLOAD } from '@/services/romHosts'
 
 /* ---------------- 从 freej2me-web 源码里挖出来的接入点 ---------------- */
 
@@ -287,7 +287,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const isFile = typeof options.game !== 'string'
   /** 本站 R2 上的 8BG JAR：由服务端解包（见 j2meUrl.ts 的 packedJarProxyName），不再经玩家浏览器上传 */
   const packedName = typeof options.game === 'string' && isRomPackUrl(options.game)
-    ? packedJarProxyName(options.game, [ENV_ROM_BASE, ENV_ROM_MIRROR])
+    ? packedJarProxyName(options.game, [ENV_ROM_BASE, ENV_ROM_MIRROR, ENV_ROM_DOWNLOAD])
     : ''
   let needsTempJar = isFile || (typeof options.game === 'string' && isRomPackUrl(options.game))
   // 本地文件和 8BG 都要先变回普通 JAR 再放进临时目录，这需要后端存在。

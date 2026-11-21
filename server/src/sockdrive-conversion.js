@@ -369,11 +369,25 @@ export async function retrySockdriveConversion(id) {
    * 两次外部等待曾超过 Cloudflare 时限直接回 504。processJob 本来就会按 ETag 重新校验源文件，
    * 并在 publish_started 时先检查已提交元数据；把 I/O 留给后台既不降低安全性，也让请求立即返回。
    */
+  /*
+   * 条件里必须带上 source_deleted：上面那次读和这次写之间，清扫器（sweepStaleSources）
+   * 可能刚领走这份 24 小时前失败的源 ZIP（source_deleted 0 → 2 → 1）。不在同一条 UPDATE 里
+   * 核对，就会把一个「源文件正在被删」的任务重新排队，processJob 下载到一半 404。
+   * 发布已开始的任务不再需要源 ZIP（只补发布 / 绑定），所以这类不看 source_deleted。
+   * PSP 转换的重试（psp-conversion.js）是同一条规矩。
+   */
   const claimed = await query(
-    "UPDATE sockdrive_conversion_jobs SET status = 'queued', progress = 0, error = NULL, message = '手动重试', completed_at = NULL WHERE id = ? AND status = 'failed'",
+    `UPDATE sockdrive_conversion_jobs SET status = 'queued', progress = 0, error = NULL, message = '手动重试', completed_at = NULL
+      WHERE id = ? AND status = 'failed' AND (publish_started = 1 OR source_deleted = 0)`,
     [id],
   )
-  if (claimed.affectedRows !== 1) throw Object.assign(new Error('任务状态刚刚变化，请刷新后再试'), { status: 409 })
+  if (claimed.affectedRows !== 1) {
+    const now = await queryOne('SELECT status, publish_started, source_deleted FROM sockdrive_conversion_jobs WHERE id = ?', [id])
+    if (now && now.status === 'failed' && !Number(now.publish_started) && Number(now.source_deleted) !== 0) {
+      throw Object.assign(new Error('临时 ZIP 正在清理或已经删除，不能重试；请重新上传'), { status: 409 })
+    }
+    throw Object.assign(new Error('任务状态刚刚变化，请刷新后再试'), { status: 409 })
+  }
   schedulePump()
   return getSockdriveConversion(id)
 }
@@ -773,9 +787,16 @@ async function processJob(job) {
   } catch (error) {
     const message = sockdriveFailureMessage(error)
     console.error(`[sockdrive-convert] ${job.id} 失败：`, error)
+    /*
+     * job 是开工时读的那一行；publish_started 是这次运行中途才写进库的（updateJob 不改内存对象），
+     * 直接读 job.publish_started 会在「发布已开始」时仍提示「临时 ZIP 已保留」—— 而那时源 ZIP
+     * 可能已经清理，管理员照着提示去等重试反而是错的。所以先回库读一次真实状态。
+     */
+    const current = await queryOne('SELECT publish_started FROM sockdrive_conversion_jobs WHERE id = ?', [job.id]).catch(() => null)
+    const publishStarted = Boolean(Number(current?.publish_started ?? job.publish_started))
     await updateJob(job.id, {
       status: 'failed', error: message,
-      message: job.publish_started ? '已保留任务状态；可重试恢复发布或绑定' : '临时 ZIP 已保留，可在 24 小时内重试',
+      message: publishStarted ? '已保留任务状态；可重试恢复发布或绑定' : '临时 ZIP 已保留，可在 24 小时内重试',
     }).catch(() => {})
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {})

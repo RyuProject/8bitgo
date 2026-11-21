@@ -312,6 +312,14 @@ export function netplayRooms({ gameId, includeAdult = false } = {}) {
     .sort((a, b) => b.createdAt - a.createdAt)
 }
 
+/** 只有成人游戏的房间。调用方必须已经核实年龄（见 /api/netplay/rooms?scope=adult）。 */
+export function netplayAdultRooms() {
+  return [...rooms.values()]
+    .filter((room) => room.adult)
+    .map(detailedRoom)
+    .sort((a, b) => b.createdAt - a.createdAt)
+}
+
 /** 单个公开房间；顺着房主迁移留下的别名查，老邀请链接仍然有效。 */
 export function netplayRoom(roomId, { includeAdult = false } = {}) {
   const asked = str(roomId, 64)
@@ -737,6 +745,24 @@ export function attachNetplay(
       if (!gamePolicy || authoritativeMax < 2) {
         return ack?.('game does not support multiplayer')
       }
+      /*
+        成人游戏：开房的人也要通过年龄门（§2.23）。只拦 join-room 不够 —— 未通过的人开出来的房，
+        自己就是房主、能邀请任何人看画面。身份同 join-room，取握手 auth.token 或 extra.auth_token。
+      */
+      if (gamePolicy.adult) {
+        socket.data.netplayOpening = true
+        let accessError
+        try {
+          accessError = await netplayAdultAccessError(socket, extra, findUser)
+        } catch (error) {
+          console.error('[netplay] 成人房年龄校验失败：', error)
+          accessError = 'adult check failed'
+        } finally {
+          socket.data.netplayOpening = false
+        }
+        if (accessError) return ack?.(accessError)
+        if (!socket.connected) return ack?.('disconnected')
+      }
 
       // 数据库查询是异步的；等待期间别的请求可能已经占了房间名或这个 socket。
       // 所有依赖当前内存状态的检查必须放在 await 之后重新做，才能避免并发开出两个同名房。
@@ -1066,6 +1092,15 @@ export function attachNetplay(
   app.get('/api/netplay/rooms', async (req, res) => {
     // 带 JWT 且通过年龄门的登录用户才能看到成人游戏的房间；其余人（含 SSE）一律看不到
     res.set('Cache-Control', 'private, no-store')
+    /*
+      ?scope=adult：只要成人房。大厅里所有人都走匿名 SSE 拿公开房，本地判断「年满 18」的登录用户
+      再额外发这一个带 JWT 的请求补上成人房（services/netplay.ts 的 refreshAdult），
+      这样普通登录用户不再为了一个看不到的列表每 15 秒让服务端查一次库。没过年龄门的一律回空数组。
+    */
+    if (req.query.scope === 'adult') {
+      if (!(await adultViewer(req, res))) return res.json([])
+      return res.json(netplayAdultRooms())
+    }
     res.json(netplayRooms({ includeAdult: await adultViewer(req, res) }))
   })
 

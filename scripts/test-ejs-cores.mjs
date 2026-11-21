@@ -287,6 +287,8 @@ for (const p of platforms) {
 for (const [platform, list] of Object.entries(CORE_OPTIONS)) {
   for (const opt of list) wanted.push({ id: opt.id, from: `CORE_OPTIONS.${platform} 的「${opt.label}」` })
 }
+// 由 ROM CRC 自动选择的隐藏核心，不在玩家下拉里，但它的产物同样是启动硬依赖。
+wanted.push({ id: 'fbneo-wofcn', from: 'wofcn CRC 命中后的专用核心' })
 
 check(`一共 ${wanted.length} 处引用，去重后 ${new Set(wanted.map((w) => w.id)).size} 个核心`, () => {
   assert.ok(wanted.length > 0, '一个都没收集到，说明 import 的两张表读空了')
@@ -308,7 +310,8 @@ for (const { id, from } of wanted) {
         const missing = [!haveJs && `${core}-wasm.data`, !haveReport && `reports/${core}.json`].filter(Boolean).join('、')
         const buildCommand = id === 'mame-current'
           ? 'node scripts/build-mame-current-core.mjs'
-          : id === 'fbneo-lowmem' ? 'npm run build:fbneo-lowmem' : 'npm run build:melondsds'
+          : id === 'fbneo-lowmem' ? 'npm run build:fbneo-lowmem'
+            : id === 'fbneo-wofcn' ? 'npm run build:fbneo-wofcn' : 'npm run build:melondsds'
         assert.fail(`缺 ${missing}；运行 ${buildCommand}，否则选用 ${id} 的游戏会开局失败`)
       })
     } else {
@@ -364,6 +367,37 @@ check('FBNeo 低内存实验版报告与普通 / legacy 产物一致', () => {
   assert.equal(report.memory.baselineMinimumBytes, 128 * 1024 * 1024)
   assert.equal(report.memory.maximumBytes, 2 * 1024 * 1024 * 1024)
   assert.equal(report.memory.allowMemoryGrowth, true)
+})
+
+check('wofcn 专用 FBNeo 普通 / legacy 产物和构建报告一致', () => {
+  const report = JSON.parse(readFileSync(join(coresDir, 'reports', 'fbneo-wofcn.json'), 'utf8'))
+  assert.equal(report.core, 'fbneo-wofcn')
+  assert.match(report.upstreamCommit, /^[0-9a-f]{40}$/)
+  assert.match(report.patchSha256, /^[0-9a-f]{64}$/)
+  const wofcnPatch = readFileSync(join(root, 'scripts', 'patch-fbneo-wofcn-source.mjs'))
+  assert.equal(createHash('sha256').update(wofcnPatch).digest('hex'), report.patchSha256, '核心构建报告没有包含当前 wofcn 源码补丁')
+  assert.match(wofcnPatch.toString('utf8'), /rawCode >= 0xe000 && rawCode <= 0xefff[\s\S]*\(a & 0x1f\) == 16[\s\S]*rawCode & 0x07ff/, '只把人物对白框的 E000-EFFF 字码导向专用字库')
+  const patchSource = wofcnPatch.toString('utf8')
+  const rawCodeCapture = patchSource.indexOf('rawCode = t;')
+  const genericMaskPatch = patchSource.indexOf('const mapBlock =')
+  assert.ok(rawCodeCapture >= 0 && genericMaskPatch > rawCodeCapture &&
+    patchSource.includes('if (Scroll1TileMask) t &= Scroll1TileMask;'),
+  '先保留掩码前的原始汉字字码，再应用通用图块掩码')
+  assert.doesNotMatch(wofcnPatch.toString('utf8'), /Code >= 0xd000 && Code <= 0xdfff/, 'D 段含普通场景图块，不映射到中文字库')
+  assert.doesNotMatch(wofcnPatch.toString('utf8'), /const dialogueGate =/, '不在绘制坐标上扩展未经验证的 D 段映射')
+  assert.ok(wofcnPatch.toString('utf8').includes('source = source.replace(/\\n#ifdef __EMSCRIPTEN__'), '复用构建目录时清除临时逐 tile 诊断输出')
+  assert.doesNotMatch(wofcnPatch.toString('utf8'), /Code >= 0xe000[\s\S]{0,80}return 0x4000/, '不把对白地址错误折到 0x4000')
+  assert.match(wofcnPatch.toString('utf8'), /if \(IsWofcnRomData\(\)\) nCpsGfxLen \+= nCpsExtraGfxLen/, '独立字库 bank 只在专用 RomData 下增长')
+  assert.match(wofcnPatch.toString('utf8'), /CpsLoadTiles\(CpsGfx \+ 0x400000, i\)/, 'wofcn 扩展字库通过 CPS1 tile loader 解码')
+  assert.doesNotMatch(wofcnPatch.toString('utf8'), /memcpy\(CpsGfx \+ 0x040000,|memcpy\(CpsGfx \+ 0x380000,/, 'wofcn 不覆盖其他场景会复用的普通图形 tile')
+  for (const file of ['fbneo-wofcn-wasm.data', 'fbneo-wofcn-legacy-wasm.data']) {
+    assert.ok(existsSync(join(coresDir, file)), `${file} 缺失`)
+  }
+  const normal = readFileSync(join(coresDir, 'fbneo-wofcn-wasm.data'))
+  assert.equal(createHash('sha256').update(normal).digest('hex'), report.sha256, '普通核心与构建报告不是同一批')
+  const sourceReport = readFileSync(join(coresDir, 'reports', 'fbneo-wofcn.json'))
+  const metadata = readFileSync(join(coresDir, 'metadata', 'fbneo-wofcn.json'))
+  assert.ok(sourceReport.equals(metadata), 'metadata 必须和 reports 逐字节相同')
 })
 
 check('旧 melonDS 只作为崩溃兜底，产物与报告必须完整', () => {

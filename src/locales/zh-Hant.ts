@@ -205,6 +205,8 @@ const zhHant: Translation = {
     passwordPlaceholder: '輸入登入密碼',
     submitPassword: '登入',
     noPasswordHint: '沒設過密碼？先用驗證碼登入，之後可以在個人中心設定。',
+    passwordResetNotice: '為了帳號安全，這個帳號以前設定的密碼已被清除，其他裝置也已登出。請到個人中心「帳號與安全」重新設定密碼。',
+    passwordResetDismiss: '關閉',
   },
 
   home: {
@@ -419,6 +421,15 @@ const zhHant: Translation = {
       mobileQ: "{title} 在手機上能玩嗎？",
       mobileA: "取決於遊戲。請查看本頁的操作說明：有螢幕按鍵的遊戲可以觸控遊玩；需要鍵盤和滑鼠的遊戲更適合電腦端。",
     },
+    embedLoginNotice: '這款遊戲內建的 {providers} 登入無法在本頁的遊戲框內完成（對方不允許在嵌入框架中開啟登入頁，會顯示 403）。需要登入時請在新分頁開啟遊戲。',
+    embedLoginOpen: '在新分頁開啟',
+    embedLoginSaveWarning: '注意：新分頁可能讀不到本頁這份存檔，8BitGo 不會代為複製或合併；能否同步取決於遊戲本身。若要保留目前進度，請先不要在新頁面開始新遊戲或覆蓋存檔。',
+    embedLoginOpenConfirm: '8BitGo 不會把本頁存檔複製或合併到新分頁。遊戲本身能否同步取決於它的規則。仍要開啟嗎？',
+    currentlyPlaying: '正在遊玩',
+    playCountLabel: '次遊玩',
+    communityContributors: '貢獻者',
+    communityContributorsEmpty: '暫時還沒有貢獻者紀錄',
+    guidesSubmit: '寫攻略',
   },
 
   /* ---------------- 遊戲留言 ---------------- */
@@ -1436,6 +1447,7 @@ const zhHant: Translation = {
     oauthEmailUnverified: '這個帳號的郵箱未通過驗證，本站無法用它登入',
     microsoftNickname: 'Microsoft 玩家',
     appleNickname: 'Apple 玩家',
+    googleNotShown: 'Google 登入沒有完成。如果沒看到 Google 的登入視窗，請先在瀏覽器裡登入 Google 帳號，或改用電子郵件驗證碼登入。',
   },
 
   detect: {
@@ -1611,6 +1623,14 @@ const zhHant: Translation = {
     ejsArcadeRomDownloadFailed: '街機遊戲檔案下載失敗：{msg}',
     ejsRomFailed: '遊戲檔案下載失敗（HTTP {status}）：{url}',
     ejsStalled: '載入在「{stage}」這一步停住了。點「重試」再來一次；一直不行請回報給我們',
+    eka2l1Desc: 'EKA2L1 的瀏覽器 WebAssembly 移植；每局在記憶體裡裝好 N-Gage 裝置與遊戲後啟動',
+    eka2l1NoFirmware: '本站尚未設定 N-Gage 裝置韌體，塞班遊戲暫時無法啟動。',
+    eka2l1NeedsS60v3: '這款遊戲是 S60 第三版（.sisx）安裝套件，所需的裝置韌體本站尚未設定。',
+    eka2l1UnknownPackage: '無法辨識這個塞班遊戲檔案：目前只支援 .sis 安裝套件和 N-Gage 卡帶轉儲（.zip）。',
+    eka2l1LoadFailed: '塞班模擬器啟動失敗：{msg}',
+    eka2l1AppExited: '遊戲啟動後退出了（{detail}），這款遊戲可能暫不相容。',
+    eka2l1NeedsIsolation: '塞班模擬器沒有取得 SharedArrayBuffer 所需的瀏覽器隔離環境。請重新整理目前的遊戲頁。',
+    eka2l1StartTimeout: '遊戲畫面兩分鐘都沒有出現。如果瀏覽器視窗在背景，請切回來後重試。',
   },
 
   featured: {

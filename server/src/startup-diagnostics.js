@@ -224,6 +224,9 @@ export function diagnoseStartupFailure({ event, platform, detail, diagnostics })
     return hit('engine_assets', '模拟器依赖资源加载停滞', 'engine_asset', 'medium', 'stage.engine_assets')
   }
   if (has(/加载进度：阶段 starting|loading progress: phase starting/)) {
+    if (platform === 'html5') {
+      return hit('timeout', '网页游戏页面已加载，但尚未确认可玩', 'startup', 'medium', 'stage.html5_starting')
+    }
     return withCore(hit('timeout', 'ROM 完成后模拟器启动停滞', 'core_init', 'medium', 'stage.starting'))
   }
   const failedResource = [...resources].reverse().find((row) => Number(row?.st) >= 400 && /^(?:fetch|xmlhttprequest|script|link|other)$/i.test(String(row?.i ?? '')))

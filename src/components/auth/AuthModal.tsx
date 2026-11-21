@@ -5,9 +5,19 @@ import { lockBodyScroll } from '@/lib/scrollLock'
 import { Button, buttonClasses } from '@/components/ui/Button'
 import { closeAuthModal, useAuthModalOpen } from '@/services/authModal'
 import type { OAuthProvider } from '@/services/auth'
-import { login, loginWithEmailCode, loginWithGoogle, requestEmailCode, startOAuthLogin, useCurrentUser } from '@/services/auth'
+import {
+  exchangeGoogleCredential,
+  login,
+  loginWithEmailCode,
+  loginWithGoogle,
+  renderGoogleButton,
+  requestEmailCode,
+  startOAuthLogin,
+  useCurrentUser,
+} from '@/services/auth'
 import { ApiError } from '@/services/api'
 import { useT, fmt } from '@/services/i18n'
+import { useLang } from '@/services/lang'
 import { FEATURES } from '@/config/features'
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
@@ -43,6 +53,30 @@ export function AuthModal() {
   const emailRef = useRef<HTMLInputElement>(null)
   const codeRef = useRef<HTMLInputElement>(null)
   const timer = useRef<ReturnType<typeof setInterval> | null>(null)
+  const lang = useLang()
+  /** Google 官方按钮画在这里；画出来之前（或画不出来）显示下面那个自己的备用按钮 */
+  const googleRowRef = useRef<HTMLDivElement>(null)
+  const googleSlotRef = useRef<HTMLDivElement>(null)
+  const [googleReady, setGoogleReady] = useState(false)
+
+  /**
+   * 官方按钮拿到凭证后的收尾。经 ref 转一道：按钮只在打开时登记一次回调，
+   * 直接传闭包的话，之后换了语言拿到的还是旧的 t。
+   */
+  const onGoogleCredential = async (credential: string) => {
+    setError(null)
+    setBusy(true)
+    try {
+      await exchangeGoogleCredential(credential)
+      closeAuthModal()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t.auth.googleFailed)
+    } finally {
+      setBusy(false)
+    }
+  }
+  const googleCredentialRef = useRef(onGoogleCredential)
+  googleCredentialRef.current = onGoogleCredential
 
   const emailValid = EMAIL_RE.test(email.trim())
   const canSubmit = emailValid && !busy && (mode === 'code' ? /^\d{6}$/.test(code) : password.length > 0)
@@ -82,6 +116,37 @@ export function AuthModal() {
   useEffect(() => {
     if (open && user) closeAuthModal()
   }, [open, user])
+
+  /*
+    打开就请 Google 画它的官方按钮（隐私政策「你主动触发才会发生的」一节写明了：打开登录窗口时
+    浏览器会从 Google 加载它）。画好之前、或者加载不出来（大陆网络、隔离页、没配客户端 ID），
+    原来那个按钮一直在，点它走 One Tap，报错也照旧。
+  */
+  useEffect(() => {
+    if (!open) return
+    const row = googleRowRef.current
+    const slot = googleSlotRef.current
+    if (!row || !slot) return
+    let cancelled = false
+    let dispose: (() => void) | null = null
+    void renderGoogleButton(slot, {
+      width: row.clientWidth,
+      lang,
+      onCredential: (credential) => void googleCredentialRef.current(credential),
+    }).then((cleanup) => {
+      if (cancelled) {
+        cleanup?.()
+        return
+      }
+      dispose = cleanup
+      setGoogleReady(Boolean(cleanup))
+    })
+    return () => {
+      cancelled = true
+      dispose?.()
+      setGoogleReady(false)
+    }
+  }, [open, lang])
 
   if (!open) return null
 
@@ -318,29 +383,42 @@ export function AuthModal() {
         </div>
 
         {/*
-          第三方登录：一行三个，各占三分之一。
+          第三方登录。Google 单独占一整行：它的官方按钮（renderButton）最窄 200px，
+          塞不进三分之一宽的格子；Microsoft / Apple 在下面一行各占一半。
 
-          文案用**短版**（只有品牌名）—— 三分之一宽的按钮只剩 ~85px 放文字，
-          而 Button 基类带 whitespace-nowrap：放不下不会换行，会直接顶穿边框。
-          尺寸也降到 md，px-6 在这个宽度下太吃地方。
+          官方按钮画在 slot 里。画好之前 slot 绝对定位、透明且不吃点击 —— 不能用 display:none，
+          GIS 在隐藏的容器里量不出宽度；画好后它占位、备用按钮撤掉。两者都是 40px 高，换的时候版面不跳。
 
+          文案用**短版**（只有品牌名）：Button 基类带 whitespace-nowrap，放不下不会换行，会顶穿边框。
           min-w-0：grid 子项默认 min-width:auto，内容撑得下就不肯缩，一样会溢出格子。
-          truncate 是最后一道保险，正常语言都不该触发。
         */}
-        {/* 手机上竖排：三列时每格只有约 85px，360px 屏上「谷歌」都被截成「谷…」，英文 Microsoft 更是只剩一半 */}
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-          <Button variant="secondary" size="md" className="w-full min-w-0" onClick={google} disabled={busy}>
-            <GoogleIcon />
-            <span className="truncate">{t.auth.googleShort}</span>
-          </Button>
-          <Button variant="secondary" size="md" className="w-full min-w-0" onClick={oauth('microsoft')} disabled={busy}>
-            <BrandIcon src="/ui/microsoft.svg" />
-            <span className="truncate">{t.auth.microsoftShort}</span>
-          </Button>
-          <Button variant="secondary" size="md" className="w-full min-w-0" onClick={oauth('apple')} disabled={busy}>
-            <BrandIcon src="/ui/apple.svg" />
-            <span className="truncate">{t.auth.appleShort}</span>
-          </Button>
+        <div className="flex flex-col gap-2">
+          <div ref={googleRowRef} className="relative flex min-h-10 w-full justify-center" data-testid="google-signin-row">
+            <div
+              ref={googleSlotRef}
+              className={cx(
+                'flex w-full justify-center',
+                !googleReady && 'pointer-events-none absolute inset-x-0 top-0 opacity-0',
+              )}
+            />
+            {!googleReady && (
+              <Button variant="secondary" size="md" className="w-full min-w-0" onClick={google} disabled={busy}>
+                <GoogleIcon />
+                <span className="truncate">{t.auth.googleShort}</span>
+              </Button>
+            )}
+          </div>
+          {/* 手机上竖排：两列时每格也只有一百多像素，英文 Microsoft 在 360px 屏上会被截断 */}
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <Button variant="secondary" size="md" className="w-full min-w-0" onClick={oauth('microsoft')} disabled={busy}>
+              <BrandIcon src="/ui/microsoft.svg" />
+              <span className="truncate">{t.auth.microsoftShort}</span>
+            </Button>
+            <Button variant="secondary" size="md" className="w-full min-w-0" onClick={oauth('apple')} disabled={busy}>
+              <BrandIcon src="/ui/apple.svg" />
+              <span className="truncate">{t.auth.appleShort}</span>
+            </Button>
+          </div>
         </div>
 
         {/* 条款 */}

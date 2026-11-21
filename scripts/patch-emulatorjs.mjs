@@ -160,13 +160,13 @@ const PRINT_OUT_TO = 'print:t=>{this.debug&&console.log(t),/^\\[libretro ERROR\\
  */
 const KEEP_ZIP_FROM = 'e.dontExtractIfCore?.includes(this.getCore())'
 /**
- * 2026-11-13 补上 fbneo-lowmem：它是 FBNeo 内存不足时的退路（src/emulator/fbneoLowmem.ts），
- * 名字不在上游名单里，引擎会把 kof97.zip / neogeo.zip 解成散文件 → Romset is unknown / 缺 BIOS 成员（§2.3）。
+ * 2026-11-13 / 2026-11-19 补上自建 FBNeo 变体：名字不在上游名单里，引擎会把 romset ZIP 解成散文件，
+ * FBNeo 就报 Romset is unknown / 缺 BIOS 成员（§2.3）。wofcn 专用核心也必须保留原始 ZIP。
  * 旧版补丁（只有 mame-current）由下面 legacy 接管升级。
  */
 const KEEP_ZIP_TO_V1 = '(e.dontExtractIfCore?.includes(this.getCore())||"mame-current"===this.getCore())'
 const KEEP_ZIP_TO =
-  '(e.dontExtractIfCore?.includes(this.getCore())||"mame-current"===this.getCore()||"fbneo-lowmem"===this.getCore())'
+  '(e.dontExtractIfCore?.includes(this.getCore())||"mame-current"===this.getCore()||"fbneo-lowmem"===this.getCore()||"fbneo-wofcn"===this.getCore())'
 
 /**
  * 2026-11-16 补上 pcsx_rearmed-lowmem：它是 PS1 默认核心内存不足时的退路（src/emulator/psxLowmem.ts），
@@ -487,13 +487,12 @@ const GROUPS = [
     ],
   },
   {
-    name: '街机 ROM 保持 zip（mame-current / fbneo-lowmem）',
+    name: '街机 ROM 保持 zip（mame-current / FBNeo 自建变体）',
     patches: [[KEEP_ZIP_FROM, KEEP_ZIP_TO]],
     legacy: () => KEEP_ZIP_TO_V1,
     hint: [
       '在 download() 里找 `dontExtractIfCore?.includes(this.getCore())` 那个三元条件；',
-      '把 mame-current / fbneo-lowmem 也判成「不解压」—— 否则 MAME 拿不到 romset 压缩包会直接 Abort，',
-      'fbneo-lowmem 拿到散文件报 Romset is unknown。',
+      '把 mame-current / fbneo-lowmem / fbneo-wofcn 也判成「不解压」—— 否则 FBNeo 拿到散文件报 Romset is unknown。',
       '⚠️ 这一组没了的话，mame-current 的游戏 100% 起不来，且只有一句「Failed to start game」。',
     ],
   },

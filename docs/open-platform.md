@@ -543,7 +543,7 @@ GET /api/open/v1/games/kof97/embed?lang=zh-Hans
 
 ## 5. 用户数据接口
 
-全部在 `/api/open/v1/me/*` 下，鉴权中间件 `requireAppUser(scope)`。
+用户数据接口以 `/api/open/v1/me/*` 为主，鉴权中间件 `requireUserScope(scope)`。
 
 | 端点 | scope |
 |---|---|
@@ -553,14 +553,27 @@ GET /api/open/v1/games/kof97/embed?lang=zh-Hans
 | `POST /me/recents/{slug}` | `library.write` |
 | `POST /v1/games/{slug}/play` | `library.write`（用户级；按账号跨设备去重，同时刷新最近在玩） |
 | `POST /v1/live/publish-token` | `live.write`（用户级；返回只允许连接 `/live` 的专用发布凭证） |
-| `GET /me/saves` | `saves.read` |
-| `GET /me/saves/{runtime}/{slug}` | `saves.read` |
-| `PUT /me/saves/{runtime}/{slug}` | `saves.write` |
-| `DELETE /me/saves/{runtime}/{slug}` | `saves.write` |
+| `GET /v1/me/saves` | `saves.read` |
+| `GET /v1/me/saves/usage` | `saves.read` |
+| `GET /v1/me/saves/{runtime}/{slug}/meta?slot=0` | `saves.read` |
+| `GET /v1/me/saves/{runtime}/{slug}?slot=0` | `saves.read` |
+| `PUT /v1/me/saves/{runtime}/{slug}?slot=0` | `saves.write` |
+| `DELETE /v1/me/saves/{runtime}/{slug}?slot=0` | `saves.write` |
 
-实现复用 `server/src/userdata.js` 和 `routes/saves.js` 里的**函数**，路由和中间件另起。
-云存档的三道配额（单份字节数、每人份数、每人总字节）继续生效，
-再叠加一层「每应用每日写入次数」。
+用户数据路由位于 `/api/open` 下。`/v1/saves` 兼容路径继续保留，和 `/v1/me/saves` 指向同一组数据；新接入建议使用后者。
+云存档复用 `server/src/routes/saves.js` 的坐标、版本冲突和配额规则，开放平台使用独立的 Bearer 用户令牌，
+不会读取站内登录 Cookie 或站内 JWT。玩家明确同意 `saves.write` 才授权第三方改动云存档；没有这项授权时 SDK 不会访问云端。
+
+- 清单仅包含元数据，返回 `revision`、大小与创建 / 更新时间；存档内容用单独的二进制 GET 下载。
+- `GET .../meta` 没有存档时返回 `204`，有存档时返回 ETag、版本和大小；所有用户存档响应均为 `private, no-store`。
+- PUT 的请求体是 `application/octet-stream`，不能为空。首次创建须带 `X-Save-Revision: <新版本>` 与 `X-Save-Parent-Revision: none`；覆盖时 parent 必须是最近读取到的 revision。重复提交同一版本、父版本和字节会幂等成功；版本落后返回 `409 save_conflict` 和当前 revision。
+- DELETE 必须带 `X-Save-Delete-Revision`，服务端只在版本仍匹配时删除；否则返回 `409 save_conflict`。
+- 缺少条件版本头返回 `428 precondition_required`；用户的份数 / 总容量配额不足返回 `409 save_quota_exceeded`；不存在的二进制存档返回 `404 not_found`。
+- 默认每位用户最多 200 份、总量 64 MiB、单份 4 MiB（实际限制随服务端配置，可从 usage 读取）。覆盖已存在的存档按原站配额规则执行。
+- 每应用每日成功写入额度按 UTC 日期统计，沙箱 1000 次、上产 10000 次，PUT 覆盖和实际删除各计一次，幂等重放与删除不存在的档不计。超额返回 `429 rate_limited`、`Retry-After`、`X-RateLimit-*` 和下次重置时间。
+- `GET /v1/me/saves/usage` 返回该用户存档占用，以及当前应用今日已用 / 剩余写入次数。
+
+服务端迁移会建立 `oauth_save_daily_usage`，上线前需要执行 `cd server && npm run migrate`。
 
 被封禁的用户（`status='banned'`）在 token 端点和每次刷新时都要重新判定，
 不能只在登录时判一次 —— access token 15 分钟寿命就是这个判定的粒度。
@@ -569,9 +582,9 @@ GET /api/open/v1/games/kof97/embed?lang=zh-Hans
 
 ## 6. 限流、配额与错误
 
-- 限流键：`app_id` + 客户端 IP，两层都要（只按 app 限，一个坏用户能拖垮整个应用；
-  只按 IP 限，应用的服务端出口 IP 会互相挤占）。
-- 响应头：`X-RateLimit-Limit` / `-Remaining` / `-Reset`，超限 `429` + `Retry-After`。
+- `client_credentials` / 设备码申请按 IP 和 `client_id` 分层限流；已验签的 API 请求按真实 `app_id` 限流。
+  云存档还单独按应用 + UTC 日期持久计数，避免进程重启清空每日额度。
+- 云存档用量、写入和删除响应提供 `X-RateLimit-Limit` / `-Remaining` / `-Reset`；每日额度超限返回 `429` + `Retry-After`。
 - 错误体统一 OAuth 风格，便于现成库解析：
 
 ```json
@@ -703,7 +716,7 @@ OPEN_ISSUER=https://8bitgo.com
 | **P0** | OIDC（`openid/profile/email`）+ `/me/authorized-apps` | 一个外部站点能用 8BitGo 账号登录并看到昵称 | 未做 |
 | **P0.5** | `games.rom` 审核流 + 嵌入播放器 + `frame-ancestors` | 外部站点能列游戏、嵌进去玩、按票下 ROM | 部分（凭据已通，`/embed` 外壳未做） |
 | **P1** | `library.read/write` | 收藏在两边同步 | 未做 |
-| **P2** | `saves.read/write` + 独立配额 | 进度在两边同步，且写坏了能查到是哪个应用 | 未做 |
+| **P2** | `saves.read/write` + 独立配额 + 浏览器 SDK | 条件读写、冲突保护、配额可查 | **已实现；部署前需 migrate** |
 | **P3** | 上产审核流、用量面板、开发者文档站 | 可以对外宣传 | 未做 |
 
 ⚠️ **P-1 是对外承诺 ROM 的前提**，不是可选项。凭据那一层已经写完了，但只要对象存储还是

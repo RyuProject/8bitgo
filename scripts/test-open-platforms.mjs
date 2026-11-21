@@ -68,11 +68,8 @@ for (const field of ['runtime', 'core', 'romExtensions']) {
       const site = byId.get(p.id)
       if (!site) continue // id 集合那条已经报过了
       /*
-        唯一允许的差异：前端 runtime 为 null 的「独立页面平台」（481af52 起的塞班，走 /symbian 的
-        EKA2L1 专用页，不进通用播放器）。前端的 null 是给 resolveRuntime 看的「通用播放器里没有引擎」；
-        而 openapi.json 的 Platform.runtime 是必填字符串，镜像只能写专用运行时的名字（eka2l1-web）。
-        为了不让这个口子变成漂移的掩护：镜像值不能冒充任何通用运行时（否则第三方会拿 emulatorjs
-        之类去跑），并且必须明说本地跑不了。
+        前端 runtime 为 null 的平台可能由独立页面提供专用运行时；OpenAPI 的 runtime 是必填字符串，
+        此时镜像写专用运行时名，且 native.runnable 必须为 false。已经进入通用播放器的平台则逐字一致。
       */
       if (field === 'runtime' && site.runtime === null) {
         if (typeof p.runtime !== 'string' || !p.runtime || GENERIC_RUNTIMES.has(p.runtime) || p.native.runnable !== false) {
@@ -159,12 +156,8 @@ check('⚠️ 整张表是深冻结的（它是每个请求共用的单例）', 
 check('romExtensions 都是小写、带点、不重复', () => {
   for (const p of OPEN_PLATFORMS) {
     assert.ok(p.romExtensions.length > 0, `${p.id} 没有扩展名`)
-    /*
-      N-Gage 2.0 的游戏包真实扩展名就是 `.n-gage`，所以独立页面平台允许中间带连字符。
-      通用播放器的平台不行：registry.ts 的 extOf 只认 `.[A-Za-z0-9]+` 结尾，带连字符的扩展名
-      在那里取不出来，按扩展名选引擎会悄悄失效。
-    */
-    const shape = byId.get(p.id)?.runtime === null ? /^\.[a-z0-9]+(?:-[a-z0-9]+)*$/ : /^\.[a-z0-9]+$/
+    /* `.n-gage` 是 N-Gage 2.0 的真实包扩展名；其它通用运行时仍要求 extOf 可解析的字符集。 */
+    const shape = p.id === 'symbian' ? /^\.[a-z0-9]+(?:-[a-z0-9]+)*$/ : /^\.[a-z0-9]+$/
     for (const e of p.romExtensions) {
       assert.match(e, shape, `${p.id} 的扩展名 ${e} 形状不对`)
     }

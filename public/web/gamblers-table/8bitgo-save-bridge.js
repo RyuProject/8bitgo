@@ -19,6 +19,7 @@
 	const MAX_FILE_COUNT = 2048;
 	const MAX_SNAPSHOT_BYTES = 64 * 1024 * 1024;
 	const AUTO_PAUSE_KEY = '8bitgo.gamblers-table.cloud-save-paused';
+	const SYNCED_KEY_PREFIX = '8bitgo.gamblers-table.cloud-synced.v1:';
 	const DIRECTORY_MODE = 0x4000;
 	const FILE_MODE = 0x8000;
 
@@ -32,6 +33,8 @@
 	let autoSaveInFlight = null;
 	let autoSaveQueued = false;
 	let lastAutoSaveFingerprint = '';
+	/** 主站给的账号摘要标签；「上次同步的指纹」按它分账号记。 */
+	let account = '';
 	let syncInFlight = null;
 	const pending = new Map();
 
@@ -243,7 +246,68 @@
 		}
 	}
 
-	async function snapshot() {
+	function validAccount(value) {
+		return typeof value === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(value) ? value : '';
+	}
+
+	function readSyncedFingerprint() {
+		if (!account) return '';
+		try {
+			return window.localStorage.getItem(SYNCED_KEY_PREFIX + account) || '';
+		} catch (_) {
+			return '';
+		}
+	}
+
+	function writeSyncedFingerprint(value) {
+		if (!account || !value) return;
+		try {
+			window.localStorage.setItem(SYNCED_KEY_PREFIX + account, value);
+		} catch (_) {
+			/* 存不下只会让下次开局多一次「从没同步过」的比较，不会丢档。 */
+		}
+	}
+
+	/**
+	 * 只看路径、类型和文件内容的指纹。快照里的 timestamp 每次 Godot 落盘都会变，
+	 * 用整份快照字节比较会把「内容没变」误判成「改过」，开局比较就会凭空制造冲突。
+	 */
+	async function contentFingerprint(records) {
+		const items = [];
+		for (const { path, value } of records) {
+			if (!validPath(path) || !value || !Number.isInteger(Number(value.mode))) continue;
+			const kind = Number(value.mode) & 0xf000;
+			if (kind !== DIRECTORY_MODE && kind !== FILE_MODE) continue;
+			let digest = '';
+			if (kind === FILE_MODE) {
+				const bytes = new Uint8Array(await crypto.subtle.digest('SHA-256', new Uint8Array(value.contents || 0)));
+				digest = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+			}
+			items.push(path + '\u0000' + kind + '\u0000' + digest);
+		}
+		if (!hasGameFiles(records)) return '';
+		items.sort();
+		const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(items.join('\n'))));
+		return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
+	}
+
+	/**
+	 * 开局谁赢：和模拟器电池存档（src/emulator/batterySync.ts）、PvZ 同一套规则，比「上次和云端同步时的内容指纹」：
+	 *   本地没变、云端变了 → 用云端；本地变了、云端没变 → 留本地并推上去；
+	 *   两边都变了（含这台浏览器从没同步过、两边又都有存档）→ 冲突，留本地，不自动覆盖云端。
+	 * pending：主站给的是它自己待补传的本机快照，本地有档时一律留本地。
+	 */
+	function decideSync(localFp, cloudFp, lastFp, pendingCopy) {
+		if (!cloudFp) return localFp ? 'keep-local' : 'none';
+		if (!localFp) return 'use-cloud';
+		if (localFp === cloudFp) return 'in-sync';
+		if (pendingCopy) return 'keep-local';
+		if (lastFp && localFp === lastFp) return 'use-cloud';
+		if (lastFp && cloudFp === lastFp) return 'keep-local';
+		return 'conflict';
+	}
+
+	async function snapshotWithRecords() {
 		const engine = window.gamblersTableEngine;
 		const runtime = engine && engine.rtenv;
 		const sync = runtime && runtime['8bitgoSyncPersistentFS'];
@@ -254,13 +318,11 @@
 			await syncInFlight;
 		}
 		const records = await readRecords();
-		return encodeSnapshot(records);
+		return { bytes: encodeSnapshot(records), records };
 	}
 
-	async function fingerprint(bytes) {
-		if (!bytes) return '';
-		const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
-		return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
+	async function snapshot() {
+		return (await snapshotWithRecords()).bytes;
 	}
 
 	function scheduleAutoSave(delay) {
@@ -291,15 +353,18 @@
 		}
 		autoSaveInFlight = (async () => {
 			try {
-				const bytes = await snapshot();
+				const taken = await snapshotWithRecords();
+				const bytes = taken.bytes;
 				if (!bytes) return;
-				const current = await fingerprint(bytes);
+				const current = await contentFingerprint(taken.records);
 				if (!current || current === lastAutoSaveFingerprint) return;
 				const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
 				const response = await request('auto-snapshot-request', { data: buffer }, [buffer]);
 				const status = response && response.status;
 				if (status === 'saved' || status === 'queued') {
 					lastAutoSaveFingerprint = current;
+					// queued 还在主站待补传队列里，云端未必有这一份，不能记成「同步过」。
+					if (status === 'saved') writeSyncedFingerprint(current);
 					return;
 				}
 				if (status === 'conflict' || status === 'blocked') {
@@ -333,7 +398,8 @@
 		if (!hostOrigin) return;
 		post({ type: 'ready' });
 		try {
-			const local = encodeSnapshot(await readRecords());
+			const localRecords = await readRecords();
+			const local = encodeSnapshot(localRecords);
 			const response = await request('auto-restore-request', {
 				localSaveBytes: local ? local.byteLength : 0,
 				pausedByUserChoice: autoSavePaused,
@@ -344,12 +410,35 @@
 				return;
 			}
 			if (!response || response.enabled !== true) return;
-			if (response.data instanceof ArrayBuffer && response.data.byteLength > 0) {
-				await replaceSnapshot(response.data);
-				const restored = encodeSnapshot(await readRecords());
-				lastAutoSaveFingerprint = await fingerprint(restored);
+			account = validAccount(response.account);
+			const pendingCopy = response.pending === true;
+			const cloud = response.data instanceof ArrayBuffer && response.data.byteLength > 0 ? response.data : null;
+			const cloudFp = cloud ? await contentFingerprint(decodeSnapshot(cloud)) : '';
+			const localFp = local ? await contentFingerprint(localRecords) : '';
+			const decision = decideSync(localFp, cloudFp, readSyncedFingerprint(), pendingCopy);
+			if (decision === 'conflict') {
+				// 两份都留着：本地继续玩，云端不动；本地那份交给主站记成冲突待同步档，由玩家在存档面板处理。
+				autoSavePaused = true;
+				autoSaveEnabled = false;
+				console.warn('[Gamblers Table] 本地与云端存档都改过，保留本地进度并暂停自动同步');
+				try {
+					const buffer = local.buffer.slice(local.byteOffset, local.byteOffset + local.byteLength);
+					await request('auto-conflict', { data: buffer }, [buffer]);
+				} catch (error) {
+					console.warn('[Gamblers Table] 无法向 8BitGo 报告存档冲突', error);
+				}
+				return;
+			}
+			if (decision === 'use-cloud') {
+				await replaceSnapshot(cloud);
+				lastAutoSaveFingerprint = await contentFingerprint(await readRecords());
+				if (!pendingCopy) writeSyncedFingerprint(lastAutoSaveFingerprint);
+			} else if (decision === 'in-sync') {
+				lastAutoSaveFingerprint = localFp;
+				if (!pendingCopy) writeSyncedFingerprint(localFp);
 			} else {
-				lastAutoSaveFingerprint = '';
+				// keep-local：基线设成云端那份，开局后的检查发现本地不同就推上去；none：两边都没有。
+				lastAutoSaveFingerprint = pendingCopy ? '' : cloudFp;
 			}
 			autoSaveEnabled = true;
 			autoSavePaused = false;
@@ -370,6 +459,7 @@
 			window.clearTimeout(autoSaveTimer);
 			autoSaveTimer = 0;
 			if (message.clearPaused === true) writeExplicitPause(false);
+			if (validAccount(message.account)) account = message.account;
 			autoSaveEnabled = message.enabled === true;
 			autoSavePaused = message.paused === true;
 			// 只有播放器明确要求暂停（例如玩家选了本地档）才跨重载保留；
@@ -377,6 +467,18 @@
 			if (message.paused === true) writeExplicitPause(true);
 			syncAutoSavePolling();
 			if (autoSaveEnabled && !autoSavePaused) scheduleAutoSave(0);
+			return;
+		}
+		if (message.type === 'auto-final-snapshot') {
+			// 主站要拆播放器：交出最后一份自动快照（内容没变就不发），然后回 auto-final-done。
+			void (async () => {
+				try {
+					await checkAutoSave(true);
+				} catch (_) {
+					/* 交不出去也要回执，主站最多等 1.5 秒 */
+				}
+				post({ type: 'auto-final-done' });
+			})();
 			return;
 		}
 		if (!Number.isInteger(message.requestId)) return;

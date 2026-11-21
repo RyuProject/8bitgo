@@ -40,6 +40,7 @@ console.log('\n街机启动链体检')
 await check('RomData 只对实际包含该实现的 FBNeo 开放', () => {
   assert.equal(supportsFbneoRomData('fbneo'), true)
   assert.equal(supportsFbneoRomData('fbneo-lowmem'), true)
+  assert.equal(supportsFbneoRomData('fbneo-wofcn'), true)
   for (const core of ['mame2003', 'mame2003_plus', 'mame-current', 'fbalpha2012_cps1']) {
     assert.equal(supportsFbneoRomData(core), false, `${core} 被误判为支持 RomData`)
   }
@@ -48,6 +49,7 @@ await check('RomData 只对实际包含该实现的 FBNeo 开放', () => {
 await check('已配 RomData 时自动纠正到 FBNeo，空值不干预选核', () => {
   assert.equal(arcadeCoreForRomData('mame2003', 'ZipName wofcn'), 'fbneo')
   assert.equal(arcadeCoreForRomData('fbneo-lowmem', 'ZipName wofcn'), 'fbneo-lowmem')
+  assert.equal(arcadeCoreForRomData('fbneo-wofcn', 'ZipName wofcn'), 'fbneo-wofcn')
   assert.equal(arcadeCoreForRomData('mame-current', '  \n'), 'mame-current')
 })
 
@@ -243,6 +245,7 @@ await check('预热的核心文件就是引擎真正下载的那个变体（lega
   }
   assert.equal(emulatorJsCoreDataFile('arcade'), 'fbneo-legacy-wasm.data')
   assert.equal(emulatorJsCoreDataFile('fbneo'), 'fbneo-legacy-wasm.data')
+  assert.equal(emulatorJsCoreDataFile('fbneo-wofcn'), 'fbneo-wofcn-legacy-wasm.data')
   assert.equal(emulatorJsCoreDataFile('nds'), 'melondsds-wasm.data')
 })
 

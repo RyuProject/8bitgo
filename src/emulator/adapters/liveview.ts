@@ -1886,6 +1886,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         void switchToSocket('fallback')
         return
       }
+      /*
+        ⚠️ 先放下 streamConnecting 再排下一轮：scheduleStreamReconnect 看到它为 true 会直接返回，
+        以前在这里调用就等于一次失败后永远不再重连（finally 里才清标志，已经晚了）。
+      */
+      streamConnecting = false
       scheduleStreamReconnect()
     } finally {
       streamConnecting = false

@@ -11,14 +11,20 @@ import { installAudioTap, type AudioTap } from '../audioTap'
 import { captureCanvasScreenshot } from '../recorder'
 import { findHtml5Canvas, html5CanvasCapabilities, html5MediaBridge } from '../html5Media'
 import { html5CanvasHasFrame, html5RuntimeSignal } from '../html5Lifecycle'
+import { cloudSaveAccountTag, recordAutoSaveConflict } from '@/services/saves'
 
 const SAVE_BRIDGE_SOURCE = '8bitgo-save-bridge'
 const SAVE_BRIDGE_VERSION = 1
 const SAVE_BRIDGE_TIMEOUT_MS = 15_000
+/**
+ * 拆播放器前等游戏页交出最后一份自动快照的上限。只等「数据交到主站」（本地 IndexedDB 先落盘、
+ * 上云失败也会进待补传队列），不等上传完成；游戏页不回应时到点照样拆，不能卡住换局。
+ */
+const SAVE_BRIDGE_FINAL_SNAPSHOT_MS = 1_500
 const GAME_SDK_SOURCE = '8bitgo-game-sdk'
 const GAME_SDK_VERSION = 1
 const GAME_SDK_TIMEOUT_MS = 15_000
-const PVZ_SHELL_VERSION = '20261119-progress1'
+const PVZ_SHELL_VERSION = '20261121-cloud-sync-compare1'
 const LEGACY_PAGES_ENTRIES = [
   ['/web/PvZ', 'https://pvz.8bitgo.com'],
   ['/web/diablo', 'https://diablo.8bitgo.com'],
@@ -144,6 +150,19 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     : { ext: 'pvzsave.zip', mime: 'application/zip' }
   const saveFormatId = options.gameSlug === 'gamblers-table' ? '8bitgo-gamblers-table-idbfs-v1' : saveFormat.ext
   let destroyed = false
+  /**
+   * 存档桥比其它消息通道晚关：destroy 之后还要收最后一份自动快照（游戏页 pagehide / 收尾请求）。
+   * 它单独一个开关，免得为了这一路把整个适配器的 destroyed 判断都推迟。
+   */
+  let saveBridgeClosed = false
+  /** 收尾阶段：只接自动快照与收尾回执，不再接读档、开局恢复等会改游戏状态的消息。 */
+  let saveBridgeFinalizing = false
+  let finalSnapshotDone: (() => void) | null = null
+  /**
+   * 存档桥所在的那个 window。iframe 被 React 先摘出 DOM 时 contentWindow 立刻变成 null，
+   * 而游戏页的 pagehide 快照正是这时候发出来；只比 contentWindow 会把这最后一份丢掉。
+   */
+  let saveBridgeWindow: Window | null = null
   let objectUrl = ''
   let saveBridgeReady = false
   // 必须先迁移入口再确定消息来源；否则旧的同源 PvZ 入口会被导航到 Pages，
@@ -180,6 +199,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let playable = false
   let firstInteractionReported = false
   let canvasProbeScheduled = false
+  let interactionDocument: Document | null = null
   const mediaTaps = new WeakMap<Window, AudioTap>()
   const liveMediaTaps = new Set<AudioTap>()
   const pendingSaveRequests = new Map<number, {
@@ -226,11 +246,29 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    * 只有本站同源页面或上面白名单里的 Pages 项目才会获得 saveState 能力。
    */
   const onSaveBridgeMessage = (event: MessageEvent) => {
-    if (destroyed || !saveBridgeOrigin || event.source !== iframe.contentWindow || event.origin !== saveBridgeOrigin) return
+    if (saveBridgeClosed || !saveBridgeOrigin || event.origin !== saveBridgeOrigin) return
+    const live = iframe.contentWindow
+    if (!event.source || (event.source !== live && event.source !== saveBridgeWindow)) return
     const message = event.data as SaveBridgeMessage | null
     if (!message || message.source !== SAVE_BRIDGE_SOURCE || message.version !== SAVE_BRIDGE_VERSION) return
+    const replyTo = event.source as Window
+    const reply = (payload: Record<string, unknown>, transfer: Transferable[] = []) => {
+      try {
+        replyTo.postMessage({ source: SAVE_BRIDGE_SOURCE, version: SAVE_BRIDGE_VERSION, ...payload }, saveBridgeOrigin, transfer)
+      } catch {
+        /* 游戏页已经卸载：数据早已交到主站，回执丢了不影响落盘 */
+      }
+    }
+
+    if (message.type === 'auto-final-done') {
+      finalSnapshotDone?.()
+      return
+    }
+    // 收尾阶段只放行自动快照：开局恢复、读档、能力上报都属于已经拆掉的这一局。
+    if ((destroyed || saveBridgeFinalizing) && message.type !== 'auto-snapshot-request') return
 
     if (message.type === 'ready') {
+      saveBridgeWindow = replyTo
       saveBridgeReady = true
       if (!caps.has('saveState')) {
         caps.add('saveState')
@@ -255,35 +293,36 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             byteLength: localSaveBytes ?? 0,
             pausedByUserChoice: message.pausedByUserChoice === true,
           }) ?? { enabled: false, data: null }
-          if (destroyed || !iframe.contentWindow) return
+          if (destroyed || saveBridgeFinalizing) return
           const data = result.data
           let buffer: ArrayBuffer | null = null
           if (data instanceof Uint8Array) {
             buffer = new ArrayBuffer(data.byteLength)
             new Uint8Array(buffer).set(data)
           }
-          const response = {
-            source: SAVE_BRIDGE_SOURCE,
-            version: SAVE_BRIDGE_VERSION,
+          reply({
             type: 'auto-restore-response',
             requestId: message.requestId,
             enabled: result.enabled,
             paused: Boolean(result.paused),
             reason: result.reason,
             data: buffer,
-          }
-          iframe.contentWindow.postMessage(response, saveBridgeOrigin, buffer ? [buffer] : [])
+            /*
+              游戏页按账号记「上次同步的内容指纹」，据此判断是用云端、保留本地还是冲突；
+              pending 表示 data 是本站待补传的本机快照而不是云端那份。账号只给摘要标签，不给令牌。
+            */
+            account: result.enabled ? cloudSaveAccountTag() : null,
+            pending: Boolean((result as { pending?: boolean }).pending),
+          }, buffer ? [buffer] : [])
         } catch (error) {
-          if (destroyed || !iframe.contentWindow) return
-          iframe.contentWindow.postMessage({
-            source: SAVE_BRIDGE_SOURCE,
-            version: SAVE_BRIDGE_VERSION,
+          if (destroyed || saveBridgeFinalizing) return
+          reply({
             type: 'auto-restore-response',
             requestId: message.requestId,
             enabled: false,
             paused: true,
             reason: error instanceof Error ? error.message : String(error),
-          }, saveBridgeOrigin)
+          })
         }
       })()
       return
@@ -302,14 +341,33 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           console.warn('[html5] HTML5 自动云存档失败', error)
           status = 'failed'
         }
-        if (destroyed || !iframe.contentWindow) return
-        iframe.contentWindow.postMessage({
-          source: SAVE_BRIDGE_SOURCE,
-          version: SAVE_BRIDGE_VERSION,
-          type: 'auto-snapshot-response',
-          requestId: message.requestId,
-          status,
-        }, saveBridgeOrigin)
+        // 收尾阶段也要回执：游戏页等到回执才会报 auto-final-done，拆播放器的等待才能提前结束。
+        if (saveBridgeClosed) return
+        reply({ type: 'auto-snapshot-response', requestId: message.requestId, status })
+      })()
+      return
+    }
+    /*
+      游戏页开局比较后发现本地与云端都改过：本地进度留在游戏页，云端不动。
+      这里把本地那份记成本账号的冲突待同步档，再走一遍自动快照通道 —— pushSave 的冲突守卫不会上传，
+      只把「云存档在另一台设备上已有更新」的提示交给播放器，和运行中撞上 409 的处理一致。
+    */
+    if (message.type === 'auto-conflict' && Number.isInteger(message.requestId)) {
+      if (!saveBridgeReady || !isManagedAutoSaveEntry()) return
+      void (async () => {
+        let status: NonNullable<SaveBridgeMessage['status']> = 'conflict'
+        try {
+          if (message.data instanceof ArrayBuffer && message.data.byteLength > 0 && message.data.byteLength <= 64 * 1024 * 1024 &&
+            options.gameSlug) {
+            const bytes = new Uint8Array(message.data)
+            await recordAutoSaveConflict('html5', options.gameSlug, bytes, 0, { core: 'html5-bridge', format: saveFormatId })
+            if (options.onHtml5AutoSaveSnapshot) status = await options.onHtml5AutoSaveSnapshot(bytes)
+          }
+        } catch (error) {
+          console.warn('[html5] 记录 HTML5 云存档冲突失败', error)
+        }
+        if (destroyed || saveBridgeFinalizing) return
+        reply({ type: 'auto-snapshot-response', requestId: message.requestId, status })
       })()
       return
     }
@@ -340,9 +398,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   }
 
   const markPlayable = () => {
-    if (destroyed || playable) return
-    playable = true
+    if (destroyed) return
     markFirstFrame()
+    if (playable) return
+    playable = true
     options.onReady?.()
   }
 
@@ -350,6 +409,38 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (destroyed || firstInteractionReported) return
     firstInteractionReported = true
     options.onFirstInteraction?.()
+  }
+
+  const stopFirstInteractionMonitoring = () => {
+    if (!interactionDocument) return
+    interactionDocument.removeEventListener('pointerdown', onGameInput, true)
+    interactionDocument.removeEventListener('touchstart', onGameInput, true)
+    interactionDocument.removeEventListener('keydown', onGameInput, true)
+    interactionDocument = null
+  }
+
+  const onGameInput = (event: Event) => {
+    // 只认浏览器实际派发给游戏文档的输入；iframe.focus() 只给焦点，不代表玩家操作过游戏。
+    if (!event.isTrusted) return
+    stopFirstInteractionMonitoring()
+    reportFirstInteraction()
+    if (playable) return
+    // 纯 DOM 游戏没有 Canvas 或运行桥；玩家能向已加载的同源文档输入，说明页面已经可操作。
+    playable = true
+    options.onReady?.()
+  }
+
+  const startFirstInteractionMonitoring = (doc: Document) => {
+    stopFirstInteractionMonitoring()
+    interactionDocument = doc
+    doc.addEventListener('pointerdown', onGameInput, true)
+    doc.addEventListener('touchstart', onGameInput, true)
+    doc.addEventListener('keydown', onGameInput, true)
+  }
+
+  const onFramePointerInput = (event: Event) => {
+    // 父页读不到跨源文档的输入，只能记 iframe 收到的可信指针操作；它不单独证明游戏已就绪。
+    if (event.isTrusted) reportFirstInteraction()
   }
 
   /**
@@ -361,10 +452,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (destroyed || event.source !== iframe.contentWindow) return
     const signal = html5RuntimeSignal(event.data)
     if (!signal) return
-    if (signal.type === 'progress') {
-      // 子页还在下载 / 写盘：喂播放器的启动看门狗（starting 阶段的 ratio 不推动进度条，只证明还活着）
-      if (!playable) options.onProgress?.({ phase: 'starting', ...(signal.ratio === undefined ? {} : { ratio: signal.ratio }) })
-    } else if (signal.type === 'first-frame') markFirstFrame()
+    if (signal.type === 'first-frame') markFirstFrame()
     else if (signal.type === 'game-playable') markPlayable()
     else if (signal.type === 'first-interaction') reportFirstInteraction()
     else options.onError?.(signal.detail || 'HTML5 游戏报告启动失败', 'runtime')
@@ -694,6 +782,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const stopMediaMonitoring = (removeCapabilities = false) => {
     mediaObserver?.disconnect()
     mediaObserver = null
+    stopFirstInteractionMonitoring()
     if (mediaPollTimer) window.clearTimeout(mediaPollTimer)
     mediaPollTimer = 0
     if (removeCapabilities) refreshMediaCapabilities(true)
@@ -713,6 +802,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       return
     }
 
+    startFirstInteractionMonitoring(doc)
     // 页面自己预先加载了媒体桥时，installAudioTap 会拿回同一个探针；没有就装迟到兜底。
     tapFor(win)
     refreshMediaCapabilities(true)
@@ -798,8 +888,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     // 这里只撤加载遮罩。真实成功必须等运行时桥或同源 canvas 探针，不能再拿 load 冒充。
     options.onSurfaceReady?.()
   })
-  // 跨域 iframe 读不到内部事件；用户亲手点进去时浏览器会把焦点交给 iframe，这仍是可靠的首次操作信号。
-  iframe.addEventListener('focus', reportFirstInteraction)
+  iframe.addEventListener('pointerdown', onFramePointerInput)
+  iframe.addEventListener('touchstart', onFramePointerInput)
   iframe.addEventListener('error', () => {
     if (destroyed) return
     options.onError?.('HTML5 游戏页面加载失败。请检查入口地址，以及目标站点是否允许被 iframe 嵌入。', 'runtime')
@@ -837,6 +927,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         enabled,
         paused,
         clearPaused,
+        // 游戏页据此给「上次同步的指纹」分账号；只是摘要标签，不是凭证。
+        account: enabled ? cloudSaveAccountTag() : null,
       }, saveBridgeOrigin)
     },
     async loadState(data: ArrayBuffer) {
@@ -845,7 +937,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       saveBridgeReady = false
       caps.delete('saveState')
       options.onCaps?.(caps)
-      // PvZ、Digiverse 和 Godot 页面都只在启动时读取玩家存档；导入后原地重载才会使用新进度。
+      // PvZ、Digiverse 和 Godot 页面都在启动时读取本地存档；导入后原地重载才会使用新进度。
       iframe.contentWindow?.location.reload()
     },
     /**
@@ -994,9 +1086,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       clearRemoteLiveCanvas()
       destroyed = true
       stopMediaMonitoring(false)
-      window.removeEventListener('message', onSaveBridgeMessage)
       window.removeEventListener('message', onRuntimeBridgeMessage)
       window.removeEventListener('message', onGameSdkMessage)
+      iframe.removeEventListener('pointerdown', onFramePointerInput)
+      iframe.removeEventListener('touchstart', onFramePointerInput)
       for (const pending of pendingGameSdkRequests.values()) {
         window.clearTimeout(pending.timer)
         pending.reject(new Error('网页游戏已关闭'))
@@ -1007,19 +1100,57 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         pending.reject(new Error('网页游戏已关闭'))
       }
       pendingSaveRequests.clear()
-      try {
-        iframe.src = 'about:blank'
-      } catch {
-        /* ignore */
+
+      let tornDown = false
+      const teardownFrame = () => {
+        if (tornDown) return
+        tornDown = true
+        finalSnapshotDone = null
+        try {
+          iframe.src = 'about:blank'
+        } catch {
+          /* ignore */
+        }
+        // 页面正常导航会自己关；异常启动时再兜一次，避免 WebAudio 线程留到 GC 才释放。
+        for (const tap of liveMediaTaps) {
+          const ctx = tap.ctx
+          if (ctx && ctx.state !== 'closed') void ctx.close().catch(() => {})
+        }
+        liveMediaTaps.clear()
+        iframe.remove()
+        if (objectUrl) URL.revokeObjectURL(objectUrl)
+        /*
+          置空 iframe 会触发游戏页的 pagehide，它可能再发一份快照；存档桥多留同样的时长收它，
+          之后才真正摘掉监听。指纹没变的快照游戏页自己就不会发。
+        */
+        window.setTimeout(() => {
+          saveBridgeClosed = true
+          window.removeEventListener('message', onSaveBridgeMessage)
+        }, SAVE_BRIDGE_FINAL_SNAPSHOT_MS)
       }
-      // 页面正常导航会自己关；异常启动时再兜一次，避免 WebAudio 线程留到 GC 才释放。
-      for (const tap of liveMediaTaps) {
-        const ctx = tap.ctx
-        if (ctx && ctx.state !== 'closed') void ctx.close().catch(() => {})
+
+      /*
+        以前这里先摘存档桥监听再置空 iframe，游戏页 pagehide 时发出的最后一份自动快照全被丢掉，
+        玩家最后几十秒的进度只留在游戏页本地，云端拿不到。现在先请游戏页交出最后一份，
+        收到 auto-final-done（快照已交到主站并拿到回执）或超时后再拆。
+      */
+      const target = iframe.isConnected ? iframe.contentWindow : null
+      if (saveBridgeReady && saveBridgeOrigin && target && isManagedAutoSaveEntry()) {
+        saveBridgeFinalizing = true
+        finalSnapshotDone = teardownFrame
+        // 收尾这一小段不占位置：换局时新一局的 iframe 会挂进同一个容器。display:none 不会卸载文档，
+        // 游戏页照样能读 IDBFS、发消息。
+        iframe.style.display = 'none'
+        window.setTimeout(teardownFrame, SAVE_BRIDGE_FINAL_SNAPSHOT_MS)
+        try {
+          target.postMessage({ source: SAVE_BRIDGE_SOURCE, version: SAVE_BRIDGE_VERSION, type: 'auto-final-snapshot' }, saveBridgeOrigin)
+        } catch {
+          teardownFrame()
+        }
+      } else {
+        saveBridgeFinalizing = true
+        teardownFrame()
       }
-      liveMediaTaps.clear()
-      iframe.remove()
-      if (objectUrl) URL.revokeObjectURL(objectUrl)
     },
   }
 }

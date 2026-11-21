@@ -1373,7 +1373,12 @@ interface ProbeTrace {
  *     走 Worker 的话是它的 ALLOWED_ORIGINS
  *   · 浏览器插件 —— 钱包类插件会 hook fetch
  */
-function reportProbeFailure(game: Pick<Game, 'slug' | 'platform'>, traces: ProbeTrace[], unreachable: boolean) {
+function reportProbeFailure(
+  game: Pick<Game, 'slug' | 'platform'>,
+  traces: ProbeTrace[],
+  unreachable: boolean,
+  networkLocked = false,
+) {
   const base = getRomBase()
   const overridden = Boolean(readLocal(ROM_BASE_KEY))
   const lines = traces.map(({ key, url, outcome, lang, backup }) => {
@@ -1387,6 +1392,9 @@ function reportProbeFailure(game: Pick<Game, 'slug' | 'platform'>, traces: Probe
       `根地址：${base || '(空)'}${overridden ? `  ⚠️ 来自 localStorage['${ROM_BASE_KEY}']，不是构建时的 VITE_ROM_BASE_URL` : ''}`,
       traces.length ? '候选：' : '候选：(一个都没有 —— 后台没绑过语言槽，约定文件名也没探到)',
       ...lines,
+      ...(networkLocked
+        ? ['同语言主地址在真实加载时网络失败，后续几轮仍问不到：按网络 / 线路问题处理，不代表 ROM 缺失。']
+        : []),
       unreachable
         ? '这几次都是「没问出来」：多半是 CORS（assets 域名要么走 Worker 并放行本站 Origin，要么在 R2 桶上配 CORS 允许 GET/HEAD）、断网，或者被浏览器插件拦了。开无痕窗口再试一次能排掉插件。'
         : '服务器明确说没有：核对后台的语言槽绑定，以及对象是否真的在桶里（注意大小写和 .lang 后缀）。',
@@ -1420,6 +1428,19 @@ export function useRomUrl(game: Game | undefined, prefer?: RomSlotLang | null): 
   const runtimeFailures = useRef(new Set<string>())
   /** 加速镜像在真实加载里失败过：本次游戏/语言选择内不再测速，直接回主域。 */
   const mirrorFailed = useRef(false)
+  /**
+   * 网络层失败后的语言锁：failover 只挑了同语言槽的备用源，但真正选中哪个地址是下一轮 HEAD 决定的 ——
+   * 备用源若 HEAD 404，按原逻辑会一路走到别的语言组，等于绕过了「网络失败不换语言」（AGENTS §2.35）。
+   * 锁住后下一轮只探这个语言组；探不到就停在「暂时读取不到」，联网事件时解锁重来。
+   */
+  const networkLangLock = useRef<{ lang: RomSlotLang | undefined } | null>(null)
+  /** 因网络失败被跳过的 key：网络恢复后要还给候选链，它们不是坏文件。 */
+  const networkFailedKeys = useRef(new Set<string>())
+  /** 把网络失败跳过的 key 还给候选链：它们不是坏文件，下一轮必须重新问一次。 */
+  const releaseNetworkFailedKeys = useCallback(() => {
+    for (const key of networkFailedKeys.current) runtimeFailures.current.delete(key)
+    networkFailedKeys.current.clear()
+  }, [])
 
   /**
    * 重试。先清掉这款游戏所有候选地址的探测结论 —— 否则「服务器明确说没有」那一类
@@ -1433,6 +1454,8 @@ export function useRomUrl(game: Game | undefined, prefer?: RomSlotLang | null): 
     }
     runtimeFailures.current.clear()
     mirrorFailed.current = false
+    networkLangLock.current = null
+    networkFailedKeys.current.clear()
     autoRetries.current = 0
     setAttempt((n) => n + 1)
   }, [game, lang, prefer])
@@ -1467,6 +1490,13 @@ export function useRomUrl(game: Game | undefined, prefer?: RomSlotLang | null): 
     const currentLang = bound.find((candidate) => candidate.key === state.key)?.lang ?? state.lang
     const next = nextFailoverKey(chain, runtimeFailures.current, { key: state.key, lang: currentLang }, scope)
     if (!next) return false
+    if (scope === 'network') {
+      networkFailedKeys.current.add(state.key)
+      networkLangLock.current = { lang: currentLang }
+    } else {
+      // 内容错误允许换别的语言：之前的网络锁不再适用
+      networkLangLock.current = null
+    }
 
     // 当前 URL 的 HEAD 结论仍然是“存在”，无需抹掉；失败集才是这轮解析真正要看的信息。
     // 留一行诊断，线上能直接看出是主包坏了后切备用，而不是误以为语言回退选错。
@@ -1489,6 +1519,8 @@ export function useRomUrl(game: Game | undefined, prefer?: RomSlotLang | null): 
   useEffect(() => {
     runtimeFailures.current.clear()
     mirrorFailed.current = false
+    networkLangLock.current = null
+    networkFailedKeys.current.clear()
     autoRetries.current = 0
   }, [game, lang, prefer])
 
@@ -1581,8 +1613,11 @@ export function useRomUrl(game: Game | undefined, prefer?: RomSlotLang | null): 
         else last.push(candidate)
       }
 
+      const langLock = networkLangLock.current
       explicitGroups:
       for (const group of groups) {
+        // 网络失败后的这一轮只探出事的那个语言组（见 networkLangLock）
+        if (langLock && group[0]?.lang !== langLock.lang) continue
         const entries = group
           .filter((candidate) => !runtimeFailures.current.has(candidate.key))
           .map((candidate) => ({ candidate, url: romUrlForKey(candidate.key) }))
@@ -1676,7 +1711,12 @@ export function useRomUrl(game: Game | undefined, prefer?: RomSlotLang | null): 
       // 只要后台绑定过语言槽或旧版通用 rom，整条绑定链都失效就应明确报缺版本；
       // 不能再猜一个约定文件名，否则会绕过管理员配置，加载到不受控的旧对象。
       if (candidates.length > 0) {
-        if (!cancelled) finish(uncertain, traces)
+        /*
+          语言锁下同语言候选都用完了：主地址是因为一次网络故障被跳过的，没被这一轮重新问过，
+          所以整轮只能算「没问出来」—— 即使备用源 HEAD 明确 404，也不能当成「确定没有这个版本」。
+          算作 uncertain 才会进自动重试；重试前 finish 会把网络跳过的 key 还回候选链。
+        */
+        if (!cancelled) finish(uncertain || Boolean(langLock), traces, Boolean(langLock))
         return
       }
 
@@ -1747,16 +1787,22 @@ export function useRomUrl(game: Game | undefined, prefer?: RomSlotLang | null): 
      * 界面继续显示「正在确认文件」，不会先闪一下「没有这个版本」再自己好。
      * 额度用完才落到 missing，并把 unreachable 带上去，让文案说人话。
      */
-    function finish(uncertain: boolean, traces: ProbeTrace[]) {
+    function finish(uncertain: boolean, traces: ProbeTrace[], networkOnly = false) {
       if (uncertain && autoRetries.current < AUTO_RETRY_DELAYS.length) {
         const wait = AUTO_RETRY_DELAYS[autoRetries.current]
         autoRetries.current += 1
+        /*
+          因网络失败被跳过的 key 在每一轮自动重试前还给候选链（语言锁保留，仍不跨语言）。
+          以前只在 window 'online' 事件里归还，可一次网络抖动 / CDN 5xx / 下载失速根本不会触发 online，
+          主地址就永远不再被问，备用源一 404 便停在「暂时读取不到」。
+        */
+        releaseNetworkFailedKeys()
         timer = window.setTimeout(() => setAttempt((n) => n + 1), wait)
         return
       }
-      // 只在真正放弃的那一下报一次；重试途中不吵
-      if (game) reportProbeFailure(game, traces, uncertain)
-      setState({ status: 'missing', url: '', unreachable: uncertain })
+      // 只在真正放弃的那一下报一次；重试途中不吵。语言锁下的放弃一律按「没问出来」报，不报确定缺失。
+      if (game) reportProbeFailure(game, traces, uncertain || networkOnly, networkOnly)
+      setState({ status: 'missing', url: '', unreachable: uncertain || networkOnly })
     }
 
     return () => {
@@ -1776,11 +1822,14 @@ export function useRomUrl(game: Game | undefined, prefer?: RomSlotLang | null): 
     if (state.status !== 'missing' || !state.unreachable) return
     const again = () => {
       autoRetries.current = 0
+      // 网络回来了：因断网跳过的地址不是坏文件，还给候选链，语言锁也一并解开
+      releaseNetworkFailedKeys()
+      networkLangLock.current = null
       setAttempt((n) => n + 1)
     }
     window.addEventListener('online', again)
     return () => window.removeEventListener('online', again)
-  }, [state.status, state.unreachable])
+  }, [state.status, state.unreachable, releaseNetworkFailedKeys])
 
   return { ...state, retry, failover }
 }

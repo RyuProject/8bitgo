@@ -20,6 +20,7 @@ import { platformLabel } from '@/services/i18nData'
 import { getT } from '@/services/i18n'
 import { liveEnabled } from '@/services/roomFlags'
 import type { Runtime } from './types'
+import { EKA2L1_RUNTIME_DIR } from './eka2l1Runtime'
 import {
   CLOUDGAME_URL,
   CLOUD_PLATFORM_CORES,
@@ -234,6 +235,21 @@ export const ppssppMeta: Runtime = {
   engineLabel: () => 'PPSSPP (WASM)',
 }
 
+export const eka2l1Meta: Runtime = {
+  id: 'eka2l1',
+  name: 'EKA2L1',
+  get description() {
+    return getT().runtime.eka2l1Desc
+  },
+  // 卡带转储是 .zip：不参与「按扩展名选引擎」（zip 太多平台在用），塞班平台按 platforms.ts 的 runtime 选到这里
+  extensions: ['sis'],
+  priority: 20,
+  // 运行目录由 repackage / build 脚本生成；空值说明没有可用构建
+  available: () => Boolean(EKA2L1_RUNTIME_DIR),
+  supports: (platform) => platform === 'symbian',
+  engineLabel: () => 'EKA2L1 (WASM)',
+}
+
 export const cloudGameMeta: Runtime = {
   id: 'cloudgame',
   name: 'Cloud',
@@ -277,6 +293,7 @@ export const runtimeMetas: Record<Runtime['id'], Runtime> = {
   play: playMeta,
   ppsspp: ppssppMeta,
   dolphin: dolphinMeta,
+  eka2l1: eka2l1Meta,
   cloudgame: cloudGameMeta,
   liveview: liveViewMeta,
 }

@@ -214,6 +214,8 @@ const en: Translation = {
     passwordPlaceholder: 'Enter your password',
     submitPassword: 'Log in',
     noPasswordHint: "No password yet? Log in with an email code — you can set one from your profile afterwards.",
+    passwordResetNotice: 'For your security, the password previously set on this account has been removed and other devices were signed out. Set a new one under Profile → Account & security.',
+    passwordResetDismiss: 'Dismiss',
   },
 
   /* ---------------- Home ---------------- */
@@ -439,6 +441,15 @@ const en: Translation = {
       mobileQ: "Does {title} work on mobile?",
       mobileA: "It depends on the game. Check the controls on this page: games with on-screen buttons work on touch devices, while keyboard-and-mouse games are best played on desktop.",
     },
+    embedLoginNotice: "This game's own {providers} sign-in can't be completed inside the game frame on this page (those sign-in pages refuse to load in embedded frames and show a 403). To sign in, open the game in a new tab.",
+    embedLoginOpen: 'Open in new tab',
+    embedLoginSaveWarning: 'The new tab may not see this page’s save. 8BitGo will not copy or merge it; syncing depends on the game itself. To protect your progress, do not start a new game or overwrite a save in the new tab.',
+    embedLoginOpenConfirm: '8BitGo will not copy or merge this page’s save into the new tab. Any syncing depends on the game itself. Continue?',
+    currentlyPlaying: 'Playing now',
+    playCountLabel: 'plays',
+    communityContributors: 'Contributors',
+    communityContributorsEmpty: 'No contributors recorded yet.',
+    guidesSubmit: 'Write a guide',
   },
 
   /* ---------------- Comments ---------------- */
@@ -1489,6 +1500,7 @@ const en: Translation = {
     oauthEmailUnverified: 'That account email is not verified, so it cannot be used to sign in here',
     microsoftNickname: 'Microsoft Player',
     appleNickname: 'Apple Player',
+    googleNotShown: "Google sign-in didn't finish. If no Google sign-in window appeared, sign in to your Google account in this browser first, or use an email code instead.",
   },
 
   /* ---------------- ROM detection ---------------- */
@@ -1666,6 +1678,14 @@ const en: Translation = {
     ejsRomFailed: 'Could not download the game file (HTTP {status}): {url}',
     ejsStalled: 'Loading got stuck at “{stage}”. Press Retry; if it keeps failing, please report it',
     ejsLoadFailed: 'The emulator failed to load. Check your connection and press Retry; if it keeps failing, please report it',
+    eka2l1Desc: 'Browser WebAssembly port of EKA2L1; each session sets up an N-Gage device and the game in memory',
+    eka2l1NoFirmware: 'No N-Gage device firmware is configured on this site yet, so Symbian games cannot start.',
+    eka2l1NeedsS60v3: 'This game is an S60 3rd Edition (.sisx) package, and the firmware it needs is not configured on this site yet.',
+    eka2l1UnknownPackage: 'This Symbian game file is not recognized. Only .sis packages and N-Gage game card dumps (.zip) are supported.',
+    eka2l1LoadFailed: 'The Symbian emulator failed to start: {msg}',
+    eka2l1AppExited: 'The game exited during startup ({detail}). It may not be compatible yet.',
+    eka2l1NeedsIsolation: 'The Symbian emulator did not get the browser isolation SharedArrayBuffer needs. Please reload this game page.',
+    eka2l1StartTimeout: 'The game screen did not appear within two minutes. If the browser window is in the background, bring it back and try again.',
   },
 
   /* ---------------- Numbers & units ---------------- */

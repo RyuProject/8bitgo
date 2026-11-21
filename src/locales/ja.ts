@@ -214,6 +214,8 @@ const ja: Translation = {
     passwordPlaceholder: 'パスワードを入力',
     submitPassword: 'ログイン',
     noPasswordHint: 'パスワード未設定ですか？メール認証コードでログインすれば、あとでマイページから設定できます。',
+    passwordResetNotice: '安全のため、このアカウントに以前設定されていたパスワードを削除し、他の端末からログアウトしました。マイページの「アカウントとセキュリティ」で新しいパスワードを設定してください。',
+    passwordResetDismiss: '閉じる',
   },
 
   /* ---------------- トップページ ---------------- */
@@ -434,6 +436,15 @@ const ja: Translation = {
       mobileQ: "{title} はスマホでも遊べますか？",
       mobileA: "ゲームによって異なります。このページの操作説明を確認してください。画面内ボタンがあるゲームはタッチ操作に対応し、キーボードとマウスが必要なゲームは PC 向けです。",
     },
+    embedLoginNotice: 'このゲーム独自の {providers} ログインは、このページの埋め込み画面では完了できません（ログインページが埋め込み表示を拒否し、403 が表示されます）。ログインするときは新しいタブでゲームを開いてください。',
+    embedLoginOpen: '新しいタブで開く',
+    embedLoginSaveWarning: '新しいタブではこのページのセーブデータを読み込めない場合があります。8BitGoがデータをコピー・統合することはなく、同期できるかはゲーム側の仕様によります。現在の進行状況を守るため、新しいタブで新規ゲームを始めたり、セーブデータを上書きしたりしないでください。',
+    embedLoginOpenConfirm: '8BitGoがこのページのセーブデータを新しいタブへコピー・統合することはありません。同期できるかはゲーム側の仕様によります。開きますか？',
+    currentlyPlaying: 'プレイ中',
+    playCountLabel: 'プレイ',
+    communityContributors: 'コントリビューター',
+    communityContributorsEmpty: 'コントリビューターの記録はまだありません。',
+    guidesSubmit: 'ガイドを書く',
   },
 
   /* ---------------- コメント ---------------- */
@@ -1427,6 +1438,7 @@ const ja: Translation = {
     oauthEmailUnverified: 'このアカウントのメールアドレスは未確認のため、ここではログインに使えません',
     microsoftNickname: 'Microsoft プレイヤー',
     appleNickname: 'Apple プレイヤー',
+    googleNotShown: 'Google ログインが完了しませんでした。Google のログイン画面が表示されなかった場合は、先にこのブラウザで Google アカウントにログインするか、メールの確認コードでログインしてください。',
   },
 
   /* ---------------- ROM の判別 ---------------- */
@@ -1604,6 +1616,14 @@ const ja: Translation = {
     ejsRomFailed: 'ゲームファイルをダウンロードできませんでした（HTTP {status}）：{url}',
     ejsStalled: '読み込みが「{stage}」で止まりました。「再試行」を押してください。繰り返す場合はご報告ください',
     ejsLoadFailed: 'エミュレーターを読み込めませんでした。接続を確認して「再試行」を押してください。繰り返す場合はご報告ください',
+    eka2l1Desc: 'EKA2L1 のブラウザー向け WebAssembly 版。毎回メモリー上に N-Gage 端末とゲームを用意して起動します',
+    eka2l1NoFirmware: 'このサイトにはまだ N-Gage 端末のファームウェアが設定されていないため、Symbian ゲームを起動できません。',
+    eka2l1NeedsS60v3: 'このゲームは S60 第 3 版（.sisx）のパッケージで、必要なファームウェアはまだこのサイトに設定されていません。',
+    eka2l1UnknownPackage: 'この Symbian ゲームファイルを認識できません。対応しているのは .sis パッケージと N-Gage ゲームカードのダンプ（.zip）のみです。',
+    eka2l1LoadFailed: 'Symbian エミュレーターの起動に失敗しました：{msg}',
+    eka2l1AppExited: 'ゲームが起動中に終了しました（{detail}）。まだ対応していない可能性があります。',
+    eka2l1NeedsIsolation: 'Symbian エミュレーターが SharedArrayBuffer に必要なブラウザーの分離環境を得られませんでした。このゲームページを再読み込みしてください。',
+    eka2l1StartTimeout: '2 分経ってもゲーム画面が表示されませんでした。ブラウザーのウィンドウがバックグラウンドにある場合は、前面に戻してからやり直してください。',
   },
 
   /* ---------------- 数値と単位 ---------------- */

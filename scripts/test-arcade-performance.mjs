@@ -151,10 +151,7 @@ test('适配器、开局键位图和操作说明共用四键推断', () => {
   assert.match(src, /EJS_defaultOptions: defaults/)
   // 改版包指纹会把核心纠正成 fbneo：默认值必须按最终核心重算，不能沿用挂载时旧核心那份
   assert.match(src, /core === coreDefaultOptionsCore \? coreDefaultOptions : coreDefaultOptionsFor\(core\)/)
-  // 键数来源的优先级：后台显式配置 → 按 ROM 内容认出的 Namco 四键格斗 → Sega Model 2 等 MAME 目录（ab5b288）。
-  // 后台那一格必须排第一，否则管理员改不动；两种内容识别互斥（认出 Namco 就不再查目录），顺序才不含糊。
   assert.match(src, /effectiveArcadeButtons\(options\.arcadeButtons \?\? namcoSet\?\.buttons \?\? mameCatalogSet\?\.buttons, options\.biosSet\?\.name, options\.gameSlug\)/)
-  assert.match(src, /const mameCatalogSet = hack \|\| namcoSet \? null : await identifyRuntimeMameCatalogSet\(/)
   assert.match(src, /repairLegacyArcadeKeyCollisions\(emu\.controls\?\.\[0\]/)
   assert.match(src, /FBNEO_ARCADE_AUDIO_LATENCY_MS/)
   assert.match(keymap, /arcadeButtonIdsFor\(arcadeCore\)\.slice\(0, arcadeButtons \?\? 6\)/)

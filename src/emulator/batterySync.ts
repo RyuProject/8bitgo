@@ -234,7 +234,9 @@ export function createBatterySync(saveSlug: string, partial: Partial<BatterySync
         if (!data.length || data.length > MAX_SAVE_BYTES) return 'skipped'
         const hash = batteryHash(data)
         if (hash === lastHash) return 'unchanged'
-        const r = await deps.push('emulatorjs', saveSlug, data, BATTERY_SAVE_SLOT, 'cloud', { format: `${FORMAT_PREFIX}${rel}`, core })
+        // automatic：开局读到的 revision 丢了（比如中途换了账号）时，服务端版本不能直接拿来当基线覆盖，
+        // 由 saves.ts 按冲突停下；pushSave 收到 target='cloud' 时也会把这份待同步档记到当前账号名下。
+        const r = await deps.push('emulatorjs', saveSlug, data, BATTERY_SAVE_SLOT, 'cloud', { format: `${FORMAT_PREFIX}${rel}`, core }, { automatic: true })
         if (r.where === 'cloud') {
           lastHash = hash
           writeLast(hash)

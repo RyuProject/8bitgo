@@ -12,7 +12,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
-import { guardPreConnectDisconnect, installIoHook, withSignalTimeout } from '../src/emulator/netplaySocketHook.ts'
+import { guardPreConnectDisconnect, installIoHook, isSameOriginSignal, withSignalTimeout } from '../src/emulator/netplaySocketHook.ts'
 
 let n = 0
 let failed = 0
@@ -120,6 +120,36 @@ const wrapper = () => {
   ok(guardPreConnectDisconnect(undefined) === false && guardPreConnectDisconnect({}) === false, '不是 socket 的对象原样放过')
 }
 
+// ── 4b. 登录令牌只交给同源信令 ──
+{
+  const store = { '8bitgo.token': '' }
+  globalThis.location = { href: 'https://8bitgo.com/games/kof97', origin: 'https://8bitgo.com' }
+  globalThis.localStorage = { getItem: (k) => store[k] ?? null }
+  try {
+    ok(isSameOriginSignal('/netplay') && isSameOriginSignal('https://8bitgo.com/netplay'), '相对路径 / 同源绝对地址算同源')
+    ok(!isSameOriginSignal('https://evil.example/netplay') && !isSameOriginSignal('//evil.example/netplay'), '外站地址不算同源')
+    ok(isSameOriginSignal(undefined), '不写地址的 io() 连当前主机，算同源')
+
+    const foreign = withSignalTimeout(['https://evil.example/netplay'], 8000)
+    ok(!('auth' in foreign[1]), '外站信令不带 auth（30 天 JWT 不出本站）')
+
+    const same = withSignalTimeout(['/netplay'], 8000)
+    ok(typeof same[1].auth === 'function', '同源信令挂上函数形式的 auth')
+    let got
+    same[1].auth((d) => (got = d))
+    ok(got && !('token' in got), '还没登录时握手交空对象')
+    store['8bitgo.token'] = 'jwt-after-login'
+    same[1].auth((d) => (got = d))
+    ok(got.token === 'jwt-after-login', '玩到一半才登录：下一次（重）连现取到新令牌')
+
+    const own = withSignalTimeout(['/netplay', { auth: { token: 'x' } }], 8000)
+    ok(own[1].auth.token === 'x', '调用方自己给的 auth 不动')
+  } finally {
+    delete globalThis.location
+    delete globalThis.localStorage
+  }
+}
+
 // ── 5. 适配器确实在用这几样 ──
 {
   const adapter = readFileSync(new URL('../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8')
@@ -134,7 +164,8 @@ const wrapper = () => {
   ok(
     failNetplay.indexOf('if (started)') >= 0 &&
       failNetplay.indexOf('cfg.onConnectionFailed?.(message)') > failNetplay.indexOf('if (started)') &&
-      failNetplay.indexOf('options.onError?.(message, scope)') > failNetplay.indexOf('cfg.onConnectionFailed?.(message)'),
+      // 开局前的联机失败走 failLoad 的闩（同一局只报一次），不再直接调 options.onError
+      failNetplay.indexOf('failLoad(message, scope') > failNetplay.indexOf('cfg.onConnectionFailed?.(message)'),
     '游戏可玩后联机失败只通知联机回退，不走致命 onError',
   )
   const player = readFileSync(new URL('../src/emulator/EmulatorPlayer.tsx', import.meta.url), 'utf8')

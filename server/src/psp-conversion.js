@@ -457,6 +457,19 @@ export async function retryPspConversion(id) {
   if (!source || source.size !== Number(row.source_size) || source.etag !== row.source_etag) {
     throw Object.assign(new Error('临时 ISO 已不存在或已改变，不能重试；请重新上传'), { status: 409 })
   }
+  /*
+   * 已发布过（output_etag 有值）的任务：processJob 一开头就核对 R2 最终对象的 ETag / 大小，
+   * 对不上直接抛「已停止自动覆盖」。以前重试照样排队，输出字段原样保留，于是每次重试都是
+   * 同一个必然失败 —— 管理员只能看着它一遍遍失败。最终对象被换掉说明发布之后有人传了别的版本，
+   * 而重新压缩发布又会被「创建任务时的 ETag」那道守卫拦下（不能覆盖别人的新版），
+   * 所以这里不清字段重来，而是当场拒绝并说明原因。对象仍是本任务发布的那份（只差数据库绑定）才放行。
+   */
+  if (row.output_etag && row.output_size) {
+    const published = await remoteHead(config, row.target_key)
+    if (!published || published.etag !== row.output_etag || published.size !== Number(row.output_size)) {
+      throw Object.assign(new Error('本任务发布的 CHD 已在 R2 上被替换或删除，重试只会再次失败；请确认当前绑定后重新上传 ISO'), { status: 409 })
+    }
+  }
   const claimed = await query(
     "UPDATE psp_conversion_jobs SET status = 'queued', progress = 0, error = NULL, message = '手动重试', completed_at = NULL WHERE id = ? AND status = 'failed' AND source_deleted = 0",
     [id],

@@ -57,6 +57,45 @@ export const EKA2L1_PATCHES = [
     ]],
   },
   {
+    id: 'idbfs-current-emscripten',
+    file: 'src/emu/web/pages/js/boot.js',
+    why: '本站用 emcc 7 构建，胶水里已经没有 FS.filesystems，IDBFS 的 DB_VERSION / DB_STORE_NAME 也成了模块内常量；'
+      + '上游 boot.js 照旧挂载 mod.FS.filesystems.IDBFS，核心一启动就报 Cannot read properties of undefined (reading \'IDBFS\')，'
+      + '玩家安装固件的第一步就失败（2026-11-19 线上复现）。改为优先取 Module.IDBFS（由 idbfs-module-export 导出），'
+      + '数据库版本与存储名缺省时用胶水里的 21 / FILE_DATA，与 savePaths 等直写 IndexedDB 的代码一致。',
+    replace: [
+      [
+        '    function patchIDBFS(mod) {\n'
+        + '        var IDBFS = mod.FS.filesystems && mod.FS.filesystems.IDBFS;',
+        '    // 8BitGo：新版 Emscripten 去掉了 FS.filesystems，IDBFS 由胶水导出为 Module.IDBFS\n'
+        + '    function idbfsOf(mod) {\n'
+        + '        return mod.IDBFS || (mod.FS.filesystems && mod.FS.filesystems.IDBFS) || null;\n'
+        + '    }\n\n'
+        + '    function patchIDBFS(mod) {\n'
+        + '        var IDBFS = idbfsOf(mod);',
+      ],
+      [
+        '                req = IDBFS.indexedDB().open(name, IDBFS.DB_VERSION);',
+        '                req = IDBFS.indexedDB().open(name, IDBFS.DB_VERSION || 21);',
+      ],
+      [
+        '                var store = db.objectStoreNames.contains(IDBFS.DB_STORE_NAME)\n'
+        + '                    ? tx.objectStore(IDBFS.DB_STORE_NAME)\n'
+        + '                    : db.createObjectStore(IDBFS.DB_STORE_NAME);',
+        "                var storeName = IDBFS.DB_STORE_NAME || 'FILE_DATA';\n"
+        + '                var store = db.objectStoreNames.contains(storeName)\n'
+        + '                    ? tx.objectStore(storeName)\n'
+        + '                    : db.createObjectStore(storeName);',
+      ],
+      [
+        "                mod.FS.mount(mod.FS.filesystems.IDBFS, {}, '/eka2l1');",
+        '                var idbfs = idbfsOf(mod);\n'
+        + "                if (!idbfs) throw new Error('IDBFS is missing from this EKA2L1 build');\n"
+        + "                mod.FS.mount(idbfs, {}, '/eka2l1');",
+      ],
+    ],
+  },
+  {
     id: 'watcher-vector-include',
     file: 'src/emu/common/include/common/watcher.h',
     why: '该公共头直接声明 std::vector 别名；没有自包含 vector 头时，WASM 的编译单元顺序会触发未声明类型错误。',
@@ -151,4 +190,39 @@ export const EKA2L1_EXTERNAL_PATCHES = [
   },
 ]
 
-export const EKA2L1_ALL_PATCHES = [...EKA2L1_PATCHES, ...EKA2L1_EXTERNAL_PATCHES]
+/**
+ * 对 Emscripten 链接产物（bin/ 里的胶水 JS）的文本修改。完整构建在链接后打，
+ * 只换前端的重新打包（repackage-eka2l1-web.mjs）对已发布的同一份胶水打，两边走同一个 applyReplacePatch。
+ */
+export const EKA2L1_GLUE_PATCHES = [
+  {
+    id: 'idbfs-module-export',
+    file: 'eka2l1.js',
+    why: '胶水（Emscripten 链接产物）只把 FS 挂到 Module 上，没有导出 IDBFS，新版 Emscripten 又去掉了 FS.filesystems，'
+      + 'boot.js 没有别的途径拿到 IDBFS 去挂载 /eka2l1。在 Module.FS 旁边一并导出 Module.IDBFS。',
+    replace: [['Module["FS"]=FS;', 'Module["FS"]=FS;Module["IDBFS"]=IDBFS;']],
+  },
+]
+
+export const EKA2L1_ALL_PATCHES = [...EKA2L1_PATCHES, ...EKA2L1_GLUE_PATCHES, ...EKA2L1_EXTERNAL_PATCHES]
+
+/** 已发布页面在发布目录里的相对路径；不是页面文件（C++ 等）返回空串 */
+export function eka2l1PublishedPagePath(patchFile) {
+  const prefix = 'src/emu/web/pages/'
+  return patchFile.startsWith(prefix) ? patchFile.slice(prefix.length) : ''
+}
+
+/**
+ * 打一条 replace 补丁：替换后的文本已在就跳过（幂等），否则原文必须恰好命中一次。
+ * 返回新文本；命中数不对时抛错，说明上游 / 产物变了，要重新判断这条修改。
+ */
+export function applyReplacePatch(text, patch) {
+  let out = text
+  for (const [from, to] of patch.replace) {
+    if (out.includes(to)) continue
+    const hits = out.split(from).length - 1
+    if (hits !== 1) throw new Error(`补丁「${patch.id}」在 ${patch.file} 命中 ${hits} 次（应为 1）`)
+    out = out.replace(from, () => to)
+  }
+  return out
+}

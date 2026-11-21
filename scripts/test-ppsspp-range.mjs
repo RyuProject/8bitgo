@@ -116,7 +116,8 @@ const serverIndex = readFileSync(new URL('../server/src/index.js', import.meta.u
 const workerHttp = readFileSync(new URL('../worker/src/http.js', import.meta.url), 'utf8')
 const workerIndex = readFileSync(new URL('../worker/src/index.js', import.meta.url), 'utf8')
 const workerConfig = readFileSync(new URL('../worker/wrangler.toml', import.meta.url), 'utf8')
-assert.match(detail, /usesIsolatedLaunchCard = requiresIsolation && game\?\.platform !== 'psp'/, 'PSP 不应再跳铺满视口的精简播放器')
+assert.match(detail, /usesIsolatedLaunchCard = requiresIsolation && !isInlineIsolatedPlatform\(game\?\.platform\)/, '行内隔离平台应保留完整详情页')
+assert.match(readFileSync(new URL('../shared/inline-isolated-platforms.js', import.meta.url), 'utf8'), /'psp'/, 'PSP 必须列入行内隔离平台')
 assert.match(host, /arguments:\s*\[[\s\S]*?'--windowed'[\s\S]*?'--xres'[\s\S]*?'--yres'/, 'PSP 必须限制浏览器后备缓冲，不能继续按整块 Retina 屏渲染')
 assert.match(host, /width:\s*480,\s*height:\s*272/, '性能优先档必须使用 PSP 原生画布')
 assert.match(host, /width:\s*640,\s*height:\s*360/, '普通设备画布上限应为 640×360')
@@ -148,7 +149,8 @@ assert.ok(
   /platform\.runtime === 'ppsspp'[\s\S]*?ppssppExperimental/.test(detail),
   'PSP 必须排除实验性提示或使用自己的 PPSSPP 提示，不能显示 PS2 文案',
 )
-assert.match(ssr, /data\?\.route === 'game' && data\.game\?\.platform === 'psp'/, 'PSP 正常详情页必须由服务端加隔离头')
+assert.match(ssr, /const inlineIsolatedPlayer = data\?\.route === 'game' && isInlineIsolatedPlatform\(data\.game\?\.platform\)/, '行内隔离平台详情页必须由服务端加隔离头')
+assert.match(readFileSync(new URL('../shared/inline-isolated-platforms.js', import.meta.url), 'utf8'), /'psp'/, 'PSP 必须列入服务端行内隔离平台')
 assert.match(ssr, /isolatedDocument[\s\S]*?'Cross-Origin-Opener-Policy': 'same-origin'[\s\S]*?'Cross-Origin-Embedder-Policy': 'require-corp'/, 'PSP 详情页缺少 COOP/COEP')
 assert.match(serverIndex, /app\.get\('\/ppsspp\/v0dbfaca'[\s\S]*?CACHE\.none[\s\S]*?v23\/index\.html\?embed=1&frame=4/, '旧 PSP bundle 的无 index 入口必须跳到当前实体运行时，不能继续 404 或命中旧缓存')
 const staticHeaders = new Map()

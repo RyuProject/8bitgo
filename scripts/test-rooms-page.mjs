@@ -41,6 +41,17 @@ assert.match(store, /document\.visibilityState === 'hidden'/, '隐藏标签页�
 assert.match(store, /document\.addEventListener\('visibilitychange', onVisible\)/)
 assert.match(store, /POLL_MAX_MS/)
 assert.doesNotMatch(store, /window\.setInterval/, '大厅降级轮询不能固定频率并发打请求')
+// 登录用户不能因为成人房整条退回 15 秒轮询：公开房一律 SSE，只有本地判断够格的人额外取一次成人房
+assert.doesNotMatch(store, /if \(connectedToken \|\| typeof EventSource/, '登录用户也要走 SSE，不能整条改轮询')
+assert.match(store, /new EventSource\(`\$\{apiBase\(\)\}\/api\/netplay\/events`\)/)
+assert.match(netplay, /function adultRoomsEligible\(\)[\s\S]*?adultVerified === true/, '成人房请求只给本地判断年满 18 的登录用户')
+assert.match(store, /\/api\/netplay\/rooms\?scope=adult/, '成人房走单独的带 JWT 请求')
+assert.match(store, /es\.addEventListener\('rooms'[\s\S]*?scheduleAdult\(\)/, 'SSE 推送（含成人房变化）触发一次成人房重取')
+assert.match(store, /ADULT_REFRESH_MS/, '成人房有慢速兜底刷新')
+const publicFetch = /refreshPublic = \(\)[\s\S]*?fetch\(`\$\{apiBase\(\)\}\/api\/netplay\/rooms`, \{ signal: controller\.signal \}\)/
+assert.match(store, publicFetch, '公开列表请求不带令牌，服务端不用为它查库')
+assert.match(store, /revision !== adultRevision/, '迟到的成人房响应不能覆盖更新的结果')
+assert.match(store, /const disconnect = \(\) => \{[\s\S]*?adultRequest\?\.abort\(\)/, '断开时取消成人房请求')
 
 const liveStart = live.indexOf('const liveStore = (() => {')
 const liveEnd = live.indexOf('\n})()', liveStart)

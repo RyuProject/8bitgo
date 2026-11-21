@@ -53,6 +53,7 @@ export const EXPECTED_COLUMNS = [
   { table: 'game_comments', column: 'post_id', why: '博客文章评论；缺了文章页发表评论会 500（评论表的宿主二选一，见 schema-v2.sql）' },
   { table: 'game_comments', column: 'pending_review', why: '游客评论审核状态；缺列时评论读取和发表会 500' },
   { table: 'users', column: 'token_version', why: '退出所有设备 / 改完密码作废旧令牌' },
+  { table: 'users', column: 'email_verified_at', why: '邮箱验证时刻；缺列时登录注册照常（只打一行警告），但 2026-11-17 前抢注老号的密码清不掉' },
   { table: 'users', column: 'birth_date', why: '成人内容年龄验证：出生日期记在账号上，缺了 PUT /api/me/birth-date 会 500，成人游戏谁也进不去' },
   /*
     2026-11-15 由 scripts/check-schema-drift.mjs 对账补登：下面这些列 migrate.mjs 一直在补，
@@ -145,6 +146,7 @@ export const EXPECTED_TABLES = [
   { table: 'oauth_codes', why: 'OAuth 授权码（只存哈希）；缺了浏览器授权能到同意页，但换令牌时会 500' },
   { table: 'oauth_app_reviews', why: '应用审核流水；缺了后台的开放平台审核页整块 500' },
   { table: 'oauth_app_testers', why: '沙箱应用的测试账号白名单；缺了沙箱应用授权时 500' },
+  { table: 'oauth_save_daily_usage', why: '开放平台云存档按应用每日计数；缺表时云存档写入 500' },
   /*
     migrate 里还会建 oauth_authorizations / oauth_tokens，但当前代码一张都不查：
     access token 是自包含 JWT，不落库；长期授权与 refresh token 尚未启用。

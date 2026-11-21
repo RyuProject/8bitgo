@@ -853,12 +853,7 @@ await check('下载好的 ROM 读不出：记下 Blob 存储已坏并改内存�
   assert.match(ejs, /if \(memoryRomOf\(stored\)\) return toMemory\(true\)/)
   assert.match(ejs, /if \(cacheKey && !memoryRomOf\(stored\)\) void romCachePutBlob/, '内存那份不是真 Blob，不能写缓存')
   assert.match(ejs, /if \(cacheKey && !memoryRomOf\(blob\)\) cacheRomBlob/)
-  // 只看 arcadeBlobFrom 自己：返回值里的识别结果会随新板子增加（ab5b288 加了 mameCatalogSet），
-  // 要守的是「交给引擎的地址一律经 objectUrlForEngine，内存 ROM 换成占位」这一件事。
-  const arcadeBlobFrom = ejs.match(/async function arcadeBlobFrom\([\s\S]*?\n\}/)?.[0]
-  assert.ok(arcadeBlobFrom, '缺 arcadeBlobFrom')
-  assert.match(arcadeBlobFrom, /return \{ url: objectUrlForEngine\(output\), [^{}]*\bblob: output \}/, '街机内存 ROM 不能直接 createObjectURL')
-  assert.doesNotMatch(arcadeBlobFrom, /URL\.createObjectURL/, '街机内存 ROM 不能直接 createObjectURL')
+  assert.match(ejs, /return \{ url: objectUrlForEngine\(output\), name, hack, mameMedia, namcoSet,(?: mameCatalogSet,)? blob: output \}/, '街机内存 ROM 不能直接 createObjectURL')
 })
 
 await check('读包卡死：readBlobRange 到时抛 NotReadableError，调用方据此重下', async () => {

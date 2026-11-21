@@ -49,6 +49,10 @@ async function writeTags(run, postId, tags) {
   )
 }
 
+/** 译文缓存上限（字符）。为什么是这个数见 writePostTranslation 的注释 */
+export const POST_TRANSLATION_MAX_CHARS = 2_000_000
+const SOURCE_COLUMN = { title_i18n: 'title', excerpt_i18n: 'excerpt', content_i18n: 'content' }
+
 /**
  * 给某一列写一条翻译缓存。field 严格走白名单 —— 任何外部输入都不允许
  * 直接拼进 SQL，否则就是 SQL 注入。
@@ -58,22 +62,41 @@ async function writeTags(run, postId, tags) {
  * 抛 ER_INVALID_JSON_PATH（连字符不是合法标识符），繁体译文一条都写不进去。
  * 那个 bug 在线上活了一段时间，见 db.js 里 jsonMemberPath 的注释。
  *
- * text 限制 64KB：content 正文比游戏简介长得多，Markdown 一篇博客 30-50KB 很正常，
- * 64KB 够用；同时挡住有人手贱贴个 10MB 的测试。
+ * ── 长度：超限就不缓存，绝不截断 ───────────────────────────
+ * 以前 `slice(0, 64_000)` 静默截断后写进缓存 —— 缓存永不过期，于是长文的某种语言版本
+ * 从此只剩前半篇，而且没有任何入口能让它重新翻译。现在超过上限直接抛错（调用方只记日志、
+ * 这次不写缓存，下次请求会重新翻译并把完整译文返给访客）。上限按源列 MEDIUMTEXT（16MB）
+ * 和 max_allowed_packet 的常见下限留余量：2,000,000 个字符的 JSON 字符串远在两者之内，
+ * 而一篇真实博客的译文连它的零头都不到。
+ *
+ * ── 源文守卫：翻译期间文章被改过就不写 ─────────────────────
+ * 翻译要跑好几秒到十几秒，期间后台 PUT 可能已经改了正文并清空 *_i18n。不加守卫的话，
+ * 基于旧正文的译文会在清空之后落库，并且因为「已有缓存」永远不会再被重翻
+ * （游戏简介的 writeDescriptionTranslation 早就有同样的 sourceGuard）。
+ * sourceGuard.source 传**翻译时读到的那一列原值**（不要 trim 过的），写入时 SQL 里再比一次；
+ * 对不上 affectedRows = 0，返回 false。
+ *
+ * @param {{ source: string } | null} [sourceGuard]
  */
-export async function writePostTranslation(slug, field, lang, text) {
+export async function writePostTranslation(slug, field, lang, text, sourceGuard = null) {
   const ALLOWED = ['title_i18n', 'excerpt_i18n', 'content_i18n']
   if (!ALLOWED.includes(field)) throw new Error(`不支持的字段：${field}`)
   if (!/^[a-zA-Z-]{2,10}$/.test(lang)) throw new Error('lang 必须合法')
-  const safeText = String(text ?? '').slice(0, 64_000)
+  const safeText = String(text ?? '')
+  if (safeText.length > POST_TRANSLATION_MAX_CHARS) {
+    throw new Error(`译文过长（${safeText.length} 字符 > ${POST_TRANSLATION_MAX_CHARS}），不写缓存`)
+  }
   const column = '`' + field + '`'
+  const guardSql = sourceGuard ? ` AND COALESCE(\`${SOURCE_COLUMN[field]}\`, '') = ?` : ''
   const r = await query(
     `UPDATE posts SET ${column} = JSON_SET(
        COALESCE(${column}, JSON_OBJECT()),
        ?,
        CAST(? AS JSON)
-     ) WHERE slug = ?`,
-    [jsonMemberPath(lang), JSON.stringify(safeText), slug],
+     ) WHERE slug = ?${guardSql}`,
+    sourceGuard
+      ? [jsonMemberPath(lang), JSON.stringify(safeText), slug, String(sourceGuard.source ?? '')]
+      : [jsonMemberPath(lang), JSON.stringify(safeText), slug],
   )
   return r.affectedRows > 0
 }
@@ -123,8 +146,8 @@ function queuePostTranslations(slug) {
           const out = markdown ? await renderMarkdownField(source, plan) : await renderField(source, plan)
           // 简繁转换可能「什么都没变」（源文里没有要转的字）—— 那种不值得占一个键
           if (!out || !out.trim() || (plan.convert && out === source)) continue
-          await writePostTranslation(slug, field, lang, out)
-          wrote += 1
+          // 源文守卫：预翻译跑期间文章又被保存过，就别把旧正文的译文写到新内容上
+          if (await writePostTranslation(slug, field, lang, out, { source })) wrote += 1
         } catch (e) {
           console.error(`[post i18n] ${slug} ${field} [${lang}] 失败：`, e?.code, e?.message)
         }
@@ -285,17 +308,21 @@ postsRouter.post('/:slug/translate', async (req, res, next) => {
     // 写缓存：成功的字段写、失败的字段不写（保留「还没翻」状态，下次再点会重试）。
     // 写完再清缓存：以前写入不 await，清缓存可能先于写入落库，边缘又缓存回旧页面。
     const writes = []
-    if (titleTranslation && !titleCached) writes.push(['title_i18n', titleTranslation])
-    if (excerptTranslation && !excerptCached) writes.push(['excerpt_i18n', excerptTranslation])
-    if (contentTranslation && !contentCached) writes.push(['content_i18n', contentTranslation])
+    // 第三项是翻译时读到的源列原值：写入时 SQL 再比一次，期间被 PUT 改过就不落库
+    if (titleTranslation && !titleCached) writes.push(['title_i18n', titleTranslation, row.title])
+    if (excerptTranslation && !excerptCached) writes.push(['excerpt_i18n', excerptTranslation, row.excerpt])
+    if (contentTranslation && !contentCached) writes.push(['content_i18n', contentTranslation, row.content])
     const results = await Promise.allSettled(
-      writes.map(([column, value]) => writePostTranslation(req.params.slug, column, lang, value)),
+      writes.map(([column, value, source]) =>
+        writePostTranslation(req.params.slug, column, lang, value, { source: source ?? '' }),
+      ),
     )
     results.forEach((r, i) => {
       if (r.status === 'rejected') console.error(`[post translate] 写 ${writes[i][0]}:`, r.reason?.message)
     })
     // 只有真的落了新译文才清缓存（全站 SSR + Cloudflare HTML），不能让匿名请求随手清站
-    if (results.some((r) => r.status === 'fulfilled')) invalidateContent()
+    // （守卫没通过的写入是 fulfilled(false)：没落库，也就不该清）
+    if (results.some((r) => r.status === 'fulfilled' && r.value === true)) invalidateContent()
 
     res.json({
       lang,

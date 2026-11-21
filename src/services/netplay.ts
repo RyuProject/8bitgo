@@ -14,6 +14,7 @@
 import { useSyncExternalStore } from 'react'
 import { fallbackAfterErrors } from './sseFallback'
 import { getCurrentUser } from './auth'
+import { getToken, TOKEN_CHANGED_EVENT } from './api'
 import type { Presence } from './presence'
 import { netplayGameId } from '../../shared/netplay-game-id.js'
 import { NETPLAY_URL, netplayEnabled } from './roomFlags'
@@ -440,23 +441,143 @@ const LIST_REQUEST_TIMEOUT_MS = 8_000
 /** 空数组用固定引用：useSyncExternalStore 要求快照引用稳定，否则会无限重渲染 */
 const NO_ROOMS: NetplayRoom[] = []
 
+/**
+ * 成人游戏的联机房只对通过年龄门的登录用户可见（§2.23，与直播同一条规则），服务端按 JWT 过滤。
+ * 单个房间的 HTTP 请求带当前登录令牌；大厅列表的成人房走 refreshAdult（只有够格的人才带令牌）。
+ */
+function netplayAuthHeaders(): Record<string, string> {
+  const token = getToken()
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
+/**
+ * 这位登录用户能不能看成人游戏的联机房（§2.23）。
+ * 只是「要不要多发一个带 JWT 的请求」的本地判断，权限边界仍在服务端：
+ * 用户对象里的 adultVerified 由出生日期按今天现算（shared/age.js），没登录 / 没填生日 / 未满 18 岁
+ * 都不带令牌，服务端就不必为每次刷新查一次库。判断错了最多是多 / 少一个请求，不会多看到房间。
+ */
+function adultRoomsEligible(): boolean {
+  return Boolean(getToken()) && getCurrentUser()?.adultVerified === true
+}
+
+/** 成人房兜底刷新间隔：房间任何变化都会经 SSE 触发一次，周期刷新只补 SSE 断开的空窗 */
+const ADULT_REFRESH_MS = 60_000
+/** SSE 一轮变化往往连着几条推送，合并后再查一次成人房 */
+const ADULT_DEBOUNCE_MS = 1_500
+
+/** 公开房 + 成人房合并成一份列表；没有成人房时原样返回公开那份，保住快照引用稳定 */
+export function mergeNetplayRoomLists(publicRooms: NetplayRoom[], adultRooms: NetplayRoom[]): NetplayRoom[] {
+  if (!adultRooms.length) return publicRooms
+  const seen = new Set(publicRooms.map((room) => room.roomId))
+  const merged = [...publicRooms, ...adultRooms.filter((room) => !seen.has(room.roomId))]
+  return merged.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
+}
+
 const store = (() => {
   let rooms: NetplayRoom[] = NO_ROOMS
+  /** 匿名部分（SSE / 不带令牌的 HTTP）与按年龄门放出的成人房分开存，各自按自己的修订号防倒退 */
+  let publicRooms: NetplayRoom[] = NO_ROOMS
+  let adultRooms: NetplayRoom[] = NO_ROOMS
+  /** 当前连接按哪一张 JWT 建立；登录 / 退出后清掉成人房，否则会沿用旧权限 */
+  let connectedToken = ''
   const listeners = new Set<() => void>()
   let es: EventSource | null = null
   let stopFallback: (() => void) | null = null
   let timer = 0
   let generation = 0
   let listRevision = 0
+  let adultRevision = 0
   let pollingOn = false
   let polling = false
   let pollRun = 0
   let pollFailures = 0
   let activeRequest: AbortController | null = null
+  let adultRequest: AbortController | null = null
   let inFlight: { generation: number; promise: Promise<boolean> } | null = null
+  let adultInFlight: { generation: number; promise: Promise<boolean> } | null = null
+  let adultTimer = 0
+  let adultDebounce = 0
   const emit = () => listeners.forEach((l) => l())
+  const publish = () => {
+    rooms = mergeNetplayRoomLists(publicRooms, adultRooms)
+    emit()
+  }
+  const clearAdult = () => {
+    adultRevision++
+    adultRequest?.abort()
+    adultRequest = null
+    if (adultRooms !== NO_ROOMS) {
+      adultRooms = NO_ROOMS
+      publish()
+    }
+  }
 
-  const refresh = (): Promise<boolean> => {
+  /**
+   * 只取成人房（服务端 ?scope=adult）。以前登录用户整条列表都改走 15 秒轮询，SSE 实时性没了，
+   * 每次轮询还要服务端 optionalUser 查一次库；现在只有本地判断「年满 18」的人才发这一个请求，
+   * 触发时机跟着 SSE 推送走（服务端任何房间变化都会推，含成人房），外加 60 秒兜底。
+   */
+  const refreshAdult = (): Promise<boolean> => {
+    if (!netplayEnabled()) return Promise.resolve(false)
+    if (!adultRoomsEligible()) {
+      clearAdult()
+      return Promise.resolve(true)
+    }
+    if (adultInFlight?.generation === generation) return adultInFlight.promise
+    const mine = generation
+    const token = getToken()
+    const revision = adultRevision
+    const controller = new AbortController()
+    adultRequest = controller
+    let promise!: Promise<boolean>
+    promise = (async () => {
+      const timeout = window.setTimeout(() => controller.abort(), LIST_REQUEST_TIMEOUT_MS)
+      try {
+        const res = await fetch(`${apiBase()}/api/netplay/rooms?scope=adult`, {
+          signal: controller.signal,
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        if (!res.ok) return false
+        const next: unknown = await res.json()
+        if (!Array.isArray(next)) return false
+        if (mine !== generation || token !== getToken() || revision !== adultRevision) return true
+        adultRooms = next.length ? (next as NetplayRoom[]) : NO_ROOMS
+        adultRevision++
+        publish()
+        return true
+      } catch {
+        return false
+      } finally {
+        window.clearTimeout(timeout)
+        if (adultRequest === controller) adultRequest = null
+        if (adultInFlight?.promise === promise) adultInFlight = null
+      }
+    })()
+    adultInFlight = { generation: mine, promise }
+    return promise
+  }
+
+  const scheduleAdult = (delay = ADULT_DEBOUNCE_MS) => {
+    if (!adultRoomsEligible()) {
+      if (adultRooms !== NO_ROOMS) clearAdult()
+      return
+    }
+    if (adultDebounce) return
+    adultDebounce = window.setTimeout(() => {
+      adultDebounce = 0
+      void refreshAdult()
+    }, delay)
+  }
+
+  /** 60 秒兜底；隐藏标签页跳过网络，用户中途补填生日 / 登录也会在下一跳被发现 */
+  const adultTick = () => {
+    adultTimer = window.setTimeout(adultTick, ADULT_REFRESH_MS)
+    if (document.visibilityState === 'hidden') return
+    if (adultRoomsEligible() || adultRooms !== NO_ROOMS) void refreshAdult()
+  }
+
+  /** 匿名的公开列表：不带令牌，服务端不查库 */
+  const refreshPublic = (): Promise<boolean> => {
     if (!netplayEnabled()) return Promise.resolve(false)
     if (inFlight?.generation === generation) return inFlight.promise
 
@@ -474,9 +595,9 @@ const store = (() => {
         const next: unknown = await res.json()
         if (!Array.isArray(next)) return false
         if (mine !== generation || revision !== listRevision) return true
-        rooms = next.length ? (next as NetplayRoom[]) : NO_ROOMS
+        publicRooms = next.length ? (next as NetplayRoom[]) : NO_ROOMS
         listRevision++
-        emit()
+        publish()
         return true
       } catch {
         /* 信令服务器暂时不可达时保留上次结果 */
@@ -489,6 +610,12 @@ const store = (() => {
     })()
     inFlight = { generation: mine, promise }
     return promise
+  }
+
+  /** 公开列表 + （够格的话）成人房一起刷；成败以公开列表为准 */
+  const refresh = async (): Promise<boolean> => {
+    const [ok] = await Promise.all([refreshPublic(), refreshAdult()])
+    return ok
   }
 
   /** SSE 不可用时退回单请求轮询；隐藏标签页暂停，故障时逐步退避。 */
@@ -528,6 +655,21 @@ const store = (() => {
     // 重订阅时废弃上一代的手动刷新，避免它白跑完再与新 SSE 快照竞争。
     activeRequest?.abort()
     activeRequest = null
+    if (connectedToken !== getToken()) {
+      // 换了身份：上一份快照可能含按年龄权限放出来的成人房，先抹掉
+      connectedToken = getToken()
+      adultRequest?.abort()
+      adultRequest = null
+      adultRevision++
+      adultRooms = NO_ROOMS
+      publish()
+    }
+    /*
+      所有人都走 SSE 拿公开房（实时、零轮询）。成人房不进匿名 SSE（EventSource 带不了 Authorization，
+      令牌也绝不能塞进 URL），由 refreshAdult 单独带 JWT 取，再合并进同一份列表。
+    */
+    adultTimer = window.setTimeout(adultTick, ADULT_REFRESH_MS)
+    if (adultRoomsEligible()) void refreshAdult()
     if (typeof EventSource !== 'function') {
       startPolling()
       return
@@ -543,9 +685,11 @@ const store = (() => {
       try {
         const next: unknown = JSON.parse((e as MessageEvent<string>).data)
         if (!Array.isArray(next)) return
-        rooms = next.length ? (next as NetplayRoom[]) : NO_ROOMS
+        publicRooms = next.length ? (next as NetplayRoom[]) : NO_ROOMS
         listRevision++
-        emit()
+        publish()
+        // 服务端任何房间变化（包括成人房）都会推一条；够格的用户顺势重取成人房
+        scheduleAdult()
       } catch {
         /* 坏包忽略，等下一条 */
       }
@@ -566,6 +710,14 @@ const store = (() => {
       window.clearTimeout(timer)
       timer = 0
     }
+    if (adultTimer) {
+      window.clearTimeout(adultTimer)
+      adultTimer = 0
+    }
+    if (adultDebounce) {
+      window.clearTimeout(adultDebounce)
+      adultDebounce = 0
+    }
     if (pollingOn) document.removeEventListener('visibilitychange', onVisible)
     pollingOn = false
     pollFailures = 0
@@ -573,16 +725,35 @@ const store = (() => {
     polling = false
     activeRequest?.abort()
     activeRequest = null
+    adultRequest?.abort()
+    adultRequest = null
+  }
+
+  const reconnectForToken = () => {
+    if (getToken() === connectedToken) return
+    disconnect()
+    if (listeners.size > 0 && netplayEnabled()) connect()
+  }
+  const onStorage = (event: StorageEvent) => {
+    if (!event.key || event.key === '8bitgo.token') reconnectForToken()
   }
 
   return {
     get: () => rooms,
     subscribe(l: () => void) {
       listeners.add(l)
-      if (listeners.size === 1 && netplayEnabled()) connect()
+      if (listeners.size === 1 && netplayEnabled()) {
+        window.addEventListener(TOKEN_CHANGED_EVENT, reconnectForToken)
+        window.addEventListener('storage', onStorage)
+        connect()
+      }
       return () => {
         listeners.delete(l)
-        if (listeners.size === 0) disconnect()
+        if (listeners.size === 0) {
+          window.removeEventListener(TOKEN_CHANGED_EVENT, reconnectForToken)
+          window.removeEventListener('storage', onStorage)
+          disconnect()
+        }
       }
     },
     refresh,
@@ -651,6 +822,18 @@ export function watchNetplayRoom(
       es.addEventListener('room-gone', () => {
         if (!stopped) handlers.onGone()
       })
+      /*
+        成人游戏的房间：匿名 SSE 拿不到详情，服务端改发 room-restricted（不是 gone，房间还在）。
+        换成带 JWT 的轮询；没通过年龄门的人轮询会拿到 404，本来也进不了这间房。
+      */
+      es.addEventListener('room-restricted', () => {
+        if (stopped || timer) return
+        stopFallback?.()
+        stopFallback = null
+        es?.close()
+        void poll()
+        timer = window.setInterval(() => void poll(), 3000)
+      })
       // 同上：CLOSED 只覆盖「服务端明确拒绝」，传输层断流要靠计次，见 sseFallback.ts
       stopFallback = fallbackAfterErrors(es, () => {
         if (stopped || timer) return
@@ -680,7 +863,10 @@ export async function probeNetplayRoom(roomId: string): Promise<NetplayRoomProbe
   // 网络半断开时 fetch 可能一直挂着；每 3 秒的兜底轮询不能为同一房间堆出许多请求。
   const timeout = setTimeout(() => abort.abort(), 8000)
   try {
-    const res = await fetch(`${apiBase()}/api/netplay/rooms/${encodeURIComponent(roomId)}`, { signal: abort.signal })
+    const res = await fetch(`${apiBase()}/api/netplay/rooms/${encodeURIComponent(roomId)}`, {
+      signal: abort.signal,
+      headers: netplayAuthHeaders(),
+    })
     if (res.status === 404) return { kind: 'gone' }
     if (!res.ok) return { kind: 'unreachable' }
     return { kind: 'room', room: (await res.json()) as NetplayRoom }

@@ -30,6 +30,20 @@ check('移动端封面视频不进入首屏下载队列', () => {
   assert.doesNotMatch(src, /preload=\{priority \? 'metadata'/)
 })
 
+check('桌面端封面视频等页面加载完、空闲后才自动拉流，弱网不自动拉', () => {
+  const src = read('src/components/game/GameCover.tsx')
+  // 2026-11-20 首页：两段预览 3.5MB 水合后就下载，和 32 张封面抢带宽，最后一张封面 11.9 秒才到
+  assert.match(src, /window\.addEventListener\('load', idle, \{ once: true \}\)/)
+  assert.match(src, /whenIdle\(resolve, \{ timeout: 3000, fallbackMs: 1500 \}\)/)
+  assert.match(src, /if \(!previewAutoplayAllowed\(\)\) return/)
+  assert.match(src, /allowsSpeculativePlayerPreload\(connection\)/)
+  // 视口回调本身不再直接 play：只有页面安定后（settled）才开始
+  assert.match(src, /else if \(settled\) start\(\)/)
+  assert.match(src, /settled = true\s*\n\s*if \(visible\) start\(\)/)
+  // 悬停是玩家自己要看的，不受这两条限制
+  assert.match(src, /onMouseEnter=\{\(\) => void ref\.current\?\.play\(\)/)
+})
+
 check('侧栏微型封面不在开局时下载和解码宣传视频', () => {
   const src = read('src/components/layout/Sidebar.tsx')
   const compactCovers = src.match(/<GameCover[^>]+still \/>/g) ?? []

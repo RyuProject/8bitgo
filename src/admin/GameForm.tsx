@@ -3462,6 +3462,33 @@ function RomField({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [platform, lang, slug, allowStorage])
 
+  useEffect(() => {
+    if (platform !== 'psx' || !lang || !slug || !allowStorage) return
+    const id = rememberedPsxConversion(slug, lang)
+    if (!id || resumedPsxJob.current === id) return
+    resumedPsxJob.current = id
+    const controller = new AbortController()
+    setProgress(45)
+    setMsg({ ok: true, text: '正在恢复上次未完成的 PS1 ISO → CD CHD 任务…' })
+    void waitForPsxConversion(id, (job) => {
+      setProgress(45 + Math.round(job.progress * 0.55))
+      setMsg({ ok: true, text: `${psxConversionLabel(job)} ${job.progress}%${job.message ? `；${job.message}` : ''}` })
+    }, controller.signal).then((job) => {
+      onChange(job.targetKey)
+      rememberPsxConversion(slug, lang, null)
+      setProgress(null)
+      setMsg({ ok: true, text: `PS1 CD CHD 已完成并恢复绑定：${job.targetKey}（${human(job.outputSize ?? 0)}）` })
+    }).catch((error) => {
+      if (error instanceof Error && error.name === 'AbortError') return
+      rememberPsxConversion(slug, lang, null)
+      setProgress(null)
+      setMsg({ ok: false, text: error instanceof Error ? error.message : '恢复 PS1 转换任务失败' })
+    })
+    return () => controller.abort()
+    // onChange 是父组件每次渲染新建的闭包，加入依赖会反复中止同一项任务。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [platform, lang, slug, allowStorage])
+
   /**
    * 检测必须从管理员浏览器发起：让服务端代请求任意后台 URL 会变成 SSRF 入口。
    * 两个源并行探，避免主站超时四秒后才开始等备用站；播放器实际启动时仍按主→备顺序选择。
@@ -3929,6 +3956,15 @@ function RomField({
         }
       } catch (err) {
         setMsg({ ok: false, text: err instanceof Error ? err.message : '无法读取 DOS ZIP 目录' })
+        if (inputRef.current) inputRef.current.value = ''
+        return
+      }
+    }
+    // 数据轨签名和 PS1 启动文件只需读取约 1MB；先查可避免上传整张盘后才被后台拒绝。
+    if (platform === 'psx' && /\.iso$/i.test(file.name)) {
+      const problem = await psxIsoValidationProblem(file).catch(() => '读取 ISO 目录失败')
+      if (problem) {
+        setMsg({ ok: false, text: problem })
         if (inputRef.current) inputRef.current.value = ''
         return
       }

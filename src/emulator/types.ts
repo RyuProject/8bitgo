@@ -45,7 +45,7 @@ import type { GbaVideoMode } from './gbaVideo'
 import type { MahjongKey } from './mahjongPanel'
 import type { SaveArchiveDetails } from './saveEnvelope'
 
-export type RuntimeId = 'emulatorjs' | 'ruffle' | 'awayfl' | 'html5' | 'jsnes' | 'binjgb' | 'iodinegba' | 'j2me' | 'jsdos' | 'webretro' | 'play' | 'ppsspp' | 'dolphin' | 'cloudgame' | 'liveview'
+export type RuntimeId = 'emulatorjs' | 'ruffle' | 'awayfl' | 'html5' | 'jsnes' | 'binjgb' | 'iodinegba' | 'j2me' | 'jsdos' | 'webretro' | 'play' | 'ppsspp' | 'dolphin' | 'eka2l1' | 'cloudgame' | 'liveview'
 
 /**
  * jsnes 的 P2P 联机会话参数（见 adapters/jsnes.ts 与 emulator/jsnesNetplay.ts）。
@@ -82,6 +82,8 @@ export interface MountOptions {
   game: File | string
   /** 启动期 GBA WASM 越界后的唯一恢复轮：丢弃该远端 ROM 的缓存与续传片，再从网络读取。 */
   forceRomRefresh?: boolean
+  /** 本次开局之前的一轮已经强制刷新过 ROM；适配器只据此在陷阱复现时清掉坏缓存，不会再丢缓存重下。 */
+  romRefreshed?: boolean
   /** PSP 在线镜像的读取方式；整包先落 OPFS 再挂成本地盘，默认按需流式读取。 */
   pspLoadMode?: 'stream' | 'download'
   /** 显示名（存档 / 截图命名用） */
@@ -94,6 +96,8 @@ export interface MountOptions {
    * 更老的板子可能只有 mame2003_plus 跑得动 —— 一个平台默认值盖不住。
    */
   core?: string
+  /** ROM CRC 命中后适配器自动换用游戏专属核心时，同步会话核心和独立存档档位。 */
+  onCoreResolved?: (core: string, saveSuffix?: string) => void
   /**
    * FBNeo RomData（.dat 文本）。传了就在虚拟文件系统里和 ROM 并排放一份
    * `<romset>.dat`，让核心把这个包当成挂在别的驱动上的自定义 romset。
@@ -208,6 +212,8 @@ export interface MountOptions {
    */
   debug?: boolean
   onProgress?: (progress: LoadProgress) => void
+  /** 引擎内部仍在推进启动阶段时通知播放器，避免外层无进度看门狗误判卡死。 */
+  onStartupActivity?: () => void
   /**
    * 旧 Flash 游戏的在线存档会话到期时间（毫秒）；0 = 游客模式 / 没拿到会话。
    *
@@ -262,7 +268,7 @@ export interface MountOptions {
   onReady?: () => void
   /** 运行时已经产出首帧 / 真正进入主循环。多数适配器会紧跟 onReady 报这一项。 */
   onStart?: () => void
-  /** HTML5 子页面通过运行时桥确认玩家第一次真实输入。其它运行时由播放器统一监听。 */
+  /** HTML5 子页面的可信输入事件或运行时桥确认玩家第一次真实操作；iframe 自动聚焦不算。 */
   onFirstInteraction?: () => void
   /**
    * scope = runtime 表示播放器外壳 / 引擎本身没起来，不是 ROM 内容坏了。

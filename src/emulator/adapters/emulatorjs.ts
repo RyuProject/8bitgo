@@ -68,6 +68,7 @@ import { MAME_CHD_MAX_BYTES, mameChdCacheKey } from '../mameChdWarm'
 import { warmEmulatorJsStart } from '../ejsStartWarm'
 import { writeFsInjections, type FsInjection } from '../fsInjection'
 import { arcadeCoreForRomData, isFbneoCore, supportsFbneoRomData } from '../arcadeCore'
+import { fbneoWofcnSaveSlug, FBNEO_WOFCN_CORE } from '../wofcnCore'
 import { MAME_AUDIO_LATENCY_MS, RETROARCH_CFG_PATH, raiseAudioLatency } from '../mameAudio'
 import { ndsAudioLatencyMs } from '../ndsAudio'
 import { disposeNdsWfcRuntime, installNdsWfcRuntime, isWorldAtWarNdsRomHeader, loadNdsWfcSettings, ndsWfcMacAddress, prepareNdsWfcSession, saveNdsWfcSettings } from '../ndsWfc'
@@ -2726,6 +2727,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let lastStage = ''
   const beat = () => {
     lastBeat = Date.now()
+    // 外层播放器也要知道核心下载 / 解压 / 编译仍在推进，不能只喂本适配器的卡死检测。
+    if (!started && !loadFailed && !destroyed) options.onStartupActivity?.()
   }
   let audioTap: AudioTap | null = null
   let volume = 0.6
@@ -3223,6 +3226,21 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     options.onError?.(message, scope)
   }
   /**
+   * PS1 Range 读盘的致命错误可能在开局前、也可能在游戏中途到来（同步 XHR 缺片读不出）。
+   * 开局前走 failLoad（同一道闩，线路与 ROM 内容无关所以 keepEdge）；开局后仍要拆这局（读不到盘没法继续），
+   * 但同样只报一次 —— 多张盘 / 多个缺片会各报一遍，以前每一遍都直接 onError，播放器对同一根因重试好几轮。
+   */
+  const reportStreamFatal = (message: string) => {
+    if (destroyed) return
+    if (!started) {
+      failLoad(message, 'runtime', { keepEdge: true })
+      return
+    }
+    if (loadFailed || crashReported) return
+    loadFailed = true
+    options.onError?.(message, 'runtime')
+  }
+  /**
    * 同一句话可能被核心打好几遍，只报第一次，免得把界面刷成一片红。
    *
    * ⚠️ 只在**开局前**往上报。播放器收到 onError 会把这局拆掉（进度全丢），而 FATAL_PHRASES
@@ -3358,7 +3376,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     stopStartWatch()
     logEngine(`[core-crash] ${core}: ${line}`)
     // 强制刷新后仍然发生同一陷阱：本轮下载的密文不留在 ROM 缓存，下一次访问会再向源站取一份。
-    if (options.platform === 'gba' && options.forceRomRefresh &&
+    // 刷新那一局之后的重开（romRefreshed）用的还是那份刷新过的 ROM，复现陷阱同样要清。
+    if (options.platform === 'gba' && (options.forceRomRefresh || options.romRefreshed) &&
       /table index is out of bounds/i.test(line) && isRomPackUrl(remoteGameUrl)) {
       const cacheKey = romCacheKey(remoteGameUrl)
       if (cacheKey) void discardStoredRom(cacheKey)
@@ -3539,7 +3558,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           cfg.onConnectionFailed?.(message)
           return
         }
-        options.onError?.(message, scope)
+        // 走 failLoad 的闩：握手超时后引擎的致命行 / 看门狗不会再报第二次。联机失败与引擎线路无关，keepEdge
+        failLoad(message, scope, { keepEdge: true })
         return
       }
       console.warn('[netplay]', message)
@@ -4947,7 +4967,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         if (engineBiosUrl) {
           const preferredBiosUrl = await reachableRomAssetUrl(engineBiosUrl, prepareAbort.signal)
           if (preferredBiosUrl !== engineBiosUrl) {
-            console.warn('[emulatorjs] 下载优选域暂不可读，平台 BIOS 改走备用资源域')
+            console.warn(`[emulatorjs] 平台 BIOS 改走读得更快的资源域：${new URL(preferredBiosUrl, location.href).host}`)
             engineBiosUrl = preferredBiosUrl
           }
         }
@@ -4996,7 +5016,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
               (message) => {
                 if (destroyed) return
                 logEngine(`[psx-range] ${message}`)
-                options.onError?.(message, 'runtime')
+                reportStreamFatal(message)
               },
             )
             options.onProgress?.({
@@ -5010,7 +5030,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             if (destroyed || prepareAbort.signal.aborted) return
             const message = `PS1 多盘组暂时无法流式读取：${error instanceof Error ? error.message : String(error)}。请检查 M3U 与同目录 CHD 是否都已发布，且对象支持 Range。`
             console.error('[emulatorjs] PS1 多盘组准备失败：', error)
-            options.onError?.(message, 'runtime')
+            failLoad(message, 'runtime', { keepEdge: true })
             return
           }
         } else if (PSX_RANGE_ENABLED && !isFile && canStreamPsxChd(options.platform, remoteGameUrl)) {
@@ -5023,7 +5043,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
               (message) => {
                 if (destroyed) return
                 logEngine(`[psx-range] ${message}`)
-                options.onError?.(message, 'runtime')
+                reportStreamFatal(message)
               },
             )
             options.onProgress?.({
@@ -5244,11 +5264,18 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             engineGameName = `${prepared.hack.zipName}.zip`
             // ROM 专属改版只在指纹命中本包后切核，不能把共享字段里的设置带给别的语言 ROM。
             const corrected = prepared.hack.romDataScope === 'rom'
-              ? (isFbneoCore(core) ? core : 'fbneo')
+              ? prepared.hack.zipName === 'wofcn'
+                ? FBNEO_WOFCN_CORE
+                : (isFbneoCore(core) ? core : 'fbneo')
               : arcadeCoreForRomData(core, builtInRomData)
             if (corrected !== core) {
               console.warn(`[arcade] 改版包需要 RomData，${core} 不会读取，已自动切换为 ${corrected}`)
               core = corrected
+            }
+            if (prepared.hack.zipName === 'wofcn') {
+              // 同步更新适配器内部存档键，避免父组件状态更新与核心启动之间出现一帧旧 slug。
+              if (options.gameSlug) options.gameSlug = fbneoWofcnSaveSlug(options.gameSlug)
+              options.onCoreResolved?.(core, ':fbneo-wofcn')
             }
             console.info(`[arcade] 按指纹认出改版包：${prepared.hack.title}（借 ${prepared.hack.driver} 驱动），已套用内置 RomData`)
           }

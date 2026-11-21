@@ -277,6 +277,8 @@ export const zhHans = {
     passwordPlaceholder: '输入登录密码',
     submitPassword: '登录',
     noPasswordHint: '没设过密码？用验证码登录，之后可以在个人中心设置。',
+    passwordResetNotice: '为了账号安全，这个账号以前设置的密码已被清除，其它设备也已退出。请到个人中心「账号与安全」重新设置密码。',
+    passwordResetDismiss: '关闭',
   },
 
   /* ---------------- 首页 ---------------- */
@@ -502,6 +504,15 @@ export const zhHans = {
       mobileQ: "{title} 在手机上能玩吗？",
       mobileA: "取决于游戏。请查看本页的操作说明：有屏幕按键的游戏可以触屏游玩；要求键盘和鼠标的游戏更适合电脑端。",
     },
+    embedLoginNotice: '这款游戏自带的 {providers} 登录无法在本页的游戏框里完成（对方不允许在嵌入框架中打开登录页，会显示 403）。需要登录时请在新标签页打开游戏。',
+    embedLoginOpen: '在新标签页打开',
+    embedLoginSaveWarning: '注意：新标签页可能读不到本页这份存档，8BitGo 不会代为复制或合并；是否能同步取决于游戏自身。若要保住当前进度，请先不要在新页面开始新游戏或覆盖存档。',
+    embedLoginOpenConfirm: '8BitGo 不会把本页存档复制或合并到新标签页。游戏自身是否能同步取决于它的规则。仍要打开吗？',
+    currentlyPlaying: '正在玩',
+    playCountLabel: '次游玩',
+    communityContributors: '贡献者',
+    communityContributorsEmpty: '暂时还没有贡献者记录',
+    guidesSubmit: '写攻略',
   },
 
   /* ---------------- 游戏评论 ---------------- */
@@ -1512,6 +1523,7 @@ export const zhHans = {
     oauthEmailUnverified: '这个账号的邮箱未通过验证，本站无法用它登录',
     microsoftNickname: 'Microsoft 玩家',
     appleNickname: 'Apple 玩家',
+    googleNotShown: 'Google 登录没有完成。如果没看到 Google 的登录窗口，请先在浏览器里登录 Google 账号，或改用邮箱验证码登录。',
   },
 
   /* ---------------- ROM 识别 ---------------- */
@@ -1689,6 +1701,14 @@ export const zhHans = {
     ejsArcadeRomDownloadFailed: '街机游戏文件下载失败：{msg}',
     ejsRomFailed: '游戏文件下载失败（HTTP {status}）：{url}',
     ejsStalled: '加载在「{stage}」这一步停住了。点「重试」再来一次；一直不行请反馈给我们',
+    eka2l1Desc: 'EKA2L1 的浏览器 WebAssembly 移植；每局在内存里装好 N-Gage 设备与游戏后启动',
+    eka2l1NoFirmware: '本站还没有配置 N-Gage 设备固件，塞班游戏暂时无法启动。',
+    eka2l1NeedsS60v3: '这款游戏是 S60 第三版（.sisx）安装包，所需的设备固件本站还没有配置。',
+    eka2l1UnknownPackage: '无法识别这个塞班游戏文件：目前只支持 .sis 安装包和 N-Gage 卡带转储（.zip）。',
+    eka2l1LoadFailed: '塞班模拟器启动失败：{msg}',
+    eka2l1AppExited: '游戏启动后退出了（{detail}），这款游戏可能暂不兼容。',
+    eka2l1NeedsIsolation: '塞班模拟器没有获得 SharedArrayBuffer 所需的浏览器隔离环境。请刷新当前游戏页。',
+    eka2l1StartTimeout: '游戏画面两分钟都没有出现。如果浏览器窗口在后台，请切回来后重试。',
   },
 
   /* ---------------- 数字与单位 ---------------- */

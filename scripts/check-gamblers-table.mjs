@@ -50,6 +50,32 @@ if (existsSync(indexPath)) {
   ok(html.includes('initializeBeforeStart') && html.includes('markStarted'), 'Godot 启动没有等待云存档恢复或启用自动同步')
 }
 
+const bridgeSourcePath = resolve(root, '8bitgo-save-bridge.js')
+if (existsSync(bridgeSourcePath)) {
+  const bridge = text(bridgeSourcePath)
+  // 开局云存档比较：和 PvZ、电池存档同一套规则，绝不无条件拿云端盖掉本地进度。
+  const decideSource = bridge.match(/function decideSync\([^)]*\) \{[\s\S]*?\n\t\}/)?.[0]
+  ok(Boolean(decideSource), '存档桥缺少开局云存档比较 decideSync')
+  if (decideSource) {
+    const decide = new Function(`${decideSource}; return decideSync`)()
+    const cases = [
+      [['', '', '', false], 'none'],
+      [['L', '', '', false], 'keep-local'],
+      [['', 'C', '', false], 'use-cloud'],
+      [['X', 'X', '', false], 'in-sync'],
+      [['L0', 'C1', 'L0', false], 'use-cloud'],
+      [['L1', 'C0', 'C0', false], 'keep-local'],
+      [['L1', 'C1', 'B0', false], 'conflict'],
+      [['L1', 'C1', '', false], 'conflict'],
+      [['L1', 'P0', '', true], 'keep-local'],
+    ]
+    for (const [args, expected] of cases) ok(decide(...args) === expected, `decideSync(${args.join(', ')}) 应为 ${expected}`)
+  }
+  for (const marker of ['auto-final-snapshot', 'auto-final-done', 'auto-conflict', 'SYNCED_KEY_PREFIX', "if (status === 'saved') writeSyncedFingerprint"]) {
+    ok(bridge.includes(marker), `存档桥缺少云存档比较 / 收尾保护：${marker}`)
+  }
+}
+
 const runtimePath = resolve(root, 'index.js')
 if (existsSync(runtimePath)) {
   ok(text(runtimePath).includes('Module["8bitgoSyncPersistentFS"]=GodotFS.sync;'), 'Godot 运行时没有导出持久化 FS 同步接口')
