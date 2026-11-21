@@ -47,6 +47,13 @@ if (!existsSync(join(dir, 'emulator.min.js')) || !existsSync(join(dir, 'loader.j
 }
 
 const js = readFileSync(join(dir, 'emulator.min.js'), 'utf8')
+const resumeHelper = readFileSync(join(root, 'scripts', 'lib', 'ejs-core-resume-runtime.js'), 'utf8').trim()
+if (!js.includes(resumeHelper)) {
+  fail(
+    'emulator.min.js 没有内嵌当前核心断点续传助手 —— 源码修复不能只留在补丁辅助文件里',
+    'npm run ejspatch，然后重新构建；续传助手改动必须同时进入自托管引擎产物',
+  )
+}
 if (!js.includes('dontExtractIfCore')) {
   fail(
     'emulator.min.js 里没有 dontExtractIfCore —— 这是 CDN 的 4.2.3 版，不是我们自建的 main 分支版',
@@ -105,9 +112,17 @@ for (const [needle, what, why] of [
   ['n<=3*s?o(0,n):(o(0,s),o((n>>1)-(s>>1),(n>>1)+(s>>1)),o(n-s,n))', '缓存键抽样哈希', '主线程会逐字节哈希 242MB 的 wasm（实测 1.3 秒卡顿），街机 blob ROM 每局也算一遍'],
   ['Could not load previous settings",t)}if(this.config.defaultOptions){', '首次开局带核心默认选项', '只在 retro_load_game 读取的核心选项（FBNeo 采样率 / 色深）对没保存过设置的玩家永不生效'],
   ['try{for(;;){__8bgArm();const{done:s,value:o}=await e.read()', '下载包体 20 秒无数据中止', '跨洲线路丢了流结尾时会永远停在「下载游戏核心 100%」'],
-  ['Z=new Uint8Array(i);let __8bgOffset=0;for(const __8bgChunk of n){Z.set(__8bgChunk,__8bgOffset)', '核心响应直接拼接 Uint8Array', '避免对已读出的核心响应再做 Blob → ArrayBuffer 回读'],
+  ['Z=__8bgTarget||new Uint8Array(i);if(!__8bgTarget){let __8bgOffset=0;for(const __8bgChunk of n){Z.set(__8bgChunk,__8bgOffset)', '核心响应直接拼接 Uint8Array', '避免 Blob 回读，并让已知长度的核心只分配一次最终缓冲区'],
+  ["const DB_NAME = '8bitgo-ejs-core-resume-v1'", '核心分片续传独立存储', '续传数据不可与 EmulatorJS 缓存库、游戏 SRAM 或即时存档共用数据库'],
+  ["headers.set('Range', `bytes=${start}-`)", '版本化核心启用 HTTP Range', '网络中断后只有服务器确认字节区间时才恢复，忽略 Range 时必须完整重下'],
+  ["!entry.etag.startsWith('W/')", '续传只接受强 ETag', '弱 ETag 不能证明字节逐一相同，不能拿它拼接旧分片'],
+  ['range.start === offset && range.end === state.total - 1', '续传响应核对真实区间', '代理错误、错偏移或短区间必须完整重试，不能把两代核心拼在一起'],
+  ['__8bgTarget.set(__8bgXhrBytes,i)', 'XHR 分段恢复与 Fetch 共用核心缓冲区', '已收字节不再复制成 chunk 数组后再复制到第二份完整核心'],
+  ['f.__8bgStalled=!0', '核心下载失速标记', 'Fetch 自己的 20 秒空闲中止必须与外部取消区分，才可安全改走完整 XHR 重取'],
+  ['f.signal.aborted&&!f.__8bgStalled', '失速后允许 XHR 恢复', 'Fetch 空闲计时刚中止核心下载时，不得把这次可恢复失速直接交给播放器换线路'],
+  ["const onVisibility = () => {\n        if (typeof document !== 'undefined' && document.visibilityState === 'hidden') clearIdle()", 'XHR 后台空闲计时暂停', '移动端页面后台冻结期间不应消耗下载时限，回来后要重新给足 20 秒'],
   ['response stream read failed', '核心响应阶段诊断', '如果浏览器仍在读 HTTP 流时失败，诊断包必须保留原始异常对象'],
-  ['改用 XHR arraybuffer 重新下载', '核心响应流读失败改走 XHR', '华为浏览器这类读不出 HTTP 流（NotReadableError）的环境没有别的读法，核心下载一失败整局就停'],
+  ['改用 XHR arraybuffer 重新下载', '核心响应流失败或失速改走 XHR', 'Fetch 流读取异常或 20 秒无进度时先换读取 API 重取，避免直接切线路重开'],
   ['XHR fallback incomplete response: HTTP ', 'XHR 兜底完整性校验', 'Android 16 大陆现场的 XHR 以 HTTP 200 返回 121KB 截断核心，必须在解压和写缓存前拒收'],
   ['return Promise.race([this.storageCache.put(n)', '引擎缓存读写有时限', 'IndexedDB 卡住时核心下完也交不出去，停在 100%'],
   ['n.onblocked=()=>e(),n.onsuccess=()=>{try{let i=n.result.transaction(', '引擎缓存读写有时限', '表不存在 / 库正在关闭时 transaction() 同步抛错，Promise 永远不 settle'],
