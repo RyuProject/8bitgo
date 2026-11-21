@@ -190,15 +190,17 @@ function romSizeArtifact(totalMb) {
  * - 其它（进度几秒没动、流式读盘、下完很久还在后面阶段）→ 维持原来按阶段的「停滞」归类。
  * 只看 slow_start：失败 / 超时的现场有自己的错误原文，不能被「还在动」盖掉。
  */
-function diagnoseSlowStartProgress(event, logs, hit) {
+function diagnoseSlowStartProgress(event, logs, hit, downloadCompleteAtMs = null) {
   if (event !== 'slow_start') return null
   const progress = readProgressSnapshot(logs)
   if (!progress || !Number.isFinite(progress.atS) || progress.atS <= 0 || progress.cached || progress.streaming) return null
   const { phase, atS, loadedMb, totalMb, romStartS, romDoneS, lastS } = progress
-  if (phase === 'rom' && lastS !== null && atS - lastS <= LIVE_PROGRESS_S && (!totalMb || loadedMb < totalMb)) {
+  const downloadCompleted = downloadCompleteAtMs !== null && downloadCompleteAtMs <= atS * 1000
+  if (!downloadCompleted && phase === 'rom' && lastS !== null && atS - lastS <= LIVE_PROGRESS_S && (!totalMb || loadedMb < totalMb)) {
     return { ...hit('rom_download', 'ROM 仍在下载，进度正常（未停滞，耗时取决于体积与带宽）', 'rom_download', 'high', 'progress.rom_downloading'), artifact: romSizeArtifact(totalMb) }
   }
-  if (phase !== 'rom' && romStartS !== null && romDoneS !== null && atS - romDoneS <= LIVE_PROGRESS_S && romDoneS - romStartS >= atS / 2) {
+  // 某些适配器的快照阶段仍留在 rom；漏斗已记录下载完成时，以时间线确认刚进入后续启动阶段。
+  if ((phase !== 'rom' || downloadCompleted) && romStartS !== null && romDoneS !== null && atS - romDoneS <= LIVE_PROGRESS_S && romDoneS - romStartS >= atS / 2) {
     return { ...hit('rom_download', 'ROM 下载占去大半启动时间，后续阶段刚开始（未停滞）', 'rom_download', 'medium', 'progress.rom_dominated'), artifact: romSizeArtifact(totalMb) }
   }
   return null
@@ -208,13 +210,22 @@ function diagnoseSlowStartProgress(event, logs, hit) {
  * 从一份已脱敏现场提取最可能的故障类别。只保存规则编号和固定标签，不把额外原文复制进诊断结论，
  * 避免归类字段绕开日志的脱敏边界；顺序按更具体、可行动的错误优先。
  */
-export function diagnoseStartupFailure({ event, platform, detail, elapsedMs, diagnostics }) {
+export function diagnoseStartupFailure({ event, runtime, platform, detail, elapsedMs, diagnostics }) {
   const logs = Array.isArray(diagnostics?.logs) ? diagnostics.logs : []
   const resources = Array.isArray(diagnostics?.resources) ? diagnostics.resources : []
-  const stageRow = [...logs].reverse().find((row) => row?.s === 'stage')
   const elapsedCandidate = elapsedMs ?? diagnostics?.attempt?.sinceStartMs
   const startedAtMs = elapsedCandidate !== undefined && elapsedCandidate !== null && Number.isFinite(Number(elapsedCandidate))
     ? Number(elapsedCandidate) : null
+  // 非 HTML5 的 download_complete 只会在 ROM / 启动所需资源已到手后上报；HTML5 的同名事件仅代表 iframe 文档 load。
+  // 慢启动现场里下载前的线路告警和旧 stage 不能盖过「已下载，正在启动」这个新事实。
+  const downloadCompleteAtMs = event === 'slow_start' && runtime && runtime !== 'html5' && Array.isArray(diagnostics?.timeline)
+    ? [...diagnostics.timeline].reverse().find((row) => row?.e === 'download_complete' &&
+      (startedAtMs === null || !Number.isFinite(Number(row?.t)) || Number(row.t) <= startedAtMs))?.t ?? null
+    : null
+  const relevantLogs = downloadCompleteAtMs === null
+    ? logs
+    : logs.filter((row) => Number(row?.t) >= downloadCompleteAtMs)
+  const stageRow = [...relevantLogs].reverse().find((row) => row?.s === 'stage')
   const stageAtMs = Number.isFinite(Number(stageRow?.t)) ? Number(stageRow.t) : null
   // 失败包会带整局日志；旧的「下载核心」阶段不能代表十几分钟后的崩溃仍在下载。
   // 缺少阶段时间戳的旧包仍按原行为兼容，只有能证明阶段过期时才丢弃它。
@@ -225,7 +236,7 @@ export function diagnoseStartupFailure({ event, platform, detail, elapsedMs, dia
     diagnostics.timeline.some((row) =>
       (row?.e === 'game_playable' || row?.e === 'first_frame') &&
       (startedAtMs === null || !Number.isFinite(Number(row?.t)) || Number(row.t) <= startedAtMs))
-  const text = [detail, diagnostics?.reason, ...logs.filter((row) => row?.s !== 'stage').map((row) => row?.m), stage]
+  const text = [detail, diagnostics?.reason, ...relevantLogs.filter((row) => row?.s !== 'stage').map((row) => row?.m), stage]
     .filter(Boolean).join('\n').slice(-12_000).toLowerCase()
   const combined = `${text}\n${resources.map((row) => row?.n).filter(Boolean).join('\n')}`
   const has = (pattern) => pattern.test(text)
@@ -298,9 +309,9 @@ export function diagnoseStartupFailure({ event, platform, detail, elapsedMs, dia
   if (has(/error loading emulatorjs runtime|runtimeerror|compileerror|ejs_runtime|instantiate(?:streaming)?|wasm.*(?:error|failed|unavailable|memory|instantiate)|(?:error|failed|unavailable).*wasm/)) {
     return withCore(hit('wasm_runtime', '模拟器核心初始化或运行时异常', hasPlayableMilestone ? 'runtime' : 'core_init', 'medium', 'error.wasm_runtime'))
   }
-  const slowProgress = diagnoseSlowStartProgress(event, logs, hit)
+  const slowProgress = diagnoseSlowStartProgress(event, relevantLogs, hit, downloadCompleteAtMs)
   if (slowProgress) return slowProgress
-  if (has(/加载进度：阶段 rom|loading progress: phase rom/)) {
+  if (has(/加载进度：阶段 rom|loading progress: phase rom/) && downloadCompleteAtMs === null) {
     return hit('rom_download', 'ROM 下载或流式读取停滞', 'rom_download', 'medium', 'stage.rom')
   }
   if (has(/加载进度：阶段 (?:engine|assets)|loading progress: phase (?:engine|assets)/)) {
@@ -320,6 +331,7 @@ export function diagnoseStartupFailure({ event, platform, detail, elapsedMs, dia
   const failedResource = [...resources].reverse().find((row) => {
     if (Number(row?.st) < 400 || !/^(?:fetch|xmlhttprequest|script|link|other)$/i.test(String(row?.i ?? ''))) return false
     if (!Number.isFinite(Number(row?.at)) || Number(row.at) < -30_000) return false
+    if (downloadCompleteAtMs !== null && Number(row.at) < downloadCompleteAtMs) return false
     return true
   })
   const failedHost = String(failedResource?.n ?? '').split('/')[0].toLowerCase()
@@ -342,6 +354,10 @@ export function diagnoseStartupFailure({ event, platform, detail, elapsedMs, dia
   if (diagnostics?.env?.online === false) return hit('offline', '浏览器报告设备离线', 'network', 'medium', 'environment.offline')
   if (has(/failed to fetch|networkerror|net::err_|connection reset|connection refused|dns_probe|request failed|网络请求失败|连接(?:超时|失败)/)) {
     return hit('network_failure', '网络请求失败', 'network', 'medium', 'error.network')
+  }
+
+  if (downloadCompleteAtMs !== null) {
+    return hit('timeout', 'ROM 已下载，仍在等待游戏可玩状态', 'startup', 'medium', 'event.timeout')
   }
 
   const lastStage = stage.toLowerCase()

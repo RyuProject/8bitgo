@@ -288,6 +288,64 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
     'ROM 5 秒就下完、之后 15 秒卡在资源阶段，仍按依赖资源停滞归类')
   assert.equal(xiyou('加载进度：阶段 assets，ROM 20.9MB/20.9MB（缓存），ROM 起于 0.3s，ROM 完成于 0.4s，最后进度 0.4s').signals[0],
     'stage.engine_assets', 'ROM 命中缓存时慢在别处')
+
+  const lateRomSnapshot = diagnoseStartupFailure({
+    event: 'slow_start', runtime: 'emulatorjs', platform: 'arcade', elapsedMs: 20_207,
+    detail: '等待 game_playable 已超过 20 秒（下载已完成，正在启动，下载完已 1.2 秒）',
+    diagnostics: {
+      timeline: [{ t: 0, e: 'start_click' }, { t: 19_033, e: 'download_complete' }, { t: 20_206, e: 'slow_start' }],
+      logs: [
+        { t: 6, s: 'stage', l: 'info', m: 'emulatorjs 运行时模块加载完成' },
+        { t: 632, s: 'download', l: 'warn', m: '首片期间的提前分片失败，后续会按常规重试： TypeError: Failed to fetch' },
+        { t: 20_207, s: 'snapshot', l: 'info', m: '加载进度：阶段 rom，ROM 38.5MB/38.5MB，ROM 起于 0.1s，ROM 完成于 19.0s，平均 17.0Mbps，最后进度 20.2s' },
+      ],
+      resources: [{ at: 632, st: 400, i: 'xmlhttprequest', n: 'u.clarity.ms/collect' }],
+    },
+  })
+  assert.deepEqual(
+    { code: lateRomSnapshot.code, signal: lateRomSnapshot.signals[0], artifact: lateRomSnapshot.artifact },
+    { code: 'rom_download', signal: 'progress.rom_dominated', artifact: 'rom-16-64mb' },
+    'ROM 已下载、占去大半启动时间时，残留的 rom 阶段与下载前线路告警不能说成停滞（#2761）',
+  )
+  const staleRomStage = diagnoseStartupFailure({
+    event: 'slow_start', runtime: 'emulatorjs', platform: 'arcade', elapsedMs: 20_207,
+    detail: '等待 game_playable 已超过 20 秒（下载已完成，正在启动）',
+    diagnostics: {
+      timeline: [{ t: 0, e: 'start_click' }, { t: 19_033, e: 'download_complete' }],
+      logs: [{ t: 6, s: 'stage', l: 'info', m: '加载进度：阶段 rom' }],
+    },
+  })
+  assert.deepEqual(
+    { code: staleRomStage.code, signal: staleRomStage.signals[0], phase: staleRomStage.phase },
+    { code: 'timeout', signal: 'event.timeout', phase: 'startup' },
+    '有下载完成漏斗事件时，没更新的 ROM 阶段只能归到后续启动等待',
+  )
+  const html5DocumentLoad = diagnoseStartupFailure({
+    event: 'slow_start', runtime: 'html5', platform: 'html5', elapsedMs: 20_000,
+    detail: '网页游戏页面已加载，但尚未确认可玩',
+    diagnostics: {
+      timeline: [{ t: 0, e: 'start_click' }, { t: 1_000, e: 'download_complete' }],
+      logs: [{ t: 1_001, s: 'stage', l: 'info', m: '加载进度：阶段 starting' }],
+    },
+  })
+  assert.deepEqual(
+    { code: html5DocumentLoad.code, signal: html5DocumentLoad.signals[0] },
+    { code: 'timeout', signal: 'stage.html5_starting' },
+    'HTML5 的 download_complete 只表示 iframe 文档已加载，仍需按网页游戏启动阶段判断',
+  )
+  const unknownRuntimeCompletion = diagnoseStartupFailure({
+    event: 'slow_start', platform: 'arcade', elapsedMs: 20_000,
+    detail: '等待游戏可玩状态超时',
+    diagnostics: {
+      timeline: [{ t: 0, e: 'start_click' }, { t: 19_000, e: 'download_complete' }],
+      logs: [{ t: 1_000, s: 'stage', l: 'info', m: '加载进度：阶段 rom' }],
+    },
+  })
+  assert.deepEqual(
+    { code: unknownRuntimeCompletion.code, signal: unknownRuntimeCompletion.signals[0] },
+    { code: 'rom_download', signal: 'stage.rom' },
+    '旧诊断包缺 runtime 时，不把含义不明的 download_complete 当作下载完成证据',
+  )
 }
 
 /* ---------- 前端采集 ---------- */

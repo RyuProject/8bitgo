@@ -4000,6 +4000,7 @@ EmulatorJS 引擎日志与加载阶段文字（`diagLog`）、下载器的重试
   artifact（`rom-64-256mb` 等），大包和小包慢网分开归组。流式读盘、命中缓存、进度几秒没动、下完很久仍卡在后面阶段，维持原「停滞」归类；
   只作用于 slow_start，失败 / 超时有自己的原文。改 `startupProgressTrace.ts` 的 snapshot 格式要同步这个解析器。
   这类「未停滞」组的行动方向是：大 DOS / Windows 包做 Sockdrive（§2.8.7），小包慢网查下载并发与线路，而不是找卡死点。
+- **下载完成事件会淘汰旧 ROM 阶段**（2026-11-21 诊断包 #2761）：ROM 在 19 秒完成，1.2 秒后上报 slow_start；快照仍把阶段写成 rom，且下载前的一次分片预取失败已由后续请求恢复。诊断不能因此说 ROM 停滞或网络失败；非 HTML5 的 `download_complete` 是资源已到手的阶段证据（HTML5 同名事件只代表 iframe 文档 load），之后优先判断「慢在 ROM」或「仍在启动」。回归：`npm run test:startup-diagnostics`。
 - 回归：`npm run test:startup-diagnostics`。
 - **聚集报警**（2026-11-15，`server/src/diag-alert.js`）：同一特征 60 分钟内来自 ≥10 个不同访问就给 `DIAG_ALERT_EMAIL` 发一封
   （复用 Resend），同一特征 6 小时内不重复，冷却记在 `site_settings` 的 `diag.alert.<特征>`。没配邮箱完全不启用。
