@@ -46,9 +46,13 @@
    CORS 只限制浏览器脚本读取，不能当作访问控制。迁移后可在 R2 控制台删掉 `8bitgo-webgame` 桶的 `html5.8bitgo.com`
    自定义域。差异：Range 请求不进边缘缓存（整份 ≤64MB 的 GET 才缓存）。
 2. **待办：`deploy/cname-optimizer/`** 现在改的是 Cloudflare 上 8bitgo.com 的 `rom` / `download` 记录，NS 迁走后要改成调新 DNS 的 API。
-3. **待办：`server/.env` 的 `CF_ZONE_ID`**（按标签清 HTML 缓存，§2.37）改成 8bitgo.top 的 zone ID，令牌要有该区域的 Cache Purge 权限。
+3. **代码已支持（2026-11-22），生产配置待改：`server/.env` 的 `CF_ZONE_ID`**（按标签清 HTML 缓存，§2.37）现在可写多个区域。迁移前就改成
+   `8b681704ebdc7249aec1b9d18669a78f,513afef951fc4989dfcff6f741d96fc9`，并给 `CF_PURGE_API_TOKEN` 加上 8bitgo.top 的 Cache Purge 权限，重启服务；
+   迁移当天不用再动。迁走后旧区域清缓存会报错，代码只告警、不判失败。
 4. **待办：EdgeOne** 新增加速域名 `8bitgo.com`，配置照搬 `cn.8bitgo.com`（回源 IP、回源 Host、`X-8bitgo-Edge` 回源头、WebSocket）。
-5. **待办：应用代码** 经 EdgeOne 访问 8bitgo.com 时，JS / CSS / API 应改回同源，不再跨域去 `cn.8bitgo.com/_cn`；`public/edge-route-v2.js` 不再跳到 cn。
+5. **已完成：应用代码**（2026-11-22）：经 EdgeOne 回源的页面 SSR 标 `<html data-8bitgo-site="cn">`；`public/edge-route-v5.js` 见到它不再跳去 cn 子域，
+   前端 `onCnSite()` 也认它，JS / CSS / API / 运行时都走同源。前提是 EdgeOne 给 8bitgo.com 回源时带同一个 `X-8bitgo-Edge` 回源头（第 4 条），
+   否则 nginx 不补 `X-8bitgo-Site`，大陆访客会被当成普通 Cloudflare 访客，还会被送去 cn 子域。
 6. **待办：老 `cn.8bitgo.com` 用户的本地存档迁移**，确认完再把 cn 301 到主域。
 
 ## 迁移当天的顺序

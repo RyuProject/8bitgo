@@ -38,7 +38,8 @@ export const STRICT_MODES = Object.freeze({
   'emulatorjs/loader.js': 'script', // 适配器用 <script> 注入，依赖 document.currentScript
   'edge-route-v2.js': 'script', // 旧 HTML 仍引用（边缘缓存里的页面），保留
   'edge-route-v3.js': 'script', // 已上线过，旧 HTML 还引用
-  'edge-route-v4.js': 'script', // index.html 的 <script src>
+  'edge-route-v4.js': 'script', // 已上线过，旧 HTML 还引用
+  'edge-route-v5.js': 'script', // index.html 的 <script src>
 })
 
 /** 不是我们发的、也不经补丁的大目录（gitignored 的第三方整站 / 运营方自备客户端） */

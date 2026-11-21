@@ -3750,7 +3750,11 @@ EdgeOne 只能用境外（香港）节点。主站、ROM、Pages 子域都不受
     否则下一次整页加载又被按地域送回同一条坏线路。
   - ⚠️ 已经在主站上玩过的访客会一直留在主站（本地存档跨不了域）；没做迁移。第一次访问要多加载一次页面（主站 HTML + 跳转后的大陆入口 HTML），
     之后站内跳转都在 cn.8bitgo.com 上；从搜索结果回到 8bitgo.com 时再走一遍判断。
-  - `edge-route-vN.js` 按版本号长期缓存（`cache.js`）：改逻辑必须新建 v5，v2 / v3 / v4 留给边缘缓存里的旧 HTML。
+  - **v5（2026-11-22，为 NS 迁出 Cloudflare 准备，见 `deploy/saas/README.md`）**：迁移后大陆访客经 DNS 分线路直接由 EdgeOne 打开 8bitgo.com，
+    地址栏是主域。SSR 在 nginx 校验过回源密钥（`X-8bitgo-Site: cn`）时给 `<html>` 加 `data-8bitgo-site="cn"`（`shared/cn-host.js` 的 `CN_SITE_ATTR`）：
+    边缘路由见到它就和在 cn 子域上一样留下；前端 `onCnSite()` 也认它，API / 运行时 / 密钥请求都走同源，不再跨域去 `cn.<裸域>/_cn`。
+    迁移前 Cloudflare 那边的 HTML 永远不带这个属性，行为与 v4 相同。⚠️ 属性名在 edge-route 脚本里是写死的字符串，改名要同步（`test:cover-cdn` 核对）。
+  - `edge-route-vN.js` 按版本号长期缓存（`cache.js`）：改逻辑必须新建 v6，v2～v4 留给边缘缓存里的旧 HTML。新文件要先 `git add`，`check-runtime-syntax` 只看已跟踪的文件。
     回归：`npm run test:edge-route && npm run test:cover-cdn`。
     我们又清不了 EdgeOne。换前缀等于一组新缓存键，源站对它固定发 `Access-Control-Allow-Origin: https://8bitgo.com`
     和 CORP。同理 CSS 里写死的 `url(/fonts/...)` 由 cn-edge.js 现场改成 `/_cn/fonts/`。
@@ -3941,7 +3945,7 @@ DNS 是**不走代理**的 CNAME，指向 BestCF 名单里的 `youxuan.cf.090227
   `CF_ZONE_ID` + `CF_PURGE_API_TOKEN` 时才发**（令牌只有该区域的 Cache Purge 权限）。
 
 所有页面带 `Cache-Tag: html`。`invalidateContent()`（后台所有写路径都调它）延迟 3 秒、合并后按标签
-清全部 HTML（`server/src/edge-purge.js`）；`deploy/redeploy.sh` 发布成功后也清一次，否则新前端
+清全部 HTML（`server/src/edge-purge.js`；`CF_ZONE_ID` 可写多个区域、逗号分隔，NS 迁出前后都写 8bitgo.com 与 SaaS 区域 8bitgo.top 两个，迁出后旧区域的永久报错不判失败）；`deploy/redeploy.sh` 发布成功后也清一次，否则新前端
 要等一天。⚠️ 新增「会改变公开页面内容」的写路径必须调 `invalidateContent()`，漏了就是旧页面挂一天。
 游玩次数这类高频写故意不清。`PAGE_EDGE_MAXAGE=0` 可整体退回 5 分钟。回归：
 `cd server && npm run test:edge-purge`。

@@ -1,4 +1,4 @@
-import { isCnHost } from '../../shared/cn-host.js'
+import { CN_SITE_ATTR, CN_SUBDOMAIN, isCnHost } from '../../shared/cn-host.js'
 import { CN_EDGE_PREFIX, COVER_CDN_META, cnEdgeOrigin } from '../../shared/cover-cdn-hint.js'
 
 /**
@@ -47,10 +47,27 @@ export function coverCdnHint(): CoverCdnHint {
   return clientCoverHint
 }
 
-/** 当前这次渲染是不是在大陆入口上 */
+/**
+ * 当前这次渲染是不是在大陆入口（EdgeOne）上。
+ *
+ * 两种情况都算：地址栏是 cn 子域；或者 SSR 在 <html> 上标了 data-8bitgo-site="cn" ——
+ * NS 迁出 Cloudflare 后，大陆访客经 DNS 分线路直接由 EdgeOne 打开 8bitgo.com（deploy/saas/README.md），
+ * 地址栏是主域，但整页已经在 EdgeOne 上：API、运行时都该同源，不能再跨域去 cn.<裸域>/_cn。
+ * 标记只来自 nginx 校验过 EdgeOne 回源密钥后补的头（shared/cn-host.js），Cloudflare 那边的 HTML 永远不带。
+ * 只在首次读取时查 DOM：<html> 不归 React 管，水合不会动它，之后的路由切换沿用同一份结论。
+ */
+let clientCnSiteMark: boolean | null = null
 export function onCnSite(): boolean {
   if (typeof window === 'undefined') return ssrCnSite
-  return SITE_HOST ? isCnHost(window.location.hostname, SITE_HOST) : false
+  if (SITE_HOST && isCnHost(window.location.hostname, SITE_HOST)) return true
+  if (clientCnSiteMark === null) {
+    try {
+      clientCnSiteMark = document.documentElement?.getAttribute(CN_SITE_ATTR) === CN_SUBDOMAIN
+    } catch {
+      clientCnSiteMark = false
+    }
+  }
+  return clientCnSiteMark
 }
 
 /**

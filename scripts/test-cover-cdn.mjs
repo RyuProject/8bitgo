@@ -97,14 +97,24 @@ const ssr = readFileSync(new URL('../server/src/ssr.js', import.meta.url), 'utf8
 assert.match(ssr, /coverCdnHint\(\{[\s\S]*?queryValue: req\.coverCdnQuery/)
 assert.match(ssr, /if \(coverHint === 'cn' && !cnSite && !req\.assetsFromOrigin\) page = retargetStaticToCnEdge\(/, '带 __assets=origin 的这次不改写到 EdgeOne')
 assert.match(ssr, /COVER_CDN_META/)
-// 边缘路由（public/edge-route-v4.js）在 <head> 里同步读 <html data-8bitgo-cdn>：meta 在 </head> 前，那时还没解析到
+// 边缘路由（public/edge-route-v5.js）在 <head> 里同步读 <html data-8bitgo-cdn>：meta 在 </head> 前，那时还没解析到
 assert.match(ssr, /if \(coverHint\) page = page\.replace\(\/<html\\b\/, `<html data-8bitgo-cdn="\$\{coverHint\}"`\)/)
-const edgeRoute = readFileSync(new URL('../public/edge-route-v4.js', import.meta.url), 'utf8')
+const edgeRoute = readFileSync(new URL('../public/edge-route-v5.js', import.meta.url), 'utf8')
 assert.match(edgeRoute, /var HINT_ATTR = 'data-8bitgo-cdn'/)
 const indexHtml = readFileSync(new URL('../index.html', import.meta.url), 'utf8')
-assert.match(indexHtml, /<script src="\/edge-route-v4\.js"><\/script>/)
-assert.ok(indexHtml.indexOf('<html') < indexHtml.indexOf('edge-route-v4.js'), '<html> 上的属性在路由脚本运行前就已解析')
+assert.match(indexHtml, /<script src="\/edge-route-v5\.js"><\/script>/)
+assert.ok(indexHtml.indexOf('<html') < indexHtml.indexOf('edge-route-v5.js'), '<html> 上的属性在路由脚本运行前就已解析')
 const cnHost = readFileSync(new URL('../src/services/cnHost.ts', import.meta.url), 'utf8')
 assert.match(cnHost, /meta\[name="\$\{COVER_CDN_META\}"\]/)
+
+// 经 EdgeOne 回源的页面（cn 子域，或 NS 迁出后经 EdgeOne 打开的主域）：SSR 标在 <html> 上，
+// 边缘路由据此留下，前端据此把 API / 运行时当同源（deploy/saas/README.md）
+const { CN_SITE_ATTR, CN_SUBDOMAIN } = await import('../shared/cn-host.js')
+assert.equal(CN_SITE_ATTR, 'data-8bitgo-site')
+assert.match(ssr, /if \(cnSite\) page = page\.replace\(\/<html\\b\/, `<html \$\{CN_SITE_ATTR\}="\$\{CN_SUBDOMAIN\}"`\)/)
+assert.match(edgeRoute, new RegExp(`var SITE_ATTR = '${CN_SITE_ATTR}'`), '边缘路由写死的属性名要和 shared/cn-host.js 一致')
+assert.match(edgeRoute, new RegExp(`getAttribute\\(SITE_ATTR\\) \\|\\| ''\\) === '${CN_SUBDOMAIN}'`))
+assert.match(cnHost, /getAttribute\(CN_SITE_ATTR\) === CN_SUBDOMAIN/, 'onCnSite 也认 SSR 的站点标记')
+assert.match(cnHost, /if \(onCnSite\(\) \|\| coverCdnHint\(\) !== 'cn'\) return ''/, '在 EdgeOne 上就不再跨域去 cn/_cn')
 
 console.log('✅ 封面 CDN：边缘决策、测速兜底、故障切换、缓存复用和 URL 体积约束通过')

@@ -45,6 +45,47 @@ await assert.rejects(
 )
 ok('429 退避重试，权限错误不重试')
 
+// ── 多个区域：逐个清；迁出后的旧区域永久失败不拖垮整体，临时失败才重试 ──
+process.env.CF_ZONE_ID = 'zoneCom, zoneTop'
+{
+  const urls = []
+  await mod.purgeHtmlNow({
+    fetchImpl: async (url) => {
+      urls.push(url)
+      return new Response(JSON.stringify({ success: true }), { status: 200 })
+    },
+  })
+  assert.deepEqual(urls.sort(), [
+    'https://api.cloudflare.com/client/v4/zones/zoneCom/purge_cache',
+    'https://api.cloudflare.com/client/v4/zones/zoneTop/purge_cache',
+  ])
+  const warn = console.warn
+  console.warn = () => {}
+  assert.equal(
+    await mod.purgeHtmlNow({
+      fetchImpl: async (url) =>
+        url.includes('zoneCom')
+          ? new Response('{"success":false}', { status: 403 })
+          : new Response(JSON.stringify({ success: true }), { status: 200 }),
+    }),
+    true,
+  )
+  console.warn = warn
+  await assert.rejects(
+    mod.purgeHtmlNow({
+      fetchImpl: async (url) =>
+        url.includes('zoneCom') ? new Response('{}', { status: 503 }) : new Response('{"success":true}', { status: 200 }),
+    }),
+    (e) => e.retryable === true,
+  )
+  await assert.rejects(
+    mod.purgeHtmlNow({ fetchImpl: async () => new Response('{"success":false}', { status: 403 }) }),
+    (e) => e.retryable === false,
+  )
+}
+process.env.CF_ZONE_ID = 'zone123'
+ok('多个区域逐个清，迁出后的旧区域报错不判失败')
+
 // ── 连续多次 schedulePurge 合并成一次 ──
 const realFetch = globalThis.fetch
 let calls = 0

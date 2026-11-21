@@ -1,5 +1,5 @@
 /**
- * 主站 / 亚洲 CDN 首次选路回归（public/edge-route-v4.js）。
+ * 主站 / 亚洲 CDN 首次选路回归（public/edge-route-v5.js）。
  *
  * 直接执行：node scripts/test-edge-route.mjs
  *
@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url'
 import { createContext, runInContext } from 'node:vm'
 
 const root = new URL('..', import.meta.url)
-const source = readFileSync(fileURLToPath(new URL('public/edge-route-v4.js', root)), 'utf8')
+const source = readFileSync(fileURLToPath(new URL('public/edge-route-v5.js', root)), 'utf8')
 const HOST_MAIN = '8bitgo.com'
 const HOST_ASIA = 'cn.8bitgo.com'
 
@@ -48,6 +48,7 @@ async function run({
   timings = { [HOST_MAIN]: 180, [HOST_ASIA]: 60 },
   nowMs = 1_000_000,
   hint = null,
+  site = null,
   databases,
   interact = false,
 } = {}) {
@@ -59,7 +60,7 @@ async function run({
   const clock = { value: nowMs }
   const document = {
     cookie,
-    documentElement: { getAttribute: (name) => (name === 'data-8bitgo-cdn' ? hint : null) },
+    documentElement: { getAttribute: (name) => (name === 'data-8bitgo-cdn' ? hint : name === 'data-8bitgo-site' ? site : null) },
   }
   const listeners = new Map()
   const location = {
@@ -258,6 +259,31 @@ await check('爬虫不测速、不跨域', async () => {
 
 await check('错误 target 不能变成外站跳转', async () => {
   const result = await run({ target: '//evil.example/steal' })
+  assert.equal(result.redirected, 'https://cn.8bitgo.com/games/test')
+})
+
+console.log('\n三点五、经 EdgeOne 打开的主域（v5，NS 迁出 Cloudflare 后）')
+
+await check('主域页面带 data-8bitgo-site=cn：已在亚洲边缘上，留下、不探测、不写 cookie', async () => {
+  const result = await run({ site: 'cn', hint: 'cn', timings: { [HOST_MAIN]: 1000, [HOST_ASIA]: 60 } })
+  assert.equal(result.redirected, null)
+  assert.equal(result.requests.length, 0)
+  assert.equal(result.document.cookie, '')
+})
+
+await check('带标记时旧 cookie 记着 cn 子域也不跳过去', async () => {
+  const result = await run({ site: 'cn', cookie: `8bitgo.edge=${HOST_ASIA}:${1_000_000 - 60_000}` })
+  assert.equal(result.redirected, null)
+  assert.equal(result.requests.length, 0)
+})
+
+await check('带标记时语言跳转照常在当前域完成', async () => {
+  const result = await run({ site: 'cn', path: '/games/x', target: '/zh-Hans/games/x' })
+  assert.equal(result.redirected, '/zh-Hans/games/x')
+})
+
+await check('标记只认 cn：其它值按原逻辑处理', async () => {
+  const result = await run({ site: 'main', hint: 'cn', timings: { [HOST_MAIN]: 1000, [HOST_ASIA]: 1600 } })
   assert.equal(result.redirected, 'https://cn.8bitgo.com/games/test')
 })
 

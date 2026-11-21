@@ -29,10 +29,16 @@ const DEBOUNCE_MS = Number(process.env.EDGE_PURGE_DELAY_MS || 3000)
 const RETRY_BASE_MS = 15_000
 const MAX_RETRIES = 5
 
+/*
+  CF_ZONE_ID 可以写多个区域（逗号或空白分隔），每次清缓存逐个清。
+  为什么：NS 迁出 Cloudflare 后（deploy/saas/README.md），海外访客的 8bitgo.com 改由 SaaS 区域 8bitgo.top
+  以 custom hostname 身份服务，页面缓存在那个区域里；清 8bitgo.com 区域清不到它们，后台改动会在海外挂一天。
+  迁移前后都写成「8bitgo.com 的 ID,8bitgo.top 的 ID」，切换当天不用改服务器配置。令牌要对每个区域都有 Cache Purge 权限。
+*/
 function config() {
-  const zone = String(process.env.CF_ZONE_ID || '').trim()
+  const zones = [...new Set(String(process.env.CF_ZONE_ID || '').split(/[\s,]+/).filter(Boolean))]
   const token = String(process.env.CF_PURGE_API_TOKEN || '').trim()
-  return zone && token ? { zone, token } : null
+  return zones.length && token ? { zones, token } : null
 }
 
 export function edgePurgeEnabled() {
@@ -54,13 +60,11 @@ export function edgePurgeStatus() {
   return { enabled: edgePurgeEnabled(), pending: Boolean(timer) || running, last: lastRun }
 }
 
-/** 调一次 Cloudflare 清缓存接口。成功 true；没配令牌 false；失败抛错，错误上带 retryable */
-async function purgeRequest(payload, fetchImpl) {
-  const cfg = config()
-  if (!cfg) return false
-  const res = await fetchImpl(`https://api.cloudflare.com/client/v4/zones/${cfg.zone}/purge_cache`, {
+/** 对一个区域调一次清缓存接口。成功 true；失败抛错，错误上带 retryable */
+async function purgeZone(zone, token, payload, fetchImpl) {
+  const res = await fetchImpl(`https://api.cloudflare.com/client/v4/zones/${zone}/purge_cache`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${cfg.token}`, 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
     signal: AbortSignal.timeout(10_000),
   })
@@ -71,9 +75,32 @@ async function purgeRequest(payload, fetchImpl) {
     /* 非 JSON 响应，按状态码判 */
   }
   if (res.ok && body?.success !== false) return true
-  const err = new Error(`Cloudflare 清缓存失败 HTTP ${res.status} ${JSON.stringify(body?.errors ?? '')}`)
+  const err = new Error(`Cloudflare 清缓存失败（区域 ${zone}）HTTP ${res.status} ${JSON.stringify(body?.errors ?? '')}`)
   err.retryable = res.status === 429 || res.status >= 500
   throw err
+}
+
+/**
+ * 对所有配置的区域各清一次。成功 true；没配令牌 false；失败抛错，错误上带 retryable。
+ *
+ * 判定：有一个区域临时失败（429 / 5xx）就整体按可重试抛出（重清已成功的区域无害）；
+ * 只有永久失败（权限、区域已停用）而别的区域清成功时算成功，只告警 ——
+ * NS 迁走后 8bitgo.com 区域会变成已迁出状态，清它会一直报错，不能因此每次都判失败、反复退避。
+ */
+async function purgeRequest(payload, fetchImpl) {
+  const cfg = config()
+  if (!cfg) return false
+  const results = await Promise.allSettled(cfg.zones.map((zone) => purgeZone(zone, cfg.token, payload, fetchImpl)))
+  const failures = results.filter((r) => r.status === 'rejected').map((r) => r.reason)
+  if (!failures.length) return true
+  const message = failures.map((e) => e?.message || String(e)).join('；')
+  if (failures.some((e) => e?.retryable !== false) || failures.length === results.length) {
+    const err = new Error(message)
+    err.retryable = failures.some((e) => e?.retryable !== false)
+    throw err
+  }
+  console.warn(`[edge-purge] 部分区域清缓存失败（其余已清）：${message}`)
+  return true
 }
 
 /** 发一次按标签清缓存。成功 true；失败抛错，错误上带 retryable */

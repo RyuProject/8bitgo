@@ -22,6 +22,14 @@ export const CN_SUBDOMAIN = 'cn'
 /** 源站 nginx 给 EdgeOne 回源请求补的站点标记头（小写，Node 的 req.headers 就是小写） */
 export const CN_SITE_HEADER = 'x-8bitgo-site'
 
+/**
+ * SSR 写在 <html> 上的站点标记：这页经 EdgeOne 回源，值为 CN_SUBDOMAIN。
+ * NS 迁出 Cloudflare 后（deploy/saas/README.md），大陆访客经 EdgeOne 直接打开 8bitgo.com，
+ * 浏览器地址栏的 hostname 不再是 cn 子域，只能靠这个标记知道自己在大陆入口上。
+ * 边缘路由脚本（public/edge-route-v5.js）也读它，那里写死了同一个字符串。
+ */
+export const CN_SITE_ATTR = 'data-8bitgo-site'
+
 /** 这个 hostname 是不是大陆入口 */
 export function isCnHost(hostname, siteHostname) {
   const site = String(siteHostname || '').trim().toLowerCase()
