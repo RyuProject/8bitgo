@@ -12,8 +12,20 @@ import { validateAdminImportPayload } from '../admin-import.js'
 import { getVolcTranslationUsage } from '../translation-usage.js'
 import { isTranslateConfigured } from '../translate.js'
 import { collectAdminHealth } from '../admin-health.js'
+import { issueRomUploadCredential, romUploadSigningSecret } from '../rom-upload-credential.js'
 
 export const adminRouter = Router()
+
+/**
+ * 后台上传用的短期 Worker 凭据（见 rom-upload-credential.js）。权限点与「ROM 存储」页同一个 site:manage；
+ * 没配签名密钥时回 503 + code，页面据此退回手填口令，而不是让上传在 Worker 那边才 401。
+ */
+adminRouter.get('/rom-upload-credential', requireAbility('site:manage'), (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store')
+  const secret = romUploadSigningSecret()
+  if (!secret) return res.status(503).json({ error: '服务器未配置 ROM_UPLOAD_SIGNING_SECRET，请手填 Worker 口令', code: 'not_configured' })
+  res.json(issueRomUploadCredential({ secret }))
+})
 
 /**
  * 后台登录门。只确认「这张凭证能不能进后台」，不为了验证身份顺手查询或泄露业务数据。

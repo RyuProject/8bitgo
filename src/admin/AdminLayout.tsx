@@ -4,6 +4,7 @@ import { cx } from '@/lib/format'
 import { useDocumentTitle } from '@/lib/useDocumentTitle'
 import { ApiError, api, apiEnabled, getAdminApiToken, getToken, setAdminApiToken } from '@/services/api'
 import { fetchAdminGames } from '@/services/store'
+import { ensureRomCredential } from '@/services/romUploadCredential'
 import { ABILITIES, ROLE_LABELS, type Ability, type UserRole } from '../../shared/roles.js'
 import { AdminHealthProvider, hasHealthError, useAdminHealth } from './adminHealth'
 
@@ -186,6 +187,14 @@ function AdminShell({ onLock, me, healthEnabled }: { onLock: () => void; me: Ver
    * 真正的门在服务端，这里少给只是把人挡在自己的后台外面。
    */
   const abilities: Ability[] = me?.abilities ?? [...ABILITIES]
+  const canManageSite = abilities.includes('site:manage')
+  // 后台上传 / 清理 / 游戏表单都要 Worker 口令：管理员登录后自动领一张短期凭据，并在过期前续上
+  useEffect(() => {
+    if (!canManageSite) return
+    void ensureRomCredential()
+    const timer = window.setInterval(() => void ensureRomCredential(), 30 * 60_000)
+    return () => window.clearInterval(timer)
+  }, [canManageSite])
   const tabs = TABS.filter((t) => abilities.includes(t.need) && (!t.adminOnly || me?.role === 'admin'))
   const routeTab = TABS.find((t) => (
     t.end ? location.pathname === t.to : location.pathname === t.to || location.pathname.startsWith(`${t.to}/`)

@@ -8,6 +8,7 @@ import {
   deleteRom,
   deleteRomObjectsExactly,
   dirOfKey,
+  getRomAutoCredential,
   getRomConfig,
   getRomPrefix,
   isBundleKey,
@@ -24,6 +25,7 @@ import {
   unbindKeyPatch,
   type RomObject,
 } from '@/services/roms'
+import { ensureRomCredential, romCredentialUnavailable } from '@/services/romUploadCredential'
 import { abortOrphanUpload, listOrphanUploads, listPendingUploads, type OrphanUpload } from '@/services/romMultipart'
 import { pickMainSwf } from '@/lib/swfBundle'
 import { platformMap } from '@/data/platforms'
@@ -190,6 +192,8 @@ export function AdminRoms() {
   const toastTimer = useRef<number | null>(null)
 
   useEffect(() => subscribeRomConfig(() => setCfg(getRomConfig())), [])
+  useEffect(() => { void ensureRomCredential() }, [])
+  const autoCredential = getRomAutoCredential()
 
   const loadGames = useCallback(async (maxPages: number) => {
     if (!apiEnabled()) return
@@ -645,8 +649,15 @@ export function AdminRoms() {
           <Field label="key 前缀（桶内目录）" hint="对应 roms/gba、roms/nes…；上传与约定路径探测都会带上它">
             <input className={cx(inputClass, 'font-mono')} value={cfg.prefix} onChange={(e) => setCfg({ ...cfg, prefix: e.target.value })} placeholder="roms" />
           </Field>
-          <Field label="Worker 口令（ADMIN_TOKEN）" hint="存于 sessionStorage，关闭标签页后需重填">
-            <input type="password" className={inputClass} value={cfg.token} onChange={(e) => setCfg({ ...cfg, token: e.target.value })} placeholder="wrangler secret put ADMIN_TOKEN" />
+          <Field
+            label="Worker 口令（可留空）"
+            hint={autoCredential && !cfg.manualToken
+              ? `已自动获取短期凭据，有效至 ${new Date(autoCredential.expiresAt).toLocaleString()}；留空即可`
+              : romCredentialUnavailable()
+                ? '服务器没配 ROM_UPLOAD_SIGNING_SECRET，需要手填 Worker 的 ADMIN_TOKEN 真实值（存于 sessionStorage）'
+                : '留空时自动向服务器申请短期凭据；手填的 ADMIN_TOKEN 真实值优先'}
+          >
+            <input type="password" className={inputClass} value={cfg.manualToken} onChange={(e) => setCfg({ ...cfg, manualToken: e.target.value })} placeholder="留空 = 自动" autoComplete="off" />
           </Field>
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-2">

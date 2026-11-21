@@ -36,6 +36,10 @@ export const ROM_BASE_KEY = '8bitgo.rom.base'
 export const ROM_API_KEY = '8bitgo.rom.api'
 export const ROM_PREFIX_KEY = '8bitgo.rom.prefix'
 export const ROM_TOKEN_KEY = '8bitgo.rom.token'
+/** 服务端签发的短期上传凭据（romUploadCredential.ts 写入）：{ token, expiresAt } */
+export const ROM_CREDENTIAL_KEY = '8bitgo.rom.credential'
+/** 2026-11-22 管理员把字段提示里的占位词原样填进口令框，上传一律 401；这个词永远不是真口令 */
+const PLACEHOLDER_TOKEN = 'ADMIN_TOKEN'
 
 const listeners = new Set<() => void>()
 
@@ -199,23 +203,51 @@ export function getRomPrefix(): string {
   return value.trim().replace(/^\/+|\/+$/g, '')
 }
 
-export function getRomToken(): string {
+/** 管理员手填的 Worker 口令（只有它进设置表单；自动凭据不会被当成手填值存回去） */
+export function getRomManualToken(): string {
   try {
-    return sessionStorage.getItem(ROM_TOKEN_KEY) ?? ''
+    const value = (sessionStorage.getItem(ROM_TOKEN_KEY) ?? '').trim()
+    return value === PLACEHOLDER_TOKEN ? '' : value
   } catch {
     return ''
   }
+}
+
+/** 还有效的自动凭据；离过期不到一分钟就当没有，免得请求发到一半过期 */
+export function getRomAutoCredential(): { token: string; expiresAt: number } | null {
+  try {
+    const raw = sessionStorage.getItem(ROM_CREDENTIAL_KEY)
+    if (!raw) return null
+    const data = JSON.parse(raw) as { token?: unknown; expiresAt?: unknown }
+    if (typeof data.token !== 'string' || !data.token || typeof data.expiresAt !== 'number') return null
+    return data.expiresAt - Date.now() > 60_000 ? { token: data.token, expiresAt: data.expiresAt } : null
+  } catch {
+    return null
+  }
+}
+
+/** 实际发给 Worker 的口令：手填的优先（排障 / 服务端没配签名密钥时用），否则用自动凭据 */
+export function getRomToken(): string {
+  return getRomManualToken() || getRomAutoCredential()?.token || ''
+}
+
+/** 自动凭据写入 / 清除后通知订阅者（上传按钮的可用状态跟着变） */
+export function notifyRomConfigChanged() {
+  for (const l of listeners) l()
 }
 
 export interface RomConfig {
   base: string
   api: string
   prefix: string
+  /** 实际生效的口令（手填或自动凭据），判断「能不能上传」用 */
   token: string
+  /** 手填的那份，只给设置表单显示和保存 */
+  manualToken: string
 }
 
 export function getRomConfig(): RomConfig {
-  return { base: getRomBase(), api: getRomApi(), prefix: getRomPrefix(), token: getRomToken() }
+  return { base: getRomBase(), api: getRomApi(), prefix: getRomPrefix(), token: getRomToken(), manualToken: getRomManualToken() }
 }
 
 export function saveRomConfig(cfg: Partial<RomConfig>) {
@@ -244,9 +276,12 @@ export function saveRomConfig(cfg: Partial<RomConfig>) {
     const prefix = cfg.prefix.replace(/^\/+|\/+$/g, '')
     writeLocal(ROM_PREFIX_KEY, prefix === BUILTIN.prefix() ? '' : prefix)
   }
-  if (cfg.token !== undefined) {
+  // 只存手填口令。去掉首尾空白；占位词「ADMIN_TOKEN」当作没填，让自动凭据接手
+  const manual = cfg.manualToken ?? cfg.token
+  if (manual !== undefined) {
+    const value = manual.trim()
     try {
-      if (cfg.token) sessionStorage.setItem(ROM_TOKEN_KEY, cfg.token)
+      if (value && value !== PLACEHOLDER_TOKEN) sessionStorage.setItem(ROM_TOKEN_KEY, value)
       else sessionStorage.removeItem(ROM_TOKEN_KEY)
     } catch {
       /* ignore */

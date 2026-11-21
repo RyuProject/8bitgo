@@ -236,6 +236,8 @@ export const ENV_MANIFEST = [
   { name: 'PSP_CONVERT_TIMEOUT_MINUTES', group: 'ROM / J2ME / IPX', kind: 'config', file: 'psp-conversion.js', note: 'createdvd / createcd / verify 共用看门狗，默认 180 分钟' },
   { name: 'PSP_CONVERT_TMP_DIR', group: 'ROM / J2ME / IPX', kind: 'config', file: 'psp-conversion.js', note: 'PSP / PS1 共用临时盘；PS1 需约 2.25 × ISO 大小 + 256MB 空间' },
   { name: 'PSP_CONVERT_WORKER_TOKEN', group: 'ROM / J2ME / IPX', kind: 'secret', file: 'psp-conversion.js', note: 'R2 管理 Worker 口令；留空复用 ADMIN_TOKEN' },
+  { name: 'ROUTE_REPORT_HOSTS', group: 'ROM / J2ME / IPX', kind: 'list', file: 'route-report.js', note: '接收浏览器线路回报的域名（逗号分隔）；留空用内置的 rom / download 两个优选域名' },
+  { name: 'ROM_UPLOAD_SIGNING_SECRET', group: 'ROM / J2ME / IPX', kind: 'secret', file: 'rom-upload-credential.js', note: '后台上传短期凭据的签名密钥；须与 Worker 同名 secret 一致，留空则后台手填口令' },
   { name: 'PSP_CONVERT_WORKER_URL', group: 'ROM / J2ME / IPX', kind: 'config', file: 'psp-conversion.js', note: '必须指向支持 multipart 写入的 ROM Worker，不能填只读 assets 域名' },
   { name: 'SOCKDRIVE_CLI', group: 'ROM / J2ME / IPX', kind: 'config', file: 'sockdrive-conversion.js', note: '官方 Sockdrive CLI 路径，默认 /opt/sockdrive/cli' },
   { name: 'SOCKDRIVE_CONCURRENCY', group: 'ROM / J2ME / IPX', kind: 'config', file: 'sockdrive-conversion.js', note: '后台并发数固定最多 1，避免镜像制作拖垮 4G 生产机' },

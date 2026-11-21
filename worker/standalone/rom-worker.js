@@ -148,6 +148,54 @@ function authorized(request, env) {
   for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i)
   return diff === 0
 }
+
+/*
+ * 后台上传的短期凭据（server/src/rom-upload-credential.js 签发）：`8bg1.<过期秒>.<随机>.<HMAC>`。
+ * 管理员登录后台后由服务端自动发，长期主口令 ADMIN_TOKEN 不再进浏览器。签名密钥是 Worker 的
+ * ROM_UPLOAD_SIGNING_SECRET，与服务端同名变量一致；没配就只认 ADMIN_TOKEN（老行为）。
+ * 过期时间离现在超过 13 小时一律拒（服务端只发 12 小时的），防止密钥泄露期间被签出长寿凭据。
+ */
+const UPLOAD_CREDENTIAL_MAX_AHEAD_MS = 13 * 3600 * 1000
+const signingKeys = new Map()
+function base64UrlBytes(value) {
+  if (!/^[A-Za-z0-9_-]+$/.test(value)) return null
+  const b64 = value.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((value.length + 3) % 4)
+  try {
+    const raw = atob(b64)
+    const out = new Uint8Array(raw.length)
+    for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i)
+    return out
+  } catch { return null }
+}
+async function signingKey(secret) {
+  let key = signingKeys.get(secret)
+  if (!key) {
+    key = crypto.subtle.importKey('raw', encoder.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['verify'])
+    signingKeys.clear()
+    signingKeys.set(secret, key)
+  }
+  return key
+}
+async function uploadCredentialValid(token, env, now = Date.now()) {
+  const secret = typeof env.ROM_UPLOAD_SIGNING_SECRET === 'string' ? env.ROM_UPLOAD_SIGNING_SECRET.trim() : ''
+  if (secret.length < 32 || typeof token !== 'string') return false
+  const parts = token.split('.')
+  if (parts.length !== 4 || parts[0] !== '8bg1' || !/^\d{9,11}$/.test(parts[1])) return false
+  const expMs = Number(parts[1]) * 1000
+  if (!(expMs > now) || expMs - now > UPLOAD_CREDENTIAL_MAX_AHEAD_MS) return false
+  const sig = base64UrlBytes(parts[3])
+  if (!sig || sig.length !== 32) return false
+  try {
+    // subtle.verify 内部做定长比较，不会因签名前缀相同而提前返回
+    return await crypto.subtle.verify('HMAC', await signingKey(secret), sig, encoder.encode(parts.slice(0, 3).join('.')))
+  } catch { return false }
+}
+/** 管理操作的鉴权：ADMIN_TOKEN（服务端转换任务 / 手填口令）或有效的短期上传凭据 */
+async function authorizedAsync(request, env) {
+  if (authorized(request, env)) return true
+  const match = /^Bearer\s+(.+)$/i.exec(request.headers.get('Authorization') || '')
+  return match ? uploadCredentialValid(match[1].trim(), env) : false
+}
 function encodeCursor(data) {
   const bytes = encoder.encode(JSON.stringify(data))
   let raw = ''
@@ -1305,7 +1353,7 @@ async function handle(request, env, url, cors) {
    */
   const privateStagingRead = ['GET', 'HEAD'].includes(request.method) && /^(?:psp|sockdrive)-staging\//.test(path)
   const admin = privateStagingRead || ['list', 'bulk', 'multipart'].includes(path) || ['PUT', 'POST', 'DELETE'].includes(request.method)
-  if (admin && !authorized(request, env)) return json({ error: 'unauthorized' }, cors, 401)
+  if (admin && !(await authorizedAsync(request, env))) return json({ error: 'unauthorized' }, cors, 401)
   if (!env.ROMS) throw new HttpError(503, 'ROMS 绑定缺失', 'missing_binding')
   if (path === 'list') {
     if (request.method !== 'GET') return methodNotAllowed(cors, 'GET, OPTIONS')

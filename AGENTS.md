@@ -1345,6 +1345,16 @@ download.8bitgo.com（0.17 秒）；首段测速把握手和约 1 秒首字节�
 2. binding **没有 `listParts`**：complete 时必须把每片的 `{partNumber, etag}` 全报回去，所以这份账只能记在前端 —— **换浏览器就续不上**
 3. binding 也**没有 `listMultipartUploads`**：没合并的分片在 R2 默认 7 天自动中止之前仍占用存储；自定义生命周期可能改变期限。Worker 在 `_uploads/` 下写标记对象，后台「ROM 存储」页靠它列出并清理残留；R2 自动中止后标记对象仍需手动清理
 
+⚠️ **后台的 Worker 口令自动填（2026-11-22）**：管理员把提示里的占位词「ADMIN_TOKEN」原样填进口令框，所有上传 401。
+现在登录后台（`site:manage`）时 `AdminLayout` 调 `ensureRomCredential()`（`src/services/romUploadCredential.ts`），
+向 `GET /api/admin/rom-upload-credential` 领一张 12 小时的 HMAC 凭据（`8bg1.<过期秒>.<随机>.<签名>`，
+`server/src/rom-upload-credential.js` 签发），存 sessionStorage `8bitgo.rom.credential`，剩不到 3 小时续签。
+Worker 的 `authorizedAsync` 先比 ADMIN_TOKEN，再用同一把 `ROM_UPLOAD_SIGNING_SECRET` 校验凭据（过期时间超过 13 小时一律拒绝）。
+这把密钥**两边必须一致**：Worker 用 `wrangler secret put ROM_UPLOAD_SIGNING_SECRET`，源站写 `server/.env`；任一边没配，
+后台退回手填（服务端回 503，页面提示）。手填口令仍优先，占位词「ADMIN_TOKEN」会被当成没填。
+服务端自己的转换任务（PSP / Sockdrive）仍用 `PSP_CONVERT_WORKER_TOKEN` / ADMIN_TOKEN，**那里必须是真实值**——
+2026-11-22 生产 `.env` 里它写的也是字面量 `ADMIN_TOKEN`，转换任务读 staging 全 401。回归：`worker/tests/upload-credential.test.mjs`。
+
 改 `worker/` 下任何源码后跑 `npm run test:worker`（内存版 R2 mock，不联网；分片只是其中一部分）。
 改了 `worker/src/` **还要**跑 `npm --prefix worker run build:standalone` 重建单文件包 ——
 `worker/tests/standalone.test.mjs` 会逐字节比对模块化实现和那份 bundle，忘了重建它就会红。
