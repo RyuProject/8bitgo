@@ -25,6 +25,7 @@ const GAME_SDK_SOURCE = '8bitgo-game-sdk'
 const GAME_SDK_VERSION = 1
 const GAME_SDK_TIMEOUT_MS = 15_000
 const PVZ_SHELL_VERSION = '20261121-cloud-sync-compare1'
+const FIRST_PARTY_SITE_HOSTS = new Set(['8bitgo.com', 'www.8bitgo.com', 'cn.8bitgo.com', 'tv.8bitgo.com'])
 const LEGACY_PAGES_ENTRIES = [
   ['/web/PvZ', 'https://pvz.8bitgo.com'],
   ['/web/diablo', 'https://diablo.8bitgo.com'],
@@ -72,7 +73,11 @@ export function versionHtml5Entry(value: string, base = location.href): string {
     const baseUrl = new URL(base)
     const url = new URL(value, baseUrl)
     let migrated = false
-    if (url.origin === baseUrl.origin) {
+    // 数据库旧入口有时是 https://8bitgo.com/... 的绝对地址；大陆 / TV 入口以 cn / tv 子域打开，
+    // 只比较 origin 会漏掉这批第一方旧 URL，继续把未注入运行桥的主站副本塞进跨源播放器 iframe。
+    const firstParty = url.origin === baseUrl.origin ||
+      (url.protocol === 'https:' && FIRST_PARTY_SITE_HOSTS.has(url.hostname.toLowerCase()))
+    if (firstParty) {
       const legacy = LEGACY_PAGES_ENTRIES.find(([path]) => url.pathname === path || url.pathname.startsWith(`${path}/`))
       if (legacy) {
         const [path, origin] = legacy

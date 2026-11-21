@@ -3980,6 +3980,7 @@ EmulatorJS 引擎日志与加载阶段文字（`diagLog`）、下载器的重试
   - EdgeOne 上的 `js-dos.js` / `ruffle.js` 25 秒取不到就换同源，迟到的脚本有闩挡住，不会建两个播放器。
   - html5 适配器先 append 后设 src，iframe 会同步触发一次 about:blank 的 load：以前被当成「已加载」，诊断里出现 5ms 的 iframe_loaded。现在忽略这次 load。
   - 45d661f 合并时丢了 html5 运行时桥的 `progress` 分支，PvZ 每秒一条 progress 被兜底分支当成失败，**每局约 10 秒报错**；现在 `dispatchHtml5RuntimeSignal` 逐类型显式匹配，只有 `failed` 报错。
+  - **绝对旧入口也要按本站域名迁移**（2026-11-21，生产 PvZ 冒烟）：大陆 `cn.8bitgo.com` 进入时，数据库里的 `https://8bitgo.com/web/PvZ/en?shell=20260923-save2` 与当前 origin 不同，旧逻辑漏过迁移，iframe 继续加载没有生命周期桥的主站副本，240 秒没首帧。`versionHtml5Entry()` 对精确的 8BitGo HTTPS 域名统一迁到 Pages，并更新 shell 代次；非本站域名和跨源 HTTP 仍不迁。回归：`npm run test:html5-pages-bridge`。
   - 核心下载「正文在流、后来停了」（20 秒无新数据 / XHR 兜底停滞）不再标记 EdgeOne 线路坏，重试留在 EdgeOne 续传；HTTP 错误、截断、头超时照旧换线（`ejsEngineErrors.ts`）。
     引擎本地化的「启动游戏失败」等先归一成英文再判 scope。
   - 已出画面后的核心崩溃，上报原因前缀「运行中崩溃（已出画面）」，不再和启动失败归成一组。

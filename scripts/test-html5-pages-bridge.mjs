@@ -45,6 +45,27 @@ const migratedPvz = versionHtml5Entry('/web/PvZ/cn/', main)
 assert.equal(html5SaveBridgeOrigin(migratedPvz, main), 'https://pvz.8bitgo.com')
 assert.equal(versionHtml5Entry('/web/PvZ2/', main), '/web/PvZ2/')
 
+// 大陆 / TV 入口可能收到数据库保存的主站绝对旧地址；也要迁到带生命周期桥的 Pages 入口。
+const absoluteLegacyFromCn = new URL(versionHtml5Entry(
+  'https://8bitgo.com/web/PvZ/en?shell=20260923-save2&lang=en#resume',
+  'https://cn.8bitgo.com/games/plants-vs-zombies-web',
+))
+assert.equal(absoluteLegacyFromCn.origin, 'https://pvz.8bitgo.com')
+assert.equal(absoluteLegacyFromCn.pathname, '/web/PvZ/en')
+assert.equal(absoluteLegacyFromCn.searchParams.get('shell'), shellVersion, '旧绝对入口也要更新到当前 Pages 外壳')
+assert.equal(absoluteLegacyFromCn.searchParams.get('lang'), 'en')
+assert.equal(absoluteLegacyFromCn.hash, '#resume')
+assert.equal(
+  versionHtml5Entry('https://not-8bitgo.com/web/PvZ/en/', 'https://cn.8bitgo.com/games/pvz'),
+  'https://not-8bitgo.com/web/PvZ/en/',
+  '只迁移精确的 8BitGo 第一方域名',
+)
+assert.equal(
+  versionHtml5Entry('http://8bitgo.com/web/PvZ/en/', 'https://cn.8bitgo.com/games/pvz'),
+  'http://8bitgo.com/web/PvZ/en/',
+  '跨源旧入口必须是 HTTPS',
+)
+
 // 拆播放器时先收最后一份自动快照：存档桥监听不能先于 iframe 置空被摘掉，等待有上限。
 {
   const adapter = readFileSync(new URL('../src/emulator/adapters/html5.ts', import.meta.url), 'utf8')
