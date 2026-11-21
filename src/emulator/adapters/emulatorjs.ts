@@ -150,6 +150,7 @@ import {
  * 玩家看到的就是「Error loading EmulatorJS runtime」。本地有核心，这条路不会走。
  */
 export { EJS_PATH } from '../paths'
+import { coreDownloadFailureCause, normalizeEngineText } from '../ejsEngineErrors'
 import { EJS_PATH, EJS_RUNTIME_GENERATION, ejsBase, ejsCoreAsset, ejsUsingEdge, markEjsEdgeFailed, ejsRuntimeAsset, EJS_EXTRACT_7Z_FILE, emulatorJsCoreDataFile, emulatorJsCoreFileFor, emulatorJsCoreForGame, ejsCoreNeedsWebgl2, emulatorJsRuntimePaths, isDiscPlatform, isLargeDirectEjsRom, isSelfDownloadPlatform } from '../paths'
 import { applyTuning, sizeOfTrack, tuningFor, usableVideoSize } from '../videoTuning'
 import {
@@ -1070,7 +1071,8 @@ function romFailureScope(error: unknown): LoadErrorScope {
 
 /** 引擎致命行的性质：内容相关的保持默认（可换 ROM），其余按运行时故障（不换 ROM）。 */
 export function engineErrorScope(line: string): LoadErrorScope {
-  const low = line.toLowerCase()
+  // 引擎界面是本地化的（「启动游戏失败」）：先换回英文原句，中英文界面拿到同一种恢复策略（ejsEngineErrors.ts）
+  const low = normalizeEngineText(line).toLowerCase()
   return CONTENT_FATAL_PHRASES.some((phrase) => low.includes(phrase)) ? 'content' : 'runtime'
 }
 
@@ -3355,6 +3357,20 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (preparedRomBlob && !memoryRomOf(preparedRomBlob) && nativeBlobReadError) {
       markRomBlobStorageBroken('引擎读 ROM ')
       return failLoad(fmt(rt.ejsEngineError, { msg: line }), 'runtime')
+    }
+    /*
+      核心下载失败（2026-11-19～20 大陆《拳皇 97 / 2002》《King of Gladiator Plus》fbneo-legacy-wasm.data，
+      诊断包 #1599 / #1602 / #1604 / #1714 / #1799，一局 2～6 分钟）：原文只有「Error downloading core (x)」，
+      摘要里看不出是 HTTP 错误还是慢网，所以把下载器给的原因附上。包体已经在流、之后失速的（bodyStalled）
+      说明 EdgeOne 线路是通的，只是慢 / 断续：不标线路坏，自动重试留在原线路，由续传助手接着已存的整 MiB 分片下；
+      以前一律 markEjsEdgeFailed，大陆访客的重试退回 Cloudflare 同源（实测 8MB 核心只有几 KB/s），第二轮必然再失败。
+      HTTP 错误 / 截断响应 / 连响应头都没等到的，仍按线路故障退回同源。
+    */
+    if (/error downloading core\s*\(/i.test(line)) {
+      const cause = coreDownloadFailureCause(errorTap?.lines ?? [])
+      logEngine(`[download] 核心下载失败；原因：${cause.detail || '未知'}；${cause.bodyStalled ? '包体失速，保留当前线路重试' : cause.httpError ? 'HTTP / 响应异常，退回同源' : '未拿到包体，退回同源'}；线路：${usedEjsEdge ? 'EdgeOne' : '同源'}`)
+      const msg = cause.detail ? `${line}: ${cause.detail}` : line
+      return failLoad(fmt(rt.ejsEngineError, { msg }), 'runtime', { keepEdge: cause.bodyStalled })
     }
     failLoad(fmt(rt.ejsEngineError, { msg: line }), engineErrorScope(line))
   }

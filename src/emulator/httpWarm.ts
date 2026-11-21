@@ -20,6 +20,25 @@ const warmed = new Map<string, Promise<boolean>>()
 const WARM_STALL_MS = 30_000
 
 /**
+ * 预热下载每收到一块字节就通知订阅者（只给 URL，不给内容）。
+ *
+ * 用途是启动看门狗：Ruffle 的核心（约 3.4MB br）由预热和 load() 共用同一条 HTTP 缓存下载，
+ * 慢线路上要一两分钟，期间外层看不到任何进度（2026-11-14/18/20 《黄金矿工》《森林冰火人》
+ * 《猫里奥》诊断包都卡在这一段被记成 timeout）。订阅者自己按 URL 过滤、自己节流。
+ */
+type WarmActivityListener = (url: string) => void
+const activityListeners = new Set<WarmActivityListener>()
+export function subscribeHttpWarmActivity(listener: WarmActivityListener): () => void {
+  activityListeners.add(listener)
+  return () => { activityListeners.delete(listener) }
+}
+function notifyWarmActivity(url: string): void {
+  for (const listener of activityListeners) {
+    try { listener(url) } catch { /* 订阅者出错不能打断预热 */ }
+  }
+}
+
+/**
  * 预热一个同源（或带 CORS 的跨源）资源。
  *
  * `cache: 'force-cache'` 的语义是「有缓存就直接用，没有就正常请求」——
@@ -67,7 +86,10 @@ async function drainIntoHttpCache(url: string): Promise<void> {
     for (;;) {
       const { done, value } = await reader.read()
       if (done) return
-      if (value?.byteLength) touch()
+      if (value?.byteLength) {
+        touch()
+        if (activityListeners.size) notifyWarmActivity(url)
+      }
     }
   } catch (error) {
     if (timedOut) throw new Error(`预热资源 ${Math.round(WARM_STALL_MS / 1000)} 秒没有收到数据`)

@@ -11,7 +11,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
-import { html5RuntimeSignal } from '../src/emulator/html5Lifecycle.ts'
+import { dispatchHtml5RuntimeSignal, html5RuntimeSignal } from '../src/emulator/html5Lifecycle.ts'
 
 const source = readFileSync(new URL('../public/html5-api/8bitgo-runtime-bridge.js', import.meta.url), 'utf8')
 
@@ -130,6 +130,28 @@ test('PvZ 自动加载器在更新进度条时报给桥', () => {
     const text = readFileSync(new URL(`../${file}`, import.meta.url), 'utf8')
     assert.ok(text.includes('bridge.reportProgress(p)'), `${file} 没有把下载进度报给生命周期桥`)
   }
+})
+
+test('父页分派：progress 只喂看门狗，绝不当失败；只有 failed 才报错（#1590 合并回归）', () => {
+  const base = { source: '8bitgo-runtime-bridge', version: 1 }
+  const calls = []
+  const handlers = {
+    progress: (ratio) => calls.push(['progress', ratio]),
+    firstFrame: () => calls.push(['firstFrame']),
+    playable: () => calls.push(['playable']),
+    firstInteraction: () => calls.push(['firstInteraction']),
+    failed: (detail) => calls.push(['failed', detail]),
+  }
+  for (const type of ['progress', 'first-frame', 'game-playable', 'first-interaction']) {
+    dispatchHtml5RuntimeSignal(html5RuntimeSignal({ ...base, type, detail: 0.5 }), handlers)
+  }
+  assert.equal(calls.filter(([k]) => k === 'failed').length, 0, '非 failed 信号不能落进失败分支')
+  assert.deepEqual(calls[0], ['progress', 0.5])
+  dispatchHtml5RuntimeSignal(html5RuntimeSignal({ ...base, type: 'failed' }), handlers)
+  assert.deepEqual(calls.at(-1), ['failed', 'HTML5 游戏报告启动失败'])
+  const adapter = readFileSync(new URL('../src/emulator/adapters/html5.ts', import.meta.url), 'utf8')
+  assert.ok(adapter.includes('dispatchHtml5RuntimeSignal(signal'), 'HTML5 适配器必须经显式分派处理桥消息')
+  assert.ok(!/else options\.onError\?\.\(signal\.detail/.test(adapter), '不能再用 else 把未知信号当失败')
 })
 
 console.log(`✓ 网页游戏生命周期桥 ${passed} 项通过`)

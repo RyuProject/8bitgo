@@ -592,7 +592,7 @@ let cohortColumnMissing = false
  * 任何失败都只记日志：诊断是锦上添花，不能让漏斗接口 500。
  */
 export async function recordStartupDiagnostics(slug, event, rawDiagnostics, {
-  country = 'XX', userAgent = '', summaryNote = '', suppressSideEffects = false,
+  country = 'XX', userAgent = '', summaryNote = '', suppressSideEffects = false, occurredAt = null,
 } = {}) {
   if (!DIAGNOSTIC_EVENTS.has(event?.event)) return false
   const input = rawDiagnostics ?? (summaryNote ? await summaryDiagnosticsFor(event, summaryNote) : null)
@@ -672,6 +672,19 @@ export async function recordStartupDiagnostics(slug, event, rawDiagnostics, {
     }
     scheduleCleanup()
     const inserted = Number(result?.affectedRows ?? 0) > 0
+    /*
+      回填（scripts/backfill-startup-diagnostics.mjs）补的是几天前的故障：created_at 必须是漏斗事件当时的时间。
+      2026-11-21 第一次回填没传，1150 条旧现场全写成了回填那一刻 —— 后台「最近出现」全挤在同一分钟，
+      按时间窗的聚集报警 / AI 分诊 / 30 天清理也都跟着错。只在真插进去时改，且只接受过去 30 天内的时间。
+    */
+    const occurred = occurredAt instanceof Date ? occurredAt : (occurredAt ? new Date(occurredAt) : null)
+    if (inserted && occurred && Number.isFinite(occurred.getTime()) &&
+      occurred.getTime() <= Date.now() && Date.now() - occurred.getTime() <= DIAGNOSTICS_RETENTION_DAYS * 86_400_000) {
+      await query(
+        'UPDATE game_startup_diagnostics SET created_at = ? WHERE visit_id = ? AND attempt_id = ? AND event = ?',
+        [occurred, event.visitId, event.attemptId, event.event],
+      ).catch((error) => console.warn('[startup] 回填诊断包的发生时间没写上：', error?.message || error))
+    }
     // 自动化客户端、已自动恢复、刷新后未确认：照常入库归组，但不叫人（needsAttention）
     const attention = inserted && !suppressSideEffects && needsAttention(event.event, diagnostics)
     // 同一特征短时间内聚集就发邮件（没配 DIAG_ALERT_EMAIL 时立即返回）；不 await，不拖慢接口

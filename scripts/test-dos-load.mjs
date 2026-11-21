@@ -407,7 +407,7 @@ check('普通 DOS / 纯 DOS 流式盘也自动存档，不用玩家再点「保�
 check('普通 DOS：引擎壳起来不等于 DOSBox 在跑，8 秒兜底不能提前撤遮罩', () => {
   assert.doesNotMatch(jsdos, /if \(engineUp \|\| ci\) markReady\(\)/)
   assert.match(jsdos, /if \(ci\) \{\s*markReady\(\)\s*return\s*\}/)
-  assert.match(jsdos, /startActiveTimeout\(\s*PLAIN_DOS_CI_BUDGET_MS,/)
+  assert.match(jsdos, /startAdapterOwnedTimeout\(\s*PLAIN_DOS_CI_BUDGET_MS,/)
 })
 
 check('点了开始就与系统盘 / 游戏包并行预热本局核心，且后端判断与 Dos() 一致', () => {
@@ -667,6 +667,33 @@ check('组件引用的 fsLoad* 文案键在基准语言里都存在', () => {
   assert.ok(used.length >= 6, `只扫到 ${used.length} 个 fsLoad* 引用，正则可能失效了`)
   const missing = used.filter((k) => valueOf(zh, k) === null)
   assert.deepEqual(missing, [], `zh-Hans 里没有：${missing.join(', ')}`)
+})
+
+check('适配器自有启动预算期间给播放器看门狗报活（#2501 / #2575 / #2231 建盘被误记 timeout）', () => {
+  const src = read('src/emulator/adapters/jsdos.ts')
+  assert.match(src, /const startAdapterOwnedTimeout = \(budgetMs: number, onTimeout: \(\) => void\)/)
+  assert.match(src, /options\.onStartupActivity\?\.\(\)\n\s*\}, ADAPTER_OWNED_HEARTBEAT_MS\)/)
+  // Windows 客体两段与普通 DOS 等 ci-ready 都必须走带报活的计时器，不能再直接 startActiveTimeout
+  assert.match(src, /cancelGuestStartupTimeout = startAdapterOwnedTimeout\(\n\s*budgetMs,/)
+  assert.match(src, /cancelGuestStartupTimeout = startAdapterOwnedTimeout\(\n\s*PLAIN_DOS_CI_BUDGET_MS,/)
+  assert.equal((src.match(/cancelGuestStartupTimeout = startActiveTimeout\(/g) ?? []).length, 0)
+  const ms = Number(src.match(/ADAPTER_OWNED_HEARTBEAT_MS = ([\d_]+)/)?.[1].replace(/_/g, ''))
+  assert.ok(ms > 0 && ms < 60_000, '报活间隔必须远小于播放器 120 秒看门狗')
+})
+
+check('引擎脚本未到时缓住的 ROM / 系统镜像进度仍给看门狗报活（#1666 / #2623）', () => {
+  const src = read('src/emulator/adapters/jsdos.ts')
+  assert.match(src, /if \(engineDone && systemDone\) options\.onProgress\?\.\(progress\)\n(?:\s*\/\/.*\n)*\s*else options\.onStartupActivity\?\.\(\)/)
+  assert.match(src, /if \(engineDone\) options\.onProgress\?\.\(latestSystemProgress\)\n\s*else options\.onStartupActivity\?\.\(\)/)
+})
+
+check('加速入口上的 js-dos.js 挂住有时限，到点改走同源；同源不设时限', () => {
+  const src = read('src/emulator/adapters/jsdos.ts')
+  const ms = Number(src.match(/JSDOS_EDGE_SCRIPT_TIMEOUT_MS = ([\d_]+)/)?.[1].replace(/_/g, ''))
+  assert.ok(ms >= 10_000 && ms < 120_000)
+  assert.match(src, /const edgeTimer = root !== JSDOS_PATH\n\s*\? window\.setTimeout\(/)
+  assert.match(src, /script\.onerror\?\.\(new Event\('error'\)\)/)
+  assert.match(src, /if \(scriptSettled\) return\n\s*scriptSettled = true\n\s*window\.clearTimeout\(edgeTimer\)\n\s*if \(root !== JSDOS_PATH\)/)
 })
 
 console.log('')

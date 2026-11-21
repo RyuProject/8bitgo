@@ -3971,6 +3971,19 @@ EmulatorJS 引擎日志与加载阶段文字（`diagLog`）、下载器的重试
 - 隐私边界写在隐私政策（`test:legal` 的 `startup-diagnostics` 两条）：不存 IP、完整 UA、ROM 地址、账号；
   ROM 文件名一律 `[ROM]`。加新字段先改白名单 `normalizeDiagnostics()`，否则服务端会直接丢掉。
 - **漏斗有失败但诊断包缺失时要留安全摘要**（2026-11-21）：生产近 7 天曾有 201 次失败、29 次超时没有关联诊断包；旧路由只在客户端带包且完整包限流通过时保存，缺包 / 限流会静默丢失现场。现在每个首次写入的 failed / timeout / slow_start / recovered 都尝试保存：完整包沿用每 IP 6 / 全站 120 每分钟；缺包、无效包、保存失败或被限流时，单独用每 IP 12 / 全站 240 的更严摘要闸，保留漏斗事件已有的安全错误摘要和阶段时间线。摘要 `capture.level=summary` 必须在后台明确显示「详细浏览器现场未收到」；设备能力等详细环境（`env`）、部署版本、开局序号、日志和资源都留空，数据库仍只存从请求头归纳的浏览器 / 系统 / 设备类别，不能把缺失信息编造出来。历史回填只生成同样的摘要，默认 dry-run，写库用 `cd server && npm run backfill-startup-diagnostics -- --days=7 --apply`，且禁止触发报警 / 飞书 / AI 分诊。回归：`npm run test:startup-diagnostics`。
+- **回填必须带故障发生时间**（2026-11-21）：第一次回填没传，1150 条旧现场的 `created_at` 全写成了回填那一刻，后台「最近出现」挤在同一分钟，
+  聚集报警 / AI 分诊的时间窗和 30 天清理也跟着错。`recordStartupDiagnostics(..., { occurredAt })` 在真插入后把 `created_at` 改成漏斗事件时间
+  （只接受过去 30 天内）；回填脚本传 `row.createdAt`。已有错位数据用 `game_startup_events` 按 (visit_id, attempt_id, event) 对回。
+- **2026-11-21 逐组复查的结论与修补**（详见提交说明）：
+  - 120 秒看门狗只**上报**超时、不拆局（《经典食人花》在超时后 35 秒出画面）。慢但仍在推进的阶段必须报 `onStartupActivity`：js-dos 被压住的系统盘 / ROM 进度、
+    Windows 客体建盘与开机（`startAdapterOwnedTimeout`，前台每 15 秒心跳，真卡死仍按适配器自己的阶段超时报错）、Ruffle 核心预热的字节进度、PPSSPP mount 期间。
+  - EdgeOne 上的 `js-dos.js` / `ruffle.js` 25 秒取不到就换同源，迟到的脚本有闩挡住，不会建两个播放器。
+  - html5 适配器先 append 后设 src，iframe 会同步触发一次 about:blank 的 load：以前被当成「已加载」，诊断里出现 5ms 的 iframe_loaded。现在忽略这次 load。
+  - 45d661f 合并时丢了 html5 运行时桥的 `progress` 分支，PvZ 每秒一条 progress 被兜底分支当成失败，**每局约 10 秒报错**；现在 `dispatchHtml5RuntimeSignal` 逐类型显式匹配，只有 `failed` 报错。
+  - 核心下载「正文在流、后来停了」（20 秒无新数据 / XHR 兜底停滞）不再标记 EdgeOne 线路坏，重试留在 EdgeOne 续传；HTTP 错误、截断、头超时照旧换线（`ejsEngineErrors.ts`）。
+    引擎本地化的「启动游戏失败」等先归一成英文再判 scope。
+  - 已出画面后的核心崩溃，上报原因前缀「运行中崩溃（已出画面）」，不再和启动失败归成一组。
+  - React #185（最大更新深度）：上报时组件栈排在说明前面，保证组件名进得了 160 字摘要；同一页**原地重挂一次**，再次出现才停在兜底页。具体更新源仍待下一份带组件栈的现场确认。
 - 部署要 `cd server && npm run migrate`；缺表时漏斗照常，诊断包不入库，后台该页 503。
 - **慢启动要分清「还在下载」和「下载完卡在启动」**（2026-11-10 阿联酋《心灵之金》：42MB 的 NDS ROM 跑在 6～10Mbps
   的线路上，物理上就要 35～60 秒；诊断包却只有 start_click → slow_start 和一条第 0 片，后续分片还没进 Resource Timing）。

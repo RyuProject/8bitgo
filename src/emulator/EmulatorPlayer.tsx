@@ -2484,7 +2484,12 @@ export function EmulatorPlayer({
         }
         // 备用核心也崩溃、或联机会话不能擅自重建时，明确结束失败状态，不能假装还在玩。
         if (debugRef.current) setEngineLines(handle?.engineLog?.() ?? [])
-        reportStartupFailure(reason)
+        /*
+          已经出过画面再崩（2026-11-21《黄金太阳》mGBA，开局 96 秒出画面、913 秒报 Aborted(undefined)）不是启动失败：
+          原样上报会和「核心起不来」混成同一组，AI 分诊还可能据此给能正常开局的游戏换核心。保留上报（中途崩溃也要看得见），
+          但在原文前标明「运行中崩溃」，后台按特征自然分开。
+        */
+        reportStartupFailure(ready ? `运行中崩溃（已出画面）：${reason}` : reason)
         endSession()
         setError(session.platform === 'nds'
           ? fmt(t.player.ndsCoreFailed, { reason })

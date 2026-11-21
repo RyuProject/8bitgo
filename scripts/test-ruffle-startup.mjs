@@ -13,6 +13,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isRomPackUrl } from '../src/emulator/romLoader.ts'
 import { warmRuffleCore } from '../src/emulator/prewarm.ts'
+import { subscribeHttpWarmActivity } from '../src/emulator/httpWarm.ts'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const read = (path) => readFileSync(join(root, path), 'utf8')
@@ -48,7 +49,13 @@ globalThis.fetch = async (url) => {
 }
 try {
   const base = 'https://cn.example.test/_cn/ruffle/v9/'
+  const activity = []
+  const unsubscribe = subscribeHttpWarmActivity((url) => activity.push(url))
   const warm = await warmRuffleCore(base)
+  await warm.done
+  unsubscribe()
+  assert.ok(activity.length >= 2 && activity.every((url) => url.startsWith(base)),
+    '核心预热每收到字节都要通知订阅者，Ruffle 据此给启动看门狗报活（#1650 / #1902 / #2667）')
   assert.ok(warm.wasm === 'aaa.wasm' || warm.wasm === 'bbb.wasm', '必须选出一套核心')
   assert.equal(await warm.done, true, '两个核心文件都完整读完才算预热完成')
   const variantJs = warm.wasm === 'aaa.wasm' ? 'core.ruffle.a.js' : 'core.ruffle.b.js'
@@ -123,5 +130,15 @@ const destroyAt = adapter.indexOf('    destroy() {')
 assert.ok(adapter.indexOf('stopFramePerf?.()', destroyAt) < adapter.indexOf('iframe.remove()', destroyAt),
   '销毁时必须先拍下 iframe 的网络记录再移除 iframe')
 assert.ok(adapter.indexOf('stopSnapshot()', destroyAt) > destroyAt, '销毁时必须注销现场快照')
+
+// 核心下载与 ruffle.js 挂死的看门狗处理
+assert.match(adapter, /subscribeHttpWarmActivity\(\(url\) => \{/, 'Ruffle 要订阅核心预热的字节活动')
+assert.match(adapter, /options\.onStartupActivity\?\.\(\)\n\s*\}\)\n\s*const releaseCoreActivity/)
+assert.ok(adapter.indexOf('releaseCoreActivity()', destroyAt) > destroyAt, '销毁时必须退订核心活动')
+const edgeMs = Number(adapter.match(/RUFFLE_EDGE_SCRIPT_TIMEOUT_MS = ([\d_]+)/)?.[1].replace(/_/g, ''))
+assert.ok(edgeMs >= 10_000 && edgeMs < 120_000, '加速线路 ruffle.js 时限要早于外层 120 秒看门狗')
+assert.match(adapter, /let edgeScriptTimer = ruffleRoot !== RUFFLE_PATH\n\s*\? window\.setTimeout\(/, '同源不设时限')
+assert.match(adapter, /if \(destroyed \|\| ruffleScriptHandled\) return\n\s*ruffleScriptHandled = true/, '迟到的加速脚本不能再建一个播放器')
+assert.match(adapter, /event\.target !== activeRuffleScript\) return/, '换线后迟到的加速脚本报错不能把同源这局也判死')
 
 console.log('✅ Flash 冷启动：核心与解码器并行预热、启动阶段诊断通过')

@@ -17,6 +17,7 @@ import {
   summarizeRepair,
 } from '@/services/moduleLinkRecovery'
 import { deferRecoveryReport, takeRecoveryForFailure, type PendingReport } from '@/services/pageRecovery'
+import { componentPath, errorHead, isReactUpdateLoop, stackFrames } from '@/services/renderErrorText'
 
 const CHUNK_RELOAD_PREFIX = '8bitgo.chunk-reload:'
 const ORIGIN_RELOAD_PREFIX = '8bitgo.chunk-origin-reload:'
@@ -230,11 +231,7 @@ interface AppErrorBoundaryState {
  * 只放错误本身、浏览器 UA 和前端版本，不放地址参数、账号或存档之类的东西。
  */
 export function describeRenderError(error: unknown, ua = '', build = ''): string {
-  const head = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
-  const frames = error instanceof Error && typeof error.stack === 'string'
-    ? error.stack.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('at ') || l.includes('@')).slice(0, 4)
-    : []
-  return [head.slice(0, 400), ...frames.map((f) => f.slice(0, 200)), ua && `UA: ${ua.slice(0, 200)}`, build && `build: ${build}`]
+  return [errorHead(error), ...stackFrames(error), ua && `UA: ${ua.slice(0, 200)}`, build && `build: ${build}`]
     .filter(Boolean)
     .join('\n')
 }
@@ -248,9 +245,16 @@ function buildCrashReport(error: unknown, info: ErrorInfo, note = '', recovery?:
   try {
     const slug = location.pathname.match(/(?:^|\/)games\/([^/?#]+)/)?.[1]
     if (!slug) return null
-    const components = String(info.componentStack ?? '')
-      .split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 3).join(' < ')
-    const detail = [describeRenderError(error), components && `组件：${components}`, note, `build: ${currentBuild()}`]
+    // 更新循环（#185）：组件栈排在调用栈前面并多给几层。摘要只留 160 字，调用栈全是压缩后的 react-dom 内部函数，
+    // 组件名才指得出是哪块页面在循环；循环的那个组件也常常不在最内层（最内层是被它反复重渲染的子组件）。
+    // 其它错误保持原来的顺序，后台已有的分组特征不变。
+    const loop = isReactUpdateLoop(error)
+    const components = componentPath(info.componentStack, loop ? 8 : 3)
+    const component = components && `组件：${components}`
+    const detail = (loop
+      ? [errorHead(error), component, note, ...stackFrames(error, 2)]
+      : [describeRenderError(error), component, note])
+      .concat(`build: ${currentBuild()}`)
       .filter(Boolean).join('\n')
     const visitId = newStartupId()
     const attemptId = newStartupId()
@@ -320,6 +324,9 @@ function currentBuild(): string {
  * 整个根节点，玩家只剩一张白页。这里刻意不依赖路由和翻译 Context：它们本身坏掉时，
  * 这张最后的错误页也必须能画出来。
  */
+/** 本页已经为更新循环原地重挂过一次（见 AppErrorBoundary.retryUpdateLoop），模块级：重挂后的新子树再崩也算同一页 */
+let updateLoopRemounted = false
+
 export class AppErrorBoundary extends Component<{ children: ReactNode }, AppErrorBoundaryState> {
   state: AppErrorBoundaryState = { failed: false, detail: '' }
 
@@ -334,8 +341,30 @@ export class AppErrorBoundary extends Component<{ children: ReactNode }, AppErro
     // 部署切换的旧 chunk 会自动刷新自救，不算故障；其余情况把现场送进后台「错误诊断」
     // chunk 下载失败 / 字节坏了：先核对修复，再按结果决定刷新还是上报（异步，自己负责上报）
     // 上一份文档是自动刷新过来的：接过前情，这次的报告写明「自动刷新后再次失败」（services/pageRecovery.ts）
+    if (isReactUpdateLoop(error)) {
+      this.retryUpdateLoop(error, info, takeRecoveryForFailure())
+      return
+    }
     const previous = takeRecoveryForFailure()
     if (!recoverBrokenAsset(error, info, previous)) reportRenderCrash(error, info, '', previous)
+  }
+
+  /**
+   * React 更新循环（#185）：先上报，再原地重新挂载一次子树，第二次还循环才停在兜底页。
+   *
+   * 2026-11-17《森林冰火人 4》、11-20《超级马里奥》（都在大陆）各一份 #185，摘要里没有组件栈，定位不到是哪个组件。
+   * 已知能触发它的模式是「effect 依赖不稳定 + 同步通知 useSyncExternalStore」，这类循环常由一次性的时序引起
+   * （某个 store 刚好在那一帧连续变化），整页刷新会丢掉玩家的位置，而原地重挂只重建 React 子树，代价最小。
+   * 每个页面只重挂一次：真是确定性的死循环，第二次照样停在兜底页，并且两份报告都带着组件栈。
+   */
+  private retryUpdateLoop(error: unknown, info: ErrorInfo, previous: PreviousAttempt): void {
+    if (updateLoopRemounted) {
+      reportRenderCrash(error, info, '原地重新挂载一次后再次出现更新循环', previous)
+      return
+    }
+    updateLoopRemounted = true
+    reportRenderCrash(error, info, '页面更新循环：已原地重新挂载一次', previous)
+    window.setTimeout(() => this.setState({ failed: false, detail: '' }), 0)
   }
 
   render() {

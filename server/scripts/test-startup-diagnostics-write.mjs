@@ -13,6 +13,7 @@ register('data:text/javascript,' + encodeURIComponent(`
 
 const state = globalThis.__startupDiagnosticFakeDb = {
   inserts: [],
+  updates: [],
   effects: [],
   async query(sql, params) {
     if (/SELECT event, elapsed_ms FROM game_startup_events/.test(sql.replace(/\s+/g, ' '))) {
@@ -28,6 +29,10 @@ const state = globalThis.__startupDiagnosticFakeDb = {
       return { affectedRows: 1 }
     }
     if (/DELETE FROM game_startup_diagnostics/.test(sql)) return { affectedRows: 0 }
+    if (/UPDATE game_startup_diagnostics SET created_at/.test(sql)) {
+      this.updates.push({ sql, params })
+      return { affectedRows: 1 }
+    }
     throw new Error(`意外的 SQL：${sql}`)
   },
 }
@@ -90,4 +95,21 @@ assert.equal(fullPayload.env.mem, 8)
 assert.equal(fullPayload.build, 'index-current.js')
 assert.equal(fullPayload.logs[0].m, 'RuntimeError: test trap')
 assert.equal(fullPayload.resources[0].st, 200)
+assert.equal(state.updates.length, 0, '实时上报不改 created_at')
+
+// 回填带上故障发生时间：插入成功后把 created_at 改成那一刻，而不是回填这一刻
+const occurredAt = new Date(Date.now() - 3 * 86_400_000)
+await recordStartupDiagnostics('super-mario-bros', {
+  ...event, visitId: 'visit-backfill-123456', attemptId: 'attempt-backfill-123456',
+}, null, { country: 'CN', summaryNote: 'backfill', suppressSideEffects: true, occurredAt })
+assert.equal(state.updates.length, 1, '回填写入发生时间')
+assert.equal(state.updates[0].params[0].getTime(), occurredAt.getTime())
+assert.deepEqual(state.updates[0].params.slice(1), ['visit-backfill-123456', 'attempt-backfill-123456', 'failed'])
+// 超出保留窗口 / 未来时间 / 乱值一律不改
+for (const bad of [new Date(Date.now() - 40 * 86_400_000), new Date(Date.now() + 86_400_000), 'not-a-date']) {
+  await recordStartupDiagnostics('super-mario-bros', {
+    ...event, visitId: `visit-bad-${state.inserts.length}-1234`, attemptId: 'attempt-bad-12345678',
+  }, null, { country: 'CN', summaryNote: 'backfill', suppressSideEffects: true, occurredAt: bad })
+}
+assert.equal(state.updates.length, 1, '不可信的发生时间不写')
 console.log('✔ 缺包摘要与完整现场均可入库；摘要不伪造现场，原有完整现场字段保持不变')

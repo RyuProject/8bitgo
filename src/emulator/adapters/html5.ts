@@ -10,7 +10,7 @@ import { focusFrame, frameGamepads } from '../frameFocus'
 import { installAudioTap, type AudioTap } from '../audioTap'
 import { captureCanvasScreenshot } from '../recorder'
 import { findHtml5Canvas, html5CanvasCapabilities, html5MediaBridge } from '../html5Media'
-import { html5CanvasHasFrame, html5RuntimeSignal } from '../html5Lifecycle'
+import { dispatchHtml5RuntimeSignal, html5CanvasHasFrame, html5RuntimeSignal } from '../html5Lifecycle'
 import { cloudSaveAccountTag, recordAutoSaveConflict } from '@/services/saves'
 
 const SAVE_BRIDGE_SOURCE = '8bitgo-save-bridge'
@@ -452,10 +452,16 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (destroyed || event.source !== iframe.contentWindow) return
     const signal = html5RuntimeSignal(event.data)
     if (!signal) return
-    if (signal.type === 'first-frame') markFirstFrame()
-    else if (signal.type === 'game-playable') markPlayable()
-    else if (signal.type === 'first-interaction') reportFirstInteraction()
-    else options.onError?.(signal.detail || 'HTML5 游戏报告启动失败', 'runtime')
+    dispatchHtml5RuntimeSignal(signal, {
+      // 子页还在下载 / 写盘：喂播放器的启动看门狗（starting 阶段的 ratio 不推动进度条，只证明还活着）
+      progress: (ratio) => {
+        if (!playable) options.onProgress?.({ phase: 'starting', ...(ratio === undefined ? {} : { ratio }) })
+      },
+      firstFrame: markFirstFrame,
+      playable: markPlayable,
+      firstInteraction: reportFirstInteraction,
+      failed: (detail) => options.onError?.(detail, 'runtime'),
+    })
   }
   window.addEventListener('message', onRuntimeBridgeMessage)
 
@@ -848,8 +854,26 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   }
 
   let loaded = false
+  const isInitialBlankLoad = (): boolean => {
+    // 入口从来不是 about:blank；文档还是 about:blank 就是初始空文档（有的浏览器在设 src 后才异步派发）。
+    // 跨源页面读 location 会抛错，那一定是已经导航到的真实入口。
+    if (iframe.getAttribute('src') === 'about:blank') return false
+    try {
+      return iframe.contentWindow?.location.href === 'about:blank'
+    } catch {
+      return false
+    }
+  }
   iframe.addEventListener('load', () => {
     if (destroyed) return
+    /*
+      Chromium 在 iframe 还没设 src 就插进 DOM 时，会为初始 about:blank 同步派发一次 load。
+      下面先 appendChild、后设 src，于是每局开头都有一次假 load：当成「入口文档到了」会立即撤遮罩、
+      把 about:blank 当成同源可观测页面、并记下 0～100ms 的 iframe_loaded / download_complete ——
+      2026-11-16～20《割绳子》《CS 1.6》《PvZ》的诊断包（#1704 / #1943 / #2326 / #1940）都是这样，
+      真正的入口页（跨源、慢线路）还没到，诊断却显示「5ms 就加载完了」。只认真正导航到的文档。
+    */
+    if (isInitialBlankLoad()) return
     if (isManagedPvzEntry()) console.info('[live][html5-sdk] 游戏 iframe 加载完成', { repeated: loaded })
     // 门户页跳进真正游戏页也会再次 load；就绪只报一次，媒体来源却必须跟着换到新文档。
     startMediaMonitoring()

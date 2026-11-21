@@ -51,6 +51,8 @@ if (unknown.length || !Number.isInteger(days) || days < 1 || days > 30 || !Numbe
           country: row.country,
           summaryNote: 'backfill',
           suppressSideEffects: true,
+          // 故障发生的时间，不是回填这一刻（否则后台的时间排序 / 聚集窗口 / 清理全部错位）
+          occurredAt: row.createdAt,
         })) saved++
       }
       console.log(`完成：新增 ${saved} 条摘要，未新增 ${rows.length - saved} 条（可能是并发写入、游戏已下架或数据库错误）。`)

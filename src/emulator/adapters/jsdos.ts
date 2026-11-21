@@ -683,6 +683,10 @@ const DOS_AUTOSAVE_INTERVAL_MS = 60_000
 
 /** js-dos 是全局脚本，整页只加载一次 */
 let loading: Promise<DosFn> | null = null
+/**
+ * 加速入口上 js-dos.js（约 320KB）的加载时限。弱网正常下载要留足，挂死则要早于播放器 120 秒看门狗换线。
+ */
+export const JSDOS_EDGE_SCRIPT_TIMEOUT_MS = 25_000
 function loadJsDos(): Promise<DosFn> {
   if (loading) return loading
   loading = new Promise<DosFn>((resolve, reject) => {
@@ -705,8 +709,29 @@ function loadJsDos(): Promise<DosFn> {
 
     const script = document.createElement('script')
     script.src = `${root}js-dos.js`
-    script.onload = () => (win.Dos ? resolve(win.Dos) : reject(new Error('js-dos 已加载但没有暴露 Dos()')))
+    /*
+      加速入口上的 js-dos.js 可能既不成功也不报错地一直挂着（EdgeOne 首次请求超时的那类现场，
+      emulators.js 同样出过，见 #1518）。脚本没有字节进度，挂多久系统镜像 / 游戏包的进度就缓多久，
+      玩家只看到条子不动。只给加速线路设时限：到点按失败处理、改走同源；同源本身没有更好的退路，不设。
+    */
+    let scriptSettled = false
+    const edgeTimer = root !== JSDOS_PATH
+      ? window.setTimeout(() => {
+          if (scriptSettled) return
+          console.warn(`[jsdos] ${root}js-dos.js ${JSDOS_EDGE_SCRIPT_TIMEOUT_MS / 1000} 秒没有加载完成，按失败处理`)
+          script.onerror?.(new Event('error'))
+        }, JSDOS_EDGE_SCRIPT_TIMEOUT_MS)
+      : 0
+    script.onload = () => {
+      if (scriptSettled) return
+      scriptSettled = true
+      window.clearTimeout(edgeTimer)
+      return win.Dos ? resolve(win.Dos) : reject(new Error('js-dos 已加载但没有暴露 Dos()'))
+    }
     script.onerror = () => {
+      if (scriptSettled) return
+      scriptSettled = true
+      window.clearTimeout(edgeTimer)
       if (root !== JSDOS_PATH) {
         console.warn(`[jsdos] ${root}js-dos.js 加载失败，改走同源 ${JSDOS_PATH}`)
         markJsdosEdgeFailed()
@@ -1404,12 +1429,35 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     return autoCheckpointInFlight
   }
   let windowsLaunchStage: 'ci' | 'boot' | 'desktop' | 'launched' = 'ci'
+  /*
+    适配器自己负责判死的启动阶段（Windows 客体建盘 / 自动启动、普通 DOS 等 ci-ready）。
+    这些阶段的前台预算是按慢设备定的（建盘 4 分钟兜底，见 loadProgress 的 windowsGuestStartupBudgetMs），
+    期间 js-dos worker 在解 qcow2、DOSBox-X 在开机，外层看不到任何字节进度。播放器的启动看门狗却是
+    「连续 120 秒没有活动」：2026-11-14～17《帝国时代》《暴力摩托》（诊断包 #2501 / #2575 / #2231）
+    都是游戏包早已到手、卡在建盘 / 开机这一段被记成 timeout，而适配器自己的预算还没用完。
+    所以在自有预算计时期间按前台定时给看门狗报活；预算用完时由适配器自己报出带阶段的错误。
+    只在页面可见时报，后台节流期间不报（播放器看门狗本来也暂停）。
+  */
+  const ADAPTER_OWNED_HEARTBEAT_MS = 15_000
+  const startAdapterOwnedTimeout = (budgetMs: number, onTimeout: () => void): (() => void) => {
+    const cancelTimeout = startActiveTimeout(budgetMs, () => document.visibilityState !== 'hidden', () => {
+      window.clearInterval(heartbeat)
+      onTimeout()
+    })
+    const heartbeat = window.setInterval(() => {
+      if (destroyed || readySent || terminalErrorSent) return
+      if (document.visibilityState !== 'hidden') options.onStartupActivity?.()
+    }, ADAPTER_OWNED_HEARTBEAT_MS)
+    return () => {
+      window.clearInterval(heartbeat)
+      cancelTimeout()
+    }
+  }
   const armGuestStartupTimeout = (stage: 'ci' | 'boot', budgetMs: number) => {
     cancelGuestStartupTimeout?.()
     windowsLaunchStage = stage
-    cancelGuestStartupTimeout = startActiveTimeout(
+    cancelGuestStartupTimeout = startAdapterOwnedTimeout(
       budgetMs,
-      () => document.visibilityState !== 'hidden',
       () => {
         const stageLabel = windowsLaunchStage === 'desktop'
           ? '打开游戏程序'
@@ -1540,6 +1588,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             (progress) => {
               latestRomProgress = progress
               if (engineDone && systemDone) options.onProgress?.(progress)
+              // 进度条先缓住，但字节确实在走：照样给看门狗报活。否则 js-dos.js 迟迟没到、系统镜像
+              // 还在下的那几十秒里看门狗什么都看不到（#1666《经典食人花》155 秒才开局，第 120 秒被记成 timeout）。
+              else options.onStartupActivity?.()
             },
             abort.signal,
             Boolean(systemUrl),
@@ -1566,6 +1617,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             (progress) => {
               latestSystemProgress = { ...progress, phase: 'assets' }
               if (engineDone) options.onProgress?.(latestSystemProgress)
+              else options.onStartupActivity?.()
             },
             abort.signal,
           ))
@@ -2109,9 +2161,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             ready 之后，播放器既不自动重试也不换语言 ROM。现在继续等 ci-ready，按前台时间计时。
           */
           cancelGuestStartupTimeout?.()
-          cancelGuestStartupTimeout = startActiveTimeout(
+          cancelGuestStartupTimeout = startAdapterOwnedTimeout(
             PLAIN_DOS_CI_BUDGET_MS,
-            () => document.visibilityState !== 'hidden',
             () => failLoad(fmt(rt.jsdosRunFailed, { msg: 'DOSBox did not start' })),
           )
         }, 8000)

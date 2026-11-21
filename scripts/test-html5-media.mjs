@@ -306,9 +306,13 @@ console.log('\n── 发布文件与 WebGL 截图策略 ──')
   const loadHandler = adapterSource.split("iframe.addEventListener('load'")[1].split("iframe.addEventListener('error'")[0]
   ok(loadHandler.includes('options.onIframeLoaded?.()'), 'iframe load 只上报独立的 iframe_loaded 阶段')
   ok(loadHandler.includes('options.onReadinessVisibilityChange?.(Boolean(frameDocument()))'), '每次导航都更新 HTML5 的同源可观测状态')
+  ok(loadHandler.indexOf('if (isInitialBlankLoad()) return') > -1 &&
+    loadHandler.indexOf('if (isInitialBlankLoad()) return') < loadHandler.indexOf('options.onIframeLoaded?.()') &&
+    adapterSource.indexOf("iframe.addEventListener('load'") < adapterSource.indexOf('container.appendChild(iframe)'),
+  'Chromium 插入无 src 的 iframe 时派发的初始 about:blank load 不能冒充入口文档已到（#1704 / #1943 / #2326）')
   ok(adapterSource.includes('let firstInteractionReported = false') &&
     adapterSource.includes("iframe.addEventListener('pointerdown', onFramePointerInput)") &&
-    adapterSource.includes("signal.type === 'first-interaction') reportFirstInteraction()"),
+    adapterSource.includes('firstInteraction: reportFirstInteraction,'),
   '可信 iframe 指针输入与游戏桥共用一次性首次操作上报；单纯获得焦点不算玩家操作')
   const playerSource = readFileSync(new URL('../src/emulator/EmulatorPlayer.tsx', import.meta.url), 'utf8')
   ok(playerSource.includes("session.runtime.id === 'html5' ? 'unknown' : 'observable'"), 'HTML5 等待 iframe 首次导航时不误记慢启动')

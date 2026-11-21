@@ -22,7 +22,8 @@ import {
   partitionNoise,
   scrub,
 } from '../server/src/startup-diagnostics.js'
-import { normalizeStartupEvent } from '../server/src/startup-metrics.js'
+import { normalizeStartupEvent, sanitizeStartupDetail } from '../server/src/startup-metrics.js'
+import { componentPath, errorHead, isReactUpdateLoop, stackFrames } from '../src/services/renderErrorText.ts'
 
 const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
 
@@ -661,6 +662,32 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
     assert.match(read(`src/locales/${lang}.ts`), /ejsOutOfMemoryVendor: ['"][^\n]*\{browser\}/, `${lang} 有厂商浏览器提示`)
     assert.match(read(`src/locales/${lang}.ts`), /memoryCleanRetry: '/, `${lang} 有干净页面重开提示`)
   }
+}
+
+// React 更新循环（#185，2026-11-17 / 11-20 两份大陆现场）：摘要只留 160 字，以前全被 React 的套话占满、组件栈没进库
+{
+  const loopError = new Error('Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.')
+  loopError.stack = `${loopError.name}: ${loopError.message}\n    at f (https://8bitgo.com/assets/react-vendor-a.js:1:2)\n    at g (https://8bitgo.com/assets/react-vendor-a.js:1:3)\n    at h (https://8bitgo.com/assets/react-vendor-a.js:1:4)`
+  assert.equal(errorHead(loopError), 'Error: Minified React error #185')
+  assert.equal(isReactUpdateLoop(loopError), true)
+  assert.equal(isReactUpdateLoop(new Error('Maximum update depth exceeded. This can happen when…')), true, '开发版原文也认')
+  assert.equal(isReactUpdateLoop(new Error('Minified React error #418; visit https://react.dev/errors/418')), false, '水合不匹配不是更新循环')
+  assert.equal(isReactUpdateLoop(new TypeError('Failed to fetch dynamically imported module')), false)
+  assert.equal(errorHead(new Error('Minified React error #418; visit https://react.dev/errors/418?args[]=x for the full message')), 'Error: Minified React error #418', '套话被截断也能压掉')
+  assert.equal(errorHead(new TypeError('Failed to fetch dynamically imported module: https://x/a.js')), 'TypeError: Failed to fetch dynamically imported module: https://x/a.js', '其它错误原样保留')
+  assert.deepEqual(stackFrames(loopError, 2), ['at f (https://8bitgo.com/assets/react-vendor-a.js:1:2)', 'at g (https://8bitgo.com/assets/react-vendor-a.js:1:3)'])
+  const stack = '\n    at Bar (https://8bitgo.com/assets/GameDetailPage-a.js:1:1)\n    at Foo (https://8bitgo.com/assets/GameDetailPage-a.js:1:2)\n    at Suspense (<anonymous>)'
+  assert.equal(componentPath(stack, 2), 'at Bar (https://8bitgo.com/assets/GameDetailPage-a.js:1:1) < at Foo (https://8bitgo.com/assets/GameDetailPage-a.js:1:2)')
+  // 拼成兜底页报告的样子再过一遍服务端摘要清洗：组件名必须留在 160 字里
+  const summary = sanitizeStartupDetail([errorHead(loopError), `组件：${componentPath(stack, 8)}`].join('\n'))
+  assert.match(summary, /^Error: Minified React error #185 组件：at Bar \(\[URL\] < at Foo/, '组件栈进了 160 字摘要')
+  assert.equal(diagnoseStartupFailure({ event: 'failed', runtime: 'page', platform: '', detail: summary, diagnostics: null }).code, 'react_update_loop', '服务端照旧归成更新循环')
+
+  const boundary = read('src/components/AppErrorBoundary.tsx')
+  assert.match(boundary, /const loop = isReactUpdateLoop\(error\)[\s\S]{0,400}\? \[errorHead\(error\), component, note, \.\.\.stackFrames\(error, 2\)\]/, '更新循环：组件栈排在调用栈前面')
+  assert.match(boundary, /if \(isReactUpdateLoop\(error\)\) \{\s*this\.retryUpdateLoop\(error, info, takeRecoveryForFailure\(\)\)\s*return/, '更新循环先上报再原地重挂')
+  assert.match(boundary, /if \(updateLoopRemounted\) \{\s*reportRenderCrash\(error, info, '原地重新挂载一次后再次出现更新循环', previous\)\s*return/, '每页只重挂一次，第二次停在兜底页')
+  assert.match(boundary, /updateLoopRemounted = true\s*reportRenderCrash\(error, info, '页面更新循环：已原地重新挂载一次', previous\)\s*window\.setTimeout\(\(\) => this\.setState\(\{ failed: false, detail: '' \}\), 0\)/)
 }
 
 console.log('✔ 启动诊断包：脱敏与白名单、UA 粗粒度、错误归组、前端采集、复制给 AI、PSP 现场、接线')

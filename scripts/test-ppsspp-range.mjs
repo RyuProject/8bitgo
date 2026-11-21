@@ -318,4 +318,9 @@ for (const marker of [
   assert.ok(webFeaturesPatch.includes(marker), `PSP 存档/改键桥补丁缺少 ${marker}`)
 }
 
+// #1791：mount 由适配器 300 秒判死，期间给播放器 120 秒看门狗报活，结束（成功 / 失败）必须停
+assert.match(adapter, /const MOUNT_HEARTBEAT_MS = 15_000/)
+assert.match(adapter, /const mountHeartbeat = window\.setInterval\(/, 'mount 期间要给启动看门狗报活')
+assert.match(adapter, /\} finally \{\n\s*window\.clearInterval\(mountHeartbeat\)/, 'mount 结束必须停掉报活')
+
 console.log('✔ PSP 平台、ISO/CSO 识别、隔离路由与 Range 核心约束通过')
