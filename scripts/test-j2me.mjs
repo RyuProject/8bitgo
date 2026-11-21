@@ -38,6 +38,8 @@ check('本站 R2 的 8BG JAR 交给服务端解包，不再经浏览器上传', 
   assert.equal(packedJarProxyName('https://assets.8bitgo.com/roms/java/sub/sh2.jar.8bg', bases), '', '子目录不认')
   assert.equal(packedJarProxyName('https://assets.8bitgo.com/roms/nes/x.nes.8bg', bases), '')
   assert.equal(packedJarProxyName('https://assets.8bitgo.com/roms/java/x.jar', bases), '', '明文 JAR 原本就走代理')
+  const adapter = readFileSync(new URL('../src/emulator/adapters/j2me.ts', import.meta.url), 'utf8')
+  assert.match(adapter, /packedJarProxyName\(options\.game, \[ENV_ROM_BASE, ENV_ROM_MIRROR, ENV_ROM_DOWNLOAD\]\)/, '适配器必须把下载优选域传给代理识别')
 })
 
 check('播放地址压成纯文件名，查询串和 hash 都要剥掉', () => {

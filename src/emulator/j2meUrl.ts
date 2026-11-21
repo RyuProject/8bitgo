@@ -130,7 +130,7 @@ export function j2meWarmTargets(base: string): string[] {
  * 只认本站主域、镜像和下载优选域下 `roms/java/` 里的对象：外链 8BG 服务端无从代理，返回空串，仍走上传那条路。
  *
  * @param url       播放地址（可能是主域或大陆镜像，带 `?romv=`）
- * @param romBases  本站 ROM 根地址（主域、镜像），不带结尾斜杠
+ * @param romBases  本站 ROM 根地址（主域、镜像、下载优选域），不带结尾斜杠
  */
 export function packedJarProxyName(url: string, romBases: readonly string[]): string {
   const clean = String(url).split(/[?#]/)[0]
