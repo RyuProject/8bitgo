@@ -1,5 +1,5 @@
 /**
- * 九个独立 Cloudflare Pages 项目的唯一配置来源。
+ * 独立 Cloudflare Pages 项目的唯一配置来源。
  *
  * 入口仍保留 `/web/<游戏>/`，不是为了迁就 Pages，而是这些上游产物内部有大量
  * 根绝对路径。保留路径可以避免重写压缩后的脚本，也让源站与 Pages 能平滑回退。
@@ -18,6 +18,16 @@ export const WEB_GAME_PAGES = Object.freeze({
       ['cn/index.html', 'body.game-mode canvas#canvas'],
       ['en/index.html', 'body.game-mode canvas#canvas'],
     ],
+  }),
+  'gamblers-table': Object.freeze({
+    project: '8bitgo-gamblers-table',
+    domain: 'gamblers-table.8bitgo.com',
+    sourceDir: 'gamblers-table',
+    entry: '/web/gamblers-table/',
+    title: 'Gamblers Table',
+    runtime: '',
+    isolated: false,
+    html: [['index.html', '#canvas']],
   }),
   diablo: Object.freeze({
     project: '8bitgo-diablo',

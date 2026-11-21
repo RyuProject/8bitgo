@@ -235,15 +235,15 @@ export interface MountOptions {
    * 网页游戏不能直接接触站点令牌，否则任何被收录页面都可能拿它冒充玩家。
    */
   onSaveRequested?: () => void
-  /** PvZ 开局前从云端 / 待同步队列取回存档；返回 paused 时保留 iframe 本地存档并停止自动上传。 */
-  onPvzAutoSaveRestore?: (localSave?: { byteLength: number }) => Promise<{
+  /** 受管理的 HTML5 游戏开局前从云端 / 待同步队列取回存档；返回 paused 时保留本机进度并停止自动上传。 */
+  onHtml5AutoSaveRestore?: (localSave?: { byteLength: number; pausedByUserChoice?: boolean }) => Promise<{
     enabled: boolean
     data: Uint8Array | null
     paused?: boolean
     reason?: string
   }>
-  /** PvZ 的存档目录变更后交给主站落盘并上传；游戏页本身永远拿不到账号令牌。 */
-  onPvzAutoSaveSnapshot?: (data: Uint8Array) => Promise<
+  /** HTML5 游戏的本地存档变更后交给主站落盘并上传；游戏页本身永远拿不到账号令牌。 */
+  onHtml5AutoSaveSnapshot?: (data: Uint8Array) => Promise<
     'saved' | 'queued' | 'conflict' | 'blocked' | 'disabled' | 'failed'
   >
   /**
@@ -591,7 +591,7 @@ export interface RuntimeHandle {
   /** 写进通用存档文件头，供兼容性排查；需要硬隔离的运行时还应把构建写进 saveArchiveKey。 */
   saveMetadata?: SaveArchiveDetails
   saveState?: () => Promise<Blob | null>
-  /** 玩家在统一面板选了云端 / 本地后，通知 PvZ iframe 开启或关闭后续自动同步。 */
+  /** 玩家在统一面板选了云端 / 本地后，通知接入自动快照协议的 HTML5 iframe 开启或关闭后续同步。 */
   setCloudAutoSaveMode?: (enabled: boolean, paused?: boolean, clearPaused?: boolean) => void
   /** 旧 srcdoc 路径的 Flash 存档无法自动辨认游戏，只在玩家明确选择时恢复。 */
   hasLegacyFlashSave?: () => boolean

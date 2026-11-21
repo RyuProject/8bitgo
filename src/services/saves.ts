@@ -149,6 +149,21 @@ function currentCloudOwner(): string | null {
   }
 }
 
+/**
+ * 交给受管理 HTML5 游戏页的账号标签：只用来在游戏页那一侧给「上次同步的指纹」分账号，
+ * 不是凭证。账号 id 做一次 FNV 摘要再给出去，游戏页拿不到原始 uid，更拿不到令牌。
+ */
+export function cloudSaveAccountTag(): string | null {
+  const owner = currentCloudOwner()
+  if (!owner) return null
+  let h = 0x811c9dc5
+  for (let i = 0; i < owner.length; i++) {
+    h ^= owner.charCodeAt(i)
+    h = Math.imul(h, 0x01000193)
+  }
+  return `a${(h >>> 0).toString(36)}-${owner.length.toString(36)}`
+}
+
 /** 云端待同步档只对原账号可见；普通“只存本地”的档仍然属于这台浏览器。 */
 function localVisibleToCurrentAccount(entry: Awaited<ReturnType<typeof idbGet>>): boolean {
   if (!entry) return false
@@ -174,18 +189,24 @@ function rememberCloudRevision(key: string, revision: string | null | undefined)
   return next
 }
 
-/** 第一次写某格前只取元信息；之后靠服务端乐观锁判“这期间是否被另一台设备改过”。 */
+/**
+ * 第一次写某格前只取元信息；之后靠服务端乐观锁判“这期间是否被另一台设备改过”。
+ *
+ * ⚠️ `adopted` 表示这台浏览器此前**不知道**云端是哪一版，revision 是刚从服务器现取的。
+ * 拿它当 parent 写入，服务端的 409 永远不会触发 —— 等于无条件覆盖。所以只有玩家明确点了
+ * 「保存到云端」的手动写入才允许这样用；自动同步 / 待同步补传见到云端已有存档就必须按冲突处理。
+ */
 async function ensureCloudRevision(
   key: string,
   runtime: SaveRuntime,
   gameSlug: string,
   slot: number,
   hint?: string,
-): Promise<string> {
+): Promise<{ revision: string; adopted: boolean }> {
   const known = cloudRevisions.get(key) || hint
   if (known) {
     cloudRevisions.set(key, known)
-    return known
+    return { revision: known, adopted: false }
   }
   const res = await fetch(cloudUrl(runtime, gameSlug, slot, '/meta'), {
     headers: authHeaders(),
@@ -193,11 +214,14 @@ async function ensureCloudRevision(
   })
   if (res.status === 204 || res.status === 404) {
     cloudRevisions.set(key, NO_CLOUD_REVISION)
-    return NO_CLOUD_REVISION
+    return { revision: NO_CLOUD_REVISION, adopted: false }
   }
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   const meta = await res.json().catch(() => ({})) as { revision?: string }
-  return rememberCloudRevision(key, meta.revision || headerOf(res, 'x-save-revision'))
+  // 只是观察到的云端版本，不代表这台浏览器同步过它；不写进 cloudRevisions，
+  // 否则下一次自动写入会把它当成「已知基线」而绕过冲突检查。
+  const revision = meta.revision?.trim() || headerOf(res, 'x-save-revision') || LEGACY_CLOUD_REVISION
+  return { revision, adopted: true }
 }
 
 async function decodeCloudResponse(
@@ -320,7 +344,7 @@ export async function prepareCloudSaveAutoSync(
   runtime: SaveRuntime,
   gameSlug: string,
   slot = 0,
-): Promise<{ enabled: boolean; data: Uint8Array | null; paused: boolean; reason?: string }> {
+): Promise<{ enabled: boolean; data: Uint8Array | null; paused: boolean; reason?: string; pending?: boolean }> {
   if (getSaveTarget() !== 'cloud' || !cloudSavesEnabled()) {
     return { enabled: false, data: null, paused: false }
   }
@@ -336,7 +360,8 @@ export async function prepareCloudSaveAutoSync(
         reason: visibleLocal.syncBlocked,
       }
     }
-    return { enabled: true, data: visibleLocal.data, paused: false }
+    // pending：这份是本站待补传的本机快照，不是云端那份；游戏页据此不把它当「另一台设备的进度」。
+    return { enabled: true, data: visibleLocal.data, paused: false, pending: true }
   }
 
   // 404 才能确认云端确实没有存档；网络错误原样抛给调用方，避免把旧本地档推上去覆盖云端。
@@ -511,6 +536,7 @@ export async function retryPendingSaves(): Promise<PendingSaveSyncResult> {
           revision,
           entry.saveMetadata,
           entry.cloudRevision,
+          true,
         )
       })
 
@@ -553,9 +579,14 @@ function schedulePendingSaveSync(delayMs = pendingSyncDelayMs): void {
 export function installSaveAutoSync(): () => void {
   if (typeof window === 'undefined' || typeof document === 'undefined') return () => {}
   const wake = () => schedulePendingSaveSync(0)
+  let lastOwner = currentCloudOwner()
   const tokenChanged = () => {
     // revision 属于账号；换账号后沿用旧账号缓存只会制造假冲突。
-    cloudRevisions.clear()
+    // ⚠️ 同一账号的令牌轮换（改密码、退出其它设备会换新令牌）不能清：清掉之后
+    // 下一次自动写入就不知道基线，只能当冲突停掉同步。
+    const owner = currentCloudOwner()
+    if (owner !== lastOwner) cloudRevisions.clear()
+    lastOwner = owner
     wake()
   }
   const visible = () => {
@@ -594,10 +625,25 @@ async function uploadCloudEntry(
   revision: string,
   metadata: SaveArchiveDetails | undefined,
   parentHint?: string,
+  automatic = false,
 ): Promise<PushedSave> {
   const runtime = coordinate.runtime as SaveRuntime
+  let parent: string | undefined
   try {
-    const parent = await ensureCloudRevision(key, runtime, coordinate.gameSlug, coordinate.slot, parentHint)
+    const base = await ensureCloudRevision(key, runtime, coordinate.gameSlug, coordinate.slot, parentHint)
+    parent = base.revision
+    if (base.adopted && automatic) {
+      // 不知道这台浏览器上次同步的是哪一版，而云端已经有存档：可能是另一台设备的新进度。
+      // 自动同步不替玩家决定，本地这份留着（dirty），等玩家在存档面板手动处理。
+      await idbMark(key, true, stamp, revision, { cloudRevision: parent, syncBlocked: 'conflict' })
+      return {
+        ok: true,
+        where: 'local',
+        error: '云存档已有另一份进度，这台浏览器没有同步过它；本地进度已保留',
+        cloudFailed: true,
+        blocked: 'conflict',
+      }
+    }
     const archive = await encodeSaveArchive(data, coordinate, metadata, stamp)
     if (archive.length > MAX_SAVE_BYTES) {
       await idbMark(key, true, stamp, revision, { cloudRevision: parent, syncBlocked: 'too-large' })
@@ -651,6 +697,11 @@ async function uploadCloudEntry(
       blocked,
     }
   } catch {
+    // 已经拿到基线（手动写入时玩家认可的那一版）就落进本地记录，
+    // 否则重载后补传不知道基线，只能按冲突停下。
+    if (parent && !automatic) {
+      await idbMark(key, true, stamp, revision, { cloudRevision: parent }).catch(() => false)
+    }
     schedulePendingSaveSync()
     return { ok: true, where: 'local', error: 'network', cloudFailed: true }
   }
@@ -706,7 +757,9 @@ async function pushOne(
    *      去读云端那份第 3 关盖上来。两小时白玩，全程零提示。
    * 所以这里要问的不是「这次上没上成」，而是「他想不想上」。
    */
-  const wantedCloud = getSaveTarget() === 'cloud'
+  // 调用方明确要上云（电池存档同步、面板里点「云端」）也算：否则这份 dirty 记录没有 owner，
+  // retryPendingSaves 永远不补传它，而且对每个登录的账号都可见。
+  const wantedCloud = target === 'cloud' || getSaveTarget() === 'cloud'
   // 时间戳给界面显示；revision 才是凭证 —— 两个标签页可能在同一毫秒各存一次。
   const stamp = Date.now()
   const revision = newSaveRevision()
@@ -728,7 +781,9 @@ async function pushOne(
     return {
       ok: localOk,
       where: localOk ? 'local' : null,
-      error: previous.syncBlocked,
+      error: previous.syncBlocked === 'conflict'
+        ? '云存档在另一台设备上已有更新；本地进度已保留，请在存档面板手动处理'
+        : previous.syncBlocked,
       cloudFailed: true,
       blocked: previous.syncBlocked,
     }
@@ -747,7 +802,35 @@ async function pushOne(
     revision,
     metadata,
     cloudRevision,
+    automatic,
   )
+}
+
+/**
+ * 受管理的 HTML5 游戏页在开局比较后判定「本地和云端都改过」时调用：
+ * 把游戏页本地那份记成本账号的待同步档并标成冲突。云端不动；之后的自动快照被
+ * pushOne 的冲突守卫拦住，只有玩家在存档面板手动保存到云端才会覆盖。
+ */
+export async function recordAutoSaveConflict(
+  runtime: SaveRuntime,
+  gameSlug: string,
+  data: Uint8Array,
+  slot = 0,
+  metadata?: SaveArchiveDetails,
+): Promise<boolean> {
+  if (!data.length || data.length > localSaveByteLimit(runtime)) return false
+  const owner = currentCloudOwner()
+  if (!owner) return false
+  const key = localKey(runtime, gameSlug, slot)
+  return serializePush(key, async () => {
+    const previous = await idbGet(key)
+    return idbPut(key, data, Date.now(), true, newSaveRevision(), {
+      cloudRevision: cloudRevisions.get(key) || (previous?.cloudOwner === owner ? previous.cloudRevision : undefined),
+      cloudOwner: owner,
+      syncBlocked: 'conflict',
+      saveMetadata: metadataForStorage(metadata),
+    })
+  })
 }
 
 /** 删存档：两边都删。游戏里「清空存档」用这个 —— 玩家的意思是这份进度不要了 */

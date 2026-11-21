@@ -1,8 +1,8 @@
 /**
  * 8BitGo 网页游戏 SDK v1。
  *
- * 这是游戏页主动接入的轻量桥：不加载第三方脚本、不改 WebGL 上下文，也不接触账号令牌。
- * 同源游戏仍由播放器直接采集；跨源游戏可通过精确来源的消息请求截图、本地录制和直播画帧。
+ * 这是游戏页主动接入的轻量桥：不加载第三方脚本、不改 WebGL 上下文。
+ * 媒体桥只通过精确来源的消息请求截图、本地录制和直播画帧；云存档客户端只使用调用方显式传入的开放平台令牌。
  */
 (() => {
   'use strict'
@@ -12,6 +12,8 @@
   const SOURCE = '8bitgo-game-sdk'
   const VERSION = 1
   const MAX_RECORD_MS = 60_000
+  const OPEN_API_BASE = 'https://8bitgo.com/api/open/v1'
+  const SAVE_RUNTIMES = new Set(['emulatorjs', 'jsdos', 'cloudgame', 'jsnes', 'ruffle', 'webretro', 'j2me', 'html5', 'ppsspp', 'dolphin'])
   const config = window.GAME_CONFIG?.eightBitGo || {}
   const state = {
     ready: false,
@@ -182,6 +184,175 @@
       'video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4',
       'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm',
     ].filter((type) => MediaRecorder.isTypeSupported?.(type))
+  }
+
+  class CloudSaveError extends Error {
+    constructor(message, { status = 0, code = 'network_error', detail = null, retryAfter = 0, currentRevision = '' } = {}) {
+      super(message)
+      this.name = 'CloudSaveError'
+      this.status = status
+      this.code = code
+      this.detail = detail
+      this.retryAfter = retryAfter
+      this.currentRevision = currentRevision
+    }
+  }
+
+  const cloudSaveApiBase = (raw) => {
+    let url
+    try { url = new URL(raw || OPEN_API_BASE) } catch { throw new TypeError('apiBaseUrl 必须是有效的 HTTPS 地址') }
+    const host = url.hostname.toLowerCase()
+    const siteHost = ['8bitgo.com', 'www.8bitgo.com', 'cn.8bitgo.com', 'tv.8bitgo.com'].includes(host)
+    const localHost = ['localhost', '127.0.0.1', '[::1]'].includes(host)
+    if ((!siteHost && !localHost) || (url.protocol !== 'https:' && !(localHost && url.protocol === 'http:')) || (siteHost && url.port) || url.username || url.password || url.search || url.hash) {
+      throw new TypeError('云存档令牌只能发送到 8BitGo 官方 API 或本机开发服务器')
+    }
+    const path = url.pathname.replace(/\/+$/, '')
+    if (path && path !== '/api/open/v1') throw new TypeError('apiBaseUrl 路径必须是 /api/open/v1')
+    return `${url.origin}/api/open/v1`
+  }
+
+  const cloudSaveCoord = ({ runtime, slug, gameSlug, slot = 0 } = {}) => {
+    const id = String(slug ?? gameSlug ?? '')
+    const rt = String(runtime || '')
+    const n = Number(slot)
+    if (!SAVE_RUNTIMES.has(rt)) throw new TypeError('runtime 不是 8BitGo 支持的存档引擎')
+    if (!id || id !== id.trim() || id.length > 160 || /[\\/\u0000-\u001f\u007f]/u.test(id)) throw new TypeError('slug 必须是 1 到 160 个字符，且不能含斜杠或控制字符')
+    if (!Number.isInteger(n) || n < 0 || n > 9) throw new TypeError('slot 必须是 0 到 9 的整数')
+    return { runtime: rt, slug: id, slot: n }
+  }
+
+  const cloudSaveRevision = (value, field, allowSentinel = false) => {
+    const revision = String(value ?? '')
+    if (allowSentinel && (revision === 'none' || revision === 'legacy')) return revision
+    if (!/^[A-Za-z0-9._:-]{1,80}$/.test(revision) || revision === 'none' || revision === 'legacy') {
+      throw new TypeError(`${field} 必须是 1 到 80 位字母、数字或 . _ : -`)
+    }
+    return revision
+  }
+
+  const newCloudSaveRevision = () => {
+    if (window.crypto?.randomUUID) return window.crypto.randomUUID()
+    if (window.crypto?.getRandomValues) {
+      const bytes = new Uint8Array(16)
+      window.crypto.getRandomValues(bytes)
+      return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
+    }
+    throw new Error('浏览器没有可用的安全随机数，无法生成存档版本')
+  }
+
+  /**
+   * 创建开放平台云存档客户端。只接受显式传入的用户级 access token，
+   * 不读取父页面、localStorage 或 8BitGo 站内登录态，也不把令牌写进 URL。
+   */
+  const createCloudSaveClient = ({ accessToken, apiBaseUrl } = {}) => {
+    const token = String(accessToken || '').trim()
+    if (!token || token.length > 16_384) throw new TypeError('请传入用户授权流程签发的 accessToken')
+    const base = cloudSaveApiBase(apiBaseUrl)
+
+    const request = async (path, options = {}) => {
+      let response
+      try {
+        response = await fetch(`${base}${path}`, {
+          ...options,
+          cache: 'no-store',
+          credentials: 'omit',
+          headers: { Authorization: `Bearer ${token}`, ...(options.headers || {}) },
+        })
+      } catch (error) {
+        if (error?.name === 'AbortError') throw error
+        throw new CloudSaveError(error?.message || '无法连接 8BitGo 云存档 API')
+      }
+      if (response.ok || response.status === 204) return response
+      let detail = null
+      try { detail = await response.json() } catch { /* 网关或代理可能没有 JSON 错误体 */ }
+      const code = String(detail?.error || 'http_error')
+      const message = String(detail?.error_description || detail?.error || `云存档 API 返回 HTTP ${response.status}`)
+      throw new CloudSaveError(message, {
+        status: response.status,
+        code,
+        detail,
+        retryAfter: Number(response.headers.get('Retry-After') || detail?.retry_after || 0),
+        currentRevision: String(response.headers.get('X-Save-Revision') || detail?.current_revision || ''),
+      })
+    }
+
+    const savePath = (coordinate) => {
+      const c = cloudSaveCoord(coordinate)
+      const slot = `?slot=${c.slot}`
+      const item = `/me/saves/${encodeURIComponent(c.runtime)}/${encodeURIComponent(c.slug)}`
+      return { c, path: `${item}${slot}`, metaPath: `${item}/meta${slot}` }
+    }
+
+    return Object.freeze({
+      /** 元信息列表；不下载存档内容。 */
+      async list({ signal } = {}) {
+        const response = await request('/me/saves', { signal })
+        return response.json()
+      },
+      /** 用户总容量与当前应用的每日写入额度。 */
+      async usage({ signal } = {}) {
+        const response = await request('/me/saves/usage', { signal })
+        return response.json()
+      },
+      /** 读取一份存档的版本、大小与时间；没有存档时返回 null。 */
+      async getMetadata(coordinate, { signal } = {}) {
+        const { metaPath } = savePath(coordinate)
+        const response = await request(metaPath, { signal })
+        return response.status === 204 ? null : response.json()
+      },
+      /** 下载二进制内容，返回 { data: ArrayBuffer, revision, parentRevision, updatedAt }。 */
+      async get(coordinate, { signal } = {}) {
+        const { path } = savePath(coordinate)
+        const response = await request(path, { signal })
+        return {
+          data: await response.arrayBuffer(),
+          revision: response.headers.get('X-Save-Revision') || 'legacy',
+          parentRevision: response.headers.get('X-Save-Parent-Revision') || null,
+          updatedAt: Number(response.headers.get('X-Save-Updated-At') || 0) || null,
+        }
+      },
+      /**
+       * 条件写入。首次创建 parentRevision 传 `none`；更新传最近读到的 revision。
+       * 返回新 revision；409 时 CloudSaveError.currentRevision 给出服务端当前版本。
+       */
+      async put(coordinate, { data, parentRevision, revision = newCloudSaveRevision(), signal } = {}) {
+        const { path } = savePath(coordinate)
+        const parent = cloudSaveRevision(parentRevision, 'parentRevision', true)
+        const next = cloudSaveRevision(revision, 'revision')
+        const validBody = data instanceof Blob || data instanceof ArrayBuffer || ArrayBuffer.isView(data)
+        if (!validBody) throw new TypeError('data 必须是 Blob、ArrayBuffer 或 TypedArray')
+        const size = data instanceof Blob ? data.size : data.byteLength
+        if (!size) throw new TypeError('云存档内容不能为空')
+        const response = await request(path, {
+          method: 'PUT',
+          signal,
+          headers: {
+            'Content-Type': 'application/octet-stream',
+            'X-Save-Revision': next,
+            'X-Save-Parent-Revision': parent,
+          },
+          body: data,
+        })
+        return { ...await response.json(), rateLimit: {
+          limit: Number(response.headers.get('X-RateLimit-Limit') || 0),
+          remaining: Number(response.headers.get('X-RateLimit-Remaining') || 0),
+          resetAt: Number(response.headers.get('X-RateLimit-Reset') || 0),
+        } }
+      },
+      /** 删除时必须传当前版本，避免陈旧页面删除其它设备的新进度。 */
+      async delete(coordinate, { revision, signal } = {}) {
+        const { path } = savePath(coordinate)
+        const expected = cloudSaveRevision(revision, 'revision', true)
+        if (expected === 'none') throw new TypeError('没有存档时无需调用 delete')
+        const response = await request(path, { method: 'DELETE', signal, headers: { 'X-Save-Delete-Revision': expected } })
+        return { ...await response.json(), rateLimit: {
+          limit: Number(response.headers.get('X-RateLimit-Limit') || 0),
+          remaining: Number(response.headers.get('X-RateLimit-Remaining') || 0),
+          resetAt: Number(response.headers.get('X-RateLimit-Reset') || 0),
+        } }
+      },
+    })
   }
 
   const startRecording = (options = {}) => {
@@ -534,6 +705,8 @@
       else sendParent({ source: '8bitgo-runtime-bridge', version: 1, type: 'failed', detail: String(message || '').slice(0, 160) })
     },
     captureScreenshot: screenshot,
+    CloudSaveError,
+    createCloudSaveClient,
     startRecording,
     stopRecording,
     startLiveCapture,
