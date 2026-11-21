@@ -178,6 +178,7 @@ for (const name of selected) {
 
   rmSync(output, { recursive: true, force: true })
   mkdirSync(resolve(output, 'web'), { recursive: true })
+  const excludedFiles = new Set(config.excludeFiles || [])
   cpSync(source, resolve(output, 'web', config.sourceDir), {
     recursive: true,
     filter: (path) => {
@@ -185,6 +186,7 @@ for (const name of selected) {
       const segments = rel.split('/')
       return !segments.includes('_framework') &&
         !(config.excludeDirs || []).some((name) => segments.includes(name)) &&
+        !excludedFiles.has(rel) &&
         !rel.endsWith('.DS_Store')
     },
   })

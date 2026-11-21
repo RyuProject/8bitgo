@@ -46,6 +46,9 @@ for (const name of selected) {
   for (const excluded of config.excludeDirs || []) {
     assert.ok(!existsSync(resolve(root, 'web', config.sourceDir, excluded)), `${name} 错把 ${excluded} 打进 Pages`)
   }
+  for (const excluded of config.excludeFiles || []) {
+    assert.ok(!existsSync(resolve(root, 'web', config.sourceDir, excluded)), `${name} 错把 ${excluded} 打进 Pages`)
+  }
 
   const files = walk(root)
   assert.ok(files.length <= 20_000, `${name} 文件数超过 Pages 免费版上限`)
@@ -65,6 +68,10 @@ for (const name of selected) {
         assert.match(html, /data-canvas-selector="body\.game-mode canvas#canvas"/, `${name}/${file} 没有把 PvZ 主画布登记给 SDK`)
         assert.ok(html.indexOf('8bitgo-media-bridge.js?v=') >= 0 && html.indexOf('8bitgo-media-bridge.js?v=') < html.indexOf('pvz-wasm-loader.js'), `${name}/${file} 必须在 PvZ 音频运行时前安装媒体桥`)
       }
+    } else if (name === 'gamblers-table') {
+      assert.ok(html.includes(`/html5-api/8bitgo-game-sdk.min.js?v=${gameSdkVersion}`), `${name}/${file} 没有加载当前版本 8BitGo SDK`)
+      assert.match(html, /data-canvas-selector=\"#canvas\"/, `${name}/${file} 没有把 Godot 画布登记给 SDK`)
+      assert.ok(html.indexOf('8bitgo-media-bridge.js?v=') >= 0 && html.indexOf('8bitgo-media-bridge.js?v=') < html.indexOf('src=\"index.js\"'), `${name}/${file} 必须在 Godot 初始化前安装媒体桥`)
     } else if (name === 'minecraft') {
       assert.ok(html.includes(`/html5-api/8bitgo-game-sdk.min.js?v=${gameSdkVersion}`), `${name}/${file} 没有加载当前版本 8BitGo SDK`)
       assert.match(html, /data-canvas-selector="body#game_frame canvas"/, `${name}/${file} 没有把 Minecraft 画布登记给 SDK`)
@@ -154,6 +161,15 @@ for (const name of selected) {
       assert.equal(staticResponse.headers.get('cross-origin-embedder-policy'), 'require-corp')
     }
 
+    if (config.runtime === 'gamblers-table') {
+      const response = await worker.fetch(new Request(`https://${config.domain}/web/gamblers-table/index.wasm`, {
+        headers: { Range: 'bytes=0-1023', 'Accept-Encoding': 'identity' },
+      }), { ASSETS: assets })
+      assert.equal(response.status, 200)
+      assert.equal(response.headers.get('content-type'), 'application/wasm')
+      assert.equal(fetched.at(-1).url, 'https://assets.8bitgo.com/web/gamblers-table/runtime/index.wasm')
+      assert.equal(fetched.at(-1).headers.get('range'), 'bytes=0-1023')
+    }
     if (config.runtime === 'diablo') {
       const response = await worker.fetch(new Request(`https://${config.domain}/web/diablo/static/media/Diablo.1234abcd.wasm`, {
         headers: { 'Accept-Encoding': 'br' },

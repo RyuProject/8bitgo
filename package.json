@@ -105,6 +105,7 @@
     "celeste:patch": "node scripts/patch-celeste-web.mjs",
     "celeste:check": "node scripts/check-celeste-web.mjs",
     "celeste:upload": "node scripts/upload-celeste-r2.mjs",
+    "gamblers-table:upload": "node scripts/upload-gamblers-table-r2.mjs",
     "test:celeste": "node scripts/test-celeste-web.mjs && node scripts/check-celeste-web.mjs",
     "minecraft:fetch": "node scripts/fetch-eaglercraft.mjs",
     "minecraft:check": "node scripts/check-eaglercraft.mjs",

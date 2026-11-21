@@ -25,7 +25,9 @@ export const WEB_GAME_PAGES = Object.freeze({
     sourceDir: 'gamblers-table',
     entry: '/web/gamblers-table/',
     title: 'Gamblers Table',
-    runtime: '',
+    // Godot 的 WASM / PCK 超过 Pages 25 MiB 单文件上限，由 _worker.js 从 R2 同源流式转发。
+    runtime: 'gamblers-table',
+    excludeFiles: ['index.wasm', 'index.pck'],
     isolated: false,
     html: [['index.html', '#canvas']],
   }),

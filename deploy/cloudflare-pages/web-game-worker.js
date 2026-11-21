@@ -68,6 +68,18 @@ function frameworkAsset(file, runtime, base) {
 }
 
 function runtimeAsset(pathname, base) {
+  if (GAME.runtime === 'gamblers-table') {
+    const match = /^\/web\/gamblers-table\/(index\.(?:wasm|pck))$/.exec(pathname)
+    if (!match) return undefined
+    const file = match[1]
+    return {
+      url: `${base}/web/gamblers-table/runtime/${file}`,
+      contentType: file.endsWith('.wasm') ? 'application/wasm' : 'application/octet-stream',
+      // 资源名没有内容哈希；必须重验证，避免 Godot 的壳和数据包跨版本拼在一起。
+      cacheControl: 'public, max-age=300, s-maxage=600, must-revalidate',
+    }
+  }
+
   if (GAME.runtime === 'diablo') {
     const match = /^\/web\/diablo\/static\/media\/([^/]+)$/.exec(pathname)
     if (!match) return undefined

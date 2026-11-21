@@ -40,7 +40,7 @@ npm run pages:web-game:deploy -- pvz
 - `undertale` → `8bitgo-undertale.pages.dev`
 - `subway-surfers` → `8bitgo-subway-surfers.pages.dev`
 
-Diablo、Celeste、Terraria 的大 WASM/.NET 文件不会复制进 Pages：各自的 `_worker.js` 会从 `https://assets.8bitgo.com` 取 R2 对象并同源转发。若以后更换 R2 域名，在对应 Pages 项目里设置 `RUNTIME_ASSET_BASE_URL`。
+Gamblers Table、Diablo、Celeste、Terraria 的大运行时文件不会复制进 Pages：各自的 `_worker.js` 会从 `https://assets.8bitgo.com` 取 R2 对象并同源转发。Gamblers Table 先执行 `npm run gamblers-table:upload -- --bucket 8bitgo-webgame`，再发布 Pages。若以后更换 R2 域名，在对应 Pages 项目里设置 `RUNTIME_ASSET_BASE_URL`。
 
 PvZ 的 `main.pak` 和动画包仍存放在网页游戏资源桶，玩家从 `download.8bitgo.com/PvZ/properties/`
 读取。构建后的中英文页面会把数据基址改成同源 `/pvz-data/`，由 Pages Worker 从下载域

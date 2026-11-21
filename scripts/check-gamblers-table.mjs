@@ -105,6 +105,7 @@ if (existsSync(adapterPath)) {
   const adapter = text(adapterPath)
   ok(adapter.includes("options.gameSlug === 'gamblers-table'"), 'HTML5 适配器没有区分 Gamblers Table 存档格式')
   ok(adapter.includes('isManagedGamblersTableEntry'), 'HTML5 适配器没有把 Gamblers Table 加入自动云存档 / SDK 精确白名单')
+  ok(text(resolve(repo, 'deploy/cloudflare-pages/web-game-worker.js')).includes("GAME.runtime === 'gamblers-table'"), 'Pages Worker 没有为 Gamblers Table 的 R2 大资源建立受限代理')
 }
 
 if (errors.length) {
