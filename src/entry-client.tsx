@@ -9,6 +9,7 @@ import { setLangForRender, syncHtmlLang } from '@/services/lang'
 import { langFromPath, langPrefix } from '@/config/languages'
 import { loadLocale } from '@/locales'
 import { initClarity } from '@/services/clarity'
+import { installRouteReport } from '@/services/romRouteReport'
 import { consumeOriginAssetsParam } from '@/services/moduleLinkRecovery'
 
 // 页面翻译会挪动文本节点，React 删插时崩溃；必须在首次渲染前装上（见 translatorDomGuard.ts）
@@ -16,6 +17,8 @@ installTranslatorDomGuard()
 
 // 大陆加速入口取不下来 chunk 后，兜底页带 __assets=origin 改用主站资源重新载入；路由读地址之前去掉参数
 consumeOriginAssetsParam()
+// 大陆玩家连优选 ROM 线路的成败回报给优选任务（只发计数，见 romRouteReport.ts）
+installRouteReport()
 
 /**
  * 首屏数据由 services/pageData 在模块加载时从 window.__8BITGO__ 里读走，

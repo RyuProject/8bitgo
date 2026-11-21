@@ -60,6 +60,23 @@ export const ROUTE_FASTER_MARGIN = 1.15
 const stats = new Map<string, RouteStat>()
 let loaded = false
 
+/**
+ * 外部观察者（真实用户回报，见 romRouteReport.ts）：每次记下的成功 / 计入的失败都通知一次。
+ * 用注入而不是 import，保持本模块不依赖任何业务模块。
+ */
+type RouteListener = (origin: string, ok: boolean, kind?: RomRouteFailure) => void
+let routeListener: RouteListener | null = null
+export function setRomRouteListener(listener: RouteListener | null): void {
+  routeListener = listener
+}
+const notify = (origin: string, ok: boolean, kind?: RomRouteFailure) => {
+  try {
+    routeListener?.(origin, ok, kind)
+  } catch {
+    /* 观察者出错不影响记分 */
+  }
+}
+
 const storage = (): Storage | null => {
   try {
     return typeof localStorage === 'undefined' ? null : localStorage
@@ -151,6 +168,7 @@ export function recordRomRouteTransfer(url: string, bytes: number, elapsedMs: nu
     stat.rateAt = now
   }
   save()
+  notify(origin, true)
 }
 
 /** 线路答复了（HEAD 成功、Range 头对上），但没有可用的吞吐样本 */
@@ -158,7 +176,7 @@ export function recordRomRouteSuccess(url: string): void {
   recordRomRouteTransfer(url, 0, 0)
 }
 
-export function recordRomRouteFailure(url: string, _kind: RomRouteFailure, now = Date.now()): void {
+export function recordRomRouteFailure(url: string, kind: RomRouteFailure, now = Date.now()): void {
   const origin = romRouteOrigin(url)
   if (!origin) return
   const stat = statFor(origin)
@@ -172,6 +190,7 @@ export function recordRomRouteFailure(url: string, _kind: RomRouteFailure, now =
     stat.openUntil = now + span
   }
   save()
+  notify(origin, false, kind)
 }
 
 /** 这条线路是否在熔断中 */
