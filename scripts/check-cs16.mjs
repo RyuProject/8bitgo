@@ -409,6 +409,8 @@ try {
     '--platform=browser',
     '--target=es2022',
     '--loader:.wasm=binary',
+    // node_modules 在本地 worktree 可能是符号链接；保留它才能避免 esbuild 把开发机绝对路径写进产物注释。
+    '--preserve-symlinks',
     `--outfile=${generated}`,
   ], { stdio: 'pipe' })
   if (!readFileSync(generated).equals(readFileSync(join(publicDir, 'cs16.bundle.js')))) {
