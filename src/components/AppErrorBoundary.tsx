@@ -1,7 +1,9 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
 import { newStartupId, recordStartupEvent } from '@/services/startupFunnel'
+import { collectStartupDiagnostics, noteStartupEvent, type StartupRecovery } from '@/services/startupDiagnostics'
 import {
   assetsFromCnEdge,
+  describeImportEvidence,
   failedLegacyChunkFile,
   isSystemJsChunkLoadError,
   lazyFailure,
@@ -14,6 +16,8 @@ import {
   resolveChunkUrl,
   summarizeRepair,
 } from '@/services/moduleLinkRecovery'
+import { deferRecoveryReport, takeRecoveryForFailure, type PendingReport } from '@/services/pageRecovery'
+import { componentPath, errorHead, isReactUpdateLoop, stackFrames } from '@/services/renderErrorText'
 
 const CHUNK_RELOAD_PREFIX = '8bitgo.chunk-reload:'
 const ORIGIN_RELOAD_PREFIX = '8bitgo.chunk-origin-reload:'
@@ -56,12 +60,14 @@ function reloadWhenOnline(): void {
   window.addEventListener('online', reload, { once: true })
 }
 
-function reloadOnce(): boolean {
-  if (!claimReload(CHUNK_RELOAD_PREFIX)) return false
-  // 退到主站资源之后再刷新也留在主站：普通 reload 会回到地址栏里那份（已去掉参数的）EdgeOne 页面
+/** 刷新这一页。退到主站资源之后再刷新也留在主站：普通 reload 会回到地址栏里那份（已去掉参数的）EdgeOne 页面 */
+function reloadPage(): void {
   if (onOriginAssetsPage()) location.replace(originAssetsUrl(location))
   else location.reload()
-  return true
+}
+
+function toOriginAssets(): void {
+  location.replace(originAssetsUrl(location))
 }
 
 /**
@@ -76,23 +82,69 @@ function claimOriginReload(edge: boolean): boolean {
   return edge && claimReload(ORIGIN_RELOAD_PREFIX)
 }
 
+/** 上一份文档自动刷新过、这一份又崩了：从 pageRecovery 接过来的前情 */
+type PreviousAttempt = ReturnType<typeof takeRecoveryForFailure>
+
+/** 这次故障的一句话：再坏一次时写进报告（「刷新前：…」） */
+function incidentSummary(error: unknown, note: string): string {
+  const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+  return [message.slice(0, 140), note.slice(0, 150)].filter(Boolean).join('；')
+}
+
+/**
+ * 要自动刷新时调用：报告留到刷新后的新页面再发（好了记 `recovered`，又坏了并进那一份；见 services/pageRecovery.ts）。
+ * 2026-11-19 以前这里是「先上报再刷新」，刷新后好了的也记成一份「加载失败」，和停在兜底页的真故障混在一组。
+ * sessionStorage 存不进去时退回原来的做法：先报，现场不能丢。
+ */
+function deferThenNavigate(
+  error: unknown,
+  info: ErrorInfo,
+  note: string,
+  via: 'reload' | 'origin',
+  file: string | null,
+  previous: PreviousAttempt,
+  navigate: () => void,
+): void {
+  const fullNote = withPrevious(note, previous)
+  const report = buildCrashReport(error, info, fullNote)
+  if (!deferRecoveryReport({ file, via, summary: incidentSummary(error, fullNote), report }) && report) sendCrashReport(report)
+  navigate()
+}
+
+/**
+ * 以前就不上报的静默刷新（部署切换的旧 chunk、没查出坏文件的偶发失败）：好了照旧什么都不发，
+ * 只把前情留给刷新后的页面 —— 再崩一次时，那份报告能写出「这已经是自动刷新之后」。
+ */
+function silentReload(error: unknown, file: string | null, previous: PreviousAttempt, note = ''): boolean {
+  if (!claimReload(CHUNK_RELOAD_PREFIX)) return false
+  deferRecoveryReport({ file, via: 'reload', summary: incidentSummary(error, withPrevious(note, previous)), report: null })
+  reloadPage()
+  return true
+}
+
+function withPrevious(note: string, previous: PreviousAttempt): string {
+  if (!previous) return note
+  return [note, `自动刷新后再次失败（刷新前：${previous.summary.slice(0, 200)}）`].filter(Boolean).join('；')
+}
+
 /**
  * chunk 没加载上（404 / 网络 / HTTP 错误）或者加载上了却解析 / 链接失败（字节坏了，2026-11-15 PK / TH 的
- * `does not provide an export named`）：先让 public/assets/asset-repair-v6.js 按构建时的 SHA-256 清单核对依赖图
+ * `does not provide an export named`）：先让 public/assets/asset-repair-v7.js 按构建时的 SHA-256 清单核对依赖图
  * 用过的 chunk，坏的绕过缓存重取 —— 普通刷新只会从一年 immutable 的缓存里拿回同一份坏字节。
  *
  * 2026-11-16 诊断包 #761（微信 iOS，cn.8bitgo.com/_cn/assets/ 上懒加载 GameDetailPage 报
  * `Importing a module script failed`，自动刷新后再失败）之后：
  * - Safari 这句错误不带地址，懒加载失败的 chunk 由 lazyNamed 挂在错误上，作为点名文件交给修复脚本；
- * - 大陆加速入口取不下来、主站正常（edgeOnly）：上报，改用主站资源整页重新载入；
- * - 修好了（缓存坏副本 / 偶发取不下来）：上报再刷新一次；
+ * - 大陆加速入口取不下来、主站正常（edgeOnly）：改用主站资源整页重新载入；
+ * - 修好了（缓存坏副本 / 偶发取不下来 / 文件正常、失败在本页模块表里）：刷新一次；
  * - 若被点名的懒加载 chunk 在 EdgeOne 上字节已校验正确、强制重取后仍无法动态导入，直接改用主站资源整页重载；
  *   这表示文件内容本身没坏，继续刷新同一资源域可能重复遇到浏览器 / 边缘链路问题（诊断包 #951）；
  * - 没发现坏文件、但这是 404 那类旧 chunk：照旧刷新一次，不算故障；一分钟内又坏了，在加速入口上就换主站再试一次；
  * - 其余：上报，停在兜底页。
+ * 2026-11-19 起，要自动刷新的那几种不再「先上报」，由刷新后的页面补报结论（deferThenNavigate）。
  * 修复脚本是首页内联钩子按需加载的；钩子不在（旧模板）时退回原来的行为。
  */
-function recoverBrokenAsset(error: unknown, info: ErrorInfo): boolean {
+function recoverBrokenAsset(error: unknown, info: ErrorInfo, previous: PreviousAttempt): boolean {
   const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
   const stale = STALE_CHUNK.test(message) || isSystemJsChunkLoadError(error)
   const syntax = error instanceof Error && error.name === 'SyntaxError'
@@ -107,53 +159,59 @@ function recoverBrokenAsset(error: unknown, info: ErrorInfo): boolean {
   const entrySrc = currentEntrySrc()
   const failure = moduleLinkFailure(message)
   const lazy = lazyFailure(error)
+  const chunk = lazy?.file ?? failedLegacyChunkFile(error)
+  const graph = describeImportEvidence(lazy?.graph)
   // integrity 清单只含现代 ES 产物；legacy 走 SystemJS，不能拿现代文件的清单声称旧 chunk 正常。
   // 能从 SystemJS 错误里取到文件名时，懒加载层已用两个唯一查询串重试；仍失败先整页刷新，重复失败再切主站资源。
   if (isSystemJsChunkLoadError(error) || lazy?.file?.includes('-legacy-')) {
-    if (reloadOnce()) return true
+    if (silentReload(error, chunk, previous, graph)) return true
     const edge = assetsFromCnEdge(entrySrc, location.origin)
     if (claimOriginReload(edge)) {
-      const file = lazy?.file ?? failedLegacyChunkFile(error)
-      reportRenderCrash(error, info, `legacy 页面脚本${file ? ` ${file}` : ''}重复加载失败，已改用主站资源重新载入`)
-      location.replace(originAssetsUrl(location))
+      const note = [`legacy 页面脚本${chunk ? ` ${chunk}` : ''}重复加载失败，已改用主站资源重新载入`, graph].filter(Boolean).join('；')
+      deferThenNavigate(error, info, note, 'origin', chunk, previous, toOriginAssets)
       return true
     }
     return false
   }
+  // 证据里点名失败的依赖也交给修复脚本：强制重取一遍，顺带把这几个文件写回浏览器缓存
   const named = [
     failure?.specifier ? resolveChunkUrl(failure.specifier, entrySrc) : null,
     lazy?.file ? resolveChunkUrl(`./${lazy.file}`, entrySrc) : null,
+    ...(lazy?.graph?.failed ?? []).map((dep) => resolveChunkUrl(`./${dep}`, entrySrc)),
   ].filter((url): url is string => Boolean(url))
   const pending = repairAssets({ reason: message.slice(0, 300), urls: named })
-  if (!pending) return stale ? reloadOnce() : false
+  if (!pending) return stale ? silentReload(error, chunk, previous, graph) : false
   void pending.then((result) => {
-    const note = [lazy ? `懒加载：${lazy.file ?? lazy.name}` : '', summarizeRepair(result, repairLoadInfo())]
+    const note = [lazy ? `懒加载：${lazy.file ?? lazy.name}` : '', graph, summarizeRepair(result, repairLoadInfo())]
       .filter(Boolean).join('；')
     const edge = stale && assetsFromCnEdge(entrySrc, location.origin)
-    const toOrigin = () => location.replace(originAssetsUrl(location))
     if (edge && result?.edgeOnly?.length && claimOriginReload(edge)) {
-      reportRenderCrash(error, info, `${note}；已改用主站资源重新载入`)
-      toOrigin()
+      deferThenNavigate(error, info, `${note}；已改用主站资源重新载入`, 'origin', chunk, previous, toOriginAssets)
       return
     }
     // #951：文件 SHA-256 正确但模块加载仍失败时，同一 EdgeOne 地址重载无法改变响应链路；整页换主站资源。
     if (edge && lazy?.file && result?.refreshed.includes(lazy.file) && claimOriginReload(edge)) {
-      reportRenderCrash(error, info, `${note}；模块内容校验正常但导入仍失败，已改用主站资源重新载入`)
-      toOrigin()
+      deferThenNavigate(error, info, `${note}；模块内容校验正常但导入仍失败，已改用主站资源重新载入`, 'origin', chunk, previous, toOriginAssets)
       return
     }
     if (repairFixedSomething(result)) {
-      reportRenderCrash(error, info, note)
-      if (!reloadOnce() && claimOriginReload(edge)) toOrigin()
+      if (claimReload(CHUNK_RELOAD_PREFIX)) {
+        deferThenNavigate(error, info, note, 'reload', chunk, previous, reloadPage)
+        return
+      }
+      if (claimOriginReload(edge)) {
+        deferThenNavigate(error, info, `${note}；刷新后仍失败，已改用主站资源重新载入`, 'origin', chunk, previous, toOriginAssets)
+        return
+      }
+      reportRenderCrash(error, info, note, previous)
       return
     }
-    if (stale && reloadOnce()) return
+    if (stale && silentReload(error, chunk, previous, note)) return
     if (claimOriginReload(edge)) {
-      reportRenderCrash(error, info, `${note}；刷新后仍失败，已改用主站资源重新载入`)
-      toOrigin()
+      deferThenNavigate(error, info, `${note}；刷新后仍失败，已改用主站资源重新载入`, 'origin', chunk, previous, toOriginAssets)
       return
     }
-    reportRenderCrash(error, info, note)
+    reportRenderCrash(error, info, note, previous)
   })
   return true
 }
@@ -173,13 +231,57 @@ interface AppErrorBoundaryState {
  * 只放错误本身、浏览器 UA 和前端版本，不放地址参数、账号或存档之类的东西。
  */
 export function describeRenderError(error: unknown, ua = '', build = ''): string {
-  const head = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
-  const frames = error instanceof Error && typeof error.stack === 'string'
-    ? error.stack.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('at ') || l.includes('@')).slice(0, 4)
-    : []
-  return [head.slice(0, 400), ...frames.map((f) => f.slice(0, 200)), ua && `UA: ${ua.slice(0, 200)}`, build && `build: ${build}`]
+  return [errorHead(error), ...stackFrames(error), ua && `UA: ${ua.slice(0, 200)}`, build && `build: ${build}`]
     .filter(Boolean)
     .join('\n')
+}
+
+/**
+ * 拼一份「页面崩溃」报告：错误原文、组件栈、修复结论，以及此刻的诊断包（环境、页面打开以来慢 / 失败的请求、日志）。
+ * 只在 /games/<slug> 上有：漏斗按游戏记账，别的页面没有挂靠的游戏。
+ * 诊断包现在就采：要刷新的那几种会把它存进 sessionStorage，刷新后的页面看不到这一页的请求和日志。
+ */
+function buildCrashReport(error: unknown, info: ErrorInfo, note = '', recovery?: StartupRecovery): PendingReport | null {
+  try {
+    const slug = location.pathname.match(/(?:^|\/)games\/([^/?#]+)/)?.[1]
+    if (!slug) return null
+    // 更新循环（#185）：组件栈排在调用栈前面并多给几层。摘要只留 160 字，调用栈全是压缩后的 react-dom 内部函数，
+    // 组件名才指得出是哪块页面在循环；循环的那个组件也常常不在最内层（最内层是被它反复重渲染的子组件）。
+    // 其它错误保持原来的顺序，后台已有的分组特征不变。
+    const loop = isReactUpdateLoop(error)
+    const components = componentPath(info.componentStack, loop ? 8 : 3)
+    const component = components && `组件：${components}`
+    const detail = (loop
+      ? [errorHead(error), component, note, ...stackFrames(error, 2)]
+      : [describeRenderError(error), component, note])
+      .concat(`build: ${currentBuild()}`)
+      .filter(Boolean).join('\n')
+    const visitId = newStartupId()
+    const attemptId = newStartupId()
+    noteStartupEvent(visitId, attemptId, 'failed')
+    const diagnostics = collectStartupDiagnostics(attemptId, detail, { resourcesSincePageStart: true })
+    return {
+      slug: decodeURIComponent(slug),
+      visitId,
+      attemptId,
+      detail,
+      diagnostics: diagnostics && recovery ? { ...diagnostics, recovery } : diagnostics,
+    }
+  } catch {
+    return null
+  }
+}
+
+function sendCrashReport(report: PendingReport): void {
+  recordStartupEvent(report.slug, {
+    visitId: report.visitId,
+    attemptId: report.attemptId,
+    event: 'failed',
+    runtime: 'page',
+    platform: '',
+    detail: report.detail,
+    diagnostics: report.diagnostics ?? undefined,
+  })
 }
 
 /**
@@ -189,24 +291,15 @@ export function describeRenderError(error: unknown, ua = '', build = ''): string
  * Chrome 134 的 Android 模拟器、强制 legacy 包里都打得开、能开局，猜不出来。这张页面以前只往本机控制台
  * 打一行，谁也看不到。现在玩家不用截图，下一次出现就能在后台看到错误原文、组件栈和粗粒度浏览器信息
  * （服务端只存「Chrome 110 / Android 15」，不存完整 UA；地址参数、账号、存档都不上报）。
- * 只在 /games/<slug> 上报：漏斗按游戏记账，别的页面没有挂靠的游戏。
+ * 上一份文档自动刷新过（previous）：这就是刷新之后又失败，诊断包标 failed_again，后台和第一次就失败的分开。
  */
-function reportRenderCrash(error: unknown, info: ErrorInfo, note = ''): void {
+function reportRenderCrash(error: unknown, info: ErrorInfo, note = '', previous: PreviousAttempt = null): void {
   try {
-    const slug = location.pathname.match(/(?:^|\/)games\/([^/?#]+)/)?.[1]
-    if (!slug) return
-    const components = String(info.componentStack ?? '')
-      .split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 3).join(' < ')
-    const detail = [describeRenderError(error), components && `组件：${components}`, note, `build: ${currentBuild()}`]
-      .filter(Boolean).join('\n')
-    recordStartupEvent(decodeURIComponent(slug), {
-      visitId: newStartupId(),
-      attemptId: newStartupId(),
-      event: 'failed',
-      runtime: 'page',
-      platform: '',
-      detail,
-    })
+    const recovery: StartupRecovery | undefined = previous
+      ? { outcome: 'failed_again', via: previous.via, afterMs: previous.afterMs, previous: previous.summary.slice(0, 200) }
+      : undefined
+    const report = buildCrashReport(error, info, withPrevious(note, previous), recovery)
+    if (report) sendCrashReport(report)
   } catch {
     /* 上报本身出错也不能影响兜底页 */
   }
@@ -231,6 +324,9 @@ function currentBuild(): string {
  * 整个根节点，玩家只剩一张白页。这里刻意不依赖路由和翻译 Context：它们本身坏掉时，
  * 这张最后的错误页也必须能画出来。
  */
+/** 本页已经为更新循环原地重挂过一次（见 AppErrorBoundary.retryUpdateLoop），模块级：重挂后的新子树再崩也算同一页 */
+let updateLoopRemounted = false
+
 export class AppErrorBoundary extends Component<{ children: ReactNode }, AppErrorBoundaryState> {
   state: AppErrorBoundaryState = { failed: false, detail: '' }
 
@@ -244,7 +340,31 @@ export class AppErrorBoundary extends Component<{ children: ReactNode }, AppErro
     console.error('[8bitgo] 页面渲染失败', error, info.componentStack)
     // 部署切换的旧 chunk 会自动刷新自救，不算故障；其余情况把现场送进后台「错误诊断」
     // chunk 下载失败 / 字节坏了：先核对修复，再按结果决定刷新还是上报（异步，自己负责上报）
-    if (!recoverBrokenAsset(error, info)) reportRenderCrash(error, info)
+    // 上一份文档是自动刷新过来的：接过前情，这次的报告写明「自动刷新后再次失败」（services/pageRecovery.ts）
+    if (isReactUpdateLoop(error)) {
+      this.retryUpdateLoop(error, info, takeRecoveryForFailure())
+      return
+    }
+    const previous = takeRecoveryForFailure()
+    if (!recoverBrokenAsset(error, info, previous)) reportRenderCrash(error, info, '', previous)
+  }
+
+  /**
+   * React 更新循环（#185）：先上报，再原地重新挂载一次子树，第二次还循环才停在兜底页。
+   *
+   * 2026-11-17《森林冰火人 4》、11-20《超级马里奥》（都在大陆）各一份 #185，摘要里没有组件栈，定位不到是哪个组件。
+   * 已知能触发它的模式是「effect 依赖不稳定 + 同步通知 useSyncExternalStore」，这类循环常由一次性的时序引起
+   * （某个 store 刚好在那一帧连续变化），整页刷新会丢掉玩家的位置，而原地重挂只重建 React 子树，代价最小。
+   * 每个页面只重挂一次：真是确定性的死循环，第二次照样停在兜底页，并且两份报告都带着组件栈。
+   */
+  private retryUpdateLoop(error: unknown, info: ErrorInfo, previous: PreviousAttempt): void {
+    if (updateLoopRemounted) {
+      reportRenderCrash(error, info, '原地重新挂载一次后再次出现更新循环', previous)
+      return
+    }
+    updateLoopRemounted = true
+    reportRenderCrash(error, info, '页面更新循环：已原地重新挂载一次', previous)
+    window.setTimeout(() => this.setState({ failed: false, detail: '' }), 0)
   }
 
   render() {

@@ -363,18 +363,12 @@ const CORE_FETCH_FROM = 'if(y=await fetch(t,{method:n,headers:s,body:o,signal:f.
 const CORE_FETCH_TO =
   'let __8bgResumePlan=__8bgCoreResume.plan(t,n,o,s);const __8bgFetchFull=async()=>{clearTimeout(V),f=new AbortController,V=setTimeout(()=>f.abort(),h);try{return await fetch(t,{method:n,headers:s,body:o,signal:f.signal})}finally{clearTimeout(V)}};' +
   'if(y=await fetch(t,{method:n,headers:__8bgResumePlan?__8bgResumePlan.headers:s,body:o,signal:f.signal}),clearTimeout(V),__8bgResumePlan){' +
-  'const __8bgAccepted=await __8bgCoreResume.accept(__8bgResumePlan,y,__8bgFetchFull);y=__8bgAccepted.response;__8bgResumeState=__8bgAccepted.state;if(__8bgResumeState)__8bgResumeState.buffer=__8bgAccepted.buffer||null}' +
+  'const __8bgAccepted=await __8bgCoreResume.accept(__8bgResumePlan,y,__8bgFetchFull);y=__8bgAccepted.response;__8bgResumeState=__8bgAccepted.state;if(__8bgResumeState)__8bgResumeState.prefix=__8bgAccepted.prefix||[]}' +
   'clearTimeout(V);if(!y.ok)throw new Error(`HTTP ${y.status}`);'
 const CORE_READER_INIT_FROM = 'const e=y.body.getReader();let i=0,n=[];let __8bgStall=0;'
 const CORE_READER_INIT_TO =
-  'const e=y.body.getReader();let i=__8bgResumeState?.start||0,n=[],__8bgTarget=__8bgResumeState?.buffer||(__8bgResumeState?.total&&__8bgResumeState.total<=67108864?new Uint8Array(__8bgResumeState.total):null);if(__8bgResumeState?.buffer)__8bgResumeState.buffer=null;else if(__8bgTarget&&i&&__8bgResumeState?.prefix){let __8bgPrefixOffset=0;for(const __8bgPart of __8bgResumeState.prefix){__8bgTarget.set(__8bgPart,__8bgPrefixOffset);__8bgPrefixOffset+=__8bgPart.byteLength}__8bgResumeState.prefix=[]}if(__8bgResumeState?.total)t=__8bgResumeState.total;if(i&&r)r("downloading",Math.floor(i/t*100),i,t);const __8bgWriter=__8bgCoreResume.writer(__8bgResumeState);let __8bgStall=0;'
-const CORE_READER_INIT_TO_PREVIOUS =
-  'const e=y.body.getReader();let i=__8bgResumeState?.start||0,n=[],__8bgTarget=__8bgResumeState?.buffer||(__8bgResumeState?.total?new Uint8Array(__8bgResumeState.total):null);if(__8bgResumeState?.buffer)__8bgResumeState.buffer=null;else if(__8bgTarget&&i&&__8bgResumeState?.prefix){let __8bgPrefixOffset=0;for(const __8bgPart of __8bgResumeState.prefix){__8bgTarget.set(__8bgPart,__8bgPrefixOffset);__8bgPrefixOffset+=__8bgPart.byteLength}__8bgResumeState.prefix=[]}if(__8bgResumeState?.total)t=__8bgResumeState.total;if(i&&r)r("downloading",Math.floor(i/t*100),i,t);const __8bgWriter=__8bgCoreResume.writer(__8bgResumeState);let __8bgStall=0;'
-const CORE_READER_INIT_TO_V1 =
-  'const e=y.body.getReader();let i=__8bgResumeState?.start||0,n=[],__8bgTarget=__8bgResumeState?.total?new Uint8Array(__8bgResumeState.total):null;if(__8bgResumeState?.buffer&&__8bgTarget){__8bgTarget.set(__8bgResumeState.buffer,0);__8bgResumeState.buffer=null}else if(__8bgTarget&&i&&__8bgResumeState?.prefix){let __8bgPrefixOffset=0;for(const __8bgPart of __8bgResumeState.prefix){__8bgTarget.set(__8bgPart,__8bgPrefixOffset);__8bgPrefixOffset+=__8bgPart.byteLength}__8bgResumeState.prefix=[]}if(__8bgResumeState?.total)t=__8bgResumeState.total;if(i&&r)r("downloading",Math.floor(i/t*100),i,t);const __8bgWriter=__8bgCoreResume.writer(__8bgResumeState);let __8bgStall=0;'
-const CORE_READER_INIT_TO_V0 =
   'const e=y.body.getReader();let i=__8bgResumeState?.start||0,n=__8bgResumeState?.prefix||[],__8bgTarget=__8bgResumeState?.total?new Uint8Array(__8bgResumeState.total):null;if(__8bgTarget&&i){let __8bgPrefixOffset=0;for(const __8bgPart of n){__8bgTarget.set(__8bgPart,__8bgPrefixOffset);__8bgPrefixOffset+=__8bgPart.byteLength}n=[]}if(__8bgResumeState?.total)t=__8bgResumeState.total;if(i&&r)r("downloading",Math.floor(i/t*100),i,t);const __8bgWriter=__8bgCoreResume.writer(__8bgResumeState);let __8bgStall=0;'
-const CORE_READER_INIT_TO_EARLIER =
+const CORE_READER_INIT_TO_PREVIOUS =
   'const e=y.body.getReader();let i=__8bgResumeState?.start||0,n=__8bgResumeState?.prefix||[];if(__8bgResumeState?.total)t=__8bgResumeState.total;if(i&&r)r("downloading",Math.floor(i/t*100),i,t);const __8bgWriter=__8bgCoreResume.writer(__8bgResumeState);let __8bgStall=0;'
 const BODY_READ_RESUME_FROM = BODY_READ_FALLBACK_TO
 let BODY_READ_RESUME_TO = BODY_READ_RESUME_FROM
@@ -410,8 +404,8 @@ replaceResumeSource(
 const CORE_COMPLETE_FROM = 'c(n)}else{const i="temp-"+Date.now();c(new a(i,B,b,e,d,S,t,A))}'
 const CORE_COMPLETE_TO = '(__8bgResumeState&&__8bgCoreResume.complete(__8bgResumeState)),c(n)}else{const i="temp-"+Date.now();(__8bgResumeState&&__8bgCoreResume.complete(__8bgResumeState)),c(new a(i,B,b,e,d,S,t,A))}'
 const CORE_FETCH_TO_PREVIOUS = CORE_FETCH_TO.replace(
-  '__8bgResumeState.buffer=__8bgAccepted.buffer||null',
-  '__8bgResumeState.prefix=__8bgAccepted.prefix||[]',
+  'let __8bgResumePlan=__8bgCoreResume.plan(t,n,o,s);',
+  'let __8bgResumePlan=__8bgCoreResume.plan(t,n,o,s),__8bgResumeState=null;',
 )
 let BODY_READ_RESUME_TO_PREVIOUS = BODY_READ_RESUME_FROM
 const replacePreviousResumeSource = (from, to) => {
@@ -778,7 +772,7 @@ const GROUPS = [
       'IndexedDB 只保存 1 MiB 完整片，最终片不落盘；恢复前先校验连续前缀，校验失败就取消 Range 并从头请求。',
       'XHR 只在验证 206 偏移、总长、ETag、MIME 后拼接；Range 不兼容时最多追加一次完整 GET。',
     ],
-    legacy: (to) => to === CORE_FETCH_TO ? CORE_FETCH_TO_PREVIOUS : to === CORE_READER_INIT_TO ? [CORE_READER_INIT_TO_PREVIOUS, CORE_READER_INIT_TO_V1, CORE_READER_INIT_TO_V0, CORE_READER_INIT_TO_EARLIER] : to === BODY_READ_RESUME_TO ? BODY_READ_RESUME_TO_PREVIOUS : undefined,
+    legacy: (to) => to === CORE_FETCH_TO ? CORE_FETCH_TO_PREVIOUS : to === CORE_READER_INIT_TO ? CORE_READER_INIT_TO_PREVIOUS : to === BODY_READ_RESUME_TO ? BODY_READ_RESUME_TO_PREVIOUS : undefined,
   },
 
   {

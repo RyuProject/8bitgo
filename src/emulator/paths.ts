@@ -20,6 +20,7 @@ import { platformMap } from '@/data/platforms'
 import { NETPLAY_URL } from '@/services/roomFlags'
 import { EJS_CORE_VERSIONS } from './ejsCoreVersionsData'
 import { cnEdgeApiBase } from '@/services/cnHost'
+import { notifyRuntimeEdgeBad, persistEdgeBad, persistedEdgeBad, type RuntimeEdgeKind } from './runtimeEdgeRoute'
 import { hotfixFlags } from '@/services/hotfixFlags'
 
 /** 末尾补上斜杠；空值原样返回（空 = 没配置 = 该引擎不可用） */
@@ -67,9 +68,10 @@ export const EJS_PATH: string = asDir(import.meta.env.VITE_EJS_PATH, '/emulatorj
  *
  * ⚠️ 引擎的 IndexedDB 核心缓存以 URL 为键：大陆老访客第一次换到这条线路会重下一次核心。
  */
-type RuntimeEdgeKind = 'ejs' | 'ruffle' | 'jsdos' | 'ppsspp' | 'j2me'
 let runtimeEdgeOrigin: string | null = null
 const runtimeEdgeFailed = new Set<RuntimeEdgeKind>()
+/** 这一页已经读过持久化判坏结论的运行时（每页每种只读一次，见 runtimeEdgeRoute.ts） */
+const runtimeEdgePersistRead = new Set<RuntimeEdgeKind>()
 
 function cnRuntimeEdge(): string {
   if (typeof window === 'undefined') return ''
@@ -81,10 +83,35 @@ function cnRuntimeEdge(): string {
 }
 
 function runtimeBase(kind: RuntimeEdgeKind, path: string): string {
+  // 本浏览器最近在加速入口上看到过硬证据（失速 / 吞吐极低），2 小时内直接走同源（runtimeEdgeRoute.ts）
+  if (!runtimeEdgePersistRead.has(kind)) {
+    runtimeEdgePersistRead.add(kind)
+    if (typeof window !== 'undefined' && persistedEdgeBad(kind)) runtimeEdgeFailed.add(kind)
+  }
   // AI 临时修补 runtime_origin（shared/hotfix.js）：加速入口出了问题时，这款游戏的运行时全部回同源
   if (!path.startsWith('/') || runtimeEdgeFailed.has(kind) || hotfixFlags().runtimeOrigin) return path
   const edge = cnRuntimeEdge()
   return edge ? `${edge}${path}` : path
+}
+
+/** 这种运行时在加速入口上的目录（不管现在是否已判坏）；不走加速入口的访客返回空串 */
+function runtimeEdgePrefix(path: string): string {
+  if (!path.startsWith('/')) return ''
+  const edge = cnRuntimeEdge()
+  return edge ? `${edge}${path}` : ''
+}
+
+/**
+ * 有硬证据说明加速入口对这位访客不可用（失速、吞吐极低、入口脚本在加速入口上加载失败 / 超时）：
+ * 本页改走同源、记 2 小时（runtimeEdgeRoute.ts），并通知还挂在加速入口上的请求立刻改道。
+ * 「开局前报错」这种不一定是线路问题的，仍用各自的 mark…EdgeFailed（只影响本页）。
+ */
+export function markRuntimeEdgeBad(kind: RuntimeEdgeKind): void {
+  const first = !runtimeEdgeFailed.has(kind)
+  runtimeEdgeFailed.add(kind)
+  runtimeEdgePersistRead.add(kind)
+  if (cnRuntimeEdge()) persistEdgeBad(kind)
+  if (first) notifyRuntimeEdgeBad(kind)
 }
 
 /** 这一局实际用的 EmulatorJS 根 */
@@ -237,6 +264,8 @@ export const jsdosBase = (): string => runtimeBase('jsdos', JSDOS_PATH)
 export function markJsdosEdgeFailed(): void {
   runtimeEdgeFailed.add('jsdos')
 }
+/** js-dos 在加速入口上的目录（用于识别预热请求、判坏后改道）；不走加速入口时为空串 */
+export const jsdosEdgePrefix = (): string => runtimeEdgePrefix(JSDOS_PATH)
 
 /**
  * J2ME 的大文件（freej2me-web.jar、libmidi.wasm、游戏 JAR）走大陆加速入口时的目录，例如
@@ -419,7 +448,7 @@ export const PPSSPP_PATH: string = asDir(import.meta.env.VITE_PPSSPP_PATH)
   2026-11-15 v22：移动/弱网/低配设备使用 480×272，普通设备 640×360，明确高配桌面设备最高 720×408。
   2026-11-17 v23：PSP 远程盘 Range 请求在当前线路断流时依次切换已验证的备用 ROM 域名。
 */
-export const PPSSPP_RUNTIME_GENERATION = 'v23'
+export const PPSSPP_RUNTIME_GENERATION = 'v24'
 export const PPSSPP_RUNTIME_PATH: string = PPSSPP_PATH
   ? asDir(`${PPSSPP_PATH}${PPSSPP_RUNTIME_GENERATION}`)
   : ''

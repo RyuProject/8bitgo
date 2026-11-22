@@ -1,3 +1,10 @@
+// 8bitgo（2026-11-19）：整份 loader 包进立即执行函数，名字一个都不进页面全局。
+// 诊断包 #1331 / #1334（Chrome 111 / Windows，《1942》）：开局 0.6 秒报
+// SyntaxError: Identifier 'debug' has already been declared，随后卡在「fbneo」两分钟被看门狗判超时。
+// 本站代码不在引擎 iframe 里声明 debug，推测是浏览器扩展往每个框架注入了全局 `var debug`；
+// 经典脚本顶层的 const / let / function 都落在 realm 的全局作用域，任何一个名字撞上，整份 loader 一行都不执行。
+// 包一层后 document.currentScript 仍在同步执行期内，照样读得到；check-emulatorjs.mjs 会预置这些名字再跑一遍守着。
+(function () {
 const folderPath = (path) => {
     const filename = path.split("/").pop();
     return path.substring(0, path.length - filename.length);
@@ -264,4 +271,5 @@ async function prepareLanguage() {
         window.EJS_emulator.on("saveUpdate", window.EJS_onSaveUpdate);
         window.EJS_emulator.enableSaveUpdateEvent();
     }
+})();
 })();

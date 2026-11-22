@@ -6,7 +6,10 @@
  * 再附几份完整现场（环境、阶段时间线、引擎日志、慢 / 失败请求），最后提示该去看哪些代码。
  */
 
-export type DiagnosticEvent = 'failed' | 'timeout' | 'slow_start'
+export type DiagnosticEvent = 'failed' | 'timeout' | 'slow_start' | 'recovered'
+
+/** 服务端判的来源：'' 普通访客；bot 确认是自动化客户端；suspect 疑似（server/src/startup-diagnostics.js classifyAutomation） */
+export type DiagnosticCohort = '' | 'bot' | 'suspect'
 
 export interface DiagnosticCount { name: string; count: number }
 
@@ -23,6 +26,7 @@ export interface DiagnosticGroup {
   signature: string
   text: string
   event: DiagnosticEvent
+  cohort?: DiagnosticCohort
   runtime: string
   count: number
   visits: number
@@ -38,11 +42,15 @@ export interface DiagnosticGroup {
 export interface DiagnosticGroupsResponse {
   days: number
   total: number
+  /** 默认没列出来的：已自动恢复、自动化客户端（noise=show 才列） */
+  hidden?: { recovered: number; automation: number }
+  noiseShown?: boolean
   groups: DiagnosticGroup[]
 }
 
 export interface DiagnosticPayload {
   v: 1
+  capture: { level: 'full' | 'summary'; note?: 'missing' | 'limited' | 'invalid' | 'save_failed' | 'backfill' }
   build: string
   reason: string
   diagnosis?: DiagnosticDiagnosis
@@ -59,7 +67,10 @@ export interface DiagnosticPayload {
     online: boolean
     hiddenMs: number
     visible: boolean
-  }
+    auto?: string[]
+  } | null
+  recovery?: { outcome: 'recovered' | 'unconfirmed' | 'failed_again'; via: 'reload' | 'origin'; afterMs: number; previous?: string }
+  automation?: { cohort: DiagnosticCohort; signals: string[] }
   attempt: { index: number; sinceStartMs: number }
   timeline: Array<{ t: number; e: string }>
   logs: Array<{ t: number; s: string; l: 'error' | 'warn' | 'log' | 'info'; m: string }>
@@ -88,6 +99,24 @@ export const EVENT_LABEL: Record<DiagnosticEvent, string> = {
   failed: '加载失败',
   timeout: '启动超时',
   slow_start: '慢启动（>20 秒）',
+  recovered: '已自动恢复',
+}
+
+export const COHORT_LABEL: Record<Exclude<DiagnosticCohort, ''>, string> = {
+  bot: '自动化客户端',
+  suspect: '疑似自动化',
+}
+
+const RECOVERY_LABEL: Record<NonNullable<DiagnosticPayload['recovery']>['outcome'], string> = {
+  recovered: '自动刷新后恢复',
+  unconfirmed: '自动刷新后未确认（没等到同一个 chunk 加载就离开 / 超时）',
+  failed_again: '自动刷新后再次失败',
+}
+
+export function formatRecovery(recovery: DiagnosticPayload['recovery']): string {
+  if (!recovery) return ''
+  const via = recovery.via === 'origin' ? '改用主站资源' : '同一资源域'
+  return `${RECOVERY_LABEL[recovery.outcome] ?? recovery.outcome}（${via}，刷新后 ${fmtMs(recovery.afterMs)}）${recovery.previous ? `；刷新前：${recovery.previous}` : ''}`
 }
 
 export const fmtMs = (ms: number | null | undefined): string => {
@@ -111,6 +140,8 @@ const DIAGNOSIS_SIGNAL_LABEL: Record<string, string> = {
   'error.storage': '日志出现浏览器存储或 Blob 读写错误',
   'error.gamepad_permission': '日志出现手柄权限错误',
   'error.engine_asset': '日志指向模拟器引擎入口资源',
+  'error.global_redeclaration': '引擎 iframe 里出现全局名重复声明（别的脚本先占了这个名字）',
+  'error.engine_script_syntax': '本站引擎脚本解析失败（整份没执行）',
   'error.engine_load': '错误摘要报告模拟器整体加载失败',
   'stage.engine_assets': '最后阶段文字指向模拟器依赖资源',
   'stage.html5_starting': 'HTML5 页面已加载，但没有可玩信号',
@@ -133,6 +164,11 @@ const DIAGNOSIS_SIGNAL_LABEL: Record<string, string> = {
   'progress.rom_dominated': 'ROM 下载用掉了大半启动时间，后续阶段刚开始',
   'stage.core': '最后阶段文字指向核心下载 / 解压',
   'event.timeout': '启动事件或错误文字报告超时',
+  'automation.webdriver': '浏览器声明受自动化控制（navigator.webdriver）',
+  'automation.crawler_ua': 'User-Agent 是爬虫 / 无头浏览器 / Lighthouse',
+  'automation.server_cpu': '桌面设备报 64 个以上逻辑核（服务器 CPU）',
+  'automation.no_window': '窗口外框 0×0（无头浏览器）',
+  'automation.no_languages': '浏览器语言列表为空',
   'error.unsupported': '日志出现不支持的功能 / 格式',
   no_specific_signal: '没有命中具体错误规则',
 }
@@ -163,6 +199,7 @@ export function formatEnvironment(sample: DiagnosticSample): string {
     if (!env.online) parts.push('离线')
     if (env.hiddenMs > 0) parts.push(`本局在后台 ${fmtMs(env.hiddenMs)}`)
     if (!env.visible) parts.push('上报时页面在后台')
+    if (env.auto?.length) parts.push(`自动化特征 ${env.auto.join(' / ')}`)
   }
   return parts.join('，')
 }
@@ -178,7 +215,13 @@ export function formatSample(sample: DiagnosticSample, index?: number): string {
     lines.push('- （诊断包内容无法解析）')
     return lines.join('\n')
   }
-  lines.push(`- 部署版本：${d.build || '未知'}；本次访问第 ${d.attempt.index} 次开局`)
+  if (d.capture?.level === 'summary') {
+    lines.push('- 现场级别：摘要；完整浏览器日志、网络请求和详细环境未收到，无法从摘要还原。')
+  } else {
+    lines.push(`- 部署版本：${d.build || '未知'}；本次访问第 ${d.attempt.index} 次开局`)
+  }
+  if (d.automation?.cohort) lines.push(`- 来源：${COHORT_LABEL[d.automation.cohort]}（${d.automation.signals.map(diagnosisSignalLabel).join('；')}）`)
+  if (d.recovery) lines.push(`- 刷新结论：${formatRecovery(d.recovery)}`)
   if (d.reason) lines.push(`- 失败原因原文：${d.reason}`)
   if (d.diagnosis) {
     const certainty = d.diagnosis.confidence === 'high' ? '高' : d.diagnosis.confidence === 'medium' ? '中' : '低'
@@ -212,6 +255,8 @@ export function formatGroupForAi(group: DiagnosticGroup, samples: DiagnosticSamp
     '请根据下面的真实玩家现场找出根因并修复（仓库根目录的 AGENTS.md 记录了工程约定和历史踩坑，先读相关章节）。',
     '',
     `- 错误特征：${group.text}`,
+    ...(group.cohort ? [`- 来源：${COHORT_LABEL[group.cohort]}（这一组不发飞书、不报警、不触发 AI 分诊；先判断是不是我们能修的）`] : []),
+    ...(group.event === 'recovered' ? ['- 这一组都在自动刷新后恢复了：玩家多等了一次刷新，看根因是否值得修，别当成停在兜底页的故障'] : []),
     `- 次数：${group.count} 次，涉及 ${group.visits} 次访问；首次 ${group.firstSeen}，最近 ${group.lastSeen}（UTC）`,
     `- 游戏：${group.games.map((g) => `${g.title}（${g.slug}）×${g.count}`).join('、') || '—'}`,
     `- 浏览器：${counts(group.browsers)}`,

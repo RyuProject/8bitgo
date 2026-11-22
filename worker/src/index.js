@@ -5,7 +5,7 @@
  */
 import {
   HttpError, json, encoder, positiveInt, declaredLength, readJson, writeBody,
-  corsHeaders, authorized, listAcross, storageFailure, isMissingMultipartUpload,
+  corsHeaders, authorizedAsync, listAcross, storageFailure, isMissingMultipartUpload,
 } from './common.js'
 import { parseRange, r2BodyResponseInit, serveObject } from './http.js'
 import { handleHtml5, html5Cors, html5Host } from './html5.js'
@@ -629,7 +629,7 @@ async function handle(request, env, url, cors) {
    */
   const privateStagingRead = ['GET', 'HEAD'].includes(request.method) && /^(?:psp|sockdrive)-staging\//.test(path)
   const admin = privateStagingRead || ['list', 'bulk', 'multipart'].includes(path) || ['PUT', 'POST', 'DELETE'].includes(request.method)
-  if (admin && !authorized(request, env)) return json({ error: 'unauthorized' }, cors, 401)
+  if (admin && !(await authorizedAsync(request, env))) return json({ error: 'unauthorized' }, cors, 401)
   if (!env.ROMS) throw new HttpError(503, 'ROMS 绑定缺失', 'missing_binding')
   if (path === 'list') {
     if (request.method !== 'GET') return methodNotAllowed(cors, 'GET, OPTIONS')

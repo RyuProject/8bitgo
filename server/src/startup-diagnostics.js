@@ -14,8 +14,13 @@ import { query } from './db.js'
 import { maybeAlertSignature } from './diag-alert.js'
 import { notifyLarkFailure } from './diag-lark.js'
 import { classifyUserAgent } from '../../shared/user-agent.js'
+import { isCrawlerUa } from './sseGuard.js'
 
-export const DIAGNOSTIC_EVENTS = new Set(['failed', 'timeout', 'slow_start'])
+/**
+ * recovered：详情页崩溃后自动刷新、刷新后的页面把同一个 chunk 加载上了（src/services/pageRecovery.ts）。
+ * 漏斗不算失败；诊断页单独一组，不发飞书、不触发聚集报警与 AI 分诊。
+ */
+export const DIAGNOSTIC_EVENTS = new Set(['failed', 'timeout', 'slow_start', 'recovered'])
 export const DIAGNOSTICS_RETENTION_DAYS = 30
 const PAYLOAD_MAX_BYTES = 32_000
 
@@ -81,11 +86,56 @@ const int = (value, min = -3_600_000, max = 3_600_000) => {
 const arr = (value, limit) => (Array.isArray(value) ? value.slice(0, limit) : [])
 const pick = (value, allowed, fallback) => (allowed.includes(value) ? value : fallback)
 
+/** 浏览器自己报的自动化特征（src/services/startupDiagnostics.ts 的 automationHints） */
+const AUTOMATION_HINTS = ['webdriver', 'no-outer', 'no-languages']
+const RECOVERY_OUTCOMES = ['recovered', 'unconfirmed', 'failed_again']
+/** 服务端判出的访问来源：'' 普通访客；bot 确认是自动化；suspect 疑似（启发式） */
+export const COHORTS = ['', 'bot', 'suspect']
+
+/**
+ * 判断这份现场是不是自动化客户端发来的。
+ *
+ * 2026-11-17～19 的「页面懒加载模块导入失败」里，#917 / #1108 / #1285 / #1368 / #1393 是同一个画像：
+ * Chrome 150 / Linux / desktop、90 个逻辑核、32GB、1440x900、zh-CN、US，网络报 3G（0.4～1.45Mbps、rtt 300～350），
+ * 上报时页面在后台，三天里换着游戏、换着部署反复出现。90 核不是任何桌面 CPU 的线程数（云主机切出来的 CPU 集），
+ * 数据中心出口又不可能只有 0.4Mbps —— 这是一台跑在美国机房、开着网络限速的抓取 / 测试机。
+ * 它的模块请求被自己中止或拦下（同一时刻 fetch() 全都正常，见 src/services/moduleLinkRecovery.ts 的模块图证据），
+ * 不是我们能修的故障，却每次都进了「加载失败」、发了飞书。
+ *
+ *   - bot（确认）：navigator.webdriver 为 true，或 UA 是爬虫 / 无头浏览器 / Lighthouse（与 SSE 拒绝爬虫是同一张表）；
+ *   - suspect（疑似）：桌面设备报 64 个以上逻辑核（服务器 CPU）；窗口外框 0×0；语言列表为空。
+ * 不看 IP、地区或语言：那些会误伤真人。疑似只是分组和不报警，现场照样保留，后台一个开关就能看到。
+ */
+export function classifyAutomation(diagnostics, { userAgent = '', device = '' } = {}) {
+  const env = diagnostics?.env ?? {}
+  const hints = Array.isArray(env.auto) ? env.auto : []
+  const confirmed = []
+  const suspected = []
+  if (hints.includes('webdriver')) confirmed.push('automation.webdriver')
+  if (isCrawlerUa(userAgent)) confirmed.push('automation.crawler_ua')
+  if (device === 'desktop' && Number(env.cores) > 64) suspected.push('automation.server_cpu')
+  if (hints.includes('no-outer')) suspected.push('automation.no_window')
+  if (hints.includes('no-languages')) suspected.push('automation.no_languages')
+  if (confirmed.length) return { cohort: 'bot', signals: [...confirmed, ...suspected] }
+  if (suspected.length) return { cohort: 'suspect', signals: suspected }
+  return { cohort: '', signals: [] }
+}
+
+/** 这份现场要不要叫人：自动化客户端、已自动恢复、刷新后结果未确认的都不发飞书、不报警、不让 AI 分诊 */
+export function needsAttention(event, diagnostics) {
+  if (event === 'recovered') return false
+  if (diagnostics?.automation?.cohort) return false
+  if (diagnostics?.recovery?.outcome === 'unconfirmed') return false
+  return true
+}
+
 const DIAGNOSIS_CODES = new Set([
-  'offline', 'network_http', 'network_failure', 'react_update_loop', 'page_asset', 'engine_asset', 'engine_assets', 'engine_load', 'core_download', 'rom_download',
+  'offline', 'network_http', 'network_failure', 'react_update_loop', 'page_asset', 'script_conflict', 'engine_asset', 'engine_assets', 'engine_load', 'core_download', 'rom_download',
   'rom_invalid', 'bios_romset', 'webgl', 'memory', 'storage', 'input_api', 'wasm_runtime', 'runtime_trap',
   'timeout', 'unsupported', 'unknown',
 ])
+const CAPTURE_LEVELS = ['full', 'summary']
+const SUMMARY_NOTES = ['missing', 'limited', 'invalid', 'save_failed', 'backfill']
 
 /**
  * 最后一次加载进度离上报时刻在这个秒数以内，就算「还在动」。播放器每收到一份下载进度都会刷新它，
@@ -140,15 +190,17 @@ function romSizeArtifact(totalMb) {
  * - 其它（进度几秒没动、流式读盘、下完很久还在后面阶段）→ 维持原来按阶段的「停滞」归类。
  * 只看 slow_start：失败 / 超时的现场有自己的错误原文，不能被「还在动」盖掉。
  */
-function diagnoseSlowStartProgress(event, logs, hit) {
+function diagnoseSlowStartProgress(event, logs, hit, downloadCompleteAtMs = null) {
   if (event !== 'slow_start') return null
   const progress = readProgressSnapshot(logs)
   if (!progress || !Number.isFinite(progress.atS) || progress.atS <= 0 || progress.cached || progress.streaming) return null
   const { phase, atS, loadedMb, totalMb, romStartS, romDoneS, lastS } = progress
-  if (phase === 'rom' && lastS !== null && atS - lastS <= LIVE_PROGRESS_S && (!totalMb || loadedMb < totalMb)) {
+  const downloadCompleted = downloadCompleteAtMs !== null && downloadCompleteAtMs <= atS * 1000
+  if (!downloadCompleted && phase === 'rom' && lastS !== null && atS - lastS <= LIVE_PROGRESS_S && (!totalMb || loadedMb < totalMb)) {
     return { ...hit('rom_download', 'ROM 仍在下载，进度正常（未停滞，耗时取决于体积与带宽）', 'rom_download', 'high', 'progress.rom_downloading'), artifact: romSizeArtifact(totalMb) }
   }
-  if (phase !== 'rom' && romStartS !== null && romDoneS !== null && atS - romDoneS <= LIVE_PROGRESS_S && romDoneS - romStartS >= atS / 2) {
+  // 某些适配器的快照阶段仍留在 rom；漏斗已记录下载完成时，以时间线确认刚进入后续启动阶段。
+  if ((phase !== 'rom' || downloadCompleted) && romStartS !== null && romDoneS !== null && atS - romDoneS <= LIVE_PROGRESS_S && romDoneS - romStartS >= atS / 2) {
     return { ...hit('rom_download', 'ROM 下载占去大半启动时间，后续阶段刚开始（未停滞）', 'rom_download', 'medium', 'progress.rom_dominated'), artifact: romSizeArtifact(totalMb) }
   }
   return null
@@ -158,11 +210,33 @@ function diagnoseSlowStartProgress(event, logs, hit) {
  * 从一份已脱敏现场提取最可能的故障类别。只保存规则编号和固定标签，不把额外原文复制进诊断结论，
  * 避免归类字段绕开日志的脱敏边界；顺序按更具体、可行动的错误优先。
  */
-export function diagnoseStartupFailure({ event, platform, detail, diagnostics }) {
+export function diagnoseStartupFailure({ event, runtime, platform, detail, elapsedMs, diagnostics }) {
   const logs = Array.isArray(diagnostics?.logs) ? diagnostics.logs : []
   const resources = Array.isArray(diagnostics?.resources) ? diagnostics.resources : []
-  const stage = [...logs].reverse().find((row) => row?.s === 'stage')?.m ?? ''
-  const text = [detail, diagnostics?.reason, ...logs.map((row) => row?.m), stage]
+  const elapsedCandidate = elapsedMs ?? diagnostics?.attempt?.sinceStartMs
+  const startedAtMs = elapsedCandidate !== undefined && elapsedCandidate !== null && Number.isFinite(Number(elapsedCandidate))
+    ? Number(elapsedCandidate) : null
+  // 非 HTML5 的 download_complete 只会在 ROM / 启动所需资源已到手后上报；HTML5 的同名事件仅代表 iframe 文档 load。
+  // 慢启动现场里下载前的线路告警和旧 stage 不能盖过「已下载，正在启动」这个新事实。
+  const downloadCompleteAtMs = event === 'slow_start' && runtime && runtime !== 'html5' && Array.isArray(diagnostics?.timeline)
+    ? [...diagnostics.timeline].reverse().find((row) => row?.e === 'download_complete' &&
+      (startedAtMs === null || !Number.isFinite(Number(row?.t)) || Number(row.t) <= startedAtMs))?.t ?? null
+    : null
+  const relevantLogs = downloadCompleteAtMs === null
+    ? logs
+    : logs.filter((row) => Number(row?.t) >= downloadCompleteAtMs)
+  const stageRow = [...relevantLogs].reverse().find((row) => row?.s === 'stage')
+  const stageAtMs = Number.isFinite(Number(stageRow?.t)) ? Number(stageRow.t) : null
+  // 失败包会带整局日志；旧的「下载核心」阶段不能代表十几分钟后的崩溃仍在下载。
+  // 缺少阶段时间戳的旧包仍按原行为兼容，只有能证明阶段过期时才丢弃它。
+  const stageIsFresh = startedAtMs === null || stageAtMs === null ||
+    (startedAtMs >= stageAtMs && startedAtMs - stageAtMs <= 30_000)
+  const stage = stageIsFresh ? stageRow?.m ?? '' : ''
+  const hasPlayableMilestone = event === 'failed' && Array.isArray(diagnostics?.timeline) &&
+    diagnostics.timeline.some((row) =>
+      (row?.e === 'game_playable' || row?.e === 'first_frame') &&
+      (startedAtMs === null || !Number.isFinite(Number(row?.t)) || Number(row.t) <= startedAtMs))
+  const text = [detail, diagnostics?.reason, ...relevantLogs.filter((row) => row?.s !== 'stage').map((row) => row?.m), stage]
     .filter(Boolean).join('\n').slice(-12_000).toLowerCase()
   const combined = `${text}\n${resources.map((row) => row?.n).filter(Boolean).join('\n')}`
   const has = (pattern) => pattern.test(text)
@@ -193,6 +267,16 @@ export function diagnoseStartupFailure({ event, platform, detail, diagnostics })
   if (platform === 'dos' && has(/unable to init emulators\.js|unable to add emulators\.js|emulators is not defined/)) {
     return hit('engine_asset', 'js-dos 运行时依赖加载失败', 'engine_asset', 'high', 'error.jsdos_emulators_asset')
   }
+  /*
+    引擎 iframe 里别的脚本（多为浏览器扩展）先占了全局名，本站经典脚本的顶层声明撞上，整份不执行（2026-11-19 #1331 / #1334 / #1343：
+    `Identifier 'debug' has already been declared`，旧 loader.js 的 const debug）。以前落到「启动流程超时」，看不出是环境冲突。
+  */
+  if (has(/identifier '[^']{1,60}' has already been declared|redeclaration of (?:let|const|var|class|function) |can't create duplicate (?:global )?variable|cannot declare a (?:let|const|class) variable twice/)) {
+    return hit('script_conflict', '引擎脚本与页面里其它脚本（多为浏览器扩展）全局名冲突', 'browser', 'high', 'error.global_redeclaration')
+  }
+  if (has(/\[engine-script\] .{0,80}解析失败/)) {
+    return hit('engine_asset', '模拟器引擎脚本解析失败', 'engine_asset', 'high', 'error.engine_script_syntax')
+  }
   if (has(/failed to load (?:emulator(?:\.min)?\.js|loader\.js)|(?:emulator(?:\.min)?\.js|loader\.js).{0,40}(?:failed|not found|missing|404)|emulatorjs failed to load|failed to load emulatorjs/)) {
     return hit('engine_asset', '模拟器引擎入口加载失败', 'engine_asset', 'high', 'error.engine_asset')
   }
@@ -218,15 +302,16 @@ export function diagnoseStartupFailure({ event, platform, detail, diagnostics })
   if (has(/invalid rom|corrupt rom|rom checksum|unknown mapper|unsupported mapper|rom.*(?:truncated|malformed)|rom.*(?:损坏|校验失败|格式错误)/)) {
     return hit('rom_invalid', 'ROM 内容或映射格式异常', 'content', 'high', 'error.rom_format')
   }
-  if (has(/failed to load.*(?:core|核心)|error downloading core|download game core|下载游戏核心|核心.*(?:下载|加载).*失败/)) {
+  // 单独的「下载游戏核心」是阶段文字，不是错误；只认明确的失败措辞，避免旧 stage 污染晚发故障。
+  if (has(/(?:failed to (?:load|download)|error (?:downloading|loading)) (?:the )?(?:game )?core|failed to load.*核心|(?:core|核心).{0,24}(?:download|load|loading|下载|加载).{0,16}(?:failed|error|失败|错误)|(?:下载游戏核心|核心下载|核心加载).{0,12}(?:失败|错误)/)) {
     return withCore(hit('core_download', '模拟器核心下载或加载失败', 'core_download', 'high', 'error.core_download'))
   }
   if (has(/error loading emulatorjs runtime|runtimeerror|compileerror|ejs_runtime|instantiate(?:streaming)?|wasm.*(?:error|failed|unavailable|memory|instantiate)|(?:error|failed|unavailable).*wasm/)) {
-    return withCore(hit('wasm_runtime', '模拟器核心初始化或运行时异常', 'core_init', 'medium', 'error.wasm_runtime'))
+    return withCore(hit('wasm_runtime', '模拟器核心初始化或运行时异常', hasPlayableMilestone ? 'runtime' : 'core_init', 'medium', 'error.wasm_runtime'))
   }
-  const slowProgress = diagnoseSlowStartProgress(event, logs, hit)
+  const slowProgress = diagnoseSlowStartProgress(event, relevantLogs, hit, downloadCompleteAtMs)
   if (slowProgress) return slowProgress
-  if (has(/加载进度：阶段 rom|loading progress: phase rom/)) {
+  if (has(/加载进度：阶段 rom|loading progress: phase rom/) && downloadCompleteAtMs === null) {
     return hit('rom_download', 'ROM 下载或流式读取停滞', 'rom_download', 'medium', 'stage.rom')
   }
   if (has(/加载进度：阶段 (?:engine|assets)|loading progress: phase (?:engine|assets)/)) {
@@ -246,6 +331,7 @@ export function diagnoseStartupFailure({ event, platform, detail, diagnostics })
   const failedResource = [...resources].reverse().find((row) => {
     if (Number(row?.st) < 400 || !/^(?:fetch|xmlhttprequest|script|link|other)$/i.test(String(row?.i ?? ''))) return false
     if (!Number.isFinite(Number(row?.at)) || Number(row.at) < -30_000) return false
+    if (downloadCompleteAtMs !== null && Number(row.at) < downloadCompleteAtMs) return false
     return true
   })
   const failedHost = String(failedResource?.n ?? '').split('/')[0].toLowerCase()
@@ -270,6 +356,10 @@ export function diagnoseStartupFailure({ event, platform, detail, diagnostics })
     return hit('network_failure', '网络请求失败', 'network', 'medium', 'error.network')
   }
 
+  if (downloadCompleteAtMs !== null) {
+    return hit('timeout', 'ROM 已下载，仍在等待游戏可玩状态', 'startup', 'medium', 'event.timeout')
+  }
+
   const lastStage = stage.toLowerCase()
   if (/rom/.test(lastStage) && /download|下载|讀取|读取|descarg|télécharg|herunterlad|ダウンロード/.test(lastStage)) {
     return hit('rom_download', 'ROM 下载或读取停滞', 'rom_download', 'medium', 'stage.rom')
@@ -292,14 +382,21 @@ export function diagnoseStartupFailure({ event, platform, detail, diagnostics })
  */
 export function normalizeDiagnostics(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const capture = raw.capture && typeof raw.capture === 'object' ? raw.capture : {}
+  const captureLevel = pick(capture.level, CAPTURE_LEVELS, 'full')
+  const summary = captureLevel === 'summary'
   const env = raw.env && typeof raw.env === 'object' ? raw.env : {}
   const net = env.net && typeof env.net === 'object' ? env.net : null
   const attempt = raw.attempt && typeof raw.attempt === 'object' ? raw.attempt : {}
   const out = {
     v: 1,
-    build: scrub(raw.build, 40).replace(/[^\w.-]/g, ''),
+    capture: {
+      level: captureLevel,
+      ...(summary && SUMMARY_NOTES.includes(capture.note) ? { note: capture.note } : {}),
+    },
+    build: summary ? '' : scrub(raw.build, 40).replace(/[^\w.-]/g, ''),
     reason: scrub(raw.reason, 600),
-    env: {
+    env: summary ? null : {
       mem: num(env.mem, 0, 1024),
       cores: num(env.cores, 0, 256),
       net: net ? {
@@ -317,8 +414,9 @@ export function normalizeDiagnostics(raw) {
       online: env.online !== false,
       hiddenMs: int(env.hiddenMs, 0),
       visible: env.visible !== false,
+      auto: [...new Set(arr(env.auto, 6).filter((hint) => AUTOMATION_HINTS.includes(hint)))],
     },
-    attempt: {
+    attempt: summary ? { index: 0, sinceStartMs: 0 } : {
       index: int(attempt.index, 0, 1000),
       sinceStartMs: int(attempt.sinceStartMs, 0),
     },
@@ -329,13 +427,13 @@ export function normalizeDiagnostics(raw) {
       e: scrub(row?.e, 24).replace(/[^\w-]/g, ''),
     })).filter((row) => row.e),
     // 日志留最后 60 行：越靠近失败的越有用，运行时现场快照也在最后
-    logs: (Array.isArray(raw.logs) ? raw.logs.slice(-60) : []).map((row) => ({
+    logs: (summary ? [] : (Array.isArray(raw.logs) ? raw.logs.slice(-60) : [])).map((row) => ({
       t: int(row?.t),
       s: scrub(row?.s, 16).replace(/[^\w-]/g, ''),
       l: pick(row?.l, ['error', 'warn', 'log', 'info'], 'log'),
       m: scrub(row?.m, 300),
     })).filter((row) => row.m),
-    resources: arr(raw.resources, 30).map((row) => ({
+    resources: (summary ? [] : arr(raw.resources, 30)).map((row) => ({
       n: scrub(row?.n, 120),
       i: scrub(row?.i, 16).replace(/[^\w-]/g, ''),
       at: int(row?.at),
@@ -345,6 +443,23 @@ export function normalizeDiagnostics(raw) {
       st: int(row?.st, 0, 999),
       p: scrub(row?.p, 12).replace(/[^\w./-]/g, ''),
     })).filter((row) => row.n),
+  }
+  const recovery = raw.recovery && typeof raw.recovery === 'object' ? raw.recovery : null
+  if (recovery && RECOVERY_OUTCOMES.includes(recovery.outcome)) {
+    out.recovery = {
+      outcome: recovery.outcome,
+      via: pick(recovery.via, ['reload', 'origin'], 'reload'),
+      afterMs: int(recovery.afterMs, 0),
+      ...(recovery.previous ? { previous: scrub(recovery.previous, 200) } : {}),
+    }
+  }
+  // 服务端判的来源；入库时 recordStartupDiagnostics 会按现场重算覆盖，这里只是读回历史数据时保留
+  const automation = raw.automation && typeof raw.automation === 'object' ? raw.automation : null
+  if (automation && COHORTS.includes(automation.cohort)) {
+    out.automation = {
+      cohort: automation.cohort,
+      signals: arr(automation.signals, 6).map((signal) => scrub(signal, 40).replace(/[^\w.-]/g, '')).filter(Boolean),
+    }
   }
   const diagnosis = raw.diagnosis && typeof raw.diagnosis === 'object' ? raw.diagnosis : null
   if (diagnosis) {
@@ -366,6 +481,49 @@ export function normalizeDiagnostics(raw) {
   return out
 }
 
+/** 空对象或只有默认值的包不算完整现场；路由应将其明确降级为摘要。 */
+export function hasUsefulDiagnostics(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false
+  if (typeof raw.reason === 'string' && raw.reason.trim()) return true
+  if (['timeline', 'logs', 'resources'].some((key) => Array.isArray(raw[key]) && raw[key].length > 0)) return true
+  const env = raw.env && typeof raw.env === 'object' ? raw.env : {}
+  return ['mem', 'cores', 'screen', 'lang', 'bits'].some((key) => env[key] !== null && env[key] !== undefined && env[key] !== '')
+    || Boolean(env.net && typeof env.net === 'object' && (env.net.type || env.net.downlink || env.net.rtt))
+}
+
+/** 失败现场缺失时只补漏斗事件已有的安全摘要，不伪造浏览器环境、版本或细节日志。 */
+async function summaryDiagnosticsFor(event, note) {
+  let timeline = []
+  try {
+    const rows = await query(
+      `SELECT event, elapsed_ms
+         FROM game_startup_events
+        WHERE visit_id = ? AND attempt_id = ?
+        ORDER BY elapsed_ms ASC, id ASC
+        LIMIT 40`,
+      [event.visitId, event.attemptId],
+    )
+    timeline = rows
+      .filter((row) => row.event && row.elapsed_ms !== null && row.elapsed_ms !== undefined)
+      .map((row) => ({ t: Number(row.elapsed_ms), e: String(row.event) }))
+  } catch (error) {
+    // 摘要仍可用漏斗事件本身入库；时间线查询失败不能让整个现场再次丢失。
+    console.warn('[startup] 摘要时间线读取失败：', error?.message || error)
+  }
+  if (!timeline.length && Number.isFinite(Number(event.elapsedMs))) {
+    timeline.push({ t: Number(event.elapsedMs), e: event.event })
+  }
+  return {
+    capture: { level: 'summary', note: SUMMARY_NOTES.includes(note) ? note : 'missing' },
+    reason: scrub(event.detail || '', 600),
+    env: null,
+    attempt: { index: 0, sinceStartMs: 0 },
+    timeline,
+    logs: [],
+    resources: [],
+  }
+}
+
 /**
  * 从 User-Agent 归出「浏览器 + 大版本」「系统」「设备类型」三个粗粒度字段，原始 UA 不落库。
  * 实现挪到 shared/user-agent.js：AI 临时修补（shared/hotfix.js）要在浏览器里按同一套规则判断
@@ -377,7 +535,32 @@ export { classifyUserAgent } from '../../shared/user-agent.js'
  * 归类用的「错误特征」：把会变的部分（数字、百分比、引号里的内容、十六进制）抹掉，
  * 同一类故障才能合并成一组。慢启动没有错误原文，用最后停在的加载阶段代替。
  */
+const COHORT_TEXT = { bot: '自动化客户端', suspect: '疑似自动化' }
+const RECOVERY_TEXT = { unconfirmed: '自动刷新后未确认', failed_again: '自动刷新后再次失败' }
+
+/**
+ * 归组时把「来源」「刷新后结论」也算进特征：自动化客户端、刷新后未确认、刷新后又坏的现场各成一组，
+ * 不和第一次就停在兜底页的真实玩家混在一起（2026-11-19）。普通访客的特征与以前完全一样，历史分组不受影响。
+ */
+function signatureQualifiers(diagnostics) {
+  const cohort = diagnostics?.automation?.cohort ?? ''
+  const outcome = diagnostics?.recovery?.outcome ?? ''
+  const key = [cohort && `cohort:${cohort}`, RECOVERY_TEXT[outcome] ? `recovery:${outcome}` : ''].filter(Boolean).join('|')
+  const text = [COHORT_TEXT[cohort], RECOVERY_TEXT[outcome]].filter(Boolean).join(' · ')
+  return { key, text }
+}
+
 export function errorSignature({ event, runtime, platform, detail, diagnostics }) {
+  const qualifiers = signatureQualifiers(diagnostics)
+  const base = baseErrorSignature({ event, runtime, platform, detail, diagnostics })
+  if (!qualifiers.key) return base
+  return {
+    signature: createHash('sha1').update(`${base.signature}|${qualifiers.key}`).digest('hex').slice(0, 16),
+    text: `${base.text} · ${qualifiers.text}`.slice(0, 200),
+  }
+}
+
+function baseErrorSignature({ event, runtime, platform, detail, diagnostics }) {
   const diagnosis = diagnostics?.diagnosis ?? diagnoseStartupFailure({ event, runtime, platform, detail, diagnostics })
   if (diagnosis.code !== 'unknown') {
     const stage = event === 'slow_start'
@@ -418,24 +601,33 @@ function scheduleCleanup() {
 
 let missingTableWarned = false
 let hotfixColumnMissing = false
+let cohortColumnMissing = false
 
 /**
  * 写一份诊断包。调用方已经写好了漏斗事件（同一个 visit/attempt/event 唯一键挡重放）。
  * 任何失败都只记日志：诊断是锦上添花，不能让漏斗接口 500。
  */
-export async function recordStartupDiagnostics(slug, event, rawDiagnostics, { country = 'XX', userAgent = '' } = {}) {
+export async function recordStartupDiagnostics(slug, event, rawDiagnostics, {
+  country = 'XX', userAgent = '', summaryNote = '', suppressSideEffects = false, occurredAt = null,
+} = {}) {
   if (!DIAGNOSTIC_EVENTS.has(event?.event)) return false
-  const diagnostics = normalizeDiagnostics(rawDiagnostics)
+  const input = rawDiagnostics ?? (summaryNote ? await summaryDiagnosticsFor(event, summaryNote) : null)
+  const diagnostics = normalizeDiagnostics(input)
   if (!diagnostics) return false
   // 分类在服务端按白名单现场重算，避免客户端自行声明故障类型导致归组失真。
   diagnostics.diagnosis = diagnoseStartupFailure({ ...event, runtime: event.runtime, diagnostics })
+  const { browser, os, device } = classifyUserAgent(userAgent)
+  // 来源同样由服务端判：原始 UA 只在这一刻用来认爬虫，不落库
+  diagnostics.automation = classifyAutomation(diagnostics, { userAgent, device })
+  // 刷新后的结论只认兜底页那一类（runtime page）；别的运行时不会带，带了也不信
+  if (event.runtime !== 'page') delete diagnostics.recovery
   while (JSON.stringify(diagnostics).length > PAYLOAD_MAX_BYTES && (diagnostics.logs.length || diagnostics.resources.length)) {
     if (diagnostics.logs.length > 10 || !diagnostics.resources.length) diagnostics.logs.shift()
     else diagnostics.resources.pop()
   }
-  const { browser, os, device } = classifyUserAgent(userAgent)
   const { signature, text } = errorSignature({ ...event, diagnostics })
   const hotfixIds = diagnostics.hotfixes.join(',')
+  const cohort = diagnostics.automation.cohort
   const values = [
     event.visitId, event.attemptId, event.event, event.runtime, event.platform,
     /^[A-Z]{2}$/.test(country) ? country : 'XX', event.elapsedMs,
@@ -444,7 +636,26 @@ export async function recordStartupDiagnostics(slug, event, rawDiagnostics, { co
   ]
   try {
     let result
-    if (!hotfixColumnMissing) {
+    if (!cohortColumnMissing && !hotfixColumnMissing) {
+      try {
+        result = await query(
+          `INSERT IGNORE INTO game_startup_diagnostics
+             (game_id, visit_id, attempt_id, event, runtime, platform, country, elapsed_ms,
+              signature, signature_text, browser, os, device, payload, hotfix_ids, cohort)
+           SELECT id, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+             FROM games
+            WHERE slug = ? AND hidden = 0
+            LIMIT 1`,
+          [...values, hotfixIds, cohort, slug],
+        )
+      } catch (error) {
+        // 先上代码、后跑迁移：缺 cohort 列时退回上一版写法（来源仍在 payload 里，只是后台默认不能按它过滤）
+        if (error?.code !== 'ER_BAD_FIELD_ERROR') throw error
+        cohortColumnMissing = true
+        console.warn('[startup] game_startup_diagnostics 缺 cohort 列，后台暂时不能默认隐藏自动化客户端 —— cd server && npm run migrate')
+      }
+    }
+    if (!result && !hotfixColumnMissing) {
       try {
         result = await query(
           `INSERT IGNORE INTO game_startup_diagnostics
@@ -477,10 +688,25 @@ export async function recordStartupDiagnostics(slug, event, rawDiagnostics, { co
     }
     scheduleCleanup()
     const inserted = Number(result?.affectedRows ?? 0) > 0
+    /*
+      回填（scripts/backfill-startup-diagnostics.mjs）补的是几天前的故障：created_at 必须是漏斗事件当时的时间。
+      2026-11-21 第一次回填没传，1150 条旧现场全写成了回填那一刻 —— 后台「最近出现」全挤在同一分钟，
+      按时间窗的聚集报警 / AI 分诊 / 30 天清理也都跟着错。只在真插进去时改，且只接受过去 30 天内的时间。
+    */
+    const occurred = occurredAt instanceof Date ? occurredAt : (occurredAt ? new Date(occurredAt) : null)
+    if (inserted && occurred && Number.isFinite(occurred.getTime()) &&
+      occurred.getTime() <= Date.now() && Date.now() - occurred.getTime() <= DIAGNOSTICS_RETENTION_DAYS * 86_400_000) {
+      await query(
+        'UPDATE game_startup_diagnostics SET created_at = ? WHERE visit_id = ? AND attempt_id = ? AND event = ?',
+        [occurred, event.visitId, event.attemptId, event.event],
+      ).catch((error) => console.warn('[startup] 回填诊断包的发生时间没写上：', error?.message || error))
+    }
+    // 自动化客户端、已自动恢复、刷新后未确认：照常入库归组，但不叫人（needsAttention）
+    const attention = inserted && !suppressSideEffects && needsAttention(event.event, diagnostics)
     // 同一特征短时间内聚集就发邮件（没配 DIAG_ALERT_EMAIL 时立即返回）；不 await，不拖慢接口
-    if (inserted) void maybeAlertSignature(signature)
+    if (attention) void maybeAlertSignature(signature)
     // 新加载失败立即通知 Lark；诊断仍先入库，通知失败或超时不影响玩家接口
-    if (inserted && (event.event === 'failed' || event.event === 'timeout')) {
+    if (attention && (event.event === 'failed' || event.event === 'timeout')) {
       void notifyLarkFailure({
         event: event.event,
         signature,
@@ -500,7 +726,7 @@ export async function recordStartupDiagnostics(slug, event, rawDiagnostics, { co
       动态 import：ai-hotfix.js 反过来要用这里的 diagnosticSamples / scrub，静态互相 import 会成环。
       都不 await，任何失败只在那边记日志。
     */
-    if (inserted) {
+    if (attention) {
       void import('./ai-hotfix.js').then((m) => {
         void m.maybeTriageSignature(signature, event.event)
         if (diagnostics.hotfixes.length && event.event !== 'slow_start') void m.noteHotfixFailure(diagnostics.hotfixes)
@@ -524,14 +750,40 @@ const clampDays = (raw) => Math.max(1, Math.min(DIAGNOSTICS_RETENTION_DAYS, Math
 const topN = (map, n = 5) => [...map.entries()].sort((a, b) => b[1] - a[1]).slice(0, n).map(([name, count]) => ({ name, count }))
 const bump = (map, key) => map.set(key, (map.get(key) ?? 0) + 1)
 
-/** 按错误特征归组：次数最多的排前面，每组带涉及的游戏 / 浏览器 / 系统 / 地区分布 */
-export async function diagnosticGroups(rawDays = 7, rawQuery = '', rawEvent = '') {
+/**
+ * 「噪音」：已自动恢复的现场与自动化客户端的现场。默认不列，只数个数；showNoise 时原样保留。
+ * 老数据库没有 cohort 列时 cohort 全是空串，只能按 event 认出已恢复的那部分。
+ */
+export function partitionNoise(rows, showNoise = false) {
+  const hidden = { recovered: 0, automation: 0 }
+  const kept = []
+  for (const row of rows) {
+    const cohort = COHORTS.includes(row.cohort) ? row.cohort : ''
+    if (!showNoise && (row.event === 'recovered' || cohort)) {
+      if (row.event === 'recovered') hidden.recovered++
+      else hidden.automation++
+      continue
+    }
+    kept.push({ ...row, cohort })
+  }
+  return { kept, hidden }
+}
+
+/**
+ * 按错误特征归组：次数最多的排前面，每组带涉及的游戏 / 浏览器 / 系统 / 地区分布。
+ *
+ * 默认不列「噪音」：已自动恢复（event recovered）和自动化客户端（cohort bot / suspect）的现场，
+ * 只在 hidden 里给出数量；后台点「显示」（noise=show）或选「已自动恢复」时才列出来（2026-11-19）。
+ */
+export async function diagnosticGroups(rawDays = 7, rawQuery = '', rawEvent = '', rawNoise = '') {
   const days = clampDays(rawDays)
   const search = scrub(rawQuery, 80)
   const event = DIAGNOSTIC_EVENTS.has(rawEvent) ? rawEvent : ''
-  const rows = await query(
+  const showNoise = rawNoise === 'show' || event === 'recovered'
+  const groupQuery = (cohortColumn) => query(
     `SELECT d.id, d.signature, d.signature_text AS signatureText, d.event, d.runtime, d.platform,
             d.country, d.browser, d.os, d.device, d.elapsed_ms AS elapsedMs, d.visit_id AS visitId,
+            ${cohortColumn ? 'd.cohort' : "''"} AS cohort,
             d.created_at AS createdAt, g.slug, COALESCE(NULLIF(g.title_zh, ''), g.title) AS title
        FROM game_startup_diagnostics d
        JOIN games g ON g.id = d.game_id
@@ -542,14 +794,25 @@ export async function diagnosticGroups(rawDays = 7, rawQuery = '', rawEvent = ''
       LIMIT 20000`,
     [days, event, event, search, `%${search}%`],
   )
+  let rows
+  try {
+    rows = await groupQuery(!cohortColumnMissing)
+  } catch (error) {
+    if (error?.code !== 'ER_BAD_FIELD_ERROR' || cohortColumnMissing) throw error
+    cohortColumnMissing = true
+    rows = await groupQuery(false)
+  }
+  const { kept, hidden } = partitionNoise(rows, showNoise)
   const groups = new Map()
-  for (const row of rows) {
+  for (const row of kept) {
+    const cohort = row.cohort
     let group = groups.get(row.signature)
     if (!group) {
       group = {
         signature: row.signature,
         text: row.signatureText,
         event: row.event,
+        cohort,
         runtime: row.runtime,
         count: 0,
         visits: new Set(),
@@ -576,6 +839,8 @@ export async function diagnosticGroups(rawDays = 7, rawQuery = '', rawEvent = ''
   return {
     days,
     total: rows.length,
+    hidden,
+    noiseShown: showNoise,
     groups: [...groups.values()]
       .sort((a, b) => b.visits.size - a.visits.size || b.count - a.count)
       .slice(0, 200)
@@ -583,6 +848,7 @@ export async function diagnosticGroups(rawDays = 7, rawQuery = '', rawEvent = ''
         signature: g.signature,
         text: g.text,
         event: g.event,
+        cohort: g.cohort,
         runtime: g.runtime,
         count: g.count,
         visits: g.visits.size,

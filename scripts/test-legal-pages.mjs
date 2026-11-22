@@ -380,7 +380,7 @@ const FACTS = [
     where: 'broadcast',
     doc: 'privacy',
     what: '「玩就是播」：新游戏默认创建公开直播房间；不公开开关只对当前游戏生效',
-    probe: ['src/emulator/LiveControls.tsx', 'const [hidden, setHidden] = useState(false)'],
+    probe: ['src/emulator/LiveControls.tsx', 'initialHidden = false,'],
     say: { zh: ['默认开启|預設開啟', '当前这局|當前這局|目前這一局'], en: ['on by default', 'current game'] },
   },
   {

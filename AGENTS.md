@@ -124,6 +124,16 @@ grep -c 'this.functions.saveStateInfo()' public/emulatorjs/emulator.min.js   # �
   适配器现在仅对远端 8BG GBA 的启动期 table trap 清理 ROM 缓存与续传片、强制网络重取一次；刷新后仍失败则删除刚写入的缓存并停止，不循环重试。新增恢复只依赖 `isWasmRuntimeCrash` 识别真实 RuntimeError，不看核心普通日志。
   本地已实测排除 SRAM / Flash 存档（含错尺寸、乱码）、金手指、mGBA 全部核心选项、回退 / 快进 / 旋转、LCD shader；再出现先看诊断包里的 `describeBootState` 行和 `[core-crash]` / ROM 刷新日志。
 
+### 2.7.1.1 `Aborted(undefined)` 是引擎自己的退出，不是核心崩溃（2026-11-22，诊断包 #2744《黄金太阳》）
+
+EmulatorJS 在 iframe 的 `beforeunload` 上触发 exit：存档 → `restart()` → 停主循环 → 1 秒后 `Module.abort()`（不带参数，
+原文 `Aborted(undefined)`）。顶层导航 / 刷新 / 下载链接都会让子框架收到 beforeunload；弱网下旧页面 1 秒后还活着就被报成
+「运行中崩溃」，导航被取消时玩家还对着一块死画面。核心自己的 C abort 打的是 `Aborted()`（空串），两者能分开。
+`src/emulator/ejsUnloadGuard.ts` 在 loader.js 之前挂捕获阶段的 beforeunload，`stopImmediatePropagation` 挡住引擎的 exit，
+改为我们自己刷电池存档（不 preventDefault，不弹「确定离开」）；`EJS.on('exit')` 之后 10 秒内的 `Aborted(undefined)` 不再按崩溃报。
+已排除：单机不会周期性 getState；mGBA 的 `save_state_info` 用静态指针、每次先 free 上一份，不漏，不需要 v3 胶水。
+回归：`node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-ejs-unload-guard.mjs`（并入 `test:ejs-failure-reasons`）。
+
 ### 2.7.2 🔴 共享引擎坏一处 = 全站游戏打不开：五道防线不准拆（2026-11-17 事故）
 
 **经过**：79be63d 给 `patch-emulatorjs.mjs` 加了一段 XHR 兜底，补丁字符串里写了正则 `/^(?:text/html|…)\b/i`。
@@ -159,6 +169,24 @@ loader.js 的 `import()` 失败，NES / SFC / GBA / 街机 / PS1 …… 所有 E
 5. **现场**：loader.js 把 `[EJS] import <文件> failed: <异常>` 写进控制台，适配器在最终失败日志里带上它，诊断包一眼能分出
    「语法错误」和「网络断了」。这一行的措辞不能撞上 `FATAL_PHRASES`，否则会抢断回退流程（`test:ejs-failure-reasons` 守着）。
 
+5.1 **loader.js 不往页面全局写名字（2026-11-19，诊断包 #1331 / #1334）**：Chrome 111 / Windows 的玩家开《1942》0.6 秒报
+   `SyntaxError: Identifier 'debug' has already been declared`，卡在「fbneo」两分钟被看门狗判超时，重试一样。本站代码不在引擎 iframe
+   里声明 `debug`，推测是浏览器扩展往每个框架注入了全局 `var debug`；旧 loader 顶层的 `const debug` / `function loadScript` 等都在
+   realm 的全局作用域，撞上一个整份不执行。现在整份 loader 包在立即执行函数里，`check-emulatorjs.mjs` 先在 VM 里声明一批同名全局再跑一遍守着。
+   线上复现方法：在引擎 iframe 的**最终** srcdoc 文档里插 `<script>var debug=1</script>`（初始 about:blank 那份会随导航作废），
+   旧版必报这句错、卡在「正在准备模拟器」。改 loader.js 后跑 `node scripts/gen-ejs-core-versions.mjs`，URL 按内容换代。
+   **复核（2026-11-20，第三份 #1343：Chrome 156 / macOS / JP，同一句）**：三份都在 `index-jTkyAWT_.js` 上；修复 4b46d14 是 09:38:44 UTC 提交的，
+   #1343 是 09:40:38 UTC —— 还是旧部署。线上 `loader.js` 现已是包好的版本（内容哈希 968fa7e61032e49c 与仓库一致）。
+   引擎 iframe 里剩下的经典脚本也查过：socket.io 是 UMD 立即执行函数；核心 Emscripten 胶水（引擎用同源 blob 插进来）顶层只有
+   `var EJS_Runtime`、`var setImmediate`，只会和别人的 `let` / `const` 同名撞。
+   但这一句以前只进日志：loader 一行没执行，适配器等满 120 秒看门狗，播放器自动重试再撞再等 120 秒，三份都是 240 秒才报失败。
+   现在 `src/emulator/engineScriptErrors.ts` 认出「开局前、来自本站引擎脚本（`/emulatorjs/`、`/_cn/emulatorjs/`、本站源 blob）的 SyntaxError」，
+   适配器当场 failLoad：全局名重复声明按 `'config'`（`ejsScriptConflict`，提示停用扩展或换无痕窗口，不自动重试），其它语法错误按 `'runtime'`。
+   服务端诊断把这类日志归成 `script_conflict`（以前落到「启动流程超时或停滞」）。跨源无 crossorigin 的经典脚本报错会被抹成「Script error.」，
+   那种照旧靠看门狗。真浏览器复现（真构建 + 生产只读 API，《1942》自动开局，扩展式地在每个框架的 document_start 插 `<script>`）：
+   插 `var debug=1` 照常开局（loader 已包好）；插 `let EJS_Runtime=1`，新版开局 2.5 秒报冲突、旧版报含糊的「Error loading EmulatorJS runtime」并按引擎故障重试。
+   ⚠️ Playwright 的 addInitScript 里直接写 `let x` 不会成为页面全局，而且 document_start 时 documentElement 还是 null —— 要等它出现再插 `<script>`。
+   回归：`npm run test:ejs-script-conflict`。
 6. **告警（2026-11-18）**：事故持续几个小时没人知道——聚集报警只发邮件，而生产上邮箱根本没配。现在统一发飞书机器人
    （`server/src/lark-notify.js`，webhook 在 `server/.env` 的 `ALERT_LARK_WEBHOOK`，不进 git）：玩家启动失败按特征聚集
    （`diag-alert.js`，邮件 / 飞书任一通道成功即算报出）、部署中止 / 自动回滚（`redeploy.sh`）、**每 15 分钟的公网开局巡检**
@@ -410,6 +438,13 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
 别再写第二个注入器（`test:romdata` 有断言守着）。
 
 ⚠️ BIOS 包要**和核心同一批**的 romset：换一个版本的 `pgm.zip` 就是 CRC 对不上 → 缺文件。
+
+**没填系统名时服务端按索引补上（2026-11-19）**：2026-11-18《圣魔世纪》（svg）当时没填 `arcade_bios`，播放器只下了平台那格的
+`neogeo.zip`（现场那个 1.9MB 的 zip），FBNeo 报 `ROM at index 128 with name pgm_t01s.rom … is required`；管理员一个多小时后补上 pgm 才好。
+`bios:pgm` 早就绑好了，缺的只是名字。现在 `mappers.js` 对没填系统名、没 RomData、FBNeo 核心的街机游戏调
+`inferArcadeSystemBios()`：所有官方 ROM（含备用源）都认得出且指向同一个系统包才下发 `arcadeBios`；**不推 neogeo**（平台那格本来就是它，
+推了只会改动 703 个 Neo Geo romset 的屏幕按键布局）；推出来的名字没有 `bios:<名>` 绑定时播放器只打提示、照常下平台 BIOS。
+后台填的值始终优先。回归：`cd server && npm run test:arcade-bios-infer`。
 
 ### 2.8.1.1 街机冷启动：三条串行链已拆开（2026-10-25，《恐龙快打》实测）
 
@@ -1331,6 +1366,16 @@ download.8bitgo.com（0.17 秒）；首段测速把握手和约 1 秒首字节�
 2. binding **没有 `listParts`**：complete 时必须把每片的 `{partNumber, etag}` 全报回去，所以这份账只能记在前端 —— **换浏览器就续不上**
 3. binding 也**没有 `listMultipartUploads`**：没合并的分片在 R2 默认 7 天自动中止之前仍占用存储；自定义生命周期可能改变期限。Worker 在 `_uploads/` 下写标记对象，后台「ROM 存储」页靠它列出并清理残留；R2 自动中止后标记对象仍需手动清理
 
+⚠️ **后台的 Worker 口令自动填（2026-11-22）**：管理员把提示里的占位词「ADMIN_TOKEN」原样填进口令框，所有上传 401。
+现在登录后台（`site:manage`）时 `AdminLayout` 调 `ensureRomCredential()`（`src/services/romUploadCredential.ts`），
+向 `GET /api/admin/rom-upload-credential` 领一张 12 小时的 HMAC 凭据（`8bg1.<过期秒>.<随机>.<签名>`，
+`server/src/rom-upload-credential.js` 签发），存 sessionStorage `8bitgo.rom.credential`，剩不到 3 小时续签。
+Worker 的 `authorizedAsync` 先比 ADMIN_TOKEN，再用同一把 `ROM_UPLOAD_SIGNING_SECRET` 校验凭据（过期时间超过 13 小时一律拒绝）。
+这把密钥**两边必须一致**：Worker 用 `wrangler secret put ROM_UPLOAD_SIGNING_SECRET`，源站写 `server/.env`；任一边没配，
+后台退回手填（服务端回 503，页面提示）。手填口令仍优先，占位词「ADMIN_TOKEN」会被当成没填。
+服务端自己的转换任务（PSP / Sockdrive）仍用 `PSP_CONVERT_WORKER_TOKEN` / ADMIN_TOKEN，**那里必须是真实值**——
+2026-11-22 生产 `.env` 里它写的也是字面量 `ADMIN_TOKEN`，转换任务读 staging 全 401。回归：`worker/tests/upload-credential.test.mjs`。
+
 改 `worker/` 下任何源码后跑 `npm run test:worker`（内存版 R2 mock，不联网；分片只是其中一部分）。
 改了 `worker/src/` **还要**跑 `npm --prefix worker run build:standalone` 重建单文件包 ——
 `worker/tests/standalone.test.mjs` 会逐字节比对模块化实现和那份 bundle，忘了重建它就会红。
@@ -1921,17 +1966,31 @@ Ruffle 的远程 SWF 由 `loadGameBytes()` 下载，它已经把断流、HTTP 5x
 
 Ruffle 核心预热只有在清单选中的 core JS 与 WASM 都读到结束后才算成功。预热失败要从 URL 去重表移除、允许下一局重试，并在诊断包标明失败；不能把“失败后放弃”记录成“预热完成”。大核心的悬停预热按省流量、网络类型、吞吐与 RTT 门控；玩家点击开始后仍与 SWF 并行预热核心。回归：`npm run test:ruffle-runtime && npm run test:ruffle-saves && npm run test:game-controls && npm run test:keymap`。
 
+### 2.24.0e.1 运行时模块按进展计时；大陆加速线路判坏记 2 小时（2026-11-22，#2756 / #2758《暴力摩托》）
+
+`loadMountOf` 的 60 秒时限以前从播放器挂载起按墙钟算，EdgeOne 对这位访客只有约 6KB/s 但一直在下，到点就判超时；js-dos.js 的
+25 秒改道逻辑在 mount 里，根本没轮到。现在 `src/emulator/moduleLoadDeadline.ts`：同目录 JS / CSS 每完成一个就重新计时，
+连续 60 秒没进展才判、总上限 180 秒（文案带「60 秒没有进展」/「180 秒仍未完成」，诊断归组特征随之变化）。
+模块本身在加速入口上超时（`assetsOnCnEdge`）时，EmulatorPlayer 带 `__assets=origin` 整页重开一次（已是主站资源页不再跳，防循环）。
+`src/emulator/runtimeEdgeRoute.ts` + `runtimeEdgeWatch.ts`：js-dos 运行时下载失速（30 秒零字节）、一段（≥20 秒）总吞吐 < 24KB/s、
+或入口脚本在加速入口失败 / 超时，就本页改同源、中止坏线上的预热并改同源重拉，结论写 localStorage `8bitgo.runtime-edge-bad.v1`（按运行时分，2 小时）。
+`runtimeBase` 每页每种运行时只读一次这个结论。**目前只接了 js-dos**：EmulatorJS / Ruffle 的同源线对多数大陆访客更慢，误判代价大，接之前要有现场证据。
+回归：`npm run test:runtime-edge-route`。
+
 ### 2.24.0f 运行时入口加载不能无限等待（2026-11-19）
 
 启动诊断若只有 `start_click → timeout`，且没有 ROM 完成事件或适配器阶段日志，不能据此归因成 ROM / 核心下载故障。播放器在调用适配器前会先动态导入运行时模块；该导入曾没有时限，若浏览器端代码分块请求一直 pending，适配器不会挂载、也没有机会报告进度，玩家只会在 120 秒后得到通用超时事件。`loadMountOf()` 现在 60 秒超时并清掉失败 promise，让错误状态和重试入口及时出现；播放器会记录模块加载起止，Ruffle 每个启动阶段也必须调 `onStartupActivity()`，避免已经推进的 iframe 启动被外层看门狗误判为静止。单份现场只能确认停在适配器首次可观测阶段之前，不能反推当时具体是哪条模块请求挂起。
 
 ### 2.24.0g React #185 优先于旧资源错误（2026-11-20）
 
-React 19 的 `Minified React error #185` 是最大更新深度超限，表示组件树出现连续状态更新；组件栈只到 `EmulatorPlayer` 时，还不足以确定是哪一个 hook / 回调触发，必须保留组件栈和同次启动阶段继续定位。#1533 的游戏记录是 NES《超级玛丽奥兄弟》，但快照却报告 Ruffle 已运行 41.6 秒，运行时与游戏记录互相矛盾，不能据此断言模拟器已启动或把原因归到 Ruffle。列表里唯一 HTTP 400 是 459 秒前的 `u.clarity.ms/collect`，与本次故障无关。`server/src/startup-diagnostics.js` 对 #185 单独归类，资源 HTTP 错误只有发生在开局前后 30 秒内才参与判断，近期第三方错误仍只作中把握度线索；旧的 Resource Timing 不能盖过当前页面错误。`EmulatorPlayer` 对重复的能力、几何、双屏布局回报按值去重；同一会话重复回报相同核心与存档档位时也保留旧对象引用。它们能挡住已知的重复更新放大路径，但没有 #1533 同次开局的回调轨迹，故**不能把该事故来源写成已定位**。回归：`npm run test:player-runtime-state && npm run test:startup-diagnostics`。
+**2026-11-22 定位到的最可能来源（未能复现）**：`LiveControls.tsx` 的 `coopCtl` 每次渲染新建对象，又在调用 `onControls`（父组件 `setLiveCtl`）的 effect 依赖里；
+`coopReady`（有 2P 键位且正在直播，默认自动开播）为真时就形成 渲染 → effect → setState → 渲染 的循环，任何一次同步更新（点击、按键、resize）都会让 React 数满 50 层抛 #185。
+《森林冰火人 4》直接命中；「NES 页面上 Ruffle 跑了 41.6 秒」是 SPA 跳转时 `usePageData` 保留旧页数据、旧 Flash 播放器还挂着，而崩溃报告按地址栏取 slug。
+修法：`coopCtl` 改 `useMemo`（只依赖原始值和稳定回调）；父组件经 `acceptLiveCtl` + `sameLiveControls` 按值去重。**往 effect 依赖里放对象、effect 里又回调父组件 setState 的写法不要再用。**
+回归：`npm run test:player-runtime-state`。直播中的双人 Flash 游戏上线后要实测一次。
 
-### 2.24.0h Grindcraft 的启动脚本超过 Ruffle 默认时限（2026-11-22）
 
-现场 Edge 157 / Windows 的 SWF 与 Ruffle WASM 均已成功加载，但 `enterFrame` 报 `A script in this movie has taken too long to execute and has been terminated`，画布黑屏而播放器仍显示运行中。Ruffle 默认 `maxExecutionDuration` 是 15 秒；只给 `grindcraft` 的 `load()` 配置提高到 60 秒，不要全站放宽，以免其它 SWF 的死循环长时间占住页面。若超过新上限，`ruffleCrash.ts` 必须把这个明确的终止标记作为运行时错误接管，不能只留在 iframe 控制台。回归：`npm run test:ruffle-runtime`；部署前还要用真实 Grindcraft 页面确认初始化进入菜单且能点击采集。
+React 19 的 `Minified React error #185` 是最大更新深度超限，表示组件树出现连续状态更新；组件栈只到 `EmulatorPlayer` 时，还不足以确定是哪一个 hook / 回调触发，必须保留组件栈和同次启动阶段继续定位。#1533 的游戏记录是 NES《超级玛丽奥兄弟》，但快照却报告 Ruffle 已运行 41.6 秒，运行时与游戏记录互相矛盾，不能据此断言模拟器已启动或把原因归到 Ruffle。列表里唯一 HTTP 400 是 459 秒前的 `u.clarity.ms/collect`，与本次故障无关。`server/src/startup-diagnostics.js` 对 #185 单独归类，资源 HTTP 错误只有发生在开局前后 30 秒内才参与判断，近期第三方错误仍只作中把握度线索；旧的 Resource Timing 不能盖过当前页面错误。`EmulatorPlayer` 对重复的能力、几何、双屏布局回报按值去重，避免相同状态不断生成新引用触发多余渲染。此保护针对可证实的更新放大路径；当前证据仍未定位到 #1533 的具体业务更新源。回归：`npm run test:player-runtime-state && npm run test:startup-diagnostics`。
 
 ### 2.24.0 Ruffle 存档要跟着游戏走；舞台按显示尺寸渲染
 
@@ -2023,6 +2082,7 @@ JSPI 开关真正的键是 `jsdos.8.jspi`。2026-10-26 以前 `jspiFlag.ts` 一�
 `?jspi=1` 才写 `jsdos.8.jspi=true` 做对照；`test:jspi` 会对着 `public/jsdos` 里的运行时核对前缀与读法。
 适配器在玩家点击开始的那一刻就调用 `warmJsdosCore()`，把与 `Dos({ backend })` 同一判断选出的核心
 并行送进 HTTP 缓存，触屏 / 键盘开局（没有悬停）也不再把核心压在关键路径末尾。
+**js-dos 依赖脚本失败后必须移除 script 标签**（2026-11-20，诊断包 #1518，《大富翁3》，Edge 157 / Windows / CN）：ROM 的 `download_complete` 已发生，随后 EdgeOne 上 `emulators.js` 请求超时；上游只看 `#emulators-js` 标签是否存在，失败标签留在 DOM 后，自动重试跳过加载并在读取 `emulators.version` 时抛 `ReferenceError: emulators is not defined`。具体为何 EdgeOne 首次请求超时，现场无法确认。`scripts/copy-jsdos.mjs` 现在只在 `window.emulators` 存在时复用加载结果，失败、onload 没有全局对象或 7 秒 pending 超时都会删标签并 reject，让播放器 8 秒兜底前释放请求、下一局切同源重试；并发调用共享 in-flight Promise，不误删仍在加载的标签，后开始的调用在共享请求完成后更新所选线路前缀。`test:jsdos-runtime` 从生成产物抽出实际加载器，覆盖错误 / 超时清理、同源重试、并发复用与无全局对象的 onload；`check-jsdos.mjs` 守住补丁特征。诊断归组按明确的 js-dos `emulators.js` 初始化错误优先于整页里残留的 ROM URL 日志，避免误报成 ROM 下载失败。改该补丁必须提升 `JSDOS_ASSET_VERSION`、重跑 `npm run jsdos`，并同步路径夹具。
 
 **js-dos 依赖脚本失败后必须移除 script 标签**（2026-11-20，诊断包 #1518，《大富翁3》，Edge 157 / Windows / CN）：ROM 的 `download_complete` 已发生，随后 EdgeOne 上 `emulators.js` 请求超时；上游只看 `#emulators-js` 标签是否存在，失败标签留在 DOM 后，自动重试跳过加载并在读取 `emulators.version` 时抛 `ReferenceError: emulators is not defined`。具体为何 EdgeOne 首次请求超时，现场无法确认。`scripts/copy-jsdos.mjs` 现在只在 `window.emulators` 存在时复用加载结果，失败、onload 没有全局对象或 7 秒 pending 超时都会删标签并 reject，让播放器 8 秒兜底前释放请求、下一局切同源重试；并发调用共享 in-flight Promise，不误删仍在加载的标签，后开始的调用在共享请求完成后更新所选线路前缀。`test:jsdos-runtime` 从生成产物抽出实际加载器，覆盖错误 / 超时清理、同源重试、并发复用与无全局对象的 onload；`check-jsdos.mjs` 守住补丁特征。诊断归组按明确的 js-dos `emulators.js` 初始化错误优先于整页里残留的 ROM URL 日志，避免误报成 ROM 下载失败。改该补丁必须提升 `JSDOS_ASSET_VERSION`、重跑 `npm run jsdos`，并同步路径夹具。
 2026-11-22 又补到主 `js-dos.js` 入口脚本没有时限：请求既不触发 `load` 也不触发 `error` 时，共享 `loading` Promise 会永久 pending，EdgeOne 到同源的回退不会发生。`loadJsdosScript` 现在 20 秒超时、失败清标签并释放 Promise；大陆入口失败后当局标记 EdgeOne 不可用并从同源重试。该入口脚本是适配器加载的，不改上游静态包，不需改 `JSDOS_ASSET_VERSION`；`test:jsdos-runtime` 的 `test-jsdos-entrypoint.mjs` 覆盖超时、错误、无全局对象、重试与定时器清理。
@@ -2527,6 +2587,14 @@ npm run pvz:check-assets              # 线上 HEAD + CORS 验收
   有 120s 超时，脚本标签也有 `onerror`，不再永远卡在「Preparing WebAssembly runtime…」。
 - 根目录那份 `pvz-manifest.json` 没有任何代码引用；`cn` / `en` 只读各自的 v2 清单。
 
+**Pages 网页游戏的就绪预算是「连续 120 秒没有进展」（2026-11-19，诊断包 #1220）**：生命周期桥
+`public/html5-api/8bitgo-runtime-bridge.js` 以前从安装起固定给 120 秒。日本 6.8Mbps / RTT 300ms 的玩家首次要下约 93MB，
+下载途中就被判失败，播放器重试后又从头等 120 秒，248 秒时第二次失败。现在桥多了 `reportProgress(ratio)`：调一次就重新给满预算，
+并按秒节流给父页发 `progress`（适配器转成 `starting` 阶段的 onProgress，只喂播放器的启动看门狗，不推进度条）。
+PvZ 自动加载片段的 `setProgress()` 按下载字节调用它。没接进度的游戏行为不变。桥是随 Pages 构建复制进各游戏子域的，
+**改了桥必须重新构建并发布对应的 Pages 项目**（`npm run pages:web-games:build -- pvz` → 发布），只部署主站不生效。
+回归：`npm run test:html5-runtime-bridge`。
+
 首次自动加载使用 `public/web/PvZ/pvz-loading.css` + `pvz-loading-scene.webp` 的 4:3 游戏启动画面，
 进度木牌读取的仍是 `setProgress()` 的真实下载 / WASM 写盘比例，不准换成与下载脱节的假动画。
 画面挂在 `#drop-zone.loading` 下，因此必需资源或引擎失败后移除 loading class 就会回到原资源选择页；
@@ -2800,6 +2868,17 @@ magic、v4、节点平方矩阵、压缩段和每节点 4 字节尾部统计，�
 低内存设备更容易丢 WebGL 上下文。加载页的下载量 / 速率 / ETA 只按真实网络字节计算，进度 DOM
 最多每帧更新一次；启动器提前取清单时必须在玩家点击开始后重置测速时钟，不能把玩家选地图的时间
 算成“下载很慢”。资源域预连接与 13KB catalog 可以提前，60MB 内容包不能在点击开始前偷跑。
+
+### 2.28.4.1.1 大陆访客的 CS1.6 走 EdgeOne 镜像，失败回 Pages（2026-11-22）
+
+cs16.8bitgo.com（Pages）从部分大陆网络打不开，而 cn.8bitgo.com/web/cs16（EdgeOne → 源站）秒开。`adapters/html5.ts` 的
+`CN_MIRRORED_PAGES_ENTRIES`（目前只有 cs16）：大陆访客（`coverCdnHint()==='cn'` 或 `onCnSite()`）用 `/web/cs16`（页面本身已由 EdgeOne 提供时同源，
+否则 `https://cn.8bitgo.com/web/cs16`），非大陆访客照旧 Pages。20 秒（只数前台）没有生命周期桥信号、同源加载后没有 `#canvas`、iframe error
+或桥报 failed，就回 Pages 一次。AI 修补的 `runtimeOrigin` 会关掉镜像。源站 `/web/cs16` 由 `server/src/web-game-html.js` 注入与 Pages 构建相同的
+媒体桥 / SDK / 运行时桥（按 sha256 带版本），失败照发原文件。房间与中继按页面同源连接，EdgeOne 上 WebSocket 和子协议已实测 101。
+EdgeOne 缓存 `/web/cs16` 一小时且没有清缓存通道：部署后这段时间里，从 8bitgo.com 跨源嵌入 cn 的大陆访客拿不到桥信号，会在 20 秒后回 Pages。
+其它 Pages 游戏（PvZ 依赖 Pages 专属 `/pvz-data` 代理和存档桥来源，Terraria / Celeste / GTA VC 要跨源隔离）没有切，切之前要逐文件核对。
+回归：`npm run test:html5-pages-bridge`。
 
 ### 2.28.4.2 CS1.6 启动页复用原版资产；联机只能走后端已验证目标 WSS↔UDP
 
@@ -3525,6 +3604,16 @@ melonDS DS 的包换了，要同步四处：报告 sha256、`NDS_MODERN_CORE_BUI
   wasm 必须带 `Content-Type: application/wasm`，否则流式编译直接失败。⚠️ 这些文件在 Cloudflare / EdgeOne 上是一年长缓存，
   上线新压缩版要清掉对应 URL 的边缘缓存，否则继续吐旧的现场压缩副本。
 
+### 2.32.0.2 PPSSPP v24：两个带 v128 的 `invoke_` 导入改走 Wasm 跳板（2026-11-22，诊断包 #2481《初音未来：歌姬计划》）
+
+`type incompatibility when transforming from/to JS` 不是 QQ 浏览器特有：WebAssembly JS API 任何浏览器都不让 v128 过 JS 边界。
+核心里只有 `invoke_iiViijjji` / `invoke_iiViijjjij` 两个导入签名带 v128，调用点全在 `GamepadEmuView` 构造（PPSSPP 自带触屏按键，
+`bShowTouchControls`；桌面 SDL 构建默认关）。玩家在 PPSSPP 菜单里打开触屏按键就崩，且设置按游戏存在 IDBFS，之后每次开局都崩。
+v24（`scripts/refresh-ppsspp-simd-v24.mjs` 从 v23 生成，Wasm / data 不变）在胶水里造一个 145 字节的辅助模块，导出同签名函数、
+经自己的表 `call_indirect`，`receiveInstance` 后把主表拷过去；构建失败就保留原包装并记日志。i64 / BigInt 不是原因（构建用 WASM_BIGINT，
+缺 BigInt 集成会在开机就失败）。根治要改 `GamepadEmu.cpp` 不按值传那个被打包成 v128 的结构，或用原生 Wasm 异常重编。
+回归：`node scripts/test-ppsspp-simd-trampoline.mjs`（并入 `test:ppsspp`）。还没在真浏览器里开过触屏按键验证。
+
 ### 2.32.1 PSP 必须留在普通详情页内启动，不能再复用 PS2 的独立播放器外壳
 
 PPSSPP 的 pthread 仍然需要 `Cross-Origin-Opener-Policy: same-origin` 与
@@ -3965,12 +4054,28 @@ EmulatorJS 引擎日志与加载阶段文字（`diagLog`）、下载器的重试
   没有日志」的状态，也走 snapshot。终端颜色码（`ESC[91m`）在前后端都会去掉。
 - 隐私边界写在隐私政策（`test:legal` 的 `startup-diagnostics` 两条）：不存 IP、完整 UA、ROM 地址、账号；
   ROM 文件名一律 `[ROM]`。加新字段先改白名单 `normalizeDiagnostics()`，否则服务端会直接丢掉。
+- **漏斗有失败但诊断包缺失时要留安全摘要**（2026-11-21）：生产近 7 天曾有 201 次失败、29 次超时没有关联诊断包；旧路由只在客户端带包且完整包限流通过时保存，缺包 / 限流会静默丢失现场。现在每个首次写入的 failed / timeout / slow_start / recovered 都尝试保存：完整包沿用每 IP 6 / 全站 120 每分钟；缺包、无效包、保存失败或被限流时，单独用每 IP 12 / 全站 240 的更严摘要闸，保留漏斗事件已有的安全错误摘要和阶段时间线。摘要 `capture.level=summary` 必须在后台明确显示「详细浏览器现场未收到」；设备能力等详细环境（`env`）、部署版本、开局序号、日志和资源都留空，数据库仍只存从请求头归纳的浏览器 / 系统 / 设备类别，不能把缺失信息编造出来。历史回填只生成同样的摘要，默认 dry-run，写库用 `cd server && npm run backfill-startup-diagnostics -- --days=7 --apply`，且禁止触发报警 / 飞书 / AI 分诊。回归：`npm run test:startup-diagnostics`。
+- **回填必须带故障发生时间**（2026-11-21）：第一次回填没传，1150 条旧现场的 `created_at` 全写成了回填那一刻，后台「最近出现」挤在同一分钟，
+  聚集报警 / AI 分诊的时间窗和 30 天清理也跟着错。`recordStartupDiagnostics(..., { occurredAt })` 在真插入后把 `created_at` 改成漏斗事件时间
+  （只接受过去 30 天内）；回填脚本传 `row.createdAt`。已有错位数据用 `game_startup_events` 按 (visit_id, attempt_id, event) 对回。
+- **2026-11-21 逐组复查的结论与修补**（详见提交说明）：
+  - 120 秒看门狗只**上报**超时、不拆局（《经典食人花》在超时后 35 秒出画面）。慢但仍在推进的阶段必须报 `onStartupActivity`：js-dos 被压住的系统盘 / ROM 进度、
+    Windows 客体建盘与开机（`startAdapterOwnedTimeout`，前台每 15 秒心跳，真卡死仍按适配器自己的阶段超时报错）、Ruffle 核心预热的字节进度、PPSSPP mount 期间。
+  - EdgeOne 上的 `js-dos.js` / `ruffle.js` 25 秒取不到就换同源，迟到的脚本有闩挡住，不会建两个播放器。
+  - html5 适配器先 append 后设 src，iframe 会同步触发一次 about:blank 的 load：以前被当成「已加载」，诊断里出现 5ms 的 iframe_loaded。现在忽略这次 load。
+  - 45d661f 合并时丢了 html5 运行时桥的 `progress` 分支，PvZ 每秒一条 progress 被兜底分支当成失败，**每局约 10 秒报错**；现在 `dispatchHtml5RuntimeSignal` 逐类型显式匹配，只有 `failed` 报错。
+  - **绝对旧入口也要按本站域名迁移**（2026-11-21，生产 PvZ 冒烟）：大陆 `cn.8bitgo.com` 进入时，数据库里的 `https://8bitgo.com/web/PvZ/en?shell=20260923-save2` 与当前 origin 不同，旧逻辑漏过迁移，iframe 继续加载没有生命周期桥的主站副本，240 秒没首帧。`versionHtml5Entry()` 对精确的 8BitGo HTTPS 域名统一迁到 Pages，并更新 shell 代次；非本站域名和跨源 HTTP 仍不迁。回归：`npm run test:html5-pages-bridge`。
+  - 核心下载「正文在流、后来停了」（20 秒无新数据 / XHR 兜底停滞）不再标记 EdgeOne 线路坏，重试留在 EdgeOne 续传；HTTP 错误、截断、头超时照旧换线（`ejsEngineErrors.ts`）。
+    引擎本地化的「启动游戏失败」等先归一成英文再判 scope。
+  - 已出画面后的核心崩溃，上报原因前缀「运行中崩溃（已出画面）」，不再和启动失败归成一组。
+  - React #185（最大更新深度）：上报时组件栈排在说明前面，保证组件名进得了 160 字摘要；同一页**原地重挂一次**，再次出现才停在兜底页。具体更新源仍待下一份带组件栈的现场确认。
 - 部署要 `cd server && npm run migrate`；缺表时漏斗照常，诊断包不入库，后台该页 503。
 - **慢启动要分清「还在下载」和「下载完卡在启动」**（2026-11-10 阿联酋《心灵之金》：42MB 的 NDS ROM 跑在 6～10Mbps
   的线路上，物理上就要 35～60 秒；诊断包却只有 start_click → slow_start 和一条第 0 片，后续分片还没进 Resource Timing）。
   `startupProgressTrace.ts` 记下最后进度：slow_start 的原因原文带上阶段（后台归组时两类自然分开），快照行带字节数与平均速率。
   ROM Worker 发 `Timing-Allow-Origin`，否则跨源请求的传输量恒为 0；边缘已缓存的旧响应要等过期才带上。
 - **诊断归组要给出可审阅的判断，不要把相关性写成根因**（2026-11-18）：前端持续观察 Resource Timing，缓冲区写满时先保留慢 / 大 / 失败候选，再逐步扩容且不清除历史记录（页面资源自修复和 J2ME 看门狗也读取该列表）；资源型 `error` 事件另外记录失败的脚本 / 样式 / 媒体入口，避免快速失败不进性能表。服务端 `diagnoseStartupFailure()` 用脱敏后的现场按固定规则标出类别、阶段、把握度与安全的核心名；明确区分 ROM 下载、ROM 内容、街机 ROM 集 / BIOS、引擎资源、WebGL、内存、存储、输入权限和核心运行时错误。`table index` 等运行时陷阱只标「待确认」，不能仅凭一条错误断言 ROM 损坏。后台现场和「复制给 AI」同时展示分类与把握度；新增字段必须在 `normalizeDiagnostics()` 白名单和隐私政策中同步维护。
+- **诊断不能把旧阶段当成当前失败**（2026-11-21，生产诊断 #2744：《黄金太阳》本地 ROM 首帧后约 13 分钟 mGBA 报 `RuntimeError: Aborted(undefined)`，却因历史日志里的「下载游戏核心」被归为核心下载失败）。仅当有明确失败措辞时才按核心下载归类；可确认发生在可玩 / 首帧之后的 WASM 错误归到运行时阶段，阶段日志若比失败早 30 秒以上不再参与停滞分类。时间戳缺失的旧诊断包仍兼容原规则。回归：`npm run test:startup-diagnostics`。
 - **慢启动先看进度快照还在不在动，别一律标「停滞」**（2026-11-18 诊断包 #1155 / #1156）：slow_start 只是「20 秒还没出画面」的时间点。
   #1155《MDK》iOS Safari：114MB 普通 DOS 整包（无 Sockdrive），第 19.9 秒仍以 31 Mbps 在下，被标成「ROM 下载或流式读取停滞」；
   #1156《西游释厄传》：21MB ROM 被 `effectiveType=3g` 压成单路串行下了 19.4 秒，第 19.7 秒进 assets、0.3 秒后上报，被标成「模拟器依赖资源加载停滞」。
@@ -3979,6 +4084,7 @@ EmulatorJS 引擎日志与加载阶段文字（`diagLog`）、下载器的重试
   artifact（`rom-64-256mb` 等），大包和小包慢网分开归组。流式读盘、命中缓存、进度几秒没动、下完很久仍卡在后面阶段，维持原「停滞」归类；
   只作用于 slow_start，失败 / 超时有自己的原文。改 `startupProgressTrace.ts` 的 snapshot 格式要同步这个解析器。
   这类「未停滞」组的行动方向是：大 DOS / Windows 包做 Sockdrive（§2.8.7），小包慢网查下载并发与线路，而不是找卡死点。
+- **下载完成事件会淘汰旧 ROM 阶段**（2026-11-21 诊断包 #2761）：ROM 在 19 秒完成，1.2 秒后上报 slow_start；快照仍把阶段写成 rom，且下载前的一次分片预取失败已由后续请求恢复。诊断不能因此说 ROM 停滞或网络失败；非 HTML5 的 `download_complete` 是资源已到手的阶段证据（HTML5 同名事件只代表 iframe 文档 load），之后优先判断「慢在 ROM」或「仍在启动」。回归：`npm run test:startup-diagnostics`。
 - 回归：`npm run test:startup-diagnostics`。
 - **聚集报警**（2026-11-15，`server/src/diag-alert.js`）：同一特征 60 分钟内来自 ≥10 个不同访问就给 `DIAG_ALERT_EMAIL` 发一封
   （复用 Resend），同一特征 6 小时内不重复，冷却记在 `site_settings` 的 `diag.alert.<特征>`。没配邮箱完全不启用。
@@ -4143,7 +4249,7 @@ PK / TH 两份现场：`The requested module './live-Cqhc9j-k.js' does not provi
 - **正常访问**：`index.html` 里一段 ES5 内联钩子，不发请求。只在 localStorage `8bitgo.asset-remap` 有未过期记录时插一张 import map；
   定义 `window.__8bitgoAssetRepair`，并监听 window 的 `SyntaxError`（入口模块链接失败时 React 起不来，兜底页接不住）。
   钩子必须排在任何模块脚本之前，import map 才来得及生效。
-- **出错时**：才加载 `public/assets/asset-repair-v6.js`（文件名即代次，长期缓存；改逻辑新建 v7，旧版留给已打开的旧页面）。
+- **出错时**：才加载 `public/assets/asset-repair-v7.js`（文件名即代次，长期缓存；改逻辑新建 v8，旧版留给已打开的旧页面）。
   首页按入口脚本所在资源域加载，所以大陆入口 `cn.8bitgo.com/_cn/assets/` 的自修复也走 EdgeOne；该路 5 秒超时或失败后再回主站
   `/assets/` 重试，每次的地址 / 结果 / 耗时记在 `window.__8bitgoAssetRepairLoad`，诊断包写成「加载失败 812ms」「5 秒超时」
   「已加载、核对 20 秒内没有结束」。只核对本页 Resource Timing 里用过的
@@ -4155,9 +4261,12 @@ PK / TH 两份现场：`The requested module './live-Cqhc9j-k.js' does not provi
   取不下来（网络错误 / HTTP 错误）→ 绕过缓存重试一次，好了记 `recovered`；仍失败时再带 `?asset-repair=1` 回源核对，
   回源正常就记 `remapped`、请服务端清 Cloudflare；仍不可达且文件在大陆加速入口上，再取主站同名文件对照，主站正常记 `edgeOnly`，
   主站也不行记 `failed`。`trace` 记录每一步的 HTTP 状态 / 网络错误 / 超时。
+  v7 起 `.js` 还核对 Content-Type（不是 JavaScript 记「类型错误」，按字节不符处理）；点名文件字节和类型都对时只记 `inDocument`，
+  不改地址、不清边缘（见本节末 #1285 / #1368 / #1393）。
 - 用 SHA-256 不用 MD5：`crypto.subtle` 只有 SHA 系列，原生实现比 JS 版 MD5 快。没上全量 SRI：那要把约 110 个哈希塞进每份 HTML。
-- `AppErrorBoundary` 对 SyntaxError 与旧 chunk 404 都先走修复：修好了先上报（诊断包带「资源核对：…」一行）再刷新；
-  没发现坏文件的 404 照旧刷新一次；其余上报。诊断包里的那一行分得清浏览器缓存坏、CDN 边缘坏、源站坏。
+- `AppErrorBoundary` 对 SyntaxError 与旧 chunk 404 都先走修复：修好了刷新一次（2026-11-19 起报告留到刷新后再发，
+  好了记 `recovered`、又坏了并成一份 `failed_again`，见本节末）；没发现坏文件的 404 照旧静默刷新一次；其余上报。
+  诊断包里的「资源核对：…」一行分得清浏览器缓存坏、CDN 边缘坏、源站坏、失败只在本页模块表里。
 - `/api/asset-repair` 不用登录：只认磁盘上这一版清单里、且磁盘 SHA-256 与清单一致的文件，按 IP 6 次 / 小时、全站 60 次 / 小时、
   同一文件 15 分钟一次。只清 Cloudflare；大陆入口 EdgeOne 没有清缓存通道，靠客户端 import map 绕过。
   没配 `CF_ZONE_ID` / `CF_PURGE_API_TOKEN` 时只打日志（`[asset-repair]`）。
@@ -4194,6 +4303,7 @@ PK / TH 两份现场：`The requested module './live-Cqhc9j-k.js' does not provi
 
 - 清单查了 56 项、55 项正常；点名的 `EmulatorPlayer-*.js` 强制重取后 SHA-256 正确，`failed` / `trace` 为空。现场只能确认动态模块请求失败后，普通 URL 的文件字节可取且正确；具体是瞬时网络、CDN 响应头还是浏览器模块加载路径，现有数据分不出来。
 - 旧恢复在普通 URL 内容正确后直接整页刷新。Chrome 仍会沿同一个 CDN URL 重试，若故障在该 URL 的边缘缓存 / 请求路径，刷新可能重复失败。v6 在同源懒加载失败且普通 URL 已校验正确时，额外用 5 秒上限核对 `?asset-repair=1` 地址；只有查询串副本也与 SHA-256 清单一致，才保存 import map remap、请求清 Cloudflare，并刷新到该副本。查询串未通过时维持原恢复行为。
+- ⚠️ 2026-11-19 复查：v6 的前提不成立，它清的是健康文件；v7 已撤掉这一支。见本节末 #1285 / #1368 / #1393。
 - 回归：`npm run test:asset-repair`。
 
 **诊断包 #761（微信 iOS 27，CN，《超级玛丽》详情页，`TypeError: Importing a module script failed.`）：旧 build，但根因当时没修。**
@@ -4239,6 +4349,89 @@ PK / TH 两份现场：`The requested module './live-Cqhc9j-k.js' does not provi
 - 2026-11-17 复查：播放器触屏手柄 `LazyTouchPad` 还是裸 `lazy()`（移动端会话必下），没有就地重试、也不点名 chunk。现已改走 `importWithRetry` + `tagLazyFailure`；`test:asset-repair` 扫描 `src/` 里所有 `lazy(() => …)`，不经 `importWithRetry`（或 `lazyNamed`）就失败。
 - **诊断包 #1196 / #1201（Chrome 97 / Android 15 / CN，《恐龙快打》）：legacy 懒加载 chunk 加载失败。** #1201 点名 `EmulatorPlayer-legacy-J-EQUy6G.js`，错误来自 SystemJS 的 `HTMLScriptElement` 加载回调；请求记录为 0 传输 / 0 内容。现有现场不能判断底层是瞬时网络、缓存还是 EdgeOne 响应，也不能从单次事件确认服务端缺文件。
   Vite legacy 包把 `import()` 编成 `System.import()`；SystemJS 的通用错误不匹配现代 ESM 重试列表，失败 URL 也可能藏在 `__vite__mapDeps` 运行时映射里，旧 `lazyChunkFile()` 因此拿不到文件名。结果是只尝试原 URL 一次，错误边界也不把它当 chunk 加载失败。现在识别 SystemJS 加载错误，从错误 URL 取出 legacy chunk 文件名，用新的 `chunk-retry` 查询串通过 `System.import()` 重试；仍失败时先整页刷新，重复失败再从 CN 加速入口切到主站。legacy 产物不在现代版 SHA-256 清单中，不能用现代清单给它作完整性结论。
+  2026-11-19 复核：#1201 就是 6b23db2（11-18 17:04 +0800）据以修复的那份现场，构建 `index-Co6eB-5S.js` 早于修复，当时没有任何重试。
+  当前构建产物里 legacy 懒加载编成 ``()=>_(()=>t.import(`./GameDetailPage-legacy-….js`),void 0,t.meta.url)``，`lazyChunkFile` 认得出；
+  重试走 `t.import(url)`（SystemJS 上下文导入），`import.meta.url` 编成 `t.meta.url`，查询串只加在入口上，依赖仍按原地址解析 —— 修复是完整的。
+  同时出错的 `lf1-cdn-tos.bytegoofy.com/…/push.js`（头条推送脚本）说明那一刻设备整体断流，不是我们一个文件的问题。
+  补充：SystemJS 失败的加载也会留在注册表里（`load.er`），和原生模块表一样；SystemJS 错误点名的文件不是懒加载入口时说明失败在依赖，
+  就地重试入口同样没用，现在按模块图证据直接交给兜底页刷新（下一条）。
+
+**诊断包 #1285 / #1368 / #1393（2026-11-18～19，Chrome 150 / Linux / desktop / US，`Failed to fetch dynamically imported module: …/GameDetailPage-*.js`）：不是 CDN 坏，是自动化客户端 + 静态依赖失败被模块表记住。**
+
+- **画像**：三份与 #917 / #1108 一模一样 —— 90 个逻辑核、32GB、1440x900、zh-CN、美国、网络报 3G（0.4～1.45Mbps、rtt 300～350ms）、
+  上报时页面在后台，三天里换游戏（三国志 3、狂野飙车 6、FIFA 97、黄金矿工……）、换部署反复出现。90 不是任何桌面 CPU 的线程数（云主机切出来的 CPU 集），
+  数据中心出口不会只有 0.4Mbps（开着网络限速），版本停在 Chrome 150（自动化集群常钉旧版浏览器）、页面在后台（多标签抓取）。
+  结论：一台跑在美国机房、按中文内容配置的抓取 / 测试机。诊断包不存 IP / ASN / 完整 UA，所以只能从这些特征推断，不能百分之百确认；
+  以前也没采 `navigator.webdriver`，现在采了（下面）。
+- **为什么「原 URL 内容正常、查询串副本正常，但 import() 失败」**：2026-11-19 用 Chromium 153 与 WebKit 26.6 的最小复现
+  （入口 `Page.js` 静态 import `dep.js`；`dep.js` 404 / 错误 MIME / 被 `route.abort` 中止 / `window.stop()` 一次）实测：
+  1. Chrome 报 `Failed to fetch dynamically imported module: …/Page.js` —— **写的是入口，不是真正失败的依赖**；Safari 只有 `Importing a module script failed.`。
+  2. 失败的依赖被**这一份文档的模块表**记住：换查询串重导入口（`?chunk-retry=1`、`=2`）、原地址重导都失败，依赖请求根本不再发；
+     整页刷新（新文档）后导入成功。入口自己失败（503）时换查询串重导就能好 —— 就地重试只对这种情况有用。SystemJS 也一样（`load.er`）。
+  3. 同一时刻 `fetch()` 入口、依赖、查询串副本全是 200。
+  所以 v6 看到的「入口字节对、查询串副本对」恰恰是这个机制，不是边缘缓存坏了；它写 import map、请求清 Cloudflare，清的是健康的
+  `GameDetailPage-*.js`（每次都让全球边缘回源一遍）。#1368 的 `gradients-*.js`（1KB 的 `src/lib/gradients.ts`）连修复脚本的 fetch、
+  强制重取、查询串回源都取不下来，只能是那台客户端自己拦 / 中止了请求；另外 6 个「改走回源」的文件同理是误判。
+  依赖第一次为什么失败，在我们这边查不到（客户端中止、拦截或它自己的代理），不是我们能修的。
+- **改动**：
+  - `importWithRetry` 第一次失败后读**模块图证据**（`importGraphEvidence`）：Resource Timing 里入口原地址那条已完整下载（有正文、非错误状态）
+    就说明失败在依赖，不再换查询串白下两遍入口（3G 上就是几百 KB、两秒多），直接交给兜底页刷新；Chrome 会给失败的依赖留一条
+    `responseStatus` 0 / ≥400、无正文的记录，据此点名（WebKit 不记失败请求，只能判入口下完了）。跨源无 TAO 时看不出，照旧重试。
+    legacy 看 SystemJS 错误里的文件是不是入口。证据挂在错误上，兜底页写进诊断包（「模块图：入口已完整下载、失败在静态依赖…」），
+    失败的依赖也交给修复脚本强制重取。不按时间筛：悬停预取（`preloadPlayer`）更早失败的依赖正是被记住的那个。
+  - `asset-repair-v7.js`：撤掉 v6 的「点名文件正常 → 查询串副本 → remap + 清 Cloudflare」，改记 `inDocument`；多核对 `.js` 的 Content-Type，
+    边缘把错误类型挂在 `.js` 上（fetch 拿得到字节、模块会被拒）才算地址本身异常，走查询串回源 / remap —— 这才是 v6 想覆盖的故障。
+    依赖真取不下来时不标 `inDocument`（入口只是被连累）。`check-asset-integrity.mjs` 改核 v7。
+  - **报告留到刷新后**（`src/services/pageRecovery.ts`）：兜底页要自动刷新时不再「先上报」，把报告（诊断包当场采）存进 sessionStorage，
+    刷新后的页面：同一个 chunk（按去哈希的名字比）加载上了 → 补报 `recovered`（漏斗新事件，不算 failures）；没点名 chunk、20 秒没再崩也算；
+    又崩了 → 那份报告带 `recovery.outcome = failed_again` 和「刷新前：…」，一次故障只记一行；换了页 / 等不到点名 chunk → `failed` + `unconfirmed`。
+    不跟刷新的自动化客户端、刷新前就关了标签页的，这份就不报了（少一份噪音）。sessionStorage 不可用时退回先报再刷新。
+    静默刷新（旧 chunk 404）好了照旧不报，只留前情。`importWithRetry` 成功时经 `onLazyChunkLoaded` 通知，路由与触屏手柄都覆盖。
+  - **来源分组**（`server/src/startup-diagnostics.js`）：前端多采 `env.auto`（`navigator.webdriver`、窗口外框 0×0、语言列表为空，几个开关、无标识符）；
+    服务端 `classifyAutomation` 当场用原始 UA（`isCrawlerUa`，与 SSE 拒爬虫同一张表）判 `bot`，桌面报 >64 核等判 `suspect`；不看 IP / 地区 / 语言。
+    `cohort` 存新列（`npm run migrate`；缺列时退回旧写法），也进特征：自动化、刷新后未确认、刷新后又坏各成一组，普通访客的特征与以前完全一样。
+    `needsAttention` 挡掉自动化 / `recovered` / `unconfirmed`：不发飞书、不聚集报警、不触发 AI 分诊、不计入 AI 修补的失败统计。
+    后台「错误诊断」默认不列已恢复和自动化（只数个数），点「显示」才列；类型筛选多了「已自动恢复」。隐私政策三种语言已写明新增的开关与刷新后补报。
+- **各样本结论**：#1285 / #1368 / #1393 = 疑似自动化客户端（`suspect`，桌面 90 核），自愈与否原现场不可知（旧版先报后刷）；
+  按新代码它们会进单独一组、不叫人。#1201 = 真实玩家、旧构建、已由 6b23db2 覆盖。
+- **端到端**（2026-11-19，Playwright Chromium 153 + 真实构建产物 + 只给 `/startup` 打桩的静态服务器，`route.abort` 让 `GameDetailPage` 的静态依赖 `AgeGate-*.js` 失败）：
+  - 失败一次 → 0 个 `chunk-retry` 请求、0 次清缓存、不写 import map，刷新一次后补报一份 `recovered`（带模块图证据；`env.auto` 是 `webdriver`）；
+  - 只有普通地址一直失败 → 查询串回源正常 → remap + 请求清缓存，刷新后经 import map 恢复，补报 `recovered`；
+  - 所有地址都失败 → 刷新一次后停在兜底页，只有一份 `failed` + `failed_again`，带刷新前的经过。
+- 回归：`npm run test:asset-repair`（模块图证据按两家浏览器的真实 Resource Timing 形状、证据驱动的重试、v7 的 inDocument / MIME、刷新后补报）、
+  `npm run test:startup-diagnostics`（来源分类、特征分组、噪音分区、`recovered` 事件），`cd server && npm run test:diag-alert && npm run test:diag-lark`。
+
+**懒加载导入系统性加固（2026-11-19，同一天的后续）：依赖失败一次不再拖垮整页。**
+
+- **问题规模**：详情页 chunk 在首屏之外还要 21 个 chunk（14 个不到 4KB），播放器 21 个，各运行时适配器 21～29 个。
+  Vite 的预加载助手（`\0vite/preload-helper.js`）给每个依赖插 `<link rel=modulepreload>`，不等、不重试；任何一个失败一次就被本页模块表记住。
+- **四种做法实测**（Chromium 153 / WebKit 26.6，入口 + 一个静态依赖，依赖第一次 503；数字是服务器收到的请求数）：
+
+  | 做法 | 不出错时 | 依赖 503 一次后 |
+  |---|---|---|
+  | modulepreload（Vite 默认） | 两家都 1 次 | 两家都导入失败（被记住） |
+  | `fetch()` 先暖缓存再 `import()` | Chromium 1 次；WebKit 有磁盘缓存 1 次、**临时会话 2 次** | 两家都恢复 |
+  | `<link rel=preload as=script crossorigin>` | 两家都 1 次（被模块加载器复用） | 两家都失败（失败的预加载也被复用，重试无效） |
+  | 合并小 chunk（codeSplitting 组） | 详情页扇出 21→10 | — 但首屏 644KB→1016KB、房间页被拖进 232KB 播放器代码，**否决** |
+
+- **现在**：`scripts/lib/vite-resilient-preload.mjs`（vite.config.ts 里 `resilientPreloadPlugin()`）用 transform 钩子把 Vite 助手的
+  `export const __vitePreload` 改名成 `__vitePreloadVite` 保留，接上包装：**Chromium 内核**（`navigator.userAgentData`）上，懒加载的 JS 依赖
+  （连同目标 chunk 本身）先 `fetch()` 完整读进 HTTP 缓存，网络错误 / 5xx 重试一次（600ms），404 等确定性错误不重试，响应头 15 秒、
+  正文停滞 15 秒中止；全部取到才交回 Vite（只剩 CSS）和真正的 `import()`，模块加载器读的全是缓存。还取不下来就抛带
+  `__8bitgoPreloadFailure` 标记的错误、**不碰模块表**，`importWithRetry` 见到它就再走一遍原加载函数（又会先暖缓存），不换查询串。
+  安全边：这一页 fetch() 从没成功过（策略 / 扩展拦了 fetch）时原样交回 Vite（含 modulepreload）；Safari / Firefox / legacy 完全不碰。
+  Safari 不开是因为无痕模式下每个依赖下两遍，弱网 iOS 多下一倍不划算；WebKit 依赖失败仍走上一条的「刷新一次 + 补报 recovered」。
+- **构建检查** `scripts/check-lazy-imports.mjs`（postbuild:client）：每个懒加载目标（现代 `import("./X.js")`、legacy `.import("./X-legacy-….js")`）
+  在磁盘上、现代目标连同静态依赖闭包都在 SHA-256 清单里；预加载助手确实进了现代包（Vite 升级冲掉补丁就红）；扇出预算 40 个 chunk、
+  首屏预算 820KB（未压缩；当前约 631KB、最大扇出 29）。预算是「明显变坏」的报警线，放宽要在提交里写原因。上面那次合并实验就会被首屏预算拦下。
+- **测试**：`npm run test:lazy-imports`（进 `npm test`：在 VM 里跑真助手代码——重试 / 404 不重试 / 去重 / 停滞中止 / 不碰模块表 / 非 Chromium 与 legacy 原样交回；
+  Vite 助手模板没变；importWithRetry 暖缓存失败后整套重来；构建检查的五种拦截）。
+  `npm run test:lazy-imports-browser [-- --dist <目录>]`（手动，要 Playwright 与构建产物，`PLAYWRIGHT_MODULE` / `WEBKIT_EXECUTABLE` 可指向本机已装的）：
+  真构建 + `route.abort` 让详情页的一个依赖失败，Chromium 失败一 / 两次在页面里就好（不刷新、不上报），WebKit 刷新一次后补报 `recovered`，
+  一直失败两家都停在兜底页只报一份 `failed_again`，不出错时每个懒加载依赖只下一次。拿 2026-11-19 之前的构建跑，Chromium「失败一次」那条会红。
+  ⚠️ Playwright 一开 `page.route` 就关 HTTP 缓存，「只下一次」只能在不拦截的那一轮量。
+- **升级 Vite 时**：`test:lazy-imports` 先核对 `node_modules/vite` 里助手模板（`export const ${preloadMethod} =`、`assetsURL`、`isCssPreloadUrl`）；
+  对不上就改 `vite-resilient-preload.mjs`，别删插件让懒加载退回「失败一次整页坏掉」。
 
 ### 2.40 塞班 / N-Gage：卡带转储 ZIP 由本站脚本导入 E 盘（2026-11-19）
 

@@ -20,6 +20,62 @@ const warmed = new Map<string, Promise<boolean>>()
 const WARM_STALL_MS = 30_000
 
 /**
+ * 预热下载每收到一块字节就通知订阅者（只给 URL，不给内容）。
+ *
+ * 用途是启动看门狗：Ruffle 的核心（约 3.4MB br）由预热和 load() 共用同一条 HTTP 缓存下载，
+ * 慢线路上要一两分钟，期间外层看不到任何进度（2026-11-14/18/20 《黄金矿工》《森林冰火人》
+ * 《猫里奥》诊断包都卡在这一段被记成 timeout）。订阅者自己按 URL 过滤、自己节流。
+ */
+type WarmActivityListener = (url: string) => void
+const activityListeners = new Set<WarmActivityListener>()
+export function subscribeHttpWarmActivity(listener: WarmActivityListener): () => void {
+  activityListeners.add(listener)
+  return () => { activityListeners.delete(listener) }
+}
+function notifyWarmActivity(url: string): void {
+  for (const listener of activityListeners) {
+    try { listener(url) } catch { /* 订阅者出错不能打断预热 */ }
+  }
+}
+
+/**
+ * 预热请求的完整生命周期（开始 / 收到字节 / 结束），给线路监视用（runtimeEdgeRoute.ts）。
+ * 只给 URL 和字节数，不给内容。
+ */
+export type WarmEvent =
+  | { type: 'start'; url: string }
+  | { type: 'bytes'; url: string; bytes: number }
+  | { type: 'end'; url: string; outcome: 'done' | 'failed' | 'stalled' | 'cancelled' }
+type WarmEventListener = (event: WarmEvent) => void
+const eventListeners = new Set<WarmEventListener>()
+export function subscribeHttpWarmEvents(listener: WarmEventListener): () => void {
+  eventListeners.add(listener)
+  return () => { eventListeners.delete(listener) }
+}
+function emitWarmEvent(event: WarmEvent): void {
+  for (const listener of eventListeners) {
+    try { listener(event) } catch { /* 订阅者出错不能打断预热 */ }
+  }
+}
+
+/** 在途预热的中止开关：线路判坏后，还挂在坏线路上的预热要让出带宽 */
+const inflight = new Map<string, AbortController>()
+
+/**
+ * 中止 URL 满足条件的在途预热（不影响已经写进缓存的）。返回被中止的 URL。
+ * 被中止的条目从去重表里删掉，之后同一 URL 还能再预热。
+ */
+export function cancelHttpWarms(match: (url: string) => boolean): string[] {
+  const cancelled: string[] = []
+  for (const [url, controller] of inflight) {
+    if (!match(url)) continue
+    cancelled.push(url)
+    try { controller.abort() } catch { /* 已结束 */ }
+  }
+  return cancelled
+}
+
+/**
  * 预热一个同源（或带 CORS 的跨源）资源。
  *
  * `cache: 'force-cache'` 的语义是「有缓存就直接用，没有就正常请求」——
@@ -48,6 +104,9 @@ export function warmHttpCache(url: string): Promise<boolean> {
  */
 async function drainIntoHttpCache(url: string): Promise<void> {
   const controller = new AbortController()
+  inflight.set(url, controller)
+  if (eventListeners.size) emitWarmEvent({ type: 'start', url })
+  let outcome: 'done' | 'failed' | 'stalled' | 'cancelled' = 'failed'
   let timedOut = false
   let timer: ReturnType<typeof setTimeout> | undefined
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
@@ -66,13 +125,26 @@ async function drainIntoHttpCache(url: string): Promise<void> {
     if (!reader) throw new Error('预热资源响应没有正文')
     for (;;) {
       const { done, value } = await reader.read()
-      if (done) return
-      if (value?.byteLength) touch()
+      if (done) {
+        outcome = 'done'
+        return
+      }
+      if (value?.byteLength) {
+        touch()
+        if (activityListeners.size) notifyWarmActivity(url)
+        if (eventListeners.size) emitWarmEvent({ type: 'bytes', url, bytes: value.byteLength })
+      }
     }
   } catch (error) {
-    if (timedOut) throw new Error(`预热资源 ${Math.round(WARM_STALL_MS / 1000)} 秒没有收到数据`)
+    if (timedOut) {
+      outcome = 'stalled'
+      throw new Error(`预热资源 ${Math.round(WARM_STALL_MS / 1000)} 秒没有收到数据`)
+    }
+    if (controller.signal.aborted) outcome = 'cancelled'
     throw error
   } finally {
+    if (inflight.get(url) === controller) inflight.delete(url)
+    if (eventListeners.size) emitWarmEvent({ type: 'end', url, outcome })
     if (timer !== undefined) clearTimeout(timer)
     if (controller.signal.aborted) void reader?.cancel().catch(() => {})
     try { reader?.releaseLock() } catch { /* 流已由浏览器关闭 */ }

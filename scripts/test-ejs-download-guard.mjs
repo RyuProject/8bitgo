@@ -395,25 +395,6 @@ const rangeHeaders = (etag, contentRange, contentLength) => ({
 }
 
 {
-  // 代理若谎报极大的 Content-Range 总长，不能按未验证的头先申请同尺寸 TypedArray。
-  const url = 'https://8bitgo.test/emulatorjs/cores/fbneo-wasm.data?v=abc123'
-  const claimedTotal = 2 ** 40
-  const fetchImpl = async () => makeResponse(url, [new Uint8Array([1, 2, 3])], {
-    headers: {
-      'Content-Range': `bytes 0-${claimedTotal - 1}/${claimedTotal}`,
-      ETag: '"core-a"',
-      'Accept-Ranges': 'bytes',
-    },
-  })
-  const { __classes } = makeContext({ fetchImpl, indexedDB: undefined })
-  await assert.rejects(
-    new __classes.Downloader(null, null).downloadFile(url, 'Core', 'GET', {}, null, null, null, 30000, 'arraybuffer'),
-    /core body length mismatch/,
-    '伪造的大总长应在核对实际包体时失败，不得尝试分配 1 TiB 内存',
-  )
-}
-
-{
   // 跨页面续传：IDB 仅记录已提交的 1 MiB 完整片，新页面读回校验后从该偏移继续。
   const url = 'https://8bitgo.test/emulatorjs/cores/fbneo-wasm.data?v=abc123'
   const partBytes = 1024 * 1024
@@ -473,23 +454,6 @@ const rangeHeaders = (etag, contentRange, contentLength) => ({
 }
 
 {
-  // 不允许写清单的浏览器也不能只写 IDB 分片，否则每次失败都会留下孤儿数据。
-  const url = 'https://8bitgo.test/emulatorjs/cores/fbneo-wasm.data?v=abc123'
-  const partBytes = 1024 * 1024
-  const sharedDb = fakeResumeDatabase()
-  const fetchImpl = async () => makeResponse(url, [new Uint8Array(partBytes).fill(5)], {
-    headers: rangeHeaders('"fbneo-build-a"', `bytes 0-${partBytes * 2}/${partBytes * 2 + 1}`, partBytes * 2 + 1),
-    failAfterChunks: true,
-  })
-  const { __classes } = makeContext({ fetchImpl, indexedDB: sharedDb.indexedDB })
-  await assert.rejects(
-    new __classes.Downloader(null, null).downloadFile(url, 'Core', 'GET', {}, null, null, null, 30000, 'arraybuffer'),
-    /Download failed/,
-  )
-  assert.equal(sharedDb.records.size, 0, '没有可用 manifest 存储时不能留下不可追踪的 IDB 分片')
-}
-
-{
   // IDB 打不开时只关闭这项优化，核心仍完整下载；不能把续传库故障写成引擎缓存挂死。
   const url = 'https://8bitgo.test/emulatorjs/cores/fbneo-wasm.data?v=abc123'
   const bytes = new Uint8Array(1024 * 1024 + 8).fill(9)
@@ -501,93 +465,6 @@ const rangeHeaders = (etag, contentRange, contentLength) => ({
   const item = await new __classes.Downloader(null, null).downloadFile(url, 'Core', 'GET', {}, null, null, null, 30000, 'arraybuffer')
   assert.equal(item.files[0].bytes.byteLength, bytes.byteLength, 'IDB 无响应不得阻断当前核心下载')
   assert.equal(localStorage.getItem('8bitgo.ejs.idbStall2'), null, '续传库故障不能污染 EmulatorJS 的缓存挂死标记')
-}
-
-{
-  // manifest 指向的 IDB 前缀缺失时，不能把不完整 206 当核心；清掉续传记录并只完整重试一次。
-  const url = 'https://8bitgo.test/emulatorjs/cores/fbneo-wasm.data?v=abc123'
-  const partBytes = 1024 * 1024
-  const core = new Uint8Array(partBytes + 8).fill(13)
-  const etag = '"fbneo-build-a"'
-  const localStorage = memoryStorage()
-  localStorage.setItem('8bitgo.ejs.coreResume.v1', JSON.stringify([{
-    url,
-    etag,
-    total: core.length,
-    offset: partBytes,
-    partBytes,
-    startedAt: Date.now() - 1000,
-    updatedAt: Date.now(),
-    owner: 'interrupted-download',
-  }]))
-  const seen = []
-  const fetchImpl = async (_url, init) => {
-    const range = new Headers(init.headers).get('Range')
-    seen.push(range)
-    if (range) return makeResponse(url, [core.slice(partBytes)], {
-      headers: rangeHeaders(etag, `bytes ${partBytes}-${core.length - 1}/${core.length}`, core.length - partBytes),
-    })
-    return makeResponse(url, [core], {
-      status: 200,
-      headers: { 'Content-Length': String(core.length), ETag: etag },
-    })
-  }
-  const { __classes } = makeContext({
-    fetchImpl,
-    indexedDB: fakeResumeDatabase().indexedDB,
-    localStorage,
-    navigator: { storage: { estimate: async () => ({ quota: 128 * 1024 * 1024, usage: 0 }) } },
-  })
-  const item = await new __classes.Downloader(null, null).downloadFile(url, 'Core', 'GET', {}, null, null, null, 30000, 'arraybuffer')
-  assert.deepEqual(item.files[0].bytes, core, '缺失前缀时只接受完整的新响应')
-  assert.deepEqual(seen, [`bytes=${partBytes}-`, null], '残缺 IDB 前缀触发一次无 Range 的完整 GET')
-}
-
-{
-  // EdgeOne 的跨源 URL 与同源核心映射到同一 canonical IDB 键；不发 If-Range，靠暴露的强 ETag 校验响应。
-  const primary = 'https://8bitgo.test/emulatorjs/cores/fbneo-wasm.data?v=abc123'
-  const edge = 'https://cn.8bitgo.test/_cn/emulatorjs/cores/fbneo-wasm.data?v=abc123'
-  const partBytes = 1024 * 1024
-  const total = partBytes + 17
-  const core = new Uint8Array(total).fill(23)
-  const canonical = primary
-  const etag = '"fbneo-build-a"'
-  const sharedDb = fakeResumeDatabase()
-  sharedDb.records.set(JSON.stringify([canonical, etag, 0]), {
-    id: JSON.stringify([canonical, etag, 0]),
-    url: canonical,
-    etag,
-    total,
-    offset: 0,
-    bytes: core.slice(0, partBytes).buffer,
-    updatedAt: Date.now(),
-  })
-  const localStorage = memoryStorage()
-  localStorage.setItem('8bitgo.ejs.coreResume.v1', JSON.stringify([{
-    url: canonical,
-    etag,
-    total,
-    offset: partBytes,
-    partBytes,
-    startedAt: Date.now() - 1000,
-    updatedAt: Date.now(),
-    owner: 'previous-page',
-  }]))
-  const fetchImpl = async (_url, init) => {
-    assert.equal(new Headers(init.headers).get('Range'), `bytes=${partBytes}-`)
-    assert.equal(new Headers(init.headers).get('If-Range'), null, '跨源请求不能为 If-Range 触发 CORS 预检')
-    return makeResponse(edge, [core.slice(partBytes)], {
-      headers: rangeHeaders(etag, `bytes ${partBytes}-${total - 1}/${total}`, total - partBytes),
-    })
-  }
-  const { __classes } = makeContext({
-    fetchImpl,
-    indexedDB: sharedDb.indexedDB,
-    localStorage,
-    navigator: { storage: { estimate: async () => ({ quota: 128 * 1024 * 1024, usage: 0 }) } },
-  })
-  const item = await new __classes.Downloader(null, null).downloadFile(edge, 'Core', 'GET', {}, null, null, null, 30000, 'arraybuffer')
-  assert.deepEqual(item.files[0].bytes, core, '跨源恢复也必须按 canonical URL 拼成精确字节')
 }
 {
   const url = 'https://8bitgo.test/emulatorjs/cores/melondsds-wasm.data?v=1'

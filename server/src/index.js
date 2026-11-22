@@ -20,7 +20,7 @@ import { CACHE, noStore, staticCacheHeaders } from './cache.js'
 import { gzipResponse } from './compress.js'
 import { precompressedStatic } from './precompressed-static.js'
 import { runtimeVersionGuard } from './runtime-version-guard.js'
-import { take, clientKey } from './rateLimit.js'
+import { take, takeAnonymous, clientKey } from './rateLimit.js'
 import { authRouter } from './routes/auth.js'
 import { gamesRouter } from './routes/games.js'
 import { gameDescriptionPushRouter } from './routes/game-description-push.js'
@@ -49,7 +49,8 @@ import { checkSchema } from './schema-check.js'
 import { savesRouter } from './routes/saves.js'
 import { flashSavesRouter } from './routes/flash-saves.js'
 import { flashSaveConfigured, flashSaveConfigurationError } from './flash-save-token.js'
-import { attachNetplay } from './netplay.js'
+import { attachNetplay, netplayRooms } from './netplay.js'
+import { countPlayingNow } from './playing-now.js'
 import { attachJsnesNetplay } from './jsnes-netplay.js'
 import { attachLive, canAccessAdultLive, liveCapacity, liveRoom, liveRooms, subscribeLiveRooms } from './live.js'
 import { admitSse, sseWrite, SSE_HEARTBEAT_FRAME, SSE_HEARTBEAT_MS } from './sseGuard.js'
@@ -81,6 +82,7 @@ import { isRomPackConfigured } from './rom-pack-key.js'
 import { createSfsService } from './sfs.js'
 import { createCs16RelayService } from './cs16-relay.js'
 import { createCs16RoomService } from './cs16-rooms.js'
+import { createWebGameHtmlRenderer } from './web-game-html.js'
 import { createNdsWfcService } from './nds-wfc.js'
 import { systemImageProxy } from './system-images.js'
 
@@ -331,6 +333,22 @@ app.get('/api/live/rooms', optionalUser, (req, res) => {
     includeAdult: canAccessAdultLive(req.user),
   }))
 })
+/*
+  游戏详情页「正在玩」：按该游戏此刻的直播间 + 联机房实时数人（下限，口径见 playing-now.js）。
+  只回一个数字，纯内存计算，不碰数据库。不进边缘缓存：成人游戏的结果随登录身份不同，
+  缓存一份会让未核实年龄的人读到核实过的人的数（/api 默认就是 no-store）。
+  每 IP 每分钟 30 次：前端一分钟只拉一次，限流只用来挡脚本刷。
+*/
+app.get('/api/live/playing', optionalUser, (req, res) => {
+  const slug = typeof req.query.game === 'string' ? req.query.game.trim().slice(0, 128) : ''
+  if (!slug) return res.status(400).json({ error: 'game required' })
+  const gate = takeAnonymous(req, 'live-playing', { perIp: 30, global: 30000 })
+  if (!gate.ok) return res.status(429).json({ error: 'too many requests', retryAfter: gate.retryAfter })
+  res.json({
+    game: slug,
+    playing: countPlayingNow(slug, { includeAdult: canAccessAdultLive(req.user), live: liveRooms, netplay: netplayRooms }),
+  })
+})
 app.get('/api/live/rooms/:roomId', optionalUser, (req, res) => {
   const room = liveRoom(req.params.roomId, { includeAdult: canAccessAdultLive(req.user) })
   if (!room) return res.status(404).json({ error: 'room not found' })
@@ -457,7 +475,7 @@ if (ssrAvailable()) {
    */
   app.get('/ppsspp/v0dbfaca', (_req, res) => {
     res.set('Cache-Control', CACHE.none)
-    res.redirect(302, '/ppsspp/v0dbfaca/v23/index.html?embed=1&frame=4')
+    res.redirect(302, '/ppsspp/v0dbfaca/v24/index.html?embed=1&frame=4')
   })
 
   /**
@@ -476,6 +494,7 @@ if (ssrAvailable()) {
    * 不挡就能拼出越界路径；`sendFile` 的 root 越界保护是第二道。
   */
   const WEB_GAME_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
+  const renderWebGameHtml = createWebGameHtmlRenderer(CLIENT_DIR)
   const CS16_REQUIRED_RUNTIME = [
     'index.html',
     'cs16.bundle.js',
@@ -538,6 +557,14 @@ if (ssrAvailable()) {
     }
     // 固定 URL（不含哈希），走「引擎」那档短缓存；见 cache.js 里 /web/ 的说明
     res.set('Cache-Control', CACHE.engine)
+    /*
+      源站副本是大陆访客的镜像入口（经 cn.8bitgo.com / EdgeOne，见 html5.ts 的 cnMirrorHtml5Entry），
+      要和 Pages 版一样带生命周期桥 / 游戏 SDK / 媒体桥；注入不了就照发原文件。
+    */
+    if (!sub) {
+      const injected = renderWebGameHtml(name)
+      if (injected) return res.type('html').send(injected)
+    }
     res.sendFile(sub ? join(name, sub, 'index.html') : join(name, 'index.html'), { root: join(CLIENT_DIR, 'web') }, (err) => {
       // 目录里没有这一份就交回 SSR 渲染 404，别在这儿编错误页
       if (err && !res.headersSent) next()

@@ -94,8 +94,7 @@ export interface ArcadeHack {
    HBMAME 将整体中文加载过程标记为未知，因此必须经投币、开始后的真实对白画面验证，
    不能仅凭注释或字库图集宣称正确。
 
-   这份方案必须通过投币、开始、人物对话的实际画面核对；不能只凭 RomData 或标题画面验收。
-   因此它目前只保留在 experimentalPlan，不能交给玩家启动。 */
+   这份方案必须通过投币、开始、人物对话的实际画面核对；不能只凭 RomData 或标题画面验收。 */
 
 const WOFCN_FONT_LANE_SIZE = 0x008000
 

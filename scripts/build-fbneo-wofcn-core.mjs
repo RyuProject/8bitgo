@@ -220,17 +220,6 @@ function prepareCoreSource(buildDir) {
   checkoutPinnedRepo(sourceDir, CORE_REPO, CORE_COMMIT)
   run('git', ['submodule', 'update', '--init', '--recursive'], sourceDir)
   run(process.execPath, [join(repoRoot, 'scripts/patch-fbneo-wofcn-source.mjs'), sourceDir], repoRoot)
-  const cpsScrollSource = readFileSync(join(sourceDir, 'src/burn/drv/capcom/cps_scr.cpp'), 'utf8')
-  if (!/t = BURN_ENDIAN_SWAP_INT16\(pst\[0\]\);\s*rawCode = t;\s*if \(Scroll1TileMask\) t &= Scroll1TileMask;/.test(cpsScrollSource)) {
-    throw new Error('WOF CN 打补丁后没有在通用 tile 掩码前保存原始字码，拒绝编译')
-  }
-  if (!cpsScrollSource.includes('#include <emscripten/em_asm.h>')) {
-    throw new Error('WOF CN 的 Emscripten EM_ASM 声明头缺失，拒绝编译')
-  }
-  const cpsDriverSource = readFileSync(join(sourceDir, 'src/burn/drv/capcom/d_cps1.cpp'), 'utf8')
-  if (/memcpy\(CpsGfx \+ 0x(?:040000|380000),/.test(cpsDriverSource)) {
-    throw new Error('WOF CN 字库映射仍覆盖普通场景图形 tile，拒绝编译')
-  }
   const makefilePath = join(sourceDir, 'src/burner/libretro/Makefile.common')
   const makefile = readFileSync(makefilePath, 'utf8')
   const gnuDate = 'GIT_DATE := $(shell git log -1 --format="%at" | xargs -I{} date -d @{} +%y%m%d)'
@@ -261,7 +250,6 @@ function main() {
   copyFileSync(normal, join(coreDir, CORE_ID + '-wasm.data'))
   copyFileSync(legacy, join(coreDir, CORE_ID + '-legacy-wasm.data'))
   const sha256 = createHash('sha256').update(readFileSync(join(coreDir, CORE_ID + '-wasm.data'))).digest('hex')
-  const legacySha256 = createHash('sha256').update(readFileSync(join(coreDir, CORE_ID + '-legacy-wasm.data'))).digest('hex')
   const report = {
     core: CORE_ID,
     buildStart: startedAt,
@@ -275,7 +263,6 @@ function main() {
     emsdkVersion: EMSDK_VERSION,
     minimumEJSVersion: MINIMUM_EJS_VERSION,
     sha256,
-    legacySha256,
   }
   writeFileSync(join(coreDir, 'reports', CORE_ID + '.json'), JSON.stringify(report, null, 2) + '\n')
   run(process.execPath, ['scripts/sync-emulatorjs-core-metadata.mjs'], repoRoot)

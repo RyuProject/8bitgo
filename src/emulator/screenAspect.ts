@@ -149,6 +149,23 @@ export function desktopScreenAspect(platform: PlatformId, geometry?: { width: nu
   return 'sm:aspect-[4/3]'
 }
 
+/**
+ * 游戏详情页（2026-11 新版设计稿）桌面端舞台：默认 2:1（设计稿 1144×564），比 16:9 矮约 11%，
+ * 让标题和资料在常见 1440×900 屏上露出首屏。
+ *
+ * 只改「默认那一档」：双屏机型上下叠时 desktopScreenAspect 给的 3:2 / 4:3 原样保留 ——
+ * 2:3 的画面放进 2:1 的框只剩四分之一宽，那是比黑边更糟的取舍（理由同上面那段）。
+ * 画面本身照旧 object-fit: contain，多出来的只是左右黑边；全屏 / 沉浸不走这里。
+ *
+ * ⚠️ 返回值必须是完整类名字面量（Tailwind 扫源码文本），别拼字符串。
+ */
+export const DETAIL_PAGE_STAGE_ASPECT = 'sm:aspect-[2/1]'
+
+export function detailPageScreenAspect(platform: PlatformId, geometry?: { width: number; height: number } | null): string {
+  const base = desktopScreenAspect(platform, geometry)
+  return base === 'sm:aspect-video' ? DETAIL_PAGE_STAGE_ASPECT : base
+}
+
 /* ---------------- 详情页 16:9 舞台的高度上限 ---------------- */
 
 /**

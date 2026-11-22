@@ -15,7 +15,7 @@ import { isAdultByBirthDate } from '../../shared/age.js'
 import { gameSupportsNetplay, normalizeGamePlayers, normalizeNetplayMode } from '../../shared/netplay-players.js'
 import { knownMameArcadeDisk, mameArcadeDiskObjectKey } from '../../shared/mame-arcade-media.js'
 import { knownMameChdDiskExpectation } from '../../shared/mame-chd-catalog.js'
-import { romsetsNeedNoBios } from './arcade-bios-index.js'
+import { inferArcadeSystemBios, romsetsNeedNoBios } from './arcade-bios-index.js'
 
 /**
  * 数据库布尔列的唯一判断方式。
@@ -757,7 +757,13 @@ export function gameRowToApi(r, rel = {}) {
   */
   if (r.platform === 'arcade' && !r.arcade_bios && !r.arcade_romdata && (!r.core || r.core === 'fbneo')) {
     const keys = [...Object.values(roms), ...Object.values(rel.romBackups ?? {})].filter((v) => typeof v === 'string' && v)
-    if (keys.length && romsetsNeedNoBios(keys)) g.arcadeNoBios = true
+    if (keys.length && romsetsNeedNoBios(keys)) {
+      g.arcadeNoBios = true
+    } else {
+      // 没填系统名的 PGM 这类游戏按索引补上（见 inferArcadeSystemBios 的说明）。后台填过的始终优先。
+      const inferred = inferArcadeSystemBios(keys)
+      if (inferred) g.arcadeBios = inferred
+    }
   }
   // 启动文件跟语言槽走；通用 ROM 继续用 games.dos_executable，旧数据无需迁移内容。
   if (rel.dosExecutables && Object.keys(rel.dosExecutables).length) g.dosExecutables = rel.dosExecutables

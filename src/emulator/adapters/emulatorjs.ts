@@ -84,6 +84,7 @@ import {
   NDS_PERFORMANCE_SLOW_WINDOWS,
 } from '../ndsAdaptivePerformance'
 import { guardFrameGamepads, readGamepadsSafe } from '../gamepadAccess'
+import { engineScriptName, engineScriptSyntaxError, type EngineScriptError } from '../engineScriptErrors'
 import { isTyping } from '../hotkeyBridge'
 import { installMahjongKeyboard, startMahjongGamepad, type MahjongGamepad, type MahjongKeyboard, type MahjongTileKey } from '../mahjongPanel'
 import { isMahjongPanelDipRomset, isMahjongPanelRomset, mahjongPanelDipDefault } from '../../../shared/mahjong-panel-sets.js'
@@ -152,6 +153,7 @@ import {
  * 玩家看到的就是「Error loading EmulatorJS runtime」。本地有核心，这条路不会走。
  */
 export { EJS_PATH } from '../paths'
+import { coreDownloadFailureCause, normalizeEngineText } from '../ejsEngineErrors'
 import { EJS_PATH, EJS_RUNTIME_GENERATION, ejsBase, ejsCoreAsset, ejsUsingEdge, markEjsEdgeFailed, ejsRuntimeAsset, EJS_EXTRACT_7Z_FILE, emulatorJsCoreDataFile, emulatorJsCoreFileFor, emulatorJsCoreForGame, ejsCoreNeedsWebgl2, emulatorJsRuntimePaths, isDiscPlatform, isLargeDirectEjsRom, isSelfDownloadPlatform } from '../paths'
 import { applyTuning, sizeOfTrack, tuningFor, usableVideoSize } from '../videoTuning'
 import {
@@ -175,6 +177,7 @@ import { dipNameOf, findDipOptions, isMahjongControlsSelected, planDipChanges, t
 import { diagLog, watchFramePerformance } from '@/services/startupDiagnostics'
 import { browserBitness, probeBrowserBitness } from '../browserBitness'
 import { createBatterySync, type BatteryFs, type BatterySync } from '../batterySync'
+import { guardEngineAutoUnload, isPlannedEngineExitAbort } from '../ejsUnloadGuard'
 import { batterySaveGameName, copyEngineSettingsToSystem, describeBootState, guardIdbfsPersist, migrateEngineSettingsKey, migrateLegacyBatterySaves, type IdbfsLike, type SaveFsLike } from '../ejsSaveFs'
 import { hotfixFlags } from '@/services/hotfixFlags'
 
@@ -1082,7 +1085,8 @@ function romFailureScope(error: unknown): LoadErrorScope {
 
 /** 引擎致命行的性质：内容相关的保持默认（可换 ROM），其余按运行时故障（不换 ROM）。 */
 export function engineErrorScope(line: string): LoadErrorScope {
-  const low = line.toLowerCase()
+  // 引擎界面是本地化的（「启动游戏失败」）：先换回英文原句，中英文界面拿到同一种恢复策略（ejsEngineErrors.ts）
+  const low = normalizeEngineText(line).toLowerCase()
   return CONTENT_FATAL_PHRASES.some((phrase) => low.includes(phrase)) ? 'content' : 'runtime'
 }
 
@@ -1489,6 +1493,7 @@ function installErrorTap(
   onFatal: (line: string) => void,
   onCoreCrash?: (line: string, details?: string) => void,
   onStartupActivity?: () => void,
+  onScriptSyntaxError?: (error: EngineScriptError) => void,
 ): { lines: string[] } {
   const lines: string[] = []
   const push = (level: string, text: string, error?: unknown) => {
@@ -1555,6 +1560,9 @@ function installErrorTap(
   win.addEventListener('error', (e) => {
     const event = e as ErrorEvent
     push('error', event.message || 'script error', event.error)
+    // 本站引擎脚本解析失败：整份没执行，不会再有进展；不等 120 秒看门狗（engineScriptErrors.ts，诊断包 #1331 / #1334 / #1343）
+    const scriptError = onScriptSyntaxError ? engineScriptSyntaxError(event, window.location.origin) : null
+    if (scriptError) onScriptSyntaxError?.(scriptError)
   })
   win.addEventListener('unhandledrejection', (e) => {
     const r = (e as PromiseRejectionEvent).reason
@@ -3216,6 +3224,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    */
   let loadFailed = false
   let crashReported = false
+  /**
+   * 引擎最近一次走 exit 流程的时刻（EJS.on('exit')）。exit 会在 1 秒后 `Module.abort()`，
+   * 那句 `Aborted(undefined)` 是计划内的收尾，不能报成核心崩溃（见 ejsUnloadGuard.ts）。
+   */
+  let engineExitAt = 0
+  /** 卸掉 iframe 上那条拦引擎自动退出的 beforeunload（见 ejsUnloadGuard.ts） */
+  let stopUnloadGuard: (() => void) | null = null
   /** 开局前的致命错误：报上去并停掉轮询（播放器收到 onError 会把这局拆掉） */
   /** 这一局的引擎是不是从大陆加速入口取的（挂载时定下，失败后标记，下一局退回同源） */
   const usedEjsEdge = ejsUsingEdge()
@@ -3369,12 +3384,28 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       markRomBlobStorageBroken('引擎读 ROM ')
       return failLoad(fmt(rt.ejsEngineError, { msg: line }), 'runtime')
     }
+    /*
+      核心下载失败（2026-11-19～20 大陆《拳皇 97 / 2002》《King of Gladiator Plus》fbneo-legacy-wasm.data，
+      诊断包 #1599 / #1602 / #1604 / #1714 / #1799，一局 2～6 分钟）：原文只有「Error downloading core (x)」，
+      摘要里看不出是 HTTP 错误还是慢网，所以把下载器给的原因附上。包体已经在流、之后失速的（bodyStalled）
+      说明 EdgeOne 线路是通的，只是慢 / 断续：不标线路坏，自动重试留在原线路，由续传助手接着已存的整 MiB 分片下；
+      以前一律 markEjsEdgeFailed，大陆访客的重试退回 Cloudflare 同源（实测 8MB 核心只有几 KB/s），第二轮必然再失败。
+      HTTP 错误 / 截断响应 / 连响应头都没等到的，仍按线路故障退回同源。
+    */
+    if (/error downloading core\s*\(/i.test(line)) {
+      const cause = coreDownloadFailureCause(errorTap?.lines ?? [])
+      logEngine(`[download] 核心下载失败；原因：${cause.detail || '未知'}；${cause.bodyStalled ? '包体失速，保留当前线路重试' : cause.httpError ? 'HTTP / 响应异常，退回同源' : '未拿到包体，退回同源'}；线路：${usedEjsEdge ? 'EdgeOne' : '同源'}`)
+      const msg = cause.detail ? `${line}: ${cause.detail}` : line
+      return failLoad(fmt(rt.ejsEngineError, { msg }), 'runtime', { keepEdge: cause.bodyStalled })
+    }
     failLoad(fmt(rt.ejsEngineError, { msg: line }), engineErrorScope(line))
   }
   const reportCoreCrash = (line: string, details?: string) => {
     if (destroyed || crashReported || loadFailed) return
-    // 把 wasm 调用栈保留在脱敏诊断包里；mGBA 裸 Aborted() 本身不带原因，只有栈能区分 ROM 回调与核心路径。
-    if (details) logEngine(`[core-crash-stack] ${details}`)
+    if (isPlannedEngineExitAbort(line, engineExitAt, Date.now())) {
+      logEngine(`[exit] 引擎退出流程收尾的 Module.abort()，不是核心崩溃：${line}`)
+      return
+    }
     // 裸 Aborted() 可能是当前浏览器进程的内存压力，设备标称内存与位数不足以判断；在崩溃当刻探测可分配的 WASM 地址空间。
     if (!started) {
       const deviceMemory = (navigator as Navigator & { deviceMemory?: number }).deviceMemory
@@ -4734,25 +4765,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (started || destroyed) return
     started = true
     stopStartWatch()
-    // 只给 NES/FCEUmm 接入原始系统 RAM；分数地址与格式仍由游戏各自决定。
-    if (options.platform === 'nes' && core === 'fceumm') {
-      const manager = (win.EJS_emulator as EjsEmulator | undefined)?.gameManager
-      if (manager?.Module) manager.readSystemRam = createSystemRamReader(manager.Module)
-      // 只有已维护该游戏分数布局时才额外读 MEMFS 并计算指纹；未配置游戏不增加启动开销。
-      const scoreFs = manager && manager.FS && typeof manager.FS.readFile === 'function'
-        ? { readFile: manager.FS.readFile.bind(manager.FS) }
-        : null
-      if (manager && scoreFs && options.catalogSlug && manager.fileName &&
-          NES_SCORE_PROFILES.some((profile) => profile.gameSlug === options.catalogSlug)) {
-        const subtle = (win as unknown as Window).crypto?.subtle
-        void hashNesRomInFs(scoreFs, manager.fileName, subtle).then((sha256) => {
-          if (destroyed || emuOf()?.gameManager !== manager || !sha256) return
-          matchedNesScoreProfile = findNesScoreProfile(NES_SCORE_PROFILES, options.catalogSlug!, sha256)
-          if (matchedNesScoreProfile) {
-            manager.readNesScore = () => decodeNesScore(manager.readSystemRam?.() ?? null, matchedNesScoreProfile!)
-          }
-        })
-      }
+    // 菜单「退出」按钮 / 其它路径仍可能触发引擎 exit：记下时刻，随后的 Aborted(undefined) 按计划内退出处理
+    try {
+      ;(win.EJS_emulator as { on?: (ev: string, cb: () => void) => void } | undefined)?.on?.('exit', () => {
+        engineExitAt = Date.now()
+      })
+    } catch {
+      /* 引擎换了实现：只是少一道过滤 */
     }
     // 默认配置会在引擎建菜单时应用一次；这里在核心与 shader 文件系统都就绪后再核对一次，
     // 同时压过历史版本可能留下的 EmulatorJS 通用 shader 设置。
@@ -5600,12 +5619,27 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         // 引擎的报错探针也要赶在 loader.js 之前装：核心是在加载过程中打错误的，
         // 装晚了那句「缺哪个文件」就已经过去了
         stopFramePerf = watchFramePerformance(win)
+        // 必须赶在 loader.js 之前：拦下引擎「iframe beforeunload → exit → 1 秒后 abort」那条路，
+        // 导航被取消 / 实为下载时游戏不会被停掉，弱网下离开页面也不再被记成运行中崩溃（诊断包 #2744）
+        stopUnloadGuard?.()
+        stopUnloadGuard = guardEngineAutoUnload(win, () => {
+          logEngine('[exit] 页面将要离开：拦下引擎自动退出，先刷电池存档')
+          flushSaveFiles()
+        })
         errorTap = installErrorTap(win, reportEngineError,
           options.platform === 'nds' || (options.platform === 'gba' && isRomPackUrl(remoteGameUrl))
             ? reportCoreCrash
             : undefined,
           () => {
             if (!started && !loadFailed && !destroyed) beat()
+          },
+          (scriptError) => {
+            if (started || loadFailed || destroyed) return
+            const name = engineScriptName(scriptError.file)
+            logEngine(`[engine-script] ${name} 解析失败，整份没执行：${scriptError.message}`)
+            // 重复声明：这台浏览器里别的脚本（常见是扩展）先占了同一个全局名，重试、换 ROM 都一样 —— 不自动重试
+            if (scriptError.redeclared) return failLoad(fmt(rt.ejsScriptConflict, { name: scriptError.redeclared }), 'config')
+            return failLoad(fmt(rt.ejsEngineError, { msg: `${name}: ${scriptError.message}` }), 'runtime')
           })
         // 预下载好的 ROM：引擎取 blob: 地址时直接拿 Blob 回应，不走 Safari 的 blob URL 加载（见 installBlobFetchShortcut）
         if (preparedRomBlob && preparedArcadeBlobUrl && gameUrl === preparedArcadeBlobUrl) {
@@ -6241,6 +6275,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     geometryWatch = 0
     document.removeEventListener('visibilitychange', onVisibility)
     window.removeEventListener('pagehide', flushSaveFiles)
+    stopUnloadGuard?.()
+    stopUnloadGuard = null
     if (flushState) {
       window.removeEventListener('pagehide', flushState)
       flushState = null

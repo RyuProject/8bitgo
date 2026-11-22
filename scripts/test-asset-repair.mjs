@@ -4,7 +4,8 @@
  *   - 构建清单：文件名跟入口走、只收 /assets/ 子资源、按磁盘字节算 SHA-256；
  *   - 首页内联钩子：import map 改指、过期项丢弃、SyntaxError 才触发、点名文件解析、修复脚本加载经过；
  *   - 入口去掉 __assets=origin（兜底页改用主站资源重新载入）；
- *   - public/assets/asset-repair-v6.js：缓存坏→重取修好；导入失败但原 URL 字节正常→验证查询串副本并通知清缓存；
+ *   - public/assets/asset-repair-v7.js：缓存坏→重取修好；导入失败但原 URL 字节与类型都正常→只记 inDocument，不改地址、不清边缘
+ *     （v6 在这里验证查询串副本并通知清缓存，2026-11-19 实验证明是误判）；.js 回错类型→查询串回源 + 通知清缓存；
  *     边缘坏 / HTTP 500→查询串回源 + 通知清缓存；源站坏→不刷新；
  *     正常文件不重取；点名文件强制覆盖；没清单只处理点名文件；一分钟内只刷新一次；
  *     取不下来→重试一次；大陆加速入口取不下来、主站正常→edgeOnly（诊断包 #761）；
@@ -41,7 +42,16 @@ import {
   importWithRetry,
   retryableImportError,
   bustedChunkUrl,
+  importGraphEvidence,
+  describeImportEvidence,
 } from '../src/services/moduleLinkRecovery.ts'
+import {
+  chunkStem,
+  deferRecoveryReport,
+  resetPageRecoveryForTest,
+  startPageRecoveryWatch,
+  takeRecoveryForFailure,
+} from '../src/services/pageRecovery.ts'
 
 // express 装在 server/ 下，根目录没有
 const { default: express } = await import(new URL('../server/node_modules/express/index.js', import.meta.url).href)
@@ -116,6 +126,10 @@ function runRepair({ serve, opts = {}, resources = Object.keys(GOOD).map((n) => 
       if (out === null) throw new TypeError('Failed to fetch')
       if (out && typeof out === 'object' && out.error) throw Object.assign(new Error('aborted'), { name: out.error })
       if (typeof out === 'number') return { ok: false, status: out, arrayBuffer: async () => enc('') }
+      // { body, type }：带 Content-Type 的响应（v7 核对 .js 的类型）
+      if (out && typeof out === 'object') {
+        return { ok: true, status: 200, headers: { get: (h) => (h.toLowerCase() === 'content-type' ? out.type : null) }, arrayBuffer: async () => enc(out.body) }
+      }
       return { ok: true, status: 200, arrayBuffer: async () => enc(out) }
     },
     crypto: webcrypto,
@@ -143,7 +157,7 @@ function runRepair({ serve, opts = {}, resources = Object.keys(GOOD).map((n) => 
   window.window = window
   window.crypto = webcrypto
   const context = vm.createContext(window)
-  vm.runInContext(read('public/assets/asset-repair-v6.js'), context)
+  vm.runInContext(read('public/assets/asset-repair-v7.js'), context)
   return window.__8bitgoAssetRepairRun(opts).then((result) => ({ result: JSON.parse(JSON.stringify(result)), calls, posts, reloads, store, session }))
 }
 
@@ -211,13 +225,62 @@ const fileOf = (url) => /\/assets\/([^/?#]+)/.exec(url)?.[1]
 }
 
 {
-  // 5. 错误点名的文件缓存里看着正常（缓存键可能不同）：仍强制重取覆盖一遍
+  // 5. 错误点名的文件缓存里看着正常（缓存键可能不同）：仍强制重取覆盖一遍。
+  //    字节与类型都对 → 导入失败在本页模块表里（v7）：只记 inDocument，不改地址、不请求清边缘缓存
   const r = await runRepair({
     opts: { urls: [`${ORIGIN}/assets/live-L1.js`] },
-    serve: (url) => (url === manifestUrl ? JSON.stringify(MANIFEST) : GOOD[fileOf(url)]),
+    serve: (url) => (url === manifestUrl ? JSON.stringify(MANIFEST) : { body: GOOD[fileOf(url)], type: 'text/javascript; charset=utf-8' }),
   })
   assert.deepEqual(r.result.refreshed, ['live-L1.js'])
-  assert.equal(r.reloads, 1)
+  assert.deepEqual(r.result.inDocument, ['live-L1.js'])
+  assert.deepEqual(r.result.remapped, [], 'v6 在这里改走回源地址：2026-11-19 实验证明是给健康文件清缓存')
+  assert.equal(r.posts.length, 0, '不请求清边缘缓存')
+  assert.equal(r.store.has('8bitgo.asset-remap'), false, '不写 import map')
+  assert.ok(!r.calls.some((c) => c.url.includes('?asset-repair=1')), '不再取查询串副本')
+  assert.equal(r.reloads, 1, '整页刷新就能重新取那个依赖')
+  assert.equal(repairFixedSomething(r.result), true)
+  assert.match(summarizeRepair(r.result), /导入失败发生在本页模块表里.*live-L1\.js/)
+}
+
+{
+  // 5c. 边缘把错误类型挂在 .js 上（字节对、Content-Type 是 text/html）：模块会被拒，fetch 照样拿到字节。
+  //     重取还是错类型、查询串回源正常 → 这才是地址本身异常：改走回源地址并请求清缓存
+  const r = await runRepair({
+    opts: { urls: [`${ORIGIN}/assets/live-L1.js`] },
+    serve(url) {
+      if (url === manifestUrl) return JSON.stringify(MANIFEST)
+      const body = GOOD[fileOf(url)]
+      if (fileOf(url) === 'live-L1.js' && !url.includes('?asset-repair=1')) return { body, type: 'text/html' }
+      return { body, type: 'application/javascript' }
+    },
+  })
+  assert.deepEqual(r.result.remapped, ['live-L1.js'])
+  assert.deepEqual(r.result.inDocument, [])
+  assert.deepEqual(r.posts.map((p) => p.body.files), [['live-L1.js']])
+  assert.match(r.result.trace.join('|'), /live-L1\.js 带查询串回源正常/)
+}
+
+{
+  // 5d. 只是浏览器缓存里那份记着错类型，绕过缓存重取就对了 → repaired，不清边缘
+  const r = await runRepair({
+    serve(url, mode) {
+      if (url === manifestUrl) return JSON.stringify(MANIFEST)
+      const body = GOOD[fileOf(url)]
+      return { body, type: fileOf(url) === 'live-L1.js' && mode === 'force-cache' ? 'text/plain' : 'text/javascript' }
+    },
+  })
+  assert.deepEqual(r.result.repaired, ['live-L1.js'])
+  assert.equal(r.posts.length, 0)
+  // 回源也是错类型 → 部署本身的问题，记 bad、不刷新
+  const bad = await runRepair({
+    opts: { urls: [`${ORIGIN}/assets/live-L1.js`] },
+    serve: (url) => (url === manifestUrl ? JSON.stringify(MANIFEST) : { body: GOOD[fileOf(url)], type: fileOf(url) === 'live-L1.js' ? 'text/html' : 'text/javascript' }),
+  })
+  assert.deepEqual(bad.result.bad, ['live-L1.js'])
+  assert.equal(bad.reloads, 0)
+  // 没有 Content-Type（极少数代理 / 测试桩）不算异常
+  const untyped = await runRepair({ serve: (url) => (url === manifestUrl ? JSON.stringify(MANIFEST) : GOOD[fileOf(url)]) })
+  assert.equal(untyped.result.ok, 4)
 }
 
 {
@@ -229,7 +292,7 @@ const fileOf = (url) => /\/assets\/([^/?#]+)/.exec(url)?.[1]
     serve: (url) => (url === manifestUrl ? JSON.stringify(MANIFEST) : GOOD[fileOf(url)]),
   })
   assert.equal(r.result.checked, 1)
-  assert.equal(r.calls.filter((call) => fileOf(call.url) === 'live-L1.js').length, 3, '只做 force-cache、一次 reload 与一次短时查询串验证')
+  assert.equal(r.calls.filter((call) => fileOf(call.url) === 'live-L1.js').length, 2, '只做 force-cache 和一次 reload')
   assert.deepEqual(r.result.refreshed, ['live-L1.js'])
 }
 
@@ -253,6 +316,28 @@ const fileOf = (url) => /\/assets\/([^/?#]+)/.exec(url)?.[1]
   assert.equal(r.result.checked, 2, '只查点名 chunk 和它的一层静态依赖')
   assert.deepEqual(r.result.refreshed, ['player-P.js'])
   assert.deepEqual(r.result.repaired, ['dep-D.js'])
+}
+
+{
+  // 5e. v7：点名入口字节正常，但它的静态依赖真取不下来 → 入口只是被连累，不标 inDocument（仍强制重取过）
+  const graphFiles = { ...GOOD, 'player-P.js': 'import"./dep-D.js"', 'dep-D.js': 'export{}' }
+  const graphManifest = buildIntegrityManifest(
+    'assets/index-ABCD1234.js',
+    Object.fromEntries(Object.entries(graphFiles).map(([name, body]) => [name, sha256Base64(body)])),
+    { 'player-P.js': ['assets/dep-D.js'] },
+  )
+  const r = await runRepair({
+    opts: { urls: [`${ORIGIN}/assets/player-P.js`] },
+    resources: [],
+    serve(url) {
+      if (url === manifestUrl) return JSON.stringify(graphManifest)
+      return fileOf(url) === 'dep-D.js' ? null : graphFiles[fileOf(url)]
+    },
+  })
+  assert.deepEqual(r.result.refreshed, ['player-P.js'])
+  assert.deepEqual(r.result.failed, ['dep-D.js'])
+  assert.deepEqual(r.result.inDocument, [], '依赖真坏时不能说失败在本页模块表里')
+  assert.ok(!r.result.trace.some((line) => /本页模块表/.test(line)))
 }
 
 {
@@ -453,8 +538,8 @@ function runHook({ remap, supports = true, entry = ENTRY, failing = [], failAll 
   // 入口模块链接失败：window 收到 SyntaxError，解析出被导入的那个文件
   const err = Object.assign(new SyntaxError("The requested module './live-L1.js' does not provide an export named 'x'"), {})
   h.listeners.error({ error: err, filename: `${ORIGIN}/assets/index-ABCD1234.js` })
-  assert.equal(h.appended.filter((el) => el.src === `${ORIGIN}/assets/asset-repair-v6.js`).length, 1, '出错时跟随入口资源域加载修复脚本')
-  assert.deepEqual(plain(h.window.__8bitgoAssetRepairLoad).map((a) => [a.u, a.r]), [[`${ORIGIN}/assets/asset-repair-v6.js`, 'ok']], '加载经过记下来')
+  assert.equal(h.appended.filter((el) => el.src === `${ORIGIN}/assets/asset-repair-v7.js`).length, 1, '出错时跟随入口资源域加载修复脚本')
+  assert.deepEqual(plain(h.window.__8bitgoAssetRepairLoad).map((a) => [a.u, a.r]), [[`${ORIGIN}/assets/asset-repair-v7.js`, 'ok']], '加载经过记下来')
   await new Promise((r) => setTimeout(r, 0))
   assert.deepEqual([...h.repairCalls[0].urls], [`${ORIGIN}/assets/index-ABCD1234.js`, live])
   h.listeners.error({ error: new TypeError('x'), filename: `${ORIGIN}/assets/a.js` })
@@ -464,7 +549,7 @@ function runHook({ remap, supports = true, entry = ENTRY, failing = [], failAll 
 
 {
   // 主站修复脚本第一次立即失败（诊断包 #872）：给同一主站地址带查询串重试一次，绕过缓存的失败响应
-  const repair = `${ORIGIN}/assets/asset-repair-v6.js`
+  const repair = `${ORIGIN}/assets/asset-repair-v7.js`
   const h = runHook({ failing: [repair] })
   assert.deepEqual(await h.window.__8bitgoAssetRepair({ urls: [] }), { ok: true })
   const attempts = plain(h.window.__8bitgoAssetRepairLoad)
@@ -472,17 +557,17 @@ function runHook({ remap, supports = true, entry = ENTRY, failing = [], failAll 
     [repair, 'error'],
     [attempts[1].u, 'ok'],
   ])
-  assert.match(attempts[1].u, /^https:\/\/8bitgo\.com\/assets\/asset-repair-v6\.js\?asset-repair-script=/)
+  assert.match(attempts[1].u, /^https:\/\/8bitgo\.com\/assets\/asset-repair-v7\.js\?asset-repair-script=/)
   assert.equal(h.appended.length, 2, '主站第一次失败后只追加一次缓存绕过重试')
 }
 
 {
   // 大陆入口：先从 EdgeOne 取修复脚本，加载失败再回主站；每一次的经过都记下来（诊断包 #761 只有「加载失败或超时」）
-  const cnRepair = 'https://cn.8bitgo.com/_cn/assets/asset-repair-v6.js'
+  const cnRepair = 'https://cn.8bitgo.com/_cn/assets/asset-repair-v7.js'
   const h = runHook({ entry: 'https://cn.8bitgo.com/_cn/assets/index-ABCD1234.js', failing: [cnRepair] })
   const result = await h.window.__8bitgoAssetRepair({ urls: [] })
   assert.deepEqual(result, { ok: true })
-  assert.deepEqual(plain(h.window.__8bitgoAssetRepairLoad).map((a) => [a.u, a.r]), [[cnRepair, 'error'], [`${ORIGIN}/assets/asset-repair-v6.js`, 'ok']])
+  assert.deepEqual(plain(h.window.__8bitgoAssetRepairLoad).map((a) => [a.u, a.r]), [[cnRepair, 'error'], [`${ORIGIN}/assets/asset-repair-v7.js`, 'ok']])
   assert.ok(h.window.__8bitgoAssetRepairLoad.every((a) => typeof a.ms === 'number' && a.ms >= 0))
 
   // 加载超时（5 秒没动静）：记 timeout，换下一个地址
@@ -498,9 +583,9 @@ function runHook({ remap, supports = true, entry = ENTRY, failing = [], failAll 
   const dead = runHook({ entry: 'https://cn.8bitgo.com/_cn/assets/index-ABCD1234.js', failAll: true })
   assert.equal(await dead.window.__8bitgoAssetRepair({ urls: [] }), null)
   assert.deepEqual(plain(dead.window.__8bitgoAssetRepairLoad).map((a) => a.r), ['error', 'error', 'error', 'error'])
-  assert.deepEqual(plain(dead.window.__8bitgoAssetRepairLoad).map((a) => a.u).slice(0, 2), [cnRepair, `${ORIGIN}/assets/asset-repair-v6.js`])
-  assert.match(plain(dead.window.__8bitgoAssetRepairLoad)[2].u, /^https:\/\/8bitgo\.com\/assets\/asset-repair-v6\.js\?asset-repair-script=/)
-  assert.match(plain(dead.window.__8bitgoAssetRepairLoad)[3].u, /^https:\/\/cn\.8bitgo\.com\/_cn\/assets\/asset-repair-v6\.js\?asset-repair-script=/)
+  assert.deepEqual(plain(dead.window.__8bitgoAssetRepairLoad).map((a) => a.u).slice(0, 2), [cnRepair, `${ORIGIN}/assets/asset-repair-v7.js`])
+  assert.match(plain(dead.window.__8bitgoAssetRepairLoad)[2].u, /^https:\/\/8bitgo\.com\/assets\/asset-repair-v7\.js\?asset-repair-script=/)
+  assert.match(plain(dead.window.__8bitgoAssetRepairLoad)[3].u, /^https:\/\/cn\.8bitgo\.com\/_cn\/assets\/asset-repair-v7\.js\?asset-repair-script=/)
 
   // 加载了却没定义入口（拿到的不是这份脚本）
   const empty = runHook({ entry: 'https://cn.8bitgo.com/_cn/assets/index-ABCD1234.js', empty: [cnRepair] })
@@ -600,18 +685,23 @@ assert.equal(parseRepairRequest({ build: '../../etc', files: ['a.js'] }), null)
 /* ---------- React 兜底页 ---------- */
 {
   const boundary = read('src/components/AppErrorBoundary.tsx')
-  assert.match(boundary, /if \(!recoverBrokenAsset\(error, info\)\) reportRenderCrash\(error, info\)/)
-  assert.match(boundary, /if \(repairFixedSomething\(result\)\) \{\s*reportRenderCrash\(error, info, note\)\s*if \(!reloadOnce\(\) && claimOriginReload\(edge\)\) toOrigin\(\)/, '修好了：先上报再刷新；一分钟内又坏了才换主站')
-  assert.match(boundary, /if \(stale && reloadOnce\(\)\) return/, '404 那类旧 chunk 照旧刷新一次，不算故障')
+  assert.match(boundary, /const previous = takeRecoveryForFailure\(\)\s*if \(!recoverBrokenAsset\(error, info, previous\)\) reportRenderCrash\(error, info, '', previous\)/, '上一份文档自动刷新过：接过前情')
+  // 2026-11-19：修好了不再「先上报再刷新」，报告留给刷新后的页面（好了记 recovered，又坏了并进那一份）
+  assert.match(boundary, /if \(repairFixedSomething\(result\)\) \{\s*if \(claimReload\(CHUNK_RELOAD_PREFIX\)\) \{\s*deferThenNavigate\(error, info, note, 'reload', chunk, previous, reloadPage\)/, '修好了：报告留到刷新后')
+  assert.match(boundary, /if \(claimOriginReload\(edge\)\) \{\s*deferThenNavigate\(error, info, `\$\{note\}；刷新后仍失败，已改用主站资源重新载入`, 'origin'/, '一分钟内又坏了才换主站')
+  assert.match(boundary, /if \(stale && silentReload\(error, chunk, previous, note\)\) return/, '404 那类旧 chunk 照旧刷新一次，不算故障')
+  assert.match(boundary, /if \(!deferRecoveryReport\(\{ file, via, summary: incidentSummary\(error, fullNote\), report \}\) && report\) sendCrashReport\(report\)\s*navigate\(\)/, '存不进 sessionStorage 就退回先报再刷新')
+  assert.match(boundary, /\.\.\.\(lazy\?\.graph\?\.failed \?\? \[\]\)\.map\(\(dep\) => resolveChunkUrl\(`\.\/\$\{dep\}`, entrySrc\)\)/, '模块图证据点名的依赖交给修复脚本')
+  assert.match(read('src/entry-client.tsx'), /startPageRecoveryWatch\(\)/, '入口在渲染前开始等结论')
   assert.match(boundary, /const stale = STALE_CHUNK\.test\(message\) \|\| isSystemJsChunkLoadError\(error\)/, 'SystemJS 脚本加载错误归入 chunk 恢复')
-  assert.match(boundary, /if \(isSystemJsChunkLoadError\(error\) \|\| lazy\?\.file\?\.includes\('-legacy-'\)\) \{\s*if \(reloadOnce\(\)\) return true/, 'legacy 不走只覆盖现代 ESM 的 SHA 清单；先刷新，重复失败才换主站')
+  assert.match(boundary, /if \(isSystemJsChunkLoadError\(error\) \|\| lazy\?\.file\?\.includes\('-legacy-'\)\) \{\s*if \(silentReload\(error, chunk, previous, graph\)\) return true/, 'legacy 不走只覆盖现代 ESM 的 SHA 清单；先刷新，重复失败才换主站')
   assert.ok(boundary.indexOf('if (isSystemJsChunkLoadError(error)') < boundary.indexOf('const named = ['), 'legacy 恢复在现代资源核对之前分流')
-  assert.match(boundary, /if \(!pending\) return stale \? reloadOnce\(\) : false/, '钩子不在时退回原来的行为')
-  // 诊断包 #761：大陆加速入口取不下来、主站正常 → 先上报，再带 __assets=origin 整页重新载入
-  assert.match(boundary, /if \(edge && result\?\.edgeOnly\?\.length && claimOriginReload\(edge\)\) \{\s*reportRenderCrash\([^;]+\)\s*toOrigin\(\)/)
+  assert.match(boundary, /if \(!pending\) return stale \? silentReload\(error, chunk, previous, graph\) : false/, '钩子不在时退回原来的行为')
+  // 诊断包 #761：大陆加速入口取不下来、主站正常 → 带 __assets=origin 整页重新载入（报告留到刷新后）
+  assert.match(boundary, /if \(edge && result\?\.edgeOnly\?\.length && claimOriginReload\(edge\)\) \{\s*deferThenNavigate\([^;]+'origin', chunk, previous, toOriginAssets\)/)
   assert.ok(boundary.indexOf('result?.edgeOnly?.length') < boundary.indexOf('if (repairFixedSomething(result))'), 'edgeOnly 先于「修好了」判断：刷新回来还是 EdgeOne')
   assert.match(boundary, /const edge = stale && assetsFromCnEdge\(entrySrc, location\.origin\)/, '只有大陆加速入口上的加载失败才换主站')
-  assert.match(boundary, /const toOrigin = \(\) => location\.replace\(originAssetsUrl\(location\)\)/)
+  assert.match(boundary, /function toOriginAssets\(\): void \{\s*location\.replace\(originAssetsUrl\(location\)\)/)
   assert.match(boundary, /lazy\?\.file \? resolveChunkUrl\(`\.\/\$\{lazy\.file\}`, entrySrc\)/, '懒加载失败的 chunk 作为点名文件交给修复脚本')
   assert.match(boundary, /summarizeRepair\(result, repairLoadInfo\(\)\)/, '诊断包写出修复脚本的加载经过')
   assert.match(boundary, /if \(onOriginAssetsPage\(\)\) location\.replace\(originAssetsUrl\(location\)\)/, '退到主站之后再刷新也留在主站')
@@ -672,10 +762,10 @@ assert.equal(parseRepairRequest({ build: '../../etc', files: ['a.js'] }), null)
   )
   assert.match(summarizeRepair(null), /没有运行/, '旧调用方不给加载经过时保持原文')
   // 「修复脚本没有运行」分清加载失败 / 超时 / 已加载但核对没结束（诊断包 #761 只有一句「加载失败或超时」）
-  const cnRepair = 'https://cn.8bitgo.com/_cn/assets/asset-repair-v6.js'
+  const cnRepair = 'https://cn.8bitgo.com/_cn/assets/asset-repair-v7.js'
   assert.equal(
-    summarizeRepair(null, { attempts: [{ u: cnRepair, r: 'error', ms: 812 }, { u: 'https://8bitgo.com/assets/asset-repair-v6.js', r: 'timeout', ms: 5003 }], timedOut: false, noHook: false }),
-    `资源核对：修复脚本没有加载上：${cnRepair} 加载失败 812ms；https://8bitgo.com/assets/asset-repair-v6.js 5 秒超时 5003ms`,
+    summarizeRepair(null, { attempts: [{ u: cnRepair, r: 'error', ms: 812 }, { u: 'https://8bitgo.com/assets/asset-repair-v7.js', r: 'timeout', ms: 5003 }], timedOut: false, noHook: false }),
+    `资源核对：修复脚本没有加载上：${cnRepair} 加载失败 812ms；https://8bitgo.com/assets/asset-repair-v7.js 5 秒超时 5003ms`,
   )
   assert.match(summarizeRepair(null, { attempts: [{ u: cnRepair, r: 'ok', ms: 90 }], timedOut: true, noHook: false }), /修复脚本已加载.*核对 20 秒内没有结束/)
   assert.match(summarizeRepair(null, { attempts: [], timedOut: true, noHook: false }), /20 秒内修复脚本一次加载都没结束/)
@@ -684,13 +774,13 @@ assert.equal(parseRepairRequest({ build: '../../etc', files: ['a.js'] }), null)
 
 // 修复脚本只用 ES2017（页面兼容下限 Chrome 64）；旧版本留给已打开的旧页面用
 {
-  for (const file of ['public/assets/asset-repair-v6.js', 'public/assets/asset-repair-v5.js', 'public/assets/asset-repair-v4.js', 'public/assets/asset-repair-v3.js', 'public/assets/asset-repair-v2.js']) {
+  for (const file of ['public/assets/asset-repair-v7.js', 'public/assets/asset-repair-v6.js', 'public/assets/asset-repair-v5.js', 'public/assets/asset-repair-v4.js', 'public/assets/asset-repair-v3.js', 'public/assets/asset-repair-v2.js']) {
     const src = read(file)
     assert.ok(!/\?\.|\?\?|catch \{|=>/.test(src), `${file} 不用可选链、空值合并、省略 catch 参数和箭头函数`)
     assert.equal(createHash('sha256').update(src).digest('hex').length, 64)
   }
-  assert.match(read('index.html'), /asset-repair-v6\.js/, '首页钩子加载 v6')
-  assert.doesNotMatch(read('index.html'), /asset-repair-v2\.js/)
+  assert.match(read('index.html'), /asset-repair-v7\.js/, '首页钩子加载 v7')
+  assert.doesNotMatch(read('index.html'), /asset-repair-v[2-6]\.js/)
 }
 
 /* ---------- 懒加载就地重试（诊断包 #872） ---------- */
@@ -782,6 +872,174 @@ assert.equal(parseRepairRequest({ build: '../../etc', files: ['a.js'] }), null)
     await assert.rejects(importWithRetry(async () => { n++; throw new SyntaxError('bad') }, 'G-a.js', ENTRY, env), SyntaxError)
     assert.equal(n, 1)
   }
+}
+
+/* ---------- 模块图证据（2026-11-19 #1285 / #1368 / #1393；#917 / #1108 同一画像） ----------
+ * 本地实验（Chromium 153 / WebKit 26.6，scratchpad 里的最小复现：入口 Page.js 静态 import dep.js）：
+ *   dep.js 404 / 错误 MIME / 请求被中止 / window.stop() 一次 →
+ *     - Chrome：`Failed to fetch dynamically imported module: …/Page.js`（写的是入口），Safari：`Importing a module script failed.`；
+ *     - 换查询串重导入口（?chunk-retry=1、=2）和原地址重导都失败，依赖请求根本不再发（被这一份文档的模块表记住）；
+ *     - 同一时刻 fetch('/assets/dep.js')、fetch('/assets/Page.js') 都是 200；整页刷新后导入成功。
+ *   入口自己 503 一次 → 换查询串重导入口成功（这才是就地重试有用的情况）。
+ *   Resource Timing：Chrome 记入口 200 + 有正文，失败的依赖 responseStatus 0 / 404、无正文；WebKit 不记失败的请求，
+ *   入口照样有正文（没有 responseStatus 字段）。
+ */
+{
+  const dir = `${ORIGIN}/assets/`
+  const okTop = { name: `${dir}Page-AAA.js`, startTime: 10, responseStart: 30, transferSize: 362, decodedBodySize: 62, responseStatus: 200 }
+  // Chrome：依赖 404
+  assert.deepEqual(importGraphEvidence('Page-AAA.js', ENTRY, new TypeError('x'), [okTop, { name: `${dir}dep-AAA.js`, startTime: 31, responseStart: 0, transferSize: 0, decodedBodySize: 0, responseStatus: 404 }], ORIGIN), { top: 'ok', failed: ['dep-AAA.js'] })
+  // Chrome：依赖被中止 / window.stop()（状态 0、全零）
+  assert.deepEqual(importGraphEvidence('Page-AAA.js', ENTRY, new TypeError('x'), [okTop, { name: `${dir}dep-AAA.js`, startTime: 31, responseStart: 0, transferSize: 0, decodedBodySize: 0, responseStatus: 0 }], ORIGIN), { top: 'ok', failed: ['dep-AAA.js'] })
+  // WebKit：没有 responseStatus、不记失败的请求
+  assert.deepEqual(importGraphEvidence('Page-AAA.js', ENTRY, new TypeError('x'), [{ name: `${dir}Page-AAA.js`, startTime: 10, responseStart: 24, transferSize: 373, decodedBodySize: 62 }], ORIGIN), { top: 'ok', failed: [] })
+  // 入口自己 503：就地换查询串重试才有用
+  assert.deepEqual(importGraphEvidence('Page-AAA.js', ENTRY, new TypeError('x'), [{ name: `${dir}Page-AAA.js`, startTime: 10, responseStart: 20, transferSize: 120, decodedBodySize: 0, responseStatus: 503 }], ORIGIN), { top: 'failed', failed: [] })
+  // 没有任何记录（还在飞 / 浏览器没给）：看不出
+  assert.deepEqual(importGraphEvidence('Page-AAA.js', ENTRY, new TypeError('x'), [], ORIGIN), { top: 'unknown', failed: [] })
+  // 重试用的 ?chunk-retry= 不算入口原地址那一条；更早（悬停预取时）失败的依赖照样点名 —— 被记住的正是它
+  assert.deepEqual(importGraphEvidence('Page-AAA.js', ENTRY, new TypeError('x'), [
+    { name: `${dir}Page-AAA.js?chunk-retry=a`, startTime: 50, responseStart: 60, transferSize: 300, decodedBodySize: 62, responseStatus: 200 },
+    { name: `${dir}old-OLD.js`, startTime: 1, responseStart: 0, transferSize: 0, decodedBodySize: 0, responseStatus: 404 },
+    { name: `${ORIGIN}/emulatorjs/loader.js`, startTime: 1, responseStart: 0, transferSize: 0, decodedBodySize: 0, responseStatus: 404 },
+  ], ORIGIN), { top: 'unknown', failed: ['old-OLD.js'] }, '只看 /assets/ 同目录的 JS')
+  // 大陆加速入口（跨源）：没 Timing-Allow-Origin 时成功的请求也是全零，不能判失败；同源有成功记录（TAO 在）才判
+  const cnDir = 'https://cn.8bitgo.com/_cn/assets/'
+  const cnBase = `${cnDir}index-ABCD1234.js`
+  const zero = (n) => ({ name: `${cnDir}${n}`, startTime: 5, responseStart: 0, transferSize: 0, decodedBodySize: 0, responseStatus: 0 })
+  assert.deepEqual(importGraphEvidence('Page-AAA.js', cnBase, new TypeError('x'), [zero('Page-AAA.js'), zero('dep-AAA.js')], ORIGIN), { top: 'unknown', failed: [] })
+  assert.deepEqual(importGraphEvidence('Page-AAA.js', cnBase, new TypeError('x'), [{ ...zero('Page-AAA.js'), responseStart: 9, decodedBodySize: 62, responseStatus: 200 }, zero('dep-AAA.js')], ORIGIN), { top: 'ok', failed: ['dep-AAA.js'] })
+  // legacy：SystemJS 错误本身写着失败的文件
+  const legacyError = (file) => {
+    const e = new Error(`${cnDir}${file}, ${cnDir}GameDetailPage-legacy-C6hAwTAm.js (SystemJS https://github.com/systemjs/systemjs/blob/main/docs/errors.md#3)`)
+    e.stack = `${e.message}\n    at HTMLScriptElement.<anonymous> (${cnDir}polyfills-legacy-CkXxdkhe.js:20:2168)`
+    return e
+  }
+  assert.deepEqual(importGraphEvidence('EmulatorPlayer-legacy-J-EQUy6G.js', cnBase, legacyError('EmulatorPlayer-legacy-J-EQUy6G.js'), [], ORIGIN), { top: 'failed', failed: ['EmulatorPlayer-legacy-J-EQUy6G.js'] }, '#1201：失败的就是懒加载入口本身，就地换查询串重试')
+  assert.deepEqual(importGraphEvidence('GameDetailPage-legacy-C6hAwTAm.js', cnBase, legacyError('gradients-legacy-Xy12abCD.js'), [], ORIGIN), { top: 'ok', failed: ['gradients-legacy-Xy12abCD.js'] })
+  assert.match(describeImportEvidence({ top: 'ok', failed: ['gradients-AbC.js'] }), /入口已完整下载、失败在静态依赖.*gradients-AbC\.js/)
+  assert.equal(describeImportEvidence({ top: 'unknown', failed: [] }), '')
+  assert.equal(describeImportEvidence(null), '')
+
+  // importWithRetry：入口已下完 → 失败在依赖，换查询串重试必然失败，直接交给错误边界（不白下两遍入口）
+  {
+    let loads = 0
+    const urls = []
+    const err = new TypeError(`Failed to fetch dynamically imported module: ${dir}Page-AAA.js`)
+    const env = {
+      sleep: async () => {}, waitOnline: async () => {}, online: () => true,
+      importUrl: async (url) => { urls.push(url); return { ok: 1 } },
+      pageOrigin: ORIGIN,
+      resources: () => [okTop, { name: `${dir}gradients-G1.js`, startTime: 31, responseStart: 0, transferSize: 0, decodedBodySize: 0, responseStatus: 0 }],
+    }
+    await assert.rejects(importWithRetry(async () => { loads++; throw err }, 'Page-AAA.js', ENTRY, env), TypeError)
+    assert.equal(loads, 1)
+    assert.deepEqual(urls, [], '不再换查询串重导入口')
+    tagLazyFailure(err, 'Page-AAA.js', 'GameDetailPage')
+    assert.deepEqual(lazyFailure(err).graph, { top: 'ok', failed: ['gradients-G1.js'] }, '证据交给兜底页')
+  }
+  // 入口自己没下下来 → 照旧换查询串重试
+  {
+    const urls = []
+    const env = {
+      sleep: async () => {}, waitOnline: async () => {}, online: () => true,
+      importUrl: async (url) => { urls.push(url); return { ok: 'busted' } },
+      pageOrigin: ORIGIN,
+      resources: () => [{ ...okTop, decodedBodySize: 0, responseStatus: 503 }],
+    }
+    assert.deepEqual(await importWithRetry(async () => { throw new TypeError('Failed to fetch dynamically imported module: x') }, 'Page-AAA.js', ENTRY, env), { ok: 'busted' })
+    assert.equal(urls.length, 1)
+  }
+}
+
+/* ---------- 刷新后补报结论（services/pageRecovery.ts） ---------- */
+{
+  const session = new Map()
+  globalThis.sessionStorage = {
+    getItem: (k) => (session.has(k) ? session.get(k) : null),
+    setItem: (k, v) => session.set(k, String(v)),
+    removeItem: (k) => session.delete(k),
+  }
+  const report = (id) => ({ slug: 'sanguozhi-3', visitId: `visit-${id}`, attemptId: `attempt-${id}`, detail: 'TypeError: Failed to fetch dynamically imported module', diagnostics: { v: 1, build: 'index-X.js' } })
+  const sent = []
+  const send = (slug, r, event, recovery) => sent.push({ slug, id: r.visitId, event, recovery, diagnostics: r.diagnostics })
+
+  assert.equal(chunkStem('GameDetailPage-BfqMSSyK.js'), 'GameDetailPage')
+  assert.equal(chunkStem('EmulatorPlayer-legacy-J-EQUy6G.js'), 'EmulatorPlayer')
+  assert.equal(chunkStem('index--IFWo9je.js'), 'index')
+  assert.equal(chunkStem('GameDetailPage-AbCdEfGh.js?chunk-retry=x'), 'GameDetailPage')
+
+  // 1. 刷新后同一个 chunk 加载上了（换了部署、哈希变了也认）→ 补报 recovered，诊断包是刷新前采的
+  resetPageRecoveryForTest()
+  const t0 = Date.now()
+  assert.equal(deferRecoveryReport({ file: 'GameDetailPage-OLD11111.js', via: 'reload', summary: 'x', report: report(1) }, '/games/sanguozhi-3'), true)
+  assert.equal(startPageRecoveryWatch({ now: t0 + 1500, path: '/games/sanguozhi-3', send }), true)
+  assert.equal(session.size, 0, '读了就删：同一份现场只处理一次')
+  await importWithRetry(async () => ({ GameDetailPage: 1 }), 'GameDetailPage-NEW22222.js', ENTRY, { sleep: async () => {}, waitOnline: async () => {}, online: () => true, importUrl: async () => ({}) })
+  assert.equal(sent.length, 1)
+  assert.equal(sent[0].event, 'recovered')
+  assert.equal(sent[0].recovery.outcome, 'recovered')
+  assert.equal(sent[0].recovery.via, 'reload')
+  assert.equal(sent[0].diagnostics.build, 'index-X.js')
+  await importWithRetry(async () => ({}), 'GameDetailPage-NEW22222.js', ENTRY, { sleep: async () => {}, waitOnline: async () => {}, online: () => true, importUrl: async () => ({}) })
+  assert.equal(sent.length, 1, '只报一次')
+
+  // 2. 刷新后又崩了：兜底页把前情接过去，这份现场不再单独补报
+  resetPageRecoveryForTest()
+  sent.length = 0
+  deferRecoveryReport({ file: 'GameDetailPage-OLD11111.js', via: 'reload', summary: '懒加载失败；文件正常', report: report(2) }, '/games/sanguozhi-3')
+  startPageRecoveryWatch({ path: '/games/sanguozhi-3', send })
+  const previous = takeRecoveryForFailure()
+  assert.equal(previous.summary, '懒加载失败；文件正常')
+  assert.equal(previous.via, 'reload')
+  assert.equal(takeRecoveryForFailure(), null)
+  assert.equal(sent.length, 0)
+
+  // 3. 换了页（玩家走开了）：补报成「未确认」，按 failed 记
+  resetPageRecoveryForTest()
+  deferRecoveryReport({ file: 'GameDetailPage-OLD11111.js', via: 'origin', summary: 'x', report: report(3) }, '/games/sanguozhi-3')
+  startPageRecoveryWatch({ path: '/games/other', send })
+  assert.deepEqual(sent.map((x) => [x.event, x.recovery.outcome, x.recovery.via]), [['failed', 'unconfirmed', 'origin']])
+
+  // 4. 20 秒没等到点名的 chunk：未确认；没点名 chunk：没再崩就算恢复
+  const realSetTimeout = globalThis.setTimeout
+  const timers = []
+  globalThis.setTimeout = (fn) => { timers.push(fn); return timers.length }
+  try {
+    resetPageRecoveryForTest()
+    sent.length = 0
+    deferRecoveryReport({ file: 'EmulatorPlayer-AAA11111.js', via: 'reload', summary: 'x', report: report(4) }, '/games/a')
+    startPageRecoveryWatch({ path: '/games/a', send })
+    timers.pop()()
+    deferRecoveryReport({ file: null, via: 'reload', summary: 'x', report: report(5) }, '/games/b')
+    startPageRecoveryWatch({ path: '/games/b', send })
+    timers.pop()()
+  } finally {
+    globalThis.setTimeout = realSetTimeout
+  }
+  assert.deepEqual(sent.map((x) => [x.id, x.event, x.recovery.outcome]), [['visit-4', 'failed', 'unconfirmed'], ['visit-5', 'recovered', 'recovered']])
+
+  // 5. 静默刷新（以前就不上报的那几种）：好了什么都不发
+  resetPageRecoveryForTest()
+  sent.length = 0
+  deferRecoveryReport({ file: 'GameDetailPage-OLD11111.js', via: 'reload', summary: 'x', report: null }, '/games/a')
+  startPageRecoveryWatch({ path: '/games/a', send })
+  await importWithRetry(async () => ({}), 'GameDetailPage-OLD11111.js', ENTRY, { sleep: async () => {}, waitOnline: async () => {}, online: () => true, importUrl: async () => ({}) })
+  assert.equal(sent.length, 0)
+
+  // 6. 过期（两分钟以上）或格式不对：当没有
+  resetPageRecoveryForTest()
+  deferRecoveryReport({ file: null, via: 'reload', summary: 'x', report: report(6) }, '/games/a')
+  assert.equal(startPageRecoveryWatch({ now: Date.now() + 121_000, path: '/games/a', send }), false)
+  session.set('8bitgo.page-recovery', '{bad json')
+  assert.equal(startPageRecoveryWatch({ path: '/games/a', send }), false)
+
+  // 7. sessionStorage 不可用：返回 false，兜底页退回先报再刷新
+  const saved = globalThis.sessionStorage
+  globalThis.sessionStorage = { getItem() { return null }, setItem() { throw new Error('QuotaExceededError') }, removeItem() {} }
+  assert.equal(deferRecoveryReport({ file: null, via: 'reload', summary: 'x', report: report(7) }, '/games/a'), false)
+  globalThis.sessionStorage = saved
+  resetPageRecoveryForTest()
 }
 
 // 所有渲染路径上的 React.lazy 都必须就地重试并点名 chunk（诊断包 #761 复查：播放器的触屏手柄 chunk 曾漏掉）

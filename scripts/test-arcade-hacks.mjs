@@ -117,9 +117,7 @@ const syntheticInputs = {
   'tk2_gfx5cn.rom': gfx5,
   'tk2_gfx6cn.rom': gfx6,
 }
-const experimentalPlan = hack.experimentalPlan
-const experimentalDerive = experimentalPlan.derive
-const derived = experimentalDerive.run(syntheticInputs)
+const derived = hack.derive.run(syntheticInputs)
 ok(derived.length === 4, `独立字库有 4 条 CPS1 通道：${derived.map((d) => d.name).join(', ')}`)
 const expected = [
   ['tk2h5_cjk_fbneo_v5_lane0.rom', 0x55, 0x5a],
@@ -133,7 +131,7 @@ for (const [index, [name, first, second]] of expected.entries()) {
   ok(d.every((b, i) => b === (i & 1 ? second : first)), `${name}: 按 FBNeo 左右半片组合顺序且保留字节`)
 }
 // 合成不能改调用方的 buffer。
-const again = experimentalDerive.run(syntheticInputs)
+const again = hack.derive.run(syntheticInputs)
 ok(crc32(again[0].data) === crc32(derived[0].data), '合成是纯函数，同样输入同样输出')
 ok(gfx5[0x10000] === 0x55 && gfx5[0x18000] === 0x56 && gfx6[0x18000] === 0x67, '合成没有改调用方的字库原始数据')
 
@@ -148,14 +146,14 @@ const extraTileRows = rows.filter((r) => r.flags.includes('CPS1_EXTRA_TILES_4000
 const tileNames = tileRows.map((r) => r.name)
 const extraTileNames = extraTileRows.map((r) => r.name)
 ok(
-  tileNames.length === 8 && JSON.stringify(extraTileNames) === JSON.stringify(experimentalDerive.outputs),
+  tileNames.length === 8 && JSON.stringify(extraTileNames) === JSON.stringify(hack.derive.outputs),
   'dat 保留八块基础图形 ROM，并将四条字库通道标记为 FBNeo 扩展图形',
 )
 const rowNameIndex = new Map(rows.map((r, i) => [r.name, i]))
 const firstQsound = rowNameIndex.get('tk2_q1.rom')
 const lastQsound = rowNameIndex.get('tk2_q4.rom')
-const firstExtraTile = rowNameIndex.get(experimentalDerive.outputs[0])
-const lastExtraTile = rowNameIndex.get(experimentalDerive.outputs.at(-1))
+const firstExtraTile = rowNameIndex.get(hack.derive.outputs[0])
+const lastExtraTile = rowNameIndex.get(hack.derive.outputs.at(-1))
 ok(
   firstExtraTile === lastQsound + 1 && lastExtraTile === firstExtraTile + 3 && firstExtraTile > firstQsound,
   '四条扩展图形 ROM 紧跟 QSound，符合 FBNeo loader 的读取顺序',
@@ -165,7 +163,7 @@ ok(
   '扩展图形四通道连续，避免 loader 把 Z80 或 QSound 行当作字库',
 )
 const expectedLaneCrcs = [0x38d273a2, 0xedb8cfbb, 0x9c2ada91, 0x2a48eb5a]
-const laneRows = rows.filter((r) => experimentalDerive.outputs.includes(r.name))
+const laneRows = rows.filter((r) => hack.derive.outputs.includes(r.name))
 ok(
   laneRows.length === 4 && laneRows.every((r, i) => r.size === FONT_SIZE && r.crc === expectedLaneCrcs[i]),
   '四条通道按 FBNeo CpsLoadTiles 左右半片顺序组合，大小与真包 CRC 完全对应',

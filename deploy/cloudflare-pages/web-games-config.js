@@ -23,6 +23,8 @@ export const WEB_GAME_PAGES = Object.freeze({
     project: '8bitgo-gamblers-table',
     domain: 'gamblers-table.8bitgo.com',
     sourceDir: 'gamblers-table',
+    // Godot 的 WASM / PCK 超过 Pages 25 MiB 单文件上限，由 Worker 同源代理主站固定资源。
+    excludeFiles: ['index.wasm', 'index.pck'],
     entry: '/web/gamblers-table/',
     title: 'Gamblers Table',
     runtime: '',

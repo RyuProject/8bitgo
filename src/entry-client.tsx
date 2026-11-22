@@ -11,6 +11,7 @@ import { loadLocale } from '@/locales'
 import { initClarity } from '@/services/clarity'
 import { installRouteReport } from '@/services/romRouteReport'
 import { consumeOriginAssetsParam } from '@/services/moduleLinkRecovery'
+import { startPageRecoveryWatch } from '@/services/pageRecovery'
 
 // 页面翻译会挪动文本节点，React 删插时崩溃；必须在首次渲染前装上（见 translatorDomGuard.ts）
 installTranslatorDomGuard()
@@ -19,6 +20,9 @@ installTranslatorDomGuard()
 consumeOriginAssetsParam()
 // 大陆玩家连优选 ROM 线路的成败回报给优选任务（只发计数，见 romRouteReport.ts）
 installRouteReport()
+
+// 上一份文档崩溃后自动刷新过：等这一页把同一个 chunk 加载上再补报「已恢复」，又崩了就并进那份报告（pageRecovery.ts）
+startPageRecoveryWatch()
 
 /**
  * 首屏数据由 services/pageData 在模块加载时从 window.__8BITGO__ 里读走，

@@ -75,7 +75,6 @@ const __8bgCoreResume = (() => {
       Number.isSafeInteger(entry.total) && entry.total > PART_BYTES && entry.total <= MAX_CORE_BYTES &&
       Number.isSafeInteger(entry.offset) && entry.offset > 0 && entry.offset < entry.total &&
       entry.offset % PART_BYTES === 0 && entry.partBytes === PART_BYTES &&
-      Number.isFinite(entry.startedAt) && entry.startedAt > 0 && entry.startedAt <= now &&
       Number.isFinite(entry.updatedAt) && entry.updatedAt > 0 && now - entry.updatedAt >= 0 && now - entry.updatedAt < MAX_AGE_MS
     )
   }
@@ -130,7 +129,7 @@ const __8bgCoreResume = (() => {
       if (hint && sameOrigin(rawUrl) && !hint.etag.startsWith('W/')) headers.set('If-Range', hint.etag)
       else headers.delete('If-Range')
     } catch { return null }
-    return { rawUrl, url, start, hint, headers, startedAt: currentTime() }
+    return { rawUrl, url, start, hint, headers }
   }
 
   function fullState(response, plan) {
@@ -145,7 +144,7 @@ const __8bgCoreResume = (() => {
       canResume: false,
       persist: false,
       owner: ownerId(),
-      startedAt: plan.startedAt,
+      startedAt: currentTime(),
     }
   }
 
@@ -188,13 +187,12 @@ const __8bgCoreResume = (() => {
       let store
       try { store = tx.objectStore(STORE_NAME) } catch { return fail() }
       const count = offset / PART_BYTES
-      // 直接填最终核心缓冲区，避免恢复时同时保留一份前缀和一份完整核心。
-      const buffer = new Uint8Array(total)
+      const parts = new Array(count)
       let requestsDone = 0
       let transactionDone = false
       const finishIfReady = () => {
         if (!transactionDone || requestsDone !== count) return
-        resolve(buffer)
+        resolve(parts)
       }
       tx.oncomplete = () => { transactionDone = true; finishIfReady() }
       tx.onerror = tx.onabort = () => fail()
@@ -211,7 +209,7 @@ const __8bgCoreResume = (() => {
               : null
           if (!record || record.url !== url || record.etag !== etag || record.total !== total ||
               record.offset !== partOffset || !bytes || bytes.byteLength !== PART_BYTES) return fail()
-          buffer.set(bytes, partOffset)
+          parts[index] = bytes
           requestsDone++
           finishIfReady()
         }
@@ -244,8 +242,8 @@ const __8bgCoreResume = (() => {
       if (!plan.hint || !etag || etag !== plan.hint.etag || range.total !== plan.hint.total) {
         return restartFull(plan, response, retryFull, 'validator changed while resuming')
       }
-      const buffer = await readPrefix(plan.url, etag, range.total, plan.start)
-      if (!buffer) return restartFull(plan, response, retryFull, 'persistent prefix is incomplete')
+      const prefix = await readPrefix(plan.url, etag, range.total, plan.start)
+      if (!prefix) return restartFull(plan, response, retryFull, 'persistent prefix is incomplete')
       return {
         response,
         state: {
@@ -257,9 +255,9 @@ const __8bgCoreResume = (() => {
           canResume: true,
           persist: range.total <= MAX_CORE_BYTES && !idbPreviouslyStalled(),
           owner: ownerId(),
-          startedAt: plan.startedAt,
+          startedAt: currentTime(),
         },
-        buffer,
+        prefix,
       }
     }
 
@@ -281,15 +279,22 @@ const __8bgCoreResume = (() => {
         canResume: resumable,
         persist: resumable && range.total <= MAX_CORE_BYTES && !idbPreviouslyStalled(),
         owner: ownerId(),
-        startedAt: plan.startedAt,
+        startedAt: currentTime(),
       },
-      buffer: null,
+      prefix: [],
     }
   }
 
   function ownerId() {
-    // 每次下载单独标识，避免同标签页并行启动同一核心时一个成功任务误删另一个任务的新检查点。
-    return `${currentTime().toString(36)}-${Math.random().toString(36).slice(2)}`
+    try {
+      const key = '8bitgo.ejs.coreResumeOwner'
+      let owner = sessionStorage.getItem(key)
+      if (!owner) {
+        owner = `${currentTime().toString(36)}-${Math.random().toString(36).slice(2)}`
+        sessionStorage.setItem(key, owner)
+      }
+      return owner
+    } catch { return `${currentTime().toString(36)}-${Math.random().toString(36).slice(2)}` }
   }
 
   function openDatabase() {
@@ -409,15 +414,8 @@ const __8bgCoreResume = (() => {
   function updateManifest(entry) {
     const ls = storage()
     if (!ls) return false
-    const before = manifest()
-    const existing = before.find((item) => item.url === entry.url && item.etag === entry.etag)
-    let entries = before.filter((item) => !(item.url === entry.url && item.etag === entry.etag))
-    // 同内容的并行下载可能先后提交检查点；不能让较慢的一路把较快一路的连续前缀倒退。
-    if (existing && validHint(existing, existing.url) && existing.total === entry.total && existing.offset > entry.offset) {
-      entries.push({ ...existing, updatedAt: entry.updatedAt })
-    } else {
-      entries.push(entry)
-    }
+    let entries = manifest().filter((item) => !(item.url === entry.url && item.etag === entry.etag))
+    entries.push(entry)
     entries.sort((a, b) => b.updatedAt - a.updatedAt)
     const kept = []
     let stored = 0
@@ -453,27 +451,8 @@ const __8bgCoreResume = (() => {
     }).catch(() => {})
   }
 
-  function deletePart(url, etag, offset) {
-    // localStorage 写清单若失败，仍须清掉刚写入的孤儿分片，且不能再经过已停用的 openDatabase 门禁。
-    const pending = dbPromise || openDatabase()
-    pending.then((db) => {
-      if (!db) return
-      transactionResult((resolve, fail) => {
-        let tx
-        try { tx = db.transaction(STORE_NAME, 'readwrite') } catch { return fail() }
-        let store
-        try { store = tx.objectStore(STORE_NAME) } catch { return fail() }
-        let request
-        try { request = store.delete(partId(url, etag, offset)) } catch { return fail() }
-        request.onerror = tx.onerror = tx.onabort = () => fail()
-        tx.oncomplete = () => resolve(true)
-      })
-    }).catch(() => {})
-  }
-
   function writer(state) {
-    // 没有 localStorage 就无法登记连续前缀；不要只写 IDB 留下无法界定的孤儿分片。
-    if (!state?.persist || !state.etag || !state.total || state.total > MAX_CORE_BYTES || !storage()) return null
+    if (!state?.persist || !state.etag || !state.total || state.total > MAX_CORE_BYTES) return null
     let buffer = new Uint8Array(PART_BYTES)
     let filled = 0
     let offset = state.start
@@ -520,16 +499,10 @@ const __8bgCoreResume = (() => {
             total: state.total,
             offset,
             partBytes: PART_BYTES,
-            startedAt: state.startedAt,
             updatedAt: now,
             owner: state.owner,
           }
-          if (!updateManifest(hint)) {
-            deletePart(state.url, state.etag, offset)
-            disabled = true
-            buffer = null
-            return
-          }
+          if (!updateManifest(hint)) { disabled = true; buffer = null; return }
           buffer = new Uint8Array(PART_BYTES)
           filled = 0
         }
@@ -541,7 +514,7 @@ const __8bgCoreResume = (() => {
     if (!state?.url || !state.etag || !state.total) return
     const entries = manifest()
     const current = entries.find((item) => item.url === state.url && item.etag === state.etag)
-    if (!current || (current.owner !== state.owner && current.startedAt >= state.startedAt)) return
+    if (!current || (current.owner !== state.owner && current.updatedAt > state.startedAt)) return
     const ls = storage()
     if (!ls) return
     try { ls.setItem(MANIFEST_KEY, JSON.stringify(entries.filter((item) => item !== current))) } catch { return }

@@ -4,6 +4,7 @@ import { ApiError, api, apiEnabled } from '@/services/api'
 import { cx } from '@/lib/format'
 import { Card, btnClass, inputClass } from './ui'
 import {
+  COHORT_LABEL,
   EVENT_LABEL,
   diagnosisPhaseLabel,
   diagnosisSignalLabel,
@@ -11,6 +12,7 @@ import {
   fmtMs,
   formatEnvironment,
   formatGroupForAi,
+  formatRecovery,
   type DiagnosticEvent,
   type DiagnosticGroup,
   type DiagnosticGroupsResponse,
@@ -34,11 +36,13 @@ const EVENT_FILTERS: Array<{ id: '' | DiagnosticEvent; label: string }> = [
   { id: 'failed', label: '加载失败' },
   { id: 'timeout', label: '启动超时' },
   { id: 'slow_start', label: '慢启动' },
+  { id: 'recovered', label: '已自动恢复' },
 ]
 
 const eventTone = (event: DiagnosticEvent) => event === 'failed'
   ? 'bg-yellow-500/10 text-yellow-400'
-  : event === 'timeout' ? 'bg-live/10 text-live' : 'bg-brand/10 text-brand-hover'
+  : event === 'timeout' ? 'bg-live/10 text-live'
+    : event === 'recovered' ? 'bg-surface-2 text-muted' : 'bg-brand/10 text-brand-hover'
 
 const shortDate = (value: string) => {
   const date = new Date(value)
@@ -80,6 +84,7 @@ function Chips({ items }: { items: Array<{ name: string; count: number }> }) {
 
 function SampleView({ sample }: { sample: DiagnosticSample }) {
   const d = sample.diagnostics
+  const captureNote = ({ missing: '客户端未附详细诊断包', limited: '详细诊断包触发限流', invalid: '客户端诊断包无有效内容', save_failed: '详细诊断包保存失败', backfill: '历史漏斗记录回填' } as const)[d?.capture?.note as 'missing' | 'limited' | 'invalid' | 'save_failed' | 'backfill']
   return (
     <div className="space-y-2 rounded-xl border border-line bg-surface-2/40 p-3 text-xs">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
@@ -89,6 +94,11 @@ function SampleView({ sample }: { sample: DiagnosticSample }) {
         <span className="text-dim">{shortDate(sample.createdAt)} · #{sample.id}</span>
       </div>
       <p className="text-muted">{formatEnvironment(sample)}</p>
+      {d?.capture?.level === 'summary' && (
+        <p className="rounded-md border border-yellow-500/30 bg-yellow-500/5 px-2 py-1 text-yellow-300">
+          仅有安全摘要（{captureNote || '完整诊断包不可用'}）；浏览器详细环境、日志和网络请求未收到，不能从摘要还原。
+        </p>
+      )}
       {d?.diagnosis && (
         <p className="text-brand-hover">
           自动识别：{d.diagnosis.label} · 阶段 {diagnosisPhaseLabel(d.diagnosis.phase)} · 把握{d.diagnosis.confidence === 'high' ? '高' : d.diagnosis.confidence === 'medium' ? '中' : '低'}
@@ -96,10 +106,14 @@ function SampleView({ sample }: { sample: DiagnosticSample }) {
         </p>
       )}
       {d?.diagnosis?.signals.length ? <p className="text-dim">依据：{d.diagnosis.signals.map(diagnosisSignalLabel).join('；')}</p> : null}
+      {d?.automation?.cohort ? (
+        <p className="text-dim">来源：{COHORT_LABEL[d.automation.cohort]}（{d.automation.signals.map(diagnosisSignalLabel).join('；')}）</p>
+      ) : null}
+      {d?.recovery ? <p className="text-muted">刷新结论：{formatRecovery(d.recovery)}</p> : null}
       {d?.reason && <p className="break-words text-fg">原因：{d.reason}</p>}
       {d && (
         <>
-          <p className="text-dim">部署 {d.build || '未知'} · 本次访问第 {d.attempt.index} 次开局 · 平台 {sample.platform} / {sample.runtime}</p>
+          <p className="text-dim">{d.capture?.level === 'summary' ? '' : `部署 ${d.build || '未知'} · 本次访问第 ${d.attempt.index} 次开局 · `}平台 {sample.platform} / {sample.runtime}</p>
           {d.timeline.length > 0 && (
             <p className="flex flex-wrap gap-x-3 text-muted">
               {d.timeline.map((row, i) => <span key={i}><span className="tabular-nums text-dim">{fmtMs(row.t)}</span> {row.e}</span>)}
@@ -196,6 +210,7 @@ function GroupCard({ group }: { group: DiagnosticGroup }) {
         <div className="min-w-0 flex-1 space-y-1.5">
           <div className="flex flex-wrap items-center gap-2 text-xs">
             <span className={cx('rounded px-1.5 py-0.5', eventTone(group.event))}>{EVENT_LABEL[group.event]}</span>
+            {group.cohort ? <span className="rounded bg-surface-2 px-1.5 py-0.5 text-muted">{COHORT_LABEL[group.cohort]}</span> : null}
             <span className="text-muted">{group.runtime || 'unknown'}</span>
             <span className="tabular-nums text-fg">{group.count} 次 · {group.visits} 次访问</span>
             <span className="text-dim">最近 {shortDate(group.lastSeen)}</span>
@@ -247,6 +262,8 @@ function GroupCard({ group }: { group: DiagnosticGroup }) {
 export function AdminDiagnostics() {
   const [days, setDays] = useState(7)
   const [event, setEvent] = useState<'' | DiagnosticEvent>('')
+  // 已自动恢复、自动化客户端默认不列（2026-11-19 一组故障里一半是 90 核的抓取机），点一下才显示
+  const [showNoise, setShowNoise] = useState(false)
   // 「AI 修补」页的「查看诊断」带 ?q= 过来
   const [params] = useSearchParams()
   const [query, setQuery] = useState(() => params.get('q') ?? '')
@@ -263,6 +280,7 @@ export function AdminDiagnostics() {
     const params = new URLSearchParams({ days: String(days) })
     if (event) params.set('event', event)
     if (search) params.set('q', search)
+    if (showNoise) params.set('noise', 'show')
     api.get<DiagnosticGroupsResponse>(`/api/admin/startup-diagnostics?${params}`, true)
       .then((r) => { if (!cancelled) setData(r) })
       .catch((e: unknown) => {
@@ -270,7 +288,7 @@ export function AdminDiagnostics() {
       })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [days, event, search])
+  }, [days, event, search, showNoise])
 
   return (
     <div className="space-y-4">
@@ -315,6 +333,15 @@ export function AdminDiagnostics() {
         {data && (
           <p className="mt-3 text-xs text-muted">
             共 {data.total} 份诊断包，归成 {data.groups.length} 组{data.groups.length >= 200 ? '（只显示前 200 组）' : ''}。
+            {data.hidden && !data.noiseShown && data.hidden.recovered + data.hidden.automation > 0 && (
+              <>
+                {' '}另有 {data.hidden.recovered} 份已自动恢复、{data.hidden.automation} 份来自自动化客户端，默认不列。
+                <button type="button" className="ml-1 text-brand-hover hover:underline" onClick={() => setShowNoise(true)}>显示</button>
+              </>
+            )}
+            {data.noiseShown && showNoise && (
+              <button type="button" className="ml-1 text-brand-hover hover:underline" onClick={() => setShowNoise(false)}>隐藏已恢复和自动化</button>
+            )}
           </p>
         )}
       </Card>

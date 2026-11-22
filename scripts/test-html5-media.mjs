@@ -306,9 +306,13 @@ console.log('\n── 发布文件与 WebGL 截图策略 ──')
   const loadHandler = adapterSource.split("iframe.addEventListener('load'")[1].split("iframe.addEventListener('error'")[0]
   ok(loadHandler.includes('options.onIframeLoaded?.()'), 'iframe load 只上报独立的 iframe_loaded 阶段')
   ok(loadHandler.includes('options.onReadinessVisibilityChange?.(Boolean(frameDocument()))'), '每次导航都更新 HTML5 的同源可观测状态')
+  ok(loadHandler.indexOf('if (isInitialBlankLoad()) return') > -1 &&
+    loadHandler.indexOf('if (isInitialBlankLoad()) return') < loadHandler.indexOf('options.onIframeLoaded?.()') &&
+    adapterSource.indexOf("iframe.addEventListener('load'") < adapterSource.indexOf('container.appendChild(iframe)'),
+  'Chromium 插入无 src 的 iframe 时派发的初始 about:blank load 不能冒充入口文档已到（#1704 / #1943 / #2326）')
   ok(adapterSource.includes('let firstInteractionReported = false') &&
     adapterSource.includes("iframe.addEventListener('pointerdown', onFramePointerInput)") &&
-    adapterSource.includes("signal.type === 'first-interaction') reportFirstInteraction()"),
+    adapterSource.includes('firstInteraction: reportFirstInteraction,'),
   '可信 iframe 指针输入与游戏桥共用一次性首次操作上报；单纯获得焦点不算玩家操作')
   const playerSource = readFileSync(new URL('../src/emulator/EmulatorPlayer.tsx', import.meta.url), 'utf8')
   ok(playerSource.includes("session.runtime.id === 'html5' ? 'unknown' : 'observable'"), 'HTML5 等待 iframe 首次导航时不误记慢启动')
@@ -319,9 +323,73 @@ console.log('\n── 发布文件与 WebGL 截图策略 ──')
   ok(recorderSource.includes('canvas.captureStream()'), '截图不强开 preserveDrawingBuffer，不给每一帧增加复制成本')
   ok(gameSdkSource.includes('window.EightBitGoGameSDK'), '独立游戏 SDK 发布 8BitGo API')
   ok(minifiedSdk === expectedMinifiedSdk && minifiedSdk.length < gameSdkSource.length, '发布压缩版与可维护源码一致且体积更小')
-  ok(!gameSdkSource.includes('createElement(\'script\')') && !gameSdkSource.includes('import('), '游戏 SDK 不下载或动态加载外部代码')
-  ok(gameSdkSource.includes('fetch(`${base}${path}`') && gameSdkSource.includes("['8bitgo.com', 'www.8bitgo.com', 'cn.8bitgo.com', 'tv.8bitgo.com']"), 'SDK 网络请求仅供云存档客户端使用，且 API 域名受白名单限制')
-  ok(adapterSource.includes('event.source !== iframe.contentWindow') && adapterSource.includes('event.origin !== gameSdkOrigin'), '父页同时校验当前 iframe 与精确游戏 origin')
+  ok(!/createElement\s*\(\s*['\"]script/.test(gameSdkSource) && !/\bimport\s*\(/.test(gameSdkSource) && !/\beval\s*\(/.test(gameSdkSource), '游戏 SDK 不动态加载或执行外部代码')
+  ok(gameSdkSource.includes('fetch(`${base}${path}`') && gameSdkSource.includes('apiBaseUrl'), '游戏 SDK 只用 fetch 调用公开平台 API 以同步云存档')
+  /*
+    父页消息桥的来源校验按行为测，不按写法测：9b842b6 为排查 PvZ 握手把 origin 判断拆成单独一段
+    （不匹配时打一行日志），原来那条整行字符串断言就红了，而校验本身没变。这里把适配器里真实的
+    处理函数抽出来，在 VM 里用伪造消息打一遍：别的窗口、同一 iframe 但 origin 不精确相等的都必须被丢掉。
+  */
+  const adapterHandler = (name, scope) => {
+    const start = adapterSource.indexOf(`const ${name} = (event: MessageEvent) => {`)
+    const end = adapterSource.indexOf(`\n  }\n  window.addEventListener('message', ${name})`, start)
+    assert.ok(start >= 0 && end > start, `适配器里缺 ${name}`)
+    const code = transformSync(`${adapterSource.slice(start, end)}\n  }`, { loader: 'ts' }).code
+    runInNewContext(`${code};globalThis.handler = ${name}`, scope)
+    return scope.handler
+  }
+  const constOf = (name) => {
+    const raw = adapterSource.match(new RegExp(`const ${name} = ('[^']+'|\\d+)`))?.[1]
+    assert.ok(raw, `适配器里缺 ${name}`)
+    return raw.startsWith("'") ? raw.slice(1, -1) : Number(raw)
+  }
+  const gameFrame = {}
+  const forgedOrigins = ['https://evil.example', 'http://pvz.8bitgo.com', 'https://pvz.8bitgo.com:8443', 'https://8bitgo.com']
+  {
+    let inits = 0
+    const scope = {
+      destroyed: false,
+      gameSdkOrigin: 'https://pvz.8bitgo.com',
+      iframe: { contentWindow: gameFrame },
+      GAME_SDK_SOURCE: constOf('GAME_SDK_SOURCE'),
+      GAME_SDK_VERSION: constOf('GAME_SDK_VERSION'),
+      sendGameSdkInit: () => { inits++ },
+      console: { info() {}, warn() {} },
+    }
+    const onGameSdkMessage = adapterHandler('onGameSdkMessage', scope)
+    const hello = { source: scope.GAME_SDK_SOURCE, version: scope.GAME_SDK_VERSION, type: 'hello' }
+    onGameSdkMessage({ source: {}, origin: scope.gameSdkOrigin, data: hello })
+    for (const origin of forgedOrigins) onGameSdkMessage({ source: gameFrame, origin, data: hello })
+    ok(inits === 0, '父页只接受当前游戏 iframe 的精确来源消息（游戏 SDK：别的窗口、相近 origin 都不会触发握手）')
+    onGameSdkMessage({ source: gameFrame, origin: scope.gameSdkOrigin, data: hello })
+    ok(inits === 1, '当前 iframe + 精确 origin 的 SDK 握手照常初始化')
+    scope.destroyed = true
+    onGameSdkMessage({ source: gameFrame, origin: scope.gameSdkOrigin, data: hello })
+    ok(inits === 1, '销毁后不再响应 SDK 消息')
+  }
+  {
+    let capsReports = 0
+    const scope = {
+      destroyed: false,
+      saveBridgeClosed: false,
+      saveBridgeFinalizing: false,
+      saveBridgeOrigin: 'https://pvz.8bitgo.com',
+      saveBridgeWindow: null,
+      saveBridgeReady: false,
+      iframe: { contentWindow: gameFrame },
+      SAVE_BRIDGE_SOURCE: constOf('SAVE_BRIDGE_SOURCE'),
+      SAVE_BRIDGE_VERSION: constOf('SAVE_BRIDGE_VERSION'),
+      caps: new Set(),
+      options: { onCaps: () => { capsReports++ } },
+    }
+    const onSaveBridgeMessage = adapterHandler('onSaveBridgeMessage', scope)
+    const ready = { source: scope.SAVE_BRIDGE_SOURCE, version: scope.SAVE_BRIDGE_VERSION, type: 'ready' }
+    onSaveBridgeMessage({ source: {}, origin: scope.saveBridgeOrigin, data: ready })
+    for (const origin of forgedOrigins) onSaveBridgeMessage({ source: gameFrame, origin, data: ready })
+    ok(!scope.saveBridgeReady && !scope.caps.has('saveState') && capsReports === 0, '存档桥同样只认当前 iframe 的精确 origin，伪造消息拿不到存档能力')
+    onSaveBridgeMessage({ source: gameFrame, origin: scope.saveBridgeOrigin, data: ready })
+    ok(scope.saveBridgeReady && scope.caps.has('saveState') && capsReports === 1, '当前 iframe + 精确 origin 的存档桥就绪后开放存档')
+  }
   ok(adapterSource.includes("type: 'live-frame-ack'") && gameSdkSource.includes("message.type === 'live-frame-ack'"), '跨源直播等父页消费完画面再发送下一帧')
 }
 

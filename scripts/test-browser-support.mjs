@@ -45,6 +45,31 @@ for (const id of ['liveview', 'cloudgame', 'html5']) assert.equal(b.runtimeRunsW
   assert.match(romPack, /if \(!webAssemblyAvailable\(\)\) \{\s*zstd = await loadJsZstd\(\)/, '没有 WebAssembly 改用纯 JS 解码（与播放器同一个判断）')
   assert.match(romPack, /await import\('fzstd'\)/, 'fzstd 也按需加载，不进主包')
   assert.match(romPack, /await import\('@bokuweb\/zstd-wasm'\)/)
+  // 推广到整个 src（2026-11-15 #2512 / #2513 / #2523 都是 `ReferenceError: WebAssembly is not defined` 崩在兜底页）：
+  // 主线程代码一律不许静态 import 会在求值时碰 WebAssembly 的胶水，也不许在模块顶层直接读 WebAssembly.*。
+  // Worker 自成一个打包入口、页面在开 Worker 前已判断过 WebAssembly，不在此列。
+  {
+    const WASM_GLUE = /^import\s[^\n]*['"](@bokuweb\/zstd-wasm|[^'"]*\.wasm(\?[^'"]*)?)['"]/m
+    const offenders = []
+    const walk = (dir) => {
+      for (const entry of readdirSync(path.join(root, dir), { withFileTypes: true })) {
+        const rel = path.join(dir, entry.name)
+        if (entry.isDirectory()) {
+          if (rel !== path.join('src', 'workers')) walk(rel)
+          continue
+        }
+        if (!/\.(ts|tsx|js|mjs)$/.test(entry.name) || /(^|\.)worker\.[tj]s$/i.test(entry.name)) continue
+        const text = read(rel)
+        if (WASM_GLUE.test(text)) offenders.push(`${rel}：静态 import WebAssembly 胶水`)
+        // 顶层语句（不缩进、不是注释）里读 WebAssembly.*：模块一求值就抛
+        for (const line of text.split('\n')) {
+          if (/^[^\s/*].*\bWebAssembly\.\w/.test(line) && !/typeof WebAssembly/.test(line)) offenders.push(`${rel}：顶层读 WebAssembly（${line.trim().slice(0, 80)}）`)
+        }
+      }
+    }
+    walk('src')
+    assert.deepEqual(offenders, [], '主线程模块不能在求值时依赖 WebAssembly')
+  }
   const p = read('src/emulator/EmulatorPlayer.tsx')
   assert.match(p, /if \(!webAssemblyAvailable\(\) && !runtimeRunsWithoutWasm\(runtime\.id, game\)\)/)
   assert.match(p, /setError\(t\.player\.browserNoWasm\)/)

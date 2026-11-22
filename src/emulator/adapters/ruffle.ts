@@ -52,6 +52,7 @@ import { installRuffleCrashGuard } from '../ruffleCrash'
 import { ruffleMaxExecutionDuration } from '../ruffleGameConfig'
 import { installRuffleWordShortcutGuard } from '../ruffleWordShortcutGuard'
 import { warmRuffleCore } from '../prewarm'
+import { subscribeHttpWarmActivity } from '../httpWarm'
 import { diagLog, registerDiagnosticSnapshot, watchFramePerformance } from '@/services/startupDiagnostics'
 
 export { RUFFLE_PATH } from '../paths'
@@ -76,6 +77,9 @@ import { markRuffleEdgeFailed, RUFFLE_PATH, RUFFLE_VERSION, ruffleBase } from '.
  *
  * 想退回官方默认：VITE_RUFFLE_FONT_RENDERER=embedded
  */
+/** 加速入口上 ruffle.js 的加载时限：正常弱网留足，挂死要早于播放器 120 秒看门狗换到同源。 */
+export const RUFFLE_EDGE_SCRIPT_TIMEOUT_MS = 25_000
+
 const FONT_RENDERER: string = import.meta.env.VITE_RUFFLE_FONT_RENDERER || 'canvas'
 
 /**
@@ -301,6 +305,23 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let coreWarmFile: string | null = null
   let coreWarmMs = -1
   let coreWarmFailed = false
+  /*
+    核心还在下载就给启动看门狗报活：只认本局线路下的 Ruffle 文件，2 秒最多一次，可玩或销毁后退订。
+    阶段推进（markStage）之外，这是 load() 等核心那段唯一的真实信号。
+  */
+  let lastCoreActivityAt = 0
+  const coreActivityRoots = [ruffleRoot, RUFFLE_PATH]
+  let stopCoreActivity: (() => void) | null = subscribeHttpWarmActivity((url) => {
+    if (destroyed || startupDone || !coreActivityRoots.some((root) => url.startsWith(root))) return
+    const now = Date.now()
+    if (now - lastCoreActivityAt < 2_000) return
+    lastCoreActivityAt = now
+    options.onStartupActivity?.()
+  })
+  const releaseCoreActivity = () => {
+    stopCoreActivity?.()
+    stopCoreActivity = null
+  }
   void warmRuffleCore(ruffleRoot).then((warm) => {
     coreWarmFile = warm.wasm
     return warm.done.then((succeeded) => {
@@ -714,9 +735,32 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     cancelWordShortcutGuard = installRuffleWordShortcutGuard(win, doc)
 
     const script = doc.createElement('script')
+    let activeRuffleScript: HTMLScriptElement = script
     script.src = `${ruffleRoot}ruffle.js`
     markStage('取 ruffle.js', ruffleRoot === RUFFLE_PATH ? '同源' : '加速线路')
-    script.onerror = () => {
+    /*
+      加速入口上的 ruffle.js 可能一直挂着既不 load 也不 error（js-dos 的 emulators.js 在 EdgeOne 上出过同样现场，#1518）。
+      没有时限时整局停在「取 ruffle.js」直到外层 120 秒看门狗；只给加速线路设时限，到点按失败换同源。
+    */
+    let edgeScriptTimer = ruffleRoot !== RUFFLE_PATH
+      ? window.setTimeout(() => {
+          edgeScriptTimer = 0
+          if (destroyed || ruffleRoot === RUFFLE_PATH) return
+          console.warn(`[ruffle] ${ruffleRoot}ruffle.js ${RUFFLE_EDGE_SCRIPT_TIMEOUT_MS / 1000} 秒没有加载完成，按失败处理`)
+          script.onerror?.(new Event('error'))
+        }, RUFFLE_EDGE_SCRIPT_TIMEOUT_MS)
+      : 0
+    const clearEdgeScriptTimer = () => {
+      if (edgeScriptTimer) window.clearTimeout(edgeScriptTimer)
+      edgeScriptTimer = 0
+    }
+    // 超时换线后，挂住的那份加速线路脚本仍可能迟到执行；onload 只处理第一次，别建两个播放器。
+    let ruffleScriptHandled = false
+    script.onerror = (event?: Event | string) => {
+      clearEdgeScriptTimer()
+      if (ruffleScriptHandled) return
+      // 已换到同源后，迟到的加速线路脚本报错不算数，只认同源那一份的结果
+      if (typeof event === 'object' && event?.target && event.target !== activeRuffleScript) return
       // 加速入口取不到 ruffle.js：这一局当场换同源再试一次，不让玩家等自动重试
       if (ruffleRoot !== RUFFLE_PATH && !destroyed) {
         console.warn(`[ruffle] ${ruffleRoot}ruffle.js 加载失败，改走同源 ${RUFFLE_PATH}`)
@@ -724,6 +768,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         ruffleRoot = RUFFLE_PATH
         markStage('取 ruffle.js', '加速线路失败，改同源')
         const retry = doc.createElement('script')
+        activeRuffleScript = retry
         retry.src = `${ruffleRoot}ruffle.js`
         retry.onerror = script.onerror
         retry.onload = script.onload
@@ -736,7 +781,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       if (!destroyed) options.onError?.(fmt(rt.ruffleLoadFailed, { path: ruffleRoot }), 'runtime')
     }
     script.onload = async () => {
-      if (destroyed) return
+      clearEdgeScriptTimer()
+      if (destroyed || ruffleScriptHandled) return
+      ruffleScriptHandled = true
       try {
         markStage('ruffle.js 已加载')
         const source = win.RufflePlayer?.newest()
@@ -1101,6 +1148,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         // onReady 必须在 load 完成之后 —— 以前放在 load 之前，播放器会在 SWF 还没解析完
         // 就把加载遮罩撤掉，玩家对着空白舞台点半天
         startupDone = true
+        releaseCoreActivity()
         markStage('可以玩了')
         options.onReady?.()
         // 不只依赖外层播放器下一次 React effect：解密后的异步启动链较长，Ruffle 自己还会
@@ -1406,6 +1454,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     },
     destroy() {
       destroyed = true
+      releaseCoreActivity()
       // 先拍下 iframe 里的网络记录，iframe 一移除就读不到了
       stopFramePerf?.()
       stopFramePerf = null

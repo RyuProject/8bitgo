@@ -11,13 +11,19 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import {
+  classifyAutomation,
   classifyUserAgent,
   DIAGNOSTICS_RETENTION_DAYS,
   diagnoseStartupFailure,
   errorSignature,
+  hasUsefulDiagnostics,
+  needsAttention,
   normalizeDiagnostics,
+  partitionNoise,
   scrub,
 } from '../server/src/startup-diagnostics.js'
+import { normalizeStartupEvent, sanitizeStartupDetail } from '../server/src/startup-metrics.js'
+import { componentPath, errorHead, isReactUpdateLoop, stackFrames } from '../src/services/renderErrorText.ts'
 
 const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
 
@@ -63,6 +69,20 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   assert.equal(big.timeline[1].e, 'download_complete')
   assert.equal(normalizeDiagnostics('nope'), null)
   assert.equal(normalizeDiagnostics([1]), null)
+  const summary = normalizeDiagnostics({
+    capture: { level: 'summary', note: 'missing', ignored: 'drop me' },
+    build: 'index-fake.js', reason: 'React error #185', env: { mem: 8, cores: 8 },
+    attempt: { index: 9 }, logs: [{ m: 'must not be retained' }], resources: [{ n: 'secret.example/path' }],
+  })
+  assert.deepEqual(summary.capture, { level: 'summary', note: 'missing' })
+  assert.equal(summary.env, null, '摘要不伪造详细环境')
+  assert.equal(summary.build, '', '摘要不伪造部署版本')
+  assert.deepEqual(summary.attempt, { index: 0, sinceStartMs: 0 }, '摘要不伪造开局序号')
+  assert.equal(summary.logs.length, 0, '摘要不包含未收到的日志')
+  assert.equal(summary.resources.length, 0, '摘要不包含未收到的网络请求')
+  assert.equal(hasUsefulDiagnostics({}), false, '空对象不能冒充完整现场')
+  assert.equal(hasUsefulDiagnostics({ build: 'index-current.js' }), false, '只有版本号不能冒充完整现场')
+  assert.equal(hasUsefulDiagnostics({ env: { mem: 8 } }), true, '有实测设备信息时视为完整现场')
   assert.equal(DIAGNOSTICS_RETENTION_DAYS, 30)
 }
 
@@ -118,30 +138,6 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   assert.equal(diagnoseStartupFailure({
     event: 'failed', runtime: 'page', diagnostics: { resources: [{ n: 'stats.example/request', i: 'fetch', at: 0, st: 404 }] },
   }).confidence, 'medium', '无法确定关联的普通资源错误要显示中把握度')
-  assert.equal(diagnoseStartupFailure({
-    event: 'failed', runtime: 'page', diagnostics: { resources: [{ n: 'stats.example/widget.js', i: 'script', at: 0, st: 404 }] },
-  }).code, 'network_http', '近期第三方脚本失败不能被升级成本站页面资源故障')
-  const reactUpdateLoop = diagnoseStartupFailure({
-    event: 'failed', runtime: 'page', platform: 'nes',
-    detail: 'Error: Minified React error #185; at fi (react-vendor.js:8:27488)',
-    diagnostics: {
-      resources: [
-        { n: 'u.clarity.ms/collect', i: 'xmlhttprequest', at: -459_500, st: 400 },
-        { n: '8bitgo.com/api/events', i: 'fetch', at: -878_100, st: 500 },
-      ],
-    },
-  })
-  assert.deepEqual(
-    { code: reactUpdateLoop.code, signal: reactUpdateLoop.signals[0], phase: reactUpdateLoop.phase, confidence: reactUpdateLoop.confidence },
-    { code: 'react_update_loop', signal: 'error.react_update_loop', phase: 'page_render', confidence: 'high' },
-    'React #185 的直接异常优先于整页缓冲里过期的第三方 / 本站请求错误（#1533）',
-  )
-  assert.notEqual(diagnoseStartupFailure({
-    event: 'failed', runtime: 'page', diagnostics: { resources: [{ n: 'u.clarity.ms/collect', i: 'xmlhttprequest', at: -459_500, st: 400 }] },
-  }).code, 'network_http', '数分钟前的第三方 HTTP 400 不归到当前开局')
-  assert.equal(diagnoseStartupFailure({
-    event: 'failed', runtime: 'page', diagnostics: { resources: [{ n: '8bitgo.com/api/events', i: 'fetch', at: -1200, st: 400 }] },
-  }).code, 'network_http', '开局附近的本站 HTTP 错误仍可识别')
   const jsdosDependencyFailure = diagnoseStartupFailure({
     event: 'failed', runtime: 'jsdos', platform: 'dos',
     detail: 'DOSBox 运行出错：DOSBox did not start',
@@ -166,6 +162,25 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   assert.notEqual(diagnoseStartupFailure({
     event: 'failed', runtime: 'emulatorjs', platform: 'nes', detail: 'ReferenceError: emulators is not defined',
   }).code, 'engine_asset', 'js-dos 专属的 emulators.js 规则不能误判其他运行时')
+  assert.equal(diagnoseStartupFailure({
+    event: 'failed', runtime: 'page', diagnostics: { resources: [{ n: 'stats.example/widget.js', i: 'script', at: 0, st: 404 }] },
+  }).code, 'network_http', '近期第三方脚本失败不能被升级成本站页面资源故障')
+  const reactUpdateLoop = diagnoseStartupFailure({
+    event: 'failed', runtime: 'page', platform: 'nes',
+    detail: 'Error: Minified React error #185; at fi (react-vendor.js:8:27488)',
+    diagnostics: { resources: [{ n: 'u.clarity.ms/collect', i: 'xmlhttprequest', at: -459_500, st: 400 }] },
+  })
+  assert.deepEqual(
+    { code: reactUpdateLoop.code, signal: reactUpdateLoop.signals[0], phase: reactUpdateLoop.phase, confidence: reactUpdateLoop.confidence },
+    { code: 'react_update_loop', signal: 'error.react_update_loop', phase: 'page_render', confidence: 'high' },
+    'React #185 的直接异常优先于整页缓冲里过期的第三方请求错误（#1533）',
+  )
+  assert.notEqual(diagnoseStartupFailure({
+    event: 'failed', runtime: 'page', diagnostics: { resources: [{ n: 'u.clarity.ms/collect', i: 'xmlhttprequest', at: -459_500, st: 400 }] },
+  }).code, 'network_http', '数分钟前的第三方 HTTP 400 不归到当前开局')
+  assert.equal(diagnoseStartupFailure({
+    event: 'failed', runtime: 'page', diagnostics: { resources: [{ n: '8bitgo.com/api/events', i: 'fetch', at: -1200, st: 400 }] },
+  }).code, 'network_http', '开局附近的本站 HTTP 错误仍可识别')
   const trap = diagnoseStartupFailure({
     event: 'failed', platform: 'gba', detail: 'RuntimeError: table index is out of bounds',
     diagnostics: { resources: [{ n: '8bitgo.com/emulatorjs/…/mgba-wasm.data' }] },
@@ -175,6 +190,36 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
     { code: 'runtime_trap', confidence: 'medium', artifact: 'mgba' },
     '运行时陷阱保留核心线索，但不把 ROM 写成已确认根因',
   )
+  const goldenSunLateAbort = diagnoseStartupFailure({
+    event: 'failed', runtime: 'emulatorjs', platform: 'gba', elapsedMs: 913_472,
+    detail: 'RuntimeError: Aborted(undefined). Build with -sASSERTIONS for more info.',
+    diagnostics: {
+      attempt: { sinceStartMs: 913_472 },
+      timeline: [
+        { t: 0, e: 'start_click' },
+        { t: 96_448, e: 'game_playable' },
+        { t: 96_450, e: 'first_frame' },
+        { t: 913_472, e: 'failed' },
+      ],
+      logs: [
+        { t: 94_674, s: 'stage', l: 'info', m: '下载游戏核心' },
+        { t: 94_716, s: 'ejs', l: 'log', m: '[EJS Core] Downloading core: mgba-legacy-wasm.data' },
+        { t: 913_472, s: 'adapter', l: 'warn', m: '[core-crash] mgba: RuntimeError: Aborted(undefined)' },
+      ],
+    },
+  })
+  assert.deepEqual(
+    { code: goldenSunLateAbort.code, phase: goldenSunLateAbort.phase, signal: goldenSunLateAbort.signals[0], artifact: goldenSunLateAbort.artifact },
+    { code: 'wasm_runtime', phase: 'runtime', signal: 'error.wasm_runtime', artifact: 'mgba-legacy' },
+    '首帧后发生的 WASM 崩溃不能被过期的「下载游戏核心」阶段误归为核心下载失败',
+  )
+  assert.equal(diagnoseStartupFailure({
+    event: 'failed', runtime: 'emulatorjs', platform: 'gba', detail: 'Error downloading core (mgba-legacy-wasm.data)',
+    diagnostics: { logs: [{ t: 100, s: 'stage', l: 'info', m: '下载游戏核心' }] },
+  }).code, 'core_download', '明确的核心下载失败仍保持原分类')
+  assert.equal(diagnoseStartupFailure({
+    event: 'failed', runtime: 'emulatorjs', platform: 'gba', detail: 'Error loading core (mgba-legacy-wasm.data)',
+  }).code, 'core_download', '明确的核心加载失败仍保持原分类')
   const trapOtherCore = errorSignature({
     event: 'failed', runtime: 'emulatorjs', platform: 'gba', detail: 'RuntimeError: table index is out of bounds',
     diagnostics: { resources: [{ n: '8bitgo.com/emulatorjs/…/melonds-wasm.data' }] },
@@ -243,6 +288,64 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
     'ROM 5 秒就下完、之后 15 秒卡在资源阶段，仍按依赖资源停滞归类')
   assert.equal(xiyou('加载进度：阶段 assets，ROM 20.9MB/20.9MB（缓存），ROM 起于 0.3s，ROM 完成于 0.4s，最后进度 0.4s').signals[0],
     'stage.engine_assets', 'ROM 命中缓存时慢在别处')
+
+  const lateRomSnapshot = diagnoseStartupFailure({
+    event: 'slow_start', runtime: 'emulatorjs', platform: 'arcade', elapsedMs: 20_207,
+    detail: '等待 game_playable 已超过 20 秒（下载已完成，正在启动，下载完已 1.2 秒）',
+    diagnostics: {
+      timeline: [{ t: 0, e: 'start_click' }, { t: 19_033, e: 'download_complete' }, { t: 20_206, e: 'slow_start' }],
+      logs: [
+        { t: 6, s: 'stage', l: 'info', m: 'emulatorjs 运行时模块加载完成' },
+        { t: 632, s: 'download', l: 'warn', m: '首片期间的提前分片失败，后续会按常规重试： TypeError: Failed to fetch' },
+        { t: 20_207, s: 'snapshot', l: 'info', m: '加载进度：阶段 rom，ROM 38.5MB/38.5MB，ROM 起于 0.1s，ROM 完成于 19.0s，平均 17.0Mbps，最后进度 20.2s' },
+      ],
+      resources: [{ at: 632, st: 400, i: 'xmlhttprequest', n: 'u.clarity.ms/collect' }],
+    },
+  })
+  assert.deepEqual(
+    { code: lateRomSnapshot.code, signal: lateRomSnapshot.signals[0], artifact: lateRomSnapshot.artifact },
+    { code: 'rom_download', signal: 'progress.rom_dominated', artifact: 'rom-16-64mb' },
+    'ROM 已下载、占去大半启动时间时，残留的 rom 阶段与下载前线路告警不能说成停滞（#2761）',
+  )
+  const staleRomStage = diagnoseStartupFailure({
+    event: 'slow_start', runtime: 'emulatorjs', platform: 'arcade', elapsedMs: 20_207,
+    detail: '等待 game_playable 已超过 20 秒（下载已完成，正在启动）',
+    diagnostics: {
+      timeline: [{ t: 0, e: 'start_click' }, { t: 19_033, e: 'download_complete' }],
+      logs: [{ t: 6, s: 'stage', l: 'info', m: '加载进度：阶段 rom' }],
+    },
+  })
+  assert.deepEqual(
+    { code: staleRomStage.code, signal: staleRomStage.signals[0], phase: staleRomStage.phase },
+    { code: 'timeout', signal: 'event.timeout', phase: 'startup' },
+    '有下载完成漏斗事件时，没更新的 ROM 阶段只能归到后续启动等待',
+  )
+  const html5DocumentLoad = diagnoseStartupFailure({
+    event: 'slow_start', runtime: 'html5', platform: 'html5', elapsedMs: 20_000,
+    detail: '网页游戏页面已加载，但尚未确认可玩',
+    diagnostics: {
+      timeline: [{ t: 0, e: 'start_click' }, { t: 1_000, e: 'download_complete' }],
+      logs: [{ t: 1_001, s: 'stage', l: 'info', m: '加载进度：阶段 starting' }],
+    },
+  })
+  assert.deepEqual(
+    { code: html5DocumentLoad.code, signal: html5DocumentLoad.signals[0] },
+    { code: 'timeout', signal: 'stage.html5_starting' },
+    'HTML5 的 download_complete 只表示 iframe 文档已加载，仍需按网页游戏启动阶段判断',
+  )
+  const unknownRuntimeCompletion = diagnoseStartupFailure({
+    event: 'slow_start', platform: 'arcade', elapsedMs: 20_000,
+    detail: '等待游戏可玩状态超时',
+    diagnostics: {
+      timeline: [{ t: 0, e: 'start_click' }, { t: 19_000, e: 'download_complete' }],
+      logs: [{ t: 1_000, s: 'stage', l: 'info', m: '加载进度：阶段 rom' }],
+    },
+  })
+  assert.deepEqual(
+    { code: unknownRuntimeCompletion.code, signal: unknownRuntimeCompletion.signals[0] },
+    { code: 'rom_download', signal: 'stage.rom' },
+    '旧诊断包缺 runtime 时，不把含义不明的 download_complete 当作下载完成证据',
+  )
 }
 
 /* ---------- 前端采集 ---------- */
@@ -388,7 +491,7 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
 
 /* ---------- 「复制给 AI」 ---------- */
 {
-  const { formatGroupForAi } = await import('../src/admin/diagnosticsReport.ts')
+  const { formatGroupForAi, formatSample } = await import('../src/admin/diagnosticsReport.ts')
   const group = {
     signature: '0123456789abcdef', text: 'failed · emulatorjs · 卡在下载核心', event: 'failed', runtime: 'emulatorjs',
     count: 3, visits: 2, games: [{ slug: 'super-mario-bros', title: '超级玛丽奥兄弟', count: 3 }],
@@ -412,17 +515,26 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   for (const needle of ['# 8BitGo 启动故障', 'AGENTS.md', 'Safari 26×3', 'SV×3', '超级玛丽奥兄弟（super-mario-bros）×3', '阶段时间线', '538ms  download_complete', '[stage/info] Descargando Núcleo del Juego', 'fceumm-wasm.data', '本次访问第 3 次开局', '内存 8GB']) {
     assert.ok(md.includes(needle), `复制给 AI 的文本缺「${needle}」`)
   }
+  const summaryMd = formatSample({
+    ...sample,
+    diagnostics: normalizeDiagnostics({ capture: { level: 'summary', note: 'missing' }, reason: 'React error #185' }),
+  })
+  assert.match(summaryMd, /现场级别：摘要/)
+  assert.match(summaryMd, /浏览器日志、网络请求和详细环境未收到/)
+  assert.doesNotMatch(summaryMd, /本次访问第|内存 8GB|index-Xy12AB/)
 }
 
 /* ---------- 接线 ---------- */
 {
   const funnel = read('src/services/startupFunnel.ts')
-  assert.match(funnel, /DIAGNOSTIC_EVENTS = new Set<StartupEventName>\(\['failed', 'timeout', 'slow_start'\]\)/)
+  assert.match(funnel, /DIAGNOSTIC_EVENTS = new Set<StartupEventName>\(\['failed', 'timeout', 'slow_start', 'recovered'\]\)/)
   assert.match(funnel, /collectStartupDiagnostics\(payload\.attemptId, payload\.detail, \{\s*resourcesSincePageStart: payload\.runtime === 'page',/, '页面崩溃带上页面打开以来的资源请求（诊断包 #761 的资源列表是空的）')
   const games = read('server/src/routes/games.js')
-  assert.match(games, /if \(result\.recorded && req\.body\?\.diagnostics\n/, '只在漏斗事件首次入库时写诊断包')
+  assert.match(games, /if \(result\.recorded && DIAGNOSTIC_EVENTS\.has\(result\.event\.event\)\)/, '首次漏斗事件总是进入诊断保存流程')
   // 诊断包一份最多 32KB，必须有自己的闸，不能只靠漏斗那道每分钟 12000 的总量
   assert.match(games, /takeAnonymous\(req, 'startup-diagnostics', \{ perIp: 6, global: 120 \}\)\.ok/)
+  assert.match(games, /startup-diagnostic-summary', \{ perIp: 12, global: 240 \}/, '缺少完整现场时仍有更严格的摘要限流兜底')
+  assert.match(games, /save_failed/, '完整现场写入失败时摘要需保留真实原因标记')
   assert.match(games, /userAgent: req\.headers\['user-agent'\]/)
   const admin = read('server/src/routes/admin.js')
   for (const path of ["'/startup-diagnostics'", "'/startup-diagnostics/samples'", "'/startup-diagnostics/:id'"]) {
@@ -450,6 +562,103 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   assert.match(psp, /diagLog\('stage', 'info', text\)/, 'PSP 桥的阶段文字进诊断包')
   assert.match(psp, /message\.type === 'performance'/)
   assert.match(psp, /stopSnapshot\(\)/, '销毁时注销快照')
+}
+
+/* ---------- 已自动恢复 / 自动化客户端 / 真实失败分开（2026-11-19 #1285 / #1368 / #1393 / #1201） ---------- */
+{
+  const LINUX_CHROME_150 = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36'
+  const lazyReason = 'TypeError: Failed to fetch dynamically imported module: https://8bitgo.com/assets/GameDetailPage-AbCd1234.js'
+  // #1393 / #1368 / #1285 与 #917 / #1108 的同一画像：90 核、32GB、1440x900、zh-CN、3G、上报时页面在后台
+  const crawlerEnv = { mem: 32, cores: 90, net: { type: '3g', downlink: 0.4, rtt: 350, saveData: false }, screen: '1440x900@1', touch: 0, lang: 'zh-CN', coi: false, sab: true, online: true, hiddenMs: 18_000, visible: false }
+  const bundle = (env, extra = {}) => normalizeDiagnostics({ build: 'index-JjUktQWI.js', reason: lazyReason, env, attempt: { index: 1, sinceStartMs: 1 }, timeline: [], logs: [], resources: [], ...extra })
+  const ua = classifyUserAgent(LINUX_CHROME_150)
+  assert.deepEqual(ua, { browser: 'Chrome 150', os: 'Linux', device: 'desktop' })
+
+  const crawler = bundle(crawlerEnv)
+  assert.deepEqual(classifyAutomation(crawler, { userAgent: LINUX_CHROME_150, device: ua.device }), { cohort: 'suspect', signals: ['automation.server_cpu'] }, '桌面 90 核 = 服务器 CPU，疑似自动化')
+  assert.deepEqual(classifyAutomation(bundle({ ...crawlerEnv, auto: ['webdriver'] }), { userAgent: LINUX_CHROME_150, device: 'desktop' }).cohort, 'bot', 'navigator.webdriver 为 true 就是自动化')
+  assert.equal(classifyAutomation(bundle({ ...crawlerEnv, cores: 8 }), { userAgent: LINUX_CHROME_150.replace('Chrome/', 'HeadlessChrome/'), device: 'desktop' }).cohort, 'bot', '无头 Chrome 的 UA')
+  assert.equal(classifyAutomation(bundle({ ...crawlerEnv, cores: 8 }), { userAgent: 'Mozilla/5.0 (Linux; Android 11; moto g power (2022)) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Mobile Safari/537.36 Chrome-Lighthouse', device: 'mobile' }).cohort, 'bot', 'PageSpeed / Lighthouse')
+  assert.equal(classifyAutomation(bundle({ ...crawlerEnv, cores: 16, hiddenMs: 0, visible: true }), { userAgent: LINUX_CHROME_150, device: 'desktop' }).cohort, '', '普通桌面不算')
+  assert.equal(classifyAutomation(bundle({ ...crawlerEnv, cores: 128 }), { userAgent: 'Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 Chrome/97.0 Mobile Safari/537.36', device: 'mobile' }).cohort, '', '核数规则只看桌面')
+  // #1201：Chrome 97 / Android 15 / 4G / 中国，是真实玩家
+  const android = bundle({ mem: 4, cores: 8, net: { type: '4g', downlink: 10, rtt: 100, saveData: false }, screen: '393x873@2.75', touch: 5, lang: 'zh-CN', online: true, hiddenMs: 0, visible: true })
+  assert.equal(classifyAutomation(android, { userAgent: 'Mozilla/5.0 (Linux; Android 15; V2309A) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/97.0.4692.98 Mobile Safari/537.36', device: 'mobile' }).cohort, '')
+  assert.deepEqual(bundle({ ...crawlerEnv, auto: ['webdriver', 'no-outer', 'evil<script>', 'webdriver'] }).env.auto, ['webdriver', 'no-outer'], '自动化特征只收白名单、去重')
+  assert.deepEqual(bundle(crawlerEnv).env.auto, [], '旧前端不发也没关系')
+
+  // 刷新结论：只收白名单字段
+  const recovered = bundle(crawlerEnv, { recovery: { outcome: 'recovered', via: 'reload', afterMs: 2345.6, previous: 'x https://evil.example/a?token=1', junk: 1 } })
+  assert.deepEqual(recovered.recovery, { outcome: 'recovered', via: 'reload', afterMs: 2346, previous: 'x evil.example/a' })
+  assert.equal(bundle(crawlerEnv, { recovery: { outcome: 'whatever' } }).recovery, undefined)
+  // 服务端判的来源读回历史数据时保留（入库时由 recordStartupDiagnostics 重算覆盖）
+  assert.deepEqual(bundle(crawlerEnv, { automation: { cohort: 'suspect', signals: ['automation.server_cpu'] } }).automation, { cohort: 'suspect', signals: ['automation.server_cpu'] })
+  assert.equal(bundle(crawlerEnv, { automation: { cohort: 'admin' } }).automation, undefined)
+
+  // 归组：普通访客的特征和以前一样；自动化、刷新后未确认、刷新后又坏各成一组
+  const withDiagnosis = (d) => ({ ...d, diagnosis: diagnoseStartupFailure({ event: 'failed', runtime: 'page', detail: lazyReason, diagnostics: d }) })
+  const plainSig = errorSignature({ event: 'failed', runtime: 'page', detail: lazyReason, diagnostics: withDiagnosis(bundle(crawlerEnv)) })
+  const suspectSig = errorSignature({ event: 'failed', runtime: 'page', detail: lazyReason, diagnostics: withDiagnosis({ ...bundle(crawlerEnv), automation: { cohort: 'suspect', signals: [] } }) })
+  const againSig = errorSignature({ event: 'failed', runtime: 'page', detail: lazyReason, diagnostics: withDiagnosis({ ...bundle(crawlerEnv), recovery: { outcome: 'failed_again', via: 'reload', afterMs: 1 } }) })
+  const unconfirmedSig = errorSignature({ event: 'failed', runtime: 'page', detail: lazyReason, diagnostics: withDiagnosis({ ...bundle(crawlerEnv), recovery: { outcome: 'unconfirmed', via: 'reload', afterMs: 1 } }) })
+  const recoveredSig = errorSignature({ event: 'recovered', runtime: 'page', detail: lazyReason, diagnostics: withDiagnosis({ ...bundle(crawlerEnv), recovery: { outcome: 'recovered', via: 'reload', afterMs: 1 } }) })
+  assert.equal(plainSig.text, 'failed · page · 页面懒加载模块导入失败')
+  assert.equal(new Set([plainSig, suspectSig, againSig, unconfirmedSig, recoveredSig].map((x) => x.signature)).size, 5, '五种现场五个组')
+  assert.equal(suspectSig.text, 'failed · page · 页面懒加载模块导入失败 · 疑似自动化')
+  assert.equal(againSig.text, 'failed · page · 页面懒加载模块导入失败 · 自动刷新后再次失败')
+  assert.equal(recoveredSig.text, 'recovered · page · 页面懒加载模块导入失败', 'recovered 本身就是事件名，不再重复')
+  assert.equal(
+    errorSignature({ event: 'failed', runtime: 'page', detail: lazyReason, diagnostics: withDiagnosis({ ...bundle(crawlerEnv), automation: { cohort: '', signals: [] } }) }).signature,
+    plainSig.signature,
+    '普通访客显式带空来源也是同一组（历史分组不变）',
+  )
+
+  // 叫不叫人：只有普通访客、确实没恢复的才报警 / 发飞书 / 让 AI 分诊
+  assert.equal(needsAttention('failed', bundle(crawlerEnv)), true)
+  assert.equal(needsAttention('failed', { ...bundle(crawlerEnv), automation: { cohort: 'suspect', signals: [] } }), false)
+  assert.equal(needsAttention('failed', { ...bundle(crawlerEnv), automation: { cohort: 'bot', signals: [] } }), false)
+  assert.equal(needsAttention('recovered', bundle(crawlerEnv)), false)
+  assert.equal(needsAttention('failed', { ...bundle(crawlerEnv), recovery: { outcome: 'unconfirmed', via: 'reload', afterMs: 1 } }), false)
+  assert.equal(needsAttention('failed', { ...bundle(crawlerEnv), recovery: { outcome: 'failed_again', via: 'reload', afterMs: 1 } }), true, '刷新后又坏是真故障')
+
+  // 后台默认不列噪音，只数个数
+  const rows = [
+    { signature: 'a', event: 'failed', cohort: '' },
+    { signature: 'b', event: 'failed', cohort: 'suspect' },
+    { signature: 'c', event: 'recovered', cohort: '' },
+    { signature: 'd', event: 'failed', cohort: 'bot' },
+    { signature: 'e', event: 'timeout', cohort: 'weird' },
+  ]
+  const hiddenNoise = partitionNoise(rows)
+  assert.deepEqual(hiddenNoise.kept.map((r) => [r.signature, r.cohort]), [['a', ''], ['e', '']], '未知来源当普通访客')
+  assert.deepEqual(hiddenNoise.hidden, { recovered: 1, automation: 2 })
+  assert.equal(partitionNoise(rows, true).kept.length, 5)
+
+  // 漏斗收 recovered 事件
+  assert.equal(normalizeStartupEvent({ event: 'recovered', visitId: 'visit-12345678', attemptId: 'attempt-12345678', runtime: 'page' }).event, 'recovered')
+
+  // 接线
+  const server = read('server/src/startup-diagnostics.js')
+  assert.match(server, /diagnostics\.automation = classifyAutomation\(diagnostics, \{ userAgent, device \}\)/, '来源在服务端按原始 UA 当场判，UA 不落库')
+  assert.match(server, /const attention = inserted && !suppressSideEffects && needsAttention\(event\.event, diagnostics\)/)
+  assert.match(server, /captureLevel === 'summary'/, '摘要不包含详细环境字段')
+  assert.match(server, /summaryDiagnosticsFor\(event, summaryNote\)/, '缺包和历史回填生成安全摘要')
+  assert.match(server, /if \(attention\) void maybeAlertSignature\(signature\)/)
+  assert.match(server, /if \(attention && \(event\.event === 'failed' \|\| event\.event === 'timeout'\)\)/, '飞书只报普通访客的真失败')
+  assert.match(server, /if \(attention\) \{\s*void import\('\.\/ai-hotfix\.js'\)/, 'AI 分诊同理')
+  assert.match(server, /if \(event\.runtime !== 'page'\) delete diagnostics\.recovery/, '刷新结论只认兜底页的报告')
+  assert.match(read('server/src/routes/admin.js'), /diagnosticGroups\(req\.query\.days, req\.query\.q, req\.query\.event, req\.query\.noise\)/)
+  assert.match(read('server/scripts/migrate.mjs'), /ADD COLUMN `cohort` VARCHAR\(12\)/)
+  assert.match(read('server/schema-v2.sql'), /cohort VARCHAR\(12\)/)
+  assert.match(read('server/src/schema-check.js'), /table: 'game_startup_diagnostics', column: 'cohort'/)
+  const client = read('src/services/startupDiagnostics.ts')
+  assert.match(client, /navigator as Navigator & \{ webdriver\?: boolean \}\)\.webdriver === true\) hints\.push\('webdriver'\)/)
+  assert.match(client, /auto: automationHints\(\)/)
+  const page = read('src/admin/AdminDiagnostics.tsx')
+  assert.match(page, /if \(showNoise\) params\.set\('noise', 'show'\)/, '后台默认隐藏噪音，点了才显示')
+  assert.match(page, /\{ id: 'recovered', label: '已自动恢复' \}/)
+  assert.match(page, /仅有安全摘要/)
+  assert.match(read('server/scripts/backfill-startup-diagnostics.mjs'), /if \(!apply\)/, '历史摘要回填默认只预览')
 }
 
 /* ---------- 慢启动要看得出卡在下载还是启动 ---------- */
@@ -496,7 +705,7 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   assert.match(ejs, /void probeBrowserBitness\(\)/, '开局先发高熵查询')
   // 详情页渲染崩溃（兜底页）也进「错误诊断」：只在 /games/<slug>，旧 chunk 自救刷新的不报
   const boundary = read('src/components/AppErrorBoundary.tsx')
-  assert.match(boundary, /if \(!recoverBrokenAsset\(error, info\)\) reportRenderCrash\(error, info\)/)
+  assert.match(boundary, /const previous = takeRecoveryForFailure\(\)\s*if \(!recoverBrokenAsset\(error, info, previous\)\) reportRenderCrash\(error, info, '', previous\)/)
   // 坏 chunk（缺具名导出 / 404）先核对修复再决定刷新还是上报，细节见 scripts/test-asset-repair.mjs
   assert.match(boundary, /event: 'failed',\s*runtime: 'page'/)
   assert.match(boundary, /games\\\/\(\[\^\/\?#\]\+\)/, '只在游戏详情页上报')
@@ -511,6 +720,32 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
     assert.match(read(`src/locales/${lang}.ts`), /ejsOutOfMemoryVendor: ['"][^\n]*\{browser\}/, `${lang} 有厂商浏览器提示`)
     assert.match(read(`src/locales/${lang}.ts`), /memoryCleanRetry: '/, `${lang} 有干净页面重开提示`)
   }
+}
+
+// React 更新循环（#185，2026-11-17 / 11-20 两份大陆现场）：摘要只留 160 字，以前全被 React 的套话占满、组件栈没进库
+{
+  const loopError = new Error('Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.')
+  loopError.stack = `${loopError.name}: ${loopError.message}\n    at f (https://8bitgo.com/assets/react-vendor-a.js:1:2)\n    at g (https://8bitgo.com/assets/react-vendor-a.js:1:3)\n    at h (https://8bitgo.com/assets/react-vendor-a.js:1:4)`
+  assert.equal(errorHead(loopError), 'Error: Minified React error #185')
+  assert.equal(isReactUpdateLoop(loopError), true)
+  assert.equal(isReactUpdateLoop(new Error('Maximum update depth exceeded. This can happen when…')), true, '开发版原文也认')
+  assert.equal(isReactUpdateLoop(new Error('Minified React error #418; visit https://react.dev/errors/418')), false, '水合不匹配不是更新循环')
+  assert.equal(isReactUpdateLoop(new TypeError('Failed to fetch dynamically imported module')), false)
+  assert.equal(errorHead(new Error('Minified React error #418; visit https://react.dev/errors/418?args[]=x for the full message')), 'Error: Minified React error #418', '套话被截断也能压掉')
+  assert.equal(errorHead(new TypeError('Failed to fetch dynamically imported module: https://x/a.js')), 'TypeError: Failed to fetch dynamically imported module: https://x/a.js', '其它错误原样保留')
+  assert.deepEqual(stackFrames(loopError, 2), ['at f (https://8bitgo.com/assets/react-vendor-a.js:1:2)', 'at g (https://8bitgo.com/assets/react-vendor-a.js:1:3)'])
+  const stack = '\n    at Bar (https://8bitgo.com/assets/GameDetailPage-a.js:1:1)\n    at Foo (https://8bitgo.com/assets/GameDetailPage-a.js:1:2)\n    at Suspense (<anonymous>)'
+  assert.equal(componentPath(stack, 2), 'at Bar (https://8bitgo.com/assets/GameDetailPage-a.js:1:1) < at Foo (https://8bitgo.com/assets/GameDetailPage-a.js:1:2)')
+  // 拼成兜底页报告的样子再过一遍服务端摘要清洗：组件名必须留在 160 字里
+  const summary = sanitizeStartupDetail([errorHead(loopError), `组件：${componentPath(stack, 8)}`].join('\n'))
+  assert.match(summary, /^Error: Minified React error #185 组件：at Bar \(\[URL\] < at Foo/, '组件栈进了 160 字摘要')
+  assert.equal(diagnoseStartupFailure({ event: 'failed', runtime: 'page', platform: '', detail: summary, diagnostics: null }).code, 'react_update_loop', '服务端照旧归成更新循环')
+
+  const boundary = read('src/components/AppErrorBoundary.tsx')
+  assert.match(boundary, /const loop = isReactUpdateLoop\(error\)[\s\S]{0,400}\? \[errorHead\(error\), component, note, \.\.\.stackFrames\(error, 2\)\]/, '更新循环：组件栈排在调用栈前面')
+  assert.match(boundary, /if \(isReactUpdateLoop\(error\)\) \{\s*this\.retryUpdateLoop\(error, info, takeRecoveryForFailure\(\)\)\s*return/, '更新循环先上报再原地重挂')
+  assert.match(boundary, /if \(updateLoopRemounted\) \{\s*reportRenderCrash\(error, info, '原地重新挂载一次后再次出现更新循环', previous\)\s*return/, '每页只重挂一次，第二次停在兜底页')
+  assert.match(boundary, /updateLoopRemounted = true\s*reportRenderCrash\(error, info, '页面更新循环：已原地重新挂载一次', previous\)\s*window\.setTimeout\(\(\) => this\.setState\(\{ failed: false, detail: '' \}\), 0\)/)
 }
 
 console.log('✔ 启动诊断包：脱敏与白名单、UA 粗粒度、错误归组、前端采集、复制给 AI、PSP 现场、接线')

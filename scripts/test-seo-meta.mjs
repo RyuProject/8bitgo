@@ -259,7 +259,10 @@ check('VideoGame 结构化数据分别声明页面 canonical 语言与可直接�
   assert.match(seo, /inLanguage\?: readonly string\[\]/, 'VideoGame 输入缺少 ROM 语言字段')
   assert.match(seo, /schema\.inLanguage = \[\.\.\.new Set\(g\.inLanguage/, 'ROM 语言没有写入 VideoGame JSON-LD')
   assert.match(detail, /inLanguage: romLangs/, '详情页没有把真实绑定的语言槽传给 JSON-LD')
-  assert.match(detail, /romLanguageLabel/, '页面没有显示完整的 ROM 语言名')
+  // 2026-11 新版详情页把「支持语言」那一格挪进了 GameDetailSections（视觉是 CN,EN 短码，完整名以 sr-only 写进 HTML）
+  const sections = code('src/components/game/GameDetailSections.tsx')
+  assert.match(sections, /romLanguageLabel/, '页面没有显示完整的 ROM 语言名')
+  assert.match(sections, /<span className="sr-only">\{langFull\}<\/span>/, '完整语言名没有写进 HTML（只剩短码，爬虫和读屏只读到 CN / JP）')
 })
 
 check('关于页与法律页只声明简中、繁中、英文三份真实长正文', () => {
@@ -294,7 +297,9 @@ check('详情页的 title 带平台缩写，H1 仍保持干净的游戏名', () 
   const i18n = code('src/services/i18nData.ts')
   assert.match(page, /gameSeoTitle\(seoTitle, seoPlatform\?\.shortName \?\? '', lang\)/, '没有用平台缩写生成搜索标题')
   assert.match(page, /title: fmt\(t\.game\.docTitle, \{ title: seoDocumentTitle \}\)/, 'meta title 没有使用唯一标题')
-  assert.match(page, /<h1[^>]*>\{seoTitle\}<\/h1>/, 'H1 不应被平台后缀污染')
+  // 详情页已将标题内联进主内容：H1 和可读游戏名用 seoTitle，平台缩写只进入文档标题。
+  assert.match(page, /<h1[^>]*>\{seoTitle\}<\/h1>/, 'H1 应使用干净的游戏名，而不是带平台后缀的文档标题')
+  assert.match(page, /title: fmt\(t\.game\.docTitle, \{ title: seoDocumentTitle \}\)/, '页面 H1 不应复用 seoDocumentTitle')
   assert.match(i18n, /`\$\{cleanTitle\}（\$\{cleanPlatform\}）`/, 'CJK 标题没有使用全角括号')
   assert.match(i18n, /`\$\{cleanTitle\} \(\$\{cleanPlatform\}\)`/, '拉丁语言标题没有使用平台后缀')
 })

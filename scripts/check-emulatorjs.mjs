@@ -113,17 +113,16 @@ for (const [needle, what, why] of [
   ['Could not load previous settings",t)}if(this.config.defaultOptions){', '首次开局带核心默认选项', '只在 retro_load_game 读取的核心选项（FBNeo 采样率 / 色深）对没保存过设置的玩家永不生效'],
   ['try{for(;;){__8bgArm();const{done:s,value:o}=await e.read()', '下载包体 20 秒无数据中止', '跨洲线路丢了流结尾时会永远停在「下载游戏核心 100%」'],
   ['Z=__8bgTarget||new Uint8Array(i);if(!__8bgTarget){let __8bgOffset=0;for(const __8bgChunk of n){Z.set(__8bgChunk,__8bgOffset)', '核心响应直接拼接 Uint8Array', '避免 Blob 回读，并让已知长度的核心只分配一次最终缓冲区'],
-  ['__8bgResumeState.total<=67108864?new Uint8Array(__8bgResumeState.total):null', 'Range 总长不能直接控制巨型分配', '错误代理给出异常 Content-Range 时先按实际包体收取，不能按头部申请超大 WASM 缓冲区'],
-  ['const DB_NAME = \'8bitgo-ejs-core-resume-v1\'', '核心 Range 分片独立存储', '核心续传不可和 EmulatorJS 缓存库、游戏 SRAM 或即时存档共用数据库'],
-  ['headers.set(\'Range\', `bytes=${start}-`)', '版本化核心启用 HTTP Range', '网络中断后只有服务器确认字节区间时才恢复，忽略 Range 时完整重下'],
-  ['!entry.etag.startsWith(\'W/\')', '续传只接受强 ETag', '弱 ETag 不能证明字节逐一相同，不能拿它拼接旧分片'],
+  ["const DB_NAME = '8bitgo-ejs-core-resume-v1'", '核心分片续传独立存储', '续传数据不可与 EmulatorJS 缓存库、游戏 SRAM 或即时存档共用数据库'],
+  ["headers.set('Range', `bytes=${start}-`)", '版本化核心启用 HTTP Range', '网络中断后只有服务器确认字节区间时才恢复，忽略 Range 时必须完整重下'],
+  ["!entry.etag.startsWith('W/')", '续传只接受强 ETag', '弱 ETag 不能证明字节逐一相同，不能拿它拼接旧分片'],
   ['range.start === offset && range.end === state.total - 1', '续传响应核对真实区间', '代理错误、错偏移或短区间必须完整重试，不能把两代核心拼在一起'],
   ['__8bgTarget.set(__8bgXhrBytes,i)', 'XHR 分段恢复与 Fetch 共用核心缓冲区', '已收字节不再复制成 chunk 数组后再复制到第二份完整核心'],
-  ['response stream read failed', '核心响应阶段诊断', '如果浏览器仍在读 HTTP 流时失败，诊断包必须保留原始异常对象'],
-  ['改用 XHR arraybuffer 重新下载', '核心响应流失败或失速改走 XHR', 'Fetch 流读取异常或 20 秒无进度时先换读取 API 重取，避免直接切线路重开'],
   ['f.__8bgStalled=!0', '核心下载失速标记', 'Fetch 自己的 20 秒空闲中止必须与外部取消区分，才可安全改走完整 XHR 重取'],
   ['f.signal.aborted&&!f.__8bgStalled', '失速后允许 XHR 恢复', 'Fetch 空闲计时刚中止核心下载时，不得把这次可恢复失速直接交给播放器换线路'],
   ["const onVisibility = () => {\n        if (typeof document !== 'undefined' && document.visibilityState === 'hidden') clearIdle()", 'XHR 后台空闲计时暂停', '移动端页面后台冻结期间不应消耗下载时限，回来后要重新给足 20 秒'],
+  ['response stream read failed', '核心响应阶段诊断', '如果浏览器仍在读 HTTP 流时失败，诊断包必须保留原始异常对象'],
+  ['改用 XHR arraybuffer 重新下载', '核心响应流失败或失速改走 XHR', 'Fetch 流读取异常或 20 秒无进度时先换读取 API 重取，避免直接切线路重开'],
   ['XHR fallback incomplete response: HTTP ', 'XHR 兜底完整性校验', 'Android 16 大陆现场的 XHR 以 HTTP 200 返回 121KB 截断核心，必须在解压和写缓存前拒收'],
   ['return Promise.race([this.storageCache.put(n)', '引擎缓存读写有时限', 'IndexedDB 卡住时核心下完也交不出去，停在 100%'],
   ['n.onblocked=()=>e(),n.onsuccess=()=>{try{let i=n.result.transaction(', '引擎缓存读写有时限', '表不存在 / 库正在关闭时 transaction() 同步抛错，Promise 永远不 settle'],
@@ -170,6 +169,35 @@ for (const [needle, what, why] of [
     new vm.Script(loader, { filename: 'loader.js' })
   } catch (error) {
     fail(`loader.js 不是合法的经典脚本（${error?.name}: ${error?.message}），所有 EmulatorJS 平台都起不来`, '检查最近对 public/emulatorjs/loader.js 的改动')
+  }
+  /*
+    loader.js 的名字不能进页面全局（2026-11-19，诊断包 #1331 / #1334，Chrome 111《1942》）：页面里先有一个
+    全局 `var debug`（推测是扩展注入），旧 loader 顶层的 `const debug` 当场 SyntaxError，整份不执行，
+    引擎卡两分钟。这里先声明一批同名全局，再真跑一遍 loader 的同步部分（异步的 import / 样式加载都失败也无所谓）。
+  */
+  {
+    const ctx = { console: { log() {}, warn() {}, error() {}, info() {} }, Intl, URL, setTimeout, clearTimeout, Promise }
+    ctx.window = ctx
+    ctx.EJS_pathtodata = '/emulatorjs/'
+    ctx.document = {
+      baseURI: 'https://8bitgo.com/',
+      currentScript: { src: 'https://8bitgo.com/emulatorjs/loader.js' },
+      createElement: () => ({ setAttribute() {}, style: {} }),
+      head: { appendChild(el) { setTimeout(() => el.onerror && el.onerror(new Error('stub')), 0) } },
+    }
+    vm.createContext(ctx)
+    vm.runInContext(
+      'var debug = true; var config = {}; var scriptPath = ""; function folderPath() {} function loadScript() {} function resolvePath() {}',
+      ctx,
+    )
+    try {
+      vm.runInContext(loader, ctx, { filename: 'loader.js' })
+    } catch (error) {
+      fail(
+        `页面里已有同名全局时 loader.js 跑不起来（${error?.name}: ${error?.message}）：扩展注入一个 var debug 就能让所有 EmulatorJS 平台卡死`,
+        '把 loader.js 的顶层声明包进立即执行函数（见文件开头的说明），别再往全局写 const / let / function',
+      )
+    }
   }
   // 上游 loader 只在 debug 时打印 import 的真实异常；换上游 loader 时这一处很容易被冲掉
   if (!loader.includes('console.error("[EJS] import " + file + " failed: "')) {

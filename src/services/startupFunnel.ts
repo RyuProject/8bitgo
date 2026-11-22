@@ -15,6 +15,8 @@ export type StartupEventName =
   | 'readiness_unobservable'
   | 'failed'
   | 'timeout'
+  /** 详情页崩溃、自动刷新后好了（services/pageRecovery.ts）：漏斗不算失败，诊断页单独一组 */
+  | 'recovered'
 
 export interface StartupEvent {
   visitId: string
@@ -43,7 +45,7 @@ export function newStartupId(): string {
 
 const sent = new Set<string>()
 /** 出问题的这几种才附诊断包；正常开局不多发任何东西 */
-const DIAGNOSTIC_EVENTS = new Set<StartupEventName>(['failed', 'timeout', 'slow_start'])
+const DIAGNOSTIC_EVENTS = new Set<StartupEventName>(['failed', 'timeout', 'slow_start', 'recovered'])
 
 /**
  * 漏斗永远不能卡住游戏本身。客户端只做会话内去重并异步上报；网络失败不弹提示，

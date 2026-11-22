@@ -93,6 +93,8 @@ assert.equal(failDb.settings.has('diag.lark.fedcba9876543210'), false, '发送�
 
 const { readFileSync } = await import('node:fs')
 const src = readFileSync(new URL('../src/startup-diagnostics.js', import.meta.url), 'utf8')
-assert.match(src, /if \(inserted && \(event\.event === 'failed' \|\| event\.event === 'timeout'\)\)/)
+// 实时入库且不是自动化客户端 / 已自动恢复 / 刷新后未确认才发通知；历史摘要回填必须静默。
+assert.match(src, /const attention = inserted && !suppressSideEffects && needsAttention\(event\.event, diagnostics\)/)
+assert.match(src, /if \(attention && \(event\.event === 'failed' \|\| event\.event === 'timeout'\)\)/)
 assert.match(src, /void notifyLarkFailure\(/)
 console.log('✔ 加载失败诊断 Lark 通知：新失败触发、慢启动忽略、消息脱敏、冷却限频、失败不阻塞')

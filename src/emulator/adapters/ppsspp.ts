@@ -26,6 +26,8 @@ const HOST_TIMEOUT_MS = 120_000
 // 大型 CHD 的冷启动实测可超过两分钟；启动完成由核心的 Booted 信号判定，五分钟只负责兜住
 // 真正卡死的会话，不能再让一个与镜像大小无关的短计时器误杀仍在正常 Range 读盘的游戏。
 const MOUNT_TIMEOUT_MS = 300_000
+/** 等 mount 期间给播放器启动看门狗报活的间隔，必须远小于它的 120 秒 */
+const MOUNT_HEARTBEAT_MS = 15_000
 const RANGE_PROBE_TIMEOUT_MS = 20_000
 /** 桥（host.js）写进 #status 的两句文案。改桥文案时 check-ppsspp 会提醒同步这里 */
 const CORE_PROGRESS_TEXT = /正在下载 PSP 核心资源…\s*(\d{1,3})%/
@@ -369,11 +371,24 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       // 存档包必须带站内游戏身份，不能只信 PPSSPP 盘内文件名：同一游戏的地区版/汉化版
       // 可能共享标题，读错状态的结果通常不是明确报错，而是几分钟后随机崩溃。
       const stateId = options.gameSlug || `local:${discNameOf(options.game, options.gameName)}`
-      if (game instanceof File) await request('mount-local', { file: game, stateId })
-      else {
-        const mounted = request('mount-remote', { remote: game, stateId })
-        if (streamDiscSize) watchCoreDownload()
-        await mounted
+      /*
+        mount 请求由适配器自己按 MOUNT_TIMEOUT_MS（300 秒）判死：核心下完后还要编译、开机、按需读 CHD，
+        读盘进度来自 pthread 里的回调，部分浏览器晚到或根本不到（见 AGENTS §2.32.2）。外层看门狗却是
+        「连续 120 秒没有活动」，2026-11-19《初音未来》（#1791）就是这样被记成 timeout 的。
+        等 mount 期间按前台给看门狗报活；真的挂死仍由 300 秒的请求超时报出。
+      */
+      const mountHeartbeat = window.setInterval(() => {
+        if (!destroyed && !fatalReported && !ready && document.visibilityState !== 'hidden') options.onStartupActivity?.()
+      }, MOUNT_HEARTBEAT_MS)
+      try {
+        if (game instanceof File) await request('mount-local', { file: game, stateId })
+        else {
+          const mounted = request('mount-remote', { remote: game, stateId })
+          if (streamDiscSize) watchCoreDownload()
+          await mounted
+        }
+      } finally {
+        window.clearInterval(mountHeartbeat)
       }
       stopCoreWatch()
       if (destroyed || fatalReported) return

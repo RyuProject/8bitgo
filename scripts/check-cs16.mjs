@@ -155,7 +155,9 @@ if (!index.includes('rel="preconnect" href="https://assets.8bitgo.com"') ||
   fail('启动页缺少资源域预连接、可访问进度条或桌面键鼠提示')
 }
 if (!detailSource.includes("game?.slug === 'counter-strike-16'") ||
-    !detailSource.includes("hasEmbeddedCs16Rooms ? '1–16'")) {
+    !/const effectiveMultiplayer = Boolean\(game\?\.multiplayer\) \|\| hasEmbeddedCs16Rooms/.test(detailSource) ||
+    !/multiplayer: effectiveMultiplayer/.test(detailSource) ||
+    !/hasEmbeddedCs16Rooms \? '1–16' : formatPlayers\(game\.players\)/.test(detailSource)) {
   fail('详情页仍会把自带 16 人房间的 CS1.6 标成单人游戏')
 }
 if (zhHansSource.includes('多数模拟器都支持即时存档') || englishSource.includes('Most emulators on 8BitGo support save states') ||
@@ -421,6 +423,8 @@ try {
     '--platform=browser',
     '--target=es2022',
     '--loader:.wasm=binary',
+    // node_modules 在本地 worktree 可能是符号链接；保留它才能避免 esbuild 把开发机绝对路径写进产物注释。
+    '--preserve-symlinks',
     `--outfile=${generated}`,
   ], { stdio: 'pipe' })
   if (!readFileSync(generated).equals(readFileSync(join(publicDir, 'cs16.bundle.js')))) {

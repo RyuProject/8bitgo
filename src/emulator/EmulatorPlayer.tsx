@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react'
-import { importWithRetry, lazyChunkFile, tagLazyFailure } from '@/services/moduleLinkRecovery'
+import { importWithRetry, lazyChunkFile, onOriginAssetsPage, originAssetsUrl, tagLazyFailure } from '@/services/moduleLinkRecovery'
+import { isRuntimeModuleTimeout } from './moduleLoadDeadline'
 import { useNavigate } from 'react-router-dom'
 import type { ArcadeButtonCount, DosBackend, DosWindowsVersion, FlashControls, Game, GenreId, Platform, PlatformId } from '@/types'
 import { platformMap } from '@/data/platforms'
@@ -100,7 +101,7 @@ import { recordPlay } from '@/services/store'
 import { newStartupId, recordStartupEvent, type StartupEventName } from '@/services/startupFunnel'
 import { diagLog, registerDiagnosticSnapshot } from '@/services/startupDiagnostics'
 import { createStartupProgressTrace } from './startupProgressTrace'
-import { sameRuntimeCaps, sameRuntimeGeometry, sameRuntimeResolution, sameRuntimeScreenLayout } from './playerRuntimeState'
+import { sameLiveControls, sameRuntimeCaps, sameRuntimeGeometry, sameRuntimeScreenLayout } from './playerRuntimeState'
 import { recordRecent } from '@/services/auth'
 import { openAuthModal } from '@/services/authModal'
 import { onMatchRequest } from '@/services/matchRequest'
@@ -1021,6 +1022,18 @@ export function EmulatorPlayer({
    * 把开关交上来（chromeless），按钮由 LiveChatBar 画。
    */
   const [liveCtl, setLiveCtl] = useState<LiveControlsHandle | null>(null)
+  /** 内容没变就保留旧引用：LiveControls 的 effect 每轮都会交一份新对象上来（React #185 的那条循环，见 sameLiveControls） */
+  const acceptLiveCtl = useCallback((next: LiveControlsHandle | null) => {
+    setLiveCtl((current) => sameLiveControls(current, next) ? current : next)
+  }, [])
+  /**
+   * 开局前在详情页选择「这一局不公开」。只保留在当前播放器实例中，换游戏会重置；
+   * 开局时作为 LiveControls 初值交下去，避免公开画面先上传再收到隐私选择。
+   */
+  const [liveOptOut, setLiveOptOut] = useState(false)
+  useEffect(() => {
+    if (liveCtl) setLiveOptOut(liveCtl.phase === 'hidden')
+  }, [liveCtl])
   /* ---------------- 观众侧的「上场当 2P」（见 coopSeat.ts） ---------------- */
   /** 主播这一局给不给 2P 位。**由主播说**（通道一开他会发 hello），不能靠猜 */
   const [coopOffered, setCoopOffered] = useState(false)
@@ -2094,13 +2107,11 @@ export function EmulatorPlayer({
       core: session.coreOverride ?? coreRef.current,
       onCoreResolved: (resolvedCore, saveSuffix) => {
         if (!isCurrent()) return
-        setSession((current) => {
-          if (current?.id !== session.id) return current
-          const saveSlug = saveSuffix && current.saveSlug ? fbneoWofcnSaveSlug(current.saveSlug) : current.saveSlug
-          // 某些 ROM 识别可能在核心启动的多个阶段重复回报；值没变时必须返回原对象，否则会无意义地重渲染。
-          if (sameRuntimeResolution(current, resolvedCore, saveSlug)) return current
-          return { ...current, coreOverride: resolvedCore, saveSlug }
-        })
+        setSession((current) => current?.id === session.id ? {
+          ...current,
+          coreOverride: resolvedCore,
+          saveSlug: saveSuffix && current.saveSlug ? fbneoWofcnSaveSlug(current.saveSlug) : current.saveSlug,
+        } : current)
       },
       forceRomRefresh: session.forceRomRefresh,
       romRefreshed: session.romRefreshed,
@@ -2480,7 +2491,12 @@ export function EmulatorPlayer({
         }
         // 备用核心也崩溃、或联机会话不能擅自重建时，明确结束失败状态，不能假装还在玩。
         if (debugRef.current) setEngineLines(handle?.engineLog?.() ?? [])
-        reportStartupFailure(reason)
+        /*
+          已经出过画面再崩（2026-11-21《黄金太阳》mGBA，开局 96 秒出画面、913 秒报 Aborted(undefined)）不是启动失败：
+          原样上报会和「核心起不来」混成同一组，AI 分诊还可能据此给能正常开局的游戏换核心。保留上报（中途崩溃也要看得见），
+          但在原文前标明「运行中崩溃」，后台按特征自然分开。
+        */
+        reportStartupFailure(ready ? `运行中崩溃（已出画面）：${reason}` : reason)
         endSession()
         setError(session.platform === 'nds'
           ? fmt(t.player.ndsCoreFailed, { reason })
@@ -2673,6 +2689,19 @@ export function EmulatorPlayer({
         window.clearTimeout(playableTimer)
         const message = error instanceof Error ? error.message : String(error)
         diagLog('stage', 'error', `${session.runtime.id} 运行时模块加载或挂载失败`, error)
+        /*
+          运行时模块本身在大陆加速入口上超时（2026-11-21 #2756 / #2758）：chunk 按相对引用方解析，
+          同一个文档里重试永远还走 EdgeOne，只有带 __assets=origin 整页重载才换得掉线路（§2.39）。
+          已经是主站资源那一份就不再跳，照常报错，不会循环。
+        */
+        if (isRuntimeModuleTimeout(error) && (error as { assetsOnCnEdge?: boolean }).assetsOnCnEdge && !onOriginAssetsPage() && typeof window !== 'undefined') {
+          reportStartupFailure(`${message}（改用主站资源整页重开）`)
+          setError(null)
+          setNotice(t.runtime.originAssetsRetry)
+          setStatus('loading')
+          window.setTimeout(() => window.location.replace(originAssetsUrl(window.location)), 300)
+          return
+        }
         reportStartupFailure(message)
         setError(message)
         setStatus('error')
@@ -3806,6 +3835,16 @@ export function EmulatorPlayer({
   const chatBarOn = liveChatOn || Boolean(liveCtl) || Boolean(matchCtl) || Boolean(coopCtl)
   const pageStandby = pagePresentation && status !== 'loading' && status !== 'running'
   const pageBarOn = pageStandby && (liveEnabled() || Boolean(onPageMatchRequest))
+  const standbyLive = pageStandby && liveEnabled() && Boolean(gameSlug) && !joining && !liveInvite && !watch && !online && supported &&
+    pageRuntime?.id !== 'html5'
+    ? {
+        on: !liveOptOut,
+        label: liveOptOut ? t.player.tools.liveHidden : t.player.tools.autoLivePending,
+        hint: liveOptOut ? t.player.tools.autoLiveOffHint : t.player.tools.autoLiveOnHint,
+        toggle: () => setLiveOptOut((value) => !value),
+        standby: true,
+      }
+    : null
   /*
     详情页那个 3:1 的矮舞台只给「还没点开始」的那一屏。一点开始（loading 起）就退回平台原本的
     舞台比例：运行中还压成 3:1 的话，1440 宽的屏上红白机只剩约 504×378；
@@ -5362,7 +5401,8 @@ export function EmulatorPlayer({
             */
             nativeGeometry={geometry}
             chromeless
-            onControls={setLiveCtl}
+            initialHidden={liveOptOut}
+            onControls={acceptLiveCtl}
             onChat={chat.push}
             onSession={setLiveSession}
           />
@@ -5597,9 +5637,7 @@ export function EmulatorPlayer({
         */
         onSend={chatSend}
         pagePresentation={pagePresentation}
-        standbyLive={pageStandby && liveEnabled()
-          ? { label: t.player.tools.autoLivePending, hint: t.player.tools.autoLivePending }
-          : undefined}
+        standbyLive={standbyLive ?? undefined}
         standbyMatch={pageStandby && onPageMatchRequest
           ? { label: t.player.match, onClick: onPageMatchRequest }
           : undefined}

@@ -64,6 +64,11 @@ globalThis.__fakeDb = {
     if (q.startsWith('SELECT COUNT(*) AS n FROM collections WHERE hidden = 0')) {
       return [{ n: collections.filter((c) => !c.hidden).length }]
     }
+    // 详情页「推荐合集」：按游戏反查公开合集的总数
+    if (q.startsWith('SELECT COUNT(*) AS n FROM collections c JOIN collection_items ci ON ci.collection_id = c.id WHERE c.hidden = 0 AND ci.game_id = ?')) {
+      const gid = Number(params[0])
+      return [{ n: collections.filter((c) => !c.hidden && items.some((i) => i.collection_id === c.id && i.game_id === gid)).length }]
+    }
     if (q.startsWith('SELECT COUNT(*) AS n FROM collections WHERE user_id')) {
       return [{ n: collections.filter((c) => c.user_id === params[0]).length }]
     }
@@ -73,6 +78,13 @@ globalThis.__fakeDb = {
     // 列表 / 详情：合集 JOIN 作者
     if (q.startsWith('SELECT c.*, u.nickname, u.avatar FROM collections c')) {
       let rows = collections
+      if (q.includes('ci.game_id = ?')) {
+        // 只在 SQL 真带了 hidden 条件时才过滤：漏写 hidden 的话这里会把下架合集也吐出去，下面的断言就会红
+        const gid = Number(params[0])
+        rows = rows.filter((c) => items.some((i) => i.collection_id === c.id && i.game_id === gid))
+        if (q.includes('WHERE c.hidden = 0')) rows = rows.filter((c) => !c.hidden)
+        return rows.map((c) => ({ ...c, nickname: users[c.user_id]?.nickname, avatar: users[c.user_id]?.avatar }))
+      }
       if (q.includes('WHERE c.id = ?')) rows = rows.filter((c) => c.id === Number(params[0]))
       else if (q.includes('WHERE c.user_id = ?')) rows = rows.filter((c) => c.user_id === params[0])
       else if (q.includes('WHERE c.hidden = 0')) rows = rows.filter((c) => !c.hidden)
@@ -383,6 +395,21 @@ process.on('exit', () => {
   ok((await call('GET', '/1', { as: AUTHOR })).status === 200, '作者本人仍看得到自己的')
   ok((await call('GET', '/1', { as: ADMIN })).status === 200, '有审核权的人看得到')
   ok((await (await call('GET', '/')).json()).items.length === 0, '公开列表里不出现')
+  ok((await (await call('GET', '/?game=metal-slug')).json()).items.length === 0, '按游戏反查时下架合集同样不出现')
+
+  console.log('\n── 详情页「推荐合集」：按游戏反查 ──')
+  reset()
+  {
+    const r = await (await call('GET', '/?game=metal-slug')).json()
+    ok(r.total === 1 && r.items.length === 1 && r.items[0].id === 1, '收录了这款游戏的公开合集能查到')
+    ok(r.items[0].covers?.[0]?.slug === 'metal-slug' && !('mine' in r.items[0]), '形状和公开列表一致，游客不带 mine')
+  }
+  ok((await (await call('GET', '/?game=contra')).json()).total === 0, '没被任何合集收录的游戏回空列表')
+  ok((await (await call('GET', '/?game=no-such-game')).json()).items.length === 0, '不存在的游戏回空列表，不报错')
+  games[0].hidden = 1
+  ok((await (await call('GET', '/?game=metal-slug')).json()).items.length === 0, '下架游戏不能反查出收录它的合集')
+  reset()
+  ok((await (await call('GET', '/?game=metal-slug&page=99999')).json()).page === 20, '未认证入口的页码有上界')
 
   console.log('\n── 加游戏是幂等的 ──')
   reset()

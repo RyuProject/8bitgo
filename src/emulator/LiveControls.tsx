@@ -76,6 +76,15 @@ interface Props {
    */
   chromeless?: boolean
   /**
+   * 开局前玩家在详情页弹幕栏里就选了「不公开」（见 EmulatorPlayer 的 liveOptOut）。
+   *
+   * ⚠️ 只能作为 useState 的**初值**读：`on` 依赖 `!hidden`，初值是 true 时组件从第一帧起就不连信令、
+   * 不抓画面，一帧都不会推出去。若改成挂载后再 setHidden，第一轮 effect 已经开始连了 ——
+   * 那就是「选了不公开却先在大厅露了一下」的隐私事故（AGENTS.md §2.23.1 同一条理由）。
+   * 只影响这一局；新开一款游戏播放器整个重挂，自然回到默认开播。
+   */
+  initialHidden?: boolean
+  /**
    * 把开关和当前状态交出去，让别处（弹幕框）画那颗按钮。
    * 传 null = 现在没得可控（组件因为不满足开播条件而没挂）。
    */
@@ -244,6 +253,7 @@ const SEAT_WANT_TTL_MS = SEAT_TTL_MS
 export function LiveControls({ handle, gameName, gameSlug, platform, active = true, netplayRoomId = null, netplayToken = '', captureRef, className,
   nativeGeometry = null,
   chromeless = false,
+  initialHidden = false,
   onControls,
   onChat,
   onSession,
@@ -298,7 +308,8 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
     return () => handle?.setBackgroundPlaybackRequired?.(false)
   }, [handle, active, viewers])
   // 不公开只暂停当前这局；新开游戏必须重新默认开播，不能沿用旧浏览器里的隐私标记。
-  const [hidden, setHidden] = useState(false)
+  // initialHidden 是本局开局前在详情页选的那一下（同一局内的选择），不是持久化的标记。
+  const [hidden, setHidden] = useState(initialHidden)
   /**
    * 自动开播还在尝试。落定后无论成没成都置 false —— 界面靠它把「连接中…」和
    * 「未开播」分开。初值是 true：组件挂上来的那一刻尝试就已经开始了，
@@ -813,20 +824,30 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
     if (b && want) b.grantSeat(want)
   }, [])
   const coopDismiss = useCallback(() => setSeatWant(null), [])
-  const coopCtl: LiveControlsHandle['coop'] = coopReady
+  /*
+    ⚠️ 必须 useMemo。它在下面那个 effect 的依赖里，effect 会把整份开关交给父组件（setLiveCtl）。
+    以前这里每次渲染都是新对象：一旦「同屏双打的 Flash（森林冰火人这类 p2 键位）+ 正在直播」
+    让 coopReady 成立，就是 渲染 → effect → 父组件 setState → 再渲染 → 新对象 → effect …… 的死循环。
+    普通优先级下它只是空转烧 CPU；玩家一次点击 / 按键 / resize 让这轮渲染变成同步优先级后，
+    React 数到 50 层就抛 #185（Maximum update depth exceeded），整页落进兜底页。
+    2026-11-17《森林冰火人 4》、11-20 从 Flash 页切到《超级马里奥》（快照里还是 Ruffle 在跑）都是这条。
+  */
+  const seatWantName = seatWant?.name
+  const hasSeatWant = Boolean(seatWant)
+  const coopCtl = useMemo<LiveControlsHandle['coop']>(() => coopReady
     ? {
         on: Boolean(seatOf),
-        label: seatOf ? t.player.coopSeated : seatWant ? t.player.coopLet : t.player.coop,
-        hint: seatOf ? t.player.coopKickHint : seatWant ? t.player.coopLetHint : t.player.coopIdleHint,
+        label: seatOf ? t.player.coopSeated : hasSeatWant ? t.player.coopLet : t.player.coop,
+        hint: seatOf ? t.player.coopKickHint : hasSeatWant ? t.player.coopLetHint : t.player.coopIdleHint,
         toggle: coopToggle,
         // 已经有人在场时不再提示新的请求：座位只有一个，先把当前这位请下去
-        pending: Boolean(seatWant) && !seatOf,
-        who: seatWant?.name,
+        pending: hasSeatWant && !seatOf,
+        who: seatWantName,
         accept: coopAccept,
         dismiss: coopDismiss,
         nudge: coopNudge,
       }
-    : null
+    : null, [coopReady, seatOf, hasSeatWant, seatWantName, coopNudge, coopToggle, coopAccept, coopDismiss, t.player])
 
   useEffect(() => {
     if (!onControls) return
