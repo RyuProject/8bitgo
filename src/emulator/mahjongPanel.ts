@@ -19,7 +19,7 @@
  *   V → 投币   和本站其它街机的投币键一致
  *   P → 碰     原生是左 Alt：Windows 上单按 Alt 会把焦点交给浏览器菜单；P 又正好是 Pon / Peng
  *   S → 得分   原生是右 Ctrl，Mac 和多数笔记本根本没有这颗键；S = Score
- * 别名在 RetroArch 之前换成原生键码再派发，MAME 看到的永远是原生那一颗。
+ * 所有按键都经按压桥派发：保留 MAME 原生键码，同时让极短的键盘点按也能被核心采到。
  */
 import { isMahjongPanelRomset } from '../../shared/mahjong-panel-sets.js'
 import { GP, startGamepadBridge, type GamepadBridge } from './gamepad'
@@ -85,7 +85,7 @@ export function mahjongKeyForCode(code: string): MahjongKey | null {
   return NATIVE_BY_CODE.get(code) ?? MAHJONG_KEY_ALIASES[code] ?? null
 }
 
-/** 这颗物理键是不是面板键的**原生**键位（是的话原样放行，不必换码重发） */
+/** 这颗物理键是不是面板键的**原生**键位（无需做别名换码，仍经过按压桥派发） */
 export function isNativeMahjongCode(code: string): boolean {
   return NATIVE_BY_CODE.has(code)
 }
@@ -138,10 +138,8 @@ interface InstallOptions {
 export function installMahjongKeyboard(parent: HTMLElement, win: Window, opts: InstallOptions = {}): MahjongKeyboard {
   const now = opts.now ?? (() => win.performance?.now?.() ?? Date.now())
   const synthetic = new WeakSet<Event>()
-  /** 每颗面板键被哪些来源按着（键盘别名 / 屏幕面板 / 手柄）—— 最后一个松手才真的松开 */
+  /** 每颗面板键被哪些来源按着（实体键盘 / 屏幕面板 / 手柄）—— 最后一个松手才真的松开 */
   const holders = new Map<MahjongKey, Set<string>>()
-  /** 玩家实际按着的原生键：失焦时浏览器不补 keyup，得替他松开，不然吃 / 碰会一直按着 */
-  const nativeHeld = new Set<string>()
   const downAt = new Map<MahjongKey, number>()
   const releaseTimers = new Map<MahjongKey, number>()
   let dead = false
@@ -213,11 +211,19 @@ export function installMahjongKeyboard(parent: HTMLElement, win: Window, opts: I
     }
     // 这些键在网页里各有默认行为：空格滚页、Backspace、Alt 唤出浏览器菜单
     e.preventDefault()
-    if (e.type === 'keypress') return
+    if (e.type === 'keypress') {
+      e.stopImmediatePropagation()
+      return
+    }
     if (isNativeMahjongCode(e.code)) {
-      if (e.type === 'keydown') nativeHeld.add(e.code)
-      else nativeHeld.delete(e.code)
-      return // 原样交给 RetroArch
+      /*
+        键位不改，但也不能把物理键盘原样透传：快速点按可能在 RetroArch 下一帧轮询前就松开，
+        A–N 选牌就会偶尔丢失。走同一个 holders / 最短按压桥，失焦时也能可靠补发松键。
+      */
+      e.stopImmediatePropagation()
+      if (e.repeat) return
+      press(key, e.type === 'keydown', `kb:${e.code}`)
+      return
     }
     // 别名：换成原生键码重发，原事件不让 MAME 看见（P 在 MAME 里是暂停）
     e.stopImmediatePropagation()
@@ -230,11 +236,6 @@ export function installMahjongKeyboard(parent: HTMLElement, win: Window, opts: I
       // 边遍历边删当前元素对 Set 是安全的（规范保证），不必先拷一份
       for (const source of set) if (source.startsWith('kb:')) press(key, false, source)
     }
-    for (const code of nativeHeld) {
-      const key = mahjongKeyForCode(code)
-      if (key) dispatch(key, false)
-    }
-    nativeHeld.clear()
   }
 
   const types = ['keydown', 'keyup', 'keypress'] as const

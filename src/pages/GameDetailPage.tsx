@@ -804,6 +804,7 @@ export function GameDetailPage() {
             {/* 操作说明 */}
             <section className="mt-8">
               <h2 className="text-lg font-bold">{t.game.controls}</h2>
+              {/* 通用 ROM 存在 game.rom，不在按语言拆分的 roms 表里；漏掉它会让单 ROM 游戏显示成普通街机键位。 */}
               <KeymapCards
                 runtimeId={runtime?.id}
                 platform={platform.id}
@@ -811,7 +812,7 @@ export function GameDetailPage() {
                 arcadeButtons={game.arcadeButtons}
                 arcadeBios={game.arcadeBios}
                 core={game.core}
-                mahjongPanel={isMahjongPanelGame(platform.id, game.core, Object.values(game.roms ?? {}))}
+                mahjongPanel={isMahjongPanelGame(platform.id, game.core, [game.rom, ...Object.values(game.roms ?? {})])}
               />
             </section>
           </section>
