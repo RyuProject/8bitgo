@@ -3,7 +3,7 @@
  * 引擎下载器补丁的行为回归（超时、XHR 回退与核心 Range 断点续传）。
  *
  * 直接把 public/emulatorjs/emulator.min.js 开头的下载器 / 缓存类切出来在 Node 里跑：
- *   - Fetch 包体失速时，20 秒后切到 XHR arraybuffer 完整重取一次；
+ *   - Fetch 没有响应头超时或包体失速时，改用 XHR arraybuffer 完整重取一次；
  *   - XHR 在后台暂停空闲计时，回到前台后才重新给完整预算；
  *   - 缓存 put 卡住时 10 秒后照样交出下载结果；
  *   - IndexedDB 封装里 transaction() 同步抛错时 Promise 必须 settle；续传库挂起只影响持久化优化。
@@ -37,6 +37,7 @@ function makeContext({ fetchImpl, indexedDB, localStorage, XMLHttpRequest, sessi
     fetch: fetchImpl,
     AbortController,
     Blob,
+    Response,
     Uint8Array,
     ArrayBuffer,
     TextEncoder,
@@ -543,6 +544,39 @@ const rangeHeaders = (etag, contentRange, contentLength) => ({
   const item = await downloader.downloadFile(url, 'Core', 'GET', {}, null, null, null, 30000, 'arraybuffer')
   assert.deepEqual(xhr.opened, [['GET', url]], 'Fetch 失速后用原响应地址改走 XHR')
   assert.deepEqual([...item.files[0].bytes], new Array(8).fill(7), '只交付 XHR 完整重取的核心字节')
+}
+
+{
+  // Fetch 等不到核心响应头时，自己的请求时限会 abort；只对这类版本化核心请求改走 XHR。
+  const url = 'https://8bitgo.test/emulatorjs/cores/fbneo-legacy-wasm.data?v=abc123'
+  const core = new Uint8Array(8).fill(5)
+  const xhr = fakeXhr({ bytes: core, responseHeaders: { 'content-length': String(core.byteLength) } })
+  const fetchImpl = async (_url, init) => new Promise((_resolve, reject) => {
+    init.signal.addEventListener('abort', () => reject(new DOMException('request timed out', 'AbortError')), { once: true })
+  })
+  const { __classes } = makeContext({ fetchImpl, indexedDB: undefined, XMLHttpRequest: xhr.X })
+  const downloader = new __classes.Downloader(null, null)
+  const item = await downloader.downloadFile(url, 'Core', 'GET', {}, null, null, null, 30000, 'arraybuffer')
+  assert.deepEqual(xhr.opened, [['GET', url]], '响应头超时后用原地址通过 XHR 完整取核心')
+  assert.deepEqual([...item.files[0].bytes], [...core], 'Fetch 未拿到响应时只交付 XHR 校验通过的完整核心')
+}
+
+{
+  // Fetch 自身的取消 / 网络异常不能被误认成超时并额外发起 XHR。
+  const url = 'https://8bitgo.test/emulatorjs/cores/fbneo-legacy-wasm.data?v=abc123'
+  const xhr = fakeXhr({ fail: true })
+  const { __classes } = makeContext({
+    fetchImpl: async () => { throw new DOMException('request cancelled', 'AbortError') },
+    indexedDB: undefined,
+    XMLHttpRequest: xhr.X,
+  })
+  const downloader = new __classes.Downloader(null, null)
+  await assert.rejects(
+    downloader.downloadFile(url, 'Core', 'GET', {}, null, null, null, 30000, 'arraybuffer'),
+    /Download failed/,
+    '非本补丁超时引起的 AbortError 仍直接失败',
+  )
+  assert.equal(xhr.opened.length, 0, '主动取消或其他 Fetch 异常不应被重试成新下载')
 }
 
 {

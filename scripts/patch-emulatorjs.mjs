@@ -365,6 +365,13 @@ const CORE_FETCH_TO =
   'if(y=await fetch(t,{method:n,headers:__8bgResumePlan?__8bgResumePlan.headers:s,body:o,signal:f.signal}),clearTimeout(V),__8bgResumePlan){' +
   'const __8bgAccepted=await __8bgCoreResume.accept(__8bgResumePlan,y,__8bgFetchFull);y=__8bgAccepted.response;__8bgResumeState=__8bgAccepted.state;if(__8bgResumeState)__8bgResumeState.prefix=__8bgAccepted.prefix||[]}' +
   'clearTimeout(V);if(!y.ok)throw new Error(`HTTP ${y.status}`);'
+const CORE_FETCH_HEADER_ACCEPT_MARKER = 'const __8bgAccepted='
+const CORE_FETCH_HEADER_ACCEPT_AT = CORE_FETCH_TO.indexOf(CORE_FETCH_HEADER_ACCEPT_MARKER)
+if (CORE_FETCH_HEADER_ACCEPT_AT < 0) throw new Error('核心响应头兜底找不到续传响应校验段')
+const CORE_FETCH_HEADER_FALLBACK_TO =
+  'let __8bgResumePlan=__8bgCoreResume.plan(t,n,o,s);const __8bgFetchWithHeaderFallback=async(__8bgUrl,__8bgHeaders)=>{clearTimeout(V),f=new AbortController;let __8bgHeaderTimedOut=false;V=setTimeout(()=>{__8bgHeaderTimedOut=true;f.__8bgHeaderTimedOut=true;f.abort()},h);try{return await fetch(__8bgUrl,{method:n,headers:__8bgHeaders,body:o,signal:f.signal})}catch(__8bgHeaderError){clearTimeout(V);if(!__8bgResumePlan||!__8bgHeaderTimedOut)throw __8bgHeaderError;console.warn("[EJS Download] Fetch 响应头超时，改用 XHR arraybuffer："+S);const __8bgHeaderResult=await __8bgCoreResume.xhrFallback({url:__8bgUrl,originalHeaders:s,state:null,offset:0,progress:r,readError:"Fetch response headers timed out"});const __8bgResponse=new Response(__8bgHeaderResult.body,{status:200,headers:{"Content-Length":String(__8bgHeaderResult.body.byteLength)}});Object.defineProperty(__8bgResponse,"url",{value:__8bgUrl});f=new AbortController;return __8bgResponse}finally{clearTimeout(V)}};const __8bgFetchFull=async()=>__8bgFetchWithHeaderFallback(t,s);' +
+  'if(y=await __8bgFetchWithHeaderFallback(t,__8bgResumePlan?__8bgResumePlan.headers:s),__8bgResumePlan){' +
+  CORE_FETCH_TO.slice(CORE_FETCH_HEADER_ACCEPT_AT)
 const CORE_READER_INIT_FROM = 'const e=y.body.getReader();let i=0,n=[];let __8bgStall=0;'
 const CORE_READER_INIT_TO =
   'const e=y.body.getReader();let i=__8bgResumeState?.start||0,n=__8bgResumeState?.prefix||[],__8bgTarget=__8bgResumeState?.total?new Uint8Array(__8bgResumeState.total):null;if(__8bgTarget&&i){let __8bgPrefixOffset=0;for(const __8bgPart of n){__8bgTarget.set(__8bgPart,__8bgPrefixOffset);__8bgPrefixOffset+=__8bgPart.byteLength}n=[]}if(__8bgResumeState?.total)t=__8bgResumeState.total;if(i&&r)r("downloading",Math.floor(i/t*100),i,t);const __8bgWriter=__8bgCoreResume.writer(__8bgResumeState);let __8bgStall=0;'
@@ -401,6 +408,11 @@ replaceResumeSource(
   'console.warn("[EJS Download] XHR arraybuffer 重新下载成功："+S+" "+__8bgBuf.byteLength+" 字节");if(__8bgResult.resumed){const __8bgXhrBytes=new Uint8Array(__8bgBuf);if(__8bgTarget)__8bgTarget.set(__8bgXhrBytes,i);else n.push(__8bgXhrBytes);i+=__8bgBuf.byteLength}else{__8bgTarget=new Uint8Array(__8bgBuf);n=[],i=__8bgBuf.byteLength}}',
   'XHR 分段结果拼接',
 )
+const BODY_READ_HEADER_FALLBACK_TO = BODY_READ_RESUME_TO.replace(
+  'if(f.signal.aborted&&!f.__8bgStalled||o)throw',
+  'if(f.signal.aborted&&!f.__8bgStalled&&!f.__8bgHeaderTimedOut||o)throw',
+)
+if (BODY_READ_HEADER_FALLBACK_TO === BODY_READ_RESUME_TO) throw new Error('响应头超时 XHR 回退未找到外部取消保护')
 const CORE_COMPLETE_FROM = 'c(n)}else{const i="temp-"+Date.now();c(new a(i,B,b,e,d,S,t,A))}'
 const CORE_COMPLETE_TO = '(__8bgResumeState&&__8bgCoreResume.complete(__8bgResumeState)),c(n)}else{const i="temp-"+Date.now();(__8bgResumeState&&__8bgCoreResume.complete(__8bgResumeState)),c(new a(i,B,b,e,d,S,t,A))}'
 const CORE_FETCH_TO_PREVIOUS = CORE_FETCH_TO.replace(
@@ -776,6 +788,18 @@ const GROUPS = [
   },
 
   {
+    name: '核心响应头超时改走 XHR',
+    patches: [
+      [CORE_FETCH_TO, CORE_FETCH_HEADER_FALLBACK_TO],
+      [BODY_READ_RESUME_TO, BODY_READ_HEADER_FALLBACK_TO],
+    ],
+    hint: [
+      '只对带版本号的核心请求，在本地响应头时限确实触发后改走 XHR；普通网络错误和外部取消仍直接失败。',
+      'XHR 成功后构造完整 200 Response 继续走原有校验；若响应到达与计时器竞争，流回退也只放行本地响应头超时。',
+    ],
+  },
+
+  {
     name: '游戏文件写 MEMFS 不复制',
     patches: [[GAME_WRITE_FROM, GAME_WRITE_TO]],
     hint: [
@@ -796,10 +820,12 @@ const GROUPS = [
 
 // 被后面各节在原地改写过的补丁：值是所有更新的写法
 const SUPERSEDED = new Map([
-  [BODY_READ_TO, [BODY_READ_DIAGNOSTICS_TO, BODY_READ_FALLBACK_FROM, BODY_READ_FALLBACK_PREVIOUS, BODY_READ_FALLBACK_TO, BODY_READ_RESUME_TO, BODY_READ_RESUME_TO_PREVIOUS, BODY_READ_FALLBACK_BROKEN]],
-  [BODY_READ_DIAGNOSTICS_TO, [BODY_READ_FALLBACK_FROM, BODY_READ_FALLBACK_PREVIOUS, BODY_READ_FALLBACK_TO, BODY_READ_RESUME_TO, BODY_READ_RESUME_TO_PREVIOUS, BODY_READ_FALLBACK_BROKEN]],
-  [BODY_READ_FALLBACK_FROM, [BODY_READ_FALLBACK_PREVIOUS, BODY_READ_FALLBACK_TO, BODY_READ_RESUME_TO, BODY_READ_RESUME_TO_PREVIOUS]],
-  [BODY_READ_FALLBACK_TO, [BODY_READ_RESUME_TO, BODY_READ_RESUME_TO_PREVIOUS]],
+  [CORE_FETCH_TO, [CORE_FETCH_HEADER_FALLBACK_TO]],
+  [BODY_READ_RESUME_TO, [BODY_READ_HEADER_FALLBACK_TO]],
+  [BODY_READ_TO, [BODY_READ_DIAGNOSTICS_TO, BODY_READ_FALLBACK_FROM, BODY_READ_FALLBACK_PREVIOUS, BODY_READ_FALLBACK_TO, BODY_READ_RESUME_TO, BODY_READ_RESUME_TO_PREVIOUS, BODY_READ_HEADER_FALLBACK_TO, BODY_READ_FALLBACK_BROKEN]],
+  [BODY_READ_DIAGNOSTICS_TO, [BODY_READ_FALLBACK_FROM, BODY_READ_FALLBACK_PREVIOUS, BODY_READ_FALLBACK_TO, BODY_READ_RESUME_TO, BODY_READ_RESUME_TO_PREVIOUS, BODY_READ_HEADER_FALLBACK_TO, BODY_READ_FALLBACK_BROKEN]],
+  [BODY_READ_FALLBACK_FROM, [BODY_READ_FALLBACK_PREVIOUS, BODY_READ_FALLBACK_TO, BODY_READ_RESUME_TO, BODY_READ_RESUME_TO_PREVIOUS, BODY_READ_HEADER_FALLBACK_TO]],
+  [BODY_READ_FALLBACK_TO, [BODY_READ_RESUME_TO, BODY_READ_RESUME_TO_PREVIOUS, BODY_READ_HEADER_FALLBACK_TO]],
   [CACHE_GET_TO, [CACHE_GET_DEAD_TO, CACHE_GET_CLEAR_TO]],
   [CACHE_PUT_TO, [CACHE_PUT_DEAD_TO, CACHE_PUT_CLEAR_TO, CACHE_PUT_CLEAR_TO_LEGACY, CACHE_PUT_CLEAR_TO_COMPLETED]],
   [CACHE_GET_DEAD_TO, [CACHE_GET_CLEAR_TO]],
