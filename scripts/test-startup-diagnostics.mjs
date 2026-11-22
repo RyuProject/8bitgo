@@ -178,6 +178,32 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   assert.notEqual(diagnoseStartupFailure({
     event: 'failed', runtime: 'page', diagnostics: { resources: [{ n: 'u.clarity.ms/collect', i: 'xmlhttprequest', at: -459_500, st: 400 }] },
   }).code, 'network_http', '数分钟前的第三方 HTTP 400 不归到当前开局')
+  const ruffleInitWithRomRequest = {
+    event: 'failed', runtime: 'ruffle', platform: 'flash',
+    detail: 'Flash 内容载入失败：Ruffle 未正确初始化',
+    diagnostics: {
+      logs: [
+        { t: 1360, s: 'download', l: 'info', m: 'ROM 首段 282606 字节 / 919ms： cn-assets.8bitgo.com/roms/…/[ROM].en.swf.8bg' },
+        { t: 160, s: 'snapshot', l: 'info', m: 'Ruffle 现场：卡在「ruffle.js 已加载」，线路 同源，SWF 未到，核心预热 未开始/失败' },
+      ],
+      resources: [{ n: 'cn-assets.8bitgo.com/roms/…/[ROM].en.swf.8bg', i: 'fetch', at: 76, d: 4950, st: 0, sz: 0 }],
+    },
+  }
+  const ruffleInit = diagnoseStartupFailure(ruffleInitWithRomRequest)
+  assert.deepEqual(
+    { code: ruffleInit.code, label: ruffleInit.label, signal: ruffleInit.signals[0] },
+    { code: 'engine_asset', label: 'Ruffle 运行时初始化失败', signal: 'error.ruffle_init' },
+    'Ruffle API 未初始化时，诊断包里的并行 ROM URL 不能把错误误归为 ROM 下载失败（#2887 / #2889）',
+  )
+  assert.match(errorSignature({ ...ruffleInitWithRomRequest, diagnostics: { ...ruffleInitWithRomRequest.diagnostics, diagnosis: ruffleInit } }).text,
+    /Ruffle 运行时初始化失败/, '错误诊断分组文案应与现场原始错误一致')
+  assert.notEqual(diagnoseStartupFailure({
+    event: 'failed', runtime: 'ruffle', platform: 'flash',
+    diagnostics: { resources: [{ n: 'cn-assets.8bitgo.com/roms/…/[ROM].en.swf.8bg', i: 'fetch', at: 76, d: 4950, st: 0, sz: 0 }] },
+  }).code, 'rom_download', '只有 ROM 资源 URL、没有失败信号时不能归为 ROM 下载失败')
+  assert.equal(diagnoseStartupFailure({
+    event: 'failed', runtime: 'ruffle', platform: 'flash', detail: 'ROM 下载失败：无法读取完整文件',
+  }).code, 'rom_download', '明确的 ROM 下载错误仍应归为 ROM 故障')
   assert.equal(diagnoseStartupFailure({
     event: 'failed', runtime: 'page', diagnostics: { resources: [{ n: '8bitgo.com/api/events', i: 'fetch', at: -1200, st: 400 }] },
   }).code, 'network_http', '开局附近的本站 HTTP 错误仍可识别')

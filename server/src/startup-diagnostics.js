@@ -247,6 +247,11 @@ export function diagnoseStartupFailure({ event, runtime, platform, detail, elaps
     return hit('react_update_loop', 'React 页面更新循环', 'page_render', 'high', 'error.react_update_loop')
   }
 
+  // Ruffle 的 script onload 触发但播放器 API 不存在时，故障在运行时初始化；同局的 ROM URL 只是并行请求，不能把它归成 ROM 故障。
+  if (has(/ruffle.{0,80}(?:未正确初始化|未正確初始化|did not initialize correctly|failed to initialize|ne s.{0,16}pas initialisé correctement|no se inicializó correctamente|wurde nicht korrekt initialisiert|non si è inizializzato correttamente|正しく初期化されていません)/i)) {
+    return hit('engine_asset', 'Ruffle 运行时初始化失败', 'engine_asset', 'high', 'error.ruffle_init')
+  }
+
   // 内容名只从自托管核心包名提取；不会把任意错误原文写进归组标签。
   const core = combined.match(/\b([a-z][a-z0-9_-]{0,30})-(?:legacy-)?wasm\.data\b/i)?.[1]?.toLowerCase() ?? ''
   const withCore = (result) => core ? { ...result, artifact: core } : result
@@ -348,7 +353,7 @@ export function diagnoseStartupFailure({ event, runtime, platform, detail, elaps
   if (failedResource) {
     return { ...hit('network_http', '资源请求返回 HTTP 错误（与本次故障的关系待确认）', 'network', 'medium', 'resource.http_status'), artifact: `http-${Number(failedResource.st)}` }
   }
-  if (has(/\[rom\]|\/roms\/|rom download|rom.*(?:下载失败|线路失败|分片.*失败|仍在下载)|仍在下载 rom|正在下载(?: rom|游戏)|正在下載(?: rom|遊戲)|downloading (?:the )?(?:game|rom)|download(?:ing)? (?:del gioco|the game)|descargando (?:el )?(?:juego|la rom)|téléchargement (?:du jeu|de la rom)|spiel wird heruntergeladen|ゲームをダウンロード/)) {
+  if (has(/rom download|rom.*(?:下载失败|线路失败|分片.*失败|仍在下载)|仍在下载 rom|正在下载(?: rom|游戏)|正在下載(?: rom|遊戲)|downloading (?:the )?(?:game|rom)|download(?:ing)? (?:del gioco|the game)|descargando (?:el )?(?:juego|la rom)|téléchargement (?:du jeu|de la rom)|spiel wird heruntergeladen|ゲームをダウンロード/)) {
     return hit('rom_download', 'ROM 下载或读取失败', 'rom_download', 'medium', 'error.rom_download')
   }
   if (diagnostics?.env?.online === false) return hit('offline', '浏览器报告设备离线', 'network', 'medium', 'environment.offline')
