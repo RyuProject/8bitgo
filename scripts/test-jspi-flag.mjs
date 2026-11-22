@@ -107,7 +107,7 @@ ok(/armJspi\(\)/.test(src), 'jsdos 适配器真的调了 armJspi')
     晚一步写就完全无效，而且不会有任何报错 —— 只是永远跑 Asyncify 版。
   */
   const armed = src.indexOf('armJspi()')
-  const injected = src.indexOf('loadJsdosScript(document, `${root}js-dos.js`')
+  const injected = src.indexOf('document.head.appendChild(script)', armed)
   ok(armed > 0 && injected > 0 && armed < injected, '⭐ armJspi 必须在调用加载器插入 js-dos.js 的 <script> 之前')
 }
 

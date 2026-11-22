@@ -1992,6 +1992,14 @@ Ruffle 核心预热只有在清单选中的 core JS 与 WASM 都读到结束后�
 
 React 19 的 `Minified React error #185` 是最大更新深度超限，表示组件树出现连续状态更新；组件栈只到 `EmulatorPlayer` 时，还不足以确定是哪一个 hook / 回调触发，必须保留组件栈和同次启动阶段继续定位。#1533 的游戏记录是 NES《超级玛丽奥兄弟》，但快照却报告 Ruffle 已运行 41.6 秒，运行时与游戏记录互相矛盾，不能据此断言模拟器已启动或把原因归到 Ruffle。列表里唯一 HTTP 400 是 459 秒前的 `u.clarity.ms/collect`，与本次故障无关。`server/src/startup-diagnostics.js` 对 #185 单独归类，资源 HTTP 错误只有发生在开局前后 30 秒内才参与判断，近期第三方错误仍只作中把握度线索；旧的 Resource Timing 不能盖过当前页面错误。`EmulatorPlayer` 对重复的能力、几何、双屏布局回报按值去重，避免相同状态不断生成新引用触发多余渲染。此保护针对可证实的更新放大路径；当前证据仍未定位到 #1533 的具体业务更新源。回归：`npm run test:player-runtime-state && npm run test:startup-diagnostics`。
 
+### 2.24.0h GrindCraft 不兼容 Ruffle 时使用游戏方 HTML5 版（2026-11-22）
+
+《GrindCraft》黑屏不是 ROM 下载失败：线上 SWF 已完整取得，随后 Ruffle 0.7.1 打印 TextBlock.createTextLine() 等 Flex 文本排版接口未实现，enterFrame 初始化脚本最终被 Ruffle 超时终止。玩家提供的 SWF 与线上文件 SHA-256 相同；附件里的 .swz 不能补齐 Ruffle 缺失的 ActionScript Text Layout Framework 实现。把 maxExecutionDuration 从 15 秒提到 60 秒只会让黑屏等待更久，不能作为修复。
+
+src/emulator/grindcraftHtml5.ts 只为 grindcraft 指向游戏方公开的 https://cdn.grindcraft.com/game.html，GameDetailPage 对该 slug 使用 HTML5 播放器并跳过原 SWF ROM 的可用性和语言门控；其它 Flash 游戏仍走 Ruffle。官方 HTML5 页已实测能进入菜单并开始采集木材；改动发布前仍须在站内播放器实测嵌入后的首帧与点击操作。不要把未经核验的 .swz 加入公共 ROM 目录，也不要再为这款游戏放宽 Ruffle 脚本时限。
+
+Ruffle 0.7.1 会把这类带样式错误输出到 iframe 的 console.log，而不一定调用 console.error。ruffleCrash.ts 必须同时观察两种方法，且销毁时还原；普通 ActionScript 日志仍不得触发红屏。回归：npm run test:ruffle-runtime。
+
 ### 2.24.0 Ruffle 存档要跟着游戏走；舞台按显示尺寸渲染
 
 Ruffle 的 SharedObject 键是 `<hostname>/<localPath>/<名字>`，而本站所有 Flash 共用一个源：

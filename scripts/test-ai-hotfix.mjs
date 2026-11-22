@@ -355,7 +355,7 @@ const ok = (name) => {
   assert.match(read('src/services/romRoute.ts'), /hotfixFlags\(\)\.romHost/)
   assert.match(read('src/services/startupDiagnostics.ts'), /hotfixes: activeHotfixIds\(\)/)
   const page = read('src/pages/GameDetailPage.tsx')
-  assert.match(page, /romUrl=\{rom\.status === 'found' && hotfix\.ready \? rom\.url : undefined\}/, '修补定下来之前不放开始按钮')
+  assert.match(page, /romUrl=\{grindcraftHtml5Url \?\? \(rom\.status === 'found' && hotfix\.ready \? rom\.url : undefined\)\}/, '普通 ROM 修补定下来之前不放开始按钮（Grindcraft 独立入口除外）')
   assert.match(page, /core=\{hotfix\.core \?\? game\.core\}/)
   assert.match(page, /t\.game\.hotfixNotice\[hotfix\.notice\]/)
   for (const lang of ['zh-Hans', 'zh-Hant', 'en', 'ja', 'es', 'fr', 'de', 'it']) {

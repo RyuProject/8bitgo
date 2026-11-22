@@ -748,15 +748,17 @@ function loadJsDos(): Promise<DosFn> {
       stopEdgeWatch()
       if (root !== JSDOS_PATH) {
         console.warn(`[jsdos] ${root}js-dos.js 加载失败，改走同源 ${JSDOS_PATH}`)
-        // 入口脚本在加速入口上失败 / 超时是线路的硬证据：本页改走同源，并记 2 小时（重试、下一次访问都不再走它）
+        // 入口脚本在加速入口上失败 / 超时是线路的硬证据：本页改走同源，并持久化坏线状态两小时。
         markRuntimeEdgeBad('jsdos')
         css.remove()
         loading = null
         loadJsDos().then(resolve, reject)
         return
       }
-      reject(error)
-    })
+      reject(new Error(`加载失败：${root}js-dos.js`))
+    }
+    // 事件和限时器先安装好再插入标签，避免缓存命中时 onload 早于监听器注册。
+    document.head.appendChild(script)
   }).catch((e) => {
     loading = null // 允许下次重试
     throw e

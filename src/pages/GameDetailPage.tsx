@@ -54,6 +54,7 @@ import { newStartupId, recordStartupEvent } from '@/services/startupFunnel'
 import { useGameHotfix } from '@/services/hotfixes'
 import { isMahjongPanelGame } from '@/emulator/mahjongPanel'
 import { html5EmbedLoginFor } from '@/emulator/html5EmbedLogin'
+import { grindcraftHtml5Entry } from '@/emulator/grindcraftHtml5'
 import { builtinWebGameFor } from '../../shared/builtin-web-games.js'
 
 export function GameDetailPage() {
@@ -387,16 +388,24 @@ export function GameDetailPage() {
   // 不挡的话下面每一处 platform.xxx 都会把整页带崩。
   if (!seoPlatform || !isPlatformEnabled(seoPlatform.id)) return <NotFoundPage message={t.game.notFoundMsg} />
   const platform = seoPlatform
+  /*
+    GrindCraft 的存量 SWF 会触发 Ruffle 未实现的 Flex TextBlock API，随后 enterFrame 被终止并留下黑帧。
+    游戏方公开的 HTML5 页面已实测可进入菜单和实际玩法，因此只在详情播放器上替换运行时与入口。
+  */
+  const grindcraftHtml5Url = grindcraftHtml5Entry(game.slug)
+  const playerPlatform = grindcraftHtml5Url ? platformMap.html5 : platform
   // 操作说明必须跟播放器使用同一套“平台 + 实际 ROM 扩展名 + 逐游戏覆盖”解析。
   // 以前这里只拿平台优先级，NES 页面永远显示 jsnes 键位；现在容器包会稳定走 EmulatorJS，
   // 若说明仍写 F2/F4 和 jsnes 2P 键，玩家会以为按键坏了。直链 `.nes` 的 mapper 要到播放器
   // Range 探测后才知道，这里取安全兜底；后台明确指定的 runtime 始终优先。
   const runtime: Runtime =
-    resolveRuntime({
-      platform: platform.id,
-      ext: rom.status === 'found' ? extOf(rom.url) : undefined,
-      runtimeOverride: (hotfix.runtime as typeof game.runtime | undefined) ?? game.runtime,
-    }) ?? runtimesFor(platform.id)[0] ?? resolveRuntime(platform.id)!
+    grindcraftHtml5Url
+      ? resolveRuntime({ platform: 'html5', ext: 'html', runtimeOverride: 'html5' })!
+      : resolveRuntime({
+          platform: platform.id,
+          ext: rom.status === 'found' ? extOf(rom.url) : undefined,
+          runtimeOverride: (hotfix.runtime as typeof game.runtime | undefined) ?? game.runtime,
+        }) ?? runtimesFor(platform.id)[0] ?? resolveRuntime(platform.id)!
   /*
     外链 HTML5 游戏自带账号登录只能在顶层页面完成时，给玩家一条「去新标签页登录」的提示。
     地址解析出来前（SSR 与水合首帧都是 checking）先看 game.roms 里登记的入口，
@@ -523,10 +532,10 @@ export function GameDetailPage() {
                   onPageMatchRequest={game.multiplayer && (p2pPlayable(game.platform) || game.platform === 'dos')
                     ? (game.platform === 'dos' ? requestIpxHost : requestMatch)
                     : undefined}
-                  platform={platform}
+                  platform={playerPlatform}
                   gameName={game.title}
                   gameSlug={game.slug}
-                  runtime={(hotfix.runtime as typeof game.runtime | undefined) ?? game.runtime}
+                  runtime={grindcraftHtml5Url ? 'html5' : (hotfix.runtime as typeof game.runtime | undefined) ?? game.runtime}
                   startupVisitId={startupVisitId}
                   maxPlayers={game.multiplayer ? game.players : 1}
                   invite={invite}
@@ -547,7 +556,7 @@ export function GameDetailPage() {
                   arcadeNoBios={game.arcadeNoBios}
                   arcadeDip={game.arcadeDip}
                   arcadeButtons={game.arcadeButtons}
-                  flashControls={game.flashControls}
+                  flashControls={grindcraftHtml5Url ? undefined : game.flashControls}
                   dosExecutable={dosExecutableForRom(game, rom)}
                   dosStartupCommands={dosStartupCommandsForRom(game, rom)}
                   dosBackend={game.dosBackend}
@@ -561,15 +570,15 @@ export function GameDetailPage() {
                   dosboxConfig={game.dosboxConfig}
                   dosSaveHint={game.dosSaveHint}
                   biosUrl={biosUrl || undefined}
-                  romUrl={rom.status === 'found' && hotfix.ready ? rom.url : undefined}
-                  romChecking={rom.status === 'checking' || (rom.status === 'found' && !hotfix.ready)}
-                  romUnavailable={rom.status === 'missing'}
-                  romUnreachable={rom.unreachable}
+                  romUrl={grindcraftHtml5Url ?? (rom.status === 'found' && hotfix.ready ? rom.url : undefined)}
+                  romChecking={!grindcraftHtml5Url && (rom.status === 'checking' || (rom.status === 'found' && !hotfix.ready))}
+                  romUnavailable={!grindcraftHtml5Url && rom.status === 'missing'}
+                  romUnreachable={!grindcraftHtml5Url && rom.unreachable}
                   onRetryRom={rom.retry}
                   onRomLoadFailed={rom.failover}
-                  romLangs={romLangs}
-                  romLang={rom.lang}
-                  romLangSelection={romLang}
+                  romLangs={grindcraftHtml5Url ? [] : romLangs}
+                  romLang={grindcraftHtml5Url ? undefined : rom.lang}
+                  romLangSelection={grindcraftHtml5Url ? undefined : romLang}
                   onRomLangChange={setRomLang}
                   // 背景那张是糊到底再压一层黑底的，96×96 完全够用，没必要下 300×300
                 backdrop={<GameCover game={game} ratio="wide" showTitle={false} showBadge={false} priority thumb className="h-full w-full" />}
@@ -806,12 +815,12 @@ export function GameDetailPage() {
               <h2 className="text-lg font-bold">{t.game.controls}</h2>
               <KeymapCards
                 runtimeId={runtime?.id}
-                platform={platform.id}
+                platform={playerPlatform.id}
                 gameSlug={game.slug}
                 arcadeButtons={game.arcadeButtons}
                 arcadeBios={game.arcadeBios}
                 core={game.core}
-                mahjongPanel={isMahjongPanelGame(platform.id, game.core, Object.values(game.roms ?? {}))}
+                mahjongPanel={isMahjongPanelGame(playerPlatform.id, game.core, Object.values(game.roms ?? {}))}
               />
             </section>
           </section>

@@ -701,7 +701,10 @@ check('加速入口判坏（预热失速 / 极慢）时 js-dos.js 不等满 25 �
   // 只在加速入口上订阅；判坏回调走同一条 onerror 改道路径
   assert.match(src, /const stopEdgeWatch = root !== JSDOS_PATH\n\s*\? onRuntimeEdgeBad\('jsdos', \(\) => \{\n\s*if \(scriptSettled\) return/)
   // 入口脚本在加速入口上失败是硬证据：持久化（不是只影响本页的 markJsdosEdgeFailed）
-  const onerror = src.slice(src.indexOf('script.onerror = () => {'), src.indexOf("reject(new Error(`加载失败：${root}js-dos.js`))"))
+  const onerrorStart = src.indexOf('script.onerror = () => {')
+  const onerrorEnd = src.indexOf('document.head.appendChild(script)', onerrorStart)
+  assert.ok(onerrorStart >= 0 && onerrorEnd > onerrorStart, '按实际的脚本插入点截取 onerror 处理器')
+  const onerror = src.slice(onerrorStart, onerrorEnd)
   assert.match(onerror, /markRuntimeEdgeBad\('jsdos'\)/)
   assert.doesNotMatch(onerror, /markJsdosEdgeFailed\(\)/)
   // 开局前的任意失败仍只影响本页（可能是 ROM / 内存问题，不该把线路记 2 小时）

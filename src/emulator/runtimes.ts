@@ -28,8 +28,6 @@ const LOADERS: Record<RuntimeId, () => Promise<RuntimeMount>> = {
 }
 
 const pendingLoads = new Map<RuntimeId, Promise<RuntimeMount>>()
-/** 代码分块请求偶尔会静默挂起；要早于播放器的 120 秒总看门狗给出可重试错误。 */
-const RUNTIME_MODULE_TIMEOUT_MS = 60_000
 
 /** 运行时 chunk 所在目录（生产构建里就是 /assets/ 或大陆加速入口的 /_cn/assets/） */
 function assetsDir(): string {

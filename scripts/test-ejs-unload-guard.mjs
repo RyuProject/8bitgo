@@ -76,7 +76,7 @@ assert.ok(guardAt < adapter.indexOf('errorTap = installErrorTap(win, reportEngin
 assert.match(adapter, /guardEngineAutoUnload\(win, \(\) => \{[\s\S]{0,120}flushSaveFiles\(\)/, '拦下后自己刷电池存档')
 assert.match(
   adapter,
-  /const reportCoreCrash = \(line: string\) => \{\s*if \(destroyed \|\| crashReported \|\| loadFailed\) return\s*if \(isPlannedEngineExitAbort\(line, engineExitAt, Date\.now\(\)\)\)/,
+  /const reportCoreCrash = \(line: string(?:, details\?: string)?\) => \{\s*if \(destroyed \|\| crashReported \|\| loadFailed\) return\s*if \(isPlannedEngineExitAbort\(line, engineExitAt, Date\.now\(\)\)\)/,
   'reportCoreCrash 先排除计划内退出',
 )
 assert.match(adapter, /\?\.on\?\.\('exit', \(\) => \{\s*engineExitAt = Date\.now\(\)/, '开局后在 EJS.on("exit") 记时刻')

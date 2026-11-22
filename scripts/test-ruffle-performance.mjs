@@ -17,7 +17,7 @@ import {
 import { RUFFLE_MAX_RENDER_AREA, ruffleStageRenderPlan, ruffleStageScale, ruffleStageSize } from '../src/emulator/ruffleStageFit.ts'
 import { isRuffleFrameReady, RUFFLE_FRAME_HTML } from '../src/emulator/ruffleFrame.ts'
 import { installRuffleCrashGuard, ruffleFatalDetail } from '../src/emulator/ruffleCrash.ts'
-import { ruffleMaxExecutionDuration } from '../src/emulator/ruffleGameConfig.ts'
+import { GRINDCRAFT_HTML5_URL, grindcraftHtml5Entry } from '../src/emulator/grindcraftHtml5.ts'
 import { allowsSpeculativePlayerPreload } from '../src/emulator/preloadPolicy.ts'
 import { isSfsGame } from '../shared/sfs-games.js'
 
@@ -356,8 +356,9 @@ assert.equal(supportsRuffleWasmExtensions(() => false), false)
 assert.equal(supportsRuffleWasmExtensions(() => { throw new Error('blocked') }), false)
 
 console.log('── Ruffle 致命异常接管 ──')
-assert.equal(ruffleMaxExecutionDuration('grindcraft'), 60, 'Grindcraft 初始化需要超过默认 15 秒的脚本预算')
-assert.equal(ruffleMaxExecutionDuration('other-flash-game'), undefined, '脚本预算只能逐款放宽')
+assert.equal(grindcraftHtml5Entry('grindcraft'), GRINDCRAFT_HTML5_URL, 'GrindCraft 应使用游戏方公开的 HTML5 版本')
+assert.equal(grindcraftHtml5Entry('GrindCraft'), GRINDCRAFT_HTML5_URL, 'slug 匹配不应受大小写影响')
+assert.equal(grindcraftHtml5Entry('other-flash-game'), null, '其它 Flash 游戏必须保留原运行时')
 assert.equal(ruffleFatalDetail({ name: 'AbortError', message: 'The operation was aborted' }), null)
 assert.equal(ruffleFatalDetail(new Error('普通 ActionScript 异常')), null)
 assert.equal(
@@ -368,6 +369,33 @@ assert.equal(
 assert.equal(ruffleFatalDetail({ name: 'RuntimeError', message: 'unreachable' }), 'unreachable')
 assert.equal(ruffleFatalDetail('RuntimeError: unreachable'), 'RuntimeError: unreachable', '浏览器只给异常文本时仍要识别 WASM trap')
 assert.equal(ruffleFatalDetail('Ruffle has panicked! panicked at renderer.rs:42'), 'Ruffle has panicked! panicked at renderer.rs:42')
+const installedListeners = new Map()
+const nativeConsole = {
+  error() {},
+  log() {},
+}
+const originalConsoleError = nativeConsole.error
+const originalConsoleLog = nativeConsole.log
+const timeoutReports = []
+const fakeWindow = {
+  console: nativeConsole,
+  addEventListener(type, listener) { installedListeners.set(type, listener) },
+  removeEventListener(type, listener) {
+    if (installedListeners.get(type) === listener) installedListeners.delete(type)
+  },
+}
+const cancelTimeoutGuard = installRuffleCrashGuard(fakeWindow, (detail) => timeoutReports.push(detail))
+nativeConsole.log(
+  '%cERROR core/src/avm2.rs:703 Error dispatching event "enterFrame": RustError("A script in this movie has taken too long to execute and has been terminated.")',
+  'color: red',
+)
+assert.equal(timeoutReports.length, 1, 'Ruffle 以 console.log 输出的带样式超时必须被守卫接住')
+nativeConsole.log('普通游戏日志')
+assert.equal(timeoutReports.length, 1, '普通游戏日志不能误报致命错误')
+cancelTimeoutGuard()
+assert.equal(nativeConsole.error, originalConsoleError, '销毁时要还原 console.error')
+assert.equal(nativeConsole.log, originalConsoleLog, '销毁时要还原 console.log')
+assert.equal(installedListeners.size, 0, '销毁时要摘掉窗口错误监听')
 const crashListeners = new Map()
 const nativeConsoleError = () => {}
 const crashWin = {
@@ -409,6 +437,7 @@ cancelLoggedRuntimeGuard()
 console.log('── 启动链与按实测负载自适应渲染 ──')
 const adapter = read('src/emulator/adapters/ruffle.ts')
 const player = read('src/emulator/EmulatorPlayer.tsx')
+const gameDetail = read('src/pages/GameDetailPage.tsx')
 const frame = read('public/flash-frame.html')
 const types = read('src/emulator/types.ts')
 const vite = read('vite.config.ts')
@@ -483,9 +512,15 @@ assert.match(adapter, /options\.onError\?\.\(rt\.flashInitFailed, 'runtime'\)/,
   '播放壳初始化失败必须标成运行时故障，不能误判成某一种语言 ROM 损坏')
 assert.match(adapter, /installRuffleCrashGuard\(win,/,
   'Ruffle 必须在 iframe 内接管 WASM RuntimeError / Rust panic，不能继续显示运行中黑屏')
-assert.match(adapter, /const maxExecutionDuration = ruffleMaxExecutionDuration\(options\.gameSlug\)[\s\S]{0,900}\{ maxExecutionDuration \}/,
-  '逐游戏脚本时限必须传进 Ruffle load() 配置')
+assert.doesNotMatch(adapter, /maxExecutionDuration|ruffleGameConfig/,
+  '提高脚本预算会延长黑屏等待，不能把超时配置留在 Ruffle')
 assert.match(adapter, /cancelCrashGuard\(\)/, '换游戏时必须清掉旧 Ruffle 会话的致命异常监听')
+assert.match(gameDetail, /grindcraftHtml5Entry\(game\.slug\)/,
+  '详情页必须按 slug 选择 GrindCraft 的 HTML5 入口')
+assert.match(gameDetail, /platform=\{playerPlatform\}[\s\S]{0,500}runtime=\{grindcraftHtml5Url \? 'html5'/,
+  'GrindCraft 的官方 HTML5 入口必须使用 HTML5 播放器')
+assert.match(gameDetail, /romUrl=\{grindcraftHtml5Url \?\?/,
+  'GrindCraft 的 HTML5 入口不能被缺失或慢到的 SWF ROM 状态阻挡')
 assert.match(vite, /flashFrame[\s\S]*?Cross-Origin-Embedder-Policy', 'require-corp'[\s\S]*?Cross-Origin-Resource-Policy', 'same-origin'/,
   '开发服务器必须让跨源隔离的 play-local 可以内嵌 Flash 播放壳')
 assert.match(serverCache, /flash-frame\.html'[\s\S]*?Cross-Origin-Embedder-Policy', 'require-corp'[\s\S]*?Cross-Origin-Resource-Policy', 'same-origin'/,

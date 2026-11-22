@@ -277,7 +277,7 @@ await check('播放器：触屏 + mahjongPad 才画麻将面板，懒加载走 i
   assert.match(p, /importWithRetry\(loadMahjongPad, mahjongPadChunk/)
   assert.match(p, /mahjongPanel=\{isMahjongPanelGame\(/, '开局前的按键图也要换成麻将面板')
   const d = src('../src/pages/GameDetailPage.tsx')
-  assert.match(d, /mahjongPanel=\{isMahjongPanelGame\(platform\.id, game\.core/)
+  assert.match(d, /mahjongPanel=\{isMahjongPanelGame\(playerPlatform\.id, game\.core,/)
 })
 
 await check('键位表：麻将机不摆 RetroPad 那张表，也不摆 2P', () => {

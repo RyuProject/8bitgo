@@ -49,12 +49,12 @@ export function ruffleFatalDetail(value: unknown): string | null {
 interface CrashWindow {
   addEventListener: (type: string, listener: EventListener) => void
   removeEventListener: (type: string, listener: EventListener) => void
-  console?: Pick<Console, 'error'>
+  console?: Pick<Console, 'error' | 'log'>
 }
 
 /**
  * 必须装在 ruffle.js 之前，才能覆盖 glue/WASM 初始化阶段；返回的清理函数在换游戏时恢复
- * console.error 并摘掉监听，避免旧会话迟到的 rejection 把新游戏顶成红屏。
+ * console.error / console.log 并摘掉监听，避免 Ruffle 的带样式日志绕过守卫或旧会话迟到的 rejection 顶掉新游戏。
  */
 export function installRuffleCrashGuard(win: CrashWindow, onFatal: (detail: string) => void): () => void {
   let reported = false
@@ -73,7 +73,19 @@ export function installRuffleCrashGuard(win: CrashWindow, onFatal: (detail: stri
 
   const consoleObject = win.console
   const nativeError = consoleObject?.error
+  const nativeLog = consoleObject?.log
   let wrappedError: Console['error'] | null = null
+  let wrappedLog: Console['log'] | null = null
+  const inspectLog = (args: unknown[]) => {
+    try {
+      for (const arg of args) {
+        report(arg)
+        if (reported) break
+      }
+      // Ruffle 的错误日志会把 RustError 和脚本超时文本合在带颜色的 console.log 参数里。
+      if (!reported) report(args.map((arg) => errorText(arg).message).join(' '))
+    } catch { /* 诊断不能反过来弄挂游戏 */ }
+  }
   if (consoleObject && typeof nativeError === 'function') {
     const candidate: Console['error'] = (...args: unknown[]) => {
       try {
@@ -96,6 +108,18 @@ export function installRuffleCrashGuard(win: CrashWindow, onFatal: (detail: stri
       // 加固 WebView 可能把 console 方法冻结；事件监听仍能接住 WASM 异常，不能让诊断钩子阻断开局。
     }
   }
+  if (consoleObject && typeof nativeLog === 'function') {
+    const candidate: Console['log'] = (...args: unknown[]) => {
+      inspectLog(args)
+      nativeLog.apply(consoleObject, args)
+    }
+    try {
+      consoleObject.log = candidate
+      wrappedLog = candidate
+    } catch {
+      // Ruffle 版本会把脚本终止原因输出到 log；冻结的 console 仍由 error/rejection 事件兜底。
+    }
+  }
 
   return () => {
     win.removeEventListener('error', onError)
@@ -104,6 +128,9 @@ export function installRuffleCrashGuard(win: CrashWindow, onFatal: (detail: stri
     try {
       if (consoleObject && wrappedError && consoleObject.error === wrappedError && nativeError) {
         consoleObject.error = nativeError
+      }
+      if (consoleObject && wrappedLog && consoleObject.log === wrappedLog && nativeLog) {
+        consoleObject.log = nativeLog
       }
     } catch { /* 销毁阶段也不能被加固 WebView 的只读属性打断 */ }
   }

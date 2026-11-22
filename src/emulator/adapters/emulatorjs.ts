@@ -51,8 +51,7 @@ import { ensureParentDir } from '../fsWrite'
 import { canonicalMameRomset } from '../mameRomset'
 import { fastForwardBoot, mameBootFastForwardFrames } from '../mameBootSkip'
 import { ejsInputDefaultOptions, nesVirtualPad, repairEjsSeats, restoredButtonIds } from '../ejsSeats'
-import { decodeNesScore, findNesScoreProfile, hashNesRomInFs, type NesScoreProfile } from '../nesScore'
-import { NES_SCORE_PROFILES } from '@/data/nesScoreProfiles'
+import { hashNesRomInFs } from '../nesScore'
 import { identifyKnownMameArcadeMedia, mameDiskSatisfies, readMameChdHeader, type MameArcadeDiskProfile } from '@/lib/mameArcadeMedia'
 import { identifyNamcoMameSet, type NamcoMameMatch } from '@/lib/namcoMameSets'
 import {
@@ -76,7 +75,7 @@ import { ndsAudioLatencyMs } from '../ndsAudio'
 import { disposeNdsWfcRuntime, installNdsWfcRuntime, isWorldAtWarNdsRomHeader, loadNdsWfcSettings, ndsWfcMacAddress, prepareNdsWfcSession, saveNdsWfcSettings } from '../ndsWfc'
 import { FBNEO_LOWMEM_CORE } from '../fbneoLowmem'
 import { PSX_LOWMEM_CORE } from '../psxLowmem'
-import { createSystemRamReader, type SystemRamReader } from '../libretroMemory'
+import type { SystemRamReader } from '../libretroMemory'
 import { canAllocateWasmMemory, preflightPagesFor, WASM_PAGE_BYTES } from '../ejsCoreMemory'
 import {
   NDS_PERFORMANCE_SAMPLE_MS,
@@ -1667,6 +1666,13 @@ function safeStr(v: unknown): string {
   }
 }
 
+/** 只保留短栈供启动诊断定位 WASM trap；不把任意对象序列化进日志。 */
+function wasmCrashStack(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object') return undefined
+  const stack = (error as { stack?: unknown }).stack
+  return typeof stack === 'string' ? stack.slice(0, 1600) : undefined
+}
+
 /**
  * 包一层 iframe 里的 XMLHttpRequest —— EmulatorJS 的下载全走它（见 emulator.js 的
  * downloadFile），所以这一层能同时干三件事：报进度、逮住下载失败、给卡死检测拍心跳。
@@ -2955,7 +2961,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       logEngine(`[probeSaveState] ${e instanceof Error ? e.message : String(e)}`)
       // 自己主动调用核心时抛的 WASM 陷阱不会经过 iframe 的 console/error 探针。
       // 不能只摘掉存档按钮却把已死亡的 NDS 主循环继续显示为“运行中”。
-      if (options.platform === 'nds' && isNdsWasmCrash('', e)) reportCoreCrash(e instanceof Error ? e.message : String(e))
+      if (options.platform === 'nds' && isNdsWasmCrash('', e)) reportCoreCrash(e instanceof Error ? e.message : String(e), wasmCrashStack(e))
       ok = false
     }
     if (ok) return
@@ -2987,7 +2993,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       }
     } catch (e) {
       logEngine(`[saveFiles] ${e instanceof Error ? e.message : String(e)}`)
-      if (options.platform === 'nds' && isNdsWasmCrash('', e)) reportCoreCrash(e instanceof Error ? e.message : String(e))
+      if (options.platform === 'nds' && isNdsWasmCrash('', e)) reportCoreCrash(e instanceof Error ? e.message : String(e), wasmCrashStack(e))
     }
   }
 
@@ -3426,6 +3432,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     crashReported = true
     stopStartWatch()
     logEngine(`[core-crash] ${core}: ${line}`)
+    if (details) logEngine(`[core-crash-stack] ${details}`)
     // 强制刷新后仍然发生同一陷阱：本轮下载的密文不留在 ROM 缓存，下一次访问会再向源站取一份。
     // 刷新那一局之后的重开（romRefreshed）用的还是那份刷新过的 ROM，复现陷阱同样要清。
     if (options.platform === 'gba' && (options.forceRomRefresh || options.romRefreshed) &&
@@ -3489,7 +3496,6 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const remoteGameUrl = isFile ? '' : (options.game as string)
   let gameUrl = isFile ? URL.createObjectURL(options.game as File) : remoteGameUrl
   let engineGameName = isFile ? (options.game as File).name : options.gameName
-  let matchedNesScoreProfile: NesScoreProfile | null = null
   /** 8BG 改名前引擎会用的名字；开局前把这个名字下的电池存档迁到新名字（见 guardSaveFs） */
   let legacyBatteryName: string | undefined
   /**
@@ -6476,7 +6482,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         // 的 catch 是直接 say(e.message)。返回 null 让它显示已本地化的「存档失败」，
         // 技术原文留在 engineLog 里给我们看。
         logEngine(`[saveState] ${e instanceof Error ? e.message : String(e)}`)
-        if (options.platform === 'nds' && isNdsWasmCrash('', e)) reportCoreCrash(e instanceof Error ? e.message : String(e))
+        if (options.platform === 'nds' && isNdsWasmCrash('', e)) reportCoreCrash(e instanceof Error ? e.message : String(e), wasmCrashStack(e))
         return null
       }
       if (!state?.length) return null
@@ -6489,7 +6495,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       try {
         gm.loadState(new Uint8Array(data))
       } catch (e) {
-        if (options.platform === 'nds' && isNdsWasmCrash('', e)) reportCoreCrash(e instanceof Error ? e.message : String(e))
+        if (options.platform === 'nds' && isNdsWasmCrash('', e)) reportCoreCrash(e instanceof Error ? e.message : String(e), wasmCrashStack(e))
         throw e
       }
     },
