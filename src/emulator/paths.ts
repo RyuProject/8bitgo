@@ -158,6 +158,11 @@ export const EJS_RUNTIME_GENERATION = '20261116-melondsds-fcb8e141-psxrange1-cor
   缓存了带 `Vary: Origin` 的副本、又没有清缓存通道）。改它只换引擎入口的 URL，不动核心。
 */
 export const EJS_ENGINE_URL_EPOCH = 'e1'
+/**
+ * 核心字节未变、但要绕过边缘上旧的 Range 响应头缓存时换代。
+ * EdgeOne 对核心 URL 缓存一年；只改源站头不会刷新已缓存的弱 ETag / CORS 头。
+ */
+export const EJS_CORE_URL_EPOCH = 'range1'
 export const ejsRuntimeAsset = (name: string): string => {
   const hash = EJS_CORE_VERSIONS[name]
   const version = hash ? `${hash}.${EJS_ENGINE_URL_EPOCH}` : EJS_RUNTIME_GENERATION
@@ -172,7 +177,11 @@ export const ejsRuntimeAsset = (name: string): string => {
  * 表里没有的文件（新加核心还没跑生成脚本）退回全局代号，行为与旧版一致；check-emulatorjs 会拦住过期的表。
  */
 export const ejsCoreAsset = (relativePath: string): string => {
-  const version = EJS_CORE_VERSIONS[decodeURIComponent(relativePath)] ?? EJS_RUNTIME_GENERATION
+  const contentVersion = EJS_CORE_VERSIONS[decodeURIComponent(relativePath)]
+  const isRangeCore = relativePath.startsWith('cores/') && relativePath.endsWith('-wasm.data')
+  const version = contentVersion
+    ? `${contentVersion}${isRangeCore ? `.${EJS_CORE_URL_EPOCH}` : ''}`
+    : EJS_RUNTIME_GENERATION
   return `${ejsBase()}${relativePath}?v=${encodeURIComponent(version)}`
 }
 

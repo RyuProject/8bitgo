@@ -280,6 +280,7 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
 
 - **XHR 兜底必须确认拿到整份核心**（2026-11-17 大陆 Android 16 Chrome 143《明星三缺一》，诊断包 #949）：Fetch 已读到约 24.3MB 后断流，XHR 却以 HTTP 200 返回 121KB；旧逻辑只看状态码，仍把它记成下载成功，随后引擎报 `EJS_Runtime is not defined`。兜底现在要求 HTTP 200、非空、字节数不短于已读流；响应未编码时还要匹配 Content-Length，并拒绝 HTML / JSON 错误页。核心缓存代次必须同步更新，清掉旧逻辑可能留下的工件。
 - **核心 Fetch 连响应头都没拿到时也要切换读取方式**（2026-11-22，大陆 Android WebView 138，《拳皇 97 / 2002》《King of Gladiator Plus》，诊断包 #2907–#2910）：4 次访问在同一份 `fbneo-legacy-wasm.data` 上等待 30 秒后由引擎中止，Resource Timing 是 HTTP 0 / 0 字节；生产文件存在，源站与 CN 入口 Range 探测都返回完整 206。旧 XHR 只在响应头已到、读取包体失败后运行，因此这类首字节前停滞没有备用读取。现在仅当版本化核心 GET 的本地响应头时限触发时，用同 URL 的 XHR 重取完整包，再经过原有状态、长度与错误页校验；普通网络错误和外部取消不额外重试。超时与首个响应竞争时，流回退允许的仍只有本地超时标记。回归覆盖超时后 XHR 成功、普通 AbortError 不发 XHR，并保留 Range / ETag / 错误响应测试。
+- **大陆核心断流的 Range 恢复必须能校验版本**（2026-11-22，诊断包 #2903 / #2907 / #2910 复核）：CN `/_cn/emulatorjs/cores/*-wasm.data` 经 EdgeOne 返回 206，却带弱 ETag，且跨源页面读不到 `Content-Range`、`ETag` 与编码头；这会阻止浏览器验证 `If-Range` 并安全续接，恢复时只能再拉整份核心，可能加重首字节前停滞后的下载失败。源站仅在内容哈希匹配时给核心 Range 响应完整 SHA-256 强 ETag，`/_cn/emulatorjs/` 暴露 Range 校验所需响应头；`EJS_CORE_URL_EPOCH` 仅给核心二进制换查询版本以绕过无法清除的旧边缘响应头缓存，核心内容哈希不变。不能据此断言此前的网络中止完全由响应头导致。回归：`npm run test:precompressed-static`、`npm run test:cn-edge`、`npm run test:ejs-cores`。
 - **核心启动看门狗不计后台时间**（同一现场）：手机浏览器将游戏页放后台约 278 秒后冻结轮询与 WASM 解压 / 编译；旧适配器仍用墙钟判断 120 秒无活动，回来时立即误报「下载游戏核心 100% 卡住」。隐藏时暂停轮询，回到前台重置心跳并恢复完整预算；若前台仍无活动，之后照常报错。
 
 - **「Cannot allocate Wasm memory」先看是不是 32 位浏览器**（2026-11-11 大陆 Chrome 109 / Windows，8GB、4 核，

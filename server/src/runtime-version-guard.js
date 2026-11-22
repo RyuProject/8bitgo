@@ -62,6 +62,10 @@ export function runtimeVersionGuard(root, { prefixes = CONTENT_VERSIONED_PREFIXE
           warned.add(key)
           log(`[runtime-version] ${urlPath} 请求版本 ${expected}，磁盘内容是 ${info.sha256.slice(0, 16)}：本次响应 no-store（部署中或版本表过期）`)
         }
+      } else if (info && urlPath.startsWith('/emulatorjs/cores/') && urlPath.endsWith('-wasm.data')) {
+        // Range 续传要用强 ETag 证明前后两段字节相同；弱 ETag 不能用于 If-Range。
+        // 仅对版本校验通过的核心使用完整 SHA-256，版本不匹配仍只发 no-store。
+        res.setHeader('ETag', `"sha256-${info.sha256}"`)
       }
     } catch {
       // 算不出哈希就当不一致处理：宁可这一次不缓存，也不能把不确定的内容锁进边缘一年
