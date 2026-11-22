@@ -357,6 +357,29 @@ export async function getSockdriveConversion(id) {
   return publicJob(await queryOne('SELECT * FROM sockdrive_conversion_jobs WHERE id = ?', [id]))
 }
 
+async function retryExecutableSnapshot(row) {
+  const game = await queryOne('SELECT id, dos_executable FROM games WHERE id = ?', [row.game_id])
+  if (!game) throw Object.assign(new Error('原游戏已删除，不能重试这个转换任务'), { status: 409 })
+
+  let effective = String(game.dos_executable || '').trim()
+  let expected = effective
+  if (row.lang) {
+    const languageRom = await queryOne(
+      'SELECT dos_executable FROM game_roms WHERE game_id = ? AND lang = ?',
+      [game.id, row.lang],
+    )
+    const languageExecutable = String(languageRom?.dos_executable || '').trim()
+    // 语言槽留空时播放器会回退默认 EXE，但绑定时仍要守住语言槽自身的原值。
+    if (languageExecutable) effective = languageExecutable
+    expected = languageExecutable
+  }
+  const executable = validExecutable(effective)
+  if (!executable) {
+    throw Object.assign(new Error('当前游戏的启动 EXE 无效；请先保存游戏盘内的 .exe 相对路径'), { status: 409 })
+  }
+  return { executable, expected }
+}
+
 export async function retrySockdriveConversion(id) {
   const row = await queryOne('SELECT * FROM sockdrive_conversion_jobs WHERE id = ?', [id])
   if (!row) return null
@@ -369,9 +392,20 @@ export async function retrySockdriveConversion(id) {
    * 两次外部等待曾超过 Cloudflare 时限直接回 504。processJob 本来就会按 ETag 重新校验源文件，
    * 并在 publish_started 时先检查已提交元数据；把 I/O 留给后台既不降低安全性，也让请求立即返回。
    */
+  /*
+   * 失败源保留给管理员修配置后直接重试。如果仍沿用任务创建时的 executable 快照，
+   * “源文件找不到 1.exe”这类错误会把同一份 ZIP 永久卡死，逼人重新上传数百 MB。
+   * 只有尚未发布时才重取配置；发布过的磁盘内已经写入启动脚本，不能把元数据改成另一套入口。
+   */
+  const executable = row.publish_started
+    ? { executable: row.executable, expected: row.expected_executable }
+    : await retryExecutableSnapshot(row)
   const claimed = await query(
-    "UPDATE sockdrive_conversion_jobs SET status = 'queued', progress = 0, error = NULL, message = '手动重试', completed_at = NULL WHERE id = ? AND status = 'failed'",
-    [id],
+    `UPDATE sockdrive_conversion_jobs
+      SET executable = ?, expected_executable = ?, status = 'queued', progress = 0, error = NULL,
+        message = '按当前游戏配置重新排队', completed_at = NULL
+      WHERE id = ? AND status = 'failed'`,
+    [executable.executable, executable.expected, id],
   )
   if (claimed.affectedRows !== 1) throw Object.assign(new Error('任务状态刚刚变化，请刷新后再试'), { status: 409 })
   schedulePump()
