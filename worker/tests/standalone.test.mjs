@@ -17,6 +17,14 @@ test('standalone bundle completes the multipart round trip',async()=>{
   const r=await standalone.fetch(req('/a?uploadId='+s.uploadId,'POST',{parts:[p],marker:s.marker},{},true),e)
   assert.equal(r.status,200);assert.equal((await r.json()).markerRemoved,true);assert.equal(await(await standalone.fetch(req('/a'),e)).text(),'data')
 })
+test('standalone bundle supports the one-upload Sockdrive staging copy',async()=>{
+  for(const handler of [modular,standalone]){
+    const e=environment();const data=new Uint8Array(32*1024).fill(0x42);const source=e.ROMS.seed('roms/dos/game.zip',data)
+    const destination='sockdrive-staging/12345678-1234-1234-1234-123456789abc.zip'
+    const r=await handler.fetch(req('/'+destination,'POST',{sourceKey:source.key,sourceSize:source.size,sourceEtag:source.httpEtag},{},true),e)
+    assert.equal(r.status,200);assert.deepEqual(e.ROMS.objects.get(destination).data,data)
+  }
+})
 test('standalone embed blocks absolute upstream input',async()=>{
   assert.equal((await embed.fetch(req('/vcsky/https://untrusted.test/a'),{VCSKY_UPSTREAM:'https://trusted.test/vcsky/'})).status,400)
 })

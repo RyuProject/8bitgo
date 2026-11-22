@@ -603,6 +603,85 @@ async function dropMarker(env, key, uploadId, supplied) {
     return true
   } catch { return false }
 }
+
+/**
+ * 复用已上传的公开 ZIP 生成私有转换源，避免浏览器把同一份 1GB ZIP 再上行一次。
+ * R2 的 GET 与 PUT 都走流；FixedLengthStream 让 R2 知道长度，并在字节数变化时拒绝提交。
+ */
+async function copyRomToSockdriveStaging(request, env, destination, cors) {
+  if (!/^sockdrive-staging\/[a-f0-9-]{16,}\.zip$/i.test(destination)) {
+    throw new HttpError(400, '无效的 Sockdrive staging key')
+  }
+  const body = await readJson(request, 4096)
+  const sourceKey = String(body.sourceKey || '').trim()
+  const sourceSize = Number(body.sourceSize)
+  const sourceEtag = String(body.sourceEtag || '').trim()
+  if (!validKey(sourceKey) || !sourceKey.startsWith('roms/') || !/\.zip$/i.test(sourceKey)) {
+    throw new HttpError(400, '只允许从公开 ROM ZIP 创建 Sockdrive staging')
+  }
+  if (!Number.isSafeInteger(sourceSize) || sourceSize < 32 * 1024 || sourceSize > 1900 * 1024 * 1024) {
+    throw new HttpError(400, 'ROM ZIP 大小超出 Sockdrive 转换范围')
+  }
+  if (!/^"[^"\r\n]{1,250}"$/.test(sourceEtag)) throw new HttpError(400, '缺少公开 ROM 的强 ETag')
+
+  const existing = await env.ROMS.head(destination)
+  if (existing) {
+    const metadata = existing.customMetadata || {}
+    if (existing.size === sourceSize && metadata.sockdriveSourceKey === sourceKey && metadata.sockdriveSourceEtag === sourceEtag) {
+      return json({ ok: true, key: destination, size: existing.size, etag: existing.httpEtag, reused: true }, cors)
+    }
+    throw new HttpError(409, '这个 staging key 已被另一份 ZIP 占用')
+  }
+
+  const source = await env.ROMS.get(sourceKey, { onlyIf: new Headers({ 'If-Match': sourceEtag }) })
+  if (!source) throw new HttpError(404, '完整回退 ZIP 不存在')
+  if (!('body' in source)) throw new HttpError(412, '完整回退 ZIP 已变化，请重新上传后再生成流式盘')
+  if (source.httpEtag !== sourceEtag) throw new HttpError(412, '完整回退 ZIP 版本不匹配，请重新上传后再生成流式盘')
+  if (source.size !== sourceSize) throw new HttpError(409, '完整回退 ZIP 大小与上传结果不一致')
+
+  let copied
+  if (typeof FixedLengthStream === 'undefined') {
+    // Node 离线测试没有 Workerd 的定长流；生产 Worker 必须走下面的长度校验分支。
+    copied = await env.ROMS.put(destination, source.body, {
+      httpMetadata: { contentType: 'application/zip' },
+      customMetadata: { sockdriveSourceKey: sourceKey, sockdriveSourceEtag: sourceEtag },
+      onlyIf: { etagDoesNotMatch: '*' },
+    })
+  } else {
+    const fixed = new FixedLengthStream(source.size)
+    const cancel = new AbortController()
+    let pumpError
+    const pumping = source.body.pipeTo(fixed.writable, { signal: cancel.signal })
+      .catch((error) => { pumpError = error })
+    try {
+      copied = await env.ROMS.put(destination, fixed.readable, {
+        httpMetadata: { contentType: 'application/zip' },
+        customMetadata: { sockdriveSourceKey: sourceKey, sockdriveSourceEtag: sourceEtag },
+        onlyIf: { etagDoesNotMatch: '*' },
+      })
+      await pumping
+      if (pumpError) throw pumpError
+    } catch (error) {
+      cancel.abort(error)
+      if (!fixed.readable.locked) await fixed.readable.cancel(error).catch(() => {})
+      await pumping
+      throw error
+    }
+  }
+  if (!copied) {
+    const raced = await env.ROMS.head(destination)
+    const metadata = raced?.customMetadata || {}
+    if (raced?.size === sourceSize && metadata.sockdriveSourceKey === sourceKey && metadata.sockdriveSourceEtag === sourceEtag) {
+      return json({ ok: true, key: destination, size: raced.size, etag: raced.httpEtag, reused: true }, cors)
+    }
+    throw new HttpError(409, 'Sockdrive staging 已被并发请求占用')
+  }
+  if (copied.size !== sourceSize) {
+    await env.ROMS.delete(destination)
+    throw new HttpError(503, 'Sockdrive staging 复制长度不完整')
+  }
+  return json({ ok: true, key: destination, size: copied.size, etag: copied.httpEtag, reused: false }, cors)
+}
 async function handle(request, env, url, cors) {
   if (request.method === 'OPTIONS') {
     if (request.headers.has('Origin') && !cors['Access-Control-Allow-Origin']) return json({ error: 'origin not allowed' }, cors, 403)
@@ -619,7 +698,7 @@ async function handle(request, env, url, cors) {
       writable: Boolean(env.ADMIN_TOKEN),
       multipart: true,
       // 制作机在启用自动队列前会检查这两个能力；旧 Worker 不会误接收随后必坏的 Brotli 产物。
-      features: { privateStagingRead: true, contentEncodingUpload: true },
+      features: { privateStagingRead: true, contentEncodingUpload: true, sockdriveSourceCopy: true },
       time: new Date().toISOString(),
     }, cors)
   }
@@ -636,6 +715,9 @@ async function handle(request, env, url, cors) {
     return objectList(env, url, cors)
   }
   if (path === 'multipart') return handleMultipartIndex(request, env, url, cors)
+  if (request.method === 'POST' && !url.search && /^sockdrive-staging\/[a-f0-9-]{16,}\.zip$/i.test(path)) {
+    return copyRomToSockdriveStaging(request, env, path, cors)
+  }
   if (path === 'bulk') {
     if (request.method !== 'POST') return methodNotAllowed(cors, 'POST, OPTIONS')
     const body = await readJson(request, MAX_JSON_BYTES)

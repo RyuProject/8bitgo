@@ -17,6 +17,8 @@ export interface SockdriveConversionCapability {
   reason: string
   maxSourceBytes: number
   format: string
+  /** 生产 Worker 支持用同桶复制代替浏览器重复上传；旧 Worker 仍走兼容上传路径。 */
+  sourceCopyAvailable?: boolean
 }
 
 export interface SockdriveConversionJob {

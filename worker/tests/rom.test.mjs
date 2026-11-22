@@ -58,6 +58,77 @@ test('public objects send Timing-Allow-Origin so diagnostics can see transfer si
   const r = await worker.fetch(req('/roms/nds/game.nds.8bg'), e)
   assert.equal(r.headers.get('Timing-Allow-Origin'), '*')
 })
+test('Sockdrive source copy stays inside R2, locks the source ETag, and is idempotent', async () => {
+  const e = environment()
+  const sourceBytes = new Uint8Array(32 * 1024).fill(0x5a)
+  const source = e.ROMS.seed('roms/dos/game.zip', sourceBytes)
+  const destination = 'sockdrive-staging/12345678-1234-1234-1234-123456789abc.zip'
+  const body = { sourceKey: source.key, sourceSize: source.size, sourceEtag: source.httpEtag }
+  const first = await worker.fetch(req(`/${destination}`, 'POST', body, {}, true), e)
+  assert.equal(first.status, 200)
+  assert.deepEqual(await first.json(), {
+    ok: true, key: destination, size: source.size,
+    etag: e.ROMS.objects.get(destination).httpEtag, reused: false,
+  })
+  assert.equal(count(e.ROMS, 'get'), 1)
+  assert.equal(count(e.ROMS, 'put'), 1)
+  assert.deepEqual(e.ROMS.objects.get(destination).data, sourceBytes)
+
+  const retry = await worker.fetch(req(`/${destination}`, 'POST', body, {}, true), e)
+  assert.equal(retry.status, 200)
+  assert.equal((await retry.json()).reused, true)
+  assert.equal(count(e.ROMS, 'get'), 1)
+  assert.equal(count(e.ROMS, 'put'), 1)
+  assert.equal((await worker.fetch(req(`/${destination}`), e)).status, 401)
+})
+test('Sockdrive source copy rejects stale ETags and non-ROM source keys', async () => {
+  const e = environment()
+  const source = e.ROMS.seed('roms/dos/game.zip', new Uint8Array(32 * 1024).fill(0x5a))
+  const destination = 'sockdrive-staging/12345678-1234-1234-1234-123456789abc.zip'
+  const stale = await worker.fetch(req(`/${destination}`, 'POST', {
+    sourceKey: source.key, sourceSize: source.size, sourceEtag: '"stale"',
+  }, {}, true), e)
+  assert.equal(stale.status, 412)
+  assert.equal(count(e.ROMS, 'put'), 0)
+
+  const privateSource = await worker.fetch(req(`/${destination}`, 'POST', {
+    sourceKey: 'sockdrive-staging/another-source.zip', sourceSize: source.size, sourceEtag: source.httpEtag,
+  }, {}, true), e)
+  assert.equal(privateSource.status, 400)
+  assert.equal(count(e.ROMS, 'put'), 0)
+})
+test('Sockdrive source copy uses the known-length streaming path available in Workerd', async () => {
+  class FixedLengthShim extends TransformStream {
+    constructor(expected) {
+      let total = 0
+      super({
+        transform(chunk, controller) {
+          total += chunk.byteLength
+          if (total > expected) throw Error('too many bytes')
+          controller.enqueue(chunk)
+        },
+        flush() { if (total !== expected) throw Error('too few bytes') },
+      })
+    }
+  }
+  const previous = globalThis.FixedLengthStream
+  globalThis.FixedLengthStream = FixedLengthShim
+  try {
+    const e = environment()
+    const sourceBytes = new Uint8Array(32 * 1024).fill(0x31)
+    const source = e.ROMS.seed('roms/dos/stream.zip', sourceBytes)
+    const destination = 'sockdrive-staging/abcdefab-cdef-abcd-efab-cdefabcdefab.zip'
+    const response = await worker.fetch(req(`/${destination}`, 'POST', {
+      sourceKey: source.key, sourceSize: source.size, sourceEtag: source.httpEtag,
+    }, {}, true), e)
+    assert.equal(response.status, 200)
+    assert.equal(e.ROMS.stats.streamWrites, 1)
+    assert.deepEqual(e.ROMS.objects.get(destination).data, sourceBytes)
+  } finally {
+    if (previous === undefined) delete globalThis.FixedLengthStream
+    else globalThis.FixedLengthStream = previous
+  }
+})
 test('CS1.5 and CS1.6 assets prefer WEBGAMES and fall back to the legacy ROMS bucket', async () => {
   const e=environment(); e.WEBGAMES=new Bucket('webgames')
   e.ROMS.seed('web/cs15/packs/index.json','legacy-cs15')
@@ -276,6 +347,11 @@ test('HEAD never returns a body and ignores Range', async () => {
 })
 test('HEAD errors and ping have no body', async () => {
   const e=environment(); for(const path of ['/missing','/ping','/%GG']) assert.equal((await worker.fetch(req(path,'HEAD'),e)).body,null)
+})
+test('ping advertises the Sockdrive source-copy capability', async () => {
+  const response = await worker.fetch(req('/ping'), environment())
+  const data = await response.json()
+  assert.equal(data.features.sockdriveSourceCopy, true)
 })
 for(const [range,status,body,cr] of [
   ['bytes=1-3',206,'bcd','bytes 1-3/6'],['bytes=-2',206,'ef','bytes 4-5/6'],
