@@ -124,6 +124,16 @@ grep -c 'this.functions.saveStateInfo()' public/emulatorjs/emulator.min.js   # �
   适配器现在仅对远端 8BG GBA 的启动期 table trap 清理 ROM 缓存与续传片、强制网络重取一次；刷新后仍失败则删除刚写入的缓存并停止，不循环重试。新增恢复只依赖 `isWasmRuntimeCrash` 识别真实 RuntimeError，不看核心普通日志。
   本地已实测排除 SRAM / Flash 存档（含错尺寸、乱码）、金手指、mGBA 全部核心选项、回退 / 快进 / 旋转、LCD shader；再出现先看诊断包里的 `describeBootState` 行和 `[core-crash]` / ROM 刷新日志。
 
+### 2.7.1.1 `Aborted(undefined)` 是引擎自己的退出，不是核心崩溃（2026-11-22，诊断包 #2744《黄金太阳》）
+
+EmulatorJS 在 iframe 的 `beforeunload` 上触发 exit：存档 → `restart()` → 停主循环 → 1 秒后 `Module.abort()`（不带参数，
+原文 `Aborted(undefined)`）。顶层导航 / 刷新 / 下载链接都会让子框架收到 beforeunload；弱网下旧页面 1 秒后还活着就被报成
+「运行中崩溃」，导航被取消时玩家还对着一块死画面。核心自己的 C abort 打的是 `Aborted()`（空串），两者能分开。
+`src/emulator/ejsUnloadGuard.ts` 在 loader.js 之前挂捕获阶段的 beforeunload，`stopImmediatePropagation` 挡住引擎的 exit，
+改为我们自己刷电池存档（不 preventDefault，不弹「确定离开」）；`EJS.on('exit')` 之后 10 秒内的 `Aborted(undefined)` 不再按崩溃报。
+已排除：单机不会周期性 getState；mGBA 的 `save_state_info` 用静态指针、每次先 free 上一份，不漏，不需要 v3 胶水。
+回归：`node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-ejs-unload-guard.mjs`（并入 `test:ejs-failure-reasons`）。
+
 ### 2.7.2 🔴 共享引擎坏一处 = 全站游戏打不开：五道防线不准拆（2026-11-17 事故）
 
 **经过**：79be63d 给 `patch-emulatorjs.mjs` 加了一段 XHR 兜底，补丁字符串里写了正则 `/^(?:text/html|…)\b/i`。
@@ -1945,11 +1955,29 @@ Ruffle 的远程 SWF 由 `loadGameBytes()` 下载，它已经把断流、HTTP 5x
 
 Ruffle 核心预热只有在清单选中的 core JS 与 WASM 都读到结束后才算成功。预热失败要从 URL 去重表移除、允许下一局重试，并在诊断包标明失败；不能把“失败后放弃”记录成“预热完成”。大核心的悬停预热按省流量、网络类型、吞吐与 RTT 门控；玩家点击开始后仍与 SWF 并行预热核心。回归：`npm run test:ruffle-runtime && npm run test:ruffle-saves && npm run test:game-controls && npm run test:keymap`。
 
+### 2.24.0e.1 运行时模块按进展计时；大陆加速线路判坏记 2 小时（2026-11-22，#2756 / #2758《暴力摩托》）
+
+`loadMountOf` 的 60 秒时限以前从播放器挂载起按墙钟算，EdgeOne 对这位访客只有约 6KB/s 但一直在下，到点就判超时；js-dos.js 的
+25 秒改道逻辑在 mount 里，根本没轮到。现在 `src/emulator/moduleLoadDeadline.ts`：同目录 JS / CSS 每完成一个就重新计时，
+连续 60 秒没进展才判、总上限 180 秒（文案带「60 秒没有进展」/「180 秒仍未完成」，诊断归组特征随之变化）。
+模块本身在加速入口上超时（`assetsOnCnEdge`）时，EmulatorPlayer 带 `__assets=origin` 整页重开一次（已是主站资源页不再跳，防循环）。
+`src/emulator/runtimeEdgeRoute.ts` + `runtimeEdgeWatch.ts`：js-dos 运行时下载失速（30 秒零字节）、一段（≥20 秒）总吞吐 < 24KB/s、
+或入口脚本在加速入口失败 / 超时，就本页改同源、中止坏线上的预热并改同源重拉，结论写 localStorage `8bitgo.runtime-edge-bad.v1`（按运行时分，2 小时）。
+`runtimeBase` 每页每种运行时只读一次这个结论。**目前只接了 js-dos**：EmulatorJS / Ruffle 的同源线对多数大陆访客更慢，误判代价大，接之前要有现场证据。
+回归：`npm run test:runtime-edge-route`。
+
 ### 2.24.0f 运行时入口加载不能无限等待（2026-11-19）
 
 启动诊断若只有 `start_click → timeout`，且没有 ROM 完成事件或适配器阶段日志，不能据此归因成 ROM / 核心下载故障。播放器在调用适配器前会先动态导入运行时模块；该导入曾没有时限，若浏览器端代码分块请求一直 pending，适配器不会挂载、也没有机会报告进度，玩家只会在 120 秒后得到通用超时事件。`loadMountOf()` 现在 60 秒超时并清掉失败 promise，让错误状态和重试入口及时出现；播放器会记录模块加载起止，Ruffle 每个启动阶段也必须调 `onStartupActivity()`，避免已经推进的 iframe 启动被外层看门狗误判为静止。单份现场只能确认停在适配器首次可观测阶段之前，不能反推当时具体是哪条模块请求挂起。
 
 ### 2.24.0g React #185 优先于旧资源错误（2026-11-20）
+
+**2026-11-22 定位到的最可能来源（未能复现）**：`LiveControls.tsx` 的 `coopCtl` 每次渲染新建对象，又在调用 `onControls`（父组件 `setLiveCtl`）的 effect 依赖里；
+`coopReady`（有 2P 键位且正在直播，默认自动开播）为真时就形成 渲染 → effect → setState → 渲染 的循环，任何一次同步更新（点击、按键、resize）都会让 React 数满 50 层抛 #185。
+《森林冰火人 4》直接命中；「NES 页面上 Ruffle 跑了 41.6 秒」是 SPA 跳转时 `usePageData` 保留旧页数据、旧 Flash 播放器还挂着，而崩溃报告按地址栏取 slug。
+修法：`coopCtl` 改 `useMemo`（只依赖原始值和稳定回调）；父组件经 `acceptLiveCtl` + `sameLiveControls` 按值去重。**往 effect 依赖里放对象、effect 里又回调父组件 setState 的写法不要再用。**
+回归：`npm run test:player-runtime-state`。直播中的双人 Flash 游戏上线后要实测一次。
+
 
 React 19 的 `Minified React error #185` 是最大更新深度超限，表示组件树出现连续状态更新；组件栈只到 `EmulatorPlayer` 时，还不足以确定是哪一个 hook / 回调触发，必须保留组件栈和同次启动阶段继续定位。#1533 的游戏记录是 NES《超级玛丽奥兄弟》，但快照却报告 Ruffle 已运行 41.6 秒，运行时与游戏记录互相矛盾，不能据此断言模拟器已启动或把原因归到 Ruffle。列表里唯一 HTTP 400 是 459 秒前的 `u.clarity.ms/collect`，与本次故障无关。`server/src/startup-diagnostics.js` 对 #185 单独归类，资源 HTTP 错误只有发生在开局前后 30 秒内才参与判断，近期第三方错误仍只作中把握度线索；旧的 Resource Timing 不能盖过当前页面错误。`EmulatorPlayer` 对重复的能力、几何、双屏布局回报按值去重，避免相同状态不断生成新引用触发多余渲染。此保护针对可证实的更新放大路径；当前证据仍未定位到 #1533 的具体业务更新源。回归：`npm run test:player-runtime-state && npm run test:startup-diagnostics`。
 
@@ -2827,6 +2855,17 @@ magic、v4、节点平方矩阵、压缩段和每节点 4 字节尾部统计，�
 最多每帧更新一次；启动器提前取清单时必须在玩家点击开始后重置测速时钟，不能把玩家选地图的时间
 算成“下载很慢”。资源域预连接与 13KB catalog 可以提前，60MB 内容包不能在点击开始前偷跑。
 
+### 2.28.4.1.1 大陆访客的 CS1.6 走 EdgeOne 镜像，失败回 Pages（2026-11-22）
+
+cs16.8bitgo.com（Pages）从部分大陆网络打不开，而 cn.8bitgo.com/web/cs16（EdgeOne → 源站）秒开。`adapters/html5.ts` 的
+`CN_MIRRORED_PAGES_ENTRIES`（目前只有 cs16）：大陆访客（`coverCdnHint()==='cn'` 或 `onCnSite()`）用 `/web/cs16`（页面本身已由 EdgeOne 提供时同源，
+否则 `https://cn.8bitgo.com/web/cs16`），非大陆访客照旧 Pages。20 秒（只数前台）没有生命周期桥信号、同源加载后没有 `#canvas`、iframe error
+或桥报 failed，就回 Pages 一次。AI 修补的 `runtimeOrigin` 会关掉镜像。源站 `/web/cs16` 由 `server/src/web-game-html.js` 注入与 Pages 构建相同的
+媒体桥 / SDK / 运行时桥（按 sha256 带版本），失败照发原文件。房间与中继按页面同源连接，EdgeOne 上 WebSocket 和子协议已实测 101。
+EdgeOne 缓存 `/web/cs16` 一小时且没有清缓存通道：部署后这段时间里，从 8bitgo.com 跨源嵌入 cn 的大陆访客拿不到桥信号，会在 20 秒后回 Pages。
+其它 Pages 游戏（PvZ 依赖 Pages 专属 `/pvz-data` 代理和存档桥来源，Terraria / Celeste / GTA VC 要跨源隔离）没有切，切之前要逐文件核对。
+回归：`npm run test:html5-pages-bridge`。
+
 ### 2.28.4.2 CS1.6 启动页复用原版资产；联机只能走后端已验证目标 WSS↔UDP
 
 启动页的背景与 Logo 不是重新画的：`public/web/cs16/ui/` 来自基础包里的原版 800×600 菜单拼图和
@@ -3550,6 +3589,16 @@ melonDS DS 的包换了，要同步四处：报告 sha256、`NDS_MODERN_CORE_BUI
   不进 git；按 sha 跳过未变的，相同内容只压一次（首次全量约 1 分钟）。中间件只在原文件字节数与 `.br.json` 一致时才吐 .br，
   wasm 必须带 `Content-Type: application/wasm`，否则流式编译直接失败。⚠️ 这些文件在 Cloudflare / EdgeOne 上是一年长缓存，
   上线新压缩版要清掉对应 URL 的边缘缓存，否则继续吐旧的现场压缩副本。
+
+### 2.32.0.2 PPSSPP v24：两个带 v128 的 `invoke_` 导入改走 Wasm 跳板（2026-11-22，诊断包 #2481《初音未来：歌姬计划》）
+
+`type incompatibility when transforming from/to JS` 不是 QQ 浏览器特有：WebAssembly JS API 任何浏览器都不让 v128 过 JS 边界。
+核心里只有 `invoke_iiViijjji` / `invoke_iiViijjjij` 两个导入签名带 v128，调用点全在 `GamepadEmuView` 构造（PPSSPP 自带触屏按键，
+`bShowTouchControls`；桌面 SDL 构建默认关）。玩家在 PPSSPP 菜单里打开触屏按键就崩，且设置按游戏存在 IDBFS，之后每次开局都崩。
+v24（`scripts/refresh-ppsspp-simd-v24.mjs` 从 v23 生成，Wasm / data 不变）在胶水里造一个 145 字节的辅助模块，导出同签名函数、
+经自己的表 `call_indirect`，`receiveInstance` 后把主表拷过去；构建失败就保留原包装并记日志。i64 / BigInt 不是原因（构建用 WASM_BIGINT，
+缺 BigInt 集成会在开机就失败）。根治要改 `GamepadEmu.cpp` 不按值传那个被打包成 v128 的结构，或用原生 Wasm 异常重编。
+回归：`node scripts/test-ppsspp-simd-trampoline.mjs`（并入 `test:ppsspp`）。还没在真浏览器里开过触屏按键验证。
 
 ### 2.32.1 PSP 必须留在普通详情页内启动，不能再复用 PS2 的独立播放器外壳
 

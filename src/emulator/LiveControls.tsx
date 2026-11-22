@@ -824,20 +824,30 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
     if (b && want) b.grantSeat(want)
   }, [])
   const coopDismiss = useCallback(() => setSeatWant(null), [])
-  const coopCtl: LiveControlsHandle['coop'] = coopReady
+  /*
+    ⚠️ 必须 useMemo。它在下面那个 effect 的依赖里，effect 会把整份开关交给父组件（setLiveCtl）。
+    以前这里每次渲染都是新对象：一旦「同屏双打的 Flash（森林冰火人这类 p2 键位）+ 正在直播」
+    让 coopReady 成立，就是 渲染 → effect → 父组件 setState → 再渲染 → 新对象 → effect …… 的死循环。
+    普通优先级下它只是空转烧 CPU；玩家一次点击 / 按键 / resize 让这轮渲染变成同步优先级后，
+    React 数到 50 层就抛 #185（Maximum update depth exceeded），整页落进兜底页。
+    2026-11-17《森林冰火人 4》、11-20 从 Flash 页切到《超级马里奥》（快照里还是 Ruffle 在跑）都是这条。
+  */
+  const seatWantName = seatWant?.name
+  const hasSeatWant = Boolean(seatWant)
+  const coopCtl = useMemo<LiveControlsHandle['coop']>(() => coopReady
     ? {
         on: Boolean(seatOf),
-        label: seatOf ? t.player.coopSeated : seatWant ? t.player.coopLet : t.player.coop,
-        hint: seatOf ? t.player.coopKickHint : seatWant ? t.player.coopLetHint : t.player.coopIdleHint,
+        label: seatOf ? t.player.coopSeated : hasSeatWant ? t.player.coopLet : t.player.coop,
+        hint: seatOf ? t.player.coopKickHint : hasSeatWant ? t.player.coopLetHint : t.player.coopIdleHint,
         toggle: coopToggle,
         // 已经有人在场时不再提示新的请求：座位只有一个，先把当前这位请下去
-        pending: Boolean(seatWant) && !seatOf,
-        who: seatWant?.name,
+        pending: hasSeatWant && !seatOf,
+        who: seatWantName,
         accept: coopAccept,
         dismiss: coopDismiss,
         nudge: coopNudge,
       }
-    : null
+    : null, [coopReady, seatOf, hasSeatWant, seatWantName, coopNudge, coopToggle, coopAccept, coopDismiss, t.player])
 
   useEffect(() => {
     if (!onControls) return

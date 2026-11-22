@@ -1689,6 +1689,7 @@ export const zhHans = {
     ejsOutOfMemoryLowmem: '已经换成低内存模式，浏览器仍然分配不出模拟器需要的内存，原地重试也不会好。请把浏览器更新到最新版，或换一个浏览器再试；关掉其它标签页和应用也可能有用。',
     ejsOutOfMemoryVendor: '你正在用 {browser} 打开，它给网页的内存不够启动这个模拟器（已经试过低内存模式），重试也不会好。请用 Chrome、Edge 或 Firefox 打开本页再玩；在应用里打开的，点右上角「在浏览器打开」。',
     memoryCleanRetry: '内存不够，正在换一个干净的页面重开一次…',
+    originAssetsRetry: '加速线路太慢，正在改从主站重新载入…',
     ejsWebglUnavailable: '浏览器无法创建 WebGL 画面。请开启硬件加速，或换用支持 WebGL 的浏览器或设备',
     ejsScriptConflict: '浏览器里有别的脚本（常见是浏览器扩展）和模拟器用了同一个全局名「{name}」，模拟器无法启动。请停用浏览器扩展，或在无痕窗口里打开再试',
     ejsArcadeRomInvalid: '街机游戏文件不完整或不是有效的 ZIP：{name}',

@@ -189,7 +189,7 @@ assert.match(ruffle, /markRuffleEdgeFailed\(\)\s*ruffleRoot = RUFFLE_PATH/, 'ruf
 assert.match(ruffle, /if \(!started\) markRuffleEdgeFailed\(\)/, '开局前报错让自动重试走同源')
 const jsdos = readFileSync(new URL('../../src/emulator/adapters/jsdos.ts', import.meta.url), 'utf8')
 assert.match(jsdos, /script\.src = `\$\{root\}js-dos\.js`/)
-assert.match(jsdos, /markJsdosEdgeFailed\(\)\s*css\.remove\(\)/, 'js-dos.js 取不到当场换同源')
+assert.match(jsdos, /(?:markJsdosEdgeFailed\(\)|markRuntimeEdgeBad\('jsdos'\))\s*css\.remove\(\)/, 'js-dos.js 取不到当场换同源（并持久化判坏）')
 assert.match(jsdos, /if \(usedJsdosEdge && !readySent\) markJsdosEdgeFailed\(\)/)
 assert.match(jsdos, /pathPrefix: emulatorsPrefix,/)
 assert.match(jsdos, /emulatorsGlobal\.pathPrefix = emulatorsPrefix/, '已加载的 emulators.js 要跟着换线路')

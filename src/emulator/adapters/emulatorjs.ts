@@ -174,6 +174,7 @@ import { findDipOptions, planDipChanges, type DipPlan } from '../dipPlan'
 import { diagLog, watchFramePerformance } from '@/services/startupDiagnostics'
 import { browserBitness, probeBrowserBitness } from '../browserBitness'
 import { createBatterySync, type BatteryFs, type BatterySync } from '../batterySync'
+import { guardEngineAutoUnload, isPlannedEngineExitAbort } from '../ejsUnloadGuard'
 import { batterySaveGameName, copyEngineSettingsToSystem, describeBootState, guardIdbfsPersist, migrateEngineSettingsKey, migrateLegacyBatterySaves, type IdbfsLike, type SaveFsLike } from '../ejsSaveFs'
 import { hotfixFlags } from '@/services/hotfixFlags'
 
@@ -3205,6 +3206,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    */
   let loadFailed = false
   let crashReported = false
+  /**
+   * 引擎最近一次走 exit 流程的时刻（EJS.on('exit')）。exit 会在 1 秒后 `Module.abort()`，
+   * 那句 `Aborted(undefined)` 是计划内的收尾，不能报成核心崩溃（见 ejsUnloadGuard.ts）。
+   */
+  let engineExitAt = 0
+  /** 卸掉 iframe 上那条拦引擎自动退出的 beforeunload（见 ejsUnloadGuard.ts） */
+  let stopUnloadGuard: (() => void) | null = null
   /** 开局前的致命错误：报上去并停掉轮询（播放器收到 onError 会把这局拆掉） */
   /** 这一局的引擎是不是从大陆加速入口取的（挂载时定下，失败后标记，下一局退回同源） */
   const usedEjsEdge = ejsUsingEdge()
@@ -3376,6 +3384,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   }
   const reportCoreCrash = (line: string) => {
     if (destroyed || crashReported || loadFailed) return
+    if (isPlannedEngineExitAbort(line, engineExitAt, Date.now())) {
+      logEngine(`[exit] 引擎退出流程收尾的 Module.abort()，不是核心崩溃：${line}`)
+      return
+    }
     // 裸 Aborted() 可能是当前浏览器进程的内存压力，设备标称内存与位数不足以判断；在崩溃当刻探测可分配的 WASM 地址空间。
     if (!started) {
       const deviceMemory = (navigator as Navigator & { deviceMemory?: number }).deviceMemory
@@ -4719,6 +4731,14 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (started || destroyed) return
     started = true
     stopStartWatch()
+    // 菜单「退出」按钮 / 其它路径仍可能触发引擎 exit：记下时刻，随后的 Aborted(undefined) 按计划内退出处理
+    try {
+      ;(win.EJS_emulator as { on?: (ev: string, cb: () => void) => void } | undefined)?.on?.('exit', () => {
+        engineExitAt = Date.now()
+      })
+    } catch {
+      /* 引擎换了实现：只是少一道过滤 */
+    }
     // 默认配置会在引擎建菜单时应用一次；这里在核心与 shader 文件系统都就绪后再核对一次，
     // 同时压过历史版本可能留下的 EmulatorJS 通用 shader 设置。
     if (options.platform === 'gba') applyGbaVideoMode(win.EJS_emulator as EjsEmulator | undefined, gbaVideoMode)
@@ -5566,6 +5586,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         // 引擎的报错探针也要赶在 loader.js 之前装：核心是在加载过程中打错误的，
         // 装晚了那句「缺哪个文件」就已经过去了
         stopFramePerf = watchFramePerformance(win)
+        // 必须赶在 loader.js 之前：拦下引擎「iframe beforeunload → exit → 1 秒后 abort」那条路，
+        // 导航被取消 / 实为下载时游戏不会被停掉，弱网下离开页面也不再被记成运行中崩溃（诊断包 #2744）
+        stopUnloadGuard?.()
+        stopUnloadGuard = guardEngineAutoUnload(win, () => {
+          logEngine('[exit] 页面将要离开：拦下引擎自动退出，先刷电池存档')
+          flushSaveFiles()
+        })
         errorTap = installErrorTap(win, reportEngineError,
           options.platform === 'nds' || (options.platform === 'gba' && isRomPackUrl(remoteGameUrl))
             ? reportCoreCrash
@@ -6215,6 +6242,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     geometryWatch = 0
     document.removeEventListener('visibilitychange', onVisibility)
     window.removeEventListener('pagehide', flushSaveFiles)
+    stopUnloadGuard?.()
+    stopUnloadGuard = null
     if (flushState) {
       window.removeEventListener('pagehide', flushState)
       flushState = null

@@ -82,3 +82,57 @@ assert.equal(
 }
 
 console.log('Pages 跨域运行桥：旧入口迁移、精确来源白名单、PvZ 发布代次与存档收尾检查通过')
+
+// —— 大陆访客的 Pages 游戏改走 EdgeOne 镜像（2026-11-22，CS1.6）——
+{
+  const { cnMirrorHtml5Entry, CN_MIRROR_FALLBACK_MS } = await import('../src/emulator/adapters/html5.ts')
+  const pages = versionHtml5Entry('/web/cs16/?room=AB12CD#x', main)
+  assert.equal(new URL(pages).origin, 'https://cs16.8bitgo.com')
+  const ctxMain = { cnVisitor: true, onCnSite: false, edgeOrigin: 'https://cn.8bitgo.com', pageOrigin: 'https://8bitgo.com' }
+  // 主域（Cloudflare）上的大陆访客：嵌 cn.8bitgo.com 的源站副本，去掉会被 301 的尾斜杠，保留查询串与 hash
+  assert.deepEqual(cnMirrorHtml5Entry(pages, ctxMain), { url: 'https://cn.8bitgo.com/web/cs16?room=AB12CD#x', readySelector: '#canvas' })
+  // 页面本身已在 EdgeOne 上（cn 子域 / NS 迁移后的主域）：同源嵌入
+  assert.equal(cnMirrorHtml5Entry(pages, { ...ctxMain, onCnSite: true, pageOrigin: 'https://cn.8bitgo.com' })?.url, 'https://cn.8bitgo.com/web/cs16?room=AB12CD#x')
+  assert.equal(cnMirrorHtml5Entry(pages, { ...ctxMain, onCnSite: true, pageOrigin: 'https://8bitgo.com' })?.url, 'https://8bitgo.com/web/cs16?room=AB12CD#x')
+  // 非大陆访客、AI 修补禁用、本地开发（无加速入口）都留在 Pages
+  assert.equal(cnMirrorHtml5Entry(pages, { ...ctxMain, cnVisitor: false }), null)
+  assert.equal(cnMirrorHtml5Entry(pages, { ...ctxMain, disabled: true }), null)
+  assert.equal(cnMirrorHtml5Entry(pages, { ...ctxMain, edgeOrigin: '' }), null)
+  assert.equal(cnMirrorHtml5Entry(pages, { ...ctxMain, onCnSite: true, pageOrigin: 'http://localhost:5173' }), null)
+  // 未逐文件核对过的 Pages 游戏不切；第三方入口、相似域名不切
+  for (const other of ['https://pvz.8bitgo.com/web/PvZ/cn/', 'https://diablo.8bitgo.com/web/diablo/', 'https://cs16.8bitgo.com.evil.com/web/cs16/', 'https://cs16.8bitgo.com/web/cs16x/']) {
+    assert.equal(cnMirrorHtml5Entry(other, ctxMain), null, other)
+  }
+  assert.ok(CN_MIRROR_FALLBACK_MS >= 10_000 && CN_MIRROR_FALLBACK_MS <= 60_000)
+  // 退回逻辑接线：超时 / iframe error / 同源错误页 / 桥报 failed 都换回 Pages，每局只退一次；SDK 识别镜像入口
+  assert.match(adapterSource, /fallbackToPages\('iframe 加载错误'\)/)
+  assert.match(adapterSource, /fallbackToPages\('大陆入口返回的不是游戏页'\)/)
+  assert.match(adapterSource, /if \(cnMirror\) armMirrorTimer\(\)/)
+  assert.match(adapterSource, /if \(!mirrorPending \|\| destroyed \|\| !pagesEntry\) return false\n\s+mirrorPending = false/)
+  assert.match(adapterSource, /cs16\.8bitgo\.com' \|\| FIRST_PARTY_SITE_HOSTS\.has\(host\)/)
+}
+
+// —— 源站 /web/cs16 补上 Pages 构建注入的桥（镜像入口靠生命周期桥确认）——
+{
+  const { injectWebGameScripts, WEB_GAME_HTML_INJECTIONS, createWebGameHtmlRenderer } = await import('../server/src/web-game-html.js')
+  const versions = { bridge: 'b'.repeat(16), media: 'm'.repeat(16), sdk: 's'.repeat(16) }
+  const source = readFileSync(new URL('../public/web/cs16/index.html', import.meta.url), 'utf8')
+  const out = injectWebGameScripts(source, WEB_GAME_HTML_INJECTIONS.cs16, versions)
+  assert.ok(out.includes(`<script src="/html5-api/8bitgo-runtime-bridge.js?v=${versions.bridge}" data-ready-selector="#canvas"></script></body>`))
+  assert.ok(out.includes(`/html5-api/8bitgo-game-sdk.min.js?v=${versions.sdk}" data-canvas-selector="#canvas"`))
+  const mediaAt = out.indexOf('8bitgo-media-bridge.js')
+  const engineAt = out.indexOf('cs16.bundle.js')
+  assert.ok(mediaAt > 0 && mediaAt < engineAt, '媒体桥必须排在引擎脚本之前')
+  assert.equal(injectWebGameScripts(out, WEB_GAME_HTML_INJECTIONS.cs16, versions), out, '重复注入必须幂等')
+  assert.equal(injectWebGameScripts(source, undefined, versions), source)
+  // 真实文件：版本号是脚本内容的 sha256 前 16 位，与 Pages 构建一致
+  const { createHash } = await import('node:crypto')
+  const sha = (rel) => createHash('sha256').update(readFileSync(new URL(`../public/${rel}`, import.meta.url))).digest('hex').slice(0, 16)
+  const rendered = createWebGameHtmlRenderer(new URL('../public', import.meta.url).pathname)('cs16')
+  assert.ok(rendered?.includes(`8bitgo-runtime-bridge.js?v=${sha('html5-api/8bitgo-runtime-bridge.js')}`))
+  assert.ok(rendered?.includes(`8bitgo-game-sdk.min.js?v=${sha('html5-api/8bitgo-game-sdk.min.js')}`))
+  assert.equal(createWebGameHtmlRenderer(new URL('../public', import.meta.url).pathname)('PvZ'), null, '未登记的游戏照发原文件')
+  const serverSource = readFileSync(new URL('../server/src/index.js', import.meta.url), 'utf8')
+  assert.match(serverSource, /const injected = renderWebGameHtml\(name\)/)
+}
+console.log('html5 大陆镜像入口：通过')

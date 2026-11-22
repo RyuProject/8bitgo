@@ -79,7 +79,8 @@ import {
   windows3xLaunchCommands,
   type WindowsLaunchCi,
 } from '../windowsLaunch'
-import { JSDOS_ASSET_VERSION, JSDOS_PATH, jsdosBase, markJsdosEdgeFailed } from '../paths'
+import { JSDOS_ASSET_VERSION, JSDOS_PATH, jsdosBase, markJsdosEdgeFailed, markRuntimeEdgeBad } from '../paths'
+import { onRuntimeEdgeBad } from '../runtimeEdgeRoute'
 import { jsdosIceEndpoint, parseIpxAddress } from '../ipxAddress'
 import {
   DOS_MOUSE_SENSITIVITY_DEFAULT,
@@ -722,19 +723,33 @@ function loadJsDos(): Promise<DosFn> {
           script.onerror?.(new Event('error'))
         }, JSDOS_EDGE_SCRIPT_TIMEOUT_MS)
       : 0
+    /*
+      预热那一路先看出加速入口失速 / 极慢（runtimeEdgeWatch.ts）时不必再等满 25 秒：
+      #2756 的 js-dos.js 在 EdgeOne 上走了 41 秒，同一页的 DOSBox-X 30 秒零字节。
+    */
+    const stopEdgeWatch = root !== JSDOS_PATH
+      ? onRuntimeEdgeBad('jsdos', () => {
+          if (scriptSettled) return
+          console.warn(`[jsdos] 加速入口已判坏，${root}js-dos.js 不再等待`)
+          script.onerror?.(new Event('error'))
+        })
+      : () => {}
     script.onload = () => {
       if (scriptSettled) return
       scriptSettled = true
       window.clearTimeout(edgeTimer)
+      stopEdgeWatch()
       return win.Dos ? resolve(win.Dos) : reject(new Error('js-dos 已加载但没有暴露 Dos()'))
     }
     script.onerror = () => {
       if (scriptSettled) return
       scriptSettled = true
       window.clearTimeout(edgeTimer)
+      stopEdgeWatch()
       if (root !== JSDOS_PATH) {
         console.warn(`[jsdos] ${root}js-dos.js 加载失败，改走同源 ${JSDOS_PATH}`)
-        markJsdosEdgeFailed()
+        // 入口脚本在加速入口上失败 / 超时是线路的硬证据：本页改走同源，并记 2 小时（重试、下一次访问都不再走它）
+        markRuntimeEdgeBad('jsdos')
         css.remove()
         script.remove()
         loading = null

@@ -4,6 +4,9 @@
  * 判断「该用哪个引擎」仍走 registry.ts + runtimeMeta.ts；只有真正选定运行时后才会取它的适配器代码。
  */
 import type { RuntimeId, RuntimeMount } from './types'
+import { isRuntimeModuleTimeout, MODULE_LOAD_IDLE_MS, MODULE_LOAD_MAX_MS, raceModuleLoad, watchModuleResources } from './moduleLoadDeadline'
+import { markRuntimeEdgeBad } from './paths'
+import { assetsFromCnEdge } from '@/services/moduleLinkRecovery'
 
 const LOADERS: Record<RuntimeId, () => Promise<RuntimeMount>> = {
   emulatorjs: () => import('./adapters/emulatorjs').then((module) => module.mount),
@@ -25,24 +28,45 @@ const LOADERS: Record<RuntimeId, () => Promise<RuntimeMount>> = {
 }
 
 const pendingLoads = new Map<RuntimeId, Promise<RuntimeMount>>()
-/** 代码分块请求偶尔会静默挂起；要早于播放器的 120 秒总看门狗给出可重试错误。 */
-const RUNTIME_MODULE_TIMEOUT_MS = 60_000
 
-/** 按选中的运行时加载并缓存挂载函数；失败时清掉 promise，允许用户重试下载代码块。 */
+/** 运行时 chunk 所在目录（生产构建里就是 /assets/ 或大陆加速入口的 /_cn/assets/） */
+function assetsDir(): string {
+  try {
+    return new URL('./', import.meta.url).href
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * 模块本身都从 EdgeOne 拿不下来时，这种运行时后面几 MB 的引擎文件更不可能走得通：持久化改走同源。
+ * 目前只接 js-dos（#2756 / #2758）；其它运行时的同源线对大陆访客普遍更慢，先不扩大。
+ */
+const EDGE_KIND_ON_MODULE_TIMEOUT: Partial<Record<RuntimeId, 'jsdos'>> = { jsdos: 'jsdos' }
+
+/**
+ * 按选中的运行时加载并缓存挂载函数；失败时清掉 promise，允许用户重试下载代码块。
+ * 时限按进展算（moduleLoadDeadline.ts）：同目录 chunk 还在陆续到齐就继续等，连续 60 秒没进展才判超时。
+ */
 export function loadMountOf(id: RuntimeId): Promise<RuntimeMount> {
   const existing = pendingLoads.get(id)
   if (existing) return existing
 
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${id} 运行时模块加载超时（60 秒），请检查网络后重试`)), RUNTIME_MODULE_TIMEOUT_MS)
-  })
-  const loading = Promise.race([LOADERS[id](), timeout]).finally(() => {
-    if (timer !== undefined) clearTimeout(timer)
+  const dir = assetsDir()
+  const loading = raceModuleLoad(LOADERS[id](), {
+    watchProgress: watchModuleResources(dir),
+    message: (reason) => reason === 'idle'
+      ? `${id} 运行时模块加载超时（${MODULE_LOAD_IDLE_MS / 1000} 秒没有进展），请检查网络后重试`
+      : `${id} 运行时模块加载超时（${MODULE_LOAD_MAX_MS / 1000} 秒仍未完成），请检查网络后重试`,
   })
   pendingLoads.set(id, loading)
-  void loading.catch(() => {
+  void loading.catch((error) => {
     if (pendingLoads.get(id) === loading) pendingLoads.delete(id)
+    if (!isRuntimeModuleTimeout(error) || typeof window === 'undefined') return
+    const onEdge = assetsFromCnEdge(dir, window.location.origin)
+    Object.defineProperty(error, 'assetsOnCnEdge', { value: onEdge, configurable: true })
+    const kind = EDGE_KIND_ON_MODULE_TIMEOUT[id]
+    if (onEdge && kind) markRuntimeEdgeBad(kind)
   })
   return loading
 }

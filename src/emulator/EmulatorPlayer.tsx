@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react'
-import { importWithRetry, lazyChunkFile, tagLazyFailure } from '@/services/moduleLinkRecovery'
+import { importWithRetry, lazyChunkFile, onOriginAssetsPage, originAssetsUrl, tagLazyFailure } from '@/services/moduleLinkRecovery'
+import { isRuntimeModuleTimeout } from './moduleLoadDeadline'
 import { useNavigate } from 'react-router-dom'
 import type { ArcadeButtonCount, DosBackend, DosWindowsVersion, FlashControls, Game, GenreId, Platform, PlatformId } from '@/types'
 import { platformMap } from '@/data/platforms'
@@ -100,7 +101,7 @@ import { recordPlay } from '@/services/store'
 import { newStartupId, recordStartupEvent, type StartupEventName } from '@/services/startupFunnel'
 import { diagLog, registerDiagnosticSnapshot } from '@/services/startupDiagnostics'
 import { createStartupProgressTrace } from './startupProgressTrace'
-import { sameRuntimeCaps, sameRuntimeGeometry, sameRuntimeScreenLayout } from './playerRuntimeState'
+import { sameLiveControls, sameRuntimeCaps, sameRuntimeGeometry, sameRuntimeScreenLayout } from './playerRuntimeState'
 import { recordRecent } from '@/services/auth'
 import { openAuthModal } from '@/services/authModal'
 import { onMatchRequest } from '@/services/matchRequest'
@@ -1021,6 +1022,10 @@ export function EmulatorPlayer({
    * 把开关交上来（chromeless），按钮由 LiveChatBar 画。
    */
   const [liveCtl, setLiveCtl] = useState<LiveControlsHandle | null>(null)
+  /** 内容没变就保留旧引用：LiveControls 的 effect 每轮都会交一份新对象上来（React #185 的那条循环，见 sameLiveControls） */
+  const acceptLiveCtl = useCallback((next: LiveControlsHandle | null) => {
+    setLiveCtl((current) => sameLiveControls(current, next) ? current : next)
+  }, [])
   /**
    * 开局前在详情页选择「这一局不公开」。只保留在当前播放器实例中，换游戏会重置；
    * 开局时作为 LiveControls 初值交下去，避免公开画面先上传再收到隐私选择。
@@ -2682,6 +2687,19 @@ export function EmulatorPlayer({
         window.clearTimeout(playableTimer)
         const message = error instanceof Error ? error.message : String(error)
         diagLog('stage', 'error', `${session.runtime.id} 运行时模块加载或挂载失败`, error)
+        /*
+          运行时模块本身在大陆加速入口上超时（2026-11-21 #2756 / #2758）：chunk 按相对引用方解析，
+          同一个文档里重试永远还走 EdgeOne，只有带 __assets=origin 整页重载才换得掉线路（§2.39）。
+          已经是主站资源那一份就不再跳，照常报错，不会循环。
+        */
+        if (isRuntimeModuleTimeout(error) && (error as { assetsOnCnEdge?: boolean }).assetsOnCnEdge && !onOriginAssetsPage() && typeof window !== 'undefined') {
+          reportStartupFailure(`${message}（改用主站资源整页重开）`)
+          setError(null)
+          setNotice(t.runtime.originAssetsRetry)
+          setStatus('loading')
+          window.setTimeout(() => window.location.replace(originAssetsUrl(window.location)), 300)
+          return
+        }
         reportStartupFailure(message)
         setError(message)
         setStatus('error')
@@ -5375,7 +5393,7 @@ export function EmulatorPlayer({
             nativeGeometry={geometry}
             chromeless
             initialHidden={liveOptOut}
-            onControls={setLiveCtl}
+            onControls={acceptLiveCtl}
             onChat={chat.push}
             onSession={setLiveSession}
           />

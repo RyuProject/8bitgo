@@ -693,7 +693,22 @@ check('加速入口上的 js-dos.js 挂住有时限，到点改走同源；同�
   assert.ok(ms >= 10_000 && ms < 120_000)
   assert.match(src, /const edgeTimer = root !== JSDOS_PATH\n\s*\? window\.setTimeout\(/)
   assert.match(src, /script\.onerror\?\.\(new Event\('error'\)\)/)
-  assert.match(src, /if \(scriptSettled\) return\n\s*scriptSettled = true\n\s*window\.clearTimeout\(edgeTimer\)\n\s*if \(root !== JSDOS_PATH\)/)
+  assert.match(src, /if \(scriptSettled\) return\n\s*scriptSettled = true\n\s*window\.clearTimeout\(edgeTimer\)\n\s*stopEdgeWatch\(\)\n\s*if \(root !== JSDOS_PATH\)/)
+})
+
+check('加速入口判坏（预热失速 / 极慢）时 js-dos.js 不等满 25 秒，并持久化改走同源（#2756 / #2758）', () => {
+  const src = read('src/emulator/adapters/jsdos.ts')
+  // 只在加速入口上订阅；判坏回调走同一条 onerror 改道路径
+  assert.match(src, /const stopEdgeWatch = root !== JSDOS_PATH\n\s*\? onRuntimeEdgeBad\('jsdos', \(\) => \{\n\s*if \(scriptSettled\) return/)
+  // 入口脚本在加速入口上失败是硬证据：持久化（不是只影响本页的 markJsdosEdgeFailed）
+  const onerror = src.slice(src.indexOf('script.onerror = () => {'), src.indexOf("reject(new Error(`加载失败：${root}js-dos.js`))"))
+  assert.match(onerror, /markRuntimeEdgeBad\('jsdos'\)/)
+  assert.doesNotMatch(onerror, /markJsdosEdgeFailed\(\)/)
+  // 开局前的任意失败仍只影响本页（可能是 ROM / 内存问题，不该把线路记 2 小时）
+  assert.match(src, /if \(usedJsdosEdge && !readySent\) markJsdosEdgeFailed\(\)/)
+  const prewarm = read('src/emulator/prewarm.ts')
+  assert.match(prewarm, /function prewarmJsdos\([^)]*\) \{\n\s*watchJsdosEdge\(\)/)
+  assert.match(prewarm, /export function warmJsdosCore\([^)]*\) \{\n\s*watchJsdosEdge\(\)/)
 })
 
 console.log('')

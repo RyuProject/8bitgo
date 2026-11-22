@@ -1611,6 +1611,7 @@ const zhHant: Translation = {
     ejsOutOfMemoryLowmem: '已經換成低記憶體模式，瀏覽器仍然配置不出模擬器需要的記憶體，原地重試也不會好。請把瀏覽器更新到最新版，或換一個瀏覽器再試；關掉其他分頁和應用程式也可能有用。',
     ejsOutOfMemoryVendor: '你正在用 {browser} 開啟，它給網頁的記憶體不足以啟動這個模擬器（已經試過低記憶體模式），重試也不會好。請用 Chrome、Edge 或 Firefox 開啟本頁再玩；在應用程式裡開啟的，點右上角「在瀏覽器開啟」。',
     memoryCleanRetry: '記憶體不足，正在換一個乾淨的頁面重開一次…',
+    originAssetsRetry: '加速線路太慢，正在改從主站重新載入…',
     ejsWebglUnavailable: '瀏覽器無法建立 WebGL 畫面。請開啟硬體加速，或改用支援 WebGL 的瀏覽器或裝置',
     ejsScriptConflict: '瀏覽器裡有別的腳本（常見是瀏覽器擴充功能）和模擬器用了同一個全域名稱「{name}」，模擬器無法啟動。請停用擴充功能，或在無痕視窗中開啟再試',
     ejsArcadeRomInvalid: '街機遊戲檔案不完整或不是有效的 ZIP：{name}',

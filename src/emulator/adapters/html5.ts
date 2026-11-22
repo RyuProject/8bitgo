@@ -12,6 +12,9 @@ import { captureCanvasScreenshot } from '../recorder'
 import { findHtml5Canvas, html5CanvasCapabilities, html5MediaBridge } from '../html5Media'
 import { dispatchHtml5RuntimeSignal, html5CanvasHasFrame, html5RuntimeSignal } from '../html5Lifecycle'
 import { cloudSaveAccountTag, recordAutoSaveConflict } from '@/services/saves'
+import { coverCdnHint, onCnSite } from '@/services/cnHost'
+import { hotfixFlags } from '@/services/hotfixFlags'
+import { cnEdgeOrigin } from '../../../shared/cover-cdn-hint.js'
 
 const SAVE_BRIDGE_SOURCE = '8bitgo-save-bridge'
 const SAVE_BRIDGE_VERSION = 1
@@ -40,6 +43,66 @@ const MANAGED_SAVE_BRIDGE_HOSTS = new Set([
   'pvz.8bitgo.com',
   '8bitgo-pvz.pages.dev',
 ])
+
+/**
+ * 大陆访客的 Pages 游戏改走 EdgeOne 入口（2026-11-22）。
+ *
+ * cs16.8bitgo.com 是 Cloudflare Pages：大陆部分线路 16 秒连不上，而同一份运行时源站也在
+ * `/web/cs16` 发布，经 cn.8bitgo.com（EdgeOne）约 2～3.5 秒。只登记**逐文件核对过**能从大陆入口
+ * 完整取到的游戏（runtime.json 全部 200 且 SHA-256 一致；房间 API 与 WSS 子协议在 EdgeOne 上实测 101）。
+ * 加新游戏前要满足三条：源站 /web/<名字> 带生命周期桥（server/src/web-game-html.js 注入）；
+ * 运行时不依赖 Pages Worker 独有的同源代理；不使用存档桥（存档桥只认 Pages 精确 origin）。
+ * readySelector：同源嵌入时用它确认拿到的是游戏页而不是 EdgeOne 错误页。
+ */
+const CN_MIRRORED_PAGES_ENTRIES = [
+  { pagesOrigin: 'https://cs16.8bitgo.com', path: '/web/cs16', readySelector: '#canvas' },
+] as const
+/** 大陆入口在这段前台时间内没交出游戏页（生命周期桥 / 同源画布），就退回 Pages 一次 */
+export const CN_MIRROR_FALLBACK_MS = 20_000
+
+export interface CnMirrorContext {
+  /** 边缘判定的大陆访客（coverCdnHint() === 'cn'，在大陆入口上恒为真） */
+  cnVisitor: boolean
+  /** 页面本身就由 EdgeOne 发出（cn 子域，或 NS 迁移后带站点标记的主域） */
+  onCnSite: boolean
+  /** cn.<裸域> 的 origin；本地开发为空 */
+  edgeOrigin: string
+  /** 当前页面 origin */
+  pageOrigin: string
+  /** AI 临时修补 runtime_origin：运行时不走大陆加速入口 */
+  disabled?: boolean
+}
+
+/**
+ * Pages 入口在大陆入口上的镜像地址；不适用时返回 null（非大陆访客、未登记的游戏、本地开发）。
+ * 页面已在 EdgeOne 上就用同源路径（同源嵌入，播放器可直接读画布），否则用 cn.<裸域>。
+ */
+export function cnMirrorHtml5Entry(entry: string, ctx: CnMirrorContext): { url: string; readySelector: string } | null {
+  if (!ctx.cnVisitor || ctx.disabled) return null
+  try {
+    const url = new URL(entry)
+    const mirror = CN_MIRRORED_PAGES_ENTRIES.find((item) => url.origin === item.pagesOrigin &&
+      (url.pathname === item.path || url.pathname.startsWith(`${item.path}/`)))
+    if (!mirror) return null
+    const origin = ctx.onCnSite ? ctx.pageOrigin : ctx.edgeOrigin
+    if (!origin.startsWith('https://')) return null
+    // 源站会把目录尾斜杠 301 掉（normalizeUrl），直接给规范地址省一跳；页面自带 <base href="/web/cs16/">。
+    const pathname = url.pathname === `${mirror.path}/` ? mirror.path : url.pathname
+    return { url: `${origin}${pathname}${url.search}${url.hash}`, readySelector: mirror.readySelector }
+  } catch {
+    return null
+  }
+}
+
+function currentCnMirrorContext(): CnMirrorContext {
+  return {
+    cnVisitor: coverCdnHint() === 'cn',
+    onCnSite: onCnSite(),
+    edgeOrigin: cnEdgeOrigin(import.meta.env.VITE_SITE_URL ?? ''),
+    pageOrigin: location.origin,
+    disabled: hotfixFlags().runtimeOrigin,
+  }
+}
 
 /**
  * 存档消息默认仍限同源；只有本站自己管理、专门承载游戏的少数精确域名例外。
@@ -172,7 +235,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let saveBridgeReady = false
   // 必须先迁移入口再确定消息来源；否则旧的同源 PvZ 入口会被导航到 Pages，
   // 但存档桥仍只接受主站 origin，表现为游戏能玩却永远没有云存档按钮。
-  const frameEntry = typeof options.game === 'string' ? versionHtml5Entry(options.game) : null
+  const pagesEntry = typeof options.game === 'string' ? versionHtml5Entry(options.game) : null
+  // 大陆访客先走 EdgeOne 镜像；失败（错误页 / 超时）时 fallbackToPages 把 frameEntry 换回 Pages 入口。
+  const cnMirror = pagesEntry ? cnMirrorHtml5Entry(pagesEntry, currentCnMirrorContext()) : null
+  let frameEntry = cnMirror?.url ?? pagesEntry
   const saveBridgeOrigin = html5SaveBridgeOrigin(frameEntry ?? options.game)
   let gameSdkOrigin = ''
   try {
@@ -185,6 +251,50 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let gameSdkReady = false
   let gameSdkLiveCapable = false
   let gameSdkToken = ''
+  /** 大陆镜像入口还没被确认是游戏页；确认或已退回 Pages 后为 false（每局最多退回一次） */
+  let mirrorPending = Boolean(cnMirror)
+  let mirrorTimer = 0
+  const clearMirrorTimer = () => {
+    if (mirrorTimer) window.clearTimeout(mirrorTimer)
+    mirrorTimer = 0
+  }
+  const confirmMirror = () => {
+    if (!mirrorPending) return
+    mirrorPending = false
+    clearMirrorTimer()
+    console.info('[html5] 大陆入口已交出游戏页', { entry: frameEntry })
+  }
+  const fallbackToPages = (reason: string): boolean => {
+    if (!mirrorPending || destroyed || !pagesEntry) return false
+    mirrorPending = false
+    clearMirrorTimer()
+    console.warn('[html5] 大陆入口未能交出游戏页，改用 Pages 入口', { reason, mirror: frameEntry, pages: pagesEntry })
+    frameEntry = pagesEntry
+    try {
+      gameSdkOrigin = new URL(pagesEntry, location.href).origin
+    } catch {
+      gameSdkOrigin = ''
+    }
+    gameSdkReady = false
+    gameSdkToken = ''
+    iframe.src = pagesEntry
+    return true
+  }
+  /** 只数前台时间：后台标签页里浏览器会节流加载，不能因此误判镜像失败 */
+  const armMirrorTimer = (remaining = CN_MIRROR_FALLBACK_MS) => {
+    if (!mirrorPending || destroyed) return
+    clearMirrorTimer()
+    mirrorTimer = window.setTimeout(() => {
+      mirrorTimer = 0
+      if (!mirrorPending || destroyed) return
+      if (document.hidden) {
+        // 后台期间不判死；回到前台后至少再给 5 秒（加载被节流过，切回来常常马上就到）
+        armMirrorTimer(5_000)
+        return
+      }
+      fallbackToPages(`${CN_MIRROR_FALLBACK_MS / 1000} 秒内没有收到游戏页的生命周期信号`)
+    }, remaining)
+  }
   let remoteLiveSession = ''
   let remoteLiveCanvas: HTMLCanvasElement | null = null
   let remoteLiveContext: CanvasRenderingContext2D | null = null
@@ -457,6 +567,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (destroyed || event.source !== iframe.contentWindow) return
     const signal = html5RuntimeSignal(event.data)
     if (!signal) return
+    if (mirrorPending) {
+      // 生命周期桥只装在真游戏页里；收到它说明大陆入口交出了正确文档。桥自己报失败则换 Pages 再试。
+      if (signal.type === 'failed' && fallbackToPages('生命周期桥报告失败')) return
+      confirmMirror()
+    }
     dispatchHtml5RuntimeSignal(signal, {
       // 子页还在下载 / 写盘：喂播放器的启动看门狗（starting 阶段的 ratio 不推动进度条，只证明还活着）
       progress: (ratio) => {
@@ -510,7 +625,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (!frameEntry) return false
     try {
       const url = new URL(frameEntry, location.href)
-      return url.protocol === 'https:' && url.hostname.toLowerCase() === 'cs16.8bitgo.com' && /^\/web\/cs16\/?$/.test(url.pathname)
+      const host = url.hostname.toLowerCase()
+      // 大陆访客的镜像入口在 cn / 主域的 /web/cs16（同一份运行时，源站注入了同样的 SDK）。
+      const managedHost = host === 'cs16.8bitgo.com' || FIRST_PARTY_SITE_HOSTS.has(host)
+      return url.protocol === 'https:' && managedHost && /^\/web\/cs16\/?$/.test(url.pathname)
     } catch {
       return false
     }
@@ -879,6 +997,16 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       真正的入口页（跨源、慢线路）还没到，诊断却显示「5ms 就加载完了」。只认真正导航到的文档。
     */
     if (isInitialBlankLoad()) return
+    if (mirrorPending && cnMirror) {
+      // 同源嵌入（页面本身在 EdgeOne 上）能直接看文档：没有游戏画布就是错误页，立即退回 Pages。
+      const doc = frameDocument()
+      if (doc) {
+        let isGame = false
+        try { isGame = Boolean(doc.querySelector(cnMirror.readySelector)) } catch { /* 选择器写死，不会抛 */ }
+        if (isGame) confirmMirror()
+        else if (fallbackToPages('大陆入口返回的不是游戏页')) return
+      }
+    }
     if (isManagedPvzEntry()) console.info('[live][html5-sdk] 游戏 iframe 加载完成', { repeated: loaded })
     // 门户页跳进真正游戏页也会再次 load；就绪只报一次，媒体来源却必须跟着换到新文档。
     startMediaMonitoring()
@@ -921,6 +1049,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   iframe.addEventListener('touchstart', onFramePointerInput)
   iframe.addEventListener('error', () => {
     if (destroyed) return
+    if (fallbackToPages('iframe 加载错误')) return
     options.onError?.('HTML5 游戏页面加载失败。请检查入口地址，以及目标站点是否允许被 iframe 嵌入。', 'runtime')
   })
 
@@ -932,6 +1061,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
   if (typeof options.game === 'string') {
     iframe.src = frameEntry as string
+    if (cnMirror) armMirrorTimer()
   } else {
     // 单文件 HTML 可以直接运行；需要其它素材的项目应部署完整目录并绑定 index.html。
     objectUrl = URL.createObjectURL(options.game)
@@ -1114,6 +1244,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       }
       clearRemoteLiveCanvas()
       destroyed = true
+      clearMirrorTimer()
       stopMediaMonitoring(false)
       window.removeEventListener('message', onRuntimeBridgeMessage)
       window.removeEventListener('message', onGameSdkMessage)

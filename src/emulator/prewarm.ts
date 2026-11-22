@@ -6,7 +6,9 @@
 import type { MameArcadeDiskSource, RuntimeId } from './types'
 import {
   J2ME_PATH,
+  JSDOS_PATH,
   jsdosBase,
+  jsdosEdgePrefix,
   PPSSPP_RUNTIME_PATH,
   ppssppAsset,
   ppssppFrameUrl,
@@ -27,6 +29,7 @@ import { jspiEnabled } from './jspiFlag'
 import { PSX_CHD_ARCHIVE, PSX_CHD_CORE } from './psxChd'
 import { prewarmMameChdMedia } from './mameChdWarm'
 import { EKA2L1_RUNTIME_DIR, EKA2L1_UPSTREAM_BUILD_ID } from './eka2l1Runtime'
+import { watchRuntimeEdge } from './runtimeEdgeWatch'
 
 /**
  * 这台设备上「指针停在按钮上」和「点击」之间是否真的有提前量。
@@ -146,7 +149,16 @@ function prewarmRuffleCore() {
  * JSPI 版与 Asyncify 版只能预热一套，判断必须和 loadJsDos() 最终写入的开关共用
  * jspiEnabled；两边分叉会让玩家白下另一份 7.5 MB 核心。
  */
+/**
+ * js-dos 走大陆加速入口时盯住预热吞吐：失速或极慢就整页改走同源并记 2 小时（runtimeEdgeWatch.ts）。
+ * 2026-11-21 #2756 / #2758：这条线对那位访客只有约 6KB/s，js-dos.js 41 秒、DOSBox-X 30 秒零字节。
+ */
+export function watchJsdosEdge(): void {
+  watchRuntimeEdge({ kind: 'jsdos', edgePrefix: jsdosEdgePrefix(), originPath: JSDOS_PATH, currentBase: jsdosBase() })
+}
+
 function prewarmJsdos(core: string | null | undefined, aggressive: boolean) {
+  watchJsdosEdge()
   warmHttpCache(`${jsdosBase()}js-dos.js`)
   warmHttpCache(`${jsdosBase()}js-dos.css`)
   if (!aggressive || !hasHoverIntent() || !allowsLargeHoverPrewarm()) return
@@ -162,6 +174,7 @@ function prewarmJsdos(core: string | null | undefined, aggressive: boolean) {
  * 这里与那两路下载并行，正式请求时直接命中缓存。`warmHttpCache` 自带去重，悬停已拉过就不再发。
  */
 export function warmJsdosCore(core: string | null | undefined) {
+  watchJsdosEdge()
   const emulatorRoot = `${jsdosBase()}emulators/`
   // 两个后端都先经过这层调度和 ZIP 文件系统；合计不足 300 KB，和核心并行拉最划算。
   warmHttpCache(`${emulatorRoot}emulators.js`)

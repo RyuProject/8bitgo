@@ -82,6 +82,7 @@ import { isRomPackConfigured } from './rom-pack-key.js'
 import { createSfsService } from './sfs.js'
 import { createCs16RelayService } from './cs16-relay.js'
 import { createCs16RoomService } from './cs16-rooms.js'
+import { createWebGameHtmlRenderer } from './web-game-html.js'
 import { createNdsWfcService } from './nds-wfc.js'
 import { systemImageProxy } from './system-images.js'
 
@@ -474,7 +475,7 @@ if (ssrAvailable()) {
    */
   app.get('/ppsspp/v0dbfaca', (_req, res) => {
     res.set('Cache-Control', CACHE.none)
-    res.redirect(302, '/ppsspp/v0dbfaca/v23/index.html?embed=1&frame=4')
+    res.redirect(302, '/ppsspp/v0dbfaca/v24/index.html?embed=1&frame=4')
   })
 
   /**
@@ -493,6 +494,7 @@ if (ssrAvailable()) {
    * 不挡就能拼出越界路径；`sendFile` 的 root 越界保护是第二道。
   */
   const WEB_GAME_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
+  const renderWebGameHtml = createWebGameHtmlRenderer(CLIENT_DIR)
   const CS16_REQUIRED_RUNTIME = [
     'index.html',
     'cs16.bundle.js',
@@ -555,6 +557,14 @@ if (ssrAvailable()) {
     }
     // 固定 URL（不含哈希），走「引擎」那档短缓存；见 cache.js 里 /web/ 的说明
     res.set('Cache-Control', CACHE.engine)
+    /*
+      源站副本是大陆访客的镜像入口（经 cn.8bitgo.com / EdgeOne，见 html5.ts 的 cnMirrorHtml5Entry），
+      要和 Pages 版一样带生命周期桥 / 游戏 SDK / 媒体桥；注入不了就照发原文件。
+    */
+    if (!sub) {
+      const injected = renderWebGameHtml(name)
+      if (injected) return res.type('html').send(injected)
+    }
     res.sendFile(sub ? join(name, sub, 'index.html') : join(name, 'index.html'), { root: join(CLIENT_DIR, 'web') }, (err) => {
       // 目录里没有这一份就交回 SSR 渲染 404，别在这儿编错误页
       if (err && !res.headersSent) next()

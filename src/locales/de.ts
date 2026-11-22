@@ -1666,6 +1666,7 @@ const de: Translation = {
     ejsOutOfMemoryLowmem: 'Auch im Modus mit wenig Speicher konnte dein Browser den benötigten Speicher für den Emulator nicht reservieren – ein erneuter Versuch hilft nicht. Aktualisiere den Browser auf die neueste Version oder probiere einen anderen Browser; das Schließen anderer Tabs und Apps kann ebenfalls helfen.',
     ejsOutOfMemoryVendor: 'Du verwendest {browser}; dieser Browser stellt Webseiten nicht genug Speicher für den Emulator bereit (der Modus mit wenig Speicher wurde bereits versucht). Ein erneuter Versuch hilft nicht. Öffne diese Seite in Chrome, Edge oder Firefox. Wenn du sie in einer App geöffnet hast, wähle „Im Browser öffnen“.',
     memoryCleanRetry: 'Nicht genug Speicher. Wird in einer frischen Seite neu geöffnet …',
+    originAssetsRetry: 'Die schnelle Route ist zu langsam; wird von der Hauptseite neu geladen…',
     ejsWebglUnavailable: 'Dieser Browser kann keinen WebGL-Kontext erstellen. Aktiviere die Hardwarebeschleunigung oder verwende einen WebGL-fähigen Browser oder ein entsprechendes Gerät.',
     ejsScriptConflict: 'Ein anderes Skript im Browser (meist eine Erweiterung) verwendet denselben globalen Namen „{name}“ wie der Emulator, daher kann der Emulator nicht starten. Deaktiviere deine Browser-Erweiterungen oder öffne die Seite in einem privaten Fenster und versuche es erneut.',
     ejsArcadeRomInvalid: 'Die Arcade-Datei ist unvollständig oder keine gültige ZIP-Datei: {name}',

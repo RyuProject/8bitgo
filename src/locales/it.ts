@@ -1666,6 +1666,7 @@ const it: Translation = {
     ejsOutOfMemoryLowmem: 'Anche in modalità a bassa memoria il browser non è riuscito a riservare la memoria necessaria all’emulatore, quindi riprovare non servirà. Aggiorna il browser all’ultima versione o prova un altro browser; chiudere altre schede e app può aiutare.',
     ejsOutOfMemoryVendor: 'Stai usando {browser}, che non concede alle pagine web memoria sufficiente per avviare questo emulatore (la modalità a bassa memoria è già stata provata); riprovare non servirà. Apri questa pagina in Chrome, Edge o Firefox. Se l’hai aperta dentro un’app, usa «Apri nel browser».',
     memoryCleanRetry: 'Memoria insufficiente. Riapertura in una pagina pulita…',
+    originAssetsRetry: 'Il percorso veloce è troppo lento; ricaricamento dal sito principale…',
     ejsWebglUnavailable: 'Questo browser non riesce a creare un contesto WebGL. Attiva l’accelerazione hardware o usa un browser o dispositivo compatibile con WebGL.',
     ejsScriptConflict: 'Un altro script del browser (di solito un’estensione) usa lo stesso nome globale «{name}» dell’emulatore, che quindi non può avviarsi. Disattiva le estensioni del browser o apri questa pagina in una finestra privata e riprova.',
     ejsArcadeRomInvalid: 'Il file arcade è incompleto o non è un ZIP valido: {name}',

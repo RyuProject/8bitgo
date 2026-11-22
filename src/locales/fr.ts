@@ -1671,6 +1671,7 @@ const fr: Translation = {
     ejsOutOfMemoryLowmem: 'Même en mode mémoire réduite, ton navigateur n’a pas pu réserver la mémoire nécessaire à l’émulateur ; réessayer ne servira à rien. Mets ton navigateur à jour ou essaie un autre navigateur ; fermer d’autres onglets et applis peut aussi aider.',
     ejsOutOfMemoryVendor: 'Tu utilises {browser}, qui n’accorde pas assez de mémoire aux pages web pour lancer cet émulateur (le mode mémoire réduite a déjà été essayé) ; réessayer ne servira à rien. Ouvre cette page dans Chrome, Edge ou Firefox. Si tu l’as ouverte dans une appli, choisis « Ouvrir dans le navigateur ».',
     memoryCleanRetry: 'Mémoire insuffisante. Réouverture dans une page vierge…',
+    originAssetsRetry: 'La route rapide est trop lente ; rechargement depuis le site principal…',
     ejsWebglUnavailable: 'Ce navigateur ne peut pas créer de contexte WebGL. Active l’accélération matérielle ou utilise un navigateur ou appareil compatible WebGL.',
     ejsScriptConflict: 'Un autre script du navigateur (souvent une extension) utilise le même nom global « {name} » que l’émulateur, qui ne peut donc pas démarrer. Désactive tes extensions ou ouvre cette page dans une fenêtre de navigation privée, puis réessaie.',
     ejsArcadeRomInvalid: "Le fichier d'arcade est incomplet ou n'est pas un ZIP valide : {name}",
