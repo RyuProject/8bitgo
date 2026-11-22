@@ -33,6 +33,7 @@ import type { HotkeyAction } from '@/services/hotkeys'
 import { cx } from '@/lib/format'
 import { DOS_MOUSE_SENSITIVITY_DEFAULT, dosMouseSpeedMultiplier } from './dosMouse'
 import { decodeSaveArchive, encodeSaveArchive, encodeSaveArchiveBlob, maxSaveArchiveBytes } from './saveEnvelope'
+import { analyzeNesRamTrace } from './nesRamTraceAnalysis'
 
 interface Props {
   handle: RuntimeHandle | null
@@ -40,8 +41,12 @@ interface Props {
   gameName: string
   /** 存档按它归档。没有 slug（玩家自己传的 ROM）就只能导出成文件 */
   gameSlug?: string
+  /** 官方目录 slug；本地 ROM 没有时允许采样者在面板中补填。 */
+  catalogSlug?: string
   /** 哪个引擎 —— 内存快照和 DOS 变更包不通用，必须分开存 */
   runtimeId?: RuntimeId
+  /** 只有用户显式添加 ?nesRamTrace=1 且当前运行 NES/FCEUmm 时才打开 RAM 采样工具。 */
+  nesRamTrace?: boolean
   /**
    * 双屏机型的屏幕布局，由运行时从**核心自报的选项表**里读出来后经 onScreenLayout 报上来
    * （见 dualScreen.ts）。null / 取值不足两个 = 这一局没有布局可切，整块 UI 不画。
@@ -95,6 +100,34 @@ function timeAgo(ts: number, lang: string): string {
  */
 const BTN = 'inline-flex h-11 min-w-11 items-center justify-center gap-1 rounded-md border border-line px-2 text-muted transition-colors hover:border-brand hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-surface disabled:opacity-40 sm:h-8 sm:min-w-8 sm:px-1.5'
 const BTN_ON = 'border-brand bg-brand-soft text-brand-hover'
+const NES_RAM_TRACE_DURATION_MS = 30_000
+const NES_RAM_TRACE_INTERVAL_MS = 250
+const NES_RAM_TRACE_MAX_BYTES = 64 * 1024
+
+interface NesRamTraceSample {
+  atMs: number
+  ramHex: string
+}
+
+interface NesRamTraceLabel {
+  atMs: number
+  score: string
+  sampleIndex: number
+}
+
+interface NesRamTraceCapture {
+  startedAt: number
+  romSha256: string | null
+  samples: NesRamTraceSample[]
+  labels: NesRamTraceLabel[]
+  durationMs: number
+}
+
+function bytesToHex(bytes: Uint8Array): string {
+  let hex = ''
+  for (const byte of bytes) hex += byte.toString(16).padStart(2, '0')
+  return hex
+}
 
 /**
  * 图标字体由浏览器直接从 jsDelivr 获取，避免把字体文件放进本站发布包；
@@ -232,7 +265,7 @@ export function EmulatorTools(props: Props) {
 
 type ReadyProps = Omit<Props, 'handle'> & { handle: RuntimeHandle }
 
-function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSaveHint,
+function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, catalogSlug, runtimeId, nesRamTrace, dosSaveHint,
   screenLayout, stageRef, onRestart, saveRequest = 0, className }: ReadyProps) {
   const t = useT()
   const lang = useLang()
@@ -302,7 +335,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
   const [paused, setPaused] = useState(false)
   const [volume, setVolume] = useState(handle?.volume ?? 1)
   const [muted, setMuted] = useState(false)
-  const [panel, setPanel] = useState<'volume' | 'gamepad' | 'gbaVideo' | 'fsSave' | 'fsLoad' | null>(null)
+  const [panel, setPanel] = useState<'volume' | 'gamepad' | 'gbaVideo' | 'fsSave' | 'fsLoad' | 'nesRamTrace' | null>(null)
   /**
    * handle 走 ref 给快捷键那个 effect 用。
    *
@@ -361,6 +394,16 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
    * 而这恰恰是玩家最需要盯着看的一句。
    */
   const [fsSaveFailed, setFsSaveFailed] = useState(false)
+  const [nesRamTraceActive, setNesRamTraceActive] = useState(false)
+  const [nesRamTraceStarting, setNesRamTraceStarting] = useState(false)
+  const [nesRamTraceScore, setNesRamTraceScore] = useState('')
+  const [nesRamTraceSlug, setNesRamTraceSlug] = useState(catalogSlug ?? '')
+  const [nesRamTraceCounts, setNesRamTraceCounts] = useState({ samples: 0, labels: 0 })
+  const nesRamTraceRef = useRef<NesRamTraceCapture | null>(null)
+  const nesRamTraceTimerRef = useRef<number | null>(null)
+  const nesRamTraceAvailable = Boolean(nesRamTrace && runtimeId === 'emulatorjs' && handle.readSystemRam)
+  const nesRamTraceAvailableRef = useRef(nesRamTraceAvailable)
+  nesRamTraceAvailableRef.current = nesRamTraceAvailable
 
   // 存档归档需要「哪个引擎 + 哪个游戏」两个坐标；缺一个就只能走文件导入导出。
   // ⚠️ 必须过 asSaveRuntime 白名单，不能直接把 RuntimeId 断言成 SaveRuntime ——
@@ -395,6 +438,107 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
     msgTimer.current = window.setTimeout(() => setMsg(''), 4000)
   }, [])
 
+  const clearNesRamTraceTimer = () => {
+    if (nesRamTraceTimerRef.current !== null) window.clearInterval(nesRamTraceTimerRef.current)
+    nesRamTraceTimerRef.current = null
+  }
+
+  const captureNesRamSnapshot = (): number | null => {
+    const capture = nesRamTraceRef.current
+    const ram = handle.readSystemRam?.()
+    if (!capture || !ram || ram.length < 1 || ram.length > NES_RAM_TRACE_MAX_BYTES) return null
+    const atMs = Math.max(0, Math.round(performance.now() - capture.startedAt))
+    capture.samples.push({ atMs, ramHex: bytesToHex(ram) })
+    return capture.samples.length - 1
+  }
+
+  const finishNesRamTrace = (automatic = false) => {
+    clearNesRamTraceTimer()
+    setNesRamTraceActive(false)
+    const capture = nesRamTraceRef.current
+    if (capture) {
+      capture.durationMs = Math.min(NES_RAM_TRACE_DURATION_MS, Math.max(0, Math.round(performance.now() - capture.startedAt)))
+      setNesRamTraceCounts({ samples: capture.samples.length, labels: capture.labels.length })
+    }
+    if (automatic) say(tt.nesRamTraceDone)
+  }
+
+  const startNesRamTrace = async () => {
+    if (!nesRamTraceAvailable || nesRamTraceStarting || nesRamTraceActive) return
+    setNesRamTraceStarting(true)
+    try {
+      // ROM 指纹只在用户显式启动采样时计算，不给普通玩家增加开局读盘或哈希开销。
+      const romSha256 = await handle.readNesRomSha256?.().catch(() => null) ?? null
+      if (handleRef.current !== handle || !nesRamTraceAvailableRef.current) return
+      const capture: NesRamTraceCapture = {
+        startedAt: performance.now(),
+        romSha256,
+        samples: [],
+        labels: [],
+        durationMs: 0,
+      }
+      nesRamTraceRef.current = capture
+      if (captureNesRamSnapshot() === null) {
+        nesRamTraceRef.current = null
+        say(tt.nesRamTraceReadFail)
+        return
+      }
+      const initialScore = nesRamTraceScore.trim()
+      if (initialScore) capture.labels.push({ atMs: capture.samples[0].atMs, score: initialScore, sampleIndex: 0 })
+      setNesRamTraceCounts({ samples: 1, labels: capture.labels.length })
+      setNesRamTraceActive(true)
+      nesRamTraceTimerRef.current = window.setInterval(() => {
+        const current = nesRamTraceRef.current
+        if (!current) return finishNesRamTrace()
+        const elapsed = performance.now() - current.startedAt
+        if (elapsed >= NES_RAM_TRACE_DURATION_MS) return finishNesRamTrace(true)
+        if (captureNesRamSnapshot() !== null && current.samples.length % 4 === 0) {
+          setNesRamTraceCounts({ samples: current.samples.length, labels: current.labels.length })
+        }
+      }, NES_RAM_TRACE_INTERVAL_MS)
+    } catch {
+      say(tt.nesRamTraceReadFail)
+    } finally {
+      setNesRamTraceStarting(false)
+    }
+  }
+
+  const markNesRamTraceScore = () => {
+    const capture = nesRamTraceRef.current
+    const score = nesRamTraceScore.trim()
+    if (!capture || !score) return
+    const sampleIndex = captureNesRamSnapshot()
+    if (sampleIndex === null) {
+      say(tt.nesRamTraceReadFail)
+      return
+    }
+    capture.labels.push({ atMs: capture.samples[sampleIndex].atMs, score, sampleIndex })
+    setNesRamTraceCounts({ samples: capture.samples.length, labels: capture.labels.length })
+    setNesRamTraceScore('')
+  }
+
+  const downloadNesRamTrace = () => {
+    const capture = nesRamTraceRef.current
+    if (!capture || !capture.samples.length) return
+    const payload = {
+      schema: '8bitgo.nes-ram-trace.v1',
+      createdAt: new Date().toISOString(),
+      gameName,
+      catalogSlug: nesRamTraceSlug.trim() || null,
+      runtime: 'emulatorjs',
+      platform: 'nes',
+      core: 'fceumm',
+      romSha256: capture.romSha256,
+      ramBytes: capture.samples[0].ramHex.length / 2,
+      sampleIntervalMs: NES_RAM_TRACE_INTERVAL_MS,
+      durationMs: capture.durationMs,
+      labels: capture.labels,
+      samples: capture.samples,
+      candidateScan: analyzeNesRamTrace(capture.labels, capture.samples),
+    }
+    downloadBlob(new Blob([JSON.stringify(payload)], { type: 'application/json' }), mediaFileName(gameName, 'nes-ram-trace.json'))
+  }
+
   // 换游戏 / 卸载时把状态清干净，别让上一局的「暂停中」留在界面上
   useEffect(() => {
     setPaused(false)
@@ -407,7 +551,12 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
     setMouseInv(Boolean(handle?.mouseInverted))
     setMouseSensitivity(handle.mouseSensitivity ?? DOS_MOUSE_SENSITIVITY_DEFAULT)
     setGbaVideoMode(handle.gbaVideoMode ?? 'pixel')
+    setNesRamTraceActive(false)
+    setNesRamTraceStarting(false)
+    setNesRamTraceCounts({ samples: 0, labels: 0 })
     return () => {
+      clearNesRamTraceTimer()
+      nesRamTraceRef.current = null
       recRef.current?.cancel()
       recRef.current = null
       if (remoteRecordingRef.current) {
@@ -420,6 +569,19 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
       window.clearTimeout(msgTimer.current)
     }
   }, [handle])
+
+  useEffect(() => {
+    setNesRamTraceSlug(catalogSlug ?? '')
+  }, [catalogSlug])
+
+  useEffect(() => {
+    if (nesRamTraceAvailable) return
+    clearNesRamTraceTimer()
+    nesRamTraceRef.current = null
+    setNesRamTraceActive(false)
+    setNesRamTraceStarting(false)
+    setNesRamTraceCounts({ samples: 0, labels: 0 })
+  }, [nesRamTraceAvailable])
 
   // 进游戏时问一次「这个游戏有没有存档」，读档按钮上要显示
   useEffect(() => {
@@ -600,7 +762,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
           target,
           handle.saveMetadata,
         )
-        // PvZ 在站点内持续监测 IDBFS；只有玩家明确选过云端后才开自动同步。
+        // 接入自动快照协议的 HTML5 页面监测自己的 IDBFS；只有玩家明确选过云端后才开自动同步。
         // 手动上传成功或进入待补传队列后，用刚导出的这份存档作为去重基线，避免重复写云端。
         if (target === 'local') {
           handle.setCloudAutoSaveMode?.(false)
@@ -854,7 +1016,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
         say(tt.saveLoadNothing)
         return
       }
-      // PvZ 读本地档后会重载 iframe；重载阶段暂停自动云端回填，避免刚选的本地档被云端盖回去。
+      // HTML5 页面读本地档后会重载 iframe；重载阶段暂停自动云端回填，避免刚选的本地档被云端盖回去。
       // 手动读云端则清掉这个一次性暂停标记，重启后仍可正常自动同步。
       if (from === 'local') handle.setCloudAutoSaveMode?.(false, true)
       else handle.setCloudAutoSaveMode?.(false, false, true)
@@ -1081,6 +1243,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
     caps.has('gamepad') ||
     caps.has('screenshot') ||
     caps.has('record') ||
+    nesRamTraceAvailable ||
     Boolean(handle.setMouseInvert) ||
     Boolean(handle.setMouseSensitivity) ||
     Boolean(handle.setGbaVideoMode)
@@ -1266,6 +1429,22 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
           </button>
         )}
 
+        {nesRamTraceAvailable && (
+          <button
+            type="button"
+            className={cx(BTN, panel === 'nesRamTrace' && BTN_ON, nesRamTraceActive && 'border-live text-live')}
+            onClick={() => {
+              setPanel(panel === 'nesRamTrace' ? null : 'nesRamTrace')
+              setMore(false)
+            }}
+            title={tt.nesRamTrace}
+            aria-label={tt.nesRamTrace}
+            aria-expanded={panel === 'nesRamTrace'}
+          >
+            <span aria-hidden="true">RAM</span>
+          </button>
+        )}
+
         {caps.has('record') && (
           <button
             type="button"
@@ -1316,6 +1495,76 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
             aria-label={tt.volume}
           />
           <span className="w-8 tabular-nums text-muted">{Math.round((muted ? 0 : volume) * 100)}</span>
+        </div>
+      )}
+
+      {panel === 'nesRamTrace' && nesRamTraceAvailable && (
+        <div className="absolute bottom-full left-0 z-20 mb-2 grid w-80 max-w-[calc(100vw-2rem)] gap-2 rounded-lg border border-line bg-surface p-3 text-sm shadow-lg">
+          <div>
+            <p className="font-semibold text-fg">{tt.nesRamTraceTitle}</p>
+            <p className="mt-1 text-muted">{tt.nesRamTraceHint}</p>
+          </div>
+          <label className="grid gap-1 text-muted">
+            <span>{tt.nesRamTraceSlug}</span>
+            <input
+              value={nesRamTraceSlug}
+              onChange={(event) => setNesRamTraceSlug(event.target.value)}
+              disabled={nesRamTraceActive || nesRamTraceStarting}
+              className="h-9 rounded border border-line bg-surface px-2 text-fg"
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </label>
+          <label className="grid gap-1 text-muted">
+            <span>{tt.nesRamTraceScore}</span>
+            <input
+              value={nesRamTraceScore}
+              onChange={(event) => setNesRamTraceScore(event.target.value)}
+              disabled={nesRamTraceStarting}
+              inputMode="numeric"
+              className="h-9 rounded border border-line bg-surface px-2 text-fg"
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </label>
+          <div className="flex flex-wrap gap-1.5">
+            {nesRamTraceActive ? (
+              <button type="button" className={cx(BTN, 'text-live')} onClick={() => finishNesRamTrace()}>
+                {tt.nesRamTraceStop}
+              </button>
+            ) : (
+              <button type="button" className={BTN} disabled={nesRamTraceStarting} onClick={() => void startNesRamTrace()}>
+                {nesRamTraceStarting ? tt.nesRamTraceStarting : tt.nesRamTraceStart}
+              </button>
+            )}
+            <button
+              type="button"
+              className={BTN}
+              disabled={!nesRamTraceActive || !nesRamTraceScore.trim()}
+              onClick={markNesRamTraceScore}
+            >
+              {tt.nesRamTraceMark}
+            </button>
+            <button
+              type="button"
+              className={BTN}
+              disabled={nesRamTraceActive || !nesRamTraceCounts.samples}
+              onClick={downloadNesRamTrace}
+            >
+              {tt.nesRamTraceDownload}
+            </button>
+          </div>
+          <p className="break-all text-xs text-muted">
+            {fmt(tt.nesRamTraceProgress, {
+              samples: String(nesRamTraceCounts.samples),
+              labels: String(nesRamTraceCounts.labels),
+            })}
+            {nesRamTraceRef.current?.romSha256 && (
+              <span title={nesRamTraceRef.current.romSha256}>
+                {' · '}{tt.nesRamTraceRom}: {nesRamTraceRef.current.romSha256.slice(0, 12)}…
+              </span>
+            )}
+          </p>
         </div>
       )}
 

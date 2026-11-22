@@ -306,7 +306,10 @@ console.log('\n── 发布文件与 WebGL 截图策略 ──')
   const loadHandler = adapterSource.split("iframe.addEventListener('load'")[1].split("iframe.addEventListener('error'")[0]
   ok(loadHandler.includes('options.onIframeLoaded?.()'), 'iframe load 只上报独立的 iframe_loaded 阶段')
   ok(loadHandler.includes('options.onReadinessVisibilityChange?.(Boolean(frameDocument()))'), '每次导航都更新 HTML5 的同源可观测状态')
-  ok(adapterSource.includes('let firstInteractionReported = false') && adapterSource.includes("iframe.addEventListener('focus', reportFirstInteraction)"), 'iframe 焦点与游戏桥共用一次性首次操作上报，避免重复统计')
+  ok(adapterSource.includes('let firstInteractionReported = false') &&
+    adapterSource.includes("iframe.addEventListener('pointerdown', onFramePointerInput)") &&
+    adapterSource.includes("signal.type === 'first-interaction') reportFirstInteraction()"),
+  '可信 iframe 指针输入与游戏桥共用一次性首次操作上报；单纯获得焦点不算玩家操作')
   const playerSource = readFileSync(new URL('../src/emulator/EmulatorPlayer.tsx', import.meta.url), 'utf8')
   ok(playerSource.includes("session.runtime.id === 'html5' ? 'unknown' : 'observable'"), 'HTML5 等待 iframe 首次导航时不误记慢启动')
   ok(playerSource.includes("readinessState === 'unobservable'"), '跨源页面超时会记录为无法观测，而非游戏失败')
@@ -316,8 +319,9 @@ console.log('\n── 发布文件与 WebGL 截图策略 ──')
   ok(recorderSource.includes('canvas.captureStream()'), '截图不强开 preserveDrawingBuffer，不给每一帧增加复制成本')
   ok(gameSdkSource.includes('window.EightBitGoGameSDK'), '独立游戏 SDK 发布 8BitGo API')
   ok(minifiedSdk === expectedMinifiedSdk && minifiedSdk.length < gameSdkSource.length, '发布压缩版与可维护源码一致且体积更小')
-  ok(!gameSdkSource.includes('createElement(\'script\')') && !gameSdkSource.includes('fetch('), '游戏 SDK 不下载或动态加载外部代码')
-  ok(adapterSource.includes("event.source !== iframe.contentWindow || event.origin !== gameSdkOrigin"), '父页只接受当前游戏 iframe 的精确来源消息')
+  ok(!gameSdkSource.includes('createElement(\'script\')') && !gameSdkSource.includes('import('), '游戏 SDK 不下载或动态加载外部代码')
+  ok(gameSdkSource.includes('fetch(`${base}${path}`') && gameSdkSource.includes("['8bitgo.com', 'www.8bitgo.com', 'cn.8bitgo.com', 'tv.8bitgo.com']"), 'SDK 网络请求仅供云存档客户端使用，且 API 域名受白名单限制')
+  ok(adapterSource.includes('event.source !== iframe.contentWindow') && adapterSource.includes('event.origin !== gameSdkOrigin'), '父页同时校验当前 iframe 与精确游戏 origin')
   ok(adapterSource.includes("type: 'live-frame-ack'") && gameSdkSource.includes("message.type === 'live-frame-ack'"), '跨源直播等父页消费完画面再发送下一帧')
 }
 

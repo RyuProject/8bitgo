@@ -339,7 +339,7 @@ check('⚠️ 「有人想上场」必须画进画面内浮层，全屏 / 沉浸
     跟着那一行一起画的话，观众的请求在全屏下会一声不响地掉在地上。
   */
   const card = ep.indexOf('coop?.pending')
-  const bar = ep.indexOf('chatBarOn &&')
+  const bar = ep.indexOf('chatBarOn || pageBarOn')
   assert.ok(card > 0 && bar > 0, '找不到卡片或弹幕框那一段')
   assert.ok(card < bar, '卡片跑到弹幕框那一段里去了 —— 全屏时会跟着一起被藏掉')
 })

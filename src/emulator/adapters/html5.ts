@@ -199,6 +199,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let playable = false
   let firstInteractionReported = false
   let canvasProbeScheduled = false
+  let interactionDocument: Document | null = null
   const mediaTaps = new WeakMap<Window, AudioTap>()
   const liveMediaTaps = new Set<AudioTap>()
   const pendingSaveRequests = new Map<number, {
@@ -397,9 +398,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   }
 
   const markPlayable = () => {
-    if (destroyed || playable) return
-    playable = true
+    if (destroyed) return
     markFirstFrame()
+    if (playable) return
+    playable = true
     options.onReady?.()
   }
 
@@ -407,6 +409,38 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (destroyed || firstInteractionReported) return
     firstInteractionReported = true
     options.onFirstInteraction?.()
+  }
+
+  const stopFirstInteractionMonitoring = () => {
+    if (!interactionDocument) return
+    interactionDocument.removeEventListener('pointerdown', onGameInput, true)
+    interactionDocument.removeEventListener('touchstart', onGameInput, true)
+    interactionDocument.removeEventListener('keydown', onGameInput, true)
+    interactionDocument = null
+  }
+
+  const onGameInput = (event: Event) => {
+    // 只认浏览器实际派发给游戏文档的输入；iframe.focus() 只给焦点，不代表玩家操作过游戏。
+    if (!event.isTrusted) return
+    stopFirstInteractionMonitoring()
+    reportFirstInteraction()
+    if (playable) return
+    // 纯 DOM 游戏没有 Canvas 或运行桥；玩家能向已加载的同源文档输入，说明页面已经可操作。
+    playable = true
+    options.onReady?.()
+  }
+
+  const startFirstInteractionMonitoring = (doc: Document) => {
+    stopFirstInteractionMonitoring()
+    interactionDocument = doc
+    doc.addEventListener('pointerdown', onGameInput, true)
+    doc.addEventListener('touchstart', onGameInput, true)
+    doc.addEventListener('keydown', onGameInput, true)
+  }
+
+  const onFramePointerInput = (event: Event) => {
+    // 父页读不到跨源文档的输入，只能记 iframe 收到的可信指针操作；它不单独证明游戏已就绪。
+    if (event.isTrusted) reportFirstInteraction()
   }
 
   /**
@@ -748,6 +782,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const stopMediaMonitoring = (removeCapabilities = false) => {
     mediaObserver?.disconnect()
     mediaObserver = null
+    stopFirstInteractionMonitoring()
     if (mediaPollTimer) window.clearTimeout(mediaPollTimer)
     mediaPollTimer = 0
     if (removeCapabilities) refreshMediaCapabilities(true)
@@ -767,6 +802,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       return
     }
 
+    startFirstInteractionMonitoring(doc)
     // 页面自己预先加载了媒体桥时，installAudioTap 会拿回同一个探针；没有就装迟到兜底。
     tapFor(win)
     refreshMediaCapabilities(true)
@@ -852,8 +888,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     // 这里只撤加载遮罩。真实成功必须等运行时桥或同源 canvas 探针，不能再拿 load 冒充。
     options.onSurfaceReady?.()
   })
-  // 跨域 iframe 读不到内部事件；用户亲手点进去时浏览器会把焦点交给 iframe，这仍是可靠的首次操作信号。
-  iframe.addEventListener('focus', reportFirstInteraction)
+  iframe.addEventListener('pointerdown', onFramePointerInput)
+  iframe.addEventListener('touchstart', onFramePointerInput)
   iframe.addEventListener('error', () => {
     if (destroyed) return
     options.onError?.('HTML5 游戏页面加载失败。请检查入口地址，以及目标站点是否允许被 iframe 嵌入。', 'runtime')
@@ -1052,6 +1088,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       stopMediaMonitoring(false)
       window.removeEventListener('message', onRuntimeBridgeMessage)
       window.removeEventListener('message', onGameSdkMessage)
+      iframe.removeEventListener('pointerdown', onFramePointerInput)
+      iframe.removeEventListener('touchstart', onFramePointerInput)
       for (const pending of pendingGameSdkRequests.values()) {
         window.clearTimeout(pending.timer)
         pending.reject(new Error('网页游戏已关闭'))

@@ -1,1 +1,20 @@
-{ "core": "fceumm", "buildStart": "2025-06-14T17:55:31+00:00", "buildEnd": "2025-06-14T17:56:45+00:00", "options": {} }
+{
+  "core": "fceumm",
+  "buildStart": "2026-11-21T18:38:14Z",
+  "buildEnd": "2026-11-21T19:11:09.894Z",
+  "options": {},
+  "upstreamRepo": "https://github.com/EmulatorJS/libretro-fceumm",
+  "upstreamCommit": "e1630de02074801eb96f3bc4ff33f69df9554c69",
+  "emulatorJsRetroArchCommit": "97f2cfa65d01d57406e4ce9459242c8ada7c7e3b",
+  "emsdkVersion": "3.1.74",
+  "minimumEJSVersion": "4.2.2",
+  "systemRam": {
+    "libretroType": 2,
+    "bytes": 2048,
+    "exports": [
+      "retro_get_memory_data",
+      "retro_get_memory_size"
+    ]
+  },
+  "sha256": "c9360f86b43b47ea3b307b698fc70034310289befb96931af470e5b40bff7097"
+}

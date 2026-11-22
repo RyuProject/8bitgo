@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "8BitGo PokeCatch Save Bridge",
+  "version": "1.1.0",
+  "description": "在 Pokecatch 游戏标签页与 8BitGo 账号云存档之间交接游戏进度。",
+  "permissions": ["scripting", "storage", "webNavigation"],
+  "host_permissions": ["https://pokecatch-online.netlify.app/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "8BitGo PokeCatch 存档桥",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://8bitgo.com/pokecatch-save-sync*",
+        "https://8bitgo.com/*/pokecatch-save-sync*",
+        "https://cn.8bitgo.com/pokecatch-save-sync*",
+        "https://cn.8bitgo.com/*/pokecatch-save-sync*"
+      ],
+      "js": ["bridge.js"],
+      "run_at": "document_start"
+    }
+  ]
+}

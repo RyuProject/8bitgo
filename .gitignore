@@ -6,6 +6,7 @@ dist
 dist-ssr
 *.local
 _to_delete/
+.8bitgo-plain-rom-migration.jsonl
 # logs
 logs
 *.log

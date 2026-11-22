@@ -19,11 +19,9 @@
  * File 是不可变的，所以这里重新包一个同内容、换名字的 File 出去。
  *
  * ── 为什么还要往包里塞合成 ROM ───────────────────────────────
- * 有些改版包新增的 ROM 不是「一整块图形」，而是「只盖住原图形一个窗口的补丁片」
- * （wofcn 的两块中文字库就是，推导见 data/arcadeHacks.ts）。而 FBNeo 的
- * CpsLoadOne 写入用 `|=`，是 OR 不是覆盖，补丁片窗口外又全是零 —— 直接列进 dat
- * 会同时踩两个坑。所以识别到带 derive 的条目时，先在这里把窗口合并好，
- * 把合成产物追加进递给引擎的包，dat 里引用合成产物。
+ * 有些改版包新增的 ROM 是分散的图形补丁片（wofcn 的中文字库就是，推导见
+ * data/arcadeHacks.ts）。这里按核心的 ROM 行格式把它们合成独立 bank，避免
+ * 覆盖原版图形；识别到带 derive 的条目时，把产物追加进递给引擎的包，dat 引用它们。
  * **玩家上传的原始文件始终不动**（File 不可变，这里产出的是新 File）。
  */
 import { appendZipEntries, extractZipEntry, type ZipFileEntry } from '@/lib/unzip'

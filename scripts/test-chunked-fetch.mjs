@@ -853,7 +853,7 @@ await check('下载好的 ROM 读不出：记下 Blob 存储已坏并改内存�
   assert.match(ejs, /if \(memoryRomOf\(stored\)\) return toMemory\(true\)/)
   assert.match(ejs, /if \(cacheKey && !memoryRomOf\(stored\)\) void romCachePutBlob/, '内存那份不是真 Blob，不能写缓存')
   assert.match(ejs, /if \(cacheKey && !memoryRomOf\(blob\)\) cacheRomBlob/)
-  assert.match(ejs, /return \{ url: objectUrlForEngine\(output\), name, hack, mameMedia, namcoSet, blob: output \}/, '街机内存 ROM 不能直接 createObjectURL')
+  assert.match(ejs, /return \{ url: objectUrlForEngine\(output\), name, hack, mameMedia, namcoSet,(?: mameCatalogSet,)? blob: output \}/, '街机内存 ROM 不能直接 createObjectURL')
 })
 
 await check('读包卡死：readBlobRange 到时抛 NotReadableError，调用方据此重下', async () => {

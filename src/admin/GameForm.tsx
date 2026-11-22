@@ -1699,7 +1699,7 @@ export function GameForm({
                   value={form.arcadeRomData ?? ''}
                   onChange={(e) => set('arcadeRomData', e.target.value || undefined)}
                   spellCheck={false}
-                  placeholder={'// wofcn 会按 ROM 指纹自动应用专属方案，请勿填入游戏级共享字段。\n// 其它改版包请填写与实际 ROM 完全匹配的 ZipName、DrvName 和完整 ROM 清单。'}
+                  placeholder={'// wofcn 已能识别，但加载方案尚未通过投币后的实际对白画面验证，当前不会自动启动。\n// 请勿把实验中的 RomData 写入游戏级共享字段。\n// 其它改版包请填写与实际 ROM 完全匹配的 ZipName、DrvName 和完整 ROM 清单。'}
                 />
                 <p className="mt-1 text-[11px] text-dim">
                   仅给不在 FBNeo 驱动表里的包用。必须同时写 <code>ZipName</code> 和 <code>DrvName</code>；已识别的改版包会在上传结果中提供一键填入。

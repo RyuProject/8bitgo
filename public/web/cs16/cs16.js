@@ -45,7 +45,7 @@ import {
 } from './pack-guards.js'
 
 const BASE = '/rodir/'
-const ASSET_VERSION = '20261116-dlhost'
+const ASSET_VERSION = '20261122-autolive'
 // 清单返回后会换成当前地图的真实压缩体积；这里仅用于清单到达前，避免进度条跳满。
 let expectedProgressBytes = 128 * 1024 * 1024
 // 引擎、客户端库、BOT、字体和 extras 实发约 15MB；留一点余量，别在资源写完时还显示 70%。
@@ -207,6 +207,7 @@ window.__probe = {
 window.__probe.keys = []
 let started = false
 let firstFrameReady = false
+let playableReported = false
 let failureReported = false
 let pageUnloading = false
 let engineFatalError = null
@@ -1568,7 +1569,10 @@ async function start({ server = null, room = null } = {}) {
     webglContextLost = false
     log('WebGL context restored')
     // 超时已经进入终态后不能再把错误层藏回去，否则玩家又只剩黑屏。
-    if (firstFrameReady && !failureReported && overlay) overlay.classList.add('hidden')
+    if (firstFrameReady && !failureReported && overlay) {
+      overlay.classList.add('hidden')
+      reportCs16Playable()
+    }
   })
 
   /*
@@ -1711,6 +1715,22 @@ async function start({ server = null, room = null } = {}) {
   firstFrameReady = true
   mark('Game ready', server?.name || room?.code)
   if (overlay && !webglContextLost && !failureReported) overlay.classList.add('hidden')
+  reportCs16Playable()
+}
+
+function reportCs16Playable() {
+  if (playableReported || !firstFrameReady || failureReported || !$('overlay')?.classList.contains('hidden')) return
+  playableReported = true
+  // 父页必须等训练服、地图和自动入队都完成再开播；仅有空画布时会把启动画面推到直播间。
+  const gameSdk = window.EightBitGoGameSDK
+  try {
+    if (typeof gameSdk?.reportPlayable === 'function') gameSdk.reportPlayable()
+    else window.EightBitGoBridge?.reportPlayable?.()
+  } catch (error) {
+    // 开播就绪回报不能让游戏本身失败；运行桥仍可独立通知父页。
+    console.warn('[8BitGo SDK] Failed to report game readiness', error)
+    try { window.EightBitGoBridge?.reportPlayable?.() } catch { /* 父页正在离开 */ }
+  }
 }
 
 function showError(e) {

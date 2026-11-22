@@ -10,7 +10,7 @@
 import { useEffect, useSyncExternalStore } from 'react'
 import type { PublicUser, User, UserRole, UserStatus } from '@/types'
 import { createLocalStore, randomId } from './localStore'
-import { api, apiBase, apiEnabled, setToken, getToken } from './api'
+import { api, ApiError, apiBase, apiEnabled, setToken, getToken } from './api'
 import { pushGuestRecent } from './recents'
 import { getT } from './i18n'
 import { checkAdultBirthDate, isAdultByBirthDate } from '../../shared/age.js'
@@ -202,14 +202,141 @@ export async function hydrateAuth(): Promise<void> {
     setAuthReady()
     return
   }
+  showPendingPasswordResetNotice()
   try {
     const u = await api.get<PublicUser>('/api/auth/me')
     setCurrentUser(u)
-  } catch {
-    setToken(null)
-    setCurrentUser(null)
+  } catch (e) {
+    if (isSessionRejected(e)) {
+      setToken(null)
+      setCurrentUser(null)
+    } else {
+      /*
+        ⚠️ 以前任何错误都清令牌：断网、超时、部署时的 502，用户都会被当场登出、还得重新收验证码。
+        令牌本身没问题时留着它，界面继续用上次缓存的用户（8bitgo.session.user）；
+        等网络回来或过一会儿再问一次，真的失效了那次自然会拿到 401 再清。
+      */
+      scheduleAuthRetry()
+    }
   } finally {
     setAuthReady()
+  }
+}
+
+/**
+ * 服务端明确拒绝了这张令牌：401（过期 / 被作废 / 用户不存在），或我们自己的 403（封禁）。
+ * 403 只认带 JSON error 的 —— Cloudflare 的拦截页、反代的 403 是 HTML，不代表令牌坏了。
+ */
+function isSessionRejected(e: unknown): boolean {
+  if (!(e instanceof ApiError)) return false
+  if (e.status === 401) return true
+  return e.status === 403 && typeof (e.data as { error?: unknown } | null)?.error === 'string'
+}
+
+/** 开机换用户信息失败后的重试：网络恢复立刻试，另外按 15s / 60s / 5min 退避，最多三次 */
+const AUTH_RETRY_DELAYS = [15_000, 60_000, 300_000]
+let authRetryCount = 0
+let authRetryTimer: ReturnType<typeof setTimeout> | null = null
+let authRetryOnline: (() => void) | null = null
+
+function scheduleAuthRetry() {
+  if (typeof window === 'undefined' || authRetryTimer || authRetryOnline) return
+  if (authRetryCount >= AUTH_RETRY_DELAYS.length) return
+  const delay = AUTH_RETRY_DELAYS[authRetryCount++]
+  const run = () => {
+    if (authRetryTimer) clearTimeout(authRetryTimer)
+    if (authRetryOnline) window.removeEventListener('online', authRetryOnline)
+    authRetryTimer = null
+    authRetryOnline = null
+    void retryHydrateAuth()
+  }
+  authRetryOnline = run
+  window.addEventListener('online', run)
+  authRetryTimer = setTimeout(run, delay)
+}
+
+async function retryHydrateAuth() {
+  // 期间用户可能已经退出或换了号：没令牌就不用再问
+  const token = getToken()
+  if (!token) return
+  try {
+    const u = await api.get<PublicUser>('/api/auth/me')
+    if (getToken() === token) setCurrentUser(u)
+  } catch (e) {
+    if (getToken() !== token) return
+    if (isSessionRejected(e)) {
+      setToken(null)
+      setCurrentUser(null)
+    } else {
+      scheduleAuthRetry()
+    }
+  }
+}
+
+/* ---------------- 「密码已被重置」提示 ---------------- */
+
+/**
+ * 服务端在主人第一次验码 / 第三方登录时，会清掉 2026-11-17 前不验邮箱注册留下的密码
+ * （server/src/routes/auth.js 的 markEmailVerified），并在登录响应里带 passwordReset。
+ * 不提示的话本人下次用密码登录只会看到「密码不正确」。
+ *
+ * 用 sessionStorage 中转：第三方登录的回调页拿到令牌后会整页跳回原页面，提示要在跳转之后显示。
+ * 提示是一小块原生 DOM（全站没有通用 toast，登录流程又分散在好几个组件里）。
+ */
+const PASSWORD_RESET_KEY = '8bitgo.auth.passwordReset'
+
+function notePasswordReset(r: { passwordReset?: unknown }) {
+  if (r.passwordReset !== true) return
+  try {
+    sessionStorage.setItem(PASSWORD_RESET_KEY, '1')
+  } catch {
+    /* 无痕 / 禁用存储：直接显示，不跨页 */
+  }
+  showPendingPasswordResetNotice(true)
+}
+
+function showPendingPasswordResetNotice(force = false) {
+  if (typeof document === 'undefined') return
+  let pending = force
+  try {
+    pending = pending || sessionStorage.getItem(PASSWORD_RESET_KEY) === '1'
+    sessionStorage.removeItem(PASSWORD_RESET_KEY)
+  } catch {
+    /* ignore */
+  }
+  if (!pending || document.getElementById('auth-password-reset-notice')) return
+  const box = document.createElement('div')
+  box.id = 'auth-password-reset-notice'
+  box.setAttribute('role', 'status')
+  box.style.cssText =
+    'position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:2147483000;' +
+    'max-width:min(480px,calc(100vw - 32px));display:flex;gap:12px;align-items:flex-start;' +
+    'padding:12px 14px;border-radius:12px;border:1px solid #ffc800;background:#1d1d24;color:#fff;' +
+    'font-size:14px;line-height:1.5;box-shadow:0 8px 24px rgba(0,0,0,.35)'
+  const text = document.createElement('span')
+  text.textContent = getT().auth.passwordResetNotice
+  const close = document.createElement('button')
+  close.type = 'button'
+  close.textContent = '×'
+  close.setAttribute('aria-label', getT().auth.passwordResetDismiss)
+  close.style.cssText = 'flex:none;background:none;border:0;color:inherit;font-size:20px;line-height:1;cursor:pointer'
+  close.onclick = () => box.remove()
+  box.append(text, close)
+  document.body.appendChild(box)
+}
+
+/**
+ * 第三方（Microsoft / Apple）登录：服务端把标记放在回调地址的 # 里（&pwreset=1），
+ * 回调页一进来就抹掉 hash，所以在本模块加载时（早于回调页的 effect）先记下，登录成功后才生效。
+ * 被伪造也只是多显示一句提示。
+ */
+let oauthPasswordResetPending = false
+if (typeof window !== 'undefined') {
+  try {
+    const h = new URLSearchParams(window.location.hash.replace(/^#/, ''))
+    oauthPasswordResetPending = h.has('token') && h.get('pwreset') === '1'
+  } catch {
+    /* ignore */
   }
 }
 
@@ -417,9 +544,13 @@ export async function loginWithEmailCode(email: string, code: string): Promise<P
   if (!/^\d{6}$/.test(c)) throw new Error(getT().errors.codeFormat)
 
   if (apiEnabled()) {
-    const r = await api.post<{ token: string; user: PublicUser }>('/api/auth/email/verify', { email: e, code: c })
+    const r = await api.post<{ token: string; user: PublicUser; passwordReset?: boolean }>('/api/auth/email/verify', {
+      email: e,
+      code: c,
+    })
     setToken(r.token)
     setCurrentUser(r.user)
+    notePasswordReset(r)
     return r.user
   }
 
@@ -601,9 +732,10 @@ async function getGoogleCredential(clientId: string): Promise<string> {
 
 /** 拿 Google 给的 ID token 换本站会话。官方按钮和备用按钮最后都走这里。 */
 export async function exchangeGoogleCredential(credential: string): Promise<PublicUser> {
-  const r = await api.post<{ token: string; user: PublicUser }>('/api/auth/google', { credential })
+  const r = await api.post<{ token: string; user: PublicUser; passwordReset?: boolean }>('/api/auth/google', { credential })
   setToken(r.token)
   setCurrentUser(r.user)
+  notePasswordReset(r)
   return r.user
 }
 
@@ -758,6 +890,15 @@ export async function completeOAuthLogin(token: string, cst: string): Promise<Pu
   try {
     const user = await api.get<PublicUser>('/api/auth/me')
     setCurrentUser(user)
+    // 回调页随后整页跳转，提示留到新页面的 hydrateAuth 里显示
+    if (oauthPasswordResetPending) {
+      oauthPasswordResetPending = false
+      try {
+        sessionStorage.setItem(PASSWORD_RESET_KEY, '1')
+      } catch {
+        /* ignore */
+      }
+    }
     return user
   } catch (e) {
     // 令牌换不出用户就别把它留在本地：留着的话下次开机会顶着一个坏令牌，处处 401

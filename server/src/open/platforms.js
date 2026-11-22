@@ -434,7 +434,7 @@ const PLATFORM_ROWS = deepFreeze([
     nameZh: '塞班 / 诺基亚 N-Gage',
     manufacturer: 'Nokia / Symbian',
     year: 1998,
-    runtime: 'eka2l1-web',
+    runtime: 'eka2l1',
     core: null,
     romExtensions: ['.sis', '.zip', '.sisx', '.n-gage'],
     native: {

@@ -22,6 +22,13 @@ import { playIdentity } from '../playcount.js'
 import { requireUser, optionalUser, hasAbility } from '../auth.js'
 import { attachRelations } from '../games-repo.js'
 import { take, takeAnonymous, clientKey, isMeaningfulIp } from '../rateLimit.js'
+/*
+  合集会进 SSR 内容缓存（content.js 的 collection:<id> / collections:<page> / 首页合集块），
+  Cloudflare 上的 HTML 还会缓存一天（§2.37）。所以凡是改了公开可见内容的写路径都要调它，
+  否则改名、加游戏、下架之后最长一天都是旧页面。浏览计数（/:id/view）是高频写，刻意不调。
+  content.js 反过来也 import 本文件 —— ESM 循环只在运行时取函数，加载期不调用，没问题。
+*/
+import { invalidateContent } from '../content.js'
 
 export const collectionsRouter = Router()
 
@@ -436,6 +443,7 @@ collectionsRouter.post('/', requireUser, async (req, res, next) => {
       return { over: false, insertId: ins.insertId }
     })
     if (created.over) return res.status(400).json({ error: `最多只能建 ${MAX_PER_USER} 个合集` })
+    invalidateContent()
     const row = await queryOne(`${SELECT_WITH_AUTHOR} WHERE c.id = ?`, [created.insertId])
     res.status(201).json(rowToApi(row, { viewerId: req.user.id }))
   } catch (e) {
@@ -469,6 +477,7 @@ collectionsRouter.patch('/:id', requireUser, async (req, res, next) => {
 
     sets.push('updated_at = CURRENT_TIMESTAMP(3)')
     await query(`UPDATE collections SET ${sets.join(', ')} WHERE id = ?`, [...args, row.id])
+    invalidateContent()
     const fresh = await queryOne(`${SELECT_WITH_AUTHOR} WHERE c.id = ?`, [row.id])
     const [out] = await decorate([fresh], req.user.id)
     res.json(out)
@@ -489,6 +498,7 @@ collectionsRouter.delete('/:id', requireUser, async (req, res, next) => {
     }
     // collection_items 靠外键级联删掉
     await query('DELETE FROM collections WHERE id = ?', [id])
+    invalidateContent()
     res.json({ ok: true })
   } catch (e) {
     next(e)
@@ -504,6 +514,7 @@ collectionsRouter.patch('/:id/hidden', requireUser, async (req, res, next) => {
     const hidden = req.body?.hidden ? 1 : 0
     const r = await query('UPDATE collections SET hidden = ? WHERE id = ?', [hidden, id])
     if (!r.affectedRows) return res.status(404).json({ error: '合集不存在' })
+    invalidateContent()
     res.json({ ok: true, hidden: Boolean(hidden) })
   } catch (e) {
     next(e)
@@ -609,7 +620,10 @@ collectionsRouter.post('/:id/games', requireUser, async (req, res, next) => {
       return { over: false, affected: ins.affectedRows }
     })
     if (added.over) return res.status(400).json({ error: `一个合集最多放 ${MAX_ITEMS} 款游戏` })
-    if (added.affected) await touch(row.id)
+    if (added.affected) {
+      await touch(row.id)
+      invalidateContent()
+    }
     res.status(201).json({ ok: true, added: Boolean(added.affected) })
   } catch (e) {
     next(e)
@@ -623,7 +637,10 @@ collectionsRouter.delete('/:id/games/:slug', requireUser, async (req, res, next)
     const game = await queryOne('SELECT id FROM games WHERE slug = ?', [String(req.params.slug ?? '').trim()])
     if (!game) return res.status(404).json({ error: '游戏不存在' })
     const r = await query('DELETE FROM collection_items WHERE collection_id = ? AND game_id = ?', [row.id, game.id])
-    if (r.affectedRows) await touch(row.id)
+    if (r.affectedRows) {
+      await touch(row.id)
+      invalidateContent()
+    }
     res.json({ ok: true, removed: Boolean(r.affectedRows) })
   } catch (e) {
     next(e)
@@ -680,6 +697,7 @@ collectionsRouter.patch('/:id/order', requireUser, async (req, res, next) => {
         [...ordered.flatMap((gid, i) => [gid, i]), row.id, ...ordered],
       )
       await touch(row.id)
+      invalidateContent()
     }
     res.json({ ok: true, ordered: ordered.length })
   } catch (e) {

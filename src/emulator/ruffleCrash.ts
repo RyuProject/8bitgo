@@ -1,10 +1,10 @@
 /**
  * Ruffle 的致命异常识别与接管。
  *
- * ActionScript 自己的异常并不等于播放器已经死掉；老游戏经常抛一两条错误后继续运行，
- * 所以这里绝不能把所有 console.error 都升级成红屏。只认 WASM RuntimeError 和 Ruffle/Rust
- * 明确的 panic 标记：这两类一旦出现，时间轴和画布都不会自行恢复，继续显示「运行中」只会
- * 让玩家对着永久黑屏反复点。
+ * ActionScript 自己的普通异常并不等于播放器已经死掉；老游戏经常抛一两条错误后继续运行，
+ * 所以这里绝不能把所有 console.error 都升级成红屏。只认 WASM RuntimeError、Ruffle/Rust
+ * 明确的 panic，以及 Ruffle 已终止脚本的超时标记：这些故障都不会自行恢复，继续显示「运行中」
+ * 只会让玩家对着永久黑屏反复点。
  */
 
 const FATAL_TEXT = [
@@ -17,7 +17,10 @@ const FATAL_TEXT = [
   /call_indirect.*null table entry/i,
   /table index is out of bounds/i,
   /unreachable executed/i,
+  /a script in this movie has taken too long to execute and has been terminated/i,
 ] as const
+
+const SCRIPT_TIMEOUT = /a script in this movie has taken too long to execute and has been terminated/i
 
 function errorText(value: unknown): { name: string; message: string } {
   if (value && typeof value === 'object') {
@@ -39,6 +42,7 @@ export function ruffleFatalDetail(value: unknown): string | null {
   if (name === 'AbortError' || /\baborterror\b/i.test(message)) return null
   const text = `${name}: ${message}`.trim()
   if (name !== 'RuntimeError' && !FATAL_TEXT.some((pattern) => pattern.test(text))) return null
+  if (SCRIPT_TIMEOUT.test(text)) return 'A script in this movie has taken too long to execute and has been terminated.'
   return (message || name || 'Ruffle runtime crashed').trim().slice(0, 320)
 }
 

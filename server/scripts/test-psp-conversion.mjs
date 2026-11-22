@@ -258,4 +258,18 @@ assert.equal(recovered.status, 'completed', '502 / DNS 抖动后应继续查询�
 assert.deepEqual(delays, [1000, 2000], '连续查询失败使用有上限的指数退避')
 assert.equal(reads, 3)
 
+// 已发布但 R2 最终对象被换掉：重试不能再排进一个必然失败的循环，要当场拒绝并说明原因
+{
+  const retryBlock = conversionSource.slice(
+    conversionSource.indexOf('export async function retryPspConversion'),
+    conversionSource.indexOf('async function updateJob'),
+  )
+  const guard = retryBlock.indexOf('if (row.output_etag && row.output_size)')
+  assert.ok(guard > 0, '重试先核对已发布对象')
+  assert.ok(guard < retryBlock.indexOf('const claimed = await query('), '核对在重新排队之前')
+  assert.match(retryBlock, /published\.etag !== row\.output_etag \|\| published\.size !== Number\(row\.output_size\)/)
+  assert.match(retryBlock, /已在 R2 上被替换或删除，重试只会再次失败/)
+  assert.match(retryBlock, /AND source_deleted = 0/)
+}
+
 console.log('✅ PSP ISO → CHD：格式守卫、后台队列、上传发布与 502 / 网络抖动恢复通过')

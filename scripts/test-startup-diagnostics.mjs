@@ -113,11 +113,59 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
     '懒加载 chunk 的导入失败不能被粗略归成网络错误',
   )
   assert.equal(diagnoseStartupFailure({
-    event: 'failed', runtime: 'page', diagnostics: { resources: [{ n: '8bitgo.com/assets/…/GameDetailPage.js', i: 'script', st: 404 }] },
+    event: 'failed', runtime: 'page', diagnostics: { resources: [{ n: '8bitgo.com/assets/…/GameDetailPage.js', i: 'script', at: 0, st: 404 }] },
   }).code, 'page_asset', '脚本本身的 HTTP 失败按页面资源定位')
   assert.equal(diagnoseStartupFailure({
-    event: 'failed', runtime: 'page', diagnostics: { resources: [{ n: 'stats.example/request', i: 'fetch', st: 404 }] },
+    event: 'failed', runtime: 'page', diagnostics: { resources: [{ n: 'stats.example/request', i: 'fetch', at: 0, st: 404 }] },
   }).confidence, 'medium', '无法确定关联的普通资源错误要显示中把握度')
+  assert.equal(diagnoseStartupFailure({
+    event: 'failed', runtime: 'page', diagnostics: { resources: [{ n: 'stats.example/widget.js', i: 'script', at: 0, st: 404 }] },
+  }).code, 'network_http', '近期第三方脚本失败不能被升级成本站页面资源故障')
+  const reactUpdateLoop = diagnoseStartupFailure({
+    event: 'failed', runtime: 'page', platform: 'nes',
+    detail: 'Error: Minified React error #185; at fi (react-vendor.js:8:27488)',
+    diagnostics: {
+      resources: [
+        { n: 'u.clarity.ms/collect', i: 'xmlhttprequest', at: -459_500, st: 400 },
+        { n: '8bitgo.com/api/events', i: 'fetch', at: -878_100, st: 500 },
+      ],
+    },
+  })
+  assert.deepEqual(
+    { code: reactUpdateLoop.code, signal: reactUpdateLoop.signals[0], phase: reactUpdateLoop.phase, confidence: reactUpdateLoop.confidence },
+    { code: 'react_update_loop', signal: 'error.react_update_loop', phase: 'page_render', confidence: 'high' },
+    'React #185 的直接异常优先于整页缓冲里过期的第三方 / 本站请求错误（#1533）',
+  )
+  assert.notEqual(diagnoseStartupFailure({
+    event: 'failed', runtime: 'page', diagnostics: { resources: [{ n: 'u.clarity.ms/collect', i: 'xmlhttprequest', at: -459_500, st: 400 }] },
+  }).code, 'network_http', '数分钟前的第三方 HTTP 400 不归到当前开局')
+  assert.equal(diagnoseStartupFailure({
+    event: 'failed', runtime: 'page', diagnostics: { resources: [{ n: '8bitgo.com/api/events', i: 'fetch', at: -1200, st: 400 }] },
+  }).code, 'network_http', '开局附近的本站 HTTP 错误仍可识别')
+  const jsdosDependencyFailure = diagnoseStartupFailure({
+    event: 'failed', runtime: 'jsdos', platform: 'dos',
+    detail: 'DOSBox 运行出错：DOSBox did not start',
+    diagnostics: {
+      logs: [
+        { t: 4000, s: 'download', l: 'info', m: 'ROM 首段 262072 字节 / 3010ms： cn-assets.8bitgo.com/roms/…/[ROM].zh-Hant.zip.8bg' },
+        { t: 50_500, s: 'stage', l: 'info', m: '游戏包下载完成' },
+        { t: 58_900, s: 'page', l: 'error', m: 'Unable to init emulators.js ReferenceError: emulators is not defined | at cn.8bitgo.com/_cn/…/js-dos.js:21:73612' },
+        { t: 65_600, s: 'page', l: 'error', m: 'TypeError: Failed to fetch | at Mi (cn.8bitgo.com/_cn/…/js-dos.js:21:74374)' },
+      ],
+      resources: [
+        { n: 'cn-assets.8bitgo.com/roms/…/[ROM].zh-Hant.zip.8bg', i: 'fetch', at: 41_900, d: 8700, st: 206 },
+        { n: 'cn.8bitgo.com/_cn/…/emulators.js', i: 'script', at: 50_600, d: 15_000, st: 0 },
+      ],
+    },
+  })
+  assert.deepEqual(
+    { code: jsdosDependencyFailure.code, signal: jsdosDependencyFailure.signals[0], phase: jsdosDependencyFailure.phase, confidence: jsdosDependencyFailure.confidence },
+    { code: 'engine_asset', signal: 'error.jsdos_emulators_asset', phase: 'engine_asset', confidence: 'high' },
+    'ROM 已下载后 emulators.js 初始化失败，应优先于残留 ROM URL 归为 js-dos 依赖故障（#1518）',
+  )
+  assert.notEqual(diagnoseStartupFailure({
+    event: 'failed', runtime: 'emulatorjs', platform: 'nes', detail: 'ReferenceError: emulators is not defined',
+  }).code, 'engine_asset', 'js-dos 专属的 emulators.js 规则不能误判其他运行时')
   const trap = diagnoseStartupFailure({
     event: 'failed', platform: 'gba', detail: 'RuntimeError: table index is out of bounds',
     diagnostics: { resources: [{ n: '8bitgo.com/emulatorjs/…/mgba-wasm.data' }] },

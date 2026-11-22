@@ -47,8 +47,8 @@ import { SELF_BUILT_CORES } from '../src/config/emulators.ts'
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const out = join(root, 'public', 'emulatorjs', 'cores')
 const ifMissing = process.argv.includes('--if-missing')
-// 兼容 melonDS 从官方 npm 包单独取证后已提交到仓库；不能为了复制其它核心
-// 再通过 npm 依赖拉进所有可选核心，也不能让清理输出目录时把它删掉。
+// 保留独立构建的核心：FCEUmm 带 RAM 导出，melonDS / MAME / FBNeo 等也不由此脚本构建。
+// 不能为了复制其它核心再通过 npm 依赖拉进全家桶，也不能让清理输出目录时把这些产物删掉。
 const PRESERVED_CORES = new Set([...SELF_BUILT_CORES, 'melonds'])
 
 /**
@@ -111,7 +111,7 @@ const CORES = [
   'fbalpha2012_cps2',   // arcade 备选：CPS2（街霸2X / 恐龙快打）
   'mame2003_plus',      // arcade 备选：兼容面最广（也最慢、最大，5MB/变体）
   'mame2003',           // arcade 备选：更老的 MAME，个别板子只有它认
-  'fceumm',             // nes
+  // fceumm 由 build-fceumm-ram-core.mjs 维护，额外导出 Libretro system RAM，不用官方包覆盖。
   'snes9x',             // snes
   'mgba',               // gba
   'gambatte',           // gb

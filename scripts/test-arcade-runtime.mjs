@@ -40,6 +40,7 @@ console.log('\n街机启动链体检')
 await check('RomData 只对实际包含该实现的 FBNeo 开放', () => {
   assert.equal(supportsFbneoRomData('fbneo'), true)
   assert.equal(supportsFbneoRomData('fbneo-lowmem'), true)
+  assert.equal(supportsFbneoRomData('fbneo-wofcn'), true)
   for (const core of ['mame2003', 'mame2003_plus', 'mame-current', 'fbalpha2012_cps1']) {
     assert.equal(supportsFbneoRomData(core), false, `${core} 被误判为支持 RomData`)
   }
@@ -48,6 +49,7 @@ await check('RomData 只对实际包含该实现的 FBNeo 开放', () => {
 await check('已配 RomData 时自动纠正到 FBNeo，空值不干预选核', () => {
   assert.equal(arcadeCoreForRomData('mame2003', 'ZipName wofcn'), 'fbneo')
   assert.equal(arcadeCoreForRomData('fbneo-lowmem', 'ZipName wofcn'), 'fbneo-lowmem')
+  assert.equal(arcadeCoreForRomData('fbneo-wofcn', 'ZipName wofcn'), 'fbneo-wofcn')
   assert.equal(arcadeCoreForRomData('mame-current', '  \n'), 'mame-current')
 })
 
@@ -159,11 +161,16 @@ await check('RomData 游戏预热最终的 FBNeo，不白下错误的 MAME 大�
 await check('wofcn 的运行配置只跟随 CRC 命中的 ROM，不污染其他语言槽', async () => {
   const adapter = await readFile(new URL('../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8')
   const form = await readFile(new URL('../src/admin/GameForm.tsx', import.meta.url), 'utf8')
+  const hacks = await readFile(new URL('../src/data/arcadeHacks.ts', import.meta.url), 'utf8')
   assert.match(adapter, /prepared\.hack\.romDataScope === 'rom'/)
+  assert.match(adapter, /prepared\.hack\?\.romDataScope === 'rom' && !prepared\.hack\.romData[\s\S]{0,220}failLoad\(fmt\(getT\(\)\.player\.arcadeHackNoPlan/)
   assert.match(adapter, /romScopedHackForName\(selectedRomset\)/)
   assert.match(adapter, /romScopedHackForData\(configuredRomData\)/)
   assert.match(adapter, /preparedArcadeHack === configuredScopedHack/)
   assert.match(adapter, /当前 ROM 指纹不匹配/)
+  assert.match(hacks, /experimentalPlan: \{ romData: WOFCN_ROMDATA, derive: WOFCN_DERIVE \}/)
+  const entry = hacks.slice(hacks.indexOf("zipName: 'wofcn'"), hacks.indexOf('\n  },', hacks.indexOf("zipName: 'wofcn'")))
+  assert.doesNotMatch(entry, /^\s*(?:romData|derive):/m, '不可验证方案不能进入播放器使用的 romData / derive 字段')
   assert.match(form, /if \(hack\.romDataScope !== 'rom'\) applyHack\(hack, true\)/)
   assert.match(form, /不要把 FBNeo 写进整款游戏的 core 字段/)
 })
@@ -243,6 +250,7 @@ await check('预热的核心文件就是引擎真正下载的那个变体（lega
   }
   assert.equal(emulatorJsCoreDataFile('arcade'), 'fbneo-legacy-wasm.data')
   assert.equal(emulatorJsCoreDataFile('fbneo'), 'fbneo-legacy-wasm.data')
+  assert.equal(emulatorJsCoreDataFile('fbneo-wofcn'), 'fbneo-wofcn-legacy-wasm.data')
   assert.equal(emulatorJsCoreDataFile('nds'), 'melondsds-wasm.data')
 })
 

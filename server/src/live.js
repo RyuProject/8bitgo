@@ -1108,6 +1108,8 @@ export function subscribeLiveRooms(res, { includeAdult = false } = {}) {
 
 /** 这间房该不该出现在大厅列表里：主播切后台超过 FROZEN_HIDE_MS 就不该 */
 function listed(room) {
+  // 下架游戏的房间永远不上列表（见 go-live 里 unlisted 那段）
+  if (room.unlisted) return false
   if (!room.hostFrozen || room.frozenSince === null) return true
   return Date.now() - room.frozenSince < FROZEN_HIDE_MS
 }
@@ -1832,11 +1834,18 @@ export function attachLive(io, options = {}) {
         */
         let gameSlug = ''
         let adult = false
+        let unlisted = false
         if (requestedSlug && !requestedSlug.startsWith('local:')) {
           const game = await findGame(requestedSlug)
-          if (!game || dbFlag(game.hidden)) return ack?.('unknown game')
+          if (!game) return ack?.('unknown game')
           gameSlug = typeof game.slug === 'string' && game.slug ? game.slug : requestedSlug
           adult = dbFlag(game.adult)
+          /*
+            下架（hidden）的游戏仍允许开播：管理员预览未上架游戏时会自动开播，以前直接回 unknown game。
+            但房间不能进公开大厅，否则未上架的游戏名 / 封面就从直播列表漏出去了 —— 记成 unlisted，
+            listed() 一律过滤，只有拿着直链的人能看。年龄门照旧按库里的真实 adult 位。
+          */
+          unlisted = dbFlag(game.hidden)
         } else {
           gameSlug = requestedSlug
         }
@@ -1922,6 +1931,8 @@ export function attachLive(io, options = {}) {
           gameSlug,
           /** 内部权限位，不进 publicRoom；列表和详情在序列化之前按它过滤。 */
           adult,
+          /** 下架游戏的房间：不进任何列表（listed() 过滤），直链仍可看。内部位，不进 publicRoom。 */
+          unlisted,
           gameName: str(payload?.gameName, 120),
           platform: str(payload?.platform, 40),
           // 正式设备主播的显示名只能来自用户表；网页匿名直播保持现有自报名行为。

@@ -82,6 +82,8 @@ export interface MountOptions {
   game: File | string
   /** 启动期 GBA WASM 越界后的唯一恢复轮：丢弃该远端 ROM 的缓存与续传片，再从网络读取。 */
   forceRomRefresh?: boolean
+  /** 本次开局之前的一轮已经强制刷新过 ROM；适配器只据此在陷阱复现时清掉坏缓存，不会再丢缓存重下。 */
+  romRefreshed?: boolean
   /** PSP 在线镜像的读取方式；整包先落 OPFS 再挂成本地盘，默认按需流式读取。 */
   pspLoadMode?: 'stream' | 'download'
   /** 显示名（存档 / 截图命名用） */
@@ -94,6 +96,8 @@ export interface MountOptions {
    * 更老的板子可能只有 mame2003_plus 跑得动 —— 一个平台默认值盖不住。
    */
   core?: string
+  /** ROM CRC 命中后适配器自动换用游戏专属核心时，同步会话核心和独立存档档位。 */
+  onCoreResolved?: (core: string, saveSuffix?: string) => void
   /**
    * FBNeo RomData（.dat 文本）。传了就在虚拟文件系统里和 ROM 并排放一份
    * `<romset>.dat`，让核心把这个包当成挂在别的驱动上的自定义 romset。
@@ -173,6 +177,8 @@ export interface MountOptions {
    * 不传就没有存档能力。
    */
   gameSlug?: string
+  /** 官方游戏的稳定 slug；与可能带 ROM / 核心后缀的存档 slug 分开，用于逐游戏识别配置。 */
+  catalogSlug?: string
   /**
    * P2P 联机会话（EmulatorJS netplay）：游戏在房主自己的浏览器里跑，
    * 画面经 WebRTC 直推给其他玩家，不经过服务器。这是默认的联机方案（兜底）。
@@ -264,7 +270,7 @@ export interface MountOptions {
   onReady?: () => void
   /** 运行时已经产出首帧 / 真正进入主循环。多数适配器会紧跟 onReady 报这一项。 */
   onStart?: () => void
-  /** HTML5 子页面通过运行时桥确认玩家第一次真实输入。其它运行时由播放器统一监听。 */
+  /** HTML5 子页面的可信输入事件或运行时桥确认玩家第一次真实操作；iframe 自动聚焦不算。 */
   onFirstInteraction?: () => void
   /**
    * scope = runtime 表示播放器外壳 / 引擎本身没起来，不是 ROM 内容坏了。
@@ -557,6 +563,15 @@ export interface RuntimeHandle {
   destroy: () => void
   /** 当前可用的能力 */
   caps: Set<Capability>
+  /**
+   * 读取 NES/FCEUmm 的 Libretro system RAM 快照。offset 是 RAM 区内的 0 起始偏移；
+   * 未就绪、当前核心不支持或范围越界时返回 null。返回值是复制后的字节，不是游戏分数。
+   */
+  readSystemRam?: (offset?: number, length?: number) => Uint8Array | null
+  /** 仅当官方游戏 slug 与当前裸 ROM SHA-256 命中已核实配置时返回分数；其余情况为 null。 */
+  readNesScore?: () => string | null
+  /** 用户主动开启 NES RAM 采样时，按需计算当前已加载 ROM 的 SHA-256；不会在普通开局时运行。 */
+  readNesRomSha256?: () => Promise<string | null>
   /** 暂停 / 继续 */
   setPaused?: (paused: boolean) => void
   /** 多盘游戏的站内换盘入口；只切换当前盘，不重启模拟器或游戏。 */

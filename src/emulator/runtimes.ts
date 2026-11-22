@@ -25,13 +25,21 @@ const LOADERS: Record<RuntimeId, () => Promise<RuntimeMount>> = {
 }
 
 const pendingLoads = new Map<RuntimeId, Promise<RuntimeMount>>()
+/** 代码分块请求偶尔会静默挂起；要早于播放器的 120 秒总看门狗给出可重试错误。 */
+const RUNTIME_MODULE_TIMEOUT_MS = 60_000
 
 /** 按选中的运行时加载并缓存挂载函数；失败时清掉 promise，允许用户重试下载代码块。 */
 export function loadMountOf(id: RuntimeId): Promise<RuntimeMount> {
   const existing = pendingLoads.get(id)
   if (existing) return existing
 
-  const loading = LOADERS[id]()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${id} 运行时模块加载超时（60 秒），请检查网络后重试`)), RUNTIME_MODULE_TIMEOUT_MS)
+  })
+  const loading = Promise.race([LOADERS[id](), timeout]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer)
+  })
   pendingLoads.set(id, loading)
   void loading.catch(() => {
     if (pendingLoads.get(id) === loading) pendingLoads.delete(id)

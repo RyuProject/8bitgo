@@ -56,7 +56,67 @@ async function findOrCreateByEmail(email, nickname) {
     )
     row = await queryOne('SELECT * FROM users WHERE email = ?', [email])
   }
-  return row
+  // 走到这里的都刚证明过邮箱归本人（验证码 / Google / Microsoft / Apple）
+  return markEmailVerified(row)
+}
+
+/** 缺 email_verified_at 列（没跑 migrate）的提醒只打一次 */
+let warnedNoVerifiedColumn = false
+
+function isMissingVerifiedColumn(e) {
+  if (e?.code !== 'ER_BAD_FIELD_ERROR') return false
+  if (!warnedNoVerifiedColumn) {
+    warnedNoVerifiedColumn = true
+    console.warn('[auth] users.email_verified_at 列不存在，抢注老号的密码无法自动清除。补法：cd server && npm run migrate')
+  }
+  return true
+}
+
+/**
+ * 记下「这个邮箱刚被证明归本人」，并处理 2026-11-17 之前抢注的号。
+ *
+ * ⚠️ 那之前 /register 不验邮箱就建带密码的号：攻击者先拿受害者的邮箱注册并设好密码，
+ * 受害者之后用验证码 / 第三方登录时按邮箱合并进的就是这一行，攻击者手里的密码一直有效。
+ * 判据是 email_verified_at：NULL 表示这一行从没有人证明过邮箱归属。此刻第一次有人证明了，
+ * 那份来历不明的密码就不能再认 —— 清空它，并把 token_version +1 踢掉攻击者已有的会话
+ * （调用方随后按新版本号给本人签令牌）。
+ *
+ * 代价：迁移前用验证码登录后自己设过密码的老用户，下次验证码登录时密码会被清掉、其它设备掉线，
+ * 需要在个人中心重设一次。那批行与抢注行在库里分不出来，宁可让本人多设一次密码，也不能把号留给别人。
+ *
+ * 两条 UPDATE 都带 `email_verified_at IS NULL`：并发的两次验码登录只有一次会清密码、加版本。
+ */
+async function markEmailVerified(row) {
+  if (!row || row.email_verified_at) return row
+  let cleared = false
+  try {
+    const r = await query(
+      "UPDATE users SET token_version = token_version + 1, password_hash = '', email_verified_at = NOW() " +
+        "WHERE id = ? AND email_verified_at IS NULL AND password_hash <> ''",
+      [row.id],
+    )
+    // 只有真清掉了密码的那一次 affectedRows = 1（并发的另一次已经被 IS NULL 条件挡掉）
+    cleared = Number(r?.affectedRows) > 0
+    await query('UPDATE users SET email_verified_at = NOW() WHERE id = ? AND email_verified_at IS NULL', [row.id])
+  } catch (e) {
+    if (isMissingVerifiedColumn(e)) return row
+    throw e
+  }
+  const fresh = await queryOne('SELECT * FROM users WHERE id = ?', [row.id])
+  // 记在 Symbol 上而不是普通字段：这一行还会交给 publicWithData，别让它混进对外的用户对象
+  if (fresh && cleared) fresh[PASSWORD_RESET] = true
+  return fresh
+}
+
+/**
+ * markEmailVerified 刚清掉了这一行的密码。登录响应据此带上 passwordReset，
+ * 前端给本人一句「密码已重置，请重新设置」—— 否则他下次用密码登录只会看到「密码不正确」，
+ * 不知道是我们清的。
+ */
+const PASSWORD_RESET = Symbol('passwordReset')
+
+function passwordResetFlag(row) {
+  return row?.[PASSWORD_RESET] ? { passwordReset: true } : {}
 }
 
 
@@ -267,6 +327,12 @@ authRouter.post('/register', async (req, res, next) => {
       }
       throw e
     }
+    // 刚验过注册码，密码是本人设的；单独一条 UPDATE，缺列（没跑 migrate）时不至于注册不了
+    try {
+      await query('UPDATE users SET email_verified_at = NOW() WHERE id = ?', [id])
+    } catch (e) {
+      if (!isMissingVerifiedColumn(e)) throw e
+    }
     const row = await queryOne('SELECT * FROM users WHERE id = ?', [id])
     res.json({ token: signToken(id, tokenVersionOf(row)), user: await publicWithData(row) })
   } catch (e) {
@@ -346,7 +412,7 @@ authRouter.post('/email/verify', async (req, res, next) => {
     await verifyCode(email, 'login', String(req.body.code || ''))
     const row = await findOrCreateByEmail(email, nicknameFromEmail(email))
     if (row.status === 'banned') return res.status(403).json({ error: '该账号已被封禁，请联系管理员' })
-    res.json({ token: signToken(row.id, tokenVersionOf(row)), user: await publicWithData(row) })
+    res.json({ token: signToken(row.id, tokenVersionOf(row)), user: await publicWithData(row), ...passwordResetFlag(row) })
   } catch (e) {
     sendCodeError(res, next, e)
   }
@@ -431,7 +497,7 @@ authRouter.post('/google', async (req, res, next) => {
     const nickname = String(info.name || nicknameFromEmail(email)).slice(0, 16)
     const row = await findOrCreateByEmail(email, nickname)
     if (row.status === 'banned') return res.status(403).json({ error: '该账号已被封禁，请联系管理员' })
-    res.json({ token: signToken(row.id, tokenVersionOf(row)), user: await publicWithData(row) })
+    res.json({ token: signToken(row.id, tokenVersionOf(row)), user: await publicWithData(row), ...passwordResetFlag(row) })
   } catch (e) {
     next(e)
   }
@@ -702,7 +768,9 @@ async function oauthCallback(req, res, next) {
      */
     const out =
       `${landingUrl()}#token=${encodeURIComponent(signToken(row.id, tokenVersionOf(row)))}` +
-      `&cst=${encodeURIComponent(cst)}`
+      `&cst=${encodeURIComponent(cst)}` +
+      // 前端 services/auth.ts 在模块加载时读这个标记（回调页随后就抹掉 hash）
+      (row[PASSWORD_RESET] ? '&pwreset=1' : '')
     res.set('Cache-Control', 'no-store').redirect(302, out)
   } catch (e) {
     next(e)

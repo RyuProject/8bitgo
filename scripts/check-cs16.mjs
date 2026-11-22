@@ -230,6 +230,20 @@ if (!source.includes('maxDevicePixelRatio: maximumDevicePixelRatio()') ||
 if (!source.includes('if (!document.hidden) visibleElapsed += now - lastCheckedAt')) {
   fail('首帧超时仍把后台标签被浏览器节流的时间算进去，会误杀正在加载的房间')
 }
+const cs16PlayableMark = source.indexOf("mark('Game ready'")
+const cs16SdkPlayableReport = source.indexOf('gameSdk?.reportPlayable')
+const cs16PlayableReporterStart = source.indexOf('function reportCs16Playable()')
+const cs16PlayableReporterEnd = source.indexOf('\nfunction showError', cs16PlayableReporterStart)
+const cs16PlayableReporter = cs16PlayableReporterStart >= 0 && cs16PlayableReporterEnd > cs16PlayableReporterStart
+  ? source.slice(cs16PlayableReporterStart, cs16PlayableReporterEnd)
+  : ''
+if (cs16PlayableMark < 0 || cs16SdkPlayableReport <= cs16PlayableMark ||
+    !cs16PlayableReporter.includes('window.EightBitGoBridge?.reportPlayable?.()') ||
+    !cs16PlayableReporter.includes('!firstFrameReady') || !cs16PlayableReporter.includes('failureReported') ||
+    !cs16PlayableReporter.includes("classList.contains('hidden')") ||
+    !source.includes('if (overlay && !webglContextLost && !failureReported) overlay.classList.add(\'hidden\')')) {
+  fail('CS1.6 没有在真实游戏就绪后通知 8BitGo SDK；直播可能提前采集空画布或永远不自动开播')
+}
 
 const supportedMaps = [
   'de_dust2', 'de_dust', 'de_inferno', 'de_nuke', 'de_aztec', 'de_train',

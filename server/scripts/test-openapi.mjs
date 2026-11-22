@@ -178,6 +178,8 @@ const SAVES = [
     game_slug: 'contra',
     slot: 0,
     size: SAVE_BYTES.length,
+    revision: 'save-rev-1',
+    parent_revision: 'legacy',
     created_at: '2026-09-01T00:00:00Z',
     updated_at: '2026-09-02T00:00:00Z',
   },
@@ -340,15 +342,15 @@ globalThis.__fakeDb = {
     }
     if (s.startsWith('INSERT INTO recents')) return { affectedRows: 1 }
     if (s.startsWith('DELETE FROM recents')) return { affectedRows: 0 }
-    if (s.startsWith('SELECT runtime, game_slug, slot, size, created_at, updated_at FROM saves')) {
+    if (s.startsWith('SELECT runtime, game_slug, slot, size, revision, parent_revision, created_at, updated_at FROM saves')) {
       return params[0] === USER_ID ? SAVES : []
     }
-    if (s.startsWith('SELECT data, updated_at FROM saves')) {
+    if (s.startsWith('SELECT data, size, revision, parent_revision, updated_at FROM saves')) {
       const [uid, runtime, slug, slot] = params
       const hit = SAVES.find(
         (r) => uid === USER_ID && r.runtime === runtime && r.game_slug === slug && r.slot === slot,
       )
-      return hit ? [{ data: SAVE_BYTES, updated_at: hit.updated_at }] : []
+      return hit ? [{ data: SAVE_BYTES, size: SAVE_BYTES.length, revision: hit.revision, parent_revision: hit.parent_revision, updated_at: hit.updated_at }] : []
     }
     return []
   },
@@ -994,12 +996,20 @@ await check('⚠️ openapi.json 的 security 和真实路由表一致（规格�
 
   /** 从源码里把「这条路由挂的是哪个中间件」抠出来 */
   const guards = new Map()
-  for (const m of src.matchAll(/openRouter\.(get|post)\('([^']+)'\s*,\s*([A-Za-z]+)\(([^)]*)\)/g)) {
-    guards.set(`${m[1]} ${m[2]}`, { fn: m[3], scope: m[4].replace(/['"]/g, '').trim() })
+  for (const m of src.matchAll(/openRouter\.(get|post|put|patch|delete)\(\s*(\[[^\]]+\]|'[^']+')\s*,\s*([A-Za-z]+)\(([^)]*)\)/g)) {
+    const paths = m[2].startsWith('[')
+      ? [...m[2].matchAll(/'([^']+)'/g)].map((path) => path[1])
+      : [m[2].slice(1, -1)]
+    for (const path of paths) guards.set(`${m[1]} ${path}`, { fn: m[3], scope: m[4].replace(/['"]/g, '').trim() })
   }
   // 完全没有中间件的（health / rom 兑现 / token / device）单独认出来
-  for (const m of src.matchAll(/openRouter\.(get|post)\('([^']+)'\s*,\s*(?:tokenBody\s*,\s*)?async/g)) {
-    if (!guards.has(`${m[1]} ${m[2]}`)) guards.set(`${m[1]} ${m[2]}`, { fn: 'none', scope: '' })
+  for (const m of src.matchAll(/openRouter\.(get|post|put|patch|delete)\(\s*(\[[^\]]+\]|'[^']+')\s*,\s*(?:tokenBody\s*,\s*)?async/g)) {
+    const paths = m[2].startsWith('[')
+      ? [...m[2].matchAll(/'([^']+)'/g)].map((path) => path[1])
+      : [m[2].slice(1, -1)]
+    for (const path of paths) {
+      if (!guards.has(`${m[1]} ${path}`)) guards.set(`${m[1]} ${path}`, { fn: 'none', scope: '' })
+    }
   }
   // 资源路径路由用已验证的短期凭据授权；handler 是共享函数而不是 inline async。
   guards.set('get /v1/bundle/:grant/:asset_path', { fn: 'none', scope: '' })

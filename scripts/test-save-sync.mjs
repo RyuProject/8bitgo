@@ -155,7 +155,8 @@ globalThis.fetch = async (url, init = {}) => {
 /* ---------------- 真模块 ---------------- */
 
 const { idbGet, idbPut, idbMark } = await import('../src/lib/idb.ts')
-const { deleteCloudSave, pushSave, pullSave, retryPendingSaves, saveInfo } = await import('../src/services/saves.ts')
+const { deleteCloudSave, installSaveAutoSync, pushSave, pullSave, retryPendingSaves, saveInfo } = await import('../src/services/saves.ts')
+const { TOKEN_CHANGED_EVENT } = await import('../src/services/api.ts')
 const { decodeSaveArchive } = await import('../src/emulator/saveEnvelope.ts')
 const { setSaveTarget } = await import('../src/services/saveTarget.ts')
 
@@ -395,6 +396,76 @@ console.log('\n── ⭐⭐ 换账号后不能把前一个人的待同步档传
   cloud.plan = [{ delay: 0, ok: true }]
   const rightAccount = await retryPendingSaves()
   ok(rightAccount.synced === 1 && await storedTag() === 0x31, '切回原账号后可以继续补传')
+}
+
+console.log('\n── ⭐⭐ 不知道基线的自动写入不能拿服务端当前版本直接覆盖 ──')
+{
+  reset()
+  setSaveTarget('cloud')
+  store.set('8bitgo.token', tokenFor('user-a'))
+  // 另一台设备已经写过；这台浏览器从没读过、也没同步过这一格。
+  cloud.stored = bytes(0x77)
+  cloud.revision = 'rev-other-device'
+  const auto = await pushSave('html5', 'unknown-base-auto', bytes(0x11), 0, 'cloud', undefined, { automatic: true })
+  ok(auto.blocked === 'conflict' && cloud.puts.length === 0, '自动写入：云端已有存档且基线未知 → 按冲突停下，不发 PUT')
+  const kept = await idbGet('html5:unknown-base-auto:0')
+  ok(kept?.dirty === true && kept.syncBlocked === 'conflict' && kept.data[0] === 0x11, '本地进度保留为冲突待同步档')
+  const retried = await retryPendingSaves()
+  ok(retried.blocked >= 1 && cloud.puts.length === 0, '补传队列也不会越过冲突')
+
+  const manual = await pushSave('html5', 'unknown-base-manual', bytes(0x12), 0, 'cloud')
+  ok(manual.where === 'cloud' && cloud.puts.at(-1)?.parent === 'rev-other-device', '玩家手动保存到云端仍可确认覆盖')
+
+  reset()
+  const empty = await pushSave('html5', 'unknown-base-empty', bytes(0x13), 0, 'cloud', undefined, { automatic: true })
+  ok(empty.where === 'cloud' && cloud.puts.at(-1)?.parent === 'none', '云端没有存档时自动写入照常上传')
+}
+
+console.log('\n── ⭐⭐ 同账号换令牌不清版本缓存，换账号才清 ──')
+{
+  reset()
+  setSaveTarget('cloud')
+  store.set('8bitgo.token', tokenFor('user-a'))
+  const savedWindow = globalThis.window
+  const savedDocument = globalThis.document
+  globalThis.window = Object.assign(new EventTarget(), { setTimeout: () => 0, clearTimeout: () => {} })
+  globalThis.document = Object.assign(new EventTarget(), { visibilityState: 'hidden' })
+  const uninstall = installSaveAutoSync()
+  try {
+    await pushSave('html5', 'token-rotation', bytes(0x21), 0, 'cloud')
+    const base = cloud.revision
+    // 同一账号签了新令牌（改密码、退出其它设备）
+    store.set('8bitgo.token', tokenFor('user-a') + 'x')
+    window.dispatchEvent(new Event(TOKEN_CHANGED_EVENT))
+    const again = await pushSave('html5', 'token-rotation', bytes(0x22), 0, 'cloud', undefined, { automatic: true })
+    ok(again.where === 'cloud' && cloud.puts.at(-1)?.parent === base, '令牌轮换后自动写入仍沿用已知基线')
+
+    store.set('8bitgo.token', tokenFor('user-b'))
+    window.dispatchEvent(new Event(TOKEN_CHANGED_EVENT))
+    const puts = cloud.puts.length
+    const other = await pushSave('html5', 'token-rotation', bytes(0x23), 0, 'cloud', undefined, { automatic: true })
+    ok(other.blocked === 'conflict' && cloud.puts.length === puts, '换了账号后旧基线作废，自动写入按冲突停下')
+  } finally {
+    uninstall()
+    globalThis.window = savedWindow
+    globalThis.document = savedDocument
+    store.set('8bitgo.token', tokenFor('user-a'))
+  }
+}
+
+console.log('\n── ⭐⭐ 明确写云端（电池存档）时待同步档必须记账号 ──')
+{
+  reset()
+  setSaveTarget('local')
+  store.set('8bitgo.token', tokenFor('user-a'))
+  cloud.plan = [{ delay: 0, ok: false }]
+  await pushSave('emulatorjs', 'battery-owner', bytes(0x41), 9, 'cloud')
+  const entry = await idbGet('emulatorjs:battery-owner:9')
+  ok(entry?.dirty === true && entry.cloudOwner === 'user-a', '落点偏好不是云端，但这次明确写云端：待同步档记到当前账号')
+  cloud.plan = [{ delay: 0, ok: true }]
+  const retried = await retryPendingSaves()
+  ok(retried.synced === 1, '补传队列能把它传上去')
+  setSaveTarget('cloud')
 }
 
 console.log(`\n${failed ? '❌' : '✅'} 存档同步：${n} 项通过，${failed} 项失败`)

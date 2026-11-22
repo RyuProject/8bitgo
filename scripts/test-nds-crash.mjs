@@ -9,6 +9,7 @@ import { EJS_WEBGL2_ONLY_CORES, ejsCoreNeedsWebgl2, emulatorJsCoreForGame, NDS_C
 import { readdirSync } from 'node:fs'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
+const emulatorAdapter = readFileSync(join(root, 'src/emulator/adapters/emulatorjs.ts'), 'utf8')
 const cores = join(root, 'public/emulatorjs/cores')
 const modernReport = JSON.parse(readFileSync(join(cores, 'reports/melondsds.json'), 'utf8'))
 assert.ok(modernReport.sha256.startsWith(NDS_MODERN_CORE_BUILD), '新版核心改变时必须让旧失败记录失效')
@@ -48,6 +49,10 @@ assert.equal(isNdsBareAbort('RuntimeError: Aborted(native code called abort())')
 assert.equal(shouldRememberNdsCoreFailure('RuntimeError: Aborted(). Build with -sASSERTIONS for more info.'), false,
   '裸 abort 可能是内存不足，不能把 ROM 记成新版核心专属故障')
 assert.equal(shouldRememberNdsCoreFailure('RuntimeError: unreachable'), true, '确定的 WASM 陷阱仍记住兼容核心偏好')
+assert.match(emulatorAdapter, /onCoreCrash\(error !== undefined \? safeStr\(error\) : text\.trim\(\) \|\| 'RuntimeError: unreachable', details\)/,
+  'WASM RuntimeError 对象的调用栈必须送到核心崩溃处理器，Golden Sun 的 mGBA abort 不能只剩一行裸错误')
+assert.match(emulatorAdapter, /\[core-crash-stack\] \$\{details\}/,
+  '核心崩溃调用栈必须进入启动诊断日志，后续才能定 mGBA abort 的触发路径')
 
 assert.equal(ndsCrashFallbackCore('melondsds', true, false), NDS_COMPAT_CORE)
 assert.equal(ndsCrashFallbackCore('melondsds', false, false), null)
@@ -149,6 +154,23 @@ assert.match(copier, /for \(const c of PRESERVED_CORES\)/)
     assert.ok(text === undefined || outdated.test(text), `${lang} 语言包新翻了这句，要补进正则`)
   }
   assert.equal(outdated.test('Network Error'), false)
+}
+
+{
+  /*
+    forceRomRefresh 是一次性动作：只有请求刷新的那次重开丢缓存重下；之后的原地重试 / 换核心 / 换引擎
+    只带持久标记 romRefreshed，否则每一轮都会把刚下好的 ROM 扔掉重下。
+  */
+  const player = readFileSync(join(root, 'src/emulator/EmulatorPlayer.tsx'), 'utf8')
+  assert.doesNotMatch(player, /forceRomRefresh: session\.forceRomRefresh,\s*\n\s*(?:startupAttemptId|ruledOut|coreOverride|totalRetries)/,
+    '重开不能继续携带一次性的 forceRomRefresh')
+  assert.equal((player.match(/forceRomRefresh: true,/g) ?? []).length, 1, '只有 GBA 陷阱恢复那一次请求刷新')
+  assert.ok((player.match(/romRefreshed: session\.romRefreshed \|\| session\.forceRomRefresh,/g) ?? []).length >= 4,
+    '重试 / NDS 换核心 / 内存换核心 / 换引擎都继承持久标记')
+  assert.match(player, /!session\.forceRomRefresh && !session\.romRefreshed && canRestartInPlace\(session\)/, '刷新过一次就不再刷第二次')
+  const adapter = readFileSync(join(root, 'src/emulator/adapters/emulatorjs.ts'), 'utf8')
+  assert.match(adapter, /options\.forceRomRefresh \? 'fresh' : 'resume'/, '适配器只按一次性动作丢缓存重下')
+  assert.doesNotMatch(adapter, /romRefreshed \? 'fresh'|romRefreshed && cacheKey\) await discardStoredRom/, '持久标记不触发重下')
 }
 
 console.log('NDS WASM 崩溃检测、一次性兼容核心回退与发布产物均通过')

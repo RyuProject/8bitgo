@@ -58,7 +58,7 @@ export function installIoHook(win: Record<string, unknown>, wrap: (io: AnyFn) =>
  * 缩短后同样的时间里能自动重试两三轮。调用方显式传了 timeout 的不动。
  */
 export function withSignalTimeout(args: unknown[], timeoutMs: number): unknown[] {
-  const out = [...args]
+  const out = withLoginAuth([...args])
   if (typeof out[0] === 'string' || out[0] instanceof URL) {
     const opts = out[1]
     if (opts && typeof opts === 'object') {
@@ -72,6 +72,62 @@ export function withSignalTimeout(args: unknown[], timeoutMs: number): unknown[]
     out.push({ timeout: timeoutMs })
   }
   return out
+}
+
+/**
+ * 握手时带上本站登录令牌（socket.io 的 `auth`）。成人游戏的联机房只对通过年龄门的登录用户开放
+ * （§2.23），服务端 join-room 从 `socket.handshake.auth.token` 取身份；引擎自己的 io(url) 不带它，
+ * 不补的话年满 18 岁的玩家也进不了成人房。
+ *
+ * 用函数形式：socket.io 每次（重）连都现取，登录 / 退出后重连拿到的是当前令牌。
+ * 令牌只走握手包体，不进 URL（会进访问日志与 Referer），且只交给同源信令（见 isSameOriginSignal）。
+ * 读不到 localStorage（隐私模式）就按游客握手。
+ * 调用方自己传了 auth 的不动。
+ */
+function currentLoginToken(): string {
+  try {
+    return globalThis.localStorage?.getItem('8bitgo.token') ?? ''
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * 信令地址是不是本站同源。令牌是 30 天有效的站内 JWT，只能交给我们自己的信令服务器：
+ * 后台把 EJS_netplayServer 指到别处（或引擎被喂了第三方地址）时，握手包里绝不能带上它。
+ * 没写地址的 io() 连的就是当前页面所在主机，按同源算；拿不到 location（Node 测试）一律不算。
+ */
+export function isSameOriginSignal(target: unknown): boolean {
+  const loc = (globalThis as { location?: { href?: string; origin?: string } }).location
+  if (!loc?.href || !loc.origin) return false
+  if (target === undefined) return true
+  if (typeof target !== 'string' && !(target instanceof URL)) return false
+  try {
+    return new URL(String(target), loc.href).origin === loc.origin
+  } catch {
+    return false
+  }
+}
+
+function withLoginAuth(args: unknown[]): unknown[] {
+  const at = typeof args[0] === 'string' || args[0] instanceof URL ? 1 : 0
+  if (!isSameOriginSignal(at === 1 ? args[0] : undefined)) return args
+  /*
+    同源时总是挂上函数形式的 auth：socket.io 每次（重）连都现取令牌，
+    开局时还没登录、玩到一半才登录的玩家，下一次重连就带上身份；没登录时交出空对象，服务端按游客处理。
+    （这里拿不到「这款是不是成人游戏」——适配器的 io 钩子不知道——所以同源一律附带，令牌不出本站。）
+  */
+  const auth = (cb: (data: { token?: string }) => void) => {
+    const token = currentLoginToken()
+    cb(token ? { token } : {})
+  }
+  const opts = args[at]
+  if (opts && typeof opts === 'object') {
+    if (!('auth' in opts)) args[at] = { ...(opts as object), auth }
+  } else if (opts === undefined && args.length <= at + 1) {
+    args[at] = { auth }
+  }
+  return args
 }
 
 interface HookableSocket {

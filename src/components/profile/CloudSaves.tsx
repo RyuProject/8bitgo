@@ -34,6 +34,7 @@ import {
 } from '@/emulator/romLanguage'
 import { parsePsxChdSaveSlug } from '@/emulator/psxChd'
 import { parseFbneoLowmemSaveSlug } from '@/emulator/fbneoLowmem'
+import { parseFbneoWofcnSaveSlug } from '@/emulator/wofcnCore'
 import { parseDolphinVersionSaveSlug } from '@/emulator/dolphinSave'
 import { Notice, Panel } from './shared'
 
@@ -46,7 +47,7 @@ function keyOf(s: SaveMeta) {
 function identityOf(s: SaveMeta): { gameSlug: string; romLang?: RomSlotLang } {
   if (s.runtime === 'ppsspp') return parsePspVariantSaveSlug(s.gameSlug)
   if (s.runtime === 'emulatorjs') {
-    const nds = parseNdsVariantSaveSlug(parsePsxChdSaveSlug(parseFbneoLowmemSaveSlug(s.gameSlug)))
+    const nds = parseNdsVariantSaveSlug(parsePsxChdSaveSlug(parseFbneoLowmemSaveSlug(parseFbneoWofcnSaveSlug(s.gameSlug))))
     return nds.romLang ? nds : parseEmulatorVariantSaveSlug(nds.gameSlug)
   }
   if (s.runtime === 'jsnes' || s.runtime === 'jsdos') return parseEmulatorVariantSaveSlug(s.gameSlug)

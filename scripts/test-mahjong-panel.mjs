@@ -4,7 +4,7 @@
  * 2026-11-19《龙虎争霸1》lhzb：本站给 EmulatorJS 的键盘默认是「键盘 → RetroPad」，
  * 而 MAME 的麻将键（A–N、吃碰杠听胡、押注 / 得分 / 比倍 / 大小）只认键盘 ——
  * 能投币开局，进了牌局一张牌都打不出去。这里守住：
- *   · 名单只收「麻将键无条件存在」的板子，靠 DIP 切摇杆的不收
+ *   · 名单按 MAME 输入定义；sdmg2 只在默认 / 实际 Mahjong 档接管，玩家选 Joystick 时保留通用输入
  *   · 键盘桥：面板键放行 / 别名换码 / 其余（MAME 的 P 暂停、Tab 菜单、Esc）拦下，站内组合键不碰
  *   · 屏幕面板 / 手柄的短按也能让核心看到（最短按压时间），多来源同按一颗键时最后一个松手才松
  *   · 适配器、播放器、键位表、联机人数推断的接线
@@ -12,7 +12,14 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
-const { MAME_MAHJONG_PANEL_SETS, isMahjongPanelRomset, romsetFromKey } = await import('../shared/mahjong-panel-sets.js')
+const {
+  MAME_MAHJONG_PANEL_DIP_DEFAULTS,
+  MAME_MAHJONG_PANEL_SETS,
+  isMahjongPanelDipRomset,
+  isMahjongPanelRomset,
+  mahjongPanelDipDefault,
+  romsetFromKey,
+} = await import('../shared/mahjong-panel-sets.js')
 const {
   MAHJONG_GAMEPAD_MAP,
   MAHJONG_KEY_DEFS,
@@ -23,6 +30,7 @@ const {
   mahjongKeyForCode,
 } = await import('../src/emulator/mahjongPanel.ts')
 const { GP } = await import('../src/emulator/gamepad.ts')
+const { isMahjongControlsSelected } = await import('../src/emulator/dipPlan.ts')
 
 let passed = 0
 const check = async (name, fn) => {
@@ -34,11 +42,19 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms))
 
 /* ---------------- 名单与识别 ---------------- */
 
-await check('名单：lhzb 一族在内，靠 DIP 切摇杆的 sdmg2 / mgcs / tarzan 不在', () => {
+await check('名单：固定麻将面板机和可切换机台在内；Joystick / 赌博条件档不接管', () => {
   for (const name of ['lhzb', 'lhzba', 'lhzb2', 'lhzb2a', 'lhzb3', 'lhb', 'xymg', 'lhdmg']) {
     assert.ok(MAME_MAHJONG_PANEL_SETS.includes(name), name)
   }
-  for (const name of ['sdmg2', 'mgcs', 'tarzan', 'lhzb3sjb', 'kof97']) assert.equal(isMahjongPanelRomset(name), false, name)
+  assert.equal(isMahjongPanelRomset('sdmg2'), true)
+  assert.equal(isMahjongPanelRomset('mxsqy'), true)
+  assert.equal(isMahjongPanelRomset('mxsqy102tw'), true)
+  assert.equal(isMahjongPanelDipRomset('roms/arcade/mxsqy.zip.8bg?romv=1'), true)
+  assert.equal(mahjongPanelDipDefault('sdmg2'), 'Mahjong')
+  assert.equal(mahjongPanelDipDefault('mxsqy'), 'Joystick')
+  assert.equal(mahjongPanelDipDefault('mxsqy102tw'), 'Joystick')
+  assert.equal(Object.keys(MAME_MAHJONG_PANEL_DIP_DEFAULTS).every(isMahjongPanelRomset), true)
+  for (const name of ['mgcs', 'tarzan', 'lhzb3sjb', 'kof97']) assert.equal(isMahjongPanelRomset(name), false, name)
   assert.equal(new Set(MAME_MAHJONG_PANEL_SETS).size, MAME_MAHJONG_PANEL_SETS.length, '名单不该有重复')
 })
 
@@ -54,6 +70,22 @@ await check('只认 mame-current 上的街机', () => {
   assert.equal(isMahjongPanelGame('arcade', undefined, ['roms/arcade/lhzb.zip']), false)
   assert.equal(isMahjongPanelGame('nes', 'mame-current', ['roms/arcade/lhzb.zip']), false)
   assert.equal(isMahjongPanelGame('arcade', 'mame-current', ['roms/arcade/kof97.zip', undefined]), false)
+})
+
+await check('可切换机台按有效 DIP 判定，玩家保存的档位优先于本站默认档', () => {
+  const option = { key: 'mame-dipswitch-sdmg2-Controls', values: ['Mahjong', 'Joystick'], current: 'Mahjong', fallback: 'Mahjong' }
+  assert.equal(isMahjongControlsSelected(option, undefined), true)
+  assert.equal(isMahjongControlsSelected(option, 'Joystick'), false)
+  assert.equal(isMahjongControlsSelected({ ...option, current: 'Joystick' }, undefined), false)
+  assert.equal(isMahjongControlsSelected(undefined, undefined), true)
+
+  // 明星三缺一 MAME 默认是 Joystick；本站主动改成 Mahjong。若核心选项暂时不可读，
+  // 必须沿用已确认的硬件档位，不能错误装上麻将矩阵桥。
+  const mxsqy = { key: 'mame-dipswitch-mxsqy-Controls', values: ['Joystick', 'Mahjong'], current: 'Joystick', fallback: 'Joystick' }
+  assert.equal(isMahjongControlsSelected(mxsqy, undefined, false), false)
+  assert.equal(isMahjongControlsSelected(mxsqy, 'Mahjong', false), true)
+  assert.equal(isMahjongControlsSelected(undefined, undefined, false), false)
+  assert.equal(isMahjongControlsSelected({ ...mxsqy, current: '', fallback: '' }, undefined, false), false)
 })
 
 /* ---------------- 键位 ---------------- */
@@ -221,6 +253,8 @@ const src = (p) => readFileSync(new URL(p, import.meta.url), 'utf8')
 await check('适配器：按最终 romset 判、开局后打开键盘直通、收掉引擎手柄、卸载时清理', () => {
   const a = src('../src/emulator/adapters/emulatorjs.ts')
   assert.match(a, /mahjongPanel = options\.platform === 'arcade' && isMahjongPanelRomset\(mameRomset\)/)
+  assert.match(a, /isMahjongPanelDipRomset\(mameBootRomset\) \? 'Controls=Mahjong' : ''/, '可切换机台没有后台配置时使用本站麻将操作默认档')
+  assert.match(a, /if \(isMahjongPanelDipRomset\(mameBootRomset\) && emuForDip\) mahjongPanel = mameSetUsesMahjongPanel\(emuForDip\)/, '读回实际 DIP，玩家选摇杆时走普通街机输入')
   assert.match(a, /changeSettingOption\?\.\('keyboardInput', 'enabled', true\)/, '键盘直通只写 allSettings，不持久化')
   assert.match(a, /changeSettingOption\?\.\('altKeyboardInput', 'enabled', true\)/)
   assert.match(a, /if \(mahjongPanel\) installMahjongInput\(win\)/)

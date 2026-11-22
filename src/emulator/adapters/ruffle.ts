@@ -49,6 +49,7 @@ import { ruffleRendererPreference, type RuffleRendererPreference } from '../flas
 import { flashLegacyBundleRules, type FlashUrlRewriteRule } from '../flashLegacyBundle'
 import { installFlashLegacyLoginRedirect } from '../flashLegacyLogin'
 import { installRuffleCrashGuard } from '../ruffleCrash'
+import { ruffleMaxExecutionDuration } from '../ruffleGameConfig'
 import { installRuffleWordShortcutGuard } from '../ruffleWordShortcutGuard'
 import { warmRuffleCore } from '../prewarm'
 import { diagLog, registerDiagnosticSnapshot, watchFramePerformance } from '@/services/startupDiagnostics'
@@ -289,6 +290,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     startupStage = name
     startupStageAt = now
     diagLog('stage', 'info', `${name}${detail ? ` · ${detail}` : ''} (+${now - mountedAt}ms)`)
+    // 外层播放器看不到 iframe 内的核心 / 元数据进度；阶段推进时刷新停滞看门狗。
+    options.onStartupActivity?.()
   }
   const kb = (n: number) => `${Math.round(n / 1024)}KB`
   /*
@@ -838,6 +841,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             rewriteRules.push([from, to])
           }
         }
+        const maxExecutionDuration = ruffleMaxExecutionDuration(options.gameSlug)
         const base = {
           autoplay: 'on',
           unmuteOverlay: 'visible',
@@ -853,6 +857,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           // Ruffle 自己的 none 模式无法在“开播后”动态恢复后台执行，所以由上面的
           // visibilitychange 精确控制：无人观看时暂停，有直播观众时继续出帧。
           backgroundExecutionMode: 'mainThread',
+          // Grindcraft 的 enterFrame 初始化超过 Ruffle 默认 15 秒预算；逐款放宽，避免影响其它 SWF。
+          ...(maxExecutionDuration === undefined ? {} : { maxExecutionDuration }),
           // Flash Stage.quality 在 Ruffle 中目前只保存数值、不改变渲染；性能档由 iframe 像素比控制。
           // 不修改游戏逻辑帧率、播放器后端或正在运行的游戏状态。
           /**

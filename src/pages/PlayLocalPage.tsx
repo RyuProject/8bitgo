@@ -77,6 +77,10 @@ export function PlayLocalPage() {
   // 否则 NES 会显示成 EmulatorJS，但实际跑的是 jsnes。
   const defaultRuntime = runtimesFor(platformId)[0] ?? resolveRuntime(platformId)
   const runtime = (activeRuntimeId ? getRuntime(activeRuntimeId) : undefined) ?? defaultRuntime
+  // 本地 ROM 的明确采样模式固定选 EmulatorJS/FCEUmm，避免 mapper 恰好被轻量 jsnes 接管后没有 Libretro RAM 接口。
+  const nesRamTraceMode = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('nesRamTrace') === '1'
+  const selectedRuntimeId = nesRamTraceMode && platformId === 'nes' ? 'emulatorjs' : activeRuntimeId
+  const selectedRuntime = (selectedRuntimeId ? getRuntime(selectedRuntimeId) : undefined) ?? runtime
 
   // 这两个回调会进 EmulatorPlayer 内部 start() 的依赖，用 useCallback 固定住引用，
   // 免得本页每次重渲染都让播放器里的回调重新创建一遍。
@@ -137,7 +141,7 @@ export function PlayLocalPage() {
           <h2 className="mb-3 text-base font-bold">
             {t.playLocal.sectionDrop}
             <span className="ml-2 text-xs font-normal text-muted">
-              {t.playLocal.autoPlatform} {fmt(t.playLocal.runtimeSuffix, { name: runtime?.name ?? '—' })}
+              {t.playLocal.autoPlatform} {fmt(t.playLocal.runtimeSuffix, { name: selectedRuntime?.name ?? '—' })}
             </span>
           </h2>
 
@@ -177,6 +181,7 @@ export function PlayLocalPage() {
 
           <EmulatorPlayer
             platform={platform}
+            runtime={selectedRuntime?.id}
             gameName={`${platformLabel(t, platform.id, platform.name)} ROM`}
             icon="🔍"
             onDetectMismatch="switch"
@@ -223,7 +228,8 @@ export function PlayLocalPage() {
                     value={romData}
                     onChange={(e) => setRomData(e.target.value)}
                     spellCheck={false}
-                    placeholder={`// wofcn 已按 ROM 指纹自动匹配专属方案，不要把它写进共享配置。
+                    placeholder={`// wofcn 已能按 ROM 指纹识别，但加载方案尚未通过投币后的实际对白画面验证，当前不会自动启动。
+// 请勿把实验中的 RomData 写入游戏级共享配置。
 // 其它改版包的 ZipName 必须与包短名一致，DrvName 必须是已确认的 FBNeo 驱动。
 // 请粘贴完整 ROM 清单，并核对每项的长度、CRC 和类型。`}
                   />

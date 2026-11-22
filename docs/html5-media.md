@@ -87,6 +87,40 @@ window.EightBitGoGameSDK?.registerCaptureStream((canvas, fps) => canvas.captureS
 
 PvZ 的 Pages 中英文游戏入口和 Minecraft Eaglercraft Pages 游戏页会加载同一个 SDK，并在游戏音频初始化前安装媒体桥。Minecraft 从主站进入时直接嵌入 Eaglercraft 游戏页，避免中间启动壳的导航丢掉父页来源校验。用户开始游玩时，SDK 才以最高 30fps 将受限尺寸的 `ImageBitmap` 转给当前播放器；浏览器支持跨页音轨转移时也会带上游戏声音。播放器把它接入原有 8BitGo 直播推流。停播、页面跳转或播放器销毁时会停止帧循环并释放接收资源。浏览器不支持画帧传递或 Canvas 读取时，保留现有「分享标签页」兜底。其它游戏页面不会自动加载 SDK。
 
+### 网页游戏读取和写入云存档（可选）
+
+SDK 也提供开放平台云存档客户端。游戏必须显式传入由用户授权流程取得的**开放平台用户 access token**；SDK 不读取父页面、`localStorage`、站内 Cookie 或站内登录 JWT。申请权限时分别请求 `saves.read` / `saves.write`，玩家没有同意写入权限时不要启用云端写档。
+
+```js
+const saves = window.EightBitGoGameSDK.createCloudSaveClient({ accessToken })
+const coordinate = { runtime: 'html5', slug: 'my-game', slot: 0 }
+
+// 列表和用量只返回元信息；get() 才下载二进制内容。
+const { items } = await saves.list()
+const usage = await saves.usage()
+const previous = await saves.getMetadata(coordinate)
+
+// 首次创建以 none 为父版本；覆盖必须基于最近读取到的 revision。
+const result = await saves.put(coordinate, {
+  data: new Blob([saveBytes]),
+  parentRevision: previous?.revision ?? 'none',
+})
+
+// 只有玩家确认删除时才调用；delete 会核对当前版本。
+if (confirm('删除云存档？')) {
+  const saved = await saves.get(coordinate)
+  await saves.delete(coordinate, { revision: saved.revision })
+}
+```
+
+`get()` 返回 `{ data: ArrayBuffer, revision, parentRevision, updatedAt }`；`put()` 是条件写入并返回新 revision。
+如果另一台设备已保存更新，SDK 会抛出 `CloudSaveError`，其中 `code === 'save_conflict'` 且 `currentRevision` 是服务端版本。
+先重新读取存档，再由游戏决定如何合并或请玩家确认；不要在冲突后自动覆盖。`usage()` 包含账号总容量和本应用当日剩余写入次数。
+
+本站托管的 Gamblers Table 由主站播放器管理云端登录和落点：游戏页加载 `8bitgo-save-bridge.js`，把 Godot IDBFS 的
+`/userfs` 编成版本化 JSON 快照，在开局前恢复、存档变化后上传。Godot 页面只接触自己的本地 IndexedDB 和父页存档桥，
+不会拿到站内 JWT 或 OAuth access token；玩家选择「只存本地」时，播放器不会启用云端同步。
+
 消息同时核对当前 iframe、游戏页的精确来源、协议版本和请求编号。顶层单独打开 SDK 页面时不会建立父页通信；referrer 缺失或浏览器限制 Canvas 读取时，SDK 的可选能力会关闭，游戏本身仍可运行。
 
 ## 边界

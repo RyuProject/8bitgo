@@ -211,5 +211,7 @@ assert.match(dipFn, /emu\.settings\?\.\[/, '玩家自己选过的值要尊重')
 assert.match(dipFn, /gameManager\?\.restart\?\.\(\)/, 'DIP 改完要重启一局')
 // 没改动就别重启（等于白白让玩家多等一遍开机画面）
 assert.match(dipFn, /if \(changed\)/, '只在真改了东西时重启')
+assert.match(dipFn, /alreadySet = sameValue\(currentDipValue\(emu, change\.key\), change\.value\)/, '当前值已经正确时不能误记成改动')
+assert.match(dipFn, /if \(!alreadySet\) changed = true/, '只有真实改写 DIP 后才重启核心')
 
 console.log('街机 DIP 开关（麻将模式）规划与适配器接线测试通过')

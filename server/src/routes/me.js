@@ -323,6 +323,13 @@ meRouter.post('/email', async (req, res, next) => {
       if (e?.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: '这个邮箱已经注册过了' })
       throw e
     }
+    // 新邮箱刚验过码，归属已证明；清密码那套只针对 NULL 的老号（见 routes/auth.js 的 markEmailVerified），
+    // 这里是本人在换绑，密码保留
+    try {
+      await query('UPDATE users SET email_verified_at = NOW() WHERE id = ?', [req.user.id])
+    } catch (e) {
+      if (e?.code !== 'ER_BAD_FIELD_ERROR') throw e
+    }
     const { row, token } = await rotateToken(req.user.id)
     if (isEmail(oldEmail) && oldEmail !== email) {
       sendEmailChangedNotice(oldEmail, email).catch((e) => console.error('[me] 换绑通知旧邮箱失败：', e?.message))

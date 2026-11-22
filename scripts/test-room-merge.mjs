@@ -8,6 +8,7 @@
  */
 import assert from 'node:assert/strict'
 import { mergeLiveIntoP2p } from '../src/services/roomMerge.ts'
+import { mergeNetplayRoomLists } from '../src/services/netplay.ts'
 
 let n = 0
 let failedChecks = 0
@@ -91,6 +92,14 @@ console.log('\n── 边界 ──')
   ok(mergeLiveIntoP2p([], []).length === 0, '两边都空 → 空列表')
   const out = mergeLiveIntoP2p([p2pRoom('NP-1')], [{ netplayRoomId: 'NP-1', view: liveView('L') }])
   ok(out[0].spectators === 0, 'viewers 没给时当 0，不会变 NaN')
+}
+
+// ── 联机大厅：匿名 SSE 的公开房 + 带 JWT 取回的成人房合并 ──
+{
+  const pub = [{ roomId: 'P1', createdAt: 10 }, { roomId: 'P2', createdAt: 30 }]
+  ok(mergeNetplayRoomLists(pub, []) === pub, '没有成人房时原样返回公开列表（快照引用稳定）')
+  const merged = mergeNetplayRoomLists(pub, [{ roomId: 'A1', createdAt: 20 }, { roomId: 'P1', createdAt: 10 }])
+  ok(merged.map((r) => r.roomId).join(',') === 'P2,A1,P1', '合并后按开房时间倒序、按 id 去重')
 }
 
 console.log(`\n全部通过 ✅  共 ${n} 项`)

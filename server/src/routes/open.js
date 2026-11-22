@@ -18,7 +18,7 @@
  */
 import express, { Router } from 'express'
 import { listGames, recordPlay as recordGamePlay } from '../games-repo.js'
-import { ping, query, queryOne } from '../db.js'
+import { ping, query, queryOne, withTransaction } from '../db.js'
 import { take, isMeaningfulIp } from '../rateLimit.js'
 import { assetPublicUrl, downloadPublicUrl, publicSiteUrl } from '../site-urls.js'
 import { CACHE } from '../cache.js'
@@ -40,7 +40,16 @@ import {
   pollDeviceAuth,
 } from '../open/device.js'
 import { favIds, recentIds } from '../userdata.js'
-import { saveCoords } from './saves.js'
+import {
+  MAX_SAVE_BYTES,
+  MAX_SAVES_PER_USER,
+  MAX_TOTAL_BYTES,
+  isSaveReplay,
+  saveCoords,
+  saveDeleteRevisionHeader,
+  saveQuotaError,
+  saveRevisionHeaders,
+} from './saves.js'
 import { APP_SCOPES, formatScopes, hasScope, missingScopes, parseScopes } from '../open/scopes.js'
 import { openGame, openPage } from '../open/mapper.js'
 import { OPEN_PLATFORMS } from '../open/platforms.js'
@@ -82,9 +91,9 @@ export const openRouter = Router()
 
 openRouter.use((req, res, next) => {
   res.set('Access-Control-Allow-Origin', '*')
-  res.set('Access-Control-Allow-Headers', 'Authorization, Content-Type, Range, If-Range')
-  res.set('Access-Control-Allow-Methods', 'GET, HEAD, POST, OPTIONS')
-  res.set('Access-Control-Expose-Headers', 'Accept-Ranges, Content-Disposition, Content-Length, Content-Range, ETag')
+  res.set('Access-Control-Allow-Headers', 'Authorization, Content-Type, Range, If-Range, X-Save-Revision, X-Save-Parent-Revision, X-Save-Delete-Revision')
+  res.set('Access-Control-Allow-Methods', 'GET, HEAD, POST, PUT, DELETE, OPTIONS')
+  res.set('Access-Control-Expose-Headers', 'Accept-Ranges, Content-Disposition, Content-Length, Content-Range, ETag, X-Save-Revision, X-Save-Parent-Revision, X-Save-Updated-At, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, Retry-After')
   // 放开到任意 Origin 的接口**一律不带 cookie**：Bearer 走 header，天然没有 CSRF 面。
   // 这里显式不发 Allow-Credentials —— 带上它 + '*' 浏览器本来也会拒，但写明白省得有人去「修」。
   res.set('Vary', 'Origin')
@@ -1572,26 +1581,81 @@ openRouter.get('/v1/library', requireUserScope('library.read'), async (req, res,
 /** 收藏最多一次给多少款 */
 const MAX_LIBRARY_ITEMS = 100
 
+/** 沙箱应用每日最多写 1000 次，上产应用最多 10000 次；覆盖与删除都计一次。 */
+const OPEN_SAVE_DAILY_WRITES = Object.freeze({ sandbox: 1000, live: 10_000 })
+const openSaveTier = (tier) => (String(tier || '').toLowerCase() === 'live' ? 'live' : 'sandbox')
+const openSaveDailyLimit = (tier) => OPEN_SAVE_DAILY_WRITES[openSaveTier(tier)]
+const saveEtag = (revision) => {
+  const value = String(revision || 'legacy')
+  return `"${/^[A-Za-z0-9._:-]{1,80}$/.test(value) ? value : 'legacy'}"`
+}
+
+function saveResetAt() {
+  const next = new Date()
+  next.setUTCHours(24, 0, 0, 0)
+  return next
+}
+
+function setSaveRateHeaders(res, limit, used, resetAt = saveResetAt()) {
+  res.setHeader('X-RateLimit-Limit', String(limit))
+  res.setHeader('X-RateLimit-Remaining', String(Math.max(0, limit - used)))
+  res.setHeader('X-RateLimit-Reset', String(Math.floor(resetAt.getTime() / 1000)))
+}
+
+function saveConflict(res, revision) {
+  res.setHeader('x-save-revision', String(revision || 'none'))
+  res.setHeader('ETag', saveEtag(revision || 'none'))
+  return fail(res, 409, 'save_conflict', '云存档在另一台设备上已有更新；请读取最新版本后再保存', { current_revision: revision || 'none' })
+}
+
 /**
- * `GET /v1/saves` —— 存档清单。**只给元信息，不带内容**：
- * 一份 DOS 变更包几百 KB，一次把全部内容吐出来对谁都没好处。
+ * `GET /v1/saves` —— 存档清单。只返回元信息，避免一次下载全部二进制内容。
  */
-openRouter.get('/v1/saves', requireUserScope('saves.read'), async (req, res, next) => {
+openRouter.get(['/v1/saves', '/v1/me/saves'], requireUserScope('saves.read'), async (req, res, next) => {
   try {
     const rows = await query(
-      `SELECT runtime, game_slug, slot, size, created_at, updated_at
+      `SELECT runtime, game_slug, slot, size, revision, parent_revision, created_at, updated_at
          FROM saves WHERE user_id = ? ORDER BY updated_at DESC`,
       [req.openClaims.userId],
     )
+    res.setHeader('cache-control', 'private, no-store')
     res.json({
       items: rows.map((r) => ({
         runtime: r.runtime,
         game_slug: r.game_slug,
-        slot: r.slot,
-        size: r.size,
+        slot: Number(r.slot),
+        size: Number(r.size),
+        revision: r.revision || 'legacy',
+        parent_revision: r.parent_revision || null,
         created_at: new Date(r.created_at).toISOString(),
         updated_at: new Date(r.updated_at).toISOString(),
       })),
+    })
+  } catch (e) {
+    next(e)
+  }
+})
+
+/**
+ * `GET /v1/saves/usage` —— 当前用户的配额占用，以及本应用今日剩余写入次数。
+ */
+openRouter.get(['/v1/saves/usage', '/v1/me/saves/usage'], requireUserScope('saves.read'), async (req, res, next) => {
+  try {
+    const uid = req.openClaims.userId
+    const appId = req.openClaims.appId
+    const [used, app, daily] = await Promise.all([
+      queryOne('SELECT COUNT(*) AS count, COALESCE(SUM(size), 0) AS bytes FROM saves WHERE user_id = ?', [uid]),
+      queryOne('SELECT rate_tier FROM oauth_apps WHERE id = ?', [appId]),
+      queryOne('SELECT write_count FROM oauth_save_daily_usage WHERE app_id = ? AND usage_date = UTC_DATE()', [appId]),
+    ])
+    const limit = openSaveDailyLimit(app?.rate_tier)
+    const writes = Number(daily?.write_count || 0)
+    const resetAt = saveResetAt()
+    setSaveRateHeaders(res, limit, writes, resetAt)
+    res.setHeader('cache-control', 'private, no-store')
+    res.json({
+      saves: { count: Number(used?.count || 0), bytes: Number(used?.bytes || 0), max_count: MAX_SAVES_PER_USER, max_bytes: MAX_TOTAL_BYTES, max_item_bytes: MAX_SAVE_BYTES },
+      daily_writes: { used: writes, limit, remaining: Math.max(0, limit - writes), resets_at: resetAt.toISOString(), tier: openSaveTier(app?.rate_tier) },
     })
   } catch (e) {
     next(e)
@@ -1605,24 +1669,182 @@ openRouter.get('/v1/saves', requireUserScope('saves.read'), async (req, res, nex
  * 各判一遍的话，哪天加个引擎名只会改其中一处，
  * 症状是「站内能存，第三方说未知的引擎」。
  */
-openRouter.get('/v1/saves/:runtime/:slug', requireUserScope('saves.read'), async (req, res, next) => {
+openRouter.get(['/v1/saves/:runtime/:slug/meta', '/v1/me/saves/:runtime/:slug/meta'], requireUserScope('saves.read'), async (req, res, next) => {
   try {
+    const c = saveCoords({ runtime: req.params.runtime, slug: req.params.slug, slot: req.query.slot })
+    if (!c.ok) return fail(res, 400, 'invalid_request', c.reason === 'runtime' ? '未知的引擎' : c.reason === 'slug' ? '游戏标识不合法' : '存档位不合法')
+    const row = await queryOne(
+      'SELECT size, revision, parent_revision, created_at, updated_at FROM saves WHERE user_id = ? AND runtime = ? AND game_slug = ? AND slot = ? LIMIT 1',
+      [req.openClaims.userId, c.runtime, c.slug, c.slot],
+    )
+    res.setHeader('cache-control', 'private, no-store')
+    if (!row) return res.status(204).end()
+    const revision = row.revision || 'legacy'
+    res.setHeader('ETag', saveEtag(revision))
+    res.setHeader('x-save-revision', revision)
+    res.setHeader('x-save-parent-revision', row.parent_revision || '')
+    res.setHeader('x-save-updated-at', String(new Date(row.updated_at).getTime()))
+    res.json({
+      runtime: c.runtime,
+      game_slug: c.slug,
+      slot: c.slot,
+      size: Number(row.size),
+      revision,
+      parent_revision: row.parent_revision || null,
+      created_at: new Date(row.created_at).toISOString(),
+      updated_at: new Date(row.updated_at).toISOString(),
+    })
+  } catch (e) {
+    next(e)
+  }
+})
+
+openRouter.get(['/v1/saves/:runtime/:slug', '/v1/me/saves/:runtime/:slug'], requireUserScope('saves.read'), async (req, res, next) => {
+  try {
+    res.setHeader('cache-control', 'private, no-store')
     const c = saveCoords({ runtime: req.params.runtime, slug: req.params.slug, slot: req.query.slot })
     if (!c.ok) {
       const msg = c.reason === 'runtime' ? '未知的引擎' : c.reason === 'slug' ? '游戏标识不合法' : '存档位不合法'
       return fail(res, 400, 'invalid_request', msg)
     }
     const row = await query(
-      'SELECT data, updated_at FROM saves WHERE user_id = ? AND runtime = ? AND game_slug = ? AND slot = ? LIMIT 1',
+      'SELECT data, size, revision, parent_revision, updated_at FROM saves WHERE user_id = ? AND runtime = ? AND game_slug = ? AND slot = ? LIMIT 1',
       [req.openClaims.userId, c.runtime, c.slug, c.slot],
     )
     const hit = row[0]
     if (!hit) return fail(res, 404, 'not_found', '没有这份存档')
     res.setHeader('content-type', 'application/octet-stream')
     res.setHeader('x-save-updated-at', String(new Date(hit.updated_at).getTime()))
+    res.setHeader('x-save-revision', hit.revision || 'legacy')
+    res.setHeader('x-save-parent-revision', hit.parent_revision || '')
+    res.setHeader('ETag', saveEtag(hit.revision || 'legacy'))
+    res.setHeader('content-length', String(Number(hit.size)))
     // 别人的存档不该进任何一层缓存
     res.setHeader('cache-control', 'private, no-store')
     res.send(hit.data)
+  } catch (e) {
+    next(e)
+  }
+})
+
+const openSaveBody = express.raw({ type: () => true, limit: MAX_SAVE_BYTES })
+
+/**
+ * `PUT /v1/saves/:runtime/:slug` —— 条件写入二进制存档。
+ * 新建时 parent_revision=none；覆盖时必须带读取到的 revision，避免旧设备覆盖新进度。
+ */
+openRouter.put(['/v1/saves/:runtime/:slug', '/v1/me/saves/:runtime/:slug'], requireUserScope('saves.write'), openSaveBody, async (req, res, next) => {
+  try {
+    const c = saveCoords({ runtime: req.params.runtime, slug: req.params.slug, slot: req.query.slot })
+    if (!c.ok) return fail(res, 400, 'invalid_request', c.reason === 'runtime' ? '未知的引擎' : c.reason === 'slug' ? '游戏标识不合法' : '存档位不合法')
+    if (!Buffer.isBuffer(req.body) || req.body.length === 0) return fail(res, 400, 'invalid_request', '存档内容不能为空')
+    if (req.body.length > MAX_SAVE_BYTES) return fail(res, 413, 'invalid_request', `单份存档最多 ${MAX_SAVE_BYTES} 字节`)
+    const revisions = saveRevisionHeaders(req.headers)
+    if (!revisions.ok) return fail(res, 400, 'invalid_request', '存档版本头不合法')
+    if (!revisions.versioned) return fail(res, 428, 'precondition_required', '写入必须带 X-Save-Revision 和 X-Save-Parent-Revision')
+
+    const uid = req.openClaims.userId
+    const appId = req.openClaims.appId
+    const result = await withTransaction(async (run) => {
+      // 用户锁串行化同一账号的多个存档配额检查；每日应用锁则串行化不同用户的应用总额度。
+      await run('SELECT id FROM users WHERE id = ? FOR UPDATE', [uid])
+      const tier = (await run('SELECT rate_tier FROM oauth_apps WHERE id = ?', [appId]))[0]?.rate_tier
+      const dailyLimit = openSaveDailyLimit(tier)
+      await run('INSERT IGNORE INTO oauth_save_daily_usage (app_id, usage_date, write_count) VALUES (?, UTC_DATE(), 0)', [appId])
+      const daily = (await run('SELECT write_count FROM oauth_save_daily_usage WHERE app_id = ? AND usage_date = UTC_DATE() FOR UPDATE', [appId]))[0]
+      const usedWrites = Number(daily?.write_count || 0)
+      const existing = (await run(
+        'SELECT size, revision, parent_revision, data FROM saves WHERE user_id = ? AND runtime = ? AND game_slug = ? AND slot = ?',
+        [uid, c.runtime, c.slug, c.slot],
+      ))[0]
+      const current = existing ? String(existing.revision || 'legacy') : 'none'
+      if (isSaveReplay(existing, revisions, req.body)) return { replay: true, revision: current, size: Number(existing.size), usedWrites, dailyLimit }
+      if (revisions.parent !== current) return { conflict: true, revision: current, usedWrites, dailyLimit }
+      if (usedWrites >= dailyLimit) return { dailyLimitReached: true, usedWrites, dailyLimit }
+
+      const usage = (await run('SELECT COUNT(*) AS count, COALESCE(SUM(size), 0) AS bytes FROM saves WHERE user_id = ?', [uid]))[0]
+      const denied = saveQuotaError({ count: Number(usage?.count || 0), bytes: Number(usage?.bytes || 0) }, Number(existing?.size || 0), req.body.length)
+      if (denied) return { denied, usedWrites, dailyLimit }
+      await run(
+        `INSERT INTO saves (user_id, runtime, game_slug, slot, size, data, revision, parent_revision)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE size = VALUES(size), data = VALUES(data), revision = VALUES(revision),
+                                 parent_revision = VALUES(parent_revision), updated_at = CURRENT_TIMESTAMP`,
+        [uid, c.runtime, c.slug, c.slot, req.body.length, req.body, revisions.revision, revisions.parent],
+      )
+      await run('UPDATE oauth_save_daily_usage SET write_count = write_count + 1, updated_at = CURRENT_TIMESTAMP WHERE app_id = ? AND usage_date = UTC_DATE()', [appId])
+      return { revision: revisions.revision, size: req.body.length, usedWrites: usedWrites + 1, dailyLimit }
+    })
+    const resetAt = saveResetAt()
+    setSaveRateHeaders(res, result.dailyLimit, result.usedWrites, resetAt)
+    if (result.conflict) return saveConflict(res, result.revision)
+    if (result.dailyLimitReached) {
+      const retryAfter = Math.max(1, Math.ceil((resetAt.getTime() - Date.now()) / 1000))
+      res.setHeader('Retry-After', String(retryAfter))
+      return fail(res, 429, 'rate_limited', '本应用今日云存档写入次数已用完', { retry_after: retryAfter, resets_at: resetAt.toISOString() })
+    }
+    if (result.denied) return fail(res, result.denied.status, 'save_quota_exceeded', result.denied.error)
+    res.setHeader('x-save-revision', result.revision)
+    res.setHeader('ETag', saveEtag(result.revision))
+    res.setHeader('cache-control', 'private, no-store')
+    return res.json({
+      ok: true,
+      size: result.size,
+      revision: result.revision,
+      parent_revision: revisions.parent,
+      updated_at: new Date().toISOString(),
+      replayed: Boolean(result.replay),
+      daily_writes: { used: result.usedWrites, limit: result.dailyLimit, remaining: Math.max(0, result.dailyLimit - result.usedWrites), resets_at: resetAt.toISOString() },
+    })
+  } catch (e) {
+    next(e)
+  }
+})
+
+/** `DELETE /v1/saves/:runtime/:slug` —— 必须确认当前 revision，防止旧页面误删新档。 */
+openRouter.delete(['/v1/saves/:runtime/:slug', '/v1/me/saves/:runtime/:slug'], requireUserScope('saves.write'), async (req, res, next) => {
+  try {
+    const c = saveCoords({ runtime: req.params.runtime, slug: req.params.slug, slot: req.query.slot })
+    if (!c.ok) return fail(res, 400, 'invalid_request', c.reason === 'runtime' ? '未知的引擎' : c.reason === 'slug' ? '游戏标识不合法' : '存档位不合法')
+    const expected = saveDeleteRevisionHeader(req.headers)
+    if (!expected.ok) return fail(res, 400, 'invalid_request', '删除版本头不合法')
+    if (!expected.revision) return fail(res, 428, 'precondition_required', '删除必须带 X-Save-Delete-Revision')
+
+    const uid = req.openClaims.userId
+    const appId = req.openClaims.appId
+    const result = await withTransaction(async (run) => {
+      await run('SELECT id FROM users WHERE id = ? FOR UPDATE', [uid])
+      const tier = (await run('SELECT rate_tier FROM oauth_apps WHERE id = ?', [appId]))[0]?.rate_tier
+      const dailyLimit = openSaveDailyLimit(tier)
+      await run('INSERT IGNORE INTO oauth_save_daily_usage (app_id, usage_date, write_count) VALUES (?, UTC_DATE(), 0)', [appId])
+      const daily = (await run('SELECT write_count FROM oauth_save_daily_usage WHERE app_id = ? AND usage_date = UTC_DATE() FOR UPDATE', [appId]))[0]
+      const usedWrites = Number(daily?.write_count || 0)
+      const existing = (await run(
+        'SELECT revision FROM saves WHERE user_id = ? AND runtime = ? AND game_slug = ? AND slot = ?',
+        [uid, c.runtime, c.slug, c.slot],
+      ))[0]
+      if (!existing) return { absent: true, usedWrites, dailyLimit }
+      const current = String(existing.revision || 'legacy')
+      if (expected.revision !== current) return { conflict: true, revision: current, usedWrites, dailyLimit }
+      if (usedWrites >= dailyLimit) return { dailyLimitReached: true, usedWrites, dailyLimit }
+      await run('DELETE FROM saves WHERE user_id = ? AND runtime = ? AND game_slug = ? AND slot = ?', [uid, c.runtime, c.slug, c.slot])
+      await run('UPDATE oauth_save_daily_usage SET write_count = write_count + 1, updated_at = CURRENT_TIMESTAMP WHERE app_id = ? AND usage_date = UTC_DATE()', [appId])
+      return { usedWrites: usedWrites + 1, dailyLimit }
+    })
+    const resetAt = saveResetAt()
+    setSaveRateHeaders(res, result.dailyLimit, result.usedWrites, resetAt)
+    if (result.conflict) return saveConflict(res, result.revision)
+    if (result.dailyLimitReached) {
+      const retryAfter = Math.max(1, Math.ceil((resetAt.getTime() - Date.now()) / 1000))
+      res.setHeader('Retry-After', String(retryAfter))
+      return fail(res, 429, 'rate_limited', '本应用今日云存档写入次数已用完', { retry_after: retryAfter, resets_at: resetAt.toISOString() })
+    }
+    res.setHeader('cache-control', 'private, no-store')
+    return res.json({
+      ok: true,
+      deleted: !result.absent,
+      daily_writes: { used: result.usedWrites, limit: result.dailyLimit, remaining: Math.max(0, result.dailyLimit - result.usedWrites), resets_at: resetAt.toISOString() },
+    })
   } catch (e) {
     next(e)
   }

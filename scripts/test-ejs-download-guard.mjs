@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 /**
- * 引擎下载器补丁的行为回归（patch-emulatorjs.mjs 第十、十一、十二节）。
+ * 引擎下载器补丁的行为回归（超时、XHR 回退与核心 Range 断点续传）。
  *
  * 直接把 public/emulatorjs/emulator.min.js 开头的下载器 / 缓存类切出来在 Node 里跑：
- *   - 包体发到 100% 却迟迟不结束时，20 秒无新数据必须 abort 并 reject（以前永远停在「下载游戏核心 100%」）；
+ *   - Fetch 包体失速时，20 秒后切到 XHR arraybuffer 完整重取一次；
+ *   - XHR 在后台暂停空闲计时，回到前台后才重新给完整预算；
  *   - 缓存 put 卡住时 10 秒后照样交出下载结果；
- *   - IndexedDB 封装里 transaction() 同步抛错时 Promise 必须 settle。
+ *   - IndexedDB 封装里 transaction() 同步抛错时 Promise 必须 settle；续传库挂起只影响持久化优化。
+ *   - XHR 在同 ETag 下从精确偏移续上；ETag / Content-Range 错误时只允许完整重取。
+ *   - 独立 IDB 跨页面恢复已提交的 1 MiB 前缀，绝不使用未完成的小片。
  * 定时器按 1/1000 缩放，整个测试几十毫秒跑完。
  */
 import assert from 'node:assert/strict'
@@ -18,8 +21,15 @@ assert.ok(cut > 0, '找不到 GameManager 类，引擎结构变了')
 const prelude = engine.slice(0, cut)
 assert.match(prelude, /class s\{constructor\(t=null,e=null\)\{this\.storageCache=t,this\.EJS=e\}/, '下载器类名变了，更新本测试')
 
-function makeContext({ fetchImpl, indexedDB, localStorage, XMLHttpRequest }) {
+function makeContext({ fetchImpl, indexedDB, localStorage, XMLHttpRequest, sessionStorage, navigator = {} }) {
   const realSetTimeout = setTimeout
+  const visibilityListeners = new Set()
+  const document = {
+    visibilityState: 'visible',
+    addEventListener(type, listener) { if (type === 'visibilitychange') visibilityListeners.add(listener) },
+    removeEventListener(type, listener) { if (type === 'visibilitychange') visibilityListeners.delete(listener) },
+    dispatchVisibilityChange() { for (const listener of visibilityListeners) listener() },
+  }
   const context = {
     console: { log() {}, warn() {}, error() {} },
     setTimeout: (fn, ms = 0) => realSetTimeout(fn, Math.max(0, Math.ceil(ms / 1000))),
@@ -33,6 +43,10 @@ function makeContext({ fetchImpl, indexedDB, localStorage, XMLHttpRequest }) {
     TextDecoder,
     URL,
     Headers,
+    document,
+    location: { href: 'https://8bitgo.test/', origin: 'https://8bitgo.test' },
+    sessionStorage: sessionStorage || { getItem() { return null }, setItem() {} },
+    navigator,
     ...(XMLHttpRequest ? { XMLHttpRequest } : {}),
     Date,
     Promise,
@@ -188,25 +202,29 @@ const stalledBody = (bytes) => new ReadableStream({
 }
 
 // 核心响应流读到一半报 NotReadableError（华为浏览器 17）：改走 XHR arraybuffer 再取一次
-function fakeXhr({ status = 200, bytes, fail = false, responseHeaders = {} }) {
+function fakeXhr({ status = 200, bytes, fail = false, responseHeaders = {}, responses }) {
   const opened = []
+  const requests = []
+  let responseIndex = 0
   class X {
     constructor() { this.headers = {} }
-    open(method, url) { opened.push([method, url]) }
+    open(method, url) { this.method = method; this.url = url; opened.push([method, url]); requests.push(this) }
     setRequestHeader(k, v) { this.headers[k] = v }
-    getResponseHeader(name) { return responseHeaders[name.toLowerCase()] ?? null }
+    getResponseHeader(name) { return (this.responseHeaders || responseHeaders)[name.toLowerCase()] ?? null }
     send() {
+      const next = responses?.[responseIndex++] || { status, bytes, fail, responseHeaders }
+      this.responseHeaders = next.responseHeaders || {}
       setTimeout(() => {
-        if (fail) return this.onerror?.()
-        this.onprogress?.({ lengthComputable: true, loaded: bytes.length, total: bytes.length })
-        this.status = status
-        this.response = bytes.buffer
+        if (next.fail) return this.onerror?.()
+        this.onprogress?.({ lengthComputable: true, loaded: next.bytes.length, total: next.bytes.length })
+        this.status = next.status
+        this.response = next.bytes.buffer.slice(next.bytes.byteOffset, next.bytes.byteOffset + next.bytes.byteLength)
         this.onload?.()
       })
     }
     abort() { this.onabort?.() }
   }
-  return { X, opened }
+  return { X, opened, requests }
 }
 const unreadableResponse = (url, headers = { 'Content-Length': '4' }) => {
   const res = new Response(new ReadableStream({
@@ -217,6 +235,359 @@ const unreadableResponse = (url, headers = { 'Content-Length': '4' }) => {
   }), { status: 200, headers })
   Object.defineProperty(res, 'url', { value: url })
   return res
+}
+
+function makeResponse(url, bytes, { status = 206, headers = {}, failAfterChunks = false } = {}) {
+  const response = new Response(new ReadableStream({
+    start(controller) {
+      for (const chunk of bytes) controller.enqueue(chunk)
+      if (failAfterChunks) setTimeout(() => controller.error(new Error('simulated network interruption')))
+      else controller.close()
+    },
+  }), { status, headers })
+  Object.defineProperty(response, 'url', { value: url })
+  return response
+}
+
+function fakeResumeDatabase({ hangOpen = false } = {}) {
+  const records = new Map()
+  const indexedDB = {
+    open() {
+      const request = {}
+      if (!hangOpen) queueMicrotask(() => {
+        request.result = database
+        request.onsuccess?.()
+      })
+      return request
+    },
+  }
+  const database = {
+    objectStoreNames: { contains: () => true },
+    close() {},
+    transaction() {
+      let pending = 0
+      let failed = false
+      const tx = {}
+      const schedule = (request, action) => {
+        pending++
+        queueMicrotask(() => {
+          try {
+            request.result = action()
+            request.onsuccess?.({ target: request })
+          } catch (error) {
+            failed = true
+            request.error = error
+            request.onerror?.({ target: request })
+            tx.onerror?.({ target: tx })
+          }
+          pending--
+          if (!pending && !failed) queueMicrotask(() => tx.oncomplete?.())
+        })
+        return request
+      }
+      const store = {
+        get(key) {
+          return schedule({}, () => {
+            const value = records.get(key)
+            return value ? { ...value, bytes: value.bytes.slice(0) } : undefined
+          })
+        },
+        put(value) {
+          return schedule({}, () => {
+            records.set(value.id, { ...value, bytes: value.bytes.slice(0) })
+            return value.id
+          })
+        },
+        delete(key) { return schedule({}, () => records.delete(key)) },
+        openCursor() { return schedule({}, () => null) },
+      }
+      tx.objectStore = () => store
+      return tx
+    },
+  }
+  return { indexedDB, records }
+}
+
+const memoryStorage = () => {
+  const values = new Map()
+  return {
+    values,
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, String(value)),
+    removeItem: (key) => values.delete(key),
+  }
+}
+
+const rangeHeaders = (etag, contentRange, contentLength) => ({
+  'Content-Range': contentRange,
+  'Content-Length': String(contentLength),
+  ETag: etag,
+  'Accept-Ranges': 'bytes',
+})
+
+{
+  // Fetch 只读到前缀時，由 XHR 从准确偏移续上；字节版本与总长都必须吻合。
+  const url = 'https://8bitgo.test/emulatorjs/cores/melondsds-wasm.data?v=abc123'
+  const full = new Uint8Array([10, 11, 12, 13, 14, 15, 16, 17])
+  const xhr = fakeXhr({
+    status: 206,
+    bytes: full.slice(3),
+    responseHeaders: {
+      'content-range': 'bytes 3-7/8',
+      'content-length': '5',
+      etag: '"core-a"',
+      'content-type': 'application/wasm',
+    },
+  })
+  const fetchImpl = async (_url, init) => {
+    assert.equal(init.headers.get('Range'), 'bytes=0-', '首个版本化核心请求应要求 identity 字节范围')
+    return makeResponse(url, [full.slice(0, 3)], {
+      headers: rangeHeaders('"core-a"', 'bytes 0-7/8', 8),
+      failAfterChunks: true,
+    })
+  }
+  const { __classes } = makeContext({ fetchImpl, indexedDB: undefined, XMLHttpRequest: xhr.X })
+  const downloader = new __classes.Downloader(null, null)
+  const item = await downloader.downloadFile(url, 'Core', 'GET', {}, null, null, null, 30000, 'arraybuffer')
+  assert.deepEqual([...item.files[0].bytes], [...full], 'XHR 后缀应与 Fetch 前缀逐字节拼成原核心')
+  assert.equal(xhr.requests[0].headers.range, 'bytes=3-', 'XHR Range 必须从已收到偏移继续')
+  assert.equal(xhr.requests[0].headers['if-range'], '"core-a"', '同源续传必须使用强 ETag 做 If-Range')
+}
+
+{
+  // XHR 返回另一 ETag 的 206 时丢弃后缀，最多再发一次完整 GET，绝不混合两个版本。
+  const url = 'https://8bitgo.test/emulatorjs/cores/melondsds-wasm.data?v=abc123'
+  const oldPrefix = new Uint8Array([1, 2, 3])
+  const newer = new Uint8Array([20, 21, 22, 23, 24, 25, 26, 27])
+  const xhr = fakeXhr({
+    responses: [
+      { status: 206, bytes: new Uint8Array([4, 5, 6, 7, 8]), responseHeaders: { 'content-range': 'bytes 3-7/8', 'content-length': '5', etag: '"core-b"' } },
+      { status: 200, bytes: newer, responseHeaders: { 'content-length': '8', etag: '"core-b"', 'content-type': 'application/wasm' } },
+    ],
+  })
+  const fetchImpl = async () => makeResponse(url, [oldPrefix], {
+    headers: rangeHeaders('"core-a"', 'bytes 0-7/8', 8),
+    failAfterChunks: true,
+  })
+  const { __classes } = makeContext({ fetchImpl, indexedDB: undefined, XMLHttpRequest: xhr.X })
+  const item = await new __classes.Downloader(null, null).downloadFile(url, 'Core', 'GET', {}, null, null, null, 30000, 'arraybuffer')
+  assert.deepEqual([...item.files[0].bytes], [...newer], 'ETag 改变后只能交付新版本完整响应')
+  assert.equal(xhr.requests.length, 2, '不匹配的 206 只允许再完整请求一次')
+  assert.equal(xhr.requests[1].headers.range, undefined, '完整重试不能继续带 Range')
+}
+
+{
+  // 弱 ETag 不能证明字节相同：即使服务器支持 Range，也只能完整重取，不得拼接。
+  const url = 'https://8bitgo.test/emulatorjs/cores/melondsds-wasm.data?v=abc123'
+  const full = new Uint8Array([31, 32, 33, 34, 35, 36, 37, 38])
+  const xhr = fakeXhr({ status: 200, bytes: full, responseHeaders: { 'content-length': '8', etag: 'W/"core-weak"' } })
+  const fetchImpl = async (_url, init) => {
+    assert.equal(init.headers.get('Range'), 'bytes=0-')
+    return makeResponse(url, [full.slice(0, 3)], {
+      headers: rangeHeaders('W/"core-weak"', 'bytes 0-7/8', 8),
+      failAfterChunks: true,
+    })
+  }
+  const { __classes } = makeContext({ fetchImpl, indexedDB: undefined, XMLHttpRequest: xhr.X })
+  const item = await new __classes.Downloader(null, null).downloadFile(url, 'Core', 'GET', {}, null, null, null, 30000, 'arraybuffer')
+  assert.deepEqual([...item.files[0].bytes], [...full])
+  assert.equal(xhr.requests[0].headers.range, undefined, '弱 ETag 下 XHR 不能发续传 Range')
+}
+
+{
+  // 代理若谎报极大的 Content-Range 总长，不能按未验证的头先申请同尺寸 TypedArray。
+  const url = 'https://8bitgo.test/emulatorjs/cores/fbneo-wasm.data?v=abc123'
+  const claimedTotal = 2 ** 40
+  const fetchImpl = async () => makeResponse(url, [new Uint8Array([1, 2, 3])], {
+    headers: {
+      'Content-Range': `bytes 0-${claimedTotal - 1}/${claimedTotal}`,
+      ETag: '"core-a"',
+      'Accept-Ranges': 'bytes',
+    },
+  })
+  const { __classes } = makeContext({ fetchImpl, indexedDB: undefined })
+  await assert.rejects(
+    new __classes.Downloader(null, null).downloadFile(url, 'Core', 'GET', {}, null, null, null, 30000, 'arraybuffer'),
+    /core body length mismatch/,
+    '伪造的大总长应在核对实际包体时失败，不得尝试分配 1 TiB 内存',
+  )
+}
+
+{
+  // 跨页面续传：IDB 仅记录已提交的 1 MiB 完整片，新页面读回校验后从该偏移继续。
+  const url = 'https://8bitgo.test/emulatorjs/cores/fbneo-wasm.data?v=abc123'
+  const partBytes = 1024 * 1024
+  const total = partBytes * 2 + 257
+  const core = new Uint8Array(total)
+  for (let index = 0; index < total; index++) core[index] = index % 251
+  const sharedDb = fakeResumeDatabase()
+  const localStorage = memoryStorage()
+  const expectedHeaders = [
+    `bytes=0-`,
+    `bytes=${partBytes}-`,
+  ]
+  const seen = []
+  const fetchImpl = async (_url, init) => {
+    const requestedRange = init.headers.get('Range')
+    seen.push({ range: requestedRange, ifRange: init.headers.get('If-Range') })
+    assert.equal(requestedRange, expectedHeaders[seen.length - 1], '跨局续传必须只从已持久化边界开始')
+    if (seen.length === 1) {
+      return makeResponse(url, [core.slice(0, partBytes), core.slice(partBytes, partBytes + 31)], {
+        headers: rangeHeaders('"fbneo-build-a"', `bytes 0-${total - 1}/${total}`, total),
+        failAfterChunks: true,
+      })
+    }
+    assert.equal(init.headers.get('If-Range'), '"fbneo-build-a"', '恢复时必须带原始强 ETag')
+    return makeResponse(url, [core.slice(partBytes)], {
+      headers: rangeHeaders('"fbneo-build-a"', `bytes ${partBytes}-${total - 1}/${total}`, total - partBytes),
+    })
+  }
+  const sessionStorageA = memoryStorage()
+  const first = makeContext({
+    fetchImpl,
+    indexedDB: sharedDb.indexedDB,
+    localStorage,
+    sessionStorage: sessionStorageA,
+    navigator: { storage: { estimate: async () => ({ quota: 128 * 1024 * 1024, usage: 0 }) } },
+  })
+  const firstDownloader = new first.__classes.Downloader(null, null)
+  await assert.rejects(
+    firstDownloader.downloadFile(url, 'Core', 'GET', {}, null, null, null, 30000, 'arraybuffer'),
+    /XHR unavailable after Error: simulated network interruption/,
+    '第一次断网应失败，但保留已提交的完整分片供下次开局恢复',
+  )
+  const manifest = JSON.parse(localStorage.getItem('8bitgo.ejs.coreResume.v1'))
+  assert.equal(manifest[0].offset, partBytes, '不完整的第二片不能进入续传清单')
+  assert.equal(sharedDb.records.size, 1, '只持久化一个已完成 1 MiB 分片')
+
+  const second = makeContext({
+    fetchImpl,
+    indexedDB: sharedDb.indexedDB,
+    localStorage,
+    sessionStorage: memoryStorage(),
+    navigator: { storage: { estimate: async () => ({ quota: 128 * 1024 * 1024, usage: 0 }) } },
+  })
+  const item = await new second.__classes.Downloader(null, null).downloadFile(url, 'Core', 'GET', {}, null, null, null, 30000, 'arraybuffer')
+  assert.deepEqual(item.files[0].bytes, core, '持久化前缀和服务器后缀必须逐字节还原')
+  assert.equal(localStorage.getItem('8bitgo.ejs.coreResume.v1'), '[]', '成功下载后清掉续传清单')
+}
+
+{
+  // 不允许写清单的浏览器也不能只写 IDB 分片，否则每次失败都会留下孤儿数据。
+  const url = 'https://8bitgo.test/emulatorjs/cores/fbneo-wasm.data?v=abc123'
+  const partBytes = 1024 * 1024
+  const sharedDb = fakeResumeDatabase()
+  const fetchImpl = async () => makeResponse(url, [new Uint8Array(partBytes).fill(5)], {
+    headers: rangeHeaders('"fbneo-build-a"', `bytes 0-${partBytes * 2}/${partBytes * 2 + 1}`, partBytes * 2 + 1),
+    failAfterChunks: true,
+  })
+  const { __classes } = makeContext({ fetchImpl, indexedDB: sharedDb.indexedDB })
+  await assert.rejects(
+    new __classes.Downloader(null, null).downloadFile(url, 'Core', 'GET', {}, null, null, null, 30000, 'arraybuffer'),
+    /Download failed/,
+  )
+  assert.equal(sharedDb.records.size, 0, '没有可用 manifest 存储时不能留下不可追踪的 IDB 分片')
+}
+
+{
+  // IDB 打不开时只关闭这项优化，核心仍完整下载；不能把续传库故障写成引擎缓存挂死。
+  const url = 'https://8bitgo.test/emulatorjs/cores/fbneo-wasm.data?v=abc123'
+  const bytes = new Uint8Array(1024 * 1024 + 8).fill(9)
+  const localStorage = memoryStorage()
+  const fetchImpl = async () => makeResponse(url, [bytes], {
+    headers: rangeHeaders('"fbneo-build-a"', `bytes 0-${bytes.length - 1}/${bytes.length}`, bytes.length),
+  })
+  const { __classes } = makeContext({ fetchImpl, indexedDB: fakeResumeDatabase({ hangOpen: true }).indexedDB, localStorage })
+  const item = await new __classes.Downloader(null, null).downloadFile(url, 'Core', 'GET', {}, null, null, null, 30000, 'arraybuffer')
+  assert.equal(item.files[0].bytes.byteLength, bytes.byteLength, 'IDB 无响应不得阻断当前核心下载')
+  assert.equal(localStorage.getItem('8bitgo.ejs.idbStall2'), null, '续传库故障不能污染 EmulatorJS 的缓存挂死标记')
+}
+
+{
+  // manifest 指向的 IDB 前缀缺失时，不能把不完整 206 当核心；清掉续传记录并只完整重试一次。
+  const url = 'https://8bitgo.test/emulatorjs/cores/fbneo-wasm.data?v=abc123'
+  const partBytes = 1024 * 1024
+  const core = new Uint8Array(partBytes + 8).fill(13)
+  const etag = '"fbneo-build-a"'
+  const localStorage = memoryStorage()
+  localStorage.setItem('8bitgo.ejs.coreResume.v1', JSON.stringify([{
+    url,
+    etag,
+    total: core.length,
+    offset: partBytes,
+    partBytes,
+    startedAt: Date.now() - 1000,
+    updatedAt: Date.now(),
+    owner: 'interrupted-download',
+  }]))
+  const seen = []
+  const fetchImpl = async (_url, init) => {
+    const range = new Headers(init.headers).get('Range')
+    seen.push(range)
+    if (range) return makeResponse(url, [core.slice(partBytes)], {
+      headers: rangeHeaders(etag, `bytes ${partBytes}-${core.length - 1}/${core.length}`, core.length - partBytes),
+    })
+    return makeResponse(url, [core], {
+      status: 200,
+      headers: { 'Content-Length': String(core.length), ETag: etag },
+    })
+  }
+  const { __classes } = makeContext({
+    fetchImpl,
+    indexedDB: fakeResumeDatabase().indexedDB,
+    localStorage,
+    navigator: { storage: { estimate: async () => ({ quota: 128 * 1024 * 1024, usage: 0 }) } },
+  })
+  const item = await new __classes.Downloader(null, null).downloadFile(url, 'Core', 'GET', {}, null, null, null, 30000, 'arraybuffer')
+  assert.deepEqual(item.files[0].bytes, core, '缺失前缀时只接受完整的新响应')
+  assert.deepEqual(seen, [`bytes=${partBytes}-`, null], '残缺 IDB 前缀触发一次无 Range 的完整 GET')
+}
+
+{
+  // EdgeOne 的跨源 URL 与同源核心映射到同一 canonical IDB 键；不发 If-Range，靠暴露的强 ETag 校验响应。
+  const primary = 'https://8bitgo.test/emulatorjs/cores/fbneo-wasm.data?v=abc123'
+  const edge = 'https://cn.8bitgo.test/_cn/emulatorjs/cores/fbneo-wasm.data?v=abc123'
+  const partBytes = 1024 * 1024
+  const total = partBytes + 17
+  const core = new Uint8Array(total).fill(23)
+  const canonical = primary
+  const etag = '"fbneo-build-a"'
+  const sharedDb = fakeResumeDatabase()
+  sharedDb.records.set(JSON.stringify([canonical, etag, 0]), {
+    id: JSON.stringify([canonical, etag, 0]),
+    url: canonical,
+    etag,
+    total,
+    offset: 0,
+    bytes: core.slice(0, partBytes).buffer,
+    updatedAt: Date.now(),
+  })
+  const localStorage = memoryStorage()
+  localStorage.setItem('8bitgo.ejs.coreResume.v1', JSON.stringify([{
+    url: canonical,
+    etag,
+    total,
+    offset: partBytes,
+    partBytes,
+    startedAt: Date.now() - 1000,
+    updatedAt: Date.now(),
+    owner: 'previous-page',
+  }]))
+  const fetchImpl = async (_url, init) => {
+    assert.equal(new Headers(init.headers).get('Range'), `bytes=${partBytes}-`)
+    assert.equal(new Headers(init.headers).get('If-Range'), null, '跨源请求不能为 If-Range 触发 CORS 预检')
+    return makeResponse(edge, [core.slice(partBytes)], {
+      headers: rangeHeaders(etag, `bytes ${partBytes}-${total - 1}/${total}`, total - partBytes),
+    })
+  }
+  const { __classes } = makeContext({
+    fetchImpl,
+    indexedDB: sharedDb.indexedDB,
+    localStorage,
+    navigator: { storage: { estimate: async () => ({ quota: 128 * 1024 * 1024, usage: 0 }) } },
+  })
+  const item = await new __classes.Downloader(null, null).downloadFile(edge, 'Core', 'GET', {}, null, null, null, 30000, 'arraybuffer')
+  assert.deepEqual(item.files[0].bytes, core, '跨源恢复也必须按 canonical URL 拼成精确字节')
 }
 {
   const url = 'https://8bitgo.test/emulatorjs/cores/melondsds-wasm.data?v=1'
@@ -277,19 +648,58 @@ const unreadableResponse = (url, headers = { 'Content-Length': '4' }) => {
   )
 }
 {
-  // 我们自己 20 秒失速中止的不回退 XHR（那是网络问题，交给播放器重试）
-  let made = 0
-  class X { constructor() { made++ } }
-  const fetchImpl = async (_url, init) => new Response(new ReadableStream({
-    start(controller) {
-      controller.enqueue(new Uint8Array(4))
-      init.signal.addEventListener('abort', () => controller.error(new DOMException('aborted', 'AbortError')))
-    },
-  }), { status: 200, headers: { 'Content-Length': '8' } })
-  const { __classes } = makeContext({ fetchImpl, indexedDB: undefined, XMLHttpRequest: X })
+  // Fetch 失速后必须在当前线路上尝试 XHR 完整重取
+  const url = 'https://8bitgo.test/emulatorjs/cores/fbneo-wasm.data'
+  const xhr = fakeXhr({ bytes: new Uint8Array(8).fill(7) })
+  const fetchImpl = async (_url, init) => {
+    const response = new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new Uint8Array(4))
+        init.signal.addEventListener('abort', () => controller.error(new DOMException('aborted', 'AbortError')))
+      },
+    }), { status: 200, headers: { 'Content-Length': '8' } })
+    Object.defineProperty(response, 'url', { value: url })
+    return response
+  }
+  const { __classes } = makeContext({ fetchImpl, indexedDB: undefined, XMLHttpRequest: xhr.X })
   const downloader = new __classes.Downloader(null, null)
-  await assert.rejects(downloader.downloadFile('https://8bitgo.test/emulatorjs/cores/fbneo-wasm.data', 'Core', 'GET', {}, null, null, null, 30000, 'arraybuffer'), /Download failed/)
-  assert.equal(made, 0, '失速中止不能再起一次 XHR')
+  const item = await downloader.downloadFile(url, 'Core', 'GET', {}, null, null, null, 30000, 'arraybuffer')
+  assert.deepEqual(xhr.opened, [['GET', url]], 'Fetch 失速后用原响应地址改走 XHR')
+  assert.deepEqual([...item.files[0].bytes], new Array(8).fill(7), '只交付 XHR 完整重取的核心字节')
+}
+
+{
+  const url = 'https://8bitgo.test/emulatorjs/cores/fbneo-wasm.data'
+  let xhrStarted
+  let aborted = false
+  class X {
+    open() {}
+    setRequestHeader() {}
+    send() { xhrStarted?.() }
+    abort() { aborted = true; this.onabort?.() }
+  }
+  const fetchImpl = async (_url, init) => {
+    const response = new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1]))
+        init.signal.addEventListener('abort', () => controller.error(new DOMException('aborted', 'AbortError')))
+      },
+    }), { status: 200, headers: { 'Content-Length': '8' } })
+    Object.defineProperty(response, 'url', { value: url })
+    return response
+  }
+  const context = makeContext({ fetchImpl, indexedDB: undefined, XMLHttpRequest: X })
+  const downloader = new context.__classes.Downloader(null, null)
+  context.document.visibilityState = 'hidden'
+  const started = new Promise((resolve) => { xhrStarted = resolve })
+  const pending = downloader.downloadFile(url, 'Core', 'GET', {}, null, null, null, 30000, 'arraybuffer')
+  await started
+  await new Promise((resolve) => setTimeout(resolve, 50))
+  assert.equal(aborted, false, '后台冻结 / 节流期间 XHR 空闲时限暂停')
+  context.document.visibilityState = 'visible'
+  context.document.dispatchVisibilityChange()
+  await assert.rejects(pending, /XHR fallback stalled after AbortError/)
+  assert.equal(aborted, true, '回到前台后恢复完整的 XHR 空闲预算')
 }
 
 {
@@ -297,4 +707,4 @@ const unreadableResponse = (url, headers = { 'Content-Length': '4' }) => {
   assert.ok(engineCore, '核心下载失败不能回落 cdn.emulatorjs.org（那里的 4.3.0-pre 核心起不来）')
 }
 
-console.log('✔ EmulatorJS 下载器：包体与缓存时限、IndexedDB 异常收敛、核心不回落官方 CDN、XHR 兜底拒绝截断与错误页并兼容压缩响应')
+console.log('✔ EmulatorJS 下载器：超时与缓存降级、强 ETag / Range 校验、XHR 字节续接、跨页面完整分片恢复、弱 ETag 隔离及截断 / 错误页拒收')

@@ -1,5 +1,6 @@
 /**
- * MAME 麻将机（只有麻将面板、没有摇杆的那批，名单见 shared/mahjong-panel-sets.js）的输入。
+ * MAME 默认按麻将面板收键的机台（名单见 shared/mahjong-panel-sets.js）的输入；
+ * sdmg2 另有摇杆 DIP，适配器只在实际档位是 Mahjong 时接管。
  *
  * ── 为什么要单独一套 ─────────────────────────────────────────
  * 麻将机的 14 张手牌、吃碰杠听胡、押注 / 得分 / 比倍 / 大小，在 MAME 里全是 IPT_MAHJONG_*，

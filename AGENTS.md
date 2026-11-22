@@ -201,6 +201,10 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
 
 ⚠️ **这个路径示例不代表 `wofcn` 已可正常显示中文。** HBMAME 的 `tk2h5` 虽挂在 `wof` 父驱动下，源码仍将中文字库加载方式标为未知；没有通过游戏画面验证前，不得用旧的 `wofj` 示例或推测的图形合成方案给玩家注入 RomData。
 
+当前实现遵守这条门槛：`src/data/arcadeHacks.ts` 只把候选 `.dat` 和合成函数放在 `experimentalPlan`，玩家可用的 `romData` / `derive` 留空；命中该 ROM 时启动链应以「没有可用加载方案」失败关闭。要启用前必须用真实包启动、投币进入人物对白，并检查普通场景图块与中文对白都正确；字库索引图、标题画面、编译成功都不算验收。
+
+`scripts/build-fbneo-wofcn-core.mjs` 会把补丁应用到锁定的 FBNeo 源码后再编译，并在编译前核对原字码必须早于 `Scroll1TileMask` 保存、扩展字库不能 `memcpy` 覆盖普通 tile。诊断用 `EM_ASM` 只能包含 `<emscripten/em_asm.h>`：根 `<emscripten.h>` 会和 libretro 的 `FILE -> RFILE` 冲突。构建报告必须同时记普通与 legacy 两份核心 SHA-256，`npm run test:ejs-cores` 分别核对；编译成功只证明 wasm 可构建，不替代游戏画面验收。
+
 落地在三处：后台 `games.arcade_romdata` 列存 dat 文本；
 `src/emulator/adapters/emulatorjs.ts` 的 `installFsInjector()` 在 loader.js 之前给
 `window.EJS_emulator` 装 setter，包一层 `startGame()` 先把 dat 写进 FS；
@@ -246,11 +250,15 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
   必须把原始异常对象写控制台，以便后续现场确认阶段。引擎核心日志里的 NotReadableError 不能套用 ROM Blob 的恢复：不记 `romBlobBroken`、不标记加速线路坏、
   不自动重下大 ROM；按本机运行环境错误停止并让诊断包保留原因。补丁在 `scripts/patch-emulatorjs.mjs`，构建守卫在 `scripts/check-emulatorjs.mjs`。
   这两份现场的 Resource Timing 都显示核心 1.3MB 已整份收到（等于 `melondsds-wasm.data` 大小）才报错，更像 Blob 往返那一步；
-  作为第二道防线，流读取本身抛错时（非我们的 20 秒失速中止、无请求体）下载器改用 **XHR arraybuffer** 重取一次——不走流也不走 Blob，
-  控制台出现「改用 XHR arraybuffer 重新下载」。⚠️ 那段代码块里 `t` 被 Content-Length 遮蔽，重取地址必须用 `y.url`。
-  XHR 也失败才 reject，错误带原始 NotReadableError，适配器照旧按本机环境错误停止。回归：`npm run test:ejs-download`。
+  流读取本身抛错或下载器自己的 20 秒空闲计时触发中止时（仅 GET、无请求体），改用 **XHR arraybuffer** 完整重取一次——不走流也不走 Blob，
+  控制台出现「改用 XHR arraybuffer 重新下载」。自有失速通过 `f.__8bgStalled` 与外部取消区分；XHR 仍核对状态、完整长度与错误页。
+  ⚠️ 那段代码块里 `t` 被 Content-Length 遮蔽，重取地址必须用 `y.url`。XHR 空闲计时在标签页后台暂停，回来后重给 20 秒；XHR 也失败才 reject。
+  2026-11-21 大陆 5 份现场（vivo Browser / Chrome、Android / Windows）都在 `fbneo-legacy-wasm.data` 下载时停流，Fetch 只收到 0–1.9MB 后被这条 20 秒规则主动 abort。
+  旧条件见到 `f.signal.aborted` 就跳过 XHR，直接报错；播放器随后退到大陆吞吐很差的 Cloudflare 路径，或重复开局再遇到同样失速。现场不能区分边缘断流、浏览器 Fetch 读流异常和用户网络抖动，
+  但确认了本站可以修的恢复缺口：主动失速后尝试 XHR，成功则继续当前线路，XHR 失败才交给播放器。回归：`npm run test:ejs-download`。
 
 - **XHR 兜底必须确认拿到整份核心**（2026-11-17 大陆 Android 16 Chrome 143《明星三缺一》，诊断包 #949）：Fetch 已读到约 24.3MB 后断流，XHR 却以 HTTP 200 返回 121KB；旧逻辑只看状态码，仍把它记成下载成功，随后引擎报 `EJS_Runtime is not defined`。兜底现在要求 HTTP 200、非空、字节数不短于已读流；响应未编码时还要匹配 Content-Length，并拒绝 HTML / JSON 错误页。核心缓存代次必须同步更新，清掉旧逻辑可能留下的工件。
+- **版本化核心支持安全续传**（2026-11-21，大陆网络短暂断流）：旧 XHR 兜底会从头再拉整份核心，几 MB 后再次断流仍要重下。现在仅对 `?v=` 版本化的 `cores/*-wasm.data` GET 请求 `Range`；源站 Range 必须走原始 identity 文件，不能拿 `.br` 偏移。版本守卫核实内容哈希后给这些核心发完整 SHA-256 强 ETag（Express 默认弱 ETag 不可用于续传）；版本不匹配时保留 no-store，且不给强 ETag。首响和续传都校验 `206`、完整 `Content-Range`、总长度、强 ETag 和 identity 编码；弱 ETag、缺 CORS 暴露头、代理忽略 Range、偏移不连续或内容版本变化时丢弃旧前缀，完整重下，绝不能跨版本拼字节。Fetch 流中断时 XHR 可从当前内存偏移接续；跨页面只从独立库 `8bitgo-ejs-core-resume-v1` 恢复已经提交的连续 **1 MiB** 分片，manifest 与分片都按 URL + 强 ETag + 总长核对，最终不完整片不落盘。分片库最多 4 项 / 48 MiB、单核心最多 64 MiB、7 天过期；空间不足、IndexedDB 卡住 / 被禁用、Range 或响应头不可用都只关闭续传旁路，不影响正常整包下载，也不写 EmulatorJS 缓存挂死标记。成功接收完整核心后清掉分片。助手源码在 `scripts/lib/ejs-core-resume-runtime.js`，由 `npm run ejspatch` 内嵌；`check-emulatorjs.mjs` 会比对内嵌副本，CN Edge 必须暴露 `Content-Range / ETag / Content-Encoding`。`npm run test:ejs-download` 覆盖同局 XHR 偏移续接、跨页面持久化、ETag 改变、弱 ETag、无 IDB 和错误响应；服务端 `test:precompressed-static` 覆盖真实 Range / If-Range；不可只测补丁字符串。
 - **核心启动看门狗不计后台时间**（同一现场）：手机浏览器将游戏页放后台约 278 秒后冻结轮询与 WASM 解压 / 编译；旧适配器仍用墙钟判断 120 秒无活动，回来时立即误报「下载游戏核心 100% 卡住」。隐藏时暂停轮询，回到前台重置心跳并恢复完整预算；若前台仍无活动，之后照常报错。
 
 - **「Cannot allocate Wasm memory」先看是不是 32 位浏览器**（2026-11-11 大陆 Chrome 109 / Windows，8GB、4 核，
@@ -279,6 +287,39 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
   ROM 副本随之释放。回归：`npm run test:fbneo-lowmem && npm run test:startup-diagnostics`。内存不足不再把大陆加速入口判坏、
   不再换 ROM（scope `runtime`）。低内存版是另一批 FBNeo 源码，即时存档单独一档（`:fbneo-lowmem`）；
   换它的构建要同步 `FBNEO_LOWMEM_BUILD`。回归：`npm run test:fbneo-lowmem`。
+- **PS1 默认 PCSX 起步写死 512 MiB：内存不足先换 `pcsx_rearmed-lowmem`，并在下载 ROM 前预检**（2026-11-16，诊断包 #780 / #783，
+  大陆 Chrome 132 / Windows 64 位、8GB、8 核，3G 1.35Mbps《生化危机 3：最终逃脱》）。358MB 的 `.chd.8bg` 先下了 15 分钟，
+  pcsx_rearmed 才在 instantiate 时报 `Cannot allocate Wasm memory for new instance`；原地重试一轮、玩家手动再开一局，4 次同一个错。
+  - **能证实的**：EmulatorJS 发布的 pcsx_rearmed（core build 2.0.2，两个包都是）memory section 起步 8192 页 = 512 MiB、上限 2 GiB，
+    而它的数据段只到 0.58MB、栈顶初值约 5.4MB，胶水层带完整的按需增长。512 MiB 是构建写死的预留，不是核心的需要：用合成光盘
+    （手写几条 MIPS 指令把屏幕填红，不含任何商业代码）实测，起步改成 64 MiB 后开机堆自然长到约 92MB、做一次即时存档后约 110MB。
+    Beetle、mupen64plus_next、genesis_plus_gx、picodrive 同样起步 512 MiB，其余核心 128 MiB 以下（`src/emulator/ejsCoreMemory.ts` 的表）。
+    引擎总是在把 ROM 交进来之前实例化核心，而我们的预下载排在引擎前面，所以失败一定在最后才暴露。
+  - **#780 的 ROM 不在 JS 内存里**：#783 的 ROM 7.7 秒从 IndexedDB 缓存读回，说明 #780 下载走的是真 Blob（内存下载不写缓存）；
+    两份诊断包也都没有「解包到内存」那行。所以不是本站的 ROM 副本占满了渲染进程。**这台机器为什么连 512 MiB 都提交不出来
+    （系统提交额度、渲染进程限额，还是别的进程占用），诊断包里没有证据，未证实**。
+  - 出事时线上那版的「换干净页面重开」只认 FBNeo 低内存提示（`isLowmemOomMessage`），PS1 的内存不足走不到它；
+    aacef9d 放宽成 `isMemoryPressureMessage` 之后才会走。`probeWasmMemoryCeilingMB` 当时只在低内存核心失败时调用，所以两份现场都没有余量数据。
+  - **修法**：
+    - `npm run build:pcsx-lowmem`（`scripts/build-pcsx-lowmem-core.mjs`）从随仓库发布的 pcsx_rearmed 两个包派生 `pcsx_rearmed-lowmem`：
+      只把 memory section 的起步页数等长改成 64 MiB，代码、胶水、core.json、即时存档格式逐字节不变。
+      本地实测把默认 PCSX 存的即时存档读进低内存版，读后状态与原档只差 68 字节（RetroArch 计时字段）。
+      所以它**不另开存档档位**；记忆卡 .srm 按核心库名 `PCSX-ReARMed` 落目录，也共用。
+    - 适配器 `preflightCoreMemory`：起步 ≥ 256 MiB 的核心，在下载 ROM 之前用同样的起步 / 上限页数 `new WebAssembly.Memory` 一次
+      （与实例化同一条分配路径）；CHD 定下最终核心、而它和预检过的不同时，在加载引擎前再预检一次。给不出时：
+      ① 播放器同意原地换（`inPlaceMemoryFallback`，只给默认 PCSX → 低内存版、可原地重开的会话）就本局直接换，已下好的 ROM 接着用；
+      ② 否则 `onOutOfMemory` 重挂；③ 都不行按 `'config'` 报内存不足，播放器只做一次干净页面重开。
+      实例化才失败时照旧走 `onOutOfMemory` 重挂换低内存版。任何核心内存不足都先记一次此刻还能新建多大的 WASM 内存。
+    - 换过一次就在本浏览器记 30 天（`8bitgo:psx-oom:<构建>`），之后 PS1 开局直接用低内存版，悬停预热也跟着换。
+    - 引擎把低内存版当成另一个「系统」，开局前把 `ejs-<gameId>-psx-<gameName>-settings` 复制到它的键（`copyEngineSettingsToSystem`），
+      改键 / 金手指不丢。**别把它加进引擎的 psx 别名组**：引擎会优先读设置里存着的 `retroarch_core`，把它换回 512 MiB 的默认核心。
+      `npm run ejspatch` 只把它加进 `determineCueSettings` 的名单，cue+bin 压缩包挑文件的规则与默认 PCSX 一致。
+  - **边界**：只替换会落到 PCSX 的开局。CHD 压缩器全是 Beetle 认识的（服务端 ISO 转出的 cdzl 盘）仍交给 Beetle：
+    CHD 的即时存档档位不分核心，两种核心的状态格式不通用。Beetle 的栈和静态区就占了约 497MB，只改起步页数行不通，那类游戏照旧报内存不足。
+    预检失败只说明「这一刻给不出」，不保证低内存版在真实游戏里不会在扩容时再失败。真实大陆机器、真实 PS1 游戏都没有验证过。
+  - 换了 pcsx_rearmed 的源包要重跑 `npm run build:pcsx-lowmem`（`test:psx-lowmem` 会核对源包哈希），并同步 `PSX_LOWMEM_BUILD`。
+    新增或换掉起步 ≥ 256 MiB 的核心，要改 `EJS_LARGE_CORE_INITIAL_PAGES`（测试对着 cores/ 里的真实 WASM 逐个核对）。
+    回归：`npm run test:psx-lowmem && npm run test:fbneo-lowmem && npm run test:startup-diagnostics`。
 
 改引擎后 URL 会自动换（2026-11-15 起引擎入口按内容版本，见 §2.8.1.1 末条），不用再手动换 `EJS_RUNTIME_GENERATION`。
 
@@ -583,8 +624,9 @@ FBNeo 没有 Model 2，只能走 mame-current（全量 MAME 0.289 核心里 90 �
 
 ### 2.8.3.3 MAME 麻将机（《龙虎争霸》lhzb 等）：键盘直通 + 白名单，触屏换麻将面板（2026-11-19）
 
-只有麻将面板的 IGS 麻将机（名单在 `shared/mahjong-panel-sets.js`，按 MAME 0.289 源码沿 PORT_INCLUDE 展开得出；
-靠 DIP 切摇杆的 sdmg2 / mgcs / tarzan 故意不收）在 MAME 里全是 `IPT_MAHJONG_*`，默认**只绑键盘**。本站 EmulatorJS
+只有麻将面板的 IGS 麻将机（名单在 `shared/mahjong-panel-sets.js`，按 MAME 源码沿 PORT_INCLUDE 展开得出；
+另含 `sdmg2` / `mxsqy` / `mxsqy102tw` 这些可切换机台：MAME 出厂 Controls 分别是 Mahjong / Joystick / Joystick，
+本站新玩家默认选 `Controls=Mahjong`；开局时读回实际档位，玩家保存了 Joystick 时走普通街机输入。）这些游戏的麻将档在 MAME 里用 `IPT_MAHJONG_*`，默认**只绑键盘**。本站 EmulatorJS
 默认是「键盘 → RetroPad」，于是能投币开局、进了牌局一张牌都打不出去。`src/emulator/mahjongPanel.ts` 接管三条输入：
 
 - **键盘**：开局后 `changeSettingOption('keyboardInput' / 'altKeyboardInput', 'enabled', true)`（第三参 true，不写进玩家设置），
@@ -669,6 +711,8 @@ JS 侧少一整份 ROM（64MB ROM 就是 64MB），所有 EmulatorJS 平台受�
 可新建的 WASM 地址空间；连 512 MiB 都分配不出时走内存提示与一次干净页面恢复。设备内存和浏览器位数正常、未检测到明显内存压力时，
 仍允许本局切旧核心，但**不保存偏好**；unreachable / 越界 / 空函数等确定陷阱仍可记住。偏好键升到 v2，让旧逻辑写入的错误记录失效。
 回归：`npm run test:nds-crash && npm run test:fbneo-lowmem`。
+
+2026-11-22 《黄金太阳》mGBA 裸 `Aborted()` 的旧现场没有异常栈，不能确认是 ROM 回调、核心内部还是标签页内存压力。`installErrorTap` 现在把跨 iframe `RuntimeError.stack` 交给 `reportCoreCrash`，适配器以 `[core-crash-stack]` 写入脱敏启动诊断；这能让下一份现场定位调用路径，**不代表旧事故根因已确认**。回归：`npm run test:nds-crash`。
 这份 ROM 是 128MiB（头部记录 127.7MB 有效数据，只有 6.5MB 填充，裁剪没意义）。本机复现时，melonDS DS 开局时 WASM 堆的变化是：
 
 - 开局前 128MiB；
@@ -1318,6 +1362,18 @@ download.8bitgo.com（0.17 秒）；首段测速把握手和约 1 秒首字节�
 的 `acceptSession()` 就是干这个的，新增这类接口时别忘了走它。
 老令牌没有 `tv`，按 0 处理，所以这套东西上线时不会把所有人踢下线。
 
+注册必须先验邮箱（`/register/request-code` → `/register` 带 code，2026-11-17）。之前不验邮箱的带密码老号，
+`users.email_verified_at` 是 NULL：主人第一次用验证码 / Google / Microsoft / Apple 登录时（`findOrCreateByEmail` →
+`markEmailVerified`），清掉那份来历不明的密码并 token_version +1。代价是迁移前「验证码登录后自设密码」的老用户要重设一次密码。
+**别在迁移里把老行批量标成已验证**，那会把抢注者的密码洗白；迁移只回填「库里能证明验过」的两类：没有密码的行
+（只能由验证码 / 第三方建出、也只能这样登录），和 `created_at >= EMAIL_VERIFIED_BACKFILL_SINCE`（默认 2026-11-19，
+比 e161dfa 晚两天，因为生产首次部署它的时刻没有记录；查到后可改成部署次日）建的行 —— 不回填的话注册验码上线后正常注册的人
+会被当成抢注号静默丢密码。真清了密码时登录响应带 `passwordReset: true`（Microsoft / Apple 回调是 `#…&pwreset=1`），
+前端 `notePasswordReset` 提示本人去「账号与安全」重设。部署要 `cd server && npm run migrate`。
+
+开机 `hydrateAuth` 只在服务端**明确拒绝**令牌时（401，或带 JSON error 的 403）才清令牌；断网、超时、5xx、CDN 的 HTML 403
+都保留令牌和缓存的用户，网络恢复或按 15s / 60s / 5min 再问。以前任何错误都清，一次部署 502 就把所有打开页面的人登出。
+
 ### 2.14.1 Google 登录的客户端 ID 只配服务端一份；游戏框里的第三方 Google 登录必然 403（2026-11-20）
 
 - **本站 Google 按钮**：前端以前只认构建期 `VITE_GOOGLE_CLIENT_ID`，它从没进过 `.env.production`（§2.1 同类坑）。
@@ -1335,7 +1391,21 @@ download.8bitgo.com（0.17 秒）；首段测速把握手和约 1 秒首字节�
   accounts.google.com，Google 对 `Sec-Fetch-Dest: iframe` 一律回 403（顶层 200，curl 可复现）；Discord 授权页
   发 `frame-ancestors 'none'`。父页面拦不住跨源框架的导航，也修不了。详情页按入口主机名提示玩家去新标签页登录，
   登记表在 `src/emulator/html5EmbedLogin.ts`。
+- **Pokecatch 直接外开**：该游戏已登记在 `shared/builtin-web-games.js`，`externalLaunchUrl` 固定为
+  `https://pokecatch-online.netlify.app/#`。详情页显示启动卡；用户点「开始游戏」才在新标签页直开游戏顶层页面，
+  让 Google / Discord 登录不再经过 iframe。这个入口不挂 EmulatorPlayer，也不预加载播放器 chunk。
+  游戏方账号与 8BitGo 云存档是两套系统；详情页的存档同步链接提供手动导入 / 导出，不承诺游戏登录能写入 8BitGo 云档。
 - 回归：`npm run test:google-login && npm run test:html5-embed-login && cd server && npm run test:oauth`。
+
+### 2.14.2 PokeCatch 的存档只能由游戏页显式交接（2026-11-20）
+
+《Pokecatch》当前进度在游戏自己的 `localStorage` 键 `gachamon-save-v1`；登录游戏账号不等于把这份进度同步到 8BitGo。
+主站详情页现在在新标签页打开游戏顶层页面，避开 Google / Discord 的 iframe 限制。`/pokecatch-save-sync` 提供 JSON / 书签手动导入导出；存档桥扩展可从游戏顶层标签页直接读取或写回这一个键，也兼容仍在运行的旧内嵌游戏框：
+扩展只在精确的游戏域名读写 `gachamon-save-v1`，恢复前将旧值备份到 `8bitgo.pokecatch.backup.v1`。它不读取游戏的其它存储或账号凭证；云存档 API 仍由已登录的 8BitGo 页面调用，坐标为 `html5 / pokecatch / slot 0`。
+
+Chrome / Edge 桌面使用目录内的 MV3 `manifest.json`；Firefox Android 使用 `manifest.firefox-android.json`，因为 Android 版不支持后台 Service Worker，也未实现 `webNavigation.getAllFrames()`，后者由 `scripting.executeScript({allFrames:true})` 配合精确主机自检替代。Safari 使用 `manifest.safari.json`：静态内容脚本只匹配游戏主机并以 `all_frames` 进入页面，主世界访问该页自己的 localStorage，隔离脚本通过扩展消息接收读写请求；不要依赖 Safari 不支持的 `scripting.executeScript` frameId / allFrames 参数。`content_scripts.world: "MAIN"` 从 macOS Safari 18.4 / iOS Safari 18 起支持。Safari 自动同步需要 Apple 包装的 macOS / iOS app 和签名，目前仓库只生成 Safari Web Extension Packager ZIP，未签名、未提交 TestFlight / App Store，也未在 Safari 设备验证；Safari 玩家暂用书签 JSON 手动迁移。Safari 用户还需允许扩展访问两个 8BitGo 域名及游戏源站。Firefox Android 正式版须先经 Mozilla 签名；兼容包尚未在实体 Android 设备验证。Android Chrome 不支持安装 Chrome 扩展，可用书签和 JSON 文件手动迁移。桌面和移动浏览器都需要安装扩展并登录同一个 8BitGo 账号；云端已有不同进度时必须确认覆盖。
+
+回归：`node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-pokecatch-cloud-save.mjs`、`node scripts/test-pokecatch-save-bridge-extension.mjs`、`npm run test:pokecatch-safari-bridge`；并跑 `npm run test:save-envelope`、`npm run test:save-sync`。不得读取或上传游戏的其它 localStorage 键（尤其认证信息），也不要把这一通用第三方域名加入存档桥允许列表。
 
 ### 2.15 `saves` 表以前只在 v1 的 schema 里
 
@@ -1851,6 +1921,18 @@ Ruffle 的远程 SWF 由 `loadGameBytes()` 下载，它已经把断流、HTTP 5x
 
 Ruffle 核心预热只有在清单选中的 core JS 与 WASM 都读到结束后才算成功。预热失败要从 URL 去重表移除、允许下一局重试，并在诊断包标明失败；不能把“失败后放弃”记录成“预热完成”。大核心的悬停预热按省流量、网络类型、吞吐与 RTT 门控；玩家点击开始后仍与 SWF 并行预热核心。回归：`npm run test:ruffle-runtime && npm run test:ruffle-saves && npm run test:game-controls && npm run test:keymap`。
 
+### 2.24.0f 运行时入口加载不能无限等待（2026-11-19）
+
+启动诊断若只有 `start_click → timeout`，且没有 ROM 完成事件或适配器阶段日志，不能据此归因成 ROM / 核心下载故障。播放器在调用适配器前会先动态导入运行时模块；该导入曾没有时限，若浏览器端代码分块请求一直 pending，适配器不会挂载、也没有机会报告进度，玩家只会在 120 秒后得到通用超时事件。`loadMountOf()` 现在 60 秒超时并清掉失败 promise，让错误状态和重试入口及时出现；播放器会记录模块加载起止，Ruffle 每个启动阶段也必须调 `onStartupActivity()`，避免已经推进的 iframe 启动被外层看门狗误判为静止。单份现场只能确认停在适配器首次可观测阶段之前，不能反推当时具体是哪条模块请求挂起。
+
+### 2.24.0g React #185 优先于旧资源错误（2026-11-20）
+
+React 19 的 `Minified React error #185` 是最大更新深度超限，表示组件树出现连续状态更新；组件栈只到 `EmulatorPlayer` 时，还不足以确定是哪一个 hook / 回调触发，必须保留组件栈和同次启动阶段继续定位。#1533 的游戏记录是 NES《超级玛丽奥兄弟》，但快照却报告 Ruffle 已运行 41.6 秒，运行时与游戏记录互相矛盾，不能据此断言模拟器已启动或把原因归到 Ruffle。列表里唯一 HTTP 400 是 459 秒前的 `u.clarity.ms/collect`，与本次故障无关。`server/src/startup-diagnostics.js` 对 #185 单独归类，资源 HTTP 错误只有发生在开局前后 30 秒内才参与判断，近期第三方错误仍只作中把握度线索；旧的 Resource Timing 不能盖过当前页面错误。`EmulatorPlayer` 对重复的能力、几何、双屏布局回报按值去重；同一会话重复回报相同核心与存档档位时也保留旧对象引用。它们能挡住已知的重复更新放大路径，但没有 #1533 同次开局的回调轨迹，故**不能把该事故来源写成已定位**。回归：`npm run test:player-runtime-state && npm run test:startup-diagnostics`。
+
+### 2.24.0h Grindcraft 的启动脚本超过 Ruffle 默认时限（2026-11-22）
+
+现场 Edge 157 / Windows 的 SWF 与 Ruffle WASM 均已成功加载，但 `enterFrame` 报 `A script in this movie has taken too long to execute and has been terminated`，画布黑屏而播放器仍显示运行中。Ruffle 默认 `maxExecutionDuration` 是 15 秒；只给 `grindcraft` 的 `load()` 配置提高到 60 秒，不要全站放宽，以免其它 SWF 的死循环长时间占住页面。若超过新上限，`ruffleCrash.ts` 必须把这个明确的终止标记作为运行时错误接管，不能只留在 iframe 控制台。回归：`npm run test:ruffle-runtime`；部署前还要用真实 Grindcraft 页面确认初始化进入菜单且能点击采集。
+
 ### 2.24.0 Ruffle 存档要跟着游戏走；舞台按显示尺寸渲染
 
 Ruffle 的 SharedObject 键是 `<hostname>/<localPath>/<名字>`，而本站所有 Flash 共用一个源：
@@ -1941,6 +2023,9 @@ JSPI 开关真正的键是 `jsdos.8.jspi`。2026-10-26 以前 `jspiFlag.ts` 一�
 `?jspi=1` 才写 `jsdos.8.jspi=true` 做对照；`test:jspi` 会对着 `public/jsdos` 里的运行时核对前缀与读法。
 适配器在玩家点击开始的那一刻就调用 `warmJsdosCore()`，把与 `Dos({ backend })` 同一判断选出的核心
 并行送进 HTTP 缓存，触屏 / 键盘开局（没有悬停）也不再把核心压在关键路径末尾。
+
+**js-dos 依赖脚本失败后必须移除 script 标签**（2026-11-20，诊断包 #1518，《大富翁3》，Edge 157 / Windows / CN）：ROM 的 `download_complete` 已发生，随后 EdgeOne 上 `emulators.js` 请求超时；上游只看 `#emulators-js` 标签是否存在，失败标签留在 DOM 后，自动重试跳过加载并在读取 `emulators.version` 时抛 `ReferenceError: emulators is not defined`。具体为何 EdgeOne 首次请求超时，现场无法确认。`scripts/copy-jsdos.mjs` 现在只在 `window.emulators` 存在时复用加载结果，失败、onload 没有全局对象或 7 秒 pending 超时都会删标签并 reject，让播放器 8 秒兜底前释放请求、下一局切同源重试；并发调用共享 in-flight Promise，不误删仍在加载的标签，后开始的调用在共享请求完成后更新所选线路前缀。`test:jsdos-runtime` 从生成产物抽出实际加载器，覆盖错误 / 超时清理、同源重试、并发复用与无全局对象的 onload；`check-jsdos.mjs` 守住补丁特征。诊断归组按明确的 js-dos `emulators.js` 初始化错误优先于整页里残留的 ROM URL 日志，避免误报成 ROM 下载失败。改该补丁必须提升 `JSDOS_ASSET_VERSION`、重跑 `npm run jsdos`，并同步路径夹具。
+2026-11-22 又补到主 `js-dos.js` 入口脚本没有时限：请求既不触发 `load` 也不触发 `error` 时，共享 `loading` Promise 会永久 pending，EdgeOne 到同源的回退不会发生。`loadJsdosScript` 现在 20 秒超时、失败清标签并释放 Promise；大陆入口失败后当局标记 EdgeOne 不可用并从同源重试。该入口脚本是适配器加载的，不改上游静态包，不需改 `JSDOS_ASSET_VERSION`；`test:jsdos-runtime` 的 `test-jsdos-entrypoint.mjs` 覆盖超时、错误、无全局对象、重试与定时器清理。
 
 `ci-ready` 之后适配器清空交给 js-dos 的 `initFs` 数组并撤销 blob URL：js-dos 把每层按 4MB **复制**
 进 worker，主线程原件却挂在它保存的 `options.initFs` 上整局不放（帝国时代约 34MB 系统盘 + 重打的
@@ -2186,10 +2271,6 @@ hook 只收本机 / Docker 网桥、且不带任何反代头的请求（密钥�
 只在这一局有 2P 位时才建、最多 16 条，它失败只重试两次、**绝不**让视频观看报错。
 回归：`cd server && npm run test:live-srs`、`npm run test:broadcast-idle`。
 
-生产机是从 `dist/client` 现场服务，所以 `vite.config.ts` 的 `emptyOutDir` 必须是 `false`。
-2026-09-25 日志已取证到构建期 `dist/client/index.html` 短暂不存在，SSR 当场 500。
-旧哈希资源留着也能保证已打开的观众页在部署期间继续懒加载；`ssr.js` 在模板
-短暂读不到时要继续用内存里已有的完整模板。回归：`npm run test:watch-panel` +
 **SRS 房的观众不开 socket.io（2026-11-20）**：以前观众要先连上 socket.io 再 watch，大陆线路首连 4～8 秒。
 现在进房是 `POST /api/live/rooms/:roomId/watch`（请求体 `{key}`），**响应体就是这位观众的事件流**
 （`server/src/live.js`「不走 socket.io 的 SRS 观众」、`src/services/liveStream.ts`）：第一帧 `welcome` 带房间快照、
@@ -2220,6 +2301,10 @@ coop / no-source / live-ended，每 10 秒一帧 ping。换票、催主播、发
 8 秒没画面先 nudge、srs-state 一到就发 WHEP、弹幕收发、冻结、流寿命到期自动重连、2P 位改连 socket、散场、点对点房退回 socket。
 **真实 SRS 的音视频拉流没有在本地验证**（这部分代码没改，只是播放票的来源换了），上线后要在生产实看一场。
 
+生产机是从 `dist/client` 现场服务，所以 `vite.config.ts` 的 `emptyOutDir` 必须是 `false`。
+2026-09-25 日志已取证到构建期 `dist/client/index.html` 短暂不存在，SSR 当场 500。
+旧哈希资源留着也能保证已打开的观众页在部署期间继续懒加载；`ssr.js` 在模板
+短暂读不到时要继续用内存里已有的完整模板。回归：`npm run test:watch-panel` +
 `npm run test:capture-worker` + `npm run test:capture-feed` + `npm run test:broadcast-signal`。
 
 Vite 的静态目录排除清单在 `scripts/lib/vite-static-exclusions.mjs`。除了大数据包，Dolphin 与
@@ -2495,6 +2580,14 @@ PvZ 子页，也不能把每次 IDBFS 检查都当成一次游戏存档。
 配额阻塞或云端读取不确定时，保留游戏 iframe 的本地进度并暂停自动上传；手动确认覆盖成功后才恢复。
 玩家手动从文件 / 本地存档恢复后也要暂停云端回填，避免重启时刚导入的进度被云端盖掉；明确读取云端或
 手动云端保存成功后再清除暂停。自动上传使用通用 `pushSave()` 的 revision 条件写和待补传队列。
+
+开局用云端前先比对（2026-11-21，PvZ 与 Gamblers Table 同一套，batterySync 同款）：iframe 在自己的 localStorage
+按账号（uid 的 FNV 散列，`cloudSaveAccountTag()`，绝不是令牌）记「上次与云端同步的内容指纹」。本地没变过才用云端；
+云端没变过就保留本地并补传；两边都变过（含首次同步两边都有档）记冲突：本地留在游戏里、云端不动、本会话暂停自动同步，
+经 `auto-conflict` → `recordAutoSaveConflict()` 走既有冲突提示。只有状态 `saved`（不是 `queued`）才更新指纹。
+拆播放器时 `html5.ts` 先发 `auto-final-snapshot`、最多等 1.5 秒 `auto-final-done`，监听再多留 1.5 秒接 pagehide 快照；
+播放器的 `onHtml5AutoSaveSnapshot` 因此不能拿 `isCurrent()` 挡上传（换局时会话代次已前进）。
+自动推送遇到「本浏览器从没见过的云端版本」按冲突处理，不再拿服务端当前 revision 当父版本；手动「存到云端」仍可覆盖。
 改 `pvz-page.js` 或存档桥时同步提升
 `PVZ_SHELL_VERSION`、`scripts/pvz-web/inject-autoplay.mjs` / `scripts/check-pvz.mjs` 的版本以及
 中英文入口引用，并更新本节；`cn/` 与 `en/` 的运行脚本来自 `pvz-page.js`。
@@ -3545,8 +3638,8 @@ ATRAC3+ 和 MP3 解码。构建/发布检查必须同时看到 `USE_FFMPEG:BOOL=
 Cloudflare 对这组静态文件的缓存键**忽略查询串**：请求 `PPSSPPSDL.data?r=17` 仍命中旧的 r16
 （22,417,304B，`CF-Cache-Status: HIT`），而新清单需要 19,434,861B。查询参数不能再承担版本隔离，
 否则新 JS、旧 data 和旧 Wasm 会被拼在同一局里。当前整套资源发布在
-`public/ppsspp/v0dbfaca/v22/`（上一版为 v21）；下次桥、JS、Wasm、data、Range 胶水或 AudioWorklet 任一项改变就
-复制/构建到 `v23/`，并同步 `PPSSPP_RUNTIME_GENERATION` 和服务端旧地址 302。旧目录保留给旧页面，
+`public/ppsspp/v0dbfaca/v23/`（上一版为 v22）；下次桥、JS、Wasm、data、Range 胶水或 AudioWorklet 任一项改变就
+复制/构建到 `v24/`，并同步 `PPSSPP_RUNTIME_GENERATION` 和服务端旧地址 302。旧目录保留给旧页面，
 不原地覆盖。
 v13 只修桥和新增本地光盘 Service Worker；v14/v15/v16 只修预读胶水，Wasm/data 与 v13 的 SHA-256 相同。
 v17 只改桥（`scripts/refresh-ppsspp-edge-v17.mjs` 从 v16 生成）：iframe 地址带 `edge=cn`（大陆访客，
@@ -3562,8 +3655,8 @@ v18 只换 JS 读盘层（`scripts/refresh-ppsspp-retry-v18.mjs` 从 v17 生成�
 v19（`refresh-ppsspp-retry-v19.mjs` 从 v18 生成）：**超时**后的重试把时限翻倍（30 → 60 → 120 秒，整个请求最多
 3 分钟）。慢线路上 2MB 分片本来就要 30 秒以上，用同样的 30 秒重试只会再超时；游戏会卡住等盘，但不再整局失败。
 已排除的方向：assets / cn-assets 两条线路的 206 在 MISS 与 HIT 下都带 ACAO 与 CORP，HTTP 0 不是缓存丢头。
-`scripts/refresh-ppsspp-js-runtime.mjs` 仍是生成 v12 的历史入口，不要用它覆盖 v13～v22。
-下一次重新构建核心前，先把 `scripts/build-ppsspp.mjs` 的目标代次和相应模板一起升到 v23。
+`scripts/refresh-ppsspp-js-runtime.mjs` 仍是生成 v12 的历史入口，不要用它覆盖 v13～v23。
+下一次重新构建核心前，先把 `scripts/build-ppsspp.mjs` 的目标代次和相应模板一起升到 v24。
 
 v20（`scripts/refresh-ppsspp-stability-v20.mjs` 从 v19 生成，Wasm / data 不变）修 2026-11-15 QQ Browser 21
 《初音未来：歌姬计划》现场暴露的两件事：实际 canvas 报 1533×777，超过 profile 规定的 960×544，说明只传
@@ -3586,6 +3679,8 @@ v22（`scripts/refresh-ppsspp-performance-v22.mjs` 从 v21 生成，Wasm / data 
 同时报告至少 8 个逻辑核和 8 GB 内存才升到 720×408 并启用独立 SAS 线程。主线程和 Worker 的实际 canvas
 backing buffer 使用同一条件，`scale <= 1` 不会放大原始尺寸。最高绘图缓冲从 v21 的 522,240 像素降到 293,760，
 PSP 游戏内部分辨率仍固定 1x。旧 v21 运行时保持不可变。
+
+v23（`scripts/refresh-ppsspp-routes-v23.mjs` 从 v22 生成，Wasm / data 不变）给真实游戏盘的同步 Range 读增加同一内容版本下的主站 / 镜像候选：异步探测谁先读到有效响应，核心线程正式读盘中途遇到网络失败后也可换线路。原始 QQ Browser 现场的 `type incompatibility when transforming from/to JS` 仍没有 worker 栈，v20 的 `ErrorEvent.error.stack` 采集保留到 v23；该机制不是对类型异常的根因修复。下一份同类诊断先核对 worker 调用栈再定因。
 
 Emscripten
 自带的 preload fetch 没有重试，`host.js` 用 `getPreloadedPackage` 接管：优先读浏览器缓存，连续
@@ -3734,10 +3829,6 @@ EdgeOne 只能用境外（香港）节点。主站、ROM、Pages 子域都不受
   主域是 `image.8bitgo.com`，大陆加速域 `image-cn.8bitgo.com`（EdgeOne 回源主域）；`/cdn-cgi/image/` 缩放
   照样回源给 Cloudflare 做，但大陆域固定 `format=webp`：EdgeOne 缓存键不看 Accept，`format=auto` 会把
   第一个访客拿到的 AVIF 发给不认 AVIF 的浏览器。回归：`npm run test:cover-cdn`。
-- **8bitgo.com 上的大陆访客，JS / CSS / 字体 / 只读 API 也走 EdgeOne**（2026-11-04，`server/src/cn-edge.js`）：
-  同一份「大陆页面」缓存里，SSR 把模板的 `/assets/`、`/fonts/` 改指 `https://cn.8bitgo.com/_cn/...`；
-  `api.ts` 的非后台 GET 走 `https://cn.8bitgo.com/_cn/api/...`。地址栏不变，只剩 HTML 本身还去 Cloudflare。
-  - ⚠️ 必须带 `/_cn` 前缀：EdgeOne 已缓存过大陆入口同源请求的 `/assets/*`（**没有** CORS 头），缓存键不看 Origin，
 - **主站上的大陆访客整页送到 cn.8bitgo.com**（2026-11-20，`public/edge-route-v3.js` → 当前 `edge-route-v4.js`）：以前的 `edge-route-v2.js` 用两个 180ms 测速探针决定去留，
   从大陆直连实测探已连上的 8bitgo.com 要 1.0 秒、第一次连 cn.8bitgo.com（含握手）要 1.4～3.2 秒，两个探针永远超时、按规则留在原地 ——
   上线以来没把一个大陆访客送去 EdgeOne。同一时刻经 Cloudflare 美国节点：首页 HTML 2.4～4.2 秒（偶尔 60 秒无响应）、入口 JS 7.9 秒、
@@ -3761,6 +3852,10 @@ EdgeOne 只能用境外（香港）节点。主站、ROM、Pages 子域都不受
     迁移前 Cloudflare 那边的 HTML 永远不带这个属性，行为与 v4 相同。⚠️ 属性名在 edge-route 脚本里是写死的字符串，改名要同步（`test:cover-cdn` 核对）。
   - `edge-route-vN.js` 按版本号长期缓存（`cache.js`）：改逻辑必须新建 v6，v2～v4 留给边缘缓存里的旧 HTML。新文件要先 `git add`，`check-runtime-syntax` 只看已跟踪的文件。
     回归：`npm run test:edge-route && npm run test:cover-cdn`。
+- **8bitgo.com 上的大陆访客，JS / CSS / 字体 / 只读 API 也走 EdgeOne**（2026-11-04，`server/src/cn-edge.js`）：
+  同一份「大陆页面」缓存里，SSR 把模板的 `/assets/`、`/fonts/` 改指 `https://cn.8bitgo.com/_cn/...`；
+  `api.ts` 的非后台 GET 走 `https://cn.8bitgo.com/_cn/api/...`。地址栏不变，只剩 HTML 本身还去 Cloudflare。
+  - ⚠️ 必须带 `/_cn` 前缀：EdgeOne 已缓存过大陆入口同源请求的 `/assets/*`（**没有** CORS 头），缓存键不看 Origin，
     我们又清不了 EdgeOne。换前缀等于一组新缓存键，源站对它固定发 `Access-Control-Allow-Origin: https://8bitgo.com`
     和 CORP。同理 CSS 里写死的 `url(/fonts/...)` 由 cn-edge.js 现场改成 `/_cn/fonts/`。
   - ⚠️ `vite.config.ts` 的 `renderBuiltUrl` 让 JS / CSS 里的产物引用相对引用方解析；去掉它，懒加载 chunk 的
@@ -3905,6 +4000,10 @@ Markdown 交给人做永久修复，修好后点「已固化」。错误诊断�
 - 档位：`safe`（默认）只自动生效 safe 档动作，`set_core` / `set_runtime` 等批准；`all` 全部自动；`off` 只建议。低于 minConfidence 一律等批准。
   有效期最长 72 小时，到期自动 `expired`。诊断包带上生效中的修补 id（`hotfix_ids` 列）：同特征仍失败 ≥ revokeAfterVisits 个访问、
   或带修补的失败总数 ≥ 3 倍时自动撤销（提示条不参与）。同一特征分诊后 6 小时内不再自动分诊，每小时预算 maxCallsPerHour。
+  撤销计数（`countHotfixFailures`）只算命中修补范围的访问（`scope.games`、浏览器 / 系统、`cnOnly` 按服务端判出的国家），同一访问去重；
+  多游戏范围时单款游戏最多贡献阈值的 60%，失败全来自同一个国家时阈值翻倍 —— 诊断包可以伪造，这是降低「伪造包撤掉好修补」的门槛，
+  不是根治（不存 IP；真要防需要给诊断接口加挑战或签名）。重新批准已撤销 / 过期的修补会重置 `applied_at`，旧失败不再计入。
+  只有真正生效（没被更新的修补覆盖）的动作才把修补 id 写进诊断包。
 - 浏览器端：`useGameHotfix`（`src/services/hotfixes.ts`）最多等 1.5 秒；**ready 之前详情页把 ROM 当「检查中」**，不让一局开到一半被换核心。
   开关放在零依赖的 `src/services/hotfixFlags.ts`，`paths.ts`（runtimeBase / Play wasm）、EmulatorJS 适配器（`readEngineCacheStall` / `romBlobBrokenNow`）、
   `romRoute.ts`（`chooseRomHost`，最多等 1.2 秒）、诊断包都读它。目前只接了游戏详情页；嵌入页 / TV / 隔离页（PS2 等）不套用修补。
@@ -4155,6 +4254,7 @@ E32 头校验才运行它，否则运行 `<代号>`，不运行的那份不写 `
 - 本站随附进运行时的脚本统一登记在 `scripts/lib/eka2l1-site-scripts.mjs`（完整构建、`npm run eka2l1:repackage`、
   `npm run eka2l1:check` 共用）。**改了这些脚本必须重跑 `npm run eka2l1:repackage`**：运行时目录按内容哈希命名、长期缓存，
   检查脚本会拦住「仓库里的脚本和发布目录不一致」。重复打包时删掉中途生成又没用上的 `v<哈希>` 目录。
+  ⚠️ 重新打包以 `eka2l1Runtime.ts` 里**当前**的 `EKA2L1_BUILD_ID` 目录为基准：先打包、再删旧目录；先删了就把常量改回上一个已提交的目录再打。
 - 回归：`npm run test:eka2l1-ngage-card`（合成 ZIP 覆盖版本选择、外层文件夹、大小写、路径穿越、ZIP64、加密、CRC、
   解压超量、只差大小写的重名、写盘冲突与持久化；设 `NGAGE_CARD_ZIP=<卡带 zip>` 时再跑真实转储）。
 - 2026-11-19 浏览器实测（真实 Emscripten FS、`EKA2L1.savePaths`、原生 DecompressionStream，《模拟人生：脱颖而出》15 MiB
@@ -4186,7 +4286,6 @@ E32 头校验才运行它，否则运行 `<代号>`，不运行的那份不写 `
 （本地与 https://8bitgo.com 都复现）。上游 `js/boot.js` 按老 Emscripten 写：`mod.FS.mount(mod.FS.filesystems.IDBFS, …)`，
 `patchIDBFS` 还读 `IDBFS.DB_VERSION` / `IDBFS.DB_STORE_NAME`。本站用 emcc 7.0.0 构建，胶水里**没有 `FS.filesystems`**、
 **没有把 IDBFS 挂到 Module 上**，版本和存储名也成了模块常量（`IDBFS_DB_VERSION=21`、`IDBFS_DB_STORE_NAME="FILE_DATA"`）——
-  ⚠️ 重新打包以 `eka2l1Runtime.ts` 里**当前**的 `EKA2L1_BUILD_ID` 目录为基准：先打包、再删旧目录；先删了就把常量改回上一个已提交的目录再打。
 就算只修挂载那一行，`patchIDBFS` 换上去的 `getDB` 也会不带版本号打开库、建出一个叫 `undefined` 的存储，存档全写不进去。
 
 **修法**（运行时 `vcfbeb38ddde3`）：补丁表新增两条，完整构建和 `npm run eka2l1:repackage` 走同一个 `applyReplacePatch`：
@@ -4202,18 +4301,6 @@ E32 头校验才运行它，否则运行 `<代号>`，不运行的那份不写 `
 最后报「ROM 文件损坏」（假 ROM 的正确结果）；写一份文件走 `syncfs`、再导入一张卡带走 `savePaths`，刷新后重新启动核心，两边都完整恢复。
 回归：`npm run test:eka2l1-patches`（拿仓库里出事那版 `vce3dcea2a438` 当修之前的样本）。真实固件下的完整开机与游戏运行仍未验证。
 
-## 3. 常用命令
-
-```bash
-npm run dev            # 全栈开发：同时启动 Vite 与 8788 后端（predev 自动准备资源）
-npm run dev:web        # 仅启动 Vite；另有 BACKEND_URL / 后端进程时才用
-npm run build          # prebuild 会跑 check-emulatorjs.mjs 体检，缺东西直接失败
-npm run lint           # oxlint
-npm run test:worker    # Worker 全套自测（分片 / Range / 缓存策略 / 代理，内存版 R2 mock，不联网）
-npm run test:play      # Play! JS / WASM / 许可证完整性与接口特征
-npm run rompack -- <ROM> [输出.8bg]  # 制作 Zstd 19 + AES-GCM 的 8BG 容器
-npm run test:rompack   # 8BG 打包、解密、解压与摘要往返
-npm run test:flash-online-save # AGI 桥完整性 + Flash 在线存档契约
 ### 2.40.2 塞班 / N-Gage：游戏详情页内嵌播放器，点开始就玩（2026-11-19）
 
 照 GGEMU 的做法：玩家不用自备固件、不用进 /symbian 程序库装机，详情页点「开始游戏」就开局。
@@ -4246,6 +4333,18 @@ npm run test:flash-online-save # AGI 桥完整性 + Flash 在线存档契约
 - 回归：`npm run test:eka2l1-player`（包类型识别、存档包格式与安全校验、快照比较、键位、接线），另跑 `test:eka2l1-ngage-card`、
   `test:eka2l1-patches`、`eka2l1:check`。
 
+## 3. 常用命令
+
+```bash
+npm run dev            # 全栈开发：同时启动 Vite 与 8788 后端（predev 自动准备资源）
+npm run dev:web        # 仅启动 Vite；另有 BACKEND_URL / 后端进程时才用
+npm run build          # prebuild 会跑 check-emulatorjs.mjs 体检，缺东西直接失败
+npm run lint           # oxlint
+npm run test:worker    # Worker 全套自测（分片 / Range / 缓存策略 / 代理，内存版 R2 mock，不联网）
+npm run test:play      # Play! JS / WASM / 许可证完整性与接口特征
+npm run rompack -- <ROM> [输出.8bg]  # 制作 Zstd 19 + AES-GCM 的 8BG 容器
+npm run test:rompack   # 8BG 打包、解密、解压与摘要往返
+npm run test:flash-online-save # AGI 桥完整性 + Flash 在线存档契约
 
 npm run ejspatch       # 重打 blob 文件名补丁（升级引擎后必跑，幂等）
 npm run ejscores       # 重新复制核心（仅升级核心时）

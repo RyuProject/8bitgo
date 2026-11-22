@@ -75,6 +75,23 @@ export interface DipOption {
   fallback: string
 }
 
+/**
+ * 按核心当前档位判断是否真在麻将面板模式。单独存过的玩家选择优先于核心默认值；
+ * 选项缺失时保留调用方已经核实过的机器默认档。
+ */
+export function isMahjongControlsSelected(
+  option: DipOption | undefined,
+  saved: string | undefined,
+  defaultSelected = true,
+): boolean {
+  if (!option) return defaultSelected
+  const savedValue = typeof saved === 'string'
+    ? option.values.find((value) => value.trim().toLowerCase() === saved.trim().toLowerCase())
+    : undefined
+  const value = savedValue || option.current || option.fallback
+  return value ? /mahjong|麻将|麻雀/i.test(value) : defaultSelected
+}
+
 /** 要应用的一次改动 */
 export interface DipChange {
   key: string

@@ -113,7 +113,9 @@ const DIAGNOSIS_SIGNAL_LABEL: Record<string, string> = {
   'error.engine_asset': '日志指向模拟器引擎入口资源',
   'error.engine_load': '错误摘要报告模拟器整体加载失败',
   'stage.engine_assets': '最后阶段文字指向模拟器依赖资源',
+  'stage.html5_starting': 'HTML5 页面已加载，但没有可玩信号',
   'error.lazy_module': '日志指向页面懒加载模块导入失败',
+  'error.react_update_loop': '日志出现 React 最大更新深度错误',
   'error.page_asset': '日志指向页面脚本或样式资源',
   'error.romset_or_bios': '日志出现街机 ROM 集或 BIOS 错误',
   'error.runtime_trap': '日志出现模拟器运行时陷阱',
@@ -138,7 +140,7 @@ const DIAGNOSIS_SIGNAL_LABEL: Record<string, string> = {
 export const diagnosisSignalLabel = (signal: string): string => DIAGNOSIS_SIGNAL_LABEL[signal] ?? signal
 
 const DIAGNOSIS_PHASE_LABEL: Record<string, string> = {
-  network: '网络', graphics: '图形初始化', browser: '浏览器功能', engine_asset: '模拟器资源',
+  network: '网络', page_render: '页面渲染', graphics: '图形初始化', browser: '浏览器功能', engine_asset: '模拟器资源',
   page_asset: '页面资源', content_config: '街机 ROM / BIOS 配置', engine: '模拟器加载', runtime: '模拟器运行时',
   content: '游戏文件', core_download: '核心下载 / 解压', rom_download: 'ROM 下载 / 读取',
   core_init: '核心启动', startup: '启动流程', configuration: '兼容性配置', unknown: '未定位',

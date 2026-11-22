@@ -1,5 +1,5 @@
 {
-  "assetVersion": "20261116-dlhost",
+  "assetVersion": "20261122-autolive",
   "files": [
     {
       "name": "PACKS.md",
@@ -13,13 +13,13 @@
     },
     {
       "name": "cs16.bundle.js",
-      "size": 1134697,
-      "sha256": "01596e9e4be21c7ac07a335ca0bd909a013ffea96214201d5d675e8412c57975"
+      "size": 1135339,
+      "sha256": "8c77f0d11c435e53a30cff6903290fd50127ede96bef361f064776ed407ca116"
     },
     {
       "name": "cs16.js",
-      "size": 77593,
-      "sha256": "2b0f6f070c7601e46d358d8141686703678b049901407dd70447ef2918b52b32"
+      "size": 78458,
+      "sha256": "ad40a37ba0716e5a28a7c66e15713a58d8c6ed1caa8372591788db10045bd084"
     },
     {
       "name": "engine/dist/constants.js",
@@ -123,8 +123,8 @@
     },
     {
       "name": "index.html",
-      "size": 23112,
-      "sha256": "f835bfd23f478452fdb695f63fc9359c64b45763404e3739e30e13da45cf4dc3"
+      "size": 23114,
+      "sha256": "9dd2b98afda903d010df93079f33f52566e3470def036749c202565e545b2cb5"
     },
     {
       "name": "lib-new/cstrike/cl_dlls/client_emscripten_wasm32.wasm",

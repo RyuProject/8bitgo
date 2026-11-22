@@ -53,6 +53,7 @@ import { cleanPageRetryUrl, isMemoryPressureMessage, takeCleanPageRetry } from '
 import type { CloudSession, CloudState } from './adapters/cloudgame'
 import { p2pPlayable, cloudPlayable, emulatorJsCoreFileFor, emulatorJsCoreForGame, NDS_COMPAT_CORE, ndsCoreForWebgl2 } from './paths'
 import { FBNEO_LOWMEM_CORE, fbneoLowmemSaveSlug, fbneoMemoryFallbackCore, prefersFbneoLowmem, rememberFbneoMemoryFailure } from './fbneoLowmem'
+import { fbneoWofcnSaveSlug, FBNEO_WOFCN_CORE } from './wofcnCore'
 import { prefersPsxLowmem, psxLowmemCoreFor, psxMemoryFallbackCore, rememberPsxMemoryFailure } from './psxLowmem'
 import { ndsCrashFallbackCore, shouldRememberNdsCoreFailure } from './ndsCrash'
 import { rememberNdsCoreFailure, rememberedNdsCore } from './ndsCorePreference'
@@ -97,8 +98,9 @@ import { FEATURES } from '@/config/features'
 import { desktopScreenAspect, liveStageStyle, mobileScreenAspect, stableLiveGeometry, stageHeightCap } from './screenAspect'
 import { recordPlay } from '@/services/store'
 import { newStartupId, recordStartupEvent, type StartupEventName } from '@/services/startupFunnel'
-import { registerDiagnosticSnapshot } from '@/services/startupDiagnostics'
+import { diagLog, registerDiagnosticSnapshot } from '@/services/startupDiagnostics'
 import { createStartupProgressTrace } from './startupProgressTrace'
+import { sameRuntimeCaps, sameRuntimeGeometry, sameRuntimeResolution, sameRuntimeScreenLayout } from './playerRuntimeState'
 import { recordRecent } from '@/services/auth'
 import { openAuthModal } from '@/services/authModal'
 import { onMatchRequest } from '@/services/matchRequest'
@@ -242,8 +244,17 @@ interface ActiveSession {
   totalRetries?: number
   /** 只属于这一局的核心覆盖；崩溃兜底不能改后台配置或污染下一次主动启动。 */
   coreOverride?: string
-  /** GBA 启动陷阱后已执行过一次远端 ROM 强制刷新；防止同一坏输入循环下载。 */
+  /**
+   * 一次性动作：**这一局**挂载时丢弃远端 ROM 的缓存与续传片、从网络重新下载。
+   * 只由请求刷新的那一次重开带上；之后的原地重试 / 换核心 / 换引擎都不再携带，
+   * 否则每一轮都会把刚下好的 ROM 扔掉重下（大 NDS / 街机包就是几十上百 MB 白下）。
+   */
   forceRomRefresh?: boolean
+  /**
+   * 持久标记：本次开局已经强制刷新过一次 ROM（GBA 启动陷阱恢复）。跟着后续所有重开走，
+   * 只用来防止同一坏输入再触发第二次刷新，不会让适配器再丢缓存。
+   */
+  romRefreshed?: boolean
   /**
    * 这一局已经试过、并且自己说「跑不了这份 ROM」的引擎（见 RuntimeHandle 那侧的 onUnsupported）。
    * 换引擎时要把它们排除掉，否则两个引擎可以来回踢皮球，永远转圈。
@@ -1839,6 +1850,7 @@ export function EmulatorPlayer({
       totalRetries?: number
       coreOverride?: string
       forceRomRefresh?: boolean
+      romRefreshed?: boolean
       ruledOut?: RuntimeId[]
       startupAttemptId?: string
       startedAt?: number
@@ -1931,6 +1943,8 @@ export function EmulatorPlayer({
         ? `${coreSaveSlug}${NDS_ADAPTIVE_PERFORMANCE_SAVE_SUFFIX}`
       : coreOverride === FBNEO_LOWMEM_CORE && coreSaveSlug
         ? fbneoLowmemSaveSlug(coreSaveSlug)
+      : coreOverride === FBNEO_WOFCN_CORE && coreSaveSlug
+        ? fbneoWofcnSaveSlug(coreSaveSlug)
         : coreSaveSlug
     const plan = loadProgressPlan({
       runtime: runtime.id,
@@ -2064,8 +2078,12 @@ export function EmulatorPlayer({
     let mountCancelled = false
     void (async () => {
       try {
+        diagLog('stage', 'info', `${session.runtime.id} 运行时模块加载开始`)
+        noteStartupActivity()
         const mount = await loadMountOf(session.runtime.id)
         if (mountCancelled || !isCurrent()) return
+        diagLog('stage', 'info', `${session.runtime.id} 运行时模块加载完成`)
+        noteStartupActivity()
         handle = mount(host, {
       platform: session.platform,
       game: session.game,
@@ -2074,7 +2092,18 @@ export function EmulatorPlayer({
       // 按游戏覆盖核心 / 平台级 BIOS：都用 ref 读当前值，
       // 放进 effect 依赖会让「BIOS 异步到货」把正在跑的游戏重启一遍
       core: session.coreOverride ?? coreRef.current,
+      onCoreResolved: (resolvedCore, saveSuffix) => {
+        if (!isCurrent()) return
+        setSession((current) => {
+          if (current?.id !== session.id) return current
+          const saveSlug = saveSuffix && current.saveSlug ? fbneoWofcnSaveSlug(current.saveSlug) : current.saveSlug
+          // 某些 ROM 识别可能在核心启动的多个阶段重复回报；值没变时必须返回原对象，否则会无意义地重渲染。
+          if (sameRuntimeResolution(current, resolvedCore, saveSlug)) return current
+          return { ...current, coreOverride: resolvedCore, saveSlug }
+        })
+      },
       forceRomRefresh: session.forceRomRefresh,
+      romRefreshed: session.romRefreshed,
       mouseCapture: shouldCaptureMouse(session.platform, genresRef.current),
       arcadeRomData: arcadeRomDataRef.current,
       arcadeMameDisks: arcadeMameDisksRef.current?.map((disk) => ({
@@ -2124,6 +2153,8 @@ export function EmulatorPlayer({
       // 存档按 slug 归档。玩家自己拖进来的 ROM 不能用页面的 slug ——
       // 那会把他那份存档写到本页官方 ROM 的档位上（见 saveSlugOf）
       gameSlug: saveSlugOf(session),
+      // 分数配置按目录游戏 slug 查找；存档 slug 可能因语言 / 核心隔离而带后缀，不能拿来认游戏。
+      catalogSlug: session.platform === 'nes' && typeof session.game === 'string' ? gameSlugRef.current : undefined,
       netplay: session.netplay,
       cloud: session.cloud,
       live: session.live,
@@ -2132,15 +2163,22 @@ export function EmulatorPlayer({
       // 有些引擎要等核心起来才知道自己支持什么，这里允许它后补
       onCaps: (next) => {
         if (!isCurrent()) return
-        setCaps(new Set(next))
+        // 有些适配器会在启动的多个阶段重复报告能力；相同集合保留旧引用，不让空更新重渲染整棵播放器。
+        const snapshot = new Set(next)
+        setCaps((current) => sameRuntimeCaps(current, snapshot) ? current : snapshot)
       },
       onGeometry: (next) => {
         if (!isCurrent()) return
-        setGeometry((current) => session.live ? stableLiveGeometry(current, next) : next)
+        const snapshot = { width: next.width, height: next.height }
+        setGeometry((current) => {
+          const geometry = session.live ? stableLiveGeometry(current, snapshot) : snapshot
+          return sameRuntimeGeometry(current, geometry) ? current : geometry
+        })
       },
       onScreenLayout: (next) => {
         if (!isCurrent()) return
-        setScreenLayout(next)
+        const snapshot = { key: next.key, current: next.current, values: [...next.values] }
+        setScreenLayout((current) => sameRuntimeScreenLayout(current, snapshot) ? current : snapshot)
       },
       /**
        * Flash 游戏在线存档会话状态。AGI2 登录后可原地启用，不必重启游戏；
@@ -2387,7 +2425,7 @@ export function EmulatorPlayer({
         begin(session.game, session.platform, next, {
           ruledOut,
           totalRetries: session.totalRetries,
-          forceRomRefresh: session.forceRomRefresh,
+          romRefreshed: session.romRefreshed || session.forceRomRefresh,
           startupAttemptId: session.startupAttemptId,
           startedAt: session.startedAt,
         })
@@ -2398,7 +2436,7 @@ export function EmulatorPlayer({
         window.clearTimeout(playableTimer)
         const gbaRomTrap = !ready && session.platform === 'gba' && session.runtime.id === 'emulatorjs' &&
           /table index is out of bounds/i.test(reason) && typeof session.game === 'string' &&
-          isRomPackUrl(session.game) && !session.forceRomRefresh && canRestartInPlace(session)
+          isRomPackUrl(session.game) && !session.forceRomRefresh && !session.romRefreshed && canRestartInPlace(session)
         if (gbaRomTrap) {
           // 普通重试会再次使用同一份已解包 ROM；这类现场之后曾在新访问重下 ROM 后恢复，因此清缓存并重取一次。
           console.warn(`[8bitgo/gba] ${crashedCore} 启动时发生 WASM table trap，刷新 8BG ROM 后重开一次：${reason}`)
@@ -2409,7 +2447,9 @@ export function EmulatorPlayer({
             totalRetries: (session.totalRetries ?? 0) + 1,
             coreOverride: session.coreOverride,
             ruledOut: session.ruledOut,
+            // 只有这一次重开真的丢缓存重下；romRefreshed 跟着后续重开走，防止再刷第二次
             forceRomRefresh: true,
+            romRefreshed: true,
             startupAttemptId: session.startupAttemptId,
             startedAt: session.startedAt,
           })
@@ -2432,7 +2472,7 @@ export function EmulatorPlayer({
             coreOverride: nextCore,
             totalRetries: session.totalRetries,
             ruledOut: session.ruledOut,
-            forceRomRefresh: session.forceRomRefresh,
+            romRefreshed: session.romRefreshed || session.forceRomRefresh,
             startupAttemptId: session.startupAttemptId,
             startedAt: session.startedAt,
           })
@@ -2472,7 +2512,7 @@ export function EmulatorPlayer({
           coreOverride: nextCore,
           totalRetries: session.totalRetries,
           ruledOut: session.ruledOut,
-          forceRomRefresh: session.forceRomRefresh,
+          romRefreshed: session.romRefreshed || session.forceRomRefresh,
           startupAttemptId: session.startupAttemptId,
           startedAt: session.startedAt,
         })
@@ -2529,7 +2569,8 @@ export function EmulatorPlayer({
           运行时基础设施故障（例如 Ruffle 播放壳没有初始化）与 ROM 无关。旧逻辑在同一份
           引擎故障上先重试，再把英语、中文等候选 ROM 挨个判坏：一次 iframe 竞态最终放大成
           二十多次启动和整条语言链误切。runtime 仍保留一次原地重试用于网络抖动，但绝不污染
-          ROM 失败集；只有适配器明确/默认认定为内容故障时才允许 failover。
+          ROM 失败集；只有适配器明确标成 content / deterministic（可换任意候选）或 network（只换同语言备用源）
+          时才允许 failover，不带 scope 的错误一律不换 ROM。
         */
 
         // 完整性/密钥/codec 错误是确定性的，同一个包再下载一次不会变好。直接切数据库里保留的
@@ -2556,7 +2597,7 @@ export function EmulatorPlayer({
             totalRetries: totalRetries + 1,
             coreOverride: session.coreOverride,
             ruledOut: session.ruledOut,
-            forceRomRefresh: session.forceRomRefresh,
+            romRefreshed: session.romRefreshed || session.forceRomRefresh,
             startupAttemptId: session.startupAttemptId,
             startedAt: session.startedAt,
           })
@@ -2631,6 +2672,7 @@ export function EmulatorPlayer({
         stopProgressSnapshot()
         window.clearTimeout(playableTimer)
         const message = error instanceof Error ? error.message : String(error)
+        diagLog('stage', 'error', `${session.runtime.id} 运行时模块加载或挂载失败`, error)
         reportStartupFailure(message)
         setError(message)
         setStatus('error')
@@ -2661,7 +2703,9 @@ export function EmulatorPlayer({
       setScreenLayout(null)
       handle?.destroy()
     }
-  }, [session])
+  // 同一会话只会在适配器按 ROM CRC 确认专用核心后补写 coreOverride / saveSlug；
+  // 这时不能拆掉正在启动的 iframe。真正换局仍会分配新 id 并重新挂载。
+  }, [session?.id])
 
   // 云端联机期间向本站后端心跳（P2P 不需要：信令服务器本来就知道房间）
   useEffect(() => {
@@ -5255,7 +5299,14 @@ export function EmulatorPlayer({
             caps={caps}
             gameName={gameName}
             gameSlug={saveSlug}
+            catalogSlug={session?.platform === 'nes' && typeof session.game === 'string' ? gameSlugRef.current : undefined}
             runtimeId={session?.runtime.id ?? activeRuntime?.id}
+            nesRamTrace={Boolean(
+              typeof window !== 'undefined' &&
+              new URLSearchParams(window.location.search).get('nesRamTrace') === '1' &&
+              session?.platform === 'nes' &&
+              session.runtime.id === 'emulatorjs'
+            )}
             dosSaveHint={dosSaveHint}
             screenLayout={screenLayout}
             saveRequest={saveRequest}

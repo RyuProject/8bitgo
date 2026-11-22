@@ -160,13 +160,13 @@ const PRINT_OUT_TO = 'print:t=>{this.debug&&console.log(t),/^\\[libretro ERROR\\
  */
 const KEEP_ZIP_FROM = 'e.dontExtractIfCore?.includes(this.getCore())'
 /**
- * 2026-11-13 补上 fbneo-lowmem：它是 FBNeo 内存不足时的退路（src/emulator/fbneoLowmem.ts），
- * 名字不在上游名单里，引擎会把 kof97.zip / neogeo.zip 解成散文件 → Romset is unknown / 缺 BIOS 成员（§2.3）。
+ * 2026-11-13 / 2026-11-19 补上自建 FBNeo 变体：名字不在上游名单里，引擎会把 romset ZIP 解成散文件，
+ * FBNeo 就报 Romset is unknown / 缺 BIOS 成员（§2.3）。wofcn 专用核心也必须保留原始 ZIP。
  * 旧版补丁（只有 mame-current）由下面 legacy 接管升级。
  */
 const KEEP_ZIP_TO_V1 = '(e.dontExtractIfCore?.includes(this.getCore())||"mame-current"===this.getCore())'
 const KEEP_ZIP_TO =
-  '(e.dontExtractIfCore?.includes(this.getCore())||"mame-current"===this.getCore()||"fbneo-lowmem"===this.getCore())'
+  '(e.dontExtractIfCore?.includes(this.getCore())||"mame-current"===this.getCore()||"fbneo-lowmem"===this.getCore()||"fbneo-wofcn"===this.getCore())'
 
 /**
  * 2026-11-16 补上 pcsx_rearmed-lowmem：它是 PS1 默认核心内存不足时的退路（src/emulator/psxLowmem.ts），
@@ -258,8 +258,9 @@ const DEFAULT_OPTIONS_TO =
  * 拳皇 97 等）。引擎的下载器有三处会让 Promise 永远不结束，进度文字就停在最后一次的百分比：
  *
  * 1. 30 秒超时（AbortController）在**拿到响应头就清掉**，读包体的 `reader.read()` 没有任何时限：
- *    跨洲线路丢了最后几个包 / 连接半开时，进度到 100% 却等不来流结束。改成每收到一块就重新计时，
- *    20 秒没有新字节就 abort → 下载器报错 → 适配器 failLoad → 播放器自动重试一次。
+ *    跨洲线路丢了最后几个包 / 连接半开时，进度到 100% 却等不来流结束。改成每收到一块就重新计时；
+ *    20 秒没有新字节就中止 Fetch，并立即用 XHR arraybuffer 完整重取一次。现场证明单纯把失败交给播放器换线路
+ *    会让大陆玩家从 EdgeOne 退回吞吐极差的 Cloudflare；XHR 成功就留在当前线路。仅 XHR 也失速才交给播放器。
  * 2. 下载完成后 `await this.storageCache.put()` 才把结果交出去；开局前还 `await storageCache.get()`。
  *    引擎的 IndexedDB 封装有好几条路永远不 settle：`transaction()` 在 onsuccess 里同步抛错（表不存在 /
  *    库正在关闭）、`put/get/delete` 同步抛 TransactionInactiveError / DataCloneError（async 执行器里的
@@ -274,6 +275,8 @@ const BODY_READ_FROM =
 const BODY_READ_TO =
   'let __8bgStall=0;const __8bgArm=()=>{clearTimeout(__8bgStall),__8bgStall=setTimeout(()=>{console.warn("[EJS Download] 20 秒没有新数据，中止："+S),f.abort()},2e4)};' +
   'try{for(;;){__8bgArm();const{done:s,value:o}=await e.read();if(s)break;n.push(o),i+=o.length,r&&t&&r("downloading",Math.floor(i/t*100),i,t)}}finally{clearTimeout(__8bgStall)}'
+const BODY_READ_STALL_FROM = 'console.warn("[EJS Download] 20 秒没有新数据，中止："+S),f.abort()'
+const BODY_READ_STALL_TO = 'console.warn("[EJS Download] 20 秒没有新数据，中止："+S),f.__8bgStalled=!0,f.abort()'
 /**
  * 华为浏览器 17 的两份现场里，核心 HTTP 200 收到 1.3MB 后立刻报 NotReadableError，且在 IndexedDB put 之前。
  * 上游把 `reader.read()` 与 `new Blob(chunks).arrayBuffer()` 放在同一个 catch 里，旧现场没有子阶段栈，无法证明
@@ -285,13 +288,18 @@ const BODY_READ_DIAGNOSTICS_FROM =
 const BODY_READ_DIAGNOSTICS_TO =
   'try{for(;;){__8bgArm();const{done:s,value:o}=await e.read();if(s)break;n.push(o),i+=o.length,r&&t&&r("downloading",Math.floor(i/t*100),i,t)}}catch(__8bgReadError){console.warn("[EJS Download] response stream read failed",__8bgReadError);throw __8bgReadError}finally{clearTimeout(__8bgStall)}'
 const ARRAYBUFFER_BLOB_FROM = 'const s=new Blob(n),o=await s.arrayBuffer();Z=new Uint8Array(o)'
-const ARRAYBUFFER_BLOB_TO =
+const ARRAYBUFFER_BLOB_TO_V1 =
   'Z=new Uint8Array(i);let __8bgOffset=0;for(const __8bgChunk of n){Z.set(__8bgChunk,__8bgOffset);__8bgOffset+=__8bgChunk.byteLength}'
+const ARRAYBUFFER_BLOB_TO =
+  'Z=__8bgTarget||new Uint8Array(i);if(!__8bgTarget){let __8bgOffset=0;for(const __8bgChunk of n){Z.set(__8bgChunk,__8bgOffset);__8bgOffset+=__8bgChunk.byteLength}}'
 /**
- * 流读取本身失败时改走 XHR arraybuffer 再取一次（2026-11-15，华为浏览器 17 / Android 12《节奏天国》后续防线）。
+ * 流读取本身失败或下载器自己的空闲计时判定失速时，改走 XHR arraybuffer 再取一次。
+ * 2026-11-15 华为浏览器 17 / Android 12《节奏天国》先加了流读取异常兜底；2026-11-21 大陆 5 份现场确认
+ * 20 秒失速中止不能直接失败：同一核心多次只收到 0–1.9MB，网络恢复后必须先换读取 API 重取。
  * 上一节去掉了 Blob 往返；若这类浏览器连 `ReadableStream.read()` 也读不出（NotReadableError），XHR 的
- * arraybuffer 响应既不走流也不走 Blob，是最后一条与 fetch 读法不同的路。只对没有请求体（GET）且不是我们自己
- * 20 秒失速中止的下载回退一次；回退请求同样 20 秒无进度就中止，失败原样交回引擎（适配器按原规则处理）。
+ * arraybuffer 响应既不走流也不走 Blob，是另一条读取路径。只对没有请求体（GET）且不是外部取消的下载回退一次；
+ * 已收到的 Fetch 字节只用于拒绝短响应，完整数据从头取，且继续检查状态码、长度和错误页类型。XHR 空闲时限只算前台时间，
+ * 标签页隐藏期间暂停，回来后重新给足 20 秒；失败原样交回引擎。
  */
 const BODY_READ_FALLBACK_FROM =
   'try{for(;;){__8bgArm();const{done:s,value:o}=await e.read();if(s)break;n.push(o),i+=o.length,r&&t&&r("downloading",Math.floor(i/t*100),i,t)}}catch(__8bgReadError){console.warn("[EJS Download] response stream read failed",__8bgReadError);' +
@@ -323,9 +331,112 @@ const BODY_READ_FALLBACK_ONLOAD_TO = BODY_READ_FALLBACK_ONLOAD_BROKEN.replace(
   '__8bgMime=__8bgType.split(";")[0].trim().toLowerCase(),__8bgTextError=__8bgMime==="text/html"||__8bgMime==="application/json"||__8bgMime==="application/xml";',
 )
 if (BODY_READ_FALLBACK_ONLOAD_TO === BODY_READ_FALLBACK_ONLOAD_BROKEN) throw new Error('XHR 兜底的 MIME 判断改写没命中')
-const BODY_READ_FALLBACK_TO = BODY_READ_FALLBACK_FROM.replace(BODY_READ_FALLBACK_ONLOAD_FROM, BODY_READ_FALLBACK_ONLOAD_TO)
+const BODY_READ_FALLBACK_PREVIOUS = BODY_READ_FALLBACK_FROM.replace(BODY_READ_FALLBACK_ONLOAD_FROM, BODY_READ_FALLBACK_ONLOAD_TO)
+const BODY_READ_FALLBACK_REPLACEMENTS = [
+  [
+    'if(f.signal.aborted||o)throw __8bgReadError;',
+    'if(f.signal.aborted&&!f.__8bgStalled||o)throw __8bgReadError;',
+    '失速恢复条件',
+  ],
+  [
+    'const __8bgBuf=await new Promise((__8bgOk,__8bgFail)=>{const __8bgX=new XMLHttpRequest;let __8bgXT=0;const __8bgXArm=()=>{clearTimeout(__8bgXT),__8bgXT=setTimeout(()=>{console.warn("[EJS Download] XHR 20 秒没有新数据，中止："+S),__8bgX.abort()},2e4)};',
+    'const __8bgBuf=await new Promise((__8bgOk,__8bgFail)=>{const __8bgX=new XMLHttpRequest;let __8bgXT=0;const __8bgXClear=()=>{clearTimeout(__8bgXT),__8bgXT=0},__8bgXArm=()=>{__8bgXClear(),"hidden"!==document.visibilityState&&(__8bgXT=setTimeout(()=>{"hidden"===document.visibilityState?__8bgXArm():(console.warn("[EJS Download] XHR 20 秒没有新数据，中止："+S),__8bgX.abort())},2e4))},__8bgXVis=()=>{"hidden"===document.visibilityState?__8bgXClear():__8bgXArm()},__8bgXDone=()=>{__8bgXClear(),document.removeEventListener("visibilitychange",__8bgXVis)};document.addEventListener("visibilitychange",__8bgXVis);',
+    'XHR 后台暂停计时',
+  ],
+  ['__8bgX.onload=()=>{clearTimeout(__8bgXT);', '__8bgX.onload=()=>{__8bgXDone();', 'XHR 完成清理'],
+  ['__8bgX.onerror=()=>{clearTimeout(__8bgXT),', '__8bgX.onerror=()=>{__8bgXDone(),', 'XHR 错误清理'],
+  ['__8bgX.onabort=()=>{clearTimeout(__8bgXT),', '__8bgX.onabort=()=>{__8bgXDone(),', 'XHR 中止清理'],
+]
+const BODY_READ_FALLBACK_TO = BODY_READ_FALLBACK_REPLACEMENTS.reduce((source, [from, to, label]) => {
+  const replaced = source.replace(from, to)
+  if (replaced === source) throw new Error(`XHR 兜底${label}补丁未命中`)
+  return replaced
+}, BODY_READ_FALLBACK_PREVIOUS)
 const BODY_READ_FALLBACK_BROKEN = BODY_READ_FALLBACK_FROM.replace(BODY_READ_FALLBACK_ONLOAD_FROM, BODY_READ_FALLBACK_ONLOAD_BROKEN)
-if (BODY_READ_FALLBACK_TO === BODY_READ_FALLBACK_FROM) throw new Error('XHR 兜底的 onload 改写没命中')
+const CORE_RESUME_HELPER = readFileSync(join(root, 'scripts', 'lib', 'ejs-core-resume-runtime.js'), 'utf8').trim()
+const CORE_RESUME_HELPER_START = '/*\n * EmulatorJS 核心下载续传助手'
+const CORE_RESUME_INSERT_FROM = 'class s{constructor(t=null,e=null){this.storageCache=t,this.EJS=e}'
+const CORE_RESUME_INSERT_TO = `${CORE_RESUME_HELPER}\n${CORE_RESUME_INSERT_FROM}`
+const CORE_RESUME_STATE_FROM = 'let C;try{C=new URL(t)'
+const CORE_RESUME_STATE_TO = 'let C,__8bgResumeState=null;try{C=new URL(t)'
+const CORE_FETCH_FROM = 'if(y=await fetch(t,{method:n,headers:s,body:o,signal:f.signal}),clearTimeout(V),!y.ok)throw new Error(`HTTP ${y.status}`);'
+const CORE_FETCH_TO =
+  'let __8bgResumePlan=__8bgCoreResume.plan(t,n,o,s);const __8bgFetchFull=async()=>{clearTimeout(V),f=new AbortController,V=setTimeout(()=>f.abort(),h);try{return await fetch(t,{method:n,headers:s,body:o,signal:f.signal})}finally{clearTimeout(V)}};' +
+  'if(y=await fetch(t,{method:n,headers:__8bgResumePlan?__8bgResumePlan.headers:s,body:o,signal:f.signal}),clearTimeout(V),__8bgResumePlan){' +
+  'const __8bgAccepted=await __8bgCoreResume.accept(__8bgResumePlan,y,__8bgFetchFull);y=__8bgAccepted.response;__8bgResumeState=__8bgAccepted.state;if(__8bgResumeState)__8bgResumeState.buffer=__8bgAccepted.buffer||null}' +
+  'clearTimeout(V);if(!y.ok)throw new Error(`HTTP ${y.status}`);'
+const CORE_READER_INIT_FROM = 'const e=y.body.getReader();let i=0,n=[];let __8bgStall=0;'
+const CORE_READER_INIT_TO =
+  'const e=y.body.getReader();let i=__8bgResumeState?.start||0,n=[],__8bgTarget=__8bgResumeState?.buffer||(__8bgResumeState?.total&&__8bgResumeState.total<=67108864?new Uint8Array(__8bgResumeState.total):null);if(__8bgResumeState?.buffer)__8bgResumeState.buffer=null;else if(__8bgTarget&&i&&__8bgResumeState?.prefix){let __8bgPrefixOffset=0;for(const __8bgPart of __8bgResumeState.prefix){__8bgTarget.set(__8bgPart,__8bgPrefixOffset);__8bgPrefixOffset+=__8bgPart.byteLength}__8bgResumeState.prefix=[]}if(__8bgResumeState?.total)t=__8bgResumeState.total;if(i&&r)r("downloading",Math.floor(i/t*100),i,t);const __8bgWriter=__8bgCoreResume.writer(__8bgResumeState);let __8bgStall=0;'
+const CORE_READER_INIT_TO_PREVIOUS =
+  'const e=y.body.getReader();let i=__8bgResumeState?.start||0,n=[],__8bgTarget=__8bgResumeState?.buffer||(__8bgResumeState?.total?new Uint8Array(__8bgResumeState.total):null);if(__8bgResumeState?.buffer)__8bgResumeState.buffer=null;else if(__8bgTarget&&i&&__8bgResumeState?.prefix){let __8bgPrefixOffset=0;for(const __8bgPart of __8bgResumeState.prefix){__8bgTarget.set(__8bgPart,__8bgPrefixOffset);__8bgPrefixOffset+=__8bgPart.byteLength}__8bgResumeState.prefix=[]}if(__8bgResumeState?.total)t=__8bgResumeState.total;if(i&&r)r("downloading",Math.floor(i/t*100),i,t);const __8bgWriter=__8bgCoreResume.writer(__8bgResumeState);let __8bgStall=0;'
+const CORE_READER_INIT_TO_V1 =
+  'const e=y.body.getReader();let i=__8bgResumeState?.start||0,n=[],__8bgTarget=__8bgResumeState?.total?new Uint8Array(__8bgResumeState.total):null;if(__8bgResumeState?.buffer&&__8bgTarget){__8bgTarget.set(__8bgResumeState.buffer,0);__8bgResumeState.buffer=null}else if(__8bgTarget&&i&&__8bgResumeState?.prefix){let __8bgPrefixOffset=0;for(const __8bgPart of __8bgResumeState.prefix){__8bgTarget.set(__8bgPart,__8bgPrefixOffset);__8bgPrefixOffset+=__8bgPart.byteLength}__8bgResumeState.prefix=[]}if(__8bgResumeState?.total)t=__8bgResumeState.total;if(i&&r)r("downloading",Math.floor(i/t*100),i,t);const __8bgWriter=__8bgCoreResume.writer(__8bgResumeState);let __8bgStall=0;'
+const CORE_READER_INIT_TO_V0 =
+  'const e=y.body.getReader();let i=__8bgResumeState?.start||0,n=__8bgResumeState?.prefix||[],__8bgTarget=__8bgResumeState?.total?new Uint8Array(__8bgResumeState.total):null;if(__8bgTarget&&i){let __8bgPrefixOffset=0;for(const __8bgPart of n){__8bgTarget.set(__8bgPart,__8bgPrefixOffset);__8bgPrefixOffset+=__8bgPart.byteLength}n=[]}if(__8bgResumeState?.total)t=__8bgResumeState.total;if(i&&r)r("downloading",Math.floor(i/t*100),i,t);const __8bgWriter=__8bgCoreResume.writer(__8bgResumeState);let __8bgStall=0;'
+const CORE_READER_INIT_TO_EARLIER =
+  'const e=y.body.getReader();let i=__8bgResumeState?.start||0,n=__8bgResumeState?.prefix||[];if(__8bgResumeState?.total)t=__8bgResumeState.total;if(i&&r)r("downloading",Math.floor(i/t*100),i,t);const __8bgWriter=__8bgCoreResume.writer(__8bgResumeState);let __8bgStall=0;'
+const BODY_READ_RESUME_FROM = BODY_READ_FALLBACK_TO
+let BODY_READ_RESUME_TO = BODY_READ_RESUME_FROM
+const replaceResumeSource = (from, to, label) => {
+  const next = BODY_READ_RESUME_TO.replace(from, to)
+  if (next === BODY_READ_RESUME_TO) throw new Error(`核心 Range 续传 ${label} 补丁未命中`)
+  BODY_READ_RESUME_TO = next
+}
+replaceResumeSource(
+  'n.push(o),i+=o.length,r&&t&&r("downloading",Math.floor(i/t*100),i,t)',
+  '(__8bgTarget?__8bgTarget.set(o,i):n.push(o)),i+=o.length,__8bgWriter&&await __8bgWriter.push(o),r&&t&&r("downloading",Math.floor(i/t*100),i,t)',
+  '分片持久化',
+)
+replaceResumeSource(
+  'r("downloading",Math.floor(i/t*100),i,t)}}catch(__8bgReadError)',
+  'r("downloading",Math.floor(i/t*100),i,t)}if(__8bgResumeState?.total&&i!==__8bgResumeState.total)throw new Error("core body length mismatch: "+i+"/"+__8bgResumeState.total)}catch(__8bgReadError)',
+  '完整长度校验',
+)
+const XHR_FALLBACK_BLOCK_START = 'const __8bgBuf=await new Promise'
+const XHR_FALLBACK_BLOCK_END = '__8bgXArm(),__8bgX.send()});'
+const xhrStart = BODY_READ_RESUME_TO.indexOf(XHR_FALLBACK_BLOCK_START)
+const xhrEndAt = BODY_READ_RESUME_TO.indexOf(XHR_FALLBACK_BLOCK_END, xhrStart)
+if (xhrStart < 0 || xhrEndAt < 0) throw new Error('核心 Range 续传找不到现有 XHR 回退块')
+const xhrEnd = xhrEndAt + XHR_FALLBACK_BLOCK_END.length
+BODY_READ_RESUME_TO = BODY_READ_RESUME_TO.slice(0, xhrStart) +
+  'const __8bgResult=await __8bgCoreResume.xhrFallback({url:y.url,originalHeaders:s,state:__8bgResumeState,offset:i,progress:r,readError:__8bgReadError});const __8bgBuf=__8bgResult.body;' +
+  BODY_READ_RESUME_TO.slice(xhrEnd)
+replaceResumeSource(
+  'console.warn("[EJS Download] XHR arraybuffer 重新下载成功："+S+" "+__8bgBuf.byteLength+" 字节");n=[new Uint8Array(__8bgBuf)],i=__8bgBuf.byteLength}',
+  'console.warn("[EJS Download] XHR arraybuffer 重新下载成功："+S+" "+__8bgBuf.byteLength+" 字节");if(__8bgResult.resumed){const __8bgXhrBytes=new Uint8Array(__8bgBuf);if(__8bgTarget)__8bgTarget.set(__8bgXhrBytes,i);else n.push(__8bgXhrBytes);i+=__8bgBuf.byteLength}else{__8bgTarget=new Uint8Array(__8bgBuf);n=[],i=__8bgBuf.byteLength}}',
+  'XHR 分段结果拼接',
+)
+const CORE_COMPLETE_FROM = 'c(n)}else{const i="temp-"+Date.now();c(new a(i,B,b,e,d,S,t,A))}'
+const CORE_COMPLETE_TO = '(__8bgResumeState&&__8bgCoreResume.complete(__8bgResumeState)),c(n)}else{const i="temp-"+Date.now();(__8bgResumeState&&__8bgCoreResume.complete(__8bgResumeState)),c(new a(i,B,b,e,d,S,t,A))}'
+const CORE_FETCH_TO_PREVIOUS = CORE_FETCH_TO.replace(
+  '__8bgResumeState.buffer=__8bgAccepted.buffer||null',
+  '__8bgResumeState.prefix=__8bgAccepted.prefix||[]',
+)
+let BODY_READ_RESUME_TO_PREVIOUS = BODY_READ_RESUME_FROM
+const replacePreviousResumeSource = (from, to) => {
+  const next = BODY_READ_RESUME_TO_PREVIOUS.replace(from, to)
+  if (next === BODY_READ_RESUME_TO_PREVIOUS) throw new Error('旧版核心续传行为识别串未命中')
+  BODY_READ_RESUME_TO_PREVIOUS = next
+}
+replacePreviousResumeSource(
+  'n.push(o),i+=o.length,r&&t&&r("downloading",Math.floor(i/t*100),i,t)',
+  'n.push(o),i+=o.length,__8bgWriter&&await __8bgWriter.push(o),r&&t&&r("downloading",Math.floor(i/t*100),i,t)',
+)
+replacePreviousResumeSource(
+  'r("downloading",Math.floor(i/t*100),i,t)}}catch(__8bgReadError)',
+  'r("downloading",Math.floor(i/t*100),i,t)}if(__8bgResumeState?.total&&i!==__8bgResumeState.total)throw new Error("core body length mismatch: "+i+"/"+__8bgResumeState.total)}catch(__8bgReadError)',
+)
+const previousXhrStart = BODY_READ_RESUME_TO_PREVIOUS.indexOf(XHR_FALLBACK_BLOCK_START)
+const previousXhrEndAt = BODY_READ_RESUME_TO_PREVIOUS.indexOf(XHR_FALLBACK_BLOCK_END, previousXhrStart)
+if (previousXhrStart < 0 || previousXhrEndAt < 0) throw new Error('旧版核心续传行为缺少 XHR 回退块')
+BODY_READ_RESUME_TO_PREVIOUS = BODY_READ_RESUME_TO_PREVIOUS.slice(0, previousXhrStart) +
+  'const __8bgResult=await __8bgCoreResume.xhrFallback({url:y.url,originalHeaders:s,state:__8bgResumeState,offset:i,progress:r,readError:__8bgReadError});const __8bgBuf=__8bgResult.body;' +
+  BODY_READ_RESUME_TO_PREVIOUS.slice(previousXhrEndAt + XHR_FALLBACK_BLOCK_END.length)
+replacePreviousResumeSource(
+  'console.warn("[EJS Download] XHR arraybuffer 重新下载成功："+S+" "+__8bgBuf.byteLength+" 字节");n=[new Uint8Array(__8bgBuf)],i=__8bgBuf.byteLength}',
+  'console.warn("[EJS Download] XHR arraybuffer 重新下载成功："+S+" "+__8bgBuf.byteLength+" 字节");if(__8bgResult.resumed){n.push(new Uint8Array(__8bgBuf));i+=__8bgBuf.byteLength}else{n=[new Uint8Array(__8bgBuf)],i=__8bgBuf.byteLength}}',
+)
 const CACHE_PUT_FROM = '!1===u&&await this.storageCache.put(n),c(n)'
 const CACHE_PUT_TO =
   '!1===u&&await Promise.race([this.storageCache.put(n).catch(t=>console.warn("[EJS Cache] put failed",t)),' +
@@ -403,6 +514,15 @@ const CACHE_PUT_CLEAR_FROM = CACHE_PUT_DEAD_TO
 const CACHE_PUT_CLEAR_TO =
   '!1===u&&!this.__8bgCacheDead&&await (()=>{let __8bgT;return Promise.race([this.storageCache.put(n).catch(t=>console.warn("[EJS Cache] put failed",t)),' +
   'new Promise(t=>{__8bgT=setTimeout(()=>{console.warn("[EJS Cache] put 超过 10 秒，本局停用缓存");' + CACHE_DEAD_MARK_V2 + 't()},1e4)})]).finally(()=>clearTimeout(__8bgT))})(),c(n)'
+const CACHE_PUT_CLEAR_TO_COMPLETED = CACHE_PUT_CLEAR_TO.replace(
+  ',c(n)',
+  ',(__8bgResumeState&&__8bgCoreResume.complete(__8bgResumeState)),c(n)',
+)
+// 历史产物在等价的 catch 表达式上少了一层括号；接受该既有写法，保证补丁脚本可幂等重跑。
+const CACHE_PUT_CLEAR_TO_LEGACY = CACHE_PUT_CLEAR_TO.replace(
+  'catch(t=>(console.warn("[EJS Cache] put failed",t)))',
+  'catch(t=>console.warn("[EJS Cache] put failed",t))',
+)
 
 /** 第十三节：exit 里不再卸载 /data/saves（卸载后排队的 autoPersist 会把整个 IndexedDB 存档库清空） */
 const EXIT_UNMOUNT_FROM =
@@ -427,6 +547,14 @@ const GAME_WRITE_TO = '(this.gameManager.FS.writeFile(`/${t}`,e,{canOwn:!0}),t)}
  * hint 是位置对不上时打给人看的排查思路。
  */
 const GROUPS = [
+  {
+    name: '核心分片续传助手',
+    patches: [[CORE_RESUME_INSERT_FROM, CORE_RESUME_INSERT_TO]],
+    hint: [
+      '在 Downloader 类前嵌入 scripts/lib/ejs-core-resume-runtime.js；',
+      '助手只管带内容版本号的 EmulatorJS 核心 GET，IDB / Range 不可用时必须自动退回完整下载。',
+    ],
+  },
   {
     name: 'blob 文件名',
     patches: [
@@ -487,13 +615,12 @@ const GROUPS = [
     ],
   },
   {
-    name: '街机 ROM 保持 zip（mame-current / fbneo-lowmem）',
+    name: '街机 ROM 保持 zip（mame-current / FBNeo 自建变体）',
     patches: [[KEEP_ZIP_FROM, KEEP_ZIP_TO]],
     legacy: () => KEEP_ZIP_TO_V1,
     hint: [
       '在 download() 里找 `dontExtractIfCore?.includes(this.getCore())` 那个三元条件；',
-      '把 mame-current / fbneo-lowmem 也判成「不解压」—— 否则 MAME 拿不到 romset 压缩包会直接 Abort，',
-      'fbneo-lowmem 拿到散文件报 Romset is unknown。',
+      '把 mame-current / fbneo-lowmem / fbneo-wofcn 也判成「不解压」—— 否则 FBNeo 拿到散文件报 Romset is unknown。',
       '⚠️ 这一组没了的话，mame-current 的游戏 100% 起不来，且只有一句「Failed to start game」。',
     ],
   },
@@ -554,24 +681,34 @@ const GROUPS = [
     ],
   },
   {
+    name: '识别下载器自己的失速中止',
+    patches: [[BODY_READ_STALL_FROM, BODY_READ_STALL_TO]],
+    hint: [
+      '在包体 20 秒空闲中止回调里，把本地 AbortController 标记为下载器主动失速；',
+      'XHR 回退只允许由这类失速或真实流读取异常触发，外部取消仍须立即结束。',
+    ],
+  },
+  {
     name: '核心响应直接拼接 Uint8Array',
     patches: [
       [BODY_READ_DIAGNOSTICS_FROM, BODY_READ_DIAGNOSTICS_TO],
       [ARRAYBUFFER_BLOB_FROM, ARRAYBUFFER_BLOB_TO],
     ],
+    legacy: (to) => to === ARRAYBUFFER_BLOB_TO ? ARRAYBUFFER_BLOB_TO_V1 : undefined,
     hint: [
       'arraybuffer 下载已经拿到 Uint8Array 分块，不要再用 new Blob(chunks).arrayBuffer() 读回；',
       '直接按总字节数分配 Uint8Array 并顺序 set，读流异常同时输出原始错误对象。',
     ],
   },
   {
-    name: '核心响应流读失败改走 XHR',
+    name: '核心响应流失败或失速改走 XHR',
     patches: [[BODY_READ_DIAGNOSTICS_TO, BODY_READ_FALLBACK_TO]],
     // 未打过本节的旧引擎，或 79be63d 打出的语法错误版本
-    legacy: () => [BODY_READ_FALLBACK_FROM, BODY_READ_FALLBACK_BROKEN],
+    legacy: () => [BODY_READ_FALLBACK_PREVIOUS, BODY_READ_FALLBACK_FROM, BODY_READ_FALLBACK_BROKEN],
     hint: [
-      '在「核心响应直接拼接 Uint8Array」那段 catch 里：只对无请求体（o 为空）、非失速中止的下载，用 XHR arraybuffer 重下一次，',
+      '在「核心响应直接拼接 Uint8Array」那段 catch 里：只对无请求体（o 为空）、非外部取消的下载，用 XHR arraybuffer 重下一次，',
       '校验响应状态、声明长度、已收字节下限与错误页类型后，才写回分块数组 n 与总长 i；截断响应不得进入 IndexedDB。',
+      '下载器自己的失速中止允许这次 XHR 回退；后台隐藏期间暂停空闲计时，避免切回前台立即误中止。',
     ],
   },
   {
@@ -628,6 +765,23 @@ const GROUPS = [
   },
 
   {
+    name: '核心断点续传与持久化',
+    patches: [
+      [CORE_RESUME_STATE_FROM, CORE_RESUME_STATE_TO],
+      [CORE_FETCH_FROM, CORE_FETCH_TO],
+      [CORE_READER_INIT_FROM, CORE_READER_INIT_TO],
+      [BODY_READ_RESUME_FROM, BODY_READ_RESUME_TO],
+      [CORE_COMPLETE_FROM, CORE_COMPLETE_TO],
+    ],
+    hint: [
+      '只对版本化的 cores/*-wasm.data GET 加 Range；首片必须是从 0 到文件尾的完整 206，后续必须匹配 Content-Range / ETag。',
+      'IndexedDB 只保存 1 MiB 完整片，最终片不落盘；恢复前先校验连续前缀，校验失败就取消 Range 并从头请求。',
+      'XHR 只在验证 206 偏移、总长、ETag、MIME 后拼接；Range 不兼容时最多追加一次完整 GET。',
+    ],
+    legacy: (to) => to === CORE_FETCH_TO ? CORE_FETCH_TO_PREVIOUS : to === CORE_READER_INIT_TO ? [CORE_READER_INIT_TO_PREVIOUS, CORE_READER_INIT_TO_V1, CORE_READER_INIT_TO_V0, CORE_READER_INIT_TO_EARLIER] : to === BODY_READ_RESUME_TO ? BODY_READ_RESUME_TO_PREVIOUS : undefined,
+  },
+
+  {
     name: '游戏文件写 MEMFS 不复制',
     patches: [[GAME_WRITE_FROM, GAME_WRITE_TO]],
     hint: [
@@ -648,18 +802,35 @@ const GROUPS = [
 
 // 被后面各节在原地改写过的补丁：值是所有更新的写法
 const SUPERSEDED = new Map([
-  [BODY_READ_TO, [BODY_READ_DIAGNOSTICS_TO, BODY_READ_FALLBACK_FROM, BODY_READ_FALLBACK_TO, BODY_READ_FALLBACK_BROKEN]],
-  [BODY_READ_DIAGNOSTICS_TO, [BODY_READ_FALLBACK_FROM, BODY_READ_FALLBACK_TO, BODY_READ_FALLBACK_BROKEN]],
-  [BODY_READ_FALLBACK_FROM, [BODY_READ_FALLBACK_TO]],
+  [BODY_READ_TO, [BODY_READ_DIAGNOSTICS_TO, BODY_READ_FALLBACK_FROM, BODY_READ_FALLBACK_PREVIOUS, BODY_READ_FALLBACK_TO, BODY_READ_RESUME_TO, BODY_READ_RESUME_TO_PREVIOUS, BODY_READ_FALLBACK_BROKEN]],
+  [BODY_READ_DIAGNOSTICS_TO, [BODY_READ_FALLBACK_FROM, BODY_READ_FALLBACK_PREVIOUS, BODY_READ_FALLBACK_TO, BODY_READ_RESUME_TO, BODY_READ_RESUME_TO_PREVIOUS, BODY_READ_FALLBACK_BROKEN]],
+  [BODY_READ_FALLBACK_FROM, [BODY_READ_FALLBACK_PREVIOUS, BODY_READ_FALLBACK_TO, BODY_READ_RESUME_TO, BODY_READ_RESUME_TO_PREVIOUS]],
+  [BODY_READ_FALLBACK_TO, [BODY_READ_RESUME_TO, BODY_READ_RESUME_TO_PREVIOUS]],
   [CACHE_GET_TO, [CACHE_GET_DEAD_TO, CACHE_GET_CLEAR_TO]],
-  [CACHE_PUT_TO, [CACHE_PUT_DEAD_TO, CACHE_PUT_CLEAR_TO]],
+  [CACHE_PUT_TO, [CACHE_PUT_DEAD_TO, CACHE_PUT_CLEAR_TO, CACHE_PUT_CLEAR_TO_LEGACY, CACHE_PUT_CLEAR_TO_COMPLETED]],
   [CACHE_GET_DEAD_TO, [CACHE_GET_CLEAR_TO]],
-  [CACHE_PUT_DEAD_TO, [CACHE_PUT_CLEAR_TO]],
+  [CACHE_PUT_DEAD_TO, [CACHE_PUT_CLEAR_TO, CACHE_PUT_CLEAR_TO_LEGACY, CACHE_PUT_CLEAR_TO_COMPLETED]],
+  [CACHE_PUT_CLEAR_TO, [CACHE_PUT_CLEAR_TO_COMPLETED]],
 ])
 
 let src = readFileSync(file, 'utf8')
 let changed = false
 const report = []
+
+// 助手独立成源码文件。每次 ejspatch 都同步内嵌副本，避免后续安全修复只改到一份。
+const embeddedHelperStart = src.indexOf(CORE_RESUME_HELPER_START)
+if (embeddedHelperStart >= 0) {
+  const embeddedHelperEnd = src.indexOf(CORE_RESUME_INSERT_FROM, embeddedHelperStart)
+  if (embeddedHelperEnd < 0) {
+    console.error('✖ 找到核心续传助手起始标记，但找不到 Downloader 类；没有写盘。')
+    process.exit(1)
+  }
+  const embeddedHelper = src.slice(embeddedHelperStart, embeddedHelperEnd).trimEnd()
+  if (embeddedHelper !== CORE_RESUME_HELPER) {
+    src = src.slice(0, embeddedHelperStart) + CORE_RESUME_HELPER + '\n' + src.slice(embeddedHelperEnd)
+    changed = true
+  }
+}
 
 for (const group of GROUPS) {
   let applied = 0

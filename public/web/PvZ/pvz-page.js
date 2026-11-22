@@ -32,6 +32,8 @@ let autoSaveCheckQueued = false;
 let autoSaveRequestId = 0;
 let lastAutoSaveFingerprint = "";
 let lastBuiltSaveFingerprint = "";
+/** 主站给的账号摘要标签；「上次同步的指纹」按它分账号记，换账号不会拿 A 的基线去比 B 的云档。 */
+let autoSaveAccount = "";
 const pendingAutoSaveRequests = new Map();
 
 const MB = 1024 * 1024;
@@ -42,6 +44,7 @@ const EXIT_SAVE_TIMEOUT_MS = 22000;
 const AUTO_SAVE_DEBOUNCE_MS = 1400;
 const AUTO_SAVE_BRIDGE_TIMEOUT_MS = 20000;
 const AUTO_CLOUD_PAUSE_KEY = "8bitgo.pvz.cloudSavePaused.v1";
+const AUTO_CLOUD_SYNCED_KEY_PREFIX = "8bitgo.pvz.cloudSynced.v1:";
 const RESOURCE_IMPORT_LIMITS = { maxArchive: 256 * MB, maxExpanded: 384 * MB, maxFile: 160 * MB, maxFiles: 10000 };
 const SAVE_IMPORT_LIMITS = { maxArchive: 64 * MB, maxExpanded: 128 * MB, maxFile: 32 * MB, maxFiles: 4096 };
 const SAVE_BRIDGE_SOURCE = "8bitgo-save-bridge";
@@ -754,12 +757,15 @@ async function exportSaves() {
   }
 }
 
-async function applySaveArchive(input) {
-  await ensureSaveFsReady();
+/**
+ * 解开存档 ZIP，得到和 captureSaveEntries 同一形状的条目（userdata/… 路径、按路径排序）。
+ * 应用存档和开局比较云端指纹共用它，两边算出来的指纹才对得上。
+ */
+async function readSaveArchiveEntries(input) {
   if (byteLengthOf(input) > SAVE_IMPORT_LIMITS.maxArchive) throw new Error("存档 ZIP 超过 64 MB");
   const zip = await JSZip.loadAsync(input);
   const entries = inspectZip(zip, SAVE_IMPORT_LIMITS, normalizeSaveImportPath, "存档 ZIP");
-  const pending = [];
+  const out = [];
   let actualTotal = 0;
   for (const item of entries) {
     const bytes = await item.entry.async("uint8array");
@@ -767,8 +773,15 @@ async function applySaveArchive(input) {
     if (bytes.byteLength > SAVE_IMPORT_LIMITS.maxFile || actualTotal > SAVE_IMPORT_LIMITS.maxExpanded) {
       throw new Error("存档 ZIP 解压后超过安全上限");
     }
-    pending.push({ path: "/saves/userdata/" + item.path, bytes });
+    out.push({ path: "userdata/" + item.path, bytes });
   }
+  out.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  return out;
+}
+
+async function applySaveArchive(input) {
+  await ensureSaveFsReady();
+  const pending = (await readSaveArchiveEntries(input)).map((entry) => ({ path: "/saves/" + entry.path, bytes: entry.bytes }));
   if (!pending.length) throw new Error("存档 ZIP 没有可读取的 userdata 文件");
 
   // 先在内存留一份旧档：写入或持久化失败时回滚，不能让“读取失败”反而毁掉现有进度。
@@ -839,6 +852,8 @@ async function checkPvzAutoSaveNow(force) {
       const status = response && response.status;
       if (status === "saved" || status === "queued") {
         lastAutoSaveFingerprint = fingerprint;
+        // 只有确认进了云端才算「同步过」；queued 还在主站待补传队列里，云端未必有这一份。
+        if (status === "saved") writeAutoSyncedFingerprint(fingerprint);
         return;
       }
       if (status === "conflict" || status === "blocked") {
@@ -869,6 +884,40 @@ async function checkPvzAutoSaveNow(force) {
   return autoSaveCheckInFlight;
 }
 
+function autoSyncedKey() {
+  return autoSaveAccount ? AUTO_CLOUD_SYNCED_KEY_PREFIX + autoSaveAccount : "";
+}
+
+function readAutoSyncedFingerprint() {
+  const key = autoSyncedKey();
+  if (!key) return "";
+  try { return localStorage.getItem(key) || ""; } catch { return ""; }
+}
+
+function writeAutoSyncedFingerprint(fingerprint) {
+  const key = autoSyncedKey();
+  if (!key || !fingerprint) return;
+  try { localStorage.setItem(key, fingerprint); } catch {}
+}
+
+/**
+ * 开局谁赢：不比时间戳（玩家机器时钟不可信），比「上次和云端同步时的内容指纹」，
+ * 与模拟器电池存档（src/emulator/batterySync.ts）同一套规则：
+ *   本地没变、云端变了 → 用云端；本地变了、云端没变 → 留本地并推上去；
+ *   两边都变了（含这台浏览器从没同步过、两边又都有存档）→ 冲突，留本地，不自动覆盖云端。
+ * pending：主站给的是它自己待补传的本机快照，不是别的设备的进度，本地有档时一律留本地。
+ */
+function decidePvzCloudSync(localFp, cloudFp, lastFp, pending) {
+  if (!cloudFp) return localFp ? "keep-local" : "none";
+  if (!localFp) return "use-cloud";
+  if (localFp === cloudFp) return "in-sync";
+  if (pending) return "keep-local";
+  if (lastFp && localFp === lastFp) return "use-cloud";
+  if (lastFp && cloudFp === lastFp) return "keep-local";
+  return "conflict";
+}
+window.__pvzDecideCloudSync = decidePvzCloudSync;
+
 async function initializePvzAutoSave() {
   if (!saveBridgeInstalled) return;
   try {
@@ -879,12 +928,13 @@ async function initializePvzAutoSave() {
     }
   } catch {}
   try {
-    let localSaveBytes = 0;
+    let local = null;
     try {
-      localSaveBytes = (await buildSaveArchiveSnapshot(false)).bytes.byteLength;
+      local = await buildSaveArchiveSnapshot(false);
     } catch {
       // 新游戏没有 userdata 时没有本地快照；保留 0，让站点照常检查云端。
     }
+    const localSaveBytes = local ? local.bytes.byteLength : 0;
     const response = await requestPvzAutoSaveBridge("auto-restore-request", { localSaveBytes });
     if (response && response.paused) {
       autoCloudSavePaused = true;
@@ -893,16 +943,46 @@ async function initializePvzAutoSave() {
       return;
     }
     if (!response || response.enabled !== true) return;
-    if (response.data instanceof ArrayBuffer && response.data.byteLength > 0) {
-      await applySaveArchive(new Uint8Array(response.data));
+    autoSaveAccount = typeof response.account === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(response.account)
+      ? response.account
+      : "";
+    const pending = response.pending === true;
+    const cloudBytes = response.data instanceof ArrayBuffer && response.data.byteLength > 0
+      ? new Uint8Array(response.data)
+      : null;
+    const cloudFp = cloudBytes ? await fingerprintSaveEntries(await readSaveArchiveEntries(cloudBytes)) : "";
+    const localFp = local ? local.fingerprint : "";
+    // 拿不到账号标签时没有可信的基线，只能按「从没同步过」比较（两边都有且不同 = 冲突）。
+    const decision = decidePvzCloudSync(localFp, cloudFp, readAutoSyncedFingerprint(), pending);
+    if (decision === "conflict") {
+      // 两份都留着：本地继续玩，云端不动；本地那份交给主站记成冲突待同步档并提示玩家去存档面板处理。
+      autoCloudSavePaused = true;
+      autoCloudSaveEnabled = false;
+      console.warn("PvZ 本地与云端存档都改过，保留本地进度，暂停自动同步");
+      try {
+        const buffer = local.bytes.buffer.slice(local.bytes.byteOffset, local.bytes.byteOffset + local.bytes.byteLength);
+        await requestPvzAutoSaveBridge("auto-conflict", { data: buffer }, [buffer]);
+      } catch (error) {
+        console.warn("PvZ 无法向主站报告存档冲突：", error);
+      }
+      return;
+    }
+    if (decision === "use-cloud") {
+      await applySaveArchive(cloudBytes);
       const entries = captureSaveEntries();
       lastAutoSaveFingerprint = await fingerprintSaveEntries(entries);
       lastBuiltSaveFingerprint = lastAutoSaveFingerprint;
+      if (!pending) writeAutoSyncedFingerprint(lastAutoSaveFingerprint);
+    } else if (decision === "in-sync") {
+      lastAutoSaveFingerprint = localFp;
+      if (!pending) writeAutoSyncedFingerprint(localFp);
     } else {
-      lastAutoSaveFingerprint = "";
+      // keep-local：基线设成云端那份，随后的检查发现本地不同就推上去；none：没有任何存档。
+      lastAutoSaveFingerprint = pending ? "" : cloudFp;
     }
     autoCloudSaveEnabled = true;
     autoCloudSavePaused = false;
+    if (decision === "keep-local" && gameStarted) schedulePvzAutoSaveCheck(0);
   } catch (error) {
     // 云端读取不确定时继续用浏览器里的 IDBFS，本局暂停自动上传以免拿旧档覆盖远端。
     autoCloudSavePaused = true;
@@ -942,7 +1022,9 @@ function eightBitGoSaveHostOrigin() {
     const origin = new URL(document.referrer).origin;
     if (origin === location.origin) return origin;
     const parent = new URL(origin);
-    if (parent.protocol === "https:" && (parent.hostname === "8bitgo.com" || parent.hostname === "www.8bitgo.com")) return origin;
+    // 与主站 html5.ts 的 MANAGED_SAVE_BRIDGE_HOSTS、Gamblers Table 存档桥同一份名单：
+    // 大陆入口 cn 与电视版 tv 也嵌这页，漏了它们那边就永远没有云存档。
+    if (parent.protocol === "https:" && ["8bitgo.com", "www.8bitgo.com", "cn.8bitgo.com", "tv.8bitgo.com"].includes(parent.hostname)) return origin;
   } catch {}
   return "";
 }
@@ -976,6 +1058,7 @@ function installSaveBridge() {
       autoSaveCheckTimer = 0;
       autoCloudSaveEnabled = message.enabled === true;
       autoCloudSavePaused = message.paused === true;
+      if (typeof message.account === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(message.account)) autoSaveAccount = message.account;
       if (autoCloudSavePaused) {
         try { localStorage.setItem(AUTO_CLOUD_PAUSE_KEY, "1"); } catch {}
       } else if (message.enabled === true || message.clearPaused === true) {
@@ -986,6 +1069,15 @@ function installSaveBridge() {
         lastAutoSaveFingerprint = lastBuiltSaveFingerprint;
         if (gameStarted) schedulePvzAutoSaveCheck(0);
       }
+      return;
+    }
+    if (message.type === "auto-final-snapshot") {
+      // 主站要拆播放器：先把 IDBFS 落盘，再交出最后一份自动快照，交完（或无需交）回 auto-final-done。
+      void (async () => {
+        try { await syncSaves(); } catch {}
+        try { await checkPvzAutoSaveNow(true); } catch {}
+        postSaveBridge({ type: "auto-final-done" });
+      })();
       return;
     }
     if (!Number.isInteger(message.requestId)) return;

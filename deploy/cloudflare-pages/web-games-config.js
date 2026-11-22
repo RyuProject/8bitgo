@@ -80,7 +80,8 @@ export const WEB_GAME_PAGES = Object.freeze({
     apiOrigin: 'https://8bitgo.com',
     // 大包已经按内容哈希发布到 R2；Pages 只承载小型运行时，避免上传两份和触发单文件上限。
     excludeDirs: ['packs'],
-    html: [['index.html', '#canvas']],
+    // 页面开头就有空画布；只有启动器隐藏后才表示已进到可玩的实战画面。
+    html: [['index.html', '#overlay.hidden']],
   }),
   gtavc: Object.freeze({
     project: '8bitgo-gta-vc',

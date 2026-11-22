@@ -24,7 +24,7 @@ import { classifyUserAgent } from '../shared/user-agent.js'
 import { openSecret, sealSecret, secretHint } from '../server/src/secret-box.js'
 import { extractJsonObject, minimaxChat } from '../server/src/minimax.js'
 import { publicAiConfig, sanitizeAiSettings } from '../server/src/ai-config.js'
-import { applyBoundaryGuards, buildSystemPrompt, decideStatus, maybeTriageSignature, planApplication, resetAiHotfixStateForTest, triageGate, triageSignature } from '../server/src/ai-hotfix.js'
+import { applyBoundaryGuards, approveHotfix, buildSystemPrompt, countHotfixFailures, noteHotfixFailure, decideStatus, maybeTriageSignature, planApplication, resetAiHotfixStateForTest, triageGate, triageSignature } from '../server/src/ai-hotfix.js'
 import { normalizeDiagnostics } from '../server/src/startup-diagnostics.js'
 
 const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
@@ -108,6 +108,14 @@ const ok = (name) => {
   const tampered = resolveHotfixes([{ id: '1', scope: { games: ['kof97'] }, actions: [{ type: 'set_core', core: 'evil-core' }, { type: 'eval_js' }] }], { slug: 'kof97', platform: 'arcade' })
   assert.deepEqual(tampered.ids, [], '浏览器端再按白名单校验一次：被篡改的缓存打不开任何东西')
   assert.equal(hotfixMatches({ scope: { games: ['a'], browsers: ['Edge'] } }, { slug: 'a', browser: 'Edge 131' }), true)
+  // 被更新的修补完全覆盖掉的旧修补这一局没起作用，不上报 —— 否则会替新修补背锅被自动撤销
+  const shadowed = resolveHotfixes([
+    { id: '12', scope: { games: ['kof97'] }, actions: [{ type: 'set_core', core: 'fbneo-lowmem' }, { type: 'memory_rom' }] },
+    { id: '11', scope: { games: ['kof97'] }, actions: [{ type: 'set_core', core: 'mame2003_plus' }, { type: 'memory_rom' }] },
+    { id: '10', scope: { games: ['kof97'] }, actions: [{ type: 'set_core', core: 'mame2003_plus' }, { type: 'runtime_origin' }] },
+  ], { slug: 'kof97', platform: 'arcade' })
+  assert.deepEqual(shadowed.ids, ['12', '10'], '#11 的两个动作都被 #12 抢先，不计入；#10 还打开了 runtime_origin，计入')
+  assert.equal(shadowed.core, 'fbneo-lowmem')
   ok('浏览器按游戏 / 浏览器家族 / 系统 / 大陆限定匹配，并再校验一次动作')
 }
 
@@ -357,6 +365,69 @@ const ok = (name) => {
   assert.match(read('src/admin/AdminLayout.tsx'), /to: '\/admin\/ai'/)
   assert.match(read('src/AppRoutes.tsx'), /path="ai"/)
   ok('浏览器各处读修补开关，详情页 / 后台入口 / 八种语言提示都在')
+}
+
+/* ---------- 重新批准：applied_at 要重置，否则旧失败立刻把它撤掉 ---------- */
+{
+  const calls = []
+  const run = async (sql, params = []) => {
+    calls.push({ sql: String(sql).replace(/\s+/g, ' '), params })
+    if (/^UPDATE ai_hotfixes SET/.test(calls.at(-1).sql)) return { affectedRows: 1 }
+    return [{ id: 5, signature: 'abc', status: 'active', scope: '{"games":["kof97"]}', actions: '[]' }]
+  }
+  await approveHotfix('5', '再试一次', { query: run })
+  const upd = calls.find((c) => c.sql.startsWith('UPDATE ai_hotfixes SET')).sql
+  const reset = upd.indexOf("applied_at = CASE WHEN applied_at IS NULL OR status IN ('revoked', 'expired') THEN UTC_TIMESTAMP() ELSE applied_at END")
+  assert.ok(reset > 0, '从已撤销 / 已过期重新生效时重置 applied_at')
+  assert.ok(reset < upd.indexOf('status = ?'), 'MySQL 赋值从左到右求值：重置必须排在 status = ? 之前，否则读到的已是 active')
+  assert.doesNotMatch(upd, /COALESCE\(applied_at/, '不再沿用旧的生效时间')
+  ok('重新批准已撤销 / 已过期的修补会重置生效时间')
+}
+
+/* ---------- 自动撤销：伪造诊断包不能随手撤掉修补 ---------- */
+{
+  const item = { signature: 'sig1', scope: { games: ['kof97'], browsers: [], os: [], cnOnly: false } }
+  const row = (i, extra = {}) => ({ visit_id: `v${i}`, signature: 'sig1', slug: 'kof97', browser: 'Chrome 132', os: 'Android 12', country: i % 2 ? 'CN' : 'US', ...extra })
+  const real = countHotfixFailures(item, Array.from({ length: 5 }, (_, i) => row(i)), 5)
+  assert.equal(real.revokeSame, true, '作用范围内、多个国家的 5 个访问照常撤销')
+
+  const offScope = countHotfixFailures(item, Array.from({ length: 50 }, (_, i) => row(i, { slug: 'mario' })), 5)
+  assert.equal(offScope.total, 0, '⭐ 作用范围外的游戏带着这个 id 的失败一条都不算')
+  assert.equal(offScope.revokeAny, false)
+
+  const oneCountry = countHotfixFailures(item, Array.from({ length: 9 }, (_, i) => row(i, { country: 'DE' })), 5)
+  assert.equal(oneCountry.sameNeeded, 10, '全来自一个国家时阈值翻倍')
+  assert.equal(oneCountry.revokeSame, false)
+  assert.equal(countHotfixFailures(item, Array.from({ length: 10 }, (_, i) => row(i, { country: 'CN' })), 5).revokeSame, true, '真的单一地区故障多一倍照样能撤')
+
+  const dup = countHotfixFailures(item, Array.from({ length: 20 }, () => row(1)), 5)
+  assert.equal(dup.same, 1, '同一个 visit 重复上报只算一次')
+
+  const scoped = { signature: 'sig1', scope: { games: ['kof97'], browsers: ['Safari'], os: [], cnOnly: true } }
+  assert.equal(countHotfixFailures(scoped, Array.from({ length: 6 }, (_, i) => row(i)), 5).total, 0, '浏览器家族 / cnOnly 不匹配的不算')
+
+  const multi = { signature: 'sig1', scope: { games: ['kof97', 'mslug'], browsers: [], os: [], cnOnly: false } }
+  const oneGame = countHotfixFailures(multi, Array.from({ length: 30 }, (_, i) => row(i)), 5)
+  assert.equal(oneGame.same, 3, '多游戏作用范围：一款游戏最多贡献阈值的 60%')
+  assert.equal(oneGame.revokeSame, false)
+  const twoGames = countHotfixFailures(multi, [...Array.from({ length: 3 }, (_, i) => row(i)), ...Array.from({ length: 3 }, (_, i) => row(i + 10, { slug: 'mslug' }))], 5)
+  assert.equal(twoGames.revokeSame, true, '两款游戏都失败才撤')
+
+  // 接线：noteHotfixFailure 用 JOIN games 取 slug 并交给 countHotfixFailures
+  resetAiHotfixStateForTest()
+  const sqls = []
+  const hotfixRow = { id: 7, signature: 'sig1', status: 'active', applied_at: '2026-11-20 00:00:00', scope: '{"games":["kof97"]}', actions: '[{"type":"memory_rom"}]' }
+  const fake = async (sql) => {
+    const q = String(sql).replace(/\s+/g, ' ')
+    sqls.push(q)
+    if (q.startsWith('SELECT * FROM ai_hotfixes')) return [hotfixRow]
+    if (q.includes('FROM game_startup_diagnostics d')) return Array.from({ length: 40 }, (_, i) => row(i, { slug: 'mario' }))
+    return { affectedRows: 1 }
+  }
+  const revoked = await noteHotfixFailure(['7'], { query: fake, config: { revokeAfterVisits: 5 } })
+  assert.deepEqual(revoked, [], '⭐ 40 份伪造的、别的游戏的诊断包撤不掉 kof97 的修补')
+  assert.ok(sqls.some((q) => /JOIN games g ON g\.id = d\.game_id/.test(q)), '按服务端落库的游戏核对作用范围')
+  ok('自动撤销只数作用范围内的失败，按游戏封顶、单一国家来源加倍')
 }
 
 console.log(`\nAI 临时修补回归通过（${passed} 项）`)

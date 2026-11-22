@@ -19,7 +19,7 @@ const emulatorToolsPath = resolve(repo, 'src/emulator/EmulatorTools.tsx')
 const snippet = readFileSync(resolve(repo, 'scripts/pvz-web/autoplay-snippet.html'), 'utf8')
 const START = '<!-- PvZ_AUTOPLAY_START -->'
 const END = '<!-- PvZ_AUTOPLAY_INJECTED -->'
-const SHELL_VERSION = '20261120-cloud-autosave1'
+const SHELL_VERSION = '20261121-cloud-sync-compare1'
 const WASM_SHA256 = '851072d991cc7f5770244b9be7204ed03ff5ee769101446987bbd3e1329ec3a6'
 
 const errors = []
@@ -132,6 +132,31 @@ if (existsSync(resolve(root, 'pvz-page.js'))) {
     ok(runtime.includes(marker), `pvz-page.js 缺少关键保护：${marker}`)
   }
   ok(runtime.includes('hasProperties || allowBuiltInProperties'), '自动清单缺 properties/ 时仍会被旧启动校验拦截')
+  // 开局云存档比较：按「上次同步的指纹」决定用云端 / 留本地 / 冲突，绝不无条件拿云端盖掉本地进度。
+  const decideSource = runtime.match(/function decidePvzCloudSync\([^)]*\) \{[\s\S]*?\n\}/)?.[0]
+  ok(Boolean(decideSource), 'pvz-page.js 缺少开局云存档比较 decidePvzCloudSync')
+  if (decideSource) {
+    const decide = new Function(`${decideSource}; return decidePvzCloudSync`)()
+    const cases = [
+      [['', '', '', false], 'none'],
+      [['L', '', '', false], 'keep-local'],
+      [['', 'C', '', false], 'use-cloud'],
+      [['X', 'X', '', false], 'in-sync'],
+      [['L0', 'C1', 'L0', false], 'use-cloud'],
+      [['L1', 'C0', 'C0', false], 'keep-local'],
+      [['L1', 'C1', 'B0', false], 'conflict'],
+      [['L1', 'C1', '', false], 'conflict'],
+      [['L1', 'P0', '', true], 'keep-local'],
+    ]
+    for (const [args, expected] of cases) {
+      ok(decide(...args) === expected, `decidePvzCloudSync(${args.join(', ')}) 应为 ${expected}`)
+    }
+  }
+  for (const marker of ['auto-final-snapshot', 'auto-final-done', 'auto-conflict', 'AUTO_CLOUD_SYNCED_KEY_PREFIX', 'if (status === "saved") writeAutoSyncedFingerprint', '"cn.8bitgo.com", "tv.8bitgo.com"']) {
+    ok(runtime.includes(marker), `pvz-page.js 缺少云存档比较 / 收尾保护：${marker}`)
+  }
+  ok(!/response\.data instanceof ArrayBuffer && response\.data\.byteLength > 0\) \{\s*await applySaveArchive/.test(runtime),
+    'pvz-page.js 又在开局无条件应用云端存档')
   ok(!runtime.includes('__pvzGuardedReload() || window.location.reload()'), '退出刷新守卫被兜底 reload 绕过')
 }
 

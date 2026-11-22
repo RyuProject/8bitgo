@@ -94,8 +94,8 @@ export function coreOptionsFor(platform: string): Array<{ id: string; label: str
 }
 
 /**
- * 自构建核心：引擎别名表里没有、由 scripts/build-*.mjs 现编并丢进
- * public/emulatorjs/cores/ 的核心（mame-current 给 IGS027A 这类新驱动用，fbneo-lowmem 用于验证较小初始堆）。
+ * 自构建或需要单独维护产物的核心：由 scripts/build-*.mjs 现编并放进
+ * public/emulatorjs/cores/；FCEUmm 也在这里，因为站内版本额外导出 NES 主 RAM 读取接口。
  * test:ejs-cores 对它们跳过「引擎内建别名表」校验，改查实际产物。
  * 只要已经出现在后台下拉里就是对玩家的可用承诺：产物缺失必须阻断构建，
  * 不能只打一条线上根本没人看的警告后继续发布。
@@ -106,7 +106,7 @@ export const MELONDSDS_VERSION = '1.4.0'
   pcsx_rearmed-lowmem 不进后台下拉（它是 PS1 内存不足时的自动退路，见 src/emulator/psxLowmem.ts），
   但必须列在这里：npm run ejscores 会清空 cores/ 再复制，不在名单里的派生核心会被悄悄删掉。
 */
-export const SELF_BUILT_CORES = new Set<string>(['mame-current', 'melondsds', 'mednafen_psx', 'fbneo-lowmem', 'pcsx_rearmed-lowmem'])
+export const SELF_BUILT_CORES = new Set<string>(['mame-current', 'melondsds', 'mednafen_psx', 'fbneo-lowmem', 'fbneo-wofcn', 'pcsx_rearmed-lowmem', 'fceumm'])
 
 /** 后台已承诺这些核心可用，缺任意一份产物都会让相应游戏无法启动。 */
-export const REQUIRED_SELF_BUILT_CORES = new Set<string>(['mame-current', 'melondsds', 'mednafen_psx', 'fbneo-lowmem', 'pcsx_rearmed-lowmem'])
+export const REQUIRED_SELF_BUILT_CORES = new Set<string>(['mame-current', 'melondsds', 'mednafen_psx', 'fbneo-lowmem', 'fbneo-wofcn', 'pcsx_rearmed-lowmem', 'fceumm'])

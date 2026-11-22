@@ -18179,7 +18179,7 @@ function validatePackCatalog(catalog) {
 
 // public/web/cs16/cs16.js
 var BASE = "/rodir/";
-var ASSET_VERSION = "20261116-dlhost";
+var ASSET_VERSION = "20261122-autolive";
 var expectedProgressBytes = 128 * 1024 * 1024;
 var AUXILIARY_PROGRESS_BYTES = 16 * 1024 * 1024;
 var Q = new URLSearchParams(location.search);
@@ -18300,6 +18300,7 @@ window.__probe = {
 window.__probe.keys = [];
 var started = false;
 var firstFrameReady = false;
+var playableReported = false;
 var failureReported = false;
 var pageUnloading = false;
 var engineFatalError = null;
@@ -19516,7 +19517,10 @@ async function start2({ server = null, room = null } = {}) {
     clearTimeout(restoreTimer);
     webglContextLost = false;
     log("WebGL context restored");
-    if (firstFrameReady && !failureReported && overlay) overlay.classList.add("hidden");
+    if (firstFrameReady && !failureReported && overlay) {
+      overlay.classList.add("hidden");
+      reportCs16Playable();
+    }
   });
   const args2 = [
     "-windowed",
@@ -19650,6 +19654,22 @@ async function start2({ server = null, room = null } = {}) {
   firstFrameReady = true;
   mark("Game ready", server?.name || room?.code);
   if (overlay && !webglContextLost && !failureReported) overlay.classList.add("hidden");
+  reportCs16Playable();
+}
+function reportCs16Playable() {
+  if (playableReported || !firstFrameReady || failureReported || !$("overlay")?.classList.contains("hidden")) return;
+  playableReported = true;
+  const gameSdk = window.EightBitGoGameSDK;
+  try {
+    if (typeof gameSdk?.reportPlayable === "function") gameSdk.reportPlayable();
+    else window.EightBitGoBridge?.reportPlayable?.();
+  } catch (error) {
+    console.warn("[8BitGo SDK] Failed to report game readiness", error);
+    try {
+      window.EightBitGoBridge?.reportPlayable?.();
+    } catch {
+    }
+  }
 }
 function showError(e) {
   if (failureReported) return;

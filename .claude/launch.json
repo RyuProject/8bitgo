@@ -52,17 +52,6 @@
       "port": 8797
     },
     {
-      "name": "psx-lowmem-probe",
-      "runtimeExecutable": "node",
-      "runtimeArgs": [
-        "/private/tmp/claude-501/-Users-zhangwenyu-Documents-GitHub-8bitgo/ada9c625-92af-4a9d-946b-89c2e51a0e94/scratchpad/tools/static-server.mjs",
-        "/Users/zhangwenyu/Documents/GitHub/8bitgo",
-        "/private/tmp/claude-501/-Users-zhangwenyu-Documents-GitHub-8bitgo/ada9c625-92af-4a9d-946b-89c2e51a0e94/scratchpad/test",
-        "8799"
-      ],
-      "port": 8799
-    },
-    {
       "name": "vite-web-prodroutes",
       "runtimeExecutable": "env",
       "runtimeArgs": [

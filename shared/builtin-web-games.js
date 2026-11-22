@@ -3,7 +3,7 @@
  *
  * 这些不是 R2 里的单文件 ROM，而是各自独立部署的一整套网站。
  * 把入口集中在 shared/，前端的 ROM 解析、隔离页登记和服务端测试才能认同一份事实；
- * 每款游戏使用各自的 Pages 自定义域名；项目自带的 pages.dev 域只作故障排查与回退。
+ * 自托管游戏使用各自的 Pages 自定义域名，少数第三方游戏可在此登记顶层外开地址。
  */
 export const BUILTIN_WEB_GAMES = Object.freeze({
   diablo: Object.freeze({
@@ -43,7 +43,7 @@ export const BUILTIN_WEB_GAMES = Object.freeze({
     title: 'Gamblers Table',
     // Godot 4 Web 导出，单线程（GODOT_THREADS_ENABLED=false），不依赖 SharedArrayBuffer，
     // 不需要 COOP/COEP 隔离壳；整目录自托管到 /web/gamblers-table/（同 diablo / minecraft / pvz2）。
-    // 注：Godot 版未实现 8BitGo 存档桥，本作暂无 JSON 云存档（仅本地进度）。
+    // Godot 的 /userfs 通过 IDBFS 快照接入 8BitGo 存档桥；自动云存档仍遵守玩家选定的本地 / 云端落点。
     isolated: false,
   }),
   'plants-vs-zombies': Object.freeze({
@@ -51,6 +51,13 @@ export const BUILTIN_WEB_GAMES = Object.freeze({
     title: 'Plants vs. Zombies',
     // PvZ Portable 是单线程 WASM；独立项目仍可在普通播放器 iframe 内运行和交换云存档。
     isolated: false,
+  }),
+  pokecatch: Object.freeze({
+    entry: 'https://pokecatch-online.netlify.app/#',
+    title: 'Pokecatch',
+    // 游戏方的 Google / Discord OAuth 不允许在 iframe 内完成；从 8BitGo 点击后直接在新标签页打开。
+    isolated: false,
+    externalLaunchUrl: 'https://pokecatch-online.netlify.app/#',
   }),
 })
 

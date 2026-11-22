@@ -52,7 +52,8 @@
 4. **待办：EdgeOne** 新增加速域名 `8bitgo.com`，配置照搬 `cn.8bitgo.com`（回源 IP、回源 Host、`X-8bitgo-Edge` 回源头、WebSocket）。
 5. **已完成：应用代码**（2026-11-22）：经 EdgeOne 回源的页面 SSR 标 `<html data-8bitgo-site="cn">`；`public/edge-route-v5.js` 见到它不再跳去 cn 子域，
    前端 `onCnSite()` 也认它，JS / CSS / API / 运行时都走同源。前提是 EdgeOne 给 8bitgo.com 回源时带同一个 `X-8bitgo-Edge` 回源头（第 4 条），
-   否则 nginx 不补 `X-8bitgo-Site`，大陆访客会被当成普通 Cloudflare 访客，还会被送去 cn 子域。
+   ⚠️ 少了这个头，源站 nginx 的来源闸门（`deploy/nginx/edge-gate.conf`）把 EdgeOne 的回源当成直连，**一律回 403，大陆整站打不开**。
+   切换前用 `curl -sI -H 'Host: 8bitgo.com' https://<EdgeOne 给的 CNAME 目标>/` 之类的方式先确认 EdgeOne 回源能拿到 200。
 6. **待办：老 `cn.8bitgo.com` 用户的本地存档迁移**，确认完再把 cn 301 到主域。
 
 ## 迁移当天的顺序
@@ -61,8 +62,18 @@
    `8bitgo.com`、`image`、`roms` 自己的证书在 8bitgo.com 区域用 TXT 验证续期，这三个名字的 `_acme-challenge` 不能放 CNAME，
    脚本对它们改用 TXT 验证；迁到新 DNS 时，再换成上面的 DCV 委派 CNAME，否则 90 天后续不了期。
 2. 在新 DNS 里建好全部记录（境外线路指向 `cname.8bitgo.top`，并带上所有 `_cf-custom-hostname` TXT 与 `_acme-challenge` CNAME），把 TTL 调低。
-3. 在注册商处改 NS。
-4. 逐个 `curl -sI https://<主机名>/ | grep -i x-8bitgo-via` 确认出现 `saas`；主机名停在 pending 的，对它发一次空 PATCH 重新验证。
+3. **改 NS 之前**，在生产机（或本机终端）开着激活脚本，让它等着接手：
+   ```bash
+   CLOUDFLARE_API_TOKEN=<令牌> node deploy/saas/activate-hostnames.mjs --notify
+   ```
+   改完 NS，Cloudflare 过一段时间才会把 8bitgo.com 区域标成 moved；在那之前旧区域照常服务。一旦变成 moved，访问就交给
+   这里的自定义主机名，而 pending 的主机名要等 Cloudflare 按退避节奏复查（7 天内 75 次、越往后间隔越长），迁移当天可能要等几个小时
+   —— 这段时间海外打不开。脚本每分钟查一次区域状态，一变 moved 立刻对每个未激活的主机名 PATCH（带原样的 ssl 对象，立即重新验证并重置退避），
+   之后每 2 分钟补一次直到全部 active，再请求每个主机名核对 `X-8bitgo-Via: saas`。
+   令牌要有：8bitgo.com 区域 Zone Read；8bitgo.top 区域 Zone Read + SSL and Certificates **Edit**。先跑一次
+   `--once` 确认令牌权限（缺权限会以退出码 2 直接说明），再跑 `--now --dry-run` 看要发的 PATCH。
+   ⚠️ 在大陆网络上跑时，最后的核对会因为走了 EdgeOne 线路而报「没有 saas」，加 `--no-probe` 或换海外机器核对。
+4. 在注册商处改 NS，盯着脚本输出；它退出 0 才算海外切换完成。脚本没开着的话，就手动在 8bitgo.top 的自定义主机名页面逐个点 Refresh。
 5. 稳定后：删掉 `worker/wrangler.toml` 里属于 8bitgo.com 区域的**全部**路由，删掉测试主机名 `saas-test.8bitgo.com`。
    要删的是六条：`zone_name = "8bitgo.com"` 的 `assets` / `image` / `download` / `rom` 四条，**加上**两条没写
    `zone_name` 的 `custom_domain = true` 路由 `roms.8bitgo.com`、`image.8bitgo.com`。后两条也挂在 8bitgo.com 区域，

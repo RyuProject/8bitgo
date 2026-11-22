@@ -80,6 +80,7 @@ import {
   type WindowsLaunchCi,
 } from '../windowsLaunch'
 import { JSDOS_ASSET_VERSION, JSDOS_PATH, jsdosBase, markJsdosEdgeFailed } from '../paths'
+import { loadJsdosScript } from '../jsdosScriptLoader'
 import { jsdosIceEndpoint, parseIpxAddress } from '../ipxAddress'
 import {
   DOS_MOUSE_SENSITIVITY_DEFAULT,
@@ -683,6 +684,7 @@ const DOS_AUTOSAVE_INTERVAL_MS = 60_000
 
 /** js-dos 是全局脚本，整页只加载一次 */
 let loading: Promise<DosFn> | null = null
+const JSDOS_ENTRY_TIMEOUT_MS = 20_000
 function loadJsDos(): Promise<DosFn> {
   if (loading) return loading
   loading = new Promise<DosFn>((resolve, reject) => {
@@ -703,22 +705,17 @@ function loadJsDos(): Promise<DosFn> {
     // 这里还没选本局的后端；JSPI 只对 DOSBox-X 生效，不能把普通 DOS 局误报成 Windows 客体。
     armJspi()
 
-    const script = document.createElement('script')
-    script.src = `${root}js-dos.js`
-    script.onload = () => (win.Dos ? resolve(win.Dos) : reject(new Error('js-dos 已加载但没有暴露 Dos()')))
-    script.onerror = () => {
+    void loadJsdosScript(document, `${root}js-dos.js`, () => win.Dos, { timeoutMs: JSDOS_ENTRY_TIMEOUT_MS }).then(resolve, (error) => {
       if (root !== JSDOS_PATH) {
-        console.warn(`[jsdos] ${root}js-dos.js 加载失败，改走同源 ${JSDOS_PATH}`)
+        console.warn(`[jsdos] ${root}js-dos.js 加载失败或超时，改走同源 ${JSDOS_PATH}：${error}`)
         markJsdosEdgeFailed()
         css.remove()
-        script.remove()
         loading = null
         loadJsDos().then(resolve, reject)
         return
       }
-      reject(new Error(`加载失败：${root}js-dos.js`))
-    }
-    document.head.appendChild(script)
+      reject(error)
+    })
   }).catch((e) => {
     loading = null // 允许下次重试
     throw e

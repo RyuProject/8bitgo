@@ -562,6 +562,11 @@ CREATE TABLE IF NOT EXISTS users (
   -- 都靠把这个数 +1 实现：带旧版本号的令牌在 requireUser 里当场作废。
   -- 详见 src/auth.js 的 signToken 注释。
   token_version INT UNSIGNED  NOT NULL DEFAULT 0,
+  -- 邮箱最近一次被证明归本人的时刻（验证码 / Google / Microsoft / Apple / 换绑验码）。
+  -- NULL = 不知道：2026-11-17 之前 /register 不验邮箱就建带密码的号，攻击者可以抢注别人的邮箱。
+  -- 这种行的主人第一次用验证码或第三方登录时，应用层清掉那份来历不明的密码并作废旧令牌（routes/auth.js）。
+  -- 老库加列时 migrate.mjs 只回填能证明验过的行（无密码 / 注册验码上线后新建的），其余留 NULL。
+  email_verified_at DATETIME  NULL DEFAULT NULL,
   created_at    TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uniq_email (email),
   KEY idx_role (role, status)
@@ -1068,4 +1073,14 @@ CREATE TABLE IF NOT EXISTS oauth_app_testers (
   added_at TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (app_id, user_id),
   CONSTRAINT fk_oat_app FOREIGN KEY (app_id) REFERENCES oauth_apps(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 开放平台云存档每日写入额度。以应用 + UTC 日期为粒度，事务行锁保证多用户并发时不超额。
+CREATE TABLE IF NOT EXISTS oauth_save_daily_usage (
+  app_id      VARCHAR(40)      NOT NULL,
+  usage_date  DATE             NOT NULL,
+  write_count INT UNSIGNED     NOT NULL DEFAULT 0,
+  updated_at  TIMESTAMP        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (app_id, usage_date),
+  CONSTRAINT fk_osdu_app FOREIGN KEY (app_id) REFERENCES oauth_apps(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

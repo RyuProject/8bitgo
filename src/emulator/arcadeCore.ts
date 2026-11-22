@@ -7,7 +7,7 @@
  * 页面会看似完成注入、核心却仍然报 Romset is unknown，排查方向完全错误。
  */
 
-const FBNEO_CORE_IDS = new Set(['fbneo', 'fbneo-lowmem'])
+const FBNEO_CORE_IDS = new Set(['fbneo', 'fbneo-lowmem', 'fbneo-wofcn'])
 
 /** 当前发布的 FBNeo 变体都包含 RomData / ZipName / DrvName 实现。 */
 export function isFbneoCore(core: string | undefined): boolean {

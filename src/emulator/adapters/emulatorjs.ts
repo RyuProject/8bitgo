@@ -51,6 +51,8 @@ import { ensureParentDir } from '../fsWrite'
 import { canonicalMameRomset } from '../mameRomset'
 import { fastForwardBoot, mameBootFastForwardFrames } from '../mameBootSkip'
 import { ejsInputDefaultOptions, nesVirtualPad, repairEjsSeats, restoredButtonIds } from '../ejsSeats'
+import { decodeNesScore, findNesScoreProfile, hashNesRomInFs, type NesScoreProfile } from '../nesScore'
+import { NES_SCORE_PROFILES } from '@/data/nesScoreProfiles'
 import { identifyKnownMameArcadeMedia, mameDiskSatisfies, readMameChdHeader, type MameArcadeDiskProfile } from '@/lib/mameArcadeMedia'
 import { identifyNamcoMameSet, type NamcoMameMatch } from '@/lib/namcoMameSets'
 import {
@@ -68,11 +70,13 @@ import { MAME_CHD_MAX_BYTES, mameChdCacheKey } from '../mameChdWarm'
 import { warmEmulatorJsStart } from '../ejsStartWarm'
 import { writeFsInjections, type FsInjection } from '../fsInjection'
 import { arcadeCoreForRomData, isFbneoCore, supportsFbneoRomData } from '../arcadeCore'
+import { fbneoWofcnSaveSlug, FBNEO_WOFCN_CORE } from '../wofcnCore'
 import { MAME_AUDIO_LATENCY_MS, RETROARCH_CFG_PATH, raiseAudioLatency } from '../mameAudio'
 import { ndsAudioLatencyMs } from '../ndsAudio'
 import { disposeNdsWfcRuntime, installNdsWfcRuntime, isWorldAtWarNdsRomHeader, loadNdsWfcSettings, ndsWfcMacAddress, prepareNdsWfcSession, saveNdsWfcSettings } from '../ndsWfc'
 import { FBNEO_LOWMEM_CORE } from '../fbneoLowmem'
 import { PSX_LOWMEM_CORE } from '../psxLowmem'
+import { createSystemRamReader, type SystemRamReader } from '../libretroMemory'
 import { canAllocateWasmMemory, preflightPagesFor, WASM_PAGE_BYTES } from '../ejsCoreMemory'
 import {
   NDS_PERFORMANCE_SAMPLE_MS,
@@ -82,7 +86,7 @@ import {
 import { guardFrameGamepads, readGamepadsSafe } from '../gamepadAccess'
 import { isTyping } from '../hotkeyBridge'
 import { installMahjongKeyboard, startMahjongGamepad, type MahjongGamepad, type MahjongKeyboard, type MahjongTileKey } from '../mahjongPanel'
-import { isMahjongPanelRomset } from '../../../shared/mahjong-panel-sets.js'
+import { isMahjongPanelDipRomset, isMahjongPanelRomset, mahjongPanelDipDefault } from '../../../shared/mahjong-panel-sets.js'
 import { isLowMemoryAbort, isLowmemOomMessage, lowmemOomMessage, probeWasmMemoryCeilingMB, vendorBrowserName } from '../memoryRecovery'
 import { isNdsBareAbort, isNdsWasmCrash, isWasmRuntimeCrash } from '../ndsCrash'
 import {
@@ -167,7 +171,7 @@ import {
   街机 DIP 开关（后台「DIP 开关」那一栏）。
   决策全在 dipPlan.ts 那个纯函数里，这里只负责读核心选项、写值、回读核对。
 */
-import { findDipOptions, planDipChanges, type DipPlan } from '../dipPlan'
+import { dipNameOf, findDipOptions, isMahjongControlsSelected, planDipChanges, type DipPlan } from '../dipPlan'
 import { diagLog, watchFramePerformance } from '@/services/startupDiagnostics'
 import { browserBitness, probeBrowserBitness } from '../browserBitness'
 import { createBatterySync, type BatteryFs, type BatterySync } from '../batterySync'
@@ -708,6 +712,10 @@ interface EjsNetplay {
 }
 interface EjsGameManager {
   getState: () => Uint8Array
+  /** FCEUmm 的 Libretro system RAM 快照读取；每次返回复制后的字节，不暴露 WASM 堆视图。 */
+  readSystemRam?: SystemRamReader
+  /** 当前 ROM 的系统 RAM 上分数配置命中后提供的只读解码入口。 */
+  readNesScore?: () => string | null
   /** EmulatorJS 的光盘控制封装；M3U 多盘游戏可在运行中切换当前盘。 */
   getDiskCount?: () => number
   getCurrentDisk?: () => number
@@ -741,6 +749,12 @@ interface EjsGameManager {
    * 比 startGame 前置钩子更晚；NDS 安全选项必须包住它才能避免被最终写入覆盖。
    */
   Module?: {
+    HEAPU8?: Uint8Array
+    cwrap?: (
+      name: string,
+      returnType: string,
+      argumentTypes: string[],
+    ) => (...args: number[]) => number
     callbacks?: {
       setupCoreSettingFile?: (path: string) => void
     }
@@ -1473,7 +1487,7 @@ function installBlobFetchShortcut(win: Window, url: string, blob: Blob, onBlobRe
 function installErrorTap(
   win: Window & Record<string, unknown>,
   onFatal: (line: string) => void,
-  onCoreCrash?: (line: string) => void,
+  onCoreCrash?: (line: string, details?: string) => void,
   onStartupActivity?: () => void,
 ): { lines: string[] } {
   const lines: string[] = []
@@ -1491,7 +1505,12 @@ function installErrorTap(
     const trap = level === 'error'
       ? isWasmRuntimeCrash(text, error)
       : level === 'warn' && error !== undefined && isWasmRuntimeCrash('', error)
-    if (trap && onCoreCrash) onCoreCrash(error !== undefined ? safeStr(error) : text.trim() || 'RuntimeError: unreachable')
+    if (trap && onCoreCrash) {
+      const details = error && typeof error === 'object' && typeof (error as { stack?: unknown }).stack === 'string'
+        ? (error as { stack: string }).stack.slice(0, 1600)
+        : undefined
+      onCoreCrash(error !== undefined ? safeStr(error) : text.trim() || 'RuntimeError: unreachable', details)
+    }
     /*
       内存不足也按致命处理：2026-11-12 2GB 安卓平板《太鼓达人 2》（mame-current，172MB ROM + CHD），
       解 35MB 核心的 7z Worker 报「DataCloneError … out of memory」后引擎永远停在「下载游戏核心」，
@@ -3225,6 +3244,21 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     options.onError?.(message, scope)
   }
   /**
+   * PS1 Range 读盘的致命错误可能在开局前、也可能在游戏中途到来（同步 XHR 缺片读不出）。
+   * 开局前走 failLoad（同一道闩，线路与 ROM 内容无关所以 keepEdge）；开局后仍要拆这局（读不到盘没法继续），
+   * 但同样只报一次 —— 多张盘 / 多个缺片会各报一遍，以前每一遍都直接 onError，播放器对同一根因重试好几轮。
+   */
+  const reportStreamFatal = (message: string) => {
+    if (destroyed) return
+    if (!started) {
+      failLoad(message, 'runtime', { keepEdge: true })
+      return
+    }
+    if (loadFailed || crashReported) return
+    loadFailed = true
+    options.onError?.(message, 'runtime')
+  }
+  /**
    * 同一句话可能被核心打好几遍，只报第一次，免得把界面刷成一片红。
    *
    * ⚠️ 只在**开局前**往上报。播放器收到 onError 会把这局拆掉（进度全丢），而 FATAL_PHRASES
@@ -3337,8 +3371,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
     failLoad(fmt(rt.ejsEngineError, { msg: line }), engineErrorScope(line))
   }
-  const reportCoreCrash = (line: string) => {
+  const reportCoreCrash = (line: string, details?: string) => {
     if (destroyed || crashReported || loadFailed) return
+    // 把 wasm 调用栈保留在脱敏诊断包里；mGBA 裸 Aborted() 本身不带原因，只有栈能区分 ROM 回调与核心路径。
+    if (details) logEngine(`[core-crash-stack] ${details}`)
     // 裸 Aborted() 可能是当前浏览器进程的内存压力，设备标称内存与位数不足以判断；在崩溃当刻探测可分配的 WASM 地址空间。
     if (!started) {
       const deviceMemory = (navigator as Navigator & { deviceMemory?: number }).deviceMemory
@@ -3360,7 +3396,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     stopStartWatch()
     logEngine(`[core-crash] ${core}: ${line}`)
     // 强制刷新后仍然发生同一陷阱：本轮下载的密文不留在 ROM 缓存，下一次访问会再向源站取一份。
-    if (options.platform === 'gba' && options.forceRomRefresh &&
+    // 刷新那一局之后的重开（romRefreshed）用的还是那份刷新过的 ROM，复现陷阱同样要清。
+    if (options.platform === 'gba' && (options.forceRomRefresh || options.romRefreshed) &&
       /table index is out of bounds/i.test(line) && isRomPackUrl(remoteGameUrl)) {
       const cacheKey = romCacheKey(remoteGameUrl)
       if (cacheKey) void discardStoredRom(cacheKey)
@@ -3421,6 +3458,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const remoteGameUrl = isFile ? '' : (options.game as string)
   let gameUrl = isFile ? URL.createObjectURL(options.game as File) : remoteGameUrl
   let engineGameName = isFile ? (options.game as File).name : options.gameName
+  let matchedNesScoreProfile: NesScoreProfile | null = null
   /** 8BG 改名前引擎会用的名字；开局前把这个名字下的电池存档迁到新名字（见 guardSaveFs） */
   let legacyBatteryName: string | undefined
   /**
@@ -3541,7 +3579,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           cfg.onConnectionFailed?.(message)
           return
         }
-        options.onError?.(message, scope)
+        // 走 failLoad 的闩：握手超时后引擎的致命行 / 看门狗不会再报第二次。联机失败与引擎线路无关，keepEdge
+        failLoad(message, scope, { keepEdge: true })
         return
       }
       console.warn('[netplay]', message)
@@ -4112,6 +4151,18 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const currentDipValue = (emu: EjsEmulator, key: string): string =>
     findDipOptions(readCoreOptions(emu)).find((o) => o.key === key)?.current ?? ''
 
+  /** 可切麻将 / 摇杆的 MAME 共用一个 ROM；桥必须跟玩家实际保存的 Controls 档位一致。 */
+  const mameSetUsesMahjongPanel = (emu: EjsEmulator): boolean => {
+    const fallbackMahjong = mahjongPanelDipDefault(mameBootRomset) === 'Mahjong'
+    try {
+      const option = findDipOptions(readCoreOptions(emu)).find((o) => dipNameOf(o.key).toLowerCase() === 'controls')
+      return isMahjongControlsSelected(option, option ? emu.settings?.[option.key] : undefined, fallbackMahjong)
+    } catch (error) {
+      console.warn('[emulatorjs] 读取麻将机 Controls DIP 失败，沿用已核实的 MAME 出厂档：', error)
+      return fallbackMahjong
+    }
+  }
+
   /** 从核心实际公开的选项表里找 DeSmuME 帧跳；绝不根据 UI 名称或引擎设置猜 key。 */
   const ndsFrameskipOption = (emu: EjsEmulator): CoreOption | null => {
     const raw = readCoreOptions(emu)
@@ -4248,7 +4299,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    *
    * 五条约束，缺一条都会出别的毛病：
    *
-   * 1. **只在后台真填了东西时动**。留空 = 不干预，一个字节都不该写。
+   * 1. **通常只在后台真填了东西时动**。留空 = 不干预；名单里的可切换麻将机默认 Controls=Mahjong。
    * 2. **认不出来就什么都不做**。planDipChanges 找不到那一项 / 那一档时给空 changes
    *    加一句把人话和候选都列出来的 warning —— 保持核心自己的默认，
    *    绝不拿猜的字符串去写（写错的取值是**静默失效**的）。
@@ -4273,7 +4324,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    * 这份账里塞噪声。
    */
   const applyArcadeDipDefault = (emu: EjsEmulator) => {
-    const raw = options.arcadeDip?.trim()
+    // 麻将面板名单中的可切换机台，本站新玩家默认用 Mahjong；显式保存过的玩家选项仍由下面的保护优先。
+    const raw = options.arcadeDip?.trim() || (isMahjongPanelDipRomset(mameBootRomset) ? 'Controls=Mahjong' : '')
     if (!raw) return
     /** 到循环结束时，是不是真有至少一处改成了（决定要不要重启） */
     let changed = false
@@ -4299,8 +4351,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         continue
       }
       let effective = ''
+      let alreadySet = false
       try {
-        if (sameValue(currentDipValue(emu, change.key), change.value)) {
+        alreadySet = sameValue(currentDipValue(emu, change.key), change.value)
+        if (alreadySet) {
           effective = change.value
         } else {
           emu.changeSettingOption?.(change.key, change.value, true)
@@ -4315,7 +4369,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         continue
       }
       if (sameValue(effective, change.value)) {
-        changed = true
+        if (!alreadySet) changed = true
         console.info(`[arcade] DIP → ${change.why}`)
       } else if (!effective) {
         // 老格式的核心选项（v1）里没有「当前值」这一栏，回读天然是空的 —— 这不是失败
@@ -4680,6 +4734,26 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (started || destroyed) return
     started = true
     stopStartWatch()
+    // 只给 NES/FCEUmm 接入原始系统 RAM；分数地址与格式仍由游戏各自决定。
+    if (options.platform === 'nes' && core === 'fceumm') {
+      const manager = (win.EJS_emulator as EjsEmulator | undefined)?.gameManager
+      if (manager?.Module) manager.readSystemRam = createSystemRamReader(manager.Module)
+      // 只有已维护该游戏分数布局时才额外读 MEMFS 并计算指纹；未配置游戏不增加启动开销。
+      const scoreFs = manager && manager.FS && typeof manager.FS.readFile === 'function'
+        ? { readFile: manager.FS.readFile.bind(manager.FS) }
+        : null
+      if (manager && scoreFs && options.catalogSlug && manager.fileName &&
+          NES_SCORE_PROFILES.some((profile) => profile.gameSlug === options.catalogSlug)) {
+        const subtle = (win as unknown as Window).crypto?.subtle
+        void hashNesRomInFs(scoreFs, manager.fileName, subtle).then((sha256) => {
+          if (destroyed || emuOf()?.gameManager !== manager || !sha256) return
+          matchedNesScoreProfile = findNesScoreProfile(NES_SCORE_PROFILES, options.catalogSlug!, sha256)
+          if (matchedNesScoreProfile) {
+            manager.readNesScore = () => decodeNesScore(manager.readSystemRam?.() ?? null, matchedNesScoreProfile!)
+          }
+        })
+      }
+    }
     // 默认配置会在引擎建菜单时应用一次；这里在核心与 shader 文件系统都就绪后再核对一次，
     // 同时压过历史版本可能留下的 EmulatorJS 通用 shader 设置。
     if (options.platform === 'gba') applyGbaVideoMode(win.EJS_emulator as EjsEmulator | undefined, gbaVideoMode)
@@ -4689,20 +4763,19 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     stopNdsPerformanceWatch = watchNdsPerformance(win)
     refineCaps()
     if (crashReported) return
+    /*
+      DIP 在核心载入 ROM 后才可读。先应用站点默认并核对玩家保存的档位，再决定触屏布局：
+      可切换麻将机默认麻将面板，但玩家若选了 Joystick，就必须保留通用方向键 / 虚拟手柄。
+    */
+    const emuForDip = emuOf()
+    if (options.platform === 'arcade' && (options.arcadeDip?.trim() || isMahjongPanelDipRomset(mameBootRomset)) && emuForDip) {
+      applyArcadeDipDefault(emuForDip)
+    }
+    if (isMahjongPanelDipRomset(mameBootRomset) && emuForDip) mahjongPanel = mameSetUsesMahjongPanel(emuForDip)
     applyTouchInput(win)
     const emuForKeys = emuOf()
     if (emuForKeys) hookControlPersistence(emuForKeys)
     if (mahjongPanel) installMahjongInput(win)
-    /*
-      街机 DIP 开关（后台那一栏 → 核心的核心选项，见 applyArcadeDipDefault）。
-
-      ⚠️ 挂在**开局之后**是硬约束，别挪到前面去：DIP 是核心在 retro_load_game 里
-      才注册成核心选项的，在那之前读选项表一个 dipswitch 键都没有，填了也白填。
-    */
-    if (options.platform === 'arcade' && options.arcadeDip?.trim()) {
-      const emuForDip = emuOf()
-      if (emuForDip) applyArcadeDipDefault(emuForDip)
-    }
     /*
       《狂热节拍》这类开机自检要跑一分多钟（S RAM / HDD 迟迟不出 OK，见 mameBootSkip.ts）：
       单人开局时快进跑过去。联机不行 —— 两边帧必须同步，房主快进会直接失步。
@@ -4998,7 +5071,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
               (message) => {
                 if (destroyed) return
                 logEngine(`[psx-range] ${message}`)
-                options.onError?.(message, 'runtime')
+                reportStreamFatal(message)
               },
             )
             options.onProgress?.({
@@ -5012,7 +5085,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             if (destroyed || prepareAbort.signal.aborted) return
             const message = `PS1 多盘组暂时无法流式读取：${error instanceof Error ? error.message : String(error)}。请检查 M3U 与同目录 CHD 是否都已发布，且对象支持 Range。`
             console.error('[emulatorjs] PS1 多盘组准备失败：', error)
-            options.onError?.(message, 'runtime')
+            failLoad(message, 'runtime', { keepEdge: true })
             return
           }
         } else if (PSX_RANGE_ENABLED && !isFile && canStreamPsxChd(options.platform, remoteGameUrl)) {
@@ -5025,7 +5098,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
               (message) => {
                 if (destroyed) return
                 logEngine(`[psx-range] ${message}`)
-                options.onError?.(message, 'runtime')
+                reportStreamFatal(message)
               },
             )
             options.onProgress?.({
@@ -5246,11 +5319,18 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             engineGameName = `${prepared.hack.zipName}.zip`
             // ROM 专属改版只在指纹命中本包后切核，不能把共享字段里的设置带给别的语言 ROM。
             const corrected = prepared.hack.romDataScope === 'rom'
-              ? (isFbneoCore(core) ? core : 'fbneo')
+              ? prepared.hack.zipName === 'wofcn'
+                ? FBNEO_WOFCN_CORE
+                : (isFbneoCore(core) ? core : 'fbneo')
               : arcadeCoreForRomData(core, builtInRomData)
             if (corrected !== core) {
               console.warn(`[arcade] 改版包需要 RomData，${core} 不会读取，已自动切换为 ${corrected}`)
               core = corrected
+            }
+            if (prepared.hack.zipName === 'wofcn') {
+              // 同步更新适配器内部存档键，避免父组件状态更新与核心启动之间出现一帧旧 slug。
+              if (options.gameSlug) options.gameSlug = fbneoWofcnSaveSlug(options.gameSlug)
+              options.onCoreResolved?.(core, ':fbneo-wofcn')
             }
             console.info(`[arcade] 按指纹认出改版包：${prepared.hack.title}（借 ${prepared.hack.driver} 驱动），已套用内置 RomData`)
           }
@@ -6228,6 +6308,23 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   return {
     caps,
     destroy,
+    ...(options.platform === 'nes' && core === 'fceumm'
+      ? {
+          readSystemRam(offset?: number, length?: number) {
+            return emuOf()?.gameManager?.readSystemRam?.(offset, length) ?? null
+          },
+          readNesScore() {
+            return emuOf()?.gameManager?.readNesScore?.() ?? null
+          },
+          readNesRomSha256() {
+            const manager = emuOf()?.gameManager
+            const fs = manager?.FS
+            if (!fs || typeof fs.readFile !== 'function' || !manager.fileName) return Promise.resolve(null)
+            const frameWindow = iframe.contentWindow as (Window & Record<string, unknown>) | null
+            return hashNesRomInFs({ readFile: fs.readFile.bind(fs) }, manager.fileName, frameWindow?.crypto?.subtle)
+          },
+        }
+      : {}),
     ...(options.platform === 'psx'
       ? {
           discControl: {

@@ -50,6 +50,15 @@ async function hasTable(table) {
   )
   return Number(r?.n ?? 0) > 0
 }
+/** email_verified_at 回填的截止日（含）。格式不对就拒绝，别让一个错字把整表洗成已验证 */
+function emailVerifiedBackfillSince() {
+  const v = String(process.env.EMAIL_VERIFIED_BACKFILL_SINCE || '2026-11-19').trim()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v) || v < '2026-11-17') {
+    throw new Error(`EMAIL_VERIFIED_BACKFILL_SINCE 必须是 2026-11-17 或之后的 YYYY-MM-DD，现在是「${v}」`)
+  }
+  return v
+}
+
 async function hasColumn(table, column) {
   const r = await one(
     'SELECT COUNT(*) AS n FROM information_schema.COLUMNS WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?',
@@ -437,6 +446,52 @@ const patches = [
     needed: async () => !(await hasColumn('users', 'token_version')),
     run: () =>
       conn.query('ALTER TABLE `users` ADD COLUMN `token_version` INT UNSIGNED NOT NULL DEFAULT 0 AFTER `status`'),
+  },
+  {
+    /**
+     * 加列时老行全是 NULL（= 邮箱是否归本人未知）。紧跟着的下一条只回填「能证明验过」的行，
+     * 其余留 NULL —— 不能整表标成已验证，那会把抢注者的密码永久洗白。见 routes/auth.js 的 markEmailVerified。
+     */
+    name: 'users.email_verified_at（邮箱验证时刻；NULL 的带密码老号在主人首次验码登录时清密码）',
+    table: 'users',
+    needed: async () => !(await hasColumn('users', 'email_verified_at')),
+    run: () =>
+      conn.query('ALTER TABLE `users` ADD COLUMN `email_verified_at` DATETIME NULL DEFAULT NULL AFTER `token_version`'),
+  },
+  {
+    /**
+     * ⚠️ 不回填的话，e161dfa（2026-11-17）之后正常注册的人会**静默丢密码**：那之后 /register 必须先验注册码，
+     * 但这一列是后来才加的，他们的行也是 NULL + 有密码，下次用验证码 / 第三方登录时会被当成抢注号清掉。
+     *
+     * 只回填两类「库里就能证明」的行：
+     *   1. 没有密码（password_hash = ''）：这种行只可能由验证码 / Google / Microsoft / Apple 建出来，
+     *      而且只能靠这些方式登录 —— 建号和每次登录都证明过邮箱。不标的话，他们以后在个人中心设的密码
+     *      会在下一次验码登录时被当成来历不明的密码清掉。
+     *   2. created_at 不早于 EMAIL_VERIFIED_BACKFILL_SINCE（默认 2026-11-19）：那之后所有建号路径都验过邮箱。
+     *      默认值故意比 e161dfa 的提交日晚两天：生产首次部署它的确切时刻没有记录（§2.7.2 提到 11-18 有两次部署），
+     *      截止日早于真实部署时刻就会把部署前不验邮箱注册的号一起洗白；晚了只是让那一两天注册的人重设一次密码
+     *      （登录时会提示）。查到部署日志后可用环境变量改成部署当天的次日。
+     *   created_at 写入时是 UTC 日期串（'YYYY-MM-DD'），这里按同样的串比较。
+     *   换绑邮箱（/me/email 一直要验新邮箱的码）证明过的行没有留下记录，只能留 NULL。
+     *
+     * 判据对重跑是安全的：部署后新建的行在建号时就写了这一列，清过密码的行也写了，
+     * 满足这两个条件又仍是 NULL 的只会是部署前的老行。所以不靠「只在加列那一步跑」也能幂等。
+     */
+    name: 'users.email_verified_at 回填（无密码账号 + 注册验码上线之后建的账号）',
+    table: 'users',
+    needed: async () => {
+      if (!(await hasColumn('users', 'email_verified_at'))) return false
+      const r = await one(
+        "SELECT COUNT(*) AS n FROM users WHERE email_verified_at IS NULL AND (password_hash = '' OR created_at >= ?)",
+        [emailVerifiedBackfillSince()],
+      )
+      return Number(r?.n ?? 0) > 0
+    },
+    run: () =>
+      conn.query(
+        "UPDATE users SET email_verified_at = NOW() WHERE email_verified_at IS NULL AND (password_hash = '' OR created_at >= ?)",
+        [emailVerifiedBackfillSince()],
+      ),
   },
   {
     name: 'users.birth_date（成人内容年龄验证：出生日期记在账号上，填一次锁定）',
@@ -1054,6 +1109,22 @@ const patches = [
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`),
   },
   {
+    name: 'oauth_save_daily_usage（开放平台云存档每日写入额度）',
+    table: null,
+    skip: async () => (!(await hasTable('oauth_apps')) ? '还没有 oauth_apps 表（先启用开放平台）' : null),
+    needed: async () => !(await hasTable('oauth_save_daily_usage')),
+    run: () => conn.query(
+      'CREATE TABLE IF NOT EXISTS `oauth_save_daily_usage` (' +
+        '`app_id` VARCHAR(40) NOT NULL,' +
+        '`usage_date` DATE NOT NULL,' +
+        '`write_count` INT UNSIGNED NOT NULL DEFAULT 0,' +
+        '`updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,' +
+        'PRIMARY KEY (`app_id`, `usage_date`),' +
+        'CONSTRAINT `fk_osdu_app` FOREIGN KEY (`app_id`) REFERENCES `oauth_apps`(`id`) ON DELETE CASCADE' +
+        ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
+    ),
+  },
+  {
     name: 'volunteer_games（每位志愿者隔离的个人游戏库）',
     table: null,
     skip: async () => (!(await hasTable('users')) ? '还没有 users 表' : !(await hasTable('game_tags')) ? '不是 v2 数据库' : null),
@@ -1380,7 +1451,7 @@ const patches = [
   },
 ]
 
-const TABLES = ['games', 'posts', 'users', 'volunteer_games', 'volunteer_posts', 'favorites', 'recents', 'saves', 'flash_save_slots', 'flash_save_kv', 'flash_save_seqs', 'login_codes', 'platform_bios', 'game_plays', 'game_startup_events', 'game_startup_diagnostics', 'ai_hotfixes', 'psp_conversion_jobs', 'sockdrive_conversion_jobs', 'developers', 'friend_links', 'friend_link_hits', 'game_comments', 'game_ratings', 'oauth_apps', 'open_rom_samples']
+const TABLES = ['games', 'posts', 'users', 'volunteer_games', 'volunteer_posts', 'favorites', 'recents', 'saves', 'flash_save_slots', 'flash_save_kv', 'flash_save_seqs', 'login_codes', 'platform_bios', 'game_plays', 'game_startup_events', 'game_startup_diagnostics', 'ai_hotfixes', 'psp_conversion_jobs', 'sockdrive_conversion_jobs', 'developers', 'friend_links', 'friend_link_hits', 'game_comments', 'game_ratings', 'oauth_apps', 'open_rom_samples', 'oauth_save_daily_usage']
 
 try {
   /*

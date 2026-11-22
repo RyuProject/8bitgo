@@ -14,6 +14,7 @@ import {
 } from '@/routes/Pages'
 import { TermsPage } from '@/pages/TermsPage'
 import { PrivacyPage } from '@/pages/PrivacyPage'
+import { PokecatchSaveSyncPage } from '@/pages/PokecatchSaveSyncPage'
 
 /**
  * 前台与后台按页面加载。前台使用同一路由声明，但 Pages.tsx 在服务端同步导出页面、
@@ -59,6 +60,7 @@ export function AppRoutes() {
             客户端读 location.hostname，两边同一套规则。不一致的话页面会先渲 TV 再跳首页。
           */}
           <Route index element={onTvHost() ? <TvPage /> : <HomePage />} />
+          <Route path="/pokecatch-save-sync" element={<PokecatchSaveSyncPage />} />
           <Route path="/games" element={<GamesPage />} />
           <Route path="/games/:slug" element={<GameDetailPage />} />
           <Route path="/platforms" element={<PlatformsPage />} />

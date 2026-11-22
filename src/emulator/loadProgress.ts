@@ -312,6 +312,9 @@ export async function fetchWithProgress(
       emit({ phase, loaded, total: loaded, ratio: 1 }, true)
       return out.buffer
     } catch (error) {
+      // 失败收尾：掐掉还挂着的响应体（校验失败 / 超上限后不再读），别让它在后台继续占连接。
+      // 只中止本看门狗自己的 controller，stalled() 的判定不受影响。
+      guard.abort()
       if (guard.stalled()) error = markRomNetworkFailure(new Error(stallMessage(stallMs)))
       else if (isNetworkFetchError(error) && NETWORK_FAILURE_TEXT.test(String((error as Error).message))) markRomNetworkFailure(error)
       if (opts.signal?.aborted || error instanceof RangeError || index === candidates.length - 1) throw error

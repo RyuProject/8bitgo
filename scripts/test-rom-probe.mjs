@@ -294,6 +294,12 @@ assert.equal(isolatedEmbedFor('diablo'), undefined, 'Diablo 不需要 COOP/COEP�
   assert.match(roms, /chooseRomHost\(getRomBase\(\), getRomMirrorBase\(\), \{[\s\S]{0,120}?prefer: coverCdnHint\(\) === 'cn' \? 'mirror' : 'primary'/, '所有平台都选线路，大陆访客默认镜像')
   assert.doesNotMatch(roms, /MIRROR_RACE_ANY_SIZE_PLATFORMS/, '不再按平台 / 大小决定要不要测')
   assert.match(roms, /Promise\.race\(\[\s*choice,[\s\S]*?ROM_HOST_WAIT_MS/, '开局对测速只做有限等待，测速本身在后台跑完')
+  // 网络失败的语言锁：一次抖动 / CDN 5xx / 失速不会触发 window 'online'，被跳过的主地址必须在每轮自动重试前回到候选链，
+  // 锁住的一轮整体算「没问出来」（同语言备用源 404 也不算确定缺失），放弃时也按读不到报。
+  assert.match(roms, /finish\(uncertain \|\| Boolean\(langLock\), traces, Boolean\(langLock\)\)/, '语言锁下的一轮按 uncertain 进自动重试')
+  assert.match(roms, /autoRetries\.current \+= 1\s*\n(?:\s*\/\*[\s\S]*?\*\/\s*\n)?\s*releaseNetworkFailedKeys\(\)\s*\n\s*timer = window\.setTimeout/, '每轮自动重试前归还网络失败跳过的 key')
+  assert.match(roms, /reportProbeFailure\(game, traces, uncertain \|\| networkOnly, networkOnly\)/, '语言锁下放弃不报确定缺失')
+  assert.match(roms, /const again = \(\) => \{[\s\S]{0,200}?releaseNetworkFailedKeys\(\)[\s\S]{0,80}?networkLangLock\.current = null/, '联网事件仍解锁并归还')
   const route = readFileSync(new URL('../src/services/romRoute.ts', import.meta.url), 'utf8')
   assert.match(route, /const HOST_PROBE_TIMEOUT_MS = 8000/, '探针上限要能熬过详情页刚打开时的连接争抢')
 }

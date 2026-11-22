@@ -48,7 +48,11 @@ const { list: lst } = attachLive(server, {
   findGame: async (slug) => {
     // slow-*：模拟数据库慢查询，给「await 期间断线」那组用例留出窗口
     if (slug.startsWith('slow-')) await new Promise((r) => setTimeout(r, 200))
-    return { adult: slug === 'adult-game' || slug === 'slow-adult' ? 1 : 0 }
+    if (slug === 'missing-game') return null
+    return {
+      adult: slug === 'adult-game' || slug === 'slow-adult' || slug === 'hidden-adult' ? 1 : 0,
+      hidden: slug.startsWith('hidden-') ? 1 : 0,
+    }
   },
   // 联机房玩家令牌：令牌就是「房号:player」才算该房玩家（真实校验见 netplay.js 的 isNetplayPlayer）
   isNetplayPlayer: (roomId, token) => Boolean(roomId) && token === `${roomId}:player`,
@@ -214,6 +218,27 @@ adultReconnect.emit('stop-live')
 adultReconnect.close(); adultViewer.close()
 await new Promise((r) => setTimeout(r, 100))
 check('成人房下播后完整清除', liveRoom(adultRoomId, { includeAdult: true }) === null)
+
+/* ── 下架游戏：允许开播（管理员预览），但不进任何列表；年龄门照旧 ── */
+const missingHost = conn(); await once(missingHost, 'connect')
+const missingLive = await call(missingHost, 'go-live', { gameSlug: 'missing-game', gameName: 'X' })
+check('库里不存在的游戏仍拒绝开播', missingLive.err === 'unknown game', missingLive.err || '')
+missingHost.close()
+const hiddenHost = conn(); await once(hiddenHost, 'connect')
+const hiddenLive = await call(hiddenHost, 'go-live', { gameSlug: 'hidden-game', gameName: 'Hidden' })
+check('下架游戏允许开播（管理员预览自动开播）', !hiddenLive.err && Boolean(hiddenLive.data?.roomId), hiddenLive.err || '')
+const hiddenRoomId = hiddenLive.data?.roomId
+check('下架游戏的直播不进公开列表', !liveRooms().some((r) => r.roomId === hiddenRoomId))
+check('下架游戏的直播也不进成人可见列表', !liveRooms({ includeAdult: true }).some((r) => r.roomId === hiddenRoomId))
+check('下架游戏按 slug 查列表也查不到', !liveRooms({ gameSlug: 'hidden-game' }).some((r) => r.roomId === hiddenRoomId))
+check('下架游戏的直播凭直链仍能查到', liveRoom(hiddenRoomId)?.roomId === hiddenRoomId)
+check('unlisted 内部位不进 publicRoom', !('unlisted' in (liveRoom(hiddenRoomId) || {})))
+hiddenHost.emit('stop-live'); hiddenHost.close()
+const hiddenAdultAnon = conn(); await once(hiddenAdultAnon, 'connect')
+const hiddenAdultLive = await call(hiddenAdultAnon, 'go-live', { gameSlug: 'hidden-adult', gameName: 'HA' })
+check('下架的成人游戏仍按真实 adult 位走年龄门', hiddenAdultLive.err === 'adult login required', hiddenAdultLive.err || '')
+hiddenAdultAnon.close()
+await new Promise((r) => setTimeout(r, 100))
 
 /* ── 正式外部设备主播：专用发布凭证 + 服务端身份 ─────────────────────────── */
 const publisherTicket = (userId) => issueLivePublisherToken({

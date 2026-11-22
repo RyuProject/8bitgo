@@ -267,18 +267,22 @@ export function resolveHotfixes(list, ctx) {
   }
   for (const hotfix of Array.isArray(list) ? list : []) {
     if (!hotfixMatches(hotfix, ctx)) continue
+    /*
+      只有**真的改变了这一局行为**的修补才记进 ids。ids 会随诊断包上报，服务端据此统计
+      「带着这条修补还失败」并自动撤销：一条修补的动作全被更新的那条覆盖掉（同类取新）、
+      或开关已经被别的修补打开过，它这一局其实没起作用，不能替别人背锅被撤掉。
+    */
     let used = false
     for (const raw of Array.isArray(hotfix.actions) ? hotfix.actions : []) {
       const action = sanitizeHotfixAction(raw, [ctx.platform])
       if ('error' in action) continue
-      used = true
-      if (action.type === 'set_core' && out.core === undefined) out.core = action.core
-      else if (action.type === 'set_runtime' && out.runtime === undefined) out.runtime = action.runtime
-      else if (action.type === 'runtime_origin') out.runtimeOrigin = true
-      else if (action.type === 'rom_host' && out.romHost === undefined) out.romHost = action.host
-      else if (action.type === 'disable_engine_cache') out.disableEngineCache = true
-      else if (action.type === 'memory_rom') out.memoryRom = true
-      else if (action.type === 'player_notice' && out.notice === undefined) out.notice = action.template
+      if (action.type === 'set_core' && out.core === undefined) { out.core = action.core; used = true }
+      else if (action.type === 'set_runtime' && out.runtime === undefined) { out.runtime = action.runtime; used = true }
+      else if (action.type === 'runtime_origin' && !out.runtimeOrigin) { out.runtimeOrigin = true; used = true }
+      else if (action.type === 'rom_host' && out.romHost === undefined) { out.romHost = action.host; used = true }
+      else if (action.type === 'disable_engine_cache' && !out.disableEngineCache) { out.disableEngineCache = true; used = true }
+      else if (action.type === 'memory_rom' && !out.memoryRom) { out.memoryRom = true; used = true }
+      else if (action.type === 'player_notice' && out.notice === undefined) { out.notice = action.template; used = true }
     }
     if (used) out.ids.push(String(hotfix.id))
   }

@@ -73,6 +73,12 @@ writeFileSync(join(ejsDir, 'emulator.min.js.br'), engineBr)
 writeFileSync(join(ejsDir, 'emulator.min.js.br.json'), sidecar(engine, engineBr))
 writeFileSync(join(ejsDir, 'loader.js'), 'var x = 1\n')
 const ENGINE_V = sha(engine).slice(0, 16)
+const coreDir = join(ejsDir, 'cores')
+mkdirSync(coreDir)
+const core = Buffer.from('versioned emulator core bytes '.repeat(4096))
+writeFileSync(join(coreDir, 'fbneo-wasm.data'), core)
+const CORE_SHA = sha(core)
+const CORE_V = CORE_SHA.slice(0, 16)
 // 没有旁注：不能吐
 writeFileSync(join(ruffleDir, 'bare.wasm'), wasm)
 writeFileSync(join(ruffleDir, 'bare.wasm.br'), brotliCompressSync(wasm))
@@ -83,7 +89,7 @@ const guardLog = []
 app.use(runtimeVersionGuard(root, { log: (line) => guardLog.push(line) }))
 app.use(precompressedStatic(root, { setHeaders: staticCacheHeaders }))
 app.use(express.static(root, { index: false, redirect: false, setHeaders: staticCacheHeaders }))
-const server = app.listen(0)
+const server = app.listen(0, '127.0.0.1')
 await new Promise((r) => server.once('listening', r))
 const port = server.address().port
 
@@ -188,6 +194,21 @@ await check('⚠️ EmulatorJS 版本号与内容一致：immutable 长缓存（
   }
 })
 
+await check('⚠️ 版本核验通过的 EmulatorJS 核心提供强 ETag，Range / If-Range 返回精确字节', async () => {
+  const path = `/emulatorjs/cores/fbneo-wasm.data?v=${CORE_V}`
+  const first = await get(path, { range: 'bytes=0-127', 'accept-encoding': 'br' })
+  assert.equal(first.status, 206)
+  assert.equal(first.headers.etag, `"sha256-${CORE_SHA}"`, '强校验器必须由已核验的完整文件哈希生成')
+  assert.equal(first.headers['content-range'], `bytes 0-127/${core.length}`)
+  assert.equal(first.headers['content-encoding'], undefined, 'Range 偏移必须针对 identity 字节')
+  assert.deepEqual(first.body, core.subarray(0, 128))
+  const resumed = await get(path, { range: 'bytes=128-255', 'if-range': first.headers.etag })
+  assert.equal(resumed.status, 206, '强 ETag 匹配时服务端应接受 If-Range')
+  assert.equal(resumed.headers.etag, first.headers.etag)
+  assert.equal(resumed.headers['content-range'], `bytes 128-255/${core.length}`)
+  assert.deepEqual(resumed.body, core.subarray(128, 256))
+})
+
 await check('⚠️ EmulatorJS 版本号与内容不一致：照常给当前文件，但 no-store，边缘与浏览器都不许缓存', async () => {
   const wrong = '0123456789abcdef'
   for (const [enc, v] of [['br', `${wrong}.e1`], ['identity', `${wrong}.e1`], ['br', `${wrong}.e1&fallback=1`], ['identity', wrong]]) {
@@ -196,6 +217,7 @@ await check('⚠️ EmulatorJS 版本号与内容不一致：照常给当前文�
     assert.equal(r.headers['cache-control'], 'no-store', `${enc} ${v}`)
     assert.equal(r.headers['cdn-cache-control'], 'no-store', `${enc} ${v}`)
     assert.equal(r.headers['cloudflare-cdn-cache-control'], 'no-store', `${enc} ${v}`)
+    assert.match(r.headers.etag, /^W\//, '版本不匹配时不得发出可用于续传的强 ETag')
     const body = r.headers['content-encoding'] === 'br' ? brotliDecompressSync(r.body) : r.body
     assert.deepEqual(body, engine, '仍然返回当前文件（可用性优先）')
   }
@@ -223,7 +245,7 @@ await check('版本守卫不出根目录、只管 /emulatorjs/', async () => {
 await check('构建脚本与中间件的名单一一对应', async () => {
   const { RUNTIME_PRECOMPRESS_PATTERNS } = await import('../../scripts/precompress-runtimes.mjs')
   const served = (p) => PRECOMPRESSED_STATIC_PATTERNS.some((r) => r.test(p))
-  for (const rel of ['ruffle/v0.7.1/172de42e6619eac8f371.wasm', 'jsdos/v8.5.3-8bitgo.4/emulators/wdosbox-x.wasm',
+  for (const rel of ['ruffle/v0.7.1/172de42e6619eac8f371.wasm', 'jsdos/v8.5.3-8bitgo.9/emulators/wdosbox-x.wasm',
     'dolphin/v7e38409/cores/dolphin/dolphin-core-upstream.wasm', 'play/20261026-system2x6-v1/Play.wasm', 'play/Play.wasm',
     'ppsspp/v0dbfaca/v19/PPSSPPSDL.wasm', 'emulatorjs/emulator.min.js', 'eka2l1/v0123456789ab/eka2l1.wasm',
     'eka2l1/v0123456789ab/eka2l1.data']) {
@@ -231,7 +253,7 @@ await check('构建脚本与中间件的名单一一对应', async () => {
     assert.ok(served(`/${rel}`), `中间件漏了 ${rel}`)
   }
   assert.ok(!served('/emulatorjs/cores/fbneo-legacy-wasm.data'), '7z 核心不预压')
-  assert.ok(!served('/jsdos/v8.5.3-8bitgo.4/emulators/wdosbox-x-dbg.wasm'), '调试版不用')
+  assert.ok(!served('/jsdos/v8.5.3-8bitgo.9/emulators/wdosbox-x-dbg.wasm'), '调试版不用')
 })
 
 await check('白名单只认实体运行时目录里的 PPSSPPSDL.data', () => {

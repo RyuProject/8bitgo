@@ -25,6 +25,7 @@ import {
   HOTFIX_NOTICE_TEMPLATES,
   HOTFIX_RUNTIME_CHOICES,
   hasFunctionalAction,
+  hotfixMatches,
   hotfixRisk,
   sanitizeHotfixProposal,
   sanitizeHotfixScope,
@@ -638,10 +639,24 @@ export async function activePublicHotfixes(deps = {}) {
 
 async function transition(id, from, to, extra = {}, deps = {}) {
   const run = deps.query ?? query
-  const sets = ['status = ?']
-  const params = [to]
+  const sets = []
+  const params = []
   if (to === 'active') {
-    sets.push('applied_at = COALESCE(applied_at, UTC_TIMESTAMP())', 'expires_at = UTC_TIMESTAMP() + INTERVAL ttl_hours HOUR', 'closed_at = NULL')
+    /*
+      从「已撤销 / 已过期」重新批准时 applied_at 必须重置：noteHotfixFailure 按
+      `created_at >= applied_at` 数「带着这条修补的失败」，沿用旧的生效时间会把上一轮
+      （正是导致撤销的那些）失败原样算进来，刚批准就被自动撤销。proposed 本来就是 NULL。
+      ⚠️ 这一句必须排在 `status = ?` 前面：MySQL 单表 UPDATE 的赋值从左到右求值，
+      排在后面的话 CASE 里读到的 status 已经是新值 'active'，重置就永远不会发生。
+    */
+    sets.push("applied_at = CASE WHEN applied_at IS NULL OR status IN ('revoked', 'expired') THEN UTC_TIMESTAMP() ELSE applied_at END")
+  }
+  sets.push('status = ?')
+  params.push(to)
+  if (to === 'active') {
+    sets.push('expires_at = UTC_TIMESTAMP() + INTERVAL ttl_hours HOUR', 'closed_at = NULL')
+    // 重新生效后的第一份失败就要按新的 applied_at 重算，别被上一轮的节流挡住
+    lastRevokeCheck.delete(String(id))
   } else {
     sets.push('closed_at = UTC_TIMESTAMP()')
   }
@@ -680,8 +695,72 @@ export async function extendHotfix(id, hours, deps = {}) {
 }
 
 /**
+ * 数「带着这条修补仍然失败」的访问，决定要不要自动撤销。纯函数，方便单测。
+ *
+ * ── 为什么不能只按 hotfix_ids 数 ─────────────────────────
+ * hotfix_ids 是浏览器自己报的，诊断接口不用登录。任何人知道一个修补 id，就能伪造一批
+ * 不同 visit_id 的诊断包把它「数」到撤销线，等于远程关掉一条正在救人的修补。这里收紧三点：
+ *   1. **作用范围必须对得上**：诊断包的游戏（服务端按 slug 落的 game_id）要在 scope.games 里，
+ *      浏览器 / 系统家族（服务端从请求头归类）、cnOnly（国家来自 CF-IPCountry）也要匹配 ——
+ *      真的套用了这条修补的访问必然满足，伪造者只能在这个范围里造；
+ *   2. **多游戏作用范围按游戏封顶**：每款游戏最多贡献阈值的 60%，至少要两款游戏都失败才撤；
+ *      一款游戏的失败不该把同一条修补对其它游戏的效果一起撤掉，也让单点刷量更难；
+ *   3. **只有一个国家来源时阈值翻倍**：国家是服务端从 IP 推出来的（不是客户端字段），
+ *      全部来自同一国家的失败更像同一个来源在刷，要多一倍才撤。真的单一地区故障（比如只在
+ *      大陆）照样能撤，只是慢一点。
+ *
+ * ⚠️ 剩余风险：库里刻意不存 IP（隐私政策），我们没有「同一个人」的可靠信号。
+ * 伪造者换着 VPN 出口、按修补的作用范围构造 UA，仍然能凑够数把它撤掉。撤销本身是安全方向
+ * （回到没修补时的行为），管理员在后台能看到撤销原因并一键重新批准；真要防，得靠给诊断接口
+ * 加人机校验或签名，不是在这里多加计数规则。
+ *
+ * @param {{ signature: string, scope: object }} item shapeHotfix 的结果
+ * @param {Array<{ visit_id: string, signature: string, slug: string, browser?: string, os?: string, country?: string }>} rows
+ * @param {number} n revokeAfterVisits
+ */
+export function countHotfixFailures(item, rows, n) {
+  const totalBy = new Map()
+  const sameBy = new Map()
+  const totalSeen = new Set()
+  const sameSeen = new Set()
+  const countries = new Set()
+  for (const r of Array.isArray(rows) ? rows : []) {
+    const visit = String(r?.visit_id ?? '')
+    if (!visit) continue
+    const country = /^[A-Z]{2}$/.test(String(r.country ?? '')) ? r.country : 'XX'
+    // cn 是「从大陆入口来的」；服务端只有国家，按 CN（或未知）近似
+    const matched = hotfixMatches(item, { slug: r.slug, browser: r.browser, os: r.os, cn: country === 'CN' || country === 'XX' })
+    if (!matched) continue
+    const slug = String(r.slug)
+    if (!totalSeen.has(visit)) {
+      totalSeen.add(visit)
+      totalBy.set(slug, (totalBy.get(slug) ?? 0) + 1)
+      if (country !== 'XX') countries.add(country)
+    }
+    if (r.signature === item.signature && !sameSeen.has(visit)) {
+      sameSeen.add(visit)
+      sameBy.set(slug, (sameBy.get(slug) ?? 0) + 1)
+    }
+  }
+  const multiGame = (item.scope?.games?.length ?? 0) > 1
+  const capped = (byGame, threshold) => {
+    const cap = multiGame ? Math.max(1, Math.ceil(threshold * 0.6)) : Infinity
+    let sum = 0
+    for (const v of byGame.values()) sum += Math.min(v, cap)
+    return sum
+  }
+  const factor = countries.size > 1 ? 1 : 2
+  const same = capped(sameBy, n)
+  const total = capped(totalBy, n * 3)
+  const sameNeeded = n * factor
+  const totalNeeded = n * 3 * factor
+  return { same, total, sameNeeded, totalNeeded, countries: countries.size, revokeSame: same >= sameNeeded, revokeAny: total >= totalNeeded }
+}
+
+/**
  * 诊断包里带着修补 id 又失败了：够多就自动撤销（不 await）。
  * 两条线：同特征（没修好）≥ N 个访问；或任意失败（修出了新问题）≥ 3N 个访问。提示条不参与。
+ * 只数作用范围内的访问，并按游戏 / 国家来源加权，见 countHotfixFailures。
  */
 export async function noteHotfixFailure(ids, deps = {}) {
   const list = (Array.isArray(ids) ? ids : []).filter((id) => /^\d{1,12}$/.test(id)).slice(0, 8)
@@ -699,18 +778,18 @@ export async function noteHotfixFailure(ids, deps = {}) {
     try {
       const item = await getHotfix(id, { query: run })
       if (!item || item.status !== 'active' || !item.appliedAt || !hasFunctionalAction(item.actions)) continue
-      const [stat] = await run(
-        `SELECT COUNT(DISTINCT visit_id) AS total,
-                COUNT(DISTINCT CASE WHEN signature = ? THEN visit_id END) AS same
-           FROM game_startup_diagnostics
-          WHERE FIND_IN_SET(?, hotfix_ids) > 0 AND event IN ('failed', 'timeout') AND created_at >= ?`,
-        [item.signature, id, new Date(item.appliedAt)],
+      const rows = await run(
+        `SELECT d.visit_id, d.signature, d.country, d.browser, d.os, g.slug
+           FROM game_startup_diagnostics d
+           JOIN games g ON g.id = d.game_id
+          WHERE FIND_IN_SET(?, d.hotfix_ids) > 0 AND d.event IN ('failed', 'timeout') AND d.created_at >= ?
+          ORDER BY d.id DESC
+          LIMIT 5000`,
+        [id, new Date(item.appliedAt)],
       )
-      const same = Number(stat?.same ?? 0)
-      const total = Number(stat?.total ?? 0)
-      const n = cfg.revokeAfterVisits
-      if (same >= n || total >= n * 3) {
-        const note = same >= n
+      const { same, total, revokeSame, revokeAny } = countHotfixFailures(item, rows, cfg.revokeAfterVisits)
+      if (revokeSame || revokeAny) {
+        const note = revokeSame
           ? `自动撤销：生效后仍有 ${same} 个访问出现同一故障（修补没起作用）`
           : `自动撤销：生效后带着这条修补共 ${total} 个访问失败（可能修出了新问题）`
         await transition(id, ['active'], 'revoked', { note }, { query: run }).catch(() => {})
