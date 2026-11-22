@@ -8,7 +8,7 @@
  */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { coreDownloadFailureCause, normalizeEngineText } from '../src/emulator/ejsEngineErrors.ts'
+import { coreDownloadFailureCause, isMameArchiveWorkerAbortText, normalizeEngineText } from '../src/emulator/ejsEngineErrors.ts'
 
 const CORE = '[log] [EJS Core] Downloading core: fbneo-legacy-wasm.data'
 
@@ -66,6 +66,12 @@ for (const reason of ['AbortError: signal is aborted without reason', 'TypeError
 assert.deepEqual(coreDownloadFailureCause([]), { detail: '', bodyStalled: false, httpError: false })
 console.log('✓ 核心下载失败分清包体失速 / HTTP 错误 / 没拿到响应')
 
+// MAME 7z Worker 解包中止要在看门狗前结束；匹配足够窄，不把普通 abort 当成同一故障
+assert.equal(isMameArchiveWorkerAbortText('Uncaught exception: abort() at _extract (blob:...)'), true)
+assert.equal(isMameArchiveWorkerAbortText('Uncaught exception: abort() during startup'), false)
+assert.equal(isMameArchiveWorkerAbortText('RangeError: Out of memory at _extract'), false)
+console.log('✓ MAME 7z 解包 Worker 致命中止精确识别，且不臆断内存根因')
+
 // 本地化报错归一
 assert.equal(normalizeEngineText('启动游戏失败'), 'Failed to start game')
 assert.equal(normalizeEngineText('ゲームの開始に失敗しました'), 'Failed to start game')
@@ -86,6 +92,10 @@ assert.ok(
   adapter.indexOf("nativeBlobReadError && /error downloading core") < adapter.indexOf('const cause = coreDownloadFailureCause('),
   'NotReadableError 分支必须排在通用核心下载失败之前',
 )
+assert.match(adapter, /const mameArchiveAbort = mameCurrentCore && level === 'error' && isMameArchiveWorkerAbortText\(`\$\{text\}\\n\$\{context\}`\)[\s\S]{0,360}onFatal\(\(mameArchiveAbort \? `\$\{text\}\\n\$\{context\}` : text\)\.trim\(\)\)/,
+  '只有 MAME-current 的错误级日志才把精确匹配的解包 Worker abort 提前交给失败处理')
+assert.match(adapter, /isMameArchiveWorkerAbortText\(line\)[\s\S]{0,320}cause unconfirmed[\s\S]{0,180}failLoad\(fmt\(rt\.ejsEngineError, \{ msg \}\), 'config'\)/,
+  'MAME 解包 Worker abort 应保留未知根因并停止自动重复大核心启动')
 const player = readFileSync(new URL('../src/emulator/EmulatorPlayer.tsx', import.meta.url), 'utf8')
 assert.match(player, /reportStartupFailure\(ready \? `运行中崩溃（已出画面）：\$\{reason\}` : reason\)/)
 console.log('✓ 适配器 / 播放器接线')

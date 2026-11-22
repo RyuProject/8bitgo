@@ -57,6 +57,10 @@ const stripTypes = (code) => code
 // 坏核心缓存：下次开局前强制清
 assert.match(adapter, /error loading emulatorjs runtime\/i\.test\(line\)\) \{\s*try \{ localStorage\.removeItem\(EJS_CACHE_PURGED_KEY\)/)
 assert.match(adapter, /if \(isOutOfMemoryText\(`\$\{line\}\\n\$\{recent\}`\)\) \{[\s\S]{0,2500}failLoad\(rt\.ejsOutOfMemory, 'runtime'\)/)
+assert.match(adapter, /if \(core === 'mame-current'\) \{[\s\S]{0,700}return failLoad\(rt\.ejsOutOfMemory, 'config'\)/,
+  'MAME-current OOM must skip the same-page retry and use the existing one-time clean-page recovery')
+assert.ok(adapter.indexOf("if (core === 'mame-current') {") < adapter.indexOf("return failLoad(rt.ejsOutOfMemory, 'runtime')"),
+  'MAME-specific OOM handling must precede the generic retryable OOM path')
 // 默认 FBNeo 内存不足先交给播放器换低内存核心；内存不足不能把大陆加速入口判坏
 assert.match(adapter, /options\.onOutOfMemory\?\.\(core, line\)\) \{\s*loadFailed = true/)
 assert.match(adapter, /usedEjsEdge && !stalled && !outOfMemory && scope !== 'config' && !opts\.keepEdge\) markEjsEdgeFailed\(\)/)
@@ -88,7 +92,7 @@ for (const entryFailure of [
   }
 }
 // 错误级的内存不足要直接走 onFatal：7z Worker 报 DataCloneError out of memory 后引擎不会再发任何事件
-assert.match(adapter, /level === 'error' && isOutOfMemoryText\(text\)\)\)\) \{\n\s*onFatal\(text\.trim\(\)\)/)
+assert.match(adapter, /level === 'error' && isOutOfMemoryText\(text\)[\s\S]{0,360}onFatal\(\(mameArchiveAbort \? `\$\{text\}\\n\$\{context\}` : text\)\.trim\(\)\)/)
 
 // 联机拒绝
 assert.match(adapter, /roomAckError = typeof error === 'string' \? error : safeStr\(error\)/)

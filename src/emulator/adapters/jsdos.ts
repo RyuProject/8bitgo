@@ -71,6 +71,7 @@ import {
 } from '../dosPad'
 import { normalizeDosStartupCommands } from '../../../shared/dos-startup-commands.js'
 import { fetchWithProgress, STALL_MS, STARTING_MILESTONE, windowsGuestLaunchBudgetMs, windowsGuestStartupBudgetMs } from '../loadProgress'
+import { isWindowsGuestStartupWasmTrap } from '../jsdosStartupTrap'
 import { startActiveTimeout } from '../activeTimeout'
 import {
   assertTypeable,
@@ -1444,6 +1445,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     return autoCheckpointInFlight
   }
   let windowsLaunchStage: 'ci' | 'boot' | 'desktop' | 'launched' = 'ci'
+  let guestStartupWasmErrorListener: ((event: ErrorEvent) => void) | null = null
   /*
     适配器自己负责判死的启动阶段（Windows 客体建盘 / 自动启动、普通 DOS 等 ci-ready）。
     这些阶段的前台预算是按慢设备定的（建盘 4 分钟兜底，见 loadProgress 的 windowsGuestStartupBudgetMs），
@@ -1502,6 +1504,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     cancelWindowsLaunch = null
     if (!abort.signal.aborted) abort.abort(new Error(message))
     options.onError?.(message, scope)
+  }
+  const onGuestStartupWasmError = (event: ErrorEvent) => {
+    if (destroyed || readySent || terminalErrorSent || !isWindowsGuestStartupWasmTrap(event, fullWindowsGuest, windowsLaunchStage)) return
+    const detail = 'DOSBox-X WebAssembly RuntimeError: unreachable before the Windows guest command interface was ready'
+    // WASM 陷阱已经终止当前执行栈；等完整建盘预算只会把明确崩溃误报成启动超时。
+    // 仍允许播放器进行一次有上限的运行时重试，给浏览器回收瞬时资源的机会。
+    failLoad(fmt(rt.jsdosRunFailed, { msg: detail }), 'runtime')
   }
   const markReady = () => {
     if (destroyed || readySent || terminalErrorSent) return
@@ -1883,6 +1892,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       const emulatorsPrefix = `${jsdosBase()}emulators/`
       const emulatorsGlobal = (window as unknown as { emulators?: { pathPrefix?: string } }).emulators
       if (emulatorsGlobal && emulatorsGlobal.pathPrefix !== emulatorsPrefix) emulatorsGlobal.pathPrefix = emulatorsPrefix
+      if (fullWindowsGuest && !guestStartupWasmErrorListener) {
+        guestStartupWasmErrorListener = onGuestStartupWasmError
+        window.addEventListener('error', guestStartupWasmErrorListener)
+      }
       props = Dos(host, {
         ...(streamingGame
           ? { url: primaryUrl, initFs }
@@ -2397,6 +2410,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       autoSaveTimer = 0
       document.removeEventListener('visibilitychange', onAutoSaveHidden)
       window.removeEventListener('pagehide', onAutoSavePageHide)
+      if (guestStartupWasmErrorListener) {
+        window.removeEventListener('error', guestStartupWasmErrorListener)
+        guestStartupWasmErrorListener = null
+      }
       cancelGuestStartupTimeout?.()
       cancelGuestStartupTimeout = null
       abort.abort()
