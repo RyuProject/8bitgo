@@ -57,6 +57,7 @@ npx wrangler deploy
 | `GET/HEAD /<key>` | 公开读取；ETag、条件请求和单段 Range |
 | `PUT /<key>` | 单次上传；需要 Bearer |
 | `DELETE /<key>` | 删除最终对象；需要 Bearer |
+| `POST /sockdrive-staging/<uuid>.zip` | `{ "sourceKey", "sourceSize", "sourceEtag" }`；强 ETag 匹配后在 R2 内流式复制公开 ROM ZIP 到私有转换区 |
 | `POST /bulk` | `{ "keys": [...] }`，1～1000 个合法 key，去重后按桶批量删除 |
 | `GET /list?prefix=...&cursor=...` | 管理员分页列表 |
 | `POST /<key>?uploads` | 新建分片；JSON 可含 contentType、size、name |

@@ -1198,8 +1198,11 @@ StarCraft 已补一条离线发布流水线：`npm run sockdrive:prepare -- --so
 显式 CPU 配置仍可覆盖。回归：`npm run test:dos-bundle && npm run test:roms`。
 
 生产后台现在把这条离线流水线包成了**持久任务**：编辑已保存的 DOSBox-X 游戏，在「原始大 ZIP
-自动转 Sockdrive」上传原始 ZIP；浏览器仍直接分片写进私有 `sockdrive-staging/`，不经过 Express
-内存。`sockdrive_conversion_jobs` 记录 ETag、原配置和发布阶段，生产机从
+自动转 Sockdrive」上传原始 ZIP。多语言「完整包 + 流式盘」只从浏览器上传一次：先写入公开完整回退包，
+ROM Worker 再用 `If-Match` 对照上传响应的强 ETag，在 R2 内流式复制到私有 `sockdrive-staging/`；
+不把 1GB 以上 ZIP 再从管理员网络上行一遍，也不把正文读进 Worker 内存。只有新 Worker `/ping`
+声明 `sockdriveSourceCopy` 时才走该路径；旧 Worker 保留原来的私有分片上传兼容路径。单独生成流式盘仍由浏览器
+直接分片写进私有 staging，不经过 Express 内存。`sockdrive_conversion_jobs` 记录 ETag、原配置和发布阶段，生产机从
 `SOCKDRIVE_CONVERT_TMP_DIR`（应挂独立大盘）下载后自动制盘、上传、公开校验，再用事务 CAS 同时绑定
 `dos_sockdrive` 与 `dos_executable`。页面关闭或服务重启都不丢任务；失败源保留 24 小时供后台重试。
 staging ZIP 下载使用固定 1MB 背压缓冲，让网络读取与磁盘写入重叠；不能退回“每个网络小块 await 一次
@@ -1217,8 +1220,8 @@ Worker 必须把 `psp-staging/` / `sockdrive-staging/` 的 GET/HEAD 也设为 Be
 多语言 DOS / Windows 游戏的流式盘按 **ROM 语言槽**绑定：`game_roms.dos_sockdrive` 经 API 映射为
 `dosSockdrives`，播放器以最终选中的 ROM 语言取同槽 Sockdrive；旧的 `games.dos_sockdrive` 只在
 完全没有逐语言配置时作历史数据回退，迁移一旦开始，缺配置的语言宁可走完整包也不跨语言误挂。
-后台已保存游戏的语言 ROM 按钮会显示「完整包 + 流式盘」：一次选择
-原始 ZIP，先发布同语言的 8BG 完整回退包，再把原始 ZIP 写入私有 staging 制作流式盘；任务最终用
+后台已保存游戏的语言 ROM 按钮会显示「完整包 + 流式盘」：一次选择原始 ZIP 并上传一次，
+先发布同语言的 8BG 完整回退包，再由 R2 桶内复制准备私有转换源（旧 Worker 会回退为第二次上传）；任务最终用
 事务 CAS 同时绑定 `object_key`、`dos_executable` 和 `dos_sockdrive`。版本目录必须带语言（如
 `sockdrives/starcraft-zh-v1730000000000`），否则多个语言会争用不可覆盖的目录。运行环境、EXE 或
 当前流式盘地址有未保存修改时必须先保存，不能让管理员传完大包才在建任务阶段发现数据库不一致。

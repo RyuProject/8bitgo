@@ -189,7 +189,9 @@ async function workerSupportsSockdrive(config) {
     })
     if (!response.ok) return false
     const info = await response.json()
-    return info?.features?.privateStagingRead === true && info?.features?.contentEncodingUpload === true
+    const features = info?.features
+    if (features?.privateStagingRead !== true || features?.contentEncodingUpload !== true) return false
+    return { sourceCopy: features.sockdriveSourceCopy === true }
   } catch { return false }
 }
 
@@ -197,6 +199,7 @@ export async function sockdriveConversionCapability(env = process.env, fresh = f
   if (!fresh && capabilityCache && Date.now() - capabilityCache.at < 30_000) return capabilityCache.value
   const config = sockdriveConversionConfig(env)
   let reason = ''
+  let sourceCopyAvailable = false
   if (!config.workerUrl) reason = '服务器未配置 SOCKDRIVE_CONVERT_WORKER_URL（可复用 PSP Worker）'
   else if (!config.workerToken) reason = '服务器未配置 Sockdrive Worker 口令'
   else if (!['br', 'gzip', 'identity'].includes(config.encoding)) reason = 'SOCKDRIVE_ENCODING 只能是 br、gzip 或 identity'
@@ -205,10 +208,12 @@ export async function sockdriveConversionCapability(env = process.env, fresh = f
   else if (!(await commandExists('virt-make-fs'))) reason = '找不到 virt-make-fs'
   else if (!(await commandExists('qemu-img'))) reason = '找不到 qemu-img'
   else if (!(await commandExists('7z'))) reason = '找不到 7z'
-  else if (!(await workerSupportsSockdrive(config))) {
-    reason = 'R2 Worker 尚未部署 Sockdrive 私有 staging / Content-Encoding 支持'
-  }
   else {
+    const workerFeatures = await workerSupportsSockdrive(config)
+    if (!workerFeatures) reason = 'R2 Worker 尚未部署 Sockdrive 私有 staging / Content-Encoding 支持'
+    else sourceCopyAvailable = workerFeatures.sourceCopy
+  }
+  if (!reason) {
     try {
       const row = await queryOne(
         "SELECT COUNT(*) AS n FROM information_schema.TABLES WHERE table_schema = DATABASE() AND table_name = 'sockdrive_conversion_jobs'",
@@ -229,6 +234,7 @@ export async function sockdriveConversionCapability(env = process.env, fresh = f
     reason,
     maxSourceBytes: config.maxSourceBytes,
     format: `Sockdrive (${config.encoding === 'br' ? 'Brotli' : config.encoding})`,
+    sourceCopyAvailable,
   }
   capabilityCache = { at: Date.now(), value }
   return value

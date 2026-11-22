@@ -1891,11 +1891,15 @@ export function explainRomStatus(status: number, what: string): Error {
   return new Error(`${what}失败：HTTP ${status}`)
 }
 
-export async function pingRomApi(api = getRomApi(), signal?: AbortSignal): Promise<{ isWorker: boolean; writable: boolean }> {
+export async function pingRomApi(api = getRomApi(), signal?: AbortSignal): Promise<{ isWorker: boolean; writable: boolean; sockdriveSourceCopy: boolean }> {
   const res = await fetch(`${api}/ping`, { cache: 'no-store', signal })
-  if (!res.ok) return { isWorker: false, writable: false }
-  const data = (await res.json().catch(() => null)) as { service?: string; writable?: boolean } | null
-  return { isWorker: data?.service === '8bitgo-roms', writable: Boolean(data?.writable) }
+  if (!res.ok) return { isWorker: false, writable: false, sockdriveSourceCopy: false }
+  const data = (await res.json().catch(() => null)) as { service?: string; writable?: boolean; features?: { sockdriveSourceCopy?: boolean } } | null
+  return {
+    isWorker: data?.service === '8bitgo-roms',
+    writable: Boolean(data?.writable),
+    sockdriveSourceCopy: data?.features?.sockdriveSourceCopy === true,
+  }
 }
 
 export async function listRomObjects(prefix = getRomPrefix(), signal?: AbortSignal): Promise<RomObject[]> {
@@ -2005,6 +2009,8 @@ export interface UploadResult {
   key: string
   url: string
   size: number
+  /** Worker 返回的强 ETag；Sockdrive 桶内复制用它锁定刚上传的这一版 ROM。 */
+  etag?: string
 }
 
 /**
@@ -2087,6 +2093,63 @@ export async function uploadRom(
   }, activityOptions)
 }
 
+/**
+ * 在 R2 桶内把已发布的 ZIP 复制到私有 Sockdrive staging；浏览器无需第二次上传大文件。
+ * ETag 防止并发管理员改写同一 ROM key 时，把另一版文件误拿去制盘。
+ */
+export async function copyRomToSockdriveStaging(
+  sourceKey: string,
+  stagingKey: string,
+  sourceSize: number,
+  sourceEtag: string,
+): Promise<{ key: string; size: number; etag: string }> {
+  const api = getRomApi()
+  if (!api) throw new Error('尚未配置 Worker 地址，无法准备 Sockdrive 源文件')
+  if (!getRomToken()) throw new Error('请先在「ROM 存储」页填写 Worker 口令（ADMIN_TOKEN）')
+  if (!sourceKey.startsWith('roms/') || !/\.zip$/i.test(sourceKey)) throw new Error('Sockdrive 源文件必须是已上传的公开 ROM ZIP')
+  if (!/^sockdrive-staging\/[a-f0-9-]{16,}\.zip$/i.test(stagingKey)) throw new Error('Sockdrive staging key 无效')
+  if (!Number.isSafeInteger(sourceSize) || sourceSize < 32 * 1024 || !/^"[^"\r\n]{1,250}"$/.test(sourceEtag)) {
+    throw new Error('无法确认已上传 ROM ZIP 的大小与版本')
+  }
+  const url = `${api}/${encodeKey(stagingKey)}`
+  const body = JSON.stringify({ sourceKey, sourceSize, sourceEtag })
+  let lastError: unknown
+  for (let attempt = 0; attempt < 3; attempt++) {
+    let response: Response
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body,
+      })
+    } catch (error) {
+      lastError = error
+      if (attempt === 2) break
+      await new Promise((resolve) => window.setTimeout(resolve, 500 * 2 ** attempt))
+      continue
+    }
+    const data = await response.json().catch(() => null) as {
+      ok?: boolean; key?: string; size?: number; etag?: string; error?: string
+    } | null
+    if (response.status >= 500 && attempt < 2) {
+      lastError = new Error(data?.error || `准备 Sockdrive 源文件失败：HTTP ${response.status}`)
+      await new Promise((resolve) => window.setTimeout(resolve, 500 * 2 ** attempt))
+      continue
+    }
+    if (!response.ok) throw new Error(data?.error || explainRomStatus(response.status, '准备 Sockdrive 源文件').message)
+    if (data?.ok !== true || data.key !== stagingKey || data.size !== sourceSize || !data.etag) {
+      lastError = new Error('Worker 未确认 Sockdrive 源文件完整复制；请在「ROM 存储」核查后重试')
+      if (attempt < 2) {
+        await new Promise((resolve) => window.setTimeout(resolve, 500 * 2 ** attempt))
+        continue
+      }
+      break
+    }
+    return { key: stagingKey, size: data.size, etag: data.etag }
+  }
+  throw lastError instanceof Error ? lastError : new Error('准备 Sockdrive 源文件失败')
+}
+
 /** 一次 PUT 传完。只适合小文件，大文件见 uploadRom 里的分片分支 */
 function singlePut(file: Blob, cleanKey: string, api: string, onProgress?: UploadProgress): Promise<UploadResult> {
   return new Promise((resolve, reject) => {
@@ -2109,7 +2172,7 @@ function singlePut(file: Blob, cleanKey: string, api: string, onProgress?: Uploa
       )
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) {
-        let data: { ok?: boolean; key?: string; size?: number } | null = null
+        let data: { ok?: boolean; key?: string; size?: number; etag?: string } | null = null
         try { data = JSON.parse(xhr.responseText) } catch { /* Worker 地址填错时可能回 HTML。 */ }
         // 仅凭 200 就把 key 写进游戏库会让播放器拿到 HTML 或不完整的对象。
         if (data?.ok !== true || data.key !== cleanKey || data.size !== file.size) {
@@ -2117,7 +2180,7 @@ function singlePut(file: Blob, cleanKey: string, api: string, onProgress?: Uploa
           return
         }
         clearRomProbeCache()
-        resolve({ key: cleanKey, url: romUrlForKey(cleanKey), size: data.size })
+        resolve({ key: cleanKey, url: romUrlForKey(cleanKey), size: data.size, etag: data.etag || undefined })
       } else {
         reject(explainRomStatus(xhr.status, '上传'))
       }

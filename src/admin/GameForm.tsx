@@ -19,7 +19,9 @@ import {
   listRomObjects,
   clearRomProbeCache,
   coverThumbKey,
+  copyRomToSockdriveStaging,
   headRom,
+  pingRomApi,
   probeRom,
   romUrlForKey,
   uploadRom,
@@ -3739,12 +3741,9 @@ function RomField({
     }
   }
 
-  /**
-   * 完整明文回退包发布成功后，复用管理员刚选的原始 ZIP 创建逐语言 Sockdrive。
-   * 这会产生第二次上行流量，但只需选择一次文件；服务端最终用事务把完整包、EXE 与流式盘一起绑定。
-   */
-  const publishLanguageSockdrive = async (file: File, targetRomKey: string, expectedRomKey: string) => {
-    if (!autoSockdrive || !lang) return ''
+  /** 在开始大文件上传前做完检查，避免传完后才发现运行配置或后台转换能力不满足。 */
+  const prepareLanguageSockdrive = async (file: File) => {
+    if (!autoSockdrive || !lang) return null
     if (autoSockdrive.hasExtras) throw new Error('还有 DOS 附加文件；请先把补丁合入原始 ZIP')
     if (!/\.zip$/i.test(file.name)) throw new Error('流式盘只能从原始 .zip 游戏包生成')
     const executable = autoSockdrive.executable.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
@@ -3759,21 +3758,48 @@ function RomField({
     if (!capability.available) throw new Error(capability.reason || '服务器暂时不能制作 Sockdrive')
     if (file.size > capability.maxSourceBytes) throw new Error(`ZIP 超过后台上限 ${human(capability.maxSourceBytes)}`)
 
+    // 后台服务和浏览器可能指向不同 Worker；只有两边都声明支持时才走 R2 桶内复制。
+    const romApi = await pingRomApi().catch(() => ({ isWorker: false, writable: false, sockdriveSourceCopy: false }))
+    return {
+      executable,
+      sourceCopyAvailable: Boolean(capability.sourceCopyAvailable && romApi.isWorker && romApi.sockdriveSourceCopy),
+    }
+  }
+
+  /** 完整回退包上传后生成私有转换源，转换完成由服务端原子绑定完整包、EXE 与流式盘。 */
+  const publishLanguageSockdrive = async (
+    file: File,
+    targetRomKey: string,
+    expectedRomKey: string,
+    sourceEtag: string | undefined,
+    preparation: { executable: string; sourceCopyAvailable: boolean },
+  ) => {
+    if (!autoSockdrive || !lang) return ''
+    const executable = preparation.executable
+    const useR2Copy = preparation.sourceCopyAvailable && Boolean(sourceEtag)
+
     const version = nextSockdriveVersion()
     const stagingKey = sockdriveStagingKey()
     let sourceUploaded = false
     let taskCreated = false
     try {
-      setProgress(0)
       setStage(null)
-      setMsg({ ok: true, text: `完整回退包已上传；正在上传 ${romLanguageLabel(lang)}流式盘源文件…` })
-      await uploadRom(file, stagingKey, (pct, at) => {
-        setProgress(Math.round(pct * 0.45))
-        if (at) setStage(at)
-      }, { failureIsFatal: false })
+      if (useR2Copy) {
+        setProgress(48)
+        setMsg({ ok: true, text: `完整回退包已上传；正在由 R2 复制到私有转换区，不会再次上传 ZIP…` })
+        await copyRomToSockdriveStaging(targetRomKey, stagingKey, file.size, sourceEtag ?? '')
+      } else {
+        // 旧 Worker 仍可用原来的私有分片上传，升级 Worker 后自动切到桶内复制。
+        setMsg({ ok: true, text: `完整回退包已上传；当前 Worker 不支持桶内复制，正在上传私有转换源…` })
+        await uploadRom(file, stagingKey, (pct, at) => {
+          setProgress(45 + Math.round(pct * 0.2))
+          if (at) setStage(at)
+        }, { failureIsFatal: false })
+      }
       sourceUploaded = true
       setStage(null)
-      setProgress(45)
+      const jobProgressStart = useR2Copy ? 50 : 65
+      setProgress(jobProgressStart)
       const request = {
         sourceKey: stagingKey,
         sourceSize: file.size,
@@ -3792,7 +3818,7 @@ function RomField({
       clearPendingSockdriveCreation(autoSockdrive.gameSlug, lang)
       rememberSockdriveConversion(autoSockdrive.gameSlug, job.id, lang)
       const completed = await waitForSockdriveConversion(job.id, (next) => {
-        setProgress(45 + Math.round(next.progress * 0.55))
+        setProgress(jobProgressStart + Math.round(next.progress * (100 - jobProgressStart) / 100))
         setMsg({ ok: true, text: `${sockdriveConversionLabel(next)} ${next.progress}%${next.message ? `；${next.message}` : ''}` })
       }, undefined, undefined, { failureIsFatal: false })
       rememberSockdriveConversion(autoSockdrive.gameSlug, null, lang)
@@ -4225,7 +4251,18 @@ function RomField({
       if (inputRef.current) inputRef.current.value = ''
       return
     }
+    let languageSockdrivePreparation: Awaited<ReturnType<typeof prepareLanguageSockdrive>> = null
+    if (oneClickSockdrive) {
+      try {
+        languageSockdrivePreparation = await prepareLanguageSockdrive(uploadSourceFile)
+      } catch (error) {
+        setMsg({ ok: false, text: `尚未上传：${error instanceof Error ? error.message : '流式盘预检失败'}` })
+        if (inputRef.current) inputRef.current.value = ''
+        return
+      }
+    }
     setProgress(0)
+    if (oneClickSockdrive) setMsg({ ok: true, text: '正在上传一次原始 ZIP；完成后同时生成完整回退包与流式盘…' })
     try {
       await trackUploadActivity(`ROM 上传、识别与发布：${file.name}`, async () => {
         if ((pspIsoToChd || psxIsoToChd) && lang) {
@@ -4314,7 +4351,7 @@ function RomField({
           }
         }
         const result = await uploadRom(uploadFile, finalKey, (pct, at) => {
-          setProgress(needsPacking ? 50 + Math.round(pct / 2) : pct)
+          setProgress(oneClickSockdrive ? Math.round(pct * 0.45) : needsPacking ? 50 + Math.round(pct / 2) : pct)
           if (at) setStage(at)
         })
         // 已经确认 R2 收到完整对象，马上释放可能很大的重试缓存；只有失败才需要把它留给下一次。
@@ -4325,7 +4362,8 @@ function RomField({
         let streamFailure = ''
         if (oneClickSockdrive) {
           try {
-            streamSuffix = await publishLanguageSockdrive(uploadSourceFile, result.key, oldKey)
+            if (!languageSockdrivePreparation) throw new Error('流式盘预检结果丢失；完整回退包已上传')
+            streamSuffix = await publishLanguageSockdrive(uploadSourceFile, result.key, oldKey, result.etag, languageSockdrivePreparation)
           } catch (error) {
             streamFailure = error instanceof Error ? error.message : '流式盘转换没有启动'
           }
@@ -4477,7 +4515,7 @@ function RomField({
                 ? `这一槽绑的是多 SWF 包里的 ${value.trim().split('/').pop()}；再传一个 zip 会原地更新 ${dirOfKey(value.trim())}/`
                 : `再次上传会原地覆盖已绑定的 ${value.trim()}；想换存放位置就先改这里的 key 或清空`
               : oneClickSockdrive
-              ? `选择一次原始 ZIP：先上传明文完整回退包，再上传私有源文件，由服务器制作版本化 Sockdrive 并原子绑定`
+              ? `只需选择一次原始 ZIP。支持时浏览器只上传一次，由 R2 桶内复制私有源；服务器制作版本化 Sockdrive 并原子绑定`
               : isArcade
               ? `街机 ROM 会**自动识别 romset**：按 ZIP 中央目录的文件名和 CRC 核验。已支持的 MAME 专用包会自动选核心/BIOS；FBNeo 命中后按 romset 短名存（如 ${defKey('kof97.zip')}）。未知或不完整包不会猜名`
               : isFlash
@@ -4505,7 +4543,7 @@ function RomField({
                 className={cx(btnClass.secondary, 'shrink-0 whitespace-nowrap')}
                 disabled={!canUpload || progress !== null || bundleAt !== null}
                 onClick={() => inputRef.current?.click()}
-                title={canUpload ? (oneClickSockdrive ? '选择原始 ZIP，同时发布完整回退包和当前语言流式盘' : isFlash ? '选择 .swf，或选 .zip 上传多 SWF 整包' : isStreamingDisc ? '选择平台支持的单文件光盘镜像并上传到 R2' : '选择文件并上传到 R2') : '需要先配置 Worker'}
+                title={canUpload ? (oneClickSockdrive ? '选择原始 ZIP：一次上传完整回退包，并在 R2 内准备流式盘源' : isFlash ? '选择 .swf，或选 .zip 上传多 SWF 整包' : isStreamingDisc ? '选择平台支持的单文件光盘镜像并上传到 R2' : '选择文件并上传到 R2') : '需要先配置 Worker'}
               >
                 {progress === null ? (oneClickSockdrive ? '☁️ 完整包 + 流式盘' : isFlash ? '☁️ 上传 SWF / ZIP' : '☁️ 上传到 R2') : `处理中 ${progress}%`}
               </button>

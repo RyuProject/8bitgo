@@ -537,8 +537,8 @@ async function putPartWithRetry(ctx: Ctx, state: PendingUpload, partNumber: numb
   throw last
 }
 
-async function completeUpload(ctx: Ctx, state: PendingUpload): Promise<number> {
-  const data = await askJson<{ ok: boolean; key: string; size: number }>(
+async function completeUpload(ctx: Ctx, state: PendingUpload): Promise<{ size: number; etag?: string }> {
+  const data = await askJson<{ ok: boolean; key: string; size: number; etag?: string }>(
     ctx,
     `${ctx.api}/${encodeKey(state.key)}?uploadId=${encodeURIComponent(state.uploadId)}`,
     {
@@ -560,7 +560,7 @@ async function completeUpload(ctx: Ctx, state: PendingUpload): Promise<number> {
     // R2 已合并成功，不能再重试 complete；更不能把错误大小假装成原文件大小去绑定。
     throw new CompletionUncertainError(`R2 已完成上传，但对象大小是 ${data?.size ?? '未知'} 字节，原文件是 ${state.fileSize} 字节；请到「ROM 存储」核查这个 key`)
   }
-  return size
+  return { size, etag: data.etag || undefined }
 }
 
 async function abortUpload(ctx: Ctx, key: string, uploadId: string, marker: string): Promise<void> {
@@ -683,11 +683,11 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
     throw await explainFailure(failure, ctx, state, total, resumable)
   }
 
-  let size: number
+  let completed: { size: number; etag?: string }
   try {
     // 值得多试两次：分片全都已经在 R2 上了，只差这一个请求，
     // 因为一次网络抖动就把几十 MB 判成失败太可惜
-    size = await withRetry(() => completeUpload(ctx, state), 3)
+    completed = await withRetry(() => completeUpload(ctx, state), 3)
   } catch (err) {
     if (err instanceof CompletionUncertainError) {
       clearState(key)
@@ -706,7 +706,7 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
     concurrency: network.limit,
     measuredMbps: network.calibrated ? network.measuredMbps : undefined,
   })
-  return { key, url: romUrlForKey(key), size }
+  return { key, url: romUrlForKey(key), size: completed.size, etag: completed.etag }
 }
 
 /**
