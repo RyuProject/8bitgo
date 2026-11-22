@@ -99,6 +99,10 @@ if (existsSync(buildRoot)) {
   throw new Error(`工作目录已经存在：${buildRoot}。为避免把两次转换混在一起，请换版本或空工作目录`)
 }
 mkdirSync(buildRoot, { recursive: true })
+// 系统盘空间有限；guestfs 和官方 CLI 会额外创建临时镜像，统一跟随每个任务的数据盘工作目录。
+const toolTempDir = join(buildRoot, '.tmp')
+mkdirSync(toolTempDir)
+Object.assign(process.env, { TMPDIR: toolTempDir, TEMP: toolTempDir, TMP: toolTempDir })
 
 const run = (command, args, options = {}) => {
   const result = spawnSync(command, args, { cwd: repoRoot, stdio: 'inherit', ...options })
