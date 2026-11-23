@@ -297,7 +297,10 @@ export function windowsSockdriveLauncherFile(
  */
 export function windowsSockdriveExecutableCommand(executable: string, drive: string): string {
   if (!/^[d-z]$/i.test(drive)) throw new Error('Sockdrive 游戏盘符必须是 D-Z')
-  return `${drive.toUpperCase()}:\\${safeStreamedExecutable(executable).replace(/\//g, '\\')}`
+  const path = safeStreamedExecutable(executable).replace(/\//g, '\\')
+  const command = `${drive.toUpperCase()}:\\${path}`
+  // Windows“运行”框会把未加引号路径的空格当成参数分隔符，英文版目录因此会被截断。
+  return /\s/.test(path) ? `"${command}"` : command
 }
 
 /**
