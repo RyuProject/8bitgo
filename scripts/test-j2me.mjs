@@ -321,6 +321,15 @@ check('⭐ 跨源部署要直接 sendReady，不能进轮询 —— 那条路以
   )
 })
 
+check('⭐ 播放器重新交焦点时要聚焦 Java 画布，避免 iframe.focus 把键盘焦点退回 body', () => {
+  const at = adapterCode.indexOf('const focusJ2me =')
+  assert.ok(at > 0, '适配器缺少 Java 画布焦点恢复函数')
+  const focus = adapterCode.slice(at, at + 360)
+  assert.match(focus, /focusFrame\(iframe\)/, '先确保 iframe 文档获得焦点')
+  assert.match(focus, /displayOf\(\)\?\.focus\(\{\s*preventScroll:\s*true\s*\}\)/, '同源时把焦点落到实际接收键盘事件的画布')
+  assert.match(adapterCode, /focus:\s*focusJ2me/, '工具栏和启动后的焦点回收都必须走画布焦点恢复')
+})
+
 check('⭐ sendReady 要同时兜住 onStart —— 只发 onReady 的话计次和状态机会缺一拍', () => {
   const at = adapterCode.indexOf('const sendReady =')
   assert.ok(at > 0)
