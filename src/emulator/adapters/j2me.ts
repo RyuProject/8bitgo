@@ -337,6 +337,22 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const displayOf = (): HTMLCanvasElement | null =>
     (iframe.contentDocument?.getElementById(DISPLAY_ID) as HTMLCanvasElement | null) ?? null
 
+  /**
+   * 把键盘焦点交给 Java 游戏画布。
+   *
+   * 播放器就绪后会再次调用运行时的 focus；只聚焦外层 iframe 会把 FreeJ2ME
+   * 已经放在 #display 上的焦点退回 iframe 内的 body，而键盘监听只挂在画布上。
+   * 所以同源时聚焦 iframe 后还要聚焦画布；跨源时读不到画布，至少保留 iframe 焦点。
+   */
+  const focusJ2me = () => {
+    focusFrame(iframe)
+    try {
+      displayOf()?.focus({ preventScroll: true })
+    } catch {
+      /* 跨源或 iframe 正在拆除：聚焦画布不可用时保留 iframe 焦点 */
+    }
+  }
+
   /* ---------------- 就绪判定 ---------------- */
 
   /**
@@ -932,7 +948,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       所以交焦点不会把它读没。键盘更是要靠它：
       FreeJ2ME 的按键监听挂在 iframe 内部。
     */
-    focus: () => focusFrame(iframe),
+    focus: focusJ2me,
     // 手柄面板要报「检测到哪些手柄」，同样得问 iframe 那个文档
     gamepads: () => frameGamepads(iframe),
     setVolume(next: number) {
