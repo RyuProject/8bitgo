@@ -4,7 +4,17 @@
  */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { findChrome, startupEventOf, verdictOf, devToolsUrlOf, CHROME_CANDIDATES } from './smoke-start.mjs'
+import {
+  adultGateReason,
+  CHROME_CANDIDATES,
+  devToolsUrlOf,
+  findChrome,
+  MAME_CHD_TIMEOUT_MS,
+  startupEventOf,
+  timeoutForGame,
+  verdictOf,
+  waitWithin,
+} from './smoke-start.mjs'
 
 assert.equal(verdictOf('first_frame'), 'pass')
 assert.equal(verdictOf('failed'), 'fail')
@@ -15,6 +25,15 @@ assert.equal(startupEventOf(JSON.stringify({ event: 'first_frame', elapsedMs: 3 
 assert.equal(startupEventOf('not json'), '')
 assert.equal(startupEventOf(undefined), '')
 
+// 未登录冒烟被年龄门拦下时，播放器根本没有挂载；不能写成“没有首帧”。
+assert.equal(adultGateReason({ adult: true, allowed: false, reason: 'login' }), '年龄门：login')
+assert.equal(adultGateReason({ adult: true, allowed: true }), '')
+assert.equal(adultGateReason({ adult: false, allowed: false }), '')
+assert.equal(timeoutForGame({ arcadeMameDisks: [{ storedBytes: 40 * 1024 * 1024 }] }, 150_000), MAME_CHD_TIMEOUT_MS)
+assert.equal(timeoutForGame({ arcadeMameDisks: [{ storedBytes: 1 }] }, 150_000), 150_000)
+assert.equal(await waitWithin(Promise.resolve('ok'), 1, '不应超时'), 'ok')
+await assert.rejects(waitWithin(new Promise(() => {}), 1, '测试超时'), /测试超时/)
+
 assert.equal(findChrome({ CHROME_PATH: '/x/chrome' }, (p) => p === '/x/chrome'), '/x/chrome', 'CHROME_PATH 优先')
 assert.equal(findChrome({}, (p) => p === CHROME_CANDIDATES.at(-1)), CHROME_CANDIDATES.at(-1))
 assert.equal(findChrome({ CHROME_PATH: '/missing' }, () => false), '', '都找不到返回空串（脚本据此退出码 2）')
@@ -23,6 +42,12 @@ const src = readFileSync(new URL('./smoke-start.mjs', import.meta.url), 'utf8')
 assert.match(src, /urlPattern: '\*\/api\/games\/\*\/startup\*'/, '启动漏斗请求必须拦下，冒烟不能进生产统计')
 assert.match(src, /urlPattern: '\*\/api\/games\/\*\/play\*'/, '游玩次数也不能被冒烟刷高')
 assert.match(src, /Fetch\.fulfillRequest/)
+assert.match(src, /Target\.createTarget/, '每款仍通过独立 DevTools 标签页隔离运行')
+assert.match(src, /测试标签页不可用/, '标签页创建失败必须按测试基础设施归因')
+assert.match(src, /TARGET_CLOSE_TIMEOUT_MS/, '关闭标签页不能无限阻塞，避免吞掉已经得出的首帧结论')
+assert.match(src, /PAGE_NAVIGATION_COMMAND_TIMEOUT_MS/, '公网详情页 SSR 回包可慢于普通 CDP 命令，导航要保留独立预算')
+assert.match(src, /infrastructureFailed \? 2 : 0/, '测试基础设施失败走退出码 2，不能触发生产回滚')
+assert.match(src, /const target = await sendWithin[\s\S]*?targetId = target\.targetId[\s\S]*?const attached = await sendWithin[\s\S]*?sessionId = attached\.sessionId/, '创建和附加标签页要用明确赋值，避免连续括号解构触发 ASI 函数调用')
 
 /*
   收尾不能改写冒烟结论（2026-11-18 生产两次部署：两款游戏都到了首帧，删 Chrome profile 报 ENOTEMPTY，
