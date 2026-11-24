@@ -77,6 +77,7 @@ r = await run('/_cn/emulatorjs/cores/fbneo-legacy-wasm.data?v=x')
 assert.equal(r.next, true); assert.equal(r.req.url, '/emulatorjs/cores/fbneo-legacy-wasm.data?v=x')
 assert.equal(r.headers.vary, undefined, '静态文件不带 Vary: Origin，预热与 <script> 共用一条缓存')
 assert.equal(r.headers['access-control-allow-origin'], 'https://8bitgo.com')
+assert.equal(r.headers['access-control-expose-headers'], 'Content-Range, Accept-Ranges, Content-Length, Content-Encoding, ETag, Last-Modified', 'EmulatorJS 跨源续传要读 Range 与强 ETag 响应头')
 for (const asset of ['/ruffle/v0.7.1/ruffle.js', '/jsdos/v8.5.3-8bitgo.9/emulators/wdosbox-x.wasm']) {
   r = await run(`/_cn${asset}`)
   assert.equal(r.next, true); assert.equal(r.req.url, asset)

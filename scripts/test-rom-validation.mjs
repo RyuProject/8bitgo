@@ -267,6 +267,10 @@ try {
   )
   assert.equal(windowsGuestLaunchCommand(streamedGuest, 'BIN/GAME.EXE', '3x', false), 'D:\\BIN\\GAME.EXE')
   assert.equal(windowsSockdriveExecutableCommand('BIN/GAME.EXE', streamedGuest.gameDrive), 'D:\\BIN\\GAME.EXE')
+  assert.equal(
+    windowsSockdriveExecutableCommand('Age Of Empires 2 The Age Of Kings/empires2.exe', streamedGuest.gameDrive),
+    '"D:\\Age Of Empires 2 The Age Of Kings\\empires2.exe"',
+  )
   assert.equal(windowsSockdriveRegistryCommand('STAR.REG', streamedGuest.gameDrive), 'regedit /s "D:\\STAR.REG"')
   assert.throws(() => windowsSockdriveRegistryCommand('../STAR.REG', 'D'), /安全的 \.reg/)
   assert.throws(() => windowsSockdriveExecutableCommand('../BAD.EXE', 'D'), /安全的 \.exe/)

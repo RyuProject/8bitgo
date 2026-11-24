@@ -101,7 +101,7 @@ export function createCnEdgeMiddleware({ clientDir, siteOrigin, socketIoClientDi
       return res.status(400).set('Cache-Control', 'no-store').type('text/plain').send('Authenticated requests must use the primary API')
     }
     res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
-    // J2ME 与 EmulatorJS 的 Range 读取要校验真实区间；跨源响应必须暴露这些头，否则浏览器只看得到安全名单里的头。
+    // J2ME 与 EmulatorJS 的 Range 读取要校验区间和版本；跨源响应必须暴露这些头，否则浏览器只看得到安全名单里的头。
     if (rest.startsWith('/j2me/') || rest.startsWith('/emulatorjs/')) {
       res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length, Content-Encoding, ETag, Last-Modified')
     }

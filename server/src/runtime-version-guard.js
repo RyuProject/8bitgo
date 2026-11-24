@@ -64,8 +64,8 @@ export function runtimeVersionGuard(root, { prefixes = CONTENT_VERSIONED_PREFIXE
         }
       } else if (info && urlPath.startsWith('/emulatorjs/cores/') && urlPath.endsWith('-wasm.data')) {
         // Range 续传要用强 ETag 证明前后两段字节完全相同；Express 默认的弱 ETag 不能用于 If-Range。
-        // 只给未做内容编码的核心数据文件覆盖 ETag，避免把 br / identity 两种表示误标成同一强校验器；
-        // 完整内容哈希已在这条按 size+mtime 缓存的路径算过，直接复用，不额外读文件。
+        // 只给未做内容编码且版本校验通过的核心覆盖 ETag，避免把 br / identity 两种表示误标成同一强校验器；
+        // 完整内容哈希已在这条按 size+mtime 缓存的路径算过，直接复用，不额外读文件。版本不匹配仍只发 no-store。
         res.setHeader('ETag', `"sha256-${info.sha256}"`)
       }
     } catch {

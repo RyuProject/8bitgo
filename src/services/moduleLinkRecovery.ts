@@ -241,8 +241,8 @@ function readResourceTimings(): ResourceTimingLike[] {
 }
 
 /**
- * 预加载助手（scripts/lib/vite-resilient-preload.mjs）暖缓存重试过仍取不下来的依赖。
- * 这种失败没碰模块表：再调一次原加载函数（又会先暖缓存）就能重新取，不必换查询串、更不必整页刷新。
+ * 预加载助手（scripts/lib/vite-resilient-preload.mjs）暖缓存重试过仍取不下来的 JS / CSS 依赖。
+ * 这种失败没碰模块表：再调一次原加载函数（又会重新暖资源）就能重试，不必换入口查询串、更不必整页刷新。
  */
 const PRELOAD_FAILURE = '__8bitgoPreloadFailure'
 
@@ -250,14 +250,14 @@ export function preloadFailure(error: unknown): { failed: string[] } | null {
   if (!error || typeof error !== 'object') return null
   const value = (error as Record<string, unknown>)[PRELOAD_FAILURE] as { failed?: unknown } | undefined
   if (!value || !Array.isArray(value.failed)) return null
-  return { failed: value.failed.filter((name): name is string => typeof name === 'string' && /^[\w.-]+\.js$/.test(name)).slice(0, MAX_FAILED_DEPS) }
+  return { failed: value.failed.filter((name): name is string => typeof name === 'string' && /^[\w.-]+\.(?:js|css)$/.test(name)).slice(0, MAX_FAILED_DEPS) }
 }
 
 /** 写进诊断包的一句话：失败在入口还是依赖 */
 export function describeImportEvidence(evidence: ImportGraphEvidence | null | undefined): string {
   if (!evidence) return ''
   const deps = evidence.failed.length ? `，失败的请求：${evidence.failed.join('、')}` : ''
-  if (evidence.top === 'preload') return `模块图：依赖暖缓存重试后仍取不下来（没进模块表，已整套重试）${deps}`
+  if (evidence.top === 'preload') return `模块图：静态依赖重试后仍取不下来（没进模块表，已整套重试）${deps}`
   if (evidence.top === 'ok') return `模块图：入口已完整下载、失败在静态依赖（被本页模块表记住，只有整页刷新能重取）${deps}`
   if (evidence.top === 'failed') return `模块图：入口本身没下下来${deps}`
   return deps ? `模块图：看不出入口是否下完${deps}` : ''

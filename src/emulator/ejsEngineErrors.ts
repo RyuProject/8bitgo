@@ -78,3 +78,8 @@ export function coreDownloadFailureCause(lines: readonly string[]): CoreDownload
     /Core range recovery failed/i.test(detail)
   return { detail, bodyStalled: bodyStalled && !httpError, httpError }
 }
+
+/** MAME-current 的 7z 解包 Worker 致命中止；仅按可核实的错误形态匹配，不推断为内存不足。 */
+export function isMameArchiveWorkerAbortText(text: string): boolean {
+  return /uncaught exception:\s*abort\(\)/i.test(text) && /\b_extract\b/i.test(text)
+}

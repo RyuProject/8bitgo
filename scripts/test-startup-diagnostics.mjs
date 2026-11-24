@@ -132,6 +132,13 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
     { code: 'page_asset', signal: 'error.lazy_module' },
     '懒加载 chunk 的导入失败不能被粗略归成网络错误',
   )
+  assert.deepEqual(
+    { code: diagnoseStartupFailure({ event: 'failed', runtime: 'page', detail: 'Error: Unable to preload CSS for cn.8bitgo.com/_cn/assets/GameDetailPage-C2JSNwpA.css' }).code,
+      signal: diagnoseStartupFailure({ event: 'failed', runtime: 'page', detail: 'Error: Unable to preload CSS for cn.8bitgo.com/_cn/assets/GameDetailPage-C2JSNwpA.css' }).signals[0],
+      confidence: diagnoseStartupFailure({ event: 'failed', runtime: 'page', detail: 'Error: Unable to preload CSS for cn.8bitgo.com/_cn/assets/GameDetailPage-C2JSNwpA.css' }).confidence },
+    { code: 'page_asset', signal: 'error.lazy_css', confidence: 'high' },
+    'Vite 懒加载 CSS 错误要直接归为页面样式资源，不能被无关的历史 HTTP 400 抢走',
+  )
   assert.equal(diagnoseStartupFailure({
     event: 'failed', runtime: 'page', diagnostics: { resources: [{ n: '8bitgo.com/assets/…/GameDetailPage.js', i: 'script', at: 0, st: 404 }] },
   }).code, 'page_asset', '脚本本身的 HTTP 失败按页面资源定位')
@@ -165,6 +172,39 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   assert.equal(diagnoseStartupFailure({
     event: 'failed', runtime: 'page', diagnostics: { resources: [{ n: 'stats.example/widget.js', i: 'script', at: 0, st: 404 }] },
   }).code, 'network_http', '近期第三方脚本失败不能被升级成本站页面资源故障')
+  const thirdPartyTrackerDuringRomDownload = diagnoseStartupFailure({
+    event: 'slow_start', runtime: 'emulatorjs', platform: 'arcade', elapsedMs: 20_088,
+    detail: '等待 game_playable 已超过 20 秒',
+    diagnostics: {
+      logs: [
+        { t: 17_488, s: 'resource', l: 'error', m: 'script 加载失败 lf1-cdn-tos.bytegoofy.com/goofy/…/push.js' },
+        { t: 20_088, s: 'snapshot', l: 'info', m: '加载进度：阶段 rom，ROM 22.3MB/27.4MB，ROM 起于 1.2s，平均 10.1Mbps，最后进度 19.8s' },
+      ],
+      resources: [{ n: 'lf1-cdn-tos.bytegoofy.com/goofy/…/push.js', i: 'script', at: 17_488, st: 0 }],
+    },
+  })
+  assert.deepEqual(
+    { code: thirdPartyTrackerDuringRomDownload.code, signal: thirdPartyTrackerDuringRomDownload.signals[0] },
+    { code: 'rom_download', signal: 'progress.rom_downloading' },
+    '第三方统计脚本加载失败不能盖过仍在正常下载的 ROM（生产诊断 #3978）',
+  )
+  const previousPageAssetDuringRomDownload = diagnoseStartupFailure({
+    event: 'slow_start', runtime: 'emulatorjs', elapsedMs: 20_472,
+    detail: '等待 game_playable 已超过 20 秒',
+    diagnostics: {
+      logs: [
+        { t: -3149, s: 'resource', l: 'error', m: 'link 加载失败 8bitgo.com/assets/…/index-ppM98XEK.js' },
+        { t: 20_472, s: 'snapshot', l: 'info', m: '加载进度：阶段 rom，ROM 41.4MB/71.7MB，ROM 起于 0.5s，平均 17.4Mbps，最后进度 20.4s' },
+      ],
+      resources: [{ n: '8bitgo.com/assets/…/index-ppM98XEK.js', i: 'link', at: -3149, st: 0 }],
+    },
+  })
+  assert.equal(previousPageAssetDuringRomDownload.signals[0], 'progress.rom_downloading',
+    '开局前的旧页面资源失败不能被归为本次页面资源故障（生产诊断 #3018）')
+  assert.equal(diagnoseStartupFailure({
+    event: 'slow_start', runtime: 'emulatorjs', elapsedMs: 20_000,
+    diagnostics: { logs: [{ t: 1000, s: 'resource', l: 'error', m: 'link 加载失败 cn.8bitgo.com/_cn/assets/GameDetailPage-C2JSNwpA.css' }] },
+  }).code, 'page_asset', '开局期间本站 JS/CSS 加载失败仍应定位为页面资源故障')
   const reactUpdateLoop = diagnoseStartupFailure({
     event: 'failed', runtime: 'page', platform: 'nes',
     detail: 'Error: Minified React error #185; at fi (react-vendor.js:8:27488)',
@@ -178,6 +218,32 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   assert.notEqual(diagnoseStartupFailure({
     event: 'failed', runtime: 'page', diagnostics: { resources: [{ n: 'u.clarity.ms/collect', i: 'xmlhttprequest', at: -459_500, st: 400 }] },
   }).code, 'network_http', '数分钟前的第三方 HTTP 400 不归到当前开局')
+  const ruffleInitWithRomRequest = {
+    event: 'failed', runtime: 'ruffle', platform: 'flash',
+    detail: 'Flash 内容载入失败：Ruffle 未正确初始化',
+    diagnostics: {
+      logs: [
+        { t: 1360, s: 'download', l: 'info', m: 'ROM 首段 282606 字节 / 919ms： cn-assets.8bitgo.com/roms/…/[ROM].en.swf.8bg' },
+        { t: 160, s: 'snapshot', l: 'info', m: 'Ruffle 现场：卡在「ruffle.js 已加载」，线路 同源，SWF 未到，核心预热 未开始/失败' },
+      ],
+      resources: [{ n: 'cn-assets.8bitgo.com/roms/…/[ROM].en.swf.8bg', i: 'fetch', at: 76, d: 4950, st: 0, sz: 0 }],
+    },
+  }
+  const ruffleInit = diagnoseStartupFailure(ruffleInitWithRomRequest)
+  assert.deepEqual(
+    { code: ruffleInit.code, label: ruffleInit.label, signal: ruffleInit.signals[0] },
+    { code: 'engine_asset', label: 'Ruffle 运行时初始化失败', signal: 'error.ruffle_init' },
+    'Ruffle API 未初始化时，诊断包里的并行 ROM URL 不能把错误误归为 ROM 下载失败（#2887 / #2889）',
+  )
+  assert.match(errorSignature({ ...ruffleInitWithRomRequest, diagnostics: { ...ruffleInitWithRomRequest.diagnostics, diagnosis: ruffleInit } }).text,
+    /Ruffle 运行时初始化失败/, '错误诊断分组文案应与现场原始错误一致')
+  assert.notEqual(diagnoseStartupFailure({
+    event: 'failed', runtime: 'ruffle', platform: 'flash',
+    diagnostics: { resources: [{ n: 'cn-assets.8bitgo.com/roms/…/[ROM].en.swf.8bg', i: 'fetch', at: 76, d: 4950, st: 0, sz: 0 }] },
+  }).code, 'rom_download', '只有 ROM 资源 URL、没有失败信号时不能归为 ROM 下载失败')
+  assert.equal(diagnoseStartupFailure({
+    event: 'failed', runtime: 'ruffle', platform: 'flash', detail: 'ROM 下载失败：无法读取完整文件',
+  }).code, 'rom_download', '明确的 ROM 下载错误仍应归为 ROM 故障')
   assert.equal(diagnoseStartupFailure({
     event: 'failed', runtime: 'page', diagnostics: { resources: [{ n: '8bitgo.com/api/events', i: 'fetch', at: -1200, st: 400 }] },
   }).code, 'network_http', '开局附近的本站 HTTP 错误仍可识别')

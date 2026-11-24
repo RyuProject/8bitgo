@@ -62,6 +62,10 @@ assert.deepEqual(gameApiToPartialRow({ dosboxConfig: '' }), { dosbox_config_over
 
 // 普通 DOS 也必须能在后台填写性能 / 内存兼容配置；以前表单只在 dosboxX 分支保存，输入会静默消失。
 const gameForm = readFileSync(new URL('../src/admin/GameForm.tsx', import.meta.url), 'utf8')
+// 运行区只有两列；子项 span 4 会创建隐式轨道，把 col-span-full 压成一条窄列。
+assert.match(gameForm, /<div className="grid w-full min-w-0 gap-3 sm:grid-cols-2">/)
+assert.match(gameForm, /<Field label="附加文件（资料片 \/ 补丁）" className="col-span-full min-w-0">/)
+assert.match(gameForm, /<Field label="共享 Windows 系统镜像" className="col-span-full min-w-0">/)
 assert.match(gameForm, /if \(form\.platform === 'dos'\) \{\s*\n\s*try \{\s*\n\s*dosboxConfig = normalizeDosboxConfigOverride/)
 assert.doesNotMatch(gameForm, /if \(form\.platform === 'dos' && form\.dosBackend === 'dosboxX'\) \{\s*\n\s*try \{\s*\n\s*dosboxConfig/)
 assert.match(gameForm, /form\.dosBackend === 'dosboxX' \? 'DOSBox-X' : 'DOSBox'/)

@@ -400,6 +400,7 @@ export async function retrySockdriveConversion(id) {
    * 并在 publish_started 时先检查已提交元数据；把 I/O 留给后台既不降低安全性，也让请求立即返回。
    */
   /*
+  /*
    * 条件里必须带上 source_deleted：上面那次读和这次写之间，清扫器（sweepStaleSources）
    * 可能刚领走这份 24 小时前失败的源 ZIP（source_deleted 0 → 2 → 1）。不在同一条 UPDATE 里
    * 核对，就会把一个「源文件正在被删」的任务重新排队，processJob 下载到一半 404。

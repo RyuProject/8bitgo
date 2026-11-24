@@ -13,6 +13,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { brotliCompressSync, brotliDecompressSync } from 'node:zlib'
 import express from 'express'
+import cors from 'cors'
+import { gzipResponse } from '../src/compress.js'
+import { createCnEdgeMiddleware } from '../src/cn-edge.js'
 import { staticCacheHeaders } from '../src/cache.js'
 import { precompressedStatic, PRECOMPRESSED_STATIC_PATTERNS } from '../src/precompressed-static.js'
 import { contentHashOfVersion, runtimeVersionGuard } from '../src/runtime-version-guard.js'
@@ -85,7 +88,10 @@ writeFileSync(join(ruffleDir, 'bare.wasm.br'), brotliCompressSync(wasm))
 
 const app = express()
 const guardLog = []
-// 与 server/src/index.js 的注册顺序一致：版本守卫 → 预压缩 → express.static
+// 与 server/src/index.js 的注册顺序一致：CORS / gzip → /_cn 改写 → 版本守卫 → 静态服务。
+app.use(cors({ origin: true, exposedHeaders: ['x-save-updated-at'] }))
+app.use((req, res, next) => gzipResponse(req, res, next))
+app.use(createCnEdgeMiddleware({ clientDir: root, siteOrigin: 'https://8bitgo.com', socketIoClientDir: '' }))
 app.use(runtimeVersionGuard(root, { log: (line) => guardLog.push(line) }))
 app.use(precompressedStatic(root, { setHeaders: staticCacheHeaders }))
 app.use(express.static(root, { index: false, redirect: false, setHeaders: staticCacheHeaders }))
@@ -203,6 +209,24 @@ await check('⚠️ 版本核验通过的 EmulatorJS 核心提供强 ETag，Rang
   assert.equal(first.headers['content-encoding'], undefined, 'Range 偏移必须针对 identity 字节')
   assert.deepEqual(first.body, core.subarray(0, 128))
   const resumed = await get(path, { range: 'bytes=128-255', 'if-range': first.headers.etag })
+  assert.equal(resumed.status, 206, '强 ETag 匹配时服务端应接受 If-Range')
+  assert.equal(resumed.headers.etag, first.headers.etag)
+  assert.equal(resumed.headers['content-range'], `bytes 128-255/${core.length}`)
+  assert.deepEqual(resumed.body, core.subarray(128, 256))
+})
+
+await check('⚠️ 大陆 /_cn 核心 Range 暴露强 ETag、Content-Range，If-Range 续接精确字节', async () => {
+  const path = `/_cn/emulatorjs/cores/fbneo-wasm.data?v=${CORE_V}.range1`
+  const origin = 'https://8bitgo.com'
+  const first = await get(path, { origin, range: 'bytes=0-127', 'accept-encoding': 'br' })
+  assert.equal(first.status, 206)
+  assert.equal(first.headers.etag, `"sha256-${CORE_SHA}"`, '边缘缓存换代后源站必须返回完整 SHA-256 强 ETag')
+  assert.equal(first.headers['content-range'], `bytes 0-127/${core.length}`)
+  assert.equal(first.headers['content-encoding'], undefined, 'Range 偏移必须针对 identity 字节')
+  assert.deepEqual(first.body, core.subarray(0, 128))
+  const exposed = String(first.headers['access-control-expose-headers'] || '').toLowerCase()
+  for (const name of ['content-range', 'etag', 'content-encoding', 'content-length']) assert.ok(exposed.includes(name), `${name} 必须可被跨源页面读取`)
+  const resumed = await get(path, { origin, range: 'bytes=128-255', 'if-range': first.headers.etag })
   assert.equal(resumed.status, 206, '强 ETag 匹配时服务端应接受 If-Range')
   assert.equal(resumed.headers.etag, first.headers.etag)
   assert.equal(resumed.headers['content-range'], `bytes 128-255/${core.length}`)

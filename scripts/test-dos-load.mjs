@@ -31,6 +31,7 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { canRestartInPlace } from '@/emulator/sessionRestart'
+import { isWindowsGuestStartupWasmTrap } from '@/emulator/jsdosStartupTrap'
 import { needsLockedAbsoluteDosMouse, needsRelativeWindowsGuestMouse } from '@/emulator/dosMouse'
 import {
   advanceLockedAbsolutePointer,
@@ -92,6 +93,20 @@ check('带无关字段的本地会话 → 能重开', () =>
   assert.equal(canRestartInPlace({ id: 7, game: 'zeek.zip', platform: 'dos' }), true))
 
 check('联机（netplay）→ 不能重开', () => assert.equal(canRestartInPlace({ netplay: { room: 'a' } }), false))
+
+check('Windows 客体在 ci-ready 前的 WASM 陷阱会被准确识别', () => {
+  const event = {
+    message: 'Uncaught RuntimeError: unreachable',
+    filename: 'wasm://wasm/01eb15b6',
+    error: { name: 'RuntimeError', message: 'unreachable' },
+  }
+  assert.equal(isWindowsGuestStartupWasmTrap(event, true, 'ci'), true)
+  assert.equal(isWindowsGuestStartupWasmTrap(event, false, 'ci'), false, '普通 DOS / 其他运行时不受影响')
+  assert.equal(isWindowsGuestStartupWasmTrap(event, true, 'boot'), false, '客体已建立命令接口后不拦运行中错误')
+  assert.equal(isWindowsGuestStartupWasmTrap({ ...event, message: 'Uncaught TypeError: x' }, true, 'ci'), false)
+  assert.equal(isWindowsGuestStartupWasmTrap({ ...event, error: { name: 'TypeError' } }, true, 'ci'), false)
+  assert.equal(isWindowsGuestStartupWasmTrap({ ...event, filename: 'https://8bitgo.com/app.js' }, true, 'ci'), false)
+})
 check('云游戏（cloud）→ 不能重开', () => assert.equal(canRestartInPlace({ cloud: { id: 'x' } }), false))
 check('看直播（live）→ 不能重开', () => assert.equal(canRestartInPlace({ live: { host: 'b' } }), false))
 check('同时联机 + 云游戏 → 不能重开', () =>
@@ -680,6 +695,14 @@ check('适配器自有启动预算期间给播放器看门狗报活（#2501 / #2
   assert.equal((src.match(/cancelGuestStartupTimeout = startActiveTimeout\(/g) ?? []).length, 0)
   const ms = Number(src.match(/ADAPTER_OWNED_HEARTBEAT_MS = ([\d_]+)/)?.[1].replace(/_/g, ''))
   assert.ok(ms > 0 && ms < 60_000, '报活间隔必须远小于播放器 120 秒看门狗')
+})
+
+check('Windows 客体 ci-ready 前的 WASM 陷阱立即失败并在销毁时卸载监听器', () => {
+  const src = read('src/emulator/adapters/jsdos.ts')
+  assert.match(src, /window\.addEventListener\('error', guestStartupWasmErrorListener\)/)
+  assert.match(src, /isWindowsGuestStartupWasmTrap\(event, fullWindowsGuest, windowsLaunchStage\)/)
+  assert.match(src, /failLoad\(fmt\(rt\.jsdosRunFailed, \{ msg: detail \}\), 'runtime'\)/)
+  assert.match(src, /window\.removeEventListener\('error', guestStartupWasmErrorListener\)/)
 })
 
 check('引擎脚本未到时缓住的 ROM / 系统镜像进度仍给看门狗报活（#1666 / #2623）', () => {

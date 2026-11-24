@@ -152,7 +152,7 @@ import {
  * 玩家看到的就是「Error loading EmulatorJS runtime」。本地有核心，这条路不会走。
  */
 export { EJS_PATH } from '../paths'
-import { coreDownloadFailureCause, normalizeEngineText } from '../ejsEngineErrors'
+import { coreDownloadFailureCause, isMameArchiveWorkerAbortText, normalizeEngineText } from '../ejsEngineErrors'
 import { EJS_PATH, EJS_RUNTIME_GENERATION, ejsBase, ejsCoreAsset, ejsUsingEdge, markEjsEdgeFailed, ejsRuntimeAsset, EJS_EXTRACT_7Z_FILE, emulatorJsCoreDataFile, emulatorJsCoreFileFor, emulatorJsCoreForGame, ejsCoreNeedsWebgl2, emulatorJsRuntimePaths, isDiscPlatform, isLargeDirectEjsRom, isSelfDownloadPlatform } from '../paths'
 import { applyTuning, sizeOfTrack, tuningFor, usableVideoSize } from '../videoTuning'
 import {
@@ -1493,9 +1493,10 @@ function installErrorTap(
   onCoreCrash?: (line: string, details?: string) => void,
   onStartupActivity?: () => void,
   onScriptSyntaxError?: (error: EngineScriptError) => void,
+  mameCurrentCore = false,
 ): { lines: string[] } {
   const lines: string[] = []
-  const push = (level: string, text: string, error?: unknown) => {
+  const push = (level: string, text: string, error?: unknown, context = '') => {
     const line = `[${level}] ${text}`.slice(0, 500)
     lines.push(line)
     if (lines.length > LOG_LIMIT) lines.shift()
@@ -1520,8 +1521,9 @@ function installErrorTap(
       解 35MB 核心的 7z Worker 报「DataCloneError … out of memory」后引擎永远停在「下载游戏核心」，
       直到 120 秒看门狗判超时。错误级才算（核心 stdout 里偶尔也会出现这几个词）。
     */
-    if (level !== 'log' && (FATAL_PHRASES.some((h) => low.includes(h)) || (level === 'error' && isOutOfMemoryText(text)))) {
-      onFatal(text.trim())
+    const mameArchiveAbort = mameCurrentCore && level === 'error' && isMameArchiveWorkerAbortText(`${text}\n${context}`)
+    if (level !== 'log' && (FATAL_PHRASES.some((h) => low.includes(h)) || (level === 'error' && isOutOfMemoryText(text)) || mameArchiveAbort)) {
+      onFatal((mameArchiveAbort ? `${text}\n${context}` : text).trim())
     }
   }
 
@@ -1541,7 +1543,10 @@ function installErrorTap(
       let forward = native
       try {
         const text = args.map((a) => (typeof a === 'string' ? a : safeStr(a))).join(' ')
-        push(level, text, args.find((a) => isNdsWasmCrash('', a)))
+        const stack = mameCurrentCore
+          ? args.map((a) => a && typeof a === 'object' ? (a as { stack?: unknown }).stack : undefined).find((value): value is string => typeof value === 'string')
+          : undefined
+        push(level, text, args.find((a) => isNdsWasmCrash('', a)), stack)
         // 街机核心启动时会连续输出 RetroArch / WebGL 初始化日志；这段没有网络或状态文案变化，
         // 但仍是引擎活着的证据。只让已知常规行刷新启动看门狗，避免普通噪声掩盖真正卡死。
         if (isRoutineCoreLine(text)) onStartupActivity?.()
@@ -1558,7 +1563,11 @@ function installErrorTap(
   }
   win.addEventListener('error', (e) => {
     const event = e as ErrorEvent
-    push('error', event.message || 'script error', event.error)
+    const stack = mameCurrentCore && event.error && typeof event.error === 'object'
+      ? (event.error as { stack?: unknown }).stack
+      : undefined
+    const context = [mameCurrentCore ? event.filename : '', typeof stack === 'string' ? stack : ''].filter(Boolean).join('\n')
+    push('error', event.message || 'script error', event.error, context)
     // 本站引擎脚本解析失败：整份没执行，不会再有进展；不等 120 秒看门狗（engineScriptErrors.ts，诊断包 #1331 / #1334 / #1343）
     const scriptError = onScriptSyntaxError ? engineScriptSyntaxError(event, window.location.origin) : null
     if (scriptError) onScriptSyntaxError?.(scriptError)
@@ -3337,6 +3346,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       }
       if (bits === '32') return failLoad(rt.ejsOutOfMemory32bit, 'config')
       /*
+        MAME-current 没有可替换的低内存构建。2026-11-22 #2975 / #2978 在同一页重复下载、解压、编译 242MB 核心，
+        可用 WASM 余量已降到 128–256MB，第二次仍是同一 OOM。直接重试只会再占一轮内存；交给播放器做一次有界的
+        干净页面重开（isMemoryPressureMessage），释放旧 iframe / ROM 副本后再试，其他核心仍保留原来的单次重试。
+      */
+      if (core === 'mame-current') {
+        logEngine(`[memory] mame-current 无低内存替代核心；跳过同页重复实例化；此刻可新建约 ${ceiling === null ? '未知' : `${ceiling}MB`} WASM`)
+        return failLoad(rt.ejsOutOfMemory, 'config')
+      }
+      /*
         低内存核心（FBNeo 起步 72 MiB / PCSX 起步 64 MiB）也分配不出：这是浏览器 / 设备环境给不出地址空间，原地重试同一个核心
         只是再等十秒撞同一个错（2026-11-14 大陆 Chrome 114 / Android 12、8GB 内存《拳皇97》：两轮都在
         instantiate 报 Out of memory）。'config'：不自动重试、不换 ROM，告诉玩家更新或换浏览器；手动重试仍可点。
@@ -3348,6 +3366,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       }
       // 'runtime'：可以原地重试一次（别的标签页可能刚释放了内存），但换 ROM / 换语言版本毫无意义
       return failLoad(rt.ejsOutOfMemory, 'runtime')
+    }
+    if (core === 'mame-current' && isMameArchiveWorkerAbortText(line)) {
+      // #2974 的 7z Worker 在明确 abort 后没有后续进度，直到看门狗超时；错误形态只证明解包中止，不能据此声称 OOM。
+      const msg = `MAME 7z extraction worker aborted; cause unconfirmed: ${line}`
+      logEngine(`[mame] 7z 解包 Worker 已中止；根因未确认，停止同页重试并提前结束启动：${line}`)
+      return failLoad(fmt(rt.ejsEngineError, { msg }), 'config')
     }
     /*
       建不出 WebGL：浏览器关了硬件加速或 GPU 被拉黑。重下 ROM、换语言版本都没用，'config' 让播放器
@@ -5646,7 +5670,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             // 重复声明：这台浏览器里别的脚本（常见是扩展）先占了同一个全局名，重试、换 ROM 都一样 —— 不自动重试
             if (scriptError.redeclared) return failLoad(fmt(rt.ejsScriptConflict, { name: scriptError.redeclared }), 'config')
             return failLoad(fmt(rt.ejsEngineError, { msg: `${name}: ${scriptError.message}` }), 'runtime')
-          })
+          },
+          isMameCurrentCore(core))
         // 预下载好的 ROM：引擎取 blob: 地址时直接拿 Blob 回应，不走 Safari 的 blob URL 加载（见 installBlobFetchShortcut）
         if (preparedRomBlob && preparedArcadeBlobUrl && gameUrl === preparedArcadeBlobUrl) {
           installBlobFetchShortcut(win, preparedArcadeBlobUrl, preparedRomBlob, (error) => {

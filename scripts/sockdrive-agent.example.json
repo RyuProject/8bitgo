@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "workDir": "/home/<your-linux-user>/8bitgo-work/sockdrive",
+  "cli": "/opt/sockdrive/cli",
+  "source": {
+    "url": "https://<private-rom-worker>/sockdrive-staging/<source-id>.zip",
+    "bytes": 451564845,
+    "sha256": "<64-char-sha256-of-the-original-zip>",
+    "tokenEnv": "SOCKDRIVE_WORKER_TOKEN",
+    "etag": "<optional-strong-etag>"
+  },
+  "game": {
+    "slug": "age-of-empires-2-dos",
+    "version": "v2026112201",
+    "executable": "AgeOfEmpires2TheAgeOfKing/empires2.EXE",
+    "lang": "zh-Hans"
+  },
+  "publish": {
+    "workerUrl": "https://<private-rom-worker>",
+    "publicBase": "https://assets.8bitgo.com",
+    "apiBase": "https://8bitgo.com",
+    "encoding": "br",
+    "freeSpace": "128M",
+    "compressionConcurrency": 4,
+    "brotliQuality": 9,
+    "uploadConcurrency": 6
+  }
+}

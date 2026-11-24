@@ -14,6 +14,7 @@
     "jsdos": "node scripts/copy-jsdos.mjs --with-dosbox-x",
     "j2me-web:build": "vite build --config vite.j2me-web.config.ts",
     "sockdrive:prepare": "node scripts/prepare-sockdrive.mjs",
+    "sockdrive:agent": "node scripts/sockdrive-external-agent.mjs",
     "sockdrive:upload": "node scripts/upload-sockdrive-r2.mjs",
     "sockdrive:bind": "node scripts/bind-sockdrive-game.mjs",
     "cs15:bundle": "esbuild public/web/cs15/cs15.js --bundle --format=esm --platform=browser --target=es2022 --outfile=public/web/cs15/cs15.bundle.js",

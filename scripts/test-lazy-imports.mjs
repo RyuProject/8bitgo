@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
  * 懒加载导入的抗失败与构建检查（不联网、不开浏览器；真浏览器验收见 scripts/test-lazy-imports-browser.mjs）：
- *   - 预加载助手（scripts/lib/vite-resilient-preload.mjs）：Chromium 上依赖先暖缓存、失败重试、404 不重试、同一依赖只取一次、
- *     卡住会中止、确实取不下来时抛带标记的错误且不碰模块表；非 Chromium / legacy / fetch 从没成功过时原样交回 Vite；
+ *   - 预加载助手（scripts/lib/vite-resilient-preload.mjs）：Chromium 上 JS 依赖暖缓存、CSS 样式表等待并有限重试，
+ *     同一依赖只取一次、失败链接移除、卡住会中止、确实取不下来时抛带标记的错误且不碰模块表；非 Chromium / legacy 原样交回 Vite；
  *   - Vite 的助手模板还是补丁认得的写法（升级 Vite 时第一个红的就是这里）；
  *   - importWithRetry：暖缓存失败后再走一遍原加载函数，而不是换查询串；
  *   - check-lazy-imports.mjs：缺懒加载目标 / 缺依赖 / 助手没换上 / 扇出超标 / 首屏超标都会拦。
@@ -53,8 +53,37 @@ const BASE = 'https://8bitgo.com/assets/'
 }
 
 /* ---------- 在 VM 里跑助手 ---------- */
-function makeHelper({ chromium = true, modern = true, fetchImpl, links = [], scripts = [], timings = {} } = {}) {
-  const calls = { vite: [], fetch: [] }
+function makeHelper({ chromium = true, modern = true, fetchImpl, cssImpl = () => true, links = [], cssLinks = [], scripts = [], timings = {} } = {}) {
+  const calls = { vite: [], fetch: [], css: [] }
+  const moduleLinks = links.map((href) => ({ href: new URL(href, BASE).href, rel: 'modulepreload', sheet: null }))
+  const stylesheetLinks = cssLinks.map((href) => ({ href: new URL(href, BASE).href, rel: 'stylesheet', sheet: {} }))
+  const makeLink = () => {
+    const listeners = new Map()
+    return {
+      rel: '', href: '', crossOrigin: '', sheet: null, parentNode: null,
+      addEventListener: (name, fn) => listeners.set(name, fn),
+      removeEventListener: (name, fn) => { if (listeners.get(name) === fn) listeners.delete(name) },
+      dispatch: (name) => { const fn = listeners.get(name); if (fn) fn() },
+    }
+  }
+  const head = {
+    appendChild: (link) => {
+      link.parentNode = head
+      stylesheetLinks.push(link)
+      calls.css.push(link.href)
+      Promise.resolve().then(() => cssImpl(link.href, calls.css.length)).then((loaded) => {
+        if (loaded) { link.sheet = {}; link.dispatch('load') }
+        else link.dispatch('error')
+      }, () => link.dispatch('error'))
+      return link
+    },
+    removeChild: (link) => {
+      const index = stylesheetLinks.indexOf(link)
+      if (index >= 0) stylesheetLinks.splice(index, 1)
+      link.parentNode = null
+      return link
+    },
+  }
   let code = RESILIENT_PRELOAD_CODE
     .replace('export const __vitePreload', 'globalThis.__vitePreload')
     .replaceAll('import.meta.url', JSON.stringify(`${BASE}index-X.js`))
@@ -72,7 +101,9 @@ function makeHelper({ chromium = true, modern = true, fetchImpl, links = [], scr
     clearTimeout,
     navigator: chromium ? { userAgentData: { brands: [{ brand: 'Chromium', version: '150' }] } } : {},
     document: {
-      getElementsByTagName: (tag) => (tag === 'link' ? links.map((href) => ({ href })) : scripts.map((src) => ({ src }))),
+      head,
+      createElement: (tag) => { assert.equal(tag, 'link'); return makeLink() },
+      getElementsByTagName: (tag) => (tag === 'link' ? [...moduleLinks, ...stylesheetLinks] : scripts.map((src) => ({ src }))),
     },
     assetsURL: (dep, importerUrl) => new URL(dep, importerUrl).href,
     isCssPreloadUrl: (url) => url.pathname.endsWith('.css'),
@@ -87,21 +118,65 @@ function makeHelper({ chromium = true, modern = true, fetchImpl, links = [], scr
   }
   context.globalThis = context
   vm.runInContext(code, vm.createContext(context))
-  return { preload: context.__vitePreload, calls }
+  return { preload: context.__vitePreload, calls, stylesheetLinks }
 }
 const ok = () => ({ ok: true, status: 200, body: { getReader: () => { let done = false; return { read: async () => (done ? { done: true } : ((done = true), { done: false, value: new Uint8Array(4) })) } } } })
 const status = (code) => ({ ok: false, status: code })
 const IMPORTER = `${BASE}index-X.js`
 
 {
-  // 1. 全部正常：每个 JS 依赖 fetch 一次，HTML 里已有 modulepreload 的不取，CSS 交回 Vite；全部取完才导入
+  // 1. 全部正常：每个 JS 依赖 fetch 一次，HTML 里已有 modulepreload 的不取，CSS 先加载；全部完成才导入
   let imported = false
   const { preload, calls } = makeHelper({ fetchImpl: () => ok(), links: [`${BASE}react-vendor-R.js`] })
   const result = await preload(async () => { imported = true; return { page: 1 } }, ['./Page-P.js', './dep-D.js', './react-vendor-R.js', './Page-P.css'], IMPORTER)
   assert.deepEqual(result, { page: 1 })
   assert.ok(imported)
   assert.deepEqual(calls.fetch, [`${BASE}Page-P.js`, `${BASE}dep-D.js`])
-  assert.deepEqual(JSON.parse(JSON.stringify(calls.vite)), [['./Page-P.css']], 'JS 依赖不再交给 Vite 插 modulepreload，CSS 仍由 Vite 处理')
+  assert.deepEqual(calls.css, [`${BASE}Page-P.css`], 'CSS 用 stylesheet link 加载并等待完成')
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.vite)), [[]], 'JS 和 CSS 均自行准备后，Vite 只负责执行导入')
+}
+
+{
+  // 1a. CSS 首次失败：移除失败 link，用唯一查询串绕过缓存重试一次
+  let attempts = 0
+  const { preload, calls, stylesheetLinks } = makeHelper({
+    timings: { __8bitgoWarmRetryMs: '[1]' },
+    cssImpl: () => ++attempts > 1,
+  })
+  assert.equal(await preload(async () => 'page', ['./Page-P.css'], IMPORTER), 'page')
+  assert.equal(calls.css.length, 2)
+  assert.equal(new URL(calls.css[0]).searchParams.has('8bg-css-retry'), false)
+  assert.ok(new URL(calls.css[1]).searchParams.has('8bg-css-retry'), '重试 URL 必须绕过失败响应缓存')
+  assert.equal(stylesheetLinks.length, 1, '失败 stylesheet 已从文档移除')
+  assert.equal(stylesheetLinks[0].href, calls.css[1])
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.vite)), [[]])
+}
+
+{
+  // 1b. 持续失败：仅两次 link 请求，输出可供诊断与恢复逻辑使用的 CSS 文件名
+  const { preload, calls } = makeHelper({ timings: { __8bitgoWarmRetryMs: '[1]' }, cssImpl: () => false })
+  const error = await preload(async () => 'unreachable', ['./Page-P.css'], IMPORTER).then(() => null, (e) => e)
+  assert.ok(error)
+  assert.equal(calls.css.length, 2, 'CSS 有界重试一次，不能循环请求')
+  assert.deepEqual(JSON.parse(JSON.stringify(error[PRELOAD_FAILURE_PROP])), { failed: ['Page-P.css'] })
+  assert.deepEqual(JSON.parse(JSON.stringify(preloadFailure(error))), { failed: ['Page-P.css'] })
+  assert.equal(retryableImportError(error), true)
+  assert.match(error.message, /Unable to preload CSS for Page-P\.css/)
+}
+
+{
+  // 1c. HTML 中已有成功的 stylesheet 直接复用；并发懒加载共享同一次请求
+  const existing = makeHelper({ cssLinks: [`${BASE}Page-P.css`] })
+  await existing.preload(async () => 'page', ['./Page-P.css'], IMPORTER)
+  assert.deepEqual(existing.calls.css, [])
+  let release
+  const gate = new Promise((resolve) => { release = resolve })
+  const shared = makeHelper({ cssImpl: async () => { await gate; return true } })
+  const a = shared.preload(async () => 'a', ['./Page-P.css'], IMPORTER)
+  const b = shared.preload(async () => 'b', ['./Page-P.css'], IMPORTER)
+  release()
+  assert.deepEqual(await Promise.all([a, b]), ['a', 'b'])
+  assert.equal(shared.calls.css.length, 1, '相同 CSS 并发加载只插一次 stylesheet')
 }
 
 {
@@ -194,9 +269,9 @@ const IMPORTER = `${BASE}index-X.js`
 
 /* ---------- importWithRetry：暖缓存失败后整套重来，不换查询串 ---------- */
 {
-  const warmError = () => {
-    const e = new TypeError('Failed to fetch dynamically imported module (dependency warm-up failed): AgeGate-A.js')
-    Object.defineProperty(e, PRELOAD_FAILURE_PROP, { value: { failed: ['AgeGate-A.js'] }, configurable: true })
+  const warmError = (name = 'AgeGate-A.js') => {
+    const e = new TypeError(`Failed to fetch dynamically imported module (dependency warm-up failed): ${name}`)
+    Object.defineProperty(e, PRELOAD_FAILURE_PROP, { value: { failed: [name] }, configurable: true })
     return e
   }
   let loads = 0
@@ -207,12 +282,22 @@ const IMPORTER = `${BASE}index-X.js`
   assert.equal(loads, 3, '三次都走原加载函数（助手会重新暖缓存）')
   assert.deepEqual(urls, [], '不换查询串')
 
+  let cssLoads = 0
+  const cssUrls = []
+  const cssResult = await importWithRetry(async () => { if (cssLoads++ === 0) throw warmError('Page-P.css'); return { css: true } }, 'GameDetailPage-G.js', `${BASE}index-X.js`, {
+    ...env,
+    importUrl: async (u) => { cssUrls.push(u); return {} },
+  })
+  assert.deepEqual(cssResult, { css: true })
+  assert.equal(cssLoads, 2, 'CSS 预加载失败后重新走原加载函数')
+  assert.deepEqual(cssUrls, [], 'CSS 预加载失败不能换懒加载入口查询串')
+
   // 三次都失败：证据标成 preload，兜底页据此写诊断包、把失败的依赖交给修复脚本
   let last
   await importWithRetry(async () => { throw (last = warmError()) }, 'GameDetailPage-G.js', `${BASE}index-X.js`, env).catch(() => {})
   tagLazyFailure(last, 'GameDetailPage-G.js', 'GameDetailPage')
   assert.deepEqual(lazyFailure(last).graph, { top: 'preload', failed: ['AgeGate-A.js'] })
-  assert.match(describeImportEvidence(lazyFailure(last).graph), /依赖暖缓存重试后仍取不下来.*AgeGate-A\.js/)
+  assert.match(describeImportEvidence(lazyFailure(last).graph), /静态依赖重试后仍取不下来.*AgeGate-A\.js/)
   // 暖缓存成功、模块加载器那一层才失败：照旧看模块图证据
   let n = 0
   const urls2 = []
@@ -265,4 +350,4 @@ function fakeDist({ helper = true, dynamicTarget = 'Page-P.js', missing = [], ex
   assert.match(analyzeLazyImports(fakeDist({ entryBytes: MAX_ENTRY_CLOSURE_BYTES + 1 })).problems.join(), /首屏静态依赖闭包.*超过预算/)
 }
 
-console.log('✔ 懒加载导入：Chromium 依赖先暖缓存重试（404 不重试、去重、卡住中止、失败不碰模块表），非 Chromium / legacy 原样交回 Vite，构建检查拦缺失 / 助手丢失 / 扇出与首屏超标')
+console.log('✔ 懒加载导入：Chromium JS 暖缓存与 CSS stylesheet 有界重试、失败清理和去重，非 Chromium / legacy 原样交回 Vite；构建检查拦缺失 / 助手丢失 / 扇出与首屏超标')

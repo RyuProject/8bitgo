@@ -34,6 +34,7 @@ import {
   EJS_PATH,
   EJS_RUNTIME_GENERATION,
   EJS_ENGINE_URL_EPOCH,
+  EJS_CORE_URL_EPOCH,
   ejsCoreAsset,
   ejsRuntimeAsset,
   emulatorJsCoreFileFor,
@@ -204,8 +205,10 @@ check('固定名核心与悬停预热共用版本化 URL，不会把两代核心
   const file = join(coresDir, 'melondsds-wasm.data')
   if (existsSync(file)) {
     const hash = createHash('sha256').update(readFileSync(file)).digest('hex').slice(0, 16)
-    assert.ok(melon.endsWith(`?v=${hash}`) || melon.endsWith(`?v=${encodeURIComponent(EJS_RUNTIME_GENERATION)}`), '核心版本必须是内容哈希（或未生成表时的全局代号）')
+    assert.ok(melon.endsWith(`?v=${hash}.${EJS_CORE_URL_EPOCH}`) || melon.endsWith(`?v=${encodeURIComponent(EJS_RUNTIME_GENERATION)}`), '核心版本必须是内容哈希与续传缓存代次（或未生成表时的全局代号）')
   }
+  const metadata = ejsCoreAsset('cores/metadata/fbneo.json')
+  assert.ok(!metadata.includes(EJS_CORE_URL_EPOCH), '元数据不参与 Range 续传，不应随核心 URL 缓存代次换代')
   const fbneoPaths = emulatorJsRuntimePaths('fbneo')
   assert.equal(
     fbneoPaths['fbneo-legacy-wasm.data'],

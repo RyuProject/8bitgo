@@ -1392,7 +1392,7 @@ export function GameForm({
       <div className="grid w-full min-w-0 gap-3 sm:grid-cols-2">
         {form.platform === 'dos' && (
           <>
-            {/* Field 根节点也是 label；复选框卡片本身是 label，改用 div 避免无效嵌套，并让选项组跨满网格。 */}
+            {/* Field 根节点也是 label，复选框卡片再嵌一层 label 会破坏 HTML 结构。运行区是两列网格，跨行项目用 col-span-full；span-4 会造出隐式列，让选项组被压成窄列。 */}
             <div className="col-span-full min-w-0">
               <span className="mb-1 block text-xs font-medium text-muted">运行环境</span>
               <div className="grid min-w-0 gap-2 sm:grid-cols-2">
@@ -1444,7 +1444,7 @@ export function GameForm({
                   <span className="min-w-0">PC-98 软盘模式（.fdi）</span>
                 </label>
               </div>
-              <p className="mt-2 text-[11px] text-dim">
+              <p className="mt-1 text-[11px] text-dim">
                 数据库平台仍是 DOS。PC-98 会固定使用 DOSBox-X 的 <code>machine=pc98</code>，从 FDI 自身启动；只挂 CUE 光盘时系统镜像留空；要运行 Windows 才需要填写系统镜像。
               </p>
             </div>
@@ -2544,7 +2544,7 @@ function DosExtrasField({
   }
 
   return (
-    <Field label="附加文件（资料片 / 补丁）" className="col-span-2 sm:col-span-4">
+    <Field label="附加文件（资料片 / 补丁）" className="col-span-full min-w-0">
       {refs.length > 0 && (
         <ul className="mb-2 space-y-1">
           {refs.map((ref, i) => (
@@ -2753,7 +2753,7 @@ function SystemImageField({
   }
 
   return (
-    <Field label="共享 Windows 系统镜像" className="col-span-2 sm:col-span-4">
+    <Field label="共享 Windows 系统镜像" className="col-span-full min-w-0">
       <div className="flex flex-col gap-2 sm:flex-row">
         <input
           className={cx(inputClass, 'font-mono')}
