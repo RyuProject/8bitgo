@@ -67,6 +67,18 @@ export async function upsertGame(game: Game, options: { createOnly?: boolean } =
   // 新增必须让服务端做 INSERT-only；浏览器里的「先查重再保存」存在竞态，会覆盖同名游戏。
   const suffix = options.createOnly ? '?create=1' : ''
   const saved = await api.put<Game>(`/api/games/${encodeURIComponent(game.slug)}${suffix}`, game, true)
+  /*
+    DOSBox-X 本身不一定会带 Windows 镜像或流式盘。过去只核对后两项，纯 DOSBox-X
+    游戏遇到旧服务端 / 少列部署时会收到 200 并关闭编辑器，管理员重开才发现勾选消失。
+    这里按服务端实际回读的值确认，失败时保留当前表单，避免再次填写整份资料。
+  */
+  const requestedDosBackend = game.dosBackend === 'dosboxX' ? 'dosboxX' : undefined
+  const persistedDosBackend = saved.dosBackend === 'dosboxX' ? 'dosboxX' : undefined
+  if (requestedDosBackend !== persistedDosBackend) {
+    throw new Error(
+      '服务端没有保存 DOSBox-X 运行环境。请在服务器运行数据库迁移并重启 8bitgo，然后重新保存。',
+    )
+  }
   const requestedSystem = game.dosSystem?.trim() || undefined
   const persistedSystem = saved.dosSystem?.trim() || undefined
   if (requestedSystem !== persistedSystem) {

@@ -62,6 +62,7 @@ assert.deepEqual(gameApiToPartialRow({ dosboxConfig: '' }), { dosbox_config_over
 
 // 普通 DOS 也必须能在后台填写性能 / 内存兼容配置；以前表单只在 dosboxX 分支保存，输入会静默消失。
 const gameForm = readFileSync(new URL('../src/admin/GameForm.tsx', import.meta.url), 'utf8')
+const gameStore = readFileSync(new URL('../src/services/store.ts', import.meta.url), 'utf8')
 // 运行区只有两列；子项 span 4 会创建隐式轨道，把 col-span-full 压成一条窄列。
 assert.match(gameForm, /<div className="grid w-full min-w-0 gap-3 sm:grid-cols-2">/)
 assert.match(gameForm, /<Field label="附加文件（资料片 \/ 补丁）" className="col-span-full min-w-0">/)
@@ -74,6 +75,11 @@ assert.match(gameForm, /dosPc98: form\.platform === 'dos' \? pc98 : false/)
 assert.doesNotMatch(gameForm, /<Field label="运行环境">[\s\S]*?<\/Field>/, '运行环境不能用 label 包住内部的复选框 label')
 assert.match(gameForm, /<div className="col-span-full min-w-0">\s*<span className="mb-1 block text-xs font-medium text-muted">运行环境<\/span>/)
 assert.match(gameForm, /<div className="grid w-full min-w-0 gap-3 sm:grid-cols-2">/)
+// 纯 DOSBox-X 不必配置 Windows 镜像或 Sockdrive；服务端若静默丢掉这个开关，
+// 后台必须留住表单并报错，不能显示“已保存”。
+assert.match(gameStore, /const requestedDosBackend = game\.dosBackend === 'dosboxX' \? 'dosboxX' : undefined/)
+assert.match(gameStore, /const persistedDosBackend = saved\.dosBackend === 'dosboxX' \? 'dosboxX' : undefined/)
+assert.match(gameStore, /服务端没有保存 DOSBox-X 运行环境/)
 
 assert.equal(dosSystemOf(' systems/win98.jsdos '), 'systems/win98.jsdos')
 assert.equal(dosSystemOf('bad\nvalue'), null)
