@@ -8,8 +8,8 @@
  *   - 换查询串重导入口也必然失败，依赖请求都不再发；只有整页刷新能好。
  * 详情页一次要拉 21 个这样的 chunk（14 个不到 4KB），3G 上任何一个抖一下，整页就进兜底页、自动刷新。
  *
- * 现在：JS 依赖先用 fetch() 取一遍（完整读完正文，写进 HTTP 缓存），失败按网络错误 / 5xx 重试一次；
- * 全部取到后才调 Vite 原来的助手（只剩 CSS）和真正的 import() —— 模块加载器读的全是缓存，没有网络环节可失败。
+ * 现在：JS 依赖先用 fetch() 取一遍（完整读完正文，写进 HTTP 缓存），失败按网络错误 / 5xx 重试一次；CSS 用 stylesheet link
+ * 单独等待并重试，成功后跳过 Vite 的 CSS 插入逻辑。这样失败的 stylesheet 会被移除，不会留在文档里让下一次导入误认为已加载。
  * fetch() 的失败不进模块表：重试过还取不下来时抛一个打了标记的错误、**不碰模块表**，
  * src/services/moduleLinkRecovery.ts 的 importWithRetry 据此再走一遍完整加载（又会先暖缓存），而不是换查询串。
  *
@@ -45,6 +45,8 @@ const __8bitgoWarmRetryMs = [600];
 const __8bitgoWarmHeadersMs = 15000;
 const __8bitgoWarmStallMs = 15000;
 const __8bitgoWarmed = {};
+const __8bitgoCssWarmed = {};
+let __8bitgoCssRetrySequence = 0;
 let __8bitgoFetchWorks = false;
 function __8bitgoSleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -102,6 +104,67 @@ function __8bitgoWarm(href) {
   });
   return promise;
 }
+function __8bitgoCssError(href) {
+  const name = href.split("/").pop().split("?")[0];
+  const error = new TypeError("Unable to preload CSS for " + name + " (dependency warm-up failed)");
+  Object.defineProperty(error, ${JSON.stringify(PRELOAD_FAILURE_PROP)}, { value: { failed: [name] }, configurable: true });
+  return error;
+}
+function __8bitgoWarmCss(href) {
+  if (__8bitgoCssWarmed[href]) return __8bitgoCssWarmed[href];
+  const promise = (async () => {
+    const existing = document.getElementsByTagName("link");
+    for (let i = 0; i < existing.length; i++) {
+      const link = existing[i];
+      if (link.rel === "stylesheet" && link.href === href && link.sheet) return href;
+    }
+    for (let attempt = 0; ; attempt++) {
+      let requestHref = href;
+      if (attempt > 0) {
+        const retryUrl = new URL(href);
+        __8bitgoCssRetrySequence = (__8bitgoCssRetrySequence + 1) % Number.MAX_SAFE_INTEGER;
+        retryUrl.searchParams.set("8bg-css-retry", Date.now().toString(36) + "-" + __8bitgoCssRetrySequence.toString(36));
+        requestHref = retryUrl.href;
+      }
+      try {
+        const link = document.createElement("link");
+        link.rel = "stylesheet";
+        link.crossOrigin = "";
+        link.href = requestHref;
+        await new Promise((resolve, reject) => {
+          let settled = false;
+          let timer;
+          const finish = (error) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            link.removeEventListener("load", onLoad);
+            link.removeEventListener("error", onError);
+            if (error) {
+              try { link.parentNode && link.parentNode.removeChild(link); } catch (removeError) {}
+              reject(error);
+            } else resolve();
+          };
+          const onLoad = () => finish(null);
+          const onError = () => finish(new Error("stylesheet load failed"));
+          timer = setTimeout(() => finish(new Error("stylesheet load timed out")), __8bitgoWarmHeadersMs);
+          link.addEventListener("load", onLoad);
+          link.addEventListener("error", onError);
+          document.head.appendChild(link);
+        });
+        return requestHref;
+      } catch (error) {
+        if (attempt >= __8bitgoWarmRetryMs.length) throw __8bitgoCssError(href);
+        await __8bitgoSleep(__8bitgoWarmRetryMs[attempt]);
+      }
+    }
+  })();
+  __8bitgoCssWarmed[href] = promise;
+  promise.catch(() => {
+    if (__8bitgoCssWarmed[href] === promise) delete __8bitgoCssWarmed[href];
+  });
+  return promise;
+}
 function __8bitgoWarmSupported() {
   try {
     return typeof fetch === "function" && typeof navigator !== "undefined" && !!navigator.userAgentData;
@@ -137,7 +200,11 @@ export const __vitePreload = function preload(baseModule, deps, importerUrl) {
     if (isCssPreloadUrl(new URL(href))) css.push(dep);
     else if (!loaded.has(href)) js.push(href);
   }
-  if (!js.length) return __vitePreloadVite(baseModule, css, importerUrl);
+  const warmCss = () => css.length
+    ? Promise.all(css.map((dep) => __8bitgoWarmCss(new URL(assetsURL(dep, importerUrl), import.meta.url).href)))
+      .then(() => __vitePreloadVite(baseModule, [], importerUrl))
+    : __vitePreloadVite(baseModule, [], importerUrl);
+  if (!js.length) return warmCss();
   const failed = [];
   return Promise.all(js.map((href) => __8bitgoWarm(href).catch(() => {
     failed.push(href);
@@ -152,7 +219,7 @@ export const __vitePreload = function preload(baseModule, deps, importerUrl) {
       Object.defineProperty(error, ${JSON.stringify(PRELOAD_FAILURE_PROP)}, { value: { failed: names.slice(0, 6) }, configurable: true });
       throw error;
     }
-    return __vitePreloadVite(baseModule, css, importerUrl);
+    return warmCss();
   });
 };
 `

@@ -294,6 +294,9 @@ export function diagnoseStartupFailure({ event, runtime, platform, detail, elaps
   if (has(/loading chunk .{0,80} failed|chunkloaderror|failed to fetch dynamically imported module|importing a module script failed|does not provide an export named|import not found:/)) {
     return hit('page_asset', '页面懒加载模块导入失败', 'page_asset', 'high', 'error.lazy_module')
   }
+  if (has(/unable to preload css for\s+\S+\.css(?:\b|\s|\)|$)/i)) {
+    return hit('page_asset', '页面懒加载样式资源加载失败', 'page_asset', 'high', 'error.lazy_css')
+  }
   if (has(/(?:script|link) 加载失败/) && /\.(?:js|css)(?:\b|$)/i.test(combined)) {
     return hit('page_asset', '页面脚本或样式资源加载失败', 'page_asset', 'high', 'error.page_asset')
   }

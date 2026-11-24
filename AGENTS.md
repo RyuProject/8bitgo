@@ -4407,6 +4407,7 @@ PK / TH 两份现场：`The requested module './live-Cqhc9j-k.js' does not provi
   `__8bitgoPreloadFailure` 标记的错误、**不碰模块表**，`importWithRetry` 见到它就再走一遍原加载函数（又会先暖缓存），不换查询串。
   安全边：这一页 fetch() 从没成功过（策略 / 扩展拦了 fetch）时原样交回 Vite（含 modulepreload）；Safari / Firefox / legacy 完全不碰。
   Safari 不开是因为无痕模式下每个依赖下两遍，弱网 iOS 多下一倍不划算；WebKit 依赖失败仍走上一条的「刷新一次 + 补报 recovered」。
+- **CSS 依赖也要有限重试（2026-11-24，诊断包 #1005 / #3959）**：Windows / Chromium 的详情页多次在 `Unable to preload CSS for …GameDetailPage-*.css` 失败；现场没有关联的 CSS HTTP 状态，当前同一路径可正常返回样式，不能据此认定构建缺文件。旧包装只预热 JS，Vite 的失败 stylesheet 会留在文档里，重导入时没有可靠重取路径。现在 Chromium 包装也自行插入 stylesheet、等待 `load`，失败就删掉失败 link，600ms 后用唯一查询串重试一次；成功后不再让 Vite 重插 CSS。每次等待上限 15 秒，仍失败时写 `__8bitgoPreloadFailure`（仅文件名）并由现有加载恢复流程重试；Safari / Firefox / legacy 路径不变。服务端把 `Unable to preload CSS for …css` 明确归为高把握度 `page_asset / error.lazy_css`，不会被几分钟前 Clarity 等第三方 HTTP 400 抢分类。回归在 `npm run test:lazy-imports` 和 `npm run test:startup-diagnostics`。
 - **构建检查** `scripts/check-lazy-imports.mjs`（postbuild:client）：每个懒加载目标（现代 `import("./X.js")`、legacy `.import("./X-legacy-….js")`）
   在磁盘上、现代目标连同静态依赖闭包都在 SHA-256 清单里；预加载助手确实进了现代包（Vite 升级冲掉补丁就红）；扇出预算 40 个 chunk、
   首屏预算 820KB（未压缩；当前约 631KB、最大扇出 29）。预算是「明显变坏」的报警线，放宽要在提交里写原因。上面那次合并实验就会被首屏预算拦下。

@@ -132,6 +132,13 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
     { code: 'page_asset', signal: 'error.lazy_module' },
     '懒加载 chunk 的导入失败不能被粗略归成网络错误',
   )
+  assert.deepEqual(
+    { code: diagnoseStartupFailure({ event: 'failed', runtime: 'page', detail: 'Error: Unable to preload CSS for cn.8bitgo.com/_cn/assets/GameDetailPage-C2JSNwpA.css' }).code,
+      signal: diagnoseStartupFailure({ event: 'failed', runtime: 'page', detail: 'Error: Unable to preload CSS for cn.8bitgo.com/_cn/assets/GameDetailPage-C2JSNwpA.css' }).signals[0],
+      confidence: diagnoseStartupFailure({ event: 'failed', runtime: 'page', detail: 'Error: Unable to preload CSS for cn.8bitgo.com/_cn/assets/GameDetailPage-C2JSNwpA.css' }).confidence },
+    { code: 'page_asset', signal: 'error.lazy_css', confidence: 'high' },
+    'Vite 懒加载 CSS 错误要直接归为页面样式资源，不能被无关的历史 HTTP 400 抢走',
+  )
   assert.equal(diagnoseStartupFailure({
     event: 'failed', runtime: 'page', diagnostics: { resources: [{ n: '8bitgo.com/assets/…/GameDetailPage.js', i: 'script', at: 0, st: 404 }] },
   }).code, 'page_asset', '脚本本身的 HTTP 失败按页面资源定位')
