@@ -354,8 +354,8 @@ function __8bitgoPrefetchAfter(range){
   if(sequential)__8bitgoPrefetchAfter(e);
   return;
  }
- const current=P(e);
- if(sequential)current.then(()=>__8bitgoPrefetchAfter(e)).catch(console.error);
+ P(e);
+ if(sequential)__8bitgoPrefetchAfter(e);
 }`)
   writeFileSync(file, code)
 }

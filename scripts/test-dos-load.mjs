@@ -446,6 +446,7 @@ check('流式盘必须走 URL bundle 入口，否则 js-dos 会把 changes URL �
 check('流式盘按网络与系统镜像竞争自适应预热，并且不再拼接即将丢弃的大 ArrayBuffer', () => {
   assert.match(jsdos, /preload_ranges\.metaj/)
   assert.match(jsdos, /const warmBudget = sockdriveWarmBudget\(connection\?\.effectiveType, Boolean\(connection\?\.saveData\)\)/)
+  assert.match(jsdos, /const profile = warmBudget > 0\s*\? await readSockdrivePreloadProfile\(url, plan, signal, cache\)\s*: null/)
   assert.match(jsdos, /planSockdriveWarmFiles\(\s*plan,\s*profile,\s*warmBudget/)
   assert.match(jsdos, /warmBudget === 0 \? 'none' : sockdriveRuntimePreloadMode/)
   assert.match(jsdos, /Math\.min\(concurrency, warmFiles\.length\)/)

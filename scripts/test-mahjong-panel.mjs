@@ -147,7 +147,7 @@ function setup(opts = {}) {
   return { win, parent, bridge, core, key, tick: (ms) => { clock += ms } }
 }
 
-await check('原生面板键原样放行给核心，并取消浏览器默认行为（空格滚页、Backspace）', () => {
+await check('原生面板键保持 MAME 键码，并取消浏览器默认行为（空格滚页、Backspace）', () => {
   const { core, key } = setup()
   const e = key('keydown', 'KeyC')
   const s = key('keydown', 'Space')

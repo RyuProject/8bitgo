@@ -1111,11 +1111,14 @@ async function verifySockdriveMetadata(
     throw new Error('Sockdrive 元数据不是有效 JSON（可能被站点回退页替换）')
   }
   const plan = parseSockdriveWarmPlan(metadata)
-  const profile = await readSockdrivePreloadProfile(url, plan, signal, cache)
   const connection = (navigator as Navigator & {
     connection?: { saveData?: boolean; effectiveType?: string }
   }).connection
   const warmBudget = sockdriveWarmBudget(connection?.effectiveType, Boolean(connection?.saveData))
+  // 2G / 省流量模式本局不会下载热点正文；连可选热点清单的跨域 RTT 也省掉，只保留真实分块 HEAD 探活。
+  const profile = warmBudget > 0
+    ? await readSockdrivePreloadProfile(url, plan, signal, cache)
+    : null
   const warmFiles = planSockdriveWarmFiles(
     plan,
     profile,

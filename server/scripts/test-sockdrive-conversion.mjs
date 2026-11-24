@@ -6,6 +6,7 @@ const {
   sockdriveFailureMessage,
   sockdriveConversionConfig,
   sockdriveConversionProgress,
+  parseSockdriveOutputSummary,
   validateSockdriveConversionRequest,
 } = await import('../src/sockdrive-conversion.js')
 
@@ -69,6 +70,11 @@ assert.equal(config.uploadConcurrency, 6)
 assert.equal(sockdriveConversionProgress('调用官方 sockify 生成静态分块…'), 55)
 assert.equal(sockdriveConversionProgress('压缩 Sockdrive 分块：50/100（50%）'), 61)
 assert.equal(sockdriveConversionProgress('压缩 Sockdrive 分块：100/100（100%）'), 67)
+assert.deepEqual(parseSockdriveOutputSummary('✔ Sockdrive 输出统计：4465 个文件 / 123456789 字节'), {
+  files: 4465,
+  bytes: 123456789,
+})
+assert.equal(parseSockdriveOutputSummary('输出统计缺失'), null)
 
 const noisyFailure = `node 失败（exit 1）：${'上传分块…'.repeat(300)}\nSyntaxError: metadata is not valid JSON`
 const compactFailure = sockdriveFailureMessage(new Error(noisyFailure), 120)

@@ -149,6 +149,11 @@ const fatNames = new Map()
 let fileCount = 0
 let totalBytes = 0
 const walk = (directory) => {
+  // 每次下钻只确认一次真实目录位置；目录项本身仍逐个 lstat 并拒绝符号链接，避免数千个普通文件各做一次 realpath。
+  const directoryReal = realpathSync(directory)
+  if (directoryReal !== sourceReal && !directoryReal.startsWith(`${sourceReal}${sep}`)) {
+    throw new Error(`源目录逃逸出工作目录：${relative(filesRoot, directory)}`)
+  }
   for (const name of readdirSync(directory)) {
     const path = join(directory, name)
     const info = lstatSync(path)
@@ -165,10 +170,6 @@ const walk = (directory) => {
       fileCount++
       totalBytes += info.size
       if (info.size > 0xffff_ffff) throw new Error(`FAT32 不支持超过 4GB 的单文件：${relative(filesRoot, path)}`)
-      const actual = realpathSync(path)
-      if (actual !== sourceReal && !actual.startsWith(`${sourceReal}${sep}`)) {
-        throw new Error(`源文件逃逸出工作目录：${relative(filesRoot, path)}`)
-      }
     } else throw new Error(`源目录含普通文件以外的条目：${relative(filesRoot, path)}`)
   }
 }
@@ -250,23 +251,25 @@ renameSync(metadataDirs[0], publishDir)
 // 官方 CLI 的压缩开关会无上限地派生外部进程；先生成未压缩热点清单，再由固定并发流式压缩全部产物。
 const baseline = ensureBaselinePreloadProfile(publishDir, 'identity')
 if (baseline.created) console.log(`✔ 已生成基础热点清单：${baseline.ranges.length} 个范围`)
+let lastReported = -1
+const compressed = await compressSockdriveDirectory(publishDir, encoding, {
+  concurrency: compressionConcurrency,
+  brotliQuality,
+  onProgress: ({ completed, total }) => {
+    const percent = Math.floor(completed / total * 100)
+    if (percent === lastReported || (percent < 100 && percent % 5 !== 0)) return
+    lastReported = percent
+    console.log(`压缩 Sockdrive 分块：${completed}/${total}（${percent}%）`)
+  },
+})
 if (encoding !== 'identity') {
-  let lastReported = -1
-  const compressed = await compressSockdriveDirectory(publishDir, encoding, {
-    concurrency: compressionConcurrency,
-    brotliQuality,
-    onProgress: ({ completed, total }) => {
-      const percent = Math.floor(completed / total * 100)
-      if (percent === lastReported || (percent < 100 && percent % 5 !== 0)) return
-      lastReported = percent
-      console.log(`压缩 Sockdrive 分块：${completed}/${total}（${percent}%）`)
-    },
-  })
   console.log(
     `✔ 固定并发压缩完成：${compressed.files} 个文件，` +
       `${(compressed.sourceBytes / 1024 / 1024).toFixed(1)} → ${(compressed.encodedBytes / 1024 / 1024).toFixed(1)} MiB`,
   )
 }
+// 服务端可以直接复用刚才的稳定统计，避免发布前再逐个 stat 数千个已压缩分块。
+console.log(`✔ Sockdrive 输出统计：${compressed.files} 个文件 / ${compressed.encodedBytes} 字节`)
 
 // 只生成不发布时仍在交付前完整校验；立即发布或后台接管时，由下一步发布器校验一次即可。
 if (!publish && !deferValidation) {

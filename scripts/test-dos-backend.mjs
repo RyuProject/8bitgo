@@ -67,6 +67,9 @@ assert.doesNotMatch(gameForm, /if \(form\.platform === 'dos' && form\.dosBackend
 assert.match(gameForm, /form\.dosBackend === 'dosboxX' \? 'DOSBox-X' : 'DOSBox'/)
 assert.match(gameForm, /PC-98 软盘模式（\.fdi）/)
 assert.match(gameForm, /dosPc98: form\.platform === 'dos' \? pc98 : false/)
+assert.doesNotMatch(gameForm, /<Field label="运行环境">[\s\S]*?<\/Field>/, '运行环境不能用 label 包住内部的复选框 label')
+assert.match(gameForm, /<div className="col-span-full min-w-0">\s*<span className="mb-1 block text-xs font-medium text-muted">运行环境<\/span>/)
+assert.match(gameForm, /<div className="grid w-full min-w-0 gap-3 sm:grid-cols-2">/)
 
 assert.equal(dosSystemOf(' systems/win98.jsdos '), 'systems/win98.jsdos')
 assert.equal(dosSystemOf('bad\nvalue'), null)

@@ -282,23 +282,35 @@ check('⚠️ 沉浸模式优先：那时侧栏是收起的，播放器该吃满
   assert.match(GDP, /const watchLayout = Boolean\(liveInvite\) && !matchPlayer && !immersive/, '沉浸模式下还在按 8 列排')
 })
 
-check('看直播或联机时切换为会话网格，普通详情页使用独立布局骨架', () => {
+check('看直播或联机时播放器缩到 8 列；自己玩时播放器整行、下面资料 + 341px 右栏（2026-11 新版设计稿）', () => {
   assert.match(
     GDP,
     /const twoColumn = watchLayout \|\| matchLayout/,
     '两种侧栏布局必须共用同一判断',
   )
-  assert.match(GDP, /<GameDetailLayout sessionLayout=\{twoColumn\} immersive=\{immersive\}>/)
-  assert.match(GDP, /<section className="game-detail-layout__player w-full">/)
+  // 看直播 / 联机仍是 12 列里的 8/4；自己玩时网格换成「正文 + 341px 右栏」，播放器跨两列整行
+  assert.match(
+    GDP,
+    /twoColumn \? 'gap-8 lg:grid-cols-12' : 'gap-x-6 gap-y-5 xl:grid-cols-\[minmax\(0,1fr\)_341px\]'/,
+    '网格两种形态的列定义不对',
+  )
+  assert.match(
+    GDP,
+    /cx\('w-full min-w-0', twoColumn \? 'lg:col-span-8' : 'xl:col-span-2'\)/,
+    '播放器那一层的列宽不对',
+  )
 })
 
-check('⚠️ 会话页侧栏从播放器顶边开始，普通详情页播放器独占一行', () => {
-  const css = code('src/components/game/game-detail.css')
-  assert.match(css, /\.game-detail-layout\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/)
-  assert.match(css, /\.game-detail-layout__player\s*\{\s*grid-column:\s*1\s*;/)
-  assert.match(css, /\.game-detail-layout--session\s*\{[^}]*grid-template-columns:\s*repeat\(12,\s*minmax\(0,\s*1fr\)\)/)
-  assert.match(css, /\.game-detail-layout--session \.game-detail-layout__player,[\s\S]*?grid-column:\s*span 8/)
-  assert.match(css, /\.game-detail-layout--session \.game-detail-layout__sidebar\s*\{[^}]*grid-column:\s*9 \/ span 4;[^}]*grid-row:\s*1 \/ span 2/)
+check('⚠️ 看直播 / 联机时侧栏要显式排到第 9 列、第 1 行、跨两行', () => {
+  /*
+    不写这一条的话自动排版是：播放器 8 列落第 1 行 → 资料区 8 列放不下落第 2 行 →
+    侧栏补到第 2 行右边。结果侧栏和**标题**齐平，比播放器矮一整行 —— 正是参考图里没有的样子。
+  */
+  assert.match(
+    GDP,
+    /twoColumn\s*\?\s*'lg:col-span-4 lg:col-start-9 lg:row-start-1 lg:row-span-2'/,
+    '侧栏没有显式定位',
+  )
 })
 
 check('⚠️ 播放器只能有一处 JSX —— 两套版面绝不能写成两套 JSX', () => {
@@ -310,13 +322,16 @@ check('⚠️ 播放器只能有一处 JSX —— 两套版面绝不能写成两
   assert.equal(hits.length, 1, `<EmulatorPlayer> 出现了 ${hits.length} 处`)
 })
 
-check('⚠️ 播放器只挂载一份，切换会话布局不会重建播放器', () => {
-  const layout = code('src/components/game/GameDetailLayout.tsx')
+check('⚠️ 播放器和侧栏在**同一个**网格元素里（版面切换只换类名）', () => {
+  // 两者之间再开一个 grid 的话，「顶边齐」是做不到的 —— col-start / row-start 只对同一个网格生效；
+  // 把两种版面写成两个网格元素的话，切换时 <EmulatorPlayer> 会被卸载（直播断流 / 进度丢失）
+  const at = GDP.search(/<div\s+data-game-detail-grid\b/)
   const player = GDP.search(/<EmulatorPlayer\s/)
-  assert.ok(player > 0, '详情页播放器不见了')
-  assert.equal((GDP.match(/<EmulatorPlayer\s/g) ?? []).length, 1, '切换布局不能靠复制第二份播放器')
-  assert.match(layout, /sessionLayout && 'game-detail-layout--session'/)
-  assert.match(layout, /immersive && 'game-detail-layout--immersive'/)
+  const aside = GDP.search(/<aside\b/)
+  assert.ok(at > 0 && at < player, '合并后的网格不在播放器之前')
+  assert.ok(player < aside, '播放器应当排在侧栏之前')
+  const between = GDP.slice(player, aside)
+  assert.ok(!/grid-cols-12|grid-cols-\[/.test(between), '播放器和侧栏之间又开了一个网格')
 })
 
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')

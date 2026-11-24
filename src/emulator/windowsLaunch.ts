@@ -198,10 +198,17 @@ export function desktopContentRatio(frame: ImageData): number {
 
 /** 有多少比例的像素是「非背景内容」才认为壳已经画出来了（实测壁纸 0.1% / 真桌面 7%） */
 export const DESKTOP_MIN_CONTENT_RATIO = 0.03
+/** Win95 启动时的大型系统对话框也有很多非背景像素，不能把它当成桌面。 */
+export const DESKTOP_MAX_9X_CONTENT_RATIO = 0.2
 
 /** 这一帧是不是「已经画了图标/任务栏」的桌面，而不是一片纯色背景 */
-export function frameHasDesktopContent(frame: ImageData): boolean {
-  return desktopContentRatio(frame) >= DESKTOP_MIN_CONTENT_RATIO
+export function frameHasDesktopContent(frame: ImageData, shell: WindowsLaunchShell = '9x'): boolean {
+  const ratio = desktopContentRatio(frame)
+  // 本机复现的 Win95「System File Error / Warning」弹窗非背景像素约 46%，旧判据会
+  // 认为桌面已就绪并把 Ctrl+Esc、R 和启动路径都打在弹窗上。真桌面约 7%，所以 9x
+  // 只接受稀疏的桌面内容；3.x 的 Program Manager 本身有窗口，继续沿用原判据。
+  return ratio >= DESKTOP_MIN_CONTENT_RATIO
+    && (shell !== '9x' || ratio <= DESKTOP_MAX_9X_CONTENT_RATIO)
 }
 
 /**
@@ -247,7 +254,7 @@ export const DESKTOP_SETTLE_STREAK = 2
 export const DESKTOP_SETTLE_FLOOR_MS = 2000
 
 /** 这一帧相比上一帧，算不算「桌面已经停下来了」 */
-export function desktopSettled(prev: ImageData | null, frame: ImageData): boolean {
+export function desktopSettled(prev: ImageData | null, frame: ImageData, shell: WindowsLaunchShell = '9x'): boolean {
   if (!prev) return false
   // 还在文本模式 / 尺寸在变 = 还在开机，不管画面动不动都不能敲
   if (!isWindowsGraphicsMode(frame.width, frame.height)) return false
@@ -258,7 +265,7 @@ export function desktopSettled(prev: ImageData | null, frame: ImageData): boolea
     壁纸是**亮的**，所以上面那条黑屏判据拦不住它 —— 必须再要一个「壳已经画出来了」的正向证据。
     详见 desktopContentRatio 的注释（实测 0.001 vs 0.071）。
   */
-  if (!frameHasDesktopContent(frame)) return false
+  if (!frameHasDesktopContent(frame, shell)) return false
   return frameDiffRatio(prev, frame) < DESKTOP_SETTLE_RATIO
 }
 
@@ -813,8 +820,8 @@ export function scheduleWindowsLaunch(
           screenshotFailures = 0
           watched += DESKTOP_SETTLE_POLL_MS
           sawDesktopContent = isWindowsGraphicsMode(frame.width, frame.height)
-            && !frameIsBlank(frame) && frameHasDesktopContent(frame)
-          streak = desktopSettled(prev, frame) ? streak + 1 : 0
+            && !frameIsBlank(frame) && frameHasDesktopContent(frame, shell)
+          streak = desktopSettled(prev, frame, shell) ? streak + 1 : 0
           prev = frame
           if (streak >= DESKTOP_SETTLE_STREAK && watched >= DESKTOP_SETTLE_FLOOR_MS) return go(true)
           if (capReached && sawDesktopContent) return go(false)

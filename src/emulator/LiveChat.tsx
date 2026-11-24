@@ -299,9 +299,6 @@ export function LiveChatBar({
   onSend,
   live,
   match,
-  standbyLive,
-  standbyMatch,
-  pagePresentation = false,
   coop,
   history,
   historyHint,
@@ -316,12 +313,6 @@ export function LiveChatBar({
    * **这一条是必须的**：弹幕不做本地回显，被丢掉的那条和「没人说话」长得一模一样。
    */
   onSend: ((text: string) => void | Promise<ChatSendResult>) | null
-  /** 详情页还没开局时显示并允许切换自动直播隐私选择。 */
-  standbyLive?: ChatBarLiveToggle
-  /** 详情页还没开局时的联机入口，仍走播放器已有的请求流程。 */
-  standbyMatch?: { label: string; onClick: () => void }
-  /** 详情页把发送按钮放在输入框旁边，直播与联机动作靠右排列。 */
-  pagePresentation?: boolean
   /**
    * 主播侧的两个开关：直播、联机。观众传 undefined，按钮就不画。
    *
@@ -418,16 +409,6 @@ export function LiveChatBar({
 
   const used = chatTextLength(text)
   const remaining = CHAT_MAX_LENGTH - used
-  const sendButton = (
-    <button
-      type="button"
-      onClick={send}
-      disabled={!onSend || !sanitizeChatText(text)}
-      className="shrink-0 rounded-xl border border-line px-2.5 py-1.5 text-xs font-semibold text-fg transition hover:border-brand hover:text-brand-hover disabled:opacity-40 disabled:hover:border-line disabled:hover:text-fg"
-    >
-      {tt.chatSend}
-    </button>
-  )
 
   const onInputChange = (v: string) => {
     // 按码点截断，和服务端同一套算法（shared/live-chat.js）
@@ -553,11 +534,11 @@ export function LiveChatBar({
           className="min-w-0 flex-1 rounded-xl border border-line bg-surface-2 px-2.5 py-1.5 text-sm text-fg placeholder:text-dim focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/30 disabled:opacity-50"
         />
         {remaining < 20 && <span className="shrink-0 text-[11px] tabular-nums text-dim">{remaining}</span>}
-        {pagePresentation && sendButton}
 
         {/*
-          游戏详情页把发送按钮紧贴输入框，开关留在右侧；其它场景把发送留在行尾，
-          这样宽屏上的主要动作仍然固定在最右边。窄屏开关只留图标，文字进 title。
+          几个开关。摆在「发送」左边：发送是这一行的主动作，留在最右边，
+          位置固定，不会因为开关出现 / 消失而左右横跳。
+          窄屏只留符号，文字进 title —— 和工具栏那排按钮同一套处理。
         */}
         {live?.quality && (
           <select
@@ -572,35 +553,7 @@ export function LiveChatBar({
             ))}
           </select>
         )}
-        {!live && standbyLive && (
-          <button
-            type="button"
-            onClick={standbyLive.toggle}
-            title={standbyLive.hint}
-            aria-label={standbyLive.hint}
-            aria-pressed={standbyLive.on}
-            className={cx(
-              'inline-flex shrink-0 items-center gap-1 rounded-xl border px-2.5 py-1.5 text-xs font-semibold transition',
-              standbyLive.on
-                ? 'border-live/25 bg-live/10 text-live'
-                : 'border-line text-muted hover:border-brand hover:text-brand-hover',
-            )}
-          >
-            <span aria-hidden>📡</span>
-            <span className="hidden sm:inline">{standbyLive.label}</span>
-          </button>
-        )}
         {live && <ToggleButton icon="📡" t={live} />}
-        {!match && standbyMatch && (
-          <button
-            type="button"
-            onClick={standbyMatch.onClick}
-            className="inline-flex shrink-0 items-center gap-1 rounded-xl border border-line px-2.5 py-1.5 text-xs font-semibold text-muted transition hover:border-brand hover:text-brand-hover"
-          >
-            <span aria-hidden>🎮</span>
-            <span className="hidden sm:inline">{standbyMatch.label}</span>
-          </button>
-        )}
         {match && <ToggleButton icon="🎮" t={match} />}
         {/* 「上场当 2P」。👥 两边都可能出现，见上面 coop 的注释 */}
         {coop && <ToggleButton icon="👥" t={coop} />}
@@ -622,7 +575,14 @@ export function LiveChatBar({
           />
         )}
 
-        {!pagePresentation && sendButton}
+        <button
+          type="button"
+          onClick={send}
+          disabled={!onSend || !sanitizeChatText(text)}
+          className="shrink-0 rounded-xl border border-line px-2.5 py-1.5 text-xs font-semibold text-fg transition hover:border-brand hover:text-brand-hover disabled:opacity-40 disabled:hover:border-line disabled:hover:text-fg"
+        >
+          {tt.chatSend}
+        </button>
       </div>
 
       {/*

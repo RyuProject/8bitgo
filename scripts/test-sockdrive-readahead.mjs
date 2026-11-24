@@ -33,10 +33,16 @@ async function until(predicate, label) {
   assert.fail(`${label} 未在 500ms 内发生`)
 }
 
-async function scenario({ mode = 'default', connection = { effectiveType: '3g' }, failPrefetch = false } = {}) {
+async function scenario({
+  mode = 'default',
+  connection = { effectiveType: '3g' },
+  failPrefetch = false,
+  holdDemandRange = null,
+} = {}) {
   const requests = []
   const delivered = []
   let failed = false
+  let releaseHeldDemand = null
   const fetch = async (url, options) => {
     const name = String(url).slice(base.length + 1)
     requests.push({ name, priority: options?.priority })
@@ -47,6 +53,9 @@ async function scenario({ mode = 'default', connection = { effectiveType: '3g' }
     if (failPrefetch && range === 2 && options?.priority === 'low' && !failed) {
       failed = true
       return new Response('', { status: 503 })
+    }
+    if (range === holdDemandRange && options?.priority !== 'low') {
+      await new Promise((resolve) => { releaseHeldDemand = resolve })
     }
     return new Response(new Uint8Array(metadata.ahead_read).fill(range))
   }
@@ -62,7 +71,13 @@ async function scenario({ mode = 'default', connection = { effectiveType: '3g' }
     await disk.readRangeAsync(range)
     await until(() => delivered.some((entry) => entry.range === range), `分块 ${range} 回调`)
   }
-  return { requests, delivered, read }
+  return {
+    requests,
+    delivered,
+    read,
+    startRead: (range) => disk.readRangeAsync(range),
+    releaseHeldDemand: () => releaseHeldDemand?.(),
+  }
 }
 
 const normal = await scenario()
@@ -74,6 +89,17 @@ assert.equal(normal.requests.filter((request) => request.name === '2.raw').lengt
 assert.deepEqual(normal.delivered.map(({ range, first, length }) => [range, first, length]), [
   [0, 0, 262144], [1, 1, 262144], [2, 2, 262144],
 ])
+
+const overlap = await scenario({ holdDemandRange: 1 })
+await overlap.read(0)
+await overlap.startRead(1)
+await until(() => overlap.requests.some((request) => request.name === '1.raw') &&
+  overlap.requests.some((request) => request.name === '2.raw' && request.priority === 'low'), '需求块与下一块并行读取')
+assert.equal(overlap.delivered.some((entry) => entry.range === 1), false, '需求块仍在网络中时不应提前交付')
+overlap.releaseHeldDemand()
+await until(() => overlap.delivered.some((entry) => entry.range === 1), '并行需求块回调')
+await overlap.read(2)
+assert.equal(overlap.requests.filter((request) => request.name === '2.raw').length, 1, '并行预读完成后真实读取仍复用同一块')
 
 const noProfile = await scenario({ mode: 'none' })
 await noProfile.read(0)

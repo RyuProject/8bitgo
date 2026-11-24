@@ -54,6 +54,8 @@ const OPEN_MAX_MS = 5 * 60 * 1000
 export const ROUTE_MIN_SAMPLE_BYTES = 64 * 1024
 const MIN_SAMPLE_MS = 20
 const EWMA_ALPHA = 0.4
+/** 当前真实样本不到旧记录的四分之一时，旧速度已不能代表眼前线路，直接采用新样本。 */
+const ROUTE_RATE_DROP_RESET_RATIO = 0.25
 /** 排序时另一条线路要快这么多才算「更快」，免得两条差不多的线路来回换（BIOS 缓存按 URL 存） */
 export const ROUTE_FASTER_MARGIN = 1.15
 
@@ -164,7 +166,11 @@ export function recordRomRouteTransfer(url: string, bytes: number, elapsedMs: nu
   if (bytes >= ROUTE_MIN_SAMPLE_BYTES && elapsedMs >= MIN_SAMPLE_MS && Number.isFinite(bytes / elapsedMs)) {
     const sample = bytes / elapsedMs
     const fresh = stat.rate && stat.rateAt !== undefined && now - stat.rateAt < ROUTE_RATE_TTL_MS
-    stat.rate = fresh ? stat.rate! * (1 - EWMA_ALPHA) + sample * EWMA_ALPHA : sample
+    // 线路会在移动网络切换、漫游或 CDN 状态变化后突然变慢。若只用对称 EWMA，16 Mbps 的旧记录
+    // 遇到 1 Mbps 的当前实测仍会留下约 10 Mbps 的分数，继续误导后续开局；大幅降速时应立即跟随实测。
+    stat.rate = fresh && sample >= stat.rate! * ROUTE_RATE_DROP_RESET_RATIO
+      ? stat.rate! * (1 - EWMA_ALPHA) + sample * EWMA_ALPHA
+      : sample
     stat.rateAt = now
   }
   save()

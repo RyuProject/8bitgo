@@ -254,7 +254,7 @@ export const AWAYFL_HOST_PATH = '/awayfl/host-v1/'
  * JSDOS_ASSET_VERSION 就必须换代。否则代码已部署，玩家却会继续命中上一份 CDN 缓存。
  */
 export const JSDOS_VERSION = '8.5.3'
-export const JSDOS_ASSET_VERSION = '8.5.3-8bitgo.9'
+export const JSDOS_ASSET_VERSION = '8.5.3-8bitgo.10'
 export const JSDOS_PATH: string = asDir(
   import.meta.env.VITE_JSDOS_PATH,
   `/jsdos/v${JSDOS_ASSET_VERSION}/`,

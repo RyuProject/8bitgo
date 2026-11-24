@@ -58,6 +58,8 @@
 
 ## 迁移当天的顺序
 
+> 迁到 DNSPod 的完整操作手册（逐条记录清单、线路、证书分工、验收命令）：`dnspod-migration.md`。
+
 1. `CLOUDFLARE_API_TOKEN=… ./create-hostnames.sh`：建好全部主机名，在 Cloudflare 的 8bitgo.com 区域写入所有权 TXT 与 DCV 记录，并等证书签好。
    `8bitgo.com`、`image`、`roms` 自己的证书在 8bitgo.com 区域用 TXT 验证续期，这三个名字的 `_acme-challenge` 不能放 CNAME，
    脚本对它们改用 TXT 验证；迁到新 DNS 时，再换成上面的 DCV 委派 CNAME，否则 90 天后续不了期。

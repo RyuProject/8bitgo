@@ -1389,59 +1389,65 @@ export function GameForm({
           <h3 className="text-sm font-semibold">平台与运行</h3>
           <p className="mt-1 text-xs text-muted">{platformMap[form.platform]?.name ?? form.platform} 专属选项会按平台自动展开；留空的核心和引擎由播放器按 ROM 特征选择。</p>
         </header>
-      <div className="grid min-w-0 gap-3 sm:grid-cols-2">
+      <div className="grid w-full min-w-0 gap-3 sm:grid-cols-2">
         {form.platform === 'dos' && (
           <>
-            <Field label="运行环境">
-              <label className="flex min-h-9 items-center gap-2 rounded-lg border border-line bg-surface-2 px-3 text-sm">
-                <input
-                  type="checkbox"
-                  checked={form.dosBackend === 'dosboxX'}
-                  disabled={pc98Form}
-                  onChange={(e) => {
-                    setForm((current) => ({
-                      ...current,
-                      dosBackend: e.target.checked ? 'dosboxX' : undefined,
-                      dosWindowsVersion: e.target.checked ? current.dosWindowsVersion ?? '9x' : current.dosWindowsVersion,
-                      dosLaunchDelay: e.target.checked ? current.dosLaunchDelay ?? 24 : current.dosLaunchDelay,
-                    }))
-                  }}
-                />
-                DOSBox-X（CUE 光盘 / Windows 3.x / 95 / 98）
-              </label>
-              <label className="mt-2 flex min-h-9 items-center gap-2 rounded-lg border border-line bg-surface-2 px-3 text-sm">
-                <input
-                  type="checkbox"
-                  checked={pc98Form}
-                  onChange={(e) => {
-                    const next = e.target.checked
-                    if (next && !window.confirm('PC-98 会改为从 .fdi 软盘直接启动，并清空 Windows、Sockdrive、DOS 启动程序和附加文件设置。继续吗？')) return
-                    setForm((current) => next
-                      ? {
-                          ...current,
-                          dosPc98: true,
-                          dosBackend: 'dosboxX',
-                          dosSystem: undefined,
-                          dosSockdrive: undefined,
-                          dosSockdrives: {},
-                          dosExecutable: undefined,
-                          dosExecutables: {},
-                          dosStartupCommands: {},
-                          dosExtras: undefined,
-                          dosExtrasLabel: undefined,
-                          dosExtrasLabelEn: undefined,
-                          dosWindowsVersion: undefined,
-                          dosLaunchDelay: undefined,
-                        }
-                      : { ...current, dosPc98: false })
-                  }}
-                />
-                PC-98 软盘模式（.fdi）
-              </label>
-              <p className="mt-1 text-[11px] text-dim">
+            {/* Field 根节点也是 label；复选框卡片本身是 label，改用 div 避免无效嵌套，并让选项组跨满网格。 */}
+            <div className="col-span-full min-w-0">
+              <span className="mb-1 block text-xs font-medium text-muted">运行环境</span>
+              <div className="grid min-w-0 gap-2 sm:grid-cols-2">
+                <label className="flex min-h-9 min-w-0 items-center gap-2 rounded-lg border border-line bg-surface-2 px-3 text-sm">
+                  <input
+                    type="checkbox"
+                    className="shrink-0"
+                    checked={form.dosBackend === 'dosboxX'}
+                    disabled={pc98Form}
+                    onChange={(e) => {
+                      setForm((current) => ({
+                        ...current,
+                        dosBackend: e.target.checked ? 'dosboxX' : undefined,
+                        dosWindowsVersion: e.target.checked ? current.dosWindowsVersion ?? '9x' : current.dosWindowsVersion,
+                        dosLaunchDelay: e.target.checked ? current.dosLaunchDelay ?? 24 : current.dosLaunchDelay,
+                      }))
+                    }}
+                  />
+                  <span className="min-w-0">DOSBox-X（CUE 光盘 / Windows 3.x / 95 / 98）</span>
+                </label>
+                <label className="flex min-h-9 min-w-0 items-center gap-2 rounded-lg border border-line bg-surface-2 px-3 text-sm">
+                  <input
+                    type="checkbox"
+                    className="shrink-0"
+                    checked={pc98Form}
+                    onChange={(e) => {
+                      const next = e.target.checked
+                      if (next && !window.confirm('PC-98 会改为从 .fdi 软盘直接启动，并清空 Windows、Sockdrive、DOS 启动程序和附加文件设置。继续吗？')) return
+                      setForm((current) => next
+                        ? {
+                            ...current,
+                            dosPc98: true,
+                            dosBackend: 'dosboxX',
+                            dosSystem: undefined,
+                            dosSockdrive: undefined,
+                            dosSockdrives: {},
+                            dosExecutable: undefined,
+                            dosExecutables: {},
+                            dosStartupCommands: {},
+                            dosExtras: undefined,
+                            dosExtrasLabel: undefined,
+                            dosExtrasLabelEn: undefined,
+                            dosWindowsVersion: undefined,
+                            dosLaunchDelay: undefined,
+                          }
+                        : { ...current, dosPc98: false })
+                    }}
+                  />
+                  <span className="min-w-0">PC-98 软盘模式（.fdi）</span>
+                </label>
+              </div>
+              <p className="mt-2 text-[11px] text-dim">
                 数据库平台仍是 DOS。PC-98 会固定使用 DOSBox-X 的 <code>machine=pc98</code>，从 FDI 自身启动；只挂 CUE 光盘时系统镜像留空；要运行 Windows 才需要填写系统镜像。
               </p>
-            </Field>
+            </div>
             {pc98Form ? (
               <Field label="PC-98 启动方式" className="col-span-full min-w-0">
                 <p className="rounded-lg border border-brand/30 bg-brand/5 px-3 py-2 text-sm text-fg">

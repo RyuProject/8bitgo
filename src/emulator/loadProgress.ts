@@ -1043,10 +1043,15 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
         if (value) loaded += value.byteLength
       }
       if (loaded < sampleBytes || controller.signal.aborted) return null
-      return (loaded * 8) / (Math.max(1, monotonicNow() - startedAt) * 1000)
+      const elapsedMs = Math.max(1, monotonicNow() - startedAt)
+      // 备用测速同样是这条线路的真实正文吞吐；免得只记录“赢了”的线路，旧分数长期不更新。
+      if (trackHealth) recordRomRouteTransfer(candidateUrl, loaded, elapsedMs)
+      return (loaded * 8) / (elapsedMs * 1000)
     } catch {
       if (timedOut && loaded >= ALTERNATE_ROUTE_MIN_SAMPLE_BYTES) {
-        return (loaded * 8) / (Math.max(1, monotonicNow() - startedAt) * 1000)
+        const elapsedMs = Math.max(1, monotonicNow() - startedAt)
+        if (trackHealth) recordRomRouteTransfer(candidateUrl, loaded, elapsedMs)
+        return (loaded * 8) / (elapsedMs * 1000)
       }
       return null
     } finally {
@@ -1580,12 +1585,15 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
             const alternateExists = Boolean(alternateRoute && alternateRoute !== firstRoute)
             const effectiveType = String(networkHints.effectiveType ?? '').toLowerCase()
             const conserveTraffic = networkHints.saveData || effectiveType === 'slow-2g' || effectiveType === '2g'
+            // 低速首段已经是真实正文样本。立即更新记分板，避免整片下完前仍沿用旧的高速记录。
+            if (trackHealth && sampledMbps < SLOW_ROUTE_MIN_MBPS) {
+              recordRomRouteTransfer(firstRoute, sampleBytes, sampleElapsedMs)
+            }
             if (alternateExists && firstTotal >= SLOW_ROUTE_MIN_FILE_BYTES && !conserveTraffic) {
               diagLog('download', 'info', `ROM 首段 ${sampleBytes} 字节 / ${sampleElapsedMs.toFixed(0)}ms（${sampledMbps.toFixed(1)} Mbps，不含握手与首字节）：`, firstRoute)
               if (sampledMbps < SLOW_ROUTE_MIN_MBPS) {
                 const alternateMbps = await measureAlternateRomRange(alternateRoute, firstTotal)
                 if (alternateMbps !== null && alternateMbps > sampledMbps * 1.15) {
-                  noteTransfer(firstRoute, sampleBytes, sampleElapsedMs)
                   throw new SlowRomRouteError(sampledMbps, sampleElapsedMs, alternateMbps, alternateRoute)
                 }
                 diagLog('download', 'info', `备用 ROM 线路没有明显更快（${alternateMbps?.toFixed(1) ?? '未测出'} Mbps），继续当前线路：`, firstRoute)

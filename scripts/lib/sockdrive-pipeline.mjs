@@ -1,5 +1,5 @@
 import { createReadStream, createWriteStream, existsSync, readFileSync, writeFileSync } from 'node:fs'
-import { readdir, rename, rm, stat } from 'node:fs/promises'
+import { lstat, readdir, rename, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import {
@@ -142,6 +142,45 @@ export function encodeSockdriveFile(bytes, encoding) {
 }
 
 /**
+ * Sockify 会生成数千个小分块。逐个 await stat 会把磁盘元数据往返串行化；固定少量 worker
+ * 同时检查文件大小，可缩短发布前扫描，又不会为每个文件各创建一个 Promise 或耗尽文件描述符。
+ */
+export async function listSockdriveFiles(directory, { concurrency = 16, strict = true } = {}) {
+  if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 16) {
+    throw new Error('Sockdrive 文件扫描并发必须是 1～16 的整数')
+  }
+  const entries = (await readdir(directory, { withFileTypes: true }))
+    .sort((a, b) => a.name.localeCompare(b.name, 'en'))
+  if (strict) {
+    const invalid = entries.find((entry) => !entry.isFile())
+    if (invalid) throw new Error(`Sockdrive 发布目录只能包含普通文件：${join(directory, invalid.name)}`)
+  }
+  const files = entries
+    .filter((entry) => entry.isFile())
+    .map((entry) => ({ name: entry.name, path: join(directory, entry.name), size: 0 }))
+  if (!files.length && strict) throw new Error('Sockdrive 发布目录没有可扫描文件')
+
+  let cursor = 0
+  let firstError = null
+  const worker = async () => {
+    while (!firstError) {
+      const file = files[cursor++]
+      if (!file) return
+      try {
+        const info = await lstat(file.path)
+        if (!info.isFile()) throw new Error(`Sockdrive 文件扫描期间条目发生变化：${file.path}`)
+        file.size = info.size
+      } catch (error) {
+        firstError ||= error
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, files.length) }, worker))
+  if (firstError) throw firstError
+  return files
+}
+
+/**
  * 官方 sockify 的 `-b/-g` 会一次为所有分块启动外部压缩器；2GB 磁盘实测会瞬间出现四百多个
  * brotli 进程并吃光 4GB 制作机。让 sockify 只负责切块，再在这里用固定数量的流式任务压缩，
  * 既不把整块磁盘读进内存，也不会在负载高峰拖死站点服务。临时文件完成后才原子替换原文件，
@@ -152,7 +191,11 @@ export async function compressSockdriveDirectory(
   encoding,
   { concurrency = 2, brotliQuality = 9, onProgress } = {},
 ) {
-  if (encoding === 'identity') return { files: 0, sourceBytes: 0, encodedBytes: 0 }
+  if (encoding === 'identity') {
+    const files = await listSockdriveFiles(directory)
+    const sourceBytes = files.reduce((total, file) => total + file.size, 0)
+    return { files: files.length, sourceBytes, encodedBytes: sourceBytes }
+  }
   if (!['br', 'gzip'].includes(encoding)) throw new Error(`不支持的 Sockdrive 压缩格式：${encoding}`)
   if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 8) {
     throw new Error('Sockdrive 压缩并发必须是 1～8 的整数')
@@ -161,15 +204,7 @@ export async function compressSockdriveDirectory(
     throw new Error('Sockdrive Brotli 质量必须是 1～11 的整数')
   }
 
-  const names = (await readdir(directory)).sort((a, b) => a.localeCompare(b, 'en'))
-  const files = []
-  for (const name of names) {
-    const path = join(directory, name)
-    const info = await stat(path)
-    if (!info.isFile()) throw new Error(`Sockdrive 发布目录只能包含普通文件：${path}`)
-    files.push({ name, path, size: info.size })
-  }
-  if (!files.length) throw new Error('Sockdrive 发布目录没有可压缩文件')
+  const files = await listSockdriveFiles(directory)
 
   let cursor = 0
   let completed = 0

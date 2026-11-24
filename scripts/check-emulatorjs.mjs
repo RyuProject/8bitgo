@@ -122,6 +122,7 @@ for (const [needle, what, why] of [
   ['f.signal.aborted&&!f.__8bgStalled', '失速后允许 XHR 恢复', 'Fetch 空闲计时刚中止核心下载时，不得把这次可恢复失速直接交给播放器换线路'],
   ["const onVisibility = () => {\n        if (typeof document !== 'undefined' && document.visibilityState === 'hidden') clearIdle()", 'XHR 后台空闲计时暂停', '移动端页面后台冻结期间不应消耗下载时限，回来后要重新给足 20 秒'],
   ['response stream read failed', '核心响应阶段诊断', '如果浏览器仍在读 HTTP 流时失败，诊断包必须保留原始异常对象'],
+  ['totalDependencies:0,wasmBinary:t,locateFile:function(i)', '核心 WASM 直接使用已解压字节', '华为浏览器 fetch(blob:) 失败时，核心字节已经在内存里，不能再靠 blob URL 读回'],
   ['改用 XHR arraybuffer 重新下载', '核心响应流失败或失速改走 XHR', 'Fetch 流读取异常或 20 秒无进度时先换读取 API 重取，避免直接切线路重开'],
   ['XHR fallback incomplete response: HTTP ', 'XHR 兜底完整性校验', 'Android 16 大陆现场的 XHR 以 HTTP 200 返回 121KB 截断核心，必须在解压和写缓存前拒收'],
   ['return Promise.race([this.storageCache.put(n)', '引擎缓存读写有时限', 'IndexedDB 卡住时核心下完也交不出去，停在 100%'],

@@ -297,9 +297,9 @@ check('详情页的 title 带平台缩写，H1 仍保持干净的游戏名', () 
   const i18n = code('src/services/i18nData.ts')
   assert.match(page, /gameSeoTitle\(seoTitle, seoPlatform\?\.shortName \?\? '', lang\)/, '没有用平台缩写生成搜索标题')
   assert.match(page, /title: fmt\(t\.game\.docTitle, \{ title: seoDocumentTitle \}\)/, 'meta title 没有使用唯一标题')
-  // 详情页已将标题内联进主内容：H1 和可读游戏名用 seoTitle，平台缩写只进入文档标题。
-  assert.match(page, /<h1[^>]*>\{seoTitle\}<\/h1>/, 'H1 应使用干净的游戏名，而不是带平台后缀的文档标题')
-  assert.match(page, /title: fmt\(t\.game\.docTitle, \{ title: seoDocumentTitle \}\)/, '页面 H1 不应复用 seoDocumentTitle')
+  // H1 在 GameDetailHeading 里画，页面传进去的必须是干净的 seoTitle，不是带平台后缀的 seoDocumentTitle
+  assert.match(page, /<GameDetailHeading[\s\S]*?title=\{seoTitle\}/, 'H1 不应被平台后缀污染')
+  assert.match(code('src/components/game/GameDetailSections.tsx'), /<h1[^>]*>\s*\{title\}\s*<\/h1>/, 'GameDetailHeading 的 H1 没有直接用传进来的标题')
   assert.match(i18n, /`\$\{cleanTitle\}（\$\{cleanPlatform\}）`/, 'CJK 标题没有使用全角括号')
   assert.match(i18n, /`\$\{cleanTitle\} \(\$\{cleanPlatform\}\)`/, '拉丁语言标题没有使用平台后缀')
 })

@@ -1302,6 +1302,26 @@ const BLACK = mkFrame(640, 480, 0)
  * 实测非主色像素只占 0.04%～0.1%（光标那几十个像素），任务栏/图标一个都没有。
  */
 const WALLPAPER = mkFrame(640, 480, 40)
+/** Win95 启动时的系统文件告警：大对话框会骗过只看「有非背景像素」的旧桌面判据。 */
+const BOOT_DIALOG = (() => {
+  const f = { width: 640, height: 480, data: new Uint8ClampedArray(640 * 480 * 4) }
+  for (let i = 0; i < 640 * 480; i++) {
+    const at = i * 4
+    f.data[at] = 0
+    f.data[at + 1] = 128
+    f.data[at + 2] = 128
+    f.data[at + 3] = 255
+  }
+  for (let y = 60; y < 470; y++) {
+    for (let x = 120; x < 530; x++) {
+      const at = (y * 640 + x) * 4
+      f.data[at] = 192
+      f.data[at + 1] = 192
+      f.data[at + 2] = 192
+    }
+  }
+  return f
+})()
 
 console.log('\n── 纯 DOS 客体：等 DOS 7.1 提示符后切盘、切目录、启动游戏 ──')
 {
@@ -1365,7 +1385,7 @@ console.log('\n── 桌面到底画完了没有（desktopSettled）──')
  * @param frameAt  (虚拟时刻) => 这一刻的画面
  * @param waitSeconds 后台配的 dosLaunchDelay
  */
-async function runLaunch({ frameAt, waitSeconds = 24, until = 120_000 }) {
+async function runLaunch({ frameAt, waitSeconds = 24, until = 120_000, shell = '3x' }) {
   const clock = fakeClock()
   globalThis.window = clock.win
   const keys = []
@@ -1389,7 +1409,7 @@ async function runLaunch({ frameAt, waitSeconds = 24, until = 120_000 }) {
     waitSeconds,
     () => false,
     () => (launchedAt = clock.now),
-    '3x',
+    shell,
     () => (failedAt = clock.now),
     (step) => {
       if (step === 'launched') typedAt = clock.now
@@ -1767,6 +1787,26 @@ console.log('\n── Windows 95 的壁纸静止：壳还没起来，不能当�
     `⭐ 等真桌面（第 5.2 秒）出现之后才敲（实际第 ${(r.firstKey / 1000).toFixed(1)} 秒），没有敲在纯壁纸上`,
   )
   ok(r.failedAt === null, '真桌面之后再敲，按正常流程判成功（没有误报失败）')
+}
+
+console.log('\n── Windows 95 的启动告警：不能把大对话框当成桌面 ──')
+{
+  ok(desktopContentRatio(BOOT_DIALOG) > 0.2, '启动告警覆盖大面积画面，非背景像素比例高于真桌面上限')
+  ok(frameHasDesktopContent(BOOT_DIALOG, '3x') === true, 'Windows 3.x 保留 Program Manager 窗口判据')
+  ok(frameHasDesktopContent(BOOT_DIALOG, '9x') === false, 'Win95 大型启动告警不能被认成桌面')
+  ok(desktopSettled(BOOT_DIALOG, BOOT_DIALOG, '9x') === false, '静止的大型启动告警不能触发自动输入')
+  const r = await runLaunch({
+    shell: '9x',
+    waitSeconds: 24,
+    until: 18_000,
+    frameAt: (t, typedAt) => typedAt !== null && t > typedAt
+      ? GAME
+      : t < 10_000
+        ? BOOT_DIALOG
+        : DESKTOP,
+  })
+  ok(r.firstKey !== null && r.firstKey >= 11_000, '先等启动告警消失并看到稳定 Win95 桌面，再发送启动快捷键')
+  ok(r.milestones.some(([, step]) => step === 'desktop'), '告警消失后的真桌面才推进 desktop 里程碑')
 }
 
 console.log('\n── 敲完之后的确认：第一眼提前到 0.8 秒 ──')

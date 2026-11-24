@@ -8,7 +8,7 @@
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { constants as fsConstants, createWriteStream } from 'node:fs'
-import { access, mkdir, open, readdir, rm, stat, statfs } from 'node:fs/promises'
+import { access, mkdir, open, rm, statfs } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { Readable, Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url'
 import { query, queryOne, withTransaction } from './db.js'
 import { invalidateContent } from './content.js'
 import { SITE_LANGUAGES } from '../../shared/site-languages.js'
+import { listSockdriveFiles } from '../../scripts/lib/sockdrive-pipeline.mjs'
 
 const ACTIVE = new Set(['queued', 'downloading', 'converting', 'uploading', 'verifying'])
 const INTERRUPTED = ['downloading', 'converting', 'uploading', 'verifying']
@@ -576,17 +577,21 @@ export function sockdriveConversionProgress(text) {
   return null
 }
 
-async function outputSummary(directory) {
-  const names = await readdir(directory)
-  let bytes = 0
-  let files = 0
-  for (const name of names) {
-    const info = await stat(join(directory, name))
-    if (!info.isFile()) continue
-    files++
-    bytes += info.size
-  }
+export function parseSockdriveOutputSummary(text) {
+  const match = /Sockdrive 输出统计：(\d+) 个文件 \/ (\d+) 字节/.exec(String(text || ''))
+  if (!match) return null
+  const files = Number(match[1])
+  const bytes = Number(match[2])
+  if (!Number.isSafeInteger(files) || !Number.isSafeInteger(bytes)) return null
   return { files, bytes }
+}
+
+async function outputSummary(directory) {
+  const files = await listSockdriveFiles(directory, { strict: false })
+  return {
+    files: files.length,
+    bytes: files.reduce((total, file) => total + file.size, 0),
+  }
 }
 
 async function verifyPublished(config, job) {
@@ -766,7 +771,7 @@ async function processJob(job) {
     await updateJob(job.id, { status: 'converting', progress: 22, message: '正在制作 FAT32/QCOW2 并生成 Sockdrive 分块' })
     let progress = 22
     let progressWrites = Promise.resolve()
-    await runCommand(process.execPath, [
+    const prepareOutput = await runCommand(process.execPath, [
       PREPARE_SCRIPT,
       '--source', input,
       '--slug', job.game_slug,
@@ -790,7 +795,7 @@ async function processJob(job) {
       },
     })
     await progressWrites
-    const summary = await outputSummary(publishDir)
+    const summary = parseSockdriveOutputSummary(prepareOutput) || await outputSummary(publishDir)
     await updateJob(job.id, {
       status: 'uploading', progress: 72, output_bytes: summary.bytes, output_files: summary.files,
       publish_started: 1, message: `正在发布 ${summary.files} 个不可变分块到 R2`,

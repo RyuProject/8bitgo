@@ -141,6 +141,18 @@ const PRINT_OUT_FROM = 'print:t=>{this.debug&&console.log(t)}'
 const PRINT_OUT_TO = 'print:t=>{this.debug&&console.log(t),/^\\[libretro ERROR\\]/i.test(t)&&console.warn(t)}'
 
 /**
+ * EmulatorJS 解压核心时已经拿到 wasm 的 Uint8Array，却只通过 locateFile 建 blob URL 给 Emscripten。
+ * 华为浏览器 17 / Android 12 的现场里，核心数据已从缓存读出，但 Emscripten 对这个 blob URL 的
+ * 流式 fetch 和 ArrayBuffer fetch 都报 `TypeError: Failed to fetch`，最终变成「both async and sync
+ * fetching of the wasm failed」。把现成字节交给 Emscripten 标准的 `wasmBinary` 入口，直接异步实例化，
+ * 不再依赖浏览器再次 fetch blob，也省掉为核心 wasm 另建 blob URL。
+ */
+const WASM_BINARY_FROM =
+  'totalDependencies:0,locateFile:function(i){return this.debug&&console.log(i),i.endsWith(".wasm")?URL.createObjectURL(new Blob([t],{type:"application/wasm"})):i.endsWith(".worker.js")?URL.createObjectURL(new Blob([e],{type:"application/javascript"})):void 0},getSavExt:'
+const WASM_BINARY_TO =
+  'totalDependencies:0,wasmBinary:t,locateFile:function(i){return this.debug&&console.log(i),i.endsWith(".wasm")?i:i.endsWith(".worker.js")?URL.createObjectURL(new Blob([e],{type:"application/javascript"})):void 0},getSavExt:'
+
+/**
  * 街机核心的 ROM / BIOS 必须保持 .zip 原样。
  *
  * 引擎给 ROM 与 BIOS 各带一份「不要解压」的核心白名单
@@ -595,6 +607,14 @@ const GROUPS = [
     hint: [
       '在 initModule 里找 Emscripten 的 print 回调；',
       '只无条件输出 `[libretro ERROR]`，其余 stdout 仍受 debug 控制，避免 MAME 日志刷屏。',
+    ],
+  },
+  {
+    name: '核心 WASM 直接使用已解压字节',
+    patches: [[WASM_BINARY_FROM, WASM_BINARY_TO]],
+    hint: [
+      '在 initModule 的 Emscripten 配置里把已解压的 wasm Uint8Array 作为 wasmBinary 传入；',
+      '核心二进制已经在内存里，不应再建 blob URL 并要求浏览器用 fetch 读回。',
     ],
   },
   {

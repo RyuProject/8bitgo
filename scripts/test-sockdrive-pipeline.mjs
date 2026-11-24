@@ -9,6 +9,7 @@ import {
   compressSockdriveDirectory,
   fatArchiveEntryKey,
   ensureBaselinePreloadProfile,
+  listSockdriveFiles,
   selectSockdriveDiskTemplate,
   SOCKDRIVE_DISK_TEMPLATES,
 } from './lib/sockdrive-pipeline.mjs'
@@ -48,6 +49,21 @@ assert.throws(
 
 const root = mkdtempSync(join(tmpdir(), '8bitgo-sockdrive-pipeline-'))
 try {
+  const scanRoot = join(root, 'scan')
+  mkdirSync(scanRoot)
+  writeFileSync(join(scanRoot, 'b.raw'), Buffer.alloc(2))
+  writeFileSync(join(scanRoot, 'a.raw'), Buffer.alloc(1))
+  assert.deepEqual(
+    (await listSockdriveFiles(scanRoot)).map(({ name, size }) => [name, size]),
+    [['a.raw', 1], ['b.raw', 2]],
+    '有界文件扫描保持稳定排序并返回实际字节数',
+  )
+  await assert.rejects(() => listSockdriveFiles(scanRoot, { concurrency: 17 }), /1～16/)
+  const emptyRoot = join(root, 'empty')
+  mkdirSync(emptyRoot)
+  assert.deepEqual(await listSockdriveFiles(emptyRoot, { strict: false }), [])
+  await assert.rejects(() => listSockdriveFiles(emptyRoot), /没有可扫描文件/)
+
   for (const encoding of ['identity', 'br', 'gzip']) {
     const dir = join(root, encoding)
     mkdirSync(dir)
@@ -61,6 +77,16 @@ try {
     assert.deepEqual(JSON.parse(decoded), [0, 2])
     assert.equal(ensureBaselinePreloadProfile(dir, encoding).created, false, '真实热点清单不能被基础清单覆盖')
   }
+
+  const identityRoot = join(root, 'identity-summary')
+  mkdirSync(identityRoot)
+  writeFileSync(join(identityRoot, '0.raw'), Buffer.alloc(7))
+  writeFileSync(join(identityRoot, 'sockdrive.metaj'), Buffer.alloc(3))
+  assert.deepEqual(await compressSockdriveDirectory(identityRoot, 'identity'), {
+    files: 2,
+    sourceBytes: 10,
+    encodedBytes: 10,
+  }, '未压缩发布也提供最终统计，后台不必再扫描一次目录')
 } finally {
   rmSync(root, { recursive: true, force: true })
 }
