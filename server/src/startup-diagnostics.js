@@ -242,6 +242,19 @@ export function diagnoseStartupFailure({ event, runtime, platform, detail, elaps
   const has = (pattern) => pattern.test(text)
   const hit = (code, label, phase, confidence, signal) => ({ code, label, phase, confidence, signals: [signal] })
 
+  const firstPartyPageAssetFailure = relevantLogs.some((row) => {
+    if (row?.s !== 'resource' || row?.l !== 'error') return false
+    const match = /^(?:script|link) 加载失败(?:\s*\|\s*|\s+)(.+)$/i.exec(String(row?.m ?? ''))
+    if (!match || !/\.(?:js|css)(?:[?#\s]|$)/i.test(match[1])) return false
+    const at = Number(row?.t)
+    // start_click 之前的页面资源可能来自上一页，不能冒充本次开局失败；时间戳缺失的旧包仍能判域名。
+    if (Number.isFinite(at) && (at < 0 || (startedAtMs !== null && at > startedAtMs + 1000))) return false
+    const url = match[1].trim()
+    if (/^\/(?:_cn\/)?assets\/[^?#\s]+\.(?:js|css)(?:[?#\s]|$)/i.test(url)) return true
+    const host = url.replace(/^https?:\/\//i, '').split(/[\/?#\s]/, 1)[0].toLowerCase().replace(/:\d+$/, '')
+    return host === '8bitgo.com' || host.endsWith('.8bitgo.com')
+  })
+
   // React #185 是最大更新深度超限；这是页面失败的直接异常，优先于整页缓冲里的旧资源 / 运行时日志。
   if (has(/minified react error #185|maximum update depth exceeded|too many re-renders/i)) {
     return hit('react_update_loop', 'React 页面更新循环', 'page_render', 'high', 'error.react_update_loop')
@@ -297,7 +310,7 @@ export function diagnoseStartupFailure({ event, runtime, platform, detail, elaps
   if (has(/unable to preload css for\s+\S+\.css(?:\b|\s|\)|$)/i)) {
     return hit('page_asset', '页面懒加载样式资源加载失败', 'page_asset', 'high', 'error.lazy_css')
   }
-  if (has(/(?:script|link) 加载失败/) && /\.(?:js|css)(?:\b|$)/i.test(combined)) {
+  if (firstPartyPageAssetFailure) {
     return hit('page_asset', '页面脚本或样式资源加载失败', 'page_asset', 'high', 'error.page_asset')
   }
   if (has(/romset is unknown|missing bios|bios.*(?:missing|缺少)|缺少.*(?:bios|rom)|romdata.*(?:failed|error|missing)|(?:failed|error|missing).*romdata/)
@@ -350,7 +363,11 @@ export function diagnoseStartupFailure({ event, runtime, platform, detail, elaps
   if (failedResource && failedFirstParty && /emulatorjs|wasm\.data/i.test(String(failedResource.n ?? ''))) {
     return withCore(hit('core_download', '模拟器核心请求返回 HTTP 错误', 'core_download', 'high', 'resource.core_http_status'))
   }
-  if (failedResource && failedFirstParty && /^(?:script|link)$/i.test(String(failedResource.i ?? '')) && /\.(?:js|css)$/i.test(String(failedResource.n ?? ''))) {
+  const failedResourceAt = Number(failedResource?.at)
+  const pageAssetFailedDuringAttempt = Number.isFinite(failedResourceAt) && failedResourceAt >= 0 &&
+    (startedAtMs === null || failedResourceAt <= startedAtMs + 1000)
+  if (failedResource && failedFirstParty && pageAssetFailedDuringAttempt &&
+    /^(?:script|link)$/i.test(String(failedResource.i ?? '')) && /\.(?:js|css)$/i.test(String(failedResource.n ?? ''))) {
     return hit('page_asset', '页面脚本或样式资源请求返回 HTTP 错误', 'page_asset', 'high', 'resource.page_asset_status')
   }
   if (failedResource) {

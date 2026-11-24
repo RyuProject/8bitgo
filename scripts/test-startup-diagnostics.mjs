@@ -172,6 +172,39 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   assert.equal(diagnoseStartupFailure({
     event: 'failed', runtime: 'page', diagnostics: { resources: [{ n: 'stats.example/widget.js', i: 'script', at: 0, st: 404 }] },
   }).code, 'network_http', '近期第三方脚本失败不能被升级成本站页面资源故障')
+  const thirdPartyTrackerDuringRomDownload = diagnoseStartupFailure({
+    event: 'slow_start', runtime: 'emulatorjs', platform: 'arcade', elapsedMs: 20_088,
+    detail: '等待 game_playable 已超过 20 秒',
+    diagnostics: {
+      logs: [
+        { t: 17_488, s: 'resource', l: 'error', m: 'script 加载失败 lf1-cdn-tos.bytegoofy.com/goofy/…/push.js' },
+        { t: 20_088, s: 'snapshot', l: 'info', m: '加载进度：阶段 rom，ROM 22.3MB/27.4MB，ROM 起于 1.2s，平均 10.1Mbps，最后进度 19.8s' },
+      ],
+      resources: [{ n: 'lf1-cdn-tos.bytegoofy.com/goofy/…/push.js', i: 'script', at: 17_488, st: 0 }],
+    },
+  })
+  assert.deepEqual(
+    { code: thirdPartyTrackerDuringRomDownload.code, signal: thirdPartyTrackerDuringRomDownload.signals[0] },
+    { code: 'rom_download', signal: 'progress.rom_downloading' },
+    '第三方统计脚本加载失败不能盖过仍在正常下载的 ROM（生产诊断 #3978）',
+  )
+  const previousPageAssetDuringRomDownload = diagnoseStartupFailure({
+    event: 'slow_start', runtime: 'emulatorjs', elapsedMs: 20_472,
+    detail: '等待 game_playable 已超过 20 秒',
+    diagnostics: {
+      logs: [
+        { t: -3149, s: 'resource', l: 'error', m: 'link 加载失败 8bitgo.com/assets/…/index-ppM98XEK.js' },
+        { t: 20_472, s: 'snapshot', l: 'info', m: '加载进度：阶段 rom，ROM 41.4MB/71.7MB，ROM 起于 0.5s，平均 17.4Mbps，最后进度 20.4s' },
+      ],
+      resources: [{ n: '8bitgo.com/assets/…/index-ppM98XEK.js', i: 'link', at: -3149, st: 0 }],
+    },
+  })
+  assert.equal(previousPageAssetDuringRomDownload.signals[0], 'progress.rom_downloading',
+    '开局前的旧页面资源失败不能被归为本次页面资源故障（生产诊断 #3018）')
+  assert.equal(diagnoseStartupFailure({
+    event: 'slow_start', runtime: 'emulatorjs', elapsedMs: 20_000,
+    diagnostics: { logs: [{ t: 1000, s: 'resource', l: 'error', m: 'link 加载失败 cn.8bitgo.com/_cn/assets/GameDetailPage-C2JSNwpA.css' }] },
+  }).code, 'page_asset', '开局期间本站 JS/CSS 加载失败仍应定位为页面资源故障')
   const reactUpdateLoop = diagnoseStartupFailure({
     event: 'failed', runtime: 'page', platform: 'nes',
     detail: 'Error: Minified React error #185; at fi (react-vendor.js:8:27488)',
