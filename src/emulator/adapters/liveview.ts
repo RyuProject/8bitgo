@@ -1876,8 +1876,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const reconnectStream = async () => {
     if (destroyed || !streamMode || streamConn || streamConnecting) return
     streamConnecting = true
+    let openedWithoutConnection = false
     try {
       await connectStream()
+      // connectStream 在 welcome 已过期时会正常结束并主动关掉旧代次；这也需要再排一轮。
+      openedWithoutConnection = !destroyed && streamMode && !streamConn
     } catch (e) {
       if (destroyed || !streamMode) return
       const err = e instanceof LiveStreamRefused ? e : null
@@ -1907,6 +1910,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       scheduleStreamReconnect()
     } finally {
       streamConnecting = false
+      // restartStream 的闹钟可能恰好在本次 connectStream 结束前触发并因 streamConnecting 被跳过。
+      // 只对「请求正常结束却没留下连接」兜底，终态错误仍由上面的 fail() 处理。
+      if (openedWithoutConnection && !switchingToSocket && !streamRetryTimer) scheduleStreamReconnect()
     }
   }
 

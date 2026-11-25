@@ -602,5 +602,15 @@ await check('liveview：事件流一次失败后仍会排下一轮重连（先�
   assert.match(view, /const scheduleStreamReconnect = [\s\S]*?streamConnecting/, '守卫仍在，避免并发重连')
 })
 
+await check('liveview：旧代次使新 welcome 失效时，重连最终会再排一轮（避免事件流永久停更）', () => {
+  const body = view.slice(view.indexOf('const reconnectStream = async'), view.indexOf('const restartStream'))
+  assert.match(body, /openedWithoutConnection = !destroyed && streamMode && !streamConn/)
+  assert.match(
+    body,
+    /finally \{\s*streamConnecting = false[\s\S]*?if \(openedWithoutConnection && !switchingToSocket && !streamRetryTimer\) scheduleStreamReconnect\(\)/,
+    '正常结束却没有建立新流时，应先释放连接锁再重试',
+  )
+})
+
 console.log(failed ? `\n${failed} 项失败（${passed} 项通过）` : `\n全部通过 ✅（${passed} 项）`)
 process.exit(failed ? 1 : 0)
