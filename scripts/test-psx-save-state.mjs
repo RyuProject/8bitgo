@@ -13,12 +13,35 @@ const cores = join(root, 'public/emulatorjs/cores')
 // Beetle PS1 两个包被 check-emulatorjs 按 Range 实玩验收过的 sha256 锁定，只带 v2（修内存泄漏）；
 // melonDS DS 额外带 v3（失败说明过滤乱码、降为 warn）。PS1 开局已不再调用 getState，乱码不会在开局出现。
 const GLUE = { mednafen_psx: 'v2', melondsds: 'v3', 'mame-current': 'v3' }
+
+/*
+  核心包是 7z，要系统 7z 才能解开看胶水。Cloudflare Workers Builds 的构建镜像没有 7z，
+  以前这里直接 spawnSync ENOENT 让整个 npm run build 失败。没有 7z 时跳过并明说（生产机 / 本机都装了，
+  真正的部署仍会跑这道检查）；设 REQUIRE_7Z=1 可强制要求。
+*/
+function find7z() {
+  for (const bin of ['7z', '7zz', '7za']) {
+    try {
+      execFileSync(bin, ['i'], { stdio: 'ignore' })
+      return bin
+    } catch (error) {
+      if (error?.code !== 'ENOENT') return bin
+    }
+  }
+  return null
+}
+const sevenZip = find7z()
+if (!sevenZip) {
+  if (process.env.REQUIRE_7Z === '1') throw new Error('找不到 7z / 7zz / 7za，无法检查核心即时存档胶水')
+  console.warn('⚠️ 跳过核心即时存档胶水检查：这台机器没有 7z / 7zz / 7za（装上后会自动执行）')
+  process.exit(0)
+}
 for (const [name, core] of [['mednafen_psx-wasm.data', 'mednafen_psx'], ['mednafen_psx-legacy-wasm.data', 'mednafen_psx'], ['melondsds-wasm.data', 'melondsds'], ['mame-current-wasm.data', 'mame-current'], ['mame-current-legacy-wasm.data', 'mame-current']]) {
   const archive = join(cores, name)
   assert.ok(existsSync(archive), `缺少自建核心：${name}`)
   const temp = mkdtempSync(join(tmpdir(), '8bitgo-psx-state-test-'))
   try {
-    execFileSync('7z', ['x', '-bd', '-y', `-o${temp}`, archive], { stdio: 'ignore' })
+    execFileSync(sevenZip, ['x', '-bd', '-y', `-o${temp}`, archive], { stdio: 'ignore' })
     const glue = readFileSync(join(temp, `${core}_libretro.js`), 'utf8')
     // mame-current 的胶水是未压缩排版（`function EmulatorJSGetState() {`）
     const start = glue.search(/function EmulatorJSGetState\(\) ?\{/)
