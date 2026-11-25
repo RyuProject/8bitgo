@@ -8,7 +8,7 @@
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { constants as fsConstants, createWriteStream } from 'node:fs'
-import { access, mkdir, open, rm, statfs } from 'node:fs/promises'
+import { access, mkdir, open, readFile, rm, statfs, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { Readable, Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
@@ -32,8 +32,13 @@ const UPLOAD_SCRIPT = join(REPO_ROOT, 'scripts/upload-sockdrive-r2.mjs')
 const DOS_83_SEGMENT = /^[A-Za-z0-9_^$~!#%&{}@'()-]{1,8}(\.[A-Za-z0-9_^$~!#%&{}@'()-]{1,3})?$/
 
 let started = false
+let starting = false
 let activeWorkers = 0
+let pumping = false
 let pumpTimer
+let claimRetryMs = 5_000
+let startupRetryTimer
+let lastCapabilityWarning = ''
 let sweepTimer
 let capabilityCache
 
@@ -57,7 +62,7 @@ export function sockdriveConversionConfig(env = process.env) {
     concurrency: positiveInt(env.SOCKDRIVE_CONCURRENCY, 1, 1),
     // 压缩以前由官方 CLI 为每个分块同时派生进程，2GB 盘能瞬间耗尽 4GB 内存；这里单独硬限流。
     compressionConcurrency: positiveInt(env.SOCKDRIVE_COMPRESSION_CONCURRENCY, 2, 8),
-    brotliQuality: positiveInt(env.SOCKDRIVE_BROTLI_QUALITY, 9, 11),
+    brotliQuality: positiveInt(env.SOCKDRIVE_BROTLI_QUALITY, 5, 11),
     // 转换本身保持单任务，发布小分块则需要并发隐藏 R2 往返；上限防止误配置打爆文件描述符。
     uploadConcurrency: positiveInt(env.SOCKDRIVE_UPLOAD_CONCURRENCY, 6, 16),
     timeoutMs: positiveInt(env.SOCKDRIVE_TIMEOUT_MINUTES, 360, 24 * 60) * 60 * 1000,
@@ -292,11 +297,18 @@ function hasDosExtras(value) {
 }
 
 export async function createSockdriveConversion(raw, actorId = null, env = process.env) {
+  const request = validateSockdriveConversionRequest(raw, env)
+  let existing
+  try {
+    existing = await existingJobForSource(request)
+  } catch (error) {
+    const capability = await sockdriveConversionCapability(env, true)
+    if (!capability.available) throw Object.assign(new Error(capability.reason), { status: 503 })
+    throw error
+  }
+  if (existing) return existing
   const capability = await sockdriveConversionCapability(env)
   if (!capability.available) throw Object.assign(new Error(capability.reason), { status: 503 })
-  const request = validateSockdriveConversionRequest(raw, env)
-  const existing = await existingJobForSource(request)
-  if (existing) return existing
   const game = await queryOne(
     'SELECT id, platform, dos_backend, dos_system, dos_sockdrive, dos_extras, dos_executable FROM games WHERE slug = ?',
     [request.gameSlug],
@@ -391,6 +403,9 @@ export async function retrySockdriveConversion(id) {
   const row = await queryOne('SELECT * FROM sockdrive_conversion_jobs WHERE id = ?', [id])
   if (!row) return null
   if (ACTIVE.has(row.status) || row.status === 'completed') return publicJob(row)
+  if (Number(row.source_deleted) === 2) {
+    throw Object.assign(new Error('任务临时文件正在清理，请稍后刷新'), { status: 409 })
+  }
   if (!row.publish_started && Number(row.source_deleted) !== 0) {
     throw Object.assign(new Error('临时 ZIP 已清理且发布尚未开始，不能重试；请重新上传'), { status: 409 })
   }
@@ -399,7 +414,6 @@ export async function retrySockdriveConversion(id) {
    * 两次外部等待曾超过 Cloudflare 时限直接回 504。processJob 本来就会按 ETag 重新校验源文件，
    * 并在 publish_started 时先检查已提交元数据；把 I/O 留给后台既不降低安全性，也让请求立即返回。
    */
-  /*
   /*
    * 条件里必须带上 source_deleted：上面那次读和这次写之间，清扫器（sweepStaleSources）
    * 可能刚领走这份 24 小时前失败的源 ZIP（source_deleted 0 → 2 → 1）。不在同一条 UPDATE 里
@@ -419,11 +433,14 @@ export async function retrySockdriveConversion(id) {
     `UPDATE sockdrive_conversion_jobs
       SET executable = ?, expected_executable = ?, status = 'queued', progress = 0, error = NULL,
         message = '按当前游戏配置重新排队', completed_at = NULL
-      WHERE id = ? AND status = 'failed' AND (publish_started = 1 OR source_deleted = 0)`,
+      WHERE id = ? AND status = 'failed' AND source_deleted <> 2 AND (publish_started = 1 OR source_deleted = 0)`,
     [executable.executable, executable.expected, id],
   )
   if (claimed.affectedRows !== 1) {
     const now = await queryOne('SELECT status, publish_started, source_deleted FROM sockdrive_conversion_jobs WHERE id = ?', [id])
+    if (now && now.status === 'failed' && Number(now.source_deleted) === 2) {
+      throw Object.assign(new Error('任务临时文件正在清理，请稍后刷新'), { status: 409 })
+    }
     if (now && now.status === 'failed' && !Number(now.publish_started) && Number(now.source_deleted) !== 0) {
       throw Object.assign(new Error('临时 ZIP 正在清理或已经删除，不能重试；请重新上传'), { status: 409 })
     }
@@ -444,14 +461,35 @@ async function updateJob(id, fields) {
   await query(`UPDATE sockdrive_conversion_jobs SET ${sql} WHERE id = ?`, [...entries.map(([, value]) => value), id])
 }
 
-async function ensureDiskSpace(config, sourceSize) {
+async function ensureDiskSpace(config, sourceSize, existingSourceBytes = 0) {
   await mkdir(config.tempDir, { recursive: true })
   const fs = await statfs(config.tempDir)
   const free = Number(fs.bavail) * Number(fs.bsize)
   // ZIP、解压目录、QCOW2 与发布分块会短暂并存；12GB 下限覆盖高压缩比的小源包，5 倍覆盖普通大包。
-  const need = Math.max(12 * 1024 ** 3, sourceSize * 5 + 1024 ** 3)
+  const fullNeed = Math.max(12 * 1024 ** 3, sourceSize * 5 + 1024 ** 3)
+  // 重试会复用完整 staging ZIP；它已经占用的空间不能再次算作待新增空间。
+  const need = Math.max(0, fullNeed - Math.min(sourceSize, Math.max(0, existingSourceBytes)))
   if (!Number.isFinite(free) || free < need) {
     throw new Error(`Sockdrive 工作盘空间不足：至少需要 ${Math.ceil(need / 1024 / 1024)}MB 可用空间`)
+  }
+}
+
+async function reusableSourceZip(path, expectedSize) {
+  let file
+  try {
+    file = await open(path, 'r')
+    const info = await file.stat()
+    if (!info.isFile() || info.size !== Number(expectedSize)) return false
+    const header = Buffer.alloc(4)
+    const { bytesRead } = await file.read(header, 0, header.length, 0)
+    return bytesRead === 4 && (
+      header.equals(Buffer.from([0x50, 0x4b, 0x03, 0x04])) ||
+      header.equals(Buffer.from([0x50, 0x4b, 0x05, 0x06]))
+    )
+  } catch {
+    return false
+  } finally {
+    await file?.close().catch(() => {})
   }
 }
 
@@ -587,11 +625,41 @@ export function parseSockdriveOutputSummary(text) {
   return { files, bytes }
 }
 
-async function outputSummary(directory) {
-  const files = await listSockdriveFiles(directory, { strict: false })
-  return {
-    files: files.length,
-    bytes: files.reduce((total, file) => total + file.size, 0),
+async function recordPreparedOutput(job, config, directory, markerPath) {
+  const files = await listSockdriveFiles(directory, { strict: true })
+  const record = {
+    version: 1,
+    sourceEtag: job.source_etag,
+    sourceSize: Number(job.source_size),
+    targetPrefix: job.target_prefix,
+    executable: job.executable,
+    encoding: job.encoding,
+    cli: config.cli,
+    freeSpace: config.freeSpace,
+    brotliQuality: config.brotliQuality,
+    publicBase: config.publicBase,
+    files: files.map(({ name, size }) => [name, size]),
+  }
+  // 这个完成标记由父进程在制作脚本完整退出后写入；没有它就不能把半成品目录当成可续发产物。
+  await writeFile(markerPath, JSON.stringify(record), { flag: 'wx' })
+  return { files: files.length, bytes: files.reduce((total, file) => total + file.size, 0) }
+}
+
+async function reusablePreparedOutput(job, config, directory, markerPath) {
+  try {
+    const record = JSON.parse(await readFile(markerPath, 'utf8'))
+    if (record.version !== 1 || record.sourceEtag !== job.source_etag ||
+        Number(record.sourceSize) !== Number(job.source_size) || record.targetPrefix !== job.target_prefix ||
+        record.executable !== job.executable ||
+        record.encoding !== job.encoding || record.cli !== config.cli || record.freeSpace !== config.freeSpace ||
+        record.brotliQuality !== config.brotliQuality || record.publicBase !== config.publicBase ||
+        !Array.isArray(record.files)) return null
+    const files = await listSockdriveFiles(directory, { strict: true })
+    if (record.files.length !== files.length || record.files.some((item, index) =>
+      !Array.isArray(item) || item[0] !== files[index].name || Number(item[1]) !== files[index].size)) return null
+    return { files: files.length, bytes: files.reduce((total, file) => total + file.size, 0) }
+  } catch {
+    return null
   }
 }
 
@@ -753,6 +821,8 @@ async function processJob(job) {
   const workRoot = join(dir, 'work')
   const buildRoot = join(workRoot, `${job.game_slug}-${job.version}`)
   const publishDir = join(buildRoot, 'publish')
+  const preparedMarker = join(buildRoot, '.8bg-publish-ready.json')
+  let completed = false
   try {
     if (job.publish_started) {
       const existing = await remoteHead(config, `${job.target_prefix}/sockdrive.metaj`)
@@ -760,47 +830,60 @@ async function processJob(job) {
         await updateJob(job.id, { status: 'verifying', progress: 98, message: '检测到已提交的元数据，正在恢复校验与绑定' })
         const published = await verifyPublished(config, job)
         await finishPublishedJob(job, config, published)
+        completed = true
         return
       }
     }
-    await ensureDiskSpace(config, Number(job.source_size))
-    await rm(dir, { recursive: true, force: true })
-    await mkdir(dir, { recursive: true })
-    await updateJob(job.id, { status: 'downloading', progress: 3, error: null, message: '正在从私有 staging 读取原始 ZIP' })
-    await downloadSource(job, config, input)
+    let summary = await reusablePreparedOutput(job, config, publishDir, preparedMarker)
+    if (!summary) {
+      // 制作未完成时清掉旧 work 目录，保留完整 ZIP；重试只需重做镜像，不必从 R2 再拉数 GB。
+      await rm(workRoot, { recursive: true, force: true })
+      await mkdir(dir, { recursive: true })
+      const sourceReady = await reusableSourceZip(input, Number(job.source_size))
+      if (!sourceReady) await rm(input, { force: true })
+      await ensureDiskSpace(config, Number(job.source_size), sourceReady ? Number(job.source_size) : 0)
+      if (!sourceReady) {
+        await updateJob(job.id, { status: 'downloading', progress: 3, error: null, message: '正在从私有 staging 读取原始 ZIP' })
+        await downloadSource(job, config, input)
+      } else {
+        await updateJob(job.id, { status: 'downloading', progress: 20, error: null, message: '复用上次已下载完成的 ZIP' })
+      }
 
-    await updateJob(job.id, { status: 'converting', progress: 22, message: '正在制作 FAT32/QCOW2 并生成 Sockdrive 分块' })
-    let progress = 22
-    let progressWrites = Promise.resolve()
-    const prepareOutput = await runCommand(process.execPath, [
-      PREPARE_SCRIPT,
-      '--source', input,
-      '--slug', job.game_slug,
-      '--version', job.version,
-      '--exe', job.executable,
-      '--work-dir', workRoot,
-      '--cli', config.cli,
-      '--encoding', job.encoding,
-      '--free-space', config.freeSpace,
-      '--public-base', config.publicBase,
-      '--compression-concurrency', String(config.compressionConcurrency),
-      '--brotli-quality', String(config.brotliQuality),
-      '--defer-validation',
-    ], {
-      timeoutMs: config.timeoutMs,
-      onText: (text) => {
-        const next = sockdriveConversionProgress(text)
-        if (next == null || next <= progress) return
-        progress = next
-        progressWrites = progressWrites.then(() => updateJob(job.id, { progress })).catch(() => {})
-      },
-    })
-    await progressWrites
-    const summary = parseSockdriveOutputSummary(prepareOutput) || await outputSummary(publishDir)
+      await updateJob(job.id, { status: 'converting', progress: 22, message: '正在制作 FAT32/QCOW2 并生成 Sockdrive 分块' })
+      let progress = 22
+      let progressWrites = Promise.resolve()
+      await runCommand(process.execPath, [
+        PREPARE_SCRIPT,
+        '--source', input,
+        '--slug', job.game_slug,
+        '--version', job.version,
+        '--exe', job.executable,
+        '--work-dir', workRoot,
+        '--cli', config.cli,
+        '--encoding', job.encoding,
+        '--free-space', config.freeSpace,
+        '--public-base', config.publicBase,
+        '--compression-concurrency', String(config.compressionConcurrency),
+        '--brotli-quality', String(config.brotliQuality),
+        '--defer-validation',
+      ], {
+        timeoutMs: config.timeoutMs,
+        onText: (text) => {
+          const next = sockdriveConversionProgress(text)
+          if (next == null || next <= progress) return
+          progress = next
+          progressWrites = progressWrites.then(() => updateJob(job.id, { progress })).catch(() => {})
+        },
+      })
+      await progressWrites
+      summary = await recordPreparedOutput(job, config, publishDir, preparedMarker)
+    }
     await updateJob(job.id, {
       status: 'uploading', progress: 72, output_bytes: summary.bytes, output_files: summary.files,
       publish_started: 1, message: `正在发布 ${summary.files} 个不可变分块到 R2`,
     })
+    // 本地发布目录已经完整落盘并有完成标记，原始 ZIP 之后不再参与上传；尽早腾出数据盘空间。
+    await rm(input, { force: true }).catch(() => {})
     let uploaded = 0
     await runCommand(process.execPath, [
       UPLOAD_SCRIPT,
@@ -829,6 +912,7 @@ async function processJob(job) {
     await updateJob(job.id, { status: 'verifying', progress: 98, message: '正在通过公开域名复核元数据、热点清单和编码' })
     const published = await verifyPublished(config, job)
     await finishPublishedJob(job, config, published)
+    completed = true
   } catch (error) {
     const message = sockdriveFailureMessage(error)
     console.error(`[sockdrive-convert] ${job.id} 失败：`, error)
@@ -838,41 +922,94 @@ async function processJob(job) {
      * 可能已经清理，管理员照着提示去等重试反而是错的。所以先回库读一次真实状态。
      */
     const current = await queryOne('SELECT publish_started FROM sockdrive_conversion_jobs WHERE id = ?', [job.id]).catch(() => null)
-    const publishStarted = Boolean(Number(current?.publish_started ?? job.publish_started))
+    const publishStarted = Boolean(Number(current?.publish_started ?? job.publish_started)) || existsSync(preparedMarker)
     await updateJob(job.id, {
       status: 'failed', error: message,
       message: publishStarted ? '已保留任务状态；可重试恢复发布或绑定' : '临时 ZIP 已保留，可在 24 小时内重试',
     }).catch(() => {})
   } finally {
-    await rm(dir, { recursive: true, force: true }).catch(() => {})
+    if (completed) {
+      await rm(dir, { recursive: true, force: true }).catch(() => {})
+    } else if (existsSync(preparedMarker)) {
+      // 分块已制好，发布/校验/绑定重试只需继续用本地发布目录，不再跑数小时制作流程。
+      await rm(input, { force: true }).catch(() => {})
+      console.log(`[sockdrive-convert] ${job.id} 保留已制好的发布目录，重试可跳过重新制盘`)
+    } else if (await reusableSourceZip(input, Number(job.source_size))) {
+      // 制盘失败时只保留可复用源 ZIP；下次重做前会删除不完整的 work 目录。
+      await rm(workRoot, { recursive: true, force: true }).catch(() => {})
+      console.log(`[sockdrive-convert] ${job.id} 保留已下载 ZIP，重试可跳过重新下载`)
+    } else {
+      await rm(dir, { recursive: true, force: true }).catch(() => {})
+    }
   }
 }
 
 async function sweepStaleSources() {
   const config = sockdriveConversionConfig()
   const rows = await query(
-    `SELECT id, source_key, status, message FROM sockdrive_conversion_jobs
-      WHERE source_deleted = 0
-        AND (status = 'completed' OR (status = 'failed' AND updated_at < NOW() - INTERVAL 24 HOUR))
+    `SELECT id, source_key, status, message, source_deleted FROM sockdrive_conversion_jobs
+      WHERE source_deleted IN (0, 2)
+        AND (source_deleted = 2 OR status = 'completed' OR (status = 'failed' AND updated_at < NOW() - INTERVAL 24 HOUR))
       ORDER BY updated_at ASC LIMIT 20`,
   )
   for (const row of rows) {
+    let sourceDeleted = false
     try {
-      const claimed = await query(
-        `UPDATE sockdrive_conversion_jobs SET source_deleted = 2
+      if (Number(row.source_deleted) === 0) {
+        const claimed = await query(
+          `UPDATE sockdrive_conversion_jobs SET source_deleted = 2
           WHERE id = ? AND source_deleted = 0
-            AND (status = 'completed' OR (status = 'failed' AND updated_at < NOW() - INTERVAL 24 HOUR))`,
-        [row.id],
-      )
-      if (claimed.affectedRows !== 1) continue
+              AND (status = 'completed' OR (status = 'failed' AND updated_at < NOW() - INTERVAL 24 HOUR))`,
+          [row.id],
+        )
+        if (claimed.affectedRows !== 1) continue
+      } else if (Number(row.source_deleted) !== 2) continue
       await deleteSource(row, config)
+      sourceDeleted = true
       await updateJob(row.id, {
         source_deleted: 1,
         ...(row.status === 'failed' ? { message: '临时 ZIP 已在失败 24 小时后自动清理' } : {}),
       })
     } catch (error) {
-      await updateJob(row.id, { source_deleted: 0 }).catch(() => {})
+      // 远端删除没确认才退回 0；若 R2 已删而数据库暂时写不进去，留在 2，下一轮按幂等 DELETE 收尾。
+      if (!sourceDeleted) await updateJob(row.id, { source_deleted: 0 }).catch(() => {})
       console.warn(`[sockdrive-convert] 清理 ${row.source_key} 失败：${error.message}`)
+      continue
+    }
+    // 本地磁盘回收与 R2 / 数据库状态分开；本地权限或 I/O 故障不能把已删的远端源误报成可重试。
+    await rm(join(config.tempDir, row.id), { recursive: true, force: true }).catch(async (error) => {
+      // source_deleted=2 同时作为本地目录待清理标记；下一轮不受 failed.updated_at 的 24 小时门槛影响。
+      await updateJob(row.id, { source_deleted: 2 }).catch(() => {})
+      console.warn(`[sockdrive-convert] 本地目录 ${row.id} 清理失败：${error.message}`)
+    })
+  }
+  await sweepRetainedWorkDirs(config)
+}
+
+/** 完成任务与已清掉 staging 的旧失败任务仍可能因进程崩溃留有本地制作目录。 */
+async function sweepRetainedWorkDirs(config) {
+  const rows = await query(
+    `SELECT id, status, source_deleted FROM sockdrive_conversion_jobs
+      WHERE source_deleted IN (1, 2)
+        AND (source_deleted = 2 OR status = 'completed' OR (status = 'failed' AND updated_at < NOW() - INTERVAL 24 HOUR))
+      ORDER BY updated_at ASC LIMIT 20`,
+  )
+  for (const row of rows) {
+    if (Number(row.source_deleted) === 1) {
+      const claim = await query(
+        `UPDATE sockdrive_conversion_jobs SET source_deleted = 2
+          WHERE id = ? AND source_deleted = 1
+            AND (status = 'completed' OR (status = 'failed' AND updated_at < NOW() - INTERVAL 24 HOUR))`,
+        [row.id],
+      )
+      if (claim.affectedRows !== 1) continue
+    } else if (Number(row.source_deleted) !== 2) continue
+    try {
+      await rm(join(config.tempDir, row.id), { recursive: true, force: true })
+      await updateJob(row.id, { source_deleted: 1 })
+    } catch (error) {
+      // 留在 2 让下一轮立即续收；rm 可重复执行，失败任务的重试入口也会在这期间阻止启动。
+      console.warn(`[sockdrive-convert] 本地制作目录 ${row.id} 清理失败：${error.message}`)
     }
   }
 }
@@ -888,45 +1025,94 @@ async function claimNext() {
 }
 
 async function pump() {
+  if (pumping) {
+    // 任务可能在异步领取期间再次唤醒队列；延后而不是并行启动第二个制盘循环。
+    schedulePump(50)
+    return
+  }
+  pumping = true
   pumpTimer = undefined
-  const config = sockdriveConversionConfig()
-  while (activeWorkers < config.concurrency) {
-    const job = await claimNext().catch((error) => {
-      console.error('[sockdrive-convert] 领取任务失败：', error.message)
-      return null
-    })
-    if (!job) break
-    activeWorkers++
-    void processJob(job).finally(() => { activeWorkers--; schedulePump(50) })
+  try {
+    const config = sockdriveConversionConfig()
+    while (activeWorkers < config.concurrency) {
+      let claimFailed = false
+      const job = await claimNext().catch((error) => {
+        claimFailed = true
+        console.error('[sockdrive-convert] 领取任务失败：', error.message)
+        return null
+      })
+      if (!job) {
+        if (claimFailed) {
+          schedulePump(claimRetryMs)
+          claimRetryMs = Math.min(claimRetryMs * 2, 60_000)
+        } else claimRetryMs = 5_000
+        break
+      }
+      claimRetryMs = 5_000
+      activeWorkers++
+      void processJob(job).finally(() => { activeWorkers--; schedulePump(50) })
+    }
+  } finally {
+    pumping = false
   }
 }
 
 function schedulePump(delay = 0) {
   if (!started || pumpTimer) return
-  pumpTimer = setTimeout(() => void pump(), delay)
+  pumpTimer = setTimeout(() => {
+    pumpTimer = undefined
+    void pump()
+  }, delay)
   pumpTimer.unref?.()
 }
 
 export async function startSockdriveConversionQueue() {
-  if (started) return
-  started = true
-  const capability = await sockdriveConversionCapability(process.env, true)
-  if (!capability.available) {
-    console.warn(`[sockdrive-convert] 未启用：${capability.reason}`)
-    return
-  }
-  await mkdir(sockdriveConversionConfig().tempDir, { recursive: true })
-  await query(
-    `UPDATE sockdrive_conversion_jobs
-      SET status = 'queued', progress = LEAST(progress, 98), message = '服务器重启，任务自动重新排队'
-      WHERE status IN (${INTERRUPTED.map(() => '?').join(', ')})`,
-    INTERRUPTED,
-  )
-  console.log('[sockdrive-convert] DOS / Windows ZIP → Sockdrive 后台队列已启用')
-  schedulePump()
-  void sweepStaleSources().catch((error) => console.warn('[sockdrive-convert] staging 清扫失败：', error.message))
-  sweepTimer = setInterval(() => {
+  if (started || starting) return
+  starting = true
+  try {
+    const capability = await sockdriveConversionCapability(process.env, true)
+    if (!capability.available) {
+      if (lastCapabilityWarning !== capability.reason) {
+        console.warn(`[sockdrive-convert] 暂未启用：${capability.reason}；60 秒后重新检查`)
+        lastCapabilityWarning = capability.reason
+      }
+      if (!startupRetryTimer) {
+        startupRetryTimer = setTimeout(() => {
+          startupRetryTimer = undefined
+          void startSockdriveConversionQueue().catch((error) => console.error('[sockdrive-convert] 队列启动重试失败：', error))
+        }, 60_000)
+        startupRetryTimer.unref?.()
+      }
+      return
+    }
+    await mkdir(sockdriveConversionConfig().tempDir, { recursive: true })
+    await query(
+      `UPDATE sockdrive_conversion_jobs
+        SET status = 'queued', progress = LEAST(progress, 98), message = '服务器重启，任务自动重新排队'
+        WHERE status IN (${INTERRUPTED.map(() => '?').join(', ')})`,
+      INTERRUPTED,
+    )
+    started = true
+    lastCapabilityWarning = ''
+    clearTimeout(startupRetryTimer)
+    startupRetryTimer = undefined
+    console.log('[sockdrive-convert] DOS / Windows ZIP → Sockdrive 后台队列已启用')
+    schedulePump()
     void sweepStaleSources().catch((error) => console.warn('[sockdrive-convert] staging 清扫失败：', error.message))
-  }, 6 * 60 * 60 * 1000)
-  sweepTimer.unref?.()
+    sweepTimer = setInterval(() => {
+      void sweepStaleSources().catch((error) => console.warn('[sockdrive-convert] staging 清扫失败：', error.message))
+    }, 6 * 60 * 60 * 1000)
+    sweepTimer.unref?.()
+  } catch (error) {
+    if (!startupRetryTimer) {
+      startupRetryTimer = setTimeout(() => {
+        startupRetryTimer = undefined
+        void startSockdriveConversionQueue().catch((retryError) => console.error('[sockdrive-convert] 队列启动重试失败：', retryError))
+      }, 30_000)
+      startupRetryTimer.unref?.()
+    }
+    throw error
+  } finally {
+    starting = false
+  }
 }

@@ -2,6 +2,7 @@
 import { api, ApiError } from './api'
 import { waitForConversionJob } from './conversionPoll.js'
 import { trackUploadActivity } from './uploadActivity'
+import { discStagingKey } from './pspConversion'
 import type { PspConversionCapability, PspConversionJob } from './pspConversion'
 import { pspConversionLabel } from './pspConversion'
 
@@ -32,9 +33,11 @@ export function rememberedPsxConversion(slug: string, lang: string): string {
   return remembered()[`${slug}:${lang}`] || ''
 }
 
-export function psxStagingKey(): string {
+export async function psxStagingKey(file?: File, slug = '', lang = '', targetKey = ''): Promise<string> {
+  if (file) return discStagingKey('psx', file, slug, lang, targetKey)
   // 旧 Worker 已把 psp-staging 设为私有读；复用这一安全前缀可避免新后端先部署时暴露源 ISO。
-  return `psp-staging/${crypto.randomUUID()}.iso`
+  const id = globalThis.crypto?.randomUUID?.() || `${Date.now().toString(16)}-${Math.random().toString(16).slice(2)}`
+  return `psp-staging/${id}.iso`
 }
 
 export function psxChdKey(isoKey: string): string {

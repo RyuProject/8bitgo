@@ -17,6 +17,7 @@
  * `sockify -b` 用 br，`sockify -g` 用 gzip；没压缩就写 identity（默认）。
  */
 import { spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs'
 import { open } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
@@ -278,7 +279,10 @@ const jsonResponse = async (response, label) => {
   }
   if (!response.ok) {
     const error = new Error(`${label}失败：${value?.error || `HTTP ${response.status}`}`)
-    error.retryable = response.status === 408 || response.status === 429 || response.status >= 500
+    error.retryable = value?.cleanupRequired !== true && (value?.retryable === true || (
+      value?.retryable !== false && value?.fatal !== true &&
+      (response.status === 408 || response.status === 429 || response.status >= 500)
+    ))
     throw error
   }
   return value
@@ -315,6 +319,7 @@ const uploadWithWorker = async (name, contentType) => {
     return
   }
 
+  const requestId = createHash('sha256').update(JSON.stringify([key, size, contentType, encoding, name])).digest('hex')
   const session = await requestJson(
     () => workerRequest(key, {
       method: 'POST',
@@ -324,6 +329,8 @@ const uploadWithWorker = async (name, contentType) => {
         contentEncoding: encoding,
         size,
         name,
+        // 目标 key 属于不可变版本目录；响应丢失后重试必须取回同一会话，不能遗留重复分片。
+        requestId,
       }),
     }, '?uploads'),
     `创建 ${name} 分片会话`,
@@ -359,7 +366,7 @@ const uploadWithWorker = async (name, contentType) => {
       () => workerRequest(key, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ parts, marker: session.marker }),
+        body: JSON.stringify({ parts, marker: session.marker, requestId, requestSignature: session.requestSignature, size }),
       }, `?uploadId=${encodeURIComponent(session.uploadId)}`),
       `合并 ${name} 分片`,
     )

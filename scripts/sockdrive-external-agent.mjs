@@ -67,7 +67,7 @@ const publicBase = String(publish.publicBase || 'https://assets.8bitgo.com').tri
 const apiBase = String(publish.apiBase || 'https://8bitgo.com').trim().replace(/\/+$/, '')
 const workerUrl = String(publish.workerUrl || '').trim().replace(/\/+$/, '')
 const compressionConcurrency = Number(publish.compressionConcurrency || 2)
-const brotliQuality = Number(publish.brotliQuality || 9)
+const brotliQuality = Number(publish.brotliQuality || 5)
 const uploadConcurrency = Number(publish.uploadConcurrency || 6)
 const freeSpace = String(publish.freeSpace || '128M').trim().toUpperCase()
 

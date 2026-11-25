@@ -1,7 +1,6 @@
 /** PS1 单数据轨 ISO → CD CHD：格式与后台接线回归；本机有 chdman 时再做真实转换。 */
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { randomBytes } from 'node:crypto'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -36,20 +35,29 @@ assert.deepEqual(chdmanCreateCdArgs('/tmp/input.cue', '/tmp/output.chd', 2), [
 assert.ok(conversionScratchBytes(1024 ** 3, 0, 0, 'psx') > conversionScratchBytes(1024 ** 3),
   'CD CHD 的磁盘预算必须包含 2048→2352 扇区开销')
 
-const bytes = Buffer.from(randomBytes(2048 * 80))
+// 目录剩余字节必须为 ISO9660 填充零；随机尾部会被严格解析器正确判为损坏记录。
+const bytes = Buffer.alloc(2048 * 80)
 bytes[0x8000] = 1
 bytes.write('CD001', 0x8001)
 bytes[0x8006] = 1
+bytes.writeUInt16LE(2048, 0x8000 + 128)
+bytes.writeUInt16BE(2048, 0x8000 + 130)
 const root = 0x8000 + 156
 bytes[root] = 34
 bytes.writeUInt32LE(20, root + 2)
+bytes.writeUInt32BE(20, root + 6)
 bytes.writeUInt32LE(2048, root + 10)
+bytes.writeUInt32BE(2048, root + 14)
+bytes[root + 25] = 2
 bytes[root + 32] = 1
+bytes[root + 33] = 0
 const at = 20 * 2048
 const name = 'SYSTEM.CNF;1'
 bytes[at] = 33 + name.length
 bytes.writeUInt32LE(21, at + 2)
+bytes.writeUInt32BE(21, at + 6)
 bytes.writeUInt32LE(64, at + 10)
+bytes.writeUInt32BE(64, at + 14)
 bytes[at + 32] = name.length
 bytes.write(name, at + 33)
 assert.equal(isPsxIsoHeader(bytes), true)

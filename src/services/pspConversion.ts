@@ -2,6 +2,7 @@
 import { api, ApiError } from './api'
 import { waitForConversionJob } from './conversionPoll.js'
 import { trackUploadActivity } from './uploadActivity'
+import { fingerprintRomUploadFile } from './romFingerprint'
 
 export type PspConversionStatus =
   | 'queued'
@@ -39,6 +40,7 @@ export interface PspConversionJob {
 }
 
 export interface CreatePspConversion {
+  platform?: 'psp' | 'psx'
   sourceKey: string
   targetKey: string
   sourceSize: number
@@ -49,6 +51,31 @@ export interface CreatePspConversion {
 }
 
 const REMEMBER_KEY = '8bitgo.psp.conversions'
+const PENDING_CREATE_KEY = '8bitgo.disc.conversion.pending'
+const STAGING_KEY = '8bitgo.disc.conversion.staging'
+const DISC_UPLOAD_TTL = 7 * 24 * 60 * 60 * 1000
+
+type DiscPlatform = 'psp' | 'psx'
+
+interface DiscStagingEntry {
+  platform: DiscPlatform
+  slot: string
+  targetKey: string
+  fileName: string
+  fileSize: number
+  lastModified: number
+  fileFingerprint: string
+  key: string
+  savedAt: number
+}
+
+interface PendingDiscCreation {
+  platform: DiscPlatform
+  slug: string
+  lang: string
+  request: CreatePspConversion
+  savedAt: number
+}
 
 function remembered(): Record<string, string> {
   try {
@@ -79,9 +106,130 @@ export function rememberedPspConversion(slug: string, lang: string): string {
   return remembered()[identity(slug, lang)] || ''
 }
 
-export function pspStagingKey(): string {
+export async function pspStagingKey(file?: File, slug = '', lang = '', targetKey = ''): Promise<string> {
+  if (file) return discStagingKey('psp', file, slug, lang, targetKey)
   const id = globalThis.crypto?.randomUUID?.() || `${Date.now().toString(16)}-${Math.random().toString(16).slice(2)}`
   return `psp-staging/${id}.iso`
+}
+
+function discSlot(platform: DiscPlatform, slug: string, lang: string): string {
+  return `${platform}:${slug}:${lang}`
+}
+
+function readDiscStaging(): Record<string, DiscStagingEntry> {
+  try {
+    const value = JSON.parse(localStorage.getItem(STAGING_KEY) || '{}')
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  } catch {
+    return {}
+  }
+}
+
+function writeDiscStaging(value: Record<string, DiscStagingEntry>) {
+  try {
+    const cutoff = Date.now() - DISC_UPLOAD_TTL
+    const entries = Object.entries(value)
+      .filter(([, item]) => item && Number(item.savedAt) >= cutoff)
+      .sort((a, b) => Number(b[1].savedAt) - Number(a[1].savedAt))
+      .slice(0, 40)
+    localStorage.setItem(STAGING_KEY, JSON.stringify(Object.fromEntries(entries)))
+  } catch {
+    // 本地账本只用于失败后续传；无痕模式仍可正常上传，只是需要从头开始。
+  }
+}
+
+/** 同一槽位重选同一 ISO 时复用 staging key，让 romMultipart 能接着上次未完成的分片上传。 */
+export async function discStagingKey(
+  platform: DiscPlatform,
+  file: File,
+  slug: string,
+  lang: string,
+  targetKey: string,
+): Promise<string> {
+  const fileFingerprint = await fingerprintRomUploadFile(file)
+  const createKey = () => globalThis.crypto?.randomUUID?.() || `${Date.now().toString(16)}-${Math.random().toString(16).slice(2)}`
+  // 无法读取摘要时仍正常上传，但不根据弱元数据复用旧 key，以免复用已完成任务的结果。
+  if (!fileFingerprint) return `psp-staging/${createKey()}.iso`
+  const slot = discSlot(platform, slug, lang)
+  const entries = readDiscStaging()
+  const previous = entries[slot]
+  if (
+    previous?.platform === platform && previous.slot === slot && previous.targetKey === targetKey &&
+    previous.fileName === file.name && previous.fileSize === file.size && previous.lastModified === file.lastModified &&
+    previous.fileFingerprint === fileFingerprint &&
+    Date.now() - Number(previous.savedAt) < DISC_UPLOAD_TTL &&
+    /^psp-staging\/[a-f0-9-]{16,}\.iso$/i.test(previous.key)
+  ) return previous.key
+
+  const key = `psp-staging/${createKey()}.iso`
+  entries[slot] = {
+    platform, slot, targetKey, fileName: file.name, fileSize: file.size,
+    lastModified: file.lastModified, fileFingerprint, key, savedAt: Date.now(),
+  }
+  writeDiscStaging(entries)
+  return key
+}
+
+export function clearDiscStagingKey(platform: DiscPlatform, slug: string, lang: string, key: string) {
+  const slot = discSlot(platform, slug, lang)
+  const entries = readDiscStaging()
+  if (entries[slot]?.key !== key) return
+  delete entries[slot]
+  writeDiscStaging(entries)
+}
+
+function readPendingDiscCreations(): Record<string, PendingDiscCreation> {
+  try {
+    const value = JSON.parse(localStorage.getItem(PENDING_CREATE_KEY) || '{}')
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  } catch {
+    return {}
+  }
+}
+
+function writePendingDiscCreations(value: Record<string, PendingDiscCreation>) {
+  try {
+    const cutoff = Date.now() - DISC_UPLOAD_TTL
+    const entries = Object.entries(value)
+      .filter(([, item]) => item && Number(item.savedAt) >= cutoff)
+      .sort((a, b) => Number(b[1].savedAt) - Number(a[1].savedAt))
+      .slice(0, 40)
+    localStorage.setItem(PENDING_CREATE_KEY, JSON.stringify(Object.fromEntries(entries)))
+  } catch {
+    // 服务端任务本身仍会运行；这份小账本只恢复管理员页面，不承载任务状态。
+  }
+}
+
+/** 上传完成后先保存原样建任务请求；响应丢失或刷新时重发同一 sourceKey 会命中服务端幂等记录。 */
+export function rememberPendingDiscConversion(
+  platform: DiscPlatform,
+  slug: string,
+  lang: string,
+  request: CreatePspConversion,
+) {
+  const entries = readPendingDiscCreations()
+  const slot = discSlot(platform, slug, lang)
+  entries[slot] = { platform, slug, lang, request: { ...request, platform }, savedAt: Date.now() }
+  writePendingDiscCreations(entries)
+}
+
+export function rememberedPendingDiscConversion(
+  platform: DiscPlatform,
+  slug: string,
+  lang: string,
+): CreatePspConversion | null {
+  const slot = discSlot(platform, slug, lang)
+  const entry = readPendingDiscCreations()[slot]
+  if (!entry || entry.platform !== platform || entry.slug !== slug || entry.lang !== lang ||
+      !Number.isFinite(Number(entry.savedAt)) || Date.now() - Number(entry.savedAt) >= DISC_UPLOAD_TTL || entry.request?.platform !== platform ||
+      !/^psp-staging\/[a-f0-9-]{16,}\.iso$/i.test(entry.request.sourceKey || '')) return null
+  return entry.request
+}
+
+export function clearPendingDiscConversion(platform: DiscPlatform, slug: string, lang: string) {
+  const entries = readPendingDiscCreations()
+  delete entries[discSlot(platform, slug, lang)]
+  writePendingDiscCreations(entries)
 }
 
 export function pspChdKey(isoKey: string): string {
