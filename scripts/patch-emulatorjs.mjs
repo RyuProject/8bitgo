@@ -85,6 +85,7 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { renderEjsCoreResumeHelper } from './lib/ejs-core-resume-helper.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const file = join(root, 'public', 'emulatorjs', 'emulator.min.js')
@@ -365,7 +366,7 @@ const BODY_READ_FALLBACK_TO = BODY_READ_FALLBACK_REPLACEMENTS.reduce((source, [f
   return replaced
 }, BODY_READ_FALLBACK_PREVIOUS)
 const BODY_READ_FALLBACK_BROKEN = BODY_READ_FALLBACK_FROM.replace(BODY_READ_FALLBACK_ONLOAD_FROM, BODY_READ_FALLBACK_ONLOAD_BROKEN)
-const CORE_RESUME_HELPER = readFileSync(join(root, 'scripts', 'lib', 'ejs-core-resume-runtime.js'), 'utf8').trim()
+const CORE_RESUME_HELPER = renderEjsCoreResumeHelper()
 const CORE_RESUME_HELPER_START = '/*\n * EmulatorJS 核心下载续传助手'
 const CORE_RESUME_INSERT_FROM = 'class s{constructor(t=null,e=null){this.storageCache=t,this.EJS=e}'
 const CORE_RESUME_INSERT_TO = `${CORE_RESUME_HELPER}\n${CORE_RESUME_INSERT_FROM}`
@@ -380,8 +381,12 @@ const CORE_FETCH_TO =
 const CORE_FETCH_HEADER_ACCEPT_MARKER = 'const __8bgAccepted='
 const CORE_FETCH_HEADER_ACCEPT_AT = CORE_FETCH_TO.indexOf(CORE_FETCH_HEADER_ACCEPT_MARKER)
 if (CORE_FETCH_HEADER_ACCEPT_AT < 0) throw new Error('核心响应头兜底找不到续传响应校验段')
-const CORE_FETCH_HEADER_FALLBACK_TO =
+const CORE_FETCH_HEADER_FALLBACK_TO_PREVIOUS =
   'let __8bgResumePlan=__8bgCoreResume.plan(t,n,o,s);const __8bgFetchWithHeaderFallback=async(__8bgUrl,__8bgHeaders)=>{clearTimeout(V),f=new AbortController;let __8bgHeaderTimedOut=false;V=setTimeout(()=>{__8bgHeaderTimedOut=true;f.__8bgHeaderTimedOut=true;f.abort()},h);try{return await fetch(__8bgUrl,{method:n,headers:__8bgHeaders,body:o,signal:f.signal})}catch(__8bgHeaderError){clearTimeout(V);if(!__8bgResumePlan||!__8bgHeaderTimedOut)throw __8bgHeaderError;console.warn("[EJS Download] Fetch 响应头超时，改用 XHR arraybuffer："+S);const __8bgHeaderResult=await __8bgCoreResume.xhrFallback({url:__8bgUrl,originalHeaders:s,state:null,offset:0,progress:r,readError:"Fetch response headers timed out"});const __8bgResponse=new Response(__8bgHeaderResult.body,{status:200,headers:{"Content-Length":String(__8bgHeaderResult.body.byteLength)}});Object.defineProperty(__8bgResponse,"url",{value:__8bgUrl});f=new AbortController;return __8bgResponse}finally{clearTimeout(V)}};const __8bgFetchFull=async()=>__8bgFetchWithHeaderFallback(t,s);' +
+  'if(y=await __8bgFetchWithHeaderFallback(t,__8bgResumePlan?__8bgResumePlan.headers:s),__8bgResumePlan){' +
+  CORE_FETCH_TO.slice(CORE_FETCH_HEADER_ACCEPT_AT)
+const CORE_FETCH_HEADER_FALLBACK_TO =
+  'let __8bgResumePlan=__8bgCoreResume.plan(t,n,o,s);const __8bgFetchWithHeaderFallback=async(__8bgUrl,__8bgHeaders)=>{clearTimeout(V),f=new AbortController;let __8bgHeaderTimedOut=false,__8bgFetchStartedAt=performance.now();V=setTimeout(()=>{__8bgHeaderTimedOut=true;f.__8bgHeaderTimedOut=true;f.abort()},h);try{return await fetch(__8bgUrl,{method:n,headers:__8bgHeaders,body:o,signal:f.signal})}catch(__8bgFetchError){clearTimeout(V);if(!__8bgResumePlan)throw __8bgFetchError;let __8bgReadError;if(__8bgHeaderTimedOut)__8bgReadError="Fetch response headers timed out";else if(__8bgFetchError?.name==="TypeError"&&!f.signal.aborted&&__8bgCoreResume.fullCoreTransferObserved(__8bgUrl,__8bgFetchStartedAt))__8bgReadError="Fetch rejected after complete core transfer";else throw __8bgFetchError;console.warn("[EJS Download] "+(__8bgHeaderTimedOut?"Fetch 响应头超时":"Fetch 已传完核心但请求失败")+"，改用 XHR arraybuffer："+S);const __8bgHeaderResult=await __8bgCoreResume.xhrFallback({url:__8bgUrl,originalHeaders:s,state:null,offset:0,progress:r,readError:__8bgReadError,expectedBytes:__8bgCoreResume.expectedCoreBytes(__8bgUrl)});const __8bgResponse=new Response(__8bgHeaderResult.body,{status:200,headers:{"Content-Length":String(__8bgHeaderResult.body.byteLength)}});Object.defineProperty(__8bgResponse,"url",{value:__8bgUrl});f=new AbortController;return __8bgResponse}finally{clearTimeout(V)}};const __8bgFetchFull=async()=>__8bgFetchWithHeaderFallback(t,s);' +
   'if(y=await __8bgFetchWithHeaderFallback(t,__8bgResumePlan?__8bgResumePlan.headers:s),__8bgResumePlan){' +
   CORE_FETCH_TO.slice(CORE_FETCH_HEADER_ACCEPT_AT)
 const CORE_READER_INIT_FROM = 'const e=y.body.getReader();let i=0,n=[];let __8bgStall=0;'
@@ -813,9 +818,10 @@ const GROUPS = [
       [CORE_FETCH_TO, CORE_FETCH_HEADER_FALLBACK_TO],
       [BODY_READ_RESUME_TO, BODY_READ_HEADER_FALLBACK_TO],
     ],
+    legacy: (to) => to === CORE_FETCH_HEADER_FALLBACK_TO ? CORE_FETCH_HEADER_FALLBACK_TO_PREVIOUS : undefined,
     hint: [
-      '只对带版本号的核心请求，在本地响应头时限确实触发后改走 XHR；普通网络错误和外部取消仍直接失败。',
-      'XHR 成功后构造完整 200 Response 继续走原有校验；若响应到达与计时器竞争，流回退也只放行本地响应头超时。',
+      '只对带版本号的核心请求，在本地响应头时限触发，或 TypeError 且 Resource Timing 按内容哈希证明整份文件已传完时改走 XHR；普通网络错误、部分传输和外部取消仍直接失败。',
+      'XHR 必须匹配按核心内容哈希生成的完整字节数，再构造 200 Response 走原有校验；流回退只放行本地响应头超时。',
     ],
   },
 
@@ -840,7 +846,7 @@ const GROUPS = [
 
 // 被后面各节在原地改写过的补丁：值是所有更新的写法
 const SUPERSEDED = new Map([
-  [CORE_FETCH_TO, [CORE_FETCH_HEADER_FALLBACK_TO]],
+  [CORE_FETCH_TO, [CORE_FETCH_HEADER_FALLBACK_TO_PREVIOUS, CORE_FETCH_HEADER_FALLBACK_TO]],
   [BODY_READ_RESUME_TO, [BODY_READ_HEADER_FALLBACK_TO]],
   [BODY_READ_TO, [BODY_READ_DIAGNOSTICS_TO, BODY_READ_FALLBACK_FROM, BODY_READ_FALLBACK_PREVIOUS, BODY_READ_FALLBACK_TO, BODY_READ_RESUME_TO, BODY_READ_RESUME_TO_PREVIOUS, BODY_READ_HEADER_FALLBACK_TO, BODY_READ_FALLBACK_BROKEN]],
   [BODY_READ_DIAGNOSTICS_TO, [BODY_READ_FALLBACK_FROM, BODY_READ_FALLBACK_PREVIOUS, BODY_READ_FALLBACK_TO, BODY_READ_RESUME_TO, BODY_READ_RESUME_TO_PREVIOUS, BODY_READ_HEADER_FALLBACK_TO, BODY_READ_FALLBACK_BROKEN]],

@@ -11,7 +11,7 @@ const collectionPage = read('src/pages/CollectionPage.tsx')
 
 assert.match(cover, /sizes=\{srcSet \? sizes \|\| \(priority \|\| eager \? '100vw' : 'auto, 100vw'\) : undefined\}/)
 assert.match(gameCard, /GAME_CARD_IMAGE_SIZES = '240px'/)
-assert.match(gameCard, /eager=\{eager\} sizes=\{coverSizes\}/)
+assert.match(gameCard, /eager=\{eager\}(?: priority=\{priority\})? sizes=\{coverSizes\}/)
 assert.match(gamesPage, /coverSizes=\{GAME_CARD_IMAGE_SIZES\}/)
 assert.match(collectionPage, /coverSizes=\{GAME_CARD_IMAGE_SIZES\}/)
 assert.match(collectionsPage, /eager=\{i < 4\} priority=\{i === 0\}/)

@@ -27,6 +27,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { renderEjsCoreResumeHelper } from './lib/ejs-core-resume-helper.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const dir = join(root, 'public', 'emulatorjs')
@@ -47,7 +48,7 @@ if (!existsSync(join(dir, 'emulator.min.js')) || !existsSync(join(dir, 'loader.j
 }
 
 const js = readFileSync(join(dir, 'emulator.min.js'), 'utf8')
-const resumeHelper = readFileSync(join(root, 'scripts', 'lib', 'ejs-core-resume-runtime.js'), 'utf8').trim()
+const resumeHelper = renderEjsCoreResumeHelper()
 if (!js.includes(resumeHelper)) {
   fail(
     'emulator.min.js 没有内嵌当前核心断点续传助手 —— 源码修复不能只留在补丁辅助文件里',

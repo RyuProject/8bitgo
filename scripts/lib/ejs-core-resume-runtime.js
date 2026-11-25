@@ -15,6 +15,7 @@ const __8bgCoreResume = (() => {
   const DB_TIMEOUT_MS = 1500
   const TX_TIMEOUT_MS = 1500
   const SPACE_CHECK_TIMEOUT_MS = 200
+  const CORE_CONTENT_MANIFEST = Object.freeze({})
   let dbPromise = null
   let storageDisabled = false
   let availableBytes = null
@@ -57,6 +58,41 @@ const __8bgCoreResume = (() => {
       const url = new URL(raw, base)
       return url.pathname.includes('/cores/') && url.pathname.endsWith('-wasm.data') && Boolean(url.searchParams.get('v'))
     } catch { return false }
+  }
+
+  function expectedCoreBytes(rawUrl) {
+    try {
+      const base = typeof location !== 'undefined' && location.href ? location.href : 'https://8bitgo.invalid/'
+      const url = new URL(rawUrl, base)
+      const marker = '/cores/'
+      const at = url.pathname.lastIndexOf(marker)
+      if (at < 0) return 0
+      const record = CORE_CONTENT_MANIFEST[url.pathname.slice(at + 1)]
+      return record && record.version === url.searchParams.get('v') &&
+        Number.isSafeInteger(record.bytes) && record.bytes > 0 ? record.bytes : 0
+    } catch { return 0 }
+  }
+
+  /** 只有本次请求的完整 identity 核心恰好全量到达时，才为 Fetch 的网络 TypeError 额外尝试 XHR。 */
+  function fullCoreTransferObserved(rawUrl, startedAt) {
+    const expected = expectedCoreBytes(rawUrl)
+    if (!expected || !Number.isFinite(startedAt)) return false
+    try {
+      if (typeof performance === 'undefined' || typeof performance.getEntriesByName !== 'function') return false
+      const entries = performance.getEntriesByName(rawUrl, 'resource')
+      for (let index = entries.length - 1; index >= 0; index--) {
+        const entry = entries[index]
+        const start = Number(entry.startTime)
+        const encoded = Number(entry.encodedBodySize)
+        const decoded = Number(entry.decodedBodySize)
+        const transferred = Number(entry.transferSize)
+        // 必须是本次网络请求；缓存命中（transferSize=0）、部分字节、旧 URL 代次都不重试。
+        if (!Number.isFinite(start) || start < startedAt - 5 || !Number.isFinite(transferred) ||
+            encoded !== expected || decoded !== expected || transferred < expected) continue
+        return true
+      }
+    } catch { return false }
+    return false
   }
 
   function manifest() {
@@ -535,7 +571,7 @@ const __8bgCoreResume = (() => {
     } catch { return { headers: new Headers(), useRange: false } }
   }
 
-  function xhrFallback({ url, originalHeaders, state, offset, progress, readError }) {
+  function xhrFallback({ url, originalHeaders, state, offset, progress, readError, expectedBytes = 0 }) {
     return new Promise((resolve, reject) => {
       if (typeof XMLHttpRequest === 'undefined') return reject(new Error(`XHR unavailable after ${readError}`))
       let timer = 0
@@ -600,7 +636,9 @@ const __8bgCoreResume = (() => {
           }
           const declared = encodingIsIdentity(encoding) ? Number(header('Content-Length')) : 0
           const versionMatches = !state?.etag || !header('ETag') || header('ETag') === state.etag
-          const expected = versionMatches && state?.total ? state.total : declared
+          const expected = Number.isSafeInteger(expectedBytes) && expectedBytes > 0
+            ? expectedBytes
+            : versionMatches && state?.total ? state.total : declared
           const minimum = useRange ? state.total : offset
           if (xhr.status === 200 && body && bytes > 0 && !badMime && bytes >= minimum &&
               (!expected || bytes === expected) && (!state?.total || versionMatches || bytes === declared)) {
@@ -618,5 +656,5 @@ const __8bgCoreResume = (() => {
     })
   }
 
-  return { plan, accept, writer, complete, xhrFallback }
+  return { plan, accept, writer, complete, xhrFallback, expectedCoreBytes, fullCoreTransferObserved }
 })()

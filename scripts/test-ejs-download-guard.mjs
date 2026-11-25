@@ -14,14 +14,16 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
+import { computeCoreContentManifest } from './gen-ejs-core-versions.mjs'
 
 const engine = readFileSync(new URL('../public/emulatorjs/emulator.min.js', import.meta.url), 'utf8')
 const cut = engine.indexOf('class r{constructor(t,e){this.EJS=e,this.Module=t')
 assert.ok(cut > 0, '找不到 GameManager 类，引擎结构变了')
 const prelude = engine.slice(0, cut)
 assert.match(prelude, /class s\{constructor\(t=null,e=null\)\{this\.storageCache=t,this\.EJS=e\}/, '下载器类名变了，更新本测试')
+const coreContentManifest = computeCoreContentManifest()
 
-function makeContext({ fetchImpl, indexedDB, localStorage, XMLHttpRequest, sessionStorage, navigator = {} }) {
+function makeContext({ fetchImpl, indexedDB, localStorage, XMLHttpRequest, sessionStorage, navigator = {}, performanceImpl = performance }) {
   const realSetTimeout = setTimeout
   const visibilityListeners = new Set()
   const document = {
@@ -51,7 +53,7 @@ function makeContext({ fetchImpl, indexedDB, localStorage, XMLHttpRequest, sessi
     ...(XMLHttpRequest ? { XMLHttpRequest } : {}),
     Date,
     Promise,
-    performance,
+    performance: performanceImpl,
     window: { indexedDB },
     indexedDB,
     ...(localStorage ? { localStorage } : {}),
@@ -562,6 +564,87 @@ const rangeHeaders = (etag, contentRange, contentLength) => ({
 }
 
 {
+  // 2026-11-25 #4181：Fetch 报 TypeError，但 Resource Timing 精确显示本次已传完当前哈希版本的整个核心。
+  const asset = 'cores/fbneo-legacy-wasm.data'
+  const manifest = coreContentManifest[asset]
+  assert.ok(manifest?.bytes > 0 && manifest.version, '核心完整长度和版本哈希必须来自当前产物')
+  const url = `https://cn.8bitgo.test/_cn/emulatorjs/${asset}?v=${manifest.version}`
+  const bytes = new Uint8Array(manifest.bytes).fill(5)
+  const xhr = fakeXhr({ bytes, responseHeaders: { 'content-length': String(bytes.byteLength), 'content-type': 'application/wasm' } })
+  const performanceImpl = {
+    now: () => 100,
+    getEntriesByName: (name) => name === url ? [{
+      name: url,
+      startTime: 101,
+      encodedBodySize: manifest.bytes,
+      decodedBodySize: manifest.bytes,
+      transferSize: manifest.bytes + 300,
+    }] : [],
+  }
+  const { __classes } = makeContext({
+    fetchImpl: async () => { throw new TypeError('Failed to fetch') },
+    indexedDB: undefined,
+    XMLHttpRequest: xhr.X,
+    performanceImpl,
+  })
+  const item = await new __classes.Downloader(null, null).downloadFile(url, 'Core', 'GET', {}, null, null, null, 30000, 'arraybuffer')
+  assert.deepEqual(xhr.opened, [['GET', url]], '完整传输后 Fetch TypeError 只补一次同 URL 的 XHR')
+  assert.equal(item.files[0].bytes.byteLength, manifest.bytes, 'XHR 必须返回与该 URL 版本完全相同的字节数')
+}
+
+{
+  // 没有完整传输证据、旧版 URL 或本次请求之外的 Resource Timing 都不能额外发起整包下载。
+  const asset = 'cores/fbneo-legacy-wasm.data'
+  const manifest = coreContentManifest[asset]
+  const cases = [
+    { name: '无 Resource Timing', version: manifest.version, entries: [] },
+    { name: '旧版本 URL', version: 'stale-version', entries: [{ startTime: 101, encodedBodySize: manifest.bytes, decodedBodySize: manifest.bytes, transferSize: manifest.bytes + 300 }] },
+    { name: '只收到部分字节', version: manifest.version, entries: [{ startTime: 101, encodedBodySize: manifest.bytes - 1, decodedBodySize: manifest.bytes - 1, transferSize: manifest.bytes - 1 + 300 }] },
+    { name: '只有旧请求的完整计时', version: manifest.version, entries: [{ startTime: 1, encodedBodySize: manifest.bytes, decodedBodySize: manifest.bytes, transferSize: manifest.bytes + 300 }] },
+  ]
+  for (const item of cases) {
+    const url = `https://cn.8bitgo.test/_cn/emulatorjs/${asset}?v=${item.version}`
+    const xhr = fakeXhr({ bytes: new Uint8Array([1, 2, 3, 4]) })
+    const performanceImpl = { now: () => 100, getEntriesByName: (name) => name === url ? item.entries.map((entry) => ({ name: url, ...entry })) : [] }
+    const { __classes } = makeContext({
+      fetchImpl: async () => { throw new TypeError('Failed to fetch') },
+      indexedDB: undefined,
+      XMLHttpRequest: xhr.X,
+      performanceImpl,
+    })
+    await assert.rejects(
+      new __classes.Downloader(null, null).downloadFile(url, 'Core', 'GET', {}, null, null, null, 30000, 'arraybuffer'),
+      /Download failed: TypeError: Failed to fetch/,
+      `${item.name}时应保留原错误，不重复下载完整核心`,
+    )
+    assert.equal(xhr.opened.length, 0, `${item.name}不能触发 XHR`)
+  }
+}
+
+{
+  // 即使首次 Resource Timing 显示整份文件已到，XHR 仍必须严格核对当前核心的完整字节数。
+  const asset = 'cores/fbneo-legacy-wasm.data'
+  const manifest = coreContentManifest[asset]
+  const url = `https://8bitgo.test/emulatorjs/${asset}?v=${manifest.version}`
+  const xhr = fakeXhr({ bytes: new Uint8Array([1, 2, 3, 4]), responseHeaders: { 'content-length': '4', 'content-type': 'application/wasm' } })
+  const performanceImpl = {
+    now: () => 100,
+    getEntriesByName: () => [{ name: url, startTime: 101, encodedBodySize: manifest.bytes, decodedBodySize: manifest.bytes, transferSize: manifest.bytes + 300 }],
+  }
+  const { __classes } = makeContext({
+    fetchImpl: async () => { throw new TypeError('Failed to fetch') },
+    indexedDB: undefined,
+    XMLHttpRequest: xhr.X,
+    performanceImpl,
+  })
+  await assert.rejects(
+    new __classes.Downloader(null, null).downloadFile(url, 'Core', 'GET', {}, null, null, null, 30000, 'arraybuffer'),
+    /XHR fallback incomplete response: HTTP 200, received 4 bytes, expected at least 0 \/ 8272960/,
+    'XHR 的短响应不能冒充完整核心',
+  )
+}
+
+{
   // Fetch 自身的取消 / 网络异常不能被误认成超时并额外发起 XHR。
   const url = 'https://8bitgo.test/emulatorjs/cores/fbneo-legacy-wasm.data?v=abc123'
   const xhr = fakeXhr({ fail: true })
@@ -618,4 +701,4 @@ const rangeHeaders = (etag, contentRange, contentLength) => ({
   assert.ok(engineCore, '核心下载失败不能回落 cdn.emulatorjs.org（那里的 4.3.0-pre 核心起不来）')
 }
 
-console.log('✔ EmulatorJS 下载器：超时与缓存降级、强 ETag / Range 校验、XHR 字节续接、跨页面完整分片恢复、弱 ETag 隔离及截断 / 错误页拒收')
+console.log('✔ EmulatorJS 下载器：超时与缓存降级、完整传输后 Fetch TypeError 的受限 XHR 恢复、强 ETag / Range 校验、跨页面分片及短响应拒收')

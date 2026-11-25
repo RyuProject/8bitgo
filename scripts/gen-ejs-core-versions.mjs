@@ -20,7 +20,7 @@
  * 手动换代这一步没有了。EJS_RUNTIME_GENERATION 只剩「存档元数据 / NDS 偏好」这类语义代号。
  */
 import { createHash } from 'node:crypto'
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -58,6 +58,21 @@ export function computeCoreVersions() {
     for (const name of readdirSync(locales).sort()) {
       if (name.endsWith('.json')) out[`localization/${name}`] = sha(join(locales, name))
     }
+  }
+  return out
+}
+
+/**
+ * 版本化核心的大小随内容哈希一起生成，供下载器在 Fetch 拒绝时验证浏览器计时是否证明整份文件已到。
+ * 只列实际 wasm 数据包；报告 JSON 和其它资源不参与这个恢复判断。
+ */
+export function computeCoreContentManifest() {
+  const out = {}
+  if (!existsSync(coresDir)) return out
+  for (const name of readdirSync(coresDir).sort()) {
+    if (!name.endsWith('-wasm.data')) continue
+    const file = join(coresDir, name)
+    out[`cores/${name}`] = { version: sha(file), bytes: statSync(file).size }
   }
   return out
 }
