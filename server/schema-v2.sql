@@ -348,6 +348,8 @@ CREATE TABLE IF NOT EXISTS sockdrive_conversion_jobs (
   -- NULL 是升级前的全局任务；新任务按 game_roms.lang 精确绑定对应语言槽。
   lang                VARCHAR(10) NULL,
   executable          VARCHAR(500) NOT NULL,
+  -- 用户提交的入口保持不变以便创建请求幂等；这里保存 ZIP 中唯一解析出的实际相对路径，供重启恢复和最终绑定。
+  resolved_executable VARCHAR(500) NULL,
   -- 转换开始时的默认 EXE；最终绑定时与 Sockdrive 目录一起 CAS，避免覆盖管理员中途改的新配置。
   expected_executable VARCHAR(500) NOT NULL DEFAULT '',
   -- 语言槽在转换期间换了完整回退包时拒绝自动绑定，避免新 ROM 误配旧流式盘。

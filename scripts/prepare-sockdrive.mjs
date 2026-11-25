@@ -24,6 +24,7 @@ import { isVersionedSockdriveDirectory } from '../shared/sockdrive-url.js'
 import {
   archiveEntriesFrom7z,
   compressSockdriveDirectory,
+  createSockdriveExecutableMatcher,
   ensureBaselinePreloadProfile,
   fatArchiveEntryKey,
   selectSockdriveDiskTemplate,
@@ -57,6 +58,8 @@ const bucket = arg('bucket')
 const apiBase = arg('api-base') || 'https://8bitgo.com'
 const compressionConcurrency = Number(arg('compression-concurrency') || process.env.SOCKDRIVE_COMPRESSION_CONCURRENCY || 2)
 const brotliQuality = Number(arg('brotli-quality') || process.env.SOCKDRIVE_BROTLI_QUALITY || 5)
+const requireDos83Executable = flag('dos83-exe')
+const DOS_83_SEGMENT = /^[A-Za-z0-9_^$~!#%&{}@'()-]{1,8}(\.[A-Za-z0-9_^$~!#%&{}@'()-]{1,3})?$/
 
 const usage = () => {
   console.error(
@@ -90,6 +93,14 @@ if (lang && !/^[a-z]{2,3}(?:-[A-Za-z]{2,8})?$/.test(lang)) throw new Error('--la
 if (!existsSync(cli) || !statSync(cli).isFile()) throw new Error(`找不到官方 sockdrive CLI：${cli}`)
 if (bind && !publish) throw new Error('--bind 只能和 --publish 一起使用；单独绑定请运行 npm run sockdrive:bind')
 if (publish && !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(bucket)) throw new Error('--publish 时必须提供合法的 --bucket')
+
+const validateResolvedExecutable = (path) => {
+  if (path.length > 255) throw new Error(`启动程序实际路径超过数据库可保存上限 255 字符：${path}`)
+  if (requireDos83Executable && !path.split('/').every((part) => DOS_83_SEGMENT.test(part))) {
+    throw new Error(`纯 DOS 流式盘要求启动路径符合 8.3 格式；压缩包中的实际路径是：${path}`)
+  }
+  return path
+}
 
 const prefix = `sockdrives/${slug}-${version}`
 if (!isVersionedSockdriveDirectory(prefix)) throw new Error(`生成的版本目录不合法：${prefix}`)
@@ -132,6 +143,7 @@ requireTool('qemu-img')
 requireTool('7z')
 
 let filesRoot = source
+let archiveExecutable = null
 if (statSync(source).isFile()) {
   if (/\.8bg$/i.test(source)) {
     throw new Error('请使用加密打包前的原始 ZIP；R2 上的 .8bg 不能拿来制作磁盘')
@@ -142,7 +154,11 @@ if (statSync(source).isFile()) {
   const requested = selectSockdriveDiskTemplate(0, freeSpace)
   const largestTemplate = SOCKDRIVE_DISK_TEMPLATES.at(-1)
   const maxDeclaredBytes = largestTemplate.bytes - requested.requestedFreeBytes - SOCKDRIVE_FILESYSTEM_OVERHEAD_BYTES
-  archiveEntriesFrom7z(listing, maxDeclaredBytes)
+  const archiveEntries = archiveEntriesFrom7z(listing, maxDeclaredBytes)
+  const executableMatcher = createSockdriveExecutableMatcher(executable)
+  for (const entry of archiveEntries) executableMatcher.add(entry)
+  // 启动路径在 ZIP 中央目录已经可知。把它放在解包前检查，坏配置不再先白白解开几百 MiB。
+  archiveExecutable = validateResolvedExecutable(executableMatcher.resolve())
   filesRoot = join(buildRoot, 'files')
   mkdirSync(filesRoot)
   run('7z', ['x', '-y', `-o${filesRoot}`, '--', source])
@@ -150,6 +166,7 @@ if (statSync(source).isFile()) {
 
 const sourceReal = realpathSync(filesRoot)
 const fatNames = new Map()
+const executableMatcher = createSockdriveExecutableMatcher(executable)
 let fileCount = 0
 let totalBytes = 0
 const walk = (directory) => {
@@ -174,6 +191,7 @@ const walk = (directory) => {
       fileCount++
       totalBytes += info.size
       if (info.size > 0xffff_ffff) throw new Error(`FAT32 不支持超过 4GB 的单文件：${relative(filesRoot, path)}`)
+      executableMatcher.add(relativeName)
     } else throw new Error(`源目录含普通文件以外的条目：${relative(filesRoot, path)}`)
   }
 }
@@ -181,19 +199,15 @@ walk(filesRoot)
 if (!fileCount) throw new Error('源目录没有文件')
 const diskTemplate = selectSockdriveDiskTemplate(totalBytes, freeSpace)
 
-const findCaseInsensitive = (root, wanted) => {
-  let current = root
-  for (const part of wanted.split('/')) {
-    const actual = readdirSync(current).find((name) => name.toLowerCase() === part.toLowerCase())
-    if (!actual) return null
-    current = join(current, actual)
-  }
-  return current
+const resolvedExecutable = validateResolvedExecutable(executableMatcher.resolve())
+if (archiveExecutable && archiveExecutable.normalize('NFC').toLowerCase() !== resolvedExecutable.normalize('NFC').toLowerCase()) {
+  throw new Error('ZIP 解包后的启动路径与中央目录不一致，请重新打包后再试')
 }
-const exePath = findCaseInsensitive(filesRoot, executable)
-if (!exePath || !statSync(exePath).isFile()) throw new Error(`源文件里找不到启动程序：${executable}`)
+const exePath = join(filesRoot, ...resolvedExecutable.split('/'))
+if (!statSync(exePath).isFile()) throw new Error(`源文件里的启动程序不是普通文件：${resolvedExecutable}`)
 
 console.log(`✔ 源文件检查通过：${fileCount} 个文件 / ${(totalBytes / 1024 / 1024).toFixed(1)} MiB`)
+if (resolvedExecutable !== executable) console.log(`✔ 已在 ZIP 子目录中唯一定位启动程序：${resolvedExecutable}`)
 const bundleRoot = join(buildRoot, 'bundle')
 const configRoot = join(bundleRoot, '.jsdos')
 mkdirSync(configRoot, { recursive: true })
@@ -291,7 +305,8 @@ const manifest = {
   createdAt: new Date().toISOString(),
   slug,
   version,
-  executable,
+  requestedExecutable: executable,
+  executable: resolvedExecutable,
   source: source,
   sourceFiles: fileCount,
   sourceBytes: totalBytes,

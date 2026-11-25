@@ -31,6 +31,7 @@ export const EXPECTED_COLUMNS = [
   { table: 'games', column: 'dos_system', why: '可复用的 Windows 客体系统镜像' },
   { table: 'games', column: 'dos_sockdrive', why: '大型 DOS / Windows 游戏的静态流式磁盘目录' },
   { table: 'sockdrive_conversion_jobs', column: 'lang', why: 'Sockdrive 转换任务精确绑定 ROM 语言槽' },
+  { table: 'sockdrive_conversion_jobs', column: 'resolved_executable', why: '恢复 ZIP 内唯一定位的启动程序路径，避免发布后绑定错误 EXE' },
   { table: 'sockdrive_conversion_jobs', column: 'expected_object_key', why: '转换期间 ROM 换包时阻止误绑定旧流式盘' },
   { table: 'sockdrive_conversion_jobs', column: 'target_object_key', why: '完整回退包与流式盘原子绑定到同一语言槽' },
   { table: 'games', column: 'dos_extras', why: 'DOS 附加文件（资料片 / 补丁）清单；缺了后台保存的附加文件会静默丢失' },

@@ -7,9 +7,11 @@ import {
   archiveEntriesFrom7z,
   assertSafeArchiveEntry,
   compressSockdriveDirectory,
+  createSockdriveExecutableMatcher,
   fatArchiveEntryKey,
   ensureBaselinePreloadProfile,
   listSockdriveFiles,
+  resolveSockdriveExecutable,
   selectSockdriveDiskTemplate,
   SOCKDRIVE_DISK_TEMPLATES,
 } from './lib/sockdrive-pipeline.mjs'
@@ -33,10 +35,46 @@ assert.deepEqual(
   archiveEntriesFrom7z('archive\n----------\nPath = StarCraft.exe\n'),
   ['StarCraft.exe'],
 )
+const folderEntries = archiveEntriesFrom7z(
+  'archive\n----------\nPath = EMPIRES2.EXE\nFolder = +\nSize = 0\nPath = game/RUN.EXE\nFolder = -\nSize = 1\n',
+)
+assert.deepEqual(folderEntries, ['EMPIRES2.EXE/', 'game/RUN.EXE'])
+const folderMatcher = createSockdriveExecutableMatcher('EMPIRES2.EXE')
+for (const entry of folderEntries) folderMatcher.add(entry)
+assert.throws(() => folderMatcher.resolve(), /找不到启动程序.*game\/RUN\.EXE/)
 assert.throws(
   () => archiveEntriesFrom7z('archive\n----------\nPath = DATA/FILE.DAT\nPath = data/file.dat\n'),
   /FAT 下会互相覆盖/,
 )
+assert.equal(resolveSockdriveExecutable('empires2.exe', {
+  basenameMatchCount: 1,
+  basenameMatches: ['Age of Empires II/EMPIRES2.EXE'],
+}), 'Age of Empires II/EMPIRES2.EXE', '根目录只填文件名时可安全定位唯一的嵌套启动程序')
+assert.equal(resolveSockdriveExecutable('games/empires2.exe', {
+  exactPath: 'Games/EMPIRES2.EXE',
+  basenameMatchCount: 2,
+  basenameMatches: ['Games/EMPIRES2.EXE', 'old/Games/EMPIRES2.EXE'],
+}), 'Games/EMPIRES2.EXE', '完整路径大小写不同仍优先精确匹配')
+assert.throws(() => resolveSockdriveExecutable('empires2.exe', {
+  basenameMatchCount: 2,
+  basenameMatches: ['Age II/EMPIRES2.EXE', 'Age II/Setup/EMPIRES2.exe'],
+}), /多个同名启动程序.*请填写完整相对路径/)
+assert.throws(() => resolveSockdriveExecutable('empires2.exe', {
+  exactPath: 'EMPIRES2.EXE',
+  basenameMatchCount: 2,
+  basenameMatches: ['EMPIRES2.EXE', 'Old Install/EMPIRES2.EXE'],
+}), /多个同名启动程序.*请填写完整相对路径/, '裸文件名即使根目录命中，也不能掩盖 ZIP 内另一个同名入口')
+assert.throws(() => resolveSockdriveExecutable('games/empires2.exe', {
+  basenameMatchCount: 1,
+  basenameMatches: ['Age II/EMPIRES2.EXE'],
+}), /找不到指定完整启动路径/)
+assert.throws(() => resolveSockdriveExecutable('empires2.exe', {
+  availableExecutables: ['setup.exe', 'uninstall.exe'],
+}), /找不到启动程序.*setup\.exe/)
+const executableMatcher = createSockdriveExecutableMatcher('GAME.EXE')
+executableMatcher.add('folder.exe/')
+executableMatcher.add('Folder/Game.exe')
+assert.equal(executableMatcher.resolve(), 'Folder/Game.exe', '目录名不能误当作启动文件')
 assert.equal(selectSockdriveDiskTemplate(1, '16M').id, 'fat16-256mb')
 assert.equal(selectSockdriveDiskTemplate(1500 * 1024 ** 2, '128M').id, 'fat32-2gb')
 assert.equal(selectSockdriveDiskTemplate(1500 * 1024 ** 2, '128M').bytes, 2_147_483_648)

@@ -1340,6 +1340,7 @@ const patches = [
       game_slug VARCHAR(120) NOT NULL,
       lang VARCHAR(10) NULL,
       executable VARCHAR(500) NOT NULL,
+      resolved_executable VARCHAR(500) NULL,
       expected_executable VARCHAR(500) NOT NULL DEFAULT '',
       expected_object_key VARCHAR(500) NOT NULL DEFAULT '',
       target_object_key VARCHAR(500) NOT NULL DEFAULT '',
@@ -1386,6 +1387,12 @@ const patches = [
         await conn.query('ALTER TABLE `sockdrive_conversion_jobs` ADD INDEX `idx_sockdrive_jobs_game_lang` (`game_id`, `lang`, `created_at`)')
       }
     },
+  },
+  {
+    name: 'sockdrive_conversion_jobs 实际启动路径列',
+    table: 'sockdrive_conversion_jobs',
+    needed: async () => !(await hasColumn('sockdrive_conversion_jobs', 'resolved_executable')),
+    run: () => conn.query('ALTER TABLE `sockdrive_conversion_jobs` ADD COLUMN `resolved_executable` VARCHAR(500) NULL AFTER `executable`'),
   },
   {
     name: 'games.dos_pc98（DOS 分类中的 PC-98 FDI 软盘模式）',

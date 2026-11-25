@@ -87,6 +87,84 @@ export function fatArchiveEntryKey(name) {
   return { value: directory ? `${clean}/` : clean, key: clean.normalize('NFC').toLowerCase() }
 }
 
+/**
+ * 管理员常会填 `GAME.EXE`，但 ZIP 发布者可能把整份安装目录再包一层。只在同名启动程序唯一时
+ * 推导真实相对路径；有多个副本时必须让人指定完整路径，不能随机启动安装器、卸载器或旧版本。
+ */
+export function resolveSockdriveExecutable(requested, {
+  exactPath = null,
+  basenameMatchCount = 0,
+  basenameMatches = [],
+  availableExecutables = [],
+} = {}) {
+  const normalize = (value) => String(value || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').normalize('NFC').toLowerCase()
+  const wanted = normalize(requested)
+  if (!wanted) throw new Error('启动程序路径为空')
+  // 只有明确提交了相对路径时，精确命中才消除歧义；只填文件名仍须保证整份 ZIP 里唯一。
+  if (wanted.includes('/') && exactPath && normalize(exactPath) === wanted) {
+    return String(exactPath).replace(/\\/g, '/')
+  }
+
+  if (wanted.includes('/')) {
+    const examples = basenameMatches.slice(0, 8).join('、')
+    const otherExamples = availableExecutables.slice(0, 8).join('、')
+    throw new Error(
+      `源文件里找不到指定完整启动路径：${requested}${examples ? `。ZIP 内同名文件：${examples}` : ''}` +
+        `${otherExamples ? `。ZIP 内其它 EXE：${otherExamples}` : ''}`,
+    )
+  }
+
+  if (basenameMatchCount === 1 && basenameMatches[0]) {
+    return String(basenameMatches[0]).replace(/\\/g, '/')
+  }
+  if (basenameMatchCount > 1) {
+    const examples = basenameMatches.slice(0, 8).join('、')
+    const remaining = basenameMatchCount > basenameMatches.length ? ` 等 ${basenameMatchCount} 个位置` : ''
+    throw new Error(
+      `源文件里有多个同名启动程序：${examples}${remaining}。请填写完整相对路径，例如 ${basenameMatches[0] || requested}`,
+    )
+  }
+
+  const examples = availableExecutables.slice(0, 8).join('、')
+  throw new Error(`源文件里找不到启动程序：${requested}${examples ? `。ZIP 内发现的 EXE：${examples}` : ''}`)
+}
+
+/** 在不保留所有 EXE 路径的情况下索引清单；ZIP 预检与解包后复核共用相同的匹配规则。 */
+export function createSockdriveExecutableMatcher(requested) {
+  const normalize = (value) => String(value || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').normalize('NFC').toLowerCase()
+  const wanted = normalize(requested)
+  const wantedBasename = wanted.split('/').at(-1)
+  let exactPath = null
+  let basenameMatchCount = 0
+  const basenameMatches = []
+  const availableExecutables = []
+
+  return {
+    add(value) {
+      const rawPath = String(value || '').replace(/\\/g, '/')
+      if (rawPath.endsWith('/')) return
+      const path = rawPath.replace(/^\/+|\/+$/g, '')
+      if (!/\.exe$/i.test(path)) return
+      const normalizedPath = normalize(path)
+      if (normalizedPath.split('/').at(-1) === wantedBasename) {
+        basenameMatchCount++
+        if (basenameMatches.length < 8) basenameMatches.push(path)
+        if (normalizedPath === wanted) exactPath = path
+      } else if (availableExecutables.length < 8) {
+        availableExecutables.push(path)
+      }
+    },
+    resolve() {
+      return resolveSockdriveExecutable(requested, {
+        exactPath,
+        basenameMatchCount,
+        basenameMatches,
+        availableExecutables,
+      })
+    },
+  }
+}
+
 /** 解析 `7z l -slt`；第一段是归档自身信息，分隔线后才是成员。 */
 export function archiveEntriesFrom7z(output, maxDeclaredBytes = 8 * 1024 ** 3) {
   const lines = String(output).replace(/\r\n?/g, '\n').split('\n')
@@ -100,20 +178,32 @@ export function archiveEntriesFrom7z(output, maxDeclaredBytes = 8 * 1024 ** 3) {
   const entries = []
   const fatNames = new Map()
   let declaredBytes = 0
+  let pendingPath = null
+  let pendingDirectory = false
+  const appendEntry = () => {
+    if (pendingPath == null) return
+    const path = pendingDirectory && !pendingPath.endsWith('/') ? `${pendingPath}/` : pendingPath
+    const entry = fatArchiveEntryKey(path)
+    const previous = fatNames.get(entry.key)
+    if (previous) {
+      throw new Error(`ZIP 含 FAT 下会互相覆盖的文件名：${JSON.stringify(previous)} / ${JSON.stringify(entry.value)}`)
+    }
+    fatNames.set(entry.key, entry.value)
+    entries.push(entry.value)
+  }
   for (const line of lines.slice(start + 1)) {
     const match = /^Path = (.*)$/.exec(line)
     if (match) {
-      const entry = fatArchiveEntryKey(match[1])
-      const previous = fatNames.get(entry.key)
-      if (previous) {
-        throw new Error(`ZIP 含 FAT 下会互相覆盖的文件名：${JSON.stringify(previous)} / ${JSON.stringify(entry.value)}`)
-      }
-      fatNames.set(entry.key, entry.value)
-      entries.push(entry.value)
+      appendEntry()
+      pendingPath = match[1]
+      pendingDirectory = false
+      continue
     }
+    if (/^Folder = \+$/i.test(line.trim()) || /^Attributes = D(?:_|\s|$)/i.test(line.trim())) pendingDirectory = true
     const size = /^Size = (\d+)$/.exec(line)
     if (size) declaredBytes += Number(size[1])
   }
+  appendEntry()
   if (!entries.length) throw new Error('ZIP 中没有文件')
   if (entries.length > 200_000) throw new Error('ZIP 成员超过 20 万个，拒绝在制作机解包')
   if (!Number.isSafeInteger(maxDeclaredBytes) || maxDeclaredBytes <= 0) throw new Error('ZIP 解压上限无效')

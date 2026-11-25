@@ -227,9 +227,9 @@ export async function sockdriveConversionCapability(env = process.env, fresh = f
       if (!Number(row?.n)) reason = '数据库缺少 sockdrive_conversion_jobs；请在 server 目录执行 npm run migrate'
       if (!reason) {
         const columns = await queryOne(
-          "SELECT COUNT(*) AS n FROM information_schema.COLUMNS WHERE table_schema = DATABASE() AND table_name = 'sockdrive_conversion_jobs' AND column_name IN ('lang', 'expected_object_key', 'target_object_key')",
+          "SELECT COUNT(*) AS n FROM information_schema.COLUMNS WHERE table_schema = DATABASE() AND table_name = 'sockdrive_conversion_jobs' AND column_name IN ('lang', 'expected_object_key', 'target_object_key', 'resolved_executable')",
         )
-        if (Number(columns?.n) !== 3) reason = 'Sockdrive 多语言任务列尚未迁移；请在 server 目录执行 npm run migrate'
+        if (Number(columns?.n) !== 4) reason = 'Sockdrive 转换任务列尚未迁移；请在 server 目录执行 npm run migrate'
       }
     } catch {
       reason = '暂时无法检查 Sockdrive 转换任务表'
@@ -260,7 +260,7 @@ function publicJob(row) {
     gameSlug: row.game_slug,
     lang: row.lang || null,
     targetRomKey: row.target_object_key || null,
-    executable: row.executable,
+    executable: row.resolved_executable || row.executable,
     bound: Boolean(row.bound),
     message: row.message || '',
     error: row.error || '',
@@ -431,7 +431,9 @@ export async function retrySockdriveConversion(id) {
     : await retryExecutableSnapshot(row)
   const claimed = await query(
     `UPDATE sockdrive_conversion_jobs
-      SET executable = ?, expected_executable = ?, status = 'queued', progress = 0, error = NULL,
+      SET executable = ?, expected_executable = ?,
+        resolved_executable = CASE WHEN publish_started = 1 THEN resolved_executable ELSE NULL END,
+        status = 'queued', progress = 0, error = NULL,
         message = '按当前游戏配置重新排队', completed_at = NULL
       WHERE id = ? AND status = 'failed' AND source_deleted <> 2 AND (publish_started = 1 OR source_deleted = 0)`,
     [executable.executable, executable.expected, id],
@@ -453,7 +455,7 @@ export async function retrySockdriveConversion(id) {
 async function updateJob(id, fields) {
   const allowed = new Set([
     'status', 'progress', 'output_bytes', 'output_files', 'metadata_etag', 'range_count', 'bound',
-    'publish_started', 'message', 'error', 'completed_at', 'source_deleted',
+    'publish_started', 'resolved_executable', 'message', 'error', 'completed_at', 'source_deleted',
   ])
   const entries = Object.entries(fields).filter(([key]) => allowed.has(key))
   if (!entries.length) return
@@ -625,6 +627,31 @@ export function parseSockdriveOutputSummary(text) {
   return { files, bytes }
 }
 
+async function readPreparedExecutable(job, buildRoot) {
+  let manifest
+  try {
+    manifest = JSON.parse(await readFile(join(buildRoot, 'release.json'), 'utf8'))
+  } catch (error) {
+    throw new Error(`Sockdrive 制作清单缺失或无效：${error instanceof Error ? error.message : String(error)}`)
+  }
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
+    throw new Error('Sockdrive 制作清单内容格式无效')
+  }
+  const requested = validExecutable(job.executable)
+  const resolved = validExecutable(manifest.executable)
+  const recordedRequest = validExecutable(manifest.requestedExecutable || manifest.executable)
+  if (!requested || !resolved || recordedRequest !== requested ||
+      manifest.slug !== job.game_slug || manifest.version !== job.version) {
+    throw new Error('Sockdrive 制作清单中的启动程序与当前任务不一致')
+  }
+  const normalizePath = (value) => value.normalize('NFC').toLowerCase()
+  const sameRequestedEntry = requested.includes('/')
+    ? normalizePath(resolved) === normalizePath(requested)
+    : normalizePath(resolved.split('/').at(-1)) === normalizePath(requested)
+  if (!sameRequestedEntry) throw new Error('Sockdrive 制作清单自动定位到了不同名称的启动程序')
+  return resolved
+}
+
 async function recordPreparedOutput(job, config, directory, markerPath) {
   const files = await listSockdriveFiles(directory, { strict: true })
   const record = {
@@ -633,6 +660,7 @@ async function recordPreparedOutput(job, config, directory, markerPath) {
     sourceSize: Number(job.source_size),
     targetPrefix: job.target_prefix,
     executable: job.executable,
+    resolvedExecutable: job.resolved_executable,
     encoding: job.encoding,
     cli: config.cli,
     freeSpace: config.freeSpace,
@@ -651,13 +679,19 @@ async function reusablePreparedOutput(job, config, directory, markerPath) {
     if (record.version !== 1 || record.sourceEtag !== job.source_etag ||
         Number(record.sourceSize) !== Number(job.source_size) || record.targetPrefix !== job.target_prefix ||
         record.executable !== job.executable ||
+        !validExecutable(record.resolvedExecutable) ||
+        (validExecutable(job.resolved_executable) && record.resolvedExecutable !== job.resolved_executable) ||
         record.encoding !== job.encoding || record.cli !== config.cli || record.freeSpace !== config.freeSpace ||
         record.brotliQuality !== config.brotliQuality || record.publicBase !== config.publicBase ||
         !Array.isArray(record.files)) return null
     const files = await listSockdriveFiles(directory, { strict: true })
     if (record.files.length !== files.length || record.files.some((item, index) =>
       !Array.isArray(item) || item[0] !== files[index].name || Number(item[1]) !== files[index].size)) return null
-    return { files: files.length, bytes: files.reduce((total, file) => total + file.size, 0) }
+    return {
+      files: files.length,
+      bytes: files.reduce((total, file) => total + file.size, 0),
+      resolvedExecutable: record.resolvedExecutable,
+    }
   } catch {
     return null
   }
@@ -797,8 +831,13 @@ async function finishPublishedJob(job, config, published) {
     // 完整回退包在数小时转换期间仍可能被后台删除；最终绑定前再确认一次，不能发布出只有流式盘的语言槽。
     if (job.lang && !(await remoteHead(config, job.target_object_key))) {
       binding = { bound: false, message: '完整回退包在转换期间被删除；Sockdrive 已发布但未自动绑定' }
+    } else if (!validExecutable(job.resolved_executable)) {
+      binding = { bound: false, message: 'Sockdrive 已发布，但无法确认 ZIP 内启动程序的实际路径；为避免错误启动，未自动绑定' }
     } else {
-      binding = await bindPublished(job)
+      binding = await bindPublished({ ...job, executable: job.resolved_executable })
+      if (binding.bound && job.resolved_executable !== job.executable) {
+        binding.message += `；启动程序已自动定位为 ${job.resolved_executable}`
+      }
     }
   }
   catch (error) { binding = { bound: false, message: `Sockdrive 已发布，但自动绑定失败：${error.message}` } }
@@ -829,12 +868,36 @@ async function processJob(job) {
       if (existing) {
         await updateJob(job.id, { status: 'verifying', progress: 98, message: '检测到已提交的元数据，正在恢复校验与绑定' })
         const published = await verifyPublished(config, job)
+        // 进程重启后只从本任务的制作清单恢复规范路径；缺清单时 finish 会安全地不自动绑定。
+        const storedExecutable = validExecutable(job.resolved_executable)
+        const manifestExecutable = await readPreparedExecutable(job, buildRoot).catch((error) => {
+          console.warn(`[sockdrive-convert] ${job.id} 无法恢复启动程序路径：${error.message}`)
+          return null
+        })
+        job.resolved_executable = manifestExecutable && storedExecutable && storedExecutable !== manifestExecutable
+          ? ''
+          : manifestExecutable || storedExecutable
         await finishPublishedJob(job, config, published)
         completed = true
         return
       }
     }
     let summary = await reusablePreparedOutput(job, config, publishDir, preparedMarker)
+    if (summary) {
+      try {
+        const resolvedExecutable = await readPreparedExecutable(job, buildRoot)
+        if (resolvedExecutable !== summary.resolvedExecutable) summary = null
+        else {
+          const storedExecutable = validExecutable(job.resolved_executable)
+          job.resolved_executable = resolvedExecutable
+          if (!storedExecutable) {
+            await updateJob(job.id, { resolved_executable: job.resolved_executable })
+          }
+        }
+      } catch {
+        summary = null
+      }
+    }
     if (!summary) {
       // 制作未完成时清掉旧 work 目录，保留完整 ZIP；重试只需重做镜像，不必从 R2 再拉数 GB。
       await rm(workRoot, { recursive: true, force: true })
@@ -852,7 +915,9 @@ async function processJob(job) {
       await updateJob(job.id, { status: 'converting', progress: 22, message: '正在制作 FAT32/QCOW2 并生成 Sockdrive 分块' })
       let progress = 22
       let progressWrites = Promise.resolve()
-      await runCommand(process.execPath, [
+      const gameRuntime = await queryOne('SELECT dos_system FROM games WHERE id = ?', [job.game_id])
+      const windowsGuest = Boolean(String(gameRuntime?.dos_system || '').trim())
+      const prepareArgs = [
         PREPARE_SCRIPT,
         '--source', input,
         '--slug', job.game_slug,
@@ -866,7 +931,9 @@ async function processJob(job) {
         '--compression-concurrency', String(config.compressionConcurrency),
         '--brotli-quality', String(config.brotliQuality),
         '--defer-validation',
-      ], {
+      ]
+      if (!windowsGuest) prepareArgs.push('--dos83-exe')
+      await runCommand(process.execPath, prepareArgs, {
         timeoutMs: config.timeoutMs,
         onText: (text) => {
           const next = sockdriveConversionProgress(text)
@@ -876,7 +943,9 @@ async function processJob(job) {
         },
       })
       await progressWrites
+      job.resolved_executable = await readPreparedExecutable(job, buildRoot)
       summary = await recordPreparedOutput(job, config, publishDir, preparedMarker)
+      await updateJob(job.id, { resolved_executable: job.resolved_executable })
     }
     await updateJob(job.id, {
       status: 'uploading', progress: 72, output_bytes: summary.bytes, output_files: summary.files,
