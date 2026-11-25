@@ -411,14 +411,19 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
 这是旧 overdump，不是 BIOS、核心或下载故障。只在确认两半逐字节相同、且半段 CRC 与驱动清单一致后，
 才可去掉重复后半段；不要把这个规则套到其它包或改版 ROM。
 
-2026-11-24 线上复核：生产 `game_roms` 仍绑定原键 `roms/arcade/avsp.zip.8bg`；修正版实际是覆写了这个对象。
-先前记录的独立键 `roms/arcade/avsp-fixed-20261115.zip.8bg` 在 R2 不存在，原对象也没有留在独立回滚键里。
-回查时该原键在 R2、`assets.8bitgo.com`、`cn-assets.8bitgo.com` 返回相同 SHA-256
-`103375cc1223ea02509f7022576e8aaedcfdecd3edc85c95195e3832a3f4127f`（9,056,573 字节）；`avp.14m`
-已是 1 MiB 且 CRC 为 `0x39933b1e`，17:31:42 UTC 现场随后记录了 `game_playable` / `first_frame`。
-不要再指引把绑定切到上述不存在的键。以后修 ROM 若需回滚，先将旧对象另存到版本化 R2 key，校验新旧对象后再改
-`game_roms`；改 ROM 绑定后仍要验证游戏详情 API 并刷新 Cloudflare 精确 URL。大陆入口 EdgeOne
-没有清缓存通道，需确认它也已返回新内容，或等待其 `s-maxage=300` 缓存自然过期。
+**2026-11-25 复核：明文 ZIP 已更新，但旁边的 `.8bg` 仍是旧 overdump。** 生产 `game_roms` 绑定为
+`roms/arcade/avsp.zip`，`backup_key` 为空。R2 明文 ZIP（9,056,573 字节，SHA-256
+`103375cc1223ea02509f7022576e8aaedcfdecd3edc85c95195e3832a3f4127f`）里的四个图形成员均为 1 MiB，CRC
+分别是 `avp.14m` `0x39933b1e`、`avp.16m` `0x85412860`、`avp.18m` `0x2e2beb06`、`avp.20m` `0xe4798d1a`。
+但相邻 `roms/arcade/avsp.zip.8bg` 仍是 2026-11-03 的 10,448,007 字节旧包，四个成员均为 2 MiB 且上下半段重复；
+只更新明文 ZIP 会留下两种内容不一致的候选。
+
+修复前的生产开局冒烟在 ROM 下载后报 `Size is zero` / `RuntimeError: memory access out of bounds`；
+诊断没有记录本次实际消费的候选 URL，不能单凭这条失败断言具体选中了哪个副本。修复时用 `scripts/pack-rom.mjs`
+从已核验的明文 ZIP 重打 `.8bg`，用 `scripts/unpack-rom.mjs` 往返解包并确认明文 SHA 完全相同，再覆写 R2 的
+`roms/arcade/avsp.zip.8bg`。旧坏副本已另存为 `roms/arcade/avsp-overdump-backup-20261125.zip.8bg`，仅供取证，
+不是可播放回滚件。覆写后同一路径的生产开局冒烟在 45 秒到达首帧。今后改这类 ROM，明文 ZIP 和派生 `.8bg`
+必须一起更新并逐成员核验；旧对象先复制到版本化备份键，再做生产路线开局验证，不能只以数据库绑定或上传成功作为验收。
 
 ### 2.8.1 街机 BIOS 分两档：平台一份 + **按系统包**各一份
 
