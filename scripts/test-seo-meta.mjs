@@ -265,6 +265,20 @@ check('VideoGame 结构化数据分别声明页面 canonical 语言与可直接�
   assert.match(sections, /<span className="sr-only">\{langFull\}<\/span>/, '完整语言名没有写进 HTML（只剩短码，爬虫和读屏只读到 CN / JP）')
 })
 
+check('ROM 语言专题页与游戏库筛选共用同一语言条件', () => {
+  const routes = code('src/AppRoutes.tsx')
+  const collection = code('src/pages/CollectionPage.tsx')
+  const games = code('src/pages/GamesPage.tsx')
+  const content = code('server/src/content.js')
+  const repo = code('server/src/games-repo.js')
+  assert.match(routes, /path="\/rom-language\/:language"/, 'ROM 语言专题页没有注册前端路由')
+  assert.match(collection, /route !== 'rom-language'/, 'ROM 语言专题页的续页请求不会识别服务端响应')
+  assert.match(content, /seg\[0\] === 'rom-language'/, '服务端 SSR / page API 没有解析 ROM 语言专题路径')
+  assert.match(repo, /gr_lang\.lang = \? AND CHAR_LENGTH\(TRIM\(gr_lang\.object_key\)\) > 0/, 'ROM 语言专题把通用槽或空槽当成真实语言版本')
+  assert.match(games, /romLanguage,\s*developer,/, '游戏库首屏查询没有包含 ROM 语言筛选')
+  assert.match(games, /fetchPageData\('\/games', \{ \.\.\.query, page: nextPage \}\)/, '游戏库续页没有复用同一 ROM 语言筛选条件')
+})
+
 check('达到真实评分门槛时，免费网页游戏同时标为 VideoGame 与 WebApplication', () => {
   const seo = code('src/services/seo.ts')
   assert.match(seo, /schema\[['"]@type['"]\]\s*=\s*\[\s*['"]VideoGame['"]\s*,\s*['"]WebApplication['"]\s*\]/, 'Google 不为仅有 VideoGame 类型的条目显示软件应用富结果')

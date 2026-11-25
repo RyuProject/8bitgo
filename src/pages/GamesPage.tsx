@@ -8,6 +8,8 @@ import { useInfinite } from '@/services/infinite'
 import { InfiniteFooter } from '@/components/ui/InfiniteFooter'
 import { platforms, platformMap } from '@/data/platforms'
 import { genres, genreMap } from '@/data/genres'
+import { romLanguageLabel } from '@/data/rom-language-labels'
+import { LANGUAGES } from '@/config/languages'
 import { isPlatformEnabled } from '@/config/platforms'
 import { platformListed, useNoWasmMode } from '@/services/noWasm'
 import { useSeo, breadcrumbSchema, itemListSchema } from '@/services/seo'
@@ -18,6 +20,7 @@ import { ABOVE_FOLD_CARDS, GAME_CARD_IMAGE_SIZES, GameCard } from '@/components/
 import { Pagination } from '@/components/ui/Pagination'
 import { Button, chipClasses } from '@/components/ui/Button'
 import { GameGridSkeleton } from '@/components/ui/PageSkeleton'
+import { RomLanguageLinks } from '@/components/game/RomLanguageLinks'
 import { FEATURES } from '@/config/features'
 import { cx } from '@/lib/format'
 
@@ -61,6 +64,8 @@ export function GamesPage() {
   const q = params.get('q') ?? ''
   const platformId = (params.get('platform') as PlatformId | null) ?? undefined
   const genreId = (params.get('genre') as GenreId | null) ?? undefined
+  const romLanguageParam = params.get('romLanguage')
+  const romLanguage = LANGUAGES.some(({ code }) => code === romLanguageParam) ? romLanguageParam ?? undefined : undefined
   const developer = params.get('developer') ?? undefined
   const multiplayer = params.get('multiplayer') === '1'
   const coin = params.get('coin') === '1'
@@ -68,7 +73,7 @@ export function GamesPage() {
   const sort: SortKey = sortParam && SORT_KEYS.includes(sortParam) ? sortParam : 'popular'
   // 取整：?page=2.5 不该算一个独立页面（后端也按整数分页）
   const page = Math.max(1, Math.trunc(Number(params.get('page') ?? 1)) || 1)
-  const activeFilterCount = [platformId, genreId, developer, multiplayer, coin, q].filter(Boolean).length
+  const activeFilterCount = [platformId, genreId, romLanguage, developer, multiplayer, coin, q].filter(Boolean).length
   // 手机首屏优先把游戏露出来；从带筛选的分享链接进入时默认展开，避免条件被藏住。
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(activeFilterCount > 0)
 
@@ -84,6 +89,7 @@ export function GamesPage() {
     // 而不是拿去查一个根本不存在的平台、回一页空列表
     platform: platform?.id,
     genre: genre?.id,
+    romLanguage,
     developer,
     multiplayer: multiplayer ? 1 : undefined,
     coin: coin ? 1 : undefined,
@@ -129,6 +135,12 @@ export function GamesPage() {
 
   const platformCounts = countsOf(facets?.platforms)
   const genreCounts = countsOf(facets?.genres)
+  const romLanguageCounts = countsOf(facets?.romLanguages)
+  const romLanguageLinks = LANGUAGES
+    .flatMap(({ code }) => {
+      const count = romLanguageCounts.get(code)
+      return count ? [{ code, count }] : []
+    })
   // 平台顺序沿用「收录多的排前面」；数量还没回来时 sort 是稳定的，保持配置里的顺序
   const platformChips = platforms
     .filter((p) => isPlatformEnabled(p.id) && platformListed(noWasm, p.id))
@@ -149,11 +161,13 @@ export function GamesPage() {
           ? fmt(t.games.titlePlatform, { platform: platformLabel(t, platform.id, platform.name) })
           : genre
             ? fmt(t.games.titleGenre, { genre: genreLabel(t, genre.id, genre.name) })
-            : multiplayer
-              ? t.games.titleMultiplayer
-              : coin
-                ? t.games.titleCoin
-                : t.games.titleAll
+            : romLanguage
+              ? fmt(t.games.romLanguageTitle, { language: romLanguageLabel(lang, romLanguage) })
+              : multiplayer
+                ? t.games.titleMultiplayer
+                : coin
+                  ? t.games.titleCoin
+                  : t.games.titleAll
 
   /**
    * 没有任何筛选、也没换排序的「干净列表」。
@@ -166,7 +180,7 @@ export function GamesPage() {
    * 而带筛选、带搜索、换过排序的那些仍然统一指回 `/games` —— 它们是同一批游戏的
    * 不同切片，组合数是乘积级的，内链层也只给裸的 `?page=` 输出 href。
    */
-  const plainList = !q && !platformId && !genreId && !developer && !multiplayer && !coin && sort === 'popular'
+  const plainList = !q && !platformId && !genreId && !romLanguage && !developer && !multiplayer && !coin && sort === 'popular'
   /**
    * SEO 用后端夹过的页码：/games?page=9999 后端回的是最后一页，
    * 用 URL 里的 9999 当 canonical 会生成无穷多个自称 canonical 的重复页（标题还是「第 9999 / 9 页」）。
@@ -183,7 +197,7 @@ export function GamesPage() {
     canonicalPath: paged ? `/games?page=${seoPage}` : '/games',
     // 站内搜索结果没有收录价值（内容随关键词无限组合），但仍允许抓取，
     // 这样 canonical 能被读到，首页 JSON-LD 里的站内搜索框也才验证得过
-    noindex: Boolean(q),
+    noindex: Boolean(q || romLanguage),
     jsonLd: [
       // 爬虫拿到的是服务端渲染好的 HTML，那时 list 已经有值；
       // 客户端跳转过来的第一帧列表还没到，先给个空清单，数据回来会重写
@@ -219,7 +233,7 @@ export function GamesPage() {
     setParams(next)
   }
 
-  const hasFilters = Boolean(q || platformId || genreId || developer || multiplayer || coin)
+  const hasFilters = Boolean(q || platformId || genreId || romLanguage || developer || multiplayer || coin)
 
   return (
     <div className="container-x py-8 sm:py-10">
@@ -318,6 +332,20 @@ export function GamesPage() {
             )
           })}
         </FilterRow>
+        <FilterRow label={t.games.filterRomLanguage}>
+          <FilterChip active={!romLanguage} onClick={() => set('romLanguage', null)}>
+            {t.common.all}
+          </FilterChip>
+          {romLanguageLinks.map(({ code, count }) => (
+            <FilterChip
+              key={code}
+              active={romLanguage === code}
+              onClick={() => set('romLanguage', romLanguage === code ? null : code)}
+            >
+              {romLanguageLabel(lang, code)} <span className="opacity-60">{count}</span>
+            </FilterChip>
+          ))}
+        </FilterRow>
         <FilterRow label={t.games.filterFeature}>
           <FilterChip active={multiplayer} onClick={() => set('multiplayer', multiplayer ? null : '1')}>
             {t.games.chipMultiplayer}
@@ -348,6 +376,8 @@ export function GamesPage() {
           )}
         </FilterRow>
       </div>
+
+      <RomLanguageLinks languages={facets?.romLanguages} className="mt-5" />
 
       {/* 结果 */}
       {state.status === 'error' ? (

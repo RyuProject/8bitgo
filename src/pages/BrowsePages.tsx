@@ -17,6 +17,7 @@ import { romUrlForKey } from '@/services/roms'
 import { PlatformCard } from '@/components/game/PlatformCard'
 import { SkeletonBlock } from '@/components/ui/PageSkeleton'
 import { Button } from '@/components/ui/Button'
+import { RomLanguageLinks } from '@/components/game/RomLanguageLinks'
 
 /**
  * 平台 / 类型 / 开发商三个总览页。
@@ -133,6 +134,7 @@ export function PlatformsPage() {
         title={t.browse.platformsTitle}
         desc={fmt(t.browse.platformsDesc, { n: enabled.length })}
       />
+      <RomLanguageLinks languages={facets?.romLanguages} className="mt-6" />
       {state.status === 'error' ? (
         <LoadError message={state.error} onRetry={state.retry} />
       ) : !facets ? (
@@ -201,6 +203,7 @@ export function GenresPage() {
   return (
     <div className="container-x py-8 sm:py-10">
       <PageIntro eyebrow="GENRES" title={t.browse.genresTitle} desc={t.browse.genresDesc} />
+      <RomLanguageLinks languages={facets?.romLanguages} className="mt-6" />
       {state.status === 'error' ? (
         <LoadError message={state.error} onRetry={state.retry} />
       ) : !facets ? (

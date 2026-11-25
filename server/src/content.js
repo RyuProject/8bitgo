@@ -10,7 +10,7 @@
  * 仍然保留一层短缓存（SSR_CACHE_MS，默认 60 秒），但缓存的是「每个路由的结果」
  * 而不是整个库，且带容量上限，不会被爬虫翻页翻到内存爆掉。
  */
-import { listGames, listHomePicks, getGameBySlug, platformCounts, genreCounts, developerCounts, verifiedFlashGameCount, filteredGameFacetCounts } from './games-repo.js'
+import { listGames, listHomePicks, getGameBySlug, platformCounts, genreCounts, developerCounts, verifiedFlashGameCount, filteredGameFacetCounts, romLanguageCounts } from './games-repo.js'
 import { getPublicCollectionDetail, listPublicCollections, topCollections } from './routes/collections.js'
 import { query } from './db.js'
 import { readI18nMap } from './mappers.js'
@@ -21,6 +21,8 @@ import { isolatedRuntimeRoute } from '../../shared/isolated-runtime-platforms.js
 import { schedulePurge } from './edge-purge.js'
 import { clearGameRoomPolicyCache } from './netplay-game-policy.js'
 import { WASM_FREE_GAME_SLUGS, WASM_FREE_PLATFORM_IDS } from '../../shared/wasm-free-platforms.js'
+import { SITE_LANGUAGES } from '../../shared/site-languages.js'
+import { ENABLED_PLATFORM_IDS } from '../../shared/site-taxonomy.js'
 
 const TTL = Number(process.env.SSR_CACHE_MS || 60_000)
 /** 缓存最多存多少个路由的结果 */
@@ -180,11 +182,13 @@ async function loadHome(platforms, gameSlugs) {
 export async function loadFacets({ includeDevelopers = false, platforms: only, gameSlugs } = {}) {
   // 开发商统计要拆分字符串并运行窗口函数，只有 /developers 页面会展示它。
   // 首页和普通列表页只需要平台/类型数量，省掉这条查询也缩短首屏等待。
-  const [platforms, genres, developers, verifiedFlashCount] = await Promise.all([
+  const visiblePlatforms = only ?? (ENABLED_PLATFORM_IDS.length ? [...ENABLED_PLATFORM_IDS] : undefined)
+  const [platforms, genres, developers, verifiedFlashCount, romLanguages] = await Promise.all([
     platformCounts(),
     genreCounts(),
     includeDevelopers ? developerCounts() : Promise.resolve([]),
     Array.isArray(gameSlugs) ? verifiedFlashGameCount(gameSlugs) : Promise.resolve(0),
+    romLanguageCounts({ platforms: visiblePlatforms, gameSlugs }),
   ])
   const platformFacets = platforms
     // noWasm 模式下 Flash 只显示实测名单内的数量，不能把其他依赖 Ruffle 的游戏一起露出。
@@ -197,6 +201,7 @@ export async function loadFacets({ includeDevelopers = false, platforms: only, g
     // 没有 WebAssembly 的浏览器只看得到能跑的平台（类型 / 开发商计数仍是全库的，只是参考数）
     platforms: platformFacets,
     genres: genres.map((r) => ({ id: r.genre, count: Number(r.n) })),
+    romLanguages,
     developers: developers.map((r) => ({
       name: r.developer,
       count: Number(r.n),
@@ -387,10 +392,13 @@ export async function loadForRoute(pathname, search) {
       const slug = safeDecode(seg[1])
       return loadGamePage(slug, platforms, gameSlugs)
     }
+    // 和详情页、平台专题页共用公开平台白名单，避免把最终会 404 的游戏列进目录和语言页。
+    const visiblePlatforms = platforms ?? (ENABLED_PLATFORM_IDS.length ? [...ENABLED_PLATFORM_IDS] : undefined)
     const q = {
       platform: qs('platform'), genre: qs('genre'), developer: qs('developer'),
+      romLanguage: qs('romLanguage'),
       multiplayer: qs('multiplayer') === '1', coin: qs('coin') === '1',
-      q: qs('q'), sort: qs('sort'), page: qs('page'), letter: qs('letter'), platforms, gameSlugs,
+      q: qs('q'), sort: qs('sort'), page: qs('page'), letter: qs('letter'), platforms: visiblePlatforms, gameSlugs,
     }
     // 带搜索词的组合太发散，不进缓存，免得把内存塞满。
     // ⚠️ page 要规整过再进 key，理由见 cachePage
@@ -402,6 +410,17 @@ export async function loadForRoute(pathname, search) {
       return { route: 'games', list, facets }
     }
     return key ? cached(key, load) : load()
+  }
+
+  // /rom-language/:lang 是真实 ROM 语言的固定目录；不把通用 ROM 算成某门语言版本。
+  if (seg[0] === 'rom-language') {
+    const language = safeDecode(seg[1] ?? '')
+    if (!SITE_LANGUAGES.some(({ code }) => code === language)) return { route: 'rom-language', language, list: { items: [], total: 0, page: 1, pageSize: 24, totalPages: 1 } }
+    return cached(`${nw}rom-language:${language}:${cachePage(qs('page'))}`, async () => ({
+      route: 'rom-language',
+      language,
+      list: await listGames({ romLanguage: language, sort: 'popular', page: qs('page'), platforms: visiblePlatforms, gameSlugs }),
+    }))
   }
 
   // `/play/<平台>/:slug` 是独立的跨源隔离播放器，但首屏仍需同一款游戏的数据。

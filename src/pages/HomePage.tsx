@@ -7,6 +7,7 @@ import { useT } from '@/services/i18n'
 import { usePageData, type HomeData } from '@/services/pageData'
 import { GameCardSkeleton, SkeletonBlock } from '@/components/ui/PageSkeleton'
 import { Button } from '@/components/ui/Button'
+import { RomLanguageLinks } from '@/components/game/RomLanguageLinks'
 
 export function HomePage() {
   const t = useT()
@@ -69,6 +70,7 @@ export function HomePage() {
             {/* 后台钦点的那几款。一款都没填就整栏不出现，首页直接从下面那栏开始 */}
             <PickedSection games={data?.popular ?? []} curated={data?.popularCurated ?? false} />
             <PlatformsSection facets={data?.facets} />
+            <RomLanguageLinks languages={data?.facets.romLanguages} className="container-x" />
             <LatestSection games={data?.newest ?? []} />
             <TogetherSection games={data?.multiplayer ?? []} />
             {/* 按游玩次数排的真榜，始终在，不受精选影响 */}

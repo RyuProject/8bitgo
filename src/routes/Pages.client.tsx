@@ -15,6 +15,7 @@ export const GenresPage = lazyNamed(() => import('@/pages/BrowsePages'), 'Genres
 export const PlatformsPage = lazyNamed(() => import('@/pages/BrowsePages'), 'PlatformsPage')
 export const GenrePage = lazyNamed(() => import('@/pages/CollectionPage'), 'GenrePage')
 export const PlatformPage = lazyNamed(() => import('@/pages/CollectionPage'), 'PlatformPage')
+export const RomLanguagePage = lazyNamed(() => import('@/pages/CollectionPage'), 'RomLanguagePage')
 export const ComingSoonPage = lazyNamed(() => import('@/pages/ComingSoonPage'), 'ComingSoonPage')
 export const NotFoundPage = lazyNamed(() => import('@/pages/NotFoundPage'), 'NotFoundPage')
 export const BlogPage = lazyNamed(() => import('@/pages/BlogPage'), 'BlogPage')

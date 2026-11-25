@@ -55,6 +55,8 @@ export interface DeveloperProfile {
 export interface Facets {
   platforms: Array<{ id: string; count: number }>
   genres: Array<{ id: string; count: number }>
+  /** 各个真实站点语言 ROM 槽对应的可玩游戏数；不含通用 ROM。 */
+  romLanguages?: Array<{ id: string; count: number }>
   developers: Array<{ name: string; count: number; topGame?: DeveloperTopGame } & DeveloperProfile>
 }
 
@@ -99,6 +101,7 @@ export interface PlatformsData { route: 'platforms'; facets: Facets }
 export interface PlatformData { route: 'platform'; id: string; list: Paged<Game> }
 export interface GenresData { route: 'genres'; facets: Facets }
 export interface GenreData { route: 'genre'; id: string; list: Paged<Game> }
+export interface RomLanguageData { route: 'rom-language'; language: string; list: Paged<Game> }
 export interface DevelopersData { route: 'developers'; facets: Facets }
 export interface CollectionsData { route: 'collections'; list: CollectionPage }
 export interface CollectionData { route: 'collection'; detail: CollectionDetail | null }
@@ -107,7 +110,7 @@ export interface OtherData { route: 'other'; facets: Facets }
 
 export type PageData =
   | HomeData | GamesData | GameData | PlatformsData | PlatformData
-  | GenresData | GenreData | DevelopersData | CollectionsData | CollectionData
+  | GenresData | GenreData | RomLanguageData | DevelopersData | CollectionsData | CollectionData
   | BlogData | OtherData
 
 /* ---------------- 首屏数据 ---------------- */

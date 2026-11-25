@@ -297,12 +297,12 @@ export async function postSitemap(req, res, next) {
 }
 
 
-/* ---------------- 平台 / 类型 sitemap ---------------- */
+/* ---------------- 平台 / 类型 / ROM 语言 sitemap ---------------- */
 
 /**
- * 平台页与类型页。
+ * 平台页、类型页与按真实 ROM 语言筛选的目录页。
  *
- * 这两类页面是主要的搜索入口（/platforms/nes、/genres/action …），有独立的 H1、
+ * 这些页面是主要的搜索入口（/platforms/nes、/genres/action、/rom-language/ja …），有独立的 H1、
  * 正文和结构化数据。它们原来由构建期的 gen-sitemap.mjs 烘进 sitemap-static.xml，
  * 而「哪些平台/类型有游戏」完全由数据库决定 —— 于是后台加了上百款游戏之后，
  * 线上 sitemap 里长期只剩 /platforms/flash 和 /platforms/html5，类型页一条都没有。
@@ -325,16 +325,16 @@ export function buildTaxonomySitemap(rows, language, siteUrl = publicSiteUrl()) 
  * 把两组「id + 最新时间」的聚合结果整理成 sitemap 要的行。纯函数，便于单测。
  *
  * 做两件事：**过滤**和**定序**。
- *   - 过滤：一款可见游戏都没有的平台 / 类型是空页面，不进 sitemap；白名单外的平台
+ *   - 过滤：一款可见游戏都没有的平台 / 类型 / ROM 语言是空页面，不进 sitemap；白名单外的平台
  *     前台根本不展示，它的详情页也不该被收录；库里可能还留着已经下线的 genre_id
  *     （游戏身上挂着旧类型），那种页面在前台是 404，写进去等于主动提交错误页。
  *   - 定序：按 id 名单的顺序而不是数据库返回的顺序，这样同一批 URL 顺序稳定，
  *     两次输出可以直接 diff。
  *
- * lastmod 取「这一页里最新的那款游戏的更新时间」—— 平台页和类型页本身没有修改时间，
+ * lastmod 取「这一页里最新的那款游戏的更新时间」—— 聚合页本身没有修改时间，
  * 它们的内容就是那批游戏，某个平台新上架一款，那一页确实变了。
  */
-export function pickTaxonomyRows(platformRows = [], genreRows = []) {
+export function pickTaxonomyRows(platformRows = [], genreRows = [], romLanguageRows = []) {
   const shape = (ids, rows, kind) => {
     const latestById = new Map(rows.map((row) => [String(row.id), row.latest]))
     return ids.filter((id) => latestById.has(id)).map((id) => ({ kind, id, latest: latestById.get(id) }))
@@ -347,11 +347,13 @@ export function pickTaxonomyRows(platformRows = [], genreRows = []) {
   return [
     ...shape(platformIds, platformRows, 'platforms'),
     ...shape([...GENRE_IDS], genreRows, 'genres'),
+    ...shape(SITE_LANGUAGES.map(({ code }) => code), romLanguageRows, 'rom-language'),
   ]
 }
 
 export async function taxonomyRows() {
-  const [platformRows, genreRows] = await Promise.all([
+  const languageCodes = SITE_LANGUAGES.map(({ code }) => code)
+  const [platformRows, genreRows, romLanguageRows] = await Promise.all([
     query(
       `SELECT platform AS id, MAX(COALESCE(updated_at, created_at, added_at)) AS latest
          FROM games WHERE hidden = 0
@@ -363,8 +365,17 @@ export async function taxonomyRows() {
         WHERE g.hidden = 0
         GROUP BY gg.genre_id`,
     ),
+    query(
+      `SELECT gr.lang AS id, MAX(COALESCE(g.updated_at, g.created_at, g.added_at)) AS latest
+         FROM game_roms gr JOIN games g ON g.id = gr.game_id
+        WHERE g.hidden = 0${ENABLED_PLATFORM_SQL}
+          AND gr.lang IN (${languageCodes.map(() => '?').join(', ')})
+          AND CHAR_LENGTH(TRIM(gr.object_key)) > 0
+        GROUP BY gr.lang`,
+      languageCodes,
+    ),
   ])
-  return pickTaxonomyRows(platformRows, genreRows)
+  return pickTaxonomyRows(platformRows, genreRows, romLanguageRows)
 }
 
 export async function taxonomySitemap(req, res, next) {

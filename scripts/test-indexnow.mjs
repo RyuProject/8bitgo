@@ -49,6 +49,17 @@ await check('游戏变更同时覆盖详情、游戏列表、平台与类型页'
   assert.ok(urls.includes('https://8bitgo.com/de/genres/shooting'))
 })
 
+await check('游戏变更会通知实际受影响的 ROM 语言专题页', async () => {
+  const urls = gameChangeUrls({
+    slug: 'language-edition',
+    roms: { ja: 'roms/japanese.zip', '*': 'roms/generic.zip' },
+  }, 'https://8bitgo.com')
+  assert.ok(urls.includes('https://8bitgo.com/ja/rom-language/ja'))
+  assert.ok(urls.includes('https://8bitgo.com/en/rom-language/ja'))
+  assert.ok(!urls.includes('https://8bitgo.com/rom-language/en'), '通用 ROM 不得伪装成英文版本')
+  assert.ok(!urls.includes('https://8bitgo.com/rom-language/fr'), '没有对应槽时不通知无关语言页')
+})
+
 await check('自动推送只提交有正文的游戏详情页，聚合页仍覆盖全部语言', async () => {
   const urls = gameChangeUrls(
     {
@@ -327,6 +338,19 @@ await check('空页面、白名单外的平台、已下线的类型都不进 sit
   assert.deepEqual(paths, ['/platforms/nes', '/platforms/snes', '/genres/action'])
 })
 
+await check('ROM 语言 sitemap 只含有实际语言槽的站点语言', async () => {
+  const d = new Date('2026-09-01T00:00:00Z')
+  const rows = pickTaxonomyRows([], [], [
+    { id: 'ja', latest: d },
+    { id: 'en', latest: d },
+    { id: '*', latest: d },
+    { id: 'pt-BR', latest: d },
+  ])
+  assert.deepEqual(rows.map(({ kind, id }) => [kind, id]), [
+    ['rom-language', 'en'], ['rom-language', 'ja'],
+  ])
+})
+
 await check('平台与类型都按名单顺序排，不跟数据库返回顺序', async () => {
   const d = new Date('2026-09-01T00:00:00Z')
   // 故意用和名单相反的顺序喂进去
@@ -468,6 +492,7 @@ await check('聚合页 URL：kind 白名单是硬的，脏数据不能决定路�
     [
       { kind: 'platforms', id: 'nes' },
       { kind: 'genres', id: 'rpg' },
+      { kind: 'rom-language', id: 'ja' },
       // 下面这些都不该产出任何 URL
       { kind: 'admin', id: 'games' },
       { kind: 'platforms', id: '' },
@@ -482,6 +507,8 @@ await check('聚合页 URL：kind 白名单是硬的，脏数据不能决定路�
     'https://8bitgo.com/en/platforms/nes',
     'https://8bitgo.com/genres/rpg',
     'https://8bitgo.com/en/genres/rpg',
+    'https://8bitgo.com/rom-language/ja',
+    'https://8bitgo.com/en/rom-language/ja',
   ])
 })
 

@@ -170,7 +170,7 @@ function orderBy(sort) {
  * 筛选计数会忽略正在统计的那一维（平台或类型），但其余条件必须和列表一致，
  * 否则搜索结果是 4 款、筛选标签却仍显示全库 19 款这种错位还会出现。
  */
-function gameFilterParts(q = {}, { omitPlatform = false, omitGenre = false } = {}) {
+function gameFilterParts(q = {}, { omitPlatform = false, omitGenre = false, omitRomLanguage = false } = {}) {
   const where = []
   const params = []
 
@@ -183,6 +183,14 @@ function gameFilterParts(q = {}, { omitPlatform = false, omitGenre = false } = {
   if (q.platform && !omitPlatform) {
     where.push('g.platform = ?')
     params.push(String(q.platform))
+  }
+  // 只按真实语言槽筛选；通用 ROM（lang='*'）不能冒充日文或西语版本。
+  if (q.romLanguage && !omitRomLanguage) {
+    where.push(`EXISTS (
+      SELECT 1 FROM game_roms gr_lang
+       WHERE gr_lang.game_id = g.id AND gr_lang.lang = ? AND CHAR_LENGTH(TRIM(gr_lang.object_key)) > 0
+    )`)
+    params.push(String(q.romLanguage))
   }
   /*
     无 WebAssembly 的精简列表按平台白名单过滤，另外只放行逐款实测过的 Flash 游戏。
@@ -291,9 +299,13 @@ function gameFilterParts(q = {}, { omitPlatform = false, omitGenre = false } = {
 export async function filteredGameFacetCounts(q = {}) {
   const platformFilter = gameFilterParts(q, { omitPlatform: true })
   const genreFilter = gameFilterParts(q, { omitGenre: true })
-  if (platformFilter.emptySearch || genreFilter.emptySearch) return { platforms: [], genres: [] }
+  const romLanguageFilter = gameFilterParts(q, { omitRomLanguage: true })
+  if (platformFilter.emptySearch || genreFilter.emptySearch || romLanguageFilter.emptySearch) {
+    return { platforms: [], genres: [], romLanguages: [] }
+  }
 
-  const [platformRows, genreRows] = await Promise.all([
+  const languageCodes = SITE_LANGUAGES.map(({ code }) => code)
+  const [platformRows, genreRows, romLanguageRows] = await Promise.all([
     query(
       `SELECT g.platform AS id, COUNT(DISTINCT g.id) AS n
          FROM games g ${platformFilter.join} ${platformFilter.whereSql}
@@ -306,11 +318,36 @@ export async function filteredGameFacetCounts(q = {}) {
         GROUP BY gg.genre_id`,
       genreFilter.allParams,
     ),
+    query(
+      `SELECT gr.lang AS id, COUNT(DISTINCT g.id) AS n
+         FROM games g JOIN game_roms gr ON gr.game_id = g.id ${romLanguageFilter.join} ${romLanguageFilter.whereSql}
+          ${romLanguageFilter.whereSql ? 'AND' : 'WHERE'} gr.lang IN (${languageCodes.map(() => '?').join(', ')})
+            AND CHAR_LENGTH(TRIM(gr.object_key)) > 0
+        GROUP BY gr.lang`,
+      [...romLanguageFilter.allParams, ...languageCodes],
+    ),
   ])
   return {
     platforms: platformRows.map((row) => ({ id: row.id, count: Number(row.n) })),
     genres: genreRows.map((row) => ({ id: row.id, count: Number(row.n) })),
+    romLanguages: romLanguageRows.map((row) => ({ id: row.id, count: Number(row.n) })),
   }
+}
+
+/** 按真实 ROM 语言槽统计可玩游戏，供首页和分类总览链接到稳定的语言专题页。 */
+export async function romLanguageCounts(q = {}) {
+  const filter = gameFilterParts(q)
+  if (filter.emptySearch) return []
+  const languageCodes = SITE_LANGUAGES.map(({ code }) => code)
+  const rows = await query(
+    `SELECT gr.lang AS id, COUNT(DISTINCT g.id) AS n
+       FROM games g JOIN game_roms gr ON gr.game_id = g.id ${filter.join} ${filter.whereSql}
+        ${filter.whereSql ? 'AND' : 'WHERE'} gr.lang IN (${languageCodes.map(() => '?').join(', ')})
+          AND CHAR_LENGTH(TRIM(gr.object_key)) > 0
+      GROUP BY gr.lang`,
+    [...filter.allParams, ...languageCodes],
+  )
+  return rows.map((row) => ({ id: row.id, count: Number(row.n) }))
 }
 
 /**

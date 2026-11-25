@@ -156,6 +156,7 @@ gamesRouter.get('/', async (req, res, next) => {
     const result = await listGames({
       platform: req.query.platform,
       genre: req.query.genre,
+      romLanguage: req.query.romLanguage,
       developer: req.query.developer,
       multiplayer: truthy(req.query.multiplayer),
       coin: truthy(req.query.coin),

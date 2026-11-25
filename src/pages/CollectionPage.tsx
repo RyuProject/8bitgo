@@ -1,11 +1,13 @@
 import { useCallback } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import type { Game, Genre, Platform } from '@/types'
-import { fetchPageData, usePageData, type GenreData, type Paged, type PlatformData } from '@/services/pageData'
+import { fetchPageData, usePageData, type GenreData, type Paged, type PlatformData, type RomLanguageData } from '@/services/pageData'
 import { useInfinite, type InfiniteList } from '@/services/infinite'
 import { InfiniteFooter } from '@/components/ui/InfiniteFooter'
 import { platformMap } from '@/data/platforms'
 import { genreMap } from '@/data/genres'
+import { romLanguageLabel } from '@/data/rom-language-labels'
+import { LANGUAGES } from '@/config/languages'
 import { isPlatformEnabled } from '@/config/platforms'
 import { useSeo, breadcrumbSchema, itemListSchema } from '@/services/seo'
 import { useT, fmt } from '@/services/i18n'
@@ -35,7 +37,7 @@ import { NotFoundPage } from './NotFoundPage'
 
 interface CollectionProps {
   /** 只影响页面上的小标签（PLATFORM / GENRE） */
-  kind: 'platform' | 'genre'
+  kind: 'platform' | 'genre' | 'rom-language'
   /** H1 与 title */
   heading: string
   /** H1 下面那句简介 */
@@ -89,7 +91,7 @@ function Collection({
   const t = useT()
   const lang = useLang()
   // 平台页与游戏库统一用 1:1 封面；类型页暂时保留原来的横版构图，避免扩大本次改动范围。
-  const coverRatio = kind === 'platform' ? 'square' : 'landscape'
+  const coverRatio = kind === 'platform' || kind === 'rom-language' ? 'square' : 'landscape'
 
   // 后端会把越界页码夹回合法范围，以它为准；数据没到之前先用 URL 上的
   const page = list?.page ?? urlPage
@@ -130,7 +132,7 @@ function Collection({
       </nav>
 
       <div className="mt-4 max-w-2xl">
-        <span className="text-pixel text-[11px] text-brand-hover">{kind === 'platform' ? 'PLATFORM' : 'GENRE'}</span>
+        <span className="text-pixel text-[11px] text-brand-hover">{kind === 'platform' ? 'PLATFORM' : kind === 'genre' ? 'GENRE' : t.games.filterRomLanguage.toUpperCase()}</span>
         <h1 className="mt-2 text-3xl font-extrabold tracking-tight">{heading}</h1>
         <p className="mt-3 leading-relaxed text-muted">{intro}</p>
         <p className="mt-2 text-sm text-muted">{list ? fmt(t.common.gamesCount, { n: list.total }) : null}</p>
@@ -221,7 +223,7 @@ function useCollectionInfinite(
     async (nextPage: number): Promise<Paged<Game>> => {
       const d = await fetchPageData(path, { page: nextPage })
       // 后端按路径决定回哪种 payload；对不上说明路由变了，这批数据不能用
-      if (d.route !== 'platform' && d.route !== 'genre') throw new Error('unexpected route payload')
+      if (d.route !== 'platform' && d.route !== 'genre' && d.route !== 'rom-language') throw new Error('unexpected route payload')
       return d.list
     },
     [path],
@@ -335,6 +337,49 @@ export function GenrePage() {
         setParams(next)
       }}
       filterHref={`/games?genre=${genre.id}`}
+    />
+  )
+}
+
+/* ---------------- ROM 语言专题页 /rom-language/:language ---------------- */
+export function RomLanguagePage() {
+  const { language = '' } = useParams<{ language: string }>()
+  const [params, setParams] = useSearchParams()
+  const t = useT()
+  const uiLanguage = useLang()
+  const page = pageFrom(params)
+  const languageInfo = LANGUAGES.find(({ code }) => code === language)
+  const path = `/rom-language/${encodeURIComponent(language)}`
+  const state = usePageData<RomLanguageData>(path, { page }, 'rom-language')
+  const more = useCollectionInfinite(path, page, state.data?.list, state.status === 'ready')
+
+  // 空语言页和伪造代码都回 404，不向搜索引擎提交空专题或软 404。
+  if (!languageInfo) return <NotFoundPage />
+  if (state.status === 'ready' && state.data.list.total === 0) return <NotFoundPage />
+
+  const name = romLanguageLabel(uiLanguage, language)
+  const list = state.data?.list
+  const heading = fmt(t.games.romLanguageTitle, { language: name })
+  return (
+    <Collection
+      kind="rom-language"
+      heading={heading}
+      intro={fmt(t.games.romLanguageIntro, { language: name })}
+      description={fmt(t.games.romLanguageDescription, { language: name, n: list?.total ?? 0 })}
+      parent={{ name: t.common.library, path: '/games' }}
+      basePath={path}
+      list={list}
+      more={more}
+      page={page}
+      error={state.status === 'error' ? state.error : undefined}
+      onRetry={state.status === 'error' ? state.retry : undefined}
+      onPage={(p) => {
+        const next = new URLSearchParams(params)
+        if (p <= 1) next.delete('page')
+        else next.set('page', String(p))
+        setParams(next)
+      }}
+      filterHref={`/games?romLanguage=${encodeURIComponent(language)}`}
     />
   )
 }

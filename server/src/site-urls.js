@@ -7,7 +7,7 @@
  * indexnow.js 仍然原样再导出这里的全部函数，老的导入路径不用改。
  */
 import { SITE_DEFAULT_LANGUAGE, SITE_LANGUAGES } from '../../shared/site-languages.js'
-import { gameHasRomForLanguage } from '../../shared/rom-language-seo.js'
+import { gameHasRomForLanguage, gameRomLanguages, romLanguageKeys } from '../../shared/rom-language-seo.js'
 
 export const DEFAULT_SITE_URL = 'https://8bitgo.com'
 
@@ -226,6 +226,11 @@ export function gameChangeUrls(game, siteUrl = publicSiteUrl(), languages) {
   for (const genre of Array.isArray(game?.genres) ? game.genres : []) {
     if (genre) aggregatePaths.add(`/genres/${encodeURIComponent(String(genre))}`)
   }
+  const romLanguages = gameRomLanguages(game)
+  const explicitRomLanguages = romLanguages === undefined
+    ? []
+    : romLanguageKeys(romLanguages).filter((code) => SITE_LANGUAGES.some(({ code: supported }) => supported === code))
+  for (const language of explicitRomLanguages) aggregatePaths.add(`/rom-language/${encodeURIComponent(language)}`)
   const requested = resolveLanguages(languages)
   // 删除时调用方只传 slug，没有正文列；此时必须推全部语言，让旧 URL 尽快被重抓成 404。
   const hasLanguageFields = gameHasLanguageFields(game)
@@ -270,10 +275,10 @@ export function postChangeUrls(post, siteUrl = publicSiteUrl(), languages) {
 }
 
 /**
- * 平台页 / 类型页这类聚合页。
+ * 平台页 / 类型页 / ROM 语言页这类聚合页。
  *
- * 入参就是 sitemaps.js 里 `taxonomyRows()` 吐出来的那种行（`{ kind, id }`，
- * kind 只能是 'platforms' 或 'genres'），两边共用同一份筛选结果 ——
+ * 入参就是 sitemaps.js 里 `taxonomyRows()` 吐出来的那种行（`{ kind, id }`），
+ * kind 只允许公开聚合页类型，两边共用同一份筛选结果 ——
  * 「哪些平台/类型真的有可见游戏」的判断只该有一处，各写一份的话，
  * sitemap 里有的页面推送时漏掉、或者反过来推一批前台 404 的页面，
  * 都要逐条比对才看得出来。
@@ -281,7 +286,7 @@ export function postChangeUrls(post, siteUrl = publicSiteUrl(), languages) {
  * kind 白名单是硬的：这些字符串最终会拼进提交给搜索引擎的 URL，
  * 让库里的脏数据决定路径前缀等于让它替我们提交任意路径。
  */
-const TAXONOMY_KINDS = new Set(['platforms', 'genres'])
+const TAXONOMY_KINDS = new Set(['platforms', 'genres', 'rom-language'])
 
 export function taxonomyDetailUrls(rows, siteUrl = publicSiteUrl(), languages) {
   const paths = new Set()

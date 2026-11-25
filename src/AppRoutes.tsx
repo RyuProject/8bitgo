@@ -8,7 +8,7 @@ import { onTvHost } from '@/services/tvHost'
 import {
   GamesPage, GameDetailPage, PlayLocalPage, RoomsPage, CollectionsPage, CollectionDetailPage,
   DevelopersPage, GenresPage, PlatformsPage, GenrePage, PlatformPage, ComingSoonPage,
-  NotFoundPage, BlogPage, PostPage, LoginPage, ProfilePage, AboutPage, SubmitGamePage,
+  NotFoundPage, BlogPage, PostPage, LoginPage, ProfilePage, AboutPage, SubmitGamePage, RomLanguagePage,
   EmbedPage, AppsPage, OAuthCallbackPage, OpenPlatformPage, OpenDevicePage,
   OpenAuthorizePage, TvPage, SymbianPage,
 } from '@/routes/Pages'
@@ -63,6 +63,7 @@ export function AppRoutes() {
           <Route path="/pokecatch-save-sync" element={<PokecatchSaveSyncPage />} />
           <Route path="/games" element={<GamesPage />} />
           <Route path="/games/:slug" element={<GameDetailPage />} />
+          <Route path="/rom-language/:language" element={<RomLanguagePage />} />
           <Route path="/platforms" element={<PlatformsPage />} />
           <Route path="/platforms/:id" element={<PlatformPage />} />
           <Route path="/symbian" element={<SymbianPage />} />
