@@ -126,10 +126,11 @@ export function needsAttention(event, diagnostics) {
   if (event === 'recovered') return false
   if (diagnostics?.automation?.cohort) return false
   if (diagnostics?.recovery?.outcome === 'unconfirmed') return false
-  // 慢启动并不等于故障。ROM 字节仍在推进、或刚下完 ROM 才进入启动阶段时，保留现场供后台分析，
-  // 但不把慢网和大包下载聚成故障告警；真正没有新进度的 stage.rom 仍会报警。
+  // 慢启动并不等于故障。ROM / 启动资源近期仍有进度时保留现场供后台分析，
+  // 但不把慢网和大包下载聚成故障告警；真正没有新进度的阶段仍会报警。
   const signals = diagnostics?.diagnosis?.signals
-  if (event === 'slow_start' && Array.isArray(signals) && signals.some((signal) => signal === 'progress.rom_downloading' || signal === 'progress.rom_dominated')) return false
+  if (event === 'slow_start' && Array.isArray(signals) && signals.some((signal) =>
+    signal === 'progress.rom_downloading' || signal === 'progress.rom_dominated' || signal === 'progress.assets_loading')) return false
   return true
 }
 
@@ -185,27 +186,36 @@ function romSizeArtifact(totalMb) {
 }
 
 /**
- * 慢启动（20 秒还没出画面）只是一个时间点，不等于卡住。按进度快照区分三种情况
+ * 慢启动（20 秒还没出画面）只是一个时间点，不等于卡住。按进度快照区分几种情况
  * （2026-11-18 两份现场都被误标成「停滞」）：
  * - ROM 还在下、最后进度就在上报前一刻 → 没停，耗时由体积和带宽决定（诊断包 #1155：《MDK》114MB 普通 DOS 整包，
  *   第 19.9 秒仍以 31 Mbps 在下，却归进了「ROM 下载或流式读取停滞」）；
  * - ROM 刚下完、下载占了大半个 20 秒 → 慢的是 ROM 下载，后面的阶段才刚开始（#1156：《西游释厄传》21MB ROM
  *   单路串行下了 19.4 秒，第 19.7 秒进 assets，0.3 秒后上报，却归进了「模拟器依赖资源加载停滞」）；
+ * - 引擎 / 资源阶段最后一次进度在上报前 3 秒内 → 加载仍在推进，不能因为尚未出画面就归成停滞；
  * - 其它（进度几秒没动、流式读盘、下完很久还在后面阶段）→ 维持原来按阶段的「停滞」归类。
  * 只看 slow_start：失败 / 超时的现场有自己的错误原文，不能被「还在动」盖掉。
  */
 function diagnoseSlowStartProgress(event, logs, hit, downloadCompleteAtMs = null) {
   if (event !== 'slow_start') return null
   const progress = readProgressSnapshot(logs)
-  if (!progress || !Number.isFinite(progress.atS) || progress.atS <= 0 || progress.cached || progress.streaming) return null
+  if (!progress || !Number.isFinite(progress.atS) || progress.atS <= 0) return null
   const { phase, atS, loadedMb, totalMb, romStartS, romDoneS, lastS } = progress
   const downloadCompleted = downloadCompleteAtMs !== null && downloadCompleteAtMs <= atS * 1000
-  if (!downloadCompleted && phase === 'rom' && lastS !== null && atS - lastS <= LIVE_PROGRESS_S && (!totalMb || loadedMb < totalMb)) {
-    return { ...hit('rom_download', 'ROM 仍在下载，进度正常（未停滞，耗时取决于体积与带宽）', 'rom_download', 'high', 'progress.rom_downloading'), artifact: romSizeArtifact(totalMb) }
+  const hasRecentProgress = lastS !== null && lastS <= atS && atS - lastS <= LIVE_PROGRESS_S
+  if (phase === 'rom') {
+    if (progress.cached || progress.streaming) return null
+    if (!downloadCompleted && hasRecentProgress && (!totalMb || loadedMb < totalMb)) {
+      return { ...hit('rom_download', 'ROM 仍在下载，进度正常（未停滞，耗时取决于体积与带宽）', 'rom_download', 'high', 'progress.rom_downloading'), artifact: romSizeArtifact(totalMb) }
+    }
   }
   // 某些适配器的快照阶段仍留在 rom；漏斗已记录下载完成时，以时间线确认刚进入后续启动阶段。
   if ((phase !== 'rom' || downloadCompleted) && romStartS !== null && romDoneS !== null && atS - romDoneS <= LIVE_PROGRESS_S && romDoneS - romStartS >= atS / 2) {
     return { ...hit('rom_download', 'ROM 下载占去大半启动时间，后续阶段刚开始（未停滞）', 'rom_download', 'medium', 'progress.rom_dominated'), artifact: romSizeArtifact(totalMb) }
+  }
+  if ((phase === 'engine' || phase === 'assets') && hasRecentProgress) {
+    // js-dos 的系统盘 / Sockdrive 会在 ROM 进度阶段之外继续推进；只看阶段名会把慢网误报成卡死。
+    return { ...hit('engine_assets', '启动资源仍在加载，近期有进度（未停滞）', 'engine_asset', 'high', 'progress.assets_loading'), artifact: 'active-progress' }
   }
   return null
 }

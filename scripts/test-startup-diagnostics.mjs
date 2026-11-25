@@ -352,8 +352,36 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   const assetsReallySlow = xiyou('加载进度：阶段 assets，ROM 20.9MB/20.9MB，ROM 起于 0.3s，ROM 完成于 5.0s，平均 36.0Mbps，最后进度 5.2s')
   assert.deepEqual({ code: assetsReallySlow.code, signal: assetsReallySlow.signals[0] }, { code: 'engine_assets', signal: 'stage.engine_assets' },
     'ROM 5 秒就下完、之后 15 秒卡在资源阶段，仍按依赖资源停滞归类')
+  const assetsStillLoading = xiyou('加载进度：阶段 assets，ROM 20.9MB/20.9MB，ROM 起于 0.3s，ROM 完成于 5.0s，平均 36.0Mbps，最后进度 19.9s')
+  assert.deepEqual({ code: assetsStillLoading.code, signal: assetsStillLoading.signals[0] }, { code: 'engine_assets', signal: 'progress.assets_loading' },
+    '引擎依赖资源仍有近期进度时按加载中保留现场，不归成停滞')
   assert.equal(xiyou('加载进度：阶段 assets，ROM 20.9MB/20.9MB（缓存），ROM 起于 0.3s，ROM 完成于 0.4s，最后进度 0.4s').signals[0],
     'stage.engine_assets', 'ROM 命中缓存时慢在别处')
+
+  const jsdosAssetProgress = (lastProgress) => diagnoseStartupFailure({
+    event: 'slow_start', runtime: 'jsdos', platform: 'dos', detail: '等待 game_playable 已超过 20 秒（仍在加载资源）',
+    diagnostics: { logs: [{ t: 20_000, s: 'snapshot', l: 'info', m: `加载进度：阶段 assets，ROM 44.4MB/44.4MB，ROM 起于 1.1s，ROM 完成于 3.3s，最后进度 ${lastProgress}s` }] },
+  })
+  const jsdosAssetsLive = jsdosAssetProgress('18.4')
+  assert.deepEqual(
+    { code: jsdosAssetsLive.code, signal: jsdosAssetsLive.signals[0], artifact: jsdosAssetsLive.artifact, confidence: jsdosAssetsLive.confidence },
+    { code: 'engine_assets', signal: 'progress.assets_loading', artifact: 'active-progress', confidence: 'high' },
+    'JSDOS 系统盘 / 游戏资源在上报前仍有进度时不能误诊为依赖停滞（#4170）',
+  )
+  assert.match(jsdosAssetsLive.label, /未停滞/)
+  assert.equal(needsAttention('slow_start', { diagnosis: jsdosAssetsLive }), false,
+    '资源仍有进度的慢启动只留诊断现场，不参与故障聚集报警')
+  const jsdosAssetsStalled = jsdosAssetProgress('5.2')
+  assert.deepEqual(
+    { code: jsdosAssetsStalled.code, signal: jsdosAssetsStalled.signals[0] },
+    { code: 'engine_assets', signal: 'stage.engine_assets' },
+    '引擎 / 资源阶段 14 秒没有新进度仍保留停滞诊断',
+  )
+  assert.notEqual(
+    errorSignature({ event: 'slow_start', runtime: 'jsdos', platform: 'dos', detail: '等待 game_playable 已超过 20 秒（仍在加载资源）', diagnostics: { logs: [{ t: 20_000, s: 'snapshot', l: 'info', m: '加载进度：阶段 assets，ROM 44.4MB/44.4MB，ROM 起于 1.1s，ROM 完成于 3.3s，最后进度 18.4s' }] } }).signature,
+    errorSignature({ event: 'slow_start', runtime: 'jsdos', platform: 'dos', detail: '等待 game_playable 已超过 20 秒（仍在加载资源）', diagnostics: { logs: [{ t: 20_000, s: 'snapshot', l: 'info', m: '加载进度：阶段 assets，ROM 44.4MB/44.4MB，ROM 起于 1.1s，ROM 完成于 3.3s，最后进度 5.2s' }] } }).signature,
+    '资源正在推进与资源真正停滞不能合成一个诊断组',
+  )
 
   const lateRomSnapshot = diagnoseStartupFailure({
     event: 'slow_start', runtime: 'emulatorjs', platform: 'arcade', elapsedMs: 20_207,
@@ -688,6 +716,7 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   assert.equal(needsAttention('failed', { ...bundle(crawlerEnv), recovery: { outcome: 'failed_again', via: 'reload', afterMs: 1 } }), true, '刷新后又坏是真故障')
   assert.equal(needsAttention('slow_start', { diagnosis: { signals: ['progress.rom_downloading'] } }), false, 'ROM 仍有新字节时只留现场，不能聚合报警')
   assert.equal(needsAttention('slow_start', { diagnosis: { signals: ['progress.rom_dominated'] } }), false, 'ROM 刚下载完、启动尚短时不能聚合报警')
+  assert.equal(needsAttention('slow_start', { diagnosis: { signals: ['progress.assets_loading'] } }), false, '启动资源仍有进度时只留现场，不能聚合报警')
   assert.equal(needsAttention('slow_start', { diagnosis: { signals: ['stage.rom'] } }), true, '没有新进度的 ROM 阶段仍需要叫人')
 
   // 后台默认不列噪音，只数个数
