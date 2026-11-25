@@ -23,8 +23,8 @@
 - 日文游戏库卡片仍显示不少英文原名，例如 `The King of Fighters ’97`、`Pokémon FireRed`。当前源码的 `gameTitle()` 与服务端 mapper 都支持读取 `titleLocalized`，因此更像是这些游戏的日文校对标题尚未填；但生产公开 API 在本轮浏览器中被拦截，且本地数据库报告无法连接，所以暂不能把“数据未填”当作已证实根因。标题覆盖率仍需数据库报告和生产后台保存抽查确认。
 - 再次复核日文详情 `/ja/games/pokemon-firered`：浏览器标题和 H1 都仍是英文 `Pokémon FireRed`；简介是长篇日文自动翻译，存在不自然表达；“1人用”与通用操作说明里列出 2P 键位也不一致。当前首要内容缺口是为真实日文 ROM 补人工标题，并校对简介、人数和操作说明，而不是继续扩写模板文字。
 - 2026-11-25 再次按精确路径查询公开搜索：没有返回 `/ja/rom-language/ja` 或 `/ja/games/pokemon-firered`；`/ja/games` 和 `/ja/genres/adventure` 仍能被搜到，但快照约两个月前，卡片标题仍大量为英文。`/ja/games/pokemon-pearl` 的搜索快照约一周前，正文已有日文内容，但结果标题仍显示英文 `Pokémon Pearl`；默认 `/games/pokemon-firered` 的快照约四周前则显示中文标题与正文。搜索快照可能滞后或不完整，这些结果不能证明 URL 未收录或 Google 当前采用的页面标题，只能作为 Search Console URL Inspection 的核对样本。
-- 2026-11-25 的公开搜索快照可搜到日文首页（当天抓取），但卡片标题仍有大量英文；首页推荐区还出现了 `pokemon` 等单款清单，且日文、德文、西班牙文快照均展示按 UI 语言拼出的模板说明。工作区已将首页推荐改为只展示达到共享索引门槛的合集；这项修复尚未部署，旧快照也不会即时刷新。
-- 浏览器将 `/robots.txt` 和 API 路径拦为 `ERR_BLOCKED_BY_CLIENT`，搜索工具也无法读取线上 `robots.txt`、sitemap XML；这是当前检查通道的限制，不能当作线上文件错误或成功的证据。专题页当前 UI 可读，错误状态是部署前的历史记录。
+- 2026-11-25 的公开搜索快照可搜到日文首页（当天抓取），但卡片标题仍有大量英文；首页推荐区还出现了 `pokemon` 等单款清单，且日文、德文、西班牙文快照均展示按 UI 语言拼出的模板说明。现已部署首页推荐索引门槛，搜索结果和旧快照不会即时刷新。
+- 浏览器将 `/robots.txt` 和 API 路径拦为 `ERR_BLOCKED_BY_CLIENT`，搜索工具也无法读取线上 `robots.txt`、sitemap XML；本轮直接请求还因当前执行环境无法解析 `8bitgo.com` 而失败。以上都是检查通道限制，不能当作线上文件错误或成功的证据。专题页当前 UI 可读，错误状态是部署前的历史记录。
 
 ### 本次公开抓取发现的内容质量风险
 
@@ -50,7 +50,7 @@
 - 回归检查：`npm run test:indexnow`（41 项）、`cd server && npm run test:nowasm-lists`、`cd server && npm run test:ssr-parallel`、`npm run test:i18n-content`（9 项）、`npm run test:seo-meta` 均通过。语言内容覆盖报告已做语法检查，但因本机 MySQL `127.0.0.1:3307` 没有监听，未能生成真实覆盖率。
 - 本轮重跑通过：`npm run test:seo-meta`、`npm run test:seo-performance`、`npm run test:indexnow`（41 项）、`npm run test:sitemap`、`npm run test:i18n-content`（9 项）、`cd server && npm run test:nowasm-lists`、`cd server && npm run test:ssr-parallel`。`npm run build` 与 `npx tsc -b --pretty false` 也均通过。
 - 随后给游戏库、平台/类型/开发商目录与平台/类型/ROM 语言列表的客户端取数错误态加了 `noindex,follow`，站内跳转遇到接口失败时会同步移除 canonical、hreflang 与 JSON-LD；新增回归断言后 `npm run test:seo-meta` 再次通过。
-- 2026-11-25 收口合集质量门槛：首页推荐、详情页 `noindex`、合集 sitemap 与 IndexNow 补交共用同一可见游戏数 / 原创说明判据；首页不会被新建的低信息清单挤满，卡片数量也不会把下架游戏算入。`npm --prefix server run test:collections`（101 项）、`npm run test:i18n-content`（9 项）、`npm run test:sitemap`、`npm run test:indexnow`（41 项）、`npm run test:seo-meta`、`npm run test:seo-performance`、`npm run test:robots`（42 项）、`npx tsc -b --pretty false`、改动脚本语法检查与 `git diff --check` 均通过。
+- 2026-11-25 收口合集质量门槛：首页推荐、详情页 `noindex`、合集 sitemap 与 IndexNow 补交共用同一可见游戏数 / 原创说明判据；首页不会被新建的低信息清单挤满，卡片数量也不会把下架游戏算入。`npm --prefix server run test:collections`（101 项）、`npm run test:i18n-content`（9 项）、`npm run test:sitemap`、`npm run test:indexnow`（41 项）、`npm run test:seo-meta`、`npm run test:seo-performance`、`npm run test:robots`（42 项）、`npx tsc -b --pretty false`、`npm run build:server`、改动脚本语法检查与 `git diff --check` 均通过。
 - `npm run build` 与 `npx tsc -b --pretty false` 均通过；完整构建包括 614 模块客户端构建、495 模块 SSR 构建、运行时语法门禁、EmulatorJS 产物一致性、浏览器兼容、资源完整性、懒加载图和预构建模拟器回归门禁。
 
 ### 目前最明显的产品缺口
