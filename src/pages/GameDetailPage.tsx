@@ -352,6 +352,8 @@ export function GameDetailPage() {
           jsonLd: [
             videoGameSchema({
               name: seoTitle,
+              // H1 用当前界面语言标题，副标题保留原名；两者都进入实体信息，兼容按原名检索。
+              alternateName: game.title,
               slug: game.slug,
               description: seoDesc,
               image: game.cover,

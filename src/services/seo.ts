@@ -623,6 +623,8 @@ export function websiteSchema(description: string) {
 
 export interface GameSchemaInput {
   name: string
+  /** 页面上同时展示的原名；保留用户用原始发行名搜索时的实体对应关系。 */
+  alternateName?: string
   slug: string
   description?: string
   image?: string
@@ -663,6 +665,8 @@ export function videoGameSchema(g: GameSchemaInput) {
       ? ['https://schema.org/SinglePlayer', 'https://schema.org/MultiPlayer']
       : 'https://schema.org/SinglePlayer',
   }
+  const alternateName = String(g.alternateName ?? '').trim()
+  if (alternateName && alternateName !== g.name.trim()) schema.alternateName = alternateName
   if (g.description) schema.description = g.description
   // 同 og:image：封面存的是对象 key，得先拼成公开地址（拼不出来就不输出这个字段）
   const imageUrl = g.image ? romUrlForKey(g.image) : ''

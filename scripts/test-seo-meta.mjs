@@ -273,6 +273,14 @@ check('达到真实评分门槛时，免费网页游戏同时标为 VideoGame �
   assert.match(seo, /ratingCount\s*\?\?\s*0\)\s*>=\s*MIN_RATINGS_FOR_SCHEMA/, '低样本评分不能进入结构化数据')
 })
 
+check('本地化详情页的结构化实体保留页面可见的原名作为 alternateName', () => {
+  const seo = code('src/services/seo.ts')
+  const detail = code('src/pages/GameDetailPage.tsx')
+  assert.match(seo, /alternateName\?: string/, 'VideoGame 输入缺少原名别名')
+  assert.match(seo, /schema\.alternateName = alternateName/, '原名没有进入 JSON-LD')
+  assert.match(detail, /alternateName: game\.title/, '结构化别名必须来自详情页实际可见的原名')
+})
+
 check('关于页与法律页只声明简中、繁中、英文三份真实长正文', () => {
   const languages = code('src/config/languages.ts')
   assert.match(
