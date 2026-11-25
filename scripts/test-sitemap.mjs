@@ -18,12 +18,14 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import {
   buildGameSitemap,
+  buildCollectionSitemap,
   buildPostSitemap,
   buildSitemapIndex,
   hasIndexableGameLanguage,
   hasLocalizedBody,
   hasLocalizedPostBody,
 } from '../server/src/routes/sitemaps.js'
+import { shouldIndexCollection } from '../shared/collection-seo.js'
 
 let failed = 0
 const check = (name, fn) => {
@@ -44,6 +46,43 @@ const withEn = { slug: '1942', description: '《1942》…', description_en: '19
 /** 德语译文已生成 */
 const withDe = { slug: 'doom', description: '《毁灭战士》…', description_en: 'Doom is…', description_i18n: { de: 'Doom ist…' }, updated_at: '2026-09-01' }
 const locs = (xml) => [...xml.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1])
+
+console.log('\n── 合集只把有独立内容价值的详情提交给搜索引擎 ──')
+check('索引门槛按可见游戏数和说明长度组合判断，并按 Unicode 码点计数', () => {
+  assert.equal(shouldIndexCollection({ gameCount: 0, description: 'x'.repeat(500) }), false)
+  assert.equal(shouldIndexCollection({ gameCount: 1, description: 'x'.repeat(299) }), false)
+  assert.equal(shouldIndexCollection({ gameCount: 1, description: '😀'.repeat(300) }), true)
+  assert.equal(shouldIndexCollection({ gameCount: 2, description: 'x'.repeat(300) }), true)
+  assert.equal(shouldIndexCollection({ gameCount: 3, description: 'x'.repeat(119) }), false)
+  assert.equal(shouldIndexCollection({ gameCount: 3, description: 'x'.repeat(120) }), true)
+  assert.equal(shouldIndexCollection({ gameCount: 5, description: '' }), true)
+  assert.equal(shouldIndexCollection({ gameCount: 'bad', description: null }), false)
+})
+
+check('合集 sitemap 只包含达到门槛的公开合集数据', () => {
+  const xml = buildCollectionSitemap([
+    { id: 1, visible_game_count: 1, description: '', updated_at: '2026-11-01' },
+    { id: 2, visible_game_count: 3, description: 'x'.repeat(120), updated_at: '2026-11-02' },
+    { id: 3, visible_game_count: 5, description: '', updated_at: '2026-11-03' },
+  ], SITE)
+  assert.deepEqual(locs(xml), [`${SITE}/collections/2`, `${SITE}/collections/3`])
+  assert.match(xml, /<lastmod>2026-11-02<\/lastmod>/)
+  assert.match(xml, /<lastmod>2026-11-03<\/lastmod>/)
+  assert.doesNotMatch(xml, /\/collections\/1(?:<|&)/)
+})
+
+check('没有达到门槛的合集时 sitemap 索引不引用合集 sitemap', () => {
+  const xml = buildSitemapIndex({ siteUrl: SITE, hasCollections: false })
+  assert.ok(!locs(xml).some((url) => url.endsWith('/sitemaps/collections.xml')))
+})
+
+check('合集 sitemap 计数只纳入仍公开的游戏', () => {
+  const src = readFileSync(new URL('../server/src/routes/sitemaps.js', import.meta.url), 'utf8')
+  const query = src.match(/async function collectionSitemapRows\(\)\s*\{\s*return query\(\s*`([\s\S]*?)`/)
+  assert.ok(query, '应当有合集 sitemap 的数据库查询')
+  assert.match(query[1], /g\.hidden\s*=\s*0/, '下架游戏不能抬高合集索引分数')
+  assert.match(query[1], /WHERE c\.hidden\s*=\s*0/, '隐藏合集不能进入 sitemap')
+})
 
 check('基准语言也只提交有正文的游戏，薄页保留可访问但不主动消耗抓取预算', () => {
   assert.equal(hasLocalizedBody({}, 'zh-Hans', { base: 'description', i18n: 'description_i18n' }), false)

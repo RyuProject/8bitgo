@@ -20,6 +20,7 @@ import { useSeo } from '@/services/seo'
 import { useT, fmt } from '@/services/i18n'
 import { usePageData, type CollectionData } from '@/services/pageData'
 import { NotFoundPage } from './NotFoundPage'
+import { shouldIndexCollection } from '../../shared/collection-seo.js'
 
 /** /collections/:id —— 一个合集里的全部游戏 */
 export function CollectionDetailPage() {
@@ -151,8 +152,11 @@ export function CollectionDetailPage() {
     // 合集标题和简介由用户只写一份；语言前缀只翻译界面，不能冒充八份独立正文。
     contentLanguages: ['zh-Hans'],
     canonicalLanguage: 'zh-Hans',
-    // 下架的合集不该被收录
-    noindex: Boolean(c?.hidden),
+    // 空合集和内容价值不足的清单继续可访问，但不主动占用搜索索引。
+    noindex: !c || Boolean(c.hidden) || !shouldIndexCollection({
+      gameCount: data?.games.length ?? 0,
+      description: c.description,
+    }),
   })
 
   if (missing) return <NotFoundPage />

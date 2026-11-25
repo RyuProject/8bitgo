@@ -17,16 +17,17 @@
 
 ### 本轮公开页面抽查（2026-11-25）
 
-- 用 Codex 内置浏览器复查线上 `/ja/games` 与 `/ja/games?romLanguage=ja`：目录显示 660 款，日语 ROM 计数为 147，且有指向 `/ja/rom-language/ja` 的普通链接；筛选页实际显示 147 款、每页 24 款，并有可点击的分页链接。首屏高人气样本仍显示 `Pokémon FireRed`、`Contra`、`Rhythm Heaven` 等英文原名。由此确认当前 UI 没有充分展示日文标题；仅凭页面无法区分是 `title_localized` 未填，还是响应数据未带该字段，覆盖报告仍需连到数据库核实。
-- **线上 `/ja/rom-language/ja` 曾有真实故障**：本地化 `<title>`、H1 和说明正常，但列表区域显示“服务器内部错误”。根因是该路由引用了 `/games` 条件分支里的局部变量 `visiblePlatforms`，触发 `ReferenceError`；修复已将平台范围提升到共享路由数据作用域，并把 `/rom-language/ja` 加入 `test:nowasm-lists`。`23d74ce` 于 2026-11-25 部署后，直接请求该 URL 返回 HTTP 200；实际 SSR HTML 含 147 款总数、首屏 24 款清单及第 2–7 页链接，未再出现服务器错误。
+- 本轮通过可见浏览器再次复查线上 `/ja/rom-language/ja`：147 款、每页 24 款、7 页分页和普通详情链接均正常；首屏 `Pokémon FireRed`、`Contra`、`Rhythm Heaven` 等标题仍为英文。随后抽查 `/ja/games/pokemon-firered`，浏览器标题与 H1 都是 `Pokémon FireRed`；日文正文是自动翻译，仍有生硬或不准确表达。由此确认用户可见的本地化缺口，不把它误判成专题页抓取故障。
+- **线上 `/ja/rom-language/ja` 曾有真实故障**：本地化 `<title>`、H1 和说明正常，但列表区域显示“服务器内部错误”。根因是该路由引用了 `/games` 条件分支里的局部变量 `visiblePlatforms`，触发 `ReferenceError`；修复已将平台范围提升到共享路由数据作用域，并把 `/rom-language/ja` 加入 `test:nowasm-lists`。部署记录标记 `23d74ce` 于 2026-11-25 发布，并记录直接请求为 HTTP 200、SSR 有 147 款总数、首屏 24 款清单及第 2–7 页链接。本轮浏览器复查独立确认页面能显示 147 款、24 款首屏和 7 页导航；浏览器工具没有提供响应头或原始 HTML，因此本轮不独立断言状态码与 SSR 源码。
 - 部署后复核 `/api/health` 返回 HTTP 200 且 `db: true`。专题 HTML 保留 self-canonical、8 个语言 `hreflang` 与 `x-default`、日文 meta description；这只验证了站点实际响应与 SSR 输出，搜索引擎是否抓取和收录仍需在 Search Console / Bing Webmaster 查看。平台、类型与 ROM 语言目录在站内数据请求失败时会切换为 `noindex,follow`，降低临时错误页被索引的风险。
-- 日文游戏库卡片仍显示不少英文原名，例如 `The King of Fighters ’97`、`Pokémon FireRed`。这与“字段可按 ROM 语言录入”不是同一问题：标题选择逻辑已支持日文名，线上实际填充覆盖率仍需数据库报告确认。
-- 外部 `site:` 搜索本轮能看到 `/ja/games`、`/ja/genres/adventure` 等日文 URL，但没有返回 `/ja/rom-language/ja`；可见游戏库快照约两个月前且只报 305 款，浏览器此刻实际显示 660 款。聚合搜索的快照不是 Google Search Console 数据，不能据此断言 Google 当前收录数或抓取延迟；但足以把 sitemap 处理时间、页面 lastmod 和 URL 检查列为上线后验收项。
-- 浏览器将 `/robots.txt` 和 API 路径拦为 `ERR_BLOCKED_BY_CLIENT`，搜索工具也无法读取线上 `robots.txt`、sitemap XML；这是当前检查通道的限制，不能当作线上文件错误或成功的证据。页面本身的 UI 访问则已验证专题错误。
+- 日文游戏库卡片仍显示不少英文原名，例如 `The King of Fighters ’97`、`Pokémon FireRed`。当前源码的 `gameTitle()` 与服务端 mapper 都支持读取 `titleLocalized`，因此更像是这些游戏的日文校对标题尚未填；但生产公开 API 在本轮浏览器中被拦截，且本地数据库报告无法连接，所以暂不能把“数据未填”当作已证实根因。标题覆盖率仍需数据库报告和生产后台保存抽查确认。
+- 再次复核日文详情 `/ja/games/pokemon-firered`：浏览器标题和 H1 都仍是英文 `Pokémon FireRed`；简介是长篇日文自动翻译，存在不自然表达；“1人用”与通用操作说明里列出 2P 键位也不一致。当前首要内容缺口是为真实日文 ROM 补人工标题，并校对简介、人数和操作说明，而不是继续扩写模板文字。
+- 2026-11-25 再次按精确路径查询公开搜索：没有返回 `/ja/rom-language/ja` 或 `/ja/games/pokemon-firered`；`/ja/games` 和 `/ja/genres/adventure` 仍能被搜到，但快照约两个月前，卡片标题仍大量为英文。`/ja/games/pokemon-pearl` 的搜索快照约一周前，正文已有日文内容，但结果标题仍显示英文 `Pokémon Pearl`；默认 `/games/pokemon-firered` 的快照约四周前则显示中文标题与正文。搜索快照可能滞后或不完整，这些结果不能证明 URL 未收录或 Google 当前采用的页面标题，只能作为 Search Console URL Inspection 的核对样本。
+- 浏览器将 `/robots.txt` 和 API 路径拦为 `ERR_BLOCKED_BY_CLIENT`，搜索工具也无法读取线上 `robots.txt`、sitemap XML；这是当前检查通道的限制，不能当作线上文件错误或成功的证据。专题页当前 UI 可读，错误状态是部署前的历史记录。
 
 ### 本次公开抓取发现的内容质量风险
 
-- 首页公开合集区出现过标题只有 “pokemon” / “Game” 且只含 1–2 款游戏的用户合集；目前 sitemap 会提交所有 `hidden = 0` 的合集详情。它们可能有社区价值，但作为搜索落地页的独立信息量偏少。建议单独定义可解释的收录门槛，并让首页合集区采用更严格的质量筛选。不要只按标题字数自动删页；先确定有用的描述、游戏数量和维护状态规则，再对低信息页 noindex 并从 sitemap 排除。
+- 线上抽查 `/ja/collections/14`：标题只有 `pokemon`、没有说明、只含 1 款游戏；页面依然公开，且旧规则会将所有 `hidden = 0` 合集提交到 sitemap。现在工作区加了统一的内容门槛：至少 5 款可见游戏，或至少 3 款并有 120 个字符说明，或至少 1 款并有 300 个字符说明。门槛只影响索引信号与 sitemap；不隐藏合集、不改变玩家访问。以共享函数同步页面 `noindex` 与 sitemap 筛选，避免两处规则漂移。这个规则是保守的运营启发式，拿到 GSC 展示/点击与合集互动数据后应复核，不把字符数当作内容质量的唯一判据。
 - `/robots.txt` 和 `/sitemap.xml` 在本次公开抓取工具中无法读取。仓库配置看起来允许公开爬虫，但线上 HTTP 状态、重定向、CDN/WAF 拦截仍未验证。
 - 仓库 `robots.txt` 只有通用 `User-agent: *` 组，允许公开目录里的搜索爬虫与 AI 搜索爬虫，且 `/api/` 继续屏蔽；同一规则目前也允许 GPTBot、ClaudeBot 等 AI 训练爬虫。搜索引用抓取与模型训练是不同用途，之后应根据站长偏好分别定策略；更改时必须保留后台/个人页的禁止规则，不能用一个点名 `Allow: /` 的专属组绕过它们。OpenAI 当前说明 OAI-SearchBot 用于 ChatGPT 搜索发现，GPTBot 则可由站长选择排除训练；若依赖 robots 控制搜索收录，还必须允许 OAI-SearchBot 读取页面，单靠 robots 放行也不能代替对 CDN/WAF/挑战页的实测。见[发布者说明](https://help.openai.com/en/articles/12627856-publishers-and-developers-faq)。
 
@@ -38,20 +39,21 @@
 - 新增按 ROM 语言浏览的稳定专题页 `/rom-language/:language`。页面只列实际绑定了该站点语言 ROM 槽的游戏，通用 `*` ROM 不会被误认为日文、法文等专属版本；空语言页返回 404。页面由 SSR 直接输出，具备本地化标题/正文、分页、canonical/hreflang、Breadcrumb 与游戏清单结构化数据。
 - 游戏库新增 ROM 语言筛选及带真实数量的语言专题链接；筛选参数页 `noindex`，稳定专题页才进入动态分类 sitemap。游戏新增、修改、删除时会推送受影响的 ROM 语言专题 URL。
 - 游戏库与 ROM 语言专题共用已开放平台白名单，避免把最终会返回 404 的下架平台游戏列进可抓取目录。
-- 上线前必须先执行数据库迁移，否则新查询会因缺少 `games.title_localized` 报错：`cd server && npm run migrate`。
+- 公开合集索引门槛共用 `shared/collection-seo.js`：有 5 款可见游戏；或 3 款以上且说明至少 120 字；或至少 1 款且说明至少 300 字。其余合集继续公开访问，但详情页返回 `noindex`，并从合集 sitemap 及 sitemap 索引中排除；可见游戏数不把已下架游戏算进去。
+- 后台保存 `title_localized` 前必须确认数据库已运行迁移 `cd server && npm run migrate`。本轮线上列表正常，但没有通过后台保存测试或 schema 检查来独立确认该列在生产库中可写。
 
 ### 本轮代码审计修复
 
 - 类型 sitemap 原先只过滤 `hidden = 0`，可能把只有下架平台游戏的类型页提交给搜索引擎。现在类型聚合只统计前台开放平台。
 - SSR 的首页、类型页与公开目录列表此前可能混入白名单外平台的游戏，产生无法打开的详情链接。现在普通访问与 noWasm 访问都分别按各自开放平台范围取数；类型计数同样应用此范围，`/genres` 不再链接到零款游戏的空类型页。
 - 回归检查：`npm run test:indexnow`（41 项）、`cd server && npm run test:nowasm-lists`、`cd server && npm run test:ssr-parallel`、`npm run test:i18n-content`（9 项）、`npm run test:seo-meta` 均通过。语言内容覆盖报告已做语法检查，但因本机 MySQL `127.0.0.1:3307` 没有监听，未能生成真实覆盖率。
+- 本轮重跑通过：`npm run test:seo-meta`、`npm run test:seo-performance`、`npm run test:indexnow`（41 项）、`npm run test:sitemap`、`npm run test:i18n-content`（9 项）、`cd server && npm run test:nowasm-lists`、`cd server && npm run test:ssr-parallel`。`npm run build` 与 `npx tsc -b --pretty false` 也均通过。
 - 随后给游戏库、平台/类型/开发商目录与平台/类型/ROM 语言列表的客户端取数错误态加了 `noindex,follow`，站内跳转遇到接口失败时会同步移除 canonical、hreflang 与 JSON-LD；新增回归断言后 `npm run test:seo-meta` 再次通过。
-- 本轮修复后 `npm run build:server` 成功；`npm run build:client` 随后通过前置隔离、613 模块打包及全部 postbuild 检查（运行时语法、EmulatorJS 字节一致、浏览器兼容、资源完整性和懒加载图均通过）。
-- `npx tsc -b --pretty false` 受当前未跟踪的 `src/emulator/dosTouchInput.ts` 阻挡：第 12、13 行触发 `erasableSyntaxOnly` 的 TS1294；该文件不属于本轮改动，保留原样。
+- `npm run build` 与 `npx tsc -b --pretty false` 均通过；完整构建包括 613 模块客户端构建、494 模块 SSR 构建、运行时语法门禁、EmulatorJS 产物一致性、浏览器兼容、资源完整性、懒加载图和预构建模拟器回归门禁。
 
 ### 目前最明显的产品缺口
 
-ROM 语言目录和筛选入口已在线可见，但当前稳定专题页的列表请求报错，需先部署本轮修复并在线复核。随后剩余的主要短板是内容覆盖：专题页的数量由真实 ROM 槽自动生成，但单款游戏的本地化标题与独立简介仍要由管理员校对/补齐；日文游戏库仍能看到不少英文原题，所以标题框需要持续填充才会改变这些条目的显示名。
+ROM 语言目录和筛选入口已在线可见；部署后 `/ja/rom-language/ja` 已可见完整清单。当前最明显的短板转为内容覆盖：日文 ROM 目录有 147 款，但热门列表和详情仍显示英文原名，逐语言标题与独立简介的实际填充率尚未读取。下一步应取得数据库覆盖报告，按游玩量先补标题和经校对的简介；同时在 Google/Bing 站长工具确认专题页索引状态。
 
 当前仓库新增了只读覆盖报告：`cd server && npm run seo:coverage`。它按八种站点语言统计可见游戏中的精确 ROM、标题、独立简介、人工校对稿和“ROM+标题+简介”完整度；默认只输出汇总数量，不输出游戏名或对象存储地址。追加 `-- --todo --limit 20` 会按游玩量列出每种语言最值得先补的标题/简介缺口。报告把通用 `*` ROM 单列，不冒充语言目录覆盖。
 

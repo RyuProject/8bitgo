@@ -1338,7 +1338,7 @@ export function GameForm({
           <Field
             key={language}
             label={`标题（${romLanguageLabel(language)}）`}
-            hint="留空时回退到原名；繁体中文会先回退到自动转换的繁体译名。"
+            hint="此语言界面会用它显示游戏名、页面标题和站内搜索；请填当地玩家常用的正式名称。留空时回退到原名，繁体中文会先回退到自动转换的繁体译名。"
           >
             <input
               className={inputClass}

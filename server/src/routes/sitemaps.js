@@ -4,6 +4,7 @@ import { localizedPublicUrl, publicSiteUrl, sitemapImagePublicUrl } from '../sit
 import { SITE_DEFAULT_LANGUAGE, SITE_LANGUAGES } from '../../../shared/site-languages.js'
 import { ENABLED_PLATFORM_IDS, GENRE_IDS } from '../../../shared/site-taxonomy.js'
 import { gameHasRomForLanguage } from '../../../shared/rom-language-seo.js'
+import { shouldIndexCollection } from '../../../shared/collection-seo.js'
 
 /**
  * 只收前台真能打开的平台。GameDetailPage 对不在 ENABLED_PLATFORM_IDS 里的平台直接回 404，
@@ -398,11 +399,18 @@ export async function taxonomySitemap(req, res, next) {
 
 /**
  * 合集详情只有默认语言这一份真实正文（其它语言前缀 canonical 回来），所以不按 8 种语言拆。
- * `/collections` 列表页本身是固定入口，放在 sitemap-static.xml；这里仅列数据库里仍公开的详情。
+ * `/collections` 列表页本身是固定入口，放在 sitemap-static.xml；这里仅列公开且达到内容门槛的详情。
  */
+function indexableCollectionRows(rows) {
+  return rows.filter((row) => shouldIndexCollection({
+    gameCount: row.visible_game_count ?? row.game_count ?? row.gameCount,
+    description: row.description,
+  }))
+}
+
 export function buildCollectionSitemap(rows, siteUrl = publicSiteUrl()) {
   return buildUrlsetSitemap(
-    rows,
+    indexableCollectionRows(rows),
     SITE_DEFAULT_LANGUAGE,
     siteUrl,
     (row) => `/collections/${Number(row.id)}`,
@@ -410,11 +418,39 @@ export function buildCollectionSitemap(rows, siteUrl = publicSiteUrl()) {
   )
 }
 
+/** 只读 sitemap 所需字段，并用实际仍可见的游戏数评估合集内容价值。 */
+async function collectionSitemapRows() {
+  return query(
+    `SELECT c.id, c.created_at, c.updated_at, c.description, COUNT(g.id) AS visible_game_count
+     FROM collections c
+     LEFT JOIN collection_items ci ON ci.collection_id = c.id
+     LEFT JOIN games g ON g.id = ci.game_id AND g.hidden = 0
+     WHERE c.hidden = 0
+     GROUP BY c.id, c.created_at, c.updated_at, c.description`,
+  )
+}
+
+function latestDate(rows, getValue) {
+  let latestTime = 0
+  let latestValue = null
+  for (const row of rows) {
+    const value = getValue(row)
+    const time = value ? new Date(value).valueOf() : 0
+    if (Number.isFinite(time) && time > latestTime) {
+      latestTime = time
+      latestValue = value
+    }
+  }
+  return latestValue
+}
+
 export async function collectionSitemap(_req, res, next) {
   try {
-    const rows = await query(
-      'SELECT id, created_at, updated_at FROM collections WHERE hidden = 0 ORDER BY id ASC',
-    )
+    const rows = await collectionSitemapRows()
+    if (!indexableCollectionRows(rows).length) {
+      res.setHeader('Cache-Control', CACHE.notFound)
+      return res.status(404).type('text/plain; charset=utf-8').send('没有达到收录标准的公开合集')
+    }
     res.setHeader('Cache-Control', CACHE.meta)
     res.setHeader('Vary', 'Accept-Encoding')
     res.type('application/xml; charset=utf-8').send(buildCollectionSitemap(rows))
@@ -539,7 +575,7 @@ export async function sitemapIndex(_req, res, next) {
     const [gameRows, postRows, collectionRows, langs] = await Promise.all([
       query(`SELECT MAX(COALESCE(updated_at, created_at, added_at)) AS latest FROM games WHERE hidden = 0${ENABLED_PLATFORM_SQL}`),
       query('SELECT MAX(COALESCE(updated_at, created_at)) AS latest FROM posts WHERE published = 1'),
-      query('SELECT COUNT(*) AS n, MAX(COALESCE(updated_at, created_at)) AS latest FROM collections WHERE hidden = 0'),
+      collectionSitemapRows(),
       langsWithContent(),
     ])
     // 一篇文章都没发布 / 一款游戏都没上架时 MAX() 是 NULL。这时不写 lastmod
@@ -547,7 +583,8 @@ export async function sitemapIndex(_req, res, next) {
     // 让搜索引擎白跑一趟，正好是我们想避免的那件事。
     const gamesLastmod = dateOnly(gameRows?.[0]?.latest)
     const postsLastmod = dateOnly(postRows?.[0]?.latest)
-    const collectionsLastmod = dateOnly(collectionRows?.[0]?.latest)
+    const eligibleCollections = indexableCollectionRows(collectionRows)
+    const collectionsLastmod = dateOnly(latestDate(eligibleCollections, (row) => row.updated_at || row.created_at))
     // 平台页 / 类型页的内容就是那批游戏，所以跟着游戏的最新更新时间走。
     const taxonomyLastmod = gamesLastmod
     res.setHeader('Cache-Control', CACHE.meta)
@@ -559,7 +596,7 @@ export async function sitemapIndex(_req, res, next) {
         postsLastmod,
         taxonomyLastmod,
         collectionsLastmod,
-        hasCollections: Number(collectionRows?.[0]?.n) > 0,
+        hasCollections: eligibleCollections.length > 0,
         // 没译文的语言那一份是空的，空 sitemap 在 GSC 里是永久错误 —— 干脆别列
         gamesLangs: langs.gamesLangs,
         postsLangs: langs.postsLangs,
