@@ -21,6 +21,7 @@ import {
   normalizeDiagnostics,
   partitionNoise,
   scrub,
+  shapeSample,
 } from '../server/src/startup-diagnostics.js'
 import { normalizeStartupEvent, sanitizeStartupDetail } from '../server/src/startup-metrics.js'
 import { componentPath, errorHead, isReactUpdateLoop, stackFrames } from '../src/services/renderErrorText.ts'
@@ -123,6 +124,25 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   const genericMissing = diagnoseStartupFailure({ event: 'failed', platform: 'nes', detail: 'Missing files while opening content' })
   assert.notEqual(genericMissing.code, 'bios_romset', '非街机的通用 missing files 不能被判成街机 BIOS 故障')
   assert.equal(diagnoseStartupFailure({ event: 'failed', platform: 'arcade', detail: 'Missing files for this romset' }).code, 'bios_romset')
+  const gbaBiosMissing = diagnoseStartupFailure({
+    event: 'failed', runtime: 'iodinegba', platform: 'gba',
+    detail: 'IodineGBA 启动需要 16 KiB GBA BIOS；请先在后台配置 GBA 平台 BIOS。',
+  })
+  assert.deepEqual(
+    { code: gbaBiosMissing.code, phase: gbaBiosMissing.phase, confidence: gbaBiosMissing.confidence, signal: gbaBiosMissing.signals[0] },
+    { code: 'bios_config', phase: 'platform_config', confidence: 'high', signal: 'error.platform_bios_config' },
+    'IodineGBA 明确报告缺少 GBA BIOS 时应指向平台配置，不能归为未知或街机 BIOS 故障',
+  )
+  const oldUnknownGbaBiosSample = shapeSample({
+    id: '4210', event: 'failed', runtime: 'iodinegba', platform: 'gba', payload: JSON.stringify({
+      v: 1, capture: { level: 'full' }, reason: 'IodineGBA 启动需要 16 KiB GBA BIOS；请先在后台配置 GBA 平台 BIOS。',
+      diagnosis: { code: 'unknown', label: '原因未能自动识别', phase: 'unknown', confidence: 'low', signals: ['no_specific_signal'] },
+    }),
+  })
+  assert.equal(oldUnknownGbaBiosSample.diagnostics.diagnosis.code, 'bios_config',
+    '读回旧现场时应把已有的 unknown 重算为新识别出的明确 BIOS 配置错误')
+  assert.notEqual(diagnoseStartupFailure({ event: 'failed', runtime: 'emulatorjs', platform: 'gba', detail: 'GBA ROM failed to load' }).code, 'bios_config',
+    '普通 GBA ROM 故障不能被误判成平台 BIOS 配置错误')
   assert.notEqual(diagnoseStartupFailure({ event: 'failed', platform: 'gba', detail: 'Failed to load ROM from blob URL' }).code, 'storage',
     '普通 Blob URL 加载失败不能直接推断为浏览器存储故障')
   assert.equal(diagnoseStartupFailure({ event: 'failed', platform: 'gba', detail: 'NotReadableError while reading Blob' }).code, 'storage')

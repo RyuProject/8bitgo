@@ -136,7 +136,7 @@ export function needsAttention(event, diagnostics) {
 
 const DIAGNOSIS_CODES = new Set([
   'offline', 'network_http', 'network_failure', 'react_update_loop', 'page_asset', 'script_conflict', 'engine_asset', 'engine_assets', 'engine_load', 'core_download', 'rom_download',
-  'rom_invalid', 'bios_romset', 'webgl', 'memory', 'storage', 'input_api', 'wasm_runtime', 'runtime_trap',
+  'rom_invalid', 'bios_romset', 'bios_config', 'webgl', 'memory', 'storage', 'input_api', 'wasm_runtime', 'runtime_trap',
   'timeout', 'unsupported', 'unknown',
 ])
 const CAPTURE_LEVELS = ['full', 'summary']
@@ -294,6 +294,11 @@ export function diagnoseStartupFailure({ event, runtime, platform, detail, elaps
   }
   if (has(/getgamepads|gamepad.*(?:securityerror|permission)|third-party iframes are not allowed|权限策略.*手柄/)) {
     return hit('input_api', '手柄接口被浏览器权限限制', 'browser', 'high', 'error.gamepad_permission')
+  }
+  // IodineGBA 是无 WebAssembly / WebGL 时的 GBA 退路；它必须使用后台配置的原始 16 KiB BIOS。
+  // 这类错误是平台配置缺失或格式不符，不能落成「未识别」，也不能和街机 ROM 集 BIOS 混为一类。
+  if (platform === 'gba' && runtime === 'iodinegba' && has(/gba bios.{0,120}(?:16\s*kib|required|require|need|not configured|configure|missing|unrecognized|size|大小|配置|未配置|没有|可识别)/)) {
+    return hit('bios_config', 'GBA 平台 BIOS 未配置或格式不符', 'platform_config', 'high', 'error.platform_bios_config')
   }
   // DOS ROM 已下载日志会留在整页诊断缓冲里，不能盖过 js-dos 依赖脚本自身的明确初始化错误。
   if (platform === 'dos' && has(/unable to init emulators\.js|unable to add emulators\.js|emulators is not defined/)) {
@@ -909,7 +914,7 @@ export async function diagnosticGroups(rawDays = 7, rawQuery = '', rawEvent = ''
   }
 }
 
-function shapeSample(row) {
+export function shapeSample(row) {
   let payload = null
   try {
     payload = JSON.parse(row.payload)
@@ -917,8 +922,10 @@ function shapeSample(row) {
     payload = null
   }
   const diagnostics = normalizeDiagnostics(payload)
-  if (diagnostics && !diagnostics.diagnosis) {
-    diagnostics.diagnosis = diagnoseStartupFailure({ event: row.event, runtime: row.runtime, platform: row.platform, detail: diagnostics.reason, diagnostics })
+  // 新规则可把历史现场中原先归成 unknown 的明确原因补成当前分类，但不重写已知诊断或任何现场数据。
+  if (diagnostics && (!diagnostics.diagnosis || diagnostics.diagnosis.code === 'unknown')) {
+    const currentDiagnosis = diagnoseStartupFailure({ event: row.event, runtime: row.runtime, platform: row.platform, detail: diagnostics.reason, diagnostics })
+    if (!diagnostics.diagnosis || currentDiagnosis.code !== 'unknown') diagnostics.diagnosis = currentDiagnosis
   }
   return {
     id: String(row.id),
