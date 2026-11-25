@@ -689,11 +689,11 @@ export function videoGameSchema(g: GameSchemaInput) {
       worstRating: 1,
     }
     /*
-      带 applicationCategory / operatingSystem / offers 的 VideoGame 会被 Google 按「软件应用」
-      富媒体结果校验，而那一类**必须**有 aggregateRating 或 review。以前三项无条件输出，
-      评分不够 5 人的游戏（几乎全部）在 Search Console 里都是「无效项」。
-      所以只在真有评分时才补上软件应用字段；平时就是一个干净的 VideoGame。
+      Google 不会为只有 VideoGame 类型的条目显示 Software App 富结果。这里是真正可在浏览器运行、
+      免费游玩的 WebApplication；达到评分门槛后才补齐必需的评分与 Offer，并同时标明 WebApplication。
+      评分人数不足时保留纯 VideoGame，避免发出不完整的软件应用数据。
     */
+    schema['@type'] = ['VideoGame', 'WebApplication']
     schema.applicationCategory = 'GameApplication'
     // 浏览器里直接运行
     schema.operatingSystem = 'Web Browser'
@@ -741,7 +741,7 @@ export function breadcrumbSchema(items: Array<{ name: string; path: string }>, l
   }
 }
 
-/** 常见问题：可能在搜索结果里展开 FAQ 富摘要 */
+/** 常见问题：用结构化格式描述页面上可见的问答，供支持 FAQPage 的检索系统理解。 */
 export function faqSchema(items: Array<{ q: string; a: string }>) {
   return {
     '@context': 'https://schema.org',

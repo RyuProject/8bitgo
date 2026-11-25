@@ -265,6 +265,14 @@ check('VideoGame 结构化数据分别声明页面 canonical 语言与可直接�
   assert.match(sections, /<span className="sr-only">\{langFull\}<\/span>/, '完整语言名没有写进 HTML（只剩短码，爬虫和读屏只读到 CN / JP）')
 })
 
+check('达到真实评分门槛时，免费网页游戏同时标为 VideoGame 与 WebApplication', () => {
+  const seo = code('src/services/seo.ts')
+  assert.match(seo, /schema\[['"]@type['"]\]\s*=\s*\[\s*['"]VideoGame['"]\s*,\s*['"]WebApplication['"]\s*\]/, 'Google 不为仅有 VideoGame 类型的条目显示软件应用富结果')
+  assert.match(seo, /schema\.aggregateRating\s*=\s*\{/, '软件应用类型必须有真实聚合评分')
+  assert.match(seo, /schema\.offers\s*=\s*\{[^}]*price:\s*['"]0['"]/, '免费可玩的网页应用必须如实提供零价 Offer')
+  assert.match(seo, /ratingCount\s*\?\?\s*0\)\s*>=\s*MIN_RATINGS_FOR_SCHEMA/, '低样本评分不能进入结构化数据')
+})
+
 check('关于页与法律页只声明简中、繁中、英文三份真实长正文', () => {
   const languages = code('src/config/languages.ts')
   assert.match(

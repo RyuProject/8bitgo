@@ -321,8 +321,8 @@ export function GameDetailPage() {
   // 搜索结果里就是一串看不懂的字，等于白写
   const seoDesc = game ? plainText(gameDescription(game, lang)) : ''
   const seoLanguages = game ? gameSeoLanguagePlan(game, lang) : undefined
-  // 游戏详情页常见问题：用现有翻译 token 拼出随语言走的问答，补足可被爬虫读懂的正文，
-  // 并配合 faqSchema 结构化数据争取「人们还问 / 精选摘要」露出。未翻译的语言（faqNs 缺失）自动跳过。
+  // 游戏详情页常见问题：用现有翻译 token 拼出随语言走的可见答案，并用 FAQPage 描述它们；
+  // Google 目前不向普通游戏站展示 FAQ 富结果，但可见问答仍能补足玩家信息。缺少译文时跳过。
   const faqNs = t.game.faq
   const faqVars = { title: seoTitle, platform: seoPlatformName, year: game?.year ? String(game.year) : '' }
   const faqItems = game && faqNs
@@ -795,8 +795,8 @@ export function GameDetailPage() {
             {/* 换一款游戏时整块重挂：滚动触发的取数要按新游戏重新等一次「滚到附近」 */}
             <GameCollectionsSection key={game.slug} gameSlug={game.slug} />
 
-            {/* 常见问题：可见问答 + faqSchema 结构化数据，补足可被爬虫读懂的页面正文，
-                并争取「人们还问」/ 精选摘要的露出（faqSchema 在 useSeo 里按 faqItems 注入）。
+            {/* 常见问题：可见问答补足玩家信息，FAQPage 只描述实际显示的内容；
+                Google 目前不向普通游戏站展示 FAQ 富结果，不把它当作排名或摘要保证。
                 设计稿没画这一节，但 FAQ 结构化数据要求问答在页面上可见，去掉可见部分就得连 schema 一起撤。 */}
             {game && faqItems.length > 0 && (
               <section aria-labelledby="game-faq">
