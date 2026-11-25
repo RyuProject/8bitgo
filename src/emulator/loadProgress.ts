@@ -758,15 +758,24 @@ const monotonicNow = () => typeof performance !== 'undefined' ? performance.now(
 
 const sleep = (ms: number, signal?: AbortSignal) =>
   new Promise<void>((resolve, reject) => {
-    const id = setTimeout(resolve, ms)
-    signal?.addEventListener(
-      'abort',
-      () => {
-        clearTimeout(id)
-        reject(new DOMException('已取消', 'AbortError'))
-      },
-      { once: true },
-    )
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const onAbort = () => {
+      if (timer !== undefined) clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+      reject(new DOMException('已取消', 'AbortError'))
+    }
+    if (signal?.aborted) {
+      onAbort()
+      return
+    }
+    timer = setTimeout(() => {
+      // 大 ROM 弱网会多次进入退避；计时结束也要摘掉监听，避免把整局已结束的闭包留在父 signal 上。
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    signal?.addEventListener('abort', onAbort, { once: true })
+    // signal 可能在上面的状态检查与监听安装之间被外部取消。
+    if (signal?.aborted) onAbort()
   })
 
 const isAbort = (e: unknown) => e instanceof DOMException && e.name === 'AbortError'
@@ -1213,8 +1222,22 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
         throw error
       })
     }
+    // 三条线路里前两条都可能只挂着不报错；再等整局 30 秒看门狗才摸第三条，会白耗一整段开局时间。
+    // 仅在同一 romv 对象的线路池里逐条加一路，每次仍等正常响应头对冲窗口，最多三路，赢家回头立刻停输家。
+    const hedgeRoutes = [
+      route,
+      backup,
+      ...rankRomRoutes(routePool).filter((candidate) => candidate !== route && candidate !== backup),
+    ].slice(0, 3)
     return new Promise<RangeAnswer>((resolve, reject) => {
-      const lanes: Array<{ route: string; controller: AbortController; failed: boolean; error?: unknown }> = []
+      const lanes: Array<{
+        route: string
+        controller: AbortController
+        failed: boolean
+        startedAt: number
+        hedgeDelayMs: number
+        error?: unknown
+      }> = []
       let settled = false
       let timer: ReturnType<typeof setTimeout> | undefined
       // 不在 resolve 时摘掉：调用方之后中止（对冲赢了 / 整局失败）时，正在读正文的那一路也要跟着停
@@ -1227,7 +1250,13 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
         }
       }
       const launch = (target: string) => {
-        const lane: (typeof lanes)[number] = { route: target, controller: new AbortController(), failed: false }
+        const lane: (typeof lanes)[number] = {
+          route: target,
+          controller: new AbortController(),
+          failed: false,
+          startedAt: monotonicNow(),
+          hedgeDelayMs: headersHedgeDelay(),
+        }
         lanes.push(lane)
         request(target, lane.controller.signal).then((res) => {
           if (settled) {
@@ -1236,11 +1265,16 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
           }
           settled = true
           clearTimeout(timer)
-          for (const other of lanes) if (other !== lane) other.controller.abort()
+          for (const other of lanes) {
+            if (other === lane) continue
+            // 只把超过自身响应头等待窗口的挂起请求记为失速；刚发出的备用请求不应因赢家先到而被误熔断。
+            if (trackHealth && !other.failed && monotonicNow() - other.startedAt >= other.hedgeDelayMs) {
+              recordRomRouteFailure(other.route, 'stall')
+            }
+            other.controller.abort()
+          }
           const answer = answered(res, target)
           if (target !== route) {
-            // 原线路过了对冲延时还没回响应头，另一条先回：记一次失速，后面的片少分给它（连续两次就熔断）
-            if (trackHealth && !lanes[0].failed) recordRomRouteFailure(route, 'stall')
             diagLog('download', 'info', `Range ${start}-${end}：${romRouteOrigin(route)} ${Math.round(answer.headersAt - sentAt)}ms 未回响应头，改用 ${romRouteOrigin(target)}`)
           }
           resolve(answer)
@@ -1249,22 +1283,31 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
           lane.error = error
           if (settled) return
           if (!lane.controller.signal.aborted) noteRouteFailure(target, error)
-          if (lanes.length < 2) {
-            // 第一条直接失败：不必等对冲延时
+          if (lanes.length < hedgeRoutes.length) {
+            // 当前线路明确失败就立刻探下一条，不必再等对冲延时。
             clearTimeout(timer)
-            launch(backup)
+            launch(hedgeRoutes[lanes.length])
+            scheduleNextHedge()
           } else if (lanes.every((item) => item.failed)) {
             settled = true
             reject(lanes[0].error)
           }
         })
       }
+      const scheduleNextHedge = () => {
+        clearTimeout(timer)
+        if (settled || lanes.length >= hedgeRoutes.length) return
+        timer = setTimeout(() => {
+          if (settled || lanes.length >= hedgeRoutes.length) return
+          // 头两条线路仍未回头时，再逐条向后探；同一时刻最多三条请求，不会整池广播大 ROM。
+          launch(hedgeRoutes[lanes.length])
+          scheduleNextHedge()
+        }, headersHedgeDelay())
+      }
       if (signal.aborted) return onAbort()
       signal.addEventListener('abort', onAbort, { once: true })
       launch(route)
-      timer = setTimeout(() => {
-        if (!settled && lanes.length < 2) launch(backup)
-      }, headersHedgeDelay())
+      scheduleNextHedge()
     })
   }
 

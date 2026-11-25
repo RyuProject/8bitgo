@@ -189,6 +189,39 @@ await check('响应头迟迟不来：另一条线路同时请求，先回的赢�
   assert.ok(health.romRouteRate('https://a.test/') === undefined)
 })
 
+await check('前两条线路都卡住时，下一条线路在第二个响应头窗口后加入，不等整局看门狗', async () => {
+  const urls = []
+  const fetchImpl = async (url, init) => {
+    urls.push(String(url))
+    if (hostOf(url) !== 'c.test') return hang(init.signal)
+    return rangeResponse(SIZE, init.headers.Range, { signal: init.signal })
+  }
+  const started = Date.now()
+  const blob = await fetchBlobWithProgress('https://a.test/x.zip?romv=1', {
+    fetchImpl, chunkBytes: CHUNK, routeHealth: true, routeHedgeMs: 30, maxConcurrency: 1,
+    alternateUrls: ['https://b.test/x.zip?romv=1', 'https://c.test/x.zip?romv=1'], networkHints: {},
+  })
+  expectExact(await readAll(blob), SIZE)
+  assert.ok(Date.now() - started < 3000, '第三条可用线路应在两个短响应头窗口内接手')
+  assert.deepEqual(urls.slice(0, 3).map(hostOf), ['a.test', 'b.test', 'c.test'])
+})
+
+await check('赢家先回时，刚启动的备用线路不误记失速', async () => {
+  const fetchImpl = async (url, init) => {
+    if (hostOf(url) === 'a.test') {
+      await delay(110, init.signal)
+      return rangeResponse(SIZE, init.headers.Range, { signal: init.signal })
+    }
+    return hang(init.signal)
+  }
+  const blob = await fetchBlobWithProgress('https://a.test/x.zip?romv=1', {
+    fetchImpl, chunkBytes: CHUNK, routeHealth: true, routeHedgeMs: 100, maxConcurrency: 1,
+    alternateUrls: ['https://b.test/x.zip?romv=1'], networkHints: {},
+  })
+  expectExact(await readAll(blob), SIZE)
+  assert.doesNotMatch(health.romRouteHealthSummary(), /b\.test/, '备用线路只等了约 10ms，不能被记为失速')
+})
+
 await check('一片在一条线路上断了：换另一条重下这一片，不整局失败', async () => {
   const urls = []
   const fetchImpl = async (url, init) => {
