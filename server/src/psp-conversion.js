@@ -35,8 +35,13 @@ const COMMAND_PROBE_TIMEOUT_MS = 5_000
 const MAX_ERROR_CHARS = 900
 
 let started = false
+let starting = false
 let activeWorkers = 0
+let pumping = false
 let pumpTimer
+let claimRetryMs = 5_000
+let startupRetryTimer
+let lastCapabilityWarning = ''
 let sweepTimer
 const capabilityCache = new Map()
 
@@ -59,15 +64,20 @@ export function pspConversionConfig(env = process.env) {
   const workerUrl = String(env.PSP_CONVERT_WORKER_URL || '').trim().replace(/\/+$/, '')
   const workerToken = String(env.PSP_CONVERT_WORKER_TOKEN || env.ADMIN_TOKEN || '').trim()
   const tempDir = resolve(String(env.PSP_CONVERT_TMP_DIR || new URL('../tmp/psp-conversions', import.meta.url).pathname))
+  const availableCpus = Math.max(1, availableParallelism())
+  const concurrency = Math.min(positiveInt(env.PSP_CONVERT_CONCURRENCY, 1, 2), availableCpus)
+  // 多任务时按队列并发均分可用 CPU，避免 2 个任务各自按 8 线程运行、反而互相抢占。
+  const processorsPerJob = Math.max(1, Math.min(8, Math.floor(availableCpus / concurrency)))
   return {
     workerUrl,
     workerToken,
     chdman: String(env.PSP_CHDMAN_BIN || 'chdman').trim() || 'chdman',
     tempDir,
     maxIsoBytes: positiveInt(env.PSP_CONVERT_MAX_ISO_MB, 2560, 16 * 1024) * 1024 * 1024,
-    concurrency: positiveInt(env.PSP_CONVERT_CONCURRENCY, 1, 2),
+    concurrency,
     uploadConcurrency: positiveInt(env.PSP_CONVERT_UPLOAD_CONCURRENCY, 4, 8),
-    chdmanProcessors: positiveInt(env.PSP_CHDMAN_PROCESSORS, Math.max(1, Math.min(availableParallelism(), 8)), 64),
+    // 转码会和游戏请求共用生产机 CPU；显式值也不能突破按任务并发分配的安全上限。
+    chdmanProcessors: Math.min(positiveInt(env.PSP_CHDMAN_PROCESSORS, processorsPerJob, 8), processorsPerJob),
     timeoutMs: positiveInt(env.PSP_CONVERT_TIMEOUT_MINUTES, 180, 24 * 60) * 60 * 1000,
   }
 }
@@ -398,7 +408,10 @@ async function existingJobForSource(request) {
   const row = await queryOne('SELECT * FROM psp_conversion_jobs WHERE source_key = ?', [request.sourceKey])
   if (!row) return null
   if (!sameCreateRequest(row, request)) {
-    throw Object.assign(new Error('这个临时 ISO 已属于另一项转换任务，拒绝复用到不同目标'), { status: 409 })
+    throw Object.assign(new Error('这个临时 ISO 已属于另一项转换任务，拒绝复用到不同目标'), {
+      status: 409,
+      code: 'conversion_source_conflict',
+    })
   }
   return publicJob(row)
 }
@@ -406,11 +419,18 @@ async function existingJobForSource(request) {
 export async function createPspConversion(raw, actorId = null, env = process.env) {
   const request = validatePspConversionRequest(raw, env)
   const platform = request.platform || 'psp'
+  // POST 必须幂等：服务端已建任务但响应途中断线时，浏览器重试只能拿回原任务，不能再压一份。
+  let existing
+  try {
+    existing = await existingJobForSource(request)
+  } catch (error) {
+    const capability = await pspConversionCapability(env, true, platform)
+    if (!capability.available) throw Object.assign(new Error(capability.reason), { status: 503 })
+    throw error
+  }
+  if (existing) return existing
   const capability = await pspConversionCapability(env, false, platform)
   if (!capability.available) throw Object.assign(new Error(capability.reason), { status: 503 })
-  // POST 必须幂等：服务端已建任务但响应途中断线时，浏览器重试只能拿回原任务，不能再压一份。
-  const existing = await existingJobForSource(request)
-  if (existing) return existing
   let gameId = null
   if (request.gameSlug) {
     const game = await queryOne('SELECT id, platform FROM games WHERE slug = ?', [request.gameSlug])
@@ -562,26 +582,15 @@ async function readFilePrefix(path, length, position = 0) {
 }
 
 export async function isPsxIsoFile(path, expectedSize) {
-  if (expectedSize % 2048 !== 0 || expectedSize < 0x9000) return false
+  if (!Number.isSafeInteger(Number(expectedSize)) || expectedSize % ISO_SECTOR_BYTES !== 0 || expectedSize < 0x9000) return false
   const pvd = await readFilePrefix(path, 0x9000)
-  if (!isPsxIsoHeader(pvd)) return false
-  const rootRecord = 0x8000 + 156
-  const rootBlock = pvd.readUInt32LE(rootRecord + 2)
-  const rootBytes = pvd.readUInt32LE(rootRecord + 10)
-  const rootOffset = rootBlock * 2048
-  if (!rootBlock || !rootBytes || rootBytes > 1024 * 1024 || rootOffset + rootBytes > expectedSize) return false
-  const directory = await readFilePrefix(path, rootBytes, rootOffset)
-  for (let at = 0; at + 34 <= directory.length;) {
-    const length = directory[at]
-    if (!length) { at = (Math.floor(at / 2048) + 1) * 2048; continue }
-    if (at + length > directory.length || length < 34) return false
-    const nameLength = directory[at + 32]
-    if (33 + nameLength > length) return false
-    const name = directory.toString('ascii', at + 33, at + 33 + nameLength).toUpperCase()
-    if (/^SYSTEM\.CNF(?:;1)?$/.test(name)) return true
-    at += length
-  }
-  return false
+  if (!isPsxIsoHeader(pvd) || !isIso9660Pvd(pvd)) return false
+  const root = isoDirectoryRecord(pvd, 16 * ISO_SECTOR_BYTES, expectedSize)
+  if (!root) return false
+  const directory = await readFilePrefix(path, root.size, root.byteOffset)
+  const entries = directory.length === root.size ? isoDirectoryEntries(directory) : null
+  const system = findIsoEntry(entries, 'SYSTEM.CNF', false)
+  return Boolean(system && isInIsoBounds(system, expectedSize))
 }
 
 async function reusableIso(path, expectedSize, platform = 'psp') {
@@ -763,6 +772,40 @@ async function retryFetch(task, what, signal) {
 }
 
 /**
+ * 创建分片会话有副作用：网络超时不代表 Worker 没建成功，不能像上传分片那样盲目重发。
+ * 只重试 Worker 明确报告“建会话前存储不可用”或“标记失败且已确认中止”的响应；
+ * 模糊响应交给任务级重试，并用稳定 requestId 找回同一会话。
+ */
+async function createMultipartSession(task, what) {
+  let last
+  for (let attempt = 0; attempt < FETCH_ATTEMPTS; attempt++) {
+    let response
+    try {
+      response = await task()
+    } catch (error) {
+      throw new Error(`${what}响应不确定，已停止自动重发以避免重复创建会话：${error instanceof Error ? error.message : String(error)}`)
+    }
+    if (response.ok) return response
+    const text = await response.text().catch(() => '')
+    let payload = null
+    try { payload = text ? JSON.parse(text) : null } catch { /* 非 JSON 响应不能证明创建失败 */ }
+    const error = new Error(`${what}失败：HTTP ${response.status}${text ? ` ${text.slice(0, 300)}` : ''}`)
+    if (response.status >= 400 && response.status < 500 && ![408, 429].includes(response.status)) {
+      throw Object.assign(error, { fatal: true })
+    }
+    const safeToRetry = response.status === 503 && (
+      payload?.code === 'storage_unavailable' ||
+      (payload?.code === 'multipart_marker_write_failed' && payload.cleanupRequired !== true) ||
+      payload?.code === 'multipart_marker_race_lost'
+    )
+    if (!safeToRetry) throw error
+    last = error
+    if (attempt + 1 < FETCH_ATTEMPTS) await new Promise((resolveWait) => setTimeout(resolveWait, 500 * 2 ** attempt))
+  }
+  throw last
+}
+
+/**
  * 本地 CHD 已经完成，发布阶段可以安全并发读取互不重叠的片。结果仍按 partNumber 排序，
  * 避免 R2 complete 因网络完成顺序不同而拿到乱序清单。
  */
@@ -820,18 +863,29 @@ async function uploadChd(job, config, path, outputSize) {
     throw new Error('最终 CHD 在任务排队期间被其他上传修改，已停止发布，避免覆盖新文件')
   }
   if (previousTarget && !job.allow_overwrite) throw new Error('最终 CHD 在排队期间已经出现，未获授权覆盖')
-  const create = await retryFetch(
+  const create = await createMultipartSession(
     () => workerRequest(config, job.target_key, {
       method: 'POST',
       query: '?uploads',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ contentType: 'application/x-mame-chd', size: outputSize, name: job.target_key.split('/').pop() }),
+      // job.id 跨任务重试保持不变；Worker 用它找回响应丢失时已经创建的同一会话。
+      body: JSON.stringify({ contentType: 'application/x-mame-chd', size: outputSize, name: job.target_key.split('/').pop(), requestId: job.id }),
     }),
     '创建 CHD 分片会话',
   )
   const session = await create.json()
   if (!session?.uploadId || !session?.marker) throw new Error('Worker 没有返回有效的 CHD 分片会话')
-  await updateJob(job.id, { upload_id: session.uploadId, upload_marker: session.marker, upload_parts: '[]' })
+  try {
+    await updateJob(job.id, { upload_id: session.uploadId, upload_marker: session.marker, upload_parts: '[]' })
+  } catch (error) {
+    // 数据库确认失败时先收掉已知会话；若中止失败，幂等标记仍可供任务重试找回。
+    try {
+      await abortMultipartSession(config, job.target_key, session.uploadId, session.marker)
+    } catch (cleanupError) {
+      throw new Error(`保存 CHD 分片会话状态失败；自动中止未确认，任务重试会尝试找回该会话：${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`)
+    }
+    throw error
+  }
 
   const file = await open(path, 'r')
   const total = Math.max(1, Math.ceil(outputSize / PART_BYTES))
@@ -895,7 +949,7 @@ async function uploadChd(job, config, path, outputSize) {
         method: 'POST',
         query: `?uploadId=${encodeURIComponent(session.uploadId)}`,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ parts, marker: session.marker }),
+        body: JSON.stringify({ parts, marker: session.marker, requestId: job.id, requestSignature: session.requestSignature, size: outputSize }),
       }),
       '合并 CHD 分片',
     )
@@ -949,33 +1003,42 @@ async function deleteSource(job, config) {
 async function sweepStaleSources() {
   const config = pspConversionConfig()
   const rows = await query(
-    `SELECT id, source_key, status, message
+    `SELECT id, source_key, status, message, source_deleted
        FROM psp_conversion_jobs
-      WHERE source_deleted = 0
-        AND (status = 'completed' OR (status = 'failed' AND updated_at < NOW() - INTERVAL 24 HOUR))
+      WHERE source_deleted IN (0, 2)
+        AND (source_deleted = 2 OR status = 'completed' OR (status = 'failed' AND updated_at < NOW() - INTERVAL 24 HOUR))
       ORDER BY updated_at ASC
       LIMIT 20`,
   )
   for (const row of rows) {
+    let sourceDeleted = false
     try {
-      const claim = await query(
-        `UPDATE psp_conversion_jobs
-            SET source_deleted = 2
-          WHERE id = ? AND source_deleted = 0
-            AND (status = 'completed' OR (status = 'failed' AND updated_at < NOW() - INTERVAL 24 HOUR))`,
-        [row.id],
-      )
-      if (claim.affectedRows !== 1) continue
+      if (Number(row.source_deleted) === 0) {
+        const claim = await query(
+          `UPDATE psp_conversion_jobs
+              SET source_deleted = 2
+            WHERE id = ? AND source_deleted = 0
+              AND (status = 'completed' OR (status = 'failed' AND updated_at < NOW() - INTERVAL 24 HOUR))`,
+          [row.id],
+        )
+        if (claim.affectedRows !== 1) continue
+      } else if (Number(row.source_deleted) !== 2) continue
       await deleteSource(row, config)
+      sourceDeleted = true
       const note = row.status === 'failed' ? '临时 ISO 已在失败 24 小时后自动清理' : row.message
       await updateJob(row.id, { source_deleted: 1, ...(note ? { message: String(note).slice(0, 500) } : {}) })
-      // 转换失败时会保留可续传的输入和已校验 CHD；源文件生命周期结束后本地副本也必须同步回收。
-      await rm(join(config.tempDir, row.id), { recursive: true, force: true }).catch(() => {})
     } catch (error) {
-      // 删除没得到确认就把领取标记退回；否则一次网络闪断会让这份临时 ISO 永远没人再清。
-      await updateJob(row.id, { source_deleted: 0 }).catch(() => {})
+      // 远端删除没确认才退回 0；若 R2 已删而数据库暂时写不进去，留在 2，下一轮按幂等 DELETE 收尾。
+      if (!sourceDeleted) await updateJob(row.id, { source_deleted: 0 }).catch(() => {})
       console.warn(`[psp-convert] 清理临时 ISO ${row.source_key} 失败：${error.message}`)
+      continue
     }
+    // 本地磁盘回收与 R2 / 数据库状态分开；本地 I/O 故障不能把已删的远端源误报成可重试。
+    await rm(join(config.tempDir, row.id), { recursive: true, force: true }).catch(async (error) => {
+      // source_deleted=2 保持清理中状态，下一轮可继续回收本地输入与已校验产物。
+      await updateJob(row.id, { source_deleted: 2 }).catch(() => {})
+      console.warn(`[psp-convert] 本地任务目录 ${row.id} 清理失败：${error.message}`)
+    })
   }
 }
 
@@ -1133,48 +1196,99 @@ async function claimNext() {
 }
 
 async function pump() {
+  if (pumping) {
+    // 队列查询是异步的；新任务可能在当前查询期间再安排一次 pump。
+    // 只延后唤醒，不并行领取，否则会突破按 CPU 计算出的任务并发上限。
+    schedulePump(50)
+    return
+  }
+  pumping = true
   pumpTimer = undefined
-  const config = pspConversionConfig()
-  while (activeWorkers < config.concurrency) {
-    const job = await claimNext().catch((error) => {
-      console.error('[psp-convert] 领取任务失败：', error.message)
-      return null
-    })
-    if (!job) break
-    activeWorkers++
-    void processJob(job).finally(() => {
-      activeWorkers--
-      schedulePump(50)
-    })
+  try {
+    const config = pspConversionConfig()
+    while (activeWorkers < config.concurrency) {
+      let claimFailed = false
+      const job = await claimNext().catch((error) => {
+        claimFailed = true
+        console.error('[psp-convert] 领取任务失败：', error.message)
+        return null
+      })
+      if (!job) {
+        // 队列空了就等新任务；数据库短暂抖动则延迟重试，不能让所有 queued 永久停住。
+        if (claimFailed) {
+          schedulePump(claimRetryMs)
+          claimRetryMs = Math.min(claimRetryMs * 2, 60_000)
+        } else claimRetryMs = 5_000
+        break
+      }
+      claimRetryMs = 5_000
+      activeWorkers++
+      void processJob(job).finally(() => {
+        activeWorkers--
+        schedulePump(50)
+      })
+    }
+  } finally {
+    pumping = false
   }
 }
 
 function schedulePump(delay = 0) {
   if (!started || pumpTimer) return
-  pumpTimer = setTimeout(() => void pump(), delay)
+  pumpTimer = setTimeout(() => {
+    pumpTimer = undefined
+    void pump()
+  }, delay)
   pumpTimer.unref?.()
 }
 
 export async function startPspConversionQueue() {
-  if (started) return
-  started = true
-  const capability = await pspConversionCapability(process.env, true)
-  if (!capability.available) {
-    console.warn(`[psp-convert] 未启用：${capability.reason}`)
-    return
-  }
-  await mkdir(pspConversionConfig().tempDir, { recursive: true })
-  await query(
-    `UPDATE psp_conversion_jobs
-        SET status = 'queued', progress = LEAST(progress, 75), message = '服务器重启，任务自动重新排队'
-      WHERE status IN (${INTERRUPTED.map(() => '?').join(', ')})`,
-    INTERRUPTED,
-  )
-  console.log('[psp-convert] PSP ISO → CHD 后台队列已启用')
-  schedulePump()
-  void sweepStaleSources().catch((error) => console.warn('[psp-convert] 临时 ISO 清扫失败：', error.message))
-  sweepTimer = setInterval(() => {
+  if (started || starting) return
+  starting = true
+  try {
+    const capability = await pspConversionCapability(process.env, true)
+    if (!capability.available) {
+      if (lastCapabilityWarning !== capability.reason) {
+        console.warn(`[psp-convert] 暂未启用：${capability.reason}；60 秒后重新检查`)
+        lastCapabilityWarning = capability.reason
+      }
+      if (!startupRetryTimer) {
+        startupRetryTimer = setTimeout(() => {
+          startupRetryTimer = undefined
+          void startPspConversionQueue().catch((error) => console.error('[psp-convert] 队列启动重试失败：', error))
+        }, 60_000)
+        startupRetryTimer.unref?.()
+      }
+      return
+    }
+    await mkdir(pspConversionConfig().tempDir, { recursive: true })
+    await query(
+      `UPDATE psp_conversion_jobs
+          SET status = 'queued', progress = LEAST(progress, 75), message = '服务器重启，任务自动重新排队'
+        WHERE status IN (${INTERRUPTED.map(() => '?').join(', ')})`,
+      INTERRUPTED,
+    )
+    started = true
+    lastCapabilityWarning = ''
+    clearTimeout(startupRetryTimer)
+    startupRetryTimer = undefined
+    console.log('[psp-convert] PSP / PS1 ISO → CHD 后台队列已启用')
+    schedulePump()
     void sweepStaleSources().catch((error) => console.warn('[psp-convert] 临时 ISO 清扫失败：', error.message))
-  }, 6 * 60 * 60 * 1000)
-  sweepTimer.unref?.()
+    sweepTimer = setInterval(() => {
+      void sweepStaleSources().catch((error) => console.warn('[psp-convert] 临时 ISO 清扫失败：', error.message))
+    }, 6 * 60 * 60 * 1000)
+    sweepTimer.unref?.()
+  } catch (error) {
+    if (!startupRetryTimer) {
+      startupRetryTimer = setTimeout(() => {
+        startupRetryTimer = undefined
+        void startPspConversionQueue().catch((retryError) => console.error('[psp-convert] 队列启动重试失败：', retryError))
+      }, 30_000)
+      startupRetryTimer.unref?.()
+    }
+    throw error
+  } finally {
+    starting = false
+  }
 }

@@ -94,6 +94,10 @@ export class Bucket {
   }
   async put(key, value, options = {}) {
     this.log('put', { key, kind: value instanceof ReadableStream ? 'stream' : 'buffer' })
+    const current = this.objects.get(key)
+    // Workers R2 returns null for a failed conditional put; model the atomic create-once marker path.
+    if (options.onlyIf?.etagDoesNotMatch === '*' && current) return null
+    if (options.onlyIf?.etagMatches && options.onlyIf.etagMatches !== current?.etag) return null
     const data = await consume(value, this.stats)
     return this.view(this.seed(key, data, { ...options }))
   }

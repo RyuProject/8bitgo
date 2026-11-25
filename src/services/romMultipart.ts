@@ -29,6 +29,7 @@
  */
 import { encodeKey, explainRomStatus, getRomApi, getRomToken, guessUploadType, romUrlForKey } from './roms'
 import type { UploadProgress, UploadResult } from './roms'
+import { fingerprintRomUploadFile } from './romFingerprint'
 
 /**
  * 一片 8MB。R2 的约束是「除最后一片外所有片必须等大，且不小于 5MB，最多 10000 片」，
@@ -47,6 +48,7 @@ const RECOVERY_SUCCESS_PARTS = 4
 const MAX_PARTS = 10000
 
 const STORE_KEY = '8bitgo.rom.multipart'
+const CREATE_REQUEST_STORE_KEY = `${STORE_KEY}.create-request`
 /** 一周没动过的记录直接丢：那个 uploadId 大概率早就被 R2 清了，留着只会误导 */
 const STORE_TTL = 7 * 24 * 60 * 60 * 1000
 const STORE_MAX = 20
@@ -63,7 +65,23 @@ export interface PendingUpload {
   lastModified: number
   /** 取头、中、尾各 64 KiB 的 SHA-256；旧账本没指纹时不允许续传。 */
   fileFingerprint: string
+  /** Worker 创建会话的幂等 ID；响应丢失后可用它取回同一 uploadId。 */
+  requestId?: string
+  /** 与创建参数绑定的签名；完成响应不确定时只认同一代对象。 */
+  requestSignature?: string
+  contentType?: string
   parts: { partNumber: number; etag: string }[]
+  updatedAt: number
+}
+
+interface CreateRequestRecord {
+  requestId: string
+  contentType: string
+  partSize: number
+  fileName: string
+  fileSize: number
+  lastModified: number
+  fileFingerprint: string
   updatedAt: number
 }
 
@@ -288,11 +306,47 @@ function clearState(key: string) {
   const store = readStore()
   delete store[key]
   writeStore(store)
+  clearCreateRequest(key)
+}
+
+function readCreateRequests(): Record<string, CreateRequestRecord> {
+  try {
+    const raw = localStorage.getItem(CREATE_REQUEST_STORE_KEY)
+    const data = raw ? JSON.parse(raw) as Record<string, CreateRequestRecord> : {}
+    return data && typeof data === 'object' ? data : {}
+  } catch {
+    return {}
+  }
+}
+
+function saveCreateRequest(key: string, record: CreateRequestRecord) {
+  try {
+    const now = Date.now()
+    const records = Object.entries(readCreateRequests())
+      .filter(([, item]) => Number.isFinite(item?.updatedAt) && now - item.updatedAt < STORE_TTL)
+      .sort((a, b) => b[1].updatedAt - a[1].updatedAt)
+      .filter(([savedKey]) => savedKey !== key)
+      .slice(0, STORE_MAX - 1)
+    records.unshift([key, record])
+    localStorage.setItem(CREATE_REQUEST_STORE_KEY, JSON.stringify(Object.fromEntries(records)))
+  } catch {
+    /* 本地配额不足时仍允许上传，只是无法在创建响应丢失后自动找回会话。 */
+  }
+}
+
+function clearCreateRequest(key: string) {
+  try {
+    const records = readCreateRequests()
+    delete records[key]
+    localStorage.setItem(CREATE_REQUEST_STORE_KEY, JSON.stringify(records))
+  } catch {
+    /* 清理本地恢复提示失败不影响 R2 会话和最终对象。 */
+  }
 }
 
 /** 本浏览器记着的未完成上传，新的在前 */
 export function listPendingUploads(): PendingUpload[] {
-  return Object.values(readStore()).filter((p) => Boolean(p.fileFingerprint)).sort((a, b) => b.updatedAt - a.updatedAt)
+  return Object.values(readStore()).filter((p) => Boolean(p.fileFingerprint && p.uploadId)).sort((a, b) => b.updatedAt - a.updatedAt)
 }
 
 /** File 才有身份可校验；从 zip 里解出来的 Blob 没有名字和时间，只能不续传 */
@@ -303,41 +357,39 @@ function identityOf(file: Blob): { fileName: string; lastModified: number } | nu
   return { fileName: f.name, lastModified: f.lastModified }
 }
 
-/** 大 ISO 不适合先读完整文件；三处小样本能挡住常见的同名同大小同时间戳误续传。 */
-async function fingerprintOf(file: Blob): Promise<string | null> {
-  if (!globalThis.crypto?.subtle) return null
-  const sample = 64 * 1024
-  const offsets = [0, Math.max(0, Math.floor(file.size / 2) - sample / 2), Math.max(0, file.size - sample)]
-  try {
-    const chunks = await Promise.all(offsets.map((at) => file.slice(at, at + sample).arrayBuffer()))
-    const bytes = new Uint8Array(chunks.reduce((n, chunk) => n + chunk.byteLength, 0))
-    let at = 0
-    for (const chunk of chunks) {
-      bytes.set(new Uint8Array(chunk), at)
-      at += chunk.byteLength
-    }
-    const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))
-    return [...hash].map((byte) => byte.toString(16).padStart(2, '0')).join('')
-  } catch {
-    // 设备不支持读取 / 摘要时只禁用续传，正常上传仍可进行。
-    return null
-  }
+function newMultipartRequestId(): string {
+  // 随机 ID 只用于去重，不承载权限；旧浏览器缺少 Web Crypto 时仍允许正常上传。
+  const bytes = new Uint8Array(16)
+  if (globalThis.crypto?.getRandomValues) globalThis.crypto.getRandomValues(bytes)
+  else for (let index = 0; index < bytes.length; index++) bytes[index] = Math.floor(Math.random() * 256)
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
 /**
  * 找出可以接着传的记录。元数据和小样本指纹全中才认。
  */
-function resumableFor(key: string, file: Blob, ident: { fileName: string; lastModified: number }, partSize: number, fingerprint: string): PendingUpload | null {
+function resumableFor(key: string, file: Blob, ident: { fileName: string; lastModified: number }, partSize: number, fingerprint: string, contentType: string): PendingUpload | null {
   const found = readStore()[key]
   if (!found || !found.uploadId) return null
   if (found.fileSize !== file.size || found.partSize !== partSize) return null
   if (found.fileName !== ident.fileName || found.lastModified !== ident.lastModified) return null
   if (!found.fileFingerprint || found.fileFingerprint !== fingerprint) return null
+  if (found.contentType && found.contentType !== contentType) return null
   if (!Array.isArray(found.parts)) return null
   const total = Math.max(1, Math.ceil(file.size / partSize))
   // 记录里出现越界的片号说明这份账本已经不可信了，宁可重传
   if (found.parts.some((p) => !p.etag || !Number.isInteger(p.partNumber) || p.partNumber < 1 || p.partNumber > total)) return null
   if (new Set(found.parts.map((p) => p.partNumber)).size !== found.parts.length) return null
+  return found
+}
+
+/** 创建请求先落本地账，再访问 Worker；响应丢失后同一个文件可用原 requestId 找回会话。 */
+function createRequestFor(key: string, file: Blob, ident: { fileName: string; lastModified: number }, partSize: number, fingerprint: string, contentType: string): CreateRequestRecord | null {
+  const found = readCreateRequests()[key]
+  if (!found || !/^[a-z0-9_-]{16,128}$/i.test(found.requestId || '') || !Number.isFinite(found.updatedAt) ||
+      Date.now() - found.updatedAt >= STORE_TTL || found.partSize !== partSize) return null
+  if (found.fileSize !== file.size || found.fileName !== ident.fileName || found.lastModified !== ident.lastModified) return null
+  if (!found.fileFingerprint || found.fileFingerprint !== fingerprint || found.contentType !== contentType) return null
   return found
 }
 
@@ -381,18 +433,18 @@ async function askJson<T>(ctx: Ctx, url: string, init: RequestInit, what: string
   return data
 }
 
-async function createUpload(ctx: Ctx, key: string, file: Blob, ident: { fileName: string; lastModified: number } | null, partSize: number, fingerprint: string): Promise<PendingUpload> {
+async function createUpload(ctx: Ctx, key: string, file: Blob, ident: { fileName: string; lastModified: number } | null, partSize: number, fingerprint: string, requestId: string): Promise<PendingUpload> {
   const data = await withRetry(
     async () => {
       try {
-        return await askJson<{ uploadId: string; marker: string }>(
+        return await askJson<{ uploadId: string; marker: string; requestSignature?: string }>(
           ctx,
           `${ctx.api}/${encodeKey(key)}?uploads`,
           {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             // contentType 只有开始时能设，complete() 不收 —— 漏了封面图会变成提示下载
-            body: JSON.stringify({ contentType: file.type || guessUploadType(key), size: file.size, name: ident?.fileName ?? '' }),
+            body: JSON.stringify({ contentType: file.type || guessUploadType(key), size: file.size, name: ident?.fileName ?? '', requestId }),
           },
           '开始分片上传',
         )
@@ -417,7 +469,7 @@ async function createUpload(ctx: Ctx, key: string, file: Blob, ident: { fileName
     },
     3,
     (error) => error instanceof UploadHttpError && !error.fatal && error.status === 503 &&
-      (error.code === 'storage_unavailable' || error.code === 'multipart_marker_write_failed'),
+      (error.code === 'storage_unavailable' || error.code === 'multipart_marker_write_failed' || error.code === 'multipart_marker_race_lost'),
   )
   if (typeof data.uploadId !== 'string' || !data.uploadId || typeof data.marker !== 'string' || !data.marker.startsWith('_uploads/')) {
     throw new Error('Worker 未返回有效的 uploadId 或残留标记；请核查 Worker 地址和版本')
@@ -431,6 +483,9 @@ async function createUpload(ctx: Ctx, key: string, file: Blob, ident: { fileName
     fileSize: file.size,
     lastModified: ident?.lastModified ?? 0,
     fileFingerprint: fingerprint,
+    requestId,
+    requestSignature: data.requestSignature,
+    contentType: file.type || guessUploadType(key),
     parts: [],
     updatedAt: Date.now(),
   }
@@ -547,6 +602,9 @@ async function completeUpload(ctx: Ctx, state: PendingUpload): Promise<{ size: n
       body: JSON.stringify({
         parts: [...state.parts].sort((a, b) => a.partNumber - b.partNumber),
         marker: state.marker,
+        requestId: state.requestId,
+        requestSignature: state.requestSignature,
+        size: state.fileSize,
       }),
     },
     '合并分片',
@@ -587,10 +645,25 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
   if (total > MAX_PARTS) throw new Error(`文件太大：${total} 片超过 R2 的 10000 片上限`)
 
   const ident = identityOf(file)
-  const fingerprint = ident ? await fingerprintOf(file) : null
+  const fingerprint = ident ? await fingerprintRomUploadFile(file) : null
+  const contentType = file.type || guessUploadType(key)
   const resumable = Boolean(ident && fingerprint)
-  const resumedState = ident && fingerprint ? resumableFor(key, file, ident, partSize, fingerprint) : null
-  const state = resumedState ?? (await createUpload(ctx, key, file, ident, partSize, fingerprint ?? ''))
+  const resumedState = ident && fingerprint ? resumableFor(key, file, ident, partSize, fingerprint, contentType) : null
+  const pendingCreate = ident && fingerprint ? createRequestFor(key, file, ident, partSize, fingerprint, contentType) : null
+  const requestId = resumedState?.requestId || pendingCreate?.requestId || newMultipartRequestId()
+  if (!resumedState && resumable && ident && fingerprint && !pendingCreate) {
+    saveCreateRequest(key, {
+      requestId,
+      contentType,
+      partSize,
+      fileName: ident.fileName,
+      fileSize: file.size,
+      lastModified: ident.lastModified,
+      fileFingerprint: fingerprint,
+      updatedAt: Date.now(),
+    })
+  }
+  const state = resumedState ?? (await createUpload(ctx, key, file, ident, partSize, fingerprint ?? '', requestId))
   const resumed = resumedState ? resumedState.parts.length : 0
   if (resumable) saveState(state)
   const preferredConcurrency = preferredUploadConcurrency()

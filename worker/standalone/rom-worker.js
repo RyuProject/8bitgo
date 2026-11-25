@@ -1200,28 +1200,59 @@ async function deterministicMarker(key, uploadId) {
   const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))
   return `${MULTIPART_PREFIX}v2-${Array.from(hash, b => b.toString(16).padStart(2, '0')).join('')}.marker`
 }
+async function idempotentRequestMarker(key, requestId) {
+  const bytes = encoder.encode(JSON.stringify([key, requestId]))
+  const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))
+  return `${MULTIPART_PREFIX}v3-${Array.from(hash, b => b.toString(16).padStart(2, '0')).join('')}.marker`
+}
+async function multipartRequestSignature(contentType, contentEncoding, size, name) {
+  const bytes = encoder.encode(JSON.stringify([contentType, contentEncoding || 'identity', size, name]))
+  const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))
+  return Array.from(hash, b => b.toString(16).padStart(2, '0')).join('')
+}
 async function createMultipart(request, env, key, cors) {
   const meta = await readJson(request, 16 * 1024, true)
   const contentType = typeof meta.contentType === 'string' && meta.contentType ? meta.contentType : guessType(key)
   const contentEncoding = safeContentEncoding(meta.contentEncoding)
+  const requestId = meta.requestId === undefined ? '' : String(meta.requestId)
   if (contentType.length > 256 || /[\r\n]/.test(contentType)) throw new HttpError(400, '无效 contentType')
   if (meta.size !== undefined && (!Number.isSafeInteger(Number(meta.size)) || Number(meta.size) < 0)) throw new HttpError(400, '无效 size')
+  if (requestId && !/^[a-z0-9_-]{16,128}$/i.test(requestId)) throw new HttpError(400, '无效 requestId')
+  const size = Number(meta.size) || 0
+  const name = typeof meta.name === 'string' ? meta.name.slice(0, 200) : ''
+  const requestSignature = requestId ? await multipartRequestSignature(contentType, contentEncoding, size, name) : ''
   const bucket = bucketForWrite(env, key)
+  let marker = ''
+  if (requestId) {
+    marker = await idempotentRequestMarker(key, requestId)
+    const existing = await bucket.head(marker)
+    if (existing) {
+      const record = existing.customMetadata || {}
+      // 创建请求可能已经在 R2 成功、但响应在返回路径上丢失。任务重试时用同一 requestId
+      // 找回原会话，避免再开一份 multipart 并把前一份留成隐性残留。
+      if (record.key !== key || record.requestId !== requestId || record.requestSignature !== requestSignature || !record.uploadId) {
+        throw new HttpError(409, '分片创建幂等标记与请求不匹配，请到 ROM 存储检查残留会话', 'multipart_idempotency_conflict')
+      }
+      return json({ ok: true, key, uploadId: record.uploadId, marker, requestSignature, maxPartBytes: MAX_PART_BYTES, reused: true }, cors)
+    }
+  }
   let upload
   try {
     upload = await bucket.createMultipartUpload(key, {
       httpMetadata: { contentType, ...(contentEncoding ? { contentEncoding } : {}), cacheControl: writeCacheControl(env) },
+      ...(requestId ? { customMetadata: { '8bitgo-request-id': requestId, '8bitgo-request-signature': requestSignature } } : {}),
     })
   } catch (error) {
     // 让管理员端能区分“创建会话时的临时 R2 故障”和后续分片失败；只有这个明确的
     // Worker 可重试响应才允许客户端重试 POST，避免把未知网关响应当成幂等操作。
     return storageFailure(error, cors, '开始分片上传')
   }
-  const marker = await deterministicMarker(key, upload.uploadId)
+  if (!marker) marker = await deterministicMarker(key, upload.uploadId)
   try {
     // Preserve the original list-with-metadata interface without per-marker GETs.
-    const record = { key, uploadId: upload.uploadId, size: Number(meta.size) || 0,
-      name: typeof meta.name === 'string' ? meta.name.slice(0, 200) : '', at: new Date().toISOString() }
+    const record = { key, uploadId: upload.uploadId,
+      ...(requestId ? { requestId, requestSignature } : {}), size,
+      name, at: new Date().toISOString() }
     // Local 7,000-byte metadata guard leaves headroom below the documented
     // 8,192-byte object metadata budget. Count UTF-8 bytes, not JS characters.
     const customMetadata = Object.fromEntries(Object.entries(record).map(([k,v]) => [k, String(v)]))
@@ -1230,17 +1261,46 @@ async function createMultipart(request, env, key, cors) {
       // Legacy frontends rely on list metadata. Reject before committing an unlistable session.
       throw new HttpError(400, 'key、文件名与分片标识合计过长，请缩短文件名', 'metadata_too_large')
     }
-    await bucket.put(marker, new Uint8Array(0), { customMetadata })
+    const storedMarker = await bucket.put(marker, new Uint8Array(0), {
+      customMetadata,
+      // 同标签页刷新或多个后台窗口可能同时恢复同一账本；先查再写不是原子操作。
+      // R2 条件写入保证同一个 requestId 最多只有一个会话成为恢复目标。
+      ...(requestId ? { onlyIf: { etagDoesNotMatch: '*' } } : {}),
+    })
+    if (!storedMarker && requestId) {
+      let cleanupFailed = false
+      try { await upload.abort() } catch { cleanupFailed = true }
+      if (cleanupFailed) {
+        return json({ ok: false, error: '并发创建会话时未能中止多余会话，请保留 uploadId 进行清理', code: 'multipart_marker_write_failed', key, uploadId: upload.uploadId, marker, retryable: true, cleanupRequired: true }, cors, 503)
+      }
+      const winner = await bucket.head(marker).catch(() => null)
+      const winnerRecord = winner?.customMetadata || {}
+      if (winner && winnerRecord.key === key && winnerRecord.requestId === requestId &&
+          winnerRecord.requestSignature === requestSignature && winnerRecord.uploadId) {
+        return json({ ok: true, key, uploadId: winnerRecord.uploadId, marker, requestSignature, maxPartBytes: MAX_PART_BYTES, reused: true }, cors)
+      }
+      if (winner) return json({ ok: false, error: '分片创建幂等标记与请求不匹配，请到 ROM 存储检查残留会话', code: 'multipart_idempotency_conflict' }, cors, 409)
+      return json({ ok: false, error: '并发创建会话的恢复标记暂时不可读；多余会话已中止，请用同一请求 ID 重试', code: 'multipart_marker_race_lost', retryable: true }, cors, 503)
+    }
   } catch (error) {
     let cleanupFailed = false
     try { await upload.abort() } catch { cleanupFailed = true }
+    if (!cleanupFailed) {
+      try {
+        const storedMarker = await bucket.head(marker)
+        // 只删回读后仍指向本次 uploadId 的标记，避免并发的同 requestId 请求互删账本。
+        if (storedMarker?.customMetadata?.key === key && storedMarker.customMetadata.uploadId === upload.uploadId) {
+          await bucket.delete(marker)
+        }
+      } catch { cleanupFailed = true }
+    }
     if (cleanupFailed) {
-      return json({ ok: false, error: '标记写入失败且分片中止失败，请保留返回的 uploadId 进行清理', code: 'multipart_marker_write_failed', key, uploadId: upload.uploadId, marker, retryable: true, cleanupRequired: true }, cors, 503)
+      return json({ ok: false, error: '标记写入失败且会话或标记清理未确认，请保留返回的 uploadId 进行清理', code: 'multipart_marker_write_failed', key, uploadId: upload.uploadId, marker, retryable: true, cleanupRequired: true }, cors, 503)
     }
     if (error instanceof HttpError) throw error
     return json({ error: '标记写入失败，已中止新建的分片会话', code: 'multipart_marker_write_failed', retryable: true }, cors, 503)
   }
-  return json({ ok: true, key, uploadId: upload.uploadId, marker, maxPartBytes: MAX_PART_BYTES }, cors)
+  return json({ ok: true, key, uploadId: upload.uploadId, marker, ...(requestId ? { requestSignature } : {}), maxPartBytes: MAX_PART_BYTES }, cors)
 }
 async function uploadPart(request, env, key, uploadId, url, cors) {
   const partNumber = Number(url.searchParams.get('partNumber'))
@@ -1259,6 +1319,13 @@ async function completeMultipart(request, env, key, uploadId, cors) {
   const body = await readJson(request, MAX_JSON_BYTES)
   const parts = body.parts
   if (!Array.isArray(parts) || !parts.length || parts.length > 10000) throw new HttpError(400, 'body 需要 1..10000 个 parts')
+  const requestId = body.requestId === undefined ? '' : String(body.requestId)
+  const requestSignature = typeof body.requestSignature === 'string' ? body.requestSignature : ''
+  const expectedSize = Number(body.size)
+  if (requestId && (!/^[a-z0-9_-]{16,128}$/i.test(requestId) || !Number.isSafeInteger(expectedSize) || expectedSize < 0 ||
+      (requestSignature && !/^[a-f0-9]{64}$/i.test(requestSignature)))) {
+    throw new HttpError(400, '分片完成请求的幂等 ID 或大小无效')
+  }
   const normalized = parts.map(p => ({ partNumber: Number(p?.partNumber), etag: typeof p?.etag === 'string' ? p.etag : '' })).sort((a,b) => a.partNumber - b.partNumber)
   if (normalized.some((p, i) => p.partNumber !== i + 1 || !p.etag || p.etag.length > 256 || /[\x00-\x1f\x7f]/.test(p.etag))) {
     throw new HttpError(400, 'parts 必须含连续 partNumber 和有效 etag')
@@ -1267,7 +1334,21 @@ async function completeMultipart(request, env, key, uploadId, cors) {
     const object = await bucketForWrite(env, key).resumeMultipartUpload(key, uploadId).complete(normalized)
     const markerRemoved = await dropMarker(env, key, uploadId, body.marker)
     return json({ ok: true, key, size: object.size, etag: object.httpEtag, uploaded: object.uploaded, markerRemoved }, cors)
-  } catch (error) { return storageFailure(error, cors, 'complete') }
+  } catch (error) {
+    // 同一上传可能由两个恢复中的标签页同时提交；R2 只允许一个 complete 消耗会话，
+    // 输家只在最终对象仍带同一请求 ID 且大小匹配时复用成功，绝不把同名新对象误认成本次结果。
+    if (requestId && isMissingMultipartUpload(error)) {
+      try {
+        const object = await bucketForWrite(env, key).head(key)
+        if (object?.size === expectedSize && object.customMetadata?.['8bitgo-request-id'] === requestId &&
+            requestSignature && object.customMetadata?.['8bitgo-request-signature'] === requestSignature) {
+          const markerRemoved = await dropMarker(env, key, uploadId, body.marker)
+          return json({ ok: true, key, size: object.size, etag: object.httpEtag, uploaded: object.uploaded, markerRemoved, reused: true }, cors)
+        }
+      } catch { /* 保留原始 complete 错误，不能把 HEAD 故障说成上传成功。 */ }
+    }
+    return storageFailure(error, cors, 'complete')
+  }
 }
 async function abortMultipart(env, key, uploadId, marker, cors) {
   try {

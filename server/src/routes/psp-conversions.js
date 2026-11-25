@@ -28,7 +28,7 @@ pspConversionsRouter.post('/', async (req, res, next) => {
     res.status(202).json(job)
   } catch (error) {
     if (Number(error?.status) >= 400 && Number(error?.status) < 600) {
-      return res.status(Number(error.status)).json({ error: error.message })
+      return res.status(Number(error.status)).json({ error: error.message, ...(error.code ? { code: error.code } : {}) })
     }
     next(error)
   }

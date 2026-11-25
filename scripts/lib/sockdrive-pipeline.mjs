@@ -189,7 +189,7 @@ export async function listSockdriveFiles(directory, { concurrency = 16, strict =
 export async function compressSockdriveDirectory(
   directory,
   encoding,
-  { concurrency = 2, brotliQuality = 9, onProgress } = {},
+  { concurrency = 2, brotliQuality = 5, onProgress } = {},
 ) {
   if (encoding === 'identity') {
     const files = await listSockdriveFiles(directory)

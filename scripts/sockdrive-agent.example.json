@@ -22,7 +22,7 @@
     "encoding": "br",
     "freeSpace": "128M",
     "compressionConcurrency": 4,
-    "brotliQuality": 9,
+    "brotliQuality": 5,
     "uploadConcurrency": 6
   }
 }

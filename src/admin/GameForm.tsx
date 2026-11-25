@@ -74,6 +74,7 @@ import { uploadSwfBundle, type BundleUploadProgress } from './swfUpload'
 import { compressCoverToWebp } from '@/lib/imageResize'
 import { canReuseRomObjectKey, confirmUpload, confirmConvertedUpload, confirmDiscImage, cleanupSuperseded, deleteRomObjects, human, isDeletableKey } from './uploadGuards'
 import { psxIsoValidationProblem } from './psxIso'
+import { pspIsoValidationProblem } from './pspIso'
 import { chdCompressors } from '@/emulator/psxChd'
 import { PSX_RANGE_BYTES } from '@/emulator/psxRangeDisc'
 import { buildPsxM3u, PSX_M3U_MAX_DISCS } from '@/emulator/psxM3u'
@@ -99,12 +100,17 @@ import { getUploadActivity, subscribeUploadActivity, trackUploadActivity } from 
 import { flashCompatibilityIssue } from '@/emulator/flashCompatibility'
 import { assertSwf, assertSwfBlob } from '@/lib/romValidation'
 import {
+  clearDiscStagingKey,
+  clearPendingDiscConversion,
   createPspConversion,
   pspChdKey,
   pspConversionCapability,
   pspConversionLabel,
   pspStagingKey,
+  retryPspConversion,
+  rememberPendingDiscConversion,
   rememberPspConversion,
+  rememberedPendingDiscConversion,
   rememberedPspConversion,
   waitForPspConversion,
 } from '@/services/pspConversion'
@@ -120,8 +126,8 @@ import {
 } from '@/services/psxConversion'
 import {
   clearPendingSockdriveCreation,
+  clearSockdriveUploadIdentity,
   createSockdriveConversion,
-  nextSockdriveVersion,
   preserveSockdriveSourceAfterCreateError,
   rememberPendingSockdriveCreation,
   rememberSockdriveConversion,
@@ -130,7 +136,7 @@ import {
   retrySockdriveConversion,
   sockdriveConversionCapability,
   sockdriveConversionLabel,
-  sockdriveStagingKey,
+  sockdriveUploadIdentity,
   type SockdriveConversionJob,
   waitForSockdriveConversion,
 } from '@/services/sockdriveConversion'
@@ -161,6 +167,31 @@ const DOSBOX_CONFIG_TEMPLATES = [
 
 const DOS_83_STREAM_SEGMENT = /^[A-Za-z0-9_^$~!#%&{}@'()-]{1,8}(\.[A-Za-z0-9_^$~!#%&{}@'()-]{1,3})?$/
 const isDos83StreamPath = (value: string) => value.split('/').every((part) => DOS_83_STREAM_SEGMENT.test(part))
+const PENDING_DISC_CREATE_RETRY = 'pending-create'
+
+/** 任务接口明确拒绝创建时回收孤立 ISO；认证错误和被另一任务引用的源对象必须保留。 */
+async function cleanupRejectedDiscSource(
+  platform: 'psp' | 'psx',
+  slug: string,
+  lang: string,
+  request: { sourceKey: string },
+  error: unknown,
+): Promise<{ handled: boolean; warning?: string }> {
+  const status = Number((error as { status?: unknown })?.status)
+  if (!Number.isFinite(status) || status < 400 || status >= 500 || status === 401 || status === 403) return { handled: false }
+
+  const code = (error as { data?: { code?: unknown } })?.data?.code
+  clearPendingDiscConversion(platform, slug, lang)
+  clearDiscStagingKey(platform, slug, lang, request.sourceKey)
+  if (code === 'conversion_source_conflict') return { handled: true }
+
+  const deletion = await deleteRomObjects([request.sourceKey]).catch(() => null)
+  return deletion?.failed.length
+    ? { handled: true, warning: `临时 ISO ${request.sourceKey} 未能自动删除，请在 ROM 存储页清理` }
+    : deletion === null
+      ? { handled: true, warning: `临时 ISO ${request.sourceKey} 的删除结果无法确认，请在 ROM 存储页核对` }
+      : { handled: true }
+}
 
 export function slugify(text: string): string {
   return text
@@ -2867,6 +2898,7 @@ function SockdriveAutoField({
   const inputRef = useRef<HTMLInputElement>(null)
   const restored = useRef('')
   const [progress, setProgress] = useState<number | null>(null)
+  const [busySelecting, setBusySelecting] = useState(false)
   const [stage, setStage] = useState<UploadStage | null>(null)
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null)
   const [failedJobId, setFailedJobId] = useState('')
@@ -2890,6 +2922,7 @@ function SockdriveAutoField({
       },
     )
     rememberSockdriveConversion(slug, null, lang)
+    clearSockdriveUploadIdentity(slug, lang, completed.sourceKey)
     clearPendingSockdriveCreation(slug, lang)
     setFailedJobId('')
     setPendingCreation(false)
@@ -2928,7 +2961,6 @@ function SockdriveAutoField({
       setMessage({ ok: true, text: '原始 ZIP 已在私有 staging，正在恢复任务创建，不会重新上传…' })
       void createSockdriveConversion(pending).then(async (job) => {
         restoredJobId = job.id
-        clearPendingSockdriveCreation(slug, lang)
         setPendingCreation(false)
         rememberSockdriveConversion(slug, job.id, lang)
         if (!controller.signal.aborted) await watchJob(job.id, controller.signal)
@@ -2949,10 +2981,29 @@ function SockdriveAutoField({
         })
       })
     }
-    return () => controller.abort()
+    return () => {
+      controller.abort()
+      if (restored.current === restoreId) restored.current = ''
+    }
     // onChange 是父组件每次渲染新建的闭包；同一任务只允许由 restored 启动一次。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slug, lang, allowStorage])
+
+  useEffect(() => {
+    const onConversion = (event: Event) => {
+      const detail = (event as CustomEvent<{ slug?: string; lang?: string; id?: string | null }>).detail
+      if (detail?.slug !== slug || detail.lang !== lang) return
+      if (detail.id) {
+        setFailedJobId(detail.id)
+        setMessage({ ok: true, text: '当前语言已有 Sockdrive 后台任务；可继续查看进度或在失败后重试，不必重新上传 ZIP。' })
+      } else {
+        setFailedJobId('')
+        setMessage((current) => current?.text.startsWith('当前语言已有 Sockdrive 后台任务') ? null : current)
+      }
+    }
+    window.addEventListener('8bitgo:sockdrive-conversion', onConversion)
+    return () => window.removeEventListener('8bitgo:sockdrive-conversion', onConversion)
+  }, [slug, lang])
 
   const onFile = async (file: File | undefined) => {
     if (!file) return
@@ -2981,14 +3032,17 @@ function SockdriveAutoField({
       const capability = await sockdriveConversionCapability()
       if (!capability.available) throw new Error(capability.reason || '服务器暂时不能制作 Sockdrive')
       if (file.size > capability.maxSourceBytes) throw new Error(`ZIP 超过后台上限 ${human(capability.maxSourceBytes)}`)
-      const version = nextSockdriveVersion()
+      const expectedSockdrive = value.trim().replace(/\/+$/, '')
+      const signature = JSON.stringify({ executable: cleanExecutable, romKey: lang ? romKey!.trim() : '', expectedSockdrive })
+      const identity = await sockdriveUploadIdentity(file, slug, lang, signature)
+      const version = identity.version
       const prefix = `sockdrives/${slug}${lang ? `-${lang.toLowerCase()}` : ''}-${version}`
       if (!window.confirm(
         `${file.name}（${human(file.size)}）\n\n` +
         `${lang ? `${romLanguageLabel(lang)}：` : ''}上传后服务器会自动制作、校验并发布到 ${prefix}，关闭页面也会继续。开始吗？`,
       )) return
 
-      stagingKey = sockdriveStagingKey()
+      stagingKey = identity.key
       setProgress(0)
       setMessage({ ok: true, text: '正在断点上传原始 ZIP；完成后会自动进入服务器队列' })
       await uploadRom(file, stagingKey, (pct, at) => {
@@ -3007,17 +3061,17 @@ function SockdriveAutoField({
         ...(lang ? { targetRomKey: romKey!.trim(), expectedRomKey: romKey!.trim() } : {}),
         executable: cleanExecutable,
         version,
-        expectedSockdrive: value.trim().replace(/\/+$/, ''),
+        expectedSockdrive,
         encoding: 'br',
       } as const
       // 先落恢复账本再发请求：服务端可能已插入任务，但 502 把响应丢在回程上。
       rememberPendingSockdriveCreation(slug, request, lang)
       const job = await createSockdriveConversion(request)
       taskCreated = true
-      clearPendingSockdriveCreation(slug, lang)
-      setPendingCreation(false)
       createdJobId = job.id
       rememberSockdriveConversion(slug, job.id, lang)
+      clearSockdriveUploadIdentity(slug, lang, stagingKey)
+      setPendingCreation(false)
       await watchJob(job.id)
     } catch (error) {
       setProgress(null)
@@ -3041,9 +3095,23 @@ function SockdriveAutoField({
       if (stagingKey && sourceUploaded && !taskCreated && !keepUploadedSource) {
         clearPendingSockdriveCreation(slug, lang)
         await deleteRomObjects([stagingKey]).catch(() => {})
+        clearSockdriveUploadIdentity(slug, lang, stagingKey)
       }
     } finally {
       if (inputRef.current) inputRef.current.value = ''
+    }
+  }
+
+  const handleFileSelection = async (file: File | undefined) => {
+    if (!file) return
+    setBusySelecting(true)
+    try {
+      await onFile(file)
+    } catch (error) {
+      setMessage({ ok: false, text: error instanceof Error ? error.message : '处理所选 ZIP 失败' })
+      if (inputRef.current) inputRef.current.value = ''
+    } finally {
+      setBusySelecting(false)
     }
   }
 
@@ -3056,9 +3124,8 @@ function SockdriveAutoField({
       const job = pending
         ? await createSockdriveConversion(pending)
         : await retrySockdriveConversion(failedJobId)
-      clearPendingSockdriveCreation(slug, lang)
-      setPendingCreation(false)
       rememberSockdriveConversion(slug, job.id, lang)
+      setPendingCreation(false)
       await watchJob(job.id)
     } catch (error) {
       setProgress(null)
@@ -3080,23 +3147,27 @@ function SockdriveAutoField({
           value={value}
           onChange={(event) => onChange(event.target.value)}
           placeholder={lang ? `sockdrives/${slug || 'game'}-${lang.toLowerCase()}-v1` : `sockdrives/${slug || 'game'}-v1`}
-          disabled={!streamingEnabled || progress !== null}
+          disabled={!streamingEnabled || busySelecting || progress !== null}
         />
-        <input ref={inputRef} type="file" accept=".zip,application/zip" className="hidden" onChange={(event) => void onFile(event.target.files?.[0])} />
+        <input ref={inputRef} type="file" accept=".zip,application/zip" className="hidden" disabled={busySelecting || progress !== null} onChange={(event) => void handleFileSelection(event.target.files?.[0])} />
         <button
           type="button"
           className={btnClass.primary}
-          disabled={!canUpload || progress !== null}
+          disabled={!canUpload || busySelecting || progress !== null}
           onClick={() => inputRef.current?.click()}
         >
-          {progress === null ? (value.trim() ? '☁️ 发布新版本' : '☁️ 生成流式盘') : `处理中 ${progress}%`}
+          {busySelecting && progress === null
+            ? '检查文件…'
+            : progress === null
+              ? (value.trim() ? '☁️ 发布新版本' : '☁️ 生成流式盘')
+              : `处理中 ${progress}%`}
         </button>
-        {value.trim() && progress === null && (
+        {value.trim() && progress === null && !busySelecting && (
           <a href={romUrlForKey(value.trim())} target="_blank" rel="noreferrer" className={btnClass.secondary}>检查</a>
         )}
         {(failedJobId || pendingCreation) && progress === null && (
           <button type="button" className={btnClass.secondary} onClick={() => void retry()}>
-            {pendingCreation ? '重试创建任务（无需重传）' : '重试后台任务'}
+            {pendingCreation ? '重试创建任务（无需重传）' : '查看 / 重试后台任务'}
           </button>
         )}
       </div>
@@ -3357,6 +3428,25 @@ function RomField({
   const multiDiscInputRef = useRef<HTMLInputElement>(null)
   const [multiDiscFiles, setMultiDiscFiles] = useState<File[]>([])
   const [progress, setProgress] = useState<number | null>(null)
+  /** 记住失败任务的原平台和语言槽，切换槽位时不能把旧 CHD 写进新槽。 */
+  const [failedDiscTask, setFailedDiscTask] = useState<{
+    id: string
+    platform: 'psp' | 'psx'
+    slug: string
+    lang: string
+  } | null>(null)
+  const rememberFailedDiscTask = (id: string, taskPlatform: 'psp' | 'psx') => {
+    setFailedDiscTask(id ? { id, platform: taskPlatform, slug, lang: lang || '' } : null)
+  }
+  const currentFailedDiscTask = failedDiscTask && failedDiscTask.platform === platform &&
+    failedDiscTask.slug === slug && failedDiscTask.lang === (lang || '')
+    ? failedDiscTask
+    : null
+  const failedDiscJobId = currentFailedDiscTask?.id || ''
+  /** 从选择文件开始就锁住当前 key，防止确认 / 预检期间修改后仍启动旧目标任务。 */
+  const [busySelecting, setBusySelecting] = useState(false)
+  const valueRef = useRef(value)
+  valueRef.current = value
   /** 分片上传的进度明细（单发 PUT 时一直是 null） */
   const [stage, setStage] = useState<UploadStage | null>(null)
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
@@ -3419,26 +3509,64 @@ function RomField({
     // 查询任务只依赖后台管理员会话，不应被浏览器里的 R2 上传令牌挡住；这样关闭标签页后仍能恢复进度。
     if (platform !== 'psp' || !lang || !slug || !allowStorage) return
     const id = rememberedPspConversion(slug, lang)
-    if (!id || resumedPspJob.current === id) return
-    resumedPspJob.current = id
+    const pending = rememberedPendingDiscConversion('psp', slug, lang)
+    const resumeKey = pending?.sourceKey || id
+    if (!resumeKey || resumedPspJob.current === resumeKey) return
+    const startingKey = value
+    resumedPspJob.current = resumeKey
+    let resumedJobId = id
     const controller = new AbortController()
     setProgress(45)
-    setMsg({ ok: true, text: '正在恢复上次未完成的 PSP ISO → CHD 任务…' })
-    void waitForPspConversion(id, (job) => {
-      setProgress(45 + Math.round(job.progress * 0.55))
-      setMsg({ ok: true, text: `${pspConversionLabel(job)} ${job.progress}%${job.message ? `；${job.message}` : ''}` })
-    }, controller.signal).then((job) => {
-      onChange(job.targetKey)
+    setMsg({ ok: true, text: pending ? '正在恢复上次未完成的 PSP ISO → CHD 请求…' : '正在恢复上次未完成的 PSP ISO → CHD 任务…' })
+    void (async () => {
+      let jobId = id
+      if (pending) {
+        const created = await createPspConversion(pending)
+        jobId = created.id
+        resumedJobId = created.id
+        rememberPspConversion(slug, lang, jobId)
+      }
+      if (!jobId) throw new Error('没有可恢复的 PSP 转换任务')
+      return waitForPspConversion(jobId, (job) => {
+        setProgress(45 + Math.round(job.progress * 0.55))
+        setMsg({ ok: true, text: `${pspConversionLabel(job)} ${job.progress}%${job.message ? `；${job.message}` : ''}` })
+      }, controller.signal)
+    })().then((job) => {
+      if (valueRef.current === startingKey) onChange(job.targetKey)
       rememberPspConversion(slug, lang, null)
+      clearPendingDiscConversion('psp', slug, lang)
+      setFailedDiscTask(null)
+      resumedPspJob.current = ''
       setProgress(null)
-      setMsg({ ok: true, text: `后台转换完成并恢复绑定：${job.targetKey}（${human(job.outputSize ?? 0)}）` })
-    }).catch((error) => {
+      setMsg({
+        ok: true,
+        text: valueRef.current === startingKey
+          ? `后台转换完成并恢复绑定：${job.targetKey}（${human(job.outputSize ?? 0)}）`
+          : `后台转换已完成：${job.targetKey}（${human(job.outputSize ?? 0)}）；ROM 键在任务期间被修改，请核对表单与游戏绑定后再保存`,
+      })
+    }).catch(async (error) => {
       if (error instanceof Error && error.name === 'AbortError') return
-      rememberPspConversion(slug, lang, null)
+      const rejected = pending && !resumedJobId
+        ? await cleanupRejectedDiscSource('psp', slug, lang, pending, error)
+        : { handled: false }
+      const status = Number((error as { status?: unknown })?.status)
+      if (resumedJobId && status !== 404) {
+        rememberPspConversion(slug, lang, resumedJobId)
+        rememberFailedDiscTask(resumedJobId, 'psp')
+      } else if (status === 404) rememberPspConversion(slug, lang, null)
+      else if (rememberedPendingDiscConversion('psp', slug, lang)) rememberFailedDiscTask(PENDING_DISC_CREATE_RETRY, 'psp')
+      if (rejected.handled) setFailedDiscTask(null)
+      resumedPspJob.current = ''
       setProgress(null)
-      setMsg({ ok: false, text: error instanceof Error ? error.message : '恢复 PSP 转换任务失败' })
+      setMsg({
+        ok: false,
+        text: `${error instanceof Error ? error.message : '恢复 PSP 转换任务失败'}${rejected.warning ? `；${rejected.warning}` : ''}`,
+      })
     })
-    return () => controller.abort()
+    return () => {
+      controller.abort()
+      if (resumedPspJob.current === resumeKey) resumedPspJob.current = ''
+    }
     // onChange 是父组件每次渲染新建的闭包，加入依赖会让同一个任务不断 abort/restart。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [platform, lang, slug, allowStorage])
@@ -3446,53 +3574,64 @@ function RomField({
   useEffect(() => {
     if (platform !== 'psx' || !lang || !slug || !allowStorage) return
     const id = rememberedPsxConversion(slug, lang)
-    if (!id || resumedPsxJob.current === id) return
-    resumedPsxJob.current = id
+    const pending = rememberedPendingDiscConversion('psx', slug, lang)
+    const resumeKey = pending?.sourceKey || id
+    if (!resumeKey || resumedPsxJob.current === resumeKey) return
+    const startingKey = value
+    resumedPsxJob.current = resumeKey
+    let resumedJobId = id
     const controller = new AbortController()
     setProgress(45)
-    setMsg({ ok: true, text: '正在恢复上次未完成的 PS1 ISO → CD CHD 任务…' })
-    void waitForPsxConversion(id, (job) => {
-      setProgress(45 + Math.round(job.progress * 0.55))
-      setMsg({ ok: true, text: `${psxConversionLabel(job)} ${job.progress}%${job.message ? `；${job.message}` : ''}` })
-    }, controller.signal).then((job) => {
-      onChange(job.targetKey)
+    setMsg({ ok: true, text: pending ? '正在恢复上次未完成的 PS1 ISO → CD CHD 请求…' : '正在恢复上次未完成的 PS1 ISO → CD CHD 任务…' })
+    void (async () => {
+      let jobId = id
+      if (pending) {
+        const created = await createPsxConversion(pending)
+        jobId = created.id
+        resumedJobId = created.id
+        rememberPsxConversion(slug, lang, jobId)
+      }
+      if (!jobId) throw new Error('没有可恢复的 PS1 转换任务')
+      return waitForPsxConversion(jobId, (job) => {
+        setProgress(45 + Math.round(job.progress * 0.55))
+        setMsg({ ok: true, text: `${psxConversionLabel(job)} ${job.progress}%${job.message ? `；${job.message}` : ''}` })
+      }, controller.signal)
+    })().then((job) => {
+      if (valueRef.current === startingKey) onChange(job.targetKey)
       rememberPsxConversion(slug, lang, null)
+      clearPendingDiscConversion('psx', slug, lang)
+      setFailedDiscTask(null)
+      resumedPsxJob.current = ''
       setProgress(null)
-      setMsg({ ok: true, text: `PS1 CD CHD 已完成并恢复绑定：${job.targetKey}（${human(job.outputSize ?? 0)}）` })
-    }).catch((error) => {
+      setMsg({
+        ok: true,
+        text: valueRef.current === startingKey
+          ? `PS1 CD CHD 已完成并恢复绑定：${job.targetKey}（${human(job.outputSize ?? 0)}）`
+          : `PS1 CD CHD 已完成：${job.targetKey}（${human(job.outputSize ?? 0)}）；ROM 键在任务期间被修改，请核对表单与游戏绑定后再保存`,
+      })
+    }).catch(async (error) => {
       if (error instanceof Error && error.name === 'AbortError') return
-      rememberPsxConversion(slug, lang, null)
+      const rejected = pending && !resumedJobId
+        ? await cleanupRejectedDiscSource('psx', slug, lang, pending, error)
+        : { handled: false }
+      const status = Number((error as { status?: unknown })?.status)
+      if (resumedJobId && status !== 404) {
+        rememberPsxConversion(slug, lang, resumedJobId)
+        rememberFailedDiscTask(resumedJobId, 'psx')
+      } else if (status === 404) rememberPsxConversion(slug, lang, null)
+      else if (rememberedPendingDiscConversion('psx', slug, lang)) rememberFailedDiscTask(PENDING_DISC_CREATE_RETRY, 'psx')
+      if (rejected.handled) setFailedDiscTask(null)
+      resumedPsxJob.current = ''
       setProgress(null)
-      setMsg({ ok: false, text: error instanceof Error ? error.message : '恢复 PS1 转换任务失败' })
+      setMsg({
+        ok: false,
+        text: `${error instanceof Error ? error.message : '恢复 PS1 转换任务失败'}${rejected.warning ? `；${rejected.warning}` : ''}`,
+      })
     })
-    return () => controller.abort()
-    // onChange 是父组件每次渲染新建的闭包，加入依赖会反复中止同一项任务。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [platform, lang, slug, allowStorage])
-
-  useEffect(() => {
-    if (platform !== 'psx' || !lang || !slug || !allowStorage) return
-    const id = rememberedPsxConversion(slug, lang)
-    if (!id || resumedPsxJob.current === id) return
-    resumedPsxJob.current = id
-    const controller = new AbortController()
-    setProgress(45)
-    setMsg({ ok: true, text: '正在恢复上次未完成的 PS1 ISO → CD CHD 任务…' })
-    void waitForPsxConversion(id, (job) => {
-      setProgress(45 + Math.round(job.progress * 0.55))
-      setMsg({ ok: true, text: `${psxConversionLabel(job)} ${job.progress}%${job.message ? `；${job.message}` : ''}` })
-    }, controller.signal).then((job) => {
-      onChange(job.targetKey)
-      rememberPsxConversion(slug, lang, null)
-      setProgress(null)
-      setMsg({ ok: true, text: `PS1 CD CHD 已完成并恢复绑定：${job.targetKey}（${human(job.outputSize ?? 0)}）` })
-    }).catch((error) => {
-      if (error instanceof Error && error.name === 'AbortError') return
-      rememberPsxConversion(slug, lang, null)
-      setProgress(null)
-      setMsg({ ok: false, text: error instanceof Error ? error.message : '恢复 PS1 转换任务失败' })
-    })
-    return () => controller.abort()
+    return () => {
+      controller.abort()
+      if (resumedPsxJob.current === resumeKey) resumedPsxJob.current = ''
+    }
     // onChange 是父组件每次渲染新建的闭包，加入依赖会反复中止同一项任务。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [platform, lang, slug, allowStorage])
@@ -3784,8 +3923,11 @@ function RomField({
     const executable = preparation.executable
     const useR2Copy = preparation.sourceCopyAvailable && Boolean(sourceEtag)
 
-    const version = nextSockdriveVersion()
-    const stagingKey = sockdriveStagingKey()
+    const expectedSockdrive = autoSockdrive.value.trim().replace(/\/+$/, '')
+    const signature = JSON.stringify({ targetRomKey, expectedRomKey, sourceEtag: sourceEtag ?? '', executable, expectedSockdrive })
+    const identity = await sockdriveUploadIdentity(file, autoSockdrive.gameSlug, lang, signature)
+    const version = identity.version
+    const stagingKey = identity.key
     let sourceUploaded = false
     let taskCreated = false
     try {
@@ -3815,19 +3957,20 @@ function RomField({
         expectedRomKey,
         executable,
         version,
-        expectedSockdrive: autoSockdrive.value.trim().replace(/\/+$/, ''),
+        expectedSockdrive,
         encoding: 'br',
       } as const
       rememberPendingSockdriveCreation(autoSockdrive.gameSlug, request, lang)
       const job = await createSockdriveConversion(request, { failureIsFatal: false })
       taskCreated = true
-      clearPendingSockdriveCreation(autoSockdrive.gameSlug, lang)
       rememberSockdriveConversion(autoSockdrive.gameSlug, job.id, lang)
+      clearSockdriveUploadIdentity(autoSockdrive.gameSlug, lang, stagingKey)
       const completed = await waitForSockdriveConversion(job.id, (next) => {
         setProgress(jobProgressStart + Math.round(next.progress * (100 - jobProgressStart) / 100))
         setMsg({ ok: true, text: `${sockdriveConversionLabel(next)} ${next.progress}%${next.message ? `；${next.message}` : ''}` })
       }, undefined, undefined, { failureIsFatal: false })
       rememberSockdriveConversion(autoSockdrive.gameSlug, null, lang)
+      clearPendingSockdriveCreation(autoSockdrive.gameSlug, lang)
       autoSockdrive.onCompleted(completed)
       return `；${romLanguageLabel(lang)}流式盘已发布并${completed.bound ? '自动绑定' : '等待保存'}：${completed.targetPrefix}`
     } catch (error) {
@@ -3835,6 +3978,7 @@ function RomField({
       if (sourceUploaded && !taskCreated && !keepUploadedSource) {
         clearPendingSockdriveCreation(autoSockdrive.gameSlug, lang)
         await deleteRomObjects([stagingKey]).catch(() => {})
+        clearSockdriveUploadIdentity(autoSockdrive.gameSlug, lang, stagingKey)
       }
       if (keepUploadedSource) {
         throw new Error(`完整回退包已发布，流式源 ZIP 也已保留，无需重传；创建任务失败：${error instanceof Error ? error.message : String(error)}`)
@@ -3948,6 +4092,9 @@ function RomField({
 
   const onFile = async (file: File | undefined) => {
     if (!file) return
+    const originalKeyValue = value
+    let activeDiscJobId = ''
+    let activeDiscPlatform: 'psp' | 'psx' | null = null
     if (isHtml5) {
       setMsg({ ok: false, text: 'HTML5 游戏通过网页入口运行，请部署完整游戏站点后填写 HTTPS 网址' })
       if (inputRef.current) inputRef.current.value = ''
@@ -4001,9 +4148,8 @@ function RomField({
         return
       }
     }
-    // 数据轨签名和 PS1 启动文件只需读取约 1MB；先查可避免上传整张盘后才被后台拒绝。
-    if (platform === 'psx' && /\.iso$/i.test(file.name)) {
-      const problem = await psxIsoValidationProblem(file).catch(() => '读取 ISO 目录失败')
+    if (platform === 'psp' && /\.iso$/i.test(file.name)) {
+      const problem = await pspIsoValidationProblem(file).catch(() => '读取 PSP ISO 目录失败')
       if (problem) {
         setMsg({ ok: false, text: problem })
         if (inputRef.current) inputRef.current.value = ''
@@ -4087,6 +4233,14 @@ function RomField({
       // 8BG 的文件扩展名属于容器；盘片检查要针对解出的真实文件。
       if (platform === 'psx' && /\.iso$/i.test(uploadSourceFile.name)) {
         const problem = await psxIsoValidationProblem(uploadSourceFile).catch(() => '读取 ISO 目录失败')
+        if (problem) {
+          setMsg({ ok: false, text: problem })
+          if (inputRef.current) inputRef.current.value = ''
+          return
+        }
+      }
+      if (platform === 'psp' && /\.iso$/i.test(uploadSourceFile.name)) {
+        const problem = await pspIsoValidationProblem(uploadSourceFile).catch(() => '读取 PSP ISO 目录失败')
         if (problem) {
           setMsg({ ok: false, text: problem })
           if (inputRef.current) inputRef.current.value = ''
@@ -4272,7 +4426,20 @@ function RomField({
     try {
       await trackUploadActivity(`ROM 上传、识别与发布：${file.name}`, async () => {
         if ((pspIsoToChd || psxIsoToChd) && lang) {
-          const stagingKey = psxIsoToChd ? psxStagingKey() : pspStagingKey()
+          const discPlatform: 'psx' | 'psp' = psxIsoToChd ? 'psx' : 'psp'
+          activeDiscPlatform = discPlatform
+          // staging 身份必须绑定完整任务意图；不同 overwrite / 绑定快照不能共用一个 ISO key，
+          // 否则另一个标签页的 409 冲突清理可能误删正在转换的源对象。
+          const stagingIdentity = JSON.stringify({
+            targetKey: finalKey,
+            gameSlug: persistedSlug || '',
+            lang,
+            expectedCurrentKey: persistedSlug ? oldKey : '',
+            overwrite: allowOverwrite,
+          })
+          const stagingKey = psxIsoToChd
+            ? await psxStagingKey(uploadSourceFile, slug, lang, stagingIdentity)
+            : await pspStagingKey(uploadSourceFile, slug, lang, stagingIdentity)
           setMsg({ ok: true, text: `正在断点上传临时 ISO；上传后服务器会自动转为 ${finalKey}` })
           await uploadRom(uploadSourceFile, stagingKey, (pct, at) => {
             // 临时 ISO 上传占前 45%，服务器下载 / 转换 / 校验 / 发布占后 55%。
@@ -4283,6 +4450,7 @@ function RomField({
           setProgress(45)
           setMsg({ ok: true, text: 'ISO 已到 R2，正在创建持久转换任务…' })
           const request = {
+            platform: discPlatform,
             sourceKey: stagingKey,
             targetKey: finalKey,
             sourceSize: uploadSourceFile.size,
@@ -4291,9 +4459,27 @@ function RomField({
             // 只有确实看到了目标并得到确认，才允许任务覆盖；探测时不存在就保持禁止覆盖。
             overwrite: allowOverwrite,
           }
-          const job = psxIsoToChd ? await createPsxConversion(request) : await createPspConversion(request)
+          // 先保存创建请求；上传已完成后刷新或遇到回程断线，都能用同一 sourceKey 找回幂等任务。
+          if (persistedSlug) {
+            rememberPendingDiscConversion(discPlatform, slug, lang, request)
+            if (psxIsoToChd) rememberPsxConversion(slug, lang, null)
+            else rememberPspConversion(slug, lang, null)
+          }
+          let job: Awaited<ReturnType<typeof createPspConversion>>
+          try {
+            job = psxIsoToChd ? await createPsxConversion(request) : await createPspConversion(request)
+          } catch (error) {
+            const rejected = await cleanupRejectedDiscSource(discPlatform, slug, lang, request, error)
+            if (rejected.warning) {
+              throw new Error(`${error instanceof Error ? error.message : '转换任务创建失败'}；${rejected.warning}`)
+            }
+            throw error
+          }
           if (psxIsoToChd) rememberPsxConversion(slug, lang, job.id)
           else rememberPspConversion(slug, lang, job.id)
+          activeDiscJobId = job.id
+          setFailedDiscTask(null)
+          clearDiscStagingKey(discPlatform, slug, lang, stagingKey)
           const onUpdate = (next: typeof job) => {
             setProgress(45 + Math.round(next.progress * 0.55))
             const label = psxIsoToChd ? psxConversionLabel(next) : pspConversionLabel(next)
@@ -4302,9 +4488,10 @@ function RomField({
           const completed = psxIsoToChd
             ? await waitForPsxConversion(job.id, onUpdate)
             : await waitForPspConversion(job.id, onUpdate)
+          if (persistedSlug) clearPendingDiscConversion(discPlatform, slug, lang)
           if (psxIsoToChd) rememberPsxConversion(slug, lang, null)
           else rememberPspConversion(slug, lang, null)
-          onChange(completed.targetKey)
+          if (valueRef.current === originalKeyValue) onChange(completed.targetKey)
           const removed = await cleanupSuperseded(oldKey, completed.targetKey, allBoundKeys)
           const ratio = completed.outputSize && completed.sourceSize
             ? `；压缩后 ${(completed.outputSize / completed.sourceSize * 100).toFixed(1)}%`
@@ -4313,6 +4500,7 @@ function RomField({
             ok: true,
             text: `${psxIsoToChd ? 'PS1 CD CHD' : 'PSP CHD'} 已校验并发布：${completed.targetKey}（${human(completed.outputSize ?? 0)}）${ratio}` +
               (completed.bound ? '；已原子绑定到游戏' : `；${completed.message || '请保存表单完成绑定'}`) +
+              (valueRef.current !== originalKeyValue ? '；ROM 键在任务期间被修改，已保留你的编辑，请核对数据库绑定后再保存' : '') +
               (removed ? `；旧文件 ${removed} 已删除` : ''),
           })
           return
@@ -4389,11 +4577,86 @@ function RomField({
         })
       })
     } catch (err) {
+      if (activeDiscJobId && activeDiscPlatform) rememberFailedDiscTask(activeDiscJobId, activeDiscPlatform)
+      else if (activeDiscPlatform && persistedSlug && lang && rememberedPendingDiscConversion(activeDiscPlatform, slug, lang)) {
+        rememberFailedDiscTask(PENDING_DISC_CREATE_RETRY, activeDiscPlatform)
+      }
       setMsg({ ok: false, text: err instanceof Error ? err.message : '上传失败' })
     } finally {
       setProgress(null)
       setStage(null)
       if (inputRef.current) inputRef.current.value = ''
+    }
+  }
+
+  const handleFileSelection = async (file: File | undefined) => {
+    if (!file) return
+    setBusySelecting(true)
+    try {
+      await onFile(file)
+    } catch (error) {
+      setMsg({ ok: false, text: error instanceof Error ? error.message : '处理所选文件失败' })
+      if (inputRef.current) inputRef.current.value = ''
+    } finally {
+      setBusySelecting(false)
+    }
+  }
+
+  const retryDiscConversion = async () => {
+    if (!failedDiscJobId) return
+    const retryId = failedDiscJobId
+    const retryPendingCreate = retryId === PENDING_DISC_CREATE_RETRY
+    const startingKey = valueRef.current
+    let pendingRequest: import('@/services/pspConversion').CreatePspConversion | null = null
+    setProgress(45)
+    setMsg({ ok: true, text: retryPendingCreate ? '正在用已上传 ISO 恢复转换任务…' : `正在重试 ${platform === 'psx' ? 'PS1 ISO → CD CHD' : 'PSP ISO → CHD'}；会复用已上传 ISO…` })
+    try {
+      pendingRequest = retryPendingCreate && slug && lang
+        ? rememberedPendingDiscConversion(platform === 'psx' ? 'psx' : 'psp', slug, lang)
+        : null
+      if (retryPendingCreate && !pendingRequest) throw new Error('已上传 ISO 的恢复请求已过期；请重新选择文件上传')
+      const job = retryPendingCreate
+        ? platform === 'psx'
+          ? await createPsxConversion(pendingRequest!)
+          : await createPspConversion(pendingRequest!)
+        : await retryPspConversion(retryId)
+      rememberFailedDiscTask(job.id, platform === 'psx' ? 'psx' : 'psp')
+      if (slug && lang) {
+        if (platform === 'psx') rememberPsxConversion(slug, lang, job.id)
+        else rememberPspConversion(slug, lang, job.id)
+      }
+      const onUpdate = (next: typeof job) => {
+        setProgress(45 + Math.round(next.progress * 0.55))
+        const label = platform === 'psx' ? psxConversionLabel(next) : pspConversionLabel(next)
+        setMsg({ ok: true, text: `${label} ${next.progress}%${next.message ? `；${next.message}` : ''}` })
+      }
+      const completed = platform === 'psx'
+        ? await waitForPsxConversion(job.id, onUpdate)
+        : await waitForPspConversion(job.id, onUpdate)
+      if (valueRef.current === startingKey) onChange(completed.targetKey)
+      if (slug && lang) {
+        clearPendingDiscConversion(platform === 'psx' ? 'psx' : 'psp', slug, lang)
+        if (platform === 'psx') rememberPsxConversion(slug, lang, null)
+        else rememberPspConversion(slug, lang, null)
+      }
+      setFailedDiscTask(null)
+      setProgress(null)
+      setMsg({
+        ok: true,
+        text: `${platform === 'psx' ? 'PS1 CD CHD' : 'PSP CHD'} 已完成：${completed.targetKey}（${human(completed.outputSize ?? 0)}）` +
+          (completed.bound ? '；已原子绑定到游戏' : `；${completed.message || '请保存表单完成绑定'}`) +
+          (valueRef.current !== startingKey ? '；ROM 键在重试期间被修改，已保留你的编辑，请核对数据库绑定后再保存' : ''),
+      })
+    } catch (error) {
+      const rejected = retryPendingCreate && pendingRequest
+        ? await cleanupRejectedDiscSource(platform === 'psx' ? 'psx' : 'psp', slug, lang || '', pendingRequest, error)
+        : { handled: false }
+      if (rejected.handled) setFailedDiscTask(null)
+      setProgress(null)
+      setMsg({
+        ok: false,
+        text: `${error instanceof Error ? error.message : '转换重试失败'}${rejected.warning ? `；${rejected.warning}` : ''}`,
+      })
     }
   }
 
@@ -4539,33 +4802,50 @@ function RomField({
             className={cx(inputClass, 'font-mono')}
             value={value}
             onChange={(e) => onChange(e.target.value)}
+            disabled={busySelecting || progress !== null}
             placeholder={isHtml5 ? 'https://game.example.com/' : defKey(isFlash ? 'x.swf' : exampleName)}
           />
           {!isHtml5 && (
             <>
-              <input ref={inputRef} type="file" accept={accept} className="hidden" onChange={(e) => void onFile(e.target.files?.[0])} />
+              <input ref={inputRef} type="file" accept={accept} className="hidden" disabled={busySelecting || progress !== null} onChange={(e) => void handleFileSelection(e.target.files?.[0])} />
               <button
                 type="button"
                 className={cx(btnClass.secondary, 'shrink-0 whitespace-nowrap')}
-                disabled={!canUpload || progress !== null || bundleAt !== null}
+                disabled={!canUpload || busySelecting || progress !== null || bundleAt !== null}
                 onClick={() => inputRef.current?.click()}
                 title={canUpload ? (oneClickSockdrive ? '选择原始 ZIP：一次上传完整回退包，并在 R2 内准备流式盘源' : isFlash ? '选择 .swf，或选 .zip 上传多 SWF 整包' : isStreamingDisc ? '选择平台支持的单文件光盘镜像并上传到 R2' : '选择文件并上传到 R2') : '需要先配置 Worker'}
               >
-                {progress === null ? (oneClickSockdrive ? '☁️ 完整包 + 流式盘' : isFlash ? '☁️ 上传 SWF / ZIP' : '☁️ 上传到 R2') : `处理中 ${progress}%`}
+                {busySelecting && progress === null
+                  ? '检查文件…'
+                  : progress === null
+                    ? (oneClickSockdrive ? '☁️ 完整包 + 流式盘' : isFlash ? '☁️ 上传 SWF / ZIP' : '☁️ 上传到 R2')
+                    : `处理中 ${progress}%`}
               </button>
             </>
           )}
-          {value && !progress && (
+          {failedDiscJobId && progress === null && (
+            <button
+              type="button"
+              className={cx(btnClass.secondary, 'shrink-0 whitespace-nowrap')}
+              onClick={() => void retryDiscConversion()}
+              disabled={busySelecting}
+            >
+              {failedDiscJobId === PENDING_DISC_CREATE_RETRY
+                ? '🔁 重试创建任务（无需重传 ISO）'
+                : '🔁 重试转换（复用已上传 ISO）'}
+            </button>
+          )}
+          {value && !progress && !busySelecting && (
             <a href={isHtml5 ? normalizeHtml5Entry(value) : romUrlForKey(value)} target="_blank" rel="noreferrer" className={cx(btnClass.secondary, 'shrink-0')} title={isHtml5 ? '在新标签页打开网页入口' : '在新标签页打开文件地址'}>
               打开
             </a>
           )}
-          {value && !progress && bundleAt === null && (
+          {value && !progress && !busySelecting && bundleAt === null && (
             <button
               type="button"
               className={cx(btnClass.danger, 'shrink-0')}
               onClick={() => void removeRom()}
-              disabled={deletingRom || (allowStorage && isDeletableKey(value) && !canUpload)}
+              disabled={busySelecting || deletingRom || (allowStorage && isDeletableKey(value) && !canUpload)}
               title={allowStorage && isDeletableKey(value)
                 ? canUpload ? '检查全库引用后解除绑定并永久删除 R2 文件' : '请先配置 Worker 地址和口令，才能删除 R2 文件'
                 : '只解除当前槽位绑定；外部文件不会被删除'}
@@ -4582,13 +4862,14 @@ function RomField({
               accept=".chd,application/octet-stream"
               multiple
               className="hidden"
+              disabled={busySelecting || progress !== null}
               onChange={(event) => onMultiDiscFiles(event.target.files ? Array.from(event.target.files) : undefined)}
             />
             <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
                 className={cx(btnClass.secondary, 'shrink-0 whitespace-nowrap')}
-                disabled={!canUpload || !lang || progress !== null || bundleAt !== null}
+                disabled={!canUpload || !lang || busySelecting || progress !== null || bundleAt !== null}
                 onClick={() => multiDiscInputRef.current?.click()}
                 title={!lang ? '先选择 ROM 语言槽' : canUpload ? `选择 2–${PSX_M3U_MAX_DISCS} 张裸 CHD，然后确认盘序再上传` : '需要先配置 Worker'}
               >
@@ -4604,16 +4885,16 @@ function RomField({
                       <span className="grid size-6 shrink-0 place-items-center rounded-full bg-brand/15 font-semibold text-brand">{index + 1}</span>
                       <span className="min-w-0 flex-1 truncate" title={file.name}>{file.name}</span>
                       <span className="shrink-0 text-dim">{human(file.size)}</span>
-                      <button type="button" className={cx(btnClass.small, 'h-8 min-w-8 border border-line bg-surface-2 text-fg hover:border-line-strong disabled:opacity-50')} disabled={index === 0 || progress !== null} onClick={() => moveMultiDiscFile(index, -1)} aria-label={`将第 ${index + 1} 张上移`} title="上移">↑</button>
-                      <button type="button" className={cx(btnClass.small, 'h-8 min-w-8 border border-line bg-surface-2 text-fg hover:border-line-strong disabled:opacity-50')} disabled={index === multiDiscFiles.length - 1 || progress !== null} onClick={() => moveMultiDiscFile(index, 1)} aria-label={`将第 ${index + 1} 张下移`} title="下移">↓</button>
+                      <button type="button" className={cx(btnClass.small, 'h-8 min-w-8 border border-line bg-surface-2 text-fg hover:border-line-strong disabled:opacity-50')} disabled={index === 0 || busySelecting || progress !== null} onClick={() => moveMultiDiscFile(index, -1)} aria-label={`将第 ${index + 1} 张上移`} title="上移">↑</button>
+                      <button type="button" className={cx(btnClass.small, 'h-8 min-w-8 border border-line bg-surface-2 text-fg hover:border-line-strong disabled:opacity-50')} disabled={index === multiDiscFiles.length - 1 || busySelecting || progress !== null} onClick={() => moveMultiDiscFile(index, 1)} aria-label={`将第 ${index + 1} 张下移`} title="下移">↓</button>
                     </li>
                   ))}
                 </ol>
                 <div className="flex flex-wrap items-center gap-2">
-                  <button type="button" className={cx(btnClass.primary, 'shrink-0')} disabled={!canUpload || progress !== null || bundleAt !== null} onClick={() => void uploadMultiDiscFiles()}>
+                  <button type="button" className={cx(btnClass.primary, 'shrink-0')} disabled={!canUpload || busySelecting || progress !== null || bundleAt !== null} onClick={() => void uploadMultiDiscFiles()}>
                     ☁️ 确认盘序并上传 {multiDiscFiles.length} 张盘
                   </button>
-                  <button type="button" className={cx(btnClass.small, 'h-9 rounded-lg border border-line px-3 text-sm text-muted hover:bg-surface-2 disabled:opacity-50')} disabled={progress !== null} onClick={() => setMultiDiscFiles([])}>
+                  <button type="button" className={cx(btnClass.small, 'h-9 rounded-lg border border-line px-3 text-sm text-muted hover:bg-surface-2 disabled:opacity-50')} disabled={busySelecting || progress !== null} onClick={() => setMultiDiscFiles([])}>
                     清除选择
                   </button>
                 </div>
@@ -4649,7 +4930,7 @@ function RomField({
               <button
                 type="button"
                 className={cx(btnClass.secondary, 'shrink-0 whitespace-nowrap')}
-                disabled={health?.checking}
+                disabled={busySelecting || progress !== null || health?.checking}
                 onClick={() => void checkHealth()}
               >
                 {health?.checking ? '检测中…' : '检测主/备'}
@@ -4659,7 +4940,7 @@ function RomField({
                   type="button"
                   className={cx(btnClass.danger, 'shrink-0 whitespace-nowrap')}
                   onClick={() => void removeBackup()}
-                  disabled={deletingRom || (allowStorage && isDeletableKey(backupValue) && !canUpload)}
+                  disabled={busySelecting || progress !== null || deletingRom || (allowStorage && isDeletableKey(backupValue) && !canUpload)}
                   title={allowStorage && isDeletableKey(backupValue)
                     ? canUpload ? '检查全库引用后解除备用地址并永久删除 R2 文件' : '请先配置 Worker 地址和口令，才能删除 R2 文件'
                     : '只清空备用地址；外部文件不会被删除'}
@@ -4754,7 +5035,7 @@ function RomField({
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span>Flash 依赖清单：{assetsValue.length} 个文件</span>
               <div className="flex gap-2">
-                <button type="button" className={btnClass.secondary} disabled={!canUpload || scanningBundle || progress !== null || bundleAt !== null} onClick={() => void scanFlashAssets()}>
+                <button type="button" className={btnClass.secondary} disabled={!canUpload || busySelecting || scanningBundle || progress !== null || bundleAt !== null} onClick={() => void scanFlashAssets()}>
                   {scanningBundle ? '扫描中…' : '扫描并登记同目录资源'}
                 </button>
                 {assetsValue.length > 0 && <button type="button" className={btnClass.secondary} onClick={() => onAssetsChange([])}>清空依赖</button>}

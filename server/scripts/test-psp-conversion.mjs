@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { availableParallelism, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const {
@@ -215,7 +215,7 @@ assert.equal(config.workerToken, 'fallback-worker-token')
 assert.equal(config.maxIsoBytes, 2048 * 1024 * 1024)
 assert.equal(config.concurrency, 1, '越界并发不能偷偷退成一个危险的大值')
 assert.equal(config.uploadConcurrency, 6)
-assert.equal(config.chdmanProcessors, 3)
+assert.equal(config.chdmanProcessors, Math.min(3, Math.min(8, availableParallelism())), '单任务线程数不能超过可用 CPU 预算')
 assert.equal(config.timeoutMs, 240 * 60 * 1000)
 
 const schema = readFileSync(new URL('../schema-v2.sql', import.meta.url), 'utf8')
@@ -230,7 +230,7 @@ assert.match(schema, /output_etag/)
 assert.match(schema, /game_id\s+BIGINT UNSIGNED/)
 assert.match(migration, /psp_conversion_jobs（PSP ISO → CHD 后台压缩队列）/)
 assert.match(routes, /requireAbility\('site:manage'\)/)
-assert.match(frontend, /pspStagingKey\(\)/)
+assert.match(frontend, /pspStagingKey\(uploadSourceFile, slug, lang, stagingIdentity\)/)
 assert.match(frontend, /waitForPspConversion/)
 assert.match(frontend, /sameStoredFormat/)
 assert.match(frontend, /persistedSlug/)

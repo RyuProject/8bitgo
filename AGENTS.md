@@ -1222,9 +1222,15 @@ ROM Worker 再用 `If-Match` 对照上传响应的强 ETag，在 R2 内流式复
 staging ZIP 下载使用固定 1MB 背压缓冲，让网络读取与磁盘写入重叠；不能退回“每个网络小块 await 一次
 随机位置写入”，1GB 以上源包会产生数万次串行等待。整个过程仍须核对 ETag、Content-Length、实际
 字节数、60 秒停滞与 ZIP 文件头，优化不能改成把源包整块读进内存。
-`sockdrive.metaj` 仍必须最后上传，它既是玩家入口也是发布提交点；重启恢复只在看见它后跳过重新制盘。
+`sockdrive.metaj` 仍必须最后上传，它既是玩家入口也是发布提交点；重启后看见它才可跳过发布，若只有本地制作完成标记则复用磁盘输出并继续上传。
+分片创建携带稳定 requestId（浏览器保存在续传账本，CHD 用任务 ID，Sockdrive 发布器按目标 key 与输出元数据计算），遇到响应丢失时会找回原 multipart 会话；不要对无幂等键的 `?uploads` 做网络重试。
+requestId 标记写入必须用 R2 `onlyIf: { etagDoesNotMatch: '*' }` 原子抢占：多个标签页同时恢复时，输家先中止自己的会话，再读取并复用赢家；不能只做 `head()` 后无条件 `put()`。若 R2 条件冲突后暂时读不到赢家标记，只能在确认输家已中止后用同一 requestId 重试。完成请求也要带 `requestId + requestSignature + size`；最终对象保留创建时的请求 ID 与元数据签名，第二个标签页遇到已被赢家消耗的 uploadId，只能在 HEAD 确认这三项吻合时复用成功，不能误报失败或仅凭同名 / 同大小认成功。
+制盘中断会删掉半份 work 目录并保留已下载 ZIP，发布 / 校验中断会保留完整 `publish/` 和制作配置标记；重试可直接恢复上传，不重复解包、造盘和 Brotli 压缩。失败 24 小时后的 staging 清理也负责回收这些本地断点，完成任务若在进程清理前崩溃也会由定时清扫回收。
+远端 staging 删除、数据库状态落库和本地目录清理是三个独立步骤：只有 R2 DELETE 未确认才把 `source_deleted` 退回 0；R2 已删除但 DB 写入失败时保留 2，让下轮以 404 幂等重试补记 1。状态 2 必须绕过 `updated_at < 24h` 筛选，否则清扫器自己的 claim 会更新 `updated_at`，进程重启后任务会再卡一天。清本地目录失败也不能把远端源谎报成仍可重试。
 转换任务仍保持单并发，但发布器默认以 `SOCKDRIVE_UPLOAD_CONCURRENCY=6` 隐藏小文件的 R2 往返，
 压缩前小文件扫描最多 16 路并行；后台直接复用压缩阶段的文件数和输出字节统计，不再重复扫描发布目录。
+默认 Brotli 质量为 5，优先缩短制盘时间；更低质量可能增大分块体积，按存储与网络预算设置 `SOCKDRIVE_BROTLI_QUALITY`。
+管理员重选同一 ZIP 时用头 / 中 / 尾样本摘要找回 staging key 和版本号，接着传未完成的 multipart；版本号还带随机尾码，防止同毫秒的两个标签页写入同一目录。
 兼容旧制盘输出时的兜底扫描同样最多 16 路；解码校验最多四路、大文件 multipart 最多三片并行。
 自动队列会传 `--defer-validation`，因为紧随其后的
 发布器已经做完整解码校验；禁止在制盘和发布两步各校验一次，把整张 2GB 盘白白解压两遍。只制作、
@@ -1239,7 +1245,7 @@ Worker 必须把 `psp-staging/` / `sockdrive-staging/` 的 GET/HEAD 也设为 Be
 后台已保存游戏的语言 ROM 按钮会显示「完整包 + 流式盘」：一次选择原始 ZIP 并上传一次，
 先发布同语言的 8BG 完整回退包，再由 R2 桶内复制准备私有转换源（旧 Worker 会回退为第二次上传）；任务最终用
 事务 CAS 同时绑定 `object_key`、`dos_executable` 和 `dos_sockdrive`。版本目录必须带语言（如
-`sockdrives/starcraft-zh-v1730000000000`），否则多个语言会争用不可覆盖的目录。运行环境、EXE 或
+`sockdrives/starcraft-zh-v1730000000000123456`），否则多个语言会争用不可覆盖的目录。运行环境、EXE 或
 当前流式盘地址有未保存修改时必须先保存，不能让管理员传完大包才在建任务阶段发现数据库不一致。
 
 ⚠️ 官方 Sockdrive CLI 2.0.10 **不接受任意磁盘容量**，只按原始镜像字节数匹配两份内置描述：
@@ -1290,7 +1296,8 @@ Free / Pro 100 MB，Business 200 MB，Enterprise 500 MB，**由边缘节点执�
 
 现在超过 24MB（`MULTIPART_THRESHOLD`）的文件自动改走**分片上传**：
 8MB 一片，首片既是真数据也是上行测速，按实际 Mbps、RTT、省流量模式与设备内存选择 1–4 路；
-单片失败重试、`localStorage` 记账后可断点续传（`src/services/romMultipart.ts`）。HTTP/2 reset、429 或网关 5xx
+单片失败重试、`localStorage` 记账后可断点续传（`src/services/romMultipart.ts`）。创建 multipart 前先保存稳定 `requestId`，Worker 用它在响应丢失后找回同一会话；普通 ROM 上传和 CHD 发布都不能对有副作用的会话创建请求盲目重发。
+HTTP/2 reset、429 或网关 5xx
 会立即收敛到单路，连续成功后才逐档恢复到本次测速上限；
 不要把它改成四路固定并发，否则一次连接级错误会再次变成重试风暴。
 XHR 的 `progress` 事件按字节差值维护总量，并限到约 12fps 再通知 React；不要恢复成每个事件遍历全部分片
@@ -3530,7 +3537,12 @@ R2 multipart 发布到最终 `roms/psp/*.chd`。`.cso` / `.chd` 保持直传。
   `/var/lib/8bitgo-data/psp-conversions`，不能写回 `/var/lib/8bitgo/psp-conversions`。R2 下载使用
   4MB 背压窗口让网络读取和磁盘写入重叠；中途断线保留本地 ISO，并带 `Range + If-Match` 从已写字节
   继续。不能恢复成“每个网络小块 await 一次磁盘写入”，那会把数万个小写操作串行化。
-- `chdman` 显式用 `PSP_CHDMAN_PROCESSORS`（留空取可用 CPU，最多 8）；转换任务仍保持单并发。
+- `chdman` 显式用 `PSP_CHDMAN_PROCESSORS`（留空按任务并发均分可用 CPU，最多 8；任务并发也不超过可用 CPU 数）。
+  转换默认单并发；显式调高时总 chdman 线程仍受可用 CPU 预算约束。
+  管理员端按 ISO 头 / 中 / 尾样本摘要续传同一 staging multipart；上传完成后的建任务请求保留到转换完成，
+  防止服务端已接单但浏览器没记住任务 ID 时刷新后重复上传。任务失败可在 ROM 栏直接重试，复用已上传 ISO。
+  staging 身份还绑定目标 key、当前绑定快照和覆盖授权；两页意图不同不能共用临时 ISO。
+  建任务接口明确拒绝且未有任务占用的 ISO 会从 R2 清掉，401/403 与服务端仍在使用的源对象必须保留。
   完整 verify 通过后才记录 `output_size`，发布失败或服务重启会复用这份已校验 CHD，不能再次下载、
   压缩和校验。未通过 verify 的半份输出必须删掉，输入断点与已校验输出最多保留到失败任务 24 小时清扫。
 - 最终 CHD 默认四路并发上传 8MB multipart（`PSP_CONVERT_UPLOAD_CONCURRENCY`，最多 8，峰值内存约
@@ -3544,7 +3556,7 @@ R2 multipart 发布到最终 `roms/psp/*.chd`。`.cso` / `.chd` 保持直传。
 `chdman createcd -c cdzl`、`verify` 和 CD 轨道元数据检查，再把 `roms/psx/*.chd` 发布到 R2。
 源文件仍放旧 Worker 已保护的 `psp-staging/`，不能擅自换成一个公开可读的新前缀。
 上传前后都校验 ISO9660 和根目录 `SYSTEM.CNF`；单独 ISO 无法还原 CDDA 音轨，带音轨的原盘
-必须先从 BIN/CUE 在本机制作 CHD。裸 CHD 带固定 `romv` 且 R2/Worker 返回匹配的强 ETag、
+必须先从 BIN/CUE 在本机制作 CHD。预检还要核对 2048-byte 逻辑扇区、根目录与 `SYSTEM.CNF` 的双字节序字段和文件范围，避免上传整张盘后才发现目录损坏。裸 CHD 带固定 `romv` 且 R2/Worker 返回匹配的强 ETag、
 正确 206/Content-Range 时，播放器先取首尾 2MB 块，开局后由 Beetle PSX 软件核心按需读盘；
 Range 不可用、版本不匹配或 CHD 格式不对时回退完整下载。 `.chd.8bg` 外层容器仍走完整
 解包，不能冒称边下边玩。旧 Beetle PSX HW 核心在浏览器触发 WASM `null function`，所以

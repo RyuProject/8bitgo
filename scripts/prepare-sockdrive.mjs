@@ -56,7 +56,7 @@ const deferValidation = flag('defer-validation')
 const bucket = arg('bucket')
 const apiBase = arg('api-base') || 'https://8bitgo.com'
 const compressionConcurrency = Number(arg('compression-concurrency') || process.env.SOCKDRIVE_COMPRESSION_CONCURRENCY || 2)
-const brotliQuality = Number(arg('brotli-quality') || process.env.SOCKDRIVE_BROTLI_QUALITY || 9)
+const brotliQuality = Number(arg('brotli-quality') || process.env.SOCKDRIVE_BROTLI_QUALITY || 5)
 
 const usage = () => {
   console.error(
