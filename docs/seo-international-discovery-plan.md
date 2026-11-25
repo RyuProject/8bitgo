@@ -18,8 +18,8 @@
 ### 本轮公开页面抽查（2026-11-25）
 
 - 用 Codex 内置浏览器复查线上 `/ja/games` 与 `/ja/games?romLanguage=ja`：目录显示 660 款，日语 ROM 计数为 147，且有指向 `/ja/rom-language/ja` 的普通链接；筛选页实际显示 147 款、每页 24 款，并有可点击的分页链接。首屏高人气样本仍显示 `Pokémon FireRed`、`Contra`、`Rhythm Heaven` 等英文原名。由此确认当前 UI 没有充分展示日文标题；仅凭页面无法区分是 `title_localized` 未填，还是响应数据未带该字段，覆盖报告仍需连到数据库核实。
-- **线上 `/ja/rom-language/ja` 当前有真实故障**：本地化 `<title>`、H1 和说明正常，但列表区域显示“服务器内部错误”。详情页入口和筛选页能正常加载，故障限于稳定专题路由。工作区代码中该路由引用了在 `/games` 条件分支内部声明的 `visiblePlatforms`，会触发 `ReferenceError`；本轮已将它提升到共享作用域，并把 `/rom-language/ja` 加入 `test:nowasm-lists` 回归覆盖。修复还在工作区，尚未部署，线上该错误仍未消除。
-- 同一专题页浏览器 DOM 有 self-canonical、8 个语言 `hreflang` 与 `x-default`、日文 meta description；错误内容由客户端加载后显示。不能仅凭浏览器 DOM 推断直接访问的 HTTP 状态或索引结果：`server/src/ssr.js` 的 SSR 失败分支会回 `503`、`no-store` 和 `Retry-After: 60`，本次浏览器工具无法读取线上响应状态。另已让平台、类型与 ROM 语言目录在站内数据请求失败时切换为 `noindex,follow`，减少客户端路由失败后残留的空错误页被索引的风险。修复部署后仍须检查 147 款清单是否出现在真实 SSR HTML。
+- **线上 `/ja/rom-language/ja` 曾有真实故障**：本地化 `<title>`、H1 和说明正常，但列表区域显示“服务器内部错误”。根因是该路由引用了 `/games` 条件分支里的局部变量 `visiblePlatforms`，触发 `ReferenceError`；修复已将平台范围提升到共享路由数据作用域，并把 `/rom-language/ja` 加入 `test:nowasm-lists`。`23d74ce` 于 2026-11-25 部署后，直接请求该 URL 返回 HTTP 200；实际 SSR HTML 含 147 款总数、首屏 24 款清单及第 2–7 页链接，未再出现服务器错误。
+- 部署后复核 `/api/health` 返回 HTTP 200 且 `db: true`。专题 HTML 保留 self-canonical、8 个语言 `hreflang` 与 `x-default`、日文 meta description；这只验证了站点实际响应与 SSR 输出，搜索引擎是否抓取和收录仍需在 Search Console / Bing Webmaster 查看。平台、类型与 ROM 语言目录在站内数据请求失败时会切换为 `noindex,follow`，降低临时错误页被索引的风险。
 - 日文游戏库卡片仍显示不少英文原名，例如 `The King of Fighters ’97`、`Pokémon FireRed`。这与“字段可按 ROM 语言录入”不是同一问题：标题选择逻辑已支持日文名，线上实际填充覆盖率仍需数据库报告确认。
 - 外部 `site:` 搜索本轮能看到 `/ja/games`、`/ja/genres/adventure` 等日文 URL，但没有返回 `/ja/rom-language/ja`；可见游戏库快照约两个月前且只报 305 款，浏览器此刻实际显示 660 款。聚合搜索的快照不是 Google Search Console 数据，不能据此断言 Google 当前收录数或抓取延迟；但足以把 sitemap 处理时间、页面 lastmod 和 URL 检查列为上线后验收项。
 - 浏览器将 `/robots.txt` 和 API 路径拦为 `ERR_BLOCKED_BY_CLIENT`，搜索工具也无法读取线上 `robots.txt`、sitemap XML；这是当前检查通道的限制，不能当作线上文件错误或成功的证据。页面本身的 UI 访问则已验证专题错误。
@@ -28,11 +28,11 @@
 
 - 首页公开合集区出现过标题只有 “pokemon” / “Game” 且只含 1–2 款游戏的用户合集；目前 sitemap 会提交所有 `hidden = 0` 的合集详情。它们可能有社区价值，但作为搜索落地页的独立信息量偏少。建议单独定义可解释的收录门槛，并让首页合集区采用更严格的质量筛选。不要只按标题字数自动删页；先确定有用的描述、游戏数量和维护状态规则，再对低信息页 noindex 并从 sitemap 排除。
 - `/robots.txt` 和 `/sitemap.xml` 在本次公开抓取工具中无法读取。仓库配置看起来允许公开爬虫，但线上 HTTP 状态、重定向、CDN/WAF 拦截仍未验证。
-- 仓库 `robots.txt` 只有通用 `User-agent: *` 组，允许公开目录里的搜索爬虫与 AI 搜索爬虫，且 `/api/` 继续屏蔽；同一规则目前也允许 GPTBot、ClaudeBot 等 AI 训练爬虫。搜索引用抓取与模型训练是不同用途，之后应根据站长偏好分别定策略；更改时必须保留后台/个人页的禁止规则，不能用一个点名 `Allow: /` 的专属组绕过它们。OpenAI 当前说明 OAI-SearchBot 用于 ChatGPT 搜索发现，GPTBot 则可由站长选择排除训练；若依赖 robots 控制搜索收录，还必须允许 OAI-SearchBot 读取页面，单靠 robots 放行也不能代替对 CDN/WAF/挑战页的实测。见[发布者说明](https://help.openai.com/en/articles/12627856-publishers-and-developers-faq)和[爬虫访问指南](https://help.openai.com/en/articles/20001243-advertiser-guidance-for-allowing-openai-web-crawlers)。
+- 仓库 `robots.txt` 只有通用 `User-agent: *` 组，允许公开目录里的搜索爬虫与 AI 搜索爬虫，且 `/api/` 继续屏蔽；同一规则目前也允许 GPTBot、ClaudeBot 等 AI 训练爬虫。搜索引用抓取与模型训练是不同用途，之后应根据站长偏好分别定策略；更改时必须保留后台/个人页的禁止规则，不能用一个点名 `Allow: /` 的专属组绕过它们。OpenAI 当前说明 OAI-SearchBot 用于 ChatGPT 搜索发现，GPTBot 则可由站长选择排除训练；若依赖 robots 控制搜索收录，还必须允许 OAI-SearchBot 读取页面，单靠 robots 放行也不能代替对 CDN/WAF/挑战页的实测。见[发布者说明](https://help.openai.com/en/articles/12627856-publishers-and-developers-faq)。
 
 ### 当前仓库具备的实现（线上状态需逐项验收）
 
-- 工作区游戏后台已有 `title_localized` 字段，只在游戏绑定对应站点语言 ROM 时显示标题框。英文和简体中文仍使用原有字段；繁体优先人工校对名，再回退自动转换名。本轮没有在生产后台编辑或保存数据，也没有核实有多少条已填写。
+- 当前 `main` 分支游戏后台已有 `title_localized` 字段，只在游戏绑定对应站点语言 ROM 时显示标题框。英文和简体中文仍使用原有字段；繁体优先人工校对名，再回退自动转换名。本轮没有在生产后台编辑或保存数据，也没有核实有多少条已填写。
 - `gameTitle()` 已用于首页、游戏卡片、详情页、搜索联想、最近游戏和云存档等界面；校对后的本地化标题也会写入站内搜索倒排索引，并进入详情页 JSON-LD 的 `name`，原题保留为 `alternateName`。标题译文本身不会扩大该语言页面的 sitemap / hreflang 覆盖。
 - 评分足够且页面确实免费可玩的游戏，结构化数据同时声明 `VideoGame` 与 `WebApplication`。Google 文档指出，仅有 `VideoGame` 类型不会显示 Software App 富结果；FAQ 标记不再承诺普通游戏站能获得 FAQ 富结果。
 - 新增按 ROM 语言浏览的稳定专题页 `/rom-language/:language`。页面只列实际绑定了该站点语言 ROM 槽的游戏，通用 `*` ROM 不会被误认为日文、法文等专属版本；空语言页返回 404。页面由 SSR 直接输出，具备本地化标题/正文、分页、canonical/hreflang、Breadcrumb 与游戏清单结构化数据。
@@ -126,7 +126,7 @@ Google 不使用 `meta keywords` 作为排名捷径。关键词应体现在准�
 3. 核对百度普通收录配置与每日任务，按中文站点情况监控提交接受数。
 4. 检查 Cloudflare/WAF 是否让 Googlebot、Bingbot、OAI-SearchBot 等读取 HTML 和图片；`robots.txt` 放行不代表 CDN 一定放行。OpenAI 也要求主机/CDN 允许其公布的搜索爬虫 IP。
 5. 为公开合集制定可解释的搜索收录规则；首页合集区只突出信息完整、确有整理价值的作品，避免低信息量条目成为重点入口。
-6. 分别验证 OAI-SearchBot、Perplexity、Claude Search 等搜索抓取，以及 GPTBot / ClaudeBot 等训练抓取是否符合站长意愿；robots 放行只是源站策略，Cloudflare/WAF 与区域 CDN 日志才证明真实请求成功。OpenAI 还维护公开的搜索爬虫 IP 清单；配置白名单时用其最新官方清单或供应商验证的机器人身份，不依赖短期日志里看到的 IP。
+6. 分别验证 OAI-SearchBot、Perplexity、Claude Search 等搜索抓取，以及 GPTBot / ClaudeBot 等训练抓取是否符合站长意愿；robots 放行只是源站策略，Cloudflare/WAF 与区域 CDN 日志才证明真实请求成功。若需要按 IP 验证 OpenAI 搜索爬虫，请使用其[官方 SearchBot IP 清单](https://openai.com/searchbot.json)，不要依赖短期日志中观察到的 IP。
 7. 每月按语言、国家、平台、ROM 语言、展示、点击、CTR、平均排名和索引状态复盘；把“有 ROM 但无当地标题/简介”的游戏作为内容待办队列。
 
 ## 完成验收标准
