@@ -128,6 +128,17 @@ console.log('⑤ 容量预检不能无限挂起')
   ck('容量预检最多等 4 秒', /LIVE_CAPACITY_TIMEOUT_MS = 4_000/.test(live) && /signal: controller\.signal/.test(live))
   const cap = runScenario('capacity')
   ck('预检超时后按 fail-open 返回，自动开播仍由服务端最终限额', cap.capacity === true && cap.ms < 6_000, JSON.stringify(cap))
+
+  const controls = code('src/emulator/LiveControls.tsx')
+  const capacity = controls.indexOf('const capacityPromise = canAutoStartLive(capacityAbort.signal)')
+  const attempt = controls.indexOf('const attempt = async')
+  const sources = controls.indexOf('let sources = handle.captureSources?.()', attempt)
+  const gate = controls.indexOf('if (!(await capacityPromise) || cancelled) return', attempt)
+  const broadcast = controls.indexOf('const b = await startBroadcast(', attempt)
+  const launch = controls.indexOf('void attempt(0)', broadcast)
+  ck('容量预检与画面 / 音轨就绪并行，但确认有容量后才建直播间', capacity >= 0 && capacity < attempt && attempt < sources && sources < gate && gate < broadcast && broadcast < launch)
+  ck('确认直播间已满时立刻停掉采集就绪轮询并落到未开播状态', /if \(!available && !cancelled\)\s*\{\s*window\.clearTimeout\(timer\)[\s\S]*?setConnecting\(false\)/.test(controls))
+  ck('满员结果会停止已经启动的跨域 SDK 采集帧桥，清理异常不能改写容量结果', /if \(!available && !cancelled\)\s*\{\s*window\.clearTimeout\(timer\)\s*timer = 0\s*try \{\s*const stopping = handleRef\.current\?\.stopRemoteLiveCapture\?\.\(\)\s*if \(stopping\) void stopping\.catch\(\(\) => undefined\)/.test(controls))
 }
 
 console.log('⑥ 自动开播网络类失败有限补试，确定的拒绝不补')

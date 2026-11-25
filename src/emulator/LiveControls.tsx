@@ -454,6 +454,26 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
     /** 开播这一步失败过几次（不含等画布 / 等声音那几轮），见 autoLiveRetry.ts */
     let failures = 0
     const capacityAbort = new AbortController()
+    let capacityAvailable: boolean | null = null
+    const capacityRejected = () => capacityAvailable === false
+    // 容量预检与画面 / 音轨就绪并行。慢引擎本来就要等资源，不能再把最多 4 秒的网络往返叠在前面。
+    const capacityPromise = canAutoStartLive(capacityAbort.signal).then((available) => {
+      capacityAvailable = available
+      if (!available && !cancelled) {
+        window.clearTimeout(timer)
+        timer = 0
+        // 跨域网页游戏的 SDK 采集可能已在等待容量时启动；无直播席位时要把这条帧桥也收掉。
+        try {
+          const stopping = handleRef.current?.stopRemoteLiveCapture?.()
+          if (stopping) void stopping.catch(() => undefined)
+        } catch {
+          // SDK 清理是尽力而为，不能让清理异常改写服务端的满员结果。
+        }
+        setConnecting(false)
+        console.info('[live] 直播间位置已满，本局跳过自动开播')
+      }
+      return available
+    })
     // 重新开始尝试就回到「连接中」。已经在播的那一路（依赖变化引起的重跑）不动它
     if (!liveRef.current) setConnecting(true)
 
@@ -468,7 +488,7 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
      * Ruffle 尤其容易踩：它的 AudioContext 是等第一声才建的。
      */
     const attempt = async (n: number, audioN = 0) => {
-      if (cancelled || liveRef.current) return
+      if (cancelled || liveRef.current || capacityRejected()) return
       let sources = handle.captureSources?.()
       let remoteLiveState: boolean | null | undefined
       if ((!sources || !canBroadcast(sources)) && handle.startRemoteLiveCapture) {
@@ -477,7 +497,7 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
         } catch {
           remoteLiveState = false
         }
-        if (cancelled || liveRef.current) return
+        if (cancelled || liveRef.current || capacityRejected()) return
         sources = handle.captureSources?.()
       }
       if (!sources || !canBroadcast(sources)) {
@@ -504,6 +524,8 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
         return
       }
       try {
+        // 本地采集可以先就绪，但建房仍必须等预检；服务端 go-live 继续做并发容量的最终裁决。
+        if (!(await capacityPromise) || cancelled) return
         const b = await startBroadcast({
           // 传函数不传对象：画布被运行时换掉（Ruffle 读档 reload）时 broadcast 会重新来要一次。
           // 传上面那个 sources 死对象的话，直播会永远冻在换画布前那一帧（见 captureFeed.ts）
@@ -572,17 +594,8 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
       }
     }
 
-    void (async () => {
-      const hasSlot = await canAutoStartLive(capacityAbort.signal)
-      if (cancelled) return
-      if (!hasSlot) {
-        // 满位只跳过这次默认开播，游戏本身照常运行；以后重新进游戏时会再次检查。
-        setConnecting(false)
-        console.info('[live] 直播间位置已满，本局跳过自动开播')
-        return
-      }
-      await attempt(0)
-    })()
+    // 容量请求在后台飞行；画面和音轨轮询立刻开始，与它重叠。
+    void attempt(0)
     return () => {
       cancelled = true
       capacityAbort.abort()
