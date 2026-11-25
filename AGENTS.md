@@ -411,9 +411,14 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
 这是旧 overdump，不是 BIOS、核心或下载故障。只在确认两半逐字节相同、且半段 CRC 与驱动清单一致后，
 才可去掉重复后半段；不要把这个规则套到其它包或改版 ROM。
 
-修正版保存在 R2 的独立 key `roms/arcade/avsp-fixed-20261115.zip.8bg`，生产 `game_roms` 英文绑定已切换，
-旧对象保留用于回滚。改 ROM 绑定后要验证游戏详情 API，并刷新 Cloudflare 精确 URL；大陆入口 EdgeOne
-没有清缓存通道，需确认它也已返回新 key，或等待其 `s-maxage=300` 缓存自然过期。
+2026-11-24 线上复核：生产 `game_roms` 仍绑定原键 `roms/arcade/avsp.zip.8bg`；修正版实际是覆写了这个对象。
+先前记录的独立键 `roms/arcade/avsp-fixed-20261115.zip.8bg` 在 R2 不存在，原对象也没有留在独立回滚键里。
+回查时该原键在 R2、`assets.8bitgo.com`、`cn-assets.8bitgo.com` 返回相同 SHA-256
+`103375cc1223ea02509f7022576e8aaedcfdecd3edc85c95195e3832a3f4127f`（9,056,573 字节）；`avp.14m`
+已是 1 MiB 且 CRC 为 `0x39933b1e`，17:31:42 UTC 现场随后记录了 `game_playable` / `first_frame`。
+不要再指引把绑定切到上述不存在的键。以后修 ROM 若需回滚，先将旧对象另存到版本化 R2 key，校验新旧对象后再改
+`game_roms`；改 ROM 绑定后仍要验证游戏详情 API 并刷新 Cloudflare 精确 URL。大陆入口 EdgeOne
+没有清缓存通道，需确认它也已返回新内容，或等待其 `s-maxage=300` 缓存自然过期。
 
 ### 2.8.1 街机 BIOS 分两档：平台一份 + **按系统包**各一份
 
