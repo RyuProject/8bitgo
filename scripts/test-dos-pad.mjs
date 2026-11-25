@@ -18,6 +18,7 @@
  * 跑：npm run test:dospad
  */
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 /* ---------------- localStorage 替身 ---------------- */
@@ -38,6 +39,7 @@ function installStorage() {
 }
 
 const mod = await import(fileURLToPath(new URL('../src/emulator/dosPad.ts', import.meta.url)))
+const touchInput = await import(fileURLToPath(new URL('../src/emulator/dosTouchInput.ts', import.meta.url)))
 const {
   CODE_TO_GLFW,
   DOS_PAD_BUTTONS,
@@ -49,6 +51,7 @@ const {
   resetDosPadKeys,
   dosPadCustomized,
 } = mod
+const { DosTouchInputLatch, isDosTouchTap, watchDosTouchInputFocusLoss } = touchInput
 
 let failed = 0
 function check(name, fn) {
@@ -239,6 +242,91 @@ check('缺字段的存档按字段补默认（老版本 / 手改过）', () => {
   assert.equal(keys.up, 87)
   assert.equal(keys.down, 264)
   assert.equal(keys.a, 341)
+})
+
+/* ---------------- 五、触屏生命周期 ---------------- */
+
+console.log('\n触屏输入生命周期')
+check('同一键的多个触点共享按住状态，最后一个松开才发 keyup', () => {
+  const events = []
+  const latch = new DosTouchInputLatch((key, down) => events.push(['key', key, down]), (button, down) => events.push(['mouse', button, down]))
+  latch.key('finger-1', 87, true)
+  latch.key('finger-2', 87, true)
+  latch.key('finger-1', 87, false)
+  assert.deepEqual(events, [['key', 87, true]])
+  latch.key('finger-2', 87, false)
+  assert.deepEqual(events, [['key', 87, true], ['key', 87, false]])
+})
+check('切后台或卸载时一次性释放所有键和鼠标按钮，重复清理安全', () => {
+  const events = []
+  const latch = new DosTouchInputLatch((key, down) => events.push(['key', key, down]), (button, down) => events.push(['mouse', button, down]))
+  latch.key('key-a', 65, true)
+  latch.key('key-b', 66, true)
+  latch.mouseButton('left-pointer', 0, true)
+  latch.releaseAll()
+  latch.releaseAll()
+  assert.deepEqual(events, [
+    ['key', 65, true], ['key', 66, true], ['mouse', 0, true],
+    ['key', 65, false], ['key', 66, false], ['mouse', 0, false],
+  ])
+})
+check('窗口失焦与标签页隐藏都会释放按住的输入，卸载后解除监听', () => {
+  const makeTarget = () => {
+    const listeners = new Map()
+    return {
+      addEventListener(type, fn) {
+        const set = listeners.get(type) ?? new Set()
+        set.add(fn)
+        listeners.set(type, set)
+      },
+      removeEventListener(type, fn) { listeners.get(type)?.delete(fn) },
+      emit(type) { for (const fn of listeners.get(type) ?? []) fn() },
+      count(type) { return listeners.get(type)?.size ?? 0 },
+    }
+  }
+  const oldWindow = globalThis.window
+  const oldDocument = globalThis.document
+  const fakeWindow = makeTarget()
+  const fakeDocument = Object.assign(makeTarget(), { visibilityState: 'visible' })
+  globalThis.window = fakeWindow
+  globalThis.document = fakeDocument
+  try {
+    const events = []
+    let focusLosses = 0
+    const latch = new DosTouchInputLatch((key, down) => events.push([key, down]), () => {})
+    const stop = watchDosTouchInputFocusLoss(latch, () => focusLosses++)
+    latch.key('finger', 87, true)
+    fakeWindow.emit('blur')
+    assert.deepEqual(events, [[87, true], [87, false]])
+    assert.equal(focusLosses, 1)
+    latch.key('finger', 87, true)
+    fakeDocument.visibilityState = 'hidden'
+    fakeDocument.emit('visibilitychange')
+    assert.deepEqual(events, [[87, true], [87, false], [87, true], [87, false]])
+    assert.equal(focusLosses, 2)
+    stop()
+    assert.equal(fakeWindow.count('blur'), 0)
+    assert.equal(fakeWindow.count('pagehide'), 0)
+    assert.equal(fakeDocument.count('visibilitychange'), 0)
+  } finally {
+    if (oldWindow === undefined) delete globalThis.window
+    else globalThis.window = oldWindow
+    if (oldDocument === undefined) delete globalThis.document
+    else globalThis.document = oldDocument
+  }
+})
+check('系统取消触控不算点击，正常抬手仍按 6px 阈值识别轻点', () => {
+  assert.equal(isDosTouchTap(0, false), false)
+  assert.equal(isDosTouchTap(0, true), true)
+  assert.equal(isDosTouchTap(5.9, true), true)
+  assert.equal(isDosTouchTap(6, true), false)
+})
+
+check('功能键行保留横向触摸滚动，普通键盘仍可纵向滚动', () => {
+  const keyboard = readFileSync(new URL('../src/emulator/DosKeyboard.tsx', import.meta.url), 'utf8')
+  assert.match(keyboard, /overflow-x-auto pb-1" style=\{\{ touchAction: 'manipulation' \}\}/)
+  assert.match(keyboard, /style=\{\{ \.\.\.KEY_STYLE, touchAction: 'manipulation' \}\}/)
+  assert.match(keyboard, /max-h-\[42vh\] overflow-y-auto[\s\S]*?touchAction: 'auto', overscrollBehavior: 'contain'/)
 })
 
 check('localStorage 写不进去时也不抛（隐私模式）', () => {

@@ -94,9 +94,11 @@ const PLATFORM_GROUPS: ReadonlyArray<{ titleKey: keyof Translation['browse']; id
 
 export function PlatformsPage() {
   const t = useT()
+  const state = usePageData<PlatformsData>('/platforms', undefined, 'platforms')
   useSeo({
     title: t.browse.platformsTitle,
     description: t.seo.platforms,
+    noindex: state.status === 'error',
     jsonLd: [
       breadcrumbSchema([
         { name: t.common.home, path: '/' },
@@ -104,7 +106,6 @@ export function PlatformsPage() {
       ]),
     ],
   })
-  const state = usePageData<PlatformsData>('/platforms', undefined, 'platforms')
   const facets = state.data?.facets
   const counts = countsOf(facets?.platforms)
   // 开放哪些平台是配置说了算，和后端有没有数据无关 ——
@@ -186,9 +187,11 @@ export function PlatformsPage() {
 /* ---------------- 类型 ---------------- */
 export function GenresPage() {
   const t = useT()
+  const state = usePageData<GenresData>('/genres', undefined, 'genres')
   useSeo({
     title: t.browse.genresTitle,
     description: t.seo.genres,
+    noindex: state.status === 'error',
     jsonLd: [
       breadcrumbSchema([
         { name: t.common.home, path: '/' },
@@ -196,9 +199,11 @@ export function GenresPage() {
       ]),
     ],
   })
-  const state = usePageData<GenresData>('/genres', undefined, 'genres')
   const facets = state.data?.facets
   const counts = countsOf(facets?.genres)
+  const visibleGenres = state.status === 'ready'
+    ? genres.filter((g) => (counts.get(g.id) ?? 0) > 0)
+    : genres
 
   return (
     <div className="container-x py-8 sm:py-10">
@@ -210,7 +215,7 @@ export function GenresPage() {
         <CardGridSkeleton count={genres.length} grid={GENRE_GRID} height="h-52" />
       ) : (
         <div className={GENRE_GRID}>
-          {genres.map((g) => (
+          {visibleGenres.map((g) => (
             <Link
               key={g.id}
               to={`/genres/${g.id}`}
@@ -236,9 +241,11 @@ export function GenresPage() {
 export function DevelopersPage() {
   const t = useT()
   const lang = useLang()
+  const state = usePageData<DevelopersData>('/developers', undefined, 'developers')
   useSeo({
     title: t.browse.developersTitle,
     description: t.seo.developers,
+    noindex: state.status === 'error',
     jsonLd: [
       breadcrumbSchema([
         { name: t.common.home, path: '/' },
@@ -246,7 +253,6 @@ export function DevelopersPage() {
       ]),
     ],
   })
-  const state = usePageData<DevelopersData>('/developers', undefined, 'developers')
   // 开发商不是配置，只能等 facets：名单和数量都由后端 GROUP BY 出来（已按数量倒序）
   const developers = state.data?.facets.developers
   const [brokenCover, setBrokenCover] = useState<Record<string, true>>({})

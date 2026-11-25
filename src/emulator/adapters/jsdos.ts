@@ -45,7 +45,7 @@ import { GP, startGamepadBridge, hasGamepadApi, type GamepadBridge } from '../ga
 import { deleteSave, pullSave, pushSave } from '@/services/saves'
 import { loadGameBytes } from '../romLoader'
 import { isRomNetworkFailure } from '../loadProgress'
-import { inspectRemoteRomPack, isRomPackUrl, ROM_PACK_ARRAY_BUFFER_LIMIT } from '@/services/romPack'
+import { inspectRemoteRomPack, isRomPackUrl, readBlobRange, ROM_PACK_ARRAY_BUFFER_LIMIT } from '@/services/romPack'
 import { prepareRemoteDosBundle } from '../dosBundleSource'
 import {
   defaultDos71SystemUrl,
@@ -55,6 +55,7 @@ import {
   systemSourcesFor,
 } from '../systemSource'
 import { armJspi } from '../jspiFlag'
+import { loadJsdosScript } from '../jsdosScriptLoader'
 import { warmJsdosCore } from '../prewarm'
 import { win3xPatchedSystemLayer } from '../win3xSystemIni'
 import { parseEmulatorVariantSaveSlug } from '../romLanguage'
@@ -685,81 +686,56 @@ const DOS_AUTOSAVE_INTERVAL_MS = 60_000
 
 /** js-dos 是全局脚本，整页只加载一次 */
 let loading: Promise<DosFn> | null = null
-/**
- * 加速入口上 js-dos.js（约 320KB）的加载时限。弱网正常下载要留足，挂死则要早于播放器 120 秒看门狗换线。
- */
+/** 加速入口上的 js-dos.js 约 320KB；25 秒无响应就尽早切回源站。 */
 export const JSDOS_EDGE_SCRIPT_TIMEOUT_MS = 25_000
+/** 源站没有可用的第三条线路，给较慢但仍能传输的弱网多留时间，同时早于播放器 120 秒看门狗。 */
+export const JSDOS_ENTRY_TIMEOUT_MS = 60_000
 function loadJsDos(): Promise<DosFn> {
   if (loading) return loading
-  loading = new Promise<DosFn>((resolve, reject) => {
-    const win = window as unknown as { Dos?: DosFn }
-    if (win.Dos) return resolve(win.Dos)
+  const win = window as unknown as { Dos?: DosFn }
+  if (win.Dos) return Promise.resolve(win.Dos)
 
-    // 大陆访客从 EdgeOne 取（paths.ts 的 jsdosBase）；取不到就当场换同源再来一次
-    const root = jsdosBase()
+  /*
+    ⚠️ 必须在 <script> 插进去**之前**：js-dos 的 store 在模块求值时就把 jspi 开关
+    从 localStorage 读死了，之后没有任何 Dos() 参数能改它。见 ../jspiFlag.ts。
+  */
+  // 这里还没选本局的后端；JSPI 只对 DOSBox-X 生效，不能把普通 DOS 局误报成 Windows 客体。
+  armJspi()
+
+  const loadFrom = async (root: string): Promise<DosFn> => {
     const css = document.createElement('link')
     css.rel = 'stylesheet'
     css.href = `${root}js-dos.css`
     document.head.appendChild(css)
 
-    /*
-      ⚠️ 必须在 <script> 插进去**之前**：js-dos 的 store 在模块求值时就把 jspi 开关
-      从 localStorage 读死了，之后没有任何 Dos() 参数能改它。见 ../jspiFlag.ts。
-    */
-    // 这里还没选本局的后端；JSPI 只对 DOSBox-X 生效，不能把普通 DOS 局误报成 Windows 客体。
-    armJspi()
-
-    const script = document.createElement('script')
-    script.src = `${root}js-dos.js`
-    /*
-      加速入口上的 js-dos.js 可能既不成功也不报错地一直挂着（EdgeOne 首次请求超时的那类现场，
-      emulators.js 同样出过，见 #1518）。脚本没有字节进度，挂多久系统镜像 / 游戏包的进度就缓多久，
-      玩家只看到条子不动。只给加速线路设时限：到点按失败处理、改走同源；同源本身没有更好的退路，不设。
-    */
-    let scriptSettled = false
-    const edgeTimer = root !== JSDOS_PATH
-      ? window.setTimeout(() => {
-          if (scriptSettled) return
-          console.warn(`[jsdos] ${root}js-dos.js ${JSDOS_EDGE_SCRIPT_TIMEOUT_MS / 1000} 秒没有加载完成，按失败处理`)
-          script.onerror?.(new Event('error'))
-        }, JSDOS_EDGE_SCRIPT_TIMEOUT_MS)
-      : 0
-    /*
-      预热那一路先看出加速入口失速 / 极慢（runtimeEdgeWatch.ts）时不必再等满 25 秒：
-      #2756 的 js-dos.js 在 EdgeOne 上走了 41 秒，同一页的 DOSBox-X 30 秒零字节。
-    */
-    const stopEdgeWatch = root !== JSDOS_PATH
+    // 预热链先判出加速入口失速时，取消正在等的脚本请求，不必再耗满入口时限。
+    const controller = root !== JSDOS_PATH ? new AbortController() : undefined
+    const stopEdgeWatch = controller
       ? onRuntimeEdgeBad('jsdos', () => {
-          if (scriptSettled) return
           console.warn(`[jsdos] 加速入口已判坏，${root}js-dos.js 不再等待`)
-          script.onerror?.(new Event('error'))
+          controller.abort(new Error('js-dos 加速入口已判坏'))
         })
       : () => {}
-    script.onload = () => {
-      if (scriptSettled) return
-      scriptSettled = true
-      window.clearTimeout(edgeTimer)
+    try {
+      return await loadJsdosScript(document, `${root}js-dos.js`, () => win.Dos, {
+        timeoutMs: root === JSDOS_PATH ? JSDOS_ENTRY_TIMEOUT_MS : JSDOS_EDGE_SCRIPT_TIMEOUT_MS,
+        signal: controller?.signal,
+      })
+    } catch (error) {
+      css.remove()
+      throw error
+    } finally {
       stopEdgeWatch()
-      return win.Dos ? resolve(win.Dos) : reject(new Error('js-dos 已加载但没有暴露 Dos()'))
     }
-    script.onerror = () => {
-      if (scriptSettled) return
-      scriptSettled = true
-      window.clearTimeout(edgeTimer)
-      stopEdgeWatch()
-      if (root !== JSDOS_PATH) {
-        console.warn(`[jsdos] ${root}js-dos.js 加载失败，改走同源 ${JSDOS_PATH}`)
-        // 入口脚本在加速入口上失败 / 超时是线路的硬证据：本页改走同源，并持久化坏线状态两小时。
-        markRuntimeEdgeBad('jsdos')
-        css.remove()
-        loading = null
-        loadJsDos().then(resolve, reject)
-        return
-      }
-      reject(new Error(`加载失败：${root}js-dos.js`))
-    }
-    // 事件和限时器先安装好再插入标签，避免缓存命中时 onload 早于监听器注册。
-    document.head.appendChild(script)
+  }
+
+  const root = jsdosBase()
+  loading = loadFrom(root).catch(async (error) => {
+    if (root === JSDOS_PATH) throw error
+    console.warn(`[jsdos] ${root}js-dos.js 加载失败或超时，改走同源 ${JSDOS_PATH}`, error)
+    // 入口脚本自身失败是线路的硬证据；只在这时持久化坏线状态两小时。
+    markRuntimeEdgeBad('jsdos')
+    return loadFrom(JSDOS_PATH)
   }).catch((e) => {
     loading = null // 允许下次重试
     throw e
@@ -799,10 +775,10 @@ async function readRom(
       if (loaded.blob.size > ROM_PACK_ARRAY_BUFFER_LIMIT) {
         throw new Error('大型 DOS 包缺少 .jsdos/dosbox.conf，无法在低内存模式下直接启动；请重新打包后上传')
       }
-      return { name: loaded.name, buf: await loaded.blob.arrayBuffer() }
+      return { name: loaded.name, buf: await readBlobRange(loaded.blob, 0, loaded.blob.size) }
     }
 
-    const magic = new Uint8Array(await game.slice(0, 4).arrayBuffer())
+    const magic = new Uint8Array(await readBlobRange(game, 0, 4, 10_000))
     if (magic[0] === 0x50 && magic[1] === 0x4b) {
       if (await isReadyJsdosBundleBlob(game)) {
         onProgress?.({ phase: 'rom', loaded: game.size, total: game.size, ratio: 1, cached: true })
@@ -810,7 +786,11 @@ async function readRom(
       }
     }
   }
-  const loaded = await loadGameBytes(game, onProgress, signal)
+  // Range 预检在弱网超时后会退回正式下载；整包路径仍须在解码前设上限，不能让大包把手机标签页撑死。
+  const limits = windowsGuest
+    ? { maxBytes: ROM_PACK_ARRAY_BUFFER_LIMIT, maxUnpackedBytes: ROM_PACK_ARRAY_BUFFER_LIMIT }
+    : undefined
+  const loaded = await loadGameBytes(game, onProgress, signal, limits)
   return { name: loaded.name, buf: loaded.data }
 }
 

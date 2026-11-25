@@ -10,12 +10,13 @@
  * 走 RuntimeHandle 的 sendMouseMove / sendMouseRelative / sendMouseButton，直接喂 js-dos，
  * 不合成鼠标事件。由 TouchPad 的「🖱」按钮打开，只在声明了 sendMouseMove 的运行时出现。
  */
-import { useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { useOverlayHost } from './overlayHost'
 import type { RuntimeHandle } from './types'
 import { cx } from '@/lib/format'
 import { useT } from '@/services/i18n'
+import { DosTouchInputLatch, isDosTouchTap, watchDosTouchInputFocusLoss } from './dosTouchInput'
 
 const PAD_STYLE: CSSProperties = {
   userSelect: 'none',
@@ -24,8 +25,6 @@ const PAD_STYLE: CSSProperties = {
   WebkitTapHighlightColor: 'transparent',
   touchAction: 'none',
 }
-/** 判定「点一下」还是「拖动」的位移阈值（像素） */
-const TAP_SLOP = 6
 /** 相对模式灵敏度：手指每移 1px 当作多少鼠标位移 */
 const RELATIVE_SCALE = 1.4
 
@@ -44,10 +43,30 @@ export function DosMousePad({ handle, onClose }: Props) {
   const rel = handle.sendMouseRelative
   const btn = handle.sendMouseButton
   const [mode, setMode] = useState<Mode>('absolute')
+  const input = useMemo(
+    () => new DosTouchInputLatch(() => {}, (button, down) => btn?.(button, down)),
+    [btn],
+  )
 
   const pointerId = useRef<number | null>(null)
   const last = useRef({ x: 0, y: 0 })
   const moved = useRef(0)
+  const nextTap = useRef(0)
+  const tapTimers = useRef(new Map<number, number>())
+
+  useEffect(() => {
+    const stopWatching = watchDosTouchInputFocusLoss(input, () => {
+      // 丢焦后可能收不到 pointercancel；旧 pointerup 不得在恢复焦点后伪造一次点击。
+      pointerId.current = null
+      moved.current = 0
+    })
+    return () => {
+      stopWatching()
+      for (const timer of tapTimers.current.values()) window.clearTimeout(timer)
+      tapTimers.current.clear()
+      input.releaseAll()
+    }
+  }, [input])
 
   const clamp01 = (n: number) => Math.max(0, Math.min(1, n))
 
@@ -59,7 +78,9 @@ export function DosMousePad({ handle, onClose }: Props) {
     moved.current = 0
     if (mode === 'absolute') {
       const r = e.currentTarget.getBoundingClientRect()
-      move?.(clamp01((e.clientX - r.left) / r.width), clamp01((e.clientY - r.top) / r.height))
+      if (r.width > 0 && r.height > 0) {
+        move?.(clamp01((e.clientX - r.left) / r.width), clamp01((e.clientY - r.top) / r.height))
+      }
     }
   }
 
@@ -71,23 +92,27 @@ export function DosMousePad({ handle, onClose }: Props) {
     moved.current += Math.abs(dx) + Math.abs(dy)
     if (mode === 'absolute') {
       const r = e.currentTarget.getBoundingClientRect()
-      move?.(clamp01((e.clientX - r.left) / r.width), clamp01((e.clientY - r.top) / r.height))
+      if (r.width > 0 && r.height > 0) {
+        move?.(clamp01((e.clientX - r.left) / r.width), clamp01((e.clientY - r.top) / r.height))
+      }
     } else {
       rel?.(dx * RELATIVE_SCALE, dy * RELATIVE_SCALE)
     }
   }
 
-  const onUp = (e: ReactPointerEvent<HTMLDivElement>) => {
+  const onEnd = (e: ReactPointerEvent<HTMLDivElement>, allowTap: boolean) => {
     if (e.pointerId !== pointerId.current) return
     pointerId.current = null
-    // 没怎么动 = 当成一次左键点击（按下 + 很快松开）
-    if (moved.current < TAP_SLOP) {
-      try {
-        btn?.(0, true)
-        window.setTimeout(() => btn?.(0, false), 60)
-      } catch {
-        /* 引擎已拆 */
-      }
+    // 只有正常抬手才算轻点；系统取消 / 丢失捕获不能误触发游戏里的鼠标点击。
+    if (isDosTouchTap(moved.current, allowTap)) {
+      const tapId = ++nextTap.current
+      const source = `trackpad-tap:${tapId}`
+      input.mouseButton(source, 0, true)
+      const timer = window.setTimeout(() => {
+        input.mouseButton(source, 0, false)
+        tapTimers.current.delete(tapId)
+      }, 60)
+      tapTimers.current.set(tapId, timer)
     }
   }
 
@@ -96,33 +121,17 @@ export function DosMousePad({ handle, onClose }: Props) {
     onPointerDown: (e: ReactPointerEvent<HTMLButtonElement>) => {
       e.preventDefault()
       e.currentTarget.setPointerCapture(e.pointerId)
-      try {
-        btn?.(button, true)
-      } catch {
-        /* ignore */
-      }
+      input.mouseButton(`mouse-button:${button}:${e.pointerId}`, button, true)
     },
     onPointerUp: (e: ReactPointerEvent<HTMLButtonElement>) => {
       e.preventDefault()
-      try {
-        btn?.(button, false)
-      } catch {
-        /* ignore */
-      }
+      input.mouseButton(`mouse-button:${button}:${e.pointerId}`, button, false)
     },
-    onPointerCancel: () => {
-      try {
-        btn?.(button, false)
-      } catch {
-        /* ignore */
-      }
+    onPointerCancel: (e: ReactPointerEvent<HTMLButtonElement>) => {
+      input.mouseButton(`mouse-button:${button}:${e.pointerId}`, button, false)
     },
-    onLostPointerCapture: () => {
-      try {
-        btn?.(button, false)
-      } catch {
-        /* ignore */
-      }
+    onLostPointerCapture: (e: ReactPointerEvent<HTMLButtonElement>) => {
+      input.mouseButton(`mouse-button:${button}:${e.pointerId}`, button, false)
     },
     onContextMenu: (e: React.MouseEvent) => e.preventDefault(),
     children: label,
@@ -163,9 +172,9 @@ export function DosMousePad({ handle, onClose }: Props) {
         style={PAD_STYLE}
         onPointerDown={onDown}
         onPointerMove={onMove}
-        onPointerUp={onUp}
-        onPointerCancel={onUp}
-        onLostPointerCapture={onUp}
+        onPointerUp={(e) => onEnd(e, true)}
+        onPointerCancel={(e) => onEnd(e, false)}
+        onLostPointerCapture={(e) => onEnd(e, false)}
       >
         <span className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-[11px] text-white/40">
           {mode === 'absolute' ? t.player.padMap.mouseMove : t.player.padMap.mouseAim}

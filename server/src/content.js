@@ -185,20 +185,20 @@ export async function loadFacets({ includeDevelopers = false, platforms: only, g
   const visiblePlatforms = only ?? (ENABLED_PLATFORM_IDS.length ? [...ENABLED_PLATFORM_IDS] : undefined)
   const [platforms, genres, developers, verifiedFlashCount, romLanguages] = await Promise.all([
     platformCounts(),
-    genreCounts(),
-    includeDevelopers ? developerCounts() : Promise.resolve([]),
+    genreCounts({ platforms: visiblePlatforms, gameSlugs }),
+    includeDevelopers ? developerCounts({ platforms: visiblePlatforms, gameSlugs }) : Promise.resolve([]),
     Array.isArray(gameSlugs) ? verifiedFlashGameCount(gameSlugs) : Promise.resolve(0),
     romLanguageCounts({ platforms: visiblePlatforms, gameSlugs }),
   ])
   const platformFacets = platforms
-    // noWasm 模式下 Flash 只显示实测名单内的数量，不能把其他依赖 Ruffle 的游戏一起露出。
-    .filter((r) => (!Array.isArray(gameSlugs) || r.platform !== 'flash') && (!only || only.includes(r.platform)))
+    // 只显示开放平台；noWasm 模式下 Flash 进一步只显示实测名单内的数量。
+    .filter((r) => (!Array.isArray(gameSlugs) || r.platform !== 'flash') && (!Array.isArray(visiblePlatforms) || visiblePlatforms.includes(r.platform)))
     .map((r) => ({ id: r.platform, count: Number(r.n) }))
   if (only && Array.isArray(gameSlugs) && verifiedFlashCount > 0) {
     platformFacets.push({ id: 'flash', count: verifiedFlashCount })
   }
   return {
-    // 没有 WebAssembly 的浏览器只看得到能跑的平台（类型 / 开发商计数仍是全库的，只是参考数）
+    // noWasm 下平台、类型与代表作都使用同一份可运行平台范围。
     platforms: platformFacets,
     genres: genres.map((r) => ({ id: r.genre, count: Number(r.n) })),
     romLanguages,
@@ -263,9 +263,9 @@ export function cachePage(raw) {
 }
 
 /** 游戏详情和各模拟器隔离播放页读的是同一份数据；集中一处避免两条路回退规则漂移。 */
-function loadGamePage(slug, platforms, gameSlugs) {
+function loadGamePage(slug, platforms, gameSlugs, cachePrefix = '') {
   // 详情页本身照常给（玩家点开始时播放器会说明原因），只有「相关推荐」按能跑的平台筛
-  return cached(`${platforms ? 'nw:' : ''}game:${slug}`, async () => {
+  return cached(`${cachePrefix}game:${slug}`, async () => {
     const game = await getGameBySlug(slug)
     if (!game || game.hidden) return { route: 'game', game: null }
     const [related, developerLogos] = await Promise.all([
@@ -379,7 +379,12 @@ export async function loadForRoute(pathname, search) {
     所有游戏列表只给 shared/wasm-free-platforms.js 里的平台。缓存 key 前缀 `nw:` 与普通访客分开。
   */
   const nowasm = qs('nowasm') === '1'
-  const platforms = nowasm ? [...WASM_FREE_PLATFORM_IDS] : undefined
+  // 所有公开目录都只能列出前台开放的平台；不然首页 / 类型页会链接到详情页 404。
+  // 仅有 WebAssembly 精简模式会进一步缩小到纯 JS 后备平台。
+  const platforms = nowasm
+    ? [...WASM_FREE_PLATFORM_IDS]
+    : ENABLED_PLATFORM_IDS.length ? [...ENABLED_PLATFORM_IDS] : undefined
+  const visiblePlatforms = platforms ?? (ENABLED_PLATFORM_IDS.length ? [...ENABLED_PLATFORM_IDS] : undefined)
   const gameSlugs = nowasm ? [...WASM_FREE_GAME_SLUGS] : undefined
   const nw = nowasm ? 'nw:' : ''
 
@@ -390,10 +395,9 @@ export async function loadForRoute(pathname, search) {
   if (seg[0] === 'games') {
     if (seg[1]) {
       const slug = safeDecode(seg[1])
-      return loadGamePage(slug, platforms, gameSlugs)
+      return loadGamePage(slug, platforms, gameSlugs, nw)
     }
     // 和详情页、平台专题页共用公开平台白名单，避免把最终会 404 的游戏列进目录和语言页。
-    const visiblePlatforms = platforms ?? (ENABLED_PLATFORM_IDS.length ? [...ENABLED_PLATFORM_IDS] : undefined)
     const q = {
       platform: qs('platform'), genre: qs('genre'), developer: qs('developer'),
       romLanguage: qs('romLanguage'),
@@ -426,7 +430,7 @@ export async function loadForRoute(pathname, search) {
   // `/play/<平台>/:slug` 是独立的跨源隔离播放器，但首屏仍需同一款游戏的数据。
   const isolatedPlay = isolatedRuntimeRoute(pathname)
   if (isolatedPlay) {
-    return loadGamePage(safeDecode(isolatedPlay.slug), platforms, gameSlugs)
+    return loadGamePage(safeDecode(isolatedPlay.slug), platforms, gameSlugs, nw)
   }
 
   // /platforms、/platforms/:id
@@ -455,7 +459,7 @@ export async function loadForRoute(pathname, search) {
     return cached(`${nw}genres`, async () => ({ route: 'genres', facets: await loadFacets({ platforms, gameSlugs }) }))
   }
 
-  if (seg[0] === 'developers') return cached('developers', async () => ({ route: 'developers', facets: await loadFacets({ includeDevelopers: true }) }))
+  if (seg[0] === 'developers') return cached(`${nw}developers`, async () => ({ route: 'developers', facets: await loadFacets({ includeDevelopers: true, platforms, gameSlugs }) }))
 
   // 合集以前只在浏览器 useEffect 里取数，SSR 永远是一屏骨架；搜索引擎因此看不到
   // 卡片链接、合集标题和里面的游戏。和其它公开内容页一样在进程内取好再渲染。

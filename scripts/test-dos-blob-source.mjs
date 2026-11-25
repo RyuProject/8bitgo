@@ -1,6 +1,5 @@
 /** 大型 DOS bundle：分片、缓存与坏缓存自愈的接线回归。 */
 import assert from 'node:assert/strict'
-import path from 'node:path'
 import { build } from 'esbuild'
 
 globalThis.__dosBlobCache = new Map()
@@ -9,6 +8,7 @@ globalThis.__dosBlobResumeClears = []
 globalThis.__dosBlobDeletes = []
 globalThis.__dosBlobFailDecode = false
 globalThis.__dosBlobUnreadable = false
+globalThis.__dosBlobProbeUnreadable = false
 globalThis.__dosBlobPrewarms = []
 globalThis.__dosBlobReady = true
 globalThis.__dosBlobStored = new Blob([new Uint8Array([0x38, 0x42, 0x47, 0x31, 1, 2, 3])])
@@ -53,7 +53,14 @@ const built = await build({
                  export const romCacheDelete = async k => { globalThis.__dosBlobDeletes.push(k); globalThis.__dosBlobCache.delete(k) };`
               : args.path === 'bundle'
                 ? `export const isReadyJsdosBundleBlob = async () => globalThis.__dosBlobReady`
-                : `export const isRomPackBytes = b => b[0] === 0x38 && b[1] === 0x42 && b[2] === 0x47 && b[3] === 0x31;
+              : `export const isRomPackBytes = b => b[0] === 0x38 && b[1] === 0x42 && b[2] === 0x47 && b[3] === 0x31;
+                   export const readBlobRange = async (blob, start, end) => {
+                     if (globalThis.__dosBlobProbeUnreadable) {
+                       globalThis.__dosBlobProbeUnreadable = false
+                       const e = new Error('blob probe stuck'); e.name = 'NotReadableError'; throw e
+                     }
+                     return blob.slice(start, end).arrayBuffer()
+                   };
                    export const isRomPackUrl = u => /\\.8bg(?:[?#]|$)/i.test(u);
                    export const prewarmRomPackDecoder = u => { globalThis.__dosBlobPrewarms.push(u) };
                    export const isBlobReadError = e => Boolean(e && e.name === 'NotReadableError');
@@ -136,6 +143,22 @@ assert.equal(globalThis.__dosBlobFetches.length, fetchesBefore + 2, '读不出�
 assert.equal(globalThis.__dosBlobFetches.at(-2).resumeKey, url3, '第一次仍带续传')
 assert.equal(globalThis.__dosBlobFetches.at(-1).resumeKey, undefined, '重下那次不能再拼旧续传片')
 assert.ok(globalThis.__dosBlobResumeClears.slice(clearsBefore).includes(url3), '重下前必须作废这组续传片')
+
+// 解密前的四字节魔数探测本身也可能遇到坏 Blob；它必须走同一条有界读取 / 续传作废恢复。
+const url4 = 'https://assets.example/roms/dos/fallout.en.zip.8bg?romv=v4'
+globalThis.__dosBlobProbeUnreadable = true
+const probeFetchesBefore = globalThis.__dosBlobFetches.length
+const probeClearsBefore = globalThis.__dosBlobResumeClears.length
+let probeRecovered
+try {
+  console.warn = () => {}
+  probeRecovered = await prepareRemoteDosBundle(url4, undefined, new AbortController().signal)
+} finally {
+  console.warn = originalWarn
+}
+assert.equal(probeRecovered.name, 'fallout.en.zip')
+assert.equal(globalThis.__dosBlobFetches.length, probeFetchesBefore + 2, '魔数读取失败后必须重下而不是停在 100%')
+assert.ok(globalThis.__dosBlobResumeClears.slice(probeClearsBefore).includes(url4), '魔数读取失败时必须作废续传片')
 
 globalThis.__dosBlobStored = globalThis.__dosBlobPlain
 globalThis.__dosBlobReady = false

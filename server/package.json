@@ -26,6 +26,7 @@
     "check:flash-keys": "node scripts/check-flash-keys.mjs",
     "test:zh-convert": "node scripts/test-zh-convert.mjs",
     "pretranslate": "node scripts/pretranslate.mjs",
+    "seo:coverage": "node scripts/seo-content-coverage.mjs",
     "test:codes": "node scripts/test-codes.mjs",
     "test:open-apps": "node scripts/test-open-apps.mjs",
     "test:openapi": "node --experimental-strip-types --import ../scripts/helpers/ts-register.mjs scripts/test-openapi.mjs",

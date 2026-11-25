@@ -279,6 +279,15 @@ check('ROM 语言专题页与游戏库筛选共用同一语言条件', () => {
   assert.match(games, /fetchPageData\('\/games', \{ \.\.\.query, page: nextPage \}\)/, '游戏库续页没有复用同一 ROM 语言筛选条件')
 })
 
+check('目录数据加载失败时不把临时错误页留在搜索索引中', () => {
+  const collection = code('src/pages/CollectionPage.tsx')
+  assert.match(collection, /description,\s*noindex: Boolean\(error\)/, '平台、类型或 ROM 语言目录报错时仍可索引')
+  const browse = code('src/pages/BrowsePages.tsx')
+  assert.equal((browse.match(/noindex: state\.status === 'error'/g) ?? []).length, 3, '平台、类型与开发商目录错误态都要 noindex')
+  const games = code('src/pages/GamesPage.tsx')
+  assert.match(games, /noindex: Boolean\(q \|\| romLanguage \|\| state\.status === 'error'\)/, '游戏库错误态仍可索引')
+})
+
 check('达到真实评分门槛时，免费网页游戏同时标为 VideoGame 与 WebApplication', () => {
   const seo = code('src/services/seo.ts')
   assert.match(seo, /schema\[['"]@type['"]\]\s*=\s*\[\s*['"]VideoGame['"]\s*,\s*['"]WebApplication['"]\s*\]/, 'Google 不为仅有 VideoGame 类型的条目显示软件应用富结果')

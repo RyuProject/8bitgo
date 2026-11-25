@@ -386,6 +386,12 @@ await check('shared 的类型 id 名单与前台 src/data/genres.ts 一致', asy
   assert.deepEqual(fromUi, [...GENRE_IDS])
 })
 
+await check('类型 sitemap 只聚合前台开放平台的游戏', async () => {
+  const src = readFileSync(new URL('../server/src/routes/sitemaps.js', import.meta.url), 'utf8')
+  const genreQuery = src.match(/SELECT gg\.genre_id AS id[\s\S]*?GROUP BY gg\.genre_id/)?.[0] ?? ''
+  assert.match(genreQuery, /WHERE g\.hidden = 0\$\{ENABLED_PLATFORM_SQL\}/)
+})
+
 await check('shared 的平台白名单与前台 src/config/platforms.ts 是同一份', async () => {
   const { readFileSync } = await import('node:fs')
   const src = readFileSync(new URL('../src/config/platforms.ts', import.meta.url), 'utf8')

@@ -3,7 +3,7 @@
  *
  * 守三件事：
  *   1. `nowasm=1` 时列表只查有纯 JS 后备的平台，Flash 只放行 AwayFL 已验证的逐款名单；
- *   2. 不带参数（SSR、正常浏览器）时 SQL 和以前一样，没有多出 IN 条件；
+ *   2. 普通浏览器的公开目录只列开放平台；
  *   3. 两种结果不共用缓存 key（否则正常访客会拿到精简版，或反过来）。
  */
 import { register } from 'node:module'
@@ -37,6 +37,7 @@ globalThis.__fakeDb = {
 
 const { loadForRoute, invalidateContent } = await import('../src/content.js')
 const { WASM_FREE_PLATFORM_IDS, WASM_FREE_GAME_SLUGS, gameRunsWithoutWasm } = await import('../../shared/wasm-free-platforms.js')
+const { ENABLED_PLATFORM_IDS } = await import('../../shared/site-taxonomy.js')
 assert.deepEqual([...WASM_FREE_PLATFORM_IDS], ['nes', 'gb', 'gbc', 'gba'])
 assert.equal(gameRunsWithoutWasm('flash', 'untested-game'), false, '未验证的 Flash 游戏不能进入精简名单')
 assert.ok(WASM_FREE_GAME_SLUGS.every((slug) => gameRunsWithoutWasm('flash', slug)), '已验证 Flash 名单必须能通过逐款筛选')
@@ -50,7 +51,7 @@ async function run(path, qs) {
   return loadForRoute(path, new URLSearchParams(qs))
 }
 
-for (const path of ['/', '/games', '/platforms/nes', '/genres/rpg']) {
+for (const path of ['/', '/games', '/platforms/nes', '/genres/rpg', '/rom-language/ja']) {
   await run(path, 'nowasm=1')
   const lists = listSql()
   assert.ok(lists.length > 0, `${path} 应该查了游戏列表`)
@@ -59,7 +60,19 @@ for (const path of ['/', '/games', '/platforms/nes', '/genres/rpg']) {
     for (const id of WASM_FREE_PLATFORM_IDS) assert.ok(c.params.includes(id), `${path} 少了参数 ${id}`)
   }
   await run(path, '')
-  for (const c of listSql()) assert.doesNotMatch(c.sql, IN, `${path} 普通访客不该带平台过滤`)
+  for (const c of listSql()) {
+    assert.match(c.sql, /platform IN \(\?/, `${path} 普通访客必须只列前台开放平台：${c.sql.slice(0, 160)}`)
+    for (const id of ENABLED_PLATFORM_IDS) assert.ok(c.params.includes(id), `${path} 普通模式少了开放平台 ${id}`)
+  }
+}
+
+for (const qs of ['', 'nowasm=1']) {
+  await run('/developers', qs)
+  const developerQuery = calls.find((c) => /WITH RECURSIVE developer_parts/.test(c.sql))
+  assert.ok(developerQuery, `/developers ${qs || '(normal)'} 应查询代表作列表`)
+  assert.match(developerQuery.sql, /platform IN \(\?/, '开发商代表作必须限制在可见平台')
+  const allowed = qs ? WASM_FREE_PLATFORM_IDS : ENABLED_PLATFORM_IDS
+  for (const id of allowed) assert.ok(developerQuery.params.includes(id), `开发商列表缺少开放平台 ${id}`)
 }
 
 // 平台计数也只给能跑的平台

@@ -353,7 +353,14 @@ export function diagnoseStartupFailure({ event, runtime, platform, detail, elaps
     return hit('engine_assets', '模拟器依赖资源加载停滞', 'engine_asset', 'medium', 'stage.engine_assets')
   }
   if (has(/加载进度：阶段 starting|loading progress: phase starting/)) {
-    if (platform === 'html5') {
+    if (runtime === 'html5' || platform === 'html5') {
+      // HTML5 的 starting 在挂载 iframe 前就会记录；只有 iframe_load / download_complete 能证明入口文档已到。
+      // 诊断包 #4154 只有 start_click → timeout，不能误写成“页面已加载”，也不能据此猜是哪条跨域请求卡住。
+      const html5DocumentLoaded = Array.isArray(diagnostics?.timeline) && diagnostics.timeline.some((row) =>
+        row?.e === 'iframe_loaded' || row?.e === 'download_complete')
+      if (!html5DocumentLoaded) {
+        return hit('timeout', 'HTML5 游戏入口页面未确认加载', 'startup', 'medium', 'stage.html5_entry_pending')
+      }
       return hit('timeout', '网页游戏页面已加载，但尚未确认可玩', 'startup', 'medium', 'stage.html5_starting')
     }
     return withCore(hit('timeout', 'ROM 完成后模拟器启动停滞', 'core_init', 'medium', 'stage.starting'))

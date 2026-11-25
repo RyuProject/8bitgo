@@ -1008,8 +1008,8 @@ export interface BundleResult {
  * 这里最多读取中央目录与每个成员的 30 字节本地头；已经带 dosbox.conf 就返回 true，
  * 普通安全 ZIP 返回 false 让旧打包逻辑补配置，损坏、危险路径和不支持的压缩方式则明确报错。
  */
-export async function isReadyJsdosBundleBlob(blob: Blob): Promise<boolean> {
-  const entries = await assertValidZipBlob(blob, 'DOS ROM')
+export async function isReadyJsdosBundleBlob(blob: Blob, timeoutMs = 30_000): Promise<boolean> {
+  const entries = await assertValidZipBlob(blob, 'DOS ROM', timeoutMs)
   const normalized = entries.map((entry) => {
     const safe = safeArchivePath(entry.name)
     if (!safe) throw new Error(`ZIP 含不安全的绝对路径、盘符或 ../ 路径：${entry.name}`)

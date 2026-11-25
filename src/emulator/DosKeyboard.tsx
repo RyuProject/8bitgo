@@ -6,11 +6,12 @@
  *
  * 只在声明了 sendKey 的运行时（目前只有 DOS）出现，由 TouchPad 的「⌨」按钮打开。
  */
-import { useCallback, useRef, type PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useMemo, type PointerEvent as ReactPointerEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { useOverlayHost } from './overlayHost'
 import type { RuntimeHandle } from './types'
 import { CODE_TO_GLFW } from './dosPad'
+import { DosTouchInputLatch, watchDosTouchInputFocusLoss } from './dosTouchInput'
 import { cx } from '@/lib/format'
 import { useT } from '@/services/i18n'
 
@@ -102,7 +103,8 @@ const KEY_STYLE: React.CSSProperties = {
   WebkitUserSelect: 'none',
   WebkitTouchCallout: 'none',
   WebkitTapHighlightColor: 'transparent',
-  touchAction: 'none',
+  // 允许短屏手机在键盘上纵向滑动；浏览器接管滚动时会发 pointercancel 并自动松键。
+  touchAction: 'pan-y',
 }
 
 interface Props {
@@ -115,36 +117,37 @@ export function DosKeyboard({ handle, onClose }: Props) {
   // 原生全屏时 portal 到 <body> 会被整个隐藏；见 overlayHost.ts
   const overlayHost = useOverlayHost()
   const send = handle.sendKey
-  const pressed = useRef<Set<string>>(new Set())
-
-  const press = useCallback(
-    (code: string, down: boolean) => {
-      const glfw = CODE_TO_GLFW[code]
-      if (glfw === undefined) return
-      if (down === pressed.current.has(code)) return
-      if (down) pressed.current.add(code)
-      else pressed.current.delete(code)
-      try {
-        send?.(glfw, down)
-      } catch {
-        /* 引擎已经拆了就忽略 */
-      }
-    },
+  const input = useMemo(
+    () => new DosTouchInputLatch((key, down) => send?.(key, down), () => {}),
     [send],
   )
 
+  useEffect(() => {
+    const stopWatching = watchDosTouchInputFocusLoss(input)
+    return () => {
+      stopWatching()
+      input.releaseAll()
+    }
+  }, [input])
+
   const keyProps = (code: string) => ({
     onPointerDown: (e: ReactPointerEvent<HTMLButtonElement>) => {
-      e.preventDefault()
       e.currentTarget.setPointerCapture(e.pointerId)
-      press(code, true)
+      const key = CODE_TO_GLFW[code]
+      if (key !== undefined) input.key(`keyboard:${e.pointerId}`, key, true)
     },
     onPointerUp: (e: ReactPointerEvent<HTMLButtonElement>) => {
-      e.preventDefault()
-      press(code, false)
+      const key = CODE_TO_GLFW[code]
+      if (key !== undefined) input.key(`keyboard:${e.pointerId}`, key, false)
     },
-    onPointerCancel: () => press(code, false),
-    onLostPointerCapture: () => press(code, false),
+    onPointerCancel: (e: ReactPointerEvent<HTMLButtonElement>) => {
+      const key = CODE_TO_GLFW[code]
+      if (key !== undefined) input.key(`keyboard:${e.pointerId}`, key, false)
+    },
+    onLostPointerCapture: (e: ReactPointerEvent<HTMLButtonElement>) => {
+      const key = CODE_TO_GLFW[code]
+      if (key !== undefined) input.key(`keyboard:${e.pointerId}`, key, false)
+    },
     onContextMenu: (e: React.MouseEvent) => e.preventDefault(),
   })
 
@@ -153,7 +156,7 @@ export function DosKeyboard({ handle, onClose }: Props) {
   return createPortal(
     <div
       className="fixed inset-x-0 bottom-0 z-[70] flex flex-col border-t border-white/15 bg-black/85 backdrop-blur-sm"
-      style={KEY_STYLE}
+      style={{ ...KEY_STYLE, touchAction: 'auto' }}
     >
       <div className="flex items-center justify-between px-3 py-1.5 text-[11px] text-white/60">
         <span>{t.player.padMap.keyboard}</span>
@@ -161,9 +164,13 @@ export function DosKeyboard({ handle, onClose }: Props) {
           {t.player.padMap.close}
         </button>
       </div>
-      <div className="max-h-[42vh] overflow-y-auto px-1.5 pb-2">
+      {/* 功能键行要横向滚动；由具体按键限定手势，容器允许浏览器选择滚动轴。 */}
+      <div
+        className="max-h-[42vh] overflow-y-auto px-1.5 pb-2"
+        style={{ touchAction: 'auto', overscrollBehavior: 'contain' }}
+      >
         {/* 功能键单独一行，可横向滚动 */}
-        <div className="mb-1 flex gap-1 overflow-x-auto pb-1">
+        <div className="mb-1 flex gap-1 overflow-x-auto pb-1" style={{ touchAction: 'manipulation' }}>
           {FN_ROW.map((k) => (
             <button
               key={k.code}
@@ -172,7 +179,7 @@ export function DosKeyboard({ handle, onClose }: Props) {
               className={cx(
                 'shrink-0 rounded border border-white/20 bg-white/10 px-2 py-1.5 text-[11px] text-white/85 active:bg-brand/70',
               )}
-              style={KEY_STYLE}
+              style={{ ...KEY_STYLE, touchAction: 'manipulation' }}
             >
               {k.label}
             </button>

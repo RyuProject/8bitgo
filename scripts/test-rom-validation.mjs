@@ -145,6 +145,9 @@ try {
   const complete = zip([['game.nes', nes]])
   assert.equal(assertValidZip(arrayBuffer(complete)).length, 1)
   assert.equal((await assertValidZipBlob(new Blob([complete]))).length, 1)
+  const stalledBlob = new Blob([complete])
+  Object.defineProperty(stalledBlob, 'slice', { value: () => ({ arrayBuffer: () => new Promise(() => {}) }) })
+  await assert.rejects(() => assertValidZipBlob(stalledBlob, '卡住的测试 ZIP', 5), (error) => error?.name === 'NotReadableError')
   const withEmptyMember = arrayBuffer(zip([
     ['_offline/empty.txt', Buffer.alloc(0)],
     ['after.bin', Buffer.from([1, 2, 3])],

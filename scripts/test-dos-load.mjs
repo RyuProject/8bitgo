@@ -711,31 +711,46 @@ check('引擎脚本未到时缓住的 ROM / 系统镜像进度仍给看门狗报
   assert.match(src, /if \(engineDone\) options\.onProgress\?\.\(latestSystemProgress\)\n\s*else options\.onStartupActivity\?\.\(\)/)
 })
 
-check('加速入口上的 js-dos.js 挂住有时限，到点改走同源；同源不设时限', () => {
+check('js-dos 主入口不论加速或同源都有限时，失败标签清理后再回退', () => {
   const src = read('src/emulator/adapters/jsdos.ts')
-  const ms = Number(src.match(/JSDOS_EDGE_SCRIPT_TIMEOUT_MS = ([\d_]+)/)?.[1].replace(/_/g, ''))
-  assert.ok(ms >= 10_000 && ms < 120_000)
-  assert.match(src, /const edgeTimer = root !== JSDOS_PATH\n\s*\? window\.setTimeout\(/)
-  assert.match(src, /script\.onerror\?\.\(new Event\('error'\)\)/)
-  assert.match(src, /if \(scriptSettled\) return\n\s*scriptSettled = true\n\s*window\.clearTimeout\(edgeTimer\)\n\s*stopEdgeWatch\(\)\n\s*if \(root !== JSDOS_PATH\)/)
+  const edgeMs = Number(src.match(/JSDOS_EDGE_SCRIPT_TIMEOUT_MS = ([\d_]+)/)?.[1].replace(/_/g, ''))
+  const originMs = Number(src.match(/JSDOS_ENTRY_TIMEOUT_MS = ([\d_]+)/)?.[1].replace(/_/g, ''))
+  assert.ok(edgeMs >= 10_000 && edgeMs < 60_000)
+  assert.ok(originMs >= edgeMs && originMs < 120_000)
+  assert.match(src, /loadJsdosScript\(document, `\$\{root\}js-dos\.js`, \(\) => win\.Dos, \{\n\s*timeoutMs: root === JSDOS_PATH \? JSDOS_ENTRY_TIMEOUT_MS : JSDOS_EDGE_SCRIPT_TIMEOUT_MS,/)
+  assert.match(src, /if \(root === JSDOS_PATH\) throw error\n\s*console\.warn\(/)
+  assert.match(src, /return loadFrom\(JSDOS_PATH\)/)
 })
 
-check('加速入口判坏（预热失速 / 极慢）时 js-dos.js 不等满 25 秒，并持久化改走同源（#2756 / #2758）', () => {
+check('加速入口被预热判坏时主动取消脚本请求并持久化改走同源（#2756 / #2758）', () => {
   const src = read('src/emulator/adapters/jsdos.ts')
-  // 只在加速入口上订阅；判坏回调走同一条 onerror 改道路径
-  assert.match(src, /const stopEdgeWatch = root !== JSDOS_PATH\n\s*\? onRuntimeEdgeBad\('jsdos', \(\) => \{\n\s*if \(scriptSettled\) return/)
+  // 只在加速入口上订阅；判坏时 abort 当前脚本，helper 会拆掉标签与超时器。
+  assert.match(src, /onRuntimeEdgeBad\('jsdos', \(\) => \{\n\s*console\.warn\(/)
+  assert.match(src, /controller\.abort\(new Error\('js-dos 加速入口已判坏'\)\)/)
   // 入口脚本在加速入口上失败是硬证据：持久化（不是只影响本页的 markJsdosEdgeFailed）
-  const onerrorStart = src.indexOf('script.onerror = () => {')
-  const onerrorEnd = src.indexOf('document.head.appendChild(script)', onerrorStart)
-  assert.ok(onerrorStart >= 0 && onerrorEnd > onerrorStart, '按实际的脚本插入点截取 onerror 处理器')
-  const onerror = src.slice(onerrorStart, onerrorEnd)
-  assert.match(onerror, /markRuntimeEdgeBad\('jsdos'\)/)
-  assert.doesNotMatch(onerror, /markJsdosEdgeFailed\(\)/)
+  const fallback = src.slice(src.indexOf('loading = loadFrom(root)'), src.indexOf('}).catch((e) => {', src.indexOf('loading = loadFrom(root)')))
+  assert.match(fallback, /markRuntimeEdgeBad\('jsdos'\)/)
+  assert.doesNotMatch(fallback, /markJsdosEdgeFailed\(\)/)
   // 开局前的任意失败仍只影响本页（可能是 ROM / 内存问题，不该把线路记 2 小时）
   assert.match(src, /if \(usedJsdosEdge && !readySent\) markJsdosEdgeFailed\(\)/)
   const prewarm = read('src/emulator/prewarm.ts')
   assert.match(prewarm, /function prewarmJsdos\([^)]*\) \{\n\s*watchJsdosEdge\(\)/)
   assert.match(prewarm, /export function warmJsdosCore\([^)]*\) \{\n\s*watchJsdosEdge\(\)/)
+})
+
+check('DOS 触屏键鼠失焦 / 卸载会松开，取消触控不会误点，短屏键盘可滚动', () => {
+  const keyboard = read('src/emulator/DosKeyboard.tsx')
+  const mouse = read('src/emulator/DosMousePad.tsx')
+  assert.match(keyboard, /watchDosTouchInputFocusLoss\(input\)/)
+  assert.match(mouse, /watchDosTouchInputFocusLoss\(input,\s*\(\) =>/)
+  assert.match(mouse, /pointerId\.current = null/)
+  assert.match(keyboard, /return \(\) => \{\n\s*stopWatching\(\)\n\s*input\.releaseAll\(\)/)
+  assert.match(keyboard, /onPointerCancel: \(e: ReactPointerEvent<HTMLButtonElement>\)/)
+  assert.match(keyboard, /touchAction: 'pan-y'/)
+  assert.match(mouse, /watchDosTouchInputFocusLoss\(input,\s*\(\) =>/)
+  assert.match(mouse, /onPointerUp=\{\(e\) => onEnd\(e, true\)\}/)
+  assert.match(mouse, /onPointerCancel=\{\(e\) => onEnd\(e, false\)\}/)
+  assert.match(mouse, /onLostPointerCapture=\{\(e\) => onEnd\(e, false\)\}/)
 })
 
 console.log('')

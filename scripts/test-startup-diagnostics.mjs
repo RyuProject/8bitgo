@@ -427,6 +427,20 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
     { code: 'timeout', signal: 'stage.html5_starting' },
     'HTML5 的 download_complete 只表示 iframe 文档已加载，仍需按网页游戏启动阶段判断',
   )
+  const html5EntryPending = diagnoseStartupFailure({
+    event: 'timeout', runtime: 'html5', platform: 'html5', elapsedMs: 120_004,
+    detail: '连续 120 秒没有启动进度或可玩信号',
+    diagnostics: {
+      timeline: [{ t: 0, e: 'start_click' }, { t: 120_004, e: 'timeout' }],
+      logs: [{ t: 2, s: 'stage', l: 'info', m: 'html5 运行时模块加载完成' },
+        { t: 120_004, s: 'snapshot', l: 'info', m: '加载进度：阶段 starting，最后进度 0.0s' }],
+    },
+  })
+  assert.deepEqual(
+    { code: html5EntryPending.code, label: html5EntryPending.label, signal: html5EntryPending.signals[0] },
+    { code: 'timeout', label: 'HTML5 游戏入口页面未确认加载', signal: 'stage.html5_entry_pending' },
+    '没有 iframe_loaded / download_complete 的现场不能声称游戏页面已加载（#4154）',
+  )
   const unknownRuntimeCompletion = diagnoseStartupFailure({
     event: 'slow_start', platform: 'arcade', elapsedMs: 20_000,
     detail: '等待游戏可玩状态超时',
@@ -585,7 +599,8 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
 
 /* ---------- 「复制给 AI」 ---------- */
 {
-  const { formatGroupForAi, formatSample } = await import('../src/admin/diagnosticsReport.ts')
+  const { diagnosisSignalLabel, formatGroupForAi, formatSample } = await import('../src/admin/diagnosticsReport.ts')
+  assert.equal(diagnosisSignalLabel('stage.html5_entry_pending'), 'HTML5 游戏入口页尚未确认加载', '后台与复制给 AI 都要显示新分类依据的中文说明')
   const group = {
     signature: '0123456789abcdef', text: 'failed · emulatorjs · 卡在下载核心', event: 'failed', runtime: 'emulatorjs',
     count: 3, visits: 2, games: [{ slug: 'super-mario-bros', title: '超级玛丽奥兄弟', count: 3 }],

@@ -197,7 +197,7 @@ export function GamesPage() {
     canonicalPath: paged ? `/games?page=${seoPage}` : '/games',
     // 站内搜索结果没有收录价值（内容随关键词无限组合），但仍允许抓取，
     // 这样 canonical 能被读到，首页 JSON-LD 里的站内搜索框也才验证得过
-    noindex: Boolean(q || romLanguage),
+    noindex: Boolean(q || romLanguage || state.status === 'error'),
     jsonLd: [
       // 爬虫拿到的是服务端渲染好的 HTML，那时 list 已经有值；
       // 客户端跳转过来的第一帧列表还没到，先给个空清单，数据回来会重写

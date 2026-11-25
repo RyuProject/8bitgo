@@ -1,6 +1,7 @@
 /** 有界加载全局脚本；超时后清理失败标签，允许调用方安全换源再试。 */
 export interface JsdosScriptLoaderOptions {
   timeoutMs?: number
+  signal?: AbortSignal
   setTimer?: typeof setTimeout
   clearTimer?: typeof clearTimeout
 }
@@ -20,11 +21,17 @@ export function loadJsdosScript<T>(
     script.src = url
     let settled = false
     let timer: ReturnType<typeof setTimeout> | undefined
+    const signal = options.signal
+    const onAbort = () => {
+      const reason = signal?.reason
+      finish(reason instanceof Error ? reason : new Error(`js-dos script request aborted: ${url}`))
+    }
 
     const finish = (error?: Error, runtime?: T) => {
       if (settled) return
       settled = true
       if (timer !== undefined) clearTimer(timer)
+      signal?.removeEventListener('abort', onAbort)
       script.onload = null
       script.onerror = null
       if (error) {
@@ -38,6 +45,11 @@ export function loadJsdosScript<T>(
       }
     }
 
+    if (signal?.aborted) {
+      onAbort()
+      return
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
     script.onload = () => {
       try {
         finish(undefined, getRuntime())

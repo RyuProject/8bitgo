@@ -653,12 +653,14 @@ export async function verifiedFlashGameCount(slugs) {
   return Number(row?.n) || 0
 }
 
-/** 各类型的上架游戏数 */
-export function genreCounts() {
+/** 各类型的上架游戏数；公开目录可传平台白名单，避免计入前台会 404 的游戏。 */
+export function genreCounts(q = {}) {
+  const filter = gameFilterParts(q)
   return query(
-    `SELECT gg.genre_id AS genre, COUNT(*) AS n
-       FROM game_genres gg JOIN games g ON g.id = gg.game_id
-      WHERE g.hidden = 0 GROUP BY gg.genre_id`,
+    `SELECT gg.genre_id AS genre, COUNT(DISTINCT g.id) AS n
+       FROM games g JOIN game_genres gg ON gg.game_id = g.id ${filter.join} ${filter.whereSql}
+      GROUP BY gg.genre_id`,
+    filter.allParams,
   )
 }
 
@@ -670,7 +672,11 @@ export function genreCounts() {
  * 再各查一遍 —— 那正是 v1 的做法（把全库拉进内存再 groupBy）。
  * MySQL 8.0+ / MariaDB 10.2+ 都支持 ROW_NUMBER()。
  */
-export function developerCounts() {
+export function developerCounts(q = {}) {
+  const filter = gameFilterParts(q)
+  const baseWhere = filter.whereSql
+    ? `${filter.whereSql} AND g.developer <> ''`
+    : `WHERE g.developer <> ''`
   return query(
     `WITH RECURSIVE developer_parts AS (
        SELECT g.id, g.slug, g.title, g.title_zh, g.title_i18n, g.title_localized, g.icon, g.cover, g.platform, g.plays,
@@ -678,8 +684,7 @@ export function developerCounts() {
               CASE WHEN LOCATE(',', REPLACE(g.developer, '，', ',')) > 0
                    THEN SUBSTRING(REPLACE(g.developer, '，', ','), LOCATE(',', REPLACE(g.developer, '，', ',')) + 1)
                    ELSE '' END AS rest
-         FROM games g
-        WHERE g.hidden = 0 AND g.developer <> ''
+         FROM games g ${filter.join} ${baseWhere}
        UNION ALL
        SELECT id, slug, title, title_zh, title_i18n, title_localized, icon, cover, platform, plays,
               TRIM(SUBSTRING_INDEX(rest, ',', 1)) AS developer,
@@ -703,6 +708,7 @@ export function developerCounts() {
        LEFT JOIN developers d ON d.name = ranked.developer
       WHERE ranked.rn = 1
       ORDER BY ranked.n DESC, ranked.developer ASC`,
+    filter.allParams,
   )
 }
 

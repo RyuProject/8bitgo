@@ -101,6 +101,8 @@ function Collection({
     // 第二页起标题带上页码，避免多页共用同一个 title
     title: page > 1 ? `${heading}${fmt(t.games.pageOf, { page, total: totalPages })}` : heading,
     description,
+    // 站内跳转时若列表接口失败，不要把只有标题和报错提示的临时页面继续留在索引里。
+    noindex: Boolean(error),
     // 每一页 canonical 指向自己：分页内容不同，不该被合并掉
     canonicalPath: page > 1 ? `${basePath}?page=${page}` : basePath,
     jsonLd: [

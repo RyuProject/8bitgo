@@ -101,7 +101,7 @@ function i18nText(raw, language) {
  * 这一行内容在 `language` 下**有没有真正属于这门语言的正文**。
  *
  * ── 为什么 sitemap 要管这件事 ────────────────────────────────
- * 站点有 8 种语言，游戏 210 款 —— 全展开就是 1,680 条 URL 交给 Google。而译文是
+ * 游戏目录会持续增长，不能按「游戏数 × 站点语言数」把所有组合都交给 Google。而译文是
  * **按需生成**的（见 [[8bitgo-i18n-content]] 那套 pretranslate）：没生成的语言，
  * 页面正文会一路回退到英文简介、繁体回退到简体（`i18nData.ts` 的 gameDescription
  * 就是这么写的，那是刻意的用户体验兜底，不是 bug）。
@@ -362,7 +362,7 @@ export async function taxonomyRows() {
     query(
       `SELECT gg.genre_id AS id, MAX(COALESCE(g.updated_at, g.created_at, g.added_at)) AS latest
          FROM game_genres gg JOIN games g ON g.id = gg.game_id
-        WHERE g.hidden = 0
+        WHERE g.hidden = 0${ENABLED_PLATFORM_SQL}
         GROUP BY gg.genre_id`,
     ),
     query(

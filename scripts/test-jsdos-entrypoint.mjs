@@ -6,8 +6,11 @@ import { pathToFileURL } from 'node:url'
 
 const { loadJsdosScript } = await import(pathToFileURL(`${process.cwd()}/src/emulator/jsdosScriptLoader.ts`))
 const source = readFileSync(`${process.cwd()}/src/emulator/adapters/jsdos.ts`, 'utf8')
-assert.match(source, /loadJsdosScript\(document, `\$\{root\}js-dos\.js`, \(\) => win\.Dos, \{ timeoutMs: JSDOS_ENTRY_TIMEOUT_MS \}\)/)
+assert.match(source, /loadJsdosScript\(document, `\$\{root\}js-dos\.js`, \(\) => win\.Dos, \{\s*timeoutMs: root === JSDOS_PATH \? JSDOS_ENTRY_TIMEOUT_MS : JSDOS_EDGE_SCRIPT_TIMEOUT_MS,\s*signal: controller\?\.signal,/)
+assert.match(source, /export const JSDOS_ENTRY_TIMEOUT_MS = 60_000/)
+assert.match(source, /export const JSDOS_EDGE_SCRIPT_TIMEOUT_MS = 25_000/)
 assert.match(source, /加载失败或超时，改走同源/)
+assert.match(source, /return loadFrom\(JSDOS_PATH\)/)
 
 function harness() {
   const scripts = []
@@ -53,6 +56,18 @@ function harness() {
 
 {
   const h = harness()
+  const controller = new AbortController()
+  const loading = loadJsdosScript(h.document, 'https://cn-assets.example/js-dos.js', () => undefined, {
+    timeoutMs: 25_000, signal: controller.signal, setTimer: h.setTimer, clearTimer: h.clearTimer,
+  })
+  controller.abort(new Error('edge marked unhealthy'))
+  await assert.rejects(loading, /edge marked unhealthy/)
+  assert.equal(h.scripts[0].removed, true, '加速线路早期判坏时必须移除未完成的 script')
+  assert.equal(h.timers[0].cleared, true, '主动取消后不能残留超时器')
+}
+
+{
+  const h = harness()
   const loading = loadJsdosScript(h.document, '/js-dos.js', () => undefined, {
     timeoutMs: 5_000, setTimer: h.setTimer, clearTimer: h.clearTimer,
   })
@@ -64,8 +79,7 @@ function harness() {
 
 {
   const h = harness()
-  let runtime
-  const loading = loadJsdosScript(h.document, '/js-dos.js', () => runtime, {
+  const loading = loadJsdosScript(h.document, '/js-dos.js', () => undefined, {
     timeoutMs: 5_000, setTimer: h.setTimer, clearTimer: h.clearTimer,
   })
   h.scripts[0].onerror()
@@ -74,4 +88,4 @@ function harness() {
   assert.equal(h.timers[0].cleared, true)
 }
 
-console.log('✔ js-dos 主入口请求超时、错误与缺失全局对象都会释放并可重试')
+console.log('✔ js-dos 主入口超时、线路主动取消、错误与缺失全局对象都会释放并可重试')

@@ -40,6 +40,8 @@ export const ROM_PACK_DEFAULT_LEVEL = 19
 export const ROM_PACK_ARRAY_BUFFER_LIMIT = 1024 * 1024 * 1024
 
 const REMOTE_HEADER_PREVIEW_BYTES = 64 * 1024
+/** 预检只读几十 KB；超时就交给有重试 / 进度的下载器，并由其大小上限兜住内存。 */
+export const ROM_PACK_PREFLIGHT_TIMEOUT_MS = 8_000
 
 /**
  * 只用 HTTP Range 读取远端 8BG 的文件头。
@@ -52,25 +54,91 @@ export async function inspectRemoteRomPack(
   url: string,
   signal?: AbortSignal,
   fetchImpl: typeof fetch = fetch,
+  timeoutMs = ROM_PACK_PREFLIGHT_TIMEOUT_MS,
 ): Promise<RomPackHeader | null> {
+  // 两次 Range 请求（文件头恰好超过首段时）共享同一个总时限。
+  const deadline = Date.now() + Math.max(0, timeoutMs)
   const readPrefix = async (end: number): Promise<{ bytes: Uint8Array<ArrayBuffer>; total?: number } | null> => {
-    const response = await fetchImpl(url, {
-      headers: { Range: `bytes=0-${end}` },
-      signal,
-      cache: 'no-store',
+    if (signal?.aborted) throw signal.reason ?? new DOMException('已取消', 'AbortError')
+    const remainingMs = deadline - Date.now()
+    if (remainingMs <= 0) return null
+    const controller = new AbortController()
+    const relayAbort = () => controller.abort(signal?.reason)
+    signal?.addEventListener('abort', relayAbort, { once: true })
+    let timedOut = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const aborted = new Promise<never>((_, reject) => {
+      controller.signal.addEventListener('abort', () => reject(controller.signal.reason ?? new DOMException('已取消', 'AbortError')), { once: true })
     })
-    if (response.status === 200) {
-      // 有些源在响应头里声称支持 Range，实际仍回整包；立刻取消，不能为一次预检吞下 GB 级文件。
-      void response.body?.cancel().catch(() => {})
-      return null
+    timer = setTimeout(() => {
+      timedOut = true
+      controller.abort(new DOMException('8BG 文件头预检超时', 'TimeoutError'))
+    }, remainingMs)
+    try {
+      const response = await Promise.race([
+        fetchImpl(url, {
+          headers: { Range: `bytes=0-${end}` },
+          signal: controller.signal,
+          cache: 'no-store',
+        }),
+        aborted,
+      ])
+      if (response.status === 200) {
+        // 有些源在响应头里声称支持 Range，实际仍回整包；立刻取消，不能为一次预检吞下 GB 级文件。
+        void response.body?.cancel().catch(() => {})
+        return null
+      }
+      if (response.status !== 206) throw new Error(`读取 8BG 文件头失败（HTTP ${response.status}）`)
+      const match = response.headers.get('content-range')?.match(/^bytes\s+0-(\d+)\/(\d+)$/i)
+      if (!match) throw new Error('8BG 文件头响应缺少有效的 Content-Range')
+      const lastByte = Number(match[1])
+      const total = Number(match[2])
+      if (!Number.isSafeInteger(lastByte) || !Number.isSafeInteger(total) || total <= lastByte || lastByte > end) {
+        void response.body?.cancel().catch(() => {})
+        throw new Error('8BG 文件头 Range 响应超出请求范围或长度无效')
+      }
+      const expected = lastByte + 1
+      const reader = response.body?.getReader()
+      if (!reader) throw new Error('8BG 文件头响应没有可读取的数据流')
+      const chunks: Uint8Array[] = []
+      let length = 0
+      let bytes: Uint8Array<ArrayBuffer>
+      try {
+        const readBody = (async () => {
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+            length += value.byteLength
+            // 不信任 Content-Range 声明的长度；坏边缘若多吐数据，不能让一次预检吃完整 ROM。
+            if (length > expected) {
+              void reader.cancel().catch(() => {})
+              throw new Error('8BG 文件头 Range 响应正文超出声明长度')
+            }
+            chunks.push(value)
+          }
+          const result = new Uint8Array(length) as Uint8Array<ArrayBuffer>
+          let offset = 0
+          for (const chunk of chunks) {
+            result.set(chunk, offset)
+            offset += chunk.byteLength
+          }
+          return result
+        })()
+        bytes = await Promise.race([readBody, aborted])
+      } finally {
+        reader.releaseLock()
+      }
+      if (bytes.byteLength !== expected) throw new Error('8BG 文件头 Range 响应长度不完整')
+      return { bytes, total }
+    } catch (error) {
+      if (signal?.aborted) throw signal.reason ?? new DOMException('已取消', 'AbortError')
+      // 预检是省时省内存的提示路径；它卡住时交回有进度、可换线路的正式下载器。
+      if (timedOut) return null
+      throw error
+    } finally {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', relayAbort)
     }
-    if (response.status !== 206) throw new Error(`读取 8BG 文件头失败（HTTP ${response.status}）`)
-    const match = response.headers.get('content-range')?.match(/^bytes\s+0-(\d+)\/(\d+)$/i)
-    if (!match) throw new Error('8BG 文件头响应缺少有效的 Content-Range')
-    const bytes = new Uint8Array(await response.arrayBuffer()) as Uint8Array<ArrayBuffer>
-    const expected = Number(match[1]) + 1
-    if (bytes.byteLength !== expected) throw new Error('8BG 文件头 Range 响应长度不完整')
-    return { bytes, total: Number(match[2]) }
   }
 
   let preview = await readPrefix(REMOTE_HEADER_PREVIEW_BYTES - 1)

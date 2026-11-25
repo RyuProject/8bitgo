@@ -153,10 +153,27 @@ export function assertValidZip(buf: ArrayBuffer, label = 'ZIP'): ZipFileEntry[] 
  * Blob 版中央目录校验。只读取文件尾、中央目录和每个成员的 30 字节本地头，
  * 不再为了验证一个 200MB 街机包申请同样大的连续 ArrayBuffer。
  */
-export async function assertValidZipBlob(blob: Blob, label = 'ZIP'): Promise<ZipFileEntry[]> {
+export async function assertValidZipBlob(blob: Blob, label = 'ZIP', timeoutMs = 60_000): Promise<ZipFileEntry[]> {
   if (blob.size < 22) throw new Error(`${label} 压缩包为空、已损坏或下载不完整`)
+  // 把整个校验限制在一个总预算内，避免坏掉的 Blob 后端让每批本地头都重新等一分钟。
+  const deadline = Date.now() + timeoutMs
+  const read = async (start: number, end: number): Promise<ArrayBuffer> => {
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) throw new DOMException(`${label} Blob 读取超时`, 'NotReadableError')
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      return await Promise.race([
+        blob.slice(start, end).arrayBuffer(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new DOMException(`${label} Blob 读取超时`, 'NotReadableError')), remaining)
+        }),
+      ])
+    } finally {
+      clearTimeout(timer)
+    }
+  }
   const tailStart = Math.max(0, blob.size - 22 - 65535)
-  const tailBuffer = await blob.slice(tailStart).arrayBuffer()
+  const tailBuffer = await read(tailStart, blob.size)
   const tail = new Uint8Array(tailBuffer)
   const tailView = new DataView(tailBuffer)
   let eocd = -1
@@ -183,7 +200,7 @@ export async function assertValidZipBlob(blob: Blob, label = 'ZIP'): Promise<Zip
     centralOffset + centralSize > blob.size
   ) return invalid()
 
-  const centralBuffer = await blob.slice(centralOffset, centralOffset + centralSize).arrayBuffer()
+  const centralBuffer = await read(centralOffset, centralOffset + centralSize)
   const bytes = new Uint8Array(centralBuffer)
   const view = new DataView(centralBuffer)
   const entries: ZipFileEntry[] = []
@@ -215,7 +232,7 @@ export async function assertValidZipBlob(blob: Blob, label = 'ZIP'): Promise<Zip
   // 并发按小批次读本地头：成千上万个成员时不能同时制造成千上万个 Blob 请求。
   for (let at = 0; at < allEntries.length; at += 64) {
     const batch = allEntries.slice(at, at + 64)
-    const headers = await Promise.all(batch.map((entry) => blob.slice(entry.offset, entry.offset + 30).arrayBuffer()))
+    const headers = await Promise.all(batch.map((entry) => read(entry.offset, entry.offset + 30)))
     for (let i = 0; i < batch.length; i++) {
       const header = headers[i]
       if (header.byteLength !== 30) return invalid()

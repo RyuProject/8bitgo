@@ -9,6 +9,7 @@ import {
 import {
   inspectRemoteRomPack,
   ROM_PACK_ARRAY_BUFFER_LIMIT,
+  ROM_PACK_PREFLIGHT_TIMEOUT_MS,
 } from '../src/services/romPack.ts'
 import { allowsSpeculativePlayerPreload } from '../src/emulator/preloadPolicy.ts'
 
@@ -77,8 +78,51 @@ assert.equal(noRange, null)
 await new Promise((resolve) => setTimeout(resolve, 0))
 assert.equal(cancelled, true, 'Range 被忽略时必须立刻取消响应体，不能把整包当预检下载')
 
+let oversizedRangeRead = false
+let oversizedRangeCancelled = false
+await assert.rejects(() => inspectRemoteRomPack('https://assets.test/bad-range.8bg', undefined, async () => ({
+  status: 206,
+  headers: new Headers({ 'Content-Range': 'bytes 0-1000000/2000000' }),
+  body: {
+    getReader() {
+      oversizedRangeRead = true
+      return { read: async () => ({ done: true }), releaseLock() {} }
+    },
+    cancel() { oversizedRangeCancelled = true; return Promise.resolve() },
+  },
+})), /超出请求范围/)
+assert.equal(oversizedRangeRead, false, 'Content-Range 越界时不能先读取响应体')
+assert.equal(oversizedRangeCancelled, true, '越界 Range 响应体必须取消')
+
+let oversizedBodyCancelled = false
+await assert.rejects(() => inspectRemoteRomPack('https://assets.test/lying-range.8bg', undefined, async () => ({
+  status: 206,
+  headers: new Headers({ 'Content-Range': 'bytes 0-0/100' }),
+  body: {
+    getReader() {
+      return {
+        read: async () => ({ done: false, value: new Uint8Array(65_537) }),
+        cancel() { oversizedBodyCancelled = true; return Promise.resolve() },
+        releaseLock() {},
+      }
+    },
+  },
+})), /正文超出声明长度/)
+assert.equal(oversizedBodyCancelled, true, '正文长度不可信时必须在超出 Range 上限时取消流')
+
+const timedOut = await inspectRemoteRomPack(
+  'https://assets.test/stalled.8bg',
+  undefined,
+  () => new Promise(() => {}),
+  5,
+)
+assert.equal(timedOut, null, '预检首字节前卡住时应交回正式下载器，不能挂住整个启动流程')
+assert.equal(ROM_PACK_PREFLIGHT_TIMEOUT_MS, 8_000)
+
 const jsdos = readFileSync(new URL('../src/emulator/adapters/jsdos.ts', import.meta.url), 'utf8')
 assert.match(jsdos, /inspectRemoteRomPack\(game, signal\)/)
+assert.match(jsdos, /const limits = windowsGuest\n\s*\? \{ maxBytes: ROM_PACK_ARRAY_BUFFER_LIMIT, maxUnpackedBytes: ROM_PACK_ARRAY_BUFFER_LIMIT }/)
+assert.match(jsdos, /loadGameBytes\(game, onProgress, signal, limits\)/)
 assert.match(jsdos, /尚未配置流式游戏盘/)
 assert.match(jsdos, /verifySockdriveForLaunch\(sockdriveUrl, abort\.signal, Boolean\(systemUrl\)\)/)
 

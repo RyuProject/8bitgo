@@ -145,6 +145,7 @@ const DIAGNOSIS_SIGNAL_LABEL: Record<string, string> = {
   'error.engine_load': '错误摘要报告模拟器整体加载失败',
   'stage.engine_assets': '最后阶段文字指向模拟器依赖资源',
   'stage.html5_starting': 'HTML5 页面已加载，但没有可玩信号',
+  'stage.html5_entry_pending': 'HTML5 游戏入口页尚未确认加载',
   'error.lazy_module': '日志指向页面懒加载模块导入失败',
   'error.react_update_loop': '日志出现 React 最大更新深度错误',
   'error.page_asset': '日志指向页面脚本或样式资源',

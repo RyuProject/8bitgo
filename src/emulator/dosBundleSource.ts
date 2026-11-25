@@ -11,7 +11,10 @@ import { fetchBlobWithProgress, withResumeTimeout } from './loadProgress'
 import { alternateRomUrls } from '@/services/romHosts'
 import { romCacheDelete, romCacheGetBlob, romCacheKey, romCachePutBlob } from './romCache'
 import { isReadyJsdosBundleBlob } from '@/lib/jsdosBundle'
-import { isBlobReadError, isRomPackBytes, isRomPackUrl, prewarmRomPackDecoder, unpackRomPackBlob } from '@/services/romPack'
+import { isBlobReadError, isRomPackBytes, isRomPackUrl, prewarmRomPackDecoder, readBlobRange, unpackRomPackBlob } from '@/services/romPack'
+
+/** 四字节探测不该被浏览器的坏 Blob 存储拖成一局永不结束。 */
+const DOS_BLOB_PROBE_TIMEOUT_MS = 10_000
 
 export interface DosBundleBlob {
   name: string
@@ -36,7 +39,7 @@ async function decodeDosBundle(
   fallbackName: string,
   onChunk?: () => void,
 ): Promise<Omit<DosBundleBlob, 'fromCache'>> {
-  const magic = new Uint8Array(await stored.slice(0, 4).arrayBuffer())
+  const magic = new Uint8Array(await readBlobRange(stored, 0, 4, DOS_BLOB_PROBE_TIMEOUT_MS))
   let blob = stored
   let name = fallbackName
   if (isRomPackBytes(magic)) {
@@ -45,10 +48,10 @@ async function decodeDosBundle(
     name = unpacked.name
   }
 
-  const head = new Uint8Array(await blob.slice(0, 4).arrayBuffer())
+  const head = new Uint8Array(await readBlobRange(blob, 0, 4, DOS_BLOB_PROBE_TIMEOUT_MS))
   const zip = head.length >= 2 && head[0] === 0x50 && head[1] === 0x4b
   // 单个 EXE/COM 仍允许走旧逻辑；只有“看起来是 ZIP 却损坏”的包才应该在这里明确失败。
-  const ready = zip ? await isReadyJsdosBundleBlob(blob) : false
+  const ready = zip ? await isReadyJsdosBundleBlob(blob, 30_000) : false
   return { name, blob, ready }
 }
 
