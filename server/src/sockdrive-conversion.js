@@ -874,9 +874,9 @@ async function processJob(job) {
           console.warn(`[sockdrive-convert] ${job.id} 无法恢复启动程序路径：${error.message}`)
           return null
         })
-        job.resolved_executable = manifestExecutable && storedExecutable && storedExecutable !== manifestExecutable
-          ? ''
-          : manifestExecutable || storedExecutable
+        const executableMismatch = Boolean(manifestExecutable && storedExecutable && storedExecutable !== manifestExecutable)
+        job.resolved_executable = executableMismatch ? '' : manifestExecutable || storedExecutable
+        if (executableMismatch) await updateJob(job.id, { resolved_executable: null }).catch(() => {})
         await finishPublishedJob(job, config, published)
         completed = true
         return
