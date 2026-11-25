@@ -27,6 +27,7 @@ import {
 } from '../src/indexnow.js'
 import { taxonomyRows } from '../src/routes/sitemaps.js'
 import { isPlatformEnabledId } from '../../shared/site-taxonomy.js'
+import { shouldIndexCollection } from '../../shared/collection-seo.js'
 
 const argv = process.argv.slice(2)
 const KINDS = ['games', 'posts', 'taxonomy', 'collections']
@@ -71,8 +72,20 @@ try {
   }
 
   if (wants('collections')) {
-    const rows = await query('SELECT id FROM collections WHERE hidden = 0 ORDER BY id ASC')
-    groups.push({ label: '用户合集详情页', items: rows.length, urls: collectionDetailUrls(rows, siteUrl) })
+    const rows = await query(
+      `SELECT c.id, c.description, COUNT(g.id) AS visible_game_count
+       FROM collections c
+       LEFT JOIN collection_items ci ON ci.collection_id = c.id
+       LEFT JOIN games g ON g.id = ci.game_id AND g.hidden = 0
+       WHERE c.hidden = 0
+       GROUP BY c.id, c.description
+       ORDER BY c.id ASC`,
+    )
+    const indexableRows = rows.filter((row) => shouldIndexCollection({
+      gameCount: row.visible_game_count,
+      description: row.description,
+    }))
+    groups.push({ label: '用户合集详情页', items: indexableRows.length, urls: collectionDetailUrls(indexableRows, siteUrl) })
   }
 
   const seen = new Set()

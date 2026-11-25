@@ -75,6 +75,28 @@ globalThis.__fakeDb = {
     if (q.startsWith('SELECT COUNT(*) AS n FROM collection_items WHERE collection_id')) {
       return [{ n: items.filter((i) => i.collection_id === Number(params[0])).length }]
     }
+    if (q.startsWith('SELECT c.*, u.nickname, u.avatar, COALESCE(public_count.visible_game_count, 0) AS visible_game_count FROM collections c')) {
+      const rows = collections
+        .filter((c) => !c.hidden)
+        .map((c) => {
+          const visibleGameCount = items.filter((item) => item.collection_id === c.id && games.some((g) =>
+            g.id === item.game_id && (!q.includes('g.hidden = 0') || !g.hidden),
+          )).length
+          const descriptionLength = [...String(c.description ?? '').trim()].length
+          const sqlCandidate = visibleGameCount >= 5 ||
+            (visibleGameCount >= 3 && descriptionLength >= 120) ||
+            (visibleGameCount >= 1 && descriptionLength >= 300)
+          return sqlCandidate ? {
+            ...c,
+            nickname: users[c.user_id]?.nickname,
+            avatar: users[c.user_id]?.avatar,
+            visible_game_count: visibleGameCount,
+          } : null
+        })
+        .filter(Boolean)
+        .sort((a, b) => b.updated_at - a.updated_at || b.id - a.id)
+      return rows
+    }
     // 列表 / 详情：合集 JOIN 作者
     if (q.startsWith('SELECT c.*, u.nickname, u.avatar FROM collections c')) {
       let rows = collections
@@ -302,13 +324,14 @@ try {
   )
   register(pathToFileURL(hooks))
 
-  const { collectionsRouter, getPublicCollectionDetail } = await import('../src/routes/collections.js')
+  const { collectionsRouter, getPublicCollectionDetail, topCollections } = await import('../src/routes/collections.js')
   const { signToken } = await import('../src/auth.js')
 
   const app = express()
   app.use(express.json())
   app.use('/api/collections', collectionsRouter)
-  const server = app.listen(0)
+  // 只占用本机回环地址，测试路由不需要向局域网开放。
+  const server = app.listen(0, '127.0.0.1')
   await new Promise((r) => server.once('listening', r))
   const base = `http://127.0.0.1:${server.address().port}`
 
@@ -347,6 +370,38 @@ process.on('exit', () => {
     process.exitCode = 1
   }
 })
+
+  console.log('\n── 首页推荐只展示有整理价值的公开合集 ──')
+  reset()
+  const addCollection = (id, title, gameCount, description, day, hidden = 0) => {
+    collections.push({
+      id,
+      user_id: AUTHOR,
+      title,
+      kind: '',
+      description,
+      hidden,
+      updated_at: new Date(`2026-01-${String(day).padStart(2, '0')}T00:00:00Z`),
+      created_at: new Date(`2026-01-${String(day).padStart(2, '0')}T00:00:00Z`),
+    })
+    for (let i = 0; i < gameCount; i++) {
+      const gameId = id * 100 + i
+      games.push({ id: gameId, slug: `collection-${id}-game-${i}`, title: `Game ${i}`, platform: 'nes', hidden: 0 })
+      items.push({ collection_id: id, game_id: gameId, created_at: new Date(Date.UTC(2026, 0, day)) })
+    }
+  }
+  addCollection(2, '五款游戏', 5, '', 4)
+  addCollection(3, '三款游戏与说明', 3, 'x'.repeat(120), 3)
+  addCollection(4, '一款游戏的短说明', 1, 'x'.repeat(299), 5)
+  addCollection(5, '已下架合集', 5, '', 6, 1)
+  addCollection(6, '五款可见和一款下架游戏', 6, '', 7)
+  games.find((game) => game.id === 604).hidden = 1
+  addCollection(7, '四款可见和一款下架游戏', 5, '', 8)
+  games.find((game) => game.id === 704).hidden = 1
+  const recommended = await topCollections(8)
+  ok(recommended.map((c) => c.id).join(',') === '6,2,3', '⭐ 只推荐达到共享索引门槛的合集，且按更新时间排序')
+  ok(recommended[0]?.gameCount === 5, '⭐ 首页卡片数量与门槛都只统计可见游戏，不把下架游戏重复算入')
+  ok((await topCollections(1)).map((c) => c.id).join(',') === '6', '推荐数量在过滤后计算，不被不达标清单占位')
 
   console.log('── 没登录 ──')
   reset()

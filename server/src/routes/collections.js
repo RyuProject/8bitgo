@@ -23,6 +23,7 @@ import { requireUser, optionalUser, hasAbility } from '../auth.js'
 import { attachRelations } from '../games-repo.js'
 import { readI18nMap } from '../mappers.js'
 import { take, takeAnonymous, clientKey, isMeaningfulIp } from '../rateLimit.js'
+import { shouldIndexCollection } from '../../../shared/collection-seo.js'
 /*
   合集会进 SSR 内容缓存（content.js 的 collection:<id> / collections:<page> / 首页合集块），
   Cloudflare 上的 HTML 还会缓存一天（§2.37）。所以凡是改了公开可见内容的写路径都要调它，
@@ -191,7 +192,8 @@ async function decorate(rows, viewerId) {
   return rows.map((r) =>
     rowToApi(r, {
       covers: covers.get(String(r.id)) ?? [],
-      gameCount: counts.get(String(r.id)) ?? 0,
+      // 首页推荐行已带公开游戏数，优先复用它，免得资格按可见数判断、卡片却把下架游戏也算进去。
+      gameCount: r.visible_game_count == null ? counts.get(String(r.id)) ?? 0 : Number(r.visible_game_count) || 0,
       viewCount: views.get(String(r.id)) ?? 0,
       viewerId,
     }),
@@ -206,11 +208,36 @@ async function decorate(rows, viewerId) {
  */
 export async function topCollections(limit = 8) {
   const rows = await query(
-    `${SELECT_WITH_AUTHOR} WHERE c.hidden = 0 ORDER BY c.updated_at DESC, c.id DESC LIMIT ?`,
-    [Math.max(1, Math.min(24, Number(limit) || 8))],
+    `SELECT c.*, u.nickname, u.avatar, COALESCE(public_count.visible_game_count, 0) AS visible_game_count
+     FROM collections c
+     JOIN users u ON u.id = c.user_id
+     LEFT JOIN (
+       SELECT ci.collection_id, COUNT(g.id) AS visible_game_count
+       FROM collection_items ci
+       JOIN collections public_collection ON public_collection.id = ci.collection_id AND public_collection.hidden = 0
+       LEFT JOIN games g ON g.id = ci.game_id AND g.hidden = 0
+       GROUP BY ci.collection_id
+     ) public_count ON public_count.collection_id = c.id
+     WHERE c.hidden = 0
+       AND (
+         COALESCE(public_count.visible_game_count, 0) >= 5
+         OR (COALESCE(public_count.visible_game_count, 0) >= 3 AND CHAR_LENGTH(TRIM(COALESCE(c.description, ''))) >= 120)
+         OR (COALESCE(public_count.visible_game_count, 0) >= 1 AND CHAR_LENGTH(TRIM(COALESCE(c.description, ''))) >= 300)
+       )
+     ORDER BY c.updated_at DESC, c.id DESC`,
   )
+  /*
+    SQL 先剔掉明显不达标的清单，避免首页为几百个低质量候选做装配；描述长度在 SQL 里
+    不合并连续空白，结果只会比 shared 规则更宽，不会漏掉达标行。最后再用共享判据精筛，
+    并在筛完后取前 N 个，保证一串新建的薄清单不会挤掉更早但有整理价值的合集。
+  */
+  const count = Math.max(1, Math.min(24, Number(limit) || 8))
+  const indexableRows = rows.filter((row) => shouldIndexCollection({
+    gameCount: row.visible_game_count,
+    description: row.description,
+  }))
   // 首页是公开数据，不带任何人的登录态 —— viewerId 传 null，输出里就不会有 mine
-  return decorate(rows, null)
+  return decorate(indexableRows.slice(0, count), null)
 }
 
 /* ---------------- 开放平台（/api/open/v1/*）专用只读入口 ---------------- */

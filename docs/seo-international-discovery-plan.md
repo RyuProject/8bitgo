@@ -23,11 +23,12 @@
 - 日文游戏库卡片仍显示不少英文原名，例如 `The King of Fighters ’97`、`Pokémon FireRed`。当前源码的 `gameTitle()` 与服务端 mapper 都支持读取 `titleLocalized`，因此更像是这些游戏的日文校对标题尚未填；但生产公开 API 在本轮浏览器中被拦截，且本地数据库报告无法连接，所以暂不能把“数据未填”当作已证实根因。标题覆盖率仍需数据库报告和生产后台保存抽查确认。
 - 再次复核日文详情 `/ja/games/pokemon-firered`：浏览器标题和 H1 都仍是英文 `Pokémon FireRed`；简介是长篇日文自动翻译，存在不自然表达；“1人用”与通用操作说明里列出 2P 键位也不一致。当前首要内容缺口是为真实日文 ROM 补人工标题，并校对简介、人数和操作说明，而不是继续扩写模板文字。
 - 2026-11-25 再次按精确路径查询公开搜索：没有返回 `/ja/rom-language/ja` 或 `/ja/games/pokemon-firered`；`/ja/games` 和 `/ja/genres/adventure` 仍能被搜到，但快照约两个月前，卡片标题仍大量为英文。`/ja/games/pokemon-pearl` 的搜索快照约一周前，正文已有日文内容，但结果标题仍显示英文 `Pokémon Pearl`；默认 `/games/pokemon-firered` 的快照约四周前则显示中文标题与正文。搜索快照可能滞后或不完整，这些结果不能证明 URL 未收录或 Google 当前采用的页面标题，只能作为 Search Console URL Inspection 的核对样本。
+- 2026-11-25 的公开搜索快照可搜到日文首页（当天抓取），但卡片标题仍有大量英文；首页推荐区还出现了 `pokemon` 等单款清单，且日文、德文、西班牙文快照均展示按 UI 语言拼出的模板说明。工作区已将首页推荐改为只展示达到共享索引门槛的合集；这项修复尚未部署，旧快照也不会即时刷新。
 - 浏览器将 `/robots.txt` 和 API 路径拦为 `ERR_BLOCKED_BY_CLIENT`，搜索工具也无法读取线上 `robots.txt`、sitemap XML；这是当前检查通道的限制，不能当作线上文件错误或成功的证据。专题页当前 UI 可读，错误状态是部署前的历史记录。
 
 ### 本次公开抓取发现的内容质量风险
 
-- 线上抽查 `/ja/collections/14`：标题只有 `pokemon`、没有说明、只含 1 款游戏；页面依然公开，且旧规则会将所有 `hidden = 0` 合集提交到 sitemap。现在工作区加了统一的内容门槛：至少 5 款可见游戏，或至少 3 款并有 120 个字符说明，或至少 1 款并有 300 个字符说明。门槛只影响索引信号与 sitemap；不隐藏合集、不改变玩家访问。以共享函数同步页面 `noindex` 与 sitemap 筛选，避免两处规则漂移。这个规则是保守的运营启发式，拿到 GSC 展示/点击与合集互动数据后应复核，不把字符数当作内容质量的唯一判据。
+- 线上抽查 `/ja/collections/14`：标题只有 `pokemon`、没有说明、只含 1 款游戏；页面依然公开，且旧规则会将所有 `hidden = 0` 合集提交到 sitemap。现在工作区加了统一的内容门槛：至少 5 款可见游戏，或至少 3 款并有 120 个字符说明，或至少 1 款并有 300 个字符说明。门槛只影响索引信号、sitemap / IndexNow 补交和首页推荐；不隐藏合集、不改变玩家直接访问。以共享函数同步详情 `noindex`、sitemap、IndexNow 和首页推荐筛选，避免规则漂移。这个规则是保守的运营启发式，拿到 GSC 展示/点击与合集互动数据后应复核，不把字符数当作内容质量的唯一判据。
 - `/robots.txt` 和 `/sitemap.xml` 在本次公开抓取工具中无法读取。仓库配置看起来允许公开爬虫，但线上 HTTP 状态、重定向、CDN/WAF 拦截仍未验证。
 - 仓库 `robots.txt` 只有通用 `User-agent: *` 组，允许公开目录里的搜索爬虫与 AI 搜索爬虫，且 `/api/` 继续屏蔽；同一规则目前也允许 GPTBot、ClaudeBot 等 AI 训练爬虫。搜索引用抓取与模型训练是不同用途，之后应根据站长偏好分别定策略；更改时必须保留后台/个人页的禁止规则，不能用一个点名 `Allow: /` 的专属组绕过它们。OpenAI 当前说明 OAI-SearchBot 用于 ChatGPT 搜索发现，GPTBot 则可由站长选择排除训练；若依赖 robots 控制搜索收录，还必须允许 OAI-SearchBot 读取页面，单靠 robots 放行也不能代替对 CDN/WAF/挑战页的实测。见[发布者说明](https://help.openai.com/en/articles/12627856-publishers-and-developers-faq)。
 
@@ -39,7 +40,7 @@
 - 新增按 ROM 语言浏览的稳定专题页 `/rom-language/:language`。页面只列实际绑定了该站点语言 ROM 槽的游戏，通用 `*` ROM 不会被误认为日文、法文等专属版本；空语言页返回 404。页面由 SSR 直接输出，具备本地化标题/正文、分页、canonical/hreflang、Breadcrumb 与游戏清单结构化数据。
 - 游戏库新增 ROM 语言筛选及带真实数量的语言专题链接；筛选参数页 `noindex`，稳定专题页才进入动态分类 sitemap。游戏新增、修改、删除时会推送受影响的 ROM 语言专题 URL。
 - 游戏库与 ROM 语言专题共用已开放平台白名单，避免把最终会返回 404 的下架平台游戏列进可抓取目录。
-- 公开合集索引门槛共用 `shared/collection-seo.js`：有 5 款可见游戏；或 3 款以上且说明至少 120 字；或至少 1 款且说明至少 300 字。其余合集继续公开访问，但详情页返回 `noindex`，并从合集 sitemap 及 sitemap 索引中排除；可见游戏数不把已下架游戏算进去。
+- 公开合集内容门槛共用 `shared/collection-seo.js`：有 5 款可见游戏；或 3 款以上且说明至少 120 字；或至少 1 款且说明至少 300 字。其余合集继续公开访问，但详情页返回 `noindex`，并从合集 sitemap、sitemap 索引、IndexNow 补交和首页推荐中排除；可见游戏数不把已下架游戏算进去。
 - 后台保存 `title_localized` 前必须确认数据库已运行迁移 `cd server && npm run migrate`。本轮线上列表正常，但没有通过后台保存测试或 schema 检查来独立确认该列在生产库中可写。
 
 ### 本轮代码审计修复
@@ -49,7 +50,8 @@
 - 回归检查：`npm run test:indexnow`（41 项）、`cd server && npm run test:nowasm-lists`、`cd server && npm run test:ssr-parallel`、`npm run test:i18n-content`（9 项）、`npm run test:seo-meta` 均通过。语言内容覆盖报告已做语法检查，但因本机 MySQL `127.0.0.1:3307` 没有监听，未能生成真实覆盖率。
 - 本轮重跑通过：`npm run test:seo-meta`、`npm run test:seo-performance`、`npm run test:indexnow`（41 项）、`npm run test:sitemap`、`npm run test:i18n-content`（9 项）、`cd server && npm run test:nowasm-lists`、`cd server && npm run test:ssr-parallel`。`npm run build` 与 `npx tsc -b --pretty false` 也均通过。
 - 随后给游戏库、平台/类型/开发商目录与平台/类型/ROM 语言列表的客户端取数错误态加了 `noindex,follow`，站内跳转遇到接口失败时会同步移除 canonical、hreflang 与 JSON-LD；新增回归断言后 `npm run test:seo-meta` 再次通过。
-- `npm run build` 与 `npx tsc -b --pretty false` 均通过；完整构建包括 613 模块客户端构建、494 模块 SSR 构建、运行时语法门禁、EmulatorJS 产物一致性、浏览器兼容、资源完整性、懒加载图和预构建模拟器回归门禁。
+- 2026-11-25 收口合集质量门槛：首页推荐、详情页 `noindex`、合集 sitemap 与 IndexNow 补交共用同一可见游戏数 / 原创说明判据；首页不会被新建的低信息清单挤满，卡片数量也不会把下架游戏算入。`npm --prefix server run test:collections`（101 项）、`npm run test:i18n-content`（9 项）、`npm run test:sitemap`、`npm run test:indexnow`（41 项）、`npm run test:seo-meta`、`npm run test:seo-performance`、`npm run test:robots`（42 项）、`npx tsc -b --pretty false`、改动脚本语法检查与 `git diff --check` 均通过。
+- `npm run build` 与 `npx tsc -b --pretty false` 均通过；完整构建包括 614 模块客户端构建、495 模块 SSR 构建、运行时语法门禁、EmulatorJS 产物一致性、浏览器兼容、资源完整性、懒加载图和预构建模拟器回归门禁。
 
 ### 目前最明显的产品缺口
 
@@ -127,7 +129,7 @@ Google 不使用 `meta keywords` 作为排名捷径。关键词应体现在准�
 2. 在 Bing Webmaster Tools 导入 Search Console 数据并检查 sitemap、URL Inspection、IndexNow 接收/抓取状态；IndexNow 只通知支持它的搜索引擎，不代替 Google Search Console。
 3. 核对百度普通收录配置与每日任务，按中文站点情况监控提交接受数。
 4. 检查 Cloudflare/WAF 是否让 Googlebot、Bingbot、OAI-SearchBot 等读取 HTML 和图片；`robots.txt` 放行不代表 CDN 一定放行。OpenAI 也要求主机/CDN 允许其公布的搜索爬虫 IP。
-5. 为公开合集制定可解释的搜索收录规则；首页合集区只突出信息完整、确有整理价值的作品，避免低信息量条目成为重点入口。
+5. ✅ 已为公开合集制定可解释的索引与首页推荐规则：详情、sitemap、IndexNow 和首页推荐共用门槛；不达标合集仍可直接访问，不进入重点推荐。
 6. 分别验证 OAI-SearchBot、Perplexity、Claude Search 等搜索抓取，以及 GPTBot / ClaudeBot 等训练抓取是否符合站长意愿；robots 放行只是源站策略，Cloudflare/WAF 与区域 CDN 日志才证明真实请求成功。若需要按 IP 验证 OpenAI 搜索爬虫，请使用其[官方 SearchBot IP 清单](https://openai.com/searchbot.json)，不要依赖短期日志中观察到的 IP。
 7. 每月按语言、国家、平台、ROM 语言、展示、点击、CTR、平均排名和索引状态复盘；把“有 ROM 但无当地标题/简介”的游戏作为内容待办队列。
 

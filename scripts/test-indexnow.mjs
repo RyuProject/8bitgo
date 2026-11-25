@@ -307,7 +307,7 @@ await check('平台页与类型页按名单顺序输出，lastmod 取该页最�
 
 await check('用户合集 sitemap 只提交默认语言 canonical，并使用合集更新时间', async () => {
   const xml = buildCollectionSitemap([
-    { id: 5, updated_at: new Date('2026-09-03T00:00:00Z') },
+    { id: 5, visible_game_count: 5, description: '', updated_at: new Date('2026-09-03T00:00:00Z') },
   ], 'https://8bitgo.com')
   assert.match(xml, /<loc>https:\/\/8bitgo\.com\/collections\/5<\/loc>/)
   assert.match(xml, /<lastmod>2026-09-03<\/lastmod>/)
@@ -543,6 +543,8 @@ await check('补交脚本覆盖游戏、文章、分类与公开合集（防止�
   const indexNow = readFileSync(new URL('../server/scripts/submit-indexnow.mjs', import.meta.url), 'utf8')
   assert.match(indexNow, /FROM collections/, 'IndexNow 补交少了公开合集')
   assert.match(indexNow, /collectionDetailUrls/, 'IndexNow 合集没有复用 canonical URL 算法')
+  assert.match(indexNow, /visible_game_count/, 'IndexNow 合集没有按可见游戏数执行索引门槛')
+  assert.match(indexNow, /shouldIndexCollection/, 'IndexNow 合集没有复用页面与 sitemap 的内容门槛')
 })
 
 console.log(`✅ IndexNow / sitemap：${passed} 项检查通过`)
