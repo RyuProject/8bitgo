@@ -440,6 +440,8 @@ const POLL_MAX_MS = 120_000
 const LIST_REQUEST_TIMEOUT_MS = 8_000
 /** 空数组用固定引用：useSyncExternalStore 要求快照引用稳定，否则会无限重渲染 */
 const NO_ROOMS: NetplayRoom[] = []
+const EMPTY_ROOMS = () => NO_ROOMS
+const NO_SUBSCRIBE = (_listener: () => void) => () => {}
 
 /**
  * 成人游戏的联机房只对通过年龄门的登录用户可见（§2.23，与直播同一条规则），服务端按 JWT 过滤。
@@ -760,8 +762,13 @@ const store = (() => {
   }
 })()
 
-export function useNetplayRooms(): NetplayRoom[] {
-  return useSyncExternalStore(store.subscribe, store.get, () => NO_ROOMS)
+export function useNetplayRooms(enabled = true): NetplayRoom[] {
+  /*
+    播放器也会用房间快照判断邀请状态和当前联机人数，但普通单机页无需跟着大厅里
+    每个房间人数变化重渲染。房间大厅自己的订阅仍保持常开；播放器只在有邀请、
+    正在联机或直播观众准备加入联机时接收快照。
+  */
+  return useSyncExternalStore(enabled ? store.subscribe : NO_SUBSCRIBE, enabled ? store.get : EMPTY_ROOMS, EMPTY_ROOMS)
 }
 
 /** 手动刷新（开完房间后立刻让列表出现自己） */

@@ -952,8 +952,8 @@ export function EmulatorPlayer({
   const [copied, setCopied] = useState(false)
 
   // P2P：从房间列表里找要加入的那个房间（判断满没满、还在不在）
-  const p2pRooms = useNetplayRooms()
-  const liveRooms = useLiveRooms()
+  const p2pRooms = useNetplayRooms(Boolean(inviteId || netplayActive || hosting || liveNetplayRoom))
+  const liveRooms = useLiveRooms(Boolean(roomId && (netplayActive || hosting)))
   const inviteRoom = inviteId ? p2pRooms.find((r) => r.roomId === inviteId) : undefined
   const inviteGone = Boolean(inviteId) && status === 'idle' && !inviteResolving && p2pRooms.length > 0 && !inviteRoom
   /** 房主掉线、正在换人：这时进去会被拒（room is changing host），先别让人点 */

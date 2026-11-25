@@ -7,6 +7,7 @@
  * 用法：npm run test:room-merge
  */
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { mergeLiveIntoP2p } from '../src/services/roomMerge.ts'
 import { mergeNetplayRoomLists } from '../src/services/netplay.ts'
 
@@ -92,6 +93,30 @@ console.log('\n── 边界 ──')
   ok(mergeLiveIntoP2p([], []).length === 0, '两边都空 → 空列表')
   const out = mergeLiveIntoP2p([p2pRoom('NP-1')], [{ netplayRoomId: 'NP-1', view: liveView('L') }])
   ok(out[0].spectators === 0, 'viewers 没给时当 0，不会变 NaN')
+}
+
+console.log('\n── 普通单机播放器不跟随大厅房间人数反复更新 ──')
+{
+  const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8')
+  const player = read('../src/emulator/EmulatorPlayer.tsx')
+  const netplay = read('../src/services/netplay.ts')
+  const live = read('../src/services/live.ts')
+  ok(
+    /useNetplayRooms\(Boolean\(inviteId \|\| netplayActive \|\| hosting \|\| liveNetplayRoom\)\)/.test(player),
+    '仅邀请、联机房或直播观众待加入联机时，播放器才订阅联机快照',
+  )
+  ok(
+    /useLiveRooms\(Boolean\(roomId && \(netplayActive \|\| hosting\)\)\)/.test(player),
+    '只有正在联机且有房间号时，播放器才订阅直播配对变化',
+  )
+  ok(
+    /useNetplayRooms\(enabled = true\)[\s\S]*?enabled \? store\.subscribe : NO_SUBSCRIBE/.test(netplay),
+    '关闭联机快照订阅时不会注册房间列表监听器',
+  )
+  ok(
+    /useLiveRooms\(enabled = true\)[\s\S]*?enabled \? liveStore\.subscribe : NO_LIVE_SUBSCRIBE/.test(live),
+    '关闭直播快照订阅时不会注册房间列表监听器',
+  )
 }
 
 // ── 联机大厅：匿名 SSE 的公开房 + 带 JWT 取回的成人房合并 ──

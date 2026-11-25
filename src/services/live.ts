@@ -431,6 +431,8 @@ const LIST_POLL_MAX_MS = 120_000
 const LIST_REQUEST_TIMEOUT_MS = 8_000
 /** 空数组用固定引用：useSyncExternalStore 要求快照引用稳定，否则会无限重渲染 */
 const NO_LIVE_ROOMS: LiveRoomInfo[] = []
+const EMPTY_LIVE_ROOMS = () => NO_LIVE_ROOMS
+const NO_LIVE_SUBSCRIBE = (_listener: () => void) => () => {}
 
 /** 和 fetchLiveRooms 的区别：这个会把失败抛出来，让 store 能区分「没人在播」和「后端不可达」 */
 async function loadLiveRooms(signal?: AbortSignal): Promise<LiveRoomInfo[]> {
@@ -643,8 +645,12 @@ const liveStore = (() => {
 })()
 
 /** 正在直播的房间（服务端推送，多个组件共享一条连接） */
-export function useLiveRooms(): LiveRoomInfo[] {
-  return useSyncExternalStore(liveStore.subscribe, liveStore.get, () => NO_LIVE_ROOMS)
+export function useLiveRooms(enabled = true): LiveRoomInfo[] {
+  /*
+    播放器只有在联机房内才需要知道直播与联机的配对变化。单机游戏期间，直播观众进出
+    仍会更新大厅列表，但不该因此让整棵模拟器界面反复渲染。
+  */
+  return useSyncExternalStore(enabled ? liveStore.subscribe : NO_LIVE_SUBSCRIBE, enabled ? liveStore.get : EMPTY_LIVE_ROOMS, EMPTY_LIVE_ROOMS)
 }
 
 /** 手动刷新（开播 / 下播之后立刻让列表跟上，不用等下一轮） */
