@@ -10,6 +10,7 @@ import {
   devToolsUrlOf,
   findChrome,
   MAME_CHD_TIMEOUT_MS,
+  startupDetailOf,
   startupEventOf,
   timeoutForGame,
   verdictOf,
@@ -24,6 +25,14 @@ assert.equal(verdictOf('game_playable'), '')
 assert.equal(startupEventOf(JSON.stringify({ event: 'first_frame', elapsedMs: 3 })), 'first_frame')
 assert.equal(startupEventOf('not json'), '')
 assert.equal(startupEventOf(undefined), '')
+assert.equal(startupDetailOf(JSON.stringify({ detail: '仍在下载 ROM：6.2MB/8.6MB，平均 2.9Mbps' })), '仍在下载 ROM：6.2MB/8.6MB，平均 2.9Mbps')
+assert.equal(
+  startupDetailOf(JSON.stringify({ detail: 'ROM https://assets.example/game.zip token=secret 192.168.1.2' })),
+  'ROM [URL] token=[已隐藏] [IP]',
+  '冒烟日志要复用服务端脱敏规则，不能把 URL、凭据或 IP 写出来',
+)
+assert.equal(startupDetailOf(JSON.stringify({ detail: 'x'.repeat(200) })).length, 160, '详情沿用服务端 160 字符上限')
+assert.equal(startupDetailOf('not json'), '')
 
 // 未登录冒烟被年龄门拦下时，播放器根本没有挂载；不能写成“没有首帧”。
 assert.equal(adultGateReason({ adult: true, allowed: false, reason: 'login' }), '年龄门：login')

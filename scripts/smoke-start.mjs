@@ -25,6 +25,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
+import { sanitizeStartupDetail } from '../server/src/startup-metrics.js'
 
 const args = process.argv.slice(2)
 const argOf = (name, fallback) => {
@@ -64,6 +65,16 @@ export function startupEventOf(postData) {
   try {
     const body = JSON.parse(postData || '{}')
     return typeof body.event === 'string' ? body.event : ''
+  } catch {
+    return ''
+  }
+}
+
+/** 启动事件里的原因摘要沿用服务端脱敏规则，避免冒烟日志泄露 URL、IP 或访问凭据。 */
+export function startupDetailOf(postData) {
+  try {
+    const body = JSON.parse(postData || '{}')
+    return sanitizeStartupDetail(body?.detail) || ''
   } catch {
     return ''
   }
@@ -295,7 +306,8 @@ async function smokeOne(cdp, slug) {
           body = (await sendWithin(cdp, 'Fetch.getRequestPostData', { requestId }, sessionId).catch(() => ({}))).postData
         }
         const event = startupEventOf(body)
-        if (event) events.push(`${event}@${Math.round((Date.now() - started) / 1000)}s`)
+        const detail = startupDetailOf(body)
+        if (event) events.push(`${event}${detail ? ` (${detail})` : ''}@${Math.round((Date.now() - started) / 1000)}s`)
         const verdict = verdictOf(event)
         if (verdict) settle({ verdict, event })
       }
