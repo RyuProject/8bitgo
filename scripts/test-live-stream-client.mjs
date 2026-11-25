@@ -182,6 +182,46 @@ await check('等不到 welcome：超时拒绝并真的掐掉请求（服务端�
   assert.equal(signal.aborted, true)
 })
 
+await check('播放器取消尚未 welcome 的事件流：立即中止请求并结束等待', async () => {
+  const controller = new AbortController()
+  let requestSignal
+  const pendingFetch = (_url, init) => new Promise((_resolve, reject) => {
+    requestSignal = init.signal
+    init.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })
+  })
+  const pending = openLiveStream('r1', 'k', { onEvent() {}, onEnd() {} }, { fetchImpl: pendingFetch, signal: controller.signal })
+  controller.abort()
+  await assert.rejects(pending, (e) => e instanceof LiveStreamRefused && e.code === 'network')
+  assert.equal(requestSignal.aborted, true, '外部取消必须传到实际 fetch')
+
+  const alreadyAborted = new AbortController()
+  alreadyAborted.abort()
+  let called = false
+  await assert.rejects(
+    openLiveStream('r1', 'k', { onEvent() {}, onEnd() {} }, { fetchImpl: async () => { called = true; throw new Error('should not fetch') }, signal: alreadyAborted.signal }),
+    (e) => e instanceof LiveStreamRefused && e.code === 'network',
+  )
+  assert.equal(called, false, '调用前已取消时不应发出请求')
+})
+
+await check('welcome 后主动取消事件流：释放响应且不伪报断线', async () => {
+  const controller = new AbortController()
+  const ends = []
+  const s = streamResponse()
+  const pending = openLiveStream('r1', 'k', { onEvent() {}, onEnd: (reason) => ends.push(reason) }, {
+    fetchImpl: async (_url, init) => {
+      init.signal.addEventListener('abort', () => s.error(new DOMException('aborted', 'AbortError')), { once: true })
+      return s.response
+    },
+    signal: controller.signal,
+  })
+  s.push(frame('welcome', WELCOME))
+  await pending
+  controller.abort()
+  await sleep(10)
+  assert.deepEqual(ends, [], '主动取消不能触发自动重连回调')
+})
+
 await check('第一帧不是 welcome：当成这条路走不通', async () => {
   const s = streamResponse()
   const p = openLiveStream('r1', 'k', { onEvent() {}, onEnd() {} }, { fetchImpl: async () => s.response })
@@ -526,6 +566,16 @@ await check('散场 / 报错 / 销毁都先收掉事件流（不然 onEnd 会去
   assert.match(failFn, /stopStream\(\)/)
   const destroy = view.slice(view.indexOf('destroy() {'))
   assert.match(destroy, /stopStream\(\)/)
+})
+
+await check('welcome 前销毁观众播放器会中止尚未返回连接对象的事件流请求', () => {
+  const connect = view.slice(view.indexOf('const connectStream'), view.indexOf('const onStreamEnd'))
+  const stop = view.slice(view.indexOf('const stopStream'), view.indexOf('const fail = '))
+  assert.match(connect, /const controller = new AbortController\(\)/)
+  assert.match(connect, /streamOpenController = controller/)
+  assert.match(connect, /\{ signal: controller\.signal \}\)/)
+  assert.match(connect, /streamOpenController === controller\) streamOpenController = null/)
+  assert.match(stop, /const opening = streamOpenController[\s\S]{0,120}opening\?\.abort\(\)/)
 })
 
 await check('SRS 房的协作连接换一轮不能清掉画面状态（不然好好的拉流 20 秒后被拆掉重拉）', () => {

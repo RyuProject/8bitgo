@@ -189,7 +189,7 @@ export function openLiveStream(
   roomId: string,
   key: string,
   handlers: LiveStreamHandlers,
-  opts: { welcomeTimeoutMs?: number; silenceMs?: number; fetchImpl?: typeof fetch } = {},
+  opts: { welcomeTimeoutMs?: number; silenceMs?: number; fetchImpl?: typeof fetch; signal?: AbortSignal } = {},
 ): Promise<LiveStreamConnection> {
   const fetchImpl = opts.fetchImpl ?? fetch
   const welcomeTimeoutMs = opts.welcomeTimeoutMs ?? STREAM_WELCOME_TIMEOUT_MS
@@ -205,10 +205,13 @@ export function openLiveStream(
     let silenceTimer: ReturnType<typeof setInterval> | 0 = 0
     let replaced = false
     let timedOut = false
+    let removeExternalAbort: (() => void) | null = null
 
     const stop = () => {
       if (silenceTimer) clearInterval(silenceTimer)
       silenceTimer = 0
+      removeExternalAbort?.()
+      removeExternalAbort = null
       try {
         controller.abort()
       } catch {
@@ -228,6 +231,9 @@ export function openLiveStream(
       stop()
       handlers.onEnd(reason, replaced)
     }
+    // TypeScript 不会把 AbortSignal 的同步回调视为可能改写 phase；用函数读取取消状态，
+    // 让流读取 await 之后仍按运行时真实状态停止消费。
+    const isStopped = () => phase === 2
 
     const welcomeTimer = setTimeout(() => {
       timedOut = true
@@ -242,6 +248,25 @@ export function openLiveStream(
         clearTimeout(welcomeTimer)
         stop()
       },
+    }
+
+    if (opts.signal) {
+      const abort = () => {
+        if (phase === 2) return
+        const waitingForWelcome = phase === 0
+        phase = 2
+        clearTimeout(welcomeTimer)
+        stop()
+        // 销毁播放器时主动取消不是断流；welcome 尚未到时仍要结束调用方正在等待的 Promise。
+        if (waitingForWelcome) reject(new LiveStreamRefused('network', 'live stream request cancelled'))
+      }
+      const remove = () => opts.signal?.removeEventListener('abort', abort)
+      removeExternalAbort = remove
+      if (opts.signal.aborted) {
+        abort()
+        return
+      }
+      opts.signal.addEventListener('abort', abort, { once: true })
     }
 
     const parser = createSseParser((event, raw) => {
@@ -283,6 +308,7 @@ export function openLiveStream(
     })
 
     void (async () => {
+      if (phase === 2) return
       let response: Response
       try {
         response = await fetchImpl(roomPath(roomId, 'watch'), {
@@ -315,7 +341,7 @@ export function openLiveStream(
       try {
         for (;;) {
           const { done, value } = await reader.read()
-          if (phase === 2) return
+          if (isStopped()) return
           if (done) break
           lastByteAt = performance.now()
           parser.push(decoder.decode(value, { stream: true }))

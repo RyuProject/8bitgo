@@ -231,6 +231,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let streamMode = false
   /** 当前那条事件流；断了 / 换掉了就是 null */
   let streamConn: LiveStreamConnection | null = null
+  /** welcome 前还拿不到连接对象；单独保留取消器，销毁时也能立即释放服务端观众名额。 */
+  let streamOpenController: AbortController | null = null
   /** 事件流的会话令牌（换票 / 催主播 / 发弹幕都要带它） */
   let streamSession = ''
   /** 每开一条流 +1；回调对不上号的是已经作废的旧流，一律忽略 */
@@ -471,6 +473,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    */
   const stopStream = () => {
     streamGen++
+    const opening = streamOpenController
+    streamOpenController = null
+    opening?.abort()
     window.clearTimeout(streamRetryTimer)
     streamRetryTimer = 0
     window.clearTimeout(upgradeTimer)
@@ -1814,27 +1819,33 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   /** 开一条事件流，welcome 里应用房间快照。失败抛 LiveStreamRefused（浏览器缺接口时是普通错误） */
   const connectStream = async () => {
     const gen = ++streamGen
-    await openLiveStream(live.roomId, viewerKey, {
-      onWelcome: (welcome, conn) => {
-        if (destroyed || gen !== streamGen) return conn.close()
-        streamConn = conn
-        streamSession = welcome.session
-        streamMode = true
-        streamRetryCount = 0
-        rewatchCount = 0
-        // 断流重连时服务端凭 key 把 SRS 拉流认领回来（45 秒宽限），还活着的拉流 applyRoomInfo 不会去动
-        applyRoomInfo(welcome as unknown as RoomSnapshot, !welcome.hostAway)
-        if (!hostAway && !hostFrozen && !gotFrame) armRewatch(FIRST_OFFER_MS)
-        // 这一局有 2P 位：协作通道的 SDP / ICE 要服务器转发，改连 socket
-        if (welcome.coopOpen) void switchToSocket('coop')
-      },
-      onEvent: (event, data) => {
-        if (!destroyed && gen === streamGen) onStreamEvent(event, data)
-      },
-      onEnd: (reason, replaced) => {
-        if (!destroyed && gen === streamGen) onStreamEnd(reason, replaced)
-      },
-    })
+    const controller = new AbortController()
+    streamOpenController = controller
+    try {
+      await openLiveStream(live.roomId, viewerKey, {
+        onWelcome: (welcome, conn) => {
+          if (destroyed || gen !== streamGen) return conn.close()
+          streamConn = conn
+          streamSession = welcome.session
+          streamMode = true
+          streamRetryCount = 0
+          rewatchCount = 0
+          // 断流重连时服务端凭 key 把 SRS 拉流认领回来（45 秒宽限），还活着的拉流 applyRoomInfo 不会去动
+          applyRoomInfo(welcome as unknown as RoomSnapshot, !welcome.hostAway)
+          if (!hostAway && !hostFrozen && !gotFrame) armRewatch(FIRST_OFFER_MS)
+          // 这一局有 2P 位：协作通道的 SDP / ICE 要服务器转发，改连 socket
+          if (welcome.coopOpen) void switchToSocket('coop')
+        },
+        onEvent: (event, data) => {
+          if (!destroyed && gen === streamGen) onStreamEvent(event, data)
+        },
+        onEnd: (reason, replaced) => {
+          if (!destroyed && gen === streamGen) onStreamEnd(reason, replaced)
+        },
+      }, { signal: controller.signal })
+    } finally {
+      if (streamOpenController === controller) streamOpenController = null
+    }
   }
 
   /** 事件流自己断了（服务端到寿命收尾 / 网络断 / 静默超时） */
