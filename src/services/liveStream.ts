@@ -200,7 +200,8 @@ export function openLiveStream(
     /** 0 = 等 welcome，1 = 在流，2 = 已结束（主动关 / 断 / 失败） */
     // 断言成联合类型：phase 在各个回调里被改，别让 TS 按初值把它收窄成 0
     let phase = 0 as 0 | 1 | 2
-    let lastByteAt = Date.now()
+    // 心跳间隔是经过时间，不能用会被 NTP / 手动校时跳变的墙上时钟。
+    let lastByteAt = performance.now()
     let silenceTimer: ReturnType<typeof setInterval> | 0 = 0
     let replaced = false
     let timedOut = false
@@ -267,7 +268,7 @@ export function openLiveStream(
         }
         silenceTimer = setInterval(() => {
           // 后台标签页的定时器会被节流，晚到也没关系：比的是「最后一个字节」到现在多久
-          if (phase === 1 && Date.now() - lastByteAt > silenceMs) end('silent')
+          if (phase === 1 && performance.now() - lastByteAt > silenceMs) end('silent')
         }, Math.max(1_000, Math.round(silenceMs / 5)))
         resolve(connection)
         return
@@ -316,7 +317,7 @@ export function openLiveStream(
           const { done, value } = await reader.read()
           if (phase === 2) return
           if (done) break
-          lastByteAt = Date.now()
+          lastByteAt = performance.now()
           parser.push(decoder.decode(value, { stream: true }))
         }
         parser.push(decoder.decode())

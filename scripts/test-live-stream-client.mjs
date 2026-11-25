@@ -192,13 +192,37 @@ await check('第一帧不是 welcome：当成这条路走不通', async () => {
 await check('静默看门狗：太久一个字节都没有就判死（中间设备静默丢连接）', async () => {
   const ends = []
   let signal
+  let tick
+  let monotonicNow = performance.now.bind(performance)
+  const originalDateNow = Date.now
+  const originalPerfNow = performance.now
+  const originalSetInterval = globalThis.setInterval
+  const originalClearInterval = globalThis.clearInterval
   const s = streamResponse()
-  const p = openLiveStream('r1', 'k', { onEvent() {}, onEnd: (reason) => ends.push(reason) }, { fetchImpl: async (_u, init) => { signal = init.signal; return s.response }, silenceMs: 1_000 })
-  s.push(frame('welcome', WELCOME))
-  await p
-  await sleep(1_400)
-  assert.deepEqual(ends, ['silent'])
-  assert.equal(signal.aborted, true, '判死之后要真的掐掉，不然连接和服务端名额都留着')
+  globalThis.setInterval = (fn) => { tick = fn; return 1 }
+  globalThis.clearInterval = () => {}
+  try {
+    const p = openLiveStream('r1', 'k', { onEvent() {}, onEnd: (reason) => ends.push(reason) }, { fetchImpl: async (_u, init) => { signal = init.signal; return s.response }, silenceMs: 3_000 })
+    s.push(frame('welcome', WELCOME))
+    await p
+    const lastByteAt = monotonicNow()
+
+    // 校时向前跳不能把正常事件流误判成静默；随后真实经过时间越界仍须判死。
+    Date.now = () => originalDateNow() + 60_000
+    performance.now = () => lastByteAt + 2_000
+    tick()
+    assert.deepEqual(ends, [], '系统时钟向前跳不应触发静默超时')
+
+    performance.now = () => lastByteAt + 3_001
+    tick()
+    assert.deepEqual(ends, ['silent'])
+    assert.equal(signal.aborted, true, '判死之后要真的掐掉，不然连接和服务端名额都留着')
+  } finally {
+    Date.now = originalDateNow
+    performance.now = originalPerfNow
+    globalThis.setInterval = originalSetInterval
+    globalThis.clearInterval = originalClearInterval
+  }
 })
 
 await check('一个事件处理抛错不会把整条流判死', async () => {
