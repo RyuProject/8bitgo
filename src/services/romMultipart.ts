@@ -244,11 +244,13 @@ export function adaptiveUploadConcurrency(
   if (hints.saveData || effectiveType === 'slow-2g' || effectiveType === '2g') return 1
 
   const sampledMbps = uploadMbps(sampleBytes, elapsedMs)
+  const hasMeasuredUpload = sampleBytes > 0 && Number.isFinite(elapsedMs) && elapsedMs > 0
   const hintedMbps = Number.isFinite(hints.downlinkMbps) ? Math.max(0, hints.downlinkMbps ?? 0) : 0
   const mbps = sampledMbps || hintedMbps
   const rtt = Number.isFinite(hints.rttMs) ? Math.max(0, hints.rttMs ?? 0) : 0
   let concurrency = 2
-  if (effectiveType === '3g' || (mbps > 0 && mbps < 3)) concurrency = 1
+  // effectiveType 是按 RTT 推测的下载网络等级；第一片已有真实上行样本后应以样本为准。
+  if ((effectiveType === '3g' && !hasMeasuredUpload) || (mbps > 0 && mbps < 3)) concurrency = 1
   else if (mbps >= 24 && (rtt === 0 || rtt < 180)) concurrency = 4
   else if (mbps >= 8 || rtt >= 180) concurrency = 3
 
