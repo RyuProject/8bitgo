@@ -3384,6 +3384,9 @@ ROM 存储和其它站级入口全部是管理员权限。后台列表统一带 
 > 2026-11-15 `deploy/redeploy.sh` 的三处自动化（见 `docs/system-optimization-2026-11.md`）：
 > - **备份拆两半**：`8bitgo-backup.sh --local-only` 同步 dump + 校验（失败照旧中止），R2 上传用 `--upload-file` 转后台、与构建并行，
 >   `trap … EXIT` 保证任何退出路径都等它结束；上传失败只告警。`BACKUP_ASYNC_UPLOAD=0` 退回同步。
+>   2026-11-25 曾出现一份有完整 footer 但压缩体量从 7.5MiB 降到 2.8MiB 的快照；不能为发布直接放宽一半体量哨兵。
+>   首份仍以退出码 42 拒绝，`redeploy.sh` 等 30 秒后另做一次完整独立快照；第二份也偏小才以 `--confirm-size-drop` 接受，
+>   上一份已验证备份继续保留，日志明确记录。任何其他备份错误照旧中止部署。回归：`cd server && npm run test:backup && cd .. && npm run test:redeploy`。
 > - **lock 未变跳过 `npm ci`**（`deploy/lib/npm-ci-if-changed.sh`，戳在 `node_modules/.8bitgo-lock-sha256`）；`FORCE_NPM_CI=1` 强制重装。
 >   以后若给根目录或 server 加 install / postinstall 钩子，要重新评估这条。
 > - **开局冒烟**（可选）：`SMOKE_TEST=1` 时健康检查后跑 `scripts/smoke-start.mjs`，无头 Chrome 把一款 NES、一款街机跑到首帧；
@@ -4106,7 +4109,11 @@ EmulatorJS 引擎日志与加载阶段文字（`diagLog`）、下载器的重试
 - 回归：`npm run test:startup-diagnostics`。
 - **聚集报警**（2026-11-15，`server/src/diag-alert.js`）：同一特征 60 分钟内来自 ≥10 个不同访问就给 `DIAG_ALERT_EMAIL` 发一封
   （复用 Resend），同一特征 6 小时内不重复，冷却记在 `site_settings` 的 `diag.alert.<特征>`。没配邮箱完全不启用。
-  阈值见 `server/.env.example` 的 `DIAG_ALERT_*`。回归：`cd server && npm run test:diag-alert`。
+  2026-11-25 生产的 mysql2 连接启用了 `CLIENT_FOUND_ROWS`：条件 UPSERT 没改值也会报「命中一行」，旧代码把它当抢锁成功，
+  于是同一特征绕过 6 小时冷却重复刷飞书。`cooldown-claim.js` 现在写入「时间戳:随机令牌」后读回比对，旧的纯时间戳值仍能被
+  `CAST(... AS UNSIGNED)` 正确判过期。即时失败通知 `diag-lark.js` 与聚集通知必须共用这套逻辑；不要再按 `affectedRows` 判定冷却成功。
+  slow_start 的 `progress.rom_downloading` / `progress.rom_dominated` 是下载仍在推进的正常慢启动，只留诊断包、不能聚类报警；`stage.rom`
+  等无进度信号仍须报警。阈值见 `server/.env.example` 的 `DIAG_ALERT_*`。回归：`npm run test:startup-diagnostics`、`cd server && npm run test:diag-alert && npm run test:diag-lark`。
 
 ### 2.36.1.1 AI 临时修补：MiniMax 只能「选开关」，不能写代码（2026-11-18）
 

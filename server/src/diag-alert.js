@@ -11,13 +11,14 @@
  *   2026-11-17 全站 EmulatorJS 事故时生产上没配邮箱，这条报警一直是关着的，故障几个小时没人知道；
  * - 只看不同 visit_id 数：一个玩家狂点重试不该触发报警；
  * - 每个特征最多每 DIAG_ALERT_COOLDOWN_HOURS 小时报一次。冷却记在 site_settings
- *   （`diag.alert.<特征>` = 上次发送的毫秒时间戳），用一条带条件的 UPSERT 抢占：
- *   多进程 / 重启之后都不会重复发；
+ *   （`diag.alert.<特征>` = 时间戳加本次主张令牌），条件 UPSERT 后会读回核实所有权：
+ *   多进程 / 重启以及 mysql2 的 CLIENT_FOUND_ROWS 模式下都不会重复发；
  * - 同一特征在本进程内每分钟最多查一次库，失败刷屏时不给数据库加压；
  * - 任何错误只记日志：报警是锦上添花，不能拖慢或弄坏漏斗接口（调用方不 await）。
  * - 邮件里只有已经脱敏入库的东西（特征文本、游戏 slug、浏览器 / 系统归类），不含 IP、UA 原文。
  */
 import { query } from './db.js'
+import { claimCooldown, releaseCooldownClaim } from './cooldown-claim.js'
 import { larkConfig, sendLark } from './lark-notify.js'
 import { mailProvider, sendRawMail } from './mail.js'
 
@@ -40,19 +41,6 @@ const CHECK_THROTTLE_MS = 60_000
 // 全站持久冷却跨进程共享，最多每十分钟发一封（每小时最多六封）。
 const GLOBAL_ALERT_COOLDOWN_MS = 10 * 60_000
 const lastChecked = new Map()
-
-/**
- * 抢占冷却：成功（之前没报过 / 已过冷却）返回 true。
- * ON DUPLICATE KEY UPDATE 只在旧值早于阈值时才改写；affectedRows：1 = 新插入，2 = 改写，0 = 仍在冷却。
- */
-async function claimCooldown(run, key, now, cooldownMs) {
-  const result = await run(
-    `INSERT INTO site_settings (name, value) VALUES (?, ?)
-     ON DUPLICATE KEY UPDATE value = IF(CAST(value AS UNSIGNED) <= ?, VALUES(value), value)`,
-    [`diag.alert.${key}`, String(now), now - cooldownMs],
-  )
-  return Number(result?.affectedRows ?? 0) > 0
-}
 
 export function renderAlert(signature, summary, cfg) {
   const games = summary.games.map((g) => `${g.name}（${g.count}）`).join('、') || '—'
@@ -89,8 +77,8 @@ export async function maybeAlertSignature(signature, deps = {}) {
   if (checked && now - checked < CHECK_THROTTLE_MS) return 'throttled'
   lastChecked.set(signature, now)
   if (lastChecked.size > 2000) lastChecked.clear()
-  let claimedSignatureCooldown = false
-  let claimedGlobalCooldown = false
+  let signatureClaim = null
+  let globalClaim = null
   try {
     const rows = await run(
       `SELECT d.visit_id AS visitId, d.signature_text AS text, g.slug AS slug, d.browser, d.os
@@ -100,15 +88,15 @@ export async function maybeAlertSignature(signature, deps = {}) {
     )
     const visits = new Set(rows.map((r) => r.visitId))
     if (visits.size < cfg.minVisits) return 'below'
-    if (!(await claimCooldown(run, signature, now, cfg.cooldownMs))) return 'cooldown'
-    claimedSignatureCooldown = true
-    if (!(await claimCooldown(run, 'global', now, GLOBAL_ALERT_COOLDOWN_MS))) {
+    signatureClaim = await claimCooldown(run, 'diag.alert', signature, now, cfg.cooldownMs)
+    if (!signatureClaim) return 'cooldown'
+    globalClaim = await claimCooldown(run, 'diag.alert', 'global', now, GLOBAL_ALERT_COOLDOWN_MS)
+    if (!globalClaim) {
       // 不占用该特征的长冷却：全站告警槽空出来后，新诊断仍可补报。
-      await run('DELETE FROM site_settings WHERE name = ? AND value = ?', [`diag.alert.${signature}`, String(now)])
-        .catch(() => {})
+      await releaseCooldownClaim(run, signatureClaim).catch(() => {})
+      signatureClaim = null
       return 'global-cap'
     }
-    claimedGlobalCooldown = true
     const tally = (key) => {
       const m = new Map()
       for (const r of rows) m.set(key(r), (m.get(key(r)) ?? 0) + 1)
@@ -141,19 +129,9 @@ export async function maybeAlertSignature(signature, deps = {}) {
     await run(`DELETE FROM site_settings WHERE name LIKE 'diag.alert.%' AND updated_at < UTC_TIMESTAMP() - INTERVAL 7 DAY`).catch(() => {})
     return 'sent'
   } catch (error) {
-    // 发信失败不能把这次告警静默压住整个冷却期；仅撤销自己刚写入的那条时间戳，避免覆盖并发的新主张。
-    if (claimedSignatureCooldown) {
-      await run(
-        'DELETE FROM site_settings WHERE name = ? AND value = ?',
-        [`diag.alert.${signature}`, String(now)],
-      ).catch(() => {})
-    }
-    if (claimedGlobalCooldown) {
-      await run(
-        'DELETE FROM site_settings WHERE name = ? AND value = ?',
-        ['diag.alert.global', String(now)],
-      ).catch(() => {})
-    }
+    // 发信失败不能把这次告警静默压住整个冷却期；仅撤销自己刚写入的令牌，避免覆盖并发的新主张。
+    await releaseCooldownClaim(run, signatureClaim).catch(() => {})
+    await releaseCooldownClaim(run, globalClaim).catch(() => {})
     console.warn('[diag-alert] 报警检查失败：', error?.message || error)
     return 'error'
   }

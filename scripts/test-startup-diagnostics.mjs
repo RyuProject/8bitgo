@@ -686,6 +686,9 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   assert.equal(needsAttention('recovered', bundle(crawlerEnv)), false)
   assert.equal(needsAttention('failed', { ...bundle(crawlerEnv), recovery: { outcome: 'unconfirmed', via: 'reload', afterMs: 1 } }), false)
   assert.equal(needsAttention('failed', { ...bundle(crawlerEnv), recovery: { outcome: 'failed_again', via: 'reload', afterMs: 1 } }), true, '刷新后又坏是真故障')
+  assert.equal(needsAttention('slow_start', { diagnosis: { signals: ['progress.rom_downloading'] } }), false, 'ROM 仍有新字节时只留现场，不能聚合报警')
+  assert.equal(needsAttention('slow_start', { diagnosis: { signals: ['progress.rom_dominated'] } }), false, 'ROM 刚下载完、启动尚短时不能聚合报警')
+  assert.equal(needsAttention('slow_start', { diagnosis: { signals: ['stage.rom'] } }), true, '没有新进度的 ROM 阶段仍需要叫人')
 
   // 后台默认不列噪音，只数个数
   const rows = [

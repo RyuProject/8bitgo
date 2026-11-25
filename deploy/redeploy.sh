@@ -29,6 +29,9 @@ HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8788/api/health}"
 PS2_CHECK_URL="${PS2_CHECK_URL:-http://127.0.0.1:8788/play/ps2/__deploy_check__}"
 PLAY_JS_CHECK_URL="${PLAY_JS_CHECK_URL:-http://127.0.0.1:8788/play/Play.js}"
 BACKUP_SCRIPT="${BACKUP_SCRIPT:-$REPO_DIR/deploy/backup/8bitgo-backup.sh}"
+# 首份体量骤降时等待后再做一份独立的完整快照。不能无限重试：两份连续完整快照仍偏小，
+# 才说明当前库确实已经变小；旧备份仍保留，后续上传和部署都会在日志留下明确警告。
+BACKUP_SIZE_DROP_RETRY_DELAY="${BACKUP_SIZE_DROP_RETRY_DELAY:-30}"
 LOG_DIR="${LOG_DIR:-/var/log}"
 LOG="$LOG_DIR/8bitgo-redeploy.log"
 # 游离 HEAD 时 `rev-parse --abbrev-ref` 返回字面量 "HEAD"，下一步会去 fetch / reset 一个叫 HEAD 的分支；
@@ -58,6 +61,9 @@ command -v systemctl >/dev/null || die "没有 systemctl"
 command -v curl >/dev/null || die "没有 curl"
 command -v git >/dev/null || die "没有 git"
 mkdir -p "$LOG_DIR"
+case "$BACKUP_SIZE_DROP_RETRY_DELAY" in
+  ''|*[!0-9]*) BACKUP_SIZE_DROP_RETRY_DELAY=30 ;;
+esac
 
 # 部署锁：同一时刻只允许一个部署；定时开局巡检（deploy/smoke-watch）拿同一把锁，部署中它会跳过，
 # 它在跑时这里等它结束（最多 15 分钟）—— 免得构建期间半新的 dist / 重启的几秒 502 被巡检误报。
@@ -157,7 +163,15 @@ finish_backup_upload() {
 trap finish_backup_upload EXIT
 if [ "${BACKUP_ASYNC_UPLOAD:-1}" = "1" ]; then
   log "── 步骤 1/7  数据库备份（本地校验完再继续，R2 上传转后台）──"
-  BACKUP_STDOUT="$("$BACKUP_SCRIPT" --local-only)" || die "备份失败，整个流程中止（不动线上）"
+  BACKUP_STATUS=0
+  BACKUP_STDOUT="$("$BACKUP_SCRIPT" --local-only)" || BACKUP_STATUS=$?
+  if [ "$BACKUP_STATUS" -eq 42 ]; then
+    log "⚠️ 备份体量骤降，${BACKUP_SIZE_DROP_RETRY_DELAY} 秒后做一份独立完整快照复验"
+    sleep "$BACKUP_SIZE_DROP_RETRY_DELAY"
+    BACKUP_STATUS=0
+    BACKUP_STDOUT="$("$BACKUP_SCRIPT" --local-only --confirm-size-drop)" || BACKUP_STATUS=$?
+  fi
+  [ "$BACKUP_STATUS" -eq 0 ] || die "备份失败，整个流程中止（不动线上）"
   BACKUP_FILE="$(printf '%s\n' "$BACKUP_STDOUT" | sed -n 's/^BACKUP_FILE=//p' | tail -1)"
   if [ -n "$BACKUP_FILE" ]; then
     "$BACKUP_SCRIPT" --upload-file "$BACKUP_FILE" >/dev/null 2>&1 &

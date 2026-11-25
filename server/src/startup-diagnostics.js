@@ -126,6 +126,10 @@ export function needsAttention(event, diagnostics) {
   if (event === 'recovered') return false
   if (diagnostics?.automation?.cohort) return false
   if (diagnostics?.recovery?.outcome === 'unconfirmed') return false
+  // 慢启动并不等于故障。ROM 字节仍在推进、或刚下完 ROM 才进入启动阶段时，保留现场供后台分析，
+  // 但不把慢网和大包下载聚成故障告警；真正没有新进度的 stage.rom 仍会报警。
+  const signals = diagnostics?.diagnosis?.signals
+  if (event === 'slow_start' && Array.isArray(signals) && signals.some((signal) => signal === 'progress.rom_downloading' || signal === 'progress.rom_dominated')) return false
   return true
 }
 

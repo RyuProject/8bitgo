@@ -6,6 +6,9 @@
 #   ./8bitgo-backup.sh              正常跑（给 systemd timer 用）
 #   ./8bitgo-backup.sh --dry-run    走完整流程但不上传、不删旧的
 #   ./8bitgo-backup.sh --local-only 只在本地留一份，不碰 R2（结束时在 stdout 打一行 BACKUP_FILE=<路径>）
+#   ./8bitgo-backup.sh --confirm-size-drop
+#                                   仅给 redeploy.sh 的第二次独立快照使用：第一次因体量骤降拒绝后，
+#                                   再完整导出一次仍骤降才接受，并保留上一份已验证备份。
 #   ./8bitgo-backup.sh --upload-file <已验过的 .sql.gz>
 #                                   只把一份本地备份传到 R2、回头核对、轮转 R2 上的旧备份；
 #                                   不连数据库。redeploy.sh 用它把上传放到后台，和构建并行
@@ -42,10 +45,12 @@ set -euo pipefail
 DRY_RUN=0
 LOCAL_ONLY=0
 UPLOAD_FILE=""
+CONFIRM_SIZE_DROP=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=1 ;;
     --local-only) LOCAL_ONLY=1 ;;
+    --confirm-size-drop) CONFIRM_SIZE_DROP=1 ;;
     --upload-file)
       [ $# -ge 2 ] || { echo "--upload-file 需要一个文件路径" >&2; exit 2; }
       UPLOAD_FILE="$2"; shift ;;
@@ -56,6 +61,9 @@ while [ $# -gt 0 ]; do
 done
 if [ -n "$UPLOAD_FILE" ] && [ "$LOCAL_ONLY" -eq 1 ]; then
   echo "--upload-file 与 --local-only 不能同时用" >&2; exit 2
+fi
+if [ -n "$UPLOAD_FILE" ] && [ "$CONFIRM_SIZE_DROP" -eq 1 ]; then
+  echo "--upload-file 与 --confirm-size-drop 不能同时用" >&2; exit 2
 fi
 
 ENV_FILE="${ENV_FILE:-/var/www/8bitgo/server/.env}"
@@ -153,13 +161,20 @@ if ! gzip -cd "$TMP" | tail -5 | grep -q 'Dump completed'; then
   die "dump 末尾没有 'Dump completed' —— 中途断了，不上传也不轮转"
 fi
 
-# 体量哨兵：和上一份比，突然小很多多半是出了事（比如连错了一个空库）
+# 体量哨兵：和上一份比，突然小很多多半是出了事（比如连错了一个空库）。
+# redeploy.sh 只在这条明确的异常后做一次全新的独立导出，再次出现才传 --confirm-size-drop；
+# 这样既不会把一次可疑快照当好备份，也不会因真实的数据清理永久卡住上线。
 SIZE="$(file_size "$TMP")"
 PREV="$(ls -1t "$BACKUP_DIR"/${DB_NAME}-*.sql.gz 2>/dev/null | head -1 || true)"
 if [ -n "$PREV" ]; then
   PREV_SIZE="$(file_size "$PREV")"
   if [ "$SIZE" -lt $((PREV_SIZE / 2)) ]; then
-    die "新备份 $(human_size "$SIZE") 不到上一份 $(human_size "$PREV_SIZE") 的一半 —— 先人工看一眼，这轮不轮转"
+    if [ "$CONFIRM_SIZE_DROP" -eq 1 ]; then
+      log "⚠️ 新备份 $(human_size "$SIZE") 仍不到上一份 $(human_size "$PREV_SIZE") 的一半；这是部署触发的第二份完整独立快照，保留旧备份并继续"
+    else
+      log "❌ 新备份 $(human_size "$SIZE") 不到上一份 $(human_size "$PREV_SIZE") 的一半 —— 拒绝这份快照；redeploy 可做一次独立复验"
+      exit 42
+    fi
   fi
 fi
 

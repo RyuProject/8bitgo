@@ -21,11 +21,16 @@ function fakeDb() {
   return {
     settings,
     async query(sql, params) {
+      if (/SELECT value FROM site_settings/.test(sql)) {
+        const value = settings.get(params[0])
+        return value === undefined ? [] : [{ value }]
+      }
       if (/INSERT INTO site_settings/.test(sql)) {
         const [name, value, threshold] = params
         if (!settings.has(name)) { settings.set(name, value); return { affectedRows: 1 } }
-        if (Number(settings.get(name)) <= threshold) { settings.set(name, value); return { affectedRows: 2 } }
-        return { affectedRows: 0 }
+        if (Number.parseInt(settings.get(name), 10) <= threshold) { settings.set(name, value); return { affectedRows: 2 } }
+        // CLIENT_FOUND_ROWS 会把「值没变」也报成命中；测试必须覆盖这个生产驱动行为。
+        return { affectedRows: 1 }
       }
       if (/DELETE FROM site_settings/.test(sql)) {
         if (params?.length === 2 && settings.get(params[0]) === params[1]) settings.delete(params[0])

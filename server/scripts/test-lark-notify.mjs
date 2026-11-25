@@ -78,9 +78,14 @@ function fakeDb(visitCount) {
       if (/FROM game_startup_diagnostics/.test(sql)) {
         return Array.from({ length: visitCount }, (_, i) => ({ visitId: `v${i}`, text: 'failed · emulatorjs · EmulatorJS 引擎加载失败', slug: 'kof97', browser: 'Chrome 150', os: 'Windows' }))
       }
+      if (/SELECT value FROM site_settings/.test(sql)) {
+        const value = settings.get(params[0])
+        return value === undefined ? [] : [{ value }]
+      }
       if (/INSERT INTO site_settings/.test(sql)) {
         if (!settings.has(params[0])) { settings.set(params[0], params[1]); return { affectedRows: 1 } }
-        return { affectedRows: 0 }
+        // 这里故意一直回报 1，模拟 CLIENT_FOUND_ROWS，不能再以 affectedRows 判定抢锁成功。
+        return { affectedRows: 1 }
       }
       if (/DELETE FROM site_settings/.test(sql)) {
         if (params?.length === 2 && settings.get(params[0]) === params[1]) settings.delete(params[0])

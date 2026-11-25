@@ -167,6 +167,21 @@ check('⚠️ 新备份比上一份小一半以上 -> 拒绝轮转（多半是�
   assert.equal(kept(e).length, 1, '旧的那份好备份被挤掉了')
 })
 
+check('部署复验：第二份独立完整快照仍偏小才可接受，上一份也必须保留', () => {
+  const e = env({ dump: GOOD_DUMP })
+  assert.equal(run(e).code, 0)
+  const first = kept(e)[0]
+  writeFileSync(join(e.bin, 'mysqldump'), `#!/usr/bin/env bash\n${TINY_DUMP}\n`)
+  chmodSync(join(e.bin, 'mysqldump'), 0o755)
+  const rejected = run(e, ['--local-only'])
+  assert.equal(rejected.code, 42, '首次体量骤降必须用专用退出码拒绝，让部署走独立复验')
+  const confirmed = run(e, ['--local-only', '--confirm-size-drop'])
+  assert.equal(confirmed.code, 0, confirmed.out)
+  assert.match(confirmed.out, /第二份完整独立快照/)
+  assert.ok(kept(e).includes(first), '接受缩小快照后仍须保留上一份已验证备份')
+  assert.equal(kept(e).length, 2, '第二份快照应该成为新的可恢复备份')
+})
+
 check('同一秒重试也保留两份已验过的备份，不覆盖旧文件', () => {
   const e = env({ dump: GOOD_DUMP })
   const fakeDate = join(e.bin, 'date')

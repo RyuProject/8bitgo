@@ -23,11 +23,17 @@ function fakeDb(visits) {
       if (/FROM game_startup_diagnostics/.test(sql)) {
         return visits.map((v, i) => ({ visitId: v, text: 'failed · emulatorjs · Failed to fetch', slug: i % 2 ? 'kof97' : 'metal-slug', browser: 'Chrome 132', os: 'Windows' }))
       }
+      if (/SELECT value FROM site_settings/.test(sql)) {
+        const value = settings.get(params[0])
+        return value === undefined ? [] : [{ value }]
+      }
       if (/INSERT INTO site_settings/.test(sql)) {
         const [name, value, threshold] = params
         if (!settings.has(name)) { settings.set(name, value); return { affectedRows: 1 } }
-        if (Number(settings.get(name)) <= threshold) { settings.set(name, value); return { affectedRows: 2 } }
-        return { affectedRows: 0 }
+        if (Number.parseInt(settings.get(name), 10) <= threshold) { settings.set(name, value); return { affectedRows: 2 } }
+        // 模拟 mysql2 的 CLIENT_FOUND_ROWS：条件更新没有改值也可能回报找到一行。
+        // 旧实现会把这里误当成成功，从而每次都重复报警。
+        return { affectedRows: 1 }
       }
       if (/DELETE FROM site_settings/.test(sql)) {
         if (params?.length === 2 && settings.get(params[0]) === params[1]) settings.delete(params[0])

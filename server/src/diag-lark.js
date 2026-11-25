@@ -5,6 +5,7 @@
  * 所以用数据库冷却键跨进程限频。通知失败不能影响诊断接口，调用方不 await。
  */
 import { query } from './db.js'
+import { claimCooldown, releaseCooldownClaim } from './cooldown-claim.js'
 
 const DEFAULT_WEBHOOK_PATTERN = /^https:\/\/open\.(?:larksuite\.com|feishu\.cn)\/open-apis\/bot\/v2\/hook\/[A-Za-z0-9-]+$/
 const GLOBAL_COOLDOWN_MS = 60_000
@@ -41,15 +42,6 @@ export function renderLarkFailure(failure, cfg) {
   return lines.join('\n')
 }
 
-async function claimCooldown(run, key, now, cooldownMs) {
-  const result = await run(
-    'INSERT INTO site_settings (name, value) VALUES (?, ?) ' +
-      'ON DUPLICATE KEY UPDATE value = IF(CAST(value AS UNSIGNED) <= ?, VALUES(value), value)',
-    ['diag.lark.' + key, String(now), now - cooldownMs],
-  )
-  return Number(result?.affectedRows ?? 0) > 0
-}
-
 /**
  * 诊断记录成功入库后调用。只通知新加载失败 / 启动超时记录；慢启动不发通知。
  * deps 只用于本地测试注入。
@@ -65,18 +57,18 @@ export async function notifyLarkFailure(failure, deps = {}) {
   const signature = String(failure.signature ?? '')
   if (!/^[\da-f]{16}$/.test(signature)) return 'ignored'
   const now = deps.now ?? Date.now()
-  let signatureClaimed = false
-  let globalClaimed = false
+  let signatureClaim = null
+  let globalClaim = null
 
   try {
-    if (!(await claimCooldown(run, signature, now, cfg.cooldownMs))) return 'cooldown'
-    signatureClaimed = true
-    if (!(await claimCooldown(run, 'global', now, GLOBAL_COOLDOWN_MS))) {
-      await run('DELETE FROM site_settings WHERE name = ? AND value = ?', ['diag.lark.' + signature, String(now)])
-        .catch(() => {})
+    signatureClaim = await claimCooldown(run, 'diag.lark', signature, now, cfg.cooldownMs)
+    if (!signatureClaim) return 'cooldown'
+    globalClaim = await claimCooldown(run, 'diag.lark', 'global', now, GLOBAL_COOLDOWN_MS)
+    if (!globalClaim) {
+      await releaseCooldownClaim(run, signatureClaim).catch(() => {})
+      signatureClaim = null
       return 'global-cap'
     }
-    globalClaimed = true
 
     const response = await sendFetch(cfg.webhook, {
       method: 'POST',
@@ -96,14 +88,8 @@ export async function notifyLarkFailure(failure, deps = {}) {
     console.log('[diag-lark] 已发送加载失败通知 ' + signature)
     return 'sent'
   } catch (error) {
-    if (signatureClaimed) {
-      await run('DELETE FROM site_settings WHERE name = ? AND value = ?', ['diag.lark.' + signature, String(now)])
-        .catch(() => {})
-    }
-    if (globalClaimed) {
-      await run('DELETE FROM site_settings WHERE name = ? AND value = ?', ['diag.lark.global', String(now)])
-        .catch(() => {})
-    }
+    await releaseCooldownClaim(run, signatureClaim).catch(() => {})
+    await releaseCooldownClaim(run, globalClaim).catch(() => {})
     // 网络异常文本可能包含请求 URL；只记录错误类型，绝不把 webhook token 写进日志。
     console.warn('[diag-lark] 通知发送失败 ' + signature + '（' + safeText(error?.name, 40) + '）')
     return 'error'
