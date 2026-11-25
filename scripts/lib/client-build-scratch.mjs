@@ -1,24 +1,67 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, lstatSync, mkdtempSync, readdirSync, renameSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 
 function trackedPublicEntries(root) {
   const output = execFileSync('git', ['ls-files', '-z', '--', 'public'], { cwd: root })
   return output.toString().split('\0').filter(Boolean)
 }
 
-function isTrackedPublicEntry(name, tracked) {
+function hasTrackedPublicEntry(name, tracked) {
   const publicPath = `public/${name}`
   return tracked.some(path => path === publicPath || path.startsWith(`${publicPath}/`))
+}
+
+/**
+ * 只遍历根级 `__*` 私人测试目录，并在目录内逐项判断。若只按顶层判断，
+ * 同一目录里一旦有一个已跟踪页面，旁边未跟踪的 ROM / ZIP 也会跟着进 Vite 产物。
+ */
+function collectScratchEntries(publicDir, tracked) {
+  const entries = []
+  const visit = (absoluteDir, prefix) => {
+    for (const name of readdirSync(absoluteDir)) {
+      const relative = prefix ? `${prefix}/${name}` : name
+      if (!hasTrackedPublicEntry(relative, tracked)) {
+        entries.push(relative)
+        continue
+      }
+      if (lstatSync(join(absoluteDir, name)).isDirectory()) visit(join(absoluteDir, name), relative)
+    }
+  }
+
+  for (const name of readdirSync(publicDir)) {
+    if (!name.startsWith('__')) continue
+    if (!hasTrackedPublicEntry(name, tracked)) {
+      entries.push(name)
+      continue
+    }
+    if (lstatSync(join(publicDir, name)).isDirectory()) visit(join(publicDir, name), name)
+  }
+  return entries
 }
 
 function removeUntrackedBuildCopies(root, tracked) {
   const outputDir = join(root, 'dist/client')
   if (!existsSync(outputDir)) return
 
+  const visit = (absoluteDir, prefix) => {
+    for (const name of readdirSync(absoluteDir)) {
+      const relative = prefix ? `${prefix}/${name}` : name
+      if (!hasTrackedPublicEntry(relative, tracked)) {
+        rmSync(join(absoluteDir, name), { recursive: true, force: true })
+        continue
+      }
+      if (lstatSync(join(absoluteDir, name)).isDirectory()) visit(join(absoluteDir, name), relative)
+    }
+  }
+
   for (const name of readdirSync(outputDir)) {
-    if (!name.startsWith('__') || isTrackedPublicEntry(name, tracked)) continue
-    rmSync(join(outputDir, name), { recursive: true, force: true })
+    if (!name.startsWith('__')) continue
+    if (!hasTrackedPublicEntry(name, tracked)) {
+      rmSync(join(outputDir, name), { recursive: true, force: true })
+      continue
+    }
+    if (lstatSync(join(outputDir, name)).isDirectory()) visit(join(outputDir, name), name)
   }
 }
 
@@ -35,10 +78,11 @@ export async function withLocalPublicScratchExcluded(root, build) {
   let buildError
 
   try {
-    for (const name of readdirSync(publicDir)) {
-      if (!name.startsWith('__') || isTrackedPublicEntry(name, tracked)) continue
-      const source = join(publicDir, name)
-      const destination = join(heldDir, name)
+    for (const name of collectScratchEntries(publicDir, tracked)) {
+      const pathParts = name.split('/')
+      const source = join(publicDir, ...pathParts)
+      const destination = join(heldDir, ...pathParts)
+      mkdirSync(dirname(destination), { recursive: true })
       renameSync(source, destination)
       moved.push({ source, destination })
     }
