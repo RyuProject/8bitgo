@@ -280,6 +280,34 @@ export function assetsFromCnEdge(entrySrc: string, pageOrigin: string): boolean 
 }
 
 /**
+ * 大陆入口自己的静态文件是同源 /assets，而不是 8bitgo.com 页面所用的 /_cn/assets。
+ * 仅在入口、当前页都确实位于 cn.<站点主机> 时认作同一条 EdgeOne 线路。
+ */
+export function assetsFromCnSite(entrySrc: string, siteUrl: string, pageOrigin: string): boolean {
+  if (!entrySrc || !siteUrl || !pageOrigin) return false
+  try {
+    const site = new URL(siteUrl)
+    const page = new URL(pageOrigin)
+    const entry = new URL(entrySrc, pageOrigin)
+    if (site.protocol !== 'http:' && site.protocol !== 'https:') return false
+    return page.origin === entry.origin &&
+      page.protocol === site.protocol &&
+      page.port === site.port &&
+      page.hostname.toLowerCase() === `cn.${site.hostname.toLowerCase()}` &&
+      entry.pathname.startsWith('/assets/')
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 主站静态图可直接切换；大陆站点同源资源先刷新一次，只有复发后才切主站，避免把瞬时故障升级成跨域加载。
+ */
+export function canSwitchToOriginAssets(edge: boolean, cnSite: boolean, hasPreviousAttempt: boolean): boolean {
+  return edge && (!cnSite || hasPreviousAttempt)
+}
+
+/**
  * 带 `__assets=origin` 的当前页地址：服务端据此不把资源改写到 EdgeOne（shared/cover-cdn-hint.js），
  * 客户端入口在渲染前用 consumeOriginAssetsParam 去掉它。
  */

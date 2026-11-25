@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { cnEdgeOrigin, retargetStaticToCnEdge } from '../../shared/cover-cdn-hint.js'
+import { cnEdgeOrigin, retargetStaticToCnEdge, retargetStaticToOrigin } from '../../shared/cover-cdn-hint.js'
 import { createCnEdgeMiddleware, rewriteCssFontUrls } from '../src/cn-edge.js'
 
 let passed = 0
@@ -37,6 +37,18 @@ assert.ok(out.includes(`data-src="${B}/assets/index-legacy-D.js"`))
 assert.ok(out.includes('href="/favicon.ico"'), '其它静态不动')
 assert.equal(retargetStaticToCnEdge(tpl, ''), tpl)
 ok('模板里的 assets / fonts 改指加速入口，入口脚本与样式表能退回同源')
+
+const originTpl = retargetStaticToOrigin(tpl, 'https://8bitgo.com')
+assert.match(originTpl, /<head>\n<link rel="preconnect" href="https:\/\/8bitgo\.com" crossorigin>/)
+assert.ok(originTpl.includes('href="https://8bitgo.com/fonts/demo.woff2"'))
+assert.ok(originTpl.includes('src="https://8bitgo.com/assets/index-A.js" onerror='), '入口模块从主站加载，失败时回到当前 CN 入口')
+assert.ok(originTpl.includes("s.src='/assets/index-A.js'"))
+assert.ok(originTpl.includes('href="https://8bitgo.com/assets/index-C.css" onerror="this.onerror=null;this.href=\'/assets/index-C.css\'"'))
+assert.ok(originTpl.includes('href="https://8bitgo.com/assets/react-B.js"'))
+assert.ok(originTpl.includes('data-src="https://8bitgo.com/assets/index-legacy-D.js"'))
+assert.ok(originTpl.includes('href="/favicon.ico"'), '其它静态不动')
+assert.equal(retargetStaticToOrigin(tpl, 'not a URL'), tpl, '主站地址无效时保留原模板')
+ok('CN 站点保留原页状态，将整张 JS/CSS 模块图切回主站并带同源退路')
 
 assert.equal(rewriteCssFontUrls(`a{src:url('/fonts/x.woff2')}b{src:url(/fonts/y.woff2)}c{src:url("/fonts/z")}d{src:url(/img/q.png)}`),
   `a{src:url('/_cn/fonts/x.woff2')}b{src:url(/_cn/fonts/y.woff2)}c{src:url("/_cn/fonts/z")}d{src:url(/img/q.png)}`)
@@ -158,7 +170,9 @@ ok('加速入口发 socket.io 浏览器客户端（带 CORS / CORP / ETag，只�
 
 // ── 接线 ──
 const ssr = readFileSync(new URL('../src/ssr.js', import.meta.url), 'utf8')
-assert.match(ssr, /coverHint === 'cn' && !cnSite && !req\.assetsFromOrigin\) page = retargetStaticToCnEdge/, '兜底页带 __assets=origin 重新载入时不改写（诊断包 #761）')
+assert.match(ssr, /if \(cnSite && req\.assetsFromOrigin\) page = retargetStaticToOrigin\(page, publicSiteUrl\(\)\)/, '大陆入口收到 __assets=origin 时，从主站加载静态图且保留当前页 sessionStorage')
+assert.match(ssr, /const cacheControl = cnSite && req\.assetsFromOrigin\s*\? CACHE\.none/, '大陆入口主站资源退路不缓存 HTML，避免边缘忽略查询参数时串给正常访客')
+assert.match(ssr, /else if \(coverHint === 'cn' && !cnSite && !req\.assetsFromOrigin\) page = retargetStaticToCnEdge/, '8bitgo.com 的大陆访客继续走 EdgeOne，origin 退路仍不改写')
 const api = readFileSync(new URL('../../src/services/api.ts', import.meta.url), 'utf8')
 assert.match(api, /SAME_ORIGIN && method === 'GET' && !admin && !hasAuth \? cnEdgeApiBase\(\)/, '只有只读、非后台、未带认证信息的请求走加速入口')
 assert.match(api, /markCnEdgeApiFailed\(\)/)

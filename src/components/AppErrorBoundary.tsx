@@ -3,6 +3,8 @@ import { newStartupId, recordStartupEvent } from '@/services/startupFunnel'
 import { collectStartupDiagnostics, noteStartupEvent, type StartupRecovery } from '@/services/startupDiagnostics'
 import {
   assetsFromCnEdge,
+  assetsFromCnSite,
+  canSwitchToOriginAssets,
   describeImportEvidence,
   failedLegacyChunkFile,
   isSystemJsChunkLoadError,
@@ -161,12 +163,15 @@ function recoverBrokenAsset(error: unknown, info: ErrorInfo, previous: PreviousA
   const lazy = lazyFailure(error)
   const chunk = lazy?.file ?? failedLegacyChunkFile(error)
   const graph = describeImportEvidence(lazy?.graph)
+  const cnSite = stale && assetsFromCnSite(entrySrc, import.meta.env.VITE_SITE_URL ?? '', location.origin)
+  const edge = stale && (cnSite || assetsFromCnEdge(entrySrc, location.origin))
+  // CN 子域本身也在 EdgeOne 上，但同源资源不能按旧逻辑识别；先同源刷新一次，复发再整页切主站资源。
+  const canSwitchOrigin = canSwitchToOriginAssets(Boolean(edge), Boolean(cnSite), Boolean(previous))
   // integrity 清单只含现代 ES 产物；legacy 走 SystemJS，不能拿现代文件的清单声称旧 chunk 正常。
   // 能从 SystemJS 错误里取到文件名时，懒加载层已用两个唯一查询串重试；仍失败先整页刷新，重复失败再切主站资源。
   if (isSystemJsChunkLoadError(error) || lazy?.file?.includes('-legacy-')) {
     if (silentReload(error, chunk, previous, graph)) return true
-    const edge = assetsFromCnEdge(entrySrc, location.origin)
-    if (claimOriginReload(edge)) {
+    if (canSwitchOrigin && claimOriginReload(true)) {
       const note = [`legacy 页面脚本${chunk ? ` ${chunk}` : ''}重复加载失败，已改用主站资源重新载入`, graph].filter(Boolean).join('；')
       deferThenNavigate(error, info, note, 'origin', chunk, previous, toOriginAssets)
       return true
@@ -180,17 +185,23 @@ function recoverBrokenAsset(error: unknown, info: ErrorInfo, previous: PreviousA
     ...(lazy?.graph?.failed ?? []).map((dep) => resolveChunkUrl(`./${dep}`, entrySrc)),
   ].filter((url): url is string => Boolean(url))
   const pending = repairAssets({ reason: message.slice(0, 300), urls: named })
-  if (!pending) return stale ? silentReload(error, chunk, previous, graph) : false
+  if (!pending) {
+    if (stale && silentReload(error, chunk, previous, graph)) return true
+    if (canSwitchOrigin && claimOriginReload(true)) {
+      deferThenNavigate(error, info, `${graph}；重复失败，已改用主站资源重新载入`, 'origin', chunk, previous, toOriginAssets)
+      return true
+    }
+    return false
+  }
   void pending.then((result) => {
     const note = [lazy ? `懒加载：${lazy.file ?? lazy.name}` : '', graph, summarizeRepair(result, repairLoadInfo())]
       .filter(Boolean).join('；')
-    const edge = stale && assetsFromCnEdge(entrySrc, location.origin)
     if (edge && result?.edgeOnly?.length && claimOriginReload(edge)) {
       deferThenNavigate(error, info, `${note}；已改用主站资源重新载入`, 'origin', chunk, previous, toOriginAssets)
       return
     }
     // #951：文件 SHA-256 正确但模块加载仍失败时，同一 EdgeOne 地址重载无法改变响应链路；整页换主站资源。
-    if (edge && lazy?.file && result?.refreshed.includes(lazy.file) && claimOriginReload(edge)) {
+    if (canSwitchOrigin && lazy?.file && result?.refreshed.includes(lazy.file) && claimOriginReload(true)) {
       deferThenNavigate(error, info, `${note}；模块内容校验正常但导入仍失败，已改用主站资源重新载入`, 'origin', chunk, previous, toOriginAssets)
       return
     }
@@ -199,7 +210,7 @@ function recoverBrokenAsset(error: unknown, info: ErrorInfo, previous: PreviousA
         deferThenNavigate(error, info, note, 'reload', chunk, previous, reloadPage)
         return
       }
-      if (claimOriginReload(edge)) {
+      if (canSwitchOrigin && claimOriginReload(true)) {
         deferThenNavigate(error, info, `${note}；刷新后仍失败，已改用主站资源重新载入`, 'origin', chunk, previous, toOriginAssets)
         return
       }
@@ -207,7 +218,7 @@ function recoverBrokenAsset(error: unknown, info: ErrorInfo, previous: PreviousA
       return
     }
     if (stale && silentReload(error, chunk, previous, note)) return
-    if (claimOriginReload(edge)) {
+    if (canSwitchOrigin && claimOriginReload(true)) {
       deferThenNavigate(error, info, `${note}；刷新后仍失败，已改用主站资源重新载入`, 'origin', chunk, previous, toOriginAssets)
       return
     }

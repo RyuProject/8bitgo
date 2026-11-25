@@ -134,3 +134,34 @@ export function retargetStaticToCnEdge(html, edgeOrigin) {
   // 尽早和加速入口握手（放在 head 最前面，排在 Cloudflare 的 Early Hints 之后也不亏）
   return out.replace(/<head>/, `<head>\n<link rel="preconnect" href="${edgeOrigin}" crossorigin>`)
 }
+
+/**
+ * 大陆入口自身遇到懒加载失败时，保留当前文档和 sessionStorage，只把整张静态模块图切回主站。
+ * 不能只替换出错 chunk：Vite 的相对 import 会再取一份入口，页面上就会出现两套 React。
+ */
+export function retargetStaticToOrigin(html, siteUrl) {
+  let origin = ''
+  try {
+    const url = new URL(siteUrl)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return html
+    origin = url.origin
+  } catch {
+    return html
+  }
+  if (!origin) return html
+
+  const back = 'this.onerror=null;'
+  let out = html.replace(/(\s(?:src|href|data-src))="\/(assets|fonts)\//g, `$1="${origin}/$2/`)
+  out = out.replace(
+    /<script((?: data-cfasync="false")?) type="module" crossorigin src="([^"]+)"><\/script>/,
+    (tag, optOut, src) => src.startsWith(`${origin}/assets/`)
+      ? `<script${optOut} type="module" crossorigin src="${src}" onerror="${back}var s=document.createElement('script');s.type='module';s.crossOrigin='';s.src='${src.slice(origin.length)}';document.head.appendChild(s)"></script>`
+      : tag,
+  )
+  out = out.replace(/<link rel="stylesheet"([^>]*?) href="([^"]+)"([^>]*)>/g, (tag, pre, href, post) =>
+    href.startsWith(`${origin}/assets/`)
+      ? `<link rel="stylesheet"${pre} href="${href}"${post.replace(/\s*\/$/, '')} onerror="${back}this.href='${href.slice(origin.length)}'">`
+      : tag,
+  )
+  return out.replace(/<head>/, `<head>\n<link rel="preconnect" href="${origin}" crossorigin>`)
+}

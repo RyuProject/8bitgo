@@ -27,6 +27,8 @@ import {
 import { createAssetRepairRouter, parseRepairRequest } from '../server/src/routes/asset-repair.js'
 import {
   assetsFromCnEdge,
+  assetsFromCnSite,
+  canSwitchToOriginAssets,
   consumeOriginAssetsParam,
   failedLegacyChunkFile,
   isSystemJsChunkLoadError,
@@ -688,7 +690,7 @@ assert.equal(parseRepairRequest({ build: '../../etc', files: ['a.js'] }), null)
   assert.match(boundary, /const previous = takeRecoveryForFailure\(\)\s*if \(!recoverBrokenAsset\(error, info, previous\)\) reportRenderCrash\(error, info, '', previous\)/, '上一份文档自动刷新过：接过前情')
   // 2026-11-19：修好了不再「先上报再刷新」，报告留给刷新后的页面（好了记 recovered，又坏了并进那一份）
   assert.match(boundary, /if \(repairFixedSomething\(result\)\) \{\s*if \(claimReload\(CHUNK_RELOAD_PREFIX\)\) \{\s*deferThenNavigate\(error, info, note, 'reload', chunk, previous, reloadPage\)/, '修好了：报告留到刷新后')
-  assert.match(boundary, /if \(claimOriginReload\(edge\)\) \{\s*deferThenNavigate\(error, info, `\$\{note\}；刷新后仍失败，已改用主站资源重新载入`, 'origin'/, '一分钟内又坏了才换主站')
+  assert.match(boundary, /if \(canSwitchOrigin && claimOriginReload\(true\)\) \{\s*deferThenNavigate\(error, info, `\$\{note\}；刷新后仍失败，已改用主站资源重新载入`, 'origin'/, '一分钟内又坏了才换主站')
   assert.match(boundary, /if \(stale && silentReload\(error, chunk, previous, note\)\) return/, '404 那类旧 chunk 照旧刷新一次，不算故障')
   assert.match(boundary, /if \(!deferRecoveryReport\(\{ file, via, summary: incidentSummary\(error, fullNote\), report \}\) && report\) sendCrashReport\(report\)\s*navigate\(\)/, '存不进 sessionStorage 就退回先报再刷新')
   assert.match(boundary, /\.\.\.\(lazy\?\.graph\?\.failed \?\? \[\]\)\.map\(\(dep\) => resolveChunkUrl\(`\.\/\$\{dep\}`, entrySrc\)\)/, '模块图证据点名的依赖交给修复脚本')
@@ -696,11 +698,13 @@ assert.equal(parseRepairRequest({ build: '../../etc', files: ['a.js'] }), null)
   assert.match(boundary, /const stale = STALE_CHUNK\.test\(message\) \|\| isSystemJsChunkLoadError\(error\)/, 'SystemJS 脚本加载错误归入 chunk 恢复')
   assert.match(boundary, /if \(isSystemJsChunkLoadError\(error\) \|\| lazy\?\.file\?\.includes\('-legacy-'\)\) \{\s*if \(silentReload\(error, chunk, previous, graph\)\) return true/, 'legacy 不走只覆盖现代 ESM 的 SHA 清单；先刷新，重复失败才换主站')
   assert.ok(boundary.indexOf('if (isSystemJsChunkLoadError(error)') < boundary.indexOf('const named = ['), 'legacy 恢复在现代资源核对之前分流')
-  assert.match(boundary, /if \(!pending\) return stale \? silentReload\(error, chunk, previous, graph\) : false/, '钩子不在时退回原来的行为')
+  assert.match(boundary, /if \(!pending\) \{\s*if \(stale && silentReload\(error, chunk, previous, graph\)\) return true\s*if \(canSwitchOrigin && claimOriginReload\(true\)\)/, '钩子不在时先刷新，复发后再切主站资源')
   // 诊断包 #761：大陆加速入口取不下来、主站正常 → 带 __assets=origin 整页重新载入（报告留到刷新后）
   assert.match(boundary, /if \(edge && result\?\.edgeOnly\?\.length && claimOriginReload\(edge\)\) \{\s*deferThenNavigate\([^;]+'origin', chunk, previous, toOriginAssets\)/)
   assert.ok(boundary.indexOf('result?.edgeOnly?.length') < boundary.indexOf('if (repairFixedSomething(result))'), 'edgeOnly 先于「修好了」判断：刷新回来还是 EdgeOne')
-  assert.match(boundary, /const edge = stale && assetsFromCnEdge\(entrySrc, location\.origin\)/, '只有大陆加速入口上的加载失败才换主站')
+  assert.match(boundary, /const cnSite = stale && assetsFromCnSite\(entrySrc, import\.meta\.env\.VITE_SITE_URL \?\? '', location\.origin\)/, '识别 CN 站点的同源 EdgeOne 资源')
+  assert.match(boundary, /const edge = stale && \(cnSite \|\| assetsFromCnEdge\(entrySrc, location\.origin\)\)/, '合并 CN 子域与主站上的 CN EdgeOne 资源')
+  assert.match(boundary, /const canSwitchOrigin = canSwitchToOriginAssets\(Boolean\(edge\), Boolean\(cnSite\), Boolean\(previous\)\)/, 'CN 子域先整页刷新，复发后才切主站资源')
   assert.match(boundary, /function toOriginAssets\(\): void \{\s*location\.replace\(originAssetsUrl\(location\)\)/)
   assert.match(boundary, /lazy\?\.file \? resolveChunkUrl\(`\.\/\$\{lazy\.file\}`, entrySrc\)/, '懒加载失败的 chunk 作为点名文件交给修复脚本')
   assert.match(boundary, /summarizeRepair\(result, repairLoadInfo\(\)\)/, '诊断包写出修复脚本的加载经过')
@@ -745,6 +749,14 @@ assert.equal(parseRepairRequest({ build: '../../etc', files: ['a.js'] }), null)
   assert.equal(assetsFromCnEdge('https://8bitgo.com/assets/index-a.js', 'https://8bitgo.com'), false, '主站资源')
   assert.equal(assetsFromCnEdge('https://cn.8bitgo.com/assets/index-a.js', 'https://cn.8bitgo.com'), false, '大陆入口站点本身是同源')
   assert.equal(assetsFromCnEdge('', 'https://8bitgo.com'), false)
+  assert.equal(assetsFromCnSite('https://cn.8bitgo.com/assets/index-a.js', 'https://8bitgo.com', 'https://cn.8bitgo.com'), true, 'CN 入口的同源静态文件仍来自 EdgeOne')
+  assert.equal(assetsFromCnSite('/assets/index-a.js', 'https://8bitgo.com', 'https://8bitgo.com'), false, '主站自身不走 CN 退路')
+  assert.equal(assetsFromCnSite('https://cn.evil.example/assets/index-a.js', 'https://8bitgo.com', 'https://cn.evil.example'), false, '只认站点配置的 cn 子域')
+  assert.equal(assetsFromCnSite('https://cn.8bitgo.com/_cn/assets/index-a.js', 'https://8bitgo.com', 'https://cn.8bitgo.com'), false, 'CN 子域的其他路径不扩大判定')
+  assert.equal(canSwitchToOriginAssets(true, true, false), false, 'CN 同源入口先尝试普通整页刷新')
+  assert.equal(canSwitchToOriginAssets(true, true, true), true, 'CN 同源入口复发后允许主站静态图退路')
+  assert.equal(canSwitchToOriginAssets(true, false, false), true, '主站上的跨域 EdgeOne 资源仍可直接切换')
+  assert.equal(canSwitchToOriginAssets(false, false, true), false, '主站资源没有跨域退路')
   assert.equal(originAssetsUrl({ pathname: '/games/x', search: '', hash: '' }), '/games/x?__assets=origin')
   assert.equal(originAssetsUrl({ pathname: '/de/games', search: '?page=2&__assets=origin', hash: '#c' }), '/de/games?page=2&__assets=origin#c', '不重复加参数')
 

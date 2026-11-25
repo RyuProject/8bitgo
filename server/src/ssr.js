@@ -18,7 +18,7 @@ import { requestHostname } from './url-normalize.js'
 import { tvRenderPath } from '../../shared/tv-host.js'
 import { CN_SITE_ATTR, CN_SITE_HEADER, CN_SUBDOMAIN, isCnRequest } from '../../shared/cn-host.js'
 import { ROCKET_LOADER_OPT_OUT, optOutRocketLoader } from '../../shared/rocket-loader-optout.js'
-import { COVER_CDN_META, cnEdgeOrigin, coverCdnHint, retargetStaticToCnEdge } from '../../shared/cover-cdn-hint.js'
+import { COVER_CDN_META, cnEdgeOrigin, coverCdnHint, retargetStaticToCnEdge, retargetStaticToOrigin } from '../../shared/cover-cdn-hint.js'
 import { isolatedRuntimeRoute } from '../../shared/isolated-runtime-platforms.js'
 import { isInlineIsolatedPlatform } from '../../shared/inline-isolated-platforms.js'
 
@@ -292,7 +292,8 @@ export async function renderPage(req, res, next) {
     let page = retargetCoverHints(getTemplate(), originOf(coverBaseUrl()), originOf(coverBase))
     // 8bitgo.com 上的大陆访客：JS / CSS / 字体也从 EdgeOne 取（cn-edge.js）；大陆入口本身已经同源。
     // 带 __assets=origin 的是兜底页在 EdgeOne 取不下来 chunk 后的重新载入：这次整页留在主站（shared/cover-cdn-hint.js）
-    if (coverHint === 'cn' && !cnSite && !req.assetsFromOrigin) page = retargetStaticToCnEdge(page, cnEdgeOrigin(publicSiteUrl()))
+    if (cnSite && req.assetsFromOrigin) page = retargetStaticToOrigin(page, publicSiteUrl())
+    else if (coverHint === 'cn' && !cnSite && !req.assetsFromOrigin) page = retargetStaticToCnEdge(page, cnEdgeOrigin(publicSiteUrl()))
     /*
       只给 200 页面发：Cloudflare 只从 200 HTML 学 Link，404 页带着也白带。
       主站上同一个地址有两份资源写法（大陆访客的 JS / CSS 走 cn.<裸域>/_cn，见上），而 Cloudflare 的 Early Hints
@@ -337,7 +338,9 @@ export async function renderPage(req, res, next) {
     // 渲染出「页面不存在」时回 404：一律 200 会让爬虫把不存在的 URL 当正常页面收录
     // 页面是匿名的（登录态在客户端 localStorage 里，SSR 不碰用户数据），
     // 所以可以放心让 Cloudflare 缓存。后台改完内容想立刻生效就清一次 Cloudflare 缓存。
-    const cacheControl = isolatedPlay ? CACHE.none : notFound ? CACHE.notFound : isNoStorePath(req.path) ? CACHE.none : CACHE.page
+    const cacheControl = cnSite && req.assetsFromOrigin
+      ? CACHE.none
+      : isolatedPlay ? CACHE.none : notFound ? CACHE.notFound : isNoStorePath(req.path) ? CACHE.none : CACHE.page
     // 只有正常的可缓存页面才在 Cloudflare 上长缓存；404 / 隔离页 / 登录回调保持原样
     // 大陆入口（EdgeOne）不经过 Cloudflare、也没有清缓存通道，不发这个头，免得哪天 EdgeOne 认了它
     const longEdgeCache = !cnSite && cacheControl === CACHE.page && Boolean(CACHE.pageEdge) && edgePurgeEnabled()
