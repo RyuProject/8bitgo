@@ -38,6 +38,7 @@ async function consume(value, stats) {
 export class Bucket {
   constructor(name = 'roms', pageSize = 1000) {
     this.name = name; this.objects = new Map(); this.uploads = new Map(); this.calls = []; this.pageSize = pageSize
+    this.pendingConditionalPuts = new Set()
     this.stats = { streamWrites: 0 }; this.fail = {}; this.beforeGet = null; this.serial = 0
   }
   log(method, args) {
@@ -96,10 +97,16 @@ export class Bucket {
     this.log('put', { key, kind: value instanceof ReadableStream ? 'stream' : 'buffer' })
     const current = this.objects.get(key)
     // Workers R2 returns null for a failed conditional put; model the atomic create-once marker path.
-    if (options.onlyIf?.etagDoesNotMatch === '*' && current) return null
+    const createOnly = options.onlyIf?.etagDoesNotMatch === '*'
+    if (createOnly && (current || this.pendingConditionalPuts.has(key))) return null
     if (options.onlyIf?.etagMatches && options.onlyIf.etagMatches !== current?.etag) return null
-    const data = await consume(value, this.stats)
-    return this.view(this.seed(key, data, { ...options }))
+    if (createOnly) this.pendingConditionalPuts.add(key)
+    try {
+      const data = await consume(value, this.stats)
+      return this.view(this.seed(key, data, { ...options }))
+    } finally {
+      if (createOnly) this.pendingConditionalPuts.delete(key)
+    }
   }
   async delete(keys) {
     this.log('delete', keys)

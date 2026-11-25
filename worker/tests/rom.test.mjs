@@ -719,6 +719,61 @@ for(const [path,method] of [['/a?partNumber=1','PUT'],['/a?uploads','DELETE'],['
   const r=await worker.fetch(req(path,method,method==='PUT'?'one-part':undefined,{},true),e)
   assert.equal(r.status,400);assert.equal(new TextDecoder().decode(e.ROMS.objects.get('a').data),'original-complete-file')
 })
+test('multipart create request IDs recover one session under retries and concurrent tabs', async () => {
+  const e = environment()
+  const key = 'roms/idempotent.bin'
+  const requestId = 'a'.repeat(32)
+  const body = { contentType: 'application/octet-stream', size: 3, name: 'game.bin', requestId }
+  const create = () => worker.fetch(req(`/${key}?uploads`, 'POST', body, {}, true), e)
+  const responses = await Promise.all([create(), create()])
+  assert.deepEqual(responses.map(response => response.status), [200, 200])
+  const sessions = await Promise.all(responses.map(response => response.json()))
+  assert.equal(new Set(sessions.map(session => session.uploadId)).size, 1)
+  assert(sessions.some(session => session.reused))
+  assert.equal(e.ROMS.uploads.size, 1, ' losing multipart sessions must be aborted')
+
+  const conflict = await worker.fetch(req(`/${key}?uploads`, 'POST', { ...body, size: 4 }, {}, true), e)
+  assert.equal(conflict.status, 409)
+  assert.equal((await conflict.json()).code, 'multipart_idempotency_conflict')
+  assert.equal(e.ROMS.uploads.size, 1, 'a conflicting create must not open another session')
+})
+test('multipart completion recovers a lost response but rejects a replaced final object', async () => {
+  const e = environment()
+  const key = 'roms/idempotent-complete.bin'
+  const makeUpload = async requestId => {
+    const body = { contentType: 'application/octet-stream', size: 3, name: 'game.bin', requestId }
+    const created = await worker.fetch(req(`/${key}?uploads`, 'POST', body, {}, true), e)
+    assert.equal(created.status, 200)
+    const session = await created.json()
+    const partResponse = await worker.fetch(req(
+      `/${key}?uploadId=${encodeURIComponent(session.uploadId)}&partNumber=1`,
+      'PUT', new Uint8Array([1, 2, 3]), { 'Content-Length': '3' }, true,
+    ), e)
+    assert.equal(partResponse.status, 200)
+    const part = await partResponse.json()
+    const completeBody = {
+      parts: [{ partNumber: part.partNumber, etag: part.etag }], marker: session.marker,
+      requestId, requestSignature: session.requestSignature, size: 3,
+    }
+    const complete = () => worker.fetch(req(
+      `/${key}?uploadId=${encodeURIComponent(session.uploadId)}`, 'POST', completeBody, {}, true,
+    ), e)
+    return { complete, session }
+  }
+
+  const original = await makeUpload('b'.repeat(32))
+  const recovered = await Promise.all([original.complete(), original.complete()])
+  assert.deepEqual(recovered.map(response => response.status), [200, 200])
+  const results = await Promise.all(recovered.map(response => response.json()))
+  assert(results.some(result => result.reused), 'a duplicate completion must confirm the already-published object')
+  assert.equal(e.ROMS.objects.get(key).customMetadata['8bitgo-request-id'], 'b'.repeat(32))
+
+  const replacement = await makeUpload('c'.repeat(32))
+  assert.equal((await replacement.complete()).status, 200)
+  const staleRetry = await original.complete()
+  assert(staleRetry.status >= 400, 'a later same-sized object must not be mistaken for the original upload')
+  assert.notEqual((await staleRetry.json()).reused, true)
+})
 test('preview video Range requests fill the edge cache once and are then sliced from it', async () => {
   const previous = globalThis.caches
   const store = new Map()
