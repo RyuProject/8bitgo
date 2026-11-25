@@ -12,6 +12,8 @@ export interface SuggestItem {
   slug: string
   title: string
   titleZh: string | null
+  titleI18n?: Record<string, string>
+  titleLocalized?: Record<string, string>
   platform: string
   year: number | null
   icon: string

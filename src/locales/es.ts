@@ -1004,6 +1004,7 @@ const es: Translation = {
     seatCooldown: 'Podrás pedirlo de nuevo en {s} s.',
     seatJoinLive: 'Pedir jugar',
     takingOver: 'El anfitrión se desconectó: tomando el control…',
+    takeoverStateFailed: 'No se pudo restaurar la partida guardada. La toma de control se pausó para proteger tu progreso.',
     tookOver: 'Ahora eres el anfitrión, la partida continúa',
     hostChanged: 'Cambió el anfitrión: reconectando…',
     p2pHint: 'El juego se ejecuta en tu navegador y se transmite directamente a quien se una (hasta {max}), sin pasar por un servidor.',

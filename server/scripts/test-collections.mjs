@@ -123,11 +123,11 @@ globalThis.__fakeDb = {
       return g ? [{ id: g.id }] : []
     }
     // 封面用的瘦身查询（列名对齐 coverGame()）
-    if (q.startsWith('SELECT id, slug, title, title_zh, platform, icon, cover, video FROM games WHERE id IN')) {
+    if (q.startsWith('SELECT id, slug, title, title_zh, title_i18n, title_localized, platform, icon, cover, video FROM games WHERE id IN')) {
       const ids = params.map(String)
       return games
         .filter((g) => ids.includes(String(g.id)) && !g.hidden)
-        .map((g) => ({ id: g.id, slug: g.slug, title: g.title, title_zh: g.title_zh ?? null, platform: g.platform, icon: g.icon ?? '🎮', cover: g.cover ?? null, video: g.video ?? null }))
+        .map((g) => ({ id: g.id, slug: g.slug, title: g.title, title_zh: g.title_zh ?? null, title_i18n: g.title_i18n ?? null, title_localized: g.title_localized ?? null, platform: g.platform, icon: g.icon ?? '🎮', cover: g.cover ?? null, video: g.video ?? null }))
     }
     if (q.startsWith('SELECT * FROM games WHERE id IN')) {
       const ids = params.slice(0, params.length).map(String)

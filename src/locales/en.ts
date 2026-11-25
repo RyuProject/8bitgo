@@ -1004,6 +1004,7 @@ const en: Translation = {
     seatCooldown: 'You can ask again in {s}s.',
     seatJoinLive: 'Ask to play',
     takingOver: 'The host dropped — taking over…',
+    takeoverStateFailed: 'Could not restore the saved game state. Takeover paused to protect your progress.',
     tookOver: 'You are the new host, the game continues',
     hostChanged: 'The host changed — reconnecting…',
     p2pHint: 'The game runs in your browser and streams straight to whoever joins (up to {max}), never through a server.',

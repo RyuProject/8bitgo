@@ -21,6 +21,7 @@ import { query, queryOne, withTransaction } from '../db.js'
 import { playIdentity } from '../playcount.js'
 import { requireUser, optionalUser, hasAbility } from '../auth.js'
 import { attachRelations } from '../games-repo.js'
+import { readI18nMap } from '../mappers.js'
 import { take, takeAnonymous, clientKey, isMeaningfulIp } from '../rateLimit.js'
 /*
   合集会进 SSR 内容缓存（content.js 的 collection:<id> / collections:<page> / 首页合集块），
@@ -94,7 +95,7 @@ async function coversFor(ids) {
   const gholes = gameIds.map(() => '?').join(',')
   // 只取画封面要用的几列（形状对齐 src/types.ts 的 CoverGame），不走 attachRelations
   const gameRows = await query(
-    `SELECT id, slug, title, title_zh, platform, icon, cover, video FROM games WHERE id IN (${gholes}) AND hidden = 0`,
+    `SELECT id, slug, title, title_zh, title_i18n, title_localized, platform, icon, cover, video FROM games WHERE id IN (${gholes}) AND hidden = 0`,
     gameIds,
   )
   const byId = new Map(gameRows.map((r) => [String(r.id), coverGame(r)]))
@@ -109,6 +110,8 @@ async function coversFor(ids) {
 function coverGame(r) {
   const g = { slug: r.slug, title: r.title, platform: r.platform, icon: r.icon || '🎮' }
   if (r.title_zh) g.titleZh = r.title_zh
+  g.titleI18n = readI18nMap(r.title_i18n)
+  g.titleLocalized = readI18nMap(r.title_localized)
   if (r.cover) g.cover = r.cover
   if (r.video) g.video = r.video
   return g

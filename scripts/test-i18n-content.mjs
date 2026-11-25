@@ -70,6 +70,14 @@ try {
     assert.equal(gameTitle(full, lang), 'Metal Slug 3', `${lang} 必须用原名`)
   }
 
+  const localized = {
+    ...full,
+    titleLocalized: { fr: 'Le titre vérifié', 'zh-Hant': '人工校對繁體名' },
+  }
+  assert.equal(gameTitle(localized, 'fr'), 'Le titre vérifié', '人工校对的语言标题必须优先于原名')
+  assert.equal(gameTitle(localized, 'zh-Hant'), '人工校對繁體名', '人工校对标题必须优先于自动繁体转换')
+  assert.equal(gameTitle({ title: 'Metal Slug 3', titleLocalized: { en: 'Titre invalide' } }, 'en'), 'Metal Slug 3', '英文始终使用基准标题列')
+
   // 没生成过繁体译名：回退到简体译名（能读，但那正是被判重复的状态）
   const noHant = { title: 'Metal Slug 3', titleZh: '合金弹头 3' }
   assert.equal(gameTitle(noHant, 'zh-Hant'), '合金弹头 3')
@@ -77,7 +85,7 @@ try {
   assert.equal(gameTitle({ title: 'Tekken 3', titleZh: '' }, 'zh-Hans'), 'Tekken 3')
   assert.equal(gameTitle({ title: 'Tekken 3', titleZh: null }, 'zh-Hant'), 'Tekken 3')
   assert.equal(gameTitle({ title: 'Tekken 3' }, 'zh-Hant'), 'Tekken 3')
-  ok('gameTitle：繁体取译名，其余语言用原名，三种「没有」都落回原名')
+  ok('gameTitle：繁体优先人工标题再自动译名，其余语言仅在有人工标题时覆盖原名')
 } catch (e) {
   bad('gameTitle 回退链', e)
 }
@@ -160,7 +168,58 @@ try {
   assert.equal(needsTranslation(manuallyLocalized, 'fr'), false, '已有人工简介时不再显示自动翻译入口')
   assert.deepEqual(gameSeoLanguagePlan(manuallyLocalized, 'fr').contentLanguages, ['zh-Hans', 'zh-Hant', 'en', 'fr'])
 
+  const titleOnly = {
+    description: '中文正文',
+    descriptionEn: 'English body',
+    titleLocalized: { de: 'Lokalisierter Titel', ja: '校對済みタイトル' },
+  }
+  assert.deepEqual(gameSeoLanguagePlan(titleOnly, 'de'), {
+    contentLanguages: ['zh-Hans', 'en'],
+    canonicalLanguage: 'en',
+  }, '只有标题译名时不能把未翻译的正文页加入 hreflang')
+
   const { gameApiToRow, gameApiToPartialRow, gameRowToApi } = await import('../server/src/mappers.js')
+  const localizedTitlesRow = gameApiToRow({ slug: 'multi', titleLocalized: { fr: '  Metal Slug 3  ', 'zh-hant': ' 合金彈頭 3 ' } })
+  assert.deepEqual(JSON.parse(localizedTitlesRow.title_localized), { fr: 'Metal Slug 3', 'zh-Hant': '合金彈頭 3' })
+  assert.equal(Object.hasOwn(gameApiToRow({ slug: 'multi' }), 'title_localized'), false, '旧客户端全量保存不得清掉人工标题')
+  assert.deepEqual(gameApiToPartialRow({ titleLocalized: {} }), { title_localized: null })
+  assert.throws(() => gameApiToRow({ slug: 'multi', titleLocalized: { en: 'Duplicate English' } }), /语言码无效/)
+  assert.deepEqual(gameRowToApi({ slug: 'multi', title_localized: localizedTitlesRow.title_localized }).titleLocalized, { fr: 'Metal Slug 3', 'zh-Hant': '合金彈頭 3' })
+  const { pickTitle } = await import('../server/src/open/i18n.js')
+  for (const lang of ['fr', 'zh-Hant']) {
+    const row = {
+      title: 'Metal Slug 3',
+      title_zh: '合金弹头 3',
+      title_i18n: { 'zh-Hant': '合金彈頭 3' },
+      title_localized: localizedTitlesRow.title_localized,
+    }
+    const apiGame = {
+      title: row.title,
+      titleZh: row.title_zh,
+      titleI18n: row.title_i18n,
+      titleLocalized: JSON.parse(row.title_localized),
+    }
+    assert.equal(pickTitle(row, lang).text, gameTitle(apiGame, lang), `${lang} 站内与开放接口标题回退必须一致`)
+  }
+  const invalidBaseOverrides = {
+    title: 'Metal Slug 3',
+    title_zh: '合金弹头 3',
+    title_i18n: { 'zh-Hant': '合金彈頭 3' },
+    title_localized: { en: '错误的英文覆盖', 'zh-Hans': '错误的简体覆盖', 'zh-Hant': '人工校對繁體名' },
+  }
+  const invalidBaseApiGame = {
+    title: invalidBaseOverrides.title,
+    titleZh: invalidBaseOverrides.title_zh,
+    titleI18n: invalidBaseOverrides.title_i18n,
+    titleLocalized: invalidBaseOverrides.title_localized,
+  }
+  for (const lang of LANGS) {
+    assert.equal(
+      pickTitle(invalidBaseOverrides, lang).text,
+      gameTitle(invalidBaseApiGame, lang),
+      `${lang} 的异常基准标题覆盖也必须保持站内和开放接口一致`,
+    )
+  }
   const localizedRow = gameApiToRow({ slug: 'multi', descriptionLocalized: { fr: '  Description française  ' } })
   assert.deepEqual(JSON.parse(localizedRow.description_localized), { fr: 'Description française' })
   assert.deepEqual(JSON.parse(gameApiToRow({ slug: 'multi', descriptionLocalized: { 'pt-br': 'Descrição' } }).description_localized), { 'pt-BR': 'Descrição' }, '保存时统一 BCP-47 大小写')
@@ -174,9 +233,12 @@ try {
   assert.match(gameForm, /Field label="简介（中文）"/)
   assert.match(gameForm, /Field label="简介（English）"/)
   assert.match(gameForm, /localizedRomLanguages\.map/)
+  assert.match(gameForm, /localizedTitleRomLanguages\.map/)
   assert.match(gameForm, /Boolean\(form\.roms\?\.\[lang\]\?\.trim\(\)\)/, '语言输入框必须跟随实际绑定的 ROM 显示')
   for (const schema of ['../server/schema-v2.sql', '../server/schema-d1.sql', '../server/8bitgo-v2-install.sql']) {
-    assert.match(readFileSync(new URL(schema, import.meta.url), 'utf8'), /description_localized/, `${schema} 必须声明新列`)
+    const sql = readFileSync(new URL(schema, import.meta.url), 'utf8')
+    assert.match(sql, /description_localized/, `${schema} 必须声明人工简介列`)
+    assert.match(sql, /title_localized/, `${schema} 必须声明人工标题列`)
   }
 
   const post = {

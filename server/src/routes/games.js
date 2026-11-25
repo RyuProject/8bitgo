@@ -3,7 +3,7 @@ import { requireAbility, hasAbility, optionalUser, roleOfRequest } from '../auth
 import { invalidateContent } from '../content.js'
 import { publicApi } from '../cache.js'
 import { playIdentity } from '../playcount.js'
-import { gameApiToPartialRow, relationsInPatch, dateOnly } from '../mappers.js'
+import { gameApiToPartialRow, relationsInPatch, dateOnly, readI18nMap } from '../mappers.js'
 import { isAdultByBirthDate } from '../../../shared/age.js'
 import { gameSupportsNetplay, netplayModeFromInput } from '../../../shared/netplay-players.js'
 import { query } from '../db.js'
@@ -311,7 +311,16 @@ gamesRouter.get('/facets', async (_req, res, next) => {
         descriptionEn: r.description_en || undefined,
         homepage: r.homepage || undefined,
         topGame: r.slug
-          ? { slug: r.slug, title: r.title, titleZh: r.title_zh || undefined, icon: r.icon, cover: r.cover || undefined, platform: r.platform }
+          ? {
+              slug: r.slug,
+              title: r.title,
+              titleZh: r.title_zh || undefined,
+              titleI18n: readI18nMap(r.title_i18n),
+              titleLocalized: readI18nMap(r.title_localized),
+              icon: r.icon,
+              cover: r.cover || undefined,
+              platform: r.platform,
+            }
           : undefined,
       })),
     })

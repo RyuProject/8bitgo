@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import type { ArcadeMameDisk, FlashControlButton, Game, GenreId, PlatformId } from '@/types'
-import { normalizeRomLanguageCode, romLanguageLabel, ROM_LANGS, type RomSlotLang } from '@/config/languages'
+import { LANGUAGES, normalizeRomLanguageCode, romLanguageLabel, ROM_LANGS, type RomSlotLang } from '@/config/languages'
 import { platforms, platformMap } from '@/data/platforms'
 import { genres } from '@/data/genres'
 import { cx } from '@/lib/format'
@@ -239,6 +239,7 @@ const EMPTY: Game = {
   slug: '',
   title: '',
   titleZh: '',
+  titleLocalized: {},
   platform: 'nes',
   genres: ['action'],
   // 不知道发行年份时存 0，避免新游戏沿用一个看似真实的 1990 年。
@@ -399,6 +400,9 @@ export function GameForm({
   // SEO 简介只给实际绑定了 ROM 的语言开输入框；zh-Hans / en 继续使用上面的固定简介字段。
   const localizedRomLanguages = allRomLangs.filter((lang) =>
     lang !== 'zh-Hans' && lang !== 'en' && Boolean(form.roms?.[lang]?.trim()),
+  )
+  const localizedTitleRomLanguages = localizedRomLanguages.filter((language) =>
+    LANGUAGES.some(({ code }) => code === language),
   )
   const arcadePrimaryLang = allRomLangs.find((lang) => Boolean(form.roms?.[lang]?.trim())) ?? 'en'
   /*
@@ -1167,6 +1171,12 @@ export function GameForm({
       slug,
       title: form.title.trim(),
       titleZh: form.titleZh?.trim() || undefined,
+      // 仅去空格和空值，不按当前 ROM 槽过滤：先解绑再换包时，已校对的名称不能悄悄丢失。
+      titleLocalized: Object.fromEntries(
+        Object.entries(form.titleLocalized ?? {})
+          .map(([language, title]) => [language, title.trim()] as const)
+          .filter(([, title]) => Boolean(title)),
+      ),
       developer: normalizeDevelopers(form.developer) || '未知',
       cover: form.cover?.trim() || undefined,
       video: form.video?.trim() || undefined,
@@ -1324,6 +1334,26 @@ export function GameForm({
         <Field label="中文译名">
           <input className={inputClass} value={form.titleZh ?? ''} onChange={(e) => set('titleZh', e.target.value)} placeholder="超级马力欧兄弟" maxLength={200} />
         </Field>
+        {localizedTitleRomLanguages.map((language) => (
+          <Field
+            key={language}
+            label={`标题（${romLanguageLabel(language)}）`}
+            hint="留空时回退到原名；繁体中文会先回退到自动转换的繁体译名。"
+          >
+            <input
+              className={inputClass}
+              value={form.titleLocalized?.[language] ?? ''}
+              onChange={(e) => set('titleLocalized', {
+                ...form.titleLocalized,
+                [language]: e.target.value,
+              })}
+              placeholder={language === 'zh-Hant'
+                ? form.titleI18n?.[language] || form.titleZh || form.title
+                : form.title}
+              maxLength={200}
+            />
+          </Field>
+        ))}
         <Field label="slug（URL 标识）" hint={isEdit ? '编辑时不可修改' : '留空则根据英文标题自动生成'}>
           <input
             className={cx(inputClass, isEdit && 'opacity-60')}

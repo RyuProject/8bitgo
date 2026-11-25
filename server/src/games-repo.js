@@ -10,7 +10,7 @@
 import { jsonMemberPath, query, queryOne, withTransaction } from './db.js'
 import { syncNetplayDerived } from './netplay-auto.js'
 import { netplayModeFromInput } from '../../shared/netplay-players.js'
-import { gameRowToApi, gameApiToRow, dateTimeIso, romRelationRows, flashBundleAssetPaths, GENERIC_ROM_LANG } from './mappers.js'
+import { gameRowToApi, gameApiToRow, dateTimeIso, readI18nMap, romRelationRows, flashBundleAssetPaths, GENERIC_ROM_LANG } from './mappers.js'
 import { boundedSearchLimit, buildGameTokens, queryTerms, tokenMatchSql, normalize, tokenize, escapeLike } from './search.js'
 import { BAYES_SCORE_SQL } from './ratings-repo.js'
 import { SITE_LANGUAGES } from '../../shared/site-languages.js'
@@ -130,7 +130,7 @@ async function attachCardRelations(rows) {
 
 /** 首页卡片严格需要的主表列；别改回 g.*，那会把长简介与运行配置重新灌进首屏。 */
 const CARD_COLUMNS = [
-  'g.id', 'g.slug', 'g.title', 'g.title_zh', 'g.title_i18n', 'g.platform',
+  'g.id', 'g.slug', 'g.title', 'g.title_zh', 'g.title_i18n', 'g.title_localized', 'g.platform',
   'g.year', 'g.developer', 'g.plays', 'g.players', 'g.multiplayer', 'g.coin_reward',
   'g.icon', 'g.cover', 'g.video', 'g.added_at', 'g.created_at', 'g.updated_at',
   'g.adult', 'g.hidden', 'g.home_rank', 'g.rating_sum', 'g.rating_weight', 'g.rating_count',
@@ -372,7 +372,7 @@ export async function suggestGames(q, { limit = 8 } = {}) {
   const norm = normalize(q).trim()
   const likePrefix = `${escapeLike(norm)}%`
   const rows = await query(
-    `SELECT g.id, g.slug, g.title, g.title_zh, g.platform, g.year, g.icon, g.cover, g.plays
+    `SELECT g.id, g.slug, g.title, g.title_zh, g.title_i18n, g.title_localized, g.platform, g.year, g.icon, g.cover, g.plays
        FROM games g
        JOIN (${m.sql}) s ON s.game_id = g.id
       WHERE g.hidden = 0
@@ -387,6 +387,8 @@ export async function suggestGames(q, { limit = 8 } = {}) {
     slug: r.slug,
     title: r.title,
     titleZh: r.title_zh ?? null,
+    titleI18n: readI18nMap(r.title_i18n),
+    titleLocalized: readI18nMap(r.title_localized),
     platform: r.platform,
     year: Number(r.year) || null,
     icon: r.icon,
@@ -436,7 +438,7 @@ export async function searchFallback(q, { limit = 12 } = {}) {
   if (!loose.length) return { suggestion: null, related: [] }
   const holes = loose.map(() => '?').join(',')
   const looseRows = await query(
-    `SELECT g.id, g.slug, g.title, g.title_zh, g.platform, g.year, g.icon, g.cover
+    `SELECT g.id, g.slug, g.title, g.title_zh, g.title_i18n, g.title_localized, g.platform, g.year, g.icon, g.cover
        FROM games g
        JOIN (SELECT game_id, SUM(weight) AS score, COUNT(*) AS hits
                FROM game_search_tokens WHERE token IN (${holes})
@@ -450,6 +452,8 @@ export async function searchFallback(q, { limit = 12 } = {}) {
     slug: r.slug,
     title: r.title,
     titleZh: r.title_zh ?? null,
+    titleI18n: readI18nMap(r.title_i18n),
+    titleLocalized: readI18nMap(r.title_localized),
     platform: r.platform,
     year: Number(r.year) || null,
     icon: r.icon,
@@ -632,7 +636,7 @@ export function genreCounts() {
 export function developerCounts() {
   return query(
     `WITH RECURSIVE developer_parts AS (
-       SELECT g.id, g.slug, g.title, g.title_zh, g.icon, g.cover, g.platform, g.plays,
+       SELECT g.id, g.slug, g.title, g.title_zh, g.title_i18n, g.title_localized, g.icon, g.cover, g.platform, g.plays,
               TRIM(SUBSTRING_INDEX(REPLACE(g.developer, '，', ','), ',', 1)) AS developer,
               CASE WHEN LOCATE(',', REPLACE(g.developer, '，', ',')) > 0
                    THEN SUBSTRING(REPLACE(g.developer, '，', ','), LOCATE(',', REPLACE(g.developer, '，', ',')) + 1)
@@ -640,17 +644,17 @@ export function developerCounts() {
          FROM games g
         WHERE g.hidden = 0 AND g.developer <> ''
        UNION ALL
-       SELECT id, slug, title, title_zh, icon, cover, platform, plays,
+       SELECT id, slug, title, title_zh, title_i18n, title_localized, icon, cover, platform, plays,
               TRIM(SUBSTRING_INDEX(rest, ',', 1)) AS developer,
               CASE WHEN LOCATE(',', rest) > 0 THEN SUBSTRING(rest, LOCATE(',', rest) + 1) ELSE '' END AS rest
          FROM developer_parts
         WHERE rest <> ''
      )
-     SELECT ranked.developer, ranked.n, ranked.slug, ranked.title, ranked.title_zh,
+     SELECT ranked.developer, ranked.n, ranked.slug, ranked.title, ranked.title_zh, ranked.title_i18n, ranked.title_localized,
             ranked.icon, ranked.cover, ranked.platform,
             d.logo, d.description, d.description_en, d.homepage
        FROM (
-         SELECT developer, slug, title, title_zh, icon, cover, platform,
+         SELECT developer, slug, title, title_zh, title_i18n, title_localized, icon, cover, platform,
                 COUNT(*)     OVER (PARTITION BY developer)                                 AS n,
                 ROW_NUMBER() OVER (PARTITION BY developer ORDER BY plays DESC, id ASC)     AS rn
            FROM developer_parts
@@ -805,7 +809,11 @@ async function reindexGame(run, gameId, game) {
     title_zh: game.titleZh ?? game.title_zh,
     developer: game.developer,
     tags: game.tags,
-    aliases: game.aliases,
+    aliases: [
+      ...(game.aliases ?? []),
+      ...Object.values(readI18nMap(game.titleI18n ?? game.title_i18n) ?? {}),
+      ...Object.values(readI18nMap(game.titleLocalized ?? game.title_localized) ?? {}),
+    ],
   })
   if (!tokens.size) return
   const rows = [...tokens]
@@ -909,7 +917,7 @@ export async function patchGame(slug, patchRow, relations, game) {
     // 与其判断「这次改动是否涉及可搜索字段」，不如从库里读回完整一行重建 ——
     // 判断漏一个字段就是搜不到，代价远大于多跑一次几十行的插入。
     const [row] = await run(
-      'SELECT g.title, g.title_zh, g.developer FROM games g WHERE g.id = ?',
+      'SELECT g.title, g.title_zh, g.title_i18n, g.title_localized, g.developer FROM games g WHERE g.id = ?',
       [id],
     )
     const tagRows = await run('SELECT tag FROM game_tags WHERE game_id = ?', [id])
@@ -1025,7 +1033,7 @@ export async function listLocalizedGameDescriptions({ status, lang, after, limit
 /**
  * 把 title_i18n 里某个语言的译名写进去（合并写，同 writeDescriptionTranslation）。
  *
- * 实际只会被 `'zh-Hant'` 调用 —— 非中文界面刻意用原名 `title`，不需要译名。
+ * 实际只会被 `'zh-Hant'` 调用；其它语言的人工校对标题单独保存在 title_localized。
  * 截断到 200 字符和 `title_zh VARCHAR(200)` 对齐：译名比原名长的情况不存在
  * （简繁是一对一的字映射），真超了说明传错了东西，截断比写进一坨脏数据好。
  *

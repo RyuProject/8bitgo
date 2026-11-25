@@ -11,6 +11,16 @@ const creates = parseCreates("CREATE TABLE IF NOT EXISTS `foo` (' + '`id` INT NO
 assert.deepEqual([...creates.get('foo')].sort(), ['id', 'name'])
 const added = parseAddColumns("conn.query(`ALTER TABLE `games`\n ADD COLUMN `a` INT,\n ADD COLUMN `b` INT`)\nconn.query('ALTER TABLE `users` ADD COLUMN `c` INT')")
 assert.deepEqual([...added].sort(), ['games.a', 'games.b', 'users.c'])
+const duplicate = analyze({
+  migrateSrc: "conn.query('CREATE TABLE `migrated` (`id` INT, `id` INT)')",
+  schemaV2Sql: 'CREATE TABLE broken (id INT, id INT);',
+  expectedTables: [],
+  expectedColumns: [],
+  tableAllow: {},
+  columnAllow: {},
+})
+assert.ok(duplicate.problems.some((p) => p.includes('migrate.mjs 的 CREATE TABLE 重复定义了列 migrated.id')))
+assert.ok(duplicate.problems.some((p) => p.includes('schema-v2.sql 的 CREATE TABLE 重复定义了列 broken.id')))
 
 const base = {
   migrateSrc: "conn.query('CREATE TABLE IF NOT EXISTS `t1` (`id` INT, `x` INT)')\nconn.query('ALTER TABLE `games` ADD COLUMN `c1` INT')",

@@ -68,6 +68,9 @@ CREATE TABLE IF NOT EXISTS games (
   slug          VARCHAR(120)  NOT NULL,
   title         VARCHAR(200)  NOT NULL,
   title_zh      VARCHAR(200)  NULL,
+  -- 中文译名的繁体转换缓存与管理员校对的逐语言标题。
+  title_i18n    JSON          NULL,
+  title_localized JSON       NULL,
   -- 平台 id，取值见 src/data/platforms.ts（'nes' / 'snes' / 'psx' …）
   platform      VARCHAR(20)   NOT NULL,
   `year`        SMALLINT UNSIGNED NOT NULL DEFAULT 0,

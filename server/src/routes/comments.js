@@ -293,7 +293,7 @@ commentsRouter.get('/replies', requireUser, async (req, res, next) => {
     const rows = await query(
       `SELECT c.id, c.content, c.created_at, c.user_id, u.nickname, u.avatar,
               g.slug AS game_slug, g.title AS game_title, g.title_zh AS game_title_zh,
-              g.title_i18n AS game_title_i18n,
+              g.title_i18n AS game_title_i18n, g.title_localized AS game_title_localized,
               po.slug AS post_slug, po.title AS post_title, po.title_i18n AS post_title_i18n
        FROM game_comments p
        JOIN game_comments c ON c.parent_id = p.id
@@ -330,6 +330,7 @@ commentsRouter.get('/replies', requireUser, async (req, res, next) => {
                 title: row.game_title ?? row.game_slug,
                 titleZh: row.game_title_zh ?? undefined,
                 titleI18n: readI18nMap(row.game_title_i18n),
+                titleLocalized: readI18nMap(row.game_title_localized),
               }
             : {
                 kind: 'post',

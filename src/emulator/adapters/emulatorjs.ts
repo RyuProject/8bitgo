@@ -40,6 +40,7 @@ import { guardPreConnectDisconnect, installIoHook, withSignalTimeout } from '../
 import { ICE_SERVERS, NETPLAY_URL, fetchIceConfig, gameIdFor, netplayUrlForFrame, socketIoScriptUrl, uploadState } from '@/services/netplay'
 import { guardInputChannel } from '../netplayGuard'
 import { normalizeHostSync } from '../netplaySyncGuard'
+import { createNetplayStateUploadQueue } from '../netplayStateUpload'
 import { extractZipEntryFromBlob, type ZipFileEntry } from '@/lib/unzip'
 import { prepareArcadeArchive } from '@/lib/arcadeArchive'
 import { romArchiveRef } from '@/lib/romArchiveUrl'
@@ -3852,7 +3853,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    */
   const startStateUpload = (win: Window & Record<string, unknown>, roomId: string) => {
     if (stateTimer || destroyed) return
-    let lastFingerprint = ''
+    const uploadQueue = createNetplayStateUploadQueue((state, keepalive) => {
+      const token = stateToken
+      return token ? uploadState(roomId, token, state, { keepalive }) : Promise.resolve(false)
+    })
 
     /** 便宜的指纹：全量哈希几 MB 太贵，采样 512 个点就足够区分「变了没有」 */
     const fingerprint = (buf: Uint8Array): string => {
@@ -3905,10 +3909,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       }
       if (!state?.length) return
       const fp = fingerprint(state)
-      if (!force && fp === lastFingerprint) return // 进度没动，不用重复传
-      lastFingerprint = fp
       // 关页面前的那一次要带 keepalive，否则请求跟着页面一起被撕掉（见 uploadState）
-      void uploadState(roomId, auth, state, { keepalive: force })
+      uploadQueue.submit(fp, state, force)
     }
 
     stateTimer = window.setInterval(() => push(), STATE_UPLOAD_MS)

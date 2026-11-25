@@ -13,6 +13,7 @@
 import { listGames, listHomePicks, getGameBySlug, platformCounts, genreCounts, developerCounts, verifiedFlashGameCount, filteredGameFacetCounts } from './games-repo.js'
 import { getPublicCollectionDetail, listPublicCollections, topCollections } from './routes/collections.js'
 import { query } from './db.js'
+import { readI18nMap } from './mappers.js'
 import { attachPostTags } from './routes/posts.js'
 import { listPublicFriendLinks } from './friend-links.js'
 import { loadVisibleNotice } from './site-notice.js'
@@ -205,7 +206,16 @@ export async function loadFacets({ includeDevelopers = false, platforms: only, g
       descriptionEn: r.description_en || undefined,
       homepage: r.homepage || undefined,
       topGame: r.slug
-        ? { slug: r.slug, title: r.title, titleZh: r.title_zh || undefined, icon: r.icon, cover: r.cover || undefined, platform: r.platform }
+        ? {
+            slug: r.slug,
+            title: r.title,
+            titleZh: r.title_zh || undefined,
+            titleI18n: readI18nMap(r.title_i18n),
+            titleLocalized: readI18nMap(r.title_localized),
+            icon: r.icon,
+            cover: r.cover || undefined,
+            platform: r.platform,
+          }
         : undefined,
     })),
   }

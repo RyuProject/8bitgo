@@ -92,6 +92,40 @@ function localizedDescriptionsOf(value) {
   return Object.keys(out).length ? JSON.stringify(out) : null
 }
 
+/** 管理员校对的逐语言标题；简体中文与英文仍分别使用 title_zh / title 基准列。 */
+function localizedTitlesOf(value) {
+  if (value == null || value === '') return null
+  let raw = value
+  if (typeof raw === 'string') {
+    try { raw = JSON.parse(raw) } catch { return badGameField('各语言标题不是合法 JSON') }
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return badGameField('各语言标题必须是语言码到文本的对象')
+  }
+  const entries = Object.entries(raw)
+  if (entries.length > 16) return badGameField('各语言标题最多支持 16 个语言槽')
+  const out = {}
+  for (const [language, value] of entries) {
+    if (!/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(language) || language.length > 10) {
+      return badGameField(`各语言标题的语言码无效：${language}`)
+    }
+    let canonicalLanguage
+    try { canonicalLanguage = Intl.getCanonicalLocales(language)[0] } catch { /* 下面统一返回字段校验错误 */ }
+    if (!canonicalLanguage || canonicalLanguage.length > 10 || canonicalLanguage === 'zh-Hans' || canonicalLanguage === 'en') {
+      return badGameField(`各语言标题的语言码无效：${language}`)
+    }
+    if (value == null || value === '') continue
+    if (typeof value !== 'string') return badGameField(`${language} 标题必须是文本`)
+    const title = value.trim()
+    if (title.length > 200) return badGameField(`${language} 标题不能超过 200 个字符`)
+    if (title) {
+      if (Object.hasOwn(out, canonicalLanguage)) return badGameField(`各语言标题存在重复语言码：${canonicalLanguage}`)
+      out[canonicalLanguage] = title
+    }
+  }
+  return Object.keys(out).length ? JSON.stringify(out) : null
+}
+
 /** 入库时统一逗号和空格，否则同一家公司会在开发商统计里被拆成多个名字。 */
 function developersText(value) {
   const seen = new Set()
@@ -730,6 +764,8 @@ export function gameRowToApi(r, rel = {}) {
   // 前端的 gameTitle() 会自然回退到 titleZh，繁体读者看到简体 —— 那是 2026-09-07
   // 之前的状态，也是 GSC 把 /zh-Hant/* 判成重复页的原因。
   g.titleI18n = readI18nMap(r.title_i18n)
+  const titleLocalized = readI18nMap(r.title_localized)
+  if (titleLocalized) g.titleLocalized = titleLocalized
   // 没写英文简介的游戏不带这个字段，前台自己回落到基准简介
   if (r.description_en) g.descriptionEn = r.description_en
   const descriptionLocalized = readI18nMap(r.description_localized)
@@ -787,6 +823,10 @@ export function gameApiToRow(g, { enforceColumnLimits = true } = {}) {
     slug: text(g.slug, 'slug', 120),
     title: text(g.title, '英文标题', 200),
     title_zh: g.titleZh == null || g.titleZh === '' ? null : text(g.titleZh, '中文译名', 200),
+    // 旧导入脚本未带新字段时不覆盖现有人工标题；后台表单会显式传空对象来清空。
+    ...(Object.prototype.hasOwnProperty.call(g ?? {}, 'titleLocalized')
+      ? { title_localized: localizedTitlesOf(g.titleLocalized) }
+      : {}),
     platform: text(g.platform, '平台', 20),
     year: Number(g.year) || 0,
     developer: text(developersText(g.developer), '开发商', 200),
@@ -841,6 +881,7 @@ export function gameApiToRow(g, { enforceColumnLimits = true } = {}) {
 const FIELD_TO_COLUMN = {
   title: ['title', (v) => boundedGameText(v, '英文标题', 200)],
   titleZh: ['title_zh', (v) => (v == null || v === '' ? null : boundedGameText(v, '中文译名', 200))],
+  titleLocalized: ['title_localized', localizedTitlesOf],
   platform: ['platform', (v) => boundedGameText(v, '平台', 20)],
   year: ['year', (v) => Number(v) || 0],
   developer: ['developer', (v) => boundedGameText(developersText(v), '开发商', 200)],

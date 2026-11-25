@@ -36,6 +36,8 @@ export interface DeveloperTopGame {
   slug: string
   title: string
   titleZh?: string
+  titleI18n?: Record<string, string>
+  titleLocalized?: Record<string, string>
   icon: string
   cover?: string
   platform: string

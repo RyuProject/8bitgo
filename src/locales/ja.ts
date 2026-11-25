@@ -993,6 +993,7 @@ const ja: Translation = {
     seatCooldown: '{s} 秒後に再申請できます。',
     seatJoinLive: 'プレイ参加を申請',
     takingOver: 'ホストが切断されました。引き継いでいます…',
+    takeoverStateFailed: 'セーブデータを復元できないため、進行状況を守るため引き継ぎを中断しました。',
     tookOver: 'あなたが新しいホストです。ゲームは続きます',
     hostChanged: 'ホストが交代しました。再接続しています…',
     p2pHint: 'ゲームはあなたのブラウザで動き、参加した人（最大 {max} 人）へ直接配信されます。サーバーは経由しません。',

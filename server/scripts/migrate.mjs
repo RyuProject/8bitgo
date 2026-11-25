@@ -159,16 +159,21 @@ const patches = [
      * 形状：`{ "zh-Hant": "合金彈頭 3" }` —— **只有繁体这一个键**，而且只有 title_zh
      * 填了的游戏才有。
      *
-     * 为什么其它语言不进这张表：非中文界面**刻意**显示原名（通常是英文/日文原题），
-     * 见 `src/services/i18nData.ts` 的 gameTitle —— 不然英文页会出现
-     * 「Play 超级马力欧兄弟 Online」这种中英夹杂。所以要译名的只有繁体。
+     * 这张表只放 OpenCC 自动生成的繁体名；管理员校对的其它语言名另存在下方
+     * `title_localized`。非中文界面没有人工译名时仍显示原名，避免把中文机翻硬塞进英文标题。
      *
-     * 为什么不直接加一个 `title_zh_hant VARCHAR(200)`：形状跟 description_i18n 保持一致，
-     * 读写复用同一套 readI18nMap / JSON_SET 代码，将来真要给某个语言单独配名字也不用再迁一次。
+     * 为什么不直接加一个 `title_zh_hant VARCHAR(200)`：形状跟其它语言映射保持一致，
+     * 读写复用同一套 readI18nMap / JSON_SET 代码，也和人工标题列明确分开。
      */
     table: 'games',
     needed: async () => !(await hasColumn('games', 'title_i18n')),
     run: () => conn.query('ALTER TABLE `games` ADD COLUMN `title_i18n` JSON NULL AFTER `title_zh`'),
+  },
+  {
+    name: 'games.title_localized（人工校对的逐语言游戏标题）',
+    table: 'games',
+    needed: async () => !(await hasColumn('games', 'title_localized')),
+    run: () => conn.query('ALTER TABLE `games` ADD COLUMN `title_localized` JSON NULL AFTER `title_i18n`'),
   },
   {
     name: 'posts.title_i18n（文章标题的各语言译文）',

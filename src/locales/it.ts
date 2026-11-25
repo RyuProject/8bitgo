@@ -1005,6 +1005,7 @@ const it: Translation = {
     seatCooldown: 'Potrai richiederlo tra {s} s.',
     seatJoinLive: 'Chiedi di giocare',
     takingOver: 'L’host si è disconnesso: stai subentrando…',
+    takeoverStateFailed: 'Impossibile ripristinare il salvataggio. Il subentro è in pausa per proteggere i progressi.',
     tookOver: 'Ora sei tu l’host, la partita continua',
     hostChanged: 'L’host è cambiato: riconnessione…',
     p2pHint: 'Il gioco gira nel tuo browser e viene trasmesso direttamente a chi entra (fino a {max}), senza passare da un server.',

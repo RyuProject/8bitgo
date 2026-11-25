@@ -16,6 +16,7 @@
 import { Router } from 'express'
 import { requireAbility } from '../auth.js'
 import { invalidateContent } from '../content.js'
+import { readI18nMap } from '../mappers.js'
 import { listDeveloperProfiles, upsertDeveloperProfile, deleteDeveloperProfile } from '../games-repo.js'
 
 export const developersRouter = Router()
@@ -40,7 +41,16 @@ developersRouter.get('/', requireAbility('content:edit'), async (_req, res, next
         descriptionEn: r.description_en || '',
         homepage: r.homepage || '',
         topGame: r.slug
-          ? { slug: r.slug, title: r.title, titleZh: r.title_zh || undefined, icon: r.icon, cover: r.cover || undefined, platform: r.platform }
+          ? {
+              slug: r.slug,
+              title: r.title,
+              titleZh: r.title_zh || undefined,
+              titleI18n: readI18nMap(r.title_i18n),
+              titleLocalized: readI18nMap(r.title_localized),
+              icon: r.icon,
+              cover: r.cover || undefined,
+              platform: r.platform,
+            }
           : undefined,
       })),
     )

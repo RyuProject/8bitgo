@@ -168,8 +168,8 @@ async function runGames() {
 
     for (const lang of LANGS) {
       /**
-       * 译名只做繁体。非中文界面**刻意**用原名 `title`（见 i18nData.gameTitle 的注释）——
-       * 给英文页配一个中文译名反而会造出「Play 超级马力欧兄弟 Online」。
+       * 自动译名只做繁体；其它语言由后台人工校对后写入 title_localized。
+       * 没有人工译名时仍用原名，避免给英文页硬塞中文名。
        */
       if (lang === 'zh-Hant' && r.title_zh) {
         const plan = translatePlan(lang, 'zh-Hans')

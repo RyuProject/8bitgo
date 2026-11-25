@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSeo } from '@/services/seo'
 import { useT, fmt } from '@/services/i18n'
+import { useLang } from '@/services/lang'
+import { gameTitle } from '@/services/i18nData'
 import { useCurrentUser, useAuthReady } from '@/services/auth'
 import { openAuthModal } from '@/services/authModal'
 import { api, apiBase, apiEnabled, getToken } from '@/services/api'
@@ -32,6 +34,8 @@ interface Suggestion {
   slug: string
   title: string
   titleZh: string | null
+  titleI18n?: Record<string, string>
+  titleLocalized?: Record<string, string>
   platform: string
 }
 
@@ -97,6 +101,7 @@ function postFormWithProgress(
  */
 export function SubmitGamePage() {
   const t = useT()
+  const lang = useLang()
   const copy = t.submitGame
   const user = useCurrentUser()
   const authReady = useAuthReady()
@@ -182,7 +187,7 @@ export function SubmitGamePage() {
   const overLimit = totalBytes > limits.maxTotalBytes
 
   function pickSuggestion(s: Suggestion) {
-    setName(s.titleZh || s.title)
+    setName(gameTitle(s, lang))
     setExistingSlug(s.slug)
     setShowSuggest(false)
     setSuggestions([])
@@ -356,7 +361,7 @@ export function SubmitGamePage() {
                     onClick={() => pickSuggestion(s)}
                     className="flex w-full items-center justify-between gap-3 px-3.5 py-2.5 text-left text-sm transition hover:bg-black/5"
                   >
-                    <span className="min-w-0 truncate font-medium">{s.titleZh || s.title}</span>
+                    <span className="min-w-0 truncate font-medium">{gameTitle(s, lang)}</span>
                     <span className="shrink-0 text-[11px] text-muted">{copy.inLibrary}</span>
                   </button>
                 </li>

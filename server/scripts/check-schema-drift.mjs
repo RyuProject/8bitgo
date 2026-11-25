@@ -47,9 +47,10 @@ function stripJsComments(src) {
 
 const unescape = (s) => s.replace(/\\`/g, '`')
 
-/** CREATE TABLE 名 → 列名集合（按括号配对取出表体，表体里每个定义的首个标识符就是列名） */
-export function parseCreates(sql) {
+/** CREATE TABLE 名 → 列名集合，同时记下重复列（MySQL 会拒绝整份建表语句）。 */
+function parseCreateDefinitions(sql) {
   const out = new Map()
+  const duplicates = []
   const re = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`?(\w+)`?\s*\(/gi
   let m
   while ((m = re.exec(sql))) {
@@ -79,11 +80,18 @@ export function parseCreates(sql) {
       const id = /^`?(\w+)`?\s/.exec(p)
       if (!id) continue
       if (/^(PRIMARY|KEY|UNIQUE|INDEX|CONSTRAINT|FULLTEXT|FOREIGN|CHECK)$/i.test(id[1])) continue
-      cols.add(id[1].toLowerCase())
+      const column = id[1].toLowerCase()
+      if (cols.has(column)) duplicates.push(`${m[1].toLowerCase()}.${column}`)
+      else cols.add(column)
     }
     out.set(m[1].toLowerCase(), cols)
   }
-  return out
+  return { tables: out, duplicates }
+}
+
+/** CREATE TABLE 名 → 列名集合（按括号配对取出表体）。 */
+export function parseCreates(sql) {
+  return parseCreateDefinitions(sql).tables
 }
 
 /** ALTER TABLE 表 ... ADD COLUMN 列：返回 Set('表.列') */
@@ -104,10 +112,19 @@ export function parseAddColumns(sql) {
 
 export function analyze({ migrateSrc, schemaV2Sql, expectedTables, expectedColumns, tableAllow = TABLE_ALLOWLIST, columnAllow = COLUMN_ALLOWLIST }) {
   const migrate = unescape(stripJsComments(migrateSrc))
-  const migrateCreates = parseCreates(migrate)
-  const schemaCreates = parseCreates(schemaV2Sql)
+  const migrateDefinitions = parseCreateDefinitions(migrate)
+  const schemaDefinitions = parseCreateDefinitions(schemaV2Sql)
+  const migrateCreates = migrateDefinitions.tables
+  const schemaCreates = schemaDefinitions.tables
   const added = parseAddColumns(migrate)
   const problems = []
+
+  for (const key of migrateDefinitions.duplicates) {
+    problems.push(`migrate.mjs 的 CREATE TABLE 重复定义了列 ${key}，执行迁移会失败`)
+  }
+  for (const key of schemaDefinitions.duplicates) {
+    problems.push(`schema-v2.sql 的 CREATE TABLE 重复定义了列 ${key}，新库初始化会失败`)
+  }
 
   const expectedTableSet = new Set(expectedTables.filter((e) => !e.column).map((e) => e.table.toLowerCase()))
   const expectedColumnSet = new Set([

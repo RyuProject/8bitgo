@@ -1005,6 +1005,7 @@ const de: Translation = {
     seatCooldown: 'Neue Anfrage in {s} s möglich.',
     seatJoinLive: 'Mitspielen anfragen',
     takingOver: 'Der Host ist weg – du übernimmst…',
+    takeoverStateFailed: 'Der Spielstand konnte nicht geladen werden. Die Übernahme wurde angehalten, um den Fortschritt zu schützen.',
     tookOver: 'Du bist jetzt Host, das Spiel geht weiter',
     hostChanged: 'Host gewechselt – neu verbinden…',
     p2pHint: 'Das Spiel läuft in deinem Browser und wird direkt an alle Beitretenden gestreamt (bis zu {max}) – ohne Server dazwischen.',

@@ -32,7 +32,7 @@ export interface CommentReplyNotice {
   createdAt: string
   author: { nickname: string; avatar: string }
   target:
-    | { kind: 'game'; slug: string; title: string; titleZh?: string; titleI18n?: Record<string, string> }
+    | { kind: 'game'; slug: string; title: string; titleZh?: string; titleI18n?: Record<string, string>; titleLocalized?: Record<string, string> }
     | { kind: 'post'; slug: string; title: string; titleI18n?: Record<string, string> }
 }
 

@@ -1058,6 +1058,7 @@ export const zhHans = {
     seatCooldown: '{s} 秒后可以再次申请。',
     seatJoinLive: '申请当玩家',
     takingOver: '房主掉线了，正在由你接手…',
+    takeoverStateFailed: '无法恢复房间存档，已暂停接手，避免覆盖原有进度。',
     tookOver: '你已成为新房主，游戏继续',
     hostChanged: '房主换人了，正在重新连接…',
     p2pHint: '游戏在你的浏览器里运行，画面直接推给加入的朋友（最多 {max} 人），不经过服务器。',

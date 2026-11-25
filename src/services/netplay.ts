@@ -15,6 +15,7 @@ import { useSyncExternalStore } from 'react'
 import { fallbackAfterErrors } from './sseFallback'
 import { getCurrentUser } from './auth'
 import { getToken, TOKEN_CHANGED_EVENT } from './api'
+import { createRequestTimeout } from './requestTimeout'
 import type { Presence } from './presence'
 import { netplayGameId } from '../../shared/netplay-game-id.js'
 import { NETPLAY_URL, netplayEnabled } from './roomFlags'
@@ -297,16 +298,22 @@ const apiBase = () => NETPLAY_URL.replace(/\/netplay$/, '')
  * 留点余量给头部。
  */
 const KEEPALIVE_MAX_BYTES = 60 * 1024
+/** 网络半开时不可无限占住房间存档的上传队列。 */
+const STATE_REQUEST_TIMEOUT_MS = 25_000
+/** 接管请求必须在服务端认领窗口内结束，超时后才能安全重试。 */
+const CLAIM_REQUEST_TIMEOUT_MS = 8_000
+const MIGRATE_REQUEST_TIMEOUT_MS = 8_000
 
 export async function uploadState(
   roomId: string,
   token: string,
   state: Uint8Array,
-  opts: { keepalive?: boolean } = {},
+  opts: { keepalive?: boolean; signal?: AbortSignal; timeoutMs?: number } = {},
 ): Promise<boolean> {
   if (!token) return false
   const url = `${apiBase()}/api/netplay/rooms/${encodeURIComponent(roomId)}/state`
   const headers = { 'content-type': 'application/octet-stream', 'x-netplay-token': token }
+  const request = createRequestTimeout(opts.timeoutMs ?? STATE_REQUEST_TIMEOUT_MS, opts.signal)
   try {
     /**
      * 关页面（pagehide）前的补传：普通 fetch 会跟着页面一起被撕掉，等于白发 —— 以前这一步
@@ -317,7 +324,7 @@ export async function uploadState(
      *   · 太大 → 先压，压完能塞进 64KB 就 keepalive，否则只能尽力普通发一次
      */
     if (opts.keepalive && state.byteLength <= KEEPALIVE_MAX_BYTES) {
-      const res = await fetch(url, { method: 'POST', headers, body: state as BodyInit, keepalive: true })
+      const res = await fetch(url, { method: 'POST', headers, body: state as BodyInit, keepalive: true, signal: request.signal })
       return res.ok
     }
     let body: Blob | Uint8Array = state
@@ -331,20 +338,29 @@ export async function uploadState(
       headers,
       body: body as BodyInit,
       keepalive: Boolean(opts.keepalive) && size <= KEEPALIVE_MAX_BYTES,
+      signal: request.signal,
     })
     return res.ok
   } catch {
     return false
+  } finally {
+    request.dispose()
   }
 }
 
 /** 取存档（自动解 gzip）。没有就返回 null */
-export async function downloadState(roomId: string, token = ''): Promise<Uint8Array | null> {
+export async function downloadState(
+  roomId: string,
+  token = '',
+  opts: { signal?: AbortSignal; timeoutMs?: number } = {},
+): Promise<Uint8Array | null> {
+  const request = createRequestTimeout(opts.timeoutMs ?? STATE_REQUEST_TIMEOUT_MS, opts.signal)
   try {
     const res = await fetch(`${apiBase()}/api/netplay/rooms/${encodeURIComponent(roomId)}/state`, {
       // 存档是别人游戏进度的完整快照，服务端要校验请求方确实是房间成员。
       // 没有令牌时也发（服务端对老前端放行），升级完两端就能收紧成强制。
       headers: token ? { 'x-netplay-token': token } : {},
+      signal: request.signal,
     })
     if (!res.ok) return null
     const buf = new Uint8Array(await res.arrayBuffer())
@@ -356,6 +372,8 @@ export async function downloadState(roomId: string, token = ''): Promise<Uint8Ar
     return buf
   } catch {
     return null
+  } finally {
+    request.dispose()
   }
 }
 
@@ -366,19 +384,27 @@ export async function downloadState(roomId: string, token = ''): Promise<Uint8Ar
  * 唯一的访客断了就把房间散掉，老邀请链接跟着死；多人房则 8 秒后轮给下一位，两个人抢着接。
  * 认领之后服务器暂停轮询、断线不散场，存档也可以凭这个令牌下载。
  */
-export async function claimRoom(roomId: string, token: string): Promise<string | null> {
+export async function claimRoom(
+  roomId: string,
+  token: string,
+  opts: { signal?: AbortSignal; timeoutMs?: number } = {},
+): Promise<string | null> {
   if (!token) return null
+  const request = createRequestTimeout(opts.timeoutMs ?? CLAIM_REQUEST_TIMEOUT_MS, opts.signal)
   try {
     const res = await fetch(`${apiBase()}/api/netplay/rooms/${encodeURIComponent(roomId)}/claim`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-netplay-token': token },
       body: '{}',
+      signal: request.signal,
     })
     if (!res.ok) return null
     const data = (await res.json()) as { claimToken?: string }
     return data.claimToken || null
   } catch {
     return null
+  } finally {
+    request.dispose()
   }
 }
 
@@ -387,17 +413,27 @@ export async function claimRoom(roomId: string, token: string): Promise<string |
  * 两个令牌：认领令牌证明「我是被选中的人」，新房间的成员令牌证明「新房间是我开的」——
  * 以前只看 body 里的 userId，那是谁都能填的。
  */
-export async function migrateRoom(oldRoomId: string, newRoomId: string, claimToken: string, newRoomToken: string): Promise<boolean> {
+export async function migrateRoom(
+  oldRoomId: string,
+  newRoomId: string,
+  claimToken: string,
+  newRoomToken: string,
+  opts: { signal?: AbortSignal; timeoutMs?: number } = {},
+): Promise<boolean> {
   if (!claimToken || !newRoomToken) return false
+  const request = createRequestTimeout(opts.timeoutMs ?? MIGRATE_REQUEST_TIMEOUT_MS, opts.signal)
   try {
     const res = await fetch(`${apiBase()}/api/netplay/rooms/${encodeURIComponent(oldRoomId)}/migrate`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-netplay-token': claimToken },
       body: JSON.stringify({ newRoomId, newRoomToken }),
+      signal: request.signal,
     })
     return res.ok
   } catch {
     return false
+  } finally {
+    request.dispose()
   }
 }
 

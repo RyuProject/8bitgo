@@ -32,9 +32,11 @@ CREATE TABLE IF NOT EXISTS games (
   slug          VARCHAR(120)  NOT NULL,
   title         VARCHAR(200)  NOT NULL,
   title_zh      VARCHAR(200)  NULL,
-  -- 中文译名的繁体版：{"zh-Hant":"..."}。只有这一个键 —— 非中文界面刻意用原名。
+  -- OpenCC 自动转换的繁体中文名：{"zh-Hant":"..."}；其它人工校对标题单独存 title_localized。
   -- 由 server/scripts/pretranslate.mjs 用 OpenCC 离线生成，改 title_zh 时清空。
   title_i18n    JSON          NULL,
+  -- 管理员校对的其它语言游戏名；英文 / 简体中文仍分别使用 title / title_zh。
+  title_localized JSON       NULL,
   -- 平台 id，取值见 src/data/platforms.ts（'nes' / 'snes' / 'psx' …）
   platform      VARCHAR(20)   NOT NULL,
   `year`        SMALLINT UNSIGNED NOT NULL DEFAULT 0,

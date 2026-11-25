@@ -31,8 +31,8 @@ export function platformDesc(t: Translation, id: string, fallback = ''): string 
 
 /**
  * 按当前语言选游戏名。
- * titleZh 是中文译名，只在中文界面下使用；其它语言用原名（通常是英文/日文原题），
- * 否则英文页面会出现「Play 超级马力欧兄弟 Online」这种中英夹杂的标题。
+ * titleZh 是简体中文译名；其余语言优先使用管理员校对过的 titleLocalized，再回退到原名。
+ * 这样英文页面仍保留游戏原题，上传了西语 ROM 的游戏则可以显示经过校对的西语标题。
  *
  * titleZh 收 null 和空串：静态数据里它是 undefined，而搜索接口回来的
  * SuggestItem 是 null，后台也可能存进一个空串 —— 三种「没有译名」都得落回原名，
@@ -43,16 +43,22 @@ export function platformDesc(t: Translation, id: string, fallback = ''): string 
  * 上二十来个游戏名全是简体，整页只有界面文案是繁体 —— Search Console 把它判成
  * `/platforms/arcade` 的重复页（「Google 选择的规范网页与用户指定的不同」）。
  *
- * 现在优先取 `titleI18n['zh-Hant']`（OpenCC 离线转好落库的，见 server/src/zh-convert.js），
- * 没生成过才退回简体译名 —— 回退依然是「能读」而不是空白，但生成过一遍之后
- * 繁体页面就真的是繁体了。
+ * 现在优先取人工校对的繁体标题，再取 `titleI18n['zh-Hant']`（OpenCC 离线转好落库的，
+ * 见 server/src/zh-convert.js），没生成过才退回简体译名 —— 回退依然是「能读」而不是空白，
+ * 生成过一遍之后繁体页面就真的是繁体了。
  */
 export function gameTitle(
-  game: { title: string; titleZh?: string | null; titleI18n?: Record<string, string> },
+  game: {
+    title: string
+    titleZh?: string | null
+    titleI18n?: Record<string, string>
+    titleLocalized?: Record<string, string>
+  },
   lang: Lang,
 ): string {
-  if (lang === 'zh-Hant') return game.titleI18n?.['zh-Hant'] || game.titleZh || game.title
+  if (lang === 'zh-Hant') return game.titleLocalized?.[lang] || game.titleI18n?.[lang] || game.titleZh || game.title
   if (lang === 'zh-Hans') return game.titleZh || game.title
+  if (lang !== 'en' && game.titleLocalized?.[lang]) return game.titleLocalized[lang]
   return game.title
 }
 

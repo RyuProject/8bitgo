@@ -49,6 +49,9 @@ CREATE TABLE IF NOT EXISTS games (
   slug           TEXT    NOT NULL,
   title          TEXT    NOT NULL,
   title_zh       TEXT,
+  -- 标题转换缓存与人工校对标题；人工标题按语言代码存 JSON 文本。
+  title_i18n     TEXT,
+  title_localized TEXT,
   platform       TEXT    NOT NULL,
   "year"         INTEGER NOT NULL DEFAULT 0,
   developer      TEXT    NOT NULL DEFAULT '',

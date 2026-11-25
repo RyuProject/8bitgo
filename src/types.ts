@@ -163,11 +163,13 @@ export interface Game {
   titleZh?: string
   /**
    * 中文译名的繁体版，形状 `{ 'zh-Hant': '合金彈頭 3' }`。
-   * **只有这一个键** —— 非中文界面刻意显示原名 `title`，见 i18nData.gameTitle。
+   * **只有这一个自动转换键**；其它语言的人工标题单独放在 `titleLocalized`。
    * 由 `server/scripts/pretranslate.mjs` 用 OpenCC 离线生成；没生成过就是 undefined，
    * gameTitle 会回退到简体译名。
    */
   titleI18n?: Record<string, string>
+  /** 人工校对的逐语言游戏名，仅对有对应 ROM 语言的游戏维护。 */
+  titleLocalized?: Record<string, string>
   platform: PlatformId
   genres: GenreId[]
   year: number
@@ -626,7 +628,7 @@ export interface CollectionAuthor {
  * 画一张封面需要的最少字段。GameCover 只认这几个，所以完整的 Game 和这个瘦身版都能喂它。
  * 合集封面、以后任何「只要图不要资料」的列表都用它，别为了画张图把整个 Game 传下来。
  */
-export type CoverGame = Pick<Game, 'slug' | 'title' | 'titleZh' | 'platform' | 'icon' | 'cover' | 'video'>
+export type CoverGame = Pick<Game, 'slug' | 'title' | 'titleZh' | 'titleI18n' | 'titleLocalized' | 'platform' | 'icon' | 'cover' | 'video'>
 
 export interface Collection {
   id: number

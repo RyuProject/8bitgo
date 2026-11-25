@@ -3,8 +3,8 @@
  *
  * ## 为什么是「单语言 + 回退链」而不是把八种语言全发出去
  *
- * 库里的译文是**残缺的**，而且残缺得不均匀：`title_i18n` 只有 zh-Hant 一个键
- * （非中文界面刻意用原名），`description_i18n` 按需生成、es/fr 目前整门是空的
+ * 库里的译文是**残缺的**，而且残缺得不均匀：`title_i18n` 只有 zh-Hant 一个自动转换键，
+ * `title_localized` 只存管理员校对过的语言名，`description_i18n` 按需生成、es/fr 目前整门是空的
  * （见项目记忆里的「多语言正文其实是同一份」）。
  * 把这么一张稀疏表原样发给接入方，等于把「该退到哪一门」这个**我们才知道的规则**
  * 丢给他自己猜 —— 他多半会写成 `i18n[lang] ?? title`，于是繁体读者看到简体、
@@ -67,16 +67,18 @@ const text = (v) => String(v ?? '').trim()
 /**
  * 标题。回退链（和 i18nData.ts 的 gameTitle 同构）：
  *
- *   zh-Hant → title_i18n['zh-Hant'] → title_zh → title
+ *   zh-Hant → title_localized['zh-Hant'] → title_i18n['zh-Hant'] → title_zh → title
  *   zh-Hans → title_zh → title
- *   其它    → title（原名。**这是刻意的**：非中文界面用游戏的原名，不是把中文名硬翻过去）
+ *   其它    → title_localized[lang] → title（原名。没有人工译名时，不把中文名硬翻过去）
  *
  * @returns {{ text: string, lang: string }} lang = 这段文字**实际**是哪一门
  */
 export function pickTitle(row, lang) {
   const want = normalizeLang(lang)
   const i18n = readMap(row?.title_i18n)
+  const curated = readMap(row?.title_localized)
   if (want === 'zh-Hant') {
+    if (text(curated[want])) return { text: text(curated[want]), lang: want }
     if (text(i18n['zh-Hant'])) return { text: text(i18n['zh-Hant']), lang: 'zh-Hant' }
     if (text(row?.title_zh)) return { text: text(row.title_zh), lang: 'zh-Hans' }
     return { text: text(row?.title), lang: 'und' }
@@ -85,6 +87,7 @@ export function pickTitle(row, lang) {
     if (text(row?.title_zh)) return { text: text(row.title_zh), lang: 'zh-Hans' }
     return { text: text(row?.title), lang: 'und' }
   }
+  if (want !== 'en' && text(curated[want])) return { text: text(curated[want]), lang: want }
   // 原名没有语言可言（`Contra` / `魂斗羅` 都可能），标成 und 而不是编一个 'en'
   return { text: text(row?.title), lang: 'und' }
 }

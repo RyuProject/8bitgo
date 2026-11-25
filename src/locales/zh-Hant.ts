@@ -1006,6 +1006,7 @@ const zhHant: Translation = {
     seatCooldown: '{s} 秒後可以再次申請。',
     seatJoinLive: '申請當玩家',
     takingOver: '房主斷線了，正在由你接手…',
+    takeoverStateFailed: '無法還原房間存檔，已暫停接手，以免覆蓋原有進度。',
     tookOver: '你已成為新房主，遊戲繼續',
     hostChanged: '房主換人了，正在重新連線…',
     p2pHint: '遊戲在你的瀏覽器裡執行，畫面直接推給加入的朋友（最多 {max} 人），不經過伺服器。',

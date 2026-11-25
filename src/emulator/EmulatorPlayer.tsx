@@ -2781,6 +2781,7 @@ export function EmulatorPlayer({
    */
   useEffect(() => {
     if (!netplayActive || !roomId || status === 'error') return
+    const watchedRoomId = roomId
     /**
      * ⚠️ 房主不订阅这条。
      *
@@ -2794,6 +2795,17 @@ export function EmulatorPlayer({
     let stopped = false
     /** 只由 cleanup 写。`stopped` 被接手逻辑当业务标志用了，两者必须分开 */
     let cancelled = false
+    let claimRequest: AbortController | null = null
+    let claimRetryTimer = 0
+    const retryClaim = () => {
+      if (claimRetryTimer || cancelled) return
+      claimRetryTimer = window.setTimeout(() => {
+        claimRetryTimer = 0
+        if (cancelled) return
+        stopped = false
+        void tick()
+      }, 2000)
+    }
     /**
      * 房间「查不到」不等于房间「没了」。
      *
@@ -2830,25 +2842,43 @@ export function EmulatorPlayer({
         setNotice(t.player.takingOver)
         // 先认领再重挂引擎：重挂会断掉旧连接，不先认领的话服务器看到唯一的访客断了
         // 就把房间散掉（老邀请链接跟着死）；多人房则 8 秒后轮给下一位，两个人抢着接
-        const claim = await claimRoom(roomId, roomTokenRef.current)
+        const request = new AbortController()
+        claimRequest = request
+        const claim = await claimRoom(roomId, roomTokenRef.current, { signal: request.signal })
         // ⚠️ 认领和取存档加起来可能要十几秒（存档快照几 MB）。这期间玩家完全可能已经
         // 点了「离开房间」或者切了 ROM 语言 —— 再把他硬拽回一个他刚明确退出的房间，
         // 等于当着他的面把新开的那一局黑屏重启。cancelled 只由 cleanup 写，可信。
-        if (cancelled) return
+        if (cancelled) {
+          request.abort()
+          if (claimRequest === request) claimRequest = null
+          return
+        }
         if (!claim) {
-          // 认领没成（被别人抢先、房间已经没了）：交回给推送流程，看房间接下来变成什么样
+          if (claimRequest === request) claimRequest = null
+          // SSE 可能在 stopped 期间收到并丢弃了唯一一条更新；失败后必须主动重查，
+          // 否则候选人会永远停在「正在接手」，尤其是服务端已认领但响应包丢失时。
+          retryClaim()
+          return
+        }
+        claimTokenRef.current = claim
+        const state = room.hasState
+          ? await downloadState(roomId, claim, { signal: request.signal })
+          : null
+        if (claimRequest === request) claimRequest = null
+        if (cancelled) return
+        if (room.hasState && !state) {
+          // 不能把「取存档失败」降级成空进度开新房；那会在几秒后上传初始状态，
+          // 覆盖服务端唯一留存的旧进度。认领会按服务端窗口过期，再轮给下一位。
+          setNotice(t.player.takeoverStateFailed)
           stopped = false
           return
         }
-        claimTokenRef.current = claim ?? ''
-        const state = room.hasState ? await downloadState(roomId, claim || roomTokenRef.current) : null
-        if (cancelled) return
         startP2p(undefined, { from: roomId, state })
       }
     }
 
-    const tick = async () => {
-      const result = await probeNetplayRoom(roomId)
+    async function tick() {
+      const result = await probeNetplayRoom(watchedRoomId)
       if (result.kind === 'unreachable') return
       await handle(result.kind === 'room' ? result.room : null)
     }
@@ -2870,6 +2900,9 @@ export function EmulatorPlayer({
     return () => {
       stopped = true
       cancelled = true
+      claimRequest?.abort()
+      claimRequest = null
+      if (claimRetryTimer) window.clearTimeout(claimRetryTimer)
       stop()
     }
   }, [session, netplayActive, roomId, status, isHost])

@@ -1006,6 +1006,7 @@ const fr: Translation = {
     seatCooldown: 'Nouvelle demande possible dans {s} s.',
     seatJoinLive: 'Demander à jouer',
     takingOver: 'L’hôte s’est déconnecté — reprise en cours…',
+    takeoverStateFailed: 'Impossible de restaurer la sauvegarde. La reprise est suspendue pour protéger votre progression.',
     tookOver: 'Vous êtes le nouvel hôte, la partie continue',
     hostChanged: 'Changement d’hôte — reconnexion…',
     p2pHint: 'Le jeu tourne dans votre navigateur et est diffusé directement aux personnes qui rejoignent (jusqu’à {max}), sans passer par un serveur.',
