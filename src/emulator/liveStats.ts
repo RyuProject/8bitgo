@@ -13,6 +13,34 @@ export function isVideoRtpStat(value: unknown, direction: 'inbound-rtp' | 'outbo
   return stat.type === direction && (stat.kind === 'video' || stat.mediaType === 'video')
 }
 
+/** Safari / Firefox 等实现可能只提供 mediaType，因此音轨也按双字段兼容读取。 */
+export function isAudioRtpStat(value: unknown, direction: 'inbound-rtp' | 'outbound-rtp'): value is LiveRtcStat {
+  if (!value || typeof value !== 'object') return false
+  const stat = value as LiveRtcStat
+  return stat.type === direction && (stat.kind === 'audio' || stat.mediaType === 'audio')
+}
+
+/**
+ * 汇总入站音视频 RTP 的累计字节数。
+ * 静止画面可以合法地没有视频包，但带音轨的 SRS 拉流仍应持续收到 Opus 包；
+ * 因此断流检测必须看音视频总字节，同时确认浏览器确实报告了音频 RTP 统计。
+ */
+export function inboundRtpByteCounts(stats: readonly unknown[]): { totalBytes: number; videoBytes: number; hasAudioStats: boolean } {
+  let totalBytes = 0
+  let videoBytes = 0
+  let hasAudioStats = false
+  for (const value of stats) {
+    if (isAudioRtpStat(value, 'inbound-rtp')) hasAudioStats = true
+    else if (!isVideoRtpStat(value, 'inbound-rtp')) continue
+
+    const bytesReceived = Number((value as LiveRtcStat).bytesReceived)
+    if (!Number.isFinite(bytesReceived) || bytesReceived <= 0) continue
+    totalBytes += bytesReceived
+    if (isVideoRtpStat(value, 'inbound-rtp')) videoBytes += bytesReceived
+  }
+  return { totalBytes, videoBytes, hasAudioStats }
+}
+
 /**
  * 读当前真正选中的 ICE 路径 RTT。
  *

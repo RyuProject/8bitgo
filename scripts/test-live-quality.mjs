@@ -7,7 +7,7 @@ import {
   tuningForLiveTier,
 } from '../src/emulator/liveAdaptiveQuality.ts'
 import { applyTuning } from '../src/emulator/videoTuning.ts'
-import { isVideoRtpStat, selectedCandidateRttMs } from '../src/emulator/liveStats.ts'
+import { inboundRtpByteCounts, isAudioRtpStat, isVideoRtpStat, selectedCandidateRttMs } from '../src/emulator/liveStats.ts'
 
 let passed = 0
 const check = (name, fn) => {
@@ -23,6 +23,26 @@ const severe = { loss: 0.18, rttMs: 1100, fps: 8, kbps: 120 }
 check('兼容只提供 mediaType 的 WebRTC 实现', () => {
   assert.equal(isVideoRtpStat({ type: 'inbound-rtp', mediaType: 'video' }, 'inbound-rtp'), true)
   assert.equal(isVideoRtpStat({ type: 'inbound-rtp', kind: 'audio' }, 'inbound-rtp'), false)
+  assert.equal(isAudioRtpStat({ type: 'inbound-rtp', mediaType: 'audio' }, 'inbound-rtp'), true)
+})
+
+check('SRS 静止视频仍有音频 RTP 时不算整条流断流', () => {
+  const bytes = inboundRtpByteCounts([
+    { type: 'inbound-rtp', kind: 'video', bytesReceived: 0 },
+    { type: 'inbound-rtp', kind: 'audio', bytesReceived: 384 },
+    { type: 'outbound-rtp', kind: 'audio', bytesReceived: 9_000 },
+    { type: 'inbound-rtp', kind: 'unknown', bytesReceived: 500 },
+  ])
+  assert.deepEqual(bytes, { totalBytes: 384, videoBytes: 0, hasAudioStats: true })
+  assert.ok(bytes.totalBytes > 0, '静止画面期间的音频字节应阻止 SRS 静默看门狗重连')
+})
+
+check('没有音频 RTP 统计时不把缺失字段当作断流证据', () => {
+  assert.deepEqual(inboundRtpByteCounts([{ type: 'inbound-rtp', kind: 'video', bytesReceived: 100 }]), {
+    totalBytes: 100,
+    videoBytes: 100,
+    hasAudioStats: false,
+  })
 })
 
 check('RTT 只读 transport 当前选中的 ICE 路径，不被备用路径顺序干扰', () => {

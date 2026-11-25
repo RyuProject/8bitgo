@@ -46,7 +46,7 @@ import { sendChatWithAck, type ChatSendResult } from '../chatSend'
 import { usableVideoSize } from '../videoTuning'
 import { COOP_CHANNEL, encode as encodeCoop, parse as parseCoop } from '../coopSeat'
 import { isTyping } from '../hotkeyBridge'
-import { isVideoRtpStat, selectedCandidateRttMs } from '../liveStats'
+import { inboundRtpByteCounts, isVideoRtpStat, selectedCandidateRttMs } from '../liveStats'
 
 export type LiveViewState = 'connecting' | 'watching' | 'reconnecting' | 'host-away' | 'ended' | 'error'
 
@@ -604,7 +604,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   /** 第一次读到累计计数只建立基线，不把握手阶段的数据误算成观看期网络质量。 */
   let linkBaselineReady = false
   /** 上一轮的累计值，用来算这一段区间的增量（getStats 给的是从头累计的） */
-  let lastPkts = { received: 0, lost: 0, bytes: 0, decoded: 0, at: 0 }
+  let lastPkts = { received: 0, lost: 0, bytes: 0, mediaBytes: 0, decoded: 0, at: 0 }
   /** 房主在输入通道的 hello 里说了「我的视频轨带心跳」（见 coopSeat 的 ka） */
   let hostKeepAlive = false
   /** 连续几轮一帧都没解出来。到 STALL_SAMPLES 就当画面卡死 */
@@ -642,11 +642,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         // packetsLost 可以是负数（重排序被算回来），夹到 0
         if (typeof t.packetsLost === 'number') lost += Math.max(0, t.packetsLost)
       })
+      const inboundBytes = inboundRtpByteCounts(stats)
 
       const now = performance.now()
       const rttMs = selectedCandidateRttMs(stats)
       if (!linkBaselineReady) {
-        lastPkts = { received, lost, bytes, decoded, at: now }
+        lastPkts = { received, lost, bytes, mediaBytes: inboundBytes.totalBytes, decoded, at: now }
         linkBaselineReady = true
         return
       }
@@ -654,8 +655,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       const dLost = Math.max(0, lost - lastPkts.lost)
       const elapsed = Math.max(1, now - lastPkts.at)
       const dBytes = Math.max(0, bytes - lastPkts.bytes)
+      const dMediaBytes = Math.max(0, inboundBytes.totalBytes - lastPkts.mediaBytes)
       const dDecoded = Math.max(0, decoded - lastPkts.decoded)
-      lastPkts = { received, lost, bytes, decoded, at: now }
+      lastPkts = { received, lost, bytes, mediaBytes: inboundBytes.totalBytes, decoded, at: now }
       /*
         ⚠️ 首帧之后画面卡死，以前没有任何一条路能发现。
         ICE 一直 connected、轨也没 ended，只是解码器再也拿不到帧（2026-10-27 线上实测：
@@ -669,7 +671,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         连续两轮（10 秒）一个字节都收不到就是 SFU 那一路断了（主播换了上行而 SRS 没把它接到我们这条拉流上、
         或者链路静默失效）。不看视频帧：游戏暂停时视频合法地不出帧。
       */
-      if (transport === 'srs' && activePc === srsPc && dBytes === 0 && stream.getAudioTracks().length > 0 && !hostFrozen && !hostAway && srsReady) {
+      if (transport === 'srs' && activePc === srsPc && inboundBytes.hasAudioStats && dMediaBytes === 0 && stream.getAudioTracks().length > 0 && !hostFrozen && !hostAway && srsReady) {
         srsSilentStreak += 1
         if (srsSilentStreak >= STALL_SAMPLES) {
           srsSilentStreak = 0
@@ -730,7 +732,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     // 有画面了才开始采样：没画面时读出来的全是握手期的噪声
     if (!linkTimer) {
       stallStreak = 0
-      lastPkts = { received: 0, lost: 0, bytes: 0, decoded: 0, at: 0 }
+      lastPkts = { received: 0, lost: 0, bytes: 0, mediaBytes: 0, decoded: 0, at: 0 }
       linkBaselineReady = false
       linkTimer = window.setInterval(() => void sampleLink(), LINK_STATS_INTERVAL_MS)
     }
@@ -1232,7 +1234,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       gotFrame = false
       tinyFrame = false
       // 新 PeerConnection 的累计计数从零开始，不能拿上条连接的包数做差。
-      lastPkts = { received: 0, lost: 0, bytes: 0, decoded: 0, at: 0 }
+      lastPkts = { received: 0, lost: 0, bytes: 0, mediaBytes: 0, decoded: 0, at: 0 }
       stallStreak = 0
       linkBaselineReady = false
     }
