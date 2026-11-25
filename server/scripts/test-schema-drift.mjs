@@ -53,4 +53,8 @@ assert.deepEqual(real.problems, [])
 
 const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'))
 assert.match(pkg.scripts.prebuild, /check-schema-drift\.mjs/, 'prebuild 要跑迁移对账')
+// 构建机（Cloudflare Workers Builds）只装根目录依赖：schema-check.js 若静态 import db.js，
+// 构建期对账会因找不到 mysql2 整个失败（2026-09～11 该 CI 一直红）
+const schemaCheckSrc = readFileSync(new URL('../src/schema-check.js', import.meta.url), 'utf8')
+assert.doesNotMatch(schemaCheckSrc, /^import[^\n]*['"]\.\/db\.js['"]/m, 'schema-check.js 不能静态 import db.js')
 console.log('✔ 迁移漏项检查：解析、三类对账、白名单与真仓库')

@@ -9,7 +9,12 @@
  * 所以这里在启动时主动查一遍，缺什么直接把话说清楚，并给出该跑的命令。
  * 只警告、不退出：缺列不影响前台读，站点该服务还是要服务。
  */
-import { query } from './db.js'
+/*
+  db.js 用到时才加载：EXPECTED_TABLES / EXPECTED_COLUMNS 还要被构建期的
+  server/scripts/check-schema-drift.mjs 静态读取，而构建机（Cloudflare Workers Builds）
+  只装根目录依赖，没有 server/node_modules；静态 import db.js 会因找不到 mysql2 让整个构建失败
+  （2026-09 起该 CI 一直红）。真正查库只在启动时的 runSchemaCheck 里发生。
+*/
 import { dosGameConfigError } from './dos-game-config.js'
 
 /** 会随版本增加的列。新增迁移时同步往这里加一条 */
@@ -186,6 +191,7 @@ async function runSchemaCheck() {
   const report = { at: new Date().toISOString(), ok: false, missingTables: [], missingColumns: [], invalidDos: [], nonStreamingWindows: 0, error: null }
   lastReport = report
   try {
+    const { query } = await import('./db.js')
     const cols = await query(
       `SELECT table_name AS t, column_name AS c
          FROM information_schema.COLUMNS
