@@ -233,6 +233,15 @@ function romDownloadFilename(url: string, fallback: string): string {
   return safeRomDownloadFilename(name)
 }
 
+type StartupFallbackKind = 'runtime' | 'core'
+
+interface StartupFallback {
+  kind: StartupFallbackKind
+  from: string
+  to: string
+  reason: string
+}
+
 interface ActiveSession {
   id: number
   game: File | string
@@ -258,6 +267,8 @@ interface ActiveSession {
   totalRetries?: number
   /** 只属于这一局的核心覆盖；崩溃兜底不能改后台配置或污染下一次主动启动。 */
   coreOverride?: string
+  /** 同一次开局里发生的自动运行时 / 核心切换，用来衡量兜底实际是否跑到首帧。 */
+  fallbacks?: StartupFallback[]
   /**
    * 一次性动作：**这一局**挂载时丢弃远端 ROM 的缓存与续传片、从网络重新下载。
    * 只由请求刷新的那一次重开带上；之后的原地重试 / 换核心 / 换引擎都不再携带，
@@ -1893,6 +1904,7 @@ export function EmulatorPlayer({
       retryAttempt?: number
       totalRetries?: number
       coreOverride?: string
+      fallbacks?: StartupFallback[]
       forceRomRefresh?: boolean
       romRefreshed?: boolean
       ruledOut?: RuntimeId[]
@@ -1976,6 +1988,32 @@ export function EmulatorPlayer({
       ? rememberedNdsPerformanceCore(game)
       : null
     const coreOverride = extra?.coreOverride ?? rememberedCore ?? rememberedPerformanceCore ?? webgl2Core ?? rememberedArcadeCore ?? rememberedPsxCore ?? undefined
+    const rememberedFallback: StartupFallback | null = extra?.coreOverride ? null
+      : rememberedCore
+        ? { kind: 'core', from: 'melondsds', to: rememberedCore, reason: 'remembered-crash' }
+        : rememberedPerformanceCore
+          ? { kind: 'core', from: 'melondsds', to: rememberedPerformanceCore, reason: 'remembered-performance-choice' }
+          : webgl2Core
+            ? { kind: 'core', from: 'melondsds', to: webgl2Core, reason: 'webgl2-unavailable' }
+            : rememberedArcadeCore
+              ? { kind: 'core', from: 'fbneo', to: rememberedArcadeCore, reason: 'remembered-memory-limit' }
+              : rememberedPsxCore
+                ? { kind: 'core', from: 'pcsx_rearmed', to: rememberedPsxCore, reason: 'remembered-memory-limit' }
+                : null
+    const browserRuntimeFallback: StartupFallback | null = extra?.coreOverride ? null
+      : targetPlatform === 'nes' && runtime.id === 'jsnes' && webglUnavailable
+        ? { kind: 'runtime', from: 'emulatorjs', to: 'jsnes', reason: 'webgl-unavailable' }
+        : (targetPlatform === 'gb' || targetPlatform === 'gbc') && runtime.id === 'binjgb' &&
+          (webglUnavailable || !webAssemblyAvailable())
+          ? { kind: 'runtime', from: 'emulatorjs', to: 'binjgb', reason: 'browser-capability' }
+          : targetPlatform === 'gba' && runtime.id === 'iodinegba' &&
+            (webglUnavailable || !webAssemblyAvailable())
+            ? { kind: 'runtime', from: 'emulatorjs', to: 'iodinegba', reason: 'browser-capability' }
+            : targetPlatform === 'flash' && runtime.id === 'awayfl' && awayflChoice.use
+              ? { kind: 'runtime', from: 'ruffle', to: 'awayfl', reason: 'wasm-unavailable' }
+              : null
+    const initialFallback = rememberedFallback ?? browserRuntimeFallback
+    const fallbacks = extra?.fallbacks ?? (initialFallback ? [initialFallback] : undefined)
     // 新旧 melonDS 的即时存档 ABI 不能假定兼容；兼容核心必须用独立档位，
     // 否则自动切换后可能把旧核心的快照写回原档，造成无法恢复的覆盖。
     const coreSaveSlug = targetPlatform === 'psx' && runtime.id === 'emulatorjs' && typeof game === 'string' && baseSaveSlug
@@ -2002,7 +2040,7 @@ export function EmulatorPlayer({
     sessionCounter.current += 1
     setSession({ id: sessionCounter.current, game, platform: targetPlatform, runtime, saveSlug,
       pspLoadMode: runtime.id === 'ppsspp' ? pspLoadModeRef.current : undefined,
-      ...extra, coreOverride, startupAttemptId, startedAt })
+      ...extra, fallbacks, coreOverride, startupAttemptId, startedAt })
     setNdsPerformanceSuggestion(null)
     setP2pConnectionFailed(false)
     if (!extra?.startupAttemptId && !inherited && runtime.id !== 'liveview' && startupVisitId) {
@@ -2040,6 +2078,9 @@ export function EmulatorPlayer({
     let romLoadStarted = false
     let romLoadCompleted = false
     let romLoadStreaming = false
+    let fallbackTrail = [...(session.fallbacks ?? [])]
+    let fallbackStartedReported = false
+    let fallbackOutcomeReported = false
     const batchedStartupPhases = new Set<StartupEventName>([
       'rom_load_start', 'rom_load_complete', 'core_warm_start', 'core_warm_complete', 'core_cache_hit', 'runtime_ready',
     ])
@@ -2085,7 +2126,23 @@ export function EmulatorPlayer({
       }
       recordStartupEvent(gameSlugRef.current, payload)
     }
+    const reportFallbackOutcome = (event: 'fallback_started' | 'fallback_succeeded' | 'fallback_failed') => {
+      if (!fallbackTrail.length || !startupVisitId || !gameSlugRef.current || session.runtime.id === 'liveview') return
+      if (event === 'fallback_started') {
+        if (fallbackStartedReported) return
+        fallbackStartedReported = true
+      } else {
+        if (!fallbackStartedReported || fallbackOutcomeReported) return
+        fallbackOutcomeReported = true
+      }
+      const detail = fallbackTrail
+        .map(({ kind, from, to, reason }) => `${kind}:${from}>${to}:${reason}`)
+        .join(';')
+      reportStartup(event, detail)
+    }
+    reportFallbackOutcome('fallback_started')
     const reportStartupFailure = (reason: string) => {
+      reportFallbackOutcome('fallback_failed')
       reportStartup(/(?:超时|timeout|timed out)/i.test(reason) ? 'timeout' : 'failed', reason)
     }
     let readinessState: 'unknown' | 'observable' | 'unobservable' = session.runtime.id === 'html5' ? 'unknown' : 'observable'
@@ -2128,6 +2185,7 @@ export function EmulatorPlayer({
         if (readinessState === 'unobservable') {
           reportStartup('readiness_unobservable', '跨域 HTML5 页面无法由父页面确认游戏是否已就绪')
         } else {
+          reportFallbackOutcome('fallback_failed')
           reportStartup('timeout', '连续 120 秒没有启动进度或可玩信号')
         }
       }, STARTUP_TIMEOUT_MS)
@@ -2480,6 +2538,7 @@ export function EmulatorPlayer({
         // 调试：核心已经产出首帧，游戏真的跑起来了
         if (debugRef.current) setDiag((d) => [...d, { stage: 'engine', label: '引擎出首帧', status: 'ok', detail: '游戏已开始运行' }])
         reportStartup('first_frame')
+        reportFallbackOutcome('fallback_succeeded')
       },
       onNdsPerformanceIssue: (fps, reason) => {
         if (!isCurrent() || session.platform !== 'nds') return
@@ -2529,6 +2588,7 @@ export function EmulatorPlayer({
         setError(null)
         setNotice(fmt(t.player.runtimeFellBack, { runtime: next.name }))
         begin(session.game, session.platform, next, {
+          fallbacks: [...fallbackTrail, { kind: 'runtime', from: session.runtime.id, to: next.id, reason: 'unsupported-rom' }],
           ruledOut,
           totalRetries: session.totalRetries,
           romRefreshed: session.romRefreshed || session.forceRomRefresh,
@@ -2552,6 +2612,7 @@ export function EmulatorPlayer({
             retryAttempt: (session.retryAttempt ?? 0) + 1,
             totalRetries: (session.totalRetries ?? 0) + 1,
             coreOverride: session.coreOverride,
+            fallbacks: fallbackTrail,
             ruledOut: session.ruledOut,
             // 只有这一次重开真的丢缓存重下；romRefreshed 跟着后续重开走，防止再刷第二次
             forceRomRefresh: true,
@@ -2576,6 +2637,7 @@ export function EmulatorPlayer({
           // 换核心给新核心一次原地重试（retryAttempt 清零），但总预算跟着这次开局走
           begin(session.game, session.platform, session.runtime, {
             coreOverride: nextCore,
+            fallbacks: [...fallbackTrail, { kind: 'core', from: crashedCore, to: nextCore, reason: 'wasm-crash' }],
             totalRetries: session.totalRetries,
             ruledOut: session.ruledOut,
             romRefreshed: session.romRefreshed || session.forceRomRefresh,
@@ -2621,6 +2683,7 @@ export function EmulatorPlayer({
         // 同 NDS 换核心：retryAttempt 清零，totalRetries 保留
         begin(session.game, session.platform, session.runtime, {
           coreOverride: nextCore,
+          fallbacks: [...fallbackTrail, { kind: 'core', from: failedCore, to: nextCore, reason: 'out-of-memory' }],
           totalRetries: session.totalRetries,
           ruledOut: session.ruledOut,
           romRefreshed: session.romRefreshed || session.forceRomRefresh,
@@ -2638,6 +2701,8 @@ export function EmulatorPlayer({
         const nextCore = psxMemoryFallbackCore(session.platform, failedCore, canRestartInPlace(session) && !session.coreOverride)
         if (!nextCore) return null
         console.warn(`[8bitgo/psx] ${failedCore} 起步内存预检失败，本局改用 ${nextCore}`)
+        fallbackTrail = [...fallbackTrail, { kind: 'core', from: failedCore, to: nextCore, reason: 'preflight-memory-limit' }]
+        reportFallbackOutcome('fallback_started')
         rememberPsxMemoryFailure()
         return nextCore
       },
@@ -2707,6 +2772,7 @@ export function EmulatorPlayer({
             retryAttempt: attempt + 1,
             totalRetries: totalRetries + 1,
             coreOverride: session.coreOverride,
+            fallbacks: fallbackTrail,
             ruledOut: session.ruledOut,
             romRefreshed: session.romRefreshed || session.forceRomRefresh,
             startupAttemptId: session.startupAttemptId,
@@ -2740,6 +2806,7 @@ export function EmulatorPlayer({
           setError(null)
           setNotice(fmt(t.player.cloudFellBack, { msg: message }))
           begin(fb.url, platform.id, fb.runtime, {
+            fallbacks: [...fallbackTrail, { kind: 'runtime', from: session.runtime.id, to: fb.runtime.id, reason: 'cloud-room-unavailable' }],
             startupAttemptId: session.startupAttemptId,
             startedAt: session.startedAt,
           })

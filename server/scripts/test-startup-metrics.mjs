@@ -15,6 +15,10 @@ const slow = normalizeStartupEvent({ ...base, event: 'slow_start', elapsedMs: 60
 assert.equal(slow.elapsedMs, 60_001)
 assert.equal(isSlowStartup(slow), true)
 assert.equal(isSlowStartup({ ...slow, elapsedMs: STARTUP_SLOW_MS - 1 }), false, '未满 60 秒不应误报慢启动')
+assert.equal(normalizeStartupEvent({ ...base, event: 'fallback_started', detail: 'core:melondsds>melonds-compat:wasm-crash' }).event,
+  'fallback_started', '运行时与核心兜底阶段必须进入漏斗白名单')
+assert.equal(normalizeStartupEvent({ ...base, event: 'fallback_succeeded' }).event, 'fallback_succeeded')
+assert.equal(normalizeStartupEvent({ ...base, event: 'fallback_failed' }).event, 'fallback_failed')
 const unobservable = normalizeStartupEvent({ ...base, event: 'readiness_unobservable', elapsedMs: 120_000 })
 assert.equal(unobservable.event, 'readiness_unobservable', '跨域页面的不可观测状态必须可记录，但不能当成失败')
 
@@ -106,6 +110,9 @@ assert.match(migration, /game_startup_events（第一方启动漏斗与 20 秒�
 assert.match(metricsSource, /const accepted = recorded \|\|/, '唯一键拦住的重放必须按幂等成功处理，不能误回 404')
 assert.match(metricsSource, /recentFailures/, '统计接口应提供最近启动失败明细')
 assert.match(metricsSource, /readiness_unobservable/, '汇总必须单独统计无法观测的页面，不混进失败数')
+assert.match(metricsSource, /fallback_attempts/, '启动汇总必须分别统计兜底尝试、成功和失败')
+assert.match(metricsSource, /fallback_successes/)
+assert.match(metricsSource, /fallback_failures/)
 assert.match(metricsSource, /sanitizeStartupDetail\(row\.detail\)/, '历史错误摘要返回后台前也必须脱敏')
 assert.match(metricsSource, /WITH attempt_events AS/, '阶段统计必须先按一次启动配对事件')
 assert.match(metricsSource, /UNION ALL\s+SELECT game_id, country, first_frame_runtime/, '不同运行时的回退事件不能拼成一个阶段')

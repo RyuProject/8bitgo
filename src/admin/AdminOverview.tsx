@@ -71,13 +71,14 @@ function StartupBreakdown({ title, rows }: { title: string; rows: StartupGroup[]
   return (
     <Card title={title}>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[76rem] text-sm">
+        <table className="w-full min-w-[82rem] text-sm">
           <thead className="text-left text-xs text-muted">
             <tr>
               <th className="pb-2 font-medium">项目</th>
               <th className="pb-2 text-right font-medium">开始</th>
               <th className="pb-2 text-right font-medium">可玩</th>
               <th className="pb-2 text-right font-medium">成功率</th>
+              <th className="pb-2 text-right font-medium" title="已到首帧 / 自动兜底尝试；悬停查看失败数">兜底成功 / 尝试</th>
               <th className="pb-2 text-right font-medium text-live">&gt;20s</th>
               <th className="pb-2 text-right font-medium">可玩总时长</th>
               <th className="pb-2 text-right font-medium" title="点击开始到 download_complete 的耗时；非 HTML5 代表 ROM / 启动资源到手，HTML5 代表 iframe 文档加载">开始→资源完成</th>
@@ -96,6 +97,12 @@ function StartupBreakdown({ title, rows }: { title: string; rows: StartupGroup[]
                 <td className="py-2 text-right tabular-nums text-muted">{row.starts}</td>
                 <td className="py-2 text-right tabular-nums">{row.playable}</td>
                 <td className="py-2 text-right tabular-nums">{row.playableRate.toFixed(1)}%</td>
+                <td
+                  className="py-2 text-right tabular-nums"
+                  title={`${row.fallbackFailures} 次兜底后失败`}
+                >
+                  {row.fallbackSuccesses} / {row.fallbackAttempts}
+                </td>
                 <td className="py-2 text-right tabular-nums text-live">{row.slowStarts}</td>
                 <td className="py-2 text-right tabular-nums text-muted">{startupTime(row.avgPlayableMs)}</td>
                 <StartupPhaseCell ms={row.avgResourceMs} samples={row.resourceSamples} />
@@ -108,7 +115,7 @@ function StartupBreakdown({ title, rows }: { title: string; rows: StartupGroup[]
               </tr>
             ))}
             {!rows.length && (
-              <tr><td colSpan={13} className="py-5 text-center text-sm text-muted">还没有启动数据</td></tr>
+              <tr><td colSpan={14} className="py-5 text-center text-sm text-muted">还没有启动数据</td></tr>
             )}
           </tbody>
         </table>
@@ -264,6 +271,10 @@ export function AdminOverview() {
 
   // 全库聚合直接用后端算好的，不再拿 facets 反推
   const stats = data?.stats
+  const fallbackAttempts = startup?.summary.fallbackAttempts ?? 0
+  const fallbackSuccesses = startup?.summary.fallbackSuccesses ?? 0
+  const fallbackFailures = startup?.summary.fallbackFailures ?? 0
+  const fallbackUnresolved = Math.max(0, fallbackAttempts - fallbackSuccesses - fallbackFailures)
 
   // 「已上架但没绑 ROM」的条目点进去是玩不了的，比进度百分比更需要先看到，
   // 所以有这种条目时优先显示它
@@ -355,12 +366,17 @@ export function AdminOverview() {
           </div>
           <span className="text-xs text-muted">详情页 {startup?.summary.detailViews ?? 0} 次</span>
         </div>
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-7">
           <Stat label="点击开始" value={startup?.summary.starts ?? 0} sub="每次主动启动一条" />
           <Stat label="成功可玩" value={startup?.summary.playable ?? 0} sub={`${(startup?.summary.playableRate ?? 0).toFixed(1)}% 成功率`} />
           <Stat label="首帧" value={startup?.summary.firstFrames ?? 0} sub="运行时确认进入主循环" />
           <Stat label="慢启动" value={startup?.summary.slowStarts ?? 0} sub="可玩耗时超过 60 秒" />
           <Stat label="无法观测" value={startup?.summary.readinessUnobservable ?? 0} sub="跨域 HTML5 无法确认就绪" />
+          <Stat
+            label="模拟器兜底"
+            value={fallbackAttempts}
+            sub={`${fallbackSuccesses} 次到首帧 · ${fallbackFailures} 次失败 · ${fallbackUnresolved} 次未确认`}
+          />
           <Stat
             label="失败 / 超时"
             value={(startup?.summary.failures ?? 0) + (startup?.summary.timeouts ?? 0)}

@@ -268,6 +268,10 @@ export interface StartupAggregate {
   timeouts: number
   slowStarts: number
   readinessUnobservable: number
+  /** 自动兼容回退的尝试、首帧恢复与最终失败次数。 */
+  fallbackAttempts: number
+  fallbackSuccesses: number
+  fallbackFailures: number
   avgPlayableMs: number | null
   maxPlayableMs: number | null
   /** 点击开始到下载完成/资源就绪的平均耗时，以及有效配对数。 */
