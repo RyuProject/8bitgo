@@ -372,17 +372,32 @@ await check('核心预热事件携带仅供内存配对的核心标识', async (
   assert.deepEqual(events, [['start', 'fbneo'], ['complete', 'fbneo']])
 })
 
-await check('开局预热排在 ROM 预下载之前，且平台 BIOS 判定只算一次', async () => {
+await check('BIOS 线路探测与核心预热、ROM 首个请求并行，且平台 BIOS 判定只算一次', async () => {
   const source = await readFile(new URL('../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8')
   const loadAt = source.indexOf("iframe.addEventListener('load'")
-  const warmAt = source.indexOf('void warmEmulatorJsStart(', loadAt)
+  const biosRouteAt = source.indexOf('const engineBiosUrlTask =', loadAt)
+  const warmAt = source.indexOf('const coreWarmTask = warmEmulatorJsStart(', loadAt)
   const arcadeAt = source.indexOf('await prepareRemoteArcadeRom(', loadAt)
-  assert.ok(warmAt > loadAt && warmAt < arcadeAt, '核心预热没有和 ROM 下载并行')
+  const biosWarmTaskAt = source.indexOf('void Promise.all([coreWarmTask, engineBiosUrlTask])', warmAt)
+  const biosWarmAt = source.indexOf('await warmEmulatorJsStart({ always: [], large: [biosUrl] }', warmAt)
+  const arcadeResolveAt = source.indexOf('await resolveEngineBiosUrl()', arcadeAt)
+  const commonResolveAt = source.lastIndexOf('await resolveEngineBiosUrl()')
+  const commonResolveCommentAt = source.lastIndexOf('// 非街机不经过上面的 BIOS 判断', commonResolveAt)
+  assert.ok(biosRouteAt > loadAt && biosRouteAt < warmAt, 'BIOS 线路探测应先启动，但不能 await 阻塞核心预热')
+  assert.match(source.slice(biosRouteAt, warmAt), /catch\(\(\) => prepareAbort\.signal\.aborted \|\| destroyed \? '' : configuredEngineBiosUrl\)/, '离开游戏后，取消的 BIOS 探测不能回退并预热原地址')
+  assert.ok(warmAt < arcadeAt, '核心预热没有排在 ROM 下载之前')
+  assert.ok(arcadeResolveAt > arcadeAt, '街机 BIOS 线路只能在 ROM 准备后收口')
+  assert.ok(commonResolveCommentAt > arcadeAt && commonResolveAt > commonResolveCommentAt, '其它平台 BIOS 线路只能在 ROM 准备后收口')
+  assert.ok(biosWarmAt > warmAt, 'BIOS 应在路线选定后单独预热，不能用未确认的旧域名')
+  assert.ok(source.slice(biosWarmTaskAt, biosWarmAt).includes('if (destroyed || prepareAbort.signal.aborted || !'), '后台预热开始前必须再次检查会话是否取消')
+  assert.match(source.slice(warmAt, biosWarmAt), /Promise\.all\(\[coreWarmTask, engineBiosUrlTask\]\)/, 'BIOS 预热应等待核心缓存查询结束，避免并发打开同一个引擎库')
   assert.equal(source.split(/(?:const|let) engineBiosUrl =/).length - 1, 1, 'engineBiosUrl 被算了两遍，预热和真正开局可能不一致')
   assert.ok(source.search(/(?:const|let) engineBiosUrl =/) < warmAt, '预热时还不知道要不要下平台 BIOS')
-  // 后续可因优选资源域不可读而切到备用域，也可由 romset 判定不需 BIOS 后清空。
+  assert.equal((source.match(/await resolveEngineBiosUrl\(\)/g) ?? []).length, 2, '街机 BIOS 判断和其它平台模拟器配置都必须在 ROM 准备后收口线路')
+  assert.equal((source.match(/if \(!\(await resolveEngineBiosUrl\(\)\)\) return/g) ?? []).length, 2, '退出游戏后不得继续构造旧会话的模拟器配置')
+  // ROM 准备后收口线路；街机 romset 若不需要平台 BIOS，仍允许把地址清空。
   const later = [...source.matchAll(/\n\s*engineBiosUrl = ([^\n]+)/g)].map((m) => m[1].trim())
-  assert.deepEqual(later, ['preferredBiosUrl', "''"], 'BIOS 只可切备用资源域，或在确认不需要时清空')
+  assert.deepEqual(later, ['resolvedUrl', "''"], 'BIOS 只可采用探测结果，或在确认不需要时清空')
 })
 
 await check('DIP 组名带连字符时保留完整组名', () => {

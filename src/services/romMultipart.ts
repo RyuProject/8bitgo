@@ -1213,6 +1213,8 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
   let loadedBytes = 0
   let serverWaitTotalMs = 0
   let serverWaitSamples = 0
+  let hashWaitTotalMs = 0
+  let hashWaitSamples = 0
   for (const n of finished) {
     const bytes = sizeOfPart(n)
     loaded.set(n, bytes)
@@ -1240,6 +1242,10 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
         ? Math.round((serverWaitTotalMs / serverWaitSamples) * 10) / 10
         : undefined,
       serverWaitSamples: serverWaitSamples || undefined,
+      hashWaitMs: hashWaitSamples > 0
+        ? Math.round((hashWaitTotalMs / hashWaitSamples) * 10) / 10
+        : undefined,
+      hashWaitSamples: hashWaitSamples || undefined,
     })
   }
   const report = (force = false) => {
@@ -1289,12 +1295,22 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
       try {
         // 摘要与 XHR 同时读各自的小块，正常上传不多一次整文件扫描，断点恢复则能核验已在 R2 的字节。
         const hashTask = resumable
-          ? fingerprintRomPart(blob).catch(() => null)
+          ? fingerprintRomPart(blob).then(
+              (hash) => ({ hash, settledAt: performance.now() }),
+              () => ({ hash: null, settledAt: performance.now() }),
+            )
           : null
         const etag = await putPartWithRetry(ctx, state, n, blob, (bytes, serverWaitMs) => {
           setLoaded(n, bytes, serverWaitMs)
         }, uploadGate, () => failure !== null, (error) => { failure ??= error }, signal)
-        const contentHash = hashTask ? await hashTask : null
+        const uploadFinishedAt = performance.now()
+        const hashResult = hashTask ? await hashTask : null
+        if (hashResult) {
+          // 已提前算完的分片计为 0，等待中的分片计实际延迟，避免均值只包含慢摘要样本。
+          hashWaitTotalMs += Math.max(0, hashResult.settledAt - uploadFinishedAt)
+          hashWaitSamples++
+        }
+        const contentHash = hashResult?.hash ?? null
         // R2 已确认本次分片来自当前文件；摘要失败只禁用这片的未来复用，不能把成功上传报成失败。
         // 续传核验会主动重传没有摘要的旧片，因此安全性不变，也避免管理员因浏览器加密 API 短暂故障重传整局。
         state.parts.push({ partNumber: n, etag, ...(contentHash ? { contentHash } : {}) })
@@ -1325,10 +1341,9 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
   try {
     // 值得多试两次：分片全都已经在 R2 上了，只差这一个请求，
     // 因为一次网络抖动就把几十 MB 判成失败太可惜
-    // complete 已是有副作用的提交点：请求发出后用户取消不能再中止唯一确认响应，
-    // 否则 R2 可能已合并成功、客户端却只留下一个看似可续传的旧 uploadId。取消仍阻止
-    // 合并前的分片和重试退避；一旦进入此请求，就等确认或 60 秒总超时后再安全收尾。
-    completed = await withRetry(() => completeUpload(ctx, state), 3, retryable, signal)
+    // 合并是有副作用的提交点：从这里开始不再响应取消，最多三次幂等请求各自受 60 秒时限保护；
+    // 否则首次响应若在 R2 完成后丢失，客户端会误报失败并留下看似可续传的旧 uploadId。
+    completed = await withRetry(() => completeUpload(ctx, state), 3, retryable)
   } catch (err) {
     if (err instanceof CompletionUncertainError) {
       clearState(key)
@@ -1350,6 +1365,10 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
       ? Math.round((serverWaitTotalMs / serverWaitSamples) * 10) / 10
       : undefined,
     serverWaitSamples: serverWaitSamples || undefined,
+    hashWaitMs: hashWaitSamples > 0
+      ? Math.round((hashWaitTotalMs / hashWaitSamples) * 10) / 10
+      : undefined,
+    hashWaitSamples: hashWaitSamples || undefined,
   })
   return { key, url: romUrlForKey(key), size: completed.size, etag: completed.etag }
 }

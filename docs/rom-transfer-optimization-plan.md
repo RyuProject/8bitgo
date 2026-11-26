@@ -123,6 +123,7 @@
 - 单发 PUT 的进度与停滞保护加入 `npm run test:r2-upload-client`：验证 99%→校验后 100%，以及静默断流 45 秒后转为可重试错误。
 - ROM 探测缓存回归覆盖同 key 更新后的 ETag 刷新、新上传对象脱离旧 404，以及有效期内复用结果避免重复 HEAD。
 - 已通过 `scripts/test-mame-chd-warm.mjs`，覆盖停滞预热会主动中止、释放任务槽并可重新落盘，以及悬停后立即点击会取消重复 Range；`npm run test:load-progress`（86 项）覆盖 ROM 退避等待取消与监听清理，PSP 整盘下载回归覆盖 503 退避时取消不会再发下一片，`npx tsc -b --pretty false` 通过。
+- 本轮把平台 BIOS 的 64 KiB 优选线路探测移出开局串行路径：现在与 EmulatorJS 入口/核心预热及 ROM 准备并行，ROM 准备后再确定最终 BIOS 地址；目标 BIOS 仍会按线路选择和引擎缓存状态预热，并等待核心缓存查询结束，避免并发打开同一 IndexedDB；玩家退出后不再回退并预热旧 BIOS 地址。`npm run test:arcade-runtime`、`npm run test:rom-route-health`、`npm run test:ejs-failure-reasons`、`npm run test:player-runtime-state`、`npm run test:r2-upload-client`、`npx tsc -b --pretty false` 与 `npm test`（292/292，7 套按项目配置跳过）通过；客户端构建的产物语法、核心字节一致性、资源完整性和懒加载门禁也通过。尚无新的生产冷启动对比数据，因此不量化节省秒数。
 - 上述结果是本地夹具回归，不代表真实 R2 吞吐或浏览器实际 OPTIONS 数量。真实后台上传与跨区域冷/热缓存对照仍需独立阶段执行。
 - 当前工作区原有 `docs/seo-international-discovery-plan.md` 改动与本方案无关，必须保持原样；本次也不包含提交或部署。
 
@@ -161,6 +162,10 @@
 2026-11-26 生产后台只读漏斗（最近 7 天）：640 次主动开局中 517 次进入可玩状态（80.8%），平均 14.8 秒。中国大陆 322 次开局、245 次可玩（76.1%）；ROM 获取均值 75.4 秒（n=25），点击开始到资源完成 15.4 秒（n=283），核心预热 5.8 秒（n=8）。香港 102 次开局、92 次可玩（90.2%），ROM 获取均值 0ms（n=5）；这个小样本可能主要命中本地缓存，不能直接和大陆作冷缓存速度比较。总体 EmulatorJS 核心预热均值 5.2 秒（n=10），已有 22 次 IndexedDB 命中。初步判断瓶颈更偏向大陆 ROM 获取及其之前的等待，核心下载目前没有足够证据成为首要瓶颈；分组和样本量限制了结论，后台上传的生产吞吐仍未测。
 
 复核诊断详情 UI 时发现 Worker 响应头耗时和边缘 HIT/MISS 已被客户端采集、入库并包含在「复制给 AI」文本中，网络表格却没有展示。现由 `formatResourceServerTiming()` 统一格式，并在现场请求行下显示，便于将 Worker 时间与请求总耗时分开观察；该改动改善定位能力，本身不改变传输速度。
+
+本轮继续审查上传提交阶段时发现：分片已全部成功后，R2 `complete` 是不可撤销的副作用提交点；代码虽不把用户取消信号传入 `complete` 请求，却仍把它传给外层重试器。若玩家/管理员在第一次确认遇到瞬时网络失败时取消，重试会在下一轮被取消，可能把 R2 已完成但响应丢失的对象报告为上传失败。现移除提交阶段的取消信号，让已开始的有界幂等确认继续；合并前的分片与队列仍响应取消。`npm run test:r2-upload-client` 覆盖取消期间首次合并响应丢失、第二次确认成功，验证最终结果和 Worker 确认一致；`npm run test:worker` 181 项、`npm run test:load-progress` 86 项、`npm run test:ejs-download`、`npm run test:rom-probe`、`npx tsc -b --pretty false` 与 `git diff --check` 均通过。该修复提升后台上传的可恢复性，不宣称带宽提速。
+
+本轮增加后台上传的本机摘要等待指标：每片 SHA-256 仍与 XHR 上行并行，界面新增“本机校验平均等待”，只计算上行结束后摘要尚未完成、确实挡住该上传 runner 的时间；已提前完成的摘要计为零并保留样本数。这样可以和实测上行、Worker/R2 确认等待区分，后续是否需要改变摘要并发不再靠猜测。`npm run test:r2-upload-client`、`npx tsc -b --pretty false`、`git diff --check` 与完整 `npm run build:client` 通过（含运行时语法、EmulatorJS 逐字节一致、59 份预压缩文件、164 项资源 SHA、浏览器兼容及懒加载门禁）。此项只补齐诊断，不代表上传变快；仍需管理员真实上传样本确认摘要是否构成瓶颈。
 
 ## 当前不建议盲改的项目
 

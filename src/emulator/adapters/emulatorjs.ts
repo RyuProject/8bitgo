@@ -5077,6 +5077,26 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         )
         /** 这次真正交给引擎去下载的平台级 BIOS（空串 = 标不设 EJS_biosUrl）。进度探针也用这个值 */
         let engineBiosUrl = skipPlatformBios || noBiosNeeded ? '' : (options.biosUrl ?? '')
+        const configuredEngineBiosUrl = engineBiosUrl
+        // BIOS 线路探测和 ROM / 核心无依赖；先并行探测，等 ROM 准备好再收口到模拟器配置。
+        const engineBiosUrlTask = configuredEngineBiosUrl
+          ? reachableRomAssetUrl(configuredEngineBiosUrl, prepareAbort.signal).then((preferredBiosUrl) => {
+              if (preferredBiosUrl !== configuredEngineBiosUrl) {
+                console.warn(`[emulatorjs] 平台 BIOS 改走读得更快的资源域：${new URL(preferredBiosUrl, location.href).host}`)
+              }
+              return preferredBiosUrl
+            }).catch(() => prepareAbort.signal.aborted || destroyed ? '' : configuredEngineBiosUrl)
+          : Promise.resolve('')
+        let engineBiosUrlResolved = false
+        const resolveEngineBiosUrl = async () => {
+          if (destroyed || prepareAbort.signal.aborted) return false
+          if (engineBiosUrlResolved) return true
+          const resolvedUrl = await engineBiosUrlTask
+          if (destroyed || prepareAbort.signal.aborted) return false
+          engineBiosUrl = resolvedUrl
+          engineBiosUrlResolved = true
+          return true
+        }
         if (noBiosNeeded && options.biosUrl) {
           console.info(`[emulatorjs] 跳过平台级 BIOS（${platformBiosName || options.biosUrl}）：这个 romset 不需要 BIOS`)
         }
@@ -5085,16 +5105,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           // 主动跳过的 —— 后台「BIOS 包（系统名）」填错了系统名会走到这里
           console.info(`[emulatorjs] 跳过平台级 BIOS（${platformBiosName}.zip）：这款游戏要的是 ${gameBiosName}.zip`)
         }
-        if (engineBiosUrl) {
-          const preferredBiosUrl = await reachableRomAssetUrl(engineBiosUrl, prepareAbort.signal)
-          if (preferredBiosUrl !== engineBiosUrl) {
-            console.warn(`[emulatorjs] 平台 BIOS 改走读得更快的资源域：${new URL(preferredBiosUrl, location.href).host}`)
-            engineBiosUrl = preferredBiosUrl
-          }
-        }
-
         /*
-          ROM 还在下载 / 解密时，把引擎入口、核心与平台 BIOS 并行拉进 HTTP 缓存（见 ejsStartWarm.ts）。
+          ROM 还在下载 / 解密时，把引擎入口与核心并行拉进 HTTP 缓存（见 ejsStartWarm.ts）。
           PS1 的 CHD 要等读到头才最终定核心，这里先按传输地址预测（psxCoreForTransfer）；
           PS1 BIOS 512KB 以前排在核心解压之后、实测占开局最后 2.7 秒，一样并行拉。
         */
@@ -5109,7 +5121,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         const warmLanguage = warmPaths[EJS_LANG[getLang()] ?? '']
         const warmCoreDataUrl = ejsCoreAsset(`cores/${encodeURIComponent(emulatorJsCoreDataFile(warmCore))}`)
         preloadEjsStyle(doc, ejsRuntimeAsset('emulator.min.css'))
-        void warmEmulatorJsStart({
+        const assumeUncached = engineCachePurgePending() || engineCacheOff
+        const coreWarmTask = warmEmulatorJsStart({
           always: [
             ejsRuntimeAsset('emulator.min.js'),
             ejsCoreAsset(`cores/metadata/${encodeURIComponent(emulatorJsCoreFileFor(warmCore))}.json`),
@@ -5119,13 +5132,17 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             warmCoreDataUrl,
             // 核心已在引擎缓存里就不用解压，也就不需要它（同属「引擎库里没有才预热」）
             warmPaths[EJS_EXTRACT_7Z_FILE],
-            ...(/^https?:|^\//.test(engineBiosUrl) ? [engineBiosUrl] : []),
           ],
         }, {
-          assumeUncached: engineCachePurgePending() || engineCacheOff,
+          assumeUncached,
           coreDataUrl: warmCoreDataUrl,
           coreKey: warmCore,
           onCoreWarmEvent: options.onCoreWarmEvent,
+        })
+        // BIOS 线路确认后再检查它自己的引擎缓存，避免探测结果反过来拖住 ROM 和核心的首个请求。
+        void Promise.all([coreWarmTask, engineBiosUrlTask]).then(async ([, biosUrl]) => {
+          if (destroyed || prepareAbort.signal.aborted || !/^https?:|^\//.test(biosUrl)) return
+          await warmEmulatorJsStart({ always: [], large: [biosUrl] }, { assumeUncached })
         }).catch(() => {})
         const cachePurgeTask = purgePoisonedEngineCache()
         const socketIoTask: Promise<unknown | null> = NETPLAY_URL
@@ -5416,6 +5433,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             System 11 的 `tekken`、`Soul Calibur.zip` 收成 `soul`，MAME 随即静默回菜单）。
           */
           /** 认出的板子用不上平台级 BIOS 时的原因（Namco / Model 2 共用一处清空，见下） */
+          if (!(await resolveEngineBiosUrl())) return
           let unneededPlatformBios = ''
           if (prepared.namcoSet) {
             namcoSet = prepared.namcoSet
@@ -5470,6 +5488,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             engineGameName = canonicalMameRomset(engineGameName)
           }
         }
+
+        // 非街机不经过上面的 BIOS 判断；ROM 已准备好后再收口 BIOS 地址，不让线路探测挡首个下载。
+        if (!(await resolveEngineBiosUrl())) return
 
         // 在真正内层文件名确定后才决定 CHD 用哪个核心；本地文件和 .chd.8bg 解包都走这里，
         // 不能只靠远端 URL 的后缀猜。核心还要看 CHD 头里的压缩器：Beetle 不认 cdfl（见 psxChd.ts）。

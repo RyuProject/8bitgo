@@ -305,6 +305,7 @@ console.log('✅ ROM 分片在首片早期样本后保守启动并发，慢速�
   let overlapObserved = false
   const startedParts = []
   const uploadedStages = []
+  const hashStages = []
   globalThis.fetch = async (url, init) => {
     const target = String(url)
     if (target.endsWith('?uploads')) return Response.json({ uploadId: 'up-early-sample', marker: '_uploads/early-sample.marker', partNumberInHeader: true })
@@ -353,6 +354,7 @@ console.log('✅ ROM 分片在首片早期样本后保守启动并发，慢速�
   try {
     const result = await uploadRomMultipart(file, 'roms/ps2/early-upload-sample.iso', (_pct, stage) => {
       if (stage?.serverWaitMs !== undefined) uploadedStages.push({ ms: stage.serverWaitMs, samples: stage.serverWaitSamples })
+      if (stage?.hashWaitMs !== undefined) hashStages.push({ ms: stage.hashWaitMs, samples: stage.hashWaitSamples })
     })
     assert.equal(result.size, file.size)
   } finally {
@@ -363,6 +365,8 @@ console.log('✅ ROM 分片在首片早期样本后保守启动并发，慢速�
   assert.deepEqual([...startedParts].sort((a, b) => a - b), [1, 2, 3])
   assert.ok(uploadedStages.at(-1)?.ms > 550 && uploadedStages.at(-1)?.ms < 680, '应按多个分片的 Worker Server-Timing 与真实上传体时长估算平均确认等待')
   assert.equal(uploadedStages.at(-1)?.samples, 3, '应显示参与等待均值的已测分片数')
+  assert.ok(hashStages.at(-1)?.ms >= 0, '应显示上传结束后本地摘要仍未完成的平均等待，即使摘要已提前完成')
+  assert.equal(hashStages.at(-1)?.samples, 3, '应显示参与本地摘要等待均值的成功分片数')
 }
 console.log('✅ 实际上传链路在首片完成前启动后续分片，并正确合并校验对象大小')
 
@@ -1262,3 +1266,32 @@ console.log('✅ 弱网下 Worker 控制请求有总时限，用户取消可立�
   assert.equal(result.size, file.size, 'R2 确认完成后客户端报告真实成功')
 }
 console.log('✅ 用户在 R2 合并确认期间取消时，不会误报未完成或遗留旧 uploadId')
+
+// 合并请求第一次确认丢失时，提交点之后的取消不能阻止幂等重试。
+{
+  const key = 'roms/psx/cancel-after-complete-timeout.iso'
+  const file = new File([new Uint8Array(25 * 1024 * 1024)], 'cancel-after-complete-timeout.iso', { lastModified: 90113 })
+  const controller = new AbortController()
+  let completeCalls = 0
+  globalThis.fetch = async (url, init) => {
+    const target = String(url)
+    if (target.endsWith('?uploads')) {
+      return Response.json({ uploadId: 'up-cancel-after-complete-timeout', marker: '_uploads/cancel-after-complete-timeout.marker', partNumberInHeader: true })
+    }
+    if (target.includes('uploadId=up-cancel-after-complete-timeout') && init?.method === 'POST') {
+      completeCalls++
+      if (completeCalls === 1) {
+        controller.abort()
+        throw new TypeError('Failed to fetch')
+      }
+      return Response.json({ ok: true, key, size: file.size })
+    }
+    throw new Error(`unexpected request: ${target}`)
+  }
+  xhrResponse = (xhr) => ({ status: 200, body: JSON.stringify({ etag: `cancel-retry-${xhr.headers['x-8bg-part-number']}` }) })
+  const result = await uploadRomMultipart(file, key, undefined, controller.signal)
+  assert.equal(completeCalls, 2, '合并确认的瞬时网络错误后，即使用户取消也必须完成幂等确认重试')
+  assert.equal(controller.signal.aborted, true, '测试确实在第一次合并确认失败时触发取消')
+  assert.equal(result.size, file.size, '最终结果应以 Worker 的完整合并确认作为准据')
+}
+console.log('✅ 合并确认丢失后，提交阶段会完成有界幂等重试')

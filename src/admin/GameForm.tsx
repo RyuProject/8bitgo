@@ -2468,9 +2468,12 @@ function stageText(stage: UploadStage | null): string {
   const serverText = stage.serverWaitMs !== undefined
     ? ` · Worker/R2 平均额外等待约 ${stage.serverWaitMs >= 1000 ? `${(stage.serverWaitMs / 1000).toFixed(1)}s` : `${Math.round(stage.serverWaitMs)}ms`}${stage.serverWaitSamples ? `（${stage.serverWaitSamples} 片样本）` : ''}`
     : ''
+  const hashText = stage.hashWaitMs !== undefined
+    ? ` · 本机校验平均等待约 ${stage.hashWaitMs >= 1000 ? `${(stage.hashWaitMs / 1000).toFixed(1)}s` : `${Math.round(stage.hashWaitMs)}ms`}${stage.hashWaitSamples ? `（${stage.hashWaitSamples} 片样本）` : ''}`
+    : ''
   return `分片 ${stage.done}/${stage.parts}` +
     (stage.resumed ? ` · 已恢复 ${stage.resumed} 片` : '') +
-    networkText + serverText
+    networkText + serverText + hashText
 }
 
 /**

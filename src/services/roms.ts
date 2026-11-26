@@ -2046,6 +2046,10 @@ export interface UploadStage {
   serverWaitMs?: number
   /** 参与 Worker/R2 平均等待估算的成功分片数。 */
   serverWaitSamples?: number
+  /** 上传请求结束后，本地摘要仍未完成而阻塞下一片派发的平均时间（毫秒）。 */
+  hashWaitMs?: number
+  /** 参与本地摘要等待估算的成功分片数。 */
+  hashWaitSamples?: number
   /** 恢复前逐片核验已上传内容时的进度；避免大文件校验期间界面看起来卡住。 */
   checkingParts?: number
   checkingTotal?: number
