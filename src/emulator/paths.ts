@@ -457,7 +457,7 @@ export const PPSSPP_PATH: string = asDir(import.meta.env.VITE_PPSSPP_PATH)
   2026-11-15 v22：移动/弱网/低配设备使用 480×272，普通设备 640×360，明确高配桌面设备最高 720×408。
   2026-11-17 v23：PSP 远程盘 Range 请求在当前线路断流时依次切换已验证的备用 ROM 域名。
 */
-export const PPSSPP_RUNTIME_GENERATION = 'v24'
+export const PPSSPP_RUNTIME_GENERATION = 'v25'
 export const PPSSPP_RUNTIME_PATH: string = PPSSPP_PATH
   ? asDir(`${PPSSPP_PATH}${PPSSPP_RUNTIME_GENERATION}`)
   : ''

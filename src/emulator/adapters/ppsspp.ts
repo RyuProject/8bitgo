@@ -101,6 +101,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     resolve: (value: unknown) => void
     reject: (error: Error) => void
     timer: number
+    activityTimeoutMs: number
   }>()
 
   const iframe = document.createElement('iframe')
@@ -121,15 +122,28 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     )
   }
 
-  const request = (type: string, payload: Record<string, unknown>): Promise<unknown> => {
+  const armPendingTimeout = (id: number, entry: NonNullable<ReturnType<typeof pending.get>>) => {
+    window.clearTimeout(entry.timer)
+    entry.timer = window.setTimeout(() => {
+      if (pending.get(id) !== entry) return
+      pending.delete(id)
+      entry.reject(new Error('PPSSPP 响应超时'))
+    }, entry.activityTimeoutMs || MOUNT_TIMEOUT_MS)
+  }
+
+  const refreshPendingActivity = () => {
+    for (const [id, entry] of pending) {
+      if (entry.activityTimeoutMs) armPendingTimeout(id, entry)
+    }
+  }
+
+  const request = (type: string, payload: Record<string, unknown>, activityTimeoutMs = 0): Promise<unknown> => {
     if (destroyed || fatalReported) return Promise.reject(new Error('PPSSPP 会话已经关闭'))
     const id = ++requestId
     return new Promise((resolve, reject) => {
-      const timer = window.setTimeout(() => {
-        pending.delete(id)
-        reject(new Error('PPSSPP 响应超时'))
-      }, MOUNT_TIMEOUT_MS)
-      pending.set(id, { resolve, reject, timer })
+      const entry = { resolve, reject, timer: 0, activityTimeoutMs }
+      pending.set(id, entry)
+      armPendingTimeout(id, entry)
       post(type, { ...payload, requestId: id })
     })
   }
@@ -335,9 +349,14 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
     if (!status || typeof MutationObserver === 'undefined') return
     let lastRatio = -1
+    let lastStatusText = ''
     const read = () => {
       if (destroyed || romPhaseReported) return stopCoreWatch()
       const text = status?.textContent ?? ''
+      if (text !== lastStatusText) {
+        lastStatusText = text
+        refreshPendingActivity()
+      }
       const core = CORE_PROGRESS_TEXT.exec(text)
       if (core) {
         // 留 5% 给 WASM 编译和解包：data 收完到核心真正起来之间还有几秒
@@ -372,18 +391,16 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       // 可能共享标题，读错状态的结果通常不是明确报错，而是几分钟后随机崩溃。
       const stateId = options.gameSlug || `local:${discNameOf(options.game, options.gameName)}`
       /*
-        mount 请求由适配器自己按 MOUNT_TIMEOUT_MS（300 秒）判死：核心下完后还要编译、开机、按需读 CHD，
-        读盘进度来自 pthread 里的回调，部分浏览器晚到或根本不到（见 AGENTS §2.32.2）。外层看门狗却是
-        「连续 120 秒没有活动」，2026-11-19《初音未来》（#1791）就是这样被记成 timeout 的。
-        等 mount 期间按前台给看门狗报活；真的挂死仍由 300 秒的请求超时报出。
+        单个 300 秒绝对计时会杀掉仍在下载的弱网会话。只要核心百分比或 ROM Range 字节仍前进，
+        就续一段 300 秒空闲窗口；完全没有进展时仍会超时。外层 120 秒看门狗仍通过心跳知道会话活着。
       */
       const mountHeartbeat = window.setInterval(() => {
         if (!destroyed && !fatalReported && !ready && document.visibilityState !== 'hidden') options.onStartupActivity?.()
       }, MOUNT_HEARTBEAT_MS)
       try {
-        if (game instanceof File) await request('mount-local', { file: game, stateId })
+        if (game instanceof File) await request('mount-local', { file: game, stateId }, MOUNT_TIMEOUT_MS)
         else {
-          const mounted = request('mount-remote', { remote: game, stateId })
+          const mounted = request('mount-remote', { remote: game, stateId }, MOUNT_TIMEOUT_MS)
           if (streamDiscSize) watchCoreDownload()
           await mounted
         }
@@ -442,6 +459,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       return
     }
     if (message.type === 'stream-progress' && Number.isFinite(message.loaded) && Number.isFinite(message.total)) {
+      refreshPendingActivity()
       const loaded = Math.max(0, Number(message.loaded))
       const total = Math.max(0, Number(message.total))
       lastStream = { loaded, total }

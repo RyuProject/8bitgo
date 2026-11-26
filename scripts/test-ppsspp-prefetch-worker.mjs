@@ -6,6 +6,7 @@ const source = readFileSync(new URL('../vendor/ppsspp/range-prefetch-worker.js',
 
 async function run(response, extra = {}) {
   const seen = []
+  let timeoutMs = 0
   const bytes = new SharedArrayBuffer(4)
   const state = new SharedArrayBuffer(4)
   let finish
@@ -18,7 +19,10 @@ async function run(response, extra = {}) {
     Int32Array,
     Atomics,
     AbortController,
-    setTimeout,
+    setTimeout(callback, delay) {
+      timeoutMs = delay
+      return setTimeout(callback, delay)
+    },
     clearTimeout,
     fetch: async (url, init) => {
       seen.push(init.headers)
@@ -32,12 +36,12 @@ async function run(response, extra = {}) {
   vm.runInNewContext(source, context, { filename: 'range-prefetch-worker.js' })
   context.self.onmessage({ data: {
     type: 'fetch', id: 7, key: 'disc\n0-3', url: 'https://assets.test/disc.chd',
-    start: 0, end: 3, total: 8, ifMatch: '"disc-v1"', bytes, state, ...extra,
+    start: 0, end: 3, total: 8, ifMatch: '"disc-v1"', bytes, state, timeoutMs: 90_000, ...extra,
   } })
   const message = await done
   assert.equal(message.id, 7)
   assert.equal(message.key, 'disc\n0-3')
-  return { state: Atomics.load(new Int32Array(state), 0), bytes: [...new Uint8Array(bytes)], headers: seen[0] }
+  return { state: Atomics.load(new Int32Array(state), 0), bytes: [...new Uint8Array(bytes)], headers: seen[0], timeoutMs }
 }
 
 function response(chunks, { status = 206, contentRange = 'bytes 0-3/8', etag = '"disc-v1"' } = {}) {
@@ -62,6 +66,7 @@ function response(chunks, { status = 206, contentRange = 'bytes 0-3/8', etag = '
 {
   const ok = await run(response([[1, 2], [3, 4]]))
   assert.deepEqual({ state: ok.state, bytes: ok.bytes }, { state: 1, bytes: [1, 2, 3, 4] })
+  assert.equal(ok.timeoutMs, 90_000, 'Worker 必须使用 Range 调度器根据链路计算的时限')
   assert.equal(ok.headers['If-Match'], '"disc-v1"', '外链预读照常带 If-Match')
   const pinned = await run(response([[1, 2], [3, 4]]), { sendValidators: false })
   assert.equal(pinned.state, 1)

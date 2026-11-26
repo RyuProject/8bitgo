@@ -3653,6 +3653,18 @@ v24（`scripts/refresh-ppsspp-simd-v24.mjs` 从 v23 生成，Wasm / data 不变�
 缺 BigInt 集成会在开机就失败）。根治要改 `GamepadEmu.cpp` 不按值传那个被打包成 v128 的结构，或用原生 Wasm 异常重编。
 回归：`node scripts/test-ppsspp-simd-trampoline.mjs`（并入 `test:ppsspp`）。还没在真浏览器里开过触屏按键验证。
 
+### 2.32.0.3 PPSSPP v25：弱网 Range 时限不能固定 20/30 秒（2026-11-26，CN 0.2–0.25 Mbps 慢启动）
+
+2 MiB 在 0.2 Mbps 上理论就要约 84 秒；固定 20 秒预读 / 30 秒正式 Range 会中止并丢弃已收字节，再从块头重拉，
+使有效吞吐进一步下降。`vendor/ppsspp/range-read-ahead.js` 现在取 Network Information 的 downlink 与本局已完成块速率中
+较保守的一项，按“预计传输时长 × 1.5 + 10 秒”计算，限制在 20–180 秒；同步 XHR、普通预读、共享预读 Worker
+共用这一时限。省流量与 2G 仍关闭投机预读，只有正式按需块会使用自适应时限。
+
+桥的 300 秒挂盘计时改为**无进度空闲时限**：只在核心下载百分比变化或真实 ROM Range 字节到达时续期，单纯心跳不续期，
+所以仍无进展 5 分钟会失败，但低速且仍在前进的开局不会因总耗时超过 5 分钟被误杀。诊断快照里的
+`__8bitgoPspRangeWarmStats().rangeTimeoutMs` 用于确认当前估算。修复发布为不可变 `v25/`；
+`paths.ts`、旧入口 302、`check-ppsspp` 与 `test:ppsspp` 必须一起换代。回归：`npm run test:ppsspp`。
+
 ### 2.32.1 PSP 必须留在普通详情页内启动，不能再复用 PS2 的独立播放器外壳
 
 PPSSPP 的 pthread 仍然需要 `Cross-Origin-Opener-Policy: same-origin` 与
@@ -3766,8 +3778,8 @@ ATRAC3+ 和 MP3 解码。构建/发布检查必须同时看到 `USE_FFMPEG:BOOL=
 Cloudflare 对这组静态文件的缓存键**忽略查询串**：请求 `PPSSPPSDL.data?r=17` 仍命中旧的 r16
 （22,417,304B，`CF-Cache-Status: HIT`），而新清单需要 19,434,861B。查询参数不能再承担版本隔离，
 否则新 JS、旧 data 和旧 Wasm 会被拼在同一局里。当前整套资源发布在
-`public/ppsspp/v0dbfaca/v23/`（上一版为 v22）；下次桥、JS、Wasm、data、Range 胶水或 AudioWorklet 任一项改变就
-复制/构建到 `v24/`，并同步 `PPSSPP_RUNTIME_GENERATION` 和服务端旧地址 302。旧目录保留给旧页面，
+`public/ppsspp/v0dbfaca/v25/`（上一版为 v24）；下次桥、JS、Wasm、data、Range 胶水或 AudioWorklet 任一项改变就
+复制/构建到 `v26/`，并同步 `PPSSPP_RUNTIME_GENERATION` 和服务端旧地址 302。旧目录保留给旧页面，
 不原地覆盖。
 v13 只修桥和新增本地光盘 Service Worker；v14/v15/v16 只修预读胶水，Wasm/data 与 v13 的 SHA-256 相同。
 v17 只改桥（`scripts/refresh-ppsspp-edge-v17.mjs` 从 v16 生成）：iframe 地址带 `edge=cn`（大陆访客，
@@ -3784,7 +3796,8 @@ v19（`refresh-ppsspp-retry-v19.mjs` 从 v18 生成）：**超时**后的重试�
 3 分钟）。慢线路上 2MB 分片本来就要 30 秒以上，用同样的 30 秒重试只会再超时；游戏会卡住等盘，但不再整局失败。
 已排除的方向：assets / cn-assets 两条线路的 206 在 MISS 与 HIT 下都带 ACAO 与 CORP，HTTP 0 不是缓存丢头。
 `scripts/refresh-ppsspp-js-runtime.mjs` 仍是生成 v12 的历史入口，不要用它覆盖 v13～v23。
-下一次重新构建核心前，先把 `scripts/build-ppsspp.mjs` 的目标代次和相应模板一起升到 v24。
+下一次重新构建核心前，先把 `scripts/build-ppsspp.mjs` 的历史目标代次（当前仍指 v12）和对应清单模板一起升到 v26；
+构建必须从 v25 完整目录复制桥、入口、AudioWorklet 和 Service Worker，再替换核心产物，不能只留下 3 个核心文件。
 
 v20（`scripts/refresh-ppsspp-stability-v20.mjs` 从 v19 生成，Wasm / data 不变）修 2026-11-15 QQ Browser 21
 《初音未来：歌姬计划》现场暴露的两件事：实际 canvas 报 1533×777，超过 profile 规定的 960×544，说明只传

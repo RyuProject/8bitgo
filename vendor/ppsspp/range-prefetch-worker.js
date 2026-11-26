@@ -3,6 +3,9 @@
  * 同线程异步 XHR 即使已经收到数据，也来不及执行完成回调，下一块只能重复下载。
  */
 const jobs = new Map()
+const DEFAULT_TIMEOUT_MS = 20_000
+const MIN_TIMEOUT_MS = 20_000
+const MAX_TIMEOUT_MS = 180_000
 
 function validRange(value, start, end, total) {
   const match = /^bytes\s+(\d+)-(\d+)\/(\d+)$/i.exec(String(value || '').trim())
@@ -14,7 +17,8 @@ async function prefetch(job) {
   const bytes = new Uint8Array(job.bytes)
   const controller = new AbortController()
   jobs.set(job.id, controller)
-  const timeout = setTimeout(() => controller.abort(), 20_000)
+  const timeoutMs = Math.min(MAX_TIMEOUT_MS, Math.max(MIN_TIMEOUT_MS, Number(job.timeoutMs) || DEFAULT_TIMEOUT_MS))
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
   try {
     const headers = { Range: `bytes=${job.start}-${job.end}`, Accept: 'application/octet-stream' }
     // 钉了 romv 的地址只核对响应、不发条件头：带 If-Match 的请求会绕过浏览器 HTTP 缓存

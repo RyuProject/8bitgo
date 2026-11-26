@@ -5,7 +5,7 @@ import vm from 'node:vm'
 const source = readFileSync(new URL('../vendor/ppsspp/range-read-ahead.js', import.meta.url), 'utf8')
 const BLOCK = 2 * 1024 * 1024
 
-function makeRuntime(effectiveType = '4g', saveData = false, deviceMemory = 8, hardwareConcurrency = 8, sharedWorker = false, totalBlocks = 6, discUrl = 'https://assets.test/game.chd') {
+function makeRuntime(effectiveType = '4g', saveData = false, deviceMemory = 8, hardwareConcurrency = 8, sharedWorker = false, totalBlocks = 6, discUrl = 'https://assets.test/game.chd', downlink) {
   const total = BLOCK * totalBlocks
   const requests = []
   const pending = []
@@ -79,7 +79,7 @@ function makeRuntime(effectiveType = '4g', saveData = false, deviceMemory = 8, h
       assert.ok(match, '测试请求必须是 Range')
       const start = Number(match[1])
       const end = Number(match[2])
-      requests.push({ start, end, async: this.async, headers: new Map(this.headers) })
+      requests.push({ start, end, async: this.async, timeout: this.timeout, headers: new Map(this.headers) })
       if (!this.async && syncFailures > 0) {
         syncFailures--
         // 同步 XHR 的网络失败：浏览器要么直接抛 NetworkError，要么以 status 0 收尾
@@ -134,7 +134,7 @@ function makeRuntime(effectiveType = '4g', saveData = false, deviceMemory = 8, h
 
   const context = {
     XMLHttpRequest: FakeXMLHttpRequest,
-    navigator: { connection: { effectiveType, saveData }, deviceMemory, hardwareConcurrency },
+    navigator: { connection: { effectiveType, saveData, ...(downlink === undefined ? {} : { downlink }) }, deviceMemory, hardwareConcurrency },
     console,
     Map,
     ArrayBuffer,
@@ -327,6 +327,25 @@ function makeRuntime(effectiveType = '4g', saveData = false, deviceMemory = 8, h
   const runtime = makeRuntime('2g')
   runtime.demand(0, BLOCK - 1)
   assert.equal(runtime.pending.length, 0, '2G 网络不能让后台预读与正式读盘争抢带宽')
+}
+
+{
+  const slow = makeRuntime('3g', false, 8, 8, false, 6, 'https://assets.test/slow.chd', 0.2)
+  slow.demand(0, BLOCK - 1)
+  const demand = slow.requests.find((request) => !request.async)
+  const prefetch = slow.requests.find((request) => request.async)
+  assert.ok(demand.timeout >= 130_000, '0.2 Mbps 下正式 2 MiB Range 不应在 30 秒时丢弃并重下')
+  assert.ok(prefetch.timeout >= 130_000, '弱网预读应沿用可完成 2 MiB 的自适应时限')
+  assert.equal(slow.context.__8bitgoPspRangeWarmStats().rangeTimeoutMs, demand.timeout,
+    '诊断快照应显示当前网络采用的实际 Range 时限')
+}
+
+{
+  const slowShared = makeRuntime('3g', false, 8, 8, true, 6, 'https://assets.test/slow.chd', 0.2)
+  slowShared.readyWorker()
+  slowShared.demand(0, BLOCK - 1)
+  assert.ok(slowShared.sharedJob(BLOCK).timeoutMs >= 130_000,
+    '独立预读 Worker 必须收到与正式 XHR 一致的弱网时限')
 }
 
 {

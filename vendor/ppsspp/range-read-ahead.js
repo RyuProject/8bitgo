@@ -17,7 +17,8 @@
   const MAX_CACHE_BYTES = 24 * 1024 * 1024
   const MAX_DEPTH = 10
   const MAX_CONCURRENCY = 4
-  const PREFETCH_TIMEOUT_MS = 20_000
+  const MIN_RANGE_TIMEOUT_MS = 20_000
+  const MAX_RANGE_TIMEOUT_MS = 180_000
   /**
    * 正式读盘遇到网络层失败（status 0：连接被重置、断线、超时）时，先在这一层就地重试。
    *
@@ -199,6 +200,27 @@
     return { depth, concurrency, cacheBytes }
   }
 
+  /**
+   * 一块 2 MiB 在 0.2 Mbps 上就要约 84 秒。固定 20/30 秒会不断丢弃已收字节并从头重拉，
+   * 所以 Range 时限按浏览器下行估计与本局实测吞吐放宽；上限仍有限，防止断线无限等。
+   */
+  const rangeTimeoutMs = (bytes) => {
+    const connection = globalThis.navigator?.connection
+    const effectiveType = String(connection?.effectiveType || '').toLowerCase()
+    const fallbackMbps = {
+      'slow-2g': 0.1,
+      '2g': 0.2,
+      '3g': 0.5,
+      '4g': 4,
+    }[effectiveType] || 0
+    const candidates = [Number(connection?.downlink), measuredMbps]
+      .filter((value) => Number.isFinite(value) && value > 0)
+    const mbps = candidates.length ? Math.min(...candidates) : fallbackMbps
+    if (!mbps) return MIN_RANGE_TIMEOUT_MS
+    const expectedMs = Math.max(0, bytes) * 8 / (mbps * 1_000_000) * 1000
+    return Math.min(MAX_RANGE_TIMEOUT_MS, Math.max(MIN_RANGE_TIMEOUT_MS, Math.ceil(expectedMs * 1.5 + 10_000)))
+  }
+
   const dropCacheEntry = (key) => {
     const entry = cache.get(key)
     if (!entry) return null
@@ -234,6 +256,7 @@
       const state = new Int32Array(new SharedArrayBuffer(4))
       const id = ++sharedJobId
       const startedAt = Date.now()
+      const timeoutMs = rangeTimeoutMs(length)
       let settled = false
       const finish = () => {
         if (settled) return
@@ -265,11 +288,12 @@
         }
         try { prefetchWorker?.postMessage({ type: 'cancel', id }) } catch { /* 正式读盘会接管。 */ }
       }
-      const entry = { shared: true, id, state, startedAt, headers: job.headers, complete: finish, cancel }
+      const entry = { shared: true, id, state, startedAt, timeoutMs, headers: job.headers, complete: finish, cancel }
       inflight.set(key, entry)
       activePrefetches++
       prefetchWorker.postMessage({
         type: 'fetch', id, key, url: job.url, start: job.start, end: job.end, total: job.total,
+        timeoutMs,
         ifMatch: header(job.headers, 'if-match'),
         ifUnmodifiedSince: header(job.headers, 'if-unmodified-since'),
         // 校验器仍用来核对响应头；只是不放进请求，免得绕过浏览器 HTTP 缓存
@@ -316,7 +340,7 @@
     activePrefetches++
     xhr.open('GET', job.url, true)
     xhr.responseType = 'arraybuffer'
-    xhr.timeout = PREFETCH_TIMEOUT_MS
+    xhr.timeout = rangeTimeoutMs(job.end - job.start + 1)
     xhr.setRequestHeader('Range', `bytes=${job.start}-${job.end}`)
     xhr.setRequestHeader('Accept', 'application/octet-stream')
     const ifMatch = header(job.headers, 'if-match')
@@ -409,7 +433,7 @@
       cancellingPrefetches = false
       // 模拟线程正被同步读盘阻塞时，它自己的 onmessage 也无法执行；独立 Worker 用
       // SharedArrayBuffer 直接唤醒这里，避免取消已下载大半的预读后再取一遍同一块。
-      const remaining = Math.max(0, PREFETCH_TIMEOUT_MS - (Date.now() - exactPrefetch.startedAt))
+      const remaining = Math.max(0, exactPrefetch.timeoutMs - (Date.now() - exactPrefetch.startedAt))
       if (Atomics.load(exactPrefetch.state, 0) === 0 && remaining > 0) {
         sharedPrefetchWaits++
         const began = Date.now()
@@ -582,6 +606,10 @@
         ? beforeDemand(this.url_, this.__8bitgoHeaders)
         : null
       if (requested) {
+        this._timeout = Math.max(this._timeout || 0, rangeTimeoutMs(requested.end - requested.start + 1))
+        this._inner.timeout = this._timeout
+      }
+      if (requested) {
         const key = cacheKey(this.url_, requested.start, requested.end)
         const entry = cache.get(key)
         if (entry && validatorMatches(entry, this.__8bitgoHeaders)) {
@@ -660,6 +688,7 @@
     prefetchedBytes,
     pressureLevel,
     measuredMbps: Math.round(measuredMbps * 100) / 100,
+    rangeTimeoutMs: rangeTimeoutMs(BLOCK_BYTES),
     sharedPrefetchReady: prefetchWorkerReady,
     sharedPrefetchWaits,
     sharedPrefetchWaitMs,
