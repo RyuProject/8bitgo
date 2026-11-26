@@ -1118,6 +1118,7 @@ const es: Translation = {
       '{platform} todavía no tiene un motor conectado, así que habrá que esperar. Mientras tanto, prueba un juego de otra plataforma.',
     leaveConfirm: 'El juego sigue en marcha: si sales de esta página perderás el progreso no guardado. ¿Salir de todos modos?',
     retryStart: 'Reintentar',
+    tryAnotherCore: 'Probar otro núcleo de emulación',
     reportProblem: 'Informar de este problema',
     cancelLoad: 'Cancelar la carga',
     keymapMore: 'controles completos más abajo',

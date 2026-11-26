@@ -1169,6 +1169,7 @@ export const zhHans = {
     unsupportedBody: '{platform} 还没有接入运行时，敬请期待。你可以先看看其他平台的游戏。',
     leaveConfirm: '游戏还在运行，离开这一页会丢掉没存的进度。确定离开？',
     retryStart: '重试',
+    tryAnotherCore: '尝试备用模拟器核心',
     reportProblem: '反馈这个问题',
     cancelLoad: '取消加载',
     keymapMore: '完整键位见下方「操作说明」',

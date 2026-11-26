@@ -1104,6 +1104,7 @@ const ja: Translation = {
     unsupportedBody: '{platform} はまだランタイムに対応していません。公開までもう少しお待ちください。まずはほかのゲーム機の作品をお楽しみください。',
     leaveConfirm: 'ゲームはまだ実行中です。このページを離れると保存していない進行状況は失われます。離れますか？',
     retryStart: '再試行',
+    tryAnotherCore: '別のエミュレーターコアを試す',
     reportProblem: 'この問題を報告',
     cancelLoad: '読み込みを中止',
     keymapMore: '操作方法の全体は下の「操作説明」に',

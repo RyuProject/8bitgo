@@ -1120,6 +1120,7 @@ const fr: Translation = {
       "{platform} n'a pas encore de moteur branché — reste à l'affût. En attendant, essaie un jeu d'une autre plateforme.",
     leaveConfirm: 'La partie est toujours en cours : quitter cette page fera perdre la progression non sauvegardée. Quitter quand même ?',
     retryStart: 'Réessayer',
+    tryAnotherCore: 'Essayer un autre cœur d’émulation',
     reportProblem: 'Signaler ce problème',
     cancelLoad: 'Annuler le chargement',
     keymapMore: 'toutes les touches plus bas',

@@ -1119,6 +1119,7 @@ const it: Translation = {
       "{platform} non ha ancora un runtime collegato: resta sintonizzato. Nel frattempo prova un gioco di un'altra piattaforma.",
     leaveConfirm: 'Il gioco è ancora in esecuzione: uscendo da questa pagina perderai i progressi non salvati. Uscire comunque?',
     retryStart: 'Riprova',
+    tryAnotherCore: 'Prova un altro core di emulazione',
     reportProblem: 'Segnala questo problema',
     cancelLoad: 'Annulla il caricamento',
     keymapMore: 'tutti i comandi più in basso',

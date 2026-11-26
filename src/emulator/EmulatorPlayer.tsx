@@ -4,6 +4,7 @@ import { isRuntimeModuleTimeout } from './moduleLoadDeadline'
 import { useNavigate } from 'react-router-dom'
 import type { ArcadeButtonCount, DosBackend, DosWindowsVersion, FlashControls, Game, GenreId, Platform, PlatformId } from '@/types'
 import { platformMap } from '@/data/platforms'
+import { coreOptionsFor } from '@/config/emulators'
 import { formatBytes, formatSpeed, isRomFileAccepted } from '@/lib/emulator'
 import { detectRom, describeDetection, type RomDetection } from './detect'
 import { isPc98FdiFileName } from './pc98'
@@ -70,6 +71,7 @@ import { prewarmMameChdMediaOnHover, prewarmRuntime } from './prewarm'
 import { observeEjsCoreWarmEvent } from './ejsStartWarm'
 import { defaultDos71SystemUrl, prewarmSystemCache } from './systemSource'
 import { canRestartInPlace } from './sessionRestart'
+import { nextManualCoreOption } from './manualCoreRecovery'
 import { AdSenseSlot } from '@/components/ads/AdSenseSlot'
 import { LoadingProgressOverlay } from './LoadingProgressOverlay'
 import { copyText } from '@/lib/clipboard'
@@ -285,12 +287,14 @@ interface ActiveSession {
    * 换引擎时要把它们排除掉，否则两个引擎可以来回踢皮球，永远转圈。
    */
   ruledOut?: RuntimeId[]
+  /** 玩家手动切换核心的恢复链；跨原地重试保留，避免按钮来回推荐已经失败的核心。 */
+  manualTriedCores?: string[]
 }
 
 /** 失败页的手动重试沿用最后一次实际启动配置，避免重新回到已失败的默认路径。 */
 type FailedLaunchContext = Pick<ActiveSession,
-  'game' | 'platform' | 'runtime' | 'coreOverride' | 'ruledOut' | 'romRefreshed'
->
+  'game' | 'platform' | 'runtime' | 'coreOverride' | 'ruledOut' | 'romRefreshed' | 'fallbacks' | 'manualTriedCores'
+> & { recoveryCause: 'core' | 'runtime' | 'content' | 'deterministic' | 'network' | 'config' }
 
 /**
  * 调试诊断：把「从拖进文件到出首帧」拆成几个阶段，每个阶段记一笔成败。
@@ -1914,10 +1918,12 @@ export function EmulatorPlayer({
       forceRomRefresh?: boolean
       romRefreshed?: boolean
       ruledOut?: RuntimeId[]
+      manualTriedCores?: string[]
       startupAttemptId?: string
       startedAt?: number
     },
   ) => {
+    failedLaunchRef.current = null
     // PPSSPP 与 Play! 没有 Canvas 2D 后备；在创建 iframe、拉 ROM 或初始化大核心前先结束，免得弱设备白等。
     if ((runtime.id === 'ppsspp' || runtime.id === 'play') && !canCreateWebgl()) {
       console.warn(`[8bitgo/runtime] 浏览器不能创建 WebGL，${runtime.id} 无法运行`)
@@ -2593,7 +2599,7 @@ export function EmulatorPlayer({
             setEngineLines(handle?.engineLog?.() ?? [])
           }
           reportStartupFailure(reason)
-          rememberFailedLaunch(session)
+          rememberFailedLaunch(session, 'runtime')
           endSession()
           setError(session.platform === 'nes' && webglUnavailable ? t.runtime.ejsWebglUnavailable : reason)
           setStatus('error')
@@ -2606,6 +2612,7 @@ export function EmulatorPlayer({
           ruledOut,
           totalRetries: session.totalRetries,
           romRefreshed: session.romRefreshed || session.forceRomRefresh,
+          manualTriedCores: session.manualTriedCores,
           startupAttemptId: session.startupAttemptId,
           startedAt: session.startedAt,
         })
@@ -2631,6 +2638,7 @@ export function EmulatorPlayer({
             // 只有这一次重开真的丢缓存重下；romRefreshed 跟着后续重开走，防止再刷第二次
             forceRomRefresh: true,
             romRefreshed: true,
+            manualTriedCores: session.manualTriedCores,
             startupAttemptId: session.startupAttemptId,
             startedAt: session.startedAt,
           })
@@ -2655,6 +2663,7 @@ export function EmulatorPlayer({
             totalRetries: session.totalRetries,
             ruledOut: session.ruledOut,
             romRefreshed: session.romRefreshed || session.forceRomRefresh,
+            manualTriedCores: session.manualTriedCores,
             startupAttemptId: session.startupAttemptId,
             startedAt: session.startedAt,
           })
@@ -2668,7 +2677,7 @@ export function EmulatorPlayer({
           但在原文前标明「运行中崩溃」，后台按特征自然分开。
         */
         reportStartupFailure(ready ? `运行中崩溃（已出画面）：${reason}` : reason)
-        rememberFailedLaunch(session)
+        rememberFailedLaunch(session, 'core', crashedCore)
         endSession()
         setError(session.platform === 'nds'
           ? fmt(t.player.ndsCoreFailed, { reason })
@@ -2702,6 +2711,7 @@ export function EmulatorPlayer({
           totalRetries: session.totalRetries,
           ruledOut: session.ruledOut,
           romRefreshed: session.romRefreshed || session.forceRomRefresh,
+          manualTriedCores: session.manualTriedCores,
           startupAttemptId: session.startupAttemptId,
           startedAt: session.startedAt,
         })
@@ -2790,6 +2800,7 @@ export function EmulatorPlayer({
             fallbacks: fallbackTrail,
             ruledOut: session.ruledOut,
             romRefreshed: session.romRefreshed || session.forceRomRefresh,
+            manualTriedCores: session.manualTriedCores,
             startupAttemptId: session.startupAttemptId,
             startedAt: session.startedAt,
           })
@@ -2855,7 +2866,9 @@ export function EmulatorPlayer({
           }
         }
         setError(failureReason)
-        rememberFailedLaunch(session)
+        const recoveryCause: FailedLaunchContext['recoveryCause'] =
+          isMemoryPressureMessage(failureReason) ? 'core' : errorScope ?? 'runtime'
+        rememberFailedLaunch(session, recoveryCause)
         reportStartupFailure(failureReason)
         setStatus('error')
       },
@@ -3845,17 +3858,51 @@ export function EmulatorPlayer({
     setSession(null)
   }
 
-  const rememberFailedLaunch = (failed: ActiveSession) => {
-    failedLaunchRef.current = canRestartInPlace(failed)
-      ? {
-          game: failed.game,
-          platform: failed.platform,
-          runtime: failed.runtime,
-          coreOverride: failed.coreOverride,
-          ruledOut: failed.ruledOut ? [...failed.ruledOut] : undefined,
-          romRefreshed: failed.romRefreshed || failed.forceRomRefresh,
-        }
-      : null
+  const rememberFailedLaunch = (
+    failed: ActiveSession,
+    recoveryCause: FailedLaunchContext['recoveryCause'] = 'runtime',
+    failedCore?: string,
+  ) => {
+    if (!canRestartInPlace(failed)) {
+      failedLaunchRef.current = null
+      return
+    }
+    const manualTriedCores = new Set(failed.manualTriedCores ?? [])
+    if (failed.coreOverride) manualTriedCores.add(failed.coreOverride)
+    const currentCore = emulatorJsCoreForGame(failed.platform, failed.coreOverride ?? coreRef.current)
+    if (currentCore) manualTriedCores.add(currentCore)
+    if (failedCore) manualTriedCores.add(failedCore)
+    for (const fallback of failed.fallbacks ?? []) {
+      if (fallback.kind === 'core') {
+        manualTriedCores.add(fallback.from)
+        manualTriedCores.add(fallback.to)
+      }
+    }
+    failedLaunchRef.current = {
+      game: failed.game,
+      platform: failed.platform,
+      runtime: failed.runtime,
+      coreOverride: failed.coreOverride,
+      ruledOut: failed.ruledOut ? [...failed.ruledOut] : undefined,
+      romRefreshed: failed.romRefreshed || failed.forceRomRefresh,
+      fallbacks: failed.fallbacks ? [...failed.fallbacks] : undefined,
+      manualTriedCores: [...manualTriedCores],
+      recoveryCause,
+    }
+  }
+
+  const nextManualCoreForFailedLaunch = (failed = failedLaunchRef.current): string | null => {
+    if (!failed || failed.runtime.id !== 'emulatorjs' ||
+        (failed.recoveryCause !== 'core' && failed.recoveryCause !== 'content')) return null
+    // RomData 是 FBNeo 专属；给这类街机包推荐 MAME 会造成确定性的错误开局。
+    if (failed.platform === 'arcade' && arcadeRomDataRef.current) return null
+    const psxDiscSet = failed.platform === 'psx' && ['chd', 'm3u'].includes(extOf(failed.game) ?? '')
+    const options = coreOptionsFor(failed.platform).filter((option) => !(psxDiscSet && option.id === 'mednafen_psx_hw'))
+    return nextManualCoreOption(
+      options,
+      failed.manualTriedCores ?? [],
+      (id) => emulatorJsCoreForGame(failed.platform, id),
+    )
   }
 
   /**
@@ -3892,7 +3939,10 @@ export function EmulatorPlayer({
    */
   const restartSession =
     session && canRestartInPlace(session)
-      ? () => begin(session.game, session.platform, session.runtime, { coreOverride: session.coreOverride })
+      ? () => begin(session.game, session.platform, session.runtime, {
+          coreOverride: session.coreOverride,
+          manualTriedCores: session.manualTriedCores,
+        })
       : undefined
 
   const reset = () => {
@@ -4567,6 +4617,8 @@ export function EmulatorPlayer({
             ? t.player.statusError
             : t.player.statusIdle
 
+  const manualCoreRetryAvailable = status === 'error' && nextManualCoreForFailedLaunch() !== null
+
   const retryLastFailedLaunch = () => {
     const failed = failedLaunchRef.current
     // 页面 ROM / 平台可能已切换；此时应由 start() 按新选择重新探测，不能拿旧地址开局。
@@ -4583,6 +4635,34 @@ export function EmulatorPlayer({
       coreOverride: failed.coreOverride,
       ruledOut: failed.ruledOut,
       romRefreshed: failed.romRefreshed,
+      manualTriedCores: failed.manualTriedCores,
+    })
+    return true
+  }
+
+  const retryWithAnotherCore = () => {
+    const failed = failedLaunchRef.current
+    const nextCore = nextManualCoreForFailedLaunch(failed)
+    if (!failed || !nextCore) return false
+    const manualTriedCores = new Set(failed.manualTriedCores ?? [])
+    if (failed.coreOverride) manualTriedCores.add(failed.coreOverride)
+    const currentCore = emulatorJsCoreForGame(failed.platform, failed.coreOverride ?? coreRef.current)
+    if (currentCore) manualTriedCores.add(currentCore)
+    manualTriedCores.add(nextCore)
+    const resolvedNextCore = emulatorJsCoreForGame(failed.platform, nextCore)
+    if (resolvedNextCore) manualTriedCores.add(resolvedNextCore)
+    failedLaunchRef.current = null
+    startSeqRef.current += 1
+    setError(null)
+    setNotice(null)
+    setDiag([])
+    setDiagCause(null)
+    setEngineLines([])
+    begin(failed.game, failed.platform, failed.runtime, {
+      coreOverride: nextCore,
+      ruledOut: failed.ruledOut,
+      romRefreshed: failed.romRefreshed,
+      manualTriedCores: [...manualTriedCores],
     })
     return true
   }
@@ -5308,6 +5388,18 @@ export function EmulatorPlayer({
                         onClick={() => startWatchLive(liveInvite)}
                       >
                         {t.player.rewatchLive}
+                      </button>
+                    </>
+                  )}
+                  {manualCoreRetryAvailable && (
+                    <>
+                      {' '}
+                      <button
+                        type="button"
+                        className="underline underline-offset-2 hover:text-white"
+                        onClick={retryWithAnotherCore}
+                      >
+                        {t.player.tryAnotherCore}
                       </button>
                     </>
                   )}

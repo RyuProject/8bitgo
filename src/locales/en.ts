@@ -1118,6 +1118,7 @@ const en: Translation = {
       '{platform} does not have a runtime hooked up yet — stay tuned. In the meantime, try a game from another platform.',
     leaveConfirm: 'The game is still running — leaving this page will lose any unsaved progress. Leave anyway?',
     retryStart: 'Retry',
+    tryAnotherCore: 'Try another emulator core',
     reportProblem: 'Report this problem',
     cancelLoad: 'Cancel loading',
     keymapMore: 'full controls below',

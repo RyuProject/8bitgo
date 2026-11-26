@@ -1119,6 +1119,7 @@ const de: Translation = {
       'Für {platform} ist noch keine Runtime angebunden – bleib dran. Probier solange ein Spiel von einer anderen Plattform.',
     leaveConfirm: 'Das Spiel läuft noch – wenn du die Seite verlässt, geht nicht gespeicherter Fortschritt verloren. Trotzdem verlassen?',
     retryStart: 'Erneut versuchen',
+    tryAnotherCore: 'Anderen Emulatorkern versuchen',
     reportProblem: 'Problem melden',
     cancelLoad: 'Laden abbrechen',
     keymapMore: 'alle Tasten weiter unten',

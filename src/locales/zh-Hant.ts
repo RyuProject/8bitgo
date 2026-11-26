@@ -1117,6 +1117,7 @@ const zhHant: Translation = {
     unsupportedBody: '{platform} 還沒有接上執行環境，敬請期待。你可以先看看其他平台的遊戲。',
     leaveConfirm: '遊戲還在執行，離開這一頁會丟掉沒存的進度。確定離開？',
     retryStart: '重試',
+    tryAnotherCore: '嘗試備用模擬器核心',
     reportProblem: '回報這個問題',
     cancelLoad: '取消載入',
     keymapMore: '完整鍵位見下方「操作說明」',
