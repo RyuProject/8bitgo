@@ -68,6 +68,7 @@ import { canStreamPsxChd, preparePsxRangeDisc, preparePsxRangePlaylist, type Psx
 import { isPsxM3uUrl } from '../psxM3u'
 import { MAME_CHD_MAX_BYTES, mameChdCacheKey } from '../mameChdWarm'
 import { warmEmulatorJsStart } from '../ejsStartWarm'
+import { usesBuiltInGbaHleBios } from '../gbaFallback'
 import { writeFsInjections, type FsInjection } from '../fsInjection'
 import { arcadeCoreForRomData, isFbneoCore, supportsFbneoRomData } from '../arcadeCore'
 import { fbneoWofcnSaveSlug, FBNEO_WOFCN_CORE } from '../wofcnCore'
@@ -5090,8 +5091,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           options.platform === 'arcade' && options.arcadeNoBios && supportsFbneoRomData(core) &&
             !options.arcadeRomData?.trim() && !gameBiosName,
         )
+        const gbaUsesHleBios = usesBuiltInGbaHleBios(options.platform, core)
         /** 这次真正交给引擎去下载的平台级 BIOS（空串 = 标不设 EJS_biosUrl）。进度探针也用这个值 */
-        let engineBiosUrl = skipPlatformBios || noBiosNeeded ? '' : (options.biosUrl ?? '')
+        let engineBiosUrl = skipPlatformBios || noBiosNeeded || gbaUsesHleBios ? '' : (options.biosUrl ?? '')
         const configuredEngineBiosUrl = engineBiosUrl
         // BIOS 线路探测和 ROM / 核心无依赖；先并行探测，等 ROM 准备好再收口到模拟器配置。
         const engineBiosUrlTask = configuredEngineBiosUrl
@@ -5114,6 +5116,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         }
         if (noBiosNeeded && options.biosUrl) {
           console.info(`[emulatorjs] 跳过平台级 BIOS（${platformBiosName || options.biosUrl}）：这个 romset 不需要 BIOS`)
+        }
+        if (gbaUsesHleBios && options.biosUrl) {
+          console.info('[emulatorjs] mGBA 使用内置 HLE BIOS；GBA 平台 BIOS 只供 IodineGBA 退路使用')
         }
         if (skipPlatformBios) {
           // 必须留痕：将来这款游戏报「缺文件」时，第一件事就是确认平台 BIOS 是被这条规则

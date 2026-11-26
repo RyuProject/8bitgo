@@ -1,7 +1,7 @@
 /** GBA 无 WebGL / WebAssembly 时的安全运行时选择与软件画面接线。 */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { gbaFallbackRuntime } from '../src/emulator/gbaFallback.ts'
+import { gbaFallbackRuntime, usesBuiltInGbaHleBios } from '../src/emulator/gbaFallback.ts'
 
 assert.equal(gbaFallbackRuntime({ wasmUnavailable: false, webglUnavailable: false }), null,
   '现代浏览器继续走普通 EmulatorJS/WebGL 路径')
@@ -15,6 +15,12 @@ assert.equal(gbaFallbackRuntime({ wasmUnavailable: true, webglUnavailable: true 
   '同时缺少两项能力时保留纯 JavaScript 退路')
 assert.equal(gbaFallbackRuntime({ wasmUnavailable: true, webglUnavailable: true, runtimeOverride: 'emulatorjs' }), 'iodinegba',
   '浏览器不支持 WebAssembly 时能力门禁优先于逐游戏 EmulatorJS 覆盖')
+assert.equal(usesBuiltInGbaHleBios('gba', 'mgba'), true,
+  'mGBA 的内置 HLE BIOS 应免除常规 GBA 开局对外部 BIOS 的依赖')
+assert.equal(usesBuiltInGbaHleBios('gba', 'iodinegba'), false,
+  'IodineGBA 仍必须下载并校验平台 BIOS')
+assert.equal(usesBuiltInGbaHleBios('arcade', 'mgba'), false,
+  '平台与核心必须同时匹配，不能把 BIOS 规则套到其它平台')
 
 const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8')
 const adapter = read('../src/emulator/adapters/emulatorjs.ts')
@@ -28,6 +34,12 @@ assert.match(registry, /fallbackId = gbaFallbackRuntime\(/,
   '详情页和 ROM 启动共用同一项 GBA 能力选择')
 assert.match(adapter, /options\.platform === 'gba' && core === 'mgba' && typeof WebAssembly !== 'undefined'/,
   '软件 WebGL 只扩展到已选的 mGBA，不能误接其它平台核心')
+assert.match(adapter, /usesBuiltInGbaHleBios\(options\.platform, core\)/,
+  '常规 mGBA 必须在创建引擎 BIOS 下载任务之前应用 HLE BIOS 策略')
+assert.match(adapter, /skipPlatformBios \|\| noBiosNeeded \|\| gbaUsesHleBios \? ''/,
+  'mGBA HLE BIOS 开局不得探测、预热或交给引擎下载远端 GBA BIOS')
+assert.match(adapter, /gbaUsesHleBios && options\.biosUrl[\s\S]*?IodineGBA 退路/,
+  '跳过远端 BIOS 时仍要说明其用途仅是 IodineGBA 兼容退路')
 assert.match(adapter, /const softwareWebglFallback = !webglAvailable/,
   '软件画面只在浏览器无法创建真实 WebGL 时启用')
 assert.match(adapter, /Canvas 2D context 已创建/,

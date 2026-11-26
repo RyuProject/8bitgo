@@ -7,6 +7,14 @@
  */
 export type GbaFallbackRuntime = 'emulatorjs' | 'iodinegba'
 
+/**
+ * 常规 mGBA 核心带 HLE BIOS，不应把平台 BIOS 的远端可用性变成开局前置条件。
+ * GBA 平台 BIOS 留给无 WebAssembly 时使用的 IodineGBA 纯 JS 退路。
+ */
+export function usesBuiltInGbaHleBios(platform: string, core: string): boolean {
+  return platform === 'gba' && core === 'mgba'
+}
+
 export function gbaFallbackRuntime({
   webglUnavailable,
   wasmUnavailable,

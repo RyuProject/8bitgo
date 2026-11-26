@@ -4278,6 +4278,7 @@ React 仍从原父元素删那个文本节点 → 整页崩到兜底页（facebo
   `8bitgo.iodinegba.battery.v1` 本地键，不与 EmulatorJS 的 SRAM / 云存档槽互相覆盖。上游源码钉在 `vendor/iodinegba/`，
   `npm run iodinegba` 重新生成 `public/iodinegba/iodinegba.js` 与内容哈希版本；更新核心时必须同时改 URL 版本。
   BIOS 管理页 `src/admin/PlatformBiosPanel.tsx` 必须保留 GBA 行（`NEED_BIOS`）：它只服务没有 WebAssembly 的 IodineGBA 退路，正常 mGBA 开局不依赖；删掉这一行会让管理员无法通过后台解决玩家的 BIOS 缺失诊断。回归：`npm run test:platform-bios-admin`。
+  **EmulatorJS 的 GBA/mGBA 不得设置 `EJS_biosUrl`，也不要为它预热平台 BIOS**：mGBA 自带 HLE，BIOS 下载失败会被引擎当作启动错误传播；可选 Gitee BIOS 断网曾让 Chrome Android 玩家在 ROM 与核心都已就绪后仍整局失败。保持 GBA BIOS 只给 IodineGBA 读取；`usesBuiltInGbaHleBios()` 与 `npm run test:gba-fallback` 守住这条边界。
   js-dos 本身就是 WebAssembly，没有纯 JS 退路。
   回归：`npm run test:js-zstd-fallback`（fzstd 逐字节解开 @bokuweb/zstd-wasm 等级 19 的 frame，含 8MB 满块）。
   用 Chromium 110 加 `--js-flags=--noexpose-wasm` 可以原样复现（线上旧版崩到兜底页，修后页面正常、点开始给出提示）。
