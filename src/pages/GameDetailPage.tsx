@@ -793,7 +793,7 @@ export function GameDetailPage() {
 
             <ContributorsSection />
             <GuidesSection gameTitle={localizedTitle} />
-            <RelatedGamesSection related={related} />
+            <RelatedGamesSection key={game.slug} related={related} />
             {/* 换一款游戏时整块重挂：滚动触发的取数要按新游戏重新等一次「滚到附近」 */}
             <GameCollectionsSection key={game.slug} gameSlug={game.slug} />
 

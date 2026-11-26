@@ -27,6 +27,8 @@ interface Props {
   eager?: boolean
   /** 首屏 LCP 候选；只给最前面的一张，避免高优先级请求互相争抢。 */
   priority?: boolean
+  /** 推迟挂载封面媒体直到调用方确认区域进入视口；卡片正文仍参与 SSR 和键盘导航。 */
+  deferCover?: boolean
   /** 列表封面实际只有一张卡宽，避免首屏小屏下被 100vw 误导去下载最大档。 */
   coverSizes?: string
 }
@@ -57,7 +59,7 @@ export const GAME_CARD_IMAGE_SIZES = '240px'
  * ⚠️ 加新 prop 时注意：传**每次渲染都新建的对象 / 数组 / 箭头函数**会让 memo 失效。
  * 这个组件目前刻意不收回调，就是为了它。
  */
-export const GameCard = memo(function GameCard({ game, className, coverRatio = 'square', rank, showCoin = true, eager, priority, coverSizes }: Props) {
+export const GameCard = memo(function GameCard({ game, className, coverRatio = 'square', rank, showCoin = true, eager, priority, deferCover, coverSizes }: Props) {
   const lang = useLang()
   const t = useT()
   const platform = platformMap[game.platform]
@@ -81,7 +83,7 @@ export const GameCard = memo(function GameCard({ game, className, coverRatio = '
           同理不再挂「☁️ 即点即玩」角标 —— 一屏二十几张卡都挂着同一个标记，
           既没区分度，也压住封面左下角（2026-09-23 站长要求去掉）。
         */}
-        <GameCover game={game} ratio={coverRatio} showTitle={false} eager={eager} priority={priority} sizes={coverSizes} />
+        <GameCover game={game} ratio={coverRatio} showTitle={false} eager={eager} priority={priority} deferMedia={deferCover} sizes={coverSizes} />
         {rank !== undefined && (
           <span className="text-pixel absolute right-2 top-2 rounded bg-black/60 px-1.5 py-1 text-[11px] text-coin backdrop-blur">
             #{rank}

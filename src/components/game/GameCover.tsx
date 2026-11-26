@@ -75,6 +75,8 @@ interface Props {
    * 老封面没有缩略图时自动退回主图，见下面的 thumbFailed。
    */
   thumb?: boolean
+  /** 只有容器真正进入视口后才挂图片 / 视频源，避免浏览器原生 lazy 提前抢开局带宽。 */
+  deferMedia?: boolean
   /** 封面图真正 load 完时调一次（<video> 那一路不会调）。轮播换图要靠它决定何时撤掉过渡层 */
   onImageLoad?: () => void
 }
@@ -259,6 +261,7 @@ export function GameCover({
   eager = false,
   sizes,
   thumb = false,
+  deferMedia = false,
   onImageLoad,
 }: Props) {
   const t = useT()
@@ -269,6 +272,29 @@ export function GameCover({
   // 测速结果变更后重算 URL；其它封面组件共享同一轮探测，不各自重复下载探针图。
   const [coverCdnRevision, setCoverCdnRevision] = useState(0)
   const coverImageRef = useRef<HTMLImageElement>(null)
+  const mediaContainerRef = useRef<HTMLDivElement>(null)
+  const [mediaVisible, setMediaVisible] = useState(!deferMedia)
+  useEffect(() => {
+    if (!deferMedia) {
+      if (!mediaVisible) setMediaVisible(true)
+      return
+    }
+    if (mediaVisible) return
+    const node = mediaContainerRef.current
+    if (!node || typeof IntersectionObserver !== 'function') {
+      // 老浏览器仍显示封面；只在支持视口观察时推迟非关键媒体。
+      setMediaVisible(true)
+      return
+    }
+    const observer = new IntersectionObserver(([entry]) => {
+      if (!entry?.isIntersecting) return
+      setMediaVisible(true)
+      observer.disconnect()
+    })
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [deferMedia, mediaVisible])
+  const mediaDeferred = deferMedia && !mediaVisible
   const coverSrc = useMemo(
     () => gameMediaUrl(game, 'cover'),
     [game.slug, game.cover, coverCdnRevision],
@@ -278,6 +304,7 @@ export function GameCover({
     [still, game.slug, game.video],
   )
   useEffect(() => {
+    if (mediaDeferred) return
     const unsubscribe = subscribeCoverCdnSelection(() => {
       // 已完整加载的封面不再切源，避免首访测速完成时整页重复下载；未完成的图切到胜出域。
       const image = coverImageRef.current
@@ -286,7 +313,7 @@ export function GameCover({
     })
     startCoverCdnSelection(game.cover || '')
     return unsubscribe
-  }, [game.cover, videoSrc])
+  }, [game.cover, videoSrc, mediaDeferred])
   // 外链没有本站生成的 -96 缩略图，直接用原图；空 key 不能被当作资源桶根地址。
   const thumbKey = thumb && game.cover ? coverThumbKey(game.cover) : ''
   const thumbSrc = thumbKey ? romUrlForKey(thumbKey) : ''
@@ -309,12 +336,13 @@ export function GameCover({
 
   // 首屏视频卡片的 poster 是图片，但 <video poster> 没有可设置 fetchPriority 的属性。
   // 在 SSR 渲染时显式预加载这一张，避免它与普通视频资源一起按 auto 排队。
-  if (priority && videoSrc && coverSrc) {
+  if (!mediaDeferred && priority && videoSrc && coverSrc) {
     preload(coverSrc, { as: 'image', fetchPriority: 'high' })
   }
 
   return (
     <div
+      ref={mediaContainerRef}
       className={cx('relative overflow-hidden', ratios[ratio], className)}
       /*
         图片到位之前，这层背景就是玩家真正看到的东西。
@@ -329,9 +357,9 @@ export function GameCover({
       aria-label={fmt(t.common.coverAlt, { title })}
     >
       {/* 背景层：视频 / 封面图 / 程序化封面 */}
-      {videoSrc ? (
+      {videoSrc && !mediaDeferred ? (
         <CoverVideo src={videoSrc} fallbackSrc={gameVideoFallbackUrl(game, videoSrc) || undefined} poster={coverSrc || undefined} />
-      ) : coverSrc && !coverFailed ? (
+      ) : coverSrc && !coverFailed && !mediaDeferred ? (
         <img
           ref={coverImageRef}
           src={imgSrc}

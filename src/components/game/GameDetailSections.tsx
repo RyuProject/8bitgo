@@ -317,13 +317,31 @@ const CARD_GRID = 'grid grid-cols-2 gap-3.5 sm:grid-cols-[repeat(auto-fill,minma
 
 export function RelatedGamesSection({ related }: { related: Game[] }) {
   const t = useT()
+  const gridRef = useRef<HTMLDivElement>(null)
+  const [coversReady, setCoversReady] = useState(false)
+  useEffect(() => {
+    if (!related.length) return
+    const grid = gridRef.current
+    if (!grid || typeof IntersectionObserver !== 'function') {
+      setCoversReady(true)
+      return
+    }
+    // 浏览器原生 loading="lazy" 通常会提前数百到上千像素取图；推荐封面不是开局必需资源，等卡片真正入视口再放行。
+    const observer = new IntersectionObserver(([entry]) => {
+      if (!entry?.isIntersecting) return
+      setCoversReady(true)
+      observer.disconnect()
+    })
+    observer.observe(grid)
+    return () => observer.disconnect()
+  }, [related.length])
   if (!related.length) return null
   return (
     <section aria-labelledby="game-related">
       <DetailSectionTitle id="game-related" icon="💡" title={t.game.relatedTitle} subtitle={t.game.relatedSubtitle} />
-      <div className={cx(CARD_GRID, 'mt-6')}>
+      <div ref={gridRef} className={cx(CARD_GRID, 'mt-6')}>
         {related.map((g) => (
-          <GameCard key={g.slug} game={g} showCoin={false} coverSizes="214px" />
+          <GameCard key={g.slug} game={g} showCoin={false} deferCover={!coversReady} coverSizes="214px" />
         ))}
       </div>
     </section>
