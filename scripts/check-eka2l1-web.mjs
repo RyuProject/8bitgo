@@ -71,6 +71,14 @@ for (const [rel, { bytes, sha256 }] of Object.entries(manifest.files)) {
   if (data.length !== bytes) fail(`${rel} 大小 ${data.length}，清单 ${bytes}`)
   if (createHash('sha256').update(data).digest('hex') !== sha256) fail(`${rel} 内容与清单不符`)
 }
+const buildIdJs = readFileSync(join(dir, 'js/build_id.js'), 'utf8')
+const assetSizesText = /window\.EKA2L1_ASSET_SIZES\s*=\s*(\{[^}]+\})\s*;?/.exec(buildIdJs)?.[1]
+if (!assetSizesText) fail('js/build_id.js 缺少核心文件大小，播放器无法校验截断下载')
+let assetSizes
+try { assetSizes = JSON.parse(assetSizesText) } catch { fail('js/build_id.js 的核心文件大小不是有效 JSON') }
+for (const [kind, rel] of [['wasm', 'eka2l1.wasm'], ['data', 'eka2l1.data']]) {
+  if (assetSizes[kind] !== manifest.files[rel]?.bytes) fail(`js/build_id.js 的 ${kind} 大小与 runtime.json 不一致`)
+}
 const sourceDoc = readFileSync(join(dir, 'SOURCE.md'), 'utf8')
 if (!sourceDoc.includes(EKA2L1_UPSTREAM_COMMIT)) fail('SOURCE.md 没有标出对应上游提交')
 if (!sourceDoc.includes('source/scripts/lib/eka2l1-patches.mjs') || !sourceDoc.includes('source/scripts/build-eka2l1-web.mjs')) {

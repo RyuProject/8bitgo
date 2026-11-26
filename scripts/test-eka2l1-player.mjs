@@ -34,6 +34,17 @@ function test(name, fn) {
   }
 }
 
+async function asyncTest(name, fn) {
+  try {
+    await fn()
+    passed++
+    console.log(`  ✓ ${name}`)
+  } catch (err) {
+    console.error(`  ✖ ${name}`)
+    throw err
+  }
+}
+
 function le32(...values) {
   const out = new Uint8Array(values.length * 4)
   const view = new DataView(out.buffer)
@@ -122,6 +133,152 @@ test('存档包：往返一致；坏 magic、截断、尾巴多、越界路径�
   throwsCode(() => P.encodeSaveArchive([{ path: 'c/big', data: new Uint8Array(2 * 1048576) }]), 'save-too-large')
 })
 
+await asyncTest('核心资源：短包自动重取，按 data 声明长度校验并限制最大体积', async () => {
+  let calls = 0
+  const result = await P.fetchCoreAsset(async () => {
+    calls++
+    return new Response(Uint8Array.from(calls === 1 ? [1, 2] : [1, 2, 3]), {
+      headers: { 'content-type': 'application/octet-stream' },
+    })
+  }, 'https://8bitgo.test/eka2l1.data?v=test', {
+    expectedBytes: 3, maxBytes: 8, idleTimeoutMs: 100, retries: 1,
+  })
+  assert.equal(calls, 2, 'data 短包应自动重试一次')
+  assert.deepEqual([...result.bytes], [1, 2, 3])
+
+  calls = 0
+  await assert.rejects(P.fetchCoreAsset(async () => {
+    calls++
+    return new Response(Uint8Array.from([1, 2, 3]), { headers: { 'content-type': 'application/octet-stream' } })
+  }, 'https://8bitgo.test/eka2l1.wasm', { maxBytes: 2, idleTimeoutMs: 100, retries: 2 }), /超过声明大小/)
+  assert.equal(calls, 1, '超过安全上限属于确定性错误，不应重复下载')
+})
+
+await asyncTest('核心资源：停流有空闲时限，重试期间不把调用方取消当网络故障', async () => {
+  let calls = 0
+  const result = await P.fetchCoreAsset(async () => {
+    calls++
+    if (calls === 1) return new Response(new ReadableStream({ start() {} }))
+    return new Response(Uint8Array.from([4, 5]))
+  }, 'https://8bitgo.test/eka2l1.data', { expectedBytes: 2, maxBytes: 8, idleTimeoutMs: 5, retries: 1 })
+  assert.equal(calls, 2, '停流后应重下核心资源')
+  assert.deepEqual([...result.bytes], [4, 5])
+
+  const controller = new AbortController()
+  controller.abort()
+  calls = 0
+  await assert.rejects(P.fetchCoreAsset(async () => { calls++; return new Response([1]) }, 'https://8bitgo.test/eka2l1.wasm', {
+    maxBytes: 8, idleTimeoutMs: 5, retries: 2, signal: controller.signal,
+  }), { name: 'AbortError' })
+  assert.equal(calls, 0, '已取消的播放器不能继续发核心请求')
+})
+
+await asyncTest('核心预热：同一个播放页只启动一次 EKA2L1.boot', async () => {
+  let bootCalls = 0
+  let memoryWrapperReady = false
+  let dataBytes = null
+  let wasmBytes = null
+  let mountCalls = 0
+  let redraws = 0
+  const requestedCoreUrls = []
+  const canvas = { width: 176, height: 208, style: {}, focus() {} }
+  const fakeDocument = { hidden: false, getElementById: () => canvas, addEventListener() {} }
+  let context
+  const fakeRoot = {
+    document: fakeDocument,
+    location: { href: 'https://8bitgo.test/eka2l1/vtest/play.html', origin: 'https://8bitgo.test' },
+    EKA2L1_ASSET_SIZES: { wasm: 4, data: 3 },
+    innerWidth: 176,
+    innerHeight: 208,
+    addEventListener() {},
+    createEKA2L1Module(options) {
+      memoryWrapperReady = Boolean(options.getPreloadedPackage)
+      assert.equal(requestedCoreUrls.length, 2, 'wasm 与 data 必须在核心工厂调用前并行发起')
+      const packageBytes = options.getPreloadedPackage('https://8bitgo.test/eka2l1/vtest/eka2l1.data?v=test', 3)
+      assert.equal(Object.prototype.toString.call(packageBytes), '[object ArrayBuffer]', 'Emscripten 预加载回调必须同步给出 ArrayBuffer')
+      dataBytes = [...new Uint8Array(packageBytes)]
+      return context.fetch('https://8bitgo.test/eka2l1.wasm?v=test').then(async (response) => {
+        assert.equal(response.headers.get('content-type'), 'application/wasm')
+        wasmBytes = [...new Uint8Array(await response.arrayBuffer())]
+        return { FS: {
+        mount() { mountCalls++ },
+        writeFile() {},
+        unlink() {},
+        readdir() { return ['.', '..'] },
+        stat() { throw new Error('ENOENT') },
+        isDir() { return false },
+        } }
+      })
+    },
+    EKA2L1: {
+      environmentProblem: () => null,
+      boot() {
+        bootCalls++
+        assert.equal(context.createEKA2L1Module.__8bitgoMemory, true, '必须先切换本局 MEMFS，再启动核心')
+        return context.createEKA2L1Module({
+          locateFile: (path) => `https://8bitgo.test/eka2l1/vtest/${path}?v=test`,
+        }).then((module) => {
+          context.EKA2L1.module = module
+          return module
+        })
+      },
+      applyPerfPrefs() {},
+      initDevice() { return 0 },
+      appList() { return [{ uid: 0x1234, name: 'Test game', sys: false }] },
+      redrawCount() { return redraws },
+      launchApp() { redraws++; return 0 },
+      setPaused() {},
+      setVolume() {},
+      sendKey() {},
+      lastAppExit() { return null },
+    },
+    MutationObserver: class { observe() {} },
+  }
+  context = vm.createContext({
+    ...fakeRoot,
+    document: fakeDocument,
+    MutationObserver: fakeRoot.MutationObserver,
+    Blob, TextEncoder, TextDecoder, URL, Headers, Response, AbortController, DOMException,
+    setTimeout, clearTimeout, console, performance,
+  })
+  const nativeFetch = async (url) => {
+    requestedCoreUrls.push(String(url))
+    const isData = String(url).endsWith('.data?v=test')
+    return new Response(
+      Uint8Array.from(isData ? [1, 2, 3] : [0, 97, 115, 109]),
+      { headers: { 'content-type': isData ? 'application/octet-stream' : 'application/wasm' } },
+    )
+  }
+  context.fetch = nativeFetch
+  vm.runInContext(readFileSync(scriptFile, 'utf8'), context, { filename: scriptFile })
+  context.EightBitGoNgageCard = {
+    async installCard() { return { plan: { appUid: 0x1234, title: 'Test game' } } },
+  }
+  const player = context.EightBitGoSymbianPlayer
+  const first = player.prepare()
+  const second = player.prepare()
+  assert.equal(first, second, '并发 prepare 必须共享同一个核心启动 Promise')
+  await first
+  assert.equal(bootCalls, 1)
+  assert.equal(memoryWrapperReady, true, '核心工厂必须使用弱网资源保护器')
+  assert.deepEqual(dataBytes, [1, 2, 3])
+  assert.deepEqual(wasmBytes, [0, 97, 115, 109])
+  assert.equal(mountCalls, 0, '播放页不得挂载 /eka2l1 的持久 IDBFS')
+  assert.equal(context.fetch, nativeFetch, '核心初始化后必须恢复页面原始 fetch')
+  const consumed = []
+  const startOptions = {
+    firmware: new ArrayBuffer(4),
+    game: Uint8Array.from([0x50, 0x4b, 0x03, 0x04]).buffer,
+    gameName: 'Test game',
+    onAssetConsumed: (asset) => consumed.push(asset),
+  }
+  const started = await player.start(startOptions)
+  assert.equal(started.uid, 0x1234)
+  assert.deepEqual(consumed, ['game', 'firmware'])
+  assert.equal(startOptions.game.byteLength, 0, '卡带装入虚拟盘后释放原始 ROM 缓冲')
+  assert.equal(startOptions.firmware.byteLength, 0, '设备激活后释放原始固件缓冲')
+})
+
 test('快照比较：只挑出开局后新建或改过的游戏文件（含开局时写回的存档）', () => {
   const fs = new FakeFS()
   const D = '/eka2l1/drives'
@@ -190,6 +347,11 @@ test('接线：运行时登记、塞班平台走 eka2l1、详情页跨源隔离�
     last = at
   }
   const constants = read('src/emulator/eka2l1Runtime.ts')
+  const adapter = read('src/emulator/adapters/eka2l1.ts')
+  assert.ok(adapter.includes('const preparedPlayer = frameReady.then'), '核心没有在 ROM / 固件到齐前开始预热')
+  assert.ok(adapter.includes('Promise.all([preparedPlayer, firmwareLoad, gameLoad, seeded])'), '核心、固件与 ROM 没有并行等待')
+  assert.ok(adapter.includes('probeRom(biosUrl, 4_000, false, { signal: aborter.signal, retry: false })'), '平台固件没有按 ETag 版本化以复用安全缓存')
+  assert.ok(adapter.includes('api?.cancelBoot()'), '失败路径没有取消核心下载并释放线程')
   const buildId = /EKA2L1_BUILD_ID = '([0-9a-f]{12})'/.exec(constants)?.[1]
   if (buildId) {
     const dir = join(root, 'public', 'eka2l1', `v${buildId}`)

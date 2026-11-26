@@ -24,6 +24,10 @@
   const MAX_ARCHIVE_BYTES = 2 * 1048576;
   const MAX_ARCHIVE_FILES = 4096;
   const FIRST_FRAME_TIMEOUT_MS = 120000;
+  const CORE_ASSET_IDLE_TIMEOUT_MS = 30000;
+  const CORE_ASSET_RETRIES = 2;
+  const MAX_CORE_WASM_BYTES = 64 * 1048576;
+  const MAX_CORE_DATA_BYTES = 32 * 1048576;
   const SISX_UID1 = 0x10201A7A;
 
   /**
@@ -73,6 +77,107 @@
       this.code = code;
       this.detail = detail || '';
       this.scope = scope || 'runtime';
+    }
+  }
+
+  function assetError(message, retryable) {
+    const error = new Error(message);
+    error.retryable = Boolean(retryable);
+    return error;
+  }
+
+  /**
+   * 核心的 wasm / data 走 Emscripten 原生下载时，响应体一旦停流就会一直等；data 包即使 HTTP 200 被截断，
+   * 上游也会把短包继续拆进虚拟文件系统。这里按已知上限流式读、逐块设空闲超时并校验完整长度，
+   * 网络失速或短包最多重试两次。data 的预分配缓冲避免「分块数组 + 最终拼接」同时驻留，降低手机峰值内存。
+   */
+  async function fetchCoreAsset(fetcher, url, options) {
+    const expectedBytes = Number.isSafeInteger(options.expectedBytes) ? options.expectedBytes : 0;
+    const maxBytes = options.maxBytes;
+    const idleTimeoutMs = options.idleTimeoutMs || CORE_ASSET_IDLE_TIMEOUT_MS;
+    const retries = Number.isSafeInteger(options.retries) ? options.retries : CORE_ASSET_RETRIES;
+    if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0 || (expectedBytes && (expectedBytes <= 0 || expectedBytes > maxBytes))) {
+      throw assetError('EKA2L1 核心资源大小配置无效', false);
+    }
+
+    for (let attempt = 0; ; attempt++) {
+      const controller = new AbortController();
+      let callerAborted = false;
+      let timedOut = false;
+      let reader = null;
+      const abortFromCaller = () => { callerAborted = true; controller.abort(); };
+      if (options.signal) {
+        if (options.signal.aborted) throw new DOMException('已取消', 'AbortError');
+        options.signal.addEventListener('abort', abortFromCaller, { once: true });
+      }
+      const withinIdleLimit = async (promise, stage) => {
+        let timer;
+        try {
+          return await Promise.race([
+            promise,
+            new Promise((_, reject) => {
+              timer = setTimeout(() => {
+                timedOut = true;
+                controller.abort();
+                reject(assetError(`EKA2L1 ${stage}超过 ${Math.round(idleTimeoutMs / 1000)} 秒没有数据`, true));
+              }, idleTimeoutMs);
+            }),
+          ]);
+        } finally {
+          if (timer !== undefined) clearTimeout(timer);
+        }
+      };
+
+      try {
+        const response = await withinIdleLimit(fetcher(url, { credentials: 'same-origin', cache: attempt ? 'reload' : 'default', signal: controller.signal }), '核心连接');
+        if (!response || response.status !== 200) {
+          const status = response ? response.status : 0;
+          throw assetError(`EKA2L1 核心资源 HTTP ${status}`, status === 0 || status === 408 || status === 429 || status >= 500);
+        }
+        const contentType = response.headers && response.headers.get('content-type') || '';
+        if (/text\/html|application\/(?:json|xhtml)/i.test(contentType)) {
+          throw assetError('EKA2L1 核心资源返回了网页或错误 JSON', false);
+        }
+        if (!response.body || typeof response.body.getReader !== 'function') {
+          throw assetError('浏览器不支持流式读取 EKA2L1 核心资源', false);
+        }
+
+        reader = response.body.getReader();
+        const chunks = expectedBytes ? null : [];
+        const output = expectedBytes ? new Uint8Array(expectedBytes) : null;
+        let loaded = 0;
+        for (;;) {
+          const part = await withinIdleLimit(reader.read(), '核心下载');
+          if (part.done) break;
+          const chunk = part.value instanceof Uint8Array ? part.value : new Uint8Array(part.value);
+          loaded += chunk.byteLength;
+          if (loaded > maxBytes || (expectedBytes && loaded > expectedBytes)) {
+            throw assetError('EKA2L1 核心资源超过声明大小', false);
+          }
+          if (output) output.set(chunk, loaded - chunk.byteLength);
+          else chunks.push(chunk);
+          if (typeof options.onChunk === 'function') options.onChunk(loaded, expectedBytes || 0);
+        }
+        if (!loaded || (expectedBytes && loaded !== expectedBytes)) {
+          throw assetError(`EKA2L1 核心资源不完整：收到 ${loaded} / ${expectedBytes || '未知'} 字节`, true);
+        }
+        if (options.signal && options.signal.aborted) throw new DOMException('已取消', 'AbortError');
+        if (output) return { bytes: output, contentType };
+        const bytes = new Uint8Array(loaded);
+        let offset = 0;
+        for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+        return { bytes, contentType };
+      } catch (error) {
+        if (reader) {
+          try { void reader.cancel().catch(() => {}); } catch { /* 下载已结束或浏览器已取消 */ }
+        }
+        if (callerAborted || (options.signal && options.signal.aborted)) throw new DOMException('已取消', 'AbortError');
+        const retryable = Boolean(error && error.retryable) || timedOut || (error && error.name === 'TypeError');
+        if (!retryable || attempt >= retries) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+      } finally {
+        if (options.signal) options.signal.removeEventListener('abort', abortFromCaller);
+      }
     }
   }
 
@@ -209,7 +314,7 @@
 
   const api = {
     SCAN, KEYBOARD, PAD, PlayerError,
-    detectGameKind, isSaveCandidate, isSafeRel, encodeSaveArchive, decodeSaveArchive,
+    detectGameKind, isSaveCandidate, isSafeRel, encodeSaveArchive, decodeSaveArchive, fetchCoreAsset,
     snapshotDrives, changedSaveFiles, scanFor,
   };
   root.EightBitGoSymbianPlayer = api;
@@ -220,6 +325,9 @@
 
   const canvas = document.getElementById('canvas');
   let session = null; // { FS, baseline, uid, name }
+  let coreBootPromise = null;
+  const coreAborter = new AbortController();
+  let coreActivity = () => {};
   let keyboardInstalled = false;
   const heldKeys = new Set();
   let geometryListener = null;
@@ -250,7 +358,65 @@
     const factory = root.createEKA2L1Module;
     if (typeof factory !== 'function' || factory.__8bitgoMemory) return typeof factory === 'function';
     const wrapped = function (options) {
-      return Promise.resolve(factory(options)).then((mod) => {
+      const nativeFetch = root.fetch;
+      const originalFetch = (input, init) => nativeFetch.call(root, input, init);
+      const isCoreAsset = (input, suffix) => {
+        try {
+          const value = typeof input === 'string' ? input : input && input.url;
+          const url = new URL(value, root.location.href);
+          return url.origin === root.location.origin && url.pathname.endsWith(suffix);
+        } catch { return false; }
+      };
+      const moduleOptions = Object.assign({}, options);
+      const assetSizes = root.EKA2L1_ASSET_SIZES || {};
+      const expectedDataBytes = Number(assetSizes.data);
+      const expectedWasmBytes = Number(assetSizes.wasm);
+      if (!Number.isSafeInteger(expectedDataBytes) || expectedDataBytes <= 0 || expectedDataBytes > MAX_CORE_DATA_BYTES
+        || !Number.isSafeInteger(expectedWasmBytes) || expectedWasmBytes <= 0 || expectedWasmBytes > MAX_CORE_WASM_BYTES) {
+        return Promise.reject(assetError('EKA2L1 核心资源大小清单缺失或无效', false));
+      }
+      const locateFile = typeof moduleOptions.locateFile === 'function'
+        ? moduleOptions.locateFile
+        : (path, prefix) => (prefix || '') + path;
+      const dataUrl = new URL(locateFile('eka2l1.data', ''), root.location.href).href;
+      const wasmUrl = new URL(locateFile('eka2l1.wasm', ''), root.location.href).href;
+      // 两份核心文件并行取回；wasm 下载期间，data 完整性校验通过后再同步交给 Emscripten。
+      const dataPromise = fetchCoreAsset(originalFetch, dataUrl, {
+        expectedBytes: expectedDataBytes, maxBytes: MAX_CORE_DATA_BYTES, signal: coreAborter.signal,
+        onChunk: () => coreActivity(),
+      });
+      // 转成结果联合类型，避免 wasm 快速失败而 data 仍在下载时产生未处理拒绝。
+      const wasmPromise = fetchCoreAsset(originalFetch, wasmUrl, {
+        expectedBytes: expectedWasmBytes, maxBytes: MAX_CORE_WASM_BYTES, signal: coreAborter.signal,
+        onChunk: () => coreActivity(),
+      }).then((result) => ({ result }), (error) => ({ error }));
+      moduleOptions.getPreloadedPackage = function (url, size) {
+        if (!isCoreAsset(url, '/eka2l1.data')) return null;
+        if (Number(size) !== expectedDataBytes || !preloadedData) {
+          throw assetError('EKA2L1 data 预加载长度与运行时清单不一致', false);
+        }
+        // 上游胶水在同步调用点检查 ArrayBuffer，不能返回 Promise。
+        return preloadedData.buffer;
+      };
+      const guardedFetch = function (input, init) {
+        if (!isCoreAsset(input, '/eka2l1.wasm')) return originalFetch(input, init);
+        return wasmPromise.then(({ result, error }) => {
+          if (error) throw error;
+          const headers = new Headers(result.contentType ? [['content-type', result.contentType]] : []);
+          if (!headers.has('content-type')) headers.set('content-type', 'application/wasm');
+          return new Response(result.bytes.buffer, { status: 200, headers });
+        });
+      };
+      root.fetch = guardedFetch;
+      let preloadedData;
+      const restoreFetch = () => {
+        if (root.fetch === guardedFetch) root.fetch = nativeFetch;
+      };
+      return dataPromise.then((result) => {
+        preloadedData = result.bytes;
+        return factory(moduleOptions);
+      }).then((mod) => {
+        restoreFetch();
         const mount = mod.FS.mount;
         mod.FS.mount = function (type, opts, mountpoint) {
           // 根文件系统本来就是 MEMFS：不挂就等于挂了一块内存盘；syncfs 对它是空操作
@@ -258,11 +424,25 @@
           return mount.call(mod.FS, type, opts, mountpoint);
         };
         return mod;
+      }, (error) => {
+        restoreFetch();
+        throw error;
       });
     };
     wrapped.__8bitgoMemory = true;
     root.createEKA2L1Module = wrapped;
     return true;
+  }
+
+  function prepare(onActivity) {
+    if (typeof onActivity === 'function') coreActivity = onActivity;
+    if (coreBootPromise) return coreBootPromise;
+    const E = root.EKA2L1;
+    if (!E || !useMemoryStorage()) return Promise.reject(new PlayerError('runtime-missing', '', 'runtime'));
+    const env = E.environmentProblem && E.environmentProblem();
+    if (env) return Promise.reject(new PlayerError('environment', env, 'config'));
+    coreBootPromise = Promise.resolve().then(() => E.boot({ canvas }));
+    return coreBootPromise;
   }
 
   function sendKey(scan, down) {
@@ -358,17 +538,28 @@
     if (session) throw new PlayerError('already-started', '');
     const onStage = typeof opts.onStage === 'function' ? opts.onStage : () => {};
     const E = root.EKA2L1;
-    if (!E || !useMemoryStorage()) throw new PlayerError('runtime-missing', '', 'runtime');
+    if (!E) throw new PlayerError('runtime-missing', '', 'runtime');
     const env = E.environmentProblem && E.environmentProblem();
     if (env) throw new PlayerError('environment', env, 'config');
 
-    const gameBytes = new Uint8Array(opts.game);
+    let gameBytes = new Uint8Array(opts.game);
+    const assetConsumed = (asset) => {
+      if (typeof opts.onAssetConsumed === 'function') {
+        try { opts.onAssetConsumed(asset); } catch { /* 释放通知不能中断游戏安装 */ }
+      }
+      if (asset === 'game') {
+        gameBytes = null;
+        opts.game = new ArrayBuffer(0);
+      } else if (asset === 'firmware') {
+        opts.firmware = new ArrayBuffer(0);
+      }
+    };
     const kind = detectGameKind(gameBytes);
     if (kind === 'sisx') throw new PlayerError('needs-s60v3', '', 'config');
     if (kind === 'unknown') throw new PlayerError('unknown-package', '', 'content');
 
     onStage('boot', { pct: 0 });
-    await E.boot({ canvas, onProgress: (pct) => onStage('boot', { pct }) });
+    await prepare();
     const FS = E.module.FS;
     try { E.applyPerfPrefs(); } catch { /* 偏好读不到就用核心默认值 */ }
 
@@ -382,6 +573,7 @@
         const result = await card.installCard(new Blob([gameBytes]), { FS, savePaths: async () => {} });
         uid = result.plan.appUid;
         name = result.plan.title;
+        assetConsumed('game');
       } catch (err) {
         throw new PlayerError('card-invalid', (err && (err.code || err.message)) || String(err), 'content');
       }
@@ -392,6 +584,7 @@
     await sleep(30); // 下面是几秒的同步调用，先让出一帧把进度画出去
     const device = E.initDevice(ROM_STAGING, '');
     try { FS.unlink(ROM_STAGING); } catch { /* 安装器已经拷走 ROM */ }
+    assetConsumed('firmware');
     if (device !== 0) throw new PlayerError('device-failed', installErrorText(device), 'config');
 
     if (kind === 'sis') {
@@ -400,6 +593,7 @@
       FS.writeFile(SIS_STAGING, gameBytes);
       const installed = E.installPackage(SIS_STAGING);
       try { FS.unlink(SIS_STAGING); } catch { /* ignore */ }
+      assetConsumed('game');
       if (installed !== 0) throw new PlayerError('install-failed', installErrorText(installed), 'content');
       const fresh = E.appList().filter((app) => !before.has(app.uid >>> 0) && !app.sys);
       if (!fresh.length) throw new PlayerError('no-app', '', 'content');
@@ -439,6 +633,8 @@
   }
 
   root.EightBitGoSymbianPlayer = Object.assign(api, {
+    prepare,
+    cancelBoot() { coreAborter.abort(); releaseAll(); },
     start,
     saveArchive,
     canvas,

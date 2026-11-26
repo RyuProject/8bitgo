@@ -1,0 +1,169 @@
+{
+  "runtime": "EKA2L1-WEB",
+  "buildId": "143db2246477",
+  "upstreamBuildId": "3888b6830c73",
+  "upstream": "https://github.com/zixing131/EKA2L1-WEB",
+  "commit": "e727af5df7afd6a45e1aea198e0fc81a0ee9bfe1",
+  "license": "AGPL-3.0",
+  "emscripten": "emcc (Emscripten gcc/clang-like replacement + linker emulating GNU ld) 7.0.0 (777e6e5db7b4990bcaeb1b9998ed642cc84e6629)",
+  "patches": [
+    "network-relay-off",
+    "locale-fallback-english",
+    "no-service-worker-library",
+    "no-service-worker-player",
+    "idbfs-current-emscripten",
+    "watcher-vector-include",
+    "exclusive-monitor-algorithm-include",
+    "page-table-algorithm-include",
+    "container-type-traits-include",
+    "pvrt-dec-cstdlib-include",
+    "ini-cstdlib-include",
+    "identity-container-iterator-equality",
+    "idbfs-module-export",
+    "capstone-cmake4",
+    "fmt-wasm-consteval",
+    "yaml-cpp-wasm-locale"
+  ],
+  "files": {
+    "css/app.css": {
+      "bytes": 22844,
+      "sha256": "aff8a58831f3bbecaf84ffd8194f45328d50f4576dd585dc69606b8e1dd6886d"
+    },
+    "eka2l1.data": {
+      "bytes": 4829746,
+      "sha256": "c82ab387f6de4d902fad6f33624ea92732dc2c5f0a4326fb543d5154986dc59b"
+    },
+    "eka2l1.js": {
+      "bytes": 304981,
+      "sha256": "278d73973117709582fa0c20ef2991fd4eed93e9ea3daa8e541c897723288c2f"
+    },
+    "eka2l1.wasm": {
+      "bytes": 11288680,
+      "sha256": "3eb188c0b1209602d4a7946ffaaa66badbf543d474c9bcb7be297e3c86e82777"
+    },
+    "icons/icon-192.png": {
+      "bytes": 3336,
+      "sha256": "9b54159435bdbd77c2940b9bac71d39fcd886637134d7e9dc844fc2f6501f4ca"
+    },
+    "icons/icon-512.png": {
+      "bytes": 7336,
+      "sha256": "9a76c9b638da842b3936bc3ba4a36205230fb0c6428bc6f6ea84a52b97ceb5d7"
+    },
+    "icons/icon-maskable.svg": {
+      "bytes": 821,
+      "sha256": "3e2e80fda936a2a26f3fc2f65b91bdb939b15fe5972e412eb41ba23714759d5b"
+    },
+    "icons/icon.svg": {
+      "bytes": 998,
+      "sha256": "a54e3811737cff7e8bfd01c7bc66bde002b07b8b880f08010a3fe2f27fc759af"
+    },
+    "index.html": {
+      "bytes": 27177,
+      "sha256": "8ea8ba1bb5e94fcbd7a335a589a3c0f33df78e94415c459e0ea77515fc4920ee"
+    },
+    "js/8bitgo-default-firmware.js": {
+      "bytes": 11117,
+      "sha256": "269af553f2335482305383edb801e64197f9ea4b70b3db0de7c679f6238e4800"
+    },
+    "js/8bitgo-ngage-card.js": {
+      "bytes": 35730,
+      "sha256": "60e3f97d60544f2f45910c66a0d9d317ddc732c44ea04b98bb58295966bd0b63"
+    },
+    "js/8bitgo-player.js": {
+      "bytes": 30485,
+      "sha256": "c0213b1692772a37c80f790b475d9435e820c904889a2703b5e8b3353ac19524"
+    },
+    "js/boot.js": {
+      "bytes": 47959,
+      "sha256": "699788b60e0fef19ec6cd6983abf4d09d891d60652bdf92106b685e416f36f74"
+    },
+    "js/build_id.js": {
+      "bytes": 99,
+      "sha256": "af07ba59d523971e41e954cfdd827ecb22549ee5ecfbc1d69b6ee2d81fbe1af7"
+    },
+    "js/i18n.js": {
+      "bytes": 5270,
+      "sha256": "0e23aa5b8f48e6752e4741cb9c5dafa6f8652cb64bbc64340129f7279b10d89d"
+    },
+    "js/i18n/en-US.js": {
+      "bytes": 22911,
+      "sha256": "776c1dd97bd369836968d0b8329028c1603c672a143c1842d6a8756d26121efe"
+    },
+    "js/i18n/zh-CN.js": {
+      "bytes": 22359,
+      "sha256": "79d7a8ce71475fec3359ff3c522a2335e3a3c858e3442a21d60813de1c54f19a"
+    },
+    "js/index.js": {
+      "bytes": 53541,
+      "sha256": "79cb0a7f173e65c3b4765fcaafe86157cf4ffc5b2e3830b828d32286c4b041fc"
+    },
+    "js/run.js": {
+      "bytes": 24465,
+      "sha256": "f58304044bbdd59c58fb611e0934b3b943bbac1795a392c5b8985686e0e2699f"
+    },
+    "LICENSE": {
+      "bytes": 34512,
+      "sha256": "342109d207b205494d49352b3535a80dadeffe69f894c5ca6ff79b8e3bf630ee"
+    },
+    "manifest.json": {
+      "bytes": 1352,
+      "sha256": "022bccf09ad1d7614724e7c72dae53f30a8bd4c258e7cd9c3d6928cc83f9a334"
+    },
+    "play.html": {
+      "bytes": 1511,
+      "sha256": "a77b7e145bcbabf3c80e4b6e88a2d0777684a3974abb954eb3f397a53efe24ee"
+    },
+    "run.html": {
+      "bytes": 16015,
+      "sha256": "f84961cd22762eef94205c014f120a10d28a82a34d9e3e685a0b587764cfa7b8"
+    },
+    "SOURCE.md": {
+      "bytes": 6243,
+      "sha256": "5e5d1043692f381b559fd406b8f3ac58c475adbdee0f1590172c9445156c8151"
+    },
+    "source/patches/external/capstone-wasm.patch": {
+      "bytes": 670,
+      "sha256": "7300d89e1df564098abd7276dfd4562e66ee3aabab5dd699567bc97491374395"
+    },
+    "source/patches/external/fmt-wasm.patch": {
+      "bytes": 1963,
+      "sha256": "0a0211504c44fbdf16906c91d7524f5bca835c311aefc830e38ea729b115b690"
+    },
+    "source/patches/external/README.md": {
+      "bytes": 1779,
+      "sha256": "a2843e883e22f36f9148733dbd229dab888ac0883787fe3195e1d8ace2e70ffd"
+    },
+    "source/patches/external/yaml-cpp-wasm.patch": {
+      "bytes": 2725,
+      "sha256": "af3928a2901ab2bcd538e71e6d41a2784ab9a3dc6ba5d8e69b5fc9c8eac22095"
+    },
+    "source/scripts/build-eka2l1-web.mjs": {
+      "bytes": 14617,
+      "sha256": "478538497231433f0add203c80fd6582fba95e6401548495d00c3d8f43874bda"
+    },
+    "source/scripts/eka2l1-default-firmware.js": {
+      "bytes": 11117,
+      "sha256": "269af553f2335482305383edb801e64197f9ea4b70b3db0de7c679f6238e4800"
+    },
+    "source/scripts/eka2l1-ngage-card.js": {
+      "bytes": 35730,
+      "sha256": "60e3f97d60544f2f45910c66a0d9d317ddc732c44ea04b98bb58295966bd0b63"
+    },
+    "source/scripts/eka2l1-player.html": {
+      "bytes": 1511,
+      "sha256": "a77b7e145bcbabf3c80e4b6e88a2d0777684a3974abb954eb3f397a53efe24ee"
+    },
+    "source/scripts/eka2l1-player.js": {
+      "bytes": 30485,
+      "sha256": "c0213b1692772a37c80f790b475d9435e820c904889a2703b5e8b3353ac19524"
+    },
+    "source/scripts/lib/eka2l1-patches.mjs": {
+      "bytes": 10457,
+      "sha256": "be202a15825ead213e4dfa83e4f702c42c04d3f8479f6670c2d35699b60c0aa2"
+    },
+    "source/scripts/lib/eka2l1-site-scripts.mjs": {
+      "bytes": 3284,
+      "sha256": "1eb72e651a81cf8cc875a842cb02a7c85965401c84849de51c2a60cf5509348c"
+    }
+  }
+}

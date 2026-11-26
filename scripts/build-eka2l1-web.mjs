@@ -220,6 +220,18 @@ for (const script of EKA2L1_SITE_SCRIPTS) {
   payload.set(script.published, { bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') })
   publishedOverrides.set(script.published, bytes)
 }
+// Emscripten 的 data 预加载回调只接受同步 ArrayBuffer；播放器先并行下载核心文件，
+// 需要用实际构建字节数校验短包，不能靠 HTTP 200 或 Content-Length 推断完整性。
+const buildIdBytes = readFileSync(join(bin, 'js', 'build_id.js'), 'utf8')
+  .replace(/\s*window\.EKA2L1_ASSET_SIZES\s*=\s*\{[^}]*\};?/g, '')
+const assetSizes = {
+  wasm: payload.get('eka2l1.wasm')?.bytes,
+  data: payload.get('eka2l1.data')?.bytes,
+}
+if (!Number.isSafeInteger(assetSizes.wasm) || !Number.isSafeInteger(assetSizes.data)) fail('无法从构建产物取得 wasm / data 文件大小')
+const sizedBuildId = Buffer.from(`${buildIdBytes.trimEnd()}\nwindow.EKA2L1_ASSET_SIZES=${JSON.stringify(assetSizes)};\n`)
+payload.set('js/build_id.js', { bytes: sizedBuildId.length, sha256: createHash('sha256').update(sizedBuildId).digest('hex') })
+publishedOverrides.set('js/build_id.js', sizedBuildId)
 payload.set('LICENSE', { bytes: licenseBytes.length, sha256: createHash('sha256').update(licenseBytes).digest('hex') })
 const sourceBytes = Buffer.from(sourceDoc)
 payload.set('SOURCE.md', { bytes: sourceBytes.length, sha256: createHash('sha256').update(sourceBytes).digest('hex') })

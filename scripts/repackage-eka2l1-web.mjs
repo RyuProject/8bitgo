@@ -94,6 +94,14 @@ const overrides = new Map([
   ['source/scripts/lib/eka2l1-patches.mjs', readFileSync(join(root, 'scripts', 'lib', 'eka2l1-patches.mjs'))],
   ['source/scripts/lib/eka2l1-site-scripts.mjs', readFileSync(join(root, 'scripts', 'lib', 'eka2l1-site-scripts.mjs'))],
 ])
+// Emscripten 的预加载回调是同步接口；播放器需提前取全 data，并用清单字节数拒绝截断包。
+const buildIdBytes = readFileSync(join(baseDir, 'js', 'build_id.js'), 'utf8')
+  .replace(/\s*window\.EKA2L1_ASSET_SIZES\s*=\s*\{[^}]*\};?/g, '')
+const assetSizes = {
+  wasm: manifest.files['eka2l1.wasm'].bytes,
+  data: manifest.files['eka2l1.data'].bytes,
+}
+overrides.set('js/build_id.js', Buffer.from(`${buildIdBytes.trimEnd()}\nwindow.EKA2L1_ASSET_SIZES=${JSON.stringify(assetSizes)};\n`))
 for (const script of EKA2L1_SITE_SCRIPTS) {
   const bytes = readFileSync(join(root, script.source))
   overrides.set(script.published, bytes)

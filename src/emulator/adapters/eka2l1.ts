@@ -13,10 +13,12 @@
 import type { Capability, CaptureSources, MountOptions, PadButton, RuntimeHandle } from '../types'
 import { EKA2L1_RUNTIME_DIR } from '../eka2l1Runtime'
 import { loadGameBytes } from '../romLoader'
+import { romCacheKey } from '../romCache'
 import { focusFrame } from '../frameFocus'
 import { canvasToBlob } from '../recorder'
 import { startGamepadInput } from '../gamepadInput'
 import { batteryHash, createBatterySync, type BatteryFs, type BatterySync } from '../batterySync'
+import { probeRom } from '@/services/roms'
 import { fmt, getT } from '@/services/i18n'
 import { diagLog, watchFramePerformance } from '@/services/startupDiagnostics'
 
@@ -38,6 +40,9 @@ interface PlayerStartResult {
 }
 
 interface PlayerApi {
+  /** 核心资源与 ROM/固件并行准备；同一 iframe 内保证只启动一次。 */
+  prepare(onActivity?: () => void): Promise<void>
+  cancelBoot(): void
   start(opts: {
     firmware: ArrayBuffer
     game: ArrayBuffer
@@ -45,6 +50,7 @@ interface PlayerApi {
     save?: Uint8Array | null
     onStage?: (stage: string, info: Record<string, number | string>) => void
     onGeometry?: (geometry: { width: number; height: number }) => void
+    onAssetConsumed?: (asset: 'firmware' | 'game') => void
   }): Promise<PlayerStartResult>
   saveArchive(): Uint8Array | null
   setPaused(paused: boolean): void
@@ -134,6 +140,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let lastSaveHash = ''
   let gamepad: ReturnType<typeof startGamepadInput> | null = null
   let stopFrameWatch: (() => void) | null = null
+  let cancelFrameWait: (() => void) | null = null
 
   const iframe = document.createElement('iframe')
   iframe.title = `${options.gameName} · EKA2L1`
@@ -143,10 +150,23 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   iframe.setAttribute('allow', 'autoplay; fullscreen; gamepad; cross-origin-isolated')
   iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-pointer-lock allow-forms')
 
+  const stopFrame = () => {
+    cancelFrameWait?.()
+    cancelFrameWait = null
+    try { api?.cancelBoot() } catch { /* 尚未创建核心或 iframe 已退出 */ }
+    try { api?.releaseAll() } catch { /* iframe 已拆 */ }
+    stopFrameWatch?.()
+    stopFrameWatch = null
+    api = null
+    iframe.src = 'about:blank'
+    iframe.remove()
+  }
+
   const fail = (message: string, scope: 'runtime' | 'content' | 'config' | 'deterministic' | 'network') => {
     if (destroyed || failed) return
     failed = true
     aborter.abort()
+    stopFrame()
     diagLog('adapter', 'error', `EKA2L1：${message}`)
     options.onError?.(message, scope)
   }
@@ -222,32 +242,72 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     container.appendChild(iframe)
 
     const frameReady = new Promise<PlayerApi>((resolve, reject) => {
-      const timer = window.setTimeout(() => reject(new Error('play.html did not load')), FRAME_READY_TIMEOUT_MS)
-      iframe.addEventListener('load', () => {
+      let settled = false
+      const clearWait = () => {
         window.clearTimeout(timer)
+        cancelFrameWait = null
+      }
+      const timer = window.setTimeout(() => {
+        if (settled) return
+        settled = true
+        cancelFrameWait = null
+        reject(new Error('play.html did not load'))
+      }, FRAME_READY_TIMEOUT_MS)
+      cancelFrameWait = () => {
+        if (settled) return
+        settled = true
+        clearWait()
+        reject(new DOMException('已取消', 'AbortError'))
+      }
+      iframe.addEventListener('load', () => {
+        if (settled || destroyed || failed) return
+        settled = true
+        clearWait()
         // 核心 wasm / data 在 iframe 里下载，诊断包要看得到这些请求
         stopFrameWatch = watchFramePerformance(iframe.contentWindow)
         const player = (iframe.contentWindow as PlayerWindow | null)?.EightBitGoSymbianPlayer
         if (player) resolve(player)
         else reject(new Error('play.html is missing the player script'))
       }, { once: true })
+      iframe.addEventListener('error', () => {
+        if (settled) return
+        settled = true
+        clearWait()
+        reject(new Error('play.html failed to load'))
+      }, { once: true })
     })
-    const firmwareLoad = loadGameBytes(
-      biosUrl,
+    // 平台固件绑定通常只有对象 key，没有 ETag 版本号；先用有时限的 HEAD 取内容版本，
+    // 后续同一固件可命中 ROM IndexedDB 缓存并安全续传。探测失败仍沿原 URL 下载，不能让 HEAD 限制可玩性。
+    const stableFirmwareUrl = romCacheKey(biosUrl)
+      ? Promise.resolve(biosUrl)
+      : probeRom(biosUrl, 4_000, false, { signal: aborter.signal, retry: false })
+          .then((outcome) => romCacheKey(outcome.url) ? outcome.url : biosUrl)
+          .catch(() => biosUrl)
+    const firmwareLoad = stableFirmwareUrl.then((url) => loadGameBytes(
+      url,
       (progress) => options.onProgress?.({ ...progress, phase: 'assets' }),
       aborter.signal,
       { maxBytes: MAX_FIRMWARE_BYTES, maxUnpackedBytes: MAX_FIRMWARE_BYTES },
-    )
+    ))
     const gameLoad = loadGameBytes(options.game, options.onProgress, aborter.signal, {
       maxBytes: MAX_GAME_BYTES,
       maxUnpackedBytes: MAX_GAME_BYTES,
     })
     // 云端那份和下载并行拉；batterySync.apply 自带超时、永不抛错
     const seeded = sync && store ? sync.apply(store.fs) : Promise.resolve('off')
+    // 核心的 wasm/data 下载与编译也和 ROM、固件并行；原先必须等两份游戏资源到齐才调用 start()，
+    // 使弱网玩家把核心冷启动完整地排在 ROM 下载之后。核心资源空闲超时 / 短包会自行重试。
+    const preparedPlayer = frameReady.then((player) => {
+      if (destroyed || failed) throw new DOMException('已取消', 'AbortError')
+      api = player
+      return player.prepare(() => {
+        if (!destroyed && !failed) options.onStartupActivity?.()
+      }).then(() => player)
+    })
 
     void (async () => {
       try {
-        const [player, firmware, game, decision] = await Promise.all([frameReady, firmwareLoad, gameLoad, seeded])
+        const [player, firmware, game, decision] = await Promise.all([preparedPlayer, firmwareLoad, gameLoad, seeded])
         if (destroyed) return
         api = player
         const save = store?.read() ?? null
@@ -269,6 +329,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             options.onStartupActivity?.()
           },
           onGeometry: (geometry) => options.onGeometry?.(geometry),
+          // EKA2L1 已把固件 / 安装包复制进本局虚拟盘后，释放下载缓冲；手机不必把整份 ROM 再留到首帧。
+          onAssetConsumed(asset) {
+            if (asset === 'firmware') firmware.data = new ArrayBuffer(0)
+            else game.data = new ArrayBuffer(0)
+          },
         })
         if (destroyed) return
         ready = true
@@ -335,10 +400,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       gamepad = null
       try { api?.releaseAll() } catch { /* iframe 已拆 */ }
       void Promise.resolve(finalPush).finally(() => sync?.stop())
-      stopFrameWatch?.()
-      api = null
-      iframe.src = 'about:blank'
-      iframe.remove()
+      stopFrame()
     },
   }
 }

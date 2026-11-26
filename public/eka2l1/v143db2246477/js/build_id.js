@@ -1,0 +1,2 @@
+window.EKA2L1_BUILD_ID='3888b6830c73';
+window.EKA2L1_ASSET_SIZES={"wasm":11288680,"data":4829746};
