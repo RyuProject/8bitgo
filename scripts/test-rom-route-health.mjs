@@ -237,6 +237,35 @@ await check('首片响应头对冲改线后，真实占用量跟随获胜线路�
   )
 })
 
+await check('错误响应不能抢赢仍在等待的有效线路（快 404 / HTML + 慢 206）', async () => {
+  const size = CHUNK
+  for (const invalidResponse of [
+    new Response('missing', { status: 404 }),
+    new Response('<html>upstream error</html>', { status: 200, headers: { 'Content-Type': 'text/html' } }),
+  ]) {
+    const urls = []
+    const fetchImpl = async (url, init) => {
+      const host = hostOf(url)
+      urls.push(host)
+      if (host === 'a.test') {
+        await delay(80, init.signal)
+        return rangeResponse(size, init.headers.Range, { signal: init.signal })
+      }
+      return invalidResponse
+    }
+    const blob = await fetchBlobWithProgress('https://a.test/x.zip?romv=1', {
+      fetchImpl, chunkBytes: CHUNK, routeHealth: true, routeHedgeMs: 10, maxConcurrency: 1,
+      alternateUrls: ['https://b.test/x.zip?romv=1'], networkHints: {},
+      check: (res) => {
+        if (/text\/html/i.test(res.headers.get('content-type') ?? '')) throw new Error('HTML error page')
+      },
+    })
+    expectExact(await readAll(blob), size)
+    assert.deepEqual(urls, ['a.test', 'b.test'], '两条线路都应响应，坏响应不得中止主线路')
+  }
+  assert.equal(health.isRomRouteOpen('https://a.test/x.zip'), false, '错误线路的快速 404 不能记成主线路失速')
+})
+
 await check('一片在一条线路上断了：换另一条重下这一片，不整局失败', async () => {
   const urls = []
   const fetchImpl = async (url, init) => {

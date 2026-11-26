@@ -1257,7 +1257,15 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
     }
     const backup = hedge && canHedgeRoutes ? pickRoute(route) : ''
     if (!backup || backup === route) {
-      return request(route, signal).then((res) => answered(res, route), (error) => {
+      return request(route, signal).then((res) => {
+        try {
+          validateResponse(res, opts.check)
+        } catch (error) {
+          if (!signal.aborted) noteRouteFailure(route, error)
+          throw error
+        }
+        return answered(res, route)
+      }, (error) => {
         if (!signal.aborted) noteRouteFailure(route, error)
         throw error
       })
@@ -1294,6 +1302,25 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
           if (settled) {
             void res.body?.cancel().catch(() => {})
             if (target === backup) releaseBackupLoad()
+            return
+          }
+          // 快速 404、5xx 或 HTML 错误页不能抢赢仍在等待的线路；丢弃坏响应，继续等或启动对端。
+          try {
+            validateResponse(res, opts.check)
+          } catch (error) {
+            lane.failed = true
+            lane.error = error
+            if (target === backup) releaseBackupLoad()
+            if (!lane.controller.signal.aborted) noteRouteFailure(target, error)
+            if (lanes.length < 2) {
+              clearTimeout(timer)
+              launch(backup)
+            } else if (lanes.every((item) => item.failed)) {
+              settled = true
+              clearTimeout(timer)
+              releaseBackupLoad()
+              reject(lanes[0].error)
+            }
             return
           }
           settled = true
@@ -1474,7 +1501,6 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
         reservedRoute = moveRouteLoad(reservedRoute, answer.route)
         running.route = answer.route
         running.headersAt = answer.headersAt
-        validateResponse(res, opts.check)
         if (early && res.status !== 206) {
           // 提前分片不替首片做「服务器不认 Range」的决定：丢掉这条回应，交给池子按常规重下
           void res.body?.cancel().catch(() => {})
@@ -1628,7 +1654,6 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
           并发要藏的是单连接的拥塞窗口和 RTT，衡量它该看正文流速；握手慢由 fetchRange 的响应头对冲去管。
         */
         const sampleStartedAt = answer.headersAt
-        validateResponse(first, opts.check)
         if (first.status !== 206) return takeWhole(first)
 
         const match = /^bytes\s+(\d+)-(\d+)\/(\d+)$/i.exec(first.headers.get('content-range') ?? '')
@@ -1805,7 +1830,6 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
       const answer = await fetchRange(route, start, end, opts.cache ?? 'default', controller.signal, false)
       served = answer.route
       headersAt = answer.headersAt
-      validateResponse(answer.res, opts.check)
       if (answer.res.status !== 206) {
         void answer.res.body?.cancel().catch(() => {})
         return
