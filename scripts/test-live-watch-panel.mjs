@@ -157,10 +157,14 @@ check('⚠️ 新游戏总是默认开播，不公开只作用于当前游戏', 
   assert.doesNotMatch(src, /8bit\.live\.private|readPrivate|writePrivate/, '旧的持久化隐私偏好仍会让后续游戏默认不公开')
   const player = code('src/emulator/EmulatorPlayer.tsx')
   assert.match(player, /<LiveControls\s+key=\{gameSlug\}/, '切换到另一款游戏时没有重置本局隐私状态')
-  // 开局前那一下选择只在这一局（这一个播放器实例）里有效，默认公开，不能落任何存储
-  assert.match(player, /const \[liveOptOut, setLiveOptOut\] = useState\(false\)/, '开局前的公开选择默认值不是公开')
+  // 开局前那一下选择默认公开；只有静态依赖失败、玩家主动整页重试时，临时带过这一跳，不能污染后续游戏
+  assert.match(player, /const \[liveOptOut, setLiveOptOut\] = useState\(\(\) =>/, '开局前的公开选择没有显式初始化')
+  assert.match(player, /return pending\.slug === gameSlug && pending\.hidden === true[\s\S]{0,130}pending\.expires > Date\.now\(\)/, '临时恢复标记没有校验游戏身份和短时有效期')
+  assert.match(player, /sessionStorage\.removeItem\('8bitgo\.player\.reload-hidden'\)/, '临时恢复标记没有在挂载后立即消费，可能污染后续游戏')
+  assert.match(player, /if \(liveOptOut\) \{[\s\S]{0,160}sessionStorage\.setItem\('8bitgo\.player\.reload-hidden'/, '重试整页导航时没有保留本局明确选择的不公开')
+  assert.match(player, /expires: Date\.now\(\) \+ 60_000/, '隐私选择跨页标记没有短时失效')
   assert.match(player, /initialHidden=\{liveOptOut\}/, '开局前选的「不公开」没有交给本局的推流组件')
-  assert.doesNotMatch(player, /localStorage[^\n]*liveOptOut|liveOptOut[^\n]*localStorage/, '开局前的公开选择不能持久化')
+  assert.doesNotMatch(player, /localStorage[^\n]*liveOptOut|liveOptOut[^\n]*localStorage|8bit\.live\.private|readPrivate|writePrivate/, '开局前的公开选择不能变成跨会话偏好')
   const toggleAt = src.indexOf('const toggleHidden = () =>')
   const phaseAt = src.indexOf('const phase: Phase', toggleAt)
   const toggle = src.slice(toggleAt, phaseAt)

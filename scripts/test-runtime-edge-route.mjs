@@ -233,6 +233,9 @@ await check('接线：runtimeBase 读持久化结论；loadMountOf 按进展计�
   const player = read('src/emulator/EmulatorPlayer.tsx')
   assert.match(player, /isRuntimeModuleTimeout\(error\) && \(error as \{ assetsOnCnEdge\?: boolean \}\)\.assetsOnCnEdge && !onOriginAssetsPage\(\)/)
   assert.match(player, /location\.replace\(originAssetsUrl\(window\.location\)\)/)
+  assert.match(player, /importFailureNeedsDocumentReload\(error\)[\s\S]{0,180}requiresDocumentReload: true/)
+  assert.match(player, /if \(failed\.requiresDocumentReload\)[\s\S]{0,700}window\.location\.replace\(target\)[\s\S]{0,100}window\.location\.reload\(\)/)
+  assert.match(player, /8bitgo\.player\.reload-hidden/, '整页重试必须保留用户开局前的不公开选择')
 })
 
 console.log('')

@@ -177,6 +177,11 @@ function importEvidence(error: unknown): ImportGraphEvidence | null {
   return value && typeof value.top === 'string' ? value : null
 }
 
+/** 入口已下载但静态依赖失败时，浏览器会把失败留在当前文档的模块表里；只有整页重载能清掉它。 */
+export function importFailureNeedsDocumentReload(error: unknown): boolean {
+  return importEvidence(error)?.top === 'ok'
+}
+
 const MAX_FAILED_DEPS = 6
 
 /**

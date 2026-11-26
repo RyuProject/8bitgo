@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react'
-import { importWithRetry, lazyChunkFile, lazyFailure, onOriginAssetsPage, originAssetsUrl, tagLazyFailure } from '@/services/moduleLinkRecovery'
+import { importFailureNeedsDocumentReload, importWithRetry, lazyChunkFile, lazyFailure, onOriginAssetsPage, originAssetsUrl, tagLazyFailure } from '@/services/moduleLinkRecovery'
 import { isRuntimeModuleTimeout } from './moduleLoadDeadline'
 import { useNavigate } from 'react-router-dom'
 import type { ArcadeButtonCount, DosBackend, DosWindowsVersion, FlashControls, Game, GenreId, Platform, PlatformId } from '@/types'
@@ -308,7 +308,11 @@ interface ActiveSession {
 /** 失败页的手动重试沿用最后一次实际启动配置，避免重新回到已失败的默认路径。 */
 type FailedLaunchContext = Pick<ActiveSession,
   'game' | 'platform' | 'runtime' | 'coreOverride' | 'coreOverridePinned' | 'ruledOut' | 'romRefreshed' | 'fallbacks' | 'manualTriedCores' | 'manualCoreFallbackAllowed'
-> & { recoveryCause: 'core' | 'runtime' | 'content' | 'deterministic' | 'network' | 'config' }
+> & {
+  recoveryCause: 'core' | 'runtime' | 'content' | 'deterministic' | 'network' | 'config'
+  /** 浏览器已把静态依赖失败记进本页模块表；同页再开必然复用失败，只能由玩家点重试刷新文档。 */
+  requiresDocumentReload?: boolean
+}
 
 /**
  * 调试诊断：把「从拖进文件到出首帧」拆成几个阶段，每个阶段记一笔成败。
@@ -1106,7 +1110,22 @@ export function EmulatorPlayer({
    * 默认 false：新游戏默认开播（AGENTS.md §2.23.1）。播放器按 game.slug 作 key 挂载，
    * 换一款游戏这个 state 跟着整个组件重建，不会把上一款的「不公开」带过去。
    */
-  const [liveOptOut, setLiveOptOut] = useState(false)
+  const [liveOptOut, setLiveOptOut] = useState(() => {
+    // 静态模块依赖失败后只能整页重载；把开局前的「不公开」带过这一次导航，避免 autoplay 重开时意外开播。
+    const key = '8bitgo.player.reload-hidden'
+    try {
+      const raw = sessionStorage.getItem(key)
+      if (!raw) return false
+      const pending = JSON.parse(raw) as { slug?: unknown; hidden?: unknown; expires?: unknown }
+      return pending.slug === gameSlug && pending.hidden === true && typeof pending.expires === 'number' && pending.expires > Date.now()
+    } catch {
+      return false
+    }
+  })
+  useEffect(() => {
+    // 状态初始化必须保持纯读取：React 开发期可能调用两次；提交后再消费一次性导航标记。
+    try { sessionStorage.removeItem('8bitgo.player.reload-hidden') } catch { /* 禁用存储时不影响游戏 */ }
+  }, [])
   useEffect(() => {
     if (liveCtl) setLiveOptOut(liveCtl.phase === 'hidden')
   }, [liveCtl])
@@ -3079,6 +3098,9 @@ export function EmulatorPlayer({
         }
         reportStartupFailure(message)
         rememberFailedLaunch(session)
+        if (typeof session.game === 'string' && importFailureNeedsDocumentReload(error) && failedLaunchRef.current) {
+          failedLaunchRef.current = { ...failedLaunchRef.current, requiresDocumentReload: true }
+        }
         setError(message)
         setStatus('error')
         return
@@ -4850,6 +4872,22 @@ export function EmulatorPlayer({
     const failed = failedLaunchRef.current
     // 页面 ROM / 平台可能已切换；此时应由 start() 按新选择重新探测，不能拿旧地址开局。
     if (!failed || typeof failed.game !== 'string' || failed.game !== romUrl || failed.platform !== platform.id) return false
+    if (failed.requiresDocumentReload) {
+      // 原地重新 import 会命中当前文档记住的失败依赖；整页导航建立新的模块表后才能重新请求。
+      try {
+        if (liveOptOut) {
+          sessionStorage.setItem('8bitgo.player.reload-hidden', JSON.stringify({
+            slug: gameSlug,
+            hidden: true,
+            expires: Date.now() + 60_000,
+          }))
+        }
+      } catch { /* 存储不可用时也允许玩家重载；不阻止恢复游戏 */ }
+      const target = cleanPageRetryUrl(window.location.href)
+      if (target) window.location.replace(target)
+      else window.location.reload()
+      return true
+    }
     failedLaunchRef.current = null
     startSeqRef.current += 1
     setError(null)

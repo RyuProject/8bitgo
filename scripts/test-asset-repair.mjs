@@ -49,6 +49,7 @@ import {
   bustedChunkUrl,
   importGraphEvidence,
   describeImportEvidence,
+  importFailureNeedsDocumentReload,
 } from '../src/services/moduleLinkRecovery.ts'
 import {
   chunkStem,
@@ -996,9 +997,11 @@ assert.equal(parseRepairRequest({ build: '../../etc', files: ['a.js'] }), null)
     await assert.rejects(importWithRetry(async () => { loads++; throw err }, 'Page-AAA.js', ENTRY, env), TypeError)
     assert.equal(loads, 1)
     assert.deepEqual(urls, [], '不再换查询串重导入口')
+    assert.equal(importFailureNeedsDocumentReload(err), true, '当前文档缓存了静态依赖失败，玩家重试必须新建模块表')
     tagLazyFailure(err, 'Page-AAA.js', 'GameDetailPage')
     assert.deepEqual(lazyFailure(err).graph, { top: 'ok', failed: ['gradients-G1.js'] }, '证据交给兜底页')
   }
+  assert.equal(importFailureNeedsDocumentReload(new TypeError('普通模块错误')), false, '无静态依赖证据时不能强制整页重载')
   // 入口自己没下下来 → 照旧换查询串重试
   {
     const urls = []
