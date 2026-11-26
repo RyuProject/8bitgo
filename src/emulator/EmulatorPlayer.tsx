@@ -71,7 +71,13 @@ import { prewarmMameChdMediaOnHover, prewarmRuntime } from './prewarm'
 import { observeEjsCoreWarmEvent } from './ejsStartWarm'
 import { defaultDos71SystemUrl, prewarmSystemCache } from './systemSource'
 import { canRestartInPlace } from './sessionRestart'
-import { coreResolvedForSession, manualFallbackAllowedForSession, nextManualCoreOption } from './manualCoreRecovery'
+import {
+  canTryManualCoreRecovery,
+  coreResolvedForSession,
+  manualCoreOptionsForFailure,
+  manualFallbackAllowedForSession,
+  nextManualCoreOption,
+} from './manualCoreRecovery'
 import { AdSenseSlot } from '@/components/ads/AdSenseSlot'
 import { LoadingProgressOverlay } from './LoadingProgressOverlay'
 import { copyText } from '@/lib/clipboard'
@@ -3923,13 +3929,21 @@ export function EmulatorPlayer({
   }
 
   const nextManualCoreForFailedLaunch = (failed = failedLaunchRef.current): string | null => {
-    if (!failed || failed.runtime.id !== 'emulatorjs' ||
-        (failed.recoveryCause !== 'core' && failed.recoveryCause !== 'content') ||
-        failed.manualCoreFallbackAllowed === false) return null
+    if (!failed || !canTryManualCoreRecovery(
+      failed.runtime.id,
+      failed.platform,
+      failed.recoveryCause,
+      failed.manualCoreFallbackAllowed,
+    )) return null
     // RomData 是 FBNeo 专属；给这类街机包推荐 MAME 会造成确定性的错误开局。
     if (failed.platform === 'arcade' && arcadeRomDataRef.current) return null
     const psxDiscSet = failed.platform === 'psx' && ['chd', 'm3u'].includes(extOf(failed.game) ?? '')
-    const options = coreOptionsFor(failed.platform).filter((option) => !(psxDiscSet && option.id === 'mednafen_psx_hw'))
+    const options = manualCoreOptionsForFailure(
+      coreOptionsFor(failed.platform).filter((option) => !(psxDiscSet && option.id === 'mednafen_psx_hw')),
+      failed.platform,
+      failed.recoveryCause,
+      failed.manualTriedCores ?? [],
+    )
     return nextManualCoreOption(
       options,
       failed.manualTriedCores ?? [],

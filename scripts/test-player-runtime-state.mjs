@@ -9,7 +9,9 @@ import {
   sameRuntimeScreenLayout,
 } from '../src/emulator/playerRuntimeState.ts'
 import {
+  canTryManualCoreRecovery,
   coreResolvedForSession,
+  manualCoreOptionsForFailure,
   manualFallbackAllowedForSession,
   nextManualCoreOption,
 } from '../src/emulator/manualCoreRecovery.ts'
@@ -31,6 +33,38 @@ assert.equal(
   '核心别名归一后不能重复建议同一个核心',
 )
 assert.equal(nextManualCoreOption([{ id: 'fbneo' }], ['fbneo']), null, '核心选项都试过后应隐藏手动切换入口')
+assert.equal(canTryManualCoreRecovery('emulatorjs', 'arcade', 'deterministic', undefined), true,
+  '街机未知驱动不应触发无意义自动重试，但仍可能由另一种街机核心收录')
+assert.equal(canTryManualCoreRecovery('emulatorjs', 'arcade', 'deterministic', false), false,
+  'CRC 已确认是 MAME 专属的街机不能推荐必然不兼容的换核')
+assert.equal(canTryManualCoreRecovery('emulatorjs', 'flash', 'deterministic', undefined), false,
+  '其它确定性内容错误不能误开放核心恢复')
+assert.equal(canTryManualCoreRecovery('emulatorjs', 'arcade', 'network', undefined), false,
+  '网络故障应走网络恢复，不能引导玩家换核心')
+assert.deepEqual(
+  manualCoreOptionsForFailure(
+    [{ id: 'fbneo' }, { id: 'fbneo-lowmem' }, { id: 'mame2003_plus' }],
+    'arcade', 'deterministic', ['fbneo'],
+  ),
+  [{ id: 'mame2003_plus' }],
+  'FBNeo 未知驱动时不再推荐同驱动表的低内存版或重复试普通版',
+)
+assert.deepEqual(
+  manualCoreOptionsForFailure(
+    [{ id: 'fbneo' }, { id: 'fbneo-lowmem' }, { id: 'mame2003_plus' }],
+    'arcade', 'deterministic', ['mame-current'],
+  ),
+  [{ id: 'fbneo' }, { id: 'mame2003_plus' }],
+  '其它街机核心报未知驱动时，FBNeo 仍可作为不同覆盖面的手动回退',
+)
+assert.deepEqual(
+  manualCoreOptionsForFailure(
+    [{ id: 'fbneo' }, { id: 'fbneo-lowmem' }],
+    'arcade', 'core', ['fbneo'],
+  ),
+  [{ id: 'fbneo' }, { id: 'fbneo-lowmem' }],
+  '内存类核心错误仍可使用低内存 FBNeo 变体',
+)
 assert.equal(coreResolvedForSession({ sessionId: 7, core: 'mame-current' }, 7, 'fbneo'), 'mame-current', '失败恢复沿用本局实际运行核心')
 assert.equal(coreResolvedForSession({ sessionId: 6, core: 'mame-current' }, 7, 'fbneo'), 'fbneo', '迟到的旧会话回调不能污染新局')
 assert.equal(coreResolvedForSession(null, 7, undefined), undefined)
@@ -87,6 +121,7 @@ for (const dep of controlsEffect[1].split(',').map((d) => d.trim())) {
   )
 }
 const player = readFileSync(new URL('../src/emulator/EmulatorPlayer.tsx', import.meta.url), 'utf8')
+const emulatorjsAdapter = readFileSync(new URL('../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8')
 assert.match(player, /onControls=\{acceptLiveCtl\}/, '播放器必须经 acceptLiveCtl 去重后再存直播开关')
 assert.match(player, /sameLiveControls\(current, next\) \? current : next/)
 
@@ -101,10 +136,13 @@ assert.match(player, /status === 'error' && retryLastFailedLaunch\(\)/)
 assert.match(player, /nextManualCoreOption\(\s*options,\s*failed\.manualTriedCores/s)
 assert.match(player, /resolvedCoreRef\.current = \{[\s\S]{0,180}core: resolvedCore/)
 assert.match(player, /coreResolvedForSession\(coreReport, failed\.id, failed\.coreOverride\)/)
-assert.match(player, /failed\.manualCoreFallbackAllowed === false/)
 assert.match(player, /failed\.runtime\.id === 'emulatorjs' \? currentCore/)
 assert.match(player, /failed\.platform === 'arcade' && arcadeRomDataRef\.current/, 'FBNeo 专属 RomData 游戏不能露出 MAME 等不兼容核心')
-assert.match(player, /failed\.recoveryCause !== 'core' && failed\.recoveryCause !== 'content'/)
+assert.match(player, /canTryManualCoreRecovery\(\s*failed\.runtime\.id,\s*failed\.platform,\s*failed\.recoveryCause,\s*failed\.manualCoreFallbackAllowed/s)
+assert.match(player, /manualCoreOptionsForFailure\(/,
+  '街机未知驱动错误必须过滤无兼容性收益的同家族低内存变体')
+assert.match(emulatorjsAdapter, /arcadeFatal === 'unknown-set'[\s\S]{0,120}'deterministic'/,
+  '街机未知驱动需跳过同核心自动重试，同时留下手动换核恢复机会')
 assert.match(player, /manualCoreRetryAvailable && \([\s\S]*?t\.player\.tryAnotherCore/)
 
 console.log('✔ 播放器对重复运行时状态报告保持引用稳定，并提供不重复的手动核心恢复路径')
