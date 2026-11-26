@@ -351,7 +351,7 @@ async function drain(
   body: ReadableStream<Uint8Array>,
   phase: LoadPhase,
   totalHint: number | undefined,
-  emit: (p: LoadProgress, flush?: boolean) => void | Promise<void>,
+  emit: (p: LoadProgress, flush?: boolean) => void,
   maxBytes = Infinity,
   touch?: () => void,
 ): Promise<{ chunks: Uint8Array[]; loaded: number }> {
@@ -374,7 +374,8 @@ async function drain(
       loaded += value.byteLength
       // 万一还是超了（服务器给的 Content-Length 本身就不对），转不确定态而不是显示 120%
       if (total !== undefined && loaded > total) total = undefined
-      await emit({ phase, loaded, total, ratio: total ? Math.min(loaded / total, 1) : undefined })
+      // 进度回调只更新同步状态；逐网络块 await 一个 void 会额外排微任务，拖慢大 ROM 的流读取。
+      emit({ phase, loaded, total, ratio: total ? Math.min(loaded / total, 1) : undefined })
     }
     if (total !== undefined && loaded !== total) {
       throw new Error(`下载不完整：应为 ${total} 字节，实际收到 ${loaded} 字节`)
@@ -1607,17 +1608,17 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
   const emitInitialRangeProgress = (flush = false) =>
     emitTotal(completed + firstRangeInFlight + inFlightBytes, total || probedTotal || undefined, flush)
   /** 把分片内的字节换算成“已经完整落盘的分片 + 当前片”的整份进度。 */
-  const takePart = async (res: Response, expect: number, onLoaded?: (loaded: number) => void | Promise<void>) => {
-    const relay = async (p: LoadProgress) => {
+  const takePart = async (res: Response, expect: number, onLoaded?: (loaded: number) => void) => {
+    const relay = (p: LoadProgress) => {
       const loaded = p.loaded ?? 0
-      await onLoaded?.(loaded)
+      onLoaded?.(loaded)
       if (onLoaded) emitInitialRangeProgress()
       else emitTotal(completed + loaded, total || probedTotal || undefined)
     }
     if (!res.body) {
       const blob = await bodylessPart(res, total)
       if (blob.size !== expect) throw new Error(`分片不完整：应为 ${expect} 字节，实际 ${blob.size}`)
-      if (onLoaded) await relay({ phase, loaded: blob.size })
+      if (onLoaded) relay({ phase, loaded: blob.size })
       return blob
     }
     // Content-Range 只是服务器自报；若实际流远大于这一片，不能先无限攒进 chunks 再验长度。
@@ -1722,7 +1723,7 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
             }, EARLY_ROUTE_STALL_MS)
           : undefined
         let sampled = false
-        const onFirstLoaded = async (loaded: number) => {
+        const onFirstLoaded = (loaded: number) => {
           firstAttemptLoaded = loaded
           firstRangeInFlight = loaded
           if (loaded >= EARLY_ROUTE_SAMPLE_BYTES) {
