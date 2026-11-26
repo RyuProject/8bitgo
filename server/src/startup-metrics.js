@@ -140,13 +140,46 @@ function scheduleCleanup() {
 export async function recordStartupEvent(slug, raw, country = 'XX') {
   const event = normalizeStartupEvent(raw)
   const safeCountry = /^[A-Z]{2}$/.test(country) ? country : 'XX'
+  // 同一局每多走一跳兜底，路线详情会变长。保留一个启动级计数，但把路由和最终运行时更新到最新进展。
+  // elapsed_ms 作为单调版本，防止较早发出的慢请求晚到后覆盖更完整的后续路线。
+  const fallbackRouteUpdate = event.event === 'fallback_started'
+    ? `
+     ON DUPLICATE KEY UPDATE
+       detail = IF(
+         COALESCE(incoming.elapsed_ms, 0) > COALESCE(elapsed_ms, 0)
+         OR (COALESCE(incoming.elapsed_ms, 0) = COALESCE(elapsed_ms, 0)
+           AND CHAR_LENGTH(COALESCE(incoming.detail, '')) > CHAR_LENGTH(COALESCE(detail, ''))),
+         incoming.detail, detail),
+       runtime = IF(
+         COALESCE(incoming.elapsed_ms, 0) > COALESCE(elapsed_ms, 0)
+         OR (COALESCE(incoming.elapsed_ms, 0) = COALESCE(elapsed_ms, 0)
+           AND CHAR_LENGTH(COALESCE(incoming.detail, '')) > CHAR_LENGTH(COALESCE(detail, ''))),
+         incoming.runtime, runtime),
+       platform = IF(
+         COALESCE(incoming.elapsed_ms, 0) > COALESCE(elapsed_ms, 0)
+         OR (COALESCE(incoming.elapsed_ms, 0) = COALESCE(elapsed_ms, 0)
+           AND CHAR_LENGTH(COALESCE(incoming.detail, '')) > CHAR_LENGTH(COALESCE(detail, ''))),
+         incoming.platform, platform),
+       elapsed_ms = GREATEST(COALESCE(elapsed_ms, 0), COALESCE(incoming.elapsed_ms, 0))`
+    : ''
+  const fallbackRouteSource = event.event === 'fallback_started'
+    ? `SELECT incoming.game_id, incoming.visit_id, incoming.attempt_id, incoming.event,
+              incoming.runtime, incoming.platform, incoming.country, incoming.elapsed_ms, incoming.detail
+         FROM (
+           SELECT id AS game_id, ? AS visit_id, ? AS attempt_id, ? AS event,
+                  ? AS runtime, ? AS platform, ? AS country, ? AS elapsed_ms, ? AS detail
+             FROM games
+            WHERE slug = ? AND hidden = 0
+            LIMIT 1
+         ) AS incoming`
+    : `SELECT id, ?, ?, ?, ?, ?, ?, ?, ?
+         FROM games
+        WHERE slug = ? AND hidden = 0
+        LIMIT 1`
   const result = await query(
-    `INSERT IGNORE INTO game_startup_events
+    `INSERT ${event.event === 'fallback_started' ? '' : 'IGNORE '}INTO game_startup_events
        (game_id, visit_id, attempt_id, event, runtime, platform, country, elapsed_ms, detail)
-     SELECT id, ?, ?, ?, ?, ?, ?, ?, ?
-       FROM games
-      WHERE slug = ? AND hidden = 0
-      LIMIT 1`,
+     ${fallbackRouteSource}${fallbackRouteUpdate}`,
     [
       event.visitId,
       event.attemptId,
@@ -161,9 +194,8 @@ export async function recordStartupEvent(slug, raw, country = 'XX') {
   )
   const recorded = Number(result?.affectedRows ?? 0) > 0
   /*
-   * INSERT IGNORE 的 affectedRows=0 有两种含义：游戏不存在，或同一阶段被浏览器 / 代理重放。
-   * 后一种必须算幂等成功，否则客户端会把唯一键正常挡住的重复包误当 404，再不断重试。
-   * 只在零行时补一次存在性查询，正常写入不多付一次数据库往返。
+   * affectedRows=0 表示游戏不存在，或同一阶段是幂等重放 / 较旧的兜底路线更新。
+   * 这些重复都不能误回 404，否则客户端会不断重试；只在零行时补一次存在性查询，正常写入不多付往返。
    */
   const accepted = recorded || (await query(
     'SELECT 1 FROM games WHERE slug = ? AND hidden = 0 LIMIT 1',

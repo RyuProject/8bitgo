@@ -92,7 +92,7 @@
     "test:sitemap": "node scripts/test-sitemap.mjs",
     "test:robots": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-robots.mjs",
     "test:site-notice": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-site-notice.mjs",
-    "test:startup-metrics": "node server/scripts/test-startup-metrics.mjs",
+    "test:startup-metrics": "node server/scripts/test-startup-metrics.mjs && node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-startup-fallback-routes.mjs",
     "test:asset-repair": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-asset-repair.mjs",
     "test:lazy-imports": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-lazy-imports.mjs",
     "test:lazy-imports-browser": "node scripts/test-lazy-imports-browser.mjs",
