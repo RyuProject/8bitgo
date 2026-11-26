@@ -70,7 +70,7 @@ globalThis.XMLHttpRequest = class {
 }
 
 const { uploadRom, deleteRomDir, headRom, listRomObjects } = await import('../src/services/roms.ts')
-const { adaptiveUploadConcurrency, preferredUploadConcurrency, PART_SIZE, uploadRomMultipart, listOrphanUploads, abortOrphanUpload, listPendingUploads, MultipartUploadGate, UploadTransferPool, askJson } = await import('../src/services/romMultipart.ts')
+const { adaptiveUploadConcurrency, preferredUploadConcurrency, warmUploadSampleBytes, PART_SIZE, uploadRomMultipart, listOrphanUploads, abortOrphanUpload, listPendingUploads, MultipartUploadGate, UploadTransferPool, askJson } = await import('../src/services/romMultipart.ts')
 const { fingerprintRomPart, fingerprintRomUploadFile } = await import('../src/services/romFingerprint.ts')
 const { matchesRomPackSource, romPackWorkerConcurrency } = await import('../src/services/romPack.ts')
 const {
@@ -363,6 +363,10 @@ console.log('✅ ROM 分片在首片早期样本后保守启动并发，慢速�
   }
   assert.equal(overlapObserved, true, '必须在第一片完成前启动至少一片后续分片')
   assert.deepEqual([...startedParts].sort((a, b) => a - b), [1, 2, 3])
+  assert.equal(warmUploadSampleBytes('https://w.test', 4), 512 * 1024, '同一 Worker 的近期干净测速可减半观察量，但不直接放开并发')
+  assert.equal(warmUploadSampleBytes('https://other-worker.test', 4), 1024 * 1024, '换 Worker 域名后不能复用旧线路速度')
+  assert.equal(warmUploadSampleBytes('https://w.test', 4, Date.now() + 10 * 60 * 1000), 1024 * 1024, '测速过期后回到完整样本')
+  assert.equal(warmUploadSampleBytes('https://w.test', 1), 1024 * 1024, '省流量或低性能设备继续走单路完整样本')
   assert.ok(uploadedStages.at(-1)?.ms > 550 && uploadedStages.at(-1)?.ms < 680, '应按多个分片的 Worker Server-Timing 与真实上传体时长估算平均确认等待')
   assert.equal(uploadedStages.at(-1)?.samples, 3, '应显示参与等待均值的已测分片数')
   assert.ok(hashStages.at(-1)?.ms >= 0, '应显示上传结束后本地摘要仍未完成的平均等待，即使摘要已提前完成')

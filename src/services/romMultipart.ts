@@ -41,10 +41,13 @@ export const PART_SIZE = 8 * 1024 * 1024
  */
 const INITIAL_CONCURRENCY = 1
 const MAX_CONCURRENCY = 4
-/** 首片传到 1 MiB 且至少观测 250 ms 后才试探性放开第二路，避免把浏览器缓冲突发当成真实上行。 */
+/** 常规首片传到 1 MiB 且至少观测 250 ms 后才试探性放开第二路，避免把浏览器缓冲突发当成真实上行。 */
 const EARLY_SAMPLE_BYTES = 1024 * 1024
 const EARLY_SAMPLE_MIN_MS = 250
 const EARLY_SAMPLE_MAX_CONCURRENCY = 2
+/** 有同 Worker 的近期成功测速时，减半首片观察量；仍先单路发出，避免首片鉴权失败时多传一片。 */
+const WARM_UPLOAD_TTL_MS = 10 * 60 * 1000
+const WARM_UPLOAD_SAMPLE_BYTES = 512 * 1024
 /** 单片重试次数（含首次）。连接级重置需要给浏览器足够时间重建 HTTP/2 会话。 */
 const ATTEMPTS = 5
 const RECOVERY_SUCCESS_PARTS = 4
@@ -85,6 +88,50 @@ export interface PendingUpload {
   /** 只有浏览器已核对本地内容后才允许续传复用；旧账本缺摘要时对应分片会安全重传。 */
   parts: { partNumber: number; etag: string; contentHash?: string }[]
   updatedAt: number
+}
+
+interface WarmUploadProfile {
+  apiOrigin: string
+  concurrency: number
+  measuredMbps: number
+  at: number
+}
+
+/** 仅保存在当前页内存：网络切换 / 刷新自然失效，不把管理员的上行情况写进持久存储。 */
+let warmUploadProfile: WarmUploadProfile | null = null
+
+function uploadApiOrigin(api: string): string {
+  try {
+    return new URL(api, typeof location === 'undefined' ? 'https://8bitgo.invalid' : location.href).origin
+  } catch {
+    return api
+  }
+}
+
+/**
+ * 同一管理页近期连续上传时复用成功测速，只减少本次首片的观察字节数，不直接增加并发。
+ * 当前请求仍由首片真实进度确认后才会放开第二路；过期或换 Worker 时使用完整样本。
+ */
+export function warmUploadSampleBytes(
+  api: string,
+  preferred: number,
+  now = Date.now(),
+): number {
+  const preferredSafe = Math.max(1, Math.min(MAX_CONCURRENCY, Math.floor(preferred) || 1))
+  const profile = warmUploadProfile
+  if (preferredSafe < 2 || !profile || profile.apiOrigin !== uploadApiOrigin(api) || now - profile.at < 0 || now - profile.at >= WARM_UPLOAD_TTL_MS) return EARLY_SAMPLE_BYTES
+  if (profile.concurrency < 2 || profile.measuredMbps <= 0) return EARLY_SAMPLE_BYTES
+  return WARM_UPLOAD_SAMPLE_BYTES
+}
+
+function rememberWarmUpload(api: string, profile: ReturnType<MultipartUploadGate['snapshot']>): void {
+  if (!profile.calibrated || profile.hadFailure || profile.measuredMbps <= 0 || profile.limit < 2) return
+  warmUploadProfile = {
+    apiOrigin: uploadApiOrigin(api),
+    concurrency: profile.limit,
+    measuredMbps: profile.measuredMbps,
+    at: Date.now(),
+  }
 }
 
 interface CreateRequestRecord {
@@ -180,6 +227,7 @@ export class MultipartUploadGate {
   private calibrated = false
   private calibratedTarget = 1
   private measuredMbps = 0
+  private hadFailure = false
   private runSequence = 0
   private calibrationRunId: number | null = null
   private calibrationStartedAt: number | null = null
@@ -189,17 +237,20 @@ export class MultipartUploadGate {
   private readonly waiters: UploadWaiter[] = []
   private readonly now: () => number
   private readonly hints: UploadNetworkHints
+  private readonly earlySampleBytes: number
 
   constructor(
     preferred = MAX_CONCURRENCY,
     initial = Math.min(INITIAL_CONCURRENCY, preferred),
     now: () => number = monotonicNow,
     hints: UploadNetworkHints = browserUploadNetworkHints(),
+    earlySampleBytes = EARLY_SAMPLE_BYTES,
   ) {
     this.preferred = Math.max(1, Math.min(MAX_CONCURRENCY, Math.floor(preferred)))
     this.limit = Math.max(1, Math.min(this.preferred, Math.floor(initial)))
     this.now = now
     this.hints = hints
+    this.earlySampleBytes = Math.max(1, Math.floor(earlySampleBytes))
   }
 
   private acquire(signal?: AbortSignal): Promise<void> {
@@ -244,7 +295,7 @@ export class MultipartUploadGate {
     const loaded = Number.isFinite(bytes) ? Math.max(0, Math.floor(bytes)) : 0
     if (loaded < this.calibrationProgressBytes) return
     this.calibrationProgressBytes = loaded
-    if (loaded < EARLY_SAMPLE_BYTES) return
+    if (loaded < this.earlySampleBytes) return
     const elapsedMs = this.now() - this.calibrationStartedAt
     if (elapsedMs < EARLY_SAMPLE_MIN_MS) return
     this.calibrate(loaded, elapsedMs, true)
@@ -294,6 +345,7 @@ export class MultipartUploadGate {
       }
       return value
     } catch (error) {
+      this.hadFailure = true
       // 让调用方先记录致命失败，再在 finally 里唤醒排队任务；否则下一片可能在错误回调前已经发出。
       try { onErrorBeforeDrain?.(error) } catch { /* 错误观测不能覆盖真正的上传失败 */ }
       if (this.provisionalTarget) {
@@ -337,6 +389,7 @@ export class MultipartUploadGate {
       successStreak: this.successStreak,
       calibrated: this.calibrated,
       measuredMbps: this.measuredMbps,
+      hadFailure: this.hadFailure,
     }
   }
 }
@@ -1203,7 +1256,13 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
   const resumed = resumedState ? resumedState.parts.length : 0
   if (resumable) saveState(state)
   const preferredConcurrency = preferredUploadConcurrency()
-  const uploadGate = new MultipartUploadGate(preferredConcurrency)
+  const uploadGate = new MultipartUploadGate(
+    preferredConcurrency,
+    INITIAL_CONCURRENCY,
+    monotonicNow,
+    browserUploadNetworkHints(),
+    warmUploadSampleBytes(ctx.api, preferredConcurrency),
+  )
 
   /** 除最后一片外都是 partSize —— R2 要求「除末片外等大」，这也是身份校验要带上 partSize 的原因 */
   const sizeOfPart = (n: number) => Math.min(partSize, file.size - (n - 1) * partSize)
@@ -1355,6 +1414,7 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
   stopScheduledReport()
   clearState(key)
   const network = uploadGate.snapshot()
+  rememberWarmUpload(ctx.api, network)
   onProgress?.(100, {
     parts: total,
     done: total,
