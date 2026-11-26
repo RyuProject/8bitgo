@@ -71,7 +71,7 @@ import { prewarmMameChdMediaOnHover, prewarmRuntime } from './prewarm'
 import { observeEjsCoreWarmEvent } from './ejsStartWarm'
 import { defaultDos71SystemUrl, prewarmSystemCache } from './systemSource'
 import { canRestartInPlace } from './sessionRestart'
-import { coreResolvedForSession, nextManualCoreOption } from './manualCoreRecovery'
+import { coreResolvedForSession, manualFallbackAllowedForSession, nextManualCoreOption } from './manualCoreRecovery'
 import { AdSenseSlot } from '@/components/ads/AdSenseSlot'
 import { LoadingProgressOverlay } from './LoadingProgressOverlay'
 import { copyText } from '@/lib/clipboard'
@@ -289,11 +289,13 @@ interface ActiveSession {
   ruledOut?: RuntimeId[]
   /** 玩家手动切换核心的恢复链；跨原地重试保留，避免按钮来回推荐已经失败的核心。 */
   manualTriedCores?: string[]
+  /** 适配器按 ROM 指纹确认只有当前核心有该驱动时，不展示必然无法启动的换核选项。 */
+  manualCoreFallbackAllowed?: boolean
 }
 
 /** 失败页的手动重试沿用最后一次实际启动配置，避免重新回到已失败的默认路径。 */
 type FailedLaunchContext = Pick<ActiveSession,
-  'game' | 'platform' | 'runtime' | 'coreOverride' | 'ruledOut' | 'romRefreshed' | 'fallbacks' | 'manualTriedCores'
+  'game' | 'platform' | 'runtime' | 'coreOverride' | 'ruledOut' | 'romRefreshed' | 'fallbacks' | 'manualTriedCores' | 'manualCoreFallbackAllowed'
 > & { recoveryCause: 'core' | 'runtime' | 'content' | 'deterministic' | 'network' | 'config' }
 
 /**
@@ -1647,7 +1649,7 @@ export function EmulatorPlayer({
   const inputRef = useRef<HTMLInputElement>(null)
   const sessionCounter = useRef(0)
   /** 适配器可能在 ROM / CHD / 内存预检后换核；失败回调闭包仍持有旧 session，故按 session id 单独记录最终核心。 */
-  const resolvedCoreRef = useRef<{ sessionId: number; core: string } | null>(null)
+  const resolvedCoreRef = useRef<{ sessionId: number; core: string; manualFallbackAllowed?: boolean } | null>(null)
   /** 启动漏斗按 attempt/event 唯一；事件仍需按核心身份配对，不能把回退核心完成时间接到旧核心上。 */
   const coreWarmObservationRef = useRef<{
     attemptId: string
@@ -2255,13 +2257,22 @@ export function EmulatorPlayer({
       // 按游戏覆盖核心 / 平台级 BIOS：都用 ref 读当前值，
       // 放进 effect 依赖会让「BIOS 异步到货」把正在跑的游戏重启一遍
       core: session.coreOverride ?? coreRef.current,
-      onCoreResolved: (resolvedCore, saveSuffix) => {
+      onCoreResolved: (resolvedCore, saveSuffix, manualFallbackAllowed) => {
         if (!isCurrent()) return
-        resolvedCoreRef.current = { sessionId: session.id, core: resolvedCore }
+        const priorReport = resolvedCoreRef.current
+        resolvedCoreRef.current = {
+          sessionId: session.id,
+          core: resolvedCore,
+          manualFallbackAllowed: manualFallbackAllowed === false ||
+            (priorReport?.sessionId === session.id && priorReport.manualFallbackAllowed === false)
+            ? false
+            : undefined,
+        }
         setSession((current) => current?.id === session.id ? {
           ...current,
           coreOverride: resolvedCore,
           saveSlug: saveSuffix && current.saveSlug ? fbneoWofcnSaveSlug(current.saveSlug) : current.saveSlug,
+          manualCoreFallbackAllowed: manualFallbackAllowed === false ? false : current.manualCoreFallbackAllowed,
         } : current)
       },
       forceRomRefresh: session.forceRomRefresh,
@@ -3877,11 +3888,14 @@ export function EmulatorPlayer({
       return
     }
     const manualTriedCores = new Set(failed.manualTriedCores ?? [])
-    const reportedCore = failed.runtime.id === 'emulatorjs'
-      ? coreResolvedForSession(resolvedCoreRef.current, failed.id, failed.coreOverride)
-      : failed.coreOverride
+    const coreReport = failed.runtime.id === 'emulatorjs' && resolvedCoreRef.current?.sessionId === failed.id
+      ? resolvedCoreRef.current
+      : null
+    const reportedCore = coreResolvedForSession(coreReport, failed.id, failed.coreOverride)
     if (failed.coreOverride) manualTriedCores.add(failed.coreOverride)
-    const currentCore = emulatorJsCoreForGame(failed.platform, reportedCore ?? coreRef.current)
+    const currentCore = failed.runtime.id === 'emulatorjs'
+      ? emulatorJsCoreForGame(failed.platform, reportedCore ?? coreRef.current)
+      : undefined
     if (currentCore) manualTriedCores.add(currentCore)
     if (failedCore) manualTriedCores.add(failedCore)
     for (const fallback of failed.fallbacks ?? []) {
@@ -3894,18 +3908,24 @@ export function EmulatorPlayer({
       game: failed.game,
       platform: failed.platform,
       runtime: failed.runtime,
-      coreOverride: currentCore ?? failed.coreOverride,
+      coreOverride: failed.runtime.id === 'emulatorjs' ? currentCore ?? failed.coreOverride : failed.coreOverride,
       ruledOut: failed.ruledOut ? [...failed.ruledOut] : undefined,
       romRefreshed: failed.romRefreshed || failed.forceRomRefresh,
       fallbacks: failed.fallbacks ? [...failed.fallbacks] : undefined,
       manualTriedCores: [...manualTriedCores],
+      manualCoreFallbackAllowed: manualFallbackAllowedForSession(
+        coreReport,
+        failed.id,
+        failed.manualCoreFallbackAllowed,
+      ) ? undefined : false,
       recoveryCause,
     }
   }
 
   const nextManualCoreForFailedLaunch = (failed = failedLaunchRef.current): string | null => {
     if (!failed || failed.runtime.id !== 'emulatorjs' ||
-        (failed.recoveryCause !== 'core' && failed.recoveryCause !== 'content')) return null
+        (failed.recoveryCause !== 'core' && failed.recoveryCause !== 'content') ||
+        failed.manualCoreFallbackAllowed === false) return null
     // RomData 是 FBNeo 专属；给这类街机包推荐 MAME 会造成确定性的错误开局。
     if (failed.platform === 'arcade' && arcadeRomDataRef.current) return null
     const psxDiscSet = failed.platform === 'psx' && ['chd', 'm3u'].includes(extOf(failed.game) ?? '')

@@ -96,8 +96,8 @@ export interface MountOptions {
    * 更老的板子可能只有 mame2003_plus 跑得动 —— 一个平台默认值盖不住。
    */
   core?: string
-  /** ROM CRC 命中后适配器自动换用游戏专属核心时，同步会话核心和独立存档档位。 */
-  onCoreResolved?: (core: string, saveSuffix?: string) => void
+  /** ROM / 内存 / 光盘识别后同步最终核心；已证实没有兼容替代核心时隐藏误导性的手动换核入口。 */
+  onCoreResolved?: (core: string, saveSuffix?: string, manualFallbackAllowed?: boolean) => void
   /**
    * FBNeo RomData（.dat 文本）。传了就在虚拟文件系统里和 ROM 并排放一份
    * `<romset>.dat`，让核心把这个包当成挂在别的驱动上的自定义 romset。

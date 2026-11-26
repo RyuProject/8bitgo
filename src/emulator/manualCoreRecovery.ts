@@ -13,9 +13,18 @@ export function nextManualCoreOption(
 
 /** 只有同一局实际解析出的核心才可覆盖启动参数，避免迟到回调污染新会话。 */
 export function coreResolvedForSession(
-  report: { sessionId: number; core: string } | null,
+  report: { sessionId: number; core: string; manualFallbackAllowed?: boolean } | null,
   sessionId: number,
   fallback: string | undefined,
 ): string | undefined {
   return report?.sessionId === sessionId ? report.core : fallback
+}
+
+/** 只有同一局的识别结论能禁止手动换核；旧 ROM 的迟到回调不能关闭新局的兜底入口。 */
+export function manualFallbackAllowedForSession(
+  report: { sessionId: number; manualFallbackAllowed?: boolean } | null,
+  sessionId: number,
+  fallback: boolean | undefined,
+): boolean {
+  return fallback !== false && !(report?.sessionId === sessionId && report.manualFallbackAllowed === false)
 }

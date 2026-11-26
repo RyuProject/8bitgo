@@ -2620,9 +2620,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   }
   // 先收窄成确定的 string 再允许 RomData 纠正它；否则 TypeScript 会因为变量可变而丢掉上面的空值判定。
   let core: string = resolvedCore
-  const reportResolvedCore = (saveSuffix?: string) => {
+  const reportResolvedCore = (saveSuffix?: string, manualFallbackAllowed?: boolean) => {
     try {
-      options.onCoreResolved?.(core, saveSuffix)
+      options.onCoreResolved?.(core, saveSuffix, manualFallbackAllowed)
     } catch (error) {
       // 核心状态同步只供失败恢复使用；父层回调异常不能中断真实开局。
       console.warn('[emulatorjs] 汇报最终核心失败，继续启动', error)
@@ -5422,8 +5422,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             if (!isMameCurrentCore(core)) {
               console.warn(`[arcade] ${namcoSet.board} 只能用 MAME 运行，${core} 没有这块板子的驱动，已自动切换为 mame-current`)
               core = 'mame-current'
-              reportResolvedCore()
             }
+            // CRC 已确认这是 MAME 专属板卡；其它核心没有对应驱动，换核只会让玩家再等一轮后回到同一错误。
+            reportResolvedCore(undefined, false)
             engineGameName = `${namcoSet.romset}.zip`
             /*
               平台级 BIOS（通常是 neogeo.zip）对这两块板子毫无用处：System 12 不需要 BIOS，
@@ -5446,8 +5447,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             if (!isMameCurrentCore(core)) {
               console.warn(`[arcade] ${mameCatalogSet.board}（${mameCatalogSet.romset}）只能用 MAME 运行，${core} 没有这块板子的驱动，已自动切换为 mame-current`)
               core = 'mame-current'
-              reportResolvedCore()
             }
+            // 目录匹配确认该 set 只有当前版 MAME 支持，不展示其它核心的必败重试入口。
+            reportResolvedCore(undefined, false)
             engineGameName = `${mameCatalogSet.romset}.zip`
             const neededBios = mameCatalogSet.missingDevices.map((device) => device.shortname)
             if (engineBiosUrl && !neededBios.includes(platformBiosName)) {
