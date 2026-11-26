@@ -142,14 +142,10 @@ export async function recordStartupEvent(slug, raw, country = 'XX') {
   const safeCountry = /^[A-Z]{2}$/.test(country) ? country : 'XX'
   // 同一局每多走一跳兜底，路线详情会变长。保留一个启动级计数，但把路由和最终运行时更新到最新进展。
   // elapsed_ms 作为单调版本，防止较早发出的慢请求晚到后覆盖更完整的后续路线。
+  // MySQL 按赋值顺序计算重复键更新：runtime / platform 先读旧路线，detail 更新后，elapsed_ms 最后推进。
   const fallbackRouteUpdate = event.event === 'fallback_started'
     ? `
      ON DUPLICATE KEY UPDATE
-       detail = IF(
-         COALESCE(incoming.elapsed_ms, 0) > COALESCE(elapsed_ms, 0)
-         OR (COALESCE(incoming.elapsed_ms, 0) = COALESCE(elapsed_ms, 0)
-           AND CHAR_LENGTH(COALESCE(incoming.detail, '')) > CHAR_LENGTH(COALESCE(detail, ''))),
-         incoming.detail, detail),
        runtime = IF(
          COALESCE(incoming.elapsed_ms, 0) > COALESCE(elapsed_ms, 0)
          OR (COALESCE(incoming.elapsed_ms, 0) = COALESCE(elapsed_ms, 0)
@@ -160,6 +156,11 @@ export async function recordStartupEvent(slug, raw, country = 'XX') {
          OR (COALESCE(incoming.elapsed_ms, 0) = COALESCE(elapsed_ms, 0)
            AND CHAR_LENGTH(COALESCE(incoming.detail, '')) > CHAR_LENGTH(COALESCE(detail, ''))),
          incoming.platform, platform),
+       detail = IF(
+         COALESCE(incoming.elapsed_ms, 0) > COALESCE(elapsed_ms, 0)
+         OR (COALESCE(incoming.elapsed_ms, 0) = COALESCE(elapsed_ms, 0)
+           AND CHAR_LENGTH(COALESCE(incoming.detail, '')) > CHAR_LENGTH(COALESCE(detail, ''))),
+         incoming.detail, detail),
        elapsed_ms = GREATEST(COALESCE(elapsed_ms, 0), COALESCE(incoming.elapsed_ms, 0))`
     : ''
   const fallbackRouteSource = event.event === 'fallback_started'
