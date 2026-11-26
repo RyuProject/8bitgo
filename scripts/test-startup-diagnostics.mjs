@@ -157,6 +157,12 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
     '读回旧现场时应把已有的 unknown 重算为新识别出的明确 BIOS 配置错误')
   assert.notEqual(diagnoseStartupFailure({ event: 'failed', runtime: 'emulatorjs', platform: 'gba', detail: 'GBA ROM failed to load' }).code, 'bios_config',
     '普通 GBA ROM 故障不能被误判成平台 BIOS 配置错误')
+  assert.equal(diagnoseStartupFailure({
+    event: 'failed', runtime: 'iodinegba', platform: 'gba', detail: 'GBA BIOS is required and must be 16 KiB',
+  }).code, 'bios_config', 'IodineGBA 的平台 BIOS 配置问题要和街机 ROM 集错误分开')
+  assert.notEqual(diagnoseStartupFailure({
+    event: 'failed', runtime: 'emulatorjs', platform: 'gba', detail: 'GBA BIOS is required and must be 16 KiB',
+  }).code, 'bios_config', '平台 BIOS 专属诊断不能误判其他 GBA 运行时')
   assert.notEqual(diagnoseStartupFailure({ event: 'failed', platform: 'gba', detail: 'Failed to load ROM from blob URL' }).code, 'storage',
     '普通 Blob URL 加载失败不能直接推断为浏览器存储故障')
   assert.equal(diagnoseStartupFailure({ event: 'failed', platform: 'gba', detail: 'NotReadableError while reading Blob' }).code, 'storage')

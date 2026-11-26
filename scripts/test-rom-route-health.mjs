@@ -250,6 +250,40 @@ await check('响应头迟迟不来：另一条线路同时请求，先回的赢�
   assert.ok(health.romRouteRate('https://a.test/') === undefined)
 })
 
+await check('备用线路快速返回 HTML 错误页时不抢赢或中止仍在下载的有效线路', async () => {
+  const urls = []
+  let primaryCompleted = false
+  const fetchImpl = async (url, init) => {
+    const host = hostOf(url)
+    urls.push(`${host} ${init.headers.Range}`)
+    if (host === 'b.test') {
+      return new Response('<!doctype html><title>edge error</title>', {
+        status: 200,
+        headers: { 'content-type': 'text/html; charset=utf-8' },
+      })
+    }
+    await delay(80, init.signal)
+    primaryCompleted = true
+    return rangeResponse(SIZE, init.headers.Range, { signal: init.signal })
+  }
+  const blob = await fetchBlobWithProgress('https://a.test/x.zip?romv=1', {
+    fetchImpl,
+    chunkBytes: CHUNK,
+    routeHealth: true,
+    routeHedgeMs: 15,
+    maxConcurrency: 1,
+    alternateUrls: ['https://b.test/x.zip?romv=1'],
+    networkHints: {},
+    check: (res) => {
+      if (/text\/html/i.test(res.headers.get('content-type') ?? '')) throw new Error('HTML error page')
+    },
+  })
+  expectExact(await readAll(blob), SIZE)
+  assert.equal(primaryCompleted, true, '先收到坏备用响应后，原线路仍应完成当前分片')
+  assert.ok(urls.includes('a.test bytes=0-65535'), `首片应保留有效原线路：${urls.join(', ')}`)
+  assert.ok(urls.includes('b.test bytes=0-65535'), `应实际触发备用线路对冲：${urls.join(', ')}`)
+})
+
 await check('首片响应头对冲改线后，真实占用量跟随获胜线路，后续并发片不继续挤在该线路', async () => {
   const size = 6 * CHUNK
   const requests = []

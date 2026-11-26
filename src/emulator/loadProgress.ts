@@ -1306,7 +1306,7 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
             if (target === backup) releaseBackupLoad()
             return
           }
-          // 快速 404、5xx 或 HTML 错误页不能抢赢仍在等待的线路；丢弃坏响应，继续等或启动对端。
+          // 快速 404、5xx 或 HTML 错误页不能抢赢仍在等待的线路；先验证响应再决定是否中止对端。
           try {
             validateResponse(res, opts.check)
           } catch (error) {
