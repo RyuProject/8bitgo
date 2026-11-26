@@ -252,6 +252,72 @@ await check('响应头迟迟不来：另一条线路同时请求，先回的赢�
   assert.ok(health.romRouteRate('https://a.test/') === undefined)
 })
 
+await check('首段小样本探测失效后，持续吞吐下降会触发一次复测并切到快线', async () => {
+  const chunk = 1024 * 1024
+  const size = chunk * 2
+  const urls = []
+  let aBytesPulled = 0
+  let aAborted = false
+  let bProbeCount = 0
+  let aBytesAtSecondProbe = 0
+  const fetchImpl = async (url, init) => {
+    const host = hostOf(url)
+    const range = init.headers.Range
+    urls.push(`${host} ${range}`)
+    if (host === 'b.test' && range === `bytes=0-${chunk - 1}` && bProbeCount < 2) {
+      bProbeCount++
+      if (bProbeCount === 1) return hang(init.signal)
+      aBytesAtSecondProbe = aBytesPulled
+      return rangeResponse(size, range, { signal: init.signal })
+    }
+    if (host === 'a.test' && range === `bytes=0-${chunk - 1}`) {
+      const start = 0
+      const bytes = bodyFor(start, chunk - 1)
+      let at = 0
+      const body = new ReadableStream({
+        async pull(controller) {
+          try {
+            await delay(180, init.signal)
+          } catch {
+            aAborted = true
+            throw abortError()
+          }
+          if (init.signal.aborted) {
+            aAborted = true
+            throw abortError()
+          }
+          if (at >= bytes.length) return controller.close()
+          const next = bytes.subarray(at, Math.min(at + 64 * 1024, bytes.length))
+          at += next.length
+          aBytesPulled += next.length
+          controller.enqueue(next)
+        },
+      })
+      return {
+        ok: true,
+        status: 206,
+        headers: headers({ 'content-range': `bytes 0-${chunk - 1}/${size}`, 'content-length': String(chunk) }),
+        body,
+      }
+    }
+    return rangeResponse(size, range, { signal: init.signal })
+  }
+  const blob = await fetchBlobWithProgress('https://a.test/x.zip?romv=slow-body', {
+    fetchImpl,
+    chunkBytes: chunk,
+    maxConcurrency: 1,
+    retries: 0,
+    routeHealth: true,
+    alternateUrls: ['https://b.test/x.zip?romv=slow-body'],
+    networkHints: {},
+  })
+  expectExact(await readAll(blob), size)
+  assert.equal(bProbeCount, 2, '小样本探测未取得结果后最多只补测一次')
+  assert.ok(aBytesAtSecondProbe >= 9 * 64 * 1024, `复测要等当前线路比首次探测多收至少 512 KiB，实际 ${aBytesAtSecondProbe}`)
+  assert.equal(aAborted, true, '确认备用线路明显更快后应及时停止慢首片')
+  assert.ok(urls.includes(`b.test bytes=0-${chunk - 1}`), '最终首片应从验证过的快线路重取')
+})
+
 await check('备用线路快速返回 HTML 错误页时不抢赢或中止仍在下载的有效线路', async () => {
   const urls = []
   let primaryCompleted = false

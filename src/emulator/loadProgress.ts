@@ -117,6 +117,9 @@ const EARLY_ROUTE_STALL_MS = 1_500
 const ALTERNATE_ROUTE_SAMPLE_BYTES = 64 * 1024
 const ALTERNATE_ROUTE_MIN_SAMPLE_BYTES = 32 * 1024
 const ALTERNATE_ROUTE_SAMPLE_TIMEOUT_MS = 1_500
+/** 首次线路探测没结果时，只有首片又多收了 512 KiB 才允许复测一次。 */
+const ALTERNATE_ROUTE_REPROBE_BYTES = 512 * 1024
+const ALTERNATE_ROUTE_MAX_PROBES = 2
 const SLOW_ROUTE_MIN_FILE_BYTES = 512 * 1024
 /** 和自适应并发的弱网档位保持一致；2G / 省流量设备不触发额外线路请求。 */
 const SLOW_ROUTE_MIN_MBPS = 3
@@ -1685,13 +1688,19 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
         const alternateExists = Boolean(alternateRoute && alternateRoute !== firstRoute)
         const effectiveType = String(networkHints.effectiveType ?? '').toLowerCase()
         const conserveTraffic = networkHints.saveData || effectiveType === 'slow-2g' || effectiveType === '2g'
-        let alternateProbeStarted = false
+        let alternateProbeInFlight = false
+        let alternateProbeAttempts = 0
+        let alternateProbeBytes = 0
         const startAlternateProbe = (routeSampleBytes: number, routeSampleElapsedMs: number) => {
-          if (alternateProbeStarted || !alternateExists || firstTotal < SLOW_ROUTE_MIN_FILE_BYTES || conserveTraffic) return
+          if (alternateProbeInFlight || !alternateExists || firstTotal < SLOW_ROUTE_MIN_FILE_BYTES || conserveTraffic) return
+          if (alternateProbeAttempts >= ALTERNATE_ROUTE_MAX_PROBES) return
+          if (alternateProbeAttempts > 0 && routeSampleBytes - alternateProbeBytes < ALTERNATE_ROUTE_REPROBE_BYTES) return
           const routeSampleMbps = (routeSampleBytes * 8) / (Math.max(1, routeSampleElapsedMs) * 1000)
           if (routeSampleMbps >= SLOW_ROUTE_MIN_MBPS) return
-          alternateProbeStarted = true
-          diagLog('download', 'info', `ROM 首段早期测速 ${routeSampleBytes} 字节 / ${routeSampleElapsedMs.toFixed(0)}ms（${routeSampleMbps.toFixed(1)} Mbps，不含握手与首字节）：`, firstRoute)
+          alternateProbeInFlight = true
+          alternateProbeAttempts++
+          alternateProbeBytes = routeSampleBytes
+          diagLog('download', 'info', `ROM 首段第 ${alternateProbeAttempts} 次测速 ${routeSampleBytes} 字节 / ${routeSampleElapsedMs.toFixed(0)}ms（${routeSampleMbps.toFixed(1)} Mbps，不含握手与首字节）：`, firstRoute)
           // 备用测速与当前首片并行；不能在 drain 的进度回调里等待，否则主流也会停读。
           void measureAlternateRomRange(alternateRoute, firstTotal, alternateProbeController.signal).then((alternateMbps) => {
             if (alternateMbps !== null && alternateMbps > routeSampleMbps * 1.15) {
@@ -1702,7 +1711,7 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
               return
             }
             diagLog('download', 'info', `备用 ROM 线路没有明显更快（${alternateMbps?.toFixed(1) ?? '未测出'} Mbps），继续当前线路：`, firstRoute)
-          }).catch(() => {})
+          }).catch(() => {}).finally(() => { alternateProbeInFlight = false })
         }
         earlyRouteProbeTimer = alternateExists && firstTotal >= SLOW_ROUTE_MIN_FILE_BYTES && !conserveTraffic
           ? setTimeout(() => {
