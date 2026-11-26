@@ -118,9 +118,10 @@ export function warmRuffleCore(base = ruffleBase()): Promise<RuffleCoreWarm> {
       }
       const done = Promise.all(variant.map((name) => warmHttpCache(`${base}${name}`))).then((results) => {
         const succeeded = results.every(Boolean)
-        // 核心预热遇到断流时允许下一局重试；失败只影响并行优化，不影响 Ruffle 正式下载。
-        if (!succeeded && ruffleCoreWarm === entry) ruffleCoreWarm = null
         return succeeded
+      }).finally(() => {
+        // 只在途合并；浏览器可能淘汰已预热文件，下一局要重新通过 force-cache 核验。
+        if (ruffleCoreWarm === entry) ruffleCoreWarm = null
       })
       return { wasm: variant.find((name) => name.endsWith('.wasm')) ?? null, done }
     } catch {

@@ -60,6 +60,8 @@ const STORE_MAX_CHARS = 1_500_000
 /** 大文件每片都同步序列化整份续传账本会形成平方级主线程开销；短批次最多丢四片账本，远端可安全覆写重传。 */
 const PART_STATE_SAVE_INTERVAL_MS = 1_000
 const PART_STATE_SAVE_MAX_DIRTY_PARTS = 4
+/** 控制请求只传少量 JSON；无进展超过一分钟通常是线路已断，不能让后台页永久转圈。 */
+export const WORKER_REQUEST_TIMEOUT_MS = 60_000
 
 export interface PendingUpload {
   /** 最终对象 key */
@@ -720,40 +722,73 @@ interface Ctx {
   token: string
 }
 
-async function askJson<T>(ctx: Ctx, url: string, init: RequestInit, what: string): Promise<T> {
-  let res: Response
+export async function askJson<T>(
+  ctx: Ctx,
+  url: string,
+  init: RequestInit,
+  what: string,
+  signal?: AbortSignal,
+  timeoutMs = WORKER_REQUEST_TIMEOUT_MS,
+): Promise<T> {
+  if (signal?.aborted) throw new MultipartUploadAborted()
+  const controller = new AbortController()
+  let timedOut = false
+  const abortFromCaller = () => controller.abort()
+  signal?.addEventListener('abort', abortFromCaller, { once: true })
+  if (signal?.aborted) abortFromCaller()
+  const timer = setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, timeoutMs)
   try {
-    res = await fetch(url, {
+    const res = await fetch(url, {
       ...init,
+      // 整个响应正文都受同一个时限保护；只限制响应头会让 res.json() 在弱网下仍无限等待。
+      signal: controller.signal,
       headers: { Authorization: `Bearer ${ctx.token}`, ...(init.headers ?? {}) },
     })
-  } catch {
-    // fetch 抛出来的是 TypeError('Failed to fetch')，直接冒出去既难懂又会被当成
-    // 「不可重试」。包成 status 0 的网络错误，上面才知道这次是可以续传的
+    let data: (T & { error?: string; fatal?: boolean; code?: string }) | null = null
+    try {
+      data = await res.json() as (T & { error?: string; fatal?: boolean; code?: string })
+    } catch (error) {
+      if (signal?.aborted) throw new MultipartUploadAborted()
+      if (timedOut) throw new UploadHttpError(`${what}响应超时，连接暂时没有完成`, 0)
+      // JSON 格式错误通常是地址 / Worker 配错；读取流本身中断则是弱网，幂等请求可以安全重试。
+      if (!(error instanceof SyntaxError)) throw new UploadHttpError(`${what}响应正文未完整接收`, 0)
+    }
+    if (signal?.aborted) throw new MultipartUploadAborted()
+    if (timedOut) throw new UploadHttpError(`${what}响应超时，连接暂时没有完成`, 0)
+    if (!res.ok) {
+      // 老版本 Worker 上，对着一个 key 发 POST 只会得到 405 / 404 —— 那是「没部署分片接口」，
+      // 不是「上传失败」，要能和真失败区分开
+      if (res.status === 404 || res.status === 405) throw new MultipartUnsupportedError(what)
+      throw new UploadHttpError(
+        data?.error || explainRomStatus(res.status, what).message,
+        res.status,
+        Boolean(data?.fatal),
+        typeof data?.code === 'string' ? data.code : '',
+        data && typeof data === 'object' ? data as Record<string, unknown> : null,
+      )
+    }
+    // 地址填成了本站域名时会落到 SSR 兜底路由，回的是 200 + 一个 HTML 页面（roms.ts 里
+    // 那个「200 + HTML」的坑）。这里拿不到 JSON 就必须报错，否则后面读 data.uploadId 才炸
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      throw new UploadHttpError(`${what}失败：Worker 返回的不是有效 JSON（地址是不是填成了站点域名？）`, res.status)
+    }
+    return data
+  } catch (error) {
+    if (signal?.aborted) throw new MultipartUploadAborted()
+    if (timedOut) throw new UploadHttpError(`${what}响应超时，连接暂时没有完成`, 0)
+    if (error instanceof UploadHttpError || error instanceof MultipartUnsupportedError) throw error
+    // fetch 抛出来的是 TypeError('Failed to fetch')；包成 status 0 的网络错误，上层才知道可安全续传重试。
     throw new UploadHttpError(`${what}失败：无法连接 Worker（网络中断或跨域被拒）`, 0)
+  } finally {
+    clearTimeout(timer)
+    signal?.removeEventListener('abort', abortFromCaller)
   }
-  const data = (await res.json().catch(() => null)) as (T & { error?: string; fatal?: boolean; code?: string }) | null
-  if (!res.ok) {
-    // 老版本 Worker 上，对着一个 key 发 POST 只会得到 405 / 404 —— 那是「没部署分片接口」，
-    // 不是「上传失败」，要能和真失败区分开
-    if (res.status === 404 || res.status === 405) throw new MultipartUnsupportedError(what)
-    throw new UploadHttpError(
-      data?.error || explainRomStatus(res.status, what).message,
-      res.status,
-      Boolean(data?.fatal),
-      typeof data?.code === 'string' ? data.code : '',
-      data && typeof data === 'object' ? data as Record<string, unknown> : null,
-    )
-  }
-  // 地址填成了本站域名时会落到 SSR 兜底路由，回的是 200 + 一个 HTML 页面（roms.ts 里
-  // 那个「200 + HTML」的坑）。这里拿不到 JSON 就必须报错，否则后面读 data.uploadId 才炸
-  if (!data || typeof data !== 'object' || Array.isArray(data)) {
-    throw new UploadHttpError(`${what}失败：Worker 返回的不是有效 JSON（地址是不是填成了站点域名？）`, res.status)
-  }
-  return data
 }
 
-async function createUpload(ctx: Ctx, key: string, file: Blob, ident: { fileName: string; lastModified: number } | null, partSize: number, fingerprint: string, requestId: string): Promise<PendingUpload> {
+async function createUpload(ctx: Ctx, key: string, file: Blob, ident: { fileName: string; lastModified: number } | null, partSize: number, fingerprint: string, requestId: string, signal?: AbortSignal): Promise<PendingUpload> {
   const data = await withRetry(
     async () => {
       try {
@@ -767,6 +802,7 @@ async function createUpload(ctx: Ctx, key: string, file: Blob, ident: { fileName
             body: JSON.stringify({ contentType: file.type || guessUploadType(key), size: file.size, name: ident?.fileName ?? '', requestId }),
           },
           '开始分片上传',
+          signal,
         )
       } catch (error) {
         // Worker 创建会话后若写续传标记失败且首次 abort 也失败，会把 uploadId 一并返回。
@@ -788,8 +824,11 @@ async function createUpload(ctx: Ctx, key: string, file: Blob, ident: { fileName
       }
     },
     3,
-    (error) => error instanceof UploadHttpError && !error.fatal && error.status === 503 &&
-      (error.code === 'storage_unavailable' || error.code === 'multipart_marker_write_failed' || error.code === 'multipart_marker_race_lost'),
+    (error) => error instanceof UploadHttpError && !error.fatal && (
+      error.status === 0 || [502, 503, 504].includes(error.status) ||
+      (error.status === 503 && ['storage_unavailable', 'multipart_marker_write_failed', 'multipart_marker_race_lost'].includes(error.code))
+    ),
+    signal,
   )
   if (typeof data.uploadId !== 'string' || !data.uploadId || typeof data.marker !== 'string' || !data.marker.startsWith('_uploads/')) {
     throw new Error('Worker 未返回有效的 uploadId 或残留标记；请核查 Worker 地址和版本')
@@ -976,10 +1015,11 @@ const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, 
 })
 
 /** 可重试的错误就退避重试，其余立刻抛 */
-async function withRetry<T>(run: () => Promise<T>, attempts: number, shouldRetry: (error: unknown) => boolean = retryable): Promise<T> {
+async function withRetry<T>(run: () => Promise<T>, attempts: number, shouldRetry: (error: unknown) => boolean = retryable, signal?: AbortSignal): Promise<T> {
   let last: unknown
   for (let i = 0; i < attempts; i++) {
-    if (i > 0) await sleep(600 * 2 ** (i - 1) + Math.random() * 400)
+    if (signal?.aborted) throw new MultipartUploadAborted()
+    if (i > 0) await sleep(600 * 2 ** (i - 1) + Math.random() * 400, signal)
     try {
       return await run()
     } catch (err) {
@@ -1063,7 +1103,7 @@ async function putPartWithRetry(
   throw last
 }
 
-async function completeUpload(ctx: Ctx, state: PendingUpload): Promise<{ size: number; etag?: string }> {
+async function completeUpload(ctx: Ctx, state: PendingUpload, signal?: AbortSignal): Promise<{ size: number; etag?: string }> {
   const data = await askJson<{ ok: boolean; key: string; size: number; etag?: string }>(
     ctx,
     `${ctx.api}/${encodeKey(state.key)}?uploadId=${encodeURIComponent(state.uploadId)}`,
@@ -1081,6 +1121,7 @@ async function completeUpload(ctx: Ctx, state: PendingUpload): Promise<{ size: n
       }),
     },
     '合并分片',
+    signal,
   )
   if (data.ok !== true || data.key !== state.key) {
     // 200 但缺少确认字段时，合并可能已发生；重复 complete 可能把真实成功说成失败。
@@ -1137,7 +1178,7 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
       updatedAt: Date.now(),
     })
   }
-  const state = resumedState ?? (await createUpload(ctx, key, file, ident, partSize, fingerprint ?? '', requestId))
+  const state = resumedState ?? (await createUpload(ctx, key, file, ident, partSize, fingerprint ?? '', requestId, signal))
   if (resumedState && fingerprint) {
     await verifyResumableParts(file, state, partSize, fingerprint, (checked, total) => {
       onProgress?.(0, {
@@ -1275,7 +1316,10 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
   try {
     // 值得多试两次：分片全都已经在 R2 上了，只差这一个请求，
     // 因为一次网络抖动就把几十 MB 判成失败太可惜
-    completed = await withRetry(() => completeUpload(ctx, state), 3)
+    // complete 已是有副作用的提交点：请求发出后用户取消不能再中止唯一确认响应，
+    // 否则 R2 可能已合并成功、客户端却只留下一个看似可续传的旧 uploadId。取消仍阻止
+    // 合并前的分片和重试退避；一旦进入此请求，就等确认或 60 秒总超时后再安全收尾。
+    completed = await withRetry(() => completeUpload(ctx, state), 3, retryable, signal)
   } catch (err) {
     if (err instanceof CompletionUncertainError) {
       clearState(key)

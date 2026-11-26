@@ -42,7 +42,9 @@ globalThis.window = {
 
 const health = await import('../src/services/romRouteHealth.ts')
 const { fetchBlobWithProgress, sameObjectRoutes } = await import('../src/emulator/loadProgress.ts')
-const { probeRom, clearRomProbeCache, ROM_PROBE_HEDGE_MS } = await import('../src/services/roms.ts')
+const {
+  probeRom, clearRomProbeCache, ROM_PROBE_HEDGE_MS, ROM_PROBE_CACHE_MAX_ENTRIES, ROM_PROBE_MISS_TTL_MS,
+} = await import('../src/services/roms.ts')
 const { reachableRomAssetUrl, clearReachableRomOrigins } = await import('../src/services/romHosts.ts')
 const { chooseRomHost } = await import('../src/services/romRoute.ts')
 
@@ -689,6 +691,55 @@ await check('超时过一次的线路排到后面：下一次检查先问别的�
   assert.equal(asked[0], 'download.example.com')
   assert.ok(outcome.url.startsWith('https://download.example.com/'))
   assert.ok(Date.now() - started < 500, '不再先撞熔断中的线路')
+})
+
+await check('有界结果缓存仍会按原 TTL 重新探测', async () => {
+  clearRomProbeCache()
+  const realNow = Date.now
+  let now = realNow()
+  let requests = 0
+  globalThis.fetch = async () => {
+    requests++
+    return { ok: false, status: 404, headers: headers({}) }
+  }
+  try {
+    Date.now = () => now
+    const url = 'https://cache.test/ttl.nes'
+    await probeRom(url, 4000, false, { retry: false })
+    await probeRom(url, 4000, false, { retry: false })
+    assert.equal(requests, 1, '有效期内复用 404 结论')
+
+    now += ROM_PROBE_MISS_TTL_MS + 1
+    await probeRom(url, 4000, false, { retry: false })
+    assert.equal(requests, 2, '确定缺失仍只缓存 1 分钟')
+  } finally {
+    Date.now = realNow
+  }
+})
+
+await check('ROM 探测结论缓存有界且复访的游戏优先保留', async () => {
+  clearRomProbeCache()
+  let requests = 0
+  globalThis.fetch = async () => {
+    requests++
+    return { ok: false, status: 404, headers: headers({}) }
+  }
+  const cacheUrl = (id) => `https://cache.test/rom-${id}.nes`
+  for (let id = 0; id < ROM_PROBE_CACHE_MAX_ENTRIES; id++) {
+    const outcome = await probeRom(cacheUrl(id), 4000, false, { retry: false })
+    assert.equal(outcome.certain, true)
+  }
+  assert.equal(requests, ROM_PROBE_CACHE_MAX_ENTRIES)
+
+  await probeRom(cacheUrl(0), 4000, false, { retry: false })
+  assert.equal(requests, ROM_PROBE_CACHE_MAX_ENTRIES, '未过期的复访应命中缓存并刷新 LRU 顺序')
+
+  await probeRom(cacheUrl(ROM_PROBE_CACHE_MAX_ENTRIES), 4000, false, { retry: false })
+  await probeRom(cacheUrl(0), 4000, false, { retry: false })
+  assert.equal(requests, ROM_PROBE_CACHE_MAX_ENTRIES + 1, '新增结论淘汰旧条目后，最近访问项仍应命中')
+
+  await probeRom(cacheUrl(1), 4000, false, { retry: false })
+  assert.equal(requests, ROM_PROBE_CACHE_MAX_ENTRIES + 2, '最久未访问项应被淘汰并在再次访问时重新探测')
 })
 
 console.log('\n五、BIOS / 线路选择也读记分板')

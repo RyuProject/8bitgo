@@ -15,7 +15,7 @@
  * 浏览器在忙的时候会一直往后排；而我们要的恰恰是「趁启动那几十秒把带宽用起来」。
  */
 
-/** 正在预热或已预热的 URL。同一个页面里重复调用只发一次请求。 */
+/** 只合并正在进行的预热；完成后由浏览器 HTTP 缓存决定下次是否需要下载。 */
 const warmed = new Map<string, Promise<boolean>>()
 const WARM_STALL_MS = 30_000
 
@@ -85,10 +85,10 @@ export function warmHttpCache(url: string): Promise<boolean> {
   if (!url) return Promise.resolve(false)
   const existing = warmed.get(url)
   if (existing) return existing
-  const pending = drainIntoHttpCache(url).then(() => true).catch(() => {
-    // 预热失败不能惊动玩家，也不该占着 warmed 不放 —— 允许下一次再试
-    warmed.delete(url)
-    return false
+  let pending: Promise<boolean>
+  pending = drainIntoHttpCache(url).then(() => true).catch(() => false).finally(() => {
+    // 浏览器可能随时淘汰 HTTP 缓存；不能把一次成功结果永久当作仍在缓存。
+    if (warmed.get(url) === pending) warmed.delete(url)
   })
   warmed.set(url, pending)
   return pending

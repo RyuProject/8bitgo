@@ -254,6 +254,15 @@ const IMPORTER = `${BASE}index-X.js`
 }
 
 {
+  // 7a. 成功结果不能永久代替缓存状态：长驻页被浏览器淘汰缓存后，重试要重新暖依赖。
+  const { preload, calls } = makeHelper({ fetchImpl: () => ok() })
+  await preload(async () => 'first', ['./shared-S.js'], IMPORTER)
+  await preload(async () => 'retry', ['./shared-S.js'], IMPORTER)
+  assert.equal(calls.fetch.filter((u) => u.endsWith('shared-S.js')).length, 2,
+    '每次新的懒加载尝试都应重新检查 HTTP 缓存；浏览器缓存命中时不会额外走网络')
+}
+
+{
   // 8. 正文卡住不动：按停滞时限中止、重试
   let n = 0
   const { preload, calls } = makeHelper({

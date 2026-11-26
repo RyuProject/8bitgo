@@ -1302,6 +1302,7 @@ cd server && npm run migrate      # 幂等
 现在超过 24MB（`MULTIPART_THRESHOLD`）的文件自动改走**分片上传**：
 8MB 一片，首片既是真数据也是上行测速，按实际 Mbps、RTT、省流量模式与设备内存选择 1–4 路；
 单片失败重试、`localStorage` 记账后可断点续传（`src/services/romMultipart.ts`）。创建 multipart 前先保存稳定 `requestId`，Worker 用它在响应丢失后找回同一会话；普通 ROM 上传和 CHD 发布都不能对有副作用的会话创建请求盲目重发。
+小型 Worker 控制请求也必须有覆盖「响应头 + JSON 正文」的总超时并接收页面取消信号；创建请求只可用稳定 `requestId` 安全重试，完成响应不确定时仍须保留专门的冲突核验流程，不能盲目重发。
 HTTP/2 reset、429 或网关 5xx
 会立即收敛到单路，连续成功后才逐档恢复到本次测速上限；
 不要把它改成四路固定并发，否则一次连接级错误会再次变成重试风暴。

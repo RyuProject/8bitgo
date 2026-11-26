@@ -23,7 +23,7 @@
  *   - 这一页里 fetch() 从没成功过（内容安全策略、扩展把 fetch 拦了）时不抛，照旧交给模块加载器，等于以前的行为；
  *   - 404 / 410 等确定性错误不重试（部署切换后的旧 chunk，交给兜底页刷新拿新 HTML）；
  *   - 只管现代包（legacy 的 SystemJS 没有依赖表，Vite 传的是 void 0）；HTML 里已有 modulepreload / script 的不重复取；
- *   - 同一个依赖同时被两个懒加载用到只取一次；失败的那次从表里删掉，下一次还能再取。
+ *   - 同一个依赖同时被两个懒加载用到只取一次；请求完成就释放去重句柄，后续重试会重新检查浏览器缓存。
  *
  * 不靠改 Vite 源码：transform 钩子把助手的 `export const __vitePreload` 改名成 `__vitePreloadVite` 保留下来，
  * 再接上这里的包装。Vite 升级改了助手的写法时直接构建失败（postbuild 还有 check-lazy-imports.mjs 核对产物里的标记）。
@@ -99,7 +99,9 @@ function __8bitgoWarm(href) {
     }
   })();
   __8bitgoWarmed[href] = promise;
-  promise.catch(() => {
+  promise.then(() => {
+    if (__8bitgoWarmed[href] === promise) delete __8bitgoWarmed[href];
+  }, () => {
     if (__8bitgoWarmed[href] === promise) delete __8bitgoWarmed[href];
   });
   return promise;

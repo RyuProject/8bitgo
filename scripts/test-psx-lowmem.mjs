@@ -237,7 +237,10 @@ check('播放器：开局读偏好、实例化失败重挂换核心、预检失�
   assert.match(player, /rememberedPsxCore = [\s\S]{0,300}psxLowmemCoreFor\(emulatorJsCoreForGame\('psx', coreRef\.current\), prefersPsxLowmem\(\)\)/)
   assert.match(player, /rememberedArcadeCore \?\? rememberedPsxCore \?\? undefined/)
   assert.match(player, /onOutOfMemory: \(failedCore: string, reason: string\) => \{[\s\S]{0,1200}psxMemoryFallbackCore\([\s\S]{0,400}rememberPsxMemoryFailure\(\)[\s\S]{0,200}coreOverride: nextCore/)
-  assert.match(player, /inPlaceMemoryFallback: \(failedCore: string\) => \{[\s\S]{0,400}psxMemoryFallbackCore\([\s\S]{0,300}rememberPsxMemoryFailure\(\)[\s\S]{0,60}return nextCore/)
+  const inPlaceFallback = player.match(/inPlaceMemoryFallback: \(failedCore: string\) => \{([\s\S]{0,1400}?)\n      \},\n      onError:/)?.[1] ?? ''
+  assert.match(inPlaceFallback, /psxMemoryFallbackCore\(/, '预检失败必须选择低内存 PCSX')
+  assert.match(inPlaceFallback, /rememberPsxMemoryFailure\(\)/, '预检回退必须记住低内存偏好')
+  assert.match(inPlaceFallback, /return nextCore/, '预检回退必须把新核心交给适配器')
   assert.doesNotMatch(player, /PSX_LOWMEM_CORE && coreSaveSlug/, '低内存 PCSX 与默认 PCSX 共用档位，不能另开')
   assert.match(read('src/emulator/types.ts'), /inPlaceMemoryFallback\?: \(core: string\) => string \| null/)
 })

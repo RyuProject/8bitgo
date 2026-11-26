@@ -5,7 +5,7 @@
 //
 // 为什么这样判：
 // - 解析走 AliDNS DoH 并带大陆三网的 ECS 子网：优选域名是按运营商分线解析的，源站（香港）直接解析
-//   拿到的是海外答案，体检就测错了对象。DoH 失败才退回本机解析。
+//   拿到的是海外答案，体检就测错了对象。DoH 失败按「本轮未知」处理，不拿海外答案冒充三网结果。
 // - 每个 IP 都要在 Cloudflare 段里，并且用「连这个 IP + SNI/Host=我们的域名」真取一次 64KB 探针，
 //   ETag 与 assets.8bitgo.com 一致才算通。只看 DNS 解析得出来不够：有些 CF 客户的专属 IP 不服务别的区域。
 // - 只看「能不能用」，不按源站测到的快慢换线路：源站在香港，测出的速度代表不了大陆玩家。
@@ -70,7 +70,13 @@ export const DEFAULTS = {
   spareCandidates: 2,
   // 找过一次一个健康候选都没有，这么久之内不再全量体检（期间当前目标照常每轮体检）
   noCandidateBackoffMs: 30 * 60 * 1000,
+  // 每轮提前体检少量备用线路；故障时先复核最近通过的候选，避免临时扫描整份清单。
+  candidateWarmTtlMs: 15 * 60 * 1000,
+  candidateWarmPoolSize: 3,
+  candidateWarmBatchSize: 1,
 }
+/** 外部候选列表只需几十 KB；不可先完整读入再截断，避免坏源响应耗尽定时任务内存。 */
+export const MAX_CANDIDATE_LIST_BYTES = 256 * 1024
 
 // https://www.cloudflare.com/ips-v4 （2026-11-16）
 export const CLOUDFLARE_V4 = [
@@ -102,6 +108,14 @@ export function isValidHostname(s) {
     h.split('.').every((l) => l.length > 0 && l.length <= 63 && !l.startsWith('-') && !l.endsWith('-'))
 }
 
+/** 更新 DNS 前确认记录仍是本轮读到的那个 DNS-only CNAME。 */
+export function dnsRecordMatches(record, { id, host, target }) {
+  const normalize = (value) => String(value || '').toLowerCase().replace(/\.$/, '')
+  return Boolean(record && record.id === id && record.type === 'CNAME' &&
+    normalize(record.name) === normalize(host) && !record.proxied &&
+    normalize(record.content) === normalize(target))
+}
+
 // 候选 = 列表 + 保底 + 额外 + 当前目标，去重（不区分大小写）、去掉屏蔽项和自己区域里的域名。
 export function buildCandidates({ listText = '', seeds = [], extra = [], current = [], blocklist = [], ownZone = '8bitgo.com' }) {
   const blocked = new Set(blocklist.map((s) => s.toLowerCase()))
@@ -118,20 +132,57 @@ export function buildCandidates({ listText = '', seeds = [], extra = [], current
   return out
 }
 
-// 体检结果 → 是否健康：每个解析出 IP 的运营商都至少有一个 IP 能用、整体成功率不低于一半、且没有非 CF IP。
-export function judgeCandidate(result) {
-  const isps = Object.entries(result.isps || {})
-  if (isps.length === 0) return { healthy: false, reason: '解析不到 IPv4' }
+/** 有界读取外部文本。超限时整份拒绝，避免把截断的域名误当完整候选；同时立即取消上游正文。 */
+export async function readLimitedText(response, maxBytes) {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) throw new RangeError('文本读取上限无效')
+  const declared = Number(response.headers?.get?.('content-length'))
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await response.body?.cancel().catch(() => {})
+    throw new RangeError(`文本响应超过 ${maxBytes} 字节上限`)
+  }
+  if (!response.body) throw new Error('文本响应没有可读正文')
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let bytes = 0
+  let text = ''
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!value) continue
+      if (bytes + value.byteLength > maxBytes) throw new RangeError(`文本响应超过 ${maxBytes} 字节上限`)
+      bytes += value.byteLength
+      text += decoder.decode(value, { stream: true })
+    }
+    return text + decoder.decode()
+  } catch (error) {
+    await reader.cancel(error).catch(() => {})
+    throw error
+  } finally {
+    try { reader.releaseLock() } catch { /* 已释放时无需处理 */ }
+  }
+}
+
+// 体检结果 → 是否健康：所有配置运营商都必须完成 ECS 解析，每个至少有一个 IP 可用。
+export function judgeCandidate(result, expectedIsps = Object.keys(result.isps || {})) {
+  const isps = expectedIsps.map((isp) => [isp, result.isps?.[isp] || { probes: [], nonCloudflare: [], resolutionStatus: 'error' }])
+  if (isps.length === 0) return { healthy: false, hardFailure: true, reason: '没有配置运营商 DNS 探测' }
   const all = isps.flatMap(([, r]) => r.probes || [])
   const nonCf = isps.flatMap(([, r]) => r.nonCloudflare || [])
-  if (nonCf.length) return { healthy: false, reason: `解析到非 Cloudflare IP：${nonCf.slice(0, 3).join(', ')}` }
-  if (all.length === 0) return { healthy: false, reason: '没有可测的 IP' }
+  if (nonCf.length) return { healthy: false, hardFailure: true, reason: `解析到非 Cloudflare IP：${nonCf.slice(0, 3).join(', ')}` }
+  const emptyIsp = isps.find(([, r]) => r.resolutionStatus === 'empty')
+  if (emptyIsp) return { healthy: false, hardFailure: true, reason: `${emptyIsp[0]} 没有 IPv4 答案` }
+  const unknownIsps = isps.filter(([, r]) => r.resolutionStatus === 'error')
+  if (unknownIsps.length) {
+    return { healthy: false, indeterminate: true, reason: `运营商 DNS 探测不完整：${unknownIsps.map(([isp]) => isp).join(', ')}` }
+  }
+  if (all.length === 0) return { healthy: false, hardFailure: true, reason: '解析不到 IPv4' }
   const deadIsp = isps.find(([, r]) => (r.probes || []).length > 0 && !(r.probes || []).some((p) => p.ok))
   if (deadIsp) return { healthy: false, reason: `${deadIsp[0]} 线路的 IP 全部不通` }
   const ok = all.filter((p) => p.ok)
   if (ok.length * 2 < all.length) return { healthy: false, reason: `只有 ${ok.length}/${all.length} 个 IP 能用` }
   const times = ok.map((p) => p.ms).sort((a, b) => a - b)
-  return { healthy: true, reason: `${ok.length}/${all.length} 个 IP 正常`, medianMs: times[Math.floor(times.length / 2)] }
+  return { healthy: true, hardFailure: false, reason: `${ok.length}/${all.length} 个 IP 正常`, medianMs: times[Math.floor(times.length / 2)] }
 }
 
 // 换线选谁：健康的、不是要换掉的那个；优先没被别的托管域名占用的；再按源站测到的中位耗时（仅作平局裁决）。
@@ -141,6 +192,56 @@ export function pickReplacement(judged, { exclude = [], inUseElsewhere = [] } = 
   const pool = judged.filter((c) => c.verdict.healthy && !ex.has(c.name))
   pool.sort((a, b) => (busy.has(a.name) - busy.has(b.name)) || (a.verdict.medianMs - b.verdict.medianMs))
   return pool[0] || null
+}
+
+/** 跨轮候选池只保留近期验证成功的少量域名；真正切换前仍会重新体检。 */
+export function freshWarmCandidates(entries, nowMs, ttlMs, limit) {
+  if (!Array.isArray(entries)) return []
+  const seen = new Set()
+  return entries.filter((entry) => {
+    const name = String(entry?.name || '').toLowerCase()
+    const checkedAt = Number(entry?.checkedAt)
+    if (!isValidHostname(name) || seen.has(name) || !Number.isFinite(checkedAt) ||
+      checkedAt > nowMs || nowMs - checkedAt >= ttlMs) return false
+    seen.add(name)
+    return true
+  }).sort((a, b) => Number(b.checkedAt) - Number(a.checkedAt))
+    .slice(0, Math.max(0, limit))
+}
+
+/** 按清单游标轮换预热；先找未缓存项，清单耗尽后再刷新最旧项。 */
+export function selectWarmBatch(names, cursor, excluded = [], cached = [], count = 1) {
+  if (!names.length || count <= 0) return { names: [], cursor }
+  const deny = new Set(excluded.map((name) => String(name).toLowerCase()))
+  const cachedNames = new Set(cached.map((entry) => String(entry?.name || '').toLowerCase()))
+  const start = (names.indexOf(cursor) + 1) % names.length
+  const ordered = Array.from({ length: names.length }, (_, i) => names[(start + i) % names.length])
+  const selected = []
+  for (const preferNew of [true, false]) {
+    for (const name of ordered) {
+      if (selected.length >= count) break
+      if (deny.has(name) || selected.includes(name) || cachedNames.has(name) !== !preferNew) continue
+      selected.push(name)
+    }
+  }
+  return { names: selected, cursor: selected.at(-1) || cursor }
+}
+
+/** 更新近期验证池；未知结果不抹掉旧证据，明确失败则移除。 */
+export function updateWarmCandidates(entries, judged, nowMs, ttlMs, limit) {
+  const pool = new Map(freshWarmCandidates(entries, nowMs, ttlMs, limit).map((entry) => [entry.name, entry]))
+  for (const candidate of judged) {
+    if (candidate.verdict.healthy) {
+      pool.set(candidate.name, { name: candidate.name, checkedAt: nowMs, medianMs: candidate.verdict.medianMs })
+    } else if (!candidate.verdict.indeterminate) {
+      pool.delete(candidate.name)
+    }
+  }
+  return [...pool.values()].sort((a, b) => Number(b.checkedAt) - Number(a.checkedAt)).slice(0, limit)
+}
+
+export function canClearNoCandidateBackoff(searchBlocked, warmedHealthy) {
+  return !searchBlocked || warmedHealthy
 }
 
 // 大陆玩家的真实回报 → good / bad / unknown。一人一票：只有失败、没有一次成功的访客才算「对他不通」。
@@ -160,10 +261,10 @@ export function judgeUserReports(stats, { minVisitors = 5, badShare = 0.6, goodS
 // - 源站说坏、玩家说好：解析到非 CF IP 这种硬伤照判不健康；其余（香港到这批 IP 的连通问题）听玩家的。
 export function combineVerdicts(probeVerdict, user) {
   if (user?.verdict === 'bad') return { healthy: false, reason: `${user.reason}（源站体检：${probeVerdict.reason}）`, byUsers: true }
-  if (!probeVerdict.healthy && user?.verdict === 'good' && !/非 Cloudflare|解析不到/.test(probeVerdict.reason)) {
+  if (!probeVerdict.healthy && user?.verdict === 'good' && !probeVerdict.hardFailure) {
     return { healthy: true, reason: `${user.reason}，忽略源站体检（${probeVerdict.reason}）`, byUsers: true }
   }
-  return { healthy: probeVerdict.healthy, reason: probeVerdict.reason, byUsers: false }
+  return { healthy: probeVerdict.healthy, indeterminate: Boolean(probeVerdict.indeterminate), reason: probeVerdict.reason, byUsers: false }
 }
 
 // 回报从什么时候算起：目标换过（或第一次看到）就从那之后 + 宽限期，免得把旧目标的失败算到新目标头上。
@@ -174,15 +275,18 @@ export function reportSince(hostState, currentTarget, nowMs, graceMs) {
 
 // 按顺序体检候选，限并发，凑够 want 个健康的就不再开新的。以前一次把全部候选（几十个域名 × 3 运营商 × 2 IP，
 // 每个 64KB）同时打出去：几百个并发 TLS 连接、二十多 MB 流量，香港小机器上整轮能占满几十秒。
-export async function findHealthy(names, examine, { concurrency = 4, want = 3 } = {}) {
+export async function findHealthy(names, examine, { concurrency = 4, want = 3, stopOnIndeterminate = Infinity } = {}) {
   const judged = []
   let healthy = 0
+  let indeterminate = 0
+  let stopped = false
   let next = 0
   const worker = async () => {
-    while (next < names.length && healthy < want) {
+    while (!stopped && next < names.length && healthy < want) {
       const c = await examine(names[next++])
       judged.push(c)
       if (c.verdict.healthy) healthy++
+      if (c.verdict.indeterminate && ++indeterminate >= stopOnIndeterminate) stopped = true
     }
   }
   await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, names.length)) }, worker))
@@ -202,31 +306,60 @@ export function targetUserVerdicts(entries) {
 }
 
 // 失败计数：健康清零；不健康 +1；到阈值才该换。
-export function nextFailureCount(prev, healthy) {
-  return healthy ? 0 : (Number(prev) || 0) + 1
+export function nextFailureCount(prev, healthy, indeterminate = false) {
+  return healthy ? 0 : indeterminate ? (Number(prev) || 0) : (Number(prev) || 0) + 1
+}
+
+// 人工改过 CNAME 时，旧目标的失败次数不能直接套到新目标上。
+export function nextTargetFailureCount(hostState, target, healthy, indeterminate = false) {
+  const prev = hostState?.target === target ? hostState.failures : 0
+  return nextFailureCount(prev, healthy, indeterminate)
 }
 
 // ---------- 以下是有副作用的部分 ----------
 
-function loadConfig(env = process.env) {
-  const list = (v, d) => (v ? v.split(/[\s,]+/).filter(Boolean) : d)
-  return {
+export function loadConfig(env = process.env) {
+  const list = (v, d) => (v === undefined ? d : v.split(/[\s,]+/).map((x) => x.trim().toLowerCase().replace(/\.$/, '')).filter(Boolean))
+  const number = (key, raw, fallback) => {
+    if (raw === undefined || String(raw).trim() === '') return fallback
+    const value = Number(raw)
+    if (!Number.isFinite(value)) throw new Error(`${key} 必须是数字`)
+    return value
+  }
+  const cfg = {
     ...DEFAULTS,
     hosts: list(env.CNAME_OPT_HOSTS, DEFAULTS.hosts),
     probePath: env.CNAME_OPT_PROBE_PATH || DEFAULTS.probePath,
-    probeBytes: Number(env.CNAME_OPT_PROBE_BYTES) || DEFAULTS.probeBytes,
+    probeBytes: number('CNAME_OPT_PROBE_BYTES', env.CNAME_OPT_PROBE_BYTES, DEFAULTS.probeBytes),
     baselineHost: env.CNAME_OPT_BASELINE_HOST || DEFAULTS.baselineHost,
     candidateListUrl: env.CNAME_OPT_LIST_URL ?? DEFAULTS.candidateListUrl,
     extraCandidates: list(env.CNAME_OPT_EXTRA, []),
     blocklist: [...DEFAULTS.blocklist, ...list(env.CNAME_OPT_BLOCKLIST, [])],
-    failThreshold: Number(env.CNAME_OPT_FAIL_THRESHOLD) || DEFAULTS.failThreshold,
+    failThreshold: number('CNAME_OPT_FAIL_THRESHOLD', env.CNAME_OPT_FAIL_THRESHOLD, DEFAULTS.failThreshold),
     reportUrl: env.CNAME_OPT_REPORT_URL ?? DEFAULTS.reportUrl,
-    reportMinVisitors: Number(env.CNAME_OPT_REPORT_MIN_VISITORS) || DEFAULTS.reportMinVisitors,
-    probeConcurrency: Number(env.CNAME_OPT_PROBE_CONCURRENCY) || DEFAULTS.probeConcurrency,
+    reportMinVisitors: number('CNAME_OPT_REPORT_MIN_VISITORS', env.CNAME_OPT_REPORT_MIN_VISITORS, DEFAULTS.reportMinVisitors),
+    probeConcurrency: number('CNAME_OPT_PROBE_CONCURRENCY', env.CNAME_OPT_PROBE_CONCURRENCY, DEFAULTS.probeConcurrency),
+    probeTimeoutMs: number('CNAME_OPT_PROBE_TIMEOUT_MS', env.CNAME_OPT_PROBE_TIMEOUT_MS, DEFAULTS.probeTimeoutMs),
     stateFile: env.CNAME_OPT_STATE_FILE || DEFAULTS.stateFile,
     zoneId: env.CF_ZONE_ID || '',
     token: env.CF_DNS_API_TOKEN || '',
   }
+  const positiveInt = (key, value, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) => {
+    if (!Number.isSafeInteger(value) || value < min || value > max) throw new Error(`${key} 必须是 ${min}–${max} 的整数`)
+  }
+  if (!cfg.hosts.length || new Set(cfg.hosts).size !== cfg.hosts.length || cfg.hosts.some((h) => !isValidHostname(h))) {
+    throw new Error('CNAME_OPT_HOSTS 必须是非空、无重复的有效域名列表')
+  }
+  if (!isValidHostname(cfg.baselineHost)) throw new Error('CNAME_OPT_BASELINE_HOST 不是有效域名')
+  if (!cfg.probePath.startsWith('/') || cfg.probePath.startsWith('//')) throw new Error('CNAME_OPT_PROBE_PATH 必须是站内绝对路径')
+  positiveInt('CNAME_OPT_PROBE_BYTES', cfg.probeBytes, { min: 1024, max: 1024 * 1024 })
+  positiveInt('CNAME_OPT_FAIL_THRESHOLD', cfg.failThreshold, { max: 100 })
+  positiveInt('CNAME_OPT_REPORT_MIN_VISITORS', cfg.reportMinVisitors, { max: 1_000_000 })
+  positiveInt('CNAME_OPT_PROBE_CONCURRENCY', cfg.probeConcurrency, { max: 16 })
+  positiveInt('CNAME_OPT_PROBE_TIMEOUT_MS', cfg.probeTimeoutMs, { min: 100, max: 120_000 })
+  if (!Object.keys(cfg.ecsSubnets).length || Object.keys(cfg.ecsSubnets).some((isp) => !cfg.ecsSubnets[isp])) throw new Error('必须配置至少一个运营商 ECS 子网')
+  if (cfg.candidateListUrl && new URL(cfg.candidateListUrl).protocol !== 'https:') throw new Error('CNAME_OPT_LIST_URL 必须使用 HTTPS')
+  return cfg
 }
 
 const log = (...a) => console.log(new Date().toISOString(), ...a)
@@ -241,20 +374,21 @@ function getJson(url, { timeoutMs = 8000, headers = {} } = {}) {
 async function resolveViaDoh(cfg, name, subnet) {
   const u = `${cfg.dohUrl}?name=${encodeURIComponent(name)}&type=1&edns_client_subnet=${encodeURIComponent(subnet)}`
   const j = await getJson(u, { headers: { accept: 'application/dns-json' } })
+  if (j.Status === 3) return []
   if (j.Status !== 0) throw new Error(`DoH Status ${j.Status}`)
   return (j.Answer || []).filter((a) => a.type === 1).map((a) => a.data)
 }
 
-async function resolveIsps(cfg, name) {
+export async function resolveIsps(cfg, name, resolve = resolveViaDoh) {
   const out = {}
   await Promise.all(Object.entries(cfg.ecsSubnets).map(async ([isp, subnet]) => {
-    try { out[isp] = await resolveViaDoh(cfg, name, subnet) } catch { out[isp] = null }
+    try {
+      const ips = await resolve(cfg, name, subnet)
+      out[isp] = { ips, status: ips.length ? 'ok' : 'empty' }
+    } catch (error) {
+      out[isp] = { ips: [], status: 'error', error: error.message }
+    }
   }))
-  if (Object.values(out).every((v) => v === null)) {
-    const ips = await dns.resolve4(name).catch(() => [])
-    return ips.length ? { local: ips } : {}
-  }
-  for (const k of Object.keys(out)) if (!out[k] || out[k].length === 0) delete out[k]
   return out
 }
 
@@ -310,32 +444,42 @@ async function probeWithRetry(cfg, ip, host, expectEtag) {
 
 // 一轮里的共享缓存：同一个 IP 常被多个优选域名 / 多个运营商同时解析到（实测 172.64.79.252 出现在两个候选里），
 // 每个 IP 一轮只测一次；同一个域名也只解析一次。
-function createRunContext(cfg, host, expectEtag) {
+export function createRunContext(cfg, expectEtag, { resolve = resolveIsps, probe = probeWithRetry } = {}) {
   const probes = new Map()
   const names = new Map()
-  const probe = (ip) => {
-    if (!probes.has(ip)) probes.set(ip, probeWithRetry(cfg, ip, host, expectEtag))
-    return probes.get(ip)
+  const resolutions = new Map()
+  const probeForHost = (ip, host) => {
+    const key = `${host}\0${ip}`
+    if (!probes.has(key)) probes.set(key, probe(cfg, ip, host, expectEtag))
+    return probes.get(key)
   }
-  const examine = (name) => {
-    if (!names.has(name)) names.set(name, examineName(cfg, name, probe))
-    return names.get(name)
+  const resolved = (name) => {
+    if (!resolutions.has(name)) resolutions.set(name, resolve(cfg, name))
+    return resolutions.get(name)
+  }
+  const examine = (name, host) => {
+    if (!host) throw new Error('体检候选时必须指定实际托管域名（TLS SNI / Host）')
+    const key = `${host}\0${name}`
+    if (!names.has(key)) names.set(key, examineName(cfg, name, host, resolved, probeForHost))
+    return names.get(key)
   }
   return { examine, probeCount: () => probes.size }
 }
 
-async function examineName(cfg, name, probe) {
-  const resolved = await resolveIsps(cfg, name)
+async function examineName(cfg, name, host, resolveName, probe) {
+  const resolved = await resolveName(name)
   const isps = {}
-  await Promise.all(Object.entries(resolved).map(async ([isp, ips]) => {
+  await Promise.all(Object.entries(cfg.ecsSubnets).map(async ([isp]) => {
+    const answer = resolved[isp] || { ips: [], status: 'error' }
+    const ips = answer.ips || []
     const uniq = [...new Set(ips)]
     const nonCloudflare = uniq.filter((ip) => !inCloudflare(ip))
     // 已经确定不健康（有非 CF IP）就不必再测连通性
     const sample = nonCloudflare.length ? [] : uniq.filter((ip) => inCloudflare(ip)).slice(0, cfg.ipsPerIsp)
-    isps[isp] = { probes: await Promise.all(sample.map(probe)), nonCloudflare }
+    isps[isp] = { probes: await Promise.all(sample.map((ip) => probe(ip, host))), nonCloudflare, resolutionStatus: answer.status }
   }))
   const result = { name, isps }
-  return { ...result, verdict: judgeCandidate(result) }
+  return { ...result, host, verdict: judgeCandidate(result, Object.keys(cfg.ecsSubnets)) }
 }
 
 // 基线：直连 assets 取探针，拿到 ETag 作为后面所有比对的标准。用同一个带硬时限的探测函数，
@@ -365,9 +509,16 @@ async function readRecords(cfg) {
   const out = {}
   for (const host of cfg.hosts) {
     const recs = await cfApi(cfg, 'GET', `/zones/${cfg.zoneId}/dns_records?type=CNAME&name=${encodeURIComponent(host)}`)
-    if (!recs.length) throw new Error(`${host} 没有 CNAME 记录`)
-    if (recs[0].proxied) throw new Error(`${host} 是代理（橙云）记录，不该由本脚本管理`)
-    out[host] = { id: recs[0].id, target: recs[0].content.toLowerCase().replace(/\.$/, '') }
+    if (recs.length !== 1) throw new Error(`${host} 应恰好有一条 CNAME 记录，实际 ${recs.length} 条；为安全起见不改 DNS`)
+    const [record] = recs
+    const recordName = String(record.name || '').toLowerCase().replace(/\.$/, '')
+    if (record.type !== 'CNAME' || recordName !== host) throw new Error(`${host} 返回了不匹配的 DNS 记录；为安全起见不改 DNS`)
+    if (record.proxied) throw new Error(`${host} 是代理（橙云）记录，不该由本脚本管理`)
+    const target = String(record.content || '').toLowerCase().replace(/\.$/, '')
+    if (!record.id || !isValidHostname(target) || target === '8bitgo.com' || target.endsWith('.8bitgo.com')) {
+      throw new Error(`${host} 的 CNAME 目标无效或指回本站：${target}`)
+    }
+    out[host] = { id: record.id, target }
   }
   return out
 }
@@ -421,7 +572,7 @@ async function loadCandidateNames(cfg, records) {
   if (cfg.candidateListUrl) {
     try {
       const r = await fetch(cfg.candidateListUrl, { signal: AbortSignal.timeout(10000) })
-      if (r.ok) listText = (await r.text()).slice(0, 256 * 1024)
+      if (r.ok) listText = await readLimitedText(r, MAX_CANDIDATE_LIST_BYTES)
       else log(`[候选] 列表 HTTP ${r.status}，只用保底候选`)
     } catch (e) { log(`[候选] 列表拉取失败（${e.message}），只用保底候选`) }
   }
@@ -433,7 +584,8 @@ async function loadCandidateNames(cfg, records) {
 
 async function main(argv = process.argv.slice(2)) {
   const statusOnly = argv.includes('--status')
-  const dryRun = argv.includes('--dry-run') || statusOnly
+  // 全量 survey 的用途是观察候选排名；即使当前故障计数已到阈值，也不能顺手改生产 DNS。
+  const dryRun = argv.includes('--dry-run') || statusOnly || argv.includes('--survey')
   const survey = argv.includes('--survey') || statusOnly
   const cfg = loadConfig()
   const canWrite = Boolean(cfg.zoneId && cfg.token)
@@ -443,7 +595,7 @@ async function main(argv = process.argv.slice(2)) {
   const records = canWrite ? await readRecords(cfg) : await readCurrentViaDns(cfg)
   const state = await loadState(cfg.stateFile)
   state.hosts ||= {}
-  const run = createRunContext(cfg, cfg.hosts[0], expectEtag)
+  const run = createRunContext(cfg, expectEtag)
   const readReports = createReportReader(cfg)
   const nowMs = Date.now()
   const now = new Date(nowMs).toISOString()
@@ -452,7 +604,7 @@ async function main(argv = process.argv.slice(2)) {
   const current = {}
   const users = {}
   for (const host of cfg.hosts) {
-    current[host] = await run.examine(records[host].target)
+    current[host] = await run.examine(records[host].target, host)
     log(`[当前] ${host} → ${describe(current[host])}`)
     const hs = state.hosts[host] || {}
     const since = reportSince(hs, records[host].target, nowMs, cfg.reportGraceMs)
@@ -478,23 +630,86 @@ async function main(argv = process.argv.slice(2)) {
 
   // 2. 要不要找替换候选：只有这一轮就会到阈值的域名才值得（以前第一次不健康就把全部候选测一遍，
   //    而换线要等第三次 —— 前两轮的几百个连接全白测）。找过一次一个健康的都没有，冷却一段时间再找。
-  const failures = Object.fromEntries(cfg.hosts.map((h) => [h, nextFailureCount(state.hosts[h]?.failures, combined[h].healthy)]))
-  const due = cfg.hosts.filter((h) => failures[h] >= cfg.failThreshold)
+  const failures = Object.fromEntries(cfg.hosts.map((h) => [h, nextTargetFailureCount(
+    state.hosts[h], records[h].target, combined[h].healthy, combined[h].indeterminate,
+  )]))
+  const due = cfg.hosts.filter((h) => failures[h] >= cfg.failThreshold && !combined[h].indeterminate)
   const searchBlocked = !survey && Date.parse(state.noCandidateUntil || '') > nowMs
-  let judged = []
-  if (survey || (due.length && !searchBlocked)) {
-    const exclude = new Set([...due.map((h) => records[h].target), ...Object.keys(userBad)])
-    const names = (await loadCandidateNames(cfg, records)).filter((n) => survey || !exclude.has(n))
-    judged = await findHealthy(names, run.examine, {
-      concurrency: cfg.probeConcurrency,
-      want: survey ? Infinity : due.length + cfg.spareCandidates,
-    })
-    log(`[候选] 体检了 ${judged.length}/${names.length} 个候选，${judged.filter((c) => c.verdict.healthy).length} 个健康，共连了 ${run.probeCount()} 个 IP`)
-    if (survey) {
-      for (const c of [...judged].sort((a, b) => (b.verdict.healthy - a.verdict.healthy) || ((a.verdict.medianMs ?? 1e9) - (b.verdict.medianMs ?? 1e9)))) log(`[候选] ${describe(c)}`)
+  const judgedByHost = {}
+  const shouldWarm = !dryRun && !survey
+  const shouldSearchDue = due.length > 0 && !searchBlocked
+  const allNames = survey || shouldWarm || shouldSearchDue ? await loadCandidateNames(cfg, records) : []
+  let warmedHealthy = false
+  if (!survey) state.candidateWarm ||= {}
+
+  // 每轮只轮换预热少量新候选，故障时优先复测这批已验证过的目标，避免临时扫描整份清单。
+  // 预热结果会过期；真正写 DNS 前仍必须用当前三网答案重新验证。
+  if (shouldWarm && allNames.length) {
+    state.candidateWarm ||= {}
+    state.candidateWarmCursor ||= {}
+    for (const host of cfg.hosts) {
+      const warm = freshWarmCandidates(state.candidateWarm[host], nowMs, cfg.candidateWarmTtlMs, cfg.candidateWarmPoolSize)
+      const excluded = [records[host].target, ...Object.keys(userBad)]
+      const batch = selectWarmBatch(allNames, state.candidateWarmCursor[host], excluded, warm, cfg.candidateWarmBatchSize)
+      state.candidateWarmCursor[host] = batch.cursor
+      if (!batch.names.length) continue
+      const judged = await findHealthy(batch.names, (name) => run.examine(name, host), {
+        concurrency: 1, want: Infinity,
+      })
+      state.candidateWarm[host] = updateWarmCandidates(warm, judged, nowMs, cfg.candidateWarmTtlMs, cfg.candidateWarmPoolSize)
+      if (judged.some((candidate) => candidate.verdict.healthy)) warmedHealthy = true
+      log(`[预热] ${host}：体检 ${judged.length} 个候选，${judged.filter((candidate) => candidate.verdict.healthy).length} 个健康`)
     }
-  } else if (due.length) {
-    log(`[候选] 上次没找到健康候选，${state.noCandidateUntil} 之前不再全量体检`)
+  }
+
+  if (survey || due.length) {
+    for (const host of (survey ? cfg.hosts : due)) {
+      const excluded = new Set([...(survey ? [] : [records[host].target]), ...Object.keys(userBad)])
+      const names = allNames.filter((name) => survey || !excluded.has(name))
+      if (!survey) {
+        const elsewhere = cfg.hosts.filter((other) => other !== host).map((other) => records[other].target)
+        const warm = freshWarmCandidates(state.candidateWarm?.[host], nowMs, cfg.candidateWarmTtlMs, cfg.candidateWarmPoolSize)
+          .filter((entry) => !excluded.has(entry.name))
+          .sort((a, b) => (elsewhere.includes(a.name) - elsewhere.includes(b.name)) || (Number(a.medianMs) - Number(b.medianMs)))
+        const warmJudged = await findHealthy(warm.map((entry) => entry.name), (name) => run.examine(name, host), {
+          concurrency: 1, want: 1, stopOnIndeterminate: 1,
+        })
+        judgedByHost[host] = warmJudged
+        if (warmJudged.length) {
+          state.candidateWarm[host] = updateWarmCandidates(warm, warmJudged, nowMs, cfg.candidateWarmTtlMs, cfg.candidateWarmPoolSize)
+        }
+        const warmPick = pickReplacement(warmJudged, { exclude: [records[host].target, ...Object.keys(userBad)], inUseElsewhere: elsewhere })
+        if (warmPick) {
+          judgedByHost[host] = warmJudged
+          warmedHealthy = true
+          log(`[候选] ${host}：最近预热目标复测通过，直接作为本轮替换候选`)
+          continue
+        }
+        if (searchBlocked) {
+          log(`[候选] ${host}：无近期预热目标可用，保留至 ${state.noCandidateUntil} 的全量扫描冷却`)
+          continue
+        }
+      }
+      const alreadyChecked = new Set((judgedByHost[host] || []).map((candidate) => candidate.name))
+      const searchNames = survey ? names : names.filter((name) => !alreadyChecked.has(name))
+      const judged = await findHealthy(searchNames, (name) => run.examine(name, host), {
+        concurrency: cfg.probeConcurrency,
+        want: survey ? Infinity : 1 + cfg.spareCandidates,
+        stopOnIndeterminate: survey ? Infinity : 3,
+      })
+      judgedByHost[host] = [...(judgedByHost[host] || []), ...judged]
+      if (!survey) {
+        state.candidateWarm[host] = updateWarmCandidates(state.candidateWarm?.[host], judged, nowMs, cfg.candidateWarmTtlMs, cfg.candidateWarmPoolSize)
+        if (judged.some((candidate) => candidate.verdict.healthy)) warmedHealthy = true
+      }
+      log(`[候选] ${host}：体检了 ${judged.length}/${searchNames.length} 个候选，${judged.filter((c) => c.verdict.healthy).length} 个健康`)
+      if (survey) {
+        for (const c of [...judged].sort((a, b) => (b.verdict.healthy - a.verdict.healthy) || ((a.verdict.medianMs ?? 1e9) - (b.verdict.medianMs ?? 1e9)))) log(`[候选] ${describe(c)}`)
+      }
+    }
+    log(`[候选] 本轮共探测 ${run.probeCount()} 个「域名 + IP」线路组合`)
+  } else if (due.length && searchBlocked) {
+    log(`[候选] 上次没找到健康候选，${state.noCandidateUntil} 之前只尝试预热池`)
   }
   if (statusOnly) return
 
@@ -514,20 +729,38 @@ async function main(argv = process.argv.slice(2)) {
     }
     if (searchBlocked) continue
     const inUseElsewhere = cfg.hosts.filter((h) => h !== host).map((h) => records[h].target)
-    const pick = pickReplacement(judged, { exclude: [records[host].target, ...Object.keys(userBad)], inUseElsewhere })
+    const pick = pickReplacement(judgedByHost[host] || [], { exclude: [records[host].target, ...Object.keys(userBad)], inUseElsewhere })
     if (!pick) {
-      noCandidate = true
+      if (!(judgedByHost[host] || []).some((c) => c.verdict.indeterminate)) noCandidate = true
       log(`[判定] ${host} 连续 ${hs.failures} 次不健康，但没有健康的候选，保持不动`)
       continue
     }
     log(`[换线] ${host}: ${records[host].target} → ${pick.name}（${pick.verdict.reason}，源站中位 ${pick.verdict.medianMs}ms）${dryRun ? '［dry-run，未改 DNS］' : ''}`)
     if (dryRun) continue
     try {
-      await cfApi(cfg, 'PATCH', `/zones/${cfg.zoneId}/dns_records/${records[host].id}`, {
+      const recordPath = `/zones/${cfg.zoneId}/dns_records/${records[host].id}`
+      const latest = await cfApi(cfg, 'GET', recordPath)
+      if (!dnsRecordMatches(latest, { ...records[host], host })) {
+        const latestTarget = String(latest?.content || '').toLowerCase().replace(/\.$/, '')
+        log(`[跳过] ${host} 的 DNS 记录在体检期间已变化（当前 ${latestTarget || '记录无效'}），不覆盖人工或其他任务的修改`)
+        if (isValidHostname(latestTarget) && latestTarget !== '8bitgo.com' && !latestTarget.endsWith('.8bitgo.com')) {
+          records[host].target = latestTarget
+          hs.target = latestTarget
+          hs.switchedAt = now
+          hs.failures = 0
+        }
+        hs.lastCheck = now
+        hs.lastVerdict = 'DNS 记录在体检期间已变化，跳过自动换线'
+        continue
+      }
+      const updated = await cfApi(cfg, 'PATCH', recordPath, {
         content: pick.name,
         // 免费套餐 DNS 记录备注上限 100 字符，超了整个 PATCH 会被拒
         comment: `优选CNAME 自动切换 ${now.slice(0, 16)} 原${records[host].target}`.slice(0, 100),
       })
+      if (!dnsRecordMatches(updated, { ...records[host], host, target: pick.name })) {
+        throw new Error('Cloudflare API 未确认目标已更新；下轮会重新读取记录，不信任本地旧状态')
+      }
     } catch (e) {
       log(`[错误] ${host} 改 DNS 失败：${e.message}`)
       process.exitCode = 1
@@ -543,7 +776,7 @@ async function main(argv = process.argv.slice(2)) {
   // dry-run 不落状态：否则手动试跑一次就给定时器的失败计数 +1，可能让它提前换线
   if (dryRun) return
   if (noCandidate) state.noCandidateUntil = new Date(nowMs + cfg.noCandidateBackoffMs).toISOString()
-  else delete state.noCandidateUntil
+  else if (canClearNoCandidateBackoff(searchBlocked, warmedHealthy)) delete state.noCandidateUntil
   await saveState(cfg.stateFile, state)
 }
 

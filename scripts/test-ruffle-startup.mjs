@@ -51,7 +51,9 @@ try {
   const base = 'https://cn.example.test/_cn/ruffle/v9/'
   const activity = []
   const unsubscribe = subscribeHttpWarmActivity((url) => activity.push(url))
-  const warm = await warmRuffleCore(base)
+  const pendingWarm = warmRuffleCore(base)
+  assert.equal(warmRuffleCore(base), pendingWarm, '同一线路仍应合并进行中的清单与核心预热')
+  const warm = await pendingWarm
   await warm.done
   unsubscribe()
   assert.ok(activity.length >= 2 && activity.every((url) => url.startsWith(base)),
@@ -62,8 +64,10 @@ try {
   assert.deepEqual(new Set(requests), new Set([`${base}bootstrap.json`, `${base}${variantJs}`, `${base}${warm.wasm}`]),
     '只预热一套核心，不能把两份 wasm 都拉下来')
   const before = requests.length
-  assert.equal(await warmRuffleCore(base), warm, '同一条线路一页只预热一次')
-  assert.equal(requests.length, before)
+  const refreshed = await warmRuffleCore(base)
+  assert.notEqual(refreshed, warm, '预热结束后不保留陈旧句柄，下一局应重新检查缓存状态')
+  await refreshed.done
+  assert.equal(requests.length, before + 3, '下一局重新检查清单和同一套核心资源')
 
   // 清单取不到：不抛错、不卡住，并允许下次再试
   globalThis.fetch = async () => new Response('nope', { status: 404 })

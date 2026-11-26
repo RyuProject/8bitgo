@@ -196,6 +196,26 @@ await check('预热事件：开始 / 字节 / 结束；可中止坏线上的在�
   assert.deepEqual(events, ['start', 'bytes', 'end:done', 'start', 'bytes', 'end:cancelled'])
 })
 
+await check('只合并在途预热；完成后重新让浏览器检查 HTTP 缓存', async () => {
+  const realFetch = globalThis.fetch
+  let requests = 0
+  globalThis.fetch = async () => {
+    requests++
+    return new Response(new Uint8Array([1, 2, 3]))
+  }
+  try {
+    const url = 'https://edge/_cn/jsdos/cache-eviction-check.js'
+    const first = warmHttpCache(url)
+    const concurrent = warmHttpCache(url)
+    assert.equal(first, concurrent, '并发调用应共用同一条预热请求')
+    assert.equal(await first, true)
+    assert.equal(await warmHttpCache(url), true)
+    assert.equal(requests, 2, '完成后应重新询问浏览器缓存；缓存淘汰时才能再次下载')
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
 await check('接线：runtimeBase 读持久化结论；loadMountOf 按进展计时并在加速入口超时时记 js-dos 判坏', () => {
   const paths = read('src/emulator/paths.ts')
   assert.match(paths, /if \(typeof window !== 'undefined' && persistedEdgeBad\(kind\)\) runtimeEdgeFailed\.add\(kind\)/)

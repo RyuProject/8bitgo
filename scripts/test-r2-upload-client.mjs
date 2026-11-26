@@ -70,7 +70,7 @@ globalThis.XMLHttpRequest = class {
 }
 
 const { uploadRom, deleteRomDir, headRom, listRomObjects } = await import('../src/services/roms.ts')
-const { adaptiveUploadConcurrency, preferredUploadConcurrency, PART_SIZE, uploadRomMultipart, listOrphanUploads, abortOrphanUpload, listPendingUploads, MultipartUploadGate, UploadTransferPool } = await import('../src/services/romMultipart.ts')
+const { adaptiveUploadConcurrency, preferredUploadConcurrency, PART_SIZE, uploadRomMultipart, listOrphanUploads, abortOrphanUpload, listPendingUploads, MultipartUploadGate, UploadTransferPool, askJson } = await import('../src/services/romMultipart.ts')
 const { fingerprintRomPart, fingerprintRomUploadFile } = await import('../src/services/romFingerprint.ts')
 const { matchesRomPackSource, romPackWorkerConcurrency } = await import('../src/services/romPack.ts')
 const {
@@ -1109,3 +1109,121 @@ assert.equal(polled.status, 'completed')
 assert.equal(polls, 3)
 assert.deepEqual(reconnects, [1, 2])
 console.log('✅ 状态查询的瞬时 502/504 只会自动重连，不再把运行中的后台任务误判为失败')
+
+// Worker 创建 / 完成等 JSON 控制请求不能像旧 fetch 一样在弱网下无限等待；取消要能中止响应体读取。
+{
+  let abortedByTimeout = false
+  globalThis.fetch = async (_url, init) => new Promise((_resolve, reject) => {
+    init.signal.addEventListener('abort', () => {
+      abortedByTimeout = true
+      reject(new DOMException('aborted', 'AbortError'))
+    }, { once: true })
+  })
+  await assert.rejects(
+    askJson({ api: 'https://w.test', token: 'test-token' }, 'https://w.test/ping', { method: 'POST' }, '测试控制请求', undefined, 15),
+    (error) => error?.status === 0 && /响应超时/.test(error.message),
+  )
+  assert.equal(abortedByTimeout, true, '控制请求超时必须主动取消底层连接')
+
+  globalThis.fetch = async () => new Response(new ReadableStream({
+    start(stream) { stream.error(new TypeError('connection reset while reading JSON')) },
+  }), { status: 200 })
+  await assert.rejects(
+    askJson({ api: 'https://w.test', token: 'test-token' }, 'https://w.test/ping', { method: 'POST' }, '测试响应正文'),
+    (error) => error?.status === 0 && /正文未完整/.test(error.message),
+  )
+
+  // Worker 已创建会话、但响应正文断流时，客户端必须用同一 requestId 找回原会话。
+  // 不能把一次读取失败变成第二个 R2 multipart upload 残留。
+  {
+    const key = 'roms/ps2/create-body-reset.iso'
+    const file = new File([new Uint8Array(25 * 1024 * 1024)], 'create-body-reset.iso', { lastModified: 90110 })
+    const sessions = new Map()
+    const createIds = []
+    let createAttempts = 0
+    let completes = 0
+    globalThis.fetch = async (url, init) => {
+      const target = String(url)
+      if (target.endsWith('?uploads')) {
+        createAttempts++
+        const requestId = JSON.parse(init.body).requestId
+        createIds.push(requestId)
+        let session = sessions.get(requestId)
+        if (!session) {
+          session = { uploadId: 'up-create-body-reset', marker: '_uploads/create-body-reset.marker' }
+          sessions.set(requestId, session)
+        }
+        if (createAttempts === 1) {
+          return new Response(new ReadableStream({
+            start(stream) {
+              stream.enqueue(new TextEncoder().encode('{"uploadId":"up-create-body-reset"'))
+              stream.error(new TypeError('connection reset while reading JSON'))
+            },
+          }), { status: 200, headers: { 'content-type': 'application/json' } })
+        }
+        return Response.json({ ...session, partNumberInHeader: true })
+      }
+      if (target.includes('uploadId=up-create-body-reset') && init?.method === 'POST') {
+        completes++
+        return Response.json({ ok: true, key, size: file.size })
+      }
+      throw new Error(`unexpected request: ${target}`)
+    }
+    xhrResponse = (xhr) => ({ status: 200, body: JSON.stringify({ etag: `body-reset-${xhr.headers['x-8bg-part-number']}` }) })
+    assert.equal((await uploadRomMultipart(file, key)).size, file.size)
+    assert.equal(createAttempts, 2, '响应正文断流后应重试会话创建')
+    assert.equal(new Set(createIds).size, 1, '重试必须复用稳定 requestId')
+    assert.equal(sessions.size, 1, 'Worker 幂等恢复应只保留一个 multipart 会话')
+    assert.equal(completes, 1)
+  }
+
+  const key = 'roms/psx/cancel-create-weaknet.iso'
+  const file = new File([new Uint8Array(1024)], 'cancel-create-weaknet.iso', { lastModified: 90111 })
+  const controller = new AbortController()
+  let requestSignal
+  globalThis.fetch = async (_url, init) => new Promise((_resolve, reject) => {
+    requestSignal = init.signal
+    requestSignal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })
+  })
+  const task = uploadRomMultipart(file, key, undefined, controller.signal)
+  for (let attempt = 0; attempt < 100 && !requestSignal; attempt++) await new Promise((resolve) => setImmediate(resolve))
+  assert.ok(requestSignal, '取消测试必须进入会话创建请求')
+  controller.abort()
+  await assert.rejects(task, /上传已取消/)
+  assert.equal(requestSignal.aborted, true, '取消按钮要传到 Worker 控制请求')
+  for (const storeKey of ['8bitgo.rom.multipart', '8bitgo.rom.multipart.create-request']) {
+    const records = JSON.parse(globalThis.localStorage.getItem(storeKey) || '{}')
+    delete records[key]
+    globalThis.localStorage.setItem(storeKey, JSON.stringify(records))
+  }
+}
+console.log('✅ 弱网下 Worker 控制请求有总时限，用户取消可立即中止会话创建')
+
+// 合并是有副作用的提交点：取消恰好发生在请求发出后，不能掐掉 R2 已完成对象的唯一确认响应。
+{
+  const key = 'roms/psx/cancel-during-complete.iso'
+  const file = new File([new Uint8Array(25 * 1024 * 1024)], 'cancel-during-complete.iso', { lastModified: 90112 })
+  const controller = new AbortController()
+  let completeSignal
+  let completeCalls = 0
+  globalThis.fetch = async (url, init) => {
+    const target = String(url)
+    if (target.endsWith('?uploads')) {
+      return Response.json({ uploadId: 'up-cancel-during-complete', marker: '_uploads/cancel-during-complete.marker', partNumberInHeader: true })
+    }
+    if (target.includes('uploadId=up-cancel-during-complete') && init?.method === 'POST') {
+      completeCalls++
+      completeSignal = init.signal
+      controller.abort()
+      return Response.json({ ok: true, key, size: file.size })
+    }
+    throw new Error(`unexpected request: ${target}`)
+  }
+  xhrResponse = (xhr) => ({ status: 200, body: JSON.stringify({ etag: `cancel-complete-${xhr.headers['x-8bg-part-number']}` }) })
+  const result = await uploadRomMultipart(file, key, undefined, controller.signal)
+  assert.equal(completeCalls, 1)
+  assert.equal(completeSignal.aborted, false, '合并开始后继续等待有界确认响应')
+  assert.equal(controller.signal.aborted, true, '测试确实在合并过程中触发了取消')
+  assert.equal(result.size, file.size, 'R2 确认完成后客户端报告真实成功')
+}
+console.log('✅ 用户在 R2 合并确认期间取消时，不会误报未完成或遗留旧 uploadId')

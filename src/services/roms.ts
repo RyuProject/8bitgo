@@ -907,22 +907,34 @@ export function defaultKeyFor(platform: string, slug: string, fileName: string):
   控制的共享 Promise；后台批量检查不带 signal，仍可合并同 URL 的并发 HEAD，避免重复打 R2。
   只有 certain=true 才进 probeResults，网络抖动永远不会被钉死在整个 SPA 会话里。
 */
-const probeResults = new Map<string, ProbeOutcome>()
+const probeResults = new Map<string, { outcome: ProbeOutcome; expiresAt: number }>()
 /**
  * 部分结论只短期有效：主地址这次没问出来、由备用域名探到的结论（无论「存在」还是「没有」）。
  * 主域可能只是一次瞬时超时；把备用域的地址当成主地址的结论记满整个 SPA 会话，
  * 之后每一局都绕开已经恢复的主域。到期后重新问一次主地址。
  */
-const probeResultExpiry = new Map<string, number>()
 /** 备用域结论的有效期（毫秒） */
 export const ALTERNATE_PROBE_TTL_MS = 5 * 60_000
 /** 对象可在同一 key 覆盖；成功探测的 ETag 不能在长驻页面里永久有效。 */
 export const ROM_PROBE_SUCCESS_TTL_MS = 5 * 60_000
 /** 刚上传或恢复的对象应尽快从旧 404 中恢复出来。 */
 export const ROM_PROBE_MISS_TTL_MS = 60_000
+/** 单页长时间浏览不同游戏时，探测结论不能随着唯一 ROM 地址无限增长。 */
+export const ROM_PROBE_CACHE_MAX_ENTRIES = 512
 const probeInflight = new Map<string, Promise<ProbeOutcome>>()
 /** 清缓存时让更早启动、但更晚返回的 HEAD 失去写回资格，避免旧 404 覆盖刚上传的新对象。 */
 let probeCacheGeneration = 0
+
+/** 写入并维持有界 LRU；淘汰只影响下次 HEAD，不会改变 ROM 选择或下载完整性。 */
+function rememberProbeResult(cacheKey: string, outcome: ProbeOutcome, expiresAt: number): void {
+  probeResults.delete(cacheKey)
+  probeResults.set(cacheKey, { outcome, expiresAt })
+  while (probeResults.size > ROM_PROBE_CACHE_MAX_ENTRIES) {
+    const oldestKey = probeResults.keys().next().value
+    if (oldestKey === undefined) break
+    probeResults.delete(oldestKey)
+  }
+}
 
 /** 单次探测的结果。certain=false 表示「这一次没问出结论」，不该被记住 */
 export interface ProbeOutcome {
@@ -1171,13 +1183,17 @@ export function probeRom(
 ): Promise<ProbeOutcome> {
   // 同一个 URL 作为 ROM 时必须拒绝 HTML，作为 HTML5 入口时又必须接受；缓存键要把两种语义分开。
   const cacheKey = `${allowHtml ? 'html' : 'rom'}:${url}`
-  const expiresAt = probeResultExpiry.get(cacheKey)
-  if (expiresAt !== undefined && Date.now() >= expiresAt) {
-    probeResults.delete(cacheKey)
-    probeResultExpiry.delete(cacheKey)
-  }
   const cached = probeResults.get(cacheKey)
-  if (cached) return Promise.resolve(cached)
+  if (cached) {
+    if (Date.now() >= cached.expiresAt) {
+      probeResults.delete(cacheKey)
+    } else {
+      // 热门游戏复访时保留在缓存尾部，优先淘汰长期未访问的旧地址。
+      probeResults.delete(cacheKey)
+      probeResults.set(cacheKey, cached)
+      return Promise.resolve(cached.outcome)
+    }
+  }
   // 带 signal 的请求归当前页面所有，不能和别的页面共享生命周期；无 signal 的后台检查仍合并在途请求。
   if (!options.signal) {
     const inflight = probeInflight.get(cacheKey)
@@ -1207,13 +1223,12 @@ export function probeRom(
     }
     // 上传 / 删除 / 手动重试可能在 HEAD 飞行期间清过缓存；旧请求回来后不能把旧结论塞回去。
     if (outcome.certain && generation === probeCacheGeneration) {
-      probeResults.set(cacheKey, outcome)
       const ttl = viaAlternate
         ? ALTERNATE_PROBE_TTL_MS
         : outcome.url
           ? ROM_PROBE_SUCCESS_TTL_MS
           : ROM_PROBE_MISS_TTL_MS
-      probeResultExpiry.set(cacheKey, Date.now() + ttl)
+      rememberProbeResult(cacheKey, outcome, Date.now() + ttl)
     }
     return outcome
   }
@@ -1247,15 +1262,12 @@ export function clearRomProbeCache(urls?: string[]): void {
   probeCacheGeneration += 1
   if (!urls) {
     probeResults.clear()
-    probeResultExpiry.clear()
     probeInflight.clear()
     return
   }
   for (const url of urls) {
     probeResults.delete(`rom:${url}`)
     probeResults.delete(`html:${url}`)
-    probeResultExpiry.delete(`rom:${url}`)
-    probeResultExpiry.delete(`html:${url}`)
     probeInflight.delete(`rom:${url}`)
     probeInflight.delete(`html:${url}`)
   }
