@@ -18,6 +18,11 @@ const { attachNetplay } = await import('../src/netplay.js')
 
 let failed = 0
 const wait = (ms) => new Promise((r) => setTimeout(r, ms))
+const waitFor = async (test, timeout = 2500) => {
+  const deadline = Date.now() + timeout
+  while (!test() && Date.now() < deadline) await wait(20)
+  return test()
+}
 const ok = (name, cond) => {
   if (!cond) failed++
   console.log(`${cond ? '✅' : '❌'} ${name}`)
@@ -137,7 +142,8 @@ const decide = (roomId, token, userid, approve) =>
   await wait(Number(process.env.NETPLAY_SEAT_REQUEST_COOLDOWN_MS || 5000) + 20)
   ok('冷却过后可以再申请', (await setRole('S1', v1.roomToken, 'player')).status === 202)
   await wait(Number(process.env.NETPLAY_SEAT_REQUEST_MS || 15000) + 60)
-  ok('房主不答复，到点按超时作废', v1Decisions.at(-1)?.reason === 'timeout')
+  const timedOut = await waitFor(() => v1Decisions.at(-1)?.reason === 'timeout')
+  ok('房主不答复，到点按超时作废', timedOut)
   ok('超时后同意已经没有用了', (await decide('S1', host.roomToken, 's-v1', true)).status === 404)
   await wait(Number(process.env.NETPLAY_SEAT_REQUEST_COOLDOWN_MS || 5000) + 20)
   ok('再申请一次', (await setRole('S1', v1.roomToken, 'player')).status === 202)

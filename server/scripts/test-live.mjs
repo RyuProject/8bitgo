@@ -67,6 +67,11 @@ const conn = (token = '') => client(url, {
 const call = (s, ev, arg) => new Promise((res) => s.emit(ev, arg, (err, data) => res({ err, data })))
 const once = (s, ev, ms = 2000) =>
   new Promise((res, rej) => { const t = setTimeout(() => rej(new Error(`超时: ${ev}`)), ms); s.once(ev, (d) => { clearTimeout(t); res(d) }) })
+const waitFor = async (test, ms = 2500) => {
+  const deadline = Date.now() + ms
+  while (!test() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10))
+  return test()
+}
 const ok = []
 const bad = []
 const check = (name, cond, extra = '') => (cond ? ok : bad).push(`${name}${extra ? ' — ' + extra : ''}`)
@@ -111,7 +116,7 @@ const countHostBurst = () => { hostBurst++ }
 v1.on('signal', countHostBurst)
 for (let i = 0; i < 12; i++) host.emit('signal', { target: viewerId, data: { sdp: { type: 'offer', sdp: `OFFER-${i}` } } })
 for (let i = 0; i < 120; i++) host.emit('signal', { target: viewerId, data: { candidate: { candidate: `candidate:host-${i}` } } })
-await new Promise((r) => setTimeout(r, 180))
+await waitFor(() => hostBurst === 132)
 check('满房主播一轮 12 份 offer 和 120 颗 ICE 不被误限速', hostBurst === 132, `实际 ${hostBurst}`)
 v1.off('signal', countHostBurst)
 
@@ -730,7 +735,7 @@ lv.close()
     } catch { /* aborted */ }
   })()
 
-  await new Promise((r) => setTimeout(r, 150))
+  await waitFor(() => events.some((event) => event.event === 'rooms'))
   check('连上就先收到一份当前列表', events.length === 1 && events[0].event === 'rooms')
   const before = events.length
 
@@ -738,24 +743,24 @@ lv.close()
   const sh = conn()
   await once(sh, 'connect')
   const { data: sr } = await call(sh, 'go-live', { gameSlug: 'sf2', gameName: 'SF2', hostName: 'Ken' })
-  await new Promise((r) => setTimeout(r, 250))
-  check('开播立刻推送', events.length > before)
-  check('推送里能看到这个房间', events.at(-1).data.some((r) => r.roomId === sr.roomId))
+  const roomPushed = await waitFor(() => events.length > before && events.at(-1)?.data?.some((r) => r.roomId === sr.roomId))
+  check('开播立刻推送', roomPushed)
+  check('推送里能看到这个房间', roomPushed)
 
   // 有人来看 → 人数变化也要推（大厅卡片上的「N 人在看」）
   const n1 = events.length
   const sv = conn()
   await once(sv, 'connect')
   await call(sv, 'watch', { roomId: sr.roomId })
-  await new Promise((r) => setTimeout(r, 250))
-  check('观众进来后人数变化也推送', events.length > n1 && events.at(-1).data.some((r) => r.roomId === sr.roomId && r.viewers === 1))
+  const viewerPushed = await waitFor(() => events.length > n1 && events.at(-1)?.data?.some((r) => r.roomId === sr.roomId && r.viewers === 1))
+  check('观众进来后人数变化也推送', viewerPushed)
 
   // 下播 → 卡片要消失
   const n2 = events.length
   sv.close()
   sh.emit('stop-live')
-  await new Promise((r) => setTimeout(r, 300))
-  check('下播后房间从推送里消失', events.length > n2 && !events.at(-1).data.some((r) => r.roomId === sr.roomId))
+  const roomRemoved = await waitFor(() => events.length > n2 && !events.at(-1)?.data?.some((r) => r.roomId === sr.roomId))
+  check('下播后房间从推送里消失', roomRemoved)
 
   sh.close()
   ctrl.abort()

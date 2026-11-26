@@ -86,12 +86,17 @@ section('基础协议')
   ok('数字散列相同也要再核对稳定 slug', wrongSlugErr === 'room belongs to another game')
   wrongGame.close()
 
-  let relayed = null
-  host.on('webrtc-signal', (d) => (relayed = d))
+  const relayed = new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), 2000)
+    host.once('webrtc-signal', (d) => {
+      clearTimeout(timer)
+      resolve(d)
+    })
+  })
   guest.emit('webrtc-signal', { target: users['u-host'].socketId, offer: { sdp: 'fake' } })
-  await wait(80)
-  ok('信令转发到指定 socket', relayed?.offer?.sdp === 'fake')
-  ok('转发时带上 sender', relayed?.sender === guest.id)
+  const relayedMessage = await relayed
+  ok('信令转发到指定 socket', relayedMessage?.offer?.sdp === 'fake')
+  ok('转发时带上 sender', relayedMessage?.sender === guest.id)
 
   // 手柄位满了不再拒人，改成让他进来当观众（见 netplay.js 的 join-room）
   const third = await connect()

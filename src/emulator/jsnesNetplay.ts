@@ -80,6 +80,10 @@ const DISCONNECT_GRACE_MS = 10_000
 const STATE_CHUNK_CHARS = 12 * 1024
 const MAX_STATE_CHARS = 8 * 1024 * 1024
 const MAX_REMOTE_FRAMES = 600
+/** 锁步双方最多只会因输入缓冲和网络排队短暂错开；拒收远期帧，避免脏包撑满缓存。 */
+const MAX_REMOTE_FRAME_LEAD = 120
+/** 多网卡环境的正常 ICE 候选远少于此值；上限防止 SDP 到达前的候选洪泛占用移动端内存。 */
+const MAX_PENDING_ICE = 256
 
 /**
  * 不拿文件名当 ROM 身份：同名汉化版和原版也不能锁步。
@@ -120,6 +124,10 @@ export class JsnesNetplay {
   private pendingIce: RTCIceCandidateInit[] = []
   /** 收到的对方输入，按帧号索引 */
   private remoteByFrame: Record<number, number> = {}
+  /** 输入缓存条数单独维护，避免每个到达帧都分配 Object.keys 临时数组。 */
+  private remoteFrameCount = 0
+  /** 已发送的最高本地帧，用来把对端输入限制在合理的锁步窗口内。 */
+  private latestLocalFrameSent = -1
   private opts: JsnesNetplayOptions
 
   constructor(opts: JsnesNetplayOptions) {
@@ -350,10 +358,25 @@ export class JsnesNetplay {
       const frame = Number(m.frame)
       const bits = Number(m.bits)
       if (!Number.isInteger(frame) || frame < 0 || frame > 2 ** 31 - 1
-        || !Number.isInteger(bits) || bits < 0 || bits >= 1 << NETPLAY_ACTIONS.length) return
-      if (Object.keys(this.remoteByFrame).length >= MAX_REMOTE_FRAMES
-        && !Object.prototype.hasOwnProperty.call(this.remoteByFrame, frame)) return
+        || !Number.isInteger(bits) || bits < 0 || bits >= 1 << NETPLAY_ACTIONS.length) {
+        return this.fail(new Error('对端发送了无效的按键帧'))
+      }
+      // 锁步通道是可靠且有序的，正常对端不会领先数秒；保留宽裕窗口处理
+      // 低帧率设备和临时抖动，同时防止伪造的远期帧占满缓存后卡死当前帧。
+      if (frame > Math.max(0, this.latestLocalFrameSent) + MAX_REMOTE_FRAME_LEAD) {
+        return this.fail(new Error('对端输入帧超前过多，联机已停止'))
+      }
+      if (frame < Math.max(0, this.latestLocalFrameSent - MAX_REMOTE_FRAMES)) return
+      const previous = this.remoteByFrame[frame]
+      if (previous !== undefined) {
+        if (previous !== bits) return this.fail(new Error('对端重复发送了不同的按键帧'))
+        return
+      }
+      if (this.remoteFrameCount >= MAX_REMOTE_FRAMES) {
+        return this.fail(new Error('对端输入缓存超限，联机已停止'))
+      }
       this.remoteByFrame[frame] = bits
+      this.remoteFrameCount++
     }
   }
 
@@ -399,9 +422,22 @@ export class JsnesNetplay {
   }
 
   private sendData(data: Record<string, unknown>): boolean {
-    if (this.dc?.readyState !== 'open') return false
-    this.dc.send(JSON.stringify(data))
-    return true
+    if (this.dc?.readyState !== 'open') {
+      if (!this.closing) this.fail(new Error('输入通道已经关闭'), false)
+      return false
+    }
+    try {
+      this.dc.send(JSON.stringify(data))
+      return true
+    } catch (error) {
+      // RTCDataChannel.send 在切网、缓冲区满或关闭竞态时会同步抛错；不能让异常逃出
+      // requestAnimationFrame，否则帧循环停止且玩家只会看到画面冻结。
+      if (!this.closing) {
+        const detail = error instanceof Error ? `：${error.message}` : ''
+        this.fail(new Error(`输入通道发送失败${detail}`), false)
+      }
+      return false
+    }
   }
 
   private markReady() {
@@ -426,14 +462,24 @@ export class JsnesNetplay {
     const message = error instanceof Error ? error.message : String(error)
     if (tellPeer) {
       try {
-        this.sendData({ kind: 'fatal', message: message.slice(0, 200) })
+        // 错误上报不能走 sendData：若发送本身抛错，会递归进入 fail。
+        if (this.dc?.readyState === 'open') this.dc.send(JSON.stringify({ kind: 'fatal', message: message.slice(0, 200) }))
       } catch {
         /* 通道已经断了。 */
       }
     }
-    this.opts.onState?.('failed')
-    this.opts.onError?.(message)
-    this.close()
+    try {
+      this.opts.onState?.('failed')
+    } catch (callbackError) {
+      console.warn('[jsnes-netplay] 状态回调失败', callbackError)
+    }
+    try {
+      this.opts.onError?.(message)
+    } catch (callbackError) {
+      console.warn('[jsnes-netplay] 错误回调失败', callbackError)
+    } finally {
+      this.close()
+    }
   }
 
   private async makeOffer() {
@@ -455,21 +501,36 @@ export class JsnesNetplay {
       }
     } else if (data.candidate) {
       // ICE 常常先于 SDP 到。直接 add 会抛 InvalidStateError，而且这颗候选永远找不回来。
-      if (!pc.remoteDescription) this.pendingIce.push(data.candidate)
+      if (!pc.remoteDescription) {
+        if (this.pendingIce.length >= MAX_PENDING_ICE) return this.fail(new Error('ICE 候选过多，无法建立联机'))
+        this.pendingIce.push(data.candidate)
+      }
       else await pc.addIceCandidate(data.candidate)
     }
   }
 
   private signal(data: unknown) {
     if (this.ws?.readyState === WebSocket.OPEN && this.peerId) {
-      this.ws.send(JSON.stringify({ type: 'signal', to: this.peerId, data }))
+      try {
+        this.ws.send(JSON.stringify({ type: 'signal', to: this.peerId, data }))
+      } catch (error) {
+        const detail = error instanceof Error ? `：${error.message}` : ''
+        this.fail(new Error(`联机信令发送失败${detail}`), false)
+      }
     }
   }
 
   /** 把本帧本地输入发给对方 */
   sendLocal(frame: number, bits: number): boolean {
     if (!this.ready) return false
-    return this.sendData({ kind: 'input', frame, bits })
+    if (!Number.isInteger(frame) || frame < 0 || frame > 2 ** 31 - 1
+      || !Number.isInteger(bits) || bits < 0 || bits >= 1 << NETPLAY_ACTIONS.length) {
+      this.fail(new Error('本地输入帧无效'), false)
+      return false
+    }
+    if (!this.sendData({ kind: 'input', frame, bits })) return false
+    this.latestLocalFrameSent = Math.max(this.latestLocalFrameSent, frame)
+    return true
   }
 
   /** 取某帧的对方输入（可能尚未到达，返回 undefined） */
@@ -480,7 +541,10 @@ export class JsnesNetplay {
   /** 清掉比某帧更老的输入缓存 */
   pruneRemote(beforeFrame: number) {
     for (const k of Object.keys(this.remoteByFrame)) {
-      if (Number(k) < beforeFrame) delete this.remoteByFrame[Number(k)]
+      if (Number(k) < beforeFrame) {
+        delete this.remoteByFrame[Number(k)]
+        this.remoteFrameCount--
+      }
     }
   }
 
@@ -520,6 +584,7 @@ export class JsnesNetplay {
       /* ignore */
     }
     this.remoteByFrame = {}
+    this.remoteFrameCount = 0
     this.pendingIce = []
     this.syncParts = null
   }

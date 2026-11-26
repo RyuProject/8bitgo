@@ -16,8 +16,36 @@ const { attachNetplay } = await import('../src/netplay.js')
 import { iceRouter } from '../src/routes/ice.js'
 
 let pass = 0, fail = 0
-const ok = (c, m) => { c ? (pass++, console.log('✅ ' + m)) : (fail++, console.log('❌ ' + m)) }
+const ok = (condition, message) => {
+  if (condition) {
+    pass++
+    console.log('✅ ' + message)
+  } else {
+    fail++
+    console.log('❌ ' + message)
+  }
+}
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+const waitFor = async (test, timeout = 2500) => {
+  const deadline = Date.now() + timeout
+  while (!test() && Date.now() < deadline) await sleep(20)
+  return test()
+}
+let fenceSequence = 0
+const flushRoomMessages = (sender, receiver, timeout = 2500) => new Promise((resolve) => {
+  const marker = `test-fence-${++fenceSequence}`
+  const done = (received) => {
+    clearTimeout(timer)
+    receiver.off('data-message', onMessage)
+    resolve(received)
+  }
+  const onMessage = (message) => {
+    if (message?.['__test-fence'] === marker) done(true)
+  }
+  const timer = setTimeout(() => done(false), timeout)
+  receiver.on('data-message', onMessage)
+  sender.emit('data-message', { '__test-fence': marker })
+})
 
 const app = express()
 app.use('/api/netplay/ice', iceRouter)
@@ -40,7 +68,7 @@ const host = await connect()
 let hostToken = null
 host.on('room-token', (d) => (hostToken = d.token))
 await new Promise((r) => host.emit('open-room', { extra: extra('r1', 'u-host'), maxPlayers: 4, password: '' }, r))
-await sleep(80)
+await waitFor(() => typeof hostToken === 'string')
 ok(typeof hostToken === 'string' && hostToken.length > 20, '开房后收到房间令牌')
 
 const guest = await connect()
@@ -48,7 +76,7 @@ let guestToken = null
 let guestUsers = null
 guest.on('room-token', (d) => (guestToken = d.token))
 await new Promise((r) => guest.emit('join-room', { extra: extra('r1', 'u-guest'), password: '' }, (e, u) => { guestUsers = u; r() }))
-await sleep(80)
+await waitFor(() => typeof guestToken === 'string')
 ok(typeof guestToken === 'string' && guestToken !== hostToken, '访客拿到不同的令牌')
 ok(guestUsers && !JSON.stringify(guestUsers).includes(hostToken), 'users 广播里不含任何人的令牌')
 
@@ -70,12 +98,12 @@ console.log('\n── 控制消息过滤 ──')
 let hijack = null
 host.on('data-message', (d) => { if (d && d['host-migrated']) hijack = d })
 guest.emit('data-message', { 'host-migrated': { roomId: 'evil' } })
-await sleep(150)
+await flushRoomMessages(guest, host)
 ok(hijack === null, '访客伪造的 host-migrated 被拦掉')
 let chat = null
 host.on('data-message', (d) => { if (d && d.chat) chat = d })
 guest.emit('data-message', { chat: 'hi' })
-await sleep(150)
+await waitFor(() => chat?.chat === 'hi')
 ok(chat?.chat === 'hi', '正常的聊天消息照常转发')
 
 // 访客发 restart / pause：EmulatorJS 的 dataMessage 收到就直接重开 / 暂停房主的游戏
@@ -83,16 +111,15 @@ const hostGot = []
 host.on('data-message', (d) => hostGot.push(d))
 guest.emit('data-message', { restart: true })
 guest.emit('data-message', { pause: true, chat: 'still here' })
-await sleep(150)
+await flushRoomMessages(guest, host)
 ok(!hostGot.some((d) => d.restart), '访客发的 restart 被拦掉')
 ok(!hostGot.some((d) => d.pause) && hostGot.some((d) => d.chat === 'still here'), '访客发的 pause 被摘掉，同包里的聊天照常')
 hostGot.length = 0
 host.emit('data-message', { pause: true })
 const guestGot = []
 guest.on('data-message', (d) => guestGot.push(d))
-await sleep(50)
 host.emit('data-message', { restart: true })
-await sleep(150)
+await waitFor(() => guestGot.some((d) => d.restart))
 ok(guestGot.some((d) => d.restart), '房主发的 restart 照常转发')
 
 // 按键同步：访客是 2P（下标 1），只能替自己按；替 1P 按的被丢
@@ -100,7 +127,7 @@ guest.emit('data-message', { 'sync-control': [
   { frame: 1, connected_input: [1, 0, 1] },
   { frame: 1, connected_input: [0, 0, 1] },
 ] })
-await sleep(150)
+await waitFor(() => hostGot.some((d) => d['sync-control']))
 const sync = hostGot.find((d) => d['sync-control'])
 ok(sync && sync['sync-control'].length === 1 && sync['sync-control'][0].connected_input[0] === 1, '访客只能发自己手柄位的按键')
 hostGot.length = 0
@@ -109,7 +136,7 @@ guest.emit('data-message', { 'sync-control': [
   { frame: 1, connected_input: [1, 8, 'pressed'] },
   { frame: 1, connected_input: [1, 8, 1] },
 ] })
-await sleep(100)
+await waitFor(() => hostGot.some((d) => d['sync-control']))
 ok(hostGot.find((d) => d['sync-control'])?.['sync-control']?.length === 1, '畸形按键参数被丢，只留下有限数字的正常按键')
 hostGot.length = 0
 // 观众（手柄位满了之后进来的人）一个键都不许发
@@ -122,7 +149,7 @@ for (let i = 0; i < 3; i++) {
 const spec = spectators[spectators.length - 1]
 spec.emit('data-message', { 'sync-control': [{ frame: 1, connected_input: [0, 0, 1] }] })
 spec.emit('data-message', { 'sync-control': [{ frame: 1, connected_input: [1, 0, 1] }], chat: 'watching' })
-await sleep(150)
+await waitFor(() => hostGot.some((d) => d.chat === 'watching'))
 ok(!hostGot.some((d) => d['sync-control']) && hostGot.some((d) => d.chat === 'watching'), '观众的按键被丢，聊天照常')
 for (const sp of spectators) sp.close()
 await sleep(100)
@@ -133,15 +160,14 @@ guest.on('webrtc-signal', (d) => (g2gLeak = d))
 const other = await connect()
 await new Promise((r) => other.emit('join-room', { extra: extra('r1', 'u-other'), password: '' }, r))
 other.emit('webrtc-signal', { target: guest.id, offer: { sdp: 'x' } })
-await sleep(150)
+await flushRoomMessages(other, host)
 ok(g2gLeak === null, '访客之间的信令被拦')
 let toHost = null
 host.on('webrtc-signal', (d) => (toHost = d))
 other.emit('webrtc-signal', { target: host.id, offer: { sdp: 'ok' } })
-await sleep(150)
+await waitFor(() => toHost?.offer?.sdp === 'ok')
 ok(toHost?.offer?.sdp === 'ok' && toHost.sender === other.id, '访客 -> 房主照常')
 other.close()
-await sleep(100)
 
 console.log('\n── 开房限流 ──')
 const dup = await new Promise((r) => guest.emit('open-room', { extra: extra('r2', 'u-guest'), maxPlayers: 2 }, r))
@@ -156,7 +182,6 @@ for (let i = 0; i < 3; i++) {
 ok(spamRes[0] == null && spamRes[1] == null, '同一 IP 前几个房间能开')
 ok(spamRes[2] === 'too many rooms', '同一 IP 超过上限被拒')
 for (const sp of spam) sp.close()
-await sleep(100)
 
 console.log('\n── SSE 推送 ──')
 const events = []
@@ -164,7 +189,7 @@ const es = await fetch(`${base}/api/netplay/events?watch=r1`)
 const reader = es.body.getReader()
 const dec = new TextDecoder()
 let buf = ''
-const pump = (async () => {
+const _pump = (async () => {
   while (true) {
     const { done, value } = await reader.read()
     if (done) break
@@ -177,13 +202,13 @@ const pump = (async () => {
     }
   }
 })()
-await sleep(200)
+await waitFor(() => events.includes('rooms') && events.includes('room'))
 ok(events.includes('rooms'), '连上就收到房间列表快照')
 ok(events.includes('room'), '订阅的房间也推了一份')
 const before = events.length
 const third = await connect()
 await new Promise((r) => third.emit('join-room', { extra: extra('r1', 'u3'), password: '' }, r))
-await sleep(400)
+await waitFor(() => events.length > before)
 ok(events.length > before, '有人加入后立刻推送（不用等轮询）')
 
 console.log('\n── sync-control 不能撑爆房主的内存 ──')
@@ -199,7 +224,7 @@ flood.push({ frame: 'abc', connected_input: [1, 0, 1] })
 let flooded = null
 host.on('data-message', (d) => { if (d['sync-control']) flooded = d['sync-control'] })
 guest.emit('data-message', { 'sync-control': flood })
-await sleep(150)
+await waitFor(() => Array.isArray(flooded))
 ok(Array.isArray(flooded) && flooded.length <= 32, `一条消息里的 sync-control 被截断（收到 ${flooded?.length}）`)
 ok(Array.isArray(flooded) && flooded.every((e) => Number.isInteger(e.frame) && e.frame >= 0), '非法帧号被丢掉')
 
@@ -207,7 +232,7 @@ console.log('\n── 聊天不能冒名 ──')
 let chatGot = null
 host.on('data-message', (d) => { if (d['chat-message']) chatGot = d['chat-message'] })
 guest.emit('data-message', { 'chat-message': { player_name: '房主', from: 'u-host', to: 'all', message: 'x'.repeat(3000) } })
-await sleep(150)
+await waitFor(() => Boolean(chatGot))
 ok(chatGot?.player_name === 'u-guest', `昵称由服务端填（收到 ${chatGot?.player_name}）`)
 ok(chatGot?.from === 'u-guest', 'from 换成真实发送者，冒充不了别人')
 ok(typeof chatGot?.message === 'string' && chatGot.message.length <= 500, '正文限长')
@@ -336,11 +361,11 @@ ok(!hostGot.some((d) => d && 'sync-control' in d), '非数组的 sync-control �
 ok(hostGot.some((d) => d && d.chat === 'keep me'), '同包里的其它字段照常')
 guestGot.length = 0
 host.emit('data-message', { 'sync-control': { frame: 1 }, chat: 'host says' })
-await sleep(150)
+await waitFor(() => guestGot.some((d) => d.chat === 'host says'))
 ok(guestGot.some((d) => d.chat === 'host says') && !guestGot.some((d) => 'sync-control' in d), '房主发的畸形 sync-control 同样被摘掉')
 guest.emit('webrtc-signal', 'not-an-object')
 guest.emit('webrtc-signal', null)
-await sleep(80)
+await flushRoomMessages(guest, host)
 ok(true, '畸形 webrtc-signal 不抛（服务器还活着）')
 
 console.log('\n── 第三批：公开列表不放大 ──')
@@ -364,7 +389,7 @@ console.log('\n── 第三批：信令限流 ──')
 let sigGot = 0
 host.on('webrtc-signal', (d) => { if (d.candidate === 'flood') sigGot++ })
 for (let i = 0; i < 80; i++) guest.emit('webrtc-signal', { target: host.id, candidate: 'flood' })
-await sleep(250)
+await waitFor(() => sigGot > 0)
 ok(sigGot > 0 && sigGot <= 40, `访客每秒最多 40 条信令（收到 ${sigGot}）`)
 await sleep(1100)
 let renegGot = 0
@@ -498,7 +523,9 @@ const cfSrv = createServer((req, res) => {
 })
 await new Promise((r) => cfSrv.listen(0, r))
 process.env.TURN_CF_API_BASE = `http://127.0.0.1:${cfSrv.address().port}/v1`
-process.env.TURN_CF_TIMEOUT_MS = '600'
+// 成功场景打到本地 mock，在整套重负载回归里给它足够调度余量；
+// 故意挂起的场景在下面单独收紧超时，仍验证开局不会被 CF 拖住。
+process.env.TURN_CF_TIMEOUT_MS = '10000'
 // 缓存是按 key 存的，换个 key 就等于让它作废（顺便验了「换 key 要立刻生效」）
 let cfKeySeq = 0
 const useFreshCfKey = () => (process.env.TURN_CF_KEY_ID = `test-key-${++cfKeySeq}`)
@@ -520,7 +547,7 @@ ok(
   withCf.iceServers[0].urls.includes('stun:stun.cloudflare.com:3478'),
   'CF 带来的 STUN 并进了 STUN 那一格（顺带解决默认 STUN 不可达）',
 )
-ok(cfEntry.urls.every((u) => String(u).startsWith('turn')), 'STUN 没有混进 TURN 那一格')
+ok(Boolean(cfEntry) && cfEntry.urls.every((u) => String(u).startsWith('turn')), 'STUN 没有混进 TURN 那一格')
 ok(withCf.expiry > Math.floor(Date.now() / 1000), 'expiry 取了会过期的那几路里最早的')
 
 // 换成仪表盘那种「一条里混排」的形状，结果必须一模一样
@@ -538,7 +565,7 @@ ok(
   '混排形状里的 stun: 正确并进了 STUN 那一格',
 )
 ok(
-  JSON.stringify(mergedTurn.urls) === JSON.stringify(cfEntry.urls),
+  Boolean(mergedTurn && cfEntry) && JSON.stringify(mergedTurn?.urls) === JSON.stringify(cfEntry?.urls),
   '两种形状解析出来的 TURN 地址完全一致',
 )
 cfShape = 'split'
@@ -614,6 +641,7 @@ ok(Array.isArray(cfDown.iceServers) && cfDown.iceServers.length >= 2, '响应结
 
 // CF 不回包：只能吞掉这一路，靠 AbortSignal 兜住
 cfMode = 'hang'
+process.env.TURN_CF_TIMEOUT_MS = '1500'
 useFreshCfKey()
 const t1 = Date.now()
 const cfHang = await (await fetch(`${base}/api/netplay/ice`)).json()

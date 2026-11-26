@@ -251,6 +251,93 @@ for (const [input, expected] of [[-3, 0], [2.9, 2], [99, 8], [Number.NaN, 2]]) {
   guest.close()
 }
 
+// RTCDataChannel 在弱网切换 / 发送缓冲区满时可以同步抛错；帧循环不能因此漏掉下一拍 rAF。
+{
+  let error = ''
+  const host = new JsnesNetplay(baseOptions({ onError: (message) => { error = message } }))
+  const guest = new JsnesNetplay(baseOptions({ seat: 1 }))
+  const a = new FakeDataChannel()
+  const b = new FakeDataChannel()
+  a.peer = b
+  b.peer = a
+  host.bindDc(a)
+  guest.bindDc(b)
+  a.open()
+  b.open()
+  await tick()
+  await tick()
+  a.send = () => { throw new Error('buffer full') }
+  assert.equal(host.sendLocal(0, 1), false)
+  assert.match(error, /输入通道发送失败.*buffer full/)
+  assert.equal(a.readyState, 'closed')
+  host.close()
+  guest.close()
+}
+
+// 合法锁步输入允许领先 120 帧的抖动余量；更远的帧要快速结束会卡死当前帧的异常会话。
+{
+  let error = ''
+  const host = new JsnesNetplay(baseOptions())
+  const guest = new JsnesNetplay(baseOptions({ seat: 1, onError: (message) => { error = message } }))
+  const a = new FakeDataChannel()
+  const b = new FakeDataChannel()
+  a.peer = b
+  b.peer = a
+  host.bindDc(a)
+  guest.bindDc(b)
+  a.open()
+  b.open()
+  await tick()
+  await tick()
+  assert.equal(guest.sendLocal(10, 1), true)
+  guest.onData({ kind: 'input', frame: 130, bits: 2 })
+  assert.equal(guest.remoteBitsFor(130), 2)
+  guest.onData({ kind: 'input', frame: 131, bits: 2 })
+  assert.match(error, /输入帧超前过多/)
+  host.close()
+  guest.close()
+}
+
+// SDP 前的 ICE 候选只暂存有限数量，阻止异常对端在手机上无限堆积对象。
+{
+  let error = ''
+  const guest = new JsnesNetplay(baseOptions({ seat: 1, onError: (message) => { error = message } }))
+  await guest.ensurePc(false)
+  for (let i = 0; i < 257; i++) {
+    await guest.onSignal({ candidate: { candidate: `candidate:${i}` } })
+  }
+  assert.match(error, /ICE 候选过多/)
+  guest.close()
+}
+
+// 输入缓存达到上限后拒绝继续增长；清理旧帧后应能复用已释放的容量。
+{
+  let error = ''
+  const host = new JsnesNetplay(baseOptions())
+  const guest = new JsnesNetplay(baseOptions({ seat: 1, onError: (message) => { error = message } }))
+  const a = new FakeDataChannel()
+  const b = new FakeDataChannel()
+  a.peer = b
+  b.peer = a
+  host.bindDc(a)
+  guest.bindDc(b)
+  a.open()
+  b.open()
+  await tick()
+  await tick()
+  assert.equal(guest.sendLocal(480, 0), true)
+  for (let frame = 0; frame < 600; frame++) guest.onData({ kind: 'input', frame, bits: 1 })
+  guest.pruneRemote(300)
+  assert.equal(guest.remoteBitsFor(100), undefined)
+  assert.equal(guest.remoteBitsFor(599), 1)
+  assert.equal(guest.sendLocal(780, 0), true)
+  for (let frame = 600; frame < 900; frame++) guest.onData({ kind: 'input', frame, bits: 1 })
+  guest.onData({ kind: 'input', frame: 900, bits: 1 })
+  assert.match(error, /输入缓存超限/)
+  host.close()
+  guest.close()
+}
+
 // jsnes 3.0 的状态 ABI 与 2.x 不兼容；旧页面必须在传状态前被协议版本挡住。
 {
   let error = ''

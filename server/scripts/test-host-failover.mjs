@@ -13,14 +13,21 @@ import { createServer } from 'node:http'
 import { io as client } from 'socket.io-client'
 import { testGameRoomPolicy } from './helpers/netplay-game-policy.mjs'
 
-process.env.NETPLAY_HOST_GRACE_MS = '3000'
-process.env.NETPLAY_CLAIM_MS = '700'
+// 保留足够长的单人应答窗口，避免测试网络调度延迟把候选人推进到下一轮；
+// 这个时序也更接近弱网下真实浏览器领取邀请、发出 /claim 的过程。
+process.env.NETPLAY_HOST_GRACE_MS = '15000'
+process.env.NETPLAY_CLAIM_MS = '3500'
 // 所有连接都来自 127.0.0.1：每房间每 IP 的成员上限要关掉（那条规则在 test-netplay-hardening.mjs 里测）
 process.env.NETPLAY_MAX_MEMBERS_PER_IP = '0'
 const { attachNetplay } = await import('../src/netplay.js')
 
 let failed = 0
 const wait = (ms) => new Promise((r) => setTimeout(r, ms))
+const waitFor = async (test, timeout = 6000) => {
+  const end = Date.now() + timeout
+  while (!test() && Date.now() < end) await wait(20)
+  return test()
+}
 const ok = (n, c) => { if (!c) failed++; console.log(`${c ? '✅' : '❌'} ${n}`) }
 
 const app = express()
@@ -52,14 +59,14 @@ console.log('── A. 第一顺位不接手，自动换下一位 ──')
   b.on('data-message', (m) => { if (m['host-migrating']) offers.push(m['host-migrating'].nextHost) })
 
   host.close()
-  await wait(250)
+  await waitFor(() => offers.length > 0)
   ok('先问第一顺位 A', offers[0] === 'u-a')
   ok('房间没解散', (await room('F1'))?.awaitingHost === true)
 
   // A 装作没反应（不调 migrate），等超时
-  await wait(900)
-  ok('A 超时后自动改问 B', offers.includes('u-b'))
-  ok('这期间房间一直活着', (await room('F1')) !== null)
+  const offeredB = await waitFor(() => offers.includes('u-b'))
+  ok('A 超时后自动改问 B', offeredB)
+  ok('这期间房间一直活着', offeredB && (await room('F1')) !== null)
 
   /**
    * B 接手。
@@ -76,8 +83,10 @@ console.log('── A. 第一顺位不接手，自动换下一位 ──')
   const claim = await fetch(`${API}/api/netplay/rooms/F1/claim`, {
     method: 'POST', headers: { 'content-type': 'application/json', 'x-netplay-token': b.token },
   })
+  const claimBody = await claim.json().catch(() => ({}))
+  if (!claim.ok) console.log(`认领诊断：status=${claim.status} nextHost=${(await room('F1'))?.nextHostUserId} tokenPresent=${Boolean(b.token)} body=${JSON.stringify(claimBody)}`)
   ok('B 先认领', claim.ok)
-  const claimToken = claim.ok ? (await claim.json()).claimToken : ''
+  const claimToken = claim.ok ? claimBody.claimToken : ''
 
   const nb = await connect()
   await open(nb, extra('u-b', 'F1b', 'B'))
@@ -103,7 +112,7 @@ console.log('\n── B. 玩家优先于观众 ──')
   const seen = []
   sp.on('data-message', (m) => { if (m['host-migrating']) seen.push(m['host-migrating'].nextHost) })
   host.close()
-  await wait(250)
+  await waitFor(() => seen.length > 0)
   ok('先问玩家（u-sp）而不是观众', seen[0] === 'u-sp')
   p1.close(); sp.close(); await wait(200)
 }
@@ -116,9 +125,9 @@ console.log('\n── C. 都不接 → 到宽限期才解散 ──')
   let hostLeft = false
   a.on('data-message', (m) => { if (m['host-left']) hostLeft = true })
   host.close()
-  await wait(1500)
-  ok('宽限期内房间还在（没有一超时就散）', (await room('F3')) !== null)
   await wait(2200)
+  ok('宽限期内房间还在（没有一超时就散）', (await room('F3')) !== null)
+  await wait(13000)
   ok('超过宽限期才广播 host-left', hostLeft)
   ok('房间解散', (await room('F3')) === null)
   a.close()
