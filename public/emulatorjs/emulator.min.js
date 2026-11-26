@@ -68,8 +68,15 @@ const __8bgCoreResume = (() => {
       const at = url.pathname.lastIndexOf(marker)
       if (at < 0) return 0
       const record = CORE_CONTENT_MANIFEST[url.pathname.slice(at + 1)]
-      return record && record.version === url.searchParams.get('v') &&
-        Number.isSafeInteger(record.bytes) && record.bytes > 0 ? record.bytes : 0
+      if (!record || !Number.isSafeInteger(record.bytes) || record.bytes <= 0) return 0
+      const requestedVersion = url.searchParams.get('v') || ''
+      // Range 核心 URL 形如 `<内容哈希>.range1`：后缀只绕过边缘上旧的 Range 响应头缓存，不改变文件内容。
+      // 只接受已知的 rangeN 代次，不能把任意查询参数误认成当前内容版本。
+      const epochSuffix = requestedVersion.startsWith(`${record.version}.`)
+        ? requestedVersion.slice(record.version.length + 1)
+        : ''
+      const versionMatches = requestedVersion === record.version || /^range\d+$/.test(epochSuffix)
+      return versionMatches ? record.bytes : 0
     } catch { return 0 }
   }
 
