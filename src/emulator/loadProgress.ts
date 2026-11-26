@@ -14,6 +14,7 @@
 import { diagLog } from '@/services/startupDiagnostics'
 import { memoryRomBlob, memoryRomOf } from '@/services/memoryRom'
 import { rememberRomHostForUrl } from '@/services/romHosts'
+import { fetchRomIntegrityManifest, romIntegrityKey, RomIntegrityError, verifyMarkedRomResponse, verifyRomBlob, verifyRomBlobRange, verifyRomResponse } from '@/services/romIntegrity'
 import {
   isRomRouteOpen,
   rankRomRoutes,
@@ -279,6 +280,18 @@ export async function fetchWithProgress(
   }
   const stallMs = opts.stallMs ?? STALL_MS
   const candidates = [url, ...new Set((opts.alternateUrls ?? []).filter((candidate) => candidate && candidate !== url))]
+  const integrityTasks = new Map<string, ReturnType<typeof fetchRomIntegrityManifest>>()
+  const integrityFor = (candidate: string) => {
+    if (!romIntegrityKey(candidate)) return Promise.resolve(null)
+    let task = integrityTasks.get(candidate)
+    if (!task) {
+      task = fetchRomIntegrityManifest(candidate, opts.signal)
+      task.catch(() => {})
+      integrityTasks.set(candidate, task)
+    }
+    return task
+  }
+  if (romIntegrityKey(url)) void integrityFor(url).catch(() => {})
   emit({ phase, loaded: 0 }, true)
 
   for (let index = 0; index < candidates.length; index++) {
@@ -287,8 +300,9 @@ export async function fetchWithProgress(
     // 首字节也要有期限：连接建立不起来 / 服务端不回响应头，是和「传一半停住」不同的病。
     guard.touch()
     try {
-      const res = await fetch(candidate, { signal: guard.signal, ...(opts.cache ? { cache: opts.cache } : {}) })
+      let res = await fetch(candidate, { signal: guard.signal, ...(opts.cache ? { cache: opts.cache } : {}) })
       validateResponse(res, opts.check)
+      res = await verifyMarkedRomResponse(candidate, res, guard.signal, integrityFor(candidate))
 
       const encoded = Boolean(res.headers.get('content-encoding'))
       const len = Number(res.headers.get('content-length'))
@@ -461,6 +475,12 @@ export interface BlobFetchOptions {
    * 默认开；注入 fetchImpl 的测试默认关，免得假域名写进记分板、打乱测试固定的请求顺序。
    */
   routeHealth?: boolean
+  /** 内部钩子：网络分片进入续传缓存前做 SHA-256 校验。 */
+  verifyPart?: (part: Blob, index: number, start: number, total: number) => Promise<Blob>
+  /** 内部钩子：Range 不受支持时，整份响应逐块校验后才交给下载器。 */
+  verifyWhole?: (response: Response) => Promise<Response>
+  /** 内部钩子：校验此前从续传缓存拼入的分片。 */
+  verifyCompletedParts?: (parts: Blob[], total: number) => Promise<Blob[]>
   /** 覆盖「响应头多久没到就去另一条线路」，同时缩短尾部对冲的判定门槛；只给测试用 */
   routeHedgeMs?: number
 }
@@ -839,20 +859,104 @@ export async function fetchBlobWithProgress(url: string, opts: BlobFetchOptions 
   const stallMs = opts.stallMs ?? STALL_MS
   const retries = opts.retries ?? CHUNK_RETRIES
   let highWater = 0
-  const guardedOpts: BlobFetchOptions = opts.onProgress
-    ? {
-        ...opts,
+  let integrityRequired = false
+  let integritySource = url
+  let integrityEtag = ''
+  let integrityWholeVerified = false
+  const integrityVerifiedParts = new Set<number>()
+  const integrityTasks = new Map<string, ReturnType<typeof fetchRomIntegrityManifest>>()
+  const integrityFor = (candidate: string) => {
+    if (!romIntegrityKey(candidate)) return Promise.resolve(null)
+    let task = integrityTasks.get(candidate)
+    if (!task) {
+      task = fetchRomIntegrityManifest(candidate, opts.signal)
+      task.catch(() => {})
+      integrityTasks.set(candidate, task)
+    }
+    return task
+  }
+  if (romIntegrityKey(url)) void integrityFor(url).catch(() => {})
+  const checkIntegrity = (response: Response) => {
+    opts.check?.(response)
+    if (response.headers.get('X-8BitGo-Integrity-Required') === 'sha256-v1') {
+      integrityRequired = true
+      integritySource = response.url || integritySource
+      const responseEtag = response.headers.get('ETag') || ''
+      if (!responseEtag) throw new RomIntegrityError('本站要求校验此 ROM / BIOS，但响应没有可核对的 ETag')
+      if (integrityEtag && integrityEtag !== responseEtag) {
+        throw new RomIntegrityError('ROM / BIOS 分片期间对象版本发生变化')
+      }
+      integrityEtag = responseEtag
+      void integrityFor(integritySource).catch(() => {})
+    }
+  }
+  const requireManifest = async (total: number) => {
+    const manifest = await integrityFor(integritySource)
+    if (!manifest) {
+      if (integrityRequired) throw new RomIntegrityError('本站要求校验此 ROM / BIOS，但 SHA-256 清单不可用')
+      return null
+    }
+    if (manifest.size !== total || (integrityEtag && manifest.etag !== integrityEtag)) {
+      throw new RomIntegrityError('ROM / BIOS 分片与 SHA-256 清单的大小或版本不一致')
+    }
+    return manifest
+  }
+  const verifyPart = async (part: Blob, index: number, start: number, total: number) => {
+    if (!integrityRequired) return part
+    const manifest = await requireManifest(total)
+    if (!manifest) throw new RomIntegrityError('本站要求校验此 ROM / BIOS，但 SHA-256 清单不可用')
+    const checked = await verifyRomBlobRange(integritySource, part, start, manifest, opts.signal)
+    integrityVerifiedParts.add(index)
+    if (checked === part || !memoryRomOf(part)) return checked
+    return memoryRomBlob([new Uint8Array(await checked.arrayBuffer())], part.type)
+  }
+  const verifyWhole = async (response: Response) => {
+    if (!integrityRequired) return response
+    const manifest = await integrityFor(integritySource)
+    if (!manifest || (integrityEtag && manifest.etag !== integrityEtag)) {
+      throw new RomIntegrityError('本站要求校验此 ROM / BIOS，但 SHA-256 清单不可用或版本不匹配')
+    }
+    const declaredSize = Number(response.headers.get('Content-Length'))
+    if (Number.isFinite(declaredSize) && declaredSize > 0 && declaredSize !== manifest.size) {
+      throw new RomIntegrityError('ROM / BIOS 整份响应长度与 SHA-256 清单不一致')
+    }
+    const verified = await verifyRomResponse(integritySource, response, opts.signal, Promise.resolve(manifest))
+    integrityWholeVerified = true
+    return verified
+  }
+  const verifyCompletedParts = async (parts: Blob[], total: number) => {
+    if (!integrityRequired) return parts
+    const manifest = await requireManifest(total)
+    if (!manifest) throw new RomIntegrityError('本站要求校验此 ROM / BIOS，但 SHA-256 清单不可用')
+    const chunkBytes = opts.chunkBytes ?? CHUNK_BYTES
+    for (let index = 0; index < parts.length; index++) {
+      if (integrityVerifiedParts.has(index)) continue
+      parts[index] = await verifyPart(parts[index], index, index * chunkBytes, total)
+    }
+    return parts
+  }
+  const guardedOpts: BlobFetchOptions = {
+    ...opts,
+    check: checkIntegrity,
+    verifyPart,
+    verifyWhole,
+    verifyCompletedParts,
+    ...(opts.onProgress
+      ? {
         // 超时重试会重新进入下载器；进度不能因此从已完成的 80MB 倒退到 0。
         onProgress: (progress) => {
           highWater = Math.max(highWater, progress.loaded ?? 0)
           opts.onProgress?.({
             ...progress,
             loaded: highWater,
-            ratio: progress.total ? Math.min(highWater / progress.total, 1) : progress.ratio,
+            ratio: progress.total
+              ? Math.min(highWater / progress.total, romIntegrityKey(url) ? 0.999 : 1)
+              : progress.ratio,
           })
         },
       }
-    : opts
+      : {}),
+  }
   /*
     一只看门狗管一次下载尝试；普通网络错误由分片循环重试，卡死则必须换一只新的
     AbortController 才能重试（已经 abort 的 signal 永远不会复活）。
@@ -886,11 +990,25 @@ export async function fetchBlobWithProgress(url: string, opts: BlobFetchOptions 
     let failure: unknown = null
     let switchForSpeed = false
     try {
-      const blob = await blobWithProgressGuarded(
+      let blob = await blobWithProgressGuarded(
         currentUrl,
         { ...guardedOpts, alternateUrl: alternates[0] ?? '', routePool: [currentUrl, ...alternates] },
         guard,
       )
+      if (integrityRequired && !integrityWholeVerified) {
+        const manifest = await requireManifest(blob.size)
+        if (!manifest) throw new RomIntegrityError('本站要求校验此 ROM / BIOS，但 SHA-256 清单不可用')
+        if (integrityVerifiedParts.size === 0) await verifyRomBlob(blob, manifest, opts.signal)
+      } else if (!integrityRequired && romIntegrityKey(url)) {
+        // 完整续传片可能在本次请求里没有任何网络响应头，不能因此跳过已发布清单。
+        // 旧对象没有清单时仍兼容；必校验对象缺少 sidecar 时，Worker 会返回 503。
+        const manifest = await integrityFor(url)
+        if (manifest) blob = await verifyRomBlobRange(url, blob, 0, manifest, opts.signal)
+      }
+      if (romIntegrityKey(url)) {
+        const total = blob.size
+        opts.onProgress?.({ phase: opts.phase ?? 'rom', loaded: total, total, ratio: 1 })
+      }
       if (currentUrl !== url) rememberRomHostForUrl(currentUrl)
       return blob
     } catch (error) {
@@ -1111,7 +1229,8 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
   }
 
   /** 服务器忽略 Range 时把 200 当整份读；已缓存的残片全部作废，不能混着拼。 */
-  const takeWhole = async (res: Response): Promise<Blob> => {
+  const takeWhole = async (response: Response): Promise<Blob> => {
+    const res = opts.verifyWhole ? await opts.verifyWhole(response) : response
     const encoded = Boolean(res.headers.get('content-encoding'))
     const len = Number(res.headers.get('content-length'))
     const total = !encoded && Number.isFinite(len) && len > 0 ? len : undefined
@@ -1584,14 +1703,17 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
       emitTotal(completed + firstRangeInFlight + inFlightBytes, total)
     }
     if (!res.body) {
-      const blob = await bodylessPart(res, total)
+      let blob = await bodylessPart(res, total)
       if (blob.size !== expect) throw new Error(`分片不完整：应为 ${expect} 字节，实际 ${blob.size}`)
+      if (opts.verifyPart) blob = await opts.verifyPart(blob, index, index * chunkBytes, total)
       setInFlight(index, blob.size, lane)
       return blob
     }
     // 并发片同样要按实际读入字节止损，不能信 CDN 宣称的 Content-Range。
     const { chunks } = await drain(res.body, phase, expect, relay, expect, guard.touch)
-    return makePart(chunks, total)
+    let blob = makePart(chunks, total)
+    if (opts.verifyPart) blob = await opts.verifyPart(blob, index, index * chunkBytes, total)
+    return blob
   }
 
   /*
@@ -1616,14 +1738,17 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
       else emitTotal(completed + loaded, total || probedTotal || undefined)
     }
     if (!res.body) {
-      const blob = await bodylessPart(res, total)
+      let blob = await bodylessPart(res, total)
       if (blob.size !== expect) throw new Error(`分片不完整：应为 ${expect} 字节，实际 ${blob.size}`)
+      if (opts.verifyPart) blob = await opts.verifyPart(blob, 0, 0, total)
       if (onLoaded) relay({ phase, loaded: blob.size })
       return blob
     }
     // Content-Range 只是服务器自报；若实际流远大于这一片，不能先无限攒进 chunks 再验长度。
     const { chunks } = await drain(res.body, phase, expect, relay, expect, guard.touch)
-    return makePart(chunks, total)
+    let blob = makePart(chunks, total)
+    if (opts.verifyPart) blob = await opts.verifyPart(blob, 0, 0, total)
+    return blob
   }
 
   /* 没有续传现场时，第一个请求同时探测 Range 支持并取得整份大小。 */
@@ -1942,7 +2067,8 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
   if (fatalError !== undefined) throw fatalError
   if (wholeResponse) return takeWhole(wholeResponse)
 
-  const complete = parts as Blob[]
+  let complete = parts as Blob[]
+  if (opts.verifyCompletedParts) complete = await opts.verifyCompletedParts(complete, total)
   // 网络与大部分写盘已经重叠；这里只等最多两笔尾写，避免 clear 与尚未提交的 put 互相复活。
   await flushPartSaves()
   // 100% 必须代表这份 ROM 已经能返回给引擎，不能先满格再等待尾部写盘。

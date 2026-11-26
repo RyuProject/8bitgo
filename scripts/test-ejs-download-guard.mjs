@@ -9,7 +9,7 @@
  *   - IndexedDB 封装里 transaction() 同步抛错时 Promise 必须 settle；续传库挂起只影响持久化优化。
  *   - XHR 在同 ETag 下从精确偏移续上；ETag / Content-Range 错误时只允许完整重取。
  *   - 独立 IDB 跨页面恢复已提交的 1 MiB 前缀，绝不使用未完成的小片。
- * 定时器按 1/1000 缩放，整个测试几十毫秒跑完。
+ * 定时器按 1/100 缩放，仍能保持短测，同时给并行测试下的事件循环留出调度余量。
  */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -19,7 +19,10 @@ import { computeCoreContentManifest } from './gen-ejs-core-versions.mjs'
 const engine = readFileSync(new URL('../public/emulatorjs/emulator.min.js', import.meta.url), 'utf8')
 const cut = engine.indexOf('class r{constructor(t,e){this.EJS=e,this.Module=t')
 assert.ok(cut > 0, '找不到 GameManager 类，引擎结构变了')
+// 这组回归用合成小字节覆盖下载器与断点续传状态机；真实核心 SHA-256 在 test-ejs-core-integrity.mjs 单独验。
 const prelude = engine.slice(0, cut)
+  .replace('await __8bgCoreResume.verifyCachedCore(t,I)', 'true')
+  .replace('await __8bgCoreResume.verifyCore(t,Z);', '')
 assert.match(prelude, /class s\{constructor\(t=null,e=null\)\{this\.storageCache=t,this\.EJS=e\}/, '下载器类名变了，更新本测试')
 const coreContentManifest = computeCoreContentManifest()
 
@@ -34,7 +37,7 @@ function makeContext({ fetchImpl, indexedDB, localStorage, XMLHttpRequest, sessi
   }
   const context = {
     console: { log() {}, warn() {}, error() {} },
-    setTimeout: (fn, ms = 0) => realSetTimeout(fn, Math.max(0, Math.ceil(ms / 1000))),
+    setTimeout: (fn, ms = 0) => realSetTimeout(fn, Math.max(0, Math.ceil(ms / 100))),
     clearTimeout,
     fetch: fetchImpl,
     AbortController,

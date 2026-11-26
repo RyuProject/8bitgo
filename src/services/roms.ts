@@ -31,7 +31,8 @@ import { coverCdnHint, type CoverCdnHint } from './cnHost'
 import { reportCoverCdnFailure, selectedCoverCdn, startCoverCdnProbe, subscribeCoverCdn } from './coverCdn'
 import { trackUploadActivity } from './uploadActivity'
 import type { UploadActivityOptions } from './uploadActivity'
-import { createRequestTimeout } from './requestTimeout'
+import { createRequestTimeout, withRequestTimeout } from './requestTimeout'
+import { createRomIntegrityManifest, isIntegrityKey } from './romIntegrityData'
 
 export const ROM_BASE_KEY = '8bitgo.rom.base'
 export const ROM_API_KEY = '8bitgo.rom.api'
@@ -2064,6 +2065,45 @@ export interface UploadResult {
   size: number
   /** Worker 返回的强 ETag；Sockdrive 桶内复制用它锁定刚上传的这一版 ROM。 */
   etag?: string
+  /** 新 Worker 在同一个 R2 提交请求里已发布对应清单。 */
+  integrityPublished?: boolean
+}
+
+const integrityWorkerCapabilities = new Map<string, { expiresAt: number; atomicUpload: boolean }>()
+const INTEGRITY_PROBE_TTL_MS = 5 * 60_000
+
+async function requireIntegrityWorker(api: string, parentSignal?: AbortSignal): Promise<boolean> {
+  const base = api.replace(/\/+$/, '')
+  const cached = integrityWorkerCapabilities.get(base)
+  if (cached && cached.expiresAt > Date.now()) return cached.atomicUpload
+  if (cached) integrityWorkerCapabilities.delete(base)
+  let features: { integrityManifest?: unknown; integrityAtomicUpload?: unknown } | null = null
+  try {
+    features = await withRequestTimeout(10_000, parentSignal, async (signal) => {
+      const response = await fetch(`${base}/ping`, { cache: 'no-store', signal })
+      if (!response.ok) return null
+      const status = await response.json().catch(() => null) as { features?: { integrityManifest?: unknown; integrityAtomicUpload?: unknown } } | null
+      return status?.features ?? null
+    })
+  } catch {
+    if (parentSignal?.aborted) throw uploadAbortError()
+  }
+  if (features?.integrityManifest !== true) throw new Error('ROM / BIOS 完整性校验服务尚未部署或暂不可用；请先更新 ROM Worker，再开始上传。文件尚未上传。')
+  const atomicUpload = features.integrityAtomicUpload === true
+  integrityWorkerCapabilities.set(base, { expiresAt: Date.now() + INTEGRITY_PROBE_TTL_MS, atomicUpload })
+  while (integrityWorkerCapabilities.size > 16) {
+    const oldest = integrityWorkerCapabilities.keys().next().value
+    if (oldest === undefined) break
+    integrityWorkerCapabilities.delete(oldest)
+  }
+  return atomicUpload
+}
+
+function encodeIntegrityManifestHeader(manifest: unknown): string {
+  const bytes = new TextEncoder().encode(JSON.stringify(manifest))
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 
 /**
@@ -2128,15 +2168,69 @@ export async function uploadRom(
     const api = getRomApi()
     if (!api) throw new Error('尚未配置 Worker 地址，无法上传')
     if (!getRomToken()) throw new Error('请先在「ROM 存储」页填写 Worker 口令（ADMIN_TOKEN）')
+    const needsIntegrity = isIntegrityKey(cleanKey)
+    let atomicIntegrityUpload = false
+    if (needsIntegrity) {
+      atomicIntegrityUpload = await requireIntegrityWorker(api, signal)
+      if (!globalThis.crypto?.subtle) throw new Error('当前浏览器不能生成 ROM / BIOS 的 SHA-256 清单，请改用 HTTPS 下的现代浏览器')
+    }
+
+    // ROM / BIOS 在后台上传时生成受 ETag 绑定的分块摘要；和网络上传并行计算，
+    // 不把几 GB 光盘一次性读进内存，也不把哈希时间叠加到上传完成之后。
+    const integrityTask = needsIntegrity ? createRomIntegrityManifest(file, cleanKey, signal) : null
+    integrityTask?.catch(() => {})
+    const uploadProgress: UploadProgress | undefined = integrityTask && onProgress
+      ? (percent, detail) => onProgress(Math.min(99, percent), detail)
+      : onProgress
+    const awaitIntegrity = async () => {
+      if (!integrityTask) return null
+      try { return await integrityTask }
+      catch (error) {
+        if (signal?.aborted) throw uploadAbortError()
+        throw error
+      }
+    }
+    const finishIntegrity = async (result: UploadResult): Promise<UploadResult> => {
+      if (!integrityTask) return result
+      if (!result.etag) throw new Error(`ROM / BIOS 已上传，但 Worker 未返回对象 ETag，无法安全绑定 SHA-256 清单（${cleanKey}）`)
+      if (result.integrityPublished) {
+        onProgress?.(100)
+        return result
+      }
+      const manifest = await awaitIntegrity()
+      const endpoint = new URL(`${api.replace(/\/+$/, '')}/integrity`)
+      endpoint.searchParams.set('key', cleanKey)
+      try {
+        await withRequestTimeout(45_000, undefined, async (requestSignal) => {
+          const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+            body: JSON.stringify({ key: cleanKey, etag: result.etag, size: result.size, manifest }),
+            signal: requestSignal,
+          })
+          const confirmation = await response.json().catch(() => null) as { ok?: boolean; key?: string; etag?: string; size?: number; error?: string } | null
+          if (!response.ok || confirmation?.ok !== true || confirmation.key !== cleanKey ||
+              confirmation.etag !== result.etag || confirmation.size !== result.size) {
+            throw new Error(`HTTP ${response.status}${confirmation?.error ? `：${confirmation.error}` : ''}`)
+          }
+        })
+      } catch (error) {
+        throw new Error(`ROM / BIOS 已上传，但 SHA-256 清单未能绑定到对象版本（${error instanceof Error ? error.message : String(error)}）。请重试上传或在 ROM 存储核查。`)
+      }
+      onProgress?.(100)
+      return result
+    }
 
     if (file.size > MULTIPART_THRESHOLD) {
       // 动态 import：分片那套只有后台用得上，静态引会被打进播放器的首屏包里
       const mp = await import('./romMultipart')
       try {
-        const result = await mp.uploadRomMultipart(file, cleanKey, onProgress, signal)
+        const result = await mp.uploadRomMultipart(file, cleanKey, uploadProgress, signal,
+          integrityTask ?? undefined, atomicIntegrityUpload)
         clearRomProbeCache()
-        return result
+        return await finishIntegrity(result)
       } catch (err) {
+        if (signal?.aborted) throw uploadAbortError()
         // Worker 还没部署分片接口（忘了 wrangler deploy）时退回单发 PUT。
         // 大文件照样会失败，但小一点的文件不该因为后端没更新就整个传不了。
         if (!(err instanceof mp.MultipartUnsupportedError)) throw err
@@ -2144,7 +2238,11 @@ export async function uploadRom(
       }
     }
 
-    return singlePut(file, cleanKey, api, onProgress, signal)
+    // 单发 PUT 无法暂停在 R2 提交之前；先完成摘要，避免摘要失败时留下必校验却无清单的对象。
+    const manifest = integrityTask ? await awaitIntegrity() : null
+    const result = await singlePut(file, cleanKey, api, uploadProgress, signal,
+      atomicIntegrityUpload ? manifest ?? undefined : undefined)
+    return await finishIntegrity(result)
   }, activityOptions)
 }
 
@@ -2212,7 +2310,14 @@ function uploadAbortError(): Error {
   return error
 }
 
-function singlePut(file: Blob, cleanKey: string, api: string, onProgress?: UploadProgress, signal?: AbortSignal): Promise<UploadResult> {
+function singlePut(
+  file: Blob,
+  cleanKey: string,
+  api: string,
+  onProgress?: UploadProgress,
+  signal?: AbortSignal,
+  integrityManifest?: unknown,
+): Promise<UploadResult> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       reject(uploadAbortError())
@@ -2222,6 +2327,8 @@ function singlePut(file: Blob, cleanKey: string, api: string, onProgress?: Uploa
     xhr.open('PUT', `${api}/${encodeKey(cleanKey)}`)
     xhr.setRequestHeader('Authorization', `Bearer ${getRomToken()}`)
     xhr.setRequestHeader('Content-Type', file.type || guessUploadType(cleanKey))
+    if (isIntegrityKey(cleanKey)) xhr.setRequestHeader('X-8BG-Integrity-Required', 'sha256-v1')
+    if (integrityManifest) xhr.setRequestHeader('X-8BG-Integrity-Manifest', encodeIntegrityManifestHeader(integrityManifest))
     let lastProgressAt = Date.now()
     let lastLoaded = 0
     let stalled = false
@@ -2270,7 +2377,7 @@ function singlePut(file: Blob, cleanKey: string, api: string, onProgress?: Uploa
         return
       }
       if (xhr.status >= 200 && xhr.status < 300) {
-        let data: { ok?: boolean; key?: string; size?: number; etag?: string } | null = null
+        let data: { ok?: boolean; key?: string; size?: number; etag?: string; integrityPublished?: boolean } | null = null
         try { data = JSON.parse(xhr.responseText) } catch { /* Worker 地址填错时可能回 HTML。 */ }
         // 仅凭 200 就把 key 写进游戏库会让播放器拿到 HTML 或不完整的对象。
         if (data?.ok !== true || data.key !== cleanKey || data.size !== file.size) {
@@ -2279,8 +2386,10 @@ function singlePut(file: Blob, cleanKey: string, api: string, onProgress?: Uploa
         }
         if (!finish()) return
         clearRomProbeCache()
-        onProgress?.(100)
-        resolve({ key: cleanKey, url: romUrlForKey(cleanKey), size: data.size, etag: data.etag || undefined })
+        // ROM / BIOS 的 100% 由 uploadRom 在摘要清单绑定完成后发送。
+        if (!isIntegrityKey(cleanKey)) onProgress?.(100)
+        resolve({ key: cleanKey, url: romUrlForKey(cleanKey), size: data.size, etag: data.etag || undefined,
+          integrityPublished: data.integrityPublished === true })
       } else {
         fail(explainRomStatus(xhr.status, '上传'))
       }

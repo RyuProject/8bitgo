@@ -60,15 +60,20 @@ const __8bgCoreResume = (() => {
     } catch { return false }
   }
 
-  function expectedCoreBytes(rawUrl) {
+  function coreRecord(rawUrl) {
     try {
       const base = typeof location !== 'undefined' && location.href ? location.href : 'https://8bitgo.invalid/'
       const url = new URL(rawUrl, base)
       const marker = '/cores/'
       const at = url.pathname.lastIndexOf(marker)
-      if (at < 0) return 0
-      const record = CORE_CONTENT_MANIFEST[url.pathname.slice(at + 1)]
-      if (!record || !Number.isSafeInteger(record.bytes) || record.bytes <= 0) return 0
+      if (at < 0 || !url.pathname.endsWith('-wasm.data')) return null
+      const name = url.pathname.slice(at + 1)
+      const record = CORE_CONTENT_MANIFEST[name]
+      if (!record || !Number.isSafeInteger(record.bytes) || record.bytes <= 0 ||
+          !Number.isSafeInteger(record.blockBytes) || record.blockBytes <= 0 ||
+          !Array.isArray(record.blocks) || record.blocks.length !== Math.ceil(record.bytes / record.blockBytes)) {
+        throw new Error(`EmulatorJS core SHA-256 manifest missing: ${name}`)
+      }
       const requestedVersion = url.searchParams.get('v') || ''
       // Range 核心 URL 形如 `<内容哈希>.range1`：后缀只绕过边缘上旧的 Range 响应头缓存，不改变文件内容。
       // 只接受已知的 rangeN 代次，不能把任意查询参数误认成当前内容版本。
@@ -76,8 +81,53 @@ const __8bgCoreResume = (() => {
         ? requestedVersion.slice(record.version.length + 1)
         : ''
       const versionMatches = requestedVersion === record.version || /^range\d+$/.test(epochSuffix)
-      return versionMatches ? record.bytes : 0
-    } catch { return 0 }
+      if (!versionMatches) throw new Error(`EmulatorJS core URL version mismatch: ${name}`)
+      return record
+    } catch (error) {
+      if (error instanceof Error && /EmulatorJS core (?:SHA-256 manifest missing|URL version mismatch)/.test(error.message)) throw error
+      return null
+    }
+  }
+
+  function expectedCoreBytes(rawUrl) {
+    try { return coreRecord(rawUrl)?.bytes || 0 } catch { return 0 }
+  }
+
+  function coreBytes(value) {
+    if (value instanceof Uint8Array) return value
+    if (value instanceof ArrayBuffer) return new Uint8Array(value)
+    if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
+    return null
+  }
+
+  async function verifyCore(rawUrl, value) {
+    const record = coreRecord(rawUrl)
+    if (!record) return true
+    const bytes = coreBytes(value)
+    if (!bytes || bytes.byteLength !== record.bytes) {
+      throw new Error(`EmulatorJS core length mismatch: expected ${record.bytes}, received ${bytes?.byteLength || 0}`)
+    }
+    const subtle = typeof crypto !== 'undefined' ? crypto.subtle : null
+    if (!subtle) throw new Error('EmulatorJS core SHA-256 verification unavailable')
+    for (let index = 0; index < record.blocks.length; index++) {
+      const start = index * record.blockBytes
+      const end = Math.min(bytes.byteLength, start + record.blockBytes)
+      const digest = new Uint8Array(await subtle.digest('SHA-256', bytes.subarray(start, end)))
+      let actual = ''
+      for (const byte of digest) actual += byte.toString(16).padStart(2, '0')
+      if (actual !== record.blocks[index]) throw new Error(`EmulatorJS core SHA-256 mismatch at block ${index + 1}`)
+    }
+    return true
+  }
+
+  async function verifyCachedCore(rawUrl, item) {
+    const record = coreRecord(rawUrl)
+    if (!record) return true
+    const files = item && Array.isArray(item.files) ? item.files : []
+    if (files.length !== 1 || !await verifyCore(rawUrl, files[0]?.bytes)) {
+      throw new Error('EmulatorJS cached core content is invalid')
+    }
+    return true
   }
 
   /** 只有本次请求的完整 identity 核心恰好全量到达时，才为 Fetch 的网络 TypeError 额外尝试 XHR。 */
@@ -663,5 +713,5 @@ const __8bgCoreResume = (() => {
     })
   }
 
-  return { plan, accept, writer, complete, xhrFallback, expectedCoreBytes, fullCoreTransferObserved }
+  return { plan, accept, writer, complete, xhrFallback, expectedCoreBytes, fullCoreTransferObserved, verifyCore, verifyCachedCore }
 })()

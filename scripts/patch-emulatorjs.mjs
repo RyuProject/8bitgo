@@ -432,6 +432,12 @@ const BODY_READ_HEADER_FALLBACK_TO = BODY_READ_RESUME_TO.replace(
 if (BODY_READ_HEADER_FALLBACK_TO === BODY_READ_RESUME_TO) throw new Error('响应头超时 XHR 回退未找到外部取消保护')
 const CORE_COMPLETE_FROM = 'c(n)}else{const i="temp-"+Date.now();c(new a(i,B,b,e,d,S,t,A))}'
 const CORE_COMPLETE_TO = '(__8bgResumeState&&__8bgCoreResume.complete(__8bgResumeState)),c(n)}else{const i="temp-"+Date.now();(__8bgResumeState&&__8bgCoreResume.complete(__8bgResumeState)),c(new a(i,B,b,e,d,S,t,A))}'
+const CORE_CACHE_FROM = 'if(I){if(I.cacheExpiry&&I.cacheExpiry>b)return this.debug&&console.log("Using cached version of",t),void c(I);'
+const CORE_CACHE_TO = 'if(I){try{await __8bgCoreResume.verifyCachedCore(t,I)}catch(__8bgCacheIntegrityError){console.warn("[EJS integrity] cached core rejected",__8bgCacheIntegrityError),I=null}if(I){if(I.cacheExpiry&&I.cacheExpiry>b)return this.debug&&console.log("Using cached version of",t),void c(I);'
+const CORE_CACHE_END_FROM = 'if(!isNaN(i)&&i<=I.added)return this.debug&&console.log("Using cached version of",t),void c(I)}}r&&r("downloading",0,0,0);'
+const CORE_CACHE_END_TO = 'if(!isNaN(i)&&i<=I.added)return this.debug&&console.log("Using cached version of",t),void c(I)}}}r&&r("downloading",0,0,0);'
+const CORE_RESULT_FROM = 'if(r&&r("complete",100,Z.byteLength||0,Z.byteLength||0),this.storageCache)'
+const CORE_RESULT_TO = 'await __8bgCoreResume.verifyCore(t,Z);if(r&&r("complete",100,Z.byteLength||0,Z.byteLength||0),this.storageCache)'
 const CORE_FETCH_TO_PREVIOUS = CORE_FETCH_TO.replace(
   'let __8bgResumePlan=__8bgCoreResume.plan(t,n,o,s);',
   'let __8bgResumePlan=__8bgCoreResume.plan(t,n,o,s),__8bgResumeState=null;',
@@ -822,6 +828,18 @@ const GROUPS = [
     hint: [
       '只对带版本号的核心请求，在本地响应头时限触发，或 TypeError 且 Resource Timing 按内容哈希证明整份文件已传完时改走 XHR；普通网络错误、部分传输和外部取消仍直接失败。',
       'XHR 必须匹配按核心内容哈希生成的完整字节数，再构造 200 Response 走原有校验；流回退只放行本地响应头超时。',
+    ],
+  },
+  {
+    name: 'EmulatorJS 核心缓存与下载内容校验',
+    patches: [
+      [CORE_CACHE_FROM, CORE_CACHE_TO],
+      [CORE_CACHE_END_FROM, CORE_CACHE_END_TO],
+      [CORE_RESULT_FROM, CORE_RESULT_TO],
+    ],
+    hint: [
+      '从生成的核心 SHA-256 分块清单校验 EJS IndexedDB 命中项；坏缓存丢弃后走网络重下。',
+      '新下载必须在报告完成、写入 EJS 缓存前核对全部内容分块；任何哈希不符都拒绝交给解压器。',
     ],
   },
 

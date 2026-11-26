@@ -55,6 +55,12 @@ if (!js.includes(resumeHelper)) {
     'npm run ejspatch，然后重新构建；续传助手改动必须同时进入自托管引擎产物',
   )
 }
+if (!js.includes('await __8bgCoreResume.verifyCore(t,Z)') || !js.includes('await __8bgCoreResume.verifyCachedCore(t,I)')) {
+  fail(
+    'emulator.min.js 没有在核心缓存命中与网络下载完成前执行 SHA-256 校验',
+    'npm run ejspatch，然后重新构建；不得把未校验的 EmulatorJS 核心交给缓存或解压器',
+  )
+}
 if (!js.includes('dontExtractIfCore')) {
   fail(
     'emulator.min.js 里没有 dontExtractIfCore —— 这是 CDN 的 4.2.3 版，不是我们自建的 main 分支版',

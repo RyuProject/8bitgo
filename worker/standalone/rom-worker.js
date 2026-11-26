@@ -118,10 +118,10 @@ function corsHeaders(request, env) {
   const origin = request.headers.get('Origin') || ''
   const headers = {
     'Access-Control-Allow-Methods': 'GET, HEAD, POST, PUT, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Range, Authorization, Content-Type, If-None-Match, If-Range, If-Modified-Since, If-Match, If-Unmodified-Since, X-8BG-Part-Number',
+    'Access-Control-Allow-Headers': 'Range, Authorization, Content-Type, If-None-Match, If-Range, If-Modified-Since, If-Match, If-Unmodified-Since, X-8BG-Part-Number, X-8BG-Integrity-Required, X-8BG-Integrity-Manifest',
     // Sockdrive 的 .raw / .metaj 是预压缩对象。浏览器会自动解码正文，但跨域脚本只有看见
     // Content-Encoding 才知道 Content-Length 仍是压缩字节数，不能拿它和解码后上限比较。
-    'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges, Content-Encoding, ETag, Last-Modified, Retry-After, Server-Timing, CF-Cache-Status, X-8BitGo-Edge-Cache',
+    'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges, Content-Encoding, ETag, Last-Modified, Retry-After, Server-Timing, CF-Cache-Status, X-8BitGo-Edge-Cache, X-8BitGo-Integrity-Required',
     'Access-Control-Max-Age': '86400',
   }
   /*
@@ -398,6 +398,9 @@ function objectHeaders(object, servedKey, cors, policy, guessType, disposition =
   headers.set('ETag', object.httpEtag)
   headers.set('Last-Modified', new Date(object.uploaded).toUTCString())
   headers.set('Accept-Ranges', 'bytes')
+  if (object.customMetadata?.['8bitgo-integrity-required'] === 'sha256-v1') {
+    headers.set('X-8BitGo-Integrity-Required', 'sha256-v1')
+  }
   // policy 为空时保留对象自己的 Cache-Control（html5 主机名复刻 R2 自定义域就靠这个）。
   if (policy) headers.set('Cache-Control', policy)
   headers.set('X-Content-Type-Options', 'nosniff')
@@ -444,6 +447,10 @@ async function serveObject(request, env, key, cors, policy, guessType, expectedV
   const h = request.headers
   const conditional = ['If-Match', 'If-None-Match', 'If-Modified-Since', 'If-Unmodified-Since'].some(n => h.has(n))
   const needsMetadata = request.method === 'HEAD' || conditional || h.has('Range')
+  const integrityFailure = async (object) => {
+    if (typeof options.integrityGate !== 'function') return null
+    return await options.integrityGate(object)
+  }
   if (!needsMetadata) {
     const found = await locate(env, key, 'get', thumbFallback)
     if (!found) return json({ error: 'not found' }, cors, 404)
@@ -454,6 +461,8 @@ async function serveObject(request, env, key, cors, policy, guessType, expectedV
       await cancelBody(found.object)
       return new Response(null, { status: 412, headers })
     }
+    const blocked = await integrityFailure(found.object)
+    if (blocked) { await cancelBody(found.object); return blocked }
     headers.set('Content-Length', String(found.object.size))
     return new Response(found.object.body, r2BodyResponseInit(headers))
   }
@@ -474,6 +483,8 @@ async function serveObject(request, env, key, cors, policy, guessType, expectedV
     if (!found) return json({ error: 'not found' }, cors, 404)
     const { object, servedKey } = found
     const headers = headersFor(object, servedKey)
+    const blocked = await integrityFailure(object)
+    if (blocked) { await cancelBody(object); return blocked }
     if (!object.body || etagVersion(object.httpEtag) !== expectedVersion) {
       await cancelBody(object)
       return new Response(null, { status: 412, headers })
@@ -499,6 +510,8 @@ async function serveObject(request, env, key, cors, policy, guessType, expectedV
     if (!found) return json({ error: h.has('If-Match') ? 'precondition failed' : 'not found' }, cors, h.has('If-Match') ? 412 : 404)
     const { object: metadata, bucket, servedKey } = found
     const headers = headersFor(metadata, servedKey)
+    const blocked = await integrityFailure(metadata)
+    if (blocked) return blocked
     // Range v1 的旧 PPSSPP 核心还不会发 If-Match，但播放 URL 已带对象 ETag。
     // Worker 在这里补上代次校验，宁可 412 明确中止，也不能在同一局里混读新旧光盘扇区。
     if (expectedVersion && etagVersion(metadata.httpEtag) !== expectedVersion) {
@@ -734,8 +747,13 @@ async function handleHtml5(request, env, url, context) {
  * Bucket names, endpoints, JSON success fields and thumbnail fallback are preserved.
  * Full audit / changed semantics are in AUDIT.md. No ROM or BIOS processing here.
  */
-const RESERVED = new Set(['', 'ping', 'list', 'multipart', 'bulk'])
+const RESERVED = new Set(['', 'ping', 'list', 'multipart', 'bulk', 'integrity'])
 const MULTIPART_PREFIX = '_uploads/'
+const INTEGRITY_PREFIX = '_integrity/'
+const INTEGRITY_BLOCK_BYTES = 2 * 1024 * 1024
+const INTEGRITY_MAX_BLOCKS = 2560
+const INTEGRITY_MANIFEST_CACHE_MAX_BYTES = 1024 * 1024
+const INTEGRITY_MANIFEST_CACHE_MAX_ENTRIES = 64
 const MAX_PART_BYTES = 32 * 1024 * 1024
 const MAX_JSON_BYTES = 2 * 1024 * 1024
 const PART_NUMBER_HEADER = 'X-8BG-Part-Number'
@@ -767,6 +785,11 @@ const ROM_DOWNLOAD_RANGE_BYTES = 8 * 1024 * 1024
 const PSP_RANGE_BYTES = 2 * 1024 * 1024
 const RANGE_CACHE_PARAM = '__8bg_edge_range'
 const RANGE_CACHE_HEADER = 'X-8BitGo-Stored-Range'
+// 清单按 ROM ETag 寻址且禁止覆盖；在当前 Worker isolate 内缓存已解析的正清单，
+// 避免每个光盘 Range 都串行向 R2 再读一次 sidecar。按原始 JSON 字节数限额，坏/缺清单不缓存。
+const integrityManifestCache = new Map()
+const integrityManifestLoads = new Map()
+let integrityManifestCacheBytes = 0
 
 /*
  * 下载域名（download.8bitgo.com，DNS 不走代理、CNAME 到优选域名）上的明文 ROM 转发。
@@ -911,7 +934,7 @@ export function edgeCacheEligible(request, url, cors) {
   if (request.method !== 'GET' || cors['Access-Control-Allow-Origin'] !== '*') return false
   // Cache API 的普通 URL 键只存整份 200；分片必须走下面独立的、带范围的私有键。
   if (request.headers.has('Range')) return false
-  if (url.searchParams.has(RANGE_CACHE_PARAM)) return false
+  if (url.searchParams.has(RANGE_CACHE_PARAM) || url.searchParams.has('__8bg_integrity_retry')) return false
   if (request.headers.has('Authorization')) return false
   if (request.headers.has('If-Match') || request.headers.has('If-Unmodified-Since') || request.headers.has('If-Range')) return false
   if (/\b(?:no-cache|no-store)\b/i.test(request.headers.get('Cache-Control') || '')) return false
@@ -959,7 +982,7 @@ function romRangeCachePlan(request, url, cors) {
     : /^\/roms\/[^/]+\/.+/i.test(url.pathname)
       ? ROM_DOWNLOAD_RANGE_BYTES
       : 0
-  if (!blockBytes || url.searchParams.has(RANGE_CACHE_PARAM)) return null
+  if (!blockBytes || url.searchParams.has(RANGE_CACHE_PARAM) || url.searchParams.has('__8bg_integrity_retry')) return null
   if (request.headers.has('Authorization') || ['If-Range', 'If-None-Match', 'If-Modified-Since', 'If-Unmodified-Since'].some(name => request.headers.has(name))) return null
   if (/\b(?:no-cache|no-store)\b/i.test(request.headers.get('Cache-Control') || '')) return null
   const contentVersion = contentAddressedMediaVersion(url.pathname)
@@ -1167,7 +1190,240 @@ function allBuckets(env) {
 function validKey(key) {
   return typeof key === 'string' && key.length > 0 && key.length <= 1024 && encoder.encode(key).length <= 1024 &&
     !key.includes('..') && !key.includes('\\') && !key.startsWith('/') && !key.endsWith('/') &&
-    !key.startsWith(MULTIPART_PREFIX) && !/[\x00-\x1f\x7f]/.test(key)
+    !key.startsWith(MULTIPART_PREFIX) && !key.startsWith(INTEGRITY_PREFIX) && !/[\x00-\x1f\x7f]/.test(key)
+}
+function integrityKeyValid(key) {
+  return validKey(key) && key.startsWith('roms/') && !key.startsWith('roms/covers/')
+}
+async function integrityObjectKey(key, etag) {
+  const bytes = encoder.encode(`${key}\n${etag}`)
+  const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))
+  return `${INTEGRITY_PREFIX}${Array.from(hash, b => b.toString(16).padStart(2, '0')).join('')}.json`
+}
+async function readIntegrityManifest(env, key, etag, size) {
+  const cacheKey = `${key}\n${etag}`
+  const cached = integrityManifestCache.get(cacheKey)
+  if (cached) {
+    integrityManifestCache.delete(cacheKey)
+    integrityManifestCache.set(cacheKey, cached)
+    if (validIntegrityManifest(cached.manifest, key, size) && cached.manifest.etag === etag) return cached.manifest
+    integrityManifestCache.delete(cacheKey)
+    integrityManifestCacheBytes -= cached.bytes
+  }
+  const pending = integrityManifestLoads.get(cacheKey)
+  if (pending) return pending
+  const loading = loadIntegrityManifestFromR2(env, key, etag, size, cacheKey)
+  integrityManifestLoads.set(cacheKey, loading)
+  try { return await loading }
+  finally { if (integrityManifestLoads.get(cacheKey) === loading) integrityManifestLoads.delete(cacheKey) }
+}
+async function loadIntegrityManifestFromR2(env, key, etag, size, cacheKey) {
+  const sidecar = await bucketForWrite(env, key).get(await integrityObjectKey(key, etag))
+  if (!sidecar) return null
+  if (sidecar.size > MAX_JSON_BYTES) {
+    await sidecar.body?.cancel().catch(() => {})
+    throw new HttpError(503, '完整性清单超过安全大小上限，请重新生成', 'invalid_integrity_manifest')
+  }
+  let manifest
+  try { manifest = JSON.parse(await new Response(sidecar.body).text()) }
+  catch { throw new HttpError(503, '完整性清单内容损坏，请重新生成', 'invalid_integrity_manifest') }
+  if (!validIntegrityManifest(manifest, key, size) || manifest.etag !== etag) {
+    throw new HttpError(503, '完整性清单与对象大小或版本不匹配，请重新生成', 'invalid_integrity_manifest')
+  }
+  if (sidecar.size <= INTEGRITY_MANIFEST_CACHE_MAX_BYTES) {
+    while (integrityManifestCache.size >= INTEGRITY_MANIFEST_CACHE_MAX_ENTRIES ||
+      integrityManifestCacheBytes + sidecar.size > INTEGRITY_MANIFEST_CACHE_MAX_BYTES) {
+      const oldest = integrityManifestCache.keys().next().value
+      if (oldest === undefined) break
+      const removed = integrityManifestCache.get(oldest)
+      integrityManifestCache.delete(oldest)
+      integrityManifestCacheBytes -= removed?.bytes || 0
+    }
+    integrityManifestCache.set(cacheKey, { manifest, bytes: sidecar.size })
+    integrityManifestCacheBytes += sidecar.size
+  }
+  return manifest
+}
+async function integrityGateFor(env, key, object, cors) {
+  if (object?.customMetadata?.['8bitgo-integrity-required'] !== 'sha256-v1') return null
+  const manifest = await readIntegrityManifest(env, key, object.httpEtag, object.size).catch(() => null)
+  if (manifest) return null
+  return json({ error: 'ROM / BIOS 缺少与当前对象版本匹配的 SHA-256 清单', code: 'integrity_manifest_missing' },
+    { ...cors, 'Cache-Control': 'no-store' }, 503, { 'Retry-After': '2' })
+}
+function integrityEtagVersion(etag) {
+  return String(etag || '').replace(/^W\//, '').replace(/\"/g, '').trim()
+}
+function validIntegrityManifest(value, key, size) {
+  if (!value || typeof value !== 'object') return false
+  const count = Math.ceil(size / INTEGRITY_BLOCK_BYTES)
+  return value.v === 1 && value.alg === 'sha256' && value.key === key && value.size === size &&
+    value.blockBytes === INTEGRITY_BLOCK_BYTES && count > 0 && count <= INTEGRITY_MAX_BLOCKS &&
+    Array.isArray(value.blocks) && value.blocks.length === count &&
+    value.blocks.every(hash => typeof hash === 'string' && /^[a-f0-9]{64}$/.test(hash))
+}
+async function handleIntegrity(request, env, url, cors) {
+  const key = url.searchParams.get('key') || ''
+  if (!integrityKeyValid(key)) throw new HttpError(400, '完整性清单只支持 roms/ 下的 ROM 与 BIOS', 'invalid_integrity_key')
+  const bucket = bucketForWrite(env, key)
+  if (request.method === 'GET') {
+    const object = await bucket.head(key)
+    if (!object) return json({ error: 'not found' }, { ...cors, 'Cache-Control': 'no-store' }, 404)
+    const version = url.searchParams.get('romv') || ''
+    if (version && integrityEtagVersion(object.httpEtag) !== version) {
+      return json({ error: 'object version changed' }, { ...cors, 'Cache-Control': 'no-store' }, 412)
+    }
+    const manifest = await readIntegrityManifest(env, key, object.httpEtag, object.size)
+    if (!manifest) {
+      const required = object.customMetadata?.['8bitgo-integrity-required'] === 'sha256-v1'
+      return json({ error: 'integrity manifest missing', ...(required ? { code: 'integrity_manifest_missing' } : {}) },
+        { ...cors, 'Cache-Control': 'no-store' }, required ? 503 : 404)
+    }
+    const cacheControl = version
+      ? 'public, max-age=300, s-maxage=300, must-revalidate'
+      : 'no-store'
+    return json({ etag: object.httpEtag, size: object.size, manifest: { ...manifest, etag: object.httpEtag } },
+      cors, 200, { 'Cache-Control': cacheControl })
+  }
+  if (request.method !== 'POST') return methodNotAllowed(cors, 'GET, POST, OPTIONS')
+  const body = await readJson(request, 2 * 1024 * 1024)
+  const etag = typeof body.etag === 'string' ? body.etag : ''
+  const manifest = body.manifest
+  if (!etag || etag.length > 256 || /[\x00-\x1f\x7f]/.test(etag) || !Number.isSafeInteger(body.size) || body.size <= 0 ||
+      !validIntegrityManifest(manifest, key, body.size) || body.size !== manifest.size) {
+    throw new HttpError(400, '完整性清单格式无效', 'invalid_integrity_manifest')
+  }
+  const object = await bucket.head(key)
+  if (!object || object.httpEtag !== etag || object.size !== body.size) {
+    throw new HttpError(412, '上传对象已变化，拒绝绑定过期摘要', 'integrity_object_changed')
+  }
+  await publishIntegrityManifest(env, key, etag, body.size, manifest)
+  return json({ ok: true, key, size: object.size, etag }, { ...cors, 'Cache-Control': 'no-store' })
+}
+async function publishIntegrityManifest(env, key, etag, size, manifest) {
+  if (!integrityKeyValid(key) || !etag || !validIntegrityManifest(manifest, key, size) || manifest.size !== size) {
+    throw new HttpError(400, '完整性清单格式无效', 'invalid_integrity_manifest')
+  }
+  const sidecarKey = await integrityObjectKey(key, etag)
+  const record = JSON.stringify({ ...manifest, etag })
+  const bucket = bucketForWrite(env, key)
+  let lastError
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const saved = await bucket.put(sidecarKey, record, {
+        httpMetadata: { contentType: 'application/json', cacheControl: 'no-store' },
+        onlyIf: { etagDoesNotMatch: '*' },
+      })
+      if (saved) return true
+      const current = await bucket.get(sidecarKey)
+      if (!current) throw new Error('conditional ROM integrity manifest write did not produce a readable sidecar')
+      const prior = current ? await new Response(current.body).text() : ''
+      if (prior === record) return true
+      throw new HttpError(409, '同一对象版本已有不同完整性清单，拒绝覆盖', 'integrity_manifest_conflict')
+    } catch (error) {
+      if (error instanceof HttpError) throw error
+      lastError = error
+      if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 100 * (attempt + 1)))
+    }
+  }
+  throw lastError
+}
+function integrityManifestHeader(request) {
+  const encoded = request.headers.get('X-8BG-Integrity-Manifest') || ''
+  if (!encoded) return null
+  if (encoded.length > 16 * 1024 || !/^[A-Za-z0-9_-]+$/.test(encoded)) {
+    throw new HttpError(400, '上传的 ROM 完整性清单头格式无效', 'invalid_integrity_manifest')
+  }
+  try {
+    const base64 = encoded.replace(/-/g, '+').replace(/_/g, '/')
+    const binary = atob(base64 + '='.repeat((4 - base64.length % 4) % 4))
+    const bytes = Uint8Array.from(binary, character => character.charCodeAt(0))
+    return JSON.parse(new TextDecoder().decode(bytes))
+  } catch {
+    throw new HttpError(400, '上传的 ROM 完整性清单无法解析', 'invalid_integrity_manifest')
+  }
+}
+/**
+ * 光盘核心里有同步 XHR，调用页来不及再用 WebCrypto 验证后才交给核心。
+ * 因此 R2 Worker 在放行带完整性标记的 Range 前先核对 2 MiB SHA-256 块；对非对齐请求只额外
+ * 读取覆盖它的完整块，最大临时缓冲仍约 10 MiB。Cache API 也只会收到已核验的响应。
+ */
+async function verifyIntegrityRangeResponse(request, env, response) {
+  if (response.status !== 206 || response.headers.get('X-8BitGo-Integrity-Required') !== 'sha256-v1') return response
+  const range = /^bytes (\d+)-(\d+)\/(\d+)$/i.exec(response.headers.get('Content-Range') || '')
+  const requested = /^bytes=(\d+)-(\d+)$/.exec(request.headers.get('Range') || '')
+  if (!range || !requested || response.headers.get('Content-Encoding')) {
+    await response.body?.cancel().catch(() => {})
+    throw new HttpError(502, '带完整性标记的 ROM Range 响应头无效', 'integrity_range_invalid')
+  }
+  const [start, end, total, requestStart, requestEnd] = [...range.slice(1), ...requested.slice(1)].map(Number)
+  if (![start, end, total, requestStart, requestEnd].every(Number.isSafeInteger) || start !== requestStart || end !== requestEnd ||
+      end < start || total <= end || end - start + 1 > 8 * 1024 * 1024) {
+    await response.body?.cancel().catch(() => {})
+    throw new HttpError(502, 'ROM Range 超出 SHA-256 校验支持范围', 'integrity_range_invalid')
+  }
+  const key = decodeURIComponent(new URL(request.url).pathname.replace(/^\/+/, ''))
+  const etag = response.headers.get('ETag') || ''
+  const bucket = bucketForWrite(env, key)
+  const manifest = await readIntegrityManifest(env, key, etag, total)
+  if (!manifest) {
+    await response.body?.cancel().catch(() => {})
+    throw new HttpError(503, 'ROM Range 缺少当前版本 SHA-256 清单', 'integrity_manifest_missing')
+  }
+
+  const original = new Uint8Array(await response.arrayBuffer())
+  if (original.byteLength !== end - start + 1) throw new HttpError(502, 'ROM Range 正文长度不符', 'integrity_range_invalid')
+  const blockBytes = manifest.blockBytes
+  const alignedStart = Math.floor(start / blockBytes) * blockBytes
+  const alignedEnd = Math.min(total - 1, Math.ceil((end + 1) / blockBytes) * blockBytes - 1)
+  const alignedLength = alignedEnd - alignedStart + 1
+  let verified
+  if (alignedStart === start && alignedEnd === end) {
+    verified = original
+  } else {
+    const object = await bucket.get(key, {
+      range: { offset: alignedStart, length: alignedLength },
+      onlyIf: { etagMatches: integrityEtagVersion(etag) },
+    })
+    if (!object?.body || object.httpEtag !== etag) {
+      await object?.body?.cancel().catch(() => {})
+      throw new HttpError(412, 'ROM 在分段完整性校验期间发生变化', 'integrity_object_changed')
+    }
+    verified = new Uint8Array(await new Response(object.body).arrayBuffer())
+    if (verified.byteLength !== alignedLength) throw new HttpError(502, 'ROM 完整性校验分段长度不符', 'integrity_range_invalid')
+  }
+
+  const matchesManifest = async (candidate) => {
+    for (let blockIndex = Math.floor(alignedStart / blockBytes); blockIndex <= Math.floor(alignedEnd / blockBytes); blockIndex++) {
+      const offset = blockIndex * blockBytes - alignedStart
+      const length = Math.min(blockBytes, total - blockIndex * blockBytes)
+      const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', candidate.subarray(offset, offset + length)))
+      const actual = Array.from(digest, byte => byte.toString(16).padStart(2, '0')).join('')
+      if (actual !== manifest.blocks[blockIndex]) return false
+    }
+    return true
+  }
+  if (!await matchesManifest(verified) && alignedStart === start && alignedEnd === end) {
+    // Range 边缘缓存返回坏字节时只重读同一代 R2 对象；从 R2 取到的字节仍不符就失败关闭。
+    const object = await bucket.get(key, {
+      range: { offset: alignedStart, length: alignedLength },
+      onlyIf: { etagMatches: integrityEtagVersion(etag) },
+    })
+    if (!object?.body || object.httpEtag !== etag) {
+      await object?.body?.cancel().catch(() => {})
+      throw new HttpError(412, 'ROM 在分段完整性修复期间发生变化', 'integrity_object_changed')
+    }
+    verified = new Uint8Array(await new Response(object.body).arrayBuffer())
+    if (verified.byteLength !== alignedLength) throw new HttpError(502, 'ROM 修复分段长度不符', 'integrity_range_invalid')
+  }
+  if (!await matchesManifest(verified)) throw new HttpError(502, 'ROM SHA-256 块与已发布清单不符', 'integrity_source_corrupt')
+  const fromAligned = start - alignedStart
+  const correct = verified.subarray(fromAligned, fromAligned + original.byteLength)
+  const headers = new Headers(response.headers)
+  if (correct.some((byte, index) => byte !== original[index])) {
+    console.warn('[rom-integrity] range response differed from the ETag-bound R2 blocks; repaired from R2')
+  }
+  return new Response(correct, r2BodyResponseInit(headers, 206, response.statusText))
 }
 function markerKeyValid(key) {
   return typeof key === 'string' && key.startsWith(MULTIPART_PREFIX) && encoder.encode(key).length <= 1024 &&
@@ -1190,7 +1446,7 @@ async function objectList(env, url, cors) {
   if (encoder.encode(prefix).length > 1024 || /[\x00-\x1f\x7f]/.test(prefix)) throw new HttpError(400, '无效 prefix')
   const page = await listAcross(allBuckets(env), { prefix: prefix || undefined, limit: 1000 }, url.searchParams.get('cursor'), `objects:${prefix}`)
   // Each physical object has a bucket identity. Same key in two buckets is not one object.
-  const objects = page.entries.filter(({ object }) => !object.key.startsWith(MULTIPART_PREFIX))
+  const objects = page.entries.filter(({ object }) => !object.key.startsWith(MULTIPART_PREFIX) && !object.key.startsWith(INTEGRITY_PREFIX))
     .map(({ object: o, bucket }) => ({ key: o.key, size: o.size, uploaded: o.uploaded, bucket }))
   return json({ objects, truncated: page.truncated, cursor: page.cursor }, cors)
 }
@@ -1223,8 +1479,8 @@ async function idempotentRequestMarker(key, requestId) {
   const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))
   return `${MULTIPART_PREFIX}v3-${Array.from(hash, b => b.toString(16).padStart(2, '0')).join('')}.marker`
 }
-async function multipartRequestSignature(contentType, contentEncoding, size, name) {
-  const bytes = encoder.encode(JSON.stringify([contentType, contentEncoding || 'identity', size, name]))
+async function multipartRequestSignature(contentType, contentEncoding, size, name, integrityRequired) {
+  const bytes = encoder.encode(JSON.stringify([contentType, contentEncoding || 'identity', size, name, integrityRequired]))
   const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))
   return Array.from(hash, b => b.toString(16).padStart(2, '0')).join('')
 }
@@ -1238,7 +1494,9 @@ async function createMultipart(request, env, key, cors) {
   if (requestId && !/^[a-z0-9_-]{16,128}$/i.test(requestId)) throw new HttpError(400, '无效 requestId')
   const size = Number(meta.size) || 0
   const name = typeof meta.name === 'string' ? meta.name.slice(0, 200) : ''
-  const requestSignature = requestId ? await multipartRequestSignature(contentType, contentEncoding, size, name) : ''
+  const integrityRequired = meta.integrityRequired === true
+  if (integrityRequired && !integrityKeyValid(key)) throw new HttpError(400, '完整性校验只支持 roms/ 下的 ROM 与 BIOS', 'invalid_integrity_key')
+  const requestSignature = requestId ? await multipartRequestSignature(contentType, contentEncoding, size, name, integrityRequired) : ''
   const bucket = bucketForWrite(env, key)
   let marker = ''
   if (requestId) {
@@ -1258,7 +1516,10 @@ async function createMultipart(request, env, key, cors) {
   try {
     upload = await bucket.createMultipartUpload(key, {
       httpMetadata: { contentType, ...(contentEncoding ? { contentEncoding } : {}), cacheControl: writeCacheControl(env) },
-      ...(requestId ? { customMetadata: { '8bitgo-request-id': requestId, '8bitgo-request-signature': requestSignature } } : {}),
+      ...((requestId || integrityRequired) ? { customMetadata: {
+        ...(requestId ? { '8bitgo-request-id': requestId, '8bitgo-request-signature': requestSignature } : {}),
+        ...(integrityRequired ? { '8bitgo-integrity-required': 'sha256-v1' } : {}),
+      } } : {}),
     })
   } catch (error) {
     // 让管理员端能区分“创建会话时的临时 R2 故障”和后续分片失败；只有这个明确的
@@ -1270,7 +1531,7 @@ async function createMultipart(request, env, key, cors) {
     // Preserve the original list-with-metadata interface without per-marker GETs.
     const record = { key, uploadId: upload.uploadId,
       ...(requestId ? { requestId, requestSignature } : {}), size,
-      name, at: new Date().toISOString() }
+      name, integrityRequired: integrityRequired ? 'true' : 'false', at: new Date().toISOString() }
     // Local 7,000-byte metadata guard leaves headroom below the documented
     // 8,192-byte object metadata budget. Count UTF-8 bytes, not JS characters.
     const customMetadata = Object.fromEntries(Object.entries(record).map(([k,v]) => [k, String(v)]))
@@ -1341,28 +1602,59 @@ async function completeMultipart(request, env, key, uploadId, cors) {
   const requestId = body.requestId === undefined ? '' : String(body.requestId)
   const requestSignature = typeof body.requestSignature === 'string' ? body.requestSignature : ''
   const expectedSize = Number(body.size)
+  const bucket = bucketForWrite(env, key)
+  const markerKey = typeof body.marker === 'string' && markerKeyValid(body.marker) ? body.marker : ''
+  const marker = markerKey && (body.integrityRequired === true || body.integrityManifest)
+    ? await bucket.head(markerKey).catch(() => null)
+    : null
+  const markerMetadata = marker?.customMetadata || {}
+  const integrityRequired = body.integrityRequired === true ||
+    (markerMetadata.key === key && markerMetadata.uploadId === uploadId && markerMetadata.integrityRequired === 'true')
+  const integrityManifest = body.integrityManifest || null
   if (requestId && (!/^[a-z0-9_-]{16,128}$/i.test(requestId) || !Number.isSafeInteger(expectedSize) || expectedSize < 0 ||
       (requestSignature && !/^[a-f0-9]{64}$/i.test(requestSignature)))) {
     throw new HttpError(400, '分片完成请求的幂等 ID 或大小无效')
+  }
+  if (integrityManifest && (!integrityRequired || !Number.isSafeInteger(expectedSize) || expectedSize <= 0 ||
+      !validIntegrityManifest(integrityManifest, key, expectedSize))) {
+    throw new HttpError(400, 'ROM 分片完成缺少有效 SHA-256 清单；R2 对象尚未合并', 'invalid_integrity_manifest')
   }
   const normalized = parts.map(p => ({ partNumber: Number(p?.partNumber), etag: typeof p?.etag === 'string' ? p.etag : '' })).sort((a,b) => a.partNumber - b.partNumber)
   if (normalized.some((p, i) => p.partNumber !== i + 1 || !p.etag || p.etag.length > 256 || /[\x00-\x1f\x7f]/.test(p.etag))) {
     throw new HttpError(400, 'parts 必须含连续 partNumber 和有效 etag')
   }
   try {
-    const object = await bucketForWrite(env, key).resumeMultipartUpload(key, uploadId).complete(normalized)
+    const object = await bucket.resumeMultipartUpload(key, uploadId).complete(normalized)
+    const integrityPublished = integrityRequired && Boolean(integrityManifest)
+    if (integrityPublished) {
+      if (object.size !== expectedSize || object.customMetadata?.['8bitgo-integrity-required'] !== 'sha256-v1') {
+        throw new HttpError(503, '合并后的 ROM 对象缺少预期大小或完整性标记', 'integrity_object_changed')
+      }
+      await publishIntegrityManifest(env, key, object.httpEtag, object.size, integrityManifest)
+    }
     const markerRemoved = await dropMarker(env, key, uploadId, body.marker)
-    return json({ ok: true, key, size: object.size, etag: object.httpEtag, uploaded: object.uploaded, markerRemoved }, cors)
+    return json({ ok: true, key, size: object.size, etag: object.httpEtag, uploaded: object.uploaded, markerRemoved,
+      integrityPublished }, cors)
   } catch (error) {
     // 同一上传可能由两个恢复中的标签页同时提交；R2 只允许一个 complete 消耗会话，
     // 输家只在最终对象仍带同一请求 ID 且大小匹配时复用成功，绝不把同名新对象误认成本次结果。
     if (requestId && isMissingMultipartUpload(error)) {
       try {
-        const object = await bucketForWrite(env, key).head(key)
+        let object
+        try { object = await bucket.head(key) } catch { /* 保留原始 complete 错误 */ }
         if (object?.size === expectedSize && object.customMetadata?.['8bitgo-request-id'] === requestId &&
             requestSignature && object.customMetadata?.['8bitgo-request-signature'] === requestSignature) {
+          const integrityPublished = integrityRequired && Boolean(integrityManifest)
+          if (integrityPublished) {
+            if (object.customMetadata?.['8bitgo-integrity-required'] !== 'sha256-v1') {
+              return json({ error: '已合并对象缺少完整性标记，拒绝作为成功复用', code: 'integrity_object_changed' }, cors, 503)
+            }
+            try { await publishIntegrityManifest(env, key, object.httpEtag, object.size, integrityManifest) }
+            catch (publishError) { return storageFailure(publishError, cors, 'integrity manifest') }
+          }
           const markerRemoved = await dropMarker(env, key, uploadId, body.marker)
-          return json({ ok: true, key, size: object.size, etag: object.httpEtag, uploaded: object.uploaded, markerRemoved, reused: true }, cors)
+          return json({ ok: true, key, size: object.size, etag: object.httpEtag, uploaded: object.uploaded,
+            markerRemoved, reused: true, integrityPublished }, cors)
         }
       } catch { /* 保留原始 complete 错误，不能把 HEAD 故障说成上传成功。 */ }
     }
@@ -1522,7 +1814,8 @@ async function handle(request, env, url, cors) {
       writable: Boolean(env.ADMIN_TOKEN),
       multipart: true,
       // 制作机在启用自动队列前会检查这两个能力；旧 Worker 不会误接收随后必坏的 Brotli 产物。
-      features: { privateStagingRead: true, contentEncodingUpload: true, sockdriveSourceCopy: true },
+      features: { privateStagingRead: true, contentEncodingUpload: true, sockdriveSourceCopy: true,
+        integrityManifest: true, integrityAtomicUpload: true },
       time: new Date().toISOString(),
     }, cors)
   }
@@ -1531,13 +1824,15 @@ async function handle(request, env, url, cors) {
    * 若继续公开 GET，管理员上传的原始商业镜像会在转换完成前暴露在公开资源域名上。
    */
   const privateStagingRead = ['GET', 'HEAD'].includes(request.method) && /^(?:psp|sockdrive)-staging\//.test(path)
-  const admin = privateStagingRead || ['list', 'bulk', 'multipart'].includes(path) || ['PUT', 'POST', 'DELETE'].includes(request.method)
+  const admin = privateStagingRead || ['list', 'bulk', 'multipart'].includes(path) ||
+    (path === 'integrity' && request.method === 'POST') || ['PUT', 'POST', 'DELETE'].includes(request.method)
   if (admin && !(await authorizedAsync(request, env))) return json({ error: 'unauthorized' }, cors, 401)
   if (!env.ROMS) throw new HttpError(503, 'ROMS 绑定缺失', 'missing_binding')
   if (path === 'list') {
     if (request.method !== 'GET') return methodNotAllowed(cors, 'GET, OPTIONS')
     return objectList(env, url, cors)
   }
+  if (path === 'integrity') return handleIntegrity(request, env, url, cors)
   if (path === 'multipart') return handleMultipartIndex(request, env, url, cors)
   if (request.method === 'POST' && !url.search && /^sockdrive-staging\/[a-f0-9-]{16,}\.zip$/i.test(path)) {
     return copyRomToSockdriveStaging(request, env, path, cors)
@@ -1591,12 +1886,28 @@ async function handle(request, env, url, cors) {
     const limit = maxUploadBytes(env)
     const contentType = request.headers.get('Content-Type') || guessType(key)
     const contentEncoding = safeContentEncoding(request.headers.get('Content-Encoding'))
+    const integrityHeader = request.headers.get('X-8BG-Integrity-Required') || ''
+    const manifest = integrityManifestHeader(request)
+    if (integrityHeader && (integrityHeader !== 'sha256-v1' || !integrityKeyValid(key))) {
+      throw new HttpError(400, '完整性校验标记无效或 key 不属于 roms/ ROM / BIOS', 'invalid_integrity_key')
+    }
+    if ((manifest && (!integrityHeader || !Number.isSafeInteger(manifest.size) || manifest.size <= 0 ||
+        !validIntegrityManifest(manifest, key, manifest.size)))) {
+      throw new HttpError(400, 'ROM 单发上传必须同时提供有效的 SHA-256 清单和必校验标记', 'invalid_integrity_manifest')
+    }
     // Unknown-length single uploads are bounded to 32 MiB. Larger uploads should
     // supply Content-Length or use the existing multipart endpoint, not allocate 512 MiB.
     const object = await writeBody(request, limit, body => bucketForWrite(env, key).put(key, body, {
       httpMetadata: { contentType, ...(contentEncoding ? { contentEncoding } : {}), cacheControl: writeCacheControl(env) },
+      ...(integrityHeader ? { customMetadata: { '8bitgo-integrity-required': 'sha256-v1' } } : {}),
     }), Math.min(limit, MAX_PART_BYTES))
-    return json({ ok: true, key, size: object.size, etag: object.httpEtag, uploaded: object.uploaded }, cors)
+    const integrityPublished = Boolean(integrityHeader && manifest)
+    if (integrityPublished) {
+      if (object.size !== manifest.size) throw new HttpError(400, 'ROM 上传长度与 SHA-256 清单不一致', 'invalid_integrity_manifest')
+      await publishIntegrityManifest(env, key, object.httpEtag, object.size, manifest)
+    }
+    return json({ ok: true, key, size: object.size, etag: object.httpEtag, uploaded: object.uploaded,
+      integrityPublished }, cors)
   }
   if (request.method === 'DELETE') return deleteResponse(env, [key], cors, false)
   if (!['GET', 'HEAD'].includes(request.method)) return methodNotAllowed(cors, 'GET, HEAD, PUT, POST, DELETE, OPTIONS')
@@ -1606,7 +1917,9 @@ async function handle(request, env, url, cors) {
    * 还按 30 天写进旧版本地址的边缘缓存。
    */
   const objectVersion = request.headers.has('Range') ? (url.searchParams.get('romv') || '') : romvVersion(url)
-  return serveObject(request, env, key, cors, cachePolicy(env, url), guessType, objectVersion)
+  return serveObject(request, env, key, cors, cachePolicy(env, url), guessType, objectVersion, {
+    integrityGate: (object) => integrityGateFor(env, key, object, cors),
+  })
 }
 export default {
   async fetch(request, env, context) {
@@ -1653,7 +1966,8 @@ export default {
         if (hit && rangePlan) {
           const contentRange = verifiedRangeHeaders(hit, rangePlan, true)
           if (contentRange) {
-            const response = restoredRangeResponse(hit, contentRange)
+            const restored = restoredRangeResponse(hit, contentRange)
+            const response = await verifyIntegrityRangeResponse(request, env, restored)
             return ['GET', 'HEAD', 'PUT'].includes(request.method) ? responseTiming(response, startedAt) : response
           }
           // 旧缓存或错误对象不能冒充 206；让 R2 重新校验版本并填充正确分片。
@@ -1667,6 +1981,8 @@ export default {
     }
     let response
     try { response = await handle(request, env, url, cors) }
+    catch (error) { response = storageFailure(error, cors) }
+    try { response = await verifyIntegrityRangeResponse(request, env, response) }
     catch (error) { response = storageFailure(error, cors) }
     const rangeContent = rangePlan && verifiedRangeHeaders(response, rangePlan)
     if (edgeCache && rangePlan && rangeContent) {

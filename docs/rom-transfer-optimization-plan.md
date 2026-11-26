@@ -175,3 +175,12 @@
 - 不更改 8 MiB ROM 下载 Range：它和现有边缘缓存块、断点续传和版本校验一一对应。
 - 不降低或提高 Zstd 等级来宣称后台提速：当前后台常规上传禁用打包；旧包解密、服务端转换等路径应另用真实文件测量后再决定。
 - 不合并不同核心 / ROM 下载器为单一大抽象：各引擎的缓存、ABI、错误语义和内容安全边界不同，压短代码本身不是性能收益。
+
+## 2026-11-27：ROM 完整性与原子发布
+
+- ROM / BIOS 的 SHA-256 清单现在随支持原子发布的 Worker 上传：小文件单发 PUT 通过请求头提交，多片文件在 `complete` 正文提交；Worker 先验证清单，再以最终 R2 ETag 绑定旁注。支持该能力时省去上传后的第二次清单绑定往返；旧 Worker 保留原有 `/integrity` 兼容路径。
+- 分片摘要继续与网络上行并行；不可逆的 R2 合并开始前必须拿到完整摘要。缺清单、摘要大小不符、版本 ETag 不符或旁注发布失败时都关闭读取，不把未验证对象交给玩家。
+- 同步修复了光盘 Range 返回类型、共享内存输入的 WebCrypto 摘要兼容，以及分片完成结果中完整性确认状态的类型声明；增加 SharedArrayBuffer 输入回归。
+- 验证通过：`npm run test:rom-integrity`、`npm run test:r2-upload-client`、`npm run test:ejs-download`、`npm run test:remote-disc`、`npm run test:load-progress`、`npm run test:ppsspp`、`npm --prefix worker test`（192 项）、客户端 TypeScript 项目检查、`npx tsc -p tsconfig.node.json`、`npm run build:client`（全部运行时 / 资源 / 浏览器兼容门禁）和 `npm run build:server`。
+- 本机 `build:client` 完成需 8 分 56 秒；插件计时主要落在 legacy 兼容输出、输出目录准备和 Tailwind 生成。该本机耗时不是线上加载耗时，但部署窗口应留足时间。
+- 本轮没有新的真实 R2 上传吞吐或跨区冷缓存基线，因此不据离线夹具声称线上提速百分比。
