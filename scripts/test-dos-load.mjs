@@ -167,7 +167,7 @@ check('自动重试和读档共用同一份会话判断，没有第二份手写�
 
 // 重开要带上这一局的核心覆盖：NDS 已经切到兼容核心时，点「重开」不能又回到会崩的新核心。
 check('重开用的是同一局的 ROM / 平台 / 运行时（是重开，不是重新挑）', () =>
-  assert.match(player, /begin\(session\.game,\s*session\.platform,\s*session\.runtime,\s*\{\s*coreOverride:\s*session\.coreOverride\s*\}\)/))
+  assert.match(player, /begin\(session\.game,\s*session\.platform,\s*session\.runtime,\s*\{\s*coreOverride:\s*session\.coreOverride,\s*manualTriedCores:\s*session\.manualTriedCores,\s*\}\)/))
 
 console.log('\n── DOS 鼠标设置：收进手柄面板 ──')
 
