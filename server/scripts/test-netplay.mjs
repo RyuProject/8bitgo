@@ -3,7 +3,7 @@
  *
  *   cd server && npm install
  *   node scripts/test-netplay.mjs                          # 跳过「超时解散」那组
- *   NETPLAY_HOST_GRACE_MS=400 node scripts/test-netplay.mjs # 全跑
+ *   NETPLAY_HOST_GRACE_MS=2000 NETPLAY_CLAIM_WINDOW_MS=5000 node scripts/test-netplay.mjs # 全跑
  *
  * 覆盖 EmulatorJS netplay 客户端真正会用到的那套协议，以及我们自己加的房主迁移：
  * 开房 / 加入 / 房间列表 / 信令定向转发 / 满员 / 密码 / 离开 /
@@ -389,14 +389,14 @@ if (process.env.NETPLAY_HOST_GRACE_MS) {
     })
     const claimed = await fetch(`${API}/api/netplay/rooms/R6/claim`, { method: 'POST', headers: { 'x-netplay-token': g1.token } })
     ok('第一位认领成功', claimed.ok)
-    // 认领之后一直不 migrate，等窗口过期
+    // 认领之后一直不 migrate，等窗口过期；给多次本地 API 往返留出余量，避免全量回归压力下误红。
     await wait(Number(process.env.NETPLAY_CLAIM_WINDOW_MS) + 300)
     ok('认领超时后轮到了下一位候选', offered.includes('u-g6b'))
     g1.close()
     g2.close()
   }
 } else {
-  console.log('\n⏭  跳过「超时解散」：用 NETPLAY_HOST_GRACE_MS=400 node scripts/test-netplay.mjs 跑这一组')
+  console.log('\n⏭  跳过「超时解散」：用 NETPLAY_HOST_GRACE_MS=2000 NETPLAY_CLAIM_WINDOW_MS=5000 node scripts/test-netplay.mjs 跑这一组')
 }
 
 console.log(failed === 0 ? '\n全部通过 ✅' : `\n有 ${failed} 项失败 ❌`)

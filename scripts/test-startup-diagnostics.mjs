@@ -57,7 +57,10 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
     attempt: { index: 3, sinceStartMs: 62_545 },
     timeline: [{ t: 0, e: 'start_click' }, { t: 430, e: 'download_complete' }],
     logs: Array.from({ length: 200 }, (_, i) => ({ t: i, s: 'ejs', l: 'warn', m: `line ${i} ${'y'.repeat(400)}` })),
-    resources: [{ n: 'cdn.example/x', i: 'fetch', at: 10, d: 30_000, tx: 0, sz: 0, st: 0, p: 'h2' }],
+    resources: [
+      { n: 'cdn.example/x', i: 'fetch', at: 10, d: 30_000, tx: 0, sz: 0, st: 0, p: 'h2', workerMs: 18.4, edgeCache: 'MISS', extra: 'drop' },
+      { n: 'cdn.example/bad', i: 'fetch', workerMs: 'broken', edgeCache: 'UNKNOWN' },
+    ],
   })
   assert.equal(big.secret, undefined, '未知字段丢弃')
   assert.equal(big.env.ua, undefined, '环境里也不收 UA')
@@ -67,6 +70,11 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   assert.ok(big.logs.every((row) => row.m.length <= 300))
   assert.ok(JSON.stringify(big).length <= 32_000, '入库前封顶 32KB')
   assert.equal(big.timeline[1].e, 'download_complete')
+  assert.equal(big.resources[0].workerMs, 18.4, '服务端只保留 worker 耗时')
+  assert.equal(big.resources[0].edgeCache, 'MISS', '只保留边缘缓存枚举')
+  assert.equal(big.resources[0].extra, undefined, '诊断资源仍按白名单重建')
+  assert.equal(big.resources[1].workerMs, undefined, '无效的 Worker 耗时不会入库')
+  assert.equal(big.resources[1].edgeCache, undefined, '无效的边缘缓存值不会入库')
   assert.equal(normalizeDiagnostics('nope'), null)
   assert.equal(normalizeDiagnostics([1]), null)
   const summary = normalizeDiagnostics({
@@ -123,6 +131,12 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   const genericMissing = diagnoseStartupFailure({ event: 'failed', platform: 'nes', detail: 'Missing files while opening content' })
   assert.notEqual(genericMissing.code, 'bios_romset', '非街机的通用 missing files 不能被判成街机 BIOS 故障')
   assert.equal(diagnoseStartupFailure({ event: 'failed', platform: 'arcade', detail: 'Missing files for this romset' }).code, 'bios_romset')
+  assert.equal(diagnoseStartupFailure({
+    event: 'failed', runtime: 'iodinegba', platform: 'gba', detail: 'GBA BIOS is required and must be 16 KiB',
+  }).code, 'bios_config', 'IodineGBA 的平台 BIOS 配置问题要和街机 ROM 集错误分开')
+  assert.notEqual(diagnoseStartupFailure({
+    event: 'failed', runtime: 'emulatorjs', platform: 'gba', detail: 'GBA BIOS is required and must be 16 KiB',
+  }).code, 'bios_config', '平台 BIOS 专属诊断不能误判其他 GBA 运行时')
   assert.notEqual(diagnoseStartupFailure({ event: 'failed', platform: 'gba', detail: 'Failed to load ROM from blob URL' }).code, 'storage',
     '普通 Blob URL 加载失败不能直接推断为浏览器存储故障')
   assert.equal(diagnoseStartupFailure({ event: 'failed', platform: 'gba', detail: 'NotReadableError while reading Blob' }).code, 'storage')
@@ -523,15 +537,28 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
       })),
       { name: 'https://download.8bitgo.com/roms/nes/private.nes.8bg', initiatorType: 'fetch',
         startTime: 995, duration: 25, transferSize: 200, decodedBodySize: 0,
-        responseStatus: 404, nextHopProtocol: 'h2' },
+        responseStatus: 404, nextHopProtocol: 'h2', serverTiming: [
+          { name: 'worker', duration: 18.4, description: '' },
+          { name: 'edge', duration: 0, description: 'MISS' },
+          { name: 'other', duration: 3, description: 'sensitive value' },
+        ] },
       { name: 'https://203.0.113.9/private/a.b+c@example.co.uk', initiatorType: 'fetch',
         startTime: 996, duration: 250, transferSize: 0, decodedBodySize: 0,
-        responseStatus: 0, nextHopProtocol: 'h2' },
+        responseStatus: 0, nextHopProtocol: 'h2', serverTiming: [
+          { name: 'worker', duration: 99, description: 'cached stale metric' },
+        ] },
     ],
   })
   const withFailedResource = hub.collectStartupDiagnostics('attempt-0001')
-  assert.ok(withFailedResource.resources.some((row) => row.st === 404 && row.n.includes('[ROM]')),
+  const missingRom = withFailedResource.resources.find((row) => row.st === 404 && row.n.includes('[ROM]'))
+  assert.ok(missingRom,
     '大量慢资源不能把快速失败请求挤出诊断包')
+  assert.equal(missingRom.workerMs, 18.4, '跨域可见的 Worker 响应头耗时进入诊断')
+  assert.equal(missingRom.edgeCache, 'MISS', '边缘 HIT / MISS 进入诊断')
+  assert.equal(withFailedResource.resources.find((row) => row.n.includes('[IP]'))?.workerMs, undefined,
+    '浏览器缓存或无 TAO 的请求不沿用旧 Server-Timing')
+  assert.doesNotMatch(JSON.stringify(withFailedResource.resources), /sensitive value|cached stale metric/,
+    '不接收未知 Server-Timing 名称或描述')
   assert.doesNotMatch(JSON.stringify(withFailedResource.resources), /203\.0\.113\.9|a\.b\+c@example\.co\.uk/,
     '资源请求在浏览器本地就完成 IP / 邮箱脱敏')
 
@@ -617,11 +644,11 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
       attempt: { index: 3, sinceStartMs: 62_545 },
       timeline: [{ t: 0, e: 'start_click' }, { t: 538, e: 'download_complete' }],
       logs: [{ t: 600, s: 'stage', l: 'info', m: 'Descargando Núcleo del Juego' }],
-      resources: [{ n: '8bitgo.com/emulatorjs/…/fceumm-wasm.data', i: 'fetch', at: 700, d: 30_000, tx: 0, sz: 0, st: 0, p: 'h2' }],
+      resources: [{ n: '8bitgo.com/emulatorjs/…/fceumm-wasm.data', i: 'fetch', at: 700, d: 30_000, tx: 0, sz: 0, st: 0, p: 'h2', workerMs: 18.4, edgeCache: 'HIT' }],
     }),
   }
   const md = formatGroupForAi(group, [sample])
-  for (const needle of ['# 8BitGo 启动故障', 'AGENTS.md', 'Safari 26×3', 'SV×3', '超级玛丽奥兄弟（super-mario-bros）×3', '阶段时间线', '538ms  download_complete', '[stage/info] Descargando Núcleo del Juego', 'fceumm-wasm.data', '本次访问第 3 次开局', '内存 8GB']) {
+  for (const needle of ['# 8BitGo 启动故障', 'AGENTS.md', 'Safari 26×3', 'SV×3', '超级玛丽奥兄弟（super-mario-bros）×3', '阶段时间线', '538ms  download_complete', '[stage/info] Descargando Núcleo del Juego', 'fceumm-wasm.data', 'Worker 响应头 18.4ms', '边缘缓存 HIT', '本次访问第 3 次开局', '内存 8GB']) {
     assert.ok(md.includes(needle), `复制给 AI 的文本缺「${needle}」`)
   }
   const summaryMd = formatSample({
@@ -637,6 +664,14 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
 {
   const funnel = read('src/services/startupFunnel.ts')
   assert.match(funnel, /DIAGNOSTIC_EVENTS = new Set<StartupEventName>\(\['failed', 'timeout', 'slow_start', 'recovered'\]\)/)
+  assert.match(funnel, /body: JSON\.stringify\(\{ events: batch \}\)/, '阶段批次应合并成一条上报请求')
+  assert.match(funnel, /'download_complete', 'rom_load_start'/, '已有下载完成事件应能并入资源阶段批次')
+  assert.match(funnel, /for \(const key of keys\) sent\.delete\(key\)/, '批量请求失败后要允许同生命周期补报')
+  const player = read('src/emulator/EmulatorPlayer.tsx')
+  assert.match(player, /startupBatchTimer = window\.setTimeout\(\(\) => flushStartupEvents\(\), 15_000\)/, '慢启动也要定时刷新阶段数据')
+  assert.match(player, /flushStartupEvents\(payload\)/, '首帧或可玩事件应与已收集阶段合并发送')
+  assert.match(player, /event === 'download_complete' \|\| event === 'first_frame'/, '有待发阶段时下载完成事件应顺带刷新批次')
+  assert.match(player, /stopProgressSnapshot\(\)[\s\S]{0,100}flushStartupEvents\(\)/, '换局 / 卸载时不能丢掉尚未发送的阶段数据')
   assert.match(funnel, /collectStartupDiagnostics\(payload\.attemptId, payload\.detail, \{\s*resourcesSincePageStart: payload\.runtime === 'page',/, '页面崩溃带上页面打开以来的资源请求（诊断包 #761 的资源列表是空的）')
   const games = read('server/src/routes/games.js')
   assert.match(games, /if \(result\.recorded && DIAGNOSTIC_EVENTS\.has\(result\.event\.event\)\)/, '首次漏斗事件总是进入诊断保存流程')

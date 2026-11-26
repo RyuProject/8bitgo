@@ -6,6 +6,7 @@
  * 而「搜不到」在开发时太容易被当成数据问题。
  */
 import { boundedSearchLimit, normalize, tokenize, pinyinTokens, queryTerms, tokenMatchSql, buildGameTokens, WEIGHT } from '../src/search.js'
+import { readFileSync } from 'node:fs'
 
 let pass = 0
 const fails = []
@@ -31,10 +32,21 @@ ok('空输入', normalize('') === '' && normalize(null) === '')
 /* ---------------- 分词 ---------------- */
 eq('中文单字 + 二字组', [...tokenize('魂斗罗')].sort(), ['斗', '斗罗', '罗', '魂', '魂斗'].sort())
 eq('英文按词', [...tokenize('The Legend of Zelda')].sort(), ['legend', 'of', 'the', 'zelda'].sort())
+eq('日文假名按字符与二元组', [...tokenize('ファイア')].sort(), ['ァ', 'ァイ', 'イ', 'イア', 'ア', 'フ', 'ファ'].sort())
+eq('韩文按字符与二元组', [...tokenize('한국어')].sort(), ['국', '국어', '어', '한', '한국'].sort())
+eq('西里尔文字按词', [...tokenize('Красный ФайрРед')], ['красный', 'файрред'])
+eq('阿拉伯文字按词', [...tokenize('العاب')], ['العاب'])
+ok('天城文保留组合附标', tokenize('पोकेमॉन').size > 0)
+ok('泰文不因没有空格而丢失', tokenize('เกม').size > 0)
 ok('中英混排', (() => {
   const t = tokenize('Contra 魂斗罗')
   return t.has('contra') && t.has('魂斗') && t.has('罗')
 })())
+{
+  const query = queryTerms('ファイアレッド')
+  ok('日文标题可形成搜索条件', !query.empty && query.required.length > 0)
+  ok('完整日文词条的每个搜索字符均可命中', query.required.every(({ token }) => tokenize('ポケットモンスター ファイアレッド').has(token)))
+}
 ok('标点不产生 token', ![...tokenize('a...b')].some((x) => x.includes('.')))
 
 /* ---------------- 拼音 ---------------- */
@@ -80,6 +92,27 @@ eq('联想 LIMIT 非数字退回默认值', boundedSearchLimit('bad', 8, 20), 8)
   eq('拼音权重', m.get('hdl'), WEIGHT.pinyin)
   ok('token 不超长', [...m.keys()].every((k) => k.length <= 32))
 }
+{
+  const m = buildGameTokens({
+    title: 'Pokémon FireRed',
+    aliases: ['ポケットモンスター ファイアレッド', 'Pokémon Edición Rojo Fuego', 'Pokémon Feuerrot'],
+  })
+  eq('日文人工标题进入本地化别名索引', m.get('ファ'), WEIGHT.alias)
+  eq('西语人工标题进入本地化别名索引', m.get('rojo'), WEIGHT.alias)
+  eq('德语人工标题进入本地化别名索引', m.get('feuerrot'), WEIGHT.alias)
+  ok('按完整日文名搜索时所有必需字符都在索引中', queryTerms('ファイアレッド').required.every(({ token }) => m.has(token)))
+}
+{
+  const japaneseKanji = buildGameTokens({ aliases: ['魂斗羅'] })
+  const chinese = buildGameTokens({ aliases: ['魂鬥羅'], pinyinAliases: ['魂鬥羅'] })
+  ok('日文汉字别名不被误读成中文拼音', !japaneseKanji.has('hundouluo'))
+  eq('明确标注的中文别名仍可生成拼音', chinese.get('hundouluo'), WEIGHT.pinyin)
+}
+{
+  const backfill = readFileSync(new URL('./backfill-search.mjs', import.meta.url), 'utf8')
+  ok('全库搜索重建读取并索引逐语言标题',
+    /title_i18n, title_localized/.test(backfill) && /aliases:\s*\[\.\.\.Object\.values\(convertedTitles\),\s*\.\.\.Object\.values\(localizedTitles\)\]/.test(backfill))
+}
 
 /* ---------------- SQL 拼装 ---------------- */
 {
@@ -90,7 +123,7 @@ eq('联想 LIMIT 非数字退回默认值', boundedSearchLimit('bad', 8, 20), 8)
   ok('没有拼进未转义的用户输入', !sql.includes('魂'))
 }
 {
-  // 分词只保留 [a-z0-9] 和汉字，所以 % 和 _ 根本活不到 LIKE 那一步。
+  // 分词只保留 Unicode 字母 / 数字和无空格文字字符，所以 % 和 _ 根本活不到 LIKE 那一步。
   // 这条守住的是这个性质本身 —— 哪天分词放宽了字符集，转义那行才真正要顶事。
   const t = queryTerms('100% _ 50_off')
   ok('通配符在分词阶段就没了', t.required.every((x) => !/[%_]/.test(x.token)), JSON.stringify(t.required))

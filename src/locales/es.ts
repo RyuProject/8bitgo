@@ -1508,6 +1508,7 @@ const es: Translation = {
     googleNotConfigured: 'El administrador todavía no configuró el inicio de sesión con Google (VITE_GOOGLE_CLIENT_ID)',
     needLogin: 'Primero inicia sesión',
     requestFailed: 'La solicitud falló (HTTP {status})',
+    pageDataTimeout: 'La página tardó demasiado en cargar. Comprueba tu conexión e inténtalo de nuevo.',
     defaultNickname: 'Jugador',
     googleNickname: 'Jugador de Google',
     oauthDenied: 'Cancelaste el inicio de sesión en la página de autorización',

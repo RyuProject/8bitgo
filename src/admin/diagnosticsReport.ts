@@ -74,7 +74,10 @@ export interface DiagnosticPayload {
   attempt: { index: number; sinceStartMs: number }
   timeline: Array<{ t: number; e: string }>
   logs: Array<{ t: number; s: string; l: 'error' | 'warn' | 'log' | 'info'; m: string }>
-  resources: Array<{ n: string; i: string; at: number; d: number; tx: number; sz: number; st: number; p: string }>
+  resources: Array<{
+    n: string; i: string; at: number; d: number; tx: number; sz: number; st: number; p: string
+    workerMs?: number; edgeCache?: 'HIT' | 'MISS'
+  }>
 }
 
 export interface DiagnosticSample {
@@ -150,6 +153,7 @@ const DIAGNOSIS_SIGNAL_LABEL: Record<string, string> = {
   'error.react_update_loop': '日志出现 React 最大更新深度错误',
   'error.page_asset': '日志指向页面脚本或样式资源',
   'error.romset_or_bios': '日志出现街机 ROM 集或 BIOS 错误',
+  'error.platform_bios_config': 'IodineGBA 报告 GBA 平台 BIOS 缺失或格式不符',
   'error.runtime_trap': '日志出现模拟器运行时陷阱',
   'error.rom_format': '日志出现 ROM 格式或映射错误',
   'error.core_download': '日志指向模拟器核心下载 / 加载',
@@ -178,7 +182,7 @@ export const diagnosisSignalLabel = (signal: string): string => DIAGNOSIS_SIGNAL
 
 const DIAGNOSIS_PHASE_LABEL: Record<string, string> = {
   network: '网络', page_render: '页面渲染', graphics: '图形初始化', browser: '浏览器功能', engine_asset: '模拟器资源',
-  page_asset: '页面资源', content_config: '街机 ROM / BIOS 配置', engine: '模拟器加载', runtime: '模拟器运行时',
+  page_asset: '页面资源', content_config: '街机 ROM / BIOS 配置', platform_config: '平台 BIOS 配置', engine: '模拟器加载', runtime: '模拟器运行时',
   content: '游戏文件', core_download: '核心下载 / 解压', rom_download: 'ROM 下载 / 读取',
   core_init: '核心启动', startup: '启动流程', configuration: '兼容性配置', unknown: '未定位',
 }
@@ -242,7 +246,12 @@ export function formatSample(sample: DiagnosticSample, index?: number): string {
   if (d.resources.length) {
     lines.push('', '慢 / 大 / 失败的网络请求（传输 0 = 命中缓存或跨域不可见）：', '```')
     for (const r of d.resources) {
-      lines.push(`${fmtMs(r.at).padStart(7)}  ${fmtMs(r.d).padStart(7)}  ${r.st || '-'}  ${r.p || '-'}  传输 ${fmtBytes(r.tx)} / 内容 ${fmtBytes(r.sz)}  ${r.i}  ${r.n}`)
+      const workerMs = typeof r.workerMs === 'number' && Number.isFinite(r.workerMs) ? r.workerMs : undefined
+      const server = [
+        workerMs !== undefined ? `Worker 响应头 ${workerMs >= 1000 ? fmtMs(workerMs) : `${workerMs.toFixed(1)}ms`}` : '',
+        r.edgeCache ? `边缘缓存 ${r.edgeCache}` : '',
+      ].filter(Boolean).join(' · ')
+      lines.push(`${fmtMs(r.at).padStart(7)}  ${fmtMs(r.d).padStart(7)}  ${r.st || '-'}  ${r.p || '-'}  传输 ${fmtBytes(r.tx)} / 内容 ${fmtBytes(r.sz)}  ${r.i}  ${r.n}${server ? `  ${server}` : ''}`)
     }
     lines.push('```')
   }

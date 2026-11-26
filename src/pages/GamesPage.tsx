@@ -114,8 +114,8 @@ export function GamesPage() {
    */
   const resetKey = JSON.stringify(query)
   const fetchMore = useCallback(
-    async (nextPage: number): Promise<Paged<Game>> => {
-      const d = await fetchPageData('/games', { ...query, page: nextPage })
+    async (nextPage: number, signal?: AbortSignal): Promise<Paged<Game>> => {
+      const d = await fetchPageData('/games', { ...query, page: nextPage }, signal)
       if (d.route !== 'games') throw new Error('unexpected route payload')
       return d.list
     },
@@ -399,7 +399,7 @@ export function GamesPage() {
             <div className="mt-4 adaptive-game-grid" aria-busy={state.status === 'loading'}>
               {inf.items.map((g, i) => (
                 // 首屏这几张的封面立即加载，避免一进页面先看到一屏占位格
-                <GameCard key={g.slug} game={g} coverRatio="square" eager={i < ABOVE_FOLD_CARDS} coverSizes={GAME_CARD_IMAGE_SIZES} />
+                <GameCard key={g.slug} game={g} coverRatio="square" eager={i < ABOVE_FOLD_CARDS} priority={i === 0} coverSizes={GAME_CARD_IMAGE_SIZES} />
               ))}
             </div>
           ) : (

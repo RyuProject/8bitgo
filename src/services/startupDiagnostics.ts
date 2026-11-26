@@ -53,6 +53,10 @@ export interface DiagnosticResource {
   st: number
   /** 协议：h2 / h3 / http/1.1 */
   p: string
+  /** 同源 ROM Worker 返回到响应头所用毫秒；流式正文不计入 */
+  workerMs?: number
+  /** ROM Worker 的边缘缓存结论；只保留实际经网络返回的 HIT / MISS */
+  edgeCache?: 'HIT' | 'MISS'
 }
 
 /** 页面崩溃自动刷新之后的结论（services/pageRecovery.ts）；只有兜底页的报告才有 */
@@ -306,16 +310,25 @@ function install(): void {
 }
 
 function resourceRow(perf: Performance, entry: PerformanceResourceTiming): RawResource {
+  const transferSize = Math.round(entry.transferSize || 0)
+  const workerMs = transferSize > 0
+    ? entry.serverTiming?.find((metric) => metric.name === 'worker' && Number.isFinite(metric.duration))?.duration
+    : undefined
+  const edgeCache = transferSize > 0
+    ? entry.serverTiming?.find((metric) => metric.name === 'edge')?.description
+    : undefined
   return {
     // Resource Timing 不走日志格式化器；显式脱敏，避免 IP / 邮箱随诊断请求先发到服务端。
     n: scrubDiagnosticText(shortenUrl(entry.name), 120),
     i: String(entry.initiatorType || '').slice(0, 16),
     atEpoch: perf.timeOrigin + entry.startTime,
     d: Math.round(entry.duration),
-    tx: Math.round(entry.transferSize || 0),
+    tx: transferSize,
     sz: Math.round(entry.decodedBodySize || 0),
     st: Math.round((entry as PerformanceResourceTiming & { responseStatus?: number }).responseStatus || 0),
     p: String(entry.nextHopProtocol || '').slice(0, 12),
+    ...(workerMs !== undefined && workerMs >= 0 ? { workerMs: Math.round(workerMs * 10) / 10 } : {}),
+    ...(edgeCache === 'HIT' || edgeCache === 'MISS' ? { edgeCache } : {}),
   }
 }
 

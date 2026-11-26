@@ -1338,7 +1338,7 @@ export function GameForm({
           <Field
             key={language}
             label={`标题（${romLanguageLabel(language)}）`}
-            hint="此语言界面会用它显示游戏名、页面标题和站内搜索；请填当地玩家常用的正式名称。留空时回退到原名，繁体中文会先回退到自动转换的繁体译名。"
+            hint="此语言界面会用它显示游戏名、页面标题和站内搜索。先核对该语言槽实际 ROM 的发行地区/版本，再填当地玩家常用的正式名称；改版 ROM 不要直接套用原版标题。留空时回退到原名，繁体中文会先回退到自动转换的繁体译名。"
           >
             <input
               className={inputClass}
@@ -2188,7 +2188,7 @@ export function GameForm({
             />
             <p className="mt-1 text-[11px] text-dim">
               {hasLocalizedRoute
-                ? '用于对应语言的游戏详情与 SEO；留空时使用英文简介，没有英文简介时回退中文。灰色占位文字仅供参考，不会保存。'
+                ? '用于对应语言的游戏详情与 SEO。请只写该 ROM 版本可核验的内容；地区/修订、多人或无线功能、改版特性不确定时不要写成事实。留空时使用英文简介，没有英文简介时回退中文。灰色占位文字仅供参考，不会保存。'
                 : '此语言码目前没有独立站点语言页面；简介会保存，待站点开放对应语言路由后用于 SEO。'}
             </p>
             {translationFeedback?.language === language && (
@@ -2455,7 +2455,11 @@ function FlashControlsField({
  * 小文件走单发 PUT，没有分片信息，这时返回空串、界面上什么都不多显示。
  */
 function stageText(stage: UploadStage | null): string {
-  if (!stage || stage.parts <= 1) return ''
+  if (!stage) return ''
+  if (stage.checkingTotal !== undefined) {
+    return `正在校验续传分片 ${stage.checkingParts ?? 0}/${stage.checkingTotal}`
+  }
+  if (stage.parts <= 1) return ''
   const networkText = stage.measuredMbps
     ? ` · 实测 ${stage.measuredMbps.toFixed(1)} Mbps${stage.concurrency ? ` · ${stage.concurrency} 路` : ''}`
     : stage.done < stage.parts
@@ -3283,6 +3287,7 @@ function MameDiskUploadRow({
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [progress, setProgress] = useState<number | null>(null)
+  const [stage, setStage] = useState<UploadStage | null>(null)
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null)
   const cfg = getRomConfig()
   const canUpload = allowStorage && Boolean(cfg.api && cfg.token)
@@ -3326,7 +3331,10 @@ function MameDiskUploadRow({
           return
         }
         setProgress(0)
-        const result = await uploadRom(file, key, setProgress)
+        const result = await uploadRom(file, key, (pct, at) => {
+          setProgress(pct)
+          if (at) setStage(at)
+        })
         merge({ ...resolved, key: result.key })
         setMessage({ ok: true, text: `已绑定 ${expected.name}.chd（${human(result.size)}）。保存后会挂到 /roms/${expected.romset}/。` })
       })
@@ -3334,6 +3342,7 @@ function MameDiskUploadRow({
       setMessage({ ok: false, text: error instanceof Error ? error.message : 'CHD 上传失败' })
     } finally {
       setProgress(null)
+      setStage(null)
       if (inputRef.current) inputRef.current.value = ''
     }
   }
@@ -3358,6 +3367,7 @@ function MameDiskUploadRow({
       </div>
       {bound ? <p className="mt-2 font-mono text-[11px] text-online">✓ 已绑定 {bound.key}</p> : <p className="mt-2 text-xs text-live">缺少这张 CHD 时，{expected.romset} 不会启动；播放器会在开局前停止并说明原因。</p>}
       {progress !== null && <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-black/10"><div className="h-full bg-brand transition-[width]" style={{ width: `${progress}%` }} /></div>}
+      {progress !== null && stageText(stage) && <p className="mt-1 font-mono text-[11px] text-dim">{stageText(stage)}</p>}
       {message && <p className={cx('mt-2 text-xs', message.ok ? 'text-online' : 'text-live')}>{message.text}</p>}
       {!canUpload && allowStorage && <p className="mt-2 text-[11px] text-dim">请先在“ROM 存储”页配置 Worker 地址与口令。</p>}
     </div>
@@ -3457,6 +3467,13 @@ function RomField({
   const inputRef = useRef<HTMLInputElement>(null)
   const multiDiscInputRef = useRef<HTMLInputElement>(null)
   const [multiDiscFiles, setMultiDiscFiles] = useState<File[]>([])
+  const multiDiscUploadSession = useRef<{
+    files: File[]
+    slug: string
+    lang: string
+    setId: string
+    completedKeys: Set<string>
+  } | null>(null)
   const [progress, setProgress] = useState<number | null>(null)
   /** 记住失败任务的原平台和语言槽，切换槽位时不能把旧 CHD 写进新槽。 */
   const [failedDiscTask, setFailedDiscTask] = useState<{
@@ -4040,6 +4057,8 @@ function RomField({
       if (multiDiscInputRef.current) multiDiscInputRef.current.value = ''
       return
     }
+    // 新选择意味着新的发布意图；不能把上一组未发布的盘片目录复用到另一组文件。
+    multiDiscUploadSession.current = null
     setMultiDiscFiles(files)
     setMsg({ ok: true, text: `已载入 ${files.length} 张盘片；请检查顺序，确认后才会上传并绑定。` })
     if (multiDiscInputRef.current) multiDiscInputRef.current.value = ''
@@ -4085,21 +4104,75 @@ function RomField({
         const playlist = buildPsxM3u(entries)
         const parent = dirOfKey(defKey('discs.m3u'))
         if (!parent) throw new Error('无法生成 PS1 多盘对象目录；请先配置 ROM 前缀')
-        const random = new Uint8Array(8)
-        crypto.getRandomValues(random)
-        const setId = [...random].map(byte => byte.toString(16).padStart(2, '0')).join('')
         const safeSlug = slug.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '') || 'game'
+        const priorSession = multiDiscUploadSession.current
+        const sameSelection = priorSession && priorSession.slug === safeSlug && priorSession.lang === lang &&
+          priorSession.files.length === files.length && priorSession.files.every((file, index) => file === files[index])
+        if (!sameSelection) {
+          const random = new Uint8Array(8)
+          crypto.getRandomValues(random)
+          const setId = [...random].map(byte => byte.toString(16).padStart(2, '0')).join('')
+          multiDiscUploadSession.current = { files: [...files], slug: safeSlug, lang, setId, completedKeys: new Set() }
+        }
+        const session = multiDiscUploadSession.current!
+        const setId = session.setId
         const setDir = `${parent}/${safeSlug}.${lang}.set-${setId}`
         const totalBytes = uploadFiles.reduce((sum, file) => sum + file.size, 0)
-        for (const [index, file] of uploadFiles.entries()) {
-          const key = `${setDir}/${entries[index].filename}`
-          setMsg({ ok: true, text: `正在上传第 ${index + 1}/${uploadFiles.length} 张盘；完成后才会发布多盘清单…` })
-          await uploadRom(file, key, (pct, at) => {
-            setProgress(Math.min(94, Math.round(((index + pct / 100) / uploadFiles.length) * 94)))
-            if (at) setStage(at)
-          })
-          setStage(null)
+        const percentByDisc = new Array<number>(uploadFiles.length).fill(0)
+        const completedDiscs = new Set<number>()
+        const failures: { index: number; message: string }[] = []
+        let nextIndex = 0
+        const discUploadAbort = new AbortController()
+        const reportProgress = () => {
+          const sentBytes = uploadFiles.reduce((sum, file, index) => sum + file.size * percentByDisc[index] / 100, 0)
+          setProgress(Math.min(94, Math.round((sentBytes / Math.max(1, totalBytes)) * 94)))
         }
+        setMsg({ ok: true, text: `正在并行上传 ${uploadFiles.length} 张盘（最多两张同时传）；全部完成后才会发布多盘清单…` })
+        const uploadWorker = async () => {
+          while (!failures.length) {
+            const index = nextIndex++
+            if (index >= uploadFiles.length) return
+            const file = uploadFiles[index]
+            const key = `${setDir}/${entries[index].filename}`
+            try {
+              if (session.completedKeys.has(key)) {
+                // 同页重试会复用随机目录；先确认已完成对象仍在且大小吻合，避免重传大盘片。
+                const existing = await headRom(key).catch(() => null)
+                if (existing?.exists && existing.size === file.size) {
+                  percentByDisc[index] = 100
+                  completedDiscs.add(index)
+                  reportProgress()
+                  setMsg({ ok: true, text: `已复用 ${completedDiscs.size}/${uploadFiles.length} 张已完成盘片；继续上传剩余盘片…` })
+                  continue
+                }
+                session.completedKeys.delete(key)
+              }
+              await uploadRom(file, key, (pct, at) => {
+                percentByDisc[index] = pct
+                reportProgress()
+                if (at) setStage(at)
+              }, undefined, discUploadAbort.signal)
+              percentByDisc[index] = 100
+              completedDiscs.add(index)
+              session.completedKeys.add(key)
+              reportProgress()
+              setMsg({ ok: true, text: `已完成 ${completedDiscs.size}/${uploadFiles.length} 张盘；全部完成后发布多盘清单…` })
+            } catch (error) {
+              // 一张盘失败后立刻停掉同组另一张盘；有强摘要账本的大盘片保留给下次重试续传。
+              if (!discUploadAbort.signal.aborted) {
+                failures.push({ index, message: error instanceof Error ? error.message : '上传失败' })
+                discUploadAbort.abort()
+              }
+            }
+          }
+        }
+        await Promise.all(Array.from({ length: Math.min(2, uploadFiles.length) }, () => uploadWorker()))
+        if (failures.length) {
+          failures.sort((a, b) => a.index - b.index)
+          const failed = failures[0]
+          throw new Error(`第 ${failed.index + 1} 张盘 ${uploadFiles[failed.index].name} 上传失败：${failed.message}`)
+        }
+        setStage(null)
         const playlistKey = `${setDir}/discs.m3u`
         setProgress(95)
         setMsg({ ok: true, text: '盘片已上传，正在发布多盘清单并绑定当前语言…' })
@@ -4109,6 +4182,7 @@ function RomField({
           if (at) setStage(at)
         })
         onChange(playlistKey)
+        multiDiscUploadSession.current = null
         setMultiDiscFiles([])
         setMsg({ ok: true, text: `已发布 ${uploadFiles.length} 张 PS1 光盘（${human(totalBytes)}）和 M3U 清单；当前语言已改绑，请保存游戏条目` })
       })
@@ -4924,7 +4998,7 @@ function RomField({
                   <button type="button" className={cx(btnClass.primary, 'shrink-0')} disabled={!canUpload || busySelecting || progress !== null || bundleAt !== null} onClick={() => void uploadMultiDiscFiles()}>
                     ☁️ 确认盘序并上传 {multiDiscFiles.length} 张盘
                   </button>
-                  <button type="button" className={cx(btnClass.small, 'h-9 rounded-lg border border-line px-3 text-sm text-muted hover:bg-surface-2 disabled:opacity-50')} disabled={busySelecting || progress !== null} onClick={() => setMultiDiscFiles([])}>
+                  <button type="button" className={cx(btnClass.small, 'h-9 rounded-lg border border-line px-3 text-sm text-muted hover:bg-surface-2 disabled:opacity-50')} disabled={busySelecting || progress !== null} onClick={() => { multiDiscUploadSession.current = null; setMultiDiscFiles([]) }}>
                     清除选择
                   </button>
                 </div>

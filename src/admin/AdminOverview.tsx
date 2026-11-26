@@ -71,7 +71,7 @@ function StartupBreakdown({ title, rows }: { title: string; rows: StartupGroup[]
   return (
     <Card title={title}>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[32rem] text-sm">
+        <table className="w-full min-w-[76rem] text-sm">
           <thead className="text-left text-xs text-muted">
             <tr>
               <th className="pb-2 font-medium">项目</th>
@@ -79,7 +79,14 @@ function StartupBreakdown({ title, rows }: { title: string; rows: StartupGroup[]
               <th className="pb-2 text-right font-medium">可玩</th>
               <th className="pb-2 text-right font-medium">成功率</th>
               <th className="pb-2 text-right font-medium text-live">&gt;20s</th>
-              <th className="pb-2 text-right font-medium">平均</th>
+              <th className="pb-2 text-right font-medium">可玩总时长</th>
+              <th className="pb-2 text-right font-medium" title="点击开始到 download_complete 的耗时；非 HTML5 代表 ROM / 启动资源到手，HTML5 代表 iframe 文档加载">开始→资源完成</th>
+              <th className="pb-2 text-right font-medium" title="首次 ROM 进度到可确认的完整获取；缓存读取可能在首次进度出现前已完成，流式光盘不按整盘下载统计">ROM 获取</th>
+              <th className="pb-2 text-right font-medium" title="EmulatorJS 核心预热开始到整份核心进入 HTTP 缓存；引擎 IndexedDB 命中单独计数">核心预热</th>
+              <th className="pb-2 text-right font-medium" title="本次启动命中 EmulatorJS IndexedDB 核心缓存的次数">核心库命中</th>
+              <th className="pb-2 text-right font-medium" title="download_complete 到 first_frame 的耗时">资源完成→首帧</th>
+              <th className="pb-2 text-right font-medium" title="download_complete 到运行时 onReady 的耗时">资源完成→就绪</th>
+              <th className="pb-2 text-right font-medium" title="first_frame 到 game_playable 的耗时">首帧→可玩</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-line">
@@ -91,15 +98,31 @@ function StartupBreakdown({ title, rows }: { title: string; rows: StartupGroup[]
                 <td className="py-2 text-right tabular-nums">{row.playableRate.toFixed(1)}%</td>
                 <td className="py-2 text-right tabular-nums text-live">{row.slowStarts}</td>
                 <td className="py-2 text-right tabular-nums text-muted">{startupTime(row.avgPlayableMs)}</td>
+                <StartupPhaseCell ms={row.avgResourceMs} samples={row.resourceSamples} />
+                <StartupPhaseCell ms={row.avgRomLoadMs} samples={row.romLoadSamples} />
+                <StartupPhaseCell ms={row.avgCoreWarmMs} samples={row.coreWarmSamples} />
+                <td className="py-2 text-right tabular-nums" title="命中 EmulatorJS IndexedDB 核心缓存的启动次数">{row.coreCacheHits}</td>
+                <StartupPhaseCell ms={row.avgResourceToFirstFrameMs} samples={row.resourceToFirstFrameSamples} />
+                <StartupPhaseCell ms={row.avgResourceToRuntimeReadyMs} samples={row.resourceToRuntimeReadySamples} />
+                <StartupPhaseCell ms={row.avgFirstFrameToPlayableMs} samples={row.firstFrameToPlayableSamples} />
               </tr>
             ))}
             {!rows.length && (
-              <tr><td colSpan={6} className="py-5 text-center text-sm text-muted">还没有启动数据</td></tr>
+              <tr><td colSpan={13} className="py-5 text-center text-sm text-muted">还没有启动数据</td></tr>
             )}
           </tbody>
         </table>
       </div>
     </Card>
+  )
+}
+
+function StartupPhaseCell({ ms, samples }: { ms: number | null; samples: number }) {
+  return (
+    <td className="py-2 text-right tabular-nums" title={`${samples} 个有效阶段样本`}>
+      <div>{startupTime(ms)}</div>
+      <div className="text-[10px] text-muted">n={samples}</div>
+    </td>
   )
 }
 
@@ -328,7 +351,7 @@ export function AdminOverview() {
         <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
           <div>
             <h2 className="font-semibold">启动漏斗 · 最近 {startupDays} 天</h2>
-            <p className="mt-1 text-xs text-muted">可玩成功率以“点击开始”为分母；超过 20 秒的成功启动单独告警。</p>
+            <p className="mt-1 text-xs text-muted">成功率以“点击开始”为分母；阶段均值按同一次启动配对，括号内为样本数。流式光盘不虚报整盘 ROM 完成，跨域 HTML5 的就绪状态不可观测。</p>
           </div>
           <span className="text-xs text-muted">详情页 {startup?.summary.detailViews ?? 0} 次</span>
         </div>
@@ -342,6 +365,38 @@ export function AdminOverview() {
             label="失败 / 超时"
             value={(startup?.summary.failures ?? 0) + (startup?.summary.timeouts ?? 0)}
             sub={`平均可玩 ${startupTime(startup?.summary.avgPlayableMs ?? null)}`}
+          />
+        </div>
+        <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3 xl:grid-cols-6">
+          <Stat
+            label="点击开始 → 资源完成"
+            value={startupTime(startup?.summary.avgResourceMs ?? null)}
+            sub={`${startup?.summary.resourceSamples ?? 0} 个有效样本；HTML5 以 iframe 文档加载为界`}
+          />
+          <Stat
+            label="ROM 获取"
+            value={startupTime(startup?.summary.avgRomLoadMs ?? null)}
+            sub={`${startup?.summary.romLoadSamples ?? 0} 个完整获取样本；缓存读耗时可能低估`}
+          />
+          <Stat
+            label="EmulatorJS 核心预热"
+            value={startupTime(startup?.summary.avgCoreWarmMs ?? null)}
+            sub={`${startup?.summary.coreWarmSamples ?? 0} 个预热样本；引擎库命中 ${startup?.summary.coreCacheHits ?? 0} 次`}
+          />
+          <Stat
+            label="资源完成 → 首帧"
+            value={startupTime(startup?.summary.avgResourceToFirstFrameMs ?? null)}
+            sub={`${startup?.summary.resourceToFirstFrameSamples ?? 0} 个有效样本；核心初始化与首帧`}
+          />
+          <Stat
+            label="资源完成 → 运行时就绪"
+            value={startupTime(startup?.summary.avgResourceToRuntimeReadyMs ?? null)}
+            sub={`${startup?.summary.resourceToRuntimeReadySamples ?? 0} 个有效样本；到 onReady`}
+          />
+          <Stat
+            label="首帧 → 可玩"
+            value={startupTime(startup?.summary.avgFirstFrameToPlayableMs ?? null)}
+            sub={`${startup?.summary.firstFrameToPlayableSamples ?? 0} 个有效样本；进入可操作状态`}
           />
         </div>
       </div>

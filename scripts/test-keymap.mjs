@@ -298,6 +298,12 @@ for (const id of ADAPTERS) {
       /showQuickSave && hotkeys\['load:local'\]/.test(cards),
     'HTML5 详情页不再提前承诺动态存档桥；真正接通后仍由播放器 caps 显示存档入口',
   )
+  const detail = readFileSync(new URL('../src/pages/GameDetailPage.tsx', import.meta.url), 'utf8')
+  ok(
+    /players=\{game\.players\}/.test(detail) &&
+      /players != null && players < 2 \? \[\] : keymap\.player2 \?\? \[\]/.test(cards),
+    '详情页单人游戏不显示模拟器通用的 2P 键位；本地 ROM 没有人数元数据时仍保留平台键位',
+  )
 }
 
 /* ── 5. 行名有没有对应的文案 ────────────────────────────────

@@ -57,6 +57,8 @@ test('public objects send Timing-Allow-Origin so diagnostics can see transfer si
   e.ROMS.seed('roms/nds/game.nds.8bg', 'x')
   const r = await worker.fetch(req('/roms/nds/game.nds.8bg'), e)
   assert.equal(r.headers.get('Timing-Allow-Origin'), '*')
+  assert.match(r.headers.get('Server-Timing') || '', /^worker;dur=\d+(?:\.\d+)?$/)
+  assert.match(r.headers.get('Access-Control-Expose-Headers') || '', /(?:^|,\s*)Server-Timing(?:,|$)/i)
 })
 test('Sockdrive source copy stays inside R2, locks the source ETag, and is idempotent', async () => {
   const e = environment()
@@ -176,6 +178,8 @@ test('versioned public GET is stored in edge cache without blocking the response
     const e = environment(); const o = e.ROMS.seed('a.zip', 'abcdef')
     const first = await worker.fetch(req(`/a.zip?romv=${o.etag}`), e, context)
     assert.equal(first.headers.get('X-8BitGo-Edge-Cache'), 'MISS')
+    assert.match(first.headers.get('Server-Timing') || '', /worker;dur=\d+(?:\.\d+)?/)
+    assert.match(first.headers.get('Server-Timing') || '', /edge;desc="MISS"/)
     assert.equal(await first.text(), 'abcdef')
     await Promise.all(waits)
     assert.equal(puts, 1)
@@ -183,6 +187,7 @@ test('versioned public GET is stored in edge cache without blocking the response
 
     const second = await worker.fetch(req(`/a.zip?romv=${o.etag}`), e, context)
     assert.equal(second.headers.get('X-8BitGo-Edge-Cache'), 'HIT')
+    assert.match(second.headers.get('Server-Timing') || '', /edge;desc="HIT"/)
     assert.equal(await second.text(), 'abcdef')
     assert.equal(count(e.ROMS, 'get'), 1)
     assert.equal(matches, 2)
@@ -730,6 +735,7 @@ test('multipart create request IDs recover one session under retries and concurr
   const sessions = await Promise.all(responses.map(response => response.json()))
   assert.equal(new Set(sessions.map(session => session.uploadId)).size, 1)
   assert(sessions.some(session => session.reused))
+  assert(sessions.every(session => session.partNumberInHeader === true), '原会话恢复和并发获胜者都声明同一分片协议')
   assert.equal(e.ROMS.uploads.size, 1, ' losing multipart sessions must be aborted')
 
   const conflict = await worker.fetch(req(`/${key}?uploads`, 'POST', { ...body, size: 4 }, {}, true), e)

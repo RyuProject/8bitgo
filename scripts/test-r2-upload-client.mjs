@@ -3,10 +3,15 @@ import assert from 'node:assert/strict'
 
 const storage = () => {
   const values = new Map()
+  const writes = new Map()
   return {
     getItem: (key) => values.get(key) ?? null,
-    setItem: (key, value) => values.set(key, String(value)),
+    setItem: (key, value) => {
+      writes.set(key, (writes.get(key) ?? 0) + 1)
+      values.set(key, String(value))
+    },
     removeItem: (key) => values.delete(key),
+    writeCount: (key) => writes.get(key) ?? 0,
   }
 }
 globalThis.localStorage = storage()
@@ -16,23 +21,46 @@ globalThis.localStorage.setItem('8bitgo.rom.api', 'https://w.test')
 globalThis.localStorage.setItem('8bitgo.rom.base', 'https://assets.test')
 globalThis.sessionStorage.setItem('8bitgo.rom.token', 'test-token')
 // Sockdrive 轮询的退避不应让离线回归真的等十几秒；这里仍保留异步边界，能抓同步递归。
+const windowListeners = new Map()
 globalThis.window = {
   setInterval,
   clearInterval,
   setTimeout: (fn) => { queueMicrotask(fn); return 1 },
   clearTimeout,
+  addEventListener: (type, listener) => {
+    const listeners = windowListeners.get(type) ?? new Set()
+    listeners.add(listener)
+    windowListeners.set(type, listeners)
+  },
+  dispatchEvent: (event) => {
+    for (const listener of windowListeners.get(event.type) ?? []) listener(event)
+    return true
+  },
 }
 
 let xhrResponse = () => ({ status: 200, body: '<html>wrong endpoint</html>' })
+let xhrNeverCompletes = false
+let xhrSendOverride = null
 globalThis.XMLHttpRequest = class {
   upload = {}
+  headers = {}
   status = 0
   responseText = ''
   open(method, url) { this.method = method; this.url = url }
-  setRequestHeader() {}
+  setRequestHeader(name, value) { this.headers[String(name).toLowerCase()] = String(value) }
   send(blob) {
+    if (xhrSendOverride) return xhrSendOverride(this, blob)
+    if (xhrNeverCompletes) return
     queueMicrotask(() => {
+      if (!String(this.url).includes('uploadId=') && blob?.size > 0) {
+        this.upload.onprogress?.({ lengthComputable: true, loaded: blob.size, total: blob.size })
+        this.upload.onload?.()
+      }
       const result = xhrResponse(this, blob)
+      if (result.error) {
+        this.onerror?.()
+        return
+      }
       this.status = result.status
       this.responseText = result.body
       this.onload?.()
@@ -42,7 +70,8 @@ globalThis.XMLHttpRequest = class {
 }
 
 const { uploadRom, deleteRomDir, headRom, listRomObjects } = await import('../src/services/roms.ts')
-const { adaptiveUploadConcurrency, uploadRomMultipart, listOrphanUploads, abortOrphanUpload, listPendingUploads, MultipartUploadGate } = await import('../src/services/romMultipart.ts')
+const { adaptiveUploadConcurrency, preferredUploadConcurrency, PART_SIZE, uploadRomMultipart, listOrphanUploads, abortOrphanUpload, listPendingUploads, MultipartUploadGate, UploadTransferPool } = await import('../src/services/romMultipart.ts')
+const { fingerprintRomPart, fingerprintRomUploadFile } = await import('../src/services/romFingerprint.ts')
 const { matchesRomPackSource, romPackWorkerConcurrency } = await import('../src/services/romPack.ts')
 const {
   clearPendingSockdriveCreation,
@@ -81,6 +110,47 @@ const { ApiError } = await import('../src/services/api.ts')
 }
 console.log('✅ HTTP/2 连接级错误会把分片上传收敛到单路，避免并发重试风暴')
 
+// 多盘组取消时，等待并发闸门的分片应立即离队，不要留着文件片和取消监听等前一请求结束。
+{
+  const gate = new MultipartUploadGate(1, 1)
+  let releaseActive
+  const active = gate.run(() => new Promise((resolve) => { releaseActive = resolve }))
+  await new Promise((resolve) => setImmediate(resolve))
+  const controller = new AbortController()
+  let queuedStarted = false
+  const queued = gate.run(async () => { queuedStarted = true }, 0, undefined, controller.signal)
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(gate.snapshot().waiting, 1)
+  controller.abort()
+  await assert.rejects(queued, /上传已取消/)
+  assert.equal(gate.snapshot().active, 1, '取消排队任务不能改变在途任务计数')
+  assert.equal(gate.snapshot().waiting, 0, '取消后应立即从并发队列移除')
+  assert.equal(queuedStarted, false, '排队的 PUT 不得在取消后启动')
+  releaseActive()
+  await active
+}
+console.log('✅ 取消上传时会立即移除仍在并发闸门排队的分片')
+
+// 多文件共享上传预算也必须响应取消，否则取消中的文件仍会等其他文件释放所有并发槽。
+{
+  const pool = new UploadTransferPool()
+  const releaseActive = []
+  const active = Array.from({ length: preferredUploadConcurrency() }, () => pool.run(
+    () => new Promise((resolve) => { releaseActive.push(resolve) }),
+  ))
+  await new Promise((resolve) => setImmediate(resolve))
+  const controller = new AbortController()
+  let queuedStarted = false
+  const queued = pool.run(async () => { queuedStarted = true }, controller.signal)
+  await new Promise((resolve) => setImmediate(resolve))
+  controller.abort()
+  await assert.rejects(queued, /上传已取消/)
+  for (const release of releaseActive) release()
+  await Promise.all(active)
+  assert.equal(queuedStarted, false, '取消的多盘上传不能在共享并发槽释放后突然启动')
+}
+console.log('✅ 取消多盘组时会立即从共享上传预算队列离队')
+
 assert.equal(adaptiveUploadConcurrency(8 * 1024 * 1024, 2_000, { hardwareConcurrency: 8 }), 4)
 assert.equal(adaptiveUploadConcurrency(8 * 1024 * 1024, 8_000, { hardwareConcurrency: 8 }), 3)
 assert.equal(adaptiveUploadConcurrency(8 * 1024 * 1024, 30_000, { hardwareConcurrency: 8 }), 1)
@@ -89,7 +159,232 @@ assert.equal(adaptiveUploadConcurrency(8 * 1024 * 1024, 8_000, { effectiveType: 
 assert.equal(adaptiveUploadConcurrency(0, 0, { effectiveType: '3g', downlinkMbps: 24, hardwareConcurrency: 8 }), 1)
 assert.equal(adaptiveUploadConcurrency(8 * 1024 * 1024, 2_000, { saveData: true, hardwareConcurrency: 8 }), 1)
 assert.equal(adaptiveUploadConcurrency(8 * 1024 * 1024, 2_000, { deviceMemoryGb: 2, hardwareConcurrency: 8 }), 2)
+assert.equal(preferredUploadConcurrency({ effectiveType: '3g', deviceMemoryGb: 8, hardwareConcurrency: 8 }), 4, '3G 标签不能压住实测上行可升到的路数')
+assert.equal(preferredUploadConcurrency({}), 4, '浏览器隐藏硬件并发数时不能默认当成双核')
+assert.equal(preferredUploadConcurrency({ hardwareConcurrency: 2 }), 2, '明确的双核设备仍保持低并发')
+assert.equal(preferredUploadConcurrency({ deviceMemoryGb: 2 }), 2, '明确的低内存设备仍保持低并发')
+assert.equal(preferredUploadConcurrency({ saveData: true }), 1, '省流量意图继续限制为单路')
 console.log('✅ 首个真实分片会按实测上行速度、设备内存与省流量模式选择 1–4 路')
+
+// 首片达到安全样本后可提前放行第二路；首片完整耗时若低于突发样本，必须修正最终并发目标。
+{
+  let now = 0
+  const gate = new MultipartUploadGate(4, 1, () => now, { effectiveType: '3g', hardwareConcurrency: 8, deviceMemoryGb: 8 })
+  let reportProgress
+  let markUploadComplete
+  let finishFirst
+  const first = gate.run((report, markStarted, markComplete) => {
+    markStarted()
+    reportProgress = report
+    markUploadComplete = markComplete
+    return new Promise((resolve) => { finishFirst = resolve })
+  }, PART_SIZE)
+  await new Promise((resolve) => setImmediate(resolve))
+  now = 200
+  reportProgress(1024 * 1024)
+  assert.equal(gate.snapshot().limit, 1, '样本还没持续 250 ms 时不能相信首段突发')
+  now = 300
+  reportProgress(1024 * 1024)
+  assert.equal(gate.snapshot().calibrated, true, '达到 1 MiB 与最短观测时长后即可测上行')
+  assert.equal(gate.snapshot().limit, 2, '测速首片未完成时最多试探第二路')
+  assert.ok(gate.snapshot().measuredMbps > 20)
+
+  let secondStarted = false
+  let thirdStarted = false
+  let finishSecond
+  const second = gate.run(() => {
+    secondStarted = true
+    return new Promise((resolve) => { finishSecond = resolve })
+  })
+  const third = gate.run(async () => { thirdStarted = true })
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(secondStarted, true, '首片仍在传输时可以启动下一片')
+  assert.equal(thirdStarted, false, '更高并发须等测速首片成功')
+
+  now = 4_300 // 请求体整片 / 4.3 s 约 15.6 Mbps。
+  markUploadComplete()
+  now = 9_000 // 模拟上行已结束后，R2 确认与响应回程又等了 4.7 秒。
+  finishFirst()
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(thirdStarted, true, '首片完整吞吐仍允许三路时应放开第三路')
+  assert.ok(gate.snapshot().measuredMbps >= 15 && gate.snapshot().measuredMbps < 16, '完整首片应覆盖早期突发样本')
+  finishSecond()
+  await Promise.all([first, second, third])
+  assert.equal(gate.snapshot().limit, 3, '最终并发应按完整首片吞吐，而不是缓冲突发选择')
+}
+{
+  let now = 0
+  const gate = new MultipartUploadGate(4, 1, () => now, { hardwareConcurrency: 8, deviceMemoryGb: 8 })
+  let reportProgress
+  let finishFirst
+  const first = gate.run((report) => {
+    reportProgress = report
+    return new Promise((resolve) => { finishFirst = resolve })
+  }, PART_SIZE)
+  await new Promise((resolve) => setImmediate(resolve))
+  now = 2_000 // 初始 1 MiB 样本约 4.2 Mbps，暂定为两路。
+  reportProgress(1024 * 1024)
+  assert.equal(gate.snapshot().limit, 2)
+  now = 30_000 // 完整首片只有约 2.2 Mbps，最终目标必须降回单路。
+  finishFirst()
+  await first
+  assert.equal(gate.snapshot().limit, 1, '即使早期估算目标是两路，也必须用整片吞吐校正')
+  assert.ok(gate.snapshot().measuredMbps < 3)
+}
+{
+  let now = 0
+  const gate = new MultipartUploadGate(4, 1, () => now, { hardwareConcurrency: 8, deviceMemoryGb: 8 })
+  await gate.run(async (reportProgress) => {
+    now = 30_000
+    reportProgress(1024 * 1024)
+    assert.equal(gate.snapshot().limit, 1, '慢上行样本不能提前增加并发')
+  }, PART_SIZE)
+  assert.equal(gate.snapshot().limit, 1)
+}
+{
+  let now = 0
+  const gate = new MultipartUploadGate(4, 1, () => now, { hardwareConcurrency: 8, deviceMemoryGb: 8 })
+  let reportProgress
+  let finishFirst
+  const first = gate.run((report) => {
+    reportProgress = report
+    return new Promise((resolve) => { finishFirst = resolve })
+  }, PART_SIZE)
+  await new Promise((resolve) => setImmediate(resolve))
+  now = 300
+  reportProgress(1024 * 1024)
+  assert.equal(gate.snapshot().limit, 2)
+  await assert.rejects(gate.run(async () => { throw { status: 503 } }))
+  assert.equal(gate.snapshot().limit, 1, '试探并发遇到网关故障后立即收敛')
+  finishFirst()
+  await first
+  assert.equal(gate.snapshot().limit, 1, '测速首片完成不能覆盖刚发生的故障降档')
+}
+console.log('✅ ROM 分片在首片早期样本后保守启动并发，慢速与失败时仍收敛到单路')
+
+// 验证真实分片路径也会把 XHR 进度送入并发闸：首片未完成时，第二片即可启动。
+{
+  const file = new File([new Uint8Array(2 * PART_SIZE + 1)], 'early-upload-sample.iso', { lastModified: 712 })
+  const originalXHR = globalThis.XMLHttpRequest
+  const originalFetch = globalThis.fetch
+  let firstPartFinished = false
+  let overlapObserved = false
+  const startedParts = []
+  globalThis.fetch = async (url, init) => {
+    const target = String(url)
+    if (target.endsWith('?uploads')) return Response.json({ uploadId: 'up-early-sample', marker: '_uploads/early-sample.marker', partNumberInHeader: true })
+    if (target.includes('uploadId=up-early-sample') && init?.method === 'POST') {
+      return Response.json({ ok: true, key: 'roms/ps2/early-upload-sample.iso', size: file.size })
+    }
+    throw new Error(`unexpected request: ${target}`)
+  }
+  globalThis.XMLHttpRequest = class {
+    upload = {}
+    headers = {}
+    status = 0
+    responseText = ''
+    open(_method, _url) {}
+    setRequestHeader(name, value) { this.headers[String(name).toLowerCase()] = String(value) }
+    send(blob) {
+      const part = Number(this.headers['x-8bg-part-number'])
+      startedParts.push(part)
+      const progress = (loaded) => this.upload.onprogress?.({ lengthComputable: true, loaded, total: blob.size })
+      const finish = () => {
+        this.status = 200
+        this.responseText = JSON.stringify({ etag: `early-${part}` })
+        this.onload?.()
+      }
+      if (part === 1) {
+        setTimeout(() => progress(1024 * 1024), 300)
+        setTimeout(() => {
+          firstPartFinished = true
+          progress(blob.size)
+          finish()
+        }, 550)
+        return
+      }
+      if (!firstPartFinished) overlapObserved = true
+      queueMicrotask(() => { progress(blob.size); finish() })
+    }
+    abort() { this.onabort?.() }
+  }
+  try {
+    const result = await uploadRomMultipart(file, 'roms/ps2/early-upload-sample.iso')
+    assert.equal(result.size, file.size)
+  } finally {
+    globalThis.XMLHttpRequest = originalXHR
+    globalThis.fetch = originalFetch
+  }
+  assert.equal(overlapObserved, true, '必须在第一片完成前启动至少一片后续分片')
+  assert.deepEqual([...startedParts].sort((a, b) => a - b), [1, 2, 3])
+}
+console.log('✅ 实际上传链路在首片完成前启动后续分片，并正确合并校验对象大小')
+
+// 两份大文件同传时，共享传输预算不得因每份文件都各自自适应而突破四条活动连接。
+{
+  const files = [
+    new File([new Uint8Array(2 * PART_SIZE + 1)], 'parallel-a.iso', { lastModified: 713 }),
+    new File([new Uint8Array(2 * PART_SIZE + 3)], 'parallel-b.iso', { lastModified: 714 }),
+  ]
+  const originalXHR = globalThis.XMLHttpRequest
+  const originalFetch = globalThis.fetch
+  const sizesByKey = new Map(files.map((file) => [`roms/ps2/${file.name}`, file.size]))
+  const keysByUploadId = new Map()
+  let session = 0
+  let active = 0
+  let maxActive = 0
+  globalThis.fetch = async (url, init) => {
+    const target = new URL(String(url))
+    const key = decodeURIComponent(target.pathname.replace(/^\//, ''))
+    if (target.search === '?uploads') {
+      const uploadId = `up-pool-${++session}`
+      keysByUploadId.set(uploadId, key)
+      return Response.json({ uploadId, marker: `_uploads/${uploadId}.marker`, partNumberInHeader: true })
+    }
+    const uploadId = target.searchParams.get('uploadId')
+    if (uploadId && init?.method === 'POST') {
+      const uploadKey = keysByUploadId.get(uploadId)
+      return Response.json({ ok: true, key: uploadKey, size: sizesByKey.get(uploadKey) })
+    }
+    throw new Error(`unexpected request: ${target}`)
+  }
+  globalThis.XMLHttpRequest = class {
+    upload = {}
+    headers = {}
+    status = 0
+    responseText = ''
+    settled = false
+    open(_method, url) { this.url = url }
+    setRequestHeader(name, value) { this.headers[String(name).toLowerCase()] = String(value) }
+    send(blob) {
+      const part = this.headers['x-8bg-part-number']
+      active++
+      maxActive = Math.max(maxActive, active)
+      setTimeout(() => {
+        this.upload.onprogress?.({ lengthComputable: true, loaded: blob.size, total: blob.size })
+        this.status = 200
+        this.responseText = JSON.stringify({ etag: `pool-${part}` })
+        this.settled = true
+        active--
+        this.onload?.()
+      }, 20)
+    }
+    abort() {
+      if (!this.settled) active--
+      this.onabort?.()
+    }
+  }
+  try {
+    const results = await Promise.all(files.map((file) => uploadRomMultipart(file, `roms/ps2/${file.name}`)))
+    assert.deepEqual(results.map((result) => result.size), files.map((file) => file.size))
+  } finally {
+    globalThis.XMLHttpRequest = originalXHR
+    globalThis.fetch = originalFetch
+  }
+  assert.ok(maxActive > 1, '多文件上传应能利用共享预算并行传输')
+  assert.ok(maxActive <= 4, `多文件总并发不得超过四路（实际 ${maxActive}）`)
+}
+console.log('✅ 多文件 ROM 上传共享四路总预算，避免每个文件分别开满并发')
 
 assert.equal(romPackWorkerConcurrency(100 * 1024 * 1024, { hardwareConcurrency: 8, deviceMemory: 8 }), 4)
 assert.equal(romPackWorkerConcurrency(100 * 1024 * 1024, { hardwareConcurrency: 4, deviceMemory: 4 }), 2)
@@ -124,7 +419,8 @@ console.log('✅ 8BG 失败重试会逐块校验源 ROM；内容变化时绝不�
 // 第一片是真实测速；高速链路直接放开，故障后仍须单路恢复，不能把多条重试一起打回边缘。
 {
   let now = 0
-  const gate = new MultipartUploadGate(4, 1, () => now, { hardwareConcurrency: 8 })
+  const hints = { effectiveType: '3g', hardwareConcurrency: 8, deviceMemoryGb: 8 }
+  const gate = new MultipartUploadGate(preferredUploadConcurrency(hints), 1, () => now, hints)
   assert.equal(gate.snapshot().limit, 1)
   await gate.run(async () => { now += 2_000 }, 8 * 1024 * 1024)
   assert.equal(gate.snapshot().limit, 4)
@@ -161,8 +457,60 @@ xhrResponse = () => ({ status: 200, body: JSON.stringify({ ok: true, key: 'roms/
 await assert.rejects(uploadRom(small, 'roms/nes/demo.nes'), /对象大小不符/)
 console.log('✅ 单发 PUT 的返回大小必须与原文件相同')
 xhrResponse = () => ({ status: 200, body: JSON.stringify({ ok: true, key: 'roms/nes/demo.nes', size: 3 }) })
-assert.equal((await uploadRom(small, 'roms/nes/demo.nes')).size, 3)
+const singlePutProgress = []
+assert.equal((await uploadRom(small, 'roms/nes/demo.nes', (pct) => singlePutProgress.push(pct))).size, 3)
+assert.deepEqual(singlePutProgress, [99, 100], '请求体传完先停在 99%，校验对象后才到 100%')
 console.log('✅ 正常的小文件上传仍可完成')
+
+// 多盘 CHD 低于分片阈值时也要响应同组取消，不能让单发 PUT 在后台继续占上行。
+{
+  const originalXHR = globalThis.XMLHttpRequest
+  let abortCount = 0
+  globalThis.XMLHttpRequest = class {
+    upload = {}
+    open() {}
+    setRequestHeader() {}
+    send() {}
+    abort() { abortCount++; this.onabort?.() }
+  }
+  const controller = new AbortController()
+  try {
+    const pending = uploadRom(small, 'roms/psx/small-disc.chd', undefined, undefined, controller.signal)
+    await new Promise((resolve) => setImmediate(resolve))
+    controller.abort()
+    await assert.rejects(pending, /上传已取消/)
+    assert.equal(abortCount, 1)
+  } finally {
+    globalThis.XMLHttpRequest = originalXHR
+  }
+}
+console.log('✅ 单发小盘上传也会响应多盘组取消')
+
+// 小文件单发 PUT 的静默断线必须结束为可重试错误，不能永远挂在后台上传中。
+{
+  const originalNow = Date.now
+  const originalSetInterval = window.setInterval
+  let now = 100_000
+  let checkStall
+  Date.now = () => now
+  window.setInterval = (fn, ms) => {
+    if (ms === 5_000) checkStall = fn
+    return 12345
+  }
+  xhrNeverCompletes = true
+  try {
+    const pending = uploadRom(new Blob(['stalled']), 'roms/nes/stalled.nes')
+    assert.equal(typeof checkStall, 'function', '单发上传安装停滞看门狗')
+    now += 45_001
+    checkStall()
+    await assert.rejects(pending, /45 秒没有收到上传进度或服务器确认/)
+  } finally {
+    xhrNeverCompletes = false
+    Date.now = originalNow
+    window.setInterval = originalSetInterval
+  }
+}
+console.log('✅ 小文件单发 PUT 45 秒无进展会退出，不会永久挂起')
 
 const uploads = [
   { marker: '_uploads/one.marker', key: 'roms/ps2/one.iso', uploadId: 'up-1', size: 1, name: 'one.iso', at: '2026-09-15' },
@@ -179,6 +527,195 @@ assert.deepEqual(await listOrphanUploads(), uploads)
 assert.equal(seen.length, 2)
 await assert.rejects(abortOrphanUpload(uploads[0]), /abort denied/)
 console.log('✅ 残留列表翻完所有页；清理失败会报错')
+
+// 新 Worker 把分片号放请求头后，同一上传的所有片应命中同一个 CORS 预检缓存项。
+{
+  const file = new File([new Uint8Array(24 * 1024 * 1024 + 1)], 'stable-url.iso', { lastModified: 321 })
+  const partUrls = []
+  const partNumbers = []
+  globalThis.fetch = async (url, init) => {
+    const target = String(url)
+    if (target.endsWith('?uploads')) return Response.json({ uploadId: 'up-header', marker: '_uploads/header.marker', partNumberInHeader: true })
+    if (target.includes('uploadId=up-header') && init?.method === 'POST') {
+      const parts = JSON.parse(init.body).parts
+      assert.deepEqual(parts.map(part => part.partNumber), [1, 2, 3, 4])
+      return Response.json({ ok: true, key: 'roms/ps2/stable-url.iso', size: file.size })
+    }
+    throw new Error(`unexpected request: ${target}`)
+  }
+  xhrResponse = (xhr) => {
+    partUrls.push(new URL(xhr.url).href)
+    partNumbers.push(xhr.headers['x-8bg-part-number'])
+    return { status: 200, body: JSON.stringify({ etag: `header-${xhr.headers['x-8bg-part-number']}` }) }
+  }
+  assert.equal((await uploadRomMultipart(file, 'roms/ps2/stable-url.iso')).size, file.size)
+  assert.equal(new Set(partUrls).size, 1, '所有分片共用 uploadId URL，不再把 partNumber 放入 query')
+  assert.deepEqual(partNumbers.sort(), ['1', '2', '3', '4'])
+}
+console.log('✅ 新 Worker 能力协商后，分片 URL 固定且 partNumber 请求头逐片递增')
+
+// 大文件账本按最多四个已完成分片批量落盘，合并前仍完整保存所有 ETag。
+{
+  const key = 'roms/ps2/batched-ledger.iso'
+  const virtualBlob = (size) => ({
+    size,
+    slice: (start, end) => virtualBlob(Math.max(0, end - start)),
+    arrayBuffer: async () => new ArrayBuffer(0),
+  })
+  const file = {
+    name: 'batched-ledger.iso',
+    lastModified: 54321,
+    type: 'application/octet-stream',
+    size: 8 * PART_SIZE,
+    slice: (start, end) => virtualBlob(Math.max(0, end - start)),
+  }
+  const writesBefore = globalThis.localStorage.writeCount('8bitgo.rom.multipart')
+  globalThis.fetch = async (url, init) => {
+    const target = String(url)
+    if (target.endsWith('?uploads')) return Response.json({ uploadId: 'up-batched-ledger', marker: '_uploads/batched-ledger.marker', partNumberInHeader: true })
+    if (target.includes('uploadId=up-batched-ledger') && init?.method === 'POST') {
+      assert.equal(JSON.parse(init.body).parts.length, 8)
+      return Response.json({ ok: true, key, size: file.size })
+    }
+    throw new Error(`unexpected request: ${target}`)
+  }
+  xhrResponse = (xhr) => ({ status: 200, body: JSON.stringify({ etag: `batched-${xhr.headers['x-8bg-part-number']}` }) })
+  assert.equal((await uploadRomMultipart(file, key)).size, file.size)
+  const writes = globalThis.localStorage.writeCount('8bitgo.rom.multipart') - writesBefore
+  assert.ok(writes <= 6, `8 片上传应批量写账，实际同步重写 ${writes} 次`)
+  assert.equal(listPendingUploads().some((item) => item.key === key), false, '合并完成后不应留下账本')
+}
+console.log('✅ 大文件续传账本每最多四片批量落盘，合并前完整保存并在成功后清理')
+
+// Worker 在上传中途回滚时，旧版会因自定义头的 CORS 预检失败；同片退回原查询参数应能续完。
+{
+  const file = new File([new Uint8Array(24 * 1024 * 1024 + 1)], 'worker-rollback.iso', { lastModified: 654 })
+  const headerAttempts = []
+  const legacyParts = []
+  globalThis.fetch = async (url, init) => {
+    const target = String(url)
+    if (target.endsWith('?uploads')) return Response.json({ uploadId: 'up-rollback', marker: '_uploads/rollback.marker', partNumberInHeader: true })
+    if (target.includes('uploadId=up-rollback') && init?.method === 'POST') {
+      assert.deepEqual(JSON.parse(init.body).parts.map(part => part.partNumber), [1, 2, 3, 4])
+      return Response.json({ ok: true, key: 'roms/ps2/worker-rollback.iso', size: file.size })
+    }
+    throw new Error(`unexpected request: ${target}`)
+  }
+  xhrResponse = (xhr) => {
+    if (xhr.headers['x-8bg-part-number']) {
+      headerAttempts.push(xhr.headers['x-8bg-part-number'])
+      return { error: true }
+    }
+    const partNumber = new URL(xhr.url).searchParams.get('partNumber')
+    legacyParts.push(partNumber)
+    return { status: 200, body: JSON.stringify({ etag: `rollback-${partNumber}` }) }
+  }
+  assert.equal((await uploadRomMultipart(file, 'roms/ps2/worker-rollback.iso')).size, file.size)
+  assert.ok(headerAttempts.length > 0, '必须先尝试能力协商出的请求头协议')
+  assert.deepEqual(legacyParts.sort(), ['1', '2', '3', '4'], '失败分片及后续分片都应改走可兼容的旧协议')
+}
+console.log('✅ Worker 回滚导致请求头预检失败时，会自动以同一分片号退回旧协议')
+
+// 旧 Worker 也可能用 400 文字拒绝请求头协议；这种明确可降级的错误不能被并发闸误当成致命失败。
+{
+  const file = new File([new Uint8Array(PART_SIZE + 1)], 'legacy-400.iso', { lastModified: 6541 })
+  const headerAttempts = []
+  const legacyParts = []
+  globalThis.fetch = async (url, init) => {
+    const target = String(url)
+    if (target.endsWith('?uploads')) return Response.json({ uploadId: 'up-legacy-400', marker: '_uploads/legacy-400.marker', partNumberInHeader: true })
+    if (target.includes('uploadId=up-legacy-400') && init?.method === 'POST') {
+      assert.deepEqual(JSON.parse(init.body).parts.map((part) => part.partNumber), [1, 2])
+      return Response.json({ ok: true, key: 'roms/ps2/legacy-400.iso', size: file.size })
+    }
+    throw new Error(`unexpected request: ${target}`)
+  }
+  xhrResponse = (xhr) => {
+    if (xhr.headers['x-8bg-part-number']) {
+      headerAttempts.push(xhr.headers['x-8bg-part-number'])
+      return { status: 400, body: JSON.stringify({ error: 'partNumber 必须是整数' }) }
+    }
+    legacyParts.push(new URL(xhr.url).searchParams.get('partNumber'))
+    return { status: 200, body: JSON.stringify({ etag: `legacy-400-${legacyParts.at(-1)}` }) }
+  }
+  assert.equal((await uploadRomMultipart(file, 'roms/ps2/legacy-400.iso')).size, file.size)
+  assert.ok(headerAttempts.length > 0, '必须先尝试新协议')
+  assert.deepEqual(legacyParts.sort(), ['1', '2'], '400 协议错误后应成功退回旧协议，不得提前停止队列')
+}
+console.log('✅ Worker 用 400 拒绝新协议时会降级到旧分片号参数')
+
+// 首片遇到致命鉴权错误时，并发闸门里排队的分片不得继续发，避免白传最多 24 MiB。
+{
+  const file = new File([new Uint8Array(40 * 1024 * 1024)], 'expired-token.iso', { lastModified: 6543 })
+  const sentParts = []
+  globalThis.fetch = async (url) => {
+    if (String(url).endsWith('?uploads')) return Response.json({ uploadId: 'up-expired-token', marker: '_uploads/expired-token.marker', partNumberInHeader: true })
+    throw new Error(`unexpected request: ${url}`)
+  }
+  xhrResponse = (xhr) => {
+    sentParts.push(Number(xhr.headers['x-8bg-part-number']))
+    return { status: 403, body: JSON.stringify({ error: 'test credential expired' }) }
+  }
+  await assert.rejects(uploadRomMultipart(file, 'roms/ps2/expired-token.iso'), /test credential expired/)
+  assert.deepEqual(sentParts, [1], '首片 403 后只允许保留首个请求，排队分片不应消耗上行流量')
+  for (const key of ['8bitgo.rom.multipart', '8bitgo.rom.multipart.create-request']) {
+    const records = JSON.parse(globalThis.localStorage.getItem(key) || '{}')
+    delete records['roms/ps2/expired-token.iso']
+    globalThis.localStorage.setItem(key, JSON.stringify(records))
+  }
+}
+console.log('✅ 首个分片遇到鉴权错误时会阻止并发队列继续上传')
+
+// 多盘组一张盘失败后取消同组请求：已确认分片保留续传，挂起的分片不再重试或合并。
+{
+  const key = 'roms/psx/cancel-sibling.iso'
+  const file = new File([new Uint8Array(25 * 1024 * 1024)], 'cancel-sibling.iso', { lastModified: 6544 })
+  const controller = new AbortController()
+  let completes = 0
+  let part1Finished = false
+  globalThis.fetch = async (url, init) => {
+    const target = String(url)
+    if (target.endsWith('?uploads')) return Response.json({ uploadId: 'up-cancel-sibling', marker: '_uploads/cancel-sibling.marker', partNumberInHeader: true })
+    if (target.includes('uploadId=up-cancel-sibling') && init?.method === 'POST') {
+      completes++
+      return Response.json({ ok: true, key, size: file.size })
+    }
+    if (init?.method === 'DELETE') throw new Error('resumable cancellation must retain the session')
+    throw new Error(`unexpected request: ${target}`)
+  }
+  xhrSendOverride = (xhr) => {
+    if (xhr.headers['x-8bg-part-number'] !== '1') return
+    queueMicrotask(() => {
+      xhr.status = 200
+      xhr.responseText = JSON.stringify({ etag: 'cancel-sibling-part-1' })
+      part1Finished = true
+      xhr.onload?.()
+    })
+  }
+  const task = uploadRomMultipart(file, key, undefined, controller.signal)
+  for (let attempt = 0; attempt < 100 && !part1Finished; attempt++) {
+    await new Promise((resolve) => setImmediate(resolve))
+  }
+  assert.equal(part1Finished, true, '首片应在取消前完成')
+  let saved
+  for (let attempt = 0; attempt < 100; attempt++) {
+    await new Promise((resolve) => setImmediate(resolve))
+    window.dispatchEvent({ type: 'pagehide' })
+    saved = listPendingUploads().find((item) => item.key === key)
+    if (saved?.parts.some((part) => part.partNumber === 1)) break
+  }
+  assert.ok(saved?.parts.some((part) => part.partNumber === 1), '取消前完成的盘片分片应进入本地续传账本')
+  controller.abort()
+  await assert.rejects(task, /上传已取消/)
+  const afterAbort = listPendingUploads().find((item) => item.key === key)
+  assert.deepEqual(afterAbort?.parts.map((part) => part.partNumber), [1], '被取消的在途分片不能伪记为完成')
+  assert.equal(completes, 0, '组内取消后不得合并不完整对象')
+  xhrSendOverride = null
+  const records = JSON.parse(globalThis.localStorage.getItem('8bitgo.rom.multipart') || '{}')
+  delete records[key]
+  globalThis.localStorage.setItem('8bitgo.rom.multipart', JSON.stringify(records))
+}
+console.log('✅ 多盘组失败会取消同组在途分片，并保留已完成片供重试续传')
 
 let aborts = 0
 globalThis.fetch = async (url, init) => {
@@ -218,27 +755,207 @@ console.log('✅ 分片合并后大小不符会阻止绑定，也不会重试 co
 }
 console.log('✅ PSP CSO 创建分片会话遇到临时 503 会退避重试并完成上传')
 
-// 两份镜像的文件名、大小、修改时间完全相同，只有内容不同；旧续传条件会把它们拼错。
+// 头 / 中 / 尾样本相同、但已上传分片内部内容不同的镜像也不能复用旧 ETag。
 const bytes = new Uint8Array(25 * 1024 * 1024)
 const firstFile = new File([bytes], 'same.iso', { lastModified: 123 })
-bytes[0] = 1
+bytes[2 * 1024 * 1024] = 1 // 落在首片中，避开原来的头 / 中 / 尾指纹采样点
 const changedFile = new File([bytes], 'same.iso', { lastModified: 123 })
+assert.equal(await fingerprintRomUploadFile(firstFile), await fingerprintRomUploadFile(changedFile), '复现旧稀疏指纹漏掉局部修改的条件')
+const key = 'roms/ps2/collision.iso'
 let creates = 0
+let round = 0
+let failAfterFirstPart = true
+const uploadedParts = [[], []]
 globalThis.fetch = async (url, init) => {
-  if (String(url).endsWith('?uploads')) return Response.json({ uploadId: `up-ident-${++creates}`, marker: `_uploads/ident-${creates}.marker` })
-  if (String(url).includes('uploadId=up-ident-') && init?.method === 'POST') return Response.json({ ok: true, key: 'roms/ps2/collision.iso', size: changedFile.size })
+  const target = String(url)
+  if (target.endsWith('?uploads')) {
+    creates++
+    return Response.json({ uploadId: `up-ident-${creates}`, marker: `_uploads/ident-${creates}.marker`, requestSignature: 'same-metadata-signature', partNumberInHeader: true })
+  }
+  if (target.includes('uploadId=up-ident-1') && init?.method === 'POST') {
+    const parts = JSON.parse(init.body).parts
+    assert.deepEqual(parts.map((part) => part.partNumber), [1, 2, 3, 4])
+    assert.ok(parts.every((part) => !('contentHash' in part)), '本地摘要不能泄漏到 R2 complete 协议')
+    return Response.json({ ok: true, key, size: changedFile.size })
+  }
   throw new Error(`unexpected request: ${url}`)
 }
 xhrResponse = (xhr) => {
-  const number = Number(new URL(xhr.url).searchParams.get('partNumber'))
-  if (creates === 1 && number !== 1) return { status: 0, body: '' }
+  const number = Number(xhr.headers['x-8bg-part-number'])
+  uploadedParts[round].push(number)
+  if (failAfterFirstPart && number !== 1) return { status: 403, body: JSON.stringify({ error: 'test credential expired' }) }
   return { status: 200, body: JSON.stringify({ etag: `etag-${number}` }) }
 }
-await assert.rejects(uploadRomMultipart(firstFile, 'roms/ps2/collision.iso'), /重新选同一个文件/)
-assert.equal(listPendingUploads().length, 1, '第一次失败后应留下可续传的账本')
-await uploadRomMultipart(changedFile, 'roms/ps2/collision.iso')
-assert.equal(creates, 2, '内容不同必须新建上传，不能拿旧分片拼进新 ISO')
-console.log('✅ 同名同大小同时间戳、内容不同的 ISO 不会错误续传')
+await assert.rejects(uploadRomMultipart(firstFile, key), /test credential expired/)
+const saved = listPendingUploads().find((item) => item.key === key)
+assert.equal(saved?.parts.length, 1, '首片成功、后续鉴权失败时应保留已确认片')
+assert.equal(saved?.parts[0].contentHash, await fingerprintRomPart(firstFile.slice(0, PART_SIZE)), '本地账本必须为已上传片保存强摘要')
+round = 1
+failAfterFirstPart = false
+const checkingProgress = []
+await uploadRomMultipart(changedFile, 'roms/ps2/collision.iso', (_pct, stage) => {
+  if (stage?.checkingTotal !== undefined) checkingProgress.push([stage.checkingParts, stage.checkingTotal])
+})
+assert.equal(creates, 1, '相同文件元数据可以安全续用原 R2 multipart 会话')
+assert.equal(uploadedParts[1].filter((part) => part === 1).length, 1, '未命中稀疏样本的已上传片必须重新核验并覆盖')
+assert.deepEqual([...uploadedParts[1]].sort((a, b) => a - b), [1, 2, 3, 4])
+assert.deepEqual(checkingProgress, [[0, 1], [1, 1]], '续传核验应向后台界面报告开始和完成状态')
+assert.equal(listPendingUploads().length, 0, '完成后续传账本应清理')
+console.log('✅ 稀疏指纹相同但分片内容不同的 ISO 会重传差异片，不会静默拼接旧字节')
+
+// 摘要 API 在上传期间临时失败时，R2 已确认的当前分片仍可合并；缺摘要片下次续传会安全重传。
+{
+  const originalFetch = globalThis.fetch
+  const originalXhrResponse = xhrResponse
+  const originalCryptoDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'crypto')
+  const originalCrypto = globalThis.crypto
+  let digestCalls = 0
+  const digestFallbackKey = 'roms/ps2/digest-fallback.iso'
+  const file = new File([new Uint8Array(PART_SIZE + 1)], 'digest-fallback.iso', { lastModified: 456 })
+  Object.defineProperty(globalThis, 'crypto', {
+    configurable: true,
+    value: {
+      getRandomValues: originalCrypto.getRandomValues.bind(originalCrypto),
+      subtle: {
+        digest: (...args) => {
+          digestCalls += 1
+          return digestCalls === 1
+            ? originalCrypto.subtle.digest.apply(originalCrypto.subtle, args)
+            : Promise.reject(new Error('temporary digest failure'))
+        },
+      },
+    },
+  })
+  globalThis.fetch = async (url, init) => {
+    const target = String(url)
+    if (target.endsWith('?uploads')) {
+      return Response.json({ uploadId: 'up-digest-fallback', marker: '_uploads/digest-fallback.marker', partNumberInHeader: true })
+    }
+    if (target.includes('uploadId=up-digest-fallback') && init?.method === 'POST') {
+      const pending = listPendingUploads().find((item) => item.key === digestFallbackKey)
+      assert.equal(pending?.parts.length, 2)
+      assert.ok(pending.parts.every((part) => !('contentHash' in part)), '摘要失败的片必须保留 ETag 但不能标记为可复用')
+      return Response.json({ ok: true, key: digestFallbackKey, size: file.size })
+    }
+    throw new Error(`unexpected request: ${target}`)
+  }
+  xhrResponse = (xhr) => ({ status: 200, body: JSON.stringify({ etag: `digest-${xhr.headers['x-8bg-part-number']}` }) })
+  try {
+    assert.equal((await uploadRomMultipart(file, digestFallbackKey)).size, file.size)
+    assert.ok(digestCalls >= 3, '文件指纹成功后应实际触发分片摘要故障')
+  } finally {
+    globalThis.fetch = originalFetch
+    xhrResponse = originalXhrResponse
+    if (originalCryptoDescriptor) Object.defineProperty(globalThis, 'crypto', originalCryptoDescriptor)
+    else delete globalThis.crypto
+  }
+}
+console.log('✅ 浏览器摘要短暂失败不会丢弃已成功上传的 R2 分片；后续续传只重传未核验片')
+
+// 内容相同的已完成片仍然复用；完整核验不能退化成每次续传都从头上传。
+const verifiedKey = 'roms/ps2/verified-resume.iso'
+globalThis.localStorage.setItem('8bitgo.rom.multipart', JSON.stringify({ [verifiedKey]: {
+  key: verifiedKey,
+  uploadId: 'up-ident-verified',
+  marker: '_uploads/ident-verified.marker',
+  partSize: PART_SIZE,
+  fileName: changedFile.name,
+  fileSize: changedFile.size,
+  lastModified: changedFile.lastModified,
+  fileFingerprint: await fingerprintRomUploadFile(changedFile),
+  requestId: 'abcdef0123456789abcdef0123456789',
+  requestSignature: 'same-metadata-signature',
+  partNumberInHeader: true,
+  contentType: 'application/octet-stream',
+  parts: [{ partNumber: 1, etag: 'verified-part-1', contentHash: await fingerprintRomPart(changedFile.slice(0, PART_SIZE)) }],
+  updatedAt: Date.now(),
+} }))
+const verifiedUploads = []
+globalThis.fetch = async (url, init) => {
+  const target = String(url)
+  if (target.includes('uploadId=up-ident-verified') && init?.method === 'POST') {
+    const parts = JSON.parse(init.body).parts
+    assert.deepEqual(parts.map((part) => part.partNumber), [1, 2, 3, 4])
+    return Response.json({ ok: true, key: verifiedKey, size: changedFile.size })
+  }
+  throw new Error(`unexpected request: ${target}`)
+}
+xhrResponse = (xhr) => {
+  const number = Number(xhr.headers['x-8bg-part-number'])
+  verifiedUploads.push(number)
+  return { status: 200, body: JSON.stringify({ etag: `verified-${number}` }) }
+}
+await uploadRomMultipart(changedFile, verifiedKey)
+assert.deepEqual(verifiedUploads.sort((a, b) => a - b), [2, 3, 4], '核验一致的首片应直接复用，不重复上传')
+console.log('✅ 内容一致的续传分片经强摘要核验后继续复用')
+
+const legacyKey = 'roms/ps2/legacy-resume.iso'
+globalThis.localStorage.setItem('8bitgo.rom.multipart', JSON.stringify({ [legacyKey]: {
+  key: legacyKey,
+  uploadId: 'up-ident-legacy',
+  marker: '_uploads/ident-legacy.marker',
+  partSize: PART_SIZE,
+  fileName: changedFile.name,
+  fileSize: changedFile.size,
+  lastModified: changedFile.lastModified,
+  fileFingerprint: await fingerprintRomUploadFile(changedFile),
+  requestId: '123456789abcdef0123456789abcdef0',
+  requestSignature: 'same-metadata-signature',
+  partNumberInHeader: true,
+  contentType: 'application/octet-stream',
+  parts: [{ partNumber: 1, etag: 'legacy-part-1' }],
+  updatedAt: Date.now(),
+} }))
+const legacyUploads = []
+globalThis.fetch = async (url, init) => {
+  if (String(url).includes('uploadId=up-ident-legacy') && init?.method === 'POST') {
+    return Response.json({ ok: true, key: legacyKey, size: changedFile.size })
+  }
+  throw new Error(`unexpected request: ${url}`)
+}
+xhrResponse = (xhr) => {
+  const number = Number(xhr.headers['x-8bg-part-number'])
+  legacyUploads.push(number)
+  return { status: 200, body: JSON.stringify({ etag: `legacy-${number}` }) }
+}
+await uploadRomMultipart(changedFile, legacyKey)
+assert.deepEqual(legacyUploads.sort((a, b) => a - b), [1, 2, 3, 4], '旧账本没有强摘要时必须重传对应远端分片')
+console.log('✅ 升级前留下的续传账本会安全重传未核验分片')
+
+// 多个大文件账本接近 localStorage 配额时，新上传仍要留下可恢复的最新状态。
+const largeLedger = Object.fromEntries(Array.from({ length: 20 }, (_, index) => {
+  const oldKey = `roms/ps2/old-${index}.iso`
+  return [oldKey, {
+    key: oldKey,
+    uploadId: `old-upload-${index}`,
+    marker: `_uploads/old-${index}.marker`,
+    partSize: PART_SIZE,
+    fileName: `old-${index}.iso`,
+    fileSize: PART_SIZE * 1000,
+    lastModified: index,
+    fileFingerprint: 'a'.repeat(64),
+    requestId: `old-request-${String(index).padStart(16, '0')}`,
+    contentType: 'application/octet-stream',
+    parts: Array.from({ length: 1000 }, (_, part) => ({ partNumber: part + 1, etag: `etag-${part}`, contentHash: 'a'.repeat(32) })),
+    updatedAt: Date.now() - index - 1,
+  }]
+}))
+globalThis.localStorage.setItem('8bitgo.rom.multipart', JSON.stringify(largeLedger))
+const budgetKey = 'roms/ps2/newest.iso'
+const budgetFile = new File([new Uint8Array(25 * 1024 * 1024)], 'newest.iso', { lastModified: 999 })
+globalThis.fetch = async (url) => {
+  if (String(url).endsWith('?uploads')) return Response.json({ uploadId: 'budget-upload', marker: '_uploads/budget.marker' })
+  throw new Error(`unexpected request: ${url}`)
+}
+xhrResponse = (xhr) => Number(xhr.headers['x-8bg-part-number']) === 1
+  ? { status: 200, body: JSON.stringify({ etag: 'budget-part-1' }) }
+  : { status: 403, body: JSON.stringify({ error: 'test credential expired' }) }
+await assert.rejects(uploadRomMultipart(budgetFile, budgetKey), /test credential expired/)
+const boundedLedger = JSON.parse(globalThis.localStorage.getItem('8bitgo.rom.multipart'))
+assert.ok(boundedLedger[budgetKey], '账本裁剪必须优先保留当前最新上传')
+assert.ok(JSON.stringify(boundedLedger).length <= 1_500_000, '账本必须留在约定的 localStorage 字符预算内')
+globalThis.localStorage.setItem('8bitgo.rom.multipart', '{}')
+console.log('✅ 多个大分片账本接近配额时，新上传状态仍可保存且总量有界')
 
 const deleted = []
 globalThis.fetch = async (url, init) => {

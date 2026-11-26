@@ -19,6 +19,7 @@ import {
   rankRomRoutes,
   recordRomRouteFailure,
   recordRomRouteTransfer,
+  romRouteEffectiveRate,
   romRouteHealthSummary,
   romRouteOrigin,
   romRouteRate,
@@ -315,14 +316,15 @@ export async function fetchWithProgress(
       // 失败收尾：掐掉还挂着的响应体（校验失败 / 超上限后不再读），别让它在后台继续占连接。
       // 只中止本看门狗自己的 controller，stalled() 的判定不受影响。
       guard.abort()
-      if (guard.stalled()) error = markRomNetworkFailure(new Error(stallMessage(stallMs)))
-      else if (isNetworkFetchError(error) && NETWORK_FAILURE_TEXT.test(String((error as Error).message))) markRomNetworkFailure(error)
-      if (opts.signal?.aborted || error instanceof RangeError || index === candidates.length - 1) throw error
+      let failure: unknown = error
+      if (guard.stalled()) failure = markRomNetworkFailure(new Error(stallMessage(stallMs)))
+      else if (isNetworkFetchError(failure) && NETWORK_FAILURE_TEXT.test(String((failure as Error).message))) markRomNetworkFailure(failure)
+      if (opts.signal?.aborted || failure instanceof RangeError || index === candidates.length - 1) throw failure
       const host = (value: string) => {
         try { return new URL(value, typeof location === 'undefined' ? 'https://8bitgo.invalid' : location.href).host }
         catch { return value }
       }
-      console.warn(`[download] ${host(candidate)} 下载失败，切换到 ${host(candidates[index + 1])}：`, error)
+      console.warn(`[download] ${host(candidate)} 下载失败，切换到 ${host(candidates[index + 1])}：`, failure)
     } finally {
       guard.stop()
     }
@@ -515,10 +517,13 @@ export interface BlobChunkWarmOptions {
   cache?: RequestCache
   /** 第一片可额外核验格式头；失败时整组临时片作废。 */
   checkPart?: (blob: Blob, index: number) => Promise<void> | void
+  /** 覆盖预热网络停滞时限；仅供回归测试缩短等待。 */
+  stallMs?: number
 }
 
 /** 同一块 CHD 被快速进出 / 多个按钮事件触发时只保留一组热区请求。 */
 const blobChunkWarmTasks = new Map<string, Promise<void>>()
+const blobChunkWarmControllers = new Map<string, AbortController>()
 
 /**
  * 把大文件最先会读到的少量 Range 片提前落进续传仓库。
@@ -538,13 +543,17 @@ export function prewarmBlobChunks(url: string, opts: BlobChunkWarmOptions): Prom
   const existing = blobChunkWarmTasks.get(key)
   if (existing) return existing
 
+  const warmController = new AbortController()
   const task = (async () => {
     const store = opts.resumeStore ?? downloadResumeStore
     let snapshot: DownloadResumeSnapshot | null = null
     try {
-      snapshot = await store.load(key, chunkBytes)
+      const loaded = await withResumeTimeout(store.load(key, chunkBytes), RESUME_LOAD_TIMEOUT_MS)
+      if (loaded === RESUME_TIMED_OUT) return
+      snapshot = loaded
       if (snapshot && snapshot.total !== opts.expectedBytes) {
-        await store.clear(key)
+        const cleared = await withResumeTimeout(store.clear(key), RESUME_CLEAR_TIMEOUT_MS)
+        if (cleared === RESUME_TIMED_OUT) return
         snapshot = null
       }
     } catch {
@@ -560,64 +569,77 @@ export function prewarmBlobChunks(url: string, opts: BlobChunkWarmOptions): Prom
       if (snapshot?.parts.has(index)) continue
       const start = index * chunkBytes
       const end = Math.min(opts.expectedBytes, start + chunkBytes) - 1
-      let response: Response
+      const guard = createStallGuard(warmController.signal, opts.stallMs ?? STALL_MS)
+      guard.touch()
       try {
-        response = await fetcher(url, {
+        const response = await fetcher(url, {
+          signal: guard.signal,
           headers: { Range: `bytes=${start}-${end}` },
           ...(opts.cache ? { cache: opts.cache } : {}),
         })
-      } catch {
-        return
-      }
-      // 不支持 Range 的 CDN 可能已经开始返回整份 CHD；取消正文，绝不能让悬停变成全盘下载。
-      if (!response.ok || response.status !== 206) {
-        await response.body?.cancel().catch(() => {})
-        return
-      }
-      const range = /^bytes\s+(\d+)-(\d+)\/(\d+)$/i.exec(response.headers.get('content-range') ?? '')
-      if (!range || Number(range[1]) !== start || Number(range[2]) !== end || Number(range[3]) !== opts.expectedBytes) {
-        await response.body?.cancel().catch(() => {})
-        return
-      }
-      const declared = response.headers.get('content-length')
-      if (declared !== null && Number(declared) !== end - start + 1) {
-        await response.body?.cancel().catch(() => {})
-        return
-      }
-      if (!response.body) return
-      const reader = response.body.getReader()
-      const pieces: Uint8Array[] = []
-      let received = 0
-      try {
-        for (;;) {
-          const { done, value } = await reader.read()
-          if (done) break
-          if (!value || received + value.byteLength > end - start + 1) throw new Error('热区分片长度异常')
-          pieces.push(value)
-          received += value.byteLength
+        // 不支持 Range 的 CDN 可能已经开始返回整份 CHD；取消正文，绝不能让悬停变成全盘下载。
+        if (!response.ok || response.status !== 206) {
+          await response.body?.cancel().catch(() => {})
+          return
+        }
+        const range = /^bytes\s+(\d+)-(\d+)\/(\d+)$/i.exec(response.headers.get('content-range') ?? '')
+        if (!range || Number(range[1]) !== start || Number(range[2]) !== end || Number(range[3]) !== opts.expectedBytes) {
+          await response.body?.cancel().catch(() => {})
+          return
+        }
+        const declared = response.headers.get('content-length')
+        if (declared !== null && Number(declared) !== end - start + 1) {
+          await response.body?.cancel().catch(() => {})
+          return
+        }
+        if (!response.body) return
+        const reader = response.body.getReader()
+        const pieces: Uint8Array[] = []
+        let received = 0
+        try {
+          for (;;) {
+            const { done, value } = await reader.read()
+            if (done) break
+            if (!value || received + value.byteLength > end - start + 1) throw new Error('热区分片长度异常')
+            guard.touch()
+            pieces.push(value)
+            received += value.byteLength
+          }
+        } catch {
+          await reader.cancel().catch(() => {})
+          return
+        } finally {
+          reader.releaseLock()
+        }
+        // 存盘与格式校验不是网络等待，停止网络看门狗，避免慢存储被错报成线路故障。
+        guard.stop()
+        if (warmController.signal.aborted || received !== end - start + 1) return
+        const part = new Blob(pieces as BlobPart[])
+        try {
+          await opts.checkPart?.(part, index)
+          const saved = await withResumeTimeout(
+            store.put(key, opts.expectedBytes, chunkBytes, index, part),
+            RESUME_PUT_TIMEOUT_MS,
+          )
+          if (saved === false || saved === RESUME_TIMED_OUT) return
+        } catch {
+          // 第一片格式不符时不能留给正式下载拼接；其余失败只是本轮预热无收益。
+          await withResumeTimeout(store.clear(key), RESUME_CLEAR_TIMEOUT_MS).catch(() => {})
+          return
         }
       } catch {
-        await reader.cancel().catch(() => {})
+        // 预热只是加速。停滞、坏响应或读取失败都交给点击后的完整下载处理。
         return
       } finally {
-        reader.releaseLock()
-      }
-      if (received !== end - start + 1) return
-      const part = new Blob(pieces as BlobPart[])
-      try {
-        await opts.checkPart?.(part, index)
-        const saved = await store.put(key, opts.expectedBytes, chunkBytes, index, part)
-        if (saved === false) return
-      } catch {
-        // 第一片格式不符时不能留给正式下载拼接；其余失败只是本轮预热无收益。
-        await store.clear(key).catch(() => {})
-        return
+        guard.stop()
       }
     }
   })().finally(() => {
     if (blobChunkWarmTasks.get(key) === task) blobChunkWarmTasks.delete(key)
+    if (blobChunkWarmControllers.get(key) === warmController) blobChunkWarmControllers.delete(key)
   })
   blobChunkWarmTasks.set(key, task)
+  blobChunkWarmControllers.set(key, warmController)
   return task
 }
 
@@ -756,17 +778,25 @@ function firstRangeSampleBytes(hints: ChunkNetworkHints): number {
 
 const monotonicNow = () => typeof performance !== 'undefined' ? performance.now() : Date.now()
 
-const sleep = (ms: number, signal?: AbortSignal) =>
+export const abortableDelay = (ms: number, signal?: AbortSignal) =>
   new Promise<void>((resolve, reject) => {
-    const id = setTimeout(resolve, ms)
-    signal?.addEventListener(
-      'abort',
-      () => {
-        clearTimeout(id)
-        reject(new DOMException('已取消', 'AbortError'))
-      },
-      { once: true },
-    )
+    if (signal?.aborted) {
+      reject(new DOMException('已取消', 'AbortError'))
+      return
+    }
+
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const finish = (error?: DOMException) => {
+      if (timer !== undefined) clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+      if (error) reject(error)
+      else resolve()
+    }
+    const onAbort = () => finish(new DOMException('已取消', 'AbortError'))
+    timer = setTimeout(() => finish(), ms)
+    signal?.addEventListener('abort', onAbort, { once: true })
+    // 防止调用方在上面的初检与监听注册之间取消。
+    if (signal?.aborted) onAbort()
   })
 
 const isAbort = (e: unknown) => e instanceof DOMException && e.name === 'AbortError'
@@ -796,6 +826,8 @@ const isAbort = (e: unknown) => e instanceof DOMException && e.name === 'AbortEr
  * 有些 CDN 对 HEAD 回 200 且带 Accept-Ranges，真发 Range 时却整份吐出来。
  */
 export async function fetchBlobWithProgress(url: string, opts: BlobFetchOptions = {}): Promise<Blob> {
+  // 玩家已点击开局：停止同一内容键上仍未完成的悬停预读，避免和正式 Range 请求重复占网。
+  if (opts.resumeKey) blobChunkWarmControllers.get(opts.resumeKey)?.abort()
   const stallMs = opts.stallMs ?? STALL_MS
   const retries = opts.retries ?? CHUNK_RETRIES
   let highWater = 0
@@ -892,7 +924,7 @@ export async function fetchBlobWithProgress(url: string, opts: BlobFetchOptions 
       continue
     }
     diagLog('download', 'warn', `整包第 ${attempt + 1} 次${guard.stalled() ? '卡住' : '失败'}，重试`, currentUrl)
-    await sleep(500 * 2 ** attempt, opts.signal)
+    await abortableDelay(500 * 2 ** attempt, opts.signal)
   }
 }
 
@@ -1007,14 +1039,21 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
   }
 
   /** 慢线路才请求另一域的同一 ROM 对齐首片；若对方没有快 15%，继续当前流避免盲切更差线路。 */
-  const measureAlternateRomRange = async (candidateUrl: string, expectedTotal: number): Promise<number | null> => {
+  const measureAlternateRomRange = async (
+    candidateUrl: string,
+    expectedTotal: number,
+    cancelSignal?: AbortSignal,
+  ): Promise<number | null> => {
     const sampleBytes = Math.min(ALTERNATE_ROUTE_SAMPLE_BYTES, chunkBytes, expectedTotal)
     if (!candidateUrl || sampleBytes <= 0) return null
     const candidateEnd = Math.min(chunkBytes, expectedTotal) - 1
     const controller = new AbortController()
-    const abortFromGuard = () => controller.abort()
-    if (guard.signal.aborted) controller.abort()
-    else guard.signal.addEventListener('abort', abortFromGuard, { once: true })
+    const abortFromParent = () => controller.abort()
+    if (guard.signal.aborted || cancelSignal?.aborted) controller.abort()
+    else {
+      guard.signal.addEventListener('abort', abortFromParent, { once: true })
+      cancelSignal?.addEventListener('abort', abortFromParent, { once: true })
+    }
     let timedOut = false
     const timer = setTimeout(() => {
       timedOut = true
@@ -1056,7 +1095,8 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
       return null
     } finally {
       clearTimeout(timer)
-      guard.signal.removeEventListener('abort', abortFromGuard)
+      guard.signal.removeEventListener('abort', abortFromParent)
+      cancelSignal?.removeEventListener('abort', abortFromParent)
       await reader?.cancel().catch(() => {})
       try { reader?.releaseLock() } catch { /* 已由浏览器释放 */ }
     }
@@ -1099,6 +1139,8 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
   let completed = 0
   let sampleBytes = 0
   let sampleElapsedMs = 0
+  /** 首片完整校准后的并发；用它收回早期测速过于乐观时已经放出的多余预取。 */
+  let calibratedConcurrency = 0
   const networkHints = opts.networkHints ?? browserChunkNetworkHints()
   const requestedMax = Math.trunc(opts.maxConcurrency ?? (opts.fetchImpl ? 1 : MAX_CHUNK_CONCURRENCY))
   const hardMax = Number.isFinite(requestedMax) ? Math.max(1, Math.min(
@@ -1118,6 +1160,13 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
   const routeLoad = new Map<string, number>()
   const loadRoute = (route: string, delta: number) =>
     routeLoad.set(route, Math.max(0, (routeLoad.get(route) ?? 0) + delta))
+  /** 响应头对冲改了实际来源后，分片占用量也要转到获胜线路。 */
+  const moveRouteLoad = (from: string, to: string): string => {
+    if (from === to) return from
+    loadRoute(from, -1)
+    loadRoute(to, 1)
+    return to
+  }
   /** 本局最近几次「发出请求 → 响应头到达」的耗时 */
   const headerSamples: number[] = []
   const medianHeaderMs = () => {
@@ -1163,9 +1212,11 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
     const healthy = usable.filter((route) => !isRomRouteOpen(route))
     const choices = healthy.length ? healthy : usable
     if (!choices.length) return avoid || url
-    const rates = choices.map((route) => romRouteRate(route))
-    const known = rates.filter((rate): rate is number => Boolean(rate))
+    const observed = choices.map((route) => romRouteRate(route))
+    const known = observed.filter((rate): rate is number => Boolean(rate))
     const top = known.length ? Math.max(...known) : 1
+    // rankRomRoutes 已按近期失败折扣排序；负载分摊也必须用同一有效吞吐，否则稍快但常失败的线路会反超。
+    const rates = choices.map((route) => romRouteEffectiveRate(route, top))
     let chosen = choices[0]
     let chosenScore = -1
     choices.forEach((route, order) => {
@@ -1208,7 +1259,15 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
     }
     const backup = hedge && canHedgeRoutes ? pickRoute(route) : ''
     if (!backup || backup === route) {
-      return request(route, signal).then((res) => answered(res, route), (error) => {
+      return request(route, signal).then((res) => {
+        try {
+          validateResponse(res, opts.check)
+        } catch (error) {
+          if (!signal.aborted) noteRouteFailure(route, error)
+          throw error
+        }
+        return answered(res, route)
+      }, (error) => {
         if (!signal.aborted) noteRouteFailure(route, error)
         throw error
       })
@@ -1217,26 +1276,60 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
       const lanes: Array<{ route: string; controller: AbortController; failed: boolean; error?: unknown }> = []
       let settled = false
       let timer: ReturnType<typeof setTimeout> | undefined
+      let backupLoadReserved = false
+      const releaseBackupLoad = () => {
+        if (!backupLoadReserved) return
+        backupLoadReserved = false
+        loadRoute(backup, -1)
+      }
       // 不在 resolve 时摘掉：调用方之后中止（对冲赢了 / 整局失败）时，正在读正文的那一路也要跟着停
       const onAbort = () => {
         clearTimeout(timer)
         for (const lane of lanes) lane.controller.abort()
+        releaseBackupLoad()
         if (!settled) {
           settled = true
           reject(signal.reason ?? new DOMException('已取消', 'AbortError'))
         }
       }
       const launch = (target: string) => {
+        // 对冲线路在等待响应头时也占用一条真实连接，不能让其它分片误把它当空闲线路。
+        if (target === backup && !backupLoadReserved) {
+          backupLoadReserved = true
+          loadRoute(target, 1)
+        }
         const lane: (typeof lanes)[number] = { route: target, controller: new AbortController(), failed: false }
         lanes.push(lane)
         request(target, lane.controller.signal).then((res) => {
           if (settled) {
             void res.body?.cancel().catch(() => {})
+            if (target === backup) releaseBackupLoad()
+            return
+          }
+          // 快速 404、5xx 或 HTML 错误页不能抢赢仍在等待的线路；先验证响应再决定是否中止对端。
+          try {
+            validateResponse(res, opts.check)
+          } catch (error) {
+            lane.failed = true
+            lane.error = error
+            if (target === backup) releaseBackupLoad()
+            if (!lane.controller.signal.aborted) noteRouteFailure(target, error)
+            if (lanes.length < 2) {
+              clearTimeout(timer)
+              launch(backup)
+            } else if (lanes.every((item) => item.failed)) {
+              settled = true
+              clearTimeout(timer)
+              releaseBackupLoad()
+              reject(lanes.find((item) => item.error !== undefined)?.error ?? error)
+            }
             return
           }
           settled = true
           clearTimeout(timer)
           for (const other of lanes) if (other !== lane) other.controller.abort()
+          // 调用方会把原线路占位马上迁到获胜线路，这里先去掉对冲请求的临时占位。
+          releaseBackupLoad()
           const answer = answered(res, target)
           if (target !== route) {
             // 原线路过了对冲延时还没回响应头，另一条先回：记一次失速，后面的片少分给它（连续两次就熔断）
@@ -1247,6 +1340,7 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
         }, (error) => {
           lane.failed = true
           lane.error = error
+          if (target === backup) releaseBackupLoad()
           if (settled) return
           if (!lane.controller.signal.aborted) noteRouteFailure(target, error)
           if (lanes.length < 2) {
@@ -1388,6 +1482,7 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
     for (let attempt = 0; ; attempt++) {
       if (parts[index]) return
       const route = pickRoute(avoidRoute)
+      let reservedRoute = route
       const controller = new AbortController()
       const abortFromGuard = () => controller.abort()
       if (guard.signal.aborted) controller.abort()
@@ -1395,7 +1490,7 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
       activeControllers.set(index, controller)
       const running = { route, startedAt: monotonicNow(), headersAt: 0 }
       runningParts.set(index, running)
-      loadRoute(route, 1)
+      loadRoute(reservedRoute, 1)
       try {
         guard.touch()
         const answer = await fetchRange(
@@ -1405,6 +1500,7 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
           controller.signal,
         )
         const res = answer.res
+        reservedRoute = moveRouteLoad(reservedRoute, answer.route)
         running.route = answer.route
         running.headersAt = answer.headersAt
         validateResponse(res, opts.check)
@@ -1464,9 +1560,9 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
         // 退避：0.5s / 1s / 2s（网络层失败最多到 8s）。切网络那一下往往要一两秒才恢复；
         // 有另一条线路可换时只稍等一下 —— 坏的多半是那条线路，不是这台设备的网络
         const switching = routePool.length > 1 && pickRoute(avoidRoute) !== avoidRoute
-        await sleep(switching ? 200 : 500 * 2 ** attempt, opts.signal)
+        await abortableDelay(switching ? 200 : 500 * 2 ** attempt, opts.signal)
       } finally {
-        loadRoute(route, -1)
+        loadRoute(reservedRoute, -1)
         guard.signal.removeEventListener('abort', abortFromGuard)
         if (activeControllers.get(index) === controller) activeControllers.delete(index)
         if (runningParts.get(index) === running) runningParts.delete(index)
@@ -1536,15 +1632,23 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
     for (let attempt = 0; ; attempt++) {
       let firstRoute = failedFirstRoute ? pickRoute(failedFirstRoute) : url
       let firstHeadersAt = 0
+      const firstRangeController = new AbortController()
+      const abortFirstRangeFromGuard = () => firstRangeController.abort()
+      if (guard.signal.aborted) firstRangeController.abort()
+      else guard.signal.addEventListener('abort', abortFirstRangeFromGuard, { once: true })
+      let firstPartRead = false
+      let fasterAlternateError: SlowRomRouteError | null = null
+      const alternateProbeController = new AbortController()
       // 首片也占线路：提前分片按负载分摊时才会落到别的线路上
-      const loadedRoute = firstRoute
-      loadRoute(loadedRoute, 1)
+      let reservedRoute = firstRoute
+      loadRoute(reservedRoute, 1)
       try {
         guard.touch()
         const answer = await fetchRange(
-          firstRoute, 0, chunkBytes - 1, attempt > 0 ? 'reload' : (opts.cache ?? 'default'), guard.signal,
+          firstRoute, 0, chunkBytes - 1, attempt > 0 ? 'reload' : (opts.cache ?? 'default'), firstRangeController.signal,
         )
         const first = answer.res
+        reservedRoute = moveRouteLoad(reservedRoute, answer.route)
         firstRoute = answer.route
         firstHeadersAt = answer.headersAt
         /*
@@ -1592,11 +1696,17 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
             if (alternateExists && firstTotal >= SLOW_ROUTE_MIN_FILE_BYTES && !conserveTraffic) {
               diagLog('download', 'info', `ROM 首段 ${sampleBytes} 字节 / ${sampleElapsedMs.toFixed(0)}ms（${sampledMbps.toFixed(1)} Mbps，不含握手与首字节）：`, firstRoute)
               if (sampledMbps < SLOW_ROUTE_MIN_MBPS) {
-                const alternateMbps = await measureAlternateRomRange(alternateRoute, firstTotal)
-                if (alternateMbps !== null && alternateMbps > sampledMbps * 1.15) {
-                  throw new SlowRomRouteError(sampledMbps, sampleElapsedMs, alternateMbps, alternateRoute)
-                }
-                diagLog('download', 'info', `备用 ROM 线路没有明显更快（${alternateMbps?.toFixed(1) ?? '未测出'} Mbps），继续当前线路：`, firstRoute)
+                // 备用测速与当前首片并行；不能在 drain 的进度回调里等待，否则主流也会停读。
+                void measureAlternateRomRange(alternateRoute, firstTotal, alternateProbeController.signal).then((alternateMbps) => {
+                  if (alternateMbps !== null && alternateMbps > sampledMbps * 1.15) {
+                    if (!firstPartRead) {
+                      fasterAlternateError = new SlowRomRouteError(sampledMbps, sampleElapsedMs, alternateMbps, alternateRoute)
+                      firstRangeController.abort()
+                    }
+                    return
+                  }
+                  diagLog('download', 'info', `备用 ROM 线路没有明显更快（${alternateMbps?.toFixed(1) ?? '未测出'} Mbps），继续当前线路：`, firstRoute)
+                }).catch(() => {})
               }
             }
             const earlyConcurrency = Math.min(
@@ -1612,12 +1722,25 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
           }
         }
         const firstPart = await takePart(first, firstEnd + 1, onFirstLoaded)
-        if (!sampled) {
-          sampleBytes = firstPart.size
-          sampleElapsedMs = Math.max(1, monotonicNow() - sampleStartedAt)
+        firstPartRead = true
+        if (fasterAlternateError) throw fasterAlternateError
+        // 首片已完整到手时不再等待未完成的备用测速，让后续下载继续。
+        alternateProbeController.abort()
+        // 早期样本只用来提前预取；正式并发与线路记分一律按首个完整分片校准。
+        // 否则慢启动后迅速提速时，旧的 256KB 低速样本会让整局始终串行下载。
+        sampleBytes = firstPart.size
+        sampleElapsedMs = Math.max(1, monotonicNow() - sampleStartedAt)
+        noteTransfer(firstRoute, sampleBytes, sampleElapsedMs)
+        calibratedConcurrency = Math.min(
+          hardMax,
+          adaptiveChunkConcurrency(sampleBytes, sampleElapsedMs, networkHints),
+          Math.ceil(firstTotal / chunkBytes),
+        )
+        // 早期样本只负责抢跑；完整分片证明链路较慢时，立刻停掉超出正式并发的预取。
+        // 被取消的早期任务会由正式 worker 按新并发重新请求，不把半片写进续传库。
+        for (const [index] of earlyTasks) {
+          if (index >= calibratedConcurrency && !parts[index]) activeControllers.get(index)?.abort()
         }
-        // 整片 8MB 才是像样的吞吐样本（256KB 采样只用来尽早定并发）
-        noteTransfer(firstRoute, firstPart.size, monotonicNow() - sampleStartedAt)
         firstRangeInFlight = 0
         parts[0] = firstPart
         // 提前分片可能先于首片下完，completed 里已经有它们
@@ -1627,6 +1750,13 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
         if (firstTotal > chunkBytes) await queuePartSave(total, 0, firstPart)
         break
       } catch (error) {
+        if (fasterAlternateError) {
+          // 首片测速证实切线更快时，中止首片旁路并等它们退出，避免旧线路的写盘晚于新一轮续传读取。
+          abortActive()
+          await Promise.all(earlyTasks.values())
+          await flushPartSaves()
+          throw fasterAlternateError
+        }
         // 卡死会在外层换一只新的 AbortController；这里不能拿已 abort 的 signal 空转。
         if (error instanceof SlowRomRouteError) throw error
         if (guard.stalled()) throw error
@@ -1637,14 +1767,17 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
         if (routePool.length > 1) failedFirstRoute = firstRoute
         if (attempt >= (isNetworkFetchError(error) ? networkRetries : retries)) throw error
         diagLog('download', 'warn', `首片第 ${attempt + 1} 次失败，重试：`, error, firstRoute)
-        await sleep(500 * 2 ** attempt, opts.signal)
+        await abortableDelay(500 * 2 ** attempt, opts.signal)
       } finally {
-        loadRoute(loadedRoute, -1)
+        alternateProbeController.abort()
+        firstRangeController.abort()
+        guard.signal.removeEventListener('abort', abortFirstRangeFromGuard)
+        loadRoute(reservedRoute, -1)
       }
     }
   }
 
-  const concurrency = Math.min(
+  const concurrency = calibratedConcurrency || Math.min(
     hardMax,
     adaptiveChunkConcurrency(sampleBytes, sampleElapsedMs, networkHints),
   )
@@ -1755,7 +1888,7 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
       const straggler = pickStraggler()
       if (!straggler) {
         try {
-          await sleep(tailPollMs, guard.signal)
+          await abortableDelay(tailPollMs, guard.signal)
         } catch {
           return
         }

@@ -4,10 +4,10 @@
  * ## 为什么存在
  *
  * 后台传 100MB 的游戏时，报的错是「网络错误：无法连接 Worker（检查地址与 CORS）」——
- * 但 Worker 是好的。真实原因是 **Cloudflare 的请求体上限由边缘节点执行**
- * （Free / Pro 100 MB，Business 200 MB，Enterprise 500 MB），超了直接 reset 连接，
- * 浏览器拿不到 413，XHR 只会触发 onerror。Worker 代码一行都没运行 ——
- * 失败时 `npx wrangler tail` 里连一条日志都没有，正是这个原因的指纹。
+ * 但 Worker 是好的。原因可能是 **Cloudflare 的请求体上限在 Worker 前按站点套餐执行**，
+ * 也可能是上行连接被中间网络重置；这两种情况都可能没有 Worker 日志。Cloudflare 当前文档列出
+ * Free / Pro 100 MB、Business 200 MB、Enterprise 可自助调至 5 GB，超限响应为 413；
+ * 不能把所有无响应 / `onerror` 都断言成超限。分片上传把单请求限制在 8 MiB，也让失败只需重传一片。
  *
  * 另一半原因是单发 PUT 本身太脆：国内上行几百 KB/s ~ 几 MB/s，100MB 要占用一条连接好几分钟，
  * 中间任何一次 TCP reset / Wi-Fi 切换 / 代理超时，整个 100MB 从 0 重来。这解释了「有的时候」。
@@ -23,13 +23,12 @@
  *
  * ## 续传的前提：文件身份必须对得上
  *
- * 恢复前校验 文件名 + 字节数 + lastModified + 分片大小 + 内容指纹，五个全中才接着传。
- * 少了这道校验，换了个文件接着传会拼出一个**损坏但看起来正常**的对象 ——
- * 大小对、etag 有、下载下来解压报错，而且完全静默。
+ * 恢复时先用文件名、字节数、lastModified 和分片大小找回候选会话，再逐片核对完整分片摘要。
+ * 只凭头 / 中 / 尾样本无法证明中间字节相同；漏掉逐片核验会把两版镜像静默拼成损坏对象。
  */
 import { encodeKey, explainRomStatus, getRomApi, getRomToken, guessUploadType, romUrlForKey } from './roms'
 import type { UploadProgress, UploadResult } from './roms'
-import { fingerprintRomUploadFile } from './romFingerprint'
+import { fingerprintRomPart, fingerprintRomUploadFile } from './romFingerprint'
 
 /**
  * 一片 8MB。R2 的约束是「除最后一片外所有片必须等大，且不小于 5MB，最多 10000 片」，
@@ -42,6 +41,10 @@ export const PART_SIZE = 8 * 1024 * 1024
  */
 const INITIAL_CONCURRENCY = 1
 const MAX_CONCURRENCY = 4
+/** 首片传到 1 MiB 且至少观测 250 ms 后才试探性放开第二路，避免把浏览器缓冲突发当成真实上行。 */
+const EARLY_SAMPLE_BYTES = 1024 * 1024
+const EARLY_SAMPLE_MIN_MS = 250
+const EARLY_SAMPLE_MAX_CONCURRENCY = 2
 /** 单片重试次数（含首次）。连接级重置需要给浏览器足够时间重建 HTTP/2 会话。 */
 const ATTEMPTS = 5
 const RECOVERY_SUCCESS_PARTS = 4
@@ -52,6 +55,11 @@ const CREATE_REQUEST_STORE_KEY = `${STORE_KEY}.create-request`
 /** 一周没动过的记录直接丢：那个 uploadId 大概率早就被 R2 清了，留着只会误导 */
 const STORE_TTL = 7 * 24 * 60 * 60 * 1000
 const STORE_MAX = 20
+/** 留空间给站点其它状态；多个大文件的分片账本不能把单个 localStorage 配额吃满后整笔写失败。 */
+const STORE_MAX_CHARS = 1_500_000
+/** 大文件每片都同步序列化整份续传账本会形成平方级主线程开销；短批次最多丢四片账本，远端可安全覆写重传。 */
+const PART_STATE_SAVE_INTERVAL_MS = 1_000
+const PART_STATE_SAVE_MAX_DIRTY_PARTS = 4
 
 export interface PendingUpload {
   /** 最终对象 key */
@@ -63,14 +71,17 @@ export interface PendingUpload {
   fileName: string
   fileSize: number
   lastModified: number
-  /** 取头、中、尾各 64 KiB 的 SHA-256；旧账本没指纹时不允许续传。 */
+  /** 取头、中、尾各 64 KiB 的 SHA-256，用于找回同一会话；是否复用远端片另由完整分片摘要决定。 */
   fileFingerprint: string
   /** Worker 创建会话的幂等 ID；响应丢失后可用它取回同一 uploadId。 */
   requestId?: string
   /** 与创建参数绑定的签名；完成响应不确定时只认同一代对象。 */
   requestSignature?: string
+  /** Worker 明确支持后，把分片号放请求头，所有分片共用一个 URL 以复用浏览器 CORS 预检缓存。 */
+  partNumberInHeader?: boolean
   contentType?: string
-  parts: { partNumber: number; etag: string }[]
+  /** 只有浏览器已核对本地内容后才允许续传复用；旧账本缺摘要时对应分片会安全重传。 */
+  parts: { partNumber: number; etag: string; contentHash?: string }[]
   updatedAt: number
 }
 
@@ -103,8 +114,56 @@ class UploadHttpError extends Error {
 /** complete 的 200 响应无法确认结果；这时不能盲目重试已经可能完成的合并。 */
 class CompletionUncertainError extends Error {}
 
+/** 同一批次的其他分片已失败；排队中的分片应退出，不要再额外消耗上行流量。 */
+class MultipartStoppedAfterSiblingFailure extends Error {}
+
+/** 组内另一张盘失败或调用方取消；有强摘要账本时保留已确认分片，否则安全清理会话。 */
+class MultipartUploadAborted extends Error {
+  constructor() {
+    super('上传已取消')
+    this.name = 'AbortError'
+  }
+}
+
 /** 这个 Worker 还没部署分片接口（老版本）。roms.ts 收到它会退回单发 PUT */
 export class MultipartUnsupportedError extends Error {}
+
+interface UploadWaiter {
+  onAbort?: () => void
+  resolve: () => void
+}
+
+function waitForUploadSlot(
+  waiters: UploadWaiter[],
+  signal: AbortSignal | undefined,
+  claim: () => void,
+): Promise<void> {
+  if (signal?.aborted) return Promise.reject(new MultipartUploadAborted())
+  return new Promise((resolve, reject) => {
+    const waiter: UploadWaiter = {
+      resolve: () => {
+        if (waiter.onAbort) signal?.removeEventListener('abort', waiter.onAbort)
+        claim()
+        resolve()
+      },
+    }
+    if (signal) {
+      waiter.onAbort = () => {
+        const index = waiters.indexOf(waiter)
+        if (index >= 0) waiters.splice(index, 1)
+        if (waiter.onAbort) signal.removeEventListener('abort', waiter.onAbort)
+        reject(new MultipartUploadAborted())
+      }
+      signal.addEventListener('abort', waiter.onAbort, { once: true })
+      // 防止信号恰好在监听器安装前取消，导致请求永远留在队列里。
+      if (signal.aborted) {
+        waiter.onAbort()
+        return
+      }
+    }
+    waiters.push(waiter)
+  })
+}
 
 /**
  * 所有分片和重试共用一个并发闸。一次 HTTP/2 连接级错误会同时打掉多个 XHR；如果每个 XHR
@@ -119,7 +178,12 @@ export class MultipartUploadGate {
   private calibrated = false
   private calibratedTarget = 1
   private measuredMbps = 0
-  private readonly waiters: Array<() => void> = []
+  private runSequence = 0
+  private calibrationRunId: number | null = null
+  private calibrationStartedAt: number | null = null
+  private calibrationProgressBytes = 0
+  private provisionalTarget = false
+  private readonly waiters: UploadWaiter[] = []
   private readonly now: () => number
   private readonly hints: UploadNetworkHints
 
@@ -135,19 +199,17 @@ export class MultipartUploadGate {
     this.hints = hints
   }
 
-  private acquire(): Promise<void> {
+  private acquire(signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) return Promise.reject(new MultipartUploadAborted())
     if (this.active < this.limit) {
       this.active++
       return Promise.resolve()
     }
-    return new Promise((resolve) => this.waiters.push(() => {
-      this.active++
-      resolve()
-    }))
+    return waitForUploadSlot(this.waiters, signal, () => { this.active++ })
   }
 
   private drain() {
-    while (this.active < this.limit && this.waiters.length) this.waiters.shift()?.()
+    while (this.active < this.limit && this.waiters.length) this.waiters.shift()?.resolve()
   }
 
   private transportFailed(error: unknown) {
@@ -157,27 +219,90 @@ export class MultipartUploadGate {
     return status === 0 || status === 429 || status === 502 || status === 503 || status === 504
   }
 
-  async run<T>(task: () => Promise<T>, sampleBytes = 0): Promise<T> {
-    await this.acquire()
-    const startedAt = this.now()
+  private calibrate(sampleBytes: number, elapsedMs: number, provisional: boolean) {
+    // 早期进度样本只负责试探第二路；首片完整成功后用整片耗时修正，避免把浏览器发送缓冲突发当成真实上行。
+    const refiningProvisionalSample = this.calibrated && this.provisionalTarget && !provisional
+    if ((this.calibrated && !refiningProvisionalSample) || sampleBytes <= 0 || elapsedMs <= 0) return
+    this.measuredMbps = uploadMbps(sampleBytes, elapsedMs)
+    this.calibratedTarget = Math.min(
+      this.preferred,
+      adaptiveUploadConcurrency(sampleBytes, elapsedMs, this.hints),
+    )
+    this.limit = provisional
+      ? Math.min(this.calibratedTarget, EARLY_SAMPLE_MAX_CONCURRENCY)
+      : this.calibratedTarget
+    // 即使早期样本算出的目标本身只有两路，也必须等首片完整结束后校正这个暂定目标。
+    this.provisionalTarget = provisional
+    this.calibrated = true
+    this.successStreak = 0
+    this.drain()
+  }
+
+  private observeProgress(runId: number, bytes: number) {
+    if (this.calibrated || runId !== this.calibrationRunId || this.calibrationStartedAt === null) return
+    const loaded = Number.isFinite(bytes) ? Math.max(0, Math.floor(bytes)) : 0
+    if (loaded < this.calibrationProgressBytes) return
+    this.calibrationProgressBytes = loaded
+    if (loaded < EARLY_SAMPLE_BYTES) return
+    const elapsedMs = this.now() - this.calibrationStartedAt
+    if (elapsedMs < EARLY_SAMPLE_MIN_MS) return
+    this.calibrate(loaded, elapsedMs, true)
+  }
+
+  async run<T>(task: (
+    reportProgress: (bytes: number) => void,
+    markStarted: () => void,
+    markUploadComplete: () => void,
+  ) => Promise<T>, sampleBytes = 0, onErrorBeforeDrain?: (error: unknown) => void, signal?: AbortSignal): Promise<T> {
+    await this.acquire(signal)
+    const runId = ++this.runSequence
+    let startedAt = this.now()
+    let uploadCompletedAt: number | null = null
+    if (!this.calibrated && sampleBytes > 0 && this.calibrationRunId === null) {
+      this.calibrationRunId = runId
+      this.calibrationStartedAt = startedAt
+    }
+    const markStarted = () => {
+      // 多文件共用传输预算时，闸门可能先排队；计时要从真正发送请求体开始，不能把排队时间算成慢网。
+      startedAt = this.now()
+      if (!this.calibrated && runId === this.calibrationRunId) {
+        this.calibrationStartedAt = startedAt
+        this.calibrationProgressBytes = 0
+      }
+    }
+    const markUploadComplete = () => { uploadCompletedAt ??= this.now() }
     try {
-      const value = await task()
+      const value = await task((bytes) => this.observeProgress(runId, bytes), markStarted, markUploadComplete)
       if (!this.calibrated && sampleBytes > 0) {
-        const elapsedMs = Math.max(1, this.now() - startedAt)
-        this.measuredMbps = uploadMbps(sampleBytes, elapsedMs)
-        this.calibratedTarget = Math.min(
-          this.preferred,
-          adaptiveUploadConcurrency(sampleBytes, elapsedMs, this.hints),
-        )
-        this.limit = this.calibratedTarget
-        this.calibrated = true
-        this.successStreak = 0
+        this.calibrate(sampleBytes, Math.max(1, (uploadCompletedAt ?? this.now()) - startedAt), false)
+      } else if (this.provisionalTarget) {
+        // 早期样本只放行第二路；首片完整成功后按整片吞吐校正目标，再放开其余并发。
+        if (runId === this.calibrationRunId) {
+          this.calibrate(sampleBytes, Math.max(1, (uploadCompletedAt ?? this.now()) - startedAt), false)
+          this.provisionalTarget = false
+          this.limit = this.calibratedTarget
+          this.drain()
+        }
       } else if (this.limit < (this.calibrated ? this.calibratedTarget : this.preferred) && ++this.successStreak >= RECOVERY_SUCCESS_PARTS) {
         this.limit++
         this.successStreak = 0
+        this.drain()
       }
       return value
     } catch (error) {
+      // 让调用方先记录致命失败，再在 finally 里唤醒排队任务；否则下一片可能在错误回调前已经发出。
+      try { onErrorBeforeDrain?.(error) } catch { /* 错误观测不能覆盖真正的上传失败 */ }
+      if (this.provisionalTarget) {
+        // 首片测速期间任一请求失败，都撤回试探并发；重试后按既有四片成功规则恢复。
+        this.provisionalTarget = false
+        this.limit = 1
+        this.successStreak = 0
+      }
+      if (!this.calibrated && runId === this.calibrationRunId) {
+        this.calibrationRunId = null
+        this.calibrationStartedAt = null
+        this.calibrationProgressBytes = 0
+      }
       if (this.transportFailed(error)) {
         this.limit = 1
         this.successStreak = 0
@@ -261,15 +386,74 @@ export function adaptiveUploadConcurrency(
   return Math.max(1, Math.min(MAX_CONCURRENCY, concurrency))
 }
 
-export function preferredUploadConcurrency(): number {
-  const hints = browserUploadNetworkHints()
+export function preferredUploadConcurrency(hints: UploadNetworkHints = browserUploadNetworkHints()): number {
   const type = String(hints.effectiveType || '').toLowerCase()
   if (hints.saveData || type === 'slow-2g' || type === '2g') return 1
-  if (type === '3g') return 2
-  if (Number(hints.deviceMemoryGb || Infinity) <= 2 || Number(hints.hardwareConcurrency || 2) <= 2) return 2
-  // 这里只给真实测速设硬上限，不再拿下载方向的 downlink 猜上行速度。
+  const memoryGb = Number(hints.deviceMemoryGb)
+  const cores = Number(hints.hardwareConcurrency)
+  const lowMemory = Number.isFinite(memoryGb) && memoryGb > 0 && memoryGb <= 2
+  const lowCpu = Number.isFinite(cores) && cores > 0 && cores <= 2
+  if (lowMemory || lowCpu) return 2
+  // 3G 是按 RTT / 下载推测的网络等级，只允许首片单路起步；真实上行测速决定后续 1–4 路。
+  // 未公开 hardwareConcurrency 的浏览器也不能被误判成双核。
   return 4
 }
+
+/**
+ * 所有并行文件共用一个传输预算。每份文件自己的闸门仍按实测上行调整，
+ * 但两个 PS1 多盘文件不会各自跑到四路、合计占满八条上行连接。
+ */
+export class UploadTransferPool {
+  private active = 0
+  private limit = preferredUploadConcurrency()
+  private successStreak = 0
+  private readonly waiters: UploadWaiter[] = []
+
+  private ceiling() {
+    return preferredUploadConcurrency()
+  }
+
+  private acquire(signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) return Promise.reject(new MultipartUploadAborted())
+    this.limit = Math.min(this.limit, this.ceiling())
+    if (this.active < this.limit) {
+      this.active++
+      return Promise.resolve()
+    }
+    return waitForUploadSlot(this.waiters, signal, () => { this.active++ })
+  }
+
+  private drain() {
+    this.limit = Math.min(this.limit, this.ceiling())
+    while (this.active < this.limit && this.waiters.length) this.waiters.shift()?.resolve()
+  }
+
+  async run<T>(task: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    await this.acquire(signal)
+    try {
+      const result = await task()
+      const target = this.ceiling()
+      if (this.limit < target && ++this.successStreak >= RECOVERY_SUCCESS_PARTS) {
+        this.limit++
+        this.successStreak = 0
+      }
+      return result
+    } catch (error) {
+      const status = typeof error === 'object' && error !== null && 'status' in error ? Number(error.status) : -1
+      const oldWorkerFallback = requiresLegacyPartNumber(error)
+      if (!oldWorkerFallback && (status === 0 || status === 429 || status === 502 || status === 503 || status === 504)) {
+        this.limit = 1
+        this.successStreak = 0
+      }
+      throw error
+    } finally {
+      this.active--
+      this.drain()
+    }
+  }
+}
+
+const uploadTransferPool = new UploadTransferPool()
 
 /* ---------------- 本地账本 ---------------- */
 
@@ -285,26 +469,91 @@ function readStore(): Record<string, PendingUpload> {
 
 function writeStore(store: Record<string, PendingUpload>) {
   try {
-    // 过期的先丢，再按时间留最近 STORE_MAX 条 —— localStorage 是有配额的，
-    // 而这些记录只在「刚失败、马上重传」的窗口里有用
+    // 新记录优先，并同时限制条数和字符量；大文件每片带摘要后账本会增长，不能让一次超额写入
+    // 使整个 localStorage.setItem 失败、连最新那局都无法续传。
     const now = Date.now()
-    const kept = Object.values(store)
+    const candidates = Object.values(store)
       .filter((p) => now - p.updatedAt < STORE_TTL)
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .slice(0, STORE_MAX)
-    localStorage.setItem(STORE_KEY, JSON.stringify(Object.fromEntries(kept.map((p) => [p.key, p]))))
+    const encoded: string[] = []
+    let chars = 2
+    for (const record of candidates) {
+      const entry = `${JSON.stringify(record.key)}:${JSON.stringify(record)}`
+      const nextChars = chars + entry.length + (encoded.length ? 1 : 0)
+      if (nextChars > STORE_MAX_CHARS) continue
+      encoded.push(entry)
+      chars = nextChars
+    }
+    localStorage.setItem(STORE_KEY, `{${encoded.join(',')}}`)
   } catch {
     /* 存不下就退化成「不能续传」，不影响这次上传本身 */
   }
 }
 
+interface PendingStateWrite {
+  state: PendingUpload
+  dirtyParts: number
+  timer: ReturnType<typeof setTimeout>
+}
+
+const pendingStateWrites = new Map<string, PendingStateWrite>()
+
+function discardPendingStateWrite(key: string) {
+  const pending = pendingStateWrites.get(key)
+  if (!pending) return
+  clearTimeout(pending.timer)
+  pendingStateWrites.delete(key)
+}
+
+function flushPendingStateWrite(key: string): boolean {
+  const pending = pendingStateWrites.get(key)
+  if (!pending) return false
+  clearTimeout(pending.timer)
+  pendingStateWrites.delete(key)
+  saveState(pending.state)
+  return true
+}
+
+function flushPendingStateWrites() {
+  for (const key of pendingStateWrites.keys()) flushPendingStateWrite(key)
+}
+
+function scheduleStateSave(state: PendingUpload) {
+  const existing = pendingStateWrites.get(state.key)
+  if (existing) {
+    existing.state = state
+    existing.dirtyParts++
+    if (existing.dirtyParts >= PART_STATE_SAVE_MAX_DIRTY_PARTS) flushPendingStateWrite(state.key)
+    return
+  }
+  const pending: PendingStateWrite = {
+    state,
+    dirtyParts: 1,
+    timer: setTimeout(() => flushPendingStateWrite(state.key), PART_STATE_SAVE_INTERVAL_MS),
+  }
+  pendingStateWrites.set(state.key, pending)
+}
+
+if (typeof window !== 'undefined') {
+  // 离页或切到后台时尽量把最近完成的片写进账本；异常崩溃时最多安全重传四片。
+  window.addEventListener('pagehide', flushPendingStateWrites)
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') flushPendingStateWrites()
+    })
+  }
+}
+
 function saveState(state: PendingUpload) {
+  discardPendingStateWrite(state.key)
   const store = readStore()
   store[state.key] = { ...state, updatedAt: Date.now() }
   writeStore(store)
 }
 
 function clearState(key: string) {
+  discardPendingStateWrite(key)
   const store = readStore()
   delete store[key]
   writeStore(store)
@@ -368,21 +617,77 @@ function newMultipartRequestId(): string {
 }
 
 /**
- * 找出可以接着传的记录。元数据和小样本指纹全中才认。
+ * 找出同一元数据对应的会话；已上传片要经 verifyResumableParts 核验后才会加入续传账本。
  */
-function resumableFor(key: string, file: Blob, ident: { fileName: string; lastModified: number }, partSize: number, fingerprint: string, contentType: string): PendingUpload | null {
+function resumableFor(key: string, file: Blob, ident: { fileName: string; lastModified: number }, partSize: number, contentType: string): PendingUpload | null {
   const found = readStore()[key]
   if (!found || !found.uploadId) return null
   if (found.fileSize !== file.size || found.partSize !== partSize) return null
   if (found.fileName !== ident.fileName || found.lastModified !== ident.lastModified) return null
-  if (!found.fileFingerprint || found.fileFingerprint !== fingerprint) return null
   if (found.contentType && found.contentType !== contentType) return null
   if (!Array.isArray(found.parts)) return null
   const total = Math.max(1, Math.ceil(file.size / partSize))
   // 记录里出现越界的片号说明这份账本已经不可信了，宁可重传
-  if (found.parts.some((p) => !p.etag || !Number.isInteger(p.partNumber) || p.partNumber < 1 || p.partNumber > total)) return null
+  if (found.parts.some((p) => !p || typeof p !== 'object' || !p.etag || !Number.isInteger(p.partNumber) || p.partNumber < 1 || p.partNumber > total)) return null
   if (new Set(found.parts.map((p) => p.partNumber)).size !== found.parts.length) return null
-  return found
+  // 本地样本指纹只负责找回会话；远端已完成片必须再按完整分片摘要逐片核验后才能复用。
+  return { ...found, partNumberInHeader: found.partNumberInHeader === true }
+}
+
+/**
+ * 续传只保留和当前文件逐字节一致的远端分片。文件头/中/尾样本相同并不能证明中间所有字节相同；
+ * 逐片核验可避免管理员换了同名同大小镜像后，把两版 ROM 静默拼在一起。
+ */
+async function verifyResumableParts(
+  file: Blob,
+  state: PendingUpload,
+  partSize: number,
+  fingerprint: string,
+  onProgress?: (checked: number, total: number) => void,
+): Promise<void> {
+  const previous = state.parts
+  const verified: PendingUpload['parts'] = []
+  let cursor = 0
+  let checked = 0
+  let lastReportedAt = 0
+  if (previous.length) onProgress?.(0, previous.length)
+  lastReportedAt = monotonicNow()
+  const reportChecked = () => {
+    checked += 1
+    const now = monotonicNow()
+    if (checked === previous.length || now - lastReportedAt >= 150) {
+      lastReportedAt = now
+      onProgress?.(checked, previous.length)
+    }
+  }
+  const worker = async () => {
+    for (;;) {
+      const part = previous[cursor++]
+      if (!part) return
+      const contentHash = part.contentHash
+      if (!contentHash || !/^[a-f0-9]{32}$/i.test(contentHash)) {
+        reportChecked()
+        continue
+      }
+      const start = (part.partNumber - 1) * partSize
+      const length = Math.min(partSize, file.size - start)
+      if (length <= 0) {
+        reportChecked()
+        continue
+      }
+      try {
+        const hash = await fingerprintRomPart(file.slice(start, start + length))
+        if (hash === contentHash.toLowerCase()) verified.push(part)
+      } catch {
+        // 无法读回本地分片时不信任远端副本；runner 会用当前文件重新覆盖该片号。
+      } finally {
+        reportChecked()
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(2, previous.length) }, () => worker()))
+  state.parts = verified.sort((a, b) => a.partNumber - b.partNumber)
+  state.fileFingerprint = fingerprint
 }
 
 /** 创建请求先落本地账，再访问 Worker；响应丢失后同一个文件可用原 requestId 找回会话。 */
@@ -439,7 +744,7 @@ async function createUpload(ctx: Ctx, key: string, file: Blob, ident: { fileName
   const data = await withRetry(
     async () => {
       try {
-        return await askJson<{ uploadId: string; marker: string; requestSignature?: string }>(
+        return await askJson<{ uploadId: string; marker: string; requestSignature?: string; partNumberInHeader?: boolean }>(
           ctx,
           `${ctx.api}/${encodeKey(key)}?uploads`,
           {
@@ -487,6 +792,8 @@ async function createUpload(ctx: Ctx, key: string, file: Blob, ident: { fileName
     fileFingerprint: fingerprint,
     requestId,
     requestSignature: data.requestSignature,
+    // 老 Worker 没有能力标记，继续走查询参数，升级前后的客户端 / Worker 可以交错部署。
+    partNumberInHeader: data.partNumberInHeader === true,
     contentType: file.type || guessUploadType(key),
     parts: [],
     updatedAt: Date.now(),
@@ -494,13 +801,29 @@ async function createUpload(ctx: Ctx, key: string, file: Blob, ident: { fileName
 }
 
 /** 传一片。用 XHR 而不是 fetch：只有 XHR 能报上传进度 */
-function putPart(ctx: Ctx, state: PendingUpload, partNumber: number, blob: Blob, onLoaded: (bytes: number) => void): Promise<string> {
-  const url = `${ctx.api}/${encodeKey(state.key)}?uploadId=${encodeURIComponent(state.uploadId)}&partNumber=${partNumber}`
+function putPart(
+  ctx: Ctx,
+  state: PendingUpload,
+  partNumber: number,
+  blob: Blob,
+  onLoaded: (bytes: number) => void,
+  partNumberInHeader: boolean,
+  onStart?: () => void,
+  onUploadComplete?: () => void,
+  signal?: AbortSignal,
+): Promise<string> {
+  const query = `?uploadId=${encodeURIComponent(state.uploadId)}`
+  const url = `${ctx.api}/${encodeKey(state.key)}${query}${partNumberInHeader ? '' : `&partNumber=${partNumber}`}`
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new MultipartUploadAborted())
+      return
+    }
     const xhr = new XMLHttpRequest()
     xhr.open('PUT', url)
     xhr.setRequestHeader('Authorization', `Bearer ${ctx.token}`)
     xhr.setRequestHeader('Content-Type', 'application/octet-stream')
+    if (partNumberInHeader) xhr.setRequestHeader('X-8BG-Part-Number', String(partNumber))
 
     /**
      * 卡死检测。XHR 自带的 timeout 是「整片的总时长」，上行慢的时候会把正常的传输也判死；
@@ -508,28 +831,46 @@ function putPart(ctx: Ctx, state: PendingUpload, partNumber: number, blob: Blob,
      * 没有它的话，一条半死的连接能把整次上传永远挂在那儿（正是「传一半没反应」那种现象）。
      */
     let lastAt = Date.now()
+    let stalled = false
     const watchdog = window.setInterval(() => {
       if (Date.now() - lastAt > 45_000) {
+        stalled = true
         window.clearInterval(watchdog)
         xhr.abort()
       }
     }, 5_000)
-    const done = () => window.clearInterval(watchdog)
+    const abortFromSignal = () => xhr.abort()
+    const done = () => {
+      window.clearInterval(watchdog)
+      signal?.removeEventListener('abort', abortFromSignal)
+    }
 
     xhr.upload.onprogress = (e) => {
+      if (signal?.aborted) return
       lastAt = Date.now()
       if (e.lengthComputable) onLoaded(e.loaded)
     }
+    // XMLHttpRequest 的 upload 事件避开 CORS 预检和响应等待：它们会影响用户总耗时，却不代表上行链路速度。
+    xhr.upload.onloadstart = () => onStart?.()
+    xhr.upload.onload = () => onUploadComplete?.()
     xhr.onerror = () => {
       done()
-      reject(new UploadHttpError('上传连接被浏览器或边缘网络重置', 0))
+      reject(signal?.aborted ? new MultipartUploadAborted() : new UploadHttpError('上传连接被浏览器或边缘网络重置', 0))
     }
     xhr.onabort = () => {
       done()
-      reject(new UploadHttpError('这一片 45 秒没有任何进展，已中断重试', 0))
+      reject(signal?.aborted
+        ? new MultipartUploadAborted()
+        : new UploadHttpError(stalled ? '这一片 45 秒没有任何进展，已中断重试' : '上传连接已中断', 0))
     }
     xhr.onload = () => {
+      // 旧浏览器若缺少 upload.load，退回完整响应时间；现代浏览器以正文送完为测速终点。
+      onUploadComplete?.()
       done()
+      if (signal?.aborted) {
+        reject(new MultipartUploadAborted())
+        return
+      }
       const data = (() => {
         try {
           return JSON.parse(xhr.responseText) as { etag?: string; error?: string; fatal?: boolean }
@@ -548,8 +889,25 @@ function putPart(ctx: Ctx, state: PendingUpload, partNumber: number, blob: Blob,
       }
       reject(new UploadHttpError(data?.error || explainRomStatus(xhr.status, '传分片').message, xhr.status, Boolean(data?.fatal)))
     }
-    xhr.send(blob)
+    // 兼容不派发 upload.loadstart 的旧 XHR；现代浏览器随后会用真实正文起点校正一次。
+    onStart?.()
+    try {
+      signal?.addEventListener('abort', abortFromSignal, { once: true })
+      if (signal?.aborted) abortFromSignal()
+      else xhr.send(blob)
+    } catch (error) {
+      done()
+      reject(error instanceof Error ? error : new Error('无法开始上传分片'))
+    }
   })
+}
+
+/** 只识别旧 Worker 无法解析新分片号协议的两种响应，其他 400 必须原样失败。 */
+function requiresLegacyPartNumber(error: unknown): boolean {
+  return error instanceof UploadHttpError && (
+    (error.status === 0 && error.message === '上传连接被浏览器或边缘网络重置') ||
+    (error.status === 400 && /partNumber.*整数/.test(error.message))
+  )
 }
 
 /** 这些状态码重试多少次都一样：口令不对、片太大、uploadId 作废 */
@@ -560,7 +918,22 @@ function retryable(err: unknown): boolean {
   return !(err.status === 400 || err.status === 401 || err.status === 403 || err.status === 409 || err.status === 413)
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
+  if (signal?.aborted) {
+    reject(new MultipartUploadAborted())
+    return
+  }
+  const timer = setTimeout(() => {
+    signal?.removeEventListener('abort', abort)
+    resolve()
+  }, ms)
+  const abort = () => {
+    clearTimeout(timer)
+    signal?.removeEventListener('abort', abort)
+    reject(new MultipartUploadAborted())
+  }
+  signal?.addEventListener('abort', abort, { once: true })
+})
 
 /** 可重试的错误就退避重试，其余立刻抛 */
 async function withRetry<T>(run: () => Promise<T>, attempts: number, shouldRetry: (error: unknown) => boolean = retryable): Promise<T> {
@@ -577,18 +950,74 @@ async function withRetry<T>(run: () => Promise<T>, attempts: number, shouldRetry
   throw last
 }
 
-async function putPartWithRetry(ctx: Ctx, state: PendingUpload, partNumber: number, blob: Blob, onLoaded: (bytes: number) => void, gate: MultipartUploadGate): Promise<string> {
+async function putPartWithRetry(
+  ctx: Ctx,
+  state: PendingUpload,
+  partNumber: number,
+  blob: Blob,
+  onLoaded: (bytes: number) => void,
+  gate: MultipartUploadGate,
+  stopRequested: () => boolean = () => false,
+  stopOnFatalError?: (error: unknown) => void,
+  signal?: AbortSignal,
+): Promise<string> {
+  const noteFatalError = (error: unknown, usedHeaderProtocol: boolean) => {
+    // 老 Worker 会用 400 表示不认识请求头里的分片号；这属于协议降级信号，不是上传致命错误。
+    if (usedHeaderProtocol && requiresLegacyPartNumber(error)) return
+    if (!(error instanceof MultipartStoppedAfterSiblingFailure) && !retryable(error)) stopOnFatalError?.(error)
+  }
   let last: unknown
   for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
+    if (signal?.aborted) throw new MultipartUploadAborted()
+    if (stopRequested()) throw new MultipartStoppedAfterSiblingFailure()
     // 连接级错误后不能在几百毫秒内把多条 PUT 一起塞回刚重建的 HTTP/2 会话。
-    if (attempt > 0) await sleep(Math.min(12_000, 1_500 * 2 ** (attempt - 1)) + Math.random() * 1_000)
+    if (attempt > 0) await sleep(Math.min(12_000, 1_500 * 2 ** (attempt - 1)) + Math.random() * 1_000, signal)
+    const useHeaderProtocol = state.partNumberInHeader === true
+    const beforeDrain = (error: unknown) => noteFatalError(error, useHeaderProtocol)
     try {
-      return await gate.run(() => putPart(ctx, state, partNumber, blob, onLoaded), blob.size)
+      return await gate.run((reportProgress, markStarted, markUploadComplete) => {
+        // runner 可能在并发闸门里排队；错误要在拿到连接之后再检查一次，避免首片 403 后仍发送后续大分片。
+        if (signal?.aborted) throw new MultipartUploadAborted()
+        if (stopRequested()) throw new MultipartStoppedAfterSiblingFailure()
+        return uploadTransferPool.run(() => {
+          if (signal?.aborted) throw new MultipartUploadAborted()
+          if (stopRequested()) throw new MultipartStoppedAfterSiblingFailure()
+          return putPart(ctx, state, partNumber, blob, (bytes) => {
+            reportProgress(bytes)
+            onLoaded(bytes)
+          }, useHeaderProtocol, markStarted, markUploadComplete, signal)
+        }, signal)
+      }, blob.size, beforeDrain, signal)
     } catch (err) {
-      last = err
+      if (err instanceof MultipartStoppedAfterSiblingFailure) throw err
+      if (useHeaderProtocol && requiresLegacyPartNumber(err)) {
+        // 在并发闸之外做协议降级，让闸门先看到 status 0 / 400 并收敛并发；
+        // 续传账本也记住旧 Worker，避免每片都先触发一次失败的 CORS 预检。
+        state.partNumberInHeader = false
+        onLoaded(0)
+        try {
+          return await gate.run((reportProgress, markStarted, markUploadComplete) => {
+            if (signal?.aborted) throw new MultipartUploadAborted()
+            if (stopRequested()) throw new MultipartStoppedAfterSiblingFailure()
+            return uploadTransferPool.run(() => {
+              if (signal?.aborted) throw new MultipartUploadAborted()
+              if (stopRequested()) throw new MultipartStoppedAfterSiblingFailure()
+              return putPart(ctx, state, partNumber, blob, (bytes) => {
+                reportProgress(bytes)
+                onLoaded(bytes)
+              }, false, markStarted, markUploadComplete, signal)
+            }, signal)
+          }, blob.size, (error) => noteFatalError(error, false), signal)
+        } catch (fallbackError) {
+          if (fallbackError instanceof MultipartStoppedAfterSiblingFailure) throw fallbackError
+          last = fallbackError
+        }
+      } else {
+        last = err
+      }
       // 重试要从 0 字节重新算这一片的进度，否则进度条会往前虚报
       onLoaded(0)
-      if (!retryable(err)) throw err
+      if (!retryable(last)) throw last
     }
   }
   throw last
@@ -602,7 +1031,9 @@ async function completeUpload(ctx: Ctx, state: PendingUpload): Promise<{ size: n
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        parts: [...state.parts].sort((a, b) => a.partNumber - b.partNumber),
+        parts: state.parts
+          .map(({ partNumber, etag }) => ({ partNumber, etag }))
+          .sort((a, b) => a.partNumber - b.partNumber),
         marker: state.marker,
         requestId: state.requestId,
         requestSignature: state.requestSignature,
@@ -640,17 +1071,18 @@ async function abortUpload(ctx: Ctx, key: string, uploadId: string, marker: stri
  * 只有「这次上传已经作废」（uploadId 过期、分片对不上）才会清掉记录并 abort ——
  * 否则会卡在「续传 → 失败 → 续传」的死循环里。
  */
-export async function uploadRomMultipart(file: Blob, key: string, onProgress?: UploadProgress): Promise<UploadResult> {
+export async function uploadRomMultipart(file: Blob, key: string, onProgress?: UploadProgress, signal?: AbortSignal): Promise<UploadResult> {
   const ctx: Ctx = { api: getRomApi(), token: getRomToken() }
   const partSize = PART_SIZE
   const total = Math.max(1, Math.ceil(file.size / partSize))
   if (total > MAX_PARTS) throw new Error(`文件太大：${total} 片超过 R2 的 10000 片上限`)
+  if (signal?.aborted) throw new MultipartUploadAborted()
 
   const ident = identityOf(file)
   const fingerprint = ident ? await fingerprintRomUploadFile(file) : null
   const contentType = file.type || guessUploadType(key)
   const resumable = Boolean(ident && fingerprint)
-  const resumedState = ident && fingerprint ? resumableFor(key, file, ident, partSize, fingerprint, contentType) : null
+  const resumedState = ident && fingerprint ? resumableFor(key, file, ident, partSize, contentType) : null
   const pendingCreate = ident && fingerprint ? createRequestFor(key, file, ident, partSize, fingerprint, contentType) : null
   const requestId = resumedState?.requestId || pendingCreate?.requestId || newMultipartRequestId()
   if (!resumedState && resumable && ident && fingerprint && !pendingCreate) {
@@ -666,6 +1098,18 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
     })
   }
   const state = resumedState ?? (await createUpload(ctx, key, file, ident, partSize, fingerprint ?? '', requestId))
+  if (resumedState && fingerprint) {
+    await verifyResumableParts(file, state, partSize, fingerprint, (checked, total) => {
+      onProgress?.(0, {
+        parts: Math.max(1, Math.ceil(file.size / partSize)),
+        done: 0,
+        resumed: 0,
+        concurrency: 1,
+        checkingParts: checked,
+        checkingTotal: total,
+      })
+    })
+  }
   const resumed = resumedState ? resumedState.parts.length : 0
   if (resumable) saveState(state)
   const preferredConcurrency = preferredUploadConcurrency()
@@ -725,38 +1169,56 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
   }
   report(true)
 
-  const queue = Array.from({ length: total }, (_, i) => i + 1).filter((n) => !finished.has(n))
+  // 最多允许 10,000 片；游标直接分配下一片，避免先建整份队列并反复 shift 搬动数组。
+  let nextPartNumber = 1
   let failure: unknown = null
 
   const runner = async () => {
     for (;;) {
       if (failure) return
-      const n = queue.shift()
-      if (n === undefined) return
+      if (signal?.aborted) {
+        failure = new MultipartUploadAborted()
+        return
+      }
+      while (nextPartNumber <= total && finished.has(nextPartNumber)) nextPartNumber++
+      if (nextPartNumber > total) return
+      const n = nextPartNumber++
       const start = (n - 1) * partSize
       const blob = file.slice(start, start + sizeOfPart(n))
       try {
+        // 摘要与 XHR 同时读各自的小块，正常上传不多一次整文件扫描，断点恢复则能核验已在 R2 的字节。
+        const hashTask = resumable
+          ? fingerprintRomPart(blob).catch(() => null)
+          : null
         const etag = await putPartWithRetry(ctx, state, n, blob, (bytes) => {
           setLoaded(n, bytes)
-        }, uploadGate)
-        state.parts.push({ partNumber: n, etag })
+        }, uploadGate, () => failure !== null, (error) => { failure ??= error }, signal)
+        const contentHash = hashTask ? await hashTask : null
+        // R2 已确认本次分片来自当前文件；摘要失败只禁用这片的未来复用，不能把成功上传报成失败。
+        // 续传核验会主动重传没有摘要的旧片，因此安全性不变，也避免管理员因浏览器加密 API 短暂故障重传整局。
+        state.parts.push({ partNumber: n, etag, ...(contentHash ? { contentHash } : {}) })
         finished.add(n)
         setLoaded(n, sizeOfPart(n))
-        // 每传完一片就落一次账：浏览器崩了 / 关了页面也只丢正在传的那几片
-        if (resumable) saveState(state)
+        // 短间隔批量落账，避免每个 8 MiB 分片都重写不断增长的整份账本。
+        if (resumable) scheduleStateSave(state)
         report(true)
       } catch (err) {
-        failure = err
+        // 保留最先发生的真实上传错误；后续排队 runner 只会收到停止哨兵。
+        if (!(err instanceof MultipartStoppedAfterSiblingFailure)) failure ??= err
         return
       }
     }
   }
 
-  await Promise.all(Array.from({ length: Math.min(preferredConcurrency, Math.max(1, queue.length)) }, () => runner()))
+  await Promise.all(Array.from({ length: Math.min(preferredConcurrency, Math.max(1, total - finished.size)) }, () => runner()))
+  if (signal?.aborted) failure ??= new MultipartUploadAborted()
   if (failure) {
     stopScheduledReport()
     throw await explainFailure(failure, ctx, state, total, resumable)
   }
+
+  // 合并前必须持久化所有已确认 ETag；complete 不确定时仍可按完整账本安全恢复。
+  if (resumable) flushPendingStateWrite(state.key)
 
   let completed: { size: number; etag?: string }
   try {
@@ -809,7 +1271,7 @@ async function explainFailure(err: unknown, ctx: Ctx, state: PendingUpload, tota
     }
     clearState(state.key)
   } else {
-    saveState(state)
+    if (!flushPendingStateWrite(state.key)) saveState(state)
   }
 
   if (err instanceof MultipartUnsupportedError && cleanupConfirmed) return err

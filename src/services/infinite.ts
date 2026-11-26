@@ -47,7 +47,7 @@ export interface InfiniteInput<T> {
    * 所以数据没对上条件之前，一律不许续接。
    */
   ready: boolean
-  fetchPage: (page: number) => Promise<Paged<T>>
+  fetchPage: (page: number, signal?: AbortSignal) => Promise<Paged<T>>
   /** 筛选条件指纹。变了就把续接的部分全部丢掉重来 */
   resetKey: string
 }
@@ -59,17 +59,30 @@ export function useInfinite<T>({ first, ready, fetchPage, resetKey }: InfiniteIn
   const [autoUsed, setAutoUsed] = useState(0)
   /** 后端说「没有那一页」时置位，别再一遍遍去要 */
   const [exhausted, setExhausted] = useState(false)
+  const activeRequest = useRef<AbortController | null>(null)
 
   // 换筛选条件 / 换页码：把续接的部分清空
   const keyRef = useRef(resetKey)
+  // promise 回调可能在 resetKey 的 effect 执行前到达；渲染时同步记录新指纹，旧响应就不会闪进新列表。
+  const renderedKeyRef = useRef(resetKey)
+  renderedKeyRef.current = resetKey
   useEffect(() => {
     if (keyRef.current === resetKey) return
     keyRef.current = resetKey
+    activeRequest.current?.abort()
+    activeRequest.current = null
+    setLoading(false)
     setExtra([])
     setError('')
     setAutoUsed(0)
     setExhausted(false)
   }, [resetKey])
+
+  // 切页或离开页面时尽早停止续页下载，弱网下不让已经看不见的旧列表继续占带宽。
+  useEffect(() => () => {
+    activeRequest.current?.abort()
+    activeRequest.current = null
+  }, [])
 
   // resetKey 刚变、清空还没生效的那一帧，extra 属于上一批条件，不能拿来拼
   const stale = keyRef.current !== resetKey
@@ -81,18 +94,20 @@ export function useInfinite<T>({ first, ready, fetchPage, resetKey }: InfiniteIn
 
   const load = useCallback(
     (auto: boolean) => {
-      if (!usable || loading || exhausted) return
+      if (!usable || loading || exhausted || activeRequest.current) return
       const next = usable.page + extra.length + 1
       if (next > usable.totalPages) return
-      const keyAtStart = keyRef.current
+      const keyAtStart = resetKey
+      const controller = new AbortController()
+      activeRequest.current = controller
       setLoading(true)
       setError('')
       if (auto) setAutoUsed((n) => n + 1)
-      fetchPage(next)
+      fetchPage(next, controller.signal)
         .then((p) => {
           // 请求飞在路上时用户换了筛选条件：这批数据已经不属于当前列表了，丢掉。
           // 不判断的话会把「上一个平台的第 4 页」接到新平台的列表屁股后面
-          if (keyRef.current !== keyAtStart) return
+          if (keyRef.current !== keyAtStart || renderedKeyRef.current !== keyAtStart || controller.signal.aborted) return
           // 后端对越界页码是「夹回合法范围」而不是报错，所以回来的可能根本不是
           // 我们要的那一页。直接接上去就是整页重复 —— 判一下页码，对不上就收工
           if (p.page !== next) {
@@ -102,12 +117,16 @@ export function useInfinite<T>({ first, ready, fetchPage, resetKey }: InfiniteIn
           setExtra((e) => [...e, p])
         })
         .catch((e: unknown) => {
-          if (keyRef.current !== keyAtStart) return
+          if (keyRef.current !== keyAtStart || renderedKeyRef.current !== keyAtStart || controller.signal.aborted) return
           setError(e instanceof Error ? e.message : '加载失败')
         })
-        .finally(() => setLoading(false))
+        .finally(() => {
+          if (activeRequest.current !== controller) return
+          activeRequest.current = null
+          setLoading(false)
+        })
     },
-    [usable, extra.length, fetchPage, loading, exhausted],
+    [usable, extra.length, fetchPage, loading, exhausted, resetKey],
   )
 
   return {

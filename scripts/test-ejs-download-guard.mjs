@@ -568,7 +568,9 @@ const rangeHeaders = (etag, contentRange, contentLength) => ({
   const asset = 'cores/fbneo-legacy-wasm.data'
   const manifest = coreContentManifest[asset]
   assert.ok(manifest?.bytes > 0 && manifest.version, '核心完整长度和版本哈希必须来自当前产物')
-  const url = `https://cn.8bitgo.test/_cn/emulatorjs/${asset}?v=${manifest.version}`
+  // 生产里的 -wasm.data URL 会在内容哈希后附 EJS_CORE_URL_EPOCH（当前为 range1）。
+  const rangeVersion = `${manifest.version}.range1`
+  const url = `https://cn.8bitgo.test/_cn/emulatorjs/${asset}?v=${rangeVersion}`
   const bytes = new Uint8Array(manifest.bytes).fill(5)
   const xhr = fakeXhr({ bytes, responseHeaders: { 'content-length': String(bytes.byteLength), 'content-type': 'application/wasm' } })
   const performanceImpl = {
@@ -596,11 +598,13 @@ const rangeHeaders = (etag, contentRange, contentLength) => ({
   // 没有完整传输证据、旧版 URL 或本次请求之外的 Resource Timing 都不能额外发起整包下载。
   const asset = 'cores/fbneo-legacy-wasm.data'
   const manifest = coreContentManifest[asset]
+  const rangeVersion = `${manifest.version}.range1`
   const cases = [
-    { name: '无 Resource Timing', version: manifest.version, entries: [] },
-    { name: '旧版本 URL', version: 'stale-version', entries: [{ startTime: 101, encodedBodySize: manifest.bytes, decodedBodySize: manifest.bytes, transferSize: manifest.bytes + 300 }] },
-    { name: '只收到部分字节', version: manifest.version, entries: [{ startTime: 101, encodedBodySize: manifest.bytes - 1, decodedBodySize: manifest.bytes - 1, transferSize: manifest.bytes - 1 + 300 }] },
-    { name: '只有旧请求的完整计时', version: manifest.version, entries: [{ startTime: 1, encodedBodySize: manifest.bytes, decodedBodySize: manifest.bytes, transferSize: manifest.bytes + 300 }] },
+    { name: '无 Resource Timing', version: rangeVersion, entries: [] },
+    { name: '旧版本 URL', version: '0000000000000000.range1', entries: [{ startTime: 101, encodedBodySize: manifest.bytes, decodedBodySize: manifest.bytes, transferSize: manifest.bytes + 300 }] },
+    { name: '未知 URL 代次', version: `${manifest.version}.other`, entries: [{ startTime: 101, encodedBodySize: manifest.bytes, decodedBodySize: manifest.bytes, transferSize: manifest.bytes + 300 }] },
+    { name: '只收到部分字节', version: rangeVersion, entries: [{ startTime: 101, encodedBodySize: manifest.bytes - 1, decodedBodySize: manifest.bytes - 1, transferSize: manifest.bytes - 1 + 300 }] },
+    { name: '只有旧请求的完整计时', version: rangeVersion, entries: [{ startTime: 1, encodedBodySize: manifest.bytes, decodedBodySize: manifest.bytes, transferSize: manifest.bytes + 300 }] },
   ]
   for (const item of cases) {
     const url = `https://cn.8bitgo.test/_cn/emulatorjs/${asset}?v=${item.version}`
@@ -625,7 +629,7 @@ const rangeHeaders = (etag, contentRange, contentLength) => ({
   // 即使首次 Resource Timing 显示整份文件已到，XHR 仍必须严格核对当前核心的完整字节数。
   const asset = 'cores/fbneo-legacy-wasm.data'
   const manifest = coreContentManifest[asset]
-  const url = `https://8bitgo.test/emulatorjs/${asset}?v=${manifest.version}`
+  const url = `https://8bitgo.test/emulatorjs/${asset}?v=${manifest.version}.range1`
   const xhr = fakeXhr({ bytes: new Uint8Array([1, 2, 3, 4]), responseHeaders: { 'content-length': '4', 'content-type': 'application/wasm' } })
   const performanceImpl = {
     now: () => 100,

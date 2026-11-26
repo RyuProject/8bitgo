@@ -67,6 +67,7 @@ import {
 } from './ndsAdaptivePerformance'
 import { psxChdSaveSlug, psxCoreForTransfer } from './psxChd'
 import { prewarmMameChdMediaOnHover, prewarmRuntime } from './prewarm'
+import { observeEjsCoreWarmEvent } from './ejsStartWarm'
 import { defaultDos71SystemUrl, prewarmSystemCache } from './systemSource'
 import { canRestartInPlace } from './sessionRestart'
 import { AdSenseSlot } from '@/components/ads/AdSenseSlot'
@@ -98,7 +99,7 @@ import {
 import { FEATURES } from '@/config/features'
 import { desktopScreenAspect, detailPageScreenAspect, liveStageStyle, mobileScreenAspect, stableLiveGeometry, stageHeightCap } from './screenAspect'
 import { recordPlay } from '@/services/store'
-import { newStartupId, recordStartupEvent, type StartupEventName } from '@/services/startupFunnel'
+import { newStartupId, recordStartupEvent, recordStartupEvents, type StartupEvent, type StartupEventName } from '@/services/startupFunnel'
 import { diagLog, registerDiagnosticSnapshot } from '@/services/startupDiagnostics'
 import { createStartupProgressTrace } from './startupProgressTrace'
 import { sameLiveControls, sameRuntimeCaps, sameRuntimeGeometry, sameRuntimeScreenLayout } from './playerRuntimeState'
@@ -1623,6 +1624,12 @@ export function EmulatorPlayer({
   const frameRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const sessionCounter = useRef(0)
+  /** 启动漏斗按 attempt/event 唯一；事件仍需按核心身份配对，不能把回退核心完成时间接到旧核心上。 */
+  const coreWarmObservationRef = useRef<{
+    attemptId: string
+    coreKey: string
+    complete: boolean
+  } | null>(null)
   const inheritedStartupRef = useRef(
     initialStartupAttemptId && initialStartupStartedAt
       ? { id: initialStartupAttemptId, startedAt: initialStartupStartedAt, consumed: false }
@@ -2029,11 +2036,30 @@ export function EmulatorPlayer({
     /** 已经进入游戏后再报错属于运行期故障，不能按“加载失败”自动重启，免得吞掉玩家进度。 */
     let ready = false
     let crashed = false
+    let romLoadStarted = false
+    let romLoadCompleted = false
+    let romLoadStreaming = false
+    const batchedStartupPhases = new Set<StartupEventName>([
+      'rom_load_start', 'rom_load_complete', 'core_warm_start', 'core_warm_complete', 'core_cache_hit', 'runtime_ready',
+    ])
+    let pendingStartupEvents: StartupEvent[] = []
+    let startupBatchTimer: number | undefined
     let playableTimer: number | undefined
     const mountedAt = typeof performance !== 'undefined' ? performance.now() : Date.now()
+    const flushStartupEvents = (include?: StartupEvent) => {
+      if (startupBatchTimer !== undefined) {
+        window.clearTimeout(startupBatchTimer)
+        startupBatchTimer = undefined
+      }
+      const events = pendingStartupEvents
+      pendingStartupEvents = []
+      if (include) events.push(include)
+      if (events.length === 1) recordStartupEvent(gameSlugRef.current, events[0])
+      else if (events.length > 1) recordStartupEvents(gameSlugRef.current, events)
+    }
     const reportStartup = (event: StartupEventName, detail?: string) => {
       if (!startupVisitId || !gameSlugRef.current || session.runtime.id === 'liveview') return
-      recordStartupEvent(gameSlugRef.current, {
+      const payload: StartupEvent = {
         visitId: startupVisitId,
         attemptId: session.startupAttemptId,
         event,
@@ -2041,7 +2067,22 @@ export function EmulatorPlayer({
         platform: session.platform,
         elapsedMs: Math.max(0, Date.now() - session.startedAt),
         detail,
-      })
+      }
+      if (batchedStartupPhases.has(event)) {
+        if (!pendingStartupEvents.some((pending) => pending.event === event)) pendingStartupEvents.push(payload)
+        if (startupBatchTimer !== undefined) window.clearTimeout(startupBatchTimer)
+        // 慢启动不能一直等首帧才落阶段；正常游戏则会在首帧时和阶段一起发出。
+        startupBatchTimer = window.setTimeout(() => flushStartupEvents(), 15_000)
+        return
+      }
+      if ((event === 'download_complete' || event === 'first_frame' || event === 'game_playable') && pendingStartupEvents.length) {
+        flushStartupEvents(payload)
+        return
+      }
+      if (pendingStartupEvents.length && ['failed', 'timeout', 'slow_start', 'readiness_unobservable', 'recovered'].includes(event)) {
+        flushStartupEvents()
+      }
+      recordStartupEvent(gameSlugRef.current, payload)
     }
     const reportStartupFailure = (reason: string) => {
       reportStartup(/(?:超时|timeout|timed out)/i.test(reason) ? 'timeout' : 'failed', reason)
@@ -2353,12 +2394,30 @@ export function EmulatorPlayer({
       onProgress: (next) => {
         if (!isCurrent()) return
         noteStartupActivity()
+        if (next.phase === 'rom') {
+          if (!romLoadStarted) {
+            romLoadStarted = true
+            reportStartup('rom_load_start')
+          }
+          romLoadStreaming ||= Boolean(next.streaming)
+          const hasByteCompletion = Number.isFinite(next.total) && Number(next.total) > 0 &&
+            Number.isFinite(next.loaded) && Number(next.loaded) >= Number(next.total)
+          const hasRatioCompletion = Number.isFinite(next.ratio) && Number(next.ratio) >= 1
+          if (!romLoadStreaming && !next.streaming && next.detail !== 'rom-pack' && !romLoadCompleted && (hasByteCompletion || hasRatioCompletion)) {
+            romLoadCompleted = true
+            reportStartup('rom_load_complete')
+          }
+        } else if (next.phase === 'starting' && romLoadStarted && !romLoadStreaming && !romLoadCompleted) {
+          // 8BG ROM 进入逐块解包时 ratio 已是 1；等引擎确认资源齐全后才结束 ROM 阶段。
+          romLoadCompleted = true
+          reportStartup('rom_load_complete')
+        }
         progressTrace.accept(next)
         loadProgress.updateDiscSize(next, DISC_NOTICE_BYTES)
         loadProgress.accept(next)
         if (
           session.runtime.id !== 'html5' &&
-          (next.phase === 'starting' || (next.phase === 'rom' && Boolean(next.total) && Number(next.loaded) >= Number(next.total)))
+          (next.phase === 'starting' || (next.phase === 'rom' && !next.streaming && Boolean(next.total) && Number(next.loaded) >= Number(next.total)))
         ) {
           reportStartup('download_complete')
         }
@@ -2368,6 +2427,17 @@ export function EmulatorPlayer({
       onStartupActivity: () => {
         if (!isCurrent()) return
         noteStartupActivity()
+      },
+      onCoreWarmEvent: (event, coreKey) => {
+        if (!isCurrent() || mountCancelled) return
+        const result = observeEjsCoreWarmEvent(
+          coreWarmObservationRef.current,
+          session.startupAttemptId,
+          coreKey,
+          event,
+        )
+        coreWarmObservationRef.current = result.observation
+        if (result.metric) reportStartup(result.metric)
       },
       onReady: () => {
         if (!isCurrent() || ready) return
@@ -2388,6 +2458,7 @@ export function EmulatorPlayer({
         stopStartupWatchdog()
         // 拿不到完整下载阶段的运行时在这里兜底；同一事件客户端与数据库都会去重。
         reportStartup('download_complete')
+        reportStartup('runtime_ready')
         // 新版 melonDS 会在 onReady 之后才 trap；立即计数会把白屏误报成可玩。
         // 留一个短观察窗，崩溃时清掉；兼容核心接棒后再确认这次开局。
         if (session.platform === 'nds' && session.runtime.id === 'emulatorjs' &&
@@ -2748,6 +2819,7 @@ export function EmulatorPlayer({
       mountCancelled = true
       stopStartupWatchdog()
       stopProgressSnapshot()
+      flushStartupEvents()
       window.clearTimeout(playableTimer)
       setHandle(null)
       setCaps(new Set())

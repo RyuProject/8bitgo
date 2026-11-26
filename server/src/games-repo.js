@@ -847,6 +847,8 @@ async function writeRelations(run, gameId, game, only) {
  */
 async function reindexGame(run, gameId, game) {
   await run('DELETE FROM game_search_tokens WHERE game_id = ?', [gameId])
+  const convertedTitles = readI18nMap(game.titleI18n ?? game.title_i18n) ?? {}
+  const localizedTitles = readI18nMap(game.titleLocalized ?? game.title_localized) ?? {}
   const tokens = buildGameTokens({
     title: game.title,
     title_zh: game.titleZh ?? game.title_zh,
@@ -854,9 +856,11 @@ async function reindexGame(run, gameId, game) {
     tags: game.tags,
     aliases: [
       ...(game.aliases ?? []),
-      ...Object.values(readI18nMap(game.titleI18n ?? game.title_i18n) ?? {}),
-      ...Object.values(readI18nMap(game.titleLocalized ?? game.title_localized) ?? {}),
+      ...Object.values(convertedTitles),
+      ...Object.values(localizedTitles ?? {}),
     ],
+    // 繁体标题是中文，可用拼音；日文汉字标题不能按中文读音误造别名。
+    pinyinAliases: [convertedTitles['zh-Hant'], localizedTitles['zh-Hant']].filter(Boolean),
   })
   if (!tokens.size) return
   const rows = [...tokens]

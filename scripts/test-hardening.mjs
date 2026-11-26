@@ -321,7 +321,7 @@ check('⚠️ 路由切换会取消上一页取数，不让废请求继续占带
   assert.match(api, /signal\?: AbortSignal/, 'API 客户端还不能接取消信号')
   assert.match(api, /signal,/, '取消信号没有传给 fetch')
   assert.match(pageData, /new AbortController\(\)/, '页面取数没有创建取消控制器')
-  assert.match(pageData, /\.get<T>\(key,\s*false,\s*controller\.signal\)/, '页面取数没有把信号传给 API')
+  assert.match(pageData, /withRequestTimeout\(PAGE_DATA_TIMEOUT_MS,\s*parent,\s*\(signal\)\s*=>\s*api\.get<T>\(url,\s*false,\s*signal\)\)/, '页面取数没有把超时/取消信号传给 API')
   assert.match(pageData, /controller\.abort\(\)/, 'effect 清理时没有真正掐断网络请求')
 })
 

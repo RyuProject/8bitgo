@@ -13,6 +13,12 @@ const EVENTS = new Set([
   'detail_view',
   'start_click',
   'download_complete',
+  'rom_load_start',
+  'rom_load_complete',
+  'core_warm_start',
+  'core_warm_complete',
+  'core_cache_hit',
+  'runtime_ready',
   'iframe_loaded',
   'first_frame',
   'game_playable',
@@ -23,6 +29,11 @@ const EVENTS = new Set([
   'timeout',
   // 详情页崩溃后自动刷新、刷新后好了（src/services/pageRecovery.ts）：单独一种事件，不算进 failures
   'recovered',
+])
+/** 页面阶段可合批，异常现场事件仍走单独接口以保留原有限流与诊断处理。 */
+const BATCHABLE_EVENTS = new Set([
+  'download_complete', 'rom_load_start', 'rom_load_complete', 'core_warm_start', 'core_warm_complete',
+  'core_cache_hit', 'runtime_ready', 'first_frame', 'game_playable',
 ])
 const ID_RE = /^[A-Za-z0-9_-]{8,64}$/
 const NAME_RE = /^[A-Za-z0-9_-]{0,32}$/
@@ -87,6 +98,25 @@ export function normalizeStartupEvent(body = {}) {
   }
 }
 
+/** 一次请求最多写 16 个同一启动 attempt 的普通阶段，拒绝跨局混批和诊断事件。 */
+export function normalizeStartupEventBatch(rawEvents) {
+  if (!Array.isArray(rawEvents) || rawEvents.length < 2 || rawEvents.length > 16) {
+    throw new Error('启动事件批次必须包含 2..16 个事件')
+  }
+  const events = rawEvents.map(normalizeStartupEvent)
+  const first = events[0]
+  const seen = new Set()
+  for (const event of events) {
+    if (!BATCHABLE_EVENTS.has(event.event)) throw new Error('此启动事件不能批量上报')
+    if (event.visitId !== first.visitId || event.attemptId !== first.attemptId) {
+      throw new Error('批量启动事件必须属于同一次启动')
+    }
+    if (seen.has(event.event)) throw new Error('批量启动事件不能重复')
+    seen.add(event.event)
+  }
+  return events
+}
+
 export function isSlowStartup(event) {
   return event?.event === 'slow_start' && Number(event.elapsedMs) >= STARTUP_SLOW_MS
 }
@@ -137,6 +167,40 @@ export async function recordStartupEvent(slug, raw, country = 'XX') {
   return { accepted, recorded, event, country: safeCountry }
 }
 
+/** 批量阶段使用一条 INSERT 完成整次请求，避免观测数据按阶段逐条占用连接和 SQL 往返。 */
+export async function recordStartupEvents(slug, rawEvents, country = 'XX') {
+  const events = normalizeStartupEventBatch(rawEvents)
+  const safeCountry = /^[A-Z]{2}$/.test(country) ? country : 'XX'
+  const rows = events.map(() => `SELECT ? AS visit_id, ? AS attempt_id, ? AS event,
+      ? AS runtime, ? AS platform, ? AS country, ? AS elapsed_ms, ? AS detail`).join('\n    UNION ALL\n    ')
+  const values = events.flatMap((event) => [
+    event.visitId,
+    event.attemptId,
+    event.event,
+    event.runtime,
+    event.platform,
+    safeCountry,
+    event.elapsedMs,
+    event.detail,
+  ])
+  const result = await query(
+    `INSERT IGNORE INTO game_startup_events
+       (game_id, visit_id, attempt_id, event, runtime, platform, country, elapsed_ms, detail)
+     SELECT g.id, e.visit_id, e.attempt_id, e.event, e.runtime, e.platform, e.country, e.elapsed_ms, e.detail
+       FROM games g
+       CROSS JOIN (${rows}) AS e
+      WHERE g.slug = ? AND g.hidden = 0`,
+    [...values, slug],
+  )
+  const recordedCount = Number(result?.affectedRows ?? 0)
+  const accepted = recordedCount > 0 || (await query(
+    'SELECT 1 FROM games WHERE slug = ? AND hidden = 0 LIMIT 1',
+    [slug],
+  )).length > 0
+  scheduleCleanup()
+  return { accepted, recordedCount, events, country: safeCountry }
+}
+
 const cutoffFor = (days) => new Date(Date.now() - days * 24 * 60 * 60_000)
 const numeric = (row, key) => Number(row?.[key] ?? 0)
 
@@ -161,6 +225,26 @@ function shapeAggregate(row = {}) {
   }
 }
 
+/** 启动阶段均值；样本数和均值一起返回，避免小样本被误读为稳定表现。 */
+export function shapePhaseTiming(row = {}) {
+  const average = (key) => row[key] == null ? null : Math.round(Number(row[key]))
+  return {
+    avgResourceMs: average('avg_resource_ms'),
+    resourceSamples: numeric(row, 'resource_samples'),
+    avgResourceToFirstFrameMs: average('avg_resource_to_first_frame_ms'),
+    resourceToFirstFrameSamples: numeric(row, 'resource_to_first_frame_samples'),
+    avgFirstFrameToPlayableMs: average('avg_first_frame_to_playable_ms'),
+    firstFrameToPlayableSamples: numeric(row, 'first_frame_to_playable_samples'),
+    avgRomLoadMs: average('avg_rom_load_ms'),
+    romLoadSamples: numeric(row, 'rom_load_samples'),
+    avgCoreWarmMs: average('avg_core_warm_ms'),
+    coreWarmSamples: numeric(row, 'core_warm_samples'),
+    coreCacheHits: numeric(row, 'core_cache_hits'),
+    avgResourceToRuntimeReadyMs: average('avg_resource_to_runtime_ready_ms'),
+    resourceToRuntimeReadySamples: numeric(row, 'resource_to_runtime_ready_samples'),
+  }
+}
+
 const AGGREGATES = `
   COUNT(DISTINCT CASE WHEN e.event = 'detail_view' THEN e.visit_id END) AS detail_views,
   COUNT(DISTINCT CASE WHEN e.event = 'start_click' THEN CONCAT(e.visit_id, ':', e.attempt_id) END) AS starts,
@@ -175,6 +259,130 @@ const AGGREGATES = `
   SUM(e.event = 'readiness_unobservable') AS readiness_unobservable,
   AVG(CASE WHEN e.event = 'game_playable' THEN e.elapsed_ms END) AS avg_playable_ms,
   MAX(CASE WHEN e.event = 'game_playable' THEN e.elapsed_ms END) AS max_playable_ms`
+
+/**
+ * 每次启动先按 visit/attempt 配对，再算事件间隔。不能直接平均所有 event.elapsed_ms：
+ * 那会把所有阶段都当成“从点击开始”的累计时间。一个查询同时回全局、游戏、运行时、地区，
+ * 避免为了新增阶段统计再开多条全表扫描。
+ */
+const PHASE_TIMING_QUERY = `
+  WITH attempt_events AS (
+    SELECT e.game_id, e.visit_id, e.attempt_id,
+           MAX(e.country) AS country,
+           MIN(CASE WHEN e.event = 'start_click' THEN e.elapsed_ms END) AS started_ms,
+           MIN(CASE WHEN e.event = 'download_complete' THEN e.elapsed_ms END) AS resource_ms,
+           MIN(CASE WHEN e.event = 'first_frame' THEN e.elapsed_ms END) AS first_frame_ms,
+           MIN(CASE WHEN e.event = 'game_playable' THEN e.elapsed_ms END) AS playable_ms,
+           MIN(CASE WHEN e.event = 'rom_load_start' THEN e.elapsed_ms END) AS rom_start_ms,
+           MIN(CASE WHEN e.event = 'rom_load_complete' THEN e.elapsed_ms END) AS rom_complete_ms,
+           MIN(CASE WHEN e.event = 'core_warm_start' THEN e.elapsed_ms END) AS core_warm_start_ms,
+           MIN(CASE WHEN e.event = 'core_warm_complete' THEN e.elapsed_ms END) AS core_warm_complete_ms,
+           MIN(CASE WHEN e.event = 'runtime_ready' THEN e.elapsed_ms END) AS runtime_ready_ms,
+           MAX(CASE WHEN e.event = 'core_cache_hit' THEN 1 ELSE 0 END) AS core_cache_hit,
+           MAX(CASE WHEN e.event = 'core_cache_hit' THEN e.runtime END) AS core_cache_runtime,
+           MAX(CASE WHEN e.event = 'start_click' THEN e.runtime END) AS start_runtime,
+           MAX(CASE WHEN e.event = 'download_complete' THEN e.runtime END) AS resource_runtime,
+           MAX(CASE WHEN e.event = 'first_frame' THEN e.runtime END) AS first_frame_runtime,
+           MAX(CASE WHEN e.event = 'game_playable' THEN e.runtime END) AS playable_runtime,
+           MAX(CASE WHEN e.event = 'rom_load_start' THEN e.runtime END) AS rom_start_runtime,
+           MAX(CASE WHEN e.event = 'rom_load_complete' THEN e.runtime END) AS rom_complete_runtime,
+           MAX(CASE WHEN e.event = 'core_warm_start' THEN e.runtime END) AS core_warm_start_runtime,
+           MAX(CASE WHEN e.event = 'core_warm_complete' THEN e.runtime END) AS core_warm_complete_runtime,
+           MAX(CASE WHEN e.event = 'runtime_ready' THEN e.runtime END) AS runtime_ready_runtime
+      FROM game_startup_events e
+     WHERE e.created_at >= ? AND e.attempt_id <> ''
+       AND e.event IN ('start_click', 'download_complete', 'first_frame', 'game_playable',
+                       'rom_load_start', 'rom_load_complete', 'core_warm_start',
+                       'core_warm_complete', 'core_cache_hit', 'runtime_ready')
+     GROUP BY e.game_id, e.visit_id, e.attempt_id
+  ), phase_samples AS (
+    SELECT game_id, country, resource_runtime AS runtime, 'resource' AS stage,
+           resource_ms - started_ms AS duration_ms
+      FROM attempt_events
+     WHERE started_ms IS NOT NULL AND resource_ms >= started_ms AND start_runtime = resource_runtime
+    UNION ALL
+    SELECT game_id, country, first_frame_runtime AS runtime, 'resource_to_first_frame' AS stage,
+           first_frame_ms - resource_ms AS duration_ms
+      FROM attempt_events
+     WHERE started_ms IS NOT NULL AND resource_ms IS NOT NULL AND first_frame_ms >= resource_ms
+       AND resource_runtime = first_frame_runtime
+    UNION ALL
+    SELECT game_id, country, playable_runtime AS runtime, 'first_frame_to_playable' AS stage,
+           playable_ms - first_frame_ms AS duration_ms
+      FROM attempt_events
+     WHERE started_ms IS NOT NULL AND first_frame_ms IS NOT NULL AND playable_ms >= first_frame_ms
+       AND first_frame_runtime = playable_runtime
+    UNION ALL
+    SELECT game_id, country, rom_complete_runtime AS runtime, 'rom_load' AS stage,
+           rom_complete_ms - rom_start_ms AS duration_ms
+     FROM attempt_events
+     WHERE started_ms IS NOT NULL AND rom_start_ms IS NOT NULL AND rom_complete_ms >= rom_start_ms
+       AND rom_start_runtime = rom_complete_runtime
+    UNION ALL
+    SELECT game_id, country, core_warm_complete_runtime AS runtime, 'core_warm' AS stage,
+           core_warm_complete_ms - core_warm_start_ms AS duration_ms
+     FROM attempt_events
+     WHERE started_ms IS NOT NULL AND core_warm_start_ms IS NOT NULL AND core_warm_complete_ms >= core_warm_start_ms
+       AND core_warm_start_runtime = core_warm_complete_runtime
+    UNION ALL
+    SELECT game_id, country, runtime_ready_runtime AS runtime, 'resource_to_runtime_ready' AS stage,
+           runtime_ready_ms - resource_ms AS duration_ms
+     FROM attempt_events
+     WHERE started_ms IS NOT NULL AND resource_ms IS NOT NULL AND runtime_ready_ms >= resource_ms
+       AND resource_runtime = runtime_ready_runtime
+    UNION ALL
+    SELECT game_id, country, core_cache_runtime AS runtime, 'core_cache_hit' AS stage, NULL AS duration_ms
+     FROM attempt_events
+     WHERE started_ms IS NOT NULL AND core_cache_hit = 1
+  )
+  SELECT 'summary' AS dimension, '' AS id, '' AS label,
+         AVG(CASE WHEN p.stage = 'resource' THEN p.duration_ms END) AS avg_resource_ms,
+         SUM(p.stage = 'resource') AS resource_samples,
+         AVG(CASE WHEN p.stage = 'resource_to_first_frame' THEN p.duration_ms END) AS avg_resource_to_first_frame_ms,
+         SUM(p.stage = 'resource_to_first_frame') AS resource_to_first_frame_samples,
+         AVG(CASE WHEN p.stage = 'first_frame_to_playable' THEN p.duration_ms END) AS avg_first_frame_to_playable_ms,
+         SUM(p.stage = 'first_frame_to_playable') AS first_frame_to_playable_samples,
+         AVG(CASE WHEN p.stage = 'rom_load' THEN p.duration_ms END) AS avg_rom_load_ms,
+         SUM(p.stage = 'rom_load') AS rom_load_samples,
+         AVG(CASE WHEN p.stage = 'core_warm' THEN p.duration_ms END) AS avg_core_warm_ms,
+         SUM(p.stage = 'core_warm') AS core_warm_samples,
+         SUM(p.stage = 'core_cache_hit') AS core_cache_hits,
+         AVG(CASE WHEN p.stage = 'resource_to_runtime_ready' THEN p.duration_ms END) AS avg_resource_to_runtime_ready_ms,
+         SUM(p.stage = 'resource_to_runtime_ready') AS resource_to_runtime_ready_samples
+    FROM phase_samples p
+  UNION ALL
+  SELECT 'game', g.slug, COALESCE(NULLIF(g.title_zh, ''), g.title),
+         AVG(CASE WHEN p.stage = 'resource' THEN p.duration_ms END), SUM(p.stage = 'resource'),
+         AVG(CASE WHEN p.stage = 'resource_to_first_frame' THEN p.duration_ms END), SUM(p.stage = 'resource_to_first_frame'),
+         AVG(CASE WHEN p.stage = 'first_frame_to_playable' THEN p.duration_ms END), SUM(p.stage = 'first_frame_to_playable'),
+         AVG(CASE WHEN p.stage = 'rom_load' THEN p.duration_ms END), SUM(p.stage = 'rom_load'),
+         AVG(CASE WHEN p.stage = 'core_warm' THEN p.duration_ms END), SUM(p.stage = 'core_warm'),
+         SUM(p.stage = 'core_cache_hit'),
+         AVG(CASE WHEN p.stage = 'resource_to_runtime_ready' THEN p.duration_ms END), SUM(p.stage = 'resource_to_runtime_ready')
+    FROM phase_samples p JOIN games g ON g.id = p.game_id
+   GROUP BY p.game_id, g.slug, g.title_zh, g.title
+  UNION ALL
+  SELECT 'runtime', COALESCE(NULLIF(p.runtime, ''), 'unknown'), COALESCE(NULLIF(p.runtime, ''), 'unknown'),
+         AVG(CASE WHEN p.stage = 'resource' THEN p.duration_ms END), SUM(p.stage = 'resource'),
+         AVG(CASE WHEN p.stage = 'resource_to_first_frame' THEN p.duration_ms END), SUM(p.stage = 'resource_to_first_frame'),
+         AVG(CASE WHEN p.stage = 'first_frame_to_playable' THEN p.duration_ms END), SUM(p.stage = 'first_frame_to_playable'),
+         AVG(CASE WHEN p.stage = 'rom_load' THEN p.duration_ms END), SUM(p.stage = 'rom_load'),
+         AVG(CASE WHEN p.stage = 'core_warm' THEN p.duration_ms END), SUM(p.stage = 'core_warm'),
+         SUM(p.stage = 'core_cache_hit'),
+         AVG(CASE WHEN p.stage = 'resource_to_runtime_ready' THEN p.duration_ms END), SUM(p.stage = 'resource_to_runtime_ready')
+    FROM phase_samples p
+   GROUP BY p.runtime
+  UNION ALL
+  SELECT 'country', p.country, p.country,
+         AVG(CASE WHEN p.stage = 'resource' THEN p.duration_ms END), SUM(p.stage = 'resource'),
+         AVG(CASE WHEN p.stage = 'resource_to_first_frame' THEN p.duration_ms END), SUM(p.stage = 'resource_to_first_frame'),
+         AVG(CASE WHEN p.stage = 'first_frame_to_playable' THEN p.duration_ms END), SUM(p.stage = 'first_frame_to_playable'),
+         AVG(CASE WHEN p.stage = 'rom_load' THEN p.duration_ms END), SUM(p.stage = 'rom_load'),
+         AVG(CASE WHEN p.stage = 'core_warm' THEN p.duration_ms END), SUM(p.stage = 'core_warm'),
+         SUM(p.stage = 'core_cache_hit'),
+         AVG(CASE WHEN p.stage = 'resource_to_runtime_ready' THEN p.duration_ms END), SUM(p.stage = 'resource_to_runtime_ready')
+    FROM phase_samples p
+   GROUP BY p.country`
 
 async function grouped(cutoff, dimension) {
   const definitions = {
@@ -206,11 +414,12 @@ export async function startupStats(rawDays = 7, rawQuery = '') {
   const days = Math.max(1, Math.min(90, Math.round(Number(rawDays) || 7)))
   const cutoff = cutoffFor(days)
   const search = text(rawQuery, 80)
-  const [summaryRows, byGame, byRuntime, byCountry, recentSlow, recentFailures] = await Promise.all([
+  const [summaryRows, byGame, byRuntime, byCountry, phaseRows, recentSlow, recentFailures] = await Promise.all([
     query(`SELECT ${AGGREGATES} FROM game_startup_events e WHERE e.created_at >= ?`, [cutoff]),
     grouped(cutoff, 'game'),
     grouped(cutoff, 'runtime'),
     grouped(cutoff, 'country'),
+    query(PHASE_TIMING_QUERY, [cutoff]),
     query(
       `SELECT g.slug, COALESCE(NULLIF(g.title_zh, ''), g.title) AS title,
               e.runtime, e.country, e.elapsed_ms AS elapsedMs, e.created_at AS createdAt
@@ -234,13 +443,24 @@ export async function startupStats(rawDays = 7, rawQuery = '') {
       [cutoff, search, `%${search}%`],
     ),
   ])
+  const phaseByDimension = { game: new Map(), runtime: new Map(), country: new Map() }
+  let summaryPhase = shapePhaseTiming()
+  for (const row of phaseRows) {
+    const phase = shapePhaseTiming(row)
+    if (row.dimension === 'summary') summaryPhase = phase
+    else phaseByDimension[row.dimension]?.set(String(row.id), phase)
+  }
+  const withPhaseTiming = (rows, dimension) => rows.map((row) => ({
+    ...row,
+    ...(phaseByDimension[dimension].get(row.id) ?? shapePhaseTiming()),
+  }))
   return {
     days,
     slowThresholdMs: STARTUP_SLOW_MS,
-    summary: shapeAggregate(summaryRows[0]),
-    byGame,
-    byRuntime,
-    byCountry,
+    summary: { ...shapeAggregate(summaryRows[0]), ...summaryPhase },
+    byGame: withPhaseTiming(byGame, 'game'),
+    byRuntime: withPhaseTiming(byRuntime, 'runtime'),
+    byCountry: withPhaseTiming(byCountry, 'country'),
     recentSlow,
     recentFailures: recentFailures.map((row) => ({
       ...row,

@@ -5092,6 +5092,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         */
         const warmPaths = emulatorJsRuntimePaths(warmCore, EJS_LANG[getLang()])
         const warmLanguage = warmPaths[EJS_LANG[getLang()] ?? '']
+        const warmCoreDataUrl = ejsCoreAsset(`cores/${encodeURIComponent(emulatorJsCoreDataFile(warmCore))}`)
         preloadEjsStyle(doc, ejsRuntimeAsset('emulator.min.css'))
         void warmEmulatorJsStart({
           always: [
@@ -5100,12 +5101,17 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             ...(warmLanguage ? [warmLanguage] : []),
           ],
           large: [
-            ejsCoreAsset(`cores/${encodeURIComponent(emulatorJsCoreDataFile(warmCore))}`),
+            warmCoreDataUrl,
             // 核心已在引擎缓存里就不用解压，也就不需要它（同属「引擎库里没有才预热」）
             warmPaths[EJS_EXTRACT_7Z_FILE],
             ...(/^https?:|^\//.test(engineBiosUrl) ? [engineBiosUrl] : []),
           ],
-        }, { assumeUncached: engineCachePurgePending() || engineCacheOff }).catch(() => {})
+        }, {
+          assumeUncached: engineCachePurgePending() || engineCacheOff,
+          coreDataUrl: warmCoreDataUrl,
+          coreKey: warmCore,
+          onCoreWarmEvent: options.onCoreWarmEvent,
+        }).catch(() => {})
         const cachePurgeTask = purgePoisonedEngineCache()
         const socketIoTask: Promise<unknown | null> = NETPLAY_URL
           ? injectScript(doc, socketIoScriptUrl(), 8_000).then(() => null, (error: unknown) => error)

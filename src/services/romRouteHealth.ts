@@ -36,6 +36,8 @@ interface RouteStat {
 }
 
 const STORAGE_KEY = '8bitgo.rom-route-health.v1'
+/** 分片下载每片都会更新速率；排序读内存即可，持久化合并到每秒一次，避免同步存储挤占正文读取回调。 */
+const PERSIST_INTERVAL_MS = 1_000
 /** 吞吐结论的有效期：线路状况按小时级变化，半小时前的测量不再可信 */
 export const ROUTE_RATE_TTL_MS = 30 * 60 * 1000
 /** 连续故障记录的有效期：十分钟没再出事就当它好了 */
@@ -110,13 +112,40 @@ function load(): void {
   }
 }
 
-function save(): void {
+function persist(): void {
   try {
     const out: Record<string, RouteStat> = {}
     for (const [origin, stat] of stats) out[origin] = stat
     storage()?.setItem(STORAGE_KEY, JSON.stringify(out))
   } catch {
     /* 无痕模式写不进去：本页内存里仍有记录 */
+  }
+}
+
+let persistTimer: ReturnType<typeof setTimeout> | undefined
+
+function flushPersist(): void {
+  if (persistTimer === undefined) return
+  clearTimeout(persistTimer)
+  persistTimer = undefined
+  persist()
+}
+
+function save(): void {
+  if (persistTimer !== undefined) return
+  persistTimer = setTimeout(() => {
+    persistTimer = undefined
+    persist()
+  }, PERSIST_INTERVAL_MS)
+}
+
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  // 最近的路线分数在内存里即时生效；离页时再同步落盘，供下一次访问选线。
+  window.addEventListener('pagehide', flushPersist)
+  if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') flushPersist()
+    })
   }
 }
 
@@ -211,6 +240,13 @@ export function romRouteRate(url: string, now = Date.now()): number | undefined 
   return origin ? freshStat(origin, now).rate : undefined
 }
 
+/** 给分片调度用的有效吞吐：沿用排序器的近期故障折扣，未测线路用调用方的乐观先验。 */
+export function romRouteEffectiveRate(url: string, fallbackRate = 1, now = Date.now()): number {
+  const origin = romRouteOrigin(url)
+  const fresh = origin ? freshStat(origin, now) : { rate: undefined, failures: 0, open: false }
+  return (fresh.rate ?? fallbackRate) * 0.5 ** Math.min(fresh.failures, 6)
+}
+
 /**
  * 把同一对象的几种线路写法排个序：没熔断的在前；同组里按「吞吐 × 0.5^近期故障次数」，
  * 要快 15% 以上才越过排在它前面的线路，否则保持调用方给的原顺序（原顺序就是默认偏好）。
@@ -263,6 +299,8 @@ export function romRouteHealthSummary(now = Date.now()): string {
 
 /** 测试与「重置」用 */
 export function resetRomRouteHealth(): void {
+  if (persistTimer !== undefined) clearTimeout(persistTimer)
+  persistTimer = undefined
   stats.clear()
   loaded = true
   try {

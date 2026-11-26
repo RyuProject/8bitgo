@@ -37,7 +37,7 @@ const script = (...steps) => {
   methods = []
 }
 
-const { probeRomUrl, probeRom, clearRomProbeCache, conventionalKeys, romCandidates, playbackRomCandidates, playbackRomCandidatesForSelection, romProbeExpected, dosExecutableForRom, dosSockdriveForRom, dosStartupCommandsForRom, streamedRomCandidateForSelection, versionedRomUrl, romKeysOf, unbindKeyPatch, shouldTryRomCandidateAfterUncertain, nextRomCandidateKey, slugFromKey, romUrlForKey, coverThumbKey, romMirrorUrl, getRomMirrorBase } = await import(
+const { probeRomUrl, probeRom, clearRomProbeCache, ROM_PROBE_SUCCESS_TTL_MS, ROM_PROBE_MISS_TTL_MS, conventionalKeys, romCandidates, playbackRomCandidates, playbackRomCandidatesForSelection, romProbeExpected, dosExecutableForRom, dosSockdriveForRom, dosStartupCommandsForRom, streamedRomCandidateForSelection, versionedRomUrl, romKeysOf, unbindKeyPatch, shouldTryRomCandidateAfterUncertain, nextRomCandidateKey, slugFromKey, romUrlForKey, coverThumbKey, romMirrorUrl, getRomMirrorBase } = await import(
   fileURLToPath(new URL('../src/services/roms.ts', import.meta.url))
 )
 // 红宝石封面是外链：没有 -96 缩略图时必须回原图，不能把空 key 拼成资源域名根目录。
@@ -391,6 +391,37 @@ assert.equal(isolatedEmbedFor('diablo'), undefined, 'Diablo 不需要 COOP/COEP�
   const u = next()
   script({ status: 200 })
   assert.equal(await probeRomUrl(u), u, '拿不到 ETag 时原样返回')
+}
+
+/* ---------- 7.1 对象覆盖后刷新旧 ETag，新上传对象也要脱离旧 404 ---------- */
+{
+  const realNow = Date.now
+  let now = 1_000_000
+  Date.now = () => now
+  try {
+    const replaced = next()
+    script({ status: 200, headers: { etag: '"old-rom"' } })
+    assert.ok((await probeRomUrl(replaced)).includes('romv=old-rom'))
+    script({ status: 200, headers: { etag: '"new-rom"' } })
+    assert.ok((await probeRomUrl(replaced)).includes('romv=old-rom'), '有效期内复用已知版本，避免多余 HEAD')
+    assert.equal(calls, 0)
+    now += ROM_PROBE_SUCCESS_TTL_MS + 1
+    assert.ok((await probeRomUrl(replaced)).includes('romv=new-rom'), '同 key 覆盖后必须重新取 ETag，避免继续读旧 ROM 缓存')
+    assert.equal(calls, 1)
+
+    const published = next()
+    script({ status: 404 })
+    assert.equal(await probeRomUrl(published), '')
+    script({ status: 200, headers: { etag: '"newly-uploaded"' } })
+    assert.equal(await probeRomUrl(published), '', '短期内沿用确定的 404，避免重复探测')
+    assert.equal(calls, 0)
+    now += ROM_PROBE_MISS_TTL_MS + 1
+    assert.ok((await probeRomUrl(published)).includes('romv=newly-uploaded'), '对象上传后短时间内应能从旧 404 恢复')
+    assert.equal(calls, 1)
+  } finally {
+    Date.now = realNow
+    clearRomProbeCache()
+  }
 }
 
 /* ---------- 8. certain 要如实报上来 ---------- */

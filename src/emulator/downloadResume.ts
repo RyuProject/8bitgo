@@ -19,6 +19,8 @@ const PART_KEY = 'downloadKey'
 const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
 /** 同时留四款已足够覆盖来回切游戏；完整 ROM 另有自己的 LRU 缓存。 */
 const MAX_SESSIONS = 4
+/** 分片会按 8 MiB 左右频繁写入；目录巡检合并到 30 秒一次，配额失败仍会立即清理。 */
+const ROUTINE_CLEANUP_INTERVAL_MS = 30_000
 /**
  * MAME 的 CHD 比普通 ROM 大得多：能用 OPFS 时，分片直接落浏览器私有文件系统，
  * 避免 IndexedDB 在写入数百 MB Blob 时额外做一次结构化克隆。Safari / 无痕模式尚未
@@ -77,6 +79,11 @@ export interface DownloadResumeStore {
 
 let dbPromise: Promise<IDBDatabase | null> | null = null
 let mameOpfsRootPromise: Promise<OpfsDirectoryHandle | null> | null = null
+let quotaCleanupTask: Promise<void> | null = null
+let idbRoutineCleanupTask: Promise<void> | null = null
+let lastIdbCleanupAt = 0
+let mameOpfsCleanupTask: Promise<void> | null = null
+let lastMameOpfsCleanupAt = 0
 
 function mameOpfsSessionName(key: string): string {
   // MAME CHD 的调用方使用内容寻址键（mame-chd:<sha1>:<sha1>:<size>）。仍保留一个短 hash
@@ -173,6 +180,18 @@ async function cleanupMameOpfs(keepKey: string): Promise<void> {
   }
 }
 
+/** OPFS 每次扫目录还要逐个读取 meta.json；合并分片写入期间的重复巡检。 */
+function requestMameOpfsCleanup(keepKey: string): void {
+  const now = Date.now()
+  if (mameOpfsCleanupTask || now - lastMameOpfsCleanupAt < ROUTINE_CLEANUP_INTERVAL_MS) return
+  lastMameOpfsCleanupAt = now
+  const task = cleanupMameOpfs(keepKey).catch(() => {})
+  mameOpfsCleanupTask = task
+  void task.finally(() => {
+    if (mameOpfsCleanupTask === task) mameOpfsCleanupTask = null
+  }).catch(() => {})
+}
+
 function openDb(): Promise<IDBDatabase | null> {
   if (dbPromise) return dbPromise
   dbPromise = new Promise((resolve) => {
@@ -238,7 +257,7 @@ async function clearStored(db: IDBDatabase, key: string): Promise<void> {
  * 淘汰按会话做，绝不能逐片做：只删一款游戏的部分片会制造看似可续、实际必重下的碎片。
  * 当前正在写的 key 始终保留，哪怕设备时钟突然跳了七天也不会误删本次下载。
  */
-async function cleanup(db: IDBDatabase, keepKey: string): Promise<void> {
+async function cleanup(db: IDBDatabase, keepKey: string, evictOldest = false): Promise<void> {
   let sessions: SessionRecord[] | null = null
   try {
     sessions = await requestResult(db.transaction(STORE_SESSIONS, 'readonly').objectStore(STORE_SESSIONS).getAll())
@@ -248,10 +267,53 @@ async function cleanup(db: IDBDatabase, keepKey: string): Promise<void> {
   if (!sessions) return
   const now = Date.now()
   const ordered = sessions.slice().sort((a, b) => b.updatedAt - a.updatedAt)
+  // 正常时最多留四局。写入因配额失败时，移除最旧的其它会话再重试一次，避免四份未过期现场
+  // 把空间占满后让后续下载永久失去断点续传能力。正在下载的 key 始终保留。
+  const oldestKey = evictOldest ? ordered.findLast((session) => session.key !== keepKey)?.key : undefined
   const remove = ordered.filter((session, index) =>
-    session.key !== keepKey && (now - session.updatedAt > MAX_AGE_MS || index >= MAX_SESSIONS),
+    session.key !== keepKey && (
+      now - session.updatedAt > MAX_AGE_MS || index >= MAX_SESSIONS || session.key === oldestKey
+    ),
   )
   for (const session of remove) await clearStored(db, session.key)
+}
+
+/** 配额错误可能同时让最多两笔下载写入失败；串行淘汰，避免两边重复删多份续传现场。 */
+async function cleanupAfterQuotaFailure(db: IDBDatabase, keepKey: string): Promise<void> {
+  if (quotaCleanupTask) {
+    await quotaCleanupTask
+    return
+  }
+  // 避免普通巡检与配额淘汰同时读写会话列表；配额恢复不受 30 秒巡检间隔限制。
+  while (idbRoutineCleanupTask) await idbRoutineCleanupTask
+  if (quotaCleanupTask) {
+    await quotaCleanupTask
+    return
+  }
+  const task = cleanup(db, keepKey, true).catch(() => {})
+  quotaCleanupTask = task
+  try {
+    await task
+  } finally {
+    lastIdbCleanupAt = Date.now()
+    if (quotaCleanupTask === task) quotaCleanupTask = null
+  }
+}
+
+/** 普通巡检节流；下载写盘不必每一片都枚举所有会话。 */
+function requestIdbCleanup(db: IDBDatabase, keepKey: string): void {
+  const now = Date.now()
+  if (
+    idbRoutineCleanupTask
+    || quotaCleanupTask
+    || now - lastIdbCleanupAt < ROUTINE_CLEANUP_INTERVAL_MS
+  ) return
+  lastIdbCleanupAt = now
+  const task = cleanup(db, keepKey).catch(() => {})
+  idbRoutineCleanupTask = task
+  void task.finally(() => {
+    if (idbRoutineCleanupTask === task) idbRoutineCleanupTask = null
+  }).catch(() => {})
 }
 
 export const downloadResumeStore: DownloadResumeStore = {
@@ -310,7 +372,7 @@ export const downloadResumeStore: DownloadResumeStore = {
       }
       parts.set(record.index, record.blob)
     }
-    void cleanup(db, key)
+    requestIdbCleanup(db, key)
     return { total: session.total, chunkBytes, parts }
   },
 
@@ -334,11 +396,21 @@ export const downloadResumeStore: DownloadResumeStore = {
       ) as SessionRecord | null
       if (previous && (previous.total !== total || previous.chunkBytes !== chunkBytes)) await clearStored(db, key)
 
-      const transaction = db.transaction([STORE_SESSIONS, STORE_PARTS], 'readwrite')
-      transaction.objectStore(STORE_SESSIONS).put({ key, total, chunkBytes, updatedAt: Date.now() } satisfies SessionRecord)
-      transaction.objectStore(STORE_PARTS).put({ downloadKey: key, index, blob } satisfies PartRecord)
-      if (!(await transactionDone(transaction))) return false
-      void cleanup(db, key)
+      const write = async (): Promise<boolean> => {
+        try {
+          const transaction = db.transaction([STORE_SESSIONS, STORE_PARTS], 'readwrite')
+          transaction.objectStore(STORE_SESSIONS).put({ key, total, chunkBytes, updatedAt: Date.now() } satisfies SessionRecord)
+          transaction.objectStore(STORE_PARTS).put({ downloadKey: key, index, blob } satisfies PartRecord)
+          return await transactionDone(transaction)
+        } catch {
+          return false
+        }
+      }
+      if (!(await write())) {
+        await cleanupAfterQuotaFailure(db, key)
+        if (!(await write())) return false
+      }
+      requestIdbCleanup(db, key)
       return true
     } catch {
       // QuotaExceededError 最常见。续传是优化，配额满仍要让这一局在内存里正常下完。
@@ -401,7 +473,7 @@ const mameOpfsResumeStore: DownloadResumeStore = {
       await clearMameOpfsSession(key)
       return null
     }
-    void cleanupMameOpfs(key)
+    requestMameOpfsCleanup(key)
     return { total: session.total, chunkBytes, parts }
   },
 
@@ -428,7 +500,7 @@ const mameOpfsResumeStore: DownloadResumeStore = {
         await opfsWrite(dir, `part-${index}.bin`, blob)
         await opfsWrite(dir, 'meta.json', JSON.stringify({ key, total, chunkBytes, updatedAt: Date.now() } satisfies SessionRecord))
       }
-      void cleanupMameOpfs(key)
+      requestMameOpfsCleanup(key)
       return true
     } catch {
       // 配额、OPFS 被策略禁用、或浏览器在后台回收句柄都只意味着回退，不应拦住本局下载。

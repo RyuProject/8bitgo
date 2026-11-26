@@ -31,6 +31,7 @@ import { coverCdnHint, type CoverCdnHint } from './cnHost'
 import { reportCoverCdnFailure, selectedCoverCdn, startCoverCdnProbe, subscribeCoverCdn } from './coverCdn'
 import { trackUploadActivity } from './uploadActivity'
 import type { UploadActivityOptions } from './uploadActivity'
+import { createRequestTimeout } from './requestTimeout'
 
 export const ROM_BASE_KEY = '8bitgo.rom.base'
 export const ROM_API_KEY = '8bitgo.rom.api'
@@ -915,6 +916,10 @@ const probeResults = new Map<string, ProbeOutcome>()
 const probeResultExpiry = new Map<string, number>()
 /** 备用域结论的有效期（毫秒） */
 export const ALTERNATE_PROBE_TTL_MS = 5 * 60_000
+/** 对象可在同一 key 覆盖；成功探测的 ETag 不能在长驻页面里永久有效。 */
+export const ROM_PROBE_SUCCESS_TTL_MS = 5 * 60_000
+/** 刚上传或恢复的对象应尽快从旧 404 中恢复出来。 */
+export const ROM_PROBE_MISS_TTL_MS = 60_000
 const probeInflight = new Map<string, Promise<ProbeOutcome>>()
 /** 清缓存时让更早启动、但更晚返回的 HEAD 失去写回资格，避免旧 404 覆盖刚上传的新对象。 */
 let probeCacheGeneration = 0
@@ -1203,8 +1208,12 @@ export function probeRom(
     // 上传 / 删除 / 手动重试可能在 HEAD 飞行期间清过缓存；旧请求回来后不能把旧结论塞回去。
     if (outcome.certain && generation === probeCacheGeneration) {
       probeResults.set(cacheKey, outcome)
-      if (viaAlternate) probeResultExpiry.set(cacheKey, Date.now() + ALTERNATE_PROBE_TTL_MS)
-      else probeResultExpiry.delete(cacheKey)
+      const ttl = viaAlternate
+        ? ALTERNATE_PROBE_TTL_MS
+        : outcome.url
+          ? ROM_PROBE_SUCCESS_TTL_MS
+          : ROM_PROBE_MISS_TTL_MS
+      probeResultExpiry.set(cacheKey, Date.now() + ttl)
     }
     return outcome
   }
@@ -1941,13 +1950,14 @@ export interface RomHead {
  * 用途是上传前的重复检查：同一个游戏的同一个语言槽（或同一张封面）只该有一份文件，
  * 直接 PUT 会静默覆盖，管理员根本不知道自己盖掉了什么。
  *
- * 管理页有口令时走受保护的 /list；没有口令才退回公开 HEAD。调用方把探测失败当作
- * 「未知但允许继续」——它只是覆盖提示，不该因为探测服务故障把上传本身堵死。
+ * 管理页有口令时走受保护的 /list；没有口令才退回公开 HEAD。探测有 12 秒上限，
+ * 避免上传前的只读检查卡住整个流程；普通重复上传把失败当未知继续，转换覆盖等强校验入口可自行失败关闭。
  */
 export async function headRom(key: string): Promise<RomHead> {
   const api = getRomApi()
   const clean = key.replace(/^\/+/, '')
   if (!api || !clean) return { exists: false }
+  const request = createRequestTimeout(12_000)
 
   /*
    * 后台已经有 ADMIN_TOKEN 时用 /list 做“静默 HEAD”。直接 fetch(HEAD /对象) 在首次上传时
@@ -1957,25 +1967,29 @@ export async function headRom(key: string): Promise<RomHead> {
    *
    * 没有 token 时保留公开 HEAD，供只读配置页或旧部署使用；上传本身反正也需要 token。
    */
-  if (getRomToken()) {
-    const url = new URL(`${api}/list`)
-    url.searchParams.set('prefix', clean)
-    const res = await fetch(url.toString(), { headers: authHeaders(), cache: 'no-store' })
-    if (!res.ok) throw explainRomStatus(res.status, '对象检测')
-    const data = (await res.json().catch(() => null)) as { objects?: RomObject[] } | null
-    const exact = (data?.objects ?? []).filter((object) => object.key === clean)
-    const preferredBucket = clean.startsWith('covers/') ? 'COVERS' : 'ROMS'
-    const object = exact.find((candidate) => candidate.bucket === preferredBucket) ?? exact[0]
-    return object ? { exists: true, size: object.size } : { exists: false }
-  }
+  try {
+    if (getRomToken()) {
+      const url = new URL(`${api}/list`)
+      url.searchParams.set('prefix', clean)
+      const res = await fetch(url.toString(), { headers: authHeaders(), cache: 'no-store', signal: request.signal })
+      if (!res.ok) throw explainRomStatus(res.status, '对象检测')
+      const data = (await res.json().catch(() => null)) as { objects?: RomObject[] } | null
+      const exact = (data?.objects ?? []).filter((object) => object.key === clean)
+      const preferredBucket = clean.startsWith('covers/') ? 'COVERS' : 'ROMS'
+      const object = exact.find((candidate) => candidate.bucket === preferredBucket) ?? exact[0]
+      return object ? { exists: true, size: object.size } : { exists: false }
+    }
 
-  const res = await fetch(`${api}/${encodeKey(clean)}`, { method: 'HEAD', headers: authHeaders(), cache: 'no-store' })
-  if (!res.ok) return { exists: false }
-  const len = Number(res.headers.get('content-length'))
-  return {
-    exists: true,
-    size: Number.isFinite(len) && len >= 0 ? len : undefined,
-    etag: res.headers.get('etag') ?? undefined,
+    const res = await fetch(`${api}/${encodeKey(clean)}`, { method: 'HEAD', headers: authHeaders(), cache: 'no-store', signal: request.signal })
+    if (!res.ok) return { exists: false }
+    const len = Number(res.headers.get('content-length'))
+    return {
+      exists: true,
+      size: Number.isFinite(len) && len >= 0 ? len : undefined,
+      etag: res.headers.get('etag') ?? undefined,
+    }
+  } finally {
+    request.dispose()
   }
 }
 
@@ -1988,6 +2002,8 @@ export async function headRom(key: string): Promise<RomHead> {
  * 所以阈值放在「一次传完还算稳」和「失败一次代价开始变大」的交界上。
  */
 export const MULTIPART_THRESHOLD = 24 * 1024 * 1024
+/** 小文件单发 PUT 也要有停滞上限；否则静默断线会让管理员永远等在上传中。 */
+const SINGLE_PUT_STALL_MS = 45_000
 
 export interface UploadStage {
   /** 分片总数 */
@@ -2000,6 +2016,9 @@ export interface UploadStage {
   concurrency?: number
   /** 首个真实分片测得的上行 Mbps；不额外发送测速文件。 */
   measuredMbps?: number
+  /** 恢复前逐片核验已上传内容时的进度；避免大文件校验期间界面看起来卡住。 */
+  checkingParts?: number
+  checkingTotal?: number
 }
 
 /** 上传进度回调。第二个参数只有分片上传才有，单发 PUT 时是 undefined */
@@ -2066,10 +2085,12 @@ export async function uploadRom(
   key: string,
   onProgress?: UploadProgress,
   activityOptions?: UploadActivityOptions,
+  signal?: AbortSignal,
 ): Promise<UploadResult> {
   const cleanKey = key.replace(/^\/+/, '')
 
   return trackUploadActivity(`R2 上传：${cleanKey.split('/').pop() || cleanKey}`, async () => {
+    if (signal?.aborted) throw uploadAbortError()
     const api = getRomApi()
     if (!api) throw new Error('尚未配置 Worker 地址，无法上传')
     if (!getRomToken()) throw new Error('请先在「ROM 存储」页填写 Worker 口令（ADMIN_TOKEN）')
@@ -2078,7 +2099,7 @@ export async function uploadRom(
       // 动态 import：分片那套只有后台用得上，静态引会被打进播放器的首屏包里
       const mp = await import('./romMultipart')
       try {
-        const result = await mp.uploadRomMultipart(file, cleanKey, onProgress)
+        const result = await mp.uploadRomMultipart(file, cleanKey, onProgress, signal)
         clearRomProbeCache()
         return result
       } catch (err) {
@@ -2089,7 +2110,7 @@ export async function uploadRom(
       }
     }
 
-    return singlePut(file, cleanKey, api, onProgress)
+    return singlePut(file, cleanKey, api, onProgress, signal)
   }, activityOptions)
 }
 
@@ -2151,41 +2172,94 @@ export async function copyRomToSockdriveStaging(
 }
 
 /** 一次 PUT 传完。只适合小文件，大文件见 uploadRom 里的分片分支 */
-function singlePut(file: Blob, cleanKey: string, api: string, onProgress?: UploadProgress): Promise<UploadResult> {
+function uploadAbortError(): Error {
+  const error = new Error('上传已取消')
+  error.name = 'AbortError'
+  return error
+}
+
+function singlePut(file: Blob, cleanKey: string, api: string, onProgress?: UploadProgress, signal?: AbortSignal): Promise<UploadResult> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(uploadAbortError())
+      return
+    }
     const xhr = new XMLHttpRequest()
     xhr.open('PUT', `${api}/${encodeKey(cleanKey)}`)
     xhr.setRequestHeader('Authorization', `Bearer ${getRomToken()}`)
     xhr.setRequestHeader('Content-Type', file.type || guessUploadType(cleanKey))
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100))
+    let lastProgressAt = Date.now()
+    let lastLoaded = 0
+    let stalled = false
+    let settled = false
+    const watchdog = window.setInterval(() => {
+      if (settled || Date.now() - lastProgressAt < SINGLE_PUT_STALL_MS) return
+      stalled = true
+      xhr.abort()
+      fail(new Error('上传停滞：45 秒没有收到上传进度或服务器确认，请重试'))
+    }, 5_000)
+    const finish = () => {
+      if (settled) return false
+      settled = true
+      window.clearInterval(watchdog)
+      signal?.removeEventListener('abort', abortFromSignal)
+      return true
     }
+    const fail = (error: Error) => {
+      if (finish()) reject(error)
+    }
+    xhr.upload.onprogress = (e) => {
+      if (settled) return
+      if (e.loaded > lastLoaded) {
+        lastLoaded = e.loaded
+        lastProgressAt = Date.now()
+      }
+      // 100% 代表 Worker 已校验对象；请求体发完但还没收到确认时停在 99%。
+      if (e.lengthComputable && e.total > 0 && onProgress) onProgress(Math.min(99, Math.round((e.loaded / e.total) * 100)))
+    }
+    xhr.upload.onload = () => { lastProgressAt = Date.now() }
     xhr.onerror = () =>
-      reject(
+      fail(signal?.aborted ? uploadAbortError() :
         new Error(
           // 「检查地址与 CORS」这句话曾经把人带到完全错误的方向上：文件超过平台上限时
           // 边缘直接 reset 连接，表现和 Worker 不通一模一样。大文件优先提这个可能。
           file.size > 90 * 1024 * 1024
             ? '上传中断：文件接近或超过 Cloudflare 单请求 100MB 上限。请部署 worker/ 的新版本以启用分片上传'
             : '网络错误：无法连接 Worker（检查地址与 CORS）',
-        ),
-      )
+        ))
+    xhr.onabort = () => fail(signal?.aborted
+      ? uploadAbortError()
+      : new Error(stalled ? '上传停滞：45 秒没有收到上传进度或服务器确认，请重试' : '上传连接已中断'))
     xhr.onload = () => {
+      if (signal?.aborted) {
+        fail(uploadAbortError())
+        return
+      }
       if (xhr.status >= 200 && xhr.status < 300) {
         let data: { ok?: boolean; key?: string; size?: number; etag?: string } | null = null
         try { data = JSON.parse(xhr.responseText) } catch { /* Worker 地址填错时可能回 HTML。 */ }
         // 仅凭 200 就把 key 写进游戏库会让播放器拿到 HTML 或不完整的对象。
         if (data?.ok !== true || data.key !== cleanKey || data.size !== file.size) {
-          reject(new Error(`上传响应不完整或对象大小不符；请到「ROM 存储」核查 ${cleanKey}`))
+          fail(new Error(`上传响应不完整或对象大小不符；请到「ROM 存储」核查 ${cleanKey}`))
           return
         }
+        if (!finish()) return
         clearRomProbeCache()
+        onProgress?.(100)
         resolve({ key: cleanKey, url: romUrlForKey(cleanKey), size: data.size, etag: data.etag || undefined })
       } else {
-        reject(explainRomStatus(xhr.status, '上传'))
+        fail(explainRomStatus(xhr.status, '上传'))
       }
     }
-    xhr.send(file)
+    try {
+      signal?.addEventListener('abort', abortFromSignal, { once: true })
+      xhr.send(file)
+    } catch (error) {
+      fail(error instanceof Error ? error : new Error('无法开始上传'))
+    }
+    function abortFromSignal() {
+      xhr.abort()
+    }
   })
 }
 

@@ -208,6 +208,30 @@ await check('超过重试次数才真的失败', async () => {
   )
 })
 
+await check('弱网退避结束后摘掉取消监听，长 ROM 重试不会累积闭包', async () => {
+  const ctrl = new AbortController()
+  const active = new Set()
+  const add = ctrl.signal.addEventListener.bind(ctrl.signal)
+  const remove = ctrl.signal.removeEventListener.bind(ctrl.signal)
+  ctrl.signal.addEventListener = (type, listener, options) => {
+    if (type === 'abort') active.add(listener)
+    return add(type, listener, options)
+  }
+  ctrl.signal.removeEventListener = (type, listener, options) => {
+    if (type === 'abort') active.delete(listener)
+    return remove(type, listener, options)
+  }
+  const { fetchImpl } = server(300, { failOn: [1] })
+  const blob = await fetchBlobWithProgress('u', {
+    fetchImpl,
+    chunkBytes: 1024,
+    retries: 1,
+    signal: ctrl.signal,
+  })
+  expectExact(await readAll(blob), 300)
+  assert.equal(active.size, 0, '下载完成后，重试退避和看门狗都必须从父 signal 解绑')
+})
+
 await check('分片少给了字节：当失败重传，绝不把残片拼进去', async () => {
   const size = 2048
   // 第 2 次请求少给一个字节；重传时给全

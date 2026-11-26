@@ -160,7 +160,7 @@ function Collection({
           <div className="mt-8 adaptive-game-grid">
             {more.items.map((g, i) => (
               // 首屏这几张的封面立即加载，避免一进页面先看到一屏占位格
-              <GameCard key={g.slug} game={g} coverRatio={coverRatio} eager={i < ABOVE_FOLD_CARDS} coverSizes={GAME_CARD_IMAGE_SIZES} />
+              <GameCard key={g.slug} game={g} coverRatio={coverRatio} eager={i < ABOVE_FOLD_CARDS} priority={i === 0} coverSizes={GAME_CARD_IMAGE_SIZES} />
             ))}
           </div>
 
@@ -222,8 +222,8 @@ function useCollectionInfinite(
 ): InfiniteList<Game> {
   const resetKey = `${path}?page=${page}`
   const fetchMore = useCallback(
-    async (nextPage: number): Promise<Paged<Game>> => {
-      const d = await fetchPageData(path, { page: nextPage })
+    async (nextPage: number, signal?: AbortSignal): Promise<Paged<Game>> => {
+      const d = await fetchPageData(path, { page: nextPage }, signal)
       // 后端按路径决定回哪种 payload；对不上说明路由变了，这批数据不能用
       if (d.route !== 'platform' && d.route !== 'genre' && d.route !== 'rom-language') throw new Error('unexpected route payload')
       return d.list

@@ -118,10 +118,10 @@ function corsHeaders(request, env) {
   const origin = request.headers.get('Origin') || ''
   const headers = {
     'Access-Control-Allow-Methods': 'GET, HEAD, POST, PUT, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Range, Authorization, Content-Type, If-None-Match, If-Range, If-Modified-Since, If-Match, If-Unmodified-Since',
+    'Access-Control-Allow-Headers': 'Range, Authorization, Content-Type, If-None-Match, If-Range, If-Modified-Since, If-Match, If-Unmodified-Since, X-8BG-Part-Number',
     // Sockdrive 的 .raw / .metaj 是预压缩对象。浏览器会自动解码正文，但跨域脚本只有看见
     // Content-Encoding 才知道 Content-Length 仍是压缩字节数，不能拿它和解码后上限比较。
-    'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges, Content-Encoding, ETag, Last-Modified, Retry-After, CF-Cache-Status, X-8BitGo-Edge-Cache',
+    'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges, Content-Encoding, ETag, Last-Modified, Retry-After, Server-Timing, CF-Cache-Status, X-8BitGo-Edge-Cache',
     'Access-Control-Max-Age': '86400',
   }
   /*
@@ -738,6 +738,7 @@ const RESERVED = new Set(['', 'ping', 'list', 'multipart', 'bulk'])
 const MULTIPART_PREFIX = '_uploads/'
 const MAX_PART_BYTES = 32 * 1024 * 1024
 const MAX_JSON_BYTES = 2 * 1024 * 1024
+const PART_NUMBER_HEADER = 'X-8BG-Part-Number'
 /*
  * 缓存策略分两档，判据是**请求 URL 有没有版本戳** —— 这两类素材在本站的行为完全不同：
  *
@@ -1111,6 +1112,23 @@ function edgeCacheHeader(response, value) {
   // Zstd 分片的媒体类型本身就声明压缩格式；重新包装响应时保留 manual，避免出口二次压缩。
   return new Response(response.body, r2BodyResponseInit(headers, response.status, response.statusText))
 }
+
+/**
+ * 给浏览器 Resource Timing 加一段低开销的服务端耗时，供慢启动诊断区分网络与 Worker 等待。
+ * GET 只计到响应头就绪（不含流式正文）；上传 PUT 会等 R2 确认分片，所以包含整段上行与写入等待。
+ * 边缘命中信息与现有响应头一致；不记录路径、对象 key、账号或请求体。
+ */
+function responseTiming(response, startedAt) {
+  const headers = new Headers(response.headers)
+  const duration = Math.max(0, performance.now() - startedAt)
+  const metrics = [`worker;dur=${duration.toFixed(1)}`]
+  const cacheStatus = headers.get('X-8BitGo-Edge-Cache')
+  if (cacheStatus === 'HIT' || cacheStatus === 'MISS') metrics.push(`edge;desc="${cacheStatus}"`)
+  const existing = headers.get('Server-Timing')
+  headers.set('Server-Timing', [existing, ...metrics].filter(Boolean).join(', '))
+  // 保留 R2 预压缩资源的 manual 编码语义，不复制或缓冲响应体。
+  return new Response(response.body, r2BodyResponseInit(headers, response.status, response.statusText))
+}
 /** 写对象元数据时用的策略；读的时候还会按请求 URL 再判一次（见 cachePolicy） */
 function writeCacheControl(env) { return cacheValue(env, 'OBJECT_CACHE_CONTROL', DEFAULT_CACHE_CONTROL) }
 /**
@@ -1233,7 +1251,7 @@ async function createMultipart(request, env, key, cors) {
       if (record.key !== key || record.requestId !== requestId || record.requestSignature !== requestSignature || !record.uploadId) {
         throw new HttpError(409, '分片创建幂等标记与请求不匹配，请到 ROM 存储检查残留会话', 'multipart_idempotency_conflict')
       }
-      return json({ ok: true, key, uploadId: record.uploadId, marker, requestSignature, maxPartBytes: MAX_PART_BYTES, reused: true }, cors)
+      return json({ ok: true, key, uploadId: record.uploadId, marker, requestSignature, maxPartBytes: MAX_PART_BYTES, partNumberInHeader: true, reused: true }, cors)
     }
   }
   let upload
@@ -1277,7 +1295,7 @@ async function createMultipart(request, env, key, cors) {
       const winnerRecord = winner?.customMetadata || {}
       if (winner && winnerRecord.key === key && winnerRecord.requestId === requestId &&
           winnerRecord.requestSignature === requestSignature && winnerRecord.uploadId) {
-        return json({ ok: true, key, uploadId: winnerRecord.uploadId, marker, requestSignature, maxPartBytes: MAX_PART_BYTES, reused: true }, cors)
+        return json({ ok: true, key, uploadId: winnerRecord.uploadId, marker, requestSignature, maxPartBytes: MAX_PART_BYTES, partNumberInHeader: true, reused: true }, cors)
       }
       if (winner) return json({ ok: false, error: '分片创建幂等标记与请求不匹配，请到 ROM 存储检查残留会话', code: 'multipart_idempotency_conflict' }, cors, 409)
       return json({ ok: false, error: '并发创建会话的恢复标记暂时不可读；多余会话已中止，请用同一请求 ID 重试', code: 'multipart_marker_race_lost', retryable: true }, cors, 503)
@@ -1300,10 +1318,9 @@ async function createMultipart(request, env, key, cors) {
     if (error instanceof HttpError) throw error
     return json({ error: '标记写入失败，已中止新建的分片会话', code: 'multipart_marker_write_failed', retryable: true }, cors, 503)
   }
-  return json({ ok: true, key, uploadId: upload.uploadId, marker, ...(requestId ? { requestSignature } : {}), maxPartBytes: MAX_PART_BYTES }, cors)
+  return json({ ok: true, key, uploadId: upload.uploadId, marker, ...(requestId ? { requestSignature } : {}), maxPartBytes: MAX_PART_BYTES, partNumberInHeader: true }, cors)
 }
-async function uploadPart(request, env, key, uploadId, url, cors) {
-  const partNumber = Number(url.searchParams.get('partNumber'))
+async function uploadPart(request, env, key, uploadId, partNumber, cors) {
   if (!Number.isInteger(partNumber) || partNumber < 1 || partNumber > 10000) throw new HttpError(400, 'partNumber 必须是 1..10000 的整数')
   if (declaredLength(request, MAX_PART_BYTES) === 0 || !request.body) throw new HttpError(400, 'empty part')
   try {
@@ -1537,6 +1554,7 @@ async function handle(request, env, url, cors) {
   const uploadId = url.searchParams.get('uploadId')
   const startsUpload = url.searchParams.has('uploads')
   const hasPart = url.searchParams.has('partNumber')
+  const hasPartHeader = request.headers.has(PART_NUMBER_HEADER)
   const hasMarker = url.searchParams.has('marker')
   for (const parameter of ['uploadId', 'uploads', 'partNumber', 'marker']) {
     if (url.searchParams.getAll(parameter).length > 1) throw new HttpError(400, '分片参数不能重复')
@@ -1544,8 +1562,8 @@ async function handle(request, env, url, cors) {
   if (hasUploadId && !validUploadId(uploadId)) throw new HttpError(400, '无效 uploadId')
   // A malformed multipart request must NEVER fall through to single PUT/DELETE:
   // missing uploadId could otherwise overwrite a final object with one part, or delete it.
-  if (startsUpload && (request.method !== 'POST' || hasUploadId || hasPart || hasMarker)) throw new HttpError(400, 'uploads 仅可用于创建分片会话')
-  if (hasPart && (!hasUploadId || request.method !== 'PUT')) throw new HttpError(400, 'partNumber 需要 PUT 与有效 uploadId')
+  if (startsUpload && (request.method !== 'POST' || hasUploadId || hasPart || hasPartHeader || hasMarker)) throw new HttpError(400, 'uploads 仅可用于创建分片会话')
+  if ((hasPart || hasPartHeader) && (!hasUploadId || request.method !== 'PUT')) throw new HttpError(400, 'partNumber 需要 PUT 与有效 uploadId')
   if (hasMarker && (!hasUploadId || request.method !== 'DELETE')) throw new HttpError(400, 'marker 需要 DELETE 与有效 uploadId')
   if (hasUploadId && !['POST', 'PUT', 'DELETE'].includes(request.method)) throw new HttpError(400, 'uploadId 不适用于此请求方法')
   if (request.method === 'POST') {
@@ -1553,7 +1571,19 @@ async function handle(request, env, url, cors) {
     if (uploadId) return completeMultipart(request, env, key, uploadId, cors)
     throw new HttpError(400, 'POST 需要 ?uploads 或 ?uploadId=')
   }
-  if (request.method === 'PUT' && uploadId) return uploadPart(request, env, key, uploadId, url, cors)
+  if (request.method === 'PUT' && uploadId) {
+    const queryPartNumber = hasPart ? Number(url.searchParams.get('partNumber')) : null
+    const headerText = request.headers.get(PART_NUMBER_HEADER)
+    const headerPartNumber = hasPartHeader && /^\d+$/.test(headerText || '') ? Number(headerText) : null
+    if ((hasPart && (!Number.isInteger(queryPartNumber) || queryPartNumber < 1 || queryPartNumber > 10000)) ||
+        (hasPartHeader && (!Number.isInteger(headerPartNumber) || headerPartNumber < 1 || headerPartNumber > 10000))) {
+      throw new HttpError(400, 'partNumber 必须是 1..10000 的整数')
+    }
+    if (queryPartNumber !== null && headerPartNumber !== null && queryPartNumber !== headerPartNumber) {
+      throw new HttpError(400, '查询参数与请求头中的 partNumber 不一致')
+    }
+    return uploadPart(request, env, key, uploadId, headerPartNumber ?? queryPartNumber, cors)
+  }
   if (request.method === 'DELETE' && uploadId) return abortMultipart(env, key, uploadId, url.searchParams.get('marker'), cors)
   if (request.method === 'PUT') {
     const limit = maxUploadBytes(env)
@@ -1578,6 +1608,7 @@ async function handle(request, env, url, cors) {
 }
 export default {
   async fetch(request, env, context) {
+    const startedAt = performance.now()
     const url = new URL(request.url)
     // 只读素材域名：独立 CORS、只读 WEBGAMES，绝不落进下面的管理接口（见 html5.js）。
     if (html5Host(url, env)) {
@@ -1600,7 +1631,7 @@ export default {
       try {
         const hit = await videoCache.match(videoRangeKey)
         const sliced = hit && await slicedPreviewVideo(hit, request.headers.get('Range'))
-        if (sliced) return sliced
+        if (sliced) return ['GET', 'HEAD', 'PUT'].includes(request.method) ? responseTiming(sliced, startedAt) : sliced
       } catch (error) {
         console.warn('[video-cache] edge match failed', error instanceof Error ? error.message : String(error))
       }
@@ -1613,10 +1644,16 @@ export default {
     if (edgeCache) {
       try {
         const hit = await edgeCache.match(rangePlan?.key || request)
-        if (hit && !rangePlan) return edgeCacheHeader(hit, 'HIT')
+        if (hit && !rangePlan) {
+          const response = edgeCacheHeader(hit, 'HIT')
+          return ['GET', 'HEAD', 'PUT'].includes(request.method) ? responseTiming(response, startedAt) : response
+        }
         if (hit && rangePlan) {
           const contentRange = verifiedRangeHeaders(hit, rangePlan, true)
-          if (contentRange) return restoredRangeResponse(hit, contentRange)
+          if (contentRange) {
+            const response = restoredRangeResponse(hit, contentRange)
+            return ['GET', 'HEAD', 'PUT'].includes(request.method) ? responseTiming(response, startedAt) : response
+          }
           // 旧缓存或错误对象不能冒充 206；让 R2 重新校验版本并填充正确分片。
           await hit.body?.cancel().catch(() => {})
         }
@@ -1636,7 +1673,8 @@ export default {
           console.warn('[rom-cache] range put failed', error instanceof Error ? error.message : String(error))
         }),
       )
-      return edgeCacheHeader(response, 'MISS')
+      const timed = edgeCacheHeader(response, 'MISS')
+      return ['GET', 'HEAD', 'PUT'].includes(request.method) ? responseTiming(timed, startedAt) : timed
     }
     // 分片上传允许封面带 Content-Encoding；Cache API 会丢掉这个头却保留压缩字节（见上面
     // Sockdrive 那段），这种封面宁可每次回 R2，也不能让 HIT 吐出一张解不开的图。
@@ -1657,7 +1695,7 @@ export default {
           console.warn('[rom-cache] negative put failed', error instanceof Error ? error.message : String(error))
         }),
       )
-      return response
+      return ['GET', 'HEAD', 'PUT'].includes(request.method) ? responseTiming(response, startedAt) : response
     }
     if (edgeCache && response.status === 200 && response.body && !response.headers.has('Content-Range') && !encodedCover && !uncacheableVideo && !tooLargeForFullPut &&
       responseMatchesRomv(response, url)) {
@@ -1668,13 +1706,14 @@ export default {
           console.warn('[rom-cache] edge put failed', error instanceof Error ? error.message : String(error))
         }),
       )
-      return edgeCacheHeader(response, 'MISS')
+      const timed = edgeCacheHeader(response, 'MISS')
+      return ['GET', 'HEAD', 'PUT'].includes(request.method) ? responseTiming(timed, startedAt) : timed
     }
     // HEAD responses (including errors and /ping) MUST NOT contain a body.
     if (request.method === 'HEAD' && response.body) {
       try { await response.body.cancel() } catch { /* already closed */ }
-      return new Response(null, { status: response.status, headers: response.headers })
+      response = new Response(null, { status: response.status, headers: response.headers })
     }
-    return response
+    return ['GET', 'HEAD', 'PUT'].includes(request.method) ? responseTiming(response, startedAt) : response
   },
 }

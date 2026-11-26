@@ -1,7 +1,7 @@
 /** 启动漏斗的输入边界与 20 秒告警阈值；不连数据库。 */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { isSlowStartup, normalizeStartupEvent, sanitizeStartupDetail, STARTUP_SLOW_MS } from '../src/startup-metrics.js'
+import { isSlowStartup, normalizeStartupEvent, normalizeStartupEventBatch, sanitizeStartupDetail, shapePhaseTiming, STARTUP_SLOW_MS } from '../src/startup-metrics.js'
 import { playShell } from '../src/routes/play.js'
 
 const base = {
@@ -34,6 +34,64 @@ assert.ok(!privateDetail.includes('eyJhbGci'), '错误摘要不保存 Bearer / J
 assert.match(privateDetail, /Fetch \[URL\].*\[IP\].*Authorization/i, '脱敏后仍保留可诊断的错误上下文')
 assert.equal(sanitizeStartupDetail('   '), null)
 
+const startupBatch = normalizeStartupEventBatch([
+  { ...base, event: 'rom_load_start', elapsedMs: 30 },
+  { ...base, event: 'core_warm_complete', elapsedMs: 420 },
+  { ...base, event: 'download_complete', elapsedMs: 600 },
+  { ...base, event: 'first_frame', elapsedMs: 800 },
+])
+assert.equal(startupBatch.length, 4, '同一次开局的资源、下载和画面阶段可以合批上报')
+assert.throws(() => normalizeStartupEventBatch([
+  { ...base, event: 'rom_load_start' },
+  { ...base, attemptId: 'another-attempt', event: 'first_frame' },
+]), /同一次启动/, '不能把不同 attempt 的耗时拼在一个批次')
+assert.throws(() => normalizeStartupEventBatch([
+  { ...base, event: 'rom_load_start' },
+  { ...base, event: 'failed', detail: '失败' },
+]), /不能批量/, '诊断事件保留原有单独保存和限流路径')
+assert.throws(() => normalizeStartupEventBatch([
+  { ...base, event: 'rom_load_start' },
+  { ...base, event: 'rom_load_start' },
+]), /不能重复/, '批次内重复阶段必须拒绝')
+
+assert.deepEqual(shapePhaseTiming({
+  avg_resource_ms: '1250.4',
+  resource_samples: '4',
+  avg_resource_to_first_frame_ms: 350,
+  resource_to_first_frame_samples: 3,
+  avg_first_frame_to_playable_ms: null,
+  first_frame_to_playable_samples: 0,
+}), {
+  avgResourceMs: 1250,
+  resourceSamples: 4,
+  avgResourceToFirstFrameMs: 350,
+  resourceToFirstFrameSamples: 3,
+  avgFirstFrameToPlayableMs: null,
+  firstFrameToPlayableSamples: 0,
+  avgRomLoadMs: null,
+  romLoadSamples: 0,
+  avgCoreWarmMs: null,
+  coreWarmSamples: 0,
+  coreCacheHits: 0,
+  avgResourceToRuntimeReadyMs: null,
+  resourceToRuntimeReadySamples: 0,
+}, '阶段汇总应取整，并保留每段有效样本量')
+assert.deepEqual(shapePhaseTiming(), {
+  avgResourceMs: null,
+  resourceSamples: 0,
+  avgResourceToFirstFrameMs: null,
+  resourceToFirstFrameSamples: 0,
+  avgFirstFrameToPlayableMs: null,
+  firstFrameToPlayableSamples: 0,
+  avgRomLoadMs: null,
+  romLoadSamples: 0,
+  avgCoreWarmMs: null,
+  coreWarmSamples: 0,
+  coreCacheHits: 0,
+  avgResourceToRuntimeReadyMs: null,
+  resourceToRuntimeReadySamples: 0,
+}, '没有阶段数据时应返回空值而不是伪造 0ms')
+
 assert.throws(() => normalizeStartupEvent({ ...base, event: 'almost_ready' }), /未知/)
 assert.throws(() => normalizeStartupEvent({ ...base, event: 'first_frame', attemptId: '' }), /attemptId/)
 assert.throws(() => normalizeStartupEvent({ ...base, event: 'first_frame', runtime: 'x/'.repeat(30) }), /运行时/)
@@ -49,6 +107,17 @@ assert.match(metricsSource, /const accepted = recorded \|\|/, '唯一键拦住�
 assert.match(metricsSource, /recentFailures/, '统计接口应提供最近启动失败明细')
 assert.match(metricsSource, /readiness_unobservable/, '汇总必须单独统计无法观测的页面，不混进失败数')
 assert.match(metricsSource, /sanitizeStartupDetail\(row\.detail\)/, '历史错误摘要返回后台前也必须脱敏')
+assert.match(metricsSource, /WITH attempt_events AS/, '阶段统计必须先按一次启动配对事件')
+assert.match(metricsSource, /UNION ALL\s+SELECT game_id, country, first_frame_runtime/, '不同运行时的回退事件不能拼成一个阶段')
+assert.match(metricsSource, /resource_ms >= started_ms/, '资源耗时只接受晚于开始事件的配对')
+assert.match(metricsSource, /first_frame_ms >= resource_ms/, '首帧阶段不能接受逆序事件')
+assert.match(metricsSource, /playable_ms >= first_frame_ms/, '可玩阶段不能接受逆序事件')
+assert.match(metricsSource, /start_runtime = resource_runtime/, '跨运行时切换的阶段不能错误归到某个运行时')
+assert.match(metricsSource, /query\(PHASE_TIMING_QUERY, \[cutoff\]\)/, '四个维度应共用一条阶段聚合查询')
+assert.match(metricsSource, /INSERT IGNORE INTO game_startup_events[\s\S]{0,550}CROSS JOIN/, '批量阶段用单条 INSERT 省掉逐事件 SQL 往返')
+assert.match(metricsSource, /recordStartupEvents/, '服务端保留批量写入入口')
+assert.match(metricsSource, /BATCHABLE_EVENTS/, '批量上报只允许普通启动阶段')
+assert.match(readFileSync(new URL('../src/routes/games.js', import.meta.url), 'utf8'), /normalizeStartupEventBatch\(req\.body\.events\)/, '启动路由识别并校验阶段批次')
 assert.match(adminRoute, /startupStats\(req\.query\.days, req\.query\.q\)/, '后台故障列表支持按游戏搜索')
 
 const renderShell = (query) => {

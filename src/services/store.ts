@@ -270,6 +270,25 @@ export interface StartupAggregate {
   readinessUnobservable: number
   avgPlayableMs: number | null
   maxPlayableMs: number | null
+  /** 点击开始到下载完成/资源就绪的平均耗时，以及有效配对数。 */
+  avgResourceMs: number | null
+  resourceSamples: number
+  /** 下载完成到首帧的平均启动耗时，以及有效配对数。 */
+  avgResourceToFirstFrameMs: number | null
+  resourceToFirstFrameSamples: number
+  /** 首帧到可玩状态的平均耗时，以及有效配对数。 */
+  avgFirstFrameToPlayableMs: number | null
+  firstFrameToPlayableSamples: number
+  /** ROM 可观测获取阶段的均值与样本数；流式光盘不把按需读取误算为整盘下载完成。 */
+  avgRomLoadMs: number | null
+  romLoadSamples: number
+  /** EmulatorJS 核心预热的均值与样本数；缓存命中单独计数。 */
+  avgCoreWarmMs: number | null
+  coreWarmSamples: number
+  coreCacheHits: number
+  /** 资源边界到运行时 onReady 的耗时，以及有效配对数。 */
+  avgResourceToRuntimeReadyMs: number | null
+  resourceToRuntimeReadySamples: number
   /** 0～100 的百分数，不是 0～1。 */
   playableRate: number
 }

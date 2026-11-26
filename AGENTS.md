@@ -1293,17 +1293,10 @@ cd server && npm run migrate      # 幂等
 后台选 `.zip` 走整包上传，文件落在 `roms/flash/<slug>[.<lang>]/` 下，相对路径才对得上。
 **别图省事把缺的 swf 单独补到 `roms/flash/` 根目录**——那是所有 Flash 游戏共用的目录，迟早撞名。
 
-### 2.12 「连不上 Worker」很可能是**文件太大**，而且 Worker 日志里查不到
+### 2.12 大文件必须分片；不要把平台上限或无响应写死成一个原因
 
-后台传 100MB 的游戏时报「网络错误：无法连接 Worker（检查地址与 CORS）」——
-Worker 是好的，地址和 CORS 也是对的。真凶是 **Cloudflare 的请求体上限**：
-Free / Pro 100 MB，Business 200 MB，Enterprise 500 MB，**由边缘节点执行，在 Worker 代码之前**。
-超限时边缘直接 reset 连接，浏览器拿不到 413，XHR 只触发 `onerror`，
-所以 `worker/src/index.js` 里那句 `Content-Length > MAX_UPLOAD_MB → 413` 一次都没运行过
-（`MAX_UPLOAD_MB` 默认写着 512，是个管不到平台上限的空承诺）。
-
-**诊断指纹**：失败时开 `npx wrangler tail`，被边缘拦掉的请求**一条日志都不会有**。
-日志里能看到这次 PUT，才说明问题在 Worker 侧。
+曾有 100MB 单发上传报「网络错误：无法连接 Worker」且 Worker 没有日志；这说明请求可能在 Worker 前被拒绝，不能单凭 `onerror` 断定是 CORS、Worker 故障或超限。
+**截至 2026-11-25，Cloudflare 文档列出的站点请求体上限是** Free / Pro 100 MB、Business 200 MB、Enterprise 可自行调到 5 GB；超过配置上限时文档规定返回 413。中间网络重置仍可能表现为 XHR `onerror`，但需要结合状态码、请求字节数和 Worker 日志诊断。[Cloudflare Workers limits](https://developers.cloudflare.com/workers/platform/limits/)
 
 现在超过 24MB（`MULTIPART_THRESHOLD`）的文件自动改走**分片上传**：
 8MB 一片，首片既是真数据也是上行测速，按实际 Mbps、RTT、省流量模式与设备内存选择 1–4 路；
@@ -1313,7 +1306,7 @@ HTTP/2 reset、429 或网关 5xx
 不要把它改成四路固定并发，否则一次连接级错误会再次变成重试风暴。
 XHR 的 `progress` 事件按字节差值维护总量，并限到约 12fps 再通知 React；不要恢复成每个事件遍历全部分片
 并立即 `setState`，大 ISO 在 3–4 路上传时会用 UI 统计反过来堵住主线程与网络回调。
-上限是按**单个请求**算的，所以分片顺带把 100MB 这道墙也绕开了。三个必须记住的约束：
+上限是按**单个请求**算的，所以分片把每次请求限制在安全范围，也让失败只需重传当前片。三个必须记住的约束：
 
 ⚠️ 浏览器控制台若同时出现多个 `PUT ... net::ERR_HTTP2_PROTOCOL_ERROR`，通常不是 ISO 或 uploadId
 损坏，而是共用同一 HTTP/2 连接的分片被边缘/中间网络一起重置。不能让每个 XHR 在几百毫秒后

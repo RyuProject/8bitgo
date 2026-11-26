@@ -8,7 +8,14 @@ test('single-file bundle matches modular ROM responses and bytes',async()=>{
   for(const [path,method,headers] of [['/a','GET',{}],['/a','GET',{Range:'bytes=-2'}],['/a','HEAD',{}],['/%GG','GET',{}],['/a?uploadId=','DELETE',{}]]){
     const e1=environment(),e2=environment();e1.ROMS.seed('a','abcdef');e2.ROMS.seed('a','abcdef')
     const a=await modular.fetch(req(path,method,undefined,headers,true),e1),b=await standalone.fetch(req(path,method,undefined,headers,true),e2)
-    assert.equal(a.status,b.status);assert.equal(await a.text(),await b.text());assert.deepEqual([...a.headers],[...b.headers])
+    const comparableHeaders=response=>[...response.headers].map(([name,value])=>[
+      name,name==='server-timing'?value.replace(/worker;dur=\d+(?:\.\d+)?/,'worker;dur=<measured>'):value,
+    ])
+    assert.equal(a.status,b.status);assert.equal(await a.text(),await b.text());assert.deepEqual(comparableHeaders(a),comparableHeaders(b))
+    if(['GET','HEAD'].includes(method)){
+      assert.match(a.headers.get('Server-Timing')||'',/worker;dur=\d+(?:\.\d+)?/)
+      assert.match(b.headers.get('Server-Timing')||'',/worker;dur=\d+(?:\.\d+)?/)
+    }
   }
 })
 test('standalone bundle completes the multipart round trip',async()=>{

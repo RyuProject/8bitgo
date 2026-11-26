@@ -1455,6 +1455,7 @@ const zhHant: Translation = {
     googleNotConfigured: '管理員尚未設定 Google 登入（VITE_GOOGLE_CLIENT_ID）',
     needLogin: '請先登入',
     requestFailed: '請求失敗（HTTP {status}）',
+    pageDataTimeout: '頁面資料載入逾時，請檢查網路後重試',
     defaultNickname: '玩家',
     googleNickname: 'Google 玩家',
     oauthDenied: '你在授權頁面取消了登入',

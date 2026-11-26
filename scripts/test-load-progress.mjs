@@ -20,6 +20,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 const {
+  abortableDelay,
   createOverallRatio,
   createSpeedMeter,
   fetchBlobWithProgress,
@@ -544,6 +545,32 @@ console.log('\n── 速度文案 ──')
   ok(formatSpeed(1024 * 1023) === '1023 KB/s', '刚好不到 1MB 仍用 KB/s，慢网络下看得出在变')
 }
 
+console.log('\n── ROM 下载退避等待可立即取消并清理监听 ──')
+{
+  const controller = new AbortController()
+  const signal = controller.signal
+  const add = signal.addEventListener.bind(signal)
+  const remove = signal.removeEventListener.bind(signal)
+  let added = 0
+  let removed = 0
+  signal.addEventListener = (type, ...args) => {
+    if (type === 'abort') added += 1
+    return add(type, ...args)
+  }
+  signal.removeEventListener = (type, ...args) => {
+    if (type === 'abort') removed += 1
+    return remove(type, ...args)
+  }
+  const waiting = abortableDelay(5_000, signal)
+  controller.abort()
+  await assert.rejects(waiting, (error) => error?.name === 'AbortError')
+  ok(added === removed, `⭐ 用户取消时退避立即结束且监听清理（注册 ${added} / 清理 ${removed}）`)
+
+  controller.abort()
+  await assert.rejects(abortableDelay(5_000, signal), (error) => error?.name === 'AbortError')
+  ok(added === removed, '已取消的信号不会再创建等待或留下监听')
+}
+
 console.log('\n── ROM 分片遇到浏览器缓存读取故障后绕过坏缓存重试 ──')
 {
   const requests = []
@@ -573,6 +600,37 @@ console.log('\n── ROM 分片遇到浏览器缓存读取故障后绕过坏缓
   assert.deepEqual([...new Uint8Array(await blob.arrayBuffer())], [1, 2, 3, 4])
   ok(requests.length === 2, '浏览器 Blob 读取错误触发一次分片重试')
   ok(requests[1]?.cache === 'reload', '⭐ 重试绕过可能损坏的 HTTP 206 磁盘缓存')
+}
+
+console.log('\n── ROM 分片退避等待会释放取消监听 ──')
+{
+  const controller = new AbortController()
+  const signal = controller.signal
+  const add = signal.addEventListener.bind(signal)
+  const remove = signal.removeEventListener.bind(signal)
+  let added = 0
+  let removed = 0
+  signal.addEventListener = (type, ...args) => {
+    if (type === 'abort') added += 1
+    return add(type, ...args)
+  }
+  signal.removeEventListener = (type, ...args) => {
+    if (type === 'abort') removed += 1
+    return remove(type, ...args)
+  }
+  const fetchImpl = (_url, init = {}) => new Promise((_resolve, reject) => {
+    const fail = () => reject(new DOMException('aborted', 'AbortError'))
+    if (init.signal.aborted) fail()
+    else init.signal.addEventListener('abort', fail, { once: true })
+  })
+  await assert.rejects(fetchBlobWithProgress('https://assets.example/roms/slow.chd?romv=test', {
+    chunkBytes: 4,
+    retries: 1,
+    stallMs: 5,
+    fetchImpl,
+    signal,
+  }), /下载卡住了/)
+  ok(added === removed, `⭐ 两轮卡死重试后取消监听全部释放（注册 ${added} / 清理 ${removed}）`)
 }
 
 console.log(`\n✅ 加载进度测试通过（${n} 项）`)

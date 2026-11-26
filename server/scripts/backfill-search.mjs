@@ -11,6 +11,7 @@
  */
 import 'dotenv/config'
 import { pool, query } from '../src/db.js'
+import { readI18nMap } from '../src/mappers.js'
 import { buildGameTokens } from '../src/search.js'
 
 const BATCH = 500
@@ -28,7 +29,7 @@ try {
   for (;;) {
     // 按 id 游标翻页，不用 OFFSET —— 十万行时 OFFSET 会越翻越慢
     const rows = await query(
-      'SELECT id, title, title_zh, developer FROM games WHERE id > ? ORDER BY id LIMIT ?',
+      'SELECT id, title, title_zh, title_i18n, title_localized, developer FROM games WHERE id > ? ORDER BY id LIMIT ?',
       [lastId, BATCH],
     )
     if (!rows.length) break
@@ -49,7 +50,15 @@ try {
     /** 攒成一条大 INSERT，一款一条会让往返次数等于游戏数 */
     const values = []
     for (const r of rows) {
-      const map = buildGameTokens({ ...r, tags: tagsBy.get(String(r.id)) ?? [] })
+      const convertedTitles = readI18nMap(r.title_i18n) ?? {}
+      const localizedTitles = readI18nMap(r.title_localized) ?? {}
+      const map = buildGameTokens({
+        ...r,
+        tags: tagsBy.get(String(r.id)) ?? [],
+        aliases: [...Object.values(convertedTitles), ...Object.values(localizedTitles)],
+        // 繁体中文可加拼音；其他语言的汉字名不按中文读音猜测。
+        pinyinAliases: [convertedTitles['zh-Hant'], localizedTitles['zh-Hant']].filter(Boolean),
+      })
       for (const [token, weight] of map) values.push([token, r.id, weight])
     }
     for (let i = 0; i < values.length; i += CHUNK) {

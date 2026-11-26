@@ -7,6 +7,12 @@ export type StartupEventName =
   | 'detail_view'
   | 'start_click'
   | 'download_complete'
+  | 'rom_load_start'
+  | 'rom_load_complete'
+  | 'core_warm_start'
+  | 'core_warm_complete'
+  | 'core_cache_hit'
+  | 'runtime_ready'
   | 'iframe_loaded'
   | 'first_frame'
   | 'game_playable'
@@ -46,6 +52,11 @@ export function newStartupId(): string {
 const sent = new Set<string>()
 /** 出问题的这几种才附诊断包；正常开局不多发任何东西 */
 const DIAGNOSTIC_EVENTS = new Set<StartupEventName>(['failed', 'timeout', 'slow_start', 'recovered'])
+/** 高频阶段可以等到首帧一起上报；异常和超时仍走原来的单事件诊断路径。 */
+const BATCHABLE_EVENTS = new Set<StartupEventName>([
+  'download_complete', 'rom_load_start', 'rom_load_complete', 'core_warm_start', 'core_warm_complete',
+  'core_cache_hit', 'runtime_ready', 'first_frame', 'game_playable',
+])
 
 /**
  * 漏斗永远不能卡住游戏本身。客户端只做会话内去重并异步上报；网络失败不弹提示，
@@ -74,5 +85,48 @@ export function recordStartupEvent(slug: string | undefined, payload: StartupEve
   }).catch(() => {
     // 临时断网后允许同一生命周期回调再补报；数据库唯一键保证成功过的不会重复。
     sent.delete(key)
+  })
+}
+
+/** 同一次开局的阶段与首帧合并成一条请求，避免观测本身增加多次同域往返。 */
+export function recordStartupEvents(slug: string | undefined, payloads: readonly StartupEvent[]): void {
+  if (!slug || !apiEnabled() || payloads.length < 2) {
+    for (const payload of payloads) recordStartupEvent(slug, payload)
+    return
+  }
+
+  const batch: StartupEvent[] = []
+  const keys: string[] = []
+  const withinBatch = new Set<string>()
+  for (const payload of payloads) {
+    if (!BATCHABLE_EVENTS.has(payload.event) || DIAGNOSTIC_EVENTS.has(payload.event) || payload.diagnostics) {
+      recordStartupEvent(slug, payload)
+      continue
+    }
+    const key = `${slug}:${payload.visitId}:${payload.attemptId ?? ''}:${payload.event}`
+    if (sent.has(key) || withinBatch.has(key)) continue
+    withinBatch.add(key)
+    batch.push(payload)
+    keys.push(key)
+  }
+  if (batch.length < 2) {
+    for (const payload of batch) recordStartupEvent(slug, payload)
+    return
+  }
+  for (const payload of batch) {
+    const key = `${slug}:${payload.visitId}:${payload.attemptId ?? ''}:${payload.event}`
+    sent.add(key)
+    noteStartupEvent(payload.visitId, payload.attemptId, payload.event)
+  }
+  void fetch(`${apiBase()}/api/games/${encodeURIComponent(slug)}/startup`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ events: batch }),
+    keepalive: true,
+  }).then((response) => {
+    if (!response.ok) throw new Error(`startup metric batch ${response.status}`)
+  }).catch(() => {
+    // 批次网络失败时允许后续同阶段回调重投；服务端 INSERT IGNORE 按事件去重。
+    for (const key of keys) sent.delete(key)
   })
 }

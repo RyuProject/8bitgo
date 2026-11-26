@@ -20,6 +20,11 @@ import { startPageLoad } from './progress'
 import { getPageDataCache, peekPageDataCache, setPageDataCache } from './pageDataCache'
 import { useNoWasmMode } from './noWasm'
 import { webAssemblyAvailable } from '@/emulator/browserSupport'
+import { getT } from './i18n'
+import { RequestTimeoutError, withRequestTimeout } from './requestTimeout'
+
+/** 页面 JSON 应有界等待：半开连接不能让首屏骨架永远挂住，失败后应出现可点的重试入口。 */
+export const PAGE_DATA_TIMEOUT_MS = 20_000
 
 /* ---------------- 各路由的数据形状 ---------------- */
 
@@ -179,10 +184,19 @@ function pageUrl(path: string, params?: Record<string, string | number | undefin
   return `/api/page?${sp.toString()}`
 }
 
-export function fetchPageData(path: string, params?: Record<string, string | number | undefined>) {
+async function requestPageData<T extends PageData>(url: string, parent?: AbortSignal): Promise<T> {
+  try {
+    return await withRequestTimeout(PAGE_DATA_TIMEOUT_MS, parent, (signal) => api.get<T>(url, false, signal))
+  } catch (error) {
+    if (error instanceof RequestTimeoutError) throw new Error(getT().errors.pageDataTimeout)
+    throw error
+  }
+}
+
+export function fetchPageData(path: string, params?: Record<string, string | number | undefined>, signal?: AbortSignal) {
   // 只在浏览器事件 / effect 里调用（无限滚动续页），直接读当前浏览器的结论，和 usePageData 的 key 保持一致
   const noWasm = typeof window !== 'undefined' && !webAssemblyAvailable()
-  return api.get<PageData>(pageUrl(path, noWasm ? { ...params, nowasm: 1 } : params))
+  return requestPageData<PageData>(pageUrl(path, noWasm ? { ...params, nowasm: 1 } : params), signal)
 }
 
 export type PageState<T> =
@@ -256,8 +270,7 @@ export function usePageData<T extends PageData>(
     // 注意 done 必须走 finally —— 只挂在 then 上的话，一次失败就会把计数永远留在 1，
     // 那根条会一直卡在 90% 不下来
     const done = startPageLoad()
-    api
-      .get<T>(key, false, controller.signal)
+    requestPageData<T>(key, controller.signal)
       .then((data) => {
         if (!cancelled) {
           setPageDataCache(key, data)

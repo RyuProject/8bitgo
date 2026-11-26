@@ -276,7 +276,7 @@ check('ROM 语言专题页与游戏库筛选共用同一语言条件', () => {
   assert.match(content, /seg\[0\] === 'rom-language'/, '服务端 SSR / page API 没有解析 ROM 语言专题路径')
   assert.match(repo, /gr_lang\.lang = \? AND CHAR_LENGTH\(TRIM\(gr_lang\.object_key\)\) > 0/, 'ROM 语言专题把通用槽或空槽当成真实语言版本')
   assert.match(games, /romLanguage,\s*developer,/, '游戏库首屏查询没有包含 ROM 语言筛选')
-  assert.match(games, /fetchPageData\('\/games', \{ \.\.\.query, page: nextPage \}\)/, '游戏库续页没有复用同一 ROM 语言筛选条件')
+  assert.match(games, /fetchPageData\('\/games', \{ \.\.\.query, page: nextPage \},\s*signal\)/, '游戏库续页没有复用筛选条件并传递取消信号')
 })
 
 check('目录数据加载失败时不把临时错误页留在搜索索引中', () => {
@@ -302,6 +302,13 @@ check('本地化详情页的结构化实体保留页面可见的原名作为 alt
   assert.match(seo, /alternateName\?: string/, 'VideoGame 输入缺少原名别名')
   assert.match(seo, /schema\.alternateName = alternateName/, '原名没有进入 JSON-LD')
   assert.match(detail, /alternateName: game\.title/, '结构化别名必须来自详情页实际可见的原名')
+})
+
+check('不同 UI 语言下的同一游戏共享稳定的 VideoGame 实体 ID', () => {
+  const seo = code('src/services/seo.ts')
+  assert.match(seo, /function gameEntityId\(slug: string\): string\s*\{\s*return absoluteUrl\(`\/games\/\$\{encodeURIComponent\(slug\)\}#game`\)\s*\}/, '游戏实体 ID 必须由稳定 slug 生成')
+  assert.match(seo, /'@id': gameEntityId\(g\.slug\)/, 'VideoGame 没有引用稳定实体 ID')
+  assert.doesNotMatch(seo.match(/function gameEntityId\(slug: string\): string[\s\S]*?\n\}/)?.[0] ?? '', /langUrl|localizedPath|language/, '实体 ID 不得随 UI 语言或 hreflang 改变')
 })
 
 check('关于页与法律页只声明简中、繁中、英文三份真实长正文', () => {
@@ -336,6 +343,7 @@ check('详情页的 title 带平台缩写，H1 仍保持干净的游戏名', () 
   const i18n = code('src/services/i18nData.ts')
   assert.match(page, /gameSeoTitle\(seoTitle, seoPlatform\?\.shortName \?\? '', lang\)/, '没有用平台缩写生成搜索标题')
   assert.match(page, /title: fmt\(t\.game\.docTitle, \{ title: seoDocumentTitle \}\)/, 'meta title 没有使用唯一标题')
+  assert.match(page, /aria-label=\{`\$\{t\.player\.start\} · \$\{localizedTitle\}`\}/, '外链启动按钮的无障碍名称没有使用当前 UI 语言标题')
   // H1 在 GameDetailHeading 里画，页面传进去的必须是干净的 seoTitle，不是带平台后缀的 seoDocumentTitle
   assert.match(page, /<GameDetailHeading[\s\S]*?title=\{seoTitle\}/, 'H1 不应被平台后缀污染')
   assert.match(code('src/components/game/GameDetailSections.tsx'), /<h1[^>]*>\s*\{title\}\s*<\/h1>/, 'GameDetailHeading 的 H1 没有直接用传进来的标题')

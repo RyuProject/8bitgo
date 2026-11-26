@@ -111,6 +111,19 @@ globalThis.fetch = async (target, init) => {
 }
 await assert.rejects(downloadPspDisc(`${url}-changed`, 'changed.chd', size, new AbortController().signal), /版本发生变化/)
 
+let retryRequests = 0
+globalThis.fetch = async () => {
+  retryRequests += 1
+  return new Response('busy', { status: 503 })
+}
+const cancelRetry = new AbortController()
+setTimeout(() => cancelRetry.abort(), 10)
+await assert.rejects(
+  downloadPspDisc(`${url}-cancel-retry`, 'cancel-retry.iso', size, cancelRetry.signal),
+  (error) => error?.name === 'AbortError',
+)
+assert.equal(retryRequests, 1, '玩家在 PSP 网络退避时取消后不能再发下一次 Range')
+
 globalThis.fetch = async () => new Response('bad', { status: 200 })
 await assert.rejects(downloadPspDisc(`${url}-bad`, 'bad.chd', size, new AbortController().signal), /响应无效/)
 const cache = await root.getDirectoryHandle('8bitgo-psp-discs')

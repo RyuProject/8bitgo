@@ -1,5 +1,6 @@
 /** PSP 整盘模式：只在浏览器私有磁盘里组装镜像，绝不把 GB 级 ROM 拼进 JS 内存。 */
 import type { LoadProgress } from './types'
+import { abortableDelay } from './loadProgress'
 import { canonicalRomUrl } from '@/services/romHosts'
 
 const PART_BYTES = 8 * 1024 * 1024
@@ -75,7 +76,7 @@ async function downloadPart(
       // 版本变化或不支持 Range 不能靠重试修好；继续只会反复下载错误响应。
       if (error instanceof Error && /版本发生变化/.test(error.message)) throw error
       if (error instanceof Error && error.name === 'PspRangeRouteError' && urls.length === 1) throw error
-      await new Promise((resolve) => setTimeout(resolve, Math.min(3000, 400 * 2 ** attempt)))
+      await abortableDelay(Math.min(3000, 400 * 2 ** attempt), signal)
     } finally {
       if (timer) clearTimeout(timer)
       signal.removeEventListener('abort', cancel)

@@ -31,7 +31,7 @@ import { gameDescriptionSource, renderField } from '../i18n-generate.js'
 import { getVolcTranslationUsage } from '../translation-usage.js'
 import { takeAnonymous } from '../rateLimit.js'
 import { clientIpFrom, resolveCountry } from '../presence.js'
-import { isSlowStartup, normalizeStartupEvent, recordStartupEvent } from '../startup-metrics.js'
+import { isSlowStartup, normalizeStartupEvent, normalizeStartupEventBatch, recordStartupEvent, recordStartupEvents } from '../startup-metrics.js'
 import { DIAGNOSTIC_EVENTS, hasUsefulDiagnostics, recordStartupDiagnostics } from '../startup-diagnostics.js'
 import { dosGameConfigError, mergeGamePatchForDosValidation } from '../dos-game-config.js'
 import {
@@ -429,6 +429,18 @@ gamesRouter.post('/:slug/startup', async (req, res, next) => {
   try {
     const gate = takeAnonymous(req, 'startup-funnel', { perIp: 360, global: 12_000 })
     if (!gate.ok) return tooMany(res, gate.retryAfter)
+    if (Array.isArray(req.body?.events)) {
+      let normalizedEvents
+      try {
+        normalizedEvents = normalizeStartupEventBatch(req.body.events)
+      } catch (error) {
+        return res.status(400).json({ error: error instanceof Error ? error.message : '启动事件格式不正确' })
+      }
+      const ip = clientIpFrom(req.socket?.remoteAddress, req.headers)
+      const result = await recordStartupEvents(req.params.slug, normalizedEvents, resolveCountry(ip, req.headers) || 'XX')
+      if (!result.accepted) return res.status(404).json({ error: '游戏不存在' })
+      return res.json({ ok: true, recorded: result.recordedCount > 0, recordedCount: result.recordedCount })
+    }
     let normalized
     try {
       normalized = normalizeStartupEvent(req.body)

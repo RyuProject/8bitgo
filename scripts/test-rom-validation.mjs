@@ -91,7 +91,7 @@ try {
               ? 'export const memoryRomBlob = (parts, type = "") => new Blob(parts, { type }); export const memoryRomOf = () => undefined'
               : args.path === 'romHosts'
                 ? 'export const rememberRomHostForUrl = () => {}'
-                : 'export const isRomRouteOpen = () => false; export const rankRomRoutes = (routes) => routes; export const recordRomRouteFailure = () => {}; export const recordRomRouteTransfer = () => {}; export const romRouteHealthSummary = () => ""; export const romRouteOrigin = (url) => url; export const romRouteRate = () => 0; export const ROUTE_MIN_SAMPLE_BYTES = 32768',
+                : 'export const isRomRouteOpen = () => false; export const rankRomRoutes = (routes) => routes; export const recordRomRouteFailure = () => {}; export const recordRomRouteTransfer = () => {}; export const romRouteHealthSummary = () => ""; export const romRouteOrigin = (url) => url; export const romRouteRate = () => 0; export const romRouteEffectiveRate = () => 0; export const ROUTE_MIN_SAMPLE_BYTES = 32768',
         }))
       },
     }],

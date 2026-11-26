@@ -15,6 +15,8 @@ interface Props {
   className?: string
   /** 显示「新」角标 */
   isNew?: boolean
+  /** 首屏 LCP 候选；首页只给第一张封面。 */
+  priority?: boolean
 }
 
 /**
@@ -24,7 +26,7 @@ interface Props {
  * IntersectionObserver），中间压一个圆钮正好挡住画面中心，而动起来的画面本身
  * 已经足够说明「这里有视频」了。
  */
-export function GameCardWide({ game, className, isNew }: Props) {
+export function GameCardWide({ game, className, isNew, priority }: Props) {
   const lang = useLang()
   const t = useT()
   const platform = platformMap[game.platform]
@@ -41,7 +43,7 @@ export function GameCardWide({ game, className, isNew }: Props) {
       className={cx('group card-hover block overflow-hidden rounded-card border border-line bg-surface hover:border-brand/60', className)}
     >
       <div className="relative">
-        <GameCover game={game} ratio="square" showTitle={false} iconSize="md" />
+        <GameCover game={game} ratio="square" showTitle={false} iconSize="md" priority={priority} />
         {isNew && (
           <Badge tone="brand" className="absolute right-2 top-2">
             NEW

@@ -12,6 +12,7 @@ async function part(e, session, data='abc') {
 }
 test('multipart complete preserves bytes, metadata and original success fields',async()=>{
   const e=environment();const s=await create(e,'covers/a.webp',{contentType:'image/webp',contentEncoding:'br',size:3,name:'封面.webp'});assert(s.marker.startsWith('_uploads/v2-'))
+  assert.equal(s.partNumberInHeader,true,'新会话声明稳定 URL 分片协议能力')
   const p=await part(e,s)
   const r=await worker.fetch(req('/'+s.key+'?uploadId='+s.uploadId,'POST',{parts:[p],marker:s.marker},{},true),e)
   assert.equal(r.status,200);const j=await r.json();assert(j.ok);assert(j.markerRemoved);assert.equal(j.size,3)
@@ -32,6 +33,36 @@ test('known-length part is streamed; Request.arrayBuffer is never called',async(
   const e=environment();const s=await create(e);const r=req('/roms/a?uploadId='+s.uploadId+'&partNumber=1','PUT','abc',{'Content-Length':'3'},true)
   r.arrayBuffer=()=>{throw Error('must not buffer known-length part')}
   assert.equal((await worker.fetch(r,e)).status,200);assert.equal(e.ROMS.stats.streamWrites,1)
+})
+test('part number header keeps the per-part URL stable and completes the upload',async()=>{
+  const e=environment();const s=await create(e)
+  const r=req('/roms/a?uploadId='+s.uploadId,'PUT','abc',{'Content-Length':'3','X-8BG-Part-Number':'1'},true)
+  const uploaded=await worker.fetch(r,e);assert.equal(uploaded.status,200)
+  assert.match(uploaded.headers.get('Server-Timing') || '', /^worker;dur=\d+(?:\.\d+)?$/,
+    '上传耗时包含请求体上传与 R2 分片确认')
+  assert.match(uploaded.headers.get('Access-Control-Expose-Headers') || '', /Server-Timing/i)
+  const partResult=await uploaded.json()
+  const result=await (await worker.fetch(req('/roms/a?uploadId='+s.uploadId,'POST',{parts:[partResult],marker:s.marker},{},true),e)).json()
+  assert.equal(result.ok,true);assert.equal(result.size,3)
+  assert.equal(new URL(r.url).search,'?uploadId='+s.uploadId)
+})
+test('part number header rejects invalid, conflicting and out-of-scope values',async()=>{
+  const e=environment();const s=await create(e)
+  for(const value of ['','0','10001','1.5','1,2']){
+    const r=await worker.fetch(req('/roms/a?uploadId='+s.uploadId,'PUT','a',{'X-8BG-Part-Number':value},true),e)
+    assert.equal(r.status,400,`header value ${JSON.stringify(value)}`)
+  }
+  const mismatch=await worker.fetch(req('/roms/a?uploadId='+s.uploadId+'&partNumber=1','PUT','a',{'X-8BG-Part-Number':'2'},true),e)
+  assert.equal(mismatch.status,400)
+  const fallthrough=await worker.fetch(req('/roms/a','PUT','unsafe',{'X-8BG-Part-Number':'1'},true),e)
+  assert.equal(fallthrough.status,400);assert.equal(e.ROMS.objects.has('roms/a'),false)
+})
+test('part number header is permitted by the CORS preflight response',async()=>{
+  const e=environment();const r=await worker.fetch(req('/roms/a?uploadId=up','OPTIONS',undefined,{
+    Origin:'https://8bitgo.com','Access-Control-Request-Method':'PUT','Access-Control-Request-Headers':'authorization,content-type,x-8bg-part-number',
+  }),e)
+  assert.equal(r.status,204);assert.match(r.headers.get('Access-Control-Allow-Headers'),/X-8BG-Part-Number/i)
+  assert.equal(r.headers.get('Access-Control-Max-Age'),'86400')
 })
 test('unknown-length part remains compatible via bounded fallback',async()=>{
   const e=environment();const s=await create(e);const r=await worker.fetch(req('/roms/a?uploadId='+s.uploadId+'&partNumber=1','PUT',streamChunks([bytes('abc')]),{},true),e)
