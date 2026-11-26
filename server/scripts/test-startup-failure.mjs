@@ -29,7 +29,8 @@ function child(env) {
     let output = ''
     proc.stdout.on('data', (data) => { output += data })
     proc.stderr.on('data', (data) => { output += data })
-    const timeout = setTimeout(() => proc.kill('SIGKILL'), 8_000)
+    // 首次导入服务端模块在慢机 / 并行回归时会超过 8 秒；这里要验证监听失败，不应先把启动过程杀掉。
+    const timeout = setTimeout(() => proc.kill('SIGKILL'), 30_000)
     proc.on('close', (code, signal) => {
       clearTimeout(timeout)
       resolve({ code, signal, output })

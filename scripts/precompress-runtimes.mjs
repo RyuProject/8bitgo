@@ -50,6 +50,7 @@ const SCAN_DIRS = ['ruffle', 'jsdos', 'dolphin', 'play', 'ppsspp', 'emulatorjs',
 const MIN_SAVING = 0.05
 
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex')
+// 同字节的历史版本共用压缩与反解校验结果，避免重复做高质量 Brotli 解压。
 const encodedByHash = new Map()
 
 function* walk(dir) {
@@ -95,20 +96,26 @@ async function compressOne(path) {
   }
   // 历代 PPSSPP 目录里的 wasm 大多逐字节相同：同一份内容只压一次（Brotli 11 每 18MB 要半分钟）
   if (!encodedByHash.has(hash)) {
-    encodedByHash.set(hash, brotli(data, {
+    const encoded = brotli(data, {
       params: {
         [constants.BROTLI_PARAM_QUALITY]: 11,
         [constants.BROTLI_PARAM_LGWIN]: 24,
         [constants.BROTLI_PARAM_SIZE_HINT]: data.byteLength,
       },
-    }))
+    }).then((bytes) => {
+      const notWorth = bytes.byteLength > data.byteLength * (1 - MIN_SAVING)
+      if (!notWorth && sha256(brotliDecompressSync(bytes)) !== hash) {
+        throw new Error(`${path} 压缩结果解不回原文件`)
+      }
+      return { bytes, notWorth }
+    })
+    encodedByHash.set(hash, encoded)
   }
-  const encoded = await encodedByHash.get(hash)
+  const { bytes: encoded, notWorth } = await encodedByHash.get(hash)
   // 旧的压缩版无论如何先拿掉：原文件已经变了，留着就是过期内容
   rmSync(`${path}.br`, { force: true })
   rmSync(`${path}.br.json`, { force: true })
-  if (encoded.byteLength > data.byteLength * (1 - MIN_SAVING)) return { path, notWorth: true }
-  if (sha256(brotliDecompressSync(encoded)) !== hash) throw new Error(`${path} 压缩结果解不回原文件`)
+  if (notWorth) return { path, notWorth: true }
   const temp = `${path}.br.tmp-${process.pid}`
   writeFileSync(temp, encoded)
   renameSync(temp, `${path}.br`)

@@ -457,9 +457,14 @@ export const PPSSPP_PATH: string = asDir(import.meta.env.VITE_PPSSPP_PATH)
   2026-11-15 v22：移动/弱网/低配设备使用 480×272，普通设备 640×360，明确高配桌面设备最高 720×408。
   2026-11-17 v23：PSP 远程盘 Range 请求在当前线路断流时依次切换已验证的备用 ROM 域名。
 */
-export const PPSSPP_RUNTIME_GENERATION = 'v25'
+export const PPSSPP_RUNTIME_GENERATION = 'v26'
+/** 大核心在新桥代次间复用，避免只改校验逻辑就让玩家重下近 38MB。 */
+export const PPSSPP_CORE_ASSET_GENERATION = 'v25'
 export const PPSSPP_RUNTIME_PATH: string = PPSSPP_PATH
   ? asDir(`${PPSSPP_PATH}${PPSSPP_RUNTIME_GENERATION}`)
+  : ''
+export const PPSSPP_CORE_ASSET_PATH: string = PPSSPP_PATH
+  ? asDir(`${PPSSPP_PATH}${PPSSPP_CORE_ASSET_GENERATION}`)
   : ''
 
 /**
@@ -476,13 +481,13 @@ export const PPSSPP_FRAME_REVISION = '4'
   改从 EdgeOne 取，取不到当场回同源（public/ppsspp/.../v17/host.js）。入口、胶水 JS、各类 Worker 必须同源，
   所以只有这两份能挪；跨源隔离页里的跨源 fetch 靠 /_cn 的 ACAO + CORP cross-origin 放行。
 */
-const ppssppEdgeBase = (): string => (PPSSPP_RUNTIME_PATH ? runtimeBase('ppsspp', PPSSPP_RUNTIME_PATH) : '')
-export const ppssppUsingEdge = (): boolean => Boolean(PPSSPP_RUNTIME_PATH) && ppssppEdgeBase() !== PPSSPP_RUNTIME_PATH
+const ppssppEdgeBase = (): string => (PPSSPP_CORE_ASSET_PATH ? runtimeBase('ppsspp', PPSSPP_CORE_ASSET_PATH) : '')
+export const ppssppUsingEdge = (): boolean => Boolean(PPSSPP_CORE_ASSET_PATH) && ppssppEdgeBase() !== PPSSPP_CORE_ASSET_PATH
 /** PSP 运行时里的文件地址；只有 wasm / data 会给大陆访客换成加速入口，和桥的判断一致 */
 export const ppssppAsset = (name: string): string =>
   (name === 'PPSSPPSDL.wasm' || name === 'PPSSPPSDL.data') && ppssppUsingEdge()
     ? `${ppssppEdgeBase()}${name}`
-    : `${PPSSPP_RUNTIME_PATH}${name}`
+    : `${PPSSPP_CORE_ASSET_PATH}${name}`
 export const ppssppFrameUrl = (): string =>
   `${PPSSPP_RUNTIME_PATH}index.html?embed=1&frame=${encodeURIComponent(PPSSPP_FRAME_REVISION)}${ppssppUsingEdge() ? '&edge=cn' : ''}`
 

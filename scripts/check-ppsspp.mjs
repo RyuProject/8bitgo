@@ -8,11 +8,14 @@ import { fileURLToPath } from 'node:url'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const VERSION = '0dbfaca'
-const RUNTIME_GENERATION = 'v25'
+const RUNTIME_GENERATION = 'v26'
+const CORE_ASSET_GENERATION = 'v25'
 const useDist = process.argv.includes('--dist')
 const sourceOnly = process.argv.includes('--source-only')
 const publicDir = join(root, 'public', 'ppsspp', `v${VERSION}`, RUNTIME_GENERATION)
 const runtimeDir = useDist ? join(root, 'dist', 'client', 'ppsspp', `v${VERSION}`, RUNTIME_GENERATION) : publicDir
+const publicCoreDir = join(root, 'public', 'ppsspp', `v${VERSION}`, CORE_ASSET_GENERATION)
+const runtimeCoreDir = useDist ? join(root, 'dist', 'client', 'ppsspp', `v${VERSION}`, CORE_ASSET_GENERATION) : publicCoreDir
 
 const fail = (message) => {
   console.error(`✖ PPSSPP 检查失败：${message}`)
@@ -40,8 +43,8 @@ for (const marker of [
   '__ppssppRangeProgress',
   '__ppssppRangeError',
   'runtime-error',
-  "RUNTIME_SCRIPT = 'PPSSPPSDL.js'",
-  "AUDIO_WORKLET_SCRIPT = 'audio-worklet.js'",
+  "RUNTIME_SCRIPT = '../v25/PPSSPPSDL.js'",
+  "AUDIO_WORKLET_SCRIPT = '../v25/audio-worklet.js'",
   'getPreloadedPackage',
   'fetchCoreData',
   "controller.abort('核心资源本次下载失败，终止旧数据流')",
@@ -59,17 +62,20 @@ for (const marker of [
   "const CORE_EDGE_FILES = ['PPSSPPSDL.wasm', 'PPSSPPSDL.data']",
   "get('edge') !== 'cn'",
   'return coreUrl(path)',
-  'if (tried.has(url)) return nativeFetch(fallback, init)',
+  "if (attempt > 1) return nativeFetch(fallback, { ...init, cache: 'reload' })",
   "console.warn('[ppsspp] 加速入口取核心失败，改走同源'",
 ]) {
   if (!host.includes(marker)) fail(`host.js 缺少加速入口标记 ${marker}`)
 }
 
-if (!/<script src="host\.js"><\/script>/.test(need(join(runtimeDir, 'index.html')).toString('utf8'))) {
-  fail('v25 index.html 没有引用同一实体目录里的 host.js')
+const indexHtml = need(join(runtimeDir, 'index.html')).toString('utf8')
+const hostScriptIntegrity = /<script src="host\.js" integrity="(sha256-[^"]+)" crossorigin="anonymous"><\/script>/.exec(indexHtml)?.[1]
+const expectedHostIntegrity = `sha256-${createHash('sha256').update(host).digest('base64')}`
+if (!hostScriptIntegrity || hostScriptIntegrity !== expectedHostIntegrity) {
+  fail('v26 index.html 的 host.js SRI 缺失或与实际脚本不匹配')
 }
-if (!/PPSSPP_RUNTIME_GENERATION = 'v25'/.test(paths) || !/PPSSPP_FRAME_REVISION = '4'/.test(paths) || !/ppssppFrameUrl/.test(adapter)) {
-  fail('PPSSPP iframe 没有使用 v25 实体目录；查询串不能穿透当前 Cloudflare 缓存键')
+if (!/PPSSPP_RUNTIME_GENERATION = 'v26'/.test(paths) || !/PPSSPP_CORE_ASSET_GENERATION = 'v25'/.test(paths) || !/PPSSPP_FRAME_REVISION = '4'/.test(paths) || !/ppssppFrameUrl/.test(adapter)) {
+  fail('PPSSPP iframe 没有使用 v26 校验壳并复用 v25 核心目录')
 }
 if (!host.includes('__8bitgoPspRangeUrls') || !adapter.includes('alternateRomUrls')) {
   fail('PPSSPP 远程光盘没有在 Range 探测和核心读取阶段配置备用线路')
@@ -83,7 +89,7 @@ if (!/arguments:\s*\[[\s\S]*?'--windowed'[\s\S]*?'--xres'[\s\S]*?'--yres'/.test(
 }
 if (!host.includes('slowNetwork') || !host.includes('qq-compat') || !host.includes('mobileDevice') ||
   !host.includes('highEndDesktop') || !host.includes('diagnostics') || !host.includes('error?.stack')) {
-  fail('v25 缺少慢网/移动/高配桌面分档、QQ 浏览器兼容档或运行时 worker 调用栈')
+  fail('PPSSPP 桥缺少慢网/移动/高配桌面分档、QQ 浏览器兼容档或运行时 worker 调用栈')
 }
 if (!host.includes('flushDeadline') || !host.includes('Promise.race([syncSaves(), flushDeadline])')) {
   fail('v25 运行时错误没有先冲刷 PPSSPP 电池存档')
@@ -208,8 +214,10 @@ for (const marker of ['WASM_USE_FFMPEG ?= OFF', '-DUSE_FFMPEG=$(WASM_USE_FFMPEG)
 for (const marker of [
   "runtime === 'ppsspp'",
   'ppssppFrameUrl()',
+  "ppssppAsset('PPSSPPSDL.js')",
   "ppssppAsset('PPSSPPSDL.wasm')",
   "ppssppAsset('PPSSPPSDL.data')",
+  '${PPSSPP_CORE_ASSET_PATH}audio-worklet.js',
   '${PPSSPP_RUNTIME_PATH}range-prefetch-worker.js',
   'hasHoverIntent() && allowsLargeHoverPrewarm()',
 ]) {
@@ -220,7 +228,40 @@ const manifest = JSON.parse(need(join(runtimeDir, 'runtime.json')).toString('utf
 if (manifest.runtimeErrorSaveFlush !== 'idbfs-flush-before-report-1500ms-v1') {
   fail('runtime.json 没有声明运行时故障前冲刷 PPSSPP 电池存档')
 }
-if (manifest.runtimeGeneration !== RUNTIME_GENERATION) fail('runtime.json 的实体目录代次不正确')
+if (manifest.runtimeGeneration !== RUNTIME_GENERATION || manifest.coreAssetGeneration !== CORE_ASSET_GENERATION) fail('runtime.json 的桥 / 核心实体目录代次不正确')
+if (manifest.runtimeIntegrityProfile !== 'sha256-2miblocks-v1' || !manifest.integrityBlocks) {
+  fail('runtime.json 没有声明 PPSSPP 核心 SHA-256 分块清单')
+}
+const coreScriptSRI = `sha256-${Buffer.from(manifest.artifacts['PPSSPPSDL.js']?.sha256 || '', 'hex').toString('base64')}`
+const hostSRI = `sha256-${createHash('sha256').update(need(join(runtimeDir, 'host.js'))).digest('base64')}`
+if (!host.includes(`script.integrity = '${coreScriptSRI}'`) ||
+    !need(join(runtimeDir, 'index.html')).toString('utf8').includes(`integrity="${hostSRI}"`)) {
+  fail('PPSSPP 核心 JS / v26 host.js 缺少与清单一致的 SRI')
+}
+for (const name of ['PPSSPPSDL.wasm', 'PPSSPPSDL.data']) {
+  const bytes = need(join(runtimeCoreDir, name))
+  const expected = manifest.integrityBlocks[name]
+  const blockBytes = Number(manifest.blockBytes)
+  const actualBlocks = []
+  for (let offset = 0; offset < bytes.byteLength; offset += blockBytes) {
+    actualBlocks.push(createHash('sha256').update(bytes.subarray(offset, Math.min(bytes.byteLength, offset + blockBytes))).digest('hex'))
+  }
+  if (!expected || expected.bytes !== bytes.byteLength || expected.blockBytes !== blockBytes ||
+      JSON.stringify(expected.blocks) !== JSON.stringify(actualBlocks) || !host.includes(JSON.stringify(manifest.integrityBlocks))) {
+    fail(`${name} 的运行时校验块、核心文件和 host.js 清单不一致`)
+  }
+}
+for (const marker of [
+  "verifyCoreResponse(response.clone(), 'PPSSPPSDL.wasm')",
+  "verifyCoreBytes(output, 'PPSSPPSDL.data')",
+  'wasmIntegrityByResponse.set(response, verification)',
+  'wasmIntegrityByResponse.get(response)',
+  "await verifyCoreBytes(source, 'PPSSPPSDL.wasm')",
+  'WebAssembly.instantiateStreaming = async',
+  "cache: attempt === 1 ? 'force-cache' : 'reload'",
+]) {
+  if (!host.includes(marker)) fail(`host.js 缺少核心完整性保护 ${marker}`)
+}
 if (manifest.rangeAlternateRouteProfile !== 'probe-and-sync-failover-v1') {
   fail('runtime.json 没有声明 PSP 远程盘 Range 备用线路方案')
 }
@@ -304,8 +345,8 @@ if (
   fail('runtime.json 没有声明锁定的 PSP H.264/音频解码能力')
 }
 
-const binaries = ['PPSSPPSDL.js', 'PPSSPPSDL.wasm', 'PPSSPPSDL.data', 'range-prefetch-worker.js']
-const installed = binaries.every((name) => existsSync(join(runtimeDir, name)))
+const binaries = ['PPSSPPSDL.js', 'PPSSPPSDL.wasm', 'PPSSPPSDL.data']
+const installed = binaries.every((name) => existsSync(join(runtimeCoreDir, name)))
 const productionEnv = existsSync(join(root, '.env.production'))
   ? readFileSync(join(root, '.env.production'), 'utf8')
   : ''
@@ -315,7 +356,7 @@ if ((!sourceOnly || productionEnabled) && !installed) {
 }
 if (installed) {
   if (!manifest.artifactsInstalled || !manifest.artifacts) fail('已有二进制，但 runtime.json 没有来源/哈希清单')
-  const runtimeScript = need(join(runtimeDir, 'PPSSPPSDL.js')).toString('utf8')
+  const runtimeScript = need(join(runtimeCoreDir, 'PPSSPPSDL.js')).toString('utf8')
   if (!runtimeScript.includes('__8bitgoPspCanvasSize') || !runtimeScript.includes('var qqBrowser=') ||
     !runtimeScript.includes('var mobileDevice=') || !runtimeScript.includes('var highEndDesktop=') ||
     !runtimeScript.includes('maxWidth=qqBrowser||mobileDevice||slow||low?480:highEndDesktop?720:640') ||
@@ -389,7 +430,7 @@ if (installed) {
     for (const marker of ['__ppssppRangeProgress', '__ppssppRangeError']) {
       if (!runtimeScript.includes(marker)) fail(`Range v2 二进制缺少 ${marker}，清单与核心不一致`)
     }
-    const runtimeWasm = need(join(runtimeDir, 'PPSSPPSDL.wasm')).toString('latin1')
+    const runtimeWasm = need(join(runtimeCoreDir, 'PPSSPPSDL.wasm')).toString('latin1')
     for (const marker of ['If-Match', 'If-Unmodified-Since', 'HTTP Range offset overflow']) {
       if (!runtimeWasm.includes(marker)) fail(`Range v2 WASM 缺少 ${marker}，清单与核心不一致`)
     }
@@ -401,7 +442,7 @@ if (installed) {
     }
   }
   for (const name of binaries) {
-    const bytes = need(join(runtimeDir, name))
+    const bytes = need(join(runtimeCoreDir, name))
     const expected = manifest.artifacts[name]
     const hash = createHash('sha256').update(bytes).digest('hex')
     if (!expected || expected.bytes !== bytes.byteLength || expected.sha256 !== hash) fail(`${name} 与 runtime.json 校验值不符`)
@@ -413,7 +454,7 @@ if (installed) {
     源站对接受 br 的浏览器直接吐 PPSSPPSDL.data.br（server/src/precompressed-static.js）。
     它解开必须就是清单里的那份 data —— 过期的 .br 会让核心拿到错的资源包，解包直接失败。
   */
-  const brPath = join(runtimeDir, 'PPSSPPSDL.data.br')
+  const brPath = join(runtimeCoreDir, 'PPSSPPSDL.data.br')
   if (!existsSync(brPath)) fail('缺少 PPSSPPSDL.data.br；运行 npm run ppsspp:precompress（data 明文 19MB，Cloudflare 不压 octet-stream）')
   let decoded
   try {
@@ -435,6 +476,11 @@ if (useDist) {
     const a = need(join(publicDir, name))
     const b = need(join(runtimeDir, name))
     if (!a.equals(b)) fail(`dist/client 中的 ${name} 不是 public 里的当前版本`)
+  }
+  for (const name of binaries) {
+    const a = need(join(publicCoreDir, name))
+    const b = need(join(runtimeCoreDir, name))
+    if (!a.equals(b)) fail(`dist/client 中的复用核心 ${name} 不是 public v25 里的当前版本`)
   }
 }
 

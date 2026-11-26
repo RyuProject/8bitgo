@@ -10,6 +10,7 @@ import {
   jsdosBase,
   jsdosEdgePrefix,
   PPSSPP_RUNTIME_PATH,
+  PPSSPP_CORE_ASSET_PATH,
   ppssppAsset,
   ppssppFrameUrl,
   ruffleBase,
@@ -222,10 +223,10 @@ export function prewarmRuntime(runtime: RuntimeId | undefined, core?: string | n
     warmHttpCache(ppssppFrameUrl())
     warmHttpCache(`${PPSSPP_RUNTIME_PATH}host.js`)
     if (aggressive && hasHoverIntent() && allowsLargeHoverPrewarm()) {
-      warmHttpCache(`${PPSSPP_RUNTIME_PATH}PPSSPPSDL.js`)
+      warmHttpCache(ppssppAsset('PPSSPPSDL.js'))
       warmHttpCache(ppssppAsset('PPSSPPSDL.wasm'))
       warmHttpCache(ppssppAsset('PPSSPPSDL.data'))
-      warmHttpCache(`${PPSSPP_RUNTIME_PATH}audio-worklet.js`)
+      warmHttpCache(`${PPSSPP_CORE_ASSET_PATH}audio-worklet.js`)
       // 真正读盘在 pthread 建出的独立 Worker 上；悬停时先取这几 KB，可避免首块完成后
       // 再串行等一次脚本网络往返，触屏点击则不额外抢核心带宽。
       warmHttpCache(`${PPSSPP_RUNTIME_PATH}range-prefetch-worker.js`)

@@ -3781,6 +3781,14 @@ Cloudflare 对这组静态文件的缓存键**忽略查询串**：请求 `PPSSPP
 `public/ppsspp/v0dbfaca/v25/`（上一版为 v24）；下次桥、JS、Wasm、data、Range 胶水或 AudioWorklet 任一项改变就
 复制/构建到 `v26/`，并同步 `PPSSPP_RUNTIME_GENERATION` 和服务端旧地址 302。旧目录保留给旧页面，
 不原地覆盖。
+
+**v26 是仅校验壳的窄例外（2026-11-27）**：这次只给桥和入口加入核心完整性校验，核心 JS/Wasm/data 的字节没有变化。
+`v26/` 的入口与桥显式从 `../v25/` 读取核心，并在 `runtime.json` 记录 `coreAssetGeneration=v25`；这样不会让玩家因
+校验代码更新而重新下载约 38MB 的核心。v25 仍是完整、不可变的一代，v26 不复制或修改它。v26 用 SRI 检查核心 JS，
+Wasm 在浏览器流式编译期间并行校验 2MiB SHA-256 块，data 在既有下载缓冲上校验同一清单；`check-ppsspp` 检查 v25 核心、
+v26 清单、入口 SRI、运行时校验块以及 dist 拷贝一致。此例外只允许复用**字节完全相同且 manifest 哈希相同**的核心：以后
+只要 JS / Wasm / data 任一字节改变，就必须先建新的 `PPSSPP_CORE_ASSET_GENERATION`，重新生成核心分块与 SRI，再发布新的桥目录；
+不能把旧 v26 桥指向一代未经验证的核心，也不能原地改写 v25。
 v13 只修桥和新增本地光盘 Service Worker；v14/v15/v16 只修预读胶水，Wasm/data 与 v13 的 SHA-256 相同。
 v17 只改桥（`scripts/refresh-ppsspp-edge-v17.mjs` 从 v16 生成）：iframe 地址带 `edge=cn`（大陆访客，
 `paths.ts` 的 `ppssppFrameUrl`）时，`PPSSPPSDL.wasm` / `.data` 改从 `cn.<裸域>/_cn/ppsspp/...` 取。只能挪这两份：
