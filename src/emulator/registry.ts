@@ -18,6 +18,7 @@ import { EXT_RUNTIME_OVERRIDES } from '@/config/emulators'
 import type { ResolveContext, Runtime, RuntimeId } from './types'
 import { runtimeMetas } from './runtimeMeta'
 import { preferredNesRuntime } from './nesRuntimePolicy'
+import { gbaFallbackRuntime } from './gbaFallback'
 import { romArchiveRef } from '@/lib/romArchiveUrl'
 import { romPackInnerName } from '../../shared/rom-pack-format.js'
 
@@ -79,9 +80,14 @@ export function resolveRuntime(target: PlatformId | ResolveContext): Runtime | u
     if (fallback?.available() && fallback.supports(platform)) return fallback
   }
 
-  // IodineGBA 是 GBA 在无 WebAssembly / WebGL 浏览器中的 Canvas 2D 退路，不能被逐游戏固定的 EmulatorJS 覆盖拦回去。
-  if (platform === 'gba' && (ctx.gbaWasmUnavailable || ctx.gbaWebglUnavailable)) {
-    const fallback = getRuntime('iodinegba')
+  // 只有没有 WebAssembly 时才退到必须配置 BIOS 的 IodineGBA；仅无 WebGL 时让 mGBA 走 Canvas 2D 兼容层。
+  if (platform === 'gba') {
+    const fallbackId = gbaFallbackRuntime({
+      wasmUnavailable: ctx.gbaWasmUnavailable,
+      webglUnavailable: ctx.gbaWebglUnavailable,
+      runtimeOverride: ctx.runtimeOverride,
+    })
+    const fallback = getRuntime(fallbackId)
     if (fallback?.available() && fallback.supports(platform)) return fallback
   }
 

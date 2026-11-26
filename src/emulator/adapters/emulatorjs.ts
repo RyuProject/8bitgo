@@ -2638,9 +2638,14 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       core = corrected
     }
   }
-  // 无 WebGL 时只给已经选定 FBNeo 的街机核心接 Canvas 2D 兼容层。
+  // 无 WebGL 时只给已经选定的 FBNeo 街机核心和 GBA 的 mGBA 核心接 Canvas 2D 兼容层。
+  // mGBA 仍需 WebAssembly，但内置 HLE BIOS；无 WASM 的 GBA 会在运行时选择阶段退到 IodineGBA。
   // 不把 MAME / FBA 核心强改成 FBNeo：它们的驱动表、CHD 和启动参数并不等价。
-  const softwareWebglFallback = !webglAvailable && options.platform === 'arcade' && isFbneoCore(core)
+  const softwareWebglFallback = !webglAvailable && (
+    (options.platform === 'arcade' && isFbneoCore(core)) ||
+    (options.platform === 'gba' && core === 'mgba' && typeof WebAssembly !== 'undefined')
+  )
+  const softwareWebglOwner = options.platform === 'gba' ? 'mGBA' : 'FBNeo'
   if (!webglAvailable && !softwareWebglFallback) {
     console.warn(`[emulatorjs] 当前浏览器无法创建 WebGL 上下文，${options.platform}/${core} 没有已验证的软件画面后备`)
     options.onError?.(rt.ejsWebglUnavailable, 'config')
@@ -2658,7 +2663,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   }
   if (softwareWebglFallback) {
     console.info(`[emulatorjs] 当前浏览器没有 WebGL；将尝试用 Canvas 2D 运行已选的 ${core} legacy 核心`)
-    diagLog('adapter', 'info', `街机 WebGL 后备：${core} legacy / Canvas 2D`)
+    diagLog('adapter', 'info', `${options.platform === 'gba' ? 'GBA' : '街机'} WebGL 后备：${core} legacy / Canvas 2D`)
   }
   /**
    * 联机会话。**可变**：一开始可能没有（玩家先自己开着玩），
@@ -6198,9 +6203,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           // 限定当前 iframe：不能改父页原型，详情页其它 canvas 仍使用浏览器原生实现。
           const { installSoftwareWebgl } = await import('../softwareWebgl')
           const installed = installSoftwareWebgl(win as unknown as Window & typeof globalThis, () => {
-            console.info('[emulatorjs] FBNeo 已创建 Canvas 2D 软件画面')
-            diagLog('adapter', 'info', 'FBNeo Canvas 2D context 已创建')
-          })
+            console.info(`[emulatorjs] ${softwareWebglOwner} 已创建 Canvas 2D 软件画面`)
+            diagLog('adapter', 'info', `${softwareWebglOwner} Canvas 2D context 已创建`)
+          }, options.platform === 'gba')
           if (!installed) {
             failLoad(rt.ejsWebglUnavailable, 'config')
             return

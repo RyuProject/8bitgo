@@ -4,8 +4,8 @@
  * 为什么要有它（2026-11-13，大陆 Linux Chrome 108 / Android 12 Chrome 123，18 次「无法建立 WebGL 画面」）：
  * EmulatorJS 的核心只编进了 RetroArch 的 GL 视频驱动，建不出 WebGL 就是 `reading 'GLctx'`，
  * 播放器只能告诉玩家「打开硬件加速」。可这批机器整机就没有 WebGL（国产 Linux 发行版自带的 Chromium、
- * 车机 / 盒子的 WebView），没有设置可开。NES 与 GB/GBC 已分别改走 jsnes / binjgb；街机仍沿用
- * EmulatorJS 的核心和 ROM 流程，只给已选 FBNeo legacy 核心试这层有限的 Canvas 2D 画面后备。
+ * 车机 / 盒子的 WebView），没有设置可开。NES 与 GB/GBC 已分别改走 jsnes / binjgb；街机只给已选的
+ * FBNeo legacy 核心、GBA 只给 mGBA legacy 核心试这层有限的 Canvas 2D 画面后备。
  *
  * 能做成的前提：这些平台的核心都是**软件渲染**，RetroArch 每帧只做一件事——把核心交出来的像素
  * texSubImage2D 进一张纹理，再画一个铺满视口的四边形（菜单 / 字体也是贴图四边形）。
@@ -15,6 +15,8 @@
  *
  * 不支持的：自定义着色器的效果（照原图画）、帧缓冲对象（离屏渲染直接丢弃）、顶点颜色调制。
  * 只给 legacy（WebGL1 / GLES2）核心用；要 WebGL2 的核心（mame-current、PS1 HW、NDS…）不装。
+ * mGBA 的 Emscripten 包装还会校验 `instanceof WebGLRenderingContext`，其软件代理需按 GBA 路径挂原型；
+ * 代理用自有属性表挡住原型上的原生方法，避免把无效接收者传给浏览器。
  */
 
 type Win = Window & typeof globalThis
@@ -147,7 +149,12 @@ export function affineFromTriangle(
   return [a, b, c, d, e, f]
 }
 
-function createSoftwareContext(canvas: HTMLCanvasElement, ctx2d: CanvasRenderingContext2D, attrs: Record<string, unknown>) {
+function createSoftwareContext(
+  canvas: HTMLCanvasElement,
+  ctx2d: CanvasRenderingContext2D,
+  attrs: Record<string, unknown>,
+  webglPrototype?: object,
+) {
   const doc = canvas.ownerDocument
   // 模拟器挂在 srcdoc iframe 里；ImageData 也要从画布所属窗口取，避免跨 realm 的 DOM 品牌检查拒收。
   const ImageDataCtor = doc.defaultView?.ImageData ?? ImageData
@@ -551,13 +558,20 @@ function createSoftwareContext(canvas: HTMLCanvasElement, ctx2d: CanvasRendering
   }
   void nextName
 
+  // mGBA 的 Emscripten GL 包装会在 canvas 实例上再包一层 getContext，并用 `instanceof WebGLRenderingContext`
+  // 验证结果。没有真 WebGL 时浏览器仍保留构造器，但普通 Proxy 不在它的原型链上，会被误判为 null。
+  // 只给明确需要该兼容检查的 mGBA 伪上下文挂原型，并在代理中避免调用原型上的原生非法接收者方法。
+  if (webglPrototype) Object.setPrototypeOf(impl, webglPrototype)
+
   /*
     WebGL 有上百个方法，RetroArch / Emscripten 还会碰到上面没列的（深度、模板、混合函数、颜色掩码……）。
     这些对 2D 画法没影响，一律当空操作；只有 uniform* 要记值（sampler 绑定哪个纹理单元、MVP）。
   */
   return new Proxy(impl, {
     get(target, prop) {
-      if (prop in target) return target[prop as string]
+      if (Object.prototype.hasOwnProperty.call(target, prop)) return target[prop as string]
+      if (webglPrototype && prop === 'constructor') return webglPrototype.constructor
+      if (!webglPrototype && prop in target) return target[prop as string]
       if (typeof prop !== 'string') return undefined
       if (/^uniform/.test(prop)) {
         return (loc: UniformLoc | null, ...v: unknown[]) => {
@@ -581,7 +595,7 @@ function createSoftwareContext(canvas: HTMLCanvasElement, ctx2d: CanvasRendering
  * 原生 getContext('webgl') 先试，返回 null 才给假的；'webgl2' 一律保持原生结果（null），
  * 引擎据此选 legacy 核心。返回 true 表示装上了。
  */
-export function installSoftwareWebgl(win: Win, onUse?: () => void): boolean {
+export function installSoftwareWebgl(win: Win, onUse?: () => void, webgl1InstanceCheck = false): boolean {
   const proto = win.HTMLCanvasElement?.prototype
   if (!proto) return false
   if ((proto as unknown as { __8bitgoSoftwareGl?: boolean }).__8bitgoSoftwareGl) return true
@@ -597,7 +611,7 @@ export function installSoftwareWebgl(win: Win, onUse?: () => void): boolean {
       if (real) return real
       const ctx2d = native.call(this, '2d') as CanvasRenderingContext2D | null
       if (!ctx2d) return null
-      const soft = createSoftwareContext(this, ctx2d, attrs ?? {})
+      const soft = createSoftwareContext(this, ctx2d, attrs ?? {}, webgl1InstanceCheck ? win.WebGLRenderingContext?.prototype : undefined)
       contexts.set(this, soft)
       onUse?.()
       return soft

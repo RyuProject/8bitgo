@@ -449,11 +449,11 @@ export interface ResolveContext {
    * GB/GBC 改走 binjgb 的纯 JavaScript 构建（public/binjgb/binjgb-js.js，scripts/build-binjgb-js.mjs）。
    */
   wasmUnavailable?: boolean
-  /** GBA 无 WebAssembly 或无 WebGL 时改走必须有平台 BIOS 的 Canvas 2D IodineGBA。 */
+  /** GBA 无 WebAssembly 时改走需要平台 BIOS 的纯 JavaScript IodineGBA。 */
   gbaWasmUnavailable?: boolean
   /** 这个浏览器不能使用 EmulatorJS 所需的画面能力；NES 改走 jsnes，GB/GBC 改走 binjgb。 */
   webglUnavailable?: boolean
-  /** GBA 的 EmulatorJS 画面不可用时改走 Canvas 2D 的 IodineGBA。 */
+  /** GBA 无 WebGL 时优先走 mGBA 软件画面；无 WebAssembly 时仍由 gbaWasmUnavailable 决定退路。 */
   gbaWebglUnavailable?: boolean
   /**
    * Flash 这一局改用 AwayFL（纯 JavaScript）：没有 WebAssembly 且游戏在验证名单里，或地址带 ?awayfl=1。

@@ -37,6 +37,7 @@ const BASE = argOf('--base', process.env.SMOKE_BASE_URL || 'https://8bitgo.com')
 const GAMES = argOf('--games', process.env.SMOKE_GAMES || 'super-mario-bros,cadillacs-and-dinosaurs')
   .split(',').map((s) => s.trim()).filter(Boolean)
 const TIMEOUT_MS = Number(argOf('--timeout', process.env.SMOKE_TIMEOUT_MS || 150_000))
+const DISABLE_WEBGL = process.env.SMOKE_DISABLE_WEBGL === '1'
 /** 带大 CHD 的 MAME 柜台不能沿用普通 ROM 的 150 秒预算。 */
 export const MAME_CHD_TIMEOUT_MS = 420_000
 /** DevTools 自己没回应时，不能把测试机问题写成游戏启动失败。 */
@@ -216,9 +217,8 @@ async function launchChrome(chrome) {
     '--no-default-browser-check',
     '--mute-audio',
     '--autoplay-policy=no-user-gesture-required',
-    // 服务器上没有 GPU：用软件 WebGL，否则 EmulatorJS 会按「建不出 WebGL」直接报环境错误
-    '--use-angle=swiftshader',
-    '--enable-unsafe-swiftshader',
+    // 默认用软件 WebGL 覆盖服务器没有 GPU 的情况；专门验 Canvas 2D 退路时显式禁用 WebGL。
+    ...(DISABLE_WEBGL ? ['--disable-webgl'] : ['--use-angle=swiftshader', '--enable-unsafe-swiftshader']),
     '--window-size=1280,800',
     ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
     'about:blank',
@@ -374,7 +374,7 @@ async function main() {
     console.error('✖ 这个 Node 没有全局 WebSocket（需要 Node 22+）；跳过开局冒烟')
     process.exit(2)
   }
-  console.log(`开局冒烟：${BASE}，${GAMES.join('、')}（普通游戏最多 ${Math.round(TIMEOUT_MS / 1000)} 秒；大 CHD 柜台最多 ${Math.round(MAME_CHD_TIMEOUT_MS / 1000)} 秒）`)
+  console.log(`开局冒烟：${BASE}，${GAMES.join('、')}（${DISABLE_WEBGL ? '禁用 WebGL；' : ''}普通游戏最多 ${Math.round(TIMEOUT_MS / 1000)} 秒；大 CHD 柜台最多 ${Math.round(MAME_CHD_TIMEOUT_MS / 1000)} 秒）`)
   const browser = await launchChrome(chrome)
   const cdp = new Cdp(browser.url)
   let failed = 0

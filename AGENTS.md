@@ -374,15 +374,16 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
   → `-s WASM=0`，全局名改成 `BinjgbJs`），两份构建的提交必须一致（`test:browser-support` 核对 sha256 与提交）。
   为什么不用 jsGBC 之类的纯 JS 模拟器：同一个核心精度更高、即时存档 / 电池存档格式不变、适配器原样复用；
   jsGBC 的 npm 包还把原生模块 `speaker`（npm audit 高危）和 webpack 拖进生产依赖，它的即时存档 `load()` 是空实现。
-- **街机无 WebGL 只给 FBNeo legacy 试 Canvas 2D 后备**（2026-11-14）：适配器先按后台核心与 RomData 规则定出最终核心；只有
-  `fbneo` / `fbneo-lowmem` 才在 EmulatorJS iframe 的 `loader.js` 前安装 `src/emulator/softwareWebgl.ts`。
-  WebGL2 仍返回不可用，因此 EmulatorJS 应加载对应的 `*-legacy-wasm.data`；不把 MAME / FBA 核心改成 FBNeo，
-  `mame-current` 和非 FBNeo 游戏仍在 ROM / 核心下载前报 WebGL 环境错误。该兼容层只实现 RetroArch WebGL1 的基本纹理四边形，
-  不支持离屏帧缓冲、自定义 shader 与顶点颜色；若改了它，必须在禁用 WebGL 的浏览器用真实 FBNeo ROM 验证画面、旋转、
-  BIOS 与 RomData，再扩大可用范围。不要把 `public/__swgl/` 里的本地试验页或 ROM 当作生产资源提交。
-- **EmulatorJS 无 WebGL 的处理按核心收窄**：NES 用 jsnes、GB/GBC 用 binjgb；街机只有最终核心为 FBNeo legacy
-  才尝试 `softwareWebgl.ts`，其余平台 / 核心都在 ROM / 核心 / BIOS 下载前报 `config` 错误。
-  若兼容层自身仍报 `GLctx`，按 WebGL 环境错误停止，不重试、不换 ROM。
+- **无 WebGL 的 EmulatorJS 软件画面后备按核心收窄**（2026-11-26，火红 GBA 诊断 #4209 / #4210）：适配器先按后台配置定最终核心；
+  街机只给 `fbneo` / `fbneo-lowmem`，GBA 只给 `mgba`，在 EmulatorJS iframe 的 `loader.js` 前安装 `src/emulator/softwareWebgl.ts`。
+  GBA 没有 WebAssembly 时仍走 IodineGBA（需要管理员配置合法来源的 16 KiB BIOS）；仅缺 WebGL 且有 WebAssembly 时用 mGBA HLE BIOS，
+  避免自动转到没有配置 BIOS 的 IodineGBA。mGBA legacy 的 Emscripten GL 包装额外要求 context `instanceof WebGLRenderingContext`；
+  普通 Proxy 会被它丢弃，收尾时触发 `deleteContext` 读取未建立的 `GLctx`。GBA 路径现在只给代理挂 `WebGLRenderingContext.prototype`，
+  同时阻止把该原型上的原生方法以伪 context 为接收者调用；FBNeo 保留原代理行为。
+  WebGL2 仍返回不可用，因此应加载对应的 `*-legacy-wasm.data`；不把 MAME / FBA 核心改成 FBNeo，`mame-current`、其它核心和平台
+  仍在 ROM / 核心下载前报 WebGL 环境错误。该兼容层只实现 RetroArch WebGL1 的基本纹理四边形，不支持离屏帧缓冲、自定义 shader 与顶点颜色；
+  若扩展它，必须用禁用 WebGL 的真实目标核心验证首帧与输入。此次以自编 32 KiB GBA 测试程序在禁用 WebGL 的 Chromium 上实测到 mGBA `first_frame`；
+  这不替代真实 FireRed ROM / 手柄操作验证。回归：`npm run test:gba-fallback`。不要把 `public/__swgl/` 里的本地试验页或 ROM 当作生产资源提交。
 - **`getGamepads()` 被权限策略挡住会抛错，不能让它弄死引擎**（2026-11-14 大陆 iPad iOS 17 应用内浏览器《拳皇 97 风云再起 Plus》：
   `SecurityError: Third-party iframes are not allowed to call getGamepads()…`，之后引擎一行日志都没有、核心一字节没下，
   两分钟看门狗报「卡住」，换线路重试又等两分钟）。本站页面被别的应用 / 网站嵌在 iframe 里、外层没给 `allow="gamepad"` 时，

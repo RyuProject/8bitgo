@@ -71,6 +71,8 @@ assert.match(src, /const target = await sendWithin[\s\S]*?targetId = target\.tar
   退出码变成 2，redeploy 记成「冒烟没有运行」、发飞书告警、/tmp 留下 30MB）。
 */
 const launch = src.slice(src.indexOf('async function launchChrome'), src.indexOf('async function smokeOne'))
+assert.match(launch, /DISABLE_WEBGL \? \['--disable-webgl'\]/, '可显式关闭 WebGL，回归 Canvas 2D 退路')
+assert.match(src, /const DISABLE_WEBGL = process\.env\.SMOKE_DISABLE_WEBGL === '1'/, '禁 WebGL 只由专用验收环境变量触发')
 assert.match(launch, /\{ stdio: 'ignore', detached: true \}/, 'Chrome 必须 detached 自成进程组，整组才能一起停')
 assert.match(launch, /process\.kill\(-proc\.pid, signal\)/, '关 Chrome 时按进程组发信号，渲染 / GPU 子进程一起停')
 const remove = launch.slice(launch.indexOf('const removeProfile'), launch.indexOf('const portFile'))

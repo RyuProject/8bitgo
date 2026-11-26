@@ -1826,7 +1826,7 @@ export function EmulatorPlayer({
   }, [romUrl, shouldProbeNes])
 
   /*
-    开局前检查运行时能力：NES 改走 jsnes，GB/GBC 改走 binjgb，禁用 WebAssembly 的 GBA 改走 IodineGBA。
+    开局前检查运行时能力：NES 改走 jsnes，GB/GBC 改走 binjgb；GBA 无 WebAssembly 时改走 IodineGBA，仅无 WebGL 时保留 mGBA 并启用软件画面层。
     放在 effect 里而不是渲染时算：SSR 没有 document，渲染时算会让首屏和水合选出不同的引擎。
   */
   const [webglProbe, setWebglProbe] = useState<{ platform: PlatformId; ready: boolean; unavailable: boolean }>(
@@ -1838,13 +1838,17 @@ export function EmulatorPlayer({
     if (!shouldProbeNoWebgl) return
     // NES 在太旧的浏览器上也改走 jsnes：EmulatorJS 的引擎和核心语法都跑不动（browserSupport.ts）
     const noWebgl = !canCreateWebgl()
-    // NES：太旧或没有 WebAssembly 都改走 jsnes；GB/GBC：没有 WebAssembly改走 binjgb；GBA 无 WebGL / WASM 改走 IodineGBA。
+    // NES：太旧或没有 WebAssembly 都改走 jsnes；GB/GBC：没有 WebAssembly改走 binjgb；GBA 记录缺失能力，运行时再区分两种退路。
     const noModernRuntime = platform.id === 'nes'
       ? !modernRuntimeSyntaxSupported() || !webAssemblyAvailable()
       : !webAssemblyAvailable()
     const missing = platform.id === 'gba' ? noWebgl || !webAssemblyAvailable() : noWebgl || noModernRuntime
     if (missing) {
-      const fallback = platform.id === 'nes' ? 'jsnes' : platform.id === 'gba' ? 'IodineGBA（纯 JavaScript）' : !webAssemblyAvailable() ? 'binjgb（纯 JavaScript 构建）' : 'binjgb'
+      const fallback = platform.id === 'nes'
+        ? 'jsnes'
+        : platform.id === 'gba'
+          ? !webAssemblyAvailable() || runtime === 'iodinegba' ? 'IodineGBA（纯 JavaScript）' : 'mGBA（Canvas 2D）'
+          : !webAssemblyAvailable() ? 'binjgb（纯 JavaScript 构建）' : 'binjgb'
       const why = noWebgl ? '建不出 WebGL' : !webAssemblyAvailable() ? '没有 WebAssembly' : '太旧（不支持类字段 / ?. / ??）'
       console.warn(`[8bitgo/runtime] 这个浏览器${why}，${platform.id.toUpperCase()} 改用 ${fallback}`)
     }
