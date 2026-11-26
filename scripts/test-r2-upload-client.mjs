@@ -286,10 +286,12 @@ console.log('✅ ROM 分片在首片早期样本后保守启动并发，慢速�
     open(_method, _url) {}
     setRequestHeader(name, value) { this.headers[String(name).toLowerCase()] = String(value) }
     send(blob) {
+      this.upload.onloadstart?.()
       const part = Number(this.headers['x-8bg-part-number'])
       startedParts.push(part)
       const progress = (loaded) => this.upload.onprogress?.({ lengthComputable: true, loaded, total: blob.size })
       const finish = () => {
+        this.upload.onload?.()
         this.status = 200
         this.responseText = JSON.stringify({ etag: `early-${part}` })
         this.onload?.()

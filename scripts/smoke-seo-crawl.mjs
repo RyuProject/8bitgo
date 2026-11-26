@@ -159,7 +159,7 @@ function videoGameEntity(page) {
       const entities = jsonLdObjects(JSON.parse(json))
       const found = entities.find((entity) => {
         const types = Array.isArray(entity['@type']) ? entity['@type'] : [entity['@type']]
-        return types.some((type) => String(type).toLowerCase().split(/[\/:#]/).at(-1) === 'videogame')
+        return types.some((type) => String(type).toLowerCase().split(/[\u002F:#]/).at(-1) === 'videogame')
       })
       if (found) return found
     } catch {
