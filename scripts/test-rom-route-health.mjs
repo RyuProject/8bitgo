@@ -431,6 +431,106 @@ await check('首段吞吐从响应头算起，握手和首字节不压低并发'
   assert.match(src, /startedAt = monotonicNow\(\)\n      validateResponse\(res, opts\.check\)/, '备用线路采样同一口径')
 })
 
+await check('首片 64 KiB 已显示慢速时就比较备用线路，不等并发估算样本', async () => {
+  const chunk = 1 << 20
+  const size = 4 * chunk
+  let primaryBytes = 0
+  let bytesAtProbe = -1
+  let alternateCalls = 0
+  const fetchImpl = async (url, init) => {
+    const host = hostOf(url)
+    const range = init.headers.Range
+    if (host === 'b.test') {
+      alternateCalls++
+      if (alternateCalls === 1) bytesAtProbe = primaryBytes
+      return rangeResponse(size, range, { signal: init.signal })
+    }
+    const match = /bytes=(\d+)-(\d+)/.exec(range)
+    const start = Number(match[1])
+    const end = Math.min(Number(match[2]), size - 1)
+    const bytes = bodyFor(start, end)
+    let at = 0
+    const body = new ReadableStream({
+      async pull(controller) {
+        if (at >= bytes.length) return controller.close()
+        await delay(350, init.signal)
+        const next = Math.min(bytes.length, at + 64 * 1024)
+        controller.enqueue(bytes.subarray(at, next))
+        primaryBytes += next - at
+        at = next
+      },
+    })
+    return {
+      ok: true,
+      status: 206,
+      headers: headers({ 'content-range': `bytes ${start}-${end}/${size}`, 'content-length': String(end - start + 1) }),
+      body,
+    }
+  }
+  const blob = await fetchBlobWithProgress('https://a.test/early-slow.zip?romv=1', {
+    fetchImpl,
+    chunkBytes: chunk,
+    routeHealth: true,
+    maxConcurrency: 1,
+    alternateUrls: ['https://b.test/early-slow.zip?romv=1'],
+    networkHints: {},
+  })
+  expectExact(await readAll(blob), size)
+  assert.equal(bytesAtProbe, 64 * 1024, `备用测速应在首个 64 KiB 慢样本后启动，实际 ${bytesAtProbe} 字节`)
+  assert.ok(alternateCalls >= 2, '备用测速确认更快后，完整首片应从备用线路重取')
+})
+
+await check('响应头已到但正文停滞时，短暂等待后改测同对象备用线路', async () => {
+  const chunk = 1 << 20
+  const size = 2 * chunk
+  let primaryAborted = false
+  let alternateCalls = 0
+  const fetchImpl = async (url, init) => {
+    if (hostOf(url) === 'b.test') {
+      alternateCalls++
+      return rangeResponse(size, init.headers.Range, { signal: init.signal })
+    }
+    const match = /bytes=(\d+)-(\d+)/.exec(init.headers.Range)
+    const start = Number(match[1])
+    const end = Math.min(Number(match[2]), size - 1)
+    const body = new ReadableStream({
+      pull() {
+        return new Promise((_, reject) => {
+          if (init.signal.aborted) {
+            primaryAborted = true
+            reject(abortError())
+          } else {
+            init.signal.addEventListener('abort', () => {
+              primaryAborted = true
+              reject(abortError())
+            }, { once: true })
+          }
+        })
+      },
+    })
+    return {
+      ok: true,
+      status: 206,
+      headers: headers({ 'content-range': `bytes ${start}-${end}/${size}`, 'content-length': String(end - start + 1) }),
+      body,
+    }
+  }
+  const started = Date.now()
+  const blob = await fetchBlobWithProgress('https://a.test/stalled-body.zip?romv=1', {
+    fetchImpl,
+    chunkBytes: chunk,
+    routeHealth: true,
+    maxConcurrency: 1,
+    alternateUrls: ['https://b.test/stalled-body.zip?romv=1'],
+    networkHints: {},
+  })
+  const elapsed = Date.now() - started
+  expectExact(await readAll(blob), size)
+  assert.equal(primaryAborted, true, '备用测速成功后应立即停止停滞的首片')
+  assert.ok(alternateCalls >= 2, '应完成一次备用测速并从备用线路续开')
+  assert.ok(elapsed < 4_000, `不应等到 30 秒下载看门狗（${elapsed}ms）`)
+})
+
 await check('首片早期采样只做预取，正式并发按完整分片吞吐校正', async () => {
   const chunk = 1 << 20
   const size = 6 * chunk

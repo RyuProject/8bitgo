@@ -110,6 +110,10 @@ export const STALL_MS = 30_000
 /** 普通网络取 256 KiB；明确弱网改取 128 KiB，避免慢线路上等太久才开始比较线路。 */
 const FIRST_RANGE_SAMPLE_BYTES = 256 * 1024
 const WEAK_NETWORK_FIRST_RANGE_SAMPLE_BYTES = 128 * 1024
+/** 线路比速可以先用 64 KiB 同口径样本，不必等并发估算的完整样本。 */
+const EARLY_ROUTE_SAMPLE_BYTES = 64 * 1024
+/** 响应头已到、正文仍迟迟没有字节时，提前问同一对象的备用线路。 */
+const EARLY_ROUTE_STALL_MS = 1_500
 const ALTERNATE_ROUTE_SAMPLE_BYTES = 64 * 1024
 const ALTERNATE_ROUTE_MIN_SAMPLE_BYTES = 32 * 1024
 const ALTERNATE_ROUTE_SAMPLE_TIMEOUT_MS = 1_500
@@ -1636,8 +1640,10 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
       if (guard.signal.aborted) firstRangeController.abort()
       else guard.signal.addEventListener('abort', abortFirstRangeFromGuard, { once: true })
       let firstPartRead = false
+      let firstAttemptLoaded = 0
       let fasterAlternateError: SlowRomRouteError | null = null
       const alternateProbeController = new AbortController()
+      let earlyRouteProbeTimer: ReturnType<typeof setTimeout> | undefined
       // 首片也占线路：提前分片按负载分摊时才会落到别的线路上
       let reservedRoute = firstRoute
       loadRoute(reservedRoute, 1)
@@ -1674,39 +1680,56 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
         total = firstTotal
         parts = Array.from({ length: Math.ceil(total / chunkBytes) }, () => undefined as Blob | undefined)
         const firstSampleSize = Math.min(firstRangeSampleBytes(networkHints), firstEnd + 1)
+        // 线路比较单独使用较小样本；并发判断仍等原来的 128/256 KiB，避免慢启动样本压低整局并发。
+        const alternateRoute = routePool.length > 1 ? pickRoute(firstRoute) : (opts.alternateUrl ?? '')
+        const alternateExists = Boolean(alternateRoute && alternateRoute !== firstRoute)
+        const effectiveType = String(networkHints.effectiveType ?? '').toLowerCase()
+        const conserveTraffic = networkHints.saveData || effectiveType === 'slow-2g' || effectiveType === '2g'
+        let alternateProbeStarted = false
+        const startAlternateProbe = (routeSampleBytes: number, routeSampleElapsedMs: number) => {
+          if (alternateProbeStarted || !alternateExists || firstTotal < SLOW_ROUTE_MIN_FILE_BYTES || conserveTraffic) return
+          const routeSampleMbps = (routeSampleBytes * 8) / (Math.max(1, routeSampleElapsedMs) * 1000)
+          if (routeSampleMbps >= SLOW_ROUTE_MIN_MBPS) return
+          alternateProbeStarted = true
+          diagLog('download', 'info', `ROM 首段早期测速 ${routeSampleBytes} 字节 / ${routeSampleElapsedMs.toFixed(0)}ms（${routeSampleMbps.toFixed(1)} Mbps，不含握手与首字节）：`, firstRoute)
+          // 备用测速与当前首片并行；不能在 drain 的进度回调里等待，否则主流也会停读。
+          void measureAlternateRomRange(alternateRoute, firstTotal, alternateProbeController.signal).then((alternateMbps) => {
+            if (alternateMbps !== null && alternateMbps > routeSampleMbps * 1.15) {
+              if (!firstPartRead) {
+                fasterAlternateError = new SlowRomRouteError(routeSampleMbps, routeSampleElapsedMs, alternateMbps, alternateRoute)
+                firstRangeController.abort()
+              }
+              return
+            }
+            diagLog('download', 'info', `备用 ROM 线路没有明显更快（${alternateMbps?.toFixed(1) ?? '未测出'} Mbps），继续当前线路：`, firstRoute)
+          }).catch(() => {})
+        }
+        earlyRouteProbeTimer = alternateExists && firstTotal >= SLOW_ROUTE_MIN_FILE_BYTES && !conserveTraffic
+          ? setTimeout(() => {
+              // 有响应头但正文 1.5 秒仍未形成有效样本时，把它视为零吞吐并验证备用线路。
+              if (firstPartRead || firstAttemptLoaded >= EARLY_ROUTE_SAMPLE_BYTES) return
+              const elapsed = Math.max(1, monotonicNow() - sampleStartedAt)
+              startAlternateProbe(firstAttemptLoaded, elapsed)
+            }, EARLY_ROUTE_STALL_MS)
+          : undefined
         let sampled = false
         const onFirstLoaded = async (loaded: number) => {
+          firstAttemptLoaded = loaded
           firstRangeInFlight = loaded
+          if (loaded >= EARLY_ROUTE_SAMPLE_BYTES) {
+            startAlternateProbe(Math.min(loaded, firstEnd + 1), Math.max(1, monotonicNow() - sampleStartedAt))
+          }
           if (!sampled && loaded >= firstSampleSize) {
             sampled = true
             sampleBytes = Math.min(loaded, firstEnd + 1)
             sampleElapsedMs = Math.max(1, monotonicNow() - sampleStartedAt)
             const sampledMbps = (sampleBytes * 8) / (sampleElapsedMs * 1000)
-            // 同一版本对象有线路池时从池里挑；否则是外层给的那一条整局备用线路
-            const alternateRoute = routePool.length > 1 ? pickRoute(firstRoute) : (opts.alternateUrl ?? '')
-            const alternateExists = Boolean(alternateRoute && alternateRoute !== firstRoute)
-            const effectiveType = String(networkHints.effectiveType ?? '').toLowerCase()
-            const conserveTraffic = networkHints.saveData || effectiveType === 'slow-2g' || effectiveType === '2g'
             // 低速首段已经是真实正文样本。立即更新记分板，避免整片下完前仍沿用旧的高速记录。
             if (trackHealth && sampledMbps < SLOW_ROUTE_MIN_MBPS) {
               recordRomRouteTransfer(firstRoute, sampleBytes, sampleElapsedMs)
             }
-            if (alternateExists && firstTotal >= SLOW_ROUTE_MIN_FILE_BYTES && !conserveTraffic) {
-              diagLog('download', 'info', `ROM 首段 ${sampleBytes} 字节 / ${sampleElapsedMs.toFixed(0)}ms（${sampledMbps.toFixed(1)} Mbps，不含握手与首字节）：`, firstRoute)
-              if (sampledMbps < SLOW_ROUTE_MIN_MBPS) {
-                // 备用测速与当前首片并行；不能在 drain 的进度回调里等待，否则主流也会停读。
-                void measureAlternateRomRange(alternateRoute, firstTotal, alternateProbeController.signal).then((alternateMbps) => {
-                  if (alternateMbps !== null && alternateMbps > sampledMbps * 1.15) {
-                    if (!firstPartRead) {
-                      fasterAlternateError = new SlowRomRouteError(sampledMbps, sampleElapsedMs, alternateMbps, alternateRoute)
-                      firstRangeController.abort()
-                    }
-                    return
-                  }
-                  diagLog('download', 'info', `备用 ROM 线路没有明显更快（${alternateMbps?.toFixed(1) ?? '未测出'} Mbps），继续当前线路：`, firstRoute)
-                }).catch(() => {})
-              }
-            }
+            // 较大的并发样本若才首次确认线路慢，也在这里启动备用测速。
+            startAlternateProbe(sampleBytes, sampleElapsedMs)
             const earlyConcurrency = Math.min(
               hardMax,
               adaptiveChunkConcurrency(sampleBytes, sampleElapsedMs, networkHints),
@@ -1721,6 +1744,7 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
         }
         const firstPart = await takePart(first, firstEnd + 1, onFirstLoaded)
         firstPartRead = true
+        clearTimeout(earlyRouteProbeTimer)
         if (fasterAlternateError) throw fasterAlternateError
         // 首片已完整到手时不再等待未完成的备用测速，让后续下载继续。
         alternateProbeController.abort()
@@ -1767,6 +1791,7 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
         diagLog('download', 'warn', `首片第 ${attempt + 1} 次失败，重试：`, error, firstRoute)
         await abortableDelay(500 * 2 ** attempt, opts.signal)
       } finally {
+        clearTimeout(earlyRouteProbeTimer)
         alternateProbeController.abort()
         firstRangeController.abort()
         guard.signal.removeEventListener('abort', abortFirstRangeFromGuard)
