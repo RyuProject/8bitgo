@@ -12,6 +12,7 @@ import {
   MAME_CHD_TIMEOUT_MS,
   startupDetailOf,
   startupEventOf,
+  startupEventsOf,
   timeoutForGame,
   verdictOf,
   waitWithin,
@@ -23,6 +24,13 @@ assert.equal(verdictOf('timeout'), 'fail')
 assert.equal(verdictOf('slow_start'), '', '慢启动不是结论，继续等')
 assert.equal(verdictOf('game_playable'), '')
 assert.equal(startupEventOf(JSON.stringify({ event: 'first_frame', elapsedMs: 3 })), 'first_frame')
+assert.deepEqual(
+  startupEventsOf(JSON.stringify({ events: [{ event: 'runtime_ready' }, { event: 'first_frame' }] })),
+  ['runtime_ready', 'first_frame'],
+  '冒烟必须能从合并上报中识别 NDS 首帧',
+)
+assert.equal(startupEventOf(JSON.stringify({ events: [{ event: 'runtime_ready' }, { event: 'first_frame' }] })), 'runtime_ready')
+assert.deepEqual(startupEventsOf('not json'), [])
 assert.equal(startupEventOf('not json'), '')
 assert.equal(startupEventOf(undefined), '')
 assert.equal(startupDetailOf(JSON.stringify({ detail: '仍在下载 ROM：6.2MB/8.6MB，平均 2.9Mbps' })), '仍在下载 ROM：6.2MB/8.6MB，平均 2.9Mbps')

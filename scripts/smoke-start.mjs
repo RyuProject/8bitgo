@@ -60,14 +60,23 @@ export function findChrome(env = process.env, exists = existsSync) {
   return CHROME_CANDIDATES.find((p) => exists(p)) || ''
 }
 
-/** 拦下的启动漏斗请求体 → 事件名（解析不了返回空串） */
-export function startupEventOf(postData) {
+/** 拦下的启动漏斗请求体 → 事件名列表；兼容合并了阶段与首帧的批量请求。 */
+export function startupEventsOf(postData) {
   try {
     const body = JSON.parse(postData || '{}')
-    return typeof body.event === 'string' ? body.event : ''
+    if (typeof body.event === 'string') return [body.event]
+    if (Array.isArray(body.events)) {
+      return body.events.flatMap((event) => typeof event?.event === 'string' ? [event.event] : [])
+    }
+    return []
   } catch {
-    return ''
+    return []
   }
+}
+
+/** 单事件兼容入口，供既有调用方和纯函数测试使用。 */
+export function startupEventOf(postData) {
+  return startupEventsOf(postData)[0] || ''
 }
 
 /** 启动事件里的原因摘要沿用服务端脱敏规则，避免冒烟日志泄露 URL、IP 或访问凭据。 */
@@ -305,11 +314,13 @@ async function smokeOne(cdp, slug) {
         if (!body && request.hasPostData) {
           body = (await sendWithin(cdp, 'Fetch.getRequestPostData', { requestId }, sessionId).catch(() => ({}))).postData
         }
-        const event = startupEventOf(body)
+        const eventsInRequest = startupEventsOf(body)
         const detail = startupDetailOf(body)
-        if (event) events.push(`${event}${detail ? ` (${detail})` : ''}@${Math.round((Date.now() - started) / 1000)}s`)
-        const verdict = verdictOf(event)
-        if (verdict) settle({ verdict, event })
+        for (const event of eventsInRequest) {
+          events.push(`${event}${detail ? ` (${detail})` : ''}@${Math.round((Date.now() - started) / 1000)}s`)
+          const verdict = verdictOf(event)
+          if (verdict) settle({ verdict, event })
+        }
       }
       // 回假的 200：不进生产漏斗、诊断包、游玩次数
       await sendWithin(cdp, 'Fetch.fulfillRequest', {
