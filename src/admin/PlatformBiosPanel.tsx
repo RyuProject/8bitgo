@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import type { PlatformId } from '@/types'
 import { platforms } from '@/data/platforms'
 import { cx } from '@/lib/format'
-import { getRomApi, getRomPrefix, probeUrl, romUrlForKey, safeFileName, uploadRom } from '@/services/roms'
+import { getRomApi, getRomPrefix, probeRom, romUrlForKey, safeFileName, uploadRom } from '@/services/roms'
+import { classifyPlatformBiosProbe, type PlatformBiosProbeState } from './platformBiosProbe'
 import { cleanupSuperseded, confirmUpload } from './uploadGuards'
 import {
   bindBiosSet,
@@ -156,7 +157,7 @@ function BiosRow({
   placeholder: string
   busy: boolean
   pct: number
-  probe?: 'checking' | 'ok' | 'missing'
+  probe?: { state: PlatformBiosProbeState; status?: number; external: boolean }
   onBind: (key: string) => void
   onUpload: (file: File) => void
   onUnbind: () => void
@@ -172,11 +173,15 @@ function BiosRow({
   accept?: string
 }) {
   const status = value
-    ? probe === 'missing'
-      ? { label: '地址异常', className: 'bg-live/15 text-live' }
-      : probe === 'checking'
-        ? { label: '检查中', className: 'bg-surface-2 text-muted' }
-        : { label: '已就绪', className: 'bg-online/15 text-online' }
+    ? probe?.state === 'missing'
+      ? { label: '文件不存在', className: 'bg-live/15 text-live' }
+      : probe?.state === 'rejected'
+        ? { label: '地址返回错误', className: 'bg-live/15 text-live' }
+        : probe?.state === 'unconfirmed'
+          ? { label: '无法确认', className: 'bg-surface-2 text-muted' }
+          : probe?.state === 'checking' || !probe
+            ? { label: '检查中', className: 'bg-surface-2 text-muted' }
+            : { label: '已就绪', className: 'bg-online/15 text-online' }
     : coveredBy
       ? { label: '由默认项提供', className: 'bg-online/15 text-online' }
       : { label: '待配置', className: 'bg-surface-2 text-dim' }
@@ -242,13 +247,24 @@ function BiosRow({
         游戏最后报的是「缺文件」，让人以为是 ROM 的问题，
         实际上是 ROM 存储的公开地址没配。这里必须说破。
       */}
-      {value && probe === 'missing' && romUrlForKey(value) && (
+      {value && probe?.state === 'missing' && romUrlForKey(value) && (
         <p className="mt-1 text-[11px] font-medium text-live">
-          ⚠️ 这个地址取不到文件（404 或不可达）。绑定只是存了个字符串，文件没传上去照样是空的 ——
+          ⚠️ 服务器确认返回 HTTP {probe.status}，文件不存在。绑定只是存了个字符串，文件没传上去照样是空的 ——
           点「上传文件」把 BIOS 传到这个 key 上，或者把 key 改成文件真正所在的位置。
         </p>
       )}
-      {value && probe === 'ok' && <p className="mt-2 text-[11px] text-online">✓ 文件可访问</p>}
+      {value && probe?.state === 'rejected' && romUrlForKey(value) && (
+        <p className="mt-1 text-[11px] font-medium text-live">
+          ⚠️ 地址返回了 HTTP {probe.status ?? '错误'}，或响应内容是网页；这不等于文件不存在，但播放器无法把它当 BIOS 使用。请检查直链或上传文件。
+        </p>
+      )}
+      {value && probe?.state === 'unconfirmed' && romUrlForKey(value) && (
+        <p className="mt-1 text-[11px] font-medium text-muted">
+          ⚠️ 浏览器没有确认这个地址能被本站读取{probe.external ? '。外站可能未开放 CORS（跨域读取）' : '，可能是网络暂时不可达'}。
+          直接打开或下载成功不代表页面脚本能读取 BIOS 字节；请上传文件，或改用允许本站跨域读取的 HTTPS 二进制直链。
+        </p>
+      )}
+      {value && probe?.state === 'ok' && <p className="mt-2 text-[11px] text-online">✓ 地址探测成功</p>}
 
       {value &&
         (romUrlForKey(value) ? (
@@ -277,13 +293,13 @@ export function PlatformBiosPanel() {
   const [extraSets, setExtraSets] = useState<string[]>([])
   const [newSet, setNewSet] = useState('')
   /**
-   * 每个已绑 key 的「文件到底在不在」。
+   * 每个已绑 key 的「文件是否存在、以及浏览器能否探测」。
    *
    * 绑定只是存了一个字符串，后台从来不验证那个地址上真有东西 —— 于是「填了但文件 404」
    * 这种状态可以一直躺着，直到玩家启动游戏才以「缺 BIOS 文件」的面目冒出来，
-   * 而那个报错看上去像是 ROM 的问题。这里当场探一下，把哑巴陷阱变成明说。
+   * 而那个报错看上去像是 ROM 的问题。这里当场探一下；跨域 / 网络失败不能冒充 404。
    */
-  const [probe, setProbe] = useState<Record<string, 'checking' | 'ok' | 'missing'>>({})
+  const [probe, setProbe] = useState<Record<string, { state: PlatformBiosProbeState; status?: number; external: boolean }>>({})
   const fileRefs = useRef<Record<string, HTMLInputElement | null>>({})
 
   useEffect(() => {
@@ -302,12 +318,21 @@ export function PlatformBiosPanel() {
   const checkKey = useCallback(async (id: string, key: string) => {
     const url = key ? romUrlForKey(key) : ''
     if (!url) {
-      setProbe((s) => ({ ...s, [id]: 'missing' }))
+      setProbe((s) => ({ ...s, [id]: { state: 'rejected', external: false } }))
       return
     }
-    setProbe((s) => ({ ...s, [id]: 'checking' }))
-    const ok = await probeUrl(url)
-    setProbe((s) => ({ ...s, [id]: ok ? 'ok' : 'missing' }))
+    let external = false
+    try {
+      external = new URL(url, window.location.href).origin !== window.location.origin
+    } catch {
+      /* URL 构造失败时由探测结果给出地址错误，不把页面渲染打断。 */
+    }
+    setProbe((s) => ({ ...s, [id]: { state: 'checking', external } }))
+    const outcome = await probeRom(url)
+    setProbe((s) => ({
+      ...s,
+      [id]: { state: classifyPlatformBiosProbe(outcome), status: outcome.status, external },
+    }))
   }, [])
 
   useEffect(() => {
@@ -482,7 +507,7 @@ export function PlatformBiosPanel() {
     ...setNames.map((name) => biosSetKey(name)),
   ]
   const boundCount = bindingIds.filter((id) => Boolean((map as Record<string, string | undefined>)[id])).length
-  const failedCount = bindingIds.filter((id) => probe[id] === 'missing').length
+  const failedCount = bindingIds.filter((id) => probe[id]?.state === 'missing').length
 
   return (
     <>
