@@ -34,8 +34,13 @@ export function canReuseRomObjectKey(oldKey: string, incomingName: string, willP
  * ⚠️ 探测本身失败（Worker 不通、CORS 没配好）一律放行：它只是个提示，
  * 不该因为探测挂了就把上传功能也堵死。
  */
-export async function confirmUpload(key: string, file: Blob): Promise<boolean> {
-  const head = await headRom(key).catch(() => null)
+export async function confirmUpload(
+  key: string,
+  file: Blob,
+  inspected?: Awaited<ReturnType<typeof headRom>> | null,
+): Promise<boolean> {
+  // 批量上传可以并行探测多个 key，再按原顺序逐个询问覆盖；传入探测结果避免再付一次串行 RTT。
+  const head = inspected === undefined ? await headRom(key).catch(() => null) : inspected
   if (!head?.exists) return true
   if (head.size === file.size) {
     return window.confirm(

@@ -2495,6 +2495,19 @@ function stageText(stage: UploadStage | null): string {
  */
 const DOS_EXTRAS_MAX = 12
 
+/** 附件批次只开两路；省流量、弱网和低资源设备收回到单路，避免小文件并发放大重传。 */
+function dosExtrasUploadConcurrency(): number {
+  if (typeof navigator === 'undefined') return 1
+  const nav = navigator as Navigator & {
+    connection?: { saveData?: boolean; effectiveType?: string }
+    deviceMemory?: number
+  }
+  const type = String(nav.connection?.effectiveType ?? '').toLowerCase()
+  const weakNetwork = nav.connection?.saveData || ['slow-2g', '2g', '3g'].includes(type)
+  const lowResource = (nav.deviceMemory ?? Infinity) <= 2 || (nav.hardwareConcurrency ?? Infinity) <= 2
+  return weakNetwork || lowResource ? 1 : 2
+}
+
 function DosExtrasField({
   slug,
   value,
@@ -2584,38 +2597,88 @@ function DosExtrasField({
     }
 
     const dir = `extras/${slug || 'shared'}`
+    const entries = usable.map((item) => {
+      const path = normalizeExtraPath(item.path)
+      return { path, key: `${dir}/${extraObjectName(path)}`, blob: item.blob }
+    })
     const next = refs.slice()
     const failed: string[] = []
     let done = 0
-    await trackUploadActivity('DOS 附加文件批量上传与绑定', async () => {
-      for (const item of usable) {
-        const path = normalizeExtraPath(item.path)
-        const key = `${dir}/${extraObjectName(path)}`
-        try {
-          if (!(await confirmUpload(key, item.blob))) continue
-          setBusy(`${path} 0%`)
-          const result = await uploadRom(item.blob, key, (pct) => setBusy(`${path} ${pct}%`))
-          const at = next.findIndex((r) => r.path.toLowerCase() === path.toLowerCase())
-          /*
-            新传的默认是**强制注入**。可选与否由管理员看着体积自己勾 ——
-            默认成可选的话，补丁这种「不打就是另一个游戏」的东西会悄悄变成没人打。
-            原地替换时保留原来那一条的可选状态：重传一版资料片不该把开关也弄丢。
-          */
-          const ref = { key: result.key, path, optional: at >= 0 ? next[at].optional : false }
-          if (at >= 0) next[at] = ref
-          else next.push(ref)
-          done++
-        } catch (err) {
-          failed.push(`${path}（${err instanceof Error ? err.message : '上传失败'}）`)
+    setBusy(`检查 ${entries.length} 个文件`)
+    try {
+      await trackUploadActivity('DOS 附加文件批量上传与绑定', async () => {
+        /*
+          不同目标可以并行检查；覆盖弹窗仍按文件顺序逐个出现。ZIP 里可能有两个名字被 DOS 规则
+          折叠成同一个对象 key（或大小写不同但落到同一 DOS 路径），这种批次继续串行，保留原来的
+          「先传第一份，再询问是否覆盖」语义，不能让两份同时抢写同一个 R2 对象。
+        */
+        const duplicateKeys = new Set<string>()
+        const seenKeys = new Set<string>()
+        for (const entry of entries) {
+          const normalized = entry.key.toLowerCase()
+          if (seenKeys.has(normalized)) duplicateKeys.add(normalized)
+          seenKeys.add(normalized)
         }
-      }
+
+        const approved: Array<{ entry: typeof entries[number] }> = []
+        if (duplicateKeys.size === 0) {
+          const heads = await Promise.all(entries.map((entry) => headRom(entry.key).catch(() => null)))
+          for (let i = 0; i < entries.length; i++) {
+            if (await confirmUpload(entries[i].key, entries[i].blob, heads[i])) {
+              approved.push({ entry: entries[i] })
+            }
+          }
+        }
+        const uploadCount = duplicateKeys.size > 0 ? entries.length : approved.length
+
+        const uploadOne = async (entry: typeof entries[number]) => {
+          const { path, key, blob } = entry
+          try {
+            // 重复 key 批次要在每次写完后再探测，确保覆盖提示看到刚写入的对象。
+            if (duplicateKeys.size > 0 && !(await confirmUpload(key, blob))) return
+            setBusy(`${path} 0% · ${done}/${uploadCount} 完成`)
+            const result = await uploadRom(blob, key, (pct) => setBusy(`${path} ${pct}% · ${done}/${uploadCount} 完成`))
+            const at = next.findIndex((r) => r.path.toLowerCase() === path.toLowerCase())
+            /*
+              新传的默认是**强制注入**。可选与否由管理员看着体积自己勾 ——
+              默认成可选的话，补丁这种「不打就是另一个游戏」的东西会悄悄变成没人打。
+              原地替换时保留原来那一条的可选状态：重传一版资料片不该把开关也弄丢。
+            */
+            const ref = { key: result.key, path, optional: at >= 0 ? next[at].optional : false }
+            if (at >= 0) next[at] = ref
+            else next.push(ref)
+            done++
+          } catch (err) {
+            failed.push(`${path}（${err instanceof Error ? err.message : '上传失败'}）`)
+          }
+        }
+
+        if (duplicateKeys.size > 0) {
+          // 旧的覆盖交互依赖每份文件上传后立刻更新 R2；重复路径一律按原顺序处理。
+          for (const entry of entries) await uploadOne(entry)
+        } else {
+          let cursor = 0
+          const workers = Array.from({ length: Math.min(dosExtrasUploadConcurrency(), approved.length) }, async () => {
+            while (cursor < approved.length) {
+              const index = cursor++
+              const { entry } = approved[index]
+              await uploadOne(entry)
+            }
+          })
+          await Promise.all(workers)
+        }
+
+        setBusy(null)
+        if (inputRef.current) inputRef.current.value = ''
+        write(next)
+        const warn = problems.map((p) => p.text).join(' ')
+        if (failed.length) setMsg({ ok: false, text: `${done} 个已上传，${failed.length} 个失败：${failed.join('；')}` })
+        else if (done) setMsg({ ok: !warn, text: `已上传并绑定 ${done} 个附加文件。${warn}`.trim() })
+      })
+    } finally {
       setBusy(null)
       if (inputRef.current) inputRef.current.value = ''
-      write(next)
-      const warn = problems.map((p) => p.text).join(' ')
-      if (failed.length) setMsg({ ok: false, text: `${done} 个已上传，${failed.length} 个失败：${failed.join('；')}` })
-      else if (done) setMsg({ ok: !warn, text: `已上传并绑定 ${done} 个附加文件。${warn}`.trim() })
-    })
+    }
   }
 
   return (

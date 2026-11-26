@@ -38,7 +38,7 @@ const reset = () => {
   confirmAnswer = true
 }
 
-const { canReuseRomObjectKey, confirmDiscImage } = await import(fileURLToPath(new URL('../src/admin/uploadGuards.ts', import.meta.url)))
+const { canReuseRomObjectKey, confirmDiscImage, confirmUpload } = await import(fileURLToPath(new URL('../src/admin/uploadGuards.ts', import.meta.url)))
 const { chdCompressors, isPsxChdTransfer, psxChdCoreForCodecs, psxChdSaveSlug, parsePsxChdSaveSlug, psxCoreForPreparedName, psxCoreForTransfer, PSX_CHD_AUDIO_LATENCY_MS, PSX_CHD_COMPAT_CORE, PSX_CHD_CORE } = await import(fileURLToPath(new URL('../src/emulator/psxChd.ts', import.meta.url)))
 const { raiseAudioLatency } = await import(fileURLToPath(new URL('../src/emulator/mameAudio.ts', import.meta.url)))
 
@@ -59,6 +59,25 @@ process.on('exit', () => {
     process.exitCode = 1
   }
 })
+
+/* 批量预检传进来的结果必须直接用于确认，不能为同一 key 再发一轮串行 HEAD。 */
+{
+  const file = new Blob([new Uint8Array(1024)])
+  reset()
+  ok(await confirmUpload('extras/game/patch.dat', file, { exists: false }), '批量预检确认目标不存在时直接放行')
+  ok(asked.confirm.length === 0, '目标不存在时不弹覆盖确认')
+  reset()
+  confirmAnswer = false
+  ok(!(await confirmUpload('extras/game/patch.dat', file, { exists: true, size: file.size })), '批量预检发现同尺寸对象时保留取消权')
+  ok(asked.confirm.length === 1 && asked.confirm[0].includes('大小完全相同'), '同尺寸覆盖使用重复上传提示')
+  reset()
+  confirmAnswer = false
+  ok(!(await confirmUpload('extras/game/patch.dat', file, { exists: true, size: file.size + 1 })), '批量预检发现不同尺寸对象时保留取消权')
+  ok(asked.confirm.length === 1 && asked.confirm[0].includes('上传会把它覆盖'), '不同尺寸覆盖使用替换版本提示')
+  reset()
+  ok(await confirmUpload('extras/game/patch.dat', file, null), '批量预检失败仍按提示性检查的既定规则放行')
+  ok(asked.confirm.length === 0, '批量预检失败不制造错误覆盖弹窗')
+}
 
 ok(canReuseRomObjectKey('roms/psp/game.iso', 'replacement.ISO', false), '同格式 ISO 可以安全原地覆盖')
 ok(!canReuseRomObjectKey('roms/psp/game.chd', 'replacement.iso', false), 'ISO 不能写进旧 CHD key')
