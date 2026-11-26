@@ -2620,6 +2620,14 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   }
   // 先收窄成确定的 string 再允许 RomData 纠正它；否则 TypeScript 会因为变量可变而丢掉上面的空值判定。
   let core: string = resolvedCore
+  const reportResolvedCore = (saveSuffix?: string) => {
+    try {
+      options.onCoreResolved?.(core, saveSuffix)
+    } catch (error) {
+      // 核心状态同步只供失败恢复使用；父层回调异常不能中断真实开局。
+      console.warn('[emulatorjs] 汇报最终核心失败，继续启动', error)
+    }
+  }
   if (options.platform === 'arcade') {
     const scopedHack = romScopedHackForData(options.arcadeRomData)
     const selectedRomName = typeof options.game === 'string' ? arcadeRomsetName(options.game) : options.game.name
@@ -2638,6 +2646,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       core = corrected
     }
   }
+  reportResolvedCore()
   // 无 WebGL 时只给已经选定的 FBNeo 街机核心和 GBA 的 mGBA 核心接 Canvas 2D 兼容层。
   // mGBA 仍需 WebAssembly，但内置 HLE BIOS；无 WASM 的 GBA 会在运行时选择阶段退到 IodineGBA。
   // 不把 MAME / FBA 核心强改成 FBNeo：它们的驱动表、CHD 和启动参数并不等价。
@@ -3511,6 +3520,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (replacement && replacement !== core) {
       logEngine(`[memory] 本局原地换成 ${replacement}（起步内存小、按需增长；即时存档档位不变）`)
       core = replacement
+      reportResolvedCore()
       return preflightCoreMemory(stage)
     }
     if (options.onOutOfMemory?.(core, reason)) {
@@ -5377,6 +5387,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           if (prepared.hack?.romData && (
             prepared.hack.romDataScope === 'rom' || !options.arcadeRomData?.trim()
           )) {
+            const coreBeforeHack = core
             builtInRomData = prepared.hack.romData
             engineGameName = `${prepared.hack.zipName}.zip`
             // ROM 专属改版只在指纹命中本包后切核，不能把共享字段里的设置带给别的语言 ROM。
@@ -5392,7 +5403,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             if (prepared.hack.zipName === 'wofcn') {
               // 同步更新适配器内部存档键，避免父组件状态更新与核心启动之间出现一帧旧 slug。
               if (options.gameSlug) options.gameSlug = fbneoWofcnSaveSlug(options.gameSlug)
-              options.onCoreResolved?.(core, ':fbneo-wofcn')
+              reportResolvedCore(':fbneo-wofcn')
+            } else if (core !== coreBeforeHack) {
+              reportResolvedCore()
             }
             console.info(`[arcade] 按指纹认出改版包：${prepared.hack.title}（借 ${prepared.hack.driver} 驱动），已套用内置 RomData`)
           }
@@ -5409,6 +5422,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             if (!isMameCurrentCore(core)) {
               console.warn(`[arcade] ${namcoSet.board} 只能用 MAME 运行，${core} 没有这块板子的驱动，已自动切换为 mame-current`)
               core = 'mame-current'
+              reportResolvedCore()
             }
             engineGameName = `${namcoSet.romset}.zip`
             /*
@@ -5432,6 +5446,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             if (!isMameCurrentCore(core)) {
               console.warn(`[arcade] ${mameCatalogSet.board}（${mameCatalogSet.romset}）只能用 MAME 运行，${core} 没有这块板子的驱动，已自动切换为 mame-current`)
               core = 'mame-current'
+              reportResolvedCore()
             }
             engineGameName = `${mameCatalogSet.romset}.zip`
             const neededBios = mameCatalogSet.missingDevices.map((device) => device.shortname)
@@ -5466,6 +5481,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         if (discCore !== core) {
           console.info(`[emulatorjs] CHD 光盘切换核心：${core} → ${discCore}（压缩器 ${chdCompressors(chdHead)?.join('/') || '未知'}）`)
           core = discCore
+          reportResolvedCore()
         }
         // 核心定稿后若与下载前预检过的不同（CHD 刚从 PCSX 换成 Beetle），再预检一次；
         // 这一步在拉引擎、解 7z、编译核心之前，给不出就省掉那十几秒并换低内存核心 / 照实报错。

@@ -37,6 +37,15 @@ const check = async (name, fn) => {
 
 console.log('\n街机启动链体检')
 
+const emulatorjsAdapter = await readFile(new URL('../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8')
+await check('自动换核后的失败恢复会收到真实核心身份', () => {
+  assert.match(emulatorjsAdapter, /reportResolvedCore\(\)[\s\S]{0,220}const softwareWebglFallback/)
+  assert.match(emulatorjsAdapter, /core = replacement\s*\n\s*reportResolvedCore\(\)/)
+  assert.match(emulatorjsAdapter, /core = 'mame-current'\s*\n\s*reportResolvedCore\(\)/)
+  assert.match(emulatorjsAdapter, /core = discCore\s*\n\s*reportResolvedCore\(\)/)
+  assert.match(emulatorjsAdapter, /reportResolvedCore\(':fbneo-wofcn'\)/)
+})
+
 await check('RomData 只对实际包含该实现的 FBNeo 开放', () => {
   assert.equal(supportsFbneoRomData('fbneo'), true)
   assert.equal(supportsFbneoRomData('fbneo-lowmem'), true)

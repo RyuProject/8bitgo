@@ -10,3 +10,12 @@ export function nextManualCoreOption(
     return !tried.has(id) && !tried.has(resolved)
   })?.id ?? null
 }
+
+/** 只有同一局实际解析出的核心才可覆盖启动参数，避免迟到回调污染新会话。 */
+export function coreResolvedForSession(
+  report: { sessionId: number; core: string } | null,
+  sessionId: number,
+  fallback: string | undefined,
+): string | undefined {
+  return report?.sessionId === sessionId ? report.core : fallback
+}

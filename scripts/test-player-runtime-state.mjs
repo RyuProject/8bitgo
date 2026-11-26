@@ -8,7 +8,7 @@ import {
   sameRuntimeGeometry,
   sameRuntimeScreenLayout,
 } from '../src/emulator/playerRuntimeState.ts'
-import { nextManualCoreOption } from '../src/emulator/manualCoreRecovery.ts'
+import { coreResolvedForSession, nextManualCoreOption } from '../src/emulator/manualCoreRecovery.ts'
 
 assert.equal(sameRuntimeCaps(new Set(['pause', 'saveState']), new Set(['saveState', 'pause'])), true)
 assert.equal(sameRuntimeCaps(new Set(['pause']), new Set(['pause', 'volume'])), false)
@@ -27,6 +27,9 @@ assert.equal(
   '核心别名归一后不能重复建议同一个核心',
 )
 assert.equal(nextManualCoreOption([{ id: 'fbneo' }], ['fbneo']), null, '核心选项都试过后应隐藏手动切换入口')
+assert.equal(coreResolvedForSession({ sessionId: 7, core: 'mame-current' }, 7, 'fbneo'), 'mame-current', '失败恢复沿用本局实际运行核心')
+assert.equal(coreResolvedForSession({ sessionId: 6, core: 'mame-current' }, 7, 'fbneo'), 'fbneo', '迟到的旧会话回调不能污染新局')
+assert.equal(coreResolvedForSession(null, 7, undefined), undefined)
 
 assert.equal(sameRuntimeGeometry({ width: 256, height: 240 }, { width: 256, height: 240 }), true)
 assert.equal(sameRuntimeGeometry({ width: 256, height: 240 }, { width: 240, height: 256 }), false)
@@ -89,6 +92,8 @@ assert.match(player, /rememberFailedLaunch\(session\)/)
 assert.match(player, /begin\(failed\.game, failed\.platform, failed\.runtime, \{\s*coreOverride: failed\.coreOverride,\s*ruledOut: failed\.ruledOut,/s)
 assert.match(player, /status === 'error' && retryLastFailedLaunch\(\)/)
 assert.match(player, /nextManualCoreOption\(\s*options,\s*failed\.manualTriedCores/s)
+assert.match(player, /resolvedCoreRef\.current = \{ sessionId: session\.id, core: resolvedCore \}/)
+assert.match(player, /coreResolvedForSession\(resolvedCoreRef\.current, failed\.id, failed\.coreOverride\)/)
 assert.match(player, /failed\.platform === 'arcade' && arcadeRomDataRef\.current/, 'FBNeo 专属 RomData 游戏不能露出 MAME 等不兼容核心')
 assert.match(player, /failed\.recoveryCause !== 'core' && failed\.recoveryCause !== 'content'/)
 assert.match(player, /manualCoreRetryAvailable && \([\s\S]*?t\.player\.tryAnotherCore/)

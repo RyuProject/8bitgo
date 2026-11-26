@@ -71,7 +71,7 @@ import { prewarmMameChdMediaOnHover, prewarmRuntime } from './prewarm'
 import { observeEjsCoreWarmEvent } from './ejsStartWarm'
 import { defaultDos71SystemUrl, prewarmSystemCache } from './systemSource'
 import { canRestartInPlace } from './sessionRestart'
-import { nextManualCoreOption } from './manualCoreRecovery'
+import { coreResolvedForSession, nextManualCoreOption } from './manualCoreRecovery'
 import { AdSenseSlot } from '@/components/ads/AdSenseSlot'
 import { LoadingProgressOverlay } from './LoadingProgressOverlay'
 import { copyText } from '@/lib/clipboard'
@@ -1646,6 +1646,8 @@ export function EmulatorPlayer({
   const frameRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const sessionCounter = useRef(0)
+  /** 适配器可能在 ROM / CHD / 内存预检后换核；失败回调闭包仍持有旧 session，故按 session id 单独记录最终核心。 */
+  const resolvedCoreRef = useRef<{ sessionId: number; core: string } | null>(null)
   /** 启动漏斗按 attempt/event 唯一；事件仍需按核心身份配对，不能把回退核心完成时间接到旧核心上。 */
   const coreWarmObservationRef = useRef<{
     attemptId: string
@@ -2054,7 +2056,9 @@ export function EmulatorPlayer({
       localFile: typeof game !== 'string',
     })
     sessionCounter.current += 1
-    setSession({ id: sessionCounter.current, game, platform: targetPlatform, runtime, saveSlug,
+    const sessionId = sessionCounter.current
+    resolvedCoreRef.current = null
+    setSession({ id: sessionId, game, platform: targetPlatform, runtime, saveSlug,
       pspLoadMode: runtime.id === 'ppsspp' ? pspLoadModeRef.current : undefined,
       ...extra, fallbacks, coreOverride, startupAttemptId, startedAt })
     setNdsPerformanceSuggestion(null)
@@ -2253,6 +2257,7 @@ export function EmulatorPlayer({
       core: session.coreOverride ?? coreRef.current,
       onCoreResolved: (resolvedCore, saveSuffix) => {
         if (!isCurrent()) return
+        resolvedCoreRef.current = { sessionId: session.id, core: resolvedCore }
         setSession((current) => current?.id === session.id ? {
           ...current,
           coreOverride: resolvedCore,
@@ -3872,8 +3877,11 @@ export function EmulatorPlayer({
       return
     }
     const manualTriedCores = new Set(failed.manualTriedCores ?? [])
+    const reportedCore = failed.runtime.id === 'emulatorjs'
+      ? coreResolvedForSession(resolvedCoreRef.current, failed.id, failed.coreOverride)
+      : failed.coreOverride
     if (failed.coreOverride) manualTriedCores.add(failed.coreOverride)
-    const currentCore = emulatorJsCoreForGame(failed.platform, failed.coreOverride ?? coreRef.current)
+    const currentCore = emulatorJsCoreForGame(failed.platform, reportedCore ?? coreRef.current)
     if (currentCore) manualTriedCores.add(currentCore)
     if (failedCore) manualTriedCores.add(failedCore)
     for (const fallback of failed.fallbacks ?? []) {
@@ -3886,7 +3894,7 @@ export function EmulatorPlayer({
       game: failed.game,
       platform: failed.platform,
       runtime: failed.runtime,
-      coreOverride: failed.coreOverride,
+      coreOverride: currentCore ?? failed.coreOverride,
       ruledOut: failed.ruledOut ? [...failed.ruledOut] : undefined,
       romRefreshed: failed.romRefreshed || failed.forceRomRefresh,
       fallbacks: failed.fallbacks ? [...failed.fallbacks] : undefined,
