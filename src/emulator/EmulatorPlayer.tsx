@@ -190,6 +190,7 @@ const AUTO_RETRY_LIMIT = 1
 const AUTO_RETRY_TOTAL_LIMIT = 2
 /** 连续两分钟没有任何启动活动，漏斗记一次 watchdog 结果；运行时自己的重试/错误处理照常继续。 */
 const STARTUP_TIMEOUT_MS = 120_000
+const STARTUP_SLOW_MS = 60_000
 /**
  * 在线存档会话还剩多久就开始提示玩家。
  * 给足时间让他找机会重进一局（过关/读档空档），而不是等到存不上才发现。
@@ -2098,9 +2099,9 @@ export function EmulatorPlayer({
     const stopProgressSnapshot = registerDiagnosticSnapshot(() => (isCurrent() && !ready ? progressTrace.snapshot() : null))
     const reportSlowStartupIfNeeded = () => {
       if (!isCurrent() || ready || slowStartupReported || readinessState !== 'observable' ||
-        Date.now() - session.startedAt < 20_000) return
+        Date.now() - session.startedAt < STARTUP_SLOW_MS) return
       slowStartupReported = true
-      reportStartup('slow_start', `等待 game_playable 已超过 20 秒${progressTrace.phaseNote()}`)
+      reportStartup('slow_start', `等待 game_playable 已超过 ${STARTUP_SLOW_MS / 1000} 秒${progressTrace.phaseNote()}`)
     }
     /*
       只数**前台**时间（2026-11-10《天之痕》）：下载 146 秒的那段玩家切去了别的标签页，Win95 在后台
@@ -2150,7 +2151,7 @@ export function EmulatorPlayer({
       }
     }
     armStartupWatchdog()
-    slowTimer = window.setTimeout(reportSlowStartupIfNeeded, Math.max(0, 20_000 - (Date.now() - session.startedAt)))
+    slowTimer = window.setTimeout(reportSlowStartupIfNeeded, Math.max(0, STARTUP_SLOW_MS - (Date.now() - session.startedAt)))
     let handle: RuntimeHandle | null = null
     let mountCancelled = false
     void (async () => {
@@ -2382,7 +2383,7 @@ export function EmulatorPlayer({
           // HTML5 的慢启动统计要求可判断 playable；跨源又没有 ready bridge 时不能制造慢启动假数据。
           window.clearTimeout(slowTimer)
         } else {
-          // iframe 可能在 20 秒后才完成同源导航；此时补做一次检查，不漏掉真实慢启动。
+          // iframe 可能在阈值后才完成同源导航；此时补做一次检查，不漏掉真实慢启动。
           reportSlowStartupIfNeeded()
         }
       },

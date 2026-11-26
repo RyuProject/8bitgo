@@ -158,7 +158,7 @@ adminRouter.get('/health', requireAbility('site:manage'), async (_req, res, next
   }
 })
 
-/** 启动成功率与 20 秒性能告警；按游戏 / 运行时 / 国家分别聚合，避免在浏览器拉原始事件。 */
+/** 启动成功率与 60 秒慢启动告警；按游戏 / 运行时 / 国家分别聚合，避免在浏览器拉原始事件。 */
 adminRouter.get('/startup-stats', requireAbility('content:edit'), async (req, res, next) => {
   try {
     res.setHeader('Cache-Control', 'no-store')

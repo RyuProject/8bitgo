@@ -476,7 +476,7 @@ gamesRouter.post('/:slug/startup', async (req, res, next) => {
       }
     }
     if (isSlowStartup(result.event)) {
-      console.warn('[startup] 启动超过 20 秒', {
+      console.warn('[startup] 启动超过 60 秒', {
         slug: req.params.slug,
         runtime: result.event.runtime || 'unknown',
         platform: result.event.platform || 'unknown',

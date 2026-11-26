@@ -1,4 +1,4 @@
-/** 启动漏斗的输入边界与 20 秒告警阈值；不连数据库。 */
+/** 启动漏斗的输入边界与 60 秒告警阈值；不连数据库。 */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { isSlowStartup, normalizeStartupEvent, normalizeStartupEventBatch, sanitizeStartupDetail, shapePhaseTiming, STARTUP_SLOW_MS } from '../src/startup-metrics.js'
@@ -11,10 +11,10 @@ const base = {
   platform: 'nds',
 }
 
-const slow = normalizeStartupEvent({ ...base, event: 'slow_start', elapsedMs: 20_001 })
-assert.equal(slow.elapsedMs, 20_001)
+const slow = normalizeStartupEvent({ ...base, event: 'slow_start', elapsedMs: 60_001 })
+assert.equal(slow.elapsedMs, 60_001)
 assert.equal(isSlowStartup(slow), true)
-assert.equal(isSlowStartup({ ...slow, elapsedMs: STARTUP_SLOW_MS - 1 }), false, '未满 20 秒不应误报慢启动')
+assert.equal(isSlowStartup({ ...slow, elapsedMs: STARTUP_SLOW_MS - 1 }), false, '未满 60 秒不应误报慢启动')
 const unobservable = normalizeStartupEvent({ ...base, event: 'readiness_unobservable', elapsedMs: 120_000 })
 assert.equal(unobservable.event, 'readiness_unobservable', '跨域页面的不可观测状态必须可记录，但不能当成失败')
 
@@ -134,6 +134,7 @@ const isolated = renderShell({ fv: base.visitId, fa: base.attemptId, fs: Date.no
 assert.match(isolated, /iframe_loaded/)
 assert.match(isolated, /game_playable/)
 assert.match(isolated, /slow_start/)
+assert.match(isolated, /"slowMs":60000/, '隔离游玩页也必须用 60 秒慢启动阈值')
 assert.match(isolated, /readiness_unobservable/)
 assert.match(isolated, /readinessObservable/)
 assert.match(isolated, /keepalive:true/)

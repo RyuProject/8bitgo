@@ -13,6 +13,7 @@ import { SITE_LANGUAGES, SITE_DEFAULT_LANGUAGE } from '../../../shared/site-lang
 import { isolatedEmbedFor } from '../../../shared/isolated-embeds.js'
 
 const LANG_CODES = new Set(SITE_LANGUAGES.map((l) => l.code))
+const STARTUP_SLOW_MS = 60_000
 
 function escapeHtml(s) {
   return String(s ?? '')
@@ -34,7 +35,7 @@ function langPrefix(lang) {
 function funnelScript(slug, funnel) {
   if (!funnel) return ''
   // 三个值都经过严格白名单；仍把 `<` 转义，避免以后放宽字段时误造出 </script>。
-  const config = JSON.stringify({ slug, ...funnel }).replace(/</g, '\\u003c')
+  const config = JSON.stringify({ slug, ...funnel, slowMs: STARTUP_SLOW_MS }).replace(/</g, '\\u003c')
   return `<script>
 (() => {
   const c=${config}, frame=document.querySelector('iframe'), sent=new Set();
@@ -68,7 +69,7 @@ function funnelScript(slug, funnel) {
     else if(m.type==='first-interaction') report('first_interaction');
     else if(m.type==='failed') report('failed',String(m.detail||'HTML5 游戏报告启动失败').slice(0,160));
   });
-  setTimeout(()=>{if(!sent.has('game_playable')&&!sent.has('failed')&&readinessObservable)report('slow_start','等待 game_playable 已超过 20 秒')},Math.max(0,20000-(Date.now()-c.startedAt)));
+  setTimeout(()=>{if(!sent.has('game_playable')&&!sent.has('failed')&&readinessObservable)report('slow_start','等待 game_playable 已超过 '+Math.round(c.slowMs/1000)+' 秒')},Math.max(0,c.slowMs-(Date.now()-c.startedAt)));
   setTimeout(()=>{
     if(sent.has('game_playable')||sent.has('failed')) return;
     inspect();

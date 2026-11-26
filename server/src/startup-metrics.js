@@ -7,7 +7,7 @@
  */
 import { query } from './db.js'
 
-export const STARTUP_SLOW_MS = 20_000
+export const STARTUP_SLOW_MS = 60_000
 const RETENTION_DAYS = 90
 const EVENTS = new Set([
   'detail_view',

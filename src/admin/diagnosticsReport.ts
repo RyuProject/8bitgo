@@ -101,7 +101,7 @@ export interface DiagnosticSample {
 export const EVENT_LABEL: Record<DiagnosticEvent, string> = {
   failed: '加载失败',
   timeout: '启动超时',
-  slow_start: '慢启动（>20 秒）',
+  slow_start: '慢启动（>60 秒）',
   recovered: '已自动恢复',
 }
 
