@@ -64,4 +64,13 @@ const player = readFileSync(new URL('../src/emulator/EmulatorPlayer.tsx', import
 assert.match(player, /onControls=\{acceptLiveCtl\}/, '播放器必须经 acceptLiveCtl 去重后再存直播开关')
 assert.match(player, /sameLiveControls\(current, next\) \? current : next/)
 
-console.log('✔ 播放器对重复运行时状态报告保持引用稳定（含直播开关，防 React #185）')
+/*
+  最终失败后手动重试必须沿用刚才实际跑过的运行时 / 核心，并保留已排除的引擎；
+  否则自动兜底走完后，按钮又从默认引擎开局，玩家会重复等待已知失败的路径。
+*/
+assert.match(player, /failedLaunchRef = useRef<FailedLaunchContext \| null>\(null\)/)
+assert.match(player, /rememberFailedLaunch\(session\)/)
+assert.match(player, /begin\(failed\.game, failed\.platform, failed\.runtime, \{\s*coreOverride: failed\.coreOverride,\s*ruledOut: failed\.ruledOut,/s)
+assert.match(player, /status === 'error' && retryLastFailedLaunch\(\)/)
+
+console.log('✔ 播放器对重复运行时状态报告保持引用稳定，并保留失败后的重试路径')

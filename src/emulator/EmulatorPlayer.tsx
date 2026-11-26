@@ -287,6 +287,11 @@ interface ActiveSession {
   ruledOut?: RuntimeId[]
 }
 
+/** 失败页的手动重试沿用最后一次实际启动配置，避免重新回到已失败的默认路径。 */
+type FailedLaunchContext = Pick<ActiveSession,
+  'game' | 'platform' | 'runtime' | 'coreOverride' | 'ruledOut' | 'romRefreshed'
+>
+
 /**
  * 调试诊断：把「从拖进文件到出首帧」拆成几个阶段，每个阶段记一笔成败。
  * 出问题时据此判断卡在哪一步 —— 是 8BG 解不开、平台识别不出、还是引擎起不来。
@@ -719,6 +724,7 @@ export function EmulatorPlayer({
   const restartWithLangRef = useRef<RomSlotLang | null>(null)
   /** 当前 ROM 实际加载失败后，父层切到备用地址时保持“继续开这一局”的用户意图。 */
   const restartAfterRomFailureRef = useRef(false)
+  const failedLaunchRef = useRef<FailedLaunchContext | null>(null)
   /**
    * start() 的调用序号。本地文件要先读头、解 8BG、认街机改版、嗅探类型，全是 await；
    * 这期间玩家又拖进另一个文件、或点了停止，旧的那次探测完成后不能再 begin() 把新会话顶掉。
@@ -2587,6 +2593,7 @@ export function EmulatorPlayer({
             setEngineLines(handle?.engineLog?.() ?? [])
           }
           reportStartupFailure(reason)
+          rememberFailedLaunch(session)
           endSession()
           setError(session.platform === 'nes' && webglUnavailable ? t.runtime.ejsWebglUnavailable : reason)
           setStatus('error')
@@ -2661,6 +2668,7 @@ export function EmulatorPlayer({
           但在原文前标明「运行中崩溃」，后台按特征自然分开。
         */
         reportStartupFailure(ready ? `运行中崩溃（已出画面）：${reason}` : reason)
+        rememberFailedLaunch(session)
         endSession()
         setError(session.platform === 'nds'
           ? fmt(t.player.ndsCoreFailed, { reason })
@@ -2847,6 +2855,7 @@ export function EmulatorPlayer({
           }
         }
         setError(failureReason)
+        rememberFailedLaunch(session)
         reportStartupFailure(failureReason)
         setStatus('error')
       },
@@ -2872,6 +2881,7 @@ export function EmulatorPlayer({
           return
         }
         reportStartupFailure(message)
+        rememberFailedLaunch(session)
         setError(message)
         setStatus('error')
         return
@@ -3518,6 +3528,7 @@ export function EmulatorPlayer({
         onLocalFileSelected?.()
       }
       const seq = ++startSeqRef.current
+      failedLaunchRef.current = null
       const superseded = () => startSeqRef.current !== seq
       setError(null)
       setNotice(null)
@@ -3834,6 +3845,19 @@ export function EmulatorPlayer({
     setSession(null)
   }
 
+  const rememberFailedLaunch = (failed: ActiveSession) => {
+    failedLaunchRef.current = canRestartInPlace(failed)
+      ? {
+          game: failed.game,
+          platform: failed.platform,
+          runtime: failed.runtime,
+          coreOverride: failed.coreOverride,
+          ruledOut: failed.ruledOut ? [...failed.ruledOut] : undefined,
+          romRefreshed: failed.romRefreshed || failed.forceRomRefresh,
+        }
+      : null
+  }
+
   /**
    * 这一局的存档归档键。
    *
@@ -3874,6 +3898,7 @@ export function EmulatorPlayer({
   const reset = () => {
     // 玩家主动停掉 / 更换本地 ROM 时，不能让一次尚未完成的语言探测日后把他重新拉进云端 ROM。
     restartWithLangRef.current = null
+    failedLaunchRef.current = null
     // 同理：还在探测中的本地文件，探测完也不能再自己开起来
     startSeqRef.current += 1
     // 主动离开房间后，URL 里的 ?p2p= / ?room= 就不该再把人拉回同一个房间
@@ -4542,9 +4567,30 @@ export function EmulatorPlayer({
             ? t.player.statusError
             : t.player.statusIdle
 
+  const retryLastFailedLaunch = () => {
+    const failed = failedLaunchRef.current
+    // 页面 ROM / 平台可能已切换；此时应由 start() 按新选择重新探测，不能拿旧地址开局。
+    if (!failed || typeof failed.game !== 'string' || failed.game !== romUrl || failed.platform !== platform.id) return false
+    failedLaunchRef.current = null
+    startSeqRef.current += 1
+    setError(null)
+    setNotice(null)
+    setDiag([])
+    setDiagCause(null)
+    setEngineLines([])
+    // 重新给手动尝试完整的自动重试预算，但继续跳过本次已判定不支持的运行时。
+    begin(failed.game, failed.platform, failed.runtime, {
+      coreOverride: failed.coreOverride,
+      ruledOut: failed.ruledOut,
+      romRefreshed: failed.romRefreshed,
+    })
+    return true
+  }
+
   /** 空闲态主按钮 */
   const primaryAction = () => {
     if (online) return startOnline()
+    if (status === 'error' && retryLastFailedLaunch()) return
     if (romUrl) void start(null)
     else inputRef.current?.click()
   }
