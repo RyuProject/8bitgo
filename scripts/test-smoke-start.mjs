@@ -10,6 +10,8 @@ import {
   devToolsUrlOf,
   findChrome,
   MAME_CHD_TIMEOUT_MS,
+  PRIVATE_START_EXPRESSION,
+  PRIVATE_START_TIMEOUT_MS,
   startupDetailOf,
   startupEventOf,
   startupEventsOf,
@@ -59,6 +61,46 @@ const src = readFileSync(new URL('./smoke-start.mjs', import.meta.url), 'utf8')
 assert.match(src, /urlPattern: '\*\/api\/games\/\*\/startup\*'/, '启动漏斗请求必须拦下，冒烟不能进生产统计')
 assert.match(src, /urlPattern: '\*\/api\/games\/\*\/play\*'/, '游玩次数也不能被冒烟刷高')
 assert.match(src, /Fetch\.fulfillRequest/)
+assert.doesNotMatch(src, /\/games\/\$\{encodeURIComponent\(slug\)\}\?autoplay=1/, '不能用 autoplay 跳过开局前的不公开设置')
+assert.equal(PRIVATE_START_TIMEOUT_MS, 90_000)
+assert.ok(
+  PRIVATE_START_EXPRESSION.indexOf('liveButton.click()') < PRIVATE_START_EXPRESSION.indexOf('startButton.click()'),
+  '必须先关闭默认公开直播，再启动游戏',
+)
+assert.match(PRIVATE_START_EXPRESSION, /aria-pressed/)
+assert.match(PRIVATE_START_EXPRESSION, /unsafe-toggle/)
+const runPrivateStart = new Function('window', 'document', `return ${PRIVATE_START_EXPRESSION}`)
+{
+  const actions = []
+  const start = {
+    innerText: '▶\n开始游戏', disabled: false, title: '',
+    hasAttribute: () => false, getAttribute: () => null,
+    click: () => actions.push('start'),
+  }
+  const live = {
+    innerText: '开局自动直播', disabled: false,
+    title: '开始游戏后会自动公开直播', ariaLabel: '开局自动直播', pressed: 'true',
+    hasAttribute: (name) => name === 'aria-pressed',
+    getAttribute(name) { return name === 'aria-pressed' ? this.pressed : null },
+    click() { actions.push('private'); this.pressed = 'false' },
+  }
+  const window = {}
+  const document = { querySelectorAll: () => [start, live] }
+  assert.deepEqual(runPrivateStart(window, document), { state: 'waiting-private' })
+  assert.deepEqual(actions, ['private'], '启用直播时首轮只能切到不公开，不能开局')
+  assert.deepEqual(runPrivateStart(window, document), { state: 'started-private' })
+  assert.deepEqual(actions, ['private', 'start'], '确认不公开后才能开始')
+}
+{
+  let started = false
+  const start = { innerText: 'Start game', disabled: false, hasAttribute: () => false, click: () => { started = true } }
+  const unknown = { innerText: 'Layout', title: '', disabled: false, pressed: 'true', hasAttribute: () => true, getAttribute: () => 'true', click() {} }
+  assert.deepEqual(runPrivateStart({}, { querySelectorAll: () => [start, unknown] }), { state: 'unsafe-toggle' })
+  assert.equal(started, false, '识别不了启用开关时必须停止，不能冒险开局')
+}
+assert.match(src, /startSmokeGamePrivately\(cdp, sessionId\)/, '只有隐私状态确认后才开始等待首帧')
+assert.match(src, /gameNotFound: gameResult\?\.status === 404/)
+assert.match(src, /if \(preflight\.gameNotFound\)/, '游戏 API 确认 404 时立即跳过，不空等启动超时')
 assert.match(src, /Target\.createTarget/, '每款仍通过独立 DevTools 标签页隔离运行')
 assert.match(src, /测试标签页不可用/, '标签页创建失败必须按测试基础设施归因')
 assert.match(src, /TARGET_CLOSE_TIMEOUT_MS/, '关闭标签页不能无限阻塞，避免吞掉已经得出的首帧结论')

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * 真实开局冒烟（2026-11-15 系统优化 #4）：用无头 Chrome 打开几款游戏的详情页（?autoplay=1），
- * 等到播放器报「首帧」才算过。
+ * 真实开局冒烟（2026-11-15 系统优化 #4）：用无头 Chrome 打开几款游戏的详情页，
+ * 先关掉默认公开直播，再点「开始游戏」，等播放器报「首帧」才算过。
  *
  *   node scripts/smoke-start.mjs                                   默认测 https://8bitgo.com
  *   node scripts/smoke-start.mjs --base http://127.0.0.1:8788      测本机 / 刚重启的生产进程
@@ -44,7 +44,39 @@ export const MAME_CHD_TIMEOUT_MS = 420_000
 export const CDP_COMMAND_TIMEOUT_MS = 15_000
 // Page.navigate 的回包要等服务端先交出主文档；公网 SSR 在高峰可超过普通 CDP 指令预算。
 const PAGE_NAVIGATION_COMMAND_TIMEOUT_MS = 60_000
+/** 页面必须先确认「不公开」再开局；控件文案没认出来就停测，不能冒险公开推流。 */
+export const PRIVATE_START_TIMEOUT_MS = 90_000
 const TARGET_CLOSE_TIMEOUT_MS = 5_000
+
+/**
+ * 在页面内安全开局：新标签默认会自动公开直播，必须先点成不公开并确认状态已翻转。
+ * 文案覆盖本站支持的七种界面语言；遇到未识别的启用中开关时失败关闭，避免误公开。
+ */
+export const PRIVATE_START_EXPRESSION = String.raw`(() => {
+  const normalize = value => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim()
+  const startLabels = ['开始游戏', 'Start game', 'ゲームを開始', 'Lancer le jeu', 'Empezar a jugar', 'Spiel starten', 'Avvia il gioco']
+  const buttons = Array.from(document.querySelectorAll('button'))
+  const startButton = buttons.find(button => !button.disabled && startLabels.some(label => normalize(button.innerText).includes(normalize(label))))
+  if (!startButton) return { state: 'waiting' }
+
+  const toggles = buttons.filter(button => button.hasAttribute('aria-pressed'))
+  const livePattern = /live|stream|broadcast|直播|配信|ライブ|transmi|diffus|directo|diretta|übertrag/i
+  const liveButton = toggles.find(button => livePattern.test([button.title, button.getAttribute('aria-label'), button.innerText].join(' ')))
+  const enabledUnknownToggle = toggles.some(button => button.getAttribute('aria-pressed') === 'true' && button !== liveButton)
+  if (enabledUnknownToggle) return { state: 'unsafe-toggle' }
+
+  if (liveButton && liveButton.getAttribute('aria-pressed') === 'true') {
+    if (!window.__8bgSmokePrivateRequested) {
+      window.__8bgSmokePrivateRequested = true
+      liveButton.click()
+    }
+    return { state: 'waiting-private' }
+  }
+
+  if (liveButton && liveButton.getAttribute('aria-pressed') !== 'false') return { state: 'waiting-private' }
+  startButton.click()
+  return { state: 'started-private' }
+})()`
 
 export const CHROME_CANDIDATES = [
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -149,8 +181,8 @@ async function fetchJsonWithin(url, timeoutMs = 10_000) {
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
     const response = await fetch(url, { signal: controller.signal, headers: { accept: 'application/json' } })
-    if (!response.ok) return null
-    return await response.json()
+    if (!response.ok) return { status: response.status, value: null }
+    return { status: response.status, value: await response.json() }
   } catch {
     // 预检只用于改善归因；接口暂时不可用时仍让真实页面自行验证。
     return null
@@ -161,8 +193,14 @@ async function fetchJsonWithin(url, timeoutMs = 10_000) {
 
 async function smokePreflight(slug) {
   const gameUrl = `${BASE}/api/games/${encodeURIComponent(slug)}`
-  const [game, access] = await Promise.all([fetchJsonWithin(gameUrl), fetchJsonWithin(`${gameUrl}/access`)])
-  return { game, adultGate: adultGateReason(access), timeoutMs: timeoutForGame(game, TIMEOUT_MS) }
+  const [gameResult, accessResult] = await Promise.all([fetchJsonWithin(gameUrl), fetchJsonWithin(`${gameUrl}/access`)])
+  const game = gameResult?.value ?? null
+  return {
+    game,
+    gameNotFound: gameResult?.status === 404,
+    adultGate: adultGateReason(accessResult?.value),
+    timeoutMs: timeoutForGame(game, TIMEOUT_MS),
+  }
 }
 
 class Cdp {
@@ -205,6 +243,23 @@ class Cdp {
 
 function sendWithin(cdp, method, params = {}, sessionId, timeoutMs = CDP_COMMAND_TIMEOUT_MS) {
   return waitWithin(cdp.send(method, params, sessionId), timeoutMs, `Chrome DevTools 在 ${Math.ceil(timeoutMs / 1000)} 秒内没有响应：${method}`)
+}
+
+/** 等播放器按钮出现，并在同一页面里先关公开直播，再点开始。 */
+export async function startSmokeGamePrivately(cdp, sessionId, timeoutMs = PRIVATE_START_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const result = await sendWithin(cdp, 'Runtime.evaluate', {
+      expression: PRIVATE_START_EXPRESSION,
+      returnByValue: true,
+    }, sessionId)
+    if (result.exceptionDetails) throw new Error(result.exceptionDetails.text || '无法检查开局隐私状态')
+    const state = result.result?.value?.state
+    if (state === 'started-private') return
+    if (state === 'unsafe-toggle') throw new Error('页面有未识别的启用开关，已停止冒烟以避免公开开局')
+    await sleep(150)
+  }
+  throw new Error('没有在时限内确认不公开状态并开始游戏')
 }
 
 async function launchChrome(chrome) {
@@ -277,6 +332,9 @@ async function launchChrome(chrome) {
 async function smokeOne(cdp, slug) {
   const started = Date.now()
   const preflight = await smokePreflight(slug)
+  if (preflight.gameNotFound) {
+    return { slug, verdict: 'skip', event: '游戏详情接口返回 404', seconds: Math.round((Date.now() - started) / 1000), events: [], errors: [] }
+  }
   if (preflight.adultGate) {
     return { slug, verdict: 'skip', event: preflight.adultGate, seconds: Math.round((Date.now() - started) / 1000), events: [], errors: [] }
   }
@@ -285,6 +343,7 @@ async function smokeOne(cdp, slug) {
   const events = []
   const errors = []
   let settle
+  let timer = 0
   const done = new Promise((resolve) => { settle = resolve })
   let off = () => {}
   try {
@@ -344,10 +403,10 @@ async function smokeOne(cdp, slug) {
     }, sessionId)
     await sendWithin(cdp, 'Runtime.enable', {}, sessionId)
     await sendWithin(cdp, 'Page.enable', {}, sessionId)
-    await sendWithin(cdp, 'Page.navigate', { url: `${BASE}/games/${encodeURIComponent(slug)}?autoplay=1` }, sessionId, PAGE_NAVIGATION_COMMAND_TIMEOUT_MS)
-    const timer = setTimeout(() => settle({ verdict: 'fail', event: `${Math.round(preflight.timeoutMs / 1000)} 秒内没有首帧` }), preflight.timeoutMs)
+    await sendWithin(cdp, 'Page.navigate', { url: `${BASE}/games/${encodeURIComponent(slug)}` }, sessionId, PAGE_NAVIGATION_COMMAND_TIMEOUT_MS)
+    timer = setTimeout(() => settle({ verdict: 'fail', event: `${Math.round(preflight.timeoutMs / 1000)} 秒内没有首帧` }), preflight.timeoutMs)
+    await startSmokeGamePrivately(cdp, sessionId)
     const result = await done
-    clearTimeout(timer)
     return { slug, ...result, seconds: Math.round((Date.now() - started) / 1000), events, errors: errors.filter(Boolean).slice(-5) }
   } catch (error) {
     return {
@@ -359,6 +418,7 @@ async function smokeOne(cdp, slug) {
       errors: errors.filter(Boolean).slice(-5),
     }
   } finally {
+    if (timer) clearTimeout(timer)
     off()
     if (targetId) await sendWithin(cdp, 'Target.closeTarget', { targetId }, undefined, TARGET_CLOSE_TIMEOUT_MS).catch(() => {})
   }
