@@ -104,6 +104,9 @@ function objectHeaders(object, servedKey, cors, policy, guessType, disposition =
   headers.set('ETag', object.httpEtag)
   headers.set('Last-Modified', new Date(object.uploaded).toUTCString())
   headers.set('Accept-Ranges', 'bytes')
+  if (object.customMetadata?.['8bitgo-integrity-required'] === 'sha256-v1') {
+    headers.set('X-8BitGo-Integrity-Required', 'sha256-v1')
+  }
   // policy 为空时保留对象自己的 Cache-Control（html5 主机名复刻 R2 自定义域就靠这个）。
   if (policy) headers.set('Cache-Control', policy)
   headers.set('X-Content-Type-Options', 'nosniff')
@@ -150,6 +153,10 @@ export async function serveObject(request, env, key, cors, policy, guessType, ex
   const h = request.headers
   const conditional = ['If-Match', 'If-None-Match', 'If-Modified-Since', 'If-Unmodified-Since'].some(n => h.has(n))
   const needsMetadata = request.method === 'HEAD' || conditional || h.has('Range')
+  const integrityFailure = async (object) => {
+    if (typeof options.integrityGate !== 'function') return null
+    return await options.integrityGate(object)
+  }
   if (!needsMetadata) {
     const found = await locate(env, key, 'get', thumbFallback)
     if (!found) return json({ error: 'not found' }, cors, 404)
@@ -160,6 +167,8 @@ export async function serveObject(request, env, key, cors, policy, guessType, ex
       await cancelBody(found.object)
       return new Response(null, { status: 412, headers })
     }
+    const blocked = await integrityFailure(found.object)
+    if (blocked) { await cancelBody(found.object); return blocked }
     headers.set('Content-Length', String(found.object.size))
     return new Response(found.object.body, r2BodyResponseInit(headers))
   }
@@ -180,6 +189,8 @@ export async function serveObject(request, env, key, cors, policy, guessType, ex
     if (!found) return json({ error: 'not found' }, cors, 404)
     const { object, servedKey } = found
     const headers = headersFor(object, servedKey)
+    const blocked = await integrityFailure(object)
+    if (blocked) { await cancelBody(object); return blocked }
     if (!object.body || etagVersion(object.httpEtag) !== expectedVersion) {
       await cancelBody(object)
       return new Response(null, { status: 412, headers })
@@ -205,6 +216,8 @@ export async function serveObject(request, env, key, cors, policy, guessType, ex
     if (!found) return json({ error: h.has('If-Match') ? 'precondition failed' : 'not found' }, cors, h.has('If-Match') ? 412 : 404)
     const { object: metadata, bucket, servedKey } = found
     const headers = headersFor(metadata, servedKey)
+    const blocked = await integrityFailure(metadata)
+    if (blocked) return blocked
     // Range v1 的旧 PPSSPP 核心还不会发 If-Match，但播放 URL 已带对象 ETag。
     // Worker 在这里补上代次校验，宁可 412 明确中止，也不能在同一局里混读新旧光盘扇区。
     if (expectedVersion && etagVersion(metadata.httpEtag) !== expectedVersion) {

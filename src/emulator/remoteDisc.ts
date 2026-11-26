@@ -1,5 +1,6 @@
 import { diagLog } from '@/services/startupDiagnostics'
 import { rememberRomHostForUrl } from '@/services/romHosts'
+import { fetchRomIntegrityManifest, romIntegrityKey, RomIntegrityError, verifyRomRange } from '@/services/romIntegrity'
 
 /**
  * 远程光盘：用 HTTP Range 按需读盘，不把整张盘下下来。
@@ -272,6 +273,17 @@ export function httpRangeFetcher(
   alternateUrl: string | readonly string[] = '',
 ): RangeFetcher {
   let activeUrl = url
+  const integrityTasks = new Map<string, ReturnType<typeof fetchRomIntegrityManifest>>()
+  const integrityFor = (target: string) => {
+    if (!romIntegrityKey(target)) return Promise.resolve(null)
+    let task = integrityTasks.get(target)
+    if (!task) {
+      task = fetchRomIntegrityManifest(target, signal)
+      integrityTasks.set(target, task)
+    }
+    return task
+  }
+  if (romIntegrityKey(url)) void integrityFor(url).catch(() => {})
   const configuredAlternates = typeof alternateUrl === 'string' ? [alternateUrl] : [...alternateUrl]
   let alternates = [...new Set(configuredAlternates.filter((candidate) => candidate && candidate !== url))]
   const measureAlternateRange = async (target: string, total: number): Promise<number | null> => {
@@ -373,12 +385,20 @@ export function httpRangeFetcher(
         cancelResponse(res)
         throw new Error(`读盘失败：分段长度应为 ${expected}，服务器声明 ${contentLength}`)
       }
+      const verifyRange = async (value: Uint8Array) => {
+        if (res.headers.get('X-8BitGo-Integrity-Required') !== 'sha256-v1') return
+        const manifest = await integrityFor(target)
+        if (!manifest) throw new RomIntegrityError('本站要求校验此光盘，但 SHA-256 清单不可用')
+        if (res.headers.get('ETag') !== manifest.etag) throw new RomIntegrityError('光盘 Range 响应版本与 SHA-256 清单不匹配')
+        await verifyRomRange(target, value, start, manifest, controller.signal)
+      }
       if (!res.body) {
-        const bytes = await res.arrayBuffer()
+        const bytes = new Uint8Array(await res.arrayBuffer())
         if (bytes.byteLength !== expected) {
           throw new Error(`读盘失败：分段长度应为 ${expected}，实际 ${bytes.byteLength}`)
         }
-        return bytes
+        await verifyRange(bytes)
+        return bytes.buffer
       }
 
       // 直接写进定长缓冲，不用无界 chunks；错回一整张盘的代理响应也不会把内存吃光。
@@ -426,6 +446,7 @@ export function httpRangeFetcher(
       if (loaded !== expected) {
         throw new Error(`读盘失败：分段长度应为 ${expected}，实际 ${loaded}`)
       }
+      await verifyRange(bytes)
       return bytes.buffer
     } catch (error) {
       if (timedOut) {

@@ -2,6 +2,7 @@
 import type { LoadProgress } from './types'
 import { abortableDelay } from './loadProgress'
 import { canonicalRomUrl } from '@/services/romHosts'
+import { fetchRomIntegrityManifest, RomIntegrityError, verifyRomBlob, verifyRomRange } from '@/services/romIntegrity'
 
 const PART_BYTES = 8 * 1024 * 1024
 const STALL_MS = 30_000
@@ -18,7 +19,7 @@ function exactRange(value: string | null, start: number, end: number, total: num
 async function downloadPart(
   urls: readonly string[], start: number, end: number, total: number, signal: AbortSignal,
   validator: { etag?: string; modified?: string },
-): Promise<{ bytes: Uint8Array<ArrayBuffer>; etag?: string; modified?: string }> {
+): Promise<{ bytes: Uint8Array<ArrayBuffer>; etag?: string; modified?: string; integrityRequired: boolean }> {
   let lastError: unknown
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     if (signal.aborted) throw signal.reason ?? new Error('下载已取消')
@@ -69,7 +70,12 @@ async function downloadPart(
         if (offset !== result.byteLength) void reader.cancel().catch(() => {})
       }
       if (offset !== result.byteLength) throw new Error('镜像分片未下载完整')
-      return { bytes: result, etag, modified }
+      return {
+        bytes: result,
+        etag,
+        modified,
+        integrityRequired: response.headers.get('X-8BitGo-Integrity-Required') === 'sha256-v1',
+      }
     } catch (error) {
       lastError = error
       if (signal.aborted) throw signal.reason ?? error
@@ -111,6 +117,7 @@ async function downloadPspDiscUnlocked(
   onProgress?: (progress: LoadProgress) => void,
 ): Promise<File> {
   const url = urls[0]
+  const integrity = await fetchRomIntegrityManifest(url, signal)
   // 空 romv 不是内容版本；若把它当稳定键，源站同路径换盘后会直接复用旧的完整镜像。
   const versioned = Boolean(new URL(url, location.href).searchParams.get('romv')?.trim())
   const root = await navigator.storage.getDirectory()
@@ -121,14 +128,22 @@ async function downloadPspDiscUnlocked(
   if (versioned) {
     try {
       const marker = await dir.getFileHandle('complete')
-      if ((await (await marker.getFile()).text()) === String(size)) {
+      const cacheVersion = integrity ? `${size}\\n${integrity.etag}` : String(size)
+      if ((await (await marker.getFile()).text()) === cacheVersion) {
         const file = await disc.getFile()
         if (file.size === size) {
+          if (integrity) await verifyRomBlob(file, integrity, signal)
           onProgress?.({ phase: 'rom', loaded: size, total: size, ratio: 1, cached: true })
           return file
         }
       }
-    } catch { /* 只有完整写入并落了完成标记的版本化镜像才可复用。 */ }
+    } catch (error) {
+      if (signal.aborted) throw signal.reason ?? error
+      if (error instanceof RomIntegrityError) {
+        // 本地完整副本也可能被磁盘损坏；不交给核心，清掉后按网络分片重新取得。
+        await dir.removeEntry('complete').catch(() => {})
+      }
+    }
   }
 
   // 上次标签页崩溃留下的半成品没有完成标记，不能算作可用缓存，也不能让它
@@ -153,6 +168,11 @@ async function downloadPspDiscUnlocked(
     onProgress?.({ phase: 'rom', loaded: 0, total: size, ratio: 0 })
     const firstEnd = Math.min(size, PART_BYTES) - 1
     const first = await downloadPart(urls, 0, firstEnd, size, controller.signal, {})
+    if (first.integrityRequired && !integrity) throw new RomIntegrityError('本站要求校验此 PSP 镜像，但 SHA-256 清单不可用')
+    if (integrity) {
+      if (first.etag !== integrity.etag || size !== integrity.size) throw new RomIntegrityError('PSP 镜像响应版本与 SHA-256 清单不匹配')
+      await verifyRomRange(url, first.bytes, 0, integrity, controller.signal)
+    }
     // 没有 ETag / Last-Modified 的外链无法证明多个 Range 属于同一代内容；带 romv 的
     // 站内链接由 R2 Worker 逐次验证版本，其余链接要拒绝，不能拼出一张隐性损坏的盘。
     if (!versioned && !first.etag && !first.modified) throw new Error('镜像没有版本校验信息，无法安全下载整包')
@@ -168,6 +188,11 @@ async function downloadPspDiscUnlocked(
         const end = Math.min(size, start + PART_BYTES) - 1
         try {
           const part = await downloadPart(urls, start, end, size, controller.signal, validator)
+          if (part.integrityRequired && !integrity) throw new RomIntegrityError('本站要求校验此 PSP 镜像，但 SHA-256 清单不可用')
+          if (integrity) {
+            if (part.etag !== integrity.etag || size !== integrity.size) throw new RomIntegrityError('PSP 镜像分片版本与 SHA-256 清单不匹配')
+            await verifyRomRange(url, part.bytes, start, integrity, controller.signal)
+          }
           // OPFS 单个 writer 的写操作必须串行；网络并发不代表可以同时改写文件游标。
           writeTail = writeTail.then(() => writer.write({ type: 'write', position: start, data: part.bytes }))
           await writeTail
@@ -187,9 +212,10 @@ async function downloadPspDiscUnlocked(
     await writer.close()
     const file = await disc.getFile()
     if (file.size !== size) throw new Error('本地镜像长度校验失败')
+    if (integrity) await verifyRomBlob(file, integrity, signal)
     const marker = await dir.getFileHandle('complete', { create: true })
     const markWriter = await marker.createWritable()
-    await markWriter.write(String(size))
+    await markWriter.write(integrity ? `${size}\\n${integrity.etag}` : String(size))
     await markWriter.close()
     onProgress?.({ phase: 'rom', loaded: size, total: size, ratio: 1 })
     return file

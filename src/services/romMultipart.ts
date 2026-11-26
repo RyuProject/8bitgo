@@ -29,6 +29,7 @@
 import { encodeKey, explainRomStatus, getRomApi, getRomToken, guessUploadType, romUrlForKey } from './roms'
 import type { UploadProgress, UploadResult } from './roms'
 import { fingerprintRomPart, fingerprintRomUploadFile } from './romFingerprint'
+import { isIntegrityKey, type RomIntegrityManifestPayload } from './romIntegrityData'
 
 /**
  * 一片 8MB。R2 的约束是「除最后一片外所有片必须等大，且不小于 5MB，最多 10000 片」，
@@ -852,7 +853,7 @@ async function createUpload(ctx: Ctx, key: string, file: Blob, ident: { fileName
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             // contentType 只有开始时能设，complete() 不收 —— 漏了封面图会变成提示下载
-            body: JSON.stringify({ contentType: file.type || guessUploadType(key), size: file.size, name: ident?.fileName ?? '', requestId }),
+            body: JSON.stringify({ contentType: file.type || guessUploadType(key), size: file.size, name: ident?.fileName ?? '', requestId, integrityRequired: isIntegrityKey(key) }),
           },
           '开始分片上传',
           signal,
@@ -1165,8 +1166,12 @@ async function putPartWithRetry(
   throw last
 }
 
-async function completeUpload(ctx: Ctx, state: PendingUpload, signal?: AbortSignal): Promise<{ size: number; etag?: string }> {
-  const data = await askJson<{ ok: boolean; key: string; size: number; etag?: string }>(
+async function completeUpload(
+  ctx: Ctx,
+  state: PendingUpload,
+  integrityManifest?: RomIntegrityManifestPayload,
+): Promise<{ size: number; etag?: string; integrityPublished?: boolean }> {
+  const data = await askJson<{ ok: boolean; key: string; size: number; etag?: string; integrityPublished?: boolean }>(
     ctx,
     `${ctx.api}/${encodeKey(state.key)}?uploadId=${encodeURIComponent(state.uploadId)}`,
     {
@@ -1180,10 +1185,10 @@ async function completeUpload(ctx: Ctx, state: PendingUpload, signal?: AbortSign
         requestId: state.requestId,
         requestSignature: state.requestSignature,
         size: state.fileSize,
+        ...(integrityManifest ? { integrityRequired: true, integrityManifest } : {}),
       }),
     },
     '合并分片',
-    signal,
   )
   if (data.ok !== true || data.key !== state.key) {
     // 200 但缺少确认字段时，合并可能已发生；重复 complete 可能把真实成功说成失败。
@@ -1194,7 +1199,7 @@ async function completeUpload(ctx: Ctx, state: PendingUpload, signal?: AbortSign
     // R2 已合并成功，不能再重试 complete；更不能把错误大小假装成原文件大小去绑定。
     throw new CompletionUncertainError(`R2 已完成上传，但对象大小是 ${data?.size ?? '未知'} 字节，原文件是 ${state.fileSize} 字节；请到「ROM 存储」核查这个 key`)
   }
-  return { size, etag: data.etag || undefined }
+  return { size, etag: data.etag || undefined, integrityPublished: data.integrityPublished === true }
 }
 
 async function abortUpload(ctx: Ctx, key: string, uploadId: string, marker: string): Promise<void> {
@@ -1214,7 +1219,14 @@ async function abortUpload(ctx: Ctx, key: string, uploadId: string, marker: stri
  * 只有「这次上传已经作废」（uploadId 过期、分片对不上）才会清掉记录并 abort ——
  * 否则会卡在「续传 → 失败 → 续传」的死循环里。
  */
-export async function uploadRomMultipart(file: Blob, key: string, onProgress?: UploadProgress, signal?: AbortSignal): Promise<UploadResult> {
+export async function uploadRomMultipart(
+  file: Blob,
+  key: string,
+  onProgress?: UploadProgress,
+  signal?: AbortSignal,
+  integrityManifestTask?: Promise<RomIntegrityManifestPayload>,
+  atomicIntegrityUpload = false,
+): Promise<UploadResult> {
   const ctx: Ctx = { api: getRomApi(), token: getRomToken() }
   const partSize = PART_SIZE
   const total = Math.max(1, Math.ceil(file.size / partSize))
@@ -1396,13 +1408,25 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
   // 合并前必须持久化所有已确认 ETag；complete 不确定时仍可按完整账本安全恢复。
   if (resumable) flushPendingStateWrite(state.key)
 
-  let completed: { size: number; etag?: string }
+  // SHA-256 与分片上行并行；在不可逆的 R2 complete 前等待摘要，避免哈希失败后留下
+  // 已发布但被完整性闸门永久拦截的对象。可续传文件保留已传分片，下次只重试摘要与合并。
+  let integrityManifest: RomIntegrityManifestPayload | undefined
+  if (integrityManifestTask) {
+    try { integrityManifest = await integrityManifestTask }
+    catch (error) { throw await explainFailure(error, ctx, state, total, resumable) }
+  }
+  if (signal?.aborted) {
+    const error = new MultipartUploadAborted()
+    throw await explainFailure(error, ctx, state, total, resumable)
+  }
+
+  let completed: { size: number; etag?: string; integrityPublished?: boolean }
   try {
     // 值得多试两次：分片全都已经在 R2 上了，只差这一个请求，
     // 因为一次网络抖动就把几十 MB 判成失败太可惜
     // 合并是有副作用的提交点：从这里开始不再响应取消，最多三次幂等请求各自受 60 秒时限保护；
     // 否则首次响应若在 R2 完成后丢失，客户端会误报失败并留下看似可续传的旧 uploadId。
-    completed = await withRetry(() => completeUpload(ctx, state), 3, retryable)
+    completed = await withRetry(() => completeUpload(ctx, state, atomicIntegrityUpload ? integrityManifest : undefined), 3, retryable)
   } catch (err) {
     if (err instanceof CompletionUncertainError) {
       clearState(key)
@@ -1430,7 +1454,8 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
       : undefined,
     hashWaitSamples: hashWaitSamples || undefined,
   })
-  return { key, url: romUrlForKey(key), size: completed.size, etag: completed.etag }
+  return { key, url: romUrlForKey(key), size: completed.size, etag: completed.etag,
+    integrityPublished: completed.integrityPublished }
 }
 
 /**

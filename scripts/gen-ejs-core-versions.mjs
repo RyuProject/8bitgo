@@ -69,10 +69,21 @@ export function computeCoreVersions() {
 export function computeCoreContentManifest() {
   const out = {}
   if (!existsSync(coresDir)) return out
+  const blockBytes = 2 * 1024 * 1024
   for (const name of readdirSync(coresDir).sort()) {
     if (!name.endsWith('-wasm.data')) continue
     const file = join(coresDir, name)
-    out[`cores/${name}`] = { version: sha(file), bytes: statSync(file).size }
+    const bytes = readFileSync(file)
+    const blocks = []
+    for (let offset = 0; offset < bytes.byteLength; offset += blockBytes) {
+      blocks.push(createHash('sha256').update(bytes.subarray(offset, Math.min(bytes.byteLength, offset + blockBytes))).digest('hex'))
+    }
+    out[`cores/${name}`] = {
+      version: createHash('sha256').update(bytes).digest('hex').slice(0, 16),
+      bytes: bytes.byteLength,
+      blockBytes,
+      blocks,
+    }
   }
   return out
 }

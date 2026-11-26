@@ -14,6 +14,7 @@
 import { diagLog } from '@/services/startupDiagnostics'
 import { memoryRomBlob, memoryRomOf } from '@/services/memoryRom'
 import { rememberRomHostForUrl } from '@/services/romHosts'
+import { fetchRomIntegrityManifest, romIntegrityKey, RomIntegrityError, verifyMarkedRomResponse, verifyRomBlob } from '@/services/romIntegrity'
 import {
   isRomRouteOpen,
   rankRomRoutes,
@@ -279,6 +280,18 @@ export async function fetchWithProgress(
   }
   const stallMs = opts.stallMs ?? STALL_MS
   const candidates = [url, ...new Set((opts.alternateUrls ?? []).filter((candidate) => candidate && candidate !== url))]
+  const integrityTasks = new Map<string, ReturnType<typeof fetchRomIntegrityManifest>>()
+  const integrityFor = (candidate: string) => {
+    if (!romIntegrityKey(candidate)) return Promise.resolve(null)
+    let task = integrityTasks.get(candidate)
+    if (!task) {
+      task = fetchRomIntegrityManifest(candidate, opts.signal)
+      task.catch(() => {})
+      integrityTasks.set(candidate, task)
+    }
+    return task
+  }
+  if (romIntegrityKey(url)) void integrityFor(url).catch(() => {})
   emit({ phase, loaded: 0 }, true)
 
   for (let index = 0; index < candidates.length; index++) {
@@ -287,8 +300,9 @@ export async function fetchWithProgress(
     // 首字节也要有期限：连接建立不起来 / 服务端不回响应头，是和「传一半停住」不同的病。
     guard.touch()
     try {
-      const res = await fetch(candidate, { signal: guard.signal, ...(opts.cache ? { cache: opts.cache } : {}) })
+      let res = await fetch(candidate, { signal: guard.signal, ...(opts.cache ? { cache: opts.cache } : {}) })
       validateResponse(res, opts.check)
+      res = await verifyMarkedRomResponse(candidate, res, guard.signal, integrityFor(candidate))
 
       const encoded = Boolean(res.headers.get('content-encoding'))
       const len = Number(res.headers.get('content-length'))
@@ -839,9 +853,40 @@ export async function fetchBlobWithProgress(url: string, opts: BlobFetchOptions 
   const stallMs = opts.stallMs ?? STALL_MS
   const retries = opts.retries ?? CHUNK_RETRIES
   let highWater = 0
-  const guardedOpts: BlobFetchOptions = opts.onProgress
-    ? {
-        ...opts,
+  let integrityRequired = false
+  let integritySource = url
+  let integrityEtag = ''
+  const integrityTasks = new Map<string, ReturnType<typeof fetchRomIntegrityManifest>>()
+  const integrityFor = (candidate: string) => {
+    if (!romIntegrityKey(candidate)) return Promise.resolve(null)
+    let task = integrityTasks.get(candidate)
+    if (!task) {
+      task = fetchRomIntegrityManifest(candidate, opts.signal)
+      task.catch(() => {})
+      integrityTasks.set(candidate, task)
+    }
+    return task
+  }
+  if (romIntegrityKey(url)) void integrityFor(url).catch(() => {})
+  const checkIntegrity = (response: Response) => {
+    opts.check?.(response)
+    if (response.headers.get('X-8BitGo-Integrity-Required') === 'sha256-v1') {
+      integrityRequired = true
+      integritySource = response.url || integritySource
+      const responseEtag = response.headers.get('ETag') || ''
+      if (!responseEtag) throw new RomIntegrityError('本站要求校验此 ROM / BIOS，但响应没有可核对的 ETag')
+      if (integrityEtag && integrityEtag !== responseEtag) {
+        throw new RomIntegrityError('ROM / BIOS 分片期间对象版本发生变化')
+      }
+      integrityEtag = responseEtag
+      void integrityFor(integritySource).catch(() => {})
+    }
+  }
+  const guardedOpts: BlobFetchOptions = {
+    ...opts,
+    check: checkIntegrity,
+    ...(opts.onProgress
+      ? {
         // 超时重试会重新进入下载器；进度不能因此从已完成的 80MB 倒退到 0。
         onProgress: (progress) => {
           highWater = Math.max(highWater, progress.loaded ?? 0)
@@ -852,7 +897,8 @@ export async function fetchBlobWithProgress(url: string, opts: BlobFetchOptions 
           })
         },
       }
-    : opts
+      : {}),
+  }
   /*
     一只看门狗管一次下载尝试；普通网络错误由分片循环重试，卡死则必须换一只新的
     AbortController 才能重试（已经 abort 的 signal 永远不会复活）。
@@ -886,11 +932,17 @@ export async function fetchBlobWithProgress(url: string, opts: BlobFetchOptions 
     let failure: unknown = null
     let switchForSpeed = false
     try {
-      const blob = await blobWithProgressGuarded(
+      let blob = await blobWithProgressGuarded(
         currentUrl,
         { ...guardedOpts, alternateUrl: alternates[0] ?? '', routePool: [currentUrl, ...alternates] },
         guard,
       )
+      if (integrityRequired) {
+        const manifest = await integrityFor(integritySource)
+        if (!manifest) throw new RomIntegrityError('本站要求校验此 ROM / BIOS，但 SHA-256 清单不可用')
+        if (manifest.etag !== integrityEtag) throw new RomIntegrityError('ROM / BIOS 响应 ETag 与 SHA-256 清单版本不匹配')
+        await verifyRomBlob(blob, manifest, opts.signal)
+      }
       if (currentUrl !== url) rememberRomHostForUrl(currentUrl)
       return blob
     } catch (error) {

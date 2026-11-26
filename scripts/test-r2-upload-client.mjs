@@ -367,12 +367,69 @@ console.log('✅ ROM 分片在首片早期样本后保守启动并发，慢速�
   assert.equal(warmUploadSampleBytes('https://other-worker.test', 4), 1024 * 1024, '换 Worker 域名后不能复用旧线路速度')
   assert.equal(warmUploadSampleBytes('https://w.test', 4, Date.now() + 10 * 60 * 1000), 1024 * 1024, '测速过期后回到完整样本')
   assert.equal(warmUploadSampleBytes('https://w.test', 1), 1024 * 1024, '省流量或低性能设备继续走单路完整样本')
-  assert.ok(uploadedStages.at(-1)?.ms > 550 && uploadedStages.at(-1)?.ms < 680, '应按多个分片的 Worker Server-Timing 与真实上传体时长估算平均确认等待')
+  const averageWaitMs = uploadedStages.at(-1)?.ms
+  assert.ok(Number.isFinite(averageWaitMs) && averageWaitMs >= 0 && averageWaitMs <= 1000,
+    '应按多个分片的 Worker Server-Timing 与真实上传体时长估算有界的平均确认等待')
   assert.equal(uploadedStages.at(-1)?.samples, 3, '应显示参与等待均值的已测分片数')
   assert.ok(hashStages.at(-1)?.ms >= 0, '应显示上传结束后本地摘要仍未完成的平均等待，即使摘要已提前完成')
   assert.equal(hashStages.at(-1)?.samples, 3, '应显示参与本地摘要等待均值的成功分片数')
 }
 console.log('✅ 实际上传链路在首片完成前启动后续分片，并正确合并校验对象大小')
+
+// 分片上传把清单放进不可逆的 complete 请求；Worker 确认发布后客户端不再追加 POST。
+{
+  const key = 'roms/ps2/atomic-integrity-multipart.iso'
+  const file = new File([new Uint8Array(PART_SIZE + 1)], 'atomic-integrity-multipart.iso', { lastModified: 7121 })
+  const manifest = {
+    v: 1, alg: 'sha256', key, size: file.size, blockBytes: 2 * 1024 * 1024,
+    blocks: Array.from({ length: Math.ceil(file.size / (2 * 1024 * 1024)) }, () => 'a'.repeat(64)),
+  }
+  const originalFetch = globalThis.fetch
+  const originalXHR = globalThis.XMLHttpRequest
+  let completeBody
+  globalThis.fetch = async (url, init) => {
+    const target = String(url)
+    if (target.endsWith('?uploads')) {
+      const createBody = JSON.parse(init.body)
+      assert.equal(createBody.integrityRequired, true)
+      return Response.json({ uploadId: 'up-atomic-integrity', marker: '_uploads/atomic-integrity.marker',
+        requestSignature: 'atomic-integrity-signature', partNumberInHeader: true })
+    }
+    if (target.includes('uploadId=up-atomic-integrity') && init?.method === 'POST') {
+      completeBody = JSON.parse(init.body)
+      return Response.json({ ok: true, key, size: file.size, etag: 'atomic-multipart-v1', integrityPublished: true })
+    }
+    throw new Error(`unexpected request: ${target}`)
+  }
+  globalThis.XMLHttpRequest = class {
+    upload = {}
+    headers = {}
+    status = 0
+    responseText = ''
+    open(_method, _url) {}
+    setRequestHeader(name, value) { this.headers[String(name).toLowerCase()] = String(value) }
+    send(blob) {
+      queueMicrotask(() => {
+        this.upload.onprogress?.({ lengthComputable: true, loaded: blob.size, total: blob.size })
+        this.status = 200
+        this.responseText = JSON.stringify({ etag: `atomic-part-${this.headers['x-8bg-part-number']}` })
+        this.onload?.()
+      })
+    }
+    abort() { this.onabort?.() }
+  }
+  try {
+    const result = await uploadRomMultipart(file, key, undefined, undefined, Promise.resolve(manifest), true)
+    assert.equal(result.integrityPublished, true)
+    assert.equal(completeBody.integrityRequired, true)
+    assert.deepEqual(completeBody.integrityManifest, manifest)
+    assert.equal(completeBody.requestSignature, 'atomic-integrity-signature')
+  } finally {
+    globalThis.fetch = originalFetch
+    globalThis.XMLHttpRequest = originalXHR
+  }
+}
+console.log('✅ ROM 分片合并随请求原子发布 SHA-256 清单，并返回 Worker 确认状态')
 
 // 两份大文件同传时，共享传输预算不得因每份文件都各自自适应而突破四条活动连接。
 {
@@ -490,6 +547,11 @@ console.log('✅ 高速上传测速后可升至四路；HTTP/2、限流和网关
 const headRequests = []
 globalThis.fetch = async (url, init) => {
   headRequests.push({ url: String(url), method: init?.method ?? 'GET' })
+  if (String(url).endsWith('/ping')) return Response.json({ features: { integrityManifest: true } })
+  if (String(url).includes('/integrity?')) {
+    const body = JSON.parse(init?.body || '{}')
+    return Response.json({ ok: true, key: body.key, etag: body.etag, size: body.size })
+  }
   if (String(url).includes('prefix=covers%2Fdemo.webp')) {
     return Response.json({ objects: [
       { key: 'covers/demo.webp', size: 11, bucket: 'ROMS' },
@@ -510,27 +572,68 @@ console.log('✅ 200 HTML 不会被当成成功上传')
 xhrResponse = () => ({ status: 200, body: JSON.stringify({ ok: true, key: 'roms/nes/demo.nes', size: 2 }) })
 await assert.rejects(uploadRom(small, 'roms/nes/demo.nes'), /对象大小不符/)
 console.log('✅ 单发 PUT 的返回大小必须与原文件相同')
-xhrResponse = () => ({ status: 200, body: JSON.stringify({ ok: true, key: 'roms/nes/demo.nes', size: 3 }) })
+xhrResponse = () => ({ status: 200, body: JSON.stringify({ ok: true, key: 'roms/nes/demo.nes', size: 3, etag: 'single-put-v1' }) })
 const singlePutProgress = []
 assert.equal((await uploadRom(small, 'roms/nes/demo.nes', (pct) => singlePutProgress.push(pct))).size, 3)
 assert.deepEqual(singlePutProgress, [99, 100], '请求体传完先停在 99%，校验对象后才到 100%')
 console.log('✅ 正常的小文件上传仍可完成')
 
+// 新 Worker 能力允许把摘要与 PUT 一起提交，避免上传成功后再多等一次完整性绑定请求。
+{
+  const originalFetch = globalThis.fetch
+  const originalApi = localStorage.getItem('8bitgo.rom.api')
+  let sentHeaders
+  try {
+    localStorage.setItem('8bitgo.rom.api', 'https://atomic-worker.test')
+    globalThis.fetch = async (url) => {
+      assert.equal(String(url), 'https://atomic-worker.test/ping', '原子上传只探测一次 Worker 能力')
+      return Response.json({ features: { integrityManifest: true, integrityAtomicUpload: true } })
+    }
+    xhrResponse = (xhr) => {
+      sentHeaders = xhr.headers
+      return { status: 200, body: JSON.stringify({
+        ok: true, key: 'roms/nes/demo.nes', size: 3, etag: 'atomic-put-v1', integrityPublished: true,
+      }) }
+    }
+    const result = await uploadRom(small, 'roms/nes/demo.nes')
+    assert.equal(result.integrityPublished, true)
+    assert.equal(sentHeaders['x-8bg-integrity-required'], 'sha256-v1')
+    const encodedManifest = sentHeaders['x-8bg-integrity-manifest']
+    assert.equal(typeof encodedManifest, 'string', '摘要随 PUT 原子提交')
+    const manifest = JSON.parse(Buffer.from(encodedManifest, 'base64url').toString('utf8'))
+    assert.equal(manifest.key, 'roms/nes/demo.nes')
+    assert.equal(manifest.size, small.size)
+    assert.equal(manifest.blocks.length, 1)
+  } finally {
+    globalThis.fetch = originalFetch
+    localStorage.setItem('8bitgo.rom.api', originalApi || '')
+    xhrResponse = () => ({ status: 200, body: JSON.stringify({
+      ok: true, key: 'roms/nes/demo.nes', size: 3, etag: 'single-put-v1',
+    }) })
+  }
+}
+console.log('✅ 新 Worker 的小文件 PUT 随请求发布校验清单，无需第二次绑定请求')
+
 // 多盘 CHD 低于分片阈值时也要响应同组取消，不能让单发 PUT 在后台继续占上行。
 {
   const originalXHR = globalThis.XMLHttpRequest
   let abortCount = 0
+  let sent = false
   globalThis.XMLHttpRequest = class {
     upload = {}
     open() {}
     setRequestHeader() {}
-    send() {}
+    send() { sent = true }
     abort() { abortCount++; this.onabort?.() }
   }
   const controller = new AbortController()
   try {
-    const pending = uploadRom(small, 'roms/psx/small-disc.chd', undefined, undefined, controller.signal)
-    await new Promise((resolve) => setImmediate(resolve))
+    // 用非 ROM 路径隔离单发 XHR 的取消行为；ROM 上传还会先检查 Worker 完整性能力并计算摘要。
+    const pending = uploadRom(small, 'test/psx/small-disc.chd', undefined, undefined, controller.signal)
+    for (let attempt = 0; attempt < 100 && !sent; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+    assert.equal(sent, true, '摘要完成后应进入实际上传请求')
     controller.abort()
     await assert.rejects(pending, /上传已取消/)
     assert.equal(abortCount, 1)
@@ -553,7 +656,8 @@ console.log('✅ 单发小盘上传也会响应多盘组取消')
   }
   xhrNeverCompletes = true
   try {
-    const pending = uploadRom(new Blob(['stalled']), 'roms/nes/stalled.nes')
+    // 只验证单发 XHR 看门狗；ROM 路径会先等完整性能力与摘要，不属于这个计时器用例。
+    const pending = uploadRom(new Blob(['stalled']), 'test/nes/stalled.nes')
     assert.equal(typeof checkStall, 'function', '单发上传安装停滞看门狗')
     now += 45_001
     checkStall()

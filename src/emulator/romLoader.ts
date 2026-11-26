@@ -10,6 +10,7 @@ import { romArchiveRef } from '@/lib/romArchiveUrl'
 import { loadRemoteArchiveRom } from './remoteArchive'
 import { isRomPackBytes, prewarmRomPackDecoder, unpackRomPack } from '@/services/romPack'
 import { parseRomPackHeader } from '../../shared/rom-pack-format.js'
+import { fetchRomIntegrityManifest, verifyRomBytes } from '@/services/romIntegrity'
 
 export interface GameBytesLimits {
   /** 下载/本地容器原始字节上限。设置后读取本地 File 前先检查 size。 */
@@ -159,6 +160,10 @@ export async function loadGameBytes(
   // 8BG 的解码器 wasm 和数据密钥与 ROM 并行取，别等下完了才发现要它（见 prewarmRomPackDecoder）
   if (isRomPackUrl(game)) prewarmRomPackDecoder(game)
 
+  // 清单与 ROM / 缓存读取并行开始；小卡带的哈希计算只在字节到齐后占用几毫秒。
+  const integrityTask = fetchRomIntegrityManifest(game, signal)
+  integrityTask.catch(() => {})
+
   // 缓存键只有在播放地址带内容版本号（?romv=<etag>）时才成立，见 romCache.ts 的文件头注释
   const cacheKey = romCacheKey(game)
   if (cacheKey) {
@@ -185,6 +190,12 @@ export async function loadGameBytes(
       try {
         assertSizeLimit(cached.byteLength, limits.maxBytes, '游戏文件')
         assertNotHtml(cached)
+        const integrity = await integrityTask
+        if (signal?.aborted) throw new DOMException('已取消', 'AbortError')
+        if (integrity && await verifyRomBytes(game, cached, integrity, signal)) {
+          // 修复块同时回写缓存；否则每次开局都会重新发现、重下同一块坏数据。
+          void romCachePut(cacheKey, cached).catch(() => {})
+        }
         if (isRomPackBytes(cached)) {
           const unpacked = await unpackIfNeeded(cached, limits)
           assertNotHtml(unpacked.data)
@@ -221,6 +232,7 @@ export async function loadGameBytes(
     : await fetchWithProgress(game, { phase: 'rom', onProgress, signal, check, maxBytes: limits.maxBytes, alternateUrls: alternateRomUrls(game) })
   assertSizeLimit(data.byteLength, limits.maxBytes, '游戏文件')
   assertNotHtml(data)
+  // fetchWithProgress / fetchBlobWithProgress 已在所有标记响应返回前校验；这里不再重复扫大 ROM。
   if (isRomPackBytes(data)) {
     const unpacked = await unpackIfNeeded(data, limits)
     assertNotHtml(unpacked.data)

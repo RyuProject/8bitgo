@@ -41,6 +41,7 @@ import { ICE_SERVERS, NETPLAY_URL, fetchIceConfig, gameIdFor, netplayUrlForFrame
 import { guardInputChannel } from '../netplayGuard'
 import { normalizeHostSync } from '../netplaySyncGuard'
 import { createNetplayStateUploadQueue } from '../netplayStateUpload'
+import { fetchRomIntegrityManifest, romIntegrityKey, verifyRomBlob, verifyRomResponse } from '@/services/romIntegrity'
 import { extractZipEntryFromBlob, type ZipFileEntry } from '@/lib/unzip'
 import { prepareArcadeArchive } from '@/lib/arcadeArchive'
 import { romArchiveRef } from '@/lib/romArchiveUrl'
@@ -1302,6 +1303,7 @@ function fetchBiosBytes(
       emit(p)
     },
   })
+    // fetchWithProgress 在标记为必校验的 Worker 响应交付前统一做 SHA-256 校验。
     .then((buf) => new Uint8Array(buf))
     .catch((e: unknown) => {
       // 玩家退出 / 换游戏就立刻停止 BIOS 下载，这是正常取消，不应写成故障日志。
@@ -1718,12 +1720,22 @@ function installNetTap(
     /** 有任何网络动静就拍一下，卡死检测靠它判断「引擎还有没有在动」 */
     onBeat: () => void
     /** 开不了局的文件下载失败了（HTTP 4xx / 5xx） */
-    onFailed: (status: number, url: string, phase: LoadPhase) => void
+    onFailed: (status: number, url: string, phase: LoadPhase, detail?: string) => void
   },
 ) {
   const emit = throttleProgress(ctx.onProgress)
   const URL_KEY = '__8bitgoUrl'
-
+  const integrityTasks = new Map<string, ReturnType<typeof fetchRomIntegrityManifest>>()
+  const startIntegrityTask = (url: string) => {
+    const key = romIntegrityKey(url)
+    if (!key) return undefined
+    const old = integrityTasks.get(key)
+    if (old) return old
+    const task = fetchRomIntegrityManifest(url)
+    task.catch(() => {})
+    integrityTasks.set(key, task)
+    return task
+  }
   /**
    * 这一趟是不是「没有它就开不了局」。
    *
@@ -1768,7 +1780,7 @@ function installNetTap(
     win.fetch = async function (input: RequestInfo | URL, init?: RequestInit) {
       const url =
         typeof input === 'string' ? input : input instanceof URL ? input.href : ((input as Request)?.url ?? String(input))
-      const res = await origFetch.call(win, input as RequestInfo, init)
+      let res = await origFetch.call(win, input as RequestInfo, init)
       if (!ctx.live() || !url) return res
       ctx.onBeat()
 
@@ -1776,6 +1788,18 @@ function installNetTap(
       if (res.status >= 400) {
         if (critical(url)) ctx.onFailed(res.status, url, phaseOf(url))
         return res
+      }
+      if (res.headers.get('X-8BitGo-Integrity-Required') === 'sha256-v1') {
+        const integrityTask = startIntegrityTask(url)
+        if (!integrityTask) return res
+        try {
+          res = await verifyRomResponse(url, res, undefined, integrityTask)
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error)
+          console.error('[emulatorjs] ROM / BIOS SHA-256 校验失败，已阻止加载：', url, error)
+          if (critical(url)) ctx.onFailed(422, url, phaseOf(url), detail)
+          return new (W.Response!)('', { status: 422, statusText: 'Integrity Check Failed' })
+        }
       }
       // 没有 body（HEAD、204、opaque）就没什么可数的
       if (!res.body) return res
@@ -2547,6 +2571,8 @@ export async function prepareRemoteDiscRom(
     return { url: objectUrlForEngine(playable), bytes: playable.size, name, blob: playable }
   }
   const cacheKey = romCacheKey(url)
+  const integrityTask = fetchRomIntegrityManifest(url, signal)
+  integrityTask.catch(() => {})
   // ROM trap 发生在模拟器里，通用自动重试会再次命中同一条 IDB 记录 / 续传片，永远喂回同一份输入。
   // 仅 GBA 崩溃恢复路径设置此项；清除后仍保留原 URL 的内容版本校验与正常缓存写入。
   if (options.forceRomRefresh && cacheKey) await discardStoredRom(cacheKey)
@@ -2555,6 +2581,8 @@ export async function prepareRemoteDiscRom(
     if (cached) {
       if (signal.aborted) throw new DOMException('已取消', 'AbortError')
       try {
+        const integrity = await integrityTask
+        if (integrity) await verifyRomBlob(cached, integrity, signal)
         const prepared = await prepare(cached)
         // 先验证，再报 100%。旧缓存损坏时若先报满格，后续整包重下的进度只能卡在 100%。
         onProgress?.({ phase: 'rom', loaded: cached.size, total: cached.size, ratio: 1, cached: true })
@@ -6197,12 +6225,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           live: () => !destroyed && !started,
           onProgress: options.onProgress,
           onBeat: beat,
-          onFailed: (status, url, phase) => failLoad(
+          onFailed: (status, url, phase, detail) => failLoad(
             phase === 'engine'
               // 核心是自托管运行时的一部分；不要把它误说成“游戏文件”，更不能放任引擎
               // 回落到已知不兼容的 4.3.0-pre CDN 地址并把坏核心写进 IndexedDB。
-              ? rt.ejsLoadFailed
-              : fmt(rt.ejsRomFailed, { status: String(status), url }),
+              ? `${rt.ejsLoadFailed}${detail ? `：${detail}` : ''}`
+              : `${fmt(rt.ejsRomFailed, { status: String(status), url })}${detail ? `：${detail}` : ''}`,
             phase === 'engine'
               ? 'runtime'
               : status === 408 || status === 425 || status === 429 || status >= 500
