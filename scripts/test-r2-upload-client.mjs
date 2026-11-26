@@ -216,9 +216,11 @@ console.log('✅ 首个真实分片会按实测上行速度、设备内存与省
   let now = 0
   const gate = new MultipartUploadGate(4, 1, () => now, { hardwareConcurrency: 8, deviceMemoryGb: 8 })
   let reportProgress
+  let markUploadComplete
   let finishFirst
-  const first = gate.run((report) => {
+  const first = gate.run((report, _markStarted, markComplete) => {
     reportProgress = report
+    markUploadComplete = markComplete
     return new Promise((resolve) => { finishFirst = resolve })
   }, PART_SIZE)
   await new Promise((resolve) => setImmediate(resolve))
@@ -245,9 +247,11 @@ console.log('✅ 首个真实分片会按实测上行速度、设备内存与省
   let now = 0
   const gate = new MultipartUploadGate(4, 1, () => now, { hardwareConcurrency: 8, deviceMemoryGb: 8 })
   let reportProgress
+  let markUploadComplete
   let finishFirst
-  const first = gate.run((report) => {
+  const first = gate.run((report, _markStarted, markComplete) => {
     reportProgress = report
+    markUploadComplete = markComplete
     return new Promise((resolve) => { finishFirst = resolve })
   }, PART_SIZE)
   await new Promise((resolve) => setImmediate(resolve))
@@ -256,9 +260,39 @@ console.log('✅ 首个真实分片会按实测上行速度、设备内存与省
   assert.equal(gate.snapshot().limit, 2)
   await assert.rejects(gate.run(async () => { throw { status: 503 } }))
   assert.equal(gate.snapshot().limit, 1, '试探并发遇到网关故障后立即收敛')
+  now = 4_300
+  markUploadComplete()
+  now = 9_000
   finishFirst()
   await first
   assert.equal(gate.snapshot().limit, 1, '测速首片完成不能覆盖刚发生的故障降档')
+  assert.ok(gate.snapshot().measuredMbps >= 15 && gate.snapshot().measuredMbps < 16, '同组分片故障后仍须用测速首片的完整上行耗时校正目标')
+}
+{
+  let now = 0
+  const gate = new MultipartUploadGate(4, 1, () => now, { hardwareConcurrency: 8, deviceMemoryGb: 8 })
+  let reportProgress
+  let rejectFirst
+  const first = gate.run((report) => {
+    reportProgress = report
+    return new Promise((_resolve, reject) => { rejectFirst = reject })
+  }, PART_SIZE)
+  await new Promise((resolve) => setImmediate(resolve))
+  now = 300
+  reportProgress(1024 * 1024)
+  assert.equal(gate.snapshot().limit, 2)
+  rejectFirst({ status: 503 })
+  await assert.rejects(first)
+  assert.equal(gate.snapshot().calibrated, false, '测速首片失败后不能保留早期突发样本')
+
+  await gate.run(async (_report, _markStarted, markComplete) => {
+    now = 2_300
+    markComplete()
+    return 'recovered'
+  }, PART_SIZE)
+  assert.equal(gate.snapshot().calibrated, true)
+  assert.ok(gate.snapshot().measuredMbps >= 33 && gate.snapshot().measuredMbps < 34, '重试成功时应重新建立完整上行样本')
+  assert.equal(gate.snapshot().limit, 4, '重试样本可以恢复到真实吞吐支持的并发')
 }
 console.log('✅ ROM 分片在首片早期样本后保守启动并发，慢速与失败时仍收敛到单路')
 
@@ -286,7 +320,11 @@ console.log('✅ ROM 分片在首片早期样本后保守启动并发，慢速�
     responseText = ''
     open(_method, _url) {}
     setRequestHeader(name, value) { this.headers[String(name).toLowerCase()] = String(value) }
-    getResponseHeader(name) { return String(name).toLowerCase() === 'server-timing' ? 'worker;dur=1000, edge;desc="MISS"' : null }
+    getResponseHeader(name) {
+      if (String(name).toLowerCase() !== 'server-timing') return null
+      const part = Number(this.headers['x-8bg-part-number'])
+      return `worker;dur=${part === 1 ? 1000 : 700}, edge;desc="MISS"`
+    }
     send(blob) {
       this.upload.onloadstart?.()
       const part = Number(this.headers['x-8bg-part-number'])
@@ -314,7 +352,7 @@ console.log('✅ ROM 分片在首片早期样本后保守启动并发，慢速�
   }
   try {
     const result = await uploadRomMultipart(file, 'roms/ps2/early-upload-sample.iso', (_pct, stage) => {
-      if (stage?.serverWaitMs !== undefined) uploadedStages.push(stage.serverWaitMs)
+      if (stage?.serverWaitMs !== undefined) uploadedStages.push({ ms: stage.serverWaitMs, samples: stage.serverWaitSamples })
     })
     assert.equal(result.size, file.size)
   } finally {
@@ -323,7 +361,8 @@ console.log('✅ ROM 分片在首片早期样本后保守启动并发，慢速�
   }
   assert.equal(overlapObserved, true, '必须在第一片完成前启动至少一片后续分片')
   assert.deepEqual([...startedParts].sort((a, b) => a - b), [1, 2, 3])
-  assert.ok(uploadedStages.some((ms) => ms > 0 && ms < 1000), '应从 Worker Server-Timing 中扣除实际上传体时间，估算额外确认等待')
+  assert.ok(uploadedStages.at(-1)?.ms > 550 && uploadedStages.at(-1)?.ms < 680, '应按多个分片的 Worker Server-Timing 与真实上传体时长估算平均确认等待')
+  assert.equal(uploadedStages.at(-1)?.samples, 3, '应显示参与等待均值的已测分片数')
 }
 console.log('✅ 实际上传链路在首片完成前启动后续分片，并正确合并校验对象大小')
 

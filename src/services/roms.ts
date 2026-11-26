@@ -2016,8 +2016,10 @@ export interface UploadStage {
   concurrency?: number
   /** 首个真实分片测得的上行 Mbps；不额外发送测速文件。 */
   measuredMbps?: number
-  /** 最近成功分片估算的 Worker/R2 确认余时；只用于区分上行与存储等待。 */
+  /** 已测分片平均估算的 Worker/R2 额外等待；只用于区分上行与存储等待。 */
   serverWaitMs?: number
+  /** 参与 Worker/R2 平均等待估算的成功分片数。 */
+  serverWaitSamples?: number
   /** 恢复前逐片核验已上传内容时的进度；避免大文件校验期间界面看起来卡住。 */
   checkingParts?: number
   checkingTotal?: number

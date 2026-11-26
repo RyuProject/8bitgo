@@ -2466,7 +2466,7 @@ function stageText(stage: UploadStage | null): string {
       ? ` · 正在测速${stage.concurrency ? ` · ${stage.concurrency} 路` : ''}`
       : ''
   const serverText = stage.serverWaitMs !== undefined
-    ? ` · Worker/R2 额外等待约 ${stage.serverWaitMs >= 1000 ? `${(stage.serverWaitMs / 1000).toFixed(1)}s` : `${Math.round(stage.serverWaitMs)}ms`}`
+    ? ` · Worker/R2 平均额外等待约 ${stage.serverWaitMs >= 1000 ? `${(stage.serverWaitMs / 1000).toFixed(1)}s` : `${Math.round(stage.serverWaitMs)}ms`}${stage.serverWaitSamples ? `（${stage.serverWaitSamples} 片样本）` : ''}`
     : ''
   return `分片 ${stage.done}/${stage.parts}` +
     (stage.resumed ? ` · 已恢复 ${stage.resumed} 片` : '') +

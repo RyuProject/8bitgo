@@ -183,6 +183,7 @@ export class MultipartUploadGate {
   private calibrationStartedAt: number | null = null
   private calibrationProgressBytes = 0
   private provisionalTarget = false
+  private provisionalFailure = false
   private readonly waiters: UploadWaiter[] = []
   private readonly now: () => number
   private readonly hints: UploadNetworkHints
@@ -219,7 +220,7 @@ export class MultipartUploadGate {
     return status === 0 || status === 429 || status === 502 || status === 503 || status === 504
   }
 
-  private calibrate(sampleBytes: number, elapsedMs: number, provisional: boolean) {
+  private calibrate(sampleBytes: number, elapsedMs: number, provisional: boolean, maxConcurrency = this.preferred) {
     // 早期进度样本只负责试探第二路；首片完整成功后用整片耗时修正，避免把浏览器发送缓冲突发当成真实上行。
     const refiningProvisionalSample = this.calibrated && this.provisionalTarget && !provisional
     if ((this.calibrated && !refiningProvisionalSample) || sampleBytes <= 0 || elapsedMs <= 0) return
@@ -228,9 +229,7 @@ export class MultipartUploadGate {
       this.preferred,
       adaptiveUploadConcurrency(sampleBytes, elapsedMs, this.hints),
     )
-    this.limit = provisional
-      ? Math.min(this.calibratedTarget, EARLY_SAMPLE_MAX_CONCURRENCY)
-      : this.calibratedTarget
+    this.limit = Math.min(this.calibratedTarget, provisional ? EARLY_SAMPLE_MAX_CONCURRENCY : maxConcurrency)
     // 即使早期样本算出的目标本身只有两路，也必须等首片完整结束后校正这个暂定目标。
     this.provisionalTarget = provisional
     this.calibrated = true
@@ -275,14 +274,17 @@ export class MultipartUploadGate {
       const value = await task((bytes) => this.observeProgress(runId, bytes), markStarted, markUploadComplete)
       if (!this.calibrated && sampleBytes > 0) {
         this.calibrate(sampleBytes, Math.max(1, (uploadCompletedAt ?? this.now()) - startedAt), false)
-      } else if (this.provisionalTarget) {
+      } else if (this.provisionalTarget && runId === this.calibrationRunId) {
         // 早期样本只放行第二路；首片完整成功后按整片吞吐校正目标，再放开其余并发。
-        if (runId === this.calibrationRunId) {
-          this.calibrate(sampleBytes, Math.max(1, (uploadCompletedAt ?? this.now()) - startedAt), false)
-          this.provisionalTarget = false
-          this.limit = this.calibratedTarget
-          this.drain()
-        }
+        // 同组其它分片若刚发生网络失败，完整样本只更新目标，实际并发仍从单路逐步恢复。
+        this.calibrate(
+          sampleBytes,
+          Math.max(1, (uploadCompletedAt ?? this.now()) - startedAt),
+          false,
+          this.provisionalFailure ? 1 : this.preferred,
+        )
+        this.provisionalFailure = false
+        this.drain()
       } else if (this.limit < (this.calibrated ? this.calibratedTarget : this.preferred) && ++this.successStreak >= RECOVERY_SUCCESS_PARTS) {
         this.limit++
         this.successStreak = 0
@@ -293,10 +295,21 @@ export class MultipartUploadGate {
       // 让调用方先记录致命失败，再在 finally 里唤醒排队任务；否则下一片可能在错误回调前已经发出。
       try { onErrorBeforeDrain?.(error) } catch { /* 错误观测不能覆盖真正的上传失败 */ }
       if (this.provisionalTarget) {
-        // 首片测速期间任一请求失败，都撤回试探并发；重试后按既有四片成功规则恢复。
-        this.provisionalTarget = false
+        // 首片或同组分片失败都先收回试探并发；首片失败作废早期样本，同组其它片失败则保留完整样本校正机会。
         this.limit = 1
         this.successStreak = 0
+        if (runId === this.calibrationRunId) {
+          this.provisionalTarget = false
+          this.provisionalFailure = false
+          this.calibrated = false
+          this.calibratedTarget = 1
+          this.measuredMbps = 0
+          this.calibrationRunId = null
+          this.calibrationStartedAt = null
+          this.calibrationProgressBytes = 0
+        } else {
+          this.provisionalFailure = true
+        }
       }
       if (!this.calibrated && runId === this.calibrationRunId) {
         this.calibrationRunId = null
@@ -1148,7 +1161,8 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
   /** 每片当前已上传的字节数（含正在传的那几片），进度条按它们的和算 */
   const loaded = new Map<number, number>()
   let loadedBytes = 0
-  let latestServerWaitMs: number | undefined
+  let serverWaitTotalMs = 0
+  let serverWaitSamples = 0
   for (const n of finished) {
     const bytes = sizeOfPart(n)
     loaded.set(n, bytes)
@@ -1172,7 +1186,10 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
       resumed,
       concurrency: network.limit,
       measuredMbps: network.calibrated ? network.measuredMbps : undefined,
-      serverWaitMs: latestServerWaitMs,
+      serverWaitMs: serverWaitSamples > 0
+        ? Math.round((serverWaitTotalMs / serverWaitSamples) * 10) / 10
+        : undefined,
+      serverWaitSamples: serverWaitSamples || undefined,
     })
   }
   const report = (force = false) => {
@@ -1186,7 +1203,9 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
   }
   const setLoaded = (n: number, bytes: number, serverWaitMs?: number) => {
     if (typeof serverWaitMs === 'number' && Number.isFinite(serverWaitMs) && serverWaitMs >= 0) {
-      latestServerWaitMs = Math.round(serverWaitMs * 10) / 10
+      // 并发分片完成顺序不稳定；展示平均确认等待，避免最后完成的一片偶然拖慢或偏快导致误判。
+      serverWaitTotalMs += serverWaitMs
+      serverWaitSamples++
     }
     const previous = loaded.get(n) ?? 0
     const safe = Math.max(0, Math.min(sizeOfPart(n), bytes))
@@ -1274,7 +1293,10 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
     resumed,
     concurrency: network.limit,
     measuredMbps: network.calibrated ? network.measuredMbps : undefined,
-    serverWaitMs: latestServerWaitMs,
+    serverWaitMs: serverWaitSamples > 0
+      ? Math.round((serverWaitTotalMs / serverWaitSamples) * 10) / 10
+      : undefined,
+    serverWaitSamples: serverWaitSamples || undefined,
   })
   return { key, url: romUrlForKey(key), size: completed.size, etag: completed.etag }
 }
