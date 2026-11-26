@@ -6,7 +6,7 @@
 import type { RuntimeId, RuntimeMount } from './types'
 import { isRuntimeModuleTimeout, MODULE_LOAD_IDLE_MS, MODULE_LOAD_MAX_MS, raceModuleLoad, watchModuleResources } from './moduleLoadDeadline'
 import { markRuntimeEdgeBad } from './paths'
-import { assetsFromCnEdge } from '@/services/moduleLinkRecovery'
+import { assetsFromCnEdge, importWithRetry, lazyChunkFile } from '@/services/moduleLinkRecovery'
 
 const LOADERS: Record<RuntimeId, () => Promise<RuntimeMount>> = {
   emulatorjs: () => import('./adapters/emulatorjs').then((module) => module.mount),
@@ -53,7 +53,9 @@ export function loadMountOf(id: RuntimeId): Promise<RuntimeMount> {
   if (existing) return existing
 
   const dir = assetsDir()
-  const loading = raceModuleLoad(LOADERS[id](), {
+  const load = LOADERS[id]
+  // 运行时适配器也是懒加载 chunk；首个请求偶发失败时必须换唯一 URL 重试，避免浏览器复用已拒绝的模块记录。
+  const loading = raceModuleLoad(importWithRetry(load, lazyChunkFile(load), import.meta.url), {
     watchProgress: watchModuleResources(dir),
     message: (reason) => reason === 'idle'
       ? `${id} 运行时模块加载超时（${MODULE_LOAD_IDLE_MS / 1000} 秒没有进展），请检查网络后重试`
