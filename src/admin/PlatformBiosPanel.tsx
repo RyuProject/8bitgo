@@ -42,7 +42,7 @@ import { Card, btnClass, inputClass } from './ui'
 const NEED_BIOS: Array<{ id: PlatformId; hint: string; accept?: string }> = [
   {
     id: 'gba',
-    hint: '仅在浏览器没有 WebAssembly、GBA 改用 IodineGBA 纯 JavaScript 退路时需要；必须是正好 16 KiB 的 GBA BIOS。可上传 .bin / .bios / .gba，或 ZIP 根目录内含其中一个文件。常规 mGBA（WebAssembly）开局不依赖此项。',
+    hint: '仅在浏览器没有 WebAssembly、GBA 改用 IodineGBA 纯 JavaScript 退路时需要；文件必须正好 16 KiB。可上传 .bin / .bios / .gba，或 ZIP 根目录内含其中一个文件；也可填写 BIOS 二进制文件的公开 HTTPS 直链（外站需允许浏览器跨域读取，仓库网页链接不是文件直链）。填写后移出输入框会自动保存并探测。常规 mGBA（WebAssembly）开局不依赖此项。',
     accept: '.zip,.bin,.bios,.gba',
   },
   {
@@ -213,7 +213,7 @@ function BiosRow({
           */
           key={value}
           className={cx(inputClass, 'min-w-0 flex-1')}
-          aria-label="BIOS 对象 key 或项目路径"
+          aria-label="BIOS 公开地址、对象 key 或项目路径"
           placeholder={placeholder}
           defaultValue={value}
           onBlur={(e) => {
@@ -529,7 +529,7 @@ export function PlatformBiosPanel() {
             {section === 'platform' && (
               <>
                 <p className="text-[11px] leading-relaxed text-dim">
-                  一个绑定供该平台全部游戏使用。文件可放进 <code className="rounded bg-surface-2 px-1">public/bios/</code>，也可以上传到对象存储；后者不需要跟着每次部署复制。
+                  一个绑定供该平台全部游戏使用。可填写公开 HTTPS 直链、站内路径，也可以上传到对象存储；外部直链需允许浏览器跨域读取。填完移出输入框后会自动保存并探测。
                 </p>
                 {platformRows.map((r) => (
                   <BiosRow
@@ -548,7 +548,9 @@ export function PlatformBiosPanel() {
                       )
                     }
                     hint={r.hint}
-                    placeholder="/bios/文件名 或对象存储 key"
+                    placeholder={r.id === 'gba'
+                      ? 'https://…/gba_bios.bin、/bios/文件名 或对象存储 key'
+                      : '/bios/文件名 或对象存储 key'}
                     accept={r.accept ?? (r.id === 'symbian' ? '.rom' : undefined)}
                     {...rowProps(r.id)}
                   />

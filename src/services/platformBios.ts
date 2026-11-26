@@ -5,8 +5,8 @@
  * 全都要 `neogeo.zip`，没有它 FBNeo 直接报错，和 ROM 对不对无关。
  * 同一份 BIOS 整个平台共用，所以按平台存一次，而不是挂到每一款游戏上。
  *
- * 这里存的是对象存储 key，用的时候再拼成 URL —— 和 ROM 的处理方式一致，
- * 换存储桶 / 换域名不用改数据。
+ * 绑定值可以是对象存储 key、站内路径或公开直链；对象 key 用时再拼成 URL，
+ * 换存储桶 / 换域名不用改已有对象 key。
  */
 import { useEffect, useState } from 'react'
 import type { PlatformId } from '@/types'
