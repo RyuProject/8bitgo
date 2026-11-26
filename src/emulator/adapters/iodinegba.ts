@@ -196,6 +196,23 @@ class IodineStartupError extends Error {
   }
 }
 
+/** BIOS 通常只有 16 KiB；先在它自己的并行 Promise 内校验，避免配错时把大 ROM 下载完才报配置错。 */
+async function prepareIodineBios(data: ArrayBuffer): Promise<ArrayBuffer> {
+  let biosBytes = data
+  if (isZip(biosBytes)) {
+    try {
+      const extracted = await extractRomFromZip(biosBytes, ['bin', 'bios', 'gba'])
+      biosBytes = extracted.data.buffer.slice(extracted.data.byteOffset, extracted.data.byteOffset + extracted.data.byteLength) as ArrayBuffer
+    } catch {
+      throw new IodineStartupError('GBA BIOS 压缩包内没有可识别的 .bin / .bios 文件。', 'config')
+    }
+  }
+  if (biosBytes.byteLength !== BIOS_BYTES) {
+    throw new IodineStartupError(`GBA BIOS 大小必须为 16 KiB，当前为 ${biosBytes.byteLength} 字节。`, 'config')
+  }
+  return biosBytes
+}
+
 export function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   if (typeof WebAssembly === 'undefined') diagLog('adapter', 'info', '浏览器没有 WebAssembly，GBA 改用纯 JavaScript 的 IodineGBA')
   const aborter = new AbortController()
@@ -420,9 +437,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         biosUrl = platformBiosUrlSync(options.platform)
       }
       if (!biosUrl) throw new IodineStartupError('IodineGBA 启动需要 16 KiB GBA BIOS；请先在后台配置 GBA 平台 BIOS。', 'config')
-      const [loaded, bios] = await Promise.all([
+      const [loaded, biosBytes] = await Promise.all([
         loadGameBytes(options.game, options.onProgress, aborter.signal, { maxBytes: MAX_ROM_BYTES, maxUnpackedBytes: MAX_ROM_BYTES }),
-        loadGameBytes(biosUrl, undefined, aborter.signal, { maxBytes: 2 * 1024 * 1024, maxUnpackedBytes: 2 * 1024 * 1024 }),
+        loadGameBytes(biosUrl, undefined, aborter.signal, { maxBytes: 2 * 1024 * 1024, maxUnpackedBytes: 2 * 1024 * 1024 })
+          .then((bios) => prepareIodineBios(bios.data)),
       ])
       if (destroyed) return
       let rom = loaded.data
@@ -433,19 +451,6 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       }
       if (rom.byteLength < 0x100 || rom.byteLength > MAX_ROM_BYTES) {
         throw new IodineStartupError('GBA ROM 长度不合法，或压缩包里没有可识别的 .gba 游戏文件。', 'content')
-      }
-      let biosBytes = bios.data
-      if (isZip(biosBytes)) {
-        try {
-          const extracted = await extractRomFromZip(biosBytes, ['bin', 'bios', 'gba'])
-          if (destroyed) return
-          biosBytes = extracted.data.buffer.slice(extracted.data.byteOffset, extracted.data.byteOffset + extracted.data.byteLength) as ArrayBuffer
-        } catch {
-          throw new IodineStartupError('GBA BIOS 压缩包内没有可识别的 .bin / .bios 文件。', 'config')
-        }
-      }
-      if (biosBytes.byteLength !== BIOS_BYTES) {
-        throw new IodineStartupError(`GBA BIOS 大小必须为 16 KiB，当前为 ${biosBytes.byteLength} 字节。`, 'config')
       }
       const Core = await loadIodineScript().then(() => window.IodineGBA)
       if (!Core) throw new Error('IodineGBA 核心未能初始化')

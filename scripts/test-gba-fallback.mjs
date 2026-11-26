@@ -18,6 +18,7 @@ assert.equal(gbaFallbackRuntime({ wasmUnavailable: true, webglUnavailable: true,
 
 const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8')
 const adapter = read('../src/emulator/adapters/emulatorjs.ts')
+const iodine = read('../src/emulator/adapters/iodinegba.ts')
 const registry = read('../src/emulator/registry.ts')
 const player = read('../src/emulator/EmulatorPlayer.tsx')
 const softwareWebgl = read('../src/emulator/softwareWebgl.ts')
@@ -42,5 +43,15 @@ assert.match(player, /gbaWasmUnavailable: platform\.id === 'gba' && !webAssembly
   '自动开局要把 WebAssembly 能力传给注册表')
 assert.match(player, /gbaWebglUnavailable: platform\.id === 'gba' && webglUnavailable/,
   '自动开局要把 WebGL 能力传给注册表')
+assert.match(iodine, /async function prepareIodineBios\(data: ArrayBuffer\)/,
+  'IodineGBA BIOS 在 ROM 下载 Promise 等待前完成解包与尺寸校验')
+assert.match(iodine, /loadGameBytes\(biosUrl,[\s\S]*?\)\s*\.then\(\(bios\) => prepareIodineBios\(bios\.data\)\)/,
+  'BIOS 错误在并行下载阶段立即拒绝，播放器清理会取消仍在进行的 ROM 请求')
+assert.match(iodine, /const \[loaded, biosBytes\] = await Promise\.all\(/,
+  'BIOS 校验前置不能把正常 ROM 与 BIOS 下载改成串行')
+assert.match(iodine, /const fail = \(error: unknown\) => \{[\s\S]*?options\.onError\?\.\(message, scope\)[\s\S]*?destroy\(\)/,
+  'BIOS 配置错误触发标准收尾，不能遗留挂起的 ROM 请求')
+assert.match(iodine, /const destroy = \(\) => \{[\s\S]*?aborter\.abort\(\)/,
+  '标准收尾通过共享 AbortController 取消 ROM 与 BIOS 传输')
 
 console.log('✔ GBA fallback：只缺 WebGL 时用 mGBA HLE + Canvas 2D；无 WebAssembly 时保留 IodineGBA')
