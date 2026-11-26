@@ -5254,6 +5254,20 @@ export function EmulatorPlayer({
                       </select>
                     )}
                   </span>
+                  {!online && romChecking && status === 'idle' && (
+                    /*
+                      云端预检遇到弱网时可能要跨三轮确认。不要让这段等待封死唯一的开局入口：
+                      本地 ROM 不依赖云端 HEAD，玩家点一下就可以选文件继续；按钮放在预热热区外，
+                      避免“想选本地文件”却先并行拉下一份大核心。真实点击也保留 iOS 文件选择器所需的用户手势。
+                    */
+                    <button
+                      type="button"
+                      onClick={() => inputRef.current?.click()}
+                      className="inline-flex min-h-11 items-center justify-center rounded-xl border border-white/35 bg-black/45 px-4 text-sm font-semibold text-white transition hover:border-white/55 hover:bg-white/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-black"
+                    >
+                      {t.player.pickRom}
+                    </button>
+                  )}
                   {!online && romUrl && pageRuntime?.id === 'ppsspp' && pspLoadMode === 'download' && (
                     <p className="max-w-md text-[11px] leading-relaxed text-white/70 sm:text-xs">
                       {t.player.pspDownloadHint}

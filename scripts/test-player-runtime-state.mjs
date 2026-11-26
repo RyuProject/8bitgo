@@ -144,5 +144,7 @@ assert.match(player, /manualCoreOptionsForFailure\(/,
 assert.match(emulatorjsAdapter, /arcadeFatal === 'unknown-set'[\s\S]{0,120}'deterministic'/,
   '街机未知驱动需跳过同核心自动重试，同时留下手动换核恢复机会')
 assert.match(player, /manualCoreRetryAvailable && \([\s\S]*?t\.player\.tryAnotherCore/)
+assert.match(player, /!online && romChecking && status === 'idle' && \([\s\S]{0,800}inputRef\.current\?\.click\(\)[\s\S]{0,500}t\.player\.pickRom/s,
+  '云端预检期间要开放本地 ROM 入口；它不能等待云端探测结束或触发远端核心预热')
 
 console.log('✔ 播放器对重复运行时状态报告保持引用稳定，并提供不重复的手动核心恢复路径')
