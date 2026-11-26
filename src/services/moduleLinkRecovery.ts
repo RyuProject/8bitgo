@@ -307,6 +307,11 @@ export function canSwitchToOriginAssets(edge: boolean, cnSite: boolean, hasPrevi
   return edge && (!cnSite || hasPreviousAttempt)
 }
 
+/** 同一加速入口整页重载后仍失败，就不再重复核对相同资源，改走主站资源图。 */
+export function shouldSwitchToOriginAfterRepeatedFailure(edge: boolean, previousVia?: 'reload' | 'origin'): boolean {
+  return edge && previousVia === 'reload'
+}
+
 /**
  * 带 `__assets=origin` 的当前页地址：服务端据此不把资源改写到 EdgeOne（shared/cover-cdn-hint.js），
  * 客户端入口在渲染前用 consumeOriginAssetsParam 去掉它。

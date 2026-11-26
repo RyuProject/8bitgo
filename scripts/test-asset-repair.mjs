@@ -39,6 +39,7 @@ import {
   originAssetsUrl,
   repairFixedSomething,
   resolveChunkUrl,
+  shouldSwitchToOriginAfterRepeatedFailure,
   summarizeRepair,
   tagLazyFailure,
   importWithRetry,
@@ -705,6 +706,8 @@ assert.equal(parseRepairRequest({ build: '../../etc', files: ['a.js'] }), null)
   assert.match(boundary, /const cnSite = stale && assetsFromCnSite\(entrySrc, import\.meta\.env\.VITE_SITE_URL \?\? '', location\.origin\)/, '识别 CN 站点的同源 EdgeOne 资源')
   assert.match(boundary, /const edge = stale && \(cnSite \|\| assetsFromCnEdge\(entrySrc, location\.origin\)\)/, '合并 CN 子域与主站上的 CN EdgeOne 资源')
   assert.match(boundary, /const canSwitchOrigin = canSwitchToOriginAssets\(Boolean\(edge\), Boolean\(cnSite\), Boolean\(previous\)\)/, 'CN 子域先整页刷新，复发后才切主站资源')
+  assert.match(boundary, /if \(shouldSwitchToOriginAfterRepeatedFailure\(Boolean\(edge\), previous\?\.via\) &&\s*canSwitchOrigin && claimOriginReload\(true\)\)\s*\{\s*const note = \[graph, '同一加速入口整页刷新后仍失败，已改用主站资源重新载入'\]/, '同源整页刷新仍失败时应跳过第二轮资源核对，直接改走主站')
+  assert.ok(boundary.indexOf('shouldSwitchToOriginAfterRepeatedFailure') < boundary.indexOf('const named = ['), '重复失败切主站必须发生在第二轮逐文件核对之前')
   assert.match(boundary, /function toOriginAssets\(\): void \{\s*location\.replace\(originAssetsUrl\(location\)\)/)
   assert.match(boundary, /lazy\?\.file \? resolveChunkUrl\(`\.\/\$\{lazy\.file\}`, entrySrc\)/, '懒加载失败的 chunk 作为点名文件交给修复脚本')
   assert.match(boundary, /summarizeRepair\(result, repairLoadInfo\(\)\)/, '诊断包写出修复脚本的加载经过')
@@ -757,6 +760,9 @@ assert.equal(parseRepairRequest({ build: '../../etc', files: ['a.js'] }), null)
   assert.equal(canSwitchToOriginAssets(true, true, true), true, 'CN 同源入口复发后允许主站静态图退路')
   assert.equal(canSwitchToOriginAssets(true, false, false), true, '主站上的跨域 EdgeOne 资源仍可直接切换')
   assert.equal(canSwitchToOriginAssets(false, false, true), false, '主站资源没有跨域退路')
+  assert.equal(shouldSwitchToOriginAfterRepeatedFailure(true, 'reload'), true, '加速入口整页刷新后复发应直接切主站')
+  assert.equal(shouldSwitchToOriginAfterRepeatedFailure(true, 'origin'), false, '已走主站资源的失败不能再次切换并循环')
+  assert.equal(shouldSwitchToOriginAfterRepeatedFailure(false, 'reload'), false, '主站资源失败没有第二个资源域可切')
   assert.equal(originAssetsUrl({ pathname: '/games/x', search: '', hash: '' }), '/games/x?__assets=origin')
   assert.equal(originAssetsUrl({ pathname: '/de/games', search: '?page=2&__assets=origin', hash: '#c' }), '/de/games?page=2&__assets=origin#c', '不重复加参数')
 

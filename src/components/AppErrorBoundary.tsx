@@ -16,6 +16,7 @@ import {
   repairFixedSomething,
   repairLoadInfo,
   resolveChunkUrl,
+  shouldSwitchToOriginAfterRepeatedFailure,
   summarizeRepair,
 } from '@/services/moduleLinkRecovery'
 import { deferRecoveryReport, takeRecoveryForFailure, type PendingReport } from '@/services/pageRecovery'
@@ -167,6 +168,17 @@ function recoverBrokenAsset(error: unknown, info: ErrorInfo, previous: PreviousA
   const edge = stale && (cnSite || assetsFromCnEdge(entrySrc, location.origin))
   // CN 子域本身也在 EdgeOne 上，但同源资源不能按旧逻辑识别；先同源刷新一次，复发再整页切主站资源。
   const canSwitchOrigin = canSwitchToOriginAssets(Boolean(edge), Boolean(cnSite), Boolean(previous))
+  /*
+    2026-11-26 Edge 157 / Windows / 中国大陆现场：静态依赖在浏览器模块表里留下失败记录，
+    强制重取确认资源字节正常后整页刷新，1.6 秒内仍在同一入口复发。刷新已给过一次新文档；
+    再跑一轮逐文件核对只会增加弱网等待，直接切主站静态资源并且只做一次。
+  */
+  if (shouldSwitchToOriginAfterRepeatedFailure(Boolean(edge), previous?.via) &&
+    canSwitchOrigin && claimOriginReload(true)) {
+    const note = [graph, '同一加速入口整页刷新后仍失败，已改用主站资源重新载入'].filter(Boolean).join('；')
+    deferThenNavigate(error, info, note, 'origin', chunk, previous, toOriginAssets)
+    return true
+  }
   // integrity 清单只含现代 ES 产物；legacy 走 SystemJS，不能拿现代文件的清单声称旧 chunk 正常。
   // 能从 SystemJS 错误里取到文件名时，懒加载层已用两个唯一查询串重试；仍失败先整页刷新，重复失败再切主站资源。
   if (isSystemJsChunkLoadError(error) || lazy?.file?.includes('-legacy-')) {
