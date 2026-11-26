@@ -972,6 +972,7 @@ const fr: Translation = {
     flashSaveSessionUnavailable: 'Vous êtes connecté, mais le service de sauvegarde en ligne est temporairement indisponible. Le jeu local reste disponible ; réessayez plus tard',
     flashSaveExpiringSoon: 'La session de sauvegarde en ligne expire dans 10 minutes — quittez et relancez la partie pour continuer à sauvegarder dans le cloud',
     runtimeFellBack: 'Cette ROM nécessite un cœur plus complet : passage à {runtime}',
+    jsnesInviteNotJoined: 'Cette ROM ne peut pas rejoindre la salle P2P jsnes. Passage à {runtime} pour jouer en solo ; l’invitation n’a pas été acceptée. Utilisez une ROM compatible avec jsnes ou retirez le lien d’invitation pour jouer en solo.',
     ndsCoreFellBack: 'Le cœur NDS a planté. Redémarrage avec le cœur compatible ; les sauvegardes restent séparées',
     ndsCoreFailed: 'Le cœur NDS a planté : {reason}',
     ndsPerformanceSlow: 'Des ralentissements persistants ont été détectés (environ {fps} FPS). Ce cœur NDS ne propose aucun réglage de qualité en cours de jeu vérifié ; la partie continue.',

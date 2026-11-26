@@ -959,6 +959,7 @@ const ja: Translation = {
     flashSaveSessionUnavailable: 'ログイン済みですが、オンラインセーブサービスは一時的に利用できません。ゲーム本体への影響はありません。後でもう一度お試しください',
     flashSaveExpiringSoon: 'オンラインセーブのセッションは 10 分後に期限切れになります。続けてクラウド保存するには、いったん退出してこのゲームに入り直してください',
     runtimeFellBack: 'この ROM にはより完全なコアが必要です。{runtime} に切り替えました',
+    jsnesInviteNotJoined: 'この ROM は jsnes の P2P ルームに参加できません。1 人プレイ用に {runtime} へ切り替えました。招待ルームには参加していません。jsnes 対応 ROM を使うか、招待リンクを外して 1 人プレイしてください。',
     ndsCoreFellBack: 'NDS コアが停止したため互換コアで再起動します。セーブデータはコアごとに保存されます',
     ndsCoreFailed: 'NDS コアが停止しました：{reason}',
     ndsPerformanceSlow: '低フレームレートが続いています（約 {fps} FPS）。現在の NDS コアには動作中に変更できることを確認済みの画質設定がないため、このゲームはそのまま続行します。',

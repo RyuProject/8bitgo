@@ -970,6 +970,7 @@ const en: Translation = {
     flashSaveSessionUnavailable: 'You are signed in, but the online save service is temporarily unavailable. Local play is unaffected; please try again later',
     flashSaveExpiringSoon: 'The online save session expires in 10 minutes — exit and re-enter this game to keep saving to the cloud',
     runtimeFellBack: 'This ROM needs a more complete emulator core — switched to {runtime}',
+    jsnesInviteNotJoined: 'This ROM cannot join the jsnes P2P room. Switched to {runtime} for solo play; the invite was not joined. Use a jsnes-compatible ROM or remove the invite link to play solo.',
     ndsCoreFellBack: 'The NDS core crashed. Restarting with the compatibility core; saves are kept separate',
     ndsCoreFailed: 'The NDS core crashed: {reason}',
     ndsPerformanceSlow: 'Sustained slow frames detected (about {fps} FPS). This NDS core has no verified live quality control, so the current game will keep running.',

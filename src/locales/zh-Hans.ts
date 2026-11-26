@@ -1021,6 +1021,7 @@ export const zhHans = {
     flashSaveSessionUnavailable: '账号已登录，但在线存档服务暂时不可用；本地游戏不受影响，请稍后重试',
     flashSaveExpiringSoon: '在线存档会话 10 分钟后到期：请找机会退出并重新进入本局，之后才能继续云端存档',
     runtimeFellBack: '这份 ROM 需要更完整的模拟核心，已自动切换到 {runtime}',
+    jsnesInviteNotJoined: '这份 ROM 不支持 jsnes 联机，已切换到 {runtime} 单人运行；尚未加入邀请房间。请换用 jsnes 支持的 ROM，或移除邀请链接后继续单人游玩。',
     ndsCoreFellBack: 'NDS 核心意外退出，已切换兼容核心并重新开始；两种核心的存档分别保存',
     ndsCoreFailed: 'NDS 核心运行失败：{reason}',
     ndsPerformanceSlow: '检测到持续掉帧（约 {fps} FPS）。当前 NDS 核心没有已确认的运行中降档项；本局会继续运行。',

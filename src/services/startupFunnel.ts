@@ -64,13 +64,19 @@ const BATCHABLE_EVENTS = new Set<StartupEventName>([
   'core_cache_hit', 'runtime_ready', 'first_frame', 'fallback_first_frame', 'fallback_playable', 'game_playable',
 ])
 
+/** 同一局的兜底路线会逐跳变长；只让这类事件按路线内容去重，后端会把最长路线写回同一条记录。 */
+export function startupEventDedupeKey(slug: string, payload: StartupEvent): string {
+  const routeRevision = payload.event === 'fallback_started' ? `:${payload.detail ?? ''}` : ''
+  return `${slug}:${payload.visitId}:${payload.attemptId ?? ''}:${payload.event}${routeRevision}`
+}
+
 /**
  * 漏斗永远不能卡住游戏本身。客户端只做会话内去重并异步上报；网络失败不弹提示，
- * 服务端还有 (visit, attempt, event) 唯一键挡住浏览器 / 代理的请求重放。
+ * 服务端用 (visit, attempt, event) 唯一键去重普通事件，并单调更新逐跳增长的兜底路线。
  */
 export function recordStartupEvent(slug: string | undefined, payload: StartupEvent): void {
   if (!slug || !apiEnabled()) return
-  const key = `${slug}:${payload.visitId}:${payload.attemptId ?? ''}:${payload.event}`
+  const key = startupEventDedupeKey(slug, payload)
   if (sent.has(key)) return
   sent.add(key)
   noteStartupEvent(payload.visitId, payload.attemptId, payload.event)
@@ -109,7 +115,7 @@ export function recordStartupEvents(slug: string | undefined, payloads: readonly
       recordStartupEvent(slug, payload)
       continue
     }
-    const key = `${slug}:${payload.visitId}:${payload.attemptId ?? ''}:${payload.event}`
+    const key = startupEventDedupeKey(slug, payload)
     if (sent.has(key) || withinBatch.has(key)) continue
     withinBatch.add(key)
     batch.push(payload)
@@ -120,7 +126,7 @@ export function recordStartupEvents(slug: string | undefined, payloads: readonly
     return
   }
   for (const payload of batch) {
-    const key = `${slug}:${payload.visitId}:${payload.attemptId ?? ''}:${payload.event}`
+    const key = startupEventDedupeKey(slug, payload)
     sent.add(key)
     noteStartupEvent(payload.visitId, payload.attemptId, payload.event)
   }
