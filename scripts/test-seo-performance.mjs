@@ -30,6 +30,22 @@ check('移动端封面视频不进入首屏下载队列', () => {
   assert.doesNotMatch(src, /preload=\{priority \? 'metadata'/)
 })
 
+check('游戏库、语言专题和首页只把首张 LCP 封面提升到高优先级', () => {
+  const card = read('src/components/game/GameCard.tsx')
+  const wideCard = read('src/components/game/GameCardWide.tsx')
+  const games = read('src/pages/GamesPage.tsx')
+  const collections = read('src/pages/CollectionPage.tsx')
+  const home = read('src/components/home/sections.tsx')
+  const cover = read('src/components/game/GameCover.tsx')
+  assert.match(card, /priority\?: boolean/, '普通游戏卡没有 LCP 优先级入口')
+  assert.match(card, /<GameCover[^>]+priority=\{priority\}/, '普通游戏卡没有把优先级传给封面')
+  assert.match(wideCard, /<GameCover[^>]+priority=\{priority\}/, '首页宽卡没有把优先级传给封面')
+  assert.match(games, /priority=\{i === 0\}/, '游戏库没有只提升首张封面')
+  assert.match(collections, /priority=\{i === 0\}/, '平台、类型与 ROM 语言专题没有只提升首张封面')
+  assert.match(home, /<GameCardWide[^>]+priority=\{i === 0\}/, '首页最新卡没有只提升首张封面')
+  assert.match(cover, /preload\(coverSrc, \{ as: 'image', fetchPriority: 'high' \}\)/, '视频 poster 没有高优先级图片预加载')
+})
+
 check('桌面端封面视频等页面加载完、空闲后才自动拉流，弱网不自动拉', () => {
   const src = read('src/components/game/GameCover.tsx')
   // 2026-11-20 首页：两段预览 3.5MB 水合后就下载，和 32 张封面抢带宽，最后一张封面 11.9 秒才到

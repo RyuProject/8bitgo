@@ -39,7 +39,7 @@ export const MAX_TOKEN = 32
  * 一次查询里「必须命中」的词条数量上限。
  *
  * ⚠️ 这条是**防 DoS 的硬闸**，不是给搜索质量兜底的：tokenMatchSql() 给 required
- * 里的每一条生成一条独立子查询再 UNION ALL，条数 = 用户输入的长度。中文是逐字切的，
+ * 里的每一条生成一条独立子查询再 UNION ALL，条数 = 用户输入的长度。无空格文字按字符切，
  * 一句 5000 字的查询就是 5000 条子查询 —— MySQL 要么在解析递归上爆栈，要么把这条
  * 连接占死很久。连接池只有十条，而 /api/games、/api/games/suggest、/api/page 三个
  * 入口全是匿名且不限流的，一条 curl 就能让整站 API 和 SSR 一起停摆。
@@ -60,12 +60,15 @@ export function boundedSearchLimit(raw, fallback, maximum) {
   return Math.min(maximum, Math.max(1, Math.trunc(value)))
 }
 
-const CJK = /[㐀-鿿豈-﫿]/
-const isCjk = (ch) => CJK.test(ch)
-const isWordChar = (ch) => /[a-z0-9]/.test(ch)
+// 这些文字没有稳定的空格分词边界；按单字与相邻双字建索引，才能让玩家搜标题中间的一段。
+// 旧范围只收汉字，日文假名、韩文和东南亚无空格文字因此整段消失，用户输入标题却搜不到游戏。
+const NGRAM_SCRIPT = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Thai}\p{Script=Lao}\p{Script=Khmer}\p{Script=Myanmar}]/u
+const isNgramChar = (ch) => NGRAM_SCRIPT.test(ch)
+// 拉丁、西里尔、阿拉伯、希腊、天城文等有空格的文字按连续字母 / 数字组词；组合附标要留在词里。
+const isWordChar = (ch) => /[\p{L}\p{M}\p{N}]/u.test(ch)
 
 /**
- * 归一化：全角转半角、繁转简、转小写、罗马音的长音记号去掉。
+ * 归一化：全角转半角、繁转简、转小写、拉丁字母去重音，其它文字保留本身的组合形式。
  * 索引和查询走的是同一个函数 —— 只要两边一致，映射准不准反而是次要的。
  */
 /**
@@ -85,18 +88,20 @@ export function escapeLike(s) {
 }
 
 export function normalize(text) {
-  return simplify(
+  const value = simplify(
     String(text ?? '')
       // NFKC 把全角字母数字、①②、㈱ 之类折叠成常见形态
       .normalize('NFKC')
       .toLowerCase(),
   )
-    // 日文罗马字常见的长音标记，去掉音调符号后 pokemon / pokémon 能互相搜到
+  // 只折叠拉丁字母上的重音，避免把俄文 й、韩文音节等其它文字拆坏；最后 NFC 合回原有书写形式。
+  return value
     .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
+    .replace(/(\p{Script=Latin})\p{M}+/gu, '$1')
+    .normalize('NFC')
 }
 
-/** 把一段文本切成「拉丁词」和「汉字串」两类片段 */
+/** 把文本切成「空格文字系统的词」和「需要 n-gram 的无空格文字片段」 */
 function segments(text) {
   const out = []
   let buf = ''
@@ -106,7 +111,7 @@ function segments(text) {
     buf = ''
   }
   for (const ch of text) {
-    const k = isCjk(ch) ? 'cjk' : isWordChar(ch) ? 'word' : null
+    const k = isNgramChar(ch) ? 'ngram' : isWordChar(ch) ? 'word' : null
     if (k !== kind) {
       flush()
       kind = k
@@ -120,8 +125,8 @@ function segments(text) {
 /**
  * 一段文本产生的索引 token。
  *
- * 拉丁：整个词。
- * 汉字：每个单字 + 每个相邻二字组。
+ * 有空格的文字：整个词。
+ * 汉字、假名、韩文及东南亚无空格文字：每个字符 + 每个相邻二字符组。
  *   为什么两者都要：只存二字组的话，单字搜索（「魂」）全部落空；
  *   只存单字的话，「斗罗」会匹配到任何同时含「斗」和「罗」的游戏，噪音很大。
  */
@@ -160,7 +165,7 @@ export function pinyinTokens(text) {
     if (cur === undefined || weight > cur) out.set(tok, weight)
   }
   for (const seg of segments(normalize(text))) {
-    if (seg.kind !== 'cjk') continue
+    if (seg.kind !== 'ngram') continue
     const py = [...seg.text].map(pinyinOfChar)
     // 有汉字查不到读音时整段跳过：拼出来的串会缺字，反而会误命中
     if (py.some((p) => !p)) continue
@@ -175,7 +180,7 @@ export function pinyinTokens(text) {
 
 /**
  * 一款游戏的全部索引条目。
- * @param {{title?, title_zh?, developer?, tags?: string[], aliases?: string[]}} game
+ * @param {{title?, title_zh?, developer?, tags?: string[], aliases?: string[], pinyinAliases?: string[]}} game
  * @returns {Map<string, number>} token -> 权重（取最高的一档）
  */
 export function buildGameTokens(game) {
@@ -196,8 +201,8 @@ export function buildGameTokens(game) {
   for (const tag of game.tags ?? []) addText(tag, WEIGHT.tag)
   for (const alias of game.aliases ?? []) addText(alias, WEIGHT.alias)
 
-  // 拼音只从中文来源取：英文标题拼出来的东西没有意义
-  for (const text of [game.title_zh, ...(game.aliases ?? [])]) {
+  // 拼音只从明确的中文来源取：日文汉字名与中文同形时，不能擅自按中文读音给它加别名。
+  for (const text of [game.title_zh, ...(game.pinyinAliases ?? [])]) {
     if (!text) continue
     for (const [tok, weight] of pinyinTokens(text)) put(tok, weight)
   }
@@ -207,14 +212,14 @@ export function buildGameTokens(game) {
 /**
  * 查询侧：把用户输入切成「必须命中」和「只加分」两组。
  *
- * 为什么中文要分两组：用户打中文是不加空格的，而标题里往往夹着别的字。
+ * 为什么无空格文字要分两组：用户输入通常不加空格，而标题里往往夹着别的字。
  * 「塞尔达时之笛」切成二字组是 塞尔/尔达/达时/时之/之笛，而《塞尔达传说：时之笛》
  * 里根本没有「达时」—— 全都要命中的话，这个再正常不过的搜法会零结果。
  *
  * 所以：
- *   必须命中 = 每个**单字**（保召回，够精确 —— 六个字都在的游戏不会太多）
- *   只加分   = 每个**二字组**（保排序 —— 连着的字挨在一起的排前面）
- * 拉丁词还是整词必须命中，最后一个词放宽成前缀（联想下拉里用户正打到一半）。
+ *   必须命中 = 每个**单字符**（保召回，够精确 —— 多个字符都在的游戏不会太多）
+ *   只加分   = 每个**相邻双字符组**（保排序 —— 连着的字符挨在一起的排前面）
+ * 有空格边界的文字仍按整词必须命中，最后一个词放宽成前缀（联想下拉里用户正打到一半）。
  *
  * @returns {{required: Array<{token, prefix}>, optional: Array<{token, prefix}>, empty: boolean}}
  */

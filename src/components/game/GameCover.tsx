@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
+import { preload } from 'react-dom'
 import type { CoverGame } from '@/types'
 import { platformMap } from '@/data/platforms'
 import { gradientFor } from '@/lib/gradients'
@@ -305,6 +306,12 @@ export function GameCover({
   const [coverFailed, setCoverFailed] = useState(false)
   useEffect(() => setCoverFailed(false), [coverSrc])
   const srcSet = imgSrc === coverSrc && !transformFailed ? coverSrcSet(coverSrc) : ''
+
+  // 首屏视频卡片的 poster 是图片，但 <video poster> 没有可设置 fetchPriority 的属性。
+  // 在 SSR 渲染时显式预加载这一张，避免它与普通视频资源一起按 auto 排队。
+  if (priority && videoSrc && coverSrc) {
+    preload(coverSrc, { as: 'image', fetchPriority: 'high' })
+  }
 
   return (
     <div

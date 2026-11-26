@@ -1338,7 +1338,7 @@ export function GameForm({
           <Field
             key={language}
             label={`标题（${romLanguageLabel(language)}）`}
-            hint="此语言界面会用它显示游戏名、页面标题和站内搜索；请填当地玩家常用的正式名称。留空时回退到原名，繁体中文会先回退到自动转换的繁体译名。"
+            hint="此语言界面会用它显示游戏名、页面标题和站内搜索。先核对该语言槽实际 ROM 的发行地区/版本，再填当地玩家常用的正式名称；改版 ROM 不要直接套用原版标题。留空时回退到原名，繁体中文会先回退到自动转换的繁体译名。"
           >
             <input
               className={inputClass}
@@ -2188,7 +2188,7 @@ export function GameForm({
             />
             <p className="mt-1 text-[11px] text-dim">
               {hasLocalizedRoute
-                ? '用于对应语言的游戏详情与 SEO；留空时使用英文简介，没有英文简介时回退中文。灰色占位文字仅供参考，不会保存。'
+                ? '用于对应语言的游戏详情与 SEO。请只写该 ROM 版本可核验的内容；地区/修订、多人或无线功能、改版特性不确定时不要写成事实。留空时使用英文简介，没有英文简介时回退中文。灰色占位文字仅供参考，不会保存。'
                 : '此语言码目前没有独立站点语言页面；简介会保存，待站点开放对应语言路由后用于 SEO。'}
             </p>
             {translationFeedback?.language === language && (

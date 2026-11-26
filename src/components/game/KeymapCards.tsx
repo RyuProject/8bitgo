@@ -27,6 +27,8 @@ interface Props {
   arcadeBios?: string
   /** 街机核心：mame-current 的按键 5 / 6 与 FBNeo 对调 */
   core?: string
+  /** 详情页的游戏人数；本地 ROM 没有元数据时留空并沿用平台默认键位。 */
+  players?: number
   /** MAME 麻将机（mahjongPanel.ts 的 isMahjongPanelGame）：键位是麻将面板那一套 */
   mahjongPanel?: boolean
   /** 'sm' 是给窄栏用的（PlayLocalPage 的侧列） */
@@ -34,7 +36,7 @@ interface Props {
   className?: string
 }
 
-export function KeymapCards({ runtimeId, platform, gameSlug, arcadeButtons, arcadeBios, core, mahjongPanel, size = 'md', className }: Props) {
+export function KeymapCards({ runtimeId, platform, gameSlug, arcadeButtons, arcadeBios, core, mahjongPanel, players, size = 'md', className }: Props) {
   const t = useT()
   const [, bump] = useState(0)
   // 玩家在播放器里改了存读档快捷键或红白机键位，这张表得立刻跟上，不能还写着旧的
@@ -111,7 +113,9 @@ export function KeymapCards({ runtimeId, platform, gameSlug, arcadeButtons, arca
    * 2P 那一组。目前只有 jsnes 有（小键盘那一半是它默认表里本来就带的）。
    * 有第二组时才给第一组加「1P」小标题 —— 只有一组的时候标它反而是噪音。
    */
-  const p2 = keymap.player2 ?? []
+  // 详情页有核实过的人数：单人游戏不能把引擎通用的 2P 键位误当成这款游戏的操作说明。
+  // 本地 ROM 没有对应条目时 players 未传入，仍显示平台默认的 2P 键位。
+  const p2 = players != null && players < 2 ? [] : keymap.player2 ?? []
   const sm = size === 'sm'
 
   const seatLabel = cx('font-semibold text-muted', sm ? 'mt-3 text-[10px]' : 'mt-4 text-[11px]')

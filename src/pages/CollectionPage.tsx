@@ -160,7 +160,7 @@ function Collection({
           <div className="mt-8 adaptive-game-grid">
             {more.items.map((g, i) => (
               // 首屏这几张的封面立即加载，避免一进页面先看到一屏占位格
-              <GameCard key={g.slug} game={g} coverRatio={coverRatio} eager={i < ABOVE_FOLD_CARDS} coverSizes={GAME_CARD_IMAGE_SIZES} />
+              <GameCard key={g.slug} game={g} coverRatio={coverRatio} eager={i < ABOVE_FOLD_CARDS} priority={i === 0} coverSizes={GAME_CARD_IMAGE_SIZES} />
             ))}
           </div>
 

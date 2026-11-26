@@ -2,10 +2,10 @@
 /**
  * 定时开局巡检（deploy/smoke-watch/8bitgo-smoke-watch.sh）的行为回归。跑：npm run test:smoke-watch
  *
- * 用一个假仓库跑真脚本：scripts/smoke-start.mjs 按预设序列返回退出码，server/scripts/notify-lark.mjs
+ * 用一个假仓库跑真脚本：游戏与 SEO 巡检分别按预设状态返回，server/scripts/notify-lark.mjs
  * 把收到的参数记下来，flock 用桩（macOS 没有 flock；这里只测脚本自己的判断，不测内核加锁）。
- * 锁住：失败先复核再报警、复核通过不报、持续故障按 key 去重、恢复发一条并清去重、巡检跑不起来单独报、
- * 部署占着锁时跳过、Chrome 等子进程不继承部署锁。
+ * 锁住：失败先复核再报警、复核通过不报、持续故障按 key 去重、恢复发一条并清去重、游戏与抓取入口状态独立、
+ * 巡检跑不起来单独报、部署占着锁时跳过、Chrome 等子进程不继承部署锁。
  */
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
@@ -59,6 +59,12 @@ function setup() {
     if (code === 1) console.log('    EmulatorJS 引擎加载失败')
     process.exit(code)
   `)
+  writeFileSync(join(repo, 'scripts/smoke-seo-crawl.mjs'), `
+    import { appendFileSync } from 'node:fs'
+    appendFileSync(${JSON.stringify(join(dir, 'seo-runs'))}, 'run\\n')
+    console.log(Number(process.env.FAKE_SEO_SMOKE_RC ?? 0) === 0 ? '✔ robots.txt / sitemap' : '✖ sitemap HTTP 500')
+    process.exit(Number(process.env.FAKE_SEO_SMOKE_RC ?? 0))
+  `)
   // 假通知：记下参数；--dedupe 冷却与 --clear 按真脚本的语义模拟
   writeFileSync(join(repo, 'server/scripts/notify-lark.mjs'), `
     import { appendFileSync, existsSync, rmSync, writeFileSync } from 'node:fs'
@@ -94,7 +100,9 @@ function setup() {
     try { notes = readFileSync(join(dir, 'notify.log'), 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) } catch { notes = [] }
     rmSync(join(dir, 'notify.log'), { force: true })
     const status = (() => { try { return readFileSync(join(dir, 'watch/status'), 'utf8').trim() } catch { return '' } })()
-    return { notes, status, left: readFileSync(join(dir, 'seq'), 'utf8') }
+    const seoStatus = (() => { try { return readFileSync(join(dir, 'watch/seo-status'), 'utf8').trim() } catch { return '' } })()
+    const seoRuns = (() => { try { return readFileSync(join(dir, 'seo-runs'), 'utf8').trim().split('\n').length } catch { return 0 } })()
+    return { notes, status, seoStatus, seoRuns, left: readFileSync(join(dir, 'seq'), 'utf8') }
   }
   return { dir, run }
 }
@@ -142,12 +150,28 @@ try {
   assert.match(r.notes[0].title, /没能运行/)
   assert.equal(r.notes[0].key, 'smoke-env')
 
+  // SEO 抓取入口有独立状态，玩家开局通过不能掩盖 sitemap 故障
+  r = run('0', { FAKE_SEO_SMOKE_RC: '1' })
+  assert.equal(r.status, 'ok', 'SEO 入口故障不能污染游戏开局状态')
+  assert.equal(r.seoStatus, 'down')
+  assert.equal(r.notes.length, 1)
+  assert.match(r.notes[0].title, /搜索抓取入口异常/)
+  assert.equal(r.notes[0].key, 'seo-crawl-down')
+  r = run('0', { FAKE_SEO_SMOKE_RC: '1' })
+  assert.deepEqual(r.notes, [], '持续 sitemap 故障按独立 key 去重')
+  r = run('0')
+  assert.equal(r.seoStatus, 'ok')
+  assert.equal(r.notes.length, 2)
+  assert.match(r.notes[0].title, /搜索抓取入口正常/)
+  assert.deepEqual(r.notes[1], { clear: 'seo-crawl-down' })
+
   // 部署占着锁：这一轮直接跳过，冒烟一次都不跑
   r = run('1,1', { FAKE_LOCK_BUSY: '1' })
   assert.equal(r.left, '1,1', '部署中不能跑冒烟')
+  assert.equal(r.seoRuns, 10, '部署中不能跑 SEO 抓取检查')
   assert.deepEqual(r.notes, [])
 } finally {
   rmSync(dir, { recursive: true, force: true })
 }
 
-console.log('✔ 开局巡检：失败先复核、复核通过不报、持续故障去重、恢复通知并清去重、巡检跑不起来单独报、部署中跳过；看门狗告警接线')
+console.log('✔ 开局与 SEO 抓取巡检：两类状态独立、持续故障去重、恢复通知并清去重、部署中跳过；看门狗告警接线')

@@ -653,11 +653,17 @@ export interface GameSchemaInput {
  */
 const MIN_RATINGS_FOR_SCHEMA = 5
 
+/** 各语言详情页描述的是同一款游戏，实体 ID 固定到默认语言路径，不跟当前 UI locale 变化。 */
+function gameEntityId(slug: string): string {
+  return absoluteUrl(`/games/${encodeURIComponent(slug)}#game`)
+}
+
 /** 游戏详情页：VideoGame + 评分 */
 export function videoGameSchema(g: GameSchemaInput) {
   const schema: Record<string, unknown> = {
     '@context': 'https://schema.org',
     '@type': 'VideoGame',
+    '@id': gameEntityId(g.slug),
     name: g.name,
     url: langUrl(`/games/${g.slug}`, g.language),
     // playMode 的取值是 GamePlayMode 枚举的 URL，不是裸字符串；多人游戏如实标上 MultiPlayer

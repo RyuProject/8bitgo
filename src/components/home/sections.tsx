@@ -159,7 +159,7 @@ export function LatestSection({ games }: { games: Game[] }) {
       <SectionHeader title={t.sections.latestTitle} subtitle={t.sections.latestSubtitle} icon="✨" moreTo="/games?sort=newest" />
       <HScroll itemClassName="w-64 sm:w-72">
         {games.map((g, i) => (
-          <GameCardWide key={g.slug} game={g} isNew={i < 3} />
+          <GameCardWide key={g.slug} game={g} isNew={i < 3} priority={i === 0} />
         ))}
       </HScroll>
     </section>

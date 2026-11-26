@@ -235,6 +235,8 @@ try {
   assert.match(gameForm, /localizedRomLanguages\.map/)
   assert.match(gameForm, /localizedTitleRomLanguages\.map/)
   assert.match(gameForm, /Boolean\(form\.roms\?\.\[lang\]\?\.trim\(\)\)/, '语言输入框必须跟随实际绑定的 ROM 显示')
+  assert.match(gameForm, /const localizedTitleRomLanguages = localizedRomLanguages\.filter\(\(language\) =>\s*LANGUAGES\.some\(\(\{ code \}\) => code === language\)/, '逐语言标题框只能用于本站支持的 UI 语言 ROM')
+  assert.match(gameForm, /localizedTitleRomLanguages\.map\(\(language\) =>\s*\(\s*<Field[\s\S]*?label=\{`标题（\$\{romLanguageLabel\(language\)\}）`\}/, '已绑定语言 ROM 必须显示同语言的人工标题输入框')
   for (const schema of ['../server/schema-v2.sql', '../server/schema-d1.sql', '../server/8bitgo-v2-install.sql']) {
     const sql = readFileSync(new URL(schema, import.meta.url), 'utf8')
     assert.match(sql, /description_localized/, `${schema} 必须声明人工简介列`)

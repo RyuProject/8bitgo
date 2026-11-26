@@ -548,7 +548,7 @@ export function GameDetailPage() {
                           target="_blank"
                           rel="noopener noreferrer"
                           className={buttonClasses('primary', 'lg')}
-                          aria-label={`${t.player.start} · ${game.title}`}
+                          aria-label={`${t.player.start} · ${localizedTitle}`}
                         >
                           <span aria-hidden>▶</span> {t.player.start} ↗
                         </a>
@@ -825,6 +825,7 @@ export function GameDetailPage() {
                 arcadeButtons={game.arcadeButtons}
                 arcadeBios={game.arcadeBios}
                 core={game.core}
+                players={game.players}
                 mahjongPanel={isMahjongPanelGame(playerPlatform.id, game.core, [game.rom, ...Object.values(game.roms ?? {})])}
               />
             </section>

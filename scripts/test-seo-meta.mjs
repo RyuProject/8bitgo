@@ -304,6 +304,13 @@ check('本地化详情页的结构化实体保留页面可见的原名作为 alt
   assert.match(detail, /alternateName: game\.title/, '结构化别名必须来自详情页实际可见的原名')
 })
 
+check('不同 UI 语言下的同一游戏共享稳定的 VideoGame 实体 ID', () => {
+  const seo = code('src/services/seo.ts')
+  assert.match(seo, /function gameEntityId\(slug: string\): string\s*\{\s*return absoluteUrl\(`\/games\/\$\{encodeURIComponent\(slug\)\}#game`\)\s*\}/, '游戏实体 ID 必须由稳定 slug 生成')
+  assert.match(seo, /'@id': gameEntityId\(g\.slug\)/, 'VideoGame 没有引用稳定实体 ID')
+  assert.doesNotMatch(seo.match(/function gameEntityId\(slug: string\): string[\s\S]*?\n\}/)?.[0] ?? '', /langUrl|localizedPath|language/, '实体 ID 不得随 UI 语言或 hreflang 改变')
+})
+
 check('关于页与法律页只声明简中、繁中、英文三份真实长正文', () => {
   const languages = code('src/config/languages.ts')
   assert.match(
@@ -336,6 +343,7 @@ check('详情页的 title 带平台缩写，H1 仍保持干净的游戏名', () 
   const i18n = code('src/services/i18nData.ts')
   assert.match(page, /gameSeoTitle\(seoTitle, seoPlatform\?\.shortName \?\? '', lang\)/, '没有用平台缩写生成搜索标题')
   assert.match(page, /title: fmt\(t\.game\.docTitle, \{ title: seoDocumentTitle \}\)/, 'meta title 没有使用唯一标题')
+  assert.match(page, /aria-label=\{`\$\{t\.player\.start\} · \$\{localizedTitle\}`\}/, '外链启动按钮的无障碍名称没有使用当前 UI 语言标题')
   // H1 在 GameDetailHeading 里画，页面传进去的必须是干净的 seoTitle，不是带平台后缀的 seoDocumentTitle
   assert.match(page, /<GameDetailHeading[\s\S]*?title=\{seoTitle\}/, 'H1 不应被平台后缀污染')
   assert.match(code('src/components/game/GameDetailSections.tsx'), /<h1[^>]*>\s*\{title\}\s*<\/h1>/, 'GameDetailHeading 的 H1 没有直接用传进来的标题')
