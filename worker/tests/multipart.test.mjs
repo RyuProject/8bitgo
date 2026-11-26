@@ -42,6 +42,7 @@ test('part number header keeps the per-part URL stable and completes the upload'
     '上传耗时包含请求体上传与 R2 分片确认')
   assert.match(uploaded.headers.get('Access-Control-Expose-Headers') || '', /Server-Timing/i)
   const partResult=await uploaded.json()
+  assert.equal(partResult.partNumberInHeader,true,'成功分片也声明 Worker 当前支持稳定 URL 请求头协议')
   const result=await (await worker.fetch(req('/roms/a?uploadId='+s.uploadId,'POST',{parts:[partResult],marker:s.marker},{},true),e)).json()
   assert.equal(result.ok,true);assert.equal(result.size,3)
   assert.equal(new URL(r.url).search,'?uploadId='+s.uploadId)

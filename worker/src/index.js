@@ -605,7 +605,9 @@ async function uploadPart(request, env, key, uploadId, partNumber, cors) {
       if (body.byteLength === 0) throw new HttpError(400, 'empty part')
       return upload.uploadPart(partNumber, body)
     })
-    return json({ ok: true, partNumber: part.partNumber, etag: part.etag }, cors)
+    // 分片响应也回报当前 Worker 的协议能力：若请求头因一次普通断线而临时退回查询参数，
+    // 客户端可据此继续用稳定 URL 上传剩余分片；真正回滚到旧 Worker 时则保持旧协议。
+    return json({ ok: true, partNumber: part.partNumber, etag: part.etag, partNumberInHeader: true }, cors)
   } catch (error) { return storageFailure(error, cors, 'uploadPart') }
 }
 async function completeMultipart(request, env, key, uploadId, cors) {

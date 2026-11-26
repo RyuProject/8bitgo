@@ -633,6 +633,41 @@ console.log('✅ 新 Worker 能力协商后，分片 URL 固定且 partNumber �
 }
 console.log('✅ 大文件续传账本每最多四片批量落盘，合并前完整保存并在成功后清理')
 
+// 新 Worker 的一次普通连接重置会临时用旧参数重试；成功响应确认能力后，后续片仍保持稳定 URL。
+{
+  const file = new File([new Uint8Array(16 * 1024 * 1024 + 1)], 'transient-reset.iso', { lastModified: 6542 })
+  const headerAttempts = []
+  const legacyParts = []
+  let resetFirstHeader = true
+  globalThis.fetch = async (url, init) => {
+    const target = String(url)
+    if (target.endsWith('?uploads')) return Response.json({ uploadId: 'up-transient-reset', marker: '_uploads/transient-reset.marker', partNumberInHeader: true })
+    if (target.includes('uploadId=up-transient-reset') && init?.method === 'POST') {
+      assert.deepEqual(JSON.parse(init.body).parts.map(part => part.partNumber), [1, 2, 3])
+      return Response.json({ ok: true, key: 'roms/ps2/transient-reset.iso', size: file.size })
+    }
+    throw new Error(`unexpected request: ${target}`)
+  }
+  xhrResponse = (xhr) => {
+    const partNumber = xhr.headers['x-8bg-part-number']
+    if (partNumber) {
+      headerAttempts.push(partNumber)
+      if (partNumber === '1' && resetFirstHeader) {
+        resetFirstHeader = false
+        return { error: true }
+      }
+      return { status: 200, body: JSON.stringify({ etag: `header-${partNumber}`, partNumberInHeader: true }) }
+    }
+    const legacyPart = new URL(xhr.url).searchParams.get('partNumber')
+    legacyParts.push(legacyPart)
+    return { status: 200, body: JSON.stringify({ etag: `legacy-${legacyPart}`, partNumberInHeader: true }) }
+  }
+  assert.equal((await uploadRomMultipart(file, 'roms/ps2/transient-reset.iso')).size, file.size)
+  assert.deepEqual(legacyParts, ['1'], '只把发生连接重置的当前片临时退回查询参数')
+  assert.deepEqual(headerAttempts, ['1', '2', '3'], '新 Worker 在成功响应中确认能力后，剩余分片仍走稳定 URL')
+}
+console.log('✅ 瞬时网络重置只临时回退当前分片，不让整次上传失去稳定 URL')
+
 // Worker 在上传中途回滚时，旧版会因自定义头的 CORS 预检失败；同片退回原查询参数应能续完。
 {
   const file = new File([new Uint8Array(24 * 1024 * 1024 + 1)], 'worker-rollback.iso', { lastModified: 654 })

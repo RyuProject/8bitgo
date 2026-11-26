@@ -945,12 +945,19 @@ function putPart(
       }
       const data = (() => {
         try {
-          return JSON.parse(xhr.responseText) as { etag?: string; error?: string; fatal?: boolean }
+          return JSON.parse(xhr.responseText) as { etag?: string; error?: string; fatal?: boolean; partNumberInHeader?: boolean }
         } catch {
           return null
         }
       })()
       if (xhr.status >= 200 && xhr.status < 300 && data?.etag) {
+        // 只有成功响应才能确认当前边缘实际运行的 Worker 版本；一次 status=0 可能只是网络抖动，
+        // 不应因此让余下每片都改用带不同查询串的旧协议，重新触发 CORS 预检。
+        if (partNumberInHeader) {
+          if (data.partNumberInHeader === true) state.partNumberInHeader = true
+        } else {
+          state.partNumberInHeader = data.partNumberInHeader === true
+        }
         const workerMs = workerTimingMs(xhr.getResponseHeader?.('Server-Timing') ?? null)
         const uploadMs = uploadStartedAt !== null && uploadFinishedAt !== null
           ? Math.max(0, uploadFinishedAt - uploadStartedAt)
@@ -1047,12 +1054,14 @@ async function putPartWithRetry(
     if (!(error instanceof MultipartStoppedAfterSiblingFailure) && !retryable(error)) stopOnFatalError?.(error)
   }
   let last: unknown
+  // 本片一旦发现头协议不可达，就让本片后续重试先走旧参数；会话级能力等成功响应确认后再更新。
+  let forceLegacyForPart = false
   for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
     if (signal?.aborted) throw new MultipartUploadAborted()
     if (stopRequested()) throw new MultipartStoppedAfterSiblingFailure()
     // 连接级错误后不能在几百毫秒内把多条 PUT 一起塞回刚重建的 HTTP/2 会话。
     if (attempt > 0) await sleep(Math.min(12_000, 1_500 * 2 ** (attempt - 1)) + Math.random() * 1_000, signal)
-    const useHeaderProtocol = state.partNumberInHeader === true
+    const useHeaderProtocol = state.partNumberInHeader === true && !forceLegacyForPart
     const beforeDrain = (error: unknown) => noteFatalError(error, useHeaderProtocol)
     try {
       return await gate.run((reportProgress, markStarted, markUploadComplete) => {
@@ -1071,9 +1080,9 @@ async function putPartWithRetry(
     } catch (err) {
       if (err instanceof MultipartStoppedAfterSiblingFailure) throw err
       if (useHeaderProtocol && requiresLegacyPartNumber(err)) {
-        // 在并发闸之外做协议降级，让闸门先看到 status 0 / 400 并收敛并发；
-        // 续传账本也记住旧 Worker，避免每片都先触发一次失败的 CORS 预检。
-        state.partNumberInHeader = false
+        // 在并发闸之外为本片回退，让闸门先看到 status 0 / 400 并收敛并发。
+        // 旧 Worker 的成功响应没有能力标记时才会降级整局；新 Worker 会在响应中确认能力。
+        forceLegacyForPart = true
         onLoaded(0)
         try {
           return await gate.run((reportProgress, markStarted, markUploadComplete) => {

@@ -154,6 +154,10 @@
 
 本轮复核外站 ZIP 的 HEAD 兜底探测：HEAD 被拒后用 `Range: bytes=0-0` 取到的 206 `Content-Length` 只有 1 字节，旧逻辑却把它当成整包大小，导致大文件被错判为小文件并跳过备用线路测速。现从 `Content-Range` 取完整对象长度；缺总长时保持未知。`npm run test:rom-probe` 与 `npm run test:rom-route-health` 通过，覆盖 206 单字节片段和缺少总长两种响应。
 
+本轮进一步缩短玩家 ROM 首片慢速换线的等待：线路测速从 128/256 KiB 并发样本中拆出，首个 64 KiB 慢样本即可并行验证同一版本对象的备用域；响应头已到但 1.5 秒无有效正文时也会试探。并发决策仍使用原有完整样本，省流量 / 2G、小文件不触发额外测速。`npm run test:rom-route-health` 新增慢正文与零正文停滞换线回归，`npm run test:load-progress`（86 项）、`npx tsc -b --pretty false`、`npm run build:client`（运行时 JS / 内联脚本解析、EmulatorJS 字节一致、预压缩、资源完整性、懒加载门禁）和 `git diff --check` 通过。该优化尚未部署，且没有新的跨地区线上测速数据。
+
+后台上传协议回归审查发现：客户端把任一 `status 0` 都当作旧 Worker 的 CORS 能力缺失，虽然当前分片成功回退，仍会把整局剩余片永久切到唯一 URL 预检缓存无法复用的旧查询参数协议。现在 Worker 每个成功分片都确认请求头协议能力；客户端只对当前失败片临时回退，只有旧 Worker 的成功响应缺少能力标记时才降级后续片。`npm run test:r2-upload-client` 新增普通网络重置后继续用稳定 URL 的回归；`npm --prefix worker test`（181 项）、Worker 源码检查、独立 Worker 重建、`npx tsc -b --pretty false`、`npm run build:client`（含生产产物门禁）和 `git diff --check` 通过。真实浏览器 OPTIONS 数量与上传总耗时仍需生产测量。
+
 ## 当前不建议盲改的项目
 
 - 不把 `MAX_CONCURRENCY` 直接拉满：HTTP/2 重置、Worker 限流、手机内存和多路重试会抵消收益。
