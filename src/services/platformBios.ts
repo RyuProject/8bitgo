@@ -51,6 +51,7 @@ let inflight: Promise<PlatformBiosMap> | null = null
 let inflightRevision = -1
 /** 写入绑定后递增，防止写入前发出的旧 GET 晚到并覆盖刚保存的值 */
 let cacheRevision = 0
+let startupRetry: Promise<PlatformBiosMap> | null = null
 const listeners = new Set<() => void>()
 
 function notify() {
@@ -132,6 +133,26 @@ export function loadedPlatformBios(): PlatformBiosMap | null {
 export function platformBiosUrlSync(platform: PlatformId): string {
   const key = cache?.[platform]
   return key ? biosUrlForKey(key) : ''
+}
+
+/**
+ * 开局时解析平台 BIOS。
+ *
+ * 普通页面请求失败会保留 5 秒退避，避免组件反复渲染时打爆接口；但模拟器开局不能把
+ * 「绑定表还没成功读到」当成「管理员确实没配」。因此在 cache 仍为 null 时绕过退避
+ * 再试一次，并在同一页面的并发开局间共享这次重试。成功读到空表才代表配置项确实缺失。
+ */
+export async function resolvePlatformBiosForStartup(platform: PlatformId): Promise<{ url: string; mapLoaded: boolean }> {
+  await fetchPlatformBios()
+  if (cache === null) {
+    if (!startupRetry) {
+      startupRetry = fetchPlatformBios(true).finally(() => {
+        startupRetry = null
+      })
+    }
+    await startupRetry
+  }
+  return { url: platformBiosUrlSync(platform), mapLoaded: cache !== null }
 }
 
 /** 后台改完 BIOS 之后调，让正在开着的页面重新拉一次 */

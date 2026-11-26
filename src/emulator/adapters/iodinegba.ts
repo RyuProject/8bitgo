@@ -14,7 +14,7 @@ import { installPadKeyboard } from '../padKeyboard'
 import type { Capability, CaptureSources, MountOptions, PadButton, RuntimeHandle } from '../types'
 import { isZip, extractRomFromZip } from '@/lib/unzip'
 import { diagLog } from '@/services/startupDiagnostics'
-import { fetchPlatformBios, platformBiosUrlSync } from '@/services/platformBios'
+import { resolvePlatformBiosForStartup } from '@/services/platformBios'
 import { IODINEGBA_BUILD } from '../iodinegbaVersion'
 
 const BASE = '/iodinegba'
@@ -430,11 +430,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   void (async () => {
     try {
       if (!context2d || !image) throw new IodineStartupError('这个浏览器无法创建 Canvas 2D 画布。', 'config')
-      let biosUrl = options.biosUrl || platformBiosUrlSync(options.platform)
+      let biosUrl = options.biosUrl
       if (!biosUrl) {
-        // 播放器可能先于 BIOS 映射接口返回而挂载；等一次共享请求，避免把网络竞态误报成未配置。
-        await fetchPlatformBios()
-        biosUrl = platformBiosUrlSync(options.platform)
+        const binding = await resolvePlatformBiosForStartup(options.platform)
+        biosUrl = binding.url
+        if (!biosUrl && !binding.mapLoaded) {
+          throw new IodineStartupError('暂时无法读取 GBA 平台 BIOS 配置，请检查网络后重试。', 'runtime')
+        }
       }
       if (!biosUrl) throw new IodineStartupError('IodineGBA 启动需要 16 KiB GBA BIOS；请先在后台配置 GBA 平台 BIOS。', 'config')
       const [loaded, biosBytes] = await Promise.all([

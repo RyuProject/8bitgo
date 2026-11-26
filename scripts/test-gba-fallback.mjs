@@ -22,6 +22,7 @@ const iodine = read('../src/emulator/adapters/iodinegba.ts')
 const registry = read('../src/emulator/registry.ts')
 const player = read('../src/emulator/EmulatorPlayer.tsx')
 const softwareWebgl = read('../src/emulator/softwareWebgl.ts')
+const platformBios = read('../src/services/platformBios.ts')
 
 assert.match(registry, /fallbackId = gbaFallbackRuntime\(/,
   '详情页和 ROM 启动共用同一项 GBA 能力选择')
@@ -53,5 +54,25 @@ assert.match(iodine, /const fail = \(error: unknown\) => \{[\s\S]*?options\.onEr
   'BIOS 配置错误触发标准收尾，不能遗留挂起的 ROM 请求')
 assert.match(iodine, /const destroy = \(\) => \{[\s\S]*?aborter\.abort\(\)/,
   '标准收尾通过共享 AbortController 取消 ROM 与 BIOS 传输')
+assert.match(platformBios, /resolvePlatformBiosForStartup[\s\S]*?if \(cache === null\)[\s\S]*?fetchPlatformBios\(true\)/,
+  'BIOS 绑定表未成功加载时绕过短退避重试一次')
+assert.match(platformBios, /startupRetry[\s\S]*?startupRetry = null/,
+  '并发开局共享 BIOS 配置重试，避免弱网时请求放大')
+assert.match(iodine, /binding\.mapLoaded\)\s*\{[\s\S]*?请检查网络后重试[\s\S]*?'runtime'/,
+  'BIOS 配置接口暂时不可用时走可重试的运行环境故障')
+
+// 用真实 API 客户端验证：首次网络失败不会被 5 秒退避挡住开局重试，成功的空表与请求失败可区分。
+globalThis.__viteEnv = { VITE_API_URL: 'same-origin' }
+let biosRequests = 0
+globalThis.fetch = async (input) => {
+  assert.equal(String(input), '/api/platform-bios/map')
+  biosRequests += 1
+  if (biosRequests === 1) throw new TypeError('temporary network failure')
+  return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })
+}
+const biosService = await import('../src/services/platformBios.ts')
+const biosBinding = await biosService.resolvePlatformBiosForStartup('gba')
+assert.equal(biosRequests, 2, '首次读取失败后应立即共享强制重试，不受常规退避影响')
+assert.deepEqual(biosBinding, { url: '', mapLoaded: true }, '成功读到空表表示确实未配置，而非网络失败')
 
 console.log('✔ GBA fallback：只缺 WebGL 时用 mGBA HLE + Canvas 2D；无 WebAssembly 时保留 IodineGBA')
