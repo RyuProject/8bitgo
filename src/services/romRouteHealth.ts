@@ -68,14 +68,14 @@ let loaded = false
  * 外部观察者（真实用户回报，见 romRouteReport.ts）：每次记下的成功 / 计入的失败都通知一次。
  * 用注入而不是 import，保持本模块不依赖任何业务模块。
  */
-type RouteListener = (origin: string, ok: boolean, kind?: RomRouteFailure) => void
+type RouteListener = (origin: string, ok: boolean, kind?: RomRouteFailure, sample?: { bytes: number; elapsedMs: number }) => void
 let routeListener: RouteListener | null = null
 export function setRomRouteListener(listener: RouteListener | null): void {
   routeListener = listener
 }
-const notify = (origin: string, ok: boolean, kind?: RomRouteFailure) => {
+const notify = (origin: string, ok: boolean, kind?: RomRouteFailure, sample?: { bytes: number; elapsedMs: number }) => {
   try {
-    routeListener?.(origin, ok, kind)
+    routeListener?.(origin, ok, kind, sample)
   } catch {
     /* 观察者出错不影响记分 */
   }
@@ -192,7 +192,8 @@ export function recordRomRouteTransfer(url: string, bytes: number, elapsedMs: nu
   stat.failures = 0
   stat.failedAt = undefined
   stat.openUntil = undefined
-  if (bytes >= ROUTE_MIN_SAMPLE_BYTES && elapsedMs >= MIN_SAMPLE_MS && Number.isFinite(bytes / elapsedMs)) {
+  const hasRateSample = bytes >= ROUTE_MIN_SAMPLE_BYTES && elapsedMs >= MIN_SAMPLE_MS && Number.isFinite(bytes / elapsedMs)
+  if (hasRateSample) {
     const sample = bytes / elapsedMs
     const fresh = stat.rate && stat.rateAt !== undefined && now - stat.rateAt < ROUTE_RATE_TTL_MS
     // 线路会在移动网络切换、漫游或 CDN 状态变化后突然变慢。若只用对称 EWMA，16 Mbps 的旧记录
@@ -203,7 +204,7 @@ export function recordRomRouteTransfer(url: string, bytes: number, elapsedMs: nu
     stat.rateAt = now
   }
   save()
-  notify(origin, true)
+  notify(origin, true, undefined, hasRateSample ? { bytes, elapsedMs } : undefined)
 }
 
 /** 线路答复了（HEAD 成功、Range 头对上），但没有可用的吞吐样本 */

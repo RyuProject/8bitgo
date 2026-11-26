@@ -152,6 +152,8 @@
 
 本轮复核发现运行时、Ruffle 和 Vite 懒加载的 JS 依赖预热都会把成功 URL / 结果句柄永久留在页面内存中；浏览器淘汰 HTTP 缓存后，同页重试可能跳过重新预热。现改为只合并在途预热，完成后由后续 `fetch` / `force-cache` 按当前缓存状态命中或重取。`test:runtime-edge-route`、`test:ruffle-runtime` 与 `test:lazy-imports` 覆盖并发去重和完成后重新检查；客户端构建中的 440 份运行时 JS / 64 份内联脚本解析、产物一致性、预压缩、完整性和懒加载图门禁通过。这只修复缓存淘汰后的重试机会，不代表线上一定更快。`npm run test:lazy-imports-browser` 因环境没有 Playwright 未运行；生产启动样本与真实浏览器验收仍待有权限的环境补测。
 
+本轮复核外站 ZIP 的 HEAD 兜底探测：HEAD 被拒后用 `Range: bytes=0-0` 取到的 206 `Content-Length` 只有 1 字节，旧逻辑却把它当成整包大小，导致大文件被错判为小文件并跳过备用线路测速。现从 `Content-Range` 取完整对象长度；缺总长时保持未知。`npm run test:rom-probe` 与 `npm run test:rom-route-health` 通过，覆盖 206 单字节片段和缺少总长两种响应。
+
 ## 当前不建议盲改的项目
 
 - 不把 `MAX_CONCURRENCY` 直接拉满：HTTP/2 重置、Worker 限流、手机内存和多路重试会抵消收益。

@@ -25,8 +25,11 @@ export const DEFAULT_REPORT_HOSTS = ['rom.8bitgo.com', 'download.8bitgo.com']
 export const REPORT_WINDOW_MS = 30 * 60 * 1000
 /** 单次上报里每个域名最多算这么多次，超出按上限截断（只影响次数统计，访客票数本来就是一人一票） */
 const MAX_EVENTS_PER_REPORT = 50
+/** 速率只上传聚合后的字节数 / 正文耗时；限制单包，防止匿名遥测被用来灌内存或异常数据。 */
+const MAX_METRIC_BYTES = 512 * 1024 * 1024
+const MAX_METRIC_MS = 50 * 60 * 1000
 /** 每个访客每个域名保留的上报条数；更早的丢掉 */
-const MAX_REPORTS_PER_VISITOR = 20
+const MAX_REPORTS_PER_VISITOR = 35
 /** 每个域名最多记这么多访客，防内存被刷爆（满了先清过期，再不行丢最旧的） */
 const MAX_VISITORS_PER_HOST = 5000
 
@@ -37,8 +40,12 @@ const clampCount = (value) => {
   const n = Math.floor(Number(value))
   return Number.isFinite(n) && n > 0 ? Math.min(n, MAX_EVENTS_PER_REPORT) : 0
 }
+const clampMetric = (value, max) => {
+  const n = Math.floor(Number(value))
+  return Number.isFinite(n) && n > 0 ? Math.min(n, max) : 0
+}
 
-/** 解析浏览器上报：{ r: [{ h: 'rom.8bitgo.com', ok: 3, fail: 1 }] }，只留白名单里的域名 */
+/** 解析浏览器上报：计数外只收总字节 / 正文耗时，不收 URL、游戏名、账号或单次传输明细。 */
 export function parseRouteReport(body, hosts = DEFAULT_REPORT_HOSTS) {
   let data = body
   if (typeof data === 'string') {
@@ -53,15 +60,37 @@ export function parseRouteReport(body, hosts = DEFAULT_REPORT_HOSTS) {
     if (!allowed.has(host)) continue
     const ok = clampCount(row.ok)
     const fail = clampCount(row.fail)
-    if (!ok && !fail) continue
-    const prev = out.get(host) || { ok: 0, fail: 0 }
-    out.set(host, { ok: Math.min(prev.ok + ok, MAX_EVENTS_PER_REPORT), fail: Math.min(prev.fail + fail, MAX_EVENTS_PER_REPORT) })
+    const samples = clampCount(row.n)
+    const bytes = clampMetric(row.b, MAX_METRIC_BYTES)
+    const elapsedMs = clampMetric(row.ms, MAX_METRIC_MS)
+    const hasRate = samples > 0 && bytes >= 64 * 1024 && elapsedMs >= 20
+    if (!ok && !fail && !hasRate) continue
+    const prev = out.get(host) || { ok: 0, fail: 0, bytes: 0, elapsedMs: 0, samples: 0 }
+    const totalBytes = Math.min(prev.bytes + (hasRate ? bytes : 0), MAX_METRIC_BYTES)
+    const totalElapsedMs = Math.min(prev.elapsedMs + (hasRate ? elapsedMs : 0), MAX_METRIC_MS)
+    const totalSamples = Math.min(prev.samples + (hasRate ? samples : 0), MAX_EVENTS_PER_REPORT)
+    out.set(host, {
+      ok: Math.min(prev.ok + ok, MAX_EVENTS_PER_REPORT),
+      fail: Math.min(prev.fail + fail, MAX_EVENTS_PER_REPORT),
+      bytes: totalBytes,
+      elapsedMs: totalElapsedMs,
+      samples: totalSamples,
+    })
   }
-  return out.size ? out : null
+  if (!out.size) return null
+  for (const [host, value] of out) {
+    if (!value.samples) {
+      delete value.bytes
+      delete value.elapsedMs
+      delete value.samples
+    }
+    out.set(host, value)
+  }
+  return out
 }
 
 export function createRouteReportStore({ windowMs = REPORT_WINDOW_MS, maxVisitors = MAX_VISITORS_PER_HOST } = {}) {
-  /** host → visitor → [{ at, ok, fail }] */
+  /** host → visitor → [{ at, ok, fail, bytes, elapsedMs, samples }] */
   const byHost = new Map()
 
   function prune(visitors, now) {
@@ -72,7 +101,7 @@ export function createRouteReportStore({ windowMs = REPORT_WINDOW_MS, maxVisitor
     }
   }
 
-  function record(host, visitor, { ok, fail }, now = Date.now()) {
+  function record(host, visitor, { ok, fail, bytes = 0, elapsedMs = 0, samples = 0 }, now = Date.now()) {
     let visitors = byHost.get(host)
     if (!visitors) byHost.set(host, (visitors = new Map()))
     if (!visitors.has(visitor) && visitors.size >= maxVisitors) {
@@ -80,7 +109,7 @@ export function createRouteReportStore({ windowMs = REPORT_WINDOW_MS, maxVisitor
       while (visitors.size >= maxVisitors) visitors.delete(visitors.keys().next().value)
     }
     const reports = visitors.get(visitor) || []
-    reports.push({ at: now, ok, fail })
+    reports.push({ at: now, ok, fail, bytes, elapsedMs, samples })
     // 删掉再插回，Map 的顺序就是「最近活跃」的顺序，满了丢的是最久没动静的访客
     visitors.delete(visitor)
     visitors.set(visitor, reports.slice(-MAX_REPORTS_PER_VISITOR))
@@ -88,24 +117,39 @@ export function createRouteReportStore({ windowMs = REPORT_WINDOW_MS, maxVisitor
 
   /**
    * since 之后（且在窗口内）的汇总：每个访客一票——
-   * okVisitors 有过成功；failOnlyVisitors 只有失败（这类访客才说明「这条线路对他不通」）。
+   * okVisitors 有过成功；failOnlyVisitors 只有失败；速率只按每访客汇总后取中位数，避免高频用户占权重。
    */
   function summary(since = 0, now = Date.now()) {
     const from = Math.max(Number(since) || 0, now - windowMs)
     const hosts = {}
     for (const [host, visitors] of byHost) {
       prune(visitors, now)
-      const s = { visitors: 0, okVisitors: 0, failOnlyVisitors: 0, okEvents: 0, failEvents: 0 }
+      const s = { visitors: 0, okVisitors: 0, failOnlyVisitors: 0, okEvents: 0, failEvents: 0, rateVisitors: 0, medianBytesPerMs: null }
+      const rates = []
       for (const reports of visitors.values()) {
         let ok = 0
         let fail = 0
-        for (const r of reports) if (r.at >= from) { ok += r.ok; fail += r.fail }
+        let bytes = 0
+        let elapsedMs = 0
+        for (const r of reports) if (r.at >= from) {
+          ok += r.ok
+          fail += r.fail
+          bytes += r.bytes || 0
+          elapsedMs += r.elapsedMs || 0
+        }
         if (!ok && !fail) continue
         s.visitors++
         s.okEvents += ok
         s.failEvents += fail
         if (ok) s.okVisitors++
         else s.failOnlyVisitors++
+        if (bytes >= 64 * 1024 && elapsedMs >= 20) rates.push(bytes / elapsedMs)
+      }
+      rates.sort((a, b) => a - b)
+      s.rateVisitors = rates.length
+      if (rates.length) {
+        const mid = Math.floor(rates.length / 2)
+        s.medianBytesPerMs = rates.length % 2 ? rates[mid] : (rates[mid - 1] + rates[mid]) / 2
       }
       hosts[host] = s
     }

@@ -31,6 +31,18 @@ await check('解析：只留白名单域名、截断计数、坏包返回 null',
   assert.equal(parseRouteReport('x'.repeat(5000)), null)
 })
 
+await check('速率遥测：只接受有界聚合字节 / 耗时，不收不完整或超范围样本', () => {
+  const r = parseRouteReport(JSON.stringify({ r: [
+    { h: 'rom.8bitgo.com', ok: 2, fail: 0, b: 1_000_000, ms: 1000, n: 3 },
+    { h: 'ROM.8bitgo.com', ok: 1, fail: 0, b: 1_000_000, ms: 1000, n: 2 },
+    { h: 'download.8bitgo.com', ok: 1, fail: 0, b: 999, ms: 1, n: 1 },
+  ] }))
+  assert.deepEqual([...r], [
+    ['rom.8bitgo.com', { ok: 3, fail: 0, bytes: 2_000_000, elapsedMs: 2000, samples: 5 }],
+    ['download.8bitgo.com', { ok: 1, fail: 0 }],
+  ])
+})
+
 await check('汇总：一人一票，只失败的访客单独计数', () => {
   const store = createRouteReportStore()
   const t = 1_000_000
@@ -39,7 +51,25 @@ await check('汇总：一人一票，只失败的访客单独计数', () => {
   store.record('rom.8bitgo.com', 'b', { ok: 1, fail: 3 }, t)
   store.record('rom.8bitgo.com', 'c', { ok: 2, fail: 0 }, t)
   const s = store.summary(0, t + 10).hosts['rom.8bitgo.com']
-  assert.deepEqual(s, { visitors: 3, okVisitors: 2, failOnlyVisitors: 1, okEvents: 3, failEvents: 13 })
+  assert.deepEqual(s, { visitors: 3, okVisitors: 2, failOnlyVisitors: 1, okEvents: 3, failEvents: 13, rateVisitors: 0, medianBytesPerMs: null })
+})
+
+await check('大陆速率：每访客先合并，再对独立访客取中位数', () => {
+  const store = createRouteReportStore()
+  const t = 1_000_000
+  store.record('rom.8bitgo.com', 'a', { ok: 1, fail: 0, bytes: 1_000_000, elapsedMs: 1000, samples: 1 }, t)
+  store.record('rom.8bitgo.com', 'a', { ok: 1, fail: 0, bytes: 1_000_000, elapsedMs: 1000, samples: 1 }, t + 1)
+  store.record('rom.8bitgo.com', 'b', { ok: 1, fail: 0, bytes: 3_000_000, elapsedMs: 1000, samples: 1 }, t)
+  store.record('rom.8bitgo.com', 'c', { ok: 1, fail: 0, bytes: 2_000_000, elapsedMs: 1000, samples: 1 }, t)
+  const s = store.summary(0, t + 10).hosts['rom.8bitgo.com']
+  assert.equal(s.rateVisitors, 3)
+  assert.equal(s.medianBytesPerMs, 2000)
+})
+
+await check('30 分钟汇总窗口保留每位访客 30 轮分钟级报告', () => {
+  const store = createRouteReportStore({ windowMs: 60_000 })
+  for (let i = 0; i < 30; i++) store.record('rom.8bitgo.com', 'a', { ok: 1, fail: 0 }, i * 1000)
+  assert.equal(store.summary(0, 30_000).hosts['rom.8bitgo.com'].okEvents, 30)
 })
 
 await check('汇总：since 之前与窗口外的回报不算', () => {
@@ -94,7 +124,7 @@ await check('HTTP：大陆访客计入、海外丢弃、内部接口只给本机
     const viaProxy = await fetch(`${base}/api/internal/route-health`, { headers: { 'x-forwarded-for': '9.9.9.9' } })
     assert.equal(viaProxy.status, 404, '经反代来的读不到')
     const direct = await (await fetch(`${base}/api/internal/route-health`)).json()
-    assert.deepEqual(direct.hosts['rom.8bitgo.com'], { visitors: 2, okVisitors: 1, failOnlyVisitors: 1, okEvents: 1, failEvents: 2 })
+    assert.deepEqual(direct.hosts['rom.8bitgo.com'], { visitors: 2, okVisitors: 1, failOnlyVisitors: 1, okEvents: 1, failEvents: 2, rateVisitors: 0, medianBytesPerMs: null })
   } finally {
     server.close()
   }

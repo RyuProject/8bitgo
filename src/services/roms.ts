@@ -951,8 +951,8 @@ export interface ProbeOutcome {
   /** reason === 'http' 时服务器给的状态码 */
   status?: number
   /**
-   * 文件字节数（HEAD 响应的 Content-Length）。只在 HEAD 成功那条路径上有值；
-   * 走 GET Range 兜底探测时 Content-Length 是那一片的长度，不能当整份大小，故不取。
+   * 外层文件字节数：优先使用 HEAD 的 Content-Length；GET Range 兜底只读取 Content-Range 的总长，
+   * 绝不把 206 的 Content-Length（通常只有 1 字节）误当整份文件大小。
    * 这是外层对象大小：`.8bg` / ZIP 压缩参数会改变它，不能拿来判断内层 ROM 的模拟器兼容性。
    * 保留该字段供下载提示、诊断和其它确实需要传输体积的界面使用。
    */
@@ -1008,11 +1008,13 @@ async function probeOnce(
     // no-store 很关键：这里正是为了发现「同一个 URL 的对象内容已经换了」，
     // 若 HEAD 自己也吃浏览器缓存，就永远读不到新的 ETag。
     let res: Response
+    let usedRangeFallback = false
     const archive = romArchiveRef(url)
     try {
       res = await fetch(url, { method: 'HEAD', cache: 'no-store', signal: ctrl.signal })
       if (archive && [403, 405, 501].includes(res.status)) {
         // 有些文件站只准 GET，HEAD 的 403/405 不等于文件不存在。只取第一字节作探测。
+        usedRangeFallback = true
         res = await fetch(archive.sourceUrl, {
           method: 'GET', headers: { Range: 'bytes=0-0' }, cache: 'no-store', signal: ctrl.signal,
         })
@@ -1021,6 +1023,7 @@ async function probeOnce(
     } catch (error) {
       if (!archive || ctrl.signal.aborted) throw error
       // HEAD 的 CORS 权限也可能单独缺失；GET 能不能读由浏览器的 CORS 判定。
+      usedRangeFallback = true
       res = await fetch(archive.sourceUrl, {
         method: 'GET', headers: { Range: 'bytes=0-0' }, cache: 'no-store', signal: ctrl.signal,
       })
@@ -1033,10 +1036,21 @@ async function probeOnce(
     const type = res.headers.get('content-type') || ''
     if (!allowHtml && /text\/html|application\/xhtml/i.test(type)) return { url: '', certain: true, reason: 'html' }
     const len = Number(res.headers.get('content-length'))
+    let size = Number.isFinite(len) && len > 0 ? len : undefined
+    if (usedRangeFallback) {
+      if (res.status === 206) {
+        // 206 的 Content-Length 只是 Range 片段长度（通常为 1），只有 Content-Range 尾部才是整份 ZIP 大小。
+        const total = /^bytes\s+0-\d+\/(\d+)\s*$/i.exec(res.headers.get('content-range') || '')?.[1]
+        size = total ? Number(total) : undefined
+      } else if (res.status !== 200) {
+        size = undefined
+      }
+      // 200 表示文件站忽略了 Range；此时 Content-Length 描述完整响应，仍可用于大小估算。
+    }
     return {
       url: versionedRomUrl(url, res.headers.get('etag')),
       certain: true,
-      size: Number.isFinite(len) && len > 0 ? len : undefined,
+      size: Number.isFinite(size) && (size ?? 0) > 0 ? size : undefined,
     }
   } catch {
     // 超时（abort）、断网、CORS 被拒、被浏览器插件拦掉，全都是「没问出来」。

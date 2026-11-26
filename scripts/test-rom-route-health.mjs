@@ -832,9 +832,9 @@ await check('真实用户回报：只计托管的优选域名，合并掉的同�
   const report = await import('../src/services/romRouteReport.ts')
   report.takeRouteReport()
   const seen = []
-  health.setRomRouteListener((origin, ok) => {
+  health.setRomRouteListener((origin, ok, _kind, sample) => {
     seen.push([origin, ok])
-    report.noteRouteResult(origin, ok)
+    report.noteRouteResult(origin, ok, sample)
   })
   try {
     const t = 5_000_000
@@ -844,7 +844,10 @@ await check('真实用户回报：只计托管的优选域名，合并掉的同�
     health.recordRomRouteFailure('https://assets.8bitgo.com/roms/a.zip', 'network', t + 300) // 不托管
     assert.equal(seen.length, 3)
     const body = JSON.parse(report.takeRouteReport())
-    assert.deepEqual(body.r, [{ h: 'rom.8bitgo.com', ok: 0, fail: 1 }, { h: 'download.8bitgo.com', ok: 1, fail: 0 }])
+    assert.deepEqual(body.r, [
+      { h: 'rom.8bitgo.com', ok: 0, fail: 1 },
+      { h: 'download.8bitgo.com', ok: 1, fail: 0, b: 128 * 1024, ms: 100, n: 1 },
+    ])
     assert.equal(report.takeRouteReport(), null, '取过一次就清空')
     assert.equal(report.routeReportHost('http://rom.8bitgo.com'), '', '只认 https')
   } finally {

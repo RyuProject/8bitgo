@@ -16,7 +16,7 @@
 //
 // 用法：node cname-optimizer.mjs [--dry-run] [--status] [--survey]
 //   --status  只体检并打印，不写状态、不改 DNS
-//   --survey  不管当前是否健康，都把全部候选体检一遍并打印排名
+//   --survey  不管当前是否健康，都把全部候选体检一遍并打印排名（只读）
 //   --dry-run 照常判断，但不调用 Cloudflare 改记录
 // 配置走环境变量（systemd 用 EnvironmentFile=/etc/8bitgo/cname-optimizer.env），见 .env.example。
 
@@ -60,6 +60,8 @@ export const DEFAULTS = {
   reportMinVisitors: 5,
   reportBadShare: 0.6,
   reportGoodShare: 0.8,
+  reportQualityMinVisitors: 5,
+  reportQualityTtlMs: 6 * 60 * 60 * 1000,
   // 换线后这段时间内的回报不算新目标的：DNS TTL 300 秒 + 运营商缓存，玩家还在连旧目标。
   reportGraceMs: 10 * 60 * 1000,
   // 因玩家回报换掉的目标，这么久内不再选回来（源站体检看它多半还是「健康」）。
@@ -74,6 +76,8 @@ export const DEFAULTS = {
   candidateWarmTtlMs: 15 * 60 * 1000,
   candidateWarmPoolSize: 3,
   candidateWarmBatchSize: 1,
+  // 避免候选源过长且大面积超时时顶满 systemd 的 5 分钟任务时限；轮换预热会继续覆盖后续候选。
+  maxDueCandidatesPerHost: 8,
 }
 /** 外部候选列表只需几十 KB；不可先完整读入再截断，避免坏源响应耗尽定时任务内存。 */
 export const MAX_CANDIDATE_LIST_BYTES = 256 * 1024
@@ -112,7 +116,7 @@ export function isValidHostname(s) {
 export function dnsRecordMatches(record, { id, host, target }) {
   const normalize = (value) => String(value || '').toLowerCase().replace(/\.$/, '')
   return Boolean(record && record.id === id && record.type === 'CNAME' &&
-    normalize(record.name) === normalize(host) && !record.proxied &&
+    normalize(record.name) === normalize(host) && record.proxied === false &&
     normalize(record.content) === normalize(target))
 }
 
@@ -186,11 +190,26 @@ export function judgeCandidate(result, expectedIsps = Object.keys(result.isps ||
 }
 
 // 换线选谁：健康的、不是要换掉的那个；优先没被别的托管域名占用的；再按源站测到的中位耗时（仅作平局裁决）。
-export function pickReplacement(judged, { exclude = [], inUseElsewhere = [] } = {}) {
+export function freshRouteQuality(routeQuality, name, nowMs, qualityTtlMs, minQualityVisitors) {
+  const quality = routeQuality?.[String(name).toLowerCase()]
+  const at = Date.parse(quality?.observedAt || '')
+  if (Number(quality?.visitors) < minQualityVisitors || !Number.isFinite(quality?.medianBytesPerMs) || quality.medianBytesPerMs <= 0 ||
+    !Number.isFinite(at) || nowMs - at < 0 || nowMs - at >= qualityTtlMs) return undefined
+  return quality
+}
+
+export function pickReplacement(judged, { exclude = [], inUseElsewhere = [], routeQuality = {}, nowMs = Date.now(), qualityTtlMs = 6 * 60 * 60 * 1000, minQualityVisitors = 5 } = {}) {
   const ex = new Set(exclude.map((s) => s.toLowerCase()))
   const busy = new Set(inUseElsewhere.map((s) => s.toLowerCase()))
   const pool = judged.filter((c) => c.verdict.healthy && !ex.has(c.name))
-  pool.sort((a, b) => (busy.has(a.name) - busy.has(b.name)) || (a.verdict.medianMs - b.verdict.medianMs))
+  pool.sort((a, b) => {
+    const spare = busy.has(a.name) - busy.has(b.name)
+    if (spare) return spare
+    const ar = freshRouteQuality(routeQuality, a.name, nowMs, qualityTtlMs, minQualityVisitors)?.medianBytesPerMs
+    const br = freshRouteQuality(routeQuality, b.name, nowMs, qualityTtlMs, minQualityVisitors)?.medianBytesPerMs
+    if (ar && br && Math.abs(ar - br) / Math.max(ar, br) >= 0.15) return br - ar
+    return a.verdict.medianMs - b.verdict.medianMs
+  })
   return pool[0] || null
 }
 
@@ -244,6 +263,10 @@ export function canClearNoCandidateBackoff(searchBlocked, warmedHealthy) {
   return !searchBlocked || warmedHealthy
 }
 
+export function canSwitchWithCandidate(searchBlocked, judged) {
+  return !searchBlocked || judged.some((candidate) => candidate.verdict.healthy)
+}
+
 // 大陆玩家的真实回报 → good / bad / unknown。一人一票：只有失败、没有一次成功的访客才算「对他不通」。
 export function judgeUserReports(stats, { minVisitors = 5, badShare = 0.6, goodShare = 0.8 } = {}) {
   const visitors = Number(stats?.visitors) || 0
@@ -251,9 +274,14 @@ export function judgeUserReports(stats, { minVisitors = 5, badShare = 0.6, goodS
   const failOnly = Number(stats.failOnlyVisitors) || 0
   const ok = Number(stats.okVisitors) || 0
   const desc = `大陆回报 ${visitors} 人：${ok} 人连上、${failOnly} 人全失败`
-  if (failOnly >= visitors * badShare) return { verdict: 'bad', reason: desc }
-  if (ok >= visitors * goodShare) return { verdict: 'good', reason: desc }
-  return { verdict: 'unknown', reason: desc }
+  const rateVisitors = Number(stats.rateVisitors) || 0
+  const rate = Number(stats.medianBytesPerMs)
+  const quality = rateVisitors >= minVisitors && Number.isFinite(rate) && rate > 0
+    ? { medianBytesPerMs: rate, visitors: rateVisitors }
+    : undefined
+  if (failOnly >= visitors * badShare) return { verdict: 'bad', reason: desc, quality }
+  if (ok >= visitors * goodShare) return { verdict: 'good', reason: desc, quality }
+  return { verdict: 'unknown', reason: desc, quality }
 }
 
 // 源站体检 + 玩家回报 → 这一轮算不算健康。
@@ -513,7 +541,7 @@ async function readRecords(cfg) {
     const [record] = recs
     const recordName = String(record.name || '').toLowerCase().replace(/\.$/, '')
     if (record.type !== 'CNAME' || recordName !== host) throw new Error(`${host} 返回了不匹配的 DNS 记录；为安全起见不改 DNS`)
-    if (record.proxied) throw new Error(`${host} 是代理（橙云）记录，不该由本脚本管理`)
+    if (record.proxied !== false) throw new Error(`${host} 不是明确的 DNS-only 记录，不该由本脚本管理`)
     const target = String(record.content || '').toLowerCase().replace(/\.$/, '')
     if (!record.id || !isValidHostname(target) || target === '8bitgo.com' || target.endsWith('.8bitgo.com')) {
       throw new Error(`${host} 的 CNAME 目标无效或指回本站：${target}`)
@@ -614,6 +642,23 @@ async function main(argv = process.argv.slice(2)) {
       : { verdict: 'unknown', reason: since >= nowMs ? '目标刚生效，等宽限期过了再看大陆回报' : '没有大陆回报' }
     users[host] = user
   }
+  const routeQuality = Object.fromEntries(Object.entries(state.routeQuality || {}).filter(([name, quality]) => {
+    const at = Date.parse(quality?.observedAt || '')
+    return isValidHostname(name) && Number(quality?.visitors) >= cfg.reportQualityMinVisitors &&
+      Number.isFinite(quality?.medianBytesPerMs) && quality.medianBytesPerMs > 0 &&
+      Number.isFinite(at) && nowMs - at >= 0 && nowMs - at < cfg.reportQualityTtlMs
+  }))
+  for (const host of cfg.hosts) {
+    const quality = users[host].quality
+    if (!quality) continue
+    const name = records[host].target
+    const previous = routeQuality[name]
+    if (!previous || quality.visitors >= previous.visitors) {
+      routeQuality[name] = { ...quality, observedAt: now }
+    }
+  }
+  state.routeQuality = Object.fromEntries(Object.entries(routeQuality)
+    .sort((a, b) => Date.parse(b[1].observedAt) - Date.parse(a[1].observedAt)).slice(0, 100))
   // 玩家回报是按「我们的域名」收的，坏的却是「CNAME 目标」：两个域名指向同一个目标时，
   // 一个被大陆玩家判坏，另一个也一样坏（只是用的人少、凑不够票）。
   const userByTarget = targetUserVerdicts(cfg.hosts.map((h) => ({ host: h, target: records[h].target, user: users[h] })))
@@ -621,7 +666,9 @@ async function main(argv = process.argv.slice(2)) {
   for (const host of cfg.hosts) {
     const user = userByTarget[host]
     combined[host] = combineVerdicts(current[host].verdict, user)
-    log(`[回报] ${host} → ${user.reason}；本轮判定：${combined[host].healthy ? '健康' : '不健康'}`)
+    const quality = freshRouteQuality(routeQuality, records[host].target, nowMs, cfg.reportQualityTtlMs, cfg.reportQualityMinVisitors)
+    const rateText = quality ? `；大陆实测中位吞吐约 ${(quality.medianBytesPerMs * 0.008).toFixed(2)} Mbps / ${quality.visitors} 人` : ''
+    log(`[回报] ${host} → ${user.reason}${rateText}；本轮判定：${combined[host].healthy ? '健康' : '不健康'}`)
   }
 
   // 被玩家判坏过、还在冷却期的目标不再选回来
@@ -691,7 +738,17 @@ async function main(argv = process.argv.slice(2)) {
         }
       }
       const alreadyChecked = new Set((judgedByHost[host] || []).map((candidate) => candidate.name))
-      const searchNames = survey ? names : names.filter((name) => !alreadyChecked.has(name))
+      let searchNames = survey ? names : names.filter((name) => !alreadyChecked.has(name))
+      if (!survey && searchNames.length > cfg.maxDueCandidatesPerHost) {
+        const batch = selectWarmBatch(
+          searchNames, state.candidateWarmCursor?.[host], [],
+          freshWarmCandidates(state.candidateWarm?.[host], nowMs, cfg.candidateWarmTtlMs, cfg.candidateWarmPoolSize),
+          cfg.maxDueCandidatesPerHost,
+        )
+        searchNames = batch.names
+        state.candidateWarmCursor ||= {}
+        state.candidateWarmCursor[host] = batch.cursor
+      }
       const judged = await findHealthy(searchNames, (name) => run.examine(name, host), {
         concurrency: cfg.probeConcurrency,
         want: survey ? Infinity : 1 + cfg.spareCandidates,
@@ -727,15 +784,21 @@ async function main(argv = process.argv.slice(2)) {
       if (!combined[host].healthy) log(`[判定] ${host} 第 ${hs.failures}/${cfg.failThreshold} 次不健康，暂不换线`)
       continue
     }
-    if (searchBlocked) continue
+    if (!canSwitchWithCandidate(searchBlocked, judgedByHost[host] || [])) continue
     const inUseElsewhere = cfg.hosts.filter((h) => h !== host).map((h) => records[h].target)
-    const pick = pickReplacement(judgedByHost[host] || [], { exclude: [records[host].target, ...Object.keys(userBad)], inUseElsewhere })
+    const pick = pickReplacement(judgedByHost[host] || [], {
+      exclude: [records[host].target, ...Object.keys(userBad)], inUseElsewhere,
+      routeQuality: state.routeQuality, nowMs,
+      qualityTtlMs: cfg.reportQualityTtlMs, minQualityVisitors: cfg.reportQualityMinVisitors,
+    })
     if (!pick) {
       if (!(judgedByHost[host] || []).some((c) => c.verdict.indeterminate)) noCandidate = true
       log(`[判定] ${host} 连续 ${hs.failures} 次不健康，但没有健康的候选，保持不动`)
       continue
     }
-    log(`[换线] ${host}: ${records[host].target} → ${pick.name}（${pick.verdict.reason}，源站中位 ${pick.verdict.medianMs}ms）${dryRun ? '［dry-run，未改 DNS］' : ''}`)
+    const pickedQuality = freshRouteQuality(state.routeQuality, pick.name, nowMs, cfg.reportQualityTtlMs, cfg.reportQualityMinVisitors)
+    const pickedRate = pickedQuality ? `，大陆实测 ${(pickedQuality.medianBytesPerMs * 0.008).toFixed(2)} Mbps / ${pickedQuality.visitors} 人` : ''
+    log(`[换线] ${host}: ${records[host].target} → ${pick.name}（${pick.verdict.reason}，源站中位 ${pick.verdict.medianMs}ms${pickedRate}）${dryRun ? '［dry-run，未改 DNS］' : ''}`)
     if (dryRun) continue
     try {
       const recordPath = `/zones/${cfg.zoneId}/dns_records/${records[host].id}`

@@ -17,8 +17,10 @@ export const REPORTED_ROUTE_HOSTS = ['rom.8bitgo.com', 'download.8bitgo.com']
 /** 第一次有记录后多久发一次；离开页面 / 切后台时立即发 */
 const FLUSH_DELAY_MS = 60_000
 const MAX_EVENTS = 50
+const MAX_METRIC_BYTES = 512 * 1024 * 1024
+const MAX_METRIC_MS = 50 * 60 * 1000
 
-const pending = new Map<string, { ok: number; fail: number }>()
+const pending = new Map<string, { ok: number; fail: number; bytes: number; elapsedMs: number; samples: number }>()
 let timer: ReturnType<typeof setTimeout> | null = null
 let installed = false
 
@@ -29,12 +31,17 @@ export function routeReportHost(origin: string): string {
 }
 
 /** 记一次结果；返回是否计入（测试用） */
-export function noteRouteResult(origin: string, ok: boolean): boolean {
+export function noteRouteResult(origin: string, ok: boolean, sample?: { bytes: number; elapsedMs: number }): boolean {
   const host = routeReportHost(origin)
   if (!host) return false
-  const entry = pending.get(host) || { ok: 0, fail: 0 }
+  const entry = pending.get(host) || { ok: 0, fail: 0, bytes: 0, elapsedMs: 0, samples: 0 }
   if (ok) entry.ok = Math.min(MAX_EVENTS, entry.ok + 1)
   else entry.fail = Math.min(MAX_EVENTS, entry.fail + 1)
+  if (sample && Number.isFinite(sample.bytes) && Number.isFinite(sample.elapsedMs) && sample.bytes >= 64 * 1024 && sample.elapsedMs >= 20) {
+    entry.bytes = Math.min(MAX_METRIC_BYTES, entry.bytes + Math.floor(sample.bytes))
+    entry.elapsedMs = Math.min(MAX_METRIC_MS, entry.elapsedMs + Math.floor(sample.elapsedMs))
+    entry.samples = Math.min(MAX_EVENTS, entry.samples + 1)
+  }
   pending.set(host, entry)
   if (!timer && typeof setTimeout !== 'undefined') timer = setTimeout(() => flushRouteReport(), FLUSH_DELAY_MS)
   return true
@@ -47,7 +54,10 @@ export function takeRouteReport(): string | null {
     timer = null
   }
   if (!pending.size) return null
-  const rows = [...pending].map(([h, c]) => ({ h, ok: c.ok, fail: c.fail }))
+  const rows = [...pending].map(([h, c]) => ({
+    h, ok: c.ok, fail: c.fail,
+    ...(c.samples ? { b: c.bytes, ms: c.elapsedMs, n: c.samples } : {}),
+  }))
   pending.clear()
   return JSON.stringify({ r: rows })
 }
@@ -74,11 +84,11 @@ export function flushRouteReport(): void {
 export function installRouteReport(): void {
   if (installed || typeof window === 'undefined') return
   installed = true
-  setRomRouteListener((origin, ok, kind) => {
+  setRomRouteListener((origin, ok, kind, sample) => {
     if (coverCdnHint() === 'main') return
     // 5xx / 429 说明连上了 Cloudflare，是我们自己 Worker / R2 的问题，换 CNAME 目标救不了，不算线路失败
     if (!ok && kind === 'server') return
-    noteRouteResult(origin, ok)
+    noteRouteResult(origin, ok, sample)
   })
   const onHide = () => {
     if (document.visibilityState === 'hidden') flushRouteReport()

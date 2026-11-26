@@ -321,9 +321,21 @@ assert.equal(isolatedEmbedFor('diablo'), undefined, 'Diablo 不需要 COOP/COEP�
   assert.equal(romCacheKey(u), '', '无内容版本时不能缓存外站文件')
   assert.equal(romCacheKey(`${u}&v=1`), `${u}&v=1`, '管理员手工版本可作为缓存键')
   assert.equal(romCacheKey(versioned), versioned, 'ETag 版本可作为缓存键')
-  script({ status: 405 }, { status: 206, headers: { etag: '"etag-2"' } })
-  assert.equal(await probeRomUrl(u), `${u}&romv=etag-2`)
+  script(
+    { status: 405 },
+    { status: 206, headers: { etag: '"etag-2"', 'content-length': '1', 'content-range': 'bytes 0-0/50000000' } },
+  )
+  const outcome = await probeRom(u)
+  assert.equal(outcome.url, `${u}&romv=etag-2`)
+  assert.equal(outcome.size, 50_000_000, 'Range 探测要取 Content-Range 总长，不能把单字节片段当作 ROM 大小')
   assert.deepEqual(methods, ['HEAD', 'GET'], 'HEAD 不可用时只用 GET Range 探一下')
+
+  const unknown = 'https://files.example.com/archive-no-total.zip?token=signed#rom=game.nes'
+  script(
+    { throw: 'HEAD 被跨域策略拒绝' },
+    { status: 206, headers: { 'content-length': '1' } },
+  )
+  assert.equal((await probeRom(unknown)).size, undefined, 'Range 响应没有 Content-Range 总长时必须返回未知大小')
 }
 
 /* ---------- 1. 服务器明确说没有 → 缓存，不重复问 ---------- */

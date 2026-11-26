@@ -4,7 +4,7 @@ import {
   DEFAULTS, inCloudflare, isValidHostname, dnsRecordMatches, buildCandidates, judgeCandidate, pickReplacement, nextFailureCount, nextTargetFailureCount,
   judgeUserReports, combineVerdicts, reportSince, findHealthy, targetUserVerdicts,
   loadConfig, resolveIsps, createRunContext, readLimitedText, MAX_CANDIDATE_LIST_BYTES,
-  freshWarmCandidates, selectWarmBatch, updateWarmCandidates, canClearNoCandidateBackoff,
+  freshWarmCandidates, selectWarmBatch, updateWarmCandidates, canClearNoCandidateBackoff, canSwitchWithCandidate, freshRouteQuality,
 } from '../deploy/cname-optimizer/cname-optimizer.mjs'
 
 assert.equal(inCloudflare('104.18.35.15'), true)
@@ -55,6 +55,7 @@ assert.equal(isValidHostname('bad_host.example.com'), false)
 assert.equal(dnsRecordMatches({ id: 'id1', type: 'CNAME', name: 'download.8bitgo.com', content: 'old.example.net', proxied: false }, { id: 'id1', host: 'download.8bitgo.com', target: 'old.example.net' }), true)
 assert.equal(dnsRecordMatches({ id: 'id1', type: 'CNAME', name: 'download.8bitgo.com', content: 'new.example.net', proxied: false }, { id: 'id1', host: 'download.8bitgo.com', target: 'old.example.net' }), false, '人工改目标后不得覆盖')
 assert.equal(dnsRecordMatches({ id: 'id1', type: 'CNAME', name: 'download.8bitgo.com', content: 'old.example.net', proxied: true }, { id: 'id1', host: 'download.8bitgo.com', target: 'old.example.net' }), false, '切到橙云后不得覆盖')
+assert.equal(dnsRecordMatches({ id: 'id1', type: 'CNAME', name: 'download.8bitgo.com', content: 'old.example.net' }, { id: 'id1', host: 'download.8bitgo.com', target: 'old.example.net' }), false, 'Cloudflare 未明确返回 DNS-only 状态时失败关闭')
 
 // 候选池只用近期成功样本；轮换预热避免每轮重测同一组，最终切换仍由主流程复核。
 {
@@ -70,6 +71,7 @@ assert.equal(dnsRecordMatches({ id: 'id1', type: 'CNAME', name: 'download.8bitgo
     names: ['c.example.net'], cursor: 'c.example.net',
   }, '优先轮到未预热候选')
   assert.deepEqual(selectWarmBatch(['a.example.net', 'b.example.net'], 'b.example.net', [], [{ name: 'a.example.net' }, { name: 'b.example.net' }], 1).names, ['a.example.net'], '清单耗尽后刷新缓存项')
+  assert.equal(selectWarmBatch(Array.from({ length: 20 }, (_, i) => `c${i}.example.net`), '', [], [], DEFAULTS.maxDueCandidatesPerHost).names.length, 8, '单轮全量扫描有明确上限')
   const updated = updateWarmCandidates(pool, [
     { name: 'fresh.example.net', verdict: { healthy: false, indeterminate: false } },
     { name: 'uncertain.example.net', verdict: { healthy: false, indeterminate: true } },
@@ -79,6 +81,8 @@ assert.equal(dnsRecordMatches({ id: 'id1', type: 'CNAME', name: 'download.8bitgo
   assert.equal(canClearNoCandidateBackoff(true, false), false, '仍在无候选冷却期且没有新健康目标时保留冷却')
   assert.equal(canClearNoCandidateBackoff(true, true), true, '新预热目标健康时解除冷却')
   assert.equal(canClearNoCandidateBackoff(false, false), true, '冷却已过期时清除状态')
+  assert.equal(canSwitchWithCandidate(true, [{ verdict: { healthy: false } }]), false, '冷却期不允许未验证或失败的候选触发切换')
+  assert.equal(canSwitchWithCandidate(true, [{ verdict: { healthy: true } }]), true, '冷却期允许本轮已复测健康的预热候选切换')
 }
 
 const names = buildCandidates({
@@ -130,6 +134,26 @@ assert.equal(judgeUserReports({ visitors: 4, failOnlyVisitors: 4 }).verdict, 'un
 assert.equal(judgeUserReports({ visitors: 10, okVisitors: 3, failOnlyVisitors: 7 }).verdict, 'bad')
 assert.equal(judgeUserReports({ visitors: 10, okVisitors: 9, failOnlyVisitors: 1 }).verdict, 'good')
 assert.equal(judgeUserReports({ visitors: 10, okVisitors: 6, failOnlyVisitors: 4 }).verdict, 'unknown')
+assert.deepEqual(judgeUserReports({ visitors: 10, okVisitors: 9, failOnlyVisitors: 1, rateVisitors: 8, medianBytesPerMs: 400 }).quality, {
+  medianBytesPerMs: 400, visitors: 8,
+}, '只有足够多独立玩家提供的正文样本进入质量排序')
+assert.equal(judgeUserReports({ visitors: 10, okVisitors: 9, failOnlyVisitors: 1, rateVisitors: 4, medianBytesPerMs: 400 }).quality, undefined)
+
+const qualityNow = Date.parse('2026-11-26T00:00:00Z')
+const sourceFast = c('source-fast.example', true, 5)
+const mainlandFast = c('mainland-fast.example', true, 50)
+assert.equal(pickReplacement([sourceFast, mainlandFast], {
+  nowMs: qualityNow,
+  routeQuality: {
+    'source-fast.example': { visitors: 8, medianBytesPerMs: 50, observedAt: new Date(qualityNow).toISOString() },
+    'mainland-fast.example': { visitors: 7, medianBytesPerMs: 500, observedAt: new Date(qualityNow).toISOString() },
+  },
+}).name, 'mainland-fast.example', '足够样本的大陆实测速率优先于香港源站延迟')
+assert.equal(pickReplacement([sourceFast, mainlandFast], {
+  nowMs: qualityNow,
+  routeQuality: { 'mainland-fast.example': { visitors: 7, medianBytesPerMs: 500, observedAt: new Date(qualityNow - 7 * 60 * 60 * 1000).toISOString() } },
+}).name, 'source-fast.example', '过期的大陆表现不参与排序')
+assert.equal(freshRouteQuality({ 'mainland-fast.example': { visitors: 4, medianBytesPerMs: 500, observedAt: new Date(qualityNow).toISOString() } }, 'mainland-fast.example', qualityNow, 3600000, 5), undefined, '独立访客样本不足不参与质量排序')
 
 const healthyProbe = { healthy: true, reason: '4/4 个 IP 正常' }
 const flakyProbe = { healthy: false, reason: 'cu 线路的 IP 全部不通' }
@@ -251,6 +275,8 @@ assert.equal(reportSince({}, 'a', t0, grace), t0 + grace)
   assert.ok(src.includes(`stateFile: '${unitPath}'`), '默认状态路径要和单元文件一致')
   assert.match(src, /if \(dryRun\) return\n/, 'dry-run 不落状态')
   assert.match(src, /const dryRun = .*argv\.includes\('--survey'\)/, '--survey 只能体检，不能改 DNS 或写状态')
+  assert.match(src, /dnsRecordMatches\(latest,/, '写 DNS 前必须重新核对记录，避免覆盖并发人工修改')
+  assert.match(src, /dnsRecordMatches\(updated,/, '写 DNS 后必须核对 Cloudflare 返回的新记录')
 }
 
 console.log('cname-optimizer：全部通过')
