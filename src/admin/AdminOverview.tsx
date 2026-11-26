@@ -78,7 +78,7 @@ function StartupBreakdown({ title, rows }: { title: string; rows: StartupGroup[]
               <th className="pb-2 text-right font-medium">开始</th>
               <th className="pb-2 text-right font-medium">可玩</th>
               <th className="pb-2 text-right font-medium">成功率</th>
-              <th className="pb-2 text-right font-medium" title="已到首帧 / 自动兜底尝试；悬停查看失败数">兜底成功 / 尝试</th>
+              <th className="pb-2 text-right font-medium" title="已到可玩状态 / 自动兜底启动链；悬停查看首帧与失败数">兜底可玩 / 链路</th>
               <th className="pb-2 text-right font-medium text-live">&gt;20s</th>
               <th className="pb-2 text-right font-medium">可玩总时长</th>
               <th className="pb-2 text-right font-medium" title="点击开始到 download_complete 的耗时；非 HTML5 代表 ROM / 启动资源到手，HTML5 代表 iframe 文档加载">开始→资源完成</th>
@@ -99,7 +99,7 @@ function StartupBreakdown({ title, rows }: { title: string; rows: StartupGroup[]
                 <td className="py-2 text-right tabular-nums">{row.playableRate.toFixed(1)}%</td>
                 <td
                   className="py-2 text-right tabular-nums"
-                  title={`${row.fallbackFailures} 次兜底后失败`}
+                  title={`${row.fallbackFirstFrames} 次到首帧；${row.fallbackFailures} 条兜底链路最终失败`}
                 >
                   {row.fallbackSuccesses} / {row.fallbackAttempts}
                 </td>
@@ -373,9 +373,9 @@ export function AdminOverview() {
           <Stat label="慢启动" value={startup?.summary.slowStarts ?? 0} sub="可玩耗时超过 60 秒" />
           <Stat label="无法观测" value={startup?.summary.readinessUnobservable ?? 0} sub="跨域 HTML5 无法确认就绪" />
           <Stat
-            label="模拟器兜底"
+            label="兜底启动链路"
             value={fallbackAttempts}
-            sub={`${fallbackSuccesses} 次到首帧 · ${fallbackFailures} 次失败 · ${fallbackUnresolved} 次未确认`}
+            sub={`${fallbackSuccesses} 次可玩 · ${startup?.summary.fallbackFirstFrames ?? 0} 次到首帧 · ${fallbackFailures} 次失败 · ${fallbackUnresolved} 次未确认`}
           />
           <Stat
             label="失败 / 超时"

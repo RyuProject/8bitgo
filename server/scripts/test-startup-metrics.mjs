@@ -17,8 +17,15 @@ assert.equal(isSlowStartup(slow), true)
 assert.equal(isSlowStartup({ ...slow, elapsedMs: STARTUP_SLOW_MS - 1 }), false, '未满 60 秒不应误报慢启动')
 assert.equal(normalizeStartupEvent({ ...base, event: 'fallback_started', detail: 'core:melondsds>melonds-compat:wasm-crash' }).event,
   'fallback_started', '运行时与核心兜底阶段必须进入漏斗白名单')
+assert.equal(normalizeStartupEvent({ ...base, event: 'fallback_first_frame' }).event, 'fallback_first_frame', '兜底首帧要和真正可玩分开统计')
+assert.equal(normalizeStartupEvent({ ...base, event: 'fallback_playable' }).event, 'fallback_playable')
 assert.equal(normalizeStartupEvent({ ...base, event: 'fallback_succeeded' }).event, 'fallback_succeeded')
 assert.equal(normalizeStartupEvent({ ...base, event: 'fallback_failed' }).event, 'fallback_failed')
+const fallbackBatch = normalizeStartupEventBatch([
+  { ...base, event: 'fallback_first_frame' },
+  { ...base, event: 'fallback_playable' },
+])
+assert.deepEqual(fallbackBatch.map((event) => event.event), ['fallback_first_frame', 'fallback_playable'], '兜底结果阶段应能和首帧一起合批')
 const unobservable = normalizeStartupEvent({ ...base, event: 'readiness_unobservable', elapsedMs: 120_000 })
 assert.equal(unobservable.event, 'readiness_unobservable', '跨域页面的不可观测状态必须可记录，但不能当成失败')
 

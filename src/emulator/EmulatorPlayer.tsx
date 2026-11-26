@@ -2080,9 +2080,11 @@ export function EmulatorPlayer({
     let romLoadStreaming = false
     let fallbackTrail = [...(session.fallbacks ?? [])]
     let fallbackStartedReported = false
+    let fallbackFirstFrameReported = false
     let fallbackOutcomeReported = false
     const batchedStartupPhases = new Set<StartupEventName>([
       'rom_load_start', 'rom_load_complete', 'core_warm_start', 'core_warm_complete', 'core_cache_hit', 'runtime_ready',
+      'fallback_first_frame', 'fallback_playable',
     ])
     let pendingStartupEvents: StartupEvent[] = []
     let startupBatchTimer: number | undefined
@@ -2126,11 +2128,14 @@ export function EmulatorPlayer({
       }
       recordStartupEvent(gameSlugRef.current, payload)
     }
-    const reportFallbackOutcome = (event: 'fallback_started' | 'fallback_succeeded' | 'fallback_failed') => {
+    const reportFallbackOutcome = (event: 'fallback_started' | 'fallback_first_frame' | 'fallback_playable' | 'fallback_failed') => {
       if (!fallbackTrail.length || !startupVisitId || !gameSlugRef.current || session.runtime.id === 'liveview') return
       if (event === 'fallback_started') {
         if (fallbackStartedReported) return
         fallbackStartedReported = true
+      } else if (event === 'fallback_first_frame') {
+        if (!fallbackStartedReported || fallbackFirstFrameReported) return
+        fallbackFirstFrameReported = true
       } else {
         if (!fallbackStartedReported || fallbackOutcomeReported) return
         fallbackOutcomeReported = true
@@ -2201,6 +2206,8 @@ export function EmulatorPlayer({
       if (!isCurrent() || crashed || session.runtime.id === 'liveview' ||
         countedPlayAttemptRef.current === session.startupAttemptId) return
       countedPlayAttemptRef.current = session.startupAttemptId
+      // 只有运行时确认已经可玩才算兜底成功；首帧单独统计，避免黑屏后偶然闪帧被算作恢复。
+      reportFallbackOutcome('fallback_playable')
       reportStartup('game_playable')
       if (gameSlugRef.current && sessionCountsAsPlayed(session)) {
         recordPlay(gameSlugRef.current)
@@ -2538,7 +2545,7 @@ export function EmulatorPlayer({
         // 调试：核心已经产出首帧，游戏真的跑起来了
         if (debugRef.current) setDiag((d) => [...d, { stage: 'engine', label: '引擎出首帧', status: 'ok', detail: '游戏已开始运行' }])
         reportStartup('first_frame')
-        reportFallbackOutcome('fallback_succeeded')
+        reportFallbackOutcome('fallback_first_frame')
       },
       onNdsPerformanceIssue: (fps, reason) => {
         if (!isCurrent() || session.platform !== 'nds') return

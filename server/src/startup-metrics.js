@@ -19,6 +19,9 @@ const EVENTS = new Set([
   'core_warm_complete',
   'core_cache_hit',
   'fallback_started',
+  'fallback_first_frame',
+  'fallback_playable',
+  // 旧版把首帧记成成功；继续接收，让回滚中的旧前端仍可上报。
   'fallback_succeeded',
   'fallback_failed',
   'runtime_ready',
@@ -36,7 +39,7 @@ const EVENTS = new Set([
 /** 页面阶段可合批，异常现场事件仍走单独接口以保留原有限流与诊断处理。 */
 const BATCHABLE_EVENTS = new Set([
   'download_complete', 'rom_load_start', 'rom_load_complete', 'core_warm_start', 'core_warm_complete',
-  'core_cache_hit', 'runtime_ready', 'first_frame', 'game_playable',
+  'core_cache_hit', 'runtime_ready', 'first_frame', 'fallback_first_frame', 'fallback_playable', 'game_playable',
 ])
 const ID_RE = /^[A-Za-z0-9_-]{8,64}$/
 const NAME_RE = /^[A-Za-z0-9_-]{0,32}$/
@@ -223,6 +226,7 @@ function shapeAggregate(row = {}) {
     slowStarts: numeric(row, 'slow_starts'),
     readinessUnobservable: numeric(row, 'readiness_unobservable'),
     fallbackAttempts: numeric(row, 'fallback_attempts'),
+    fallbackFirstFrames: numeric(row, 'fallback_first_frames'),
     fallbackSuccesses: numeric(row, 'fallback_successes'),
     fallbackFailures: numeric(row, 'fallback_failures'),
     avgPlayableMs: row.avg_playable_ms == null ? null : Math.round(Number(row.avg_playable_ms)),
@@ -264,7 +268,8 @@ const AGGREGATES = `
   SUM(e.event = 'slow_start') AS slow_starts,
   SUM(e.event = 'readiness_unobservable') AS readiness_unobservable,
   SUM(e.event = 'fallback_started') AS fallback_attempts,
-  SUM(e.event = 'fallback_succeeded') AS fallback_successes,
+  SUM(e.event IN ('fallback_first_frame', 'fallback_succeeded')) AS fallback_first_frames,
+  SUM(e.event = 'fallback_playable') AS fallback_successes,
   SUM(e.event = 'fallback_failed') AS fallback_failures,
   AVG(CASE WHEN e.event = 'game_playable' THEN e.elapsed_ms END) AS avg_playable_ms,
   MAX(CASE WHEN e.event = 'game_playable' THEN e.elapsed_ms END) AS max_playable_ms`

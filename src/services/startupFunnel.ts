@@ -13,6 +13,9 @@ export type StartupEventName =
   | 'core_warm_complete'
   | 'core_cache_hit'
   | 'fallback_started'
+  | 'fallback_first_frame'
+  | 'fallback_playable'
+  /** 旧版事件曾在首帧触发；保留接收能力，但新版不再发送。 */
   | 'fallback_succeeded'
   | 'fallback_failed'
   | 'runtime_ready'
@@ -58,7 +61,7 @@ const DIAGNOSTIC_EVENTS = new Set<StartupEventName>(['failed', 'timeout', 'slow_
 /** 高频阶段可以等到首帧一起上报；异常和超时仍走原来的单事件诊断路径。 */
 const BATCHABLE_EVENTS = new Set<StartupEventName>([
   'download_complete', 'rom_load_start', 'rom_load_complete', 'core_warm_start', 'core_warm_complete',
-  'core_cache_hit', 'runtime_ready', 'first_frame', 'game_playable',
+  'core_cache_hit', 'runtime_ready', 'first_frame', 'fallback_first_frame', 'fallback_playable', 'game_playable',
 ])
 
 /**
