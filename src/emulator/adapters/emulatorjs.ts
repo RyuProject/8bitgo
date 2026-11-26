@@ -83,6 +83,7 @@ import {
   NDS_PERFORMANCE_SLOW_FPS,
   NDS_PERFORMANCE_SLOW_WINDOWS,
 } from '../ndsAdaptivePerformance'
+import { observeNdsPerformanceRecovery } from '../ndsPerformanceRecovery'
 import { guardFrameGamepads, readGamepadsSafe } from '../gamepadAccess'
 import { engineScriptName, engineScriptSyntaxError, type EngineScriptError } from '../engineScriptErrors'
 import { isTyping } from '../hotkeyBridge'
@@ -4305,6 +4306,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     let lastFrame: number | null = null
     let lastAt = 0
     let slowWindows = 0
+    let healthyWindows = 0
     let adapting = false
     let issueSent = false
     let appliedFrameskip = ''
@@ -4324,6 +4326,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         lastFrame = frame
         lastAt = now
         slowWindows = 0
+        healthyWindows = 0
         return
       }
       if (lastFrame == null || !lastAt || frame < lastFrame) {
@@ -4335,13 +4338,25 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       const fps = elapsed > 0 ? ((frame - lastFrame) * 1000) / elapsed : 0
       lastFrame = frame
       lastAt = now
-      // 高于核心常规节奏通常是快进；不把玩家主动快进误判成低帧率。
+      // 玩家快进时的高帧率不能冒充原速恢复；回到自然速度后再确认。
       if (fps >= 65) {
         slowWindows = 0
+        healthyWindows = 0
         return
       }
-      if (fps < NDS_PERFORMANCE_SLOW_FPS) slowWindows++
-      else slowWindows = 0
+      // 高于可玩阈值的连续采样用于确认恢复；不因一个短暂正常窗口就撤掉警告。
+      if (fps >= NDS_PERFORMANCE_SLOW_FPS) {
+        slowWindows = 0
+        const recovery = observeNdsPerformanceRecovery(fps, healthyWindows, issueSent)
+        healthyWindows = recovery.healthyWindows
+        if (recovery.recovered) {
+          issueSent = false
+          options.onNdsPerformanceRecovered?.()
+        }
+        return
+      }
+      healthyWindows = 0
+      slowWindows++
       if (slowWindows < NDS_PERFORMANCE_SLOW_WINDOWS || adapting) return
 
       if (core === 'desmume' || core === 'desmume2015') {
