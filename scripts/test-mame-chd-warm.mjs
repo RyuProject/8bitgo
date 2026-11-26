@@ -55,6 +55,7 @@ Object.defineProperty(globalThis, 'navigator', {
 const {
   CHUNK_BYTES,
   fetchBlobWithProgress,
+  prewarmBlobChunks,
 } = await import('../src/emulator/loadProgress.ts')
 const {
   mameChdCacheKey,
@@ -126,5 +127,99 @@ assert.deepEqual(new Uint8Array(await complete.arrayBuffer()), bytes, 'OPFS 热�
 const bad = { ...disk, url: `${disk.url}?bad=1`, chdSha1: '3'.repeat(40) }
 await prewarmMameChd(bad)
 assert.equal(await mameChdResumeStore.load(mameChdCacheKey(bad), CHUNK_BYTES), null, 'CHD 头身份不符时不能留下可被正式下载拼接的热区片')
+
+const tinyParts = new Map()
+const tinyStore = {
+  load: async (key, chunkBytes) => {
+    const part = tinyParts.get(key)
+    return part ? { total: 4, chunkBytes, parts: new Map([[0, part]]) } : null
+  },
+  put: async (key, _total, _chunkBytes, _index, part) => { tinyParts.set(key, part); return true },
+  clear: async (key) => { tinyParts.delete(key) },
+}
+let stalledFetchAborted = false
+let warmFetches = 0
+await prewarmBlobChunks('https://assets.8bitgo.test/roms/arcade-media/stall.chd', {
+  resumeKey: 'mame-chd:stall-test',
+  expectedBytes: 4,
+  chunkBytes: 4,
+  stallMs: 5,
+  resumeStore: tinyStore,
+  fetchImpl: (_url, init) => {
+    warmFetches += 1
+    return new Promise((_resolve, reject) => {
+      init.signal.addEventListener('abort', () => {
+        stalledFetchAborted = true
+        reject(new DOMException('stalled', 'AbortError'))
+      }, { once: true })
+    })
+  },
+})
+assert.equal(stalledFetchAborted, true, '悬停预热必须在连续无字节时主动中止网络请求')
+await prewarmBlobChunks('https://assets.8bitgo.test/roms/arcade-media/stall.chd', {
+  resumeKey: 'mame-chd:stall-test',
+  expectedBytes: 4,
+  chunkBytes: 4,
+  stallMs: 5,
+  resumeStore: tinyStore,
+  fetchImpl: async () => {
+    warmFetches += 1
+    return new Response(new Uint8Array([1, 2, 3, 4]), {
+      status: 206,
+      headers: { 'Content-Range': 'bytes 0-3/4', 'Content-Length': '4' },
+    })
+  },
+})
+assert.equal(warmFetches, 2, '停滞任务结束后，同键再次预热必须能发起新请求')
+assert.equal((await tinyStore.load('mame-chd:stall-test', 4))?.parts.get(0)?.size, 4, '重试后热区分片应正常落盘')
+
+const clickParts = new Map()
+const clickStore = {
+  load: async (key, chunkBytes) => {
+    const part = clickParts.get(key)
+    return part ? { total: 4, chunkBytes, parts: new Map([[0, part]]) } : null
+  },
+  put: async (key, _total, _chunkBytes, _index, part) => { clickParts.set(key, part); return true },
+  clear: async (key) => { clickParts.delete(key) },
+}
+let warmStarted
+const warmStartedPromise = new Promise((resolve) => { warmStarted = resolve })
+let warmCancelledByClick = false
+const clickUrl = 'https://assets.8bitgo.test/roms/arcade-media/click.chd'
+const clickKey = 'mame-chd:click-test'
+const clickWarm = prewarmBlobChunks(clickUrl, {
+  resumeKey: clickKey,
+  expectedBytes: 4,
+  chunkBytes: 4,
+  resumeStore: clickStore,
+  stallMs: 1000,
+  fetchImpl: (_url, init) => new Promise((_resolve, reject) => {
+    warmStarted()
+    init.signal.addEventListener('abort', () => {
+      warmCancelledByClick = true
+      reject(new DOMException('cancelled by game start', 'AbortError'))
+    }, { once: true })
+  }),
+})
+await warmStartedPromise
+let fullRangeRequests = 0
+const clicked = await fetchBlobWithProgress(clickUrl, {
+  chunkBytes: 4,
+  resumeKey: clickKey,
+  resumeStore: clickStore,
+  stallMs: 100,
+  fetchImpl: async (_url, init) => {
+    fullRangeRequests += 1
+    assert.equal(init.headers?.Range, 'bytes=0-3')
+    return new Response(new Uint8Array([5, 6, 7, 8]), {
+      status: 206,
+      headers: { 'Content-Range': 'bytes 0-3/4', 'Content-Length': '4' },
+    })
+  },
+})
+await clickWarm
+assert.equal(warmCancelledByClick, true, '正式下载开始时必须取消仍在路上的悬停请求')
+assert.equal(fullRangeRequests, 1, '正式下载只应发送自己的那一份 Range，不与悬停预读重叠')
+assert.deepEqual(new Uint8Array(await clicked.arrayBuffer()), new Uint8Array([5, 6, 7, 8]))
 
 console.log('✅ MAME CHD 热区预读、OPFS 续传与正式下载复用通过')

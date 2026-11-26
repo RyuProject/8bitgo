@@ -19,7 +19,7 @@ import { matchLocalArcadeHack } from '../src/emulator/arcadeHack.ts'
 import { REQUIRED_SELF_BUILT_CORES } from '../src/config/emulators.ts'
 import { readdir } from 'node:fs/promises'
 import { EJS_WEBGL2_DEFAULT_CORES, emulatorJsCoreDataFile } from '../src/emulator/paths.ts'
-import { ejsCachedUrls, warmEmulatorJsStart } from '../src/emulator/ejsStartWarm.ts'
+import { ejsCachedUrls, observeEjsCoreWarmEvent, warmEmulatorJsStart } from '../src/emulator/ejsStartWarm.ts'
 import { dipNameOf } from '../src/emulator/dipPlan.ts'
 import { matchRomset } from '../src/lib/arcadeRomset.ts'
 import { canonicalMameRomset } from '../src/emulator/mameRomset.ts'
@@ -255,8 +255,8 @@ await check('预热的核心文件就是引擎真正下载的那个变体（lega
 })
 
 /** 只实现 ejsCachedUrls 用到的那点 IndexedDB：open / onupgradeneeded / index('url').count */
-function fakeIdb({ exists, urls = [] }) {
-  const state = { aborted: false, created: false }
+function fakeIdb({ exists, urls = [], countMode = 'normal' }) {
+  const state = { aborted: false, created: false, closed: false }
   return {
     state,
     open() {
@@ -269,13 +269,15 @@ function fakeIdb({ exists, urls = [] }) {
         }
         request.result = {
           objectStoreNames: { contains: (n) => exists && n === 'cache' },
-          close() {},
+          close() { state.closed = true },
           transaction: () => ({
             objectStore: () => ({
               indexNames: { contains: (n) => n === 'url' },
               index: () => ({
                 count(url) {
+                  if (countMode === 'throw') throw new Error('坏掉的索引')
                   const q = {}
+                  if (countMode === 'pending') return q
                   setTimeout(() => { q.result = urls.includes(url) ? 1 : 0; q.onsuccess?.() }, 0)
                   return q
                 },
@@ -307,6 +309,54 @@ await check('开局预热：引擎缓存里已有的核心不再下载，库不�
   const warmed2 = []
   await warmEmulatorJsStart({ always: [], large: [core] }, { idb: undefined, warm: (u) => warmed2.push(u) })
   assert.deepEqual(warmed2, [core], '没有 IndexedDB 时照常预热')
+})
+
+await check('IndexedDB 查询同步抛错或卡住时会关闭连接，不阻塞引擎升级', async () => {
+  const core = '/emulatorjs/cores/fbneo-legacy-wasm.data?v=1'
+  const broken = fakeIdb({ exists: true, countMode: 'throw' })
+  assert.equal((await ejsCachedUrls([core], broken)).size, 0, '索引异常按未命中处理')
+  assert.equal(broken.state.closed, true, '同步查询异常后关闭数据库')
+
+  const stuck = fakeIdb({ exists: true, countMode: 'pending' })
+  assert.equal((await ejsCachedUrls([core], stuck)).size, 0, '卡住的查询在时限后按未命中处理')
+  assert.equal(stuck.state.closed, true, '时限触发后关闭仍未完成查询的数据库连接')
+})
+
+await check('核心切换重试不会把不同核心的预热时间配成一段', () => {
+  let state = null
+  let result = observeEjsCoreWarmEvent(state, 'attempt-0', 'fbneo', 'complete')
+  assert.equal(result.observation, null, '孤立的完成事件不能预先占住启动 ID')
+
+  result = observeEjsCoreWarmEvent(state, 'attempt-1', 'fbneo', 'start')
+  assert.equal(result.metric, 'core_warm_start')
+  state = result.observation
+
+  result = observeEjsCoreWarmEvent(state, 'attempt-1', 'mame2003', 'complete')
+  assert.equal(result.metric, undefined, '回退核心完成不能接到初始核心的开始事件上')
+  assert.equal(result.observation.coreKey, 'fbneo')
+  state = result.observation
+
+  result = observeEjsCoreWarmEvent(state, 'attempt-1', 'fbneo', 'complete')
+  assert.equal(result.metric, 'core_warm_complete', '同一核心完成后才结束预热样本')
+  state = result.observation
+  result = observeEjsCoreWarmEvent(state, 'attempt-1', 'fbneo', 'complete')
+  assert.equal(result.metric, undefined, '重复完成事件不得生成重复阶段')
+
+  result = observeEjsCoreWarmEvent(state, 'attempt-2', 'mame2003', 'cached')
+  assert.equal(result.metric, 'core_cache_hit', '新开局仍可独立记录核心缓存命中')
+})
+
+await check('核心预热事件携带仅供内存配对的核心标识', async () => {
+  const core = '/emulatorjs/cores/fbneo-wasm.data?v=1'
+  const events = []
+  await warmEmulatorJsStart({ always: [], large: [core] }, {
+    idb: undefined,
+    coreDataUrl: core,
+    coreKey: 'fbneo',
+    warm: () => Promise.resolve(true),
+    onCoreWarmEvent: (event, key) => events.push([event, key]),
+  })
+  assert.deepEqual(events, [['start', 'fbneo'], ['complete', 'fbneo']])
 })
 
 await check('开局预热排在 ROM 预下载之前，且平台 BIOS 判定只算一次', async () => {

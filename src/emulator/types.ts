@@ -216,6 +216,8 @@ export interface MountOptions {
   onProgress?: (progress: LoadProgress) => void
   /** 引擎内部仍在推进启动阶段时通知播放器，避免外层无进度看门狗误判卡死。 */
   onStartupActivity?: () => void
+  /** 只把核心预热阶段回传给播放器，避免把资源 URL 带进启动统计。 */
+  onCoreWarmEvent?: (event: 'start' | 'complete' | 'cached', coreKey: string) => void
   /**
    * 旧 Flash 游戏的在线存档会话到期时间（毫秒）；0 = 游客模式 / 没拿到会话。
    *

@@ -31,9 +31,12 @@ export function ejsCachedUrls(urls: readonly string[], idb: IdbFactoryLike | und
   if (!idb || !urls.length) return Promise.resolve(found)
   return new Promise((resolve) => {
     let settled = false
+    let db: IDBDatabase | undefined
     const done = () => {
       if (settled) return
       settled = true
+      // 超时后也要关闭已经打开的连接；IndexedDB 请求不 settle 时，留着连接会阻塞引擎升级。
+      try { db?.close() } catch { /* 已关闭 */ }
       resolve(found)
     }
     const timer = setTimeout(done, LOOKUP_TIMEOUT_MS)
@@ -58,9 +61,13 @@ export function ejsCachedUrls(urls: readonly string[], idb: IdbFactoryLike | und
       done()
     }
     request.onsuccess = () => {
-      const db = request.result
-      const finish = () => {
+      db = request.result
+      // 打开数据库可能晚于 400ms 超时；不能让迟到的连接留在后台。
+      if (settled) {
         try { db.close() } catch { /* 已关闭 */ }
+        return
+      }
+      const finish = () => {
         clearTimeout(timer)
         done()
       }
@@ -75,13 +82,19 @@ export function ejsCachedUrls(urls: readonly string[], idb: IdbFactoryLike | und
       }
       let pending = urls.length
       for (const url of urls) {
-        const query = index.count(url)
-        query.onsuccess = () => {
-          if (query.result > 0) found.add(url)
-          if (--pending === 0) finish()
-        }
-        query.onerror = () => {
-          if (--pending === 0) finish()
+        try {
+          const query = index.count(url)
+          query.onsuccess = () => {
+            if (query.result > 0) found.add(url)
+            if (--pending === 0) finish()
+          }
+          query.onerror = () => {
+            if (--pending === 0) finish()
+          }
+        } catch {
+          // 坏索引同步抛错时直接当作缓存未命中，不能把开局预热卡到超时。
+          finish()
+          return
         }
       }
     }
@@ -95,15 +108,49 @@ export interface EjsStartWarmPlan {
   large: string[]
 }
 
+export type EjsCoreWarmEvent = 'start' | 'complete' | 'cached'
+export type EjsCoreWarmMetric = 'core_warm_start' | 'core_warm_complete' | 'core_cache_hit'
+export interface EjsCoreWarmObservation {
+  attemptId: string
+  coreKey: string
+  complete: boolean
+}
+
+/** 同一次开局只统计首个核心，且完成事件必须来自它，避免换核心重试串成一段耗时。 */
+export function observeEjsCoreWarmEvent(
+  current: EjsCoreWarmObservation | null,
+  attemptId: string,
+  coreKey: string,
+  event: EjsCoreWarmEvent,
+): { observation: EjsCoreWarmObservation | null; metric?: EjsCoreWarmMetric } {
+  if (event === 'start') {
+    if (current?.attemptId === attemptId) return { observation: current }
+    return { observation: { attemptId, coreKey, complete: false }, metric: 'core_warm_start' }
+  }
+  if (event === 'cached') {
+    if (current?.attemptId === attemptId) return { observation: current }
+    return { observation: { attemptId, coreKey, complete: true }, metric: 'core_cache_hit' }
+  }
+  if (current?.attemptId !== attemptId || current.coreKey !== coreKey || current.complete) {
+    return { observation: current }
+  }
+  return { observation: { ...current, complete: true }, metric: 'core_warm_complete' }
+}
+
 /**
  * 开局点击后立刻调用。不 await 也不抛错：预热失败的后果只是「和以前一样慢」。
  * `warm` 可注入，便于测试；默认写 HTTP 缓存。
  */
 export async function warmEmulatorJsStart(
   plan: EjsStartWarmPlan,
-  { idb, warm = warmHttpCache, assumeUncached = false }: {
+  { idb, warm = warmHttpCache, assumeUncached = false, coreDataUrl, coreKey, onCoreWarmEvent }: {
     idb?: IdbFactoryLike
-    warm?: (url: string) => void
+    warm?: (url: string) => void | boolean | PromiseLike<boolean | void>
+    /** 本局将使用的核心数据文件；只观测这一条大资源。 */
+    coreDataUrl?: string
+    /** 内部配对标记，不上报 URL 或资源路径。 */
+    coreKey?: string
+    onCoreWarmEvent?: (event: EjsCoreWarmEvent, coreKey: string) => void
     /**
      * 引擎缓存这一局马上要被清掉（EJS_CACHE_GENERATION 换代，见 purgePoisonedEngineCache）：
      * 库里「有」的核心几百毫秒后就没了。以前照查不误 → 判定已缓存 → 不预热 → 清库 →
@@ -113,10 +160,25 @@ export async function warmEmulatorJsStart(
   } = {},
 ): Promise<string[]> {
   const started: string[] = []
+  const notifyCore = (url: string, event: EjsCoreWarmEvent) => {
+    if (url !== coreDataUrl) return
+    try { onCoreWarmEvent?.(event, coreKey ?? '') } catch { /* 观测回调不能打断游戏预热 */ }
+  }
+  const beginWarm = (url: string) => {
+    notifyCore(url, 'start')
+    const result = warm(url)
+    started.push(url)
+    if (url === coreDataUrl && result && typeof result === 'object' && 'then' in result) {
+      void Promise.resolve(result).then((ok) => {
+        if (ok !== false) notifyCore(url, 'complete')
+      }, () => {})
+    } else if (url === coreDataUrl && result !== false) {
+      notifyCore(url, 'complete')
+    }
+  }
   for (const url of plan.always) {
     if (!url) continue
-    warm(url)
-    started.push(url)
+    beginWarm(url)
   }
   const large = plan.large.filter(Boolean)
   if (!large.length) return started
@@ -127,9 +189,11 @@ export async function warmEmulatorJsStart(
     cached = new Set()
   }
   for (const url of large) {
-    if (cached.has(url)) continue
-    warm(url)
-    started.push(url)
+    if (cached.has(url)) {
+      notifyCore(url, 'cached')
+      continue
+    }
+    beginWarm(url)
   }
   return started
 }

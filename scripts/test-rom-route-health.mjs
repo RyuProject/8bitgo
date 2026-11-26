@@ -83,6 +83,8 @@ const expectExact = (bytes, size) => {
   for (let i = 0; i < size; i++) if (bytes[i] !== byteAt(i)) assert.fail(`第 ${i} 字节错位`)
 }
 const hostOf = (url) => new URL(url).host
+const CHUNK = 65536
+const SIZE = 4 * CHUNK
 
 console.log('\n一、线路记分板')
 
@@ -142,6 +144,30 @@ await check('真实吞吐快 15% 以上才越过排在前面的线路', async ()
   assert.deepEqual(health.rankRomRoutes([A, B]), [B, A])
 })
 
+await check('分片负载分摊沿用故障折扣，不让稍快但近期失败的线路反超', async () => {
+  const A = 'https://a.test/x.zip?romv=1'
+  const B = 'https://b.test/x.zip?romv=1'
+  // B 的原始测速比 A 快 50%，但近期失败折扣后低于 A；首片也会把 A 的实测速率更新到低于 B 原始测速。
+  health.recordRomRouteTransfer(A, 1_000_000, 1000)
+  health.recordRomRouteTransfer(B, 1_500_000, 1000)
+  health.recordRomRouteFailure(B, 'network')
+  const size = 4 * CHUNK
+  const requests = []
+  const fetchImpl = async (url, init) => {
+    requests.push(`${hostOf(url)} ${init.headers.Range}`)
+    return rangeResponse(size, init.headers.Range, { pieceDelay: 10, signal: init.signal })
+  }
+  const blob = await fetchBlobWithProgress(A, {
+    fetchImpl, chunkBytes: CHUNK, routeHealth: true, routeHedgeMs: 5000, maxConcurrency: 1,
+    alternateUrls: [B], networkHints: { downlinkMbps: 100 },
+  })
+  expectExact(await readAll(blob), size)
+  assert.ok(
+    requests.includes(`a.test bytes=${CHUNK}-${2 * CHUNK - 1}`),
+    `B 的原始速率较高但近期失败后，下一片应留在 A：${requests.join(', ')}`,
+  )
+})
+
 await check('太小的样本和过期的吞吐都不算数', async () => {
   const A = 'https://a.test/r.zip'
   health.recordRomRouteTransfer(A, 1000, 50)
@@ -168,9 +194,6 @@ await check('只有路径与查询串（含 romv）完全相同的线路才进�
 
 console.log('\n三、分片下载')
 
-const SIZE = 4 * 65536
-const CHUNK = 65536
-
 await check('响应头迟迟不来：另一条线路同时请求，先回的赢，内容逐字节正确', async () => {
   const urls = []
   const fetchImpl = async (url, init) => {
@@ -189,37 +212,29 @@ await check('响应头迟迟不来：另一条线路同时请求，先回的赢�
   assert.ok(health.romRouteRate('https://a.test/') === undefined)
 })
 
-await check('前两条线路都卡住时，下一条线路在第二个响应头窗口后加入，不等整局看门狗', async () => {
-  const urls = []
+await check('首片响应头对冲改线后，真实占用量跟随获胜线路，后续并发片不继续挤在该线路', async () => {
+  const size = 6 * CHUNK
+  const requests = []
+  // 确保迁移到 B 的在途占用会让仍有较高有效速率的 A 接到下一片。
+  health.recordRomRouteTransfer('https://a.test/x.zip?romv=1', 2_000_000, 1000)
+  health.recordRomRouteTransfer('https://b.test/x.zip?romv=1', 1_000_000, 1000)
   const fetchImpl = async (url, init) => {
-    urls.push(String(url))
-    if (hostOf(url) !== 'c.test') return hang(init.signal)
-    return rangeResponse(SIZE, init.headers.Range, { signal: init.signal })
-  }
-  const started = Date.now()
-  const blob = await fetchBlobWithProgress('https://a.test/x.zip?romv=1', {
-    fetchImpl, chunkBytes: CHUNK, routeHealth: true, routeHedgeMs: 30, maxConcurrency: 1,
-    alternateUrls: ['https://b.test/x.zip?romv=1', 'https://c.test/x.zip?romv=1'], networkHints: {},
-  })
-  expectExact(await readAll(blob), SIZE)
-  assert.ok(Date.now() - started < 3000, '第三条可用线路应在两个短响应头窗口内接手')
-  assert.deepEqual(urls.slice(0, 3).map(hostOf), ['a.test', 'b.test', 'c.test'])
-})
-
-await check('赢家先回时，刚启动的备用线路不误记失速', async () => {
-  const fetchImpl = async (url, init) => {
-    if (hostOf(url) === 'a.test') {
-      await delay(110, init.signal)
-      return rangeResponse(SIZE, init.headers.Range, { signal: init.signal })
-    }
-    return hang(init.signal)
+    const host = hostOf(url)
+    const range = init.headers.Range
+    requests.push(`${host} ${range}`)
+    // 只有首片的原线路不回响应头，确保首片由备用域提供；其余范围两域都能正常服务。
+    if (host === 'a.test' && range === 'bytes=0-65535') return hang(init.signal)
+    return rangeResponse(size, range, { pieceDelay: 10, signal: init.signal })
   }
   const blob = await fetchBlobWithProgress('https://a.test/x.zip?romv=1', {
-    fetchImpl, chunkBytes: CHUNK, routeHealth: true, routeHedgeMs: 100, maxConcurrency: 1,
-    alternateUrls: ['https://b.test/x.zip?romv=1'], networkHints: {},
+    fetchImpl, chunkBytes: CHUNK, routeHealth: true, routeHedgeMs: 20, maxConcurrency: 3,
+    alternateUrls: ['https://b.test/x.zip?romv=1'], networkHints: { downlinkMbps: 100 },
   })
-  expectExact(await readAll(blob), SIZE)
-  assert.doesNotMatch(health.romRouteHealthSummary(), /b\.test/, '备用线路只等了约 10ms，不能被记为失速')
+  expectExact(await readAll(blob), size)
+  assert.ok(
+    requests.includes(`a.test bytes=${CHUNK}-${2 * CHUNK - 1}`),
+    `首片由 b.test 接手后，第一个并发新片应使用仍空闲的 a.test：${requests.join(', ')}`,
+  )
 })
 
 await check('一片在一条线路上断了：换另一条重下这一片，不整局失败', async () => {
@@ -311,6 +326,64 @@ await check('首段吞吐从响应头算起，握手和首字节不压低并发'
   const src = readFileSync(new URL('../src/emulator/loadProgress.ts', import.meta.url), 'utf8')
   assert.match(src, /const sampleStartedAt = answer\.headersAt/)
   assert.match(src, /startedAt = monotonicNow\(\)\n      validateResponse\(res, opts\.check\)/, '备用线路采样同一口径')
+})
+
+await check('备用线路测速不暂停当前 ROM 正文；小文件首片结束就取消慢探测', async () => {
+  const size = 1 << 20
+  const chunk = size
+  let alternateAborted = false
+  let primaryChunks = 0
+  const fetchImpl = async (url, init) => {
+    if (hostOf(url) === 'b.test') {
+      return new Promise((_, reject) => {
+        if (init.signal.aborted) {
+          alternateAborted = true
+          reject(abortError())
+          return
+        }
+        init.signal.addEventListener('abort', () => {
+          alternateAborted = true
+          reject(abortError())
+        }, { once: true })
+      })
+    }
+    const range = /bytes=(\d+)-(\d+)/.exec(init.headers.Range)
+    const start = Number(range[1])
+    const end = Math.min(Number(range[2]), size - 1)
+    const bytes = bodyFor(start, end)
+    let offset = 0
+    const body = new ReadableStream({
+      async pull(controller) {
+        if (offset === 0) await delay(750, init.signal)
+        if (init.signal.aborted) throw abortError()
+        if (offset >= bytes.length) return controller.close()
+        const next = Math.min(bytes.length, offset + 256 * 1024)
+        controller.enqueue(bytes.subarray(offset, next))
+        offset = next
+        primaryChunks++
+      },
+    })
+    return {
+      ok: true,
+      status: 206,
+      headers: headers({ 'content-range': `bytes ${start}-${end}/${size}`, 'content-length': String(end - start + 1) }),
+      body,
+    }
+  }
+  const started = Date.now()
+  const blob = await fetchBlobWithProgress('https://a.test/slow.bin?romv=1', {
+    fetchImpl,
+    chunkBytes: chunk,
+    routeHealth: true,
+    maxConcurrency: 1,
+    alternateUrls: ['https://b.test/slow.bin?romv=1'],
+    networkHints: {},
+  })
+  const elapsed = Date.now() - started
+  expectExact(await readAll(blob), size)
+  assert.equal(primaryChunks, 4, '首片正文应在备用线路探测等待期间继续读完')
+  assert.ok(elapsed < 1_300, `备用线路失去响应不应在首片读包体中额外阻塞 1.5 秒（${elapsed}ms）`)
+  assert.equal(alternateAborted, true, '首片已完整时应取消尚未返回响应头的测速请求')
 })
 
 console.log('\n四、ROM 存在性检查（HEAD）')

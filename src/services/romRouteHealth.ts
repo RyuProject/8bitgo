@@ -211,6 +211,13 @@ export function romRouteRate(url: string, now = Date.now()): number | undefined 
   return origin ? freshStat(origin, now).rate : undefined
 }
 
+/** 给分片调度用的有效吞吐：沿用排序器的近期故障折扣，未测线路用调用方的乐观先验。 */
+export function romRouteEffectiveRate(url: string, fallbackRate = 1, now = Date.now()): number {
+  const origin = romRouteOrigin(url)
+  const fresh = origin ? freshStat(origin, now) : { rate: undefined, failures: 0, open: false }
+  return (fresh.rate ?? fallbackRate) * 0.5 ** Math.min(fresh.failures, 6)
+}
+
 /**
  * 把同一对象的几种线路写法排个序：没熔断的在前；同组里按「吞吐 × 0.5^近期故障次数」，
  * 要快 15% 以上才越过排在它前面的线路，否则保持调用方给的原顺序（原顺序就是默认偏好）。
