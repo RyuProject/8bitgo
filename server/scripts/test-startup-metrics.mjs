@@ -1,7 +1,7 @@
 /** 启动漏斗的输入边界与 60 秒告警阈值；不连数据库。 */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { isSlowStartup, normalizeStartupEvent, normalizeStartupEventBatch, sanitizeStartupDetail, shapePhaseTiming, STARTUP_SLOW_MS } from '../src/startup-metrics.js'
+import { isSlowStartup, normalizeStartupEvent, normalizeStartupEventBatch, sanitizeStartupDetail, shapeFallbackRoute, shapePhaseTiming, STARTUP_SLOW_MS } from '../src/startup-metrics.js'
 import { playShell } from '../src/routes/play.js'
 
 const base = {
@@ -102,6 +102,14 @@ assert.deepEqual(shapePhaseTiming(), {
   avgResourceToRuntimeReadyMs: null,
   resourceToRuntimeReadySamples: 0,
 }, '没有阶段数据时应返回空值而不是伪造 0ms')
+assert.deepEqual(shapeFallbackRoute({
+  route: 'core:melondsds>melonds-compat:wasm-crash https://private.example/rom',
+  runtime: 'emulatorjs', attempts: '5', first_frames: '4', playable: '3', failures: '1',
+}), {
+  route: 'core:melondsds>melonds-compat:wasm-crash [URL]',
+  runtime: 'emulatorjs', attempts: 5, firstFrames: 4, playable: 3, failures: 1, unresolved: 1,
+}, '兜底路线展示前必须脱敏，并以尝试总数减去终态计算未确认数')
+assert.equal(shapeFallbackRoute({ runtime: '../bad', attempts: 2, playable: 4 }).runtime, 'unknown', '非法目标运行时不能回显进后台')
 
 assert.throws(() => normalizeStartupEvent({ ...base, event: 'almost_ready' }), /未知/)
 assert.throws(() => normalizeStartupEvent({ ...base, event: 'first_frame', attemptId: '' }), /attemptId/)
@@ -120,6 +128,9 @@ assert.match(metricsSource, /readiness_unobservable/, '汇总必须单独统计�
 assert.match(metricsSource, /fallback_attempts/, '启动汇总必须分别统计兜底尝试、成功和失败')
 assert.match(metricsSource, /fallback_successes/)
 assert.match(metricsSource, /fallback_failures/)
+assert.match(metricsSource, /const FALLBACK_ROUTE_QUERY = `/, '后台应按启动 attempt 合并兜底路线和结果')
+assert.match(metricsSource, /HAVING MAX\(e\.event = 'fallback_started'\) = 1/, '没有实际兜底开始事件的孤立阶段不能生成路线尝试')
+assert.match(metricsSource, /fallbackRoutes: fallbackRoutes\.map\(shapeFallbackRoute\)/, '兜底路线结果应经脱敏整形后返回')
 assert.match(metricsSource, /sanitizeStartupDetail\(row\.detail\)/, '历史错误摘要返回后台前也必须脱敏')
 assert.match(metricsSource, /WITH attempt_events AS/, '阶段统计必须先按一次启动配对事件')
 assert.match(metricsSource, /UNION ALL\s+SELECT game_id, country, first_frame_runtime/, '不同运行时的回退事件不能拼成一个阶段')

@@ -310,6 +310,16 @@ export interface StartupStats {
   byGame: StartupGroup[]
   byRuntime: StartupGroup[]
   byCountry: StartupGroup[]
+  /** 按一次启动归并后的自动兜底路线表现。 */
+  fallbackRoutes: Array<{
+    route: string
+    runtime: string
+    attempts: number
+    firstFrames: number
+    playable: number
+    failures: number
+    unresolved: number
+  }>
   recentSlow: Array<{
     slug: string
     title: string

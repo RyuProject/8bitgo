@@ -124,6 +124,43 @@ function StartupBreakdown({ title, rows }: { title: string; rows: StartupGroup[]
   )
 }
 
+function FallbackRouteBreakdown({ rows }: { rows: StartupStats['fallbackRoutes'] }) {
+  return (
+    <Card title="兜底路线效果">
+      <p className="mb-3 text-xs text-muted">按同一次启动合并兜底阶段；路线包含切换原因，目标运行时按实际接棒的运行时统计。</p>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[48rem] text-sm">
+          <thead className="text-left text-xs text-muted">
+            <tr>
+              <th className="pb-2 font-medium">路线 / 原因</th>
+              <th className="pb-2 font-medium">目标运行时</th>
+              <th className="pb-2 text-right font-medium">链路</th>
+              <th className="pb-2 text-right font-medium">首帧</th>
+              <th className="pb-2 text-right font-medium">可玩</th>
+              <th className="pb-2 text-right font-medium">失败</th>
+              <th className="pb-2 text-right font-medium">未确认</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-line">
+            {rows.map((row) => (
+              <tr key={`${row.runtime}:${row.route}`}>
+                <td className="max-w-[30rem] truncate py-2 font-mono text-xs" title={row.route}>{row.route}</td>
+                <td className="py-2 text-muted">{row.runtime}</td>
+                <td className="py-2 text-right tabular-nums">{row.attempts}</td>
+                <td className="py-2 text-right tabular-nums">{row.firstFrames}</td>
+                <td className="py-2 text-right tabular-nums text-online">{row.playable}</td>
+                <td className="py-2 text-right tabular-nums text-live">{row.failures}</td>
+                <td className="py-2 text-right tabular-nums text-muted">{row.unresolved}</td>
+              </tr>
+            ))}
+            {!rows.length && <tr><td colSpan={7} className="py-5 text-center text-sm text-muted">所选时间范围内没有自动兜底记录</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </Card>
+  )
+}
+
 function StartupPhaseCell({ ms, samples }: { ms: number | null; samples: number }) {
   return (
     <td className="py-2 text-right tabular-nums" title={`${samples} 个有效阶段样本`}>
@@ -422,6 +459,8 @@ export function AdminOverview() {
         <StartupBreakdown title="按运行时" rows={startup?.byRuntime ?? []} />
         <StartupBreakdown title="按地区" rows={startup?.byCountry ?? []} />
       </div>
+
+      <FallbackRouteBreakdown rows={startup?.fallbackRoutes ?? []} />
 
       <section className="space-y-3">
         <div className="flex flex-wrap items-end justify-between gap-3">

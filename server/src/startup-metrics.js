@@ -255,6 +255,23 @@ export function shapePhaseTiming(row = {}) {
   }
 }
 
+/** 后台兜底路线只展示白名单名称与已脱敏的路线摘要。 */
+export function shapeFallbackRoute(row = {}) {
+  const runtime = text(row.runtime, 32)
+  const playable = numeric(row, 'playable')
+  const failures = numeric(row, 'failures')
+  const attempts = numeric(row, 'attempts')
+  return {
+    route: sanitizeStartupDetail(row.route) ?? '路线详情不可用',
+    runtime: /^[A-Za-z0-9_-]{1,32}$/.test(runtime) ? runtime : 'unknown',
+    attempts,
+    firstFrames: numeric(row, 'first_frames'),
+    playable,
+    failures,
+    unresolved: Math.max(0, attempts - playable - failures),
+  }
+}
+
 const AGGREGATES = `
   COUNT(DISTINCT CASE WHEN e.event = 'detail_view' THEN e.visit_id END) AS detail_views,
   COUNT(DISTINCT CASE WHEN e.event = 'start_click' THEN CONCAT(e.visit_id, ':', e.attempt_id) END) AS starts,
@@ -273,6 +290,32 @@ const AGGREGATES = `
   SUM(e.event = 'fallback_failed') AS fallback_failures,
   AVG(CASE WHEN e.event = 'game_playable' THEN e.elapsed_ms END) AS avg_playable_ms,
   MAX(CASE WHEN e.event = 'game_playable' THEN e.elapsed_ms END) AS max_playable_ms`
+
+/** 先按一次启动合并兜底事件，避免首帧 / 结果阶段被重复算成多条路线尝试。 */
+const FALLBACK_ROUTE_QUERY = `
+  WITH fallback_attempts AS (
+    SELECT e.game_id, e.visit_id, e.attempt_id,
+           MAX(CASE WHEN e.event = 'fallback_started' THEN e.detail END) AS route,
+           MAX(CASE WHEN e.event = 'fallback_started' THEN e.runtime END) AS runtime,
+           MAX(e.event IN ('fallback_first_frame', 'fallback_succeeded')) AS first_frames,
+           MAX(e.event = 'fallback_playable') AS playable,
+           MAX(e.event = 'fallback_failed') AS failures
+      FROM game_startup_events e
+     WHERE e.created_at >= ?
+       AND e.event IN ('fallback_started', 'fallback_first_frame', 'fallback_succeeded', 'fallback_playable', 'fallback_failed')
+     GROUP BY e.game_id, e.visit_id, e.attempt_id
+    HAVING MAX(e.event = 'fallback_started') = 1
+  )
+  SELECT COALESCE(NULLIF(route, ''), '路线详情不可用') AS route,
+         COALESCE(NULLIF(runtime, ''), 'unknown') AS runtime,
+         COUNT(*) AS attempts,
+         SUM(first_frames) AS first_frames,
+         SUM(playable) AS playable,
+         SUM(failures) AS failures
+    FROM fallback_attempts
+   GROUP BY route, runtime
+   ORDER BY attempts DESC, route ASC
+   LIMIT 20`
 
 /**
  * 每次启动先按 visit/attempt 配对，再算事件间隔。不能直接平均所有 event.elapsed_ms：
@@ -428,12 +471,13 @@ export async function startupStats(rawDays = 7, rawQuery = '') {
   const days = Math.max(1, Math.min(90, Math.round(Number(rawDays) || 7)))
   const cutoff = cutoffFor(days)
   const search = text(rawQuery, 80)
-  const [summaryRows, byGame, byRuntime, byCountry, phaseRows, recentSlow, recentFailures] = await Promise.all([
+  const [summaryRows, byGame, byRuntime, byCountry, phaseRows, fallbackRoutes, recentSlow, recentFailures] = await Promise.all([
     query(`SELECT ${AGGREGATES} FROM game_startup_events e WHERE e.created_at >= ?`, [cutoff]),
     grouped(cutoff, 'game'),
     grouped(cutoff, 'runtime'),
     grouped(cutoff, 'country'),
     query(PHASE_TIMING_QUERY, [cutoff]),
+    query(FALLBACK_ROUTE_QUERY, [cutoff]),
     query(
       `SELECT g.slug, COALESCE(NULLIF(g.title_zh, ''), g.title) AS title,
               e.runtime, e.country, e.elapsed_ms AS elapsedMs, e.created_at AS createdAt
@@ -475,6 +519,7 @@ export async function startupStats(rawDays = 7, rawQuery = '') {
     byGame: withPhaseTiming(byGame, 'game'),
     byRuntime: withPhaseTiming(byRuntime, 'runtime'),
     byCountry: withPhaseTiming(byCountry, 'country'),
+    fallbackRoutes: fallbackRoutes.map(shapeFallbackRoute),
     recentSlow,
     recentFailures: recentFailures.map((row) => ({
       ...row,
