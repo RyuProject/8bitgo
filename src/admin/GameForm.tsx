@@ -2465,9 +2465,12 @@ function stageText(stage: UploadStage | null): string {
     : stage.done < stage.parts
       ? ` · 正在测速${stage.concurrency ? ` · ${stage.concurrency} 路` : ''}`
       : ''
+  const serverText = stage.serverWaitMs !== undefined
+    ? ` · Worker/R2 额外等待约 ${stage.serverWaitMs >= 1000 ? `${(stage.serverWaitMs / 1000).toFixed(1)}s` : `${Math.round(stage.serverWaitMs)}ms`}`
+    : ''
   return `分片 ${stage.done}/${stage.parts}` +
     (stage.resumed ? ` · 已恢复 ${stage.resumed} 片` : '') +
-    networkText
+    networkText + serverText
 }
 
 /**

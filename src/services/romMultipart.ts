@@ -801,12 +801,22 @@ async function createUpload(ctx: Ctx, key: string, file: Blob, ident: { fileName
 }
 
 /** 传一片。用 XHR 而不是 fetch：只有 XHR 能报上传进度 */
+function workerTimingMs(header: string | null): number | undefined {
+  for (const metric of header?.split(',') ?? []) {
+    if (!/^\s*worker(?:;|$)/i.test(metric)) continue
+    const duration = /(?:^|;)\s*dur=(\d+(?:\.\d+)?)(?:;|$)/i.exec(metric)?.[1]
+    const value = duration === undefined ? NaN : Number(duration)
+    if (Number.isFinite(value) && value >= 0) return value
+  }
+  return undefined
+}
+
 function putPart(
   ctx: Ctx,
   state: PendingUpload,
   partNumber: number,
   blob: Blob,
-  onLoaded: (bytes: number) => void,
+  onLoaded: (bytes: number, serverWaitMs?: number) => void,
   partNumberInHeader: boolean,
   onStart?: () => void,
   onUploadComplete?: () => void,
@@ -820,6 +830,9 @@ function putPart(
       return
     }
     const xhr = new XMLHttpRequest()
+    let uploadStartedAt: number | null = null
+    let uploadFinishedAt: number | null = null
+    let uploadFinishedEvent = false
     xhr.open('PUT', url)
     xhr.setRequestHeader('Authorization', `Bearer ${ctx.token}`)
     xhr.setRequestHeader('Content-Type', 'application/octet-stream')
@@ -851,8 +864,15 @@ function putPart(
       if (e.lengthComputable) onLoaded(e.loaded)
     }
     // XMLHttpRequest 的 upload 事件避开 CORS 预检和响应等待：它们会影响用户总耗时，却不代表上行链路速度。
-    xhr.upload.onloadstart = () => onStart?.()
-    xhr.upload.onload = () => onUploadComplete?.()
+    xhr.upload.onloadstart = () => {
+      uploadStartedAt = monotonicNow()
+      onStart?.()
+    }
+    xhr.upload.onload = () => {
+      uploadFinishedAt = monotonicNow()
+      uploadFinishedEvent = true
+      onUploadComplete?.()
+    }
     xhr.onerror = () => {
       done()
       reject(signal?.aborted ? new MultipartUploadAborted() : new UploadHttpError('上传连接被浏览器或边缘网络重置', 0))
@@ -865,7 +885,7 @@ function putPart(
     }
     xhr.onload = () => {
       // 旧浏览器若缺少 upload.load，退回完整响应时间；现代浏览器以正文送完为测速终点。
-      onUploadComplete?.()
+      if (!uploadFinishedEvent) onUploadComplete?.()
       done()
       if (signal?.aborted) {
         reject(new MultipartUploadAborted())
@@ -879,7 +899,14 @@ function putPart(
         }
       })()
       if (xhr.status >= 200 && xhr.status < 300 && data?.etag) {
-        onLoaded(blob.size)
+        const workerMs = workerTimingMs(xhr.getResponseHeader?.('Server-Timing') ?? null)
+        const uploadMs = uploadStartedAt !== null && uploadFinishedAt !== null
+          ? Math.max(0, uploadFinishedAt - uploadStartedAt)
+          : undefined
+        const serverWaitMs = workerMs !== undefined && uploadMs !== undefined
+          ? Math.max(0, workerMs - uploadMs)
+          : undefined
+        onLoaded(blob.size, serverWaitMs)
         resolve(data.etag)
         return
       }
@@ -955,7 +982,7 @@ async function putPartWithRetry(
   state: PendingUpload,
   partNumber: number,
   blob: Blob,
-  onLoaded: (bytes: number) => void,
+  onLoaded: (bytes: number, serverWaitMs?: number) => void,
   gate: MultipartUploadGate,
   stopRequested: () => boolean = () => false,
   stopOnFatalError?: (error: unknown) => void,
@@ -982,9 +1009,9 @@ async function putPartWithRetry(
         return uploadTransferPool.run(() => {
           if (signal?.aborted) throw new MultipartUploadAborted()
           if (stopRequested()) throw new MultipartStoppedAfterSiblingFailure()
-          return putPart(ctx, state, partNumber, blob, (bytes) => {
+          return putPart(ctx, state, partNumber, blob, (bytes, serverWaitMs) => {
             reportProgress(bytes)
-            onLoaded(bytes)
+            onLoaded(bytes, serverWaitMs)
           }, useHeaderProtocol, markStarted, markUploadComplete, signal)
         }, signal)
       }, blob.size, beforeDrain, signal)
@@ -1002,9 +1029,9 @@ async function putPartWithRetry(
             return uploadTransferPool.run(() => {
               if (signal?.aborted) throw new MultipartUploadAborted()
               if (stopRequested()) throw new MultipartStoppedAfterSiblingFailure()
-              return putPart(ctx, state, partNumber, blob, (bytes) => {
+              return putPart(ctx, state, partNumber, blob, (bytes, serverWaitMs) => {
                 reportProgress(bytes)
-                onLoaded(bytes)
+                onLoaded(bytes, serverWaitMs)
               }, false, markStarted, markUploadComplete, signal)
             }, signal)
           }, blob.size, (error) => noteFatalError(error, false), signal)
@@ -1121,6 +1148,7 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
   /** 每片当前已上传的字节数（含正在传的那几片），进度条按它们的和算 */
   const loaded = new Map<number, number>()
   let loadedBytes = 0
+  let latestServerWaitMs: number | undefined
   for (const n of finished) {
     const bytes = sizeOfPart(n)
     loaded.set(n, bytes)
@@ -1144,6 +1172,7 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
       resumed,
       concurrency: network.limit,
       measuredMbps: network.calibrated ? network.measuredMbps : undefined,
+      serverWaitMs: latestServerWaitMs,
     })
   }
   const report = (force = false) => {
@@ -1155,7 +1184,10 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
     }
     if (reportTimer === null) reportTimer = window.setTimeout(emitProgress, 80 - elapsed)
   }
-  const setLoaded = (n: number, bytes: number) => {
+  const setLoaded = (n: number, bytes: number, serverWaitMs?: number) => {
+    if (typeof serverWaitMs === 'number' && Number.isFinite(serverWaitMs) && serverWaitMs >= 0) {
+      latestServerWaitMs = Math.round(serverWaitMs * 10) / 10
+    }
     const previous = loaded.get(n) ?? 0
     const safe = Math.max(0, Math.min(sizeOfPart(n), bytes))
     if (safe === previous) return
@@ -1190,8 +1222,8 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
         const hashTask = resumable
           ? fingerprintRomPart(blob).catch(() => null)
           : null
-        const etag = await putPartWithRetry(ctx, state, n, blob, (bytes) => {
-          setLoaded(n, bytes)
+        const etag = await putPartWithRetry(ctx, state, n, blob, (bytes, serverWaitMs) => {
+          setLoaded(n, bytes, serverWaitMs)
         }, uploadGate, () => failure !== null, (error) => { failure ??= error }, signal)
         const contentHash = hashTask ? await hashTask : null
         // R2 已确认本次分片来自当前文件；摘要失败只禁用这片的未来复用，不能把成功上传报成失败。
@@ -1242,6 +1274,7 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
     resumed,
     concurrency: network.limit,
     measuredMbps: network.calibrated ? network.measuredMbps : undefined,
+    serverWaitMs: latestServerWaitMs,
   })
   return { key, url: romUrlForKey(key), size: completed.size, etag: completed.etag }
 }

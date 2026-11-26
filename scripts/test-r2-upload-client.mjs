@@ -270,6 +270,7 @@ console.log('✅ ROM 分片在首片早期样本后保守启动并发，慢速�
   let firstPartFinished = false
   let overlapObserved = false
   const startedParts = []
+  const uploadedStages = []
   globalThis.fetch = async (url, init) => {
     const target = String(url)
     if (target.endsWith('?uploads')) return Response.json({ uploadId: 'up-early-sample', marker: '_uploads/early-sample.marker', partNumberInHeader: true })
@@ -285,6 +286,7 @@ console.log('✅ ROM 分片在首片早期样本后保守启动并发，慢速�
     responseText = ''
     open(_method, _url) {}
     setRequestHeader(name, value) { this.headers[String(name).toLowerCase()] = String(value) }
+    getResponseHeader(name) { return String(name).toLowerCase() === 'server-timing' ? 'worker;dur=1000, edge;desc="MISS"' : null }
     send(blob) {
       this.upload.onloadstart?.()
       const part = Number(this.headers['x-8bg-part-number'])
@@ -311,7 +313,9 @@ console.log('✅ ROM 分片在首片早期样本后保守启动并发，慢速�
     abort() { this.onabort?.() }
   }
   try {
-    const result = await uploadRomMultipart(file, 'roms/ps2/early-upload-sample.iso')
+    const result = await uploadRomMultipart(file, 'roms/ps2/early-upload-sample.iso', (_pct, stage) => {
+      if (stage?.serverWaitMs !== undefined) uploadedStages.push(stage.serverWaitMs)
+    })
     assert.equal(result.size, file.size)
   } finally {
     globalThis.XMLHttpRequest = originalXHR
@@ -319,6 +323,7 @@ console.log('✅ ROM 分片在首片早期样本后保守启动并发，慢速�
   }
   assert.equal(overlapObserved, true, '必须在第一片完成前启动至少一片后续分片')
   assert.deepEqual([...startedParts].sort((a, b) => a - b), [1, 2, 3])
+  assert.ok(uploadedStages.some((ms) => ms > 0 && ms < 1000), '应从 Worker Server-Timing 中扣除实际上传体时间，估算额外确认等待')
 }
 console.log('✅ 实际上传链路在首片完成前启动后续分片，并正确合并校验对象大小')
 
