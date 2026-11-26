@@ -232,6 +232,7 @@
     "test:open-console": "node scripts/test-open-console.mjs",
     "test:tv-page": "node scripts/test-tv-page.mjs",
     "test:platforms": "node scripts/test-platforms.mjs",
+    "test:platform-bios-admin": "node scripts/test-platform-bios-admin.mjs",
     "test:local-rom": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-local-rom-detect.mjs",
     "test:snes-platform": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-snes-platform.mjs",
     "test:dolphin": "node scripts/check-dolphin.mjs && node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-dolphin-range.mjs",

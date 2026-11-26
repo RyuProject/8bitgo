@@ -39,7 +39,12 @@ import { Card, btnClass, inputClass } from './ui'
  * ⚠️ 平台级那一格**留着不动**：它现在是「这个平台默认给哪份」，也是老数据（还没填
  * arcade_bios 的游戏）唯一的 BIOS 来源。删了它，所有 Neo Geo 游戏当天全部起不来。
  */
-const NEED_BIOS: Array<{ id: PlatformId; hint: string }> = [
+const NEED_BIOS: Array<{ id: PlatformId; hint: string; accept?: string }> = [
+  {
+    id: 'gba',
+    hint: '仅在浏览器没有 WebAssembly、GBA 改用 IodineGBA 纯 JavaScript 退路时需要；必须是正好 16 KiB 的 GBA BIOS。可上传 .bin / .bios / .gba，或 ZIP 根目录内含其中一个文件。常规 mGBA（WebAssembly）开局不依赖此项。',
+    accept: '.zip,.bin,.bios,.gba',
+  },
   {
     id: 'symbian',
     hint: 'EKA2L1 的诺基亚 N-Gage QD（S60v1 / RH-29）设备 ROM。请上传从设备导出的 .rom / SYM.ROM；首次打开塞班模拟器时会自动安装到玩家当前浏览器。RPKG 是另一份 Z 盘系统文件包，不属于此项。',
@@ -544,7 +549,7 @@ export function PlatformBiosPanel() {
                     }
                     hint={r.hint}
                     placeholder="/bios/文件名 或对象存储 key"
-                    accept={r.id === 'symbian' ? '.rom' : undefined}
+                    accept={r.accept ?? (r.id === 'symbian' ? '.rom' : undefined)}
                     {...rowProps(r.id)}
                   />
                 ))}

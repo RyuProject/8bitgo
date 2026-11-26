@@ -918,7 +918,7 @@ export async function diagnosticGroups(rawDays = 7, rawQuery = '', rawEvent = ''
   }
 }
 
-function shapeSample(row) {
+export function shapeSample(row) {
   let payload = null
   try {
     payload = JSON.parse(row.payload)
@@ -926,8 +926,10 @@ function shapeSample(row) {
     payload = null
   }
   const diagnostics = normalizeDiagnostics(payload)
-  if (diagnostics && !diagnostics.diagnosis) {
-    diagnostics.diagnosis = diagnoseStartupFailure({ event: row.event, runtime: row.runtime, platform: row.platform, detail: diagnostics.reason, diagnostics })
+  // 新规则可把历史现场中原先归成 unknown 的明确原因补成当前分类，但不重写已知诊断或任何现场数据。
+  if (diagnostics && (!diagnostics.diagnosis || diagnostics.diagnosis.code === 'unknown')) {
+    const currentDiagnosis = diagnoseStartupFailure({ event: row.event, runtime: row.runtime, platform: row.platform, detail: diagnostics.reason, diagnostics })
+    if (!diagnostics.diagnosis || currentDiagnosis.code !== 'unknown') diagnostics.diagnosis = currentDiagnosis
   }
   return {
     id: String(row.id),

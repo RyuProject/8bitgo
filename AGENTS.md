@@ -289,6 +289,7 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
 - **版本化核心支持安全续传**（2026-11-21，大陆网络短暂断流）：旧 XHR 兜底会从头再拉整份核心，几 MB 后再次断流仍要重下。现在仅对 `?v=` 版本化的 `cores/*-wasm.data` GET 请求 `Range`；源站 Range 必须走原始 identity 文件，不能拿 `.br` 偏移。版本守卫核实内容哈希后给这些核心发完整 SHA-256 强 ETag（Express 默认弱 ETag 不可用于续传）；版本不匹配时保留 no-store，且不给强 ETag。首响和续传都校验 `206`、完整 `Content-Range`、总长度、强 ETag 和 identity 编码；弱 ETag、缺 CORS 暴露头、代理忽略 Range、偏移不连续或内容版本变化时丢弃旧前缀，完整重下，绝不能跨版本拼字节。Fetch 流中断时 XHR 可从当前内存偏移接续；跨页面只从独立库 `8bitgo-ejs-core-resume-v1` 恢复已经提交的连续 **1 MiB** 分片，manifest 与分片都按 URL + 强 ETag + 总长核对，最终不完整片不落盘。分片库最多 4 项 / 48 MiB、单核心最多 64 MiB、7 天过期；空间不足、IndexedDB 卡住 / 被禁用、Range 或响应头不可用都只关闭续传旁路，不影响正常整包下载，也不写 EmulatorJS 缓存挂死标记。成功接收完整核心后清掉分片。助手源码在 `scripts/lib/ejs-core-resume-runtime.js`，由 `npm run ejspatch` 内嵌；`check-emulatorjs.mjs` 会比对内嵌副本，CN Edge 必须暴露 `Content-Range / ETag / Content-Encoding`。`npm run test:ejs-download` 覆盖同局 XHR 偏移续接、跨页面持久化、ETag 改变、弱 ETag、无 IDB 和错误响应；服务端 `test:precompressed-static` 覆盖真实 Range / If-Range；不可只测补丁字符串。
 - **核心 Fetch 连响应头都没拿到时也要切换读取方式**（2026-11-22，大陆 Android WebView 138，《拳皇 97 / 2002》《King of Gladiator Plus》，诊断包 #2907–#2910）：4 次访问在同一份 `fbneo-legacy-wasm.data` 上等待 30 秒后由引擎中止，Resource Timing 是 HTTP 0 / 0 字节；生产文件存在，源站与 CN 入口 Range 探测都返回完整 206。旧 XHR 只在响应头已到、读取包体失败后运行，因此这类首字节前停滞没有备用读取。现在仅当版本化核心 GET 的本地响应头时限触发时，用同 URL 的 XHR 重取完整包，再经过原有状态、长度与错误页校验；普通网络错误和外部取消不额外重试。超时与首个响应竞争时，流回退允许的仍只有本地超时标记。回归覆盖超时后 XHR 成功、普通 AbortError 不发 XHR，并保留 Range / ETag / 错误响应测试。
 - **Fetch 在整份核心传完后仍可能以 TypeError 拒绝**（2026-11-25，大陆 32 位 Chrome 99，《King of Gladiator Plus》，诊断包 #4181）：日志里的 `Failed to fetch` 单独不足以区分网络错误，但这次 Resource Timing 的编码体、解码体字节数都精确等于当前 `fbneo-legacy-wasm.data`，传输字节数也覆盖整份文件；之后同局重试未收到字节，最终首帧耗时约 238 秒。只在带当前核心内容哈希的 URL、同次请求 Resource Timing 证明完整传输、XHR 返回字节数再次精确匹配核心清单时，允许一次 XHR arraybuffer 恢复。缺少计时、旧版本、部分字节、外部取消和普通网络错误均不触发整包重试；这修复的是确认完整传输后的恢复缺口，不代表一般网络失败都能重试。回归：`npm run test:ejs-download`。
+  复核该现场发现，首次回归夹具用了裸内容哈希，但生产 Range 核心 URL 实际是 `<内容哈希>.range1`；恢复助手按完整字符串相等比较，因而把“当前版本”误判成旧版，完整传输后的 XHR 恢复根本没触发。现在只接受裸哈希或 `<内容哈希>.rangeN`，并用生产 URL 形式回归；不能为了放行而接受任意后缀或放宽完整字节校验。
 - **大陆核心断流的 Range 恢复必须能校验版本**（2026-11-22，诊断包 #2903 / #2907 / #2910 复核）：CN `/_cn/emulatorjs/cores/*-wasm.data` 经 EdgeOne 返回 206，却带弱 ETag，且跨源页面读不到 `Content-Range`、`ETag` 与编码头；这会阻止浏览器验证 `If-Range` 并安全续接，恢复时只能再拉整份核心，可能加重首字节前停滞后的下载失败。源站仅在内容哈希匹配时给核心 Range 响应完整 SHA-256 强 ETag，`/_cn/emulatorjs/` 暴露 Range 校验所需响应头；`EJS_CORE_URL_EPOCH` 仅给核心二进制换查询版本以绕过无法清除的旧边缘响应头缓存，核心内容哈希不变。不能据此断言此前的网络中止完全由响应头导致。回归：`npm run test:precompressed-static`、`npm run test:cn-edge`、`npm run test:ejs-cores`。
 - **核心启动看门狗不计后台时间**（同一现场）：手机浏览器将游戏页放后台约 278 秒后冻结轮询与 WASM 解压 / 编译；旧适配器仍用墙钟判断 120 秒无活动，回来时立即误报「下载游戏核心 100% 卡住」。隐藏时暂停轮询，回到前台重置心跳并恢复完整预算；若前台仍无活动，之后照常报错。
 
@@ -1376,8 +1377,9 @@ download.8bitgo.com（0.17 秒）；首段测速把握手和约 1 秒首字节�
   `chooseRomHost`（有真实数据时不跑 64KB 探针）、下载器、PSP / Dolphin / PS2 的光盘候选都读同一份排序。
 - HEAD 存在性检查（`roms.ts` 的 `hedgedProbe`）：1 秒没答复或答不上来就同时问下一条；原地址的 404 是终论，备用线路的 404 要等其余线路答完。
 - `fetchBlobWithProgress`：吞吐从响应头算起；有真实样本时 effectiveType=3g 不再强制单路。**只有路径与查询串（含 romv）完全相同**的线路
-  （`sameObjectRoutes`）才混着取分片：按「吞吐 ÷ 在途数」分到各线路，响应头 2.5 秒（≥6×RTT、≥3×本局中位）没到就在另一条线路发同一 Range，
-  失败片换线重试，空出来的一路对最慢的片做尾部对冲（先完的落盘、另一路中止，每片一次）。首片期间提前开的分片也走池子，能被对冲。
+  （`sameObjectRoutes`）才混着取分片：按「吞吐 ÷ 在途数」分到各线路，响应头 2.5 秒（≥6×RTT、≥3×本局中位）没到就在另一条线路发同一 Range；
+  若前两条仍无响应头，每过一个同样的窗口再试下一条，最多三路，避免两条线路静默挂起后等满整局看门狗。赢家回响应头后立刻中止输家；
+  只有已经超过自身响应头等待窗口的输家才记为失速，避免刚启动的备用线路被误熔断。失败片换线重试，空出来的一路对最慢的片做尾部对冲（先完的落盘、另一路中止，每片一次）。首片期间提前开的分片也走池子，能被对冲。
   不带 romv 绝不混片；省流量 / 2G 不对冲。注入 `fetchImpl` 的测试默认 `routeHealth: false`，保持固定请求顺序。
 - 浏览器实测（同一 ROM、同一网络）：19.4 秒 → 6.8 秒。回归：`npm run test:rom-route-health && npm run test:chunked-fetch`。
 
@@ -4260,6 +4262,7 @@ React 仍从原父元素删那个文本节点 → 整页崩到兜底页（facebo
   它必须拿到正好 16 KiB 的平台 BIOS，未配置时开局前报配置错误。IodineGBA 没有即时存档 ABI，游戏内电池存档只写独立的
   `8bitgo.iodinegba.battery.v1` 本地键，不与 EmulatorJS 的 SRAM / 云存档槽互相覆盖。上游源码钉在 `vendor/iodinegba/`，
   `npm run iodinegba` 重新生成 `public/iodinegba/iodinegba.js` 与内容哈希版本；更新核心时必须同时改 URL 版本。
+  BIOS 管理页 `src/admin/PlatformBiosPanel.tsx` 必须保留 GBA 行（`NEED_BIOS`）：它只服务没有 WebAssembly 的 IodineGBA 退路，正常 mGBA 开局不依赖；删掉这一行会让管理员无法通过后台解决玩家的 BIOS 缺失诊断。回归：`npm run test:platform-bios-admin`。
   js-dos 本身就是 WebAssembly，没有纯 JS 退路。
   回归：`npm run test:js-zstd-fallback`（fzstd 逐字节解开 @bokuweb/zstd-wasm 等级 19 的 frame，含 8MB 满块）。
   用 Chromium 110 加 `--js-flags=--noexpose-wasm` 可以原样复现（线上旧版崩到兜底页，修后页面正常、点开始给出提示）。
