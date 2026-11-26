@@ -8,15 +8,13 @@
  * 这里用 jsnes 自带的高层 Browser 类：它负责 canvas、WebAudio、键盘与手柄，
  * 并提供 destroy() 做彻底清理，正好对上 Runtime.mount 的「返回销毁函数」约定。
  */
-import type { Capability, CaptureSources, LoadProgress, MountOptions, PadButton, RuntimeHandle } from '../types'
+import type { Capability, CaptureSources, MountOptions, PadButton, RuntimeHandle } from '../types'
 import { canvasToBlob } from '../recorder'
 import { getT, fmt } from '@/services/i18n'
-import { extractRomFromZip, isZip } from '@/lib/unzip'
-import { assertNesRom } from '@/lib/romValidation'
-import { loadGameBytes } from '../romLoader'
 import { isRomNetworkFailure } from '../loadProgress'
 import { analyzeJsnesCompatibility } from '../nesMapper'
-import { installJsnesSafeStop, probeJsnesStartup } from '../jsnesCompat'
+import { installJsnesSafeStart, installJsnesSafeStop, probeJsnesStartup } from '../jsnesCompat'
+import { JsnesRomTooLargeError, readJsnesRom } from '../jsnesRom'
 import { startGamepadInput, type GamepadInput } from '../gamepadInput'
 import { installPadKeyboard } from '../padKeyboard'
 import type { PadAction, Seat } from '@/services/padKeys'
@@ -82,32 +80,6 @@ function toBinaryString(buf: ArrayBuffer): string {
 }
 
 /**
- * 读取 ROM 字节。
- *
- * 这里做两件 jsnes 自己不会做的事：
- *
- * 1. **认出「取到的不是 ROM」**。ROM 根地址配错时（比如少写 https://），
- *    请求会落到本站的 SSR 兜底路由上，返回 200 + 一个 HTML 页面。
- *    直接喂给 jsnes 的话只会得到一句「Not a valid NES ROM.」，
- *    完全看不出真正的原因是地址配错了。这里提前说清楚。
- *
- * 2. **解压**。站点允许 .zip 格式的 ROM，EmulatorJS 内部会自己解压，jsnes 不会。
- *    这里按**内容**判断（zip 的 PK 魔数），文件名叫什么无关 ——
- *    实际见过把 zip 存成 .nes 的情况。
- */
-async function readRom(game: File | string, onProgress?: (p: LoadProgress) => void, signal?: AbortSignal): Promise<ArrayBuffer> {
-  const loaded = await loadGameBytes(game, onProgress, signal)
-  let buf = loaded.data
-
-  if (isZip(buf)) {
-    const { data } = await extractRomFromZip(buf, ['nes', 'unf', 'unif', 'fds'])
-    buf = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer
-  }
-  assertNesRom(buf)
-  return buf
-}
-
-/**
  * jsnes 的 Browser 实例，比它的类型声明多不少东西。
  * 下划线开头的是它的实现细节，用之前都做了存在性判断。
  */
@@ -146,6 +118,8 @@ interface JsnesFrameTimer {
   /** rAF 回调。是实例属性，所以可以整个换掉 —— installClock 就是这么修的 */
   onAnimationFrame: (time: number) => void
   requestAnimationFrame: () => void
+  start?: () => void
+  stop?: () => void
   /** onGenerateFrame() + lastFrameTime += interval */
   generateFrame: () => void
 }
@@ -154,6 +128,7 @@ interface JsnesFrameTimer {
 interface JsnesSpeakers {
   audioCtx?: AudioContext | null
   node?: AudioWorkletNode | null
+  start?: () => Promise<unknown> | unknown
   /** 下面三项是 safe stop 对 jsnes 3.0.0 生命周期的最小镜像，升级包时由 test:jsnes 盯着 */
   stop?: () => void
   _removeResumeListeners?: () => void
@@ -177,6 +152,7 @@ interface JsnesBrowser {
   _screen?: { canvas?: HTMLCanvasElement }
   _speakers?: JsnesSpeakers
   _frameTimer?: JsnesFrameTimer
+  _fpsInterval?: number
 }
 
 /**
@@ -260,8 +236,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let gain: GainNode | null = null
   /** stop() 要据此判断能不能继续按上游写死的 destination 去 disconnect */
   let audioRerouted = false
-  let speakerStopPatched = false
+  let audioLifecyclePatched = false
   let volume = 1
+  let soloClockStopped = false
+  let soloPaused = false
   const caps = new Set<Capability>()
 
   // 容器：jsnes 会把 canvas 塞进来
@@ -310,6 +288,32 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let gamepad: GamepadInput | null = null
   /** 键盘监听的卸载函数，destroy 时要摘 —— 不摘的话方向键会一直被 preventDefault */
   let padKeyboard: (() => void) | null = null
+
+  /** 启动中途失败时也要收掉 Browser 已经建立的全局监听、轮询和音频上下文。 */
+  const cleanupBrowserResources = () => {
+    try { unlockAudio?.() } catch { /* 清理一个失效的手势监听不能挡住后续资源释放 */ }
+    unlockAudio = null
+    window.removeEventListener('resize', onResize)
+    try { padKeyboard?.() } catch { /* 继续清理 Browser 自己的键盘监听 */ }
+    padKeyboard = null
+    try { gamepad?.stop() } catch { /* 轮询停止失败不能留下音频和 DOM */ }
+    gamepad = null
+    const instance = browser
+    browser = null
+    try {
+      instance?.destroy()
+    } catch {
+      /* Browser 构造或核心启动失败时，尽力清理但不能盖住原始错误 */
+    }
+    try {
+      gain?.disconnect()
+    } catch {
+      /* AudioContext 可能已随 Browser.destroy 关闭 */
+    }
+    gain = null
+    audioRerouted = false
+    host.remove()
+  }
 
   /** 上一次 rAF 到达的时刻；音频那条线靠它判断 rAF 是不是被浏览器停了 */
   let lastRafAt = 0
@@ -390,6 +394,34 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
   }
 
+  /** 联机只接管模拟帧时钟；保留本地音频节点，双方各自听到自己的游戏声音。 */
+  const stopSoloFrameClock = () => {
+    const instance = browser
+    if (!instance?._frameTimer) return
+    soloClockStopped = true
+    instance?._frameTimer?.stop?.()
+    if (instance?._fpsInterval !== undefined) {
+      window.clearInterval(instance._fpsInterval)
+      instance._fpsInterval = undefined
+    }
+  }
+
+  const resumeSoloFrameClock = () => {
+    if (!soloClockStopped) return
+    const ft = browser?._frameTimer
+    if (!ft) return
+    soloClockStopped = false
+    installClock(ft)
+    ft.start?.()
+  }
+
+  /** 锁步联机不能只暂停本地一端；握手期间也隐藏单机暂停按钮，避免制造不同步状态。 */
+  const setSoloPauseAvailable = (available: boolean) => {
+    if (available) caps.add('pause')
+    else caps.delete('pause')
+    options.onCaps?.(caps)
+  }
+
   /**
    * 往 worklet 里灌一段静音，把缓冲区垫到 AUDIO_CUSHION_MS。
    *
@@ -406,9 +438,6 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     node.port.postMessage({ type: 'samples', left: silence, right: silence })
     lastCushionAt = performance.now()
   }
-
-  /** 等 AudioWorklet 就绪最多等这么久；等不到就放弃（没声音也得让游戏能玩） */
-  const AUDIO_READY_TIMEOUT_MS = 5000
 
   /**
    * 等 jsnes 的音频节点就绪，然后做两件事。**两件都不能同步做**：
@@ -445,34 +474,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    * 暂停会把整个 AudioContext 关掉（Speakers.stop()），恢复播放时重建一个新的，
    * 所以恢复之后要再调一次 —— 旧的 gain 挂在已经关闭的 context 上，是死的。
    */
-  const attachAudio = async () => {
-    const deadline = Date.now() + AUDIO_READY_TIMEOUT_MS
-    let speakers = browser?._speakers
-    while (!destroyed && (!speakers?.audioCtx || !speakers.node)) {
-      if (Date.now() > deadline) return
-      await new Promise((r) => setTimeout(r, 50))
-      speakers = browser?._speakers
-    }
+  const attachAudio = () => {
+    const speakers = browser?._speakers
     const ctx = speakers?.audioCtx
     const node = speakers?.node
     if (destroyed || !speakers || !ctx || !node) return
-
-    if (!speakerStopPatched) {
-      installJsnesSafeStop(
-        speakers,
-        () => audioRerouted,
-        () => {
-          audioRerouted = false
-          try {
-            gain?.disconnect()
-          } catch {
-            /* context 已关时节点可能也已失效 */
-          }
-          gain = null
-        },
-      )
-      speakerStopPatched = true
-    }
 
     /**
      * AudioContext 得自己叫醒。
@@ -515,6 +521,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     speakers.onBufferUnderrun = () => {
       const sp = browser?._speakers
       if (destroyed || !sp) return
+      if (netplay || netplayActive) {
+        // 锁步等待远端输入时只补静音；不能让声音回调偷偷推进一帧，造成双方状态分叉。
+        if (performance.now() - lastCushionAt > CUSHION_REFILL_MS) fillCushion(sp)
+        return
+      }
       if (performance.now() - lastRafAt > RAF_STALE_MS) {
         // rAF 真的停了（页面在后台）。这时让音频接管时钟 —— 和 jsnes 原来的行为一致，
         // 否则声音会一直断。回到前台后 installClock 会把帧时钟拉回来。
@@ -690,18 +701,18 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (netplay === target) netplay = null
     netplaySession.current = null
     resetNetplayLoop()
+    if (!destroyed) setSoloPauseAvailable(true)
     if (!resumeSolo || destroyed) return
-    try {
-      browser?.start?.()
-    } catch {
-      /* 已经恢复也无妨。 */
-    }
-    if (browser?._frameTimer) installClock(browser._frameTimer)
+    // 联机期间音频一直运行；这里只重启被初始状态同步停掉的模拟帧时钟。
+    resumeSoloFrameClock()
   }
 
   /** 开 / 加入 jsnes 联机；返回是否成功发起了连接 */
   const startNetplay = async (): Promise<boolean> => {
     if (netplay || !netplaySession.current || !browser?.nes) return false
+    // 适配器无法替工具栏清除它自己的“已暂停”状态；要求玩家先恢复，避免联机退出后 UI 与游戏状态不一致。
+    if (soloPaused) return false
+    setSoloPauseAvailable(false)
     const session = netplaySession.current
     const np = new JsnesNetplay({
       roomId: session.roomId,
@@ -712,20 +723,20 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         const nes = browser?.nes
         if (!nes) throw new Error('模拟器尚未准备好')
         clearCatchup()
-        browser?.stop?.()
+        stopSoloFrameClock()
         return nes.toJSON()
       },
       applyInitialState: (state) => {
         const nes = browser?.nes
         if (!nes || !state || typeof state !== 'object') throw new Error('房主状态不可用')
         clearCatchup()
-        browser?.stop?.()
+        stopSoloFrameClock()
         nes.fromJSON(state)
       },
       onReady: () => {
         if (destroyed || netplay !== np || !browser) return
         netplayActive = true
-        browser.stop?.()
+        stopSoloFrameClock()
         resetNetplayLoop()
         const ft = browser._frameTimer
         if (ft) startNetplayLoop(ft)
@@ -767,7 +778,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         import('jsnes').catch((error: unknown) => {
           throw new JsnesStartupError(error instanceof Error ? error.message : String(error), 'runtime')
         }),
-        readRom(options.game, options.onProgress, aborter.signal).catch((error: unknown) => {
+        readJsnesRom(options.game, options.onProgress, aborter.signal).catch((error: unknown) => {
+          if (error instanceof JsnesRomTooLargeError) throw error
           throw new JsnesStartupError(
             error instanceof Error ? error.message : String(error),
             isRomNetworkFailure(error) ? 'network' : 'content',
@@ -821,20 +833,36 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             console.warn('[jsnes] 运行期错误（不拆会话）', err)
             return
           }
+          cleanupBrowserResources()
           options.onError?.(fmt(rt.jsnesRunFailed, { msg: err.message }), 'runtime')
         },
       }) as unknown as JsnesBrowser
 
+      if (browser._speakers) {
+        installJsnesSafeStop(
+          browser._speakers,
+          () => audioRerouted,
+          () => {
+            audioRerouted = false
+            try {
+              gain?.disconnect()
+            } catch {
+              /* context 已关时节点可能也已失效 */
+            }
+            gain = null
+          },
+        )
+        audioLifecyclePatched = installJsnesSafeStart(
+          browser._speakers,
+          attachAudio,
+          (error) => console.warn('[jsnes] 音频初始化失败，继续静音运行', error),
+        )
+      }
+
       try {
         browser.loadROM(romData)
       } catch (e) {
-        const inst = browser
-        browser = null
-        try {
-          inst.destroy()
-        } catch {
-          /* 清理失败就算了，至少监听已经摘掉 */
-        }
+        cleanupBrowserResources()
         /**
          * ⚠️ loadROM 失败要换引擎，不能原样重试。
          *
@@ -856,7 +884,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
       window.addEventListener('resize', onResize)
 
-      for (const c of ['pause', 'screenshot', 'record', 'gamepad', 'touchpad'] as Capability[]) caps.add(c)
+      for (const c of ['screenshot', 'record', 'gamepad', 'touchpad'] as Capability[]) caps.add(c)
+      if (!options.netplay) caps.add('pause')
 
       /*
         停掉 jsnes 自带的键盘映射，换上我们自己那套（services/padKeys.ts + padKeyboard.ts）。
@@ -880,7 +909,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       options.onCaps?.(caps)
 
       // 音频要等 AudioWorklet 加载完才能接，不能在这里同步做（见 attachAudio 的说明）
-      void attachAudio()
+      if (!audioLifecyclePatched) attachAudio()
 
       readyFired = true
       options.onReady?.()
@@ -890,6 +919,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     } catch (e) {
       if (destroyed) return
       const msg = e instanceof Error ? e.message : String(e)
+      if (!readyFired) cleanupBrowserResources()
+      if (e instanceof JsnesRomTooLargeError) {
+        options.onUnsupported?.(e.message)
+        return
+      }
       options.onError?.(fmt(rt.jsnesLoadFailed, { msg }), e instanceof JsnesStartupError ? e.scope : 'runtime')
     }
   })()
@@ -901,7 +935,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     volume,
     saveMetadata: { core: 'jsnes', build: '3.0.0', format: 'jsnes-state' },
     setPaused: (paused) => {
+      // 暂停一端会让 lockstep 双方推进不同的帧；联机握手与游玩期间都不接受单机暂停。
+      if (netplay || netplayActive) return
       if (paused) {
+        soloPaused = true
         // 补帧的定时器要一起收：否则暂停之后画面还会往前走一两帧
         clearCatchup()
         browser?.stop?.()
@@ -909,9 +946,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         gain = null
         return
       }
+      soloPaused = false
       browser?.start?.()
-      // 恢复播放会重建 AudioContext 和 worklet，采样率和 gain 都要重新接
-      void attachAudio()
+      // 安全启动包装器会在新 worklet ready 后重新接采样率与音量节点。
     },
     setVolume: (v) => {
       volume = Math.max(0, Math.min(1, v))
@@ -922,6 +959,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     // ── jsnes P2P 联机：在已运行的这一局上开 / 加入，不重开（见 startNetplay）──
     openJsnesNetplay: (session) => {
       if (netplay || !browser?.nes) return false
+      if (soloPaused) {
+        window.setTimeout(() => session.onError?.('请先恢复游戏，再开始联机'), 0)
+        return false
+      }
       netplaySession.current = session
       if (readyFired) void startNetplay()
       return true
@@ -996,28 +1037,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       // 旧实现只拆 Browser，WebSocket / PeerConnection 和服务端房间都留到超时才消失。
       leaveNetplay(netplay, false)
       clearCatchup()
-      unlockAudio?.()
-      unlockAudio = null
-      window.removeEventListener('resize', onResize)
-      // 键盘先摘：不摘的话方向键会一直被 preventDefault，玩家退出播放器后页面滚不动了
-      padKeyboard?.()
-      padKeyboard = null
-      gamepad?.stop()
-      gamepad = null
-      // 先让 Browser.stop() 走 safe stop；若先手动断 gain，上游会再次按不存在的直连断开而抛错。
-      try {
-        browser?.destroy()
-      } catch {
-        /* 已经卸载过就忽略 */
-      }
-      try {
-        gain?.disconnect()
-      } catch {
-        /* ignore */
-      }
-      gain = null
-      audioRerouted = false
-      host.remove()
+      cleanupBrowserResources()
     },
   }
 }

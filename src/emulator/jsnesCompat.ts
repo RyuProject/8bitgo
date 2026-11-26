@@ -54,6 +54,10 @@ export interface JsnesSpeakerStopTarget {
   _removeResumeListeners?: () => void
 }
 
+export interface JsnesSpeakerStartTarget extends JsnesSpeakerStopTarget {
+  start?: () => Promise<unknown> | unknown
+}
+
 /**
  * jsnes 3.0.0 的 stop() 写死了 `node.disconnect(audioCtx.destination)`。本站为了调音量，把
  * 连接改成 node -> gain -> destination 后，那条特定目标连接已经不存在，Chrome 会抛
@@ -106,4 +110,53 @@ export function installJsnesSafeStop(
     speakers.batchPos = 0
     onStopped()
   }
+}
+
+/**
+ * jsnes 3.0 的 Browser.start() 不等待 Speakers.start()，AudioWorklet 不支持或初始化失败时会产生
+ * unhandled rejection；快速暂停/恢复时，旧 addModule() 还可能在新 AudioContext 上继续建节点。
+ * 串行化启动、让 stop 使旧代次失效，并把音频失败收敛成“无声但游戏仍可玩”。
+ */
+export function installJsnesSafeStart(
+  speakers: JsnesSpeakerStartTarget,
+  onReady: () => void,
+  onError: (error: unknown) => void,
+): boolean {
+  if (typeof speakers.start !== 'function') return false
+
+  const nativeStart = speakers.start.bind(speakers)
+  const nativeStop = typeof speakers.stop === 'function' ? speakers.stop.bind(speakers) : null
+  let generation = 0
+  let previousStart = Promise.resolve()
+
+  speakers.stop = () => {
+    generation++
+    nativeStop?.()
+  }
+
+  speakers.start = () => {
+    const ownGeneration = ++generation
+    const task = previousStart.catch(() => {}).then(async () => {
+      // 暂停、销毁或后续恢复都让旧启动失效；不让迟到的 worklet 抢新一局的音频节点。
+      if (ownGeneration !== generation) return
+      try {
+        await nativeStart()
+      } catch (error) {
+        if (ownGeneration !== generation) return
+        try {
+          speakers.stop?.()
+        } catch {
+          /* 音频停机失败不能挡住纯画面游戏继续运行 */
+        }
+        onError(error)
+        return
+      }
+      if (ownGeneration === generation) onReady()
+    })
+    // task 内部吞掉音频初始化异常，Browser.start() 忽略返回值也不会留下未处理拒绝。
+    previousStart = task.catch(() => {})
+    return previousStart
+  }
+
+  return true
 }

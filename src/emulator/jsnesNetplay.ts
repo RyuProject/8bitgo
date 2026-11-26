@@ -99,7 +99,7 @@ export function jsnesRomFingerprint(bytes: Uint8Array): string {
 export class JsnesNetplay {
   roomId = ''
   seat: 0 | 1
-  bufferFrames: number
+  bufferFrames = 2
   private ws: WebSocket | null = null
   private pc: RTCPeerConnection | null = null
   private dc: RTCDataChannel | null = null
@@ -125,7 +125,7 @@ export class JsnesNetplay {
   constructor(opts: JsnesNetplayOptions) {
     this.opts = opts
     this.seat = opts.seat
-    this.bufferFrames = opts.bufferFrames ?? 2
+    this.setBuffer(opts.bufferFrames ?? 2)
     // 旧实现漏了这一句：访客无论填什么房号都会走 host 分支，实际效果是“加入”又开了一间。
     this.roomId = opts.roomId?.trim().toLowerCase() ?? ''
   }
@@ -485,7 +485,8 @@ export class JsnesNetplay {
   }
 
   setBuffer(frames: number) {
-    this.bufferFrames = Math.max(0, Math.min(8, frames | 0))
+    // 房间参数来自 UI / 对端；夹在 0..8 帧，避免异常值造成过大延迟或环形缓冲分配失控。
+    this.bufferFrames = Math.max(0, Math.min(8, Number.isFinite(frames) ? Math.trunc(frames) : 2))
   }
 
   close() {

@@ -17,7 +17,7 @@
  */
 import { readFileSync } from 'node:fs'
 import { NES } from 'jsnes'
-import { installJsnesSafeStop, JSNES_PREFLIGHT_FRAMES, probeJsnesStartup } from '../src/emulator/jsnesCompat.ts'
+import { installJsnesSafeStart, installJsnesSafeStop, JSNES_PREFLIGHT_FRAMES, probeJsnesStartup } from '../src/emulator/jsnesCompat.ts'
 
 let failed = 0
 const ok = (name, cond, detail = '') => {
@@ -203,6 +203,74 @@ class FakeNode {
   installJsnesSafeStop(speakers, () => false, () => stopped++)
   speakers.stop()
   ok('没有改音频链时仍委托上游 stop', nativeStops === 1 && stopped === 1)
+}
+
+/* ============ 六、AudioWorklet 失败与暂停恢复竞态 ============ */
+section('移动端音频启动失败与快速恢复')
+function fakeSpeakers(start) {
+  return {
+    audioCtx: null,
+    node: null,
+    batchPos: 3,
+    start,
+    stop() {
+      try { this.node?.disconnect(this.audioCtx?.destination) } catch { /* 测试替身 */ }
+      this.node = null
+      const ctx = this.audioCtx
+      this.audioCtx = null
+      if (ctx) void ctx.close()
+      this.batchPos = 0
+    },
+  }
+}
+
+{
+  let closed = 0
+  let ready = 0
+  const errors = []
+  const speakers = fakeSpeakers(function () {
+    this.audioCtx = { destination: {}, close: () => { closed++; return Promise.resolve() } }
+    throw new Error('AudioWorklet unavailable')
+  })
+  installJsnesSafeStop(speakers, () => false, () => {})
+  installJsnesSafeStart(speakers, () => ready++, (error) => errors.push(error))
+  await speakers.start()
+  ok('AudioWorklet 启动拒绝被吸收，不变成未处理 Promise', errors.length === 1)
+  ok('失败只关闭局部音频并保留静音游玩路径', speakers.audioCtx === null && speakers.node === null && closed === 1 && ready === 0)
+}
+
+{
+  let starts = 0
+  let ready = 0
+  const errors = []
+  let releaseFirst
+  const speakers = fakeSpeakers(function () {
+    starts++
+    const context = { id: starts, destination: {}, close: () => Promise.resolve() }
+    this.audioCtx = context
+    if (starts === 1) {
+      return new Promise((resolve, reject) => {
+        releaseFirst = () => {
+          if (!this.audioCtx) return reject(new Error('旧 AudioContext 已关闭'))
+          this.node = { context: this.audioCtx, disconnect() {} }
+          resolve()
+        }
+      })
+    }
+    this.node = { context, disconnect() {} }
+    return Promise.resolve()
+  })
+  installJsnesSafeStop(speakers, () => false, () => {})
+  installJsnesSafeStart(speakers, () => ready++, (error) => errors.push(error))
+  const first = speakers.start()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  speakers.stop()
+  const second = speakers.start()
+  ok('旧 worklet 尚未完成時，新启动先排队', starts === 1)
+  releaseFirst()
+  await Promise.all([first, second])
+  ok('暂停期间旧启动被丢弃，恢复后只保留新 AudioContext', starts === 2 && speakers.node?.context?.id === 2 && speakers.audioCtx?.id === 2)
+  ok('只有最新一代报告音频就绪，旧失败不误报', ready === 1 && errors.length === 0)
 }
 
 /* safe stop 镜像了这几项内部实现；升级 jsnes 时先在测试里明确失败，不能静默漂移。 */

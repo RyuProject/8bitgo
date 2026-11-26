@@ -21,6 +21,14 @@ export const JSNES_MAPPERS: ReadonlySet<number> = new Set([
   0, 1, 2, 3, 4, 5, 7, 9, 11, 34, 38, 66, 71, 79, 94, 118, 119, 140, 180, 240, 241,
 ])
 
+/**
+ * jsnes 把整份 ROM 转成 JS 字符串，再由纯 JS 核心拆成 PRG/CHR bank。
+ * 16 MiB 已远高于常见 NES 卡带；转换期间还会同时保留字节、JS 字符串和 mapper bank，
+ * 因此用较低上限给移动浏览器留出余量，超限交给 EmulatorJS 的 WASM 核心。
+ * 超过上限时交给 EmulatorJS，而不是让浏览器在分配字符串时崩溃。
+ */
+export const JSNES_MAX_ROM_BYTES = 16 * 1024 * 1024
+
 /** iNES 文件头的魔数：'N' 'E' 'S' 0x1A */
 const MAGIC = [0x4e, 0x45, 0x53, 0x1a]
 
@@ -34,6 +42,7 @@ export type JsnesCompatibilityCode =
   | 'unsupported-timing'
   | 'unsupported-trainer'
   | 'unsupported-size-encoding'
+  | 'rom-too-large'
   | 'invalid-prg-size'
   | 'truncated-rom'
 
@@ -118,6 +127,14 @@ export function analyzeJsnesCompatibility(
   totalBytes?: number,
 ): JsnesCompatibility {
   const b = bytesOf(rom)
+  if (b.byteLength > JSNES_MAX_ROM_BYTES) {
+    return {
+      compatible: false,
+      code: 'rom-too-large',
+      message: `ROM 超过 jsnes 的 ${Math.floor(JSNES_MAX_ROM_BYTES / 1024 / 1024)} MiB 安全上限`,
+      actualBytes: b.byteLength,
+    }
+  }
   if (b.length < 16) {
     return { compatible: false, code: 'header-too-short', message: 'iNES 文件头不足 16 字节' }
   }
@@ -206,6 +223,15 @@ export function analyzeJsnesCompatibility(
   }
 
   const expectedBytes = 16 + prgUnits * 16_384 + chrUnits * 8_192
+  if (expectedBytes > JSNES_MAX_ROM_BYTES) {
+    return {
+      compatible: false,
+      code: 'rom-too-large',
+      message: `ROM 头声明超过 jsnes 的 ${Math.floor(JSNES_MAX_ROM_BYTES / 1024 / 1024)} MiB 安全上限`,
+      mapper,
+      expectedBytes,
+    }
+  }
   const knownBytes = Number.isFinite(totalBytes) && Number(totalBytes) > 0
     ? Math.floor(Number(totalBytes))
     : b.byteLength > 16

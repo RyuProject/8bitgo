@@ -136,6 +136,23 @@ const baseOptions = (overrides = {}) => ({
   ...overrides,
 })
 
+// 输入延迟既来自房间设置，也可能在握手时由对端传入；两种入口都必须夹在安全范围内。
+for (const [input, expected] of [[-3, 0], [2.9, 2], [99, 8], [Number.NaN, 2]]) {
+  const peer = new JsnesNetplay(baseOptions({ bufferFrames: input }))
+  assert.equal(peer.bufferFrames, expected)
+  peer.close()
+}
+{
+  const peer = new JsnesNetplay(baseOptions())
+  peer.setBuffer(-1)
+  assert.equal(peer.bufferFrames, 0)
+  peer.setBuffer(100)
+  assert.equal(peer.bufferFrames, 8)
+  peer.setBuffer(Number.NaN)
+  assert.equal(peer.bufferFrames, 2)
+  peer.close()
+}
+
 // 旧版构造函数没把 opts.roomId 写进实例，访客点“加入”实际发的是 host。
 {
   const guest = new JsnesNetplay(baseOptions({ seat: 1, roomId: 'ABC123' }))

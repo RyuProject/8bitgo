@@ -246,7 +246,12 @@ export async function assertValidZipBlob(blob: Blob, label = 'ZIP', timeoutMs = 
 }
 
 /** 解出某一项的完整内容 */
-export async function extractZipEntry(buf: ArrayBuffer, entry: ZipFileEntry, maxBytes = Infinity): Promise<Uint8Array> {
+export async function extractZipEntry(
+  buf: ArrayBuffer,
+  entry: ZipFileEntry,
+  maxBytes = Infinity,
+  verifyCrc = false,
+): Promise<Uint8Array> {
   const b = new Uint8Array(buf)
   const dv = new DataView(buf)
 
@@ -261,9 +266,15 @@ export async function extractZipEntry(buf: ArrayBuffer, entry: ZipFileEntry, max
   const raw = b.subarray(dataStart, Math.min(end, b.length))
   if (entry.uncompressedSize > maxBytes) throw new Error('zip: 解包后的 ROM 过大')
 
+  const verify = (data: Uint8Array) => {
+    if (data.byteLength !== entry.uncompressedSize) throw new Error('zip: 解包后的大小与目录不符')
+    if (verifyCrc && crc32(data) !== entry.crc32) throw new Error('zip: ROM 校验失败（CRC-32 不匹配）')
+    return data
+  }
+
   if (entry.method === 0) {
     if (raw.byteLength > maxBytes) throw new Error('zip: 解包后的 ROM 过大')
-    return raw
+    return verifyCrc ? verify(raw) : raw
   }
   if (entry.method !== 8) throw new Error(`zip: 不支持的压缩方式 ${entry.method}`)
   if (typeof DecompressionStream === 'undefined') throw new Error('zip: 浏览器不支持 DecompressionStream')
@@ -278,7 +289,8 @@ export async function extractZipEntry(buf: ArrayBuffer, entry: ZipFileEntry, max
     },
   })
   const stream = rawDeflateStream(raw, entry.crc32, entry.uncompressedSize).pipeThrough(limiter)
-  return new Uint8Array(await new Response(stream).arrayBuffer())
+  const data = new Uint8Array(await new Response(stream).arrayBuffer())
+  return verify(data)
 }
 
 /**
@@ -357,7 +369,12 @@ export function rawDeflateStream(raw: Uint8Array | Blob, crc32: number, uncompre
  * @param prefer 优先的扩展名（不带点，小写），按顺序匹配；都没命中就取最大的那个文件
  *               —— ROM 包里常常还塞着 readme.txt 之类的小文件。
  */
-export async function extractRomFromZip(buf: ArrayBuffer, prefer: string[]): Promise<{ name: string; data: Uint8Array }> {
+export async function extractRomFromZip(
+  buf: ArrayBuffer,
+  prefer: string[],
+  maxBytes = Infinity,
+  verifyCrc = false,
+): Promise<{ name: string; data: Uint8Array }> {
   const entries = listZipEntries(buf)
   if (!entries.length) throw new Error('zip: 压缩包是空的或已损坏')
 
@@ -369,7 +386,7 @@ export async function extractRomFromZip(buf: ArrayBuffer, prefer: string[]): Pro
   }
   if (!pick) pick = entries.reduce((a, b2) => (b2.uncompressedSize > a.uncompressedSize ? b2 : a))
 
-  return { name: pick.name, data: await extractZipEntry(buf, pick) }
+  return { name: pick.name, data: await extractZipEntry(buf, pick, maxBytes, verifyCrc) }
 }
 
 /* ══════════════════════════ 往包里追加成员 ══════════════════════════ */

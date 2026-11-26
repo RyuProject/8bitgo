@@ -205,6 +205,12 @@ for (const m of [0, 25, 256, 555, 4095]) {
   exponent[9] = 0x0f
   assert.equal(analyzeJsnesCompatibility(exponent).code, 'unsupported-size-encoding')
 
+  const oversized = header(0, { nes20: true })
+  oversized[4] = 0
+  oversized[5] = 0
+  oversized[9] = 9 // NES 2.0 PRG size = 2304 × 16 KiB，超过纯 JS 核心安全线
+  assert.equal(analyzeJsnesCompatibility(oversized).code, 'rom-too-large', '头部已知过大时应在核心字符串转换前转交其他运行时')
+
   const pal10 = header(0)
   pal10[9] = 1
   assert.equal(analyzeJsnesCompatibility(pal10).code, 'unsupported-timing')

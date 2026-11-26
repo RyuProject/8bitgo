@@ -37,7 +37,7 @@
     "baidu": "cd server && node scripts/submit-baidu.mjs",
     "audit:migration": "node scripts/audit-migration.mjs",
     "test": "node scripts/run-tests.mjs",
-    "test:jsnes": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-jsnes-audio.mjs && node scripts/test-jsnes-netplay.mjs",
+    "test:jsnes": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-jsnes-audio.mjs && node scripts/test-jsnes-rom.mjs && node scripts/test-jsnes-netplay.mjs",
     "test:cloudgame-lifecycle": "node scripts/test-cloudgame-lifecycle.mjs",
     "test:lang": "node scripts/test-lang-detect.mjs",
     "test:legal": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-legal-pages.mjs",
