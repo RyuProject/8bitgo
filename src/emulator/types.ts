@@ -289,6 +289,8 @@ export interface MountOptions {
   onCoreCrash?: (core: string, message: string) => void
   /** NDS 持续掉帧但当前核心没有已验证的运行时降档项时，提示玩家下次开局尝试性能核心。 */
   onNdsPerformanceIssue?: (fps: number, reason: 'no-live-option' | 'frameskip-exhausted') => void
+  /** NDS 核心连续多个采样窗口恢复到可玩帧率后清除过期提示。 */
+  onNdsPerformanceRecovered?: () => void
   /** NDS 核心回读确认帧跳选项已经生效；只用于告知玩家和诊断，不触发重启。 */
   onNdsPerformanceApplied?: (frameskip: string) => void
   /**

@@ -721,6 +721,7 @@ export function EmulatorPlayer({
   const [file, setFile] = useState<File | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const ndsPerformanceNoticeRef = useRef<string | null>(null)
   const [romDownloadBusy, setRomDownloadBusy] = useState(false)
   const [romDownloadError, setRomDownloadError] = useState(false)
   const romDownloadBusyRef = useRef(false)
@@ -2070,6 +2071,11 @@ export function EmulatorPlayer({
       pspLoadMode: runtime.id === 'ppsspp' ? pspLoadModeRef.current : undefined,
       ...extra, fallbacks, coreOverride, startupAttemptId, startedAt })
     setNdsPerformanceSuggestion(null)
+    const previousNdsPerformanceNotice = ndsPerformanceNoticeRef.current
+    ndsPerformanceNoticeRef.current = null
+    if (previousNdsPerformanceNotice) {
+      setNotice((current) => current === previousNdsPerformanceNotice ? null : current)
+    }
     setP2pConnectionFailed(false)
     if (!extra?.startupAttemptId && !inherited && runtime.id !== 'liveview' && startupVisitId) {
       recordStartupEvent(gameSlugRef.current, {
@@ -2590,8 +2596,17 @@ export function EmulatorPlayer({
         if (reason === 'no-live-option') {
           setNdsPerformanceSuggestion({ fps: Math.round(fps), game: session.game })
         } else {
-          setNotice(fmt(t.player.ndsPerformanceExhausted, { fps: String(Math.round(fps)) }))
+          const message = fmt(t.player.ndsPerformanceExhausted, { fps: String(Math.round(fps)) })
+          ndsPerformanceNoticeRef.current = message
+          setNotice(message)
         }
+      },
+      onNdsPerformanceRecovered: () => {
+        if (!isCurrent() || session.platform !== 'nds') return
+        setNdsPerformanceSuggestion(null)
+        const message = ndsPerformanceNoticeRef.current
+        ndsPerformanceNoticeRef.current = null
+        if (message) setNotice((current) => current === message ? null : current)
       },
       onNdsPerformanceApplied: (frameskip) => {
         if (!isCurrent() || session.platform !== 'nds') return
@@ -4005,6 +4020,7 @@ export function EmulatorPlayer({
     setFile(null)
     setError(null)
     setNotice(null)
+    ndsPerformanceNoticeRef.current = null
     setNdsPerformanceSuggestion(null)
     setRoomId(null)
     setPlayers(1)
