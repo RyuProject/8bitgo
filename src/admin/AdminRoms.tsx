@@ -436,7 +436,7 @@ export function AdminRoms() {
   const loadSafeDeleteGames = async (keys: string[]): Promise<Game[]> => {
     const [fresh, platformBios] = await Promise.all([
       fetchGamePages(Number.MAX_SAFE_INTEGER),
-      api.get<PlatformBiosRefs>('/api/platform-bios').catch((err: unknown) => {
+      api.get<PlatformBiosRefs>('/api/platform-bios/map').catch((err: unknown) => {
         throw new Error(err instanceof Error ? `读取平台 BIOS 绑定失败，已阻止删除：${err.message}` : '读取平台 BIOS 绑定失败，已阻止删除')
       }),
     ])

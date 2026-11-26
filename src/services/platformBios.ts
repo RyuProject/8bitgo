@@ -48,6 +48,9 @@ let cache: PlatformBiosMap | null = null
 let failedAt = 0
 const RETRY_BACKOFF_MS = 5000
 let inflight: Promise<PlatformBiosMap> | null = null
+let inflightRevision = -1
+/** 写入绑定后递增，防止写入前发出的旧 GET 晚到并覆盖刚保存的值 */
+let cacheRevision = 0
 const listeners = new Set<() => void>()
 
 function notify() {
@@ -60,15 +63,29 @@ export function fetchPlatformBios(force = false): Promise<PlatformBiosMap> {
   if (!force && cache) return Promise.resolve(cache)
   // 上一次失败之后的退避窗口内直接给空表，别把失败的接口打爆
   if (!force && failedAt && Date.now() - failedAt < RETRY_BACKOFF_MS) return Promise.resolve({})
-  if (!force && inflight) return inflight
-  inflight = api
-    .get<PlatformBiosMap>('/api/platform-bios')
+  if (!force && inflight && inflightRevision === cacheRevision) return inflight
+  const requestRevision = cacheRevision
+  let request: Promise<PlatformBiosMap>
+  request = api
+    .get<PlatformBiosMap>('/api/platform-bios/map')
     .then((m) => {
-      cache = m && typeof m === 'object' ? m : {}
-      failedAt = 0
-      return cache
+      const fetched = m && typeof m === 'object' ? m : {}
+      if (requestRevision === cacheRevision) {
+        cache = fetched
+        failedAt = 0
+        return cache
+      }
+      // GET 在后台写入前已经发出；不能让它把新绑定回滚成旧值。
+      if (cache) return cache
+      if (inflight && inflight !== request && inflightRevision === cacheRevision) return inflight
+      return fetched
     })
     .catch(() => {
+      if (requestRevision !== cacheRevision) {
+        if (cache) return cache
+        if (inflight && inflight !== request && inflightRevision === cacheRevision) return inflight
+        return {}
+      }
       /**
        * 取不到就当没配 —— BIOS 缺失由引擎自己报错，比在这里抛出去有用（那样连不需要
        * BIOS 的平台也一起打不开了）。
@@ -86,10 +103,15 @@ export function fetchPlatformBios(force = false): Promise<PlatformBiosMap> {
       return cache ?? {}
     })
     .finally(() => {
-      inflight = null
+      if (inflight === request) {
+        inflight = null
+        inflightRevision = -1
+      }
       notify()
     })
-  return inflight
+  inflight = request
+  inflightRevision = requestRevision
+  return request
 }
 
 /** 同步读已缓存的绑定；没加载过返回 undefined */
@@ -114,7 +136,25 @@ export function platformBiosUrlSync(platform: PlatformId): string {
 
 /** 后台改完 BIOS 之后调，让正在开着的页面重新拉一次 */
 export function invalidatePlatformBios() {
+  cacheRevision++
   cache = null
+  failedAt = 0
+  void fetchPlatformBios(true)
+}
+
+/** 保存成功后先更新本页缓存，避免重新读取时短暂或永久显示旧绑定。 */
+function updatePlatformBiosBinding(platform: string, objectKey: string | null) {
+  cacheRevision++
+  failedAt = 0
+  if (cache) {
+    const next = { ...cache } as Record<string, string>
+    if (objectKey) next[platform] = objectKey
+    else delete next[platform]
+    cache = next as PlatformBiosMap
+    notify()
+    return
+  }
+  // 尚无完整映射时从源站重读；旧请求受 cacheRevision 保护，不能覆盖这次写入。
   void fetchPlatformBios(true)
 }
 
@@ -172,21 +212,23 @@ export function usePsxBiosUrl(region?: PsxBiosRegion): string {
 
 export async function bindPlatformBios(platform: PlatformId, objectKey: string): Promise<void> {
   await api.put(`/api/platform-bios/${encodeURIComponent(platform)}`, { objectKey }, true)
-  invalidatePlatformBios()
+  updatePlatformBiosBinding(platform, objectKey)
 }
 
 export async function unbindPlatformBios(platform: PlatformId): Promise<void> {
   await api.del(`/api/platform-bios/${encodeURIComponent(platform)}`, true)
-  invalidatePlatformBios()
+  updatePlatformBiosBinding(platform, null)
 }
 
 /** 绑定某个 BIOS **系统包**（`neogeo` / `pgm` …）。接口和平台级共用一个，键带 `bios:` 前缀 */
 export async function bindBiosSet(name: string, objectKey: string): Promise<void> {
-  await api.put(`/api/platform-bios/${encodeURIComponent(biosSetKey(name))}`, { objectKey }, true)
-  invalidatePlatformBios()
+  const key = biosSetKey(name)
+  await api.put(`/api/platform-bios/${encodeURIComponent(key)}`, { objectKey }, true)
+  updatePlatformBiosBinding(key, objectKey)
 }
 
 export async function unbindBiosSet(name: string): Promise<void> {
-  await api.del(`/api/platform-bios/${encodeURIComponent(biosSetKey(name))}`, true)
-  invalidatePlatformBios()
+  const key = biosSetKey(name)
+  await api.del(`/api/platform-bios/${encodeURIComponent(key)}`, true)
+  updatePlatformBiosBinding(key, null)
 }

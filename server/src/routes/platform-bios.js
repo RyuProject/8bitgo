@@ -1,7 +1,8 @@
 /**
  * 平台级 BIOS：某些平台不给 BIOS 根本起不来。
  *
- *   GET    /api/platform-bios            公开。返回 { 平台id: 对象存储key }
+ *   GET    /api/platform-bios/map        公开。返回 { 平台id: 对象存储key }
+ *   GET    /api/platform-bios            旧入口，保留兼容
  *   PUT    /api/platform-bios/:platform  管理员。{ objectKey } 绑定
  *   DELETE /api/platform-bios/:platform  管理员。解绑
  *
@@ -35,16 +36,19 @@ export const platformBiosRouter = Router()
  * 因为核心是按固定文件名找 BIOS 的（见 admin/PlatformBiosPanel.tsx 的说明），
  * 而绑定地址的最后一段会被当成文件名。
  */
-platformBiosRouter.get('/', async (_req, res, next) => {
+async function getPlatformBiosMap(_req, res, next) {
   try {
     const map = await listPlatformBios()
-    // 短缓存：后台改完绑定清不了边缘，见 CACHE.bios 的注释
     publicApi(res, CACHE.bios)
     res.json(map)
   } catch (e) {
     next(e)
   }
-})
+}
+
+// 新路径绕开大陆边缘上曾缓存过的旧入口；绑定映射必须每次从源站读取。
+platformBiosRouter.get('/map', getPlatformBiosMap)
+platformBiosRouter.get('/', getPlatformBiosMap)
 
 platformBiosRouter.put('/:platform', requireAdmin, async (req, res, next) => {
   try {

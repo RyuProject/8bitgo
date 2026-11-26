@@ -41,7 +41,7 @@ async function loadAllGames(signal?: AbortSignal): Promise<Game[]> {
 async function loadReferenceIndex(signal?: AbortSignal): Promise<ObjectReferenceIndex> {
   const [games, platformBios] = await Promise.all([
     loadAllGames(signal),
-    api.get<PlatformBiosRefs>('/api/platform-bios', false, signal).catch((err: unknown) => {
+    api.get<PlatformBiosRefs>('/api/platform-bios/map', false, signal).catch((err: unknown) => {
       if (signal?.aborted) throw err
       throw new Error('读取平台 BIOS 绑定失败，无法确认对象没被 BIOS 使用；已停止')
     }),

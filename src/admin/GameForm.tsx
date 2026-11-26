@@ -608,7 +608,7 @@ export function GameForm({
         throw new Error(`全库引用检查不完整（读取 ${games.length} / ${first.total} 款游戏），为避免误删没有执行`)
       }
       // 平台 BIOS 也是 R2 对象；fetchPlatformBios 失败时会静默给空表，删除前必须直接读、读不到就停。
-      const platformBios = await api.get<PlatformBiosRefs>('/api/platform-bios').catch(() => {
+      const platformBios = await api.get<PlatformBiosRefs>('/api/platform-bios/map').catch(() => {
         throw new Error('读取平台 BIOS 绑定失败，无法确认对象没被 BIOS 使用；已阻止删除')
       })
 
