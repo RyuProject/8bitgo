@@ -168,6 +168,7 @@
     "test:starcraft-weak-network": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-starcraft-weak-network.mjs",
     "test:dos-extras": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-dos-extras.mjs",
     "test:disc-upload": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-disc-upload.mjs",
+    "test:psx-rom-migration": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-psx-rom-migration.mjs",
     "test:psx-conversion": "npm --prefix server run test:psx-conversion && node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-psx-iso.mjs",
     "test:psx-range": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-psx-range.mjs",
     "test:psx-multidisc": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-psx-multidisc.mjs",

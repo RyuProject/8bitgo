@@ -93,7 +93,11 @@ import { extractGameKeywordsFromDescriptions } from './gameKeywords'
 import { normalizeDosStartupCommands } from '../../shared/dos-startup-commands.js'
 import { isVersionedSockdriveDirectory } from '../../shared/sockdrive-url.js'
 import { probeRange } from '@/emulator/remoteDisc'
-import { isRomPackBytes, packRomForUpload, recommendedRomPackCodec, releasePackedRomUpload, romPackKey, unpackRomPackBlob } from '@/services/romPack'
+import { inspectRomPackBlob, isRomPackBytes, packRomForUpload, recommendedRomPackCodec, releasePackedRomUpload, romPackKey, unpackRomPackBlob } from '@/services/romPack'
+import { fetchBlobWithProgress } from '@/emulator/loadProgress'
+import { romCacheKey } from '@/emulator/romCache'
+import { alternateRomUrls } from '@/services/romHosts'
+import { downloadLegacyPsxPackForMigration, isLegacyPsxPackKey } from './psxRomMigration'
 import { isStreamingDiscPlatform } from '../../shared/streaming-disc-platforms.js'
 import { html5EntryProblem, normalizeHtml5Entry } from '@/emulator/html5Entry'
 import { getUploadActivity, subscribeUploadActivity, trackUploadActivity } from '@/services/uploadActivity'
@@ -3500,6 +3504,11 @@ function RomField({
   const [busySelecting, setBusySelecting] = useState(false)
   const valueRef = useRef(value)
   valueRef.current = value
+  const psxMigrationAbort = useRef<AbortController | null>(null)
+  useEffect(() => () => {
+    psxMigrationAbort.current?.abort()
+    psxMigrationAbort.current = null
+  }, [])
   /** 分片上传的进度明细（单发 PUT 时一直是 null） */
   const [stage, setStage] = useState<UploadStage | null>(null)
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
@@ -4200,7 +4209,7 @@ function RomField({
     }
   }
 
-  const onFile = async (file: File | undefined) => {
+  const onFile = async (file: File | undefined, discImageConfirmed = false) => {
     if (!file) return
     const originalKeyValue = value
     let activeDiscJobId = ''
@@ -4267,7 +4276,7 @@ function RomField({
       }
     }
     // 光盘平台：格式和体积先问一句。转 .chd 这件事只有在**上传之前**说才有用
-    if (!(await confirmDiscImage(platform, file))) {
+    if (!discImageConfirmed && !(await confirmDiscImage(platform, file))) {
       if (inputRef.current) inputRef.current.value = ''
       return
     }
@@ -4357,7 +4366,7 @@ function RomField({
           return
         }
       }
-      if (!(await confirmDiscImage(platform, uploadSourceFile))) {
+      if (!discImageConfirmed && !(await confirmDiscImage(platform, uploadSourceFile))) {
         if (inputRef.current) inputRef.current.value = ''
         return
       }
@@ -4712,6 +4721,71 @@ function RomField({
     }
   }
 
+  /** 旧 PS1 CHD 只迁移对象格式；原 `.8bg` 对象保留，游戏绑定仍等管理员保存表单才切换。 */
+  const migrateBoundPsxPack = async () => {
+    const sourceKey = valueRef.current.trim()
+    if (platform !== 'psx' || !isLegacyPsxPackKey(sourceKey) || !canUpload) return
+    const aborter = new AbortController()
+    psxMigrationAbort.current = aborter
+    setBusySelecting(true)
+    setMsg({ ok: true, text: '正在核对旧 PS1 镜像版本…' })
+    try {
+      const sourceUrl = romUrlForKey(sourceKey)
+      const probe = await probeRom(sourceUrl, 4_000, false, { retry: false })
+      if (aborter.signal.aborted) return
+      if (!probe.url || !probe.size) throw new Error('暂时无法读取旧镜像的版本或大小，请稍后重试')
+      if (!window.confirm(
+        `${sourceKey}\n\n` +
+          `将下载并解密旧镜像（${human(probe.size)}），再上传成可按需读取的裸 CHD。` +
+          '原 8BG 对象会保留；新文件上传后仍需保存游戏条目才会切换玩家绑定。\n\n继续迁移吗？',
+      )) return
+
+      setProgress(0)
+      setMsg({ ok: true, text: `正在断点下载旧镜像（${human(probe.size)}）；完成后会自动解包并上传裸 CHD…` })
+      await trackUploadActivity(`旧 PS1 CHD 迁移：${sourceKey}`, async () => {
+        const file = await downloadLegacyPsxPackForMigration(sourceKey, {
+          urlForKey: romUrlForKey,
+          probe: async () => probe,
+          download: (url, size, onProgress, signal) => fetchBlobWithProgress(url, {
+            phase: 'rom',
+            signal,
+            alternateUrls: alternateRomUrls(url),
+            resumeKey: romCacheKey(url),
+            maxBytes: size,
+            check: (response) => {
+              if (/text\/html|application\/xhtml/i.test(response.headers.get('content-type') ?? '')) {
+                throw new Error('旧 PS1 镜像地址返回了网页，不是 8BG 文件')
+              }
+            },
+            onProgress: ({ loaded, total }) => onProgress?.(loaded ?? 0, total ?? size),
+          }),
+        }, (loaded, total) => {
+          setProgress(Math.min(24, Math.round((loaded / Math.max(1, total)) * 24)))
+        }, aborter.signal)
+
+        if (aborter.signal.aborted) return
+        const { header } = await inspectRomPackBlob(file)
+        if (!/\.chd$/i.test(header.originalName)) throw new Error(`旧容器内是 ${header.originalName}，不是 CHD；未上传`)
+        if (header.originalSize > 1024 * 1024 * 1024) throw new Error('解密后的 CHD 超过流式读盘上限 1 GiB；未上传')
+
+        if (valueRef.current.trim() !== sourceKey) throw new Error('下载期间 ROM 绑定已变化；文件未上传')
+        // 上面的迁移确认已经明确告知完整下载量与裸 CHD 上传，不再重复弹同一类体积确认。
+        await onFile(file, true)
+      })
+    } catch (error) {
+      if (!aborter.signal.aborted) {
+        setMsg({ ok: false, text: error instanceof Error ? `旧 PS1 镜像迁移失败：${error.message}` : '旧 PS1 镜像迁移失败' })
+      }
+    } finally {
+      if (psxMigrationAbort.current === aborter) psxMigrationAbort.current = null
+      if (!aborter.signal.aborted) {
+        setProgress(null)
+        setStage(null)
+        setBusySelecting(false)
+      }
+    }
+  }
+
   const retryDiscConversion = async () => {
     if (!failedDiscJobId) return
     const retryId = failedDiscJobId
@@ -4943,6 +5017,17 @@ function RomField({
               {failedDiscJobId === PENDING_DISC_CREATE_RETRY
                 ? '🔁 重试创建任务（无需重传 ISO）'
                 : '🔁 重试转换（复用已上传 ISO）'}
+            </button>
+          )}
+          {platform === 'psx' && isLegacyPsxPackKey(value) && (
+            <button
+              type="button"
+              className={cx(btnClass.secondary, 'shrink-0 whitespace-nowrap')}
+              onClick={() => void migrateBoundPsxPack()}
+              disabled={!canUpload || busySelecting || progress !== null || bundleAt !== null}
+              title="断点下载并校验当前旧 8BG 镜像，自动解包后上传裸 CHD；旧对象保留，保存游戏条目后才切换绑定"
+            >
+              🔄 迁移为流式 CHD
             </button>
           )}
           {value && !progress && !busySelecting && (
