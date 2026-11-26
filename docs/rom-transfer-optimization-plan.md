@@ -136,7 +136,7 @@
 
 本轮补充 ROM Worker 传输观测：响应通过 `Server-Timing` 暴露 Worker 到响应头就绪的耗时和现有边缘缓存 HIT/MISS，不缓冲或复制流式正文；上传分片耗时覆盖请求体接收及 R2 确认。浏览器启动诊断只收录实际经网络返回且通过 TAO 的 Worker 指标，并在报告中显示；服务端按白名单落库，拒绝无效数值和缓存枚举。同步验证稳定分片 URL / 自定义分片头的 Worker 处理，并重建控制台单文件 Worker。`npm run test:worker` 181 项、`npm run test:startup-diagnostics`、`npx tsc -b --pretty false`、`git diff --check` 和完整 `npm test -- --jobs 4`（290/290；需允许本机回环监听）通过。指标部署后才可用于真实分区、缓存冷热与上行耗时对照；目前不能据此宣称线上提速。
 
-本轮继续修正后台自适应测速的计时边界：此前整片速率用 XHR 收到响应的时间计算，把 CORS 预检和 R2 确认延迟也算进上行速度，快线上可能误降并发。现在优先用上传体 `loadstart` 到 `load` 作为测量区间，缺少事件时回退旧算法；失败请求仍不参与校准。`npm run test:r2-upload-client` 用“请求体 4.3 秒、响应确认再等 4.7 秒”的场景确认目标并发按真实上行吞吐计算，`npx tsc -b --pretty false`、`npm run build:client`、`npm run build:server`、`git diff --check` 和完整 `npm test -- --jobs 4`（291/291；需允许本机回环监听）通过。该调整只校正测速，不扩大设备并发上限。
+本轮继续修正后台自适应测速的计时边界：此前整片速率用 XHR 收到响应的时间计算，把 CORS 预检和 R2 确认延迟也算进上行速度，快线上可能误降并发。现在优先用上传体 `loadstart` 到 `load` 作为测量区间，缺少事件时回退旧算法；失败请求仍不参与校准。后台上传进度另显示 Worker/R2 额外等待的粗略估算，只有服务端暴露有效 `Server-Timing` 且浏览器提供完整上传事件时才显示。`npm run test:r2-upload-client` 用“请求体 4.3 秒、响应确认再等 4.7 秒”的场景确认目标并发按真实上行吞吐计算，`npx tsc -b --pretty false`、`npm run build:client`、`npm run build:server`、`git diff --check` 和完整 `npm test -- --jobs 4`（291/291；需允许本机回环监听）通过。该调整只校正测速，不扩大设备并发上限。
 
 ## 当前不建议盲改的项目
 
