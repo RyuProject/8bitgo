@@ -971,6 +971,7 @@ const de: Translation = {
     flashSaveSessionUnavailable: 'Du bist angemeldet, aber der Online-Speicherdienst ist vorübergehend nicht verfügbar. Lokal spielen funktioniert weiterhin; bitte später erneut versuchen',
     flashSaveExpiringSoon: 'Die Online-Speicher-Sitzung läuft in 10 Minuten ab – verlasse das Spiel und starte es neu, um weiter in der Cloud zu speichern',
     runtimeFellBack: 'Diese ROM braucht einen vollständigeren Kern – zu {runtime} gewechselt',
+    jsnesInviteNotJoined: 'Dieses ROM kann dem jsnes-P2P-Raum nicht beitreten. Zu {runtime} für Einzelspieler gewechselt; die Einladung wurde nicht angenommen. Verwende ein jsnes-kompatibles ROM oder entferne den Einladungslink für Einzelspieler.',
     ndsCoreFellBack: 'Der NDS-Kern ist abgestürzt. Neustart mit dem kompatiblen Kern; Spielstände bleiben getrennt',
     ndsCoreFailed: 'Der NDS-Kern ist abgestürzt: {reason}',
     ndsPerformanceSlow: 'Anhaltend niedrige Bildrate erkannt (etwa {fps} FPS). Dieser NDS-Kern hat keine bestätigte Qualitätsanpassung während des Spiels; die aktuelle Partie läuft weiter.',

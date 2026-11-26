@@ -369,6 +369,7 @@ assert.notEqual(jsnesRomFingerprint(new Uint8Array([1, 2, 3])), jsnesRomFingerpr
 const playerSource = readFileSync(new URL('../src/emulator/EmulatorPlayer.tsx', import.meta.url), 'utf8')
 const panelSource = readFileSync(new URL('../src/emulator/JsnesNetplayPanel.tsx', import.meta.url), 'utf8')
 assert.match(playerSource, /initialRoomId=\{jsnesInviteCode\}/, '邀请房号必须交给可见面板')
+assert.match(playerSource, /targetPlatform === 'nes' && jsnesNetplay && runtime\.id !== 'jsnes'[\s\S]*jsnesInviteNotJoined/, '邀请 ROM 落到单人备用运行时后，必须明确告知玩家未加入联机房')
 assert.match(panelSource, /joinRoom\(initialRoomId\)/, '可见面板必须自动加入邀请房')
 assert.match(playerSource, /autoHost=\{jsnesNetplayAutoHost\}/, '通用开房请求必须把自动开房意图交给 jsnes 面板')
 assert.match(panelSource, /if \(!autoHost \|\| initialRoomId \|\| autoHostStarted\.current\) return/, 'jsnes 面板必须自动创建通用按钮请求的房间')

@@ -970,6 +970,7 @@ const es: Translation = {
     flashSaveSessionUnavailable: 'Has iniciado sesión, pero el servicio de guardado en línea no está disponible temporalmente. El juego local no se ve afectado; inténtalo más tarde',
     flashSaveExpiringSoon: 'La sesión de guardado en línea caduca en 10 minutos: sal y vuelve a entrar en la partida para seguir guardando en la nube',
     runtimeFellBack: 'Esta ROM necesita un núcleo más completo: se cambió a {runtime}',
+    jsnesInviteNotJoined: 'Esta ROM no puede unirse a la sala P2P de jsnes. Se cambió a {runtime} para jugar en solitario; no se aceptó la invitación. Usa una ROM compatible con jsnes o quita el enlace de invitación para jugar en solitario.',
     ndsCoreFellBack: 'El núcleo NDS falló. Reiniciando con el núcleo compatible; las partidas se guardan por separado',
     ndsCoreFailed: 'El núcleo NDS falló: {reason}',
     ndsPerformanceSlow: 'Se detectaron fotogramas lentos de forma continua (unos {fps} FPS). Este núcleo NDS no tiene un ajuste de calidad en ejecución verificado, así que la partida actual continuará.',

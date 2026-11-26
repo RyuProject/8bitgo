@@ -971,6 +971,7 @@ const it: Translation = {
     flashSaveSessionUnavailable: 'Hai effettuato l’accesso, ma il servizio di salvataggio online è temporaneamente indisponibile. Il gioco locale continua a funzionare; riprova più tardi',
     flashSaveExpiringSoon: 'La sessione di salvataggio online scade tra 10 minuti: esci e rientra nella partita per continuare a salvare nel cloud',
     runtimeFellBack: 'Questa ROM richiede un core più completo: passato a {runtime}',
+    jsnesInviteNotJoined: 'Questa ROM non può entrare nella stanza P2P di jsnes. Passaggio a {runtime} per giocare in solitaria; l’invito non è stato accettato. Usa una ROM compatibile con jsnes o rimuovi il link di invito per giocare in solitaria.',
     ndsCoreFellBack: 'Il core NDS si è arrestato. Riavvio con il core compatibile; i salvataggi restano separati',
     ndsCoreFailed: 'Il core NDS si è arrestato: {reason}',
     ndsPerformanceSlow: 'Rilevati rallentamenti persistenti (circa {fps} FPS). Questo core NDS non ha una regolazione della qualità in gioco verificata, quindi la partita corrente continuerà.',

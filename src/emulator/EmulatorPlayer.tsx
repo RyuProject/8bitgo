@@ -2090,6 +2090,10 @@ export function EmulatorPlayer({
     // 自动重试与换引擎属于同一次开局：保留已显示进度，并由状态机把新一轮映射到剩余区间。
     const carryOver = Boolean(extra?.retryAttempt) || Boolean(extra?.ruledOut?.length) || Boolean(extra?.coreOverride) || Boolean(extra?.forceRomRefresh)
     loadProgress.reset(plan, { carryOver })
+    // jsnes 邀请只能由 jsnes 接入；换到其他运行时虽可保住单人游戏，也必须说明邀请房没有加入。
+    if (targetPlatform === 'nes' && jsnesNetplay && runtime.id !== 'jsnes') {
+      setNotice(fmt(t.player.jsnesInviteNotJoined, { runtime: runtime.name }))
+    }
     setStatus('loading')
   }
   // 会话变化时挂载 / 卸载运行时

@@ -972,6 +972,7 @@ const zhHant: Translation = {
     flashSaveSessionUnavailable: '帳號已登入，但線上存檔服務暫時無法使用；本機遊戲不受影響，請稍後重試',
     flashSaveExpiringSoon: '線上存檔工作階段 10 分鐘後到期：請找機會退出並重新進入本局，之後才能繼續雲端存檔',
     runtimeFellBack: '這份 ROM 需要更完整的模擬核心，已自動切換到 {runtime}',
+    jsnesInviteNotJoined: '此 ROM 不支援 jsnes 聯機，已切換到 {runtime} 單人遊玩；尚未加入邀請房間。請改用 jsnes 支援的 ROM，或移除邀請連結後繼續單人遊玩。',
     ndsCoreFellBack: 'NDS 核心意外退出，已切換相容核心並重新開始；兩種核心的存檔分開保存',
     ndsCoreFailed: 'NDS 核心執行失敗：{reason}',
     ndsPerformanceSlow: '偵測到持續掉幀（約 {fps} FPS）。目前 NDS 核心沒有已確認可在遊戲中調整的降檔選項；本局會繼續執行。',
