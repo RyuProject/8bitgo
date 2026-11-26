@@ -652,8 +652,11 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
 
 /* ---------- 「复制给 AI」 ---------- */
 {
-  const { diagnosisSignalLabel, formatGroupForAi, formatSample } = await import('../src/admin/diagnosticsReport.ts')
+  const { diagnosisSignalLabel, formatGroupForAi, formatResourceServerTiming, formatSample } = await import('../src/admin/diagnosticsReport.ts')
   assert.equal(diagnosisSignalLabel('stage.html5_entry_pending'), 'HTML5 游戏入口页尚未确认加载', '后台与复制给 AI 都要显示新分类依据的中文说明')
+  assert.equal(formatResourceServerTiming({ workerMs: 18.4, edgeCache: 'HIT' }), 'Worker 响应头 18.4ms · 边缘缓存 HIT', '现场表格和 AI 报告共用 Worker / 边缘缓存格式')
+  assert.equal(formatResourceServerTiming({}), '', '没有服务器计时信息时不增加空白行')
+  assert.match(read('src/admin/AdminDiagnostics.tsx'), /formatResourceServerTiming\(r\)/, '现场网络表格应展示已采集的服务器计时信息')
   const group = {
     signature: '0123456789abcdef', text: 'failed · emulatorjs · 卡在下载核心', event: 'failed', runtime: 'emulatorjs',
     count: 3, visits: 2, games: [{ slug: 'super-mario-bros', title: '超级玛丽奥兄弟', count: 3 }],

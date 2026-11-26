@@ -213,7 +213,22 @@ for (const token of [
   'this.audioCtx.close()',
   'this.batchPos = 0',
 ]) {
-  ok(`jsnes 2.1.0 的停机契约仍包含 ${token}`, speakersSource.includes(token))
+  ok(`jsnes 3.0.0 的停机契约仍包含 ${token}`, speakersSource.includes(token))
+}
+
+/* ============ 六、3.0 存档 ABI 版本必须明确拒绝 2.x 状态 ============ */
+{
+  const nes = new NES({ onFrame: () => {}, onAudioSample: () => {} })
+  nes.loadROM(ROM)
+  const state = nes.toJSON()
+  ok('3.0 状态带有 ABI 版本号', state.version === 2)
+  let oldStateRejected = false
+  try {
+    nes.fromJSON({ ...state, version: 1 })
+  } catch (error) {
+    oldStateRejected = /incompatible version/i.test(error?.message ?? '')
+  }
+  ok('2.x 存档被拒绝，避免旧结构破坏当前模拟器状态', oldStateRejected)
 }
 
 console.log(failed === 0 ? '\n全部通过 ✅' : `\n有 ${failed} 项失败 ❌`)

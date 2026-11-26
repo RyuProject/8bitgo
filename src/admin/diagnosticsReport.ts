@@ -129,6 +129,17 @@ export const fmtMs = (ms: number | null | undefined): string => {
   return abs >= 1000 ? `${sign}${(abs / 1000).toFixed(1)}s` : `${sign}${Math.round(abs)}ms`
 }
 
+/** 已采集的 Worker / 边缘缓存信息同时用于现场表格和 AI 报告，避免两处展示不一致。 */
+export function formatResourceServerTiming(resource: Pick<DiagnosticPayload['resources'][number], 'workerMs' | 'edgeCache'>): string {
+  const workerMs = typeof resource.workerMs === 'number' && Number.isFinite(resource.workerMs)
+    ? resource.workerMs
+    : undefined
+  return [
+    workerMs !== undefined ? `Worker 响应头 ${workerMs >= 1000 ? fmtMs(workerMs) : `${workerMs.toFixed(1)}ms`}` : '',
+    resource.edgeCache ? `边缘缓存 ${resource.edgeCache}` : '',
+  ].filter(Boolean).join(' · ')
+}
+
 export const fmtBytes = (n: number): string => {
   if (!n) return '0'
   if (n >= 1048576) return `${(n / 1048576).toFixed(1)}MB`
@@ -246,11 +257,7 @@ export function formatSample(sample: DiagnosticSample, index?: number): string {
   if (d.resources.length) {
     lines.push('', '慢 / 大 / 失败的网络请求（传输 0 = 命中缓存或跨域不可见）：', '```')
     for (const r of d.resources) {
-      const workerMs = typeof r.workerMs === 'number' && Number.isFinite(r.workerMs) ? r.workerMs : undefined
-      const server = [
-        workerMs !== undefined ? `Worker 响应头 ${workerMs >= 1000 ? fmtMs(workerMs) : `${workerMs.toFixed(1)}ms`}` : '',
-        r.edgeCache ? `边缘缓存 ${r.edgeCache}` : '',
-      ].filter(Boolean).join(' · ')
+      const server = formatResourceServerTiming(r)
       lines.push(`${fmtMs(r.at).padStart(7)}  ${fmtMs(r.d).padStart(7)}  ${r.st || '-'}  ${r.p || '-'}  传输 ${fmtBytes(r.tx)} / 内容 ${fmtBytes(r.sz)}  ${r.i}  ${r.n}${server ? `  ${server}` : ''}`)
     }
     lines.push('```')

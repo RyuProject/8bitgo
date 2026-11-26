@@ -72,7 +72,8 @@ interface WsSignal {
   [k: string]: unknown
 }
 
-const PROTOCOL_VERSION = 2
+// 3.0 更换了存档 ABI；旧页面传来的 2.x 初始状态必须在握手阶段拒绝。
+const PROTOCOL_VERSION = 3
 const CONNECT_TIMEOUT_MS = 15_000
 const PEER_TIMEOUT_MS = 25_000
 const DISCONNECT_GRACE_MS = 10_000

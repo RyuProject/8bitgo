@@ -48,7 +48,8 @@ const NES_BUTTON: Record<PadAction, number> = {
 
 /** 一次 rAF 最多追几帧。掉出去太多就别硬追了，直接对齐，免得补帧风暴把页面拖死 */
 /** 存档文件的身份戳：认出「这是不是本模拟器的存档」，见 loadState */
-const STATE_TAG = '8bitgo-jsnes-1'
+// 3.0 的周期级核心存档不兼容 2.x；独立标记可在写入核心前拒绝旧云档和导出档。
+const STATE_TAG = '8bitgo-jsnes-3'
 
 const MAX_CATCHUP_FRAMES = 4
 /** 超过这么久没等到 rAF，就认为浏览器把它停了（页面切到后台 / 窗口最小化） */
@@ -153,7 +154,7 @@ interface JsnesFrameTimer {
 interface JsnesSpeakers {
   audioCtx?: AudioContext | null
   node?: AudioWorkletNode | null
-  /** 下面三项是 safe stop 对 jsnes 2.1.0 生命周期的最小镜像，升级包时由 test:jsnes 盯着 */
+  /** 下面三项是 safe stop 对 jsnes 3.0.0 生命周期的最小镜像，升级包时由 test:jsnes 盯着 */
   stop?: () => void
   _removeResumeListeners?: () => void
   batchPos?: number
@@ -898,7 +899,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   return {
     caps,
     volume,
-    saveMetadata: { core: 'jsnes', build: '2.1.0', format: 'jsnes-state' },
+    saveMetadata: { core: 'jsnes', build: '3.0.0', format: 'jsnes-state' },
     setPaused: (paused) => {
       if (paused) {
         // 补帧的定时器要一起收：否则暂停之后画面还会往前走一两帧

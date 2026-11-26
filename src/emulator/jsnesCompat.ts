@@ -55,13 +55,13 @@ export interface JsnesSpeakerStopTarget {
 }
 
 /**
- * jsnes 2.1.0 的 stop() 写死了 `node.disconnect(audioCtx.destination)`。本站为了调音量，把
+ * jsnes 3.0.0 的 stop() 写死了 `node.disconnect(audioCtx.destination)`。本站为了调音量，把
  * 连接改成 node -> gain -> destination 后，那条特定目标连接已经不存在，Chrome 会抛
  * InvalidAccessError；更糟的是 Browser 的异常处理会先 stop 再上报，于是这条清理错误把真正的
  * 「invalid opcode」盖掉，还让 worklet 留着不断重试。
  *
  * 只有音频确实被本站改线时才接管 stop；未改线时继续走上游实现。下面几步刻意保持与
- * jsnes 2.1.0 一致，只把「断开特定 destination」换成「断开全部输出」。升级 jsnes 后测试会
+ * jsnes 3.0.0 一致，只把「断开特定 destination」换成「断开全部输出」。升级 jsnes 后测试会
  * 核对这组内部字段，避免上游改了生命周期而我们继续悄悄照抄旧实现。
  */
 export function installJsnesSafeStop(

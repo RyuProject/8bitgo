@@ -13,6 +13,7 @@ import {
   formatEnvironment,
   formatGroupForAi,
   formatRecovery,
+  formatResourceServerTiming,
   type DiagnosticEvent,
   type DiagnosticGroup,
   type DiagnosticGroupsResponse,
@@ -131,15 +132,18 @@ function SampleView({ sample }: { sample: DiagnosticSample }) {
                   <tr><th className="pr-2 font-normal">开始</th><th className="pr-2 font-normal">耗时</th><th className="pr-2 font-normal">状态</th><th className="pr-2 font-normal">传输 / 内容</th><th className="font-normal">请求</th></tr>
                 </thead>
                 <tbody>
-                  {d.resources.map((r, i) => (
-                    <tr key={i} className={r.st >= 400 ? 'text-live' : r.d >= 10_000 ? 'text-yellow-400' : 'text-muted'}>
-                      <td className="pr-2 tabular-nums">{fmtMs(r.at)}</td>
-                      <td className="pr-2 tabular-nums">{fmtMs(r.d)}</td>
-                      <td className="pr-2">{r.st || '-'} {r.p}</td>
-                      <td className="pr-2 tabular-nums">{fmtBytes(r.tx)} / {fmtBytes(r.sz)}</td>
-                      <td className="break-all">{r.i} {r.n}</td>
-                    </tr>
-                  ))}
+                  {d.resources.map((r, i) => {
+                    const serverTiming = formatResourceServerTiming(r)
+                    return (
+                      <tr key={i} className={r.st >= 400 ? 'text-live' : r.d >= 10_000 ? 'text-yellow-400' : 'text-muted'}>
+                        <td className="pr-2 tabular-nums">{fmtMs(r.at)}</td>
+                        <td className="pr-2 tabular-nums">{fmtMs(r.d)}</td>
+                        <td className="pr-2">{r.st || '-'} {r.p}</td>
+                        <td className="pr-2 tabular-nums">{fmtBytes(r.tx)} / {fmtBytes(r.sz)}</td>
+                        <td className="break-all">{r.i} {r.n}{serverTiming && <span className="mt-0.5 block font-sans text-[10px] text-dim">{serverTiming}</span>}</td>
+                      </tr>
+                    )
+                  })}
                 </tbody>
               </table>
             </div>

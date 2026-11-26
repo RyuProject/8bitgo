@@ -57,7 +57,7 @@ function isInesHeader(b: Uint8Array): boolean {
   return true
 }
 
-/** 必须逐位复刻 jsnes 2.1.0 的 ROM._loadINES1Header / _loadNES2Header，不能自作聪明纠偏。 */
+/** 必须逐位复刻 jsnes 3.0.0 的 ROM._loadINES1Header / _loadNES2Header，不能自作聪明纠偏。 */
 function mapperFromHeader(b: Uint8Array): { mapper: number; nes2: boolean } {
   const nes2 = (b[7] & 0x0c) === 0x08
   if (nes2) {
@@ -235,7 +235,7 @@ export function analyzeJsnesCompatibility(
 /**
  * jsnes 能不能跑这份 ROM。
  *
- * **认不出格式时返回 false**：jsnes 2.1.0 的 ROM.load 只接受 `NES\\x1a` iNES，
+ * **认不出格式时返回 false**：jsnes 3.0.0 的 ROM.load 只接受 `NES\\x1a` iNES，
  * 并不支持 UNIF / FDS。以前把未知格式乐观放行，会先下载并创建 jsnes，再确定性失败后
  * 切 EmulatorJS；容器头 `8BG1` 也会被误当成“可以试”。未知格式直接交给兼容面更宽的引擎。
  */

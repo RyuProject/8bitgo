@@ -143,7 +143,7 @@ for (const m of [0, 25, 256, 555, 4095]) {
   for (const m of JSNES_MAPPERS) {
     assert.equal(jsnesCanRun(header(m)), true, `mapper ${m} jsnes 实现了，不该被拦`)
   }
-  // jsnes 2.1.0 只接受 iNES；8BG / UNIF / FDS 不能再先做一次必败尝试。
+  // jsnes 3.0.0 只接受 iNES；8BG / UNIF / FDS 不能再先做一次必败尝试。
   assert.equal(jsnesCanRun(new Uint8Array(4)), false, '认不出格式时交给 EmulatorJS')
 }
 

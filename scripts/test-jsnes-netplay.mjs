@@ -234,6 +234,31 @@ const baseOptions = (overrides = {}) => ({
   guest.close()
 }
 
+// jsnes 3.0 的状态 ABI 与 2.x 不兼容；旧页面必须在传状态前被协议版本挡住。
+{
+  let error = ''
+  const host = new JsnesNetplay(baseOptions({ onError: (message) => { error = message } }))
+  const guest = new JsnesNetplay(baseOptions({ seat: 1 }))
+  const a = new FakeDataChannel()
+  const b = new FakeDataChannel()
+  a.peer = b
+  b.peer = a
+  const sendFromOldClient = a.send.bind(a)
+  a.send = (value) => {
+    const message = JSON.parse(value)
+    if (message.kind === 'hello') message.version = 2
+    sendFromOldClient(JSON.stringify(message))
+  }
+  host.bindDc(a)
+  guest.bindDc(b)
+  a.open()
+  b.open()
+  await tick()
+  assert.match(error, /联机协议版本不同/)
+  host.close()
+  guest.close()
+}
+
 assert.equal(jsnesRomFingerprint(new Uint8Array([1, 2, 3])), jsnesRomFingerprint(new Uint8Array([1, 2, 3])))
 assert.notEqual(jsnesRomFingerprint(new Uint8Array([1, 2, 3])), jsnesRomFingerprint(new Uint8Array([1, 2, 4])))
 
