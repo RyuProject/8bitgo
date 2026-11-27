@@ -15,6 +15,8 @@ export class RomIntegrityError extends Error {
 const manifestCache = new Map<string, { promise: Promise<RomIntegrityManifest | null>; expiresAt: number }>()
 const MANIFEST_CACHE_LIMIT = 32
 const UNVERSIONED_TTL_MS = 30_000
+const MANIFEST_REQUEST_TIMEOUT_MS = 2_500
+const MANIFEST_TOTAL_TIMEOUT_MS = 6_000
 const warned = new Set<string>()
 
 function localSetting(key: string): string {
@@ -73,6 +75,40 @@ export function romIntegrityManifestUrl(rawUrl: string): string | null {
   } catch { return null }
 }
 
+/**
+ * ROM API 主域暂时不可达时，从同一 R2 对象的可信读取域补取清单。
+ * 这些域名由生产配置映射到同一个 Worker / ROM 桶；镜像域只作最后候选，因为它可能经过额外代理。
+ */
+function romIntegrityManifestUrls(rawUrl: string, key: string, version: string): string[] {
+  const primary = romIntegrityManifestUrl(rawUrl)
+  if (!primary) return []
+  const base = typeof location === 'undefined' ? 'https://8bitgo.invalid/' : location.href
+  const env = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env
+  const candidates = [
+    primary,
+    new URL(rawUrl, base).origin,
+    String(env?.VITE_ROM_DOWNLOAD_URL || ''),
+    String(env?.VITE_ROM_BASE_URL || ''),
+    String(env?.VITE_ROM_MIRROR_URL || ''),
+  ]
+  const urls = new Set<string>()
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string' || !candidate.trim()) continue
+    try {
+      const source = new URL(candidate, base)
+      if (!['http:', 'https:'].includes(source.protocol)) continue
+      // 配置的 API 主地址沿用既有的路径前缀；其它回退项必须是本站可信读取域。
+      const isPrimary = candidate === primary
+      if (!isPrimary && !isTrustedOrigin(source)) continue
+      const endpoint = isPrimary ? new URL(primary) : new URL('/integrity', source.origin)
+      endpoint.searchParams.set('key', key)
+      if (version) endpoint.searchParams.set('romv', version)
+      urls.add(endpoint.href)
+    } catch { /* 非法备用地址不影响其它可信线路 */ }
+  }
+  return [...urls]
+}
+
 function etagVersion(etag: string): string {
   return etag.replace(/^W\//, '').replace(/"/g, '').trim()
 }
@@ -110,39 +146,71 @@ export function fetchRomIntegrityManifest(rawUrl: string, parentSignal?: AbortSi
   if (old) manifestCache.delete(cacheKey)
 
   const pending = (async () => {
-    const manifestUrl = romIntegrityManifestUrl(rawUrl)
-    if (!manifestUrl) return null
+    const manifestUrls = romIntegrityManifestUrls(rawUrl, key, version)
+    if (!manifestUrls.length) return null
     // 清单请求按 key + romv 共用；不能绑到第一个标签页的 AbortSignal，否则它取消后会连带取消
     // 同一时刻另一个播放器正在等待的请求。调用方取消后只忽略结果，2.5 秒上限仍会回收请求。
-    const timed = withTimeout(undefined, 2_500)
-    try {
-      const response = await fetch(manifestUrl, { cache: version ? 'force-cache' : 'no-store', signal: timed.signal })
-      if (response.status === 404 || response.status === 405) {
-        // 404 是旧对象尚未回填的兼容状态；上传器与迁移脚本会逐步消除它。
-        warnOnce(key, '此资源还没有 SHA-256 清单，当前仍按旧有 HTTP / 大小 / 格式检查加载')
-        return null
-      }
-      if (response.status === 503 || response.status === 412) {
-        throw new RomIntegrityError(`Worker 拒绝使用不完整或版本不符的 ROM / BIOS 校验清单（HTTP ${response.status}）`)
-      }
-      if (!response.ok) {
-        warnOnce(key, `清单接口 HTTP ${response.status}，本次按兼容路径继续`)
-        return null
-      }
-      const value = await response.json().catch(() => null) as { etag?: unknown; size?: unknown; manifest?: unknown } | null
-      if (!value || typeof value.etag !== 'string' || !Number.isSafeInteger(value.size) || Number(value.size) <= 0) {
-        throw new RomIntegrityError('Worker 返回的 SHA-256 清单元数据无效')
-      }
-      if (version && etagVersion(value.etag) !== version) throw new RomIntegrityError('清单版本与 ROM 地址不一致')
-      const manifest = validateRomIntegrityManifest(value.manifest, key, value.etag, Number(value.size))
-      if (!manifest) throw new RomIntegrityError('Worker 返回的 SHA-256 分块清单无效')
-      return manifest
-    } catch (error) {
-      if (error instanceof RomIntegrityError) throw error
-      // 清单请求失败不延长弱网玩家等待；Worker 对已经标记为必校验的对象会自行拒绝无清单下载。
-      warnOnce(key, `清单暂不可读（${error instanceof Error ? error.message : String(error)}）`)
+    const deadline = Date.now() + MANIFEST_TOTAL_TIMEOUT_MS
+    let lastFailure: unknown
+    let integrityFailure: RomIntegrityError | null = null
+    let sawMissing = false
+    for (const manifestUrl of manifestUrls) {
+      const remainingMs = deadline - Date.now()
+      if (remainingMs <= 0) break
+      const timed = withTimeout(undefined, Math.min(MANIFEST_REQUEST_TIMEOUT_MS, remainingMs))
+      try {
+        const response = await fetch(manifestUrl, { cache: version ? 'force-cache' : 'no-store', signal: timed.signal })
+        if (response.status === 404 || response.status === 405) {
+          // 有些读取域不提供 Worker 路由；试完其它域后才把 404 当作旧对象兼容状态。
+          sawMissing = true
+          continue
+        }
+        if (!response.ok) {
+          const error = new RomIntegrityError(response.status === 503 || response.status === 412
+            ? `Worker 拒绝使用不完整或版本不符的 ROM / BIOS 校验清单（HTTP ${response.status}）`
+            : `Worker 清单接口返回 HTTP ${response.status}`)
+          lastFailure = error
+          if (response.status === 503 || response.status === 412) integrityFailure = error
+          continue
+        }
+        const value = await response.json().catch((error) => {
+          lastFailure = error
+          return null
+        }) as { etag?: unknown; size?: unknown; manifest?: unknown } | null
+        if (!value || typeof value.etag !== 'string' || !Number.isSafeInteger(value.size) || Number(value.size) <= 0) {
+          const error = new RomIntegrityError('Worker 返回的 SHA-256 清单元数据无效')
+          lastFailure = error
+          integrityFailure = error
+          continue
+        }
+        if (version && etagVersion(value.etag) !== version) {
+          const error = new RomIntegrityError('清单版本与 ROM 地址不一致')
+          lastFailure = error
+          integrityFailure = error
+          continue
+        }
+        const manifest = validateRomIntegrityManifest(value.manifest, key, value.etag, Number(value.size))
+        if (!manifest) {
+          const error = new RomIntegrityError('Worker 返回的 SHA-256 分块清单无效')
+          lastFailure = error
+          integrityFailure = error
+          continue
+        }
+        return manifest
+      } catch (error) {
+        lastFailure = error
+        if (error instanceof RomIntegrityError) integrityFailure = error
+      } finally { timed.dispose() }
+    }
+    if (integrityFailure) throw integrityFailure
+    if (sawMissing && !lastFailure) {
+      // 404 是旧对象尚未回填的兼容状态；上传器与迁移脚本会逐步消除它。
+      warnOnce(key, '此资源还没有 SHA-256 清单，当前仍按旧有 HTTP / 大小 / 格式检查加载')
       return null
-    } finally { timed.dispose() }
+    }
+    // 清单请求失败不延长弱网玩家等待；Worker 对已经标记为必校验的对象会拒绝无清单下载。
+    warnOnce(key, `清单暂不可读（${lastFailure instanceof Error ? lastFailure.message : String(lastFailure ?? '请求超时')}）`)
+    return null
   })()
   pending.catch(() => {})
   const entry = { promise: pending, expiresAt: 0 }
@@ -152,7 +220,10 @@ export function fetchRomIntegrityManifest(rawUrl: string, parentSignal?: AbortSi
     if (!first || first === cacheKey) break
     manifestCache.delete(first)
   }
-  void pending.then(() => { entry.expiresAt = version ? Number.POSITIVE_INFINITY : Date.now() + UNVERSIONED_TTL_MS }, () => {
+  void pending.then((manifest) => {
+    // 只有已验证的清单才可随 romv 永久缓存；404 / 临时网络错误必须过期后重试，不能把一次故障锁死整页。
+    entry.expiresAt = manifest && version ? Number.POSITIVE_INFINITY : Date.now() + UNVERSIONED_TTL_MS
+  }, () => {
     if (manifestCache.get(cacheKey) === entry) manifestCache.delete(cacheKey)
   })
   return pending

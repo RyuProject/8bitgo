@@ -135,6 +135,21 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   assert.equal(diagnoseStartupFailure({
     event: 'failed', runtime: 'iodinegba', platform: 'gba', detail: 'GBA BIOS is required and must be 16 KiB',
   }).code, 'bios_config', 'IodineGBA 的平台 BIOS 配置问题要和街机 ROM 集错误分开')
+  const requiredRomManifestFailure = diagnoseStartupFailure({
+    event: 'timeout', runtime: 'emulatorjs', platform: 'arcade',
+    detail: '街机游戏文件下载失败：本站要求校验此 ROM / BIOS，但 SHA-256 清单不可用',
+  })
+  assert.deepEqual(
+    { code: requiredRomManifestFailure.code, label: requiredRomManifestFailure.label, phase: requiredRomManifestFailure.phase,
+      confidence: requiredRomManifestFailure.confidence, signal: requiredRomManifestFailure.signals[0] },
+    { code: 'rom_integrity', label: 'ROM / BIOS 完整性清单不可用，下载被安全校验拦截', phase: 'rom_download',
+      confidence: 'high', signal: 'error.rom_integrity_manifest' },
+    '必校验 ROM 因清单不可用而被阻断时，不能被归成通用启动超时',
+  )
+  assert.notEqual(diagnoseStartupFailure({
+    event: 'failed', runtime: 'emulatorjs', platform: 'arcade',
+    diagnostics: { logs: [{ t: 2_000, s: 'page', l: 'warn', m: '[ROM integrity] pgm.zip: 清单暂不可读（SHA-256 清单请求超时）' }] },
+  }).code, 'rom_integrity', '可选清单预警本身不能被当作已阻断的必校验 ROM')
   assert.notEqual(diagnoseStartupFailure({
     event: 'failed', runtime: 'emulatorjs', platform: 'gba', detail: 'GBA BIOS is required and must be 16 KiB',
   }).code, 'bios_config', '平台 BIOS 专属诊断不能误判其他 GBA 运行时')
@@ -155,6 +170,24 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   })
   assert.equal(oldUnknownGbaBiosSample.diagnostics.diagnosis.code, 'bios_config',
     '读回旧现场时应把已有的 unknown 重算为新识别出的明确 BIOS 配置错误')
+  const oldTimeoutManifestSample = shapeSample({
+    id: '4328', event: 'timeout', runtime: 'emulatorjs', platform: 'arcade', payload: JSON.stringify({
+      v: 1, capture: { level: 'full' },
+      reason: '街机游戏文件下载失败：本站要求校验此 ROM / BIOS，但 SHA-256 清单不可用',
+      diagnosis: { code: 'timeout', label: '启动流程超时或停滞', phase: 'startup', confidence: 'medium', signals: ['event.timeout'] },
+    }),
+  })
+  assert.equal(oldTimeoutManifestSample.diagnostics.diagnosis.code, 'rom_integrity',
+    '读回旧的通用超时现场时，应把明确的 SHA-256 清单阻断提升为具体原因')
+  const oldPspTimeoutSample = shapeSample({
+    id: '4283', event: 'timeout', runtime: 'ppsspp', platform: 'psp', payload: JSON.stringify({
+      v: 1, capture: { level: 'full' }, reason: 'PPSSPP 启动失败：PPSSPP 响应超时',
+      logs: [{ t: 603_000, s: 'snapshot', l: 'info', m: 'PSP 现场：模式 stream，镜像 686.3MB，已读 4.3MB，核心未启动，状态「正在流式读取游戏… 已按需读取 4.3 MB」' }],
+      diagnosis: { code: 'timeout', label: '启动流程超时或停滞', phase: 'startup', confidence: 'medium', signals: ['event.timeout'] },
+    }),
+  })
+  assert.equal(oldPspTimeoutSample.diagnostics.diagnosis.signals[0], 'error.ppsspp_stream_timeout',
+    '读回旧的 PSP 通用超时现场时，应采用已验证的流式挂盘专属诊断')
   assert.notEqual(diagnoseStartupFailure({ event: 'failed', runtime: 'emulatorjs', platform: 'gba', detail: 'GBA ROM failed to load' }).code, 'bios_config',
     '普通 GBA ROM 故障不能被误判成平台 BIOS 配置错误')
   assert.equal(diagnoseStartupFailure({
@@ -667,6 +700,7 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
 {
   const { diagnosisSignalLabel, formatGroupForAi, formatResourceServerTiming, formatSample } = await import('../src/admin/diagnosticsReport.ts')
   assert.equal(diagnosisSignalLabel('stage.html5_entry_pending'), 'HTML5 游戏入口页尚未确认加载', '后台与复制给 AI 都要显示新分类依据的中文说明')
+  assert.equal(diagnosisSignalLabel('error.rom_integrity_manifest'), '本站要求校验 ROM / BIOS，但 SHA-256 清单不可用', '后台与复制给 AI 都要解释完整性清单拦截信号')
   assert.equal(formatResourceServerTiming({ workerMs: 18.4, edgeCache: 'HIT' }), 'Worker 响应头 18.4ms · 边缘缓存 HIT', '现场表格和 AI 报告共用 Worker / 边缘缓存格式')
   assert.equal(formatResourceServerTiming({}), '', '没有服务器计时信息时不增加空白行')
   assert.match(read('src/admin/AdminDiagnostics.tsx'), /formatResourceServerTiming\(r\)/, '现场网络表格应展示已采集的服务器计时信息')
