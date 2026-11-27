@@ -4,13 +4,14 @@ import { openAuthModal } from '@/services/authModal'
 import { PixelButton } from '@/components/ui/PixelButton'
 import { GameCover } from '@/components/game/GameCover'
 import { useGamesBySlugs } from '@/services/gameCache'
-import { romUrlForKey } from '@/services/roms'
+import { coverSrcSet, gameMediaUrl } from '@/services/roms'
 import { cx } from '@/lib/format'
 import { useCurrentUser } from '@/services/auth'
 import { FEATURES } from '@/config/features'
 import { useT, fmt } from '@/services/i18n'
 import { useLang } from '@/services/lang'
 import { gameTitle } from '@/services/i18nData'
+import { allowsSpeculativePlayerPreload, type NetworkHint } from '@/emulator/preloadPolicy'
 import type { Game } from '@/types'
 import type { Translation } from '@/locales'
 import { usePrefersReducedMotion } from '@/lib/motion'
@@ -62,6 +63,8 @@ const DEPTH = [
 // md / lg 上这一行还要塞下左边的标题和文案，所以先小一档，宽屏（xl）才放到最大
 const STACK_BOX = 'h-56 w-64 lg:h-64 lg:w-72 xl:h-80 xl:w-96'
 const CARD = 'w-[55%]'
+/** 和 STACK_BOX × CARD 一致，预热与实际卡片必须挑同一档缩放封面。 */
+const HERO_COVER_SIZES = '(min-width: 1280px) 211px, (min-width: 1024px) 158px, 141px'
 
 /**
  * Fisher-Yates，返回打乱后的下标表。
@@ -169,13 +172,20 @@ function Banner({ className, games }: { className?: string; games?: Game[] }) {
    * 正好压在动画中间，看着就是卡一下。提前一轮拉好，切换时只是换个 src，直接命中缓存。
    */
   useEffect(() => {
-    if (pool.length < 2) return
+    // 首次随机顺序还没落定时不预热；否则先下载旧顺序的下一张，再下载随机后的下一张。
+    if (pool.length < 2 || (base.length > 1 && (!order || order.length !== base.length))) return
+    const connection = (navigator as Navigator & { connection?: NetworkHint }).connection
+    // 预热只是为了轮换动画顺滑，不应在不轮换、后台或弱网时占用玩家当前资源。
+    if (reduced || paused || document.hidden || !allowsSpeculativePlayerPreload(connection)) return
     const next = pool[(seq + 1) % pool.length]
-    const src = next?.cover ? romUrlForKey(next.cover) : ''
+    const src = next ? gameMediaUrl(next, 'cover') : ''
     if (!src) return
+    const srcSet = coverSrcSet(src)
     const img = new Image()
+    img.sizes = HERO_COVER_SIZES
+    if (srcSet) img.srcset = srcSet
     img.src = src
-  }, [pool, seq])
+  }, [base.length, order, pool, seq, reduced, paused])
 
   const current = pool.length ? pool[seq % pool.length] : null
   // 名单还没到的时候保留原来那句品牌语，别让标题空着或者闪一下
@@ -279,7 +289,7 @@ function Banner({ className, games }: { className?: string; games?: Game[] }) {
                         再标高优先级就等于没分优先级了。
                         still：这一摞每 5 秒换一批，带视频封面的话就是不停地新建 <video>
                         + 解码 + 销毁，主线程被占住，整页跟着一顿一顿（见 GameCover 的 still） */}
-                    <GameCover game={game} ratio="square" iconSize="md" showTitle={false} priority={key === 0} still />
+                    <GameCover game={game} ratio="square" iconSize="md" showTitle={false} priority={key === 0} sizes={HERO_COVER_SIZES} still />
                   </Link>
                 </div>
               </div>

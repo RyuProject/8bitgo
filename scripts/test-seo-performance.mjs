@@ -73,6 +73,17 @@ check('侧栏微型封面不在开局时下载和解码宣传视频', () => {
   assert.ok(compactCovers.some((tag) => tag.includes('ratio="landscape"')), '曾经玩过的横版微缩图仍会加载视频')
 })
 
+check('首页轮播只在可轮换时预热，并复用封面转码档与实际尺寸', () => {
+  const src = read('src/components/home/HomeBanner.tsx')
+  assert.match(src, /const HERO_COVER_SIZES = '\(min-width: 1280px\) 211px, \(min-width: 1024px\) 158px, 141px'/)
+  assert.match(src, /if \(reduced \|\| paused \|\| document\.hidden \|\| !allowsSpeculativePlayerPreload\(connection\)\) return/)
+  assert.match(src, /const srcSet = coverSrcSet\(src\)/, '预热必须走与实际卡片相同的缩放候选')
+  assert.match(src, /img\.sizes = HERO_COVER_SIZES/)
+  assert.match(src, /if \(srcSet\) img\.srcset = srcSet/)
+  assert.match(src, /sizes=\{HERO_COVER_SIZES\}/, '实际卡片与预热的 sizes 必须一致')
+  assert.doesNotMatch(src, /romUrlForKey/, '预热不能绕过游戏媒体地址与缩放图路径')
+})
+
 check('街机游戏详情和弱网不请求第三方字体，其它页面只在空闲时加载', () => {
   const html = read('index.html')
   const css = read('src/index.css')
