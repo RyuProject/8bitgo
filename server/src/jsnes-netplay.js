@@ -70,12 +70,11 @@ function rejectUpgrade(socket, status, message) {
 }
 
 function makeRoomId() {
-  // 6 位十六进制（Node 的 Buffer.toString 不支持 base36，用 hex 最稳），
-  // 足够随机，又不至于在邀请链接里太长
-  return randomBytes(4).toString('hex').slice(0, 6)
+  // 房间号本身就是邀请凭据；16 位十六进制有 64 位熵，避免短码被扫中后抢占 2P 座位。
+  return randomBytes(8).toString('hex')
 }
 
-export function attachJsnesNetplay(httpServer, app, origins = ['*']) {
+export function attachJsnesNetplay(httpServer, origins = ['*']) {
   // maxPayload：ws 默认 100 MiB，信令最大也就几 KB 的 SDP，给 64 KB 足够
   const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 })
 
@@ -173,8 +172,10 @@ export function attachJsnesNetplay(httpServer, app, origins = ['*']) {
       }
 
       if (msg.type === 'join') {
-        // 房间号统一转小写：链接里是十六进制小写，进房时查表不会因为大小写不一致而查不到
-        const roomId = typeof msg.roomId === 'string' ? msg.roomId.toLowerCase() : ''
+        // 房间号既是邀请凭据，也要限制格式；拒绝旧短码和任意长字符串，避免把匿名猜码变成可用接口。
+        const roomId = typeof msg.roomId === 'string' && /^[a-f0-9]{16}$/i.test(msg.roomId)
+          ? msg.roomId.toLowerCase()
+          : ''
         const room = rooms.get(roomId)
         if (!room) return send(ws, { type: 'error', reason: 'room not found' })
         if (!room.hostId) return send(ws, { type: 'error', reason: 'room not found' })
@@ -269,22 +270,6 @@ export function attachJsnesNetplay(httpServer, app, origins = ['*']) {
       if (sock) send(sock, { type: 'peer-left' })
     }
   }
-
-  // 让本站房间列表也能看见 jsnes 联机（可选；不影响 EmulatorJS 那条）
-  app.get('/api/jsnes-netplay/rooms', (_req, res) => {
-    res.json(
-      [...rooms.entries()].map(([roomId, room]) => ({
-        roomId,
-        players: roomPlayers(room),
-        createdAt: room.createdAt,
-      })),
-    )
-  })
-  app.get('/api/jsnes-netplay/rooms/:roomId', (req, res) => {
-    const room = rooms.get(String(req.params.roomId).toLowerCase())
-    if (!room) return res.status(404).json({ error: 'room not found' })
-    res.json({ exists: true, players: roomPlayers(room) })
-  })
 
   return wss
 }

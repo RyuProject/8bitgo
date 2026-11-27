@@ -787,7 +787,7 @@ app.post('/api/live/rooms/:roomId/chat', live.streamChat)
 app.post('/api/live/srs-hook', live.srsHook)
 // jsnes 的 P2P 联机信令：与 EmulatorJS netplay 完全独立的一条路，走 /jsnes-netplay（见 jsnes-netplay.js）。
 // 同样只转发 WebRTC 握手，画面与输入都不经过服务器。
-attachJsnesNetplay(httpServer, app, origins)
+attachJsnesNetplay(httpServer, origins)
 // 旧 Flash 的裸 TCP 不能从浏览器直连；只接管 /sfs/sas3，其余 upgrade 继续交给 socket.io / IPX。
 sfs.attach(httpServer)
 cs16Relay.attach(httpServer)
