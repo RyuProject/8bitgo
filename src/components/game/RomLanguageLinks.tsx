@@ -23,7 +23,7 @@ export function RomLanguageLinks({ languages, className }: RomLanguageLinksProps
       <span className="mr-1 text-xs font-semibold text-muted">{t.games.filterRomLanguage}</span>
       {items.map(({ id, count }) => (
         <Link key={id} to={`/rom-language/${encodeURIComponent(id)}`} className={chipClasses(false)}>
-          {romLanguageLabel(uiLanguage, id)} <span className="opacity-60">{count}</span>
+          {romLanguageLabel(uiLanguage, id)} <span>{count}</span>
         </Link>
       ))}
     </nav>
