@@ -135,7 +135,7 @@ export function needsAttention(event, diagnostics) {
 }
 
 const DIAGNOSIS_CODES = new Set([
-  'offline', 'network_http', 'network_failure', 'react_update_loop', 'page_asset', 'script_conflict', 'engine_asset', 'engine_assets', 'engine_load', 'core_download', 'rom_download',
+  'offline', 'network_http', 'network_failure', 'react_update_loop', 'page_asset', 'script_conflict', 'engine_asset', 'engine_assets', 'engine_load', 'core_download', 'rom_download', 'rom_integrity',
   'rom_invalid', 'bios_romset', 'bios_config', 'webgl', 'memory', 'storage', 'input_api', 'wasm_runtime', 'runtime_trap',
   'timeout', 'unsupported', 'unknown',
 ])
@@ -299,6 +299,10 @@ export function diagnoseStartupFailure({ event, runtime, platform, detail, elaps
   // 这类错误是平台配置缺失或格式不符，不能落成「未识别」，也不能和街机 ROM 集 BIOS 混为一类。
   if (platform === 'gba' && runtime === 'iodinegba' && has(/gba bios.{0,120}(?:16\s*kib|required|require|need|not configured|configure|missing|unrecognized|size|大小|配置|未配置|没有|可识别)/)) {
     return hit('bios_config', 'GBA 平台 BIOS 未配置或格式不符', 'platform_config', 'high', 'error.platform_bios_config')
+  }
+  // 只有请求方已明确要求校验、但拿不到 SHA-256 清单时才细分；可选清单的普通预警不代表 ROM 被阻断。
+  if (has(/本站要求校验此\s*rom\s*\/\s*bios，但\s*sha-?256\s*清单不可用|(?:required|mandatory).{0,80}(?:rom|bios).{0,80}(?:sha-?256|integrity).{0,80}(?:manifest|清单).{0,60}(?:unavailable|missing|不可用|缺失|timeout|超时)/)) {
+    return hit('rom_integrity', 'ROM / BIOS 完整性清单不可用，下载被安全校验拦截', 'rom_download', 'high', 'error.rom_integrity_manifest')
   }
   // DOS ROM 已下载日志会留在整页诊断缓冲里，不能盖过 js-dos 依赖脚本自身的明确初始化错误。
   if (platform === 'dos' && has(/unable to init emulators\.js|unable to add emulators\.js|emulators is not defined/)) {
@@ -931,10 +935,12 @@ export function shapeSample(row) {
     payload = null
   }
   const diagnostics = normalizeDiagnostics(payload)
-  // 新规则可把历史现场中原先归成 unknown 的明确原因补成当前分类，但不重写已知诊断或任何现场数据。
-  if (diagnostics && (!diagnostics.diagnosis || diagnostics.diagnosis.code === 'unknown')) {
+  // 新规则可补充历史 unknown；两条新增的强证据也允许把旧 timeout 精炼成具体阻断原因，现场本身不改写。
+  if (diagnostics && (!diagnostics.diagnosis || diagnostics.diagnosis.code === 'unknown' || diagnostics.diagnosis.code === 'timeout')) {
     const currentDiagnosis = diagnoseStartupFailure({ event: row.event, runtime: row.runtime, platform: row.platform, detail: diagnostics.reason, diagnostics })
-    if (!diagnostics.diagnosis || currentDiagnosis.code !== 'unknown') diagnostics.diagnosis = currentDiagnosis
+    const refinesTimeout = diagnostics.diagnosis?.code === 'timeout' &&
+      ['error.ppsspp_stream_timeout', 'error.rom_integrity_manifest'].includes(currentDiagnosis.signals[0])
+    if (!diagnostics.diagnosis || diagnostics.diagnosis.code === 'unknown' || refinesTimeout) diagnostics.diagnosis = currentDiagnosis
   }
   return {
     id: String(row.id),

@@ -4509,6 +4509,7 @@ PK / TH 两份现场：`The requested module './live-Cqhc9j-k.js' does not provi
   在磁盘上、现代目标连同静态依赖闭包都在 SHA-256 清单里；预加载助手确实进了现代包（Vite 升级冲掉补丁就红）；扇出预算 40 个 chunk、
   首屏预算 820KB（未压缩；当前约 631KB、最大扇出 29）。预算是「明显变坏」的报警线，放宽要在提交里写原因。上面那次合并实验就会被首屏预算拦下。
 - **运行时适配器导入也要走同一套有限重试**（2026-11-26，生产诊断 #4295，Chrome 154 / macOS / JP，《口袋妖怪 白》）：20ms 内 `Failed to fetch dynamically imported module: …/emulatorjs-*.js`，真实访客开局直接失败；同一带哈希文件随后从公网返回 200，不能据此说 CDN 持续缺文件。`lazyNamed` / `EmulatorPlayer` 里的懒加载已用 `importWithRetry`，但 `runtimes.ts` 的 `LOADERS[id]()` 曾直接 `import()`，正好漏了玩家点击开始后才加载的模拟器适配器。现在 `loadMountOf` 用 `lazyChunkFile` 取出构建后的文件名，再经 `importWithRetry` 做有限、唯一 URL 重试；外层 `raceModuleLoad` 的进展超时和失败清除仍保留。给新运行时加 `LOADERS` 时不要绕过这层。回归：`npm run test:runtime-edge-route` + `npm run test:lazy-imports`。
+- **ROM 完整性清单不可因单域故障锁死一局**（2026-11-27，诊断 #4330，街机 ROM / PGM BIOS）：播放器固定访问 `roms.8bitgo.com/integrity`；该域暂时不可达时，旧逻辑把版本化 URL 的 `null` 永久缓存在当前页面，重试不会再请求清单，Worker 又会按必校验策略拒绝 ROM。现在清单请求按可信的同桶读取域有限回退（总计最多 6 秒），只有验证通过的版本化清单永久缓存；缺失或网络失败最多缓存 30 秒，安全校验仍不降级。后台只在日志明确说「必校验对象的 SHA-256 清单不可用」时归为高把握度 ROM 完整性拦截，可选清单预警不算根因；旧通用超时现场在回读时也会更新为已证实的完整性 / PSP 流式挂盘分类。回归：`npm run test:rom-integrity` + `npm run test:startup-diagnostics`。
 - **测试**：`npm run test:lazy-imports`（进 `npm test`：在 VM 里跑真助手代码——重试 / 404 不重试 / 去重 / 停滞中止 / 不碰模块表 / 非 Chromium 与 legacy 原样交回；
   Vite 助手模板没变；importWithRetry 暖缓存失败后整套重来；构建检查的五种拦截）。
   `npm run test:lazy-imports-browser [-- --dist <目录>]`（手动，要 Playwright 与构建产物，`PLAYWRIGHT_MODULE` / `WEBKIT_EXECUTABLE` 可指向本机已装的）：

@@ -22,6 +22,7 @@ function hex(bytes) {
 
 const originalFetch = globalThis.fetch
 const originalLocation = globalThis.location
+const originalLocalStorage = globalThis.localStorage
 try {
   globalThis.location = { href: 'https://8bitgo.com/' }
 
@@ -70,6 +71,54 @@ try {
   }
   const loadedManifest = await fetchRomIntegrityManifest(`https://rom.8bitgo.com/${tinyManifest.key}?romv=manifest-shape-v1`)
   assert.deepEqual(loadedManifest, tinyManifest, 'frontend accepts the Worker nested manifest response')
+
+  // Worker API 主域偶发不可达时，改从同一对象的 ROM 读取域取清单，不把一次故障变成启动失败。
+  globalThis.localStorage = { getItem: (key) => key === '8bitgo.rom.api' ? 'https://roms.8bitgo.com' : null }
+  const fallbackKey = 'roms/integrity-test/manifest-fallback.gba'
+  const fallbackManifest = { ...tinyManifest, key: fallbackKey }
+  const manifestOrigins = []
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input))
+    manifestOrigins.push(url.origin)
+    if (url.origin === 'https://roms.8bitgo.com') throw new TypeError('API host unavailable')
+    assert.equal(url.origin, 'https://rom.8bitgo.com', 'fallback only targets the trusted object origin')
+    assert.equal(url.searchParams.get('key'), fallbackKey)
+    return new Response(JSON.stringify({ etag, size: tiny.byteLength, manifest: fallbackManifest }), {
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+  assert.deepEqual(
+    await fetchRomIntegrityManifest(`https://rom.8bitgo.com/${fallbackKey}?romv=manifest-shape-v1`),
+    fallbackManifest,
+  )
+  assert.deepEqual(manifestOrigins, ['https://roms.8bitgo.com', 'https://rom.8bitgo.com'],
+    '专用 API 主机失败后，应在同一 ROM Worker 读取域成功取得清单')
+
+  // 版本化地址只永久缓存有效清单；临时网络失败的 null 结果到期后必须重新请求。
+  const originalNow = Date.now
+  let fakeNow = originalNow()
+  let transientFetches = 0
+  Date.now = () => fakeNow
+  try {
+    const transientKey = 'roms/integrity-test/manifest-transient.gba'
+    const transientEtag = '"manifest-transient-v1"'
+    globalThis.fetch = async (input) => {
+      transientFetches++
+      if (transientFetches <= 2) throw new TypeError('temporary network outage')
+      const url = new URL(String(input))
+      assert.equal(url.searchParams.get('key'), transientKey)
+      return new Response(JSON.stringify({ etag: transientEtag, size: tiny.byteLength,
+        manifest: { ...tinyManifest, key: transientKey, etag: transientEtag } }), {
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+    const transientUrl = `https://rom.8bitgo.com/${transientKey}?romv=manifest-transient-v1`
+    assert.equal(await fetchRomIntegrityManifest(transientUrl), null, '双线路临时失败保留兼容回退结果')
+    fakeNow += 30_001
+    assert.equal((await fetchRomIntegrityManifest(transientUrl))?.key, transientKey,
+      '短暂网络故障的版本化清单缓存到期后会重新获取')
+    assert.equal(transientFetches, 3)
+  } finally { Date.now = originalNow }
 
   const responseUrl = `https://rom.8bitgo.com/${tinyManifest.key}?romv=manifest-shape-v1`
   let optionalManifestRequested = false
@@ -250,4 +299,6 @@ try {
   globalThis.fetch = originalFetch
   if (originalLocation === undefined) delete globalThis.location
   else globalThis.location = originalLocation
+  if (originalLocalStorage === undefined) delete globalThis.localStorage
+  else globalThis.localStorage = originalLocalStorage
 }

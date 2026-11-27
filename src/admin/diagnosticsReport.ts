@@ -174,6 +174,7 @@ const DIAGNOSIS_SIGNAL_LABEL: Record<string, string> = {
   'resource.page_asset_status': '页面脚本或样式请求返回 HTTP 错误状态',
   'resource.http_status': '资源请求返回 HTTP 错误状态',
   'error.rom_download': '日志或请求指向 ROM 下载 / 读取',
+  'error.rom_integrity_manifest': '本站要求校验 ROM / BIOS，但 SHA-256 清单不可用',
   'error.ppsspp_stream_timeout': 'PPSSPP 报告挂盘响应超时，现场确认仍在流式读盘',
   'error.network': '日志出现网络请求错误',
   'stage.rom': '最后阶段文字指向 ROM 下载 / 读取',
