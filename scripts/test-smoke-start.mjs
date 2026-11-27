@@ -13,11 +13,15 @@ import {
   CHROME_CANDIDATES,
   DEFAULT_SMOKE_GAMES,
   DISABLE_WASM_SCRIPT,
+  INPUT_PROBE_BINDING,
+  INPUT_PROBE_EXPRESSION,
   devToolsUrlOf,
   findChrome,
   MAME_CHD_TIMEOUT_MS,
   PRIVATE_START_EXPRESSION,
   PRIVATE_START_TIMEOUT_MS,
+  INPUT_CONFIRM_TIMEOUT_MS,
+  sendSmokeInput,
   startSmokeGamePrivately,
   summarizeSmokeNetwork,
   startupDetailOf,
@@ -25,19 +29,20 @@ import {
   startupEventsOf,
   timeoutForGame,
   verdictOf,
+  waitForSmokeInput,
   waitWithin,
 } from './smoke-start.mjs'
 
-assert.equal(verdictOf('first_frame'), 'pass')
+assert.equal(verdictOf('first_frame'), '', '首帧只证明出现过画面，不能作为可玩结论')
+assert.equal(verdictOf('game_playable'), 'pass')
 assert.equal(verdictOf('failed'), 'fail')
 assert.equal(verdictOf('timeout'), 'fail')
 assert.equal(verdictOf('slow_start'), '', '慢启动不是结论，继续等')
-assert.equal(verdictOf('game_playable'), '')
 assert.equal(startupEventOf(JSON.stringify({ event: 'first_frame', elapsedMs: 3 })), 'first_frame')
 assert.deepEqual(
-  startupEventsOf(JSON.stringify({ events: [{ event: 'runtime_ready' }, { event: 'first_frame' }] })),
-  ['runtime_ready', 'first_frame'],
-  '冒烟必须能从合并上报中识别 NDS 首帧',
+  startupEventsOf(JSON.stringify({ events: [{ event: 'runtime_ready' }, { event: 'first_frame' }, { event: 'game_playable' }] })),
+  ['runtime_ready', 'first_frame', 'game_playable'],
+  '冒烟必须能从合并上报中识别运行时可玩状态',
 )
 assert.equal(startupEventOf(JSON.stringify({ events: [{ event: 'runtime_ready' }, { event: 'first_frame' }] })), 'runtime_ready')
 assert.deepEqual(startupEventsOf('not json'), [])
@@ -51,8 +56,23 @@ assert.equal(
 )
 assert.equal(startupDetailOf(JSON.stringify({ detail: 'x'.repeat(200) })).length, 160, '详情沿用服务端 160 字符上限')
 assert.equal(startupDetailOf('not json'), '')
+assert.equal(INPUT_CONFIRM_TIMEOUT_MS, 3000)
+assert.equal(INPUT_PROBE_BINDING, '__8bgSmokeKeyProbe')
+assert.match(INPUT_PROBE_EXPRESSION, /data-testid="emulator-stage"/)
+assert.match(INPUT_PROBE_EXPRESSION, /stage\.contains\(event\.target\)/, '方向键探针不能把页面其它区域的按键误当成游戏输入')
+const inputCalls = []
+await sendSmokeInput(async (method, params) => inputCalls.push({ method, params }), { x: 120, y: 240 })
+assert.deepEqual(inputCalls.map(({ method, params }) => [method, params.type, params.key, params.x, params.y]), [
+  ['Input.dispatchMouseEvent', 'mouseMoved', undefined, 120, 240],
+  ['Input.dispatchMouseEvent', 'mousePressed', undefined, 120, 240],
+  ['Input.dispatchMouseEvent', 'mouseReleased', undefined, 120, 240],
+  ['Input.dispatchKeyEvent', 'keyDown', 'ArrowRight', undefined, undefined],
+  ['Input.dispatchKeyEvent', 'keyUp', 'ArrowRight', undefined, undefined],
+], '先点击游戏画面取得焦点，再成对发送方向键，不能把按键卡住')
+assert.equal(await waitForSmokeInput(Promise.resolve(true), 10), true)
+assert.equal(await waitForSmokeInput(new Promise(() => {}), 1), false)
 
-// 未登录冒烟被年龄门拦下时，播放器根本没有挂载；不能写成“没有首帧”。
+// 未登录冒烟被年龄门拦下时，播放器根本没有挂载；不能写成“游戏未能启动”。
 assert.equal(adultGateReason({ adult: true, allowed: false, reason: 'login' }), '年龄门：login')
 assert.equal(adultGateReason({ adult: true, allowed: true }), '')
 assert.equal(adultGateReason({ adult: false, allowed: false }), '')

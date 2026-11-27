@@ -20,6 +20,12 @@ const redeploy = join(root, 'deploy/redeploy.sh')
 const syntax = spawnSync('bash', ['-n', redeploy], { encoding: 'utf8' })
 assert.equal(syntax.status, 0, `redeploy.sh 语法错误：${syntax.stderr}`)
 const source = readFileSync(redeploy, 'utf8')
+const restartStep = source.slice(source.indexOf('步骤 7/7'))
+assert.ok(
+  restartStep.indexOf('systemctl daemon-reload') >= 0 &&
+    restartStep.indexOf('systemctl daemon-reload') < restartStep.indexOf('systemctl restart "$UNIT"'),
+  '重启前必须重新加载 systemd 单元，避免部署后的单元文件仍被旧配置覆盖',
+)
 const sourcedAt = source.indexOf('lib/npm-ci-if-changed.sh')
 const step3 = source.indexOf('npm_ci_if_changed "$REPO_DIR"')
 assert.ok(sourcedAt > 0 && step3 > sourcedAt, 'redeploy.sh 必须先载入判据再调用 npm_ci_if_changed')

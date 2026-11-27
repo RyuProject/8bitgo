@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # 8BitGo 定时巡检：用无头 Chrome 走公网真实路径（默认 https://8bitgo.com，经过 Cloudflare），
-# 把一款 NES、一款 CPS1 街机跑到首帧，并检查 robots.txt / sitemap 抓取入口；失败就发飞书。
+# 把一款 NES、一款 CPS1 街机跑到可玩状态并确认方向键输入到达播放器，再检查 robots.txt / sitemap 抓取入口；失败就发飞书。
 #
 # 为什么（2026-11-17 全站 EmulatorJS 事故）：所有 EmulatorJS 游戏打不开了几个小时，进程健康检查一直是 200，
 # 没有任何人被通知。玩家侧的启动失败聚集报警要等真有人来玩、还要诊断包能报上来；这条巡检不依赖玩家，
@@ -92,9 +92,9 @@ detail="$(grep -E '✔|✖|^ {4}' "$RUN_OUT" 2>/dev/null | head -20)"
 case "$rc" in
   0)
     echo ok > "$STATE_DIR/status"
-    log "通过：$(grep -c '✔' "$RUN_OUT" 2>/dev/null) 款到首帧"
+    log "通过：$(grep -c '✔' "$RUN_OUT" 2>/dev/null) 款确认可玩并收到方向键"
     if [ "$prev" = "down" ]; then
-      notify --title "✅ 已恢复：游戏能正常开局了" --text "开局巡检（${BASE_URL}）重新通过：
+      notify --title "✅ 已恢复：游戏可玩且能操作" --text "开局巡检（${BASE_URL}）重新通过：
 ${detail}"
       notify --clear smoke-down
     fi
@@ -102,7 +102,7 @@ ${detail}"
   1)
     echo down > "$STATE_DIR/status"
     log "❌ 复核仍失败，告警"
-    notify --dedupe smoke-down --cooldown "$REMIND_SEC" --title "🔴 开局巡检失败：游戏跑不到首帧" --text "对 ${BASE_URL} 的开局巡检连续两次失败（间隔 ${RECHECK_SEC} 秒），玩家很可能打不开游戏：
+    notify --dedupe smoke-down --cooldown "$REMIND_SEC" --title "🔴 开局巡检失败：游戏不可玩或无法操作" --text "对 ${BASE_URL} 的开局巡检连续两次失败（间隔 ${RECHECK_SEC} 秒），玩家很可能无法正常玩游戏：
 ${detail}
 
 先看后台「错误诊断」：${BASE_URL%/}/admin/diagnostics
@@ -111,7 +111,7 @@ ${detail}
     ;;
   *)
     log "⚠️ 巡检没能运行（退出码 ${rc}）：$(tail -3 "$RUN_OUT" 2>/dev/null | tr '\n' ' ')"
-    notify --dedupe smoke-env --cooldown 86400 --title "⚠️ 开局巡检没能运行" --text "巡检脚本退出码 ${rc}（Chrome 不见了 / 脚本出错），这段时间没有在自动检查游戏能不能开局：
+    notify --dedupe smoke-env --cooldown 86400 --title "⚠️ 开局巡检没能运行" --text "巡检脚本退出码 ${rc}（Chrome 不见了 / 脚本出错），这段时间没有自动确认游戏可玩和输入是否正常：
 $(tail -5 "$RUN_OUT" 2>/dev/null)
 
 日志：${LOG}"

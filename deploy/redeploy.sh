@@ -273,12 +273,13 @@ log "── 步骤 6/7  数据库迁移 ──"
 
 # ── 7. 重启 + 健康检查 ──
 log "── 步骤 7/7  重启 $UNIT + 健康检查 ──"
+systemctl daemon-reload || die "systemctl daemon-reload 失败"
 systemctl restart "$UNIT" || die "systemctl restart 失败"
 if health_ok && ps2_headers_ok; then
   # 页面在 Cloudflare 边缘缓存一天（见 server/src/edge-purge.js），新前端要靠这一步立刻生效。
   # 清失败不回滚：站点是好的，只是旧 HTML 要等过期（旧哈希资源仍保留在 dist，不会白屏）。
   ( cd "$SERVER_DIR" && npm run --silent purge:edge-html ) || log "⚠️ 清 Cloudflare HTML 缓存失败，新版要等边缘过期才全量生效"
-  # 开局冒烟：真把 NES、CPS1 街机、GBA 各一款跑到首帧（scripts/smoke-start.mjs，需要本机有 Chrome / Chromium）。
+  # 开局冒烟：NES、CPS1 街机、GBA 各一款都要到可玩状态，并确认方向键能进播放器（需要 Chrome / Chromium）。
   # 2026-11-17 全站事故之后默认打开：健康检查 200 只说明进程活着，那次所有 EmulatorJS 游戏都打不开，
   # 健康检查照样全绿。失败先重试一次（排除 CDN / ROM 线路的瞬时抖动），仍失败就回滚。
   #   SMOKE_TEST=0       整个跳过（例如 CDN 正在出故障、需要强行发布修复时）
@@ -299,17 +300,17 @@ if health_ok && ps2_headers_ok; then
     case "$SMOKE_RC" in
       0) log "开局冒烟通过" ;;
       2)
-        log "⚠️⚠️ 开局冒烟没有运行完（没有 Chrome / Chromium，或冒烟脚本自身出错，见上面的输出）：这次发布没有经过「游戏能开局」验证"
-        notify "⚠️ 部署完成，但开局冒烟没能运行" "这次发布没有经过「游戏能开局」验证（Chrome 不见了或冒烟脚本出错）。"$'\n'"$(deploy_context)"
+        log "⚠️⚠️ 开局冒烟没有运行完（没有 Chrome / Chromium，或冒烟脚本自身出错，见上面的输出）：这次发布没有经过「游戏可玩且能操作」验证"
+        notify "⚠️ 部署完成，但开局冒烟没能运行" "这次发布没有经过「游戏可玩且能操作」验证（Chrome 不见了或冒烟脚本出错）。"$'\n'"$(deploy_context)"
         ;;
       *)
         if [ "${SMOKE_ROLLBACK:-1}" = "1" ]; then
-          log "❌ 开局冒烟两次失败：新版本游戏跑不到首帧，回滚到 ${BEFORE_COMMIT}（确认是 CDN / ROM 故障而非代码问题时，可用 SMOKE_TEST=0 重新发布）"
-          ROLLBACK_REASON="开局冒烟两次失败：新版本游戏跑不到首帧（确认是 CDN / ROM 故障时可用 SMOKE_TEST=0 重新发布）"
+          log "❌ 开局冒烟两次失败：新版本游戏未达到可玩状态或无法接收输入，回滚到 ${BEFORE_COMMIT}（确认是 CDN / ROM 故障而非代码问题时，可用 SMOKE_TEST=0 重新发布）"
+          ROLLBACK_REASON="开局冒烟两次失败：新版本游戏未达到可玩状态或无法接收输入（确认是 CDN / ROM 故障时可用 SMOKE_TEST=0 重新发布）"
           rollback
           exit 1
         fi
-        log "⚠️ 开局冒烟失败（SMOKE_ROLLBACK=0，不回滚）：站点已上线，但这些游戏没跑到首帧，请看后台「错误诊断」"
+        log "⚠️ 开局冒烟失败（SMOKE_ROLLBACK=0，不回滚）：站点已上线，但这些游戏未达到可玩状态或无法接收输入，请看后台「错误诊断」"
         ;;
     esac
   fi
