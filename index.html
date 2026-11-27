@@ -16,6 +16,11 @@
     <link rel="icon" href="/favicon.ico" sizes="32x32" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      边缘选路脚本稍后必须同步执行，避免玩家先从较慢的域名下载整套应用；提前预载，
+      让它与下面的 ES5 首屏保护逻辑并行下载，减少解析器走到脚本标签时的等待。
+    -->
+    <link rel="preload" href="/edge-route-v5.js" as="script" fetchpriority="high" />
 
     <!--
       按浏览器语言自动跳到对应语言版本。

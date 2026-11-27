@@ -103,6 +103,8 @@ const edgeRoute = readFileSync(new URL('../public/edge-route-v5.js', import.meta
 assert.match(edgeRoute, /var HINT_ATTR = 'data-8bitgo-cdn'/)
 const indexHtml = readFileSync(new URL('../index.html', import.meta.url), 'utf8')
 assert.match(indexHtml, /<script src="\/edge-route-v5\.js"><\/script>/)
+assert.match(indexHtml, /<link rel="preload" href="\/edge-route-v5\.js" as="script" fetchpriority="high"\s*\/>/)
+assert.ok(indexHtml.indexOf('rel="preload" href="/edge-route-v5.js"') < indexHtml.indexOf('<script src="/edge-route-v5.js">'), '同步选路脚本应在 ES5 首屏保护期间并行预载')
 assert.ok(indexHtml.indexOf('<html') < indexHtml.indexOf('edge-route-v5.js'), '<html> 上的属性在路由脚本运行前就已解析')
 const cnHost = readFileSync(new URL('../src/services/cnHost.ts', import.meta.url), 'utf8')
 assert.match(cnHost, /meta\[name="\$\{COVER_CDN_META\}"\]/)
