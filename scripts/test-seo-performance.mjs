@@ -91,7 +91,14 @@ check('首页轮播只在可轮换时预热，并复用封面转码档与实际�
   assert.doesNotMatch(src, /romUrlForKey/, '预热不能绕过游戏媒体地址与缩放图路径')
 })
 
-check('街机游戏详情和弱网不请求第三方字体，其它页面只在空闲时加载', () => {
+check('首页所有尺寸的轮换游戏名固定两行，避免长标题周期性推移正文', () => {
+  const src = read('src/components/home/HomeBanner.tsx')
+  assert.match(src, /min-h-\[2\.5em\]/, '标题槽必须预留两行高度')
+  assert.match(src, /line-clamp-2(?! md:line-clamp-none)/, '所有尺寸的标题都限制在两行内')
+  assert.match(src, /setInterval\(\(\) => \{/, '布局守卫应对应会周期轮换的横幅标题')
+})
+
+check('首页、游戏页和弱网不请求第三方字体，其它页面只在空闲时加载', () => {
   const html = read('index.html')
   const css = read('src/index.css')
   const fontUrl = 'https://fontsapi.zeoseven.com/214/main/result.css'
@@ -100,6 +107,7 @@ check('街机游戏详情和弱网不请求第三方字体，其它页面只在�
     .find((script) => script.includes("id = 'zeoseven-fonts'"))
   assert.ok(loader, 'index.html 没有字体按需加载器')
   assert.match(loader, /window\.location\.pathname/, '字体策略没有按游戏详情页路径跳过')
+  assert.ok(loader.includes("sitePath === '/"), '本地化首页应跳过会触发全页换字的晚到字体')
   assert.match(loader, /games\\\/\[\^\/\]\+/, '本地化游戏详情页也必须跳过字体下载')
   assert.match(loader, /saveData|slow-2g|downlink|rtt/, '弱网 / 流量节省模式没有跳过字体请求')
   assert.match(loader, /addEventListener\('load', afterLoad/, '字体请求在页面 load 前启动')
@@ -111,6 +119,18 @@ check('街机游戏详情和弱网不请求第三方字体，其它页面只在�
   const theme = css.match(/@theme \{[\s\S]*?\n\}/)?.[0] ?? ''
   assert.match(theme, /'Sarasa UI SC'/, '基础字体栈没有使用 ZeoSeven 的 Sarasa UI SC')
   assert.match(theme, /ui-sans-serif, system-ui/, '基础字体栈没有系统字体兜底')
+})
+
+check('首页横向轨道延后并合并尺寸读取，侧栏计数不进入首屏请求链', () => {
+  const scroll = read('src/components/ui/HScroll.tsx')
+  const sidebar = read('src/components/layout/Sidebar.tsx')
+  const idle = read('src/components/ui/useIdleImport.ts')
+  assert.match(scroll, /requestAnimationFrame\(\(\) => \{[\s\S]*?update\(\)/, '横向轨道应把初次尺寸读取放到下一帧')
+  assert.match(scroll, /if \(frame\) return/, '同一帧内的尺寸变更应合并为一次读取')
+  assert.equal((sidebar.match(/useIdleImport\(loadCounts, \{ delayMs: 3000, enabled: countsEnabled \}\)/g) ?? []).length, 2, '房间数与游戏数应延后加载')
+  assert.match(sidebar, /route\.startsWith\('\/games\/'\)[\s\S]*route === '\/play-local'/, '正在玩的游戏页必须跳过侧栏后台请求')
+  assert.match(sidebar, /\(desktop \|\| mobileOpen\)/, '移动端抽屉关闭时不加载侧栏计数')
+  assert.match(idle, /if \(!enabled\) return/, '被禁用的懒加载不得启动计时器或模块请求')
 })
 
 check('SSR 在启动时预热模板和渲染入口，部署窗口继续用内存副本', () => {
@@ -184,7 +204,11 @@ check('SSR 预载当前语言 chunk，失败或旧构建时安全退回现有按
       v: 2,
       alg: 'sha256',
       entry: 'index-ABCD1234.js',
-      locales: { en: 'assets/en-EFGH5678.js', 'zh-Hant': 'assets/zh-Hant-IJKL9012.js' },
+      locales: {
+        en: 'assets/en-EFGH5678.js',
+        'zh-Hans': 'assets/zh-Hans-ABCD1234.js',
+        'zh-Hant': 'assets/zh-Hant-IJKL9012.js',
+      },
     }))
     const template = '<script type="module" crossorigin src="/assets/index-ABCD1234.js"></script>'
     assert.equal(
@@ -194,7 +218,11 @@ check('SSR 预载当前语言 chunk，失败或旧构建时安全退回现有按
     const preloaded = localePreloadTag(template, 'en', clientDir)
     assert.match(retargetStaticToCnEdge(preloaded, 'https://cn.8bitgo.com'), /href="https:\/\/cn\.8bitgo\.com\/_cn\/assets\/en-EFGH5678\.js"/)
     assert.match(retargetStaticToOrigin(preloaded, 'https://8bitgo.com'), /href="https:\/\/8bitgo\.com\/assets\/en-EFGH5678\.js"/)
-    assert.equal(localePreloadTag(template, 'zh-Hans', clientDir), '', '基准语言已经在入口包里，不额外预载')
+    assert.equal(
+      localePreloadTag(template, 'zh-Hans', clientDir),
+      '<link rel="modulepreload" crossorigin data-8bitgo-locale-preload="true" href="/assets/zh-Hans-ABCD1234.js">',
+      '简体中文语言包从主包拆出后，SSR 也要预载当前页面使用的 chunk',
+    )
     assert.equal(localePreloadTag(template, 'invalid', clientDir), '', '不接受 URL 中的任意语言值')
     assert.equal(
       localePreloadTag('<script type="module" src="/assets/index-OLD12345.js"></script>', 'en', clientDir),

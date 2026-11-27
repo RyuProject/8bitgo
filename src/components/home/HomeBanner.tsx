@@ -253,13 +253,12 @@ function Banner({ className, games }: { className?: string; games?: Game[] }) {
           <h2 className="mt-3 text-2xl font-extrabold leading-tight tracking-tight sm:text-3xl lg:text-4xl">
             {t.home.headline1}
             <br />
-            {/* 至少占满一行。名字长短差得多（《魂斗罗》和 The King of Fighters '97 不是一个
-                量级），偶尔会折成两行 —— 那一行的高度由右边那摞封面（STACK_BOX + 上下内边距）
-                兜着，撑不破这一行，所以这里只保底一行，不预留两行去换一块空当出来 */}
-            <span className="block min-h-[1.15em]">
+            {/* 标题每 3 秒轮换，长名字换行会把下方整页推走；桌面卡堆只兜横幅最小高度，
+                不足以兜住超长游戏名。所有尺寸固定两行并截断，首屏和每次轮换都占同样高度。 */}
+            <span className="block min-h-[2.5em]">
               <span
                 key={seq}
-                className="hero-title animate-hero-title inline-block bg-gradient-to-r from-brand-hover via-sky-400 to-cyan-300 bg-clip-text text-transparent"
+                className="hero-title animate-hero-title block line-clamp-2 bg-gradient-to-r from-brand-hover via-sky-400 to-cyan-300 bg-clip-text text-transparent"
               >
                 {headline}
               </span>

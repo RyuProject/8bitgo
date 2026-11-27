@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 
-const LANGUAGES = new Set(['zh-Hant', 'en', 'es', 'fr', 'it', 'de', 'ja'])
+const LANGUAGES = new Set(['zh-Hans', 'zh-Hant', 'en', 'es', 'fr', 'it', 'de', 'ja'])
 const manifestCache = new Map()
 
 function entryChunk(template) {
