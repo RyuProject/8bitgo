@@ -135,10 +135,18 @@ const SLOW_ROUTE_MIN_FILE_BYTES = 512 * 1024
 const SLOW_ROUTE_MIN_MBPS = 3
 /**
  * 一个分片请求这么久还没回响应头，就在另一条线路上同时请求同一个 Range，谁的响应头先到用谁。
- * 2026-11-18《西游释厄传》浏览器实测：rom.8bitgo.com 建连卡了 11.4 秒，同一时刻 download.8bitgo.com 0.17 秒。
- * 实际延时取「这个值、6×RTT 提示、3×本次已见响应头耗时」中最大的，高 RTT 网络上不会每片都白发一份。
+ * 2026-11-18《西游释厄传》曾遇到主线路建连卡 11.4 秒、备用线路 0.17 秒；2026-11-26 同一 ROM
+ * 单设备样本又测到主线路 4.06 秒、备用线路 1.30 秒。样本不足以重排全站线路，但说明固定等 2.5 秒会白等；
+ * 缩短默认等待，并把 RTT / 已见响应头的动态等待封顶，避免慢线路自己的历史耗时把备用线路也拖慢。
  */
-const ROUTE_HEADERS_HEDGE_MS = 2_500
+const ROUTE_HEADERS_HEDGE_MS = 1_500
+const ROUTE_HEADERS_HEDGE_MAX_MS = 2_500
+/** 响应头竞速延迟有明确上下界，便于用纯值回归锁定，不依赖墙钟精度。 */
+export function routeHeadersHedgeDelayMs(rttMs: number, medianHeaderMs: number, minimumMs = ROUTE_HEADERS_HEDGE_MS): number {
+  const rttDelay = Number.isFinite(rttMs) ? Math.max(0, rttMs) * 3 : 0
+  const observedHeaderDelay = Number.isFinite(medianHeaderMs) ? Math.max(0, medianHeaderMs) * 1.5 : 0
+  return Math.max(minimumMs, Math.min(ROUTE_HEADERS_HEDGE_MAX_MS, Math.max(rttDelay, observedHeaderDelay)))
+}
 /** 尾部对冲：空出来的一路每隔这么久看一眼还在下的片 */
 const TAIL_HEDGE_POLL_MS = 400
 /** 预计还要这么久以上才下完的片才值得在另一条线路上重下 */
@@ -520,7 +528,7 @@ export interface BlobFetchOptions {
   verifyWhole?: (response: Response) => Promise<Response>
   /** 内部钩子：校验此前从续传缓存拼入的分片。 */
   verifyCompletedParts?: (parts: Blob[], total: number) => Promise<Blob[]>
-  /** 覆盖「响应头多久没到就去另一条线路」，同时缩短尾部对冲的判定门槛；只给测试用 */
+  /** 覆盖响应头对冲的最小等待时间，同时缩短尾部对冲的判定门槛；只给测试用 */
   routeHedgeMs?: number
 }
 
@@ -1448,7 +1456,7 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
   }
   const headersHedgeDelay = () => {
     const rtt = Number.isFinite(networkHints.rttMs) ? Math.max(0, networkHints.rttMs ?? 0) : 0
-    return Math.max(opts.routeHedgeMs ?? ROUTE_HEADERS_HEDGE_MS, rtt * 6, medianHeaderMs() * 3)
+    return routeHeadersHedgeDelayMs(rtt, medianHeaderMs(), opts.routeHedgeMs ?? ROUTE_HEADERS_HEDGE_MS)
   }
   type RangeAnswer = { res: Response; route: string; headersAt: number }
   /**

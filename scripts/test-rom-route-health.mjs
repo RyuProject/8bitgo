@@ -41,7 +41,7 @@ globalThis.window = {
 }
 
 const health = await import('../src/services/romRouteHealth.ts')
-const { fetchBlobWithProgress, sameObjectRoutes } = await import('../src/emulator/loadProgress.ts')
+const { fetchBlobWithProgress, sameObjectRoutes, routeHeadersHedgeDelayMs } = await import('../src/emulator/loadProgress.ts')
 const {
   probeRom, clearRomProbeCache, ROM_PROBE_HEDGE_MS, ROM_PROBE_CACHE_MAX_ENTRIES, ROM_PROBE_MISS_TTL_MS,
 } = await import('../src/services/roms.ts')
@@ -112,6 +112,16 @@ const CHUNK = 65536
 const SIZE = 4 * CHUNK
 
 console.log('\n一、线路记分板')
+
+await check('响应头对冲延迟有较短默认值，并把 RTT / 慢线路历史耗时封顶', async () => {
+  assert.equal(routeHeadersHedgeDelayMs(0, 0), 1500, '首次没有网络样本时最多先等 1.5 秒')
+  assert.equal(routeHeadersHedgeDelayMs(300, 0), 1500, '低 RTT 不改变默认等待')
+  assert.equal(routeHeadersHedgeDelayMs(700, 0), 2100, '高 RTT 仍给握手留余量')
+  assert.equal(routeHeadersHedgeDelayMs(0, 1300), 1950, '已见响应头耗时按 1.5 倍估算')
+  assert.equal(routeHeadersHedgeDelayMs(0, 4060), 2500, '慢线路历史耗时不能把等待推到 2.5 秒以上')
+  assert.equal(routeHeadersHedgeDelayMs(1000, 3000), 2500, '动态估算有统一上限')
+  assert.equal(routeHeadersHedgeDelayMs(100, 100, 5000), 5000, '测试专用覆盖值仍可强制延后对冲')
+})
 
 await check('没有记录时保持调用方的原顺序', async () => {
   const A = 'https://a.test/r.zip?romv=1'
