@@ -17,7 +17,11 @@ const MANIFEST_CACHE_LIMIT = 32
 const UNVERSIONED_TTL_MS = 30_000
 const MANIFEST_REQUEST_TIMEOUT_MS = 2_500
 const MANIFEST_TOTAL_TIMEOUT_MS = 6_000
+/** 清单很小；主域短暂无响应时，用一条可信同桶线路并行兜底，避免串行等满请求超时。 */
+const MANIFEST_HEDGE_DELAY_MS = 150
 const warned = new Set<string>()
+/** 只有下载器真的按清单验过的 Blob 才能把印记带入本地大 ROM 缓存。 */
+const verifiedBlobTags = new WeakMap<Blob, string>()
 
 function localSetting(key: string): string {
   try { return localStorage.getItem(key)?.trim() || '' } catch { return '' }
@@ -119,13 +123,13 @@ function warnOnce(key: string, reason: string): void {
   console.warn(`[ROM integrity] ${key}: ${reason}`)
 }
 
-function withTimeout(parent: AbortSignal | undefined, ms: number): { signal: AbortSignal; dispose: () => void } {
+function withTimeout(parent: AbortSignal | undefined, ms: number): { controller: AbortController; signal: AbortSignal; dispose: () => void } {
   const controller = new AbortController()
   const relay = () => controller.abort(parent?.reason)
   if (parent?.aborted) relay()
   else parent?.addEventListener('abort', relay, { once: true })
   const timer = setTimeout(() => controller.abort(new Error('SHA-256 清单请求超时')), ms)
-  return { signal: controller.signal, dispose: () => { clearTimeout(timer); parent?.removeEventListener('abort', relay) } }
+  return { controller, signal: controller.signal, dispose: () => { clearTimeout(timer); parent?.removeEventListener('abort', relay) } }
 }
 
 /** 与对象下载并行请求小清单；版本化地址可由浏览器长期缓存，不增加反复开局的往返。 */
@@ -154,16 +158,22 @@ export function fetchRomIntegrityManifest(rawUrl: string, parentSignal?: AbortSi
     let lastFailure: unknown
     let integrityFailure: RomIntegrityError | null = null
     let sawMissing = false
-    for (const manifestUrl of manifestUrls) {
+    const inFlight = new Set<AbortController>()
+    type CandidateResult = { manifest: RomIntegrityManifest } | { manifest: null }
+    const attempt = async (manifestUrl: string): Promise<CandidateResult> => {
       const remainingMs = deadline - Date.now()
-      if (remainingMs <= 0) break
+      if (remainingMs <= 0) {
+        lastFailure = new Error('SHA-256 清单总等待时间已到')
+        return { manifest: null }
+      }
       const timed = withTimeout(undefined, Math.min(MANIFEST_REQUEST_TIMEOUT_MS, remainingMs))
+      inFlight.add(timed.controller)
       try {
         const response = await fetch(manifestUrl, { cache: version ? 'force-cache' : 'no-store', signal: timed.signal })
         if (response.status === 404 || response.status === 405) {
           // 有些读取域不提供 Worker 路由；试完其它域后才把 404 当作旧对象兼容状态。
           sawMissing = true
-          continue
+          return { manifest: null }
         }
         if (!response.ok) {
           const error = new RomIntegrityError(response.status === 503 || response.status === 412
@@ -171,7 +181,7 @@ export function fetchRomIntegrityManifest(rawUrl: string, parentSignal?: AbortSi
             : `Worker 清单接口返回 HTTP ${response.status}`)
           lastFailure = error
           if (response.status === 503 || response.status === 412) integrityFailure = error
-          continue
+          return { manifest: null }
         }
         const value = await response.json().catch((error) => {
           lastFailure = error
@@ -181,26 +191,78 @@ export function fetchRomIntegrityManifest(rawUrl: string, parentSignal?: AbortSi
           const error = new RomIntegrityError('Worker 返回的 SHA-256 清单元数据无效')
           lastFailure = error
           integrityFailure = error
-          continue
+          return { manifest: null }
         }
         if (version && etagVersion(value.etag) !== version) {
           const error = new RomIntegrityError('清单版本与 ROM 地址不一致')
           lastFailure = error
           integrityFailure = error
-          continue
+          return { manifest: null }
         }
         const manifest = validateRomIntegrityManifest(value.manifest, key, value.etag, Number(value.size))
         if (!manifest) {
           const error = new RomIntegrityError('Worker 返回的 SHA-256 分块清单无效')
           lastFailure = error
           integrityFailure = error
-          continue
+          return { manifest: null }
         }
-        return manifest
+        return { manifest }
       } catch (error) {
         lastFailure = error
         if (error instanceof RomIntegrityError) integrityFailure = error
-      } finally { timed.dispose() }
+        return { manifest: null }
+      } finally {
+        timed.dispose()
+        inFlight.delete(timed.controller)
+      }
+    }
+    const first = attempt(manifestUrls[0])
+    let firstOutcome: CandidateResult | undefined
+    let hedgeTimer: ReturnType<typeof setTimeout> | undefined
+    const firstOrHedge = await Promise.race([
+      first.then((result) => ({ kind: 'first' as const, result })),
+      new Promise<{ kind: 'hedge' }>((resolve) => {
+        hedgeTimer = setTimeout(() => resolve({ kind: 'hedge' }), MANIFEST_HEDGE_DELAY_MS)
+      }),
+    ])
+    if (hedgeTimer !== undefined) clearTimeout(hedgeTimer)
+    let nextUrlIndex = 1
+    if (firstOrHedge.kind === 'first') {
+      firstOutcome = firstOrHedge.result
+      if (firstOutcome.manifest) return firstOutcome.manifest
+    } else if (manifestUrls.length > 1) {
+      // 仅在主域 150ms 内没有结果时同时尝试一个同桶备用域，限制额外请求与字节数。
+      const second = attempt(manifestUrls[1])
+      const winner = await new Promise<RomIntegrityManifest | null>((resolve) => {
+        let remaining = 2
+        let settled = false
+        for (const task of [first, second]) {
+          void task.then((result) => {
+            if (result.manifest && !settled) {
+              settled = true
+              resolve(result.manifest)
+              return
+            }
+            if (--remaining === 0 && !settled) {
+              settled = true
+              resolve(null)
+            }
+          })
+        }
+      })
+      if (winner) {
+        // 首个有效清单足够；别让已经输掉的慢线路继续占连接或等满超时。
+        for (const controller of inFlight) controller.abort()
+        return winner
+      }
+      nextUrlIndex = 2
+    } else {
+      firstOutcome = await first
+      if (firstOutcome.manifest) return firstOutcome.manifest
+    }
+    for (let index = nextUrlIndex; index < manifestUrls.length && Date.now() < deadline; index++) {
+      const result = await attempt(manifestUrls[index])
+      if (result.manifest) return result.manifest
     }
     if (integrityFailure) throw integrityFailure
     if (sawMissing && !lastFailure) {
@@ -237,6 +299,37 @@ async function digest(bytes: Uint8Array): Promise<string> {
   const view = isShared ? Uint8Array.from(bytes) : bytes as Uint8Array<ArrayBuffer>
   const hash = new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', view))
   return Array.from(hash, (byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+/**
+ * 给本地完整 ROM 缓存里的「已校验」标记生成身份。
+ *
+ * ETag + URL 能识别对象版本，但把清单内容也纳入标签，才能让被替换的 sidecar 触发重验；
+ * 这里只散列几 KB 的元数据，不读 ROM 本体。标签带域分隔，避免和其它 SHA-256 用途混淆。
+ */
+export async function romIntegrityManifestTag(manifest: RomIntegrityManifest): Promise<string> {
+  const payload = [
+    '8bitgo-rom-integrity-cache-v1',
+    String(manifest.v),
+    manifest.alg,
+    manifest.key,
+    manifest.etag,
+    String(manifest.size),
+    String(manifest.blockBytes),
+    manifest.blocks.join(','),
+  ].join('\n')
+  return `sha256:${await digest(new TextEncoder().encode(payload))}`
+}
+
+/** 在完整字节校验成功之后记录该 Blob 的清单身份；单纯收到迟到清单不能调用此函数。 */
+export async function markRomBlobIntegrityVerified(blob: Blob, manifest: RomIntegrityManifest): Promise<void> {
+  if (blob.size !== manifest.size) throw new RomIntegrityError('ROM / BIOS 大小与已校验清单不一致')
+  verifiedBlobTags.set(blob, await romIntegrityManifestTag(manifest))
+}
+
+/** 本地缓存只读取这份内存侧的实测标记，不从清单是否到达推断 Blob 已通过校验。 */
+export function romBlobIntegrityTag(blob: Blob): string | undefined {
+  return verifiedBlobTags.get(blob)
 }
 
 function parseContentRange(value: string | null): { start: number; end: number; total: number } | null {

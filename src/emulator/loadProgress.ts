@@ -14,7 +14,16 @@
 import { diagLog } from '@/services/startupDiagnostics'
 import { memoryRomBlob, memoryRomOf } from '@/services/memoryRom'
 import { rememberRomHostForUrl } from '@/services/romHosts'
-import { fetchRomIntegrityManifest, romIntegrityKey, RomIntegrityError, verifyMarkedRomResponse, verifyRomBlob, verifyRomBlobRange, verifyRomResponse } from '@/services/romIntegrity'
+import {
+  fetchRomIntegrityManifest,
+  markRomBlobIntegrityVerified,
+  romIntegrityKey,
+  RomIntegrityError,
+  verifyMarkedRomResponse,
+  verifyRomBlob,
+  verifyRomBlobRange,
+  verifyRomResponse,
+} from '@/services/romIntegrity'
 import {
   isRomRouteOpen,
   rankRomRoutes,
@@ -725,6 +734,34 @@ const isNetworkFetchError = (error: unknown): boolean => {
 }
 
 const MAX_CHUNK_CONCURRENCY = 4
+/** 旧对象的清单只是增强校验，下载结束后只给它短窗口，不能拖住小 ROM 的开局。 */
+const OPTIONAL_ROM_MANIFEST_WAIT_MS = 150
+
+/** 可选清单在短窗口内已到达就继续校验；超时只跳过本局旁路，不影响后台缓存与必校验路径。 */
+function optionalManifestWithin<T>(task: Promise<T>, signal?: AbortSignal): Promise<T | null> {
+  if (signal?.aborted) return Promise.reject(new DOMException('已取消', 'AbortError'))
+  return new Promise((resolve, reject) => {
+    let settled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const cleanup = () => {
+      if (timer !== undefined) clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+    }
+    const finish = (value: T | null, error?: DOMException) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      if (error) reject(error)
+      else resolve(value)
+    }
+    const onAbort = () => finish(null, new DOMException('已取消', 'AbortError'))
+    timer = setTimeout(() => finish(null), OPTIONAL_ROM_MANIFEST_WAIT_MS)
+    signal?.addEventListener('abort', onAbort, { once: true })
+    task.then((value) => finish(value), () => finish(null))
+    if (signal?.aborted) onAbort()
+  })
+}
+
 /**
  * 网络与 IndexedDB 写盘重叠，但最多只允许两笔写入排队。
  * 不设上限会在高速网络 + 慢闪存上堆出几十个 8MB 事务，最后反过来挤掉模拟器启动所需内存。
@@ -893,6 +930,7 @@ export async function fetchBlobWithProgress(url: string, opts: BlobFetchOptions 
   let integritySource = url
   let integrityEtag = ''
   let integrityWholeVerified = false
+  let verifiedIntegrityManifest: Awaited<ReturnType<typeof fetchRomIntegrityManifest>> = null
   const integrityVerifiedParts = new Set<number>()
   const integrityTasks = new Map<string, ReturnType<typeof fetchRomIntegrityManifest>>()
   const integrityFor = (candidate: string) => {
@@ -952,6 +990,7 @@ export async function fetchBlobWithProgress(url: string, opts: BlobFetchOptions 
     }
     const verified = await verifyRomResponse(integritySource, response, opts.signal, Promise.resolve(manifest))
     integrityWholeVerified = true
+    verifiedIntegrityManifest = manifest
     return verified
   }
   const verifyCompletedParts = async (parts: Blob[], total: number) => {
@@ -963,6 +1002,7 @@ export async function fetchBlobWithProgress(url: string, opts: BlobFetchOptions 
       if (integrityVerifiedParts.has(index)) continue
       parts[index] = await verifyPart(parts[index], index, index * chunkBytes, total)
     }
+    verifiedIntegrityManifest = manifest
     return parts
   }
   const guardedOpts: BlobFetchOptions = {
@@ -1015,6 +1055,11 @@ export async function fetchBlobWithProgress(url: string, opts: BlobFetchOptions 
     currentUrl = at >= 0 ? alternates.splice(at, 1)[0] : alternates.shift()!
   }
   for (let attempt = 0; ; attempt++) {
+    // 失速后会重新从 IndexedDB 载入 Blob；上一轮验证的是内存里的旧对象，不能替这一轮作证。
+    // 整份 200 响应若在验完后读流卡住，也必须在重试拿到的新响应上重新确认完整性。
+    integrityWholeVerified = false
+    verifiedIntegrityManifest = null
+    integrityVerifiedParts.clear()
     const guard = createStallGuard(opts.signal, stallMs)
     guard.touch()
     let failure: unknown = null
@@ -1028,12 +1073,26 @@ export async function fetchBlobWithProgress(url: string, opts: BlobFetchOptions 
       if (integrityRequired && !integrityWholeVerified) {
         const manifest = await requireManifest(blob.size)
         if (!manifest) throw new RomIntegrityError('本站要求校验此 ROM / BIOS，但 SHA-256 清单不可用')
-        if (integrityVerifiedParts.size === 0) await verifyRomBlob(blob, manifest, opts.signal)
+        if (integrityVerifiedParts.size !== manifest.blocks.length) await verifyRomBlob(blob, manifest, opts.signal)
+        verifiedIntegrityManifest = manifest
       } else if (!integrityRequired && romIntegrityKey(url)) {
         // 完整续传片可能在本次请求里没有任何网络响应头，不能因此跳过已发布清单。
         // 旧对象没有清单时仍兼容；必校验对象缺少 sidecar 时，Worker 会返回 503。
-        const manifest = await integrityFor(url)
-        if (manifest) blob = await verifyRomBlobRange(url, blob, 0, manifest, opts.signal)
+        const manifest = await optionalManifestWithin(integrityFor(url), opts.signal)
+        if (manifest) {
+          blob = await verifyRomBlobRange(url, blob, 0, manifest, opts.signal)
+          verifiedIntegrityManifest = manifest
+        }
+      }
+      // 缓存优化需要的是「这份 Blob 已经过该清单校验」的证据；清单请求可能在 150ms 后继续后台完成，
+      // 但不能把那个结果误贴到刚刚绕过校验、已经交给模拟器的字节上。
+      if (verifiedIntegrityManifest) {
+        try {
+          await markRomBlobIntegrityVerified(blob, verifiedIntegrityManifest)
+        } catch {
+          // 这枚标签只省下一次本地复验；不能让辅助标签生成失败推翻已完整验证的 ROM。
+          diagLog('download', 'warn', 'ROM 已通过 SHA-256 校验，但未能生成本地缓存印记')
+        }
       }
       if (romIntegrityKey(url)) {
         const total = blob.size

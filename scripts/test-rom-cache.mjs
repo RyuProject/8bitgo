@@ -69,8 +69,8 @@ function createFakeIdb() {
       put: (value, key) =>
         run(makeRequest(), () => {
           if (name === 'blobs') {
-            const prev = map().get(key)?.byteLength ?? 0
-            if (usedBytes() - prev + value.byteLength > hardLimit) {
+            const prev = sizeOf(map().get(key))
+            if (usedBytes() - prev + sizeOf(value) > hardLimit) {
               const err = new Error('quota')
               err.name = 'QuotaExceededError'
               throw err
@@ -277,6 +277,14 @@ process.on('unhandledRejection', (e) => {
     await cache.romCachePut(url('b'), buf(200)) // 400 > 250 → 被拒 → 腾空间 → 重试
     assert.ok(await cache.romCacheGet(url('b')), '配额被拒后应腾出空间重试成功')
     assert.equal(await cache.romCacheGet(url('a')), null, '为了放下 b，a 应被淘汰')
+
+    const blobCache = await freshCache()
+    blobCache.fake.setQuota(1000)
+    blobCache.fake.setHardLimit(250)
+    await blobCache.romCachePutBlob(url('disc-a'), new Blob([new Uint8Array(200)]))
+    await blobCache.romCachePutBlob(url('disc-b'), new Blob([new Uint8Array(200)]))
+    assert.ok(await blobCache.romCacheGetBlob(url('disc-b')), 'Blob 配额被拒后也应腾出空间重试成功')
+    assert.equal(await blobCache.romCacheGetBlob(url('disc-a')), null, 'Blob 重试应按真实 Blob 大小淘汰旧项')
     console.log('✓ 配额被拒 → 淘汰 → 重试一次')
   }
 
@@ -355,6 +363,44 @@ process.on('unhandledRejection', (e) => {
     assert.ok(await romCacheGet(url('b')), '覆盖 a 不应淘汰容量内的 b')
     assert.deepEqual(await romCacheStats().then(({ count, bytes }) => ({ count, bytes })), { count: 2, bytes: 400 })
     console.log('✓ 同键覆盖不重复计算容量、不误淘汰其它 ROM')
+  }
+
+  /* --- 13. 大盘校验印记：只信同清单的一周内结果，旧缓存仍能首局复验后补印记 --- */
+  {
+    const {
+      romCacheGetBlobRecord,
+      romCacheIntegrityIsFresh,
+      romCacheMarkIntegrityVerified,
+      romCachePutBlob,
+      ROM_CACHE_INTEGRITY_RECHECK_MS,
+    } = await freshCache()
+    const key = url('verified-disc')
+    const originalTag = `sha256:${'a'.repeat(64)}`
+    const changedTag = `sha256:${'b'.repeat(64)}`
+    await romCachePutBlob(key, new Blob([new Uint8Array(1024)]), originalTag)
+    let record = await romCacheGetBlobRecord(key)
+    assert.ok(record?.blob instanceof Blob)
+    assert.equal(record.integrityTag, originalTag, '新下载已验证的标签应与 Blob 同事务写入')
+    assert.equal(record.integrityCheckedAt, clock)
+    assert.equal(romCacheIntegrityIsFresh(record, originalTag), true)
+    assert.equal(romCacheIntegrityIsFresh(record, changedTag), false, '新清单不能沿用旧 ROM 的校验印记')
+
+    tick(ROM_CACHE_INTEGRITY_RECHECK_MS + 1)
+    assert.equal(romCacheIntegrityIsFresh(record, originalTag), false, '过期印记必须触发完整复验')
+    await romCacheMarkIntegrityVerified(key, changedTag, 2048, record)
+    record = await romCacheGetBlobRecord(key)
+    assert.equal(record.integrityTag, originalTag, '缓存尺寸变化时不能把旧 Blob 的校验结果贴到新记录')
+    const staleRecord = record
+    await romCachePutBlob(key, new Blob([new Uint8Array(1024)]))
+    await romCacheMarkIntegrityVerified(key, changedTag, 1024, staleRecord)
+    record = await romCacheGetBlobRecord(key)
+    assert.equal(record.integrityTag, undefined, '同尺寸 ROM 被替换后也不能接收旧 Blob 的迟到校验印记')
+    await romCacheMarkIntegrityVerified(key, changedTag, 1024, record)
+    record = await romCacheGetBlobRecord(key)
+    assert.equal(record.integrityTag, changedTag, '旧缓存完整复验成功后只更新元信息')
+    assert.equal(record.integrityCheckedAt, clock)
+    assert.equal(romCacheIntegrityIsFresh(record, changedTag), true)
+    console.log('✓ 大 ROM 校验印记绑定清单并按一周时限失效')
   }
 
   console.log('\n全部通过 ✅')

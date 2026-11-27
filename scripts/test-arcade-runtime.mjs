@@ -228,16 +228,33 @@ await check('退出等 BIOS 的会话后不再启动已移除 iframe 里的 WASM
   assert.match(source, /\(\) => !destroyed(?:,|\))/)
 })
 
-await check('ROM、额外 BIOS、缓存清理与联机辅助资源并行启动', async () => {
+await check('ROM、额外 BIOS、缓存清理与联机资源并行预取且不阻塞首帧', async () => {
   const source = await readFile(new URL('../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8')
   const loadAt = source.indexOf("iframe.addEventListener('load'")
   const parallelAt = source.indexOf('const biosDownloads = new Map', loadAt)
   const arcadeAt = source.indexOf('await prepareRemoteArcadeRom(', loadAt)
-  const joinAt = source.indexOf('const socketIoError = await socketIoTask', loadAt)
   assert.ok(loadAt >= 0 && parallelAt > loadAt && parallelAt < arcadeAt, 'BIOS 仍在 ROM 下载后才开始')
   assert.match(source.slice(parallelAt, arcadeAt), /if \(!biosDownloads\.has\(file\.url\)\)/, '相同 BIOS URL 会被重复下载')
   assert.ok(source.indexOf('const cachePurgeTask = purgePoisonedEngineCache()', loadAt) < arcadeAt, '缓存清理没有与 ROM 并行')
-  assert.ok(source.indexOf('const socketIoTask:', loadAt) < arcadeAt && joinAt > arcadeAt, '联机脚本没有提前发起、稍后收口')
+  const preloadAt = source.indexOf('void ensureSocketIo(doc)', loadAt)
+  assert.ok(preloadAt > loadAt && preloadAt < arcadeAt, '邀请局没有提前并行预取联机脚本')
+  assert.ok(source.indexOf('void fetchIceConfig()', preloadAt) < arcadeAt, '邀请局没有提前并行预取 ICE')
+
+  const netplayBootAt = source.indexOf('// 联机资源在上面并行预取，但无论单人还是邀请局都不在首帧前等它们。', loadAt)
+  const loaderAt = source.indexOf("await injectScript(doc, ejsRuntimeAsset('loader.js'))", netplayBootAt)
+  const netplayBoot = source.slice(netplayBootAt, loaderAt)
+  assert.ok(loaderAt > netplayBootAt, '找不到 EmulatorJS loader 注入位置')
+  assert.doesNotMatch(netplayBoot, /await (?:ensureSocketIo|fetchIceConfig|socketIoTask)/, '联机资源阻塞了游戏首帧')
+  assert.ok(netplayBoot.indexOf('hookRoomToken(win)') >= 0, '联机令牌钩子必须赶在 loader 之前安装')
+  assert.ok(netplayBoot.indexOf('instrumentRtc(win') >= 0, 'WebRTC 钩子必须赶在 loader 之前安装')
+
+  const startNetplayAt = source.indexOf('const startNetplay = async')
+  const finishStartAt = source.indexOf('const finishStart =', startNetplayAt)
+  const startNetplay = source.slice(startNetplayAt, finishStartAt)
+  const socketWaitAt = startNetplay.indexOf('await ensureSocketIo(win.document)')
+  const iceWaitAt = startNetplay.indexOf('const ice = await fetchIceConfig()')
+  const roomAt = Math.min(startNetplay.indexOf('np.openRoom('), startNetplay.indexOf('np.joinRoom('))
+  assert.ok(socketWaitAt >= 0 && iceWaitAt > socketWaitAt && roomAt > iceWaitAt, '开 / 加入房间前没有等联机脚本与 ICE')
 })
 
 await check('预热的核心文件就是引擎真正下载的那个变体（legacy / WebGL2）', async () => {

@@ -16,6 +16,7 @@ const keyFilter = String(valueArg('--key') || '').trim()
 const prefixFilter = String(valueArg('--prefix') || '').trim()
 const limit = Number(valueArg('--limit') || Number.POSITIVE_INFINITY)
 const concurrency = Number(valueArg('--concurrency') || 4)
+const batchBlocks = Number(valueArg('--batch-blocks') || 8)
 
 function fail(message) {
   console.error(`✖ ${message}`)
@@ -41,6 +42,9 @@ if (prefixFilter && (!prefixFilter.startsWith('roms/') || prefixFilter.startsWit
 }
 if (!(limit > 0) || (!Number.isSafeInteger(limit) && limit !== Number.POSITIVE_INFINITY)) fail('--limit 必须是正整数')
 if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 16) fail('--concurrency 必须是 1..16 的整数')
+if (!Number.isSafeInteger(batchBlocks) || batchBlocks < 1 || batchBlocks > 8) fail('--batch-blocks 必须是 1..8 的整数')
+// 每个 R2 Range 最多 2 MiB；限制并发中的缓冲区总量，避免迁移脚本把 Worker 内存顶满。
+if (apply && concurrency * batchBlocks > 32) fail('--apply 的并发与批次大小超过安全内存预算（最多 32 个分块）')
 
 const api = new URL(apiValue.endsWith('/') ? apiValue : `${apiValue}/`)
 const authHeaders = { Authorization: `Bearer ${token}` }
@@ -111,26 +115,88 @@ function integrityUrl(key) {
   return url
 }
 
-async function hasManifest(key) {
+async function readManifestState(key) {
   const response = await request(integrityUrl(key), { headers: authHeaders, cache: 'no-store' })
-  if (response.status === 200) return true
-  if (response.status === 404) return false
   const body = await response.json().catch(() => null)
-  if (response.status === 503 && body?.code === 'integrity_manifest_missing') return false
+  if (!body || typeof body !== 'object') {
+    throw new Error(`读取 ${key} 清单失败（HTTP ${response.status}，响应不是 JSON）`)
+  }
+  if (response.status === 200) {
+    return { present: true, etag: String(body.etag || body.manifest?.etag || ''), size: Number(body.size) }
+  }
+  if (response.status === 404 || (response.status === 503 && body.code === 'integrity_manifest_missing')) {
+    return { present: false, etag: String(body.etag || ''), size: Number(body.size) }
+  }
   throw new Error(`读取 ${key} 清单失败（HTTP ${response.status}）：${JSON.stringify(body).slice(0, 180)}`)
 }
 
-async function backfillOne(key, index, total) {
-  if (await hasManifest(key)) {
+async function readObjectMetadata(key, listedSize) {
+  let last
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const head = await request(objectUrl(key), {
+      method: 'HEAD',
+      headers: { ...authHeaders, 'Cache-Control': 'no-cache' },
+      cache: 'no-store',
+    })
+    if (!head.ok) throw new Error(`HEAD ${key} 失败（HTTP ${head.status}）`)
+    const etag = head.headers.get('ETag') || ''
+    const rawSize = head.headers.get('Content-Length')
+    const size = Number(rawSize)
+    if (etag && Number.isSafeInteger(size) && size > 0) return { etag, size }
+    // 有些边缘 HEAD 会保留 ETag 却省略 Content-Length；/list 的 size 来自 R2。
+    // 后续 hash-blocks 会用当前 R2 的 ETag + size 双重核对，故可安全补这个缺头。
+    if (etag && rawSize === null) {
+      let fallbackSize = listedSize
+      if (!Number.isSafeInteger(fallbackSize) || fallbackSize <= 0) {
+        try { fallbackSize = await listObjectSize(key) } catch {}
+      }
+      if (Number.isSafeInteger(fallbackSize) && fallbackSize > 0) {
+        await head.body?.cancel().catch(() => {})
+        return { etag, size: fallbackSize }
+      }
+    }
+    last = { status: head.status, hasEtag: Boolean(etag), rawSize }
+    await head.body?.cancel().catch(() => {})
+    if (attempt < 2) await wait(250 * (attempt + 1))
+  }
+  const sizeState = last?.rawSize === null ? '缺失' : Number.isSafeInteger(Number(last?.rawSize)) ? '无效' : '非数字'
+  throw new Error(`${key} HEAD 连续三次缺少有效元数据（HTTP ${last?.status}，ETag ${last?.hasEtag ? '存在' : '缺失'}，长度 ${sizeState}）`)
+}
+
+async function listObjectSize(key) {
+  let cursor = ''
+  do {
+    const url = new URL('list', api)
+    url.searchParams.set('prefix', key)
+    if (cursor) url.searchParams.set('cursor', cursor)
+    const response = await request(url, { headers: authHeaders, cache: 'no-store' })
+    if (!response.ok) throw new Error(`重新读取 ${key} 长度失败（HTTP ${response.status}）`)
+    const page = await readJson(response, `重新读取 ${key} 长度`)
+    if (!Array.isArray(page.objects)) throw new Error(`重新读取 ${key} 长度时列表格式无效`)
+    const object = page.objects.find((item) => item.key === key && (!item.bucket || item.bucket === 'ROMS'))
+    if (object) {
+      const size = Number(object.size)
+      if (Number.isSafeInteger(size) && size > 0) return size
+      throw new Error(`${key} 的 R2 列表长度无效`)
+    }
+    cursor = page.truncated ? String(page.cursor || '') : ''
+    if (page.truncated && !cursor) throw new Error('R2 列表被截断但没有返回 cursor')
+  } while (cursor)
+  throw new Error(`R2 列表中找不到 ${key}`)
+}
+
+async function backfillOne(item, index, total) {
+  const { key, listedSize } = item
+  let manifestState = await readManifestState(key)
+  if (manifestState.present) {
     console.log(`[${index}/${total}] 已有清单：${key}`)
     return 'present'
   }
-  const head = await request(objectUrl(key), { method: 'HEAD', headers: authHeaders, cache: 'no-store' })
-  if (!head.ok) throw new Error(`HEAD ${key} 失败（HTTP ${head.status}）`)
-  const etag = head.headers.get('ETag') || ''
-  const size = Number(head.headers.get('Content-Length'))
-  if (!etag || !Number.isSafeInteger(size) || size <= 0) throw new Error(`${key} 缺少有效 ETag / 文件长度`)
-  const totalBlocks = Math.ceil(size / (2 * 1024 * 1024))
+  let metadata = manifestState.etag && Number.isSafeInteger(manifestState.size) && manifestState.size > 0
+    ? { etag: manifestState.etag, size: manifestState.size }
+    : await readObjectMetadata(key, listedSize)
+  let { etag, size } = metadata
+  let totalBlocks = Math.ceil(size / (2 * 1024 * 1024))
   if (totalBlocks > 2_560) throw new Error(`${key} 有 ${totalBlocks} 个分块，超过 Worker 支持的 2560 块`)
 
   if (!apply) {
@@ -140,13 +206,30 @@ async function backfillOne(key, index, total) {
 
   const blocks = []
   let startIndex = 0
+  let versionRefreshes = 0
   while (startIndex < totalBlocks) {
     const response = await request(integrityUrl(key), {
       method: 'POST',
       headers: { ...authHeaders, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'hash-blocks', key, etag, size, startIndex, batchBlocks: 8 }),
+      body: JSON.stringify({ action: 'hash-blocks', key, etag, size, startIndex, batchBlocks }),
     })
     const result = await readJson(response, `为 ${key} 生成摘要`)
+    if (response.status === 412 && result.code === 'integrity_object_changed' && versionRefreshes < 2) {
+      // 对象可能在回填期间被覆盖。重新从 Worker 的 R2 head 获取 ETag / size，整份摘要从第 0 块重算。
+      manifestState = await readManifestState(key)
+      if (manifestState.present) return 'present'
+      metadata = manifestState.etag && Number.isSafeInteger(manifestState.size) && manifestState.size > 0
+        ? { etag: manifestState.etag, size: manifestState.size }
+        : await readObjectMetadata(key, await listObjectSize(key))
+      etag = metadata.etag
+      size = metadata.size
+      totalBlocks = Math.ceil(size / (2 * 1024 * 1024))
+      if (totalBlocks > 2_560) throw new Error(`${key} 有 ${totalBlocks} 个分块，超过 Worker 支持的 2560 块`)
+      blocks.length = 0
+      startIndex = 0
+      versionRefreshes++
+      continue
+    }
     if (!response.ok || result.ok !== true || result.etag !== etag || result.size !== size ||
         result.startIndex !== startIndex || result.blockBytes !== 2 * 1024 * 1024 ||
         !Array.isArray(result.blocks) || !result.blocks.length || result.nextIndex !== startIndex + result.blocks.length ||
@@ -175,8 +258,8 @@ async function backfillOne(key, index, total) {
 }
 
 async function listKeys() {
-  if (keyFilter) return [keyFilter]
-  const keys = []
+  if (keyFilter) return [{ key: keyFilter, listedSize: null }]
+  const keys = new Map()
   let cursor = ''
   do {
     const url = new URL('list', api)
@@ -188,12 +271,18 @@ async function listKeys() {
     if (!Array.isArray(page.objects)) throw new Error('Worker 列表响应缺少 objects 数组')
     for (const object of page.objects) {
       if (object.bucket && object.bucket !== 'ROMS') continue
-      if (validKey(object.key)) keys.push(object.key)
+      if (validKey(object.key)) {
+        const size = Number(object.size)
+        keys.set(object.key, {
+          key: object.key,
+          listedSize: Number.isSafeInteger(size) && size > 0 ? size : null,
+        })
+      }
     }
     cursor = page.truncated ? String(page.cursor || '') : ''
     if (page.truncated && !cursor) throw new Error('Worker 列表被截断但没有返回 cursor')
   } while (cursor)
-  return [...new Set(keys)].sort()
+  return [...keys.values()].sort((a, b) => a.key.localeCompare(b.key))
 }
 
 try {

@@ -29,7 +29,15 @@ import { canCreateWebgl, canCreateWebgl2 } from '../webglSupport'
 import { fetchBlobWithProgress, fetchWithProgress, isRomNetworkFailure, throttleProgress, withResumeTimeout } from '../loadProgress'
 import { emulatorJsDownloadPhase, isCriticalEmulatorJsDownload } from '../emulatorjsDownload'
 import { downloadResumeStore, mameChdResumeStore } from '../downloadResume'
-import { romCacheDelete, romCacheGetBlob, romCacheKey, romCachePutBlob } from '../romCache'
+import {
+  romCacheDelete,
+  romCacheGetBlob,
+  romCacheGetBlobRecord,
+  romCacheIntegrityIsFresh,
+  romCacheKey,
+  romCacheMarkIntegrityVerified,
+  romCachePutBlob,
+} from '../romCache'
 import { focusFrame, frameGamepads } from '../frameFocus'
 import { installAudioTap, type AudioTap } from '../audioTap'
 import { getT, fmt } from '@/services/i18n'
@@ -41,7 +49,7 @@ import { ICE_SERVERS, NETPLAY_URL, fetchIceConfig, gameIdFor, netplayUrlForFrame
 import { guardInputChannel } from '../netplayGuard'
 import { normalizeHostSync } from '../netplaySyncGuard'
 import { createNetplayStateUploadQueue } from '../netplayStateUpload'
-import { fetchRomIntegrityManifest, romIntegrityKey, verifyRomBlob, verifyRomResponse } from '@/services/romIntegrity'
+import { fetchRomIntegrityManifest, romBlobIntegrityTag, romIntegrityKey, romIntegrityManifestTag, verifyRomBlob, verifyRomResponse } from '@/services/romIntegrity'
 import { extractZipEntryFromBlob, type ZipFileEntry } from '@/lib/unzip'
 import { prepareArcadeArchive } from '@/lib/arcadeArchive'
 import { romArchiveRef } from '@/lib/romArchiveUrl'
@@ -2013,22 +2021,6 @@ function injectScript(doc: Document, src: string, timeoutMs?: number): Promise<v
   })
 }
 
-/** 可选资源只等固定时间；成功时清掉计时器，避免每局多留一个无意义的 6 秒回调。 */
-function optionalWithin<T>(task: Promise<T>, timeoutMs: number): Promise<T | null> {
-  return new Promise((resolve) => {
-    let settled = false
-    let timer = 0
-    const done = (value: T | null) => {
-      if (settled) return
-      settled = true
-      window.clearTimeout(timer)
-      resolve(value)
-    }
-    timer = window.setTimeout(() => done(null), timeoutMs)
-    void task.then((value) => done(value), () => done(null))
-  })
-}
-
 /**
  * 从远程地址取出街机核心真正要看的 romset 文件名。
  *
@@ -2303,8 +2295,14 @@ async function unpackRomPackForEngine(stored: Blob, onProgress: MountOptions['on
  */
 const pendingRomCacheWrites = new Map<string, Promise<void>>()
 
-function cacheRomBlob(cacheKey: string, blob: Blob): void {
-  const write = romCachePutBlob(cacheKey, blob).catch(() => {})
+function cacheRomBlob(
+  cacheKey: string,
+  blob: Blob,
+  verifiedIntegrityTag?: string,
+): void {
+  // 只把下载器已确证通过的标签和 Blob 原子写入；迟到清单不能替未经校验的字节背书。
+  // force refresh 在删缓存前会等 put 结束，避免慢 IndexedDB 写入把旧 ROM 复活。
+  const write = romCachePutBlob(cacheKey, blob, verifiedIntegrityTag).catch(() => {})
   pendingRomCacheWrites.set(cacheKey, write)
   void write.finally(() => {
     if (pendingRomCacheWrites.get(cacheKey) === write) pendingRomCacheWrites.delete(cacheKey)
@@ -2577,12 +2575,22 @@ export async function prepareRemoteDiscRom(
   // 仅 GBA 崩溃恢复路径设置此项；清除后仍保留原 URL 的内容版本校验与正常缓存写入。
   if (options.forceRomRefresh && cacheKey) await discardStoredRom(cacheKey)
   if (cacheKey) {
-    const cached = await romCacheGetBlob(cacheKey)
+    const cachedRecord = await romCacheGetBlobRecord(cacheKey)
+    const cached = cachedRecord?.blob ?? null
     if (cached) {
       if (signal.aborted) throw new DOMException('已取消', 'AbortError')
       try {
         const integrity = await integrityTask
-        if (integrity) await verifyRomBlob(cached, integrity, signal)
+        if (integrity) {
+          const integrityTag = await romIntegrityManifestTag(integrity)
+          if (cached.size !== integrity.size || !romCacheIntegrityIsFresh(cachedRecord, integrityTag)) {
+            await verifyRomBlob(cached, integrity, signal)
+            // 旧缓存首局仍完整复验；之后仅在校验清单变化或印记超过一周时重验。
+            if (cachedRecord) {
+              void romCacheMarkIntegrityVerified(cacheKey, integrityTag, cached.size, cachedRecord).catch(() => {})
+            }
+          }
+        }
         const prepared = await prepare(cached)
         // 先验证，再报 100%。旧缓存损坏时若先报满格，后续整包重下的进度只能卡在 100%。
         onProgress?.({ phase: 'rom', loaded: cached.size, total: cached.size, ratio: 1, cached: true })
@@ -2631,7 +2639,11 @@ export async function prepareRemoteDiscRom(
   }
   // 不 await：写几百 MB 要花时间，不该让玩家在开局前干等。Blob 本身是不可变的，
   // prepare 产出的 URL 与这份密文缓存互不影响。内存下载的那份不是真 Blob，不缓存。
-  if (cacheKey && !memoryRomOf(blob)) cacheRomBlob(cacheKey, blob)
+  if (cacheKey && !memoryRomOf(blob)) {
+    // 下载器把「真的验过」的清单身份附在 Blob 上；未等到可选清单时仍能立即缓存，但不跳过下次复验。
+    // 这样 PS1 / PS2 热启动可复用可信印记，清单慢时则不会把未校验数据误记成可信。
+    cacheRomBlob(cacheKey, blob, romBlobIntegrityTag(blob))
+  }
 
   return prepared
 }
@@ -2707,8 +2719,24 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   /**
    * 联机会话。**可变**：一开始可能没有（玩家先自己开着玩），
    * 后面点「联机匹配」时由 openNetplay() 补进来，游戏不用重开。
-   */
+  */
   let netplay = options.netplay
+  /** 联机资源只在邀请局或玩家主动开房时请求；多人操作重复触发也共用同一份脚本加载。 */
+  let socketIoReady: Promise<unknown | null> = Promise.resolve(null)
+  let socketIoStarted = false
+  const ensureSocketIo = (doc: Document) => {
+    if (!NETPLAY_URL) return Promise.resolve(null)
+    if (!socketIoStarted) {
+      socketIoStarted = true
+      socketIoReady = injectScript(doc, socketIoScriptUrl(), 8_000)
+        .then(() => null, (error: unknown) => {
+          // 本次开房失败后允许玩家重试，别把一次瞬时断网记成整个页面生命周期都不可用。
+          socketIoStarted = false
+          return error
+        })
+    }
+    return socketIoReady
+  }
   /** 中途反复开 / 退联机时复用同一个引擎对象，不能把 dataMessage 一层层包起来。 */
   const syncGuarded = new WeakSet<EjsNetplay>()
   /**
@@ -3694,6 +3722,16 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (!np) {
       failNetplay(rt.netplayUnavailable)
       return
+    }
+    if (NETPLAY_URL) {
+      // socket.io 是可选联机资源：单人游戏不等它；玩家真正开房时再等并报告错误。
+      const socketIoError = await ensureSocketIo(win.document)
+      if (destroyed || netplay !== cfg) return
+      if (socketIoError) {
+        logEngine(`[netplay] socket.io 脚本加载失败：${socketIoScriptUrl()}`)
+        failNetplay(fmt(rt.netplaySignalUnreachable, { url: socketIoScriptUrl() }))
+        return
+      }
     }
     np.name = cfg.playerName
 
@@ -5190,10 +5228,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           await warmEmulatorJsStart({ always: [], large: [biosUrl] }, { assumeUncached })
         }).catch(() => {})
         const cachePurgeTask = purgePoisonedEngineCache()
-        const socketIoTask: Promise<unknown | null> = NETPLAY_URL
-          ? injectScript(doc, socketIoScriptUrl(), 8_000).then(() => null, (error: unknown) => error)
-          : Promise.resolve(null)
-        const iceTask = NETPLAY_URL ? optionalWithin(fetchIceConfig(), 6_000) : Promise.resolve(null)
+        // 邀请局提前并行预取小型联机资源，首帧后开房会复用在途请求；单人局不发这些请求。
+        if (netplay) {
+          void ensureSocketIo(doc)
+          void fetchIceConfig()
+        }
 
         if (!isFile && options.platform === 'psx' && isPsxM3uUrl(remoteGameUrl)) {
           try {
@@ -6236,40 +6275,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           ),
         })
 
-        // socket.io 客户端必须在 loader.js 之前就位：netplay 用的是全局 io()
+        // 联机资源在上面并行预取，但无论单人还是邀请局都不在首帧前等它们。
         if (NETPLAY_URL) {
-          const socketIoError = await socketIoTask
-          if (socketIoError) {
-            // 信令服务器不可达时不阻断单机游戏，只是联机用不了。
-            // ⚠️ onError 对播放器来说就是「这局完了」（重试一次然后拆掉），没有「警告」这一档 ——
-            // 以前这里不管有没有联机会话都往上报，信令一挂（或者被广告拦截器拦掉脚本），
-            // 全站所有 EmulatorJS 游戏都起不来。现在只有带着联机会话进来的才算致命
-            if (destroyed) return
-            logEngine(`[netplay] socket.io 脚本加载失败：${socketIoScriptUrl()}`)
-            if (netplay) {
-              failLoad(fmt(rt.netplaySignalUnreachable, { url: socketIoScriptUrl() }), 'runtime')
-              return
-            }
-          }
+          // 先装访问器：单人局之后按需插入脚本，邀请局 loader 也可能重新写入全局 io。
           hookRoomToken(win)
-
-          /*
-            ICE 配置向服务端要：那边按请求现算一份短期 TURN 凭证，
-            凭证不进前端包，换 TURN 也不用重新构建（见 services/netplay.ts）。
-
-            ⚠️ 这一句以前是**没有期限**的 `await fetchIceConfig()`，而它有两个要命的地方：
-              1. 它跑在 loader.js 之前，只要配了 NETPLAY_URL，**单机开局也要等它**；
-              2. 上面那只看门狗（watchStart）是刻意装在更后面的（装了会因为看不到心跳
-                 而误判「卡住」，见那段注释），所以这期间没有任何东西能救。
-            取 ICE 的机器被静默丢包时，玩家的单机 NES 也会跟着永远转圈。
-            给一个上限：正常 RTT 几十毫秒，6 秒没回来就先用兜底 STUN 开局 ——
-            真正联机时那条路会自己再取一次（onIceReady 不发就是了）。
-          */
-          const ice = await iceTask
-          if (ice) {
-            win.EJS_netplayICEServers = ice.iceServers
-            netplay?.onIceReady?.(ice.hasTurn)
-          }
 
           // 包一层 RTCPeerConnection：观察连接状态、失败自动重试、限码率保帧率。
           // 必须在 loader.js 之前装，否则 netplay 拿到的是原生构造函数 ——
@@ -6301,12 +6310,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
          *
          * 它盯的两样东西（`.ejs_error_text`、`win.EJS_emulator.started`）都是 loader.js
          * 跑起来之后才可能出现的，早装一秒也看不到任何东西 —— 却会开始 30 秒倒计时。
-         * 而它上面那几步全是**没有超时**的等待：注入 socket.io、取 ICE 配置、清缓存。
-         * 信令主机被防火墙静默丢包（DROP 而不是 RST）时，`<script>` 要等到 TCP 超时才 onerror，
-         * 三十几秒起步 —— 这期间没有任何东西能喂心跳（installNetTap 只包 iframe 里的 XHR，
-         * `<script>` 和父窗口的 fetch 都不走它；`.ejs_loading_text` 此时还不存在）。
-         * 于是**单机开一局街机也会被判「卡住了」**，重试一次再等 30 秒，最后红字。
-         * 那一局根本不需要联机。
+         * 所以只在 ROM 准备、缓存清理与可选 WebGL 后备就绪后、loader.js 前启动它。
+         * 联机脚本 / ICE 只在邀请局并行预取，绝不能在这里等待；玩家实际开房时才检查它们。
+         * 以前把信令等待放在这儿，静默丢包会让**不需要联机的单机游戏**先等 TCP 超时，
+         * 而 `.ejs_loading_text` 尚未创建，既没有心跳也没有可见进度。
          */
         /*
           getGamepads() 被权限策略挡住时会抛 SecurityError，而 EmulatorJS 的 GamepadHandler 在构造里同步调它：

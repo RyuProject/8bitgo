@@ -11,8 +11,16 @@ let active = 0
 let maximumActive = 0
 let retryableHashResponses = 0
 let invalidPublishResponses = 0
+let largestHashBatch = 0
+let missingLengthHeadResponses = 0
+let missingEtagHeadResponses = 0
+let retriedMissingEtagMetadata = 0
+let versionConflictResponses = 0
+let versionChanged = false
 const retriedKeys = new Set()
 const invalidPublishKeys = new Set()
+const publishedSizes = new Map()
+const publishedEtags = new Map()
 
 function send(response, status, body = null, headers = {}) {
   response.writeHead(status, { 'Cache-Control': 'no-store', ...headers })
@@ -30,18 +38,47 @@ const server = createServer(async (request, response) => {
       return
     }
     if (url.pathname === '/list') {
-      send(response, 200, { objects: objectKeys.map((key) => ({ key, bucket: 'ROMS' })), truncated: false })
+      send(response, 200, { objects: objectKeys.map((key, index) => ({
+        key,
+        size: index === 2 || (index === 4 && versionChanged) ? 1536 : 1024,
+        bucket: 'ROMS',
+      })), truncated: false })
       return
     }
     if (url.pathname === '/integrity' && request.method === 'GET') {
       const key = url.searchParams.get('key')
-      send(response, manifests.has(key) ? 200 : 404, manifests.has(key) ? { ok: true } : { error: 'not found' })
+      const index = objectKeys.indexOf(key)
+      const currentEtag = index === 4 && versionChanged ? '"fixture-new-4"' : `"fixture-${index}"`
+      const currentSize = index === 2 || (index === 4 && versionChanged) ? 1536 : 1024
+      if (manifests.has(key)) {
+        send(response, 200, { ok: true, etag: publishedEtags.get(key), size: publishedSizes.get(key) })
+      } else {
+        const body = { error: 'not found' }
+        // 模拟旧 Worker 缺少元数据的响应，覆盖 HEAD / 列表回退；其它响应返回同次 R2 head 的 ETag + 长度。
+        if (index !== 2 && index !== 3) Object.assign(body, { etag: currentEtag, size: currentSize })
+        send(response, 404, body)
+      }
       return
     }
     if (url.pathname.startsWith('/roms/') && request.method === 'HEAD') {
       const index = objectKeys.indexOf(url.pathname.slice(1))
       if (index < 0) { send(response, 404); return }
-      response.writeHead(200, { ETag: `"fixture-${index}"`, 'Content-Length': '1024' })
+      if (index === 2) {
+        missingLengthHeadResponses++
+        response.writeHead(200, { 'Cache-Control': 'no-store', ETag: `"fixture-${index}"` })
+        response.end()
+        return
+      }
+      if (index === 3 && missingEtagHeadResponses === 0) {
+        missingEtagHeadResponses++
+        response.writeHead(200, { 'Cache-Control': 'no-store' })
+        response.end()
+        return
+      }
+      if (index === 3) retriedMissingEtagMetadata++
+      const currentEtag = index === 4 && versionChanged ? '"fixture-new-4"' : `"fixture-${index}"`
+      const currentSize = index === 4 && versionChanged ? '1536' : '1024'
+      response.writeHead(200, { ETag: currentEtag, 'Content-Length': currentSize })
       response.end()
       return
     }
@@ -50,10 +87,17 @@ const server = createServer(async (request, response) => {
       for await (const chunk of request) text += chunk
       const body = JSON.parse(text)
       if (body.action === 'hash-blocks') {
+        largestHashBatch = Math.max(largestHashBatch, body.batchBlocks)
         if (body.key === objectKeys[0] && !retriedKeys.has(body.key)) {
           retriedKeys.add(body.key)
           retryableHashResponses++
           send(response, 502, { error: 'transient fixture failure' })
+          return
+        }
+        if (body.key === objectKeys[4] && !versionChanged) {
+          versionChanged = true
+          versionConflictResponses++
+          send(response, 412, { error: 'fixture version changed', code: 'integrity_object_changed' })
           return
         }
         send(response, 200, {
@@ -69,6 +113,8 @@ const server = createServer(async (request, response) => {
         })
         return
       }
+      publishedSizes.set(body.key, body.size)
+      publishedEtags.set(body.key, body.etag)
       manifests.add(body.key)
       if (body.key === objectKeys[1] && !invalidPublishKeys.has(body.key)) {
         invalidPublishKeys.add(body.key)
@@ -109,14 +155,28 @@ function run(args) {
 }
 
 try {
-  const applied = await run(['--prefix=roms/', '--apply', '--concurrency=4'])
+  const applied = await run(['--prefix=roms/', '--apply', '--concurrency=4', '--batch-blocks=4'])
   assert.equal(applied.code, 0, applied.output)
   assert.match(applied.output, /本次补齐 10/)
   assert.equal(manifests.size, objectKeys.length, '每个对象都应发布绑定清单')
   assert.equal(retryableHashResponses, 1, '瞬态 HTTP 502 应重试一次后恢复')
   assert.equal(invalidPublishResponses, 1, 'HTTP 200 非 JSON 的歧义响应应安全重试已提交的幂等清单')
+  assert.equal(missingLengthHeadResponses, 1, '夹具应模拟 HEAD 保留 ETag 却省略长度')
+  assert.equal(publishedSizes.get(objectKeys[2]), 1536, 'HEAD 缺长度时应使用 R2 列表长度并经 Worker 复核')
+  assert.equal(missingEtagHeadResponses, 1, '夹具应模拟一次 HTTP 200 缺 ETag 的 HEAD')
+  assert.equal(retriedMissingEtagMetadata, 1, '缺 ETag 时应有限重试后再回填')
+  assert.equal(versionConflictResponses, 1, '夹具应模拟回填期间对象版本变化')
+  assert.equal(publishedSizes.get(objectKeys[4]), 1536, '对象版本变化后应使用新长度重新计算全部摘要')
+  assert.equal(publishedEtags.get(objectKeys[4]), '"fixture-new-4"', '旧版本摘要不能混入新版本清单')
+  assert.ok(largestHashBatch <= 4, '实际 R2 分块批次不能超过显式内存预算')
   assert.ok(maximumActive > 1, '对象处理应能有界并发')
   assert.ok(maximumActive <= 4, '并发不能超过显式上限')
+
+  manifests.delete(objectKeys[2])
+  const singleKeyFallback = await run([`--key=${objectKeys[2]}`, '--apply'])
+  assert.equal(singleKeyFallback.code, 0, singleKeyFallback.output)
+  assert.equal(publishedSizes.get(objectKeys[2]), 1536, '单对象回填在 HEAD 缺长度时应重新从 R2 列表取长度')
+  assert.equal(missingLengthHeadResponses, 2, '前缀和单对象两种模式都应覆盖 HEAD 缺长度')
 
   const checked = await run(['--prefix=roms/', '--require-complete', '--concurrency=3'])
   assert.equal(checked.code, 0, checked.output)
@@ -125,6 +185,9 @@ try {
   const invalid = await run(['--prefix=roms/', '--concurrency=17'])
   assert.notEqual(invalid.code, 0, '超出安全上限的并发配置必须拒绝')
   assert.match(invalid.output, /--concurrency 必须是 1\.\.16 的整数/)
+  const unsafeMemory = await run(['--prefix=roms/', '--apply', '--concurrency=8', '--batch-blocks=8'])
+  assert.notEqual(unsafeMemory.code, 0, '过大的并发 Range 缓冲区预算必须拒绝')
+  assert.match(unsafeMemory.output, /安全内存预算/)
   console.log('ROM integrity backfill: bounded apply, full read-only gate, and concurrency validation passed.')
 } finally {
   server.close()

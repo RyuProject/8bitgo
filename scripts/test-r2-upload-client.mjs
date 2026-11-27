@@ -650,6 +650,55 @@ console.log('✅ 正常的小文件上传仍可完成')
 }
 console.log('✅ 新 Worker 的小文件 PUT 随请求发布校验清单，无需第二次绑定请求')
 
+// 多个 ROM 并行上传复用同一能力探测；取消其中一项不能掐掉其它项等待的 Worker 响应。
+{
+  const originalFetch = globalThis.fetch
+  const originalApi = localStorage.getItem('8bitgo.rom.api')
+  const originalXhrResponse = xhrResponse
+  let pingCount = 0
+  let releasePing
+  let sharedProbeSignal
+  try {
+    localStorage.setItem('8bitgo.rom.api', 'https://parallel-integrity-worker.test')
+    globalThis.fetch = async (url, init = {}) => {
+      assert.equal(String(url), 'https://parallel-integrity-worker.test/ping')
+      pingCount++
+      sharedProbeSignal = init.signal
+      return new Promise((resolve) => {
+        releasePing = () => resolve(Response.json({
+          features: { integrityManifest: true, integrityAtomicUpload: true },
+        }))
+      })
+    }
+    xhrResponse = (xhr, blob) => {
+      const key = decodeURIComponent(new URL(xhr.url).pathname.slice(1))
+      return { status: 200, body: JSON.stringify({
+        ok: true, key, size: blob.size, etag: `parallel-${key}`, integrityPublished: true,
+      }) }
+    }
+    const firstFile = new File(['first'], 'parallel-first.nes', { lastModified: 601 })
+    const secondFile = new File(['second'], 'parallel-second.nes', { lastModified: 602 })
+    const firstUpload = uploadRom(firstFile, 'roms/nes/parallel-first.nes')
+    const secondController = new AbortController()
+    const secondUpload = uploadRom(secondFile, 'roms/nes/parallel-second.nes', undefined, undefined, secondController.signal)
+    for (let attempt = 0; attempt < 100 && !releasePing; attempt++) await new Promise((resolve) => setTimeout(resolve, 1))
+    assert.equal(pingCount, 1, '同时开始的 ROM 上传应合并为一次 Worker 能力探测')
+    assert.ok(sharedProbeSignal && !sharedProbeSignal.aborted)
+    secondController.abort()
+    await assert.rejects(secondUpload, /上传已取消/)
+    assert.equal(sharedProbeSignal.aborted, false, '单项取消不能中断共享 Worker 探测')
+    releasePing()
+    assert.equal((await firstUpload).integrityPublished, true, '未取消的上传应继续完成原子发布')
+    assert.equal(pingCount, 1)
+  } finally {
+    releasePing?.()
+    globalThis.fetch = originalFetch
+    xhrResponse = originalXhrResponse
+    localStorage.setItem('8bitgo.rom.api', originalApi || '')
+  }
+}
+console.log('✅ 同一 ROM Worker 的并行上传共享能力探测，单个取消不会拖断其它上传')
+
 // 多盘 CHD 低于分片阈值时也要响应同组取消，不能让单发 PUT 在后台继续占上行。
 {
   const originalXHR = globalThis.XMLHttpRequest

@@ -154,9 +154,13 @@ test('integrity capability is advertised and legacy objects remain readable duri
   assert.equal(features.integrityManifest, true)
   assert.equal(features.requireAllRomIntegrity, false, '默认保留旧资源兼容，不能在未盘点时意外锁死游戏')
   const legacyKey = 'roms/nes/integrity-legacy-test.nes'
-  env.ROMS.seed(legacyKey, bytes)
+  const legacyObject = env.ROMS.seed(legacyKey, bytes)
   assert.equal((await worker.fetch(req(`/${legacyKey}`), env)).status, 200)
-  assert.equal((await worker.fetch(req(`/integrity?key=${encodeURIComponent(legacyKey)}`), env)).status, 404)
+  const missing = await worker.fetch(req(`/integrity?key=${encodeURIComponent(legacyKey)}`), env)
+  assert.equal(missing.status, 404)
+  const missingBody = await missing.json()
+  assert.equal(missingBody.etag, legacyObject.httpEtag, '回填元数据来自同一次 R2 head')
+  assert.equal(missingBody.size, bytes.length, '回填长度来自同一次 R2 head')
 })
 
 test('global strict mode fails closed for unbackfilled ROMs and allows verified legacy objects', async () => {
@@ -173,7 +177,10 @@ test('global strict mode fails closed for unbackfilled ROMs and allows verified 
   assert.equal((await blocked.json()).code, 'integrity_manifest_missing')
   const manifestBlocked = await worker.fetch(req(`/integrity?key=${encodeURIComponent(strictKey)}`), env)
   assert.equal(manifestBlocked.status, 503)
-  assert.equal((await manifestBlocked.json()).code, 'integrity_manifest_missing')
+  const missingMetadata = await manifestBlocked.json()
+  assert.equal(missingMetadata.code, 'integrity_manifest_missing')
+  assert.equal(missingMetadata.etag, object.httpEtag)
+  assert.equal(missingMetadata.size, bytes.length)
 
   const published = await worker.fetch(req(`/integrity?key=${encodeURIComponent(strictKey)}`, 'POST', {
     key: strictKey, size: bytes.length, etag: object.httpEtag, manifest: { ...payload(), key: strictKey },

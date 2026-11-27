@@ -926,7 +926,9 @@ await check('下载好的 ROM 读不出：记下 Blob 存储已坏并改内存�
   assert.equal((ejs.match(/if \(isBlobReadError\(error\)\) markRomBlobStorageBroken\('读 ROM 缓存'\)/g) ?? []).length, 2)
   assert.match(ejs, /if \(memoryRomOf\(stored\)\) return toMemory\(true\)/)
   assert.match(ejs, /if \(cacheKey && !memoryRomOf\(stored\)\) void romCachePutBlob/, '内存那份不是真 Blob，不能写缓存')
-  assert.match(ejs, /if \(cacheKey && !memoryRomOf\(blob\)\) cacheRomBlob/)
+  assert.match(ejs,
+    /if \(cacheKey && !memoryRomOf\(blob\)\) \{[\s\S]{0,500}?cacheRomBlob\(cacheKey, blob, romBlobIntegrityTag\(blob\)\)/,
+    '只有下载器确实校验过的 ROM 才能给完整缓存写入 SHA-256 印记')
   assert.match(ejs, /return \{ url: objectUrlForEngine\(output\), name, hack, mameMedia, namcoSet,(?: mameCatalogSet,)? blob: output \}/, '街机内存 ROM 不能直接 createObjectURL')
 })
 

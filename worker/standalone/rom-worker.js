@@ -1351,7 +1351,9 @@ async function handleIntegrity(request, env, url, cors) {
     const manifest = await readIntegrityManifest(env, key, object.httpEtag, object.size)
     if (!manifest) {
       const required = romIntegrityRequired(env, key, object)
-      return json({ error: 'integrity manifest missing', ...(required ? { code: 'integrity_manifest_missing' } : {}) },
+      // 管理端回填要用这次 R2 head 的同一份 ETag / size；不能用边缘 HEAD 或早先列表的长度拼版本。
+      return json({ error: 'integrity manifest missing', etag: object.httpEtag, size: object.size,
+        ...(required ? { code: 'integrity_manifest_missing' } : {}) },
         { ...cors, 'Cache-Control': 'no-store' }, required ? 503 : 404)
     }
     const cacheControl = version

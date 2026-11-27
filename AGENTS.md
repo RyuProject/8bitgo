@@ -4509,7 +4509,10 @@ PK / TH 两份现场：`The requested module './live-Cqhc9j-k.js' does not provi
   在磁盘上、现代目标连同静态依赖闭包都在 SHA-256 清单里；预加载助手确实进了现代包（Vite 升级冲掉补丁就红）；扇出预算 40 个 chunk、
   首屏预算 820KB（未压缩；当前约 631KB、最大扇出 29）。预算是「明显变坏」的报警线，放宽要在提交里写原因。上面那次合并实验就会被首屏预算拦下。
 - **运行时适配器导入也要走同一套有限重试**（2026-11-26，生产诊断 #4295，Chrome 154 / macOS / JP，《口袋妖怪 白》）：20ms 内 `Failed to fetch dynamically imported module: …/emulatorjs-*.js`，真实访客开局直接失败；同一带哈希文件随后从公网返回 200，不能据此说 CDN 持续缺文件。`lazyNamed` / `EmulatorPlayer` 里的懒加载已用 `importWithRetry`，但 `runtimes.ts` 的 `LOADERS[id]()` 曾直接 `import()`，正好漏了玩家点击开始后才加载的模拟器适配器。现在 `loadMountOf` 用 `lazyChunkFile` 取出构建后的文件名，再经 `importWithRetry` 做有限、唯一 URL 重试；外层 `raceModuleLoad` 的进展超时和失败清除仍保留。给新运行时加 `LOADERS` 时不要绕过这层。回归：`npm run test:runtime-edge-route` + `npm run test:lazy-imports`。
-- **ROM 完整性清单不可因单域故障锁死一局**（2026-11-27，诊断 #4330，街机 ROM / PGM BIOS）：播放器固定访问 `roms.8bitgo.com/integrity`；该域暂时不可达时，旧逻辑把版本化 URL 的 `null` 永久缓存在当前页面，重试不会再请求清单，Worker 又会按必校验策略拒绝 ROM。现在清单请求按可信的同桶读取域有限回退（总计最多 6 秒），只有验证通过的版本化清单永久缓存；缺失或网络失败最多缓存 30 秒，安全校验仍不降级。后台只在日志明确说「必校验对象的 SHA-256 清单不可用」时归为高把握度 ROM 完整性拦截，可选清单预警不算根因；旧通用超时现场在回读时也会更新为已证实的完整性 / PSP 流式挂盘分类。回归：`npm run test:rom-integrity` + `npm run test:startup-diagnostics`。
+- **ROM 完整性清单不可因单域故障锁死一局**（2026-11-27，诊断 #4330，街机 ROM / PGM BIOS）：播放器固定访问 `roms.8bitgo.com/integrity`；该域暂时不可达时，旧逻辑把版本化 URL 的 `null` 永久缓存在当前页面，重试不会再请求清单，Worker 又会按必校验策略拒绝 ROM。现在清单请求按可信的同桶读取域有限回退（总计最多 6 秒），只有验证通过的版本化清单永久缓存；缺失或网络失败最多缓存 30 秒，安全校验仍不降级。PS1 / PS2 的缓存标签不能在下载后同步等清单再写，否则会卡住开局；ROM Blob 先开始缓存，标签后台补写，强制刷新要等完整待写任务结束再清理，避免迟到回调复活旧缓存。后台只在日志明确说「必校验对象的 SHA-256 清单不可用」时归为高把握度 ROM 完整性拦截，可选清单预警不算根因；旧通用超时现场在回读时也会更新为已证实的完整性 / PSP 流式挂盘分类。回归：`npm run test:rom-integrity` + `npm run test:startup-diagnostics`。
+- 未标记为必校验的旧 ROM 对象，下载完成后最多等待可选 SHA-256 清单 150ms；清单及时返回仍校验并修复坏块，超时先启动游戏且让清单请求在后台完成。只有下载器实际校验过的 Blob 才能带本地缓存印记，迟到清单不能给未校验字节背书；缓存印记更新还要匹配 Blob 记录代次，避免迟到的旧校验标记新文件。必校验对象路径不变，仍等待有效清单并失败关闭。`scripts/test-rom-integrity.mjs` 覆盖快速 / 慢速清单、迟到清单与坏字节；`scripts/test-rom-cache.mjs` 覆盖同尺寸换盘后的迟到印记。
+- 必校验对象的清单主域 150ms 无响应时，最多并发一条可信同桶备用域；首个有效清单胜出后立即取消慢请求，剩余候选仍顺序兜底，总上限 6 秒不变。主域快速失败不额外等 150ms；只有一个地址时必须继续等待它，不能把竞速延迟当总超时。`npm run test:rom-integrity` 覆盖这些边界。
+- 多个后台 ROM 上传并发命中同一 Worker 时，完整性能力探测按 Worker 地址共用一个在途任务；各文件只取消自己的等待，不可取消共享请求，成功能力仍按原 TTL 缓存。这样多盘 / 多 ROM 不会同时发重复 `/ping`，且探测失败前仍不开始发 ROM。回归：`npm run test:r2-upload-client`。
 - **测试**：`npm run test:lazy-imports`（进 `npm test`：在 VM 里跑真助手代码——重试 / 404 不重试 / 去重 / 停滞中止 / 不碰模块表 / 非 Chromium 与 legacy 原样交回；
   Vite 助手模板没变；importWithRetry 暖缓存失败后整套重来；构建检查的五种拦截）。
   `npm run test:lazy-imports-browser [-- --dist <目录>]`（手动，要 Playwright 与构建产物，`PLAYWRIGHT_MODULE` / `WEBKIT_EXECUTABLE` 可指向本机已装的）：
@@ -4529,6 +4532,10 @@ PK / TH 两份现场：`The requested module './live-Cqhc9j-k.js' does not provi
 - 运行时覆盖：EmulatorJS 核心 `.data`、PPSSPP、Play!、Ruffle、Dolphin、EKA2L1 的核心大文件有 SHA-256 / SRI 校验；EKA2L1 的 wasm/data 在完整长度接收后、交给 Emscripten 前按 `build_id.js` 的可信摘要校验。Binjgb 的 JS 用 SRI、WASM 在传给 Emscripten 前校验，IodineGBA 的 JS 用 SRI。小核心改版要更新摘要并跑 `npm run test:core-asset-integrity`。
 - 游戏 ROM 与 BIOS：详情页适配器统一走 `loadGameBytes()`；带 `X-8BitGo-Integrity-Required` 标记的 R2 文件必须有 ETag 绑定的分块 SHA-256 清单，下载、Range 和本地缓存读取均先校验再交给核心。EKA2L1 独立说明页自动安装的站内 R2 固件也并行取清单并在写入设备前逐块校验；清单缺失但对象被标记为必校验时停止。外站直链、本地文件和未回填的旧 R2 对象没有可信摘要时，仍不能声称其内容正确；回填只保护后续传输，不替代来源验收。
 - `js-dos` 的固定版本主入口 `js-dos.js` 在浏览器中用 SRI 校验（同一次请求，不额外下载）；其余 JS 胶水、CSS 和完整运行时包由 `runtime.json` / `check-jsdos.mjs` 在构建期核对。DOSBox、DOSBox-X（含 JSPI / debug）、wlibzip、webrtcnet 的 Emscripten WASM 则在各自 `instantiateAsync` 入口单次流式下载到固定长度缓冲区，SHA-256 匹配最终构建产物后才编译。哈希在 `wdosbox.wasm` 的鼠标二进制补丁之后生成；构建门禁逐个对照所有 WASM 清单、加载器和最终产物。该路径在 SHA-256 不可用、长度错误、HTTP 失败或摘要不符时停止，绝不回落未校验的 `instantiateStreaming` / ArrayBuffer 路径。它不改页面或 Worker 的全局 `fetch` / WASM API。改 js-dos 产物必须提升 `JSDOS_ASSET_VERSION` 并运行 `npm run test:jsdos-runtime`。
+
+### 2.39.2 EmulatorJS 单人开局不等待联机辅助资源（2026-11-27）
+
+单人开局不加载 socket.io，也不请求 ICE，避免给 ROM / 核心首传增加无关请求；邀请链接带联机会话时才在 ROM 准备期间并行预取。单人和邀请局都不能为首帧等待联机资源；room-token 与 WebRTC 钩子仍必须在 `loader.js` 前安装，开 / 加入房间前再由 `startNetplay()` 等 socket.io 和新鲜 ICE。联机资源失败只终止联机尝试，不拆正在运行的游戏。`npm run test:arcade-runtime` 必须覆盖单人不发请求、邀请预取不阻塞首帧、钩子早装和实际开房等待。
 
 ### 2.40 塞班 / N-Gage：卡带转储 ZIP 由本站脚本导入 E 盘（2026-11-19）
 

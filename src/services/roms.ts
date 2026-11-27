@@ -2070,33 +2070,69 @@ export interface UploadResult {
 }
 
 const integrityWorkerCapabilities = new Map<string, { expiresAt: number; atomicUpload: boolean }>()
+const integrityWorkerCapabilityTasks = new Map<string, Promise<boolean>>()
 const INTEGRITY_PROBE_TTL_MS = 5 * 60_000
+
+/** 多个 ROM 同时开始上传时，共用同一 Worker 探测；单个文件取消不应取消其它上传等待的探测。 */
+function waitForIntegrityCapability(task: Promise<boolean>, signal?: AbortSignal): Promise<boolean> {
+  if (!signal) return task
+  if (signal.aborted) return Promise.reject(uploadAbortError())
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const cleanup = () => signal.removeEventListener('abort', abort)
+    const finish = (error: unknown, value?: boolean) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      if (error) reject(error)
+      else resolve(Boolean(value))
+    }
+    const abort = () => finish(uploadAbortError())
+    signal.addEventListener('abort', abort, { once: true })
+    task.then((value) => finish(null, value), (error) => finish(error))
+    if (signal.aborted) abort()
+  })
+}
 
 async function requireIntegrityWorker(api: string, parentSignal?: AbortSignal): Promise<boolean> {
   const base = api.replace(/\/+$/, '')
+  if (parentSignal?.aborted) throw uploadAbortError()
   const cached = integrityWorkerCapabilities.get(base)
-  if (cached && cached.expiresAt > Date.now()) return cached.atomicUpload
+  if (cached && cached.expiresAt > Date.now()) {
+    return waitForIntegrityCapability(Promise.resolve(cached.atomicUpload), parentSignal)
+  }
   if (cached) integrityWorkerCapabilities.delete(base)
-  let features: { integrityManifest?: unknown; integrityAtomicUpload?: unknown } | null = null
-  try {
-    features = await withRequestTimeout(10_000, parentSignal, async (signal) => {
-      const response = await fetch(`${base}/ping`, { cache: 'no-store', signal })
-      if (!response.ok) return null
-      const status = await response.json().catch(() => null) as { features?: { integrityManifest?: unknown; integrityAtomicUpload?: unknown } } | null
-      return status?.features ?? null
-    })
-  } catch {
-    if (parentSignal?.aborted) throw uploadAbortError()
+  let task = integrityWorkerCapabilityTasks.get(base)
+  if (!task) {
+    task = (async () => {
+      let features: { integrityManifest?: unknown; integrityAtomicUpload?: unknown } | null = null
+      try {
+        features = await withRequestTimeout(10_000, undefined, async (signal) => {
+          const response = await fetch(`${base}/ping`, { cache: 'no-store', signal })
+          if (!response.ok) return null
+          const status = await response.json().catch(() => null) as { features?: { integrityManifest?: unknown; integrityAtomicUpload?: unknown } } | null
+          return status?.features ?? null
+        })
+      } catch { /* 失败统一走「完整性能力不可用」错误；单个等待者取消不掐掉共享探测 */ }
+      if (features?.integrityManifest !== true) {
+        throw new Error('ROM / BIOS 完整性校验服务尚未部署或暂不可用；请先更新 ROM Worker，再开始上传。文件尚未上传。')
+      }
+      const atomicUpload = features.integrityAtomicUpload === true
+      integrityWorkerCapabilities.set(base, { expiresAt: Date.now() + INTEGRITY_PROBE_TTL_MS, atomicUpload })
+      while (integrityWorkerCapabilities.size > 16) {
+        const oldest = integrityWorkerCapabilities.keys().next().value
+        if (oldest === undefined) break
+        integrityWorkerCapabilities.delete(oldest)
+      }
+      return atomicUpload
+    })()
+    integrityWorkerCapabilityTasks.set(base, task)
+    void task.then(
+      () => { if (integrityWorkerCapabilityTasks.get(base) === task) integrityWorkerCapabilityTasks.delete(base) },
+      () => { if (integrityWorkerCapabilityTasks.get(base) === task) integrityWorkerCapabilityTasks.delete(base) },
+    )
   }
-  if (features?.integrityManifest !== true) throw new Error('ROM / BIOS 完整性校验服务尚未部署或暂不可用；请先更新 ROM Worker，再开始上传。文件尚未上传。')
-  const atomicUpload = features.integrityAtomicUpload === true
-  integrityWorkerCapabilities.set(base, { expiresAt: Date.now() + INTEGRITY_PROBE_TTL_MS, atomicUpload })
-  while (integrityWorkerCapabilities.size > 16) {
-    const oldest = integrityWorkerCapabilities.keys().next().value
-    if (oldest === undefined) break
-    integrityWorkerCapabilities.delete(oldest)
-  }
-  return atomicUpload
+  return waitForIntegrityCapability(task, parentSignal)
 }
 
 function encodeIntegrityManifestHeader(manifest: unknown): string {

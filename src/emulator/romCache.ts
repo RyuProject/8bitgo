@@ -33,7 +33,7 @@ const DB_NAME = '8bitgo-roms'
 const DB_VERSION = 1
 /** 字节本体 */
 const STORE_BLOB = 'blobs'
-/** 只放 { size, storedAt, lastUsedAt }。LRU 淘汰要遍历全部条目，读元信息不该把几 GB 字节也拖出来 */
+/** 只放小型索引 / 校验元信息。LRU 淘汰要遍历全部条目，不能把几 GB 字节也拖出来 */
 const STORE_META = 'meta'
 
 /**
@@ -77,6 +77,41 @@ interface MetaEntry {
   size: number
   storedAt: number
   lastUsedAt: number
+  /** 记录每次 Blob 写入的身份，防止迟到的复验结果贴到同键同尺寸的新 ROM。 */
+  recordId?: string
+  /** 仅可信清单校验成功后写入；新版本清单不匹配时必须重验 ROM 本体。 */
+  integrityTag?: string
+  integrityCheckedAt?: number
+}
+
+export interface RomCacheBlobRecord {
+  blob: Blob
+  recordId?: string
+  storedAt?: number
+  integrityTag?: string
+  integrityCheckedAt?: number
+}
+
+let cacheRecordSequence = 0
+
+/** 只作同页 / 跨标签缓存写入代次比较，不承载安全凭据。 */
+function nextCacheRecordId(): string {
+  return `${Date.now().toString(36)}-${(++cacheRecordSequence).toString(36)}-${Math.random().toString(36).slice(2)}`
+}
+
+/** 本地 Blob 每周至少完整重验一次；同一周内重复开局可免去数百 MB 的磁盘读取与 SHA-256。 */
+export const ROM_CACHE_INTEGRITY_RECHECK_MS = 7 * 24 * 60 * 60 * 1000
+
+/** 缓存键、完整清单与近期校验时间都一致时，才可跳过本次整盘哈希。 */
+export function romCacheIntegrityIsFresh(
+  record: Pick<RomCacheBlobRecord, 'integrityTag' | 'integrityCheckedAt'> | null,
+  integrityTag: string,
+  now = Date.now(),
+): boolean {
+  const checkedAt = record?.integrityCheckedAt
+  return Boolean(record && integrityTag && record.integrityTag === integrityTag &&
+    Number.isSafeInteger(checkedAt) && checkedAt! > 0 && now >= checkedAt! &&
+    now - checkedAt! <= ROM_CACHE_INTEGRITY_RECHECK_MS)
 }
 
 /**
@@ -202,6 +237,89 @@ export async function romCacheGetBlob(key: string, type = 'application/octet-str
   return blob
 }
 
+/** 读取光盘 Blob 与其校验印记；缺少旧元信息时仍返回 Blob，由调用方走一次完整校验。 */
+export async function romCacheGetBlobRecord(key: string, type = 'application/octet-stream'): Promise<RomCacheBlobRecord | null> {
+  if (!key) return null
+  const db = await openDb()
+  if (!db) return null
+  let value: unknown
+  let rawMeta: MetaEntry | null = null
+  try {
+    const tx = db.transaction([STORE_BLOB, STORE_META], 'readonly')
+    const blobReq = tx.objectStore(STORE_BLOB).get(key)
+    const metaReq = tx.objectStore(STORE_META).get(key)
+    ;[value, rawMeta] = await Promise.all([
+      askWithin(blobReq, READ_TIMEOUT_MS),
+      askWithin(metaReq, READ_TIMEOUT_MS),
+    ]) as [unknown, MetaEntry | null]
+  } catch {
+    return null
+  }
+  let blob: Blob | null = null
+  if (value instanceof Blob && value.size > 0) blob = value.type === type ? value : new Blob([value], { type })
+  else if (value instanceof ArrayBuffer && value.byteLength > 0) blob = new Blob([value], { type })
+  if (!blob) return null
+  void touch(db, key)
+  const integrityCheckedAt = rawMeta?.integrityCheckedAt
+  return {
+    blob,
+    ...(typeof rawMeta?.recordId === 'string' ? { recordId: rawMeta.recordId } : {}),
+    ...(typeof rawMeta?.storedAt === 'number' && Number.isSafeInteger(rawMeta.storedAt) ? { storedAt: rawMeta.storedAt } : {}),
+    ...(typeof rawMeta?.integrityTag === 'string' ? { integrityTag: rawMeta.integrityTag } : {}),
+    ...(typeof integrityCheckedAt === 'number' && Number.isSafeInteger(integrityCheckedAt) ? { integrityCheckedAt } : {}),
+  }
+}
+
+/** 已经完整复验过的缓存只读写小型元信息，不重新读取大 Blob。 */
+export async function romCacheMarkIntegrityVerified(
+  key: string,
+  integrityTag: string,
+  expectedSize: number,
+  identity: Pick<RomCacheBlobRecord, 'recordId' | 'storedAt'>,
+): Promise<void> {
+  if (!key || !/^sha256:[a-f0-9]{64}$/i.test(integrityTag) || !Number.isSafeInteger(expectedSize) || expectedSize <= 0 ||
+      (!identity.recordId && (!Number.isSafeInteger(identity.storedAt) || (identity.storedAt ?? 0) <= 0))) return
+  const db = await openDb()
+  if (!db) return
+  await new Promise<void>((resolve) => {
+    let tx: IDBTransaction
+    let ended = false
+    const finish = () => {
+      if (ended) return
+      ended = true
+      clearTimeout(timer)
+      resolve()
+    }
+    const timer = setTimeout(finish, READ_TIMEOUT_MS)
+    try {
+      tx = db.transaction(STORE_META, 'readwrite')
+      const metaStore = tx.objectStore(STORE_META)
+      const metaReq = metaStore.get(key)
+      metaReq.onsuccess = () => {
+        const metaValue = metaReq.result as MetaEntry | undefined
+        // 同键、同尺寸的重新下载也可能是另一份 Blob；迟到的复验只更新读取时见到的那一代。
+        const sameRecord = identity.recordId
+          ? metaValue?.recordId === identity.recordId
+          : !metaValue?.recordId && metaValue?.storedAt === identity.storedAt
+        if (!metaValue || metaValue.size !== expectedSize || !sameRecord) return
+        try {
+          metaStore.put({
+            ...metaValue,
+            recordId: metaValue.recordId || nextCacheRecordId(),
+            integrityTag,
+            integrityCheckedAt: Date.now(),
+          } satisfies MetaEntry, key)
+        } catch { finish() }
+      }
+      tx.oncomplete = finish
+      tx.onabort = finish
+      tx.onerror = finish
+    } catch {
+      finish()
+    }
+  })
+}
+
 /**
  * 更新最近使用时间，喂给 LRU。
  *
@@ -252,11 +370,11 @@ export async function romCachePut(key: string, data: ArrayBuffer): Promise<void>
  * 几百 MB 到几 GB 的镜像从下载到入库全程不需要一整块连续内存（见 loadProgress.ts
  * 的 fetchBlobWithProgress）。同样不要 await，写盘慢不该让玩家干等。
  */
-export async function romCachePutBlob(key: string, blob: Blob): Promise<void> {
-  return put(key, blob, MAX_BLOB_ENTRY_BYTES)
+export async function romCachePutBlob(key: string, blob: Blob, verifiedIntegrityTag?: string): Promise<void> {
+  return put(key, blob, MAX_BLOB_ENTRY_BYTES, verifiedIntegrityTag)
 }
 
-async function put(key: string, data: CacheValue, maxEntry: number): Promise<void> {
+async function put(key: string, data: CacheValue, maxEntry: number, verifiedIntegrityTag?: string): Promise<void> {
   if (!key) return
   const size = sizeOf(data)
   if (size === 0 || size > maxEntry) return
@@ -278,11 +396,11 @@ async function put(key: string, data: CacheValue, maxEntry: number): Promise<voi
   if (size > budget / 2) return skip(key, size, `超过预算的一半（${Math.round(budget / 2 / 1048576)}MB）`)
   if (!(await ensureRoom(db, size, budget, key))) return skip(key, size, '腾不出空间')
 
-  const result = await putEntry(db, key, data)
+  const result = await putEntry(db, key, data, verifiedIntegrityTag)
   if (result !== 'quota') return
   // 配额是**整个源**共享的，存档、EmulatorJS-Cache、HTTP 缓存都在占，
   // estimate() 给的数字不一定跟得上。被拒了就多腾一倍再试一次，还不行就放弃。
-  if (await ensureRoom(db, size * 2, budget, key)) await putEntry(db, key, data)
+  if (await ensureRoom(db, size * 2, budget, key)) await putEntry(db, key, data, verifiedIntegrityTag)
 }
 
 /** 读全部元信息（不碰字节本体） */
@@ -349,7 +467,7 @@ function removeKeys(db: IDBDatabase, keys: string[]): Promise<void> {
 }
 
 /** 字节和元信息写在同一个事务里，避免出现「有元信息没字节」的半条记录 */
-function putEntry(db: IDBDatabase, key: string, data: CacheValue): Promise<'ok' | 'quota' | 'fail'> {
+function putEntry(db: IDBDatabase, key: string, data: CacheValue, verifiedIntegrityTag?: string): Promise<'ok' | 'quota' | 'fail'> {
   return new Promise((resolve) => {
     let tx: IDBTransaction
     try {
@@ -370,7 +488,16 @@ function putEntry(db: IDBDatabase, key: string, data: CacheValue): Promise<'ok' 
       blobReq.onerror = () => {
         if (blobReq.error?.name === 'QuotaExceededError') quota = true
       }
-      tx.objectStore(STORE_META).put({ size: sizeOf(data), storedAt: now, lastUsedAt: now } satisfies MetaEntry, key)
+      const meta: MetaEntry = {
+        size: sizeOf(data),
+        storedAt: now,
+        lastUsedAt: now,
+        recordId: nextCacheRecordId(),
+        ...(verifiedIntegrityTag && /^sha256:[a-f0-9]{64}$/i.test(verifiedIntegrityTag)
+          ? { integrityTag: verifiedIntegrityTag, integrityCheckedAt: now }
+          : {}),
+      }
+      tx.objectStore(STORE_META).put(meta, key)
     } catch {
       resolve('fail')
     }
