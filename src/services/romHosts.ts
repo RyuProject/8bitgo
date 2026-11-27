@@ -118,13 +118,28 @@ const REACHABLE_TRUSTED_RATE = 256
  * 引擎自己只会对着这一个地址下，不会换线路，所以这里选错了整局都要等它。
  *
  * 候选按线路记分板（romRouteHealth.ts）排序：排第一的线路吞吐够快、或 60 秒内刚探过，就直接用；
- * 否则每条读 64KB 样本，第一条 600ms 没读完就同时问下一条，谁先读完用谁，样本吞吐记进记分板。
+ * 否则每条默认读 64KB 样本，第一条 600ms 没读完就同时问下一条，谁先读完用谁，样本吞吐记进记分板。
+ * 后台文件直开可缩小样本并强制重测：浏览器接管后不会把完整下载吞吐回报给页面，旧分数不能证明这次线路仍快。
  */
-export async function reachableRomAssetUrl(url: string, signal?: AbortSignal): Promise<string> {
+export interface ReachableRomAssetOptions {
+  /** 后台“打开”只需要迅速比较候选线路，避免为选线路额外读取过多 ROM 正文。 */
+  sampleBytes?: number
+  hedgeDelayMs?: number
+  attemptTimeoutMs?: number
+  /** 文件直开不会回报完整下载吞吐；不能让旧的高分把本次线路探测跳过去。 */
+  forceProbe?: boolean
+}
+
+export async function reachableRomAssetUrl(
+  url: string,
+  signal?: AbortSignal,
+  options: ReachableRomAssetOptions = {},
+): Promise<string> {
   if (!url || typeof fetch !== 'function') return url
   const candidates = rankRomRoutes([url, ...alternateRomUrls(url)])
+  const sampleBytes = Math.max(1, Math.floor(options.sampleBytes ?? REACHABLE_SAMPLE_BYTES))
   const top = candidates[0] ?? url
-  if (!isRomRouteOpen(top) && ((reachableRomOrigins.get(romRouteOrigin(top)) ?? 0) > Date.now() || (romRouteRate(top) ?? 0) >= REACHABLE_TRUSTED_RATE)) {
+  if (!options.forceProbe && !isRomRouteOpen(top) && ((reachableRomOrigins.get(romRouteOrigin(top)) ?? 0) > Date.now() || (romRouteRate(top) ?? 0) >= REACHABLE_TRUSTED_RATE)) {
     return top
   }
   try {
@@ -137,7 +152,7 @@ export async function reachableRomAssetUrl(url: string, signal?: AbortSignal): P
           mode: 'cors',
           credentials: 'omit',
           cache: 'no-store',
-          headers: { Range: `bytes=0-${REACHABLE_SAMPLE_BYTES - 1}` },
+          headers: { Range: `bytes=0-${sampleBytes - 1}` },
           signal: attemptSignal,
         })
         if (!response.ok) {
@@ -153,7 +168,7 @@ export async function reachableRomAssetUrl(url: string, signal?: AbortSignal): P
             if (done) break
             bytes += value?.byteLength ?? 0
             // 不支持 Range、回了整份 200 的源：读够样本就停，不把大文件整个拖下来
-            if (bytes >= REACHABLE_SAMPLE_BYTES) {
+            if (bytes >= sampleBytes) {
               void reader.cancel().catch(() => {})
               break
             }
@@ -171,7 +186,11 @@ export async function reachableRomAssetUrl(url: string, signal?: AbortSignal): P
       recordRomRouteTransfer(candidate, bytes, headersAt ? Date.now() - headersAt : 0)
       reachableRomOrigins.set(romRouteOrigin(candidate), Date.now() + 60_000)
       return candidate
-    }, { hedgeDelayMs: REACHABLE_HEDGE_MS, attemptTimeoutMs: REACHABLE_TIMEOUT_MS, signal })
+    }, {
+      hedgeDelayMs: options.hedgeDelayMs ?? REACHABLE_HEDGE_MS,
+      attemptTimeoutMs: options.attemptTimeoutMs ?? REACHABLE_TIMEOUT_MS,
+      signal,
+    })
   } catch {
     return url
   }

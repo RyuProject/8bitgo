@@ -20,6 +20,7 @@ import { namcoC76BiosProblem } from '@/lib/namcoSystem11'
 import { arcadeArchiveLayoutProblem } from '@/lib/arcadeArchive'
 import { loadMameSetCatalog, mameCatalogDeviceBiosProblem } from '@/lib/mameSetCatalog'
 import { Card, btnClass, inputClass } from './ui'
+import { RomOpenLink } from './RomOpenLink'
 
 /**
  * 平台级 BIOS 与街机 BIOS 系统包。
@@ -199,9 +200,9 @@ function BiosRow({
         </div>
         {value && (
           <div className="flex shrink-0 items-center gap-2 text-xs">
-            <a className="text-brand-hover hover:underline" href={romUrlForKey(value)} target="_blank" rel="noreferrer">
+            <RomOpenLink className="text-brand-hover hover:underline" href={romUrlForKey(value)}>
               打开
-            </a>
+            </RomOpenLink>
             <button type="button" className="text-live hover:underline" onClick={onUnbind}>
               解绑
             </button>

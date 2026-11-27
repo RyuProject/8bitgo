@@ -4210,6 +4210,8 @@ DNS 是**不走代理**的 CNAME，指向 BestCF 名单里的 `youxuan.cf.090227
 站内播放器用 `VITE_ROM_DOWNLOAD_URL=https://rom.8bitgo.com` 优先读取明文 ROM / BIOS / 系统镜像；旧 `.8bg` 与
 开放平台短期凭据下载仍走 `download.8bitgo.com`。两条线路失败时继续回退到主资源域或 EdgeOne 镜像。
 
+- **后台“打开/检查”也比较真实正文速度**：普通链接原先是 `romUrlForKey()` 生成的单域 `<a>`，浏览器接管下载后页面无法换线。`src/admin/RomOpenLink.tsx` 左键同步开新标签，再用同一对象 8KiB Range 样本、600ms 对冲和 4.5 秒单线路上限，在 `rom` / `download` / `cn-assets` 中选先读完的线路；完整文件仍只从一个域名下载。外链和中键、修饰键点击保留浏览器行为。不要把优选 IP 直接写成 HTTPS URL：继续使用有证书且 Worker 按 Host 路由的域名。
+
 - `/roms/...` 等对象路径与 `assets` 完全一样（同一个 Worker，私有前缀 401、`romv` 校验、Range 边缘缓存都在；边缘缓存按完整 URL，多个域名各存一份）。
 - `/api/open/v1/rom-plain/{grant}`、`/api/open/v1/bundle-plain/{grant}/...`、`/api/diag` 由 Worker 原样转发到源站
   （`PLAIN_PROXY_HOSTS` / `PLAIN_PROXY_ORIGIN`），凭据校验、限流、8BG 解密都在源站，Worker 不持有 ROM 密钥；

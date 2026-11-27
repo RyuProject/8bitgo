@@ -34,6 +34,7 @@ import { slugify } from './GameForm'
 import { PlatformBiosPanel } from './PlatformBiosPanel'
 import { SystemImageSourcesPanel } from './SystemImageSourcesPanel'
 import { RomCleanupPanel } from './RomCleanupPanel'
+import { RomOpenLink } from './RomOpenLink'
 import { objectKeyOf, planRomObjectDeletion, type PlatformBiosRefs } from './romDeletePlan'
 import { Card, Field, Stat, btnClass, inputClass } from './ui'
 
@@ -808,14 +809,12 @@ export function AdminRoms() {
                       </span>
                     ))}
                   </span>
-                  <a
+                  <RomOpenLink
                     href={romUrlForKey(keys[0])}
-                    target="_blank"
-                    rel="noreferrer"
                     className={cx(btnClass.small, 'text-muted hover:bg-black/5 hover:text-fg')}
                   >
                     打开
-                  </a>
+                  </RomOpenLink>
                   <button
                     type="button"
                     className={cx(btnClass.small, 'text-live hover:bg-live/15')}
@@ -1016,9 +1015,9 @@ function BundleRow({
                   <span className={cx('min-w-0 flex-1 truncate font-mono', f.key === (boundKey ?? bundle.main) ? 'text-fg' : 'text-muted')}>{rel(f.key)}</span>
                   {f.key === (boundKey ?? bundle.main) && <span className="shrink-0 rounded bg-brand/20 px-1 text-[10px] text-brand-hover">主</span>}
                   <span className="shrink-0 tabular-nums text-dim">{formatBytes(f.size)}</span>
-                  <a href={romUrlForKey(f.key)} target="_blank" rel="noreferrer" className={cx(btnClass.small, 'shrink-0 text-muted hover:bg-black/5 hover:text-fg')}>
+                  <RomOpenLink href={romUrlForKey(f.key)} className={cx(btnClass.small, 'shrink-0 text-muted hover:bg-black/5 hover:text-fg')}>
                     打开
-                  </a>
+                  </RomOpenLink>
                 </li>
               ))}
             </ul>

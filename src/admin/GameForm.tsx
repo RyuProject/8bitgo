@@ -84,6 +84,7 @@ import { isPlayable } from '@/emulator'
 import { NETPLAY_MAX_PLAYERS } from '../../shared/netplay-players.js'
 import { normalizeDevelopers } from '@/lib/developers'
 import { Field, btnClass, inputClass } from './ui'
+import { RomOpenLink } from './RomOpenLink'
 import { fetchAdminGames, patchGame } from '@/services/store'
 import { api, apiEnabled } from '@/services/api'
 import { objectReferenceMatches, planRomObjectDeletion, unbindRomObjectKeys, type PlatformBiosRefs } from './romDeletePlan'
@@ -2943,7 +2944,7 @@ function SystemImageField({
         可填对象 key、站内路径或完整 URL。相同值可给所有 Win95 游戏复用；留空则兼容旧模式，把游戏 ROM 当作系统与游戏合一的完整 .jsdos。
         {value.trim() && romUrlForKey(value.trim()) && (
           <>
-            {' '}<a className="text-brand-hover hover:underline" href={romUrlForKey(value.trim())} target="_blank" rel="noreferrer">检查文件</a>
+            {' '}<RomOpenLink className="text-brand-hover hover:underline" href={romUrlForKey(value.trim())}>检查文件</RomOpenLink>
           </>
         )}
       </p>
@@ -3270,7 +3271,7 @@ function SockdriveAutoField({
               : `处理中 ${progress}%`}
         </button>
         {value.trim() && progress === null && !busySelecting && (
-          <a href={romUrlForKey(value.trim())} target="_blank" rel="noreferrer" className={btnClass.secondary}>检查</a>
+          <RomOpenLink href={romUrlForKey(value.trim())} className={btnClass.secondary}>检查</RomOpenLink>
         )}
         {(failedJobId || pendingCreation) && progress === null && (
           <button type="button" className={btnClass.secondary} onClick={() => void retry()}>
@@ -3435,7 +3436,7 @@ function MameDiskUploadRow({
         <button type="button" className={btnClass.primary} disabled={!canUpload || progress !== null} onClick={() => inputRef.current?.click()}>
           {progress === null ? (bound ? '☁️ 重新上传并校验' : '☁️ 上传必需 CHD') : `上传中 ${progress}%`}
         </button>
-        {bound?.key && <a href={romUrlForKey(bound.key)} target="_blank" rel="noreferrer" className={btnClass.secondary}>检查</a>}
+        {bound?.key && <RomOpenLink href={romUrlForKey(bound.key)} className={btnClass.secondary}>检查</RomOpenLink>}
         {bound && progress === null && <button type="button" className={btnClass.secondary} onClick={() => onChange(value.filter((disk) => disk !== bound))}>解绑</button>}
       </div>
       {bound ? <p className="mt-2 font-mono text-[11px] text-online">✓ 已绑定 {bound.key}</p> : <p className="mt-2 text-xs text-live">缺少这张 CHD 时，{expected.romset} 不会启动；播放器会在开局前停止并说明原因。</p>}
@@ -5094,9 +5095,15 @@ function RomField({
             </button>
           )}
           {value && !progress && !busySelecting && (
-            <a href={isHtml5 ? normalizeHtml5Entry(value) : romUrlForKey(value)} target="_blank" rel="noreferrer" className={cx(btnClass.secondary, 'shrink-0')} title={isHtml5 ? '在新标签页打开网页入口' : '在新标签页打开文件地址'}>
-              打开
-            </a>
+            isHtml5 ? (
+              <a href={normalizeHtml5Entry(value)} target="_blank" rel="noreferrer" className={cx(btnClass.secondary, 'shrink-0')} title="在新标签页打开网页入口">
+                打开
+              </a>
+            ) : (
+              <RomOpenLink href={romUrlForKey(value)} className={cx(btnClass.secondary, 'shrink-0')} title="在新标签页打开文件地址">
+                打开
+              </RomOpenLink>
+            )
           )}
           {value && !progress && !busySelecting && bundleAt === null && (
             <button
@@ -5176,14 +5183,12 @@ function RomField({
                 placeholder="R2 对象 key 或完整 HTTPS URL"
               />
               {backupValue.trim() && (
-                <a
+                <RomOpenLink
                   href={romUrlForKey(backupValue.trim())}
-                  target="_blank"
-                  rel="noreferrer"
                   className={cx(btnClass.secondary, 'shrink-0')}
                 >
                   打开
-                </a>
+                </RomOpenLink>
               )}
               <button
                 type="button"
