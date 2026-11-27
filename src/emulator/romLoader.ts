@@ -42,13 +42,14 @@ async function unpackIfNeeded(
   data: ArrayBuffer,
   limits: GameBytesLimits,
   onProgress?: (progress: LoadProgress) => void,
+  signal?: AbortSignal,
 ): Promise<{ name?: string; data: ArrayBuffer }> {
   assertUnpackedSize(data, limits.maxUnpackedBytes)
   if (!isRomPackBytes(data)) return { data }
   const unpacked = await unpackRomPack(data, () => {
     // 密文下载已经结束；继续报活动但不重复推进下载字节，解包内部已节流到每 200ms 最多一次。
     onProgress?.({ phase: 'rom', ratio: 1, detail: 'rom-pack' })
-  })
+  }, signal)
   assertSizeLimit(unpacked.data.byteLength, limits.maxUnpackedBytes, '游戏文件')
   return unpacked
 }
@@ -145,7 +146,7 @@ export async function loadGameBytes(
       ...(isRomPackBytes(data) ? { detail: 'rom-pack' as const } : {}),
     })
     assertNotHtml(data)
-    const unpacked = await unpackIfNeeded(data, limits, onProgress)
+    const unpacked = await unpackIfNeeded(data, limits, onProgress, signal)
     assertNotHtml(unpacked.data)
     limits.validate?.(unpacked.data)
     if (unpacked.name) return { name: unpacked.name, data: unpacked.data }
@@ -207,7 +208,7 @@ export async function loadGameBytes(
           void romCachePut(cacheKey, cached).catch(() => {})
         }
         if (isRomPackBytes(cached)) {
-          const unpacked = await unpackIfNeeded(cached, limits, onProgress)
+          const unpacked = await unpackIfNeeded(cached, limits, onProgress, signal)
           assertNotHtml(unpacked.data)
           limits.validate?.(unpacked.data)
           onProgress?.({ phase: 'rom', loaded: cached.byteLength, total: cached.byteLength, ratio: 1, cached: true })
@@ -220,7 +221,9 @@ export async function loadGameBytes(
         onProgress?.({ phase: 'rom', loaded: cached.byteLength, total: cached.byteLength, ratio: 1, cached: true })
         void downloadResumeStore.clear(cacheKey).catch(() => {})
         return { name: fileNameFromUrl(game), data: cached, remoteUrl: game, fromCache: true }
-      } catch {
+      } catch (error) {
+        // 玩家离页 / 换游戏不是缓存损坏；保留有效内容与续传片，别让旧开局再占网回源。
+        if (signal?.aborted) throw signal.reason ?? error
         await romCacheDelete(cacheKey).catch(() => {})
         // 旧缓存对应的续传片也可能不可信；一并清掉，回源不能再拼出同一份坏内容。
         await downloadResumeStore.clear(cacheKey).catch(() => {})
@@ -262,7 +265,7 @@ export async function loadGameBytes(
   assertNotHtml(data)
   // fetchWithProgress / fetchBlobWithProgress 已在所有标记响应返回前校验；这里不再重复扫大 ROM。
   if (isRomPackBytes(data)) {
-    const unpacked = await unpackIfNeeded(data, limits, onProgress)
+    const unpacked = await unpackIfNeeded(data, limits, onProgress, signal)
     assertNotHtml(unpacked.data)
     limits.validate?.(unpacked.data)
     // 解密、解压、摘要都通过后才缓存密文；截断包不能因为一次失败被永久钉在浏览器里。

@@ -466,7 +466,29 @@ async function fetchRawKey(packageId: string, keyId?: string): Promise<KeyRespon
   )
 }
 
-async function contentKey(header: Pick<RomPackHeader, 'packageId' | 'keyId'>): Promise<CryptoKey> {
+function awaitWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise
+  if (signal.aborted) return Promise.reject(signal.reason ?? new DOMException('已取消', 'AbortError'))
+  return new Promise<T>((resolve, reject) => {
+    let settled = false
+    const finish = (success: boolean, result: unknown) => {
+      if (settled) return
+      settled = true
+      signal.removeEventListener('abort', onAbort)
+      if (success) resolve(result as T)
+      else reject(result)
+    }
+    const onAbort = () => finish(false, signal.reason ?? new DOMException('已取消', 'AbortError'))
+    signal.addEventListener('abort', onAbort, { once: true })
+    promise.then((value) => finish(true, value), (error) => finish(false, error))
+    if (signal.aborted) onAbort()
+  })
+}
+
+async function contentKey(
+  header: Pick<RomPackHeader, 'packageId' | 'keyId'>,
+  signal?: AbortSignal,
+): Promise<CryptoKey> {
   const cacheKey = `${header.keyId}:${header.packageId}`
   let pending = keyCache.get(cacheKey)
   if (!pending) {
@@ -476,7 +498,8 @@ async function contentKey(header: Pick<RomPackHeader, 'packageId' | 'keyId'>): P
     keyCache.set(cacheKey, pending)
     pending.catch(() => keyCache.delete(cacheKey))
   }
-  return pending
+  // 同包多个入口共享密钥请求，但旧会话取消时应立即释放对 ROM / 输出缓冲的引用。
+  return awaitWithAbort(pending, signal)
 }
 
 /** 后台上传的新 ROM 默认走这里；Worker 池做重活，React 页面只收进度和最终 Blob。 */
@@ -635,14 +658,20 @@ export async function packRomForUpload(
   }
 }
 
-async function decode(header: Pick<RomPackHeader, 'codec' | 'codecVersion'>, data: Uint8Array, expectedSize: number): Promise<Uint8Array<ArrayBuffer>> {
+async function decode(
+  header: Pick<RomPackHeader, 'codec' | 'codecVersion'>,
+  data: Uint8Array,
+  expectedSize: number,
+  signal?: AbortSignal,
+): Promise<Uint8Array<ArrayBuffer>> {
   // codecVersion 是以后更换编码参数/实现时的兼容边界。静默拿 v1 解码器读 v2，报出来只会像
   // “ROM 损坏”；明确拒绝才能保证以后加 LZMA2 或 Zstd 新封装时老客户端不会误判。
   if (header.codecVersion !== 1) throw new Error(`这个版本的播放器不支持 ${header.codec} codec v${header.codecVersion}`)
   if (header.codec === ROM_PACK_CODEC.STORE) return new Uint8Array(data)
   if (header.codec === ROM_PACK_CODEC.ZSTD) {
     assertZstdFrameContentSize(data, expectedSize)
-    await readyZstd()
+    await awaitWithAbort(readyZstd(), signal)
+    throwIfAborted(signal)
     // 无帧大小的 Zstd 数据也只能申请当前块声明的大小，不能让畸形文件退回库默认的 1MB。
     const out = zstd!.decompress(data, { defaultHeapSize: expectedSize })
     // 两个解码器交回来的都已是独立的整块输出（zstd-wasm 从堆里 slice() 出来、fzstd 写进新分配的定长块），
@@ -660,7 +689,9 @@ async function decryptChunk(
   index: number,
   cipher: ArrayBuffer | Uint8Array<ArrayBuffer>,
   key: CryptoKey,
+  signal?: AbortSignal,
 ): Promise<Uint8Array<ArrayBuffer>> {
+  throwIfAborted(signal)
   let encoded: ArrayBuffer
   try {
     encoded = await crypto.subtle.decrypt(
@@ -669,12 +700,17 @@ async function decryptChunk(
       cipher,
     )
   } catch {
+    if (signal?.aborted) throw signal.reason ?? new DOMException('已取消', 'AbortError')
     throw new Error(`ROM 包第 ${index + 1} 块解密失败：文件损坏或服务端密钥不匹配`)
   }
+  // Web Crypto 本身不可中止；游戏切换期间它返回后必须立刻放弃，不能再解压和扫整块 SHA。
+  throwIfAborted(signal)
   const expected = header.chunks[index]
-  const source = await decode(header, new Uint8Array(encoded), expected.sourceSize)
+  const source = await decode(header, new Uint8Array(encoded), expected.sourceSize, signal)
+  throwIfAborted(signal)
   if (source.byteLength !== expected.sourceSize) throw new Error(`ROM 包第 ${index + 1} 块解压大小不符`)
   const digest = hex(await crypto.subtle.digest('SHA-256', source))
+  throwIfAborted(signal)
   if (digest !== expected.sha256) throw new Error(`ROM 包第 ${index + 1} 块校验失败`)
   return source
 }
@@ -741,7 +777,9 @@ async function forEachRomPackChunk(
 export async function unpackRomPack(
   data: ArrayBuffer,
   onProgress?: (loaded: number, total: number) => void,
+  signal?: AbortSignal,
 ): Promise<{ name: string; data: ArrayBuffer; header: RomPackHeader }> {
+  throwIfAborted(signal)
   const bytes = new Uint8Array(data)
   const { header, dataOffset } = parseRomPackHeader(bytes)
   if (dataOffset + header.payloadSize !== bytes.byteLength) throw new Error('8BG 文件长度与文件头不一致')
@@ -758,19 +796,23 @@ export async function unpackRomPack(
   }
   // 通知调用方已经转入解包；后续最多每 200ms 续报一次，避免小分块产生过多界面更新。
   reportProgress(true)
-  const key = await contentKey(header)
+  throwIfAborted(signal)
+  const key = await contentKey(header, signal)
+  throwIfAborted(signal)
   const output = new Uint8Array(header.originalSize)
   await forEachRomPackChunk(header, dataOffset, async (index, cipherAt) => {
     const meta = header.chunks[index]
     // 密文已完整驻留在 data；Web Crypto 接受 TypedArray 视图，避免每个 8 MiB 块再复制一份。
     const cipher = bytes.subarray(cipherAt, cipherAt + meta.cipherSize)
-    const source = await decryptChunk(header, index, cipher, key)
+    const source = await decryptChunk(header, index, cipher, key, signal)
     output.set(source, index * header.chunkSize)
     completedBytes += source.byteLength
     reportProgress(completedBytes === header.originalSize)
-  })
+  }, signal)
+  throwIfAborted(signal)
   if (header.originalSha256) {
     const digest = hex(await crypto.subtle.digest('SHA-256', output))
+    throwIfAborted(signal)
     if (digest !== header.originalSha256) throw new Error('ROM 包整文件校验失败')
   }
   return { name: header.originalName, data: output.buffer, header }
@@ -877,14 +919,14 @@ async function unpackEachChunk(
 ): Promise<RomPackHeader> {
   throwIfAborted(signal)
   const { header, dataOffset } = await inspectRomPackBlob(blob, signal)
-  const key = await contentKey(header)
+  const key = await contentKey(header, signal)
   throwIfAborted(signal)
   let unpacked = 0
   await forEachRomPackChunk(header, dataOffset, async (index, cipherAt) => {
     throwIfAborted(signal)
     const meta = header.chunks[index]
     const cipher = await readBlobRange(blob, cipherAt, cipherAt + meta.cipherSize, ROM_PACK_READ_TIMEOUT_MS, signal)
-    const source = await decryptChunk(header, index, cipher, key)
+    const source = await decryptChunk(header, index, cipher, key, signal)
     throwIfAborted(signal)
     take(source, index)
     if (consumeInput) releaseMemoryRomBefore(blob, cipherAt + meta.cipherSize)

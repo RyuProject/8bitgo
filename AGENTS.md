@@ -844,7 +844,7 @@ ROM 缓存读不出同样记它。标记有效期内第一次下载就先走内�
 旧版完整 ROM 缓存不会重走下载器，同样要在解密前查缓存 Blob 大小；8BG 还得先读文件头，
 拦截 `originalSize` 超过 512MiB 的容器，不能等逐块解密完才靠卡带校验发现。
 外站 ZIP 解出的完整 ROM 若缓存损坏，必须先删除再回源；命中缓存的 100% 进度也只能在验证之后报。
-DOS 启动的 8BG 分块解包和 ZIP 目录校验都必须接收本局 `AbortSignal`：离页 / 换游戏时停止后续分块与目录批次读取；正在进行的 Blob `arrayBuffer()` / Web Crypto 操作无法强停，但完成后不得再派发下一块、写明文块或续报。缓存解包 / 校验遇到用户取消要原样抛出，不能误判为坏缓存后删除并重下。回归：`npm run test:dos-blob && npm run test:rompack && npm run test:roms && npm run test:dos-bundle`。
+DOS 启动的远端与本地 8BG 解包、预制 ZIP 魔数探测和 ZIP 目录校验都必须接收本局 `AbortSignal`：离页 / 换游戏时停止后续分块与目录批次读取；正在进行的 Blob `arrayBuffer()` / Web Crypto 操作无法强停，但完成后不得再派发下一块、解压、扫 SHA、写明文块或续报。通用 `romLoader` 的缓存校验 catch 也必须先识别取消，再删缓存或续传片。缓存解包 / 校验遇到用户取消要原样抛出，不能误判为坏缓存后删除并重下。回归：`npm run test:dos-blob && npm run test:rompack && npm run test:roms && npm run test:dos-bundle && npm run test:dos-load`。
 
 ⚠️ 多语言 NDS 的即时存档不能共用游戏 slug。`ndsVariantSaveSlug` 为第一语言保留旧键（避免已有存档
 无声消失），其余语言加 `~nds-<语言>`；兼容核心再加原有 `:melonds-compat`。个人页解析两层后缀

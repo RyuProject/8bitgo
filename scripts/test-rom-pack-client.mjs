@@ -44,9 +44,14 @@ const oldFetch = globalThis.fetch
 const oldFileReader = globalThis.FileReader
 const key = Buffer.from(rawKey).toString('base64url')
 const assetPath = '/roms/test/synthetic.nes.8bg'
+let keyResponseDelayMs = 0
+let keyRequests = 0
 globalThis.fetch = async (url, init = {}) => {
   const target = new URL(String(url))
   if (target.pathname.endsWith('/api/rom-pack/key')) {
+    keyRequests++
+    const delay = keyResponseDelayMs
+    if (delay) await new Promise((resolve) => setTimeout(resolve, delay))
     return Response.json({ packageId: target.searchParams.get('packageId'), keyId: target.searchParams.get('keyId') ?? 'v1', key })
   }
   if (target.pathname === '/integrity') return new Response('', { status: 404 })
@@ -71,6 +76,7 @@ globalThis.fetch = async (url, init = {}) => {
 
 let decryptInput
 let decryptCalls = 0
+let digestCalls = 0
 let activeDecrypts = 0
 let maxConcurrentDecrypts = 0
 let decryptDelayMs = 0
@@ -97,6 +103,12 @@ const subtle = new Proxy(webcrypto.subtle, {
         }
       }
     }
+    if (property === 'digest') {
+      return async (...args) => {
+        digestCalls++
+        return target.digest(...args)
+      }
+    }
     const value = Reflect.get(target, property, target)
     return typeof value === 'function' ? value.bind(target) : value
   },
@@ -110,6 +122,19 @@ globalThis.crypto = new Proxy(webcrypto, {
 })
 
 try {
+  const keyAbort = new AbortController()
+  const priorKeyRequests = keyRequests
+  keyResponseDelayMs = 250
+  const waitingForKey = unpackRomPack(container.buffer, undefined, keyAbort.signal)
+  while (keyRequests === priorKeyRequests) await new Promise((resolve) => setTimeout(resolve, 0))
+  keyAbort.abort(new DOMException('player changed games', 'AbortError'))
+  const keyAbortOutcome = await Promise.race([
+    waitingForKey.then(() => 'resolved', (error) => error?.name),
+    new Promise((resolve) => setTimeout(() => resolve('late'), 80)),
+  ])
+  assert.equal(keyAbortOutcome, 'AbortError', '共享密钥请求仍在后台时，已取消会话应立即释放 ROM 解包等待')
+  keyResponseDelayMs = 0
+
   const unpackProgress = []
   const unpacked = await unpackRomPack(container.buffer, (loaded, total) => unpackProgress.push([loaded, total]))
   assert.deepEqual(new Uint8Array(unpacked.data), source)
@@ -231,6 +256,18 @@ try {
     }
     assert.equal(abortedProgress, 1, '取消后不应继续解包或汇报后续块')
     assert.equal(decryptCalls, 1, '串行低内存路径收到取消后不得再派发下一块')
+
+    const arrayAbort = new AbortController()
+    decryptCalls = 0
+    digestCalls = 0
+    decryptDelayMs = 30
+    const pendingArrayUnpack = unpackRomPack(multiContainer.buffer, undefined, arrayAbort.signal)
+    while (decryptCalls === 0) await new Promise((resolve) => setTimeout(resolve, 0))
+    arrayAbort.abort(new DOMException('player changed games', 'AbortError'))
+    await assert.rejects(pendingArrayUnpack, (error) => error?.name === 'AbortError')
+    assert.equal(digestCalls, 0, 'Web Crypto 解密结束时已取消，应跳过后续分块 SHA 和整包 SHA')
+    assert.ok(decryptCalls <= 2, '低内存 8BG 解包取消后不能继续派发滑动窗口外的块')
+    decryptDelayMs = 15
 
     maxConcurrentDecrypts = 0
     const verified = await verifyRomPackBlob(multiBlob)

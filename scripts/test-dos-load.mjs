@@ -72,6 +72,7 @@ const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$
 const tools = strip(read('src/emulator/EmulatorTools.tsx'))
 const player = strip(read('src/emulator/EmulatorPlayer.tsx'))
 const jsdos = strip(read('src/emulator/adapters/jsdos.ts'))
+const romLoader = strip(read('src/emulator/romLoader.ts'))
 const windowsLaunch = strip(read('src/emulator/windowsLaunch.ts'))
 const prewarm = strip(read('src/emulator/prewarm.ts'))
 
@@ -386,6 +387,15 @@ check('DOS 整包与资料片按设备内存、移动端和弱网收紧预算', 
   assert.equal(dosLoadLimits({ deviceMemory: 8, hardwareConcurrency: 8 }).extraConcurrency, 2)
   assert.equal(dosLoadLimits({ userAgent: 'Desktop' }).systemImageBytes, 512 * 1024 * 1024)
   assert.equal(dosLoadLimits({ deviceMemory: 8, hardwareConcurrency: 8, effectiveType: '2g' }).extraConcurrency, 1)
+})
+
+check('本地 DOS ZIP 目录检查与 8BG 解包都响应离页取消', () => {
+  assert.match(jsdos, /readBlobRange\(game,\s*0,\s*4,\s*10_000,\s*signal\)/)
+  assert.match(jsdos, /isReadyJsdosBundleBlob\(game,\s*30_000,\s*signal\)/)
+  assert.match(romLoader, /unpackRomPack\(data,\s*\(\)\s*=>\s*\{[\s\S]*?\},\s*signal\)/)
+  assert.match(romLoader, /unpackIfNeeded\(data,\s*limits,\s*onProgress,\s*signal\)/)
+  assert.match(romLoader, /\} catch \(error\) \{\s*if \(signal\?\.aborted\) throw signal\.reason \?\? error\s*await romCacheDelete\(cacheKey\)/,
+    '缓存完整性校验被取消时必须保留数据并跳过回源')
 })
 
 check('Win95 / PC-98 悬停时预热正确的 DOSBox-X 核心和系统盘版本探测', () => {

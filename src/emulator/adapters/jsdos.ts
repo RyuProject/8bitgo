@@ -799,9 +799,9 @@ async function readRom(
       return { name: loaded.name, buf: await readBlobRange(loaded.blob, 0, loaded.blob.size) }
     }
 
-    const magic = new Uint8Array(await readBlobRange(game, 0, 4, 10_000))
+    const magic = new Uint8Array(await readBlobRange(game, 0, 4, 10_000, signal))
     if (magic[0] === 0x50 && magic[1] === 0x4b) {
-      if (await isReadyJsdosBundleBlob(game)) {
+      if (await isReadyJsdosBundleBlob(game, 30_000, signal)) {
         onProgress?.({ phase: 'rom', loaded: game.size, total: game.size, ratio: 1, cached: true })
         return { name: game.name, bundleBlob: game }
       }
