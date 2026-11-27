@@ -70,6 +70,7 @@ globalThis.fetch = async (url, init = {}) => {
 }
 
 let decryptInput
+let decryptCalls = 0
 let activeDecrypts = 0
 let maxConcurrentDecrypts = 0
 let decryptDelayMs = 0
@@ -80,6 +81,7 @@ const subtle = new Proxy(webcrypto.subtle, {
   get(target, property) {
     if (property === 'decrypt') {
       return async (...args) => {
+        decryptCalls++
         decryptInput = args[2]
         const chunkIndex = args[2] instanceof Uint8Array ? trackedDecryptOffsets.get(args[2].byteOffset) : undefined
         if (chunkIndex !== undefined) trackedDecryptEvents.push(`start:${chunkIndex}`)
@@ -207,6 +209,28 @@ try {
     assert.equal(await digest(await unpackedBlob.blob.arrayBuffer()), multiHeader.originalSha256,
       '并行完成的 Blob 分块仍须按 ROM 原顺序组装')
     assert.equal(maxConcurrentDecrypts, 2, '后台导入与大 ROM 解包也应使用自适应并行度')
+
+    const configuredNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { hardwareConcurrency: 2, deviceMemory: 2 }, configurable: true,
+    })
+    const unpackAbort = new AbortController()
+    let abortedProgress = 0
+    decryptCalls = 0
+    try {
+      await assert.rejects(
+        unpackRomPackBlob(multiBlob, () => {
+          abortedProgress++
+          unpackAbort.abort(new DOMException('player changed games', 'AbortError'))
+        }, unpackAbort.signal),
+        (error) => error?.name === 'AbortError',
+      )
+    } finally {
+      if (configuredNavigator) Object.defineProperty(globalThis, 'navigator', configuredNavigator)
+      else delete globalThis.navigator
+    }
+    assert.equal(abortedProgress, 1, '取消后不应继续解包或汇报后续块')
+    assert.equal(decryptCalls, 1, '串行低内存路径收到取消后不得再派发下一块')
 
     maxConcurrentDecrypts = 0
     const verified = await verifyRomPackBlob(multiBlob)

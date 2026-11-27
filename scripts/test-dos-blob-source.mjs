@@ -7,6 +7,8 @@ globalThis.__dosBlobFetches = []
 globalThis.__dosBlobResumeClears = []
 globalThis.__dosBlobDeletes = []
 globalThis.__dosBlobFailDecode = false
+globalThis.__dosBlobAbortDecode = false
+globalThis.__dosBlobDecodeStarted = false
 globalThis.__dosBlobUnreadable = false
 globalThis.__dosBlobProbeUnreadable = false
 globalThis.__dosBlobPrewarms = []
@@ -64,7 +66,17 @@ const built = await build({
                    export const isRomPackUrl = u => /\\.8bg(?:[?#]|$)/i.test(u);
                    export const prewarmRomPackDecoder = u => { globalThis.__dosBlobPrewarms.push(u) };
                    export const isBlobReadError = e => Boolean(e && e.name === 'NotReadableError');
-                   export const unpackRomPackBlob = async () => {
+                   export const unpackRomPackBlob = async (stored, onChunk, signal) => {
+                     if (globalThis.__dosBlobAbortDecode) {
+                       globalThis.__dosBlobAbortDecode = false
+                       globalThis.__dosBlobDecodeStarted = true
+                       if (!signal) throw new Error('解包必须收到启动取消信号')
+                       await new Promise(resolve => {
+                         if (signal.aborted) resolve()
+                         else signal.addEventListener('abort', resolve, { once: true })
+                       })
+                       throw signal.reason ?? new DOMException('已取消', 'AbortError')
+                     }
                      if (globalThis.__dosBlobUnreadable) {
                        globalThis.__dosBlobUnreadable = false
                        const e = new Error('blob store broken'); e.name = 'NotReadableError'; throw e
@@ -119,6 +131,24 @@ try {
 assert.equal(recovered.fromCache, false)
 assert.ok(globalThis.__dosBlobDeletes.includes(url2), '旧密钥/截断缓存必须删除后回网络自愈')
 assert.equal(globalThis.__dosBlobFetches.length, 2)
+
+// 玩家离开页面时，缓存解包必须中止，且不能把有效密文缓存当成坏包删除。
+const abortUrl = 'https://assets.example/roms/dos/fallout.en.zip.8bg?romv=abort'
+globalThis.__dosBlobCache.set(abortUrl, globalThis.__dosBlobStored)
+globalThis.__dosBlobAbortDecode = true
+globalThis.__dosBlobDecodeStarted = false
+const abortController = new AbortController()
+const abortFetchesBefore = globalThis.__dosBlobFetches.length
+const pendingAbort = prepareRemoteDosBundle(abortUrl, undefined, abortController.signal)
+for (let attempt = 0; attempt < 20 && !globalThis.__dosBlobDecodeStarted; attempt++) {
+  await new Promise((resolve) => setTimeout(resolve, 0))
+}
+assert.equal(globalThis.__dosBlobDecodeStarted, true, '测试需等到缓存包体解码已开始再取消')
+abortController.abort(new DOMException('game changed', 'AbortError'))
+await assert.rejects(pendingAbort, (error) => error?.name === 'AbortError')
+assert.equal(globalThis.__dosBlobCache.get(abortUrl), globalThis.__dosBlobStored, '取消解包不能清除有效 ROM 缓存')
+assert.ok(!globalThis.__dosBlobDeletes.includes(abortUrl), '用户取消不能进入坏缓存自愈')
+assert.equal(globalThis.__dosBlobFetches.length, abortFetchesBefore, '缓存解包取消后不应额外下载游戏包')
 
 const unversioned = 'https://assets.example/roms/dos/fallout.en.zip.8bg'
 await prepareRemoteDosBundle(unversioned, undefined, new AbortController().signal)

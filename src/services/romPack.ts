@@ -684,7 +684,9 @@ async function forEachRomPackChunk(
   header: RomPackHeader,
   dataOffset: number,
   process: (index: number, cipherAt: number) => Promise<void>,
+  signal?: AbortSignal,
 ): Promise<void> {
+  throwIfAborted(signal)
   const offsets = new Array<number>(header.chunks.length)
   let cipherAt = dataOffset
   header.chunks.forEach((chunk, index) => {
@@ -704,11 +706,19 @@ async function forEachRomPackChunk(
   let failure: unknown
   const runWorker = async () => {
     while (!failed) {
+      try {
+        throwIfAborted(signal)
+      } catch (error) {
+        failed = true
+        failure = error
+        return
+      }
       // 小型滑动窗口避免某个早期慢块尚未失败时，其它槽一路解到文件末尾。
       if (nextIndex >= header.chunks.length || nextIndex >= firstUnfinished + windowSize) return
       const index = nextIndex++
       try {
         await process(index, offsets[index]!)
+        throwIfAborted(signal)
         finished.add(index)
         while (finished.delete(firstUnfinished)) firstUnfinished++
       } catch (error) {
@@ -723,6 +733,7 @@ async function forEachRomPackChunk(
     }
   }
   await Promise.all(Array.from({ length: concurrency }, runWorker))
+  throwIfAborted(signal)
   if (failed) throw failure
 }
 
@@ -773,17 +784,37 @@ export async function unpackRomPack(
  */
 export const ROM_PACK_READ_TIMEOUT_MS = 60_000
 
-export async function readBlobRange(blob: Blob, start: number, end: number, timeoutMs = ROM_PACK_READ_TIMEOUT_MS): Promise<ArrayBuffer> {
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw signal.reason ?? new DOMException('已取消', 'AbortError')
+}
+
+export async function readBlobRange(
+  blob: Blob,
+  start: number,
+  end: number,
+  timeoutMs = ROM_PACK_READ_TIMEOUT_MS,
+  signal?: AbortSignal,
+): Promise<ArrayBuffer> {
+  throwIfAborted(signal)
   let timer: ReturnType<typeof setTimeout> | undefined
+  let abortListener: (() => void) | undefined
+  const reads: Promise<ArrayBuffer>[] = [blob.slice(start, end).arrayBuffer()]
+  if (signal) {
+    reads.push(new Promise<never>((_, reject) => {
+      abortListener = () => reject(signal.reason ?? new DOMException('已取消', 'AbortError'))
+      signal.addEventListener('abort', abortListener, { once: true })
+      // signal 可能在前一行檢查之後、監聽器註冊之前中止。
+      if (signal.aborted) abortListener()
+    }))
+  }
   try {
-    return await Promise.race([
-      blob.slice(start, end).arrayBuffer(),
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new DOMException('读取已下载的 ROM 超时', 'NotReadableError')), timeoutMs)
-      }),
-    ])
+    reads.push(new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new DOMException('读取已下载的 ROM 超时', 'NotReadableError')), timeoutMs)
+    }))
+    return await Promise.race(reads)
   } finally {
     clearTimeout(timer)
+    if (abortListener) signal?.removeEventListener('abort', abortListener)
   }
 }
 
@@ -793,10 +824,11 @@ export function isBlobReadError(error: unknown): boolean {
 }
 
 /** 只读取并验证文件头与总长度；后台识别现成 .8bg 时不能只看四字节魔数。 */
-export async function inspectRomPackBlob(blob: Blob): Promise<{ header: RomPackHeader; dataOffset: number }> {
-  const prefix = new Uint8Array(await readBlobRange(blob, 0, ROM_PACK_HEADER_PREFIX_BYTES))
+export async function inspectRomPackBlob(blob: Blob, signal?: AbortSignal): Promise<{ header: RomPackHeader; dataOffset: number }> {
+  throwIfAborted(signal)
+  const prefix = new Uint8Array(await readBlobRange(blob, 0, ROM_PACK_HEADER_PREFIX_BYTES, ROM_PACK_READ_TIMEOUT_MS, signal))
   const headerLength = romPackHeaderLength(prefix)
-  const headBytes = new Uint8Array(await readBlobRange(blob, 0, ROM_PACK_HEADER_PREFIX_BYTES + headerLength))
+  const headBytes = new Uint8Array(await readBlobRange(blob, 0, ROM_PACK_HEADER_PREFIX_BYTES + headerLength, ROM_PACK_READ_TIMEOUT_MS, signal))
   const parsed = parseRomPackHeader(headBytes)
   if (parsed.dataOffset + parsed.header.payloadSize !== blob.size) throw new Error('8BG 文件长度与文件头不一致')
   return parsed
@@ -841,33 +873,43 @@ async function unpackEachChunk(
   onProgress: ((progress: PackProgress) => void) | undefined,
   take: (source: Uint8Array<ArrayBuffer>, index: number) => void,
   consumeInput = false,
+  signal?: AbortSignal,
 ): Promise<RomPackHeader> {
-  const { header, dataOffset } = await inspectRomPackBlob(blob)
+  throwIfAborted(signal)
+  const { header, dataOffset } = await inspectRomPackBlob(blob, signal)
   const key = await contentKey(header)
+  throwIfAborted(signal)
   let unpacked = 0
   await forEachRomPackChunk(header, dataOffset, async (index, cipherAt) => {
+    throwIfAborted(signal)
     const meta = header.chunks[index]
-    const cipher = await readBlobRange(blob, cipherAt, cipherAt + meta.cipherSize)
-    take(await decryptChunk(header, index, cipher, key), index)
+    const cipher = await readBlobRange(blob, cipherAt, cipherAt + meta.cipherSize, ROM_PACK_READ_TIMEOUT_MS, signal)
+    const source = await decryptChunk(header, index, cipher, key)
+    throwIfAborted(signal)
+    take(source, index)
     if (consumeInput) releaseMemoryRomBefore(blob, cipherAt + meta.cipherSize)
     unpacked += meta.sourceSize
     onProgress?.({ loaded: unpacked, total: header.originalSize })
-  })
+  }, signal)
   return header
 }
 
 /** 探 Blob 存储是否真的接住了解包结果：每块抽查首字节，再按引擎真实读取大小探合并后的 ROM。 */
 const BLOB_STORAGE_PROBE_MS = 8_000
-async function assertBlobPartsReadable(parts: Blob[]): Promise<Blob> {
+async function assertBlobPartsReadable(parts: Blob[], signal?: AbortSignal): Promise<Blob> {
   try {
-    await Promise.all(parts.map((part) => (part.size ? readBlobRange(part, 0, 1, BLOB_STORAGE_PROBE_MS) : null)))
+    throwIfAborted(signal)
+    await Promise.all(parts.map((part) => (part.size ? readBlobRange(part, 0, 1, BLOB_STORAGE_PROBE_MS, signal) : null)))
     const combined = new Blob(parts, { type: 'application/octet-stream' })
     // 引擎以 4MB 为一片读取。只探 1 字节会漏掉“文件头可读、实际内容读不出”的临时 Blob。
     const probeBytes = Math.min(combined.size, 4 * 1024 * 1024)
-    const probe = await readBlobRange(combined, 0, probeBytes, BLOB_STORAGE_PROBE_MS)
+    const probe = await readBlobRange(combined, 0, probeBytes, BLOB_STORAGE_PROBE_MS, signal)
     if (probe.byteLength !== probeBytes) throw new Error('ROM Blob 预读长度不符')
+    throwIfAborted(signal)
     return combined
   } catch {
+    // 玩家离页属于正常取消，不能伪装成坏 Blob 触发降级或清除缓存。
+    if (signal?.aborted) throw signal.reason ?? new DOMException('已取消', 'AbortError')
     throw new RomBlobStorageError()
   }
 }
@@ -883,11 +925,14 @@ async function assertBlobPartsReadable(parts: Blob[]): Promise<Blob> {
 export async function unpackRomPackBlob(
   blob: Blob,
   onProgress?: (progress: PackProgress) => void,
+  signal?: AbortSignal,
 ): Promise<{ name: string; blob: Blob; header: RomPackHeader }> {
+  throwIfAborted(signal)
   const output: Blob[] = []
   // 每块立刻固化成 Blob：既脱离可能复用的 WASM 内存，也允许浏览器把大结果落到磁盘。
-  const header = await unpackEachChunk(blob, onProgress, (source, index) => { output[index] = new Blob([source]) })
-  const playable = await assertBlobPartsReadable(output)
+  const header = await unpackEachChunk(blob, onProgress, (source, index) => { output[index] = new Blob([source]) }, false, signal)
+  const playable = await assertBlobPartsReadable(output, signal)
+  throwIfAborted(signal)
   return { name: header.originalName, blob: playable, header }
 }
 
