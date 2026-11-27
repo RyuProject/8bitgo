@@ -64,6 +64,13 @@ check('没有可摘的就原样返回（大多数页面走这一支）', () => {
   assert.equal(body, plain)
 })
 
+check('响应式 WebP preload 的 1x/2x 候选集完整保留', () => {
+  const preload = '<link rel="preload" as="image" imageSrcSet="/ui/logo-8bitgo-1x.webp 1x, /ui/logo-8bitgo-2x.webp 2x"/>'
+  const { hoisted, body } = splitHoistedHead(`${preload}<div>正文</div>`)
+  assert.deepEqual(hoisted, [preload])
+  assert.equal(body, '<div>正文</div>')
+})
+
 check('meta 也收（React 提升的不止 link）', () => {
   const { hoisted, body } = splitHoistedHead('<meta name="x" content="1"/><div>a</div>')
   assert.deepEqual(hoisted, ['<meta name="x" content="1"/>'])
