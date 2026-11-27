@@ -253,6 +253,20 @@ export function clearSockdrivePin(url: string): void {
   writePins(pins)
 }
 
+/** 启动线路失败后明确钉到同一 R2 对象的另一条线路，避免缓存测速结论让下一局又选回故障域名。 */
+export function failoverSockdriveUrl(url: string): string {
+  if (!url || typeof window === 'undefined') return url
+  const canonical = canonicalRomUrl(url)
+  const mirror = mirrorRomUrl(canonical)
+  if (!mirror) return url
+  const failedOnMirror = url.startsWith(`${ENV_ROM_MIRROR}/`)
+  const nextHost: RomHost = failedOnMirror ? 'primary' : 'mirror'
+  const pins = readPins()
+  pins[canonical] = { host: nextHost, at: Date.now() }
+  writePins(pins)
+  return nextHost === 'mirror' ? mirror : canonical
+}
+
 /**
  * js-dos 的 Sockdrive 存档包是一串记录：[u32 URL 长度][URL][u32 数据长度][扇区差异]，
  * 开机时**按 URL 原样匹配**当前挂载的盘（emulators.js 的 traverseSockdriveChanges）。

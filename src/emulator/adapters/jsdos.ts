@@ -878,6 +878,14 @@ function rememberSockdriveCacheRepair(url: string): void {
   }
 }
 
+function markSockdriveNetworkError<T>(error: T): T {
+  const message = String((error as { message?: unknown } | null)?.message ?? error ?? '')
+  if (isRomNetworkFailure(error) || /(?:HTTP (?:408|425|429|5\d\d)\b|秒没有收到(?:数据|响应))/i.test(message)) {
+    return markRomNetworkFailure(error)
+  }
+  return error
+}
+
 async function readSockdrivePreloadProfile(
   url: string,
   plan: SockdriveWarmPlan,
@@ -1015,7 +1023,9 @@ async function warmSockdriveFile(
       })
     }
   }
-  throw new Error(`Sockdrive 启动分块 ${file.name} 读取失败（${failure instanceof Error ? failure.message : String(failure)}）`)
+  throw markSockdriveNetworkError(
+    new Error(`Sockdrive 启动分块 ${file.name} 读取失败（${failure instanceof Error ? failure.message : String(failure)}）`, { cause: failure }),
+  )
 }
 
 async function headSockdriveFile(
@@ -1040,7 +1050,7 @@ async function headSockdriveFile(
     const reason = controller.signal.aborted && !signal.aborted
       ? '15 秒没有收到响应'
       : error instanceof Error ? error.message : String(error)
-    throw new Error(`Sockdrive 分块 ${sample} 读取失败（${reason}）`)
+    throw markSockdriveNetworkError(new Error(`Sockdrive 分块 ${sample} 读取失败（${reason}）`, { cause: error }))
   } finally {
     window.clearTimeout(timer)
     signal.removeEventListener('abort', relayAbort)
@@ -1090,7 +1100,9 @@ async function verifySockdriveMetadata(
       maxBytes: SOCKDRIVE_METADATA_LIMIT,
     })
   } catch (error) {
-    throw new Error(`Sockdrive 元数据读取失败（${error instanceof Error ? error.message : String(error)}）`)
+    const wrapped = new Error(`Sockdrive 元数据读取失败（${error instanceof Error ? error.message : String(error)}）`, { cause: error })
+    if (isRomNetworkFailure(error)) markRomNetworkFailure(wrapped)
+    throw wrapped
   }
   let metadata: unknown
   try {
@@ -1623,7 +1635,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       )
       const sockdriveTask = settled(streamingGame
         ? verifySockdriveForLaunch(sockdriveUrl, abort.signal, Boolean(systemUrl))
-        : Promise.resolve<SockdriveRuntimePreload>('none'))
+        : Promise.resolve<SockdriveRuntimePreload>('none'),
+      (error) => isRomNetworkFailure(error) ? 'network' : 'content')
       /*
         系统镜像走**多源测速与兜底**（见 ../systemSource）：先读后台已校验的副本，
         再对候选源的首块做小范围并行测速；固定的同源 R2 代理始终留作兜底。它是 Win9x/Win3.x 游戏的硬前提 ——

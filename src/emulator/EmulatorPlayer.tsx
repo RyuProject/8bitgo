@@ -17,7 +17,7 @@ import { awayflForcedByUrl, useAwayflChoice } from './awayflPolicy'
 import { romArchiveRef } from '@/lib/romArchiveUrl'
 import { romUrlForKey } from '@/services/roms'
 import { MAX_SAVE_BYTES, cloudSavesEnabled, getSaveTarget, prepareCloudSaveAutoSync, pushSave } from '@/services/saves'
-import { clearSockdrivePin, pinnedSockdriveUrl, routeRomAssetUrl } from '@/services/romHosts'
+import { failoverSockdriveUrl, pinnedSockdriveUrl, routeRomAssetUrl } from '@/services/romHosts'
 import { coverCdnHint } from '@/services/cnHost'
 import { isRomPackBytes, unpackRomPackBlob } from '@/services/romPack'
 import { isRomPackUrl } from '../../shared/rom-pack-format.js'
@@ -707,13 +707,14 @@ export function EmulatorPlayer({
     免得 js-dos 的 OPFS 扇区缓存按两个 URL 各存一份。还没测出线路时，大陆访客默认镜像、其他人默认主域。
   */
   const hostFallback = coverCdnHint() === 'cn' ? 'mirror' : 'primary'
+  const [sockdriveRouteRevision, setSockdriveRouteRevision] = useState(0)
   const dosSystemUrl = useMemo(
     () => (rawDosSystemUrl ? routeRomAssetUrl(rawDosSystemUrl, hostFallback) : rawDosSystemUrl),
     [rawDosSystemUrl, hostFallback],
   )
   const dosSockdriveUrl = useMemo(
     () => (rawDosSockdriveUrl ? pinnedSockdriveUrl(rawDosSockdriveUrl, hostFallback) : rawDosSockdriveUrl),
-    [rawDosSockdriveUrl, hostFallback],
+    [rawDosSockdriveUrl, hostFallback, sockdriveRouteRevision],
   )
   // 静态 Sockdrive 是 BIOS 硬盘；纯 DOS 游戏也要先启动真实 DOS 7.1，才能把游戏盘读成 D:。
   const effectiveDosSystemUrl = dosSystemUrl || (dosSockdriveUrl ? routeRomAssetUrl(defaultDos71SystemUrl(), hostFallback) : undefined)
@@ -2778,8 +2779,16 @@ export function EmulatorPlayer({
       },
       onError: (message: string, errorScope?: 'runtime' | 'content' | 'config' | 'deterministic' | 'network') => {
         if (!isCurrent()) return
-        // Sockdrive 起不来时解除这块盘的线路绑定，下一次按最新测速结果重选（镜像故障时会回到主域）
-        if (session.runtime.id === 'jsdos' && dosSockdriveUrlRef.current) clearSockdrivePin(dosSockdriveUrlRef.current)
+        const attempt = session.retryAttempt ?? 0
+        // 同一局第一次遇到 Sockdrive 资源错误时，钉到另一条同对象线路；直接更新 ref，确保同步发起的原地重试也拿到新 URL。
+        if (session.runtime.id === 'jsdos' && dosSockdriveUrlRef.current && attempt === 0 &&
+            (errorScope === 'network' || errorScope === 'content' || errorScope === 'deterministic')) {
+          const nextUrl = failoverSockdriveUrl(dosSockdriveUrlRef.current)
+          if (nextUrl !== dosSockdriveUrlRef.current) {
+            dosSockdriveUrlRef.current = nextUrl
+            setSockdriveRouteRevision((revision) => revision + 1)
+          }
+        }
         // 信令层偶尔只给空错误；直播又不会自动重挂，空串会让错误状态只剩黑框。
         // 同时把具体原因留在本机控制台，光有 failedMs 无法区分「房间已散」和「网络没通」。
         const failureReason = session.runtime.id === 'liveview' ? message.trim() || t.runtime.liveTimeout : message
@@ -2799,7 +2808,6 @@ export function EmulatorPlayer({
         //
         // ⚠️ 「哪些会话不能重挂」和读档那边是**同一个**判断，所以共用 canRestartInPlace ——
         // 以前这里手写了一遍，两份分叉的表现只会在联机时出现，而且不报错。
-        const attempt = session.retryAttempt ?? 0
         /*
           网络层失败（下载器的重试和备用线路都用完）只许切同语言槽的备用源：换别的语言走同一条网络，
           只会把整条语言链逐个白下一遍（AGENTS §2.35）。父层的 failover 按 scope 收窄候选。
