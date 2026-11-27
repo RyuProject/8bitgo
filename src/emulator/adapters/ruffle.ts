@@ -56,6 +56,7 @@ import { diagLog, registerDiagnosticSnapshot, watchFramePerformance } from '@/se
 
 export { RUFFLE_PATH } from '../paths'
 import { markRuffleEdgeFailed, RUFFLE_PATH, RUFFLE_VERSION, ruffleBase } from '../paths'
+import { installRuffleRuntimeIntegrity } from '../ruffleIntegrity'
 
 /* ---------------- 设备字体（中文不显示的根因）---------------- */
 
@@ -477,6 +478,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
   /** 音频探针（见 ../audioTap）。ruffle.js 加载前装上，销毁时跟着 iframe 一起没 */
   let audioTap: AudioTap | null = null
+  let restoreRuntimeIntegrity: (() => void) | null = null
 
   const iframe = document.createElement('iframe')
   iframe.title = fmt(rt.flashTitle, { name: options.gameName })
@@ -717,6 +719,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     audioTap = installAudioTap(win as unknown as Window & Record<string, unknown>)
     // 同样要赶在 ruffle.js 之前：Ruffle 建实例时取一次 window.localStorage。scope 在拿到 SWF 后才填。
     storageScoped = installFlashStorageScope(win, () => storageScope)
+    // Ruffle 的 build 清单只在构建机核对不够：浏览器还要对动态核心 JS 用 SRI、对 WASM 验 SHA-256。
+    // 根目录可在 EdgeOne 故障时切换；两条线路都必须返回同一份经清单锁定的字节。
+    restoreRuntimeIntegrity?.()
+    restoreRuntimeIntegrity = installRuffleRuntimeIntegrity(win, doc, () => ruffleRoot)
     /*
       load() 成功只代表启动链走完，不代表后面的 WASM 时间轴永远不会崩。
       森林冰火人这类游戏会在菜单之后才进入大量脚本逻辑；若那时 Ruffle panic，旧行为仍保留
@@ -1462,6 +1468,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       cancelCrashGuard()
       cancelWordShortcutGuard()
       cancelFocusRetry()
+      restoreRuntimeIntegrity?.()
+      restoreRuntimeIntegrity = null
       if (canvasCapsTimer) window.clearTimeout(canvasCapsTimer)
       canvasCapsTimer = 0
       if (adaptivePerformanceTimer) window.clearInterval(adaptivePerformanceTimer)

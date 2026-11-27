@@ -68,17 +68,22 @@ check('侧栏微型封面不在开局时下载和解码宣传视频', () => {
   assert.ok(compactCovers.some((tag) => tag.includes('ratio="landscape"')), '曾经玩过的横版微缩图仍会加载视频')
 })
 
-check('ZeoSeven 字体非阻塞加载，首屏先显示系统字体', () => {
+check('街机游戏详情和弱网不请求第三方字体，其它页面只在空闲时加载', () => {
   const html = read('index.html')
   const css = read('src/index.css')
   const fontUrl = 'https://fontsapi.zeoseven.com/214/main/result.css'
-  const preload = html.match(/<link\b[^>]*fontsapi\.zeoseven\.com\/214\/main\/result\.css[^>]*>/)?.[0] ?? ''
-  assert.ok(preload, 'index.html 没有引用 ZeoSeven 的 Sarasa UI SC 字体样式表')
-  assert.match(preload, /rel="preload"/, '字体样式表不是 preload')
-  assert.match(preload, /as="style"/, '字体样式表的 preload 类型不正确')
-  assert.match(preload, /crossorigin/, '跨域预载与 stylesheet 的凭证模式不一致')
-  assert.match(preload, /onload="this\.onload=null;this\.rel='stylesheet'"/, 'CSS 下载完成后没有再应用为 stylesheet')
-  assert.match(html, new RegExp(`<noscript>\\s*<link[^>]+href="${fontUrl.replaceAll('.', '\\.')}"`), '禁用 JavaScript 时没有字体样式表兜底')
+  const loader = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)]
+    .map((match) => match[1])
+    .find((script) => script.includes("id = 'zeoseven-fonts'"))
+  assert.ok(loader, 'index.html 没有字体按需加载器')
+  assert.match(loader, /window\.location\.pathname/, '字体策略没有按游戏详情页路径跳过')
+  assert.match(loader, /games\\\/\[\^\/\]\+/, '本地化游戏详情页也必须跳过字体下载')
+  assert.match(loader, /saveData|slow-2g|downlink|rtt/, '弱网 / 流量节省模式没有跳过字体请求')
+  assert.match(loader, /addEventListener\('load', afterLoad/, '字体请求在页面 load 前启动')
+  assert.match(loader, /requestIdleCallback\(loadFonts, \{ timeout: 5000 \}\)/, '没有优先等页面空闲')
+  assert.match(loader, /link\.href = 'https:\/\/fontsapi\.zeoseven\.com/, '空闲回调没有设置字体 CDN')
+  assert.doesNotMatch(html, /<link\b[^>]*fontsapi\.zeoseven\.com[^>]*rel="preload"/, '字体 CSS 仍占用首屏预载队列')
+  assert.equal(loader.includes(fontUrl), true, '字体地址改变时需要同步更新法律说明')
   assert.doesNotMatch(css, /@font-face|Geist Pixel|Ark Pixel|\/fonts\/(?:geist|ark)-pixel/, '主 CSS 仍引用已移除的自托管字体')
   const theme = css.match(/@theme \{[\s\S]*?\n\}/)?.[0] ?? ''
   assert.match(theme, /'Sarasa UI SC'/, '基础字体栈没有使用 ZeoSeven 的 Sarasa UI SC')

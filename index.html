@@ -411,19 +411,45 @@
     <meta data-ssr-default name="twitter:card" content="summary_large_image" />
 
     <!--
-      字体样式表先以 preload 下载，加载完成后才切成 stylesheet。
-      因此首次绘制使用 src/index.css 的系统字体兜底，字体 CDN 慢或不可用也不挡页面。
+      游戏详情页不下载第三方字体：中文字体 CSS 会再拆成很多字形分片，和 ROM / 核心争弱网连接。
+      系统字体栈已在 src/index.css 兜底；其它页面等 load 后空闲再加载，省下首屏关键请求槽。
+      Save-Data、2G、低下行或高 RTT 环境完全跳过字体请求，避免为装饰字体增加用户流量。
     -->
-    <link
-      href="https://fontsapi.zeoseven.com/214/main/result.css"
-      rel="preload"
-      as="style"
-      crossorigin
-      onload="this.onload=null;this.rel='stylesheet'"
-    />
-    <noscript>
-      <link rel="stylesheet" href="https://fontsapi.zeoseven.com/214/main/result.css" crossorigin />
-    </noscript>
+    <script>
+      ;(function () {
+        try {
+          if (/(?:^|\/)games\/[^/]+(?:\/|$)/i.test(window.location.pathname || '/')) return
+          var connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection
+          if (connection) {
+            var effectiveType = String(connection.effectiveType || '').toLowerCase()
+            var downlink = Number(connection.downlink)
+            var rtt = Number(connection.rtt)
+            if (connection.saveData || /^(?:slow-2g|2g)$/.test(effectiveType) ||
+                (downlink > 0 && downlink < 1.5) || (rtt > 0 && rtt >= 350)) return
+          }
+
+          function loadFonts() {
+            if (document.getElementById('zeoseven-fonts')) return
+            var link = document.createElement('link')
+            link.id = 'zeoseven-fonts'
+            link.rel = 'stylesheet'
+            link.href = 'https://fontsapi.zeoseven.com/214/main/result.css'
+            link.crossOrigin = 'anonymous'
+            document.head.appendChild(link)
+          }
+          function scheduleIdle() {
+            if (typeof window.requestIdleCallback === 'function') {
+              window.requestIdleCallback(loadFonts, { timeout: 5000 })
+            } else {
+              window.setTimeout(loadFonts, 1500)
+            }
+          }
+          function afterLoad() { window.setTimeout(scheduleIdle, 500) }
+          if (document.readyState === 'complete') afterLoad()
+          else window.addEventListener('load', afterLoad, { once: true })
+        } catch (e) {}
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>

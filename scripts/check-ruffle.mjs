@@ -12,6 +12,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const distMode = process.argv.includes('--dist')
 const pkgFile = join(root, 'node_modules', '@ruffle-rs', 'ruffle', 'package.json')
 const pathsFile = join(root, 'src', 'emulator', 'paths.ts')
+const integrityFile = join(root, 'src', 'emulator', 'ruffleIntegrity.ts')
 
 const fail = (message) => {
   console.error(`✖ Ruffle 检查失败：${message}`)
@@ -57,6 +58,16 @@ for (const file of manifest.files) {
 
 if (!manifest.files.some((file) => file.name === 'ruffle.js')) fail('清单里没有 ruffle.js')
 if (!manifest.files.some((file) => file.name.endsWith('.wasm'))) fail('清单里没有 wasm 核心')
+if (!existsSync(integrityFile)) fail('缺少浏览器端 Ruffle 核心完整性守卫')
+const integritySource = readFileSync(integrityFile, 'utf8')
+for (const file of manifest.files.filter((item) => item.name === 'ruffle.js' || /^core\.ruffle\..+\.js$/.test(item.name) || item.name.endsWith('.wasm'))) {
+  const escapedName = file.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const declaration = new RegExp(`['"]${escapedName}['"]\\s*:\\s*['"]([a-f0-9]{64})['"]`).exec(integritySource)?.[1]
+  if (declaration !== file.sha256) fail(`${file.name} 缺少与 runtime.json 一致的浏览器端 SHA-256 校验值`)
+}
+if (!integritySource.includes('verifyRuffleWasmResponse') || !integritySource.includes('script.integrity = sri(expected)')) {
+  fail('浏览器端 Ruffle 核心守卫缺少 WASM SHA-256 或动态脚本 SRI')
+}
 let bootstrapManifest
 try {
   bootstrapManifest = JSON.parse(readFileSync(bootstrapFile, 'utf8'))
