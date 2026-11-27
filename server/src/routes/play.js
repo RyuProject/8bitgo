@@ -39,15 +39,49 @@ function funnelScript(slug, funnel) {
   return `<script>
 (() => {
   const c=${config}, frame=document.querySelector('iframe'), sent=new Set();
+  let stopSlowTimer=()=>{}, stopTimeoutTimer=()=>{};
   const report=(event,detail) => {
     if(sent.has(event)) return;
     sent.add(event);
+    if(['game_playable','failed','timeout','readiness_unobservable'].includes(event)) {
+      stopSlowTimer();
+      stopTimeoutTimer();
+    }
     fetch('/api/games/'+encodeURIComponent(c.slug)+'/startup', {
       method:'POST', headers:{'Content-Type':'application/json','Accept':'application/json'}, keepalive:true,
       body:JSON.stringify({visitId:c.visitId,attemptId:c.attemptId,event,runtime:'html5',platform:'',elapsedMs:Math.max(0,Date.now()-c.startedAt),detail})
     }).then(r=>{if(!r.ok) throw new Error(String(r.status))}).catch(()=>sent.delete(event));
   };
   let readinessObservable=true;
+  const visibleTimer=(callback,delay) => {
+    const elapsedBeforeScript=document.visibilityState==='hidden'?0:Math.max(0,Date.now()-c.startedAt);
+    let remaining=Math.max(0,delay-elapsedBeforeScript), timer=0, generation=0, segmentStartedAt=0, disposed=false;
+    const clear=(accountElapsed) => {
+      if(!timer) return;
+      clearTimeout(timer); timer=0; generation++;
+      if(accountElapsed) remaining=Math.max(0,remaining-(Date.now()-segmentStartedAt));
+    };
+    const dispose=() => {
+      if(disposed) return;
+      disposed=true; clear(false); document.removeEventListener('visibilitychange',onVisibility);
+    };
+    const finish=() => { if(disposed) return; dispose(); callback(); };
+    const arm=() => {
+      if(disposed||timer||document.visibilityState==='hidden') return;
+      const token=++generation, startedAt=Date.now(); segmentStartedAt=startedAt;
+      timer=setTimeout(() => {
+        if(disposed||token!==generation) return;
+        timer=0;
+        if(document.visibilityState==='hidden') return;
+        remaining=Math.max(0,remaining-(Date.now()-startedAt));
+        if(remaining===0) finish(); else arm();
+      },remaining);
+    };
+    const onVisibility=() => { if(document.visibilityState==='hidden') clear(true); else arm(); };
+    document.addEventListener('visibilitychange',onVisibility);
+    arm();
+    return dispose;
+  };
   const playable=()=>{report('first_frame');report('game_playable')};
   const inspect=()=>{
     try {
@@ -69,13 +103,13 @@ function funnelScript(slug, funnel) {
     else if(m.type==='first-interaction') report('first_interaction');
     else if(m.type==='failed') report('failed',String(m.detail||'HTML5 游戏报告启动失败').slice(0,160));
   });
-  setTimeout(()=>{if(!sent.has('game_playable')&&!sent.has('failed')&&readinessObservable)report('slow_start','等待 game_playable 已超过 '+Math.round(c.slowMs/1000)+' 秒')},Math.max(0,c.slowMs-(Date.now()-c.startedAt)));
-  setTimeout(()=>{
+  stopSlowTimer=visibleTimer(()=>{if(!sent.has('game_playable')&&!sent.has('failed')&&readinessObservable)report('slow_start','前台累计等待 game_playable 已超过 '+Math.round(c.slowMs/1000)+' 秒')},c.slowMs);
+  stopTimeoutTimer=visibleTimer(()=>{
     if(sent.has('game_playable')||sent.has('failed')) return;
     inspect();
-    if(readinessObservable) report('timeout','等待 game_playable 超过 120 秒');
+    if(readinessObservable) report('timeout','前台累计等待 game_playable 超过 120 秒');
     else report('readiness_unobservable','跨域 HTML5 页面无法由父页面确认游戏是否已就绪');
-  },Math.max(0,120000-(Date.now()-c.startedAt)));
+  },120000);
 })();
 </script>`
 }
