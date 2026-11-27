@@ -90,6 +90,8 @@ command -v node >/dev/null || die "找不到 node，用 NODE_BIN=/绝对路径/n
 # 依赖安装的「lock 未变就跳过」判据单独放一个文件，方便测试（scripts/test-redeploy.mjs）
 # shellcheck source=lib/npm-ci-if-changed.sh
 . "$(dirname "$(readlink -f "$0")")/lib/npm-ci-if-changed.sh" || die "缺少 deploy/lib/npm-ci-if-changed.sh"
+# 构建输出在部署机远程运行时也要落进日志；回滚构建失败不能只留下一个无法定位的告警。
+. "$(dirname "$(readlink -f "$0")")/lib/build-with-diagnostics.sh" || die "缺少 deploy/lib/build-with-diagnostics.sh"
 
 # Bash 只会在执行流走到函数定义后才认得它。健康检查与回滚函数必须放在主流程之前，
 # 否则发布已重启服务后会报 command not found，还会让自动回滚同样失效。
@@ -122,7 +124,11 @@ rollback() {
   # 真遇到这种情况，回滚后手动在 server/ 和根目录各跑一次 npm ci 即可。
   # reset 而不是 checkout：checkout 一个提交会让仓库停在游离 HEAD，下次部署按分支拉取时就对不上了
   git reset --hard --quiet "$BEFORE_COMMIT" || { log "⚠️ git reset 失败，需人工介入"; notify "🔴 回滚失败，需人工介入" "git reset 到 ${BEFORE_COMMIT} 失败"$'\n'"$(deploy_context)"; return; }
-  ( cd "$REPO_DIR"  && npm run build ) || { log "⚠️ 回滚构建失败，需人工介入"; notify "🔴 回滚失败，需人工介入" "回滚到 ${BEFORE_COMMIT} 后重新构建失败，线上 dist 可能是半新的"$'\n'"$(deploy_context)"; return; }
+  if ! build_with_diagnostics "$REPO_DIR" "$LOG" "$LOG_DIR"; then
+    log "⚠️ 回滚构建失败，需人工介入（构建输出：${BUILD_FAILURE_LOG:-$LOG}）"
+    notify "🔴 回滚失败，需人工介入" "回滚到 ${BEFORE_COMMIT} 后重新构建失败，线上 dist 可能是半新的。构建输出：${BUILD_FAILURE_LOG:-$LOG}"$'\n'"$(deploy_context)"
+    return
+  fi
   ( cd "$SERVER_DIR" && npm run migrate ) || log "⚠️ 回滚迁移失败（破坏性迁移无法自动还原）"
   systemctl restart "$UNIT" || { log "⚠️ 回滚重启失败，需人工介入"; notify "🔴 回滚失败，需人工介入" "回滚后 systemctl restart $UNIT 失败"$'\n'"$(deploy_context)"; return; }
   if health_ok; then
@@ -248,7 +254,7 @@ log "── 步骤 5/7  构建（client + server 包）──"
 # prebuild 的门禁失败时 dist 还没动，停下即可；可一旦 vite 已经开始写（postbuild 检查失败、server 包构建失败），
 # 新文件已经在对外提供，旧进程又不会重启 —— 必须回滚重建，不能只 die。
 BUILD_MARK="$(mktemp)"
-if ! ( cd "$REPO_DIR" && npm run build ); then
+if ! build_with_diagnostics "$REPO_DIR" "$LOG" "$LOG_DIR"; then
   if [ -n "$(find "$REPO_DIR/dist" -type f -newer "$BUILD_MARK" -print -quit 2>/dev/null)" ]; then
     rm -f "$BUILD_MARK"
     log "❌ 构建失败，且 dist 已被部分改写（线上正在发半新文件），回滚到 ${BEFORE_COMMIT}"
@@ -257,7 +263,7 @@ if ! ( cd "$REPO_DIR" && npm run build ); then
     exit 1
   fi
   rm -f "$BUILD_MARK"
-  die "构建失败（构建前门禁拦下，线上 dist 未改动）"
+  die "构建失败（构建前门禁拦下，线上 dist 未改动；构建输出：${BUILD_FAILURE_LOG:-$LOG}）"
 fi
 rm -f "$BUILD_MARK"
 
