@@ -1,6 +1,7 @@
-import { Suspense, useEffect } from 'react'
+import { Suspense, useEffect, useState } from 'react'
 import { Outlet, useLocation, useNavigationType } from 'react-router-dom'
 import { cx } from '@/lib/format'
+import { onImPanelLoadRequest } from '@/services/im'
 import { ShellProvider, useShell } from './ShellContext'
 import { Sidebar } from './Sidebar'
 import { Topbar } from './Topbar'
@@ -75,14 +76,10 @@ function TvShell() {
 /**
  * 站内消息抽屉的延迟挂载壳。
  *
- * 抽屉本身一直挂着（靠 transform 滑出，收起也有动画，见 ImPanel 头注释），
- * 但**它连着的 services/imClient.ts（45 KB）不该在首屏**：访客里绝大多数没登录、
- * 更不会去点那颗按钮，却要为它付下载和执行。
- *
- * 所以这里把挂载推迟到浏览器空闲（见 useIdleImport 的注释：为什么不用 React.lazy）。
- * 推迟的只有挂载那一刻，不是「用到才加载」——登录用户的 IM 连接本来就等
- * requestIdleCallback（timeout 8 秒）才开始，这里 800 毫秒的空闲窗口比它早得多，
- * 顶栏那颗按钮的注册也不会晚到用户点得着。
+ * 抽屉依赖的 comments / avatar / imClient 不参与首屏绘制；默认等 3 秒和一个空闲窗口，
+ * 把这些动态模块移出移动端首屏请求链。顶栏聚焦、悬停、点击或评论头像发私信时，服务接缝
+ * 会取消等待并提前加载。即使访客一直没操作，抽屉仍会自动挂载，登录态变化时的 IM 生命周期
+ * 不会被条件渲染截断；服务端与 hydration 首帧仍都不读登录态。
  *
  * ⚠️ 别改成条件渲染（登录才挂）：imClient 的 startImWhenIdle 是在这里挂载时排的，
  * 而它在服务端渲染时什么都不做是**故意的**（useCurrentUser 的 SSR 快照恒为 null）。
@@ -90,7 +87,10 @@ function TvShell() {
 const loadImPanel = () => import('@/components/im/ImPanel')
 
 function DeferredImPanel() {
-  const mod = useIdleImport(loadImPanel, { timeout: 800, fallbackMs: 200 })
+  const [requested, setRequested] = useState(false)
+  useEffect(() => onImPanelLoadRequest(() => setRequested(true)), [])
+  // 默认越过移动端首屏关键时间窗；顶栏收到真实交互意图时立即取消延迟，避免按钮显得没响应。
+  const mod = useIdleImport(loadImPanel, { timeout: 800, fallbackMs: 200, delayMs: requested ? 0 : 3000 })
   return mod ? <mod.ImPanel /> : null
 }
 
