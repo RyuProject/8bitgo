@@ -18,6 +18,18 @@ const UNKNOWN_DEVELOPER_LABELS = new Set([
   '–',
 ])
 
+/** 已核实为个人创作者的公开署名；字符串字段没有实体类型，不能把这些昵称假装成公司。 */
+const PERSON_DEVELOPER_NAMES = new Set([
+  'bui',
+  'clemaister',
+  'xiaoniao',
+  'mrlee',
+])
+
+export function developerSchemaType(name: string): 'Person' | 'Organization' {
+  return PERSON_DEVELOPER_NAMES.has(name.trim().toLowerCase()) ? 'Person' : 'Organization'
+}
+
 export function splitDevelopers(value: string | undefined | null): string[] {
   const seen = new Set<string>()
   return String(value ?? '')
