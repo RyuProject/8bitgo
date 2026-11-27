@@ -2228,7 +2228,8 @@ export function EmulatorPlayer({
         if (readinessState === 'unobservable') {
           reportStartup('readiness_unobservable', '跨域 HTML5 页面无法由父页面确认游戏是否已就绪')
         } else {
-          reportFallbackOutcome('fallback_failed')
+          // 看门狗只证明这段时间没有进度，不证明启动已终止；慢设备 / 弱网可能稍后仍成功。
+          // 兜底路线暂留「未确认」，最终错误才记失败，避免同一次启动被同时算成成功和失败。
           reportStartup('timeout', '连续 120 秒没有启动进度或可玩信号')
         }
       }, STARTUP_TIMEOUT_MS)

@@ -128,6 +128,10 @@ assert.match(metricsSource, /readiness_unobservable/, '汇总必须单独统计�
 assert.match(metricsSource, /fallback_attempts/, '启动汇总必须分别统计兜底尝试、成功和失败')
 assert.match(metricsSource, /fallback_successes/)
 assert.match(metricsSource, /fallback_failures/)
+assert.match(metricsSource, /e\.event = 'fallback_failed' AND NOT EXISTS \([\s\S]*recovered\.event = 'fallback_playable'/,
+  '同一次开局后续恢复成功时，汇总不能再把早先的重试失败算作最终兜底失败')
+assert.match(metricsSource, /MAX\(e\.event = 'fallback_failed'\) = 1 AND MAX\(e\.event = 'fallback_playable'\) = 0/,
+  '兜底路线的成功与失败必须互斥，防止单次尝试同时计入两种结局')
 assert.match(metricsSource, /event\.event === 'fallback_started'[\s\S]*ON DUPLICATE KEY UPDATE/, '同一启动的后续兜底跳转必须更新原路线记录')
 assert.match(metricsSource, /elapsed_ms = GREATEST\(COALESCE\(elapsed_ms, 0\), COALESCE\(incoming\.elapsed_ms, 0\)\)/, '迟到的较旧兜底请求不能回滚到较短路线')
 assert.match(metricsSource, /CHAR_LENGTH\(COALESCE\(incoming\.detail, ''\)\) > CHAR_LENGTH\(COALESCE\(detail, ''\)\)/, '相同毫秒内的路线更新只接受更完整的详情')
