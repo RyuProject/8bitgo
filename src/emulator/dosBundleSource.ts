@@ -58,7 +58,7 @@ async function decodeDosBundle(
   const head = new Uint8Array(await readBlobRange(blob, 0, 4, DOS_BLOB_PROBE_TIMEOUT_MS, signal))
   const zip = head.length >= 2 && head[0] === 0x50 && head[1] === 0x4b
   // 单个 EXE/COM 仍允许走旧逻辑；只有“看起来是 ZIP 却损坏”的包才应该在这里明确失败。
-  const ready = zip ? await isReadyJsdosBundleBlob(blob, 30_000) : false
+  const ready = zip ? await isReadyJsdosBundleBlob(blob, 30_000, signal) : false
   if (signal) throwIfAborted(signal)
   return { name, blob, ready }
 }

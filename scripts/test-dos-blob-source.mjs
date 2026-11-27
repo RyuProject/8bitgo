@@ -9,6 +9,8 @@ globalThis.__dosBlobDeletes = []
 globalThis.__dosBlobFailDecode = false
 globalThis.__dosBlobAbortDecode = false
 globalThis.__dosBlobDecodeStarted = false
+globalThis.__dosBlobAbortReady = false
+globalThis.__dosBlobReadyStarted = false
 globalThis.__dosBlobUnreadable = false
 globalThis.__dosBlobProbeUnreadable = false
 globalThis.__dosBlobPrewarms = []
@@ -54,7 +56,19 @@ const built = await build({
                  export const romCachePutBlob = async (k, b) => { globalThis.__dosBlobCache.set(k, b) };
                  export const romCacheDelete = async k => { globalThis.__dosBlobDeletes.push(k); globalThis.__dosBlobCache.delete(k) };`
               : args.path === 'bundle'
-                ? `export const isReadyJsdosBundleBlob = async () => globalThis.__dosBlobReady`
+                ? `export const isReadyJsdosBundleBlob = async (blob, timeout, signal) => {
+                     if (globalThis.__dosBlobAbortReady) {
+                       globalThis.__dosBlobAbortReady = false
+                       globalThis.__dosBlobReadyStarted = true
+                       if (!signal) throw new Error('ZIP 校验必须收到启动取消信号')
+                       await new Promise(resolve => {
+                         if (signal.aborted) resolve()
+                         else signal.addEventListener('abort', resolve, { once: true })
+                       })
+                       throw signal.reason ?? new DOMException('已取消', 'AbortError')
+                     }
+                     return globalThis.__dosBlobReady
+                   }`
               : `export const isRomPackBytes = b => b[0] === 0x38 && b[1] === 0x42 && b[2] === 0x47 && b[3] === 0x31;
                    export const readBlobRange = async (blob, start, end) => {
                      if (globalThis.__dosBlobProbeUnreadable) {
@@ -149,6 +163,24 @@ await assert.rejects(pendingAbort, (error) => error?.name === 'AbortError')
 assert.equal(globalThis.__dosBlobCache.get(abortUrl), globalThis.__dosBlobStored, '取消解包不能清除有效 ROM 缓存')
 assert.ok(!globalThis.__dosBlobDeletes.includes(abortUrl), '用户取消不能进入坏缓存自愈')
 assert.equal(globalThis.__dosBlobFetches.length, abortFetchesBefore, '缓存解包取消后不应额外下载游戏包')
+
+// 普通 ZIP 的目录检查也必须听从本局取消信号，不能在切换游戏后继续扫 Blob。
+const abortZipUrl = 'https://assets.example/roms/dos/fallout.en.zip?romv=abort-zip'
+globalThis.__dosBlobCache.set(abortZipUrl, globalThis.__dosBlobPlain)
+globalThis.__dosBlobAbortReady = true
+globalThis.__dosBlobReadyStarted = false
+const zipAbortController = new AbortController()
+const zipAbortFetchesBefore = globalThis.__dosBlobFetches.length
+const pendingZipAbort = prepareRemoteDosBundle(abortZipUrl, undefined, zipAbortController.signal)
+for (let attempt = 0; attempt < 20 && !globalThis.__dosBlobReadyStarted; attempt++) {
+  await new Promise((resolve) => setTimeout(resolve, 0))
+}
+assert.equal(globalThis.__dosBlobReadyStarted, true, '测试需等到缓存 ZIP 目录检查已开始再取消')
+zipAbortController.abort(new DOMException('game changed', 'AbortError'))
+await assert.rejects(pendingZipAbort, (error) => error?.name === 'AbortError')
+assert.equal(globalThis.__dosBlobCache.get(abortZipUrl), globalThis.__dosBlobPlain, '取消 ZIP 校验不能清除有效缓存')
+assert.ok(!globalThis.__dosBlobDeletes.includes(abortZipUrl), '取消 ZIP 校验不能触发坏缓存自愈')
+assert.equal(globalThis.__dosBlobFetches.length, zipAbortFetchesBefore, '取消 ZIP 校验后不应发起重新下载')
 
 const unversioned = 'https://assets.example/roms/dos/fallout.en.zip.8bg'
 await prepareRemoteDosBundle(unversioned, undefined, new AbortController().signal)
