@@ -222,6 +222,8 @@ const publishedPlanCheck = queue.slice(
 assert.match(publishedPlanCheck, /aheadRead > 16 \* 1024 \* 1024/, '公开 Sockdrive 单块上限要在绑定前复核')
 assert.match(queue, /validatePublishedSockdrivePlan\(metadata, profile\)/)
 assert.match(queue, /readBoundedSockdriveJson\(metadataResponse, '公开 sockdrive\.metaj'\)/)
+assert.match(queue, /readBoundedSockdriveJson\(preload, '公开 preload_ranges\.metaj'\)/)
+assert.match(queue, /readBoundedSockdriveJson\(canonicalPreload,/)
 assert.match(queue, /publishedSockdrivePlansMatch\(plan, canonicalPlan\)/, '玩家路径缓存必须与完整发布计划一致')
 assert.doesNotMatch(queue, /canonical\.json\(\)/, '玩家路径不能无界解析公开 JSON')
 assert.match(queue, /plan\.small\.size \? 'preload\.raw'/, '所有有效分块都是小范围时需用预取文件验证')

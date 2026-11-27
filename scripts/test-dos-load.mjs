@@ -45,6 +45,7 @@ import {
   parseSockdrivePreload,
   parseSockdriveWarmPlan,
   planSockdriveWarmFiles,
+  SOCKDRIVE_WARM_MAX_FILES,
   drainSockdriveWarmResponse,
   readBoundedResponseBytes,
   sockdriveWarmBudget,
@@ -500,6 +501,7 @@ check('流式盘按网络与系统镜像竞争自适应预热，并且不再拼�
   assert.match(jsdos, /const warmBudget = sockdriveWarmBudget\(connection\?\.effectiveType, Boolean\(connection\?\.saveData\)\)/)
   assert.match(jsdos, /const profile = warmBudget > 0\s*\? await readSockdrivePreloadProfile\(url, plan, signal, cache\)\s*: null/)
   assert.match(jsdos, /planSockdriveWarmFiles\(\s*plan,\s*profile,\s*warmBudget/)
+  assert.match(jsdos, /SOCKDRIVE_WARM_MAX_FILES/)
   assert.match(jsdos, /warmBudget === 0 \? 'none' : sockdriveRuntimePreloadMode/)
   assert.match(jsdos, /Math\.min\(concurrency, warmFiles\.length\)/)
   assert.match(jsdos, /const cache = sockdriveCacheMode\(url\)/)
@@ -561,7 +563,7 @@ check('热点清单按真实对象去重，并在预算边界停止', () => {
   assert.equal(sockdriveWarmConcurrency('3g', false, false), 2)
   assert.equal(sockdriveWarmConcurrency('2g', false, false), 1)
   assert.equal(sockdriveWarmConcurrency('4g', true, false), 1)
-  assert.equal(sockdriveWarmBudget('4g', false), 16 * 1024 * 1024)
+  assert.equal(sockdriveWarmBudget('4g', false), 8 * 1024 * 1024)
   assert.equal(sockdriveWarmBudget('3g', false), 8 * 1024 * 1024)
   assert.equal(sockdriveWarmBudget('2g', false), 0)
   assert.equal(sockdriveWarmBudget('4g', true), 0)
@@ -574,9 +576,26 @@ check('热点清单按真实对象去重，并在预算边界停止', () => {
     small_ranges: [],
     preload_ranges: Array.from({ length: 27 }, (_, index) => index),
   })
-  const scarOfSkyWarmed = planSockdriveWarmFiles(scarOfSkyPlan, scarOfSkyPlan.preload, sockdriveWarmBudget('3g', false))
+  const scarOfSkyWarmed = planSockdriveWarmFiles(
+    scarOfSkyPlan, scarOfSkyPlan.preload, sockdriveWarmBudget('3g', false), SOCKDRIVE_WARM_MAX_FILES,
+  )
   assert.equal(scarOfSkyWarmed.length, 27, '3G 下也要装齐《天之痕》6.75MB 启动清单')
   assert.equal(sockdriveRuntimePreloadMode(scarOfSkyPlan, scarOfSkyPlan.preload, scarOfSkyWarmed), 'default')
+  const falloutPlan = parseSockdriveWarmPlan({
+    size: 2 * 1024 * 1024,
+    ahead_read: 262144,
+    range_count: 8192,
+    sector_size: 512,
+    dropped_ranges: Array.from({ length: 5975 }, (_, index) => index),
+    small_ranges: [],
+    preload_ranges: Array.from({ length: 245 }, (_, index) => 5975 + index),
+  })
+  const falloutWarm = planSockdriveWarmFiles(
+    falloutPlan, falloutPlan.preload, sockdriveWarmBudget('4g', false), SOCKDRIVE_WARM_MAX_FILES,
+  )
+  assert.equal(falloutWarm.length, 32, '大清单启动最多发 32 个预取请求，不为完整热点列表阻塞开局')
+  assert.equal(falloutWarm.reduce((total, file) => total + file.expectedBytes, 0), 8 * 1024 * 1024)
+  assert.equal(sockdriveRuntimePreloadMode(falloutPlan, falloutPlan.preload, falloutWarm), 'none', '未预热全清单时让 Sockdrive 按需读剩余块')
   assert.throws(() => parseSockdrivePreload([3], plan.rangeCount, plan.dropped), /无效的预取分块/)
   assert.throws(() => parseSockdriveWarmPlan({
     size: 3 * 1024 * 1024,

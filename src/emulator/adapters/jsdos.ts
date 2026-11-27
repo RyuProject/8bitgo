@@ -115,6 +115,7 @@ import {
   parseSockdrivePreload,
   parseSockdriveWarmPlan,
   planSockdriveWarmFiles,
+  SOCKDRIVE_WARM_MAX_FILES,
   sockdriveWarmBudget,
   sockdriveWarmConcurrency,
   sockdriveRuntimePreloadMode,
@@ -1133,6 +1134,7 @@ async function verifySockdriveMetadata(
     plan,
     profile,
     warmBudget,
+    SOCKDRIVE_WARM_MAX_FILES,
   )
   const concurrency = sockdriveWarmConcurrency(
     connection?.effectiveType,

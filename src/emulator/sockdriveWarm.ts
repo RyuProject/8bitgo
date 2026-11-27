@@ -15,6 +15,10 @@ export interface SockdriveWarmFile {
 
 export type SockdriveRuntimePreload = 'default' | 'none'
 
+// 生产 Fallout 清单有 245 个热点范围；即使总字节不大，也不能让几十次 RTT 挡住 DOSBox-X 开机。
+// 最多预取 32 个对象，其余由 Sockdrive 按需读取，避免启动预热成为整局的门槛。
+export const SOCKDRIVE_WARM_MAX_FILES = 32
+
 /** 预热只计数不留字节；元数据给出的长度是硬上限，不能信任代理的 Content-Length。 */
 export async function drainSockdriveWarmResponse(
   response: Response,
@@ -112,13 +116,14 @@ export async function readBoundedResponseBytes(response: Response, maxBytes: num
 const SOCKDRIVE_MAX_DISK_BYTES = 2 * 1024 ** 3
 // Sockify 的正常分块是 256 KiB；16 MiB 留足发布余量，同时避免坏清单让一个启动读请求占满手机内存。
 const SOCKDRIVE_MAX_BLOCK_BYTES = 16 * 1024 * 1024
-const SOCKDRIVE_WARM_DESKTOP_BYTES = 16 * 1024 * 1024
+const SOCKDRIVE_WARM_DESKTOP_BYTES = 8 * 1024 * 1024
 const SOCKDRIVE_WARM_3G_BYTES = 8 * 1024 * 1024
 
 /**
  * 弱网也要尽量在进客体前装齐启动热点。《天之痕》实际清单是 27 个 256KB 块（6.75MB），
  * 旧 4MB 预算只覆盖前 16 块，并让 js-dos 关闭 OPFS 预载；剩余 11 块在剧情开始后同步等网络。
- * 8MB 足够覆盖这份清单，又不会把 3G 预热放大到桌面端的 16MB。省流量 / 2G 仍不主动拉正文。
+ * 8MiB 足够覆盖这份清单；桌面也限制在相同体积和 32 个对象，避免大清单拖住开机。
+ * 省流量 / 2G 仍不主动拉正文。
  */
 export function sockdriveWarmBudget(effectiveType: string | undefined, saveData: boolean): number {
   if (saveData || /(?:^|-)2g$/i.test(effectiveType ?? '')) return 0
@@ -224,6 +229,7 @@ export function planSockdriveWarmFiles(
   plan: SockdriveWarmPlan,
   override: readonly number[] | null,
   budgetBytes: number,
+  maxFiles = Number.MAX_SAFE_INTEGER,
 ): SockdriveWarmFile[] {
   const ranges = override ?? plan.preload
   const files = new Map<string, number>()
@@ -239,13 +245,14 @@ export function planSockdriveWarmFiles(
     if (!Number.isSafeInteger(expectedBytes) || expectedBytes <= 0 || used + expectedBytes > budgetBytes) continue
     files.set(name, expectedBytes)
     used += expectedBytes
+    if (files.size >= maxFiles) break
   }
   return [...files].map(([name, expectedBytes]) => ({ name, expectedBytes }))
 }
 
 /**
  * js-dos 的 `default` 会把整份 preload_ranges.metaj 再以四路并发全部读取，并不知道本站的
- * 16MB / 4MB / 省流量预算。只有清单涉及的对象已经全进 HTTP 缓存时才让它继续：此时它只是
+ * 8MiB / 32 个对象 / 省流量限制。只有清单涉及的对象已经全进 HTTP 缓存时才让它继续：此时它只是
  * 把缓存字节搬进 OPFS；否则关掉重复预取，预算内的热点仍会在真正读盘时从 HTTP 缓存秒取。
  */
 export function sockdriveRuntimePreloadMode(
