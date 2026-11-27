@@ -14,6 +14,7 @@ export interface DosLoadLimits {
   extraFileBytes: number
   extraTotalBytes: number
   extraConcurrency: number
+  systemImageBytes: number
 }
 
 const MIB = 1024 * 1024
@@ -34,6 +35,8 @@ export function dosLoadLimits(hints: DosLoadHints = {}): DosLoadLimits {
         extraFileBytes: 128 * MIB,
         extraTotalBytes: 256 * MIB,
         extraConcurrency: 1,
+        // 现场实测最大的正式 Windows 95 镜像约 93 MiB；手机留 128 MiB 上限，拦住错误页/错绑大包。
+        systemImageBytes: 128 * MIB,
       }
     : {
         arrayBufferBytes: 1024 * MIB,
@@ -41,5 +44,24 @@ export function dosLoadLimits(hints: DosLoadHints = {}): DosLoadLimits {
         extraTotalBytes: 1024 * MIB,
         // 附加文件会同时驻留内存；两路足够重叠 RTT，也限制 500 MiB 资料片造成的峰值。
         extraConcurrency: weakNetwork ? 1 : 2,
+        systemImageBytes: 512 * MIB,
       }
+}
+
+/** ROM 与系统镜像必须按同一套设备信息判断，Safari 不公开 deviceMemory 时以平台和触控特征兜底。 */
+export function dosLoadLimitsForBrowser(): DosLoadLimits {
+  if (typeof navigator === 'undefined') return dosLoadLimits()
+  const browser = navigator as Navigator & {
+    deviceMemory?: number
+    connection?: { effectiveType?: string; saveData?: boolean }
+  }
+  return dosLoadLimits({
+    deviceMemory: browser.deviceMemory,
+    hardwareConcurrency: browser.hardwareConcurrency,
+    userAgent: browser.userAgent,
+    platform: browser.platform,
+    maxTouchPoints: browser.maxTouchPoints,
+    effectiveType: browser.connection?.effectiveType,
+    saveData: browser.connection?.saveData,
+  })
 }

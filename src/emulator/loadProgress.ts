@@ -317,6 +317,11 @@ export async function fetchWithProgress(
       }
 
       if (!res.body) {
+        // 没有可逐块计数的流时，有限上限必须在分配前可证明；否则一个缺 Content-Length 的代理响应
+        // 会先把任意大的正文放进内存，再由下面的检查拒绝，限额就失去了止损作用。
+        if (Number.isFinite(opts.maxBytes) && total === undefined) {
+          throw new Error('浏览器不支持安全流式下载，无法限制文件大小')
+        }
         const buf = await res.arrayBuffer()
         if (buf.byteLength > (opts.maxBytes ?? Infinity)) throw new RangeError('文件过大，无法在浏览器内存中解包')
         if (total !== undefined && buf.byteLength !== total) {

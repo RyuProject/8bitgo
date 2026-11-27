@@ -45,6 +45,7 @@ import {
   parseSockdrivePreload,
   parseSockdriveWarmPlan,
   planSockdriveWarmFiles,
+  readBoundedResponseBytes,
   sockdriveWarmBudget,
   sockdriveWarmConcurrency,
   sockdriveRuntimePreloadMode,
@@ -77,6 +78,16 @@ const fails = []
 const check = (name, fn) => {
   try {
     fn()
+    pass++
+    console.log('  ✓ ' + name)
+  } catch (e) {
+    fails.push({ name, e })
+    console.log('  ✗ ' + name + ' —— ' + (e?.message ?? e))
+  }
+}
+const checkAsync = async (name, fn) => {
+  try {
+    await fn()
     pass++
     console.log('  ✓ ' + name)
   } catch (e) {
@@ -358,6 +369,7 @@ check('DOS 整包与资料片按设备内存、移动端和弱网收紧预算', 
     extraFileBytes: 128 * 1024 * 1024,
     extraTotalBytes: 256 * 1024 * 1024,
     extraConcurrency: 1,
+    systemImageBytes: 128 * 1024 * 1024,
   })
   assert.deepEqual(dosLoadLimits({
     hardwareConcurrency: 8,
@@ -365,6 +377,7 @@ check('DOS 整包与资料片按设备内存、移动端和弱网收紧预算', 
   }).extraConcurrency, 1)
   assert.deepEqual(dosLoadLimits({ maxTouchPoints: 5, platform: 'MacIntel' }).arrayBufferBytes, 256 * 1024 * 1024)
   assert.equal(dosLoadLimits({ deviceMemory: 8, hardwareConcurrency: 8 }).extraConcurrency, 2)
+  assert.equal(dosLoadLimits({ userAgent: 'Desktop' }).systemImageBytes, 512 * 1024 * 1024)
   assert.equal(dosLoadLimits({ deviceMemory: 8, hardwareConcurrency: 8, effectiveType: '2g' }).extraConcurrency, 1)
 })
 
@@ -505,6 +518,7 @@ check('Sockdrive 在开始按钮悬停时提前预热，正式启动复用同一
   assert.match(jsdos, /prewarmed\.claimed = true/)
   assert.match(jsdos, /export function cancelSockdrivePrewarm\(value: string\)/)
   assert.match(player, /cancelSockdrivePrewarm\(prewarmUrl\)/, '切换页面时要结束未被开局接管的预热')
+  assert.match(jsdos, /if \(signal\.aborted\) prewarmed\.controller\.abort\(signal\.reason\)/, '开局接管后玩家离页也要停掉预热自己的请求')
   assert.match(jsdos, /verifySockdriveForLaunch\(sockdriveUrl, abort\.signal, Boolean\(systemUrl\)\)/)
   assert.doesNotMatch(jsdos, /verifySockdriveMetadata\(sockdriveUrl, abort\.signal, Boolean\(systemUrl\)\)/)
 })
@@ -578,6 +592,20 @@ check('热点清单按真实对象去重，并在预算边界停止', () => {
     small_ranges: [],
     preload_ranges: [],
   }), /单个分块超过 16MB/, '小清单不能要求移动端一次读取 32 MiB')
+})
+
+await checkAsync('Sockdrive 启动清单在未知长度响应中边收边限流并取消超限流', async () => {
+  const withinLimit = await readBoundedResponseBytes(new Response(new Uint8Array([1, 2, 3])), 3)
+  assert.deepEqual([...withinLimit], [1, 2, 3])
+
+  let canceled = false
+  const oversized = new Response(new ReadableStream({
+    start(controller) { controller.enqueue(new Uint8Array(5)) },
+    cancel() { canceled = true },
+  }))
+  await assert.rejects(() => readBoundedResponseBytes(oversized, 4), /响应体超过 4 字节/)
+  assert.equal(canceled, true, '超限时要取消流，不能继续下载或保留连接')
+  await assert.rejects(() => readBoundedResponseBytes(new Response(null), 4), /不支持安全流式读取/)
 })
 
 check('Win95 致命错误是终态，迟到的 ci-ready 与兜底定时器不能再报成功', () => {

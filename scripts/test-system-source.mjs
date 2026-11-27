@@ -103,9 +103,13 @@ function fakeFetch(routes) {
     return {
       ok: r.status ? r.status < 400 : true,
       status: r.status ?? 200,
-      headers: { get: (k) => (k.toLowerCase() === 'content-type' ? r.type ?? 'application/octet-stream' : null) },
+      headers: { get: (k) => {
+        if (k.toLowerCase() === 'content-type') return r.type ?? 'application/octet-stream'
+        if (k.toLowerCase() === 'content-length') return r.contentLength !== undefined ? r.contentLength : r.body?.byteLength ?? null
+        return null
+      } },
       body: null,
-      arrayBuffer: async () => r.body,
+      arrayBuffer: async () => { r.onArrayBuffer?.(); return r.body },
     }
   }
 }
@@ -247,6 +251,28 @@ await check('⚠️ 主源下了个不是镜像的 zip → 也要换源', async 
   globalThis.fetch = fakeFetch({ [PRIMARY]: { body: NO_CONF }, [SAME_ORIGIN]: { body: GOOD } })
   const r = await loadSystemBytes(src)
   assert.equal(r.usedFallback, true, '只看 HTTP 状态码的话，这一份会被当成好的')
+})
+
+await check('⚠️ 系统镜像响应头超过设备上限时先拒绝，不能申请完整大缓冲', async () => {
+  let read = false
+  globalThis.fetch = fakeFetch({
+    [PRIMARY]: { body: GOOD, contentLength: `${512 * 1024 * 1024 + 1}`, onArrayBuffer: () => { read = true } },
+    [SAME_ORIGIN]: { body: GOOD },
+  })
+  const result = await loadSystemBytes(src)
+  assert.equal(result.usedFallback, true)
+  assert.equal(read, false, 'Content-Length 超限要在调用 response.arrayBuffer 之前拒绝')
+})
+
+await check('⚠️ 缺流和缺长度的旧浏览器响应必须在整块分配前失败', async () => {
+  let read = false
+  globalThis.fetch = fakeFetch({
+    [PRIMARY]: { body: GOOD, contentLength: null, onArrayBuffer: () => { read = true } },
+    [SAME_ORIGIN]: { body: GOOD },
+  })
+  const result = await loadSystemBytes(src)
+  assert.equal(result.usedFallback, true)
+  assert.equal(read, false, '未知长度的非流式响应不能先整块读取再检查大小')
 })
 
 await check('主源好的时候不碰备用源', async () => {

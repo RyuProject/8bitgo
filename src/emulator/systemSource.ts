@@ -28,6 +28,7 @@
  */
 import { assertValidZip } from '@/lib/unzip'
 import { fetchWithProgress } from './loadProgress'
+import { dosLoadLimitsForBrowser } from './dosLoadLimits'
 import type { LoadProgress } from './types'
 import { romCacheDelete, romCacheGet, romCacheKey, romCachePut } from './romCache'
 import { versionedRomUrl } from '@/services/roms'
@@ -484,6 +485,7 @@ export async function loadSystemBytes(
   signal?: AbortSignal,
 ): Promise<LoadedSystem> {
   if (!sources.length) throw new Error('没有可用的系统镜像地址')
+  const maxBytes = dosLoadLimitsForBrowser().systemImageBytes
   const failures: string[] = []
 
   /*
@@ -570,6 +572,9 @@ export async function loadSystemBytes(
       const data = await fetchWithProgress(fetchUrl, {
         phase: 'assets',
         signal: guard.signal,
+        maxBytes,
+        // 系统镜像通常有 Content-Length；直接写目标数组，避免手机上同时留分片和整份镜像。
+        preallocateKnownLength: true,
         onProgress: (p) => {
           guard.tick()
           onProgress?.(p)

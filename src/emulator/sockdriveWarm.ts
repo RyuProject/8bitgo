@@ -15,6 +15,49 @@ export interface SockdriveWarmFile {
 
 export type SockdriveRuntimePreload = 'default' | 'none'
 
+/** 只读启动清单也要按流量上限逐块读；缺 Content-Length 的代理响应不能用 arrayBuffer 无界分配。 */
+export async function readBoundedResponseBytes(response: Response, maxBytes: number): Promise<Uint8Array> {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) throw new RangeError('响应体上限无效')
+  const declaredLength = Number(response.headers.get('content-length'))
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    void response.body?.cancel().catch(() => {})
+    throw new RangeError(`响应体超过 ${maxBytes} 字节`)
+  }
+  const body = response.body
+  // 热点清单只是投机优化；不支持流的旧环境直接退回主清单，不能为它冒险整块申请未知大小。
+  if (!body) throw new Error('浏览器不支持安全流式读取 Sockdrive 清单')
+
+  const reader = body.getReader()
+  const chunks: Uint8Array[] = []
+  let loaded = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!value) continue
+      if (loaded + value.byteLength > maxBytes) {
+        await reader.cancel().catch(() => {})
+        throw new RangeError(`响应体超过 ${maxBytes} 字节`)
+      }
+      chunks.push(value)
+      loaded += value.byteLength
+    }
+  } catch (error) {
+    await reader.cancel(error).catch(() => {})
+    throw error
+  } finally {
+    try { reader.releaseLock() } catch { /* body 终止时无需二次释放 */ }
+  }
+
+  const out = new Uint8Array(loaded)
+  let offset = 0
+  for (const chunk of chunks) {
+    out.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return out
+}
+
 // 官方 sockify 2.0.10 最大模板是 FAT32 2GB。更大的声明不是本站合法产物，若继续按它循环找块，
 // 一份几 KB 的损坏元数据就能让主线程执行数十亿次循环并假死。
 const SOCKDRIVE_MAX_DISK_BYTES = 2 * 1024 ** 3

@@ -44,7 +44,7 @@ import { imageDataToBlob } from '../recorder'
 import { GP, startGamepadBridge, hasGamepadApi, type GamepadBridge } from '../gamepad'
 import { deleteSave, pullSave, pushSave } from '@/services/saves'
 import { loadGameBytes } from '../romLoader'
-import { dosLoadLimits } from '../dosLoadLimits'
+import { dosLoadLimitsForBrowser } from '../dosLoadLimits'
 import { isRomNetworkFailure, markRomNetworkFailure } from '../loadProgress'
 import { inspectRemoteRomPack, isRomPackUrl, readBlobRange } from '@/services/romPack'
 import { prepareRemoteDosBundle } from '../dosBundleSource'
@@ -118,6 +118,7 @@ import {
   sockdriveWarmBudget,
   sockdriveWarmConcurrency,
   sockdriveRuntimePreloadMode,
+  readBoundedResponseBytes,
   type SockdriveRuntimePreload,
   type SockdriveWarmFile,
   type SockdriveWarmPlan,
@@ -755,19 +756,7 @@ async function readRom(
   | { name: string; buf: ArrayBuffer; bundleBlob?: undefined }
   | { name: string; bundleBlob: Blob; buf?: undefined }
 > {
-  const browser = typeof navigator === 'undefined' ? null : navigator as Navigator & {
-    deviceMemory?: number
-    connection?: { effectiveType?: string; saveData?: boolean }
-  }
-  const loadLimits = dosLoadLimits(browser ? {
-    deviceMemory: browser.deviceMemory,
-    hardwareConcurrency: browser.hardwareConcurrency,
-    userAgent: browser.userAgent,
-    platform: browser.platform,
-    maxTouchPoints: browser.maxTouchPoints,
-    effectiveType: browser.connection?.effectiveType,
-    saveData: browser.connection?.saveData,
-  } : {})
+  const loadLimits = dosLoadLimitsForBrowser()
   const arrayBufferLimit = loadLimits.arrayBufferBytes
   if ((!preferReadyBundleBlob || windowsGuest) && typeof game === 'string' && isRomPackUrl(game)) {
     const header = await inspectRemoteRomPack(game, signal)
@@ -826,19 +815,7 @@ async function loadExtras(
   signal: AbortSignal,
 ): Promise<ExtraFile[]> {
   if (!list?.length) return []
-  const browser = typeof navigator === 'undefined' ? null : navigator as Navigator & {
-    deviceMemory?: number
-    connection?: { effectiveType?: string; saveData?: boolean }
-  }
-  const limits = dosLoadLimits(browser ? {
-    deviceMemory: browser.deviceMemory,
-    hardwareConcurrency: browser.hardwareConcurrency,
-    userAgent: browser.userAgent,
-    platform: browser.platform,
-    maxTouchPoints: browser.maxTouchPoints,
-    effectiveType: browser.connection?.effectiveType,
-    saveData: browser.connection?.saveData,
-  } : {})
+  const limits = dosLoadLimitsForBrowser()
   const out: ExtraFile[] = []
   let cursor = 0
   let completedBytes = 0
@@ -964,15 +941,9 @@ async function readSockdrivePreloadProfile(
     console.warn(`[jsdos] Sockdrive 热点清单返回 HTTP ${response.status}，退回主清单的受限预热`)
     return null
   }
-  const declaredLength = Number(response.headers.get('content-length'))
-  if (Number.isFinite(declaredLength) && declaredLength > SOCKDRIVE_METADATA_LIMIT) {
-    void response.body?.cancel().catch(() => {})
-    cleanup()
-    throw new Error('Sockdrive 热点清单超过 1MB，拒绝在开局时读取')
-  }
-  let bytes: ArrayBuffer
+  let bytes: Uint8Array
   try {
-    bytes = await response.arrayBuffer()
+    bytes = await readBoundedResponseBytes(response, SOCKDRIVE_METADATA_LIMIT)
   } catch (error) {
     if (signal.aborted) throw error
     console.warn('[jsdos] Sockdrive 热点清单正文读取失败，退回主清单的受限预热', error)
@@ -980,7 +951,6 @@ async function readSockdrivePreloadProfile(
   } finally {
     cleanup()
   }
-  if (bytes.byteLength > SOCKDRIVE_METADATA_LIMIT) throw new Error('Sockdrive 热点清单超过 1MB，拒绝在开局时读取')
   try {
     return parseSockdrivePreload(JSON.parse(new TextDecoder().decode(bytes)), plan.rangeCount, plan.dropped)
   } catch (error) {
@@ -1289,6 +1259,8 @@ async function verifySockdriveForLaunch(
     // 悬停阶段的瞬时失败不能让点击也直接失败；正式启动用自己的失速保护再试一次。
     return verifySockdriveMetadata(url, signal, sharesLargeDownload)
   } finally {
+    // 开局接管后离页时 await 已经退出，但预热 fetch 仍有自己的 controller；一起停掉免得后台续烧流量。
+    if (signal.aborted) prewarmed.controller.abort(signal.reason)
     if (sockdrivePrewarmTasks.get(url) === prewarmed) sockdrivePrewarmTasks.delete(url)
   }
 }
