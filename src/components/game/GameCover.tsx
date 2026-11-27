@@ -76,7 +76,7 @@ interface Props {
    * 老封面没有缩略图时自动退回主图，见下面的 thumbFailed。
    */
   thumb?: boolean
-  /** 只有容器真正进入视口后才挂图片 / 视频源，避免浏览器原生 lazy 提前抢开局带宽。 */
+  /** 只有容器进入视口附近的预取边界后才挂图片 / 视频源，避免原生 lazy 抢首屏带宽。 */
   deferMedia?: boolean
   /** 封面图真正 load 完时调一次（<video> 那一路不会调）。轮播换图要靠它决定何时撤掉过渡层 */
   onImageLoad?: () => void
@@ -319,7 +319,7 @@ export function GameCover({
       if (!entry?.isIntersecting) return
       setMediaVisible(true)
       observer.disconnect()
-    })
+    }, { rootMargin: '280px' })
     observer.observe(node)
     return () => observer.disconnect()
   }, [deferMedia, mediaVisible])
