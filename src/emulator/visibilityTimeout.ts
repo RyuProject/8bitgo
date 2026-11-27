@@ -40,6 +40,7 @@ export function createVisibilityTimeout(
 
   let remaining = duration
   let timer: ReturnType<typeof setTimeout> | null = null
+  let timerGeneration = 0
   let segmentStartedAt = 0
   let disposed = false
   let unsubscribe = () => {}
@@ -48,6 +49,8 @@ export function createVisibilityTimeout(
     if (timer === null) return
     cancelTimer(timer)
     timer = null
+    // clearTimeout 不能撤回已进入事件队列的回调；换代后，迟到的旧回调只会退出。
+    timerGeneration += 1
     if (accountElapsed) remaining = Math.max(0, remaining - Math.max(0, now() - segmentStartedAt))
   }
 
@@ -61,11 +64,15 @@ export function createVisibilityTimeout(
 
   const schedule = () => {
     if (disposed || timer !== null || !visible()) return
-    segmentStartedAt = now()
+    const generation = ++timerGeneration
+    const startedAt = now()
+    segmentStartedAt = startedAt
     timer = scheduleTimer(() => {
+      if (disposed || generation !== timerGeneration) return
       timer = null
-      remaining = Math.max(0, remaining - Math.max(0, now() - segmentStartedAt))
+      // 某些 WebView 会在页面隐藏后仍触发已排队的计时器；隐藏时不消耗前台预算。
       if (!visible()) return
+      remaining = Math.max(0, remaining - Math.max(0, now() - startedAt))
       if (remaining === 0) finish()
       else schedule()
     }, remaining)

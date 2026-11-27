@@ -27,6 +27,7 @@ function fakeVisibilityClock() {
   let visible = true
   let nextId = 0
   const timers = new Map()
+  const canceledCallbacks = []
   const listeners = new Set()
   const api = {
     environment: {
@@ -36,7 +37,11 @@ function fakeVisibilityClock() {
         timers.set(id, { at: time + delayMs, callback })
         return id
       },
-      clearTimeout(id) { timers.delete(id) },
+      clearTimeout(id) {
+        const timer = timers.get(id)
+        if (timer) canceledCallbacks.push(timer.callback)
+        timers.delete(id)
+      },
       isVisible: () => visible,
       subscribeVisibility(callback) {
         listeners.add(callback)
@@ -58,6 +63,10 @@ function fakeVisibilityClock() {
       visible = next
       for (const listener of listeners) listener()
     },
+    fireCanceled() {
+      const callbacks = canceledCallbacks.splice(0)
+      for (const callback of callbacks) callback()
+    },
   }
   return api
 }
@@ -77,6 +86,21 @@ function fakeVisibilityClock() {
   clock.advance(1)
   assert.equal(timedOut, 1, '前台剩余时限耗尽后仍必须超时')
   timeout.dispose()
+
+  const delayedClock = fakeVisibilityClock()
+  let delayedTimedOut = 0
+  const delayed = createVisibilityTimeout(100, () => delayedTimedOut++, delayedClock.environment)
+  delayedClock.advance(40)
+  delayedClock.setVisible(false)
+  delayedClock.advance(10_000)
+  delayedClock.fireCanceled()
+  assert.equal(delayedTimedOut, 0, '已取消但迟到的后台计时器不能耗尽前台剩余预算')
+  delayedClock.setVisible(true)
+  delayedClock.advance(59)
+  assert.equal(delayedTimedOut, 0, '恢复前台后仍应保留隐藏前的 60ms 预算')
+  delayedClock.advance(1)
+  assert.equal(delayedTimedOut, 1, '后台延迟回调退出后，前台预算仍按时耗尽')
+  delayed.dispose()
 
   const resetClock = fakeVisibilityClock()
   let resetTimedOut = 0
