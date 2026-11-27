@@ -7,6 +7,7 @@ import { readFileSync } from 'node:fs'
 import {
   adultGateReason,
   CHROME_CANDIDATES,
+  DEFAULT_SMOKE_GAMES,
   devToolsUrlOf,
   findChrome,
   MAME_CHD_TIMEOUT_MS,
@@ -58,6 +59,9 @@ assert.equal(findChrome({}, (p) => p === CHROME_CANDIDATES.at(-1)), CHROME_CANDI
 assert.equal(findChrome({ CHROME_PATH: '/missing' }, () => false), '', '都找不到返回空串（脚本据此退出码 2）')
 
 const src = readFileSync(new URL('./smoke-start.mjs', import.meta.url), 'utf8')
+assert.deepEqual(DEFAULT_SMOKE_GAMES.split(','), ['super-mario-bros', 'cadillacs-and-dinosaurs', 'pokemon-sapphire'],
+  '部署冒烟必须覆盖 NES、CPS1 与 mGBA 的 GBA 路径')
+assert.match(src, /process\.env\.SMOKE_GAMES \|\| DEFAULT_SMOKE_GAMES/, '仍允许巡检或人工覆盖冒烟游戏')
 assert.match(src, /urlPattern: '\*\/api\/games\/\*\/startup\*'/, '启动漏斗请求必须拦下，冒烟不能进生产统计')
 assert.match(src, /urlPattern: '\*\/api\/games\/\*\/play\*'/, '游玩次数也不能被冒烟刷高')
 assert.match(src, /Fetch\.fulfillRequest/)

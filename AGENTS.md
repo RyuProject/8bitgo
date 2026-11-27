@@ -159,7 +159,7 @@ loader.js 的 `import()` 失败，NES / SFC / GBA / 街机 / PS1 …… 所有 E
    否则部署构建窗口、构建失败、回滚期间，旧版本号会被缓存成新内容一年 —— **回滚也救不回来**。
    `precompressed-static.js` 的 `.br` 旁注同样按 sha256 + brBytes 校验，不再只比字节数（等长修改会把旧引擎挂在新版本号下）。
 4. **部署**：`redeploy.sh` 构建失败且 `dist/` 已被改写时回滚（Vite 直接写线上目录，只 die 会留下半新文件）；
-   重启后默认跑 `smoke-start.mjs`（一款 NES + 一款 CPS1 跑到首帧），失败重试一次，仍失败回滚。
+   重启后默认跑 `smoke-start.mjs`（NES、CPS1、GBA 各一款跑到首帧）；GBA 样例守 mGBA 的 HLE BIOS 路径，失败重试一次，仍失败回滚。
    **生产机必须装 Chromium**，否则冒烟只能告警跳过（日志里是 `⚠️⚠️ 开局冒烟没有运行`）。确认是 CDN / ROM 故障而非代码问题时
    用 `SMOKE_TEST=0` 强行发布修复。回滚改为 `git reset --hard`（留在分支上），分支名用 `symbolic-ref`，游离 HEAD 不再污染下次部署。
    ⚠️ 退出码 2 也包括「脚本自身出错」，不只是没有 Chrome。2026-11-18 生产两次部署：两款游戏都到了首帧，随后删 Chrome profile
@@ -3409,7 +3409,7 @@ ROM 存储和其它站级入口全部是管理员权限。后台列表统一带 
 >   上一份已验证备份继续保留，日志明确记录。任何其他备份错误照旧中止部署。回归：`cd server && npm run test:backup && cd .. && npm run test:redeploy`。
 > - **lock 未变跳过 `npm ci`**（`deploy/lib/npm-ci-if-changed.sh`，戳在 `node_modules/.8bitgo-lock-sha256`）；`FORCE_NPM_CI=1` 强制重装。
 >   以后若给根目录或 server 加 install / postinstall 钩子，要重新评估这条。
-> - **开局冒烟**（可选）：`SMOKE_TEST=1` 时健康检查后跑 `scripts/smoke-start.mjs`，无头 Chrome 把一款 NES、一款街机跑到首帧；
+> - **开局冒烟**（可选）：`SMOKE_TEST=1` 时健康检查后跑 `scripts/smoke-start.mjs`，无头 Chrome 把一款 NES、一款 CPS1 街机和一款 GBA 跑到首帧；
 >   拦下启动漏斗与游玩计数请求，不污染统计；失败只告警、不回滚。生产机需先装 Chromium（未装时记「跳过」）。
 
 生产机是 **38.76.186.225**（Ubuntu 24.04，4C/4G）。旧机 103.242.13.112 已停服且

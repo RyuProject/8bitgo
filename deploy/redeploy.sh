@@ -272,7 +272,7 @@ if health_ok && ps2_headers_ok; then
   # 页面在 Cloudflare 边缘缓存一天（见 server/src/edge-purge.js），新前端要靠这一步立刻生效。
   # 清失败不回滚：站点是好的，只是旧 HTML 要等过期（旧哈希资源仍保留在 dist，不会白屏）。
   ( cd "$SERVER_DIR" && npm run --silent purge:edge-html ) || log "⚠️ 清 Cloudflare HTML 缓存失败，新版要等边缘过期才全量生效"
-  # 开局冒烟：真把一款 NES、一款街机跑到首帧（scripts/smoke-start.mjs，需要本机有 Chrome / Chromium）。
+  # 开局冒烟：真把 NES、CPS1 街机、GBA 各一款跑到首帧（scripts/smoke-start.mjs，需要本机有 Chrome / Chromium）。
   # 2026-11-17 全站事故之后默认打开：健康检查 200 只说明进程活着，那次所有 EmulatorJS 游戏都打不开，
   # 健康检查照样全绿。失败先重试一次（排除 CDN / ROM 线路的瞬时抖动），仍失败就回滚。
   #   SMOKE_TEST=0       整个跳过（例如 CDN 正在出故障、需要强行发布修复时）
