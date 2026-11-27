@@ -15,6 +15,7 @@ import {
   romIntegrityManifestTag,
   romIntegrityManifestUrl,
   romIntegrityKey,
+  RomIntegrityManifestUnavailableError,
   verifyRomBlob,
   verifyRomBlobRange,
   verifyRomBytes,
@@ -406,6 +407,74 @@ try {
   failRepair = true
   await assert.rejects(fetchBlobWithProgress(responseUrl), RomIntegrityError,
     '坏块无法从可信同版本对象修复时必须拒绝交给模拟器')
+
+  // 必校验清单的暂时超时只重取小清单一次；不应把同一首个 ROM 分片白下数遍。
+  const manifestRetryKey = 'roms/integrity-test/manifest-retry.gba'
+  const manifestRetryEtag = '"manifest-retry-v1"'
+  const manifestRetryPayload = await createRomIntegrityManifest(new Blob([tiny]), manifestRetryKey)
+  const manifestRetry = { ...manifestRetryPayload, etag: manifestRetryEtag }
+  const manifestRetryUrl = `https://rom.8bitgo.com/${manifestRetryKey}?romv=manifest-retry-v1`
+  let manifestRetryRequests = 0
+  let manifestRetryRomRequests = 0
+  const fetchBeforeManifestRetry = globalThis.fetch
+  globalThis.fetch = async (input, init = {}) => {
+    const target = new URL(String(input))
+    if (target.pathname === '/integrity') {
+      manifestRetryRequests++
+      if (manifestRetryRequests <= 2) throw new TypeError('temporary network outage')
+      return new Response(JSON.stringify({ etag: manifestRetryEtag, size: tiny.byteLength, manifest: manifestRetry }), {
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+    manifestRetryRomRequests++
+    assert.equal(init.headers?.Range, `bytes=0-${tiny.byteLength - 1}`)
+    return new Response(tiny, { status: 206, headers: {
+      'Content-Range': `bytes 0-${tiny.byteLength - 1}/${tiny.byteLength}`,
+      'Content-Length': String(tiny.byteLength),
+      ETag: manifestRetryEtag,
+      'X-8BitGo-Integrity-Required': 'sha256-v1',
+    } })
+  }
+  const recoveredManifestBlob = await fetchBlobWithProgress(manifestRetryUrl, {
+    chunkBytes: tiny.byteLength,
+    retries: 3,
+    routeHealth: false,
+    fetchImpl: globalThis.fetch,
+  })
+  assert.deepEqual(new Uint8Array(await recoveredManifestBlob.arrayBuffer()), tiny,
+    '清单第一次超时但短重取成功时仍可安全交付 ROM')
+  assert.equal(manifestRetryRequests, 3, '初次双域请求失败后只发起一次新的清单获取')
+  assert.equal(manifestRetryRomRequests, 1, '重试清单期间不重复下载 ROM 首片')
+
+  // 两次清单获取仍不可用时，立即停下；不能拿重复下载 ROM 来伪装网络重试。
+  const manifestUnavailableKey = 'roms/integrity-test/manifest-unavailable.gba'
+  const manifestUnavailableEtag = '"manifest-unavailable-v1"'
+  const manifestUnavailableUrl = `https://rom.8bitgo.com/${manifestUnavailableKey}?romv=manifest-unavailable-v1`
+  let manifestUnavailableRequests = 0
+  let manifestUnavailableRomRequests = 0
+  globalThis.fetch = async (input) => {
+    const target = new URL(String(input))
+    if (target.pathname === '/integrity') {
+      manifestUnavailableRequests++
+      throw new TypeError('temporary network outage')
+    }
+    manifestUnavailableRomRequests++
+    return new Response(tiny, { status: 206, headers: {
+      'Content-Range': `bytes 0-${tiny.byteLength - 1}/${tiny.byteLength}`,
+      ETag: manifestUnavailableEtag,
+      'X-8BitGo-Integrity-Required': 'sha256-v1',
+    } })
+  }
+  await assert.rejects(fetchBlobWithProgress(manifestUnavailableUrl, {
+    chunkBytes: tiny.byteLength,
+    retries: 3,
+    routeHealth: false,
+    fetchImpl: globalThis.fetch,
+  }), RomIntegrityManifestUnavailableError,
+  '强制清单经过一次有界重取仍不可用时必须明确拒绝')
+  assert.equal(manifestUnavailableRequests, 4, '失败时只执行两轮受限的双域清单请求')
+  assert.equal(manifestUnavailableRomRequests, 1, '清单失败后不能重复下载同一个首片')
+  globalThis.fetch = fetchBeforeManifestRetry
 
   failRepair = false
   const cachedBadPart = {
