@@ -118,6 +118,8 @@ import {
   sockdriveWarmFileLimit,
   sockdriveWarmBudget,
   sockdriveWarmConcurrency,
+  sockdriveWarmDeadlineMs,
+  runSockdriveWarmWithinDeadline,
   sockdriveRuntimePreloadMode,
   drainSockdriveWarmResponse,
   readBoundedResponseBytes,
@@ -1148,19 +1150,34 @@ async function verifySockdriveMetadata(
     Boolean(connection?.saveData),
     sharesLargeDownload,
   )
-  // Win95 镜像并行下载时保持两路；纯 DOS 没有大文件竞争，四路能明显降低大量小分块的 RTT。
-  let cursor = 0
-  const worker = async () => {
-    for (;;) {
-      const file = warmFiles[cursor++]
-      if (!file) return
-      await warmSockdriveFile(url, file, signal, cache, onActivity)
-    }
+  // 预热是可选加速：弱网持续滴流时也必须在有限时间内让 DOSBox-X 开始读取磁盘。
+  const warmedFiles: SockdriveWarmFile[] = []
+  const warmResult = warmFiles.length
+    ? await runSockdriveWarmWithinDeadline(
+        signal,
+        sockdriveWarmDeadlineMs(connection?.effectiveType, sharesLargeDownload),
+        async (warmSignal) => {
+          let cursor = 0
+          const worker = async () => {
+            for (;;) {
+              const file = warmFiles[cursor++]
+              if (!file) return
+              await warmSockdriveFile(url, file, warmSignal, cache, onActivity)
+              warmedFiles.push(file)
+            }
+          }
+          await Promise.all(Array.from({ length: Math.min(concurrency, warmFiles.length) }, worker))
+        },
+      )
+    : 'complete'
+  if (warmResult === 'timeout') {
+    console.warn('[jsdos] Sockdrive 热点预热超出启动时限，已停止预热并改由客体按需读取')
   }
-  await Promise.all(Array.from({ length: Math.min(concurrency, warmFiles.length) }, worker))
 
   // 空清单也不能把省流量会话误判成“已全量预热”：worker 的顺序预读以此开关为底线。
-  const runtimePreload = warmBudget === 0 ? 'none' : sockdriveRuntimePreloadMode(plan, profile, warmFiles)
+  const runtimePreload = warmBudget === 0 || warmResult === 'timeout'
+    ? 'none'
+    : sockdriveRuntimePreloadMode(plan, profile, warmedFiles)
 
   /*
     清单存在不代表分块齐全：手工发布、对象被误删或“先传元数据后传数据”都会让玩家在启动中途
