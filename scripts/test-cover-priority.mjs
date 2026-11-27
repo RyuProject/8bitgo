@@ -17,7 +17,14 @@ assert.match(cover, /videoSrc && !mediaDeferred/)
 assert.match(cover, /coverSrc && !coverFailed && !mediaDeferred/)
 assert.match(cover, /!mediaDeferred && priority && videoSrc && coverSrc/)
 assert.match(gameCard, /GAME_CARD_IMAGE_SIZES = '240px'/)
-assert.match(gameCard, /eager=\{eager\} priority=\{priority\} deferMedia=\{deferCover\} sizes=\{coverSizes\}/)
+assert.match(gameCard, /eager=\{eager\}/)
+assert.match(gameCard, /priority=\{priority\}/)
+assert.match(gameCard, /deferMedia=\{deferCover\}/)
+assert.match(
+  gameCard,
+  /sizes=\{coverSizes \?\? \(priority \? GAME_CARD_IMAGE_SIZES : undefined\)\}/,
+  '优先封面使用 240px 目标尺寸，调用方传入的真实尺寸仍优先',
+)
 assert.match(detailSections, /new IntersectionObserver\(\(\[entry\]\) => \{[\s\S]*?setCoversReady\(true\)[\s\S]*?\}\)/)
 assert.match(detailSections, /GameCard key=\{g\.slug\} game=\{g\} showCoin=\{false\} deferCover=\{!coversReady\}/)
 assert.match(gamesPage, /coverSizes=\{GAME_CARD_IMAGE_SIZES\}/)
