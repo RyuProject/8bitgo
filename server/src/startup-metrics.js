@@ -41,6 +41,8 @@ const EVENTS = new Set([
 const BATCHABLE_EVENTS = new Set([
   'download_complete', 'rom_load_start', 'rom_load_complete', 'core_warm_start', 'core_warm_complete',
   'core_cache_hit', 'runtime_ready', 'first_frame', 'fallback_first_frame', 'fallback_playable', 'game_playable',
+  // 页面卸载时与未发出的阶段合批，减少 keepalive 请求被取消后漏记中断的概率。
+  'startup_interrupted',
 ])
 const ID_RE = /^[A-Za-z0-9_-]{8,64}$/
 const NAME_RE = /^[A-Za-z0-9_-]{0,32}$/

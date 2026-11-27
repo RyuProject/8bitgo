@@ -30,6 +30,12 @@ const unobservable = normalizeStartupEvent({ ...base, event: 'readiness_unobserv
 assert.equal(unobservable.event, 'readiness_unobservable', '跨域页面的不可观测状态必须可记录，但不能当成失败')
 const interrupted = normalizeStartupEvent({ ...base, event: 'startup_interrupted', elapsedMs: 60_000, detail: '仍在下载 ROM：20MB/30MB' })
 assert.equal(interrupted.event, 'startup_interrupted', '离开时尚未可玩的启动要与失败、超时分开记录')
+const interruptedBatch = normalizeStartupEventBatch([
+  { ...base, event: 'rom_load_start', elapsedMs: 30 },
+  { ...base, event: 'startup_interrupted', elapsedMs: 60_000, detail: '仍在下载 ROM：20MB/30MB' },
+])
+assert.deepEqual(interruptedBatch.map((event) => event.event), ['rom_load_start', 'startup_interrupted'],
+  '离页时应允许把中断事件与尚未发送的阶段合批写入')
 
 const view = normalizeStartupEvent({ visitId: base.visitId, event: 'detail_view', platform: 'nds' })
 assert.equal(view.attemptId, '', '详情页加载发生在点击前，不应伪造 attempt id')
@@ -120,6 +126,7 @@ assert.throws(() => normalizeStartupEvent({ ...base, event: 'first_frame', runti
 const schema = readFileSync(new URL('../schema-v2.sql', import.meta.url), 'utf8')
 const migration = readFileSync(new URL('./migrate.mjs', import.meta.url), 'utf8')
 const metricsSource = readFileSync(new URL('../src/startup-metrics.js', import.meta.url), 'utf8')
+const startupFunnelSource = readFileSync(new URL('../../src/services/startupFunnel.ts', import.meta.url), 'utf8')
 const adminRoute = readFileSync(new URL('../src/routes/admin.js', import.meta.url), 'utf8')
 assert.match(schema, /CREATE TABLE IF NOT EXISTS game_startup_events/)
 assert.match(schema, /UNIQUE KEY uniq_startup_event \(visit_id, attempt_id, event\)/)
@@ -157,6 +164,13 @@ assert.match(metricsSource, /query\(PHASE_TIMING_QUERY, \[cutoff\]\)/, '四个�
 assert.match(metricsSource, /INSERT IGNORE INTO game_startup_events[\s\S]{0,550}CROSS JOIN/, '批量阶段用单条 INSERT 省掉逐事件 SQL 往返')
 assert.match(metricsSource, /recordStartupEvents/, '服务端保留批量写入入口')
 assert.match(metricsSource, /BATCHABLE_EVENTS/, '批量上报只允许普通启动阶段')
+const batchableEvents = (source, name) => {
+  const body = source.match(new RegExp(`const ${name} = new Set(?:<StartupEventName>)?\\(\\[([\\s\\S]*?)\\]\\)`))?.[1]
+  assert.ok(body, `${name} 必须能从源码中解析`)
+  return [...body.matchAll(/'([^']+)'/g)].map((match) => match[1]).sort()
+}
+assert.deepEqual(batchableEvents(startupFunnelSource, 'BATCHABLE_EVENTS'), batchableEvents(metricsSource, 'BATCHABLE_EVENTS'),
+  '前端与后端的批量事件白名单必须一致，避免离页合批请求被服务端拒绝')
 assert.match(readFileSync(new URL('../src/routes/games.js', import.meta.url), 'utf8'), /normalizeStartupEventBatch\(req\.body\.events\)/, '启动路由识别并校验阶段批次')
 assert.match(adminRoute, /startupStats\(req\.query\.days, req\.query\.q\)/, '后台故障列表支持按游戏搜索')
 
