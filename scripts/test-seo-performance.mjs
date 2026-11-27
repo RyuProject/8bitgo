@@ -75,8 +75,11 @@ check('侧栏微型封面不在开局时下载和解码宣传视频', () => {
 
 check('首页轮播只在可轮换时预热，并复用封面转码档与实际尺寸', () => {
   const src = read('src/components/home/HomeBanner.tsx')
+  assert.match(src, /const HERO_STACK_QUERY = '\(min-width: 768px\)'/, '轮播断点必须和 CSS 的 md 卡堆一致')
+  assert.match(src, /if \(!heroStackVisible \|\| reduced \|\| paused \|\| pool\.length < 2\)/, '卡堆隐藏时不应轮换标题')
   assert.match(src, /const HERO_COVER_SIZES = '\(min-width: 1280px\) 211px, \(min-width: 1024px\) 158px, 141px'/)
-  assert.match(src, /if \(reduced \|\| paused \|\| document\.hidden \|\| !allowsSpeculativePlayerPreload\(connection\)\) return/)
+  assert.match(src, /if \(!heroStackVisible \|\| pool\.length < 2 \|\| \(base\.length > 1/)
+  assert.match(src, /document\.hidden \|\| !allowsSpeculativePlayerPreload\(connection\)\) return/)
   assert.match(src, /const srcSet = coverSrcSet\(src\)/, '预热必须走与实际卡片相同的缩放候选')
   assert.match(src, /img\.sizes = HERO_COVER_SIZES/)
   assert.match(src, /if \(srcSet\) img\.srcset = srcSet/)

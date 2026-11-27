@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { listenMediaQuery } from '@/lib/mediaQuery'
 import { openAuthModal } from '@/services/authModal'
 import { PixelButton } from '@/components/ui/PixelButton'
 import { GameCover } from '@/components/game/GameCover'
@@ -65,6 +66,22 @@ const STACK_BOX = 'h-56 w-64 lg:h-64 lg:w-72 xl:h-80 xl:w-96'
 const CARD = 'w-[55%]'
 /** 和 STACK_BOX × CARD 一致，预热与实际卡片必须挑同一档缩放封面。 */
 const HERO_COVER_SIZES = '(min-width: 1280px) 211px, (min-width: 1024px) 158px, 141px'
+const HERO_STACK_QUERY = '(min-width: 768px)'
+
+/** 小屏上卡堆本身隐藏，因此也停掉只服务卡堆的标题轮换和封面预取。 */
+function useHeroStackVisible() {
+  const [visible, setVisible] = useState(false)
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return
+    const media = window.matchMedia(HERO_STACK_QUERY)
+    const update = () => setVisible(media.matches)
+    update()
+    return listenMediaQuery(media, update)
+  }, [])
+
+  return visible
+}
 
 /**
  * Fisher-Yates，返回打乱后的下标表。
@@ -111,6 +128,7 @@ function Banner({ className, games }: { className?: string; games?: Game[] }) {
   const t = useT()
   const lang = useLang()
   const reduced = usePrefersReducedMotion()
+  const heroStackVisible = useHeroStackVisible()
 
   /**
    * 轮换名单。
@@ -141,8 +159,9 @@ function Banner({ className, games }: { className?: string; games?: Game[] }) {
    */
   const [order, setOrder] = useState<number[] | null>(null)
   useEffect(() => {
+    if (!heroStackVisible) return
     setOrder(base.length > 1 ? shuffledIndexes(base.length) : null)
-  }, [base.length])
+  }, [base.length, heroStackVisible])
 
   const pool = useMemo(
     () => (order && order.length === base.length ? order.map((i) => base[i]) : base),
@@ -155,14 +174,14 @@ function Banner({ className, games }: { className?: string; games?: Game[] }) {
 
   useEffect(() => {
     // 只有一款可转的时候别起定时器：动画会原地重放，看着像闪
-    if (reduced || paused || pool.length < 2) return
+    if (!heroStackVisible || reduced || paused || pool.length < 2) return
     const timer = window.setInterval(() => {
       // 后台标签页不推进。不挡的话切回来会一次性补上十几轮，卡堆直接跳到不知道哪一款
       if (document.hidden) return
       setSeq((v) => v + 1)
     }, ROTATE_MS)
     return () => window.clearInterval(timer)
-  }, [reduced, paused, pool.length])
+  }, [heroStackVisible, reduced, paused, pool.length])
 
   /**
    * 把**下一张**封面提前拉下来。
@@ -173,7 +192,7 @@ function Banner({ className, games }: { className?: string; games?: Game[] }) {
    */
   useEffect(() => {
     // 首次随机顺序还没落定时不预热；否则先下载旧顺序的下一张，再下载随机后的下一张。
-    if (pool.length < 2 || (base.length > 1 && (!order || order.length !== base.length))) return
+    if (!heroStackVisible || pool.length < 2 || (base.length > 1 && (!order || order.length !== base.length))) return
     const connection = (navigator as Navigator & { connection?: NetworkHint }).connection
     // 预热只是为了轮换动画顺滑，不应在不轮换、后台或弱网时占用玩家当前资源。
     if (reduced || paused || document.hidden || !allowsSpeculativePlayerPreload(connection)) return
@@ -185,7 +204,7 @@ function Banner({ className, games }: { className?: string; games?: Game[] }) {
     img.sizes = HERO_COVER_SIZES
     if (srcSet) img.srcset = srcSet
     img.src = src
-  }, [base.length, order, pool, seq, reduced, paused])
+  }, [base.length, order, pool, seq, reduced, paused, heroStackVisible])
 
   const current = pool.length ? pool[seq % pool.length] : null
   // 名单还没到的时候保留原来那句品牌语，别让标题空着或者闪一下
