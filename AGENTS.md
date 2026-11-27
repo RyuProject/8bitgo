@@ -1490,6 +1490,16 @@ Chrome / Edge 桌面使用目录内的 MV3 `manifest.json`；Firefox Android 使
 
 同类问题的通用判据：`server/src/routes/` 里查了某张表的接口，去 `schema-v2.sql` 里 grep 一遍表名。
 
+### 2.15.1 云存档请求必须有界等待，IndexedDB 必须等事务提交（2026-11-27）
+
+云存档的 `fetch` 超时要包住响应体读取：只给 `fetch()` 加时限会在拿到响应头后仍卡在 `.json()` / `.arrayBuffer()`。
+自动开局读云档最多等 6 秒，超时先继续游戏并保留本机存档；玩家主动读 / 下载最多等 30 秒，写入 / 删除最多等 45 秒，
+元信息与列表分别最多等 12 / 15 秒。超时要 abort 底层请求；PUT 已经可能在服务器提交后才断响应，重试必须复用同一 `revision` 才幂等。
+
+个人页云存档列表请求失败不能返回 `[]`：`[]` 表示服务端确认没有存档，网络错误必须显示错误并提供重试，避免把玩家误导成存档消失。
+IndexedDB 的 `IDBRequest.onsuccess` 也不代表本地已经持久提交；写操作须等 `IDBTransaction.oncomplete`，事务 abort 要回报失败，
+否则云端请求失败时玩家会以为有本地兜底，实际却没有落盘。回归：`npm run test:save-sync`。
+
 ### 2.16 房主国旗全是 ❓ ＝ 反代没传真实 IP
 
 房间卡片上房主的设备 💻📱 / 地区 🇨🇳 / 网络 👌🀄️👎 三个格子由 `server/src/presence.js`

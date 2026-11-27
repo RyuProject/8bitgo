@@ -64,10 +64,21 @@ export function CloudSaves() {
   const [saves, setSaves] = useState<SaveMeta[] | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [listLoading, setListLoading] = useState(true)
 
   const load = useCallback(async () => {
-    setSaves(await listCloudSaves())
-  }, [])
+    setListLoading(true)
+    setLoadError(null)
+    try {
+      setSaves(await listCloudSaves())
+    } catch (err) {
+      // 请求失败不等于玩家没有存档；保留已有列表，并给首次加载失败显示重试入口。
+      setLoadError(err instanceof Error ? err.message : t.profile.saveFailed)
+    } finally {
+      setListLoading(false)
+    }
+  }, [t.profile.saveFailed])
 
   useEffect(() => {
     void load()
@@ -142,17 +153,59 @@ export function CloudSaves() {
       {error && <div className="mb-3"><Notice text={error} /></div>}
 
       {saves === null ? (
-        // 列表还没回来时占住位置，避免「空状态」闪一下又被列表顶掉
-        <ul className="space-y-2" aria-busy="true">
-          {[0, 1].map((i) => (
-            <li key={i} className="h-14 animate-pulse rounded-xl bg-surface-2" />
-          ))}
-        </ul>
+        loadError ? (
+          <div className="space-y-3" role="alert">
+            <Notice text={loadError} />
+            <button
+              type="button"
+              disabled={listLoading}
+              onClick={() => void load()}
+              className="rounded-lg border border-line px-3 py-1.5 text-sm font-semibold text-fg hover:border-brand hover:text-brand-hover disabled:opacity-50"
+            >
+              {t.common.retry}
+            </button>
+          </div>
+        ) : (
+          // 列表还没回来时占住位置，避免「空状态」闪一下又被列表顶掉
+          <ul className="space-y-2" aria-busy="true">
+            {[0, 1].map((i) => (
+              <li key={i} className="h-14 animate-pulse rounded-xl bg-surface-2" />
+            ))}
+          </ul>
+        )
       ) : saves.length === 0 ? (
+        loadError ? (
+          <div className="space-y-3" role="alert">
+            <Notice text={loadError} />
+            <button
+              type="button"
+              disabled={listLoading}
+              onClick={() => void load()}
+              className="rounded-lg border border-line px-3 py-1.5 text-sm font-semibold text-fg hover:border-brand hover:text-brand-hover disabled:opacity-50"
+            >
+              {t.common.retry}
+            </button>
+          </div>
+        ) : (
         <p className="rounded-xl border border-dashed border-line px-4 py-8 text-center text-sm text-muted">
           {t.account.savesEmpty}
         </p>
+        )
       ) : (
+        <>
+        {loadError && (
+          <div className="mb-3 space-y-3" role="alert">
+            <Notice text={loadError} />
+            <button
+              type="button"
+              disabled={listLoading}
+              onClick={() => void load()}
+              className="rounded-lg border border-line px-3 py-1.5 text-sm font-semibold text-fg hover:border-brand hover:text-brand-hover disabled:opacity-50"
+            >
+              {t.common.retry}
+            </button>
+          </div>
+        )}
         <ul className="divide-y divide-line">
           {saves.map((s) => {
             const identity = identityOf(s)
@@ -194,6 +247,7 @@ export function CloudSaves() {
             )
           })}
         </ul>
+        </>
       )}
     </Panel>
   )

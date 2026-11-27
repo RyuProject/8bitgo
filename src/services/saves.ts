@@ -23,6 +23,7 @@ import {
 } from '@/emulator/saveEnvelope'
 // 落点偏好单独一个无依赖的模块，好在 node 侧直接测；这里透传出去，调用方不用多认一个文件
 import { getSaveTarget, setSaveTarget, type SaveTarget } from './saveTarget'
+import { RequestTimeoutError, withRequestTimeout } from './requestTimeout'
 export { getSaveTarget, setSaveTarget, type SaveTarget }
 
 /** 存档属于哪个引擎。格式不通用，所以必须分开存 */
@@ -85,6 +86,30 @@ export const MAX_LOCAL_PSP_SAVE_BYTES = 96 * 1024 * 1024
 export const MAX_LOCAL_JSDOS_SAVE_BYTES = 64 * 1024 * 1024
 /** Dolphin 会把整台 GC / Wii 的内存与设备状态写进去；本地要容得下，云端仍守 4MB。 */
 export const MAX_LOCAL_DOLPHIN_SAVE_BYTES = 256 * 1024 * 1024
+
+/** 云端半开连接不能让玩家一直卡在保存 / 读档状态；大存档给弱网留更长传输窗口。 */
+const CLOUD_READ_TIMEOUT_MS = 30_000
+const CLOUD_WRITE_TIMEOUT_MS = 45_000
+const CLOUD_META_TIMEOUT_MS = 12_000
+const CLOUD_LIST_TIMEOUT_MS = 15_000
+/** 自动开局读取只等短窗口，网络不可用时先玩；存档同步不该挡住游戏启动。 */
+const CLOUD_BOOT_READ_TIMEOUT_MS = 6_000
+
+/** 复用全站请求时限实现，并把底层英文超时错误翻成云存档界面能直接显示的提示。 */
+function withCloudRequestTimeout<T>(
+  timeoutMs: number,
+  operation: (signal: AbortSignal) => Promise<T>,
+  parent?: AbortSignal,
+): Promise<T> {
+  return withRequestTimeout(timeoutMs, parent, operation).catch((error: unknown) => {
+    if (error instanceof RequestTimeoutError) {
+      const localized = new Error('云存档请求超时，请检查网络后重试')
+      localized.name = 'TimeoutError'
+      throw localized
+    }
+    throw error
+  })
+}
 
 /**
  * 导入和本地落盘必须共用同一条上限，不能出现“文件选择时能读进内存、真正保存才报太大”。
@@ -208,20 +233,26 @@ async function ensureCloudRevision(
     cloudRevisions.set(key, known)
     return { revision: known, adopted: false }
   }
-  const res = await fetch(cloudUrl(runtime, gameSlug, slot, '/meta'), {
-    headers: authHeaders(),
-    cache: 'no-store',
+  const result = await withCloudRequestTimeout(CLOUD_META_TIMEOUT_MS, async (signal) => {
+    const res = await fetch(cloudUrl(runtime, gameSlug, slot, '/meta'), {
+      headers: authHeaders(),
+      cache: 'no-store',
+      signal,
+    })
+    if (res.status === 204 || res.status === 404) return { revision: NO_CLOUD_REVISION, adopted: false }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const meta = await res.json().catch(() => ({})) as { revision?: string }
+    // 只是观察到的云端版本，不代表这台浏览器同步过它；不能写进 cloudRevisions。
+    const revision = meta.revision?.trim() || headerOf(res, 'x-save-revision') || LEGACY_CLOUD_REVISION
+    return { revision, adopted: true }
   })
-  if (res.status === 204 || res.status === 404) {
+  if (!result.adopted) {
     cloudRevisions.set(key, NO_CLOUD_REVISION)
-    return { revision: NO_CLOUD_REVISION, adopted: false }
+    return result
   }
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  const meta = await res.json().catch(() => ({})) as { revision?: string }
   // 只是观察到的云端版本，不代表这台浏览器同步过它；不写进 cloudRevisions，
   // 否则下一次自动写入会把它当成「已知基线」而绕过冲突检查。
-  const revision = meta.revision?.trim() || headerOf(res, 'x-save-revision') || LEGACY_CLOUD_REVISION
-  return { revision, adopted: true }
+  return result
 }
 
 async function decodeCloudResponse(
@@ -248,21 +279,28 @@ export async function fetchCloudSaveStrict(
   gameSlug: string,
   slot: number,
   signal?: AbortSignal,
+  timeoutMs = CLOUD_READ_TIMEOUT_MS,
 ): Promise<{ data: Uint8Array; revision: string; updatedAt: number; format?: string } | null> {
   if (!cloudSavesEnabled()) throw new Error('not signed in')
-  const res = await fetch(cloudUrl(runtime, gameSlug, slot), { headers: authHeaders(), cache: 'no-store', signal })
-  const key = localKey(runtime, gameSlug, slot)
-  if (res.status === 404 || res.status === 204) {
-    cloudRevisions.set(key, NO_CLOUD_REVISION)
-    return null
-  }
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  const got = await decodeCloudResponse(res, { runtime, gameSlug, slot })
-  if (!got.data.length) {
-    cloudRevisions.set(key, NO_CLOUD_REVISION)
-    return null
-  }
-  return { data: got.data, revision: got.revision, updatedAt: got.updatedAt, format: got.format }
+  return withCloudRequestTimeout(timeoutMs, async (deadlineSignal) => {
+    const res = await fetch(cloudUrl(runtime, gameSlug, slot), {
+      headers: authHeaders(),
+      cache: 'no-store',
+      signal: deadlineSignal,
+    })
+    const key = localKey(runtime, gameSlug, slot)
+    if (res.status === 404 || res.status === 204) {
+      cloudRevisions.set(key, NO_CLOUD_REVISION)
+      return null
+    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const got = await decodeCloudResponse(res, { runtime, gameSlug, slot })
+    if (!got.data.length) {
+      cloudRevisions.set(key, NO_CLOUD_REVISION)
+      return null
+    }
+    return { data: got.data, revision: got.revision, updatedAt: got.updatedAt, format: got.format }
+  }, signal)
 }
 
 export interface PulledSave {
@@ -315,12 +353,9 @@ export async function pullSave(runtime: SaveRuntime, gameSlug: string, slot = 0)
 
   if (cloudSavesEnabled()) {
     try {
-      const res = await fetch(cloudUrl(runtime, gameSlug, slot), { headers: authHeaders(), cache: 'no-store' })
-      if (res.ok) {
-        const got = await decodeCloudResponse(res, { runtime, gameSlug, slot })
-        if (got.data.length > 0) {
-          return { ...got, where: 'cloud' }
-        }
+      const got = await fetchCloudSaveStrict(runtime, gameSlug, slot, undefined, CLOUD_BOOT_READ_TIMEOUT_MS)
+      if (got?.data.length) {
+        return { ...got, where: 'cloud' }
       }
       // 404 = 云端确实没有这份存档，继续往下看本地
     } catch {
@@ -365,7 +400,7 @@ export async function prepareCloudSaveAutoSync(
   }
 
   // 404 才能确认云端确实没有存档；网络错误原样抛给调用方，避免把旧本地档推上去覆盖云端。
-  const cloud = await fetchCloudSaveStrict(runtime, gameSlug, slot)
+  const cloud = await fetchCloudSaveStrict(runtime, gameSlug, slot, undefined, CLOUD_BOOT_READ_TIMEOUT_MS)
   return { enabled: true, data: cloud?.data ?? null, paused: false }
 }
 
@@ -399,10 +434,16 @@ export async function fetchCloudSave(
   slot = 0,
 ): Promise<{ data: Uint8Array; archive: Uint8Array; updatedAt: number; revision: string } | null> {
   if (!cloudSavesEnabled()) return null
-  const res = await fetch(cloudUrl(runtime, gameSlug, slot), { headers: authHeaders(), cache: 'no-store' })
-  if (!res.ok) return null
-  const got = await decodeCloudResponse(res, { runtime, gameSlug, slot })
-  return got.data.length ? got : null
+  return withCloudRequestTimeout(CLOUD_READ_TIMEOUT_MS, async (signal) => {
+    const res = await fetch(cloudUrl(runtime, gameSlug, slot), {
+      headers: authHeaders(),
+      cache: 'no-store',
+      signal,
+    })
+    if (!res.ok) return null
+    const got = await decodeCloudResponse(res, { runtime, gameSlug, slot })
+    return got.data.length ? got : null
+  })
 }
 
 export interface PushedSave {
@@ -650,22 +691,27 @@ async function uploadCloudEntry(
       return { ok: true, where: 'local', error: 'too-large', cloudFailed: true, blocked: 'too-large' }
     }
 
-    const res = await fetch(cloudUrl(runtime, coordinate.gameSlug, coordinate.slot), {
-      method: 'PUT',
-      headers: {
-        ...authHeaders(),
-        'content-type': 'application/octet-stream',
-        'x-save-revision': revision,
-        'x-save-parent-revision': parent,
-      },
-      body: archive as BodyInit,
+    const parentRevision = base.revision
+    const { res, response } = await withCloudRequestTimeout(CLOUD_WRITE_TIMEOUT_MS, async (signal) => {
+      const res = await fetch(cloudUrl(runtime, coordinate.gameSlug, coordinate.slot), {
+        method: 'PUT',
+        headers: {
+          ...authHeaders(),
+          'content-type': 'application/octet-stream',
+          'x-save-revision': revision,
+          'x-save-parent-revision': parentRevision,
+        },
+        body: archive as BodyInit,
+        signal,
+      })
+      const response = await res.json().catch(() => ({})) as {
+        code?: string
+        error?: string
+        revision?: string
+        currentRevision?: string
+      }
+      return { res, response }
     })
-    const response = await res.json().catch(() => ({})) as {
-      code?: string
-      error?: string
-      revision?: string
-      currentRevision?: string
-    }
     if (res.ok) {
       const cloudRevision = rememberCloudRevision(
         key,
@@ -703,7 +749,12 @@ async function uploadCloudEntry(
       await idbMark(key, true, stamp, revision, { cloudRevision: parent }).catch(() => false)
     }
     schedulePendingSaveSync()
-    return { ok: true, where: 'local', error: 'network', cloudFailed: true }
+    return {
+      ok: true,
+      where: 'local',
+      error: '云端请求失败或超时；进度已保存在本机，联网后会继续同步',
+      cloudFailed: true,
+    }
   }
 }
 
@@ -838,8 +889,13 @@ export async function deleteSave(runtime: SaveRuntime, gameSlug: string, slot = 
   const key = localKey(runtime, gameSlug, slot)
   // 先删云端：若另一台设备刚更新，服务端会拒绝这个过期删除；这时保留本地副本，
   // 不能让玩家以为“已清空”却在下一次同步时把远端进度重新拉回来。
-  if (cloudSavesEnabled()) await deleteCloudSave(runtime, gameSlug, slot)
-  await idbDelete(key)
+  const removeCloudCopy = cloudSavesEnabled()
+  if (removeCloudCopy) await deleteCloudSave(runtime, gameSlug, slot)
+  if (!await idbDelete(key)) {
+    throw new Error(removeCloudCopy
+      ? '云端存档已删除，但本机副本没有删除成功；请刷新后检查本地存档'
+      : '本机存档没有删除成功；请刷新后重试')
+  }
   cloudRevisions.delete(key)
 }
 
@@ -865,12 +921,14 @@ export async function deleteCloudSave(
   if (knownRevision && knownRevision !== NO_CLOUD_REVISION) {
     headers['x-save-delete-revision'] = knownRevision
   }
-  const res = await fetch(cloudUrl(runtime, gameSlug, slot), { method: 'DELETE', headers })
-  // 删除是幂等操作：另一台设备已经删掉同一格时，当前目的也已达成。
-  if (res.status !== 404 && !res.ok) {
-    const body = await res.json().catch(() => ({})) as { error?: string }
-    throw new Error(body.error || `HTTP ${res.status}`)
-  }
+  await withCloudRequestTimeout(CLOUD_WRITE_TIMEOUT_MS, async (signal) => {
+    const res = await fetch(cloudUrl(runtime, gameSlug, slot), { method: 'DELETE', headers, signal })
+    // 删除是幂等操作：另一台设备已经删掉同一格时，当前目的也已达成。
+    if (res.status !== 404 && !res.ok) {
+      const body = await res.json().catch(() => ({})) as { error?: string }
+      throw new Error(body.error || `HTTP ${res.status}`)
+    }
+  })
   cloudRevisions.set(key, NO_CLOUD_REVISION)
 }
 
@@ -898,17 +956,20 @@ export async function saveInfo(
 
   if (cloudSavesEnabled()) {
     try {
-      const res = await fetch(cloudUrl(runtime, gameSlug, slot, '/meta'), {
-        headers: authHeaders(),
-        cache: 'no-store',
-      })
-      // 204 = 云端明确说「这一格没有存档」（不是错误，所以服务端不回 404 了）。
-      // 必须先判它再 json()：204 没有响应体，解析会抛，落进下面那个 catch 之后
-      // 看起来和「请求失败」一模一样 —— 真出问题时反而查不出来
-      if (res.status !== 204 && res.ok) {
+      const cloud = await withCloudRequestTimeout(CLOUD_META_TIMEOUT_MS, async (signal) => {
+        const res = await fetch(cloudUrl(runtime, gameSlug, slot, '/meta'), {
+          headers: authHeaders(),
+          cache: 'no-store',
+          signal,
+        })
+        // 204 = 云端明确说「这一格没有存档」；它不是错误，也没有响应体可解析。
+        if (res.status === 204 || !res.ok) return null
         const j = (await res.json()) as { size: number; updatedAt: number; revision?: string }
-        rememberCloudRevision(localKey(runtime, gameSlug, slot), j.revision || headerOf(res, 'x-save-revision'))
-        return { where: 'cloud', updatedAt: j.updatedAt, size: j.size }
+        return { meta: j, revision: j.revision || headerOf(res, 'x-save-revision') }
+      })
+      if (cloud) {
+        rememberCloudRevision(localKey(runtime, gameSlug, slot), cloud.revision)
+        return { where: 'cloud', updatedAt: cloud.meta.updatedAt, size: cloud.meta.size }
       }
     } catch {
       /* 往下看本地 */
@@ -923,12 +984,15 @@ export async function saveInfo(
 /** 我的云存档清单（个人页要用；没登录时返回空） */
 export async function listCloudSaves(): Promise<SaveMeta[]> {
   if (!cloudSavesEnabled()) return []
-  try {
-    const res = await fetch(`${apiBase()}/api/saves`, { headers: authHeaders(), cache: 'no-store' })
-    if (!res.ok) return []
-    const rows = (await res.json()) as Array<Omit<SaveMeta, 'where'>>
+  return withCloudRequestTimeout(CLOUD_LIST_TIMEOUT_MS, async (signal) => {
+    const res = await fetch(`${apiBase()}/api/saves`, {
+      headers: authHeaders(),
+      cache: 'no-store',
+      signal,
+    })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const rows = await res.json() as Array<Omit<SaveMeta, 'where'>>
+    if (!Array.isArray(rows)) throw new Error('云存档清单格式不正确')
     return rows.map((r) => ({ ...r, where: 'cloud' as const }))
-  } catch {
-    return []
-  }
+  })
 }

@@ -123,10 +123,43 @@ class IdbRequest {
   onblocked = null
   result = undefined
 }
-const settleRequest = (request, result) => {
-  request.result = result
-  queueMicrotask(() => request.onsuccess?.())
-  return request
+function makeTransaction(stores) {
+  const transaction = {
+    pending: 0,
+    completeScheduled: false,
+    completed: false,
+    oncomplete: null,
+    onerror: null,
+    onabort: null,
+    settleRequest(request, result) {
+      request.result = result
+      transaction.pending++
+      queueMicrotask(() => {
+        request.onsuccess?.()
+        transaction.pending--
+        if (transaction.pending || transaction.completeScheduled || transaction.completed) return
+        transaction.completeScheduled = true
+        queueMicrotask(() => {
+          transaction.completeScheduled = false
+          if (transaction.pending || transaction.completed) return
+          transaction.completed = true
+          transaction.oncomplete?.()
+        })
+      })
+      return request
+    },
+    objectStore(name) {
+      if (!stores.has(name)) stores.set(name, new Map())
+      const values = stores.get(name)
+      return {
+        get(key) { return transaction.settleRequest(new IdbRequest(), values.has(key) ? structuredClone(values.get(key)) : undefined) },
+        put(value, key) { values.set(key, structuredClone(value)); return transaction.settleRequest(new IdbRequest(), key) },
+        delete(key) { values.delete(key); return transaction.settleRequest(new IdbRequest(), undefined) },
+        getAllKeys() { return transaction.settleRequest(new IdbRequest(), [...values.keys()]) },
+      }
+    },
+  }
+  return transaction
 }
 globalThis.indexedDB = {
   open(name) {
@@ -137,18 +170,7 @@ globalThis.indexedDB = {
     request.result = {
       objectStoreNames: { contains: (store) => stores.has(store) },
       createObjectStore: (store) => (stores.set(store, new Map()), {}),
-      transaction: (store) => ({
-        objectStore() {
-          if (!stores.has(store)) stores.set(store, new Map())
-          const values = stores.get(store)
-          return {
-            get(key) { return settleRequest(new IdbRequest(), values.has(key) ? structuredClone(values.get(key)) : undefined) },
-            put(value, key) { values.set(key, structuredClone(value)); return settleRequest(new IdbRequest(), key) },
-            delete(key) { values.delete(key); return settleRequest(new IdbRequest(), undefined) },
-            getAllKeys() { return settleRequest(new IdbRequest(), [...values.keys()]) },
-          }
-        },
-      }),
+      transaction: () => makeTransaction(stores),
     }
     queueMicrotask(() => {
       if (fresh) request.onupgradeneeded?.()

@@ -40,12 +40,32 @@ function tx<T>(mode: IDBTransactionMode, run: (store: IDBObjectStore) => IDBRequ
     (db) =>
       new Promise<T | null>((resolve) => {
         if (!db) return resolve(null)
+        let result: T | null = null
+        let requestSucceeded = false
+        let requestFailed = false
+        let settled = false
+        const finish = (value: T | null) => {
+          if (settled) return
+          settled = true
+          resolve(value)
+        }
         try {
-          const request = run(db.transaction(STORE, mode).objectStore(STORE))
-          request.onsuccess = () => resolve(request.result)
-          request.onerror = () => resolve(null)
+          const transaction = db.transaction(STORE, mode)
+          const request = run(transaction.objectStore(STORE))
+          request.onsuccess = () => {
+            result = request.result
+            requestSucceeded = true
+          }
+          request.onerror = () => {
+            requestFailed = true
+          }
+          transaction.oncomplete = () => finish(requestSucceeded && !requestFailed ? result : null)
+          transaction.onerror = () => {
+            requestFailed = true
+          }
+          transaction.onabort = () => finish(null)
         } catch {
-          resolve(null)
+          finish(null)
         }
       }),
   )
@@ -186,6 +206,7 @@ export async function idbMark(
   if (!db) return false
   return new Promise<boolean>((resolve) => {
     let settled = false
+    let operationOk = false
     const finish = (ok: boolean) => {
       if (settled) return
       settled = true
@@ -195,12 +216,17 @@ export async function idbMark(
       const transaction = db.transaction(STORE, 'readwrite')
       const store = transaction.objectStore(STORE)
       const request = store.get(key) as IDBRequest<unknown>
-      request.onerror = () => finish(false)
+      request.onerror = () => {
+        operationOk = false
+      }
       transaction.onabort = () => finish(false)
-      transaction.onerror = () => finish(false)
+      transaction.onerror = () => {
+        operationOk = false
+      }
+      transaction.oncomplete = () => finish(operationOk)
       request.onsuccess = () => {
         const raw = request.result
-        if (!raw || typeof raw !== 'object') return finish(false)
+        if (!raw || typeof raw !== 'object') return
         const cur = raw as {
           data?: unknown
           updatedAt?: unknown
@@ -218,11 +244,11 @@ export async function idbMark(
           if (!dirty && cur.dirty !== true) {
             // 旧上传晚到会把云端倒退；把较新的本地档重新标成待同步，至少保证下次读档不倒退。
             const put = store.put({ ...cur, dirty: true }, key)
-            put.onsuccess = () => finish(false)
-            put.onerror = () => finish(false)
+            put.onsuccess = () => { operationOk = false }
+            put.onerror = () => { operationOk = false }
             return
           }
-          return finish(false)
+          return
         }
         const hasCloudRevision = Object.prototype.hasOwnProperty.call(updates, 'cloudRevision')
         const hasSyncBlocked = Object.prototype.hasOwnProperty.call(updates, 'syncBlocked')
@@ -230,7 +256,10 @@ export async function idbMark(
           (cur.dirty === true) === dirty &&
           (!hasCloudRevision || cur.cloudRevision === updates.cloudRevision) &&
           (!hasSyncBlocked || cur.syncBlocked === updates.syncBlocked)
-        if (unchanged) return finish(true)
+        if (unchanged) {
+          operationOk = true
+          return
+        }
         const put = store.put({
           ...cur,
           dirty,
@@ -238,8 +267,8 @@ export async function idbMark(
           // undefined 表示清掉旧的阻塞原因；成功同步或新存档都要能恢复自动补传。
           ...(hasSyncBlocked ? { syncBlocked: updates.syncBlocked } : {}),
         }, key)
-        put.onsuccess = () => finish(true)
-        put.onerror = () => finish(false)
+        put.onsuccess = () => { operationOk = true }
+        put.onerror = () => { operationOk = false }
       }
     } catch {
       finish(false)
@@ -247,8 +276,9 @@ export async function idbMark(
   })
 }
 
-export async function idbDelete(key: string): Promise<void> {
-  await tx<undefined>('readwrite', (s) => s.delete(key))
+export async function idbDelete(key: string): Promise<boolean> {
+  const result = await tx<undefined>('readwrite', (s) => s.delete(key))
+  return result !== null
 }
 
 export async function idbKeys(): Promise<string[]> {

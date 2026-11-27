@@ -34,37 +34,71 @@ class Req {
     this.result = undefined
   }
 }
-const settle = (req, result) => {
-  req.result = result
-  queueMicrotask(() => req.onsuccess?.())
-  return req
-}
-function objectStore(db, name) {
-  if (!db.has(name)) db.set(name, new Map())
-  const m = db.get(name)
-  return {
-    get: (k) => settle(new Req(), m.has(k) ? structuredClone(m.get(k)) : undefined),
-    put: (v, k) => {
-      m.set(k, structuredClone(v))
-      return settle(new Req(), k)
-    },
-    delete: (k) => {
-      m.delete(k)
-      return settle(new Req(), undefined)
-    },
-    getAllKeys: () => settle(new Req(), [...m.keys()]),
+function objectStore(db, name, transaction, pendingWrites) {
+  if (!db.stores.has(name)) db.stores.set(name, new Map())
+  const m = db.stores.get(name)
+  const request = (run) => {
+    const req = new Req()
+    transaction.pending++
+    queueMicrotask(() => {
+      try {
+        req.result = run()
+        req.onsuccess?.()
+      } catch {
+        req.onerror?.()
+      } finally {
+        transaction.pending--
+        transaction.completeWhenIdle()
+      }
+    })
+    return req
   }
+  return {
+    get: (k) => request(() => m.has(k) ? structuredClone(m.get(k)) : undefined),
+    put: (v, k) => request(() => (pendingWrites.push(() => m.set(k, structuredClone(v))), k)),
+    delete: (k) => request(() => (pendingWrites.push(() => m.delete(k)), undefined)),
+    getAllKeys: () => request(() => [...m.keys()]),
+  }
+}
+function makeTransaction(db) {
+  const pendingWrites = []
+  const transaction = {
+    pending: 0,
+    completeScheduled: false,
+    completed: false,
+    oncomplete: null,
+    onerror: null,
+    onabort: null,
+    completeWhenIdle() {
+      if (transaction.pending || transaction.completeScheduled || transaction.completed) return
+      transaction.completeScheduled = true
+      queueMicrotask(() => {
+        transaction.completeScheduled = false
+        if (transaction.pending || transaction.completed) return
+        transaction.completed = true
+        if (db.failNextCommit) {
+          db.failNextCommit = false
+          transaction.onabort?.()
+          return
+        }
+        for (const commit of pendingWrites) commit()
+        transaction.oncomplete?.()
+      })
+    },
+    objectStore: (name) => objectStore(db, name, transaction, pendingWrites),
+  }
+  return transaction
 }
 globalThis.indexedDB = {
   open(name) {
     const req = new Req()
     const fresh = !DBS.has(name)
-    if (fresh) DBS.set(name, new Map())
+    if (fresh) DBS.set(name, { stores: new Map(), failNextCommit: false })
     const db = DBS.get(name)
     req.result = {
-      objectStoreNames: { contains: (s) => db.has(s) },
-      createObjectStore: (s) => (db.set(s, new Map()), {}),
-      transaction: (s) => ({ objectStore: () => objectStore(db, s) }),
+      objectStoreNames: { contains: (s) => db.stores.has(s) },
+      createObjectStore: (s) => (db.stores.set(s, new Map()), {}),
+      transaction: () => makeTransaction(db),
     }
     queueMicrotask(() => {
       if (fresh) req.onupgradeneeded?.()
@@ -81,8 +115,16 @@ const responseHeaders = (values = {}) => ({
 })
 
 /** 可编排的假云端：plan 按 PUT 顺序消费，能让某一次慢、某一次失败 */
-const cloud = { puts: [], plan: [], deletes: [], deletePlan: [], stored: null, revision: null }
+const cloud = {
+  puts: [], plan: [], deletes: [], deletePlan: [], stored: null, revision: null,
+  listStatus: 200, listRows: [],
+}
 globalThis.fetch = async (url, init = {}) => {
+  if (String(url).endsWith('/api/saves')) {
+    return cloud.listStatus === 200
+      ? { ok: true, status: 200, headers: responseHeaders(), json: async () => cloud.listRows }
+      : { ok: false, status: cloud.listStatus, headers: responseHeaders(), json: async () => ({}) }
+  }
   if (init.method === 'PUT') {
     const body = new Uint8Array(init.body)
     const step = cloud.plan.shift() ?? { delay: 0, ok: true }
@@ -155,8 +197,9 @@ globalThis.fetch = async (url, init = {}) => {
 /* ---------------- 真模块 ---------------- */
 
 const { idbGet, idbPut, idbMark } = await import('../src/lib/idb.ts')
-const { deleteCloudSave, installSaveAutoSync, pushSave, pullSave, retryPendingSaves, saveInfo } = await import('../src/services/saves.ts')
+const { deleteCloudSave, deleteSave, installSaveAutoSync, listCloudSaves, pushSave, pullSave, retryPendingSaves, saveInfo } = await import('../src/services/saves.ts')
 const { TOKEN_CHANGED_EVENT } = await import('../src/services/api.ts')
+const { RequestTimeoutError, withRequestTimeout } = await import('../src/services/requestTimeout.ts')
 const { decodeSaveArchive } = await import('../src/emulator/saveEnvelope.ts')
 const { setSaveTarget } = await import('../src/services/saveTarget.ts')
 
@@ -173,13 +216,18 @@ const ok = (c, m) => {
 }
 const reset = () => {
   // idb.ts 会缓存已打开的连接；只清 DBS 外层 Map 不会清到那条连接仍引用的对象仓库。
-  for (const db of DBS.values()) for (const objectStore of db.values()) objectStore.clear()
+  for (const db of DBS.values()) {
+    for (const objectStore of db.stores.values()) objectStore.clear()
+    db.failNextCommit = false
+  }
   cloud.puts = []
   cloud.plan = []
   cloud.deletes = []
   cloud.deletePlan = []
   cloud.stored = null
   cloud.revision = null
+  cloud.listStatus = 200
+  cloud.listRows = []
 }
 const bytes = (tag, len = 8) => {
   const b = new Uint8Array(len)
@@ -224,6 +272,51 @@ console.log('── idbMark 的版本守卫 ──')
     (await idbGet('k')).dirty === true,
     '⭐⭐ 较新的存档已同步后旧上传才返回，也要重新标为待同步，防止云端被旧档倒退',
   )
+
+  const db = DBS.get('8bitgo')
+  db.failNextCommit = true
+  const didPersist = await idbPut('aborted-write', bytes(0x7), 600, true)
+  ok(didPersist === false, '⭐⭐ 写请求成功但事务最终中止时，不能提前报告本地已保存')
+  ok(await idbGet('aborted-write') === null, '事务中止后数据没有被假测试存储留下')
+
+  await idbPut('aborted-mark', bytes(0x8), 700, true, 'mark-rev')
+  db.failNextCommit = true
+  const didMark = await idbMark('aborted-mark', false, 700, 'mark-rev')
+  ok(didMark === false, '⭐⭐ 同步标记也要等事务提交后才能报告成功')
+  ok((await idbGet('aborted-mark'))?.dirty === true, '事务中止时仍保留待同步标记')
+}
+
+console.log('\n── 半开云请求有界结束 ──')
+{
+  let aborted = false
+  const timedOut = await withRequestTimeout(10, undefined, (signal) => new Promise(() => {
+    signal?.addEventListener('abort', () => {
+      aborted = true
+    }, { once: true })
+  })).then(() => null, (error) => error)
+  ok(timedOut instanceof RequestTimeoutError, '云请求卡在包体时会以超时错误结束')
+  ok(aborted, '超时会取消底层请求，不留下继续占连接的读取')
+
+  const controller = new AbortController()
+  const cancelled = withRequestTimeout(1_000, controller.signal, (signal) => new Promise((_resolve, reject) => {
+    signal?.addEventListener('abort', () => reject(signal.reason), { once: true })
+  })).then(() => null, (error) => error)
+  controller.abort()
+  const cancelledError = await cancelled
+  ok(cancelledError?.name === 'AbortError', '调用方主动取消仍立即中止，不误报超时')
+}
+
+console.log('\n── 云存档列表错误不伪装成空 ──')
+{
+  reset()
+  const empty = await listCloudSaves()
+  ok(empty.length === 0, '服务端确认空列表时才返回空列表')
+  cloud.listRows = [{ runtime: 'emulatorjs', gameSlug: 'contra', slot: 0, size: 8, updatedAt: 1, revision: 'rev-a' }]
+  const rows = await listCloudSaves()
+  ok(rows.length === 1 && rows[0].where === 'cloud', '清单读取成功时保留云端标记与记录')
+  cloud.listStatus = 503
+  const failed = await listCloudSaves().then(() => false, () => true)
+  ok(failed, 'HTTP 错误会交给界面展示重试，不会显示成“没有云存档”')
 }
 
 console.log('\n── ⭐⭐ 并发存两次：慢的那次先发、后回 ──')
@@ -374,6 +467,15 @@ console.log('\n── ⭐⭐ 删除失败不能伪装成成功或毒化版本缓
     '删除失败后下一次保存仍基于旧 revision，不会把版本缓存错误改成 none',
   )
   ok(cloud.deletes[0]?.expected === before, '已知 revision 的删除请求会带条件版本头')
+
+  await idbPut('jsdos:local-delete-failure:0', bytes(0x43), 900, false, 'local-rev')
+  DBS.get('8bitgo').failNextCommit = true
+  const localDeleteRejected = await deleteSave('jsdos', 'local-delete-failure').then(
+    () => false,
+    () => true,
+  )
+  ok(localDeleteRejected, '本机事务中止时删除操作会明确失败，不假报两边都已清理')
+  ok((await idbGet('jsdos:local-delete-failure:0'))?.data[0] === 0x43, '本机删除事务中止时原始副本仍完整保留')
 }
 
 console.log('\n── ⭐⭐ 换账号后不能把前一个人的待同步档传走 ──')
