@@ -702,7 +702,12 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   assert.match(player, /reportFallbackOutcome\('fallback_started'\)/, '实际切换核心 / 运行时后必须记录兜底开始')
   assert.match(player, /reportFallbackOutcome\('fallback_first_frame'\)/, '兜底核心出首帧时必须记录中间结果')
   assert.match(player, /reportFallbackOutcome\('fallback_playable'\)[\s\S]{0,120}reportStartup\('game_playable'\)/, '兜底到达可玩状态后才算恢复成功')
-  assert.match(player, /reportFallbackOutcome\('fallback_failed'\)/, '兜底核心失败或超时后必须记录恢复失败')
+  assert.match(player, /const reportStartupFailure = \(reason: string\) => \{\s*reportFallbackOutcome\('fallback_failed'\)/,
+    '最终启动失败时必须记录兜底失败')
+  const watchdog = player.match(/const armStartupWatchdog = \(\) => \{[\s\S]*?const noteStartupActivity/)
+  assert.ok(watchdog, '启动看门狗实现必须可检查')
+  assert.doesNotMatch(watchdog[0], /reportFallbackOutcome\('fallback_failed'\)/,
+    '看门狗超时不等于终态失败，慢启动稍后可恢复')
   assert.match(player, /flushStartupEvents\(payload\)/, '首帧或可玩事件应与已收集阶段合并发送')
   assert.match(player, /event === 'download_complete' \|\| event === 'first_frame'/, '有待发阶段时下载完成事件应顺带刷新批次')
   assert.match(player, /stopProgressSnapshot\(\)[\s\S]{0,100}flushStartupEvents\(\)/, '换局 / 卸载时不能丢掉尚未发送的阶段数据')

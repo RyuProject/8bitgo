@@ -320,7 +320,15 @@ const AGGREGATES = `
   SUM(e.event = 'fallback_started') AS fallback_attempts,
   SUM(e.event IN ('fallback_first_frame', 'fallback_succeeded')) AS fallback_first_frames,
   SUM(e.event = 'fallback_playable') AS fallback_successes,
-  SUM(e.event = 'fallback_failed') AS fallback_failures,
+  /* 后续同一启动成功时，早先的重试 / 整页恢复失败不再算成兜底最终失败。 */
+  SUM(e.event = 'fallback_failed' AND NOT EXISTS (
+    SELECT 1
+     FROM game_startup_events recovered
+     WHERE recovered.game_id = e.game_id
+       AND recovered.visit_id = e.visit_id
+       AND recovered.attempt_id = e.attempt_id
+       AND recovered.event = 'fallback_playable'
+  )) AS fallback_failures,
   AVG(CASE WHEN e.event = 'game_playable' THEN e.elapsed_ms END) AS avg_playable_ms,
   MAX(CASE WHEN e.event = 'game_playable' THEN e.elapsed_ms END) AS max_playable_ms`
 
@@ -332,7 +340,7 @@ const FALLBACK_ROUTE_QUERY = `
            MAX(CASE WHEN e.event = 'fallback_started' THEN e.runtime END) AS runtime,
            MAX(e.event IN ('fallback_first_frame', 'fallback_succeeded')) AS first_frames,
            MAX(e.event = 'fallback_playable') AS playable,
-           MAX(e.event = 'fallback_failed') AS failures
+           (MAX(e.event = 'fallback_failed') = 1 AND MAX(e.event = 'fallback_playable') = 0) AS failures
       FROM game_startup_events e
      WHERE e.created_at >= ?
        AND e.event IN ('fallback_started', 'fallback_first_frame', 'fallback_succeeded', 'fallback_playable', 'fallback_failed')
