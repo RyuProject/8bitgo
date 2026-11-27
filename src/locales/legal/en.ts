@@ -581,7 +581,7 @@ Clearing this site's data removes all of the above (your browser's "clear site d
 
 - **ByteDance (Toutiao) URL submission** — on every page load, and on every in-site page change, the site loads a ByteDance script that submits **the current page URL** to it for search indexing. What it sees is the page address, your IP address and your browser information. This script currently has **no switch and no consent step**.
 
-- **ZeoSeven FontsAPI fonts** — Chinese-language pages (except game-detail pages) may load the Sarasa UI SC stylesheet and glyphs from fontsapi.zeoseven.com when the page is idle and the connection is suitable. English and other non-Chinese pages do not request it. Browser requests expose the IP address and request information normally sent with network requests; they do not include 8BitGo account details. System fonts appear first and are replaced when the remote font is ready.
+- **ZeoSeven FontsAPI fonts** — some Chinese-language pages (except the homepage and game pages) may load the Sarasa UI SC stylesheet and glyphs from fontsapi.zeoseven.com when the page is idle and the connection is suitable. English and other non-Chinese pages do not request it. Browser requests expose the IP address and request information normally sent with network requests; they do not include 8BitGo account details. System fonts appear first and are replaced when the remote font is ready.
 
 ### Only when you trigger it
 

@@ -21,6 +21,7 @@ import { gameTitle, platformLabel } from '@/services/i18nData'
 import { GameCover } from '@/components/game/GameCover'
 import { UserRoleRing } from '@/components/UserRole'
 import { gameListed, useNoWasmMode } from '@/services/noWasm'
+import { stripLang } from '@/config/languages'
 
 export const SIDEBAR_WIDTH = 240
 export const SIDEBAR_COLLAPSED_WIDTH = 72
@@ -227,13 +228,25 @@ export function Sidebar() {
 const loadCounts = () => import('./SidebarCounts')
 
 function RoomCount() {
-  const mod = useIdleImport(loadCounts)
+  const { desktop, mobileOpen } = useShell()
+  const route = stripLang(useLocation().pathname)
+  const countsEnabled = !isGameplayRoute(route) && (desktop || mobileOpen)
+  // 这只是导航徽标；房间列表和两条轮询接口等首屏后再加载，移动端抽屉关闭或正在玩游戏时不加载。
+  const mod = useIdleImport(loadCounts, { delayMs: 3000, enabled: countsEnabled })
   return mod ? <mod.RoomCount /> : null
 }
 
 function GamesCount() {
-  const mod = useIdleImport(loadCounts)
+  const { desktop, mobileOpen } = useShell()
+  const route = stripLang(useLocation().pathname)
+  const countsEnabled = !isGameplayRoute(route) && (desktop || mobileOpen)
+  const mod = useIdleImport(loadCounts, { delayMs: 3000, enabled: countsEnabled })
   return mod ? <mod.GamesCount /> : null
+}
+
+/** 游戏页与本地 ROM 页优先给 ROM / 核心带宽，侧栏数字不在开局期间补请求。 */
+function isGameplayRoute(route: string): boolean {
+  return route.startsWith('/games/') || route.startsWith('/play/') || route === '/play-local'
 }
 
 /**

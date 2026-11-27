@@ -35,18 +35,28 @@ export function HScroll({
   }, [])
 
   useEffect(() => {
-    update()
     const el = ref.current
     if (!el) return
-    el.addEventListener('scroll', update, { passive: true })
-    const ro = typeof ResizeObserver === 'function' ? new ResizeObserver(update) : null
+    let frame = 0
+    const scheduleUpdate = () => {
+      if (frame) return
+      // 合并挂载、尺寸和滚动触发的测量；放到下一帧读取，避免 React 刚改完 DOM 时同步强制布局。
+      frame = requestAnimationFrame(() => {
+        frame = 0
+        update()
+      })
+    }
+    scheduleUpdate()
+    el.addEventListener('scroll', scheduleUpdate, { passive: true })
+    const ro = typeof ResizeObserver === 'function' ? new ResizeObserver(scheduleUpdate) : null
     ro?.observe(el)
     // ResizeObserver 到 Safari 13.1 才有；旧浏览器至少在窗口尺寸变化时重算箭头。
-    if (!ro) window.addEventListener('resize', update, { passive: true })
+    if (!ro) window.addEventListener('resize', scheduleUpdate, { passive: true })
     return () => {
-      el.removeEventListener('scroll', update)
+      el.removeEventListener('scroll', scheduleUpdate)
       ro?.disconnect()
-      if (!ro) window.removeEventListener('resize', update)
+      if (!ro) window.removeEventListener('resize', scheduleUpdate)
+      if (frame) cancelAnimationFrame(frame)
     }
   }, [update])
 

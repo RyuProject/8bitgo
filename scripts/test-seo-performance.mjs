@@ -92,7 +92,14 @@ check('首页轮播只在可轮换时预热，并复用封面转码档与实际�
   assert.doesNotMatch(src, /romUrlForKey/, '预热不能绕过游戏媒体地址与缩放图路径')
 })
 
-check('非中文、游戏详情和弱网不请求第三方字体，中文其它页面只在空闲时加载', () => {
+check('首页所有尺寸的轮换游戏名固定两行，避免长标题周期性推移正文', () => {
+  const src = read('src/components/home/HomeBanner.tsx')
+  assert.match(src, /min-h-\[2\.5em\]/, '标题槽必须预留两行高度')
+  assert.match(src, /line-clamp-2(?! md:line-clamp-none)/, '所有尺寸的标题都限制在两行内')
+  assert.match(src, /setInterval\(\(\) => \{/, '布局守卫应对应会周期轮换的横幅标题')
+})
+
+check('非中文、首页、游戏详情和弱网不请求第三方字体，中文其它页面只在空闲时加载', () => {
   const html = read('index.html')
   const css = read('src/index.css')
   const fontUrl = 'https://fontsapi.zeoseven.com/214/main/result.css'
@@ -102,6 +109,7 @@ check('非中文、游戏详情和弱网不请求第三方字体，中文其它�
   assert.ok(loader, 'index.html 没有字体按需加载器')
   assert.match(loader, /document\.documentElement\.lang[^\n]*\.startsWith\('zh'\)/, '非中文页面仍会下载未使用的字体 CSS')
   assert.match(loader, /window\.location\.pathname/, '字体策略没有按游戏详情页路径跳过')
+  assert.ok(loader.includes("sitePath === '/"), '首页应跳过会触发全页换字的晚到字体')
   assert.match(loader, /games\\\/\[\^\/\]\+/, '本地化游戏详情页也必须跳过字体下载')
   assert.match(loader, /saveData|slow-2g|downlink|rtt/, '弱网 / 流量节省模式没有跳过字体请求')
   assert.match(loader, /addEventListener\('load', afterLoad/, '字体请求在页面 load 前启动')
@@ -132,7 +140,8 @@ check('非中文、游戏详情和弱网不请求第三方字体，中文其它�
     return requested
   }
   assert.deepEqual(requestedFonts('en', '/en'), [], '英文页仍请求字体')
-  assert.deepEqual(requestedFonts('zh-Hans', '/'), [fontUrl], '适合网络的中文页没有加载字体')
+  assert.deepEqual(requestedFonts('zh-Hans', '/search'), [fontUrl], '适合网络的中文内容页没有加载字体')
+  assert.deepEqual(requestedFonts('zh-Hans', '/zh-Hans'), [], '本地化首页请求了字体')
   assert.deepEqual(requestedFonts('zh-Hant', '/zh-Hant/games/contra'), [], '中文游戏详情页请求了字体')
   assert.deepEqual(requestedFonts('zh-Hans', '/', { effectiveType: '2g', downlink: 0.3, rtt: 800 }), [], '弱网仍请求字体')
 })

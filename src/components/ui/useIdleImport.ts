@@ -16,34 +16,48 @@ import { whenIdle } from '@/lib/idle'
  * 挂上去。代价是这类组件会「晚一拍」出现，所以只适合徽标这种装饰性内容。
  *
  * ⚠️ `load` 必须是**模块级稳定引用**（写成 `() => import('./x')` 常量）。
- * 内部用 ref 存它、effect 只跑一次，别在调用处现造箭头函数指望它变化。
+ * 内部用 ref 存它；effect 只由启用状态和时机选项驱动，别在调用处现造箭头函数指望它变化。
  */
 export function useIdleImport<M>(
   load: () => Promise<M>,
-  { timeout = 1500, fallbackMs = 400 }: { timeout?: number; fallbackMs?: number } = {},
+  {
+    timeout = 1500,
+    fallbackMs = 400,
+    delayMs = 0,
+    enabled = true,
+  }: { timeout?: number; fallbackMs?: number; delayMs?: number; enabled?: boolean } = {},
 ): M | null {
   const loadRef = useRef(load)
   loadRef.current = load
   const [mod, setMod] = useState<M | null>(null)
 
   useEffect(() => {
+    if (!enabled) return
     let alive = true
-    const cancel = whenIdle(
-      () => {
-        // 加载失败就算了：徽标少一个数字，比在控制台里抛一个没人处理的 rejection 强
-        loadRef.current()
-          .then((m) => {
-            if (alive) setMod(m)
-          })
-          .catch(() => {})
-      },
-      { timeout, fallbackMs },
-    )
+    let cancelIdle = () => {}
+    const loadWhenIdle = () => {
+      cancelIdle = whenIdle(
+        () => {
+          // 加载失败就算了：徽标少一个数字，比在控制台里抛一个没人处理的 rejection 强
+          loadRef.current()
+            .then((m) => {
+              if (alive) setMod(m)
+            })
+            .catch(() => {})
+        },
+        { timeout, fallbackMs },
+      )
+    }
+    // 可选的最短等待时间用于非首屏装饰模块：requestIdleCallback 可能刚好在首屏绘制后立刻触发，
+    // 这时它们仍会挤进 Lighthouse 的初始请求链；等一会儿再借空闲期，不影响玩家随后使用。
+    const delay = delayMs > 0 ? window.setTimeout(loadWhenIdle, delayMs) : null
+    if (delay === null) loadWhenIdle()
     return () => {
       alive = false
-      cancel()
+      if (delay !== null) window.clearTimeout(delay)
+      cancelIdle()
     }
-  }, [timeout, fallbackMs])
+  }, [timeout, fallbackMs, delayMs, enabled])
 
-  return mod
+  return enabled ? mod : null
 }

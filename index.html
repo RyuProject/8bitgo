@@ -411,15 +411,16 @@
     <meta data-ssr-default name="twitter:card" content="summary_large_image" />
 
     <!--
-      只有中文界面需要第三方字体；英文等页面使用系统字体，避免下载一份完全用不到的 64 KB 样式。
-      游戏详情页不下载字体：中文字体 CSS 会再拆成很多字形分片，和 ROM / 核心争弱网连接。
-      其它中文页面等 load 后空闲再加载；Save-Data、2G、低下行或高 RTT 环境也完全跳过。
+      首页和游戏详情页不下载第三方字体：首页标题会轮换，晚到的字体替换会移动整页；游戏页也不能和 ROM / 核心争弱网连接。
+      只有中文界面会下载字体；其它中文页面等 load 后空闲再加载，省下首屏关键请求槽。
+      Save-Data、2G、低下行或高 RTT 环境完全跳过字体请求，避免为装饰字体增加用户流量。
     -->
     <script>
       ;(function () {
         try {
           if (!String(document.documentElement.lang || '').toLowerCase().startsWith('zh')) return
-          if (/(?:^|\/)games\/[^/]+(?:\/|$)/i.test(window.location.pathname || '/')) return
+          var sitePath = (window.location.pathname || '/').replace(/^\/(?:zh-Hans|zh-Hant|en|es|fr|it|de|ja)(?=\/|$)/, '') || '/'
+          if (sitePath === '/' || /^\/(?:games\/[^/]+|play)(?:\/|$)/i.test(sitePath)) return
           var connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection
           if (connection) {
             var effectiveType = String(connection.effectiveType || '').toLowerCase()

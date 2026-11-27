@@ -15,21 +15,20 @@
  * 而任何一个访客只会用到其中一种。以前是八种全部静态引入，等于每个人
  * 都要下载七份自己永远看不到的文案 —— 这是首屏包里最大的一块无效体积。
  *
- * 基准语言留在主包里不拆：它同时是类型来源，也是语言包没下下来时的兜底，
- * 必须能同步拿到。
+ * 简体中文也按需加载：类型只在编译期引用，不会把整份中文文案带进所有语言的首屏包。
+ * 若当前语言下载失败，再动态加载简体中文兜底；这一步在入口渲染前完成，不会让水合期间闪语言。
  *
  * 切换语言走的是整页跳转（见 services/lang.ts 的 setLang），
  * 所以一次页面生命周期里只会用到一种语言，不存在「加载完 A 又要 B」的情况。
  */
 import type { Lang } from '@/config/languages'
-import zhHans from './zh-Hans'
+import type zhHans from './zh-Hans'
 
 /** 全站文案的结构（由简体中文推导） */
 export type Translation = typeof zhHans
 
-type LazyLang = Exclude<Lang, 'zh-Hans'>
-
-const LOADERS: Record<LazyLang, () => Promise<{ default: Translation }>> = {
+const LOADERS: Record<Lang, () => Promise<{ default: Translation }>> = {
+  'zh-Hans': () => import('./zh-Hans'),
   'zh-Hant': () => import('./zh-Hant'),
   en: () => import('./en'),
   es: () => import('./es'),
@@ -39,8 +38,10 @@ const LOADERS: Record<LazyLang, () => Promise<{ default: Translation }>> = {
   ja: () => import('./ja'),
 }
 
-/** 已经拿到的语言包。基准语言天生就在。 */
-const loaded: Partial<Record<Lang, Translation>> = { 'zh-Hans': zhHans }
+/** 已经拿到的语言包；入口会在渲染前填好当前语言。 */
+const loaded: Partial<Record<Lang, Translation>> = {}
+/** 仅临时回退的语言要在后续请求重试，不能让一次短暂断网污染 SSR 常驻进程。 */
+const retryRequestedLang = new Set<Lang>()
 
 /**
  * 同步取已加载的语言包。没加载过返回 undefined —— 调用方自己决定退回哪种。
@@ -54,20 +55,26 @@ export function getLoadedLocale(lang: Lang): Translation | undefined {
  * 加载某种语言的文案。已加载过就直接返回，不会重复请求。
  *
  * 失败时退回基准语言而不是抛错：语言包下不下来（网络抖动、部署换了文件名）
- * 顶多是文案变成中文，不该让整个页面白屏。
+ * 顶多是文案退回中文（中文包也取不到时再退回英文），不该只因某一种语言包失败就白屏。
  */
 export async function loadLocale(lang: Lang): Promise<Translation> {
   const hit = loaded[lang]
-  if (hit) return hit
-  const load = LOADERS[lang as LazyLang]
-  if (!load) return zhHans
-  try {
-    const mod = await load()
-    loaded[lang] = mod.default
-    return mod.default
-  } catch {
-    return zhHans
-  }
-}
+  if (hit && !retryRequestedLang.has(lang)) return hit
 
-export { zhHans }
+  // 简体中文不再静态驻留主包；目标语言失败时按顺序动态加载兜底，且避免重复尝试同一语言。
+  const fallbacks = [...new Set<Lang>([lang, 'zh-Hans', 'en'])]
+  for (const fallbackLang of fallbacks) {
+    try {
+      const mod = await LOADERS[fallbackLang]()
+      loaded[fallbackLang] = mod.default
+      loaded[lang] = mod.default
+      if (fallbackLang === lang) retryRequestedLang.delete(lang)
+      else retryRequestedLang.add(lang)
+      return mod.default
+    } catch {
+      // 网络失败时尝试下一份兜底；入口仍会在任何 React 渲染前等待结果。
+    }
+  }
+
+  throw new Error(`无法加载界面语言包：${lang}`)
+}

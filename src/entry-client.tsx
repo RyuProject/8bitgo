@@ -40,12 +40,12 @@ const root = document.getElementById('root')!
 /**
  * 先把当前语言的文案取到手，再渲染。
  *
- * 非基准语言是按需加载的（见 locales/index.ts）。这里之所以要 await 而不是
+ * 所有语言都按需加载（见 locales/index.ts）。这里之所以要 await 而不是
  * 「先用中文渲染、加载完再切」：服务端吐出来的 HTML 已经是目标语言了，
  * 客户端要是拿中文去 hydrate，两边对不上，React 会把整棵树推倒重建 ——
  * 用户看到的就是页面先闪一下中文再变回英文。
  *
- * 简体中文本来就在主包里，loadLocale 立刻 resolve，等于没有这一步。
+ * SSR 同样会预载当前语言；网络预载失败时 loader 会在此处尝试兜底语言。
  */
 async function start() {
   await loadLocale(lang)
