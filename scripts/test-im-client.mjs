@@ -651,11 +651,11 @@ check('⭐ 关闭 / 登出要把找人那一行复位', () => {
 check('⭐ Esc 一次只退一层：会话 -> 找人行 -> 关面板', () => {
   assert.match(
     panelCode,
-    /if \(active\) setActive\(null\)\s*else if \(composeOpen\) setComposeOpen\(false\)\s*else doClose\(\)/,
+    /if \(activeForUser\) setActive\(null\)\s*else if \(composeOpen\) setComposeOpen\(false\)\s*else doClose\(\)/,
     'Esc 的退出顺序变了 —— 写成并列 if 会一次退两层',
   )
   // composeOpen 不进依赖数组的话，闭包里永远是 false，那一层等于不存在
-  assert.match(panelCode, /\}, \[open, active, composeOpen, doClose\]\)/, 'Esc 的依赖数组漏了 composeOpen')
+  assert.match(panelCode, /\}, \[open, activeForUser, composeOpen, doClose\]\)/, 'Esc 的依赖数组漏了 composeOpen')
 })
 
 check('⭐ 输入框必须关掉自动填充', () => {
@@ -679,8 +679,8 @@ check('⭐ 组字期间的 Enter 不能当提交（中日文用户每打一个�
 })
 
 check('没连上时不给这个入口（查得到人，却会栽进一个连不上的会话）', () => {
-  assert.match(panelCode, /\{state === 'ready' && \(\s*<button/, '顶栏那颗按钮没有按连接状态收起')
-  assert.match(panelCode, /state === 'ready' && !active && composeOpen &&/, '输入行没有按连接状态收起')
+  assert.match(panelCode, /\{readyForUser && \(\s*<button/, '顶栏那颗按钮没有按当前账号连接状态收起')
+  assert.match(panelCode, /readyForUser && !activeForUser && composeOpen &&/, '输入行没有按当前账号连接状态收起')
 })
 
 console.log('\n十二、昵称的权威源是我们的库，不是腾讯')
@@ -786,6 +786,34 @@ check('⭐ 自动重连要有节流，手点「重新连接」不受它管', () 
   // 连上就归零：之后真的掉线该立刻重连
   const ready = clientCode.slice(clientCode.indexOf('on(E.SDK_READY'))
   assert.match(ready.slice(0, 300), /lastAutoRetry = 0/, 'SDK_READY 没把节流归零')
+})
+
+console.log('\n十四、账号切换时会话数据必须留在原账号')
+
+check('⭐ 会话数据只在 SDK 当前连接属于本账号时读写', () => {
+  assert.match(clientCode, /export function imReadyForUser\(userId: string \| undefined\): boolean/)
+  assert.match(clientCode, /boundUserId === userId && imState\(\) === 'ready'/)
+  assert.match(panelCode, /const readyForUser = imReadyForUser\(userId\) && state === 'ready'/)
+  assert.match(panelCode, /const currentConvs = convsOwnerId === userId \? convs : \[\]/)
+})
+
+check('⭐ 账号切换清空旧会话，并丢弃迟到的旧账号列表响应', () => {
+  assert.match(panelCode, /previousUserId\.current === userId/)
+  assert.match(panelCode, /setConvsOwnerId\(null\)/)
+  assert.match(panelCode, /convRequestSeq\.current \+= 1/)
+  assert.match(panelCode, /userIdRef\.current === ownerId && convRequestSeq\.current === requestSeq && imReadyForUser\(ownerId\)/)
+  assert.match(panelCode, /ownerId: userId, id: convIdFor\(p\.peerId\)/)
+  assert.match(panelCode, /active\?\.ownerId === userId/)
+})
+
+check('⭐ 账号切换期间不把新账号资料写入旧连接，也不沿用旧账号的私信目标', () => {
+  const profile = clientCode.slice(clientCode.indexOf('async function syncProfile'), clientCode.indexOf('/* ---------------- 会话与消息'))
+  const dm = clientCode.slice(clientCode.indexOf('export async function requestImDm'), clientCode.indexOf('/* ---------------- 按邮箱找人'))
+  assert.match(profile, /boundUserId !== ownerId/)
+  assert.match(profile, /chat !== currentChat \|\| boundUserId !== ownerId/)
+  assert.match(dm, /ownerId, peerId: peer\.peerId/)
+  assert.match(dm, /getCurrentUser\(\).*ownerId/)
+  assert.match(dm, /imReadyForUser\(p\.ownerId\)/)
 })
 
 console.log(`\n✅ IM 接入结构检查：${n} 项通过`)

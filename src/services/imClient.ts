@@ -49,6 +49,11 @@ import { imState, invalidate, isStale, onImStateChange, setState, setStateIf, st
 // 状态相关的读接口原样透传，让 UI 只认这一个模块
 export { imState, imStateDetail, onImStateChange, type ImState } from './imSession'
 
+/** 只有当前 SDK 连接确实属于这个账号且已就绪时，面板才允许读写会话。 */
+export function imReadyForUser(userId: string | undefined): boolean {
+  return Boolean(userId && chat && TC && boundUserId === userId && imState() === 'ready')
+}
+
 /* ---------------- 对外的数据形状 ---------------- */
 
 /** 一条会话（本版只有单聊） */
@@ -627,13 +632,17 @@ function textOfMessage(m: RawIncoming, T: ChatNS): string {
  */
 async function syncProfile(): Promise<void> {
   const u = getCurrentUser()
-  if (!chat || !u) return
+  const ownerId = u ? String(u.id) : ''
+  const currentChat = chat
+  // 账号切换期间旧连接可能还活着；绝不能把新账号的资料写进旧账号的腾讯档案。
+  if (!currentChat || !u || boundUserId !== ownerId) return
   const nick = (u.nickname || '').slice(0, 32)
   const avatar = u.avatar || '🕹️'
   const key = `${nick}|${avatar}`
   if (key === syncedProfile) return
   try {
-    await chat.updateMyProfile({ nick, avatar })
+    await currentChat.updateMyProfile({ nick, avatar })
+    if (chat !== currentChat || boundUserId !== ownerId) return
     syncedProfile = key
   } catch (e) {
     console.warn('[im] 昵称同步失败（不影响聊天）：', e)
@@ -891,7 +900,7 @@ export async function markImRead(conversationId: string): Promise<void> {
 
 /* ---------------- 从别处发起私信 ---------------- */
 
-let pendingDm: { peerId: string; nick: string; avatar: string } | null = null
+let pendingDm: { ownerId: string; peerId: string; nick: string; avatar: string } | null = null
 
 /**
  * 「给这个人发私信」。评论区点头像走这里。
@@ -902,9 +911,10 @@ let pendingDm: { peerId: string; nick: string; avatar: string } | null = null
 export async function requestImDm(peer: { peerId: string; nick?: string; avatar?: string }): Promise<boolean> {
   const me = getCurrentUser()
   if (!me || !peer.peerId || peer.peerId === me.id) return false
-  pendingDm = { peerId: peer.peerId, nick: peer.nick ?? '', avatar: peer.avatar ?? '' }
+  const ownerId = String(me.id)
+  pendingDm = { ownerId, peerId: peer.peerId, nick: peer.nick ?? '', avatar: peer.avatar ?? '' }
   const ok = await ensureImStarted()
-  if (!ok || !panelOpener) {
+  if (!ok || !panelOpener || String(getCurrentUser()?.id ?? '') !== ownerId || !imReadyForUser(ownerId)) {
     // 连不上就别把目标留在那儿 —— 留着会在下一次打开抽屉时把用户莫名带进一个
     // 几分钟前点过的会话。第一版就是这个毛病，而且还会返回 true。
     pendingDm = null
@@ -921,7 +931,8 @@ export async function requestImDm(peer: { peerId: string; nick?: string; avatar?
 export function takePendingImDm(): { peerId: string; nick: string; avatar: string } | null {
   const p = pendingDm
   pendingDm = null
-  return p
+  if (!p || String(getCurrentUser()?.id ?? '') !== p.ownerId || !imReadyForUser(p.ownerId)) return null
+  return { peerId: p.peerId, nick: p.nick, avatar: p.avatar }
 }
 
 /* ---------------- 按邮箱找人 ---------------- */

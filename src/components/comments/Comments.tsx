@@ -25,6 +25,18 @@ import { Stars } from '@/components/game/StarRating'
 import { Button } from '@/components/ui/Button'
 import { SkeletonBlock } from '@/components/ui/PageSkeleton'
 
+/** 用随机请求键区分「用户又发了一条」和「上一条成功但响应丢了后的重试」。 */
+function newCommentRequestId(): string {
+  const bytes = new Uint8Array(16)
+  const cryptoApi = globalThis.crypto
+  if (cryptoApi?.getRandomValues) cryptoApi.getRandomValues(bytes)
+  else for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256)
+  bytes[6] = (bytes[6] & 0x0f) | 0x40
+  bytes[8] = (bytes[8] & 0x3f) | 0x80
+  const hex = [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
+
 /**
  * 评论区。同一个组件服务两个宿主：游戏详情页的侧栏、博客文章页的右侧栏。
  *
@@ -68,6 +80,9 @@ function CommentsPanel({ target, variant = 'default' }: { target: CommentTarget;
   const c = t.comments
   const user = useCurrentUser()
   const authReady = useAuthReady()
+  const draftOwnerKey = user?.id ?? 'guest'
+  const draftOwnerRef = useRef(draftOwnerKey)
+  draftOwnerRef.current = draftOwnerKey
 
   const [items, setItems] = useState<GameComment[]>([])
   const [total, setTotal] = useState(0)
@@ -80,14 +95,21 @@ function CommentsPanel({ target, variant = 'default' }: { target: CommentTarget;
   const [text, setText] = useState('')
   const [replyTo, setReplyTo] = useState<GameComment | null>(null)
   const [sending, setSending] = useState(false)
+  const sendingRef = useRef<object | null>(null)
   const [formError, setFormError] = useState('')
   const [formNotice, setFormNotice] = useState('')
   const boxRef = useRef<HTMLTextAreaElement>(null)
+  const [storedDraftOwner, setStoredDraftOwner] = useState(draftOwnerKey)
+  const ownsDraft = storedDraftOwner === draftOwnerKey
+  const draftText = ownsDraft ? text : ''
+  const draftReplyTo = ownsDraft ? replyTo : null
+  const requestAttempts = useRef(new Map<string, string>())
   /**
    * 当前宿主。面板在 A → B 之间是复用的，A 的请求（翻页、首屏、发表）在跳走之后才返回时，
    * 结果不能落到 B 的列表上 —— 每个 await 之后都拿它比一下，宿主变了就丢掉。
    */
   const hostRef = useRef(`${kind}:${slug}`)
+  const hostEpoch = useRef(0)
   /** 首屏 / 翻页请求的序号：同一宿主里后发的请求优先，慢的旧响应不能盖掉新列表 */
   const loadSeq = useRef(0)
 
@@ -140,6 +162,7 @@ function CommentsPanel({ target, variant = 'default' }: { target: CommentTarget;
       return
     }
     hostRef.current = `${kind}:${slug}`
+    hostEpoch.current += 1
     setItems([])
     setTotal(0)
     setPage(1)
@@ -149,24 +172,53 @@ function CommentsPanel({ target, variant = 'default' }: { target: CommentTarget;
     setText('')
     setFormError('')
     setFormNotice('')
+    sendingRef.current = null
+    setSending(false)
     void load(1, false)
   }, [kind, slug, load])
 
+  // 草稿和引用对象属于当前账号；切换账号后首帧就隐藏，随后清除，避免把未发表内容带给下一个人。
+  useEffect(() => {
+    if (ownsDraft) return
+    setStoredDraftOwner(draftOwnerKey)
+    setText('')
+    setReplyTo(null)
+    setFormError('')
+    setFormNotice('')
+    sendingRef.current = null
+    setSending(false)
+  }, [draftOwnerKey, ownsDraft])
+
   const submit = async () => {
-    const content = text.trim()
-    if (!content || sending || !authReady) return
+    const content = draftText.trim()
+    if (!ownsDraft || !content || sending || sendingRef.current || !authReady) return
     if (content.length > COMMENT_MAX_LENGTH) {
       setFormError(fmt(c.tooLong, { n: COMMENT_MAX_LENGTH }))
       return
     }
     const host = `${kind}:${slug}`
+    const epoch = hostEpoch.current
+    const signature = JSON.stringify([host, draftOwnerKey, content, draftReplyTo?.id ?? null])
+    let clientRequestId = requestAttempts.current.get(signature)
+    if (!clientRequestId) {
+      clientRequestId = newCommentRequestId()
+      requestAttempts.current.set(signature, clientRequestId)
+      // 用户连续改稿时保留少量未确认请求，返回旧草稿重试仍能命中原请求。
+      if (requestAttempts.current.size > 8) {
+        const oldest = requestAttempts.current.keys().next().value
+        if (oldest) requestAttempts.current.delete(oldest)
+      }
+    }
+    const sendAttempt = {}
+    sendingRef.current = sendAttempt
     setSending(true)
     setFormError('')
     setFormNotice('')
     try {
-      const created = await postComment({ kind, slug }, content, replyTo?.id)
+      const created = await postComment({ kind, slug }, content, draftReplyTo?.id, clientRequestId)
+      if (requestAttempts.current.get(signature) === clientRequestId) requestAttempts.current.delete(signature)
       // 发表期间已经换到别的游戏 / 文章：评论已经存上了，但不能插进新宿主的列表
-      if (hostRef.current !== host) return
+      if (draftOwnerRef.current !== draftOwnerKey || hostRef.current !== host || hostEpoch.current !== epoch) return
       if (created.pendingReview) {
         // 待审核内容不能乐观插入公开列表，也不能计入公开评论数。
         setFormNotice(c.pendingNotice)
@@ -178,9 +230,14 @@ function CommentsPanel({ target, variant = 'default' }: { target: CommentTarget;
       setText('')
       setReplyTo(null)
     } catch (e) {
-      if (hostRef.current === host) setFormError(e instanceof Error ? e.message : c.loadFailed)
+      if (draftOwnerRef.current === draftOwnerKey && hostRef.current === host && hostEpoch.current === epoch) {
+        setFormError(e instanceof Error ? e.message : c.loadFailed)
+      }
     } finally {
-      setSending(false)
+      if (sendingRef.current === sendAttempt) {
+        sendingRef.current = null
+        setSending(false)
+      }
     }
   }
 
@@ -200,7 +257,7 @@ function CommentsPanel({ target, variant = 'default' }: { target: CommentTarget;
     setItems((prev) => prev.map((x) => (x.id === next.id ? next : x)))
   }
 
-  const remaining = COMMENT_MAX_LENGTH - text.length
+  const remaining = COMMENT_MAX_LENGTH - draftText.length
   const hasMore = items.length < total
 
   // id 给详情页「反馈问题」用：出错的玩家一键滚到这里留言
@@ -228,9 +285,9 @@ function CommentsPanel({ target, variant = 'default' }: { target: CommentTarget;
         <>
           {/* ---- 发表 ---- */}
           <div className={card ? 'mt-3' : 'mt-4'}>
-              {replyTo && (
+              {draftReplyTo && (
                 <div className="mb-2 flex items-center justify-between gap-2 rounded-lg bg-surface-2 px-2.5 py-1.5 text-xs">
-                  <span className="truncate text-muted">{fmt(c.replyingTo, { name: replyTo.author.nickname || c.guestAuthor })}</span>
+                  <span className="truncate text-muted">{fmt(c.replyingTo, { name: draftReplyTo.author.nickname || c.guestAuthor })}</span>
                   <button
                     type="button"
                     onClick={() => setReplyTo(null)}
@@ -242,16 +299,20 @@ function CommentsPanel({ target, variant = 'default' }: { target: CommentTarget;
               )}
               <textarea
                 ref={boxRef}
-                value={text}
+                value={draftText}
                 onChange={(e) => {
+                  if (!ownsDraft) {
+                    setStoredDraftOwner(draftOwnerKey)
+                    setReplyTo(null)
+                  }
                   setText(e.target.value)
                   if (formError) setFormError('')
                   if (formNotice) setFormNotice('')
                 }}
                 rows={3}
                 maxLength={COMMENT_MAX_LENGTH}
-                aria-label={replyTo ? fmt(c.replyPlaceholder, { name: replyTo.author.nickname || c.guestAuthor }) : card ? c.placeholderCard : c.placeholder}
-                placeholder={replyTo ? fmt(c.replyPlaceholder, { name: replyTo.author.nickname || c.guestAuthor }) : card ? c.placeholderCard : c.placeholder}
+                aria-label={draftReplyTo ? fmt(c.replyPlaceholder, { name: draftReplyTo.author.nickname || c.guestAuthor }) : card ? c.placeholderCard : c.placeholder}
+                placeholder={draftReplyTo ? fmt(c.replyPlaceholder, { name: draftReplyTo.author.nickname || c.guestAuthor }) : card ? c.placeholderCard : c.placeholder}
                 className={
                   card
                     ? // 设计稿：105px 高的白底输入框、7px 圆角、#dfe4ea 描边、#bcc1cb 占位字
@@ -277,14 +338,14 @@ function CommentsPanel({ target, variant = 'default' }: { target: CommentTarget;
                   <button
                     type="button"
                     onClick={() => void submit()}
-                    disabled={!text.trim() || sending || !authReady}
+                    disabled={!draftText.trim() || sending || !authReady}
                     className="inline-flex h-8 shrink-0 items-center gap-2 rounded-2xl border-2 border-[#dfe4ea] bg-white px-3 text-xs font-bold text-[#263329] shadow-[0_4px_0_0_#dfe4ea] transition-[transform,box-shadow,background-color] duration-100 hover:bg-surface-2 active:translate-y-[3px] active:shadow-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50"
                   >
                     <span aria-hidden>💬</span>
                     {sending ? c.submitting : c.submitCard}
                   </button>
                 ) : (
-                  <Button size="md" onClick={() => void submit()} disabled={!text.trim() || sending || !authReady}>
+                  <Button size="md" onClick={() => void submit()} disabled={!draftText.trim() || sending || !authReady}>
                     {sending ? c.submitting : c.submit}
                   </Button>
                 )}
@@ -296,12 +357,12 @@ function CommentsPanel({ target, variant = 'default' }: { target: CommentTarget;
               )}
           </div>
 
-          {formError && (
+          {ownsDraft && formError && (
             <p className="mt-2 text-xs text-live" role="alert">
               {formError}
             </p>
           )}
-          {formNotice && <p className="mt-2 text-xs text-online" role="status">{formNotice}</p>}
+          {ownsDraft && formNotice && <p className="mt-2 text-xs text-online" role="status">{formNotice}</p>}
         </>
       )}
       </div>

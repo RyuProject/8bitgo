@@ -75,11 +75,13 @@ export async function postComment(
   target: CommentTarget,
   content: string,
   parentId?: string,
+  clientRequestId?: string,
 ): Promise<GameComment> {
   return api.post<GameComment>('/api/comments', {
     [target.kind === 'game' ? 'gameSlug' : 'postSlug']: target.slug,
     content,
     parentId,
+    clientRequestId,
   })
 }
 

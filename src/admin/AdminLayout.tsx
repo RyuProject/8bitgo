@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link, Navigate, NavLink, Outlet, useLocation, useNavigate, useOutletContext } from 'react-router-dom'
 import { cx } from '@/lib/format'
 import { useDocumentTitle } from '@/lib/useDocumentTitle'
 import { ApiError, api, apiEnabled, getAdminApiToken, getToken, setAdminApiToken } from '@/services/api'
+import { useAuthReady, useCurrentUser } from '@/services/auth'
 import { fetchAdminGames } from '@/services/store'
 import { ensureRomCredential } from '@/services/romUploadCredential'
 import { ABILITIES, ROLE_LABELS, type Ability, type UserRole } from '../../shared/roles.js'
@@ -78,6 +79,9 @@ interface VerifyResult {
  */
 export function AdminLayout() {
   useDocumentTitle('后台管理')
+  const currentUser = useCurrentUser()
+  const authReady = useAuthReady()
+  const currentUserId = currentUser?.id ?? null
   const [gate, setGate] = useState<GateState>(() => {
     try {
       // 这个标签页里已经用口令进过后台
@@ -91,6 +95,9 @@ export function AdminLayout() {
 
   /** 服务端认下来的身份。不缓存在浏览器里 —— 那等于让前端自己给自己发权限 */
   const [me, setMe] = useState<VerifyResult | null>(null)
+  const [verifiedUserId, setVerifiedUserId] = useState(currentUserId)
+  const [verifyRevision, setVerifyRevision] = useState(0)
+  const previousUserId = useRef(currentUserId)
 
   const lock = useCallback(() => {
     setAdminApiToken(null)
@@ -102,6 +109,17 @@ export function AdminLayout() {
     setGate('locked')
   }, [])
 
+  // 后台可能显示待审核正文与邮箱；账号变更后立即遮住旧页面，再用新凭证重验。
+  useEffect(() => {
+    if (!authReady || previousUserId.current === currentUserId) return
+    previousUserId.current = currentUserId
+    setMe(null)
+    if (gate === 'unlocked' || gate === 'checking' || getToken()) {
+      setGate('checking')
+      setVerifyRevision((revision) => revision + 1)
+    }
+  }, [authReady, currentUserId, gate])
+
   // 刷新后台时可以沿用当前标签页的会话，但仍要回服务端重新验一次，不能只信浏览器里的标记。
   useEffect(() => {
     if (gate !== 'checking') return
@@ -111,6 +129,7 @@ export function AdminLayout() {
       .then((res) => {
         if (cancelled) return
         setMe(res)
+        setVerifiedUserId(currentUserId)
         setGate('unlocked')
       })
       .catch(() => {
@@ -119,14 +138,16 @@ export function AdminLayout() {
     return () => {
       cancelled = true
     }
-  }, [gate, lock])
+  }, [gate, lock, verifyRevision])
 
-  if (gate !== 'unlocked') {
+  // useEffect 会在绘制后运行；身份不匹配时在 render 阶段先隐藏旧权限页。
+  if (gate !== 'unlocked' || (authReady && verifiedUserId !== currentUserId)) {
     return (
       <Gate
-        checking={gate === 'checking'}
+        checking={gate === 'checking' || (authReady && verifiedUserId !== currentUserId)}
         onUnlock={(res) => {
           setMe(res)
+          setVerifiedUserId(currentUserId)
           setGate('unlocked')
         }}
       />

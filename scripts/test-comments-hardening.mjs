@@ -8,8 +8,11 @@ const read = (rel) => readFileSync(path.join(root, rel), 'utf8')
 const route = read('server/src/routes/comments.js')
 const panel = read('src/components/comments/Comments.tsx')
 const admin = read('src/admin/AdminComments.tsx')
+const adminLayout = read('src/admin/AdminLayout.tsx')
 const migration = read('server/scripts/migrate.mjs')
 const schema = read('server/schema-v2.sql')
+const install = read('server/8bitgo-v2-install.sql')
+const schemaCheck = read('server/src/schema-check.js')
 const service = read('src/services/comments.ts')
 const mapper = read('server/src/mappers.js')
 const types = read('src/types.ts')
@@ -51,7 +54,9 @@ check('评论编辑在数据库更新时再次校验所有权、可见性和五�
 
 check('前台加载更多失败有独立重试状态，不污染发表错误', () => {
   assert.match(panel, /const \[loadMoreError, setLoadMoreError\]/)
-  assert.match(panel, /setLoadMoreError\(e instanceof Error \? e\.message : c\.loadFailed\)/)
+  // 代理层错误正文可能包含内部诊断信息，页面只显示可操作的通用提示。
+  assert.match(panel, /setLoadMoreError\(c\.loadFailed\)/)
+  assert.doesNotMatch(panel, /setLoadMoreError\(e instanceof Error \? e\.message/)
   assert.match(panel, /loadMoreError \? c\.retry : c\.loadMore/)
   assert.doesNotMatch(panel, /setFormError\(e instanceof Error \? e\.message : c\.loadFailed\)[\s\S]{0,200}if \(append\)/)
 })
@@ -63,15 +68,24 @@ check('管理端丢弃过期列表响应，审核动作后按当前筛选重新�
   assert.match(admin, /setReloadVersion\(\(n\) => n \+ 1\)/)
 })
 
+check('管理员切换账号后先隐藏旧审核数据，再用新凭证重新验证', () => {
+  assert.match(adminLayout, /useCurrentUser\(\)/)
+  assert.match(adminLayout, /previousUserId\.current = currentUserId/)
+  assert.match(adminLayout, /setMe\(null\)/)
+  assert.match(adminLayout, /setVerifyRevision\(\(revision\) => revision \+ 1\)/)
+  assert.match(adminLayout, /verifiedUserId !== currentUserId/)
+  assert.match(adminLayout, /\[gate, lock, verifyRevision\]/)
+})
+
 check('游客发言可入库但始终待审核，登录用户发表后立即可见', () => {
   const post = route.slice(route.indexOf("commentsRouter.post('/', optionalUser"), route.indexOf("commentsRouter.patch('/:id'"))
   assert.match(post, /pendingReview = !req\.user/)
   assert.match(post, /req\.user\?\.id \?\? null/)
-  assert.match(post, /pending_review\) VALUES[\s\S]*pendingReview \? 1 : 0/)
+  assert.match(post, /pending_review, client_request_id\) VALUES[\s\S]*pendingReview \? 1 : 0, clientRequestId/)
   assert.match(post, /takeAnonymous\(req, 'comment:guest'/)
   assert.match(post, /req\.user\?\.status === 'banned'/)
   assert.match(route, /c\.pending_review = 0 AND c\.hidden = 0 AND c\.deleted_at IS NULL/)
-  assert.match(panel, /if \(!content \|\| sending \|\| !authReady\) return/)
+  assert.match(panel, /if \(!ownsDraft \|\| !content \|\| sending \|\| sendingRef\.current \|\| !authReady\) return/)
 })
 
 check('游客可回复公开评论，但不能回复尚未审核的内容', () => {
@@ -79,6 +93,27 @@ check('游客可回复公开评论，但不能回复尚未审核的内容', () =
   assert.match(panel, /onReply=\{startReply\}/)
   assert.match(panel, /created\.pendingReview[\s\S]*setFormNotice\(c\.pendingNotice\)/)
   assert.match(panel, /待审核内容不能乐观插入公开列表/)
+})
+
+check('弱网下重复提交沿用幂等键，服务端只返回原评论', () => {
+  const post = route.slice(route.indexOf("commentsRouter.post('/', optionalUser"), route.indexOf("commentsRouter.patch('/:id'"))
+  assert.match(panel, /requestAttempts = useRef\(new Map<string, string>\(\)\)/)
+  assert.match(panel, /requestAttempts\.current\.get\(signature\)/)
+  assert.match(panel, /sendingRef\.current/)
+  assert.match(panel, /hostEpoch\.current !== epoch/)
+  assert.match(service, /clientRequestId,/)
+  assert.match(post, /CLIENT_REQUEST_ID_RE/)
+  assert.match(post, /UNIQUE KEY|ER_DUP_ENTRY/)
+  assert.match(post, /sameRequest[\s\S]*res\.status\(200\)\.json\(repeated\)/)
+  assert.match(post, /评论请求已被使用，请重新提交/)
+})
+
+check('评论草稿与在途请求按账号和宿主隔离', () => {
+  assert.match(panel, /const draftOwnerKey = user\?\.id \?\? 'guest'/)
+  assert.match(panel, /const draftText = ownsDraft \? text : ''/)
+  assert.match(panel, /draftOwnerRef\.current !== draftOwnerKey/)
+  assert.match(panel, /sendingRef\.current === sendAttempt/)
+  assert.match(panel, /hostEpoch\.current !== epoch/)
 })
 
 check('后台可筛选、通过游客评论，并继续隐藏或删除任何非删除项', () => {
@@ -97,6 +132,17 @@ check('数据库允许游客作者为空且为审核状态建立索引，迁移�
   assert.match(migration, /game_comments（游客评论待审核 \+ 可空作者）/)
   assert.match(migration, /ADD COLUMN `pending_review` TINYINT\(1\) NOT NULL DEFAULT 0/)
   assert.match(migration, /MODIFY `user_id` VARCHAR\(40\) NULL/)
+})
+
+check('弱网幂等键同步进入新库、旧库迁移和启动自检', () => {
+  for (const source of [schema, install]) {
+    assert.match(source, /client_request_id CHAR\(36\).*NULL/)
+    assert.match(source, /UNIQUE KEY uq_cmt_client_request_id \(client_request_id\)/)
+  }
+  assert.match(migration, /game_comments\.client_request_id（弱网发表幂等键）/)
+  assert.match(migration, /ADD COLUMN `client_request_id` CHAR\(36\)/)
+  assert.match(migration, /ADD UNIQUE INDEX `uq_cmt_client_request_id`/)
+  assert.match(schemaCheck, /game_comments', column: 'client_request_id'/)
 })
 
 check('API 类型和映射明确标记游客、待审核状态，不向前台公开待审核正文', () => {

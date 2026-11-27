@@ -31,6 +31,8 @@ export const commentsRouter = Router()
 
 /** 正文长度上限，和 game_comments.content 的 VARCHAR(2000) 对齐 */
 const MAX_LEN = 2000
+/** 弱网重试沿用此键；服务端用唯一索引保证同一次发表最多落库一条。 */
+const CLIENT_REQUEST_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 /** 后台 LIKE 查询有五个候选列，限制输入长度避免管理员误粘超长文本拖慢数据库 */
 const MAX_SEARCH_LEN = 120
 /**
@@ -413,11 +415,16 @@ commentsRouter.post('/', optionalUser, async (req, res, next) => {
     const gameSlug = String(req.body?.gameSlug ?? '').trim()
     const postSlug = String(req.body?.postSlug ?? '').trim()
     const content = cleanContent(req.body?.content)
+    const rawRequestId = req.body?.clientRequestId
+    const clientRequestId = rawRequestId == null || rawRequestId === '' ? null : String(rawRequestId).trim().toLowerCase()
     // 宿主参数先做纯字符串校验，别让「参数都不对」的请求也消耗限流额度
     if (!gameSlug && !postSlug) return res.status(400).json({ error: '缺少 gameSlug 或 postSlug' })
     if (gameSlug && postSlug) return res.status(400).json({ error: 'gameSlug 和 postSlug 只能给一个' })
     if (!content) return res.status(400).json({ error: '评论内容不能为空' })
     if (content.length > MAX_LEN) return res.status(400).json({ error: `评论不能超过 ${MAX_LEN} 字` })
+    if (clientRequestId && !CLIENT_REQUEST_ID_RE.test(clientRequestId)) {
+      return res.status(400).json({ error: '评论请求标识不合法' })
+    }
 
     if (req.user) {
       const perUser = take(`comment:user:${req.user.id}`, 5, 60_000)
@@ -459,10 +466,32 @@ commentsRouter.post('/', optionalUser, async (req, res, next) => {
 
     // target.col 只可能是 'game_id' / 'post_id'，另一个宿主列留 NULL
     const pendingReview = !req.user
-    const r = await query(
-      `INSERT INTO game_comments (${target.col}, user_id, parent_id, content, country, pending_review) VALUES (?, ?, ?, ?, ?, ?)`,
-      [target.id, req.user?.id ?? null, parentId, content, country, pendingReview ? 1 : 0],
-    )
+    let r
+    try {
+      r = await query(
+        `INSERT INTO game_comments (${target.col}, user_id, parent_id, content, country, pending_review, client_request_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [target.id, req.user?.id ?? null, parentId, content, country, pendingReview ? 1 : 0, clientRequestId],
+      )
+    } catch (e) {
+      if (!clientRequestId || e?.code !== 'ER_DUP_ENTRY') throw e
+      // INSERT 成功但响应丢失后，重试会撞唯一键。只有完全相同的作者、宿主、正文和引用
+      // 才返回原结果；复用请求键发另一条内容只回冲突，不能覆盖或泄漏已有评论。
+      const existing = await queryOne(
+        `SELECT id, ${target.col}, user_id, parent_id, content, hidden, deleted_at FROM game_comments WHERE client_request_id = ?`,
+        [clientRequestId],
+      )
+      if (!existing) throw e
+      const sameRequest =
+        String(existing[target.col]) === String(target.id) &&
+        String(existing.user_id ?? '') === String(req.user?.id ?? '') &&
+        String(existing.parent_id ?? '') === String(parentId ?? '') &&
+        String(existing.content) === content
+      if (!sameRequest) return res.status(409).json({ error: '评论请求已被使用，请重新提交' })
+      if (Number(existing.hidden ?? 0) !== 0 || existing.deleted_at) return res.status(409).json({ error: '评论状态已变化，请刷新后重试' })
+      const repeated = await loadOne(existing.id)
+      if (!repeated) return res.status(409).json({ error: '评论状态已变化，请刷新后重试' })
+      return res.status(200).json(repeated)
+    }
     const created = await loadOne(r.insertId)
     // 管理员可能在 INSERT 与回读之间彻底清理该评论；不能返回 201 + null 让前端误判成功。
     if (!created) return res.status(409).json({ error: '评论状态已变化，请刷新后重试' })
