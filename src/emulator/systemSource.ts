@@ -356,6 +356,9 @@ export function prewarmSystemCache(url: string): void {
 
 const MIRROR_PROBE_BYTES = 64 * 1024
 const MIRROR_PROBE_MS = 2500
+/** 坏线路不能拖住开局；慢网仍给首个有效样本足够时间，拿到后只留短暂窗口比较其它线路。 */
+const MIRROR_SELECTION_MS = 1800
+const MIRROR_SELECTION_GRACE_MS = 150
 
 /** 只把真正可由浏览器读取的 Range 响应参与测速；不支持 Range / CORS 的源留作故障回退。 */
 async function probeSystemSource(source: SystemSource, signal?: AbortSignal): Promise<number | null> {
@@ -376,12 +379,17 @@ async function probeSystemSource(source: SystemSource, signal?: AbortSignal): Pr
     })
     const contentRange = response.headers.get('content-range') ?? ''
     const match = /^bytes 0-(\d+)\/(\d+)$/i.exec(contentRange)
-    if (response.status !== 206 || (contentRange && (!match || Number(match[2]) <= Number(match[1])))) {
+    if (response.status !== 206 || !match) {
       await response.body?.cancel().catch(() => {})
       return null
     }
-    const advertisedBytes = match ? Number(match[1]) + 1 : null
-    if (advertisedBytes !== null && (advertisedBytes < 1 || advertisedBytes > MIRROR_PROBE_BYTES)) {
+    const advertisedEnd = Number(match[1])
+    const advertisedTotal = Number(match[2])
+    const advertisedBytes = advertisedEnd + 1
+    if (
+      !Number.isSafeInteger(advertisedEnd) || !Number.isSafeInteger(advertisedTotal) ||
+      advertisedTotal < advertisedBytes || advertisedBytes < 1 || advertisedBytes > MIRROR_PROBE_BYTES
+    ) {
       await response.body?.cancel().catch(() => {})
       return null
     }
@@ -418,8 +426,53 @@ async function probeSystemSource(source: SystemSource, signal?: AbortSignal): Pr
  */
 async function fastestSystemSources(sources: readonly SystemSource[], signal?: AbortSignal): Promise<SystemSource[]> {
   if (typeof window === 'undefined' || sources.length < 2) return [...sources]
-  const measured = await Promise.all(sources.map(async (source, index) => ({ source, index, elapsed: await probeSystemSource(source, signal) })))
+  const probeController = new AbortController()
+  const relayAbort = () => probeController.abort(signal?.reason)
   if (signal?.aborted) throw new DOMException('已取消', 'AbortError')
+  signal?.addEventListener('abort', relayAbort, { once: true })
+  const measured: Array<{ source: SystemSource; index: number; elapsed: number | null }> = sources.map((source, index) => ({
+    source,
+    index,
+    elapsed: null,
+  }))
+  let releaseFirstSuccess: (() => void) | null = null
+  const firstSuccess = new Promise<void>((resolve) => { releaseFirstSuccess = resolve })
+  const probes = sources.map(async (source, index) => {
+    measured[index].elapsed = await probeSystemSource(source, probeController.signal)
+    if (measured[index].elapsed !== null) releaseFirstSuccess?.()
+  })
+  let allFinished = false
+  const allProbesFinished = Promise.all(probes).then(() => { allFinished = true })
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let graceTimer: ReturnType<typeof setTimeout> | undefined
+  const startedAt = typeof performance !== 'undefined' ? performance.now() : Date.now()
+  try {
+    const outcome = await Promise.race([
+      allProbesFinished.then(() => 'all' as const),
+      firstSuccess.then(() => 'sample' as const),
+      new Promise<'budget'>((resolve) => { timer = setTimeout(() => resolve('budget'), MIRROR_SELECTION_MS) }),
+    ])
+    if (outcome === 'sample' && !allFinished) {
+      const elapsed = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - startedAt
+      const graceMs = Math.min(MIRROR_SELECTION_GRACE_MS, Math.max(0, MIRROR_SELECTION_MS - elapsed))
+      if (graceMs > 0) {
+        await Promise.race([
+          allProbesFinished,
+          new Promise<void>((resolve) => { graceTimer = setTimeout(resolve, graceMs) }),
+        ])
+      }
+    }
+    if (signal?.aborted) throw new DOMException('已取消', 'AbortError')
+    if (!allFinished) {
+      // 未回头块的慢源继续测速只会挡住开局；保留它作后续故障回退，不让它占关键路径。
+      probeController.abort(new DOMException('线路测速预算结束', 'TimeoutError'))
+    }
+  } finally {
+    if (timer) clearTimeout(timer)
+    if (graceTimer) clearTimeout(graceTimer)
+    signal?.removeEventListener('abort', relayAbort)
+    if (!probeController.signal.aborted) probeController.abort()
+  }
   const available: Array<{ source: SystemSource; index: number; elapsed: number }> = measured.flatMap((item) =>
     item.elapsed === null ? [] : [{ source: item.source, index: item.index, elapsed: item.elapsed }],
   )

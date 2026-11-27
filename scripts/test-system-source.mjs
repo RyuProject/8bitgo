@@ -337,6 +337,161 @@ await check('全都取不到时，报错里要点名每个源和原因', async (
   )
 })
 
+console.log('三点四、线路测速不能把冷启动堵在坏源上')
+
+await check('206 缺少 Content-Range 的源不参与测速排序', async () => {
+  const hadWindow = Object.hasOwn(globalThis, 'window')
+  const oldWindow = globalThis.window
+  const oldFetch = globalThis.fetch
+  const invalid = 'https://range-invalid.example/system.jsdos'
+  const valid = 'https://range-valid.example/system.jsdos'
+  let firstFullDownload = ''
+  globalThis.window = {}
+  globalThis.fetch = async (url, init) => {
+    if (init?.headers?.Range) {
+      if (url === invalid) return new Response(new Uint8Array([1]), { status: 206 })
+      const bytes = new Uint8Array(GOOD)
+      return new Response(bytes, {
+        status: 206,
+        headers: { 'content-range': `bytes 0-${bytes.byteLength - 1}/${bytes.byteLength}` },
+      })
+    }
+    firstFullDownload = url
+    return new Response(GOOD, { status: 200 })
+  }
+  try {
+    const result = await loadSystemBytes([
+      { url: invalid, label: '缺 Range 信息的源' },
+      { url: valid, label: '有效 Range 源' },
+    ])
+    assert.equal(result.url, valid, '协议不完整的 206 被错排成最快源')
+    assert.equal(firstFullDownload, valid, '开局仍先请求了无法证明 Range 位置的源')
+  } finally {
+    globalThis.fetch = oldFetch
+    if (hadWindow) globalThis.window = oldWindow
+    else delete globalThis.window
+  }
+})
+
+await check('单条慢到不回头块的线路不会让系统镜像开局多等 2.5 秒', async () => {
+  const hadWindow = Object.hasOwn(globalThis, 'window')
+  const oldWindow = globalThis.window
+  const oldFetch = globalThis.fetch
+  const slow = 'https://range-slow.example/system.jsdos'
+  const fast = 'https://range-fast.example/system.jsdos'
+  let slowProbeAborted = false
+  globalThis.window = {}
+  globalThis.fetch = async (url, init) => {
+    if (init?.headers?.Range && url === slow) {
+      return await new Promise((_resolve, reject) => {
+        const abort = () => {
+          slowProbeAborted = true
+          reject(new DOMException('测速取消', 'AbortError'))
+        }
+        if (init.signal.aborted) abort()
+        else init.signal.addEventListener('abort', abort, { once: true })
+      })
+    }
+    if (init?.headers?.Range && url === fast) {
+      const bytes = new Uint8Array(GOOD)
+      return new Response(bytes, {
+        status: 206,
+        headers: { 'content-range': `bytes 0-${bytes.byteLength - 1}/${bytes.byteLength}` },
+      })
+    }
+    if (url === fast) return new Response(GOOD, { status: 200 })
+    throw new Error(`不应请求未测通的源：${url}`)
+  }
+  const started = Date.now()
+  try {
+    const result = await loadSystemBytes([
+      { url: slow, label: '慢源' },
+      { url: fast, label: '快源' },
+    ])
+    const elapsed = Date.now() - started
+    assert.equal(result.url, fast, '已测通的线路没有先开局')
+    assert.ok(elapsed < 1000, `坏源拖住了系统镜像开局 ${elapsed}ms`)
+    assert.equal(slowProbeAborted, true, '排序完成后慢探测仍留在后台占连接')
+  } finally {
+    globalThis.fetch = oldFetch
+    if (hadWindow) globalThis.window = oldWindow
+    else delete globalThis.window
+  }
+})
+
+await check('弱网下较慢但持续返回的有效 Range 仍能选中，不被探测预算提前放弃', async () => {
+  const hadWindow = Object.hasOwn(globalThis, 'window')
+  const oldWindow = globalThis.window
+  const oldFetch = globalThis.fetch
+  const slowButValid = 'https://range-slow-valid.example/system.jsdos'
+  const malformed = 'https://range-malformed.example/system.jsdos'
+  globalThis.window = {}
+  globalThis.fetch = async (url, init) => {
+    if (init?.headers?.Range && url === slowButValid) {
+      await new Promise((resolve) => setTimeout(resolve, 1100))
+      const bytes = new Uint8Array(GOOD)
+      return new Response(bytes, {
+        status: 206,
+        headers: { 'content-range': `bytes 0-${bytes.byteLength - 1}/${bytes.byteLength}` },
+      })
+    }
+    if (init?.headers?.Range) return new Response(new Uint8Array([1]), { status: 206 })
+    return new Response(GOOD, { status: 200 })
+  }
+  try {
+    const result = await loadSystemBytes([
+      { url: slowButValid, label: '弱网有效源' },
+      { url: malformed, label: '无效 Range 源' },
+    ])
+    assert.equal(result.url, slowButValid, '持续传输的弱网样本被当成没测到')
+  } finally {
+    globalThis.fetch = oldFetch
+    if (hadWindow) globalThis.window = oldWindow
+    else delete globalThis.window
+  }
+})
+
+await check('玩家取消系统镜像测速会立即中止所有探针，不开始整包下载', async () => {
+  const hadWindow = Object.hasOwn(globalThis, 'window')
+  const oldWindow = globalThis.window
+  const oldFetch = globalThis.fetch
+  const ctl = new AbortController()
+  const urls = ['https://range-cancel-a.example/system.jsdos', 'https://range-cancel-b.example/system.jsdos']
+  let abortedProbes = 0
+  let fullDownloads = 0
+  globalThis.window = {}
+  globalThis.fetch = async (_url, init) => {
+    if (!init?.headers?.Range) {
+      fullDownloads++
+      return new Response(GOOD, { status: 200 })
+    }
+    return await new Promise((_resolve, reject) => {
+      const abort = () => {
+        abortedProbes++
+        reject(new DOMException('玩家取消', 'AbortError'))
+      }
+      if (init.signal.aborted) abort()
+      else init.signal.addEventListener('abort', abort, { once: true })
+    })
+  }
+  const started = Date.now()
+  const timer = setTimeout(() => ctl.abort(new DOMException('玩家取消', 'AbortError')), 25)
+  try {
+    await assert.rejects(
+      () => loadSystemBytes(urls.map((url) => ({ url, label: '待测线路' })), undefined, ctl.signal),
+      (error) => error.name === 'AbortError',
+    )
+    assert.ok(Date.now() - started < 700, '取消仍等到测速预算到期')
+    assert.equal(abortedProbes, 2, '不是所有在途测速都收到取消')
+    assert.equal(fullDownloads, 0, '取消后仍开始了镜像正文下载')
+  } finally {
+    clearTimeout(timer)
+    globalThis.fetch = oldFetch
+    if (hadWindow) globalThis.window = oldWindow
+    else delete globalThis.window
+  }
+})
+
 console.log('三点五、缓存：那 20 MB 不该每次都重下一遍')
 
 /*
