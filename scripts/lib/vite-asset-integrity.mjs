@@ -53,6 +53,20 @@ export function buildIntegrityManifest(entryFileName, files, imports = {}) {
   return { v: INTEGRITY_MANIFEST_VERSION, alg: 'sha256', entry: path.basename(entryFileName), files: out, imports: graph }
 }
 
+/** 当前 SSR 语言包 → 本次构建的动态 chunk；服务端据此提前预载正在访问的那一份。 */
+export function localeAssetsFromBundle(bundle) {
+  const locales = {}
+  for (const item of Object.values(bundle ?? {})) {
+    if (item?.type !== 'chunk') continue
+    const id = String(item.facadeModuleId ?? '').replace(/\\/g, '/')
+    const match = /(?:^|\/)src\/locales\/(zh-Hant|en|es|fr|it|de|ja)\.ts$/.exec(id)
+    const fileName = String(item.fileName ?? '')
+    if (!match || !/^assets\/[A-Za-z0-9_.-]+\.js$/.test(fileName)) continue
+    locales[match[1]] = fileName
+  }
+  return Object.fromEntries(Object.entries(locales).sort(([a], [b]) => a.localeCompare(b)))
+}
+
 export function assetIntegrityPlugin() {
   return {
     name: 'asset-integrity-manifest',
@@ -74,9 +88,12 @@ export function assetIntegrityPlugin() {
         if (item.type !== 'chunk' || !files[path.basename(item.fileName)]) continue
         imports[path.basename(item.fileName)] = item.imports || []
       }
+      const locales = localeAssetsFromBundle(bundle)
       const target = path.join(dir, 'assets', manifestName)
       const tmp = `${target}.${process.pid}.tmp`
-      writeFileSync(tmp, JSON.stringify(buildIntegrityManifest(entry.fileName, files, imports)))
+      const manifest = buildIntegrityManifest(entry.fileName, files, imports)
+      if (Object.keys(locales).length) manifest.locales = locales
+      writeFileSync(tmp, JSON.stringify(manifest))
       renameSync(tmp, target)
     },
   }

@@ -14,14 +14,16 @@
  */
 import assert from 'node:assert/strict'
 import { createHash, webcrypto } from 'node:crypto'
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import vm from 'node:vm'
 import {
   buildIntegrityManifest,
+  assetIntegrityPlugin,
   integrityManifestName,
   isIntegrityTarget,
+  localeAssetsFromBundle,
   sha256Base64,
 } from './lib/vite-asset-integrity.mjs'
 import { createAssetRepairRouter, parseRepairRequest } from '../server/src/routes/asset-repair.js'
@@ -73,6 +75,32 @@ assert.equal(isIntegrityTarget('assets/live.js.map'), false)
 assert.equal(isIntegrityTarget('index.html'), false)
 assert.equal(isIntegrityTarget('emulatorjs/loader.js'), false, '只管 /assets/')
 assert.equal(sha256Base64('abc'), 'ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=')
+assert.deepEqual(localeAssetsFromBundle({
+  'en.js': { type: 'chunk', facadeModuleId: '/repo/src/locales/en.ts', fileName: 'assets/en-A1.js' },
+  'fr.js': { type: 'chunk', facadeModuleId: 'C:\\repo\\src\\locales\\fr.ts', fileName: 'assets/fr-B2.js' },
+  'main.js': { type: 'chunk', facadeModuleId: '/repo/src/locales/zh-Hans.ts', fileName: 'assets/index-C3.js' },
+  'asset.js': { type: 'asset', facadeModuleId: '/repo/src/locales/de.ts', fileName: 'assets/de-D4.js' },
+}), { en: 'assets/en-A1.js', fr: 'assets/fr-B2.js' }, '只记录真实动态语言 chunk，并兼容 Windows 构建路径')
+{
+  const dir = mkdtempSync(path.join(tmpdir(), '8bitgo-integrity-plugin-'))
+  try {
+    mkdirSync(path.join(dir, 'assets'))
+    const entryFile = 'assets/index-ABCD1234.js'
+    const localeFile = 'assets/en-EFGH5678.js'
+    writeFileSync(path.join(dir, entryFile), 'import("./en-EFGH5678.js")')
+    writeFileSync(path.join(dir, localeFile), 'export default {}')
+    const bundle = {
+      [entryFile]: { type: 'chunk', isEntry: true, fileName: entryFile, facadeModuleId: '/repo/src/entry-client.ts', imports: [] },
+      [localeFile]: { type: 'chunk', isEntry: false, fileName: localeFile, facadeModuleId: '/repo/src/locales/en.ts', imports: [] },
+    }
+    assetIntegrityPlugin().writeBundle({ dir, format: 'es' }, bundle)
+    const manifest = JSON.parse(readFileSync(path.join(dir, 'assets', 'integrity-ABCD1234.json'), 'utf8'))
+    assert.deepEqual(manifest.locales, { en: localeFile }, 'writeBundle 把 SSR 语言到真实 JS chunk 的映射写入清单')
+    assert.equal(manifest.files['en-EFGH5678.js'], sha256Base64(readFileSync(path.join(dir, localeFile))), '映射指向的 chunk 同样进入字节完整性清单')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
 assert.deepEqual(Object.keys(buildIntegrityManifest('assets/index-x.js', { b: '2', a: '1' }).files), ['a', 'b'], '按文件名排序，内容稳定')
 assert.deepEqual(
   buildIntegrityManifest('assets/index-x.js', { 'page-P.js': '1', 'dep-D.js': '2' }, { 'page-P.js': ['assets/dep-D.js', 'assets/dep-D.js', 'other.css'] }).imports,
@@ -83,6 +111,7 @@ assert.deepEqual(
   const config = read('vite.config.ts')
   assert.match(config, /assetIntegrityPlugin\(\)/, 'vite 配置挂上了清单插件')
   const plugin = read('scripts/lib/vite-asset-integrity.mjs')
+  assert.match(plugin, /localeAssetsFromBundle\(bundle\)/, '构建清单记录 SSR 语言包对应的 chunk')
   assert.match(plugin, /writeBundle\(options, bundle\)/, '在 writeBundle 里算：哈希的是写到磁盘上的字节')
   assert.match(plugin, /readFileSync\(path\.join\(dir, fileName\)\)/)
   assert.match(plugin, /renameSync\(tmp, target\)/, '先写临时文件再改名')
@@ -636,6 +665,7 @@ assert.equal(parseRepairRequest({ build: '../../etc', files: ['a.js'] }), null)
   const purged = []
   const logs = []
   let clock = 1_000_000
+  let clockReads = 0
   const app = express()
   app.set('trust proxy', false)
   app.use(express.json())
@@ -644,7 +674,7 @@ assert.equal(parseRepairRequest({ build: '../../etc', files: ['a.js'] }), null)
     siteOrigin: ORIGIN,
     purge: async (urls) => { purged.push(urls) },
     purgeEnabled: () => true,
-    now: () => clock,
+    now: () => { clockReads++; return clock },
     log: { warn: (m) => logs.push(m), error: (m) => logs.push(m) },
   }))
   const server = app.listen(0, '127.0.0.1')
@@ -654,22 +684,31 @@ assert.equal(parseRepairRequest({ build: '../../etc', files: ['a.js'] }), null)
   })
   const base = `http://127.0.0.1:${server.address().port}/api/asset-repair`
   const post = (body) => fetch(base, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-  const settle = () => new Promise((r) => setTimeout(r, 30))
+  const waitForClockReads = async (minimum) => {
+    const deadline = Date.now() + 2_000
+    while (clockReads < minimum && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5))
+    assert.ok(clockReads >= minimum, `服务端清理流程在时限内完成（now 调用数 ≥ ${minimum}）`)
+  }
+  const waitForPurgeCount = async (minimum) => {
+    const deadline = Date.now() + 2_000
+    while (purged.length < minimum && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5))
+    assert.ok(purged.length >= minimum, `服务端在时限内调用缓存清理（次数 ≥ ${minimum}）`)
+  }
   try {
     let res = await post({ build: 'ABCD1234', files: ['live-L1.js', 'other-O1.js', 'not-in-manifest.js'] })
     assert.equal(res.status, 202)
     assert.equal((await res.json()).accepted, 2)
     assert.equal(res.headers.get('cache-control'), 'no-store')
-    await settle()
+    await waitForPurgeCount(1)
     assert.deepEqual(purged, [[`${ORIGIN}/assets/live-L1.js`]], '只清磁盘与清单一致的文件，清完整 URL')
     assert.ok(logs.some((m) => /other-O1\.js 和构建清单对不上/.test(m)), '磁盘坏了打错误日志')
 
     res = await post({ build: 'ABCD1234', files: ['live-L1.js'] })
-    await settle()
+    await waitForClockReads(3)
     assert.equal(purged.length, 1, '同一文件 15 分钟内只清一次')
     clock += 16 * 60 * 1000
     await post({ build: 'ABCD1234', files: ['live-L1.js'] })
-    await settle()
+    await waitForPurgeCount(2)
     assert.equal(purged.length, 2)
 
     assert.equal((await post({ build: 'NOPE0000', files: ['a.js'] })).status, 404, '没有这一版的清单')

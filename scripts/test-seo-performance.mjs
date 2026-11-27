@@ -6,9 +6,13 @@
  * 但移动端 LCP 会被数 MB 资源拖慢，或构建窗口里让爬虫偶发拿到 500，所以单独守住。
  */
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import { CACHE } from '../server/src/cache.js'
 import { earlyHintLinks, retargetCoverHints } from '../server/src/early-hints.js'
+import { localePreloadTag } from '../server/src/locale-preload.js'
+import { retargetStaticToCnEdge, retargetStaticToOrigin } from '../shared/cover-cdn-hint.js'
 
 const read = (relative) => readFileSync(new URL(`../${relative}`, import.meta.url), 'utf8')
 let failed = 0
@@ -124,6 +128,7 @@ check('Early Hints：从构建模板提取入口 JS / CSS / 本地字体和封�
 <script type="module" crossorigin src="/assets/index-CL8i0tUz.js"></script>
 <link rel="modulepreload" crossorigin href="/assets/react-vendor-mkkrrnzo.js">
 <link rel="modulepreload" crossorigin href="/assets/api-D2I2rW4W.js">
+<link rel="modulepreload" crossorigin data-8bitgo-locale-preload="true" href="/assets/en-D3.js">
 <link rel="stylesheet" crossorigin href="/assets/index-g-Tc-3Xd.css">
 <script nomodule crossorigin id="vite-legacy-polyfill" src="/assets/polyfills-legacy-Bd8zl_rk.js"></script>
 </head></html>`
@@ -134,6 +139,7 @@ check('Early Hints：从构建模板提取入口 JS / CSS / 本地字体和封�
       '</assets/index-g-Tc-3Xd.css>; rel=preload; as=style; crossorigin',
       '</assets/index-CL8i0tUz.js>; rel=preload; as=script; crossorigin',
       '</assets/react-vendor-mkkrrnzo.js>; rel=preload; as=script; crossorigin',
+      '</assets/en-D3.js>; rel=preload; as=script; crossorigin',
       '</fonts/demo.woff2>; rel=preload; as=font; type="font/woff2"; crossorigin',
     ].join(', '),
   )
@@ -144,6 +150,45 @@ check('Early Hints：从构建模板提取入口 JS / CSS / 本地字体和封�
   // 2026-11-18 /rooms：Cloudflare 的 Early Hints 不分大陆 / 非大陆两份资源写法，主站有大陆加速入口时不能发 Link
   assert.match(src, /const assetVariants = !cnSite && Boolean\(cnEdgeOrigin\(publicSiteUrl\(\)\)\)/)
   assert.match(src, /const earlyHints = notFound \|\| assetVariants \? '' : earlyHintsFor\(page\)/)
+})
+
+check('SSR 预载当前语言 chunk，失败或旧构建时安全退回现有按需加载', () => {
+  const clientDir = mkdtempSync(path.join(tmpdir(), '8bitgo-locale-preload-'))
+  try {
+    mkdirSync(path.join(clientDir, 'assets'))
+    writeFileSync(path.join(clientDir, 'assets', 'integrity-ABCD1234.json'), JSON.stringify({
+      v: 2,
+      alg: 'sha256',
+      entry: 'index-ABCD1234.js',
+      locales: { en: 'assets/en-EFGH5678.js', 'zh-Hant': 'assets/zh-Hant-IJKL9012.js' },
+    }))
+    const template = '<script type="module" crossorigin src="/assets/index-ABCD1234.js"></script>'
+    assert.equal(
+      localePreloadTag(template, 'en', clientDir),
+      '<link rel="modulepreload" crossorigin data-8bitgo-locale-preload="true" href="/assets/en-EFGH5678.js">',
+    )
+    const preloaded = localePreloadTag(template, 'en', clientDir)
+    assert.match(retargetStaticToCnEdge(preloaded, 'https://cn.8bitgo.com'), /href="https:\/\/cn\.8bitgo\.com\/_cn\/assets\/en-EFGH5678\.js"/)
+    assert.match(retargetStaticToOrigin(preloaded, 'https://8bitgo.com'), /href="https:\/\/8bitgo\.com\/assets\/en-EFGH5678\.js"/)
+    assert.equal(localePreloadTag(template, 'zh-Hans', clientDir), '', '基准语言已经在入口包里，不额外预载')
+    assert.equal(localePreloadTag(template, 'invalid', clientDir), '', '不接受 URL 中的任意语言值')
+    assert.equal(
+      localePreloadTag('<script type="module" src="/assets/index-OLD12345.js"></script>', 'en', clientDir),
+      '',
+      '旧构建或发布窗口缺少清单时不生成坏链接',
+    )
+    writeFileSync(path.join(clientDir, 'assets', 'integrity-MNOP3456.json'), JSON.stringify({
+      v: 2, alg: 'sha256', entry: 'index-ABCD1234.js', locales: { en: 'assets/../../private.js' },
+    }))
+    const malformedTemplate = '<script type="module" src="/assets/index-MNOP3456.js"></script>'
+    assert.equal(localePreloadTag(malformedTemplate, 'en', clientDir), '', '清单路径不能逃出 assets 目录')
+  } finally {
+    rmSync(clientDir, { recursive: true, force: true })
+  }
+
+  const ssr = read('server/src/ssr.js')
+  assert.match(ssr, /localePreloadTag\(templatePage, lang, CLIENT_DIR\)/, 'SSR 按本页语言生成 preload')
+  assert.match(ssr, /localePreload\n\s*\? injectOnce\(templatePage, '<\/head>'/, '预载链接在大陆线路改写前注入')
 })
 
 check('大陆入口：封面 preconnect / dns-prefetch 换成 EdgeOne 封面域，其余不动', () => {
