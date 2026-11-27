@@ -69,7 +69,7 @@ globalThis.XMLHttpRequest = class {
   abort() { this.onabort?.() }
 }
 
-const { uploadRom, deleteRomDir, headRom, listRomObjects } = await import('../src/services/roms.ts')
+const { uploadRom, deleteRomDir, deleteRomObjectsExactly, headRom, listRomObjects } = await import('../src/services/roms.ts')
 const { adaptiveUploadConcurrency, preferredUploadConcurrency, warmUploadSampleBytes, PART_SIZE, uploadRomMultipart, listOrphanUploads, abortOrphanUpload, listPendingUploads, MultipartUploadGate, UploadTransferPool, askJson } = await import('../src/services/romMultipart.ts')
 const { fingerprintRomPart, fingerprintRomUploadFile } = await import('../src/services/romFingerprint.ts')
 const { matchesRomPackSource, romPackWorkerConcurrency } = await import('../src/services/romPack.ts')
@@ -157,6 +157,7 @@ assert.equal(adaptiveUploadConcurrency(8 * 1024 * 1024, 30_000, { hardwareConcur
 assert.equal(adaptiveUploadConcurrency(8 * 1024 * 1024, 2_000, { effectiveType: '3g', hardwareConcurrency: 8 }), 4)
 assert.equal(adaptiveUploadConcurrency(8 * 1024 * 1024, 8_000, { effectiveType: '3g', hardwareConcurrency: 8 }), 3)
 assert.equal(adaptiveUploadConcurrency(0, 0, { effectiveType: '3g', downlinkMbps: 24, hardwareConcurrency: 8 }), 1)
+assert.equal(adaptiveUploadConcurrency(0, 0, {}), 2, '没有网络样本时按两路基线启动，不假装已测到高速')
 assert.equal(adaptiveUploadConcurrency(8 * 1024 * 1024, 2_000, { saveData: true, hardwareConcurrency: 8 }), 1)
 assert.equal(adaptiveUploadConcurrency(8 * 1024 * 1024, 2_000, { deviceMemoryGb: 2, hardwareConcurrency: 8 }), 2)
 assert.equal(preferredUploadConcurrency({ effectiveType: '3g', deviceMemoryGb: 8, hardwareConcurrency: 8 }), 4, '3G 标签不能压住实测上行可升到的路数')
@@ -1183,6 +1184,20 @@ globalThis.fetch = async (url, init) => {
 assert.equal((await deleteRomDir('roms/flash/demo')).length, 2)
 assert.equal(oldDeletes, 2)
 console.log('✅ 旧 Worker 会退回原来的逐文件删除')
+
+const exactKeys = ['roms/flash/demo/old-a.swf', 'roms/flash/demo/old-b.swf']
+const exactBulk = []
+globalThis.fetch = async (url, init) => {
+  if (String(url).endsWith('/bulk')) {
+    const keys = JSON.parse(init.body).keys
+    exactBulk.push(keys)
+    return Response.json({ ok: true, deleted: keys })
+  }
+  throw new Error(`unexpected request: ${url}`)
+}
+assert.deepEqual(await deleteRomObjectsExactly(exactKeys), { removed: exactKeys, failed: [] })
+assert.deepEqual(exactBulk, [exactKeys], '精确清理应复用一次批量删除，不应重新列目录或逐项请求')
+console.log('✅ Flash 包旧文件按核对过的精确 key 一次批量清理')
 
 globalThis.fetch = async (url) => Response.json({ objects: [], truncated: true, cursor: String(Number(new URL(url).searchParams.get('cursor') || 0) + 1) })
 await assert.rejects(listRomObjects('roms/ps2'), /文件过多/)

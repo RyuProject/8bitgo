@@ -67,6 +67,16 @@ assert.match(
   /const mainBuffer = new Uint8Array\(mainData\)\.buffer\s*assertSwf\(mainBuffer\)\s*const compatibilityIssue = await flashCompatibilityIssue\(mainBuffer\)/,
   '多 SWF 包必须在上传前校验并检查主文件',
 )
+assert.match(
+  bundleUpload,
+  /const concurrencyTask = import\('@\/services\/romMultipart'\)[\s\S]*?adaptiveUploadConcurrency\(0,\s*0,\s*browserUploadNetworkHints\(\)\)[\s\S]*?\.catch\(\(\) => 1\)/,
+  '整包上传要按现有网络自适应规则限并发，策略模块不可用时安全退到单路',
+)
+assert.match(
+  bundleUpload,
+  /await runBoundedUploadQueue\(picked, preferred,[\s\S]*?workingMemoryBudget\)/,
+  '整包解压和上传必须共用有界队列与设备内存预算',
+)
 assert.match(singleUpload, /platform === 'flash'[\s\S]{0,260}?await assertSwfBlob\(unpacked\.blob\)/,
   '已打包的 8BG Flash 也必须校验内层 SWF')
 

@@ -409,7 +409,7 @@ const uploadMbps = (bytes: number, elapsedMs: number) => bytes > 0 && elapsedMs 
   ? (bytes * 8) / (elapsedMs * 1000)
   : 0
 
-function browserUploadNetworkHints(): UploadNetworkHints {
+export function browserUploadNetworkHints(): UploadNetworkHints {
   const navigator = globalThis.navigator as {
     hardwareConcurrency?: number
     deviceMemory?: number

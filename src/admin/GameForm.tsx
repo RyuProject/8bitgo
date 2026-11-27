@@ -4922,7 +4922,7 @@ function RomField({
     }
     const oldKey = value.trim()
     setMsg(null)
-    setBundleAt({ done: 0, total: pending.plan.files.filter((f) => f.include).length, path: '', pct: 0 })
+    setBundleAt({ done: 0, total: pending.plan.files.filter((f) => f.include).length, active: 0, path: '', pct: 0 })
     try {
       const r = await uploadSwfBundle({
         zip: pending.zip,
@@ -4945,6 +4945,7 @@ function RomField({
         text:
           `已上传 ${r.keys.length} 个文件（${human(r.bytes)}）到 ${pending.dir}/，主 SWF 绑定为 ${r.mainKey}` +
           (r.removed.length ? `；清理了 ${r.removed.length} 个旧文件` : '') +
+          (r.cleanupFailed ? `；${r.cleanupFailed} 个旧文件未能自动清理，请在 ROM 存储中核查` : '') +
           (removedOld ? `；旧 ROM ${removedOld} 已删除` : ''),
       })
       setPending(null)
@@ -5502,7 +5503,7 @@ function SwfBundlePanel({
       {progress ? (
         <div className="mt-3">
           <p className="text-xs text-muted">
-            上传中 {progress.done}/{progress.total} · {progress.pct}%
+            上传中 {progress.done}/{progress.total} · {progress.pct}%{progress.active > 1 ? ` · 并行 ${progress.active} 个文件` : ''}
             {progress.path && <span className="ml-1 font-mono text-dim">{progress.path}</span>}
           </p>
           <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-black/10">

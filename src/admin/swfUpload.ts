@@ -5,7 +5,7 @@
  * Worker 那边一个 key 一个对象，没有「上传整个目录」这种接口。所以这里做三件事：
  *   1. 传之前看目录里有没有旧文件，有就问一句（重传同一个包属于原地覆盖，很正常；
  *      但传成了另一个包就会两份混在一起，谁也跑不起来）
- *   2. 逐个解压 + 上传，把整体进度按字节算出来给界面
+ *   2. 按设备和网络并发限额解压 + 上传，把整体进度按字节算出来给界面
  *   3. 传完清理「这次没传、上次留下的」孤儿文件 —— 版本换了、文件改名了都会留下这种
  *
  * 界面上的确认弹窗留在这里而不是组件里：和 uploadGuards.ts 一个路数，
@@ -13,17 +13,20 @@
  */
 import { extractZipEntry } from '@/lib/unzip'
 import type { SwfBundleFile } from '@/lib/swfBundle'
-import { deleteRom, listRomDir, uploadRom } from '@/services/roms'
+import { deleteRomObjectsExactly, listRomDir, uploadRom } from '@/services/roms'
 import { human } from './uploadGuards'
 import { flashCompatibilityIssue } from '@/emulator/flashCompatibility'
 import { assertSwf } from '@/lib/romValidation'
 import { trackUploadActivity } from '@/services/uploadActivity'
+import { BoundedUploadFailure, runBoundedUploadQueue, uploadWorkingMemoryBudgetBytes } from './boundedUploadQueue'
 
 export interface BundleUploadProgress {
   /** 已经传完的文件数 */
   done: number
   total: number
-  /** 正在传的那个（相对包目录的路径） */
+  /** 当前并行上传的文件数 */
+  active: number
+  /** 最近有进度的资源（相对包目录的路径） */
   path: string
   /** 整体百分比，按字节算 —— 按文件数算的话 10MB 的 war.swf 和 2KB 的配置文件一样重 */
   pct: number
@@ -36,6 +39,8 @@ export interface BundleUploadResult {
   bytes: number
   /** 顺手清掉的孤儿文件 */
   removed: string[]
+  /** Worker / R2 未确认删除的旧对象数；上传成功不应被可选清理失败覆盖 */
+  cleanupFailed: number
 }
 
 /** 传一个文件，失败重试一次 —— 几十个文件里偶发一个网络抖动就整包失败太脆了 */
@@ -86,6 +91,14 @@ export async function uploadSwfBundle({
   const compatibilityIssue = await flashCompatibilityIssue(mainBuffer)
   if (compatibilityIssue) throw new Error(`${main}：${compatibilityIssue.message}；整包没有上传`)
 
+  // 复用大文件分片上传的网络自适应规则：弱网 / 省流量 / 低内存设备自动收缩并发。
+  // 整包没有单片测速样本，因此先按浏览器网络提示选择并发；策略模块加载失败时保守单路。
+  // 提前与目录预检并行加载，若管理员取消确认也不会留下未处理的模块加载拒绝。
+  const concurrencyTask = import('@/services/romMultipart')
+    .then(({ adaptiveUploadConcurrency, browserUploadNetworkHints }) =>
+      adaptiveUploadConcurrency(0, 0, browserUploadNetworkHints()))
+    .catch(() => 1)
+
   const base = dir.replace(/\/+$/, '')
   const keyOf = (path: string) => `${base}/${path}`
 
@@ -105,36 +118,35 @@ export async function uploadSwfBundle({
 
   return trackUploadActivity(`Flash 整包发布：${base}`, async () => {
     const totalBytes = picked.reduce((s, f) => s + f.size, 0) || 1
-    const keys: string[] = []
-    let doneBytes = 0
-
-    for (let i = 0; i < picked.length; i++) {
-      const f = picked[i]
-      const key = keyOf(f.path)
-      onProgress?.({ done: i, total: picked.length, path: f.path, pct: Math.round((doneBytes / totalBytes) * 100) })
-      try {
+    const preferred = await concurrencyTask
+    const deviceMemoryGb = (globalThis.navigator as (Navigator & { deviceMemory?: number }) | undefined)?.deviceMemory
+    const workingMemoryBudget = uploadWorkingMemoryBudgetBytes(deviceMemoryGb)
+    try {
+      await runBoundedUploadQueue(picked, preferred, async (f, _index, reportPercent) => {
+        const key = keyOf(f.path)
         const data = await extractZipEntry(zip, f.entry)
         const blob = new Blob([data as BlobPart])
-        await putOnce(blob, key, (pct) => {
-          onProgress?.({
-            done: i,
-            total: picked.length,
-            path: f.path,
-            pct: Math.round(((doneBytes + (f.size * pct) / 100) / totalBytes) * 100),
-          })
-        })
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
-        throw new Error(`第 ${i + 1}/${picked.length} 个文件 ${f.path} 失败：${msg}（前 ${i} 个已经传上去了，修好后重传整包即可覆盖）`)
+        await putOnce(blob, key, reportPercent)
+      }, (progress) => onProgress?.(progress), workingMemoryBudget)
+    } catch (error) {
+      if (error instanceof BoundedUploadFailure) {
+        const failed = picked[error.itemIndex]
+        const reason = error.reason instanceof Error ? error.reason.message : String(error.reason)
+        throw new Error(
+          `第 ${error.itemIndex + 1}/${picked.length} 个文件 ${failed?.path ?? ''} 失败：${reason}` +
+          `（已确认 ${error.completedIndices.length} 个文件成功；同时上传的其它对象可能已写入 R2，重新上传整包会覆盖同名文件）`,
+        )
       }
-      keys.push(key)
-      doneBytes += f.size
+      throw error
     }
-    onProgress?.({ done: picked.length, total: picked.length, path: '', pct: 100 })
+
+    const keys = picked.map((f) => keyOf(f.path))
+    onProgress?.({ done: picked.length, total: picked.length, active: 0, path: '', pct: 100 })
 
     // 清理孤儿：上一版包里有、这一版没有的文件。留着不影响加载，但会一直占空间，
     // 而且下次有人来看目录会以为它们还在被引用。
     const removed: string[] = []
+    let cleanupFailed = 0
     const uploaded = new Set(keys)
     const stale = existing.filter((o) => !uploaded.has(o.key))
     if (stale.length) {
@@ -145,17 +157,18 @@ export async function uploadSwfBundle({
           '\n\n从 R2 删掉吗？（不确定就选取消，它们不影响游戏加载）',
       )
       if (ok) {
-        for (const o of stale) {
-          try {
-            await deleteRom(o.key)
-            removed.push(o.key)
-          } catch {
-            /* 删不掉就算了，不能让清理失败把整次上传判成失败 */
-          }
+        try {
+          // 已有清单来自上传前的目录核对；按这些精确 key 一次批量提交，避免几百次串行 Worker 往返。
+          const deletion = await deleteRomObjectsExactly(stale.map((object) => object.key))
+          removed.push(...deletion.removed)
+          cleanupFailed = deletion.failed.length
+        } catch {
+          // 清理是可选收尾；不能把已经确认上传的游戏包误报成失败。
+          cleanupFailed = stale.length
         }
       }
     }
 
-    return { mainKey: keyOf(main), keys, bytes: totalBytes, removed }
+    return { mainKey: keyOf(main), keys, bytes: totalBytes, removed, cleanupFailed }
   })
 }
