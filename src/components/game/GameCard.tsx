@@ -25,7 +25,7 @@ interface Props {
    * 惰性图要等滚动才真正开始下，一屏全是黑/渐变格子；首屏这几点字节不值得省。
    */
   eager?: boolean
-  /** 首屏 LCP 候选；只给最前面的一张，避免高优先级请求互相争抢。 */
+  /** 首屏 LCP 候选；只给实际露出的卡片，避免一整排高优先级请求互相争抢。 */
   priority?: boolean
   /** 推迟挂载封面媒体直到调用方确认区域进入视口；卡片正文仍参与 SSR 和键盘导航。 */
   deferCover?: boolean
@@ -83,7 +83,16 @@ export const GameCard = memo(function GameCard({ game, className, coverRatio = '
           同理不再挂「☁️ 即点即玩」角标 —— 一屏二十几张卡都挂着同一个标记，
           既没区分度，也压住封面左下角（2026-09-23 站长要求去掉）。
         */}
-        <GameCover game={game} ratio={coverRatio} showTitle={false} eager={eager} priority={priority} deferMedia={deferCover} sizes={coverSizes} />
+        <GameCover
+          game={game}
+          ratio={coverRatio}
+          showTitle={false}
+          eager={eager}
+          priority={priority}
+          deferMedia={deferCover}
+          // 优先图不能退回 100vw：精选横轨卡只有约 224px，手机上误取 480px 会浪费首屏带宽。
+          sizes={coverSizes ?? (priority ? GAME_CARD_IMAGE_SIZES : undefined)}
+        />
         {rank !== undefined && (
           <span className="text-pixel absolute right-2 top-2 rounded bg-black/60 px-1.5 py-1 text-[11px] text-coin backdrop-blur">
             #{rank}

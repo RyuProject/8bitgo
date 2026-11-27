@@ -44,6 +44,7 @@ check('游戏库和专题只把首张 LCP 封面提升到高优先级，首页�
   const cover = read('src/components/game/GameCover.tsx')
   assert.match(card, /priority\?: boolean/, '普通游戏卡没有 LCP 优先级入口')
   assert.match(card, /<GameCover[^>]+priority=\{priority\}/, '普通游戏卡没有把优先级传给封面')
+  assert.match(card, /sizes=\{coverSizes \?\? \(priority \? GAME_CARD_IMAGE_SIZES : undefined\)\}/, '首屏方卡应按实际卡宽选择封面档，不能默认按 100vw 下载')
   assert.match(wideCard, /<GameCover[^>]+priority=\{priority\}/, '首页宽卡没有把优先级传给封面')
   assert.match(games, /priority=\{i === 0\}/, '游戏库没有只提升首张封面')
   assert.match(collections, /priority=\{i === 0\}/, '平台、类型与 ROM 语言专题没有只提升首张封面')
