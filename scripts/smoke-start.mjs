@@ -252,20 +252,29 @@ function sendWithin(cdp, method, params = {}, sessionId, timeoutMs = CDP_COMMAND
 }
 
 /** 等播放器按钮出现，并在同一页面里先关公开直播，再点开始。 */
-export async function startSmokeGamePrivately(cdp, sessionId, timeoutMs = PRIVATE_START_TIMEOUT_MS) {
+export async function startSmokeGamePrivately(cdp, sessionId, timeoutMs = PRIVATE_START_TIMEOUT_MS, hasStarted = () => true) {
   const deadline = Date.now() + timeoutMs
+  let clickedStart = false
   while (Date.now() < deadline) {
+    if (hasStarted()) return 'started-private'
     const result = await sendWithin(cdp, 'Runtime.evaluate', {
       expression: PRIVATE_START_EXPRESSION,
       returnByValue: true,
     }, sessionId)
     if (result.exceptionDetails) throw new Error(result.exceptionDetails.text || '无法检查开局隐私状态')
     const state = result.result?.value?.state
-    if (state === 'started-private') return state
+    if (state === 'started-private') {
+      clickedStart = true
+      if (hasStarted()) return state
+      // 关闭 WebAssembly 会拖慢首屏 hydration；SSR 按钮可能先出现，第一次 click 还没有 React 监听器。
+      // 继续确认开局漏斗请求，未触发时重试点击，避免把空点击当成成功。
+    }
     if (state === 'unsafe-toggle') throw new Error('页面有未识别的启用开关，已停止冒烟以避免公开开局')
     await sleep(150)
   }
-  throw new Error('没有在时限内确认不公开状态并开始游戏')
+  throw new Error(clickedStart
+    ? '开始按钮已点击，但页面没有触发开局请求'
+    : '没有在时限内确认不公开状态并开始游戏')
 }
 
 async function launchChrome(chrome) {
@@ -415,7 +424,8 @@ async function smokeOne(cdp, slug) {
     await sendWithin(cdp, 'Runtime.enable', {}, sessionId)
     await sendWithin(cdp, 'Page.navigate', { url: `${BASE}/games/${encodeURIComponent(slug)}` }, sessionId, PAGE_NAVIGATION_COMMAND_TIMEOUT_MS)
     timer = setTimeout(() => settle({ verdict: 'fail', event: `${Math.round(preflight.timeoutMs / 1000)} 秒内没有首帧` }), preflight.timeoutMs)
-    startState = await startSmokeGamePrivately(cdp, sessionId)
+    startState = await startSmokeGamePrivately(cdp, sessionId, PRIVATE_START_TIMEOUT_MS,
+      () => events.some((event) => event.startsWith('start_click')))
     const result = await done
     let pageState
     if (result.verdict === 'fail') {

@@ -14,6 +14,7 @@ import {
   MAME_CHD_TIMEOUT_MS,
   PRIVATE_START_EXPRESSION,
   PRIVATE_START_TIMEOUT_MS,
+  startSmokeGamePrivately,
   startupDetailOf,
   startupEventOf,
   startupEventsOf,
@@ -100,7 +101,22 @@ const runPrivateStart = new Function('window', 'document', `return ${PRIVATE_STA
   assert.deepEqual(runPrivateStart(window, document), { state: 'waiting-private' })
   assert.deepEqual(actions, ['private'], '启用直播时首轮只能切到不公开，不能开局')
   assert.deepEqual(runPrivateStart(window, document), { state: 'started-private' })
-  assert.deepEqual(actions, ['private', 'start'], '确认不公开后才能开始')
+assert.deepEqual(actions, ['private', 'start'], '确认不公开后才能开始')
+}
+{
+  let evaluations = 0
+  let started = false
+  const cdp = {
+    send(method, params) {
+      assert.equal(method, 'Runtime.evaluate')
+      assert.equal(params.expression, PRIVATE_START_EXPRESSION)
+      evaluations++
+      return Promise.resolve({ result: { value: { state: 'started-private' } } })
+    },
+  }
+  setTimeout(() => { started = true }, 240)
+  assert.equal(await startSmokeGamePrivately(cdp, 'test-session', 1000, () => started), 'started-private')
+  assert.ok(evaluations >= 2, 'SSR 的空点击后必须继续重试，直到开局请求被观察到')
 }
 {
   let started = false
@@ -109,7 +125,7 @@ const runPrivateStart = new Function('window', 'document', `return ${PRIVATE_STA
   assert.deepEqual(runPrivateStart({}, { querySelectorAll: () => [start, unknown] }), { state: 'unsafe-toggle' })
   assert.equal(started, false, '识别不了启用开关时必须停止，不能冒险开局')
 }
-assert.match(src, /startSmokeGamePrivately\(cdp, sessionId\)/, '只有隐私状态确认后才开始等待首帧')
+assert.match(src, /startSmokeGamePrivately\(cdp, sessionId, PRIVATE_START_TIMEOUT_MS,/, '必须等到实际开局请求后才开始判定首帧')
 assert.match(src, /gameNotFound: gameResult\?\.status === 404/)
 assert.match(src, /if \(preflight\.gameNotFound\)/, '游戏 API 确认 404 时立即跳过，不空等启动超时')
 assert.match(src, /Target\.createTarget/, '每款仍通过独立 DevTools 标签页隔离运行')
