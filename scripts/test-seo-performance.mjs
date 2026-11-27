@@ -217,7 +217,11 @@ check('SSR 预载当前语言 chunk，失败或旧构建时安全退回现有按
       v: 2,
       alg: 'sha256',
       entry: 'index-ABCD1234.js',
-      locales: { en: 'assets/en-EFGH5678.js', 'zh-Hant': 'assets/zh-Hant-IJKL9012.js' },
+      locales: {
+        en: 'assets/en-EFGH5678.js',
+        'zh-Hans': 'assets/zh-Hans-MNOP3456.js',
+        'zh-Hant': 'assets/zh-Hant-IJKL9012.js',
+      },
     }))
     const template = '<script type="module" crossorigin src="/assets/index-ABCD1234.js"></script>'
     assert.equal(
@@ -227,7 +231,11 @@ check('SSR 预载当前语言 chunk，失败或旧构建时安全退回现有按
     const preloaded = localePreloadTag(template, 'en', clientDir)
     assert.match(retargetStaticToCnEdge(preloaded, 'https://cn.8bitgo.com'), /href="https:\/\/cn\.8bitgo\.com\/_cn\/assets\/en-EFGH5678\.js"/)
     assert.match(retargetStaticToOrigin(preloaded, 'https://8bitgo.com'), /href="https:\/\/8bitgo\.com\/assets\/en-EFGH5678\.js"/)
-    assert.equal(localePreloadTag(template, 'zh-Hans', clientDir), '', '基准语言已经在入口包里，不额外预载')
+    assert.equal(
+      localePreloadTag(template, 'zh-Hans', clientDir),
+      '<link rel="modulepreload" crossorigin data-8bitgo-locale-preload="true" href="/assets/zh-Hans-MNOP3456.js">',
+      '简体中文现在也是动态 chunk，SSR 必须提前预载以免首屏水合多等一个 RTT',
+    )
     assert.equal(localePreloadTag(template, 'invalid', clientDir), '', '不接受 URL 中的任意语言值')
     assert.equal(
       localePreloadTag('<script type="module" src="/assets/index-OLD12345.js"></script>', 'en', clientDir),
