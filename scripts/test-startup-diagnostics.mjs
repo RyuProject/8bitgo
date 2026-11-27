@@ -20,6 +20,7 @@ import {
   needsAttention,
   normalizeDiagnostics,
   partitionNoise,
+  reclassifyStartupDiagnostic,
   scrub,
   shapeSample,
 } from '../server/src/startup-diagnostics.js'
@@ -135,6 +136,19 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   assert.equal(diagnoseStartupFailure({
     event: 'failed', runtime: 'iodinegba', platform: 'gba', detail: 'GBA BIOS is required and must be 16 KiB',
   }).code, 'bios_config', 'IodineGBA 的平台 BIOS 配置问题要和街机 ROM 集错误分开')
+  const gbaBiosFetchFailure = diagnoseStartupFailure({
+    event: 'failed', runtime: 'emulatorjs', platform: 'gba',
+    detail: 'TypeError: Failed to fetch',
+    diagnostics: { resources: [{ n: 'gitee.com/…/gba_bios.bin', i: 'fetch', st: 0 }] },
+  })
+  assert.deepEqual(
+    { code: gbaBiosFetchFailure.code, phase: gbaBiosFetchFailure.phase, confidence: gbaBiosFetchFailure.confidence, signal: gbaBiosFetchFailure.signals[0] },
+    { code: 'bios_download', phase: 'network', confidence: 'high', signal: 'error.gba_bios_download' },
+    '只有 GBA BIOS 文件名与明确网络失败同时出现时才归成 BIOS 下载故障',
+  )
+  assert.notEqual(diagnoseStartupFailure({
+    event: 'failed', runtime: 'emulatorjs', platform: 'gba', detail: 'TypeError: Failed to fetch',
+  }).code, 'bios_download', '普通网络故障没有 BIOS 请求证据时不得细分')
   const requiredRomManifestFailure = diagnoseStartupFailure({
     event: 'timeout', runtime: 'emulatorjs', platform: 'arcade',
     detail: '街机游戏文件下载失败：本站要求校验此 ROM / BIOS，但 SHA-256 清单不可用',
@@ -179,6 +193,34 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   })
   assert.equal(oldTimeoutManifestSample.diagnostics.diagnosis.code, 'rom_integrity',
     '读回旧的通用超时现场时，应把明确的 SHA-256 清单阻断提升为具体原因')
+  const oldEngineAssetsManifestSample = shapeSample({
+    id: '4329', event: 'timeout', runtime: 'emulatorjs', platform: 'arcade',
+    signature: '0123456789abcdef', signatureText: 'timeout · emulatorjs · 模拟器依赖资源加载停滞',
+    payload: JSON.stringify({
+      v: 1, capture: { level: 'full' }, reason: '街机游戏文件下载失败：本站要求校验此 ROM / BIOS，但 SHA-256 清单不可用',
+      diagnosis: { code: 'engine_assets', label: '模拟器依赖资源加载停滞', phase: 'engine_asset', confidence: 'medium', signals: ['stage.engine_assets'] },
+    }),
+  })
+  assert.equal(oldEngineAssetsManifestSample.diagnostics.diagnosis.code, 'rom_integrity',
+    '历史错误阶段归类不能盖住更具体的完整性阻断证据')
+  assert.notEqual(oldEngineAssetsManifestSample.signature, '0123456789abcdef',
+    '样本结论升级后必须同步展示新归组签名')
+  const oldNetworkBiosSample = reclassifyStartupDiagnostic({
+    event: 'failed', runtime: 'emulatorjs', platform: 'gba', payload: JSON.stringify({
+      v: 1, capture: { level: 'full' }, reason: 'TypeError: Failed to fetch',
+      logs: [{ t: 100, s: 'ejs', l: 'error', m: 'GET gitee.com/…/gba_bios.bin: TypeError: Failed to fetch' }],
+      diagnosis: { code: 'network_failure', label: '网络请求失败', phase: 'network', confidence: 'medium', signals: ['error.network'] },
+    }),
+  })
+  assert.equal(oldNetworkBiosSample.diagnostics.diagnosis.code, 'bios_download',
+    '历史普通网络错误有 BIOS 文件证据时应升级为 BIOS 下载故障')
+  const preserveSpecificOldDiagnosis = reclassifyStartupDiagnostic({
+    event: 'failed', runtime: 'emulatorjs', platform: 'arcade', payload: JSON.stringify({
+      v: 1, capture: { level: 'full' }, reason: '没有可识别的具体错误',
+      diagnosis: { code: 'rom_integrity', label: '旧结论', phase: 'rom_download', confidence: 'high', signals: ['error.rom_integrity_manifest'] },
+    }),
+  })
+  assert.equal(preserveSpecificOldDiagnosis, null, '证据不足时历史强诊断不得被重算成弱结论')
   const oldPspTimeoutSample = shapeSample({
     id: '4283', event: 'timeout', runtime: 'ppsspp', platform: 'psp', payload: JSON.stringify({
       v: 1, capture: { level: 'full' }, reason: 'PPSSPP 启动失败：PPSSPP 响应超时',
@@ -701,6 +743,7 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   const { diagnosisSignalLabel, formatGroupForAi, formatResourceServerTiming, formatSample } = await import('../src/admin/diagnosticsReport.ts')
   assert.equal(diagnosisSignalLabel('stage.html5_entry_pending'), 'HTML5 游戏入口页尚未确认加载', '后台与复制给 AI 都要显示新分类依据的中文说明')
   assert.equal(diagnosisSignalLabel('error.rom_integrity_manifest'), '本站要求校验 ROM / BIOS，但 SHA-256 清单不可用', '后台与复制给 AI 都要解释完整性清单拦截信号')
+  assert.equal(diagnosisSignalLabel('error.gba_bios_download'), 'EmulatorJS 的 GBA BIOS 文件请求失败')
   assert.equal(formatResourceServerTiming({ workerMs: 18.4, edgeCache: 'HIT' }), 'Worker 响应头 18.4ms · 边缘缓存 HIT', '现场表格和 AI 报告共用 Worker / 边缘缓存格式')
   assert.equal(formatResourceServerTiming({}), '', '没有服务器计时信息时不增加空白行')
   assert.match(read('src/admin/AdminDiagnostics.tsx'), /formatResourceServerTiming\(r\)/, '现场网络表格应展示已采集的服务器计时信息')
@@ -750,8 +793,8 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   assert.match(player, /reportFallbackOutcome\('fallback_started'\)/, '实际切换核心 / 运行时后必须记录兜底开始')
   assert.match(player, /reportFallbackOutcome\('fallback_first_frame'\)/, '兜底核心出首帧时必须记录中间结果')
   assert.match(player, /reportFallbackOutcome\('fallback_playable'\)[\s\S]{0,120}reportStartup\('game_playable'\)/, '兜底到达可玩状态后才算恢复成功')
-  assert.match(player, /const reportStartupFailure = \(reason: string\) => \{\s*startupEnded = true\s*reportFallbackOutcome\('fallback_failed'\)/,
-    '最终启动失败时必须结束启动并记录兜底失败')
+  assert.match(player, /const reportStartupFailure = \(reason: string\) => \{\s*startupEnded = true\s*stopStartupWatchdog\(\)\s*reportFallbackOutcome\('fallback_failed'\)/,
+    '最终启动失败时必须结束启动、清理看门狗并记录兜底失败')
   assert.match(player, /const reportStartupInterrupted = \(\) => \{[\s\S]{0,300}reportStartup\('startup_interrupted'/,
     '离开时尚未可玩的开局必须单独记录')
   assert.match(player, /window\.addEventListener\('pagehide', onStartupPageHide\)/,
@@ -909,6 +952,14 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   assert.match(page, /\{ id: 'recovered', label: '已自动恢复' \}/)
   assert.match(page, /仅有安全摘要/)
   assert.match(read('server/scripts/backfill-startup-diagnostics.mjs'), /if \(!apply\)/, '历史摘要回填默认只预览')
+  const reclassify = read('server/scripts/reclassify-startup-diagnostics.mjs')
+  assert.match(reclassify, /if \(apply && updates\.length\)/, '历史重分类必须默认只预览，只有 --apply 才写入')
+  assert.match(reclassify, /WHERE id > \?/,
+    '历史重分类按主键分页，避免一次把保留期内所有现场装进内存')
+  assert.match(reclassify, /SET signature = \?, signature_text = \?, payload = \?/,
+    '后台归组签名与诊断结论必须在同一更新中保持一致')
+  assert.doesNotMatch(reclassify, /DELETE FROM|recordStartupDiagnostics\(/,
+    '历史重分类不得删现场或重新插入漏斗诊断')
 }
 
 /* ---------- 慢启动要看得出卡在下载还是启动 ---------- */
@@ -936,6 +987,10 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   assert.match(player, /const STARTUP_SLOW_MS = 60_000/)
   assert.match(player, /createVisibilityTimeout\(STARTUP_SLOW_MS/,
     '慢启动只累计页面前台时间，避免后台停留误报')
+  assert.match(player, /createVisibilityTimeout\(STARTUP_TIMEOUT_MS,/,
+    '启动超时只累计页面前台时间，且必须保护已排队的旧定时回调')
+  assert.match(player, /startupWatchdog\.reset\(\)/, '启动有进展时重新给足前台空闲时限')
+  assert.doesNotMatch(player, /timeoutTimer|onStartupVisibility/, '启动超时不使用缺少回调代次保护的手写计时器')
   assert.match(player, /reportStartup\('slow_start', `前台累计等待 game_playable 已超过 \$\{STARTUP_SLOW_MS \/ 1000\} 秒\$\{progressTrace\.phaseNote\(\)\}`\)/)
   assert.match(player, /if \(!observable\) \{[\s\S]{0,180}stopSlowStartupTimer\(\)/,
     '无法判断 HTML5 是否可玩时暂停慢启动告警')
