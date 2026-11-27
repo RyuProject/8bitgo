@@ -326,6 +326,20 @@ export function romPackWorkerConcurrency(
   return Math.max(1, Math.min(chunks, 4, memoryCap, Math.max(1, hardware - 1)))
 }
 
+/** 解包同时保留解密块和输出块；设备未提供内存档位时把并行数压到两路。 */
+export function romPackDecodeConcurrency(
+  fileSize: number,
+  capacity: RomPackCapacity = {
+    hardwareConcurrency: globalThis.navigator?.hardwareConcurrency,
+    deviceMemory: (globalThis.navigator as Navigator & { deviceMemory?: number } | undefined)?.deviceMemory,
+  },
+): number {
+  const workers = romPackWorkerConcurrency(fileSize, capacity)
+  return Number.isFinite(capacity.deviceMemory) && Number(capacity.deviceMemory) > 0
+    ? workers
+    : Math.min(workers, 2)
+}
+
 export async function matchesRomPackSource(
   file: File,
   header: RomPackHeader,
@@ -638,6 +652,35 @@ async function decryptChunk(
   return source
 }
 
+/** 分批跑异步解密，既让 Web Crypto 有机会并行，也把失败后的多余工作限制在当前一批。 */
+async function forEachRomPackChunk(
+  header: RomPackHeader,
+  dataOffset: number,
+  process: (index: number, cipherAt: number) => Promise<void>,
+): Promise<void> {
+  const offsets = new Array<number>(header.chunks.length)
+  let cipherAt = dataOffset
+  header.chunks.forEach((chunk, index) => {
+    offsets[index] = cipherAt
+    cipherAt += chunk.cipherSize
+  })
+  const concurrency = Math.min(romPackDecodeConcurrency(header.originalSize), header.chunks.length)
+  for (let first = 0; first < header.chunks.length; first += concurrency) {
+    const count = Math.min(concurrency, header.chunks.length - first)
+    const results = await Promise.all(Array.from({ length: count }, async (_, offset) => {
+      const index = first + offset
+      try {
+        await process(index, offsets[index]!)
+        return { ok: true as const }
+      } catch (error) {
+        return { ok: false as const, error }
+      }
+    }))
+    const failed = results.find((result) => !result.ok)
+    if (failed && !failed.ok) throw failed.error
+  }
+}
+
 /** 小/中型 ROM 的完整解包；返回原始文件名，让模拟器仍按 .zip/.nes/.nds 识别。 */
 export async function unpackRomPack(
   data: ArrayBuffer,
@@ -649,29 +692,27 @@ export async function unpackRomPack(
   // 这一条路径必须申请连续 ArrayBuffer；光盘等大文件走下面的 Blob 版本。先挡住异常文件头，
   // 避免在校验第一块之前就把手机标签页用一笔超大分配直接杀掉。
   if (header.originalSize > ROM_PACK_ARRAY_BUFFER_LIMIT) throw new Error('ROM 包解开后超过 1GB，请改用支持 Blob 的播放器路径')
-  let sourceAt = 0
+  let completedBytes = 0
   let lastProgressAt = Number.NEGATIVE_INFINITY
   const reportProgress = (force = false) => {
     const now = performance.now()
     if (!force && now - lastProgressAt < 200) return
     lastProgressAt = now
-    onProgress?.(sourceAt, header.originalSize)
+    onProgress?.(completedBytes, header.originalSize)
   }
   // 通知调用方已经转入解包；后续最多每 200ms 续报一次，避免小分块产生过多界面更新。
   reportProgress(true)
   const key = await contentKey(header)
   const output = new Uint8Array(header.originalSize)
-  let cipherAt = dataOffset
-  for (let index = 0; index < header.chunks.length; index++) {
+  await forEachRomPackChunk(header, dataOffset, async (index, cipherAt) => {
     const meta = header.chunks[index]
     // 密文已完整驻留在 data；Web Crypto 接受 TypedArray 视图，避免每个 8 MiB 块再复制一份。
     const cipher = bytes.subarray(cipherAt, cipherAt + meta.cipherSize)
     const source = await decryptChunk(header, index, cipher, key)
-    output.set(source, sourceAt)
-    sourceAt += source.byteLength
-    cipherAt += meta.cipherSize
-    reportProgress(index === header.chunks.length - 1)
-  }
+    output.set(source, index * header.chunkSize)
+    completedBytes += source.byteLength
+    reportProgress(completedBytes === header.originalSize)
+  })
   if (header.originalSha256) {
     const digest = hex(await crypto.subtle.digest('SHA-256', output))
     if (digest !== header.originalSha256) throw new Error('ROM 包整文件校验失败')
@@ -723,16 +764,14 @@ export async function inspectRomPackBlob(blob: Blob): Promise<{ header: RomPackH
 export async function verifyRomPackBlob(blob: Blob, onProgress?: (progress: PackProgress) => void): Promise<RomPackHeader> {
   const { header, dataOffset } = await inspectRomPackBlob(blob)
   const key = await contentKey(header)
-  let cipherAt = dataOffset
   let verified = 0
-  for (let index = 0; index < header.chunks.length; index++) {
+  await forEachRomPackChunk(header, dataOffset, async (index, cipherAt) => {
     const meta = header.chunks[index]
     const cipher = await blob.slice(cipherAt, cipherAt + meta.cipherSize).arrayBuffer()
     await decryptChunk(header, index, cipher, key)
-    cipherAt += meta.cipherSize
     verified += meta.sourceSize
     onProgress?.({ loaded: verified, total: header.originalSize })
-  }
+  })
   return header
 }
 
@@ -755,22 +794,20 @@ export class RomBlobStorageError extends Error {
 async function unpackEachChunk(
   blob: Blob,
   onProgress: ((progress: PackProgress) => void) | undefined,
-  take: (source: Uint8Array<ArrayBuffer>) => void,
+  take: (source: Uint8Array<ArrayBuffer>, index: number) => void,
   consumeInput = false,
 ): Promise<RomPackHeader> {
   const { header, dataOffset } = await inspectRomPackBlob(blob)
   const key = await contentKey(header)
-  let cipherAt = dataOffset
   let unpacked = 0
-  for (let index = 0; index < header.chunks.length; index++) {
+  await forEachRomPackChunk(header, dataOffset, async (index, cipherAt) => {
     const meta = header.chunks[index]
     const cipher = await readBlobRange(blob, cipherAt, cipherAt + meta.cipherSize)
-    take(await decryptChunk(header, index, cipher, key))
-    cipherAt += meta.cipherSize
-    if (consumeInput) releaseMemoryRomBefore(blob, cipherAt)
+    take(await decryptChunk(header, index, cipher, key), index)
+    if (consumeInput) releaseMemoryRomBefore(blob, cipherAt + meta.cipherSize)
     unpacked += meta.sourceSize
     onProgress?.({ loaded: unpacked, total: header.originalSize })
-  }
+  })
   return header
 }
 
@@ -804,7 +841,7 @@ export async function unpackRomPackBlob(
 ): Promise<{ name: string; blob: Blob; header: RomPackHeader }> {
   const output: Blob[] = []
   // 每块立刻固化成 Blob：既脱离可能复用的 WASM 内存，也允许浏览器把大结果落到磁盘。
-  const header = await unpackEachChunk(blob, onProgress, (source) => { output.push(new Blob([source])) })
+  const header = await unpackEachChunk(blob, onProgress, (source, index) => { output[index] = new Blob([source]) })
   const playable = await assertBlobPartsReadable(output)
   return { name: header.originalName, blob: playable, header }
 }
@@ -823,7 +860,7 @@ export async function unpackRomPackToMemory(
   consumeInput = false,
 ): Promise<{ name: string; blob: Blob; header: RomPackHeader }> {
   const parts: Uint8Array<ArrayBuffer>[] = []
-  const header = await unpackEachChunk(blob, onProgress, (source) => { parts.push(source) }, consumeInput)
+  const header = await unpackEachChunk(blob, onProgress, (source, index) => { parts[index] = source }, consumeInput)
   return { name: header.originalName, blob: memoryRomBlob(parts), header }
 }
 

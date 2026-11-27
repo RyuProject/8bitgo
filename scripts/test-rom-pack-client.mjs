@@ -5,7 +5,7 @@ import { encodeRomPackPrefix, romPackAad, romPackIv } from '../shared/rom-pack-f
 globalThis.__viteEnv = { VITE_API_URL: 'https://api.example.test' }
 const oldCryptoDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'crypto')
 Object.defineProperty(globalThis, 'crypto', { value: webcrypto, configurable: true, writable: true })
-const { unpackRomPack } = await import('../src/services/romPack.ts')
+const { romPackDecodeConcurrency, unpackRomPack, unpackRomPackBlob, verifyRomPackBlob } = await import('../src/services/romPack.ts')
 const { loadGameBytes } = await import('../src/emulator/romLoader.ts')
 
 const digest = async (bytes) => Buffer.from(await webcrypto.subtle.digest('SHA-256', bytes)).toString('hex')
@@ -47,7 +47,7 @@ const assetPath = '/roms/test/synthetic.nes.8bg'
 globalThis.fetch = async (url, init = {}) => {
   const target = new URL(String(url))
   if (target.pathname.endsWith('/api/rom-pack/key')) {
-    return Response.json({ packageId: header.packageId, keyId: header.keyId, key })
+    return Response.json({ packageId: target.searchParams.get('packageId'), keyId: target.searchParams.get('keyId'), key })
   }
   if (target.pathname === '/integrity') return new Response('', { status: 404 })
   if (target.pathname === assetPath) {
@@ -70,12 +70,22 @@ globalThis.fetch = async (url, init = {}) => {
 }
 
 let decryptInput
+let activeDecrypts = 0
+let maxConcurrentDecrypts = 0
+let decryptDelayMs = 0
 const subtle = new Proxy(webcrypto.subtle, {
   get(target, property) {
     if (property === 'decrypt') {
-      return (...args) => {
+      return async (...args) => {
         decryptInput = args[2]
-        return target.decrypt(...args)
+        activeDecrypts++
+        maxConcurrentDecrypts = Math.max(maxConcurrentDecrypts, activeDecrypts)
+        try {
+          if (decryptDelayMs) await new Promise((resolve) => setTimeout(resolve, decryptDelayMs))
+          return await target.decrypt(...args)
+        } finally {
+          activeDecrypts--
+        }
       }
     }
     const value = Reflect.get(target, property, target)
@@ -98,6 +108,87 @@ try {
   assert.ok(decryptInput instanceof Uint8Array, 'Web Crypto 应直接接收原容器的密文视图')
   assert.equal(decryptInput.buffer, container.buffer, '解包不能先复制当前密文块')
   assert.equal(decryptInput.byteOffset, prefix.byteLength)
+
+  const chunkBytes = 8 * 1024 * 1024
+  const multiSource = new Uint8Array(chunkBytes + 1)
+  const multiHeader = {
+    ...header,
+    packageId: 'abcdef0123456789abcdef0123456789',
+    originalName: 'synthetic-multichunk.nes',
+    originalSize: multiSource.byteLength,
+    chunkSize: chunkBytes,
+    noncePrefix: Buffer.alloc(8, 0x61).toString('base64url'),
+    originalSha256: await digest(multiSource),
+    chunks: [],
+    payloadSize: 0,
+  }
+  const multiEncrypted = []
+  for (let index = 0; index < Math.ceil(multiSource.byteLength / chunkBytes); index++) {
+    const start = index * chunkBytes
+    const part = multiSource.subarray(start, Math.min(multiSource.byteLength, start + chunkBytes))
+    multiHeader.chunks.push({
+      sourceSize: part.byteLength,
+      encodedSize: part.byteLength,
+      cipherSize: part.byteLength + 16,
+      sha256: await digest(part),
+    })
+    const encryptedPart = await webcrypto.subtle.encrypt(
+      { name: 'AES-GCM', iv: romPackIv(multiHeader, index), additionalData: romPackAad(multiHeader, index), tagLength: 128 },
+      keyForEncryption,
+      part,
+    )
+    multiEncrypted.push(new Uint8Array(encryptedPart))
+    assert.equal(encryptedPart.byteLength, multiHeader.chunks[index].cipherSize)
+  }
+  multiHeader.payloadSize = multiHeader.chunks.reduce((sum, part) => sum + part.cipherSize, 0)
+  const multiPrefix = encodeRomPackPrefix(multiHeader)
+  const multiContainer = new Uint8Array(multiPrefix.byteLength + multiHeader.payloadSize)
+  multiContainer.set(multiPrefix)
+  let multiCipherAt = multiPrefix.byteLength
+  for (const part of multiEncrypted) {
+    multiContainer.set(part, multiCipherAt)
+    multiCipherAt += part.byteLength
+  }
+
+  const oldNavigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
+  Object.defineProperty(globalThis, 'navigator', {
+    value: { hardwareConcurrency: 4, deviceMemory: 4 }, configurable: true,
+  })
+  try {
+    assert.equal(romPackDecodeConcurrency(32 * 1024 * 1024, { hardwareConcurrency: 8, deviceMemory: 2 }), 1,
+      '低内存设备必须逐块解包')
+    assert.equal(romPackDecodeConcurrency(32 * 1024 * 1024, { hardwareConcurrency: 8, deviceMemory: 4 }), 2,
+      '中等内存设备最多两路解包')
+    assert.equal(romPackDecodeConcurrency(32 * 1024 * 1024, { hardwareConcurrency: 8, deviceMemory: 8 }), 4,
+      '高内存设备可以使用四路解包')
+    assert.equal(romPackDecodeConcurrency(32 * 1024 * 1024, { hardwareConcurrency: 8 }), 2,
+      '浏览器不报告内存档位时采用保守并行度')
+    assert.equal(romPackDecodeConcurrency(32 * 1024 * 1024, { hardwareConcurrency: 2, deviceMemory: 8 }), 1,
+      '解包给至少一个逻辑核心留给页面')
+
+    decryptDelayMs = 15
+    maxConcurrentDecrypts = 0
+    const multiUnpacked = await unpackRomPack(multiContainer.buffer)
+    assert.equal(await digest(multiUnpacked.data), multiHeader.originalSha256)
+    assert.equal(maxConcurrentDecrypts, 2, '多块 8BG ROM 应按设备上限并行解密')
+
+    const multiBlob = new Blob([multiContainer])
+    maxConcurrentDecrypts = 0
+    const unpackedBlob = await unpackRomPackBlob(multiBlob)
+    assert.equal(unpackedBlob.blob.size, multiSource.byteLength)
+    assert.equal(await digest(await unpackedBlob.blob.arrayBuffer()), multiHeader.originalSha256,
+      '并行完成的 Blob 分块仍须按 ROM 原顺序组装')
+    assert.equal(maxConcurrentDecrypts, 2, '后台导入与大 ROM 解包也应使用自适应并行度')
+
+    maxConcurrentDecrypts = 0
+    const verified = await verifyRomPackBlob(multiBlob)
+    assert.equal(verified.packageId, multiHeader.packageId)
+    assert.equal(maxConcurrentDecrypts, 2, '完整性验证应与客户端解包共用有界并行策略')
+  } finally {
+    decryptDelayMs = 0
+    if (oldNavigatorDescriptor) Object.defineProperty(globalThis, 'navigator', oldNavigatorDescriptor)
+    else delete globalThis.navigator
+  }
 
   globalThis.FileReader = class {
     result = null
