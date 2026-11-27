@@ -9,7 +9,7 @@
  *   - IndexedDB 封装里 transaction() 同步抛错时 Promise 必须 settle；续传库挂起只影响持久化优化。
  *   - XHR 在同 ETag 下从精确偏移续上；ETag / Content-Range 错误时只允许完整重取。
  *   - 独立 IDB 跨页面恢复已提交的 1 MiB 前缀，绝不使用未完成的小片。
- * 定时器按 1/100 缩放，仍能保持短测，同时给并行测试下的事件循环留出调度余量。
+ * 定时器按 1/20 缩放；20 秒失速预算仍只需 1 秒实测，XHR 与流读取竞速也有足够调度余量。
  */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -37,7 +37,7 @@ function makeContext({ fetchImpl, indexedDB, localStorage, XMLHttpRequest, sessi
   }
   const context = {
     console: { log() {}, warn() {}, error() {} },
-    setTimeout: (fn, ms = 0) => realSetTimeout(fn, Math.max(0, Math.ceil(ms / 100))),
+    setTimeout: (fn, ms = 0) => realSetTimeout(fn, Math.max(0, Math.ceil(ms / 20))),
     clearTimeout,
     fetch: fetchImpl,
     AbortController,
@@ -93,7 +93,8 @@ const stalledBody = (bytes) => new ReadableStream({
     '包体卡在 100% 时必须 reject，交给播放器重试',
   )
   assert.ok(progress.some(([phase, pct]) => phase === 'downloading' && pct === 100), '确实先到了 100%')
-  assert.ok(Date.now() - started < 2000, '按缩放后的 20 秒中止')
+  // 缩放后理论上约 1 秒；保留 8 秒事件循环余量，同时抓住未缩放的 20 秒超时。
+  assert.ok(Date.now() - started < 8000, '按缩放后的 20 秒中止')
 }
 
 {
@@ -154,8 +155,8 @@ const stalledBody = (bytes) => new ReadableStream({
   assert.equal(gets, 1, '缓存判死以后，核心下载不再先等一次 get')
   assert.equal(puts, 0, '缓存判死以后也不再 put')
   assert.ok(progress.some(([phase]) => phase === 'downloading'), '核心下载立刻出进度文字，不会被判卡住')
-  // 缩放后：一次 get 超时 15ms，远小于两次（以前要连等 2 × 20 秒）
-  assert.ok(Date.now() - t0 < 1000)
+  // 缩放后：一次 get 超时约 750ms，远小于两次（以前要连等 2 × 20 秒）。
+  assert.ok(Date.now() - t0 < 5000, '挂起的 IndexedDB 只等一次就必须让下载继续')
 }
 
 {
@@ -202,7 +203,7 @@ const stalledBody = (bytes) => new ReadableStream({
   const downloader = new __classes.Downloader(cache, null)
   const item = await Promise.race([
     downloader.downloadFile('https://8bitgo.test/emulatorjs/cores/fceumm-wasm.data', 'Core', 'GET', {}, null, null, null, 30000, 'arraybuffer'),
-    new Promise((resolve) => setTimeout(() => resolve('hung'), 1000)),
+    new Promise((resolve) => setTimeout(() => resolve('hung'), 5000)),
   ])
   assert.equal(item, cached, 'HEAD 复验卡住时用缓存继续')
 }
