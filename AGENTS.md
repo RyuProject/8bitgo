@@ -86,6 +86,7 @@ grep -c 'this.functions.saveStateInfo()' public/emulatorjs/emulator.min.js   # �
 ——它压根不再下载，硬刷新、清 HTTP 缓存全都无效。
 `src/emulator/adapters/emulatorjs.ts` 里的 `purgePoisonedEngineCache()` 按「代次」清一次，
 每个访客只清一回。**引擎构建再出现不兼容更换时，把 `EJS_CACHE_GENERATION` 加一。**
+清理时 `indexedDB.databases()`、事务清表和 `deleteDatabase()` 都有时限；任一路径提前结束都必须清掉尚未触发的计时器，不能让成功开局后留下空转回调。
 
 ### 2.7 升级引擎后必须重跑 `npm run ejspatch`
 
@@ -262,7 +263,7 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
   **没有百分比**）：一局要连查两次缓存（核心报告 + 核心），各等满 20 秒就超过适配器 30 秒的卡死预算，库坏掉的浏览器
   每局都这样。现在 get 15 秒超时或 put 超时后下载器打 `__8bgCacheDead`，本局不再碰缓存，并写 localStorage
   `8bitgo.ejs.idbStall`；适配器 3 天内据此 `EJS_cacheConfig.enabled=false`、跳过清库和预热探测。
-  `purgePoisonedEngineCache` 里的 `indexedDB.databases()` 也加了 3 秒时限（开局要等它）。
+  `purgePoisonedEngineCache` 里的 `indexedDB.databases()` 也加了 3 秒时限（开局要等它）；数据库列表、事务或删除请求提前结束时，时限器都立即清理。
   缓存过期后的 HEAD 复验（8 秒）和文本响应包体（核心报告，20 秒）同样补了时限。
 
 - **时限定时器必须在 get / put 完成后清掉**（第十二节，2026-11-11 孟加拉 Android 10《拳皇 2002》两局慢启动 20 秒）：
@@ -2177,6 +2178,7 @@ libmidi.wasm 3.1MB 要 48 秒，CheerpJ 自己的 CDN 全程闲着；之后再�
 自动重试两次又各等 120 秒。现在预热最多等 2 秒就设 src（实测 Chrome 会合并同一 URL 的在途请求，iframe 那次传输 0 字节，
 不会下两遍）；`J2ME_STALL_TIMEOUT_MS` 只数前台、iframe 每完成一个请求就重新计时，前台总上限 6 分钟；
 iframe 登记了 `watchFramePerformance`，诊断包里能看到 CheerpJ 的下载。回归：`npm run test:j2me`。
+预热若在 2 秒预算内完成，必须立即清掉并行等待的超时器；否则它会在 CheerpJ 已启动后仍唤醒一次。
 JVM 起不来一律以 `'runtime'` 报（`j2meStartTimeout`）：不带 scope 时播放器当内容错，en 失败又去试 zh-Hans，玩家再等一轮。
 run.html 的 load 到了却没有 `cheerpjInit`（leaningtech 的 loader.js 被拦 / 取不到，`cheerpjLoaderMissing`）先再探 CDN；
 明确 `down` 才切到备用运行时，其余情况按原逻辑重载一次或报启动故障。

@@ -312,19 +312,21 @@ async function purgePoisonedEngineCache(): Promise<void> {
    * 30 秒后被卡死检测报成「卡住了」。清表只要一个 readwrite 事务，不用别人关连接。
    * 库不存在时不能用 open()（会凭空建一个版本 1 的空库，引擎再开就对不上），所以先用
    * indexedDB.databases() 确认；没有这个 API 的浏览器退回 deleteDatabase。
-   */
+  */
   try {
-    // databases() 在 IndexedDB 挂死的 Safari 上永不 resolve，而开局要等这一步；3 秒拿不到就走 deleteDatabase 那条（同样有时限）
+    // databases() 在 IndexedDB 挂死的 Safari 上永不 resolve；3 秒拿不到就走 deleteDatabase 那条。
     const list = typeof indexedDB.databases === 'function'
-      ? await Promise.race([indexedDB.databases(), new Promise<never>((_, reject) => setTimeout(() => reject(new Error('databases() timeout')), 3000))])
+      ? await withTimeout(indexedDB.databases(), 3000)
       : null
     if (list) {
       if (!list.some((d) => d.name === DB)) return markDone() // 本来就没有，没什么可清
       const cleared = await new Promise<boolean>((resolve) => {
         let settled = false
+        let timer: ReturnType<typeof setTimeout> | undefined
         const done = (ok: boolean) => {
           if (settled) return
           settled = true
+          if (timer !== undefined) clearTimeout(timer)
           resolve(ok)
         }
         const req = indexedDB.open(DB)
@@ -353,7 +355,7 @@ async function purgePoisonedEngineCache(): Promise<void> {
             done(false)
           }
         }
-        setTimeout(() => done(false), 4000)
+        timer = setTimeout(() => done(false), 4000)
       })
       if (cleared) markDone()
       return
@@ -364,9 +366,11 @@ async function purgePoisonedEngineCache(): Promise<void> {
 
   const deleted = await new Promise<boolean>((resolve) => {
     let settled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
     const done = (ok: boolean) => {
       if (settled) return
       settled = true
+      if (timer !== undefined) clearTimeout(timer)
       resolve(ok)
     }
     try {
@@ -380,7 +384,7 @@ async function purgePoisonedEngineCache(): Promise<void> {
       // 有别的标签页开着数据库就先放行本局，但绝不能写「清理完成」；下次启动再试。
       req.onblocked = () => done(false)
       // 浏览器实现异常时也不能把开局一直卡住；超时同样保持未完成状态。
-      setTimeout(() => done(false), 2000)
+      timer = setTimeout(() => done(false), 2000)
     } catch {
       done(false)
     }

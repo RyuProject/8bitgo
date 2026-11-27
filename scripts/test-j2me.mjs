@@ -457,6 +457,8 @@ check('⭐ 预热与 CheerpJ 并行：最多等 2 秒就设 src，不再等预�
   assert.ok(warm >= 0 && warm < upload, '运行时预热必须先于 ROM 解密/上传开始')
   assert.ok(wait > upload && wait < src, '预热要和启动 iframe 赛跑，而不是挡在前面')
   assert.match(adapterCode, /J2ME_WARMUP_WAIT_MS = 2_000/)
+  assert.match(adapterCode, /let warmTimer: ReturnType<typeof setTimeout> \| undefined/)
+  assert.match(adapterCode, /\.finally\(\(\) => \{\s*if \(warmTimer !== undefined\) window\.clearTimeout\(warmTimer\)/, '预热提前完成后必须清掉 2 秒超时器')
   assert.match(adapterCode, /if \(destroyed \|\| failed \|\| fallbackActive\) return\s+diagLog\('j2me'[\s\S]{0,200}?srcSet = true/, '等待期间若取消游戏或已切备用运行时，不能再启动 CheerpJ iframe')
 })
 

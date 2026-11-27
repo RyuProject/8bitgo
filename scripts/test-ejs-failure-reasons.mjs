@@ -151,7 +151,10 @@ for (const lang of ['zh-Hans', 'zh-Hant', 'en', 'es', 'fr', 'de', 'it', 'ja']) {
   assert.match(adapter, /assumeUncached,\s*coreDataUrl/)
   assert.match(adapter, /warmEmulatorJsStart\(\{ always: \[\], large: \[biosUrl\] \}, \{ assumeUncached \}\)/)
   assert.match(fnSource('purgePoisonedEngineCache'), /if \(readEngineCacheStall\(\)\) return/)
-  assert.match(fnSource('purgePoisonedEngineCache'), /indexedDB\.databases\(\), new Promise<never>/, 'databases() 必须有时限')
+  assert.match(fnSource('purgePoisonedEngineCache'), /withTimeout\(indexedDB\.databases\(\), 3000\)/, 'databases() 必须有时限')
+  const purgeSource = fnSource('purgePoisonedEngineCache')
+  assert.equal((purgeSource.match(/if \(timer !== undefined\) clearTimeout\(timer\)/g) ?? []).length, 2, '清表与删除完成后都必须清掉仍挂着的时限器')
+  assert.match(adapter, /function withTimeout<T>[\s\S]*?clearTimeout\(timer\)/, 'databases() 提前返回时必须清掉超时器')
   const engine = readFileSync(new URL('../public/emulatorjs/emulator.min.js', import.meta.url), 'utf8')
   assert.ok(engine.includes(`localStorage.setItem("${adapter.match(/EJS_IDB_STALL_KEY = '([^']+)'/)[1]}"`), '引擎补丁与适配器用同一个键')
 }

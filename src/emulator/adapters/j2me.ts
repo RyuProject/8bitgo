@@ -825,10 +825,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       */
       options.onProgress?.({ phase: 'engine' })
       const warmStarted = Date.now()
+      let warmTimer: ReturnType<typeof setTimeout> | undefined
       const warmed = await Promise.race([
         Promise.all([runtimeWarmup, directJarWarmup]).then(() => true),
-        new Promise<false>((resolve) => { window.setTimeout(() => resolve(false), J2ME_WARMUP_WAIT_MS) }),
-      ])
+        new Promise<false>((resolve) => { warmTimer = window.setTimeout(() => resolve(false), J2ME_WARMUP_WAIT_MS) }),
+      ]).finally(() => {
+        if (warmTimer !== undefined) window.clearTimeout(warmTimer)
+      })
       if (destroyed || failed || fallbackActive) return
       diagLog('j2me', 'info', warmed
         ? `预热完成 (+${Date.now() - warmStarted}ms)，启动 CheerpJ`
