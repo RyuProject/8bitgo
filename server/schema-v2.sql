@@ -812,6 +812,8 @@ CREATE TABLE IF NOT EXISTS game_comments (
   parent_id  BIGINT UNSIGNED NULL,
   content    VARCHAR(2000)   NOT NULL,
   country    CHAR(2)         NOT NULL DEFAULT 'XX',
+  -- 同一次发表的弱网重试键；NULL 兼容旧客户端和后台导入
+  client_request_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,
   hidden     TINYINT(1)      NOT NULL DEFAULT 0,
   pending_review TINYINT(1)  NOT NULL DEFAULT 0,
   -- 编辑过的时间；NULL = 从没编辑过（前台据此显示「已编辑」）
@@ -828,6 +830,7 @@ CREATE TABLE IF NOT EXISTS game_comments (
   -- 后台审核：先按状态过滤再按时间排
   KEY idx_cmt_hidden_time (hidden, created_at DESC),
   KEY idx_cmt_review_time (pending_review, created_at DESC),
+  UNIQUE KEY uq_cmt_client_request_id (client_request_id),
   CONSTRAINT fk_cmt_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE,
   CONSTRAINT fk_cmt_post FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
   CONSTRAINT fk_cmt_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,

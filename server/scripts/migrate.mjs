@@ -763,6 +763,7 @@ const patches = [
         parent_id  BIGINT UNSIGNED NULL,
         content    VARCHAR(2000)   NOT NULL,
         country    CHAR(2)         NOT NULL DEFAULT 'XX',
+        client_request_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,
         hidden     TINYINT(1)      NOT NULL DEFAULT 0,
         pending_review TINYINT(1)  NOT NULL DEFAULT 0,
         edited_at  TIMESTAMP(3)    NULL DEFAULT NULL,
@@ -773,6 +774,7 @@ const patches = [
         KEY idx_cmt_parent (parent_id),
         KEY idx_cmt_hidden_time (hidden, created_at DESC),
         KEY idx_cmt_review_time (pending_review, created_at DESC),
+        UNIQUE KEY uq_cmt_client_request_id (client_request_id),
         CONSTRAINT fk_cmt_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE,
         CONSTRAINT fk_cmt_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
         CONSTRAINT fk_cmt_parent FOREIGN KEY (parent_id) REFERENCES game_comments(id) ON DELETE SET NULL
@@ -1433,6 +1435,19 @@ const patches = [
       }
       if (!(await hasIndex('game_comments', 'idx_cmt_review_time'))) {
         await conn.query('ALTER TABLE `game_comments` ADD INDEX `idx_cmt_review_time` (`pending_review`, `created_at` DESC)')
+      }
+    },
+  },
+  {
+    name: 'game_comments.client_request_id（弱网发表幂等键）',
+    table: 'game_comments',
+    needed: async () => !(await hasColumn('game_comments', 'client_request_id')) || !(await hasIndex('game_comments', 'uq_cmt_client_request_id')),
+    run: async () => {
+      if (!(await hasColumn('game_comments', 'client_request_id'))) {
+        await conn.query('ALTER TABLE `game_comments` ADD COLUMN `client_request_id` CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL AFTER `country`')
+      }
+      if (!(await hasIndex('game_comments', 'uq_cmt_client_request_id'))) {
+        await conn.query('ALTER TABLE `game_comments` ADD UNIQUE INDEX `uq_cmt_client_request_id` (`client_request_id`)')
       }
     },
   },

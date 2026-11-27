@@ -15,6 +15,7 @@ import {
   ImLookupError,
   ImNotConnectedError,
   imReconnect,
+  imReadyForUser,
   imState,
   imStateDetail,
   IM_TEXT_MAX,
@@ -100,7 +101,9 @@ export function ImPanel() {
   /** 和 state 一起取：detail 不是 React state，只订阅 state 会让第二个错误显示第一个的细节 */
   const [detail, setDetail] = useState(() => imStateDetail())
   const [convs, setConvs] = useState<ImConversation[]>([])
+  const [convsOwnerId, setConvsOwnerId] = useState<string | null>(null)
   const [convError, setConvError] = useState(false)
+  const convRequestSeq = useRef(0)
   const [replyNotices, setReplyNotices] = useState<CommentReplyNotice[]>([])
   const [replyNoticeOwner, setReplyNoticeOwner] = useState<string | null>(null)
   const [replyNoticeStatus, setReplyNoticeStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
@@ -108,6 +111,8 @@ export function ImPanel() {
   const replyNoticeOwnerRef = useRef<string | null>(null)
   const replyUserRef = useRef(userId)
   replyUserRef.current = userId
+  const userIdRef = useRef(userId)
+  userIdRef.current = userId
   const [supportPeer, setSupportPeer] = useState<ImPeer | null>(null)
   const [supportDismissed, setSupportDismissed] = useState(false)
   const [supportBusy, setSupportBusy] = useState(false)
@@ -120,7 +125,11 @@ export function ImPanel() {
   /** 已经本地化好的报错文案。存字符串而不是 code —— 切语言不会重渲染这一句，存 code 反而会留着旧语言 */
   const [lookupError, setLookupError] = useState('')
   const emailRef = useRef<HTMLInputElement>(null)
-  const [active, setActive] = useState<{ id: string; peerId: string; nick: string; avatar: string } | null>(null)
+  const [active, setActive] = useState<{ ownerId: string; id: string; peerId: string; nick: string; avatar: string } | null>(null)
+  const activeForUser = active?.ownerId === userId ? active : null
+  const readyForUser = imReadyForUser(userId) && state === 'ready'
+  const stateForUser: ImState = state === 'ready' && !readyForUser ? 'connecting' : state
+  const currentConvs = convsOwnerId === userId ? convs : []
   /** 打开抽屉前焦点在哪。关闭时还回去 —— 不还的话焦点会留在刚被 inert 掉的子树里 */
   const returnFocus = useRef<HTMLElement | null>(null)
   const panelRef = useRef<HTMLElement>(null)
@@ -152,6 +161,7 @@ export function ImPanel() {
     setComposeOpen(false)
     setEmailDraft('')
     setLookupError('')
+    setLookupBusy(false)
     // 焦点还给打开它的那颗按钮。inert 生效之后焦点会被浏览器丢到 body 上，
     // 用户再按 Tab 会从头开始 —— 对键盘用户来说等于迷路。
     const el = returnFocus.current
@@ -201,6 +211,23 @@ export function ImPanel() {
     if (myId) startImWhenIdle()
   }, [myId])
 
+  // 账号切换时先隔离组件内存的数据；异步回包还要经过 userId + 序号双重校验。
+  const previousUserId = useRef(userId)
+  useEffect(() => {
+    if (previousUserId.current === userId) return
+    previousUserId.current = userId
+    convRequestSeq.current += 1
+    setConvs([])
+    setConvsOwnerId(null)
+    setConvError(false)
+    setActive(null)
+    setComposeOpen(false)
+    setEmailDraft('')
+    setLookupError('')
+    setSupportError('')
+    setSupportBusy(false)
+  }, [userId])
+
   /*
     资料改了就把新昵称 / 头像重新推给腾讯。
 
@@ -233,6 +260,7 @@ export function ImPanel() {
     setOpen(false)
     setActive(null)
     setConvs([])
+    setConvsOwnerId(null)
     setComposeOpen(false)
     setEmailDraft('')
     setLookupError('')
@@ -251,7 +279,7 @@ export function ImPanel() {
     if (!el) return
     const first = el.querySelector<HTMLElement>('textarea, button, [href]')
     requestAnimationFrame(() => (first ?? el).focus?.())
-  }, [open, active])
+  }, [open, activeForUser])
 
   // Esc 关闭
   useEffect(() => {
@@ -261,7 +289,7 @@ export function ImPanel() {
       /*
         输入法组字期间的 Esc 是「取消候选词」，不是「关闭面板」。
         中日文用户每打错一个词都会按它 —— 不判的话 ChatView 会被卸载，
-        整条草稿跟着没了（draft 是组件 state，而 key={active.id} 会强制重挂）。
+        整条草稿跟着没了（draft 是组件 state，而 key={activeForUser?.id} 会强制重挂）。
         Enter 那边一开始就判了 isComposing，这里最初漏了。
       */
       if (e.isComposing) return
@@ -269,30 +297,38 @@ export function ImPanel() {
         逐层退出，和返回键的直觉一致：
         会话 -> 列表 -> 关面板；找人那一行展开时，先收它。
 
-        ⚠️ 找人行只在列表视图里存在，所以它和 active 天然互斥，
+        ⚠️ 找人行只在列表视图里存在，所以它和 activeForUser 天然互斥，
         两个分支的先后顺序其实无所谓 —— 但写成串行的 else if 而不是两个独立 if，
         是为了保证「一次 Esc 只退一层」。
       */
-      if (active) setActive(null)
+      if (activeForUser) setActive(null)
       else if (composeOpen) setComposeOpen(false)
       else doClose()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [open, active, composeOpen, doClose])
+  }, [open, activeForUser, composeOpen, doClose])
 
   /* ---------------- 会话列表 ---------------- */
 
   const reload = useCallback(async () => {
+    const ownerId = userId
+    if (!ownerId || !imReadyForUser(ownerId)) return
+    const requestSeq = ++convRequestSeq.current
+    const isCurrent = () => userIdRef.current === ownerId && convRequestSeq.current === requestSeq && imReadyForUser(ownerId)
     try {
-      setConvs(await listImConversations())
+      const next = await listImConversations()
+      if (!isCurrent()) return
+      setConvs(next)
+      setConvsOwnerId(ownerId)
       setConvError(false)
     } catch (e) {
+      if (!isCurrent()) return
       // 没连上和「一条会话都没有」在界面上是两件事，不能都渲染成空列表
       if (e instanceof ImNotConnectedError) setConvError(true)
       else console.warn('[im] 会话列表拉取失败：', e)
     }
-  }, [])
+  }, [userId])
 
   const reloadReplyNotices = useCallback(async (quiet = false) => {
     if (!userId) {
@@ -339,10 +375,10 @@ export function ImPanel() {
   }, [open, userId, reloadReplyNotices])
 
   useEffect(() => {
-    if (state !== 'ready') return
+    if (!readyForUser) return
     void reload()
     return onImConversationsChange(() => void reload())
-  }, [state, reload])
+  }, [readyForUser, reload])
 
   /**
    * 从评论区点头像进来的：把寄存的目标取走，直接进那条会话。
@@ -351,12 +387,13 @@ export function ImPanel() {
    * （那种情况 open 和 state 都没变，只靠依赖数组是不会重跑的）。
    */
   const takeDm = useCallback(() => {
+    if (!userId || !imReadyForUser(userId)) return
     const p = takePendingImDm()
-    if (p) setActive({ id: convIdFor(p.peerId), peerId: p.peerId, nick: p.nick, avatar: p.avatar })
-  }, [])
+    if (p) setActive({ ownerId: userId, id: convIdFor(p.peerId), peerId: p.peerId, nick: p.nick, avatar: p.avatar })
+  }, [userId])
   useEffect(() => {
-    if (open && state === 'ready') takeDm()
-  }, [open, state, takeDm])
+    if (open && readyForUser) takeDm()
+  }, [open, readyForUser, takeDm])
   useEffect(() => onImDmRequest(takeDm), [takeDm])
 
   /* ---------------- 按邮箱找人 ---------------- */
@@ -404,26 +441,34 @@ export function ImPanel() {
 
   // 只在用户打开消息抽屉时查一次固定反馈账号，避免每个页面加载都消耗邮箱查找额度。
   useEffect(() => {
-    if (!open || state !== 'ready' || !userId || isSupportAccount || supportPeer) return
+    if (!open || !readyForUser || !userId || isSupportAccount || supportPeer) return
+    const ownerId = userId
     void resolveSupportPeer().catch((e) => {
+      if (userIdRef.current !== ownerId) return
       setSupportError(lookupText(e instanceof ImLookupError ? e.code : 'failed'))
       if (!(e instanceof ImLookupError)) console.warn('[im] 反馈联系人查找失败：', e)
     })
-  }, [open, state, userId, isSupportAccount, supportPeer, resolveSupportPeer, lookupText])
+  }, [open, readyForUser, userId, isSupportAccount, supportPeer, resolveSupportPeer, lookupText])
 
   const openSupportChat = useCallback(async () => {
+    const ownerId = userId
+    if (!ownerId || !imReadyForUser(ownerId)) return
     try {
       const peer = await resolveSupportPeer()
+      if (userIdRef.current !== ownerId || !imReadyForUser(ownerId)) return
       setSupportError('')
-      setActive({ id: convIdFor(peer.id), peerId: peer.id, nick: SUPPORT_NICK, avatar: peer.avatar })
+      setActive({ ownerId, id: convIdFor(peer.id), peerId: peer.id, nick: SUPPORT_NICK, avatar: peer.avatar })
     } catch (e) {
+      if (userIdRef.current !== ownerId) return
       setSupportError(lookupText(e instanceof ImLookupError ? e.code : 'failed'))
       if (!(e instanceof ImLookupError)) console.warn('[im] 打开反馈会话失败：', e)
     }
-  }, [resolveSupportPeer, lookupText])
+  }, [userId, resolveSupportPeer, lookupText])
 
   const dismissSupport = useCallback(async () => {
-    if (supportBusy) return
+    const ownerId = userId
+    if (supportBusy || !ownerId || !imReadyForUser(ownerId)) return
+    const isCurrent = () => userIdRef.current === ownerId && imReadyForUser(ownerId)
     setSupportBusy(true)
     setSupportError('')
     try {
@@ -437,12 +482,17 @@ export function ImPanel() {
           if (!(e instanceof ImLookupError)) console.warn('[im] 删除反馈入口时查找联系人失败：', e)
         }
       }
-      const existing = peer ? convs.find((c) => c.peerId === peer.id) : undefined
+      if (!isCurrent()) return
+      const existing = peer ? currentConvs.find((c) => c.peerId === peer.id) : undefined
       if (existing) await deleteImConversation(existing.id)
-      if (existing) setConvs((prev) => prev.filter((c) => c.id !== existing.id))
-      if (userId && typeof window !== 'undefined') {
+      if (!isCurrent()) return
+      if (existing) {
+        setConvs((prev) => prev.filter((c) => c.id !== existing.id))
+        setConvsOwnerId(ownerId)
+      }
+      if (typeof window !== 'undefined') {
         try {
-          window.localStorage.setItem(`${SUPPORT_DISMISSED_KEY}:${userId}`, '1')
+          window.localStorage.setItem(`${SUPPORT_DISMISSED_KEY}:${ownerId}`, '1')
         } catch {
           // 当前页面仍能隐藏；存储不可用时，下次访问会重新显示默认反馈入口。
         }
@@ -450,14 +500,15 @@ export function ImPanel() {
       setSupportDismissed(true)
       if (existing) await reload()
     } catch (e) {
+      if (!isCurrent()) return
       setSupportError(lookupText(e instanceof ImLookupError ? e.code : 'failed'))
       if (!(e instanceof ImLookupError)) console.warn('[im] 删除反馈会话失败：', e)
     } finally {
-      setSupportBusy(false)
+      if (userIdRef.current === ownerId) setSupportBusy(false)
     }
-  }, [supportBusy, supportPeer, resolveSupportPeer, lookupText, convs, userId, reload])
+  }, [supportBusy, supportPeer, resolveSupportPeer, lookupText, currentConvs, userId, reload])
 
-  const supportConversation = supportPeer ? convs.find((c) => c.peerId === supportPeer.id) : undefined
+  const supportConversation = supportPeer ? currentConvs.find((c) => c.peerId === supportPeer.id) : undefined
   const supportRow: ConversationListItem = supportConversation
     ? {
         ...supportConversation,
@@ -477,12 +528,12 @@ export function ImPanel() {
         support: true,
       }
   const visibleConvs: ConversationListItem[] = isSupportAccount
-    ? convs
+    ? currentConvs
     : supportConversation
-      ? [supportRow, ...convs.filter((c) => c.id !== supportConversation.id)]
+      ? [supportRow, ...currentConvs.filter((c) => c.id !== supportConversation.id)]
       : supportDismissed
-        ? convs
-        : [supportRow, ...convs]
+        ? currentConvs
+        : [supportRow, ...currentConvs]
 
   /**
    * 查到人就直接进会话。
@@ -495,24 +546,27 @@ export function ImPanel() {
    * 直接进一个空会话是正确做法（见 imClient.lookupImUserByEmail 的注释）。
    */
   const startByEmail = useCallback(async () => {
+    const ownerId = userId
     const addr = emailDraft.trim()
-    if (!addr || lookupBusy) return
+    if (!ownerId || !imReadyForUser(ownerId) || !addr || lookupBusy) return
     setLookupBusy(true)
     setLookupError('')
     try {
       const peer = await lookupImUserByEmail(addr)
-      setActive({ id: convIdFor(peer.id), peerId: peer.id, nick: peer.nickname, avatar: peer.avatar })
+      if (userIdRef.current !== ownerId || !imReadyForUser(ownerId)) return
+      setActive({ ownerId, id: convIdFor(peer.id), peerId: peer.id, nick: peer.nickname, avatar: peer.avatar })
       // 成功才清空。失败时把用户输的地址留着 —— 多半只是打错一个字母，
       // 清掉等于逼他重敲一遍整个邮箱
       setEmailDraft('')
       setComposeOpen(false)
     } catch (e) {
+      if (userIdRef.current !== ownerId) return
       setLookupError(lookupText(e instanceof ImLookupError ? e.code : 'failed'))
       if (!(e instanceof ImLookupError)) console.warn('[im] 按邮箱找人失败：', e)
     } finally {
-      setLookupBusy(false)
+      if (userIdRef.current === ownerId) setLookupBusy(false)
     }
-  }, [emailDraft, lookupBusy, lookupText])
+  }, [emailDraft, lookupBusy, lookupText, userId])
 
   /*
     展开时把焦点送进输入框。
@@ -555,7 +609,7 @@ export function ImPanel() {
         {mounted && (
           <>
             <header className="flex h-14 shrink-0 items-center gap-2 border-b border-line px-3">
-              {active ? (
+              {activeForUser ? (
                 <>
                   <button
                     type="button"
@@ -567,8 +621,8 @@ export function ImPanel() {
                       <path d="M15 18l-6-6 6-6" />
                     </svg>
                   </button>
-                  <Avatar value={active.avatar} />
-                  <span className="min-w-0 flex-1 truncate text-sm font-semibold">{active.nick || t.im.unknownUser}</span>
+                  <Avatar value={activeForUser.avatar} />
+                  <span className="min-w-0 flex-1 truncate text-sm font-semibold">{activeForUser.nick || t.im.unknownUser}</span>
                 </>
               ) : (
                 <>
@@ -577,7 +631,7 @@ export function ImPanel() {
                     只在 ready 时给这颗按钮。查人本身是一条普通 REST 请求，没连上也能查通 ——
                     但查到之后会一头栽进一个连不上的会话，那比按钮不出现更让人困惑。
                   */}
-                  {state === 'ready' && (
+                  {readyForUser && (
                     <button
                       type="button"
                       onClick={() => {
@@ -626,7 +680,7 @@ export function ImPanel() {
               找人的输入行。放在顶栏和列表之间，收起时整块不渲染 ——
               它不是常驻控件，常驻会让一个「看消息」的面板第一眼像个搜索页。
             */}
-            {state === 'ready' && !active && composeOpen && (
+            {readyForUser && !activeForUser && composeOpen && (
               <div className="shrink-0 border-b border-line bg-surface-2/40 p-2">
                 <div className="flex items-center gap-2">
                   <input
@@ -680,10 +734,10 @@ export function ImPanel() {
               </div>
             )}
 
-            {state !== 'ready' ? (
-              <StatusBody state={state} detail={detail} />
-            ) : active ? (
-              <ChatView key={active.id} conv={active} open={open} />
+            {!readyForUser ? (
+              <StatusBody state={stateForUser} detail={detail} />
+            ) : activeForUser ? (
+              <ChatView key={activeForUser.id} conv={activeForUser} open={open} />
             ) : (
               <ConversationList
                 convs={visibleConvs}
@@ -692,7 +746,7 @@ export function ImPanel() {
                 supportError={supportError}
                 onPick={(c) => {
                   if (c.support) void openSupportChat()
-                  else setActive({ id: c.id, peerId: c.peerId, nick: c.nick, avatar: c.avatar })
+                  else if (userId) setActive({ ownerId: userId, id: c.id, peerId: c.peerId, nick: c.nick, avatar: c.avatar })
                 }}
                 onRemoveSupport={() => void dismissSupport()}
                 onNew={() => {

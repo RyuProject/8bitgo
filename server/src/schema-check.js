@@ -59,6 +59,7 @@ export const EXPECTED_COLUMNS = [
   { table: 'games', column: 'rating_count', why: '评分人数，卡片上「N 人评分」用' },
   { table: 'game_comments', column: 'post_id', why: '博客文章评论；缺了文章页发表评论会 500（评论表的宿主二选一，见 schema-v2.sql）' },
   { table: 'game_comments', column: 'pending_review', why: '游客评论审核状态；缺列时评论读取和发表会 500' },
+  { table: 'game_comments', column: 'client_request_id', why: '弱网重复提交保护；缺列时评论发表会 500' },
   { table: 'users', column: 'token_version', why: '退出所有设备 / 改完密码作废旧令牌' },
   { table: 'users', column: 'email_verified_at', why: '邮箱验证时刻；缺列时登录注册照常（只打一行警告），但 2026-11-17 前抢注老号的密码清不掉' },
   { table: 'users', column: 'birth_date', why: '成人内容年龄验证：出生日期记在账号上，缺了 PUT /api/me/birth-date 会 500，成人游戏谁也进不去' },
