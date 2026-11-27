@@ -78,6 +78,32 @@ try {
     assert.equal(rangeDigestCalls, 4, '每个 2 MiB 块恰好散列一次')
     assert.equal(maximumActiveDigests, 2, '分片校验最多并行两个 SHA-256，控制瞬时内存')
   } finally { crypto.subtle.digest = originalDigest }
+  const rangeEtag = '"parallel-range-v1"'
+  const repairRangeManifest = { ...rangeManifest, etag: rangeEtag }
+  const damagedRange = new Uint8Array(rangeContent)
+  damagedRange[0] ^= 0xff
+  damagedRange[ROM_INTEGRITY_BLOCK_BYTES * 2] ^= 0xff
+  const beforeRangeRepairFetch = globalThis.fetch
+  let rangeRepairRequests = 0
+  globalThis.fetch = async (_input, init = {}) => {
+    const match = /^bytes=(\d+)-(\d+)$/.exec(init.headers?.Range ?? '')
+    assert.ok(match, '并行校验发现坏块后必须按精确 Range 修复')
+    const repairStart = Number(match[1])
+    const repairEnd = Number(match[2])
+    rangeRepairRequests++
+    assert.equal(init.headers['If-Match'], rangeEtag, '损坏块修复必须锁定同一 ROM 版本')
+    return new Response(rangeContent.slice(repairStart, repairEnd + 1), { status: 206, headers: {
+      'Content-Range': `bytes ${repairStart}-${repairEnd}/${rangeContent.byteLength}`,
+      ETag: rangeEtag,
+    } })
+  }
+  try {
+    const repairedRange = await verifyRomBlobRange(`https://rom.8bitgo.com/${rangeKey}`, new Blob([damagedRange]), 0,
+      repairRangeManifest)
+    assert.deepEqual(new Uint8Array(await repairedRange.arrayBuffer()), rangeContent,
+      '同批发现多个坏块时也必须按原位置修复并保持 ROM 字节顺序')
+    assert.equal(rangeRepairRequests, 2, '只重取 SHA-256 不匹配的两个块')
+  } finally { globalThis.fetch = beforeRangeRepairFetch }
 
   const etag = '"manifest-shape-v1"'
   const tiny = new Uint8Array([1, 2, 3, 4])
