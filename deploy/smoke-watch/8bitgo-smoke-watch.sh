@@ -51,6 +51,8 @@ notify() {
   node "$NOTIFY" "$@" >> "$LOG" 2>&1 || true
 }
 
+. "$REPO_DIR/deploy/lib/cleanup-smoke-profiles.sh" || { log "❌ 缺少冒烟 profile 清理助手"; exit 1; }
+
 command -v node >/dev/null 2>&1 || { log "❌ 找不到 node"; exit 1; }
 command -v flock >/dev/null 2>&1 || { log "❌ 找不到 flock"; exit 1; }
 
@@ -60,8 +62,9 @@ if ! flock -n 9; then
   exit 0
 fi
 
-# 兜底：清掉半小时以前的 Chrome 临时 profile（正常每次都会删；万一某次没删掉也不会越攒越多，系统盘只有 20GB）
-find "${TMPDIR:-/tmp}" -maxdepth 1 -name '8bitgo-smoke-*' -mmin +30 -exec rm -rf {} + 2>/dev/null
+# 兜底：profile 超过半小时，或 Chrome 进程组运行超过半小时，都先停掉整组再删目录。
+# 冒烟正常最多几分钟；超长存活通常是父脚本异常退出留下的孤儿。只 rm 文件会让打开文件继续占磁盘。
+cleanup_stale_smoke_profiles "${TMPDIR:-/tmp}" 1800 2>&1 | while IFS= read -r message; do log "$message"; done
 
 RUN_OUT="$STATE_DIR/last-run.txt"
 SEO_RUN_OUT="$STATE_DIR/seo-last-run.txt"

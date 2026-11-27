@@ -315,7 +315,7 @@
     "test:https-guard": "node scripts/test-https-guard.mjs",
     "test:js-zstd-fallback": "node scripts/test-js-zstd-fallback.mjs",
     "test:memory-rom-unpack": "node scripts/test-memory-rom-unpack.mjs",
-    "test:redeploy": "node scripts/test-redeploy.mjs",
+    "test:redeploy": "node scripts/test-redeploy.mjs && npm run test:smoke-start",
     "test:jsdos-asset-lock": "node scripts/test-jsdos-asset-lock.mjs",
     "test:smoke-start": "node scripts/test-smoke-start.mjs",
     "test:smoke-watch": "node scripts/test-smoke-watch.mjs",

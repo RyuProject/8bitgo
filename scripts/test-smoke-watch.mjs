@@ -9,7 +9,7 @@
  */
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -47,7 +47,8 @@ function setup() {
   const dir = mkdtempSync(join(tmpdir(), 'smoke-watch-'))
   const repo = join(dir, 'repo')
   const bin = join(dir, 'bin')
-  for (const d of [join(repo, 'scripts'), join(repo, 'server/scripts'), bin, join(dir, 'state')]) mkdirSync(d, { recursive: true })
+  for (const d of [join(repo, 'scripts'), join(repo, 'server/scripts'), join(repo, 'deploy/lib'), bin, join(dir, 'state'), join(dir, 'tmp')]) mkdirSync(d, { recursive: true })
+  copyFileSync(join(root, 'deploy/lib/cleanup-smoke-profiles.sh'), join(repo, 'deploy/lib/cleanup-smoke-profiles.sh'))
   // 假冒烟：每次调用从序列文件里取下一个退出码
   writeFileSync(join(repo, 'scripts/smoke-start.mjs'), `
     import { readFileSync, writeFileSync } from 'node:fs'
@@ -90,6 +91,7 @@ function setup() {
         REPO_DIR: repo,
         SMOKE_WATCH_STATE_DIR: join(dir, 'watch'),
         SMOKE_WATCH_LOG: join(dir, 'watch.log'),
+        TMPDIR: join(dir, 'tmp'),
         DEPLOY_LOCK_FILE: join(dir, 'deploy.lock'),
         SMOKE_WATCH_RECHECK_SEC: '0',
         ...extra,
