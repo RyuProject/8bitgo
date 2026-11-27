@@ -9,6 +9,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { createContext, runInContext } from 'node:vm'
 import { CACHE } from '../server/src/cache.js'
 import { earlyHintLinks, retargetCoverHints } from '../server/src/early-hints.js'
 import { localePreloadTag } from '../server/src/locale-preload.js'
@@ -91,7 +92,7 @@ check('首页轮播只在可轮换时预热，并复用封面转码档与实际�
   assert.doesNotMatch(src, /romUrlForKey/, '预热不能绕过游戏媒体地址与缩放图路径')
 })
 
-check('街机游戏详情和弱网不请求第三方字体，其它页面只在空闲时加载', () => {
+check('非中文、游戏详情和弱网不请求第三方字体，中文其它页面只在空闲时加载', () => {
   const html = read('index.html')
   const css = read('src/index.css')
   const fontUrl = 'https://fontsapi.zeoseven.com/214/main/result.css'
@@ -99,6 +100,7 @@ check('街机游戏详情和弱网不请求第三方字体，其它页面只在�
     .map((match) => match[1])
     .find((script) => script.includes("id = 'zeoseven-fonts'"))
   assert.ok(loader, 'index.html 没有字体按需加载器')
+  assert.match(loader, /document\.documentElement\.lang[^\n]*\.startsWith\('zh'\)/, '非中文页面仍会下载未使用的字体 CSS')
   assert.match(loader, /window\.location\.pathname/, '字体策略没有按游戏详情页路径跳过')
   assert.match(loader, /games\\\/\[\^\/\]\+/, '本地化游戏详情页也必须跳过字体下载')
   assert.match(loader, /saveData|slow-2g|downlink|rtt/, '弱网 / 流量节省模式没有跳过字体请求')
@@ -111,6 +113,28 @@ check('街机游戏详情和弱网不请求第三方字体，其它页面只在�
   const theme = css.match(/@theme \{[\s\S]*?\n\}/)?.[0] ?? ''
   assert.match(theme, /'Sarasa UI SC'/, '基础字体栈没有使用 ZeoSeven 的 Sarasa UI SC')
   assert.match(theme, /ui-sans-serif, system-ui/, '基础字体栈没有系统字体兜底')
+
+  const requestedFonts = (lang, pathname, connection = { effectiveType: '4g', downlink: 10, rtt: 50 }) => {
+    const requested = []
+    const document = {
+      documentElement: { lang },
+      readyState: 'complete',
+      getElementById: () => null,
+      createElement: () => ({}),
+      head: { appendChild: (link) => requested.push(link.href) },
+    }
+    const window = {
+      location: { pathname },
+      setTimeout: (fn) => { fn(); return 1 },
+      requestIdleCallback: (fn) => fn(),
+    }
+    runInContext(loader, createContext({ document, window, navigator: { connection } }))
+    return requested
+  }
+  assert.deepEqual(requestedFonts('en', '/en'), [], '英文页仍请求字体')
+  assert.deepEqual(requestedFonts('zh-Hans', '/'), [fontUrl], '适合网络的中文页没有加载字体')
+  assert.deepEqual(requestedFonts('zh-Hant', '/zh-Hant/games/contra'), [], '中文游戏详情页请求了字体')
+  assert.deepEqual(requestedFonts('zh-Hans', '/', { effectiveType: '2g', downlink: 0.3, rtt: 800 }), [], '弱网仍请求字体')
 })
 
 check('SSR 在启动时预热模板和渲染入口，部署窗口继续用内存副本', () => {
