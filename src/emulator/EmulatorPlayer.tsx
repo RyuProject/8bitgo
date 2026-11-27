@@ -2132,6 +2132,7 @@ export function EmulatorPlayer({
     let romLoadStarted = false
     let romLoadCompleted = false
     let romLoadStreaming = false
+    const isStreamingDosSession = session.runtime.id === 'jsdos' && Boolean(dosSockdriveUrlRef.current)
     let fallbackTrail = [...(session.fallbacks ?? [])]
     let fallbackStartedReported = false
     let fallbackFirstFrameReported = false
@@ -2564,7 +2565,8 @@ export function EmulatorPlayer({
       onProgress: (next) => {
         if (!isCurrent()) return
         noteStartupActivity()
-        if (next.phase === 'rom') {
+        // Sockdrive 不整包下载 ROM；适配器在系统镜像和热点都就绪后发的 rom=100% 只是启动占位，不能倒写成“刚开始下载”。
+        if (next.phase === 'rom' && !isStreamingDosSession) {
           if (!romLoadStarted) {
             romLoadStarted = true
             reportStartup('rom_load_start')

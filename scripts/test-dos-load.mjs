@@ -402,6 +402,11 @@ check('配置流式目录后不再下载整包 ROM', () => {
   assert.match(jsdos, /streamingGame\s*\?\s*options\.dosExtras\?\.length/)
 })
 
+check('Sockdrive 不把系统镜像下载结束误记成 ROM 下载开始', () => {
+  assert.match(player, /const isStreamingDosSession = session\.runtime\.id === 'jsdos' && Boolean\(dosSockdriveUrlRef\.current\)/)
+  assert.match(player, /if \(next\.phase === 'rom' && !isStreamingDosSession\)/)
+})
+
 check('流式盘按预算选择官方预取，并挂到 DOSBox-X 的 Sockdrive', () => {
   assert.match(jsdos, /buildSockdriveWindowsGuestConfig\(systemConfig, sockdriveUrl, dosboxConfig\)/)
   assert.match(jsdos, /streamingGame \? \{ sockdrivePreload \} : \{\}/)
