@@ -32,3 +32,4 @@ export const OpenDevicePage = lazyNamed(() => import('@/pages/OpenDevicePage'), 
 export const OpenAuthorizePage = lazyNamed(() => import('@/pages/OpenAuthorizePage'), 'OpenAuthorizePage')
 export const TvPage = lazyNamed(() => import('@/pages/TvPage'), 'TvPage')
 export const SymbianPage = lazyNamed(() => import('@/pages/SymbianPage'), 'SymbianPage')
+export const PokecatchSaveSyncPage = lazyNamed(() => import('@/pages/PokecatchSaveSyncPage'), 'PokecatchSaveSyncPage')

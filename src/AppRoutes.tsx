@@ -10,11 +10,10 @@ import {
   DevelopersPage, GenresPage, PlatformsPage, GenrePage, PlatformPage, ComingSoonPage,
   NotFoundPage, BlogPage, PostPage, LoginPage, ProfilePage, AboutPage, SubmitGamePage, RomLanguagePage,
   EmbedPage, AppsPage, OAuthCallbackPage, OpenPlatformPage, OpenDevicePage,
-  OpenAuthorizePage, TvPage, SymbianPage,
+  OpenAuthorizePage, TvPage, SymbianPage, PokecatchSaveSyncPage,
 } from '@/routes/Pages'
 import { TermsPage } from '@/pages/TermsPage'
 import { PrivacyPage } from '@/pages/PrivacyPage'
-import { PokecatchSaveSyncPage } from '@/pages/PokecatchSaveSyncPage'
 
 /**
  * 前台与后台按页面加载。前台使用同一路由声明，但 Pages.tsx 在服务端同步导出页面、
