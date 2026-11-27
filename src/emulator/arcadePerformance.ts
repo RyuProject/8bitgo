@@ -56,10 +56,11 @@ export function effectiveArcadeButtons(
 /**
  * 街机核心的全站性能默认值。这里只放经过核心源码取证、且可以被玩家设置覆盖的选项。
  *
- * FBNeo 官方把 cpu-speed-adjust 定义为“提高后修复部分游戏的原机降速”的入口，所以不能只给
- * 《合金弹头 X》开：其它 Neo Geo / CPS / PGM 游戏同样会在精灵、爆炸或音效繁忙时触发真实街机
- * 的 CPU 饱和。这里按宿主线程数给 110%~130%，已知降速更重的《合金弹头》系列再加一档；
- * 同时把采样率和插值调到更轻的档位，给超频腾出预算。玩家明确保存的核心选项仍会覆盖这些默认值。
+ * `fbneo-cpu-speed-adjust` 调的是**模拟出来的街机 CPU 时钟**，不是宿主 CPU 加速：大于 100% 会让
+ * 核心每帧执行更多工作、改变游戏时序。官方文档把提高时钟限定为修复少数游戏的原机降速，
+ * 低端设备反而建议降低时钟；宿主线程数也不能代表单核性能或某款板卡是否需要超频。因此全站
+ * 默认固定 100%，不按桌面线程数或触屏状态擅自超频。玩家可以在核心选项里按游戏调整，已保存的值优先。
+ * 采样率和插值仍使用较轻档位，降低音频处理成本。
  *
  * MAME 2003/Plus 没有等价的、对全部驱动都安全的 CPU 超频选项，只降低采样成本；本站打包的
  * 普通 MAME 2003 还包含 DCS 声音加速，Plus 构建里实测没有该选项，不能写一项假配置。
@@ -70,12 +71,6 @@ export function arcadePerformanceDefaultOptions(
   platform: PlatformId,
   core: string,
   gameSlug: string | undefined,
-  hardwareConcurrency: number | undefined,
-  /**
-   * 触屏设备（手机 / 平板）。线程数说明不了单核快慢：千元安卓机照样报 8 线程，按桌面档拿到 130%~150%
-   * 的超频，再加上 frameskip 关着，宿主一跟不上就是爆音和掉帧。触屏一律只保留轻微余量。
-   */
-  touchDevice = false,
 ): Readonly<Record<string, string>> {
   if (platform !== 'arcade') return {}
 
@@ -90,21 +85,15 @@ export function arcadePerformanceDefaultOptions(
 
   if (!isFbneoArcadeCore(platform, core)) return {}
 
-  const threads = Number.isFinite(hardwareConcurrency) ? Math.max(1, Number(hardwareConcurrency)) : 4
-  const slug = gameSlug?.trim().toLowerCase() ?? ''
-  const hasHeavyNativeSlowdown = METAL_SLUG_SLUG.test(slug)
-  const cpuClock = touchDevice
-    ? hasHeavyNativeSlowdown ? '110%' : '100%'
-    : hasHeavyNativeSlowdown
-      ? threads >= 8 ? '150%' : threads >= 4 ? '130%' : '110%'
-      : threads >= 8 ? '130%' : threads >= 4 ? '120%' : '110%'
   const defaults: Record<string, string> = {
-    'fbneo-cpu-speed-adjust': cpuClock,
+    'fbneo-cpu-speed-adjust': '100%',
     'fbneo-frameskip-type': 'disabled',
     'fbneo-samplerate': '44100',
     'fbneo-sample-interpolation': '2-point 1st order',
   }
 
+  const slug = gameSlug?.trim().toLowerCase() ?? ''
+  const hasHeavyNativeSlowdown = METAL_SLUG_SLUG.test(slug)
   // 32 位色深有些街机必须开，不能为省性能全站关闭；Neo Geo 的《合金弹头》不依赖它，才单独关。
   if (hasHeavyNativeSlowdown) defaults['fbneo-allow-depth-32'] = 'disabled'
   return defaults

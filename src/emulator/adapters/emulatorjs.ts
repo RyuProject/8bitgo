@@ -2740,9 +2740,6 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       options.platform,
       forCore,
       options.gameSlug,
-      typeof navigator === 'undefined' ? undefined : navigator.hardwareConcurrency,
-      typeof window !== 'undefined' && typeof navigator !== 'undefined' &&
-        (navigator.maxTouchPoints ?? 0) > 0 && Boolean(window.matchMedia?.('(pointer: coarse)').matches),
     ),
     ...(options.platform === 'gba' ? { shader: gbaShaderForMode(gbaVideoMode) } : {}),
     // 红白机 FCEUmm 的连发（X / Y）。引擎方案里没有这两颗，开局后由 repairEjsSeats 补回键位
@@ -5712,7 +5709,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             直接复用当前自托管引擎内置资源，不多一次网络请求。
           */
           // 按**最终**核心算：改版包指纹可能在上面把 mame2003 等纠正成 fbneo，挂载时那份
-          // coreDefaultOptions 还是旧核心的键，FBNeo 的超频 / 采样默认值就会整套丢失。
+          // coreDefaultOptions 还是旧核心的键，FBNeo 的 CPU 时钟 / 采样默认值就会整套丢失。
           ...(() => {
             const defaults = core === coreDefaultOptionsCore ? coreDefaultOptions : coreDefaultOptionsFor(core)
             return Object.keys(defaults).length ? { EJS_defaultOptions: defaults } : {}

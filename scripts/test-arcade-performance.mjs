@@ -20,52 +20,40 @@ const test = (name, fn) => {
 
 console.log('\n街机性能与输入体检')
 
-test('目标初代与 Metal Slug X 在强机上使用重度去降速档，同时保持帧跳关闭', () => {
-  const options = arcadePerformanceDefaultOptions('arcade', 'fbneo', 'metal-slug-super-vehicle-001', 8)
-  assert.equal(options['fbneo-cpu-speed-adjust'], '150%')
+test('FBNeo 默认保留原机 CPU 时钟；Metal Slug 只关闭不需要的 32 位色深', () => {
+  const options = arcadePerformanceDefaultOptions('arcade', 'fbneo', 'metal-slug-super-vehicle-001')
+  assert.equal(options['fbneo-cpu-speed-adjust'], '100%')
   assert.equal(options['fbneo-frameskip-type'], 'disabled')
   assert.equal(options['fbneo-samplerate'], '44100')
   assert.equal(options['fbneo-sample-interpolation'], '2-point 1st order')
   assert.equal(options['fbneo-allow-depth-32'], 'disabled')
   assert.equal(
-    arcadePerformanceDefaultOptions('arcade', 'fbneo', 'metal-slug-x-super-vehicle-001', 8)['fbneo-cpu-speed-adjust'],
-    '150%',
+    arcadePerformanceDefaultOptions('arcade', 'fbneo', 'metal-slug-x-super-vehicle-001')['fbneo-cpu-speed-adjust'],
+    '100%',
   )
 })
 
-test('低端双线程设备只做保守去降速，避免优化反而压垮宿主', () => {
-  const options = arcadePerformanceDefaultOptions('arcade', 'fbneo', 'metal-slug-super-vehicle-001', 2)
-  assert.equal(options['fbneo-cpu-speed-adjust'], '110%')
-})
-
-test('普通 FBNeo 街机也启用全站去降速，但不冒险关闭 32 位色深', () => {
-  const options = arcadePerformanceDefaultOptions('arcade', 'fbneo', 'kof97', 8)
-  assert.equal(options['fbneo-cpu-speed-adjust'], '130%')
+test('普通 FBNeo 街机不因宿主型号推测而改变模拟器时钟', () => {
+  const options = arcadePerformanceDefaultOptions('arcade', 'fbneo', 'kof97')
+  assert.equal(options['fbneo-cpu-speed-adjust'], '100%')
   assert.equal(options['fbneo-samplerate'], '44100')
   assert.equal(options['fbneo-allow-depth-32'], undefined)
-  assert.deepEqual(arcadePerformanceDefaultOptions('arcade', 'fbneo-lowmem', 'kof97', 8), options)
-})
-
-test('玩家本地 ROM 没有 slug 时仍得到全站 FBNeo 优化', () => {
-  const options = arcadePerformanceDefaultOptions('arcade', 'fbneo', undefined, 4)
-  assert.equal(options['fbneo-cpu-speed-adjust'], '120%')
+  assert.deepEqual(arcadePerformanceDefaultOptions('arcade', 'fbneo-lowmem', 'kof97'), options)
+  assert.equal(arcadePerformanceDefaultOptions('arcade', 'fbneo', undefined)['fbneo-cpu-speed-adjust'], '100%')
 })
 
 test('MAME 2003 系只启用安全的宿主加速，不伪造全局 CPU 超频', () => {
-  assert.deepEqual(arcadePerformanceDefaultOptions('arcade', 'mame2003_plus', 'mk', 8), {
+  assert.deepEqual(arcadePerformanceDefaultOptions('arcade', 'mame2003_plus', 'mk'), {
     'mame2003-plus_frameskip': '0',
     'mame2003-plus_sample_rate': '44100',
   })
-  assert.deepEqual(arcadePerformanceDefaultOptions('arcade', 'mame2003', 'mk', 8), {
+  assert.deepEqual(arcadePerformanceDefaultOptions('arcade', 'mame2003', 'mk'), {
     mame2003_dcs_speedhack: 'enabled',
     mame2003_frameskip: '0',
     mame2003_sample_rate: '44100',
   })
-  assert.deepEqual(arcadePerformanceDefaultOptions('arcade', 'mame-current', 'mk', 8), {})
-  // 触屏设备：线程数不可信（千元机也报 8 线程），只给轻微超频余量
-  assert.equal(arcadePerformanceDefaultOptions('arcade', 'fbneo', 'kof97', 8, true)['fbneo-cpu-speed-adjust'], '100%')
-  assert.equal(arcadePerformanceDefaultOptions('arcade', 'fbneo', 'metal-slug-x-super-vehicle-001', 8, true)['fbneo-cpu-speed-adjust'], '110%')
-  assert.deepEqual(arcadePerformanceDefaultOptions('gba', 'fbneo', 'kof97', 8), {})
+  assert.deepEqual(arcadePerformanceDefaultOptions('arcade', 'mame-current', 'mk'), {})
+  assert.deepEqual(arcadePerformanceDefaultOptions('gba', 'fbneo', 'kof97'), {})
 })
 
 test('80ms 音频窗口覆盖全部轻量街机核心，mame-current 继续单独走 128ms', () => {
