@@ -402,7 +402,8 @@ type CoverImageWidth = (typeof COVER_WIDTHS)[number]
 
 function transformedCoverUrl(src: string, width: CoverImageWidth, base: string, format: 'auto' | 'webp'): string {
   const prefix = `${base}/covers/`
-  if (!base || !/^https:\/\//i.test(base) || !src.startsWith(prefix)) return ''
+  // Cloudflare Image Resizing 当前会对 AVIF 源图返回 415；跳过这条必失败的请求，直接用已压缩的源图。
+  if (!base || !/^https:\/\//i.test(base) || !src.startsWith(prefix) || /\.avif(?:[?#]|$)/i.test(src)) return ''
   const path = src.slice(base.length + 1)
   return `${base}/cdn-cgi/image/width=${width},quality=80,format=${format},fit=scale-down/${path}`
 }

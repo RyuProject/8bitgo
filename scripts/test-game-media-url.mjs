@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { cnPreviewVideoUrl, coverSrcSet, gameMediaUrl } from '../src/services/roms.ts'
+import { cnPreviewVideoUrl, coverImageUrl, coverSrcSet, gameMediaUrl } from '../src/services/roms.ts'
 import { isCnHost, isCnRequest } from '../shared/cn-host.js'
 
 // 测试运行时没有 Vite 注入的对象存储根地址；站内路径仍足以钉住“不误走代理”。
@@ -24,6 +24,9 @@ assert.equal(
     `${base}/cdn-cgi/image/width=480,quality=80,format=auto,fit=scale-down/covers/kof%2097.webp 480w`,
 )
 assert.equal(coverSrcSet(`${base}/covers/kof.webp`, ''), '')
+const avif = `${base}/covers/the-king-of-fighters-2000.avif`
+assert.equal(coverSrcSet(avif, base), '', 'Cloudflare 不接受 AVIF 源图变换（HTTP 415），不发出必失败的 srcset')
+assert.equal(coverImageUrl(avif, 480, base, 'auto'), avif, 'AVIF video poster 直接复用已压缩源图')
 assert.equal(coverSrcSet('/api/games/kof/media/cover?v=1', base), '')
 assert.equal(coverSrcSet(`${base}/logos/kof.png`, base), '')
 assert.equal(coverSrcSet('http://localhost:8787/covers/kof.webp', 'http://localhost:8787'), '')
