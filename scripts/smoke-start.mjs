@@ -6,6 +6,7 @@
  *   node scripts/smoke-start.mjs                                   默认测 https://8bitgo.com
  *   node scripts/smoke-start.mjs --base http://127.0.0.1:8788      测本机 / 刚重启的生产进程
  *   SMOKE_GAMES=super-mario-bros,cadillacs-and-dinosaurs node scripts/smoke-start.mjs
+ *   SMOKE_DISABLE_WASM=1 SMOKE_GAMES=pokemon-sapphire node scripts/smoke-start.mjs --base https://8bitgo.com
  *
  * 为什么要有它：/api/health 200 只说明进程活着。2026-09 以来好几次事故都是「站点一切正常、
  * 游戏打不开」—— 引擎补丁没进 dist（§2.5）、核心回落坏地址（§2.4）、Rocket Loader 改写脚本（§2.37.1）。
@@ -40,6 +41,9 @@ const GAMES = argOf('--games', process.env.SMOKE_GAMES || DEFAULT_SMOKE_GAMES)
   .split(',').map((s) => s.trim()).filter(Boolean)
 const TIMEOUT_MS = Number(argOf('--timeout', process.env.SMOKE_TIMEOUT_MS || 150_000))
 const DISABLE_WEBGL = process.env.SMOKE_DISABLE_WEBGL === '1'
+const DISABLE_WASM = process.env.SMOKE_DISABLE_WASM === '1'
+/** 只在新文档脚本运行前覆盖能力探针，真实走站点的纯 JS 退路选择。 */
+export const DISABLE_WASM_SCRIPT = 'Object.defineProperty(globalThis, "WebAssembly", { configurable: true, value: undefined })'
 /** 带大 CHD 的 MAME 柜台不能沿用普通 ROM 的 150 秒预算。 */
 export const MAME_CHD_TIMEOUT_MS = 420_000
 /** DevTools 自己没回应时，不能把测试机问题写成游戏启动失败。 */
@@ -257,7 +261,7 @@ export async function startSmokeGamePrivately(cdp, sessionId, timeoutMs = PRIVAT
     }, sessionId)
     if (result.exceptionDetails) throw new Error(result.exceptionDetails.text || '无法检查开局隐私状态')
     const state = result.result?.value?.state
-    if (state === 'started-private') return
+    if (state === 'started-private') return state
     if (state === 'unsafe-toggle') throw new Error('页面有未识别的启用开关，已停止冒烟以避免公开开局')
     await sleep(150)
   }
@@ -344,6 +348,7 @@ async function smokeOne(cdp, slug) {
   let sessionId = ''
   const events = []
   const errors = []
+  let startState = ''
   let settle
   let timer = 0
   const done = new Promise((resolve) => { settle = resolve })
@@ -403,13 +408,24 @@ async function smokeOne(cdp, slug) {
         { urlPattern: '*/api/games/*/play*', requestStage: 'Request' },
       ],
     }, sessionId)
-    await sendWithin(cdp, 'Runtime.enable', {}, sessionId)
     await sendWithin(cdp, 'Page.enable', {}, sessionId)
+    if (DISABLE_WASM) {
+      await sendWithin(cdp, 'Page.addScriptToEvaluateOnNewDocument', { source: DISABLE_WASM_SCRIPT }, sessionId)
+    }
+    await sendWithin(cdp, 'Runtime.enable', {}, sessionId)
     await sendWithin(cdp, 'Page.navigate', { url: `${BASE}/games/${encodeURIComponent(slug)}` }, sessionId, PAGE_NAVIGATION_COMMAND_TIMEOUT_MS)
     timer = setTimeout(() => settle({ verdict: 'fail', event: `${Math.round(preflight.timeoutMs / 1000)} 秒内没有首帧` }), preflight.timeoutMs)
-    await startSmokeGamePrivately(cdp, sessionId)
+    startState = await startSmokeGamePrivately(cdp, sessionId)
     const result = await done
-    return { slug, ...result, seconds: Math.round((Date.now() - started) / 1000), events, errors: errors.filter(Boolean).slice(-5) }
+    let pageState
+    if (result.verdict === 'fail') {
+      const snapshot = await sendWithin(cdp, 'Runtime.evaluate', {
+        expression: `JSON.stringify({ title: document.title, buttons: [...document.querySelectorAll('button')].map(b => ({ label: (b.innerText || b.getAttribute('aria-label') || b.title || '').replace(/\\s+/g, ' ').trim().slice(0, 80), disabled: b.disabled })).filter(b => b.label).slice(0, 12), alerts: [...document.querySelectorAll('[role="alert"],[role="status"]')].map(e => (e.innerText || e.textContent || '').trim().slice(0, 160)).filter(Boolean).slice(0, 8) })`,
+        returnByValue: true,
+      }, sessionId).catch(() => null)
+      try { pageState = JSON.parse(snapshot?.result?.value ?? 'null') } catch { pageState = undefined }
+    }
+    return { slug, ...result, seconds: Math.round((Date.now() - started) / 1000), startState, pageState, events, errors: errors.filter(Boolean).slice(-5) }
   } catch (error) {
     return {
       slug,
@@ -453,10 +469,14 @@ async function main() {
       else if (r.verdict === 'infrastructure') {
         infrastructureFailed++
         console.error(line)
+        if (r.startState) console.error(`    开局按钮状态：${r.startState}`)
+        if (r.pageState) console.error(`    页面状态：${JSON.stringify(r.pageState)}`)
       }
       else {
         failed++
         console.error(line)
+        if (r.startState) console.error(`    开局按钮状态：${r.startState}`)
+        if (r.pageState) console.error(`    页面状态：${JSON.stringify(r.pageState)}`)
         for (const e of r.errors) console.error(`    ${e}`)
       }
     }

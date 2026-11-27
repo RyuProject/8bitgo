@@ -20,7 +20,7 @@ import { getPadKeys, onPadKeysChange, parseBinding, type PadAction, type Seat } 
  *    角色带着「一直往右」继续跑 —— 这条是 gamepadInput.ts 那边踩过的。
  */
 
-type Send = (action: PadAction, down: boolean, seat: Seat) => void
+type Send = (action: PadAction, down: boolean, seat: Seat, code: string) => void
 
 function isEditable(el: EventTarget | null): boolean {
   const node = el as HTMLElement | null
@@ -40,7 +40,7 @@ export function installPadKeyboard(send: Send): () => void {
     // 用**按下那一刻**的映射来松开，不然玩家玩着玩着改了键，会漏一次 keyup
     const parsed = parseBinding(pressedAs.get(code) ?? '')
     pressedAs.delete(code)
-    if (parsed) send(parsed.action, false, parsed.seat)
+    if (parsed) send(parsed.action, false, parsed.seat, code)
   }
   /** 每个按下的键当时算作哪条绑定 */
   const pressedAs = new Map<string, string>()
@@ -60,7 +60,7 @@ export function installPadKeyboard(send: Send): () => void {
     if (!parsed) return
     held.add(e.code)
     pressedAs.set(e.code, binding)
-    send(parsed.action, true, parsed.seat)
+    send(parsed.action, true, parsed.seat, e.code)
   }
 
   const onKeyUp = (e: KeyboardEvent) => {
