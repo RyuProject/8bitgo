@@ -20,10 +20,16 @@ assert.equal(gameMediaUrl({ slug: 'empty' }, 'cover'), '')
 const base = 'https://image.8bitgo.com'
 assert.equal(
   coverSrcSet(`${base}/covers/kof%2097.webp`, base),
-  `${base}/cdn-cgi/image/width=240,quality=80,format=auto,fit=scale-down/covers/kof%2097.webp 240w, ` +
+  `${base}/cdn-cgi/image/width=160,quality=80,format=auto,fit=scale-down/covers/kof%2097.webp 160w, ` +
+    `${base}/cdn-cgi/image/width=240,quality=80,format=auto,fit=scale-down/covers/kof%2097.webp 240w, ` +
     `${base}/cdn-cgi/image/width=480,quality=80,format=auto,fit=scale-down/covers/kof%2097.webp 480w`,
 )
 assert.equal(coverSrcSet(`${base}/covers/kof.webp`, ''), '')
+assert.equal(
+  coverImageUrl(`${base}/covers/super-mario-bros-96.jpg`, 96, base, 'auto'),
+  `${base}/cdn-cgi/image/width=96,quality=80,format=auto,fit=scale-down/covers/super-mario-bros-96.jpg`,
+  '96px 缩略图即使回退到大图对象也必须保持缩放',
+)
 const avif = `${base}/covers/the-king-of-fighters-2000.avif`
 assert.equal(coverSrcSet(avif, base), '', 'Cloudflare 不接受 AVIF 源图变换（HTTP 415），不发出必失败的 srcset')
 assert.equal(coverImageUrl(avif, 480, base, 'auto'), avif, 'AVIF video poster 直接复用已压缩源图')
@@ -37,7 +43,8 @@ assert.equal(coverSrcSet(`${base}/covers/kof.webp`), '')
 const cnBase = 'https://image-cn.8bitgo.com'
 assert.equal(
   coverSrcSet(`${cnBase}/covers/kof.webp`, cnBase, 'webp'),
-  `${cnBase}/cdn-cgi/image/width=240,quality=80,format=webp,fit=scale-down/covers/kof.webp 240w, ` +
+  `${cnBase}/cdn-cgi/image/width=160,quality=80,format=webp,fit=scale-down/covers/kof.webp 160w, ` +
+    `${cnBase}/cdn-cgi/image/width=240,quality=80,format=webp,fit=scale-down/covers/kof.webp 240w, ` +
     `${cnBase}/cdn-cgi/image/width=480,quality=80,format=webp,fit=scale-down/covers/kof.webp 480w`,
 )
 

@@ -4,18 +4,28 @@ import { useT } from '@/services/i18n'
 import { genreLabel } from '@/services/i18nData'
 import type { Facets } from '@/services/pageData'
 import { SkeletonBlock } from '@/components/ui/PageSkeleton'
+import actionIcon from '@/assets/ui/genre-icons/action.svg'
+import adventureIcon from '@/assets/ui/genre-icons/adventure.svg'
+import fightingIcon from '@/assets/ui/genre-icons/fighting.svg'
+import platformerIcon from '@/assets/ui/genre-icons/platformer.svg'
+import puzzleIcon from '@/assets/ui/genre-icons/puzzle.svg'
+import racingIcon from '@/assets/ui/genre-icons/racing.svg'
+import rpgIcon from '@/assets/ui/genre-icons/rpg.svg'
+import shooterIcon from '@/assets/ui/genre-icons/shooter.svg'
+import strategyIcon from '@/assets/ui/genre-icons/strategy.svg'
 
-const CUSTOM_GENRE_ICONS = new Set([
-  'action',
-  'fighting',
-  'shooter',
-  'platformer',
-  'adventure',
-  'rpg',
-  'strategy',
-  'racing',
-  'puzzle',
-])
+// 构建期哈希 URL 可长期缓存；public/ui 原件继续兼容旧页面和外部引用。
+const CUSTOM_GENRE_ICONS: Partial<Record<string, string>> = {
+  action: actionIcon,
+  adventure: adventureIcon,
+  fighting: fightingIcon,
+  platformer: platformerIcon,
+  puzzle: puzzleIcon,
+  racing: racingIcon,
+  rpg: rpgIcon,
+  shooter: shooterIcon,
+  strategy: strategyIcon,
+}
 
 /**
  * 首页隐藏的 h1：屏幕上看不见，搜索引擎与读屏软件仍能读到。
@@ -62,9 +72,9 @@ export function HomeIntro({ facets, loading = false }: { facets?: Facets; loadin
             ))
           : shown.map((g) => (
               <PixelButton key={g.id} to={`/genres/${g.id}`} compact>
-                {CUSTOM_GENRE_ICONS.has(g.id) ? (
+                {CUSTOM_GENRE_ICONS[g.id] ? (
                   <img
-                    src={`/ui/genre-icons/${g.id}.svg`}
+                    src={CUSTOM_GENRE_ICONS[g.id]}
                     alt=""
                     className="h-5 w-5 object-contain [image-rendering:pixelated]"
                     aria-hidden

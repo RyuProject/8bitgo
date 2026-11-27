@@ -352,7 +352,8 @@ export function GameCover({
    */
   const [thumbFailed, setThumbFailed] = useState(false)
   useEffect(() => setThumbFailed(false), [thumbSrc])
-  const imgSrc = thumbSrc && !thumbFailed ? thumbSrc : coverSrc
+  // Worker 缺少 -96 对象时会回传主图；仍经边缘缩到 96px，避免小卡片整张下载。
+  const imgSrc = thumbSrc && !thumbFailed ? coverImageUrl(thumbSrc, 96) : coverSrc
   /**
    * 缩放转码版本。变换失败（额度用完、源图格式不认）时 Cloudflare 回的是错误而不是原图，
    * 所以和缩略图一样要记状态退回原图，不能让卡片停在渐变上。

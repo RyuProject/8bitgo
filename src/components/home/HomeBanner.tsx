@@ -17,6 +17,7 @@ import type { Game } from '@/types'
 import type { Translation } from '@/locales'
 import { usePrefersReducedMotion } from '@/lib/motion'
 import { gameListed, useNoWasmMode } from '@/services/noWasm'
+import runMyRomIcon from '@/assets/ui/run-my-rom.svg'
 
 /**
  * 首页热门还没到货时先顶上的几款。取不到的（不存在 / 已下架）自动跳过，
@@ -273,7 +274,7 @@ function Banner({ className, games }: { className?: string; games?: Game[] }) {
               <span>{t.home.ctaPlay}</span>
             </PixelButton>
             <PixelButton to="/play-local">
-              <img src="/ui/run-my-rom.svg" alt="" className="h-5 w-5 object-contain [image-rendering:pixelated]" aria-hidden />
+              <img src={runMyRomIcon} alt="" className="h-5 w-5 object-contain [image-rendering:pixelated]" aria-hidden />
               <span>{t.home.ctaUpload}</span>
             </PixelButton>
           </div>

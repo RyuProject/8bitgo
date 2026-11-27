@@ -392,13 +392,13 @@ export function gameVideoFallbackUrl(game: { slug: string; video?: string }, cur
 }
 
 /**
- * 封面缩放档位：卡片实际 222~254 CSS 像素，1x 屏取 240、2x 屏取 480。
- * 只开两档是为了守住 Image Transformations 免费额度（每月 5,000 个唯一变换）：
- * 650 张封面 × 2 档，即使 format=auto 的 AVIF / WebP 分开计也在额度内。
+ * 封面响应式档位：160 适配小卡片，240 覆盖常规卡片，480 留给高密度屏与大卡片。
+ * 96 单独用于小缩略图，避免缺失的 -96 对象回退主图后，仍把 225px 图送进 77px 容器。
+ * 变换按源图与参数组合计数，format / quality 不另算：650 张封面 × 3 个卡片档位加 1 个缩略图档位，
+ * 约 2,600 个唯一变换，低于 Cloudflare Images Free 每月 5,000 个唯一变换数。
  */
-const COVER_WIDTHS = [240, 480] as const
-
-type CoverImageWidth = (typeof COVER_WIDTHS)[number]
+const COVER_WIDTHS = [160, 240, 480] as const
+type CoverImageWidth = 96 | (typeof COVER_WIDTHS)[number]
 
 function transformedCoverUrl(src: string, width: CoverImageWidth, base: string, format: 'auto' | 'webp'): string {
   const prefix = `${base}/covers/`
