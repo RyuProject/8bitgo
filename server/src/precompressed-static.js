@@ -1,5 +1,5 @@
 /**
- * 体积大、不会变、又没有被压缩过的静态运行时文件：预先压好 `<原名>.br`，由源站直接吐压缩字节。
+ * 体积大、不会变、又没有被压缩过的静态文件：预先压好 `<原名>.br`，由源站直接吐压缩字节。
  *
  * ── 为什么（2026-11-04《GT 赛车》PSP 实测）────────────────────────────
  * PPSSPPSDL.data 是 Emscripten 的资源包（字体、界面图集、着色器、语言文件），19.4MB，
@@ -29,6 +29,8 @@ import { fileSha256 } from './file-hash.js'
  * 比 Brotli 11 大 25~30%：Ruffle 4.68MB → 3.26MB、Dolphin 4.59MB → 3.22MB。
  */
 export const PRECOMPRESSED_STATIC_PATTERNS = Object.freeze([
+  // Vite 哈希产物：有内容哈希，且 Cloudflare 对常见浏览器请求目前会选 gzip；源站预压缩可稳定下发 Brotli。
+  /^\/assets\/[^/]+-[A-Za-z0-9_-]{8,}\.(?:css|js)$/,
   /^\/ppsspp\/v[0-9a-f]+\/v\d+\/PPSSPPSDL\.data$/,
   /^\/ruffle\/v[^/]+\/[^/]+\.wasm$/,
   /^\/jsdos\/v[^/]+\/emulators\/(?:wdosbox|wdosbox-x|wdosbox-x-jspi|wlibzip)\.wasm$/,
@@ -44,6 +46,7 @@ export const PRECOMPRESSED_STATIC_PATTERNS = Object.freeze([
 const LEGACY_WITHOUT_SIDECAR = /^\/ppsspp\/v[0-9a-f]+\/v\d+\/PPSSPPSDL\.data$/
 
 const CONTENT_TYPES = {
+  '.css': 'text/css; charset=utf-8',
   '.wasm': 'application/wasm',
   '.js': 'application/javascript; charset=utf-8',
   '.data': 'application/octet-stream',
