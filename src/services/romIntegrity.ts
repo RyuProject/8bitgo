@@ -160,9 +160,10 @@ export function fetchRomIntegrityManifest(rawUrl: string, parentSignal?: AbortSi
 
 async function digest(bytes: Uint8Array): Promise<string> {
   if (!globalThis.crypto?.subtle) throw new RomIntegrityError('浏览器不支持 SHA-256，无法安全校验 ROM / BIOS')
-  // SharedArrayBuffer 不能直接交给 WebCrypto；复制当前分块也避免摘要过程中被并发改写。
-  const view = new Uint8Array(bytes.byteLength)
-  view.set(bytes)
+  // WebCrypto 会在调用时复制输入快照；普通 ROM 分块直接传入即可，避免 JS 再复制一次。
+  // wasm 共享内存视图不能直接交给 WebCrypto，仍先复制出普通 ArrayBuffer。
+  const isShared = typeof SharedArrayBuffer !== 'undefined' && bytes.buffer instanceof SharedArrayBuffer
+  const view = isShared ? Uint8Array.from(bytes) : bytes as Uint8Array<ArrayBuffer>
   const hash = new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', view))
   return Array.from(hash, (byte) => byte.toString(16).padStart(2, '0')).join('')
 }

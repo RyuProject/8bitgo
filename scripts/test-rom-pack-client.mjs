@@ -5,7 +5,7 @@ import { encodeRomPackPrefix, romPackAad, romPackIv } from '../shared/rom-pack-f
 globalThis.__viteEnv = { VITE_API_URL: 'https://api.example.test' }
 const oldCryptoDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'crypto')
 Object.defineProperty(globalThis, 'crypto', { value: webcrypto, configurable: true, writable: true })
-const { romPackDecodeConcurrency, unpackRomPack, unpackRomPackBlob, verifyRomPackBlob } = await import('../src/services/romPack.ts')
+const { romPackDecodeConcurrency, unpackRomPack, unpackRomPackBlob, verifyRomPackBlob, packRomForUpload, releasePackedRomUpload } = await import('../src/services/romPack.ts')
 const { loadGameBytes } = await import('../src/emulator/romLoader.ts')
 
 const digest = async (bytes) => Buffer.from(await webcrypto.subtle.digest('SHA-256', bytes)).toString('hex')
@@ -47,7 +47,7 @@ const assetPath = '/roms/test/synthetic.nes.8bg'
 globalThis.fetch = async (url, init = {}) => {
   const target = new URL(String(url))
   if (target.pathname.endsWith('/api/rom-pack/key')) {
-    return Response.json({ packageId: target.searchParams.get('packageId'), keyId: target.searchParams.get('keyId'), key })
+    return Response.json({ packageId: target.searchParams.get('packageId'), keyId: target.searchParams.get('keyId') ?? 'v1', key })
   }
   if (target.pathname === '/integrity') return new Response('', { status: 404 })
   if (target.pathname === assetPath) {
@@ -73,17 +73,24 @@ let decryptInput
 let activeDecrypts = 0
 let maxConcurrentDecrypts = 0
 let decryptDelayMs = 0
+let trackedDecryptOffsets = new Map()
+let trackedDecryptEvents = []
+let decryptDelayByChunk = null
 const subtle = new Proxy(webcrypto.subtle, {
   get(target, property) {
     if (property === 'decrypt') {
       return async (...args) => {
         decryptInput = args[2]
+        const chunkIndex = args[2] instanceof Uint8Array ? trackedDecryptOffsets.get(args[2].byteOffset) : undefined
+        if (chunkIndex !== undefined) trackedDecryptEvents.push(`start:${chunkIndex}`)
         activeDecrypts++
         maxConcurrentDecrypts = Math.max(maxConcurrentDecrypts, activeDecrypts)
         try {
-          if (decryptDelayMs) await new Promise((resolve) => setTimeout(resolve, decryptDelayMs))
+          const delay = chunkIndex === undefined ? decryptDelayMs : decryptDelayByChunk?.[chunkIndex] ?? decryptDelayMs
+          if (delay) await new Promise((resolve) => setTimeout(resolve, delay))
           return await target.decrypt(...args)
         } finally {
+          if (chunkIndex !== undefined) trackedDecryptEvents.push(`end:${chunkIndex}`)
           activeDecrypts--
         }
       }
@@ -109,8 +116,8 @@ try {
   assert.equal(decryptInput.buffer, container.buffer, '解包不能先复制当前密文块')
   assert.equal(decryptInput.byteOffset, prefix.byteLength)
 
-  const chunkBytes = 8 * 1024 * 1024
-  const multiSource = new Uint8Array(chunkBytes + 1)
+  const chunkBytes = 64 * 1024
+  const multiSource = new Uint8Array(chunkBytes * 3 + 1)
   const multiHeader = {
     ...header,
     packageId: 'abcdef0123456789abcdef0123456789',
@@ -145,7 +152,11 @@ try {
   const multiContainer = new Uint8Array(multiPrefix.byteLength + multiHeader.payloadSize)
   multiContainer.set(multiPrefix)
   let multiCipherAt = multiPrefix.byteLength
-  for (const part of multiEncrypted) {
+  const multiChunkOffsets = new Map()
+  const multiChunkStartOffsets = []
+  for (const [index, part] of multiEncrypted.entries()) {
+    multiChunkOffsets.set(multiCipherAt, index)
+    multiChunkStartOffsets[index] = multiCipherAt
     multiContainer.set(part, multiCipherAt)
     multiCipherAt += part.byteLength
   }
@@ -165,13 +176,30 @@ try {
       '浏览器不报告内存档位时采用保守并行度')
     assert.equal(romPackDecodeConcurrency(32 * 1024 * 1024, { hardwareConcurrency: 2, deviceMemory: 8 }), 1,
       '解包给至少一个逻辑核心留给页面')
+    assert.equal(romPackDecodeConcurrency(multiSource.byteLength, { hardwareConcurrency: 4, deviceMemory: 4 }, multiHeader.chunks.length), 2,
+      '解包并行度应按容器真实分块数计算，而不是假定每块固定 8 MiB')
 
-    decryptDelayMs = 15
+    trackedDecryptOffsets = multiChunkOffsets
+    trackedDecryptEvents = []
+    decryptDelayByChunk = [10, 120, 0, 0]
     maxConcurrentDecrypts = 0
     const multiUnpacked = await unpackRomPack(multiContainer.buffer)
     assert.equal(await digest(multiUnpacked.data), multiHeader.originalSha256)
     assert.equal(maxConcurrentDecrypts, 2, '多块 8BG ROM 应按设备上限并行解密')
+    assert.ok(
+      trackedDecryptEvents.indexOf('start:2') < trackedDecryptEvents.indexOf('end:1'),
+      '前一块解完后应立即补入新块，不等最慢任务完成',
+    )
 
+    const corruptContainer = multiContainer.slice()
+    corruptContainer[multiChunkStartOffsets[2]] ^= 1
+    trackedDecryptEvents = []
+    decryptDelayByChunk = [60, 10, 0, 0]
+    await assert.rejects(unpackRomPack(corruptContainer.buffer), /第 3 块解密失败/)
+    assert.ok(!trackedDecryptEvents.includes('start:3'), '在途块解密失败后不应继续派发窗口外的块')
+
+    decryptDelayByChunk = null
+    decryptDelayMs = 15
     const multiBlob = new Blob([multiContainer])
     maxConcurrentDecrypts = 0
     const unpackedBlob = await unpackRomPackBlob(multiBlob)
@@ -186,6 +214,8 @@ try {
     assert.equal(maxConcurrentDecrypts, 2, '完整性验证应与客户端解包共用有界并行策略')
   } finally {
     decryptDelayMs = 0
+    decryptDelayByChunk = null
+    trackedDecryptOffsets = new Map()
     if (oldNavigatorDescriptor) Object.defineProperty(globalThis, 'navigator', oldNavigatorDescriptor)
     else delete globalThis.navigator
   }
@@ -222,6 +252,74 @@ try {
   assert.deepEqual(new Uint8Array(remote.data), source)
   assert.ok(remoteProgress.some((progress) => progress.detail === 'rom-pack'),
     '远端 .8bg 下载完成时要抑制误报 ROM 完成，并切换到解包活动')
+
+  const oldWorkerDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'Worker')
+  const oldWindowDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const expiryCallbacks = []
+  const clearedTimers = []
+  let nextTimer = 1
+  Object.defineProperty(globalThis, 'Worker', {
+    configurable: true,
+    value: class {
+      onmessage = null
+      onerror = null
+      postMessage(message) {
+        if (message.type === 'init') {
+          queueMicrotask(() => this.onmessage?.({ data: { type: 'ready' } }))
+          return
+        }
+        void message.source.arrayBuffer().then(async (buffer) => {
+          const bytes = new Uint8Array(buffer)
+          const sha256 = Buffer.from(await webcrypto.subtle.digest('SHA-256', bytes)).toString('hex')
+          const cipher = new Uint8Array(bytes.byteLength + 16)
+          cipher.set(bytes)
+          this.onmessage?.({ data: {
+            type: 'chunk', index: message.index, cipher: cipher.buffer,
+            chunk: { sourceSize: bytes.byteLength, encodedSize: bytes.byteLength, cipherSize: cipher.byteLength, sha256 },
+          } })
+        })
+      }
+      terminate() {}
+    },
+  })
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      setTimeout(callback, delayMs) {
+        assert.equal(delayMs, 2 * 60 * 60 * 1000, '打包重试缓存应沿用两小时恢复窗口')
+        expiryCallbacks.push(callback)
+        return nextTimer++
+      },
+      clearTimeout(timer) { clearedTimers.push(timer) },
+    },
+  })
+  try {
+    const uploadSource = new Blob([source.subarray(0, 1024)])
+    Object.defineProperties(uploadSource, {
+      name: { value: 'retry.nes' },
+      lastModified: { value: 123 },
+    })
+    const firstPack = await packRomForUpload(uploadSource, 'retry.nes', undefined, 'store')
+    assert.equal(firstPack.reused, false)
+    assert.equal(expiryCallbacks.length, 1, '新打包结果必须安排自动过期清理')
+    const immediateRetry = await packRomForUpload(uploadSource, 'retry.nes', undefined, 'store')
+    assert.equal(immediateRetry.reused, true, '失败后两小时内仍可复用相同密文续传')
+
+    expiryCallbacks[0]()
+    const afterExpiry = await packRomForUpload(uploadSource, 'retry.nes', undefined, 'store')
+    assert.equal(afterExpiry.reused, false, '缓存到期后必须重新打包，旧 Blob 不得继续被引用')
+    assert.equal(expiryCallbacks.length, 2)
+    releasePackedRomUpload(afterExpiry.blob)
+    assert.ok(clearedTimers.includes(2), '上传确认成功后应同时清除过期计时器')
+    const afterRelease = await packRomForUpload(uploadSource, 'retry.nes', undefined, 'store')
+    assert.equal(afterRelease.reused, false, '成功释放的密文不能被后续开局再次复用')
+    releasePackedRomUpload(afterRelease.blob)
+  } finally {
+    if (oldWorkerDescriptor) Object.defineProperty(globalThis, 'Worker', oldWorkerDescriptor)
+    else delete globalThis.Worker
+    if (oldWindowDescriptor) Object.defineProperty(globalThis, 'window', oldWindowDescriptor)
+    else delete globalThis.window
+  }
 } finally {
   globalThis.fetch = oldFetch
   globalThis.FileReader = oldFileReader

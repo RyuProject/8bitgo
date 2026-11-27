@@ -55,6 +55,7 @@ const SHAPE = /^[A-Z][A-Z0-9_]{2,}$/
  * ⚠️ 四种读法都要认。只认 `env.X` 的话会漏掉间接读取 ——
  * routes/auth.js 里是 `trimEnv('MICROSOFT_CLIENT_ID')`，
  * routes/submit-game.js 里是 `envMb('SUBMIT_ROM_MAX_FILE_MB', 20)`，
+ * mail.js 里是 `mailApiBase('RESEND_API_BASE', ...)`，
  * 这两处一共 3 个变量，2026-09-13 第一版正则一个都没看见。
  */
 const META_FILES = ['config-report.js', 'config-manifest.js']
@@ -90,6 +91,7 @@ function scanEnvUsage(root = SRC) {
       for (const m of code.matchAll(/(?:process\.)?env\.([A-Za-z_$][\w$]*)/g)) add(m[1])
       for (const m of code.matchAll(/(?:process\.)?env\[\s*['"]([^'"]+)['"]/g)) add(m[1])
       for (const m of code.matchAll(/\b\w*[Ee]nv\w*\(\s*['"]([^'"]+)['"]/g)) add(m[1])
+      for (const m of code.matchAll(/\bmailApiBase\(\s*['"]([^'"]+)['"]/g)) add(m[1])
     }
   }
   walk(root)
@@ -182,8 +184,11 @@ await check('清单记的读取位置没有漂（文件被挪走会红）', () =
 
 await check('⚠️ 扫描器认得出间接读法（只认 env.X 会漏掉这几个）', () => {
   const used = scanEnvUsage()
-  // trimEnv('X') —— routes/auth.js；envMb('X', n) —— routes/submit-game.js
-  for (const k of ['MICROSOFT_CLIENT_ID', 'APPLE_PRIVATE_KEY_PATH', 'SUBMIT_ROM_MAX_FILE_MB']) {
+  // trimEnv('X') —— routes/auth.js；envMb('X', n) —— routes/submit-game.js；mailApiBase('X') —— mail.js
+  for (const k of [
+    'MICROSOFT_CLIENT_ID', 'APPLE_PRIVATE_KEY_PATH', 'SUBMIT_ROM_MAX_FILE_MB',
+    'RESEND_API_BASE', 'CF_API_BASE',
+  ]) {
     assert.ok(used.has(k), `扫描器漏了 ${k} —— 间接读法那几条正则失效了`)
   }
 })

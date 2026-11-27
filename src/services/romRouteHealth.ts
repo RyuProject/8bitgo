@@ -36,6 +36,8 @@ interface RouteStat {
 }
 
 const STORAGE_KEY = '8bitgo.rom-route-health.v1'
+/** 外链 ROM 允许使用任意源站；限制长驻页面的线路状态和同步持久化体积。 */
+const MAX_ROUTE_STATS = 128
 /** 分片下载每片都会更新速率；排序读内存即可，持久化合并到每秒一次，避免同步存储挤占正文读取回调。 */
 const PERSIST_INTERVAL_MS = 1_000
 /** 吞吐结论的有效期：线路状况按小时级变化，半小时前的测量不再可信 */
@@ -95,8 +97,17 @@ function load(): void {
   try {
     const parsed = JSON.parse(storage()?.getItem(STORAGE_KEY) || '{}') as Record<string, RouteStat>
     if (!parsed || typeof parsed !== 'object') return
-    for (const [origin, stat] of Object.entries(parsed)) {
-      if (!/^https?:\/\//.test(origin) || !stat || typeof stat !== 'object') continue
+    const rawEntries = Object.entries(parsed)
+    let needsCleanup = rawEntries.length > MAX_ROUTE_STATS
+    const entries = rawEntries.sort((a, b) => {
+      const activityAt = (stat: RouteStat) => Math.max(Number(stat?.rateAt) || 0, Number(stat?.failedAt) || 0)
+      return activityAt(a[1]) - activityAt(b[1])
+    })
+    for (const [origin, stat] of entries) {
+      if (!/^https?:\/\//.test(origin) || !stat || typeof stat !== 'object') {
+        needsCleanup = true
+        continue
+      }
       const failures = Number.isFinite(stat.failures) && stat.failures > 0 ? Math.min(20, Math.floor(stat.failures)) : 0
       const rate = Number.isFinite(stat.rate) && (stat.rate ?? 0) > 0 ? stat.rate : undefined
       stats.set(origin, {
@@ -106,10 +117,28 @@ function load(): void {
         failedAt: failures ? Number(stat.failedAt) || 0 : undefined,
         openUntil: Number(stat.openUntil) || undefined,
       })
+      if (stats.size > MAX_ROUTE_STATS) needsCleanup = true
+      trimRouteStats()
     }
+    // 旧版曾把任意外站都永久落盘。即使本页只读线路分数，也要在离页时收敛旧存储，
+    // 否则每次重新打开仍会解析那份无界 JSON，直到恰好有新传输写入才会清理。
+    if (needsCleanup) save()
   } catch {
     /* 存储坏了就当没记过 */
   }
+}
+
+function trimRouteStats(): void {
+  while (stats.size > MAX_ROUTE_STATS) {
+    const oldest = stats.keys().next().value
+    if (oldest === undefined) break
+    stats.delete(oldest)
+  }
+}
+
+function touchRouteStat(origin: string, stat: RouteStat): void {
+  stats.delete(origin)
+  stats.set(origin, stat)
 }
 
 function persist(): void {
@@ -166,6 +195,9 @@ function statFor(origin: string): RouteStat {
   if (!stat) {
     stat = { failures: 0 }
     stats.set(origin, stat)
+    trimRouteStats()
+  } else {
+    touchRouteStat(origin, stat)
   }
   return stat
 }
@@ -175,6 +207,7 @@ function freshStat(origin: string, now: number) {
   load()
   const stat = stats.get(origin)
   if (!stat) return { rate: undefined, failures: 0, open: false }
+  touchRouteStat(origin, stat)
   const rate = stat.rate && stat.rateAt !== undefined && now - stat.rateAt < ROUTE_RATE_TTL_MS ? stat.rate : undefined
   const failures = stat.failures && stat.failedAt !== undefined && now - stat.failedAt < FAILURE_TTL_MS ? stat.failures : 0
   const open = Boolean(stat.openUntil && stat.openUntil > now)
@@ -288,7 +321,8 @@ export function rankRomRoutes(urls: readonly string[], now = Date.now()): string
 export function romRouteHealthSummary(now = Date.now()): string {
   load()
   const parts: string[] = []
-  for (const origin of stats.keys()) {
+  // freshStat 会刷新 LRU；先快照 key，避免 Map 迭代器重复访问刚移到末尾的热点项。
+  for (const origin of [...stats.keys()]) {
     const fresh = freshStat(origin, now)
     if (!fresh.rate && !fresh.failures && !fresh.open) continue
     const host = origin.replace(/^https?:\/\//, '')

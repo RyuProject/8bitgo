@@ -1,4 +1,4 @@
-import type { ZipFileEntry } from './unzip'
+import { clearValidatedZipBlobLocalHeaders, validatedZipBlobLocalHeader, type ZipFileEntry } from './unzip'
 
 /** 输出 ZIP 里的一个成员：取原包里的 entry，换成 name 写出 */
 export interface ZipRewriteItem {
@@ -54,11 +54,11 @@ export async function rewriteZipEntries(blob: Blob, items: readonly ZipRewriteIt
       throw new Error(`街机 ZIP 使用了当前浏览器${action}器不支持的 ZIP64 格式；请先在电脑上处理后上传。`)
     }
 
-    let localHeader = localHeaders.get(entry.offset)
+    let localHeader = localHeaders.get(entry.offset) ?? validatedZipBlobLocalHeader(blob, entry.offset)
     if (!localHeader) {
       localHeader = new Uint8Array(await blob.slice(entry.offset, entry.offset + 30).arrayBuffer())
-      localHeaders.set(entry.offset, localHeader)
     }
+    localHeaders.set(entry.offset, localHeader)
     if (localHeader.byteLength !== 30) throw new Error(`ZIP 成员“${entry.name}”的本地文件头不完整。`)
     const local = new DataView(localHeader.buffer, localHeader.byteOffset, localHeader.byteLength)
     if (local.getUint32(0, true) !== 0x04034b50) throw new Error(`ZIP 成员“${entry.name}”的本地文件头损坏。`)
@@ -151,5 +151,7 @@ export async function rewriteZipEntries(blob: Blob, items: readonly ZipRewriteIt
   end.setUint16(20, 0, true)
   parts.push(eocd)
 
-  return new Blob(parts, { type: blob.type || 'application/zip' })
+  const rewritten = new Blob(parts, { type: blob.type || 'application/zip' })
+  clearValidatedZipBlobLocalHeaders(blob)
+  return rewritten
 }

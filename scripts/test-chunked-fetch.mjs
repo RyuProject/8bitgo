@@ -695,6 +695,56 @@ await check('有内容版本的通用 ROM 探测 Range；无版本外链仍单�
   }
 })
 
+await check('带有限大小上限的普通 ROM 启用已知长度预分配', async () => {
+  const { readFileSync } = await import('node:fs')
+  const source = readFileSync(new URL('../src/emulator/romLoader.ts', import.meta.url), 'utf8')
+  assert.match(
+    source,
+    /const boundedMaxBytes = typeof limits\.maxBytes === 'number' &&\s*Number\.isSafeInteger\(limits\.maxBytes\) && limits\.maxBytes > 0[\s\S]*?preallocateKnownLength:\s*boundedMaxBytes/,
+    '只有正整数安全上限的 ROM 才能提前分配，避免无上限外链按错误 Content-Length 申请大块内存',
+  )
+  assert.match(source, /smallRomMemoryLimit\s*=\s*boundedMaxBytes\s*\?\s*Math\.min\(limits\.maxBytes!,\s*CHUNK_BYTES\)/)
+  assert.match(source, /inMemoryUpTo:\s*smallRomMemoryLimit/)
+
+  const oldFetch = globalThis.fetch
+  const oldUint8Array = globalThis.Uint8Array
+  const bytes = new oldUint8Array([0x4e, 0x45, 0x53, 0x1a, ...Array(12).fill(0)])
+  const observePreallocation = async (bounded) => {
+    let bodyStarted = false
+    let allocatedBeforeBody = false
+    globalThis.Uint8Array = new Proxy(oldUint8Array, {
+      construct(target, args) {
+        if (!bodyStarted && typeof args[0] === 'number' && args[0] === bytes.byteLength) allocatedBeforeBody = true
+        return Reflect.construct(target, args, target)
+      },
+    })
+    globalThis.fetch = async () => ({
+      ok: true,
+      status: 200,
+      headers: headers({ 'content-length': String(bytes.byteLength) }),
+      body: new ReadableStream({
+        pull(controller) {
+          bodyStarted = true
+          controller.enqueue(bytes)
+          controller.close()
+        },
+      }, { highWaterMark: 0 }),
+    })
+    try {
+      const loaded = await loadGameBytes('https://files.example/limited.nes', undefined, undefined,
+        bounded ? { maxBytes: 1024 } : {})
+      assert.deepEqual(new oldUint8Array(loaded.data), bytes)
+    } finally {
+      globalThis.fetch = oldFetch
+      globalThis.Uint8Array = oldUint8Array
+    }
+    return allocatedBeforeBody
+  }
+
+  assert.equal(await observePreallocation(true), true, '有限上限且 Content-Length 已知时应在读正文前分配最终缓冲')
+  assert.equal(await observePreallocation(false), false, '无上限外链不能信任 Content-Length 提前分配')
+})
+
 console.log('六、第一片期间的进度也要带总量')
 
 await check('⚠️ 第一片还没读完时每帧都带 Content-Range 给的总量（《主题医院》150MB 卡在 67%）', async () => {

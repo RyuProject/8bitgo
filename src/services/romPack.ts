@@ -298,6 +298,29 @@ interface PackedRomRetryCache extends Omit<PackedRomUpload, 'reused'> {
  */
 let packedRomRetryCache: PackedRomRetryCache | null = null
 const PACK_RETRY_CACHE_TTL = 2 * 60 * 60 * 1000
+let packedRomRetryExpiryTimer: number | undefined
+
+function clearPackedRomRetryCache(blob?: Blob): void {
+  if (blob && packedRomRetryCache?.blob !== blob) return
+  packedRomRetryCache = null
+  if (packedRomRetryExpiryTimer !== undefined && typeof window !== 'undefined') {
+    window.clearTimeout(packedRomRetryExpiryTimer)
+  }
+  packedRomRetryExpiryTimer = undefined
+}
+
+function retainPackedRomRetryCache(cache: PackedRomRetryCache): void {
+  clearPackedRomRetryCache()
+  packedRomRetryCache = cache
+  if (typeof window === 'undefined') return
+  // 过期后及时放掉可能很大的 Blob；不能只等下一次上传才检查 TTL。
+  const timer = window.setTimeout(() => {
+    if (packedRomRetryCache !== cache) return
+    packedRomRetryCache = null
+    packedRomRetryExpiryTimer = undefined
+  }, PACK_RETRY_CACHE_TTL)
+  packedRomRetryExpiryTimer = timer
+}
 
 const randomId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), (v) => v.toString(16).padStart(2, '0')).join('')
 const hex = (buf: ArrayBuffer) => Array.from(new Uint8Array(buf), (v) => v.toString(16).padStart(2, '0')).join('')
@@ -314,8 +337,11 @@ export function romPackWorkerConcurrency(
     hardwareConcurrency: globalThis.navigator?.hardwareConcurrency,
     deviceMemory: (globalThis.navigator as Navigator & { deviceMemory?: number } | undefined)?.deviceMemory,
   },
+  actualChunks?: number,
 ): number {
-  const chunks = Math.max(1, Math.ceil(fileSize / ROM_PACK_CHUNK_BYTES))
+  const chunks = Number.isSafeInteger(actualChunks) && Number(actualChunks) > 0
+    ? Number(actualChunks)
+    : Math.max(1, Math.ceil(fileSize / ROM_PACK_CHUNK_BYTES))
   const hardware = Number.isFinite(capacity.hardwareConcurrency) && Number(capacity.hardwareConcurrency) > 0
     ? Math.floor(Number(capacity.hardwareConcurrency))
     : 2
@@ -333,8 +359,9 @@ export function romPackDecodeConcurrency(
     hardwareConcurrency: globalThis.navigator?.hardwareConcurrency,
     deviceMemory: (globalThis.navigator as Navigator & { deviceMemory?: number } | undefined)?.deviceMemory,
   },
+  actualChunks?: number,
 ): number {
-  const workers = romPackWorkerConcurrency(fileSize, capacity)
+  const workers = romPackWorkerConcurrency(fileSize, capacity, actualChunks)
   return Number.isFinite(capacity.deviceMemory) && Number(capacity.deviceMemory) > 0
     ? workers
     : Math.min(workers, 2)
@@ -377,7 +404,7 @@ export async function matchesRomPackSource(
 
 /** 上传确认完成后立即放掉大 Blob；失败时故意保留，供当前页面的下一次选择续传。 */
 export function releasePackedRomUpload(blob: Blob): void {
-  if (packedRomRetryCache?.blob === blob) packedRomRetryCache = null
+  clearPackedRomRetryCache(blob)
 }
 
 /** 密钥第一条线路这么久还没回来，就同时走另一条（见 hedgedRequest.ts） */
@@ -473,11 +500,11 @@ export async function packRomForUpload(
       return { blob: cached.blob, header: cached.header, workers: cached.workers, reused: true }
     }
     // 同名同大小同时间的文件也可能被外部工具原地改过；完整散列不一致时绝不能沿用旧密文。
-    packedRomRetryCache = null
+    clearPackedRomRetryCache()
     onProgress?.({ loaded: 0, total: file.size })
   } else if (cached) {
     // 单槽缓存避免连续尝试不同 ROM 时长期占住上一份 GB 级 Blob。
-    packedRomRetryCache = null
+    clearPackedRomRetryCache()
   }
 
   const packageId = randomId()
@@ -590,7 +617,7 @@ export async function packRomForUpload(
       workers: workerCount,
       reused: false,
     }
-    packedRomRetryCache = {
+    retainPackedRomRetryCache({
       blob: result.blob,
       header,
       workers: workerCount,
@@ -600,7 +627,7 @@ export async function packRomForUpload(
       originalName,
       codec,
       createdAt: Date.now(),
-    }
+    })
     return result
   } finally {
     rawKey.fill(0)
@@ -652,7 +679,7 @@ async function decryptChunk(
   return source
 }
 
-/** 分批跑异步解密，既让 Web Crypto 有机会并行，也把失败后的多余工作限制在当前一批。 */
+/** 有界工作队列让空闲槽位立即接下一块，失败后不再派发未开始的块。 */
 async function forEachRomPackChunk(
   header: RomPackHeader,
   dataOffset: number,
@@ -664,21 +691,39 @@ async function forEachRomPackChunk(
     offsets[index] = cipherAt
     cipherAt += chunk.cipherSize
   })
-  const concurrency = Math.min(romPackDecodeConcurrency(header.originalSize), header.chunks.length)
-  for (let first = 0; first < header.chunks.length; first += concurrency) {
-    const count = Math.min(concurrency, header.chunks.length - first)
-    const results = await Promise.all(Array.from({ length: count }, async (_, offset) => {
-      const index = first + offset
+  const concurrency = Math.min(
+    romPackDecodeConcurrency(header.originalSize, undefined, header.chunks.length),
+    header.chunks.length,
+  )
+  const windowSize = concurrency * 2
+  const finished = new Set<number>()
+  let nextIndex = 0
+  let firstUnfinished = 0
+  let failed = false
+  let failureIndex = Number.POSITIVE_INFINITY
+  let failure: unknown
+  const runWorker = async () => {
+    while (!failed) {
+      // 小型滑动窗口避免某个早期慢块尚未失败时，其它槽一路解到文件末尾。
+      if (nextIndex >= header.chunks.length || nextIndex >= firstUnfinished + windowSize) return
+      const index = nextIndex++
       try {
         await process(index, offsets[index]!)
-        return { ok: true as const }
+        finished.add(index)
+        while (finished.delete(firstUnfinished)) firstUnfinished++
       } catch (error) {
-        return { ok: false as const, error }
+        failed = true
+        // 多个在途块同时失败时沿用原批处理规则：报告块号较小的错误，保证诊断稳定。
+        if (index < failureIndex) {
+          failureIndex = index
+          failure = error
+        }
+        return
       }
-    }))
-    const failed = results.find((result) => !result.ok)
-    if (failed && !failed.ok) throw failed.error
+    }
   }
+  await Promise.all(Array.from({ length: concurrency }, runWorker))
+  if (failed) throw failure
 }
 
 /** 小/中型 ROM 的完整解包；返回原始文件名，让模拟器仍按 .zip/.nes/.nds 识别。 */

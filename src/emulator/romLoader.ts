@@ -1,5 +1,5 @@
 /** 各轻量运行时共用的 ROM 读取入口：有内容版本的地址可跨刷新补缺片，无版本地址保持单次直取。 */
-import { fetchBlobWithProgress, fetchWithProgress } from './loadProgress'
+import { CHUNK_BYTES, fetchBlobWithProgress, fetchWithProgress } from './loadProgress'
 import { alternateRomUrls } from '@/services/romHosts'
 import { downloadResumeStore } from './downloadResume'
 import { romCacheGet, romCacheGetBlob, romCacheKey, romCachePut } from './romCache'
@@ -239,14 +239,25 @@ export async function loadGameBytes(
       ? { ...progress, detail: 'rom-pack' }
       : progress)
   }
+  const boundedMaxBytes = typeof limits.maxBytes === 'number' &&
+    Number.isSafeInteger(limits.maxBytes) && limits.maxBytes > 0
+  // 有明确大小上限的内容版本 ROM，实际小于一片时可以完整留在网络块内；不必为它打开续传库。
+  // 上限可能是平台最大值（例如 64 MiB），仍只把不超过 8 MiB 的实际响应放进 JS 内存。
+  const smallRomMemoryLimit = boundedMaxBytes ? Math.min(limits.maxBytes!, CHUNK_BYTES) : undefined
   // 只有带 romv 的不可变对象才可拼接旧片；小卡带首个 Range 就是完整文件，仍只需一趟网络。
   // 无版本的外链维持普通 GET，避免源站原地换包时把旧片拼进新 ROM。
   const data = cacheKey
     ? await (await fetchBlobWithProgress(game, {
         phase: 'rom', onProgress: reportDownloadProgress, signal, resumeKey: cacheKey, check, maxBytes: limits.maxBytes,
         alternateUrls: alternateRomUrls(game),
+        ...(smallRomMemoryLimit ? { inMemoryUpTo: smallRomMemoryLimit } : {}),
       })).arrayBuffer()
-    : await fetchWithProgress(game, { phase: 'rom', onProgress: reportDownloadProgress, signal, check, maxBytes: limits.maxBytes, alternateUrls: alternateRomUrls(game) })
+    : await fetchWithProgress(game, {
+        phase: 'rom', onProgress: reportDownloadProgress, signal, check, maxBytes: limits.maxBytes,
+        alternateUrls: alternateRomUrls(game),
+        // 只有调用方给出有限上限才提前分配；Content-Length 超限会在分配前拒绝，未知长度仍沿用分块拼接。
+        preallocateKnownLength: boundedMaxBytes,
+      })
   assertSizeLimit(data.byteLength, limits.maxBytes, '游戏文件')
   assertNotHtml(data)
   // fetchWithProgress / fetchBlobWithProgress 已在所有标记响应返回前校验；这里不再重复扫大 ROM。

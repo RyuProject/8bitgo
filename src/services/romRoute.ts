@@ -48,6 +48,36 @@ export interface RouteRaceOptions {
 }
 
 const routeSpeeds = new Map<string, RouteSpeed>()
+/** 外站 ROM 可能带来任意多源站；长驻 SPA 只保留最近使用的 128 条线路测速。 */
+const ROUTE_SPEED_CACHE_MAX_ENTRIES = 128
+
+function cachedRouteSpeed(id: string): number | undefined {
+  const cached = routeSpeeds.get(id)
+  if (!cached) return undefined
+  if (cached.expiresAt <= Date.now()) {
+    routeSpeeds.delete(id)
+    return undefined
+  }
+  // 命中时刷新 LRU 顺序，避免热门线路被偶尔浏览的外站挤掉、反复触发双源测速。
+  routeSpeeds.delete(id)
+  routeSpeeds.set(id, cached)
+  return cached.bytesPerMs
+}
+
+function rememberRouteSpeed(id: string, bytesPerMs: number): void {
+  const now = Date.now()
+  // 过期项只会在同一 origin 再查询时被发现；顺手清掉其它过期项，限制长期会话占用。
+  for (const [origin, cached] of routeSpeeds) {
+    if (cached.expiresAt <= now) routeSpeeds.delete(origin)
+  }
+  routeSpeeds.delete(id)
+  routeSpeeds.set(id, { bytesPerMs, expiresAt: now + ROUTE_SPEED_TTL_MS })
+  while (routeSpeeds.size > ROUTE_SPEED_CACHE_MAX_ENTRIES) {
+    const oldest = routeSpeeds.keys().next().value
+    if (oldest === undefined) break
+    routeSpeeds.delete(oldest)
+  }
+}
 
 const routeId = (url: string): string => {
   try {
@@ -85,8 +115,8 @@ async function measureRoute(source: RomRouteSource, options: RouteRaceOptions): 
   if (!id) return 0
   const now = options.now ?? (() => typeof performance !== 'undefined' ? performance.now() : Date.now())
   const cacheResults = options.cacheResults ?? !options.fetchImpl
-  const cached = cacheResults ? routeSpeeds.get(id) : undefined
-  if (cached && cached.expiresAt > Date.now()) return cached.bytesPerMs
+  const cached = cacheResults ? cachedRouteSpeed(id) : undefined
+  if (cached !== undefined) return cached
 
   const controller = new AbortController()
   const abortFromParent = () => controller.abort()
@@ -114,9 +144,7 @@ async function measureRoute(source: RomRouteSource, options: RouteRaceOptions): 
     }
     const elapsedMs = Math.max(1, now() - startedAt)
     const bytesPerMs = loaded > 0 ? loaded / elapsedMs : 0
-    if (cacheResults && bytesPerMs > 0) {
-      routeSpeeds.set(id, { bytesPerMs, expiresAt: Date.now() + ROUTE_SPEED_TTL_MS })
-    }
+    if (cacheResults && bytesPerMs > 0) rememberRouteSpeed(id, bytesPerMs)
     return bytesPerMs
   } catch {
     return 0

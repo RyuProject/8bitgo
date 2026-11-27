@@ -15,6 +15,7 @@ const token = String(process.env.ROM_INTEGRITY_TOKEN || '').trim()
 const keyFilter = String(valueArg('--key') || '').trim()
 const prefixFilter = String(valueArg('--prefix') || '').trim()
 const limit = Number(valueArg('--limit') || Number.POSITIVE_INFINITY)
+const concurrency = Number(valueArg('--concurrency') || 4)
 
 function fail(message) {
   console.error(`✖ ${message}`)
@@ -39,19 +40,64 @@ if (prefixFilter && (!prefixFilter.startsWith('roms/') || prefixFilter.startsWit
   fail('--prefix 必须位于 roms/ 下，且不能指向 covers')
 }
 if (!(limit > 0) || (!Number.isSafeInteger(limit) && limit !== Number.POSITIVE_INFINITY)) fail('--limit 必须是正整数')
+if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 16) fail('--concurrency 必须是 1..16 的整数')
 
 const api = new URL(apiValue.endsWith('/') ? apiValue : `${apiValue}/`)
 const authHeaders = { Authorization: `Bearer ${token}` }
 const timeout = () => AbortSignal.timeout(60_000)
+const retryableStatus = new Set([408, 425, 429, 500, 502, 503, 504])
+const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms))
 
 async function request(url, init = {}) {
-  const response = await fetch(url, { ...init, signal: init.signal || timeout() })
-  return response
+  let lastError
+  for (let attempt = 0; attempt < 3; attempt++) {
+    let response
+    try {
+      response = await fetch(url, { ...init, signal: init.signal || timeout() })
+    } catch (error) {
+      if (init.signal?.aborted || attempt === 2) {
+        const method = init.method || 'GET'
+        const target = new URL(url)
+        throw new Error(`${method} ${target.origin}${target.pathname} 失败：${error instanceof Error ? error.message : String(error)}`)
+      }
+      lastError = error
+      await wait(300 * (attempt + 1))
+      continue
+    }
+
+    const method = String(init.method || 'GET').toUpperCase()
+    if (response.ok && method !== 'HEAD' && response.status !== 204) {
+      // Worker 写入可能已成功，但代理偶尔把空响应 / HTML 错误页伪装成 HTTP 200。
+      // 回填的 POST 是条件写入且幂等，重试会核对已有清单，不会覆盖不同摘要。
+      const body = await response.clone().json().catch(() => null)
+      if ((!body || typeof body !== 'object') && attempt < 2) {
+        await response.body?.cancel().catch(() => {})
+        await wait(300 * (attempt + 1))
+        continue
+      }
+      if (!body || typeof body !== 'object') return response
+    }
+    if (!retryableStatus.has(response.status) || attempt === 2) return response
+    if (response.status === 503) {
+      const body = await response.clone().json().catch(() => null)
+      // 缺少清单是兼容读取 / 首次回填的正常状态，不能按瞬态 503 重试。
+      if (body?.code === 'integrity_manifest_missing') return response
+    }
+    await response.body?.cancel().catch(() => {})
+    await wait(300 * (attempt + 1))
+  }
+  throw lastError || new Error('Worker 请求失败')
 }
 
 async function readJson(response, label) {
-  const body = await response.json().catch(() => null)
-  if (!body || typeof body !== 'object') throw new Error(`${label} 返回的 JSON 无效（HTTP ${response.status}）`)
+  const raw = await response.text().catch(() => '')
+  let body = null
+  try { body = JSON.parse(raw) } catch {}
+  if (!body || typeof body !== 'object') {
+    const shape = !raw.trim() ? '空响应' : raw.trimStart().startsWith('<') ? 'HTML' : '非 JSON 正文'
+    const contentType = response.headers.get('Content-Type') || '无 Content-Type'
+    throw new Error(`${label} 返回的 JSON 无效（HTTP ${response.status}，${contentType}，${shape}，${raw.length} 字节）`)
+  }
   return body
 }
 
@@ -166,12 +212,23 @@ try {
   let missing = 0
   let published = 0
   console.log(`${apply ? '回填' : '只读盘点'} ${selected.length} 个对象${keys.length > selected.length ? `（共发现 ${keys.length} 个，受 --limit 限制）` : ''}`)
-  for (let index = 0; index < selected.length; index++) {
-    const result = await backfillOne(selected[index], index + 1, selected.length)
-    if (result === 'present') present++
-    else if (result === 'missing') missing++
-    else published++
-  }
+  let nextIndex = 0
+  let firstError = null
+  await Promise.all(Array.from({ length: Math.min(concurrency, selected.length) }, async () => {
+    while (!firstError) {
+      const index = nextIndex++
+      if (index >= selected.length) return
+      try {
+        const result = await backfillOne(selected[index], index + 1, selected.length)
+        if (result === 'present') present++
+        else if (result === 'missing') missing++
+        else published++
+      } catch (error) {
+        firstError ??= error
+      }
+    }
+  }))
+  if (firstError) throw firstError
   console.log(`完成：已有 ${present}，缺少 ${missing}，本次补齐 ${published}`)
   if (!apply && missing) console.log('预览未修改 R2；确认范围后再加 --apply。')
   if (requireComplete) {

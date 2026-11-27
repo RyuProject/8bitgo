@@ -30,6 +30,27 @@ export interface ZipFileEntry {
   offset: number
 }
 
+export interface ZipBlobValidationOptions {
+  /** 后续会原样重写同一份 Blob 时保留已核对的本地头，避免拍平 / 重组重复读盘。 */
+  cacheLocalHeaders?: boolean
+  /** 整体读取时限；普通调用保留原来的 60 秒默认值。 */
+  timeoutMs?: number
+}
+
+const validatedBlobHeaders = new WeakMap<Blob, { bytes: Uint8Array; entryIndexes: Map<number, number> }>()
+
+/** 仅返回同一 Blob 经完整校验时缓存的本地头；不同文件或普通校验仍由调用方读取验证。 */
+export function validatedZipBlobLocalHeader(blob: Blob, offset: number): Uint8Array | undefined {
+  const cache = validatedBlobHeaders.get(blob)
+  const index = cache?.entryIndexes.get(offset)
+  return index === undefined ? undefined : cache!.bytes.subarray(index * 30, index * 30 + 30)
+}
+
+/** 上传预检结束或重写完成后释放紧凑头缓存，避免管理员保留文件选择时长期占用内存。 */
+export function clearValidatedZipBlobLocalHeaders(blob: Blob): void {
+  validatedBlobHeaders.delete(blob)
+}
+
 /**
  * 解 zip 里的文件名。
  *
@@ -153,7 +174,13 @@ export function assertValidZip(buf: ArrayBuffer, label = 'ZIP'): ZipFileEntry[] 
  * Blob 版中央目录校验。只读取文件尾、中央目录和每个成员的 30 字节本地头，
  * 不再为了验证一个 200MB 街机包申请同样大的连续 ArrayBuffer。
  */
-export async function assertValidZipBlob(blob: Blob, label = 'ZIP', timeoutMs = 60_000): Promise<ZipFileEntry[]> {
+export async function assertValidZipBlob(
+  blob: Blob,
+  label = 'ZIP',
+  timeoutOrOptions: number | ZipBlobValidationOptions = 60_000,
+): Promise<ZipFileEntry[]> {
+  const timeoutMs = typeof timeoutOrOptions === 'number' ? timeoutOrOptions : timeoutOrOptions.timeoutMs ?? 60_000
+  const cacheLocalHeaders = typeof timeoutOrOptions !== 'number' && timeoutOrOptions.cacheLocalHeaders === true
   if (blob.size < 22) throw new Error(`${label} 压缩包为空、已损坏或下载不完整`)
   // 把整个校验限制在一个总预算内，避免坏掉的 Blob 后端让每批本地头都重新等一分钟。
   const deadline = Date.now() + timeoutMs
@@ -205,6 +232,8 @@ export async function assertValidZipBlob(blob: Blob, label = 'ZIP', timeoutMs = 
   const view = new DataView(centralBuffer)
   const entries: ZipFileEntry[] = []
   const allEntries: ZipFileEntry[] = []
+  const cachedHeaders = cacheLocalHeaders ? new Uint8Array(count * 30) : null
+  const cachedEntryIndexes = cacheLocalHeaders ? new Map<number, number>() : null
   let p = 0
   for (let i = 0; i < count; i++) {
     if (p + 46 > bytes.length || view.getUint32(p, true) !== 0x02014b50) return invalid()
@@ -240,8 +269,14 @@ export async function assertValidZipBlob(blob: Blob, label = 'ZIP', timeoutMs = 
       if (local.getUint32(0, true) !== 0x04034b50) return invalid()
       const dataStart = batch[i].offset + 30 + local.getUint16(26, true) + local.getUint16(28, true)
       if (dataStart > blob.size || dataStart + batch[i].compressedSize > blob.size) return invalid()
+      if (cachedHeaders && cachedEntryIndexes) {
+        const entryIndex = at + i
+        cachedHeaders.set(new Uint8Array(header), entryIndex * 30)
+        cachedEntryIndexes.set(batch[i].offset, entryIndex)
+      }
     }
   }
+  if (cachedHeaders && cachedEntryIndexes) validatedBlobHeaders.set(blob, { bytes: cachedHeaders, entryIndexes: cachedEntryIndexes })
   return entries
 }
 

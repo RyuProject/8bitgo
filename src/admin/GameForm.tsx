@@ -28,7 +28,7 @@ import {
   type UploadStage,
 } from '@/services/roms'
 import { bundleBytes, bundleWarnings, pickMainSwf, planSwfBundleFromZip, type SwfBundleFile, type SwfBundlePlan } from '@/lib/swfBundle'
-import { assertValidZip, assertValidZipBlob, extractZipEntry, isZip, type ZipFileEntry } from '@/lib/unzip'
+import { assertValidZip, assertValidZipBlob, clearValidatedZipBlobLocalHeaders, extractZipEntry, isZip, type ZipFileEntry } from '@/lib/unzip'
 import { inspectPlayArcadeBundle } from '@/lib/playArcadeBundle'
 import { arcadeArchiveLayoutProblem } from '@/lib/arcadeArchive'
 import { arcadeArchiveUnsafePathProblem } from '@/lib/namcoSystem11'
@@ -4444,9 +4444,10 @@ function RomField({
     let rebuiltMameSet = ''
     pendingRebuiltFrom.current = undefined
     if (isArcade && !isPlayArcadeBundle) {
+      const validatedArcadeBlob = uploadSourceFile
       setMsg({ ok: true, text: '正在读取街机 ZIP 目录与 CRC；不会解压整包…' })
       try {
-        arcadeEntries = await assertValidZipBlob(uploadSourceFile, '街机 ROM')
+        arcadeEntries = await assertValidZipBlob(uploadSourceFile, '街机 ROM', { cacheLocalHeaders: true })
         arcadeEntriesOf = uploadSourceFile
         /*
           MAME 专属板子（Sega Model 2 …）的 merged / 命名不规范的包：先按 CRC 认出完整的 set，
@@ -4498,6 +4499,8 @@ function RomField({
         setMsg({ ok: false, text: err instanceof Error ? err.message : '无法安全拍平 / 重组街机 ZIP；文件未上传' })
         if (inputRef.current) inputRef.current.value = ''
         return
+      } finally {
+        clearValidatedZipBlobLocalHeaders(validatedArcadeBlob)
       }
     }
     let sniffed: string | null

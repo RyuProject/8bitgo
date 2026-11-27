@@ -47,7 +47,7 @@ assert.equal(romUrlForKey(coverThumbKey(externalCover), 'https://assets.8bitgo.c
 assert.equal(romUrlForKey(externalCover, 'https://assets.8bitgo.com'), externalCover)
 const { ROM_LANGS, normalizeRomLanguageCode, romLanguageLabel } = await import(fileURLToPath(new URL('../src/config/languages.ts', import.meta.url)))
 const { romCacheKey } = await import(fileURLToPath(new URL('../src/emulator/romCache.ts', import.meta.url)))
-const { chooseFasterRomRoute, chooseRomHost, clearRomHostChoice, ROM_ROUTE_PROBE_PATH } = await import(fileURLToPath(new URL('../src/services/romRoute.ts', import.meta.url)))
+const { chooseFasterRomRoute, chooseRomHost, clearRomHostChoice, clearRomRouteSpeedCache, ROM_ROUTE_PROBE_PATH } = await import(fileURLToPath(new URL('../src/services/romRoute.ts', import.meta.url)))
 const { isolatedEmbedFor } = await import(fileURLToPath(new URL('../shared/isolated-embeds.js', import.meta.url)))
 const { gameRowToApi, dosExecutableOf, dosStartupCommandsOf, relationsInPatch, romRelationRows } = await import(fileURLToPath(new URL('../server/src/mappers.js', import.meta.url)))
 // ts-loader 为了让 ROM 探测测试保持轻量，会把平台表换成空桩；补齐流式光盘真正用到的格式。
@@ -229,6 +229,55 @@ assert.equal(isolatedEmbedFor('diablo'), undefined, 'Diablo 不需要 COOP/COEP�
   // 主域那份样本本身就要 300ms（见 smallFetch）；上限取 2 秒：仍远小于 3 秒超时，足以证明没在等镜像，
   // 又不会因为 npm test 并行时机器一时卡顿就误报。
   assert.ok(Date.now() - t0 < 2000, `主域先取完样本就应定局，不等镜像 3 秒超时（实际 ${Date.now() - t0}ms）`)
+}
+
+/* ---------- 外站双源测速缓存有界，并保留近期热点 ---------- */
+{
+  clearRomRouteSpeedCache()
+  let backupCalls = 0
+  const response = () => new Response(new Uint8Array(1024), { status: 206 })
+  const fetchImpl = async (url, init) => {
+    if (new URL(url).hostname.startsWith('primary-')) {
+      return await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => resolve(response()), 100)
+        if (init.signal.aborted) {
+          clearTimeout(timer)
+          reject(new Error('aborted'))
+        } else {
+          init.signal.addEventListener('abort', () => {
+            clearTimeout(timer)
+            reject(new Error('aborted'))
+          }, { once: true })
+        }
+      })
+    }
+    backupCalls++
+    return response()
+  }
+  const run = (index) => chooseFasterRomRoute(
+    { url: `https://primary-${index}.example.com/rom.zip`, size: 64 * 1024 * 1024 },
+    { url: `https://backup-${index}.example.com/rom.zip`, size: 64 * 1024 * 1024 },
+    { fetchImpl, cacheResults: true, sampleBytes: 1024, timeoutMs: 1000, minBytes: 0 },
+  )
+
+  assert.equal(await run(0), 'backup')
+  for (let index = 1; index <= 127; index++) assert.equal(await run(index), 'backup')
+  const beforeRefresh = backupCalls
+  assert.equal(await run(0), 'backup', '容量将满时访问热点线路应刷新它的 LRU 顺序')
+  assert.equal(backupCalls, beforeRefresh, '热点刷新仍应复用已有测速结果')
+  assert.equal(await run(128), 'backup')
+  const beforeHotHit = backupCalls
+  assert.equal(await run(0), 'backup', '最近重新访问的线路仍应命中缓存')
+  assert.equal(backupCalls, beforeHotHit, 'LRU 命中不应重复请求热点备用源')
+
+  assert.equal(await run(129), 'backup', '新来源加入时应正常完成测速')
+  const beforeEvictedHit = backupCalls
+  assert.equal(await run(1), 'backup', '超出容量的旧线路应重新测速而非永久驻留')
+  assert.equal(backupCalls, beforeEvictedHit + 1, '最久未使用的备用源应从有界缓存淘汰')
+  const beforeRecentHit = backupCalls
+  assert.equal(await run(129), 'backup')
+  assert.equal(backupCalls, beforeRecentHit, '最新线路应留在缓存中')
+  clearRomRouteSpeedCache()
 }
 
 /* ---------- 主域 / 加速镜像的线路选择：固定小探针、有先验、可缓存 ---------- */

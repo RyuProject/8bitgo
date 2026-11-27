@@ -120,6 +120,71 @@ await check('没有记录时保持调用方的原顺序', async () => {
   assert.deepEqual(health.rankRomRoutes([A, B, C]), [A, B, C])
 })
 
+await check('线路状态 LRU 有界且保留最近访问的热点源站', async () => {
+  const key = '8bitgo.rom-route-health.v1'
+  const route = (index) => `https://route-${index}.example.com/rom.zip`
+  const now = Date.now()
+  for (let index = 0; index < 128; index++) health.recordRomRouteTransfer(route(index), 64 * 1024, 20, now + index)
+  assert.ok(health.romRouteRate(route(0), now + 128) > 0, '使用热点线路应刷新淘汰顺序')
+  health.recordRomRouteTransfer(route(128), 64 * 1024, 20, now + 129)
+  assert.ok(health.romRouteRate(route(0), now + 129) > 0, '热点线路应继续保留')
+  assert.equal(health.romRouteRate(route(1), now + 129), undefined, '最久未使用线路应淘汰')
+  assert.ok(health.romRouteRate(route(128), now + 129) > 0, '新线路应可立即参与排序')
+
+  window.dispatchEvent({ type: 'pagehide' })
+  const saved = JSON.parse(localStorage.getItem(key))
+  assert.equal(Object.keys(saved).length, 128, '持久化记录也必须有界')
+  assert.ok(saved['https://route-0.example.com'], '持久化保留热点源站')
+  assert.equal(saved['https://route-1.example.com'], undefined, '持久化不应保留被淘汰的旧源站')
+})
+
+await check('读取旧版超量记分板后即使没有新下载也会收敛落盘', async () => {
+  const key = '8bitgo.rom-route-health.v1'
+  const originalStorage = globalThis.localStorage
+  const originalWindow = globalThis.window
+  const legacyNow = Date.now()
+  const values = new Map([[key, JSON.stringify(Object.fromEntries(Array.from({ length: 200 }, (_, index) => [
+    `https://legacy-${index}.example.com`,
+    { rate: index + 1, rateAt: legacyNow + index, failures: 0 },
+  ]))) ]])
+  const listeners = new Map()
+  globalThis.localStorage = {
+    getItem: (name) => values.get(name) ?? null,
+    setItem: (name, value) => values.set(name, String(value)),
+    removeItem: (name) => values.delete(name),
+  }
+  globalThis.window = {
+    setTimeout: setTimeout.bind(globalThis),
+    clearTimeout: clearTimeout.bind(globalThis),
+    addEventListener: (type, listener) => {
+      const group = listeners.get(type) ?? new Set()
+      group.add(listener)
+      listeners.set(type, group)
+    },
+    dispatchEvent: (event) => {
+      for (const listener of listeners.get(event.type) ?? []) listener(event)
+      return true
+    },
+  }
+  let legacyHealth
+  try {
+    legacyHealth = await import(`../src/services/romRouteHealth.ts?legacy-lru=${Date.now()}`)
+    assert.equal(legacyHealth.romRouteRate('https://legacy-0.example.com/rom.zip'), undefined,
+      '加载时应丢弃最久未使用的旧线路')
+    assert.ok(legacyHealth.romRouteRate('https://legacy-199.example.com/rom.zip') > 0,
+      '加载时应保留最近使用的旧线路')
+    window.dispatchEvent({ type: 'pagehide' })
+    const saved = JSON.parse(localStorage.getItem(key))
+    assert.equal(Object.keys(saved).length, 128, '仅访问旧分数后离页也应压缩旧版存储')
+    assert.ok(saved['https://legacy-199.example.com'])
+    assert.equal(saved['https://legacy-0.example.com'], undefined)
+  } finally {
+    legacyHealth?.resetRomRouteHealth()
+    globalThis.localStorage = originalStorage
+    globalThis.window = originalWindow
+  }
+})
+
 await check('高频分片样本合并写入；离页时持久化最新线路状态', async () => {
   const A = 'https://a.test/r.zip'
   const key = '8bitgo.rom-route-health.v1'

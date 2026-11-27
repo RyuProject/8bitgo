@@ -139,6 +139,7 @@
     "test:rom-transcode": "node server/scripts/test-rom-transcode.mjs",
     "test:romcache": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-rom-cache.mjs",
     "test:rom-integrity": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-rom-integrity.mjs",
+    "test:rom-integrity-backfill": "node scripts/test-rom-integrity-backfill.mjs",
     "test:play-integrity": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-play-integrity.mjs",
     "test:flash-keys": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-flash-keys.mjs",
     "test:game-controls": "node scripts/test-game-controls.mjs",
