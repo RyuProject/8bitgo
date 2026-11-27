@@ -214,7 +214,7 @@ async function makePage(browser, options = {}) {
       body: mockWasm.subarray(start, end + 1),
     })
   })
-  await page.route('https://download.8bitgo.com/**', (route) => {
+  await page.route('https://download.8bitgo.com/**', async (route) => {
     const path = new URL(route.request().url()).pathname
     if (options.missingReanim && path.includes('/packs/')) {
       return route.fulfill({ status: 404, headers: { 'access-control-allow-origin': '*' }, body: 'missing' })
@@ -233,6 +233,12 @@ async function makePage(browser, options = {}) {
     const body = options.assetBodies?.[key] || Buffer.from([1, 2, 3, 4])
     const range = route.request().headers().range || ''
     if (options.resourceRangeRequests && key === 'main.pak') options.resourceRangeRequests.push(range || 'full')
+    if (options.resourceConcurrency && key === 'main.pak' && range) {
+      options.resourceConcurrency.active++
+      options.resourceConcurrency.max = Math.max(options.resourceConcurrency.max, options.resourceConcurrency.active)
+      await new Promise((resolve) => setTimeout(resolve, 40))
+      options.resourceConcurrency.active--
+    }
     if (key === 'main.pak' && range === options.failResourceRange && Number(options.failResourceRangeTimes || 0) > 0) {
       options.failResourceRangeTimes--
       return route.abort('timedout')
@@ -262,7 +268,10 @@ async function makePage(browser, options = {}) {
   return { context, page, pageErrors }
 }
 
-const browser = await chromium.launch({ headless: true })
+const browser = await chromium.launch({
+  headless: true,
+  ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {}),
+})
 try {
   {
     const context = await browser.newContext()
@@ -310,6 +319,20 @@ try {
     assert.equal(resourceRangeRequests.filter((range) => range === 'bytes=0-2097151').length, 1, '大资源刷新后不应重下已缓存首块')
     assert.equal(resourceRangeRequests.filter((range) => range === 'bytes=2097152-4194303').length, 4, '失败分块应先重试三次，刷新后再续传')
     assert.equal(resourceRangeRequests.filter((range) => range === 'bytes=4194304-4194304').length, 1, '续传后应继续补齐最后一块')
+    assert.deepEqual(pageErrors, [])
+    await context.close()
+  }
+
+  {
+    const resourceConcurrency = { active: 0, max: 0 }
+    const { context, page, pageErrors } = await makePage(browser, {
+      manifest: largeManifest,
+      assetBodies: { 'main.pak': largeMain },
+      resourceConcurrency,
+    })
+    await page.goto(origin + '/web/PvZ/cn', { waitUntil: 'domcontentloaded' })
+    await page.waitForFunction(() => document.body.classList.contains('game-mode'), null, { timeout: 20000 })
+    assert.equal(resourceConcurrency.max, 2, '通过首个 Range 验证后，剩余大资源分块应并发下载')
     assert.deepEqual(pageErrors, [])
     await context.close()
   }

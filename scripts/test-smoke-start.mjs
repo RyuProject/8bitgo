@@ -15,6 +15,7 @@ import {
   PRIVATE_START_EXPRESSION,
   PRIVATE_START_TIMEOUT_MS,
   startSmokeGamePrivately,
+  summarizeSmokeNetwork,
   startupDetailOf,
   startupEventOf,
   startupEventsOf,
@@ -53,6 +54,20 @@ assert.equal(adultGateReason({ adult: true, allowed: true }), '')
 assert.equal(adultGateReason({ adult: false, allowed: false }), '')
 assert.equal(timeoutForGame({ arcadeMameDisks: [{ storedBytes: 40 * 1024 * 1024 }] }, 150_000), MAME_CHD_TIMEOUT_MS)
 assert.equal(timeoutForGame({ arcadeMameDisks: [{ storedBytes: 1 }] }, 150_000), 150_000)
+assert.deepEqual(
+  summarizeSmokeNetwork([
+    { url: 'https://rom.8bitgo.com/game.nds?token=secret', startedAt: 1000, durationMs: 8000, bytes: 2048 },
+    { url: 'https://assets.8bitgo.com/core.data?token=private', startedAt: 1000, durationMs: 200, bytes: 8 * 1048576 },
+    { url: 'https://assets.8bitgo.com/bad.data?key=secret', startedAt: 1000, durationMs: 500, bytes: 0, error: 'net::ERR_FAILED' },
+    { url: 'https://assets.8bitgo.com/tiny.css', startedAt: 1000, durationMs: 50, bytes: 100 },
+  ], 10_000),
+  [
+    { path: 'assets.8bitgo.com/bad.data', status: 0, bytes: 0, durationMs: 500, error: 'net::ERR_FAILED' },
+    { path: 'rom.8bitgo.com/game.nds', status: 0, bytes: 2048, durationMs: 8000, error: '' },
+    { path: 'assets.8bitgo.com/core.data', status: 0, bytes: 8 * 1048576, durationMs: 200, error: '' },
+  ],
+  '失败冒烟要列出慢请求和失败请求，但不暴露查询参数',
+)
 assert.equal(await waitWithin(Promise.resolve('ok'), 1, '不应超时'), 'ok')
 await assert.rejects(waitWithin(new Promise(() => {}), 1, '测试超时'), /测试超时/)
 
@@ -73,6 +88,7 @@ assert.match(src, /页面状态：\$\{JSON\.stringify\(r\.pageState\)\}/, '真�
 assert.match(src, /urlPattern: '\*\/api\/games\/\*\/startup\*'/, '启动漏斗请求必须拦下，冒烟不能进生产统计')
 assert.match(src, /urlPattern: '\*\/api\/games\/\*\/play\*'/, '游玩次数也不能被冒烟刷高')
 assert.match(src, /Fetch\.fulfillRequest/)
+assert.match(src, /Network\.loadingFailed/, '启动失败时要保留网络错误与卡住的资源请求')
 assert.doesNotMatch(src, /\/games\/\$\{encodeURIComponent\(slug\)\}\?autoplay=1/, '不能用 autoplay 跳过开局前的不公开设置')
 assert.equal(PRIVATE_START_TIMEOUT_MS, 90_000)
 assert.ok(

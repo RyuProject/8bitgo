@@ -182,6 +182,28 @@ export function timeoutForGame(game, fallback) {
     : fallback
 }
 
+/** 失败冒烟只输出大请求和异常请求；过滤 URL 查询串，避免日志带出临时凭据。 */
+export function summarizeSmokeNetwork(requests, now = Date.now()) {
+  return requests
+    .map((request) => {
+      let path = request.url
+      try {
+        const url = new URL(request.url)
+        path = `${url.host}${url.pathname}`
+      } catch { /* 无效地址只保留原值，正常 CDP URL 都应能解析 */ }
+      return {
+        path,
+        status: request.status || 0,
+        bytes: Math.max(0, Math.round(request.bytes || 0)),
+        durationMs: Math.max(0, Math.round(request.durationMs ?? (now - request.startedAt))),
+        error: request.error || '',
+      }
+    })
+    .filter((request) => request.error || request.durationMs >= 5000 || request.bytes >= 5 * 1048576)
+    .sort((a, b) => Number(Boolean(b.error)) - Number(Boolean(a.error)) || b.durationMs - a.durationMs || b.bytes - a.bytes)
+    .slice(0, 12)
+}
+
 async function fetchJsonWithin(url, timeoutMs = 10_000) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
@@ -357,6 +379,7 @@ async function smokeOne(cdp, slug) {
   let sessionId = ''
   const events = []
   const errors = []
+  const networkRequests = new Map()
   let startState = ''
   let settle
   let timer = 0
@@ -380,7 +403,25 @@ async function smokeOne(cdp, slug) {
   }
   off = cdp.on(async (msg) => {
     if (msg.sessionId !== sessionId) return
-    if (msg.method === 'Fetch.requestPaused') {
+    if (msg.method === 'Network.requestWillBeSent') {
+      const { requestId, request } = msg.params
+      networkRequests.set(requestId, { url: request.url, startedAt: Date.now(), status: 0, bytes: 0, error: '' })
+    } else if (msg.method === 'Network.responseReceived') {
+      const item = networkRequests.get(msg.params.requestId)
+      if (item) item.status = Number(msg.params.response?.status) || 0
+    } else if (msg.method === 'Network.loadingFinished') {
+      const item = networkRequests.get(msg.params.requestId)
+      if (item) {
+        item.bytes = Number(msg.params.encodedDataLength) || 0
+        item.durationMs = Date.now() - item.startedAt
+      }
+    } else if (msg.method === 'Network.loadingFailed') {
+      const item = networkRequests.get(msg.params.requestId)
+      if (item) {
+        item.error = String(msg.params.errorText || 'network error').slice(0, 100)
+        item.durationMs = Date.now() - item.startedAt
+      }
+    } else if (msg.method === 'Fetch.requestPaused') {
       const { requestId, request } = msg.params
       let pathname = ''
       try { pathname = new URL(request.url).pathname } catch { /* 拦到的地址解析不了：当作不是漏斗请求，照样放过 */ }
@@ -411,6 +452,7 @@ async function smokeOne(cdp, slug) {
     }
   })
   try {
+    await sendWithin(cdp, 'Network.enable', {}, sessionId)
     await sendWithin(cdp, 'Fetch.enable', {
       patterns: [
         { urlPattern: '*/api/games/*/startup*', requestStage: 'Request' },
@@ -435,7 +477,16 @@ async function smokeOne(cdp, slug) {
       }, sessionId).catch(() => null)
       try { pageState = JSON.parse(snapshot?.result?.value ?? 'null') } catch { pageState = undefined }
     }
-    return { slug, ...result, seconds: Math.round((Date.now() - started) / 1000), startState, pageState, events, errors: errors.filter(Boolean).slice(-5) }
+    return {
+      slug,
+      ...result,
+      seconds: Math.round((Date.now() - started) / 1000),
+      startState,
+      pageState,
+      events,
+      errors: errors.filter(Boolean).slice(-5),
+      network: result.verdict === 'fail' ? summarizeSmokeNetwork([...networkRequests.values()]) : [],
+    }
   } catch (error) {
     return {
       slug,
@@ -488,6 +539,10 @@ async function main() {
         if (r.startState) console.error(`    开局按钮状态：${r.startState}`)
         if (r.pageState) console.error(`    页面状态：${JSON.stringify(r.pageState)}`)
         for (const e of r.errors) console.error(`    ${e}`)
+        for (const request of r.network ?? []) {
+          const details = [request.status ? `HTTP ${request.status}` : '', request.bytes ? `${(request.bytes / 1048576).toFixed(1)} MiB` : '', `${(request.durationMs / 1000).toFixed(1)} 秒`, request.error].filter(Boolean).join('；')
+          console.error(`    请求：${request.path}（${details}）`)
+        }
       }
     }
   } finally {

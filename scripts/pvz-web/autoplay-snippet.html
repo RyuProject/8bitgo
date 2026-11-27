@@ -34,6 +34,8 @@
   // main.pak / reanim 包按 2MB Range 分块；每块落盘后刷新也能续传，避免 40~50MB 文件断线后归零。
   var RANGE_RESUME_THRESHOLD = 4 * 1048576;
   var RANGE_CHUNK_SIZE = 2 * 1048576;
+  // 大资源先串行验证首个 Range；确认服务端支持后每份资源最多并发拉 3 块，减少跨境链路的往返等待。
+  var RANGE_CONCURRENCY = 3;
   var AUTO_RETRY_LIMIT = 3;
   // 可选资源 404 后多久才重试。reanim/ 漏传时是 2000 多个 404，不记一笔的话
   // 每次进页面都要把这几千个请求重放一遍，白白浪费几十秒和大量流量。
@@ -442,15 +444,18 @@
       return pump();
     }
 
-    function fetchRange(entry, index, committedBytes) {
+    function fetchRange(entry, index, committedBytes, externalSignal) {
       var start = index * RANGE_CHUNK_SIZE;
       var end = Math.min(entry.size, start + RANGE_CHUNK_SIZE) - 1;
       var expectedLength = end - start + 1;
       var attempt = 0;
       function run() {
+        if (externalSignal && externalSignal.aborted) return Promise.reject(new DOMException('已取消', 'AbortError'));
         attempt++;
         var controller = new AbortController();
         activeControllers.add(controller);
+        var abortFromPool = function () { controller.abort(); };
+        if (externalSignal) externalSignal.addEventListener('abort', abortFromPool, { once: true });
         var stallTimer = setTimeout(function () { controller.abort(); }, FETCH_STALL_TIMEOUT_MS);
         function resetStallTimer() {
           clearTimeout(stallTimer);
@@ -485,6 +490,7 @@
           }).then(function (bytes) { return { full: false, bytes: bytes }; });
         }).catch(function (error) {
           clearTimeout(stallTimer);
+          if (externalSignal && externalSignal.aborted) throw error;
           if (!failed && attempt < 3 && retryableError(error)) {
             return new Promise(function (resolve) { setTimeout(resolve, attempt * 500); }).then(run);
           }
@@ -492,6 +498,7 @@
           throw error;
         }).finally(function () {
           clearTimeout(stallTimer);
+          if (externalSignal) externalSignal.removeEventListener('abort', abortFromPool);
           activeControllers.delete(controller);
         });
       }
@@ -537,16 +544,43 @@
             bytes: result.bytes,
           }]]).catch(function (error) { console.warn('[PvZ] 资源断点写入失败：', error); });
         }
-        function nextPart() {
-          if (full) return Promise.resolve();
+        function nextMissing() {
           while (next < count && parts[next]) next++;
-          if (next >= count) return Promise.resolve();
-          var index = next++;
-          return fetchRange(entry, index, committed).then(function (result) {
-            return savePart(index, result).then(nextPart);
+          return next < count ? next++ : -1;
+        }
+        function downloadMissing() {
+          var first = nextMissing();
+          if (first < 0) return Promise.resolve();
+          // 有些代理会忽略 Range 并返回整份 200。先单独验证一块，避免并发时重复拉多份大文件。
+          return fetchRange(entry, first, committed).then(function (result) {
+            return savePart(first, result);
+          }).then(function () {
+            if (full) return;
+            var poolController = new AbortController();
+            function worker() {
+              if (full || poolController.signal.aborted) return Promise.resolve();
+              var index = nextMissing();
+              if (index < 0) return Promise.resolve();
+              return fetchRange(entry, index, committed, poolController.signal).then(function (result) {
+                if (result.full) {
+                  full = result.bytes;
+                  assembled = null;
+                  poolController.abort();
+                  return;
+                }
+                return savePart(index, result);
+              }).then(function () {
+                return worker();
+              }).catch(function (error) {
+                if (!full && !poolController.signal.aborted) poolController.abort();
+                if (full) return;
+                throw error;
+              });
+            }
+            return Promise.all(Array.from({ length: Math.min(RANGE_CONCURRENCY, count) }, worker));
           });
         }
-        return nextPart().then(function () {
+        return downloadMissing().then(function () {
           var bytes = full;
           if (!bytes) bytes = assembled;
           if (!full) {
