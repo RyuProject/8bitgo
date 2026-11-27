@@ -2167,6 +2167,10 @@ Windows 系统镜像、游戏包和资料片从同一刻下载；ROM 进度在�
 再长时间不动。资料片最多三路并发，并走共用的失速中止。回归：
 `npm run test:jsdos-runtime && npm run test:dos-bundle && npm run test:dos-extras && npm run test:system-source`。
 
+附加文件下载要检查响应 `Content-Type`：对象路径失效时，CDN / 静态站可能用 HTTP 200 返回 HTML 错误页；
+若把它直接并入 ZIP，js-dos 可能只表现为游戏内缺文件或黑屏。`assertDosExtraResponse()` 在读取响应体前
+拒绝 HTML / XHTML，且仍允许合法二进制与文本资源。`test:dos-extras` 覆盖检查与适配器接线。
+
 系统镜像冷缓存时会并发用 Range 测线路。不能等每一条源都结束才开局：一条坏线路会把可用样本和真正下载
 一起挡在它的 2.5 秒超时后；现在首个有效样本后只留 150ms 比较窗口，整轮最多 1.8 秒，超时即取消未完成
 探测并把那些源留在下载故障回退链里。206 必须带合法 `Content-Range` 且实际字节数吻合才能计入排序，缺头

@@ -31,6 +31,9 @@ const {
 const { isPc98FdiFileName } = await import(
   fileURLToPath(new URL('../src/emulator/pc98.ts', import.meta.url))
 )
+const { assertValidZipBlob } = await import(
+  fileURLToPath(new URL('../src/lib/unzip.ts', import.meta.url))
+)
 const {
   buildSockdriveWindowsGuestConfig,
   dosSockdriveProgramCommand,
@@ -720,6 +723,34 @@ console.log('\n── 自带 dosbox.conf 的 .jsdos 包不能吞掉后台配置 
   }
   const largePath = new TailOnlyBlob([bundled])
   ok(await isReadyJsdosBundleBlob(largePath), '⭐ 大型现成 bundle 只读 ZIP 尾部即可判定为可直接启动')
+
+  let oversizedCentralRead = false
+  const oversizedCentralBytes = 16 * 1024 * 1024 + 1
+  const oversizedCentralBlob = {
+    size: oversizedCentralBytes + 22,
+    slice(start, end) {
+      const length = end - start
+      if (end === this.size) {
+        const tail = new Uint8Array(length)
+        const view = new DataView(tail.buffer)
+        const eocd = tail.length - 22
+        view.setUint32(eocd, 0x06054b50, true)
+        view.setUint16(eocd + 8, 1, true)
+        view.setUint16(eocd + 10, 1, true)
+        view.setUint32(eocd + 12, oversizedCentralBytes, true)
+        view.setUint32(eocd + 16, 0, true)
+        return { arrayBuffer: async () => tail.buffer }
+      }
+      oversizedCentralRead = true
+      throw new Error('不应分配超大中央目录')
+    },
+  }
+  await assert.rejects(
+    () => assertValidZipBlob(oversizedCentralBlob, 'DOS ROM'),
+    /中央目录超过 16 MiB 安全上限/,
+    '⭐ DOS ZIP 的伪造超大中央目录必须在 ArrayBuffer 分配前失败',
+  )
+  ok(!oversizedCentralRead, '超大中央目录拦截发生在读取 / 分配整块之前')
   ok(
     !(await isReadyJsdosBundleBlob(new Blob([makeZip([{ name: 'GAME.EXE', data: EXE }])]))),
     '安全的普通 ZIP 返回“需要补配置”，不会被误当成现成 bundle',

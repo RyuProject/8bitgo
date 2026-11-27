@@ -22,7 +22,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 const { mergeExtraFiles } = await import(fileURLToPath(new URL('../src/lib/jsdosBundle.ts', import.meta.url)))
-const { parseDosExtra, parseDosExtras, formatDosExtra, defaultExtraPath, normalizeExtraPath, extraObjectName, skipExtraEntry, extraPathProblem } =
+const { assertDosExtraResponse, parseDosExtra, parseDosExtras, formatDosExtra, defaultExtraPath, normalizeExtraPath, extraObjectName, skipExtraEntry, extraPathProblem } =
   await import(fileURLToPath(new URL('../src/lib/dosExtras.ts', import.meta.url)))
 const { extractZipEntry, listZipEntries } = await import(fileURLToPath(new URL('../src/lib/unzip.ts', import.meta.url)))
 const { dosExtrasName } = await import(fileURLToPath(new URL('../src/services/i18nData.ts', import.meta.url)))
@@ -161,6 +161,23 @@ function readLocal(buf) {
 
 const bytes = (s) => te.encode(s)
 const same = (a, b) => a.length === b.length && a.every((x, i) => x === b[i])
+
+/* ---------------- 下载响应不能把错误页当成游戏文件 ---------------- */
+
+assert.throws(
+  () => assertDosExtraResponse(new Response('<html>not found</html>', { headers: { 'content-type': 'text/html; charset=utf-8' } })),
+  /返回了网页/,
+  'CDN 用 HTTP 200 返回 HTML 错误页时，附加文件必须在进入 ZIP 前失败',
+)
+assert.throws(
+  () => assertDosExtraResponse(new Response('<html>not found</html>', { headers: { 'content-type': 'application/xhtml+xml' } })),
+  /返回了网页/,
+  'XHTML 错误页同样不能当成资料片文件',
+)
+assert.doesNotThrow(
+  () => assertDosExtraResponse(new Response('patch data', { headers: { 'content-type': 'application/octet-stream' } })),
+  '合法二进制附加文件不受影响',
+)
 
 /* ---------------- 一、合并本身 ---------------- */
 
@@ -387,6 +404,7 @@ const adapter = readFileSync(new URL('../src/emulator/adapters/jsdos.ts', import
   ok(/prepareRemoteDosBundle\(game, onProgress/.test(adapter), '⭐ 大型远端 DOS 包走 Blob 分片加载，不经过完整 ArrayBuffer')
   ok(/const limits = \{ maxBytes: arrayBufferLimit, maxUnpackedBytes: arrayBufferLimit \}/.test(adapter), '需要重打包时，所有 DOS ROM 都有设备级 ArrayBuffer 上限')
   ok(/maxBytes,\s*preallocateKnownLength: true/.test(adapter), '附加文件用已知长度直接填充目标缓冲，避免分片与整块副本同时驻留')
+  ok(/check:\s*assertDosExtraResponse/.test(adapter), '附加文件 HTTP 200 错误页在下载时被拦截，不会伪装成 ZIP 成员')
   ok(/reservedBytes \+= maxBytes[\s\S]*?reservedBytes -= maxBytes/.test(adapter), '并行资料片下载先预留总内存预算，不会把总量乘上并发数')
   ok(/URL\.createObjectURL\(rom\.bundleBlob\)/.test(adapter), '⭐ 已带配置的 js-dos bundle 直接启动，不再复制整包重打')
   ok(/!dosboxConfig\?\.trim\(\)[\s\S]{0,120}?!startupCommands[\s\S]{0,120}?!options\.dosExtras\?\.length/.test(adapter), 'Blob 透传只在没有任何后台覆盖时启用')

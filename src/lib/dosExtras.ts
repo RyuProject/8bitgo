@@ -31,6 +31,14 @@ export interface DosExtraSource extends DosExtraRef {
   url: string
 }
 
+/** 响应头检查：CDN 对失效对象可能回 HTTP 200 的 HTML 页面，不能把错误页注入游戏 ZIP。 */
+export function assertDosExtraResponse(response: Pick<Response, 'headers'>): void {
+  const contentType = response.headers.get('content-type') ?? ''
+  if (/^\s*(?:text\/html|application\/xhtml\+xml)\b/i.test(contentType)) {
+    throw new Error('附加文件地址返回了网页，而不是文件')
+  }
+}
+
 /** 路径里一段都不能是空 / . / ..，也不收控制字符 —— 这个值最终会变成 ZIP 里的路径 */
 export function normalizeExtraPath(v: string | undefined | null): string {
   const s = String(v ?? '')

@@ -46,6 +46,7 @@ import { deleteSave, pullSave, pushSave } from '@/services/saves'
 import { loadGameBytes } from '../romLoader'
 import { dosLoadLimitsForBrowser } from '../dosLoadLimits'
 import { isRomNetworkFailure, markRomNetworkFailure } from '../loadProgress'
+import { assertDosExtraResponse } from '@/lib/dosExtras'
 import { inspectRemoteRomPack, isRomPackUrl, readBlobRange, ROM_PACK_READ_TIMEOUT_MS } from '@/services/romPack'
 import { prepareRemoteDosBundle } from '../dosBundleSource'
 import {
@@ -859,6 +860,7 @@ async function loadExtras(
           maxBytes,
           preallocateKnownLength: true,
           alternateUrls: alternateRomUrls(url),
+          check: assertDosExtraResponse,
         })
       } catch (e) {
         const failure = new Error(`附加文件「${path}」下载失败（${e instanceof Error ? e.message : String(e)}）`, { cause: e })
