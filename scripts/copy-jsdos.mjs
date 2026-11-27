@@ -25,6 +25,7 @@ import {
 } from 'node:fs'
 import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { findEmscriptenWasmFile, patchEmscriptenWasmLoader } from './lib/jsdos-wasm-integrity.mjs'
 
 const scriptFile = fileURLToPath(import.meta.url)
 const root = join(dirname(scriptFile), '..')
@@ -70,6 +71,9 @@ function skip(relativeName) {
   const name = relativeName.replace(/\\/g, '/')
   if (name.endsWith('.map') || name.endsWith('.symbols') || name.endsWith('.d.ts')) return true
   if (name.startsWith('emulators/types/')) return true
+  // npm 包会附带 DOSBox-X 的调试启动器与独立调试 WASM；本站没有入口使用它们，且调试启动器实际仍指向正式 WASM。
+  // 排除后可避免把未执行的调试符号包算进生产完整性覆盖与每次部署的静态资产。
+  if (name.startsWith('emulators/wdosbox-x-dbg.')) return true
   if (!withDosboxX && name.split('/').pop()?.startsWith('wdosbox-x')) return true
   return false
 }
@@ -382,6 +386,29 @@ function patchSyncSleep(file) {
 }
 
 /**
+ * 在 js-dos 自己的 Emscripten 加载入口验 DOSBox / 压缩 / 网络 WASM。
+ * 调用方必须先完成所有 WASM 二进制补丁，再从最终字节生成摘要；否则会把本站构建后的核心误判为损坏。
+ * 每个流按可信长度写入单个缓冲区，下载只发生一次，也不触碰全局 fetch/WASM。
+ */
+function patchWasmIntegrity(file) {
+  const code = readFileSync(file, 'utf8')
+  let wasmName
+  try { wasmName = findEmscriptenWasmFile(code) } catch (error) {
+    fail(`${file.split(/[\\/]/).pop()} 的 WASM 定位结构无效：${error instanceof Error ? error.message : String(error)}`)
+  }
+  const wasmPath = join(dirname(file), wasmName)
+  if (!existsSync(wasmPath)) fail(`${file.split(/[\\/]/).pop()} 找不到配套 ${wasmName}`)
+  const expected = { file: wasmName, bytes: statSync(wasmPath).size, sha256: sha256(wasmPath) }
+  let patched
+  try {
+    patched = patchEmscriptenWasmLoader(code, expected)
+  } catch (error) {
+    fail(`${file.split(/[\\/]/).pop()} 的运行时 WASM 校验补丁失败：${error instanceof Error ? error.message : String(error)}`)
+  }
+  writeFileSync(file, patched)
+}
+
+/**
  * DOSBox 核心（wdosbox.wasm）的 INT 33h 事件回调把 SI/DI 改回「累计」mickey 计数。
  *
  * ── 为什么（2026-11-05《主题医院》实测）──────────────────────────────────────
@@ -571,11 +598,24 @@ patchLifecycle(mainJs)
 patchEmulatorsScriptRecovery(mainJs)
 wrapCssInLayer(join(out, 'js-dos.css'))
 wrapInIife(mainJs)
-patchSockdriveSequentialReadAhead(join(out, 'emulators', 'emulators.js'))
-for (const core of readdirSync(join(out, 'emulators')).filter((name) => /^wdosbox(?:-x)?(?:-jspi|-dbg)?\.js$/.test(name))) {
-  patchSyncSleep(join(out, 'emulators', core))
+const emulatorsDir = join(out, 'emulators')
+patchSockdriveSequentialReadAhead(join(emulatorsDir, 'emulators.js'))
+for (const core of readdirSync(emulatorsDir).filter((name) => /^wdosbox(?:-x)?(?:-jspi|-dbg)?\.js$/.test(name))) {
+  patchSyncSleep(join(emulatorsDir, core))
 }
-patchDosboxMouseWasm(join(out, 'emulators', 'wdosbox.wasm'))
+// 所有会改动 WASM 的补丁都必须先完成，完整性摘要才绑定到最终可执行字节。
+patchDosboxMouseWasm(join(emulatorsDir, 'wdosbox.wasm'))
+const wasmLoaders = readdirSync(emulatorsDir).filter((name) => /\.(?:js|mjs)$/.test(name) &&
+  readFileSync(join(emulatorsDir, name), 'utf8').includes('WebAssembly.instantiateStreaming'))
+const coveredWasm = new Set()
+for (const loader of wasmLoaders) {
+  const loaderPath = join(emulatorsDir, loader)
+  patchWasmIntegrity(loaderPath)
+  coveredWasm.add(findEmscriptenWasmFile(readFileSync(loaderPath, 'utf8')))
+}
+const wasmFiles = readdirSync(emulatorsDir).filter((name) => name.endsWith('.wasm'))
+const uncoveredWasm = wasmFiles.filter((name) => !coveredWasm.has(name))
+if (uncoveredWasm.length) fail(`js-dos 有 WASM 没有运行时校验：${uncoveredWasm.join('、')}`)
 
 const files = listFiles(out)
   .filter((name) => name !== 'runtime.json')
@@ -591,6 +631,7 @@ writeFileSync(
     syncSleepTimedWait: true,
     int74CumulativeMickeys: true,
     emulatorsScriptRecovery: true,
+    wasmRuntimeIntegrity: true,
     sourceFingerprint,
     copyScriptSha256,
     files,

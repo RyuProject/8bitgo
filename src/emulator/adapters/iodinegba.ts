@@ -15,7 +15,8 @@ import type { Capability, CaptureSources, MountOptions, PadButton, RuntimeHandle
 import { isZip, extractRomFromZip } from '@/lib/unzip'
 import { diagLog } from '@/services/startupDiagnostics'
 import { resolvePlatformBiosForStartup } from '@/services/platformBios'
-import { IODINEGBA_BUILD } from '../iodinegbaVersion'
+import { IODINEGBA_BUILD, IODINEGBA_SHA256 } from '../iodinegbaVersion'
+import { applyPinnedScriptIntegrity } from '../coreAssetIntegrity'
 
 const BASE = '/iodinegba'
 const BIOS_BYTES = 0x4000
@@ -85,6 +86,7 @@ function loadIodineScript(): Promise<void> {
       const script = document.createElement('script')
       script.async = true
       script.src = `${BASE}/iodinegba.js?v=${IODINEGBA_BUILD}`
+      applyPinnedScriptIntegrity(script, IODINEGBA_SHA256)
       script.onload = () => window.IodineGBA ? resolve() : reject(new Error('IodineGBA 脚本没有导出核心'))
       script.onerror = () => reject(new Error('无法加载自托管的 IodineGBA 核心'))
       document.head.appendChild(script)

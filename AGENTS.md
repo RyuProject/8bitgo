@@ -4515,6 +4515,16 @@ PK / TH 两份现场：`The requested module './live-Cqhc9j-k.js' does not provi
 - **升级 Vite 时**：`test:lazy-imports` 先核对 `node_modules/vite` 里助手模板（`export const ${preloadMethod} =`、`assetsURL`、`isCssPreloadUrl`）；
   对不上就改 `vite-resilient-preload.mjs`，别删插件让懒加载退回「失败一次整页坏掉」。
 
+### 2.39.1 模拟器核心、BIOS 与 ROM 的下载完整性（2026-11-27）
+
+**不用 MD5，统一用 SHA-256。** 传输完整性必须在字节交给模拟器前验证；构建机上的哈希清单不能代替浏览器运行时校验。
+
+- 站内 R2 的 ROM / BIOS 用按 ETag 绑定的 2 MiB SHA-256 分块清单。新上传在清单发布前不可读；有清单的整包下载、Range 读盘和浏览器缓存都会校验，发现坏块只重取对应块一次，仍不匹配就停止开局。
+- 旧 R2 对象没有清单时仍走兼容读取。`npm run rom:integrity-backfill` 默认只预览；`--apply` 记录当前 R2 字节，**只能保护之后的传输一致性，不能证明存量对象原本就是正确 ROM / BIOS**。要验证源内容正确，必须另有可信发布方摘要或人工验收。
+- 外站直链与玩家本地文件没有独立可信摘要时，不能把“下载后计算出的摘要”当成原件校验。格式 / 长度检查只能筛掉明显错误，不能确认 BIOS / ROM 内容正确；不得伪造可信哈希。
+- 运行时覆盖：EmulatorJS 核心 `.data`、PPSSPP、Play!、Ruffle、Dolphin 的核心大文件有 SHA-256 / SRI 校验；Binjgb 的 JS 用 SRI、WASM 在传给 Emscripten 前校验，IodineGBA 的 JS 用 SRI。小核心改版要更新摘要并跑 `npm run test:core-asset-integrity`。
+- `js-dos` 的 JS 胶水、CSS 和完整运行时包仍由 `runtime.json` / `check-jsdos.mjs` 在构建期核对；DOSBox、DOSBox-X（含 JSPI / debug）、wlibzip、webrtcnet 的 Emscripten WASM 则在各自 `instantiateAsync` 入口单次流式下载到固定长度缓冲区，SHA-256 匹配最终构建产物后才编译。哈希在 `wdosbox.wasm` 的鼠标二进制补丁之后生成；构建门禁逐个对照所有 WASM 清单、加载器和最终产物。该路径在 SHA-256 不可用、长度错误、HTTP 失败或摘要不符时停止，绝不回落未校验的 `instantiateStreaming` / ArrayBuffer 路径。它不改页面或 Worker 的全局 `fetch` / WASM API。改 js-dos 产物必须提升 `JSDOS_ASSET_VERSION` 并运行 `npm run test:jsdos-runtime`。
+
 ### 2.40 塞班 / N-Gage：卡带转储 ZIP 由本站脚本导入 E 盘（2026-11-19）
 
 第一代 N-Gage 游戏的 No-Intro 转储是 MMC 卡上的原始目录（`game.id`、`nokia.dat`、`System/Apps/<代号>/…`），

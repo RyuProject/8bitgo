@@ -21,9 +21,10 @@ const { code } = await transform(source, {
   minify: true,
   legalComments: 'none',
 })
-const version = createHash('sha256').update(code).digest('hex').slice(0, 16)
+const sha256 = createHash('sha256').update(code).digest('hex')
+const version = sha256.slice(0, 16)
 const publicDir = path.join(root, 'public/iodinegba')
 await mkdir(publicDir, { recursive: true })
 await writeFile(path.join(publicDir, 'iodinegba.js'), code)
-await writeFile(path.join(root, 'src/emulator/iodinegbaVersion.ts'), `export const IODINEGBA_BUILD = '${version}' as const\n`)
+await writeFile(path.join(root, 'src/emulator/iodinegbaVersion.ts'), `export const IODINEGBA_BUILD = '${version}' as const\n/** 完整摘要用于浏览器 SRI；短代次只负责换缓存 URL，不能代替完整性校验。 */\nexport const IODINEGBA_SHA256 = '${sha256}' as const\n`)
 console.info(`IodineGBA ${version}: ${sources.length} upstream scripts → public/iodinegba/iodinegba.js`)

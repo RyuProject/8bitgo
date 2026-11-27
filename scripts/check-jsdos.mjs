@@ -9,6 +9,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { findEmscriptenWasmFile } from './lib/jsdos-wasm-integrity.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const distMode = process.argv.includes('--dist')
@@ -52,9 +53,10 @@ if (
   manifest.withDosboxX !== true ||
   manifest.ipxPatched !== true ||
   manifest.mouseCaptureChromePatched !== true ||
-  manifest.emulatorsScriptRecovery !== true
+  manifest.emulatorsScriptRecovery !== true ||
+  manifest.wasmRuntimeIntegrity !== true
 ) {
-  fail('runtime.json 的版本或 DOSBox-X / IPX / 鼠标捕获 / 依赖脚本恢复补丁标记不正确')
+  fail('runtime.json 的版本或 DOSBox-X / IPX / 鼠标捕获 / 依赖恢复 / WASM 运行时完整性标记不正确')
 }
 if (manifest.copyScriptSha256 !== sha256(copyScript)) fail('复制补丁脚本已经变化，public 仍是旧产物；请运行 npm run jsdos')
 if (!Array.isArray(manifest.files) || !manifest.files.length) fail('runtime.json 没有文件清单')
@@ -107,6 +109,9 @@ const required = [
   'emulators/webrtcnet.wasm',
 ]
 for (const name of required) if (!listed.includes(name)) fail(`运行时缺 ${name}`)
+if (listed.some((name) => /^emulators\/wdosbox-x-dbg\.(?:js|wasm)$/.test(name))) {
+  fail('生产产物不应包含没有运行时入口的 DOSBox-X 调试启动器 / WASM')
+}
 
 const js = readFileSync(join(runtimeDir, 'js-dos.js'), 'utf8')
 const emulators = readFileSync(join(runtimeDir, 'emulators', 'emulators.js'), 'utf8')
@@ -181,4 +186,29 @@ for (const name of required.filter((name) => name.endsWith('.wasm'))) {
   if (!wasm.subarray(0, 4).equals(Buffer.from([0x00, 0x61, 0x73, 0x6d]))) fail(`${name} 不是有效 WASM`)
 }
 
-console.log(`✔ js-dos ${version} ${distMode ? '部署产物' : '公开目录'}完整（DOSBox / DOSBox-X 配套，鼠标与会话补丁在位）`)
+// 运行时清单里的每个 WASM 都必须由对应 Emscripten 加载器核验最终产物摘要。
+const wasmFiles = manifest.files.filter((file) => file.name.startsWith('emulators/') && file.name.endsWith('.wasm'))
+const verifiedWasm = new Set()
+for (const name of listed.filter((file) => /^emulators\/.*\.(?:js|mjs)$/.test(file))) {
+  const code = readFileSync(join(runtimeDir, name), 'utf8')
+  if (!code.includes('function findWasmBinary(){')) continue
+  const metadata = code.match(/var __8bitgoWasmIntegrity=Object\.freeze\((\{[^;]+\})\);/)
+  if (!metadata) fail(`${name} 仍有未校验的 Emscripten WASM 加载入口`)
+  let expected
+  try { expected = JSON.parse(metadata[1]) } catch { fail(`${name} 内嵌的 WASM 清单不是合法 JSON`) }
+  let located
+  try { located = findEmscriptenWasmFile(code) } catch (error) {
+    fail(`${name} 的 WASM 定位结构损坏：${error instanceof Error ? error.message : String(error)}`)
+  }
+  const entry = wasmFiles.find((file) => file.name === `emulators/${expected.file}`)
+  if (!entry || located !== expected.file || entry.size !== expected.bytes || entry.sha256 !== expected.sha256) {
+    fail(`${name} 内嵌摘要与最终 ${expected.file || 'WASM'} 产物不一致`)
+  }
+  if (code.includes('WebAssembly.instantiateStreaming')) fail(`${name} 保留了绕过 SHA-256 校验的流式编译入口`)
+  verifiedWasm.add(expected.file)
+}
+for (const file of wasmFiles) {
+  if (!verifiedWasm.has(file.name.slice('emulators/'.length))) fail(`${file.name} 没有对应的运行时 SHA-256 校验器`)
+}
+
+console.log(`✔ js-dos ${version} ${distMode ? '部署产物' : '公开目录'}完整（DOSBox / DOSBox-X 配套，鼠标补丁与所有 WASM 运行时 SHA-256 校验在位）`)

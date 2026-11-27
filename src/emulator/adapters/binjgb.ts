@@ -11,6 +11,8 @@
 import type { Capability, CaptureSources, MountOptions, PadButton, RuntimeHandle } from '../types'
 import { canvasToBlob } from '../recorder'
 import { loadGameBytes } from '../romLoader'
+import { fetchWithProgress } from '../loadProgress'
+import { applyPinnedScriptIntegrity, BINJGB_ASSETS, verifyPinnedAssetBytes } from '../coreAssetIntegrity'
 import { extractRomFromZip, isZip } from '@/lib/unzip'
 import { batterySaveGameName } from '../ejsSaveFs'
 import { createBatterySync, type BatteryFs, type BatterySync } from '../batterySync'
@@ -66,6 +68,8 @@ interface BinjgbModule {
 
 type BinjgbFactory = (options: {
   locateFile: (path: string) => string
+  /** 先验 SHA-256 再交给 Emscripten，避免损坏的 wasm 进入编译器。 */
+  wasmBinary?: ArrayBuffer
   print: (...args: unknown[]) => void
   printErr: (...args: unknown[]) => void
 }) => Promise<BinjgbModule>
@@ -80,7 +84,10 @@ declare global {
 
 /** 这一页用哪份构建：有 WebAssembly 用快的那份，没有就用 wasm2js 出来的纯 JS 版 */
 function binjgbBuild(): { file: string; global: 'Binjgb' | 'BinjgbJs' } {
-  return webAssemblyAvailable() ? { file: 'binjgb.js', global: 'Binjgb' } : { file: 'binjgb-js.js', global: 'BinjgbJs' }
+  // 没有 WebCrypto 时走自带 SRI 的纯 JS 版，不能把未校验的 WASM 交给核心。
+  return webAssemblyAvailable() && Boolean(globalThis.crypto?.subtle)
+    ? { file: 'binjgb.js', global: 'Binjgb' }
+    : { file: 'binjgb-js.js', global: 'BinjgbJs' }
 }
 
 let scriptPromise: Promise<void> | null = null
@@ -95,6 +102,7 @@ function loadBinjgbScript(): Promise<void> {
       const script = document.createElement('script')
       script.async = true
       script.src = `${BINJGB_BASE}/${build.file}?v=${BINJGB_BUILD}`
+      applyPinnedScriptIntegrity(script, build.global === 'Binjgb' ? BINJGB_ASSETS.wasmScript.sha256 : BINJGB_ASSETS.javascriptScript.sha256)
       script.onload = () => window[build.global] ? resolve() : reject(new Error('binjgb 脚本没有导出运行时'))
       script.onerror = () => reject(new Error('无法加载自托管的 binjgb 运行时'))
       document.head.appendChild(script)
@@ -110,13 +118,22 @@ function loadBinjgb(): Promise<BinjgbModule> {
   if (!modulePromise) {
     modulePromise = loadBinjgbScript()
       .then(() => {
-        const factory = window[binjgbBuild().global]
+        const build = binjgbBuild()
+        const factory = window[build.global]
         if (!factory) throw new Error('binjgb 脚本没有导出运行时')
-        return factory({
+        const wasmTask = build.global === 'Binjgb'
+          ? fetchWithProgress(`${BINJGB_BASE}/binjgb.wasm?v=${BINJGB_BUILD}`, {
+              phase: 'engine',
+              maxBytes: BINJGB_ASSETS.wasm.bytes,
+              cache: 'force-cache',
+            }).then((bytes) => verifyPinnedAssetBytes(bytes, BINJGB_ASSETS.wasm))
+          : Promise.resolve(undefined)
+        return wasmTask.then((wasmBinary) => factory({
           locateFile: (path) => `${BINJGB_BASE}/${path}?v=${BINJGB_BUILD}`,
+          ...(wasmBinary ? { wasmBinary } : {}),
           print: (...args) => console.info('[binjgb]', ...args),
           printErr: (...args) => console.warn('[binjgb]', ...args),
-        })
+        }))
       })
       .catch((error: unknown) => {
         modulePromise = null

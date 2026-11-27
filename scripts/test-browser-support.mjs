@@ -91,10 +91,10 @@ assert.match(player, /setError\(t\.player\.browserTooOld\)/)
 assert.match(player, /const noModernRuntime = platform\.id === 'nes'\s*\? !modernRuntimeSyntaxSupported\(\) \|\| !webAssemblyAvailable\(\)\s*: !webAssemblyAvailable\(\)/, 'NES 详情页走 jsnes，GB/GBC 走 binjgb（太旧 / 没有 WebAssembly）')
 assert.match(player, /wasmUnavailable: \(targetPlatform === 'gb' \|\| targetPlatform === 'gbc'\) && !webAssemblyAvailable\(\)/, '本地 GB/GBC 也走 binjgb')
 assert.match(read('src/emulator/registry.ts'), /\(platform === 'gb' \|\| platform === 'gbc'\) && \(ctx\.webglUnavailable \|\| ctx\.wasmUnavailable\)/)
-// binjgb 没有 WebAssembly 时换同一提交的纯 JS 构建（scripts/build-binjgb-js.mjs）
+// binjgb 没有 WebAssembly 或 SHA-256 时换同一提交、由 SRI 保护的纯 JS 构建（scripts/build-binjgb-js.mjs）
 {
   const adapter = read('src/emulator/adapters/binjgb.ts')
-  assert.match(adapter, /webAssemblyAvailable\(\) \? \{ file: 'binjgb\.js', global: 'Binjgb' \} : \{ file: 'binjgb-js\.js', global: 'BinjgbJs' \}/)
+  assert.match(adapter, /webAssemblyAvailable\(\) && Boolean\(globalThis\.crypto\?\.subtle\)\s*\?\s*\{ file: 'binjgb\.js', global: 'Binjgb' \}\s*:\s*\{ file: 'binjgb-js\.js', global: 'BinjgbJs' \}/)
   const meta = JSON.parse(read('public/binjgb/binjgb-js.json'))
   assert.equal(meta.wasm, false)
   assert.equal(meta.exportName, 'BinjgbJs')
