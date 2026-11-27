@@ -43,6 +43,7 @@ import {
 import { aspectCorrectedSize } from '@/emulator/recorder'
 import {
   parseSockdrivePreload,
+  parseOptionalSockdrivePreloadJson,
   parseSockdriveWarmPlan,
   planSockdriveWarmFiles,
   SOCKDRIVE_WARM_MAX_FILES,
@@ -503,6 +504,8 @@ check('流式盘按网络与系统镜像竞争自适应预热，并且不再拼�
   assert.match(jsdos, /const warmBudget = sockdriveWarmBudget\(connection\?\.effectiveType, Boolean\(connection\?\.saveData\)\)/)
   assert.match(jsdos, /const warmFileLimit = sockdriveWarmFileLimit\(\(profile \?\? plan\.preload\)\.length\)/)
   assert.match(jsdos, /const profile = warmBudget > 0\s*\? await readSockdrivePreloadProfile\(url, plan, signal, cache\)\s*: null/)
+  assert.match(jsdos, /parseOptionalSockdrivePreloadJson\(new TextDecoder\(\)\.decode\(bytes\), plan\.rangeCount, plan\.dropped\)/)
+  assert.match(jsdos, /return parsed\.ranges/)
   assert.match(jsdos, /planSockdriveWarmFiles\(\s*plan,\s*profile,\s*warmBudget/)
   assert.match(jsdos, /sockdriveWarmFileLimit/)
   assert.match(jsdos, /onProgress: \(\) => onActivity\?\.\(\)/)
@@ -558,6 +561,20 @@ check('热点清单按真实对象去重，并在预算边界停止', () => {
     'none',
   )
   assert.equal(sockdriveRuntimePreloadMode(plan, [], []), 'default')
+  assert.deepEqual(parseOptionalSockdrivePreloadJson('[2,0]', plan.rangeCount, plan.dropped), {
+    ranges: [2, 0], error: null,
+  })
+  const malformedProfile = parseOptionalSockdrivePreloadJson('{broken', plan.rangeCount, plan.dropped)
+  assert.equal(malformedProfile.ranges, null)
+  assert.equal(typeof malformedProfile.error, 'string')
+  const invalidProfile = parseOptionalSockdrivePreloadJson('[99]', plan.rangeCount, plan.dropped)
+  assert.equal(invalidProfile.ranges, null)
+  assert.match(invalidProfile.error ?? '', /无效的预取分块/)
+  assert.deepEqual(
+    planSockdriveWarmFiles(plan, invalidProfile.ranges, 1024 * 1024),
+    planSockdriveWarmFiles(plan, null, 1024 * 1024),
+    '无效的可选清单应退回主清单预热，而不是阻断开局',
+  )
   assert.equal(
     sockdriveRuntimePreloadMode(plan, null, planSockdriveWarmFiles(plan, null, 1024 * 1024)),
     'none',

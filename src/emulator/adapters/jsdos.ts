@@ -112,7 +112,7 @@ import {
   dosGameCompatibilityStartupCommands,
 } from '../dosGameCompatibility'
 import {
-  parseSockdrivePreload,
+  parseOptionalSockdrivePreloadJson,
   parseSockdriveWarmPlan,
   planSockdriveWarmFiles,
   sockdriveWarmFileLimit,
@@ -964,11 +964,11 @@ async function readSockdrivePreloadProfile(
   } finally {
     cleanup()
   }
-  try {
-    return parseSockdrivePreload(JSON.parse(new TextDecoder().decode(bytes)), plan.rangeCount, plan.dropped)
-  } catch (error) {
-    throw new Error(`Sockdrive 热点清单无效（${error instanceof Error ? error.message : String(error)}）`)
+  const parsed = parseOptionalSockdrivePreloadJson(new TextDecoder().decode(bytes), plan.rangeCount, plan.dropped)
+  if (parsed.ranges === null) {
+    console.warn(`[jsdos] Sockdrive 热点清单无效（${parsed.error ?? '未知错误'}），退回主清单的受限预热`)
   }
+  return parsed.ranges
 }
 
 async function warmSockdriveFile(

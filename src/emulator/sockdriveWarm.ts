@@ -233,6 +233,28 @@ export function parseSockdrivePreload(
 }
 
 /**
+ * 外置热点清单只是预热提示；坏 JSON 或越界范围不能让本来可按需读取的游戏整局失败。
+ * 主清单仍由 parseSockdriveWarmPlan 严格校验，只有这份可选覆盖允许回退到主清单。
+ */
+export function parseOptionalSockdrivePreloadJson(
+  text: string,
+  rangeCount: number,
+  dropped: ReadonlySet<number>,
+): { ranges: number[] | null; error: string | null } {
+  try {
+    return {
+      ranges: parseSockdrivePreload(JSON.parse(text), rangeCount, dropped),
+      error: null,
+    }
+  } catch (error) {
+    return {
+      ranges: null,
+      error: error instanceof Error ? error.message : String(error),
+    }
+  }
+}
+
+/**
  * 把热点扇区映射成真正的对象文件，并按预算截断。
  * small_ranges 共用一份 preload.raw，必须去重；预算防止一份异常清单在点击时抢拉整张盘。
  */
