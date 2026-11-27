@@ -17,6 +17,7 @@ import { requireUser } from '../auth.js'
 import { queryOne } from '../db.js'
 import { take, clientKey, isMeaningfulIp } from '../rateLimit.js'
 import { sendRawMail, MailError, FROM_EMAIL, submitMailProvider } from '../mail.js'
+import { escapeHtml } from '../html.js'
 import {
   SUBMIT_ROM_LANGS as LANGS,
   SUBMIT_ROM_LANG_LABEL_ZH as LANG_LABEL,
@@ -108,15 +109,6 @@ function headerSafe(value, max) {
 function bodySafe(value, max) {
   const unified = String(value ?? '').split('\r\n').join('\n').split('\r').join('\n')
   return stripControl(unified, true).trim().slice(0, max)
-}
-
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
 }
 
 /** 换行转 <br>，用在需要保留换行的正文上 */

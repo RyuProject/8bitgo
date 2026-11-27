@@ -30,6 +30,7 @@ await new Promise((r) => server.listen(0, '127.0.0.1', r))
 const PORT = server.address().port
 
 process.env.CF_ACCOUNT_ID = 'acct_test'
+process.env.NODE_ENV = 'test'
 process.env.CF_EMAIL_TOKEN = 'tok_test'
 process.env.MAIL_FROM = 'noreply@8bitgo.com'
 process.env.MAIL_FROM_NAME = '8BitGo'

@@ -17,6 +17,7 @@ import { requireUser } from '../auth.js'
 import { take, clientKey, isMeaningfulIp } from '../rateLimit.js'
 import { sendRawMail, MailError, FROM_EMAIL } from '../mail.js'
 import { listApps } from '../apps-repo.js'
+import { escapeHtml } from '../html.js'
 
 export const appsRouter = Router()
 
@@ -118,17 +119,16 @@ appsRouter.post('/community-submit', requireUser, rateLimitSubmit, async (req, r
       (contact ? `联系方式：${contact}\n` : '') +
       `\n应用简介：\n${description}\n`
 
-    const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    const nl2br = (s) => esc(s).replace(/\n/g, '<br>')
+    const nl2br = (s) => escapeHtml(s).replace(/\n/g, '<br>')
     const html =
       `<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;line-height:1.7;color:#222">` +
       `<h2 style="margin:0 0 12px">8BitGo 社区应用提交</h2>` +
-      `<p><strong>提交人：</strong>${esc(user.nickname)} &lt;${esc(user.email)}&gt;（用户 ID ${esc(user.id)}）</p>` +
-      `<p><strong>应用名称：</strong>${esc(name)}</p>` +
-      `<p><strong>适用平台：</strong>${esc(platform || '（未填）')}</p>` +
-      `<p><strong>提交时间：</strong>${esc(new Date().toISOString())}</p>` +
-      (link ? `<p><strong>主页 / 下载：</strong><a href="${esc(link)}" rel="noreferrer noopener">${esc(link)}</a></p>` : '') +
-      (contact ? `<p><strong>联系方式：</strong>${esc(contact)}</p>` : '') +
+      `<p><strong>提交人：</strong>${escapeHtml(user.nickname)} &lt;${escapeHtml(user.email)}&gt;（用户 ID ${escapeHtml(user.id)}）</p>` +
+      `<p><strong>应用名称：</strong>${escapeHtml(name)}</p>` +
+      `<p><strong>适用平台：</strong>${escapeHtml(platform || '（未填）')}</p>` +
+      `<p><strong>提交时间：</strong>${escapeHtml(new Date().toISOString())}</p>` +
+      (link ? `<p><strong>主页 / 下载：</strong><a href="${escapeHtml(link)}" rel="noreferrer noopener">${escapeHtml(link)}</a></p>` : '') +
+      (contact ? `<p><strong>联系方式：</strong>${escapeHtml(contact)}</p>` : '') +
       `<hr style="border:none;border-top:1px solid #eee;margin:14px 0">` +
       `<p><strong>应用简介：</strong></p><p>${nl2br(description)}</p>` +
       `</div>`

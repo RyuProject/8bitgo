@@ -45,7 +45,17 @@ export class MailError extends Error {
 export const FROM_EMAIL = (process.env.MAIL_FROM || process.env.SMTP_FROM || process.env.SMTP_USER || '').trim()
 const FROM_NAME = (process.env.MAIL_FROM_NAME || '8BitGo').trim()
 /** 发信超时。挂在这里等于把一个 HTTP 请求也挂住，必须卡死 */
-const TIMEOUT_MS = Number(process.env.MAIL_TIMEOUT_MS || 15_000)
+const configuredTimeout = Number(process.env.MAIL_TIMEOUT_MS || 15_000)
+const TIMEOUT_MS = Number.isFinite(configuredTimeout) && configuredTimeout > 0 ? Math.floor(configuredTimeout) : 15_000
+
+/** 测试端点能接触到真实发信密钥，因此生产进程不接受自定义 API 地址。 */
+function mailApiBase(variable, fallback) {
+  const override = String(process.env[variable] || '').trim()
+  if (override && process.env.NODE_ENV !== 'test') {
+    throw new MailError('sender', `${variable} 仅允许在 NODE_ENV=test 时配置`)
+  }
+  return (override || fallback).replace(/\/+$/, '')
+}
 
 /**
  * 当前生效的通路。启动时打一行日志用 ——
@@ -84,7 +94,7 @@ function resendKind(status, name, message) {
 async function sendViaResend(message) {
   // RESEND_API_BASE 只给本地 mock 用。正式环境不要设 ——
   // 设了就等于把能替你发信的 API Key 发给那个地址。
-  const base = (process.env.RESEND_API_BASE || 'https://api.resend.com').replace(/\/+$/, '')
+  const base = mailApiBase('RESEND_API_BASE', 'https://api.resend.com')
 
   let res
   try {
@@ -156,7 +166,7 @@ function kindOf(status, code) {
 async function sendViaCloudflare(message) {
   // CF_API_BASE 只给本地 mock 用（见 scripts/test-mail-parsing.mjs）。正式环境不要设 ——
   // 设了就等于把带 Email Sending 权限的 Token 发给那个地址。
-  const base = (process.env.CF_API_BASE || 'https://api.cloudflare.com/client/v4').replace(/\/+$/, '')
+  const base = mailApiBase('CF_API_BASE', 'https://api.cloudflare.com/client/v4')
   const url = `${base}/accounts/${process.env.CF_ACCOUNT_ID}/email/sending/send`
 
   let res
@@ -202,8 +212,9 @@ async function sendViaCloudflare(message) {
   if (Array.isArray(r.permanent_bounces) && r.permanent_bounces.length > 0) {
     throw new MailError('suppressed', `收件地址被退回：${r.permanent_bounces.join(', ')}`, r)
   }
-  const accepted = [...(r.delivered || []), ...(r.queued || [])]
-  if (accepted.length === 0) {
+  // 这里只需判断是否有一封被接收；合并数组会为每次发信多分配一份副本。
+  const hasAccepted = (Array.isArray(r.delivered) && r.delivered.length > 0) || (Array.isArray(r.queued) && r.queued.length > 0)
+  if (!hasAccepted) {
     // 既没收下也没退回 —— 返回体格式和预期不符，宁可报错也别假装发出去了
     throw new MailError('unknown', 'Cloudflare 既未接收也未退回这封信，返回体见日志', r)
   }
@@ -229,6 +240,11 @@ async function getTransport() {
       // Cloudflare 的 SMTP 只支持 465，填错端口连不上。
       secure: port === 465,
       auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS || '' },
+      // Nodemailer 默认连接超时 120 秒、空闲 socket 超时 10 分钟；邮件请求不能挂这么久。
+      connectionTimeout: TIMEOUT_MS,
+      greetingTimeout: TIMEOUT_MS,
+      socketTimeout: TIMEOUT_MS,
+      dnsTimeout: TIMEOUT_MS,
     })
   } catch {
     transporter = null
@@ -257,9 +273,11 @@ async function sendViaSmtp({ subject, text, html, attachments, replyTo }, to) {
       attachments: attachments && attachments.length ? attachments : undefined,
     })
   } catch (e) {
-    // nodemailer 的 5xx 是对方明确拒收（地址不存在之类），4xx 多是临时故障
+    // 只有 RCPT TO 的 5xx 能确认是收件地址被拒；MAIL FROM 等 5xx 通常是发件配置问题。
     const code = Number(e?.responseCode || 0)
-    throw new MailError(code >= 500 && code < 600 ? 'suppressed' : 'network', `SMTP 发信失败：${e.message}`, e)
+    const recipientRejected = code >= 500 && code < 600 && /^RCPT\b/i.test(String(e?.command || ''))
+    const kind = recipientRejected ? 'suppressed' : code >= 500 && code < 600 ? 'sender' : 'network'
+    throw new MailError(kind, `SMTP 发信失败：${e.message}`, e)
   }
 }
 
@@ -334,6 +352,9 @@ export async function sendLoginCode(email, code, purpose = 'login') {
   const provider = mailProvider()
 
   if (provider === 'none') {
+    if (process.env.NODE_ENV === 'production') {
+      throw new MailError('sender', '生产环境未配置发信通道，拒绝把验证码写入日志')
+    }
     console.log(`[mail:dev] 验证码 ${code} -> ${email}（用途 ${purpose}，未配置发信通道，仅打印日志）`)
     return
   }
@@ -438,6 +459,9 @@ export async function sendRawMail({ to, subject, text, html, attachments = [], r
   const chosen = provider || submitMailProvider()
 
   if (chosen === 'none') {
+    if (process.env.NODE_ENV === 'production') {
+      throw new MailError('sender', '生产环境未配置发信通道，拒绝把邮件内容写入日志')
+    }
     console.log(`[mail:dev] (提交游戏) -> ${to}\n主题：${subject}\n附件 ${attachments.length} 个\n${text}`)
     return
   }

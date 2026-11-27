@@ -68,6 +68,13 @@ let useDb = null
 /** 内存兜底。key = `${purpose}:${email}` */
 const mem = new Map()
 
+/** 隔离测试可强制走内存后端，避免测试误连 server/.env 指向的数据库。 */
+export function useMemoryCodeStoreForTest() {
+  if (process.env.NODE_ENV !== 'test') throw new Error('验证码内存后端仅允许测试环境使用')
+  useDb = false
+  mem.clear()
+}
+
 function memKey(email, purpose) {
   return `${purpose}:${email}`
 }
@@ -148,41 +155,74 @@ async function readRec(email, purpose) {
   return mem.get(memKey(email, purpose)) ?? null
 }
 
-async function writeRec(email, purpose, rec) {
+/**
+ * 原子占用发码冷却。先 SELECT 再 UPSERT 会让并发请求同时通过冷却，
+ * 最终多封邮件互相覆盖；条件 UPDATE + INSERT IGNORE 让 MySQL 主键负责仲裁。
+ */
+async function reserveIssue(email, purpose, rec) {
+  const cutoff = rec.sentAt - COOLDOWN_MS
   if (useDb !== false) {
     try {
-      await query(
-        `INSERT INTO login_codes (email, purpose, user_id, code_hash, tries, expires_at, sent_at)
-              VALUES (?, ?, ?, ?, 0, ?, ?)
-         ON DUPLICATE KEY UPDATE user_id = VALUES(user_id), code_hash = VALUES(code_hash),
-                                 tries = 0, expires_at = VALUES(expires_at), sent_at = VALUES(sent_at)`,
+      const updated = await query(
+        `UPDATE login_codes SET user_id = ?, code_hash = ?, tries = 0, expires_at = ?, sent_at = ?
+          WHERE email = ? AND purpose = ? AND sent_at <= ?`,
+        [rec.userId, rec.hash, rec.expires, rec.sentAt, email, purpose, cutoff],
+      )
+      useDb = true
+      if (Number(updated?.affectedRows || 0) > 0) return
+
+      const inserted = await query(
+        `INSERT IGNORE INTO login_codes (email, purpose, user_id, code_hash, tries, expires_at, sent_at)
+         VALUES (?, ?, ?, ?, 0, ?, ?)`,
         [email, purpose, rec.userId, rec.hash, rec.expires, rec.sentAt],
       )
       useDb = true
-      return
+      if (Number(inserted?.affectedRows || 0) > 0) return
+
+      const current = await readRec(email, purpose)
+      if (current && current.sentAt > cutoff) {
+        const wait = Math.ceil((COOLDOWN_MS - (rec.sentAt - current.sentAt)) / 1000)
+        throw new CodeError(429, `发送过于频繁，请 ${Math.max(1, wait)}s 后再试`, {
+          retryAfter: Math.max(1, wait),
+        })
+      }
+      // 在正常 InnoDB 主键语义下，未更新且未插入只会是冷却冲突。
+      throw new CodeError(503, '验证码暂时无法签发，请稍后再试')
     } catch (e) {
       fallback(e)
     }
   }
-  // 只有内存兜底才需要自己限条目数：数据库那边主键是 (email, purpose)，
-  // 涨得再多也有发信配额和下面的 sweep 兜着
-  if (!mem.has(memKey(email, purpose)) && mem.size >= MAX_PENDING) {
-    throw new CodeError(429, '当前请求过多，请稍后再试')
+
+  // 内存兜底没有跨进程能力，但检查和写入之间没有 await，单进程内不会被并发插队。
+  const key = memKey(email, purpose)
+  const current = mem.get(key)
+  if (current && rec.sentAt - current.sentAt < COOLDOWN_MS) {
+    const wait = Math.max(1, Math.ceil((COOLDOWN_MS - (rec.sentAt - current.sentAt)) / 1000))
+    throw new CodeError(429, `发送过于频繁，请 ${wait}s 后再试`, { retryAfter: wait })
   }
-  mem.set(memKey(email, purpose), { ...rec, tries: 0 })
+  if (!current && mem.size >= MAX_PENDING) throw new CodeError(429, '当前请求过多，请稍后再试')
+  mem.set(key, { ...rec, tries: 0 })
 }
 
-async function dropRec(email, purpose) {
+/** 只删除本次操作读到的那一代验证码，避免迟到的失败清理误删新码。 */
+async function dropRec(email, purpose, expectedHash) {
+  if (!expectedHash) return false
   if (useDb !== false) {
     try {
-      await query('DELETE FROM login_codes WHERE email = ? AND purpose = ?', [email, purpose])
+      const result = await query('DELETE FROM login_codes WHERE email = ? AND purpose = ? AND code_hash = ?', [
+        email,
+        purpose,
+        expectedHash,
+      ])
       useDb = true
-      return
+      return Number(result?.affectedRows || 0) > 0
     } catch (e) {
       fallback(e)
     }
   }
-  mem.delete(memKey(email, purpose))
+  const key = memKey(email, purpose)
+  if (mem.get(key)?.hash !== expectedHash) return false
+  return mem.delete(key)
 }
 
 /**
@@ -306,15 +346,16 @@ export async function issueCode(req, email, mailPurpose, userId = null) {
 
   const code = String(100000 + crypto.randomInt(900000))
   const now = Date.now()
-  await writeRec(email, purpose, {
+  const issued = {
     userId,
     hash: hashCode(email, purpose, code),
     expires: now + CODE_TTL_MS,
     sentAt: now,
-  })
+  }
+  await reserveIssue(email, purpose, issued)
 
   /**
-   * 发信失败必须把刚写进去的验证码撤掉。
+   * 发信被明确拒绝时撤掉刚写进去的验证码；发送结果不确定时保留它供已到达的邮件使用。
    *
    * 早先这里是裸 await，异常一路冒到 Express 的兜底处理器变成一句「服务器内部错误」——
    * 而记录还在，sentAt 也已经打上了。结果是用户既收不到信，又被冷却挡在门外一分钟，
@@ -326,7 +367,10 @@ export async function issueCode(req, email, mailPurpose, userId = null) {
   try {
     await sendLoginCode(email, code, mailPurpose)
   } catch (e) {
-    await dropRec(email, purpose)
+    // 请求超时或上游 5xx 时，邮件可能已被接收、只是回执没回来；保留这张码，
+    // 否则用户可能收到一封永远无法验证的邮件。明确拒收/配置错误才撤销。
+    const deliveryUncertain = e?.kind === 'network' || e?.kind === 'unknown'
+    if (!deliveryUncertain) await dropRec(email, purpose, issued.hash)
     switch (e?.kind) {
       case 'suppressed':
         // 这个地址退过信 / 被标过垃圾邮件，再发多少次都不会到
@@ -339,6 +383,12 @@ export async function issueCode(req, email, mailPurpose, userId = null) {
         // 细节只进日志：回给客户端等于把配置状况告诉所有人。
         console.error('[codes] 发信配置有问题：', e.message)
         throw new CodeError(500, '邮件服务暂时不可用，请稍后再试')
+      case 'network':
+      case 'unknown':
+        console.error('[codes] 邮件发送结果未确认：', e)
+        throw new CodeError(502, '邮件发送结果暂未确认；若邮件已到，验证码仍可使用；未收到请 60 秒后重试', {
+          retryAfter: Math.round(COOLDOWN_MS / 1000),
+        })
       default:
         console.error('[codes] 验证码邮件发送失败：', e)
         throw new CodeError(502, '邮件发送失败，请稍后再试')
@@ -373,13 +423,12 @@ export async function verifyCode(email, mailPurpose, code, userId = null) {
   // 先原子地占一次机会，再去比对（见 reserveAttempt 的注释）
   if (!(await reserveAttempt(email, purpose))) {
     const cur = await readRec(email, purpose)
-    await dropRec(email, purpose)
     if (cur && cur.expires >= Date.now()) throw new CodeError(429, '错误次数过多，请重新获取验证码')
     throw new CodeError(400, '验证码已过期，请重新获取')
   }
   const rec = await readRec(email, purpose)
   if (!rec || rec.expires < Date.now()) {
-    await dropRec(email, purpose)
+    if (rec) await dropRec(email, purpose, rec.hash)
     throw new CodeError(400, '验证码已过期，请重新获取')
   }
   // 签发时绑了用户，校验时就必须是同一个人。
@@ -391,7 +440,7 @@ export async function verifyCode(email, mailPurpose, code, userId = null) {
     // rec.tries 已经包含本次（reserveAttempt 先加过了）
     // 用完机会直接作废这个验证码 —— 否则可以慢慢把 6 位数字试穿
     if (rec.tries >= MAX_TRIES) {
-      await dropRec(email, purpose)
+      await dropRec(email, purpose, rec.hash)
       throw new CodeError(429, '错误次数过多，请重新获取验证码')
     }
     throw new CodeError(400, '验证码不正确')

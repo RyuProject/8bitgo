@@ -33,6 +33,7 @@ const server = createServer((req, res) => {
 })
 await new Promise((r) => server.listen(0, '127.0.0.1', r))
 process.env.RESEND_API_KEY = 're_test_key'
+process.env.NODE_ENV = 'test'
 process.env.RESEND_API_BASE = `http://127.0.0.1:${server.address().port}`
 process.env.MAIL_FROM = 'noreply@8bitgo.com'
 delete process.env.CF_ACCOUNT_ID

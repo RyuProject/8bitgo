@@ -30,6 +30,7 @@ await new Promise((r) => server.listen(0, '127.0.0.1', r))
 const PORT = server.address().port
 
 process.env.RESEND_API_KEY = 're_test_key'
+process.env.NODE_ENV = 'test'
 process.env.MAIL_FROM = 'noreply@8bitgo.com'
 process.env.MAIL_FROM_NAME = '8BitGo'
 process.env.MAIL_TIMEOUT_MS = '3000'
@@ -146,6 +147,49 @@ try {
   ok('请求体字段与 Resend 接口一致')
 } catch (e) {
   bad('请求体字段与 Resend 接口一致', e)
+}
+
+console.log('\n生产配置保护：')
+let previous
+try {
+  previous = lastRequest
+  process.env.NODE_ENV = 'production'
+  await sendLoginCode('player@example.com', '654321')
+  bad('生产环境拒绝自定义测试 API 地址', new Error('本应在发请求前拒绝'))
+} catch (e) {
+  if (e?.kind === 'sender' && lastRequest !== previous) {
+    bad('生产环境拒绝自定义测试 API 地址', new Error('请求仍到达了 mock'))
+  } else if (e?.kind === 'sender') {
+    ok('生产环境拒绝自定义测试 API 地址')
+  } else {
+    bad('生产环境拒绝自定义测试 API 地址', e)
+  }
+} finally {
+  process.env.NODE_ENV = 'test'
+}
+
+try {
+  const key = process.env.RESEND_API_KEY
+  delete process.env.RESEND_API_KEY
+  process.env.NODE_ENV = 'production'
+  const logs = []
+  const originalLog = console.log
+  console.log = (...args) => logs.push(args.join(' '))
+  let error
+  try {
+    await sendLoginCode('player@example.com', '987654')
+  } catch (e) {
+    error = e
+  } finally {
+    console.log = originalLog
+    process.env.RESEND_API_KEY = key
+    process.env.NODE_ENV = 'test'
+  }
+  assert.equal(error?.kind, 'sender')
+  assert.equal(logs.some((line) => line.includes('987654')), false, '生产环境不能把验证码写入日志')
+  ok('生产环境未配置通道时拒绝写日志验证码')
+} catch (e) {
+  bad('生产环境未配置通道时拒绝写日志验证码', e)
 }
 
 console.log('\n三种用途的文案要能分辨：')

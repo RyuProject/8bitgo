@@ -8,6 +8,7 @@
  * 这里只测发信这一段，报错原样打出来。
  */
 import 'dotenv/config'
+import { randomInt } from 'node:crypto'
 import { sendLoginCode, mailProvider } from '../src/mail.js'
 
 const to = process.argv[2]
@@ -36,8 +37,8 @@ if (provider === 'cloudflare' && !process.env.MAIL_FROM) {
   console.warn('\n⚠️  没设 MAIL_FROM，正在退回用 SMTP_FROM / SMTP_USER。Cloudflare 要求发件域已完成 onboarding。')
 }
 
-const code = String(100000 + Math.floor(Math.random() * 900000))
-console.log(`\n正在发送验证码 ${code} …`)
+const code = String(randomInt(100000, 1000000))
+console.log('\n正在发送验证邮件 …')
 
 try {
   await sendLoginCode(to, code)
