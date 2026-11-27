@@ -9,9 +9,17 @@ import type { LoadProgress } from './types'
 import { downloadResumeStore } from './downloadResume'
 import { fetchBlobWithProgress, withResumeTimeout } from './loadProgress'
 import { alternateRomUrls } from '@/services/romHosts'
-import { romCacheDelete, romCacheGetBlob, romCacheKey, romCachePutBlob } from './romCache'
+import {
+  romCacheDelete,
+  romCacheGetBlobRecord,
+  romCacheIntegrityIsFresh,
+  romCacheKey,
+  romCacheMarkIntegrityVerified,
+  romCachePutBlob,
+} from './romCache'
 import { isReadyJsdosBundleBlob } from '@/lib/jsdosBundle'
 import { isBlobReadError, isRomPackBytes, isRomPackUrl, prewarmRomPackDecoder, readBlobRange, unpackRomPackBlob } from '@/services/romPack'
+import { fetchRomIntegrityManifest, romBlobIntegrityTag, romIntegrityManifestTag, verifyRomBlob } from '@/services/romIntegrity'
 
 /** 四字节探测不该被浏览器的坏 Blob 存储拖成一局永不结束。 */
 const DOS_BLOB_PROBE_TIMEOUT_MS = 10_000
@@ -73,6 +81,9 @@ export async function prepareRemoteDosBundle(
   // 普通 DOS 包走这里而不经过 loadGameBytes：解码器和密钥同样要与下载（或读缓存）并行取，
   // 否则下完 ROM 还要串行等两趟往返（2026-11-12《凯撒大帝》实测约 2 秒）。
   if (isRomPackUrl(url)) prewarmRomPackDecoder(url)
+  // 缓存命中也要核对本站发布的分块清单；与 ROM 下载并行取，避免命中后再串行多等一趟。
+  const integrityTask = fetchRomIntegrityManifest(url, signal)
+  void integrityTask.catch(() => {})
 
   const decode = async (stored: Blob) => {
     throwIfAborted(signal)
@@ -84,13 +95,24 @@ export async function prepareRemoteDosBundle(
   }
 
   if (cacheKey) {
-    const cached = await romCacheGetBlob(cacheKey)
+    const cachedRecord = await romCacheGetBlobRecord(cacheKey)
+    const cached = cachedRecord?.blob ?? null
     if (cached) {
+      const cacheRecord = cachedRecord ?? { blob: cached }
       if (signal.aborted) throw new DOMException('已取消', 'AbortError')
-      onProgress?.({ phase: 'rom', loaded: cached.size, total: cached.size, ratio: 1, cached: true })
       try {
+        const integrity = await integrityTask
+        if (integrity) {
+          const integrityTag = await romIntegrityManifestTag(integrity)
+          if (cached.size !== integrity.size || !romCacheIntegrityIsFresh(cacheRecord, integrityTag)) {
+            await verifyRomBlob(cached, integrity, signal)
+            // 复验只更新读取时的缓存代次；过期旧记录每周重验一次，避免每次开局读完整大包。
+            void romCacheMarkIntegrityVerified(cacheKey, integrityTag, cached.size, cacheRecord).catch(() => {})
+          }
+        }
         const decoded = await decode(cached)
         throwIfAborted(signal)
+        onProgress?.({ phase: 'rom', loaded: cached.size, total: cached.size, ratio: 1, cached: true })
         // 两个标签页并发下载时可能在完整缓存写好后又落了几片，命中时顺手收尾。
         void downloadResumeStore.clear(cacheKey).catch(() => {})
         return { ...decoded, fromCache: true }
@@ -135,6 +157,6 @@ export async function prepareRemoteDosBundle(
   throwIfAborted(signal)
   // 保留 8BG 密文而不是明文：既避免扩大磁盘占用，也不把后台加密在浏览器缓存层绕开。
   // 不 await，写几百 MB 的 IndexedDB 不应该挡住 DOSBox 开机。
-  if (cacheKey) void romCachePutBlob(cacheKey, stored).catch(() => {})
+  if (cacheKey) void romCachePutBlob(cacheKey, stored, romBlobIntegrityTag(stored)).catch(() => {})
   return { ...decoded, fromCache: false }
 }

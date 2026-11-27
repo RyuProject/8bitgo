@@ -129,9 +129,11 @@ for (const lang of ['zh-Hans', 'zh-Hant', 'en', 'es', 'fr', 'de', 'it', 'ja']) {
   assert.match(canFailoverRom, /canRestartInPlace\(session\)/)
   assert.match(canFailoverRom, /onRomLoadFailed\?\.\(message/,
     '运行时入口故障不得触发 ROM 语言/备用地址切换')
-  assert.match(player, /if \(document\.visibilityState === 'hidden'\) return\s*timeoutTimer = window\.setTimeout/)
-  assert.match(player, /document\.addEventListener\('visibilitychange', onStartupVisibility\)/)
-  assert.match(player, /document\.removeEventListener\('visibilitychange', onStartupVisibility\)/)
+  assert.match(player, /createVisibilityTimeout\(STARTUP_TIMEOUT_MS,/,
+    '启动看门狗必须复用可见性时限，避免隐藏页中的排队回调误报超时')
+  assert.match(player, /startupWatchdog\.reset\(\)/, '只在新启动进度到达后重置空闲时限')
+  assert.match(player, /startupWatchdog\?\.dispose\(\)/, '启动完成或销毁时必须清掉看门狗监听')
+  assert.doesNotMatch(player, /timeoutTimer|onStartupVisibility/, '看门狗不再依赖手写的可见性计时器')
 }
 
 // 引擎缓存的 IndexedDB 挂死过：3 天内整局关缓存、不清库、不探测（2026-11-11 萨尔瓦多 Safari）

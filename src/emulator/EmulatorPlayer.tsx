@@ -2208,13 +2208,14 @@ export function EmulatorPlayer({
     reportFallbackOutcome('fallback_started')
     const reportStartupFailure = (reason: string) => {
       startupEnded = true
+      stopStartupWatchdog()
       reportFallbackOutcome('fallback_failed')
       reportStartup(/(?:超时|timeout|timed out)/i.test(reason) ? 'timeout' : 'failed', reason)
     }
     let readinessState: 'unknown' | 'observable' | 'unobservable' = session.runtime.id === 'html5' ? 'unknown' : 'observable'
     let startupTimedOut = false
     let lastStartupActivityAt = Date.now()
-    let timeoutTimer = 0
+    let startupWatchdog: VisibilityTimeout | null = null
     let slowTimer: VisibilityTimeout | null = null
     let slowStartupReported = false
     // 慢启动 / 超时诊断包要看得出「还在下载」还是「下载完卡在启动」，见 startupProgressTrace.ts
@@ -2245,36 +2246,33 @@ export function EmulatorPlayer({
         reportStartup('slow_start', `前台累计等待 game_playable 已超过 ${STARTUP_SLOW_MS / 1000} 秒${progressTrace.phaseNote()}`)
       })
     }
-    /*
-      只数**前台**时间（2026-11-10《天之痕》）：下载 146 秒的那段玩家切去了别的标签页，Win95 在后台
-      开机被节流，适配器自己的开机 / 自启动计时器都是按前台时间走的（AGENTS §2.24.1），从没报错；
-      这里却按墙钟数满 120 秒，把一局还在开机的游戏记成「超时」。后台不计时，回到前台重新给满 120 秒。
-    */
-    const onStartupVisibility = () => {
-      if (document.visibilityState === 'visible') armStartupWatchdog()
-      else window.clearTimeout(timeoutTimer)
-    }
-    document.addEventListener('visibilitychange', onStartupVisibility)
     const stopStartupWatchdog = () => {
-      window.clearTimeout(timeoutTimer)
+      startupWatchdog?.dispose()
+      startupWatchdog = null
       stopSlowStartupTimer()
-      document.removeEventListener('visibilitychange', onStartupVisibility)
     }
     const armStartupWatchdog = () => {
-      window.clearTimeout(timeoutTimer)
-      if (!isCurrent() || ready || crashed || startupTimedOut) return
-      if (document.visibilityState === 'hidden') return
-      timeoutTimer = window.setTimeout(() => {
-        if (!isCurrent() || ready || crashed || startupTimedOut) return
-        startupTimedOut = true
-        if (readinessState === 'unobservable') {
-          reportStartup('readiness_unobservable', '跨域 HTML5 页面无法由父页面确认游戏是否已就绪')
-        } else {
-          // 看门狗只证明这段时间没有进度，不证明启动已终止；慢设备 / 弱网可能稍后仍成功。
-          // 兜底路线暂留「未确认」，最终错误才记失败，避免同一次启动被同时算成成功和失败。
-          reportStartup('timeout', '连续 120 秒没有启动进度或可玩信号')
-        }
-      }, STARTUP_TIMEOUT_MS)
+      if (!isCurrent() || ready || crashed || startupEnded || startupTimedOut) {
+        stopStartupWatchdog()
+        return
+      }
+      if (!startupWatchdog) {
+        startupWatchdog = createVisibilityTimeout(STARTUP_TIMEOUT_MS, () => {
+          startupWatchdog = null
+          if (!isCurrent() || ready || crashed || startupEnded || startupTimedOut) return
+          startupTimedOut = true
+          if (readinessState === 'unobservable') {
+            reportStartup('readiness_unobservable', '跨域 HTML5 页面无法由父页面确认游戏是否已就绪')
+          } else {
+            // 看门狗只证明这段时间没有进度，不证明启动已终止；慢设备 / 弱网可能稍后仍成功。
+            // 兜底路线暂留「未确认」，最终错误才记失败，避免同一次启动被同时算成成功和失败。
+            reportStartup('timeout', '连续 120 秒没有启动进度或可玩信号')
+          }
+        })
+      } else {
+        // visibilityTimeout 会暂停后台时间，并丢弃已排队的旧回调；有新进度时才重新给足时限。
+        startupWatchdog.reset()
+      }
     }
     const noteStartupActivity = () => {
       const now = Date.now()
@@ -2287,7 +2285,7 @@ export function EmulatorPlayer({
       if (!isCurrent() || crashed || session.runtime.id === 'liveview' ||
         countedPlayAttemptRef.current === session.startupAttemptId) return
       startupEnded = true
-      stopSlowStartupTimer()
+      stopStartupWatchdog()
       countedPlayAttemptRef.current = session.startupAttemptId
       // 只有运行时确认已经可玩才算兜底成功；首帧单独统计，避免黑屏后偶然闪帧被算作恢复。
       reportFallbackOutcome('fallback_playable')

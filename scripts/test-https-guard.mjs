@@ -7,10 +7,11 @@ import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
 
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8')
+const { EDGE_ROUTE_PLACEHOLDER } = await import('./lib/edge-route-inline.mjs')
 const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1])
 const guard = scripts.find((s) => s.includes('8bitgo.https-upgrade'))
 assert.ok(guard, 'index.html 里要有 HTTPS 守卫')
-assert.ok(html.indexOf('8bitgo.https-upgrade') < html.indexOf('<script src="/edge-route-v5.js">'), '必须排在所有脚本之前')
+assert.ok(html.indexOf('8bitgo.https-upgrade') < html.indexOf(EDGE_ROUTE_PLACEHOLDER), 'HTTPS 守卫必须早于边缘路由脚本')
 // 只用 ES5：旧浏览器也要能执行这句提示
 assert.ok(!/=>|\blet\b|\bconst\b|`/.test(guard), 'HTTPS 守卫只能写 ES5')
 

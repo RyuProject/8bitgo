@@ -17,12 +17,6 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <!--
-      边缘选路脚本稍后必须同步执行，避免玩家先从较慢的域名下载整套应用；提前预载，
-      让它与下面的 ES5 首屏保护逻辑并行下载，减少解析器走到脚本标签时的等待。
-    -->
-    <link rel="preload" href="/edge-route-v5.js" as="script" fetchpriority="high" />
-
-    <!--
       按浏览器语言自动跳到对应语言版本。
 
       为什么必须内联、必须放在这里：这段要在**首屏绘制之前**跑完。写成模块脚本
@@ -252,9 +246,10 @@
     <!--
       先选离访客更快的完整站点镜像，再让语言脚本决定目标路径。它只写一个两小时的
       非认证 Cookie；已有登录态、后台、OAuth、爬虫和测速工具会留在当前域名。
-      文件名带版本号，发版改变规则时必须同时换文件名，避免边缘拿到旧逻辑。
+      构建时把 public/edge-route-v5.js 原样内联，避免首屏多一次同步网络往返；
+      文件名仍保留给已缓存旧 HTML 的访客，发版改变规则时必须同时换版本。
     -->
-    <script src="/edge-route-v5.js"></script>
+    <script data-8bitgo-edge-route-placeholder></script>
     <script>
       (function () {
         try {

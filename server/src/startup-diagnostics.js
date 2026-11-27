@@ -136,7 +136,7 @@ export function needsAttention(event, diagnostics) {
 
 const DIAGNOSIS_CODES = new Set([
   'offline', 'network_http', 'network_failure', 'react_update_loop', 'page_asset', 'script_conflict', 'engine_asset', 'engine_assets', 'engine_load', 'core_download', 'rom_download', 'rom_integrity',
-  'rom_invalid', 'bios_romset', 'bios_config', 'webgl', 'memory', 'storage', 'input_api', 'wasm_runtime', 'runtime_trap',
+  'rom_invalid', 'bios_romset', 'bios_config', 'bios_download', 'webgl', 'memory', 'storage', 'input_api', 'wasm_runtime', 'runtime_trap',
   'timeout', 'unsupported', 'unknown',
 ])
 const CAPTURE_LEVELS = ['full', 'summary']
@@ -303,6 +303,14 @@ export function diagnoseStartupFailure({ event, runtime, platform, detail, elaps
   // 只有请求方已明确要求校验、但拿不到 SHA-256 清单时才细分；可选清单的普通预警不代表 ROM 被阻断。
   if (has(/本站要求校验此\s*rom\s*\/\s*bios，但\s*sha-?256\s*清单不可用|(?:required|mandatory).{0,80}(?:rom|bios).{0,80}(?:sha-?256|integrity).{0,80}(?:manifest|清单).{0,60}(?:unavailable|missing|不可用|缺失|timeout|超时)/)) {
     return hit('rom_integrity', 'ROM / BIOS 完整性清单不可用，下载被安全校验拦截', 'rom_download', 'high', 'error.rom_integrity_manifest')
+  }
+  // 旧版 EmulatorJS 曾从外部地址取 GBA BIOS；必须同时看到 BIOS 文件名和真实请求失败，不能把并行的网络告警误认成根因。
+  const gbaBiosRequestFailed = runtime === 'emulatorjs' && platform === 'gba' && /gba_bios\.bin/i.test(combined) && (
+    has(/failed to fetch|networkerror|net::err_|connection reset|request failed|failed to load.*bios|bios.*(?:download|fetch).{0,30}(?:failed|error)/) ||
+    resources.some((row) => /gba_bios\.bin/i.test(String(row?.n ?? '')) && Number(row?.st) >= 400)
+  )
+  if (gbaBiosRequestFailed) {
+    return hit('bios_download', 'GBA BIOS 文件请求失败', 'network', 'high', 'error.gba_bios_download')
   }
   // DOS ROM 已下载日志会留在整页诊断缓冲里，不能盖过 js-dos 依赖脚本自身的明确初始化错误。
   if (platform === 'dos' && has(/unable to init emulators\.js|unable to add emulators\.js|emulators is not defined/)) {
@@ -601,6 +609,66 @@ export { classifyUserAgent } from '../../shared/user-agent.js'
  */
 const COHORT_TEXT = { bot: '自动化客户端', suspect: '疑似自动化' }
 const RECOVERY_TEXT = { unconfirmed: '自动刷新后未确认', failed_again: '自动刷新后再次失败' }
+
+/** 新规则只覆盖证据更具体的旧结论；历史现场证据不够时保留原诊断，避免回填造成降级或误归因。 */
+function diagnosisEvidencePriority(diagnosis) {
+  const signal = diagnosis?.signals?.[0] ?? ''
+  const exact = {
+    'error.rom_integrity_manifest': 110,
+    'error.gba_bios_download': 110,
+    'error.ppsspp_stream_timeout': 105,
+    'error.global_redeclaration': 100,
+    'error.platform_bios_config': 100,
+    'error.romset_or_bios': 100,
+    'error.core_download': 85,
+    'error.rom_download': 80,
+    'error.network': 45,
+    'resource.rom_http_status': 90,
+    'resource.core_http_status': 90,
+    'resource.page_asset_status': 90,
+    'resource.http_status': 50,
+    'event.timeout': 10,
+    no_specific_signal: 0,
+  }
+  if (Object.hasOwn(exact, signal)) return exact[signal]
+  if (signal.startsWith('error.')) return 85
+  if (signal.startsWith('resource.')) return 75
+  if (signal.startsWith('progress.')) return 55
+  if (signal.startsWith('stage.')) return 35
+  return 0
+}
+
+/** 仅在当前规则给出更强证据时重算旧诊断；归组签名和展示结论必须使用同一份现场。 */
+export function reclassifyStartupDiagnostic(row) {
+  let payload = row?.payload
+  if (typeof payload === 'string') {
+    try {
+      payload = JSON.parse(payload)
+    } catch {
+      return null
+    }
+  }
+  const diagnostics = normalizeDiagnostics(payload)
+  if (!diagnostics) return null
+  const current = diagnoseStartupFailure({
+    event: row.event,
+    runtime: row.runtime,
+    platform: row.platform,
+    elapsedMs: row.elapsedMs,
+    detail: diagnostics.reason,
+    diagnostics,
+  })
+  if (diagnostics.diagnosis && diagnosisEvidencePriority(current) <= diagnosisEvidencePriority(diagnostics.diagnosis)) return null
+  diagnostics.diagnosis = current
+  const { signature, text } = errorSignature({
+    event: row.event,
+    runtime: row.runtime,
+    platform: row.platform,
+    detail: diagnostics.reason,
+    diagnostics,
+  })
+  return { diagnostics, signature, signatureText: text }
+}
 
 /**
  * 归组时把「来源」「刷新后结论」也算进特征：自动化客户端、刷新后未确认、刷新后又坏的现场各成一组，
@@ -934,14 +1002,8 @@ export function shapeSample(row) {
   } catch {
     payload = null
   }
-  const diagnostics = normalizeDiagnostics(payload)
-  // 新规则可补充历史 unknown；两条新增的强证据也允许把旧 timeout 精炼成具体阻断原因，现场本身不改写。
-  if (diagnostics && (!diagnostics.diagnosis || diagnostics.diagnosis.code === 'unknown' || diagnostics.diagnosis.code === 'timeout')) {
-    const currentDiagnosis = diagnoseStartupFailure({ event: row.event, runtime: row.runtime, platform: row.platform, detail: diagnostics.reason, diagnostics })
-    const refinesTimeout = diagnostics.diagnosis?.code === 'timeout' &&
-      ['error.ppsspp_stream_timeout', 'error.rom_integrity_manifest'].includes(currentDiagnosis.signals[0])
-    if (!diagnostics.diagnosis || diagnostics.diagnosis.code === 'unknown' || refinesTimeout) diagnostics.diagnosis = currentDiagnosis
-  }
+  const reclassified = reclassifyStartupDiagnostic({ ...row, payload })
+  const diagnostics = reclassified?.diagnostics ?? normalizeDiagnostics(payload)
   return {
     id: String(row.id),
     slug: row.slug,
@@ -954,8 +1016,8 @@ export function shapeSample(row) {
     os: row.os,
     device: row.device,
     elapsedMs: row.elapsedMs == null ? null : Number(row.elapsedMs),
-    signature: row.signature,
-    signatureText: row.signatureText,
+    signature: reclassified?.signature ?? row.signature,
+    signatureText: reclassified?.signatureText ?? row.signatureText,
     createdAt: row.createdAt,
     // 历史数据也过一遍当前的白名单与脱敏规则
     diagnostics,

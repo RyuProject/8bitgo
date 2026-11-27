@@ -6,6 +6,15 @@ globalThis.__dosBlobCache = new Map()
 globalThis.__dosBlobFetches = []
 globalThis.__dosBlobResumeClears = []
 globalThis.__dosBlobDeletes = []
+globalThis.__dosBlobCachePuts = []
+globalThis.__dosBlobCacheMeta = new Map()
+globalThis.__dosBlobIntegrityManifests = new Map()
+globalThis.__dosBlobIntegrityVerifiedTags = new WeakMap()
+globalThis.__dosBlobIntegrityVerifies = []
+globalThis.__dosBlobIntegrityMarks = []
+globalThis.__dosBlobIntegrityBadBlobs = new WeakSet()
+globalThis.__dosBlobAbortVerify = false
+globalThis.__dosBlobVerifyStarted = false
 globalThis.__dosBlobFailDecode = false
 globalThis.__dosBlobAbortDecode = false
 globalThis.__dosBlobDecodeStarted = false
@@ -39,6 +48,7 @@ const built = await build({
       fake(/^\.\/romCache$/, 'cache')
       fake(/^@\/lib\/jsdosBundle$/, 'bundle')
       fake(/^@\/services\/romPack$/, 'pack')
+      fake(/^@\/services\/romIntegrity$/, 'integrity')
       // 换线路（assets ↔ cn-assets）由 romHosts 决定；这里只验证下载器确实拿到了备用地址。
       fake(/^@\/services\/romHosts$/, 'hosts')
       api.onLoad({ filter: /.*/, namespace: 'dos-blob-test' }, (args) => ({
@@ -46,15 +56,30 @@ const built = await build({
         contents: args.path === 'resume'
           ? `export const downloadResumeStore = { clear: async k => { globalThis.__dosBlobResumeClears.push(k) } }`
           : args.path === 'progress'
-            ? `export const fetchBlobWithProgress = async (u, o) => { globalThis.__dosBlobFetches.push({ u, resumeKey: o.resumeKey, alternateUrls: o.alternateUrls }); return globalThis.__dosBlobStored };
+            ? `export const fetchBlobWithProgress = async (u, o) => { globalThis.__dosBlobFetches.push({ u, resumeKey: o.resumeKey, alternateUrls: o.alternateUrls }); const manifest = globalThis.__dosBlobIntegrityManifests.get(u); if (manifest) globalThis.__dosBlobIntegrityVerifiedTags.set(globalThis.__dosBlobStored, manifest.tag); return globalThis.__dosBlobStored };
                export const withResumeTimeout = async (task) => task;`
             : args.path === 'hosts'
               ? `export const alternateRomUrls = u => [u.replace('https://assets.example/', 'https://cn-assets.example/')]`
             : args.path === 'cache'
               ? `export const romCacheKey = u => /[?&]romv=/.test(u) ? u : '';
-                 export const romCacheGetBlob = async k => globalThis.__dosBlobCache.get(k) ?? null;
-                 export const romCachePutBlob = async (k, b) => { globalThis.__dosBlobCache.set(k, b) };
-                 export const romCacheDelete = async k => { globalThis.__dosBlobDeletes.push(k); globalThis.__dosBlobCache.delete(k) };`
+                 export const romCacheGetBlobRecord = async k => { const blob = globalThis.__dosBlobCache.get(k); return blob ? { blob, ...(globalThis.__dosBlobCacheMeta.get(k) ?? {}) } : null };
+                 export const romCacheIntegrityIsFresh = (record, tag) => record?.integrityTag === tag && Number.isSafeInteger(record.integrityCheckedAt) && Date.now() - record.integrityCheckedAt <= 7 * 24 * 60 * 60 * 1000;
+                 export const romCacheMarkIntegrityVerified = async (k, tag, size, identity) => { globalThis.__dosBlobIntegrityMarks.push({ k, tag, size, identity }); globalThis.__dosBlobCacheMeta.set(k, { ...identity, integrityTag: tag, integrityCheckedAt: Date.now() }) };
+                 export const romCachePutBlob = async (k, b, tag) => { globalThis.__dosBlobCache.set(k, b); globalThis.__dosBlobCacheMeta.set(k, { recordId: 'written', storedAt: Date.now(), ...(tag ? { integrityTag: tag, integrityCheckedAt: Date.now() } : {}) }); globalThis.__dosBlobCachePuts.push({ k, b, tag }) };
+                 export const romCacheDelete = async k => { globalThis.__dosBlobDeletes.push(k); globalThis.__dosBlobCache.delete(k); globalThis.__dosBlobCacheMeta.delete(k) };`
+            : args.path === 'integrity'
+              ? `export const fetchRomIntegrityManifest = async (u, signal) => { if (signal?.aborted) throw signal.reason; return globalThis.__dosBlobIntegrityManifests.get(u) ?? null };
+                 export const romIntegrityManifestTag = async manifest => manifest.tag;
+                 export const romBlobIntegrityTag = blob => globalThis.__dosBlobIntegrityVerifiedTags.get(blob);
+                 export const verifyRomBlob = async (blob, manifest, signal) => {
+                   globalThis.__dosBlobIntegrityVerifies.push({ blob, manifest });
+                   if (globalThis.__dosBlobAbortVerify) {
+                     globalThis.__dosBlobAbortVerify = false; globalThis.__dosBlobVerifyStarted = true;
+                     await new Promise(resolve => { if (signal?.aborted) resolve(); else signal?.addEventListener('abort', resolve, { once: true }) });
+                     throw signal?.reason ?? new DOMException('已取消', 'AbortError');
+                   }
+                   if (blob.size !== manifest.size || globalThis.__dosBlobIntegrityBadBlobs.has(blob)) throw new Error('DOS 缓存完整性校验失败');
+                 }`
               : args.path === 'bundle'
                 ? `export const isReadyJsdosBundleBlob = async (blob, timeout, signal) => {
                      if (globalThis.__dosBlobAbortReady) {
@@ -131,10 +156,80 @@ assert.equal(globalThis.__dosBlobFetches.length, 1, '第二次开局不应重新
 assert.ok(progress.some((value) => value.cached === true && value.ratio === 1), '缓存命中必须告诉加载界面“无需下载”')
 assert.ok(globalThis.__dosBlobResumeClears.includes(url), '完整缓存命中时清掉并发遗留的临时分片')
 
+// DOS 的大包路径不能像普通解包那样只看 ZIP 目录；缓存密文也必须过本站 SHA-256 分块清单。
+const integrityTag = `sha256:${'a'.repeat(64)}`
+const integrityUrl = 'https://assets.example/roms/dos/verified.zip?romv=integrity-v1'
+const integrityManifest = { size: globalThis.__dosBlobPlain.size, tag: integrityTag }
+const integrityCachedBlob = globalThis.__dosBlobPlain
+globalThis.__dosBlobIntegrityManifests.set(integrityUrl, integrityManifest)
+globalThis.__dosBlobCache.set(integrityUrl, integrityCachedBlob)
+globalThis.__dosBlobCacheMeta.set(integrityUrl, {
+  recordId: 'stale-dos-cache', storedAt: Date.now() - 9 * 24 * 60 * 60 * 1000,
+  integrityTag: 'sha256:old', integrityCheckedAt: Date.now() - 9 * 24 * 60 * 60 * 1000,
+})
+const verifiesBeforeCacheCheck = globalThis.__dosBlobIntegrityVerifies.length
+const verifiedCachedDos = await prepareRemoteDosBundle(integrityUrl, undefined, new AbortController().signal)
+assert.equal(verifiedCachedDos.fromCache, true)
+assert.equal(globalThis.__dosBlobIntegrityVerifies.length, verifiesBeforeCacheCheck + 1,
+  '旧 DOS 缓存必须按 SHA-256 清单完整复验')
+assert.ok(globalThis.__dosBlobIntegrityMarks.some((entry) => entry.k === integrityUrl && entry.tag === integrityTag),
+  '成功复验后给当前缓存记录写入清单印记')
+const verifiesBeforeFreshHit = globalThis.__dosBlobIntegrityVerifies.length
+await prepareRemoteDosBundle(integrityUrl, undefined, new AbortController().signal)
+assert.equal(globalThis.__dosBlobIntegrityVerifies.length, verifiesBeforeFreshHit,
+  '同一清单下的一周内命中不重复读取大型 DOS Blob')
+
+// 被动改过但 ZIP 结构仍完整的数据必须丢弃；不能把解包成功误当成内容完整性证明。
+const corruptUrl = 'https://assets.example/roms/dos/corrupt.zip?romv=integrity-v2'
+const corruptCachedBlob = new Blob([new Uint8Array([0x50, 0x4b, 0x03, 0x04, 1, 1, 1])])
+globalThis.__dosBlobIntegrityManifests.set(corruptUrl, integrityManifest)
+globalThis.__dosBlobCache.set(corruptUrl, corruptCachedBlob)
+globalThis.__dosBlobCacheMeta.set(corruptUrl, { recordId: 'corrupt', storedAt: Date.now() - 9 * 86400000 })
+globalThis.__dosBlobIntegrityBadBlobs.add(corruptCachedBlob)
+const corruptDeletesBefore = globalThis.__dosBlobDeletes.length
+const corruptFetchesBefore = globalThis.__dosBlobFetches.length
+const originalWarn = console.warn
+let recoveredCorruptDos
+try {
+  console.warn = () => {}
+  recoveredCorruptDos = await prepareRemoteDosBundle(corruptUrl, undefined, new AbortController().signal)
+} finally {
+  console.warn = originalWarn
+}
+assert.equal(recoveredCorruptDos.fromCache, false)
+assert.ok(globalThis.__dosBlobDeletes.slice(corruptDeletesBefore).includes(corruptUrl), '完整性失败的 DOS 缓存必须删除')
+assert.equal(globalThis.__dosBlobFetches.length, corruptFetchesBefore + 1, '坏缓存应只触发一次网络自愈')
+assert.equal(globalThis.__dosBlobCachePuts.findLast((entry) => entry.k === corruptUrl)?.tag, integrityTag,
+  '下载器已验证的 DOS 密文应把完整性印记一并写入缓存')
+const verifiesBeforeRedownloadHit = globalThis.__dosBlobIntegrityVerifies.length
+await prepareRemoteDosBundle(corruptUrl, undefined, new AbortController().signal)
+assert.equal(globalThis.__dosBlobIntegrityVerifies.length, verifiesBeforeRedownloadHit,
+  '已验证的新下载在清单未变时可直接命中缓存')
+
+// 切换游戏中止大 Blob 复验时，不能把正确缓存误判坏包并清掉。
+const abortIntegrityUrl = 'https://assets.example/roms/dos/abort-integrity.zip?romv=integrity-v3'
+globalThis.__dosBlobIntegrityManifests.set(abortIntegrityUrl, integrityManifest)
+globalThis.__dosBlobCache.set(abortIntegrityUrl, integrityCachedBlob)
+globalThis.__dosBlobCacheMeta.set(abortIntegrityUrl, { recordId: 'abort-integrity', storedAt: Date.now() - 9 * 86400000 })
+globalThis.__dosBlobAbortVerify = true
+globalThis.__dosBlobVerifyStarted = false
+const abortIntegrityController = new AbortController()
+const abortIntegrityFetchesBefore = globalThis.__dosBlobFetches.length
+const pendingIntegrityAbort = prepareRemoteDosBundle(abortIntegrityUrl, undefined, abortIntegrityController.signal)
+for (let attempt = 0; attempt < 20 && !globalThis.__dosBlobVerifyStarted; attempt++) {
+  await new Promise((resolve) => setTimeout(resolve, 0))
+}
+assert.equal(globalThis.__dosBlobVerifyStarted, true, '测试需等到本地 DOS Blob 完整性复验开始再取消')
+abortIntegrityController.abort(new DOMException('game changed', 'AbortError'))
+await assert.rejects(pendingIntegrityAbort, (error) => error?.name === 'AbortError')
+assert.equal(globalThis.__dosBlobCache.get(abortIntegrityUrl), integrityCachedBlob, '取消复验不能删除有效 DOS 缓存')
+assert.ok(!globalThis.__dosBlobDeletes.includes(abortIntegrityUrl), '取消复验不能走坏缓存自愈')
+assert.equal(globalThis.__dosBlobFetches.length, abortIntegrityFetchesBefore, '取消复验后不应额外下载 ROM')
+
+const url2FetchesBefore = globalThis.__dosBlobFetches.length
 const url2 = 'https://assets.example/roms/dos/fallout.en.zip.8bg?romv=v2'
 globalThis.__dosBlobCache.set(url2, globalThis.__dosBlobStored)
 globalThis.__dosBlobFailDecode = true
-const originalWarn = console.warn
 let recovered
 try {
   console.warn = () => {}
@@ -144,7 +239,7 @@ try {
 }
 assert.equal(recovered.fromCache, false)
 assert.ok(globalThis.__dosBlobDeletes.includes(url2), '旧密钥/截断缓存必须删除后回网络自愈')
-assert.equal(globalThis.__dosBlobFetches.length, 2)
+assert.equal(globalThis.__dosBlobFetches.length, url2FetchesBefore + 1)
 
 // 玩家离开页面时，缓存解包必须中止，且不能把有效密文缓存当成坏包删除。
 const abortUrl = 'https://assets.example/roms/dos/fallout.en.zip.8bg?romv=abort'
@@ -183,9 +278,10 @@ assert.ok(!globalThis.__dosBlobDeletes.includes(abortZipUrl), '取消 ZIP 校验
 assert.equal(globalThis.__dosBlobFetches.length, zipAbortFetchesBefore, '取消 ZIP 校验后不应发起重新下载')
 
 const unversioned = 'https://assets.example/roms/dos/fallout.en.zip.8bg'
+const unversionedFetchesBefore = globalThis.__dosBlobFetches.length
 await prepareRemoteDosBundle(unversioned, undefined, new AbortController().signal)
 await prepareRemoteDosBundle(unversioned, undefined, new AbortController().signal)
-assert.equal(globalThis.__dosBlobFetches.length, 4, '无版本 URL 不得缓存或续传，避免两代 ROM 拼包')
+assert.equal(globalThis.__dosBlobFetches.length, unversionedFetchesBefore + 2, '无版本 URL 不得缓存或续传，避免两代 ROM 拼包')
 assert.equal(globalThis.__dosBlobFetches.at(-1).resumeKey, undefined)
 
 // 续传片拼出的包读不出来（NotReadableError）：作废续传片，不带续传整包重下一次（AGENTS §2.8.4）。
@@ -228,4 +324,4 @@ const plain = await prepareRemoteDosBundle('https://assets.example/game.zip?romv
 assert.equal(plain.name, 'game.zip')
 assert.equal(plain.ready, false, '没有 dosbox.conf 的普通 ZIP 必须回旧逻辑补配置')
 
-console.log('DOS Blob：分片续传、换线路、并行预热、版本缓存、密文落盘、坏缓存与读不出包自愈、普通 ZIP 回退通过')
+console.log('DOS Blob：分片续传、完整性清单复验、坏缓存与读不出包自愈、取消保护、普通 ZIP 回退通过')

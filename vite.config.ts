@@ -7,6 +7,7 @@ import tailwindcss from '@tailwindcss/vite'
 import { defineConfig, loadEnv } from 'vite'
 import { builtinWebGameFor } from './shared/builtin-web-games.js'
 import { HUGE_STATIC_DIRS } from './scripts/lib/vite-static-exclusions.mjs'
+import { inlineEdgeRouteHtml } from './scripts/lib/edge-route-inline.mjs'
 import { optOutRocketLoader } from './shared/rocket-loader-optout.js'
 import { assetIntegrityPlugin } from './scripts/lib/vite-asset-integrity.mjs'
 import { resilientPreloadPlugin } from './scripts/lib/vite-resilient-preload.mjs'
@@ -238,6 +239,18 @@ export default defineConfig(({ mode }) => {
     exclude: ['@bokuweb/zstd-wasm'],
   },
   plugins: [
+    {
+      name: 'inline-edge-route',
+      transformIndexHtml: {
+        // 必须在 Vite 注入入口脚本和 modulepreload 之后替换：路由源码注释含 `</head>` 示例，
+        // 若提前塞进模板，Vite 的 HTML 注入会把注释当成真正的 head 结束位置。
+        order: 'post' as const,
+        handler: (html: string) => inlineEdgeRouteHtml(
+          html,
+          readFileSync(path.join(PUBLIC_DIR, 'edge-route-v5.js'), 'utf8'),
+        ),
+      },
+    },
     react(),
     legacy({
       targets: LEGACY_BROWSER_TARGETS,
