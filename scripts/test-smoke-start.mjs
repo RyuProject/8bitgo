@@ -8,6 +8,7 @@ import {
   adultGateReason,
   CHROME_CANDIDATES,
   DEFAULT_SMOKE_GAMES,
+  DISABLE_WASM_SCRIPT,
   devToolsUrlOf,
   findChrome,
   MAME_CHD_TIMEOUT_MS,
@@ -62,6 +63,12 @@ const src = readFileSync(new URL('./smoke-start.mjs', import.meta.url), 'utf8')
 assert.deepEqual(DEFAULT_SMOKE_GAMES.split(','), ['super-mario-bros', 'cadillacs-and-dinosaurs', 'pokemon-sapphire'],
   '部署冒烟必须覆盖 NES、CPS1 与 mGBA 的 GBA 路径')
 assert.match(src, /process\.env\.SMOKE_GAMES \|\| DEFAULT_SMOKE_GAMES/, '仍允许巡检或人工覆盖冒烟游戏')
+assert.match(src, /process\.env\.SMOKE_DISABLE_WASM === '1'/, '无 WebAssembly 能力测试必须显式开启')
+assert.match(src, /Page\.addScriptToEvaluateOnNewDocument/, '关闭 WebAssembly 的探针必须早于页面脚本运行')
+const noWasmWindow = { WebAssembly: {} }
+new Function('globalThis', DISABLE_WASM_SCRIPT)(noWasmWindow)
+assert.equal(noWasmWindow.WebAssembly, undefined, '无 WebAssembly 冒烟必须确实让能力探针走纯 JS 退路')
+assert.match(src, /页面状态：\$\{JSON\.stringify\(r\.pageState\)\}/, '真实开局失败时要保留页面按钮与错误提示，便于区分能力门禁和启动故障')
 assert.match(src, /urlPattern: '\*\/api\/games\/\*\/startup\*'/, '启动漏斗请求必须拦下，冒烟不能进生产统计')
 assert.match(src, /urlPattern: '\*\/api\/games\/\*\/play\*'/, '游玩次数也不能被冒烟刷高')
 assert.match(src, /Fetch\.fulfillRequest/)

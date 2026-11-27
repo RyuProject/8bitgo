@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { gbaFallbackRuntime, usesBuiltInGbaHleBios } from '../src/emulator/gbaFallback.ts'
+import { createInputSourceRouter } from '../src/emulator/inputSourceRouter.ts'
 
 assert.equal(gbaFallbackRuntime({ wasmUnavailable: false, webglUnavailable: false }), null,
   '现代浏览器继续走普通 EmulatorJS/WebGL 路径')
@@ -21,6 +22,27 @@ assert.equal(usesBuiltInGbaHleBios('gba', 'iodinegba'), false,
   'IodineGBA 仍必须下载并校验平台 BIOS')
 assert.equal(usesBuiltInGbaHleBios('arcade', 'mgba'), false,
   '平台与核心必须同时匹配，不能把 BIOS 规则套到其它平台')
+
+const routedKeys = []
+const inputSources = createInputSourceRouter((button, down) => routedKeys.push([button, down]))
+inputSources.set('a', true, 'keyboard')
+inputSources.set('a', true, 'gamepad')
+inputSources.set('a', false, 'gamepad')
+assert.deepEqual(routedKeys, [['a', true]], '手柄松开不能解除仍按住该键的键盘输入')
+inputSources.set('a', false, 'keyboard')
+assert.deepEqual(routedKeys, [['a', true], ['a', false]], '最后一个输入源松开时才通知核心')
+inputSources.set('b', true, 'keyboard:KeyZ')
+inputSources.set('b', true, 'keyboard:KeyX')
+inputSources.set('b', false, 'keyboard:KeyZ')
+assert.deepEqual(routedKeys.slice(-1), [['b', true]], '松开一个映射到同一动作的键不应释放另一个仍按住的键')
+inputSources.set('b', false, 'keyboard:KeyX')
+assert.deepEqual(routedKeys.slice(-1), [['b', false]], '同一动作的最后一个物理键松开时才释放核心按键')
+inputSources.set('l', true, 'touch:l')
+inputSources.set('l', true, 'gamepad')
+inputSources.releaseSource('gamepad')
+assert.deepEqual(routedKeys.slice(-1), [['l', true]], '清理手柄状态时应保留仍按住的触屏肩键')
+inputSources.releaseSource('touch:l')
+assert.deepEqual(routedKeys.slice(-1), [['l', false]], '触屏松开后才解除仍被持有的肩键')
 
 const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8')
 const adapter = read('../src/emulator/adapters/emulatorjs.ts')
@@ -62,6 +84,12 @@ assert.match(iodine, /loadGameBytes\(biosUrl,[\s\S]*?\)\s*\.then\(\(bios\) => pr
   'BIOS 错误在并行下载阶段立即拒绝，播放器清理会取消仍在进行的 ROM 请求')
 assert.match(iodine, /const \[loaded, biosBytes\] = await Promise\.all\(/,
   'BIOS 校验前置不能把正常 ROM 与 BIOS 下载改成串行')
+assert.match(iodine, /installPadKeyboard\(\(button, down, _seat, code\) =>[\s\S]*?`keyboard:\$\{code\}`/,
+  '本站键盘映射用物理键 code 区分同时按下的同一动作绑定')
+assert.match(iodine, /setKey\(button, want, 'gamepad'\)/,
+  '手柄松开不能清掉键盘或触屏持有的相同动作')
+assert.match(iodine, /setKey\(button, true, `touch:\$\{button\}`\)/,
+  '触屏肩键与键盘、手柄拥有独立按住状态')
 assert.match(iodine, /const fail = \(error: unknown\) => \{[\s\S]*?options\.onError\?\.\(message, scope\)[\s\S]*?destroy\(\)/,
   'BIOS 配置错误触发标准收尾，不能遗留挂起的 ROM 请求')
 assert.match(iodine, /const destroy = \(\) => \{[\s\S]*?aborter\.abort\(\)/,

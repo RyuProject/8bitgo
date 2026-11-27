@@ -17,6 +17,7 @@ import { diagLog } from '@/services/startupDiagnostics'
 import { resolvePlatformBiosForStartup } from '@/services/platformBios'
 import { IODINEGBA_BUILD, IODINEGBA_SHA256 } from '../iodinegbaVersion'
 import { applyPinnedScriptIntegrity } from '../coreAssetIntegrity'
+import { createInputSourceRouter } from '../inputSourceRouter'
 
 const BASE = '/iodinegba'
 const BIOS_BYTES = 0x4000
@@ -246,8 +247,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let batteryKey = ''
   let lastBatteryRecord = ''
   let unlockAudio: (() => void) | null = null
-  const held = new Set<IodineButton>()
   const gamepadHeld = new Set<IodineButton>()
+  const inputSources = createInputSourceRouter<IodineButton>((button, down) => {
+    const index = KEY_INDEX[button]
+    if (down) engine?.keyDown(index)
+    else engine?.keyUp(index)
+  })
 
   try {
     batteryKey = `${SAVE_KEY_PREFIX}${encodeURIComponent(identityFor(options))}`
@@ -276,20 +281,16 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
   }
 
-  const setKey = (button: IodineButton, down: boolean) => {
-    if (!engine || destroyed || held.has(button) === down) return
-    if (down) held.add(button)
-    else held.delete(button)
-    const index = KEY_INDEX[button]
-    if (down) engine.keyDown(index)
-    else engine.keyUp(index)
+  const setKey = (button: IodineButton, down: boolean, source: string) => {
+    if (!engine || destroyed) return
+    inputSources.set(button, down, source)
   }
 
-  const commonPad = (button: PadButton, down: boolean) => setKey(button, down)
+  const commonPad = (button: PadButton, down: boolean, source = 'touchpad') => setKey(button, down, source)
   const stopGamepad = () => {
     if (gamepadRaf) cancelAnimationFrame(gamepadRaf)
     gamepadRaf = 0
-    for (const button of gamepadHeld) setKey(button, false)
+    for (const button of gamepadHeld) setKey(button, false, 'gamepad')
     gamepadHeld.clear()
   }
 
@@ -309,7 +310,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         if (want === gamepadHeld.has(button)) continue
         if (want) gamepadHeld.add(button)
         else gamepadHeld.delete(button)
-        setKey(button, want)
+        setKey(button, want, 'gamepad')
       }
     } catch {
       // 读取手柄失败时保留上一帧按键，下一帧再重试。
@@ -353,11 +354,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (event.code !== 'KeyQ' && event.code !== 'KeyE') return
     if (event.target instanceof HTMLElement && /^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName)) return
     event.preventDefault()
-    setKey(event.code === 'KeyQ' ? 'l' : 'r', true)
+    setKey(event.code === 'KeyQ' ? 'l' : 'r', true, 'keyboard-extra')
   }
   const extraKeysUp = (event: KeyboardEvent) => {
-    if (event.code === 'KeyQ') setKey('l', false)
-    else if (event.code === 'KeyE') setKey('r', false)
+    if (event.code === 'KeyQ') setKey('l', false, 'keyboard-extra')
+    else if (event.code === 'KeyE') setKey('r', false, 'keyboard-extra')
   }
 
   if (typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches) {
@@ -372,9 +373,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       control.addEventListener('pointerdown', (event) => {
         event.preventDefault()
         control.setPointerCapture(event.pointerId)
-        setKey(button, true)
+        setKey(button, true, `touch:${button}`)
       })
-      const release = () => setKey(button, false)
+      const release = () => setKey(button, false, `touch:${button}`)
       control.addEventListener('pointerup', release)
       control.addEventListener('pointercancel', release)
       control.addEventListener('lostpointercapture', release)
@@ -392,6 +393,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     stopGamepad()
     uninstallKeyboard?.()
     uninstallKeyboard = null
+    inputSources.releaseSource('keyboard-extra')
     window.removeEventListener('keydown', extraKeysDown, true)
     window.removeEventListener('keyup', extraKeysUp, true)
     document.removeEventListener('visibilitychange', onVisibilityChange)
@@ -506,10 +508,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       engine = instance
       options.onGeometry?.({ width: 240, height: 160 })
       options.onProgress?.({ phase: 'starting', ratio: 1 })
-      uninstallKeyboard = installPadKeyboard((button, down) => {
-        if (button === 'turboA') commonPad('a', down)
-        else if (button === 'turboB') commonPad('b', down)
-        else commonPad(button, down)
+      uninstallKeyboard = installPadKeyboard((button, down, _seat, code) => {
+        if (button === 'turboA') commonPad('a', down, `keyboard:${code}`)
+        else if (button === 'turboB') commonPad('b', down, `keyboard:${code}`)
+        else commonPad(button, down, `keyboard:${code}`)
       })
       window.addEventListener('keydown', extraKeysDown, true)
       window.addEventListener('keyup', extraKeysUp, true)
@@ -547,7 +549,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       }
     },
     setVolume: (volume) => audio?.handler.setVolume(volume),
-    sendButton: commonPad,
+    sendButton: (button, down) => commonPad(button, down),
     screenshot: async () => canvasToBlob(canvas),
     nativeVideoSize: () => ({ width: 240, height: 160 }),
     volume: 1,

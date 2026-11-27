@@ -900,7 +900,13 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
 
   const player = read('src/emulator/EmulatorPlayer.tsx')
   assert.match(player, /const STARTUP_SLOW_MS = 60_000/)
-  assert.match(player, /reportStartup\('slow_start', `等待 game_playable 已超过 \$\{STARTUP_SLOW_MS \/ 1000\} 秒\$\{progressTrace\.phaseNote\(\)\}`\)/)
+  assert.match(player, /createVisibilityTimeout\(STARTUP_SLOW_MS/,
+    '慢启动只累计页面前台时间，避免后台停留误报')
+  assert.match(player, /reportStartup\('slow_start', `前台累计等待 game_playable 已超过 \$\{STARTUP_SLOW_MS \/ 1000\} 秒\$\{progressTrace\.phaseNote\(\)\}`\)/)
+  assert.match(player, /if \(!observable\) \{[\s\S]{0,180}stopSlowStartupTimer\(\)/,
+    '无法判断 HTML5 是否可玩时暂停慢启动告警')
+  assert.doesNotMatch(player, /setTimeout\(reportSlowStartupIfNeeded/,
+    '慢启动不能继续用不暂停的墙钟定时器')
   assert.match(player, /progressTrace\.accept\(next\)/)
   assert.equal(player.match(/stopProgressSnapshot\(\)/g)?.length, 3, '模块导入失败、挂载失败与卸载都要注销快照')
   assert.match(read('worker/src/common.js'), /'Timing-Allow-Origin'\] = '\*'/, 'ROM 对象要让诊断包看得到传输字节')

@@ -1,6 +1,7 @@
 /** 启动漏斗的输入边界与 60 秒告警阈值；不连数据库。 */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import vm from 'node:vm'
 import { isSlowStartup, normalizeStartupEvent, normalizeStartupEventBatch, sanitizeStartupDetail, shapeFallbackRoute, shapePhaseTiming, STARTUP_SLOW_MS } from '../src/startup-metrics.js'
 import { playShell } from '../src/routes/play.js'
 
@@ -193,5 +194,84 @@ assert.match(isolated, /readiness_unobservable/)
 assert.match(isolated, /readinessObservable/)
 assert.match(isolated, /keepalive:true/)
 assert.doesNotMatch(renderShell({}), /8bitgo-runtime-bridge/, '直接打开隔离页时没有详情页漏斗，不应伪造一条')
+
+/* ---------- HTML5 慢启动与超时只累计前台时间 ---------- */
+{
+  const script = [...isolated.matchAll(/<script>([\s\S]*?)<\/script>/g)].at(-1)?.[1]
+  assert.ok(script, '隔离页必须包含启动漏斗脚本')
+  let now = 0
+  let timerId = 0
+  const timers = new Map()
+  const canceledCallbacks = []
+  const listeners = new Map()
+  const reports = []
+  const frameListeners = new Map()
+  const frame = {
+    contentDocument: { querySelector: () => null },
+    contentWindow: {},
+    addEventListener: (type, callback) => frameListeners.set(type, callback),
+  }
+  const document = {
+    visibilityState: 'visible',
+    querySelector: () => frame,
+    addEventListener(type, callback) {
+      if (!listeners.has(type)) listeners.set(type, new Set())
+      listeners.get(type).add(callback)
+    },
+    removeEventListener(type, callback) { listeners.get(type)?.delete(callback) },
+  }
+  const advance = (ms) => {
+    const end = now + ms
+    while (true) {
+      const next = [...timers.entries()].sort((a, b) => a[1].at - b[1].at)[0]
+      if (!next || next[1].at > end) break
+      now = next[1].at
+      timers.delete(next[0])
+      next[1].callback()
+    }
+    now = end
+  }
+  const setVisibility = (visible) => {
+    document.visibilityState = visible ? 'visible' : 'hidden'
+    for (const callback of listeners.get('visibilitychange') ?? []) callback()
+  }
+  const window = { addEventListener() {} }
+  vm.runInNewContext(script, {
+    document,
+    window,
+    Date: { now: () => now },
+    setTimeout(callback, delay) {
+      const id = ++timerId
+      timers.set(id, { at: now + delay, callback })
+      return id
+    },
+    clearTimeout(id) {
+      const timer = timers.get(id)
+      if (timer) canceledCallbacks.push(timer.callback)
+      timers.delete(id)
+    },
+    encodeURIComponent,
+    fetch: (_url, init) => {
+      reports.push(JSON.parse(init.body))
+      return Promise.resolve({ ok: true })
+    },
+  })
+  advance(30_000)
+  setVisibility(false)
+  for (const callback of canceledCallbacks.splice(0)) callback()
+  advance(10 * 60_000)
+  assert.deepEqual(reports, [], '后台停留不能触发慢启动或超时')
+  setVisibility(true)
+  advance(29_999)
+  assert.deepEqual(reports, [], '恢复前台后须累计完剩余前台时间')
+  advance(1)
+  assert.equal(reports[0]?.event, 'slow_start')
+  assert.match(reports[0]?.detail, /前台累计等待/)
+  advance(59_999)
+  assert.equal(reports.some((item) => item.event === 'timeout'), false, '120 秒预算未满时不超时')
+  advance(1)
+  assert.equal(reports.at(-1)?.event, 'timeout')
+  assert.match(reports.at(-1)?.detail, /前台累计等待/)
+}
 
 console.log('✅ 启动漏斗输入与慢启动阈值测试通过')

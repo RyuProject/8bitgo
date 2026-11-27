@@ -51,6 +51,7 @@ import { romScopedHackForData } from '@/data/arcadeHacks'
 import type { DosExtraSource } from '@/lib/dosExtras'
 import type { LiveSession } from './adapters/liveview'
 import type { NetplaySession, SeatEvent } from './adapters/emulatorjs'
+import { createVisibilityTimeout, type VisibilityTimeout } from './visibilityTimeout'
 import { cleanPageRetryUrl, isMemoryPressureMessage, takeCleanPageRetry } from './memoryRecovery'
 import type { CloudSession, CloudState } from './adapters/cloudgame'
 import { p2pPlayable, cloudPlayable, emulatorJsCoreFileFor, emulatorJsCoreForGame, NDS_COMPAT_CORE, ndsCoreForWebgl2 } from './paths'
@@ -2213,7 +2214,7 @@ export function EmulatorPlayer({
     let startupTimedOut = false
     let lastStartupActivityAt = Date.now()
     let timeoutTimer = 0
-    let slowTimer = 0
+    let slowTimer: VisibilityTimeout | null = null
     let slowStartupReported = false
     // 慢启动 / 超时诊断包要看得出「还在下载」还是「下载完卡在启动」，见 startupProgressTrace.ts
     const progressTrace = createStartupProgressTrace(session.startedAt)
@@ -2229,11 +2230,19 @@ export function EmulatorPlayer({
       if (!event.persisted) reportStartupInterrupted()
     }
     window.addEventListener('pagehide', onStartupPageHide)
-    const reportSlowStartupIfNeeded = () => {
-      if (!isCurrent() || ready || slowStartupReported || readinessState !== 'observable' ||
-        Date.now() - session.startedAt < STARTUP_SLOW_MS) return
-      slowStartupReported = true
-      reportStartup('slow_start', `等待 game_playable 已超过 ${STARTUP_SLOW_MS / 1000} 秒${progressTrace.phaseNote()}`)
+    const stopSlowStartupTimer = () => {
+      slowTimer?.dispose()
+      slowTimer = null
+    }
+    const armSlowStartupTimer = () => {
+      if (!isCurrent() || ready || startupEnded || slowStartupReported || readinessState !== 'observable' || slowTimer) return
+      // 慢启动诊断与启动看门狗使用相同口径，只累计玩家看得见页面的时间。
+      slowTimer = createVisibilityTimeout(STARTUP_SLOW_MS, () => {
+        slowTimer = null
+        if (!isCurrent() || ready || startupEnded || slowStartupReported || readinessState !== 'observable') return
+        slowStartupReported = true
+        reportStartup('slow_start', `前台累计等待 game_playable 已超过 ${STARTUP_SLOW_MS / 1000} 秒${progressTrace.phaseNote()}`)
+      })
     }
     /*
       只数**前台**时间（2026-11-10《天之痕》）：下载 146 秒的那段玩家切去了别的标签页，Win95 在后台
@@ -2247,7 +2256,7 @@ export function EmulatorPlayer({
     document.addEventListener('visibilitychange', onStartupVisibility)
     const stopStartupWatchdog = () => {
       window.clearTimeout(timeoutTimer)
-      window.clearTimeout(slowTimer)
+      stopSlowStartupTimer()
       document.removeEventListener('visibilitychange', onStartupVisibility)
     }
     const armStartupWatchdog = () => {
@@ -2277,6 +2286,7 @@ export function EmulatorPlayer({
       if (!isCurrent() || crashed || session.runtime.id === 'liveview' ||
         countedPlayAttemptRef.current === session.startupAttemptId) return
       startupEnded = true
+      stopSlowStartupTimer()
       countedPlayAttemptRef.current = session.startupAttemptId
       // 只有运行时确认已经可玩才算兜底成功；首帧单独统计，避免黑屏后偶然闪帧被算作恢复。
       reportFallbackOutcome('fallback_playable')
@@ -2288,7 +2298,7 @@ export function EmulatorPlayer({
       }
     }
     armStartupWatchdog()
-    slowTimer = window.setTimeout(reportSlowStartupIfNeeded, Math.max(0, STARTUP_SLOW_MS - (Date.now() - session.startedAt)))
+    armSlowStartupTimer()
     let handle: RuntimeHandle | null = null
     let mountCancelled = false
     void (async () => {
@@ -2540,10 +2550,10 @@ export function EmulatorPlayer({
         readinessState = observable ? 'observable' : 'unobservable'
         if (!observable) {
           // HTML5 的慢启动统计要求可判断 playable；跨源又没有 ready bridge 时不能制造慢启动假数据。
-          window.clearTimeout(slowTimer)
+          stopSlowStartupTimer()
         } else {
-          // iframe 可能在阈值后才完成同源导航；此时补做一次检查，不漏掉真实慢启动。
-          reportSlowStartupIfNeeded()
+          // 可观测性恢复后重新累计前台观察窗口，不把未知阶段算成启动停滞。
+          armSlowStartupTimer()
         }
       },
       onFirstInteraction: () => {
