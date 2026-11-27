@@ -159,7 +159,9 @@ export function LatestSection({ games }: { games: Game[] }) {
       <SectionHeader title={t.sections.latestTitle} subtitle={t.sections.latestSubtitle} icon="✨" moreTo="/games?sort=newest" />
       <HScroll itemClassName="w-64 sm:w-72">
         {games.map((g, i) => (
-          <GameCardWide key={g.slug} game={g} isNew={i < 3} priority={i === 0} />
+          // 这个区块在首页长列表下方，首张卡也在视口外；强制高优先级会抢首屏的游戏资源。
+          // 交给原生 lazy loading，玩家滚到这里时浏览器再拉封面。
+          <GameCardWide key={g.slug} game={g} isNew={i < 3} />
         ))}
       </HScroll>
     </section>

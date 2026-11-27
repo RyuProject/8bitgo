@@ -34,7 +34,7 @@ check('移动端封面视频不进入首屏下载队列', () => {
   assert.doesNotMatch(src, /preload=\{priority \? 'metadata'/)
 })
 
-check('游戏库、语言专题和首页只把首张 LCP 封面提升到高优先级', () => {
+check('游戏库和专题只把首张 LCP 封面提升到高优先级，首页延后加载下方栏目封面', () => {
   const card = read('src/components/game/GameCard.tsx')
   const wideCard = read('src/components/game/GameCardWide.tsx')
   const games = read('src/pages/GamesPage.tsx')
@@ -46,7 +46,7 @@ check('游戏库、语言专题和首页只把首张 LCP 封面提升到高优�
   assert.match(wideCard, /<GameCover[^>]+priority=\{priority\}/, '首页宽卡没有把优先级传给封面')
   assert.match(games, /priority=\{i === 0\}/, '游戏库没有只提升首张封面')
   assert.match(collections, /priority=\{i === 0\}/, '平台、类型与 ROM 语言专题没有只提升首张封面')
-  assert.match(home, /<GameCardWide[^>]+priority=\{i === 0\}/, '首页最新卡没有只提升首张封面')
+  assert.doesNotMatch(home, /<GameCardWide[^>]+priority=/, '首页下方最新栏目不应抢占首屏图片带宽')
   assert.match(cover, /preload\(coverSrc, \{ as: 'image', fetchPriority: 'high' \}\)/, '视频 poster 没有高优先级图片预加载')
 })
 
