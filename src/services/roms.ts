@@ -724,14 +724,14 @@ export interface RomCandidate {
   lang?: RomSlotLang
   /** true 表示同一语言槽的备用地址；启动入口等设置仍跟随 lang。 */
   backup?: boolean
-  /** 数据库仍绑旧 key，但播放器先尝试旁边的 `<key>.8bg`；便于整库原地渐进迁移。 */
+  /** true 表示同一 ROM 的另一种存储表示，失败时可继续尝试同语言候选。 */
   derivedPacked?: boolean
 }
 
 /** 网络类失败本来会停止整条回退链；唯一例外是紧跟主地址的同语言备用源。 */
 export function shouldTryRomCandidateAfterUncertain(current: RomCandidate, next?: RomCandidate): boolean {
-  // 明文原件和旁边派生的 .8bg 是同一个对象的两种形态，必须当成一组：一个问不出来时仍给另一个机会，
-  // 否则渐进迁移期间一次 HEAD / CORS 波动就可能挡住尚未转换或已经转换的游戏。
+  // 明文原件和旁边派生的 .8bg、PS1 裸 CHD 与历史 `.chd.8bg` 是同一 ROM 的两种表示，必须当成一组：
+  // 一个问不出来时仍给另一个机会，否则迁移或弱网期间一次 HEAD / CORS 波动就会挡住可玩的版本。
   if (
     next
     && (current.derivedPacked || next.derivedPacked)
@@ -806,15 +806,35 @@ export function playbackRomCandidates(game: Pick<Game, 'platform' | 'rom' | 'rom
   const raw = romCandidates(game, lang, prefer)
   // Play! 的 System 2x6 包必须保持普通 ZIP；加密成 8BG 后 libchdr 无法按随机访问读取 CHD。
   if (game.platform === 'arcade' && game.runtime === 'play') return raw
-  // PS1 后台允许显式绑定旧 8BG，但不能从裸 CHD/ISO 再派生 `.8bg` 地址：
-  // 新上传的原始 CHD 必须直接命中，否则会先请求不存在的 `.chd.8bg`，还会绕过 Range 流式读取。
+  // 旧后台记录可能仍绑 `.chd.8bg`，但同目录裸 CHD 已存在时必须优先它，才能启用按需 Range 读盘；
+  // 裸盘不存在或线路暂时问不出来时，才回退原 8BG。新上传的裸 CHD 仍不派生不存在的 `.chd.8bg`。
+  if (game.platform === 'psx') {
+    const out: RomCandidate[] = []
+    const seen = new Set<string>()
+    for (const candidate of raw) {
+      const split = candidate.key.search(/[?#]/)
+      const pathname = split < 0 ? candidate.key : candidate.key.slice(0, split)
+      const rawChd = !selfContainedKey(candidate.key) && /\.chd\.8bg$/i.test(pathname)
+        ? `${pathname.slice(0, -4)}${split < 0 ? '' : candidate.key.slice(split)}`
+        : ''
+      if (rawChd && !seen.has(rawChd)) {
+        seen.add(rawChd)
+        out.push({ ...candidate, key: rawChd })
+      }
+      if (!seen.has(candidate.key)) {
+        seen.add(candidate.key)
+        out.push(rawChd ? { ...candidate, derivedPacked: true } : candidate)
+      }
+    }
+    return out
+  }
   if (game.platform === 'html5') {
     // 旧数据里可能只填了裸域名；规范成网页地址后直接交给 iframe，避免被拼成 download.8bitgo.com 的 ROM key。
     return raw
       .map((candidate) => ({ ...candidate, key: normalizeHtml5Entry(candidate.key) }))
       .filter((candidate) => !html5EntryProblem(candidate.key))
   }
-  if (isStreamingDiscPlatform(game.platform) || game.platform === 'psx') return raw
+  if (isStreamingDiscPlatform(game.platform)) return raw
   const out: RomCandidate[] = []
   const seen = new Set<string>()
   for (const candidate of raw) {

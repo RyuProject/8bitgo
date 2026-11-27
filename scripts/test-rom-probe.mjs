@@ -67,6 +67,29 @@ const next = () => `https://assets.example.com/roms/nes/game-${++url}.zip`
   const candidates = playbackRomCandidates({ platform: 'psx', roms: { 'zh-Hans': key } }, 'zh-Hans')
   assert.deepEqual(candidates.map((candidate) => candidate.key), [key], 'PS1 裸 CHD 绑定直接使用 R2 中已有对象，不额外请求 .chd.8bg')
 
+  const legacyPack = 'roms/psx/gran-turismo-2.en.chd.8bg'
+  const legacyCandidates = playbackRomCandidates({ platform: 'psx', roms: { en: legacyPack } }, 'zh-Hans')
+  assert.deepEqual(
+    legacyCandidates.map(({ key: candidateKey, derivedPacked }) => ({ key: candidateKey, derivedPacked: Boolean(derivedPacked) })),
+    [
+      { key: 'roms/psx/gran-turismo-2.en.chd', derivedPacked: false },
+      { key: legacyPack, derivedPacked: true },
+    ],
+    '旧 PS1 8BG 绑定优先同目录裸 CHD，缺失时保留打包文件回退',
+  )
+  assert.equal(
+    shouldTryRomCandidateAfterUncertain(legacyCandidates[0], legacyCandidates[1]),
+    true,
+    '裸 CHD 的 Range 探测不确定时仍可尝试旧 8BG 文件',
+  )
+
+  const externalPack = 'https://rom.example.com/gran-turismo-2.en.chd.8bg'
+  assert.deepEqual(
+    playbackRomCandidates({ platform: 'psx', roms: { en: externalPack } }, 'zh-Hans').map((candidate) => candidate.key),
+    [externalPack],
+    '第三方绝对地址不派生本站裸 CHD 地址',
+  )
+
   const keys = conventionalKeys({ platform: 'psx', slug: 'demo' })
   const rawChd = keys.indexOf('roms/psx/demo.chd')
   const packedChd = keys.indexOf('roms/psx/demo.chd.8bg')
