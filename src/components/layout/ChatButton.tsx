@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { cx } from '@/lib/format'
 import { useT } from '@/services/i18n'
-import { getImStatus, getImUnread, imReady, imUnreadLabel, onImChange, onImPreview, openIm, retryIm, type ImPreview, type ImStatus } from '@/services/im'
+import { getImStatus, getImUnread, imReady, imUnreadLabel, onImChange, onImPreview, openIm, requestImPanelLoad, retryIm, type ImPreview, type ImStatus } from '@/services/im'
 
 /**
  * 顶栏的聊天气泡按钮。**IM 的入口，也是它唯一的落点。**
@@ -227,6 +227,8 @@ export function ChatButton() {
 
       <button
         type="button"
+        onPointerEnter={requestImPanelLoad}
+        onFocus={requestImPanelLoad}
         onClick={() => {
           // IM 接上了就交给它
           if (openIm()) {
@@ -239,6 +241,8 @@ export function ChatButton() {
             setPlaceholder(false)
             return
           }
+          // 首次点击也提前加载抽屉实现；当前按钮仍显示原有连接状态面板，不等待模块下载。
+          requestImPanelLoad()
           /*
             还没接上：**点一下就开始连**，别让用户干等 requestIdleCallback 的 8 秒。
             retryIm 在 off / error / kicked / unavailable 下都是「再试一次」，

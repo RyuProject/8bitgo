@@ -6,7 +6,7 @@
  * **零 import**，和 services/hotkeys.ts、services/padKeys.ts 同一个理由：
  * 以后要在 node 里测未读数的合并逻辑，直接 import 就行，不需要浏览器。
  *
- * ## 两个口子
+ * ## 给界面层的口子
  *
  * 1. `registerImOpener(fn)` —— IM 面板挂载时把「怎么打开我」交上来。
  *    没人注册时 `openIm()` 返回 false，顶栏据此显示一个「即将上线」的占位面板，
@@ -14,6 +14,8 @@
  * 2. `setImUnread(n)` —— IM 那边收到新消息就报个数，顶栏的红点自己会跟上。
  *    刻意做成「报总数」而不是「+1」：断线重连之后客户端本地的累加值一定是错的，
  *    唯一可靠的做法是让服务端告诉你现在到底有几条未读。
+ * 3. `requestImPanelLoad()` —— 用户碰到消息入口时通知 Layout 提前加载抽屉；平时由 Layout 延后挂载，
+ *    这样非首屏依赖不会挤进首页请求链，而登录后的 IM 生命周期仍由常驻抽屉接管。
  */
 
 /** 红点上最多显示到几，再多就是 99+。IM 里未读上千是常态，全写出来会把按钮撑坏 */
@@ -24,6 +26,31 @@ export const IM_UNREAD_CAP = 99
 type ImOpener = () => void
 
 let opener: ImOpener | null = null
+
+/* ---------------- 延后抽屉模块，直到用户表达意图 ---------------- */
+
+const imPanelLoadListeners = new Set<() => void>()
+let imPanelLoadRequested = false
+
+/** 首次指向消息入口时通知 Layout 提前加载抽屉；事件只记本页生命周期，不写入持久存储。 */
+export function requestImPanelLoad(): void {
+  if (imPanelLoadRequested) return
+  imPanelLoadRequested = true
+  for (const listener of [...imPanelLoadListeners]) {
+    try {
+      listener()
+    } catch {
+      /* 加载提示不能影响顶栏按钮的状态面板 */
+    }
+  }
+}
+
+/** Layout 挂载时订阅；若首次交互发生在订阅前，立即补发一次请求。 */
+export function onImPanelLoadRequest(listener: () => void): () => void {
+  imPanelLoadListeners.add(listener)
+  if (imPanelLoadRequested) listener()
+  return () => imPanelLoadListeners.delete(listener)
+}
 
 /**
  * IM 面板注册「怎么打开我」。返回注销函数。

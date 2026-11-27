@@ -3,6 +3,7 @@ import { cx } from '@/lib/format'
 import { useT } from '@/services/i18n'
 import { useAuthReady, useCurrentUser } from '@/services/auth'
 import { requestImDm } from '@/services/imClient'
+import { requestImPanelLoad } from '@/services/im'
 import { userRoleAvatarClass } from '@/components/UserRole'
 import type { UserRole } from '@/types'
 
@@ -83,6 +84,8 @@ export function DmAvatar({
         setBusy(true)
         setFailed(false)
         try {
+          // 点评论头像时与连接并行加载抽屉；否则延后的 panelOpener 会让首次私信请求落空。
+          requestImPanelLoad()
           // false = 没登录 / 后端没配 IM / 连接失败。三种都不弹错误框：
           // 把 title 换成「暂时用不了」就够了，为一个次要入口弹全站模态框太重。
           if (!(await requestImDm({ peerId, nick, avatar }))) setFailed(true)

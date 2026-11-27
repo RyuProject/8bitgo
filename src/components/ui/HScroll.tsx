@@ -37,9 +37,12 @@ export function HScroll({
   useEffect(() => {
     const el = ref.current
     if (!el) return
+    // md 以下箭头由 CSS 隐藏，手机只用原生手势；此时读取 scrollWidth/clientWidth 没有用途，
+    // 而这些几何属性在布局尚未更新时会强制浏览器同步排版。宽屏才为箭头测量轨道边界。
+    const arrowsEnabled = window.matchMedia('(min-width: 768px)')
     let frame = 0
     const scheduleUpdate = () => {
-      if (frame) return
+      if (!arrowsEnabled.matches || frame) return
       // 合并挂载、尺寸和滚动触发的测量；放到下一帧读取，避免 React 刚改完 DOM 时同步强制布局。
       frame = requestAnimationFrame(() => {
         frame = 0
