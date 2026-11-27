@@ -457,18 +457,27 @@ export async function verifyRomBlobRange(
   const first = start / manifest.blockBytes
   const replacements: BlobPart[] = []
   let repaired = false
-  for (let offset = 0; offset < blob.size; offset += manifest.blockBytes) {
+  // 一个下载分片通常含四个完整性块。两个一批可让 WebCrypto 并行散列，
+  // 又把每条下载通道新增的临时 ArrayBuffer 限制在约 4 MiB。
+  const blocksPerBatch = 2
+  for (let offset = 0; offset < blob.size; offset += manifest.blockBytes * blocksPerBatch) {
     if (signal?.aborted) throw new DOMException('已取消', 'AbortError')
-    const index = first + offset / manifest.blockBytes
-    const length = Math.min(manifest.blockBytes, blob.size - offset)
-    const block = blob.slice(offset, offset + length)
-    const bytes = new Uint8Array(await block.arrayBuffer())
-    if (await digest(bytes) === manifest.blocks[index]) {
-      replacements.push(block)
-      continue
+    const count = Math.min(blocksPerBatch, Math.ceil((blob.size - offset) / manifest.blockBytes))
+    const checks = await Promise.all(Array.from({ length: count }, async (_, batchOffset) => {
+      const blockOffset = offset + batchOffset * manifest.blockBytes
+      const index = first + blockOffset / manifest.blockBytes
+      const block = blob.slice(blockOffset, Math.min(blob.size, blockOffset + manifest.blockBytes))
+      const bytes = new Uint8Array(await block.arrayBuffer())
+      return { index, block, valid: await digest(bytes) === manifest.blocks[index] }
+    }))
+    for (const check of checks) {
+      if (check.valid) {
+        replacements.push(check.block)
+        continue
+      }
+      replacements.push(await fetchRepairBlock(rawUrl, manifest, check.index, signal))
+      repaired = true
     }
-    replacements.push(await fetchRepairBlock(rawUrl, manifest, index, signal))
-    repaired = true
   }
   return repaired ? new Blob(replacements, { type: blob.type }) : blob
 }

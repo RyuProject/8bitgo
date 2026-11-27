@@ -13,6 +13,7 @@ import {
   romIntegrityManifestUrl,
   romIntegrityKey,
   verifyRomBlob,
+  verifyRomBlobRange,
   verifyRomBytes,
   verifyRomResponse,
 } from '../src/services/romIntegrity.ts'
@@ -51,6 +52,32 @@ try {
     'standalone same-origin runtime receives the same key and version used by the normal ROM loader')
   assert.equal(romIntegrityManifestUrl('https://example.org/roms/test/game.gba'), null,
     'external BIOS URLs do not get assigned a fabricated trusted manifest')
+
+  // 单个 8 MiB 下载分片的四个 2 MiB 摘要应分两路计算，限制额外瞬时内存。
+  const rangeContent = new Uint8Array(ROM_INTEGRITY_BLOCK_BYTES * 4)
+  for (let index = 0; index < rangeContent.byteLength; index++) rangeContent[index] = (index * 17) % 251
+  const rangeKey = 'roms/integrity-test/parallel-range.gba'
+  const rangeManifest = await createRomIntegrityManifest(new Blob([rangeContent]), rangeKey)
+  const originalDigest = crypto.subtle.digest.bind(crypto.subtle)
+  let activeDigests = 0
+  let maximumActiveDigests = 0
+  let rangeDigestCalls = 0
+  crypto.subtle.digest = async (...args) => {
+    activeDigests++
+    rangeDigestCalls++
+    maximumActiveDigests = Math.max(maximumActiveDigests, activeDigests)
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      return await originalDigest(...args)
+    } finally { activeDigests-- }
+  }
+  try {
+    const rangeBlob = new Blob([rangeContent])
+    assert.equal(await verifyRomBlobRange(`https://rom.8bitgo.com/${rangeKey}`, rangeBlob, 0, rangeManifest), rangeBlob,
+      '全部完整性块正确时保留原 Blob，避免额外合并复制')
+    assert.equal(rangeDigestCalls, 4, '每个 2 MiB 块恰好散列一次')
+    assert.equal(maximumActiveDigests, 2, '分片校验最多并行两个 SHA-256，控制瞬时内存')
+  } finally { crypto.subtle.digest = originalDigest }
 
   const etag = '"manifest-shape-v1"'
   const tiny = new Uint8Array([1, 2, 3, 4])
