@@ -3,7 +3,7 @@ import { CHUNK_BYTES, fetchBlobWithProgress, fetchWithProgress, optionalManifest
 import { alternateRomUrls } from '@/services/romHosts'
 import { downloadResumeStore } from './downloadResume'
 import {
-  romCacheGetBlobRecord, romCacheGetRecord, romCacheGetRecordWithinLimit, romCacheKey,
+  romCacheGetBoundedRecord, romCacheGetRecord, romCacheKey,
   romCacheMarkIntegrityManifestVerified, romCachePut,
 } from './romCache'
 import type { RomCacheBlobRecord } from './romCache'
@@ -191,13 +191,15 @@ export async function loadGameBytes(
   // 缓存键只有在播放地址带内容版本号（?romv=<etag>）时才成立，见 romCache.ts 的文件头注释
   const cacheKey = romCacheKey(game)
   if (cacheKey) {
-    // 有上限的播放器先以 Blob 检查缓存大小，避免把历史的大 ArrayBuffer 缓存重新读进内存。
-    const cachedBlobRecord = limits.maxBytes !== undefined ? await romCacheGetBlobRecord(cacheKey) : null
-    const cachedBlob = cachedBlobRecord?.blob ?? null
-    let cachedIntegrityRequired = cachedBlobRecord?.integrityRequired
-    let cachedIntegrityManifest = cachedBlobRecord?.integrityManifest
-    let cachedIdentity: Pick<RomCacheBlobRecord, 'recordId' | 'storedAt'> | undefined = cachedBlobRecord ?? undefined
-    let cached: ArrayBuffer | null = null
+    // 有上限时先看索引再取字节，并保留 ArrayBuffer / Blob 原类型，避免越限缓存进入内存或来回复制。
+    const boundedRecord = limits.maxBytes !== undefined
+      ? await romCacheGetBoundedRecord(cacheKey, limits.maxBytes)
+      : null
+    const cachedBlob = boundedRecord?.value instanceof Blob ? boundedRecord.value : null
+    let cachedIntegrityRequired = boundedRecord?.integrityRequired
+    let cachedIntegrityManifest = boundedRecord?.integrityManifest
+    let cachedIdentity: Pick<RomCacheBlobRecord, 'recordId' | 'storedAt'> | undefined = boundedRecord ?? undefined
+    let cached: ArrayBuffer | null = boundedRecord?.value instanceof ArrayBuffer ? boundedRecord.value : null
     if (cachedBlob) {
       try {
         assertSizeLimit(cachedBlob.size, limits.maxBytes, '游戏文件')
@@ -207,11 +209,8 @@ export async function loadGameBytes(
         // 超限的历史缓存不能盖住正常网络回源；删除后继续按本局安全上限重新下载。
         await romCacheDelete(cacheKey).catch(() => {})
       }
-    } else {
-      // 有 maxBytes 的旧版本 ROM 也可能以 ArrayBuffer 形式缓存；先用 IDB 元数据挡住超限项再读字节。
-      const record = limits.maxBytes === undefined
-        ? await romCacheGetRecord(cacheKey)
-        : await romCacheGetRecordWithinLimit(cacheKey, limits.maxBytes)
+    } else if (limits.maxBytes === undefined) {
+      const record = await romCacheGetRecord(cacheKey)
       cached = record?.data ?? null
       cachedIntegrityRequired = record?.integrityRequired
       cachedIntegrityManifest = record?.integrityManifest

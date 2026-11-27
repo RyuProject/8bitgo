@@ -107,6 +107,14 @@ export interface RomCacheArrayBufferRecord {
   integrityManifest?: RomIntegrityManifest
 }
 
+export interface RomCacheBoundedRecord {
+  value: ArrayBuffer | Blob
+  recordId?: string
+  storedAt?: number
+  integrityRequired?: boolean
+  integrityManifest?: RomIntegrityManifest
+}
+
 let cacheRecordSequence = 0
 
 /** 只作同页 / 跨标签缓存写入代次比较，不承载安全凭据。 */
@@ -258,18 +266,18 @@ export async function romCacheGetRecord(key: string): Promise<RomCacheArrayBuffe
   }
 }
 
-/** 有上限的运行时先在同一个 IDB 只读事务中检查元数据，再取 ArrayBuffer，避免读入超限旧缓存。 */
-export async function romCacheGetRecordWithinLimit(
+/** 有大小上限的运行时先读索引，再按原存储类型取缓存，避免超限复制及 ArrayBuffer→Blob→ArrayBuffer 往返。 */
+export async function romCacheGetBoundedRecord(
   key: string,
   maxBytes: number,
-): Promise<RomCacheArrayBufferRecord | null> {
+): Promise<RomCacheBoundedRecord | null> {
   if (!key || !Number.isSafeInteger(maxBytes) || maxBytes <= 0) return null
   const db = await openDb()
   if (!db) return null
   return new Promise((resolve) => {
     let settled = false
     let timer: ReturnType<typeof setTimeout> | undefined
-    const finish = (record: RomCacheArrayBufferRecord | null) => {
+    const finish = (record: RomCacheBoundedRecord | null) => {
       if (settled) return
       settled = true
       if (timer !== undefined) clearTimeout(timer)
@@ -286,34 +294,24 @@ export async function romCacheGetRecordWithinLimit(
           finish(null)
           return
         }
-        // 在元数据请求事件仍激活的事务里读取字节，检查结果不会与另一个标签页的覆盖之间出现空档。
+        // 在元数据请求事件仍激活的事务里取值；不能先 await 再开新事务，否则 IDB 会在回调后自动关闭。
         const valueReq = tx.objectStore(STORE_BLOB).get(key)
         valueReq.onsuccess = () => {
           const value = valueReq.result
-          if (!(value instanceof ArrayBuffer) || value.byteLength === 0 || value.byteLength > maxBytes ||
-              value.byteLength !== meta.size) {
+          const valueSize = value instanceof Blob ? value.size : value instanceof ArrayBuffer ? value.byteLength : 0
+          if (valueSize <= 0 || valueSize > maxBytes || valueSize !== meta.size) {
             finish(null)
             return
           }
-          const currentMetaReq = tx.objectStore(STORE_META).get(key)
-          currentMetaReq.onsuccess = () => {
-            const current = currentMetaReq.result as MetaEntry | undefined
-            if (!current || current.size !== meta.size || current.storedAt !== meta.storedAt ||
-                current.recordId !== meta.recordId) {
-              finish(null)
-              return
-            }
-            void touch(db, key)
-            finish({
-              data: value,
-              ...(typeof current.recordId === 'string' ? { recordId: current.recordId } : {}),
-              ...(typeof current.storedAt === 'number' && Number.isSafeInteger(current.storedAt) ? { storedAt: current.storedAt } : {}),
-              ...(typeof current.integrityRequired === 'boolean' ? { integrityRequired: current.integrityRequired } : {}),
-              ...(current.integrityManifest && typeof current.integrityManifest === 'object'
-                ? { integrityManifest: current.integrityManifest } : {}),
-            })
-          }
-          currentMetaReq.onerror = () => finish(null)
+          void touch(db, key)
+          finish({
+            value,
+            ...(typeof meta.recordId === 'string' ? { recordId: meta.recordId } : {}),
+            ...(typeof meta.storedAt === 'number' && Number.isSafeInteger(meta.storedAt) ? { storedAt: meta.storedAt } : {}),
+            ...(typeof meta.integrityRequired === 'boolean' ? { integrityRequired: meta.integrityRequired } : {}),
+            ...(meta.integrityManifest && typeof meta.integrityManifest === 'object'
+              ? { integrityManifest: meta.integrityManifest } : {}),
+          })
         }
         valueReq.onerror = () => finish(null)
       }

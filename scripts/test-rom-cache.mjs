@@ -458,22 +458,29 @@ process.on('unhandledRejection', (e) => {
     console.log('✓ ROM 缓存持久化 Worker 必校验状态并保守识别旧缓存')
   }
 
-  /* --- 15. 有大小上限的 ROM 先查 Blob，再安全复用上限内的 ArrayBuffer 缓存 --- */
+  /* --- 15. 有大小上限的 ROM 先查索引，避免超限内容及不必要的 Blob 往返 --- */
   {
-    const { romCacheGetRecordWithinLimit, romCachePut, fake } = await freshCache()
+    const { romCacheGetBoundedRecord, romCachePut, romCachePutBlob, fake } = await freshCache()
     const smallKey = url('limited-small-arraybuffer')
     await romCachePut(smallKey, buf(128))
-    const small = await romCacheGetRecordWithinLimit(smallKey, 128)
-    assert.equal(small?.data.byteLength, 128, '限额内的 ArrayBuffer 缓存应可供有上限的运行时复用')
+    const small = await romCacheGetBoundedRecord(smallKey, 128)
+    assert.ok(small?.value instanceof ArrayBuffer, '限额内的 ArrayBuffer 应原类型交给调用方，不转换成 Blob')
+    assert.equal(small.value.byteLength, 128)
+
+    const blobKey = url('limited-blob')
+    await romCachePutBlob(blobKey, new Blob([new Uint8Array(128)]))
+    const blob = await romCacheGetBoundedRecord(blobKey, 128)
+    assert.ok(blob?.value instanceof Blob, '限额内的 Blob 应继续保留 Blob 类型')
+    assert.equal(blob.value.size, 128)
 
     const largeKey = url('limited-large-arraybuffer')
     await romCachePut(largeKey, buf(256))
     const readsBefore = fake.blobGetRequests
-    const oversized = await romCacheGetRecordWithinLimit(largeKey, 128)
+    const oversized = await romCacheGetBoundedRecord(largeKey, 128)
     assert.equal(oversized, null, '超出调用方上限的旧缓存应当按未命中处理')
     assert.equal(fake.blobGetRequests, readsBefore,
       '读取超限元数据后必须直接返回，不能先把超限 ArrayBuffer 拉进内存')
-    console.log('✓ 有大小上限的 ROM 只复用不超限的 ArrayBuffer 缓存')
+    console.log('✓ 有大小上限的 ROM 先核元数据、保留缓存类型并拒绝越限读取')
   }
 
   console.log('\n全部通过 ✅')

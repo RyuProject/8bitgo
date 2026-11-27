@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 const script = fileURLToPath(new URL('./backfill-rom-integrity.mjs', import.meta.url))
 const objectKeys = Array.from({ length: 10 }, (_, index) => `roms/test/${index}.nes`)
 const manifests = new Set()
+const manifestReads = new Set()
 let active = 0
 let maximumActive = 0
 let retryableHashResponses = 0
@@ -49,6 +50,7 @@ const server = createServer(async (request, response) => {
     }
     if (url.pathname === '/integrity' && request.method === 'GET') {
       const key = url.searchParams.get('key')
+      manifestReads.add(key)
       const index = objectKeys.indexOf(key)
       const currentEtag = index === 4 && versionChanged ? '"fixture-new-4"' : `"fixture-${index}"`
       const currentSize = index === 2 || (index === 4 && versionChanged) ? 1536 : 1024
@@ -193,6 +195,14 @@ try {
   assert.equal(publishedSizes.get(objectKeys[2]), 1536, '单对象回填在 HEAD 缺长度时应重新从 R2 列表取长度')
   assert.equal(missingLengthHeadResponses, 2, '前缀和单对象两种模式都应覆盖 HEAD 缺长度')
 
+  manifests.delete(objectKeys[8])
+  manifests.delete(objectKeys[9])
+  manifestReads.clear()
+  const resumed = await run(['--prefix=roms/', '--apply', '--start-index=9', '--limit=2'])
+  assert.equal(resumed.code, 0, resumed.output)
+  assert.match(resumed.output, /本次补齐 2/)
+  assert.deepEqual([...manifestReads].sort(), [objectKeys[8], objectKeys[9]].sort(), '分段续跑不能重扫起始序号之前的对象')
+
   const checked = await run(['--prefix=roms/', '--require-complete', '--concurrency=3'])
   assert.equal(checked.code, 0, checked.output)
   assert.match(checked.output, /已有 10，缺少 0/)
@@ -200,6 +210,12 @@ try {
   const invalid = await run(['--prefix=roms/', '--concurrency=17'])
   assert.notEqual(invalid.code, 0, '超出安全上限的并发配置必须拒绝')
   assert.match(invalid.output, /--concurrency 必须是 1\.\.16 的整数/)
+  const invalidStart = await run(['--prefix=roms/', '--start-index=0'])
+  assert.notEqual(invalidStart.code, 0, '无效的分段续跑起点必须拒绝')
+  assert.match(invalidStart.output, /--start-index 必须是从 1 开始的正整数/)
+  const partialGate = await run(['--prefix=roms/', '--require-complete', '--start-index=2'])
+  assert.notEqual(partialGate.code, 0, '覆盖率门禁不能接受分段范围')
+  assert.match(partialGate.output, /不能用 --key、--limit 或 --start-index/)
   const unsafeMemory = await run(['--prefix=roms/', '--apply', '--concurrency=8', '--batch-blocks=8'])
   assert.notEqual(unsafeMemory.code, 0, '过大的并发 Range 缓冲区预算必须拒绝')
   assert.match(unsafeMemory.output, /安全内存预算/)

@@ -15,6 +15,7 @@ const token = String(process.env.ROM_INTEGRITY_TOKEN || '').trim()
 const keyFilter = String(valueArg('--key') || '').trim()
 const prefixFilter = String(valueArg('--prefix') || '').trim()
 const limit = Number(valueArg('--limit') || Number.POSITIVE_INFINITY)
+const startIndex = Number(valueArg('--start-index') || 1)
 const concurrency = Number(valueArg('--concurrency') || 4)
 const batchBlocks = Number(valueArg('--batch-blocks') || 8)
 
@@ -32,8 +33,8 @@ if (!apiValue) fail('请设置 ROM_INTEGRITY_API，指向当前 ROM Worker 的�
 if (!token) fail('请通过 ROM_INTEGRITY_TOKEN 环境变量提供 Worker ADMIN_TOKEN 或当前有效的 8bg1 短期 Worker 凭据')
 if (Boolean(keyFilter) === Boolean(prefixFilter)) fail('请且只请指定 --key=roms/... 或 --prefix=roms/...')
 if (requireComplete && apply) fail('--require-complete 是只读覆盖率门禁，不能与 --apply 同用')
-if (requireComplete && (keyFilter || prefixFilter !== 'roms/' || limit !== Number.POSITIVE_INFINITY)) {
-  fail('--require-complete 必须完整盘点 --prefix=roms/，不能用 --key 或 --limit')
+if (requireComplete && (keyFilter || prefixFilter !== 'roms/' || limit !== Number.POSITIVE_INFINITY || startIndex !== 1)) {
+  fail('--require-complete 必须从头完整盘点 --prefix=roms/，不能用 --key、--limit 或 --start-index')
 }
 if (keyFilter && !validKey(keyFilter)) fail('--key 必须是 roms/ 下的合法 ROM / BIOS key（不含 covers）')
 if (prefixFilter && (!prefixFilter.startsWith('roms/') || prefixFilter.startsWith('roms/covers/') ||
@@ -41,6 +42,7 @@ if (prefixFilter && (!prefixFilter.startsWith('roms/') || prefixFilter.startsWit
   fail('--prefix 必须位于 roms/ 下，且不能指向 covers')
 }
 if (!(limit > 0) || (!Number.isSafeInteger(limit) && limit !== Number.POSITIVE_INFINITY)) fail('--limit 必须是正整数')
+if (!Number.isSafeInteger(startIndex) || startIndex < 1) fail('--start-index 必须是从 1 开始的正整数')
 if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 16) fail('--concurrency 必须是 1..16 的整数')
 if (!Number.isSafeInteger(batchBlocks) || batchBlocks < 1 || batchBlocks > 8) fail('--batch-blocks 必须是 1..8 的整数')
 // 每个 R2 Range 最多 2 MiB；限制并发中的缓冲区总量，避免迁移脚本把 Worker 内存顶满。
@@ -301,26 +303,28 @@ try {
 
   const keys = await listKeys()
   if (!keys.length) throw new Error('没有找到符合条件的 ROM / BIOS 对象')
-  const selected = keys.slice(0, limit)
+  const selected = keys.slice(startIndex - 1, Number.isFinite(limit) ? startIndex - 1 + limit : undefined)
+  if (!selected.length) throw new Error(`--start-index=${startIndex} 超出 ${keys.length} 个对象的范围`)
   let present = 0
   let missing = 0
   let published = 0
-  console.log(`${apply ? '回填' : '只读盘点'} ${selected.length} 个对象${keys.length > selected.length ? `（共发现 ${keys.length} 个，受 --limit 限制）` : ''}`)
+  console.log(`${apply ? '回填' : '只读盘点'} ${selected.length} 个对象（序号 ${startIndex}–${startIndex + selected.length - 1}/${keys.length}）`)
   let nextIndex = 0
   let firstError = null
   await Promise.all(Array.from({ length: Math.min(concurrency, selected.length) }, async () => {
     while (!firstError) {
       const index = nextIndex++
       if (index >= selected.length) return
+      const absoluteIndex = startIndex - 1 + index
       try {
-        const result = await backfillOne(selected[index], index + 1, selected.length)
+        const result = await backfillOne(selected[index], absoluteIndex + 1, keys.length)
         if (result === 'present') present++
         else if (result === 'missing') missing++
         else published++
       } catch (error) {
         if (!firstError) {
           const detail = error instanceof Error ? error.message : String(error)
-          firstError = new Error(`[${index + 1}/${selected.length}] ${detail}`, { cause: error })
+          firstError = new Error(`[${absoluteIndex + 1}/${keys.length}] ${detail}`, { cause: error })
         }
       }
     }

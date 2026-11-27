@@ -779,8 +779,10 @@ await check('普通小 ROM 直接写目标缓冲，超出安全阈值不按 Cont
 await check('带有限大小上限的普通 ROM 启用已知长度预分配', async () => {
   const { readFileSync } = await import('node:fs')
   const source = readFileSync(new URL('../src/emulator/romLoader.ts', import.meta.url), 'utf8')
-  assert.match(source, /limits\.maxBytes === undefined\s*\? await romCacheGetRecord\(cacheKey\)\s*:\s*await romCacheGetRecordWithinLimit\(cacheKey, limits\.maxBytes\)/,
-    '有大小上限时在 Blob 缓存未命中后仍要复用上限内的 ArrayBuffer ROM 缓存')
+  assert.match(source, /const boundedRecord = limits\.maxBytes !== undefined\s*\? await romCacheGetBoundedRecord\(cacheKey, limits\.maxBytes\)\s*:\s*null/,
+    '有大小上限时必须先按缓存元数据限额读取，并保留 ArrayBuffer / Blob 原类型')
+  assert.match(source, /boundedRecord\?\.value instanceof ArrayBuffer \? boundedRecord\.value : null/,
+    '限额内的 ArrayBuffer 缓存应直接交给轻量运行时，避免 Blob 转换和二次读取')
   assert.match(
     source,
     /const boundedMaxBytes = typeof limits\.maxBytes === 'number' &&\s*Number\.isSafeInteger\(limits\.maxBytes\) && limits\.maxBytes > 0[\s\S]*?preallocateKnownLength:\s*true[\s\S]*?preallocateMaxBytes:\s*boundedMaxBytes \? limits\.maxBytes : SMALL_ROM_PREALLOCATE_MAX_BYTES/,
