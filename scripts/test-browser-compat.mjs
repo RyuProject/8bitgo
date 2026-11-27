@@ -35,7 +35,8 @@ assert.match(css, /@supports not \(height:\s*100dvh\)/)
 
 const hScroll = read('src/components/ui/HScroll.tsx')
 assert.match(hScroll, /typeof ResizeObserver === 'function'/)
-assert.match(hScroll, /window\.addEventListener\('resize', update/)
+assert.match(hScroll, /window\.addEventListener\('resize', scheduleUpdate/)
+assert.match(hScroll, /window\.removeEventListener\('resize', scheduleUpdate/)
 
 const mediaQuery = read('src/lib/mediaQuery.ts')
 assert.match(mediaQuery, /typeof media\.addEventListener === 'function'/)
