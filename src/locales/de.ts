@@ -1511,6 +1511,7 @@ const de: Translation = {
     googleNotConfigured: 'Die Google-Anmeldung wurde vom Administrator nicht konfiguriert (VITE_GOOGLE_CLIENT_ID)',
     needLogin: 'Bitte melde dich zuerst an',
     requestFailed: 'Anfrage fehlgeschlagen (HTTP {status})',
+    apiRequestTimeout: 'Die Anfrage hat zu lange gedauert. Prüfe deine Verbindung und versuche es erneut.',
     pageDataTimeout: 'Das Laden der Seitendaten dauert zu lange. Prüfe deine Verbindung und versuche es erneut.',
     defaultNickname: 'Spieler',
     googleNickname: 'Google-Spieler',

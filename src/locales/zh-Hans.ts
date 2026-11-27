@@ -1533,6 +1533,7 @@ export const zhHans = {
     googleNotConfigured: '管理员尚未配置 Google 登录（VITE_GOOGLE_CLIENT_ID）',
     needLogin: '请先登录',
     requestFailed: '请求失败（HTTP {status}）',
+    apiRequestTimeout: '请求超时，请检查网络后重试',
     pageDataTimeout: '页面数据加载超时，请检查网络后重试',
     defaultNickname: '玩家',
     googleNickname: 'Google 玩家',

@@ -49,7 +49,7 @@ const configuredTimeout = Number(process.env.MAIL_TIMEOUT_MS || 15_000)
 const TIMEOUT_MS = Number.isFinite(configuredTimeout) && configuredTimeout > 0 ? Math.floor(configuredTimeout) : 15_000
 
 /** 测试端点能接触到真实发信密钥，因此生产进程不接受自定义 API 地址。 */
-function mailApiBase(variable, fallback) {
+function mailEnvApiBase(variable, fallback) {
   const override = String(process.env[variable] || '').trim()
   if (override && process.env.NODE_ENV !== 'test') {
     throw new MailError('sender', `${variable} 仅允许在 NODE_ENV=test 时配置`)
@@ -94,7 +94,7 @@ function resendKind(status, name, message) {
 async function sendViaResend(message) {
   // RESEND_API_BASE 只给本地 mock 用。正式环境不要设 ——
   // 设了就等于把能替你发信的 API Key 发给那个地址。
-  const base = mailApiBase('RESEND_API_BASE', 'https://api.resend.com')
+  const base = mailEnvApiBase('RESEND_API_BASE', 'https://api.resend.com')
 
   let res
   try {
@@ -166,7 +166,7 @@ function kindOf(status, code) {
 async function sendViaCloudflare(message) {
   // CF_API_BASE 只给本地 mock 用（见 scripts/test-mail-parsing.mjs）。正式环境不要设 ——
   // 设了就等于把带 Email Sending 权限的 Token 发给那个地址。
-  const base = mailApiBase('CF_API_BASE', 'https://api.cloudflare.com/client/v4')
+  const base = mailEnvApiBase('CF_API_BASE', 'https://api.cloudflare.com/client/v4')
   const url = `${base}/accounts/${process.env.CF_ACCOUNT_ID}/email/sending/send`
 
   let res
