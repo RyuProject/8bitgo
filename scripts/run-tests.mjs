@@ -54,6 +54,7 @@ const AGGREGATES = new Set(['server:test:netplay:all'])
 const SERIAL = new Set([
   'server:test:netplay', // 9921
   'server:test:saves', // 9941
+  'test:rom-probe', // 用真实计时器比较线路速度；并行 CPU 负载会把快慢响应挤进同一轮事件循环
 ])
 
 /** 只在特定平台能跑的 */
