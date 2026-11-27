@@ -944,7 +944,7 @@ await check('解包逐块报进度；读不出时作废续传 / 缓存只重下�
   const { readFileSync } = await import('node:fs')
   const read = (f) => readFileSync(new URL(`../${f}`, import.meta.url), 'utf8')
   const pack = read('src/services/romPack.ts')
-  assert.match(pack, /const cipher = await readBlobRange\(blob, cipherAt, cipherAt \+ meta\.cipherSize\)/)
+  assert.match(pack, /const cipher = await readBlobRange\(blob, cipherAt, cipherAt \+ meta\.cipherSize, ROM_PACK_READ_TIMEOUT_MS, signal\)/)
   assert.match(pack, /onProgress\?\.\(\{ loaded: unpacked, total: header\.originalSize \}\)/)
   const ejs = read('src/emulator/adapters/emulatorjs.ts')
   // 街机也走带内存退路的解包入口；unpackRomPackBlob 只剩 unpackRomPackForEngine 里那一处
@@ -952,7 +952,7 @@ await check('解包逐块报进度；读不出时作废续传 / 缓存只重下�
   assert.equal((ejs.match(/const unpacked = await unpackRomPackForEngine\(stored, onProgress\)/g) ?? []).length, 2)
   assert.equal((ejs.match(/if \(!isBlobReadError\(error\) \|\| memoryRomOf\((?:stored|blob)\)\) throw error/g) ?? []).length, 2)
   const dos = read('src/emulator/dosBundleSource.ts')
-  assert.match(dos, /decodeDosBundle\(stored, fallbackName, report\)/)
+  assert.match(dos, /decodeDosBundle\(stored, fallbackName, report, signal\)/)
   assert.match(dos, /if \(!cacheKey \|\| !isBlobReadError\(error\)\) throw error/)
 })
 
@@ -979,7 +979,7 @@ await check('Blob 存储坏掉：内存 ROM 替身可切片校验，交给引擎
   assert.match(ejs, /isNativeBlobReadMessage\(message\)/, '引擎读 ROM 报 NotReadableError 时要标记本页 Blob 存储已坏')
   assert.match(ejs, /const memory = memoryRomOf\(blob\)/, '引擎取 ROM 的快捷回应要认内存 ROM')
   const pack = readFileSync(new URL('../src/services/romPack.ts', import.meta.url), 'utf8')
-  assert.match(pack, /await Promise\.all\(parts\.map\(\(part\) => \(part\.size \? readBlobRange\(part, 0, 1, BLOB_STORAGE_PROBE_MS\) : null\)\)\)/, '解包后要探每个 Blob 块是否存在')
+  assert.match(pack, /await Promise\.all\(parts\.map\(\(part\) => \(part\.size \? readBlobRange\(part, 0, 1, BLOB_STORAGE_PROBE_MS, signal\) : null\)\)\)/, '解包后要探每个 Blob 块是否存在')
   assert.match(pack, /const probeBytes = Math\.min\(combined\.size, 4 \* 1024 \* 1024\)/, '还要按引擎的 4MB 读取大小探合并后的 ROM')
   assert.match(ejs, /onBlobReadError\?\.\(error\)/, '引擎读取 Blob 失败时要主动通知启动恢复')
   assert.match(ejs, /failLoad\(fmt\(rt\.ejsEngineError, \{ msg: message \}\), 'runtime'\)/, 'Blob 读取失败应重挂一次并保留 ROM 候选')
