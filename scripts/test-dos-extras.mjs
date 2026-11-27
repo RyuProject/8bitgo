@@ -395,8 +395,11 @@ const adapter = readFileSync(new URL('../src/emulator/adapters/jsdos.ts', import
   ok(!adapter.includes('const Dos = await loadJsDos()'), '不再等引擎脚本加载完才开始下载 ROM')
   // 取不到就抛，不静默跳过：少一条要么是 key 填错（永远不会自己好），
   // 要么这一局本来就跑不成预期的样子，而玩家只会以为「你们这个扩展包是假的」
-  ok(/throw new Error\(`附加文件「\$\{path\}」下载失败/.test(adapter), '附加文件下不下来时抛错，不静默跳过')
+  ok(/const failure = new Error\(`附加文件「\$\{path\}」下载失败/.test(adapter) && /throw failure/.test(adapter), '附加文件下不下来时抛错，不静默跳过')
   ok(/loadExtras\(options\.dosExtras, abort\.signal\)/.test(adapter), '下载挂在会话的 AbortSignal 上（玩家切走就别继续吞流量）')
+  ok(/alternateUrls:\s*alternateRomUrls\(url\)/.test(adapter), '资料片和补丁下载失败时切到同一对象的备用域名')
+  ok(/if \(isRomNetworkFailure\(e\)\) markRomNetworkFailure\(failure\)/.test(adapter), '包装附加文件错误时保留网络故障标记，允许同语言网络回退')
+  ok(/loadExtras\(options\.dosExtras, abort\.signal\),\s*\(error\) => isRomNetworkFailure\(error\) \? 'network' : 'content'/.test(adapter), '附加文件网络故障与内容故障分开归类')
 }
 
 /* ---------------- 六、开关：默认不下那 500MB ---------------- */

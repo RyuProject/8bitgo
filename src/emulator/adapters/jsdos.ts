@@ -12,7 +12,7 @@
  * 想换成官方 CDN 就设 VITE_JSDOS_PATH=https://v8.js-dos.com/latest/
  */
 import type { Capability, CaptureSources, LoadProgress, MountOptions, PadButton, RuntimeHandle } from '../types'
-import { canonicalRomUrl, retargetSockdriveChanges } from '@/services/romHosts'
+import { alternateRomUrls, canonicalRomUrl, retargetSockdriveChanges } from '@/services/romHosts'
 import { getT, fmt } from '@/services/i18n'
 import {
   hideJsdosConfigForLayer,
@@ -44,7 +44,7 @@ import { imageDataToBlob } from '../recorder'
 import { GP, startGamepadBridge, hasGamepadApi, type GamepadBridge } from '../gamepad'
 import { deleteSave, pullSave, pushSave } from '@/services/saves'
 import { loadGameBytes } from '../romLoader'
-import { isRomNetworkFailure } from '../loadProgress'
+import { isRomNetworkFailure, markRomNetworkFailure } from '../loadProgress'
 import { inspectRemoteRomPack, isRomPackUrl, readBlobRange, ROM_PACK_ARRAY_BUFFER_LIMIT } from '@/services/romPack'
 import { prepareRemoteDosBundle } from '../dosBundleSource'
 import {
@@ -73,6 +73,7 @@ import {
 import { normalizeDosStartupCommands } from '../../../shared/dos-startup-commands.js'
 import { fetchWithProgress, STALL_MS, STARTING_MILESTONE, windowsGuestLaunchBudgetMs, windowsGuestStartupBudgetMs } from '../loadProgress'
 import { isWindowsGuestStartupWasmTrap } from '../jsdosStartupTrap'
+import { createJsdosResourceFailureGate } from '../jsdosStartupGate'
 import { startActiveTimeout } from '../activeTimeout'
 import {
   assertTypeable,
@@ -821,9 +822,15 @@ async function loadExtras(
       if (!url) throw new Error(`附加文件「${path}」没有可用地址（ROM 存储没配好？）`)
       let buf: ArrayBuffer
       try {
-        buf = await fetchWithProgress(url, { signal, phase: 'assets' })
+        buf = await fetchWithProgress(url, {
+          signal,
+          phase: 'assets',
+          alternateUrls: alternateRomUrls(url),
+        })
       } catch (e) {
-        throw new Error(`附加文件「${path}」下载失败（${e instanceof Error ? e.message : String(e)}）`)
+        const failure = new Error(`附加文件「${path}」下载失败（${e instanceof Error ? e.message : String(e)}）`, { cause: e })
+        if (isRomNetworkFailure(e)) markRomNetworkFailure(failure)
+        throw failure
       }
       if (!buf.byteLength) throw new Error(`附加文件「${path}」是空的`)
       out[index] = { path, data: new Uint8Array(buf) }
@@ -1515,6 +1522,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     let startupPhase: 'config' | 'resources' | 'runtime' = 'config'
     let concurrentFailure: unknown = null
     let concurrentFailureScope: 'runtime' | 'content' | 'network' = 'runtime'
+    const resourceFailureGate = createJsdosResourceFailureGate()
     try {
       if (pc98 && streamingGame) {
         throw new Error('PC-98 软盘模式不能同时使用 Sockdrive；请上传单个 .fdi ROM')
@@ -1566,6 +1574,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           if (concurrentFailure === null) {
             concurrentFailure = error
             concurrentFailureScope = scopeForError(error)
+            resourceFailureGate.fail(error)
           }
           // ROM / 资料片已经确定失败时，系统镜像继续下载没有任何价值；让错误立刻出现在界面上。
           if (!abort.signal.aborted) abort.abort(error)
@@ -1609,7 +1618,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         ? options.dosExtras?.length
           ? Promise.reject(new Error('流式游戏盘不能现场合并 DOS 附加文件，请重新生成 Sockdrive'))
           : Promise.resolve([])
-        : loadExtras(options.dosExtras, abort.signal))
+        : loadExtras(options.dosExtras, abort.signal),
+      (error) => isRomNetworkFailure(error) ? 'network' : 'content',
+      )
       const sockdriveTask = settled(streamingGame
         ? verifySockdriveForLaunch(sockdriveUrl, abort.signal, Boolean(systemUrl))
         : Promise.resolve<SockdriveRuntimePreload>('none'))
@@ -1632,13 +1643,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
       let Dos: DosFn
       try {
-        Dos = await engineTask
+        Dos = await resourceFailureGate.race(engineTask)
       } catch (e) {
         if (concurrentFailure === null) {
           concurrentFailure = e
           concurrentFailureScope = 'runtime'
+          startupPhase = 'runtime'
         }
-        startupPhase = 'runtime'
         // 核心脚本失败时把三路下载一起停掉；settled 会把它们的拒绝接住，避免控制台再冒未处理异常。
         abort.abort(e)
         await Promise.all([romTask, extrasTask, sockdriveTask, systemTask])
