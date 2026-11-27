@@ -263,9 +263,9 @@ export const AWAYFL_HOST_PATH = '/awayfl/host-v1/'
  * JSDOS_ASSET_VERSION 就必须换代。否则代码已部署，玩家却会继续命中上一份 CDN 缓存。
  */
 export const JSDOS_VERSION = '8.5.3'
-export const JSDOS_ASSET_VERSION = '8.5.3-8bitgo.11'
+export const JSDOS_ASSET_VERSION = '8.5.3-8bitgo.13'
 /** js-dos 主入口脚本的浏览器 SRI；check-jsdos 会与同版本 runtime.json 的摘要逐字核对。 */
-export const JSDOS_SCRIPT_INTEGRITY = 'sha256-ysKDnwu0CjEstxxcIl8Rei9wUkzh6lwrEWiuBe2CIPQ='
+export const JSDOS_SCRIPT_INTEGRITY = 'sha256-+MSUxw4D2WVbm5naX1wRijk6OXyHCYVEY4Fak8d5FFI='
 export const JSDOS_PATH: string = asDir(
   import.meta.env.VITE_JSDOS_PATH,
   `/jsdos/v${JSDOS_ASSET_VERSION}/`,
