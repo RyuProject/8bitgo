@@ -6,6 +6,14 @@ import { fixSockfsDgramPoll, installNdsWfcRuntime, isWorldAtWarNdsRomHeader, loa
 import { NDS_WFC_SETTINGS_PATH, NDS_WFC_SETTINGS_SIZE } from '../src/emulator/ndsStartup.ts'
 import { buildDnsAReply, dnsAnswerIpsFor, disposeNdsWfcDnsShim, installNdsWfcDnsShim, LocalDnsSocket, parseDnsQuestion, parseRelayUrl, PooledSocket, RetryingWebSocket, sanitizeDnsTable } from '../src/emulator/ndsWfcDns.ts'
 
+async function waitFor(predicate, message, timeoutMs = 1_000) {
+  const deadline = Date.now() + timeoutMs
+  while (!predicate()) {
+    if (Date.now() >= deadline) assert.fail(message)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+}
+
 const storedMac = new Map()
 const macWindow = {
   localStorage: {
@@ -238,7 +246,7 @@ let currentRelayUrl = 'wss://8bitgo.com/api/nds-wfc/socket/old-token/tcp/178.62.
 const dynamicRetry = new RetryingWebSocket(currentRelayUrl, ['binary'], FakeRealSocket, [1], 500, () => currentRelayUrl)
 FakeRealSocket.created[0].onclose({ code: 1006 })
 currentRelayUrl = 'wss://8bitgo.com/api/nds-wfc/socket/new-token/tcp/178.62.43.212/443'
-await new Promise((resolve) => setTimeout(resolve, 10))
+await waitFor(() => FakeRealSocket.created.length === 2, '退避后必须创建使用新令牌的连接')
 assert.equal(FakeRealSocket.created[1].url, currentRelayUrl, '在退避期间续取会话后，当前 socket 的重试也要换新令牌')
 dynamicRetry.close()
 // 重试用尽才报错
@@ -248,8 +256,9 @@ const failEvents = []
 failing.onerror = () => failEvents.push('error')
 failing.onclose = () => failEvents.push('close')
 FakeRealSocket.created[0].onclose({ code: 1006 })
-await new Promise((resolve) => setTimeout(resolve, 10))
+await waitFor(() => FakeRealSocket.created.length === 2, '第一次失败后必须创建一次重试连接')
 FakeRealSocket.created[1].onclose({ code: 1006 })
+await waitFor(() => failEvents.length === 2, '重试用尽后必须通知 error 和 close')
 assert.deepEqual(failEvents, ['error', 'close'])
 assert.equal(failing.readyState, 3)
 assert.equal(installNdsWfcDnsShim(shimWin, { server: '178.62.43.212', answers: {} }, '/api/nds-wfc/socket/'), true, '重复安装只换表')
@@ -319,8 +328,10 @@ assert.ok(FakeRealSocket.created.every((ws) => ws.readyState === 3), '重复 tea
 
 // WebSocket 握手若一直停在 CONNECTING，客户端要主动结束本次尝试并按退避策略重连。
 class ClosingSocket extends FakeRealSocket {
+  static closeCalls = 0
   close() {
     this.readyState = 3
+    ClosingSocket.closeCalls++
     this.onclose?.({ type: 'close', code: 1006 })
   }
 }
@@ -329,15 +340,16 @@ const timed = new RetryingWebSocket('wss://8bitgo.com/api/nds-wfc/socket/x/tcp/1
 const timedEvents = []
 timed.onerror = () => timedEvents.push('error')
 timed.onclose = () => timedEvents.push('close')
-await new Promise((resolve) => setTimeout(resolve, 30))
+await waitFor(() => timedEvents.length === 2, 'CONNECTING 超时并重试用尽后必须通知 error 和 close')
 assert.equal(FakeRealSocket.created.length, 2, 'CONNECTING 超时后必须产生一次受控重试')
 assert.deepEqual(timedEvents, ['error', 'close'])
 FakeRealSocket.created.length = 0
+ClosingSocket.closeCalls = 0
 const cancelRetry = new RetryingWebSocket('wss://8bitgo.com/api/nds-wfc/socket/x/tcp/178.62.43.212/443', ['binary'], ClosingSocket, [80], 5)
 const cancelEvents = []
 cancelRetry.onerror = () => cancelEvents.push('error')
 cancelRetry.onclose = () => cancelEvents.push('close')
-await new Promise((resolve) => setTimeout(resolve, 10))
+await waitFor(() => ClosingSocket.closeCalls === 1, 'CONNECTING 超时应先安排退避重试')
 cancelRetry.close()
 await new Promise((resolve) => setTimeout(resolve, 90))
 assert.equal(FakeRealSocket.created.length, 1, '用户关闭后必须取消等待中的自动重试')
