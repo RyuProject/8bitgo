@@ -204,7 +204,7 @@ loader.js 的 `import()` 失败，NES / SFC / GBA / 街机 / PS1 …… 所有 E
 
 **经过**：首页 SSR 曾用第一次出现的 `</head>` 字符串插入语言预载和 SEO meta。`public/edge-route-v5.js` 的注释里也有这个字面量，插入位置因此落进内联脚本注释；页面文本提取器把脚本后续源码显示在首页上。生产修复改为在 `index.html` 放唯一标记 `<!-- 8bitgo-ssr-head -->`，由 `server/src/ssr.js` 只替换这个标记，并把内联路由升到 v6。
 
-**规约**：SSR 头部内容必须通过模板专用标记注入，禁止按 `</head>` 搜索或替换；同步内联脚本源码不得含 `</head`。`npm run test:cover-cdn` 检查这两条以及标记唯一性，并必须挂在 `prebuild` 上，保证部署改写 `dist/` 之前就失败关闭。`check-edge-route-inline.mjs` 的 postbuild 校验也必须保留，确保产物中的内联脚本与源文件一致。
+**规约**：SSR 头部内容必须通过模板专用标记注入，禁止按 `</head>` 搜索或替换；同步内联脚本源码不得含 `</head`。`npm run test:cover-cdn` 检查这两条以及标记唯一性、插入槽位顺序，并必须挂在 `prebuild` 上，保证部署改写 `dist/` 之前就失败关闭。`check-edge-route-inline.mjs` 的 postbuild 校验也必须保留，确保产物中的内联脚本与源文件一致，且唯一 SSR 槽位位于完整路由脚本之后、真实 `</head>` 之前。
 
 ### 2.8 街机靠**压缩包文件名**认游戏
 
