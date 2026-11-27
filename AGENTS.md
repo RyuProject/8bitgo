@@ -4015,7 +4015,7 @@ EdgeOne 只能用境外（香港）节点。主站、ROM、Pages 子域都不受
   主域是 `image.8bitgo.com`，大陆加速域 `image-cn.8bitgo.com`（EdgeOne 回源主域）；`/cdn-cgi/image/` 缩放
   照样回源给 Cloudflare 做，但大陆域固定 `format=webp`：EdgeOne 缓存键不看 Accept，`format=auto` 会把
   第一个访客拿到的 AVIF 发给不认 AVIF 的浏览器。回归：`npm run test:cover-cdn`。
-- **主站上的大陆访客整页送到 cn.8bitgo.com**（2026-11-20，`public/edge-route-v3.js` → 当前 `edge-route-v4.js`）：以前的 `edge-route-v2.js` 用两个 180ms 测速探针决定去留，
+- **主站上的大陆访客整页送到 cn.8bitgo.com**（2026-11-20，`public/edge-route-v3.js` → 当前 `edge-route-v6.js`）：以前的 `edge-route-v2.js` 用两个 180ms 测速探针决定去留，
   从大陆直连实测探已连上的 8bitgo.com 要 1.0 秒、第一次连 cn.8bitgo.com（含握手）要 1.4～3.2 秒，两个探针永远超时、按规则留在原地 ——
   上线以来没把一个大陆访客送去 EdgeOne。同一时刻经 Cloudflare 美国节点：首页 HTML 2.4～4.2 秒（偶尔 60 秒无响应）、入口 JS 7.9 秒、
   一张封面 15.3 秒；经 EdgeOne：JS 1.5 秒、封面 3.1 秒。v3 改看 Cloudflare 已给的地域结论：SSR 把 `coverHint` 写进
@@ -4036,7 +4036,8 @@ EdgeOne 只能用境外（香港）节点。主站、ROM、Pages 子域都不受
     地址栏是主域。SSR 在 nginx 校验过回源密钥（`X-8bitgo-Site: cn`）时给 `<html>` 加 `data-8bitgo-site="cn"`（`shared/cn-host.js` 的 `CN_SITE_ATTR`）：
     边缘路由见到它就和在 cn 子域上一样留下；前端 `onCnSite()` 也认它，API / 运行时 / 密钥请求都走同源，不再跨域去 `cn.<裸域>/_cn`。
     迁移前 Cloudflare 那边的 HTML 永远不带这个属性，行为与 v4 相同。⚠️ 属性名在 edge-route 脚本里是写死的字符串，改名要同步（`test:cover-cdn` 核对）。
-  - `edge-route-vN.js` 按版本号长期缓存（`cache.js`）：改逻辑必须新建 v6，v2～v4 留给边缘缓存里的旧 HTML。新文件要先 `git add`，`check-runtime-syntax` 只看已跟踪的文件。
+  - **v6（2026-11-28）**：SSR 的 title/meta/preload 只能写进模板里的 `<!-- 8bitgo-ssr-head -->` 槽位，不能首次查找 HTML head 结束标记；内联路由脚本注释也不写该结束标记，避免边缘文本提取误把源码显示为正文。
+  - `edge-route-vN.js` 按版本号长期缓存（`cache.js`）：改逻辑必须新建 v7，v2～v6 留给边缘缓存里的旧 HTML。新文件要先 `git add`，`check-runtime-syntax` 只看已跟踪的文件。
     回归：`npm run test:edge-route && npm run test:cover-cdn`。
 - **8bitgo.com 上的大陆访客，JS / CSS / 字体 / 只读 API 也走 EdgeOne**（2026-11-04，`server/src/cn-edge.js`）：
   同一份「大陆页面」缓存里，SSR 把模板的 `/assets/`、`/fonts/` 改指 `https://cn.8bitgo.com/_cn/...`；

@@ -1,5 +1,5 @@
 /**
- * 主站 / 亚洲 CDN 首次选路回归（public/edge-route-v5.js）。
+ * 主站 / 亚洲 CDN 首次选路回归（public/edge-route-v6.js）。
  *
  * 直接执行：node scripts/test-edge-route.mjs
  *
@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url'
 import { createContext, runInContext } from 'node:vm'
 
 const root = new URL('..', import.meta.url)
-const source = readFileSync(fileURLToPath(new URL('public/edge-route-v5.js', root)), 'utf8')
+const source = readFileSync(fileURLToPath(new URL('public/edge-route-v6.js', root)), 'utf8')
 const HOST_MAIN = '8bitgo.com'
 const HOST_ASIA = 'cn.8bitgo.com'
 

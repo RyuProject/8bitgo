@@ -246,7 +246,7 @@
     <!--
       先选离访客更快的完整站点镜像，再让语言脚本决定目标路径。它只写一个两小时的
       非认证 Cookie；已有登录态、后台、OAuth、爬虫和测速工具会留在当前域名。
-      构建时把 public/edge-route-v5.js 原样内联，避免首屏多一次同步网络往返；
+      构建时把 public/edge-route-v6.js 原样内联，避免首屏多一次同步网络往返；
       文件名仍保留给已缓存旧 HTML 的访客，发版改变规则时必须同时换版本。
     -->
     <script data-8bitgo-edge-route-placeholder></script>
@@ -451,6 +451,8 @@
         } catch (e) {}
       })()
     </script>
+    <!-- SSR 注入本页的 title、meta 和语言预载；固定插入点避免误命中脚本注释里的相同字符串。 -->
+    <!-- 8bitgo-ssr-head -->
   </head>
   <body>
     <div id="root"></div>

@@ -27,6 +27,7 @@ const root = path.resolve(fileURLToPath(new URL('../..', import.meta.url)))
 const CLIENT_DIR = path.join(root, 'dist/client')
 const TEMPLATE = path.join(CLIENT_DIR, 'index.html')
 const SERVER_ENTRY = path.join(root, 'dist/server/entry-server.js')
+const SSR_HEAD_MARKER = '<!-- 8bitgo-ssr-head -->'
 
 export function ssrAvailable() {
   const available = existsSync(TEMPLATE) && existsSync(SERVER_ENTRY)
@@ -293,7 +294,7 @@ export async function renderPage(req, res, next) {
     const templatePage = retargetCoverHints(getTemplate(), originOf(coverBaseUrl()), originOf(coverBase))
     const localePreload = localePreloadTag(templatePage, lang, CLIENT_DIR)
     let page = localePreload
-      ? injectOnce(templatePage, '</head>', `${localePreload}\n</head>`)
+      ? injectOnce(templatePage, SSR_HEAD_MARKER, `${localePreload}\n${SSR_HEAD_MARKER}`)
       : templatePage
     // 8bitgo.com 上的大陆访客：JS / CSS / 字体也从 EdgeOne 取（cn-edge.js）；大陆入口本身已经同源。
     // 带 __assets=origin 的是兜底页在 EdgeOne 取不下来 chunk 后的重新载入：这次整页留在主站（shared/cover-cdn-hint.js）
@@ -312,7 +313,7 @@ export async function renderPage(req, res, next) {
 
     // <html lang> 跟随当前语言
     page = page.replace(/<html([^>]*)\slang="[^"]*"/, `<html$1 lang="${lang}"`)
-    // 边缘路由（public/edge-route-v5.js）在 <head> 里同步运行，要当场知道 Cloudflare 判定的地域；
+    // 边缘路由（public/edge-route-v6.js）在 <head> 里同步运行，要当场知道 Cloudflare 判定的地域；
     // 下面写在 </head> 前的 <meta name="8bitgo-cover-cdn"> 那时还没解析到。值只会是 cn / main。
     if (coverHint) page = page.replace(/<html\b/, `<html data-8bitgo-cdn="${coverHint}"`)
     // 这页经 EdgeOne 回源（cn 子域，或 NS 迁出 Cloudflare 后经 EdgeOne 打开的主域，见 deploy/saas/README.md）：
@@ -333,7 +334,7 @@ export async function renderPage(req, res, next) {
 
     const coverMeta = coverHint ? `\n<meta name="${COVER_CDN_META}" content="${coverHint}">` : ''
     const headHtml = `<title>${escapeHtml(head.title)}</title>\n${head.tags.join('\n')}${coverMeta}`
-    page = injectOnce(page, '</head>', `${headHtml}\n</head>`)
+    page = injectOnce(page, SSR_HEAD_MARKER, headHtml)
 
     // 首屏 HTML + 给客户端 hydrate 用的数据
     // data-cfasync：别让 Cloudflare Rocket Loader 把注水数据推迟到 load 之后（shared/rocket-loader-optout.js）

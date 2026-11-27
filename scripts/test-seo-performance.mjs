@@ -236,7 +236,7 @@ check('SSR 预载当前语言 chunk，失败或旧构建时安全退回现有按
 
   const ssr = read('server/src/ssr.js')
   assert.match(ssr, /localePreloadTag\(templatePage, lang, CLIENT_DIR\)/, 'SSR 按本页语言生成 preload')
-  assert.match(ssr, /localePreload\n\s*\? injectOnce\(templatePage, '<\/head>'/, '预载链接在大陆线路改写前注入')
+  assert.match(ssr, /localePreload\n\s*\? injectOnce\(templatePage, SSR_HEAD_MARKER/, '预载链接在大陆线路改写前通过固定槽位注入')
 })
 
 check('大陆入口：封面 preconnect / dns-prefetch 换成 EdgeOne 封面域，其余不动', () => {
