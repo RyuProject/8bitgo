@@ -248,6 +248,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let lastBatteryRecord = ''
   let unlockAudio: (() => void) | null = null
   const gamepadHeld = new Set<IodineButton>()
+  const extraKeysHeld = new Set<'l' | 'r'>()
   const inputSources = createInputSourceRouter<IodineButton>((button, down) => {
     const index = KEY_INDEX[button]
     if (down) engine?.keyDown(index)
@@ -346,19 +347,35 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   }
 
   const onVisibilityChange = () => {
-    if (document.visibilityState === 'hidden') updateBattery()
+    if (document.visibilityState === 'hidden') {
+      releaseExtraKeys()
+      updateBattery()
+    }
   }
   const onPageHide = () => updateBattery()
 
+  const releaseExtraKeys = () => {
+    for (const button of extraKeysHeld) setKey(button, false, 'keyboard-extra')
+    extraKeysHeld.clear()
+  }
+
+  const extraButtonOf = (code: string): 'l' | 'r' | null =>
+    code === 'KeyQ' ? 'l' : code === 'KeyE' ? 'r' : null
+
   const extraKeysDown = (event: KeyboardEvent) => {
-    if (event.code !== 'KeyQ' && event.code !== 'KeyE') return
-    if (event.target instanceof HTMLElement && /^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName)) return
+    const button = extraButtonOf(event.code)
+    if (!button) return
+    const target = event.target as HTMLElement | null
+    if (target?.isContentEditable || (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) return
     event.preventDefault()
-    setKey(event.code === 'KeyQ' ? 'l' : 'r', true, 'keyboard-extra')
+    if (extraKeysHeld.has(button)) return
+    extraKeysHeld.add(button)
+    setKey(button, true, 'keyboard-extra')
   }
   const extraKeysUp = (event: KeyboardEvent) => {
-    if (event.code === 'KeyQ') setKey('l', false, 'keyboard-extra')
-    else if (event.code === 'KeyE') setKey('r', false, 'keyboard-extra')
+    const button = extraButtonOf(event.code)
+    if (!button || !extraKeysHeld.delete(button)) return
+    setKey(button, false, 'keyboard-extra')
   }
 
   if (typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches) {
@@ -393,9 +410,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     stopGamepad()
     uninstallKeyboard?.()
     uninstallKeyboard = null
+    releaseExtraKeys()
     inputSources.releaseSource('keyboard-extra')
     window.removeEventListener('keydown', extraKeysDown, true)
     window.removeEventListener('keyup', extraKeysUp, true)
+    window.removeEventListener('blur', releaseExtraKeys)
     document.removeEventListener('visibilitychange', onVisibilityChange)
     window.removeEventListener('pagehide', onPageHide)
     if (unlockAudio) {
@@ -515,6 +534,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       })
       window.addEventListener('keydown', extraKeysDown, true)
       window.addEventListener('keyup', extraKeysUp, true)
+      window.addEventListener('blur', releaseExtraKeys)
       gamepadRaf = requestAnimationFrame(pollGamepad)
       document.addEventListener('visibilitychange', onVisibilityChange)
       window.addEventListener('pagehide', onPageHide)

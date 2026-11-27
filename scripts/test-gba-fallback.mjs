@@ -90,6 +90,10 @@ assert.match(iodine, /setKey\(button, want, 'gamepad'\)/,
   '手柄松开不能清掉键盘或触屏持有的相同动作')
 assert.match(iodine, /setKey\(button, true, `touch:\$\{button\}`\)/,
   '触屏肩键与键盘、手柄拥有独立按住状态')
+assert.match(iodine, /window\.addEventListener\('blur', releaseExtraKeys\)/,
+  '窗口失焦时要松开 Q / E 肩键，避免回到游戏后持续误输入')
+assert.match(iodine, /target\?\.isContentEditable/,
+  '编辑富文本时不会误触发 Q / E 肩键')
 assert.match(iodine, /const fail = \(error: unknown\) => \{[\s\S]*?options\.onError\?\.\(message, scope\)[\s\S]*?destroy\(\)/,
   'BIOS 配置错误触发标准收尾，不能遗留挂起的 ROM 请求')
 assert.match(iodine, /const destroy = \(\) => \{[\s\S]*?aborter\.abort\(\)/,
