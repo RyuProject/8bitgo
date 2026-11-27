@@ -16,8 +16,18 @@ export interface SockdriveWarmFile {
 export type SockdriveRuntimePreload = 'default' | 'none'
 
 // 生产 Fallout 清单有 245 个热点范围；即使总字节不大，也不能让几十次 RTT 挡住 DOSBox-X 开机。
-// 最多预取 32 个对象，其余由 Sockdrive 按需读取，避免启动预热成为整局的门槛。
+// 小型清单最多预取 32 个对象；长清单只预取 8 个开局热点，其余由 Sockdrive 按需读取。
 export const SOCKDRIVE_WARM_MAX_FILES = 32
+const SOCKDRIVE_LARGE_PROFILE_THRESHOLD = 64
+export const SOCKDRIVE_LARGE_PROFILE_STARTUP_FILES = 8
+
+/** 长清单通常记录了一段完整游玩过程；开局只挡住最先触达的一小段，其余块由客体按需读取。 */
+export function sockdriveWarmFileLimit(profileRangeCount: number): number {
+  if (!Number.isSafeInteger(profileRangeCount) || profileRangeCount < 0) return SOCKDRIVE_WARM_MAX_FILES
+  return profileRangeCount > SOCKDRIVE_LARGE_PROFILE_THRESHOLD
+    ? SOCKDRIVE_LARGE_PROFILE_STARTUP_FILES
+    : SOCKDRIVE_WARM_MAX_FILES
+}
 
 /** 预热只计数不留字节；元数据给出的长度是硬上限，不能信任代理的 Content-Length。 */
 export async function drainSockdriveWarmResponse(
@@ -122,7 +132,8 @@ const SOCKDRIVE_WARM_3G_BYTES = 8 * 1024 * 1024
 /**
  * 弱网也要尽量在进客体前装齐启动热点。《天之痕》实际清单是 27 个 256KB 块（6.75MB），
  * 旧 4MB 预算只覆盖前 16 块，并让 js-dos 关闭 OPFS 预载；剩余 11 块在剧情开始后同步等网络。
- * 8MiB 足够覆盖这份清单；桌面也限制在相同体积和 32 个对象，避免大清单拖住开机。
+ * 8MiB 足够覆盖这份清单；长清单通常含整段试玩轨迹，只在启动前读前 8 个对象（通常 2MiB），
+ * 其余对象交给客体按需读取，避免冷启动固定等待整段网络传输。
  * 省流量 / 2G 仍不主动拉正文。
  */
 export function sockdriveWarmBudget(effectiveType: string | undefined, saveData: boolean): number {

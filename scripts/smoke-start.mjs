@@ -33,8 +33,10 @@ const argOf = (name, fallback) => {
   return i >= 0 && args[i + 1] ? args[i + 1] : fallback
 }
 const BASE = argOf('--base', process.env.SMOKE_BASE_URL || 'https://8bitgo.com').replace(/\/+$/, '')
-// 一款 NES（jsnes / EmulatorJS 最常见的一条路）+ 一款不需要 BIOS 的 CPS1 街机（FBNeo + 8BG 解包）
-const GAMES = argOf('--games', process.env.SMOKE_GAMES || 'super-mario-bros,cadillacs-and-dinosaurs')
+// GBA 样例专门守 mGBA 的 HLE BIOS 路径；第三款游戏能拦住“ROM 可读、可选 BIOS 外链却阻断开局”这类回归。
+export const DEFAULT_SMOKE_GAMES = 'super-mario-bros,cadillacs-and-dinosaurs,pokemon-sapphire'
+// NES（jsnes / EmulatorJS）、CPS1（FBNeo + 8BG 解包）和 GBA（mGBA）各覆盖一条不同启动链。
+const GAMES = argOf('--games', process.env.SMOKE_GAMES || DEFAULT_SMOKE_GAMES)
   .split(',').map((s) => s.trim()).filter(Boolean)
 const TIMEOUT_MS = Number(argOf('--timeout', process.env.SMOKE_TIMEOUT_MS || 150_000))
 const DISABLE_WEBGL = process.env.SMOKE_DISABLE_WEBGL === '1'

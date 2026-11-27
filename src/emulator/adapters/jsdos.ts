@@ -115,7 +115,7 @@ import {
   parseSockdrivePreload,
   parseSockdriveWarmPlan,
   planSockdriveWarmFiles,
-  SOCKDRIVE_WARM_MAX_FILES,
+  sockdriveWarmFileLimit,
   sockdriveWarmBudget,
   sockdriveWarmConcurrency,
   sockdriveRuntimePreloadMode,
@@ -976,13 +976,14 @@ async function warmSockdriveFile(
   file: SockdriveWarmFile,
   signal: AbortSignal,
   cache: RequestCache,
+  onActivity?: () => void,
 ): Promise<void> {
   let failure: unknown = null
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       /*
         热点只需要完整读进 HTTP 缓存，字节本身不会交给适配器。以前走 fetchWithProgress 会先保留
-        所有 chunk、再分配一块连续 ArrayBuffer 复制一次，16MB 预热就平白制造约 32MB 峰值和一次
+        所有 chunk、再分配一块连续 ArrayBuffer 复制一次，8MB 预热就平白制造约 16MB 峰值和一次
         主线程大拷贝。这里边读边计数后立即释放 chunk，官方 runtime 随后从缓存搬进 OPFS。
       */
       const controller = new AbortController()
@@ -1008,7 +1009,10 @@ async function warmSockdriveFile(
           void response.body?.cancel().catch(() => {})
           throw new Error(`HTTP ${response.status}`)
         }
-        const loaded = await drainSockdriveWarmResponse(response, file.expectedBytes, armIdle)
+        const loaded = await drainSockdriveWarmResponse(response, file.expectedBytes, () => {
+          armIdle()
+          onActivity?.()
+        })
         if (loaded !== file.expectedBytes) throw new Error(`长度 ${loaded}，应为 ${file.expectedBytes}`)
       } catch (error) {
         if (stalled && !signal.aborted) throw new Error(`${Math.round(STALL_MS / 1000)} 秒没有收到数据`)
@@ -1098,6 +1102,7 @@ async function verifySockdriveMetadata(
   url: string,
   signal: AbortSignal,
   sharesLargeDownload: boolean,
+  onActivity?: () => void,
 ): Promise<SockdriveRuntimePreload> {
   const cache = sockdriveCacheMode(url)
   let bytes: ArrayBuffer
@@ -1107,6 +1112,7 @@ async function verifySockdriveMetadata(
       // 发布器强制版本化且 immutable；复用清单缓存可省掉每次开局的一次跨域往返。
       cache,
       phase: 'assets',
+      onProgress: () => onActivity?.(),
       // 正常清单只有几 KB；上限也能挡住错误配置返回整页 HTML / 大文件时的内存浪费。
       maxBytes: SOCKDRIVE_METADATA_LIMIT,
     })
@@ -1130,11 +1136,12 @@ async function verifySockdriveMetadata(
   const profile = warmBudget > 0
     ? await readSockdrivePreloadProfile(url, plan, signal, cache)
     : null
+  const warmFileLimit = sockdriveWarmFileLimit((profile ?? plan.preload).length)
   const warmFiles = planSockdriveWarmFiles(
     plan,
     profile,
     warmBudget,
-    SOCKDRIVE_WARM_MAX_FILES,
+    warmFileLimit,
   )
   const concurrency = sockdriveWarmConcurrency(
     connection?.effectiveType,
@@ -1147,7 +1154,7 @@ async function verifySockdriveMetadata(
     for (;;) {
       const file = warmFiles[cursor++]
       if (!file) return
-      await warmSockdriveFile(url, file, signal, cache)
+      await warmSockdriveFile(url, file, signal, cache, onActivity)
     }
   }
   await Promise.all(Array.from({ length: Math.min(concurrency, warmFiles.length) }, worker))
@@ -1185,6 +1192,7 @@ async function verifySockdriveMetadata(
 interface SockdrivePrewarmTask {
   controller: AbortController
   task: Promise<SockdriveRuntimePreload>
+  onActivity?: () => void
   /** 开始游戏后预热已成为启动工作，播放器离开时由启动自己的 signal 收尾。 */
   claimed: boolean
 }
@@ -1206,13 +1214,19 @@ export function prewarmSockdriveCache(value: string, sharesLargeDownload: boolea
   }
   if (sockdrivePrewarmTasks.has(url)) return
   const controller = new AbortController()
+  const entry: SockdrivePrewarmTask = {
+    controller,
+    task: Promise.resolve<SockdriveRuntimePreload>('none'),
+    claimed: false,
+  }
   let task: Promise<SockdriveRuntimePreload>
-  task = verifySockdriveMetadata(url, controller.signal, sharesLargeDownload).catch((error) => {
+  task = verifySockdriveMetadata(url, controller.signal, sharesLargeDownload, () => entry.onActivity?.()).catch((error) => {
     // 网络刚好抖了一下时不能把失败缓存整页；正式点击或下一次悬停应当可以重新尝试。
     if (sockdrivePrewarmTasks.get(url)?.task === task) sockdrivePrewarmTasks.delete(url)
     throw error
   })
-  sockdrivePrewarmTasks.set(url, { controller, task, claimed: false })
+  entry.task = task
+  sockdrivePrewarmTasks.set(url, entry)
   // 预热是投机任务，错误留给正式启动重试并展示，不能制造全局 unhandled rejection。
   void task.catch(() => {})
 }
@@ -1245,17 +1259,20 @@ async function verifySockdriveForLaunch(
   url: string,
   signal: AbortSignal,
   sharesLargeDownload: boolean,
+  onActivity?: () => void,
 ): Promise<SockdriveRuntimePreload> {
   const prewarmed = sockdrivePrewarmTasks.get(url)
-  if (!prewarmed) return verifySockdriveMetadata(url, signal, sharesLargeDownload)
+  if (!prewarmed) return verifySockdriveMetadata(url, signal, sharesLargeDownload, onActivity)
   prewarmed.claimed = true
+  prewarmed.onActivity = onActivity
   try {
     return await awaitSockdrivePrewarm(prewarmed.task, signal)
   } catch (error) {
     if (signal.aborted) throw error
     // 悬停阶段的瞬时失败不能让点击也直接失败；正式启动用自己的失速保护再试一次。
-    return verifySockdriveMetadata(url, signal, sharesLargeDownload)
+    return verifySockdriveMetadata(url, signal, sharesLargeDownload, onActivity)
   } finally {
+    prewarmed.onActivity = undefined
     // 开局接管后离页时 await 已经退出，但预热 fetch 仍有自己的 controller；一起停掉免得后台续烧流量。
     if (signal.aborted) prewarmed.controller.abort(signal.reason)
     if (sockdrivePrewarmTasks.get(url) === prewarmed) sockdrivePrewarmTasks.delete(url)
@@ -1673,7 +1690,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       (error) => isRomNetworkFailure(error) ? 'network' : 'content',
       )
       const sockdriveTask = settled(streamingGame
-        ? verifySockdriveForLaunch(sockdriveUrl, abort.signal, Boolean(systemUrl))
+        ? verifySockdriveForLaunch(sockdriveUrl, abort.signal, Boolean(systemUrl), () => options.onStartupActivity?.())
         : Promise.resolve<SockdriveRuntimePreload>('none'),
       (error) => isRomNetworkFailure(error) ? 'network' : 'content')
       /*

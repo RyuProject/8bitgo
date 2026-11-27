@@ -159,7 +159,7 @@ loader.js 的 `import()` 失败，NES / SFC / GBA / 街机 / PS1 …… 所有 E
    否则部署构建窗口、构建失败、回滚期间，旧版本号会被缓存成新内容一年 —— **回滚也救不回来**。
    `precompressed-static.js` 的 `.br` 旁注同样按 sha256 + brBytes 校验，不再只比字节数（等长修改会把旧引擎挂在新版本号下）。
 4. **部署**：`redeploy.sh` 构建失败且 `dist/` 已被改写时回滚（Vite 直接写线上目录，只 die 会留下半新文件）；
-   重启后默认跑 `smoke-start.mjs`（一款 NES + 一款 CPS1 跑到首帧），失败重试一次，仍失败回滚。
+   重启后默认跑 `smoke-start.mjs`（NES、CPS1、GBA 各一款跑到首帧）；GBA 样例守 mGBA 的 HLE BIOS 路径，失败重试一次，仍失败回滚。
    **生产机必须装 Chromium**，否则冒烟只能告警跳过（日志里是 `⚠️⚠️ 开局冒烟没有运行`）。确认是 CDN / ROM 故障而非代码问题时
    用 `SMOKE_TEST=0` 强行发布修复。回滚改为 `git reset --hard`（留在分支上），分支名用 `symbolic-ref`，游离 HEAD 不再污染下次部署。
    ⚠️ 退出码 2 也包括「脚本自身出错」，不只是没有 Chrome。2026-11-18 生产两次部署：两款游戏都到了首帧，随后删 Chrome profile
@@ -1142,9 +1142,10 @@ Worker 的 404 正文是合法 JSON，它反而会把错误对象当数组并在
 预算内预热；发布器继续把外置清单当一等产物校验，正式版本不应依赖这条兼容兜底。
 
 播放器会在共享系统镜像下载期间读取这份独立热点清单，并把真正会用到的 `.raw` 送入 HTTP 缓存：
-桌面 / 4G 最多 16MB，3G 最多 8MB，2G 与省流量模式只做一个真实热点的 HEAD 探活；与 Win95 系统盘
-同时下载时正文最多两路，纯 DOS 没有大文件竞争时用四路。预热只流式计数，不能把即将丢弃的热点再
-拼成完整 ArrayBuffer；否则 16MB 预算会额外制造约 32MB 峰值和一次主线程复制。每个热点正文都按
+桌面 / 4G 与 3G 最多 8MB；热点清单超过 64 项时开局前只等最先触达的 8 个对象（Fallout 为约 2MB），
+短清单仍最多预热 32 个对象；其余由客体按需读取。2G 与省流量模式只做一个真实热点的 HEAD 探活；
+与 Win95 系统盘同时下载时正文最多两路，纯 DOS 没有大文件竞争时用四路。预热只流式计数，不能把即将丢弃的热点再
+拼成完整 ArrayBuffer；否则 8MB 预算会额外制造约 16MB 峰值和一次主线程复制。每个热点正文都按
 元数据校验解码后长度，缺块或截断要在
 DOSBox-X 启动前明确报错，不能继续留给客体黑屏。加载错误还必须锁成终态：迟到的 `ci-ready`、
 自启动回调或兜底定时器都不得在 `onError` 之后再发 `onReady`。回归统一放在 `npm run test:dos-load`。
@@ -1165,7 +1166,7 @@ js-dos 仍经 `fsChanges.pull` 交回，worker 按非 ZIP 层识别成 `sockdriv
 Sockdrive URL 的指纹。**换 v2 目录会自动开一份新存档**：旧扇区差异不能套到新基础盘，否则可能
 破坏文件系统；旧存档会保留，但不要自动迁移。播放器先按网络预算把热点送入 HTTP 缓存：
 清单涉及的对象已全部预热时传 `sockdrivePreload: 'default'`，让官方 runtime 把缓存字节搬进
-OPFS；预算只覆盖部分热点时传 `none`，否则 js-dos 会无视 16MB / 8MB / 省流量上限，再以四路
+OPFS；预算只覆盖部分热点时传 `none`，否则 js-dos 会无视 8MB / 省流量上限，再以四路
 并发把整份外置热点清单拉完，反而和客体真正的读盘抢带宽。这里的 `none` 不是取消预热——预算内
 热点已在 HTTP 缓存，剩余块回到按需读取；发布前仍必须采集并上传完整 `preload_ranges.metaj`。
 这里不能直接用
@@ -3409,7 +3410,7 @@ ROM 存储和其它站级入口全部是管理员权限。后台列表统一带 
 >   上一份已验证备份继续保留，日志明确记录。任何其他备份错误照旧中止部署。回归：`cd server && npm run test:backup && cd .. && npm run test:redeploy`。
 > - **lock 未变跳过 `npm ci`**（`deploy/lib/npm-ci-if-changed.sh`，戳在 `node_modules/.8bitgo-lock-sha256`）；`FORCE_NPM_CI=1` 强制重装。
 >   以后若给根目录或 server 加 install / postinstall 钩子，要重新评估这条。
-> - **开局冒烟**（可选）：`SMOKE_TEST=1` 时健康检查后跑 `scripts/smoke-start.mjs`，无头 Chrome 把一款 NES、一款街机跑到首帧；
+> - **开局冒烟**（可选）：`SMOKE_TEST=1` 时健康检查后跑 `scripts/smoke-start.mjs`，无头 Chrome 把一款 NES、一款 CPS1 街机和一款 GBA 跑到首帧；
 >   拦下启动漏斗与游玩计数请求，不污染统计；失败只告警、不回滚。生产机需先装 Chromium（未装时记「跳过」）。
 
 生产机是 **38.76.186.225**（Ubuntu 24.04，4C/4G）。旧机 103.242.13.112 已停服且

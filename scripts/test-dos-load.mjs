@@ -46,6 +46,8 @@ import {
   parseSockdriveWarmPlan,
   planSockdriveWarmFiles,
   SOCKDRIVE_WARM_MAX_FILES,
+  SOCKDRIVE_LARGE_PROFILE_STARTUP_FILES,
+  sockdriveWarmFileLimit,
   drainSockdriveWarmResponse,
   readBoundedResponseBytes,
   sockdriveWarmBudget,
@@ -491,7 +493,7 @@ check('Sockdrive 的保存绕开 js-dos 的 canSave（配置含 qcow2 时恒为 
 check('流式盘必须走 URL bundle 入口，否则 js-dos 会把 changes URL 留空、保存永远失败', () => {
   assert.match(jsdos, /makeJsdosConfigBundle\(guest\.dosboxConf\)/)
   assert.match(jsdos, /streamingGame\s*\?\s*\{\s*url:\s*primaryUrl,\s*initFs\s*\}/)
-  assert.match(jsdos, /verifySockdriveForLaunch\(sockdriveUrl, abort\.signal, Boolean\(systemUrl\)\)/)
+  assert.match(jsdos, /verifySockdriveForLaunch\(sockdriveUrl, abort\.signal, Boolean\(systemUrl\), \(\) => options\.onStartupActivity\?\.\(\)\)/)
   assert.match(jsdos, /method:\s*'HEAD'/)
   assert.match(jsdos, /Sockdrive 分块 \$\{sample\} 读取失败/)
 })
@@ -499,9 +501,12 @@ check('流式盘必须走 URL bundle 入口，否则 js-dos 会把 changes URL �
 check('流式盘按网络与系统镜像竞争自适应预热，并且不再拼接即将丢弃的大 ArrayBuffer', () => {
   assert.match(jsdos, /preload_ranges\.metaj/)
   assert.match(jsdos, /const warmBudget = sockdriveWarmBudget\(connection\?\.effectiveType, Boolean\(connection\?\.saveData\)\)/)
+  assert.match(jsdos, /const warmFileLimit = sockdriveWarmFileLimit\(\(profile \?\? plan\.preload\)\.length\)/)
   assert.match(jsdos, /const profile = warmBudget > 0\s*\? await readSockdrivePreloadProfile\(url, plan, signal, cache\)\s*: null/)
   assert.match(jsdos, /planSockdriveWarmFiles\(\s*plan,\s*profile,\s*warmBudget/)
-  assert.match(jsdos, /SOCKDRIVE_WARM_MAX_FILES/)
+  assert.match(jsdos, /sockdriveWarmFileLimit/)
+  assert.match(jsdos, /onProgress: \(\) => onActivity\?\.\(\)/)
+  assert.match(jsdos, /armIdle\(\)\s*onActivity\?\.\(\)/)
   assert.match(jsdos, /warmBudget === 0 \? 'none' : sockdriveRuntimePreloadMode/)
   assert.match(jsdos, /Math\.min\(concurrency, warmFiles\.length\)/)
   assert.match(jsdos, /const cache = sockdriveCacheMode\(url\)/)
@@ -522,7 +527,7 @@ check('Sockdrive 在开始按钮悬停时提前预热，正式启动复用同一
   assert.match(jsdos, /export function cancelSockdrivePrewarm\(value: string\)/)
   assert.match(player, /cancelSockdrivePrewarm\(prewarmUrl\)/, '切换页面时要结束未被开局接管的预热')
   assert.match(jsdos, /if \(signal\.aborted\) prewarmed\.controller\.abort\(signal\.reason\)/, '开局接管后玩家离页也要停掉预热自己的请求')
-  assert.match(jsdos, /verifySockdriveForLaunch\(sockdriveUrl, abort\.signal, Boolean\(systemUrl\)\)/)
+  assert.match(jsdos, /verifySockdriveForLaunch\(sockdriveUrl, abort\.signal, Boolean\(systemUrl\), \(\) => options\.onStartupActivity\?\.\(\)\)/)
   assert.doesNotMatch(jsdos, /verifySockdriveMetadata\(sockdriveUrl, abort\.signal, Boolean\(systemUrl\)\)/)
 })
 
@@ -567,6 +572,9 @@ check('热点清单按真实对象去重，并在预算边界停止', () => {
   assert.equal(sockdriveWarmBudget('3g', false), 8 * 1024 * 1024)
   assert.equal(sockdriveWarmBudget('2g', false), 0)
   assert.equal(sockdriveWarmBudget('4g', true), 0)
+  assert.equal(sockdriveWarmFileLimit(27), SOCKDRIVE_WARM_MAX_FILES, '小型启动轨迹仍完整预热')
+  assert.equal(sockdriveWarmFileLimit(64), SOCKDRIVE_WARM_MAX_FILES, '中型清单保留既有启动覆盖')
+  assert.equal(sockdriveWarmFileLimit(245), SOCKDRIVE_LARGE_PROFILE_STARTUP_FILES, '整段试玩清单只挡住启动前缀')
   const scarOfSkyPlan = parseSockdriveWarmPlan({
     size: 2 * 1024 * 1024,
     ahead_read: 262144,
@@ -591,10 +599,10 @@ check('热点清单按真实对象去重，并在预算边界停止', () => {
     preload_ranges: Array.from({ length: 245 }, (_, index) => 5975 + index),
   })
   const falloutWarm = planSockdriveWarmFiles(
-    falloutPlan, falloutPlan.preload, sockdriveWarmBudget('4g', false), SOCKDRIVE_WARM_MAX_FILES,
+    falloutPlan, falloutPlan.preload, sockdriveWarmBudget('4g', false), sockdriveWarmFileLimit(falloutPlan.preload.length),
   )
-  assert.equal(falloutWarm.length, 32, '大清单启动最多发 32 个预取请求，不为完整热点列表阻塞开局')
-  assert.equal(falloutWarm.reduce((total, file) => total + file.expectedBytes, 0), 8 * 1024 * 1024)
+  assert.equal(falloutWarm.length, 8, 'Fallout 的 245 项整段试玩清单只阻塞前 8 个启动热点')
+  assert.equal(falloutWarm.reduce((total, file) => total + file.expectedBytes, 0), 2 * 1024 * 1024)
   assert.equal(sockdriveRuntimePreloadMode(falloutPlan, falloutPlan.preload, falloutWarm), 'none', '未预热全清单时让 Sockdrive 按需读剩余块')
   assert.throws(() => parseSockdrivePreload([3], plan.rangeCount, plan.dropped), /无效的预取分块/)
   assert.throws(() => parseSockdriveWarmPlan({
