@@ -46,6 +46,7 @@ check('游戏库和专题只把首张 LCP 封面提升到高优先级，首页�
   assert.match(wideCard, /<GameCover[^>]+priority=\{priority\}/, '首页宽卡没有把优先级传给封面')
   assert.match(games, /priority=\{i === 0\}/, '游戏库没有只提升首张封面')
   assert.match(collections, /priority=\{i === 0\}/, '平台、类型与 ROM 语言专题没有只提升首张封面')
+  assert.match(home, /<GameCard key=\{g\.slug\} game=\{g\} priority=\{i === 0\}/, '首页精选区没有只提升首张封面')
   assert.doesNotMatch(home, /<GameCardWide[^>]+priority=/, '首页下方最新栏目不应抢占首屏图片带宽')
   assert.match(cover, /preload\(coverSrc, \{ as: 'image', fetchPriority: 'high' \}\)/, '视频 poster 没有高优先级图片预加载')
 })

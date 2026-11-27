@@ -77,8 +77,10 @@ export function PickedSection({ games, curated }: { games: Game[]; curated: bool
         moreTo="/games"
       />
       <HScroll>
-        {games.map((g) => (
-          <GameCard key={g.slug} game={g} />
+        {games.map((g, i) => (
+          // 精选区紧跟首页横幅；窄屏首屏能看到首卡，它的封面 / 视频 poster 可能成为 LCP。
+          // 只提升这一张，避免整排图片和横幅争抢弱网带宽。
+          <GameCard key={g.slug} game={g} priority={i === 0} />
         ))}
       </HScroll>
     </section>
