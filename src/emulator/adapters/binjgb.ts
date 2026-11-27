@@ -452,7 +452,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       const loaded = await loadGameBytes(options.game, options.onProgress, aborter.signal, {
         maxBytes: MAX_ROM_BYTES,
         maxUnpackedBytes: MAX_ROM_BYTES,
-      })
+      }, options.onRomLoadStart)
       romLoaded = true
       if (destroyed) return
       let romData = loaded.data

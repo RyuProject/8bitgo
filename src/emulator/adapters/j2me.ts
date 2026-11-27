@@ -784,7 +784,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         // 本地 jar 要先传到后端才能被 freej2me-web 取到。fetch 拿不到上传进度
         // （只有 XHR 的 upload.onprogress 有），所以这里只报阶段，UI 转不确定态。
         options.onProgress?.({ phase: 'rom' })
-        const loaded = await loadGameBytes(options.game, options.onProgress)
+        const loaded = await loadGameBytes(options.game, options.onProgress, undefined, undefined, options.onRomLoadStart)
         const data = loaded.data
         // 后端还会独立再验一次；前端先验是为了不上传明显损坏的包，也能立刻给玩家准确提示。
         assertJar(data)

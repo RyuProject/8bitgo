@@ -727,6 +727,27 @@ await check('小 ROM 首次下载及时拿到可选清单时先校验，再把�
     '经过验证的可选清单应和小 ROM 缓存字节一起保存')
 })
 
+await check('ROM 阶段起始回调先于缓存/网络异步等待', async () => {
+  const oldFetch = globalThis.fetch
+  const events = []
+  const bytes = new Uint8Array([0x4e, 0x45, 0x53, 0x1a, 0, 0, 0, 0])
+  globalThis.fetch = async () => {
+    events.push('fetch')
+    return new Response(bytes, { headers: { 'content-length': String(bytes.byteLength) } })
+  }
+  try {
+    const loaded = await loadGameBytes(
+      'https://files.example/start.nes', undefined, undefined, {},
+      () => events.push('rom-start'),
+    )
+    assert.deepEqual(new Uint8Array(loaded.data), bytes)
+    assert.ok(events.indexOf('rom-start') >= 0 && events.indexOf('rom-start') < events.indexOf('fetch'),
+      '开始事件必须在首个请求前同步发出，覆盖首字节等待与缓存查询')
+  } finally {
+    globalThis.fetch = oldFetch
+  }
+})
+
 await check('普通小 ROM 直接写目标缓冲，超出安全阈值不按 Content-Length 预分配', async () => {
   const oldFetch = globalThis.fetch
   const oldUint8Array = globalThis.Uint8Array

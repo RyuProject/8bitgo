@@ -292,7 +292,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     const gameLoad = loadGameBytes(options.game, options.onProgress, aborter.signal, {
       maxBytes: MAX_GAME_BYTES,
       maxUnpackedBytes: MAX_GAME_BYTES,
-    })
+    }, options.onRomLoadStart)
     // 云端那份和下载并行拉；batterySync.apply 自带超时、永不抛错
     const seeded = sync && store ? sync.apply(store.fs) : Promise.resolve('off')
     // 核心的 wasm/data 下载与编译也和 ROM、固件并行；原先必须等两份游戏资源到齐才调用 start()，

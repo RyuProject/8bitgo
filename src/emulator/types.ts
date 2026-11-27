@@ -214,6 +214,8 @@ export interface MountOptions {
    */
   debug?: boolean
   onProgress?: (progress: LoadProgress) => void
+  /** ROM 的真实读取开始时回调；用于把缓存读取、线路探测和首字节等待计入阶段统计，不改变进度条。 */
+  onRomLoadStart?: () => void
   /** 引擎内部仍在推进启动阶段时通知播放器，避免外层无进度看门狗误判卡死。 */
   onStartupActivity?: () => void
   /** 只把核心预热阶段回传给播放器，避免把资源 URL 带进启动统计。 */

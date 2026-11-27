@@ -259,7 +259,7 @@ function mountRaw(container: HTMLElement, options: MountOptions): RawMount {
     try {
       // webretro 原本在 iframe 里直接下载，外层既看不到完整字节，也没法判断 CDN 是否只回了
       // 半个 ZIP。改成先在父页面完整下载并验 NDS 头，再用 blob: 交给同源 iframe；只下载一次。
-      const loaded = await loadGameBytes(options.game, options.onProgress, abort.signal)
+      const loaded = await loadGameBytes(options.game, options.onProgress, abort.signal, undefined, options.onRomLoadStart)
       const rom = await prepareNdsRom(loaded.data, loaded.name || 'rom.nds')
       romPrepared = true
       if (destroyed) return

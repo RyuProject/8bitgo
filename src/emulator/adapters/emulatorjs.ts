@@ -1345,7 +1345,9 @@ function fetchMameDiskBytes(
   onBeat: () => void,
   onProgress: MountOptions['onProgress'],
   signal: AbortSignal,
+  onRomLoadStart?: MountOptions['onRomLoadStart'],
 ): Promise<Blob> {
+  onRomLoadStart?.()
   if (!disk.url) return Promise.reject(new Error('媒体盘没有可访问的下载地址'))
   if (!Number.isSafeInteger(disk.storedBytes) || disk.storedBytes < 124 || disk.storedBytes > MAME_CHD_MAX_BYTES) {
     return Promise.reject(new Error('媒体盘声明的压缩容量不合法'))
@@ -1729,6 +1731,7 @@ function installNetTap(
     biosUrl?: string
     live: () => boolean
     onProgress?: (p: LoadProgress) => void
+    onRomLoadStart?: MountOptions['onRomLoadStart']
     /** 有任何网络动静就拍一下，卡死检测靠它判断「引擎还有没有在动」 */
     onBeat: () => void
     /** 开不了局的文件下载失败了（HTTP 4xx / 5xx） */
@@ -1792,6 +1795,8 @@ function installNetTap(
     win.fetch = async function (input: RequestInfo | URL, init?: RequestInit) {
       const url =
         typeof input === 'string' ? input : input instanceof URL ? input.href : ((input as Request)?.url ?? String(input))
+      const phase = phaseOf(url)
+      if (phase === 'rom' && ctx.live()) ctx.onRomLoadStart?.()
       let res = await origFetch.call(win, input as RequestInfo, init)
       if (!ctx.live() || !url) return res
       ctx.onBeat()
@@ -1822,7 +1827,6 @@ function installNetTap(
       */
       if (/^application\/wasm\b/i.test(res.headers.get('content-type') || '') && /^blob:/i.test(url)) return res
 
-      const phase = phaseOf(url)
       const len = Number(res.headers.get('content-length') || 0)
       /*
        * 压缩过的响应里 Content-Length 是**压缩后**的大小，而读出来的是解压后的字节，
@@ -1871,6 +1875,7 @@ function installNetTap(
   proto.send = function (this: XMLHttpRequest & Record<string, unknown>, ...args: unknown[]) {
     const url = String(this[URL_KEY] ?? '')
     const phase = phaseOf(url)
+    if (phase === 'rom' && ctx.live()) ctx.onRomLoadStart?.()
     let seen = 0
     this.addEventListener('progress', (e: ProgressEvent) => {
       if (!ctx.live()) return
@@ -2374,7 +2379,9 @@ export async function prepareRemoteArcadeRom(
   url: string,
   onProgress: MountOptions['onProgress'],
   signal: AbortSignal,
+  onRomLoadStart?: MountOptions['onRomLoadStart'],
 ): Promise<PreparedArcadeRom> {
+  onRomLoadStart?.()
   if (romArchiveRef(url)) {
     const extracted = await loadRemoteArchiveRom(url, onProgress, signal)
     if (signal.aborted) throw new DOMException('已取消', 'AbortError')
@@ -2543,11 +2550,13 @@ export async function prepareRemoteDiscRom(
   options: {
     resumeAcrossRefresh?: boolean
     forceRomRefresh?: boolean
+    onRomLoadStart?: MountOptions['onRomLoadStart']
     validate?: (blob: Blob) => Promise<void>
     maxBytes?: number
     maxUnpackedBytes?: number
   } = {},
 ): Promise<{ url: string; bytes: number; name?: string; blob: Blob }> {
+  options.onRomLoadStart?.()
   if (isRomPackUrl(url)) prewarmRomPackDecoder(url)
   const prepare = async (stored: Blob): Promise<{ url: string; bytes: number; name?: string; blob: Blob }> => {
     // 历史缓存不经过本版下载器；同一上限也得在解密/解压前拦住旧数据。
@@ -5112,7 +5121,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             try {
               mameDiskPath(disk)
               const diskProgress = mameRomProgress(disk)
-              mameDiskDownloads.set(disk, fetchMameDiskBytes(disk, beat, diskProgress, mameDiskAbort.signal).then((blob) => {
+              mameDiskDownloads.set(disk, fetchMameDiskBytes(
+                disk, beat, diskProgress, mameDiskAbort.signal, options.onRomLoadStart,
+              ).then((blob) => {
                 // 节流可能吞掉最后一帧；校验通过就明确记满，CHD 期间压住的进度才会放出来
                 diskProgress?.({ phase: 'rom', ratio: 1 })
                 return blob
@@ -5247,6 +5258,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         }
 
         if (!isFile && options.platform === 'psx' && isPsxM3uUrl(remoteGameUrl)) {
+          options.onRomLoadStart?.()
           try {
             if (!PSX_RANGE_ENABLED) throw new Error('本站尚未启用 PS1 多盘流式读取')
             preparedPsxRange = await preparePsxRangePlaylist(
@@ -5274,6 +5286,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             return
           }
         } else if (PSX_RANGE_ENABLED && !isFile && canStreamPsxChd(options.platform, remoteGameUrl)) {
+          options.onRomLoadStart?.()
           try {
             preparedPsxRange = await preparePsxRangeDisc(
               remoteGameUrl,
@@ -5313,6 +5326,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           engineGameName = preparedPsxRange.name
           discRomPrepared = true
         } else if (!isFile && romArchiveRef(remoteGameUrl) && options.platform !== 'arcade') {
+          options.onRomLoadStart?.()
           const extracted = await loadRemoteArchiveRom(remoteGameUrl, (p) => {
             beat()
             options.onProgress?.(p)
@@ -5345,6 +5359,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
               // 小卡带只发首片一个请求，不必为每个平台维持另一条下载链。
               resumeAcrossRefresh: Boolean(romCacheKey(remoteGameUrl)),
               forceRomRefresh: options.forceRomRefresh,
+              onRomLoadStart: options.onRomLoadStart,
               validate: validateNds,
               // 外层 8BG 的密文和清单会略大于裸卡带，但绝不能让错误响应宣称几百 GB。
               maxBytes: options.platform === 'nds' ? MAX_NDS_ROM_BYTES + 64 * 1024 * 1024 : undefined,
@@ -5402,6 +5417,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
               prepareAbort.signal,
               {
                 resumeAcrossRefresh: true,
+                onRomLoadStart: options.onRomLoadStart,
                 validate: validateNds,
                 // N64、Mega CD 等直链不是 DS 卡带，不能套 512MB 的 NDS 格式上限。
                 maxBytes: options.platform === 'nds' ? MAX_NDS_ROM_BYTES + 32 * 1024 * 1024 : undefined,
@@ -5441,7 +5457,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             },
             prepareAbort.signal,
             // PS1 的原始 ISO/PBP 和 CHD 一样会被弱网中断；只按 romv 内容版本决定能否跨刷新拼片。
-            { resumeAcrossRefresh: Boolean(romCacheKey(remoteGameUrl)) },
+            { resumeAcrossRefresh: Boolean(romCacheKey(remoteGameUrl)), onRomLoadStart: options.onRomLoadStart },
           )
           if (destroyed) {
             URL.revokeObjectURL(prepared.url)
@@ -5468,6 +5484,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
               romProgress?.(p)
             },
             prepareAbort.signal,
+            options.onRomLoadStart,
           )
           if (destroyed) {
             URL.revokeObjectURL(prepared.url)
@@ -6272,6 +6289,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           biosUrl: engineBiosUrl,
           live: () => !destroyed && !started,
           onProgress: options.onProgress,
+          onRomLoadStart: options.onRomLoadStart,
           onBeat: beat,
           onFailed: (status, url, phase, detail) => failLoad(
             phase === 'engine'

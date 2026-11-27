@@ -164,7 +164,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     maxUnpackedBytes: MAX_SWF_BYTES,
     validate: assertSwf,
     validateBlob: assertSwfBlob,
-  })
+  }, options.onRomLoadStart)
   void gameBytes.catch(() => {})
 
   const onMessage = (event: MessageEvent) => {

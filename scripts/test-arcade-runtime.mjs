@@ -38,6 +38,14 @@ const check = async (name, fn) => {
 console.log('\n街机启动链体检')
 
 const emulatorjsAdapter = await readFile(new URL('../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8')
+await check('EmulatorJS 在 ROM 请求发出前报告阶段开始', () => {
+  const fetchAt = emulatorjsAdapter.indexOf('win.fetch = async function')
+  const fetchStart = emulatorjsAdapter.indexOf('let res = await origFetch.call(win, input as RequestInfo, init)', fetchAt)
+  assert.ok(fetchAt >= 0 && fetchStart > fetchAt, '引擎 fetch 探针位置缺失')
+  assert.match(emulatorjsAdapter.slice(fetchAt, fetchStart), /const phase = phaseOf\(url\)[\s\S]*phase === 'rom' && ctx\.live\(\)[\s\S]*ctx\.onRomLoadStart\?\.\(\)/,
+    'ROM 计时必须早于原始 fetch，包含首字节等待')
+})
+
 await check('自动换核后的失败恢复会收到真实核心身份', () => {
   assert.match(emulatorjsAdapter, /options\.onCoreResolved\?\.\(core, saveSuffix, manualFallbackAllowed\)/)
   assert.match(emulatorjsAdapter, /core = replacement\s*\n\s*reportResolvedCore\(\)/)

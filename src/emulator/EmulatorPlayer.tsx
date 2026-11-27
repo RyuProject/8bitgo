@@ -2281,6 +2281,12 @@ export function EmulatorPlayer({
       lastStartupActivityAt = now
       armStartupWatchdog()
     }
+    const markRomLoadStarted = () => {
+      if (!isCurrent() || isStreamingDosSession || romLoadStarted) return
+      romLoadStarted = true
+      noteStartupActivity()
+      reportStartup('rom_load_start')
+    }
     const confirmPlayable = () => {
       if (!isCurrent() || crashed || session.runtime.id === 'liveview' ||
         countedPlayAttemptRef.current === session.startupAttemptId) return
@@ -2565,10 +2571,7 @@ export function EmulatorPlayer({
         noteStartupActivity()
         // Sockdrive 不整包下载 ROM；适配器在系统镜像和热点都就绪后发的 rom=100% 只是启动占位，不能倒写成“刚开始下载”。
         if (next.phase === 'rom' && !isStreamingDosSession) {
-          if (!romLoadStarted) {
-            romLoadStarted = true
-            reportStartup('rom_load_start')
-          }
+          markRomLoadStarted()
           romLoadStreaming ||= Boolean(next.streaming)
           const hasByteCompletion = Number.isFinite(next.total) && Number(next.total) > 0 &&
             Number.isFinite(next.loaded) && Number(next.loaded) >= Number(next.total)
@@ -2593,6 +2596,7 @@ export function EmulatorPlayer({
         }
         // accept() 会在真实进度跑满阶段时推进状态机；此处只负责记录开局漏斗事件。
       },
+      onRomLoadStart: markRomLoadStarted,
       // EmulatorJS 的阶段文字变化 / 内部网络活动不会总带来新的字节进度；这些活动仍应刷新外层启动超时。
       onStartupActivity: () => {
         if (!isCurrent()) return

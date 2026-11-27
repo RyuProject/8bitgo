@@ -767,10 +767,12 @@ async function readRom(
   signal?: AbortSignal,
   windowsGuest = false,
   preferReadyBundleBlob = false,
+  onRomLoadStart?: () => void,
 ): Promise<
   | { name: string; buf: ArrayBuffer; bundleBlob?: undefined }
   | { name: string; bundleBlob: Blob; buf?: undefined }
 > {
+  onRomLoadStart?.()
   const loadLimits = dosLoadLimitsForBrowser()
   const arrayBufferLimit = loadLimits.arrayBufferBytes
   if ((!preferReadyBundleBlob || windowsGuest) && typeof game === 'string' && isRomPackUrl(game)) {
@@ -1700,6 +1702,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             abort.signal,
             Boolean(systemUrl),
             preferReadyBundleBlob,
+            options.onRomLoadStart,
           ),
         (error) => isRomNetworkFailure(error) ? 'network' : 'content',
       )

@@ -778,7 +778,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         import('jsnes').catch((error: unknown) => {
           throw new JsnesStartupError(error instanceof Error ? error.message : String(error), 'runtime')
         }),
-        readJsnesRom(options.game, options.onProgress, aborter.signal).catch((error: unknown) => {
+        readJsnesRom(options.game, options.onProgress, aborter.signal, options.onRomLoadStart).catch((error: unknown) => {
           if (error instanceof JsnesRomTooLargeError) throw error
           throw new JsnesStartupError(
             error instanceof Error ? error.message : String(error),

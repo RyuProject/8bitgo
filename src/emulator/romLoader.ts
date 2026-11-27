@@ -141,7 +141,10 @@ export async function loadGameBytes(
   onProgress?: (progress: LoadProgress) => void,
   signal?: AbortSignal,
   limits: GameBytesLimits = {},
+  onRomLoadStart?: () => void,
 ): Promise<LoadedGameBytes> {
+  // 在任何缓存 / 文件 / 网络 await 之前记开始；首字节或缓存命中进度都可能已经太晚。
+  onRomLoadStart?.()
   if (typeof game !== 'string') {
     // File.size 可在读盘前取得；先挡住异常大的 SWF，避免 arrayBuffer() 一次申请整块内存。
     assertSizeLimit(game.size, limits.maxBytes, '游戏文件')

@@ -463,7 +463,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       }
       if (!biosUrl) throw new IodineStartupError('IodineGBA 启动需要 16 KiB GBA BIOS；请先在后台配置 GBA 平台 BIOS。', 'config')
       const [loaded, biosBytes] = await Promise.all([
-        loadGameBytes(options.game, options.onProgress, aborter.signal, { maxBytes: MAX_ROM_BYTES, maxUnpackedBytes: MAX_ROM_BYTES }),
+        loadGameBytes(options.game, options.onProgress, aborter.signal, { maxBytes: MAX_ROM_BYTES, maxUnpackedBytes: MAX_ROM_BYTES }, options.onRomLoadStart),
         loadGameBytes(biosUrl, undefined, aborter.signal, { maxBytes: 2 * 1024 * 1024, maxUnpackedBytes: 2 * 1024 * 1024 })
           .then((bios) => prepareIodineBios(bios.data)),
       ])

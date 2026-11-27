@@ -70,6 +70,7 @@ export async function readJsnesRom(
   game: File | string,
   onProgress?: (progress: LoadProgress) => void,
   signal?: AbortSignal,
+  onRomLoadStart?: () => void,
 ): Promise<ArrayBuffer> {
   let loaded: Awaited<ReturnType<typeof loadGameBytes>>
   try {
@@ -78,7 +79,7 @@ export async function readJsnesRom(
       maxUnpackedBytes: JSNES_MAX_ROM_BYTES,
       // 格式与 ZIP 元数据必须在 romLoader 写 IndexedDB 前验证，坏对象不能被重试永久复用。
       validate: validateJsnesContainer,
-    })
+    }, onRomLoadStart)
   } catch (error) {
     // 大文件走 onUnsupported，让播放器切到 EmulatorJS；否则纯 JS 字符串转换会在移动端耗尽内存。
     if (error instanceof RangeError) throw new JsnesRomTooLargeError()

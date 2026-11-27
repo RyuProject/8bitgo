@@ -3440,7 +3440,7 @@ ROM 存储和其它站级入口全部是管理员权限。后台列表统一带 
 否则两边分叉。确认稳定后可退租。
 
 - **本机 SSH 登录生产机**：使用 `ssh root@38.76.186.225`（22 端口）。省略 `root@` 会套用本机用户名，
-  生产机不会接受该账号的密钥。已验证 root 登录成功，远端主机名为 `ecskbvbd`；不要把私钥、密码或 token 写进仓库。
+  生产机不会接受该账号的密钥。2026-11-28 复核 root 登录成功，远端主机名为 `ecskbvbd`；不要把私钥、密码或 token 写进仓库。
 - **人工发布入口**：登录后执行 `cd /var/www/8bitgo && ./deploy/redeploy.sh`。该脚本负责备份、拉取当前分支、构建、健康检查和失败回滚；
   不要用简化的 `git pull && npm install && npm run build && systemctl restart 8bitgo` 替代它。
 
