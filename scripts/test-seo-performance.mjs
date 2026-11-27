@@ -99,6 +99,18 @@ check('首页所有尺寸的轮换游戏名固定两行，避免长标题周期�
   assert.match(src, /setInterval\(\(\) => \{/, '布局守卫应对应会周期轮换的横幅标题')
 })
 
+check('Clarity 授权横幅进入 SSR 首屏，已选择过的访客首次绘制前仍隐藏', () => {
+  const component = read('src/components/privacy/ClarityConsentBanner.tsx')
+  const html = read('index.html')
+  const css = read('src/index.css')
+  assert.match(component, /const \[open, setOpen\] = useState\(true\)/, '横幅必须和 SSR 首帧一起渲染')
+  assert.match(component, /clarity-consent-banner fixed/, '横幅应保持固定定位，不推移页面内容')
+  assert.match(html, /localStorage\.getItem\('8bit\.clarity\.consent\.v1'\)/, '首绘脚本必须读取原有本地授权键')
+  assert.match(html, /data-clarity-consent/, '首绘脚本没有标记已选择过的访客')
+  assert.match(css, /html\[data-clarity-consent\] \.clarity-consent-banner\s*\{\s*visibility:\s*hidden/, '已有选择的访客仍会闪出授权横幅')
+  assert.doesNotMatch(html, /document\.cookie[^\n]*clarity|8bitgo_clarity_consent/, '授权状态不得改存 Cookie')
+})
+
 check('非中文、首页、游戏详情和弱网不请求第三方字体，中文其它页面只在空闲时加载', () => {
   const html = read('index.html')
   const css = read('src/index.css')

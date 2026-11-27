@@ -13,27 +13,38 @@ import { useT } from '@/services/i18n'
 
 /**
  * Clarity 会生成会话回放与热图，因此必须在访客明确同意之后才加载远端脚本。
- * 首次客户端 effect 之前保持空白，避免 SSR 与 hydration 因 localStorage 状态不同而重建。
+ * SSR 与水合首帧都画同一份横幅；已有选择的浏览器由 head 脚本先标记，再用 CSS 隐藏，避免晚到横幅拖慢 LCP。
  */
 export function ClarityConsentBanner() {
   const t = useT()
-  const [ready, setReady] = useState(false)
-  const [open, setOpen] = useState(false)
+  // SSR 与客户端首帧都先画出来；已选过的访客由 index.html 的早期脚本加属性隐藏，避免水合后才出现并拖慢 LCP。
+  const [open, setOpen] = useState(true)
   const [choice, setChoice] = useState<ClarityConsent | null>(null)
+
+  const markConsent = (consent: ClarityConsent | null) => {
+    if (typeof document === 'undefined') return
+    if (consent) document.documentElement.dataset.clarityConsent = consent
+    else delete document.documentElement.dataset.clarityConsent
+  }
 
   useEffect(() => {
     if (!clarityConfigured()) return
 
-    const sync = () => setChoice(readClarityConsent())
+    const sync = () => {
+      const stored = readClarityConsent()
+      setChoice(stored)
+      markConsent(stored)
+    }
     const show = () => {
       sync()
+      markConsent(null)
       setOpen(true)
     }
 
     const stored = readClarityConsent()
     setChoice(stored)
     setOpen(stored === null)
-    setReady(true)
+    markConsent(stored)
 
     const offChanged = onClarityConsentChanged(sync)
     const offOpen = onOpenClarityPreferences(show)
@@ -43,11 +54,12 @@ export function ClarityConsentBanner() {
     }
   }, [])
 
-  if (!ready || !open || !clarityConfigured()) return null
+  if (!open || !clarityConfigured()) return null
 
   const choose = (next: ClarityConsent) => {
     setClarityConsent(next)
     setChoice(next)
+    markConsent(next)
     setOpen(false)
   }
 
@@ -60,7 +72,7 @@ export function ClarityConsentBanner() {
     <section
       role="region"
       aria-label={t.clarityConsent.title}
-      className="fixed inset-x-3 bottom-3 z-[45] mx-auto max-w-3xl rounded-3xl border-2 border-line-strong bg-surface/95 p-4 shadow-2xl backdrop-blur sm:bottom-5 sm:p-5"
+      className="clarity-consent-banner fixed inset-x-3 bottom-3 z-[45] mx-auto max-w-3xl rounded-3xl border-2 border-line-strong bg-surface/95 p-4 shadow-2xl backdrop-blur sm:bottom-5 sm:p-5"
     >
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">

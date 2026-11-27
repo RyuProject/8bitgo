@@ -6,6 +6,15 @@
 
 @import 'tailwindcss';
 
+/*
+  授权记录只在浏览器本地。已选择过的访客由 index.html 的同步 head 脚本在首绘前标记，
+  SSR 横幅仍与客户端首帧保持同一棵树；visibility 不参与布局，也不把横幅绘成 LCP。
+*/
+html[data-clarity-consent] .clarity-consent-banner {
+  visibility: hidden;
+  pointer-events: none;
+}
+
 /* ---------- 字体 ----------
  * 中文界面可用 ZeoSeven FontsAPI 的 Sarasa UI SC；英文等非中文页面直接用系统字体。
  * index.html 只在中文、非首页、非游戏页、非弱网且页面空闲后加载；玩家进入模拟器时不为字体
