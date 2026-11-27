@@ -13,6 +13,7 @@ import { loadForRoute } from './content.js'
 import { CACHE } from './cache.js'
 import { HTML_CACHE_TAG, edgePurgeEnabled } from './edge-purge.js'
 import { earlyHintLinks, retargetCoverHints } from './early-hints.js'
+import { localePreloadTag } from './locale-preload.js'
 import { coverBaseUrl, publicSiteUrl } from './site-urls.js'
 import { requestHostname } from './url-normalize.js'
 import { tvRenderPath } from '../../shared/tv-host.js'
@@ -289,7 +290,11 @@ export async function renderPage(req, res, next) {
 
     const { html, head, lang, notFound, coverBase } = await render({ url, data, tvHost, cnSite, coverHint })
 
-    let page = retargetCoverHints(getTemplate(), originOf(coverBaseUrl()), originOf(coverBase))
+    const templatePage = retargetCoverHints(getTemplate(), originOf(coverBaseUrl()), originOf(coverBase))
+    const localePreload = localePreloadTag(templatePage, lang, CLIENT_DIR)
+    let page = localePreload
+      ? injectOnce(templatePage, '</head>', `${localePreload}\n</head>`)
+      : templatePage
     // 8bitgo.com 上的大陆访客：JS / CSS / 字体也从 EdgeOne 取（cn-edge.js）；大陆入口本身已经同源。
     // 带 __assets=origin 的是兜底页在 EdgeOne 取不下来 chunk 后的重新载入：这次整页留在主站（shared/cover-cdn-hint.js）
     if (cnSite && req.assetsFromOrigin) page = retargetStaticToOrigin(page, publicSiteUrl())

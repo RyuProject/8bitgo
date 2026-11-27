@@ -52,7 +52,8 @@ export function earlyHintLinks(html) {
   }
   for (const tag of tags) {
     const href = attr(tag, 'href')
-    if (/\brel\s*=\s*"modulepreload"/i.test(tag) && VENDOR_CHUNK.test(href)) {
+    const localeChunk = attr(tag, 'data-8bitgo-locale-preload') === 'true'
+    if (/\brel\s*=\s*"modulepreload"/i.test(tag) && (VENDOR_CHUNK.test(href) || localeChunk)) {
       links.push(`<${href}>; rel=preload; as=script; crossorigin`)
     }
   }
