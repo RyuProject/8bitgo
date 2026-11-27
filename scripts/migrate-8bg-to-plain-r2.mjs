@@ -46,6 +46,7 @@ const usage = () => {
   --state <文件>           续跑账本，默认 ~/.local/state/8bitgo/rom-plain-migration.jsonl
   --work-dir <目录>        每次只存一份密文和一份明文的临时目录
   --public-base <地址>     玩家读取明文的公开根地址，默认 https://rom.8bitgo.com
+  Worker 完整性 API 默认 https://rom.8bitgo.com；写入时使用 ROM_INTEGRITY_TOKEN，或 PSP_CONVERT_WORKER_TOKEN / ADMIN_TOKEN
   --limit <数量>           只处理前 N 个，用于小批量验证
   --keep-work              成功后也保留临时文件（排查用）
   --help                   显示本说明`)
@@ -67,6 +68,8 @@ const defaultStateDir = path.join(process.env.XDG_STATE_HOME || path.join(os.hom
 const stateFile = path.resolve(value('state', path.join(defaultStateDir, 'rom-plain-migration.jsonl')))
 const workDir = path.resolve(value('work-dir', path.join(os.tmpdir(), '8bitgo-plain-rom-migration')))
 const publicBase = String(value('public-base', 'https://rom.8bitgo.com')).replace(/\/+$/, '')
+const integrityApiValue = String(process.env.ROM_INTEGRITY_API || process.env.PSP_CONVERT_WORKER_URL || 'https://rom.8bitgo.com').trim()
+const integrityToken = String(process.env.ROM_INTEGRITY_TOKEN || process.env.PSP_CONVERT_WORKER_TOKEN || process.env.ADMIN_TOKEN || '').trim()
 const keepWork = has('keep-work')
 const rawLimit = value('limit')
 const limit = rawLimit ? Number(rawLimit) : Infinity
@@ -86,14 +89,23 @@ try {
 } catch (error) {
   throw new Error(`--public-base 不合法：${error instanceof Error ? error.message : String(error)}`)
 }
+let integrityApi
+try {
+  integrityApi = new URL(integrityApiValue.endsWith('/') ? integrityApiValue : `${integrityApiValue}/`)
+  if (integrityApi.protocol !== 'https:' || integrityApi.pathname !== '/' || integrityApi.username || integrityApi.password || integrityApi.search || integrityApi.hash) {
+    throw new Error('地址必须是无认证、无查询串的 HTTPS Worker 根地址')
+  }
+} catch (error) {
+  throw new Error(`ROM 完整性 API 地址无效：${error instanceof Error ? error.message : String(error)}`)
+}
 
 const remotePath = (key = '') => `${remote}:${bucket}/${key}`
 const underPrefix = (key) => key === prefix || key.startsWith(`${prefix}/`)
 const safeKey = (key) => typeof key === 'string' && underPrefix(key) && !key.split('/').some(part => !part || part === '.' || part === '..' || /[\\\0-\x1f]/.test(part))
 
-function run(command, commandArgs, { quiet = false } = {}) {
+function run(command, commandArgs, { quiet = false, env = process.env } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, commandArgs, { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn(command, commandArgs, { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] })
     const stdout = []
     const stderr = []
     child.stdout.on('data', chunk => stdout.push(Buffer.from(chunk)))
@@ -252,6 +264,30 @@ async function verifyPublicPlain(key, expectedSize, localPlain = '') {
   }
 }
 
+async function hasRomIntegrityManifest(key, expectedSize) {
+  const url = new URL('integrity', integrityApi)
+  url.searchParams.set('key', key)
+  const response = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(20_000) })
+  if (!response.ok) return false
+  const body = await response.json().catch(() => null)
+  const manifest = body?.manifest
+  return body?.size === expectedSize && typeof body?.etag === 'string' && body.etag.length > 0 &&
+    manifest?.key === key && manifest?.etag === body.etag && manifest?.size === expectedSize &&
+    manifest?.v === 1 && manifest?.alg === 'sha256' && manifest?.blockBytes === 2 * 1024 * 1024 &&
+    Array.isArray(manifest.blocks) && manifest.blocks.length === Math.ceil(expectedSize / (2 * 1024 * 1024)) &&
+    manifest.blocks.every(hash => /^[a-f0-9]{64}$/.test(hash))
+}
+
+async function publishRomIntegrityManifest(key) {
+  if (!integrityToken) throw new Error('缺少 Worker 完整性写入凭据；未创建 ROM SHA-256 清单')
+  const api = new URL(integrityApi)
+  api.pathname = api.pathname.replace(/\/$/, '')
+  await run(process.execPath, [
+    path.join(root, 'scripts/backfill-rom-integrity.mjs'),
+    '--apply', `--api=${api.href}`, `--key=${key}`,
+  ], { env: { ...process.env, ROM_INTEGRITY_API: api.href, ROM_INTEGRITY_TOKEN: integrityToken } })
+}
+
 async function runUnpack(input, output) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [path.join(root, 'scripts/unpack-rom.mjs'), input, output], {
@@ -278,6 +314,9 @@ async function alreadyPublished(record, source, target) {
   // 维护工具留下摘要元数据，也必须相等，不能把另一份同长度文件误判成已完成。
   const metadataHash = originalHashFromMetadata(object.Metadata)
   if (metadataHash && metadataHash !== record.sha256) return false
+  // 旧账本可能来自还没有清单协议的发布。不能只给当前 R2 字节补摘要后就跳过，
+  // 否则同尺寸的意外替换会被登记成正确文件；缺清单时从保留的 .8bg 重新解包、比对并发布。
+  if (!await hasRomIntegrityManifest(target, record.plainSize)) return false
   await verifyPublicPlain(target, record.plainSize)
   return true
 }
@@ -316,6 +355,9 @@ async function migrateOne(source, state) {
     await run(rcloneBin, [
       'copyto', plain, remotePath(target), '--ignore-times', '--no-traverse', '--retries', '5', '--low-level-retries', '10',
     ])
+    // rclone 直写 R2 不经过 Worker 上传门禁；发布后立刻用 R2 同 ETag 的 Range 计算并绑定 SHA-256。
+    // 失败时不记迁移完成，保留源 .8bg，严格模式会继续拒绝未写入清单的对象。
+    await publishRomIntegrityManifest(target)
     const published = await remoteObject(target)
     if (!published || published.Size !== plainInfo.size) throw new Error('上传后 R2 对象不存在或长度不符')
     const metadataHash = originalHashFromMetadata(published.Metadata)
@@ -349,6 +391,7 @@ if (!apply) {
 if (!process.env.ROM_PACK_SECRET && !process.env.ROM_PACK_SECRET_V1) {
   throw new Error('缺少 ROM_PACK_SECRET；请在持有生产 server/.env 的可信机器上运行')
 }
+if (!integrityToken) throw new Error('缺少 ROM_INTEGRITY_TOKEN / PSP_CONVERT_WORKER_TOKEN / ADMIN_TOKEN；写入前必须确保能发布 SHA-256 清单')
 await mkdir(workDir, { recursive: true })
 const state = await readState()
 let published = 0

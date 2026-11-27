@@ -2,9 +2,11 @@ import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
+import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 const script = fileURLToPath(new URL('./backfill-rom-integrity.mjs', import.meta.url))
+const plainMigration = readFileSync(new URL('./migrate-8bg-to-plain-r2.mjs', import.meta.url), 'utf8')
 const objectKeys = Array.from({ length: 10 }, (_, index) => `roms/test/${index}.nes`)
 const manifests = new Set()
 const manifestReads = new Set()
@@ -24,6 +26,13 @@ const retriedKeys = new Set()
 const invalidPublishKeys = new Set()
 const publishedSizes = new Map()
 const publishedEtags = new Map()
+
+assert.match(plainMigration, /await publishRomIntegrityManifest\(target\)/,
+  'rclone 直写明文 ROM 后必须通过 Worker 发布 SHA-256 清单')
+assert.match(plainMigration, /if \(!await hasRomIntegrityManifest\(target, record\.plainSize\)\) return false/,
+  '旧迁移账本没有清单时不能只对当前 R2 字节回填后跳过，应重新解包并与源头校验')
+assert.ok(plainMigration.indexOf('await publishRomIntegrityManifest(target)') < plainMigration.indexOf('await appendState(record)'),
+  '摘要发布与公网验证必须先于迁移账本确认')
 
 function send(response, status, body = null, headers = {}) {
   response.writeHead(status, { 'Cache-Control': 'no-store', ...headers })

@@ -10,7 +10,7 @@
  * complete 的旧 multipart 会先中止，再从头发布。最终对象只在 complete 那一刻可见，
  * 玩家永远不会读到半份 CHD。
  */
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { constants as fsConstants, createWriteStream } from 'node:fs'
 import { access, mkdir, open, rm, stat, statfs, writeFile } from 'node:fs/promises'
@@ -25,6 +25,7 @@ const ACTIVE = new Set(['queued', 'downloading', 'converting', 'verifying', 'upl
 const INTERRUPTED = ['downloading', 'converting', 'verifying', 'uploading']
 const ROM_LANGS = new Set(['zh-Hans', 'zh-Hant', 'en', 'ja'])
 const PART_BYTES = 8 * 1024 * 1024
+export const ROM_INTEGRITY_BLOCK_BYTES = 2 * 1024 * 1024
 const STREAM_BUFFER_BYTES = 4 * 1024 * 1024
 const ISO_SECTOR_BYTES = 2048
 const MAX_ISO_DIRECTORY_BYTES = 1024 * 1024
@@ -289,6 +290,30 @@ async function remoteHead(config, key) {
   const etag = response.headers.get('etag') || ''
   if (!Number.isSafeInteger(size) || size < 0 || !etag) throw new Error(`对象存储没有返回 ${key} 的完整大小或 ETag`)
   return { size, etag }
+}
+
+/** 清单必须绑定到最终 CHD 的 R2 ETag，不能只凭上传响应或同尺寸 HEAD 把对象当作可验证。 */
+async function verifyRomIntegrityManifest(config, key, etag, size, expected) {
+  const url = new URL('/integrity', `${config.workerUrl}/`)
+  url.searchParams.set('key', key)
+  const response = await retryFetch(
+    () => fetch(url, {
+      headers: workerHeaders(config),
+      signal: AbortSignal.timeout(WORKER_REQUEST_TIMEOUT_MS),
+    }),
+    '读取 CHD SHA-256 清单',
+  )
+  if (!response.ok) throw new Error(`Worker 读取 CHD SHA-256 清单失败：HTTP ${response.status}`)
+  const body = await response.json().catch(() => null)
+  const manifest = body?.manifest
+  if (body?.etag !== etag || body?.size !== size || manifest?.etag !== etag ||
+      manifest?.key !== key || manifest?.size !== size || manifest?.blockBytes !== ROM_INTEGRITY_BLOCK_BYTES ||
+      manifest?.alg !== 'sha256' || manifest?.v !== 1 || !Array.isArray(manifest.blocks) ||
+      manifest.blocks.length !== expected.blocks.length ||
+      manifest.blocks.some((hash, index) => hash !== expected.blocks[index])) {
+    throw new Error('Worker 没有发布与当前 CHD ETag 绑定且内容相同的 SHA-256 清单')
+  }
+  return true
 }
 
 /** 空串明确表示“创建任务时目标不存在”，不是“不知道”；这一区分决定能不能安全覆盖。 */
@@ -567,6 +592,21 @@ export async function readExactlyAt(file, buffer, position) {
     offset += bytesRead
   }
   return offset
+}
+
+/**
+ * Worker 的 ROM 清单按 2 MiB 分块；CHD 上传本来就把 8 MiB 分片读进内存，
+ * 在同一份缓冲区里算四个 SHA-256，避免再把数 GB 的已校验 CHD 从磁盘扫描一遍。
+ */
+export function hashRomIntegrityBlocks(bytes) {
+  if (!(bytes instanceof Uint8Array) || bytes.byteLength === 0) throw new Error('CHD 完整性分块不能为空')
+  const blocks = []
+  for (let offset = 0; offset < bytes.byteLength; offset += ROM_INTEGRITY_BLOCK_BYTES) {
+    blocks.push(createHash('sha256')
+      .update(bytes.subarray(offset, Math.min(bytes.byteLength, offset + ROM_INTEGRITY_BLOCK_BYTES)))
+      .digest('hex'))
+  }
+  return blocks
 }
 
 async function readFilePrefix(path, length, position = 0) {
@@ -869,7 +909,8 @@ async function uploadChd(job, config, path, outputSize) {
       query: '?uploads',
       headers: { 'Content-Type': 'application/json' },
       // job.id 跨任务重试保持不变；Worker 用它找回响应丢失时已经创建的同一会话。
-      body: JSON.stringify({ contentType: 'application/x-mame-chd', size: outputSize, name: job.target_key.split('/').pop(), requestId: job.id }),
+      // 全局严格模式打开后，PSP / PS1 转换产物也必须在 R2 合并时原子发布清单。
+      body: JSON.stringify({ contentType: 'application/x-mame-chd', size: outputSize, name: job.target_key.split('/').pop(), requestId: job.id, integrityRequired: true }),
     }),
     '创建 CHD 分片会话',
   )
@@ -892,14 +933,16 @@ async function uploadChd(job, config, path, outputSize) {
   const controller = new AbortController()
   let reported = -1
   let progressWrites = Promise.resolve()
-  let parts
+  let uploadedParts
   try {
-    parts = await concurrentMapOrdered(total, config.uploadConcurrency, async (index) => {
+    uploadedParts = await concurrentMapOrdered(total, config.uploadConcurrency, async (index) => {
       const partNumber = index + 1
       const length = Math.min(PART_BYTES, outputSize - (partNumber - 1) * PART_BYTES)
       const buffer = Buffer.allocUnsafe(length)
       const bytesRead = await readExactlyAt(file, buffer, (partNumber - 1) * PART_BYTES)
       if (bytesRead !== length) throw new Error(`读取 CHD 第 ${partNumber} 片不完整`)
+      // 与本次上行共用同一份 8 MiB 缓冲区，避免哈希第二次读数 GB 磁盘文件。
+      const blockHashes = hashRomIntegrityBlocks(buffer)
       const response = await retryFetch(
         () => workerRequest(config, job.target_key, {
           method: 'PUT',
@@ -913,12 +956,12 @@ async function uploadChd(job, config, path, outputSize) {
       )
       const part = await response.json()
       if (!part?.etag) throw new Error(`Worker 没有确认 CHD 第 ${partNumber} 片`)
-      return { partNumber, etag: part.etag }
+      return { part: { partNumber, etag: part.etag }, blockHashes }
     }, (completed, results) => {
       const progress = 76 + Math.floor((completed / total) * 22)
       if (progress === reported && completed !== total) return
       reported = progress
-      const checkpoint = results.filter(Boolean)
+      const checkpoint = results.filter(Boolean).map(({ part }) => part)
       // upload_parts 只负责崩溃后定位并中止旧会话，不用于续传；按可见进度批量落库，
       // 避免 1～2GB 文件每 8MB 都制造一次串行 MySQL 往返。
       progressWrites = progressWrites.then(() => updateJob(job.id, {
@@ -935,6 +978,21 @@ async function uploadChd(job, config, path, outputSize) {
     await file.close()
   }
 
+  const parts = uploadedParts.map(({ part }) => part)
+  const blocks = uploadedParts.flatMap(({ blockHashes }) => blockHashes)
+  if (blocks.length !== Math.ceil(outputSize / ROM_INTEGRITY_BLOCK_BYTES) ||
+      blocks.some((hash) => !/^[a-f0-9]{64}$/.test(hash))) {
+    throw new Error('CHD 上传分片没有形成完整的 SHA-256 清单；已停止合并')
+  }
+  const integrityManifest = {
+    v: 1,
+    alg: 'sha256',
+    key: job.target_key,
+    size: outputSize,
+    blockBytes: ROM_INTEGRITY_BLOCK_BYTES,
+    blocks,
+  }
+
   let result
   try {
     // multipart complete 本身不支持 If-Match；在最靠近提交的位置再核对一次，把覆盖竞态压到最小。
@@ -949,7 +1007,15 @@ async function uploadChd(job, config, path, outputSize) {
         method: 'POST',
         query: `?uploadId=${encodeURIComponent(session.uploadId)}`,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ parts, marker: session.marker, requestId: job.id, requestSignature: session.requestSignature, size: outputSize }),
+        body: JSON.stringify({
+          parts,
+          marker: session.marker,
+          requestId: job.id,
+          requestSignature: session.requestSignature,
+          size: outputSize,
+          integrityRequired: true,
+          integrityManifest,
+        }),
       }),
       '合并 CHD 分片',
     )
@@ -959,13 +1025,15 @@ async function uploadChd(job, config, path, outputSize) {
     const after = await remoteHead(config, job.target_key).catch(() => null)
     if (!after || after.size !== outputSize || after.etag === previousTarget?.etag) throw error
     // 网络断在 complete 的响应途中，但新一代对象已经可见；不要把真成功重跑成失败。
-    result = { ok: true, key: job.target_key, size: after.size, etag: after.etag }
+    await verifyRomIntegrityManifest(config, job.target_key, after.etag, outputSize, integrityManifest)
+    result = { ok: true, key: job.target_key, size: after.size, etag: after.etag, integrityPublished: true }
   }
-  if (result?.ok !== true || result.key !== job.target_key || Number(result.size) !== outputSize || !result.etag) {
+  if (result?.ok !== true || result.key !== job.target_key || Number(result.size) !== outputSize || !result.etag || result.integrityPublished !== true) {
     throw new Error('Worker 没有完整确认最终 CHD；请到 ROM 存储核查对象')
   }
   const final = await remoteHead(config, job.target_key)
   if (!final || final.size !== outputSize || final.etag !== result.etag) throw new Error('最终 CHD 的大小或 ETag 校验失败')
+  await verifyRomIntegrityManifest(config, job.target_key, final.etag, outputSize, integrityManifest)
   await updateJob(job.id, { upload_id: null, upload_marker: null, upload_parts: null, output_etag: final.etag })
   return result
 }
