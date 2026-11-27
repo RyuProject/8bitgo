@@ -107,7 +107,7 @@ assert.equal((indexHtml.match(/<!-- 8bitgo-ssr-head -->/g) || []).length, 1, '�
 assert.match(ssr, /SSR_HEAD_MARKER/)
 assert.match(ssr, /injectOnce\(templatePage, SSR_HEAD_MARKER/, '语言预载必须先写入模板专用插入点')
 assert.match(ssr, /injectOnce\(page, SSR_HEAD_MARKER, headHtml\)/, 'SSR head 只能写入模板专用插入点')
-assert.doesNotMatch(ssr, /injectOnce\(page, ['"]<\/head['"]/ )
+assert.doesNotMatch(ssr, /<\/head/i, 'SSR 不得搜索或替换 HTML head 结束标签')
 const { EDGE_ROUTE_PLACEHOLDER, inlineEdgeRouteHtml } = await import('./lib/edge-route-inline.mjs')
 assert.ok(indexHtml.includes(EDGE_ROUTE_PLACEHOLDER), 'HTML 必须保留构建时内联选路的位置')
 assert.ok(!/<script[^>]+src="\/edge-route-v6\.js"/.test(indexHtml), 'HTML 源码不应再为同步选路脚本发起单独请求')

@@ -314,7 +314,7 @@ export async function renderPage(req, res, next) {
     // <html lang> 跟随当前语言
     page = page.replace(/<html([^>]*)\slang="[^"]*"/, `<html$1 lang="${lang}"`)
     // 边缘路由（public/edge-route-v6.js）在 <head> 里同步运行，要当场知道 Cloudflare 判定的地域；
-    // 下面写在 </head> 前的 <meta name="8bitgo-cover-cdn"> 那时还没解析到。值只会是 cn / main。
+    // 下面的封面 meta 若写在模板 head 区块后部，边缘路由运行时还没解析到。值只会是 cn / main。
     if (coverHint) page = page.replace(/<html\b/, `<html data-8bitgo-cdn="${coverHint}"`)
     // 这页经 EdgeOne 回源（cn 子域，或 NS 迁出 Cloudflare 后经 EdgeOne 打开的主域，见 deploy/saas/README.md）：
     // 边缘路由据此留在当前域，前端据此把 API / 运行时都当同源（src/services/cnHost.ts 的 onCnSite）。
