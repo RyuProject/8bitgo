@@ -40,6 +40,7 @@ import { alternateRomUrls, rememberRomHostForUrl } from '@/services/romHosts'
 import { rankRomRoutes } from '@/services/romRouteHealth'
 import { diagLog } from '@/services/startupDiagnostics'
 import { inspectPlayArcadeBundle, PLAY_ARCADE_BUNDLE_MAX_BYTES, type PlayArcadeBundle } from '@/lib/playArcadeBundle'
+import { preloadVerifiedPlayModule, verifyPlayWasmResponse } from '../playIntegrity'
 
 /** Emscripten 模块工厂（MODULARIZE 构建）。只列我们真正调到的那几样 */
 interface PlayModule {
@@ -363,12 +364,16 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
      * 串行了一次往返；先把模块请求发出去，后面仍按 rom → engine 报阶段，不会让进度条倒退。
      */
     const scriptUrl = playRuntimeAsset('Play.js')
-    const factoryPromise = import(/* @vite-ignore */ scriptUrl).then((imported: { default?: PlayFactory }) => {
-      if (typeof imported.default !== 'function') throw new Error('Play.js 没有导出模块工厂')
-      return imported.default
+    const factoryPromise = preloadVerifiedPlayModule(scriptUrl)
+      .then(() => import(/* @vite-ignore */ scriptUrl))
+      .then((imported: { default?: PlayFactory }) => {
+        if (typeof imported.default !== 'function') throw new Error('Play.js 没有导出模块工厂')
+        return imported.default
+      })
+    // 核心验签若在大 ROM / 光盘探测期间先失败，立即停掉并行网络请求，避免进度条继续空等。
+    void factoryPromise.catch((error: unknown) => {
+      if (!destroyed && !requestController.signal.aborted) requestController.abort(error)
     })
-    // 探盘提前失败时也要接住模块拒绝；真正走到引擎阶段仍 await 原 Promise 并展示原始错误。
-    void factoryPromise.catch(() => {})
 
     /* ---- 1. 盘：先探 Range ---- */
     let source: DiscSource | null = null
@@ -499,7 +504,25 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       })
       let instance: PlayModule
       if (!playWasmUsingEdge()) {
-        instance = await createModule()
+        /*
+         * 构建清单只能证明仓库产物没串代，不能证明浏览器实际收到的字节一致。
+         * 只包精确的 Play.wasm URL，ROM、API 与 Worker 请求继续走原始 fetch。
+         */
+        const originalFetch = window.fetch
+        const expectedUrl = new URL(playRuntimeAsset('Play.wasm'), location.href).href
+        const wrappedFetch: typeof window.fetch = async (input, init) => {
+          const requestedUrl = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+          const response = await originalFetch.call(window, input as RequestInfo, init)
+          return new URL(requestedUrl, location.href).href === expectedUrl
+            ? verifyPlayWasmResponse(response)
+            : response
+        }
+        window.fetch = wrappedFetch
+        try {
+          instance = await createModule()
+        } finally {
+          if (window.fetch === wrappedFetch) window.fetch = originalFetch
+        }
       } else {
         /*
          * 只拦截这一份版本化 WASM 的 fetch：这样 EdgeOne 不可达、跨源头不匹配或返回错误状态时，
@@ -528,7 +551,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           let failure: unknown
           try {
             const response = await originalFetch.call(window, input, { ...init, signal: edgeController.signal })
-            if (response.ok) return response
+            if (response.ok) return await verifyPlayWasmResponse(response)
+            void response.body?.cancel().catch(() => {})
             failure = new Error(`HTTP ${response.status}`)
           } catch (error) {
             if (parentSignal?.aborted) throw error
@@ -540,7 +564,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
           markPlayWasmEdgeFailed()
           console.warn(`[play] EdgeOne Play.wasm ${edgeTimedOut ? '超过 12 秒无响应' : '请求失败'}，退回同源`, failure)
-          return originalFetch.call(window, fallbackUrl, init)
+          return verifyPlayWasmResponse(await originalFetch.call(window, fallbackUrl, init))
         }
 
         window.fetch = wrappedFetch

@@ -49,6 +49,34 @@ test('integrity publication requires admin auth, valid ROM keys, exact ETag and 
   assert.equal(env.ROMS.objects.has('_integrity/'), false)
 })
 
+test('legacy ROM integrity hashes are computed from ETag-bound R2 ranges in bounded batches', async () => {
+  const env = environment()
+  const backfillKey = 'roms/psx/integrity-backfill-test.chd'
+  const data = Uint8Array.from({ length: blockBytes + 13 }, (_, index) => (index * 29) & 0xff)
+  const object = env.ROMS.seed(backfillKey, data)
+  const body = (startIndex, etag = object.httpEtag) => ({
+    action: 'hash-blocks', key: backfillKey, size: data.byteLength, etag, startIndex, batchBlocks: 1,
+  })
+  const path = `/integrity?key=${encodeURIComponent(backfillKey)}`
+
+  assert.equal((await worker.fetch(req(path, 'POST', body(0), {}, false), env)).status, 401)
+  const first = await worker.fetch(req(path, 'POST', body(0), {}, true), env)
+  assert.equal(first.status, 200)
+  const firstResult = await first.json()
+  assert.deepEqual(firstResult.blocks, [hash(data.subarray(0, blockBytes))])
+  assert.equal(firstResult.nextIndex, 1)
+
+  const last = await worker.fetch(req(path, 'POST', body(1), {}, true), env)
+  assert.equal(last.status, 200)
+  const lastResult = await last.json()
+  assert.deepEqual(lastResult.blocks, [hash(data.subarray(blockBytes))])
+  assert.equal(lastResult.nextIndex, 2)
+  assert.equal(env.ROMS.objects.has('_integrity/'), false, '哈希阶段只读 R2，不提前发布清单')
+
+  assert.equal((await worker.fetch(req(path, 'POST', body(0, '"stale"'), {}, true), env)).status, 412)
+  assert.equal((await worker.fetch(req(path, 'POST', body(2), {}, true), env)).status, 400)
+})
+
 test('required marker uploads are restricted to ROM keys and sidecars stay private', async () => {
   const env = environment()
   const bad = await worker.fetch(req('/games/not-a-rom.bin', 'PUT', bytes, { 'X-8BG-Integrity-Required': 'sha256-v1' }, true), env)
@@ -73,6 +101,9 @@ test('single PUT publishes its ETag-bound manifest in the same Worker request', 
   const loaded = await worker.fetch(req(`/integrity?key=${encodeURIComponent(atomicKey)}&romv=${object.etag}`), env)
   assert.equal(loaded.status, 200)
   assert.equal((await loaded.json()).manifest.blocks[0], hash(bytes))
+  const sidecar = `_integrity/${hash(new TextEncoder().encode(`${atomicKey}\n${object.httpEtag}`))}.json`
+  assert.equal(env.ROMS.objects.has(sidecar), true)
+  assert.equal((await worker.fetch(req(`/${sidecar}`), env)).status, 404, '内部 sidecar 不能通过公开对象路由读取')
 })
 
 test('multipart completion validates and publishes its manifest before acknowledging the commit', async () => {

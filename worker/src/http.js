@@ -149,26 +149,33 @@ async function cancelBody(object) {
 export async function serveObject(request, env, key, cors, policy, guessType, expectedVersion = '', options = {}) {
   const thumbFallback = options.thumbFallback !== false
   const disposition = options.disposition !== false
-  const headersFor = (object, servedKey) => objectHeaders(object, servedKey, cors, policy, guessType, disposition)
+  const headersFor = (object, servedKey, integrityVerified = false) => {
+    const headers = objectHeaders(object, servedKey, cors, policy, guessType, disposition)
+    if (integrityVerified) headers.set('X-8BitGo-Integrity-Required', 'sha256-v1')
+    return headers
+  }
   const h = request.headers
   const conditional = ['If-Match', 'If-None-Match', 'If-Modified-Since', 'If-Unmodified-Since'].some(n => h.has(n))
   const needsMetadata = request.method === 'HEAD' || conditional || h.has('Range')
-  const integrityFailure = async (object) => {
-    if (typeof options.integrityGate !== 'function') return null
-    return await options.integrityGate(object)
+  const checkIntegrity = async (object) => {
+    if (typeof options.integrityGate !== 'function') return { response: null, verified: false }
+    const result = await options.integrityGate(object)
+    return result instanceof Response
+      ? { response: result, verified: false }
+      : { response: null, verified: result === true }
   }
   if (!needsMetadata) {
     const found = await locate(env, key, 'get', thumbFallback)
     if (!found) return json({ error: 'not found' }, cors, 404)
-    const headers = headersFor(found.object, found.servedKey)
+    const integrity = await checkIntegrity(found.object)
+    const headers = headersFor(found.object, found.servedKey, integrity.verified)
     // romv 已把 URL 钉在某一代 ETag 上：对象被替换后整份 GET 同样回 412，不能把新字节
     // 交给旧版本地址（否则浏览器与边缘都会把新内容长期缓存在旧 URL 下）。
     if (expectedVersion && etagVersion(found.object.httpEtag) !== expectedVersion) {
       await cancelBody(found.object)
       return new Response(null, { status: 412, headers })
     }
-    const blocked = await integrityFailure(found.object)
-    if (blocked) { await cancelBody(found.object); return blocked }
+    if (integrity.response) { await cancelBody(found.object); return integrity.response }
     headers.set('Content-Length', String(found.object.size))
     return new Response(found.object.body, r2BodyResponseInit(headers))
   }
@@ -188,9 +195,9 @@ export async function serveObject(request, env, key, cors, policy, guessType, ex
     const found = await locatePinnedRange(env, key, expectedVersion, pinnedRange, thumbFallback)
     if (!found) return json({ error: 'not found' }, cors, 404)
     const { object, servedKey } = found
-    const headers = headersFor(object, servedKey)
-    const blocked = await integrityFailure(object)
-    if (blocked) { await cancelBody(object); return blocked }
+    const integrity = await checkIntegrity(object)
+    const headers = headersFor(object, servedKey, integrity.verified)
+    if (integrity.response) { await cancelBody(object); return integrity.response }
     if (!object.body || etagVersion(object.httpEtag) !== expectedVersion) {
       await cancelBody(object)
       return new Response(null, { status: 412, headers })
@@ -215,9 +222,9 @@ export async function serveObject(request, env, key, cors, policy, guessType, ex
     const found = await locate(env, key, 'head', thumbFallback)
     if (!found) return json({ error: h.has('If-Match') ? 'precondition failed' : 'not found' }, cors, h.has('If-Match') ? 412 : 404)
     const { object: metadata, bucket, servedKey } = found
-    const headers = headersFor(metadata, servedKey)
-    const blocked = await integrityFailure(metadata)
-    if (blocked) return blocked
+    const integrity = await checkIntegrity(metadata)
+    if (integrity.response) return integrity.response
+    const headers = headersFor(metadata, servedKey, integrity.verified)
     // Range v1 的旧 PPSSPP 核心还不会发 If-Match，但播放 URL 已带对象 ETag。
     // Worker 在这里补上代次校验，宁可 412 明确中止，也不能在同一局里混读新旧光盘扇区。
     if (expectedVersion && etagVersion(metadata.httpEtag) !== expectedVersion) {
@@ -242,7 +249,7 @@ export async function serveObject(request, env, key, cors, policy, guessType, ex
       await cancelBody(object)
       continue
     }
-    const finalHeaders = headersFor(object, servedKey)
+    const finalHeaders = headersFor(object, servedKey, integrity.verified)
     if (range) {
       finalHeaders.set('Content-Range', `bytes ${range.offset}-${range.offset + range.length - 1}/${object.size}`)
       finalHeaders.set('Content-Length', String(range.length))

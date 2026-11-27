@@ -1635,6 +1635,11 @@ cd server && npm run migrate     # 增加 game_roms.backup_key，幂等
 PS2 使用 Play! 官方 Web 构建，`public/play/Play.js` 和 `Play.wasm` 是**同一批产物**，连同
 `runtime.json` 的长度 / SHA-256 与上游许可证一起提交。`npm run test:play` 和 prebuild 会校验；
 升级时两个文件必须一起换并更新 manifest，不能只覆盖其中一个。
+玩家实际收到的字节也要验：`Play.js` 先以 `modulepreload` + SRI 放进页面 module map，验证失败 / 超时
+不能继续对同一 URL 做无校验的 `import()`；`Play.wasm` 在交给 Emscripten 前核对精确长度与 SHA-256，
+EdgeOne 响应坏了可退回同源，但同源也必须通过相同摘要。核心验签失败时取消并行 ROM / 光盘请求，
+不要让进度条继续等待大 ROM。更新运行时后同步 `src/emulator/playIntegrity.ts`、`runtime.json`，
+并运行 `npm run test:play-integrity` 与 `node scripts/check-play.mjs`。
 
 官方构建固定启用 pthread / SharedArrayBuffer，所以游戏详情页不直接挂模拟器，而是整页跳到
 `/play/ps2/:slug`。Express 与 Vite 开发服务器只给这条顶层文档发 COOP / COEP；改成 SPA
@@ -3410,6 +3415,11 @@ ROM 存储和其它站级入口全部是管理员权限。后台列表统一带 
 生产机是 **38.76.186.225**（Ubuntu 24.04，4C/4G）。旧机 103.242.13.112 已停服且
 `8bitgo.service` 已 disable，**只作回滚后路 —— 它的数据库已冻结，别再在上面改任何内容**，
 否则两边分叉。确认稳定后可退租。
+
+- **本机 SSH 登录生产机**：使用 `ssh root@38.76.186.225`（22 端口）。省略 `root@` 会套用本机用户名，
+  生产机不会接受该账号的密钥。已验证 root 登录成功，远端主机名为 `ecskbvbd`；不要把私钥、密码或 token 写进仓库。
+- **人工发布入口**：登录后执行 `cd /var/www/8bitgo && ./deploy/redeploy.sh`。该脚本负责备份、拉取当前分支、构建、健康检查和失败回滚；
+  不要用简化的 `git pull && npm install && npm run build && systemctl restart 8bitgo` 替代它。
 
 - **进程守护是 systemd `8bitgo.service`，不是 pm2**（§1 那行 pm2 是历史遗留，已改）。
   由 `deploy/systemd/install-service.sh` 安装，`WorkingDirectory` 必须是 `server/` ——

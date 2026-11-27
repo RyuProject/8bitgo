@@ -51,6 +51,7 @@ const js = readFileSync(join(runtimePath, 'Play.js'), 'utf8')
 const wasm = readFileSync(join(runtimePath, 'Play.wasm'))
 const paths = readFileSync(join(root, 'src', 'emulator', 'paths.ts'), 'utf8')
 const adapter = readFileSync(join(root, 'src', 'emulator', 'adapters', 'play.ts'), 'utf8')
+const integritySource = readFileSync(join(root, 'src', 'emulator', 'playIntegrity.ts'), 'utf8')
 if (!js.includes('export default Play')) fail('Play.js 不是当前适配器需要的 ES module 构建')
 if (!js.includes('mainScriptUrlOrBlob') || !js.includes('new Worker')) {
   fail('Play.js 缺 pthread Worker 特征；跨源隔离和加载方式可能已经变化')
@@ -63,6 +64,18 @@ for (const marker of ['#outputCanvas', 'bootDiscImage', 'bootArcade', 'setArcade
 const generation = /PLAY_RUNTIME_GENERATION\s*=\s*'([^']+)'/.exec(paths)?.[1]
 if (!generation || manifest.runtimePath !== generation || !adapter.includes("playRuntimeAsset('Play.js')")) {
   fail('Play! 核心更新后必须将 JS/WASM 放入同名代次目录，防止 CDN 混用旧产物')
+}
+const wasmRecord = manifest.files?.[`${manifest.runtimePath}/Play.wasm`]
+const jsRecord = manifest.files?.[`${manifest.runtimePath}/Play.js`]
+const integrityBytes = Number(/export const PLAY_WASM_BYTES = ([\d_]+)/.exec(integritySource)?.[1]?.replaceAll('_', ''))
+const integritySha256 = /export const PLAY_WASM_SHA256 = '([a-f0-9]{64})'/.exec(integritySource)?.[1]
+const integrityJsSha256 = /export const PLAY_JS_SHA256 = '([a-f0-9]{64})'/.exec(integritySource)?.[1]
+const preloadAt = adapter.indexOf('preloadVerifiedPlayModule(scriptUrl)')
+const importAt = adapter.indexOf('import(/* @vite-ignore */ scriptUrl)')
+if (!wasmRecord || integrityBytes !== wasmRecord.bytes || integritySha256 !== wasmRecord.sha256 ||
+    !jsRecord || integrityJsSha256 !== jsRecord.sha256 || preloadAt < 0 || importAt < 0 || preloadAt > importAt ||
+    !adapter.includes('verifyPlayWasmResponse(response)') || !adapter.includes('requestController.abort(error)')) {
+  fail('Play.js / Play.wasm 浏览器端完整性预期值与构建清单不一致，或没有在模块导入 / 核心实例化前验签')
 }
 
 const targetLabel = checkDist ? 'dist/client/play/ 产物' : 'Play! Web 运行时'

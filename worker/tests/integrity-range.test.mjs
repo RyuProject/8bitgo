@@ -34,6 +34,60 @@ test('required PSX range reads return only the requested, ETag-bound verified by
   assert.deepEqual(new Uint8Array(await response.arrayBuffer()), content.subarray(7, 32))
 })
 
+test('backfilled sidecars verify legacy Range reads and expose the browser verification marker', async () => {
+  const e = environment()
+  const legacyKey = 'roms/psx/integrity-backfilled-legacy.chd'
+  const object = e.ROMS.seed(legacyKey, content)
+  const path = `/${legacyKey}?romv=${object.etag}`
+
+  const before = await worker.fetch(req(path, 'GET', undefined, { Range: 'bytes=3-20' }), e)
+  assert.equal(before.status, 206)
+  assert.equal(before.headers.get('X-8BitGo-Integrity-Required'), null)
+  assert.deepEqual(new Uint8Array(await before.arrayBuffer()), content.subarray(3, 21))
+
+  const manifest = { ...payload(content, legacyKey), etag: object.httpEtag }
+  const published = await worker.fetch(req(`/integrity?key=${encodeURIComponent(legacyKey)}`, 'POST', {
+    key: legacyKey, size: content.byteLength, etag: object.httpEtag, manifest,
+  }, {}, true), e)
+  assert.equal(published.status, 200)
+
+  const full = await worker.fetch(req(path), e)
+  assert.equal(full.status, 200)
+  assert.equal(full.headers.get('X-8BitGo-Integrity-Required'), 'sha256-v1',
+    '整份回填对象也必须触发浏览器在交给模拟器前验 SHA-256')
+  assert.deepEqual(new Uint8Array(await full.arrayBuffer()), content)
+
+  const after = await worker.fetch(req(path, 'GET', undefined, { Range: 'bytes=3-20' }), e)
+  assert.equal(after.status, 206)
+  assert.equal(after.headers.get('X-8BitGo-Integrity-Required'), 'sha256-v1')
+  assert.deepEqual(new Uint8Array(await after.arrayBuffer()), content.subarray(3, 21))
+})
+
+test('a backfilled manifest marks an older full-object edge-cache hit for browser verification', async () => {
+  const previous = globalThis.caches
+  try {
+    const e = environment()
+    const legacyKey = 'roms/nes/integrity-cached-legacy.nes'
+    const object = e.ROMS.seed(legacyKey, content)
+    const path = `/${legacyKey}?romv=${object.etag}`
+    const manifest = { ...payload(content, legacyKey), etag: object.httpEtag }
+    const published = await worker.fetch(req(`/integrity?key=${encodeURIComponent(legacyKey)}`, 'POST', {
+      key: legacyKey, size: content.byteLength, etag: object.httpEtag, manifest,
+    }, {}, true), e)
+    assert.equal(published.status, 200)
+
+    const cached = new Response(content, { headers: { ETag: object.httpEtag, 'Content-Length': String(content.byteLength) } })
+    globalThis.caches = { default: { async match(request) { return request.url.endsWith(path) ? cached.clone() : null } } }
+    const response = await worker.fetch(req(path), e, { waitUntil() {} })
+    assert.equal(response.status, 200)
+    assert.equal(response.headers.get('X-8BitGo-Integrity-Required'), 'sha256-v1')
+    assert.deepEqual(new Uint8Array(await response.arrayBuffer()), content)
+  } finally {
+    if (previous === undefined) delete globalThis.caches
+    else globalThis.caches = previous
+  }
+})
+
 test('a validated integrity sidecar is read from R2 once per Worker isolate and object version', async () => {
   const e = environment()
   const cacheKey = 'roms/psx/integrity-cache-test.chd'

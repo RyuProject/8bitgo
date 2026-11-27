@@ -443,26 +443,33 @@ async function cancelBody(object) {
 async function serveObject(request, env, key, cors, policy, guessType, expectedVersion = '', options = {}) {
   const thumbFallback = options.thumbFallback !== false
   const disposition = options.disposition !== false
-  const headersFor = (object, servedKey) => objectHeaders(object, servedKey, cors, policy, guessType, disposition)
+  const headersFor = (object, servedKey, integrityVerified = false) => {
+    const headers = objectHeaders(object, servedKey, cors, policy, guessType, disposition)
+    if (integrityVerified) headers.set('X-8BitGo-Integrity-Required', 'sha256-v1')
+    return headers
+  }
   const h = request.headers
   const conditional = ['If-Match', 'If-None-Match', 'If-Modified-Since', 'If-Unmodified-Since'].some(n => h.has(n))
   const needsMetadata = request.method === 'HEAD' || conditional || h.has('Range')
-  const integrityFailure = async (object) => {
-    if (typeof options.integrityGate !== 'function') return null
-    return await options.integrityGate(object)
+  const checkIntegrity = async (object) => {
+    if (typeof options.integrityGate !== 'function') return { response: null, verified: false }
+    const result = await options.integrityGate(object)
+    return result instanceof Response
+      ? { response: result, verified: false }
+      : { response: null, verified: result === true }
   }
   if (!needsMetadata) {
     const found = await locate(env, key, 'get', thumbFallback)
     if (!found) return json({ error: 'not found' }, cors, 404)
-    const headers = headersFor(found.object, found.servedKey)
+    const integrity = await checkIntegrity(found.object)
+    const headers = headersFor(found.object, found.servedKey, integrity.verified)
     // romv 已把 URL 钉在某一代 ETag 上：对象被替换后整份 GET 同样回 412，不能把新字节
     // 交给旧版本地址（否则浏览器与边缘都会把新内容长期缓存在旧 URL 下）。
     if (expectedVersion && etagVersion(found.object.httpEtag) !== expectedVersion) {
       await cancelBody(found.object)
       return new Response(null, { status: 412, headers })
     }
-    const blocked = await integrityFailure(found.object)
-    if (blocked) { await cancelBody(found.object); return blocked }
+    if (integrity.response) { await cancelBody(found.object); return integrity.response }
     headers.set('Content-Length', String(found.object.size))
     return new Response(found.object.body, r2BodyResponseInit(headers))
   }
@@ -482,9 +489,9 @@ async function serveObject(request, env, key, cors, policy, guessType, expectedV
     const found = await locatePinnedRange(env, key, expectedVersion, pinnedRange, thumbFallback)
     if (!found) return json({ error: 'not found' }, cors, 404)
     const { object, servedKey } = found
-    const headers = headersFor(object, servedKey)
-    const blocked = await integrityFailure(object)
-    if (blocked) { await cancelBody(object); return blocked }
+    const integrity = await checkIntegrity(object)
+    const headers = headersFor(object, servedKey, integrity.verified)
+    if (integrity.response) { await cancelBody(object); return integrity.response }
     if (!object.body || etagVersion(object.httpEtag) !== expectedVersion) {
       await cancelBody(object)
       return new Response(null, { status: 412, headers })
@@ -509,9 +516,9 @@ async function serveObject(request, env, key, cors, policy, guessType, expectedV
     const found = await locate(env, key, 'head', thumbFallback)
     if (!found) return json({ error: h.has('If-Match') ? 'precondition failed' : 'not found' }, cors, h.has('If-Match') ? 412 : 404)
     const { object: metadata, bucket, servedKey } = found
-    const headers = headersFor(metadata, servedKey)
-    const blocked = await integrityFailure(metadata)
-    if (blocked) return blocked
+    const integrity = await checkIntegrity(metadata)
+    if (integrity.response) return integrity.response
+    const headers = headersFor(metadata, servedKey, integrity.verified)
     // Range v1 的旧 PPSSPP 核心还不会发 If-Match，但播放 URL 已带对象 ETag。
     // Worker 在这里补上代次校验，宁可 412 明确中止，也不能在同一局里混读新旧光盘扇区。
     if (expectedVersion && etagVersion(metadata.httpEtag) !== expectedVersion) {
@@ -536,7 +543,7 @@ async function serveObject(request, env, key, cors, policy, guessType, expectedV
       await cancelBody(object)
       continue
     }
-    const finalHeaders = headersFor(object, servedKey)
+    const finalHeaders = headersFor(object, servedKey, integrity.verified)
     if (range) {
       finalHeaders.set('Content-Range', `bytes ${range.offset}-${range.offset + range.length - 1}/${object.size}`)
       finalHeaders.set('Content-Length', String(range.length))
@@ -745,13 +752,16 @@ async function handleHtml5(request, env, url, context) {
 /**
  * 8BitGo ROM Worker: public GET/HEAD; Bearer-protected PUT/DELETE/list/bulk/multipart.
  * Bucket names, endpoints, JSON success fields and thumbnail fallback are preserved.
- * Full audit / changed semantics are in AUDIT.md. No ROM or BIOS processing here.
+ * Full audit / changed semantics are in AUDIT.md. Public ROM / BIOS responses with a published
+ * ETag-bound SHA-256 manifest are marked for verification; newly marked objects fail closed.
  */
 const RESERVED = new Set(['', 'ping', 'list', 'multipart', 'bulk', 'integrity'])
 const MULTIPART_PREFIX = '_uploads/'
 const INTEGRITY_PREFIX = '_integrity/'
 const INTEGRITY_BLOCK_BYTES = 2 * 1024 * 1024
 const INTEGRITY_MAX_BLOCKS = 2560
+const INTEGRITY_BACKFILL_BATCH_BLOCKS = 8
+const INTEGRITY_MANIFEST_MISS_TTL_MS = 30_000
 const INTEGRITY_MANIFEST_CACHE_MAX_BYTES = 1024 * 1024
 const INTEGRITY_MANIFEST_CACHE_MAX_ENTRIES = 64
 const MAX_PART_BYTES = 32 * 1024 * 1024
@@ -789,6 +799,7 @@ const RANGE_CACHE_HEADER = 'X-8BitGo-Stored-Range'
 // 避免每个光盘 Range 都串行向 R2 再读一次 sidecar。按原始 JSON 字节数限额，坏/缺清单不缓存。
 const integrityManifestCache = new Map()
 const integrityManifestLoads = new Map()
+const integrityManifestMisses = new Map()
 let integrityManifestCacheBytes = 0
 
 /*
@@ -1210,11 +1221,23 @@ async function readIntegrityManifest(env, key, etag, size) {
     integrityManifestCache.delete(cacheKey)
     integrityManifestCacheBytes -= cached.bytes
   }
+  const missUntil = integrityManifestMisses.get(cacheKey)
+  if (missUntil && missUntil > Date.now()) return null
+  if (missUntil) integrityManifestMisses.delete(cacheKey)
   const pending = integrityManifestLoads.get(cacheKey)
   if (pending) return pending
   const loading = loadIntegrityManifestFromR2(env, key, etag, size, cacheKey)
   integrityManifestLoads.set(cacheKey, loading)
-  try { return await loading }
+  try {
+    const manifest = await loading
+    if (!manifest) {
+      // 新旧 ROM 的大多数 Range 都没有清单；短暂负缓存避免每 2 MiB 再多打一趟 R2。
+      // 回填后至多 30 秒切到验签路径，发布接口会立刻清掉当前 isolate 的 miss。
+      if (integrityManifestMisses.size >= 512) integrityManifestMisses.delete(integrityManifestMisses.keys().next().value)
+      integrityManifestMisses.set(cacheKey, Date.now() + INTEGRITY_MANIFEST_MISS_TTL_MS)
+    }
+    return manifest
+  }
   finally { if (integrityManifestLoads.get(cacheKey) === loading) integrityManifestLoads.delete(cacheKey) }
 }
 async function loadIntegrityManifestFromR2(env, key, etag, size, cacheKey) {
@@ -1245,11 +1268,52 @@ async function loadIntegrityManifestFromR2(env, key, etag, size, cacheKey) {
   return manifest
 }
 async function integrityGateFor(env, key, object, cors) {
-  if (object?.customMetadata?.['8bitgo-integrity-required'] !== 'sha256-v1') return null
-  const manifest = await readIntegrityManifest(env, key, object.httpEtag, object.size).catch(() => null)
-  if (manifest) return null
+  const required = object?.customMetadata?.['8bitgo-integrity-required'] === 'sha256-v1'
+  if (!integrityKeyValid(key)) {
+    if (!required) return false
+    return json({ error: '完整性标记只允许用于 roms/ 下的 ROM / BIOS', code: 'invalid_integrity_key' },
+      { ...cors, 'Cache-Control': 'no-store' }, 503, { 'Retry-After': '2' })
+  }
+  let manifest
+  try {
+    // 同一对象在 Worker isolate 内短暂负缓存，避免旧资源每次开局都额外读取 sidecar；
+    // 回填接口会清除当前 isolate 的缓存，其它 isolate 最迟 30 秒后会看到新清单。
+    manifest = await readIntegrityManifest(env, key, object.httpEtag, object.size)
+  } catch (error) {
+    // 老对象遇到临时 R2 故障仍走兼容路径；但发布过的坏清单不能被当成“尚未回填”。
+    if (!required && error?.code !== 'invalid_integrity_manifest') return false
+    return json({ error: 'ROM / BIOS SHA-256 清单不可用或损坏', code: 'invalid_integrity_manifest' },
+      { ...cors, 'Cache-Control': 'no-store' }, 503, { 'Retry-After': '2' })
+  }
+  if (manifest) return true
+  if (!required) return false
   return json({ error: 'ROM / BIOS 缺少与当前对象版本匹配的 SHA-256 清单', code: 'integrity_manifest_missing' },
     { ...cors, 'Cache-Control': 'no-store' }, 503, { 'Retry-After': '2' })
+}
+async function markCachedIntegrityResponse(env, key, response, cors) {
+  if (!integrityKeyValid(key) || response.status !== 200) return response
+  const required = response.headers.get('X-8BitGo-Integrity-Required') === 'sha256-v1'
+  const etag = response.headers.get('ETag') || ''
+  const size = Number(response.headers.get('Content-Length'))
+  if (!etag || !Number.isSafeInteger(size) || size <= 0) {
+    if (!required) return response
+    await response.body?.cancel().catch(() => {})
+    return json({ error: '缓存 ROM / BIOS 缺少可核对的 ETag 或长度', code: 'integrity_cache_invalid' },
+      { ...cors, 'Cache-Control': 'no-store' }, 503, { 'Retry-After': '2' })
+  }
+  const result = await integrityGateFor(env, key, {
+    httpEtag: etag,
+    size,
+    customMetadata: required ? { '8bitgo-integrity-required': 'sha256-v1' } : {},
+  }, cors)
+  if (result instanceof Response) {
+    await response.body?.cancel().catch(() => {})
+    return result
+  }
+  if (result !== true || required) return response
+  const headers = new Headers(response.headers)
+  headers.set('X-8BitGo-Integrity-Required', 'sha256-v1')
+  return new Response(response.body, r2BodyResponseInit(headers, response.status, response.statusText))
 }
 function integrityEtagVersion(etag) {
   return String(etag || '').replace(/^W\//, '').replace(/\"/g, '').trim()
@@ -1288,6 +1352,44 @@ async function handleIntegrity(request, env, url, cors) {
   if (request.method !== 'POST') return methodNotAllowed(cors, 'GET, POST, OPTIONS')
   const body = await readJson(request, 2 * 1024 * 1024)
   const etag = typeof body.etag === 'string' ? body.etag : ''
+  if (body.action === 'hash-blocks') {
+    const batchBlocks = body.batchBlocks === undefined ? INTEGRITY_BACKFILL_BATCH_BLOCKS : body.batchBlocks
+    if (body.key !== key || !etag || etag.length > 256 || /[\x00-\x1f\x7f]/.test(etag) ||
+        !Number.isSafeInteger(body.size) || body.size <= 0 || !Number.isSafeInteger(body.startIndex) || body.startIndex < 0 ||
+        !Number.isSafeInteger(batchBlocks) || batchBlocks < 1 || batchBlocks > INTEGRITY_BACKFILL_BATCH_BLOCKS) {
+      throw new HttpError(400, 'ROM 完整性回填参数无效', 'invalid_integrity_backfill')
+    }
+    const count = Math.ceil(body.size / INTEGRITY_BLOCK_BYTES)
+    if (count <= 0 || count > INTEGRITY_MAX_BLOCKS || body.startIndex >= count) {
+      throw new HttpError(400, 'ROM 完整性回填分块超出支持范围', 'invalid_integrity_backfill')
+    }
+    const bucket = bucketForWrite(env, key)
+    const object = await bucket.head(key)
+    if (!object || object.httpEtag !== etag || object.size !== body.size) {
+      throw new HttpError(412, 'ROM 在完整性回填期间已变化，拒绝生成摘要', 'integrity_object_changed')
+    }
+    const endIndex = Math.min(count, body.startIndex + batchBlocks)
+    const blocks = []
+    for (let index = body.startIndex; index < endIndex; index++) {
+      const offset = index * INTEGRITY_BLOCK_BYTES
+      const length = Math.min(INTEGRITY_BLOCK_BYTES, body.size - offset)
+      const part = await bucket.get(key, {
+        range: { offset, length },
+        onlyIf: { etagMatches: integrityEtagVersion(etag) },
+      })
+      if (!part?.body || part.httpEtag !== etag) {
+        await part?.body?.cancel().catch(() => {})
+        throw new HttpError(412, 'ROM 在 SHA-256 回填读取期间已变化', 'integrity_object_changed')
+      }
+      const bytes = new Uint8Array(await new Response(part.body).arrayBuffer())
+      if (bytes.byteLength !== length) throw new HttpError(502, 'ROM 完整性回填读取到短分块', 'integrity_backfill_short_read')
+      const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))
+      blocks.push(Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join(''))
+    }
+    return json({ ok: true, key, etag, size: body.size, blockBytes: INTEGRITY_BLOCK_BYTES,
+      startIndex: body.startIndex, nextIndex: endIndex, totalBlocks: count, blocks },
+    { ...cors, 'Cache-Control': 'no-store' })
+  }
   const manifest = body.manifest
   if (!etag || etag.length > 256 || /[\x00-\x1f\x7f]/.test(etag) || !Number.isSafeInteger(body.size) || body.size <= 0 ||
       !validIntegrityManifest(manifest, key, body.size) || body.size !== manifest.size) {
@@ -1305,6 +1407,7 @@ async function publishIntegrityManifest(env, key, etag, size, manifest) {
     throw new HttpError(400, '完整性清单格式无效', 'invalid_integrity_manifest')
   }
   const sidecarKey = await integrityObjectKey(key, etag)
+  integrityManifestMisses.delete(`${key}\n${etag}`)
   const record = JSON.stringify({ ...manifest, etag })
   const bucket = bucketForWrite(env, key)
   let lastError
@@ -1349,24 +1452,39 @@ function integrityManifestHeader(request) {
  * 读取覆盖它的完整块，最大临时缓冲仍约 10 MiB。Cache API 也只会收到已核验的响应。
  */
 async function verifyIntegrityRangeResponse(request, env, response) {
-  if (response.status !== 206 || response.headers.get('X-8BitGo-Integrity-Required') !== 'sha256-v1') return response
-  const range = /^bytes (\d+)-(\d+)\/(\d+)$/i.exec(response.headers.get('Content-Range') || '')
+  if (response.status !== 206) return response
+  const required = response.headers.get('X-8BitGo-Integrity-Required') === 'sha256-v1'
   const requested = /^bytes=(\d+)-(\d+)$/.exec(request.headers.get('Range') || '')
+  let key
+  try { key = decodeURIComponent(new URL(request.url).pathname.replace(/^\/+/, '')) }
+  catch {
+    if (!required) return response
+    await response.body?.cancel().catch(() => {})
+    throw new HttpError(502, '带完整性标记的 ROM Range 路径无效', 'integrity_range_invalid')
+  }
+  if (!integrityKeyValid(key)) {
+    if (!required) return response
+    await response.body?.cancel().catch(() => {})
+    throw new HttpError(502, '带完整性标记的 Range 不属于 ROM / BIOS key', 'integrity_range_invalid')
+  }
+  if (!requested && !required) return response
+  const range = /^bytes (\d+)-(\d+)\/(\d+)$/i.exec(response.headers.get('Content-Range') || '')
   if (!range || !requested || response.headers.get('Content-Encoding')) {
     await response.body?.cancel().catch(() => {})
     throw new HttpError(502, '带完整性标记的 ROM Range 响应头无效', 'integrity_range_invalid')
   }
   const [start, end, total, requestStart, requestEnd] = [...range.slice(1), ...requested.slice(1)].map(Number)
-  if (![start, end, total, requestStart, requestEnd].every(Number.isSafeInteger) || start !== requestStart || end !== requestEnd ||
-      end < start || total <= end || end - start + 1 > 8 * 1024 * 1024) {
+  if (![start, end, total, requestStart, requestEnd].every(Number.isSafeInteger) || start !== requestStart ||
+      requestEnd < requestStart || end !== Math.min(requestEnd, total - 1) || end < start || total <= end ||
+      end - start + 1 > 8 * 1024 * 1024) {
     await response.body?.cancel().catch(() => {})
     throw new HttpError(502, 'ROM Range 超出 SHA-256 校验支持范围', 'integrity_range_invalid')
   }
-  const key = decodeURIComponent(new URL(request.url).pathname.replace(/^\/+/, ''))
   const etag = response.headers.get('ETag') || ''
   const bucket = bucketForWrite(env, key)
   const manifest = await readIntegrityManifest(env, key, etag, total)
   if (!manifest) {
+    if (!required) return response
     await response.body?.cancel().catch(() => {})
     throw new HttpError(503, 'ROM Range 缺少当前版本 SHA-256 清单', 'integrity_manifest_missing')
   }
@@ -1420,6 +1538,7 @@ async function verifyIntegrityRangeResponse(request, env, response) {
   const fromAligned = start - alignedStart
   const correct = verified.subarray(fromAligned, fromAligned + original.byteLength)
   const headers = new Headers(response.headers)
+  if (!required) headers.set('X-8BitGo-Integrity-Required', 'sha256-v1')
   if (correct.some((byte, index) => byte !== original[index])) {
     console.warn('[rom-integrity] range response differed from the ETag-bound R2 blocks; repaired from R2')
   }
@@ -1815,7 +1934,7 @@ async function handle(request, env, url, cors) {
       multipart: true,
       // 制作机在启用自动队列前会检查这两个能力；旧 Worker 不会误接收随后必坏的 Brotli 产物。
       features: { privateStagingRead: true, contentEncodingUpload: true, sockdriveSourceCopy: true,
-        integrityManifest: true, integrityAtomicUpload: true },
+        integrityManifest: true, integrityAtomicUpload: true, integrityBackfill: true },
       time: new Date().toISOString(),
     }, cors)
   }
@@ -1845,7 +1964,7 @@ async function handle(request, env, url, cors) {
     }
     return deleteResponse(env, [...new Set(body.keys)], cors, true)
   }
-  if (RESERVED.has(path) || !validKey(path)) return json({ error: 'not found' }, cors, 404)
+  if (RESERVED.has(path) || path.startsWith(INTEGRITY_PREFIX) || !validKey(path)) return json({ error: 'not found' }, cors, 404)
   const key = path
   const hasUploadId = url.searchParams.has('uploadId')
   const uploadId = url.searchParams.get('uploadId')
@@ -1960,7 +2079,19 @@ export default {
       try {
         const hit = await edgeCache.match(rangePlan?.key || request)
         if (hit && !rangePlan) {
-          const response = edgeCacheHeader(hit, 'HIT')
+          let checked = hit
+          try {
+            const key = decodeURIComponent(url.pathname.replace(/^\/+/, ''))
+            checked = await markCachedIntegrityResponse(env, key, hit, cors)
+          } catch (error) {
+            console.warn('[rom-integrity] cached response check failed', error instanceof Error ? error.message : String(error))
+            if (hit.headers.get('X-8BitGo-Integrity-Required') === 'sha256-v1') {
+              await hit.body?.cancel().catch(() => {})
+              checked = json({ error: '缓存 ROM / BIOS 完整性暂不可验证', code: 'integrity_cache_unavailable' },
+                { ...cors, 'Cache-Control': 'no-store' }, 503, { 'Retry-After': '2' })
+            }
+          }
+          const response = edgeCacheHeader(checked, 'HIT')
           return ['GET', 'HEAD', 'PUT'].includes(request.method) ? responseTiming(response, startedAt) : response
         }
         if (hit && rangePlan) {

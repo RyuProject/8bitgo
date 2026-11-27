@@ -4,6 +4,8 @@ import worker from '../src/index.js'
 import { r2BodyResponseInit } from '../src/http.js'
 import { Bucket, environment, req, count, streamChunks } from './fixtures.mjs'
 
+const objectGetCount = (env, key) => env.ROMS.calls.filter(call => call.method === 'get' && call.args.key === key).length
+
 for (const method of ['PUT','POST','DELETE']) test(`${method}: unauthorized writes are rejected`, async () => {
   const e = environment(); const r = await worker.fetch(req('/game.zip', method), e); assert.equal(r.status,401); assert.equal(e.ROMS.calls.length,0)
 })
@@ -427,7 +429,7 @@ test('version-pinned arcade chunks reuse an independent 8 MiB edge-cache entry',
     assert.equal(await first.text(), 'first-ROM-bytes')
     await Promise.all(waits)
     assert.equal(puts, 1)
-    assert.equal(count(e.ROMS, 'get'), 1)
+    assert.equal(objectGetCount(e, 'roms/arcade/mslug4.zip.8bg'), 1)
 
     const second = await worker.fetch(req(path, 'GET', undefined, range), e, context)
     assert.equal(second.status, 206)
@@ -435,13 +437,13 @@ test('version-pinned arcade chunks reuse an independent 8 MiB edge-cache entry',
     assert.equal(second.headers.get('Content-Range'), 'bytes 0-14/15')
     assert.equal(second.headers.get('X-8BitGo-Stored-Range'), null)
     assert.equal(await second.text(), 'first-ROM-bytes')
-    assert.equal(count(e.ROMS, 'get'), 1)
+    assert.equal(objectGetCount(e, 'roms/arcade/mslug4.zip.8bg'), 1)
 
     const updated = e.ROMS.seed('roms/arcade/mslug4.zip.8bg', 'new-ROM-bytes')
     const newer = await worker.fetch(req(`/roms/arcade/mslug4.zip.8bg?romv=${updated.etag}`, 'GET', undefined, range), e, context)
     assert.equal(newer.headers.get('X-8BitGo-Edge-Cache'), 'MISS')
     assert.equal(await newer.text(), 'new-ROM-bytes')
-    assert.equal(count(e.ROMS, 'get'), 2)
+    assert.equal(objectGetCount(e, 'roms/arcade/mslug4.zip.8bg'), 2)
   } finally {
     if (previous === undefined) delete globalThis.caches
     else globalThis.caches = previous
@@ -469,7 +471,8 @@ test('version-pinned NDS 8 MiB and PS1 CHD 2 MiB ranges each reuse edge cache', 
       assert.equal(second.headers.get('X-8BitGo-Edge-Cache'), 'HIT')
       assert.equal(await second.text(), `bytes:${key}`)
     }
-    assert.equal(count(e.ROMS, 'get'), 2, '两种平台的第二次读取都不应再次穿透 R2')
+    assert.equal(objectGetCount(e, 'roms/nds/rhythm.nds') + objectGetCount(e, 'roms/psx/chrono.chd'), 2,
+      '两种平台的第二次读取都不应再次穿透 ROM 对象；首次请求允许额外查一次 sidecar')
   } finally {
     if (previous === undefined) delete globalThis.caches
     else globalThis.caches = previous
@@ -497,7 +500,7 @@ test('content-addressed MAME CHD ranges reuse edge cache and get immutable cachi
     const second = await worker.fetch(req(`/${key}`, 'GET', undefined, range), e, context)
     assert.equal(second.headers.get('X-8BitGo-Edge-Cache'), 'HIT')
     assert.equal(await second.text(), 'MComprHD-bytes')
-    assert.equal(count(e.ROMS, 'get'), 1, '第二位玩家不应再穿透 R2')
+    assert.equal(objectGetCount(e, key), 1, '第二位玩家不应再穿透 ROM 对象')
     // 路径不像内容寻址（大写 / 短哈希）就仍走旧规则：不缓存
     e.ROMS.seed('roms/arcade-media/mame/ABC/nm-002.chd', 'x')
     const plain = await worker.fetch(req('/roms/arcade-media/mame/ABC/nm-002.chd', 'GET', undefined, range), e, context)
@@ -528,13 +531,13 @@ test('version-pinned PSP chunks reuse an independent 2 MiB edge-cache entry with
     assert.equal(first.headers.get('X-8BitGo-Edge-Cache'), 'MISS')
     assert.equal((await first.arrayBuffer()).byteLength, 2 * 1024 * 1024)
     await Promise.all(waits)
-    assert.equal(count(e.ROMS, 'get'), 1)
+    assert.equal(objectGetCount(e, 'roms/psp/djmax.en.chd'), 1)
 
     const second = await worker.fetch(req(path, 'GET', undefined, range), e, context)
     assert.equal(second.status, 206)
     assert.equal(second.headers.get('X-8BitGo-Edge-Cache'), 'HIT')
     assert.equal((await second.arrayBuffer()).byteLength, 2 * 1024 * 1024)
-    assert.equal(count(e.ROMS, 'get'), 1)
+    assert.equal(objectGetCount(e, 'roms/psp/djmax.en.chd'), 1)
 
     const probe = await worker.fetch(req(path, 'GET', undefined, { Range: 'bytes=0-0', 'If-Match': original.httpEtag }), e, context)
     assert.equal(probe.headers.get('X-8BitGo-Edge-Cache'), null, '1 字节探测不能制造 PSP 边缘分片')
@@ -569,7 +572,8 @@ test('PS2 and Dolphin discs reuse aligned 2 MiB edge blocks', async () => {
       assert.equal(second.headers.get('X-8BitGo-Edge-Cache'), 'HIT')
       assert.equal((await second.arrayBuffer()).byteLength, 2 * 1024 * 1024)
     }
-    assert.equal(count(e.ROMS, 'get'), 2, '两张流式光盘的第二次读取都应命中边缘块')
+    assert.equal(objectGetCount(e, 'roms/ps2/ico.iso') + objectGetCount(e, 'roms/gamecube/wind-waker.rvz'), 2,
+      '两张流式光盘的第二次读取都应命中边缘块')
   } finally {
     if (previous === undefined) delete globalThis.caches
     else globalThis.caches = previous
@@ -635,10 +639,10 @@ test('arcade cache keeps the final short chunk separate from the first chunk', a
     const again = await worker.fetch(req(path, 'GET', undefined, finalRange), e, context)
     assert.equal(again.headers.get('X-8BitGo-Edge-Cache'), 'HIT')
     assert.deepEqual(new Uint8Array(await again.arrayBuffer()), new Uint8Array([7, 8, 9]))
-    assert.equal(count(e.ROMS, 'get'), 1)
+    assert.equal(objectGetCount(e, 'roms/arcade/mslug4.zip.8bg'), 1)
     const firstChunk = await worker.fetch(req(path, 'GET', undefined, { Range: 'bytes=0-8388607' }), e, context)
     assert.equal(firstChunk.headers.get('X-8BitGo-Edge-Cache'), 'MISS')
-    assert.equal(count(e.ROMS, 'get'), 2)
+    assert.equal(objectGetCount(e, 'roms/arcade/mslug4.zip.8bg'), 2)
     await firstChunk.body?.cancel()
     await Promise.all(waits)
     assert.equal(stored.size, 2)
