@@ -48,12 +48,20 @@ check('游戏库和专题只把首张 LCP 封面提升到高优先级，首页�
   assert.match(games, /priority=\{i === 0\}/, '游戏库没有只提升首张封面')
   assert.match(collections, /priority=\{i === 0\}/, '平台、类型与 ROM 语言专题没有只提升首张封面')
   assert.match(home, /<GameCard key=\{g\.slug\} game=\{g\} priority=\{i === 0\}/, '首页精选区没有只提升首张封面')
-  assert.doesNotMatch(home, /<GameCardWide[^>]+priority=/, '首页下方最新栏目不应抢占首屏图片带宽')
+  assert.match(home, /<GameCardWide key=\{g\.slug\} game=\{g\} isNew=\{i < 3\} priority=\{i === 0\} \/>/, '首页最新栏目只提升可能成为 LCP 的第一张卡片')
+  assert.match(wideCard, /sizes="\(min-width: 640px\) 288px, 256px"/, '首页宽卡必须按真实展示宽度挑选封面档位')
   assert.match(cover, /const posterSrc = coverSrc \? coverImageUrl\(coverSrc\) : ''/, '视频 poster 必须使用受尺寸限制的图片转换地址')
   assert.match(cover, /preload\(posterSrc, \{ as: 'image', fetchPriority: 'high' \}\)/, '首屏视频 poster 没有以同一转换地址高优先级预加载')
   assert.match(cover, /loading=\{priority \? 'eager' : 'lazy'\}/, '非首屏视频 poster 必须参与原生懒加载')
   assert.match(cover, /fallbackPoster/, '图片转换失败时视频 poster 必须退回源图')
+  assert.match(read('src/services/roms.ts'), /const COVER_WIDTHS = \[160, 240, 480\]/, '封面缩放必须包含榜单小卡所需的 160px 档')
   assert.match(read('src/services/roms.ts'), /function transformedCoverUrl[\s\S]*width=\$\{width\},quality=80,format=\$\{format\},fit=scale-down/, 'poster 转换必须复用既有缓存格式和尺寸策略')
+})
+
+check('ROM 语言数量使用足够对比度的继承色', () => {
+  const links = read('src/components/game/RomLanguageLinks.tsx')
+  assert.match(links, /<span>\{count\}<\/span>/, 'ROM 语言计数应继承 chip 的前景色')
+  assert.doesNotMatch(links, /opacity-60/, '低对比度透明度不能用于小号计数')
 })
 
 check('桌面端封面视频等页面加载完、空闲后才自动拉流，弱网不自动拉', () => {

@@ -43,7 +43,15 @@ export function GameCardWide({ game, className, isNew, priority }: Props) {
       className={cx('group card-hover block overflow-hidden rounded-card border border-line bg-surface hover:border-brand/60', className)}
     >
       <div className="relative">
-        <GameCover game={game} ratio="square" showTitle={false} iconSize="md" priority={priority} />
+        <GameCover
+          game={game}
+          ratio="square"
+          showTitle={false}
+          iconSize="md"
+          priority={priority}
+          // 首页横卡宽度固定为 256/288px，避免把 100vw 误当成图片展示宽度。
+          sizes="(min-width: 640px) 288px, 256px"
+        />
         {isNew && (
           <Badge tone="brand" className="absolute right-2 top-2">
             NEW
