@@ -88,6 +88,17 @@ assert(requests.some(([start]) => start === PSX_RANGE_BYTES * 4))
 assert.throws(() => node.stream_ops.read({}, new Uint8Array(1), 0, 17 * 1024 * 1024, 0), /异常大/)
 range.dispose()
 
+let transientAttempts = 0
+const retriedRange = await preparePsxRangeDisc(url, 'retry.chd', new AbortController().signal,
+  async (_url, init) => {
+    transientAttempts++
+    assert.equal(init.headers.Range, `bytes=0-${PSX_RANGE_BYTES - 1}`)
+    if (transientAttempts === 1) throw new TypeError('Failed to fetch')
+    return fakeResponse(0, PSX_RANGE_BYTES - 1)
+  }, undefined, { includeTail: false, prefetch: false })
+assert.equal(transientAttempts, 2, 'CDN HTTP/2 断流重试一次后继续流式开局')
+retriedRange.dispose()
+
 const fatalMessages = []
 class FaultyXhr extends FakeXhr {
   send() { throw new Error('network offline') }
