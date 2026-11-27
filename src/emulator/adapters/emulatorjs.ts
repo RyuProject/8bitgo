@@ -5215,11 +5215,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             ejsCoreAsset(`cores/metadata/${encodeURIComponent(emulatorJsCoreFileFor(warmCore))}.json`),
             ...(warmLanguage ? [warmLanguage] : []),
           ],
-          large: [
-            warmCoreDataUrl,
-            // 核心已在引擎缓存里就不用解压，也就不需要它（同属「引擎库里没有才预热」）
-            warmPaths[EJS_EXTRACT_7Z_FILE],
-          ],
+          large: [warmCoreDataUrl],
+          // 只有核心需从 .data 解压时才用到 7z；核心缓存命中则跳过这份预热。
+          coreMiss: [warmPaths[EJS_EXTRACT_7Z_FILE]],
         }, {
           assumeUncached,
           coreDataUrl: warmCoreDataUrl,

@@ -341,6 +341,26 @@ await check('开局预热：引擎缓存里已有的核心不再下载，库不�
   assert.deepEqual(warmed2, [core], '没有 IndexedDB 时照常预热')
 })
 
+await check('核心缓存命中时跳过解压器预热，冷核心仍与解压器并行预热', async () => {
+  const core = '/emulatorjs/cores/fbneo-legacy-wasm.data?v=1'
+  const extractor = '/emulatorjs/compression/extract7z.js?v=1'
+  const warmedHit = []
+  await warmEmulatorJsStart({ always: [], large: [core], coreMiss: [extractor] }, {
+    idb: fakeIdb({ exists: true, urls: [core] }),
+    warm: (url) => warmedHit.push(url),
+    coreDataUrl: core,
+  })
+  assert.deepEqual(warmedHit, [], '核心在引擎缓存中时解压器没有启动路径')
+
+  const warmedCold = []
+  await warmEmulatorJsStart({ always: [], large: [core], coreMiss: [extractor] }, {
+    idb: fakeIdb({ exists: true, urls: [] }),
+    warm: (url) => warmedCold.push(url),
+    coreDataUrl: core,
+  })
+  assert.deepEqual(warmedCold, [core, extractor], '核心未命中时仍预热核心与解压器')
+})
+
 await check('IndexedDB 查询同步抛错或卡住时会关闭连接，不阻塞引擎升级', async () => {
   const core = '/emulatorjs/cores/fbneo-legacy-wasm.data?v=1'
   const broken = fakeIdb({ exists: true, countMode: 'throw' })
@@ -408,6 +428,8 @@ await check('BIOS 线路探测与核心预热、ROM 首个请求并行，且平�
   assert.ok(biosWarmAt > warmAt, 'BIOS 应在路线选定后单独预热，不能用未确认的旧域名')
   assert.ok(source.slice(biosWarmTaskAt, biosWarmAt).includes('if (destroyed || prepareAbort.signal.aborted || !'), '后台预热开始前必须再次检查会话是否取消')
   assert.match(source.slice(warmAt, biosWarmAt), /Promise\.all\(\[coreWarmTask, engineBiosUrlTask\]\)/, 'BIOS 预热应等待核心缓存查询结束，避免并发打开同一个引擎库')
+  assert.match(source.slice(warmAt, arcadeAt), /large: \[warmCoreDataUrl\],[\s\S]*coreMiss: \[warmPaths\[EJS_EXTRACT_7Z_FILE\]\]/,
+    '7z 解压器只在核心未命中时预热')
   assert.equal(source.split(/(?:const|let) engineBiosUrl =/).length - 1, 1, 'engineBiosUrl 被算了两遍，预热和真正开局可能不一致')
   assert.ok(source.search(/(?:const|let) engineBiosUrl =/) < warmAt, '预热时还不知道要不要下平台 BIOS')
   assert.equal((source.match(/await resolveEngineBiosUrl\(\)/g) ?? []).length, 2, '街机 BIOS 判断和其它平台模拟器配置都必须在 ROM 准备后收口线路')

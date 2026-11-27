@@ -106,6 +106,8 @@ export interface EjsStartWarmPlan {
   always: string[]
   /** 大文件（核心、平台 BIOS）：引擎缓存里没有时才预热。 */
   large: string[]
+  /** 只在本局核心不在引擎缓存时需要的资源，例如核心压缩包的解压脚本。 */
+  coreMiss?: string[]
 }
 
 export type EjsCoreWarmEvent = 'start' | 'complete' | 'cached'
@@ -194,6 +196,12 @@ export async function warmEmulatorJsStart(
       continue
     }
     beginWarm(url)
+  }
+  // 核心命中时引擎不再解压 .data；此时单独预热 7z 脚本只会浪费带宽与解码工作。
+  if (!coreDataUrl || !cached.has(coreDataUrl)) {
+    for (const url of plan.coreMiss ?? []) {
+      if (url) beginWarm(url)
+    }
   }
   return started
 }
