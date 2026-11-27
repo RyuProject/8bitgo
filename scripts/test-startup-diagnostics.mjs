@@ -214,6 +214,45 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   })
   assert.equal(oldNetworkBiosSample.diagnostics.diagnosis.code, 'bios_download',
     '历史普通网络错误有 BIOS 文件证据时应升级为 BIOS 下载故障')
+  const javaUploadFailure = diagnoseStartupFailure({
+    event: 'failed', runtime: 'j2me', platform: 'java',
+    detail: 'No se pudo subir tu juego Java: Failed to fetch',
+    diagnostics: {
+      reason: 'No se pudo subir tu juego Java: Failed to fetch',
+      resources: [
+        { n: 'rom.8bitgo.com/integrity', i: 'fetch', at: 2673, st: 503 },
+        { n: 'cn.8bitgo.com/api/…/upload', i: 'fetch', at: 3047, st: 0 },
+      ],
+      timeline: [
+        { t: 0, e: 'start_click' },
+        { t: 2869, e: 'download_complete' },
+        { t: 16811, e: 'startup_interrupted' },
+      ],
+    },
+  })
+  assert.deepEqual(
+    { code: javaUploadFailure.code, label: javaUploadFailure.label, phase: javaUploadFailure.phase, confidence: javaUploadFailure.confidence, signal: javaUploadFailure.signals[0] },
+    { code: 'j2me_upload', label: 'Java 本地游戏上传请求失败', phase: 'network', confidence: 'high', signal: 'error.j2me_upload' },
+    'Java 本地游戏上传的明确网络错误应优先于同页无关的 /integrity 503',
+  )
+  assert.notEqual(diagnoseStartupFailure({
+    event: 'failed', runtime: 'j2me', platform: 'java',
+    detail: 'Java emulator failed to start',
+    diagnostics: { resources: [{ n: 'rom.8bitgo.com/integrity', i: 'fetch', at: 2673, st: 503 }] },
+  }).code, 'j2me_upload', '没有上传错误文本时，不能把 Java 启动故障猜成上传失败')
+  const oldJavaUploadSample = reclassifyStartupDiagnostic({
+    id: '4352', event: 'failed', runtime: 'j2me', platform: 'java',
+    signature: '1234567890abcdef', signatureText: 'failed · j2me · 资源请求返回 HTTP 错误 · http-503',
+    payload: JSON.stringify({
+      v: 1, capture: { level: 'full' }, reason: 'No se pudo subir tu juego Java: Failed to fetch',
+      resources: [{ n: 'rom.8bitgo.com/integrity', i: 'fetch', at: 2673, st: 503 }],
+      diagnosis: { code: 'network_http', label: '资源请求返回 HTTP 错误', phase: 'network', confidence: 'medium', signals: ['resource.http_status'], artifact: 'http-503' },
+    }),
+  })
+  assert.equal(oldJavaUploadSample.diagnostics.diagnosis.code, 'j2me_upload',
+    '历史 Java 本地游戏上传失败应从无关 HTTP 状态码重归为具体上传故障')
+  assert.notEqual(oldJavaUploadSample.signature, '1234567890abcdef',
+    '历史现场升级诊断后必须同步更新后台分组签名')
   const preserveSpecificOldDiagnosis = reclassifyStartupDiagnostic({
     event: 'failed', runtime: 'emulatorjs', platform: 'arcade', payload: JSON.stringify({
       v: 1, capture: { level: 'full' }, reason: '没有可识别的具体错误',
@@ -744,6 +783,7 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   assert.equal(diagnosisSignalLabel('stage.html5_entry_pending'), 'HTML5 游戏入口页尚未确认加载', '后台与复制给 AI 都要显示新分类依据的中文说明')
   assert.equal(diagnosisSignalLabel('error.rom_integrity_manifest'), '本站要求校验 ROM / BIOS，但 SHA-256 清单不可用', '后台与复制给 AI 都要解释完整性清单拦截信号')
   assert.equal(diagnosisSignalLabel('error.gba_bios_download'), 'EmulatorJS 的 GBA BIOS 文件请求失败')
+  assert.equal(diagnosisSignalLabel('error.j2me_upload'), 'Java 本地游戏上传提示伴随明确的网络请求失败')
   assert.equal(formatResourceServerTiming({ workerMs: 18.4, edgeCache: 'HIT' }), 'Worker 响应头 18.4ms · 边缘缓存 HIT', '现场表格和 AI 报告共用 Worker / 边缘缓存格式')
   assert.equal(formatResourceServerTiming({}), '', '没有服务器计时信息时不增加空白行')
   assert.match(read('src/admin/AdminDiagnostics.tsx'), /formatResourceServerTiming\(r\)/, '现场网络表格应展示已采集的服务器计时信息')

@@ -137,7 +137,7 @@ export function needsAttention(event, diagnostics) {
 const DIAGNOSIS_CODES = new Set([
   'offline', 'network_http', 'network_failure', 'react_update_loop', 'page_asset', 'script_conflict', 'engine_asset', 'engine_assets', 'engine_load', 'core_download', 'rom_download', 'rom_integrity',
   'rom_invalid', 'bios_romset', 'bios_config', 'bios_download', 'webgl', 'memory', 'storage', 'input_api', 'wasm_runtime', 'runtime_trap',
-  'timeout', 'unsupported', 'unknown',
+  'timeout', 'j2me_upload', 'unsupported', 'unknown',
 ])
 const CAPTURE_LEVELS = ['full', 'summary']
 const SUMMARY_NOTES = ['missing', 'limited', 'invalid', 'save_failed', 'backfill']
@@ -388,6 +388,17 @@ export function diagnoseStartupFailure({ event, runtime, platform, detail, elaps
     return withCore(hit('timeout', 'ROM 完成后模拟器启动停滞', 'core_init', 'medium', 'stage.starting'))
   }
   /*
+    J2ME 本地游戏要先临时上传，上传失败会走同一条 failed 漏斗；同页并行探测的 `/integrity`
+    也可能恰好返回 503。Resource Timing 是整页缓冲，不能让这个旁路请求盖过错误摘要里明确的上传失败。
+  */
+  const reasonText = [detail, diagnostics?.reason].filter(Boolean).join('\n').toLowerCase()
+  const j2meUploadFailed = event === 'failed' && runtime === 'j2me' &&
+    /(?:could not upload your java game|no se pudo subir tu juego java|impossibile caricare il tuo gioco java|dein java-spiel konnte nicht hochgeladen werden|impossible d'envoyer ton jeu java|java ゲームのアップロードに失敗|本地 java 游戏上传失败|本機 java 遊戲上傳失敗)/i.test(reasonText) &&
+    /(?:failed to fetch|networkerror|net::err_|connection reset|connection refused|request failed|errore di rete|erreur de réseau|error de red|网络请求失败|连接失败)/i.test(reasonText)
+  if (j2meUploadFailed) {
+    return hit('j2me_upload', 'Java 本地游戏上传请求失败', 'network', 'high', 'error.j2me_upload')
+  }
+  /*
     Resource Timing 是整页缓冲，不是本次点击专属。错误请求只有发生在开局附近才参与归因；
     否则像 Clarity 数分钟前的 400 会盖过当前真正的 React / 引擎错误。近期第三方请求只能作中把握度线索，
     不能冒充本站 ROM、核心或页面脚本的明确失败。
@@ -617,6 +628,7 @@ function diagnosisEvidencePriority(diagnosis) {
     'error.rom_integrity_manifest': 110,
     'error.gba_bios_download': 110,
     'error.ppsspp_stream_timeout': 105,
+    'error.j2me_upload': 95,
     'error.global_redeclaration': 100,
     'error.platform_bios_config': 100,
     'error.romset_or_bios': 100,
