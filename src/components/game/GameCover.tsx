@@ -5,6 +5,7 @@ import type { CoverGame } from '@/types'
 import { platformMap } from '@/data/platforms'
 import { gradientFor } from '@/lib/gradients'
 import {
+  coverImageUrl,
   coverSrcSet,
   coverThumbKey,
   gameMediaUrl,
@@ -134,11 +135,22 @@ function previewAutoplayAllowed(): boolean {
  * 和 32 张封面抢带宽，最后一张封面拖到 11.9 秒才到。预览只是装饰，封面才是玩家要看的。
  * 悬停播放不受这两条限制：那是玩家自己要看的。
  */
-function CoverVideo({ src: primarySrc, fallbackSrc, poster }: { src: string; fallbackSrc?: string; poster?: string }) {
+function CoverVideo({ src: primarySrc, fallbackSrc, poster, fallbackPoster, priority = false }: {
+  src: string
+  fallbackSrc?: string
+  poster?: string
+  fallbackPoster?: string
+  priority?: boolean
+}) {
   const ref = useRef<HTMLVideoElement>(null)
   // 大陆加速镜像（EdgeOne）取不到时退回主线路，只换一次；换了视频就重新从首选地址开始
   const [failedSrc, setFailedSrc] = useState('')
   const src = failedSrc === primarySrc && fallbackSrc ? fallbackSrc : primarySrc
+  const [failedPoster, setFailedPoster] = useState('')
+  const posterSrc = failedPoster === poster && fallbackPoster ? fallbackPoster : poster
+  const [hasVideoFrame, setHasVideoFrame] = useState(false)
+
+  useEffect(() => setHasVideoFrame(false), [src])
 
   useEffect(() => {
     const v = ref.current
@@ -223,22 +235,39 @@ function CoverVideo({ src: primarySrc, fallbackSrc, poster }: { src: string; fal
   }, [src])
 
   return (
-    <video
-      ref={ref}
-      src={src}
-      poster={poster}
-      muted
-      loop
-      playsInline
-      // 一律从 none 开始；桌面端进入视口或悬停后再拉，移动端永远只用 poster。
-      preload="none"
-      onError={() => {
-        if (fallbackSrc && src === primarySrc) setFailedSrc(primarySrc)
-      }}
-      className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-105"
-      // 悬停仍然生效：自动播被系统设置或省电模式拦下时，这是兜底
-      onMouseEnter={() => void ref.current?.play().catch(() => {})}
-    />
+    <>
+      {posterSrc && (
+        <img
+          src={posterSrc}
+          alt=""
+          aria-hidden
+          loading={priority ? 'eager' : 'lazy'}
+          fetchPriority={priority ? 'high' : 'auto'}
+          decoding="async"
+          onError={(event) => {
+            reportCoverLoadFailure(event.currentTarget.currentSrc || event.currentTarget.src)
+            if (poster && fallbackPoster && poster !== fallbackPoster && posterSrc === poster) setFailedPoster(poster)
+          }}
+          className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-105"
+        />
+      )}
+      <video
+        ref={ref}
+        src={src}
+        muted
+        loop
+        playsInline
+        // poster 由可懒加载、可回退的 img 绘制；视频本身只在桌面进入视口 / 悬停后才取帧。
+        preload="none"
+        onPlaying={() => setHasVideoFrame(true)}
+        onError={() => {
+          if (fallbackSrc && src === primarySrc) setFailedSrc(primarySrc)
+        }}
+        className={cx('absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-105', !hasVideoFrame && 'opacity-0')}
+        // 悬停仍然生效：自动播被系统设置或省电模式拦下时，这是兜底
+        onMouseEnter={() => void ref.current?.play().catch(() => {})}
+      />
+    </>
   )
 }
 
@@ -334,10 +363,10 @@ export function GameCover({
   useEffect(() => setCoverFailed(false), [coverSrc])
   const srcSet = imgSrc === coverSrc && !transformFailed ? coverSrcSet(coverSrc) : ''
 
-  // 首屏视频卡片的 poster 是图片，但 <video poster> 没有可设置 fetchPriority 的属性。
-  // 在 SSR 渲染时显式预加载这一张，避免它与普通视频资源一起按 auto 排队。
+  const posterSrc = coverSrc ? coverImageUrl(coverSrc) : ''
+  // 首屏视频 poster 用同一张 480px 转码图预载与绘制，避免裸 PNG 与无尺寸源图抢首屏带宽。
   if (!mediaDeferred && priority && videoSrc && coverSrc) {
-    preload(coverSrc, { as: 'image', fetchPriority: 'high' })
+    preload(posterSrc, { as: 'image', fetchPriority: 'high' })
   }
 
   return (
@@ -358,7 +387,13 @@ export function GameCover({
     >
       {/* 背景层：视频 / 封面图 / 程序化封面 */}
       {videoSrc && !mediaDeferred ? (
-        <CoverVideo src={videoSrc} fallbackSrc={gameVideoFallbackUrl(game, videoSrc) || undefined} poster={coverSrc || undefined} />
+        <CoverVideo
+          src={videoSrc}
+          fallbackSrc={gameVideoFallbackUrl(game, videoSrc) || undefined}
+          poster={posterSrc || undefined}
+          fallbackPoster={coverSrc || undefined}
+          priority={priority}
+        />
       ) : coverSrc && !coverFailed && !mediaDeferred ? (
         <img
           ref={coverImageRef}

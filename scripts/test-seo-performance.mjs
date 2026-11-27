@@ -48,7 +48,11 @@ check('游戏库和专题只把首张 LCP 封面提升到高优先级，首页�
   assert.match(collections, /priority=\{i === 0\}/, '平台、类型与 ROM 语言专题没有只提升首张封面')
   assert.match(home, /<GameCard key=\{g\.slug\} game=\{g\} priority=\{i === 0\}/, '首页精选区没有只提升首张封面')
   assert.doesNotMatch(home, /<GameCardWide[^>]+priority=/, '首页下方最新栏目不应抢占首屏图片带宽')
-  assert.match(cover, /preload\(coverSrc, \{ as: 'image', fetchPriority: 'high' \}\)/, '视频 poster 没有高优先级图片预加载')
+  assert.match(cover, /const posterSrc = coverSrc \? coverImageUrl\(coverSrc\) : ''/, '视频 poster 必须使用受尺寸限制的图片转换地址')
+  assert.match(cover, /preload\(posterSrc, \{ as: 'image', fetchPriority: 'high' \}\)/, '首屏视频 poster 没有以同一转换地址高优先级预加载')
+  assert.match(cover, /loading=\{priority \? 'eager' : 'lazy'\}/, '非首屏视频 poster 必须参与原生懒加载')
+  assert.match(cover, /fallbackPoster/, '图片转换失败时视频 poster 必须退回源图')
+  assert.match(read('src/services/roms.ts'), /function transformedCoverUrl[\s\S]*width=\$\{width\},quality=80,format=\$\{format\},fit=scale-down/, 'poster 转换必须复用既有缓存格式和尺寸策略')
 })
 
 check('桌面端封面视频等页面加载完、空闲后才自动拉流，弱网不自动拉', () => {

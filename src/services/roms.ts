@@ -398,6 +398,25 @@ export function gameVideoFallbackUrl(game: { slug: string; video?: string }, cur
  */
 const COVER_WIDTHS = [240, 480] as const
 
+type CoverImageWidth = (typeof COVER_WIDTHS)[number]
+
+function transformedCoverUrl(src: string, width: CoverImageWidth, base: string, format: 'auto' | 'webp'): string {
+  const prefix = `${base}/covers/`
+  if (!base || !/^https:\/\//i.test(base) || !src.startsWith(prefix)) return ''
+  const path = src.slice(base.length + 1)
+  return `${base}/cdn-cgi/image/width=${width},quality=80,format=${format},fit=scale-down/${path}`
+}
+
+/** 单张 poster 没有 srcset：用 480 档覆盖 240px CSS 卡片的高密度屏，并保留不可变换源图回退。 */
+export function coverImageUrl(
+  src: string,
+  width: CoverImageWidth = 480,
+  base = import.meta.env.VITE_COVER_TRANSFORM === '1' ? getCoverBase() : '',
+  format: 'auto' | 'webp' = base && base === getCnCoverBase() ? 'webp' : 'auto',
+): string {
+  return transformedCoverUrl(src, width, base, format) || src
+}
+
 /**
  * 封面的 Cloudflare Image Transformations srcset；不适用时返回空串，调用方照旧用原图。
  *
@@ -418,12 +437,8 @@ export function coverSrcSet(
   base = import.meta.env.VITE_COVER_TRANSFORM === '1' ? getCoverBase() : '',
   format: 'auto' | 'webp' = base && base === getCnCoverBase() ? 'webp' : 'auto',
 ): string {
-  const prefix = `${base}/covers/`
-  if (!base || !/^https:\/\//i.test(base) || !src.startsWith(prefix)) return ''
-  const path = src.slice(base.length + 1)
-  return COVER_WIDTHS.map(
-    (width) => `${base}/cdn-cgi/image/width=${width},quality=80,format=${format},fit=scale-down/${path} ${width}w`,
-  ).join(', ')
+  const urls = COVER_WIDTHS.map((width) => transformedCoverUrl(src, width, base, format))
+  return urls[0] ? urls.map((url, index) => `${url} ${COVER_WIDTHS[index]}w`).join(', ') : ''
 }
 
 const IMAGE_EXT_RE = /\.(png|jpe?g|webp|avif)$/i
