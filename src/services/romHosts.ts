@@ -99,6 +99,22 @@ export function clearReachableRomOrigins(): void {
 const REACHABLE_HEDGE_MS = 600
 /** 每条线路读完样本的时限（含响应头）。要读正文，比只等响应头宽一些 */
 const REACHABLE_TIMEOUT_MS = 3000
+const ROM_ETAG_VERSION = /^[a-f0-9]{32}(?:-\d+)?$/i
+
+function etagVersion(value: string | null): string {
+  const version = String(value ?? '').replace(/^W\//i, '').replace(/"/g, '').trim()
+  return ROM_ETAG_VERSION.test(version) ? version : ''
+}
+
+function withRomVersion(url: string, version: string): string {
+  if (!version) return url
+  const hashAt = url.indexOf('#')
+  const address = hashAt < 0 ? url : url.slice(0, hashAt)
+  if (/[?&]romv=/i.test(address)) return url
+  const fragment = hashAt < 0 ? '' : url.slice(hashAt)
+  return `${address}${address.includes('?') ? '&' : '?'}romv=${encodeURIComponent(version)}${fragment}`
+}
+
 /**
  * 探测读的正文量。量的是吞吐，不是延迟：2026-11-20 大陆实测，优选域 rom / download.8bitgo.com 的响应头
  * 照样秒回，正文却只有 7 KB/s；1 字节探测于是选中了它，《实况足球 2000》开局等这份 512KB 的 PS1 BIOS 等了 74 秒
@@ -128,6 +144,8 @@ export interface ReachableRomAssetOptions {
   attemptTimeoutMs?: number
   /** 文件直开不会回报完整下载吞吐；不能让旧的高分把本次线路探测跳过去。 */
   forceProbe?: boolean
+  /** 后台直开把探测得到的 R2 ETag 固定到 URL，启用长缓存并防止对象替换后复用旧链接。 */
+  pinVersionToEtag?: boolean
 }
 
 export async function reachableRomAssetUrl(
@@ -142,8 +160,9 @@ export async function reachableRomAssetUrl(
   if (!options.forceProbe && !isRomRouteOpen(top) && ((reachableRomOrigins.get(romRouteOrigin(top)) ?? 0) > Date.now() || (romRouteRate(top) ?? 0) >= REACHABLE_TRUSTED_RATE)) {
     return top
   }
+  const candidateVersions = new Map<string, string>()
   try {
-    return await hedgedRequest(candidates, async (candidate, attemptSignal) => {
+    const selected = await hedgedRequest(candidates, async (candidate, attemptSignal) => {
       let bytes = 0
       let headersAt = 0
       try {
@@ -161,6 +180,8 @@ export async function reachableRomAssetUrl(
           throw new Error(`HTTP ${response.status}`)
         }
         headersAt = Date.now()
+        const version = etagVersion(response.headers.get('ETag'))
+        if (version) candidateVersions.set(candidate, version)
         const reader = response.body?.getReader()
         if (reader) {
           for (;;) {
@@ -191,6 +212,9 @@ export async function reachableRomAssetUrl(
       attemptTimeoutMs: options.attemptTimeoutMs ?? REACHABLE_TIMEOUT_MS,
       signal,
     })
+    return options.pinVersionToEtag
+      ? withRomVersion(selected, candidateVersions.get(selected) ?? '')
+      : selected
   } catch {
     return url
   }

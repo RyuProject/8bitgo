@@ -79,7 +79,7 @@ const hang = (signal) => new Promise((_, reject) => {
   signal?.addEventListener('abort', () => reject(abortError()), { once: true })
 })
 /** 一个 206 回应；pieceDelay > 0 时正文分 4 段慢慢给，且能被中止 */
-function rangeResponse(size, range, { pieceDelay = 0, signal } = {}) {
+function rangeResponse(size, range, { pieceDelay = 0, signal, etag } = {}) {
   const m = /bytes=(\d+)-(\d+)/.exec(range)
   const start = Number(m[1])
   const end = Math.min(Number(m[2]), size - 1)
@@ -98,7 +98,7 @@ function rangeResponse(size, range, { pieceDelay = 0, signal } = {}) {
   return {
     ok: true,
     status: 206,
-    headers: headers({ 'content-range': `bytes ${start}-${end}/${size}`, 'content-length': String(end - start + 1) }),
+    headers: headers({ 'content-range': `bytes ${start}-${end}/${size}`, 'content-length': String(end - start + 1), ...(etag ? { etag } : {}) }),
     body,
   }
 }
@@ -957,6 +957,33 @@ await check('BIOS：探测只读 64KB 样本，不把整份 BIOS 拖下来', asy
   }
   await reachableRomAssetUrl('https://rom.example.com/roms/bios/neogeo.zip')
   assert.deepEqual([...new Set(ranges)], ['bytes=0-65535'])
+})
+
+await check('后台直开：用探测到的 R2 ETag 固定链接版本并保留查询与片段', async () => {
+  const version = '0123456789abcdef0123456789abcdef'
+  globalThis.fetch = async (url, init) => rangeResponse(4 << 20, init.headers.Range, {
+    signal: init.signal,
+    etag: `"${version}"`,
+  })
+  const url = await reachableRomAssetUrl(
+    'https://download.example.com/roms/bios/neogeo.zip?source=admin#open',
+    undefined,
+    { sampleBytes: 8 * 1024, forceProbe: true, pinVersionToEtag: true },
+  )
+  const parsed = new URL(url)
+  assert.equal(parsed.searchParams.get('romv'), version)
+  assert.equal(parsed.searchParams.get('source'), 'admin')
+  assert.equal(parsed.hash, '#open')
+})
+
+await check('后台直开：没有有效 ETag 时不添加 romv', async () => {
+  globalThis.fetch = async (url, init) => rangeResponse(4 << 20, init.headers.Range, { signal: init.signal, etag: '"not-an-r2-etag"' })
+  const url = await reachableRomAssetUrl(
+    'https://download.example.com/roms/bios/neogeo.zip',
+    undefined,
+    { sampleBytes: 8 * 1024, forceProbe: true, pinVersionToEtag: true },
+  )
+  assert.equal(new URL(url).searchParams.has('romv'), false)
 })
 
 await check('BIOS：排第一的线路刚有真实下载就直接用，不发探测', async () => {

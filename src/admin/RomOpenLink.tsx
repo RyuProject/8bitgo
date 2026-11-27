@@ -36,6 +36,7 @@ export function RomOpenLink({ href, ...props }: RomOpenLinkProps) {
       hedgeDelayMs: 600,
       attemptTimeoutMs: 4_500,
       forceProbe: true,
+      pinVersionToEtag: true,
     }).then((route) => {
       if (!tab.closed) tab.location.replace(route || targetUrl)
     }).catch(() => {
