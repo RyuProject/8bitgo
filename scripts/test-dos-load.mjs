@@ -392,6 +392,8 @@ check('DOS 整包与资料片按设备内存、移动端和弱网收紧预算', 
 check('本地 DOS ZIP 目录检查与 8BG 解包都响应离页取消', () => {
   assert.match(jsdos, /readBlobRange\(game,\s*0,\s*4,\s*10_000,\s*signal\)/)
   assert.match(jsdos, /isReadyJsdosBundleBlob\(game,\s*30_000,\s*signal\)/)
+  assert.match(jsdos, /readBlobRange\(loaded\.blob,\s*0,\s*loaded\.blob\.size,\s*ROM_PACK_READ_TIMEOUT_MS,\s*signal\)/,
+    '远端普通 ZIP 转成重打包字节前必须遵守取消和 Blob 读取时限')
   assert.match(romLoader, /unpackRomPack\(data,\s*\(\)\s*=>\s*\{[\s\S]*?\},\s*signal\)/)
   assert.match(romLoader, /unpackIfNeeded\(data,\s*limits,\s*onProgress,\s*signal\)/)
   assert.match(romLoader, /\} catch \(error\) \{\s*if \(signal\?\.aborted\) throw signal\.reason \?\? error\s*await romCacheDelete\(cacheKey\)/,

@@ -46,7 +46,7 @@ import { deleteSave, pullSave, pushSave } from '@/services/saves'
 import { loadGameBytes } from '../romLoader'
 import { dosLoadLimitsForBrowser } from '../dosLoadLimits'
 import { isRomNetworkFailure, markRomNetworkFailure } from '../loadProgress'
-import { inspectRemoteRomPack, isRomPackUrl, readBlobRange } from '@/services/romPack'
+import { inspectRemoteRomPack, isRomPackUrl, readBlobRange, ROM_PACK_READ_TIMEOUT_MS } from '@/services/romPack'
 import { prepareRemoteDosBundle } from '../dosBundleSource'
 import {
   defaultDos71SystemUrl,
@@ -796,7 +796,11 @@ async function readRom(
       if (loaded.blob.size > arrayBufferLimit) {
         throw new Error(`大型 DOS 包缺少 .jsdos/dosbox.conf，超过此设备的安全内存载入上限（${(arrayBufferLimit / 1024 ** 2).toFixed(0)} MiB）；请重新打包或使用内存更大的设备`)
       }
-      return { name: loaded.name, buf: await readBlobRange(loaded.blob, 0, loaded.blob.size) }
+      // 非预制 bundle 必须转成连续字节才能补配置；切换游戏时不应继续读取数百 MB 的 Blob。
+      return {
+        name: loaded.name,
+        buf: await readBlobRange(loaded.blob, 0, loaded.blob.size, ROM_PACK_READ_TIMEOUT_MS, signal),
+      }
     }
 
     const magic = new Uint8Array(await readBlobRange(game, 0, 4, 10_000, signal))
