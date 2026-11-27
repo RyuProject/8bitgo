@@ -27,6 +27,7 @@ function createFakeIdb() {
   let hardLimit = Number.POSITIVE_INFINITY
   /** name -> Map(key -> value) */
   const stores = new Map()
+  let blobGetRequests = 0
 
   // 值可能是 ArrayBuffer（卡带机 ROM）也可能是 Blob（光盘镜像），两种都要会数
   const sizeOf = (v) => (v instanceof Blob ? v.size : (v?.byteLength ?? 0))
@@ -62,7 +63,10 @@ function createFakeIdb() {
       return req
     }
     return {
-      get: (key) => run(makeRequest(), (r) => { r.result = map().get(key) }),
+      get: (key) => {
+        if (name === 'blobs') blobGetRequests++
+        return run(makeRequest(), (r) => { r.result = map().get(key) })
+      },
       getAll: () => run(makeRequest(), (r) => { r.result = [...map().values()] }),
       getAllKeys: () => run(makeRequest(), (r) => { r.result = [...map().keys()] }),
       delete: (key) => run(makeRequest(), () => { map().delete(key) }),
@@ -141,6 +145,7 @@ function createFakeIdb() {
     setHardLimit: (v) => { hardLimit = v },
     stores,
     usedBytes,
+    get blobGetRequests() { return blobGetRequests },
   }
 }
 
@@ -377,10 +382,21 @@ process.on('unhandledRejection', (e) => {
     const key = url('verified-disc')
     const originalTag = `sha256:${'a'.repeat(64)}`
     const changedTag = `sha256:${'b'.repeat(64)}`
-    await romCachePutBlob(key, new Blob([new Uint8Array(1024)]), originalTag)
+    const verifiedManifest = {
+      v: 1,
+      alg: 'sha256',
+      key: 'roms/psx/verified-disc.chd',
+      etag: '"verified-disc-v1"',
+      size: 1024,
+      blockBytes: 2 * 1024 * 1024,
+      blocks: ['c'.repeat(64)],
+    }
+    await romCachePutBlob(key, new Blob([new Uint8Array(1024)]), originalTag, verifiedManifest)
     let record = await romCacheGetBlobRecord(key)
     assert.ok(record?.blob instanceof Blob)
     assert.equal(record.integrityTag, originalTag, '新下载已验证的标签应与 Blob 同事务写入')
+    assert.deepEqual(record.integrityManifest, verifiedManifest,
+      '大型 ROM 的完整性清单应和 Blob 一起持久化，热命中才可省去 sidecar 请求')
     assert.equal(record.integrityCheckedAt, clock)
     assert.equal(romCacheIntegrityIsFresh(record, originalTag), true)
     assert.equal(romCacheIntegrityIsFresh(record, changedTag), false, '新清单不能沿用旧 ROM 的校验印记')
@@ -395,12 +411,69 @@ process.on('unhandledRejection', (e) => {
     await romCacheMarkIntegrityVerified(key, changedTag, 1024, staleRecord)
     record = await romCacheGetBlobRecord(key)
     assert.equal(record.integrityTag, undefined, '同尺寸 ROM 被替换后也不能接收旧 Blob 的迟到校验印记')
-    await romCacheMarkIntegrityVerified(key, changedTag, 1024, record)
+    await romCacheMarkIntegrityVerified(key, changedTag, 1024, record, verifiedManifest)
     record = await romCacheGetBlobRecord(key)
     assert.equal(record.integrityTag, changedTag, '旧缓存完整复验成功后只更新元信息')
+    assert.deepEqual(record.integrityManifest, verifiedManifest, '过期缓存复验后应保留最新的可信清单')
     assert.equal(record.integrityCheckedAt, clock)
     assert.equal(romCacheIntegrityIsFresh(record, changedTag), true)
     console.log('✓ 大 ROM 校验印记绑定清单并按一周时限失效')
+  }
+
+  /* --- 14. ROM 缓存保留 Worker 的必校验标记和已验证清单；旧缓存仍可识别为未知 --- */
+  {
+    const { romCacheGetRecord, romCacheMarkIntegrityManifestVerified, romCachePut } = await freshCache()
+    const key = url('integrity-required')
+    await romCachePut(key, buf(128), true)
+    assert.equal((await romCacheGetRecord(key))?.integrityRequired, true,
+      '必校验响应写入缓存后，后续不能按可选清单处理')
+    const verifiedManifest = {
+      v: 1,
+      alg: 'sha256',
+      key: 'roms/nes/integrity-required.zip',
+      etag: '"abc123"',
+      size: 128,
+      blockBytes: 2 * 1024 * 1024,
+      blocks: ['a'.repeat(64)],
+    }
+    await romCachePut(key, buf(128), true, verifiedManifest)
+    assert.deepEqual((await romCacheGetRecord(key))?.integrityManifest, verifiedManifest,
+      '已通过下载器校验的清单应与缓存字节同事务持久化')
+    await romCachePut(key, buf(128), false)
+    assert.equal((await romCacheGetRecord(key))?.integrityRequired, false,
+      '缓存应保留下载响应当时明确未标记的状态')
+    assert.equal((await romCacheGetRecord(key))?.integrityManifest, undefined,
+      '覆盖字节但未提供已验证清单时必须清除旧证明')
+    const oldRecord = await romCacheGetRecord(key)
+    await romCacheMarkIntegrityManifestVerified(key, verifiedManifest, 128, oldRecord)
+    assert.deepEqual((await romCacheGetRecord(key))?.integrityManifest, verifiedManifest,
+      '旧缓存复验后应只更新对应记录的元数据')
+    await romCachePut(key, buf(128), false)
+    await romCacheMarkIntegrityManifestVerified(key, verifiedManifest, 128, oldRecord)
+    assert.equal((await romCacheGetRecord(key))?.integrityManifest, undefined,
+      '迟到的旧代次校验不能给同键同尺寸的新字节背书')
+    await romCachePut(key, buf(128))
+    assert.equal((await romCacheGetRecord(key))?.integrityRequired, undefined,
+      '没有元数据的旧缓存必须保持未知，不能推断成可选')
+    console.log('✓ ROM 缓存持久化 Worker 必校验状态并保守识别旧缓存')
+  }
+
+  /* --- 15. 有大小上限的 ROM 先查 Blob，再安全复用上限内的 ArrayBuffer 缓存 --- */
+  {
+    const { romCacheGetRecordWithinLimit, romCachePut, fake } = await freshCache()
+    const smallKey = url('limited-small-arraybuffer')
+    await romCachePut(smallKey, buf(128))
+    const small = await romCacheGetRecordWithinLimit(smallKey, 128)
+    assert.equal(small?.data.byteLength, 128, '限额内的 ArrayBuffer 缓存应可供有上限的运行时复用')
+
+    const largeKey = url('limited-large-arraybuffer')
+    await romCachePut(largeKey, buf(256))
+    const readsBefore = fake.blobGetRequests
+    const oversized = await romCacheGetRecordWithinLimit(largeKey, 128)
+    assert.equal(oversized, null, '超出调用方上限的旧缓存应当按未命中处理')
+    assert.equal(fake.blobGetRequests, readsBefore,
+      '读取超限元数据后必须直接返回，不能先把超限 ArrayBuffer 拉进内存')
+    console.log('✓ 有大小上限的 ROM 只复用不超限的 ArrayBuffer 缓存')
   }
 
   console.log('\n全部通过 ✅')

@@ -28,6 +28,7 @@
 
 import { romArchiveRef } from '@/lib/romArchiveUrl'
 import { canonicalRomUrl } from '@/services/romHosts'
+import type { RomIntegrityManifest } from '@/services/romIntegrityData'
 
 const DB_NAME = '8bitgo-roms'
 const DB_VERSION = 1
@@ -82,6 +83,10 @@ interface MetaEntry {
   /** 仅可信清单校验成功后写入；新版本清单不匹配时必须重验 ROM 本体。 */
   integrityTag?: string
   integrityCheckedAt?: number
+  /** 下载响应当时是否明确要求校验；旧缓存缺省表示未知，读取时继续保守等待清单。 */
+  integrityRequired?: boolean
+  /** 仅下载器已按该清单验完全部字节后保存；热缓存可用它本地复验而不等网络清单。 */
+  integrityManifest?: RomIntegrityManifest
 }
 
 export interface RomCacheBlobRecord {
@@ -90,6 +95,16 @@ export interface RomCacheBlobRecord {
   storedAt?: number
   integrityTag?: string
   integrityCheckedAt?: number
+  integrityRequired?: boolean
+  integrityManifest?: RomIntegrityManifest
+}
+
+export interface RomCacheArrayBufferRecord {
+  data: ArrayBuffer
+  recordId?: string
+  storedAt?: number
+  integrityRequired?: boolean
+  integrityManifest?: RomIntegrityManifest
 }
 
 let cacheRecordSequence = 0
@@ -213,6 +228,104 @@ export async function romCacheGet(key: string): Promise<ArrayBuffer | null> {
   return value
 }
 
+/** 读取小 ROM 与下载响应的校验要求；缺少新元信息的旧缓存由调用方按未知状态处理。 */
+export async function romCacheGetRecord(key: string): Promise<RomCacheArrayBufferRecord | null> {
+  if (!key) return null
+  const db = await openDb()
+  if (!db) return null
+  let value: unknown
+  let meta: MetaEntry | null = null
+  try {
+    const tx = db.transaction([STORE_BLOB, STORE_META], 'readonly')
+    const blobReq = tx.objectStore(STORE_BLOB).get(key)
+    const metaReq = tx.objectStore(STORE_META).get(key)
+    ;[value, meta] = await Promise.all([
+      askWithin(blobReq, READ_TIMEOUT_MS),
+      askWithin(metaReq, READ_TIMEOUT_MS),
+    ]) as [unknown, MetaEntry | null]
+  } catch {
+    return null
+  }
+  if (!(value instanceof ArrayBuffer) || value.byteLength === 0) return null
+  void touch(db, key)
+  return {
+    data: value,
+    ...(typeof meta?.recordId === 'string' ? { recordId: meta.recordId } : {}),
+    ...(typeof meta?.storedAt === 'number' && Number.isSafeInteger(meta.storedAt) ? { storedAt: meta.storedAt } : {}),
+    ...(typeof meta?.integrityRequired === 'boolean' ? { integrityRequired: meta.integrityRequired } : {}),
+    ...(meta?.integrityManifest && typeof meta.integrityManifest === 'object'
+      ? { integrityManifest: meta.integrityManifest } : {}),
+  }
+}
+
+/** 有上限的运行时先在同一个 IDB 只读事务中检查元数据，再取 ArrayBuffer，避免读入超限旧缓存。 */
+export async function romCacheGetRecordWithinLimit(
+  key: string,
+  maxBytes: number,
+): Promise<RomCacheArrayBufferRecord | null> {
+  if (!key || !Number.isSafeInteger(maxBytes) || maxBytes <= 0) return null
+  const db = await openDb()
+  if (!db) return null
+  return new Promise((resolve) => {
+    let settled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const finish = (record: RomCacheArrayBufferRecord | null) => {
+      if (settled) return
+      settled = true
+      if (timer !== undefined) clearTimeout(timer)
+      resolve(record)
+    }
+    timer = setTimeout(() => finish(null), READ_TIMEOUT_MS)
+    try {
+      const tx = db.transaction([STORE_BLOB, STORE_META], 'readonly')
+      const metaStore = tx.objectStore(STORE_META)
+      const metaReq = metaStore.get(key)
+      metaReq.onsuccess = () => {
+        const meta = metaReq.result as MetaEntry | undefined
+        if (!meta || !Number.isSafeInteger(meta.size) || meta.size <= 0 || meta.size > maxBytes) {
+          finish(null)
+          return
+        }
+        // 在元数据请求事件仍激活的事务里读取字节，检查结果不会与另一个标签页的覆盖之间出现空档。
+        const valueReq = tx.objectStore(STORE_BLOB).get(key)
+        valueReq.onsuccess = () => {
+          const value = valueReq.result
+          if (!(value instanceof ArrayBuffer) || value.byteLength === 0 || value.byteLength > maxBytes ||
+              value.byteLength !== meta.size) {
+            finish(null)
+            return
+          }
+          const currentMetaReq = tx.objectStore(STORE_META).get(key)
+          currentMetaReq.onsuccess = () => {
+            const current = currentMetaReq.result as MetaEntry | undefined
+            if (!current || current.size !== meta.size || current.storedAt !== meta.storedAt ||
+                current.recordId !== meta.recordId) {
+              finish(null)
+              return
+            }
+            void touch(db, key)
+            finish({
+              data: value,
+              ...(typeof current.recordId === 'string' ? { recordId: current.recordId } : {}),
+              ...(typeof current.storedAt === 'number' && Number.isSafeInteger(current.storedAt) ? { storedAt: current.storedAt } : {}),
+              ...(typeof current.integrityRequired === 'boolean' ? { integrityRequired: current.integrityRequired } : {}),
+              ...(current.integrityManifest && typeof current.integrityManifest === 'object'
+                ? { integrityManifest: current.integrityManifest } : {}),
+            })
+          }
+          currentMetaReq.onerror = () => finish(null)
+        }
+        valueReq.onerror = () => finish(null)
+      }
+      metaReq.onerror = () => finish(null)
+      tx.onabort = () => finish(null)
+      tx.onerror = () => finish(null)
+    } catch {
+      finish(null)
+    }
+  })
+}
+
 /**
  * 读缓存，要一个 Blob。
  *
@@ -267,6 +380,9 @@ export async function romCacheGetBlobRecord(key: string, type = 'application/oct
     ...(typeof rawMeta?.storedAt === 'number' && Number.isSafeInteger(rawMeta.storedAt) ? { storedAt: rawMeta.storedAt } : {}),
     ...(typeof rawMeta?.integrityTag === 'string' ? { integrityTag: rawMeta.integrityTag } : {}),
     ...(typeof integrityCheckedAt === 'number' && Number.isSafeInteger(integrityCheckedAt) ? { integrityCheckedAt } : {}),
+    ...(typeof rawMeta?.integrityRequired === 'boolean' ? { integrityRequired: rawMeta.integrityRequired } : {}),
+    ...(rawMeta?.integrityManifest && typeof rawMeta.integrityManifest === 'object'
+      ? { integrityManifest: rawMeta.integrityManifest } : {}),
   }
 }
 
@@ -276,9 +392,41 @@ export async function romCacheMarkIntegrityVerified(
   integrityTag: string,
   expectedSize: number,
   identity: Pick<RomCacheBlobRecord, 'recordId' | 'storedAt'>,
+  verifiedIntegrityManifest?: RomIntegrityManifest,
 ): Promise<void> {
   if (!key || !/^sha256:[a-f0-9]{64}$/i.test(integrityTag) || !Number.isSafeInteger(expectedSize) || expectedSize <= 0 ||
+      (!identity.recordId && (!Number.isSafeInteger(identity.storedAt) || (identity.storedAt ?? 0) <= 0)) ||
+      (verifiedIntegrityManifest && (verifiedIntegrityManifest.size !== expectedSize ||
+        !Array.isArray(verifiedIntegrityManifest.blocks) ||
+        verifiedIntegrityManifest.blocks.some((hash) => typeof hash !== 'string' || !/^[a-f0-9]{64}$/.test(hash))))) return
+  return updateIntegrityMeta(key, expectedSize, identity, {
+    ensureRecordId: true,
+    integrityTag,
+    integrityCheckedAt: Date.now(),
+    ...(verifiedIntegrityManifest ? { integrityManifest: verifiedIntegrityManifest } : {}),
+  })
+}
+
+/** 将已经按服务端清单复验过的缓存绑定到完整清单，后续可在本地验证，不等网络旁路。 */
+export async function romCacheMarkIntegrityManifestVerified(
+  key: string,
+  manifest: RomIntegrityManifest,
+  expectedSize: number,
+  identity: Pick<RomCacheBlobRecord, 'recordId' | 'storedAt'>,
+): Promise<void> {
+  if (!key || !manifest || manifest.size !== expectedSize || !Number.isSafeInteger(expectedSize) || expectedSize <= 0 ||
+      typeof manifest.key !== 'string' || typeof manifest.etag !== 'string' || !Array.isArray(manifest.blocks) ||
+      manifest.blocks.some((hash) => typeof hash !== 'string' || !/^[a-f0-9]{64}$/.test(hash)) ||
       (!identity.recordId && (!Number.isSafeInteger(identity.storedAt) || (identity.storedAt ?? 0) <= 0))) return
+  return updateIntegrityMeta(key, expectedSize, identity, { ensureRecordId: true, integrityManifest: manifest })
+}
+
+async function updateIntegrityMeta(
+  key: string,
+  expectedSize: number,
+  identity: Pick<RomCacheBlobRecord, 'recordId' | 'storedAt'>,
+  patch: Partial<Omit<MetaEntry, 'recordId'>> & { ensureRecordId?: boolean },
+): Promise<void> {
   const db = await openDb()
   if (!db) return
   await new Promise<void>((resolve) => {
@@ -303,11 +451,11 @@ export async function romCacheMarkIntegrityVerified(
           : !metaValue?.recordId && metaValue?.storedAt === identity.storedAt
         if (!metaValue || metaValue.size !== expectedSize || !sameRecord) return
         try {
+          const { ensureRecordId, ...fields } = patch
           metaStore.put({
             ...metaValue,
-            recordId: metaValue.recordId || nextCacheRecordId(),
-            integrityTag,
-            integrityCheckedAt: Date.now(),
+            ...fields,
+            ...(ensureRecordId ? { recordId: metaValue.recordId || nextCacheRecordId() } : {}),
           } satisfies MetaEntry, key)
         } catch { finish() }
       }
@@ -356,11 +504,16 @@ async function touch(db: IDBDatabase, key: string): Promise<void> {
  * 被 transfer 过的 buffer 会变成游离态、byteLength 归零，下面那道 size === 0
  * 的判断就是兜这种情况：宁可不缓存，也不能把 0 字节写进去当成有效 ROM。
  */
-export async function romCachePut(key: string, data: ArrayBuffer): Promise<void> {
+export async function romCachePut(
+  key: string,
+  data: ArrayBuffer,
+  integrityRequired?: boolean,
+  verifiedIntegrityManifest?: RomIntegrityManifest | null,
+): Promise<void> {
   if (data.byteLength > MAX_ENTRY_BYTES) {
     skip(key, data.byteLength, `超过单条上限（${Math.round(MAX_ENTRY_BYTES / 1048576)}MB）`)
   }
-  return put(key, data, MAX_ENTRY_BYTES)
+  return put(key, data, MAX_ENTRY_BYTES, undefined, integrityRequired, verifiedIntegrityManifest)
 }
 
 /**
@@ -370,11 +523,23 @@ export async function romCachePut(key: string, data: ArrayBuffer): Promise<void>
  * 几百 MB 到几 GB 的镜像从下载到入库全程不需要一整块连续内存（见 loadProgress.ts
  * 的 fetchBlobWithProgress）。同样不要 await，写盘慢不该让玩家干等。
  */
-export async function romCachePutBlob(key: string, blob: Blob, verifiedIntegrityTag?: string): Promise<void> {
-  return put(key, blob, MAX_BLOB_ENTRY_BYTES, verifiedIntegrityTag)
+export async function romCachePutBlob(
+  key: string,
+  blob: Blob,
+  verifiedIntegrityTag?: string,
+  verifiedIntegrityManifest?: RomIntegrityManifest,
+): Promise<void> {
+  return put(key, blob, MAX_BLOB_ENTRY_BYTES, verifiedIntegrityTag, undefined, verifiedIntegrityManifest)
 }
 
-async function put(key: string, data: CacheValue, maxEntry: number, verifiedIntegrityTag?: string): Promise<void> {
+async function put(
+  key: string,
+  data: CacheValue,
+  maxEntry: number,
+  verifiedIntegrityTag?: string,
+  integrityRequired?: boolean,
+  verifiedIntegrityManifest?: RomIntegrityManifest | null,
+): Promise<void> {
   if (!key) return
   const size = sizeOf(data)
   if (size === 0 || size > maxEntry) return
@@ -396,11 +561,13 @@ async function put(key: string, data: CacheValue, maxEntry: number, verifiedInte
   if (size > budget / 2) return skip(key, size, `超过预算的一半（${Math.round(budget / 2 / 1048576)}MB）`)
   if (!(await ensureRoom(db, size, budget, key))) return skip(key, size, '腾不出空间')
 
-  const result = await putEntry(db, key, data, verifiedIntegrityTag)
+  const result = await putEntry(db, key, data, verifiedIntegrityTag, integrityRequired, verifiedIntegrityManifest)
   if (result !== 'quota') return
   // 配额是**整个源**共享的，存档、EmulatorJS-Cache、HTTP 缓存都在占，
   // estimate() 给的数字不一定跟得上。被拒了就多腾一倍再试一次，还不行就放弃。
-  if (await ensureRoom(db, size * 2, budget, key)) await putEntry(db, key, data, verifiedIntegrityTag)
+  if (await ensureRoom(db, size * 2, budget, key)) {
+    await putEntry(db, key, data, verifiedIntegrityTag, integrityRequired, verifiedIntegrityManifest)
+  }
 }
 
 /** 读全部元信息（不碰字节本体） */
@@ -467,7 +634,14 @@ function removeKeys(db: IDBDatabase, keys: string[]): Promise<void> {
 }
 
 /** 字节和元信息写在同一个事务里，避免出现「有元信息没字节」的半条记录 */
-function putEntry(db: IDBDatabase, key: string, data: CacheValue, verifiedIntegrityTag?: string): Promise<'ok' | 'quota' | 'fail'> {
+function putEntry(
+  db: IDBDatabase,
+  key: string,
+  data: CacheValue,
+  verifiedIntegrityTag?: string,
+  integrityRequired?: boolean,
+  verifiedIntegrityManifest?: RomIntegrityManifest | null,
+): Promise<'ok' | 'quota' | 'fail'> {
   return new Promise((resolve) => {
     let tx: IDBTransaction
     try {
@@ -496,6 +670,9 @@ function putEntry(db: IDBDatabase, key: string, data: CacheValue, verifiedIntegr
         ...(verifiedIntegrityTag && /^sha256:[a-f0-9]{64}$/i.test(verifiedIntegrityTag)
           ? { integrityTag: verifiedIntegrityTag, integrityCheckedAt: now }
           : {}),
+        ...(typeof integrityRequired === 'boolean' ? { integrityRequired } : {}),
+        ...(verifiedIntegrityManifest && verifiedIntegrityManifest.size === sizeOf(data)
+          ? { integrityManifest: verifiedIntegrityManifest } : {}),
       }
       tx.objectStore(STORE_META).put(meta, key)
     } catch {

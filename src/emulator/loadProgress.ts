@@ -278,10 +278,14 @@ export async function fetchWithProgress(
     signal?: AbortSignal
     /** 拿到响应头之后的校验钩子，比如挡掉返回 HTML 的错误页 */
     check?: (res: Response) => void
+    /** 只记录 Worker 对当前响应的完整性要求；缓存时用于区分必校验和旧版可选清单。 */
+    onIntegrityRequired?: (required: boolean) => void
     /** 需要整块 ArrayBuffer 的调用方可设上限，防止未知长度的响应耗尽标签页内存。 */
     maxBytes?: number
     /** 已知 Content-Length 时直接写目标缓冲，适用于受限的大文件，避免“分片 + 整块”双份驻留。 */
     preallocateKnownLength?: boolean
+    /** 无下载上限的调用方只允许为小文件预分配，防止错误的 Content-Length 触发大额申请。 */
+    preallocateMaxBytes?: number
     /** 外站包装 ZIP 不应另留一份 HTTP 缓存，真正缓存的是解出的 ROM。 */
     cache?: RequestCache
     /** 同一个本站 R2 对象的备用域名；只有当前来源失败时才依次尝试。 */
@@ -321,6 +325,8 @@ export async function fetchWithProgress(
     try {
       let res = await fetch(candidate, { signal: guard.signal, ...(opts.cache ? { cache: opts.cache } : {}) })
       validateResponse(res, opts.check)
+      try { opts.onIntegrityRequired?.(res.headers.get('X-8BitGo-Integrity-Required') === 'sha256-v1') }
+      catch { /* 旁路元信息不能改变 ROM 下载结果 */ }
       res = await verifyMarkedRomResponse(candidate, res, guard.signal, integrityFor(candidate))
 
       const encoded = Boolean(res.headers.get('content-encoding'))
@@ -356,6 +362,7 @@ export async function fetchWithProgress(
         opts.maxBytes,
         guard.touch,
         opts.preallocateKnownLength,
+        opts.preallocateMaxBytes,
       )
       if (buffer) {
         emit({ phase, loaded, total: loaded, ratio: 1 }, true)
@@ -405,10 +412,12 @@ async function drain(
   maxBytes = Infinity,
   touch?: () => void,
   preallocateKnownLength = false,
+  preallocateMaxBytes = Infinity,
 ): Promise<{ chunks: Uint8Array[]; loaded: number; buffer?: Uint8Array<ArrayBuffer> }> {
   const reader = body.getReader()
   const chunks: Uint8Array[] = []
-  const buffer = preallocateKnownLength && totalHint !== undefined
+  const buffer = preallocateKnownLength && totalHint !== undefined && Number.isSafeInteger(totalHint) &&
+      totalHint <= preallocateMaxBytes
     ? new Uint8Array(totalHint) as Uint8Array<ArrayBuffer>
     : undefined
   let total = totalHint
@@ -471,6 +480,8 @@ export interface BlobFetchOptions {
   onProgress?: ProgressSink
   signal?: AbortSignal
   check?: (res: Response) => void
+  /** 当前响应是否被 Worker 标为必校验；只供 ROM 缓存保存，不参与校验判定。 */
+  onIntegrityRequired?: (required: boolean) => void
   /** Blob 的 MIME。引擎那边只看扩展名，这里给什么都不影响解析 */
   type?: string
   /** 分片大小。默认 CHUNK_BYTES，测试里调小好造多片场景 */
@@ -746,7 +757,7 @@ const MAX_CHUNK_CONCURRENCY = 4
 const OPTIONAL_ROM_MANIFEST_WAIT_MS = 150
 
 /** 可选清单在短窗口内已到达就继续校验；超时只跳过本局旁路，不影响后台缓存与必校验路径。 */
-function optionalManifestWithin<T>(task: Promise<T>, signal?: AbortSignal): Promise<T | null> {
+export function optionalManifestWithin<T>(task: Promise<T>, signal?: AbortSignal): Promise<T | null> {
   if (signal?.aborted) return Promise.reject(new DOMException('已取消', 'AbortError'))
   return new Promise((resolve, reject) => {
     let settled = false
@@ -954,7 +965,10 @@ export async function fetchBlobWithProgress(url: string, opts: BlobFetchOptions 
   if (romIntegrityKey(url)) void integrityFor(url).catch(() => {})
   const checkIntegrity = (response: Response) => {
     opts.check?.(response)
-    if (response.headers.get('X-8BitGo-Integrity-Required') === 'sha256-v1') {
+    const required = response.headers.get('X-8BitGo-Integrity-Required') === 'sha256-v1'
+    try { opts.onIntegrityRequired?.(required) }
+    catch { /* 缓存提示不能改变下载完整性判定 */ }
+    if (required) {
       integrityRequired = true
       integritySource = response.url || integritySource
       const responseEtag = response.headers.get('ETag') || ''

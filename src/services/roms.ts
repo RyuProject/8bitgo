@@ -2222,25 +2222,25 @@ export async function uploadRom(
     if (!getRomToken()) throw new Error('请先在「ROM 存储」页填写 Worker 口令（ADMIN_TOKEN）')
     const needsIntegrity = isIntegrityKey(cleanKey)
     let atomicIntegrityUpload = false
+    let integrityController: AbortController | null = null
     let integrityWork: ReturnType<typeof createRomIntegrityWork> | null = null
     let integrityTask: Promise<RomIntegrityManifestPayload> | null = null
+    let integrityCapabilityTask: Promise<boolean> | null = null
     if (needsIntegrity) {
       if (!globalThis.crypto?.subtle) throw new Error('当前浏览器不能生成 ROM / BIOS 的 SHA-256 清单，请改用 HTTPS 下的现代浏览器')
       // 首次上传的 Worker 能力探测可能要一趟 RTT；摘要只读本地文件，可与它并行，
-      // 但能力确认前仍不开始网络上传，避免旧 Worker 收到无法安全发布的 ROM。
-      const integrityController = new AbortController()
-      const relayIntegrityAbort = () => integrityController.abort(signal?.reason)
+      // 分片上传还会把这个探测与创建空会话并行；确认能力前不会发送任何 ROM 字节。
+      const controller = new AbortController()
+      integrityController = controller
+      const relayIntegrityAbort = () => controller.abort(signal?.reason)
       if (signal?.aborted) relayIntegrityAbort()
       else signal?.addEventListener('abort', relayIntegrityAbort, { once: true })
-      integrityWork = createRomIntegrityWork(file, cleanKey, integrityController.signal)
+      integrityWork = createRomIntegrityWork(file, cleanKey, controller.signal)
       integrityTask = integrityWork.manifest
       void integrityTask.catch(() => {}).finally(() => signal?.removeEventListener('abort', relayIntegrityAbort))
-      try {
-        atomicIntegrityUpload = await requireIntegrityWorker(api, signal)
-      } catch (error) {
-        integrityController.abort(error)
-        throw error
-      }
+      integrityCapabilityTask = requireIntegrityWorker(api, signal)
+      // 大文件的分片创建可能先于能力响应完成；如果其创建请求先失败，这个旁路探测仍可能随后失败。
+      void integrityCapabilityTask.catch(() => {})
     }
 
     // ROM / BIOS 在后台上传时生成受 ETag 绑定的分块摘要；和网络上传并行计算，
@@ -2292,20 +2292,37 @@ export async function uploadRom(
       const mp = await import('./romMultipart')
       try {
         const result = await mp.uploadRomMultipart(file, cleanKey, uploadProgress, signal,
-          integrityTask ?? undefined, atomicIntegrityUpload, integrityWork?.fingerprintPart)
+          integrityTask ?? undefined, atomicIntegrityUpload, integrityWork?.fingerprintPart,
+          integrityCapabilityTask ?? undefined)
         clearRomProbeCache()
         return await finishIntegrity(result)
       } catch (err) {
         if (signal?.aborted) throw uploadAbortError()
         // Worker 还没部署分片接口（忘了 wrangler deploy）时退回单发 PUT。
         // 大文件照样会失败，但小一点的文件不该因为后端没更新就整个传不了。
-        if (!(err instanceof mp.MultipartUnsupportedError)) throw err
+        if (!(err instanceof mp.MultipartUnsupportedError)) {
+          integrityController?.abort(err)
+          throw err
+        }
         console.warn('[rom] Worker 没有分片接口，退回单发 PUT；大文件请部署 worker/ 的新版本')
       }
     }
 
     // 单发 PUT 无法暂停在 R2 提交之前；先完成摘要，避免摘要失败时留下必校验却无清单的对象。
-    const manifest = integrityTask ? await awaitIntegrity() : null
+    let atomicUpload = false
+    let manifest: RomIntegrityManifestPayload | null = null
+    if (integrityCapabilityTask || integrityTask) {
+      try {
+        [atomicUpload, manifest] = await Promise.all([
+          integrityCapabilityTask ?? Promise.resolve(false),
+          integrityTask ? awaitIntegrity() : Promise.resolve(null),
+        ])
+      } catch (error) {
+        integrityController?.abort(error)
+        throw error
+      }
+    }
+    atomicIntegrityUpload = atomicUpload
     const result = await singlePut(file, cleanKey, api, uploadProgress, signal,
       atomicIntegrityUpload ? manifest ?? undefined : undefined)
     return await finishIntegrity(result)

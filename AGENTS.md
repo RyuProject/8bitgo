@@ -4545,6 +4545,7 @@ PK / TH 两份现场：`The requested module './live-Cqhc9j-k.js' does not provi
 
 - 站内 R2 的 ROM / BIOS 用按 ETag 绑定的 2 MiB SHA-256 分块清单。新上传在清单发布前不可读；有清单的整包下载、Range 读盘和浏览器缓存都会校验，发现坏块只重取对应块一次，仍不匹配就停止开局。
 - 旧 R2 对象没有清单时仍走兼容读取，避免未盘点前突然让老游戏无法启动。迁移时先用 `npm run rom:integrity-backfill -- --prefix=roms/ --require-complete` 做全量只读门禁；有缺项时用 `--apply` 回填后重跑门禁，确认零缺项再把 `worker/wrangler.toml` 的 `REQUIRE_ALL_ROM_INTEGRITY` 从 `"false"` 改为 `"true"` 并部署。全局严格模式会对 R2 全部 `roms/` 对象 fail closed，且不增加玩家开局往返；Worker `/ping` 会报告开关状态。回填记录的是当前 R2 字节，**只能保护之后的传输一致性，不能证明存量对象原本就是正确 ROM / BIOS**。要验证源内容正确，必须另有可信发布方摘要或人工验收。
+- 批量回填遇到边缘 HTML 503 或瞬时 `fetch failed` 时必须有界指数退避重试（最多 5 次；本地超时仍限 3 次），失败需带对象序号便于定位；自动化摘要应隐藏 R2 key。持续失败时停止并保持严格模式关闭，修复/确认服务健康后可重跑，已发布的条件清单会安全跳过。
 - 外站直链与玩家本地文件没有独立可信摘要时，不能把“下载后计算出的摘要”当成原件校验。格式 / 长度检查只能筛掉明显错误，不能确认 BIOS / ROM 内容正确；不得伪造可信哈希。
 - 运行时覆盖：EmulatorJS 核心 `.data`、PPSSPP、Play!、Ruffle、Dolphin、EKA2L1 的核心大文件有 SHA-256 / SRI 校验；EKA2L1 的 wasm/data 在完整长度接收后、交给 Emscripten 前按 `build_id.js` 的可信摘要校验。Binjgb 的 JS 用 SRI、WASM 在传给 Emscripten 前校验，IodineGBA 的 JS 用 SRI。小核心改版要更新摘要并跑 `npm run test:core-asset-integrity`。
 - 游戏 ROM 与 BIOS：详情页适配器统一走 `loadGameBytes()`；带 `X-8BitGo-Integrity-Required` 标记的 R2 文件必须有 ETag 绑定的分块 SHA-256 清单，下载、Range 和本地缓存读取均先校验再交给核心。EKA2L1 独立说明页自动安装的站内 R2 固件也并行取清单并在写入设备前逐块校验；清单缺失但对象被标记为必校验时停止。外站直链、本地文件和未回填的旧 R2 对象没有可信摘要时，仍不能声称其内容正确；回填只保护后续传输，不替代来源验收。

@@ -1239,6 +1239,7 @@ export async function uploadRomMultipart(
   integrityManifestTask?: Promise<RomIntegrityManifestPayload>,
   atomicIntegrityUpload = false,
   integrityPartFingerprint?: (start: number, size: number) => Promise<string>,
+  integrityCapabilityTask?: Promise<boolean>,
 ): Promise<UploadResult> {
   const ctx: Ctx = { api: getRomApi(), token: getRomToken() }
   const partSize = PART_SIZE
@@ -1252,6 +1253,7 @@ export async function uploadRomMultipart(
   const resumable = Boolean(ident && fingerprint)
   const resumedState = ident && fingerprint ? resumableFor(key, file, ident, partSize, contentType) : null
   const pendingCreate = ident && fingerprint ? createRequestFor(key, file, ident, partSize, fingerprint, contentType) : null
+  const hadPendingCreate = Boolean(pendingCreate)
   const requestId = resumedState?.requestId || pendingCreate?.requestId || newMultipartRequestId()
   if (!resumedState && resumable && ident && fingerprint && !pendingCreate) {
     saveCreateRequest(key, {
@@ -1277,6 +1279,31 @@ export async function uploadRomMultipart(
         checkingTotal: total,
       })
     }, integrityPartFingerprint)
+  }
+  if (integrityManifestTask && integrityCapabilityTask) {
+    try {
+      // Worker 能力探测与创建空会话并行；门槛仍在第一片 ROM 上行之前，旧 Worker 不会收到游戏内容。
+      atomicIntegrityUpload = await integrityCapabilityTask
+    } catch (error) {
+      const canReuseSession = Boolean(resumedState || hadPendingCreate)
+      let cleanupConfirmed = canReuseSession
+      if (!canReuseSession) {
+        try {
+          await abortUpload(ctx, state.key, state.uploadId, state.marker)
+          cleanupConfirmed = true
+          clearState(key)
+        } catch {
+          if (resumable) saveState(state)
+        }
+      } else if (resumable) {
+        saveState(state)
+      }
+      if (!cleanupConfirmed) {
+        const reason = error instanceof Error ? error.message : String(error)
+        throw new Error(`${reason}；能力确认前没有上传 ROM 字节，但分片会话清理未确认，请到「ROM 存储」检查残留`)
+      }
+      throw error
+    }
   }
   const resumed = resumedState ? resumedState.parts.length : 0
   if (resumable) saveState(state)

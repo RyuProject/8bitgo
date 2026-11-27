@@ -69,7 +69,7 @@ globalThis.XMLHttpRequest = class {
   abort() { this.onabort?.() }
 }
 
-const { uploadRom, deleteRomDir, deleteRomObjectsExactly, headRom, listRomObjects } = await import('../src/services/roms.ts')
+const { uploadRom, deleteRomDir, deleteRomObjectsExactly, headRom, listRomObjects, MULTIPART_THRESHOLD } = await import('../src/services/roms.ts')
 const { adaptiveUploadConcurrency, preferredUploadConcurrency, warmUploadSampleBytes, PART_SIZE, uploadRomMultipart, listOrphanUploads, abortOrphanUpload, listPendingUploads, MultipartUploadGate, UploadTransferPool, askJson } = await import('../src/services/romMultipart.ts')
 const { fingerprintRomPart, fingerprintRomUploadFile } = await import('../src/services/romFingerprint.ts')
 const { createRomIntegrityWork } = await import('../src/services/romIntegrityData.ts')
@@ -649,6 +649,118 @@ console.log('✅ 正常的小文件上传仍可完成')
   }
 }
 console.log('✅ 新 Worker 的小文件 PUT 随请求发布校验清单，无需第二次绑定请求')
+
+// 大文件首次上传时把完整性能力探测与创建空分片会话并行；能力确认前不得发任何 ROM 字节。
+const capabilityProbeLargeFile = new File(
+  [new Uint8Array(MULTIPART_THRESHOLD + 1)],
+  'capability-overlap.iso',
+  { lastModified: 8701 },
+)
+{
+  const originalFetch = globalThis.fetch
+  const originalApi = localStorage.getItem('8bitgo.rom.api')
+  const originalSendOverride = xhrSendOverride
+  const originalXhrResponse = xhrResponse
+  let pingStarted = false
+  let pingResolved = false
+  let releasePing
+  let createStarted = false
+  let partStarted = false
+  let completeBody
+  try {
+    localStorage.setItem('8bitgo.rom.api', 'https://capability-overlap-worker.test')
+    globalThis.fetch = async (url, init = {}) => {
+      const target = String(url)
+      if (target.endsWith('/ping')) {
+        pingStarted = true
+        return new Promise((resolve) => {
+          releasePing = () => {
+            pingResolved = true
+            resolve(Response.json({ features: { integrityManifest: true, integrityAtomicUpload: true } }))
+          }
+        })
+      }
+      if (target.endsWith('?uploads')) {
+        createStarted = true
+        assert.equal(JSON.parse(init.body).integrityRequired, true)
+        return Response.json({ uploadId: 'up-overlap', marker: '_uploads/overlap.marker',
+          requestSignature: 'overlap-signature', partNumberInHeader: true })
+      }
+      if (target.includes('uploadId=up-overlap') && init.method === 'POST') {
+        completeBody = JSON.parse(init.body)
+        return Response.json({ ok: true, key: 'roms/ps2/capability-overlap.iso', size: capabilityProbeLargeFile.size,
+          etag: 'overlap-etag', integrityPublished: true })
+      }
+      throw new Error(`unexpected request: ${target}`)
+    }
+    xhrSendOverride = (xhr, blob) => {
+      partStarted = true
+      assert.equal(pingResolved, true, 'Worker 能力未确认前不能上传 ROM 内容')
+      xhr.upload.onloadstart?.()
+      xhr.upload.onprogress?.({ lengthComputable: true, loaded: blob.size, total: blob.size })
+      xhr.upload.onload?.()
+      queueMicrotask(() => {
+        xhr.status = 200
+        xhr.responseText = JSON.stringify({ etag: `overlap-part-${xhr.headers['x-8bg-part-number']}`, partNumberInHeader: true })
+        xhr.onload?.()
+      })
+    }
+    const upload = uploadRom(capabilityProbeLargeFile, 'roms/ps2/capability-overlap.iso')
+    for (let attempt = 0; attempt < 100 && !createStarted; attempt++) await new Promise((resolve) => setTimeout(resolve, 1))
+    const overlapped = pingStarted && createStarted && !pingResolved
+    releasePing?.()
+    const result = await upload
+    assert.equal(overlapped, true, '空会话创建应与 Worker 能力 RTT 重叠')
+    assert.equal(partStarted, true)
+    assert.equal(result.integrityPublished, true)
+    assert.equal(completeBody.integrityRequired, true)
+    assert.ok(completeBody.integrityManifest?.blocks?.length, '合并时仍须附完整 SHA-256 清单')
+  } finally {
+    releasePing?.()
+    globalThis.fetch = originalFetch
+    xhrSendOverride = originalSendOverride
+    xhrResponse = originalXhrResponse
+    localStorage.setItem('8bitgo.rom.api', originalApi || '')
+  }
+}
+console.log('✅ 大 ROM 上传把 Worker 能力 RTT 与空分片会话创建重叠，完整性确认前仍不发送 ROM 字节')
+
+// 能力检查失败时，创建过的空会话必须清理，且一片 ROM 内容都不能发出。
+{
+  const originalFetch = globalThis.fetch
+  const originalApi = localStorage.getItem('8bitgo.rom.api')
+  const originalSendOverride = xhrSendOverride
+  let created = 0
+  let aborted = 0
+  let sentParts = 0
+  try {
+    localStorage.setItem('8bitgo.rom.api', 'https://unsupported-integrity-worker.test')
+    globalThis.fetch = async (url, init = {}) => {
+      const target = String(url)
+      if (target.endsWith('/ping')) return Response.json({ features: { integrityManifest: false } })
+      if (target.endsWith('?uploads')) {
+        created++
+        return Response.json({ uploadId: 'up-no-integrity', marker: '_uploads/no-integrity.marker',
+          requestSignature: 'no-integrity-signature', partNumberInHeader: true })
+      }
+      if (init.method === 'DELETE') {
+        aborted++
+        return Response.json({ ok: true })
+      }
+      throw new Error(`unexpected request: ${target}`)
+    }
+    xhrSendOverride = () => { sentParts++ }
+    await assert.rejects(uploadRom(capabilityProbeLargeFile, 'roms/ps2/unsupported-integrity.iso'), /完整性校验服务尚未部署/)
+    assert.equal(created, 1, '探测可与一个空 multipart 会话并行')
+    assert.equal(aborted, 1, '能力失败后应确认清理刚创建的空会话')
+    assert.equal(sentParts, 0, '能力失败不能发送任何游戏 ROM 字节')
+  } finally {
+    globalThis.fetch = originalFetch
+    xhrSendOverride = originalSendOverride
+    localStorage.setItem('8bitgo.rom.api', originalApi || '')
+  }
+}
+console.log('✅ ROM 完整性能力不满足时会清理空会话并拒绝上传内容')
 
 // 多个 ROM 并行上传复用同一能力探测；取消其中一项不能掐掉其它项等待的 Worker 响应。
 {

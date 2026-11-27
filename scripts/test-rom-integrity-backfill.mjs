@@ -10,6 +10,8 @@ const manifests = new Set()
 let active = 0
 let maximumActive = 0
 let retryableHashResponses = 0
+let retryableHtml503Responses = 0
+let droppedNetworkRequests = 0
 let invalidPublishResponses = 0
 let largestHashBatch = 0
 let missingLengthHeadResponses = 0
@@ -113,6 +115,17 @@ const server = createServer(async (request, response) => {
         })
         return
       }
+      if (body.key === objectKeys[5] && retryableHtml503Responses < 3) {
+        retryableHtml503Responses++
+        response.writeHead(503, { 'Cache-Control': 'no-store', 'Content-Type': 'text/html' })
+        response.end('<html>temporary edge response</html>')
+        return
+      }
+      if (body.key === objectKeys[6] && droppedNetworkRequests < 4) {
+        droppedNetworkRequests++
+        response.destroy()
+        return
+      }
       publishedSizes.set(body.key, body.size)
       publishedEtags.set(body.key, body.etag)
       manifests.add(body.key)
@@ -160,6 +173,8 @@ try {
   assert.match(applied.output, /本次补齐 10/)
   assert.equal(manifests.size, objectKeys.length, '每个对象都应发布绑定清单')
   assert.equal(retryableHashResponses, 1, '瞬态 HTTP 502 应重试一次后恢复')
+  assert.equal(retryableHtml503Responses, 3, 'HTML 503 应用有界退避重试后恢复')
+  assert.equal(droppedNetworkRequests, 4, '短暂网络断开应有界退避重试后恢复')
   assert.equal(invalidPublishResponses, 1, 'HTTP 200 非 JSON 的歧义响应应安全重试已提交的幂等清单')
   assert.equal(missingLengthHeadResponses, 1, '夹具应模拟 HEAD 保留 ETag 却省略长度')
   assert.equal(publishedSizes.get(objectKeys[2]), 1536, 'HEAD 缺长度时应使用 R2 列表长度并经 Worker 复核')

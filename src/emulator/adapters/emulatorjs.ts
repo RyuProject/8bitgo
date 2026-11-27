@@ -49,7 +49,7 @@ import { ICE_SERVERS, NETPLAY_URL, fetchIceConfig, gameIdFor, netplayUrlForFrame
 import { guardInputChannel } from '../netplayGuard'
 import { normalizeHostSync } from '../netplaySyncGuard'
 import { createNetplayStateUploadQueue } from '../netplayStateUpload'
-import { fetchRomIntegrityManifest, romBlobIntegrityTag, romIntegrityKey, romIntegrityManifestTag, verifyRomBlob, verifyRomResponse } from '@/services/romIntegrity'
+import { fetchRomIntegrityManifest, romBlobIntegrityManifest, romBlobIntegrityTag, romIntegrityKey, romIntegrityManifestForUrl, romIntegrityManifestTag, verifyRomBlob, verifyRomResponse } from '@/services/romIntegrity'
 import { extractZipEntryFromBlob, type ZipFileEntry } from '@/lib/unzip'
 import { prepareArcadeArchive } from '@/lib/arcadeArchive'
 import { romArchiveRef } from '@/lib/romArchiveUrl'
@@ -2303,10 +2303,11 @@ function cacheRomBlob(
   cacheKey: string,
   blob: Blob,
   verifiedIntegrityTag?: string,
+  verifiedIntegrityManifest?: Awaited<ReturnType<typeof romBlobIntegrityManifest>>,
 ): void {
   // 只把下载器已确证通过的标签和 Blob 原子写入；迟到清单不能替未经校验的字节背书。
   // force refresh 在删缓存前会等 put 结束，避免慢 IndexedDB 写入把旧 ROM 复活。
-  const write = romCachePutBlob(cacheKey, blob, verifiedIntegrityTag).catch(() => {})
+  const write = romCachePutBlob(cacheKey, blob, verifiedIntegrityTag, verifiedIntegrityManifest).catch(() => {})
   pendingRomCacheWrites.set(cacheKey, write)
   void write.finally(() => {
     if (pendingRomCacheWrites.get(cacheKey) === write) pendingRomCacheWrites.delete(cacheKey)
@@ -2573,8 +2574,14 @@ export async function prepareRemoteDiscRom(
     return { url: objectUrlForEngine(playable), bytes: playable.size, name, blob: playable }
   }
   const cacheKey = romCacheKey(url)
-  const integrityTask = fetchRomIntegrityManifest(url, signal)
-  integrityTask.catch(() => {})
+  let integrityTask: ReturnType<typeof fetchRomIntegrityManifest> | null = null
+  const getIntegrityManifest = () => {
+    if (!integrityTask) {
+      integrityTask = fetchRomIntegrityManifest(url, signal)
+      integrityTask.catch(() => {})
+    }
+    return integrityTask
+  }
   // ROM trap 发生在模拟器里，通用自动重试会再次命中同一条 IDB 记录 / 续传片，永远喂回同一份输入。
   // 仅 GBA 崩溃恢复路径设置此项；清除后仍保留原 URL 的内容版本校验与正常缓存写入。
   if (options.forceRomRefresh && cacheKey) await discardStoredRom(cacheKey)
@@ -2584,14 +2591,17 @@ export async function prepareRemoteDiscRom(
     if (cached) {
       if (signal.aborted) throw new DOMException('已取消', 'AbortError')
       try {
-        const integrity = await integrityTask
+        // 新缓存保存的是下载器完整验证过的清单。清单身份、URL 版本与字节数都吻合时，
+        // 一周内可免掉网络清单往返和数百 MB 的本地重哈希；过期后用本地清单复验即可。
+        const savedManifest = romIntegrityManifestForUrl(url, cachedRecord?.integrityManifest, cached.size)
+        const integrity = savedManifest ?? await getIntegrityManifest()
         if (integrity) {
           const integrityTag = await romIntegrityManifestTag(integrity)
           if (cached.size !== integrity.size || !romCacheIntegrityIsFresh(cachedRecord, integrityTag)) {
             await verifyRomBlob(cached, integrity, signal)
             // 旧缓存首局仍完整复验；之后仅在校验清单变化或印记超过一周时重验。
             if (cachedRecord) {
-              void romCacheMarkIntegrityVerified(cacheKey, integrityTag, cached.size, cachedRecord).catch(() => {})
+              void romCacheMarkIntegrityVerified(cacheKey, integrityTag, cached.size, cachedRecord, integrity).catch(() => {})
             }
           }
         }
@@ -2646,7 +2656,7 @@ export async function prepareRemoteDiscRom(
   if (cacheKey && !memoryRomOf(blob)) {
     // 下载器把「真的验过」的清单身份附在 Blob 上；未等到可选清单时仍能立即缓存，但不跳过下次复验。
     // 这样 PS1 / PS2 热启动可复用可信印记，清单慢时则不会把未校验数据误记成可信。
-    cacheRomBlob(cacheKey, blob, romBlobIntegrityTag(blob))
+    cacheRomBlob(cacheKey, blob, romBlobIntegrityTag(blob), romBlobIntegrityManifest(blob))
   }
 
   return prepared

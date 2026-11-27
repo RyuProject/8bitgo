@@ -695,15 +695,99 @@ await check('有内容版本的通用 ROM 探测 Range；无版本外链仍单�
   }
 })
 
+await check('本地 ROM 缓存只复用已验证的同版本清单；旧缓存仍等待当前清单', async () => {
+  const { readFileSync } = await import('node:fs')
+  const source = readFileSync(new URL('../src/emulator/romLoader.ts', import.meta.url), 'utf8')
+  assert.match(source, /const savedManifest = romIntegrityManifestForUrl\(game, cachedIntegrityManifest, cached\.byteLength\)/,
+    '缓存内的清单必须匹配当前 URL、ROM key 与字节数')
+  assert.match(source, /const integrity = savedManifest \?\? await getIntegrityManifest\(\)/,
+    '无已验证清单的旧缓存必须等待当前 Worker 清单')
+  assert.match(source, /const getIntegrityManifest = \(\) =>\s*\{\s*if \(!integrityTask\)\s*\{\s*integrityTask = fetchRomIntegrityManifest/,
+    '热缓存先验证本地证明，不应无条件发清单请求')
+  assert.match(source, /if \(integrity\)\s*\{\s*const repaired = await verifyRomBytes\(game, cached, integrity, signal\)/,
+    '本地缓存仍须按清单逐块复验后才交给模拟器')
+  assert.match(source, /romCacheMarkIntegrityManifestVerified\(cacheKey, integrity, cached\.byteLength, cachedIdentity\)/,
+    '旧缓存复验成功后只更新元数据，下次可本地复验')
+  assert.match(source, /cachedIntegrityRequired === true && !integrity[\s\S]*?throw new Error\(/,
+    '曾被标为必校验的缓存缺清单时必须失败关闭')
+  assert.doesNotMatch(source, /cachedIntegrityRequired === false[\s\S]{0,120}optionalManifestWithin/,
+    '缓存命中不得因 150ms 超时而漏掉迟到的 sidecar 或强制校验策略')
+})
+
+await check('小 ROM 首次下载及时拿到可选清单时先校验，再把证明随缓存保存', async () => {
+  const { readFileSync } = await import('node:fs')
+  const source = readFileSync(new URL('../src/emulator/romLoader.ts', import.meta.url), 'utf8')
+  assert.match(source,
+    /const verifiedIntegrityManifest = integrityRequired\s*\? await getIntegrityManifest\(\)\s*:\s*cacheKey \? await optionalManifestWithin\(getIntegrityManifest\(\), signal\) : null/,
+    '旧对象只在 150ms 内拿到清单时参与本次验证，迟到清单不得给已返回字节背书')
+  assert.match(source,
+    /if \(!integrityRequired && verifiedIntegrityManifest\) \{\s*await verifyRomBytes\(game, data, verifiedIntegrityManifest, signal\)\s*\}/,
+    '可选清单必须先逐块校验小 ROM 字节，才可以进入本地缓存')
+  assert.match(source, /romCachePut\(cacheKey, data, integrityRequired, verifiedIntegrityManifest\)/,
+    '经过验证的可选清单应和小 ROM 缓存字节一起保存')
+})
+
+await check('普通小 ROM 直接写目标缓冲，超出安全阈值不按 Content-Length 预分配', async () => {
+  const oldFetch = globalThis.fetch
+  const oldUint8Array = globalThis.Uint8Array
+  const bytes = new oldUint8Array([0x4e, 0x45, 0x53, 0x1a, ...Array(12).fill(0)])
+  const maxPreallocation = 32 * 1024 * 1024
+  const observeAllocation = (expectedSize) => {
+    let bodyStarted = false
+    let allocatedBeforeBody = false
+    globalThis.Uint8Array = new Proxy(oldUint8Array, {
+      construct(target, args) {
+        if (!bodyStarted && typeof args[0] === 'number' && args[0] === expectedSize) allocatedBeforeBody = true
+        return Reflect.construct(target, args, target)
+      },
+    })
+    globalThis.fetch = async () => ({
+      ok: true,
+      status: 200,
+      headers: headers({ 'content-length': String(expectedSize) }),
+      body: new ReadableStream({
+        pull(controller) {
+          bodyStarted = true
+          controller.enqueue(bytes)
+          controller.close()
+        },
+      }, { highWaterMark: 0 }),
+    })
+    return () => allocatedBeforeBody
+  }
+
+  try {
+    const smallAllocated = observeAllocation(bytes.byteLength)
+    const loaded = await loadGameBytes('https://assets.example/tiny.nes')
+    assert.deepEqual(new oldUint8Array(loaded.data), bytes)
+    assert.equal(smallAllocated(), true, '已知长度的小 ROM 应直接写最终缓冲，不再保留网络块后复制')
+
+    const largeSize = maxPreallocation + 1
+    const largeAllocated = observeAllocation(largeSize)
+    await assert.rejects(
+      () => loadGameBytes('https://assets.example/oversized-length.nes'),
+      /下载不完整/,
+      '夹具只提供少量正文，长度核验仍应拒绝伪造的超大声明',
+    )
+    assert.equal(largeAllocated(), false, '超出 32 MiB 的声明不能提前申请整块内存')
+  } finally {
+    globalThis.fetch = oldFetch
+    globalThis.Uint8Array = oldUint8Array
+  }
+})
+
 await check('带有限大小上限的普通 ROM 启用已知长度预分配', async () => {
   const { readFileSync } = await import('node:fs')
   const source = readFileSync(new URL('../src/emulator/romLoader.ts', import.meta.url), 'utf8')
+  assert.match(source, /limits\.maxBytes === undefined\s*\? await romCacheGetRecord\(cacheKey\)\s*:\s*await romCacheGetRecordWithinLimit\(cacheKey, limits\.maxBytes\)/,
+    '有大小上限时在 Blob 缓存未命中后仍要复用上限内的 ArrayBuffer ROM 缓存')
   assert.match(
     source,
-    /const boundedMaxBytes = typeof limits\.maxBytes === 'number' &&\s*Number\.isSafeInteger\(limits\.maxBytes\) && limits\.maxBytes > 0[\s\S]*?preallocateKnownLength:\s*boundedMaxBytes/,
-    '只有正整数安全上限的 ROM 才能提前分配，避免无上限外链按错误 Content-Length 申请大块内存',
+    /const boundedMaxBytes = typeof limits\.maxBytes === 'number' &&\s*Number\.isSafeInteger\(limits\.maxBytes\) && limits\.maxBytes > 0[\s\S]*?preallocateKnownLength:\s*true[\s\S]*?preallocateMaxBytes:\s*boundedMaxBytes \? limits\.maxBytes : SMALL_ROM_PREALLOCATE_MAX_BYTES/,
+    '有上限时按调用方限额预分配；无上限外链只允许小 ROM 使用 32 MiB 安全阈值',
   )
-  assert.match(source, /smallRomMemoryLimit\s*=\s*boundedMaxBytes\s*\?\s*Math\.min\(limits\.maxBytes!,\s*CHUNK_BYTES\)/)
+  assert.match(source, /smallRomMemoryLimit\s*=\s*boundedMaxBytes\s*&&\s*limits\.maxBytes!\s*<=\s*CHUNK_BYTES\s*\?\s*limits\.maxBytes!\s*:\s*undefined/,
+    '只有总上限不超过一片时才能关闭续传并使用内存 ROM；更大上限必须保留跨刷新续传')
   assert.match(source, /inMemoryUpTo:\s*smallRomMemoryLimit/)
 
   const oldFetch = globalThis.fetch
@@ -742,7 +826,7 @@ await check('带有限大小上限的普通 ROM 启用已知长度预分配', as
   }
 
   assert.equal(await observePreallocation(true), true, '有限上限且 Content-Length 已知时应在读正文前分配最终缓冲')
-  assert.equal(await observePreallocation(false), false, '无上限外链不能信任 Content-Length 提前分配')
+  assert.equal(await observePreallocation(false), true, '无上限外链的小 ROM 也应在 32 MiB 阈值内直接写最终缓冲')
 })
 
 console.log('六、第一片期间的进度也要带总量')
@@ -927,8 +1011,17 @@ await check('下载好的 ROM 读不出：记下 Blob 存储已坏并改内存�
   assert.match(ejs, /if \(memoryRomOf\(stored\)\) return toMemory\(true\)/)
   assert.match(ejs, /if \(cacheKey && !memoryRomOf\(stored\)\) void romCachePutBlob/, '内存那份不是真 Blob，不能写缓存')
   assert.match(ejs,
-    /if \(cacheKey && !memoryRomOf\(blob\)\) \{[\s\S]{0,500}?cacheRomBlob\(cacheKey, blob, romBlobIntegrityTag\(blob\)\)/,
-    '只有下载器确实校验过的 ROM 才能给完整缓存写入 SHA-256 印记')
+    /if \(cacheKey && !memoryRomOf\(blob\)\) \{[\s\S]{0,600}?cacheRomBlob\(cacheKey, blob, romBlobIntegrityTag\(blob\), romBlobIntegrityManifest\(blob\)\)/,
+    '只有下载器确实校验过的 ROM 才能给完整缓存写入 SHA-256 印记和清单')
+  assert.match(ejs, /const savedManifest = romIntegrityManifestForUrl\(url, cachedRecord\?\.integrityManifest, cached\.size\)/,
+    '大型 ROM 缓存必须先验证持久化清单仍匹配 URL、版本与字节数')
+  assert.match(ejs, /const integrity = savedManifest \?\? await getIntegrityManifest\(\)/,
+    '没有可信本地清单的旧缓存才请求当前 sidecar')
+  assert.match(ejs,
+    /if \(cached\.size !== integrity\.size \|\| !romCacheIntegrityIsFresh\(cachedRecord, integrityTag\)\) \{[\s\S]{0,350}?romCacheMarkIntegrityVerified\(cacheKey, integrityTag, cached\.size, cachedRecord, integrity\)/,
+    '大型 ROM 缓存过期后要按清单重新哈希并一起更新清单与印记')
+  assert.match(ejs, /let integrityTask: ReturnType<typeof fetchRomIntegrityManifest> \| null = null/,
+    '缓存命中不能无条件发起网络清单请求')
   assert.match(ejs, /return \{ url: objectUrlForEngine\(output\), name, hack, mameMedia, namcoSet,(?: mameCatalogSet,)? blob: output \}/, '街机内存 ROM 不能直接 createObjectURL')
 })
 

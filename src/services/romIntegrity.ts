@@ -20,8 +20,8 @@ const MANIFEST_TOTAL_TIMEOUT_MS = 6_000
 /** 清单很小；主域短暂无响应时，用一条可信同桶线路并行兜底，避免串行等满请求超时。 */
 const MANIFEST_HEDGE_DELAY_MS = 150
 const warned = new Set<string>()
-/** 只有下载器真的按清单验过的 Blob 才能把印记带入本地大 ROM 缓存。 */
-const verifiedBlobTags = new WeakMap<Blob, string>()
+/** 只有下载器真的按清单验过的 Blob 才能把证明带入本地大 ROM 缓存。 */
+const verifiedBlobProofs = new WeakMap<Blob, { tag: string; manifest: RomIntegrityManifest }>()
 
 function localSetting(key: string): string {
   try { return localStorage.getItem(key)?.trim() || '' } catch { return '' }
@@ -115,6 +115,27 @@ function romIntegrityManifestUrls(rawUrl: string, key: string, version: string):
 
 function etagVersion(etag: string): string {
   return etag.replace(/^W\//, '').replace(/"/g, '').trim()
+}
+
+/** 读取缓存中的清单前，要求它仍对应当前本站 ROM key、ETag/romv 与字节长度。 */
+export function romIntegrityManifestForUrl(
+  rawUrl: string,
+  value: unknown,
+  size: number,
+): RomIntegrityManifest | null {
+  const key = romIntegrityKey(rawUrl)
+  if (!key || !value || typeof value !== 'object') return null
+  const etag = (value as { etag?: unknown }).etag
+  if (typeof etag !== 'string') return null
+  const manifest = validateRomIntegrityManifest(value, key, etag, size)
+  if (!manifest) return null
+  try {
+    const base = typeof location === 'undefined' ? 'https://8bitgo.invalid/' : location.href
+    const version = new URL(rawUrl, base).searchParams.get('romv')?.trim() || ''
+    return !version || etagVersion(manifest.etag) === version ? manifest : null
+  } catch {
+    return null
+  }
 }
 
 function warnOnce(key: string, reason: string): void {
@@ -323,13 +344,21 @@ export async function romIntegrityManifestTag(manifest: RomIntegrityManifest): P
 
 /** 在完整字节校验成功之后记录该 Blob 的清单身份；单纯收到迟到清单不能调用此函数。 */
 export async function markRomBlobIntegrityVerified(blob: Blob, manifest: RomIntegrityManifest): Promise<void> {
-  if (blob.size !== manifest.size) throw new RomIntegrityError('ROM / BIOS 大小与已校验清单不一致')
-  verifiedBlobTags.set(blob, await romIntegrityManifestTag(manifest))
+  const checked = validateRomIntegrityManifest(manifest, manifest.key, manifest.etag, blob.size)
+  if (!checked) throw new RomIntegrityError('ROM / BIOS 与已校验清单不一致')
+  // 把已验证凭据拍成独立快照，避免调用方后来改动 blocks 让印记与持久化清单脱钩。
+  const proof = { ...checked, blocks: [...checked.blocks] }
+  verifiedBlobProofs.set(blob, { tag: await romIntegrityManifestTag(proof), manifest: proof })
 }
 
 /** 本地缓存只读取这份内存侧的实测标记，不从清单是否到达推断 Blob 已通过校验。 */
 export function romBlobIntegrityTag(blob: Blob): string | undefined {
-  return verifiedBlobTags.get(blob)
+  return verifiedBlobProofs.get(blob)?.tag
+}
+
+/** 与通过校验的印记来自同一 WeakMap 项，防止迟到清单被单独保存成缓存证明。 */
+export function romBlobIntegrityManifest(blob: Blob): RomIntegrityManifest | undefined {
+  return verifiedBlobProofs.get(blob)?.manifest
 }
 
 function parseContentRange(value: string | null): { start: number; end: number; total: number } | null {

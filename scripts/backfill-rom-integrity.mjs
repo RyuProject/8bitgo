@@ -54,18 +54,20 @@ const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms))
 
 async function request(url, init = {}) {
   let lastError
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < 5; attempt++) {
     let response
+    const requestSignal = init.signal || timeout()
     try {
-      response = await fetch(url, { ...init, signal: init.signal || timeout() })
+      response = await fetch(url, { ...init, signal: requestSignal })
     } catch (error) {
-      if (init.signal?.aborted || attempt === 2) {
+      const maxAttempts = requestSignal.aborted ? 3 : 5
+      if (init.signal?.aborted || attempt + 1 >= maxAttempts) {
         const method = init.method || 'GET'
         const target = new URL(url)
         throw new Error(`${method} ${target.origin}${target.pathname} 失败：${error instanceof Error ? error.message : String(error)}`)
       }
       lastError = error
-      await wait(300 * (attempt + 1))
+      await wait(requestSignal.aborted ? 300 * (attempt + 1) : Math.min(8_000, 500 * (2 ** attempt)))
       continue
     }
 
@@ -81,14 +83,17 @@ async function request(url, init = {}) {
       }
       if (!body || typeof body !== 'object') return response
     }
-    if (!retryableStatus.has(response.status) || attempt === 2) return response
+    // 长时间批量回填会偶尔遇到边缘 HTML 503；短暂退避后重试同一个有界分块，
+    // 避免 300ms 内连续撞上同一故障窗口。其余状态仍保持原来的三次上限。
+    const maxAttempts = response.status === 503 ? 5 : 3
+    if (!retryableStatus.has(response.status) || attempt + 1 >= maxAttempts) return response
     if (response.status === 503) {
       const body = await response.clone().json().catch(() => null)
       // 缺少清单是兼容读取 / 首次回填的正常状态，不能按瞬态 503 重试。
       if (body?.code === 'integrity_manifest_missing') return response
     }
     await response.body?.cancel().catch(() => {})
-    await wait(300 * (attempt + 1))
+    await wait(response.status === 503 ? Math.min(8_000, 500 * (2 ** attempt)) : 300 * (attempt + 1))
   }
   throw lastError || new Error('Worker 请求失败')
 }
@@ -313,7 +318,10 @@ try {
         else if (result === 'missing') missing++
         else published++
       } catch (error) {
-        firstError ??= error
+        if (!firstError) {
+          const detail = error instanceof Error ? error.message : String(error)
+          firstError = new Error(`[${index + 1}/${selected.length}] ${detail}`, { cause: error })
+        }
       }
     }
   }))

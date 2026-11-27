@@ -7,8 +7,11 @@ import {
 } from '../src/services/romIntegrityData.ts'
 import {
   fetchRomIntegrityManifest,
+  markRomBlobIntegrityVerified,
+  romBlobIntegrityManifest,
   romBlobIntegrityTag,
   RomIntegrityError,
+  romIntegrityManifestForUrl,
   romIntegrityManifestTag,
   romIntegrityManifestUrl,
   romIntegrityKey,
@@ -118,6 +121,20 @@ try {
     '清单块哈希变化必须让旧缓存印记失效')
   assert.notEqual(await romIntegrityManifestTag({ ...tinyManifest, etag: '"manifest-shape-v2"' }), manifestTag,
     'ROM 对象版本变化必须让旧缓存印记失效')
+  const versionedTinyUrl = `https://rom.8bitgo.com/${tinyManifest.key}?romv=manifest-shape-v1`
+  assert.deepEqual(romIntegrityManifestForUrl(versionedTinyUrl, tinyManifest, tiny.byteLength), tinyManifest,
+    '大型 ROM 缓存中的清单必须与当前对象 key、版本及长度匹配')
+  assert.equal(romIntegrityManifestForUrl(versionedTinyUrl.replace('manifest-shape-v1', 'manifest-shape-v2'), tinyManifest, tiny.byteLength), null,
+    '清单 ETag 与 URL 版本不符时不可复用本地证明')
+  assert.equal(romIntegrityManifestForUrl(versionedTinyUrl, tinyManifest, tiny.byteLength + 1), null,
+    '缓存字节长度变化时不可复用本地证明')
+  const proofBlob = new Blob([tiny])
+  const mutableProofManifest = { ...tinyManifest, blocks: [...tinyManifest.blocks] }
+  await markRomBlobIntegrityVerified(proofBlob, mutableProofManifest)
+  mutableProofManifest.blocks[0] = '0'.repeat(64)
+  assert.equal(romBlobIntegrityTag(proofBlob), manifestTag)
+  assert.deepEqual(romBlobIntegrityManifest(proofBlob), tinyManifest,
+    '完整验证后的 Blob 必须保存不可被外部改动的清单快照供持久化缓存使用')
   if (typeof SharedArrayBuffer === 'function') {
     const shared = new Uint8Array(new SharedArrayBuffer(tiny.byteLength))
     shared.set(tiny)
