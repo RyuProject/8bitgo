@@ -3,7 +3,7 @@ import { summarizeHealthAlerts, STARTUP_MIN_SAMPLES } from '../src/admin-health.
 
 const healthy = {
   schema: { missingTables: [], missingColumns: [], invalidDos: [], nonStreamingWindows: 0, error: null },
-  startup: { starts: STARTUP_MIN_SAMPLES, playable: STARTUP_MIN_SAMPLES, failures: 0, slow: 0 },
+  startup: { starts: STARTUP_MIN_SAMPLES, playable: STARTUP_MIN_SAMPLES, failures: 0, slow: 0, interrupted: 0 },
   diagnostics: { groups: [] },
   jobs: { queues: [], recentFailures: [], partialError: null },
   content: { pendingComments: 0, visibleWithoutRom: 0, hiddenGames: 0, draftPosts: 0 },
@@ -20,7 +20,7 @@ assert.deepEqual(
 const alerts = summarizeHealthAlerts({
   ...healthy,
   schema: { ...healthy.schema, missingTables: [{ table: 'saves' }] },
-  startup: { starts: 100, playable: 80, failures: 20, slow: 4 },
+  startup: { starts: 100, playable: 80, failures: 20, slow: 4, interrupted: 7 },
   jobs: { queues: [{ kind: 'psp', active: 2, queued: 1, completed24h: 0, failed24h: 1, stalled: 2 }], recentFailures: [], partialError: null },
   content: { ...healthy.content, visibleWithoutRom: 3, pendingComments: 2 },
   edgePurge: { enabled: true, pending: false, last: { at: '2026-11-15T00:00:00.000Z', ok: false, error: 'timeout' } },

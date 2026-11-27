@@ -24,6 +24,7 @@ export type StartupEventName =
   | 'game_playable'
   | 'first_interaction'
   | 'slow_start'
+  | 'startup_interrupted'
   | 'readiness_unobservable'
   | 'failed'
   | 'timeout'
@@ -62,6 +63,8 @@ const DIAGNOSTIC_EVENTS = new Set<StartupEventName>(['failed', 'timeout', 'slow_
 const BATCHABLE_EVENTS = new Set<StartupEventName>([
   'download_complete', 'rom_load_start', 'rom_load_complete', 'core_warm_start', 'core_warm_complete',
   'core_cache_hit', 'runtime_ready', 'first_frame', 'fallback_first_frame', 'fallback_playable', 'game_playable',
+  // 页面卸载时把尚未发出的阶段与中断一起写进一个 keepalive 请求，降低漏报概率。
+  'startup_interrupted',
 ])
 
 /** 同一局的兜底路线会逐跳变长；只让这类事件按路线内容去重，后端会把最长路线写回同一条记录。 */

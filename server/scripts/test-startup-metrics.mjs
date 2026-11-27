@@ -28,6 +28,8 @@ const fallbackBatch = normalizeStartupEventBatch([
 assert.deepEqual(fallbackBatch.map((event) => event.event), ['fallback_first_frame', 'fallback_playable'], '兜底结果阶段应能和首帧一起合批')
 const unobservable = normalizeStartupEvent({ ...base, event: 'readiness_unobservable', elapsedMs: 120_000 })
 assert.equal(unobservable.event, 'readiness_unobservable', '跨域页面的不可观测状态必须可记录，但不能当成失败')
+const interrupted = normalizeStartupEvent({ ...base, event: 'startup_interrupted', elapsedMs: 60_000, detail: '仍在下载 ROM：20MB/30MB' })
+assert.equal(interrupted.event, 'startup_interrupted', '离开时尚未可玩的启动要与失败、超时分开记录')
 
 const view = normalizeStartupEvent({ visitId: base.visitId, event: 'detail_view', platform: 'nds' })
 assert.equal(view.attemptId, '', '详情页加载发生在点击前，不应伪造 attempt id')
@@ -125,6 +127,7 @@ assert.match(migration, /game_startup_events（第一方启动漏斗与 20 秒�
 assert.match(metricsSource, /const accepted = recorded \|\|/, '唯一键拦住的重放必须按幂等成功处理，不能误回 404')
 assert.match(metricsSource, /recentFailures/, '统计接口应提供最近启动失败明细')
 assert.match(metricsSource, /readiness_unobservable/, '汇总必须单独统计无法观测的页面，不混进失败数')
+assert.match(metricsSource, /SUM\(e\.event = 'startup_interrupted'\) AS interruptions/, '离页时尚未可玩的启动必须单独计数，不伪装成失败')
 assert.match(metricsSource, /fallback_attempts/, '启动汇总必须分别统计兜底尝试、成功和失败')
 assert.match(metricsSource, /fallback_successes/)
 assert.match(metricsSource, /fallback_failures/)

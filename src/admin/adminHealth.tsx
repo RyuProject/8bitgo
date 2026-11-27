@@ -24,7 +24,7 @@ export interface HealthError {
 
 export interface HealthSnapshot {
   generatedAt: string
-  startup: { starts: number; playable: number; failures: number; slow: number } | HealthError
+  startup: { starts: number; playable: number; failures: number; slow: number; interrupted: number } | HealthError
   diagnostics: { groups: Array<{ signature: string; text: string; visits: number; count: number }> } | HealthError
   jobs: { queues: JobQueue[]; recentFailures: Array<{ id: string; kind: string; slug: string; lang: string; error: string; updatedAt: string | null }>; partialError: string | null } | HealthError
   content: { pendingComments: number; visibleWithoutRom: number; hiddenGames: number; draftPosts: number } | HealthError

@@ -2125,6 +2125,8 @@ export function EmulatorPlayer({
     /** 已经进入游戏后再报错属于运行期故障，不能按“加载失败”自动重启，免得吞掉玩家进度。 */
     let ready = false
     let crashed = false
+    let startupEnded = false
+    let startupInterruptedReported = false
     let romLoadStarted = false
     let romLoadCompleted = false
     let romLoadStreaming = false
@@ -2140,6 +2142,7 @@ export function EmulatorPlayer({
     let startupBatchTimer: number | undefined
     let playableTimer: number | undefined
     const mountedAt = typeof performance !== 'undefined' ? performance.now() : Date.now()
+    const startupSlug = gameSlugRef.current
     const flushStartupEvents = (include?: StartupEvent) => {
       if (startupBatchTimer !== undefined) {
         window.clearTimeout(startupBatchTimer)
@@ -2148,11 +2151,11 @@ export function EmulatorPlayer({
       const events = pendingStartupEvents
       pendingStartupEvents = []
       if (include) events.push(include)
-      if (events.length === 1) recordStartupEvent(gameSlugRef.current, events[0])
-      else if (events.length > 1) recordStartupEvents(gameSlugRef.current, events)
+      if (events.length === 1) recordStartupEvent(startupSlug, events[0])
+      else if (events.length > 1) recordStartupEvents(startupSlug, events)
     }
     const reportStartup = (event: StartupEventName, detail?: string) => {
-      if (!startupVisitId || !gameSlugRef.current || session.runtime.id === 'liveview') return
+      if (!startupVisitId || !startupSlug || session.runtime.id === 'liveview') return
       const payload: StartupEvent = {
         visitId: startupVisitId,
         attemptId: session.startupAttemptId,
@@ -2173,13 +2176,17 @@ export function EmulatorPlayer({
         flushStartupEvents(payload)
         return
       }
+      if (event === 'startup_interrupted' && pendingStartupEvents.length) {
+        flushStartupEvents(payload)
+        return
+      }
       if (pendingStartupEvents.length && ['failed', 'timeout', 'slow_start', 'readiness_unobservable', 'recovered'].includes(event)) {
         flushStartupEvents()
       }
-      recordStartupEvent(gameSlugRef.current, payload)
+      recordStartupEvent(startupSlug, payload)
     }
     const reportFallbackOutcome = (event: 'fallback_started' | 'fallback_first_frame' | 'fallback_playable' | 'fallback_failed') => {
-      if (!fallbackTrail.length || !startupVisitId || !gameSlugRef.current || session.runtime.id === 'liveview') return
+      if (!fallbackTrail.length || !startupVisitId || !startupSlug || session.runtime.id === 'liveview') return
       if (event === 'fallback_started') {
         if (fallbackStartedReported) return
         fallbackStartedReported = true
@@ -2197,6 +2204,7 @@ export function EmulatorPlayer({
     }
     reportFallbackOutcome('fallback_started')
     const reportStartupFailure = (reason: string) => {
+      startupEnded = true
       reportFallbackOutcome('fallback_failed')
       reportStartup(/(?:超时|timeout|timed out)/i.test(reason) ? 'timeout' : 'failed', reason)
     }
@@ -2209,6 +2217,17 @@ export function EmulatorPlayer({
     // 慢启动 / 超时诊断包要看得出「还在下载」还是「下载完卡在启动」，见 startupProgressTrace.ts
     const progressTrace = createStartupProgressTrace(session.startedAt)
     const stopProgressSnapshot = registerDiagnosticSnapshot(() => (isCurrent() && !ready ? progressTrace.snapshot() : null))
+    const reportStartupInterrupted = () => {
+      if (!isCurrent() || startupEnded || startupInterruptedReported || !startupVisitId || !startupSlug ||
+        session.runtime.id === 'liveview' || countedPlayAttemptRef.current === session.startupAttemptId) return
+      startupInterruptedReported = true
+      reportStartup('startup_interrupted', progressTrace.phaseNote() || '页面离开时本局尚未可玩')
+    }
+    const onStartupPageHide = (event: PageTransitionEvent) => {
+      // BFCache 只是暂存页面，返回后启动仍会继续，不能记成玩家放弃。
+      if (!event.persisted) reportStartupInterrupted()
+    }
+    window.addEventListener('pagehide', onStartupPageHide)
     const reportSlowStartupIfNeeded = () => {
       if (!isCurrent() || ready || slowStartupReported || readinessState !== 'observable' ||
         Date.now() - session.startedAt < STARTUP_SLOW_MS) return
@@ -2256,6 +2275,7 @@ export function EmulatorPlayer({
     const confirmPlayable = () => {
       if (!isCurrent() || crashed || session.runtime.id === 'liveview' ||
         countedPlayAttemptRef.current === session.startupAttemptId) return
+      startupEnded = true
       countedPlayAttemptRef.current = session.startupAttemptId
       // 只有运行时确认已经可玩才算兜底成功；首帧单独统计，避免黑屏后偶然闪帧被算作恢复。
       reportFallbackOutcome('fallback_playable')
@@ -2979,6 +2999,8 @@ export function EmulatorPlayer({
       setScreenLayout(null)
     })()
     return () => {
+      reportStartupInterrupted()
+      window.removeEventListener('pagehide', onStartupPageHide)
       mountCancelled = true
       stopStartupWatchdog()
       stopProgressSnapshot()

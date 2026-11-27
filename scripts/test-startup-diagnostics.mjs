@@ -696,14 +696,23 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   assert.match(funnel, /DIAGNOSTIC_EVENTS = new Set<StartupEventName>\(\['failed', 'timeout', 'slow_start', 'recovered'\]\)/)
   assert.match(funnel, /body: JSON\.stringify\(\{ events: batch \}\)/, '阶段批次应合并成一条上报请求')
   assert.match(funnel, /'download_complete', 'rom_load_start'/, '已有下载完成事件应能并入资源阶段批次')
+  assert.match(funnel, /'startup_interrupted'/, '离页事件应能和未发送的阶段合成一条 keepalive 请求')
   assert.match(funnel, /for \(const key of keys\) sent\.delete\(key\)/, '批量请求失败后要允许同生命周期补报')
   const player = read('src/emulator/EmulatorPlayer.tsx')
   assert.match(player, /startupBatchTimer = window\.setTimeout\(\(\) => flushStartupEvents\(\), 15_000\)/, '慢启动也要定时刷新阶段数据')
   assert.match(player, /reportFallbackOutcome\('fallback_started'\)/, '实际切换核心 / 运行时后必须记录兜底开始')
   assert.match(player, /reportFallbackOutcome\('fallback_first_frame'\)/, '兜底核心出首帧时必须记录中间结果')
   assert.match(player, /reportFallbackOutcome\('fallback_playable'\)[\s\S]{0,120}reportStartup\('game_playable'\)/, '兜底到达可玩状态后才算恢复成功')
-  assert.match(player, /const reportStartupFailure = \(reason: string\) => \{\s*reportFallbackOutcome\('fallback_failed'\)/,
-    '最终启动失败时必须记录兜底失败')
+  assert.match(player, /const reportStartupFailure = \(reason: string\) => \{\s*startupEnded = true\s*reportFallbackOutcome\('fallback_failed'\)/,
+    '最终启动失败时必须结束启动并记录兜底失败')
+  assert.match(player, /const reportStartupInterrupted = \(\) => \{[\s\S]{0,300}reportStartup\('startup_interrupted'/,
+    '离开时尚未可玩的开局必须单独记录')
+  assert.match(player, /window\.addEventListener\('pagehide', onStartupPageHide\)/,
+    '页面离开时必须捕获尚未可玩的开局')
+  assert.match(player, /if \(!event\.persisted\) reportStartupInterrupted\(\)/,
+    '进入 BFCache 不应误记成玩家中断开局')
+  assert.match(player, /event === 'startup_interrupted' && pendingStartupEvents\.length\)[\s\S]{0,100}flushStartupEvents\(payload\)/,
+    '卸载时的中断事件应与待发阶段合批，减少 keepalive 丢失风险')
   const watchdog = player.match(/const armStartupWatchdog = \(\) => \{[\s\S]*?const noteStartupActivity/)
   assert.ok(watchdog, '启动看门狗实现必须可检查')
   assert.doesNotMatch(watchdog[0], /reportFallbackOutcome\('fallback_failed'\)/,

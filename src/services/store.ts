@@ -267,6 +267,7 @@ export interface StartupAggregate {
   failures: number
   timeouts: number
   slowStarts: number
+  interruptions: number
   readinessUnobservable: number
   /** 自动兼容回退链路数、首帧数、真正可玩数与最终失败数。 */
   fallbackAttempts: number

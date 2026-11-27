@@ -50,7 +50,8 @@ async function startupSection(query, cutoff) {
     `SELECT SUM(event = 'start_click') AS starts,
             SUM(event = 'game_playable') AS playable,
             SUM(event IN ('failed', 'timeout')) AS failures,
-            SUM(event = 'slow_start') AS slow
+            SUM(event = 'slow_start') AS slow,
+            SUM(event = 'startup_interrupted') AS interrupted
        FROM game_startup_events
       WHERE created_at >= ?`,
     [cutoff],
@@ -60,6 +61,7 @@ async function startupSection(query, cutoff) {
     playable: num(row?.playable),
     failures: num(row?.failures),
     slow: num(row?.slow),
+    interrupted: num(row?.interrupted),
   }
 }
 

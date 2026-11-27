@@ -403,11 +403,12 @@ export function AdminOverview() {
           </div>
           <span className="text-xs text-muted">详情页 {startup?.summary.detailViews ?? 0} 次</span>
         </div>
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-7">
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4 xl:grid-cols-8">
           <Stat label="点击开始" value={startup?.summary.starts ?? 0} sub="每次主动启动一条" />
           <Stat label="成功可玩" value={startup?.summary.playable ?? 0} sub={`${(startup?.summary.playableRate ?? 0).toFixed(1)}% 成功率`} />
           <Stat label="首帧" value={startup?.summary.firstFrames ?? 0} sub="运行时确认进入主循环" />
           <Stat label="慢启动" value={startup?.summary.slowStarts ?? 0} sub="可玩耗时超过 60 秒" />
+          <Stat label="离开时未可玩" value={startup?.summary.interruptions ?? 0} sub="离开页面时本局尚未可玩" />
           <Stat label="无法观测" value={startup?.summary.readinessUnobservable ?? 0} sub="跨域 HTML5 无法确认就绪" />
           <Stat
             label="兜底启动链路"

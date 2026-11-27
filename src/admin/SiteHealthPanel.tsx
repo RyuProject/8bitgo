@@ -85,7 +85,7 @@ export function SiteHealthPanel({ dataState }: { dataState: DataState }) {
             <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted">
               <span>
                 最近 24 小时：{' '}
-                {hasHealthError(snapshot.startup) ? '启动统计暂不可用' : `${snapshot.startup.starts.toLocaleString('zh-CN')} 次开始 · ${snapshot.startup.playable.toLocaleString('zh-CN')} 次成功 · ${snapshot.startup.failures.toLocaleString('zh-CN')} 次失败 · ${snapshot.startup.slow.toLocaleString('zh-CN')} 次慢启动`}
+                {hasHealthError(snapshot.startup) ? '启动统计暂不可用' : `${snapshot.startup.starts.toLocaleString('zh-CN')} 次开始 · ${snapshot.startup.playable.toLocaleString('zh-CN')} 次成功 · ${snapshot.startup.failures.toLocaleString('zh-CN')} 次失败 · ${snapshot.startup.slow.toLocaleString('zh-CN')} 次慢启动 · ${snapshot.startup.interrupted.toLocaleString('zh-CN')} 次未可玩离开`}
               </span>
               <span>更新于 {timeLabel(snapshot.generatedAt)}</span>
             </div>
