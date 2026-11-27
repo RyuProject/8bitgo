@@ -33,8 +33,10 @@ const ok = (n, c) => { if (!c) failed++; console.log(`${c ? '✅' : '❌'} ${n}`
 const app = express()
 const http = createServer(app)
 attachNetplay(http, app, ['*'], { resolveGamePolicy: testGameRoomPolicy })
-await new Promise((r) => http.listen(9931, r))
-const API = 'http://127.0.0.1:9931'
+await new Promise((r) => http.listen(0, '127.0.0.1', r))
+const address = http.address()
+if (!address || typeof address === 'string') throw new Error('测试 HTTP 服务没有分配临时端口')
+const API = `http://127.0.0.1:${address.port}`
 const connect = async () => {
   const s = client(`${API}/netplay`)
   // 服务端在 ack 之后紧接着发的房间令牌 —— 认领和迁移都要凭它

@@ -86,8 +86,8 @@ export interface PendingUpload {
   /** Worker 明确支持后，把分片号放请求头，所有分片共用一个 URL 以复用浏览器 CORS 预检缓存。 */
   partNumberInHeader?: boolean
   contentType?: string
-  /** 只有浏览器已核对本地内容后才允许续传复用；旧账本缺摘要时对应分片会安全重传。 */
-  parts: { partNumber: number; etag: string; contentHash?: string }[]
+  /** 只有浏览器已核对本地内容后才允许续传复用；无版本号按旧 v1 核验，清单路径使用 v2。 */
+  parts: { partNumber: number; etag: string; contentHash?: string; contentHashVersion?: 1 | 2 }[]
   updatedAt: number
 }
 
@@ -713,6 +713,7 @@ async function verifyResumableParts(
   partSize: number,
   fingerprint: string,
   onProgress?: (checked: number, total: number) => void,
+  integrityPartFingerprint?: (start: number, size: number) => Promise<string>,
 ): Promise<void> {
   const previous = state.parts
   const verified: PendingUpload['parts'] = []
@@ -738,6 +739,15 @@ async function verifyResumableParts(
         reportChecked()
         continue
       }
+      if (part.contentHashVersion !== undefined && part.contentHashVersion !== 2 && part.contentHashVersion !== 1) {
+        reportChecked()
+        continue
+      }
+      if (part.contentHashVersion === 2 && !integrityPartFingerprint) {
+        // v2 指纹来自必校验清单块；没有同一份清单任务时不能用旧算法猜测验证。
+        reportChecked()
+        continue
+      }
       const start = (part.partNumber - 1) * partSize
       const length = Math.min(partSize, file.size - start)
       if (length <= 0) {
@@ -745,7 +755,9 @@ async function verifyResumableParts(
         continue
       }
       try {
-        const hash = await fingerprintRomPart(file.slice(start, start + length))
+        const hash = part.contentHashVersion === 2
+          ? await integrityPartFingerprint!(start, length)
+          : await fingerprintRomPart(file.slice(start, start + length))
         if (hash === contentHash.toLowerCase()) verified.push(part)
       } catch {
         // 无法读回本地分片时不信任远端副本；runner 会用当前文件重新覆盖该片号。
@@ -1226,6 +1238,7 @@ export async function uploadRomMultipart(
   signal?: AbortSignal,
   integrityManifestTask?: Promise<RomIntegrityManifestPayload>,
   atomicIntegrityUpload = false,
+  integrityPartFingerprint?: (start: number, size: number) => Promise<string>,
 ): Promise<UploadResult> {
   const ctx: Ctx = { api: getRomApi(), token: getRomToken() }
   const partSize = PART_SIZE
@@ -1263,7 +1276,7 @@ export async function uploadRomMultipart(
         checkingParts: checked,
         checkingTotal: total,
       })
-    })
+    }, integrityPartFingerprint)
   }
   const resumed = resumedState ? resumedState.parts.length : 0
   if (resumable) saveState(state)
@@ -1366,9 +1379,11 @@ export async function uploadRomMultipart(
       try {
         // 摘要与 XHR 同时读各自的小块，正常上传不多一次整文件扫描，断点恢复则能核验已在 R2 的字节。
         const hashTask = resumable
-          ? fingerprintRomPart(blob).then(
-              (hash) => ({ hash, settledAt: performance.now() }),
-              () => ({ hash: null, settledAt: performance.now() }),
+          ? Promise.resolve().then(() => integrityPartFingerprint
+              ? integrityPartFingerprint(start, blob.size)
+              : fingerprintRomPart(blob)).then(
+              (hash) => ({ hash, version: integrityPartFingerprint ? 2 as const : 1 as const, settledAt: performance.now() }),
+              () => ({ hash: null, version: null, settledAt: performance.now() }),
             )
           : null
         const etag = await putPartWithRetry(ctx, state, n, blob, (bytes, serverWaitMs) => {
@@ -1384,7 +1399,11 @@ export async function uploadRomMultipart(
         const contentHash = hashResult?.hash ?? null
         // R2 已确认本次分片来自当前文件；摘要失败只禁用这片的未来复用，不能把成功上传报成失败。
         // 续传核验会主动重传没有摘要的旧片，因此安全性不变，也避免管理员因浏览器加密 API 短暂故障重传整局。
-        state.parts.push({ partNumber: n, etag, ...(contentHash ? { contentHash } : {}) })
+        state.parts.push({
+          partNumber: n,
+          etag,
+          ...(contentHash ? { contentHash, ...(hashResult?.version === 2 ? { contentHashVersion: 2 as const } : {}) } : {}),
+        })
         finished.add(n)
         setLoaded(n, sizeOfPart(n))
         // 短间隔批量落账，避免每个 8 MiB 分片都重写不断增长的整份账本。

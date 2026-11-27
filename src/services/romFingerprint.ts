@@ -20,9 +20,10 @@ export async function fingerprintRomUploadFile(file: Blob): Promise<string | nul
 }
 
 /**
- * 为一个 R2 分片生成可续传核验的强摘要。
+ * 为旧账本和没有 ROM 完整性清单的对象生成 v1 可续传摘要。
  * 分成 1 MiB 小窗是因为 Web Crypto 不支持流式 digest；分片上传和摘要并行时只额外保留一个小窗，
  * 不会为了确认 8 MiB 远端分片而把整张镜像再复制一份到内存。
+ * 新 ROM / BIOS 上传走完整性清单的 2 MiB 块摘要，并从同一组摘要派生 v2 分片指纹，避免重复读文件。
  */
 export async function fingerprintRomPart(filePart: Blob): Promise<string> {
   const subtle = globalThis.crypto?.subtle

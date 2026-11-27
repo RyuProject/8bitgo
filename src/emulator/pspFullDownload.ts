@@ -2,7 +2,8 @@
 import type { LoadProgress } from './types'
 import { abortableDelay } from './loadProgress'
 import { canonicalRomUrl } from '@/services/romHosts'
-import { fetchRomIntegrityManifest, RomIntegrityError, verifyRomBlob, verifyRomRange } from '@/services/romIntegrity'
+import { fetchRomIntegrityManifest, romIntegrityKey, RomIntegrityError, verifyRomBlob, verifyRomRange } from '@/services/romIntegrity'
+import { rankRomRoutes, recordRomRouteFailure, recordRomRouteTransfer } from '@/services/romRouteHealth'
 
 const PART_BYTES = 8 * 1024 * 1024
 const STALL_MS = 30_000
@@ -21,25 +22,44 @@ async function downloadPart(
   validator: { etag?: string; modified?: string },
 ): Promise<{ bytes: Uint8Array<ArrayBuffer>; etag?: string; modified?: string; integrityRequired: boolean }> {
   let lastError: unknown
+  const attemptedUrls = new Set<string>()
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     if (signal.aborted) throw signal.reason ?? new Error('下载已取消')
-    const url = urls[attempt % urls.length]
+    // 每片开始前重新读线路记分；上一片刚测出的慢速或失败会立即影响后续片。
+    const rankedUrls = rankRomRoutes(urls)
+    let url = rankedUrls.find((candidate) => !attemptedUrls.has(candidate))
+    if (!url) {
+      attemptedUrls.clear()
+      url = rankedUrls[0] ?? urls[0]
+    }
+    attemptedUrls.add(url)
     const controller = new AbortController()
     const cancel = () => controller.abort(signal.reason)
     signal.addEventListener('abort', cancel, { once: true })
     let timer: ReturnType<typeof setTimeout> | undefined
+    let stalled = false
+    let failure: 'network' | 'timeout' | 'stall' | 'server' | null = null
+    let skipRoutePenalty = false
     const touch = () => {
       if (timer) clearTimeout(timer)
-      timer = setTimeout(() => controller.abort(new Error('下载连接长时间没有数据')), STALL_MS)
+      timer = setTimeout(() => {
+        stalled = true
+        controller.abort(new Error('下载连接长时间没有数据'))
+      }, STALL_MS)
     }
     try {
       touch()
       const headers: Record<string, string> = { Range: `bytes=${start}-${end}`, Accept: 'application/octet-stream' }
-      if (validator.etag) headers['If-Match'] = validator.etag
+      // If-Match 只接受强 ETag；把 W/ 标签发过去会被符合规范的服务器永远回 412。
+      if (validator.etag && !/^W\//i.test(validator.etag)) headers['If-Match'] = validator.etag
       else if (validator.modified) headers['If-Unmodified-Since'] = validator.modified
       const response = await fetch(url, { headers, signal: controller.signal, cache: 'no-store' })
       if (response.status !== 206 || !exactRange(response.headers.get('content-range'), start, end, total)) {
         void response.body?.cancel().catch(() => {})
+        if (response.status === 408) failure = 'timeout'
+        else if (response.status === 425 || response.status === 429 || response.status >= 500) failure = 'server'
+        else if (response.status === 404 || response.status === 410 || response.status === 412) skipRoutePenalty = true
+        else failure = 'server'
         const error = new Error(`镜像分片响应无效（HTTP ${response.status}）`)
         if (response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500) {
           error.name = 'PspRangeNetworkError'
@@ -53,15 +73,22 @@ async function downloadPart(
         void response.body?.cancel().catch(() => {})
         throw new Error('下载期间镜像版本发生变化，请重新开始')
       }
-      if (!response.body) throw new Error('浏览器没有提供可逐块读取的响应体')
+      if (!response.body) {
+        failure = 'server'
+        throw new Error('浏览器没有提供可逐块读取的响应体')
+      }
       const result = new Uint8Array(new ArrayBuffer(end - start + 1))
       const reader = response.body.getReader()
       let offset = 0
+      const bodyStartedAt = performance.now()
       try {
         for (;;) {
           const { done, value } = await reader.read()
           if (done) break
-          if (offset + value.byteLength > result.byteLength) throw new Error('镜像分片超出声明长度')
+          if (offset + value.byteLength > result.byteLength) {
+            failure = 'server'
+            throw new Error('镜像分片超出声明长度')
+          }
           result.set(value, offset)
           offset += value.byteLength
           touch()
@@ -70,6 +97,7 @@ async function downloadPart(
         if (offset !== result.byteLength) void reader.cancel().catch(() => {})
       }
       if (offset !== result.byteLength) throw new Error('镜像分片未下载完整')
+      recordRomRouteTransfer(url, offset, performance.now() - bodyStartedAt)
       return {
         bytes: result,
         etag,
@@ -79,6 +107,9 @@ async function downloadPart(
     } catch (error) {
       lastError = error
       if (signal.aborted) throw signal.reason ?? error
+      if (stalled) failure = 'stall'
+      else if (!failure && !skipRoutePenalty && !(error instanceof Error && /版本发生变化/.test(error.message))) failure = 'network'
+      if (failure) recordRomRouteFailure(url, failure)
       // 版本变化或不支持 Range 不能靠重试修好；继续只会反复下载错误响应。
       if (error instanceof Error && /版本发生变化/.test(error.message)) throw error
       if (error instanceof Error && error.name === 'PspRangeRouteError' && urls.length === 1) throw error
@@ -117,31 +148,46 @@ async function downloadPspDiscUnlocked(
   onProgress?: (progress: LoadProgress) => void,
 ): Promise<File> {
   const url = urls[0]
-  const integrity = await fetchRomIntegrityManifest(url, signal)
-  // 空 romv 不是内容版本；若把它当稳定键，源站同路径换盘后会直接复用旧的完整镜像。
-  const versioned = Boolean(new URL(url, location.href).searchParams.get('romv')?.trim())
+  // 清单请求和磁盘准备并行；后续首段 Range 也会与清单并行，避免弱网下先白等 2.5 秒。
+  // 仍须在任何字节写入 OPFS 前拿到清单并完成校验。
+  const integrityTask = fetchRomIntegrityManifest(url, signal)
+  void integrityTask.catch(() => {})
+  let integrity: Awaited<typeof integrityTask> = null
+  // 只有本站 ROM Worker 会按 romv 拒绝过期对象；外站可以带同名查询串但不执行版本锁。
+  // 不信任外站自称的 romv，否则它无 ETag / Last-Modified 时也会被拼成跨版本整盘。
+  const versioned = Boolean(new URL(url, location.href).searchParams.get('romv')?.trim() && romIntegrityKey(url))
   const root = await navigator.storage.getDirectory()
   const cache = await root.getDirectoryHandle(CACHE_DIR, { create: true })
   const dir = await cache.getDirectoryHandle(key, { create: true })
   const discName = name.split(/[\\/]/).pop() || 'game.iso'
   let disc = await dir.getFileHandle(discName, { create: true })
   if (versioned) {
+    let cacheVersion: string | null = null
     try {
       const marker = await dir.getFileHandle('complete')
-      const cacheVersion = integrity ? `${size}\\n${integrity.etag}` : String(size)
-      if ((await (await marker.getFile()).text()) === cacheVersion) {
-        const file = await disc.getFile()
-        if (file.size === size) {
-          if (integrity) await verifyRomBlob(file, integrity, signal)
-          onProgress?.({ phase: 'rom', loaded: size, total: size, ratio: 1, cached: true })
-          return file
-        }
-      }
+      cacheVersion = await (await marker.getFile()).text()
     } catch (error) {
       if (signal.aborted) throw signal.reason ?? error
-      if (error instanceof RomIntegrityError) {
-        // 本地完整副本也可能被磁盘损坏；不交给核心，清掉后按网络分片重新取得。
-        await dir.removeEntry('complete').catch(() => {})
+    }
+    if (cacheVersion !== null) {
+      // 若清单请求失败，不能把它误当成缓存损坏再降级下载；已标记必校验的对象应失败关闭。
+      integrity = await integrityTask
+      const expectedCacheVersion = integrity ? `${size}\\n${integrity.etag}` : String(size)
+      if (cacheVersion === expectedCacheVersion) {
+        try {
+          const file = await disc.getFile()
+          if (file.size === size) {
+            if (integrity) await verifyRomBlob(file, integrity, signal)
+            onProgress?.({ phase: 'rom', loaded: size, total: size, ratio: 1, cached: true })
+            return file
+          }
+        } catch (error) {
+          if (signal.aborted) throw signal.reason ?? error
+          if (error instanceof RomIntegrityError) {
+            // 本地完整副本也可能被磁盘损坏；不交给核心，清掉后按网络分片重新取得。
+            await dir.removeEntry('complete').catch(() => {})
+          }
+        }
       }
     }
   }
@@ -167,7 +213,18 @@ async function downloadPspDiscUnlocked(
   try {
     onProgress?.({ phase: 'rom', loaded: 0, total: size, ratio: 0 })
     const firstEnd = Math.min(size, PART_BYTES) - 1
-    const first = await downloadPart(urls, 0, firstEnd, size, controller.signal, {})
+    const firstTask = downloadPart(urls, 0, firstEnd, size, controller.signal, {})
+    let first: Awaited<typeof firstTask>
+    try {
+      const [downloadedFirst, downloadedIntegrity] = await Promise.all([firstTask, integrityTask])
+      first = downloadedFirst
+      integrity = downloadedIntegrity
+    } catch (error) {
+      // 清单拒绝时停止仍在进行的首段下载，避免后台重试继续占网；这时尚未写入任何镜像字节。
+      controller.abort(error)
+      await firstTask.catch(() => {})
+      throw error
+    }
     if (first.integrityRequired && !integrity) throw new RomIntegrityError('本站要求校验此 PSP 镜像，但 SHA-256 清单不可用')
     if (integrity) {
       if (first.etag !== integrity.etag || size !== integrity.size) throw new RomIntegrityError('PSP 镜像响应版本与 SHA-256 清单不匹配')
@@ -175,7 +232,8 @@ async function downloadPspDiscUnlocked(
     }
     // 没有 ETag / Last-Modified 的外链无法证明多个 Range 属于同一代内容；带 romv 的
     // 站内链接由 R2 Worker 逐次验证版本，其余链接要拒绝，不能拼出一张隐性损坏的盘。
-    if (!versioned && !first.etag && !first.modified) throw new Error('镜像没有版本校验信息，无法安全下载整包')
+    const hasStrongEtag = first.etag && !/^W\//i.test(first.etag)
+    if (!versioned && !hasStrongEtag && !first.modified) throw new Error('镜像没有可安全使用的版本校验信息，无法安全下载整包')
     const validator = { etag: first.etag, modified: first.modified }
     await writer.write({ type: 'write', position: 0, data: first.bytes })
     loaded = first.bytes.byteLength
@@ -212,7 +270,7 @@ async function downloadPspDiscUnlocked(
     await writer.close()
     const file = await disc.getFile()
     if (file.size !== size) throw new Error('本地镜像长度校验失败')
-    if (integrity) await verifyRomBlob(file, integrity, signal)
+    // 有 SHA-256 清单时，每个网络分片都已在写入前校验；再从 OPFS 读回整张盘哈希会重复扫过数 GB。
     const marker = await dir.getFileHandle('complete', { create: true })
     const markWriter = await marker.createWritable()
     await markWriter.write(integrity ? `${size}\\n${integrity.etag}` : String(size))

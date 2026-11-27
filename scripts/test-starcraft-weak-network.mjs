@@ -126,7 +126,7 @@ assert.match(jsdos, /const arrayBufferLimit = loadLimits\.arrayBufferBytes/)
 assert.match(jsdos, /const limits = \{ maxBytes: arrayBufferLimit, maxUnpackedBytes: arrayBufferLimit }/)
 assert.match(jsdos, /loadGameBytes\(game, onProgress, signal, limits\)/)
 assert.match(jsdos, /请先发布并绑定 Sockdrive/)
-assert.match(jsdos, /verifySockdriveForLaunch\(sockdriveUrl, abort\.signal, Boolean\(systemUrl\)\)/)
+assert.match(jsdos, /verifySockdriveForLaunch\(\s*sockdriveUrl,\s*abort\.signal,\s*Boolean\(systemUrl\),\s*\(\) => options\.onStartupActivity\?\.\(\)\s*\)/)
 
 const ageGate = readFileSync(new URL('../src/components/game/AgeGate.tsx', import.meta.url), 'utf8')
 assert.match(ageGate, /ACCESS_REQUEST_TIMEOUT_MS = 8_000/)

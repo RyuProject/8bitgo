@@ -48,17 +48,12 @@ const MANUAL = {
 const AGGREGATES = new Set(['server:test:netplay:all'])
 
 /**
- * 绑**固定端口**的套件，必须串行。
- * ⚠️ test-host-failover 和 test-spectator 都绑 9931 —— 并行会互相撞死，
- * 而症状是随机的连接错误，查起来极费劲。新增固定端口的测试记得加进来。
+ * 绑**固定端口**的套件，必须串行；需要 HTTP 服务的测试尽量监听系统分配的临时端口，
+ * 避免不同工作树里的测试进程互相抢占同一个端口。
  */
 const SERIAL = new Set([
   'server:test:netplay', // 9921
-  'server:test:host-failover', // 9931
-  'server:test:spectator', // 9931 —— 和上面同一个端口
   'server:test:saves', // 9941
-  'server:test:netplay:failover',
-  'server:test:netplay:spectator',
 ])
 
 /** 只在特定平台能跑的 */

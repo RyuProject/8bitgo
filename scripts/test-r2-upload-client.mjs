@@ -72,6 +72,7 @@ globalThis.XMLHttpRequest = class {
 const { uploadRom, deleteRomDir, deleteRomObjectsExactly, headRom, listRomObjects } = await import('../src/services/roms.ts')
 const { adaptiveUploadConcurrency, preferredUploadConcurrency, warmUploadSampleBytes, PART_SIZE, uploadRomMultipart, listOrphanUploads, abortOrphanUpload, listPendingUploads, MultipartUploadGate, UploadTransferPool, askJson } = await import('../src/services/romMultipart.ts')
 const { fingerprintRomPart, fingerprintRomUploadFile } = await import('../src/services/romFingerprint.ts')
+const { createRomIntegrityWork } = await import('../src/services/romIntegrityData.ts')
 const { matchesRomPackSource, romPackWorkerConcurrency } = await import('../src/services/romPack.ts')
 const {
   clearPendingSockdriveCreation,
@@ -381,10 +382,15 @@ console.log('✅ 实际上传链路在首片完成前启动后续分片，并正
 {
   const key = 'roms/ps2/atomic-integrity-multipart.iso'
   const file = new File([new Uint8Array(PART_SIZE + 1)], 'atomic-integrity-multipart.iso', { lastModified: 7121 })
-  const manifest = {
-    v: 1, alg: 'sha256', key, size: file.size, blockBytes: 2 * 1024 * 1024,
-    blocks: Array.from({ length: Math.ceil(file.size / (2 * 1024 * 1024)) }, () => 'a'.repeat(64)),
-  }
+  const originalSlice = file.slice.bind(file)
+  let fileReads = 0
+  Object.defineProperty(file, 'slice', { value: (start, end, type) => {
+    const blob = originalSlice(start, end, type)
+    const read = blob.arrayBuffer.bind(blob)
+    Object.defineProperty(blob, 'arrayBuffer', { value: () => { fileReads++; return read() } })
+    return blob
+  } })
+  const integrityWork = createRomIntegrityWork(file, key)
   const originalFetch = globalThis.fetch
   const originalXHR = globalThis.XMLHttpRequest
   let completeBody
@@ -398,6 +404,9 @@ console.log('✅ 实际上传链路在首片完成前启动后续分片，并正
     }
     if (target.includes('uploadId=up-atomic-integrity') && init?.method === 'POST') {
       completeBody = JSON.parse(init.body)
+      const ledger = JSON.parse(globalThis.localStorage.getItem('8bitgo.rom.multipart') || '{}')
+      assert.ok(ledger[key]?.parts.every((part) => part.contentHashVersion === 2),
+        '新续传指纹必须复用完整性块摘要并记录独立算法版本')
       return Response.json({ ok: true, key, size: file.size, etag: 'atomic-multipart-v1', integrityPublished: true })
     }
     throw new Error(`unexpected request: ${target}`)
@@ -420,11 +429,14 @@ console.log('✅ 实际上传链路在首片完成前启动后续分片，并正
     abort() { this.onabort?.() }
   }
   try {
-    const result = await uploadRomMultipart(file, key, undefined, undefined, Promise.resolve(manifest), true)
+    const result = await uploadRomMultipart(file, key, undefined, undefined,
+      integrityWork.manifest, true, integrityWork.fingerprintPart)
     assert.equal(result.integrityPublished, true)
     assert.equal(completeBody.integrityRequired, true)
-    assert.deepEqual(completeBody.integrityManifest, manifest)
+    assert.deepEqual(completeBody.integrityManifest, await integrityWork.manifest)
     assert.equal(completeBody.requestSignature, 'atomic-integrity-signature')
+    assert.equal(fileReads, 3 + Math.ceil(file.size / (2 * 1024 * 1024)),
+      '首传应只读三段轻量身份样本和完整性块，不再重复读取每个 R2 分片计算另一种摘要')
   } finally {
     globalThis.fetch = originalFetch
     globalThis.XMLHttpRequest = originalXHR
@@ -584,11 +596,27 @@ console.log('✅ 正常的小文件上传仍可完成')
   const originalFetch = globalThis.fetch
   const originalApi = localStorage.getItem('8bitgo.rom.api')
   let sentHeaders
+  let releasePing
+  let probeReturned = false
+  let digestStartedBeforeProbeReturned = false
   try {
     localStorage.setItem('8bitgo.rom.api', 'https://atomic-worker.test')
+    const atomicFile = new File(['abc'], 'atomic-demo.nes', { lastModified: 456 })
+    const originalSlice = atomicFile.slice.bind(atomicFile)
+    Object.defineProperty(atomicFile, 'slice', {
+      value: (...args) => {
+        if (!probeReturned) digestStartedBeforeProbeReturned = true
+        return originalSlice(...args)
+      },
+    })
     globalThis.fetch = async (url) => {
       assert.equal(String(url), 'https://atomic-worker.test/ping', '原子上传只探测一次 Worker 能力')
-      return Response.json({ features: { integrityManifest: true, integrityAtomicUpload: true } })
+      return new Promise((resolve) => {
+        releasePing = () => {
+          probeReturned = true
+          resolve(Response.json({ features: { integrityManifest: true, integrityAtomicUpload: true } }))
+        }
+      })
     }
     xhrResponse = (xhr) => {
       sentHeaders = xhr.headers
@@ -596,7 +624,13 @@ console.log('✅ 正常的小文件上传仍可完成')
         ok: true, key: 'roms/nes/demo.nes', size: 3, etag: 'atomic-put-v1', integrityPublished: true,
       }) }
     }
-    const result = await uploadRom(small, 'roms/nes/demo.nes')
+    const upload = uploadRom(atomicFile, 'roms/nes/demo.nes')
+    for (let attempt = 0; attempt < 100 && !releasePing; attempt++) await new Promise((resolve) => setTimeout(resolve, 1))
+    assert.equal(typeof releasePing, 'function', 'ROM 清单生成应与 Worker 能力探测同时开始')
+    releasePing()
+    releasePing = null
+    const result = await upload
+    assert.equal(digestStartedBeforeProbeReturned, true, '完整性摘要应在能力探测回包前已经开始')
     assert.equal(result.integrityPublished, true)
     assert.equal(sentHeaders['x-8bg-integrity-required'], 'sha256-v1')
     const encodedManifest = sentHeaders['x-8bg-integrity-manifest']
@@ -606,6 +640,7 @@ console.log('✅ 正常的小文件上传仍可完成')
     assert.equal(manifest.size, small.size)
     assert.equal(manifest.blocks.length, 1)
   } finally {
+    releasePing?.(Response.json({ features: { integrityManifest: true, integrityAtomicUpload: true } }))
     globalThis.fetch = originalFetch
     localStorage.setItem('8bitgo.rom.api', originalApi || '')
     xhrResponse = () => ({ status: 200, body: JSON.stringify({
@@ -1082,6 +1117,95 @@ xhrResponse = (xhr) => {
 await uploadRomMultipart(changedFile, verifiedKey)
 assert.deepEqual(verifiedUploads.sort((a, b) => a - b), [2, 3, 4], '核验一致的首片应直接复用，不重复上传')
 console.log('✅ 内容一致的续传分片经强摘要核验后继续复用')
+
+const verifiedV2Key = 'roms/ps2/verified-resume-v2.iso'
+const verifiedV2File = new File([new Uint8Array(PART_SIZE + 1)], 'verified-resume-v2.iso', { lastModified: 3211 })
+const verifiedV2Work = createRomIntegrityWork(verifiedV2File, verifiedV2Key)
+globalThis.localStorage.setItem('8bitgo.rom.multipart', JSON.stringify({ [verifiedV2Key]: {
+  key: verifiedV2Key,
+  uploadId: 'up-ident-verified-v2',
+  marker: '_uploads/ident-verified-v2.marker',
+  partSize: PART_SIZE,
+  fileName: verifiedV2File.name,
+  fileSize: verifiedV2File.size,
+  lastModified: verifiedV2File.lastModified,
+  fileFingerprint: await fingerprintRomUploadFile(verifiedV2File),
+  requestId: 'abcdef0123456789abcdef012345678a',
+  requestSignature: 'same-v2-metadata-signature',
+  partNumberInHeader: true,
+  contentType: 'application/octet-stream',
+  parts: [{
+    partNumber: 1,
+    etag: 'verified-v2-part-1',
+    contentHash: await verifiedV2Work.fingerprintPart(0, PART_SIZE),
+    contentHashVersion: 2,
+  }],
+  updatedAt: Date.now(),
+} }))
+const verifiedV2Uploads = []
+globalThis.fetch = async (url, init) => {
+  if (String(url).includes('uploadId=up-ident-verified-v2') && init?.method === 'POST') {
+    const parts = JSON.parse(init.body).parts
+    assert.deepEqual(parts.map((part) => part.partNumber), [1, 2], 'v2 完整性块指纹应保留已核验首片')
+    return Response.json({ ok: true, key: verifiedV2Key, size: verifiedV2File.size, integrityPublished: true })
+  }
+  throw new Error(`unexpected request: ${url}`)
+}
+xhrResponse = (xhr) => {
+  const number = Number(xhr.headers['x-8bg-part-number'])
+  verifiedV2Uploads.push(number)
+  return { status: 200, body: JSON.stringify({ etag: `verified-v2-${number}` }) }
+}
+await uploadRomMultipart(verifiedV2File, verifiedV2Key, undefined, undefined,
+  verifiedV2Work.manifest, true, verifiedV2Work.fingerprintPart)
+assert.deepEqual(verifiedV2Uploads, [2], 'v2 本地续传验证成功时只上传缺失分片')
+console.log('✅ 新版完整性块指纹可跨刷新核验并复用已上传分片')
+
+const changedV2Key = 'roms/ps2/changed-resume-v2.iso'
+const oldV2File = new File([new Uint8Array(PART_SIZE + 1)], 'changed-resume-v2.iso', { lastModified: 3212 })
+const oldV2Work = createRomIntegrityWork(oldV2File, changedV2Key)
+const oldV2Fingerprint = await fingerprintRomUploadFile(oldV2File)
+const oldV2PartHash = await oldV2Work.fingerprintPart(0, PART_SIZE)
+const changedV2Bytes = new Uint8Array(PART_SIZE + 1)
+changedV2Bytes[2 * 1024 * 1024 + 17] = 1
+const changedV2File = new File([changedV2Bytes], oldV2File.name, { lastModified: oldV2File.lastModified })
+assert.equal(await fingerprintRomUploadFile(changedV2File), oldV2Fingerprint,
+  '碰撞测试只改变头 / 中 / 尾抽样之外的内容')
+const changedV2Work = createRomIntegrityWork(changedV2File, changedV2Key)
+globalThis.localStorage.setItem('8bitgo.rom.multipart', JSON.stringify({ [changedV2Key]: {
+  key: changedV2Key,
+  uploadId: 'up-ident-changed-v2',
+  marker: '_uploads/ident-changed-v2.marker',
+  partSize: PART_SIZE,
+  fileName: changedV2File.name,
+  fileSize: changedV2File.size,
+  lastModified: changedV2File.lastModified,
+  fileFingerprint: oldV2Fingerprint,
+  requestId: 'abcdef0123456789abcdef012345678b',
+  requestSignature: 'same-v2-metadata-signature',
+  partNumberInHeader: true,
+  contentType: 'application/octet-stream',
+  parts: [{ partNumber: 1, etag: 'old-content-v2', contentHash: oldV2PartHash, contentHashVersion: 2 }],
+  updatedAt: Date.now(),
+} }))
+const changedV2Uploads = []
+globalThis.fetch = async (url, init) => {
+  if (String(url).includes('uploadId=up-ident-changed-v2') && init?.method === 'POST') {
+    assert.deepEqual(JSON.parse(init.body).parts.map((part) => part.partNumber), [1, 2])
+    return Response.json({ ok: true, key: changedV2Key, size: changedV2File.size, integrityPublished: true })
+  }
+  throw new Error(`unexpected request: ${url}`)
+}
+xhrResponse = (xhr) => {
+  const number = Number(xhr.headers['x-8bg-part-number'])
+  changedV2Uploads.push(number)
+  return { status: 200, body: JSON.stringify({ etag: `changed-v2-${number}` }) }
+}
+await uploadRomMultipart(changedV2File, changedV2Key, undefined, undefined,
+  changedV2Work.manifest, true, changedV2Work.fingerprintPart)
+assert.deepEqual(changedV2Uploads.sort((a, b) => a - b), [1, 2],
+  'v2 完整性块发现抽样之外字节变化时必须重传对应分片')
+console.log('✅ v2 续传摘要发现稀疏样本之外的内容变化后会重传')
 
 const legacyKey = 'roms/ps2/legacy-resume.iso'
 globalThis.localStorage.setItem('8bitgo.rom.multipart', JSON.stringify({ [legacyKey]: {

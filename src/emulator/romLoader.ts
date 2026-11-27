@@ -38,10 +38,17 @@ function assertUnpackedSize(data: ArrayBuffer, limit: number | undefined): void 
   assertSizeLimit(size, limit, '游戏文件')
 }
 
-async function unpackIfNeeded(data: ArrayBuffer, limits: GameBytesLimits): Promise<{ name?: string; data: ArrayBuffer }> {
+async function unpackIfNeeded(
+  data: ArrayBuffer,
+  limits: GameBytesLimits,
+  onProgress?: (progress: LoadProgress) => void,
+): Promise<{ name?: string; data: ArrayBuffer }> {
   assertUnpackedSize(data, limits.maxUnpackedBytes)
   if (!isRomPackBytes(data)) return { data }
-  const unpacked = await unpackRomPack(data)
+  const unpacked = await unpackRomPack(data, () => {
+    // 密文下载已经结束；继续报活动但不重复推进下载字节，解包内部已节流到每 200ms 最多一次。
+    onProgress?.({ phase: 'rom', ratio: 1, detail: 'rom-pack' })
+  })
   assertSizeLimit(unpacked.data.byteLength, limits.maxUnpackedBytes, '游戏文件')
   return unpacked
 }
@@ -133,9 +140,12 @@ export async function loadGameBytes(
     assertSizeLimit(game.size, limits.maxBytes, '游戏文件')
     const data = await readBlobArrayBuffer(game, signal)
     assertSizeLimit(data.byteLength, limits.maxBytes, '游戏文件')
-    onProgress?.({ phase: 'rom', loaded: data.byteLength, total: data.byteLength, ratio: 1 })
+    onProgress?.({
+      phase: 'rom', loaded: data.byteLength, total: data.byteLength, ratio: 1,
+      ...(isRomPackBytes(data) ? { detail: 'rom-pack' as const } : {}),
+    })
     assertNotHtml(data)
-    const unpacked = await unpackIfNeeded(data, limits)
+    const unpacked = await unpackIfNeeded(data, limits, onProgress)
     assertNotHtml(unpacked.data)
     limits.validate?.(unpacked.data)
     if (unpacked.name) return { name: unpacked.name, data: unpacked.data }
@@ -197,7 +207,7 @@ export async function loadGameBytes(
           void romCachePut(cacheKey, cached).catch(() => {})
         }
         if (isRomPackBytes(cached)) {
-          const unpacked = await unpackIfNeeded(cached, limits)
+          const unpacked = await unpackIfNeeded(cached, limits, onProgress)
           assertNotHtml(unpacked.data)
           limits.validate?.(unpacked.data)
           onProgress?.({ phase: 'rom', loaded: cached.byteLength, total: cached.byteLength, ratio: 1, cached: true })
@@ -222,19 +232,26 @@ export async function loadGameBytes(
     const type = res.headers.get('content-type') ?? ''
     if (/text\/html|application\/xhtml/i.test(type)) throw new Error('ROM 地址返回了网页，不是游戏文件')
   }
+  const reportDownloadProgress = (progress: LoadProgress) => {
+    const complete = (progress.ratio ?? 0) >= 1 ||
+      (Number(progress.total) > 0 && Number(progress.loaded) >= Number(progress.total))
+    onProgress?.(isRomPackUrl(game) && progress.phase === 'rom' && complete
+      ? { ...progress, detail: 'rom-pack' }
+      : progress)
+  }
   // 只有带 romv 的不可变对象才可拼接旧片；小卡带首个 Range 就是完整文件，仍只需一趟网络。
   // 无版本的外链维持普通 GET，避免源站原地换包时把旧片拼进新 ROM。
   const data = cacheKey
     ? await (await fetchBlobWithProgress(game, {
-        phase: 'rom', onProgress, signal, resumeKey: cacheKey, check, maxBytes: limits.maxBytes,
+        phase: 'rom', onProgress: reportDownloadProgress, signal, resumeKey: cacheKey, check, maxBytes: limits.maxBytes,
         alternateUrls: alternateRomUrls(game),
       })).arrayBuffer()
-    : await fetchWithProgress(game, { phase: 'rom', onProgress, signal, check, maxBytes: limits.maxBytes, alternateUrls: alternateRomUrls(game) })
+    : await fetchWithProgress(game, { phase: 'rom', onProgress: reportDownloadProgress, signal, check, maxBytes: limits.maxBytes, alternateUrls: alternateRomUrls(game) })
   assertSizeLimit(data.byteLength, limits.maxBytes, '游戏文件')
   assertNotHtml(data)
   // fetchWithProgress / fetchBlobWithProgress 已在所有标记响应返回前校验；这里不再重复扫大 ROM。
   if (isRomPackBytes(data)) {
-    const unpacked = await unpackIfNeeded(data, limits)
+    const unpacked = await unpackIfNeeded(data, limits, onProgress)
     assertNotHtml(unpacked.data)
     limits.validate?.(unpacked.data)
     // 解密、解压、摘要都通过后才缓存密文；截断包不能因为一次失败被永久钉在浏览器里。

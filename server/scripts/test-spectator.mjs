@@ -32,9 +32,11 @@ const section = (title) => console.log(`\n── ${title} ──`)
 const app = express()
 const http = createServer(app)
 attachNetplay(http, app, ['*'], { resolveGamePolicy: testGameRoomPolicy })
-await new Promise((r) => http.listen(9931, r))
-const WS = 'http://127.0.0.1:9931/netplay'
-const API = 'http://127.0.0.1:9931'
+await new Promise((r) => http.listen(0, '127.0.0.1', r))
+const address = http.address()
+if (!address || typeof address === 'string') throw new Error('测试 HTTP 服务没有分配临时端口')
+const WS = `http://127.0.0.1:${address.port}/netplay`
+const API = `http://127.0.0.1:${address.port}`
 
 /** 连上并记住服务端下发的房间令牌（切身份要用它证明「我是房里的人」） */
 const connect = async () => {

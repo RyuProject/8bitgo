@@ -27,7 +27,7 @@ function validKey(key) {
 }
 
 if (!apiValue) fail('请设置 ROM_INTEGRITY_API，指向当前 ROM Worker 的根地址')
-if (!token) fail('请通过 ROM_INTEGRITY_TOKEN 环境变量提供 Worker ADMIN_TOKEN')
+if (!token) fail('请通过 ROM_INTEGRITY_TOKEN 环境变量提供 Worker ADMIN_TOKEN 或当前有效的 8bg1 短期 Worker 凭据')
 if (Boolean(keyFilter) === Boolean(prefixFilter)) fail('请且只请指定 --key=roms/... 或 --prefix=roms/...')
 if (requireComplete && apply) fail('--require-complete 是只读覆盖率门禁，不能与 --apply 同用')
 if (requireComplete && (keyFilter || prefixFilter !== 'roms/' || limit !== Number.POSITIVE_INFINITY)) {

@@ -32,7 +32,7 @@ import { reportCoverCdnFailure, selectedCoverCdn, startCoverCdnProbe, subscribeC
 import { trackUploadActivity } from './uploadActivity'
 import type { UploadActivityOptions } from './uploadActivity'
 import { createRequestTimeout, withRequestTimeout } from './requestTimeout'
-import { createRomIntegrityManifest, isIntegrityKey } from './romIntegrityData'
+import { createRomIntegrityWork, isIntegrityKey, type RomIntegrityManifestPayload } from './romIntegrityData'
 
 export const ROM_BASE_KEY = '8bitgo.rom.base'
 export const ROM_API_KEY = '8bitgo.rom.api'
@@ -2170,15 +2170,29 @@ export async function uploadRom(
     if (!getRomToken()) throw new Error('请先在「ROM 存储」页填写 Worker 口令（ADMIN_TOKEN）')
     const needsIntegrity = isIntegrityKey(cleanKey)
     let atomicIntegrityUpload = false
+    let integrityWork: ReturnType<typeof createRomIntegrityWork> | null = null
+    let integrityTask: Promise<RomIntegrityManifestPayload> | null = null
     if (needsIntegrity) {
-      atomicIntegrityUpload = await requireIntegrityWorker(api, signal)
       if (!globalThis.crypto?.subtle) throw new Error('当前浏览器不能生成 ROM / BIOS 的 SHA-256 清单，请改用 HTTPS 下的现代浏览器')
+      // 首次上传的 Worker 能力探测可能要一趟 RTT；摘要只读本地文件，可与它并行，
+      // 但能力确认前仍不开始网络上传，避免旧 Worker 收到无法安全发布的 ROM。
+      const integrityController = new AbortController()
+      const relayIntegrityAbort = () => integrityController.abort(signal?.reason)
+      if (signal?.aborted) relayIntegrityAbort()
+      else signal?.addEventListener('abort', relayIntegrityAbort, { once: true })
+      integrityWork = createRomIntegrityWork(file, cleanKey, integrityController.signal)
+      integrityTask = integrityWork.manifest
+      void integrityTask.catch(() => {}).finally(() => signal?.removeEventListener('abort', relayIntegrityAbort))
+      try {
+        atomicIntegrityUpload = await requireIntegrityWorker(api, signal)
+      } catch (error) {
+        integrityController.abort(error)
+        throw error
+      }
     }
 
     // ROM / BIOS 在后台上传时生成受 ETag 绑定的分块摘要；和网络上传并行计算，
     // 不把几 GB 光盘一次性读进内存，也不把哈希时间叠加到上传完成之后。
-    const integrityTask = needsIntegrity ? createRomIntegrityManifest(file, cleanKey, signal) : null
-    integrityTask?.catch(() => {})
     const uploadProgress: UploadProgress | undefined = integrityTask && onProgress
       ? (percent, detail) => onProgress(Math.min(99, percent), detail)
       : onProgress
@@ -2226,7 +2240,7 @@ export async function uploadRom(
       const mp = await import('./romMultipart')
       try {
         const result = await mp.uploadRomMultipart(file, cleanKey, uploadProgress, signal,
-          integrityTask ?? undefined, atomicIntegrityUpload)
+          integrityTask ?? undefined, atomicIntegrityUpload, integrityWork?.fingerprintPart)
         clearRomProbeCache()
         return await finishIntegrity(result)
       } catch (err) {

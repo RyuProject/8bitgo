@@ -614,7 +614,12 @@ async function decode(header: Pick<RomPackHeader, 'codec' | 'codecVersion'>, dat
   throw new Error(`这个版本的播放器还没有安装 ${header.codec} 解码器`)
 }
 
-async function decryptChunk(header: RomPackHeader, index: number, cipher: ArrayBuffer, key: CryptoKey): Promise<Uint8Array<ArrayBuffer>> {
+async function decryptChunk(
+  header: RomPackHeader,
+  index: number,
+  cipher: ArrayBuffer | Uint8Array<ArrayBuffer>,
+  key: CryptoKey,
+): Promise<Uint8Array<ArrayBuffer>> {
   let encoded: ArrayBuffer
   try {
     encoded = await crypto.subtle.decrypt(
@@ -634,24 +639,38 @@ async function decryptChunk(header: RomPackHeader, index: number, cipher: ArrayB
 }
 
 /** 小/中型 ROM 的完整解包；返回原始文件名，让模拟器仍按 .zip/.nes/.nds 识别。 */
-export async function unpackRomPack(data: ArrayBuffer): Promise<{ name: string; data: ArrayBuffer; header: RomPackHeader }> {
+export async function unpackRomPack(
+  data: ArrayBuffer,
+  onProgress?: (loaded: number, total: number) => void,
+): Promise<{ name: string; data: ArrayBuffer; header: RomPackHeader }> {
   const bytes = new Uint8Array(data)
   const { header, dataOffset } = parseRomPackHeader(bytes)
   if (dataOffset + header.payloadSize !== bytes.byteLength) throw new Error('8BG 文件长度与文件头不一致')
   // 这一条路径必须申请连续 ArrayBuffer；光盘等大文件走下面的 Blob 版本。先挡住异常文件头，
   // 避免在校验第一块之前就把手机标签页用一笔超大分配直接杀掉。
   if (header.originalSize > ROM_PACK_ARRAY_BUFFER_LIMIT) throw new Error('ROM 包解开后超过 1GB，请改用支持 Blob 的播放器路径')
+  let sourceAt = 0
+  let lastProgressAt = Number.NEGATIVE_INFINITY
+  const reportProgress = (force = false) => {
+    const now = performance.now()
+    if (!force && now - lastProgressAt < 200) return
+    lastProgressAt = now
+    onProgress?.(sourceAt, header.originalSize)
+  }
+  // 通知调用方已经转入解包；后续最多每 200ms 续报一次，避免小分块产生过多界面更新。
+  reportProgress(true)
   const key = await contentKey(header)
   const output = new Uint8Array(header.originalSize)
-  let sourceAt = 0
   let cipherAt = dataOffset
   for (let index = 0; index < header.chunks.length; index++) {
     const meta = header.chunks[index]
-    const cipher = bytes.slice(cipherAt, cipherAt + meta.cipherSize).buffer
+    // 密文已完整驻留在 data；Web Crypto 接受 TypedArray 视图，避免每个 8 MiB 块再复制一份。
+    const cipher = bytes.subarray(cipherAt, cipherAt + meta.cipherSize)
     const source = await decryptChunk(header, index, cipher, key)
     output.set(source, sourceAt)
     sourceAt += source.byteLength
     cipherAt += meta.cipherSize
+    reportProgress(index === header.chunks.length - 1)
   }
   if (header.originalSha256) {
     const digest = hex(await crypto.subtle.digest('SHA-256', output))
