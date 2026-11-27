@@ -1515,6 +1515,7 @@ const fr: Translation = {
     googleNotConfigured: "La connexion Google n'a pas été configurée par l'administrateur (VITE_GOOGLE_CLIENT_ID)",
     needLogin: "Connecte-toi d'abord",
     requestFailed: 'Échec de la requête (HTTP {status})',
+    apiRequestTimeout: 'La requête prend trop de temps. Vérifie ta connexion et réessaie.',
     pageDataTimeout: 'Le chargement de la page prend trop de temps. Vérifie ta connexion et réessaie.',
     defaultNickname: 'Joueur',
     googleNickname: 'Joueur Google',

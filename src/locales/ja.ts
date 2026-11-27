@@ -1448,6 +1448,7 @@ const ja: Translation = {
     googleNotConfigured: '管理者が Google ログインをまだ設定していません（VITE_GOOGLE_CLIENT_ID）',
     needLogin: '先にログインしてください',
     requestFailed: 'リクエストに失敗しました（HTTP {status}）',
+    apiRequestTimeout: 'リクエストがタイムアウトしました。接続を確認して再試行してください。',
     pageDataTimeout: 'ページデータの読み込みに時間がかかっています。接続を確認して再試行してください。',
     defaultNickname: 'プレイヤー',
     googleNickname: 'Google プレイヤー',

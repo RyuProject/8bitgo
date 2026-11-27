@@ -22,6 +22,7 @@
  */
 import { getT, fmt } from './i18n'
 import { cnEdgeApiBase, markCnEdgeApiFailed } from './cnHost'
+import { RequestTimeoutError, withRequestTimeout } from './requestTimeout'
 
 const RAW_API_URL = (import.meta.env.VITE_API_URL || '').trim()
 /** same-origin / 单个斜杠：走相对路径，同一个域名下的 /api/… */
@@ -45,6 +46,10 @@ export function apiLabel(): string {
 
 const TOKEN_KEY = '8bitgo.token'
 const ADMIN_TOKEN_KEY = '8bitgo.api.admintoken'
+/** 普通 API 必须同时限制响应头和正文读取；个别调用可显式延长。 */
+export const API_REQUEST_TIMEOUT_MS = 30_000
+/** 大陆加速入口若迟迟不响应，尽早切回同源，别把整次请求预算耗在坏线路上。 */
+const CN_EDGE_API_TIMEOUT_MS = 8_000
 /** 同一标签页里 localStorage 不会触发 storage 事件，需要这条通知让长连接切换登录权限。 */
 export const TOKEN_CHANGED_EVENT = '8bitgo:token-changed'
 
@@ -104,6 +109,7 @@ interface ReqOptions {
   body?: unknown
   admin?: boolean
   signal?: AbortSignal
+  timeoutMs?: number
 }
 
 /** 带上状态码与响应体的请求错误。调用方想细分处理时用 instanceof 判一下即可。 */
@@ -118,22 +124,25 @@ export class ApiError extends Error {
   }
 }
 
+/** 弱网下的请求超时需要可识别，方便页面给出明确的重试提示。 */
+export class ApiTimeoutError extends Error {
+  constructor() {
+    super(getT().errors.apiRequestTimeout)
+    this.name = 'ApiTimeoutError'
+  }
+}
+
 async function request<T>(
   method: string,
   path: string,
-  { body, admin = false, signal }: ReqOptions = {},
+  { body, admin = false, signal, timeoutMs = API_REQUEST_TIMEOUT_MS }: ReqOptions = {},
   skipAdminToken = false,
 ): Promise<T> {
-  const init: RequestInit = {
-    method,
-    headers: {
-      // 整个 API 都是 JSON；显式声明让 /api/oauth/authorize 这类按 Accept 分流的端点回 JSON 而不是 HTML
-      Accept: 'application/json',
-      ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
-      ...authHeaders(admin, skipAdminToken),
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-    signal,
+  const headers = {
+    // 整个 API 都是 JSON；显式声明让 /api/oauth/authorize 这类按 Accept 分流的端点回 JSON 而不是 HTML
+    Accept: 'application/json',
+    ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+    ...authHeaders(admin, skipAdminToken),
   }
   /*
     8bitgo.com 上的大陆访客：只读请求走 EdgeOne 香港（见 cnHost.ts 的 cnEdgeApiBase）。
@@ -145,27 +154,52 @@ async function request<T>(
     Authorization 不在 CORS 安全名单里，每次都要先发 OPTIONS 预检，EdgeOne 这一跳一出岔子就整条被拦；
     更要紧的是令牌不该经过会缓存内容的第三方边缘，按用户变化的响应也不该有机会进那份共享缓存。
   */
-  const hasAuth = 'Authorization' in (init.headers as Record<string, string>)
+  const hasAuth = 'Authorization' in headers
   const edgeBase = SAME_ORIGIN && method === 'GET' && !admin && !hasAuth ? cnEdgeApiBase() : ''
-  let res: Response
+  const readResponse = (url: string, budgetMs: number) => withRequestTimeout(
+    budgetMs,
+    signal,
+    async (requestSignal) => {
+      const init: RequestInit = {
+        method,
+        headers,
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+        signal: requestSignal,
+      }
+      const response = await fetch(url, init)
+      // 正文读取也放在时限里：fetch 只承诺响应头到了，res.text() 仍可能在半开连接上永远不结束。
+      const text = await response.text()
+      return { response, text }
+    },
+  )
+  const readSourceResponse = async (url: string) => {
+    try {
+      return await readResponse(url, timeoutMs)
+    } catch (error) {
+      if (error instanceof RequestTimeoutError) throw new ApiTimeoutError()
+      throw error
+    }
+  }
+
+  let result: { response: Response; text: string }
   if (edgeBase) {
     try {
-      res = await fetch(`${edgeBase}${path}`, init)
+      result = await readResponse(`${edgeBase}${path}`, CN_EDGE_API_TIMEOUT_MS)
     } catch (err) {
       if (signal?.aborted) throw err
       markCnEdgeApiFailed()
-      res = await fetch(`${API_URL}${path}`, init)
+      result = await readSourceResponse(`${API_URL}${path}`)
     }
     // 只对加速入口本身的网关错误退回源站；源站请求失败应原样交给上层，不能被 catch 后再请求一次。
-    if (res.status >= 502 && res.status <= 504) {
+    if (result.response.status >= 502 && result.response.status <= 504) {
       // 标记整个会话退回同源，避免后续每次站内跳转都先等一遍已故障的加速入口。
       markCnEdgeApiFailed()
-      res = await fetch(`${API_URL}${path}`, init)
+      result = await readSourceResponse(`${API_URL}${path}`)
     }
   } else {
-    res = await fetch(`${API_URL}${path}`, init)
+    result = await readSourceResponse(`${API_URL}${path}`)
   }
-  const text = await res.text()
+  const { response: res, text } = result
   // 网关的 502 页面、被静态服务器兜底成 index.html 的 /api 请求，返回的都是 HTML。
   // 以前在这里直接 JSON.parse，用户看到的报错是「Unexpected token '<'」，
   // 而不是设计好的「请求失败：502」。解析失败当作没有结构化数据处理。
@@ -189,7 +223,7 @@ async function request<T>(
     const code = (data as { code?: string } | null)?.code
     if (code === 'invalid_admin_token' && !skipAdminToken && getAdminApiToken() && getToken()) {
       setAdminApiToken(null)
-      return request<T>(method, path, { body, admin, signal }, true)
+      return request<T>(method, path, { body, admin, signal, timeoutMs }, true)
     }
     const msg = (data as { error?: string } | null)?.error || fmt(getT().errors.requestFailed, { status: res.status })
     // 抛 ApiError 而不是裸 Error：状态码和响应体不能在这里丢掉 ——
@@ -204,10 +238,14 @@ async function request<T>(
 }
 
 export const api = {
-  get: <T>(path: string, admin = false, signal?: AbortSignal) => request<T>('GET', path, { admin, signal }),
-  post: <T>(path: string, body?: unknown, admin = false) => request<T>('POST', path, { body, admin }),
-  put: <T>(path: string, body?: unknown, admin = false) => request<T>('PUT', path, { body, admin }),
-  patch: <T>(path: string, body?: unknown, admin = false) => request<T>('PATCH', path, { body, admin }),
+  get: <T>(path: string, admin = false, signal?: AbortSignal, timeoutMs?: number) =>
+    request<T>('GET', path, { admin, signal, timeoutMs }),
+  post: <T>(path: string, body?: unknown, admin = false, timeoutMs?: number) =>
+    request<T>('POST', path, { body, admin, timeoutMs }),
+  put: <T>(path: string, body?: unknown, admin = false, timeoutMs?: number) =>
+    request<T>('PUT', path, { body, admin, timeoutMs }),
+  patch: <T>(path: string, body?: unknown, admin = false, timeoutMs?: number) =>
+    request<T>('PATCH', path, { body, admin, timeoutMs }),
   /**
    * DELETE。第三个参数是请求体 —— 注销账号要把邮箱验证码带上（DELETE /api/me）。
    *
@@ -215,5 +253,6 @@ export const api = {
    * 已有十几处在用 `api.del(path, true)`，把 body 插到第二位会让那个 true
    * 悄悄变成请求体，而 admin 变成 undefined —— 后台的删除全部 403，且不报错在明面上。
    */
-  del: <T>(path: string, admin = false, body?: unknown) => request<T>('DELETE', path, { admin, body }),
+  del: <T>(path: string, admin = false, body?: unknown, timeoutMs?: number) =>
+    request<T>('DELETE', path, { admin, body, timeoutMs }),
 }

@@ -56,7 +56,7 @@ try {
       contents: [
         "export * from './src/lib/romValidation.ts'",
         "export { assertValidZip, assertValidZipBlob, listZipEntries, extractZipEntry } from './src/lib/unzip.ts'",
-        "export { makeJsdosBundle, makeJsdosConfigBundle } from './src/lib/jsdosBundle.ts'",
+        "export { makeJsdosBundle, makeJsdosConfigBundle, isReadyJsdosBundleBlob } from './src/lib/jsdosBundle.ts'",
         "export { buildSockdriveWindowsGuestConfig, buildWindowsGuestConfig, sockdriveVersionedSaveKey, windowsGuestLaunchCommand, windowsSockdriveExecutableCommand, windowsSockdriveLauncherFile, windowsSockdriveRegistryCommand } from './src/lib/windowsGuest.ts'",
         "export { normalizeDosboxConfigOverride, mergeDosboxConfigOverride } from './shared/dosbox-config.js'",
         "export { createOverallRatio, fetchWithProgress, windowsGuestStartupBudgetMs } from './src/emulator/loadProgress.ts'",
@@ -106,6 +106,7 @@ try {
     prepareNdsRom,
     makeJsdosBundle,
     makeJsdosConfigBundle,
+    isReadyJsdosBundleBlob,
     listZipEntries,
     extractZipEntry,
     buildWindowsGuestConfig,
@@ -148,6 +149,10 @@ try {
   const stalledBlob = new Blob([complete])
   Object.defineProperty(stalledBlob, 'slice', { value: () => ({ arrayBuffer: () => new Promise(() => {}) }) })
   await assert.rejects(() => assertValidZipBlob(stalledBlob, '卡住的测试 ZIP', 5), (error) => error?.name === 'NotReadableError')
+  const zipAbort = new AbortController()
+  const pendingZipCheck = isReadyJsdosBundleBlob(stalledBlob, 30_000, zipAbort.signal)
+  zipAbort.abort(new DOMException('game changed', 'AbortError'))
+  await assert.rejects(pendingZipCheck, (error) => error?.name === 'AbortError', '离页应中止 DOS ZIP 的 Blob 目录读取')
   const withEmptyMember = arrayBuffer(zip([
     ['_offline/empty.txt', Buffer.alloc(0)],
     ['after.bin', Buffer.from([1, 2, 3])],

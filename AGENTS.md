@@ -843,6 +843,7 @@ ROM 缓存读不出同样记它。标记有效期内第一次下载就先走内�
 旧版完整 ROM 缓存不会重走下载器，同样要在解密前查缓存 Blob 大小；8BG 还得先读文件头，
 拦截 `originalSize` 超过 512MiB 的容器，不能等逐块解密完才靠卡带校验发现。
 外站 ZIP 解出的完整 ROM 若缓存损坏，必须先删除再回源；命中缓存的 100% 进度也只能在验证之后报。
+DOS 启动的 8BG 分块解包和 ZIP 目录校验都必须接收本局 `AbortSignal`：离页 / 换游戏时停止后续分块与目录批次读取；正在进行的 Blob `arrayBuffer()` / Web Crypto 操作无法强停，但完成后不得再派发下一块、写明文块或续报。缓存解包 / 校验遇到用户取消要原样抛出，不能误判为坏缓存后删除并重下。回归：`npm run test:dos-blob && npm run test:rompack && npm run test:roms && npm run test:dos-bundle`。
 
 ⚠️ 多语言 NDS 的即时存档不能共用游戏 slug。`ndsVariantSaveSlug` 为第一语言保留旧键（避免已有存档
 无声消失），其余语言加 `~nds-<语言>`；兼容核心再加原有 `:melonds-compat`。个人页解析两层后缀
@@ -1149,6 +1150,10 @@ Worker 的 404 正文是合法 JSON，它反而会把错误对象当数组并在
 元数据校验解码后长度，缺块或截断要在
 DOSBox-X 启动前明确报错，不能继续留给客体黑屏。加载错误还必须锁成终态：迟到的 `ci-ready`、
 自启动回调或兜底定时器都不得在 `onError` 之后再发 `onReady`。回归统一放在 `npm run test:dos-load`。
+
+热点预热有总启动时限：纯 DOS 桌面 / 4G 最多 20 秒、3G 最多 30 秒；与 Windows 系统镜像并行时分别最多 30 / 45 秒。
+到时中止仍在进行的热点请求、传 `sockdrivePreload: 'none'`，让客体从 HTTP 缓存复用已完成的块并按需读取其余块；不能只用
+「25 秒无字节」看门狗，因为持续滴流会不断续期并让开局无限等待。玩家离页仍立即取消，不得伪装成预热超时。
 
 流式盘不能再由浏览器现场合并 `dos_extras` 或 `windowsGameCompatibilityExtras`：那块盘已经变成
 远程只读扇区，补丁必须在 `sockify` **之前**写进去。尤其《凯撒大帝 3》的 `c3.inf` 分辨率补丁

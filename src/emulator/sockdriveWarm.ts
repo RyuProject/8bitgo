@@ -155,6 +155,64 @@ export function sockdriveWarmConcurrency(
   return sharesLargeDownload ? 2 : 4
 }
 
+/**
+ * Sockdrive 热点是可选加速，不应像系统镜像那样允许慢速滴流无限延长开局。
+ * 纯 DOS 直接使用较短预算；与 Windows 系统盘并行时允许多等一会儿，让两路传输重叠。
+ */
+export function sockdriveWarmDeadlineMs(effectiveType: string | undefined, sharesLargeDownload: boolean): number {
+  if (effectiveType === '3g') return sharesLargeDownload ? 45_000 : 30_000
+  return sharesLargeDownload ? 30_000 : 20_000
+}
+
+/** 到时只取消可选热点预热并交给客体按需读取；调用方主动离页仍按取消传播。 */
+export async function runSockdriveWarmWithinDeadline(
+  parentSignal: AbortSignal,
+  deadlineMs: number,
+  work: (signal: AbortSignal) => Promise<void>,
+): Promise<'complete' | 'timeout'> {
+  if (!Number.isFinite(deadlineMs) || deadlineMs <= 0) throw new RangeError('Sockdrive 预热时限无效')
+  if (parentSignal.aborted) throw parentSignal.reason ?? new DOMException('Sockdrive 预热已取消', 'AbortError')
+
+  const controller = new AbortController()
+  const relayAbort = () => controller.abort(parentSignal.reason)
+  parentSignal.addEventListener('abort', relayAbort, { once: true })
+  let expired = false
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let rejectParentAbort: (() => void) | undefined
+  const timeout = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => {
+      expired = true
+      controller.abort(new DOMException('Sockdrive 预热超出启动时限', 'TimeoutError'))
+      resolve('timeout')
+    }, deadlineMs)
+  })
+  const aborted = new Promise<never>((_resolve, reject) => {
+    rejectParentAbort = () => reject(parentSignal.reason ?? new DOMException('Sockdrive 预热已取消', 'AbortError'))
+    if (parentSignal.aborted) rejectParentAbort()
+    else parentSignal.addEventListener('abort', rejectParentAbort, { once: true })
+  })
+  const task = Promise.resolve().then(() => {
+    if (parentSignal.aborted) throw parentSignal.reason ?? new DOMException('Sockdrive 预热已取消', 'AbortError')
+    return work(controller.signal)
+  }).then(
+    () => expired ? 'timeout' as const : 'complete' as const,
+    (error: unknown) => {
+      // 时限触发会主动中止各个分块请求；这类可选预热失败应退回客体按需读取。
+      if (expired && !parentSignal.aborted) return 'timeout' as const
+      throw error
+    },
+  )
+
+  try {
+    return await Promise.race([task, timeout, aborted])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+    parentSignal.removeEventListener('abort', relayAbort)
+    if (rejectParentAbort) parentSignal.removeEventListener('abort', rejectParentAbort)
+    if (parentSignal.aborted) controller.abort(parentSignal.reason)
+  }
+}
+
 function positiveInteger(metadata: Record<string, unknown>, key: string): number {
   const value = metadata[key]
   if (!Number.isSafeInteger(value) || Number(value) <= 0) {

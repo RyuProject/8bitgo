@@ -1511,6 +1511,7 @@ const it: Translation = {
     googleNotConfigured: "L'amministratore non ha configurato l'accesso con Google (VITE_GOOGLE_CLIENT_ID)",
     needLogin: 'Accedi prima di continuare',
     requestFailed: 'Richiesta non riuscita (HTTP {status})',
+    apiRequestTimeout: 'La richiesta è scaduta. Controlla la connessione e riprova.',
     pageDataTimeout: 'Il caricamento della pagina richiede troppo tempo. Controlla la connessione e riprova.',
     defaultNickname: 'Giocatore',
     googleNickname: 'Giocatore Google',

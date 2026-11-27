@@ -53,6 +53,8 @@ import {
   readBoundedResponseBytes,
   sockdriveWarmBudget,
   sockdriveWarmConcurrency,
+  sockdriveWarmDeadlineMs,
+  runSockdriveWarmWithinDeadline,
   sockdriveRuntimePreloadMode,
 } from '@/emulator/sockdriveWarm'
 
@@ -504,7 +506,7 @@ check('流式盘必须走 URL bundle 入口，否则 js-dos 会把 changes URL �
   assert.match(jsdos, /Sockdrive 分块 \$\{sample\} 读取失败/)
 })
 
-check('流式盘按网络与系统镜像竞争自适应预热，并且不再拼接即将丢弃的大 ArrayBuffer', () => {
+check('流式盘按网络与系统镜像竞争自适应预热，且热点等待有总时限', () => {
   assert.match(jsdos, /preload_ranges\.metaj/)
   assert.match(jsdos, /const warmBudget = sockdriveWarmBudget\(connection\?\.effectiveType, Boolean\(connection\?\.saveData\)\)/)
   assert.match(jsdos, /const warmFileLimit = sockdriveWarmFileLimit\(\(profile \?\? plan\.preload\)\.length\)/)
@@ -513,9 +515,11 @@ check('流式盘按网络与系统镜像竞争自适应预热，并且不再拼�
   assert.match(jsdos, /return parsed\.ranges/)
   assert.match(jsdos, /planSockdriveWarmFiles\(\s*plan,\s*profile,\s*warmBudget/)
   assert.match(jsdos, /sockdriveWarmFileLimit/)
+  assert.match(jsdos, /runSockdriveWarmWithinDeadline\(/)
+  assert.match(jsdos, /sockdriveWarmDeadlineMs\(connection\?\.effectiveType, sharesLargeDownload\)/)
   assert.match(jsdos, /onProgress: \(\) => onActivity\?\.\(\)/)
   assert.match(jsdos, /armIdle\(\)\s*onActivity\?\.\(\)/)
-  assert.match(jsdos, /warmBudget === 0 \? 'none' : sockdriveRuntimePreloadMode/)
+  assert.match(jsdos, /warmBudget === 0 \|\| warmResult === 'timeout'\s*\? 'none'\s*:\s*sockdriveRuntimePreloadMode\(plan, profile, warmedFiles\)/)
   assert.match(jsdos, /Math\.min\(concurrency, warmFiles\.length\)/)
   assert.match(jsdos, /const cache = sockdriveCacheMode\(url\)/)
   assert.match(jsdos, /return 'reload'/)
@@ -594,6 +598,9 @@ check('热点清单按真实对象去重，并在预算边界停止', () => {
   assert.equal(sockdriveWarmBudget('3g', false), 8 * 1024 * 1024)
   assert.equal(sockdriveWarmBudget('2g', false), 0)
   assert.equal(sockdriveWarmBudget('4g', true), 0)
+  assert.equal(sockdriveWarmDeadlineMs('4g', false), 20_000)
+  assert.equal(sockdriveWarmDeadlineMs('3g', false), 30_000)
+  assert.equal(sockdriveWarmDeadlineMs('3g', true), 45_000)
   assert.equal(sockdriveWarmFileLimit(27), SOCKDRIVE_WARM_MAX_FILES, '小型启动轨迹仍完整预热')
   assert.equal(sockdriveWarmFileLimit(64), SOCKDRIVE_WARM_MAX_FILES, '中型清单保留既有启动覆盖')
   assert.equal(sockdriveWarmFileLimit(245), SOCKDRIVE_LARGE_PROFILE_STARTUP_FILES, '整段试玩清单只挡住启动前缀')
@@ -680,6 +687,36 @@ await checkAsync('Sockdrive 分块预热按元数据限长，不安全的非流�
   }
   await assert.rejects(() => drainSockdriveWarmResponse(noLength, 8), /不支持安全流式读取/)
   assert.equal(allocated, false, '无流且无 Content-Length 时不能申请未知大小缓冲')
+})
+
+await checkAsync('Sockdrive 预热有总时限，慢速滴流不会无限挡住启动', async () => {
+  const parent = new AbortController()
+  let warmAborted = false
+  let drips = 0
+  const outcome = await runSockdriveWarmWithinDeadline(parent.signal, 25, (signal) => new Promise((_resolve, reject) => {
+    const drip = setInterval(() => { drips++ }, 1)
+    signal.addEventListener('abort', () => {
+      warmAborted = true
+      clearInterval(drip)
+      reject(signal.reason)
+    }, { once: true })
+  }))
+  assert.equal(outcome, 'timeout')
+  assert.equal(warmAborted, true, '总时限必须把正在进行的分块请求一起中止')
+  assert.ok(drips > 0, '持续有少量数据也不能不断重置总启动时限')
+  assert.equal(await runSockdriveWarmWithinDeadline(parent.signal, 100, async () => {}), 'complete')
+  await assert.rejects(
+    runSockdriveWarmWithinDeadline(parent.signal, 100, async () => { throw new Error('真实分块错误') }),
+    /真实分块错误/,
+    'HTTP / 内容错误仍要失败，不能被误当成可选预热超时',
+  )
+
+  const canceled = new AbortController()
+  const task = runSockdriveWarmWithinDeadline(canceled.signal, 100, (signal) => new Promise((_resolve, reject) => {
+    signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+  }))
+  canceled.abort(new DOMException('leave', 'AbortError'))
+  await assert.rejects(task, { name: 'AbortError' }, '离页取消不能被吞成可选预热超时')
 })
 
 check('Win95 致命错误是终态，迟到的 ci-ready 与兜底定时器不能再报成功', () => {

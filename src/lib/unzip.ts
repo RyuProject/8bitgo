@@ -35,6 +35,8 @@ export interface ZipBlobValidationOptions {
   cacheLocalHeaders?: boolean
   /** 整体读取时限；普通调用保留原来的 60 秒默认值。 */
   timeoutMs?: number
+  /** 播放器离页或切换游戏时停止后续目录读取。 */
+  signal?: AbortSignal
 }
 
 const validatedBlobHeaders = new WeakMap<Blob, { bytes: Uint8Array; entryIndexes: Map<number, number> }>()
@@ -181,26 +183,41 @@ export async function assertValidZipBlob(
 ): Promise<ZipFileEntry[]> {
   const timeoutMs = typeof timeoutOrOptions === 'number' ? timeoutOrOptions : timeoutOrOptions.timeoutMs ?? 60_000
   const cacheLocalHeaders = typeof timeoutOrOptions !== 'number' && timeoutOrOptions.cacheLocalHeaders === true
+  const signal = typeof timeoutOrOptions === 'number' ? undefined : timeoutOrOptions.signal
+  const throwIfAborted = () => {
+    if (signal?.aborted) throw signal.reason ?? new DOMException(`${label} 校验已取消`, 'AbortError')
+  }
+  throwIfAborted()
   if (blob.size < 22) throw new Error(`${label} 压缩包为空、已损坏或下载不完整`)
   // 把整个校验限制在一个总预算内，避免坏掉的 Blob 后端让每批本地头都重新等一分钟。
   const deadline = Date.now() + timeoutMs
   const read = async (start: number, end: number): Promise<ArrayBuffer> => {
+    throwIfAborted()
     const remaining = deadline - Date.now()
     if (remaining <= 0) throw new DOMException(`${label} Blob 读取超时`, 'NotReadableError')
     let timer: ReturnType<typeof setTimeout> | undefined
+    let abortListener: (() => void) | undefined
+    const reads: Promise<ArrayBuffer>[] = [blob.slice(start, end).arrayBuffer()]
+    if (signal) {
+      reads.push(new Promise<never>((_, reject) => {
+        abortListener = () => reject(signal.reason ?? new DOMException(`${label} 校验已取消`, 'AbortError'))
+        signal.addEventListener('abort', abortListener, { once: true })
+        if (signal.aborted) abortListener()
+      }))
+    }
     try {
-      return await Promise.race([
-        blob.slice(start, end).arrayBuffer(),
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new DOMException(`${label} Blob 读取超时`, 'NotReadableError')), remaining)
-        }),
-      ])
+      reads.push(new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new DOMException(`${label} Blob 读取超时`, 'NotReadableError')), remaining)
+      }))
+      return await Promise.race(reads)
     } finally {
       clearTimeout(timer)
+      if (abortListener) signal?.removeEventListener('abort', abortListener)
     }
   }
   const tailStart = Math.max(0, blob.size - 22 - 65535)
   const tailBuffer = await read(tailStart, blob.size)
+  throwIfAborted()
   const tail = new Uint8Array(tailBuffer)
   const tailView = new DataView(tailBuffer)
   let eocd = -1
@@ -228,6 +245,7 @@ export async function assertValidZipBlob(
   ) return invalid()
 
   const centralBuffer = await read(centralOffset, centralOffset + centralSize)
+  throwIfAborted()
   const bytes = new Uint8Array(centralBuffer)
   const view = new DataView(centralBuffer)
   const entries: ZipFileEntry[] = []
@@ -260,6 +278,7 @@ export async function assertValidZipBlob(
 
   // 并发按小批次读本地头：成千上万个成员时不能同时制造成千上万个 Blob 请求。
   for (let at = 0; at < allEntries.length; at += 64) {
+    throwIfAborted()
     const batch = allEntries.slice(at, at + 64)
     const headers = await Promise.all(batch.map((entry) => read(entry.offset, entry.offset + 30)))
     for (let i = 0; i < batch.length; i++) {
@@ -276,6 +295,7 @@ export async function assertValidZipBlob(
       }
     }
   }
+  throwIfAborted()
   if (cachedHeaders && cachedEntryIndexes) validatedBlobHeaders.set(blob, { bytes: cachedHeaders, entryIndexes: cachedEntryIndexes })
   return entries
 }

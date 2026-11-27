@@ -1510,6 +1510,7 @@ const en: Translation = {
     googleNotConfigured: 'Google login has not been configured by the administrator (VITE_GOOGLE_CLIENT_ID)',
     needLogin: 'Please log in first',
     requestFailed: 'Request failed (HTTP {status})',
+    apiRequestTimeout: 'Request timed out. Check your connection and try again.',
     pageDataTimeout: 'Page data took too long to load. Check your connection and try again.',
     defaultNickname: 'Player',
     googleNickname: 'Google Player',

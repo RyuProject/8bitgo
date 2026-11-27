@@ -16,6 +16,10 @@ import { isBlobReadError, isRomPackBytes, isRomPackUrl, prewarmRomPackDecoder, r
 /** 四字节探测不该被浏览器的坏 Blob 存储拖成一局永不结束。 */
 const DOS_BLOB_PROBE_TIMEOUT_MS = 10_000
 
+function throwIfAborted(signal: AbortSignal): void {
+  if (signal.aborted) throw signal.reason ?? new DOMException('已取消', 'AbortError')
+}
+
 export interface DosBundleBlob {
   name: string
   blob: Blob
@@ -38,20 +42,24 @@ async function decodeDosBundle(
   stored: Blob,
   fallbackName: string,
   onChunk?: () => void,
+  signal?: AbortSignal,
 ): Promise<Omit<DosBundleBlob, 'fromCache'>> {
-  const magic = new Uint8Array(await readBlobRange(stored, 0, 4, DOS_BLOB_PROBE_TIMEOUT_MS))
+  if (signal) throwIfAborted(signal)
+  const magic = new Uint8Array(await readBlobRange(stored, 0, 4, DOS_BLOB_PROBE_TIMEOUT_MS, signal))
   let blob = stored
   let name = fallbackName
   if (isRomPackBytes(magic)) {
-    const unpacked = await unpackRomPackBlob(stored, onChunk)
+    const unpacked = await unpackRomPackBlob(stored, onChunk, signal)
     blob = unpacked.blob
     name = unpacked.name
   }
 
-  const head = new Uint8Array(await readBlobRange(blob, 0, 4, DOS_BLOB_PROBE_TIMEOUT_MS))
+  if (signal) throwIfAborted(signal)
+  const head = new Uint8Array(await readBlobRange(blob, 0, 4, DOS_BLOB_PROBE_TIMEOUT_MS, signal))
   const zip = head.length >= 2 && head[0] === 0x50 && head[1] === 0x4b
   // 单个 EXE/COM 仍允许走旧逻辑；只有“看起来是 ZIP 却损坏”的包才应该在这里明确失败。
-  const ready = zip ? await isReadyJsdosBundleBlob(blob, 30_000) : false
+  const ready = zip ? await isReadyJsdosBundleBlob(blob, 30_000, signal) : false
+  if (signal) throwIfAborted(signal)
   return { name, blob, ready }
 }
 
@@ -67,11 +75,12 @@ export async function prepareRemoteDosBundle(
   if (isRomPackUrl(url)) prewarmRomPackDecoder(url)
 
   const decode = async (stored: Blob) => {
+    throwIfAborted(signal)
     // 下载到 100% 后还有 63 个 8MB 块要验签/解密/解压；把真相写在遮罩上，别让 99% 像死机。
     const report = () => onProgress?.({ phase: 'starting', detail: 'rom-pack' })
     report()
     // 每解完一块再报一次：500MB 的包有 63 块，低配机上会超过启动看门狗的 120 秒
-    return decodeDosBundle(stored, fallbackName, report)
+    return decodeDosBundle(stored, fallbackName, report, signal)
   }
 
   if (cacheKey) {
@@ -81,10 +90,13 @@ export async function prepareRemoteDosBundle(
       onProgress?.({ phase: 'rom', loaded: cached.size, total: cached.size, ratio: 1, cached: true })
       try {
         const decoded = await decode(cached)
+        throwIfAborted(signal)
         // 两个标签页并发下载时可能在完整缓存写好后又落了几片，命中时顺手收尾。
         void downloadResumeStore.clear(cacheKey).catch(() => {})
         return { ...decoded, fromCache: true }
       } catch (error) {
+        // 用户切换游戏时停止解包即可，不能把有效缓存误判为损坏并删除。
+        if (signal.aborted) throw signal.reason ?? new DOMException('已取消', 'AbortError')
         // 本机旧密钥、截断写入或旧格式都不能把玩家永久困住；删掉后立刻回远端自愈。
         await romCacheDelete(cacheKey).catch(() => {})
         console.warn('[jsdos] DOS ROM 缓存不可用，重新下载：', error)
@@ -111,6 +123,7 @@ export async function prepareRemoteDosBundle(
   try {
     decoded = await decode(stored)
   } catch (error) {
+    if (signal.aborted) throw signal.reason ?? new DOMException('已取消', 'AbortError')
     // 续传片拼出的包读不出来（Blob 存储坏了或读包卡死）：作废续传片，不带续传重下一次。
     if (!cacheKey || !isBlobReadError(error)) throw error
     console.warn('[jsdos] 下载好的 DOS 包读不出来，作废续传片重下一次：', error)
@@ -119,6 +132,7 @@ export async function prepareRemoteDosBundle(
     decoded = await decode(stored)
   }
 
+  throwIfAborted(signal)
   // 保留 8BG 密文而不是明文：既避免扩大磁盘占用，也不把后台加密在浏览器缓存层绕开。
   // 不 await，写几百 MB 的 IndexedDB 不应该挡住 DOSBox 开机。
   if (cacheKey) void romCachePutBlob(cacheKey, stored).catch(() => {})
