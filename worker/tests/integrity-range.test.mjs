@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import worker, { edgeCacheEligible } from '../src/index.js'
+import standaloneWorker from '../standalone/rom-worker.js'
 import { environment, req } from './fixtures.mjs'
 
 const blockBytes = 2 * 1024 * 1024
@@ -34,6 +35,91 @@ test('required PSX range reads return only the requested, ETag-bound verified by
   assert.deepEqual(new Uint8Array(await response.arrayBuffer()), content.subarray(7, 32))
 })
 
+test('J2ME full JAR verification streams only ETag-bound SHA-256 blocks and bypasses edge cache', async () => {
+  const e = environment()
+  const jarKey = 'roms/java/integrity-full-jar-test.jar'
+  const object = await seedRequired(e, content, jarKey)
+  const path = `/${jarKey}?romv=${object.etag}`
+  const request = req(path, 'GET', undefined, { 'X-8BG-Verify-Full': 'sha256-v1' })
+  assert.equal(edgeCacheEligible(request, new URL(request.url), { 'Access-Control-Allow-Origin': '*' }), false)
+
+  const response = await worker.fetch(request, e, { waitUntil() { throw new Error('full JAR verification must not use edge cache') } })
+  assert.equal(response.status, 200)
+  assert.equal(response.headers.get('X-8BG-Integrity-Verified'), 'sha256-v1')
+  assert.deepEqual(new Uint8Array(await response.arrayBuffer()), content)
+})
+
+test('J2ME full JAR verification fails closed when the sidecar is missing or does not match source bytes', async () => {
+  const e = environment()
+  const missingKey = 'roms/java/integrity-full-jar-missing.jar'
+  const missing = e.ROMS.seed(missingKey, content)
+  const missingResponse = await worker.fetch(req(`/${missingKey}?romv=${missing.etag}`, 'GET', undefined,
+    { 'X-8BG-Verify-Full': 'sha256-v1' }), e)
+  assert.equal(missingResponse.status, 503)
+  assert.equal((await missingResponse.json()).code, 'integrity_manifest_missing')
+
+  const corruptKey = 'roms/java/integrity-full-jar-corrupt.jar'
+  const corrupt = e.ROMS.seed(corruptKey, content)
+  const wrong = payload(content, corruptKey)
+  wrong.blocks[0] = '0'.repeat(64)
+  const published = await worker.fetch(req(`/integrity?key=${encodeURIComponent(corruptKey)}`, 'POST', {
+    key: corruptKey, etag: corrupt.httpEtag, size: corrupt.size, manifest: wrong,
+  }, {}, true), e)
+  assert.equal(published.status, 200)
+  const response = await worker.fetch(req(`/${corruptKey}?romv=${corrupt.etag}`, 'GET', undefined,
+    { 'X-8BG-Verify-Full': 'sha256-v1' }), e)
+  assert.equal(response.status, 200, '校验在流结束时完成，不能先把未经校验的内容交给代理')
+  await assert.rejects(response.arrayBuffer(), /SHA-256 不符/)
+})
+
+test('J2ME Range reads require an ETag-bound manifest even while global legacy mode is enabled', async () => {
+  const e = environment()
+  const jarKey = 'roms/java/integrity-range-jar-test.jar'
+  const object = e.ROMS.seed(jarKey, content)
+  const path = `/${jarKey}?romv=${object.etag}`
+  const headers = { Range: 'bytes=3-20', 'X-8BG-Require-Integrity': 'sha256-v1' }
+
+  const missing = await worker.fetch(req(path, 'GET', undefined, headers), e)
+  assert.equal(missing.status, 503)
+  assert.equal((await missing.json()).code, 'integrity_manifest_missing')
+
+  const published = await worker.fetch(req(`/integrity?key=${encodeURIComponent(jarKey)}`, 'POST', {
+    key: jarKey, etag: object.httpEtag, size: object.size, manifest: payload(content, jarKey),
+  }, {}, true), e)
+  assert.equal(published.status, 200)
+  const verifiedRequest = req(path, 'GET', undefined, headers)
+  const response = await worker.fetch(verifiedRequest, e)
+  assert.equal(response.status, 206)
+  assert.equal(response.headers.get('X-8BitGo-Integrity-Required'), 'sha256-v1')
+  assert.deepEqual(new Uint8Array(await response.arrayBuffer()), content.subarray(3, 21))
+
+  const standalone = await standaloneWorker.fetch(verifiedRequest, e)
+  assert.equal(standalone.status, 206)
+  assert.deepEqual(new Uint8Array(await standalone.arrayBuffer()), content.subarray(3, 21))
+})
+
+test('J2ME full JAR verification handles block boundaries and standalone Worker uses the same guard', async () => {
+  const bytes = new Uint8Array(blockBytes + 17)
+  for (let i = 0; i < bytes.length; i++) bytes[i] = (i * 29 + 11) & 0xff
+  const jarKey = 'roms/java/integrity-full-jar-blocks.jar'
+  const e = environment()
+  const object = e.ROMS.seed(jarKey, bytes, { customMetadata: { '8bitgo-integrity-required': 'sha256-v1' } })
+  const manifest = { v: 1, alg: 'sha256', key: jarKey, size: bytes.length, blockBytes,
+    blocks: [sha256(bytes.subarray(0, blockBytes)), sha256(bytes.subarray(blockBytes))] }
+  const published = await worker.fetch(req(`/integrity?key=${encodeURIComponent(jarKey)}`, 'POST', {
+    key: jarKey, etag: object.httpEtag, size: object.size, manifest,
+  }, {}, true), e)
+  assert.equal(published.status, 200)
+  const request = req(`/${jarKey}?romv=${object.etag}`, 'GET', undefined, { 'X-8BG-Verify-Full': 'sha256-v1' })
+  const modular = await worker.fetch(request, e)
+  assert.equal(modular.headers.get('X-8BG-Integrity-Verified'), 'sha256-v1')
+  assert.deepEqual(new Uint8Array(await modular.arrayBuffer()), bytes)
+
+  const standalone = await standaloneWorker.fetch(request, e)
+  assert.equal(standalone.headers.get('X-8BG-Integrity-Verified'), 'sha256-v1')
+  assert.deepEqual(new Uint8Array(await standalone.arrayBuffer()), bytes)
+})
+
 test('backfilled sidecars verify legacy Range reads and expose the browser verification marker', async () => {
   const e = environment()
   const legacyKey = 'roms/psx/integrity-backfilled-legacy.chd'
@@ -63,10 +149,34 @@ test('backfilled sidecars verify legacy Range reads and expose the browser verif
   assert.deepEqual(new Uint8Array(await after.arrayBuffer()), content.subarray(3, 21))
 })
 
-test('a backfilled manifest marks an older full-object edge-cache hit for browser verification', async () => {
+test('global strict mode blocks missing sidecars on Range requests without delaying verified reads', async () => {
+  const e = environment()
+  e.REQUIRE_ALL_ROM_INTEGRITY = 'true'
+  const strictKey = 'roms/psx/integrity-strict-range.chd'
+  const object = e.ROMS.seed(strictKey, content)
+  const path = `/${strictKey}?romv=${object.etag}`
+  const range = { Range: 'bytes=3-20' }
+
+  const missing = await worker.fetch(req(path, 'GET', undefined, range), e)
+  assert.equal(missing.status, 503)
+  assert.equal((await missing.json()).code, 'integrity_manifest_missing')
+
+  const manifest = { ...payload(content, strictKey), etag: object.httpEtag }
+  const published = await worker.fetch(req(`/integrity?key=${encodeURIComponent(strictKey)}`, 'POST', {
+    key: strictKey, size: content.byteLength, etag: object.httpEtag, manifest,
+  }, {}, true), e)
+  assert.equal(published.status, 200)
+  const verified = await worker.fetch(req(path, 'GET', undefined, range), e)
+  assert.equal(verified.status, 206)
+  assert.equal(verified.headers.get('X-8BitGo-Integrity-Required'), 'sha256-v1')
+  assert.deepEqual(new Uint8Array(await verified.arrayBuffer()), content.subarray(3, 21))
+})
+
+test('backfilled manifests mark old edge-cache hits for browser verification in global strict mode', async () => {
   const previous = globalThis.caches
   try {
     const e = environment()
+    e.REQUIRE_ALL_ROM_INTEGRITY = 'true'
     const legacyKey = 'roms/nes/integrity-cached-legacy.nes'
     const object = e.ROMS.seed(legacyKey, content)
     const path = `/${legacyKey}?romv=${object.etag}`
@@ -82,6 +192,29 @@ test('a backfilled manifest marks an older full-object edge-cache hit for browse
     assert.equal(response.status, 200)
     assert.equal(response.headers.get('X-8BitGo-Integrity-Required'), 'sha256-v1')
     assert.deepEqual(new Uint8Array(await response.arrayBuffer()), content)
+  } finally {
+    if (previous === undefined) delete globalThis.caches
+    else globalThis.caches = previous
+  }
+})
+
+test('global strict mode also blocks stale edge-cache hits without a manifest', async () => {
+  const previous = globalThis.caches
+  try {
+    const e = environment()
+    e.REQUIRE_ALL_ROM_INTEGRITY = 'true'
+    const strictKey = 'roms/nes/integrity-strict-cached-legacy.nes'
+    const object = e.ROMS.seed(strictKey, content)
+    const path = `/${strictKey}?romv=${object.etag}`
+    globalThis.caches = { default: { async match(request) {
+      // Cache API 返回独立响应；不要用 Response.clone() 模拟，tee 流只取消一支会等待另一支。
+      return request.url.endsWith(path)
+        ? new Response(content, { headers: { ETag: object.httpEtag, 'Content-Length': String(content.byteLength) } })
+        : null
+    } } }
+    const response = await worker.fetch(req(path), e, { waitUntil() {} })
+    assert.equal(response.status, 503)
+    assert.equal((await response.json()).code, 'integrity_manifest_missing')
   } finally {
     if (previous === undefined) delete globalThis.caches
     else globalThis.caches = previous

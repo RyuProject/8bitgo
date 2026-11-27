@@ -391,9 +391,11 @@ const CORE_FETCH_HEADER_FALLBACK_TO =
   CORE_FETCH_TO.slice(CORE_FETCH_HEADER_ACCEPT_AT)
 const CORE_READER_INIT_FROM = 'const e=y.body.getReader();let i=0,n=[];let __8bgStall=0;'
 const CORE_READER_INIT_TO =
-  'const e=y.body.getReader();let i=__8bgResumeState?.start||0,n=__8bgResumeState?.prefix||[],__8bgTarget=__8bgResumeState?.total?new Uint8Array(__8bgResumeState.total):null;if(__8bgTarget&&i){let __8bgPrefixOffset=0;for(const __8bgPart of n){__8bgTarget.set(__8bgPart,__8bgPrefixOffset);__8bgPrefixOffset+=__8bgPart.byteLength}n=[]}if(__8bgResumeState?.total)t=__8bgResumeState.total;if(i&&r)r("downloading",Math.floor(i/t*100),i,t);const __8bgWriter=__8bgCoreResume.writer(__8bgResumeState);let __8bgStall=0;'
-const CORE_READER_INIT_TO_PREVIOUS =
-  'const e=y.body.getReader();let i=__8bgResumeState?.start||0,n=__8bgResumeState?.prefix||[];if(__8bgResumeState?.total)t=__8bgResumeState.total;if(i&&r)r("downloading",Math.floor(i/t*100),i,t);const __8bgWriter=__8bgCoreResume.writer(__8bgResumeState);let __8bgStall=0;'
+  'const e=y.body.getReader();let i=__8bgResumeState?.start||0,n=__8bgResumeState?.prefix||[],__8bgTarget=__8bgResumeState?.total?new Uint8Array(__8bgResumeState.total):null;if(__8bgTarget&&i){let __8bgPrefixOffset=0;for(const __8bgPart of n){__8bgTarget.set(__8bgPart,__8bgPrefixOffset);__8bgPrefixOffset+=__8bgPart.byteLength}n=[]}if(__8bgResumeState?.total)t=__8bgResumeState.total;if(i&&r)r("downloading",Math.min(99,Math.floor(i/t*100)),i,t);const __8bgWriter=__8bgCoreResume.writer(__8bgResumeState);let __8bgStall=0;'
+const CORE_READER_INIT_TO_PREVIOUS = CORE_READER_INIT_TO.replace(
+  'Math.min(99,Math.floor(i/t*100))',
+  'Math.floor(i/t*100)',
+)
 const BODY_READ_RESUME_FROM = BODY_READ_FALLBACK_TO
 let BODY_READ_RESUME_TO = BODY_READ_RESUME_FROM
 const replaceResumeSource = (from, to, label) => {
@@ -403,12 +405,12 @@ const replaceResumeSource = (from, to, label) => {
 }
 replaceResumeSource(
   'n.push(o),i+=o.length,r&&t&&r("downloading",Math.floor(i/t*100),i,t)',
-  '(__8bgTarget?__8bgTarget.set(o,i):n.push(o)),i+=o.length,__8bgWriter&&await __8bgWriter.push(o),r&&t&&r("downloading",Math.floor(i/t*100),i,t)',
+  '(__8bgTarget?__8bgTarget.set(o,i):n.push(o)),i+=o.length,__8bgWriter&&await __8bgWriter.push(o),r&&t&&r("downloading",Math.min(99,Math.floor(i/t*100)),i,t)',
   '分片持久化',
 )
 replaceResumeSource(
-  'r("downloading",Math.floor(i/t*100),i,t)}}catch(__8bgReadError)',
-  'r("downloading",Math.floor(i/t*100),i,t)}if(__8bgResumeState?.total&&i!==__8bgResumeState.total)throw new Error("core body length mismatch: "+i+"/"+__8bgResumeState.total)}catch(__8bgReadError)',
+  'r("downloading",Math.min(99,Math.floor(i/t*100)),i,t)}}catch(__8bgReadError)',
+  'r("downloading",Math.min(99,Math.floor(i/t*100)),i,t)}if(__8bgResumeState?.total&&i!==__8bgResumeState.total)throw new Error("core body length mismatch: "+i+"/"+__8bgResumeState.total)}catch(__8bgReadError)',
   '完整长度校验',
 )
 const XHR_FALLBACK_BLOCK_START = 'const __8bgBuf=await new Promise'
@@ -430,6 +432,12 @@ const BODY_READ_HEADER_FALLBACK_TO = BODY_READ_RESUME_TO.replace(
   'if(f.signal.aborted&&!f.__8bgStalled&&!f.__8bgHeaderTimedOut||o)throw',
 )
 if (BODY_READ_HEADER_FALLBACK_TO === BODY_READ_RESUME_TO) throw new Error('响应头超时 XHR 回退未找到外部取消保护')
+const uncappedCoreProgress = (source) => source.replaceAll('Math.min(99,Math.floor(i/t*100))', 'Math.floor(i/t*100)')
+const BODY_READ_RESUME_TO_PREVIOUS = uncappedCoreProgress(BODY_READ_RESUME_TO)
+const BODY_READ_HEADER_FALLBACK_TO_PREVIOUS = uncappedCoreProgress(BODY_READ_HEADER_FALLBACK_TO)
+if (BODY_READ_RESUME_TO_PREVIOUS === BODY_READ_RESUME_TO || BODY_READ_HEADER_FALLBACK_TO_PREVIOUS === BODY_READ_HEADER_FALLBACK_TO) {
+  throw new Error('旧核心下载进度写法未能从 capped 版本构造')
+}
 const CORE_COMPLETE_FROM = 'c(n)}else{const i="temp-"+Date.now();c(new a(i,B,b,e,d,S,t,A))}'
 const CORE_COMPLETE_TO = '(__8bgResumeState&&__8bgCoreResume.complete(__8bgResumeState)),c(n)}else{const i="temp-"+Date.now();(__8bgResumeState&&__8bgCoreResume.complete(__8bgResumeState)),c(new a(i,B,b,e,d,S,t,A))}'
 const CORE_CACHE_FROM = 'if(I){if(I.cacheExpiry&&I.cacheExpiry>b)return this.debug&&console.log("Using cached version of",t),void c(I);'
@@ -441,30 +449,6 @@ const CORE_RESULT_TO = 'await __8bgCoreResume.verifyCore(t,Z);if(r&&r("complete"
 const CORE_FETCH_TO_PREVIOUS = CORE_FETCH_TO.replace(
   'let __8bgResumePlan=__8bgCoreResume.plan(t,n,o,s);',
   'let __8bgResumePlan=__8bgCoreResume.plan(t,n,o,s),__8bgResumeState=null;',
-)
-let BODY_READ_RESUME_TO_PREVIOUS = BODY_READ_RESUME_FROM
-const replacePreviousResumeSource = (from, to) => {
-  const next = BODY_READ_RESUME_TO_PREVIOUS.replace(from, to)
-  if (next === BODY_READ_RESUME_TO_PREVIOUS) throw new Error('旧版核心续传行为识别串未命中')
-  BODY_READ_RESUME_TO_PREVIOUS = next
-}
-replacePreviousResumeSource(
-  'n.push(o),i+=o.length,r&&t&&r("downloading",Math.floor(i/t*100),i,t)',
-  'n.push(o),i+=o.length,__8bgWriter&&await __8bgWriter.push(o),r&&t&&r("downloading",Math.floor(i/t*100),i,t)',
-)
-replacePreviousResumeSource(
-  'r("downloading",Math.floor(i/t*100),i,t)}}catch(__8bgReadError)',
-  'r("downloading",Math.floor(i/t*100),i,t)}if(__8bgResumeState?.total&&i!==__8bgResumeState.total)throw new Error("core body length mismatch: "+i+"/"+__8bgResumeState.total)}catch(__8bgReadError)',
-)
-const previousXhrStart = BODY_READ_RESUME_TO_PREVIOUS.indexOf(XHR_FALLBACK_BLOCK_START)
-const previousXhrEndAt = BODY_READ_RESUME_TO_PREVIOUS.indexOf(XHR_FALLBACK_BLOCK_END, previousXhrStart)
-if (previousXhrStart < 0 || previousXhrEndAt < 0) throw new Error('旧版核心续传行为缺少 XHR 回退块')
-BODY_READ_RESUME_TO_PREVIOUS = BODY_READ_RESUME_TO_PREVIOUS.slice(0, previousXhrStart) +
-  'const __8bgResult=await __8bgCoreResume.xhrFallback({url:y.url,originalHeaders:s,state:__8bgResumeState,offset:i,progress:r,readError:__8bgReadError});const __8bgBuf=__8bgResult.body;' +
-  BODY_READ_RESUME_TO_PREVIOUS.slice(previousXhrEndAt + XHR_FALLBACK_BLOCK_END.length)
-replacePreviousResumeSource(
-  'console.warn("[EJS Download] XHR arraybuffer 重新下载成功："+S+" "+__8bgBuf.byteLength+" 字节");n=[new Uint8Array(__8bgBuf)],i=__8bgBuf.byteLength}',
-  'console.warn("[EJS Download] XHR arraybuffer 重新下载成功："+S+" "+__8bgBuf.byteLength+" 字节");if(__8bgResult.resumed){n.push(new Uint8Array(__8bgBuf));i+=__8bgBuf.byteLength}else{n=[new Uint8Array(__8bgBuf)],i=__8bgBuf.byteLength}}',
 )
 const CACHE_PUT_FROM = '!1===u&&await this.storageCache.put(n),c(n)'
 const CACHE_PUT_TO =
@@ -815,7 +799,8 @@ const GROUPS = [
       'IndexedDB 只保存 1 MiB 完整片，最终片不落盘；恢复前先校验连续前缀，校验失败就取消 Range 并从头请求。',
       'XHR 只在验证 206 偏移、总长、ETag、MIME 后拼接；Range 不兼容时最多追加一次完整 GET。',
     ],
-    legacy: (to) => to === CORE_FETCH_TO ? CORE_FETCH_TO_PREVIOUS : to === CORE_READER_INIT_TO ? CORE_READER_INIT_TO_PREVIOUS : to === BODY_READ_RESUME_TO ? BODY_READ_RESUME_TO_PREVIOUS : undefined,
+    legacy: (to) => to === CORE_FETCH_TO ? CORE_FETCH_TO_PREVIOUS : to === CORE_READER_INIT_TO ? CORE_READER_INIT_TO_PREVIOUS :
+      to === BODY_READ_RESUME_TO ? [BODY_READ_RESUME_TO_PREVIOUS, BODY_READ_HEADER_FALLBACK_TO_PREVIOUS] : undefined,
   },
 
   {
@@ -824,7 +809,8 @@ const GROUPS = [
       [CORE_FETCH_TO, CORE_FETCH_HEADER_FALLBACK_TO],
       [BODY_READ_RESUME_TO, BODY_READ_HEADER_FALLBACK_TO],
     ],
-    legacy: (to) => to === CORE_FETCH_HEADER_FALLBACK_TO ? CORE_FETCH_HEADER_FALLBACK_TO_PREVIOUS : undefined,
+    legacy: (to) => to === CORE_FETCH_HEADER_FALLBACK_TO ? CORE_FETCH_HEADER_FALLBACK_TO_PREVIOUS :
+      to === BODY_READ_HEADER_FALLBACK_TO ? BODY_READ_HEADER_FALLBACK_TO_PREVIOUS : undefined,
     hint: [
       '只对带版本号的核心请求，在本地响应头时限触发，或 TypeError 且 Resource Timing 按内容哈希证明整份文件已传完时改走 XHR；普通网络错误、部分传输和外部取消仍直接失败。',
       'XHR 必须匹配按核心内容哈希生成的完整字节数，再构造 200 Response 走原有校验；流回退只放行本地响应头超时。',
@@ -865,11 +851,11 @@ const GROUPS = [
 // 被后面各节在原地改写过的补丁：值是所有更新的写法
 const SUPERSEDED = new Map([
   [CORE_FETCH_TO, [CORE_FETCH_HEADER_FALLBACK_TO_PREVIOUS, CORE_FETCH_HEADER_FALLBACK_TO]],
-  [BODY_READ_RESUME_TO, [BODY_READ_HEADER_FALLBACK_TO]],
-  [BODY_READ_TO, [BODY_READ_DIAGNOSTICS_TO, BODY_READ_FALLBACK_FROM, BODY_READ_FALLBACK_PREVIOUS, BODY_READ_FALLBACK_TO, BODY_READ_RESUME_TO, BODY_READ_RESUME_TO_PREVIOUS, BODY_READ_HEADER_FALLBACK_TO, BODY_READ_FALLBACK_BROKEN]],
-  [BODY_READ_DIAGNOSTICS_TO, [BODY_READ_FALLBACK_FROM, BODY_READ_FALLBACK_PREVIOUS, BODY_READ_FALLBACK_TO, BODY_READ_RESUME_TO, BODY_READ_RESUME_TO_PREVIOUS, BODY_READ_HEADER_FALLBACK_TO, BODY_READ_FALLBACK_BROKEN]],
-  [BODY_READ_FALLBACK_FROM, [BODY_READ_FALLBACK_PREVIOUS, BODY_READ_FALLBACK_TO, BODY_READ_RESUME_TO, BODY_READ_RESUME_TO_PREVIOUS, BODY_READ_HEADER_FALLBACK_TO]],
-  [BODY_READ_FALLBACK_TO, [BODY_READ_RESUME_TO, BODY_READ_RESUME_TO_PREVIOUS, BODY_READ_HEADER_FALLBACK_TO]],
+  [BODY_READ_RESUME_TO, [BODY_READ_HEADER_FALLBACK_TO, BODY_READ_HEADER_FALLBACK_TO_PREVIOUS]],
+  [BODY_READ_TO, [BODY_READ_DIAGNOSTICS_TO, BODY_READ_FALLBACK_FROM, BODY_READ_FALLBACK_PREVIOUS, BODY_READ_FALLBACK_TO, BODY_READ_RESUME_TO, BODY_READ_RESUME_TO_PREVIOUS, BODY_READ_HEADER_FALLBACK_TO, BODY_READ_HEADER_FALLBACK_TO_PREVIOUS, BODY_READ_FALLBACK_BROKEN]],
+  [BODY_READ_DIAGNOSTICS_TO, [BODY_READ_FALLBACK_FROM, BODY_READ_FALLBACK_PREVIOUS, BODY_READ_FALLBACK_TO, BODY_READ_RESUME_TO, BODY_READ_RESUME_TO_PREVIOUS, BODY_READ_HEADER_FALLBACK_TO, BODY_READ_HEADER_FALLBACK_TO_PREVIOUS, BODY_READ_FALLBACK_BROKEN]],
+  [BODY_READ_FALLBACK_FROM, [BODY_READ_FALLBACK_PREVIOUS, BODY_READ_FALLBACK_TO, BODY_READ_RESUME_TO, BODY_READ_RESUME_TO_PREVIOUS, BODY_READ_HEADER_FALLBACK_TO, BODY_READ_HEADER_FALLBACK_TO_PREVIOUS]],
+  [BODY_READ_FALLBACK_TO, [BODY_READ_RESUME_TO, BODY_READ_RESUME_TO_PREVIOUS, BODY_READ_HEADER_FALLBACK_TO, BODY_READ_HEADER_FALLBACK_TO_PREVIOUS]],
   [CACHE_GET_TO, [CACHE_GET_DEAD_TO, CACHE_GET_CLEAR_TO]],
   [CACHE_PUT_TO, [CACHE_PUT_DEAD_TO, CACHE_PUT_CLEAR_TO, CACHE_PUT_CLEAR_TO_LEGACY, CACHE_PUT_CLEAR_TO_COMPLETED]],
   [CACHE_GET_DEAD_TO, [CACHE_GET_CLEAR_TO]],

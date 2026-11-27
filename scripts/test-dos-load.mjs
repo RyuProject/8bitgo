@@ -45,6 +45,7 @@ import {
   parseSockdrivePreload,
   parseSockdriveWarmPlan,
   planSockdriveWarmFiles,
+  drainSockdriveWarmResponse,
   readBoundedResponseBytes,
   sockdriveWarmBudget,
   sockdriveWarmConcurrency,
@@ -606,6 +607,30 @@ await checkAsync('Sockdrive 启动清单在未知长度响应中边收边限流�
   await assert.rejects(() => readBoundedResponseBytes(oversized, 4), /响应体超过 4 字节/)
   assert.equal(canceled, true, '超限时要取消流，不能继续下载或保留连接')
   await assert.rejects(() => readBoundedResponseBytes(new Response(null), 4), /不支持安全流式读取/)
+})
+
+await checkAsync('Sockdrive 分块预热按元数据限长，不安全的非流式响应不申请整块缓冲', async () => {
+  let activity = 0
+  const bytes = await drainSockdriveWarmResponse(new Response(new Uint8Array([1, 2, 3])), 3, () => { activity++ })
+  assert.equal(bytes, 3)
+  assert.ok(activity > 0)
+
+  let canceled = false
+  const oversized = new Response(new ReadableStream({
+    start(controller) { controller.enqueue(new Uint8Array(5)) },
+    cancel() { canceled = true },
+  }))
+  await assert.rejects(() => drainSockdriveWarmResponse(oversized, 4), /长度超过 4/)
+  assert.equal(canceled, true, '超限分块必须取消流')
+
+  let allocated = false
+  const noLength = {
+    headers: new Headers(),
+    body: null,
+    arrayBuffer: async () => { allocated = true; return new ArrayBuffer(8) },
+  }
+  await assert.rejects(() => drainSockdriveWarmResponse(noLength, 8), /不支持安全流式读取/)
+  assert.equal(allocated, false, '无流且无 Content-Length 时不能申请未知大小缓冲')
 })
 
 check('Win95 致命错误是终态，迟到的 ci-ready 与兜底定时器不能再报成功', () => {

@@ -2,6 +2,8 @@
 export interface JsdosScriptLoaderOptions {
   timeoutMs?: number
   signal?: AbortSignal
+  /** 只给本站固定版本入口传入；SRI 在同一次请求里校验，不额外下载文件。 */
+  integrity?: string
   setTimer?: typeof setTimeout
   clearTimer?: typeof clearTimeout
 }
@@ -18,6 +20,14 @@ export function loadJsdosScript<T>(
   return new Promise<T>((resolve, reject) => {
     const script = documentRef.createElement('script')
     script.async = true
+    if (options.integrity) {
+      if (!/^sha256-[A-Za-z0-9+/]{43}=$/.test(options.integrity)) {
+        reject(new Error('js-dos 入口脚本 SHA-256 SRI 配置无效'))
+        return
+      }
+      script.integrity = options.integrity
+      script.crossOrigin = 'anonymous'
+    }
     script.src = url
     let settled = false
     let timer: ReturnType<typeof setTimeout> | undefined

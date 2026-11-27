@@ -45,8 +45,11 @@ let etag = '"v1"'
 globalThis.fetch = async (url, init = {}) => {
   fetches++
   assert.equal(String(url), 'https://assets.invalid/roms/java/minimal.jar.8bg', '只去 R2 的 roms/java/<名>.jar.8bg 取')
+  assert.equal(init.headers?.['X-8BG-Verify-Full'], 'sha256-v1', '8BG JAR 必须由 Worker 完整校验后才能进入解包流程')
   if (init.headers?.['if-none-match'] === etag) return new Response(null, { status: 304, headers: { etag } })
-  return new Response(packed, { status: 200, headers: { etag, 'content-length': String(packed.length) } })
+  return new Response(packed, { status: 200, headers: {
+    etag, 'content-length': String(packed.length), 'x-8bg-integrity-verified': 'sha256-v1',
+  } })
 }
 
 const { j2meJarProxy, packedJarKeyName } = await import(pathToFileURL(path.join(root, 'server/src/j2me.js')).href)
@@ -90,19 +93,37 @@ try {
   const notModified = await request('minimal.8bg.jar', { ifNoneMatch: head.headers.get('etag') })
   assert.equal(notModified.statusCode, 304)
 
+  // 过期后 Worker 只返回 304 和 ETag；必须安全复用此前整份 SHA-256 已通过的内存缓存。
+  const realNow = Date.now
+  Date.now = () => realNow() + 61_000
+  try {
+    const revalidated = await request('minimal.8bg.jar')
+    assert.equal(revalidated.statusCode, 200)
+    assert.ok(revalidated.body.equals(fixture), '304 分支复用的仍是已校验 JAR')
+    assert.equal(fetches, 2, '缓存过期时发一次带 If-None-Match 的验证请求')
+  } finally { Date.now = realNow }
+
   // 包坏了：不能把垃圾交给 JVM
   etag = '"v2"'
   const broken = Buffer.from(packed)
   broken[broken.length - 5] ^= 0xff
-  globalThis.fetch = async () => new Response(broken, { status: 200, headers: { etag } })
+  globalThis.fetch = async () => new Response(broken, { status: 200, headers: {
+    etag, 'content-length': String(broken.length), 'x-8bg-integrity-verified': 'sha256-v1',
+  } })
   const bad = await request('other.8bg.jar')
   assert.equal(bad.statusCode, 502, '解密 / 校验失败回 502')
+
+  globalThis.fetch = async () => new Response(packed, { status: 200, headers: {
+    etag, 'content-length': String(packed.length),
+  } })
+  const unverified = await request('unverified.8bg.jar')
+  assert.equal(unverified.statusCode, 502, '缺少 Worker 全量校验结果时不解包、不交给模拟器')
 
   globalThis.fetch = async () => new Response('nope', { status: 404 })
   const missing = await request('missing.8bg.jar')
   assert.equal(missing.statusCode, 404)
 
-  console.log('✔ J2ME 8BG 服务端解包：HEAD / 整包 / Range / 304 / 缓存复用 / 坏包 / 缺失')
+  console.log('✔ J2ME 8BG 服务端解包：SHA-256 / HEAD / 整包 / Range / 304 / 缓存复用 / 坏包 / 缺失')
 } finally {
   await rm(directory, { recursive: true, force: true })
 }

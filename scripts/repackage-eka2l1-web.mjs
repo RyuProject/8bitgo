@@ -97,11 +97,19 @@ const overrides = new Map([
 // Emscripten 的预加载回调是同步接口；播放器需提前取全 data，并用清单字节数拒绝截断包。
 const buildIdBytes = readFileSync(join(baseDir, 'js', 'build_id.js'), 'utf8')
   .replace(/\s*window\.EKA2L1_ASSET_SIZES\s*=\s*\{[^}]*\};?/g, '')
+  .replace(/\s*window\.EKA2L1_ASSET_INTEGRITY\s*=\s*\{[^}]*\};?/g, '')
 const assetSizes = {
   wasm: manifest.files['eka2l1.wasm'].bytes,
   data: manifest.files['eka2l1.data'].bytes,
 }
-overrides.set('js/build_id.js', Buffer.from(`${buildIdBytes.trimEnd()}\nwindow.EKA2L1_ASSET_SIZES=${JSON.stringify(assetSizes)};\n`))
+const assetIntegrity = {
+  wasm: manifest.files['eka2l1.wasm'].sha256,
+  data: manifest.files['eka2l1.data'].sha256,
+}
+if (!/^[a-f0-9]{64}$/.test(assetIntegrity.wasm || '') || !/^[a-f0-9]{64}$/.test(assetIntegrity.data || '')) {
+  throw new Error('基准运行时缺少 wasm / data 的 SHA-256 清单；请先完整构建 EKA2L1')
+}
+overrides.set('js/build_id.js', Buffer.from(`${buildIdBytes.trimEnd()}\nwindow.EKA2L1_ASSET_SIZES=${JSON.stringify(assetSizes)};\nwindow.EKA2L1_ASSET_INTEGRITY=${JSON.stringify(assetIntegrity)};\n`))
 for (const script of EKA2L1_SITE_SCRIPTS) {
   const bytes = readFileSync(join(root, script.source))
   overrides.set(script.published, bytes)

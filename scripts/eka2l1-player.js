@@ -93,11 +93,15 @@
    */
   async function fetchCoreAsset(fetcher, url, options) {
     const expectedBytes = Number.isSafeInteger(options.expectedBytes) ? options.expectedBytes : 0;
+    const expectedSha256 = String(options.expectedSha256 || '').toLowerCase();
     const maxBytes = options.maxBytes;
     const idleTimeoutMs = options.idleTimeoutMs || CORE_ASSET_IDLE_TIMEOUT_MS;
     const retries = Number.isSafeInteger(options.retries) ? options.retries : CORE_ASSET_RETRIES;
     if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0 || (expectedBytes && (expectedBytes <= 0 || expectedBytes > maxBytes))) {
       throw assetError('EKA2L1 核心资源大小配置无效', false);
+    }
+    if (expectedSha256 && !/^[a-f0-9]{64}$/.test(expectedSha256)) {
+      throw assetError('EKA2L1 核心资源 SHA-256 清单无效', false);
     }
 
     for (let attempt = 0; ; attempt++) {
@@ -162,10 +166,19 @@
           throw assetError(`EKA2L1 核心资源不完整：收到 ${loaded} / ${expectedBytes || '未知'} 字节`, true);
         }
         if (options.signal && options.signal.aborted) throw new DOMException('已取消', 'AbortError');
-        if (output) return { bytes: output, contentType };
-        const bytes = new Uint8Array(loaded);
-        let offset = 0;
-        for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+        const bytes = output || new Uint8Array(loaded);
+        if (!output) {
+          let offset = 0;
+          for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+        }
+        if (expectedSha256) {
+          const subtle = root.crypto && root.crypto.subtle;
+          if (!subtle) throw assetError('浏览器不支持 SHA-256，无法安全加载 EKA2L1 核心', false);
+          const actual = Array.from(new Uint8Array(await subtle.digest('SHA-256', bytes)),
+            (byte) => byte.toString(16).padStart(2, '0')).join('');
+          if (actual !== expectedSha256) throw assetError('EKA2L1 核心资源 SHA-256 不匹配', true);
+        }
+        if (options.signal && options.signal.aborted) throw new DOMException('已取消', 'AbortError');
         return { bytes, contentType };
       } catch (error) {
         if (reader) {
@@ -369,11 +382,15 @@
       };
       const moduleOptions = Object.assign({}, options);
       const assetSizes = root.EKA2L1_ASSET_SIZES || {};
+      const assetIntegrity = root.EKA2L1_ASSET_INTEGRITY || {};
       const expectedDataBytes = Number(assetSizes.data);
       const expectedWasmBytes = Number(assetSizes.wasm);
       if (!Number.isSafeInteger(expectedDataBytes) || expectedDataBytes <= 0 || expectedDataBytes > MAX_CORE_DATA_BYTES
         || !Number.isSafeInteger(expectedWasmBytes) || expectedWasmBytes <= 0 || expectedWasmBytes > MAX_CORE_WASM_BYTES) {
         return Promise.reject(assetError('EKA2L1 核心资源大小清单缺失或无效', false));
+      }
+      if (!/^[a-f0-9]{64}$/.test(String(assetIntegrity.data || '')) || !/^[a-f0-9]{64}$/.test(String(assetIntegrity.wasm || ''))) {
+        return Promise.reject(assetError('EKA2L1 核心资源 SHA-256 清单缺失或无效', false));
       }
       const locateFile = typeof moduleOptions.locateFile === 'function'
         ? moduleOptions.locateFile
@@ -382,12 +399,14 @@
       const wasmUrl = new URL(locateFile('eka2l1.wasm', ''), root.location.href).href;
       // 两份核心文件并行取回；wasm 下载期间，data 完整性校验通过后再同步交给 Emscripten。
       const dataPromise = fetchCoreAsset(originalFetch, dataUrl, {
-        expectedBytes: expectedDataBytes, maxBytes: MAX_CORE_DATA_BYTES, signal: coreAborter.signal,
+        expectedBytes: expectedDataBytes, expectedSha256: assetIntegrity.data,
+        maxBytes: MAX_CORE_DATA_BYTES, signal: coreAborter.signal,
         onChunk: () => coreActivity(),
       });
       // 转成结果联合类型，避免 wasm 快速失败而 data 仍在下载时产生未处理拒绝。
       const wasmPromise = fetchCoreAsset(originalFetch, wasmUrl, {
-        expectedBytes: expectedWasmBytes, maxBytes: MAX_CORE_WASM_BYTES, signal: coreAborter.signal,
+        expectedBytes: expectedWasmBytes, expectedSha256: assetIntegrity.wasm,
+        maxBytes: MAX_CORE_WASM_BYTES, signal: coreAborter.signal,
         onChunk: () => coreActivity(),
       }).then((result) => ({ result }), (error) => ({ error }));
       moduleOptions.getPreloadedPackage = function (url, size) {

@@ -270,6 +270,125 @@ function publicJob(row) {
   }
 }
 
+/** 后台重启恢复发布时也要按玩家的解析规则校验清单，不能只因预取文件是数组就自动绑定。 */
+export function validatePublishedSockdrivePlan(metadata, profile) {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+    throw new Error('公开 sockdrive.metaj 根节点无效')
+  }
+  const sizeKb = metadata.size
+  const aheadRead = metadata.ahead_read
+  const rangeCount = metadata.range_count
+  const sectorSize = metadata.sector_size
+  const sizeBytes = sizeKb * 1024
+  if (!Number.isSafeInteger(sizeKb) || sizeKb <= 0 || !Number.isSafeInteger(sizeBytes) || sizeBytes > 2 * 1024 ** 3 ||
+      !Number.isSafeInteger(aheadRead) || aheadRead <= 0 || aheadRead > 16 * 1024 * 1024 ||
+      !Number.isSafeInteger(rangeCount) || rangeCount <= 0 || Math.ceil(sizeBytes / aheadRead) !== rangeCount ||
+      !Number.isSafeInteger(sectorSize) || sectorSize <= 0 || aheadRead % sectorSize !== 0) {
+    throw new Error('公开 sockdrive.metaj 的磁盘大小、分块或扇区布局无效')
+  }
+
+  const seen = new Set()
+  const readRanges = (value, field) => {
+    if (!Array.isArray(value)) throw new Error(`公开 Sockdrive ${field} 不是数组`)
+    const ranges = []
+    for (const range of value) {
+      if (!Number.isSafeInteger(range) || range < 0 || range >= rangeCount || seen.has(range)) {
+        throw new Error(`公开 Sockdrive ${field} 含越界、空范围或重复索引：${String(range)}`)
+      }
+      seen.add(range)
+      ranges.push(range)
+    }
+    return ranges
+  }
+  const dropped = new Set(readRanges(metadata.dropped_ranges ?? [], 'dropped_ranges'))
+  const small = new Set(readRanges(metadata.small_ranges ?? [], 'small_ranges'))
+  // 小范围允许进入 preload_ranges：Sockdrive 会把它们从 preload.raw 中恢复。
+  const preload = []
+  const preloadValue = metadata.preload_ranges ?? []
+  if (!Array.isArray(preloadValue)) throw new Error('公开 Sockdrive preload_ranges 不是数组')
+  const preloadSeen = new Set()
+  for (const range of preloadValue) {
+    if (!Number.isSafeInteger(range) || range < 0 || range >= rangeCount || dropped.has(range) || preloadSeen.has(range)) {
+      throw new Error(`公开 Sockdrive preload_ranges 含越界、空范围或重复索引：${String(range)}`)
+    }
+    preloadSeen.add(range)
+    preload.push(range)
+  }
+  // 独立热点清单覆盖默认预取，不可含坏索引；允许其引用 small_ranges，因为它同样映射到 preload.raw。
+  const profileSeen = new Set()
+  if (!Array.isArray(profile)) throw new Error('公开 preload_ranges.metaj 不是数组')
+  for (const range of profile) {
+    if (!Number.isSafeInteger(range) || range < 0 || range >= rangeCount || dropped.has(range) || profileSeen.has(range)) {
+      throw new Error(`公开 preload_ranges.metaj 含越界、空范围或重复索引：${String(range)}`)
+    }
+    profileSeen.add(range)
+  }
+  return { sizeBytes, aheadRead, rangeCount, sectorSize, dropped, small, preload, profile: [...profile] }
+}
+
+/** 清单很小且由管理端生成，但边缘缓存或错误发布仍可能返回任意长度的正文；先限流再解析。 */
+export async function readBoundedSockdriveJson(response, label, maxBytes = 1024 * 1024) {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) throw new RangeError('Sockdrive JSON 上限无效')
+  const rawLength = response.headers.get('content-length')
+  const declaredLength = rawLength === null ? null : Number(rawLength)
+  if (declaredLength !== null && Number.isSafeInteger(declaredLength) && declaredLength > maxBytes) {
+    void response.body?.cancel().catch(() => {})
+    throw new Error(`${label} 超过 ${maxBytes} 字节`)
+  }
+
+  let bytes
+  if (!response.body) {
+    if (declaredLength === null || !Number.isSafeInteger(declaredLength) || declaredLength < 0 || declaredLength > maxBytes) {
+      throw new Error(`${label} 没有可限制大小的响应流`)
+    }
+    bytes = new Uint8Array(await response.arrayBuffer())
+  } else {
+    const reader = response.body.getReader()
+    const chunks = []
+    let loaded = 0
+    try {
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        if (!value) continue
+        if (loaded + value.byteLength > maxBytes) {
+          await reader.cancel().catch(() => {})
+          throw new Error(`${label} 超过 ${maxBytes} 字节`)
+        }
+        chunks.push(value)
+        loaded += value.byteLength
+      }
+    } catch (error) {
+      await reader.cancel(error).catch(() => {})
+      throw error
+    } finally {
+      try { reader.releaseLock() } catch { /* 已终止的响应流无需再次释放 */ }
+    }
+    bytes = new Uint8Array(loaded)
+    let offset = 0
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset)
+      offset += chunk.byteLength
+    }
+  }
+  if (bytes.byteLength > maxBytes) throw new Error(`${label} 超过 ${maxBytes} 字节`)
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes))
+  } catch (error) {
+    throw new Error(`${label} 不是有效 JSON`, { cause: error })
+  }
+}
+
+/** 玩家规范路径必须与绕过缓存的发布内容完全一致，不能只比较分块总数。 */
+export function publishedSockdrivePlansMatch(left, right) {
+  const sameSet = (a, b) => a.size === b.size && [...a].every((value) => b.has(value))
+  const sameArray = (a, b) => a.length === b.length && a.every((value, index) => value === b[index])
+  return left.sizeBytes === right.sizeBytes && left.aheadRead === right.aheadRead &&
+    left.rangeCount === right.rangeCount && left.sectorSize === right.sectorSize &&
+    sameSet(left.dropped, right.dropped) && sameSet(left.small, right.small) &&
+    sameArray(left.preload, right.preload) && sameArray(left.profile, right.profile)
+}
+
 function sameRequest(row, request) {
   return row.source_key === request.sourceKey && Number(row.source_size) === request.sourceSize &&
     row.game_slug === request.gameSlug && (row.lang || null) === request.lang &&
@@ -709,29 +828,20 @@ async function verifyPublished(config, job) {
     headers: publicHeaders, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), cache: 'no-store',
   })
   if (!metadataResponse.ok) throw new Error(`公开 sockdrive.metaj 读取失败：HTTP ${metadataResponse.status}`)
-  const metadata = await metadataResponse.json()
-  if (!Number.isSafeInteger(metadata.range_count) || metadata.range_count <= 0) throw new Error('公开 sockdrive.metaj 的分块数无效')
-  if (Number.isSafeInteger(metadata.ahead_read) && metadata.ahead_read > 16 * 1024 * 1024) {
-    throw new Error('公开 sockdrive.metaj 的单个分块超过 16 MiB')
-  }
-  if (!Number.isSafeInteger(metadata.size) || metadata.size <= 0 || metadata.size * 1024 > 2 * 1024 ** 3 ||
-      !Number.isSafeInteger(metadata.ahead_read) || metadata.ahead_read <= 0 || metadata.ahead_read > 16 * 1024 * 1024 ||
-      Math.ceil(metadata.size * 1024 / metadata.ahead_read) !== metadata.range_count) {
-    throw new Error('公开 sockdrive.metaj 的磁盘大小与分块数量不一致')
-  }
+  const metadata = await readBoundedSockdriveJson(metadataResponse, '公开 sockdrive.metaj')
   const cors = metadataResponse.headers.get('access-control-allow-origin')
   if (cors !== '*' && cors !== 'https://8bitgo.com') throw new Error('公开 Sockdrive 没有允许 8bitgo.com 跨域读取')
   const preload = await fetch(`${root}/preload_ranges.metaj?verify=${stamp}`, {
     headers: publicHeaders, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), cache: 'no-store',
   })
-  if (!preload.ok || !Array.isArray(await preload.json())) throw new Error('公开 preload_ranges.metaj 无效')
-  const dropped = new Set(Array.isArray(metadata.dropped_ranges) ? metadata.dropped_ranges : [])
-  const small = new Set(Array.isArray(metadata.small_ranges) ? metadata.small_ranges : [])
+  if (!preload.ok) throw new Error('公开 preload_ranges.metaj 无效')
+  const profile = await readBoundedSockdriveJson(preload, '公开 preload_ranges.metaj')
+  const plan = validatePublishedSockdrivePlan(metadata, profile)
   let sampleRange
-  for (let range = 0; sampleRange === undefined && range < metadata.range_count; range++) {
-    if (!dropped.has(range) && !small.has(range)) sampleRange = range
+  for (let range = 0; sampleRange === undefined && range < plan.rangeCount; range++) {
+    if (!plan.dropped.has(range) && !plan.small.has(range)) sampleRange = range
   }
-  const sample = sampleRange === undefined ? (small.size ? 'preload.raw' : '') : `${sampleRange}.raw`
+  const sample = sampleRange === undefined ? (plan.small.size ? 'preload.raw' : '') : `${sampleRange}.raw`
   if (sample) {
     const readsBody = sampleRange !== undefined
     const response = await fetch(`${root}/${sample}?verify=${stamp}`, {
@@ -742,7 +852,7 @@ async function verifyPublished(config, job) {
     const actualEncoding = response.headers.get('content-encoding') || 'identity'
     if (actualEncoding !== job.encoding) throw new Error(`公开分块编码是 ${actualEncoding}，应为 ${job.encoding}`)
     if (readsBody) {
-      const expected = Math.min(metadata.ahead_read, metadata.size * 1024 - sampleRange * metadata.ahead_read)
+      const expected = Math.min(plan.aheadRead, plan.sizeBytes - sampleRange * plan.aheadRead)
       const actual = (await response.arrayBuffer()).byteLength
       if (actual !== expected) throw new Error(`公开分块 ${sample} 解码后是 ${actual} 字节，应为 ${expected} 字节`)
     }
@@ -754,11 +864,21 @@ async function verifyPublished(config, job) {
       headers: publicHeaders, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     })
     if (!canonical.ok) throw new Error(`玩家路径第 ${pass} 次读取 sockdrive.metaj 失败：HTTP ${canonical.status}`)
-    let value
-    try { value = await canonical.json() } catch {
-      throw new Error(`玩家路径第 ${pass} 次读取 sockdrive.metaj 不是 JSON；边缘缓存可能损坏`)
+    const canonicalMetadata = await readBoundedSockdriveJson(canonical, `玩家路径第 ${pass} 次读取 sockdrive.metaj`)
+    const canonicalPreload = await fetch(`${root}/preload_ranges.metaj`, {
+      headers: publicHeaders, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    })
+    if (!canonicalPreload.ok) throw new Error(`玩家路径第 ${pass} 次读取 preload_ranges.metaj 失败：HTTP ${canonicalPreload.status}`)
+    const canonicalProfile = await readBoundedSockdriveJson(canonicalPreload, `玩家路径第 ${pass} 次读取 preload_ranges.metaj`)
+    let canonicalPlan
+    try {
+      canonicalPlan = validatePublishedSockdrivePlan(canonicalMetadata, canonicalProfile)
+    } catch (error) {
+      throw new Error(`玩家路径第 ${pass} 次读取到无效 Sockdrive 清单：${error instanceof Error ? error.message : String(error)}`)
     }
-    if (value.range_count !== metadata.range_count) throw new Error('玩家路径 sockdrive.metaj 与已发布产物不一致')
+    if (!publishedSockdrivePlansMatch(plan, canonicalPlan)) {
+      throw new Error(`玩家路径第 ${pass} 次读取的 Sockdrive 清单与已发布产物不一致`)
+    }
   }
   const head = await remoteHead(config, `${job.target_prefix}/sockdrive.metaj`)
   if (!head) throw new Error('Worker 中找不到已发布的 sockdrive.metaj')

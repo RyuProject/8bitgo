@@ -101,6 +101,27 @@ const UPLOAD_LEASE = Symbol('j2meUploadLease')
 let activeUploads = 0
 let activeProxies = 0
 
+// 改完整性策略时换这一代代理 ETag，让更新前可能缓存了坏字节的浏览器先完整重取一次。
+function verifiedJarEtag(sourceEtag) {
+  const value = String(sourceEtag || '')
+  return /^"[^"\r\n]*"$/.test(value)
+    ? `"8bg-sha256-v1-${Buffer.from(value).toString('base64url')}"`
+    : ''
+}
+function sourceEtagsForVerifiedJar(value) {
+  const tags = String(value || '').match(/(?:W\/)?"8bg-sha256-v1-[A-Za-z0-9_-]+"/g) || []
+  return [...new Set(tags.map((tag) => {
+    const encoded = tag.replace(/^W\//, '').slice('"8bg-sha256-v1-'.length, -1)
+    const decoded = Buffer.from(encoded, 'base64url').toString()
+    return verifiedJarEtag(decoded) === `"8bg-sha256-v1-${encoded}"` ? decoded : ''
+  }).filter(Boolean))]
+}
+function clientHasVerifiedJarEtag(value, expected) {
+  if (!expected) return false
+  const tags = String(value || '').match(/(?:W\/)?"8bg-sha256-v1-[A-Za-z0-9_-]+"/g) || []
+  return tags.some((tag) => tag.replace(/^W\//, '') === expected)
+}
+
 /** Async cleanup; return value is now a Promise. All internal callers await/catch it. */
 export function sweepTmp() { return store.sweep() }
 export function startSweeper() {
@@ -335,11 +356,16 @@ function startPackedJarTask(keyName, cached) {
   const signal = AbortSignal.timeout(PROXY_TIMEOUT)
   return (async () => {
     const target = `${ROM_BASE}/${ROM_PREFIX}/java/${encodeURIComponent(keyName)}`
-    const headers = cached?.etag ? { 'if-none-match': cached.etag } : {}
+    const headers = { 'X-8BG-Verify-Full': 'sha256-v1', ...(cached?.etag ? { 'if-none-match': cached.etag } : {}) }
     const upstream = await fetch(target, { headers, signal })
-    if (upstream.status === 304 && cached) {
-      cached.checkedAt = Date.now()
-      return cached
+    if (upstream.status === 304) {
+      if (cached) {
+        // 304 不带正文或自定义完整性头；它只续用本进程此前已验过且 ETag 相同的字节。
+        cached.checkedAt = Date.now()
+        return cached
+      }
+      await upstream.body?.cancel().catch(() => {})
+      throw new Error('上游对没有已校验缓存的请求返回 304')
     }
     if (!upstream.ok) {
       await upstream.body?.cancel().catch(() => {})
@@ -347,7 +373,14 @@ function startPackedJarTask(keyName, cached) {
       error.status = upstream.status === 404 ? 404 : 502
       throw error
     }
+    if (upstream.headers.get('x-8bg-integrity-verified') !== 'sha256-v1') {
+      await upstream.body?.cancel().catch(() => {})
+      throw new Error('上游 8BG JAR 缺少完整 SHA-256 校验标记')
+    }
     const packed = await readResponseBuffer(upstream, PROXY_BYTES, signal)
+    if (packed.length !== Number(upstream.headers.get('content-length'))) {
+      throw new Error('上游 8BG JAR 下载长度不完整')
+    }
     const bytes = await decryptPackedJar(packed)
     const entry = {
       bytes,
@@ -376,14 +409,14 @@ async function servePackedJar(req, res, keyName) {
     const entry = await loadPackedJar(keyName, signal)
     const size = entry.bytes.length
     // 解包后的明文 ETag 跟着 8BG 对象走：重传 ROM 后 R2 的 ETag 变了，这里也跟着变
-    const etag = entry.etag ? `"8bg-${entry.etag.replace(/^W\/|"/g, '')}"` : ''
+    const etag = verifiedJarEtag(entry.etag)
     res.setHeader('Content-Type', 'application/java-archive')
     res.setHeader('X-Content-Type-Options', 'nosniff')
     res.setHeader('Accept-Ranges', 'bytes')
     res.setHeader('Cache-Control', 'public, max-age=0, must-revalidate')
     if (etag) res.setHeader('ETag', etag)
     if (entry.lastModified) res.setHeader('Last-Modified', entry.lastModified)
-    if (etag && req.headers['if-none-match'] === etag) return res.status(304).end()
+    if (etag && clientHasVerifiedJarEtag(req.headers['if-none-match'], etag)) return res.status(304).end()
     let start = 0
     let end = size - 1
     let status = 200
@@ -505,26 +538,30 @@ export async function j2meJarProxy(req, res) {
   res.once('close', onClose)
   try {
     /*
-      条件请求要**原样转给上游**（2026-09-07 补）。
-
-      背景：freej2me-web 只能吃纯文件名，所以适配器把播放地址上那个
-      `?romv=<etag>` 缓存戳丢掉了（见 src/emulator/j2meUrl.ts 的 j2meFileName）——
-      全站别的平台靠那个戳换缓存，J2ME 这条路上没有。
-      而这里原来给的是 `Cache-Control: public, max-age=86400`：
-      **管理员重传了一个 J2ME 的 ROM，玩家最多一整天还在玩旧包**，
-      而且完全看不出为什么（页面刷了、后台也显示新文件）。
-
-      修法不是把缓存关掉（每次开局重下几百 KB 也不必要），而是让它**每次都回来问一句**：
-      下面 Cache-Control 改成 must-revalidate + max-age=0，浏览器于是带
-      If-None-Match 回来；我们把它转给 R2，没变就原样透传 304，一个字节都不用传。
-      ETag 本来就已经在往下转了，这条链是通的。
+      J2ME 适配器会丢掉播放地址上的 `?romv=<etag>`（freej2me-web 只接受纯文件名），
+      因此代理响应必须每次重验证，避免管理员替换 ROM 后玩家还拿到旧缓存。
+      JAR 请求绕过浏览器 ROM loader，代理要求 Worker 对整包逐块校验、对 Range 校验覆盖块，
+      然后才交给 CheerpJ；整包响应使用带校验代次的代理 ETag，旧版原始 ETag 只能触发完整重取。
+      HEAD 没有正文，不做字节校验。
     */
+    const verifyJar = req.method !== 'HEAD' && name.toLowerCase().endsWith('.jar')
+    const verifyFullJar = verifyJar && !req.headers.range
     const headers = {}
     if (req.headers.range) headers.range = req.headers.range
-    if (req.headers['if-none-match']) headers['if-none-match'] = req.headers['if-none-match']
-    if (req.headers['if-modified-since']) headers['if-modified-since'] = req.headers['if-modified-since']
+    // JAR 由服务端代理给 CheerpJ，不经过浏览器 ROM loader；分段与整包都强制 Worker 要求当前版本清单。
+    // Worker 按 Range 覆盖块验证，完整 200 响应则逐块流式验证后才会交给本进程。
+    if (verifyJar) {
+      headers['X-8BG-Require-Integrity'] = 'sha256-v1'
+      headers['X-8BG-Verify-Full'] = 'sha256-v1'
+    }
+    if (verifyFullJar) {
+      const sourceEtags = sourceEtagsForVerifiedJar(req.headers['if-none-match'])
+      if (sourceEtags.length) headers['if-none-match'] = sourceEtags.join(', ')
+    } else if (!verifyJar && req.headers['if-none-match']) headers['if-none-match'] = req.headers['if-none-match']
+    // 旧客户端可能只带日期或原始 ETag；不能据此给未经过新校验流程的缓存回 304。
+    if (!verifyJar && req.headers['if-modified-since']) headers['if-modified-since'] = req.headers['if-modified-since']
     if (req.headers['if-range']) headers['if-range'] = req.headers['if-range']
-    const upstream = await fetch(target, { headers, signal, method: req.method === 'HEAD' ? 'HEAD' : 'GET' })
+    let upstream = await fetch(target, { headers, signal, method: req.method === 'HEAD' ? 'HEAD' : 'GET' })
 
     /*
       304 必须在 `upstream.ok` 那道判断**之前**处理：304 不在 2xx 里，
@@ -533,12 +570,38 @@ export async function j2meJarProxy(req, res) {
       而且 304 本来就没有 body，不能去 arrayBuffer()、更不能拿去验 JAR。
     */
     if (upstream.status === 304) {
+      if (verifyJar && !verifyFullJar) {
+        await upstream.body?.cancel().catch(() => {})
+        return res.status(502).send('JAR Range 上游意外返回 304')
+      }
+      const verifiedEtag = verifyFullJar ? verifiedJarEtag(upstream.headers.get('etag')) : ''
+      if (verifyFullJar && !clientHasVerifiedJarEtag(req.headers['if-none-match'], verifiedEtag)) {
+        // 旧版缓存可能携带了正确 ETag 却保存了损坏正文；不把 Worker 的 304 直接转给它。
+        await upstream.body?.cancel().catch(() => {})
+        const retryHeaders = { ...headers }
+        delete retryHeaders['if-none-match']
+        upstream = await fetch(target, { headers: retryHeaders, signal, method: 'GET' })
+      } else {
+        for (const h of ['last-modified', 'cache-control']) {
+          const v = upstream.headers.get(h)
+          if (v) res.setHeader(h, v)
+        }
+        if (verifyFullJar) res.setHeader('ETag', verifiedEtag)
+        else {
+          const v = upstream.headers.get('etag')
+          if (v) res.setHeader('etag', v)
+        }
+        res.setHeader('Cache-Control', 'public, max-age=0, must-revalidate')
+        return res.status(304).end()
+      }
+    }
+    if (upstream.status === 304) {
       for (const h of ['etag', 'last-modified', 'cache-control']) {
         const v = upstream.headers.get(h)
         if (v) res.setHeader(h, v)
       }
       res.setHeader('Cache-Control', 'public, max-age=0, must-revalidate')
-      return res.status(304).end()
+      return res.status(502).send('上游重复返回未校验的 304')
     }
 
     if (!upstream.ok && upstream.status !== 206) {
@@ -554,7 +617,25 @@ export async function j2meJarProxy(req, res) {
       await upstream.body?.cancel().catch(() => {})
       return res.status(upstream.status).end()
     }
+    if (verifyFullJar && upstream.status !== 200) {
+      await upstream.body?.cancel().catch(() => {})
+      return res.status(502).send('上游未返回完整 JAR')
+    }
+    const verifiedFullJarResponse = verifyJar && upstream.status === 200
+    if (verifiedFullJarResponse && upstream.headers.get('x-8bg-integrity-verified') !== 'sha256-v1') {
+      await upstream.body?.cancel().catch(() => {})
+      console.error(`[j2me] 上游 JAR 缺少完整 SHA-256 校验标记 ${name}`)
+      return res.status(502).send('上游 JAR 未通过 SHA-256 完整性校验')
+    }
+    if (verifyJar && upstream.status === 206 && upstream.headers.get('x-8bitgo-integrity-required') !== 'sha256-v1') {
+      await upstream.body?.cancel().catch(() => {})
+      console.error(`[j2me] 上游 JAR Range 缺少完整性校验标记 ${name}`)
+      return res.status(502).send('上游 JAR Range 未通过 SHA-256 完整性校验')
+    }
     const body = await readResponseBuffer(upstream, PROXY_BYTES, signal)
+    if (verifiedFullJarResponse && body.length !== Number(upstream.headers.get('content-length'))) {
+      return res.status(502).send('上游 JAR 下载长度不完整')
+    }
     // 普通完整响应在转给 FreeJ2ME 前先验一次；Range 响应只有局部字节，不能冒充完整 JAR 去验。
     if (upstream.status === 200 && name.toLowerCase().endsWith('.jar')) {
       try {
@@ -565,10 +646,12 @@ export async function j2meJarProxy(req, res) {
       }
     }
     res.status(upstream.status)
-    for (const h of ['content-type', 'content-range', 'accept-ranges', 'etag', 'last-modified']) {
+    for (const h of ['content-type', 'content-range', 'accept-ranges', 'last-modified']) {
       const v = upstream.headers.get(h)
       if (v) res.setHeader(h, v)
     }
+    const proxyEtag = verifiedFullJarResponse ? verifiedJarEtag(upstream.headers.get('etag')) : upstream.headers.get('etag')
+    if (proxyEtag) res.setHeader('ETag', proxyEtag)
     // Node fetch 可能已经把 gzip/br 响应解压；沿用上游 Content-Length 会让浏览器只读到半截。
     res.setHeader('Content-Length', String(body.length))
     // 见上面那段：不能强缓存一天，否则重传 ROM 之后玩家还在玩旧包。

@@ -19,6 +19,7 @@ import { alternateRomUrls, rememberRomHostForUrl } from '@/services/romHosts'
 import { rankRomRoutes } from '@/services/romRouteHealth'
 import { fmt, getT } from '@/services/i18n'
 import { diagLog, registerDiagnosticSnapshot, watchFramePerformance } from '@/services/startupDiagnostics'
+import { createVisibilityTimeout, type VisibilityTimeout } from '../visibilityTimeout'
 
 const BRIDGE_SOURCE = '8bitgo-ppsspp-bridge'
 const BRIDGE_VERSION = 1
@@ -83,7 +84,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let ready = false
   let bootStarted = false
   let requestId = 0
-  let hostTimer = 0
+  let hostTimeout: VisibilityTimeout | null = null
   let fatalReported = false
   const probeController = new AbortController()
   let remoteProbe: Promise<{ url: string; result: ProbeResult }> | null = null
@@ -100,7 +101,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const pending = new Map<number, {
     resolve: (value: unknown) => void
     reject: (error: Error) => void
-    timer: number
+    timeout: VisibilityTimeout | null
     activityTimeoutMs: number
   }>()
 
@@ -123,12 +124,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   }
 
   const armPendingTimeout = (id: number, entry: NonNullable<ReturnType<typeof pending.get>>) => {
-    window.clearTimeout(entry.timer)
-    entry.timer = window.setTimeout(() => {
+    if (entry.timeout) {
+      entry.timeout.reset()
+      return
+    }
+    entry.timeout = createVisibilityTimeout(entry.activityTimeoutMs || MOUNT_TIMEOUT_MS, () => {
       if (pending.get(id) !== entry) return
       pending.delete(id)
       entry.reject(new Error('PPSSPP 响应超时'))
-    }, entry.activityTimeoutMs || MOUNT_TIMEOUT_MS)
+    })
   }
 
   const refreshPendingActivity = () => {
@@ -141,7 +145,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (destroyed || fatalReported) return Promise.reject(new Error('PPSSPP 会话已经关闭'))
     const id = ++requestId
     return new Promise((resolve, reject) => {
-      const entry = { resolve, reject, timer: 0, activityTimeoutMs }
+      const entry = { resolve, reject, timeout: null, activityTimeoutMs }
       pending.set(id, entry)
       armPendingTimeout(id, entry)
       post(type, { ...payload, requestId: id })
@@ -150,7 +154,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
   const rejectPending = (message: string) => {
     for (const entry of pending.values()) {
-      window.clearTimeout(entry.timer)
+      entry.timeout?.dispose()
       entry.reject(new Error(message))
     }
     pending.clear()
@@ -159,7 +163,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const failSession = (message: string, pendingMessage = 'PPSSPP 会话启动失败', scope: 'runtime' | 'content' | 'config' | 'network' = 'runtime') => {
     if (destroyed || fatalReported) return
     fatalReported = true
-    window.clearTimeout(hostTimer)
+    hostTimeout?.dispose()
+    hostTimeout = null
     probeController.abort(new Error(pendingMessage))
     rejectPending(pendingMessage)
     options.onError?.(message, scope)
@@ -233,10 +238,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     // host-ready 只说明 iframe 的桥已经加载，不能拿它当网络超时。旧实现会在一个永不返回的
     // Range 探测上无限挂住，而且 destroy 后请求仍继续占连接；这里给探测独立的截止时间。
     let probeTimedOut = false
-    const probeTimer = window.setTimeout(() => {
+    const probeTimeout = createVisibilityTimeout(RANGE_PROBE_TIMEOUT_MS, () => {
       probeTimedOut = true
       probeController.abort()
-    }, RANGE_PROBE_TIMEOUT_MS)
+    })
     let probe: ProbeResult
     let probeNetworkFailure = false
     let probeMissingResource = false
@@ -256,7 +261,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         probeMissingResource ||= Boolean(probe.missingResource)
       }
     } finally {
-      window.clearTimeout(probeTimer)
+      probeTimeout.dispose()
     }
     if (!probe.rangeSupported || !probe.size) {
       if (probeNetworkFailure || probeTimedOut) throw markRomNetworkFailure(new Error('PPSSPP 光盘 Range 探测网络失败'))
@@ -454,7 +459,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (!message || message.source !== BRIDGE_SOURCE || message.version !== BRIDGE_VERSION) return
 
     if (message.type === 'host-ready') {
-      window.clearTimeout(hostTimer)
+      hostTimeout?.dispose()
+      hostTimeout = null
       void boot()
       return
     }
@@ -482,7 +488,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     const entry = pending.get(message.requestId as number)
     if (!entry) return
     pending.delete(message.requestId as number)
-    window.clearTimeout(entry.timer)
+    entry.timeout?.dispose()
+    entry.timeout = null
     if (message.ok) entry.resolve(message.payload)
     else {
       if (message.diagnostics) diagLog('ppsspp', 'error', '运行时 worker 调用栈', message.diagnostics)
@@ -592,11 +599,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   // 目录：Cloudflare 会忽略查询串，不能拿它替换 Wasm/data。入口 HTML 的浏览器缓存换代
   // 则由 ppssppFrameUrl 管，见 paths.ts。
   iframe.src = ppssppFrameUrl()
-  hostTimer = window.setTimeout(() => {
+  hostTimeout = createVisibilityTimeout(HOST_TIMEOUT_MS, () => {
     if (!destroyed && !ready && !fatalReported) {
       failSession(rt.ppssppStartTimeout, 'PPSSPP 运行时页面启动超时')
     }
-  }, HOST_TIMEOUT_MS)
+  })
   // 探测只取 2 字节；与 iframe 入口并行可省掉一次串行跨域往返。进度仍在 host-ready 后
   // 才切到 ROM 阶段，避免“镜像已加载”掩盖 36MB 核心资源还在下载的实际状态。
   if (typeof options.game === 'string' && globalThis.crossOriginIsolated && typeof SharedArrayBuffer !== 'undefined') {
@@ -673,7 +680,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       if (destroyed) return
       destroyed = true
       probeController.abort()
-      window.clearTimeout(hostTimer)
+      hostTimeout?.dispose()
+      hostTimeout = null
       window.clearInterval(volumeTimer)
       stopCoreWatch()
       statusWatch?.disconnect()

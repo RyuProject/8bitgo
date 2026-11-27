@@ -83,7 +83,7 @@ import {
   windows3xLaunchCommands,
   type WindowsLaunchCi,
 } from '../windowsLaunch'
-import { JSDOS_ASSET_VERSION, JSDOS_PATH, jsdosBase, markJsdosEdgeFailed, markRuntimeEdgeBad } from '../paths'
+import { JSDOS_ASSET_VERSION, JSDOS_PATH, JSDOS_SCRIPT_INTEGRITY, jsdosBase, markJsdosEdgeFailed, markRuntimeEdgeBad } from '../paths'
 import { onRuntimeEdgeBad } from '../runtimeEdgeRoute'
 import { jsdosIceEndpoint, parseIpxAddress } from '../ipxAddress'
 import {
@@ -118,6 +118,7 @@ import {
   sockdriveWarmBudget,
   sockdriveWarmConcurrency,
   sockdriveRuntimePreloadMode,
+  drainSockdriveWarmResponse,
   readBoundedResponseBytes,
   type SockdriveRuntimePreload,
   type SockdriveWarmFile,
@@ -723,6 +724,8 @@ function loadJsDos(): Promise<DosFn> {
       return await loadJsdosScript(document, `${root}js-dos.js`, () => win.Dos, {
         timeoutMs: root === JSDOS_PATH ? JSDOS_ENTRY_TIMEOUT_MS : JSDOS_EDGE_SCRIPT_TIMEOUT_MS,
         signal: controller?.signal,
+        // 自托管固定版本在同一次下载中做浏览器原生 SRI；自定义 latest CDN 没有本站可信摘要。
+        integrity: rootHasPinnedJsdosVersion(root) ? JSDOS_SCRIPT_INTEGRITY : undefined,
       })
     } catch (error) {
       css.remove()
@@ -744,6 +747,15 @@ function loadJsDos(): Promise<DosFn> {
     throw e
   })
   return loading
+}
+
+function rootHasPinnedJsdosVersion(root: string): boolean {
+  try {
+    const path = new URL(root, window.location.href).pathname
+    return path.split('/').includes(`v${JSDOS_ASSET_VERSION}`)
+  } catch {
+    return false
+  }
 }
 
 async function readRom(
@@ -986,7 +998,6 @@ async function warmSockdriveFile(
         }, STALL_MS)
       }
       armIdle()
-      let loaded = 0
       try {
         const response = await fetch(`${url}/${file.name}`, {
           signal: controller.signal,
@@ -996,23 +1007,8 @@ async function warmSockdriveFile(
           void response.body?.cancel().catch(() => {})
           throw new Error(`HTTP ${response.status}`)
         }
-        if (!response.body) {
-          // 极老浏览器没有流接口；只在这条兼容路径保留一次性分配。
-          loaded = (await response.arrayBuffer()).byteLength
-        } else {
-          const reader = response.body.getReader()
-          for (;;) {
-            const { done, value } = await reader.read()
-            if (done) break
-            if (!value) continue
-            armIdle()
-            loaded += value.byteLength
-            if (loaded > file.expectedBytes) {
-              await reader.cancel().catch(() => {})
-              throw new Error(`长度超过 ${file.expectedBytes}`)
-            }
-          }
-        }
+        const loaded = await drainSockdriveWarmResponse(response, file.expectedBytes, armIdle)
+        if (loaded !== file.expectedBytes) throw new Error(`长度 ${loaded}，应为 ${file.expectedBytes}`)
       } catch (error) {
         if (stalled && !signal.aborted) throw new Error(`${Math.round(STALL_MS / 1000)} 秒没有收到数据`)
         throw error
@@ -1020,7 +1016,6 @@ async function warmSockdriveFile(
         window.clearTimeout(timer)
         signal.removeEventListener('abort', relayAbort)
       }
-      if (loaded !== file.expectedBytes) throw new Error(`长度 ${loaded}，应为 ${file.expectedBytes}`)
       return
     } catch (error) {
       failure = error

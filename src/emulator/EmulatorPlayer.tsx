@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react'
-import { importWithRetry, lazyChunkFile, onOriginAssetsPage, originAssetsUrl, tagLazyFailure } from '@/services/moduleLinkRecovery'
+import { importWithRetry, lazyChunkFile, lazyFailure, onOriginAssetsPage, originAssetsUrl, tagLazyFailure } from '@/services/moduleLinkRecovery'
 import { isRuntimeModuleTimeout } from './moduleLoadDeadline'
 import { useNavigate } from 'react-router-dom'
 import type { ArcadeButtonCount, DosBackend, DosWindowsVersion, FlashControls, Game, GenreId, Platform, PlatformId } from '@/types'
@@ -721,6 +721,7 @@ export function EmulatorPlayer({
   const [status, setStatus] = useState<Status>('idle')
   const [file, setFile] = useState<File | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [runtimeModuleError, setRuntimeModuleError] = useState<Error | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const ndsPerformanceNoticeRef = useRef<string | null>(null)
   const [romDownloadBusy, setRomDownloadBusy] = useState(false)
@@ -2294,7 +2295,19 @@ export function EmulatorPlayer({
       try {
         diagLog('stage', 'info', `${session.runtime.id} 运行时模块加载开始`)
         noteStartupActivity()
-        const mount = await loadMountOf(session.runtime.id)
+        let mount: Awaited<ReturnType<typeof loadMountOf>>
+        try {
+          mount = await loadMountOf(session.runtime.id)
+        } catch (error) {
+          if (lazyFailure(error)) {
+            stopStartupWatchdog()
+            stopProgressSnapshot()
+            window.clearTimeout(playableTimer)
+            setRuntimeModuleError(error instanceof Error ? error : new Error(String(error)))
+            return
+          }
+          throw error
+        }
         if (mountCancelled || !isCurrent()) return
         diagLog('stage', 'info', `${session.runtime.id} 运行时模块加载完成`)
         noteStartupActivity()
@@ -4835,6 +4848,9 @@ export function EmulatorPlayer({
     一行输入框不是。所以现在限宽由调用方通过 `className` 交给下面这个播放器盒子，
     弹幕条作为兄弟节点落在包装层的原始宽度上，跟内容列对齐。
   */
+  // 动态运行时模块加载失败必须交给外层 AppErrorBoundary：它会核对依赖图并执行有上限的缓存修复 / 刷新。
+  if (runtimeModuleError) throw runtimeModuleError
+
   return (
     <>
     <div

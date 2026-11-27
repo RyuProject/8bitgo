@@ -55,6 +55,8 @@ bucket_name = "8bitgo-webgame"
 # 允许跨域访问的来源，多个用逗号分隔；开发期用 * ，上线后改成你的站点域名，例如
 # ALLOWED_ORIGINS = "https://8bitgo.example.com,http://localhost:5173"
 ALLOWED_ORIGINS = "*"
+# 全量 ROM / BIOS 清单回填与只读盘点通过后，才改成 "true"；否则旧对象缺清单会被故意挡下。
+REQUIRE_ALL_ROM_INTEGRITY = "false"
 
 # 下载域名上把 /api/open/v1/rom-plain|bundle-plain 与 /api/diag 原样转发给源站（见 src/index.js
 # 的 PLAIN_PROXY_PATH）。凭据校验、限流、解密都在源站；留空任一项即关闭转发。

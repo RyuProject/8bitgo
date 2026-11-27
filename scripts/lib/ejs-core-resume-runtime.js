@@ -109,13 +109,21 @@ const __8bgCoreResume = (() => {
     }
     const subtle = typeof crypto !== 'undefined' ? crypto.subtle : null
     if (!subtle) throw new Error('EmulatorJS core SHA-256 verification unavailable')
-    for (let index = 0; index < record.blocks.length; index++) {
-      const start = index * record.blockBytes
-      const end = Math.min(bytes.byteLength, start + record.blockBytes)
-      const digest = new Uint8Array(await subtle.digest('SHA-256', bytes.subarray(start, end)))
-      let actual = ''
-      for (const byte of digest) actual += byte.toString(16).padStart(2, '0')
-      if (actual !== record.blocks[index]) throw new Error(`EmulatorJS core SHA-256 mismatch at block ${index + 1}`)
+    // 一次并行四块：下载已完成后减少串行 WebCrypto 往返，但把临时输入限制在约 8 MiB。
+    for (let first = 0; first < record.blocks.length; first += 4) {
+      const count = Math.min(4, record.blocks.length - first)
+      const actual = await Promise.all(Array.from({ length: count }, async (_, offset) => {
+        const index = first + offset
+        const start = index * record.blockBytes
+        const end = Math.min(bytes.byteLength, start + record.blockBytes)
+        const digest = new Uint8Array(await subtle.digest('SHA-256', bytes.subarray(start, end)))
+        return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('')
+      }))
+      for (let offset = 0; offset < count; offset++) {
+        if (actual[offset] !== record.blocks[first + offset]) {
+          throw new Error(`EmulatorJS core SHA-256 mismatch at block ${first + offset + 1}`)
+        }
+      }
     }
     return true
   }
@@ -670,7 +678,8 @@ const __8bgCoreResume = (() => {
           if (!progress || !event.lengthComputable) return
           const loaded = (useRange ? offset : 0) + event.loaded
           const total = useRange && state?.total ? state.total : event.total
-          progress('downloading', Math.floor(loaded / total * 100), loaded, total)
+          // XHR onprogress 在最后一字节后、load / SHA-256 完成前仍可能继续触发；100% 留给完整性校验之后。
+          progress('downloading', Math.min(99, Math.floor(loaded / total * 100)), loaded, total)
         }
         xhr.onload = () => {
           clearIdle()

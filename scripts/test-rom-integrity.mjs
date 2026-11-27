@@ -8,6 +8,7 @@ import {
 import {
   fetchRomIntegrityManifest,
   RomIntegrityError,
+  romIntegrityManifestUrl,
   romIntegrityKey,
   verifyRomBlob,
   verifyRomBytes,
@@ -42,6 +43,11 @@ try {
   assert.equal(validateRomIntegrityManifest({ ...manifest, blocks: [...manifest.blocks, 'a'.repeat(64)], etag: '"v1"' }, key, '"v1"', content.byteLength), null)
   assert.equal(romIntegrityKey('https://rom.8bitgo.com/roms/test/game.gba'), 'roms/test/game.gba')
   assert.equal(romIntegrityKey('https://rom.8bitgo.com/roms/covers/cover.webp'), null)
+  assert.equal(romIntegrityManifestUrl('https://rom.8bitgo.com/roms/test/game.gba?romv=version-1'),
+    'https://rom.8bitgo.com/integrity?key=roms%2Ftest%2Fgame.gba&romv=version-1',
+    'standalone same-origin runtime receives the same key and version used by the normal ROM loader')
+  assert.equal(romIntegrityManifestUrl('https://example.org/roms/test/game.gba'), null,
+    'external BIOS URLs do not get assigned a fabricated trusted manifest')
 
   const etag = '"manifest-shape-v1"'
   const tiny = new Uint8Array([1, 2, 3, 4])

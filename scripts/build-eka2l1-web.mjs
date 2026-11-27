@@ -228,8 +228,13 @@ const assetSizes = {
   wasm: payload.get('eka2l1.wasm')?.bytes,
   data: payload.get('eka2l1.data')?.bytes,
 }
+const assetIntegrity = {
+  wasm: payload.get('eka2l1.wasm')?.sha256,
+  data: payload.get('eka2l1.data')?.sha256,
+}
 if (!Number.isSafeInteger(assetSizes.wasm) || !Number.isSafeInteger(assetSizes.data)) fail('无法从构建产物取得 wasm / data 文件大小')
-const sizedBuildId = Buffer.from(`${buildIdBytes.trimEnd()}\nwindow.EKA2L1_ASSET_SIZES=${JSON.stringify(assetSizes)};\n`)
+if (!/^[a-f0-9]{64}$/.test(assetIntegrity.wasm || '') || !/^[a-f0-9]{64}$/.test(assetIntegrity.data || '')) fail('无法从构建产物取得 wasm / data SHA-256')
+const sizedBuildId = Buffer.from(`${buildIdBytes.trimEnd()}\nwindow.EKA2L1_ASSET_SIZES=${JSON.stringify(assetSizes)};\nwindow.EKA2L1_ASSET_INTEGRITY=${JSON.stringify(assetIntegrity)};\n`)
 payload.set('js/build_id.js', { bytes: sizedBuildId.length, sha256: createHash('sha256').update(sizedBuildId).digest('hex') })
 publishedOverrides.set('js/build_id.js', sizedBuildId)
 payload.set('LICENSE', { bytes: licenseBytes.length, sha256: createHash('sha256').update(licenseBytes).digest('hex') })

@@ -9,6 +9,7 @@ import process from 'node:process'
 const args = new Set(process.argv.slice(2).filter((arg) => !arg.includes('=')))
 const valueArg = (name) => process.argv.slice(2).find((arg) => arg.startsWith(`${name}=`))?.slice(name.length + 1)
 const apply = args.has('--apply')
+const requireComplete = args.has('--require-complete')
 const apiValue = String(valueArg('--api') || process.env.ROM_INTEGRITY_API || '').trim()
 const token = String(process.env.ROM_INTEGRITY_TOKEN || '').trim()
 const keyFilter = String(valueArg('--key') || '').trim()
@@ -28,6 +29,10 @@ function validKey(key) {
 if (!apiValue) fail('请设置 ROM_INTEGRITY_API，指向当前 ROM Worker 的根地址')
 if (!token) fail('请通过 ROM_INTEGRITY_TOKEN 环境变量提供 Worker ADMIN_TOKEN')
 if (Boolean(keyFilter) === Boolean(prefixFilter)) fail('请且只请指定 --key=roms/... 或 --prefix=roms/...')
+if (requireComplete && apply) fail('--require-complete 是只读覆盖率门禁，不能与 --apply 同用')
+if (requireComplete && (keyFilter || prefixFilter !== 'roms/' || limit !== Number.POSITIVE_INFINITY)) {
+  fail('--require-complete 必须完整盘点 --prefix=roms/，不能用 --key 或 --limit')
+}
 if (keyFilter && !validKey(keyFilter)) fail('--key 必须是 roms/ 下的合法 ROM / BIOS key（不含 covers）')
 if (prefixFilter && (!prefixFilter.startsWith('roms/') || prefixFilter.startsWith('roms/covers/') ||
     prefixFilter.includes('..') || prefixFilter.includes('\\') || /[\x00-\x1f\x7f]/.test(prefixFilter))) {
@@ -169,6 +174,14 @@ try {
   }
   console.log(`完成：已有 ${present}，缺少 ${missing}，本次补齐 ${published}`)
   if (!apply && missing) console.log('预览未修改 R2；确认范围后再加 --apply。')
+  if (requireComplete) {
+    if (missing) {
+      console.error(`✖ ROM / BIOS 完整性清单仍缺 ${missing} 项；暂时不能开启全局严格校验。`)
+      process.exitCode = 2
+    } else {
+      console.log('✔ roms/ 下所有 ROM / BIOS 都有 ETag 绑定清单；可以评估开启 REQUIRE_ALL_ROM_INTEGRITY=true。')
+    }
+  }
 } catch (error) {
   console.error(`✖ ${error instanceof Error ? error.message : String(error)}`)
   process.exitCode = 1

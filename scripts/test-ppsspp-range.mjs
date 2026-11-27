@@ -5,6 +5,7 @@ import { CACHE, staticCacheHeaders } from '../server/src/cache.js'
 import { detectRom } from '../src/emulator/detect.ts'
 import { isStreamingDiscPlatform } from '../shared/streaming-disc-platforms.js'
 import { isIsolatedRuntimePlatform, isolatedRuntimeRoute } from '../shared/isolated-runtime-platforms.js'
+import { createVisibilityTimeout } from '../src/emulator/visibilityTimeout.ts'
 import {
   canResumeRomLanguageSwitch,
   nextRomLanguageRestart,
@@ -20,6 +21,81 @@ const fakeFile = (name, bytes) => ({
     return { arrayBuffer: async () => part.buffer.slice(part.byteOffset, part.byteOffset + part.byteLength) }
   },
 })
+
+function fakeVisibilityClock() {
+  let time = 0
+  let visible = true
+  let nextId = 0
+  const timers = new Map()
+  const listeners = new Set()
+  const api = {
+    environment: {
+      now: () => time,
+      setTimeout(callback, delayMs) {
+        const id = ++nextId
+        timers.set(id, { at: time + delayMs, callback })
+        return id
+      },
+      clearTimeout(id) { timers.delete(id) },
+      isVisible: () => visible,
+      subscribeVisibility(callback) {
+        listeners.add(callback)
+        return () => listeners.delete(callback)
+      },
+    },
+    advance(ms) {
+      const end = time + ms
+      while (true) {
+        const next = [...timers.entries()].sort((a, b) => a[1].at - b[1].at)[0]
+        if (!next || next[1].at > end) break
+        time = next[1].at
+        timers.delete(next[0])
+        next[1].callback()
+      }
+      time = end
+    },
+    setVisible(next) {
+      visible = next
+      for (const listener of listeners) listener()
+    },
+  }
+  return api
+}
+
+/* ---------- 前台空闲时限：后台停留不误杀，前台仍按既定预算超时 ---------- */
+{
+  const clock = fakeVisibilityClock()
+  let timedOut = 0
+  const timeout = createVisibilityTimeout(100, () => timedOut++, clock.environment)
+  clock.advance(40)
+  clock.setVisible(false)
+  clock.advance(10_000)
+  assert.equal(timedOut, 0, '页面隐藏期间 PPSSPP 超时必须暂停')
+  clock.setVisible(true)
+  clock.advance(59)
+  assert.equal(timedOut, 0, '返回前台只继续消耗剩余的 60ms')
+  clock.advance(1)
+  assert.equal(timedOut, 1, '前台剩余时限耗尽后仍必须超时')
+  timeout.dispose()
+
+  const resetClock = fakeVisibilityClock()
+  let resetTimedOut = 0
+  const resettable = createVisibilityTimeout(100, () => resetTimedOut++, resetClock.environment)
+  resetClock.advance(70)
+  resettable.reset()
+  resetClock.advance(99)
+  assert.equal(resetTimedOut, 0, '可观测启动进度应续满空闲窗口')
+  resetClock.advance(1)
+  assert.equal(resetTimedOut, 1, '续期后的窗口仍有确定的截止点')
+  resettable.dispose()
+
+  const disposedClock = fakeVisibilityClock()
+  let disposedTimedOut = 0
+  const disposed = createVisibilityTimeout(20, () => disposedTimedOut++, disposedClock.environment)
+  disposed.dispose()
+  disposedClock.advance(100)
+  assert.equal(disposedTimedOut, 0, '会话正常销毁后不能迟到报超时')
+}
 
 function writeIsoEntry(bytes, offset, name, extent, size, directory = false) {
   const nameBytes = name === '.' ? new Uint8Array([0]) : name === '..' ? new Uint8Array([1]) : new TextEncoder().encode(name)

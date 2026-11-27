@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url'
 
 const { loadJsdosScript } = await import(pathToFileURL(`${process.cwd()}/src/emulator/jsdosScriptLoader.ts`))
 const source = readFileSync(`${process.cwd()}/src/emulator/adapters/jsdos.ts`, 'utf8')
-assert.match(source, /loadJsdosScript\(document, `\$\{root\}js-dos\.js`, \(\) => win\.Dos, \{\s*timeoutMs: root === JSDOS_PATH \? JSDOS_ENTRY_TIMEOUT_MS : JSDOS_EDGE_SCRIPT_TIMEOUT_MS,\s*signal: controller\?\.signal,/)
+assert.match(source, /loadJsdosScript\(document, `\$\{root\}js-dos\.js`, \(\) => win\.Dos, \{\s*timeoutMs: root === JSDOS_PATH \? JSDOS_ENTRY_TIMEOUT_MS : JSDOS_EDGE_SCRIPT_TIMEOUT_MS,\s*signal: controller\?\.signal,\s*\/\/ 自托管固定版本[\s\S]*?integrity: rootHasPinnedJsdosVersion\(root\) \? JSDOS_SCRIPT_INTEGRITY : undefined,/)
 assert.match(source, /export const JSDOS_ENTRY_TIMEOUT_MS = 60_000/)
 assert.match(source, /export const JSDOS_EDGE_SCRIPT_TIMEOUT_MS = 25_000/)
 assert.match(source, /加载失败或超时，改走同源/)
@@ -18,7 +18,7 @@ function harness() {
   const document = {
     createElement(name) {
       assert.equal(name, 'script')
-      return { async: false, src: '', onload: null, onerror: null, removed: false, remove() { this.removed = true } }
+      return { async: false, src: '', integrity: '', crossOrigin: '', onload: null, onerror: null, removed: false, remove() { this.removed = true } }
     },
     head: { appendChild(script) { scripts.push(script); return script } },
   }
@@ -35,9 +35,11 @@ function harness() {
   const h = harness()
   let runtime
   const loading = loadJsdosScript(h.document, 'https://cn-assets.example/js-dos.js', () => runtime, {
-    timeoutMs: 20_000, setTimer: h.setTimer, clearTimer: h.clearTimer,
+    timeoutMs: 20_000, integrity: 'sha256-ysKDnwu0CjEstxxcIl8Rei9wUkzh6lwrEWiuBe2CIPQ=', setTimer: h.setTimer, clearTimer: h.clearTimer,
   })
   assert.equal(h.scripts[0].src, 'https://cn-assets.example/js-dos.js')
+  assert.equal(h.scripts[0].integrity, 'sha256-ysKDnwu0CjEstxxcIl8Rei9wUkzh6lwrEWiuBe2CIPQ=')
+  assert.equal(h.scripts[0].crossOrigin, 'anonymous')
   assert.equal(h.timers[0].delay, 20_000)
   h.timers[0].callback()
   await assert.rejects(loading, /timed out after 20000ms/)
@@ -52,6 +54,16 @@ function harness() {
   h.scripts[1].onload()
   assert.equal(await retry, runtime)
   assert.equal(h.timers[1].cleared, true)
+}
+
+{
+  const h = harness()
+  const loading = loadJsdosScript(h.document, '/js-dos.js', () => undefined, {
+    integrity: 'sha256-invalid', setTimer: h.setTimer, clearTimer: h.clearTimer,
+  })
+  await assert.rejects(loading, /SRI 配置无效/)
+  assert.equal(h.scripts.length, 0, '无效摘要必须在发网络请求前失败关闭')
+  assert.equal(h.timers.length, 0)
 }
 
 {

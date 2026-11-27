@@ -6,7 +6,7 @@
 import type { RuntimeId, RuntimeMount } from './types'
 import { isRuntimeModuleTimeout, MODULE_LOAD_IDLE_MS, MODULE_LOAD_MAX_MS, raceModuleLoad, watchModuleResources } from './moduleLoadDeadline'
 import { markRuntimeEdgeBad } from './paths'
-import { assetsFromCnEdge, importWithRetry, lazyChunkFile } from '@/services/moduleLinkRecovery'
+import { assetsFromCnEdge, importWithRetry, lazyChunkFile, tagLazyFailure } from '@/services/moduleLinkRecovery'
 
 const LOADERS: Record<RuntimeId, () => Promise<RuntimeMount>> = {
   emulatorjs: () => import('./adapters/emulatorjs').then((module) => module.mount),
@@ -54,8 +54,15 @@ export function loadMountOf(id: RuntimeId): Promise<RuntimeMount> {
 
   const dir = assetsDir()
   const load = LOADERS[id]
+  const file = lazyChunkFile(load)
   // 运行时适配器也是懒加载 chunk；首个请求偶发失败时必须换唯一 URL 重试，避免浏览器复用已拒绝的模块记录。
-  const loading = raceModuleLoad(importWithRetry(load, lazyChunkFile(load), import.meta.url), {
+  const imported = importWithRetry(load, file, import.meta.url).catch((error) => {
+    // 页面模块会交给 AppErrorBoundary 核对静态依赖、修复缓存并受限刷新；运行时模块也必须走同一路径，
+    // 否则播放器的 effect 会把动态导入失败直接显示成普通错误，绕过现成的资源修复流程。
+    tagLazyFailure(error, file, `${id} runtime`)
+    throw error
+  })
+  const loading = raceModuleLoad(imported, {
     watchProgress: watchModuleResources(dir),
     message: (reason) => reason === 'idle'
       ? `${id} 运行时模块加载超时（${MODULE_LOAD_IDLE_MS / 1000} 秒没有进展），请检查网络后重试`

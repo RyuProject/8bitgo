@@ -139,6 +139,11 @@ for (const marker of ['BroadcastChannel', 'Content-Range', 'Accept-Ranges', 'Cac
 if (!/MOUNT_TIMEOUT_MS = 300_000/.test(adapter)) {
   fail('PSP 冷启动仍可能被旧的短超时误杀')
 }
+if (!/createVisibilityTimeout\(entry\.activityTimeoutMs \|\| MOUNT_TIMEOUT_MS/.test(adapter) ||
+    !/createVisibilityTimeout\(HOST_TIMEOUT_MS/.test(adapter) ||
+    !/createVisibilityTimeout\(RANGE_PROBE_TIMEOUT_MS/.test(adapter)) {
+  fail('PSP 桥、入口和 Range 探测时限必须暂停隐藏标签页时间')
+}
 if (!/FS\.writeFile\(PERFORMANCE_CONFIG_PATH,[\s\S]*?performanceConfig\(profile\)/.test(host)) {
   fail('host.js 没有在 PPSSPP 启动前写入通用兼容配置')
 }

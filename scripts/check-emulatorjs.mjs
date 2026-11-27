@@ -61,6 +61,12 @@ if (!js.includes('await __8bgCoreResume.verifyCore(t,Z)') || !js.includes('await
     'npm run ejspatch，然后重新构建；不得把未校验的 EmulatorJS 核心交给缓存或解压器',
   )
 }
+if (!js.includes('Math.min(99,Math.floor(i/t*100))')) {
+  fail(
+    '核心下载器会在 SHA-256 校验完成前报告 100%',
+    'npm run ejspatch；完整性校验成功前最多报告 99%，避免进度条满格后仍等待',
+  )
+}
 if (!js.includes('dontExtractIfCore')) {
   fail(
     'emulator.min.js 里没有 dontExtractIfCore —— 这是 CDN 的 4.2.3 版，不是我们自建的 main 分支版',

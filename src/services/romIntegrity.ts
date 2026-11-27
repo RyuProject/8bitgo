@@ -58,6 +58,21 @@ export function romIntegrityKey(rawUrl: string): string | null {
   } catch { return null }
 }
 
+/** 给独立运行页传递同一套清单地址；下载和校验仍在目标页面内并行进行。 */
+export function romIntegrityManifestUrl(rawUrl: string): string | null {
+  const key = romIntegrityKey(rawUrl)
+  if (!key) return null
+  try {
+    const base = typeof location === 'undefined' ? 'https://8bitgo.invalid/' : location.href
+    const assetUrl = new URL(rawUrl, base)
+    const endpoint = new URL(`${configuredApi(rawUrl)}/integrity`)
+    endpoint.searchParams.set('key', key)
+    const version = assetUrl.searchParams.get('romv') || ''
+    if (version) endpoint.searchParams.set('romv', version)
+    return endpoint.href
+  } catch { return null }
+}
+
 function etagVersion(etag: string): string {
   return etag.replace(/^W\//, '').replace(/"/g, '').trim()
 }
@@ -95,14 +110,13 @@ export function fetchRomIntegrityManifest(rawUrl: string, parentSignal?: AbortSi
   if (old) manifestCache.delete(cacheKey)
 
   const pending = (async () => {
-    const endpoint = new URL(`${configuredApi(rawUrl)}/integrity`)
-    endpoint.searchParams.set('key', key)
-    if (version) endpoint.searchParams.set('romv', version)
+    const manifestUrl = romIntegrityManifestUrl(rawUrl)
+    if (!manifestUrl) return null
     // 清单请求按 key + romv 共用；不能绑到第一个标签页的 AbortSignal，否则它取消后会连带取消
     // 同一时刻另一个播放器正在等待的请求。调用方取消后只忽略结果，2.5 秒上限仍会回收请求。
     const timed = withTimeout(undefined, 2_500)
     try {
-      const response = await fetch(endpoint, { cache: version ? 'force-cache' : 'no-store', signal: timed.signal })
+      const response = await fetch(manifestUrl, { cache: version ? 'force-cache' : 'no-store', signal: timed.signal })
       if (response.status === 404 || response.status === 405) {
         // 404 是旧对象尚未回填的兼容状态；上传器与迁移脚本会逐步消除它。
         warnOnce(key, '此资源还没有 SHA-256 清单，当前仍按旧有 HTTP / 大小 / 格式检查加载')

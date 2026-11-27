@@ -76,8 +76,13 @@ const assetSizesText = /window\.EKA2L1_ASSET_SIZES\s*=\s*(\{[^}]+\})\s*;?/.exec(
 if (!assetSizesText) fail('js/build_id.js 缺少核心文件大小，播放器无法校验截断下载')
 let assetSizes
 try { assetSizes = JSON.parse(assetSizesText) } catch { fail('js/build_id.js 的核心文件大小不是有效 JSON') }
+const assetIntegrityText = /window\.EKA2L1_ASSET_INTEGRITY\s*=\s*(\{[^}]+\})\s*;?/.exec(buildIdJs)?.[1]
+if (!assetIntegrityText) fail('js/build_id.js 缺少核心 SHA-256 摘要，播放器无法校验核心内容')
+let assetIntegrity
+try { assetIntegrity = JSON.parse(assetIntegrityText) } catch { fail('js/build_id.js 的核心 SHA-256 摘要不是有效 JSON') }
 for (const [kind, rel] of [['wasm', 'eka2l1.wasm'], ['data', 'eka2l1.data']]) {
   if (assetSizes[kind] !== manifest.files[rel]?.bytes) fail(`js/build_id.js 的 ${kind} 大小与 runtime.json 不一致`)
+  if (assetIntegrity[kind] !== manifest.files[rel]?.sha256) fail(`js/build_id.js 的 ${kind} SHA-256 与 runtime.json 不一致`)
 }
 const sourceDoc = readFileSync(join(dir, 'SOURCE.md'), 'utf8')
 if (!sourceDoc.includes(EKA2L1_UPSTREAM_COMMIT)) fail('SOURCE.md 没有标出对应上游提交')

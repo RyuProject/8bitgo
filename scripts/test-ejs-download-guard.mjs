@@ -92,7 +92,8 @@ const stalledBody = (bytes) => new ReadableStream({
     /Download failed/,
     '包体卡在 100% 时必须 reject，交给播放器重试',
   )
-  assert.ok(progress.some(([phase, pct]) => phase === 'downloading' && pct === 100), '确实先到了 100%')
+  assert.ok(progress.some(([phase, pct]) => phase === 'downloading' && pct === 99), '完整字节到达后保持在 99%，等待完整性校验')
+  assert.ok(!progress.some(([phase, pct]) => phase === 'downloading' && pct >= 100), '校验完成前不能把进度报成 100%')
   // 缩放后理论上约 1 秒；保留 8 秒事件循环余量，同时抓住未缩放的 20 秒超时。
   assert.ok(Date.now() - started < 8000, '按缩放后的 20 秒中止')
 }
@@ -478,9 +479,13 @@ const rangeHeaders = (etag, contentRange, contentLength) => ({
   const xhr = fakeXhr({ bytes: new Uint8Array([4, 3, 2, 1]) })
   const { __classes } = makeContext({ fetchImpl: async () => unreadableResponse(url), indexedDB: undefined, XMLHttpRequest: xhr.X })
   const downloader = new __classes.Downloader(null, null)
-  const item = await downloader.downloadFile(url, 'Core', 'GET', {}, null, null, null, 30000, 'arraybuffer')
+  const progress = []
+  const item = await downloader.downloadFile(url, 'Core', 'GET', {}, null, (...event) => progress.push(event), null, 30000, 'arraybuffer')
   assert.deepEqual(xhr.opened, [['GET', url]], 'XHR 必须用响应地址重取（块内的 t 是 Content-Length，不是 URL）')
   assert.deepEqual([...item.files[0].bytes], [4, 3, 2, 1], 'XHR 拿到的整份字节交给引擎，不能拼上流里读到的前半段')
+  assert.ok(progress.some(([phase, pct]) => phase === 'downloading' && pct === 99), 'XHR 收齐字节后也要等核心校验完成')
+  assert.ok(!progress.some(([phase, pct]) => phase === 'downloading' && pct >= 100), 'XHR 不能提前报告下载 100%')
+  assert.ok(progress.some(([phase, pct]) => phase === 'complete' && pct === 100), '只在下载器收尾后报告 100%')
 }
 {
   const url = 'https://8bitgo.test/emulatorjs/cores/melondsds-wasm.data?v=1'

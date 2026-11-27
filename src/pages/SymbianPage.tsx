@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { EKA2L1_BUILD_ID, EKA2L1_RUNTIME_DIR } from '@/emulator/eka2l1Runtime'
 import { useT } from '@/services/i18n'
 import { fetchPlatformBios, platformBiosUrlSync, usePlatformBiosUrl } from '@/services/platformBios'
+import { romIntegrityManifestUrl } from '@/services/romIntegrity'
 import { useSeo } from '@/services/seo'
 
 const EKA2L1_WEB_SOURCE = 'https://github.com/zixing131/EKA2L1-WEB'
@@ -28,6 +29,9 @@ export function SymbianPage() {
     try {
       if (firmwareUrl) sessionStorage.setItem('8bitgo.eka2l1.defaultFirmwareUrl', firmwareUrl)
       else sessionStorage.removeItem('8bitgo.eka2l1.defaultFirmwareUrl')
+      const integrityUrl = firmwareUrl ? romIntegrityManifestUrl(firmwareUrl) : null
+      if (integrityUrl) sessionStorage.setItem('8bitgo.eka2l1.defaultFirmwareIntegrityUrl', integrityUrl)
+      else sessionStorage.removeItem('8bitgo.eka2l1.defaultFirmwareIntegrityUrl')
     } catch {
       // 浏览器禁用 sessionStorage 时仍可手动在模拟器中选择固件。
     }

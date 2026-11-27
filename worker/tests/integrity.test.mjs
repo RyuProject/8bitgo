@@ -150,9 +150,41 @@ test('aligned and unaligned optical-disc Range responses are checked before reac
 test('integrity capability is advertised and legacy objects remain readable during backfill', async () => {
   const env = environment()
   const ping = await worker.fetch(req('/ping'), env)
-  assert.equal((await ping.json()).features.integrityManifest, true)
+  const features = (await ping.json()).features
+  assert.equal(features.integrityManifest, true)
+  assert.equal(features.requireAllRomIntegrity, false, '默认保留旧资源兼容，不能在未盘点时意外锁死游戏')
   const legacyKey = 'roms/nes/integrity-legacy-test.nes'
   env.ROMS.seed(legacyKey, bytes)
   assert.equal((await worker.fetch(req(`/${legacyKey}`), env)).status, 200)
   assert.equal((await worker.fetch(req(`/integrity?key=${encodeURIComponent(legacyKey)}`), env)).status, 404)
+})
+
+test('global strict mode fails closed for unbackfilled ROMs and allows verified legacy objects', async () => {
+  const env = environment()
+  env.REQUIRE_ALL_ROM_INTEGRITY = 'true'
+  const ping = await worker.fetch(req('/ping'), env)
+  assert.equal((await ping.json()).features.requireAllRomIntegrity, true)
+  const strictKey = 'roms/nes/integrity-strict-legacy.nes'
+  const object = env.ROMS.seed(strictKey, bytes)
+  const path = `/${strictKey}?romv=${object.etag}`
+
+  const blocked = await worker.fetch(req(path), env)
+  assert.equal(blocked.status, 503)
+  assert.equal((await blocked.json()).code, 'integrity_manifest_missing')
+  const manifestBlocked = await worker.fetch(req(`/integrity?key=${encodeURIComponent(strictKey)}`), env)
+  assert.equal(manifestBlocked.status, 503)
+  assert.equal((await manifestBlocked.json()).code, 'integrity_manifest_missing')
+
+  const published = await worker.fetch(req(`/integrity?key=${encodeURIComponent(strictKey)}`, 'POST', {
+    key: strictKey, size: bytes.length, etag: object.httpEtag, manifest: { ...payload(), key: strictKey },
+  }, {}, true), env)
+  assert.equal(published.status, 200)
+  const loaded = await worker.fetch(req(path), env)
+  assert.equal(loaded.status, 200)
+  assert.equal(loaded.headers.get('X-8BitGo-Integrity-Required'), 'sha256-v1')
+  assert.deepEqual(new Uint8Array(await loaded.arrayBuffer()), bytes)
+
+  const coversObject = env.ROMS.seed('roms/covers/test.webp', bytes)
+  const covers = await worker.fetch(req(`/roms/covers/test.webp?romv=${coversObject.etag}`), env)
+  assert.equal(covers.status, 200, '全局模式只强制 ROM / BIOS，不拦封面')
 })

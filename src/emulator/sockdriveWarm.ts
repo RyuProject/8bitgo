@@ -15,6 +15,55 @@ export interface SockdriveWarmFile {
 
 export type SockdriveRuntimePreload = 'default' | 'none'
 
+/** 预热只计数不留字节；元数据给出的长度是硬上限，不能信任代理的 Content-Length。 */
+export async function drainSockdriveWarmResponse(
+  response: Response,
+  expectedBytes: number,
+  onChunk?: () => void,
+): Promise<number> {
+  if (!Number.isSafeInteger(expectedBytes) || expectedBytes <= 0) throw new RangeError('Sockdrive 预热长度无效')
+  const encoding = response.headers.get('content-encoding')
+  const declaredLength = Number(response.headers.get('content-length'))
+  const hasDeclaredLength = Number.isSafeInteger(declaredLength) && declaredLength >= 0
+  if (!encoding && hasDeclaredLength && declaredLength > expectedBytes) {
+    void response.body?.cancel().catch(() => {})
+    throw new Error(`长度超过 ${expectedBytes}`)
+  }
+
+  if (!response.body) {
+    // 没有流时只能接受未压缩且长度已精确声明的对象，才可证明 arrayBuffer 不会超出硬上限。
+    if (encoding || !hasDeclaredLength || declaredLength !== expectedBytes) {
+      throw new Error('浏览器不支持安全流式读取 Sockdrive 分块')
+    }
+    const bytes = await response.arrayBuffer()
+    if (bytes.byteLength !== expectedBytes) throw new Error(`长度 ${bytes.byteLength}，应为 ${expectedBytes}`)
+    return bytes.byteLength
+  }
+
+  const reader = response.body.getReader()
+  let loaded = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!value) continue
+      if (loaded + value.byteLength > expectedBytes) {
+        await reader.cancel().catch(() => {})
+        throw new Error(`长度超过 ${expectedBytes}`)
+      }
+      loaded += value.byteLength
+      onChunk?.()
+    }
+  } catch (error) {
+    await reader.cancel(error).catch(() => {})
+    throw error
+  } finally {
+    try { reader.releaseLock() } catch { /* body 终止时无需二次释放 */ }
+  }
+  if (loaded !== expectedBytes) throw new Error(`长度 ${loaded}，应为 ${expectedBytes}`)
+  return loaded
+}
+
 /** 只读启动清单也要按流量上限逐块读；缺 Content-Length 的代理响应不能用 arrayBuffer 无界分配。 */
 export async function readBoundedResponseBytes(response: Response, maxBytes: number): Promise<Uint8Array> {
   if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) throw new RangeError('响应体上限无效')

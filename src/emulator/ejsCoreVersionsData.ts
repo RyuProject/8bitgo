@@ -102,7 +102,7 @@ export const EJS_CORE_VERSIONS: Readonly<Record<string, string>> = Object.freeze
   "cores/metadata/snes9x.json": "dc7ac963eb7935a7",
   "cores/metadata/stella2014.json": "c9920b95db48f678",
   "cores/metadata/vice_x64sc.json": "5c50bc4ff5546a2c",
-  "emulator.min.js": "d878e73b024dc294",
+  "emulator.min.js": "42936603ffd51cc4",
   "emulator.min.css": "6c7b0ae656c00b8f",
   "loader.js": "968fa7e61032e49c",
   "compression/extract7z.js": "4ac9933b995a516c",

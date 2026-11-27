@@ -199,6 +199,8 @@ const PREVIEW_VIDEO_CACHE_MAX_BYTES = 32 * 1024 * 1024
 const previewVideoFills = new Set()
 export function edgeCacheEligible(request, url, cors) {
   if (request.method !== 'GET' || cors['Access-Control-Allow-Origin'] !== '*') return false
+  // J2ME 服务端会把整份 JAR 缓冲后交给 CheerpJ；这条专用路径必须直读 R2 并逐块验清单，不能命中旧边缘缓存。
+  if (request.headers.get('X-8BG-Verify-Full') === 'sha256-v1') return false
   // Cache API 的普通 URL 键只存整份 200；分片必须走下面独立的、带范围的私有键。
   if (request.headers.has('Range')) return false
   if (url.searchParams.has(RANGE_CACHE_PARAM) || url.searchParams.has('__8bg_integrity_retry')) return false
@@ -523,8 +525,8 @@ async function loadIntegrityManifestFromR2(env, key, etag, size, cacheKey) {
   }
   return manifest
 }
-async function integrityGateFor(env, key, object, cors) {
-  const required = object?.customMetadata?.['8bitgo-integrity-required'] === 'sha256-v1'
+async function integrityGateFor(env, key, object, cors, forceRequired = false) {
+  const required = forceRequired || romIntegrityRequired(env, key, object)
   if (!integrityKeyValid(key)) {
     if (!required) return false
     return json({ error: '完整性标记只允许用于 roms/ 下的 ROM / BIOS', code: 'invalid_integrity_key' },
@@ -548,7 +550,12 @@ async function integrityGateFor(env, key, object, cors) {
 }
 async function markCachedIntegrityResponse(env, key, response, cors) {
   if (!integrityKeyValid(key) || response.status !== 200) return response
-  const required = response.headers.get('X-8BitGo-Integrity-Required') === 'sha256-v1'
+  const alreadyMarkedRequired = response.headers.get('X-8BitGo-Integrity-Required') === 'sha256-v1'
+  const required = romIntegrityRequired(env, key, {
+    customMetadata: alreadyMarkedRequired
+      ? { '8bitgo-integrity-required': 'sha256-v1' }
+      : {},
+  })
   const etag = response.headers.get('ETag') || ''
   const size = Number(response.headers.get('Content-Length'))
   if (!etag || !Number.isSafeInteger(size) || size <= 0) {
@@ -566,7 +573,7 @@ async function markCachedIntegrityResponse(env, key, response, cors) {
     await response.body?.cancel().catch(() => {})
     return result
   }
-  if (result !== true || required) return response
+  if (result !== true || alreadyMarkedRequired) return response
   const headers = new Headers(response.headers)
   headers.set('X-8BitGo-Integrity-Required', 'sha256-v1')
   return new Response(response.body, r2BodyResponseInit(headers, response.status, response.statusText))
@@ -582,6 +589,10 @@ function validIntegrityManifest(value, key, size) {
     Array.isArray(value.blocks) && value.blocks.length === count &&
     value.blocks.every(hash => typeof hash === 'string' && /^[a-f0-9]{64}$/.test(hash))
 }
+function romIntegrityRequired(env, key, object) {
+  return object?.customMetadata?.['8bitgo-integrity-required'] === 'sha256-v1' ||
+    (env.REQUIRE_ALL_ROM_INTEGRITY === 'true' && integrityKeyValid(key))
+}
 async function handleIntegrity(request, env, url, cors) {
   const key = url.searchParams.get('key') || ''
   if (!integrityKeyValid(key)) throw new HttpError(400, '完整性清单只支持 roms/ 下的 ROM 与 BIOS', 'invalid_integrity_key')
@@ -595,7 +606,7 @@ async function handleIntegrity(request, env, url, cors) {
     }
     const manifest = await readIntegrityManifest(env, key, object.httpEtag, object.size)
     if (!manifest) {
-      const required = object.customMetadata?.['8bitgo-integrity-required'] === 'sha256-v1'
+      const required = romIntegrityRequired(env, key, object)
       return json({ error: 'integrity manifest missing', ...(required ? { code: 'integrity_manifest_missing' } : {}) },
         { ...cors, 'Cache-Control': 'no-store' }, required ? 503 : 404)
     }
@@ -709,7 +720,8 @@ function integrityManifestHeader(request) {
  */
 async function verifyIntegrityRangeResponse(request, env, response) {
   if (response.status !== 206) return response
-  const required = response.headers.get('X-8BitGo-Integrity-Required') === 'sha256-v1'
+  const required = response.headers.get('X-8BitGo-Integrity-Required') === 'sha256-v1' ||
+    request.headers.get('X-8BG-Require-Integrity') === 'sha256-v1'
   const requested = /^bytes=(\d+)-(\d+)$/.exec(request.headers.get('Range') || '')
   let key
   try { key = decodeURIComponent(new URL(request.url).pathname.replace(/^\/+/, '')) }
@@ -799,6 +811,92 @@ async function verifyIntegrityRangeResponse(request, env, response) {
     console.warn('[rom-integrity] range response differed from the ETag-bound R2 blocks; repaired from R2')
   }
   return new Response(correct, r2BodyResponseInit(headers, 206, response.statusText))
+}
+/**
+ * J2ME 的 CheerpJ 通过同源代理读取完整 JAR，响应不会经过浏览器的 ROM loader。
+ * 专用请求头要求 Worker 在字节离开 R2 前逐个 SHA-256 分块校验；每次只缓存一个清单块，
+ * 因而大 JAR 也不会为了验完整文件而整体读入 Worker 内存。代理会缓冲到 EOF 后才交给核心，
+ * 所以中途校验失败的流不会成为一份可运行的 JAR。
+ */
+async function verifyIntegrityFullResponse(request, env, response, cors) {
+  if (request.method !== 'GET' || request.headers.get('X-8BG-Verify-Full') !== 'sha256-v1' ||
+      response.status !== 200) return response
+  let key
+  try { key = decodeURIComponent(new URL(request.url).pathname.replace(/^\/+/, '')) }
+  catch { key = '' }
+  const etag = response.headers.get('ETag') || ''
+  const size = Number(response.headers.get('Content-Length'))
+  const required = response.headers.get('X-8BitGo-Integrity-Required') === 'sha256-v1'
+  if (!integrityKeyValid(key) || !etag || !Number.isSafeInteger(size) || size <= 0 || !response.body ||
+      response.headers.has('Content-Encoding')) {
+    await response.body?.cancel().catch(() => {})
+    return json({ error: 'J2ME 完整 JAR 缺少可验证的版本、长度或正文', code: 'integrity_full_invalid' },
+      { ...cors, 'Cache-Control': 'no-store' }, 502)
+  }
+  let manifest
+  try { manifest = await readIntegrityManifest(env, key, etag, size) }
+  catch (error) {
+    await response.body.cancel().catch(() => {})
+    console.warn('[rom-integrity] full JAR manifest unavailable', error instanceof Error ? error.message : String(error))
+    return json({ error: 'J2ME 完整 JAR SHA-256 清单不可用', code: 'integrity_manifest_unavailable' },
+      { ...cors, 'Cache-Control': 'no-store' }, 503, { 'Retry-After': '2' })
+  }
+  if (!manifest) {
+    await response.body.cancel().catch(() => {})
+    return json({ error: 'J2ME 完整 JAR 缺少当前版本 SHA-256 清单', code: 'integrity_manifest_missing' },
+      { ...cors, 'Cache-Control': 'no-store' }, 503)
+  }
+  const headers = new Headers(response.headers)
+  headers.set('X-8BG-Integrity-Verified', 'sha256-v1')
+  if (!required) headers.set('X-8BitGo-Integrity-Required', 'sha256-v1')
+  let total = 0
+  let blockIndex = 0
+  let pending = []
+  let pendingLength = 0
+  const body = response.body.pipeThrough(new TransformStream({
+    async transform(chunk, controller) {
+      if (!(chunk instanceof Uint8Array)) throw new TypeError('J2ME integrity stream returned non-byte chunk')
+      if (total + chunk.byteLength > size) throw new HttpError(502, 'J2ME 完整 JAR 超过声明长度', 'integrity_full_invalid')
+      total += chunk.byteLength
+      let offset = 0
+      while (offset < chunk.byteLength) {
+        const take = Math.min(manifest.blockBytes - pendingLength, chunk.byteLength - offset)
+        pending.push(chunk.subarray(offset, offset + take))
+        pendingLength += take
+        offset += take
+        if (pendingLength !== manifest.blockBytes) continue
+        await verifyFullIntegrityBlock(pending, pendingLength, manifest, blockIndex++)
+        const verified = new Uint8Array(pendingLength)
+        let written = 0
+        for (const part of pending) { verified.set(part, written); written += part.byteLength }
+        controller.enqueue(verified)
+        pending = []
+        pendingLength = 0
+      }
+    },
+    async flush(controller) {
+      if (total !== size) throw new HttpError(502, 'J2ME 完整 JAR 长度与对象版本不符', 'integrity_full_invalid')
+      if (pendingLength) {
+        await verifyFullIntegrityBlock(pending, pendingLength, manifest, blockIndex++)
+        const verified = new Uint8Array(pendingLength)
+        let written = 0
+        for (const part of pending) { verified.set(part, written); written += part.byteLength }
+        controller.enqueue(verified)
+      }
+      if (blockIndex !== manifest.blocks.length) throw new HttpError(502, 'J2ME 完整 JAR SHA-256 分块数量不符', 'integrity_full_invalid')
+    },
+  }))
+  return new Response(body, r2BodyResponseInit(headers, response.status, response.statusText))
+}
+async function verifyFullIntegrityBlock(parts, length, manifest, blockIndex) {
+  const expected = manifest.blocks[blockIndex]
+  if (!expected) throw new HttpError(502, 'J2ME 完整 JAR SHA-256 分块数量超出清单', 'integrity_full_invalid')
+  const block = new Uint8Array(length)
+  let offset = 0
+  for (const part of parts) { block.set(part, offset); offset += part.byteLength }
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', block))
+  const actual = Array.from(digest, byte => byte.toString(16).padStart(2, '0')).join('')
+  if (actual !== expected) throw new HttpError(502, `J2ME 完整 JAR 第 ${blockIndex + 1} 块 SHA-256 不符`, 'integrity_source_corrupt')
 }
 function markerKeyValid(key) {
   return typeof key === 'string' && key.startsWith(MULTIPART_PREFIX) && encoder.encode(key).length <= 1024 &&
@@ -1190,7 +1288,8 @@ async function handle(request, env, url, cors) {
       multipart: true,
       // 制作机在启用自动队列前会检查这两个能力；旧 Worker 不会误接收随后必坏的 Brotli 产物。
       features: { privateStagingRead: true, contentEncodingUpload: true, sockdriveSourceCopy: true,
-        integrityManifest: true, integrityAtomicUpload: true, integrityBackfill: true },
+        integrityManifest: true, integrityAtomicUpload: true, integrityBackfill: true,
+        requireAllRomIntegrity: env.REQUIRE_ALL_ROM_INTEGRITY === 'true' },
       time: new Date().toISOString(),
     }, cors)
   }
@@ -1293,7 +1392,8 @@ async function handle(request, env, url, cors) {
    */
   const objectVersion = request.headers.has('Range') ? (url.searchParams.get('romv') || '') : romvVersion(url)
   return serveObject(request, env, key, cors, cachePolicy(env, url), guessType, objectVersion, {
-    integrityGate: (object) => integrityGateFor(env, key, object, cors),
+    integrityGate: (object) => integrityGateFor(env, key, object, cors,
+      request.headers.get('X-8BG-Require-Integrity') === 'sha256-v1'),
   })
 }
 export default {
@@ -1368,6 +1468,8 @@ export default {
     }
     let response
     try { response = await handle(request, env, url, cors) }
+    catch (error) { response = storageFailure(error, cors) }
+    try { response = await verifyIntegrityFullResponse(request, env, response, cors) }
     catch (error) { response = storageFailure(error, cors) }
     try { response = await verifyIntegrityRangeResponse(request, env, response) }
     catch (error) { response = storageFailure(error, cors) }

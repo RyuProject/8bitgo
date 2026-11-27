@@ -11,6 +11,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { webcrypto } from 'node:crypto'
 import vm from 'node:vm'
 import { EKA2L1_SITE_SCRIPTS } from './lib/eka2l1-site-scripts.mjs'
 import { INLINE_ISOLATED_PLATFORMS, isInlineIsolatedPlatform } from '../shared/inline-isolated-platforms.js'
@@ -58,6 +59,11 @@ function throwsCode(fn, code) {
     assert.equal(err.code, code, `期望 ${code}，实际 ${err.code}`)
     return true
   })
+}
+
+async function sha256(bytes) {
+  return Array.from(new Uint8Array(await webcrypto.subtle.digest('SHA-256', bytes)),
+    (byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
 /** 只实现播放器用到的几个 Emscripten FS 方法 */
@@ -154,6 +160,29 @@ await asyncTest('核心资源：短包自动重取，按 data 声明长度校验
   assert.equal(calls, 1, '超过安全上限属于确定性错误，不应重复下载')
 })
 
+await asyncTest('核心资源：完整字节在交给 Emscripten 前通过 SHA-256，损坏包重取仍失败关闭', async () => {
+  const valid = Uint8Array.from([1, 2, 3, 4])
+  const expectedSha256 = await sha256(valid)
+  let calls = 0
+  const result = await P.fetchCoreAsset(async () => {
+    calls++
+    return new Response(valid, { headers: { 'content-type': 'application/octet-stream' } })
+  }, 'https://8bitgo.test/eka2l1.data', {
+    expectedBytes: valid.length, expectedSha256, maxBytes: 8, idleTimeoutMs: 100, retries: 1,
+  })
+  assert.equal(calls, 1)
+  assert.deepEqual([...result.bytes], [...valid])
+
+  calls = 0
+  await assert.rejects(P.fetchCoreAsset(async () => {
+    calls++
+    return new Response(Uint8Array.from([4, 3, 2, 1]), { headers: { 'content-type': 'application/octet-stream' } })
+  }, 'https://8bitgo.test/eka2l1.data', {
+    expectedBytes: valid.length, expectedSha256, maxBytes: 8, idleTimeoutMs: 100, retries: 1,
+  }), /SHA-256 不匹配/)
+  assert.equal(calls, 2, '摘要不符最多重取一次，不能把坏核心交给 Emscripten')
+})
+
 await asyncTest('核心资源：停流有空闲时限，重试期间不把调用方取消当网络故障', async () => {
   let calls = 0
   const result = await P.fetchCoreAsset(async () => {
@@ -181,13 +210,16 @@ await asyncTest('核心预热：同一个播放页只启动一次 EKA2L1.boot', 
   let mountCalls = 0
   let redraws = 0
   const requestedCoreUrls = []
+  const expectedData = Uint8Array.from([1, 2, 3])
+  const expectedWasm = Uint8Array.from([0, 97, 115, 109])
   const canvas = { width: 176, height: 208, style: {}, focus() {} }
   const fakeDocument = { hidden: false, getElementById: () => canvas, addEventListener() {} }
   let context
   const fakeRoot = {
     document: fakeDocument,
     location: { href: 'https://8bitgo.test/eka2l1/vtest/play.html', origin: 'https://8bitgo.test' },
-    EKA2L1_ASSET_SIZES: { wasm: 4, data: 3 },
+    EKA2L1_ASSET_SIZES: { wasm: expectedWasm.length, data: expectedData.length },
+    EKA2L1_ASSET_INTEGRITY: { wasm: await sha256(expectedWasm), data: await sha256(expectedData) },
     innerWidth: 176,
     innerHeight: 208,
     addEventListener() {},
@@ -238,14 +270,14 @@ await asyncTest('核心预热：同一个播放页只启动一次 EKA2L1.boot', 
     ...fakeRoot,
     document: fakeDocument,
     MutationObserver: fakeRoot.MutationObserver,
-    Blob, TextEncoder, TextDecoder, URL, Headers, Response, AbortController, DOMException,
+    Blob, TextEncoder, TextDecoder, URL, Headers, Response, AbortController, DOMException, crypto: webcrypto,
     setTimeout, clearTimeout, console, performance,
   })
   const nativeFetch = async (url) => {
     requestedCoreUrls.push(String(url))
     const isData = String(url).endsWith('.data?v=test')
     return new Response(
-      Uint8Array.from(isData ? [1, 2, 3] : [0, 97, 115, 109]),
+      isData ? expectedData : expectedWasm,
       { headers: { 'content-type': isData ? 'application/octet-stream' : 'application/wasm' } },
     )
   }

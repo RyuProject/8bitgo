@@ -7,8 +7,68 @@ const {
   sockdriveConversionConfig,
   sockdriveConversionProgress,
   parseSockdriveOutputSummary,
+  validatePublishedSockdrivePlan,
+  readBoundedSockdriveJson,
+  publishedSockdrivePlansMatch,
   validateSockdriveConversionRequest,
 } = await import('../src/sockdrive-conversion.js')
+
+const validPublishedPlan = validatePublishedSockdrivePlan({
+  size: 3,
+  ahead_read: 2048,
+  range_count: 2,
+  sector_size: 512,
+  dropped_ranges: [],
+  small_ranges: [1],
+  preload_ranges: [0, 1],
+}, [1])
+assert.equal(validPublishedPlan.sizeBytes, 3072)
+assert.equal(validPublishedPlan.rangeCount, 2)
+assert.deepEqual([...validPublishedPlan.small], [1])
+assert.deepEqual(validPublishedPlan.profile, [1], '恢复校验允许小范围通过 preload.raw 预取')
+assert.equal(publishedSockdrivePlansMatch(
+  validPublishedPlan,
+  validatePublishedSockdrivePlan({
+    size: 3, ahead_read: 2048, range_count: 2, sector_size: 512,
+    dropped_ranges: [], small_ranges: [1], preload_ranges: [0, 1],
+  }, [1]),
+), true, '玩家缓存路径与绕过缓存路径的同一计划应匹配')
+assert.equal(publishedSockdrivePlansMatch(
+  validPublishedPlan,
+  validatePublishedSockdrivePlan({
+    size: 3, ahead_read: 1536, range_count: 2, sector_size: 512,
+    dropped_ranges: [], small_ranges: [1], preload_ranges: [0, 1],
+  }, [1]),
+), false, '只比 range_count 会漏掉同分块数但读取布局不同的坏缓存')
+assert.throws(() => validatePublishedSockdrivePlan({
+  size: 3, ahead_read: 2048, range_count: 2, sector_size: 512,
+  dropped_ranges: [1], small_ranges: [], preload_ranges: [0],
+}, [1]), /空范围或重复索引/, '预取配置不能引用已丢弃分块')
+assert.throws(() => validatePublishedSockdrivePlan({
+  size: 3, ahead_read: 2048, range_count: 2, sector_size: 512,
+  dropped_ranges: [], small_ranges: [], preload_ranges: [2],
+}, [0]), /preload_ranges 含越界/)
+assert.throws(() => validatePublishedSockdrivePlan({
+  size: 3, ahead_read: 2048, range_count: 2, sector_size: 512,
+  dropped_ranges: [], small_ranges: [], preload_ranges: [0],
+}, [0, 0]), /preload_ranges\.metaj 含越界、空范围或重复索引/)
+
+assert.deepEqual(await readBoundedSockdriveJson(new Response('{"ok":true}'), '测试清单', 32), { ok: true })
+let boundedStreamCanceled = false
+const oversizedJson = new Response(new ReadableStream({
+  start(controller) { controller.enqueue(new Uint8Array([1, 2, 3, 4])) },
+  cancel() { boundedStreamCanceled = true },
+}))
+await assert.rejects(() => readBoundedSockdriveJson(oversizedJson, '测试清单', 3), /超过 3 字节/)
+assert.equal(boundedStreamCanceled, true, '超长远端 JSON 必须立即取消读取')
+let unboundedArrayBufferCalled = false
+const noStreamJson = {
+  headers: new Headers(),
+  body: null,
+  arrayBuffer: async () => { unboundedArrayBufferCalled = true; return new TextEncoder().encode('[]').buffer },
+}
+await assert.rejects(() => readBoundedSockdriveJson(noStreamJson, '测试清单', 16), /没有可限制大小的响应流/)
+assert.equal(unboundedArrayBufferCalled, false, '未知长度且没有流时不能调用 arrayBuffer')
 
 const env = {
   PSP_CONVERT_WORKER_URL: 'https://worker.example.test/',
@@ -154,8 +214,17 @@ assert.match(queue, /remoteHead\(config, job\.target_object_key\)/)
 assert.match(queue, /'Accept-Encoding': job\.encoding === 'identity' \? 'identity' : job\.encoding/)
 assert.match(queue, /method: readsBody \? 'GET' : 'HEAD'/)
 assert.match(queue, /for \(let pass = 1; pass <= 2; pass\+\+\)/)
-assert.match(queue, /边缘缓存可能损坏/)
-assert.match(queue, /metadata\.ahead_read > 16 \* 1024 \* 1024/, '公开 Sockdrive 单块上限要在绑定前复核')
+assert.match(queue, /玩家路径第 \$\{pass\} 次读取的 Sockdrive 清单与已发布产物不一致/)
+const publishedPlanCheck = queue.slice(
+  queue.indexOf('export function validatePublishedSockdrivePlan'),
+  queue.indexOf('function sameRequest'),
+)
+assert.match(publishedPlanCheck, /aheadRead > 16 \* 1024 \* 1024/, '公开 Sockdrive 单块上限要在绑定前复核')
+assert.match(queue, /validatePublishedSockdrivePlan\(metadata, profile\)/)
+assert.match(queue, /readBoundedSockdriveJson\(metadataResponse, '公开 sockdrive\.metaj'\)/)
+assert.match(queue, /publishedSockdrivePlansMatch\(plan, canonicalPlan\)/, '玩家路径缓存必须与完整发布计划一致')
+assert.doesNotMatch(queue, /canonical\.json\(\)/, '玩家路径不能无界解析公开 JSON')
+assert.match(queue, /plan\.small\.size \? 'preload\.raw'/, '所有有效分块都是小范围时需用预取文件验证')
 
 assert.doesNotMatch(queue, /必须先配置 DOSBox-X 和共享 Windows 系统镜像/)
 // 重试与清扫器的竞态：重新排队必须在同一条 UPDATE 里核对源 ZIP 还在（发布已开始的除外），0 行要给出明确原因

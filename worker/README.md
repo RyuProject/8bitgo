@@ -42,6 +42,16 @@ npx wrangler deploy
 
 网站可继续把 ROM Worker 地址用作 `VITE_ROM_BASE_URL` 或后台 ROM 存储服务地址。公开读取仍无需口令；修改、列表和上传仍只接受 `Authorization: Bearer <ADMIN_TOKEN>`。CORS 不是权限控制，不阻止非浏览器请求。
 
+### ROM / BIOS 完整性迁移
+
+新上传的 `roms/` 对象已要求同一次上传发布 ETag 绑定的 SHA-256 分块清单。旧对象在迁移期间仍兼容读取；先从仓库根目录运行只读盘点：
+
+```bash
+npm run rom:integrity-backfill -- --prefix=roms/ --require-complete
+```
+
+有缺项时先运行默认只读盘点，再确认资源来源后用 `--apply` 回填；回填会为当前 R2 字节生成摘要，只能保护之后的传输，不能证明历史文件内容原本正确。再次运行 `--require-complete` 显示零缺项后，才把 `worker/wrangler.toml` 中的 `REQUIRE_ALL_ROM_INTEGRITY` 从 `"false"` 改为 `"true"` 并部署。此开关会让 `roms/` 下所有 ROM / BIOS 在摘要缺失或不可用时返回 503；`/ping` 的 `features.requireAllRomIntegrity` 可确认线上开关状态。不要在全量盘点通过前启用，否则未回填的旧游戏会被拒绝。
+
 ## HTML5 游戏素材域名
 
 `html5.8bitgo.com` 通过独立的 `WEBGAMES` 绑定只读游戏素材，不进入 ROM 上传、删除或管理接口。

@@ -349,6 +349,11 @@ export function diagnoseStartupFailure({ event, runtime, platform, detail, elaps
   if (has(/error loading emulatorjs runtime|runtimeerror|compileerror|ejs_runtime|instantiate(?:streaming)?|wasm.*(?:error|failed|unavailable|memory|instantiate)|(?:error|failed|unavailable).*wasm/)) {
     return withCore(hit('wasm_runtime', '模拟器核心初始化或运行时异常', hasPlayableMilestone ? 'runtime' : 'core_init', 'medium', 'error.wasm_runtime'))
   }
+  // PSP 挂盘请求的 5 分钟是无进展时限；只有错误原文和最后快照都确认处于流式读盘时才细分，
+  // 避免把核心下载、整包下载或其它 PPSSPP 超时误说成 ROM 故障。
+  if (runtime === 'ppsspp' && has(/ppsspp 响应超时/) && /psp 现场：模式 stream/i.test(text) && /正在流式读取游戏/i.test(text)) {
+    return hit('rom_download', 'PSP 光盘流式读取无进展超时', 'rom_download', 'medium', 'error.ppsspp_stream_timeout')
+  }
   const slowProgress = diagnoseSlowStartProgress(event, relevantLogs, hit, downloadCompleteAtMs)
   if (slowProgress) return slowProgress
   if (has(/加载进度：阶段 rom|loading progress: phase rom/) && downloadCompleteAtMs === null) {

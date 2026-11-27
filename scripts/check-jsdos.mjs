@@ -30,6 +30,7 @@ const declared = pathsSource.match(/export const JSDOS_VERSION\s*=\s*['"]([^'"]+
 const assetVersion = pathsSource.match(/export const JSDOS_ASSET_VERSION\s*=\s*['"]([^'"]+)['"]/)?.[1]
 if (declared !== version) fail(`src/emulator/paths.ts 声明 ${declared || '空'}，npm 安装的是 ${version}`)
 if (!assetVersion || !assetVersion.startsWith(`${version}-`)) fail(`JSDOS_ASSET_VERSION 没有跟随当前上游版本 ${version}`)
+const pinnedEntrySri = pathsSource.match(/export const JSDOS_SCRIPT_INTEGRITY\s*=\s*['"](sha256-[A-Za-z0-9+/]+=*)['"]/)?.[1]
 
 const publicDir = join(root, 'public', 'jsdos', `v${assetVersion}`)
 const runtimeDir = distMode ? join(root, 'dist', 'client', 'jsdos', `v${assetVersion}`) : publicDir
@@ -91,6 +92,13 @@ for (const file of manifest.files) {
   if (!existsSync(target)) fail(`缺文件 ${file.name}`)
   if (statSync(target).size !== file.size) fail(`${file.name} 长度不符`)
   if (sha256(target) !== file.sha256) fail(`${file.name} 摘要不符`)
+}
+const entryFile = manifest.files.find((file) => file.name === 'js-dos.js')
+const expectedEntrySri = entryFile
+  ? `sha256-${Buffer.from(entryFile.sha256, 'hex').toString('base64')}`
+  : ''
+if (!pinnedEntrySri || pinnedEntrySri !== expectedEntrySri) {
+  fail('JSDOS_SCRIPT_INTEGRITY 与当前 js-dos.js 产物不符；更新路径常量后重跑 npm run test:jsdos-runtime')
 }
 
 const required = [

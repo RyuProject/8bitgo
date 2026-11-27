@@ -172,6 +172,19 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
     { code: 'page_asset', signal: 'error.lazy_module' },
     '懒加载 chunk 的导入失败不能被粗略归成网络错误',
   )
+  const pspStreamTimeout = diagnoseStartupFailure({
+    event: 'timeout', runtime: 'ppsspp', platform: 'psp',
+    detail: 'PPSSPP 游戏加载失败：PPSSPP 响应超时',
+    diagnostics: { logs: [{ s: 'snapshot', l: 'info', m: 'PSP 现场：模式 stream，镜像 1.4GB，已读 0.0MB，核心未启动，状态「正在流式读取游戏… 已按需读取 0.0 MB」' }] },
+  })
+  assert.deepEqual(
+    { code: pspStreamTimeout.code, phase: pspStreamTimeout.phase, confidence: pspStreamTimeout.confidence, signal: pspStreamTimeout.signals[0] },
+    { code: 'rom_download', phase: 'rom_download', confidence: 'medium', signal: 'error.ppsspp_stream_timeout' },
+    'PPSSPP 只有在错误和最后快照同时确认流式读盘时才细分挂盘超时',
+  )
+  assert.equal(diagnoseStartupFailure({
+    event: 'timeout', runtime: 'ppsspp', platform: 'psp', detail: 'PPSSPP 响应超时',
+  }).signals[0], 'event.timeout', '缺少流式读盘证据时不推断 PSP 超时原因')
   assert.deepEqual(
     { code: diagnoseStartupFailure({ event: 'failed', runtime: 'page', detail: 'Error: Unable to preload CSS for cn.8bitgo.com/_cn/assets/GameDetailPage-C2JSNwpA.css' }).code,
       signal: diagnoseStartupFailure({ event: 'failed', runtime: 'page', detail: 'Error: Unable to preload CSS for cn.8bitgo.com/_cn/assets/GameDetailPage-C2JSNwpA.css' }).signals[0],
@@ -747,7 +760,14 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
     '播放器收到引擎活动后刷新启动看门狗')
   assert.match(ejs, /stopFramePerf = watchFramePerformance\(win\)/, 'iframe 的网络记录（核心下载）进诊断包')
   assert.match(read('server/src/cn-edge.js'), /res\.setHeader\('Timing-Allow-Origin', siteOrigin\)/, '加速入口要让诊断包看得到传输字节')
+  const runtimes = read('src/emulator/runtimes.ts')
+  assert.match(runtimes, /tagLazyFailure\(error, file, `\$\{id\} runtime`\)/, '运行时懒加载错误要带模块名和依赖图交给资源修复')
+  assert.match(player, /if \(lazyFailure\(error\)\)[\s\S]{0,260}setRuntimeModuleError\(/, '运行时 chunk 失败要送进页面错误边界核对与恢复')
+  assert.match(player, /if \(runtimeModuleError\) throw runtimeModuleError/, '播放器不能把 chunk 导入失败吞成普通运行时错误')
   const psp = read('src/emulator/adapters/ppsspp.ts')
+  assert.match(psp, /createVisibilityTimeout\(entry\.activityTimeoutMs \|\| MOUNT_TIMEOUT_MS/, 'PSP 桥响应空闲时限只累计页面前台时间')
+  assert.match(psp, /createVisibilityTimeout\(RANGE_PROBE_TIMEOUT_MS/, 'PSP 光盘探测不能在页面后台时被时限误中止')
+  assert.match(psp, /createVisibilityTimeout\(HOST_TIMEOUT_MS/, 'PSP iframe 初始化时限也必须暂停后台时间')
   assert.match(psp, /registerDiagnosticSnapshot\(/, 'PSP 读盘字节数与帧率 / 预读采样进快照')
   assert.match(psp, /stopFramePerf = watchFramePerformance\(win\)/, 'PSP 核心下载请求进诊断包')
   assert.match(psp, /diagLog\('ppsspp'/, 'PSP 核心错误输出进诊断包')
@@ -882,7 +902,7 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   assert.match(player, /const STARTUP_SLOW_MS = 60_000/)
   assert.match(player, /reportStartup\('slow_start', `等待 game_playable 已超过 \$\{STARTUP_SLOW_MS \/ 1000\} 秒\$\{progressTrace\.phaseNote\(\)\}`\)/)
   assert.match(player, /progressTrace\.accept\(next\)/)
-  assert.equal(player.match(/stopProgressSnapshot\(\)/g)?.length, 2, '挂载失败与卸载都要注销快照')
+  assert.equal(player.match(/stopProgressSnapshot\(\)/g)?.length, 3, '模块导入失败、挂载失败与卸载都要注销快照')
   assert.match(read('worker/src/common.js'), /'Timing-Allow-Origin'\] = '\*'/, 'ROM 对象要让诊断包看得到传输字节')
 }
 

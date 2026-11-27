@@ -264,6 +264,8 @@ export const AWAYFL_HOST_PATH = '/awayfl/host-v1/'
  */
 export const JSDOS_VERSION = '8.5.3'
 export const JSDOS_ASSET_VERSION = '8.5.3-8bitgo.11'
+/** js-dos 主入口脚本的浏览器 SRI；check-jsdos 会与同版本 runtime.json 的摘要逐字核对。 */
+export const JSDOS_SCRIPT_INTEGRITY = 'sha256-ysKDnwu0CjEstxxcIl8Rei9wUkzh6lwrEWiuBe2CIPQ='
 export const JSDOS_PATH: string = asDir(
   import.meta.env.VITE_JSDOS_PATH,
   `/jsdos/v${JSDOS_ASSET_VERSION}/`,

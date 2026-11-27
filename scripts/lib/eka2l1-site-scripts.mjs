@@ -10,7 +10,7 @@ export const EKA2L1_SITE_SCRIPTS = Object.freeze([
     source: 'scripts/eka2l1-default-firmware.js',
     published: 'js/8bitgo-default-firmware.js',
     sourceCopy: 'source/scripts/eka2l1-default-firmware.js',
-    doc: '8BitGo 还附带 `source/scripts/eka2l1-default-firmware.js`：从本站游戏页进入时，若当前浏览器尚无设备则先安装后台配置的 N-Gage QD ROM，再把选中的游戏包导入本机；`.n-gage` 包放入 E:\\n-gage，需在 Games 应用中完成安装。已有设备不会被默认固件覆盖；导入内容只保存在玩家自己的浏览器存储中。',
+    doc: '8BitGo 还附带 `source/scripts/eka2l1-default-firmware.js`：从本站游戏页进入时，若当前浏览器尚无设备则先安装后台配置的 N-Gage QD ROM，再把选中的游戏包导入本机；来自本站 R2 且已有 SHA-256 清单的固件，会在写入设备前按清单逐块校验，完整性标记要求校验但清单缺失时停止安装；`.n-gage` 包放入 E:\\n-gage，需在 Games 应用中完成安装。已有设备不会被默认固件覆盖；导入内容只保存在玩家自己的浏览器存储中。',
   },
   {
     source: 'scripts/eka2l1-ngage-card.js',
