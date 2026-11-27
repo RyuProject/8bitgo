@@ -1888,6 +1888,17 @@ export function EmulatorPlayer({
     })
   }, [platform.id, runtime, romUrl, shouldProbeNes, currentNesProbe?.ready, jsnesNetplay, jsnesCompatible, webglUnavailable, awayflChoice.ready, awayflChoice.use])
 
+  useEffect(() => {
+    if (pageRuntime?.id !== 'jsdos' || !dosSockdriveUrl) return
+    const prewarmUrl = dosSockdriveUrl
+    return () => {
+      // 页面切换时停止尚未交给开局流程的投机下载，避免旧游戏继续占用移动网络。
+      void import('./adapters/jsdos')
+        .then(({ cancelSockdrivePrewarm }) => cancelSockdrivePrewarm(prewarmUrl))
+        .catch(() => {})
+    }
+  }, [dosSockdriveUrl, pageRuntime?.id])
+
   /**
    * 玩家点击前预取本局最可能使用的适配器：播放器壳和适配器并行到达，避免把新代码块的网络往返
    * 加到真正开局之后。直播 / 云端邀请分别预取自己的运行时；未选中的平台适配器不下载。

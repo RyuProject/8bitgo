@@ -385,6 +385,9 @@ const adapter = readFileSync(new URL('../src/emulator/adapters/jsdos.ts', import
   ok(/^await makeJsdosBundle\(\s*\n\s*rom!?\.name,\s*\n\s*rom!?\.buf,/.test(call), '⭐ 普通 DOS 不先复制完整 ROM')
   ok(/startupCommands,\s*\n\s*\/\/[^\n]+\n\s*compatibleExtras,/.test(call), '⭐ 普通 DOS 把附加文件直接交给最终 bundle 一次并入')
   ok(/prepareRemoteDosBundle\(game, onProgress/.test(adapter), '⭐ 大型远端 DOS 包走 Blob 分片加载，不经过完整 ArrayBuffer')
+  ok(/const limits = \{ maxBytes: arrayBufferLimit, maxUnpackedBytes: arrayBufferLimit \}/.test(adapter), '需要重打包时，所有 DOS ROM 都有设备级 ArrayBuffer 上限')
+  ok(/maxBytes,\s*preallocateKnownLength: true/.test(adapter), '附加文件用已知长度直接填充目标缓冲，避免分片与整块副本同时驻留')
+  ok(/reservedBytes \+= maxBytes[\s\S]*?reservedBytes -= maxBytes/.test(adapter), '并行资料片下载先预留总内存预算，不会把总量乘上并发数')
   ok(/URL\.createObjectURL\(rom\.bundleBlob\)/.test(adapter), '⭐ 已带配置的 js-dos bundle 直接启动，不再复制整包重打')
   ok(/!dosboxConfig\?\.trim\(\)[\s\S]{0,120}?!startupCommands[\s\S]{0,120}?!options\.dosExtras\?\.length/.test(adapter), 'Blob 透传只在没有任何后台覆盖时启用')
   ok(

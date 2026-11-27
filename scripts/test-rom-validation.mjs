@@ -352,7 +352,28 @@ try {
   const originalFetch = globalThis.fetch
   globalThis.fetch = async () => new Response(new Uint8Array([1, 2]), { headers: { 'content-length': '3' } })
   await assert.rejects(() => fetchWithProgress('https://example.test/short.rom'), /下载不完整/)
-  globalThis.fetch = originalFetch
+  const NativeUint8Array = globalThis.Uint8Array
+  const allocatedBytes = []
+  const CountingUint8Array = function (value, ...args) {
+    if (typeof value === 'number') allocatedBytes.push(value)
+    return new NativeUint8Array(value, ...args)
+  }
+  Object.setPrototypeOf(CountingUint8Array, NativeUint8Array)
+  CountingUint8Array.prototype = NativeUint8Array.prototype
+  let preallocated
+  try {
+    globalThis.Uint8Array = CountingUint8Array
+    globalThis.fetch = async () => new Response(new NativeUint8Array([7, 8, 9]), { headers: { 'content-length': '3' } })
+    preallocated = await fetchWithProgress('https://example.test/known-length.bin', {
+      maxBytes: 3,
+      preallocateKnownLength: true,
+    })
+  } finally {
+    globalThis.Uint8Array = NativeUint8Array
+    globalThis.fetch = originalFetch
+  }
+  assert.deepEqual([...new NativeUint8Array(preallocated)], [7, 8, 9])
+  assert.deepEqual(allocatedBytes, [3], '已知长度时只申请目标缓冲，不另存分片再复制整份')
 
   const overall = createOverallRatio()
   assert.equal(overall({ phase: 'engine', ratio: 0.5 }), 0.1)

@@ -44,8 +44,9 @@ import { imageDataToBlob } from '../recorder'
 import { GP, startGamepadBridge, hasGamepadApi, type GamepadBridge } from '../gamepad'
 import { deleteSave, pullSave, pushSave } from '@/services/saves'
 import { loadGameBytes } from '../romLoader'
+import { dosLoadLimits } from '../dosLoadLimits'
 import { isRomNetworkFailure, markRomNetworkFailure } from '../loadProgress'
-import { inspectRemoteRomPack, isRomPackUrl, readBlobRange, ROM_PACK_ARRAY_BUFFER_LIMIT } from '@/services/romPack'
+import { inspectRemoteRomPack, isRomPackUrl, readBlobRange } from '@/services/romPack'
 import { prepareRemoteDosBundle } from '../dosBundleSource'
 import {
   defaultDos71SystemUrl,
@@ -754,13 +755,28 @@ async function readRom(
   | { name: string; buf: ArrayBuffer; bundleBlob?: undefined }
   | { name: string; bundleBlob: Blob; buf?: undefined }
 > {
-  if (windowsGuest && typeof game === 'string' && isRomPackUrl(game)) {
+  const browser = typeof navigator === 'undefined' ? null : navigator as Navigator & {
+    deviceMemory?: number
+    connection?: { effectiveType?: string; saveData?: boolean }
+  }
+  const loadLimits = dosLoadLimits(browser ? {
+    deviceMemory: browser.deviceMemory,
+    hardwareConcurrency: browser.hardwareConcurrency,
+    userAgent: browser.userAgent,
+    platform: browser.platform,
+    maxTouchPoints: browser.maxTouchPoints,
+    effectiveType: browser.connection?.effectiveType,
+    saveData: browser.connection?.saveData,
+  } : {})
+  const arrayBufferLimit = loadLimits.arrayBufferBytes
+  if ((!preferReadyBundleBlob || windowsGuest) && typeof game === 'string' && isRomPackUrl(game)) {
     const header = await inspectRemoteRomPack(game, signal)
-    if (header && header.originalSize > ROM_PACK_ARRAY_BUFFER_LIMIT) {
-      const gib = (header.originalSize / 1024 ** 3).toFixed(1)
-      throw new Error(
-        `这款大型 Windows 游戏尚未配置流式游戏盘（整包解开后 ${gib} GB），已停止下载以避免耗尽流量和内存。请先发布并绑定 Sockdrive。`,
-      )
+    if (header && header.originalSize > arrayBufferLimit) {
+      const mib = (header.originalSize / 1024 ** 2).toFixed(0)
+      const limitMib = (arrayBufferLimit / 1024 ** 2).toFixed(0)
+      throw new Error(windowsGuest
+        ? `这款大型 Windows 游戏解包后约 ${mib} MiB，超过此设备的安全内存载入上限（${limitMib} MiB）；已停止下载，请先发布并绑定 Sockdrive。`
+        : `这款 DOS 游戏解包后约 ${mib} MiB，超过此设备的安全内存载入上限（${limitMib} MiB）；请移除附加文件或使用内存更大的设备。`)
     }
   }
 
@@ -773,8 +789,8 @@ async function readRom(
     if (typeof game === 'string') {
       const loaded = await prepareRemoteDosBundle(game, onProgress, signal ?? new AbortController().signal)
       if (loaded.ready) return { name: loaded.name, bundleBlob: loaded.blob }
-      if (loaded.blob.size > ROM_PACK_ARRAY_BUFFER_LIMIT) {
-        throw new Error('大型 DOS 包缺少 .jsdos/dosbox.conf，无法在低内存模式下直接启动；请重新打包后上传')
+      if (loaded.blob.size > arrayBufferLimit) {
+        throw new Error(`大型 DOS 包缺少 .jsdos/dosbox.conf，超过此设备的安全内存载入上限（${(arrayBufferLimit / 1024 ** 2).toFixed(0)} MiB）；请重新打包或使用内存更大的设备`)
       }
       return { name: loaded.name, buf: await readBlobRange(loaded.blob, 0, loaded.blob.size) }
     }
@@ -787,10 +803,8 @@ async function readRom(
       }
     }
   }
-  // Range 预检在弱网超时后会退回正式下载；整包路径仍须在解码前设上限，不能让大包把手机标签页撑死。
-  const limits = windowsGuest
-    ? { maxBytes: ROM_PACK_ARRAY_BUFFER_LIMIT, maxUnpackedBytes: ROM_PACK_ARRAY_BUFFER_LIMIT }
-    : undefined
+  // 需要 ArrayBuffer 重打包的 DOS 路径按设备限量；大包先走 Blob 透传，不能让手机标签页被连续分配杀掉。
+  const limits = { maxBytes: arrayBufferLimit, maxUnpackedBytes: arrayBufferLimit }
   const loaded = await loadGameBytes(game, onProgress, signal, limits)
   return { name: loaded.name, buf: loaded.data }
 }
@@ -812,31 +826,56 @@ async function loadExtras(
   signal: AbortSignal,
 ): Promise<ExtraFile[]> {
   if (!list?.length) return []
+  const browser = typeof navigator === 'undefined' ? null : navigator as Navigator & {
+    deviceMemory?: number
+    connection?: { effectiveType?: string; saveData?: boolean }
+  }
+  const limits = dosLoadLimits(browser ? {
+    deviceMemory: browser.deviceMemory,
+    hardwareConcurrency: browser.hardwareConcurrency,
+    userAgent: browser.userAgent,
+    platform: browser.platform,
+    maxTouchPoints: browser.maxTouchPoints,
+    effectiveType: browser.connection?.effectiveType,
+    saveData: browser.connection?.saveData,
+  } : {})
   const out: ExtraFile[] = []
   let cursor = 0
+  let completedBytes = 0
+  let reservedBytes = 0
   const worker = async () => {
     for (;;) {
       const index = cursor++
       if (index >= list.length) return
       const { url, path } = list[index]
       if (!url) throw new Error(`附加文件「${path}」没有可用地址（ROM 存储没配好？）`)
+      const remainingBudget = limits.extraTotalBytes - completedBytes - reservedBytes
+      const maxBytes = Math.min(limits.extraFileBytes, remainingBudget)
+      if (maxBytes <= 0) throw new Error(`附加文件「${path}」超过此设备的 DOS 附加文件总载入上限`)
+      reservedBytes += maxBytes
       let buf: ArrayBuffer
       try {
         buf = await fetchWithProgress(url, {
           signal,
           phase: 'assets',
+          maxBytes,
+          preallocateKnownLength: true,
           alternateUrls: alternateRomUrls(url),
         })
       } catch (e) {
         const failure = new Error(`附加文件「${path}」下载失败（${e instanceof Error ? e.message : String(e)}）`, { cause: e })
         if (isRomNetworkFailure(e)) markRomNetworkFailure(failure)
         throw failure
+      } finally {
+        reservedBytes -= maxBytes
       }
       if (!buf.byteLength) throw new Error(`附加文件「${path}」是空的`)
+      completedBytes += buf.byteLength
+      if (completedBytes > limits.extraTotalBytes) throw new Error(`附加文件总量超过此设备的 DOS 安全载入上限`)
       out[index] = { path, data: new Uint8Array(buf) }
     }
   }
-  await Promise.all(Array.from({ length: Math.min(3, list.length) }, worker))
+  await Promise.all(Array.from({ length: Math.min(limits.extraConcurrency, list.length) }, worker))
   return out
 }
 
@@ -915,16 +954,19 @@ async function readSockdrivePreloadProfile(
     return null
   }
   if (response.status === 404) {
+    void response.body?.cancel().catch(() => {})
     cleanup()
     return null
   }
   if (!response.ok) {
+    void response.body?.cancel().catch(() => {})
     cleanup()
     console.warn(`[jsdos] Sockdrive 热点清单返回 HTTP ${response.status}，退回主清单的受限预热`)
     return null
   }
   const declaredLength = Number(response.headers.get('content-length'))
   if (Number.isFinite(declaredLength) && declaredLength > SOCKDRIVE_METADATA_LIMIT) {
+    void response.body?.cancel().catch(() => {})
     cleanup()
     throw new Error('Sockdrive 热点清单超过 1MB，拒绝在开局时读取')
   }
@@ -980,7 +1022,10 @@ async function warmSockdriveFile(
           signal: controller.signal,
           cache,
         })
-        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        if (!response.ok) {
+          void response.body?.cancel().catch(() => {})
+          throw new Error(`HTTP ${response.status}`)
+        }
         if (!response.body) {
           // 极老浏览器没有流接口；只在这条兼容路径保留一次性分配。
           loaded = (await response.arrayBuffer()).byteLength
@@ -1170,7 +1215,14 @@ async function verifySockdriveMetadata(
  * 浏览器不保证把两个在途跨域请求合并，结果可能是热点被下载两遍，反而让真正的挂盘更慢。
  * URL 已被版本目录钉住，同一页面内成功结果可以安全复用到后续重试。
  */
-const sockdrivePrewarmTasks = new Map<string, Promise<SockdriveRuntimePreload>>()
+interface SockdrivePrewarmTask {
+  controller: AbortController
+  task: Promise<SockdriveRuntimePreload>
+  /** 开始游戏后预热已成为启动工作，播放器离开时由启动自己的 signal 收尾。 */
+  claimed: boolean
+}
+
+const sockdrivePrewarmTasks = new Map<string, SockdrivePrewarmTask>()
 
 function normalizedSockdrivePrewarmUrl(value: string): string {
   return normalizeSockdriveUrl(new URL(value, window.location.href).toString())
@@ -1190,12 +1242,27 @@ export function prewarmSockdriveCache(value: string, sharesLargeDownload: boolea
   let task: Promise<SockdriveRuntimePreload>
   task = verifySockdriveMetadata(url, controller.signal, sharesLargeDownload).catch((error) => {
     // 网络刚好抖了一下时不能把失败缓存整页；正式点击或下一次悬停应当可以重新尝试。
-    if (sockdrivePrewarmTasks.get(url) === task) sockdrivePrewarmTasks.delete(url)
+    if (sockdrivePrewarmTasks.get(url)?.task === task) sockdrivePrewarmTasks.delete(url)
     throw error
   })
-  sockdrivePrewarmTasks.set(url, task)
+  sockdrivePrewarmTasks.set(url, { controller, task, claimed: false })
   // 预热是投机任务，错误留给正式启动重试并展示，不能制造全局 unhandled rejection。
   void task.catch(() => {})
+}
+
+/** 页面切换时停止尚未被开局接管的投机下载，避免旧游戏继续占用移动网络。 */
+export function cancelSockdrivePrewarm(value: string): void {
+  if (!value || typeof window === 'undefined') return
+  let url: string
+  try {
+    url = normalizedSockdrivePrewarmUrl(value)
+  } catch {
+    return
+  }
+  const entry = sockdrivePrewarmTasks.get(url)
+  if (!entry || entry.claimed) return
+  sockdrivePrewarmTasks.delete(url)
+  entry.controller.abort(new DOMException('Sockdrive 预热已取消', 'AbortError'))
 }
 
 function awaitSockdrivePrewarm<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -1214,12 +1281,15 @@ async function verifySockdriveForLaunch(
 ): Promise<SockdriveRuntimePreload> {
   const prewarmed = sockdrivePrewarmTasks.get(url)
   if (!prewarmed) return verifySockdriveMetadata(url, signal, sharesLargeDownload)
+  prewarmed.claimed = true
   try {
-    return await awaitSockdrivePrewarm(prewarmed, signal)
+    return await awaitSockdrivePrewarm(prewarmed.task, signal)
   } catch (error) {
     if (signal.aborted) throw error
     // 悬停阶段的瞬时失败不能让点击也直接失败；正式启动用自己的失速保护再试一次。
     return verifySockdriveMetadata(url, signal, sharesLargeDownload)
+  } finally {
+    if (sockdrivePrewarmTasks.get(url) === prewarmed) sockdrivePrewarmTasks.delete(url)
   }
 }
 

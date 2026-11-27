@@ -711,8 +711,11 @@ async function verifyPublished(config, job) {
   if (!metadataResponse.ok) throw new Error(`公开 sockdrive.metaj 读取失败：HTTP ${metadataResponse.status}`)
   const metadata = await metadataResponse.json()
   if (!Number.isSafeInteger(metadata.range_count) || metadata.range_count <= 0) throw new Error('公开 sockdrive.metaj 的分块数无效')
+  if (Number.isSafeInteger(metadata.ahead_read) && metadata.ahead_read > 16 * 1024 * 1024) {
+    throw new Error('公开 sockdrive.metaj 的单个分块超过 16 MiB')
+  }
   if (!Number.isSafeInteger(metadata.size) || metadata.size <= 0 || metadata.size * 1024 > 2 * 1024 ** 3 ||
-      !Number.isSafeInteger(metadata.ahead_read) || metadata.ahead_read <= 0 ||
+      !Number.isSafeInteger(metadata.ahead_read) || metadata.ahead_read <= 0 || metadata.ahead_read > 16 * 1024 * 1024 ||
       Math.ceil(metadata.size * 1024 / metadata.ahead_read) !== metadata.range_count) {
     throw new Error('公开 sockdrive.metaj 的磁盘大小与分块数量不一致')
   }

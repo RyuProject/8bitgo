@@ -18,6 +18,8 @@ export type SockdriveRuntimePreload = 'default' | 'none'
 // 官方 sockify 2.0.10 最大模板是 FAT32 2GB。更大的声明不是本站合法产物，若继续按它循环找块，
 // 一份几 KB 的损坏元数据就能让主线程执行数十亿次循环并假死。
 const SOCKDRIVE_MAX_DISK_BYTES = 2 * 1024 ** 3
+// Sockify 的正常分块是 256 KiB；16 MiB 留足发布余量，同时避免坏清单让一个启动读请求占满手机内存。
+const SOCKDRIVE_MAX_BLOCK_BYTES = 16 * 1024 * 1024
 const SOCKDRIVE_WARM_DESKTOP_BYTES = 16 * 1024 * 1024
 const SOCKDRIVE_WARM_3G_BYTES = 8 * 1024 * 1024
 
@@ -67,6 +69,9 @@ export function parseSockdriveWarmPlan(value: unknown): SockdriveWarmPlan {
   const aheadRead = positiveInteger(metadata, 'ahead_read')
   const rangeCount = positiveInteger(metadata, 'range_count')
   const sectorSize = positiveInteger(metadata, 'sector_size')
+  if (aheadRead > SOCKDRIVE_MAX_BLOCK_BYTES) {
+    throw new Error('Sockdrive 单个分块超过 16MB，拒绝在启动时读取')
+  }
   if (!Number.isSafeInteger(sizeBytes) || sizeBytes > SOCKDRIVE_MAX_DISK_BYTES ||
       Math.ceil(sizeBytes / aheadRead) !== rangeCount) {
     throw new Error('Sockdrive 元数据的磁盘大小与分块数量不一致')

@@ -31,6 +31,7 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { canRestartInPlace } from '@/emulator/sessionRestart'
+import { dosLoadLimits } from '@/emulator/dosLoadLimits'
 import { isWindowsGuestStartupWasmTrap } from '@/emulator/jsdosStartupTrap'
 import { needsLockedAbsoluteDosMouse, needsRelativeWindowsGuestMouse } from '@/emulator/dosMouse'
 import {
@@ -347,6 +348,26 @@ check('异常位移不会把绝对光标污染成 NaN，下一帧仍可继续移
 
 console.log('\n── DOS / Windows Sockdrive：大型游戏按块读取 ──')
 
+check('DOS 整包与资料片按设备内存、移动端和弱网收紧预算', () => {
+  assert.deepEqual(dosLoadLimits({
+    deviceMemory: 4,
+    hardwareConcurrency: 8,
+    userAgent: 'Mozilla/5.0 (Linux; Android 14; Mobile)',
+  }), {
+    arrayBufferBytes: 256 * 1024 * 1024,
+    extraFileBytes: 128 * 1024 * 1024,
+    extraTotalBytes: 256 * 1024 * 1024,
+    extraConcurrency: 1,
+  })
+  assert.deepEqual(dosLoadLimits({
+    hardwareConcurrency: 8,
+    userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)',
+  }).extraConcurrency, 1)
+  assert.deepEqual(dosLoadLimits({ maxTouchPoints: 5, platform: 'MacIntel' }).arrayBufferBytes, 256 * 1024 * 1024)
+  assert.equal(dosLoadLimits({ deviceMemory: 8, hardwareConcurrency: 8 }).extraConcurrency, 2)
+  assert.equal(dosLoadLimits({ deviceMemory: 8, hardwareConcurrency: 8, effectiveType: '2g' }).extraConcurrency, 1)
+})
+
 check('Win95 / PC-98 悬停时预热正确的 DOSBox-X 核心和系统盘版本探测', () => {
   assert.match(player, /prewarmCore = pageRuntime\?\.id === 'jsdos' && \(dosPc98 \|\| effectiveDosSystemUrl \|\| dosBackend === 'dosboxX'\)/)
   assert.match(player, /prewarmRuntime\(pageRuntime\?\.id, warmCore, aggressive\)/)
@@ -472,6 +493,7 @@ check('流式盘按网络与系统镜像竞争自适应预热，并且不再拼�
   assert.match(jsdos, /if \(cache === 'reload'\) await warmSockdriveFile\(url, sample, signal, cache\)/)
   assert.match(jsdos, /rememberSockdriveCacheRepair\(url\)/)
   assert.match(jsdos, /loaded !== file\.expectedBytes/)
+  assert.match(jsdos, /response\.body\?\.cancel\(\)\.catch\(\(\) => \{\}\)/, '错误响应体必须取消，不能继续占连接和缓存写入')
   assert.doesNotMatch(jsdos, /const bytes = await fetchWithProgress\(`\$\{url\}\/\$\{file\.name\}`/)
 })
 
@@ -479,7 +501,10 @@ check('Sockdrive 在开始按钮悬停时提前预热，正式启动复用同一
   assert.match(player, /prewarmSockdriveCache\(dosSockdriveUrl, Boolean\(effectiveDosSystemUrl\)\)/)
   assert.match(jsdos, /const sockdrivePrewarmTasks = new Map/)
   assert.match(jsdos, /const prewarmed = sockdrivePrewarmTasks\.get\(url\)/)
-  assert.match(jsdos, /await awaitSockdrivePrewarm\(prewarmed, signal\)/)
+  assert.match(jsdos, /await awaitSockdrivePrewarm\(prewarmed\.task, signal\)/)
+  assert.match(jsdos, /prewarmed\.claimed = true/)
+  assert.match(jsdos, /export function cancelSockdrivePrewarm\(value: string\)/)
+  assert.match(player, /cancelSockdrivePrewarm\(prewarmUrl\)/, '切换页面时要结束未被开局接管的预热')
   assert.match(jsdos, /verifySockdriveForLaunch\(sockdriveUrl, abort\.signal, Boolean\(systemUrl\)\)/)
   assert.doesNotMatch(jsdos, /verifySockdriveMetadata\(sockdriveUrl, abort\.signal, Boolean\(systemUrl\)\)/)
 })
@@ -544,6 +569,15 @@ check('热点清单按真实对象去重，并在预算边界停止', () => {
     range_count: 12288,
     sector_size: 512,
   }), /磁盘大小与分块数量/)
+  assert.throws(() => parseSockdriveWarmPlan({
+    size: 32 * 1024,
+    ahead_read: 32 * 1024 * 1024,
+    range_count: 1,
+    sector_size: 512,
+    dropped_ranges: [],
+    small_ranges: [],
+    preload_ranges: [],
+  }), /单个分块超过 16MB/, '小清单不能要求移动端一次读取 32 MiB')
 })
 
 check('Win95 致命错误是终态，迟到的 ci-ready 与兜底定时器不能再报成功', () => {

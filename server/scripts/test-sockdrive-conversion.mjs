@@ -155,6 +155,7 @@ assert.match(queue, /'Accept-Encoding': job\.encoding === 'identity' \? 'identit
 assert.match(queue, /method: readsBody \? 'GET' : 'HEAD'/)
 assert.match(queue, /for \(let pass = 1; pass <= 2; pass\+\+\)/)
 assert.match(queue, /边缘缓存可能损坏/)
+assert.match(queue, /metadata\.ahead_read > 16 \* 1024 \* 1024/, '公开 Sockdrive 单块上限要在绑定前复核')
 
 assert.doesNotMatch(queue, /必须先配置 DOSBox-X 和共享 Windows 系统镜像/)
 // 重试与清扫器的竞态：重新排队必须在同一条 UPDATE 里核对源 ZIP 还在（发布已开始的除外），0 行要给出明确原因

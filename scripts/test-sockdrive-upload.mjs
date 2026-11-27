@@ -82,6 +82,23 @@ try {
     /Sockdrive 结构完整：2 个范围/,
   )
 
+  const oversizedBlock = join(root, 'oversized-block')
+  mkdirSync(oversizedBlock)
+  writeFileSync(join(oversizedBlock, 'sockdrive.metaj'), JSON.stringify({
+    size: 32 * 1024,
+    ahead_read: 32 * 1024 * 1024,
+    range_count: 1,
+    sector_size: 512,
+    dropped_ranges: [],
+    small_ranges: [],
+    preload_ranges: [],
+  }))
+  assert.throws(
+    () => run(oversizedBlock, 'identity', 'sockdrives/oversized-block-v1'),
+    /单个分块超过 16 MiB/,
+    '发布前挡住会迫使玩家一次读取 32 MiB 的清单',
+  )
+
   const invalidProfile = join(root, 'invalid-profile')
   mkdirSync(invalidProfile)
   makeFixture('invalid-profile', 'identity')

@@ -263,6 +263,8 @@ export async function fetchWithProgress(
     check?: (res: Response) => void
     /** 需要整块 ArrayBuffer 的调用方可设上限，防止未知长度的响应耗尽标签页内存。 */
     maxBytes?: number
+    /** 已知 Content-Length 时直接写目标缓冲，适用于受限的大文件，避免“分片 + 整块”双份驻留。 */
+    preallocateKnownLength?: boolean
     /** 外站包装 ZIP 不应另留一份 HTTP 缓存，真正缓存的是解出的 ROM。 */
     cache?: RequestCache
     /** 同一个本站 R2 对象的备用域名；只有当前来源失败时才依次尝试。 */
@@ -324,7 +326,19 @@ export async function fetchWithProgress(
         return buf
       }
 
-      const { chunks, loaded } = await drain(res.body, phase, total, emit, opts.maxBytes, guard.touch)
+      const { chunks, loaded, buffer } = await drain(
+        res.body,
+        phase,
+        total,
+        emit,
+        opts.maxBytes,
+        guard.touch,
+        opts.preallocateKnownLength,
+      )
+      if (buffer) {
+        emit({ phase, loaded, total: loaded, ratio: 1 }, true)
+        return buffer.buffer
+      }
       const out = new Uint8Array(loaded)
       let at = 0
       for (const c of chunks) {
@@ -368,9 +382,13 @@ async function drain(
   emit: (p: LoadProgress, flush?: boolean) => void,
   maxBytes = Infinity,
   touch?: () => void,
-): Promise<{ chunks: Uint8Array[]; loaded: number }> {
+  preallocateKnownLength = false,
+): Promise<{ chunks: Uint8Array[]; loaded: number; buffer?: Uint8Array<ArrayBuffer> }> {
   const reader = body.getReader()
   const chunks: Uint8Array[] = []
+  const buffer = preallocateKnownLength && totalHint !== undefined
+    ? new Uint8Array(totalHint) as Uint8Array<ArrayBuffer>
+    : undefined
   let total = totalHint
   let loaded = 0
   try {
@@ -384,7 +402,14 @@ async function drain(
         // 真实流量越过硬上限时不能把同一份畸形回包当瞬时网络错误反复重下。
         throw new RangeError('文件过大，无法在浏览器内存中解包')
       }
-      chunks.push(value)
+      if (buffer) {
+        if (loaded + value.byteLength > buffer.byteLength) {
+          throw new Error(`下载长度超过 Content-Length：已知 ${buffer.byteLength} 字节`)
+        }
+        buffer.set(value, loaded)
+      } else {
+        chunks.push(value)
+      }
       loaded += value.byteLength
       // 万一还是超了（服务器给的 Content-Length 本身就不对），转不确定态而不是显示 120%
       if (total !== undefined && loaded > total) total = undefined
@@ -394,7 +419,7 @@ async function drain(
     if (total !== undefined && loaded !== total) {
       throw new Error(`下载不完整：应为 ${total} 字节，实际收到 ${loaded} 字节`)
     }
-    return { chunks, loaded }
+    return { chunks, loaded, buffer }
   } catch (error) {
     // Chromium 的磁盘缓存 / IDB Blob 偶发 NotReadableError 时要释放坏流，重试才不会留住旧文件引用。
     await reader.cancel(error).catch(() => {})

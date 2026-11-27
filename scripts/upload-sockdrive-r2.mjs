@@ -140,6 +140,9 @@ for (const key of ['size', 'range_count', 'ahead_read', 'sector_size']) {
   if (!Number.isSafeInteger(metadata[key]) || metadata[key] <= 0) throw new Error(`sockdrive.metaj 的 ${key} 无效`)
 }
 const rangeCount = metadata.range_count
+if (metadata.ahead_read > 16 * 1024 * 1024) {
+  throw new Error('sockdrive.metaj 的单个分块超过 16 MiB；拒绝发布会让玩家启动时占满内存的磁盘')
+}
 if (!Number.isSafeInteger(metadata.size * 1024) || metadata.size * 1024 > 2 * 1024 ** 3 ||
     Math.ceil(metadata.size * 1024 / metadata.ahead_read) !== rangeCount) {
   throw new Error('sockdrive.metaj 的磁盘大小与分块数量不一致')
