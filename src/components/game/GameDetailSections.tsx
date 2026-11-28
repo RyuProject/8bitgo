@@ -170,7 +170,7 @@ export function GameIntroFacts({
 }: {
   game: Game
   developerLogos?: Record<string, string>
-  /** 「最高 3 人联机」/「单人游戏」，页面算好（CS1.6 那种特例在页面里处理） */
+  /** 本站在线房间支持人数或“不支持”，页面算好（CS1.6 那种特例在页面里处理） */
   players: string
   romLangs: string[]
 }) {

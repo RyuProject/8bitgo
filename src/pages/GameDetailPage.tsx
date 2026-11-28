@@ -434,8 +434,8 @@ export function GameDetailPage() {
   const devices =
     touchSupport === 'all' ? t.game.devicesAll : touchSupport === 'some' ? t.game.devicesSome : t.game.devicesDesktop
   /**
-   * 「游玩人数」那一格。CS1.6 的 16 人房由嵌入页自己的服务器提供，数据库里仍是单人（见 hasEmbeddedCs16Rooms）；
-   * 其余按「这款游戏真开了联机 + 手柄位 ≥ 2」才说联机，和播放器的开房判断一致（maxPlayers 那一行）。
+   * 「本站联机」那一格。CS1.6 的 16 人房由嵌入页自己的服务器提供，数据库里仍是单人（见 hasEmbeddedCs16Rooms）；
+   * 其余按「这款游戏真开了联机 + 手柄位 ≥ 2」才显示本站支持人数，和播放器的开房判断一致。
    */
   const playersText = hasEmbeddedCs16Rooms
     ? fmt(t.game.playersUpTo, { n: '16' })
