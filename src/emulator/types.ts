@@ -471,8 +471,10 @@ export interface ResolveContext {
    * GB/GBC 改走 binjgb 的纯 JavaScript 构建（public/binjgb/binjgb-js.js，scripts/build-binjgb-js.mjs）。
    */
   wasmUnavailable?: boolean
-  /** GBA 无 WebAssembly 时改走需要平台 BIOS 的纯 JavaScript IodineGBA。 */
+  /** GBA 没有 WebAssembly 时改走需要平台 BIOS 的纯 JavaScript IodineGBA。 */
   gbaWasmUnavailable?: boolean
+  /** GBA 浏览器解析不了原样发布的 EmulatorJS 语法时使用 legacy 安全的 IodineGBA。 */
+  gbaModernSyntaxUnavailable?: boolean
   /** 这个浏览器不能使用 EmulatorJS 所需的画面能力；NES 改走 jsnes，GB/GBC 改走 binjgb。 */
   webglUnavailable?: boolean
   /** GBA 无 WebGL 时优先走 mGBA 软件画面；无 WebAssembly 时仍由 gbaWasmUnavailable 决定退路。 */
