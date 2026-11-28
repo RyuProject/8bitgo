@@ -12,6 +12,7 @@ import { jsnesCanRun } from './nesMapper'
 import { probeNesRomHeader } from './nesRomProbe'
 import { resolveRuntime, runtimesFor, extOf } from './registry'
 import { canAutoFallbackRuntime } from './runtimeFallback'
+import { isDeterministicStartupFailure } from './startupRetryPolicy'
 import { canCreateWebgl, canCreateWebgl2 } from './webglSupport'
 import { modernRuntimeSyntaxSupported, runtimeNeedsModernBrowser, runtimeRunsWithoutWasm, webAssemblyAvailable } from './browserSupport'
 import { awayflForcedByUrl, useAwayflChoice } from './awayflPolicy'
@@ -2920,7 +2921,7 @@ export function EmulatorPlayer({
 
         // 完整性/密钥/codec 错误是确定性的，同一个包再下载一次不会变好。直接切数据库里保留的
         // 旧 ROM 备用地址，避免迁移期玩家先白等一轮自动重试。
-        const deterministicPackFailure = errorScope === 'deterministic' || /(?:8BG|ROM 包|Flash 站点锁)/i.test(message)
+        const deterministicPackFailure = isDeterministicStartupFailure(errorScope, message)
         if (deterministicPackFailure && canFailoverRom()) {
           restartAfterRomFailureRef.current = true
           endSession()
