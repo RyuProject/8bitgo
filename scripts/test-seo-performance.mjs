@@ -90,7 +90,7 @@ check('游戏库和专题只把首张 LCP 封面提升到高优先级，首页�
   assert.match(cover, /transformFallbackAvailable = !useLegacyAvifThumb && !transformFailed && \(Boolean\(srcSet\) \|\| imgSrc !== coverSrc\)/, '单档小图的 CDN 变换失败时也必须退回原图')
   assert.match(cover, /else if \(transformFallbackAvailable\) setTransformFailed\(true\)/, '变换失败回退不能依赖 srcset 是否存在')
   assert.match(read('src/services/roms.ts'), /function transformedCoverUrl[\s\S]*width=\$\{boundedWidth\},quality=\$\{quality\},format=\$\{format\},fit=scale-down/, 'poster 转换必须限制最大宽度并保留质量策略和不放大策略')
-  assert.match(cover, /const coverQuality = priority \? 60 : 75/, '只有首屏优先封面可以使用更高压缩率')
+  assert.match(cover, /const coverQuality = priority \? 45 : 75/, '仅首屏 LCP 优先封面使用 PSI 验证过的更高压缩率')
 })
 
 check('ROM 语言数量使用足够对比度的继承色', () => {

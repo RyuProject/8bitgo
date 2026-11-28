@@ -404,7 +404,7 @@ const COVER_WIDTH_SCALES = [2 / 3, 1, 4 / 3, 2] as const
 const COVER_WIDTH_BUCKETS = [96, 160, 240, 320, 480] as const
 const MAX_COVER_WIDTH = COVER_WIDTH_BUCKETS[COVER_WIDTH_BUCKETS.length - 1]
 type CoverImageWidth = number
-type CoverImageQuality = 60 | 75
+type CoverImageQuality = 45 | 60 | 75
 
 function coverWidthBucket(width: number): number {
   // 封面源图以 300px 为主、历史较大的图不超过 480px；超出后继续放大没有可见细节收益。
