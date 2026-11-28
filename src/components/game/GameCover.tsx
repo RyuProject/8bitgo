@@ -135,11 +135,13 @@ function previewAutoplayAllowed(): boolean {
  * 和 32 张封面抢带宽，最后一张封面拖到 11.9 秒才到。预览只是装饰，封面才是玩家要看的。
  * 悬停播放不受这两条限制：那是玩家自己要看的。
  */
-function CoverVideo({ src: primarySrc, fallbackSrc, poster, fallbackPoster, priority = false }: {
+function CoverVideo({ src: primarySrc, fallbackSrc, poster, fallbackPoster, posterSrcSet, posterSizes, priority = false }: {
   src: string
   fallbackSrc?: string
   poster?: string
   fallbackPoster?: string
+  posterSrcSet?: string
+  posterSizes?: string
   priority?: boolean
 }) {
   const ref = useRef<HTMLVideoElement>(null)
@@ -148,6 +150,8 @@ function CoverVideo({ src: primarySrc, fallbackSrc, poster, fallbackPoster, prio
   const src = failedSrc === primarySrc && fallbackSrc ? fallbackSrc : primarySrc
   const [failedPoster, setFailedPoster] = useState('')
   const posterSrc = failedPoster === poster && fallbackPoster ? fallbackPoster : poster
+  // 变换图失败后改走原图；此时必须一并停用变换版 srcset，才能让回退地址真正生效。
+  const activePosterSrcSet = posterSrc === poster ? posterSrcSet : ''
   const [hasVideoFrame, setHasVideoFrame] = useState(false)
 
   useEffect(() => setHasVideoFrame(false), [src])
@@ -239,6 +243,8 @@ function CoverVideo({ src: primarySrc, fallbackSrc, poster, fallbackPoster, prio
       {posterSrc && (
         <img
           src={posterSrc}
+          srcSet={activePosterSrcSet || undefined}
+          sizes={activePosterSrcSet ? posterSizes : undefined}
           alt=""
           aria-hidden
           loading={priority ? 'eager' : 'lazy'}
@@ -363,11 +369,20 @@ export function GameCover({
   const [coverFailed, setCoverFailed] = useState(false)
   useEffect(() => setCoverFailed(false), [coverSrc])
   const srcSet = imgSrc === coverSrc && !transformFailed ? coverSrcSet(coverSrc) : ''
+  // 视频 poster 也按卡片实际宽度挑图；否则手机首屏一直下 480px 档，低密度屏多传一截。
+  const posterSrcSet = videoSrc && coverSrc
+    ? (imgSrc === coverSrc && !transformFailed ? srcSet : coverSrcSet(coverSrc))
+    : ''
+  const posterSizes = sizes || (priority || eager ? '100vw' : 'auto, 100vw')
 
   const posterSrc = coverSrc ? coverImageUrl(coverSrc) : ''
-  // 首屏视频 poster 用同一张 480px 转码图预载与绘制，避免裸 PNG 与无尺寸源图抢首屏带宽。
+  // preload 与 img 用同一组 srcset / sizes，避免先预载 480px 再额外下载更合适的小档。
   if (!mediaDeferred && priority && videoSrc && coverSrc) {
-    preload(posterSrc, { as: 'image', fetchPriority: 'high' })
+    preload(posterSrc, {
+      as: 'image',
+      fetchPriority: 'high',
+      ...(posterSrcSet ? { imageSrcSet: posterSrcSet, imageSizes: posterSizes } : {}),
+    })
   }
 
   return (
@@ -393,6 +408,8 @@ export function GameCover({
           fallbackSrc={gameVideoFallbackUrl(game, videoSrc) || undefined}
           poster={posterSrc || undefined}
           fallbackPoster={coverSrc || undefined}
+          posterSrcSet={posterSrcSet}
+          posterSizes={posterSizes}
           priority={priority}
         />
       ) : coverSrc && !coverFailed && !mediaDeferred ? (
