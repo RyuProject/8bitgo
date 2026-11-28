@@ -15,6 +15,12 @@ import { join } from 'node:path'
 
 /** 需要注入的游戏：就绪选择器 + 引擎脚本（媒体桥必须排在它前面，引擎初始化时就会建 WebAudio） */
 export const WEB_GAME_HTML_INJECTIONS = Object.freeze({
+  pvz: Object.freeze({
+    readySelector: 'body.game-mode canvas#canvas',
+    sdkCanvasSelector: 'body.game-mode canvas#canvas',
+    subpaths: Object.freeze(['cn', 'en']),
+    runtimeScript: /<script\b[^>]*\bsrc=(['"])[^'"]*pvz-wasm-loader\.js(?:\?[^'"]*)?\1[^>]*>/i,
+  }),
   cs16: Object.freeze({
     readySelector: '#canvas',
     sdkCanvasSelector: '#canvas',
@@ -67,11 +73,16 @@ export function createWebGameHtmlRenderer(clientDir) {
     const info = statSync(path)
     return `${info.mtimeMs}:${info.size}`
   }
-  return function render(name) {
-    const config = WEB_GAME_HTML_INJECTIONS[name]
+  return function render(name, sub = '') {
+    const configKey = String(name).toLowerCase()
+    const config = WEB_GAME_HTML_INJECTIONS[configKey]
     if (!config) return null
     try {
-      const htmlPath = join(clientDir, 'web', name, 'index.html')
+      // 只有明确登记的语言子目录才能作为入口；其它子路径继续交给静态服务，避免把任意文件当 HTML 改写。
+      if ((config.subpaths && !sub) || (sub && !config.subpaths?.includes(sub))) return null
+      const htmlPath = sub
+        ? join(clientDir, 'web', name, sub, 'index.html')
+        : join(clientDir, 'web', name, 'index.html')
       const api = join(clientDir, 'html5-api')
       const paths = {
         bridge: join(api, '8bitgo-runtime-bridge.js'),
@@ -79,7 +90,8 @@ export function createWebGameHtmlRenderer(clientDir) {
         sdk: join(api, '8bitgo-game-sdk.min.js'),
       }
       const key = [htmlPath, ...Object.values(paths)].map(stamp).join('|')
-      const hit = cache.get(name)
+      const cacheKey = `${configKey}/${sub}`
+      const hit = cache.get(cacheKey)
       if (hit?.key === key) return hit.html
       const versions = {
         bridge: fileVersion(paths.bridge),
@@ -87,7 +99,7 @@ export function createWebGameHtmlRenderer(clientDir) {
         sdk: fileVersion(paths.sdk),
       }
       const html = injectWebGameScripts(readFileSync(htmlPath, 'utf8'), config, versions)
-      cache.set(name, { key, html })
+      cache.set(cacheKey, { key, html })
       return html
     } catch {
       return null

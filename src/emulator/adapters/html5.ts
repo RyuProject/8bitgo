@@ -55,6 +55,10 @@ const MANAGED_SAVE_BRIDGE_HOSTS = new Set([
  * readySelector：同源嵌入时用它确认拿到的是游戏页而不是 EdgeOne 错误页。
  */
 const CN_MIRRORED_PAGES_ENTRIES = [
+  // PvZ 源站副本自带本地 WASM / 清单，并直接从 download.8bitgo.com 取带 CORS 与 Range 的资源；
+  // 不依赖 Pages Worker 的 /pvz-data 代理，因此可在大陆先走 EdgeOne，失败仍退回 Pages。
+  { pagesOrigin: 'https://pvz.8bitgo.com', path: '/web/PvZ/cn', readySelector: '#canvas' },
+  { pagesOrigin: 'https://pvz.8bitgo.com', path: '/web/PvZ/en', readySelector: '#canvas' },
   { pagesOrigin: 'https://cs16.8bitgo.com', path: '/web/cs16', readySelector: '#canvas' },
 ] as const
 /** 大陆入口在这段前台时间内没交出游戏页（生命周期桥 / 同源画布），就退回 Pages 一次 */
@@ -114,6 +118,9 @@ export function html5SaveBridgeOrigin(value: string | Blob, base = location.href
     if (typeof value !== 'string') return page.origin
     const game = new URL(value, page)
     if (game.origin === page.origin) return game.origin
+    // 大陆镜像用本站精确域名承载 PvZ 源站副本；只有固定语言入口能拿存档桥权限。
+    if (game.protocol === 'https:' && FIRST_PARTY_SITE_HOSTS.has(game.hostname.toLowerCase()) &&
+      /^\/web\/PvZ\/(?:cn|en)\/?$/.test(game.pathname)) return game.origin
     if (game.protocol === 'https:' && MANAGED_SAVE_BRIDGE_HOSTS.has(game.hostname.toLowerCase())) return game.origin
   } catch {
     /* 非法入口会在后面的 iframe 导航里按原有错误路径处理；这里只关闭存档能力。 */
@@ -239,7 +246,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   // 大陆访客先走 EdgeOne 镜像；失败（错误页 / 超时）时 fallbackToPages 把 frameEntry 换回 Pages 入口。
   const cnMirror = pagesEntry ? cnMirrorHtml5Entry(pagesEntry, currentCnMirrorContext()) : null
   let frameEntry = cnMirror?.url ?? pagesEntry
-  const saveBridgeOrigin = html5SaveBridgeOrigin(frameEntry ?? options.game)
+  let saveBridgeOrigin = html5SaveBridgeOrigin(frameEntry ?? options.game)
   let gameSdkOrigin = ''
   try {
     if (frameEntry) gameSdkOrigin = new URL(frameEntry, location.href).origin
@@ -270,6 +277,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     clearMirrorTimer()
     console.warn('[html5] 大陆入口未能交出游戏页，改用 Pages 入口', { reason, mirror: frameEntry, pages: pagesEntry })
     frameEntry = pagesEntry
+    saveBridgeOrigin = html5SaveBridgeOrigin(frameEntry ?? options.game)
     try {
       gameSdkOrigin = new URL(pagesEntry, location.href).origin
     } catch {
@@ -361,7 +369,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    * 只有本站同源页面或上面白名单里的 Pages 项目才会获得 saveState 能力。
    */
   const onSaveBridgeMessage = (event: MessageEvent) => {
-    if (saveBridgeClosed || !saveBridgeOrigin || event.origin !== saveBridgeOrigin) return
+    const replyOrigin = saveBridgeOrigin
+    if (saveBridgeClosed || !replyOrigin || event.origin !== replyOrigin) return
     const live = iframe.contentWindow
     if (!event.source || (event.source !== live && event.source !== saveBridgeWindow)) return
     const message = event.data as SaveBridgeMessage | null
@@ -369,7 +378,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     const replyTo = event.source as Window
     const reply = (payload: Record<string, unknown>, transfer: Transferable[] = []) => {
       try {
-        replyTo.postMessage({ source: SAVE_BRIDGE_SOURCE, version: SAVE_BRIDGE_VERSION, ...payload }, saveBridgeOrigin, transfer)
+        replyTo.postMessage({ source: SAVE_BRIDGE_SOURCE, version: SAVE_BRIDGE_VERSION, ...payload }, replyOrigin, transfer)
       } catch {
         /* 游戏页已经卸载：数据早已交到主站，回执丢了不影响落盘 */
       }
@@ -593,7 +602,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (!frameEntry) return false
     try {
       const url = new URL(frameEntry, location.href)
-      return ['pvz.8bitgo.com', '8bitgo-pvz.pages.dev'].includes(url.hostname.toLowerCase()) && /^\/web\/PvZ\/(?:cn|en)\/?$/.test(url.pathname)
+      const host = url.hostname.toLowerCase()
+      const managedHost = ['pvz.8bitgo.com', '8bitgo-pvz.pages.dev'].includes(host) || FIRST_PARTY_SITE_HOSTS.has(host)
+      return url.protocol === 'https:' && managedHost && /^\/web\/PvZ\/(?:cn|en)\/?$/.test(url.pathname)
     } catch {
       return false
     }
@@ -961,7 +972,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   }
 
   function requestSaveBridge(type: 'export' | 'import', data?: ArrayBuffer): Promise<unknown> {
-    if (!saveBridgeReady || !saveBridgeOrigin || !iframe.contentWindow) return Promise.reject(new Error('网页游戏存档尚未就绪'))
+    const targetOrigin = saveBridgeOrigin
+    if (!saveBridgeReady || !targetOrigin || !iframe.contentWindow) return Promise.reject(new Error('网页游戏存档尚未就绪'))
     const requestId = ++saveRequestId
     return new Promise((resolve, reject) => {
       const timer = window.setTimeout(() => {
@@ -971,7 +983,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       pendingSaveRequests.set(requestId, { resolve, reject, timer })
       const message = { source: SAVE_BRIDGE_SOURCE, version: SAVE_BRIDGE_VERSION, type, requestId, data }
       try {
-        iframe.contentWindow?.postMessage(message, saveBridgeOrigin, data ? [data] : [])
+        iframe.contentWindow?.postMessage(message, targetOrigin, data ? [data] : [])
       } catch (error) {
         pendingSaveRequests.delete(requestId)
         window.clearTimeout(timer)

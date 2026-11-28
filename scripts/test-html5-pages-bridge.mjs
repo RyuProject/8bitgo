@@ -5,10 +5,12 @@ import { html5SaveBridgeOrigin, versionHtml5Entry } from '../src/emulator/adapte
 const main = 'https://8bitgo.com/games/pvz'
 assert.equal(html5SaveBridgeOrigin('/web/PvZ/cn', main), 'https://8bitgo.com')
 assert.equal(html5SaveBridgeOrigin('https://pvz.8bitgo.com/web/PvZ/cn/', main), 'https://pvz.8bitgo.com')
+assert.equal(html5SaveBridgeOrigin('https://cn.8bitgo.com/web/PvZ/cn/', main), 'https://cn.8bitgo.com')
 assert.equal(html5SaveBridgeOrigin('https://8bitgo-pvz.pages.dev/web/PvZ/cn/', main), 'https://8bitgo-pvz.pages.dev')
 assert.equal(html5SaveBridgeOrigin('https://digiverse.8bitgo.com/web/gamblers-table/', main), 'https://digiverse.8bitgo.com')
 assert.equal(html5SaveBridgeOrigin('https://gamblers-table.8bitgo.com/web/gamblers-table/', main), 'https://gamblers-table.8bitgo.com')
 assert.equal(html5SaveBridgeOrigin('https://attacker.8bitgo.com/game/', main), null)
+assert.equal(html5SaveBridgeOrigin('https://cn.8bitgo.com/games/pvz', main), null)
 assert.equal(html5SaveBridgeOrigin('https://example.com/game/', main), null)
 // cn / tv 入口嵌同一个 Pages 游戏页；游戏页那一侧的父页面名单（pvz-page.js、Gamblers 存档桥）必须认它们。
 assert.equal(html5SaveBridgeOrigin('https://pvz.8bitgo.com/web/PvZ/cn/', 'https://cn.8bitgo.com/games/pvz'), 'https://pvz.8bitgo.com')
@@ -83,7 +85,7 @@ assert.equal(
 
 console.log('Pages 跨域运行桥：旧入口迁移、精确来源白名单、PvZ 发布代次与存档收尾检查通过')
 
-// —— 大陆访客的 Pages 游戏改走 EdgeOne 镜像（2026-11-22，CS1.6）——
+// —— 大陆访客的 Pages 游戏改走 EdgeOne 镜像（PvZ 与 CS1.6）——
 {
   const { cnMirrorHtml5Entry, CN_MIRROR_FALLBACK_MS } = await import('../src/emulator/adapters/html5.ts')
   const pages = versionHtml5Entry('/web/cs16/?room=AB12CD#x', main)
@@ -99,8 +101,16 @@ console.log('Pages 跨域运行桥：旧入口迁移、精确来源白名单、P
   assert.equal(cnMirrorHtml5Entry(pages, { ...ctxMain, disabled: true }), null)
   assert.equal(cnMirrorHtml5Entry(pages, { ...ctxMain, edgeOrigin: '' }), null)
   assert.equal(cnMirrorHtml5Entry(pages, { ...ctxMain, onCnSite: true, pageOrigin: 'http://localhost:5173' }), null)
-  // 未逐文件核对过的 Pages 游戏不切；第三方入口、相似域名不切
-  for (const other of ['https://pvz.8bitgo.com/web/PvZ/cn/', 'https://diablo.8bitgo.com/web/diablo/', 'https://cs16.8bitgo.com.evil.com/web/cs16/', 'https://cs16.8bitgo.com/web/cs16x/']) {
+  const pvzPages = versionHtml5Entry('https://pvz.8bitgo.com/web/PvZ/cn/?shell=check', main)
+  assert.deepEqual(cnMirrorHtml5Entry(pvzPages, ctxMain), {
+    url: `https://cn.8bitgo.com/web/PvZ/cn?shell=${shellVersion}`, readySelector: '#canvas',
+  })
+  assert.equal(cnMirrorHtml5Entry(pvzPages, { ...ctxMain, onCnSite: true, pageOrigin: 'https://cn.8bitgo.com' })?.url,
+    `https://cn.8bitgo.com/web/PvZ/cn?shell=${shellVersion}`)
+  assert.equal(cnMirrorHtml5Entry('https://pvz.8bitgo.com/web/PvZ/', ctxMain), null, 'PvZ 根提示頁不是可玩入口，不鏡像')
+  assert.equal(cnMirrorHtml5Entry('https://pvz.8bitgo.com/web/PvZ/en/', ctxMain)?.url, 'https://cn.8bitgo.com/web/PvZ/en')
+  // 未逐文件核對過的 Pages 游戏不切；第三方入口、相似域名不切
+  for (const other of ['https://diablo.8bitgo.com/web/diablo/', 'https://cs16.8bitgo.com.evil.com/web/cs16/', 'https://cs16.8bitgo.com/web/cs16x/']) {
     assert.equal(cnMirrorHtml5Entry(other, ctxMain), null, other)
   }
   assert.ok(CN_MIRROR_FALLBACK_MS >= 10_000 && CN_MIRROR_FALLBACK_MS <= 60_000)
@@ -112,7 +122,7 @@ console.log('Pages 跨域运行桥：旧入口迁移、精确来源白名单、P
   assert.match(adapterSource, /cs16\.8bitgo\.com' \|\| FIRST_PARTY_SITE_HOSTS\.has\(host\)/)
 }
 
-// —— 源站 /web/cs16 补上 Pages 构建注入的桥（镜像入口靠生命周期桥确认）——
+// —— 源站 PvZ /web/PvZ/{cn,en} 与 /web/cs16 补上 Pages 构建注入的桥 ——
 {
   const { injectWebGameScripts, WEB_GAME_HTML_INJECTIONS, createWebGameHtmlRenderer } = await import('../server/src/web-game-html.js')
   const versions = { bridge: 'b'.repeat(16), media: 'm'.repeat(16), sdk: 's'.repeat(16) }
@@ -131,8 +141,20 @@ console.log('Pages 跨域运行桥：旧入口迁移、精确来源白名单、P
   const rendered = createWebGameHtmlRenderer(new URL('../public', import.meta.url).pathname)('cs16')
   assert.ok(rendered?.includes(`8bitgo-runtime-bridge.js?v=${sha('html5-api/8bitgo-runtime-bridge.js')}`))
   assert.ok(rendered?.includes(`8bitgo-game-sdk.min.js?v=${sha('html5-api/8bitgo-game-sdk.min.js')}`))
-  assert.equal(createWebGameHtmlRenderer(new URL('../public', import.meta.url).pathname)('PvZ'), null, '未登记的游戏照发原文件')
+  const pvzSource = readFileSync(new URL('../public/web/PvZ/cn/index.html', import.meta.url), 'utf8')
+  const pvzInjected = injectWebGameScripts(pvzSource, WEB_GAME_HTML_INJECTIONS.pvz, versions)
+  assert.ok(pvzInjected.includes(`8bitgo-runtime-bridge.js?v=${versions.bridge}" data-ready-selector="body.game-mode canvas#canvas"`))
+  assert.ok(pvzInjected.includes(`8bitgo-game-sdk.min.js?v=${versions.sdk}" data-canvas-selector="body.game-mode canvas#canvas"`))
+  assert.ok(pvzInjected.indexOf('8bitgo-media-bridge.js') < pvzInjected.indexOf('pvz-wasm-loader.js'), 'PvZ 媒体桥必须早于 WASM 引擎初始化')
+  assert.equal(injectWebGameScripts(pvzInjected, WEB_GAME_HTML_INJECTIONS.pvz, versions), pvzInjected, 'PvZ 重复注入必须幂等')
+  const renderer = createWebGameHtmlRenderer(new URL('../public', import.meta.url).pathname)
+  const renderedPvz = renderer('PvZ', 'cn')
+  assert.ok(renderedPvz?.includes(`8bitgo-runtime-bridge.js?v=${sha('html5-api/8bitgo-runtime-bridge.js')}`))
+  assert.ok(renderedPvz?.includes('body.game-mode canvas#canvas'))
+  assert.equal(renderer('PvZ'), null, '未登记的 PvZ 根提示页照发原文件')
+  assert.equal(renderer('PvZ', 'other'), null, '不允许把未登记语言子目录当成注入入口')
+  assert.equal(renderer('not-managed-game'), null, '未登记的游戏照发原文件')
   const serverSource = readFileSync(new URL('../server/src/index.js', import.meta.url), 'utf8')
-  assert.match(serverSource, /const injected = renderWebGameHtml\(name\)/)
+  assert.match(serverSource, /const injected = renderWebGameHtml\(name, sub\)/)
 }
 console.log('html5 大陆镜像入口：通过')

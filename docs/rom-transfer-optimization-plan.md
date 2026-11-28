@@ -291,3 +291,10 @@
 - v32 的 BroadcastChannel 试验在 Chromium 中不能把 pthread 的 SharedArrayBuffer 交给 Broker；即使 Broker 下载完成，核心线程仍会退回原生同步 XHR，造成同一分片重复传输。v33 改为页面创建一个专用 Broker Worker，并沿 Emscripten 的 pthread `load` 消息向每个核心线程分发独立 MessagePort，避免依赖 SharedWorker 或跨代理 BroadcastChannel。
 - 真实 Chromium 还拒绝让 TextDecoder 直接解码 SharedArrayBuffer 视图。共享响应头很短，现在只复制响应头视图后再解码；ROM 正文仍直接写入各 pthread 的共享缓冲。
 - `npm run test:ppsspp` 全套回归通过。另用真实 Chromium 启动两个隔离 Worker 同时读取同一 2 MiB 区间：服务器收到一条正式分片请求，两个 Worker 都得到完整字节，Broker 计数为一条请求 / 一个合并等待者。测试未覆盖真实游戏从 v33 启动到首帧，也没有生产流量前后对照，因此不报告游戏启动提速百分比；v33 是新不可变目录，Wasm/data 与校验完整的 v31 基线逐字节一致。
+
+## 2026-11-28：PvZ 大陆入口超时回退到同源 EdgeOne 副本
+
+- 生产 7 天启动漏斗里，中国区 PvZ 有 44 次开始、41 次 iframe 完成；另有 2 次 120 秒超时，来自 Windows Chrome 与 Android WebView，均没有 iframe 完成事件。证据指向入口页未交付，不足以断言 Pages 是每次失败的唯一原因。
+- 为已登记的 PvZ 中文 / 英文 Pages 入口增加大陆 EdgeOne 镜像，未确认镜像页面时最多等 20 秒后退回 Pages。源站副本的 WASM / 清单在本站；生产探测确认下载域大包支持 Range 与跨域读取。源站页面现由服务端注入与 Pages 相同的运行桥、游戏 SDK 和媒体桥，因此保留启动可观测性、直播能力与存档流程。
+- 存档来源只允许精确的本站 PvZ 语言页面；镜像回退到 Pages 时重新计算目标 origin，避免继续向旧镜像发存档消息。PvZ 根提示页、其它语言目录和未核验的 Pages 游戏不进入镜像表。
+- `npm run test:html5-pages-bridge`、`npm run test:html5-runtime-bridge`、`npm run test:html5-media` 和 TypeScript 项目检查已通过。完整生产构建仍待完成；没有真实大陆设备上的修复后对照，不估算成功率提升。
