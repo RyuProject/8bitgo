@@ -1,14 +1,18 @@
 # 8BitGo 国际搜索与 AI 可发现性方案
 
-更新日期：2026-11-28
+更新日期：2026-11-29
 
 目标：让玩家用自己的语言、游戏名、平台、类型和版本信息找到真正能玩的游戏；让搜索引擎与 AI 抓取器能直接读懂页面、语言、可玩版本和实体关系。
 
 ## 先看结论
 
-### 2026-11-28 当前生产复核
+### 2026-11-29 当前生产复核
 
 本节更新生产现状；下方 11-26 的抓取、性能与数据库记录保留为历史快照，不能再当作当前标题覆盖状态。
+
+- **Pokémon GBA 共同开发方字段补齐（2026-11-29）**：MobyGames 的 GBA 发行记录将 FireRed、LeafGreen、Ruby、Sapphire 的开发方分别列为 Creatures, Inc. 与 Game Freak, Inc.。生产四条记录此前只列 `Game Freak`；现改为 `Game Freak, Creatures`，平台与年份不变。生产 API、英文 SSR 的 `VideoGame.author` 和 `Creatures` 开发商筛选均已核对。[FireRed](https://www.mobygames.com/game/15034/pokemon-firered-version/releases/)、[LeafGreen](https://www.mobygames.com/game/14757/pokemon-leafgreen-version/releases/gameboy-advance/)、[Ruby](https://www.mobygames.com/game/8459/pokemon-ruby-version/releases/)、[Sapphire](https://www.mobygames.com/game/8460/pokemon-sapphire-version/releases/)。
+
+- **西语简介覆盖复核（2026-11-29）**：检查生产游玩量前 100 款中确实有西语 ROM 的游戏，均已有人工 `descriptionLocalized.es`，本轮没有缺失项。`angry-birds` 当前只有英文 ROM，因此按“本地化正文只绑定实际存在的对应语言 ROM”规则，不新增西语人工简介；其西语 UI 继续回退显示英文正文。
 
 - **ROM 版本哈希复核（2026-11-28）**：生产 `gold-miner-2-player` SWF 解包后的 SHA-256 为 `0b308628f086cad2fb659ebb3f292f995d210e9b801a0bbcc53410126ed0a4e2`，与[Flash 保存计划馆藏](https://cf.flash.homes/flash/1CR8-CA7G-GV5D)完全一致，确认是同一份文件；馆藏只列来源 `Villivateur`，没有开发者署名。生产 `cat-mario-flash` 的 8BG ROM 在内存中解包后为 3,632,676 字节，Internet Archive 同名 SWF 为 3,664,333 字节；两份都是 CWS，解压并重建 FWS 头后仍不同，标准化 SHA-256 分别为 `54ec5ca401521319a9ac2a023ab25473920f780b21072f67e7621ada9f606c79` 和 `a2838971d09f8dc1d2470082eb6f7a91398cd885afe61b83e1f8d687493a3bae`。因此不能把另一版本日期或署名套用到本站 ROM。
 
