@@ -151,6 +151,15 @@ assert.match(player, /failed\.platform === 'arcade' && arcadeRomDataRef\.current
 assert.match(player, /canTryManualCoreRecovery\(\s*failed\.runtime\.id,\s*failed\.platform,\s*failed\.recoveryCause,\s*failed\.manualCoreFallbackAllowed/s)
 assert.match(player, /manualCoreOptionsForFailure\(/,
   '街机未知驱动错误必须过滤无兼容性收益的同家族低内存变体')
+const beginAt = player.indexOf('const begin = (')
+const beginSessionAt = player.indexOf('setSession({ id: sessionId', beginAt)
+const beginImmersiveAt = player.indexOf('enterAutoImmersive()', beginAt)
+assert.ok(beginAt >= 0 && beginImmersiveAt > beginAt && beginImmersiveAt < beginSessionAt,
+  '手机沉浸布局必须在开局挂载前切换，不能等慢核心变成 running 后再造成大幅布局位移')
+assert.match(player, /const enterAutoImmersive = useCallback\(\(\) => \{\s*if \(!shellAvailable \|\| !isCompactViewport\(\) \|\| immersiveRef\.current\) return/s,
+  '自动切沉浸仅限播放器 shell 的紧凑视口，并保留玩家手动打开的状态')
+assert.match(player, /autoImmersiveRef\.current &&\s*\(status === 'error' \|\| status === 'idle'\)/s,
+  '自动切入后遇到失败或停止时要收回本次自动布局')
 assert.match(emulatorjsAdapter, /arcadeFatal === 'unknown-set'[\s\S]{0,120}'deterministic'/,
   '街机未知驱动需跳过同核心自动重试，同时留下手动换核恢复机会')
 assert.match(player, /manualCoreRetryAvailable && \([\s\S]*?t\.player\.tryAnotherCore/)
