@@ -8,7 +8,7 @@
  */
 import { readFileSync } from 'node:fs'
 import { WebSocket } from 'ws'
-import { attachIpx, ipxStats } from '../src/ipx.js'
+import { attachIpx, ipxStats, sendIpxFrame } from '../src/ipx.js'
 
 let pass = 0
 let fail = 0
@@ -139,6 +139,33 @@ console.log('\n\u2500\u2500 \u2b50 源码守卫 \u2500\u2500')
   const guardAt = src.indexOf('clients.get(address) !== ws')
   const delAt = src.indexOf('clients.delete(address)', closeAt)
   ok(guardAt > closeAt && guardAt < delAt, '守卫必须在 delete 之前')
+}
+
+console.log('\n\u2500\u2500 \u2b50 \u6162\u63a5\u6536\u7aef\u80cc\u538b \u2500\u2500')
+{
+  let sent = 0
+  const openPeer = {
+    OPEN: 1,
+    readyState: 1,
+    bufferedAmount: 512 * 1024 - 30,
+    send() { sent++ },
+    close() { throw new Error('\u672a\u9884\u671f\u65ad\u5f00') },
+  }
+  ok(sendIpxFrame(openPeer, Buffer.alloc(30)), '\u961f\u5217\u4e0a\u9650\u5185\u7684\u63a7\u5236\u5305\u7167\u5e38\u53d1\u9001')
+  ok(sent === 1, '\u6b63\u5e38\u63a5\u6536\u7aef\u4ecd\u6536\u5230\u6570\u636e')
+
+  let closeCode = 0
+  const slowPeer = {
+    OPEN: 1,
+    readyState: 1,
+    bufferedAmount: 512 * 1024,
+    send() { throw new Error('\u6162\u63a5\u6536\u7aef\u4e0d\u80fd\u518d\u6536\u5230\u6392\u961f\u5305') },
+    close(code) { closeCode = code },
+  }
+  ok(!sendIpxFrame(slowPeer, Buffer.alloc(1)), '\u8d85\u8fc7\u5f85\u53d1\u9001\u961f\u5217\u4e0a\u9650\u65f6\u505c\u6b62\u6295\u9012')
+  ok(closeCode === 1013, '\u53ea\u5173\u95ed\u961f\u5217\u79ef\u538b\u7684\u6162\u63a5\u6536\u7aef\uff0c\u91ca\u653e\u5176\u5185\u5b58')
+  const closedPeer = { ...openPeer, readyState: 3 }
+  ok(!sendIpxFrame(closedPeer, Buffer.alloc(1)), '\u5df2\u5173\u95ed\u8fde\u63a5\u4e0d\u518d\u53d1\u9001')
 }
 
 wss.close()

@@ -2118,7 +2118,8 @@ js-dos 运行时从 npm 复制到 `public/jsdos/v<version>/`，版本同时写�
 DOSBox-X 配置，都显式写 `[ipx] ipx=true`；DOSBox / DOSBox-X 默认关闭 IPX 时，游戏内 IPX/LAN 功能会连本地协议栈都用不到。这个配置不等于加入网络：
 `startIpxServer` / `connectIpxAddress` 不得在普通单机启动时设置，WebRTC peer 仍只由玩家开房、加入或打开邀请链接时创建，
 离开房间 / 退出游戏后释放。逐游戏高级配置可显式写 `[ipx] ipx=false`；自带 `.jsdos/dosbox.conf` 的预制包继续保留包内配置，
-避免为改一个小配置而复制大型 ROM 包。
+避免为改一个小配置而复制大型 ROM 包。`server/src/ipx.js` 还必须限制发往每个接收端的 `bufferedAmount`：连接数和单帧大小有限，
+并不代表 `ws.send()` 的 TCP 待写队列有界；慢客户端超过 512 KiB 时只关闭该接收端，不能让广播把服务进程内存拖成无界增长。
 
 普通 DOS 包生成的 `cycles=auto` 一遇保护模式就放到 max：DOS4GW 游戏若模拟节奏跟 CPU 走，就会快得没法玩
 （2026-11-15《主题公园》）。这类游戏在 `windowsGameCompatibilityDosboxConfig` 里给固定周期（`theme-park` 为
