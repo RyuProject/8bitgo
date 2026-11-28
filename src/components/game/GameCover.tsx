@@ -353,11 +353,13 @@ export function GameCover({
     startCoverCdnSelection(game.cover || '')
     return unsubscribe
   }, [game.cover, videoSrc, mediaDeferred])
-  // 标准封面缩略图直接从主图变换，不再为每张图请求/保存一份 -96 副本；AVIF 暂不能走 CDN 变换，仍复用历史缩略图。
+  // 标准封面小图直接从主图变换；AVIF 暂不能走 CDN 变换，只复用历史缩略图。
   const legacyAvifThumbKey = thumb && game.cover && /\.avif$/i.test(game.cover) ? coverThumbKey(game.cover) : ''
   const legacyAvifThumbSrc = legacyAvifThumbKey ? romUrlForKey(legacyAvifThumbKey) : ''
   const coverSizes = sizes || (thumb ? '96px' : '')
-  // AVIF 是当前唯一不能走 CDN 变换的封面格式；其它小图只请求主图的单一 96px 响应档。
+  // PSI 首屏只有第一张封面会争取 LCP；仅压缩它，避免把全站后续游戏图片一起降质。
+  const coverQuality = priority ? 60 : 75
+  // 只有 AVIF 需要沿用旧 -96 对象；其它格式只发一个 96px 主图变换请求。
   const [legacyThumbFailed, setLegacyThumbFailed] = useState(false)
   useEffect(() => setLegacyThumbFailed(false), [legacyAvifThumbSrc])
   const useLegacyAvifThumb = Boolean(legacyAvifThumbSrc && !legacyThumbFailed)
@@ -370,17 +372,17 @@ export function GameCover({
   const [coverFailed, setCoverFailed] = useState(false)
   useEffect(() => setCoverFailed(false), [coverSrc])
   const imgSrc = useLegacyAvifThumb ? legacyAvifThumbSrc : thumb && !transformFailed ? coverImageUrl(coverSrc, 96) : coverSrc
-  // 96px 专供 40~44px 图标和模糊背景，单档在 2x 屏上也够用，继续列 160/240 只会多耗流量。
-  const srcSet = !thumb && !useLegacyAvifThumb && !transformFailed ? coverSrcSet(coverSrc, undefined, undefined, coverSizes) : ''
+  // 小图只有 96px 一个候选；卡片图才按布局宽度发 srcset。
+  const srcSet = !thumb && !useLegacyAvifThumb && !transformFailed ? coverSrcSet(coverSrc, undefined, undefined, coverSizes, coverQuality) : ''
   const transformFallbackAvailable = !useLegacyAvifThumb && !transformFailed && (Boolean(srcSet) || imgSrc !== coverSrc)
   // 视频 poster 也按卡片实际宽度挑图；否则手机首屏会按默认卡片宽度取图，多传一截。
   const posterSrcSet = videoSrc && coverSrc && !thumb
-    ? (transformFailed ? '' : imgSrc === coverSrc ? srcSet : coverSrcSet(coverSrc, undefined, undefined, coverSizes))
+    ? (transformFailed ? '' : imgSrc === coverSrc ? srcSet : coverSrcSet(coverSrc, undefined, undefined, coverSizes, coverQuality))
     : ''
   const posterSizes = coverSizes || (priority || eager ? '100vw' : 'auto, 100vw')
 
   const posterSrc = coverSrc
-    ? useLegacyAvifThumb ? legacyAvifThumbSrc : coverImageUrl(coverSrc, thumb ? 96 : coverPosterWidth(coverSizes))
+    ? useLegacyAvifThumb ? legacyAvifThumbSrc : coverImageUrl(coverSrc, thumb ? 96 : coverPosterWidth(coverSizes), undefined, undefined, coverQuality)
     : ''
   // preload 与 img 用同一组 srcset / sizes，避免先预载大档再额外下载更合适的小档。
   if (!mediaDeferred && priority && videoSrc && coverSrc) {

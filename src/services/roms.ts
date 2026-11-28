@@ -404,6 +404,7 @@ const COVER_WIDTH_SCALES = [2 / 3, 1, 4 / 3, 2] as const
 const COVER_WIDTH_BUCKETS = [96, 160, 240, 320, 480] as const
 const MAX_COVER_WIDTH = COVER_WIDTH_BUCKETS[COVER_WIDTH_BUCKETS.length - 1]
 type CoverImageWidth = number
+type CoverImageQuality = 60 | 75
 
 function coverWidthBucket(width: number): number {
   // 封面源图以 300px 为主、历史较大的图不超过 480px；超出后继续放大没有可见细节收益。
@@ -431,14 +432,20 @@ export function coverPosterWidth(sizes = ''): number {
   return widths[widths.length - 1] || DEFAULT_COVER_SLOT_WIDTH * 2
 }
 
-function transformedCoverUrl(src: string, width: CoverImageWidth, base: string, format: 'auto' | 'webp'): string {
+function transformedCoverUrl(
+  src: string,
+  width: CoverImageWidth,
+  base: string,
+  format: 'auto' | 'webp',
+  quality: CoverImageQuality = 75,
+): string {
   const prefix = `${base}/covers/`
   // Cloudflare Image Resizing 当前会对 AVIF 源图返回 415；跳过这条必失败的请求，直接用已压缩的源图。
   if (!base || !/^https:\/\//i.test(base) || !src.startsWith(prefix) || /\.avif(?:[?#]|$)/i.test(src)) return ''
   const path = src.slice(base.length + 1)
   const boundedWidth = Math.min(MAX_COVER_WIDTH, Math.max(1, Math.ceil(width)))
- // scale-down 让小源图保持原尺寸，避免高档候选只放大像素却不增加细节。
-  return `${base}/cdn-cgi/image/width=${boundedWidth},quality=75,format=${format},fit=scale-down/${path}`
+  // scale-down 保证较小的源图保持原尺寸；优先首图可单独调质量以减少 LCP 传输。
+  return `${base}/cdn-cgi/image/width=${boundedWidth},quality=${quality},format=${format},fit=scale-down/${path}`
 }
 
 /** 单张图片没有 srcset 时按传入展示尺寸转码，并保留不可变换源图回退。 */
@@ -447,8 +454,9 @@ export function coverImageUrl(
   width: CoverImageWidth = coverPosterWidth(),
   base = import.meta.env.VITE_COVER_TRANSFORM === '1' ? getCoverBase() : '',
   format: 'auto' | 'webp' = base && base === getCnCoverBase() ? 'webp' : 'auto',
+  quality: CoverImageQuality = 75,
 ): string {
-  return transformedCoverUrl(src, width, base, format) || src
+  return transformedCoverUrl(src, width, base, format, quality) || src
 }
 
 /**
@@ -471,9 +479,10 @@ export function coverSrcSet(
   base = import.meta.env.VITE_COVER_TRANSFORM === '1' ? getCoverBase() : '',
   format: 'auto' | 'webp' = base && base === getCnCoverBase() ? 'webp' : 'auto',
   sizes = '',
+  quality: CoverImageQuality = 75,
 ): string {
   const widths = coverWidthsForSizes(sizes)
-  const urls = widths.map((width) => transformedCoverUrl(src, width, base, format))
+  const urls = widths.map((width) => transformedCoverUrl(src, width, base, format, quality))
   return urls[0] ? urls.map((url, index) => `${url} ${widths[index]}w`).join(', ') : ''
 }
 

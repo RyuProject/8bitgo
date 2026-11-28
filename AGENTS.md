@@ -1821,6 +1821,11 @@ cd .. && npm run test:flash-online-save
 
 自测：`cd server && npm run test:netplay:all`。这一项不改数据库结构，不需要迁移。
 
+**联机 / 直播资源上限必须安全解析（2026-11-28）。** 房间数、每 IP 配额、存档内存预算和开播限流不能直接用
+`Number(process.env.X || 默认值)`：拼错环境变量会得到 `NaN`，而 `数量 >= NaN` 永远为 false，等于静默移除防护。
+普通数值用 `server/src/resource-limits.js` 的 `envNumber`；明确允许 `0` 关闭的配额用 `envNumberOrZero`，只有字面值 `0`
+才能关闭，负数 / 非数字回到安全默认。改这些参数时保留测试里有意使用的 `0`，并确认坏配置不会把限制变成无限。
+
 **联机人数默认自动推断（2026-11-13）。** `games.netplay_mode` 记意图：`auto`（默认）/ `on` / `off`；
 `players` / `multiplayer` 两列是**生效值**，每次写游戏后由 `server/src/netplay-auto.js` 的
 `syncNetplayDerived` 在同一事务里重算，所以公开 API、游戏库筛选、开房鉴权都不用看 mode。

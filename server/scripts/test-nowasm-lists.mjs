@@ -106,7 +106,7 @@ assert.match(src('src/components/home/sections.tsx'), /gameListed\(noWasm, g\.pl
 assert.match(src('src/services/search.ts'), /gameRunsWithoutWasm\(g\.platform, g\.slug\)/, '搜索联想没按游戏名单过滤')
 assert.match(src('src/components/layout/Layout.tsx'), /<NoWasmNotice \/>/, '没挂全站提示')
 assert.match(src('src/locales/zh-Hans.ts'), /noWasmNotice: '当前浏览器不支持或者禁用了WebAssembly，无法显示全部游戏。'/)
-// 名单要和播放器的纯 JS 退路一致：NES → jsnes，GB/GBC → binjgb-js；GBA 无 WASM 或不认引擎语法 → IodineGBA。
+// 名单要和播放器的纯 JS 退路一致：NES → jsnes，GB/GBC → binjgb-js；GBA 无 WASM 或不支持现代语法 → IodineGBA。
 assert.match(src('src/emulator/registry.ts'), /\(platform === 'gb' \|\| platform === 'gbc'\) && \(ctx\.webglUnavailable \|\| ctx\.wasmUnavailable\)/)
 assert.match(src('src/emulator/registry.ts'), /const fallbackId = gbaFallbackRuntime\(/)
 assert.match(src('src/emulator/gbaFallback.ts'), /if \(wasmUnavailable \|\| modernSyntaxUnavailable\) return 'iodinegba'/)

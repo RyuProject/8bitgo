@@ -10,11 +10,11 @@
 
 本节更新生产现状；下方 11-26 的抓取、性能与数据库记录保留为历史快照，不能再当作当前标题覆盖状态。
 
-- **逐语言标题和简介待办已清空**：生产机 `npm run seo:coverage -- --review` 显示 663 款公开游戏；对每个有精确语言 ROM 的条目，八种语言的标题、简介和非自动内容校验均无待办。对应语言 ROM 数为简中 299、繁中 37、英文 558、西语 111、法语 62、意大利语 52、德语 57、日语 148。此结果表示字段覆盖与报告规则通过，不代表每段简介都已由母语编辑做事实校对。
+- **逐语言标题和简介待办已清空**：生产机 `npm --prefix server run seo:coverage -- --review --limit 12` 显示 663 款公开游戏；对每个有精确语言 ROM 的条目，八种语言的标题、简介和非自动内容校验均无待办。对应语言 ROM 数为简中 299、繁中 37、英文 558、西语 111、法语 62、意大利语 52、德语 57、日语 148。此结果表示字段覆盖与报告规则通过，不代表每段简介都已由母语编辑做事实校对。
 - **本地化游戏标题已进入真实页面**：日文《火红》详情现在的 `<title>` 与 H1 均使用「ポケットモンスター ファイアレッド」；可见证据表明后台标题、SSR 与详情页标题信号的链路已经生效。用户最初提出的“按 UI 语言显示对应游戏标题”已在线解决。
 - **合集索引仍有可收敛的抓取路径**：生产有 16 个公开合集，其中 4 个达到详情页 / 首页 / sitemap 索引门槛，12 个为 `noindex`；`/collections` 仍链接到这 12 个 noindex 页面。作者自建合集的描述属于作者表达，本计划不代作者改写；下一步应评估目录是否只把可索引合集作为搜索入口，同时保留玩家访问方式。
-- **元数据准确性仍有缺口**：9 款公开游戏至少缺开发商或发行年份。一个旧搜索快照把[《黄金矿工双人版》页面](https://8bitgo.com/games/gold-miner-2-player)显示为 1990 年；2026-11-28 带唯一参数的 Cloudflare `MISS` SSR 与生产数据库均显示 2008 年，且[4399 的游戏列表](https://www.4399.com/special/old_34.htm)将《黄金矿工双人版》列为 2008-01-24。年份有独立证据支持，没有改库；旧搜索快照不是线上现值。开发商仍未知。《1944: The Loop Master》常见原作资料指向 2000 年街机版，但本站条目按 NES ROM 运行；在确认本站 ROM 的具体版本前，不能把街机版年份和开发商直接套给 NES 条目。
-- **生产部署状态正常**：截至 2026-11-28，SSH 部署已到主分支提交 `68ac27d6`；`8bitgo` 服务 active，`/api/health` 返回 HTTP 200 与 `db: true`；NES、CPS1 街机和 GBA 三款游戏的生产开局冒烟均通过。日文《火红》页面的 SSR `<title>`、H1 与 `hreflang="ja"` 也已在线复核。部署 SSH 地址与 `./deploy/redeploy.sh` 命令已记录在 `AGENTS.md`。
+- **元数据准确性仍有缺口**：生产公开游戏中 7 款仍缺开发商或发行年份（只读 SQL 复核）。《黄金矿工双人版》当前数据库与带唯一参数的 SSR 均显示 2008；[4399 旧版列表](https://www.4399.com/special/old_34.htm)记为 2008-01-24，年份有独立证据，开发商仍未知。旧搜索快照中的 1990 不是当前线上值。Kartboard 的创作者为 David Ronai（Makio64）；[BrowserGaming 的核实记录](https://browsergaming.com/games/kartboard/)引用了创作者 2026-11-16 的发布帖。已将生产年份从 0 补为 2026，数据库与公开 SSR 的 `datePublished` 都确认；搜索 tokens 已重建，IndexNow 接收 33 个 URL，Cloudflare HTML 缓存已清。同期百度推送返回 HTTP 400 配额已满，未重试。《1944: The Loop Master》数据库平台是 NES；可查的同名原作来源指向[2000 年街机版](https://gamefaqs.gamespot.com/arcade/565641-1944-the-loop-master/data)，不能证明本站 NES ROM 的发行年。已将原先误填的 1990 清空为未知，开发商保持未知；SSR 不再输出 `datePublished`，IndexNow 接收 42 个 URL，Cloudflare HTML 缓存已清。对 Pokecatch，[开发者账号的 2026 年试玩帖](https://www.reddit.com/r/pokemonfr/comments/1x94jmr/pokecatch_besoin_de_vos_avis_jeu_navigateur/)自述正在开发 Poke'Catch 并附游戏链接；其玩法与本站条目简介相符。生产年份由 0 补为 2026，开发者记为公开署名 `SireChaussette`；数据库与 SSR JSON-LD 的 `datePublished` / `author` 均已确认，搜索 tokens 已重建，IndexNow 接收 33 个 URL，Cloudflare HTML 缓存已清。仍有 7 款缺开发商或年份。
+- **生产服务健康，最新部署的冒烟结论待确认**：生产代码已切到主分支提交 `b5f1711d`，`8bitgo` 服务 active，`/api/health` 返回 HTTP 200 与 `db: true`。该次部署日志记录 NES 与 CPS1 街机开局冒烟通过，但没有 GBA 结果或最终部署完成行，不能记作三项全通过；前一完整部署 `7a1403c2` 的 NES、CPS1 与 GBA 冒烟均通过。日文《火红》页面的 SSR `<title>`、H1 与 `hreflang="ja"` 也已在线复核。部署 SSH 地址与 `./deploy/redeploy.sh` 命令已记录在 `AGENTS.md`。
 - **站长侧指标仍缺数据源**：Search Console、Bing Webmaster、Cloudflare/WAF 日志仍未接入，所以真实收录、查询曝光、验证爬虫状态和边缘缓存清理结果未知。普通 UA 或伪装搜索 UA 的 HTTP 200 不能证明真实搜索爬虫已通过。
 - **抓取入口与首屏性能仍需持续监控**：11-26 的巡检读到 robots 与 sitemap，但两次遇到不同语言 sitemap 的 `fetch failed`；这没有收到失败 HTTP 状态，应继续区分公网链路抖动与源站响应故障。此前 PSI / CrUX 的性能记录仍是定位线索，需用更新后的真实用户数据复测，不能把旧报告视为本次部署效果。
 
@@ -340,8 +340,8 @@ Google 不使用 `meta keywords` 作为排名捷径。关键词应体现在准�
 
 ## 下一步执行顺序
 
-1. 为《黄金矿工双人版》的 2008 年份保留 4399 来源记录；《1944: The Loop Master》先核验本站 NES ROM 是否为移植、改版或错误命名，再决定展示原作信息还是该版本信息。
-2. 对报告中缺开发商 / 年份的 9 款游戏逐条找发行商、说明书、可信游戏数据库或作品官网证据；缺乏可靠来源时保留“未知”，不要为填满字段而猜测。
+1. 为《黄金矿工双人版》的 2008 年份保留 4399 来源记录，并继续查找该 Flash 双人版的开发商；《1944: The Loop Master》先核验本站 NES ROM 是否为移植、改版或错误命名，再决定展示该版本信息。
+2. 对仍缺开发商 / 年份的 8 款游戏逐条找发行商、说明书、可信游戏数据库或作品官网证据；缺乏可靠来源时保留“未知”，不要为填满字段而猜测。Kartboard 的年份已按创作者发布记录补齐。
 3. 评估 `/collections` 到 noindex 合集的普通链接是否值得作为搜索入口；保留用户直接访问路径与合集的社区用途，不代作者改写描述。
 4. 用生产 `seo:coverage -- --review` 做上线前后的字段回归；当前报告无待办，新增或替换 ROM 后再复核对应语言的标题、简介和 ROM 绑定。
 5. 连接 Search Console / Bing Webmaster 的只读数据源，取近 3 个月按国家、查询词、落地页、语言和设备拆分的表现与索引状态；同时检查生成式 AI 表现报告是否可用，并从 Cloudflare / EdgeOne 取近 7 天真实爬虫状态码。

@@ -46,6 +46,22 @@ export function envNumber(
   return normalized
 }
 
+/**
+ * 配额允许显式写 0 表示关闭（例如单 IP 上限），但负数 / 拼错值必须回到安全默认值。
+ * 直接用 envNumber(min: 0) 会把 -1 夹成 0，反而把保护关掉，所以把“明确的 0”单独处理。
+ */
+export function envNumberOrZero(name, fallback, { max = Number.MAX_SAFE_INTEGER, source = process.env } = {}) {
+  const raw = source[name]
+  if (raw == null || String(raw).trim() === '') return fallback
+  const value = Number(raw)
+  if (!Number.isFinite(value) || value < 0) {
+    warn(name, `不是非负数字（${JSON.stringify(String(raw))}）`, fallback)
+    return fallback
+  }
+  if (value === 0) return 0
+  return envNumber(name, fallback, { min: 1, max, source })
+}
+
 function warn(name, why, effective) {
   console.warn(`[config] ${name} ${why}，本次按 ${effective} 生效（检查一下服务器上的环境变量）`)
 }

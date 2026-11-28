@@ -13,6 +13,12 @@ assert.equal(isDeterministicStartupFailure('deterministic', 'romset is unknown')
   '确定性格式错误仍直接寻找内容备用源')
 assert.equal(isDeterministicStartupFailure('content', 'Flash 站点锁：Armor Games 黑屏'), true,
   '已识别的 Flash 站点锁仍直接寻找内容备用源')
+assert.equal(isDeterministicStartupFailure(undefined, 'Flash 站点锁：这份 ROM 仅授权域名可运行'), true,
+  'Flash 站点锁是确定性内容问题，不重下相同文件')
+assert.equal(isDeterministicStartupFailure('network', 'Flash 站点锁检查前网络超时'), false,
+  '网络 scope 优先于包装文案，弱网仍能重试相同地址')
+assert.equal(isDeterministicStartupFailure('deterministic', 'Flash 站点锁：授权域名不匹配'), true,
+  'Flash 站点锁必须绕过无意义的同地址重试')
 assert.equal(isDeterministicStartupFailure('runtime', '8BG ROM 包加载器未初始化'), false,
   '运行时设施故障不能污染 ROM 候选链')
 

@@ -10,6 +10,8 @@ const collectionsPage = read('src/pages/CollectionsPage.tsx')
 const gamesPage = read('src/pages/GamesPage.tsx')
 const collectionPage = read('src/pages/CollectionPage.tsx')
 
+assert.match(cover, /const coverSizes = sizes \|\| \(thumb \? '96px' : ''\)/,
+  '封面缩略图要使用 96px 目标尺寸，已知卡片尺寸由调用方优先指定')
 assert.match(cover, /sizes=\{srcSet \? coverSizes \|\| \(priority \|\| eager \? '100vw' : 'auto, 100vw'\) : undefined\}/,
   '响应式图片优先使用实际尺寸，否则保留按优先级选择的默认尺寸')
 assert.match(cover, /sizes=\{srcSet && !sourceMedia \? coverSizes \|\| \(priority \|\| eager \? '100vw' : 'auto, 100vw'\) : undefined\}/,

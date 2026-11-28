@@ -280,6 +280,12 @@
 
 - 桌面悬停预热和紧接着的开局可能同时查询同一核心的 EmulatorJS IndexedDB 缓存，重复打开数据库并做 URL 索引计数。现在只合并相同数据库、相同 URL 集的在途查询；结果按调用方复制返回，完成即移除，不缓存命中状态，以免跨标签页清库后误跳过核心下载。`npm run test:arcade-runtime` 覆盖只打开一次、调用方结果隔离、下一次查询重新读取；TypeScript 检查通过。此项消除重复本地数据库工作，不量化为开局提速。
 
+## 2026-11-28：J2ME 备用运行时缺类不能被并行 502 误诊
+
+- 生产最近 7 天的 5 次 J2ME 失败涉及 3 款 Java ME 游戏。现场错误明确为备用 `j2me-web` 缺少 `javax.wireless.messaging`（WMA）或 `javax.microedition.m3g`（M3G）类；同局 8BG ROM 请求的 HTTP 502 只是失败线路候选，不能覆盖运行时已经报出的缺类异常。
+- 诊断规则现在把明确的 WMA / M3G `NoClassDefFoundError` 归到高把握度运行时兼容性问题；无缺类证据的 HTTP 502 仍保留为待确认网络线索。历史诊断重算也会用新证据更新分组签名。`npm run test:startup-diagnostics` 覆盖新旧样本、误归类负例与历史重分组。
+- 这项改动修正后台归因，不会给 `j2me-web` 增加 WMA / M3G 实现；当 CheerpJ 无法启动时，这些依赖相应 API 的游戏仍可能无法运行，需要单独验证兼容性实现方案。
+
 ## 2026-11-28：PPSSPP 同一分片跨 pthread 去重
 
 - v32 的 BroadcastChannel 试验在 Chromium 中不能把 pthread 的 SharedArrayBuffer 交给 Broker；即使 Broker 下载完成，核心线程仍会退回原生同步 XHR，造成同一分片重复传输。v33 改为页面创建一个专用 Broker Worker，并沿 Emscripten 的 pthread `load` 消息向每个核心线程分发独立 MessagePort，避免依赖 SharedWorker 或跨代理 BroadcastChannel。
