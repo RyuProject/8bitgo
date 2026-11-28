@@ -193,8 +193,8 @@ function Shell() {
       <ClarityConsentBanner />
 
       {/*
-        站内消息的右侧抽屉。挂载之后**一直挂着**（靠 transform 滑出，所以收起也有动画），
-        但推迟到浏览器空闲才挂 —— 见上面 DeferredImPanel 的注释。
+        站内消息的右侧抽屉。挂载之后**一直挂着**（靠 transform 滑出，所以收起也有动画）；
+        登录用户在首屏后的空闲期挂载，匿名访客只有打开消息入口时才加载 —— 见上面 DeferredImPanel。
         它在服务端渲染时什么都不做：useCurrentUser() 的 SSR 快照恒为 null
         （见 services/auth.ts 的注释），所以 SSR 出来就是一个空壳。
         SDK 核心和抽屉所需插件是 services/imClient.ts 里的动态 import，不在首屏主包里。
