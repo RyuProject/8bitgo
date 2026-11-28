@@ -108,7 +108,7 @@ import {
 import { FEATURES } from '@/config/features'
 import { desktopScreenAspect, detailPageScreenAspect, liveStageStyle, mobileScreenAspect, stableLiveGeometry, stageHeightCap } from './screenAspect'
 import { recordPlay } from '@/services/store'
-import { newStartupId, recordStartupEvent, recordStartupEvents, type StartupEvent, type StartupEventName } from '@/services/startupFunnel'
+import { newStartupId, recordStartupEvent, recordStartupEvents, shouldReportFallbackRoute, type StartupEvent, type StartupEventName } from '@/services/startupFunnel'
 import { diagLog, registerDiagnosticSnapshot } from '@/services/startupDiagnostics'
 import { createStartupProgressTrace } from './startupProgressTrace'
 import { sameLiveControls, sameRuntimeCaps, sameRuntimeGeometry, sameRuntimeScreenLayout } from './playerRuntimeState'
@@ -2137,6 +2137,7 @@ export function EmulatorPlayer({
     const isStreamingDosSession = session.runtime.id === 'jsdos' && Boolean(dosSockdriveUrlRef.current)
     let fallbackTrail = [...(session.fallbacks ?? [])]
     let fallbackStartedReported = false
+    let reportedFallbackRoute = ''
     let fallbackFirstFrameReported = false
     let fallbackInteractionReported = false
     let fallbackOutcomeReported = false
@@ -2193,9 +2194,13 @@ export function EmulatorPlayer({
     }
     const reportFallbackOutcome = (event: 'fallback_started' | 'fallback_first_frame' | 'fallback_playable' | 'fallback_failed') => {
       if (!fallbackTrail.length || !startupVisitId || !startupSlug || session.runtime.id === 'liveview') return
+      const detail = fallbackTrail
+        .map(({ kind, from, to, reason }) => `${kind}:${from}>${to}:${reason}`)
+        .join(';')
       if (event === 'fallback_started') {
-        if (fallbackStartedReported) return
+        if (!shouldReportFallbackRoute(reportedFallbackRoute, detail)) return
         fallbackStartedReported = true
+        reportedFallbackRoute = detail
       } else if (event === 'fallback_first_frame') {
         if (!fallbackStartedReported || fallbackFirstFrameReported) return
         fallbackFirstFrameReported = true
@@ -2203,9 +2208,6 @@ export function EmulatorPlayer({
         if (!fallbackStartedReported || fallbackOutcomeReported) return
         fallbackOutcomeReported = true
       }
-      const detail = fallbackTrail
-        .map(({ kind, from, to, reason }) => `${kind}:${from}>${to}:${reason}`)
-        .join(';')
       reportStartup(event, detail)
     }
     const reportFallbackInteraction = () => {
