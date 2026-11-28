@@ -11,7 +11,7 @@ const gamesPage = read('src/pages/GamesPage.tsx')
 const collectionPage = read('src/pages/CollectionPage.tsx')
 
 assert.match(cover, /sizes=\{srcSet && !sourceMedia \? coverSizes \|\| \(priority \|\| eager \? '100vw' : 'auto, 100vw'\) : undefined\}/)
-assert.equal((cover.match(/decoding=\{priority \? 'sync' : 'async'\}/g) ?? []).length, 2)
+assert.equal((cover.match(/decoding="async"/g) ?? []).length, 2)
 assert.match(cover, /deferMedia\?: boolean/)
 assert.match(cover, /const mediaDeferred = deferMedia && !mediaVisible/)
 assert.match(cover, /videoSrc && !mediaDeferred/)
