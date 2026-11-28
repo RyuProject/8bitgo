@@ -359,6 +359,10 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
   - 换了 pcsx_rearmed 的源包要重跑 `npm run build:pcsx-lowmem`（`test:psx-lowmem` 会核对源包哈希），并同步 `PSX_LOWMEM_BUILD`。
     新增或换掉起步 ≥ 256 MiB 的核心，要改 `EJS_LARGE_CORE_INITIAL_PAGES`（测试对着 cores/ 里的真实 WASM 逐个核对）。
     回归：`npm run test:psx-lowmem && npm run test:fbneo-lowmem && npm run test:startup-diagnostics`。
+- **默认核心与显式固定核心必须分开记**（2026-11-28）：`onCoreResolved` 会把 ROM 最终解析出的核心写回 `session.coreOverride`，用于读档重开和失败后重试；这不等于玩家固定了核心。
+  `coreOverridePinned` 必须从 `begin()` 沿自动重试、读档重开、失败重试一路保留；低内存 / NDS 兼容回退只按这个标记判断是否允许换核。
+  若标记为 `false`，`begin()` 忽略传回来的已解析核心，让设备记住的安全核心优先；真正手动换核心或自动切换后设为 `true`。
+  否则重开 / 重试时默认核心会被当成显式覆盖，关闭 PS1 / FBNeo 低内存和 NDS 崩溃兼容回退。回归：`npm run test:player-runtime-state && npm run test:dos-load && npm run test:nds-crash && npm run test:psx-lowmem && npm run test:fbneo-lowmem`。
 
 改引擎后 URL 会自动换（2026-11-15 起引擎入口按内容版本，见 §2.8.1.1 末条），不用再手动换 `EJS_RUNTIME_GENERATION`。
 

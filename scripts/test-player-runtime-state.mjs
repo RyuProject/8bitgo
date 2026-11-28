@@ -131,11 +131,21 @@ assert.match(player, /sameLiveControls\(current, next\) \? current : next/)
 */
 assert.match(player, /failedLaunchRef = useRef<FailedLaunchContext \| null>\(null\)/)
 assert.match(player, /rememberFailedLaunch\(session\)/)
-assert.match(player, /begin\(failed\.game, failed\.platform, failed\.runtime, \{\s*coreOverride: failed\.coreOverride,\s*ruledOut: failed\.ruledOut,/s)
+assert.match(player, /begin\(failed\.game, failed\.platform, failed\.runtime, \{\s*coreOverride: failed\.coreOverride,\s*coreOverridePinned: failed\.coreOverridePinned,\s*ruledOut: failed\.ruledOut,/s)
 assert.match(player, /status === 'error' && retryLastFailedLaunch\(\)/)
 assert.match(player, /nextManualCoreOption\(\s*options,\s*failed\.manualTriedCores/s)
 assert.match(player, /resolvedCoreRef\.current = \{[\s\S]{0,180}core: resolvedCore/)
 assert.match(player, /coreResolvedForSession\(coreReport, failed\.id, failed\.coreOverride\)/)
+assert.match(player, /const coreOverridePinned = requestedCoreOverride !== undefined\s*\? extra\?\.coreOverridePinned \?\? true\s*:\s*Boolean\(coreOverride\)/,
+  '默认解析核心保持可回退，自动选出的记忆核心则固定到本局')
+assert.match(player, /const requestedCoreOverride = extra\?\.coreOverridePinned === false \? undefined : extra\?\.coreOverride/,
+  '未固定的已解析核心不能压过设备记忆中的兼容 / 低内存核心')
+assert.match(player, /coreOverridePinned: session\.coreOverridePinned/,
+  '会话重开和自动重试必须保留核心固定状态，默认核心仍可触发低内存 / 兼容回退')
+assert.match(player, /coreOverridePinned: true,[\s\S]{0,100}manualTriedCores: \[\.\.\.manualTriedCores\]/,
+  '玩家手动换核后新会话必须固定所选核心')
+assert.match(player, /const restartable = canRestartInPlace\(session\) && !session\.coreOverridePinned/)
+assert.match(player, /ndsCrashFallbackCore\(crashedCore, canRestartInPlace\(session\), Boolean\(session\.coreOverridePinned\)\)/)
 assert.match(player, /failed\.runtime\.id === 'emulatorjs' \? currentCore/)
 assert.match(player, /failed\.platform === 'arcade' && arcadeRomDataRef\.current/, 'FBNeo 专属 RomData 游戏不能露出 MAME 等不兼容核心')
 assert.match(player, /canTryManualCoreRecovery\(\s*failed\.runtime\.id,\s*failed\.platform,\s*failed\.recoveryCause,\s*failed\.manualCoreFallbackAllowed/s)
