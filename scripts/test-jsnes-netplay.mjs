@@ -126,7 +126,7 @@ class FakeDataChannel extends EventTarget {
 }
 
 const mod = await import(`data:text/javascript;base64,${Buffer.from(built.outputFiles[0].contents).toString('base64')}`)
-const { JsnesNetplay, jsnesRomFingerprint } = mod
+const { JsnesNetplay, jsnesRomFingerprint, releaseNetplaySeatInputs } = mod
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
 const baseOptions = (overrides = {}) => ({
   seat: 0,
@@ -135,6 +135,19 @@ const baseOptions = (overrides = {}) => ({
   applyInitialState: () => {},
   ...overrides,
 })
+
+// 离房 / 断线时要释放双方最后施加到核心里的按键；链路断在 keydown 与 keyup 之间也不能卡键。
+{
+  const applied = { 0: (1 << 0) | (1 << 7), 1: (1 << 4) | (1 << 9) }
+  const released = []
+  releaseNetplaySeatInputs(applied, (seat, action) => released.push([seat, action]))
+  assert.deepEqual(released, [[0, 'a'], [0, 'right'], [1, 'up'], [1, 'turboB']])
+  assert.deepEqual(applied, { 0: 0, 1: 0 }, '已释放的位图要归零，避免重复松键')
+
+  const untouched = { 0: -1, 1: -1 }
+  releaseNetplaySeatInputs(untouched, () => assert.fail('未施加过输入的座位不应发送 keyup'))
+  assert.deepEqual(untouched, { 0: 0, 1: 0 })
+}
 
 // 输入延迟既来自房间设置，也可能在握手时由对端传入；两种入口都必须夹在安全范围内。
 for (const [input, expected] of [[-3, 0], [2.9, 2], [99, 8], [Number.NaN, 2]]) {
@@ -368,6 +381,7 @@ assert.notEqual(jsnesRomFingerprint(new Uint8Array([1, 2, 3])), jsnesRomFingerpr
 
 const playerSource = readFileSync(new URL('../src/emulator/EmulatorPlayer.tsx', import.meta.url), 'utf8')
 const panelSource = readFileSync(new URL('../src/emulator/JsnesNetplayPanel.tsx', import.meta.url), 'utf8')
+const adapterSource = readFileSync(new URL('../src/emulator/adapters/jsnes.ts', import.meta.url), 'utf8')
 assert.match(playerSource, /initialRoomId=\{jsnesInviteCode\}/, '邀请房号必须交给可见面板')
 assert.match(playerSource, /targetPlatform === 'nes' && jsnesNetplay && runtime\.id !== 'jsnes'[\s\S]*jsnesInviteNotJoined/, '邀请 ROM 落到单人备用运行时后，必须明确告知玩家未加入联机房')
 assert.match(panelSource, /joinRoom\(initialRoomId\)/, '可见面板必须自动加入邀请房')
@@ -379,6 +393,11 @@ assert.doesNotMatch(
   playerSource.slice(playerSource.indexOf('const jsnesInviteCode'), playerSource.indexOf('/** netplay 给我们分配的身份 id')),
   /handle\.openJsnesNetplay\(/,
   '父组件不能在面板外偷偷先占用联机会话',
+)
+assert.match(
+  adapterSource,
+  /releaseNetplaySeatInputs\(appliedSeatBits,[\s\S]*?nes\.buttonUp\?\.\(seat === 1 \? 2 : 1, code\)/,
+  '离房清理必须把双方仍按下的按键释放到对应 jsnes 手柄，避免断线遗留卡键',
 )
 
 console.log('jsnes 联机通过：邀请进房、ICE/Offer 竞态、初始状态、ROM 对账与逐帧输入')

@@ -55,6 +55,7 @@ const SERIAL = new Set([
   'server:test:netplay', // 9921
   'server:test:saves', // 9941
   'test:rom-probe', // 用真实计时器比较线路速度；并行 CPU 负载会把快慢响应挤进同一轮事件循环
+  'test:rom-route-health', // 线路对冲有真实毫秒上限；并行 CPU 负载会把模拟线路延迟放大成假失败
 ])
 
 /** 只在特定平台能跑的 */
