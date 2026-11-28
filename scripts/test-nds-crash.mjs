@@ -111,7 +111,7 @@ assert.match(adapter, /if \(destroyed \|\| started \|\| loadFailed \|\| crashRep
 assert.equal(isNdsWasmCrash('', { name: 'RuntimeError', message: 'null function' }), true)
 assert.match(player, /onCoreCrash: \(crashedCore: string, reason: string\)/)
 assert.match(player, /coreOverride: nextCore/)
-assert.match(player, /Boolean\(session\.coreOverride\)/)
+assert.match(player, /Boolean\(session\.coreOverridePinned\)/)
 assert.match(player, /\$\{coreSaveSlug\}:melonds-compat/)
 assert.match(player, /countedPlayAttemptRef\.current === session\.startupAttemptId/)
 assert.match(player, /playableTimer = window\.setTimeout\(confirmPlayable, 5_000\)/)

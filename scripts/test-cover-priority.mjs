@@ -10,8 +10,14 @@ const collectionsPage = read('src/pages/CollectionsPage.tsx')
 const gamesPage = read('src/pages/GamesPage.tsx')
 const collectionPage = read('src/pages/CollectionPage.tsx')
 
-assert.match(cover, /sizes=\{srcSet && !sourceMedia \? coverSizes \|\| \(priority \|\| eager \? '100vw' : 'auto, 100vw'\) : undefined\}/)
-assert.equal((cover.match(/decoding="async"/g) ?? []).length, 2)
+assert.match(cover, /const coverSizes = sizes \|\| \(thumb \? '96px' : ''\)/,
+  '封面缩略图要使用 96px 目标尺寸，已知卡片尺寸由调用方优先指定')
+assert.match(cover, /sizes=\{srcSet \? coverSizes \|\| \(priority \|\| eager \? '100vw' : 'auto, 100vw'\) : undefined\}/,
+  '响应式图片优先使用实际尺寸，否则保留按优先级选择的默认尺寸')
+assert.match(cover, /sizes=\{srcSet && !sourceMedia \? coverSizes \|\| \(priority \|\| eager \? '100vw' : 'auto, 100vw'\) : undefined\}/,
+  'picture 的主图与 source 必须使用同一组尺寸策略')
+assert.equal((cover.match(/decoding="async"/g) ?? []).length, 2,
+  '首屏图和视频海报保持异步解码，避免同步解码延长绘制等待')
 assert.match(cover, /deferMedia\?: boolean/)
 assert.match(cover, /const mediaDeferred = deferMedia && !mediaVisible/)
 assert.match(cover, /videoSrc && !mediaDeferred/)
