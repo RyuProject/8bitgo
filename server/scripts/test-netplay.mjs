@@ -33,9 +33,14 @@ const section = (title) => console.log(`\n── ${title} ──`)
 const app = express()
 const http = createServer(app)
 attachNetplay(http, app, ['*'], { resolveGamePolicy: testGameRoomPolicy })
-await new Promise((r) => http.listen(9921, r))
-const WS = 'http://127.0.0.1:9921/netplay'
-const API = 'http://127.0.0.1:9921'
+// 固定端口会和本机开发服务器、并行测试冲突；绑定回环随机端口只隔离测试，不依赖端口碰运气。
+await new Promise((resolve, reject) => {
+  http.once('error', reject)
+  http.listen(0, '127.0.0.1', resolve)
+})
+const { port } = http.address()
+const WS = `http://127.0.0.1:${port}/netplay`
+const API = `http://127.0.0.1:${port}`
 
 const connect = async () => {
   const s = client(WS)
