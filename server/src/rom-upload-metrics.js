@@ -131,12 +131,18 @@ function shapeGroup(row) {
     failed: Number(row.failed ?? 0),
     cancelled: Number(row.cancelled ?? 0),
     successRate: attempts ? successful / attempts : 0,
+    successDurationSamples: Number(row.success_duration_samples ?? successful),
+    successSpeedSamples: Number(row.success_speed_samples ?? 0),
     avgDurationMs: numeric(row, 'avg_duration_ms'),
     avgPrepareMs: numeric(row, 'avg_prepare_ms'),
     avgFirstPartMs: numeric(row, 'avg_first_part_ms'),
     avgTransferMs: numeric(row, 'avg_transfer_ms'),
     avgFinalizeMs: numeric(row, 'avg_finalize_ms'),
     avgMeasuredMbps: numeric(row, 'avg_measured_mbps'),
+    p50SuccessDurationMs: numeric(row, 'p50_success_duration_ms'),
+    p90SuccessDurationMs: numeric(row, 'p90_success_duration_ms'),
+    p50SuccessMbps: numeric(row, 'p50_success_mbps'),
+    p90SuccessMbps: numeric(row, 'p90_success_mbps'),
     avgPeakConcurrency: numeric(row, 'avg_concurrency'),
     avgServerWaitMs: numeric(row, 'avg_server_wait_ms'),
     avgHashWaitMs: numeric(row, 'avg_hash_wait_ms'),
@@ -148,9 +154,32 @@ export async function romUploadStats(days = 7, query = defaultQuery) {
   const parsedDays = Number(days)
   const safeDays = Number.isFinite(parsedDays) ? Math.max(1, Math.min(30, Math.round(parsedDays))) : 7
   const rows = await query(
-    `SELECT size_band, upload_mode, region, device_class, network_type,
+    `WITH ranked AS (
+       SELECT size_band, upload_mode, region, device_class, network_type,
+              outcome, duration_ms, measured_mbps, prepare_ms, first_part_ms,
+              transfer_ms, finalize_ms, server_wait_ms, hash_wait_ms, resumed,
+              ROW_NUMBER() OVER (
+                PARTITION BY size_band, upload_mode, region, device_class, network_type
+                ORDER BY (outcome = 'success') DESC, duration_ms
+              ) AS duration_rank,
+              SUM(outcome = 'success') OVER (
+                PARTITION BY size_band, upload_mode, region, device_class, network_type
+              ) AS success_count,
+              ROW_NUMBER() OVER (
+                PARTITION BY size_band, upload_mode, region, device_class, network_type
+                ORDER BY (outcome = 'success' AND measured_mbps IS NOT NULL) DESC, measured_mbps
+              ) AS speed_rank,
+              SUM(outcome = 'success' AND measured_mbps IS NOT NULL) OVER (
+                PARTITION BY size_band, upload_mode, region, device_class, network_type
+              ) AS speed_count
+         FROM rom_upload_metrics
+        WHERE created_at >= UTC_TIMESTAMP() - INTERVAL ${safeDays} DAY
+     )
+     SELECT size_band, upload_mode, region, device_class, network_type,
             COUNT(*) AS attempts,
             SUM(outcome = 'success') AS successful,
+            SUM(outcome = 'success') AS success_duration_samples,
+            SUM(outcome = 'success' AND measured_mbps IS NOT NULL) AS success_speed_samples,
             SUM(outcome = 'failure') AS failed,
             SUM(outcome = 'cancelled') AS cancelled,
             AVG(duration_ms) AS avg_duration_ms,
@@ -159,12 +188,21 @@ export async function romUploadStats(days = 7, query = defaultQuery) {
             AVG(transfer_ms) AS avg_transfer_ms,
             AVG(finalize_ms) AS avg_finalize_ms,
             AVG(measured_mbps) AS avg_measured_mbps,
+            MAX(CASE WHEN outcome = 'success' AND duration_rank = CEIL(success_count * 0.5)
+                     THEN duration_ms END) AS p50_success_duration_ms,
+            MAX(CASE WHEN outcome = 'success' AND duration_rank = CEIL(success_count * 0.9)
+                     THEN duration_ms END) AS p90_success_duration_ms,
+            MAX(CASE WHEN outcome = 'success' AND measured_mbps IS NOT NULL
+                           AND speed_rank = CEIL(speed_count * 0.5)
+                     THEN measured_mbps END) AS p50_success_mbps,
+            MAX(CASE WHEN outcome = 'success' AND measured_mbps IS NOT NULL
+                           AND speed_rank = CEIL(speed_count * 0.9)
+                     THEN measured_mbps END) AS p90_success_mbps,
             AVG(concurrency) AS avg_concurrency,
             AVG(server_wait_ms) AS avg_server_wait_ms,
             AVG(hash_wait_ms) AS avg_hash_wait_ms,
             AVG(resumed) AS avg_resumed
-       FROM rom_upload_metrics
-      WHERE created_at >= UTC_TIMESTAMP() - INTERVAL ${safeDays} DAY
+       FROM ranked
       GROUP BY size_band, upload_mode, region, device_class, network_type
       ORDER BY attempts DESC, size_band, upload_mode
       LIMIT 100`,

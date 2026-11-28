@@ -34,6 +34,7 @@
 - 发现并修复的往返浪费：每片原先把 `partNumber` 放在查询串里，导致每片 URL 不同。Fetch 标准的预检缓存键包含 URL；因此即使服务端预检缓存时长为一天，浏览器也不能在不同片 URL 间复用该缓存。现在新 Worker 明确声明能力后，客户端把分片号放在 `X-8BG-Part-Number`，所有片共用 `uploadId` URL；旧 Worker 和旧账本继续走原查询串协议。新 Worker CORS 允许该头。
 - 实测边界：回归验证了 URL 固定、分片号递增、合并成功和旧查询参数兼容；未在真实后台浏览器抓取 OPTIONS 数量，故预期从“每个不同分片 URL 需单独预检”降到同一上传会话复用缓存，实际请求数仍需线上测量。
 - 新增匿名上传性能基线：按大小档、单发/分片、Cloudflare 国家粗分组、设备类型和浏览器网络类型聚合，记录准备 / 首片 / 传输 / 收尾耗时、实测上行、并发、Worker/R2 与摘要等待、续传比例及结果类别；不落账号、IP、UA、ROM 名称、对象 key、精确大小或分片数，原始样本 30 天后清理。上传不等待统计接口，失败不会影响 ROM 上传；`ROM 上传性能基线` 面板仅返回聚合数据。`npm run test:rom-upload-metrics`、`npm run test:r2-upload-client`、TypeScript 与前后端构建通过。真实生产样本要等代码和数据库迁移部署后产生，当前没有可用于比较的生产上行基线。
+- 上传面板除均值外，按同一分桶展示成功耗时与首片实测速率的 P50/P90 最近秩分位数，并分别标出有效样本数；失败和取消仍单独进入成功率，不污染成功上传速度分布。少于 20 个有效样本时标记为“样本少”，避免用尝试总数掩盖测速缺失或低成功率；只有部署后有足够样本时，才能据此决定并发 / 摘要调度调整。
 
 ### 玩家 ROM 下载
 
@@ -297,4 +298,4 @@
 - 生产 7 天启动漏斗里，中国区 PvZ 有 44 次开始、41 次 iframe 完成；另有 2 次 120 秒超时，来自 Windows Chrome 与 Android WebView，均没有 iframe 完成事件。证据指向入口页未交付，不足以断言 Pages 是每次失败的唯一原因。
 - 为已登记的 PvZ 中文 / 英文 Pages 入口增加大陆 EdgeOne 镜像，未确认镜像页面时最多等 20 秒后退回 Pages。源站副本的 WASM / 清单在本站；生产探测确认下载域大包支持 Range 与跨域读取。源站页面现由服务端注入与 Pages 相同的运行桥、游戏 SDK 和媒体桥，因此保留启动可观测性、直播能力与存档流程。
 - 存档来源只允许精确的本站 PvZ 语言页面；镜像回退到 Pages 时重新计算目标 origin，避免继续向旧镜像发存档消息。PvZ 根提示页、其它语言目录和未核验的 Pages 游戏不进入镜像表。
-- `npm run test:html5-pages-bridge`、`npm run test:html5-runtime-bridge`、`npm run test:html5-media` 和 TypeScript 项目检查已通过。完整生产构建仍待完成；没有真实大陆设备上的修复后对照，不估算成功率提升。
+- `npm run test:html5-pages-bridge`、`npm run test:html5-runtime-bridge`、`npm run test:html5-media` 和 TypeScript 项目检查已通过；随后 `npm run build:client` 完整生产客户端构建通过，包括产物完整性、运行时语法、预压缩、浏览器兼容和懒加载图门禁。没有真实大陆设备上的修复后对照，不估算成功率提升。

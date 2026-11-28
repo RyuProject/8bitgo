@@ -73,16 +73,26 @@ const stats = await romUploadStats(99, async (sql) => {
   statsSql = sql
   return [{
     size_band: '128to512m', upload_mode: 'multipart', region: 'CN', device_class: 'desktop', network_type: '4g',
-    attempts: '5', successful: '4', failed: '1', cancelled: '0', avg_duration_ms: '60000.8',
+    attempts: '5', successful: '4', success_duration_samples: '4', success_speed_samples: '3', failed: '1', cancelled: '0', avg_duration_ms: '60000.8',
     avg_prepare_ms: '2000', avg_first_part_ms: '11000', avg_transfer_ms: '54000', avg_finalize_ms: '4000',
     avg_measured_mbps: '38.447', avg_concurrency: '3.5', avg_server_wait_ms: '42.5', avg_hash_wait_ms: '1.25', avg_resumed: '0.4',
+    p50_success_duration_ms: '54000', p90_success_duration_ms: '73000',
+    p50_success_mbps: '35.2', p90_success_mbps: '41.7',
   }]
 })
 assert.equal(stats.days, 30, '统计查询最多回看 30 天')
 assert.match(statsSql, /GROUP BY size_band, upload_mode, region, device_class, network_type/)
+assert.match(statsSql, /ROW_NUMBER\(\) OVER/, '分组慢尾耗时和实测速度使用数据库窗口排名')
+assert.match(statsSql, /CEIL\(success_count \* 0\.9\)/, 'P90 使用最近秩法且只计成功上传')
 assert.equal(stats.groups[0].attempts, 5)
 assert.equal(stats.groups[0].successRate, 0.8)
+assert.equal(stats.groups[0].successDurationSamples, 4)
+assert.equal(stats.groups[0].successSpeedSamples, 3)
 assert.equal(stats.groups[0].avgDurationMs, 60_000.8)
+assert.equal(stats.groups[0].p50SuccessDurationMs, 54_000)
+assert.equal(stats.groups[0].p90SuccessDurationMs, 73_000)
+assert.equal(stats.groups[0].p50SuccessMbps, 35.2)
+assert.equal(stats.groups[0].p90SuccessMbps, 41.7)
 assert.equal(stats.groups[0].avgPeakConcurrency, 3.5)
 assert.equal(stats.groups[0].resumeRate, 0.4)
 

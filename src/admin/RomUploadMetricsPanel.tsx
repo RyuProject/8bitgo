@@ -18,6 +18,12 @@ function duration(value: number | null): string {
   return `${(value / 60_000).toFixed(1)} 分钟`
 }
 
+function percentilePair(p50: number | null, p90: number | null, samples: number, format: (value: number) => string): string {
+  if (p50 === null && p90 === null) return `— · n=${samples}`
+  const sampleNote = samples < 20 ? '（样本少）' : ''
+  return `P50 ${p50 === null ? '—' : format(p50)} · P90 ${p90 === null ? '—' : format(p90)} · n=${samples}${sampleNote}`
+}
+
 function region(value: RomUploadMetricGroup['region']): string {
   return value === 'CN' ? '大陆' : value === 'OTHER' ? '境外' : '未知'
 }
@@ -88,7 +94,7 @@ export function RomUploadMetricsPanel() {
       }
     >
       <p className="mb-3 text-xs leading-relaxed text-muted">
-        只按大小档、传输方式、地区、设备和网络类型聚合；不保存 ROM 名称、对象路径、账号、IP 或精确文件大小。样本保留 30 天。成功率用于发现回退，准备 / 首片 / 传输 / 收尾耗时和实测速度用于定位瓶颈。
+        只按大小档、传输方式、地区、设备和网络类型聚合；不保存 ROM 名称、对象路径、账号、IP 或精确文件大小。样本保留 30 天。成功率用于发现回退，准备 / 首片 / 传输 / 收尾耗时和实测速度用于定位瓶颈。P50/P90 是成功样本的最近秩分位数；每列标出实际样本数，少于 20 个时只作观察，不据此自动调参。
       </p>
       <div className="mb-3 flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted">
         <span>上传次数：<strong className="text-fg">{total}</strong></span>
@@ -103,16 +109,18 @@ export function RomUploadMetricsPanel() {
       )}
       {groups.length > 0 && (
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[1120px] text-xs">
+          <table className="w-full min-w-[1440px] text-xs">
             <thead className="text-left text-muted">
               <tr>
                 <th className="pb-2 pr-3 font-medium">条件 / 样本</th>
                 <th className="pb-2 pr-3 font-medium">成功</th>
+                <th className="pb-2 pr-3 font-medium" title="只统计成功上传；P50/P90 使用最近秩法，表示典型与慢尾耗时；单元格内 n 为成功样本数。">成功耗时 P50/P90</th>
                 <th className="pb-2 pr-3 font-medium">准备</th>
                 <th className="pb-2 pr-3 font-medium">首片</th>
                 <th className="pb-2 pr-3 font-medium">传输</th>
                 <th className="pb-2 pr-3 font-medium">收尾</th>
                 <th className="pb-2 pr-3 font-medium">实测上行</th>
+                <th className="pb-2 pr-3 font-medium" title="只统计成功且有首片实测速率的上传；单发小文件不参与；单元格内 n 为有效速率样本数。">实测上行 P50/P90</th>
                 <th className="pb-2 pr-3 font-medium">Worker/R2 等待</th>
                 <th className="pb-2 pr-3 font-medium" title="单发 ROM / BIOS：本机 SHA-256 完整生成耗时；分片上传：每片上行结束后被尚未完成的摘要实际挡住的平均等待。">摘要 / 等待</th>
                 <th className="pb-2 font-medium">峰值并发 / 续传率</th>
@@ -126,11 +134,13 @@ export function RomUploadMetricsPanel() {
                     <span className="text-dim">{group.attempts} 次</span>
                   </td>
                   <td className="py-2 pr-3 tabular-nums">{group.successful}/{group.attempts} · {Math.round(group.successRate * 100)}%</td>
+                  <td className="py-2 pr-3 tabular-nums">{percentilePair(group.p50SuccessDurationMs, group.p90SuccessDurationMs, group.successDurationSamples, duration)}</td>
                   <td className="py-2 pr-3 tabular-nums">{duration(group.avgPrepareMs)}</td>
                   <td className="py-2 pr-3 tabular-nums">{duration(group.avgFirstPartMs)}</td>
                   <td className="py-2 pr-3 tabular-nums">{duration(group.avgTransferMs)}</td>
                   <td className="py-2 pr-3 tabular-nums">{duration(group.avgFinalizeMs)}</td>
                   <td className="py-2 pr-3 tabular-nums">{group.avgMeasuredMbps === null ? '—' : `${group.avgMeasuredMbps.toFixed(1)} Mbps`}</td>
+                  <td className="py-2 pr-3 tabular-nums">{percentilePair(group.p50SuccessMbps, group.p90SuccessMbps, group.successSpeedSamples, (value) => `${value.toFixed(1)} Mbps`)}</td>
                   <td className="py-2 pr-3 tabular-nums">{duration(group.avgServerWaitMs)}</td>
                   <td className="py-2 pr-3 tabular-nums">{duration(group.avgHashWaitMs)}</td>
                   <td className="py-2 tabular-nums">{group.avgPeakConcurrency === null ? '—' : `${group.avgPeakConcurrency.toFixed(1)} 路（样本均值）`} · 续传 {Math.round(group.resumeRate * 100)}%</td>

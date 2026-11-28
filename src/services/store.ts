@@ -372,6 +372,8 @@ export interface RomUploadMetricGroup {
   network: 'slow-2g' | '2g' | '3g' | '4g' | 'unknown'
   attempts: number
   successful: number
+  successDurationSamples: number
+  successSpeedSamples: number
   failed: number
   cancelled: number
   successRate: number
@@ -381,6 +383,10 @@ export interface RomUploadMetricGroup {
   avgTransferMs: number | null
   avgFinalizeMs: number | null
   avgMeasuredMbps: number | null
+  p50SuccessDurationMs: number | null
+  p90SuccessDurationMs: number | null
+  p50SuccessMbps: number | null
+  p90SuccessMbps: number | null
   avgPeakConcurrency: number | null
   avgServerWaitMs: number | null
   avgHashWaitMs: number | null
