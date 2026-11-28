@@ -43,6 +43,8 @@ export function SectionHeader({
         {moreTo && (
           <InternalLink
             to={moreTo}
+            // 首页各区块都会出现相同的“查看全部”文字；带上区块名，让读屏和审计都能分清目的地。
+            aria-label={`${moreLabel ?? t.common.viewAll}: ${title}`}
             /*
               指向 /games? 的非收录筛选组合时，InternalLink 自己
               就不发 href 了。在这里包而不是让每个调用方自己记：首页那几个「更多」

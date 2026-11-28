@@ -27,6 +27,19 @@ assert.equal(
 )
 assert.equal(coverSrcSet(`${base}/covers/kof.webp`, ''), '')
 assert.equal(
+  coverImageUrl(`${base}/covers/kof.webp`, 480, base, 'auto', 60),
+  `${base}/cdn-cgi/image/width=480,quality=60,format=auto,fit=scale-down/covers/kof.webp`,
+  '首屏优先封面可单独使用更高压缩率，其余封面仍保留默认质量',
+)
+assert.equal(
+  coverSrcSet(`${base}/covers/kof.webp`, base, 'auto', '240px', 60),
+  `${base}/cdn-cgi/image/width=160,quality=60,format=auto,fit=scale-down/covers/kof.webp 160w, ` +
+    `${base}/cdn-cgi/image/width=240,quality=60,format=auto,fit=scale-down/covers/kof.webp 240w, ` +
+    `${base}/cdn-cgi/image/width=320,quality=60,format=auto,fit=scale-down/covers/kof.webp 320w, ` +
+    `${base}/cdn-cgi/image/width=480,quality=60,format=auto,fit=scale-down/covers/kof.webp 480w`,
+  'srcset 中所有分辨率候选应统一使用首屏压缩质量',
+)
+assert.equal(
   coverSrcSet(`${base}/covers/kof.webp`, base, 'auto', '120px'),
   `${base}/cdn-cgi/image/width=96,quality=75,format=auto,fit=scale-down/covers/kof.webp 96w, ` +
     `${base}/cdn-cgi/image/width=160,quality=75,format=auto,fit=scale-down/covers/kof.webp 160w, ` +

@@ -49,6 +49,7 @@ assert.deepEqual(flashLegacyBundleRulesForFingerprint({
 console.log('── 启动回退与上传守卫接线 ──')
 const adapter = read('src/emulator/adapters/ruffle.ts')
 const player = read('src/emulator/EmulatorPlayer.tsx')
+const retryPolicy = read('src/emulator/startupRetryPolicy.ts')
 const singleUpload = read('src/admin/GameForm.tsx')
 const bundleUpload = read('src/admin/swfUpload.ts')
 assert.match(adapter, /flashCompatibilityIssue\(loaded\.data\)/, 'Ruffle 启动前必须检查解密后的 SWF')

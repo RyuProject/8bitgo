@@ -68,7 +68,7 @@ check('游戏库和专题只把首张 LCP 封面提升到高优先级，首页�
   assert.match(cover, /\{ rootMargin: '280px' \}/, '封面媒体应在进入视口前 280px 挂载，避免原生 lazy 抢跑')
   assert.match(rankCard, /deferMedia=\{deferCover\}/, '榜单卡没有把延迟挂载策略传给封面')
   assert.match(collectionCard, /deferMedia=\{deferCover && !priority\}/, '合集轮播没有保留首屏优先图并延后其它格子')
-  assert.match(cover, /coverImageUrl\(coverSrc, thumb \? 96 : coverPosterWidth\(coverSizes\)\)/, '小图 poster 固定使用 96px，其它 poster 按实际布局尺寸转换')
+  assert.match(cover, /coverImageUrl\(coverSrc, thumb \? 96 : coverPosterWidth\(coverSizes\), undefined, undefined, coverQuality\)/, '小图 poster 固定使用 96px，其它 poster 按实际布局尺寸和首图质量转换')
   assert.match(cover, /preload\(posterSrc, \{[\s\S]*imageSrcSet: posterSrcSet, imageSizes: posterSizes[\s\S]*\}\)/, '首屏视频 poster 预加载必须和卡片使用同一组响应式候选')
   assert.match(cover, /srcSet=\{activePosterSrcSet \|\| undefined\}/, '视频 poster 必须根据卡片尺寸选择响应式图片')
   assert.match(cover, /sizes=\{activePosterSrcSet \? posterSizes : undefined\}/, '视频 poster 必须按真实卡片宽度选择图片档位')
@@ -83,13 +83,19 @@ check('游戏库和专题只把首张 LCP 封面提升到高优先级，首页�
   assert.match(cover, /const srcSet = !thumb && !useLegacyAvifThumb && !transformFailed/, '96px 小图不能再下载多余的高分辨率候选')
   assert.match(cover, /transformFallbackAvailable = !useLegacyAvifThumb && !transformFailed && \(Boolean\(srcSet\) \|\| imgSrc !== coverSrc\)/, '单档小图的 CDN 变换失败时也必须退回原图')
   assert.match(cover, /else if \(transformFallbackAvailable\) setTransformFailed\(true\)/, '变换失败回退不能依赖 srcset 是否存在')
-  assert.match(read('src/services/roms.ts'), /function transformedCoverUrl[\s\S]*width=\$\{boundedWidth\},quality=75,format=\$\{format\},fit=scale-down/, 'poster 转换必须限制最大宽度并保留小体积和不放大策略')
+  assert.match(read('src/services/roms.ts'), /function transformedCoverUrl[\s\S]*width=\$\{boundedWidth\},quality=\$\{quality\},format=\$\{format\},fit=scale-down/, 'poster 转换必须限制最大宽度并保留质量策略和不放大策略')
+  assert.match(cover, /const coverQuality = priority \? 60 : 75/, '只有首屏优先封面可以使用更高压缩率')
 })
 
 check('ROM 语言数量使用足够对比度的继承色', () => {
   const links = read('src/components/game/RomLanguageLinks.tsx')
   assert.match(links, /<span>\{count\}<\/span>/, 'ROM 语言计数应继承 chip 的前景色')
   assert.doesNotMatch(links, /opacity-60/, '低对比度透明度不能用于小号计数')
+})
+
+check('首页各个区块的“查看全部”链接有不同的可访问名称', () => {
+  const header = read('src/components/ui/SectionHeader.tsx')
+  assert.match(header, /aria-label=\{`\$\{moreLabel \?\? t\.common\.viewAll\}: \$\{title\}`\}/, '相同可见文字的区块链接应在读屏名称中说明各自标题')
 })
 
 check('桌面端封面视频等页面加载完、空闲后才自动拉流，弱网不自动拉', () => {
