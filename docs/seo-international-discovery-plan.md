@@ -24,6 +24,8 @@
 
 - **高游玩量标题与简介校对（2026-11-28）**：[SNK 官方 KOF 2002 页面](https://www.snk-corp.co.jp/us/games/kof-portal/series/2002/)使用标题 `THE KING OF FIGHTERS 2002`，并列出 MVS 街机版日期与 3 对 3、Quick Emergency Evasion、Quick MAX Activation 等玩法。生产 `king-of-fighters-2002` 的英文标题原先漏掉 `The`，中英文简介尾部含有拼接进正文的站外来源残片；现已改为官方游戏名，并重写简介、区分原版与后续 `Unlimited Match`。生产简中标题 `超级玛丽奥兄弟` 也已按[任天堂香港的官方简体中文用名](https://www.nintendo.com/hk/topics/article/a_200904_06_sc.html)纠正为 `超级马力欧兄弟`。中英文 KOF 详情与简中《超级马力欧兄弟》详情的公开 SSR 均返回 HTTP 200，JSON-LD 名称和简介已反映修正，旧标题及简介残片未再出现。
 
+- **Pokémon Emerald 开发商字段纠错（2026-11-28）**：[任天堂英国官方游戏页](https://www.nintendo.com/en-gb/Games/Game-Boy-Advance/Pokemon-Emerald-Version-267112.html)将 Nintendo 列为发行商、Game Freak / Creatures 列为开发商。生产记录原把发行商 Nintendo 混入开发商字段；已通过后台 API 修正为 `Game Freak, Creatures`，保留 2004 年份。英文详情 SSR 的 `VideoGame.author` 现为 Game Freak 与 Creatures，未再把 Nintendo 声明为作者；开发商筛选也能返回这款游戏。
+
 - **全库简介来源残片清理（2026-11-28）**：先从游玩量前 100 款中清理 7 款游戏的 8 段简介，再扩展扫描生产公开目录全部 663 款游戏，追加清理 15 款游戏的 18 段简介；两轮合计修正 22 款游戏的 26 段简介。被误拼进正文的“抖音百科”和孤立 `Wikipedia` 标签均通过后台 API 清除，其他简介内容保持原样。扫描中另有一处描述《Cursed Treasure 2》后续 Steam 发行版的句子，语义完整且与游戏相关，故保留。再次读取全库的中文、英文和本地化简介后，来源残片命中数为 0；5 个详情页的公网 SSR 抽样均返回 HTTP 200 且不含残片。
 
 - **逐语言标题和简介待办已清空**：生产机 `npm --prefix server run seo:coverage -- --review --limit 12` 显示 663 款公开游戏；对每个有精确语言 ROM 的条目，八种语言的标题、简介和非自动内容校验均无待办。对应语言 ROM 数为简中 299、繁中 37、英文 558、西语 111、法语 62、意大利语 52、德语 57、日语 148。此结果表示字段覆盖与报告规则通过，不代表每段简介都已由母语编辑做事实校对。
