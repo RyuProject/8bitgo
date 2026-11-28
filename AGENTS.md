@@ -14,7 +14,7 @@
 | 前端 | Vite + React 19 + TypeScript，带 SSR（`vite.config.server.ts` → `dist/server`） |
 | 后端 | `server/`，Express + MySQL，和前端**同源**（一个进程同时提供 `/api` 和静态资源） |
 | 存储 | Cloudflare R2 + Worker（`worker/`），普通公开读取走 `assets.8bitgo.com`，站内明文 ROM 优选 `rom.8bitgo.com`，开放平台授权下载走 `download.8bitgo.com` |
-| 部署 | 生产机 **38.76.186.225**，服务器上 `git pull && npm install && npm run build && systemctl restart 8bitgo`，前面挂 Cloudflare（部署形态见 §2.30） |
+| 部署 | SSH：`ssh root@38.76.186.225`；发布执行 `cd /var/www/8bitgo && ./deploy/redeploy.sh`，前面挂 Cloudflare（部署形态见 §2.30） |
 | 模拟器 | EmulatorJS（主机/掌机/街机）、Ruffle（Flash）、js-dos、jsnes、webretro、FreeJ2ME、Play!（PS2） |
 | 登录 | 邮箱验证码（**Resend** 发信）/ 密码 / Google，JWT 30 天，见 §2.13–2.14 |
 
