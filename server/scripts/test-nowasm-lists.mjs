@@ -109,7 +109,7 @@ assert.match(src('src/locales/zh-Hans.ts'), /noWasmNotice: '当前浏览器不�
 // 名单要和播放器的纯 JS 退路一致：NES → jsnes，GB/GBC → binjgb-js；GBA 无 WASM → IodineGBA。
 assert.match(src('src/emulator/registry.ts'), /\(platform === 'gb' \|\| platform === 'gbc'\) && \(ctx\.webglUnavailable \|\| ctx\.wasmUnavailable\)/)
 assert.match(src('src/emulator/registry.ts'), /const fallbackId = gbaFallbackRuntime\(/)
-assert.match(src('src/emulator/gbaFallback.ts'), /if \(wasmUnavailable\) return 'iodinegba'/)
+assert.match(src('src/emulator/gbaFallback.ts'), /if \(wasmUnavailable \|\| modernSyntaxUnavailable\) return 'iodinegba'/)
 assert.match(src('src/emulator/EmulatorPlayer.tsx'), /flashAwayfl: awayflChoice\.use/)
 
 console.log('✔ nowasm 列表过滤：SQL、平台计数、缓存隔离与前端接线都对')
