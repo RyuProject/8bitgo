@@ -35,6 +35,12 @@ check('移动端封面视频不进入首屏下载队列', () => {
   assert.doesNotMatch(src, /preload=\{priority \? 'metadata'/)
 })
 
+check('首屏优先封面同步解码，其它封面异步解码', () => {
+  const src = read('src/components/game/GameCover.tsx')
+  const priorityDecoders = src.match(/decoding=\{priority \? 'sync' : 'async'\}/g) ?? []
+  assert.equal(priorityDecoders.length, 2, '静态封面和视频 poster 都应只对 LCP 优先图同步解码')
+})
+
 check('游戏库和专题只把首张 LCP 封面提升到高优先级，首页延后加载下方栏目封面', () => {
   const card = read('src/components/game/GameCard.tsx')
   const wideCard = read('src/components/game/GameCardWide.tsx')
