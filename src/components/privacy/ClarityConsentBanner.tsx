@@ -72,7 +72,8 @@ export function ClarityConsentBanner() {
     <section
       role="region"
       aria-label={t.clarityConsent.title}
-      className="clarity-consent-banner fixed inset-x-3 bottom-3 z-[45] mx-auto max-w-3xl rounded-3xl border-2 border-line-strong bg-surface/95 p-4 shadow-2xl backdrop-blur sm:bottom-5 sm:p-5"
+      /* PSI 曾命中横幅里的说明文字；不透明底色已足够清晰，避免 backdrop-filter 额外采样和合成首屏内容。 */
+      className="clarity-consent-banner fixed inset-x-3 bottom-3 z-[45] mx-auto max-w-3xl rounded-3xl border-2 border-line-strong bg-surface p-4 shadow-2xl sm:bottom-5 sm:p-5"
     >
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">

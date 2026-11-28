@@ -308,7 +308,7 @@ function Banner({ className, games }: { className?: string; games?: Game[] }) {
                         再标高优先级就等于没分优先级了。
                         still：这一摞每 5 秒换一批，带视频封面的话就是不停地新建 <video>
                         + 解码 + 销毁，主线程被占住，整页跟着一顿一顿（见 GameCover 的 still） */}
-                    <GameCover game={game} ratio="square" iconSize="md" showTitle={false} priority={key === 0} sizes={HERO_COVER_SIZES} still />
+                    <GameCover game={game} ratio="square" iconSize="md" showTitle={false} priority={key === 0} sizes={HERO_COVER_SIZES} sourceMedia={HERO_STACK_QUERY} still />
                   </Link>
                 </div>
               </div>

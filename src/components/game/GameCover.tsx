@@ -70,6 +70,8 @@ interface Props {
   eager?: boolean
   /** 图片展示宽度提示，避免窄卡片按整屏宽度下载过大的封面档位。 */
   sizes?: string
+  /** 只在媒体条件匹配时提供图片源，避免隐藏的桌面封面在手机上发起请求。 */
+  sourceMedia?: string
   /**
    * 用 96×96 缩略图代替 300×300 主图。
    * 只给**显示尺寸很小**的位置开（搜索联想、首页类型样例那种 40~44px，以及详情页
@@ -296,6 +298,7 @@ export function GameCover({
   still = false,
   eager = false,
   sizes,
+  sourceMedia,
   thumb = false,
   deferMedia = false,
   onImageLoad,
@@ -414,31 +417,40 @@ export function GameCover({
           priority={priority}
         />
       ) : coverSrc && !coverFailed && !mediaDeferred ? (
-        <img
-          ref={coverImageRef}
-          src={imgSrc}
-          srcSet={srcSet || undefined}
-          /*
-            懒加载图用 sizes="auto" 让浏览器按真实布局宽度挑档；不认 auto 的浏览器和首屏 eager 图
-            默认退回 100vw。已知尺寸的卡片由调用方显式传 sizes，避免窄图误取 480 档。
-          */
-          sizes={srcSet ? sizes || (priority || eager ? '100vw' : 'auto, 100vw') : undefined}
-          alt={title}
-          // 首屏那几张必须 eager：对着 LCP 图片加 loading="lazy"，
-          // 等于让浏览器先跳过它、发现完别的资源再回头下，LCP 反而更慢
-          loading={priority || eager ? 'eager' : 'lazy'}
-          fetchPriority={priority ? 'high' : 'auto'}
-          decoding="async"
-          onLoad={onImageLoad}
-          // 缩略图没对象（老封面）就换回主图；主图本身就坏了则留给渐变背景兜着
-          onError={(event) => {
-            reportCoverLoadFailure(event.currentTarget.currentSrc || event.currentTarget.src)
-            if (thumbSrc && !thumbFailed) setThumbFailed(true)
-            else if (srcSet) setTransformFailed(true)
-            else setCoverFailed(true)
-          }}
-          className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-105"
-        />
+        <picture>
+          {sourceMedia && (
+            <source
+              media={sourceMedia}
+              srcSet={srcSet || imgSrc}
+              sizes={srcSet ? sizes || (priority || eager ? '100vw' : 'auto, 100vw') : undefined}
+            />
+          )}
+          <img
+            ref={coverImageRef}
+            src={sourceMedia ? undefined : imgSrc}
+            srcSet={sourceMedia ? undefined : srcSet || undefined}
+            /*
+              懒加载图用 sizes="auto" 让浏览器按真实布局宽度挑档；不认 auto 的浏览器和首屏 eager 图
+              默认退回 100vw。已知尺寸的卡片由调用方显式传 sizes，避免窄图误取 480 档。
+            */
+            sizes={srcSet && !sourceMedia ? sizes || (priority || eager ? '100vw' : 'auto, 100vw') : undefined}
+            alt={title}
+            // 首屏那几张必须 eager：对着 LCP 图片加 loading="lazy"，
+            // 等于让浏览器先跳过它、发现完别的资源再回头下，LCP 反而更慢
+            loading={priority || eager ? 'eager' : 'lazy'}
+            fetchPriority={priority ? 'high' : 'auto'}
+            decoding="async"
+            onLoad={onImageLoad}
+            // 缩略图没对象（老封面）就换回主图；主图本身就坏了则留给渐变背景兜着
+            onError={(event) => {
+              reportCoverLoadFailure(event.currentTarget.currentSrc || event.currentTarget.src)
+              if (thumbSrc && !thumbFailed) setThumbFailed(true)
+              else if (srcSet) setTransformFailed(true)
+              else setCoverFailed(true)
+            }}
+            className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-105"
+          />
+        </picture>
       ) : (
         <>
           <div className="pixel-grid absolute inset-0 opacity-70" aria-hidden />
