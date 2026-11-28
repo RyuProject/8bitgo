@@ -247,8 +247,9 @@ function wire(wss, serverAddress) {
       const buf = Buffer.isBuffer(data) ? data : Buffer.from(data)
       const header = parseHeader(buf)
       if (!header) return
-      // 声明长度超过实包时，DOSBox 会继续按头部长度读，结果可能是截断包或协议状态错乱。
-      if (header.length < HEADER_SIZE || header.length > buf.length) return
+      // WebSocket 一帧就是一份 IPX 报文，头部长度必须精确覆盖整帧；截断或尾随字节都会让
+      // 两端按不同边界解释同一包，弱网重试时也不能把无效数据继续扇出给整个房间。
+      if (header.length < HEADER_SIZE || header.length !== buf.length) return
 
       // 注册：客户端问「我的地址是多少」
       if (header.dest.socket === 0x2 && header.dest.host === 0) {

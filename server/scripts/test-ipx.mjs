@@ -97,6 +97,13 @@ console.log('\n── 包身份不能冒充 ──')
   a.ws.send(truncated)
   await new Promise((s) => setTimeout(s, 60))
   ok(gotTruncated === false, '⭐ 声明长度超过实包的截断数据不会转发')
+
+  let gotTrailingBytes = false
+  b.ws.once('message', () => { gotTrailingBytes = true })
+  const trailing = Buffer.concat([ipxPacket({ destHost: 0xffffffff }), Buffer.from([0xde, 0xad])])
+  a.ws.send(trailing)
+  await new Promise((s) => setTimeout(s, 60))
+  ok(gotTrailingBytes === false, '⭐ 声明长度小于 WebSocket 帧的尾随字节不会转发')
   a.ws.close()
   b.ws.close()
   await new Promise((s) => setTimeout(s, 60))
