@@ -373,6 +373,7 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
   若标记为 `false`，`begin()` 忽略传回来的已解析核心，让设备记住的安全核心优先；真正手动换核心或自动切换后设为 `true`。
   否则重开 / 重试时默认核心会被当成显式覆盖，关闭 PS1 / FBNeo 低内存和 NDS 崩溃兼容回退。回归：`npm run test:player-runtime-state && npm run test:dos-load && npm run test:nds-crash && npm run test:psx-lowmem && npm run test:fbneo-lowmem`。
 - **运行时拒绝 ROM 后只切到确实支持当前扩展名的引擎**：`runtimesFor(platform)` 只说明引擎支持平台，不代表支持这份文件；街机上的 Play! 只能由后台逐游戏配置显式选择，通用自动回退没有这个上下文，不能把它当候选。自动回退时必须保留 `ruledOut`、过滤不匹配扩展名；没有扩展名时不要盲试。`npm run test:runtime-fallback` 必须挂在 `prebuild`。
+- **网络错误 scope 优先于 ROM 错误文案**：弱网超时 / 断流的包装消息也可能带“8BG / ROM 包”，不能因此跳过同地址重试或误把运行时故障当内容错误。只有下载器未判为 `network`、且内容错误 / 确定性关键字命中时，才跳过原地重试去找备用 ROM。回归：`npm run test:startup-retry-policy`，必须挂在 `prebuild`。
 
 改引擎后 URL 会自动换（2026-11-15 起引擎入口按内容版本，见 §2.8.1.1 末条），不用再手动换 `EJS_RUNTIME_GENERATION`。
 
