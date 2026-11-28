@@ -24,6 +24,7 @@ export interface GbaLinkSerial {
   SIODATA_B: number
   SIODATA_C: number
   SIODATA_D: number
+  RCNTDataBits: number
   serialBitsShifted: number
   shiftClocks: number
   RCNTMode: number
@@ -31,6 +32,28 @@ export interface GbaLinkSerial {
   writeSIOCNT1: (data: number) => void
   readSIOCNT0: () => number
   writeRCNT1: (data: number) => void
+  readRCNT0: () => number
+  writeRCNT0: (data: number) => void
+  readJOYCNT: () => number
+  writeJOYCNT: (data: number) => void
+  readJOYBUS_RECV0: () => number
+  readJOYBUS_RECV1: () => number
+  readJOYBUS_RECV2: () => number
+  readJOYBUS_RECV3: () => number
+  writeJOYBUS_RECV0: (data: number) => void
+  writeJOYBUS_RECV1: (data: number) => void
+  writeJOYBUS_RECV2: (data: number) => void
+  writeJOYBUS_RECV3: (data: number) => void
+  readJOYBUS_SEND0: () => number
+  readJOYBUS_SEND1: () => number
+  readJOYBUS_SEND2: () => number
+  readJOYBUS_SEND3: () => number
+  writeJOYBUS_SEND0: (data: number) => void
+  writeJOYBUS_SEND1: (data: number) => void
+  writeJOYBUS_SEND2: (data: number) => void
+  writeJOYBUS_SEND3: (data: number) => void
+  readJOYBUS_STAT: () => number
+  writeJOYBUS_STAT: (data: number) => void
   addClocks: (clocks: number) => void
   clockSerial: () => void
   clockMultiplayer: () => void
@@ -56,7 +79,7 @@ const NORMAL_32BIT_MODE = 1
 const MULTIPLAYER_MODE = 2
 const UART_MODE = 3
 /** 串口时序实现变更时递增，避免不同版本的浏览器运行时继续锁步。 */
-export const GBA_LINK_PROTOCOL_VERSION = 'gba-link-cable-v1'
+export const GBA_LINK_PROTOCOL_VERSION = 'gba-link-cable-v2'
 const SERIAL_IRQ_MASK = 0x80
 const WORD_MASK = 0xffff
 const BYTE_MASK = 0xff
@@ -68,13 +91,35 @@ type OriginalMethods = {
   writeSIOCNT1: GbaLinkSerial['writeSIOCNT1']
   readSIOCNT0: GbaLinkSerial['readSIOCNT0']
   writeRCNT1: GbaLinkSerial['writeRCNT1']
+  readRCNT0: GbaLinkSerial['readRCNT0']
+  writeRCNT0: GbaLinkSerial['writeRCNT0']
+  readJOYCNT: GbaLinkSerial['readJOYCNT']
+  writeJOYCNT: GbaLinkSerial['writeJOYCNT']
+  readJOYBUS_RECV0: GbaLinkSerial['readJOYBUS_RECV0']
+  readJOYBUS_RECV1: GbaLinkSerial['readJOYBUS_RECV1']
+  readJOYBUS_RECV2: GbaLinkSerial['readJOYBUS_RECV2']
+  readJOYBUS_RECV3: GbaLinkSerial['readJOYBUS_RECV3']
+  writeJOYBUS_RECV0: GbaLinkSerial['writeJOYBUS_RECV0']
+  writeJOYBUS_RECV1: GbaLinkSerial['writeJOYBUS_RECV1']
+  writeJOYBUS_RECV2: GbaLinkSerial['writeJOYBUS_RECV2']
+  writeJOYBUS_RECV3: GbaLinkSerial['writeJOYBUS_RECV3']
+  readJOYBUS_SEND0: GbaLinkSerial['readJOYBUS_SEND0']
+  readJOYBUS_SEND1: GbaLinkSerial['readJOYBUS_SEND1']
+  readJOYBUS_SEND2: GbaLinkSerial['readJOYBUS_SEND2']
+  readJOYBUS_SEND3: GbaLinkSerial['readJOYBUS_SEND3']
+  writeJOYBUS_SEND0: GbaLinkSerial['writeJOYBUS_SEND0']
+  writeJOYBUS_SEND1: GbaLinkSerial['writeJOYBUS_SEND1']
+  writeJOYBUS_SEND2: GbaLinkSerial['writeJOYBUS_SEND2']
+  writeJOYBUS_SEND3: GbaLinkSerial['writeJOYBUS_SEND3']
+  readJOYBUS_STAT: GbaLinkSerial['readJOYBUS_STAT']
+  writeJOYBUS_STAT: GbaLinkSerial['writeJOYBUS_STAT']
   addClocks: GbaLinkSerial['addClocks']
   clockSerial: GbaLinkSerial['clockSerial']
   clockMultiplayer: GbaLinkSerial['clockMultiplayer']
   clockUART: GbaLinkSerial['clockUART']
 }
 
-/** 创建真实双机本地电缆；普通 8/32 位与 Multi-Pak 可用，UART/GPIO/JoyBus 明确失败。 */
+/** 创建真实双机本地电缆；普通 8/32 位与 Multi-Pak 可用，未实现的串口协议在实际访问时明确失败。 */
 export function attachGbaCable(
   player0: GbaLinkEndpoint,
   player1: GbaLinkEndpoint,
@@ -87,6 +132,28 @@ export function attachGbaCable(
     writeSIOCNT1: serial.writeSIOCNT1,
     readSIOCNT0: serial.readSIOCNT0,
     writeRCNT1: serial.writeRCNT1,
+    readRCNT0: serial.readRCNT0,
+    writeRCNT0: serial.writeRCNT0,
+    readJOYCNT: serial.readJOYCNT,
+    writeJOYCNT: serial.writeJOYCNT,
+    readJOYBUS_RECV0: serial.readJOYBUS_RECV0,
+    readJOYBUS_RECV1: serial.readJOYBUS_RECV1,
+    readJOYBUS_RECV2: serial.readJOYBUS_RECV2,
+    readJOYBUS_RECV3: serial.readJOYBUS_RECV3,
+    writeJOYBUS_RECV0: serial.writeJOYBUS_RECV0,
+    writeJOYBUS_RECV1: serial.writeJOYBUS_RECV1,
+    writeJOYBUS_RECV2: serial.writeJOYBUS_RECV2,
+    writeJOYBUS_RECV3: serial.writeJOYBUS_RECV3,
+    readJOYBUS_SEND0: serial.readJOYBUS_SEND0,
+    readJOYBUS_SEND1: serial.readJOYBUS_SEND1,
+    readJOYBUS_SEND2: serial.readJOYBUS_SEND2,
+    readJOYBUS_SEND3: serial.readJOYBUS_SEND3,
+    writeJOYBUS_SEND0: serial.writeJOYBUS_SEND0,
+    writeJOYBUS_SEND1: serial.writeJOYBUS_SEND1,
+    writeJOYBUS_SEND2: serial.writeJOYBUS_SEND2,
+    writeJOYBUS_SEND3: serial.writeJOYBUS_SEND3,
+    readJOYBUS_STAT: serial.readJOYBUS_STAT,
+    writeJOYBUS_STAT: serial.writeJOYBUS_STAT,
     addClocks: serial.addClocks,
     clockSerial: serial.clockSerial,
     clockMultiplayer: serial.clockMultiplayer,
@@ -96,6 +163,7 @@ export function attachGbaCable(
   let destroyed = false
   let failed = false
   let failureReason: string | null = null
+  let unsupportedProtocol: 'UART' | 'GPIO' | 'JoyBus' | 'RFU' | null = null
   let multiTransferActive = false
   let unsupportedSerialActivity = false
   let pendingNormalFrames = 0
@@ -165,6 +233,18 @@ export function attachGbaCable(
     }
   }
 
+  const markUnsupportedProtocol = (protocol: 'UART' | 'GPIO' | 'JoyBus' | 'RFU') => {
+    unsupportedProtocol ??= protocol
+    unsupportedSerialActivity = true
+  }
+
+  const wrapJoyBusAccess = <T extends (...args: never[]) => unknown>(method: T): T => {
+    return function (this: GbaLinkSerial, ...args: never[]) {
+      if (this.RCNTMode === 3) markUnsupportedProtocol('JoyBus')
+      return method.apply(this, args)
+    } as T
+  }
+
   /** 普通 32 位模式只交换 SIODATA32 的 A/B 两个半字，不覆盖 Multi-Pak 的 C/D 槽。 */
   const writeNormal32 = (serial: GbaLinkSerial, value: number) => {
     serial.SIODATA_A = value & WORD_MASK
@@ -229,6 +309,23 @@ export function attachGbaCable(
       return value
     }
 
+    // 部分游戏启动时会短暂把 RCNT 切到 GPIO 检查外设；仅切模式不代表已用到串口，
+    // 真正读写 GPIO 引脚时才失败关闭，避免把这类初始化误报成联机不兼容。
+    serial.readRCNT0 = function () {
+      if (serial.RCNTMode === 2) markUnsupportedProtocol('GPIO')
+      return original.readRCNT0.call(serial)
+    }
+
+    serial.writeRCNT0 = function (data: number) {
+      if (serial.RCNTMode === 2) {
+        // RFU 登录用 GPIO 的 PD 复位脉冲（bit 5 拉高且旧 bit 1 为低）；它必须识别为
+        // 无线协议，不能把握手寄存器伪装成普通 GPIO 电缆数据。
+        const rfuResetPulse = (data & 0x20) !== 0 && (serial.RCNTDataBits & 0x02) === 0
+        markUnsupportedProtocol(rfuResetPulse ? 'RFU' : 'GPIO')
+      }
+      original.writeRCNT0.call(serial, data)
+    }
+
     serial.writeSIOCNT1 = function (data: number) {
       const previousMode = serial.SIOCNT_MODE
       original.writeSIOCNT1.call(serial, data)
@@ -237,18 +334,38 @@ export function attachGbaCable(
         serial.SIOMULT_PLAYER_NUMBER = playerNumber
       }
       if (!serial.SIOTransferStarted && serial.SIOCNT_MODE !== previousMode) normalOutbox[playerNumber] = null
-      // Iodine 的 UART 是独立 FIFO 协议；发现真实收发使能时停止联机，不伪造串口回包。
+      // Iodine 的 UART 是独立 FIFO 协议；发现启用收发时停止联机，不伪造串口回包。
       if (
         serial.SIOCNT_MODE === UART_MODE &&
         (serial.SIOCNT_UART_SEND_ENABLE || serial.SIOCNT_UART_RECV_ENABLE)
-      ) unsupportedSerialActivity = true
+      ) markUnsupportedProtocol('UART')
     }
 
     serial.writeRCNT1 = function (data: number) {
       original.writeRCNT1.call(serial, data)
-      // RCNT 2/3 分别是 GPIO / JoyBus；两端帧交换不能模拟这些线级协议。
-      if (serial.RCNTMode >= 2) unsupportedSerialActivity = true
     }
+
+    // JoyBus 的寄存器协议与 GBA 电缆位移时序无关；保留上游寄存器行为，但阻止伪造回包。
+    serial.readJOYCNT = wrapJoyBusAccess(original.readJOYCNT)
+    serial.writeJOYCNT = wrapJoyBusAccess(original.writeJOYCNT)
+    serial.readJOYBUS_RECV0 = wrapJoyBusAccess(original.readJOYBUS_RECV0)
+    serial.readJOYBUS_RECV1 = wrapJoyBusAccess(original.readJOYBUS_RECV1)
+    serial.readJOYBUS_RECV2 = wrapJoyBusAccess(original.readJOYBUS_RECV2)
+    serial.readJOYBUS_RECV3 = wrapJoyBusAccess(original.readJOYBUS_RECV3)
+    serial.writeJOYBUS_RECV0 = wrapJoyBusAccess(original.writeJOYBUS_RECV0)
+    serial.writeJOYBUS_RECV1 = wrapJoyBusAccess(original.writeJOYBUS_RECV1)
+    serial.writeJOYBUS_RECV2 = wrapJoyBusAccess(original.writeJOYBUS_RECV2)
+    serial.writeJOYBUS_RECV3 = wrapJoyBusAccess(original.writeJOYBUS_RECV3)
+    serial.readJOYBUS_SEND0 = wrapJoyBusAccess(original.readJOYBUS_SEND0)
+    serial.readJOYBUS_SEND1 = wrapJoyBusAccess(original.readJOYBUS_SEND1)
+    serial.readJOYBUS_SEND2 = wrapJoyBusAccess(original.readJOYBUS_SEND2)
+    serial.readJOYBUS_SEND3 = wrapJoyBusAccess(original.readJOYBUS_SEND3)
+    serial.writeJOYBUS_SEND0 = wrapJoyBusAccess(original.writeJOYBUS_SEND0)
+    serial.writeJOYBUS_SEND1 = wrapJoyBusAccess(original.writeJOYBUS_SEND1)
+    serial.writeJOYBUS_SEND2 = wrapJoyBusAccess(original.writeJOYBUS_SEND2)
+    serial.writeJOYBUS_SEND3 = wrapJoyBusAccess(original.writeJOYBUS_SEND3)
+    serial.readJOYBUS_STAT = wrapJoyBusAccess(original.readJOYBUS_STAT)
+    serial.writeJOYBUS_STAT = wrapJoyBusAccess(original.writeJOYBUS_STAT)
 
     // 本桥在帧边界交换寄存器，不让上游按其相反的时钟位判定执行数十万次空移位。
     serial.addClocks = function (clocks: number) {
@@ -265,7 +382,7 @@ export function attachGbaCable(
     }
     serial.clockUART = function () {
       if (destroyed) original.clockUART.call(serial)
-      else unsupportedSerialActivity = true
+      else markUnsupportedProtocol('UART')
     }
   }
 
@@ -276,12 +393,20 @@ export function attachGbaCable(
     settleFrame() {
       if (destroyed) return 'idle'
       if (failed) return 'failed'
-      if (unsupportedSerialActivity || serials.some((serial) => serial.RCNTMode >= 2)) {
-        failTransfer('当前游戏使用了暂未支持的 GBA 串口模式（UART、GPIO、JoyBus 或 RFU）')
+      if (unsupportedSerialActivity) {
+        const protocol = unsupportedProtocol ?? 'RFU'
+        failTransfer(`当前游戏实际使用了暂未支持的 GBA ${protocol} 串口协议`)
         return 'failed'
       }
 
       const [first, second] = serials
+      if (
+        serials.some((serial) => serial.RCNTMode >= 2) &&
+        (multiTransferActive || serials.some((serial) => serial.SIOTransferStarted))
+      ) {
+        failTransfer('GBA 串口传输过程中切换到了 GPIO/JoyBus 模式')
+        return 'failed'
+      }
       if (first.SIOCNT_MODE === MULTIPLAYER_MODE && second.SIOCNT_MODE === MULTIPLAYER_MODE) {
         if (!multiTransferActive) {
           // 1 号口不会自主发起 Multi 传输；等 0 号口写 Start。
@@ -378,6 +503,28 @@ export function attachGbaCable(
         serial.writeSIOCNT1 = original.writeSIOCNT1
         serial.readSIOCNT0 = original.readSIOCNT0
         serial.writeRCNT1 = original.writeRCNT1
+        serial.readRCNT0 = original.readRCNT0
+        serial.writeRCNT0 = original.writeRCNT0
+        serial.readJOYCNT = original.readJOYCNT
+        serial.writeJOYCNT = original.writeJOYCNT
+        serial.readJOYBUS_RECV0 = original.readJOYBUS_RECV0
+        serial.readJOYBUS_RECV1 = original.readJOYBUS_RECV1
+        serial.readJOYBUS_RECV2 = original.readJOYBUS_RECV2
+        serial.readJOYBUS_RECV3 = original.readJOYBUS_RECV3
+        serial.writeJOYBUS_RECV0 = original.writeJOYBUS_RECV0
+        serial.writeJOYBUS_RECV1 = original.writeJOYBUS_RECV1
+        serial.writeJOYBUS_RECV2 = original.writeJOYBUS_RECV2
+        serial.writeJOYBUS_RECV3 = original.writeJOYBUS_RECV3
+        serial.readJOYBUS_SEND0 = original.readJOYBUS_SEND0
+        serial.readJOYBUS_SEND1 = original.readJOYBUS_SEND1
+        serial.readJOYBUS_SEND2 = original.readJOYBUS_SEND2
+        serial.readJOYBUS_SEND3 = original.readJOYBUS_SEND3
+        serial.writeJOYBUS_SEND0 = original.writeJOYBUS_SEND0
+        serial.writeJOYBUS_SEND1 = original.writeJOYBUS_SEND1
+        serial.writeJOYBUS_SEND2 = original.writeJOYBUS_SEND2
+        serial.writeJOYBUS_SEND3 = original.writeJOYBUS_SEND3
+        serial.readJOYBUS_STAT = original.readJOYBUS_STAT
+        serial.writeJOYBUS_STAT = original.writeJOYBUS_STAT
         serial.addClocks = original.addClocks
         serial.clockSerial = original.clockSerial
         serial.clockMultiplayer = original.clockMultiplayer
