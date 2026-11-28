@@ -127,7 +127,7 @@ function StartupBreakdown({ title, rows }: { title: string; rows: StartupGroup[]
 function FallbackRouteBreakdown({ rows }: { rows: StartupStats['fallbackRoutes'] }) {
   return (
     <Card title="兜底路线效果">
-      <p className="mb-3 text-xs text-muted">按同一次启动合并兜底阶段；“输入信号”只统计最后一次兜底跳转后的首次舞台操作，玩家没有操作时不算失败。</p>
+      <p className="mb-3 text-xs text-muted">按同一次启动合并兜底阶段；“输入信号”统计兜底后首次舞台操作，玩家没有操作时仍视为未确认。</p>
       <div className="overflow-x-auto">
         <table className="w-full min-w-[54rem] text-sm">
           <thead className="text-left text-xs text-muted">

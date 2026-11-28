@@ -537,7 +537,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const onGameInput = (event: Event) => {
     // 只认浏览器实际派发给游戏文档的输入；iframe.focus() 只给焦点，不代表玩家操作过游戏。
     if (!event.isTrusted) return
-    stopFirstInteractionMonitoring()
+    options.onStageInteraction?.()
+    if (!options.onStageInteraction) stopFirstInteractionMonitoring()
     reportFirstInteraction()
     if (playable) return
     // 纯 DOM 游戏没有 Canvas 或运行桥；玩家能向已加载的同源文档输入，说明页面已经可操作。
@@ -555,7 +556,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
   const onFramePointerInput = (event: Event) => {
     // 父页读不到跨源文档的输入，只能记 iframe 收到的可信指针操作；它不单独证明游戏已就绪。
-    if (event.isTrusted) reportFirstInteraction()
+    if (event.isTrusted) {
+      options.onStageInteraction?.()
+      reportFirstInteraction()
+    }
   }
 
   /**

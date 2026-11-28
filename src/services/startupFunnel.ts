@@ -14,6 +14,7 @@ export type StartupEventName =
   | 'core_cache_hit'
   | 'fallback_started'
   | 'fallback_first_frame'
+  | 'fallback_interaction'
   | 'fallback_playable'
   /** 旧版事件曾在首帧触发；保留接收能力，但新版不再发送。 */
   | 'fallback_succeeded'

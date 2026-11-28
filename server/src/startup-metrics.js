@@ -20,6 +20,7 @@ const EVENTS = new Set([
   'core_cache_hit',
   'fallback_started',
   'fallback_first_frame',
+  'fallback_interaction',
   'fallback_playable',
   // 旧版把首帧记成成功；继续接收，让回滚中的旧前端仍可上报。
   'fallback_succeeded',
@@ -326,8 +327,22 @@ const AGGREGATES = `
   SUM(e.event = 'readiness_unobservable') AS readiness_unobservable,
   SUM(e.event = 'fallback_started') AS fallback_attempts,
   SUM(e.event IN ('fallback_first_frame', 'fallback_succeeded')) AS fallback_first_frames,
-  /* 有输入信号才算观察到兜底后的实际操作；没按键只表示样本未知，不算失败。 */
-  SUM(e.event = 'first_interaction' AND EXISTS (
+  /* 新客户端专门记录兜底后的操作；旧客户端用首次操作时间回退兼容，未操作仍是未知。 */
+  SUM((e.event = 'fallback_interaction' AND EXISTS (
+    SELECT 1
+      FROM game_startup_events started
+     WHERE started.game_id = e.game_id
+       AND started.visit_id = e.visit_id
+       AND started.attempt_id = e.attempt_id
+       AND started.event = 'fallback_started'
+  )) OR (e.event = 'first_interaction' AND NOT EXISTS (
+    SELECT 1
+      FROM game_startup_events reported
+     WHERE reported.game_id = e.game_id
+       AND reported.visit_id = e.visit_id
+       AND reported.attempt_id = e.attempt_id
+       AND reported.event = 'fallback_interaction'
+  ) AND EXISTS (
     SELECT 1
       FROM game_startup_events interacted
      WHERE interacted.game_id = e.game_id
@@ -335,7 +350,7 @@ const AGGREGATES = `
        AND interacted.attempt_id = e.attempt_id
        AND interacted.event = 'fallback_started'
        AND interacted.elapsed_ms <= e.elapsed_ms
-  )) AS fallback_interactions,
+  ))) AS fallback_interactions,
   SUM(e.event = 'fallback_playable') AS fallback_successes,
   /* 后续同一启动成功时，早先的重试 / 整页恢复失败不再算成兜底最终失败。 */
   SUM(e.event = 'fallback_failed' AND NOT EXISTS (
@@ -357,12 +372,13 @@ const FALLBACK_ROUTE_QUERY = `
            MAX(CASE WHEN e.event = 'fallback_started' THEN e.runtime END) AS runtime,
            MAX(CASE WHEN e.event = 'fallback_started' THEN e.elapsed_ms END) AS last_fallback_ms,
            MAX(e.event IN ('fallback_first_frame', 'fallback_succeeded')) AS first_frames,
+           MAX(e.event = 'fallback_interaction') AS fallback_interacted,
            MAX(e.event = 'fallback_playable') AS playable,
            MAX(CASE WHEN e.event = 'first_interaction' THEN e.elapsed_ms END) AS first_interaction_ms,
            (MAX(e.event = 'fallback_failed') = 1 AND MAX(e.event = 'fallback_playable') = 0) AS failures
       FROM game_startup_events e
      WHERE e.created_at >= ?
-       AND e.event IN ('fallback_started', 'fallback_first_frame', 'fallback_succeeded', 'fallback_playable', 'fallback_failed', 'first_interaction')
+       AND e.event IN ('fallback_started', 'fallback_first_frame', 'fallback_interaction', 'fallback_succeeded', 'fallback_playable', 'fallback_failed', 'first_interaction')
      GROUP BY e.game_id, e.visit_id, e.attempt_id
     HAVING MAX(e.event = 'fallback_started') = 1
   )
@@ -371,7 +387,7 @@ const FALLBACK_ROUTE_QUERY = `
          COUNT(*) AS attempts,
          SUM(first_frames) AS first_frames,
          SUM(playable) AS playable,
-         SUM(first_interaction_ms >= last_fallback_ms) AS interactions,
+         SUM(fallback_interacted OR first_interaction_ms >= last_fallback_ms) AS interactions,
          SUM(failures) AS failures
     FROM fallback_attempts
    GROUP BY route, runtime
