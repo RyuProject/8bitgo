@@ -55,7 +55,7 @@ globalThis.fetch = async (url, init = {}) => {
 
 const { j2meJarProxy, packedJarKeyName } = await import(pathToFileURL(path.join(root, 'server/src/j2me.js')).href)
 
-async function request(name, { range, method = 'GET', ifNoneMatch } = {}) {
+async function request(name, { range, method = 'GET', ifNoneMatch, onResponse } = {}) {
   const res = new PassThrough()
   const chunks = []
   const headers = new Map()
@@ -68,6 +68,7 @@ async function request(name, { range, method = 'GET', ifNoneMatch } = {}) {
   const reqHeaders = {}
   if (range) reqHeaders.range = range
   if (ifNoneMatch) reqHeaders['if-none-match'] = ifNoneMatch
+  onResponse?.(res)
   await j2meJarProxy({ params: { name }, headers: reqHeaders, method }, res)
   await finished(res)
   return { statusCode, headers, body: Buffer.concat(chunks) }
@@ -104,7 +105,7 @@ try {
     assert.equal(fetches, 2, '缓存过期时发一次带 If-None-Match 的验证请求')
   } finally { Date.now = realNow }
 
-  // 过期缓存仍要回源校验，不能在代理并发已满时借「缓存命中」绕过并发闸。
+  // 过期缓存仍要回源校验；拥挤时进有界队列，不借陈旧字节绕过闸，也不让单条 Range 瞬间 503。
   let releaseBlockedFetch
   let markBlockedFetchStarted
   const blockedFetchStarted = new Promise((resolve) => { markBlockedFetchStarted = resolve })
@@ -117,6 +118,12 @@ try {
     return originalFetch(url, init)
   }
   let blockedRequest
+  let queuedRequests = []
+  let queuedSettled = 0
+  const enqueueStaleRange = () => request('minimal.8bg.jar', { range: 'bytes=0-9' }).then((result) => {
+    queuedSettled++
+    return result
+  })
   Date.now = () => realNow()
   try {
     blockedRequest = request('blocked.8bg.jar')
@@ -124,8 +131,29 @@ try {
     const freshCached = await request('minimal.8bg.jar', { range: 'bytes=0-9' })
     assert.equal(freshCached.statusCode, 206, '代理已满时，新鲜缓存仍可直接服务')
     Date.now = () => realNow() + 122_000
-    const crowdedStaleCache = await request('minimal.8bg.jar', { range: 'bytes=0-9' })
-    assert.equal(crowdedStaleCache.statusCode, 503, '代理已满时，过期缓存不能绕过回源并发上限')
+    for (let index = 0; index < 7; index++) {
+      queuedRequests.push(enqueueStaleRange())
+    }
+    let canceledResponse
+    const canceledRequest = request('minimal.8bg.jar', {
+      range: 'bytes=0-9',
+      onResponse: (res) => { canceledResponse = res },
+    })
+    await new Promise((resolve) => setImmediate(resolve))
+    canceledResponse.emit('close')
+    const canceled = await canceledRequest
+    assert.equal(canceled.statusCode, 502, '模拟客户端断开后等待者立即退出队列')
+    queuedRequests.push(enqueueStaleRange())
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(queuedSettled, 0, '过期缓存满载时等待回源名额，不使用陈旧字节')
+    const overflow = await request('minimal.8bg.jar', { range: 'bytes=0-9' })
+    assert.equal(overflow.statusCode, 503, '等待队列满后有界拒绝，避免无限堆积')
+    releaseBlockedFetch?.(new Response(packed, { status: 200, headers: {
+      etag, 'content-length': String(packed.length), 'x-8bg-integrity-verified': 'sha256-v1',
+    } }))
+    const queuedResults = await Promise.all(queuedRequests)
+    assert.ok(queuedResults.every((result) => result.statusCode === 206), '释放回源名额后，排队中的 Range 全部完成')
+    assert.equal(queuedSettled, 8, '等待队列被完整排空')
   } finally {
     releaseBlockedFetch?.(new Response(packed, { status: 200, headers: {
       etag, 'content-length': String(packed.length), 'x-8bg-integrity-verified': 'sha256-v1',
@@ -134,6 +162,7 @@ try {
       const blocked = await blockedRequest
       assert.equal(blocked.statusCode, 200, '释放并发槽后，正常的 8BG 请求仍可完成')
     }
+    if (queuedRequests.length) await Promise.all(queuedRequests)
     Date.now = realNow
     globalThis.fetch = originalFetch
   }
@@ -158,7 +187,7 @@ try {
   const missing = await request('missing.8bg.jar')
   assert.equal(missing.statusCode, 404)
 
-  console.log('✔ J2ME 8BG 服务端解包：SHA-256 / HEAD / 整包 / Range / 304 / 缓存并发闸 / 坏包 / 缺失')
+  console.log('✔ J2ME 8BG 服务端解包：SHA-256 / HEAD / 整包 / Range / 304 / 有界并发队列 / 坏包 / 缺失')
 } finally {
   await rm(directory, { recursive: true, force: true })
 }
