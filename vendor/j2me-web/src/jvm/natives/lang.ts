@@ -892,6 +892,7 @@ const THROWABLES: Array<[string, string]> = [
   ['javax/microedition/rms/RecordStoreNotOpenException', 'javax/microedition/rms/RecordStoreException'],
   ['javax/microedition/rms/InvalidRecordIDException', 'javax/microedition/rms/RecordStoreException'],
   ['javax/microedition/media/MediaException', 'java/lang/Exception'],
+  ['javax/wireless/messaging/SizeExceededException', 'java/io/IOException'],
 ];
 
 export const langNatives: NativeClassDef[] = [

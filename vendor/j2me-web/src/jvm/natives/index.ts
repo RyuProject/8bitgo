@@ -10,6 +10,7 @@ import { nokiaNatives } from './nokia';
 import { rmsNatives } from './rms';
 import { utilNatives } from './util';
 import { vendorNatives } from './vendor';
+import { wmaNatives } from './wma';
 
 export const allNatives: NativeClassDef[] = [
   ...langNatives,
@@ -23,4 +24,5 @@ export const allNatives: NativeClassDef[] = [
   ...vendorNatives,
   ...nokiaNatives,
   ...netStubNatives,
+  ...wmaNatives,
 ];

@@ -2279,6 +2279,7 @@ embed 开局 2 秒内的未捕获 Java 异常报 error，不报 ready（以前�
 实测结果：能进菜单 / 游戏 —— 帝国时代 2 / 3 / 亚洲王朝、Anarchy 2087、Asphalt 4 / 6 / Nitro / Urban GT / Urban GT 2、仙剑 2004、
 辐射、寂静岭 1 / 2、模拟人生 2；**仍不行** —— 3D（M3G，不打算支持）的 Asphalt 3 3D / Urban GT 3D / Rally / 模拟人生 3 冬季版，
 以及停在片头的 Asphalt 3、模拟人生 3、逆转裁判、寂静岭 3（游戏线程 NPE）。`warcraft-iii` 的 JAR 与帝国时代 3 逐字节相同，是数据错（同 §2.27）。
+2026-11-28 补充：备用 JVM 注册 WMA 2.0 的消息类型与常量，避免可选联网分支仅因缺类就导致整局失败；浏览器兜底仍不提供 SMS/MMS 传输，`Connector.open()` 明确按无网络失败。M3G 需要实际 3D API 与渲染后端，继续保持不支持，不能加空实现冒充可玩。
 复测方法：静态扫描用 javap 列出游戏引用的平台方法、对照 `allNatives` 找缺口；运行用无头 Chromium 在本地 dev 服务器里
 iframe 嵌 `/j2me-web/embed.html` 发 start 消息、按键并比对画面。端到端（CheerpJ loader 404 / 卡死 → 自动换 j2me-web → 出画面）
 两种都实测通过（卡死那种约 48 秒出画面）。回归：`node scripts/test-j2me-web.mjs`（已并入 `npm run test:j2me`）。

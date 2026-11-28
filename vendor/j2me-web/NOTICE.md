@@ -17,6 +17,10 @@ J2ME game on 8bitgo.com in the fallback runtime):
   `LayerManager` (bounding-box collisions only).
 - `src/jvm/natives/netstub.ts` (new): `javax.microedition.io.Connector` and
   connection interfaces; opening a connection throws ConnectionNotFoundException.
+- `src/jvm/natives/wma.ts` (new): WMA 2.0 class/interface names and message type
+  constants, so optional messaging branches do not fail during class resolution.
+  SMS/MMS transport remains unavailable; opening a connection still reports the
+  existing ConnectionNotFoundException instead of pretending a message was sent.
 - `src/gfx/gif.ts` (new): synchronous first-frame GIF decoder; `lcdui.ts` uses it
   so GIFs loaded from a game's own resource packs are no longer blank.
 - `src/jvm/jvm.ts`: `startApp()` runs on its own thread instead of the event

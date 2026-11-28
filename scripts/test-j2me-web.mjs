@@ -17,14 +17,14 @@ import { build } from 'esbuild'
 const dir = mkdtempSync(path.join(tmpdir(), 'j2me-web-nokia-'))
 const entry = path.join(dir, 'entry.ts')
 const root = new URL('../vendor/j2me-web/src/jvm/natives/', import.meta.url).pathname
-writeFileSync(entry, `export * from '${root}nokia.ts'; export { allNatives } from '${root}index.ts'; export { decodeGif } from '${root}../../gfx/gif.ts'; export { detectScreenSize } from '${root}../../player/detect.ts';`)
+writeFileSync(entry, `export * from '${root}nokia.ts'; export { allNatives } from '${root}index.ts'; export { Jvm } from '${root}../jvm.ts'; export { JArray, JObject } from '${root}../types.ts'; export { decodeGif } from '${root}../../gfx/gif.ts'; export { detectScreenSize } from '${root}../../player/detect.ts';`)
 await build({ entryPoints: [entry], bundle: true, format: 'esm', platform: 'node', outfile: path.join(dir, 'out.mjs'), logLevel: 'error', loader: { '.css': 'empty' } })
 // 模块加载时会建一块画布；这里只测纯逻辑，给个什么都不做的替身
 globalThis.OffscreenCanvas ??= class {
   constructor(w, h) { this.width = w; this.height = h }
   getContext() { return new Proxy({}, { get: () => () => ({ data: new Uint8ClampedArray(4) }) }) }
 }
-const { FLIP_HORIZONTAL, FLIP_VERTICAL, nokiaNatives, nokiaToMidpTransform, allNatives, decodeGif, detectScreenSize } = await import(pathToFileURL(path.join(dir, 'out.mjs')).href)
+const { FLIP_HORIZONTAL, FLIP_VERTICAL, nokiaNatives, nokiaToMidpTransform, allNatives, Jvm, JArray, JObject, decodeGif, detectScreenSize } = await import(pathToFileURL(path.join(dir, 'out.mjs')).href)
 rmSync(dir, { recursive: true, force: true })
 
 let failed = 0
@@ -140,6 +140,46 @@ check('AlertType 常量是对象，MIDP 2.0 图层、联网替身、RateControl 
   assert.equal(def('javax/microedition/lcdui/game/Sprite').super, 'javax/microedition/lcdui/game/Layer')
   // media.ts 已定义 Connection / InputConnection，联网替身不能再注册一遍把它们盖掉
   assert.equal(allNatives.filter((d) => d.name === 'javax/microedition/io/Connection').length, 1)
+})
+
+check('WMA 2.0 类型可解析，但 Connector 仍明确拒绝虚构短信联网', () => {
+  const byName = new Map(allNatives.map((d) => [d.name, d]))
+  for (const name of ['javax/wireless/messaging/Message', 'javax/wireless/messaging/TextMessage',
+    'javax/wireless/messaging/BinaryMessage', 'javax/wireless/messaging/MultipartMessage',
+    'javax/wireless/messaging/MessageListener', 'javax/wireless/messaging/MessageConnection',
+    'javax/wireless/messaging/MessagePart']) assert.ok(byName.has(name), `缺 ${name}`)
+  assert.deepEqual(byName.get('javax/wireless/messaging/MessageConnection').fields, {
+    'BINARY_MESSAGE:Ljava/lang/String;': 'binary',
+    'MULTIPART_MESSAGE:Ljava/lang/String;': 'multipart',
+    'TEXT_MESSAGE:Ljava/lang/String;': 'text',
+  })
+  const connector = byName.get('javax/microedition/io/Connector')
+  assert.equal(typeof connector.statics['open(Ljava/lang/String;)Ljavax/microedition/io/Connection;'], 'function')
+  assert.ok(src('jvm/natives/lang.ts').includes("['javax/wireless/messaging/SizeExceededException', 'java/io/IOException']"))
+  const jvm = new Jvm({ log: () => {}, onHalt: () => {} }, new Map(), allNatives)
+  for (const name of ['javax/wireless/messaging/Message', 'javax/wireless/messaging/TextMessage',
+    'javax/wireless/messaging/BinaryMessage', 'javax/wireless/messaging/MultipartMessage',
+    'javax/wireless/messaging/MessageListener', 'javax/wireless/messaging/MessageConnection',
+    'javax/wireless/messaging/MessagePart', 'javax/wireless/messaging/SizeExceededException']) {
+    assert.equal(jvm.loadClass(name).name, name, `JVM 无法解析 ${name}`)
+  }
+  const connectionClass = jvm.loadClass('javax/wireless/messaging/MessageConnection')
+  const textMessageSlot = connectionClass.staticSlots.get('TEXT_MESSAGE:Ljava/lang/String;')
+  assert.notEqual(textMessageSlot, undefined)
+  assert.equal(connectionClass.statics[textMessageSlot], 'text')
+
+  const partClass = jvm.loadClass('javax/wireless/messaging/MessagePart')
+  const part = new JObject(partClass)
+  const bytes = new JArray('[B', Int8Array.from([7, -3, 12]))
+  const init = jvm.findMethod(partClass, '<init>([BLjava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V')
+  assert.ok(init)
+  jvm.invokeSync(jvm.eventThread, init, [part, bytes, 'application/octet-stream', 'part-1', null, 'UTF-8'])
+  const getContent = jvm.findVirtual(partClass, 'getContent()[B')
+  assert.ok(getContent)
+  const copy = jvm.invokeSync(jvm.eventThread, getContent, [part])
+  assert.deepEqual(Array.from(copy.d), [7, -3, 12])
+  copy.d[0] = 0
+  assert.deepEqual(Array.from(jvm.invokeSync(jvm.eventThread, getContent, [part]).d), [7, -3, 12], 'getContent 必须返回副本')
 })
 
 const fakeJar = (manifest, entries = []) => ({ manifest: new Map(Object.entries(manifest)), entries: new Map(entries) })
