@@ -118,8 +118,6 @@ export function attachJsnesNetplay(httpServer, origins = ['*']) {
     }
   }
 
-  const roomPlayers = (room) => room.players.size
-
   wss.on('connection', (ws, req) => {
     ws.id = randomBytes(9).toString('hex')
     ws.roomId = null
@@ -155,6 +153,14 @@ export function attachJsnesNetplay(httpServer, origins = ['*']) {
         return
       }
       if (!msg || typeof msg !== 'object') return
+
+      if (msg.type === 'ping') {
+        // 应用层心跳让经 Cloudflare 的空闲信令连接持续有双向流量；只回显短 ID，避免放大任意负载。
+        if (typeof msg.id === 'string' && msg.id.length > 0 && msg.id.length <= 64) {
+          send(ws, { type: 'pong', id: msg.id })
+        }
+        return
+      }
 
       if (msg.type === 'host') {
         // 先退出旧房间：否则同一条连接连发 host 就能把 MAX_ROOMS 占满

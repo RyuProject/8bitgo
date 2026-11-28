@@ -2,9 +2,25 @@
 /** jsnes 信令服务：来源限制、真实加入、房内信令与清理。 */
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
+import { readFile } from 'node:fs/promises'
 import express from 'express'
 import { WebSocket } from 'ws'
 import { attachJsnesNetplay } from '../src/jsnes-netplay.js'
+
+const nginxConfig = await readFile(new URL('../../deploy/nginx/cs16-websocket-locations.conf', import.meta.url), 'utf8')
+const jsnesUpgradeLocation = nginxConfig.split('location = /jsnes-netplay {')[1]?.split('\n}')[0] ?? ''
+assert.ok(jsnesUpgradeLocation, '生产 nginx 必须显式接管 GBA/jsnes 信令 WebSocket 路径')
+for (const directive of [
+  'proxy_pass http://127.0.0.1:8788;',
+  'proxy_http_version 1.1;',
+  'proxy_set_header Upgrade $http_upgrade;',
+  'proxy_set_header Connection $conn_upgrade;',
+  'proxy_read_timeout 3600s;',
+  'proxy_send_timeout 3600s;',
+  'proxy_buffering off;',
+]) {
+  assert.ok(jsnesUpgradeLocation.includes(directive), `生产 nginx 信令路由缺少 ${directive}`)
+}
 
 const app = express()
 const server = createServer(app)
@@ -30,6 +46,9 @@ const send = (ws, value) => ws.send(JSON.stringify(value))
 await assert.rejects(connect('https://evil.example'), /403/)
 
 const host = await connect()
+const heartbeat = next(host)
+send(host, { type: 'ping', id: 'test-ping-1' })
+assert.deepEqual(await heartbeat, { type: 'pong', id: 'test-ping-1' }, '信令服务应对客户端心跳及时回应')
 send(host, { type: 'host' })
 const opened = await next(host)
 assert.equal(opened.type, 'room')

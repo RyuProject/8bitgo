@@ -214,7 +214,9 @@ try {
   assert.equal(cores.length, 6, '握手完成后每端再创建两个真实 GBA 核心')
 
   host.sendButton('a', true)
+  host.sendButton('l', true)
   guest.sendButton('right', true)
+  guest.sendButton('r', true)
   const step = (timestamp) => {
     now = timestamp
     const callbacks = [...rafs.values()]
@@ -234,8 +236,12 @@ try {
     const seat1 = pair[1].IOCore.joypad.readKeyStatus16()
     assert.equal(seat0 & 0x01, 0, '两端座位 0 的真实 GBA KEYINPUT 都应收到房主 A 键')
     assert.equal(seat0 & 0x10, 0x10, '两端座位 0 不应收到访客右键')
+    assert.equal(seat0 & 0x0200, 0, '两端座位 0 的真实 GBA KEYINPUT 都应收到房主 L 键')
+    assert.equal(seat0 & 0x0100, 0x0100, '两端座位 0 不应收到访客 R 键')
     assert.equal(seat1 & 0x01, 0x01, '两端座位 1 不应收到房主 A 键')
     assert.equal(seat1 & 0x10, 0, '两端座位 1 的真实 GBA KEYINPUT 都应收到访客右键')
+    assert.equal(seat1 & 0x0100, 0, '两端座位 1 的真实 GBA KEYINPUT 都应收到访客 R 键')
+    assert.equal(seat1 & 0x0200, 0x0200, '两端座位 1 不应收到房主 L 键')
   }
   assert.equal(hostError, '')
   assert.equal(guestError, '')
@@ -244,7 +250,7 @@ try {
   guest.closeNetplay()
   assert.equal(hostSeats[1].IOCore, null, '离开联机后销毁本机远端座位副本')
   assert.equal(guestSeats[0].IOCore, null, '离开联机后销毁访客的远端座位副本')
-  console.log('GBA 适配器联机回归通过：真实 mount 双机握手、双端四核心锁步、KEYINPUT 镜像及断开资源收尾')
+  console.log('GBA 适配器联机回归通过：真实 mount 双机握手、双端四核心锁步、A/L/R 与方向键 KEYINPUT 镜像及断开资源收尾')
 } finally {
   host.destroy()
   guest.destroy()
