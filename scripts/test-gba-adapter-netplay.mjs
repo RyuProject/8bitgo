@@ -31,8 +31,8 @@ const stubs = new Map([
       this.closed = false
     }
     connect() {
-      return new Promise((resolve) => {
-        globalThis.__gbaPendingPeers.push({ peer: this, resolve })
+      return new Promise((resolve, reject) => {
+        globalThis.__gbaPendingPeers.push({ peer: this, resolve, reject })
         if (globalThis.__gbaPendingPeers.length !== 2) return
         const [{ peer: host, resolve: resolveHost }, { peer: guest, resolve: resolveGuest }] = globalThis.__gbaPendingPeers.splice(0, 2)
         host.remotePeer = guest
@@ -56,7 +56,14 @@ const stubs = new Map([
     pruneRemote(before) {
       for (const frame of this.remote.keys()) if (frame < before) this.remote.delete(frame)
     }
-    close() { this.closed = true }
+    close() {
+      this.closed = true
+      const index = globalThis.__gbaPendingPeers.findIndex(({ peer }) => peer === this)
+      if (index >= 0) {
+        const [{ reject }] = globalThis.__gbaPendingPeers.splice(index, 1)
+        reject(new Error('联机已经关闭'))
+      }
+    }
   }`],
 ])
 
@@ -250,6 +257,19 @@ try {
   guest.closeNetplay()
   assert.equal(hostSeats[1].IOCore, null, '离开联机后销毁本机远端座位副本')
   assert.equal(guestSeats[0].IOCore, null, '离开联机后销毁访客的远端座位副本')
+
+  let staleErrors = 0
+  let retryErrors = 0
+  assert.equal(host.openGbaLinkNetplay({ mode: 'host', onError: () => { staleErrors++ } }), true)
+  host.closeNetplay()
+  assert.equal(host.openGbaLinkNetplay({ mode: 'host', onError: () => { retryErrors++ } }), true)
+  assert.equal(guest.openGbaLinkNetplay({ mode: 'join', roomId: 'retry-room', onError: () => { retryErrors++ } }), true)
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.equal(staleErrors, 0, '手动断开后迟到的旧握手失败不能回调过期 UI 会话')
+  assert.equal(retryErrors, 0, '立即重试建立的新会话不能被旧会话错误污染')
+  assert.equal(cores.length, 10, '旧连接取消后仍能重新创建一对锁步核心')
+  host.closeNetplay()
+  guest.closeNetplay()
   console.log('GBA 适配器联机回归通过：真实 mount 双机握手、双端四核心锁步、A/L/R 与方向键 KEYINPUT 镜像及断开资源收尾')
 } finally {
   host.destroy()

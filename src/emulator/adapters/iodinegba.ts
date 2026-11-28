@@ -791,7 +791,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         batteryBySeat[peerSeat] = parseBattery(state)
       },
       onReady: () => {
-        if (destroyed || netplay !== np) return
+        if (destroyed || netplay !== np || netplaySession !== session) return
         try {
           makeLinkCores()
         } catch (error) {
@@ -801,14 +801,23 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         }
       },
       onError: (message) => {
-        if (netplay === np) resumeSoloAfterLink(np)
+        // 断开后立刻重试时，旧 WebSocket 的迟到错误不能覆盖新会话的 UI 状态。
+        if (destroyed || netplay !== np || netplaySession !== session) return
+        resumeSoloAfterLink(np)
         session.onError?.(message)
       },
-      onState: session.onLinkState,
-      onPeerCount: session.onPlayers,
-      onRoom: session.onRoom,
+      onState: (state) => {
+        if (netplay === np && netplaySession === session) session.onLinkState?.(state)
+      },
+      onPeerCount: (count) => {
+        if (netplay === np && netplaySession === session) session.onPlayers?.(count)
+      },
+      onRoom: (roomId, isHost) => {
+        if (netplay === np && netplaySession === session) session.onRoom?.(roomId, isHost)
+      },
       onHostLeft: () => {
-        if (netplay === np) resumeSoloAfterLink(np)
+        if (destroyed || netplay !== np || netplaySession !== session) return
+        resumeSoloAfterLink(np)
         session.onHostLeft?.()
       },
     })
@@ -817,7 +826,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       await np.connect()
       return true
     } catch (error) {
-      if (netplay === np) resumeSoloAfterLink(np)
+      if (destroyed || netplay !== np || netplaySession !== session) return false
+      resumeSoloAfterLink(np)
       session.onError?.(error instanceof Error ? error.message : String(error))
       return false
     }
