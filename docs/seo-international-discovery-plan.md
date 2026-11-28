@@ -22,6 +22,8 @@
 
 - **高游玩量街机元数据纠错（2026-11-28）**：[FBNeo Neo Geo 驱动目录](https://raw.githubusercontent.com/finalburnneo/FBNeo/master/src/burn/drv/neogeo/d_neogeo.cpp)将 `kog`（King of Gladiator）和 `kogplus`（King of Gladiator Plus）都标为 1997 年 bootleg，没有给出开发商署名。生产中这两款游戏的开发者字段曾出现乱码；已通过后台 API 清空两条开发者值，保留有来源支持的 1997 年份。后台更新触发内容缓存失效与搜索索引推送；复核生产游戏 API、`/developers` API 和英文详情 SSR 后，两页不再含乱码，开发者目录也不再出现该乱码条目，详情 JSON-LD 不再输出虚假的 `author`。
 
+- **高游玩量标题与简介校对（2026-11-28）**：[SNK 官方 KOF 2002 页面](https://www.snk-corp.co.jp/us/games/kof-portal/series/2002/)使用标题 `THE KING OF FIGHTERS 2002`，并列出 MVS 街机版日期与 3 对 3、Quick Emergency Evasion、Quick MAX Activation 等玩法。生产 `king-of-fighters-2002` 的英文标题原先漏掉 `The`，中英文简介尾部含有拼接进正文的站外来源残片；现已改为官方游戏名，并重写简介、区分原版与后续 `Unlimited Match`。生产简中标题 `超级玛丽奥兄弟` 也已按[任天堂香港的官方简体中文用名](https://www.nintendo.com/hk/topics/article/a_200904_06_sc.html)纠正为 `超级马力欧兄弟`。中英文 KOF 详情与简中《超级马力欧兄弟》详情的公开 SSR 均返回 HTTP 200，JSON-LD 名称和简介已反映修正，旧标题及简介残片未再出现。
+
 - **逐语言标题和简介待办已清空**：生产机 `npm --prefix server run seo:coverage -- --review --limit 12` 显示 663 款公开游戏；对每个有精确语言 ROM 的条目，八种语言的标题、简介和非自动内容校验均无待办。对应语言 ROM 数为简中 299、繁中 37、英文 558、西语 111、法语 62、意大利语 52、德语 57、日语 148。此结果表示字段覆盖与报告规则通过，不代表每段简介都已由母语编辑做事实校对。
 - **生产复核（2026-11-28 14:20 UTC）**：再次运行只读 `seo:coverage -- --review --limit 20`，仍为 663 款公开游戏、8 种语言的标题 / 简介 / 非自动内容校验均无待办。生产 SSR 源站与 Cloudflare 公网 `MISS` 页面均返回《黄金矿工》年份 2008、`本站联机：不支持`；网页检索器展示的旧快照仍有 1990 和在线双人说法，但这次没有观察到公网边缘继续返回旧 HTML。该检查不能替代 Search Console 对真实爬虫和索引的验证。
 - **本地化游戏标题已进入真实页面**：日文《火红》详情现在的 `<title>` 与 H1 均使用「ポケットモンスター ファイアレッド」；可见证据表明后台标题、SSR 与详情页标题信号的链路已经生效。用户最初提出的“按 UI 语言显示对应游戏标题”已在线解决。
