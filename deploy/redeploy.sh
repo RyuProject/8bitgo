@@ -314,6 +314,14 @@ if health_ok && ps2_headers_ok; then
         ;;
     esac
   fi
+
+  # 新诊断规则上线后，修正保留期内的旧现场与分组签名，避免后台和健康面板继续显示过时结论。
+  # 这只是诊断数据维护；失败时记录并告警，不回滚已经通过可玩性检查的版本。
+  log "── 历史启动诊断重分类（30 天）──"
+  if ! ( cd "$SERVER_DIR" && node scripts/reclassify-startup-diagnostics.mjs --days=30 --apply ) >> "$LOG" 2>&1; then
+    log "⚠️ 历史启动诊断重分类失败；线上版本已通过检查，诊断分组可能暂时保留旧结论"
+    notify "⚠️ 部署完成，但历史诊断重分类失败" "历史启动诊断与分组签名没有全部更新，请查看部署日志。"$'\n'"$(deploy_context)"
+  fi
   log "✅ 部署完成：$(git rev-parse --short HEAD)"
   exit 0
 fi

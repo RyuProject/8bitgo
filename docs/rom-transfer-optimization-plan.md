@@ -283,7 +283,7 @@
 ## 2026-11-28：J2ME 备用运行时缺类不能被并行 502 误诊
 
 - 生产最近 7 天的 5 次 J2ME 失败涉及 3 款 Java ME 游戏。现场错误明确为备用 `j2me-web` 缺少 `javax.wireless.messaging`（WMA）或 `javax.microedition.m3g`（M3G）类；同局 8BG ROM 请求的 HTTP 502 只是失败线路候选，不能覆盖运行时已经报出的缺类异常。
-- 诊断规则现在把明确的 WMA / M3G `NoClassDefFoundError` 归到高把握度运行时兼容性问题；无缺类证据的 HTTP 502 仍保留为待确认网络线索。历史诊断重算也会用新证据更新分组签名。`npm run test:startup-diagnostics` 覆盖新旧样本、误归类负例与历史重分组。
+- 诊断规则现在把明确的 WMA / M3G `NoClassDefFoundError` 归到高把握度运行时兼容性问题；无缺类证据的 HTTP 502 仍保留为待确认网络线索。成功发布后会自动重算保留期内的历史诊断并同步分组签名，让错误列表和健康面板一起更新；扫描按主键分页并固定本轮上界，避免高频上报拖住部署。`npm run test:startup-diagnostics` 与 `npm run test:redeploy` 覆盖新旧样本、误归类负例、发布接线与有界扫描。
 - 这项改动修正后台归因，不会给 `j2me-web` 增加 WMA / M3G 实现；当 CheerpJ 无法启动时，这些依赖相应 API 的游戏仍可能无法运行，需要单独验证兼容性实现方案。
 
 ## 2026-11-28：PPSSPP 同一分片跨 pthread 去重

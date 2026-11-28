@@ -28,6 +28,14 @@ if (unknown.length || !Number.isInteger(days) || days < 1 || days > 30 ||
   process.exitCode = 2
 } else {
   try {
+    // 固定本轮扫描的主键上界，避免部署期间持续写入的新现场让维护任务一直追着跑。
+    const [snapshot] = await query(
+      `SELECT CAST(COALESCE(MAX(id), 0) AS CHAR) AS maxId
+         FROM game_startup_diagnostics
+        WHERE created_at >= UTC_TIMESTAMP() - INTERVAL ${days} DAY
+          AND event IN ('failed', 'timeout', 'slow_start')`,
+    )
+    const maxId = String(snapshot?.maxId ?? '0')
     let lastId = '0'
     let scanned = 0
     let changed = 0
@@ -35,14 +43,15 @@ if (unknown.length || !Number.isInteger(days) || days < 1 || days > 30 ||
     while (maxRows === 0 || scanned < maxRows) {
       const size = maxRows === 0 ? batchSize : Math.min(batchSize, maxRows - scanned)
       const rows = await query(
-        `SELECT id, event, runtime, platform, elapsed_ms AS elapsedMs, payload
-           FROM game_startup_diagnostics
+        `SELECT CAST(id AS CHAR) AS id, event, runtime, platform, elapsed_ms AS elapsedMs, payload
+          FROM game_startup_diagnostics
           WHERE id > ?
+            AND id <= ?
             AND created_at >= UTC_TIMESTAMP() - INTERVAL ${days} DAY
             AND event IN ('failed', 'timeout', 'slow_start')
           ORDER BY id ASC
           LIMIT ${size}`,
-        [lastId],
+        [lastId, maxId],
       )
       if (!rows.length) break
       scanned += rows.length
