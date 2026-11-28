@@ -24,6 +24,8 @@ const PERSON_DEVELOPER_NAMES = new Set([
   'clemaister',
   'xiaoniao',
   'mrlee',
+  'ozmafioso',
+  'david ronai (makio64)',
 ])
 
 export function developerSchemaType(name: string): 'Person' | 'Organization' {

@@ -362,7 +362,7 @@ check('VideoGame 作者按已核实身份声明 Person 或 Organization', () => 
   runInNewContext(compiled, { module, exports: module.exports })
   const { developerSchemaType } = module.exports
 
-  for (const person of ['Bui', 'Clemaister', 'xiaoniao', 'MrLee']) {
+  for (const person of ['Bui', 'Clemaister', 'xiaoniao', 'MrLee', 'OzMafioso', 'David Ronai (Makio64)']) {
     assert.equal(developerSchemaType(person), 'Person', `${person} 应作为个人创作者`)
   }
   assert.equal(developerSchemaType('SEGA AM2'), 'Organization', '工作室仍应使用 Organization')
