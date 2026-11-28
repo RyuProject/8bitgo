@@ -357,8 +357,8 @@ export function GameCover({
   const legacyAvifThumbKey = thumb && game.cover && /\.avif$/i.test(game.cover) ? coverThumbKey(game.cover) : ''
   const legacyAvifThumbSrc = legacyAvifThumbKey ? romUrlForKey(legacyAvifThumbKey) : ''
   const coverSizes = sizes || (thumb ? '96px' : '')
-  // PSI 首屏只有第一张封面会争取 LCP；仅压缩它，避免把全站后续游戏图片一起降质。
-  const coverQuality = priority ? 60 : 75
+  // PSI 实测首屏 LCP 封面仍有 6 KiB 可省；只降低优先图质量，后续封面保留 75。
+  const coverQuality = priority ? 45 : 75
   // 只有 AVIF 需要沿用旧 -96 对象；其它格式只发一个 96px 主图变换请求。
   const [legacyThumbFailed, setLegacyThumbFailed] = useState(false)
   useEffect(() => setLegacyThumbFailed(false), [legacyAvifThumbSrc])
