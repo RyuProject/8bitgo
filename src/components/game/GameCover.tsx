@@ -252,8 +252,8 @@ function CoverVideo({ src: primarySrc, fallbackSrc, poster, fallbackPoster, post
           aria-hidden
           loading={priority ? 'eager' : 'lazy'}
           fetchPriority={priority ? 'high' : 'auto'}
-          // LCP poster 已经以高优先级下载；同步解码让浏览器拿到字节后直接绘制首屏帧。
-          decoding={priority ? 'sync' : 'async'}
+          // LCP poster 已经以高优先级下载；异步解码避免图片解码占住首屏主线程。
+          decoding="async"
           onError={(event) => {
             reportCoverLoadFailure(event.currentTarget.currentSrc || event.currentTarget.src)
             if (poster && fallbackPoster && poster !== fallbackPoster && posterSrc === poster) setFailedPoster(poster)
@@ -442,8 +442,8 @@ export function GameCover({
             // 等于让浏览器先跳过它、发现完别的资源再回头下，LCP 反而更慢
             loading={priority || eager ? 'eager' : 'lazy'}
             fetchPriority={priority ? 'high' : 'auto'}
-            // 首屏优先封面同步解码，避免异步解码把已下载的 LCP 图片继续留在空白占位上。
-            decoding={priority ? 'sync' : 'async'}
+            // 首屏优先级负责争取网络带宽；异步解码让浏览器继续处理首屏交互与绘制。
+            decoding="async"
             onLoad={onImageLoad}
             // 缩略图没对象（老封面）就换回主图；主图本身就坏了则留给渐变背景兜着
             onError={(event) => {
