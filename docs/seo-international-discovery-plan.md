@@ -28,6 +28,8 @@
 
 - **Metal Slug 开发商字段纠错（2026-11-28）**：[SNK 官方 NEOGEO 游戏目录](https://neogeomuseum.snk-corp.co.jp/english/catalogue/index.php)将 `METAL SLUG` 列为 Nazca 开发，街机版日期为 1996-04-19。生产 `metal-slug-super-vehicle-001` 原填 `Nazca, SNK`，把发行商混入开发商字段；已通过后台 API 改为 `Nazca`，保留标题和 1996 年份。英文详情 SSR 的 `VideoGame.author` 现只列 Nazca，开发商筛选能返回该游戏。
 
+- **复合开发商字段纠错（2026-11-28）**：[Silent Hill Mobile（Orphan）资料页](https://www.silenthillmemories.net/sh_orphan/info_en.htm)区分开发商 Gamefederation 与发行商 Konami；[第二作制作名单](https://www.silenthillmemories.net/sh_mobile2/credits_en.htm)将 Konami 的制作职位与 Gamefederation Studio 的开发团队分列；[第三作资料页](https://www.silenthillmemories.net/sh_mobile3/info_en.htm)列 Playsoft 为开发商、Konami 为发行商。生产三条记录此前都把 Konami 混入开发商，现分别改为 `Gamefederation Studio`、`Gamefederation Studio`、`Playsoft`，保留 2007、2008、2010 年份。[PSP 初代《初音未来 Project DIVA》的发行记录](https://www.mobygames.com/game/184420/hatsune-miku-project-diva/releases/psp/)将 Dingo Inc. 与 SEGA Corporation 列为开发商、Crypton Future Media 列为许可方；生产记录现改为 `Dingo Inc., SEGA`，保留 PSP 平台和 2009 年份。四页公开 SSR 均返回 HTTP 200，`VideoGame.author` 与修正后的字段一致；开发商筛选能分别找到对应游戏，Konami / Crypton 不再返回这四条记录。
+
 - **全库简介来源残片清理（2026-11-28）**：先从游玩量前 100 款中清理 7 款游戏的 8 段简介，再扩展扫描生产公开目录全部 663 款游戏，追加清理 15 款游戏的 18 段简介；两轮合计修正 22 款游戏的 26 段简介。被误拼进正文的“抖音百科”和孤立 `Wikipedia` 标签均通过后台 API 清除，其他简介内容保持原样。扫描中另有一处描述《Cursed Treasure 2》后续 Steam 发行版的句子，语义完整且与游戏相关，故保留。再次读取全库的中文、英文和本地化简介后，来源残片命中数为 0；5 个详情页的公网 SSR 抽样均返回 HTTP 200 且不含残片。
 
 - **逐语言标题和简介待办已清空**：生产机 `npm --prefix server run seo:coverage -- --review --limit 12` 显示 663 款公开游戏；对每个有精确语言 ROM 的条目，八种语言的标题、简介和非自动内容校验均无待办。对应语言 ROM 数为简中 299、繁中 37、英文 558、西语 111、法语 62、意大利语 52、德语 57、日语 148。此结果表示字段覆盖与报告规则通过，不代表每段简介都已由母语编辑做事实校对。
