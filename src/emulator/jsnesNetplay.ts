@@ -107,6 +107,9 @@ const PROTOCOL_VERSION = 4
 const CONNECT_TIMEOUT_MS = 15_000
 const PEER_TIMEOUT_MS = 25_000
 const DISCONNECT_GRACE_MS = 10_000
+/** Cloudflare 会关闭双向静默的 WebSocket；信令在游戏过程中仍需保活以支持 ICE 重协商。 */
+const SIGNAL_HEARTBEAT_MS = 25_000
+const SIGNAL_HEARTBEAT_TIMEOUT_MS = 10_000
 const STATE_CHUNK_CHARS = 12 * 1024
 const MAX_STATE_CHARS = 8 * 1024 * 1024
 /** 状态以 12 KiB 小块发送，限制单条消息可避免坏对端在移动端触发大块 JSON 解析。 */
@@ -146,6 +149,10 @@ export class JsnesNetplay {
   private connectTimer = 0
   private peerTimer = 0
   private disconnectTimer = 0
+  private heartbeatTimer = 0
+  private heartbeatDeadlineTimer = 0
+  private heartbeatSequence = 0
+  private heartbeatId = ''
   private closing = false
   private ready = false
   private peerHello = false
@@ -183,7 +190,12 @@ export class JsnesNetplay {
       this.openedResolve = resolve
       this.openedReject = reject
       ws.onopen = () => {
-        ws.send(JSON.stringify({ type: this.roomId ? 'join' : 'host', roomId: this.roomId }))
+        try {
+          ws.send(JSON.stringify({ type: this.roomId ? 'join' : 'host', roomId: this.roomId }))
+          this.armSignalHeartbeat(ws)
+        } catch (error) {
+          this.fail(new Error(`信令连接初始化失败${error instanceof Error ? `：${error.message}` : ''}`), false)
+        }
       }
       this.connectTimer = window.setTimeout(() => this.rejectOpen(new Error('信令连接超时')), CONNECT_TIMEOUT_MS)
       ws.onerror = () => this.rejectOpen(new Error('信令连接失败'))
@@ -196,11 +208,31 @@ export class JsnesNetplay {
       }
       ws.onclose = () => {
         if (!this.closing) {
-          this.rejectOpen(new Error('信令连接已断开'))
-          this.opts.onState?.('disconnected')
+          const error = new Error('信令连接已断开')
+          this.rejectOpen(error)
+          this.fail(error, false)
         }
       }
     })
+  }
+
+  private armSignalHeartbeat(ws: WebSocket) {
+    window.clearInterval(this.heartbeatTimer)
+    this.heartbeatTimer = window.setInterval(() => {
+      if (this.closing || this.ws !== ws || ws.readyState !== WebSocket.OPEN) return
+      if (this.heartbeatId) return this.fail(new Error('信令心跳超时'))
+      const id = `${Date.now().toString(36)}-${(++this.heartbeatSequence).toString(36)}`
+      this.heartbeatId = id
+      this.heartbeatDeadlineTimer = window.setTimeout(() => {
+        this.heartbeatDeadlineTimer = 0
+        if (!this.closing && this.heartbeatId === id) this.fail(new Error('信令心跳无响应'))
+      }, SIGNAL_HEARTBEAT_TIMEOUT_MS)
+      try {
+        ws.send(JSON.stringify({ type: 'ping', id }))
+      } catch (error) {
+        this.fail(new Error(`信令心跳发送失败${error instanceof Error ? `：${error.message}` : ''}`), false)
+      }
+    }, SIGNAL_HEARTBEAT_MS)
   }
 
   private resolveOpen() {
@@ -254,6 +286,13 @@ export class JsnesNetplay {
         if (!this.peerId && typeof msg.from === 'string') this.peerId = msg.from
         void this.onSignal(msg.data as { sdp?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit })
           .catch((error) => this.fail(error))
+        break
+      }
+      case 'pong': {
+        if (typeof msg.id !== 'string' || msg.id !== this.heartbeatId) break
+        window.clearTimeout(this.heartbeatDeadlineTimer)
+        this.heartbeatDeadlineTimer = 0
+        this.heartbeatId = ''
         break
       }
       case 'peer-left': {
@@ -656,9 +695,14 @@ export class JsnesNetplay {
     window.clearTimeout(this.connectTimer)
     window.clearTimeout(this.peerTimer)
     window.clearTimeout(this.disconnectTimer)
+    window.clearInterval(this.heartbeatTimer)
+    window.clearTimeout(this.heartbeatDeadlineTimer)
     this.connectTimer = 0
     this.peerTimer = 0
     this.disconnectTimer = 0
+    this.heartbeatTimer = 0
+    this.heartbeatDeadlineTimer = 0
+    this.heartbeatId = ''
     this.rejectOpen(new Error('联机已经关闭'))
     try {
       this.ws?.send(JSON.stringify({ type: 'leave' }))

@@ -188,6 +188,73 @@ for (const [input, expected] of [[-3, 0], [2.9, 2], [99, 8], [Number.NaN, 2]]) {
   guest.close()
 }
 
+// Cloudflare 会关闭双向静默的 WebSocket；客户端必须保活，并在关闭时清理心跳。
+{
+  const originalSetInterval = globalThis.setInterval
+  const originalClearInterval = globalThis.clearInterval
+  const originalSetTimeout = globalThis.setTimeout
+  const originalClearTimeout = globalThis.clearTimeout
+  const intervals = new Map()
+  const timeouts = new Map()
+  let nextTimerId = 1
+  globalThis.setInterval = (callback, delay) => {
+    const id = nextTimerId++
+    intervals.set(id, { callback, delay })
+    return id
+  }
+  globalThis.clearInterval = (id) => intervals.delete(id)
+  globalThis.setTimeout = (callback, delay) => {
+    const id = nextTimerId++
+    timeouts.set(id, { callback, delay })
+    return id
+  }
+  globalThis.clearTimeout = (id) => timeouts.delete(id)
+  try {
+    const peer = new JsnesNetplay(baseOptions())
+    const connected = peer.connect()
+    const ws = FakeWebSocket.all.at(-1)
+    ws.open()
+    ws.receive({ type: 'room', roomId: 'heartbeat-room', seat: 0 })
+    await connected
+    const heartbeat = [...intervals.values()][0]
+    assert.ok(heartbeat, '信令连接打开后应启动心跳')
+    assert.ok(heartbeat.delay <= 30_000, '心跳周期应短于常见代理空闲期限')
+    heartbeat.callback()
+    const ping = ws.sent.find((message) => message.type === 'ping')
+    assert.ok(ping?.id, '心跳应带唯一 ID 以匹配 pong')
+    assert.ok([...timeouts.values()].some((timeout) => timeout.delay === 10_000), '每次心跳都应有无响应截止时间')
+    ws.receive({ type: 'pong', id: 'stale-ping' })
+    assert.ok([...timeouts.values()].some((timeout) => timeout.delay === 10_000), '过期 pong 不得延长或清除当前心跳截止时间')
+    ws.receive({ type: 'pong', id: ping.id })
+    assert.equal([...timeouts.values()].some((timeout) => timeout.delay === 10_000), false, '匹配的 pong 应清除截止时间')
+    peer.close()
+    assert.equal(intervals.size, 0, '离开房间时必须清理心跳 interval')
+    assert.equal(timeouts.size, 0, '离开房间时必须清理所有未完成 timeout')
+
+    let error = ''
+    const stalled = new JsnesNetplay(baseOptions({ onError: (message) => { error = message } }))
+    const stalledConnect = stalled.connect()
+    const stalledWs = FakeWebSocket.all.at(-1)
+    stalledWs.open()
+    stalledWs.receive({ type: 'room', roomId: 'stalled-heartbeat-room', seat: 0 })
+    await stalledConnect
+    const stalledHeartbeat = Array.from(intervals.values())[0]
+    stalledHeartbeat.callback()
+    const deadlineEntry = Array.from(timeouts.entries()).find(([, timeout]) => timeout.delay === 10_000)
+    assert.ok(deadlineEntry, '缺少 pong 时应安排失败截止')
+    timeouts.delete(deadlineEntry[0])
+    deadlineEntry[1].callback()
+    assert.equal(error, '信令心跳无响应', '信令服务失联后应结束联机并恢复可控错误')
+    assert.equal(intervals.size, 0, '心跳失败后也必须释放 interval')
+    assert.equal(timeouts.size, 0, '心跳失败后也必须释放 timeout')
+  } finally {
+    globalThis.setInterval = originalSetInterval
+    globalThis.clearInterval = originalClearInterval
+    globalThis.setTimeout = originalSetTimeout
+    globalThis.clearTimeout = originalClearTimeout
+  }
+}
+
 // 房主收到 peer-joined 时 ICE 还没取回：offer 必须等待 PC，而不是静默丢掉。
 {
   let releaseIce
