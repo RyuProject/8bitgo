@@ -358,7 +358,7 @@ export function GameCover({
   const legacyAvifThumbKey = thumb && game.cover && /\.avif$/i.test(game.cover) ? coverThumbKey(game.cover) : ''
   const legacyAvifThumbSrc = legacyAvifThumbKey ? romUrlForKey(legacyAvifThumbKey) : ''
   const coverSizes = sizes || (thumb ? '96px' : '')
-  // AVIF 是当前唯一不能走 CDN 变换的封面格式；其它格式只请求主图的 96px 响应档。
+  // AVIF 是当前唯一不能走 CDN 变换的封面格式；其它小图只请求主图的单一 96px 响应档。
   const [legacyThumbFailed, setLegacyThumbFailed] = useState(false)
   useEffect(() => setLegacyThumbFailed(false), [legacyAvifThumbSrc])
   const useLegacyAvifThumb = Boolean(legacyAvifThumbSrc && !legacyThumbFailed)
@@ -371,15 +371,17 @@ export function GameCover({
   const [coverFailed, setCoverFailed] = useState(false)
   useEffect(() => setCoverFailed(false), [coverSrc])
   const imgSrc = useLegacyAvifThumb ? legacyAvifThumbSrc : thumb && !transformFailed ? coverImageUrl(coverSrc, 96) : coverSrc
-  const srcSet = !useLegacyAvifThumb && !transformFailed ? coverSrcSet(coverSrc, undefined, undefined, coverSizes) : ''
+  // 96px 专供 40~44px 图标和模糊背景，单档在 2x 屏上也够用，继续列 160/240 只会多耗流量。
+  const srcSet = !thumb && !useLegacyAvifThumb && !transformFailed ? coverSrcSet(coverSrc, undefined, undefined, coverSizes) : ''
+  const transformFallbackAvailable = !useLegacyAvifThumb && !transformFailed && (Boolean(srcSet) || imgSrc !== coverSrc)
   // 视频 poster 也按卡片实际宽度挑图；否则手机首屏会按默认卡片宽度取图，多传一截。
-  const posterSrcSet = videoSrc && coverSrc
+  const posterSrcSet = videoSrc && coverSrc && !thumb
     ? (transformFailed ? '' : imgSrc === coverSrc ? srcSet : coverSrcSet(coverSrc, undefined, undefined, coverSizes))
     : ''
   const posterSizes = coverSizes || (priority || eager ? '100vw' : 'auto, 100vw')
 
   const posterSrc = coverSrc
-    ? useLegacyAvifThumb ? legacyAvifThumbSrc : coverImageUrl(coverSrc, coverPosterWidth(coverSizes))
+    ? useLegacyAvifThumb ? legacyAvifThumbSrc : coverImageUrl(coverSrc, thumb ? 96 : coverPosterWidth(coverSizes))
     : ''
   // preload 与 img 用同一组 srcset / sizes，避免先预载大档再额外下载更合适的小档。
   if (!mediaDeferred && priority && videoSrc && coverSrc) {
@@ -447,7 +449,7 @@ export function GameCover({
             onError={(event) => {
               reportCoverLoadFailure(event.currentTarget.currentSrc || event.currentTarget.src)
               if (useLegacyAvifThumb && !legacyThumbFailed) setLegacyThumbFailed(true)
-              else if (srcSet) setTransformFailed(true)
+              else if (transformFallbackAvailable) setTransformFailed(true)
               else setCoverFailed(true)
             }}
             className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-105"
