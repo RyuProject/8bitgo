@@ -5,7 +5,27 @@ import { createServer } from 'node:http'
 import { readFile } from 'node:fs/promises'
 import express from 'express'
 import { WebSocket } from 'ws'
-import { attachJsnesNetplay } from '../src/jsnes-netplay.js'
+import { attachJsnesNetplay, MAX_JSNES_BUFFERED_BYTES, sendJsnesMessage } from '../src/jsnes-netplay.js'
+
+const backpressurePeer = {
+  OPEN: WebSocket.OPEN,
+  readyState: WebSocket.OPEN,
+  bufferedAmount: 0,
+  sent: [],
+  closed: null,
+  send(data) { this.sent.push(data) },
+  close(code, reason) { this.closed = { code, reason } },
+}
+const signalFrame = { type: 'pong', id: 'backpressure-check' }
+const signalBytes = Buffer.byteLength(JSON.stringify(signalFrame))
+backpressurePeer.bufferedAmount = MAX_JSNES_BUFFERED_BYTES - signalBytes
+assert.equal(sendJsnesMessage(backpressurePeer, signalFrame), true, '队列恰好达到上限时仍发送最后一条完整信令')
+assert.equal(backpressurePeer.sent.length, 1)
+backpressurePeer.bufferedAmount = MAX_JSNES_BUFFERED_BYTES
+assert.equal(sendJsnesMessage(backpressurePeer, signalFrame), false, '慢接收端不得把待发送信令队列推过上限')
+assert.equal(backpressurePeer.closed?.code, 1013, '队列积压只关闭慢接收端')
+const closedPeer = { ...backpressurePeer, readyState: WebSocket.CLOSED, closed: null }
+assert.equal(sendJsnesMessage(closedPeer, signalFrame), false, '关闭的连接不再序列化或发送消息')
 
 const nginxConfig = await readFile(new URL('../../deploy/nginx/cs16-websocket-locations.conf', import.meta.url), 'utf8')
 const jsnesUpgradeLocation = nginxConfig.split('location = /jsnes-netplay {')[1]?.split('\n}')[0] ?? ''

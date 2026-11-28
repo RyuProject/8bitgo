@@ -39,6 +39,8 @@ const MAX_PER_IP = envNumber('JSNES_NETPLAY_MAX_PER_IP', 12, { max: 100 })
 const JOIN_TIMEOUT_MS = 15_000
 /** 单个连接每秒最多转发几条 signal，防刷 */
 const SIGNALS_PER_SEC = 60
+/** SDP / ICE 只需短时排队；不让掉线或极慢的浏览器把信令内存无限堆高。 */
+export const MAX_JSNES_BUFFERED_BYTES = 512 * 1024
 
 function sameOrigin(req, origin) {
   try {
@@ -72,6 +74,27 @@ function rejectUpgrade(socket, status, message) {
 function makeRoomId() {
   // 房间号本身就是邀请凭据；16 位十六进制有 64 位熵，避免短码被扫中后抢占 2P 座位。
   return randomBytes(8).toString('hex')
+}
+
+export function sendJsnesMessage(ws, obj) {
+  if (ws.readyState !== ws.OPEN) return false
+  let payload
+  try {
+    payload = JSON.stringify(obj)
+  } catch {
+    return false
+  }
+  if (ws.bufferedAmount + Buffer.byteLength(payload, 'utf8') > MAX_JSNES_BUFFERED_BYTES) {
+    try { ws.close(1013, 'jsnes signaling receiver congested') } catch { /* 已关闭 */ }
+    return false
+  }
+  try {
+    ws.send(payload)
+    return true
+  } catch {
+    try { ws.close() } catch { /* 已关闭 */ }
+    return false
+  }
 }
 
 export function attachJsnesNetplay(httpServer, origins = ['*']) {
@@ -110,13 +133,7 @@ export function attachJsnesNetplay(httpServer, origins = ['*']) {
     }
   })
 
-  const send = (ws, obj) => {
-    try {
-      if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj))
-    } catch {
-      /* 连接已断，忽略 */
-    }
-  }
+  const send = sendJsnesMessage
 
   wss.on('connection', (ws, req) => {
     ws.id = randomBytes(9).toString('hex')

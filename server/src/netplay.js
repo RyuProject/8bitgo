@@ -87,6 +87,8 @@ const MAX_STATE_BYTES = 12 * 1024 * 1024
 const MAX_ROOMS = envNumber('NETPLAY_MAX_ROOMS', 500, { max: 5_000 })
 /** 单个连接每秒最多广播几条 data-message（聊天 / 暂停之类），防刷屏 */
 const MSG_PER_SEC = 20
+/** 正常按键 / 聊天消息远小于此值；限制扩展字段，避免房间广播放大大包流量。 */
+export const MAX_DATA_MESSAGE_BYTES = 16 * 1024
 /**
  * 服务端保留的控制消息 key。
  * data-message 是房间内广播，原样转发的话任何一个访客都能自己发一条
@@ -1037,6 +1039,13 @@ export function attachNetplay(
         }
         if (dirty && Object.keys(d).length === 0) return
       }
+      let messageBytes = 0
+      try {
+        messageBytes = Buffer.byteLength(JSON.stringify(d), 'utf8')
+      } catch {
+        return
+      }
+      if (messageBytes > MAX_DATA_MESSAGE_BYTES) return
       socket.to(roomKey(roomId)).emit('data-message', d)
     })
   })

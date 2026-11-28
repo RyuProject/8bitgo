@@ -2142,6 +2142,8 @@ DOSBox-X 配置，都显式写 `[ipx] ipx=true`；DOSBox / DOSBox-X 默认关闭
 避免为改一个小配置而复制大型 ROM 包。`server/src/ipx.js` 还必须限制发往每个接收端的 `bufferedAmount`：连接数和单帧大小有限，
 并不代表 `ws.send()` 的 TCP 待写队列有界；慢客户端超过 512 KiB 时只关闭该接收端，不能让广播把服务进程内存拖成无界增长。
 
+**所有 WebSocket 广播都要按“现有待发送字节 + 下一帧字节”检查背压**：仅检查 `bufferedAmount` 会让最后一帧越过上限；超限时只关闭或丢弃慢接收端的消息，不能阻塞其它玩家。Socket.IO 房间广播也要在清洗协议字段后限制单条 JSON 大小，避免一个 128 KiB 扩展字段被放大到整间房；正常按键同步和聊天必须有针对性回归。
+
 普通 DOS 包生成的 `cycles=auto` 一遇保护模式就放到 max：DOS4GW 游戏若模拟节奏跟 CPU 走，就会快得没法玩
 （2026-11-15《主题公园》）。这类游戏在 `windowsGameCompatibilityDosboxConfig` 里给固定周期（`theme-park` 为
 `cycles=fixed 25000`），后台 `dosbox_config_override` 仍优先；别把全站默认改成 fixed，慢保护模式游戏会被拖垮。

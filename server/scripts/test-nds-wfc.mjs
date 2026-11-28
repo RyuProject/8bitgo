@@ -4,7 +4,14 @@ import { createServer } from 'node:http'
 import net from 'node:net'
 import express from 'express'
 import { WebSocket } from 'ws'
-import { createNdsWfcService, dnsAReply, dnsAnswerIps, dnsQueryName, dnsRefusedReply, dnsServFailReply, gpTraceSummary, natnegConnectPeer, resolveDns4Tcp, wfcDnsStaticIp, wfcDnsUpstream } from '../src/nds-wfc.js'
+import { createNdsWfcService, dnsAReply, dnsAnswerIps, dnsQueryName, dnsRefusedReply, dnsServFailReply, gpTraceSummary, natnegConnectPeer, ndsWfcFrameFits, resolveDns4Tcp, wfcDnsStaticIp, wfcDnsUpstream } from '../src/nds-wfc.js'
+
+assert.equal(ndsWfcFrameFits({ bufferedAmount: 512 * 1024 - 4 }, Buffer.alloc(4)), true,
+  'NDS 中继队列恰好达到上限时最后一帧仍能发送')
+assert.equal(ndsWfcFrameFits({ bufferedAmount: 512 * 1024 - 3 }, Buffer.alloc(4)), false,
+  'NDS 中继必须把待发帧计入预算，不能越过 512 KiB')
+assert.equal(ndsWfcFrameFits({ bufferedAmount: Number.NaN }, Buffer.alloc(4)), false,
+  '未知队列长度不能被当作安全发送')
 
 const labels = 'nas.nintendowifi.net'.split('.')
 const name = Buffer.concat([...labels.map((label) => Buffer.concat([Buffer.from([label.length]), Buffer.from(label)])), Buffer.from([0])])

@@ -12,7 +12,7 @@ process.env.NETPLAY_MAX_ROOMS_PER_IP = '3'
 process.env.NETPLAY_MAX_MEMBERS_PER_IP = '0'
 // 存档总预算压到 64 字节：正常上传的 'SAVEDATA' 8 字节能过，第三批里试一份 100 字节的
 process.env.NETPLAY_STATE_BUDGET_BYTES = '64'
-const { attachNetplay } = await import('../src/netplay.js')
+const { attachNetplay, MAX_DATA_MESSAGE_BYTES } = await import('../src/netplay.js')
 import { iceRouter } from '../src/routes/ice.js'
 
 let pass = 0, fail = 0
@@ -105,6 +105,18 @@ host.on('data-message', (d) => { if (d && d.chat) chat = d })
 guest.emit('data-message', { chat: 'hi' })
 await waitFor(() => chat?.chat === 'hi')
 ok(chat?.chat === 'hi', '正常的聊天消息照常转发')
+let oversizedMessage = false
+let smallExtension = false
+host.on('data-message', (d) => {
+  if (d?.['oversized-extension']) oversizedMessage = true
+  if (d?.['small-extension'] === 'ok') smallExtension = true
+})
+guest.emit('data-message', { 'oversized-extension': 'x'.repeat(MAX_DATA_MESSAGE_BYTES) })
+await flushRoomMessages(guest, host)
+ok(!oversizedMessage, '超过 16 KiB 的扩展消息不会被放大广播')
+guest.emit('data-message', { 'small-extension': 'ok' })
+await flushRoomMessages(guest, host)
+ok(smallExtension, '拒绝超大消息不影响同一连接后续正常广播')
 
 // 访客发 restart / pause：EmulatorJS 的 dataMessage 收到就直接重开 / 暂停房主的游戏
 const hostGot = []

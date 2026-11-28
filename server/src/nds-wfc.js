@@ -50,6 +50,15 @@ const MAX_BUFFERED = 512 * 1024
 const MAX_BYTES_PER_SECOND = 1024 * 1024
 const MAX_ALLOWED_DNS_IPS = 128
 
+/**
+ * WebSocket 的 bufferedAmount 不包含本次尚未送入队列的帧；先把本帧计入预算，
+ * 才能保证慢接收端不会恰好越过上限。TCP 与 UDP 中继共用这条边界。
+ */
+export function ndsWfcFrameFits(ws, data, maxBuffered = MAX_BUFFERED) {
+  return Number.isFinite(ws?.bufferedAmount) && Number.isFinite(data?.length) &&
+    ws.bufferedAmount + data.length <= maxBuffered
+}
+
 function publicIpv4(host) {
   if (net.isIP(host) !== 4) return false
   const [a, b, c] = host.split('.').map(Number)
@@ -568,7 +577,7 @@ export function createNdsWfcService({
     }
     const send = (data) => {
       if (ws.readyState !== WebSocket.OPEN) return
-      if (ws.bufferedAmount > MAX_BUFFERED) return close()
+      if (!ndsWfcFrameFits(ws, data)) return close()
       try { ws.send(data, { binary: true }) } catch { close() }
     }
     const admit = (message) => {
@@ -640,7 +649,7 @@ export function createNdsWfcService({
       upstream.on('data', (data) => {
         trace('tcp recv', host, port, data.length, gpPort ? gpTraceSummary(data) ?? '' : '')
         if (ws.readyState !== WebSocket.OPEN) return
-        if (ws.bufferedAmount > MAX_BUFFERED) return close()
+        if (!ndsWfcFrameFits(ws, data)) return close()
         pendingUpstreamFrames++
         try {
           ws.send(data, { binary: true }, (error) => {
