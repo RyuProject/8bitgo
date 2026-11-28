@@ -721,6 +721,8 @@ await checkAsync('Sockdrive 预热有总时限，慢速滴流不会无限挡住�
   let warmAborted = false
   let drips = 0
   const outcome = await runSockdriveWarmWithinDeadline(parent.signal, 25, (signal) => new Promise((_resolve, reject) => {
+    // 先记一块已到达的数据；系统繁忙时 1ms interval 可能和 25ms 截止计时器同时变为就绪。
+    drips++
     const drip = setInterval(() => { drips++ }, 1)
     signal.addEventListener('abort', () => {
       warmAborted = true
