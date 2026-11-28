@@ -844,7 +844,8 @@ try {
   const resumedAfterStall = await fetchBlobWithProgress(retryUrl, {
     chunkBytes: ROM_INTEGRITY_BLOCK_BYTES,
     retries: 1,
-    stallMs: 200,
+    // 预构建串行运行大量资源门禁；留出调度余量，避免把事件循环忙碌误判成网络失速。
+    stallMs: 1_000,
     resumeKey: retryUrl,
     resumeStore: retryResumeStore,
     fetchImpl: retryFetchImpl,
