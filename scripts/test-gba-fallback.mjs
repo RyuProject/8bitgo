@@ -16,6 +16,10 @@ assert.equal(gbaFallbackRuntime({ wasmUnavailable: true, webglUnavailable: true 
   '同时缺少两项能力时保留纯 JavaScript 退路')
 assert.equal(gbaFallbackRuntime({ wasmUnavailable: true, webglUnavailable: true, runtimeOverride: 'emulatorjs' }), 'iodinegba',
   '浏览器不支持 WebAssembly 时能力门禁优先于逐游戏 EmulatorJS 覆盖')
+assert.equal(gbaFallbackRuntime({ wasmUnavailable: false, webglUnavailable: false, modernSyntaxUnavailable: true }), 'iodinegba',
+  '有 WebAssembly / WebGL 但解析不了原样发布的 EJS 语法时，改走 legacy 安全的纯 JS GBA')
+assert.equal(gbaFallbackRuntime({ wasmUnavailable: false, webglUnavailable: false, modernSyntaxUnavailable: true, runtimeOverride: 'emulatorjs' }), 'iodinegba',
+  '旧浏览器不能因逐游戏固定 EmulatorJS 而进入必然的语法错误')
 assert.equal(usesBuiltInGbaHleBios('gba', 'mgba'), true,
   'mGBA 的内置 HLE BIOS 应免除常规 GBA 开局对外部 BIOS 的依赖')
 assert.equal(usesBuiltInGbaHleBios('gba', 'iodinegba'), false,
@@ -54,6 +58,8 @@ const platformBios = read('../src/services/platformBios.ts')
 
 assert.match(registry, /fallbackId = gbaFallbackRuntime\(/,
   '详情页和 ROM 启动共用同一项 GBA 能力选择')
+assert.match(registry, /modernSyntaxUnavailable: ctx\.gbaModernSyntaxUnavailable/,
+  '详情页与 ROM 选择都把旧语法能力送入 GBA 运行时选择')
 assert.match(adapter, /options\.platform === 'gba' && core === 'mgba' && typeof WebAssembly !== 'undefined'/,
   '软件 WebGL 只扩展到已选的 mGBA，不能误接其它平台核心')
 assert.match(adapter, /usesBuiltInGbaHleBios\(options\.platform, core\)/,
@@ -76,6 +82,8 @@ assert.match(softwareWebgl, /webgl1InstanceCheck \? win\.WebGLRenderingContext\?
   'FBNeo 仍保持原有代理行为，只有 mGBA 挂接 WebGL1 原型')
 assert.match(player, /gbaWasmUnavailable: platform\.id === 'gba' && !webAssemblyAvailable\(\)/,
   '自动开局要把 WebAssembly 能力传给注册表')
+assert.match(player, /gbaModernSyntaxUnavailable: platform\.id === 'gba' && !modernRuntimeSyntaxSupported\(\)/,
+  '详情页和本地 ROM 开局都要把现代语法能力传给 GBA 运行时策略')
 assert.match(player, /gbaWebglUnavailable: platform\.id === 'gba' && webglUnavailable/,
   '自动开局要把 WebGL 能力传给注册表')
 assert.match(iodine, /async function prepareIodineBios\(data: ArrayBuffer\)/,
@@ -119,4 +127,11 @@ const biosBinding = await biosService.resolvePlatformBiosForStartup('gba')
 assert.equal(biosRequests, 2, '首次读取失败后应立即共享强制重试，不受常规退避影响')
 assert.deepEqual(biosBinding, { url: '', mapLoaded: true }, '成功读到空表表示确实未配置，而非网络失败')
 
-console.log('✔ GBA fallback：只缺 WebGL 时用 mGBA HLE + Canvas 2D；无 WebAssembly 时保留 IodineGBA')
+// BIOS 网络恢复测试完成后再载入注册表：它的元数据依赖可能间接加载服务模块，不应预热上面的 fetch 桩。
+const { resolveRuntime } = await import('../src/emulator/registry.ts')
+assert.equal(resolveRuntime({ platform: 'gba', ext: 'gba', gbaModernSyntaxUnavailable: true })?.id, 'iodinegba',
+  '详情页与 ROM 选择最终都应由注册表选中纯 JavaScript GBA 运行时')
+assert.equal(resolveRuntime({ platform: 'gba', ext: 'gba', runtimeOverride: 'emulatorjs', gbaModernSyntaxUnavailable: true })?.id, 'iodinegba',
+  '能力不兼容时逐游戏固定的 EmulatorJS 也要让位')
+
+console.log('✔ GBA fallback：按 WebGL / WebAssembly / 浏览器语法能力选择 mGBA 或 legacy 安全的 IodineGBA')

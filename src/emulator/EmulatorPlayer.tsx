@@ -1856,22 +1856,26 @@ export function EmulatorPlayer({
     if (!shouldProbeNoWebgl) return
     // NES 在太旧的浏览器上也改走 jsnes：EmulatorJS 的引擎和核心语法都跑不动（browserSupport.ts）
     const noWebgl = !canCreateWebgl()
+    const modernSyntaxUnavailable = !modernRuntimeSyntaxSupported()
     // NES：太旧或没有 WebAssembly 都改走 jsnes；GB/GBC：没有 WebAssembly改走 binjgb；GBA 记录缺失能力，运行时再区分两种退路。
     const noModernRuntime = platform.id === 'nes'
-      ? !modernRuntimeSyntaxSupported() || !webAssemblyAvailable()
+      ? modernSyntaxUnavailable || !webAssemblyAvailable()
       : !webAssemblyAvailable()
-    const missing = platform.id === 'gba' ? noWebgl || !webAssemblyAvailable() : noWebgl || noModernRuntime
+    const gbaNeedsLegacyRuntime = platform.id === 'gba' && modernSyntaxUnavailable
+    const missing = platform.id === 'gba'
+      ? noWebgl || !webAssemblyAvailable() || gbaNeedsLegacyRuntime
+      : noWebgl || noModernRuntime
     if (missing) {
       const fallback = platform.id === 'nes'
         ? 'jsnes'
         : platform.id === 'gba'
-          ? !webAssemblyAvailable() || runtime === 'iodinegba' ? 'IodineGBA（纯 JavaScript）' : 'mGBA（Canvas 2D）'
+          ? !webAssemblyAvailable() || gbaNeedsLegacyRuntime || runtime === 'iodinegba' ? 'IodineGBA（纯 JavaScript）' : 'mGBA（Canvas 2D）'
           : !webAssemblyAvailable() ? 'binjgb（纯 JavaScript 构建）' : 'binjgb'
       const why = noWebgl ? '建不出 WebGL' : !webAssemblyAvailable() ? '没有 WebAssembly' : '太旧（不支持类字段 / ?. / ??）'
       console.warn(`[8bitgo/runtime] 这个浏览器${why}，${platform.id.toUpperCase()} 改用 ${fallback}`)
     }
     setWebglProbe({ platform: platform.id, ready: true, unavailable: missing })
-  }, [platform.id, shouldProbeNoWebgl])
+  }, [platform.id, runtime, shouldProbeNoWebgl])
 
   const currentNesProbe = nesProbe.url === romUrl ? nesProbe : undefined
   const jsnesCompatible = shouldProbeNes ? currentNesProbe?.compatible : undefined
@@ -1889,6 +1893,7 @@ export function EmulatorPlayer({
       jsnesCompatible,
       webglUnavailable,
       gbaWasmUnavailable: platform.id === 'gba' && !webAssemblyAvailable(),
+      gbaModernSyntaxUnavailable: platform.id === 'gba' && !modernRuntimeSyntaxSupported(),
       gbaWebglUnavailable: platform.id === 'gba' && webglUnavailable,
       flashAwayfl: awayflChoice.use,
     })
@@ -2059,7 +2064,7 @@ export function EmulatorPlayer({
           (webglUnavailable || !webAssemblyAvailable())
           ? { kind: 'runtime', from: 'emulatorjs', to: 'binjgb', reason: 'browser-capability' }
           : targetPlatform === 'gba' && runtime.id === 'iodinegba' &&
-            (webglUnavailable || !webAssemblyAvailable())
+            (webglUnavailable || !webAssemblyAvailable() || !modernRuntimeSyntaxSupported())
             ? { kind: 'runtime', from: 'emulatorjs', to: 'iodinegba', reason: 'browser-capability' }
             : targetPlatform === 'flash' && runtime.id === 'awayfl' && awayflChoice.use
               ? { kind: 'runtime', from: 'ruffle', to: 'awayfl', reason: 'wasm-unavailable' }
@@ -3870,6 +3875,7 @@ export function EmulatorPlayer({
           (targetPlatform === 'nes' && (!modernRuntimeSyntaxSupported() || !webAssemblyAvailable())),
         wasmUnavailable: (targetPlatform === 'gb' || targetPlatform === 'gbc') && !webAssemblyAvailable(),
         gbaWasmUnavailable: targetPlatform === 'gba' && !webAssemblyAvailable(),
+        gbaModernSyntaxUnavailable: targetPlatform === 'gba' && !modernRuntimeSyntaxSupported(),
         gbaWebglUnavailable: targetPlatform === 'gba' && !canCreateWebgl(),
       })
       if (!runtime) {

@@ -79,16 +79,25 @@ for (const id of ['liveview', 'cloudgame', 'html5']) assert.equal(b.runtimeRunsW
 }
 
 // 哪些运行时要求新浏览器：经 Vite 转译的几个不要求
-for (const id of ['jsnes', 'liveview', 'cloudgame', 'html5']) assert.equal(b.runtimeNeedsModernBrowser(id), false, id)
+for (const id of ['jsnes', 'iodinegba', 'liveview', 'cloudgame', 'html5']) assert.equal(b.runtimeNeedsModernBrowser(id), false, id)
 for (const id of ['emulatorjs', 'ruffle', 'binjgb', 'jsdos', 'j2me', 'webretro', 'play', 'ppsspp', 'dolphin']) assert.equal(b.runtimeNeedsModernBrowser(id), true, id)
 
 // 接线
 const player = read('src/emulator/EmulatorPlayer.tsx')
+const packageJson = JSON.parse(read('package.json'))
+assert.ok(packageJson.scripts.prebuild.includes('npm run test:browser-support'), '浏览器语法兼容检查必须在构建前运行')
+assert.ok(packageJson.scripts.prebuild.includes('npm run test:gba-fallback'), 'GBA 运行时回退检查必须在构建前运行')
 const beginAt = player.indexOf('const begin = (')
 const guardAt = player.indexOf('if (runtimeNeedsModernBrowser(runtime.id) && !modernRuntimeSyntaxSupported())')
 assert.ok(beginAt > 0 && guardAt > beginAt && guardAt - beginAt < 1500, 'begin() 一开头就拦，在下载任何东西之前')
 assert.match(player, /setError\(t\.player\.browserTooOld\)/)
-assert.match(player, /const noModernRuntime = platform\.id === 'nes'\s*\? !modernRuntimeSyntaxSupported\(\) \|\| !webAssemblyAvailable\(\)\s*: !webAssemblyAvailable\(\)/, 'NES 详情页走 jsnes，GB/GBC 走 binjgb（太旧 / 没有 WebAssembly）')
+assert.match(player, /const noModernRuntime = platform\.id === 'nes'\s*\? modernSyntaxUnavailable \|\| !webAssemblyAvailable\(\)\s*: !webAssemblyAvailable\(\)/, 'NES 详情页走 jsnes，GB/GBC 走 binjgb（太旧 / 没有 WebAssembly）')
+assert.match(player, /gbaNeedsLegacyRuntime = platform\.id === 'gba' && modernSyntaxUnavailable/,
+  'GBA 不能把只支持 legacy 语法的浏览器送进 EmulatorJS 核心')
+assert.match(read('src/emulator/registry.ts'), /modernSyntaxUnavailable: ctx\.gbaModernSyntaxUnavailable/,
+  'GBA 语法能力要进入与详情页、本地 ROM 共用的运行时注册表')
+assert.match(read('src/emulator/EmulatorPlayer.tsx'), /gbaModernSyntaxUnavailable: targetPlatform === 'gba' && !modernRuntimeSyntaxSupported\(\)/,
+  '本地 ROM 的 GBA 检测必须传递现代语法能力')
 assert.match(player, /wasmUnavailable: \(targetPlatform === 'gb' \|\| targetPlatform === 'gbc'\) && !webAssemblyAvailable\(\)/, '本地 GB/GBC 也走 binjgb')
 assert.match(read('src/emulator/registry.ts'), /\(platform === 'gb' \|\| platform === 'gbc'\) && \(ctx\.webglUnavailable \|\| ctx\.wasmUnavailable\)/)
 // binjgb 没有 WebAssembly 或 SHA-256 时换同一提交、由 SRI 保护的纯 JS 构建（scripts/build-binjgb-js.mjs）
@@ -122,13 +131,14 @@ function minEs(src) {
   return Infinity
 }
 const FLOOR = 2022
-const files = ['public/emulatorjs/emulator.min.js', 'public/emulatorjs/loader.js', 'public/binjgb/binjgb.js']
+const files = ['public/emulatorjs/emulator.min.js', 'public/emulatorjs/loader.js', 'public/binjgb/binjgb.js', 'public/iodinegba/iodinegba.js']
 const ruffleDir = readdirSync(path.join(root, 'public/ruffle')).filter((d) => d.startsWith('v')).sort().pop()
 if (ruffleDir) files.push(`public/ruffle/${ruffleDir}/ruffle.js`)
 for (const f of files) {
   if (!existsSync(path.join(root, f))) continue
   const v = minEs(read(f))
   assert.ok(v <= FLOOR, `${f} 需要 ES${v}，超过了 browserSupport.ts 的下限 ES${FLOOR}`)
+  if (f === 'public/iodinegba/iodinegba.js') assert.ok(v <= 2015, `IodineGBA 必须保留 legacy 语法，实际需要 ES${v}`)
 }
 // 核心胶水封在 7z 里：有 bsdtar（macOS 自带）就抽一个核心核对，没有就跳过
 let checkedCore = false
