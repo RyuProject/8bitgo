@@ -18,13 +18,17 @@ export function usesBuiltInGbaHleBios(platform: string, core: string): boolean {
 export function gbaFallbackRuntime({
   webglUnavailable,
   wasmUnavailable,
+  modernSyntaxUnavailable,
   runtimeOverride,
 }: {
   webglUnavailable?: boolean
   wasmUnavailable?: boolean
+  modernSyntaxUnavailable?: boolean
   runtimeOverride?: string | null
 }): GbaFallbackRuntime | null {
-  if (wasmUnavailable) return 'iodinegba'
+  // IodineGBA 经过站点 legacy 构建且源码只要求 ES2015；旧浏览器即使有 WASM，也解析不了原样发布的 EJS 核心。
+  // 这时改用纯 JS 路径可以免去必然的语法错误，BIOS 缺失则由适配器给出可操作的配置提示。
+  if (wasmUnavailable || modernSyntaxUnavailable) return 'iodinegba'
   if (!webglUnavailable) return null
   // 管理员明确固定 IodineGBA 时保留配置；否则 mGBA 的 HLE BIOS 可免去站点分发固件。
   return runtimeOverride === 'iodinegba' ? 'iodinegba' : 'emulatorjs'

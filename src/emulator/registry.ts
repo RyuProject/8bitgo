@@ -85,6 +85,7 @@ export function resolveRuntime(target: PlatformId | ResolveContext): Runtime | u
     const fallbackId = gbaFallbackRuntime({
       wasmUnavailable: ctx.gbaWasmUnavailable,
       webglUnavailable: ctx.gbaWebglUnavailable,
+      modernSyntaxUnavailable: ctx.gbaModernSyntaxUnavailable,
       runtimeOverride: ctx.runtimeOverride,
     })
     const fallback = getRuntime(fallbackId)

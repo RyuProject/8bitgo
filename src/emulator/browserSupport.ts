@@ -13,8 +13,8 @@
  * 合起来下限是 Chrome 80、Safari 14、Firefox 74。更老的浏览器（Android 旧 WebView、iOS 12–13、
  * 内核较老的应用内浏览器）页面打得开，点开始后却在 iframe / Worker 里静默语法错误，只剩看门狗超时。
  * 转译这些产物不现实（核心胶水封在 7z 包里、随核心一起更新），所以：
- *   - NES 改走 jsnes（随 Vite 打包，legacy 包里已经转译过），照常能玩；
- *   - 其它运行时开局前直接说清楚「浏览器太旧，请更新」，不去下载几十 MB 再失败。
+ *   - NES 改走 jsnes（随 Vite 打包，legacy 包里已经转译过）；GBA 改走 legacy 安全的 IodineGBA；
+ *   - 其余没有兼容引擎的运行时开局前说清楚「浏览器太旧，请更新」，不去下载几十 MB 再失败。
  */
 import type { RuntimeId } from './types'
 

@@ -387,8 +387,8 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
   jsGBC 的 npm 包还把原生模块 `speaker`（npm audit 高危）和 webpack 拖进生产依赖，它的即时存档 `load()` 是空实现。
 - **无 WebGL 的 EmulatorJS 软件画面后备按核心收窄**（2026-11-26，火红 GBA 诊断 #4209 / #4210）：适配器先按后台配置定最终核心；
   街机只给 `fbneo` / `fbneo-lowmem`，GBA 只给 `mgba`，在 EmulatorJS iframe 的 `loader.js` 前安装 `src/emulator/softwareWebgl.ts`。
-  GBA 没有 WebAssembly 时仍走 IodineGBA（需要管理员配置合法来源的 16 KiB BIOS）；仅缺 WebGL 且有 WebAssembly 时用 mGBA HLE BIOS，
-  避免自动转到没有配置 BIOS 的 IodineGBA。mGBA legacy 的 Emscripten GL 包装额外要求 context `instanceof WebGLRenderingContext`；
+  GBA 没有 WebAssembly，或浏览器不能解析 EmulatorJS 的现代语法时走 IodineGBA（需要管理员配置合法来源的 16 KiB BIOS）；仅缺 WebGL 且语法可用、有 WebAssembly 时用 mGBA HLE BIOS，
+  避免仅因缺 WebGL 自动转到可能未配置 BIOS 的 IodineGBA。IodineGBA 自托管脚本必须保持 ES2015 语法，`test:browser-support` 验证真实产物，`test:gba-fallback` 验证选路；两项都挂在 `prebuild` 上。mGBA legacy 的 Emscripten GL 包装额外要求 context `instanceof WebGLRenderingContext`；
   普通 Proxy 会被它丢弃，收尾时触发 `deleteContext` 读取未建立的 `GLctx`。GBA 路径现在只给代理挂 `WebGLRenderingContext.prototype`，
   同时阻止把该原型上的原生方法以伪 context 为接收者调用；FBNeo 保留原代理行为。
   WebGL2 仍返回不可用，因此应加载对应的 `*-legacy-wasm.data`；不把 MAME / FBA 核心改成 FBNeo，`mame-current`、其它核心和平台
