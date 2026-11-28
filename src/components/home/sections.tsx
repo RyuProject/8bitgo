@@ -161,8 +161,8 @@ export function LatestSection({ games }: { games: Game[] }) {
       <SectionHeader title={t.sections.latestTitle} subtitle={t.sections.latestSubtitle} icon="✨" moreTo="/games?sort=newest" />
       <HScroll itemClassName="w-64 sm:w-72">
         {games.map((g, i) => (
-          // 最新栏通常在首屏下方；保留第一张媒体挂载，其余靠近视口再挂，最高优先级留给当前可见 LCP。
-          <GameCardWide key={g.slug} game={g} isNew={i < 3} deferCover={i !== 0} />
+          // PSI 实测手机会把最新栏首张横卡选作 LCP；只提升这张，其余封面仍靠近视口再挂载。
+          <GameCardWide key={g.slug} game={g} isNew={i < 3} priority={i === 0} deferCover={i !== 0} />
         ))}
       </HScroll>
     </section>

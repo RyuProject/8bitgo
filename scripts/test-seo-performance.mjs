@@ -64,7 +64,7 @@ check('游戏库和专题只把首张 LCP 封面提升到高优先级，首页�
   assert.match(cover, /<source\s+media=\{sourceMedia\}\s+srcSet=\{srcSet \|\| imgSrc\}/, '响应式 Hero 图片源没有绑定桌面媒体条件')
   assert.match(cover, /src=\{sourceMedia \? undefined : imgSrc\}/, '媒体条件不匹配时 img 仍提供了移动端回退源')
   assert.match(home, /priority=\{i === 0\} eager=\{i === 1\} deferCover=\{i >= 2\}/, '精选区首张提升优先级、第二张立即加载，其余封面靠近视口后再挂载')
-  assert.match(home, /<GameCardWide key=\{g\.slug\} game=\{g\} isNew=\{i < 3\} deferCover=\{i !== 0\}/, '首页最新栏目不抢首屏优先级，其余封面延后挂载')
+  assert.match(home, /<GameCardWide key=\{g\.slug\} game=\{g\} isNew=\{i < 3\} priority=\{i === 0\} deferCover=\{i !== 0\}/, '首页最新栏只将 PSI 实测的手机 LCP 首图提升优先级，其余封面延后挂载')
   assert.match(wideCard, /sizes="\(min-width: 640px\) 288px, 256px"/, '首页宽卡必须按真实展示宽度挑选封面档位')
   assert.match(home, /rank=\{i \+ 1\}\s+deferCover/, '首页榜单封面没有延后挂载')
   assert.match(home, /<GameCardWide[^>]+deferCover/, '首页最新游戏封面具有延后挂载入口')
