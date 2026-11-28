@@ -158,9 +158,40 @@ function testUnsupportedAndTimeouts() {
   const gpioPeer = endpoint(0)
   const gpioCable = attachGbaCable(gpio, gpioPeer)
   gpio.serial.writeRCNT1(0x80) // RCNT mode 2 = GPIO
+  assert.equal(gpioCable.settleFrame(), 'idle', '仅在启动时切换 GPIO 模式不应误判为使用 GPIO 协议')
+  gpio.serial.writeRCNT0(0x04) // 真正访问 GPIO 引脚
   assert.equal(gpioCable.settleFrame(), 'failed')
   assert.match(gpioCable.failureReason, /GPIO/)
   gpioCable.destroy()
+
+  const joyBus = endpoint(0)
+  const joyBusPeer = endpoint(0)
+  const joyBusCable = attachGbaCable(joyBus, joyBusPeer)
+  joyBus.serial.writeRCNT1(0xc0) // 仅选中 JoyBus 模式时尚未发生协议数据交换
+  assert.equal(joyBusCable.settleFrame(), 'idle')
+  joyBus.serial.writeJOYCNT(0x01)
+  assert.equal(joyBusCable.settleFrame(), 'failed')
+  assert.match(joyBusCable.failureReason, /JoyBus/)
+  joyBusCable.destroy()
+
+  const rfu = endpoint(0)
+  const rfuPeer = endpoint(0)
+  const rfuCable = attachGbaCable(rfu, rfuPeer)
+  rfu.serial.writeRCNT1(0x80) // RFU 复位时先选择 GPIO
+  rfu.serial.writeRCNT0(0xa0) // RFU 的 PD 复位脉冲
+  assert.equal(rfuCable.settleFrame(), 'failed')
+  assert.match(rfuCable.failureReason, /RFU/)
+  rfuCable.destroy()
+
+  const switchedDuringTransfer = endpoint(0)
+  const transferPeer = endpoint(0)
+  const switchedCable = attachGbaCable(switchedDuringTransfer, transferPeer)
+  switchedDuringTransfer.serial.writeSIOCNT0(0x81)
+  transferPeer.serial.writeSIOCNT0(0x80)
+  switchedDuringTransfer.serial.writeRCNT1(0x80)
+  assert.equal(switchedCable.settleFrame(), 'failed', '电缆传输中切换到 GPIO 不能完成伪造的数据交换')
+  assert.match(switchedCable.failureReason, /传输过程中切换/)
+  switchedCable.destroy()
 
   const mixed = endpoint(2)
   const mixedPeer = endpoint(0)
@@ -186,21 +217,20 @@ function testUnsupportedAndTimeouts() {
 function testDestroyRestoresCore() {
   const p0 = endpoint(0)
   const p1 = endpoint(0)
-  const originals = [
-    p0.serial.writeSIOCNT0,
-    p0.serial.writeSIOCNT1,
-    p0.serial.readSIOCNT0,
-    p0.serial.writeRCNT1,
-    p0.serial.addClocks,
-    p0.serial.clockSerial,
+  const patchedMethods = [
+    'writeSIOCNT0', 'writeSIOCNT1', 'readSIOCNT0', 'writeRCNT1', 'readRCNT0', 'writeRCNT0',
+    'readJOYCNT', 'writeJOYCNT',
+    'readJOYBUS_RECV0', 'readJOYBUS_RECV1', 'readJOYBUS_RECV2', 'readJOYBUS_RECV3',
+    'writeJOYBUS_RECV0', 'writeJOYBUS_RECV1', 'writeJOYBUS_RECV2', 'writeJOYBUS_RECV3',
+    'readJOYBUS_SEND0', 'readJOYBUS_SEND1', 'readJOYBUS_SEND2', 'readJOYBUS_SEND3',
+    'writeJOYBUS_SEND0', 'writeJOYBUS_SEND1', 'writeJOYBUS_SEND2', 'writeJOYBUS_SEND3',
+    'readJOYBUS_STAT', 'writeJOYBUS_STAT', 'addClocks', 'clockSerial', 'clockMultiplayer', 'clockUART',
   ]
+  const originals = patchedMethods.map((method) => p0.serial[method])
   const cable = attachGbaCable(p0, p1)
   cable.destroy()
   assert.equal(cable.settleFrame(), 'idle')
-  assert.deepEqual(
-    [p0.serial.writeSIOCNT0, p0.serial.writeSIOCNT1, p0.serial.readSIOCNT0, p0.serial.writeRCNT1, p0.serial.addClocks, p0.serial.clockSerial],
-    originals,
-  )
+  assert.deepEqual(patchedMethods.map((method) => p0.serial[method]), originals, '销毁必须还原每个串口拦截器')
   p0.serial.writeSIOCNT1(0x40)
   p0.serial.writeSIOCNT0(0x80)
   p0.serial.addClocks(p0.serial.SIOShiftClockDivider * 8)
