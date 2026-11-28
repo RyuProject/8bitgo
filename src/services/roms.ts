@@ -392,13 +392,34 @@ export function gameVideoFallbackUrl(game: { slug: string; video?: string }, cur
 }
 
 /**
- * 封面响应式档位：160 适配小卡片，240 覆盖常规卡片，480 留给高密度屏与大卡片。
- * 96 单独用于小缩略图，避免缺失的 -96 对象回退主图后，仍把 225px 图送进 77px 容器。
- * 变换按源图与参数组合计数，format / quality 不另算：650 张封面 × 3 个卡片档位加 1 个缩略图档位，
- * 约 2,600 个唯一变换，低于 Cloudflare Images Free 每月 5,000 个唯一变换数。
+ * 变换宽度从实际 sizes 提示计算，避免 CSS 卡片尺寸变化后还要手工维护另一份档位表。
+ * 三档分别覆盖约 2/3 倍、1 倍和 2 倍展示宽度；不支持解析的 sizes（如 auto / vw）
+ * 用列表卡片的 240px 最大宽度生成候选，浏览器仍会按真实布局尺寸挑选。
+ * 96px 缩略图是独立固定档：它对应后台上传生成的 -96 对象，不能跟随卡片尺寸变化。
  */
-const COVER_WIDTHS = [160, 240, 480] as const
-type CoverImageWidth = 96 | (typeof COVER_WIDTHS)[number]
+const DEFAULT_COVER_SLOT_WIDTH = 240
+const COVER_WIDTH_SCALES = [2 / 3, 1, 2] as const
+type CoverImageWidth = number
+
+function coverWidthsForSizes(sizes = ''): number[] {
+  // sizes 的每个逗号项可能带媒体条件；只读项尾部的实际槽位，不能把 min-width 断点当图宽。
+  const slotWidths = sizes
+    .split(',')
+    .map((part) => {
+      if (/\bcalc\s*\(/i.test(part)) return 0
+      const match = part.match(/(?:^|\s)(\d+(?:\.\d+)?)px\s*$/)
+      return match ? Number(match[1]) : 0
+    })
+    .filter((width) => Number.isFinite(width) && width > 0)
+  const slotWidth = slotWidths.length ? Math.max(...slotWidths) : DEFAULT_COVER_SLOT_WIDTH
+  return [...new Set(COVER_WIDTH_SCALES.map((scale) => Math.max(1, Math.round(slotWidth * scale))))].sort((a, b) => a - b)
+}
+
+/** 视频 poster 没有 srcset，取布局提示对应的 2x 宽度，未提供提示时回落到列表卡片 480px。 */
+export function coverPosterWidth(sizes = ''): number {
+  const widths = coverWidthsForSizes(sizes)
+  return widths[widths.length - 1] || DEFAULT_COVER_SLOT_WIDTH * 2
+}
 
 function transformedCoverUrl(src: string, width: CoverImageWidth, base: string, format: 'auto' | 'webp'): string {
   const prefix = `${base}/covers/`
@@ -408,10 +429,10 @@ function transformedCoverUrl(src: string, width: CoverImageWidth, base: string, 
   return `${base}/cdn-cgi/image/width=${width},quality=80,format=${format},fit=scale-down/${path}`
 }
 
-/** 单张 poster 没有 srcset：用 480 档覆盖 240px CSS 卡片的高密度屏，并保留不可变换源图回退。 */
+/** 单张图片没有 srcset 时按传入展示尺寸转码，并保留不可变换源图回退。 */
 export function coverImageUrl(
   src: string,
-  width: CoverImageWidth = 480,
+  width: CoverImageWidth = coverPosterWidth(),
   base = import.meta.env.VITE_COVER_TRANSFORM === '1' ? getCoverBase() : '',
   format: 'auto' | 'webp' = base && base === getCnCoverBase() ? 'webp' : 'auto',
 ): string {
@@ -437,9 +458,11 @@ export function coverSrcSet(
   src: string,
   base = import.meta.env.VITE_COVER_TRANSFORM === '1' ? getCoverBase() : '',
   format: 'auto' | 'webp' = base && base === getCnCoverBase() ? 'webp' : 'auto',
+  sizes = '',
 ): string {
-  const urls = COVER_WIDTHS.map((width) => transformedCoverUrl(src, width, base, format))
-  return urls[0] ? urls.map((url, index) => `${url} ${COVER_WIDTHS[index]}w`).join(', ') : ''
+  const widths = coverWidthsForSizes(sizes)
+  const urls = widths.map((width) => transformedCoverUrl(src, width, base, format))
+  return urls[0] ? urls.map((url, index) => `${url} ${widths[index]}w`).join(', ') : ''
 }
 
 const IMAGE_EXT_RE = /\.(png|jpe?g|webp|avif)$/i

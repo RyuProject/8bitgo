@@ -6,6 +6,7 @@ import { platformMap } from '@/data/platforms'
 import { gradientFor } from '@/lib/gradients'
 import {
   coverImageUrl,
+  coverPosterWidth,
   coverSrcSet,
   coverThumbKey,
   gameMediaUrl,
@@ -368,14 +369,14 @@ export function GameCover({
   useEffect(() => setTransformFailed(false), [coverSrc])
   const [coverFailed, setCoverFailed] = useState(false)
   useEffect(() => setCoverFailed(false), [coverSrc])
-  const srcSet = imgSrc === coverSrc && !transformFailed ? coverSrcSet(coverSrc) : ''
+  const srcSet = imgSrc === coverSrc && !transformFailed ? coverSrcSet(coverSrc, undefined, undefined, sizes) : ''
   // 视频 poster 也按卡片实际宽度挑图；否则手机首屏一直下 480px 档，低密度屏多传一截。
   const posterSrcSet = videoSrc && coverSrc
-    ? (imgSrc === coverSrc && !transformFailed ? srcSet : coverSrcSet(coverSrc))
+    ? (transformFailed ? '' : imgSrc === coverSrc ? srcSet : coverSrcSet(coverSrc, undefined, undefined, sizes))
     : ''
   const posterSizes = sizes || (priority || eager ? '100vw' : 'auto, 100vw')
 
-  const posterSrc = coverSrc ? coverImageUrl(coverSrc) : ''
+  const posterSrc = coverSrc ? coverImageUrl(coverSrc, coverPosterWidth(sizes)) : ''
   // preload 与 img 用同一组 srcset / sizes，避免先预载 480px 再额外下载更合适的小档。
   if (!mediaDeferred && priority && videoSrc && coverSrc) {
     preload(posterSrc, {

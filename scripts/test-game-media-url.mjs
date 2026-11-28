@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { cnPreviewVideoUrl, coverImageUrl, coverSrcSet, gameMediaUrl } from '../src/services/roms.ts'
+import { cnPreviewVideoUrl, coverImageUrl, coverPosterWidth, coverSrcSet, gameMediaUrl } from '../src/services/roms.ts'
 import { isCnHost, isCnRequest } from '../shared/cn-host.js'
 
 // 测试运行时没有 Vite 注入的对象存储根地址；站内路径仍足以钉住“不误走代理”。
@@ -25,6 +25,22 @@ assert.equal(
     `${base}/cdn-cgi/image/width=480,quality=80,format=auto,fit=scale-down/covers/kof%2097.webp 480w`,
 )
 assert.equal(coverSrcSet(`${base}/covers/kof.webp`, ''), '')
+assert.equal(
+  coverSrcSet(`${base}/covers/kof.webp`, base, 'auto', '120px'),
+  `${base}/cdn-cgi/image/width=80,quality=80,format=auto,fit=scale-down/covers/kof.webp 80w, ` +
+    `${base}/cdn-cgi/image/width=120,quality=80,format=auto,fit=scale-down/covers/kof.webp 120w, ` +
+    `${base}/cdn-cgi/image/width=240,quality=80,format=auto,fit=scale-down/covers/kof.webp 240w`,
+  'srcset 档位应根据实际卡片宽度和密度自动生成',
+)
+assert.equal(
+  coverSrcSet(`${base}/covers/kof.webp`, base, 'auto', '(min-width: 1280px) 211px, (min-width: 1024px) 158px, 141px'),
+  `${base}/cdn-cgi/image/width=141,quality=80,format=auto,fit=scale-down/covers/kof.webp 141w, ` +
+    `${base}/cdn-cgi/image/width=211,quality=80,format=auto,fit=scale-down/covers/kof.webp 211w, ` +
+    `${base}/cdn-cgi/image/width=422,quality=80,format=auto,fit=scale-down/covers/kof.webp 422w`,
+  '媒体断点值不能混入图宽，卡片实际宽度决定生成的三个档位',
+)
+assert.equal(coverPosterWidth('111px'), 222, '视频 poster 应按实际卡片尺寸生成 2x 宽度')
+assert.equal(coverPosterWidth('auto, 100vw'), 480, '无法解析的布局提示应使用安全的卡片宽度回退')
 assert.equal(
   coverImageUrl(`${base}/covers/super-mario-bros-96.jpg`, 96, base, 'auto'),
   `${base}/cdn-cgi/image/width=96,quality=80,format=auto,fit=scale-down/covers/super-mario-bros-96.jpg`,

@@ -200,7 +200,7 @@ function Banner({ className, games }: { className?: string; games?: Game[] }) {
     const next = pool[(seq + 1) % pool.length]
     const src = next ? gameMediaUrl(next, 'cover') : ''
     if (!src) return
-    const srcSet = coverSrcSet(src)
+    const srcSet = coverSrcSet(src, undefined, undefined, HERO_COVER_SIZES)
     const img = new Image()
     img.sizes = HERO_COVER_SIZES
     if (srcSet) img.srcset = srcSet
