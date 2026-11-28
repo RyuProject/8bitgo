@@ -159,7 +159,13 @@ function testUnsupportedAndTimeouts() {
   const gpioCable = attachGbaCable(gpio, gpioPeer)
   gpio.serial.writeRCNT1(0x80) // RCNT mode 2 = GPIO
   assert.equal(gpioCable.settleFrame(), 'idle', '仅在启动时切换 GPIO 模式不应误判为使用 GPIO 协议')
-  gpio.serial.writeRCNT0(0x04) // 真正访问 GPIO 引脚
+  gpio.serial.readRCNT0() // 游戏启动探测会读静态引脚状态，不代表开始了 GPIO 串行传输
+  gpio.serial.writeRCNT0(0x04) // 写静态电平也只是探测，不能单独判成 GPIO 协议
+  assert.equal(gpioCable.settleFrame(), 'idle')
+  gpio.serial.writeRCNT0(0x40) // 将 SC 配成输出并保持低电平
+  gpio.serial.writeRCNT0(0x44) // 第一个时钟边沿可能只是拉高探测
+  assert.equal(gpioCable.settleFrame(), 'idle')
+  gpio.serial.writeRCNT0(0x40) // 第二个边沿完成一个时钟周期，才是实际 GPIO 串行活动
   assert.equal(gpioCable.settleFrame(), 'failed')
   assert.match(gpioCable.failureReason, /GPIO/)
   gpioCable.destroy()

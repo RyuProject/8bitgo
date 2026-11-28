@@ -25,6 +25,7 @@ export interface GbaLinkSerial {
   SIODATA_C: number
   SIODATA_D: number
   RCNTDataBits: number
+  RCNTDataBitFlow: number
   serialBitsShifted: number
   shiftClocks: number
   RCNTMode: number
@@ -166,6 +167,8 @@ export function attachGbaCable(
   let unsupportedProtocol: 'UART' | 'GPIO' | 'JoyBus' | 'RFU' | null = null
   let multiTransferActive = false
   let unsupportedSerialActivity = false
+  // 只累计 GPIO 时钟输出线的真实边沿；读取寄存器或设置静态电平常用于启动探测。
+  let gpioClockEdges = 0
   let pendingNormalFrames = 0
   let multiSendWords: [number, number] = [serials[0].SIODATA8 & WORD_MASK, serials[1].SIODATA8 & WORD_MASK]
   const normalOutbox: [number | null, number | null] = [null, null]
@@ -309,10 +312,8 @@ export function attachGbaCable(
       return value
     }
 
-    // 部分游戏启动时会短暂把 RCNT 切到 GPIO 检查外设；仅切模式不代表已用到串口，
-    // 真正读写 GPIO 引脚时才失败关闭，避免把这类初始化误报成联机不兼容。
+    // 普通游戏会读取 RCNT 探测外设；读取静态 GPIO 电平不是数据传输，不能据此中止联机。
     serial.readRCNT0 = function () {
-      if (serial.RCNTMode === 2) markUnsupportedProtocol('GPIO')
       return original.readRCNT0.call(serial)
     }
 
@@ -320,8 +321,21 @@ export function attachGbaCable(
       if (serial.RCNTMode === 2) {
         // RFU 登录用 GPIO 的 PD 复位脉冲（bit 5 拉高且旧 bit 1 为低）；它必须识别为
         // 无线协议，不能把握手寄存器伪装成普通 GPIO 电缆数据。
-        const rfuResetPulse = (data & 0x20) !== 0 && (serial.RCNTDataBits & 0x02) === 0
-        markUnsupportedProtocol(rfuResetPulse ? 'RFU' : 'GPIO')
+        const previousBits = serial.RCNTDataBits & 0x0f
+        const previousDirections = serial.RCNTDataBitFlow & 0x0f
+        const rfuResetPulse = (data & 0x20) !== 0 && (previousBits & 0x02) === 0
+        if (rfuResetPulse) markUnsupportedProtocol('RFU')
+        original.writeRCNT0.call(serial, data)
+
+        // GPIO 联机协议至少要让输出的 SC 线完成一个高低周期。游戏启动时常写一次
+        // GPIO 配置、读回静态状态或拉高一根线探测附件；这些都不是串行数据，不能误杀。
+        const clockOutput = (previousDirections & 0x04) !== 0 && (serial.RCNTDataBitFlow & 0x04) !== 0
+        const clockEdge = ((previousBits ^ serial.RCNTDataBits) & 0x04) !== 0
+        if (!rfuResetPulse && clockOutput && clockEdge) {
+          gpioClockEdges++
+          if (gpioClockEdges >= 2) markUnsupportedProtocol('GPIO')
+        }
+        return
       }
       original.writeRCNT0.call(serial, data)
     }
@@ -342,7 +356,9 @@ export function attachGbaCable(
     }
 
     serial.writeRCNT1 = function (data: number) {
+      const previousMode = serial.RCNTMode
       original.writeRCNT1.call(serial, data)
+      if (serial.RCNTMode !== previousMode) gpioClockEdges = 0
     }
 
     // JoyBus 的寄存器协议与 GBA 电缆位移时序无关；保留上游寄存器行为，但阻止伪造回包。

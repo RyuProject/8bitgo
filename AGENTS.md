@@ -4634,7 +4634,7 @@ PK / TH 两份现场：`The requested module './live-Cqhc9j-k.js' does not provi
 GBA 联机使用 `GbaLinkNetplayPanel` + IodineGBA：每位玩家本机运行两份核心，将两份串口接到 `gbaLinkCable.ts`，数据通道只传按帧编号的输入和各自座位的电池存档；不传画面。IodineGBA 需要管理员配置有效的 16 KiB GBA BIOS。双方必须使用相同 ROM、BIOS、IodineGBA 构建和电缆协议。`gameId` 必须包含 `IODINEGBA_SHA256` 与 `GBA_LINK_PROTOCOL_VERSION`；串口时序或座位输入含义变化时递增电缆协议，避免旧页面继续锁步并静默分叉。
 
 - 通用 GBA 开房必须优先走电缆面板；EmulatorJS 的 `openNetplay` 不是 GBA 双机串口能力。切换到 IodineGBA 后，自动加入 / 开房要等播放器状态到 `running`，此时核心才可接收联机请求。
-- 当前只支持普通 8/32 位串口和 Multi-Pak。UART、GPIO、JoyBus、RFU 或两端不一致的串口配置必须在实际协议活动时明确失败关闭；不能伪造传输结果继续运行。仅切换 RCNT 模式不能视为 GPIO/JoyBus 数据活动，否则部分游戏启动期的外设探测会误杀标准电缆联机。锁步输入固定 60Hz，最多补 2 帧；对端输入停止 15 秒后结束联机，后台标签页不累计等待时间。
+- 当前只支持普通 8/32 位串口和 Multi-Pak。UART、GPIO、JoyBus、RFU 或两端不一致的串口配置必须在实际协议活动时明确失败关闭；不能伪造传输结果继续运行。仅切换 RCNT 模式、读取静态 GPIO 电平、写静态引脚值或单个时钟边沿都不能视为 GPIO 串行传输；需看到输出 SC 线至少两个边沿（一个高低周期）才失败关闭，RFU 的 PD 复位脉冲仍立即按 RFU 处理。这样保留启动期附件探测，同时不把普通 GBA 多人游戏误判成 GPIO。锁步输入固定 60Hz，最多补 2 帧；对端输入停止 15 秒后结束联机，后台标签页不累计等待时间。
 - 每端同时模拟两份 GBA 核心，主线程和纯 JS 备用核心会增加移动设备负载；`Cartridge.getROMArray()` 必须保留只读 ROM 的共享视图，不能每个核心复制最多 32 MiB 卡带。只渲染和输出本机座位，远端镜像不能复制画面或音频。后台切换要释放手柄和触屏输入，断开时保留本机座位并释放另一份核心。
 - 回归：`npm run test:gba-link-cable`（生产 IodineGBA 串口 / CPU、两端锁步及真实 `mount` 适配器）；`npm run test:jsnes`（共享 WebRTC 数据通道握手、存档分片与邀请接线）。本地假数据通道不能证明公网 ICE、特定商业游戏或跨网络可玩；对外宣称可用前仍需有 TURN 配置的真实浏览器双端实测。
 
