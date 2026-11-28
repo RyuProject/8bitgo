@@ -18,10 +18,39 @@
 
 /** 模板里体积最大、又在首屏关键路径上的那个 vendor 块；其余小块交给 HTML 里的 modulepreload */
 const VENDOR_CHUNK = /\/assets\/react-vendor-[^/]+\.js$/
+const SSR_CRITICAL_CSS_MARKER = '<!-- 8bitgo-ssr-critical-css -->'
 
 function attr(tag, name) {
   const match = new RegExp(`\\s${name}\\s*=\\s*"([^"]*)"`, 'i').exec(tag)
   return match ? match[1] : ''
+}
+
+/**
+ * 把 Vite 生成的阻塞样式表移到同步选路脚本之后。
+ *
+ * 大陆主域会把 CSS 改写到 EdgeOne，Cloudflare 的 Early Hints 又不能按地区缓存两套 URL；
+ * 旧模板要先消费约 38 KB 的 head 内容才发现 stylesheet。专用槽位放在语言 / 边缘跳转之后，
+ * 让 CSS 尽早开始下载，同时不会为即将跳走的文档提前请求样式。
+ *
+ * @param {string} html Vite 构建后的 HTML 模板，或已按地区改写的 SSR 页面
+ * @returns {string} 保留原 link 标签和属性、仅调整其在 head 中的位置
+ */
+export function promoteSsrStylesheet(html) {
+  const source = String(html || '')
+  const markerAt = source.indexOf(SSR_CRITICAL_CSS_MARKER)
+  if (markerAt < 0 || source.indexOf(SSR_CRITICAL_CSS_MARKER, markerAt + SSR_CRITICAL_CSS_MARKER.length) >= 0) return source
+
+  const stylesheets = [...source.matchAll(/<link\b[^>]*>/gi)]
+    .filter((match) => attr(match[0], 'rel').trim().toLowerCase() === 'stylesheet')
+  if (!stylesheets.length) return source.replace(SSR_CRITICAL_CSS_MARKER, '')
+  // 模板结构变化时不猜插入位置，避免把样式挪到选路脚本之前。
+  if (stylesheets.some((match) => match.index < markerAt)) return source.replace(SSR_CRITICAL_CSS_MARKER, '')
+
+  let page = source
+  for (const match of [...stylesheets].reverse()) {
+    page = page.slice(0, match.index) + page.slice(match.index + match[0].length)
+  }
+  return page.replace(SSR_CRITICAL_CSS_MARKER, stylesheets.map((match) => match[0]).join('\n'))
 }
 
 /**
