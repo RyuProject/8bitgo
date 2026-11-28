@@ -10,11 +10,15 @@ const collectionsPage = read('src/pages/CollectionsPage.tsx')
 const gamesPage = read('src/pages/GamesPage.tsx')
 const collectionPage = read('src/pages/CollectionPage.tsx')
 
+assert.match(cover, /sizes=\{srcSet \? coverSizes \|\| \(priority \|\| eager \? '100vw' : 'auto, 100vw'\) : undefined\}/,
+  'picture 的 source 与主图必须使用同一组响应式尺寸策略')
 assert.match(
   cover,
   /sizes=\{srcSet && !sourceMedia \? coverSizes \|\| \(priority \|\| eager \? '100vw' : 'auto, 100vw'\) : undefined\}/,
   '懒加载封面按布局自动选择宽度，首屏图使用明确的兜底尺寸',
 )
+assert.equal((cover.match(/decoding=\{priority \? 'sync' : 'async'\}/g) ?? []).length, 2,
+  '首屏图和视频海报都优先解码，避免 LCP 画面等图片解码')
 assert.match(cover, /deferMedia\?: boolean/)
 assert.match(cover, /const mediaDeferred = deferMedia && !mediaVisible/)
 assert.match(cover, /videoSrc && !mediaDeferred/)
@@ -39,6 +43,8 @@ assert.match(detailSections, /GameCard key=\{g\.slug\} game=\{g\} showCoin=\{fal
 assert.match(gamesPage, /coverSizes=\{GAME_CARD_IMAGE_SIZES\}/)
 assert.match(collectionPage, /coverSizes=\{GAME_CARD_IMAGE_SIZES\}/)
 assert.match(collectionsPage, /eager=\{i < 4\} priority=\{i === 0\}/)
+assert.match(read('src/components/home/sections.tsx'), /priority=\{i === 0\} eager=\{i === 1\} deferCover=\{i >= 2\}/)
+assert.doesNotMatch(read('src/components/home/sections.tsx'), /GameCardWide key=\{g\.slug\} game=\{g\} isNew=\{i < 3\} priority=\{i === 0\}/)
 assert.match(collectionCard, /priority=\{priority && i === 0\}/)
 assert.match(collectionCard, /eager=\{\(eager && !incoming\) \|\| swapped\}/)
 assert.match(collectionCard, /sizes="120px"/)

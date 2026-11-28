@@ -277,6 +277,8 @@ interface ActiveSession {
   totalRetries?: number
   /** 只属于这一局的核心覆盖；崩溃兜底不能改后台配置或污染下一次主动启动。 */
   coreOverride?: string
+  /** 当前核心可能是运行时解析结果；单独记录是否由调用方固定，避免默认核心被误当成手动覆盖。 */
+  coreOverridePinned?: boolean
   /** 同一次开局里发生的自动运行时 / 核心切换，用来衡量兜底实际是否跑到首帧。 */
   fallbacks?: StartupFallback[]
   /**
@@ -303,7 +305,7 @@ interface ActiveSession {
 
 /** 失败页的手动重试沿用最后一次实际启动配置，避免重新回到已失败的默认路径。 */
 type FailedLaunchContext = Pick<ActiveSession,
-  'game' | 'platform' | 'runtime' | 'coreOverride' | 'ruledOut' | 'romRefreshed' | 'fallbacks' | 'manualTriedCores' | 'manualCoreFallbackAllowed'
+  'game' | 'platform' | 'runtime' | 'coreOverride' | 'coreOverridePinned' | 'ruledOut' | 'romRefreshed' | 'fallbacks' | 'manualTriedCores' | 'manualCoreFallbackAllowed'
 > & { recoveryCause: 'core' | 'runtime' | 'content' | 'deterministic' | 'network' | 'config' }
 
 /**
@@ -1968,6 +1970,7 @@ export function EmulatorPlayer({
       retryAttempt?: number
       totalRetries?: number
       coreOverride?: string
+      coreOverridePinned?: boolean
       fallbacks?: StartupFallback[]
       forceRomRefresh?: boolean
       romRefreshed?: boolean
@@ -2021,19 +2024,21 @@ export function EmulatorPlayer({
           : (runtime.id === 'emulatorjs' || runtime.id === 'jsnes' || runtime.id === 'jsdos' || runtime.id === 'dolphin') && gameSlugRef.current
             ? emulatorVariantSaveSlug(gameSlugRef.current, romLangRef.current, romLangsRef.current ?? [])
           : gameSlugRef.current
+    // 未固定的运行时解析结果仅用于显示 / 恢复上下文；重开时让当前设备重新应用记忆中的安全核心。
+    const requestedCoreOverride = extra?.coreOverridePinned === false ? undefined : extra?.coreOverride
     // 同一版新核心已对这份 ROM 发生过 WASM 陷阱时，下一局直接进兼容核心，
     // 免去每次先下载、初始化新版再崩溃；本局显式覆盖和联机不受这一记忆影响。
-    const rememberedCore = !extra?.coreOverride && targetPlatform === 'nds' && runtime.id === 'emulatorjs' &&
+    const rememberedCore = !requestedCoreOverride && targetPlatform === 'nds' && runtime.id === 'emulatorjs' &&
       canRestartInPlace(extra ?? {}) && emulatorJsCoreFileFor(coreRef.current ?? 'nds') === 'melondsds'
       ? rememberedNdsCore(game)
       : null
     // 这个浏览器默认 FBNeo 分配不出 WASM 内存过：街机直接用低内存核心，省掉一轮必然失败的开局
-    const rememberedArcadeCore = !extra?.coreOverride && targetPlatform === 'arcade' && runtime.id === 'emulatorjs' &&
+    const rememberedArcadeCore = !requestedCoreOverride && targetPlatform === 'arcade' && runtime.id === 'emulatorjs' &&
       canRestartInPlace(extra ?? {}) && emulatorJsCoreForGame('arcade', coreRef.current) === 'fbneo' && prefersFbneoLowmem()
       ? FBNEO_LOWMEM_CORE
       : null
     // 同理：这个浏览器默认 PCSX 的 512 MiB 起步内存给不出来过，PS1 直接用低内存版（与默认核心共用存档档位）
-    const rememberedPsxCore = !extra?.coreOverride && targetPlatform === 'psx' && runtime.id === 'emulatorjs' &&
+    const rememberedPsxCore = !requestedCoreOverride && targetPlatform === 'psx' && runtime.id === 'emulatorjs' &&
       canRestartInPlace(extra ?? {})
       ? psxLowmemCoreFor(emulatorJsCoreForGame('psx', coreRef.current), prefersPsxLowmem())
       : null
@@ -2042,19 +2047,23 @@ export function EmulatorPlayer({
       报「显卡驱动已过时」（2026-11-14 大陆 Chrome 149，下完 ROM 才失败、又换语言 ROM 白下三遍）。
       开局前问一次，改用有 legacy 构建的旧 melonDS；两版即时存档各存一档（下面的 saveSlug）。
     */
-    const webgl2Core = !extra?.coreOverride && targetPlatform === 'nds' && runtime.id === 'emulatorjs'
+    const webgl2Core = !requestedCoreOverride && targetPlatform === 'nds' && runtime.id === 'emulatorjs'
       ? ndsCoreForWebgl2(coreRef.current, canCreateWebgl2())
       : null
     if (webgl2Core) console.warn('[8bitgo/nds] 浏览器建不出 WebGL2，新版 melonDS DS 没有 WebGL1 构建，改用兼容核心')
     // 只有玩家在掉帧提示上主动选择「下次尝试」时，才把下一局一次性改用 DeSmuME。
     // 确定性崩溃记忆优先；DeSmuME 自带 legacy 包，因此可由玩家明确选择来覆盖 WebGL2 兼容核心。
-    const rememberedPerformanceCore = !extra?.coreOverride && !rememberedCore &&
+    const rememberedPerformanceCore = !requestedCoreOverride && !rememberedCore &&
       targetPlatform === 'nds' && runtime.id === 'emulatorjs' && canRestartInPlace(extra ?? {}) &&
       emulatorJsCoreForGame('nds', coreRef.current ?? 'nds') === 'melondsds'
       ? rememberedNdsPerformanceCore(game)
       : null
-    const coreOverride = extra?.coreOverride ?? rememberedCore ?? rememberedPerformanceCore ?? webgl2Core ?? rememberedArcadeCore ?? rememberedPsxCore ?? undefined
-    const rememberedFallback: StartupFallback | null = extra?.coreOverride ? null
+    const coreOverride = requestedCoreOverride ?? rememberedCore ?? rememberedPerformanceCore ?? webgl2Core ?? rememberedArcadeCore ?? rememberedPsxCore ?? undefined
+    // `coreOverride` 也会保存运行时最终解析出的核心；重开时传回该值不算固定，但新选出的记忆回退核心要固定。
+    const coreOverridePinned = requestedCoreOverride !== undefined
+      ? extra?.coreOverridePinned ?? true
+      : Boolean(coreOverride)
+    const rememberedFallback: StartupFallback | null = requestedCoreOverride ? null
       : rememberedCore
         ? { kind: 'core', from: 'melondsds', to: rememberedCore, reason: 'remembered-crash' }
         : rememberedPerformanceCore
@@ -2066,7 +2075,7 @@ export function EmulatorPlayer({
               : rememberedPsxCore
                 ? { kind: 'core', from: 'pcsx_rearmed', to: rememberedPsxCore, reason: 'remembered-memory-limit' }
                 : null
-    const browserRuntimeFallback: StartupFallback | null = extra?.coreOverride ? null
+    const browserRuntimeFallback: StartupFallback | null = requestedCoreOverride ? null
       : targetPlatform === 'nes' && runtime.id === 'jsnes' && webglUnavailable
         ? { kind: 'runtime', from: 'emulatorjs', to: 'jsnes', reason: 'webgl-unavailable' }
         : (targetPlatform === 'gb' || targetPlatform === 'gbc') && runtime.id === 'binjgb' &&
@@ -2108,7 +2117,7 @@ export function EmulatorPlayer({
     resolvedCoreRef.current = null
     setSession({ id: sessionId, game, platform: targetPlatform, runtime, saveSlug,
       pspLoadMode: runtime.id === 'ppsspp' ? pspLoadModeRef.current : undefined,
-      ...extra, fallbacks, coreOverride, startupAttemptId, startedAt })
+      ...extra, fallbacks, coreOverride, coreOverridePinned, startupAttemptId, startedAt })
     setNdsPerformanceSuggestion(null)
     const previousNdsPerformanceNotice = ndsPerformanceNoticeRef.current
     ndsPerformanceNoticeRef.current = null
@@ -2791,6 +2800,7 @@ export function EmulatorPlayer({
             retryAttempt: (session.retryAttempt ?? 0) + 1,
             totalRetries: (session.totalRetries ?? 0) + 1,
             coreOverride: session.coreOverride,
+            coreOverridePinned: session.coreOverridePinned,
             fallbacks: fallbackTrail,
             ruledOut: session.ruledOut,
             // 只有这一次重开真的丢缓存重下；romRefreshed 跟着后续重开走，防止再刷第二次
@@ -2803,7 +2813,7 @@ export function EmulatorPlayer({
           return
         }
         const nextCore = session.platform === 'nds' && session.runtime.id === 'emulatorjs'
-          ? ndsCrashFallbackCore(crashedCore, canRestartInPlace(session), Boolean(session.coreOverride))
+          ? ndsCrashFallbackCore(crashedCore, canRestartInPlace(session), Boolean(session.coreOverridePinned))
           : null
         if (nextCore === NDS_COMPAT_CORE) {
           // 当前 WASM 已经 trap，继续留在“运行中”只会是一张不会再更新的白屏。
@@ -2848,7 +2858,7 @@ export function EmulatorPlayer({
       */
       onOutOfMemory: (failedCore: string, reason: string) => {
         if (!isCurrent() || ready) return false
-        const restartable = canRestartInPlace(session) && !session.coreOverride
+        const restartable = canRestartInPlace(session) && !session.coreOverridePinned
         const fbneoCore = session.runtime.id === 'emulatorjs'
           ? fbneoMemoryFallbackCore(session.platform, failedCore, restartable)
           : null
@@ -2881,7 +2891,7 @@ export function EmulatorPlayer({
       */
       inPlaceMemoryFallback: (failedCore: string) => {
         if (!isCurrent() || ready || session.runtime.id !== 'emulatorjs') return null
-        const nextCore = psxMemoryFallbackCore(session.platform, failedCore, canRestartInPlace(session) && !session.coreOverride)
+        const nextCore = psxMemoryFallbackCore(session.platform, failedCore, canRestartInPlace(session) && !session.coreOverridePinned)
         if (!nextCore) return null
         console.warn(`[8bitgo/psx] ${failedCore} 起步内存预检失败，本局改用 ${nextCore}`)
         fallbackTrail = [...fallbackTrail, { kind: 'core', from: failedCore, to: nextCore, reason: 'preflight-memory-limit' }]
@@ -2962,6 +2972,7 @@ export function EmulatorPlayer({
             retryAttempt: attempt + 1,
             totalRetries: totalRetries + 1,
             coreOverride: session.coreOverride,
+            coreOverridePinned: session.coreOverridePinned,
             fallbacks: fallbackTrail,
             ruledOut: session.ruledOut,
             romRefreshed: session.romRefreshed || session.forceRomRefresh,
@@ -4074,6 +4085,7 @@ export function EmulatorPlayer({
       romRefreshed: failed.romRefreshed || failed.forceRomRefresh,
       fallbacks: failed.fallbacks ? [...failed.fallbacks] : undefined,
       manualTriedCores: [...manualTriedCores],
+      coreOverridePinned: failed.coreOverridePinned,
       manualCoreFallbackAllowed: manualFallbackAllowedForSession(
         coreReport,
         failed.id,
@@ -4142,6 +4154,7 @@ export function EmulatorPlayer({
     session && canRestartInPlace(session)
       ? () => begin(session.game, session.platform, session.runtime, {
           coreOverride: session.coreOverride,
+          coreOverridePinned: session.coreOverridePinned,
           manualTriedCores: session.manualTriedCores,
         })
       : undefined
@@ -4838,6 +4851,7 @@ export function EmulatorPlayer({
     // 重新给手动尝试完整的自动重试预算，但继续跳过本次已判定不支持的运行时。
     begin(failed.game, failed.platform, failed.runtime, {
       coreOverride: failed.coreOverride,
+      coreOverridePinned: failed.coreOverridePinned,
       ruledOut: failed.ruledOut,
       romRefreshed: failed.romRefreshed,
       manualTriedCores: failed.manualTriedCores,
@@ -4865,6 +4879,7 @@ export function EmulatorPlayer({
     setEngineLines([])
     begin(failed.game, failed.platform, failed.runtime, {
       coreOverride: nextCore,
+      coreOverridePinned: true,
       ruledOut: failed.ruledOut,
       romRefreshed: failed.romRefreshed,
       manualTriedCores: [...manualTriedCores],

@@ -170,7 +170,7 @@ check('自动重试和读档共用同一份会话判断，没有第二份手写�
   assert.equal(hits.length, 7, `canRestartInPlace(session) 用了 ${hits.length} 处，应该是重开、自动重试、两类 ROM 故障恢复、NDS 核心回退、内存不足换低内存核心、PS1 内存预检原地换核心七处`)
   assert.match(player, /ndsCrashFallbackCore\(crashedCore, canRestartInPlace\(session\)/)
   // 2026-11 起 onOutOfMemory 先算一次 restartable，FBNeo 与 PS1 两个低内存回退都只能用它，不许各自再手写一份
-  assert.match(player, /const restartable = canRestartInPlace\(session\) && !session\.coreOverride/)
+  assert.match(player, /const restartable = canRestartInPlace\(session\) && !session\.coreOverridePinned/)
   assert.match(player, /fbneoMemoryFallbackCore\(session\.platform, failedCore, restartable\)/)
   assert.match(player, /psxMemoryFallbackCore\(session\.platform, failedCore, restartable\)/)
   assert.match(player, /inPlaceMemoryFallback:[\s\S]{0,240}?psxMemoryFallbackCore\([^\n]*canRestartInPlace\(session\)/)
@@ -187,7 +187,7 @@ check('自动重试和读档共用同一份会话判断，没有第二份手写�
 
 // 重开要带上这一局的核心覆盖：NDS 已经切到兼容核心时，点「重开」不能又回到会崩的新核心。
 check('重开用的是同一局的 ROM / 平台 / 运行时（是重开，不是重新挑）', () =>
-  assert.match(player, /begin\(session\.game,\s*session\.platform,\s*session\.runtime,\s*\{\s*coreOverride:\s*session\.coreOverride,\s*manualTriedCores:\s*session\.manualTriedCores,\s*\}\)/))
+  assert.match(player, /begin\(session\.game,\s*session\.platform,\s*session\.runtime,\s*\{\s*coreOverride:\s*session\.coreOverride,\s*coreOverridePinned:\s*session\.coreOverridePinned,\s*manualTriedCores:\s*session\.manualTriedCores,\s*\}\)/))
 
 console.log('\n── DOS 鼠标设置：收进手柄面板 ──')
 

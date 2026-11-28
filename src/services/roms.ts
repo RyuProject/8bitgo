@@ -438,7 +438,7 @@ function transformedCoverUrl(src: string, width: CoverImageWidth, base: string, 
   const path = src.slice(base.length + 1)
   const boundedWidth = Math.min(MAX_COVER_WIDTH, Math.max(1, Math.ceil(width)))
   // scale-down 让小源图保持原尺寸，避免高档候选只放大像素却不增加细节。
-  return `${base}/cdn-cgi/image/width=${boundedWidth},quality=80,format=${format},fit=scale-down/${path}`
+  return `${base}/cdn-cgi/image/width=${boundedWidth},quality=75,format=${format},fit=scale-down/${path}`
 }
 
 /** 单张图片没有 srcset 时按传入展示尺寸转码，并保留不可变换源图回退。 */
