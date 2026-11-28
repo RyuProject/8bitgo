@@ -78,8 +78,8 @@ export function PickedSection({ games, curated }: { games: Game[]; curated: bool
       />
       <HScroll>
         {games.map((g, i) => (
-          // 只给首张可见封面最高优先级；第二张仍 eager，避免横向露出的卡片等滚动才开始加载。
-          <GameCard key={g.slug} game={g} priority={i === 0} eager={i === 1} deferCover={i >= 2} />
+          // PSI 把精选栏第三张「恐龙快打」选成手机 LCP；前三张都可能露在首屏，后续封面仍延迟。
+          <GameCard key={g.slug} game={g} priority={i < 3} deferCover={i >= 3} />
         ))}
       </HScroll>
     </section>
