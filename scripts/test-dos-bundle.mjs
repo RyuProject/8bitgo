@@ -953,6 +953,7 @@ console.log('\n── 普通 DOS 包必须显式开启游戏需要的内存接�
   const memory = buildDosboxConf('HEROES2.EXE')
   ok(/\[dosbox\]\nmemsize=16(?:\n|$)/.test(memory), '自动配置明确给普通 DOS 游戏 16 MB 内存')
   ok(/\[dos\]\nxms=true\nems=true\numb=true(?:\n|$)/.test(memory), '自动配置明确开启 XMS / EMS / UMB')
+  ok(/\[ipx\]\nipx=true(?:\n|$)/.test(memory), '自动配置默认开放 DOSBox IPX 协议栈，但不启动浏览器联机')
   ok(memory.indexOf('[dosbox]') < memory.indexOf('[autoexec]'), '内存配置在启动游戏前已生效')
 
   const tuned = await makeJsdosBundle(
@@ -964,6 +965,15 @@ console.log('\n── 普通 DOS 包必须显式开启游戏需要的内存接�
   const tunedText = new TextDecoder().decode(await tuned.blob.arrayBuffer())
   ok(/\[dosbox\]\nmemsize=32/.test(tunedText), '普通 DOS 的逐游戏 memsize 覆盖写进最终 bundle')
   ok(/\[dos\]\nxms=true\nems=false\numb=true/.test(tunedText), '普通 DOS 可以逐游戏关闭有兼容性冲突的 EMS')
+
+  const ipxOff = await makeJsdosBundle(
+    'HEROES2.zip',
+    makeZip([{ name: 'HEROES2.EXE', data: EXE }]),
+    undefined,
+    '[ipx]\nipx=false',
+  )
+  const ipxOffText = new TextDecoder().decode(await ipxOff.blob.arrayBuffer())
+  ok(/\[ipx\]\nipx=false/.test(ipxOffText), '逐游戏高级配置仍可关闭 IPX 协议栈')
 }
 
 console.log('\n── 大型纯 DOS 游戏：DOS 7.1 启动盘 + D: Sockdrive 边下边玩 ──')

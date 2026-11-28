@@ -989,9 +989,11 @@ socket 重查，TCP connect 也只等约 2 秒；而浏览器每个 SOCKFS socke
 游戏的确认按钮；不能把此前旧构建的 61020/20100 当成新构建的最终结果。后端真实服务探针与
 十轮本地回归均通过，仍不足以代替两名玩家完成实际匹配的验收。
 在游戏内通过登录并进入房间以前，**不要启用生产 WFC，也不要把探针成功写成联机成功**。
-另一个待验收的边界是 NATNEG：GameSpy 匹配后可能下发未曾出现在 WFC DNS 答案里的玩家公网
-地址；当前中继会拒绝该目标。不能直接开放任意公网 UDP 作为“修复”，那会把公开会话接口变成
-可滥用的 UDP 出口；须在真实匹配流量里确认协议，再从可信匹配服务器的响应中限时授权精确对端。
+另一个待验收的边界是 NATNEG 的真实匹配时序：GameSpy 可能下发未曾出现在 WFC DNS 答案里的玩家公网
+地址；当前代码只接受本局 DNS 授权过的 NATNEG 主机从 UDP/27901 发来的有效 CONNECT，并只限时授权包内
+点名的精确公网 IP:端口（见上方中继规则与 `server/scripts/test-nds-wfc.mjs`）。这条安全路径有模拟包回归，
+仍缺两名玩家完成真实匹配的线上证据；不要把模拟包测试写成实战通过。不能开放任意公网 UDP 作为“修复”，
+那会把公开会话接口变成可滥用的 UDP 出口。生产 WFC 继续保持关闭，直到实际进房验收完成。
 
 ### 2.8.5 js-dos 鼠标不是一个开关：捕获方式与坐标协议必须分开
 
@@ -2106,6 +2108,12 @@ js-dos 运行时从 npm 复制到 `public/jsdos/v<version>/`，版本同时写�
    两个函数，结果 i32 的那个就是 INT74）。`check-jsdos` 验旧特征已消失、新特征在位、`WebAssembly.validate`
    通过。排查手段：往虚拟盘写一个 INT 33h 记录 TSR（`wc-send-data-chunk` 可直接写文件），再从
    `ws-update-lines` 维护帧缓冲按形状找光标，能把「游戏读哪个接口、位移是否线性」量化出来。
+
+**DOS IPX 协议栈默认可用，浏览器联机仍按需建立（2026-11-28）**：普通 ZIP / EXE 自动生成的 `dosbox.conf`，以及共享 Windows 客体和 Sockdrive 的
+DOSBox-X 配置，都显式写 `[ipx] ipx=true`；DOSBox / DOSBox-X 默认关闭 IPX 时，游戏内 IPX/LAN 功能会连本地协议栈都用不到。这个配置不等于加入网络：
+`startIpxServer` / `connectIpxAddress` 不得在普通单机启动时设置，WebRTC peer 仍只由玩家开房、加入或打开邀请链接时创建，
+离开房间 / 退出游戏后释放。逐游戏高级配置可显式写 `[ipx] ipx=false`；自带 `.jsdos/dosbox.conf` 的预制包继续保留包内配置，
+避免为改一个小配置而复制大型 ROM 包。
 
 普通 DOS 包生成的 `cycles=auto` 一遇保护模式就放到 max：DOS4GW 游戏若模拟节奏跟 CPU 走，就会快得没法玩
 （2026-11-15《主题公园》）。这类游戏在 `windowsGameCompatibilityDosboxConfig` 里给固定周期（`theme-park` 为
