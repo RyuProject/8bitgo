@@ -16,8 +16,8 @@ assert.match(cover, /sizes=\{srcSet \? coverSizes \|\| \(priority \|\| eager \? 
   '响应式图片优先使用实际尺寸，否则保留按优先级选择的默认尺寸')
 assert.match(cover, /sizes=\{srcSet && !sourceMedia \? coverSizes \|\| \(priority \|\| eager \? '100vw' : 'auto, 100vw'\) : undefined\}/,
   'picture 的主图与 source 必须使用同一组尺寸策略')
-assert.equal((cover.match(/decoding="async"/g) ?? []).length, 2,
-  '首屏图和视频海报保持异步解码，避免同步解码延长绘制等待')
+assert.equal((cover.match(/decoding=\{priority \? 'sync' : 'async'\}/g) ?? []).length, 2,
+  '首屏优先图与视频海报同步解码，其它封面异步解码')
 assert.match(cover, /deferMedia\?: boolean/)
 assert.match(cover, /const mediaDeferred = deferMedia && !mediaVisible/)
 assert.match(cover, /videoSrc && !mediaDeferred/)
