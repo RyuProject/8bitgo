@@ -398,6 +398,12 @@ export function diagnoseStartupFailure({ event, runtime, platform, detail, elaps
   if (j2meUploadFailed) {
     return hit('j2me_upload', 'Java 本地游戏上传请求失败', 'network', 'high', 'error.j2me_upload')
   }
+  // 备用 JVM 的缺类是运行时兼容性问题；同一开局里预热 ROM 的 EdgeOne 502 可能只是失败后改走源站，不能盖过明确的 API 链接错误。
+  const j2meMissingApi = event === 'failed' && runtime === 'j2me' &&
+    has(/(?:noclassdeffounderror|classnotfoundexception)\s*[:：]?\s*javax\.(?:microedition\.m3g|wireless\.messaging)(?:[.$/]\w+)?/i)
+  if (j2meMissingApi) {
+    return hit('unsupported', 'Java ME 游戏使用了当前运行时不支持的 API', 'runtime', 'high', 'error.j2me_api_unsupported')
+  }
   /*
     Resource Timing 是整页缓冲，不是本次点击专属。错误请求只有发生在开局附近才参与归因；
     否则像 Clarity 数分钟前的 400 会盖过当前真正的 React / 引擎错误。近期第三方请求只能作中把握度线索，
@@ -629,6 +635,7 @@ function diagnosisEvidencePriority(diagnosis) {
     'error.gba_bios_download': 110,
     'error.ppsspp_stream_timeout': 105,
     'error.j2me_upload': 95,
+    'error.j2me_api_unsupported': 100,
     'error.global_redeclaration': 100,
     'error.platform_bios_config': 100,
     'error.romset_or_bios': 100,

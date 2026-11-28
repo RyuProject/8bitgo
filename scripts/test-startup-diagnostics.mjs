@@ -240,6 +240,24 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
     detail: 'Java emulator failed to start',
     diagnostics: { resources: [{ n: 'rom.8bitgo.com/integrity', i: 'fetch', at: 2673, st: 503 }] },
   }).code, 'j2me_upload', '没有上传错误文本时，不能把 Java 启动故障猜成上传失败')
+  const javaMissingApiFailure = diagnoseStartupFailure({
+    event: 'failed', runtime: 'j2me', platform: 'java',
+    detail: 'CheerpJ 无法启动，备用 J2ME 运行时也无法启动：java.lang.NoClassDefFoundError: javax.microedition.m3g.Graphics3D',
+    diagnostics: {
+      reason: 'CheerpJ 无法启动，备用 J2ME 运行时也无法启动：java.lang.NoClassDefFoundError: javax.microedition.m3g.Graphics3D',
+      logs: [{ s: 'j2me-web', l: 'error', m: 'j2me-web 启动失败：java.lang.NoClassDefFoundError: javax.microedition.m3g.Graphics3D' }],
+      resources: [{ n: 'cn.8bitgo.com/j2me/…/game.8bg.jar', i: 'fetch', at: 16, st: 502 }],
+    },
+  })
+  assert.deepEqual(
+    { code: javaMissingApiFailure.code, label: javaMissingApiFailure.label, phase: javaMissingApiFailure.phase, confidence: javaMissingApiFailure.confidence, signal: javaMissingApiFailure.signals[0] },
+    { code: 'unsupported', label: 'Java ME 游戏使用了当前运行时不支持的 API', phase: 'runtime', confidence: 'high', signal: 'error.j2me_api_unsupported' },
+    '明确的 WMA / M3G 缺类错误要优先于并行 ROM 预热的 HTTP 502',
+  )
+  assert.equal(diagnoseStartupFailure({
+    event: 'failed', runtime: 'j2me', platform: 'java', detail: 'CheerpJ could not start',
+    diagnostics: { resources: [{ n: 'cn.8bitgo.com/j2me/…/game.8bg.jar', i: 'fetch', at: 16, st: 502 }] },
+  }).code, 'network_http', '没有明确缺类证据时保留 HTTP 状态作为待确认线索')
   const oldJavaUploadSample = reclassifyStartupDiagnostic({
     id: '4352', event: 'failed', runtime: 'j2me', platform: 'java',
     signature: '1234567890abcdef', signatureText: 'failed · j2me · 资源请求返回 HTTP 错误 · http-503',
@@ -253,6 +271,21 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
     '历史 Java 本地游戏上传失败应从无关 HTTP 状态码重归为具体上传故障')
   assert.notEqual(oldJavaUploadSample.signature, '1234567890abcdef',
     '历史现场升级诊断后必须同步更新后台分组签名')
+  const oldJavaApiSample = reclassifyStartupDiagnostic({
+    id: '4401', event: 'failed', runtime: 'j2me', platform: 'java',
+    signature: 'fedcba0987654321', signatureText: 'failed · j2me · 资源请求返回 HTTP 错误 · http-502',
+    payload: JSON.stringify({
+      v: 1, capture: { level: 'full' },
+      reason: 'CheerpJ 无法启动，备用 J2ME 运行时也无法启动：java.lang.NoClassDefFoundError: javax.wireless.messaging.MessageListener',
+      logs: [{ s: 'j2me-web', l: 'error', m: 'j2me-web 启动失败：java.lang.NoClassDefFoundError: javax.wireless.messaging.MessageListener' }],
+      resources: [{ n: 'cn.8bitgo.com/j2me/…/game.8bg.jar', i: 'fetch', at: 16, st: 502 }],
+      diagnosis: { code: 'network_http', label: '资源请求返回 HTTP 错误', phase: 'network', confidence: 'medium', signals: ['resource.http_status'], artifact: 'http-502' },
+    }),
+  })
+  assert.equal(oldJavaApiSample.diagnostics.diagnosis.signals[0], 'error.j2me_api_unsupported',
+    '历史 Java ME 缺 API 错误应重归类，不能被旁路 ROM 502 遮住')
+  assert.notEqual(oldJavaApiSample.signature, 'fedcba0987654321',
+    '历史 API 兼容性归因变化后必须同步更新后台分组签名')
   const preserveSpecificOldDiagnosis = reclassifyStartupDiagnostic({
     event: 'failed', runtime: 'emulatorjs', platform: 'arcade', payload: JSON.stringify({
       v: 1, capture: { level: 'full' }, reason: '没有可识别的具体错误',
