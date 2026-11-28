@@ -90,7 +90,7 @@ export const GameCard = memo(function GameCard({ game, className, coverRatio = '
           eager={eager}
           priority={priority}
           deferMedia={deferCover}
-          // 优先图和主动加载的首屏卡都要提供卡片宽度，不能让浏览器按 100vw 选到过大的候选。
+          // 首屏优先图和主动加载的卡片都提供真实槽宽，避免按 100vw 选到过大的封面档。
           sizes={coverSizes ?? (priority || eager ? GAME_CARD_IMAGE_SIZES : undefined)}
         />
         {rank !== undefined && (

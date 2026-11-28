@@ -372,6 +372,8 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
   `coreOverridePinned` 必须从 `begin()` 沿自动重试、读档重开、失败重试一路保留；低内存 / NDS 兼容回退只按这个标记判断是否允许换核。
   若标记为 `false`，`begin()` 忽略传回来的已解析核心，让设备记住的安全核心优先；真正手动换核心或自动切换后设为 `true`。
   否则重开 / 重试时默认核心会被当成显式覆盖，关闭 PS1 / FBNeo 低内存和 NDS 崩溃兼容回退。回归：`npm run test:player-runtime-state && npm run test:dos-load && npm run test:nds-crash && npm run test:psx-lowmem && npm run test:fbneo-lowmem`。
+- **运行时拒绝 ROM 后只切到确实支持当前扩展名的引擎**：`runtimesFor(platform)` 只说明引擎支持平台，不代表支持这份文件；街机上的 Play! 只能由后台逐游戏配置显式选择，通用自动回退没有这个上下文，不能把它当候选。自动回退时必须保留 `ruledOut`、过滤不匹配扩展名；没有扩展名时不要盲试。`npm run test:runtime-fallback` 必须挂在 `prebuild`。
+- **网络错误 scope 优先于 ROM 错误文案**：弱网超时 / 断流的包装消息也可能带“8BG / ROM 包”，不能因此跳过同地址重试或误把运行时故障当内容错误。只有下载器未判为 `network`、且内容错误 / 确定性关键字命中时，才跳过原地重试去找备用 ROM。回归：`npm run test:startup-retry-policy`，必须挂在 `prebuild`。
 
 改引擎后 URL 会自动换（2026-11-15 起引擎入口按内容版本，见 §2.8.1.1 末条），不用再手动换 `EJS_RUNTIME_GENERATION`。
 
@@ -2126,7 +2128,8 @@ js-dos 运行时从 npm 复制到 `public/jsdos/v<version>/`，版本同时写�
 DOSBox-X 配置，都显式写 `[ipx] ipx=true`；DOSBox / DOSBox-X 默认关闭 IPX 时，游戏内 IPX/LAN 功能会连本地协议栈都用不到。这个配置不等于加入网络：
 `startIpxServer` / `connectIpxAddress` 不得在普通单机启动时设置，WebRTC peer 仍只由玩家开房、加入或打开邀请链接时创建，
 离开房间 / 退出游戏后释放。逐游戏高级配置可显式写 `[ipx] ipx=false`；自带 `.jsdos/dosbox.conf` 的预制包继续保留包内配置，
-避免为改一个小配置而复制大型 ROM 包。
+避免为改一个小配置而复制大型 ROM 包。`server/src/ipx.js` 还必须限制发往每个接收端的 `bufferedAmount`：连接数和单帧大小有限，
+并不代表 `ws.send()` 的 TCP 待写队列有界；慢客户端超过 512 KiB 时只关闭该接收端，不能让广播把服务进程内存拖成无界增长。
 
 普通 DOS 包生成的 `cycles=auto` 一遇保护模式就放到 max：DOS4GW 游戏若模拟节奏跟 CPU 走，就会快得没法玩
 （2026-11-15《主题公园》）。这类游戏在 `windowsGameCompatibilityDosboxConfig` 里给固定周期（`theme-park` 为

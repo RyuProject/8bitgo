@@ -39,7 +39,7 @@ assert.equal(
     `${base}/cdn-cgi/image/width=240,quality=75,format=auto,fit=scale-down/covers/kof.webp 240w, ` +
     `${base}/cdn-cgi/image/width=320,quality=75,format=auto,fit=scale-down/covers/kof.webp 320w, ` +
     `${base}/cdn-cgi/image/width=480,quality=75,format=auto,fit=scale-down/covers/kof.webp 480w`,
-  '媒体断点值不能混入图宽，卡片实际宽度与 4/3 密度候选决定生成档位',
+  '媒体断点值不能混入图宽，卡片实际宽度决定生成的响应档位',
 )
 assert.equal(coverPosterWidth('111px'), 240, '视频 poster 应按实际卡片尺寸生成并吸附到不低于目标的共享 2x 宽度')
 assert.equal(
@@ -52,13 +52,18 @@ assert.equal(
   `${base}/cdn-cgi/image/width=240,quality=75,format=auto,fit=scale-down/covers/kof.webp 240w, ` +
     `${base}/cdn-cgi/image/width=320,quality=75,format=auto,fit=scale-down/covers/kof.webp 320w, ` +
     `${base}/cdn-cgi/image/width=480,quality=75,format=auto,fit=scale-down/covers/kof.webp 480w`,
-  '首页最大宽卡的候选封顶在 480px，避免为低分辨率源图生成无收益的大档',
+  '首页最大宽卡的候选上限为480px，避免继续产生大图变换',
 )
 assert.equal(coverPosterWidth('auto, 100vw'), 480, '无法解析的布局提示应使用安全的卡片宽度回退')
 assert.equal(
   coverImageUrl(`${base}/covers/super-mario-bros-96.jpg`, 96, base, 'auto'),
   `${base}/cdn-cgi/image/width=96,quality=75,format=auto,fit=scale-down/covers/super-mario-bros-96.jpg`,
   '96px 缩略图即使回退到大图对象也必须保持缩放',
+)
+assert.equal(
+  coverImageUrl(`${base}/covers/kof.webp`, 640, base, 'auto'),
+  `${base}/cdn-cgi/image/width=480,quality=75,format=auto,fit=scale-down/covers/kof.webp`,
+  '历史调用方请求超大尺寸时也必须限制封面最大变换宽度',
 )
 const avif = `${base}/covers/the-king-of-fighters-2000.avif`
 assert.equal(coverSrcSet(avif, base), '', 'Cloudflare 不接受 AVIF 源图变换（HTTP 415），不发出必失败的 srcset')

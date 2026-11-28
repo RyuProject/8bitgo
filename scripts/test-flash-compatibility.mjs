@@ -55,7 +55,8 @@ assert.match(adapter, /flashCompatibilityIssue\(loaded\.data\)/, 'Ruffle 启动�
 assert.match(adapter, /flashLegacyBundleRules\([\s\S]*loaded\.data/, 'Ruffle 必须在 load 前接入多 SWF 兼容资源')
 assert.match(adapter, /new frameGlobal\.RegExp\(from\.source, from\.flags\)/,
   '正则必须在 Ruffle iframe realm 重建，否则 instanceof RegExp 会失效')
-assert.match(player, /Flash 站点锁/, '站点锁是确定性坏 ROM，不能先原样重试')
+assert.match(player, /isDeterministicStartupFailure\(errorScope, message\)/, '启动重试要委托给按错误类别分流的策略')
+assert.match(read('src/emulator/startupRetryPolicy.ts'), /Flash 站点锁/, 'Flash 站点锁仍按确定性坏 ROM 处理')
 // 2026-11-15 起两条上传路径都先 assertSwf（截断 / 坏头直接拦），再查站点锁；两步必须用同一份字节。
 assert.match(
   singleUpload,
