@@ -264,6 +264,7 @@ function shapeAggregate(row = {}) {
     readinessUnobservable: numeric(row, 'readiness_unobservable'),
     fallbackAttempts: numeric(row, 'fallback_attempts'),
     fallbackFirstFrames: numeric(row, 'fallback_first_frames'),
+    fallbackInteractions: numeric(row, 'fallback_interactions'),
     fallbackSuccesses: numeric(row, 'fallback_successes'),
     fallbackFailures: numeric(row, 'fallback_failures'),
     avgPlayableMs: row.avg_playable_ms == null ? null : Math.round(Number(row.avg_playable_ms)),
@@ -304,6 +305,7 @@ export function shapeFallbackRoute(row = {}) {
     attempts,
     firstFrames: numeric(row, 'first_frames'),
     playable,
+    interactions: numeric(row, 'interactions'),
     failures,
     unresolved: Math.max(0, attempts - playable - failures),
   }
@@ -324,6 +326,16 @@ const AGGREGATES = `
   SUM(e.event = 'readiness_unobservable') AS readiness_unobservable,
   SUM(e.event = 'fallback_started') AS fallback_attempts,
   SUM(e.event IN ('fallback_first_frame', 'fallback_succeeded')) AS fallback_first_frames,
+  /* 有输入信号才算观察到兜底后的实际操作；没按键只表示样本未知，不算失败。 */
+  SUM(e.event = 'first_interaction' AND EXISTS (
+    SELECT 1
+      FROM game_startup_events interacted
+     WHERE interacted.game_id = e.game_id
+       AND interacted.visit_id = e.visit_id
+       AND interacted.attempt_id = e.attempt_id
+       AND interacted.event = 'fallback_started'
+       AND interacted.elapsed_ms <= e.elapsed_ms
+  )) AS fallback_interactions,
   SUM(e.event = 'fallback_playable') AS fallback_successes,
   /* 后续同一启动成功时，早先的重试 / 整页恢复失败不再算成兜底最终失败。 */
   SUM(e.event = 'fallback_failed' AND NOT EXISTS (
@@ -343,12 +355,14 @@ const FALLBACK_ROUTE_QUERY = `
     SELECT e.game_id, e.visit_id, e.attempt_id,
            MAX(CASE WHEN e.event = 'fallback_started' THEN e.detail END) AS route,
            MAX(CASE WHEN e.event = 'fallback_started' THEN e.runtime END) AS runtime,
+           MAX(CASE WHEN e.event = 'fallback_started' THEN e.elapsed_ms END) AS last_fallback_ms,
            MAX(e.event IN ('fallback_first_frame', 'fallback_succeeded')) AS first_frames,
            MAX(e.event = 'fallback_playable') AS playable,
+           MAX(CASE WHEN e.event = 'first_interaction' THEN e.elapsed_ms END) AS first_interaction_ms,
            (MAX(e.event = 'fallback_failed') = 1 AND MAX(e.event = 'fallback_playable') = 0) AS failures
       FROM game_startup_events e
      WHERE e.created_at >= ?
-       AND e.event IN ('fallback_started', 'fallback_first_frame', 'fallback_succeeded', 'fallback_playable', 'fallback_failed')
+       AND e.event IN ('fallback_started', 'fallback_first_frame', 'fallback_succeeded', 'fallback_playable', 'fallback_failed', 'first_interaction')
      GROUP BY e.game_id, e.visit_id, e.attempt_id
     HAVING MAX(e.event = 'fallback_started') = 1
   )
@@ -357,6 +371,7 @@ const FALLBACK_ROUTE_QUERY = `
          COUNT(*) AS attempts,
          SUM(first_frames) AS first_frames,
          SUM(playable) AS playable,
+         SUM(first_interaction_ms >= last_fallback_ms) AS interactions,
          SUM(failures) AS failures
     FROM fallback_attempts
    GROUP BY route, runtime

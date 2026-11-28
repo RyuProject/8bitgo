@@ -272,6 +272,8 @@ export interface StartupAggregate {
   /** 自动兼容回退链路数、首帧数、真正可玩数与最终失败数。 */
   fallbackAttempts: number
   fallbackFirstFrames: number
+  /** 兜底启动后观测到首次舞台输入的次数；没有输入属于未知，不归类为失败。 */
+  fallbackInteractions: number
   fallbackSuccesses: number
   fallbackFailures: number
   avgPlayableMs: number | null
@@ -318,6 +320,7 @@ export interface StartupStats {
     attempts: number
     firstFrames: number
     playable: number
+    interactions: number
     failures: number
     unresolved: number
   }>

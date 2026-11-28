@@ -99,7 +99,7 @@ function StartupBreakdown({ title, rows }: { title: string; rows: StartupGroup[]
                 <td className="py-2 text-right tabular-nums">{row.playableRate.toFixed(1)}%</td>
                 <td
                   className="py-2 text-right tabular-nums"
-                  title={`${row.fallbackFirstFrames} 次到首帧；${row.fallbackFailures} 条兜底链路最终失败`}
+                  title={`${row.fallbackFirstFrames} 次到首帧；${row.fallbackInteractions} 次观察到操作；${row.fallbackFailures} 条兜底链路最终失败`}
                 >
                   {row.fallbackSuccesses} / {row.fallbackAttempts}
                 </td>
@@ -127,9 +127,9 @@ function StartupBreakdown({ title, rows }: { title: string; rows: StartupGroup[]
 function FallbackRouteBreakdown({ rows }: { rows: StartupStats['fallbackRoutes'] }) {
   return (
     <Card title="兜底路线效果">
-      <p className="mb-3 text-xs text-muted">按同一次启动合并兜底阶段；路线包含切换原因，目标运行时按实际接棒的运行时统计。</p>
+      <p className="mb-3 text-xs text-muted">按同一次启动合并兜底阶段；“输入信号”只统计最后一次兜底跳转后的首次舞台操作，玩家没有操作时不算失败。</p>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[48rem] text-sm">
+        <table className="w-full min-w-[54rem] text-sm">
           <thead className="text-left text-xs text-muted">
             <tr>
               <th className="pb-2 font-medium">路线 / 原因</th>
@@ -137,6 +137,7 @@ function FallbackRouteBreakdown({ rows }: { rows: StartupStats['fallbackRoutes']
               <th className="pb-2 text-right font-medium">链路</th>
               <th className="pb-2 text-right font-medium">首帧</th>
               <th className="pb-2 text-right font-medium">可玩</th>
+              <th className="pb-2 text-right font-medium" title="该启动后观察到首次舞台内指针、键盘或手柄操作；无操作不计失败">输入信号</th>
               <th className="pb-2 text-right font-medium">失败</th>
               <th className="pb-2 text-right font-medium">未确认</th>
             </tr>
@@ -149,11 +150,12 @@ function FallbackRouteBreakdown({ rows }: { rows: StartupStats['fallbackRoutes']
                 <td className="py-2 text-right tabular-nums">{row.attempts}</td>
                 <td className="py-2 text-right tabular-nums">{row.firstFrames}</td>
                 <td className="py-2 text-right tabular-nums text-online">{row.playable}</td>
+                <td className="py-2 text-right tabular-nums">{row.interactions}</td>
                 <td className="py-2 text-right tabular-nums text-live">{row.failures}</td>
                 <td className="py-2 text-right tabular-nums text-muted">{row.unresolved}</td>
               </tr>
             ))}
-            {!rows.length && <tr><td colSpan={7} className="py-5 text-center text-sm text-muted">所选时间范围内没有自动兜底记录</td></tr>}
+            {!rows.length && <tr><td colSpan={8} className="py-5 text-center text-sm text-muted">所选时间范围内没有自动兜底记录</td></tr>}
           </tbody>
         </table>
       </div>
@@ -413,7 +415,7 @@ export function AdminOverview() {
           <Stat
             label="兜底启动链路"
             value={fallbackAttempts}
-            sub={`${fallbackSuccesses} 次可玩 · ${startup?.summary.fallbackFirstFrames ?? 0} 次到首帧 · ${fallbackFailures} 次失败 · ${fallbackUnresolved} 次未确认`}
+            sub={`${fallbackSuccesses} 次可玩 · ${startup?.summary.fallbackInteractions ?? 0} 次观察到操作 · ${startup?.summary.fallbackFirstFrames ?? 0} 次到首帧 · ${fallbackFailures} 次失败 · ${fallbackUnresolved} 次未确认`}
           />
           <Stat
             label="失败 / 超时"

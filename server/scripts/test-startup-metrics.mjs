@@ -113,10 +113,10 @@ assert.deepEqual(shapePhaseTiming(), {
 }, '没有阶段数据时应返回空值而不是伪造 0ms')
 assert.deepEqual(shapeFallbackRoute({
   route: 'core:melondsds>melonds-compat:wasm-crash https://private.example/rom',
-  runtime: 'emulatorjs', attempts: '5', first_frames: '4', playable: '3', failures: '1',
+  runtime: 'emulatorjs', attempts: '5', first_frames: '4', playable: '3', interactions: '2', failures: '1',
 }), {
   route: 'core:melondsds>melonds-compat:wasm-crash [URL]',
-  runtime: 'emulatorjs', attempts: 5, firstFrames: 4, playable: 3, failures: 1, unresolved: 1,
+  runtime: 'emulatorjs', attempts: 5, firstFrames: 4, playable: 3, interactions: 2, failures: 1, unresolved: 1,
 }, '兜底路线展示前必须脱敏，并以尝试总数减去终态计算未确认数')
 assert.equal(shapeFallbackRoute({ runtime: '../bad', attempts: 2, playable: 4 }).runtime, 'unknown', '非法目标运行时不能回显进后台')
 
@@ -137,6 +137,13 @@ assert.match(metricsSource, /recentFailures/, '统计接口应提供最近启动
 assert.match(metricsSource, /readiness_unobservable/, '汇总必须单独统计无法观测的页面，不混进失败数')
 assert.match(metricsSource, /SUM\(e\.event = 'startup_interrupted'\) AS interruptions/, '离页时尚未可玩的启动必须单独计数，不伪装成失败')
 assert.match(metricsSource, /fallback_attempts/, '启动汇总必须分别统计兜底尝试、成功和失败')
+assert.match(metricsSource, /fallback_interactions/, '兜底汇总应单独统计出现操作信号的启动，不把未操作样本算作失败')
+assert.match(metricsSource, /interacted\.attempt_id = e\.attempt_id[\s\S]*interacted\.event = 'fallback_started'/,
+  '输入信号必须与同一次启动的兜底尝试关联')
+assert.match(metricsSource, /interacted\.elapsed_ms <= e\.elapsed_ms/,
+  '早于最后一次兜底跳转的操作不能误算为接棒后的输入信号')
+assert.match(metricsSource, /first_interaction_ms >= last_fallback_ms/,
+  '路线统计只把最后一次兜底跳转后的首次操作作为正向证据')
 assert.match(metricsSource, /fallback_successes/)
 assert.match(metricsSource, /fallback_failures/)
 assert.match(metricsSource, /e\.event = 'fallback_failed' AND NOT EXISTS \([\s\S]*recovered\.event = 'fallback_playable'/,
