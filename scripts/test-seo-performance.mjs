@@ -106,6 +106,20 @@ check('登录弹窗等到用户打开时才加载，不挤首页首屏脚本', (
   assert.match(layout, /function DeferredAuthModal\(\)[\s\S]*useAuthModalOpen\(\)[\s\S]*if \(!open\) return null[\s\S]*<Suspense/)
 })
 
+check('首页语言包不携带长篇法律正文，SSR 与直达水合只在法律路由预热', () => {
+  const locales = ['en', 'es', 'fr', 'it', 'de', 'ja', 'zh-Hans', 'zh-Hant']
+  for (const lang of locales) {
+    assert.doesNotMatch(read(`src/locales/${lang}.ts`), /from ['"]\.\/legal\//, `${lang} 语言包静态引入法律正文`)
+  }
+  const legal = read('src/locales/legal/index.ts')
+  const server = read('src/entry-server.tsx')
+  const client = read('src/entry-client.tsx')
+  assert.match(legal, /import\('\.\/en'\)/, '法律正文没有保持独立动态块')
+  assert.match(server, /renderPath === ['"]\/terms['"] \|\| renderPath === ['"]\/privacy['"][\s\S]*await loadLegalPages\(lang\)/, 'SSR 法律页没有先加载正文，可能输出空壳')
+  assert.match(client, /pagePath === ['"]\/terms['"] \|\| pagePath === ['"]\/privacy['"][\s\S]*await loadLegalPages\(lang\)/, '直达法律页没有先加载正文，可能与 SSR 水合不一致')
+  assert.match(read('src/services/legalPageCopy.ts'), /loadLegalPages\(lang\)[\s\S]*setCopy\(pages\[page\]\)/, '站内跳到法律页时没有按需加载正文')
+})
+
 check('首页各个区块的“查看全部”链接有不同的可访问名称', () => {
   const header = read('src/components/ui/SectionHeader.tsx')
   assert.match(header, /aria-label=\{`\$\{moreLabel \?\? t\.common\.viewAll\}: \$\{title\}`\}/, '相同可见文字的区块链接应在读屏名称中说明各自标题')

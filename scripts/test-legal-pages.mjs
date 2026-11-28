@@ -39,6 +39,10 @@ const check = (name, fn) => {
 const { termsZhHans, privacyZhHans } = await import('../src/locales/legal/zh-Hans.ts')
 const { termsZhHant, privacyZhHant } = await import('../src/locales/legal/zh-Hant.ts')
 const { termsEnglish, privacyEnglish } = await import('../src/locales/legal/en.ts')
+const { loadLegalPages } = await import('../src/locales/legal/index.ts')
+const LOADED_PAGES = Object.fromEntries(await Promise.all(
+  ['zh-Hans', 'zh-Hant', 'en', 'es', 'fr', 'it', 'de', 'ja'].map(async (lang) => [lang, await loadLegalPages(lang)]),
+))
 
 const DOCS = {
   'terms/zh-Hans': termsZhHans,
@@ -97,6 +101,17 @@ check('最后更新是合法日期，且不在未来', () => {
     assert.match(d.updated, /^\d{4}-\d{2}-\d{2}$/, `${k} 的 updated 不是 YYYY-MM-DD`)
     assert.equal(new Date(d.updated + 'T00:00:00Z').toISOString().slice(0, 10), d.updated, `${k} 的 updated 是个不存在的日期`)
     assert.ok(d.updated <= today, `${k} 的 updated（${d.updated}）在未来 —— 生效日期不能往后写`)
+  }
+})
+
+check('按需加载仍对应简体、繁体正文，其他语言继续复用英文正文', () => {
+  assert.equal(LOADED_PAGES['zh-Hans'].terms, termsZhHans)
+  assert.equal(LOADED_PAGES['zh-Hans'].privacy, privacyZhHans)
+  assert.equal(LOADED_PAGES['zh-Hant'].terms, termsZhHant)
+  assert.equal(LOADED_PAGES['zh-Hant'].privacy, privacyZhHant)
+  for (const lang of ['en', 'es', 'fr', 'it', 'de', 'ja']) {
+    assert.equal(LOADED_PAGES[lang].terms, termsEnglish, `${lang} 条款没有复用既有英文正文`)
+    assert.equal(LOADED_PAGES[lang].privacy, privacyEnglish, `${lang} 隐私政策没有复用既有英文正文`)
   }
 })
 

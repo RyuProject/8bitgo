@@ -14,8 +14,6 @@
  *     NES、SNES、GBA、PS1、N64、DOS、ROM、G 币（币种名）等。
  */
 
-import { termsZhHans, privacyZhHans } from './legal/zh-Hans'
-
 export const zhHans = {
   /* ---------------- 通用 ---------------- */
   common: {
@@ -602,13 +600,6 @@ export const zhHans = {
     unknownRegion: '未知地区',
     remaining: '还可以输入 {n} 字',
   },
-
-  /* ---------------- 法律文本 ----------------
-     服务条款和隐私政策的正文在 src/locales/legal/ 里 —— 两份加起来两千多行，
-     放在这个文件里没人愿意打开它。简体中文那份是权威版本（条款里明写了
-     「以简体中文版为准」），改动一律先改那边。 */
-  termsPage: termsZhHans,
-  privacyPage: privacyZhHans,
 
   /* ---------------- 关于我们 ---------------- */
   aboutPage: {

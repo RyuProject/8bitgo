@@ -1,7 +1,6 @@
 /** Textes d'interface en français. La structure des clés reflète exactement zh-Hans.ts. */
 import type { Translation } from './index'
 import { aboutEnglish } from './about'
-import { termsEnglish, privacyEnglish } from './legal/en'
 
 const fr: Translation = {
   /* ---------------- Général ---------------- */
@@ -590,8 +589,6 @@ const fr: Translation = {
     errorTotalTooLarge: 'Pièces jointes : {total}, au-dessus de la limite de {max}. Passez les plus gros en lien de téléchargement',
   },
 
-  termsPage: termsEnglish,
-  privacyPage: privacyEnglish,
   aboutPage: aboutEnglish,
 
   /* ---------------- Blog ---------------- */

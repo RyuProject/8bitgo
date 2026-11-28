@@ -1,7 +1,6 @@
 /** Deutsche UI-Texte. Schlüsselstruktur exakt wie in zh-Hans.ts. */
 import type { Translation } from './index'
 import { aboutEnglish } from './about'
-import { termsEnglish, privacyEnglish } from './legal/en'
 
 const de: Translation = {
   /* ---------------- Allgemein ---------------- */
@@ -589,8 +588,6 @@ const de: Translation = {
     errorTotalTooLarge: 'Anhänge insgesamt {total}, über dem Limit von {max}. Große Dateien bitte als Download-Link',
   },
 
-  termsPage: termsEnglish,
-  privacyPage: privacyEnglish,
   aboutPage: aboutEnglish,
 
   /* ---------------- Blog ---------------- */

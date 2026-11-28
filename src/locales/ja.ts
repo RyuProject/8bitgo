@@ -1,7 +1,6 @@
 /** 日本語の文案。キー構造・順序は基準言語の zh-Hans.ts と完全に一致させること。 */
 import type { Translation } from './index'
 import { aboutEnglish } from './about'
-import { termsEnglish, privacyEnglish } from './legal/en'
 
 const ja: Translation = {
   /* ---------------- 共通 ---------------- */
@@ -584,8 +583,6 @@ const ja: Translation = {
     errorTotalTooLarge: '添付合計 {total} が上限 {max} を超えています。大きいものはダウンロードリンクでお願いします',
   },
 
-  termsPage: termsEnglish,
-  privacyPage: privacyEnglish,
   aboutPage: aboutEnglish,
 
   /* ---------------- ブログ ---------------- */
