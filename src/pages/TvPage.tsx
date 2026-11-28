@@ -9,7 +9,7 @@ import { useT, fmt } from '@/services/i18n'
 import { useLang } from '@/services/lang'
 import { useSeo } from '@/services/seo'
 import { tvOrigin } from '@/services/tvHost'
-import { romUrlForKey } from '@/services/roms'
+import { coverImageUrl, coverSrcSet, romUrlForKey } from '@/services/roms'
 import { cx } from '@/lib/format'
 import { gradientFor } from '@/lib/gradients'
 import { fetchTv, fetchTvWall, computeRotation, type TvSignal } from '@/services/tv'
@@ -320,8 +320,44 @@ function Preview({ games, lang, t }: { games: Game[]; lang: Lang; t: ReturnType<
 /** 屏幕背景：有封面用封面图（带缓慢推近），没有用程序化渐变 + emoji */
 function ScreenBackground({ game, iconClassName }: { game: Game; iconClassName?: string }) {
   const coverSrc = game.cover ? romUrlForKey(game.cover) : ''
+  const placeholderSrc = coverSrc ? coverImageUrl(coverSrc, 96) : ''
+  const [loadedCover, setLoadedCover] = useState('')
+  const [failedTransformSrc, setFailedTransformSrc] = useState('')
+  const [placeholderFailed, setPlaceholderFailed] = useState(false)
+  const transformFailed = failedTransformSrc === coverSrc
+  const coverDisplaySrc = transformFailed ? coverSrc : coverImageUrl(coverSrc, 480)
+  useEffect(() => setPlaceholderFailed(false), [placeholderSrc])
   if (coverSrc) {
-    return <img src={coverSrc} alt="" className="tv-kenburns absolute inset-0 h-full w-full object-cover" />
+    return (
+      <>
+        {placeholderSrc !== coverSrc && !placeholderFailed && loadedCover !== coverSrc && (
+          <img
+            src={placeholderSrc}
+            alt=""
+            aria-hidden
+            fetchPriority="low"
+            decoding="async"
+            onError={() => setPlaceholderFailed(true)}
+            className="absolute inset-0 h-full w-full scale-105 object-cover blur-md"
+          />
+        )}
+        <img
+          key={coverSrc}
+          src={coverDisplaySrc}
+          srcSet={transformFailed ? undefined : coverSrcSet(coverSrc) || undefined}
+          sizes="100vw"
+          alt=""
+          loading="eager"
+          fetchPriority="high"
+          decoding="async"
+          onLoad={() => setLoadedCover(coverSrc)}
+          onError={() => {
+            if (!transformFailed && coverDisplaySrc !== coverSrc) setFailedTransformSrc(coverSrc)
+          }}
+          className={cx('tv-kenburns absolute inset-0 h-full w-full object-cover transition-opacity duration-300', loadedCover !== coverSrc && 'opacity-0')}
+        />
+      </>
+    )
   }
   return (
     <div

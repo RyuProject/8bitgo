@@ -432,6 +432,27 @@ const BODY_READ_HEADER_FALLBACK_TO = BODY_READ_RESUME_TO.replace(
   'if(f.signal.aborted&&!f.__8bgStalled&&!f.__8bgHeaderTimedOut||o)throw',
 )
 if (BODY_READ_HEADER_FALLBACK_TO === BODY_READ_RESUME_TO) throw new Error('响应头超时 XHR 回退未找到外部取消保护')
+/*
+ * 已发布核心的精确长度来自版本绑定的 SHA-256 清单。首个数据块抵达后再分配最终缓冲，
+ * 后续网络块直接写入；这样不会在等待首字节时预占整份核心，也不再把全部网络块和最终副本同时留在内存。
+ * 未知版本或分配失败仍保留原来的分块收集路径，完整性校验与 XHR 恢复不变。
+ */
+const CORE_READER_STREAM_INIT_TO =
+  'const e=y.body.getReader();let i=__8bgResumeState?.start||0,n=__8bgResumeState?.prefix||[],__8bgExpected=__8bgResumeState?.total||__8bgCoreResume.expectedCoreBytes(y.url),__8bgTarget=null;if(__8bgResumeState?.total)t=__8bgResumeState.total;else if(__8bgExpected)t=__8bgExpected;if(i&&r)r("downloading",Math.min(99,Math.floor(i/t*100)),i,t);const __8bgWriter=__8bgCoreResume.writer(__8bgResumeState);let __8bgStall=0;'
+const CORE_STREAM_BODY_COPY_FROM = '(__8bgTarget?__8bgTarget.set(o,i):n.push(o)),i+=o.length,__8bgWriter&&await __8bgWriter.push(o),r&&t&&r("downloading",Math.min(99,Math.floor(i/t*100)),i,t)'
+const CORE_STREAM_BODY_COPY_TO =
+  'if(!__8bgTarget&&__8bgExpected)try{const __8bgBuffer=new Uint8Array(__8bgExpected);if(i){let __8bgPrefixOffset=0;for(const __8bgPart of n){__8bgBuffer.set(__8bgPart,__8bgPrefixOffset);__8bgPrefixOffset+=__8bgPart.byteLength}n=[]}__8bgTarget=__8bgBuffer}catch(__8bgAllocError){console.warn("[EJS Download] 核心缓冲预分配失败，保留分块读取",__8bgAllocError)}(__8bgTarget?__8bgTarget.set(o,i):n.push(o)),i+=o.length,__8bgWriter&&await __8bgWriter.push(o),r&&t&&r("downloading",Math.min(99,Math.floor(i/t*100)),i,t)'
+const CORE_STREAM_BODY_LENGTH_FROM = 'if(__8bgResumeState?.total&&i!==__8bgResumeState.total)throw new Error("core body length mismatch: "+i+"/"+__8bgResumeState.total)'
+const CORE_STREAM_BODY_LENGTH_TO = 'if(__8bgExpected&&i!==__8bgExpected)throw new Error("core body length mismatch: "+i+"/"+__8bgExpected)'
+let CORE_STREAM_BODY_TO = BODY_READ_HEADER_FALLBACK_TO
+for (const [from, to, label] of [
+  [CORE_STREAM_BODY_COPY_FROM, CORE_STREAM_BODY_COPY_TO, '流式直写'],
+  [CORE_STREAM_BODY_LENGTH_FROM, CORE_STREAM_BODY_LENGTH_TO, '精确长度校验'],
+]) {
+  const next = CORE_STREAM_BODY_TO.replace(from, to)
+  if (next === CORE_STREAM_BODY_TO) throw new Error(`核心流式缓冲${label}补丁未命中`)
+  CORE_STREAM_BODY_TO = next
+}
 const uncappedCoreProgress = (source) => source.replaceAll('Math.min(99,Math.floor(i/t*100))', 'Math.floor(i/t*100)')
 const BODY_READ_RESUME_TO_PREVIOUS = uncappedCoreProgress(BODY_READ_RESUME_TO)
 const BODY_READ_HEADER_FALLBACK_TO_PREVIOUS = uncappedCoreProgress(BODY_READ_HEADER_FALLBACK_TO)
@@ -817,6 +838,17 @@ const GROUPS = [
     ],
   },
   {
+    name: '核心数据流直写最终缓冲',
+    patches: [
+      [CORE_READER_INIT_TO, CORE_READER_STREAM_INIT_TO],
+      [BODY_READ_HEADER_FALLBACK_TO, CORE_STREAM_BODY_TO],
+    ],
+    hint: [
+      '仅使用版本绑定清单给出的精确核心长度；首个响应块抵达后预分配最终 Uint8Array，避免完整网络块与最终副本并存。',
+      '未知长度或分配失败时必须保留原分块路径；流长度错误仍走既有完整长度校验与受限 XHR 恢复。',
+    ],
+  },
+  {
     name: 'EmulatorJS 核心缓存与下载内容校验',
     patches: [
       [CORE_CACHE_FROM, CORE_CACHE_TO],
@@ -851,11 +883,13 @@ const GROUPS = [
 // 被后面各节在原地改写过的补丁：值是所有更新的写法
 const SUPERSEDED = new Map([
   [CORE_FETCH_TO, [CORE_FETCH_HEADER_FALLBACK_TO_PREVIOUS, CORE_FETCH_HEADER_FALLBACK_TO]],
-  [BODY_READ_RESUME_TO, [BODY_READ_HEADER_FALLBACK_TO, BODY_READ_HEADER_FALLBACK_TO_PREVIOUS]],
-  [BODY_READ_TO, [BODY_READ_DIAGNOSTICS_TO, BODY_READ_FALLBACK_FROM, BODY_READ_FALLBACK_PREVIOUS, BODY_READ_FALLBACK_TO, BODY_READ_RESUME_TO, BODY_READ_RESUME_TO_PREVIOUS, BODY_READ_HEADER_FALLBACK_TO, BODY_READ_HEADER_FALLBACK_TO_PREVIOUS, BODY_READ_FALLBACK_BROKEN]],
-  [BODY_READ_DIAGNOSTICS_TO, [BODY_READ_FALLBACK_FROM, BODY_READ_FALLBACK_PREVIOUS, BODY_READ_FALLBACK_TO, BODY_READ_RESUME_TO, BODY_READ_RESUME_TO_PREVIOUS, BODY_READ_HEADER_FALLBACK_TO, BODY_READ_HEADER_FALLBACK_TO_PREVIOUS, BODY_READ_FALLBACK_BROKEN]],
-  [BODY_READ_FALLBACK_FROM, [BODY_READ_FALLBACK_PREVIOUS, BODY_READ_FALLBACK_TO, BODY_READ_RESUME_TO, BODY_READ_RESUME_TO_PREVIOUS, BODY_READ_HEADER_FALLBACK_TO, BODY_READ_HEADER_FALLBACK_TO_PREVIOUS]],
-  [BODY_READ_FALLBACK_TO, [BODY_READ_RESUME_TO, BODY_READ_RESUME_TO_PREVIOUS, BODY_READ_HEADER_FALLBACK_TO, BODY_READ_HEADER_FALLBACK_TO_PREVIOUS]],
+  [CORE_READER_INIT_TO, [CORE_READER_STREAM_INIT_TO]],
+  [BODY_READ_RESUME_TO, [BODY_READ_HEADER_FALLBACK_TO, BODY_READ_HEADER_FALLBACK_TO_PREVIOUS, CORE_STREAM_BODY_TO]],
+  [BODY_READ_TO, [BODY_READ_DIAGNOSTICS_TO, BODY_READ_FALLBACK_FROM, BODY_READ_FALLBACK_PREVIOUS, BODY_READ_FALLBACK_TO, BODY_READ_RESUME_TO, BODY_READ_RESUME_TO_PREVIOUS, BODY_READ_HEADER_FALLBACK_TO, BODY_READ_HEADER_FALLBACK_TO_PREVIOUS, BODY_READ_FALLBACK_BROKEN, CORE_STREAM_BODY_TO]],
+  [BODY_READ_DIAGNOSTICS_TO, [BODY_READ_FALLBACK_FROM, BODY_READ_FALLBACK_PREVIOUS, BODY_READ_FALLBACK_TO, BODY_READ_RESUME_TO, BODY_READ_RESUME_TO_PREVIOUS, BODY_READ_HEADER_FALLBACK_TO, BODY_READ_HEADER_FALLBACK_TO_PREVIOUS, BODY_READ_FALLBACK_BROKEN, CORE_STREAM_BODY_TO]],
+  [BODY_READ_FALLBACK_FROM, [BODY_READ_FALLBACK_PREVIOUS, BODY_READ_FALLBACK_TO, BODY_READ_RESUME_TO, BODY_READ_RESUME_TO_PREVIOUS, BODY_READ_HEADER_FALLBACK_TO, BODY_READ_HEADER_FALLBACK_TO_PREVIOUS, CORE_STREAM_BODY_TO]],
+  [BODY_READ_FALLBACK_TO, [BODY_READ_RESUME_TO, BODY_READ_RESUME_TO_PREVIOUS, BODY_READ_HEADER_FALLBACK_TO, BODY_READ_HEADER_FALLBACK_TO_PREVIOUS, CORE_STREAM_BODY_TO]],
+  [BODY_READ_HEADER_FALLBACK_TO, [CORE_STREAM_BODY_TO]],
   [CACHE_GET_TO, [CACHE_GET_DEAD_TO, CACHE_GET_CLEAR_TO]],
   [CACHE_PUT_TO, [CACHE_PUT_DEAD_TO, CACHE_PUT_CLEAR_TO, CACHE_PUT_CLEAR_TO_LEGACY, CACHE_PUT_CLEAR_TO_COMPLETED]],
   [CACHE_GET_DEAD_TO, [CACHE_GET_CLEAR_TO]],

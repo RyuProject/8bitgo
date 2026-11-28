@@ -163,6 +163,10 @@ export async function chooseFasterRomRoute(
 ): Promise<'primary' | 'backup'> {
   const hints = options.hints ?? runtimeHints()
   if (!worthRacing(primary, backup, hints, options.minBytes)) return 'primary'
+  // 玩家下载已把该域的真实正文吞吐与熔断状态写进共享记分板；两边都有近期样本时直接复用，
+  // 不要在每次刷新 / 新页面里再从两个 ROM 各下载一份测速块。缺任一结论时仍现场测量。
+  const knownRoute = hostFromRouteHealth(primary.url, backup.url, 'primary')
+  if (knownRoute) return knownRoute === 'mirror' ? 'backup' : 'primary'
   /*
     先到先得：两边样本一样大，先取完的就是更快的那条路，不必再等另一边跑满 3 秒超时
     （小 ROM 开局总共才几百毫秒，白等 3 秒得不偿失）。

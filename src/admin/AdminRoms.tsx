@@ -34,6 +34,7 @@ import { slugify } from './GameForm'
 import { PlatformBiosPanel } from './PlatformBiosPanel'
 import { SystemImageSourcesPanel } from './SystemImageSourcesPanel'
 import { RomCleanupPanel } from './RomCleanupPanel'
+import { RomUploadMetricsPanel } from './RomUploadMetricsPanel'
 import { RomOpenLink } from './RomOpenLink'
 import { objectKeyOf, planRomObjectDeletion, type PlatformBiosRefs } from './romDeletePlan'
 import { Card, Field, Stat, btnClass, inputClass } from './ui'
@@ -777,6 +778,8 @@ export function AdminRoms() {
       )}
 
       <MultipartPanel />
+
+      <RomUploadMetricsPanel />
 
       <RomCleanupPanel
         onDeleted={(keys) => {

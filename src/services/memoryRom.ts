@@ -82,11 +82,15 @@ function clampSliceIndex(value: number | undefined, size: number, fallback: numb
   return value < 0 ? Math.max(size + value, 0) : Math.min(value, size)
 }
 
-/** 把若干块字节包成只读的 Blob 替身（不复制）。 */
-export function memoryRomBlob(parts: Uint8Array<ArrayBuffer>[], type = 'application/octet-stream'): Blob {
+/** 消费字节块迭代器构造只读 Blob 替身，边收集边算偏移，调用方不必先摊平一份临时数组。 */
+export function memoryRomBlob(parts: Iterable<Uint8Array<ArrayBuffer>>, type = 'application/octet-stream'): Blob {
+  const storedParts: MemoryRom['parts'] = []
   const offsets = [0]
-  for (const part of parts) offsets.push(offsets[offsets.length - 1] + part.byteLength)
-  const rom: MemoryRom = { parts: [...parts], size: offsets[offsets.length - 1], type }
+  for (const part of parts) {
+    storedParts.push(part)
+    offsets.push(offsets[offsets.length - 1] + part.byteLength)
+  }
+  const rom: MemoryRom = { parts: storedParts, size: offsets[offsets.length - 1], type }
   partOffsets.set(rom, offsets)
   const view = (start: number, end: number): Blob => ({
     size: Math.max(0, end - start),

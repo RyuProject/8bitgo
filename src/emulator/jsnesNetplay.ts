@@ -44,6 +44,15 @@ export function decodeInput(bits: number): Record<string, boolean> {
   return out
 }
 
+/** 将生产环境常用的同源 `/netplay` 和独立信令域名都解析为 WebSocket 入口。 */
+export function jsnesNetplaySocketUrl(configuredUrl: string, pageUrl: string): string {
+  // VITE_NETPLAY_URL 在生产通常是 `/netplay`；先相对页面解析才能取得真实 origin。
+  const configured = new URL(configuredUrl, pageUrl)
+  const socketUrl = new URL('/jsnes-netplay', configured.origin)
+  socketUrl.protocol = new URL(pageUrl).protocol === 'https:' ? 'wss:' : 'ws:'
+  return socketUrl.toString()
+}
+
 export interface JsnesNetplayOptions {
   /** 进房时带房间号；不带就是开新房 */
   roomId?: string
@@ -57,6 +66,10 @@ export interface JsnesNetplayOptions {
   captureInitialState: () => unknown
   /** 访客在锁步开始前载入房主的完整状态。 */
   applyInitialState: (state: unknown) => void
+  /** GBA 电缆联机需要双方各自把本机卡带存档同步给对方，按座位组成两份镜像存档。 */
+  captureOwnState?: () => unknown
+  /** GBA 电缆联机收到对端卡带存档时调用；不影响默认的房主权威同步。 */
+  applyPeerState?: (state: unknown) => void
   /** 初始状态已经对齐，可以接管帧时钟。 */
   onReady?: () => void
   /** 协议 / ROM / 状态同步失败。 */
@@ -72,13 +85,15 @@ interface WsSignal {
   [k: string]: unknown
 }
 
-// 3.0 更换了存档 ABI；旧页面传来的 2.x 初始状态必须在握手阶段拒绝。
-const PROTOCOL_VERSION = 3
+// 4.0 增加双向卡带存档握手；旧页面不能误把它当成房主单向状态同步。
+const PROTOCOL_VERSION = 4
 const CONNECT_TIMEOUT_MS = 15_000
 const PEER_TIMEOUT_MS = 25_000
 const DISCONNECT_GRACE_MS = 10_000
 const STATE_CHUNK_CHARS = 12 * 1024
 const MAX_STATE_CHARS = 8 * 1024 * 1024
+/** 状态以 12 KiB 小块发送，限制单条消息可避免坏对端在移动端触发大块 JSON 解析。 */
+const MAX_DATA_MESSAGE_CHARS = STATE_CHUNK_CHARS + 1024
 const MAX_REMOTE_FRAMES = 600
 /** 锁步双方最多只会因输入缓冲和网络排队短暂错开；拒收远期帧，避免脏包撑满缓存。 */
 const MAX_REMOTE_FRAME_LEAD = 120
@@ -121,6 +136,10 @@ export class JsnesNetplay {
   private syncId = ''
   private syncParts: string[] | null = null
   private syncChars = 0
+  private ownStateSent = false
+  private peerStateReceived = false
+  private peerStateAcked = false
+  private ownStateId = ''
   private pendingIce: RTCIceCandidateInit[] = []
   /** 收到的对方输入，按帧号索引 */
   private remoteByFrame: Record<number, number> = {}
@@ -141,10 +160,7 @@ export class JsnesNetplay {
   /** 连上信令、拿到房间号（开房）或进房成功（进房）后才 resolve */
   connect(): Promise<void> {
     if (!NETPLAY_URL) return Promise.reject(new Error('NETPLAY_URL 未配置'))
-    const base = NETPLAY_URL.replace(/\/netplay$/, '')
-    const url = new URL('/jsnes-netplay', base)
-    url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const ws = new WebSocket(url.toString())
+    const ws = new WebSocket(jsnesNetplaySocketUrl(NETPLAY_URL, window.location.href))
     this.ws = ws
     return new Promise<void>((resolve, reject) => {
       this.openedResolve = resolve
@@ -280,7 +296,13 @@ export class JsnesNetplay {
   private bindDc(dc: RTCDataChannel) {
     this.dc = dc
     dc.onopen = () => {
-      this.sendData({ kind: 'hello', version: PROTOCOL_VERSION, gameId: this.opts.gameId, bufferFrames: this.bufferFrames })
+      this.sendData({
+        kind: 'hello',
+        version: PROTOCOL_VERSION,
+        gameId: this.opts.gameId,
+        bufferFrames: this.bufferFrames,
+        exchangeState: Boolean(this.opts.captureOwnState && this.opts.applyPeerState),
+      })
     }
     dc.onclose = () => {
       if (!this.closing) this.fail(new Error('输入通道已断开'))
@@ -289,8 +311,12 @@ export class JsnesNetplay {
       if (!this.closing) this.fail(new Error('输入通道发生错误'))
     }
     dc.onmessage = (e) => {
+      if (typeof e.data !== 'string' || e.data.length > MAX_DATA_MESSAGE_CHARS) {
+        if (!this.closing) this.fail(new Error('对端联机消息格式错误或超过大小限制'))
+        return
+      }
       try {
-        const m = JSON.parse(e.data as string) as Record<string, unknown>
+        const m = JSON.parse(e.data) as Record<string, unknown>
         this.onData(m)
       } catch {
         /* 坏包忽略 */
@@ -302,18 +328,24 @@ export class JsnesNetplay {
     if (m.kind === 'hello') {
       if (m.version !== PROTOCOL_VERSION) return this.fail(new Error('双方联机协议版本不同，请刷新页面后重试'))
       if (m.gameId !== this.opts.gameId) return this.fail(new Error('双方 ROM 内容不同，不能进行锁步联机'))
+      if (Boolean(m.exchangeState) !== Boolean(this.opts.captureOwnState && this.opts.applyPeerState)) {
+        return this.fail(new Error('双方联机模式不一致，请刷新页面后重新开房'))
+      }
       const peerBuffer = Number(m.bufferFrames)
       if (this.seat === 1 && Number.isInteger(peerBuffer)) this.setBuffer(peerBuffer)
       this.peerHello = true
-      if (this.seat === 0) void this.sendInitialState()
+      if (this.opts.captureOwnState && this.opts.applyPeerState) void this.sendOwnState()
+      else if (this.seat === 0) void this.sendInitialState()
       return
     }
-    if (m.kind === 'sync-start' && this.seat === 1) {
+    if (m.kind === 'sync-start' && (this.seat === 1 || (this.opts.captureOwnState && this.opts.applyPeerState))) {
       const id = typeof m.id === 'string' ? m.id : ''
+      const fromSeat = m.fromSeat === 0 || m.fromSeat === 1 ? m.fromSeat : null
       const chunks = Number(m.chunks)
       const chars = Number(m.chars)
       if (!id || !Number.isInteger(chunks) || chunks < 1 || chunks > Math.ceil(MAX_STATE_CHARS / STATE_CHUNK_CHARS)
-        || !Number.isInteger(chars) || chars < 2 || chars > MAX_STATE_CHARS) {
+        || !Number.isInteger(chars) || chars < 2 || chars > MAX_STATE_CHARS
+        || (this.opts.captureOwnState && this.opts.applyPeerState && fromSeat !== (this.seat === 0 ? 1 : 0))) {
         return this.fail(new Error('房主状态数据不合法'))
       }
       this.syncId = id
@@ -321,24 +353,37 @@ export class JsnesNetplay {
       this.syncChars = chars
       return
     }
-    if (m.kind === 'sync-chunk' && this.seat === 1 && this.syncParts && m.id === this.syncId) {
+    if (m.kind === 'sync-chunk' && (this.seat === 1 || (this.opts.captureOwnState && this.opts.applyPeerState)) && this.syncParts && m.id === this.syncId) {
       const index = Number(m.index)
       if (!Number.isInteger(index) || index < 0 || index >= this.syncParts.length || typeof m.data !== 'string'
         || m.data.length > STATE_CHUNK_CHARS) return
       this.syncParts[index] = m.data
       return
     }
-    if (m.kind === 'sync-end' && this.seat === 1 && this.syncParts && m.id === this.syncId) {
+    if (m.kind === 'sync-end' && (this.seat === 1 || (this.opts.captureOwnState && this.opts.applyPeerState)) && this.syncParts && m.id === this.syncId) {
       if (this.syncParts.some((part) => typeof part !== 'string')) return this.fail(new Error('房主状态数据不完整'))
       const json = this.syncParts.join('')
       if (json.length !== this.syncChars) return this.fail(new Error('房主状态长度不匹配'))
       try {
-        this.opts.applyInitialState(JSON.parse(json))
+        const state = JSON.parse(json)
+        if (this.opts.captureOwnState && this.opts.applyPeerState) {
+          this.opts.applyPeerState(state)
+          this.peerStateReceived = true
+        } else {
+          this.opts.applyInitialState(state)
+        }
       } catch {
         return this.fail(new Error('无法载入房主的游戏状态'))
       }
       this.syncParts = null
-      this.sendData({ kind: 'sync-ready', id: this.syncId })
+      this.sendData({ kind: 'sync-ready', id: this.syncId, fromSeat: this.seat })
+      if (this.opts.captureOwnState && this.opts.applyPeerState) this.maybeStartSymmetricSync()
+      return
+    }
+    if (m.kind === 'sync-ready' && this.opts.captureOwnState && this.opts.applyPeerState && m.id === this.ownStateId
+      && m.fromSeat === (this.seat === 0 ? 1 : 0)) {
+      this.peerStateAcked = true
+      this.maybeStartSymmetricSync()
       return
     }
     if (m.kind === 'sync-ready' && this.seat === 0 && m.id === this.syncId) {
@@ -403,6 +448,41 @@ export class JsnesNetplay {
       this.sendData({ kind: 'sync-end', id: this.syncId })
     } catch (error) {
       this.fail(error)
+    }
+  }
+
+  /** 双方交换自己座位的卡带存档；确保两端在开局前都拿到同一对存档。 */
+  private async sendOwnState() {
+    if (!this.peerHello || this.ownStateSent || this.closing || !this.opts.captureOwnState || !this.opts.applyPeerState) return
+    this.ownStateSent = true
+    try {
+      const json = JSON.stringify(this.opts.captureOwnState())
+      if (!json || json.length > MAX_STATE_CHARS) throw new Error('卡带存档过大，无法联机同步')
+      this.ownStateId = `${this.seat}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+      const chunks = Math.ceil(json.length / STATE_CHUNK_CHARS)
+      this.sendData({ kind: 'sync-start', id: this.ownStateId, fromSeat: this.seat, chunks, chars: json.length })
+      for (let index = 0; index < chunks; index++) {
+        await this.waitForBuffer()
+        if (this.closing) return
+        this.sendData({
+          kind: 'sync-chunk',
+          id: this.ownStateId,
+          index,
+          data: json.slice(index * STATE_CHUNK_CHARS, (index + 1) * STATE_CHUNK_CHARS),
+        })
+      }
+      this.sendData({ kind: 'sync-end', id: this.ownStateId })
+    } catch (error) {
+      this.fail(error)
+    }
+  }
+
+  private maybeStartSymmetricSync() {
+    if (!this.opts.captureOwnState || !this.opts.applyPeerState || this.closing || !this.ownStateSent
+      || !this.peerStateReceived || !this.peerStateAcked) return
+    if (this.seat === 0) {
+      this.sendData({ kind: 'sync-go', id: this.ownStateId })
+      this.markReady()
     }
   }
 

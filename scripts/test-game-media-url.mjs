@@ -20,8 +20,10 @@ assert.equal(gameMediaUrl({ slug: 'empty' }, 'cover'), '')
 const base = 'https://image.8bitgo.com'
 assert.equal(
   coverSrcSet(`${base}/covers/kof%2097.webp`, base),
-  `${base}/cdn-cgi/image/width=240,quality=80,format=auto,fit=scale-down/covers/kof%2097.webp 240w, ` +
-    `${base}/cdn-cgi/image/width=480,quality=80,format=auto,fit=scale-down/covers/kof%2097.webp 480w`,
+  `${base}/cdn-cgi/image/width=96,quality=80,format=auto,fit=contain/covers/kof%2097.webp 96w, ` +
+    `${base}/cdn-cgi/image/width=160,quality=80,format=auto,fit=contain/covers/kof%2097.webp 160w, ` +
+    `${base}/cdn-cgi/image/width=240,quality=80,format=auto,fit=contain/covers/kof%2097.webp 240w, ` +
+    `${base}/cdn-cgi/image/width=480,quality=80,format=auto,fit=contain/covers/kof%2097.webp 480w`,
 )
 assert.equal(coverSrcSet(`${base}/covers/kof.webp`, ''), '')
 const avif = `${base}/covers/the-king-of-fighters-2000.avif`
@@ -37,8 +39,10 @@ assert.equal(coverSrcSet(`${base}/covers/kof.webp`), '')
 const cnBase = 'https://image-cn.8bitgo.com'
 assert.equal(
   coverSrcSet(`${cnBase}/covers/kof.webp`, cnBase, 'webp'),
-  `${cnBase}/cdn-cgi/image/width=240,quality=80,format=webp,fit=scale-down/covers/kof.webp 240w, ` +
-    `${cnBase}/cdn-cgi/image/width=480,quality=80,format=webp,fit=scale-down/covers/kof.webp 480w`,
+  `${cnBase}/cdn-cgi/image/width=96,quality=80,format=webp,fit=contain/covers/kof.webp 96w, ` +
+    `${cnBase}/cdn-cgi/image/width=160,quality=80,format=webp,fit=contain/covers/kof.webp 160w, ` +
+    `${cnBase}/cdn-cgi/image/width=240,quality=80,format=webp,fit=contain/covers/kof.webp 240w, ` +
+    `${cnBase}/cdn-cgi/image/width=480,quality=80,format=webp,fit=contain/covers/kof.webp 480w`,
 )
 
 // 只认 cn.<站点域名>；服务端看不到这个 Host，只认 nginx 校验过 EdgeOne 密钥后补的标记头

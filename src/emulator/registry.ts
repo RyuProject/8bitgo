@@ -82,6 +82,10 @@ export function resolveRuntime(target: PlatformId | ResolveContext): Runtime | u
 
   // 只有没有 WebAssembly 时才退到必须配置 BIOS 的 IodineGBA；仅无 WebGL 时让 mGBA 走 Canvas 2D 兼容层。
   if (platform === 'gba') {
+    if (ctx.gbaLinkNetplay) {
+      const linkRuntime = getRuntime('iodinegba')
+      if (linkRuntime?.available() && linkRuntime.supports('gba')) return linkRuntime
+    }
     const fallbackId = gbaFallbackRuntime({
       wasmUnavailable: ctx.gbaWasmUnavailable,
       webglUnavailable: ctx.gbaWebglUnavailable,

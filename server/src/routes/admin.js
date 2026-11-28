@@ -13,6 +13,7 @@ import { getVolcTranslationUsage } from '../translation-usage.js'
 import { isTranslateConfigured } from '../translate.js'
 import { collectAdminHealth } from '../admin-health.js'
 import { issueRomUploadCredential, romUploadSigningSecret } from '../rom-upload-credential.js'
+import { recordRomUploadMetric, romUploadStats } from '../rom-upload-metrics.js'
 
 export const adminRouter = Router()
 
@@ -165,6 +166,30 @@ adminRouter.get('/startup-stats', requireAbility('content:edit'), async (req, re
     res.json(await startupStats(req.query.days, req.query.q))
   } catch (e) {
     next(e)
+  }
+})
+
+/** 上传端只发匿名分桶数据；入库前丢弃文件名、ROM key 与精确大小，供后台判断真实瓶颈。 */
+adminRouter.post('/rom-upload-metrics', requireAbility('games:edit'), async (req, res, next) => {
+  try {
+    await recordRomUploadMetric(req.body, req)
+    res.status(202).json({ ok: true })
+  } catch (error) {
+    if (error?.name === 'RomUploadMetricError') return res.status(400).json({ error: error.message })
+    next(error)
+  }
+})
+
+/** ROM 存储页性能基线；只允许站点 ROM 管理员读取，不回传单次上传记录。 */
+adminRouter.get('/rom-upload-stats', requireAbility('games:edit'), async (req, res, next) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store')
+    res.json(await romUploadStats(req.query.days))
+  } catch (error) {
+    if (error?.code === 'ER_NO_SUCH_TABLE') {
+      return res.status(503).json({ error: '缺少 rom_upload_metrics 表：cd server && npm run migrate' })
+    }
+    next(error)
   }
 })
 

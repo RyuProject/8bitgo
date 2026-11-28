@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { CACHE, staticCacheHeaders } from '../server/src/cache.js'
 import { detectRom } from '../src/emulator/detect.ts'
+import { setLangForRender } from '../src/services/lang.ts'
+import { loadLocale } from '../src/locales/index.ts'
 import { isStreamingDiscPlatform } from '../shared/streaming-disc-platforms.js'
 import { isIsolatedRuntimePlatform, isolatedRuntimeRoute } from '../shared/isolated-runtime-platforms.js'
 import { createVisibilityTimeout } from '../src/emulator/visibilityTimeout.ts'
@@ -12,6 +14,10 @@ import {
   parsePspVariantSaveSlug,
   pspVariantSaveSlug,
 } from '../src/emulator/romLanguage.ts'
+
+// detectRom 的错误文案来自 getT()；独立 Node 回归没有入口启动时，必须先装载基准语言包。
+await loadLocale('zh-Hans')
+setLangForRender('zh-Hans')
 
 const fakeFile = (name, bytes) => ({
   name,
@@ -207,9 +213,9 @@ const player = readFileSync(new URL('../src/emulator/EmulatorPlayer.tsx', import
 const profileSaves = readFileSync(new URL('../src/components/profile/CloudSaves.tsx', import.meta.url), 'utf8')
 const prewarm = readFileSync(new URL('../src/emulator/prewarm.ts', import.meta.url), 'utf8')
 const paths = readFileSync(new URL('../src/emulator/paths.ts', import.meta.url), 'utf8')
-const host = readFileSync(new URL('../public/ppsspp/v0dbfaca/v26/host.js', import.meta.url), 'utf8')
-const audioWorklet = readFileSync(new URL('../public/ppsspp/v0dbfaca/v25/audio-worklet.js', import.meta.url), 'utf8')
-const runtimeScript = readFileSync(new URL('../public/ppsspp/v0dbfaca/v25/PPSSPPSDL.js', import.meta.url), 'utf8')
+const host = readFileSync(new URL('../public/ppsspp/v0dbfaca/v33/host.js', import.meta.url), 'utf8')
+const audioWorklet = readFileSync(new URL('../public/ppsspp/v0dbfaca/v33/audio-worklet.js', import.meta.url), 'utf8')
+const runtimeScript = readFileSync(new URL('../public/ppsspp/v0dbfaca/v33/PPSSPPSDL.js', import.meta.url), 'utf8')
 const detail = readFileSync(new URL('../src/pages/GameDetailPage.tsx', import.meta.url), 'utf8')
 const ssr = readFileSync(new URL('../server/src/ssr.js', import.meta.url), 'utf8')
 const serverIndex = readFileSync(new URL('../server/src/index.js', import.meta.url), 'utf8')
@@ -223,8 +229,13 @@ assert.match(host, /width:\s*480,\s*height:\s*272/, '性能优先档必须使用
 assert.match(host, /width:\s*640,\s*height:\s*360/, '普通设备画布上限应为 640×360')
 assert.match(host, /width:\s*720,\s*height:\s*408/, '明确高配桌面设备画布上限应为 720×408')
 assert.match(host, /__ppssppAudioWorkletUrl/, 'PSP 外壳必须把独立音频线程脚本交给核心')
-assert.match(host, /RUNTIME_SCRIPT = '\.\.\/v25\/PPSSPPSDL\.js'/, 'v26 校验壳必须复用 v25 实体目录中的核心')
-assert.match(host, /return coreUrl\(path\)/, 'PPSSPP 核心资源经 coreUrl 解析：默认 v25 同源，大陆访客的 wasm / data 走加速入口')
+assert.match(host, /RUNTIME_SCRIPT = 'PPSSPPSDL\.js'/, 'v33 必须从同一不可变目录加载完整核心胶水')
+assert.match(host, /CORE_ASSET_PATH = '\.\/'/, 'v33 的 Wasm 与 data 必须和桥、胶水位于同一实体目录')
+assert.match(host, /return coreUrl\(path\)/, 'PPSSPP 核心资源经 coreUrl 解析：默认 v33 同源，大陆访客的 wasm / data 走加速入口')
+assert.match(host, /__8bitgoPspRangeBrokerWorker = new Worker\(new URL\('range-prefetch-worker\.js', location\.href\)\)/, 'v33 页面必须启动 Range Broker 专用 Worker')
+assert.match(host, /\['mobile', 'qq-compat'\]\.includes\(profile\.id\)/, '移动浏览器与 QQ 浏览器必须启用 PPSSPP 自带触控')
+assert.match(host, /TouchButtonHideSeconds = 0/, '移动端触控不能闲置几秒后自动消失')
+assert.match(host, /\[TouchControls\.Portrait\][\s\S]*?DPadX = 0\.20[\s\S]*?AnalogStickY = 0\.60[\s\S]*?ActionButtonCenterX = 0\.75/, '竖屏方向键、摇杆和面键必须避开游戏画面并留在视口内')
 assert.match(host, /const qqBrowser = \/\(\?:QQBrowser\|MQQBrowser\\\/\|QQ\\\/\)\/i/, 'QQ Browser 必须进入保守性能档')
 assert.match(host, /id: 'qq-compat', width: 480, height: 272, separateSasThread: false/, 'QQ Browser 必须使用 PSP 原生画布并关闭额外 SAS 线程')
 assert.match(host, /Promise\.race\(\[syncSaves\(\), flushDeadline\]\)/, 'PPSSPP RuntimeError 上报前必须等待有限时长的电池存档冲刷')
@@ -233,8 +244,8 @@ assert.match(runtimeScript, /var mobileDevice=\/Android\|iPhone\|iPad\|iPod\|Mob
 assert.match(runtimeScript, /var highEndDesktop=cores>=8&&memory>=8&&!mobileDevice&&!slow&&!qqBrowser/, '只有明确的高配桌面设备可使用最高档画布')
 assert.match(runtimeScript, /maxWidth=qqBrowser\|\|mobileDevice\|\|slow\|\|low\?480:highEndDesktop\?720:640/, '核心实际绘图缓冲必须套用性能优先的三级上限')
 assert.match(host, /: new URL\(path, location\.href\)\.href/, '不在加速名单里的文件仍按同目录解析')
-assert.match(paths, /PPSSPP_RUNTIME_GENERATION = 'v26'/, 'Cloudflare 忽略查询串时必须靠实体目录换代')
-assert.match(paths, /PPSSPP_CORE_ASSET_GENERATION = 'v25'/, '只更新桥时必须复用已缓存的核心实体目录')
+assert.match(paths, /PPSSPP_RUNTIME_GENERATION = 'v33'/, 'Cloudflare 忽略查询串时必须靠实体目录换代')
+assert.match(paths, /PPSSPP_CORE_ASSET_GENERATION = 'v33'/, 'Range 胶水、核心和桥必须按同一实体代次发布')
 assert.match(paths, /PPSSPP_FRAME_REVISION = '4'/, 'PPSSPP 入口 HTML 必须有独立的浏览器缓存换代号')
 assert.match(adapter, /iframe\.src = ppssppFrameUrl\(\)/, 'PPSSPP iframe 必须使用可换代的入口地址')
 assert.match(prewarm, /warmHttpCache\(ppssppFrameUrl\(\)\)/, 'PSP 预热必须与 iframe 使用同一个入口地址')
@@ -256,9 +267,9 @@ assert.ok(
 assert.match(ssr, /const inlineIsolatedPlayer = data\?\.route === 'game' && isInlineIsolatedPlatform\(data\.game\?\.platform\)/, '行内隔离平台详情页必须由服务端加隔离头')
 assert.match(readFileSync(new URL('../shared/inline-isolated-platforms.js', import.meta.url), 'utf8'), /'psp'/, 'PSP 必须列入服务端行内隔离平台')
 assert.match(ssr, /isolatedDocument[\s\S]*?'Cross-Origin-Opener-Policy': 'same-origin'[\s\S]*?'Cross-Origin-Embedder-Policy': 'require-corp'/, 'PSP 详情页缺少 COOP/COEP')
-assert.match(serverIndex, /app\.get\('\/ppsspp\/v0dbfaca'[\s\S]*?CACHE\.none[\s\S]*?v26\/index\.html\?embed=1&frame=4/, '旧 PSP bundle 的无 index 入口必须跳到当前实体运行时，不能继续 404 或命中旧缓存')
+assert.match(serverIndex, /app\.get\('\/ppsspp\/v0dbfaca'[\s\S]*?CACHE\.none[\s\S]*?v33\/index\.html\?embed=1&frame=4/, '旧 PSP bundle 的无 index 入口必须跳到当前实体运行时，不能继续 404 或命中旧缓存')
 const staticHeaders = new Map()
-staticCacheHeaders({ setHeader: (name, value) => staticHeaders.set(name, value) }, '/dist/client/ppsspp/v0dbfaca/v26/index.html')
+staticCacheHeaders({ setHeader: (name, value) => staticHeaders.set(name, value) }, '/dist/client/ppsspp/v0dbfaca/v33/index.html')
 assert.equal(staticHeaders.get('Cache-Control'), CACHE.engine, 'PPSSPP 入口 HTML 不能按 immutable 缓存，避免错误响应长期卡在 iframe')
 assert.match(workerHttp, /'Cross-Origin-Resource-Policy', 'cross-origin'/, '隔离详情页的跨源封面会被 COEP 拦截')
 assert.match(workerIndex, /PSP_RANGE_BYTES = 2 \* 1024 \* 1024/, 'PSP 边缘缓存必须与核心的 2 MiB Range 对齐')

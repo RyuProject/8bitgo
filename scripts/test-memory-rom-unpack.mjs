@@ -64,6 +64,11 @@ async function runChild(mode) {
   }
   const { memoryRomBlob, memoryRomOf } = await import('../src/services/memoryRom.ts')
   const { unpackRomPackToMemory } = await import('../src/services/romPack.ts')
+  const iterableRom = memoryRomBlob((function* () {
+    yield new Uint8Array([1, 2])
+    yield new Uint8Array([3, 4])
+  })())
+  assert.deepEqual([...new Uint8Array(await iterableRom.arrayBuffer())], [1, 2, 3, 4], '内存 ROM 支持惰性块迭代器')
   // 模块都加载完再拿掉（Node 自己剥 TS 类型要用 WebAssembly）；解码器是第一次解包时才按 webAssemblyAvailable() 选的
   if (mode === 'no-wasm') delete globalThis.WebAssembly
 

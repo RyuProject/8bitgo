@@ -13,7 +13,7 @@ import { useT } from '@/services/i18n'
 import { gameTitle, platformLabel } from '@/services/i18nData'
 import { useLang } from '@/services/lang'
 import { fetchSuggest, rememberSearch, recentSearches, clearRecentSearches, searchEnabled, type SuggestItem } from '@/services/search'
-import { romUrlForKey } from '@/services/roms'
+import { coverImageUrl, romUrlForKey } from '@/services/roms'
 
 const DEBOUNCE_MS = 200
 
@@ -235,11 +235,14 @@ export function SearchBox({ className, full, onSubmitted }: Props) {
                   {/* 封面存的是对象 key，得先拼成公开地址，直接用会裂图 */}
                   {romUrlForKey(item.cover ?? '') ? (
                     <img
-                      src={romUrlForKey(item.cover ?? '')}
+                      src={coverImageUrl(romUrlForKey(item.cover ?? ''), 96)}
                       alt=""
                       loading="lazy"
                       onError={(e) => {
-                        e.currentTarget.style.visibility = 'hidden'
+                        const image = e.currentTarget
+                        const original = romUrlForKey(item.cover ?? '')
+                        if (original && image.src !== original) image.src = original
+                        else image.style.visibility = 'hidden'
                       }}
                       className="h-9 w-9 shrink-0 rounded bg-white/5 object-cover"
                     />

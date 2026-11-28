@@ -16,8 +16,12 @@ const EVENTS = new Set([
   'rom_load_start',
   'rom_load_complete',
   'core_warm_start',
+  'core_warm_first_byte',
   'core_warm_complete',
   'core_cache_hit',
+  'core_load_start',
+  'core_load_first_byte',
+  'core_load_complete',
   'fallback_started',
   'fallback_first_frame',
   'fallback_playable',
@@ -39,7 +43,8 @@ const EVENTS = new Set([
 ])
 /** 页面阶段可合批，异常现场事件仍走单独接口以保留原有限流与诊断处理。 */
 const BATCHABLE_EVENTS = new Set([
-  'download_complete', 'rom_load_start', 'rom_load_complete', 'core_warm_start', 'core_warm_complete',
+  'download_complete', 'rom_load_start', 'rom_load_complete', 'core_warm_start', 'core_warm_first_byte', 'core_warm_complete',
+  'core_load_start', 'core_load_first_byte', 'core_load_complete',
   'core_cache_hit', 'runtime_ready', 'first_frame', 'fallback_first_frame', 'fallback_playable', 'game_playable',
   // 页面卸载时与未发出的阶段合批，减少 keepalive 请求被取消后漏记中断的概率。
   'startup_interrupted',
@@ -286,7 +291,15 @@ export function shapePhaseTiming(row = {}) {
     romLoadSamples: numeric(row, 'rom_load_samples'),
     avgCoreWarmMs: average('avg_core_warm_ms'),
     coreWarmSamples: numeric(row, 'core_warm_samples'),
+    avgCoreFirstByteMs: average('avg_core_first_byte_ms'),
+    coreFirstByteSamples: numeric(row, 'core_first_byte_samples'),
+    avgCoreLoadMs: average('avg_core_load_ms'),
+    coreLoadSamples: numeric(row, 'core_load_samples'),
+    avgCoreLoadFirstByteMs: average('avg_core_load_first_byte_ms'),
+    coreLoadFirstByteSamples: numeric(row, 'core_load_first_byte_samples'),
     coreCacheHits: numeric(row, 'core_cache_hits'),
+    coreWarmMatchSamples: numeric(row, 'core_warm_match_samples'),
+    coreWarmMismatches: numeric(row, 'core_warm_mismatches'),
     avgResourceToRuntimeReadyMs: average('avg_resource_to_runtime_ready_ms'),
     resourceToRuntimeReadySamples: numeric(row, 'resource_to_runtime_ready_samples'),
   }
@@ -379,7 +392,11 @@ const PHASE_TIMING_QUERY = `
            MIN(CASE WHEN e.event = 'rom_load_start' THEN e.elapsed_ms END) AS rom_start_ms,
            MIN(CASE WHEN e.event = 'rom_load_complete' THEN e.elapsed_ms END) AS rom_complete_ms,
            MIN(CASE WHEN e.event = 'core_warm_start' THEN e.elapsed_ms END) AS core_warm_start_ms,
+           MIN(CASE WHEN e.event = 'core_warm_first_byte' THEN e.elapsed_ms END) AS core_warm_first_byte_ms,
            MIN(CASE WHEN e.event = 'core_warm_complete' THEN e.elapsed_ms END) AS core_warm_complete_ms,
+           MIN(CASE WHEN e.event = 'core_load_start' THEN e.elapsed_ms END) AS core_load_start_ms,
+           MIN(CASE WHEN e.event = 'core_load_first_byte' THEN e.elapsed_ms END) AS core_load_first_byte_ms,
+           MIN(CASE WHEN e.event = 'core_load_complete' THEN e.elapsed_ms END) AS core_load_complete_ms,
            MIN(CASE WHEN e.event = 'runtime_ready' THEN e.elapsed_ms END) AS runtime_ready_ms,
            MAX(CASE WHEN e.event = 'core_cache_hit' THEN 1 ELSE 0 END) AS core_cache_hit,
            MAX(CASE WHEN e.event = 'core_cache_hit' THEN e.runtime END) AS core_cache_runtime,
@@ -390,13 +407,21 @@ const PHASE_TIMING_QUERY = `
            MAX(CASE WHEN e.event = 'rom_load_start' THEN e.runtime END) AS rom_start_runtime,
            MAX(CASE WHEN e.event = 'rom_load_complete' THEN e.runtime END) AS rom_complete_runtime,
            MAX(CASE WHEN e.event = 'core_warm_start' THEN e.runtime END) AS core_warm_start_runtime,
+           MAX(CASE WHEN e.event = 'core_warm_first_byte' THEN e.runtime END) AS core_warm_first_byte_runtime,
            MAX(CASE WHEN e.event = 'core_warm_complete' THEN e.runtime END) AS core_warm_complete_runtime,
-           MAX(CASE WHEN e.event = 'runtime_ready' THEN e.runtime END) AS runtime_ready_runtime
+           MAX(CASE WHEN e.event = 'core_load_start' THEN e.runtime END) AS core_load_start_runtime,
+           MAX(CASE WHEN e.event = 'core_load_first_byte' THEN e.runtime END) AS core_load_first_byte_runtime,
+           MAX(CASE WHEN e.event = 'core_load_complete' THEN e.runtime END) AS core_load_complete_runtime,
+           MAX(CASE WHEN e.event = 'runtime_ready' THEN e.runtime END) AS runtime_ready_runtime,
+           MAX(CASE WHEN e.event IN ('core_warm_start', 'core_cache_hit') THEN e.detail END) AS core_warm_key,
+           MAX(CASE WHEN e.event = 'core_load_start' THEN e.detail END) AS core_load_key,
+           MAX(CASE WHEN e.event = 'runtime_ready' THEN e.detail END) AS core_resolved_key
       FROM game_startup_events e
      WHERE e.created_at >= ? AND e.attempt_id <> ''
        AND e.event IN ('start_click', 'download_complete', 'first_frame', 'game_playable',
                        'rom_load_start', 'rom_load_complete', 'core_warm_start',
-                       'core_warm_complete', 'core_cache_hit', 'runtime_ready')
+                       'core_warm_first_byte', 'core_warm_complete', 'core_cache_hit',
+                       'core_load_start', 'core_load_first_byte', 'core_load_complete', 'runtime_ready')
      GROUP BY e.game_id, e.visit_id, e.attempt_id
   ), phase_samples AS (
     SELECT game_id, country, resource_runtime AS runtime, 'resource' AS stage,
@@ -428,6 +453,27 @@ const PHASE_TIMING_QUERY = `
      WHERE started_ms IS NOT NULL AND core_warm_start_ms IS NOT NULL AND core_warm_complete_ms >= core_warm_start_ms
        AND core_warm_start_runtime = core_warm_complete_runtime
     UNION ALL
+    SELECT game_id, country, core_warm_first_byte_runtime AS runtime, 'core_first_byte' AS stage,
+           core_warm_first_byte_ms - core_warm_start_ms AS duration_ms
+      FROM attempt_events
+     WHERE started_ms IS NOT NULL AND core_warm_start_ms IS NOT NULL
+       AND core_warm_first_byte_ms >= core_warm_start_ms
+       AND core_warm_start_runtime = core_warm_first_byte_runtime
+    UNION ALL
+    SELECT game_id, country, core_load_complete_runtime AS runtime, 'core_load' AS stage,
+           core_load_complete_ms - core_load_start_ms AS duration_ms
+      FROM attempt_events
+     WHERE started_ms IS NOT NULL AND core_load_start_ms IS NOT NULL
+       AND core_load_complete_ms >= core_load_start_ms
+       AND core_load_start_runtime = core_load_complete_runtime
+    UNION ALL
+    SELECT game_id, country, core_load_first_byte_runtime AS runtime, 'core_load_first_byte' AS stage,
+           core_load_first_byte_ms - core_load_start_ms AS duration_ms
+      FROM attempt_events
+     WHERE started_ms IS NOT NULL AND core_load_start_ms IS NOT NULL
+       AND core_load_first_byte_ms >= core_load_start_ms
+       AND core_load_start_runtime = core_load_first_byte_runtime
+    UNION ALL
     SELECT game_id, country, runtime_ready_runtime AS runtime, 'resource_to_runtime_ready' AS stage,
            runtime_ready_ms - resource_ms AS duration_ms
      FROM attempt_events
@@ -437,6 +483,16 @@ const PHASE_TIMING_QUERY = `
     SELECT game_id, country, core_cache_runtime AS runtime, 'core_cache_hit' AS stage, NULL AS duration_ms
      FROM attempt_events
      WHERE started_ms IS NOT NULL AND core_cache_hit = 1
+    UNION ALL
+    /* 只比较新客户端附带的核心文件名；旧记录没有身份信息，不把它伪装成匹配样本。 */
+    SELECT game_id, country, COALESCE(core_load_start_runtime, runtime_ready_runtime) AS runtime,
+           'core_warm_match' AS stage,
+           CASE WHEN core_warm_key = COALESCE(core_load_key, core_resolved_key) THEN 0 ELSE 1 END AS duration_ms
+     FROM attempt_events
+     WHERE started_ms IS NOT NULL
+       AND core_warm_key IS NOT NULL AND COALESCE(core_load_key, core_resolved_key) IS NOT NULL
+       AND COALESCE(core_warm_start_runtime, core_cache_runtime) =
+           COALESCE(core_load_start_runtime, runtime_ready_runtime)
   )
   SELECT 'summary' AS dimension, '' AS id, '' AS label,
          AVG(CASE WHEN p.stage = 'resource' THEN p.duration_ms END) AS avg_resource_ms,
@@ -449,7 +505,15 @@ const PHASE_TIMING_QUERY = `
          SUM(p.stage = 'rom_load') AS rom_load_samples,
          AVG(CASE WHEN p.stage = 'core_warm' THEN p.duration_ms END) AS avg_core_warm_ms,
          SUM(p.stage = 'core_warm') AS core_warm_samples,
+         AVG(CASE WHEN p.stage = 'core_first_byte' THEN p.duration_ms END) AS avg_core_first_byte_ms,
+         SUM(p.stage = 'core_first_byte') AS core_first_byte_samples,
+         AVG(CASE WHEN p.stage = 'core_load' THEN p.duration_ms END) AS avg_core_load_ms,
+         SUM(p.stage = 'core_load') AS core_load_samples,
+         AVG(CASE WHEN p.stage = 'core_load_first_byte' THEN p.duration_ms END) AS avg_core_load_first_byte_ms,
+         SUM(p.stage = 'core_load_first_byte') AS core_load_first_byte_samples,
          SUM(p.stage = 'core_cache_hit') AS core_cache_hits,
+         SUM(p.stage = 'core_warm_match') AS core_warm_match_samples,
+         SUM(p.stage = 'core_warm_match' AND p.duration_ms > 0) AS core_warm_mismatches,
          AVG(CASE WHEN p.stage = 'resource_to_runtime_ready' THEN p.duration_ms END) AS avg_resource_to_runtime_ready_ms,
          SUM(p.stage = 'resource_to_runtime_ready') AS resource_to_runtime_ready_samples
     FROM phase_samples p
@@ -460,7 +524,11 @@ const PHASE_TIMING_QUERY = `
          AVG(CASE WHEN p.stage = 'first_frame_to_playable' THEN p.duration_ms END), SUM(p.stage = 'first_frame_to_playable'),
          AVG(CASE WHEN p.stage = 'rom_load' THEN p.duration_ms END), SUM(p.stage = 'rom_load'),
          AVG(CASE WHEN p.stage = 'core_warm' THEN p.duration_ms END), SUM(p.stage = 'core_warm'),
+         AVG(CASE WHEN p.stage = 'core_first_byte' THEN p.duration_ms END), SUM(p.stage = 'core_first_byte'),
+         AVG(CASE WHEN p.stage = 'core_load' THEN p.duration_ms END), SUM(p.stage = 'core_load'),
+         AVG(CASE WHEN p.stage = 'core_load_first_byte' THEN p.duration_ms END), SUM(p.stage = 'core_load_first_byte'),
          SUM(p.stage = 'core_cache_hit'),
+         SUM(p.stage = 'core_warm_match'), SUM(p.stage = 'core_warm_match' AND p.duration_ms > 0),
          AVG(CASE WHEN p.stage = 'resource_to_runtime_ready' THEN p.duration_ms END), SUM(p.stage = 'resource_to_runtime_ready')
     FROM phase_samples p JOIN games g ON g.id = p.game_id
    GROUP BY p.game_id, g.slug, g.title_zh, g.title
@@ -471,7 +539,11 @@ const PHASE_TIMING_QUERY = `
          AVG(CASE WHEN p.stage = 'first_frame_to_playable' THEN p.duration_ms END), SUM(p.stage = 'first_frame_to_playable'),
          AVG(CASE WHEN p.stage = 'rom_load' THEN p.duration_ms END), SUM(p.stage = 'rom_load'),
          AVG(CASE WHEN p.stage = 'core_warm' THEN p.duration_ms END), SUM(p.stage = 'core_warm'),
+         AVG(CASE WHEN p.stage = 'core_first_byte' THEN p.duration_ms END), SUM(p.stage = 'core_first_byte'),
+         AVG(CASE WHEN p.stage = 'core_load' THEN p.duration_ms END), SUM(p.stage = 'core_load'),
+         AVG(CASE WHEN p.stage = 'core_load_first_byte' THEN p.duration_ms END), SUM(p.stage = 'core_load_first_byte'),
          SUM(p.stage = 'core_cache_hit'),
+         SUM(p.stage = 'core_warm_match'), SUM(p.stage = 'core_warm_match' AND p.duration_ms > 0),
          AVG(CASE WHEN p.stage = 'resource_to_runtime_ready' THEN p.duration_ms END), SUM(p.stage = 'resource_to_runtime_ready')
     FROM phase_samples p
    GROUP BY p.runtime
@@ -482,7 +554,11 @@ const PHASE_TIMING_QUERY = `
          AVG(CASE WHEN p.stage = 'first_frame_to_playable' THEN p.duration_ms END), SUM(p.stage = 'first_frame_to_playable'),
          AVG(CASE WHEN p.stage = 'rom_load' THEN p.duration_ms END), SUM(p.stage = 'rom_load'),
          AVG(CASE WHEN p.stage = 'core_warm' THEN p.duration_ms END), SUM(p.stage = 'core_warm'),
+         AVG(CASE WHEN p.stage = 'core_first_byte' THEN p.duration_ms END), SUM(p.stage = 'core_first_byte'),
+         AVG(CASE WHEN p.stage = 'core_load' THEN p.duration_ms END), SUM(p.stage = 'core_load'),
+         AVG(CASE WHEN p.stage = 'core_load_first_byte' THEN p.duration_ms END), SUM(p.stage = 'core_load_first_byte'),
          SUM(p.stage = 'core_cache_hit'),
+         SUM(p.stage = 'core_warm_match'), SUM(p.stage = 'core_warm_match' AND p.duration_ms > 0),
          AVG(CASE WHEN p.stage = 'resource_to_runtime_ready' THEN p.duration_ms END), SUM(p.stage = 'resource_to_runtime_ready')
     FROM phase_samples p
    GROUP BY p.country`

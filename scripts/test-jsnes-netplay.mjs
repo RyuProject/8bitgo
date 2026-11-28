@@ -36,7 +36,7 @@ const built = await build({
 })
 
 globalThis.window = globalThis
-globalThis.location = { protocol: 'http:' }
+globalThis.location = { protocol: 'http:', href: 'http://app.test/games/demo' }
 globalThis.__fetchIceConfig = async () => ({ iceServers: [{ urls: 'stun:test' }], hasTurn: false, expiry: 0 })
 
 class FakeWebSocket {
@@ -126,7 +126,7 @@ class FakeDataChannel extends EventTarget {
 }
 
 const mod = await import(`data:text/javascript;base64,${Buffer.from(built.outputFiles[0].contents).toString('base64')}`)
-const { JsnesNetplay, jsnesRomFingerprint } = mod
+const { JsnesNetplay, jsnesNetplaySocketUrl, jsnesRomFingerprint } = mod
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
 const baseOptions = (overrides = {}) => ({
   seat: 0,
@@ -135,6 +135,16 @@ const baseOptions = (overrides = {}) => ({
   applyInitialState: () => {},
   ...overrides,
 })
+
+// 生产配置是同源相对路径；不能把 `/netplay` 当成 URL 的 origin 传给 URL 构造器。
+assert.equal(
+  jsnesNetplaySocketUrl('/netplay', 'https://8bitgo.com/games/demo'),
+  'wss://8bitgo.com/jsnes-netplay',
+)
+assert.equal(
+  jsnesNetplaySocketUrl('https://relay.example.net/netplay', 'https://8bitgo.com/games/demo'),
+  'wss://relay.example.net/jsnes-netplay',
+)
 
 // 输入延迟既来自房间设置，也可能在握手时由对端传入；两种入口都必须夹在安全范围内。
 for (const [input, expected] of [[-3, 0], [2.9, 2], [99, 8], [Number.NaN, 2]]) {
@@ -158,6 +168,7 @@ for (const [input, expected] of [[-3, 0], [2.9, 2], [99, 8], [Number.NaN, 2]]) {
   const guest = new JsnesNetplay(baseOptions({ seat: 1, roomId: 'ABC123' }))
   const connected = guest.connect()
   const ws = FakeWebSocket.all.at(-1)
+  assert.equal(ws.url, 'ws://unit.test/jsnes-netplay')
   ws.open()
   assert.deepEqual(ws.sent[0], { type: 'join', roomId: 'abc123' })
   ws.receive({ type: 'joined', roomId: 'abc123', host: 'host-1', seat: 1 })
@@ -233,6 +244,45 @@ for (const [input, expected] of [[-3, 0], [2.9, 2], [99, 8], [Number.NaN, 2]]) {
   guest.close()
 }
 
+// GBA 电缆联机必须双向交换座位存档；双方确认互收后才由房主发出同步开始信号。
+{
+  let hostReady = 0
+  let guestReady = 0
+  let hostPeerState = null
+  let guestPeerState = null
+  const host = new JsnesNetplay(baseOptions({
+    onReady: () => hostReady++,
+    captureOwnState: () => ({ tag: 'gba-save', seat: 0, data: 'host-save' }),
+    applyPeerState: (state) => { hostPeerState = state },
+  }))
+  const guest = new JsnesNetplay(baseOptions({
+    seat: 1,
+    onReady: () => guestReady++,
+    captureOwnState: () => ({ tag: 'gba-save', seat: 1, data: 'guest-save' }),
+    applyPeerState: (state) => { guestPeerState = state },
+  }))
+  const a = new FakeDataChannel()
+  const b = new FakeDataChannel()
+  a.peer = b
+  b.peer = a
+  host.bindDc(a)
+  guest.bindDc(b)
+  a.open()
+  b.open()
+  for (let i = 0; i < 8; i++) await tick()
+  assert.deepEqual(hostPeerState, { tag: 'gba-save', seat: 1, data: 'guest-save' })
+  assert.deepEqual(guestPeerState, { tag: 'gba-save', seat: 0, data: 'host-save' })
+  assert.equal(hostReady, 1)
+  assert.equal(guestReady, 1)
+  assert.equal(host.sendLocal(0, 0x201), true)
+  assert.equal(guest.sendLocal(0, 0x102), true)
+  await tick()
+  assert.equal(guest.remoteBitsFor(0), 0x201)
+  assert.equal(host.remoteBitsFor(0), 0x102)
+  host.close()
+  guest.close()
+}
+
 // 内容不同必须明确失败，不能让两个已经分叉的模拟器继续显示“已连接”。
 {
   let error = ''
@@ -248,6 +298,52 @@ for (const [input, expected] of [[-3, 0], [2.9, 2], [99, 8], [Number.NaN, 2]]) {
   b.open()
   await tick()
   assert.match(error, /ROM 内容不同/)
+  guest.close()
+}
+
+// 数据通道只传很小的输入或 12 KiB 存档块；拒绝超大消息，避免坏包占满移动端主线程。
+{
+  let error = ''
+  const peer = new JsnesNetplay(baseOptions({ onError: (message) => { error = message } }))
+  const channel = new FakeDataChannel()
+  peer.bindDc(channel)
+  channel.open()
+  channel.onmessage?.({ data: ' '.repeat(20_000) })
+  assert.match(error, /消息格式错误或超过大小限制/)
+  assert.equal(channel.readyState, 'closed')
+  peer.close()
+}
+
+// 大卡带存档仍按 12 KiB 分片通过大小门禁，不能为了限流误拒绝合法同步。
+{
+  const payload = 'save-byte'.repeat(6_000)
+  let hostReady = 0
+  let guestReady = 0
+  let guestState = null
+  const host = new JsnesNetplay(baseOptions({
+    onReady: () => hostReady++,
+    captureOwnState: () => ({ data: payload }),
+    applyPeerState: () => {},
+  }))
+  const guest = new JsnesNetplay(baseOptions({
+    seat: 1,
+    onReady: () => guestReady++,
+    captureOwnState: () => ({ data: payload }),
+    applyPeerState: (state) => { guestState = state },
+  }))
+  const a = new FakeDataChannel()
+  const b = new FakeDataChannel()
+  a.peer = b
+  b.peer = a
+  host.bindDc(a)
+  guest.bindDc(b)
+  a.open()
+  b.open()
+  for (let i = 0; i < 32 && (!hostReady || !guestReady); i++) await tick()
+  assert.equal(hostReady, 1)
+  assert.equal(guestReady, 1)
+  assert.equal(guestState.data.length, payload.length)
+  host.close()
   guest.close()
 }
 
@@ -368,6 +464,9 @@ assert.notEqual(jsnesRomFingerprint(new Uint8Array([1, 2, 3])), jsnesRomFingerpr
 
 const playerSource = readFileSync(new URL('../src/emulator/EmulatorPlayer.tsx', import.meta.url), 'utf8')
 const panelSource = readFileSync(new URL('../src/emulator/JsnesNetplayPanel.tsx', import.meta.url), 'utf8')
+const gbaPanelSource = readFileSync(new URL('../src/emulator/GbaLinkNetplayPanel.tsx', import.meta.url), 'utf8')
+const gbaAdapterSource = readFileSync(new URL('../src/emulator/adapters/iodinegba.ts', import.meta.url), 'utf8')
+const runtimeRegistrySource = readFileSync(new URL('../src/emulator/registry.ts', import.meta.url), 'utf8')
 assert.match(playerSource, /initialRoomId=\{jsnesInviteCode\}/, '邀请房号必须交给可见面板')
 assert.match(playerSource, /targetPlatform === 'nes' && jsnesNetplay && runtime\.id !== 'jsnes'[\s\S]*jsnesInviteNotJoined/, '邀请 ROM 落到单人备用运行时后，必须明确告知玩家未加入联机房')
 assert.match(panelSource, /joinRoom\(initialRoomId\)/, '可见面板必须自动加入邀请房')
@@ -380,5 +479,47 @@ assert.doesNotMatch(
   /handle\.openJsnesNetplay\(/,
   '父组件不能在面板外偷偷先占用联机会话',
 )
+assert.match(playerSource, /get\('gbap2p'\)/, 'GBA 邀请链接必须识别独立的 gbap2p 参数')
+assert.match(runtimeRegistrySource, /ctx\.gbaLinkNetplay[\s\S]*getRuntime\('iodinegba'\)/, 'GBA 邀请必须强制选择支持串口桥的 IodineGBA')
+assert.match(playerSource, /openGbaLinkNetplay/, '播放器必须把 GBA 电缆联机入口挂到当前会话')
+assert.match(
+  playerSource,
+  /if \(platform\.id === 'gba'\) \{[\s\S]*setGbaLinkNetplayAutoHost\(true\)[\s\S]*setGbaLinkNetplayOpen\(true\)[\s\S]*return true\s*\}\s*if \(handle\?\.openNetplay\)/,
+  '详情页通用开房在 GBA 上必须优先走电缆联机，不能落到 EmulatorJS 通用房间',
+)
+assert.match(gbaAdapterSource, /captureOwnState:[\s\S]*applyPeerState:/, 'GBA 两端必须互相交换独立卡带存档')
+assert.match(gbaAdapterSource, /attachGbaCable/, '运行时必须把两份核心接到同一条本地 GBA 电缆')
+assert.match(gbaPanelSource, /onHostLeft: \(\) => \{\s*setLinkState\('closed'\)/, '对端离开后面板不能继续显示已连接')
+assert.match(
+  gbaPanelSource,
+  /if \(!handle\?\.openGbaLinkNetplay\) \{[\s\S]*autoHostSwitchStarted\.current = true[\s\S]*start\('host'\)[\s\S]*return[\s\S]*autoHostStarted\.current = true[\s\S]*start\('host'\)/,
+  '通用 GBA 开房必须在运行时切换到 IodineGBA 后自动继续建立房间',
+)
+assert.match(gbaPanelSource, /playerStatus !== 'running'[\s\S]*autoJoinStarted/, '自动加入必须等 GBA 核心真正进入运行状态')
+assert.match(gbaPanelSource, /playerStatus !== 'running'[\s\S]*autoHostStarted/, '自动开房必须等切换后的 GBA 核心真正进入运行状态')
+assert.match(
+  gbaPanelSource,
+  /const reset = \(\) => \{[\s\S]*autoHostStarted\.current = true[\s\S]*autoHostSwitchStarted\.current = true/,
+  '玩家在运行时切换期间断开后，切换完成不能又自动开房',
+)
+const gbaResumeSource = gbaAdapterSource.slice(
+  gbaAdapterSource.indexOf('const resumeSoloAfterLink'),
+  gbaAdapterSource.indexOf('const startLinkLoop'),
+)
+assert.ok(
+  gbaResumeSource.indexOf('applyLinkInput(netplaySeat, gbaInputBits(localKeys))') < gbaResumeSource.indexOf('netplayActive = false'),
+  '切回单机前必须先把联机延迟输入对齐到当前实体按键状态',
+)
+const gbaMakeLinkSource = gbaAdapterSource.slice(
+  gbaAdapterSource.indexOf('const makeLinkCores'),
+  gbaAdapterSource.indexOf('const startGbaNetplay'),
+)
+assert.doesNotMatch(gbaMakeLinkSource, /localKeys\.clear\(\)/, '建联机双核心不能清除仍由输入源路由持有的按键')
+assert.match(gbaPanelSource, /支持 GBA 普通 8\/32 位串口和 Multi-Pak；UART、GPIO、JoyBus 与 RFU/, '面板必须准确说明支持的标准串口和不支持的协议')
+assert.match(gbaAdapterSource, /GBA_LINK_PROTOCOL_VERSION\}:\$\{IODINEGBA_SHA256\}/, '双方核心或电缆协议代次不同时必须拒绝锁步')
+assert.match(gbaAdapterSource, /gbaLinkRemoteWaitExpired/, '对端输入停止但信令仍连通时必须有界退出锁步')
+assert.match(gbaAdapterSource, /inputSources\.releaseSource\('gamepad'\)[\s\S]*inputSources\.releaseSource\('touchpad'\)/,
+  '移动端后台后应释放遗留的手柄和触屏按键')
+assert.match(gbaPanelSource, /有效的 16 KiB GBA BIOS/, '切换到 IodineGBA 联机前必须提醒用户需要平台 BIOS')
 
-console.log('jsnes 联机通过：邀请进房、ICE/Offer 竞态、初始状态、ROM 对账与逐帧输入')
+console.log('联机回归通过：jsnes 握手/帧输入、GBA 双向存档同步、邀请路由与运行时接线')

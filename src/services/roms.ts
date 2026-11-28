@@ -324,8 +324,7 @@ export function encodeKey(key: string): string {
  *   3. 其余 —— 当成对象存储的 key，拼上公开访问地址；没配地址时返回空串
  */
 export function romUrlForKey(key: string, base = getRomBase()): string {
-  // 外链封面没有 -96 缩略图，coverThumbKey 会返回空串。空串若继续拼根地址，
-  // 玩家页背景图就会请求 https://assets.8bitgo.com/，而不是退回原图。
+  // 空 key 若继续拼根地址，玩家页背景图就会请求对象桶根路径，而不是显示无图占位。
   if (!key.trim()) return ''
   if (/^https?:\/\//i.test(key)) return key
   if (key.startsWith('/')) return key
@@ -392,11 +391,10 @@ export function gameVideoFallbackUrl(game: { slug: string; video?: string }, cur
 }
 
 /**
- * 封面缩放档位：卡片实际 222~254 CSS 像素，1x 屏取 240、2x 屏取 480。
- * 只开两档是为了守住 Image Transformations 免费额度（每月 5,000 个唯一变换）：
- * 650 张封面 × 2 档，即使 format=auto 的 AVIF / WebP 分开计也在额度内。
+ * 封面响应档位由同一张 R2 主图在边缘按需生成，不把四份派生图写回 R2。
+ * 浏览器会结合 sizes、实际布局和 DPR 自动挑选；统一从这组宽度生成 srcset。
  */
-const COVER_WIDTHS = [240, 480] as const
+const COVER_WIDTHS = [96, 160, 240, 480] as const
 
 type CoverImageWidth = (typeof COVER_WIDTHS)[number]
 
@@ -405,7 +403,9 @@ function transformedCoverUrl(src: string, width: CoverImageWidth, base: string, 
   // Cloudflare Image Resizing 当前会对 AVIF 源图返回 415；跳过这条必失败的请求，直接用已压缩的源图。
   if (!base || !/^https:\/\//i.test(base) || !src.startsWith(prefix) || /\.avif(?:[?#]|$)/i.test(src)) return ''
   const path = src.slice(base.length + 1)
-  return `${base}/cdn-cgi/image/width=${width},quality=80,format=${format},fit=scale-down/${path}`
+  // contain 保持比例并给出 srcset 声明的实际宽度；480 档会插值放大 300px 源图，
+  // 不会凭空恢复细节。派生响应缓存在 Cloudflare 边缘，不新增 R2 对象。
+  return `${base}/cdn-cgi/image/width=${width},quality=80,format=${format},fit=contain/${path}`
 }
 
 /** 单张 poster 没有 srcset：用 480 档覆盖 240px CSS 卡片的高密度屏，并保留不可变换源图回退。 */
@@ -421,11 +421,11 @@ export function coverImageUrl(
 /**
  * 封面的 Cloudflare Image Transformations srcset；不适用时返回空串，调用方照旧用原图。
  *
- * 只处理本站封面域下的 `covers/` 原图：外链走同源代理，缩略图本来就只有 96 像素。
+ * 只处理本站封面域下的 `covers/` 原图：外链走同源代理；96px 占位也从主图边缘变换。
  * 用 `/cdn-cgi/image/` 而不是在 Worker 里转码，是因为变换结果由 Cloudflare 边缘直接缓存，
  * 而且按浏览器 Accept 自动给 AVIF / WebP；源图仍经 Worker 读 R2，缓存寿命跟着源图
  * 的 s-maxage=600 走，所以「换封面 10 分钟内生效」不变。
- * fit=scale-down 保证 480 档不会把 300 像素的老封面放大糊掉。
+ * fit=contain 让 96/160/240/480 四个宽度描述符都对应实际返回尺寸；480 对 300 源图是插值放大。
  *
  * 构建期开关 VITE_COVER_TRANSFORM=1：本地开发的封面根地址没有 /cdn-cgi/，开了只会全部 404。
  *
@@ -445,11 +445,9 @@ export function coverSrcSet(
 const IMAGE_EXT_RE = /\.(png|jpe?g|webp|avif)$/i
 
 /**
- * 封面的 96×96 缩略图 key：`covers/xxx.webp` → `covers/xxx-96.webp`。
+ * 旧版封面的 96×96 缩略图 key：`covers/xxx.webp` → `covers/xxx-96.webp`。
  *
- * 只拼字符串，不探活 —— 老封面上传时还没有缩略图这一步，那种 key 取不到；
- * 由 Worker 在 GET 时退回原图（见 worker/src/index.js 的 -96 兜底），
- * 前端再用 onError 兜一层，所以这里不用等任何请求。
+ * 只保留给历史对象与迁移工具；新图片不再额外写入 -96 对象，前端从主图请求 CDN 96px 档。
  *
  * @returns 缩略图 key；外链地址和无法识别的 key 返回空串（调用方应当直接用原图）
  */
@@ -2057,6 +2055,8 @@ export interface UploadStage {
   resumed: number
   /** 首片真实测速后当前允许同时上传的分片数。 */
   concurrency?: number
+  /** 上传任务期间真实同时占用上传闸门的分片峰值；区别于策略上限。 */
+  peakConcurrency?: number
   /** 首个真实分片测得的上行 Mbps；不额外发送测速文件。 */
   measuredMbps?: number
   /** 已测分片平均估算的 Worker/R2 额外等待；只用于区分上行与存储等待。 */
@@ -2074,6 +2074,134 @@ export interface UploadStage {
 
 /** 上传进度回调。第二个参数只有分片上传才有，单发 PUT 时是 undefined */
 export type UploadProgress = (pct: number, stage?: UploadStage) => void
+
+type RomUploadOutcome = 'success' | 'failure' | 'cancelled'
+type RomUploadErrorClass = 'network' | 'storage' | 'integrity' | 'cancelled' | 'configuration' | 'other'
+
+function romUploadMetricId(): string | null {
+  try {
+    if (typeof crypto.randomUUID === 'function') return crypto.randomUUID()
+    const bytes = crypto.getRandomValues(new Uint8Array(16))
+    bytes[6] = (bytes[6] & 0x0f) | 0x40
+    bytes[8] = (bytes[8] & 0x3f) | 0x80
+    const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+  } catch {
+    return null
+  }
+}
+
+function romUploadSizeBand(size: number): string {
+  if (size < 8 * 1024 ** 2) return 'lt8m'
+  if (size < 24 * 1024 ** 2) return '8to24m'
+  if (size < 128 * 1024 ** 2) return '24to128m'
+  if (size < 512 * 1024 ** 2) return '128to512m'
+  return 'gte512m'
+}
+
+function romUploadEnvironment(): { device: string; network: string } {
+  if (typeof navigator === 'undefined') return { device: 'unknown', network: 'unknown' }
+  const ua = navigator.userAgent || ''
+  const mobile = /Android|iPhone|iPod|Mobile/i.test(ua)
+  const tablet = /iPad|Tablet/i.test(ua) || (/Macintosh/i.test(ua) && navigator.maxTouchPoints > 1)
+  const device = tablet ? 'tablet' : mobile ? 'mobile' : ua ? 'desktop' : 'unknown'
+  const effectiveType = (navigator as Navigator & { connection?: { effectiveType?: string } }).connection?.effectiveType
+  const network = effectiveType && ['slow-2g', '2g', '3g', '4g'].includes(effectiveType) ? effectiveType : 'unknown'
+  return { device, network }
+}
+
+function classifyRomUploadError(error: unknown): RomUploadErrorClass {
+  if (error instanceof Error && error.name === 'AbortError') return 'cancelled'
+  const message = error instanceof Error ? error.message : String(error)
+  if (/已取消|cancel/i.test(message)) return 'cancelled'
+  if (/SHA-256|完整性|ETag|清单|校验失败/i.test(message)) return 'integrity'
+  if (/Worker|R2|HTTP 5\d\d|502|503|504|合并分片/i.test(message)) return 'storage'
+  if (/网络|fetch|timeout|超时|连接/i.test(message)) return 'network'
+  if (/配置|权限|ADMIN_TOKEN|尚未配置|浏览器不能/i.test(message)) return 'configuration'
+  return 'other'
+}
+
+/** 上传采样只记低基数性能值；ROM key、游戏名、账号、IP 与精确文件大小都不会离开浏览器。 */
+function createRomUploadMetric(fileSize: number, key: string) {
+  const uploadId = romUploadMetricId()
+  if (!uploadId || !isIntegrityKey(key) || !(import.meta.env.VITE_API_URL || '').trim()) return null
+  // 只在管理员明确开始 ROM 上传时取统计发送器；玩家开局依赖图不携带后台 API 模块。
+  const senderTask = import('./romUploadMetricSender')
+  const startedAt = performance.now()
+  const environment = romUploadEnvironment()
+  let mode = fileSize > MULTIPART_THRESHOLD ? 'multipart' : 'single'
+  let firstProgressAt: number | null = null
+  let firstPartMs: number | null = null
+  let transferCompletedAt: number | null = null
+  let resumedParts = 0
+  let peakConcurrency = 0
+  let measuredMbps: number | null = null
+  let serverWaitMs: number | null = null
+  let hashWaitMs: number | null = null
+
+  const observe = (percent: number, stage?: UploadStage) => {
+    const now = performance.now()
+    if (stage) {
+      resumedParts = Math.max(resumedParts, stage.resumed)
+      peakConcurrency = Math.max(peakConcurrency, stage.peakConcurrency ?? 0)
+      if (typeof stage.measuredMbps === 'number') measuredMbps = stage.measuredMbps
+      if (typeof stage.serverWaitMs === 'number') serverWaitMs = stage.serverWaitMs
+      if (typeof stage.hashWaitMs === 'number') hashWaitMs = stage.hashWaitMs
+      // 续传分片本地核验不是本次上行的起点，单独留在准备阶段里计时。
+      if (stage.checkingTotal) return
+    }
+    firstProgressAt ??= now
+    if (stage) {
+      if (stage.done > stage.resumed && firstPartMs === null) firstPartMs = now - startedAt
+      // done=parts 表示最后一片已被 R2 确认，接下来的等待是清单/合并阶段。
+      if (stage.parts > 0 && stage.done >= stage.parts) transferCompletedAt ??= now
+    } else if (percent >= 100) {
+      transferCompletedAt ??= now
+    }
+  }
+
+  const finish = (outcome: RomUploadOutcome, errorClass: RomUploadErrorClass = 'other') => {
+    const endedAt = performance.now()
+    const elapsed = Math.max(0, endedAt - startedAt)
+    const transferMs = firstProgressAt !== null && transferCompletedAt !== null
+      ? Math.max(0, transferCompletedAt - firstProgressAt)
+      : null
+    const payload = {
+      uploadId,
+      sizeBand: romUploadSizeBand(fileSize),
+      mode,
+      outcome,
+      error: outcome === 'success' ? 'none' : errorClass,
+      ...environment,
+      durationMs: Math.round(elapsed),
+      prepareMs: firstProgressAt === null ? Math.round(elapsed) : Math.round(firstProgressAt - startedAt),
+      firstPartMs: firstPartMs === null ? null : Math.round(firstPartMs),
+      transferMs: transferMs === null ? null : Math.round(transferMs),
+      finalizeMs: transferCompletedAt === null ? null : Math.round(endedAt - transferCompletedAt),
+      measuredMbps,
+      concurrency: peakConcurrency || null,
+      serverWaitMs,
+      hashWaitMs,
+      resumed: resumedParts > 0,
+    }
+    void senderTask.then(({ sendRomUploadMetric }) => sendRomUploadMetric(payload)).catch(() => {})
+  }
+
+  const completeTransfer = () => {
+    const now = performance.now()
+    transferCompletedAt ??= now
+  }
+
+  return {
+    observe,
+    finish,
+    completeTransfer,
+    setMode: (value: 'single' | 'multipart') => { mode = value },
+    setHashWaitMs: (value: number) => {
+      if (Number.isFinite(value) && value >= 0) hashWaitMs = Math.round(value)
+    },
+  }
+}
 
 export interface UploadResult {
   key: string
@@ -2214,8 +2342,9 @@ export async function uploadRom(
   signal?: AbortSignal,
 ): Promise<UploadResult> {
   const cleanKey = key.replace(/^\/+/, '')
+  const metric = createRomUploadMetric(file.size, cleanKey)
 
-  return trackUploadActivity(`R2 上传：${cleanKey.split('/').pop() || cleanKey}`, async () => {
+  const runUpload = async () => {
     if (signal?.aborted) throw uploadAbortError()
     const api = getRomApi()
     if (!api) throw new Error('尚未配置 Worker 地址，无法上传')
@@ -2235,8 +2364,18 @@ export async function uploadRom(
       const relayIntegrityAbort = () => controller.abort(signal?.reason)
       if (signal?.aborted) relayIntegrityAbort()
       else signal?.addEventListener('abort', relayIntegrityAbort, { once: true })
+      // 小文件的单发 PUT 要等完整清单才能把清单随请求原子提交；单独记录这段本机摘要时间，
+      // 便于区分准备阶段里的 CPU 等待与 Worker 能力探测。大文件的摘要和分片上传并行，
+      // 继续用各分片实际被摘要阻塞的平均时间，避免把全文件哈希时长误记成传输等待。
+      const singlePutHashStartedAt = metric && file.size <= MULTIPART_THRESHOLD ? performance.now() : null
       integrityWork = createRomIntegrityWork(file, cleanKey, controller.signal)
       integrityTask = integrityWork.manifest
+      if (singlePutHashStartedAt !== null) {
+        void integrityTask.then(
+          () => metric?.setHashWaitMs(performance.now() - singlePutHashStartedAt),
+          () => metric?.setHashWaitMs(performance.now() - singlePutHashStartedAt),
+        )
+      }
       void integrityTask.catch(() => {}).finally(() => signal?.removeEventListener('abort', relayIntegrityAbort))
       integrityCapabilityTask = requireIntegrityWorker(api, signal)
       // 大文件的分片创建可能先于能力响应完成；如果其创建请求先失败，这个旁路探测仍可能随后失败。
@@ -2245,9 +2384,12 @@ export async function uploadRom(
 
     // ROM / BIOS 在后台上传时生成受 ETag 绑定的分块摘要；和网络上传并行计算，
     // 不把几 GB 光盘一次性读进内存，也不把哈希时间叠加到上传完成之后。
-    const uploadProgress: UploadProgress | undefined = integrityTask && onProgress
-      ? (percent, detail) => onProgress(Math.min(99, percent), detail)
-      : onProgress
+    const uploadProgress: UploadProgress | undefined = metric || onProgress
+      ? (percent, detail) => {
+          metric?.observe(percent, detail)
+          onProgress?.(integrityTask ? Math.min(99, percent) : percent, detail)
+        }
+      : undefined
     const awaitIntegrity = async () => {
       if (!integrityTask) return null
       try { return await integrityTask }
@@ -2260,6 +2402,7 @@ export async function uploadRom(
       if (!integrityTask) return result
       if (!result.etag) throw new Error(`ROM / BIOS 已上传，但 Worker 未返回对象 ETag，无法安全绑定 SHA-256 清单（${cleanKey}）`)
       if (result.integrityPublished) {
+        metric?.observe(100)
         onProgress?.(100)
         return result
       }
@@ -2283,6 +2426,7 @@ export async function uploadRom(
       } catch (error) {
         throw new Error(`ROM / BIOS 已上传，但 SHA-256 清单未能绑定到对象版本（${error instanceof Error ? error.message : String(error)}）。请重试上传或在 ROM 存储核查。`)
       }
+      metric?.observe(100)
       onProgress?.(100)
       return result
     }
@@ -2304,6 +2448,7 @@ export async function uploadRom(
           integrityController?.abort(err)
           throw err
         }
+        metric?.setMode('single')
         console.warn('[rom] Worker 没有分片接口，退回单发 PUT；大文件请部署 worker/ 的新版本')
       }
     }
@@ -2325,8 +2470,24 @@ export async function uploadRom(
     atomicIntegrityUpload = atomicUpload
     const result = await singlePut(file, cleanKey, api, uploadProgress, signal,
       atomicIntegrityUpload ? manifest ?? undefined : undefined)
+    metric?.completeTransfer()
     return await finishIntegrity(result)
-  }, activityOptions)
+  }
+
+  return trackUploadActivity(
+    `R2 上传：${cleanKey.split('/').pop() || cleanKey}`,
+    () => runUpload().then(
+      (result) => {
+        metric?.finish('success')
+        return result
+      },
+      (error) => {
+        metric?.finish(error instanceof Error && error.name === 'AbortError' ? 'cancelled' : 'failure', classifyRomUploadError(error))
+        throw error
+      },
+    ),
+    activityOptions,
+  )
 }
 
 /**

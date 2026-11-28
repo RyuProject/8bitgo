@@ -960,6 +960,66 @@ await check('续传片可读：照常复用，不重复下载', async () => {
   assert.ok(!calls.some((c) => /bytes=0-/.test(String(c.range ?? c))), '第 0 片来自续传，不该再请求')
 })
 
+await check('续传写盘明显慢于网络时停止落盘，不挡 ROM 交给模拟器', async () => {
+  const chunkBytes = 1024
+  const size = 3 * chunkBytes
+  const pendingPuts = []
+  let clears = 0
+  const resumeStore = {
+    async load() { return null },
+    put() { return new Promise((resolve) => pendingPuts.push(resolve)) },
+    async clear() { clears++ },
+  }
+  const { fetchImpl } = server(size)
+  const download = fetchBlobWithProgress('u', {
+    fetchImpl, chunkBytes, resumeKey: 'rom?v=slow-storage', resumeStore,
+  })
+  const result = await Promise.race([
+    download.then((blob) => ({ kind: 'complete', blob })),
+    new Promise((resolve) => setTimeout(() => resolve({ kind: 'blocked' }), 1800)),
+  ])
+  for (const resolve of pendingPuts) resolve(true)
+  const blob = result.kind === 'complete' ? result.blob : await download
+  assert.equal(result.kind, 'complete', '坏存储不应等到 15 秒分片写超时才交付完整 ROM')
+  expectExact(await readAll(blob), size)
+  assert.ok(pendingPuts.length <= 2, '放弃写盘前仍遵守两笔在途事务上限')
+  assert.equal(clears, 0, '迟到写入可能仍在完成时不能并发清理它')
+})
+
+await check('大量续传片的可读性探测限制为四路并行', async () => {
+  const chunkBytes = 1024
+  const savedParts = 12
+  const size = (savedParts + 1) * chunkBytes
+  const tracker = { active: 0, maximum: 0 }
+  class TrackedReadableBlob extends Blob {
+    slice(start, end, type) {
+      const sliced = super.slice(start, end, type)
+      return {
+        arrayBuffer: async () => {
+          tracker.active++
+          tracker.maximum = Math.max(tracker.maximum, tracker.active)
+          try {
+            await new Promise((resolve) => setTimeout(resolve, 2))
+            return await sliced.arrayBuffer()
+          } finally {
+            tracker.active--
+          }
+        },
+      }
+    }
+  }
+  const resumeStore = memoryResumeStore()
+  for (let index = 0; index < savedParts; index++) {
+    await resumeStore.put('rom?v=bounded', size, chunkBytes, index,
+      new TrackedReadableBlob([bodyFor(index * chunkBytes, (index + 1) * chunkBytes - 1)]))
+  }
+  const { fetchImpl } = server(size)
+  const blob = await fetchBlobWithProgress('u', { fetchImpl, chunkBytes, resumeKey: 'rom?v=bounded', resumeStore })
+  expectExact(await readAll(blob), size)
+  assert.ok(tracker.maximum > 1, '探测仍应有限并发，避免把每片改成完全串行')
+  assert.ok(tracker.maximum <= 4, `最多允许四路探测，实际 ${tracker.maximum}`)
+})
+
 await check('inMemoryUpTo：整份留在内存（memoryRomBlob 替身），一个真 Blob 都不建、不写续传片', async () => {
   const { memoryRomOf } = await import('../src/services/memoryRom.ts')
   const size = 4096 + 7

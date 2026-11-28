@@ -1,7 +1,7 @@
 # 8BitGo — 给接手的 AI 助手 / 开发者
 
 > Codex 会自动读取仓库根目录的 `AGENTS.md`，所以工程约定和「踩过的坑」都写在这儿。
-> 最后更新：2026-10-12。**「当前进度」一节有时效性，其余部分是长期有效的约定。**
+> 最后更新：2026-11-28。**「当前进度」一节有时效性，其余部分是长期有效的约定。**
 
 ---
 
@@ -19,6 +19,15 @@
 | 登录 | 邮箱验证码（**Resend** 发信）/ 密码 / Google，JWT 30 天，见 §2.13–2.14 |
 
 代码注释一律用中文，且**解释「为什么」而不是「是什么」**——现有注释里记着大量踩坑经过，改代码前先读注释。
+
+### 1.1 邮箱与账号隔离硬性规定（永久）
+
+**绝对禁止**向 `hickerzed@moledao.io` 或任何名称、邮箱、登录身份、授权令牌、别名或其他关联信息表明属于 `hickerzed` 的账号写入或存放任何内容。无论内容是否与 8BitGo 有关，都不得例外。
+
+- 不得在这些账号中创建、保存或修改邮件草稿、已发送邮件、回复、转发、附件、联系人、日历事件、云盘文件或其他数据；也不得把它们作为发件账号（已发送邮件会留存在账号中）、收件人、抄送/密送对象、备份位置或临时中转位置。
+- 不得为了测试、验证、备份、同步或“先存草稿”等原因向这些账号写入内容。若邮件或云服务工具当前授权的是 `hickerzed` 关联账号，任何写操作都必须停止。
+- 执行其他邮箱或云存储写操作前，先核对实际授权账号；身份无法确认时，不得写入。
+- 此规则适用于所有助手、自动化、工具、工作区和后续任务。只有用户明确要求修改或删除本条规则，才可改变；普通的发邮件请求、草稿确认或工具默认账号都不能覆盖它。
 
 ---
 
@@ -3698,6 +3707,19 @@ v24（`scripts/refresh-ppsspp-simd-v24.mjs` 从 v23 生成，Wasm / data 不变�
 `__8bitgoPspRangeWarmStats().rangeTimeoutMs` 用于确认当前估算。修复发布为不可变 `v25/`；
 `paths.ts`、旧入口 302、`check-ppsspp` 与 `test:ppsspp` 必须一起换代。回归：`npm run test:ppsspp`。
 
+### 2.32.0.4 PPSSPP 无网络测速 API 时不能每块反复超时（2026-11-28）
+
+Safari / 部分 WebView 没有 `navigator.connection`。v25 因而把首块 2 MiB Range 固定限在 20 秒；而成功的正式读盘不更新吞吐，
+每个后续盘块都会从 20 秒重新开始，弱网会不断丢弃已收字节再重拉。另一个边界是同步重试上限曾为 120 秒，低速估算已允许到
+180 秒时，超时退避会把下一次时限缩短。
+
+现在没有网络信息时按 0.1 Mbps 估算（2 MiB 使用 180 秒封顶），经验证的完整、对齐盘块才会更新实测吞吐，盘大小的 1 字节探测
+不参与学习；同步超时退避上限与 Range 总上限共用 180 秒常量。v27 整套实体运行时由
+`scripts/refresh-ppsspp-weak-network-v27.mjs` 从已校验的 v25 核心与 v26 桥生成，不覆盖旧目录；桥、核心胶水、Wasm/data、
+AudioWorklet、Range Worker、SRI 与完整性清单一起发布。同步更新 `paths.ts`、旧入口 302、`check-ppsspp` 与回归。
+
+回归：`npm run test:ppsspp`，含无 Network Information API、0.1 Mbps 连续读盘、探测不污染吞吐、180 秒退避上限与版本化核心完整性检查；`scripts/test-ppsspp-save-state.mjs` 还隔离验证状态包导入/导出、跨游戏拒绝、核心读档失败回滚和 IDBFS 同步。真机云存档覆盖仍要在可丢弃账号/隔离浏览器中做，不能拿管理员生产存档冒险。
+
 ### 2.32.1 PSP 必须留在普通详情页内启动，不能再复用 PS2 的独立播放器外壳
 
 PPSSPP 的 pthread 仍然需要 `Cross-Origin-Opener-Policy: same-origin` 与
@@ -4559,6 +4581,15 @@ PK / TH 两份现场：`The requested module './live-Cqhc9j-k.js' does not provi
 ### 2.39.2 EmulatorJS 单人开局不等待联机辅助资源（2026-11-27）
 
 单人开局不加载 socket.io，也不请求 ICE，避免给 ROM / 核心首传增加无关请求；邀请链接带联机会话时才在 ROM 准备期间并行预取。单人和邀请局都不能为首帧等待联机资源；room-token 与 WebRTC 钩子仍必须在 `loader.js` 前安装，开 / 加入房间前再由 `startNetplay()` 等 socket.io 和新鲜 ICE。联机资源失败只终止联机尝试，不拆正在运行的游戏。`npm run test:arcade-runtime` 必须覆盖单人不发请求、邀请预取不阻塞首帧、钩子早装和实际开房等待。
+
+### 2.39.3 GBA 双人电缆联机（2026-11-28）
+
+GBA 联机使用 `GbaLinkNetplayPanel` + IodineGBA：每位玩家本机运行两份核心，将两份串口接到 `gbaLinkCable.ts`，数据通道只传按帧编号的输入和各自座位的电池存档；不传画面。IodineGBA 需要管理员配置有效的 16 KiB GBA BIOS。双方必须使用相同 ROM、BIOS、IodineGBA 构建和电缆协议。`gameId` 必须包含 `IODINEGBA_SHA256` 与 `GBA_LINK_PROTOCOL_VERSION`；串口时序或座位输入含义变化时递增电缆协议，避免旧页面继续锁步并静默分叉。
+
+- 通用 GBA 开房必须优先走电缆面板；EmulatorJS 的 `openNetplay` 不是 GBA 双机串口能力。切换到 IodineGBA 后，自动加入 / 开房要等播放器状态到 `running`，此时核心才可接收联机请求。
+- 当前只支持普通 8/32 位串口和 Multi-Pak。UART、GPIO、JoyBus、RFU 或两端不一致的串口配置必须明确失败关闭；不能伪造传输结果继续运行。锁步输入固定 60Hz，最多补 2 帧；对端输入停止 15 秒后结束联机，后台标签页不累计等待时间。
+- 每端同时模拟两份 GBA 核心，主线程和纯 JS 备用核心会增加移动设备负载；`Cartridge.getROMArray()` 必须保留只读 ROM 的共享视图，不能每个核心复制最多 32 MiB 卡带。只渲染和输出本机座位，远端镜像不能复制画面或音频。后台切换要释放手柄和触屏输入，断开时保留本机座位并释放另一份核心。
+- 回归：`npm run test:gba-link-cable`（生产 IodineGBA 串口 / CPU、两端锁步及真实 `mount` 适配器）；`npm run test:jsnes`（共享 WebRTC 数据通道握手、存档分片与邀请接线）。本地假数据通道不能证明公网 ICE、特定商业游戏或跨网络可玩；对外宣称可用前仍需有 TURN 配置的真实浏览器双端实测。
 
 ### 2.40 塞班 / N-Gage：卡带转储 ZIP 由本站脚本导入 E 盘（2026-11-19）
 

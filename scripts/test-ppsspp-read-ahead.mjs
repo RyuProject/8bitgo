@@ -5,7 +5,16 @@ import vm from 'node:vm'
 const source = readFileSync(new URL('../vendor/ppsspp/range-read-ahead.js', import.meta.url), 'utf8')
 const BLOCK = 2 * 1024 * 1024
 
-function makeRuntime(effectiveType = '4g', saveData = false, deviceMemory = 8, hardwareConcurrency = 8, sharedWorker = false, totalBlocks = 6, discUrl = 'https://assets.test/game.chd', downlink) {
+class BrowserTextDecoder extends TextDecoder {
+  decode(input, options) {
+    if (input?.buffer instanceof SharedArrayBuffer) {
+      throw new TypeError("Failed to execute 'decode' on 'TextDecoder': The provided ArrayBufferView value must not be shared.")
+    }
+    return super.decode(input, options)
+  }
+}
+
+function makeRuntime(effectiveType = '4g', saveData = false, deviceMemory = 8, hardwareConcurrency = 8, sharedWorker = false, totalBlocks = 6, discUrl = 'https://assets.test/game.chd', downlink, syncDurationMs = 0, mobile = false, sharedPortMode = false, brokerPortMode = false) {
   const total = BLOCK * totalBlocks
   const requests = []
   const pending = []
@@ -16,6 +25,7 @@ function makeRuntime(effectiveType = '4g', saveData = false, deviceMemory = 8, h
   let competingJobsAtWait = 0
   let syncFailures = 0
   let syncFailMode = 'throw'
+  let fakeNow = 1_000_000
   const timeoutsSeen = []
 
   class FakeWorker {
@@ -43,6 +53,68 @@ function makeRuntime(effectiveType = '4g', saveData = false, deviceMemory = 8, h
     }
 
     terminate() {}
+  }
+
+  class FakeSharedWorker {
+    constructor() {
+      this.port = {
+        onmessage: null,
+        onerror: null,
+        close() {},
+        start: () => this.port.onmessage?.({ data: { type: 'ready' } }),
+        postMessage: (data) => {
+          if (data.type === 'cancel') return
+          if (data.type !== 'fetch') return
+          requests.push({
+            start: data.start, end: data.end, async: true, shared: true, timeout: data.timeoutMs,
+            headers: new Map(),
+          })
+          new Uint8Array(data.bytes).fill(7)
+          const state = new Int32Array(data.state)
+          if (data.state.byteLength > 8) {
+            const rawHeaders = new TextEncoder().encode(
+              `content-range: bytes ${data.start}-${data.end}/${data.total}\r\netag: \"disc-v1\"\r\n`,
+            )
+            new Uint8Array(data.state, 8).set(rawHeaders)
+          }
+          Atomics.store(state, 0, 1)
+          Atomics.notify(state, 0)
+          this.port.onmessage?.({ data: { type: 'done', id: data.id, key: data.key } })
+        },
+      }
+    }
+  }
+
+  class FakeBrokerPort {
+    constructor() {
+      this.onmessage = null
+      this.onerror = null
+    }
+    start() {}
+    close() {}
+    postMessage(data) {
+      if (data.type === 'ping') {
+        this.onmessage?.({ data: { type: 'ready', id: data.id } })
+        return
+      }
+      if (data.type === 'cancel') return
+      if (data.type !== 'fetch') return
+      requests.push({
+        start: data.start, end: data.end, async: true, shared: true, timeout: data.timeoutMs,
+        headers: new Map(),
+      })
+      new Uint8Array(data.bytes).fill(7)
+      const state = new Int32Array(data.state)
+      if (data.state.byteLength > 8) {
+        const rawHeaders = new TextEncoder().encode(
+          `content-range: bytes ${data.start}-${data.end}/${data.total}\r\netag: "disc-v1"\r\n`,
+        )
+        new Uint8Array(data.state, 8).set(rawHeaders)
+      }
+      Atomics.store(state, 0, 1)
+      Atomics.notify(state, 0)
+      this.onmessage?.({ data: { type: 'done', id: data.id, key: data.key } })
+    }
   }
 
   class FakeXMLHttpRequest {
@@ -86,6 +158,7 @@ function makeRuntime(effectiveType = '4g', saveData = false, deviceMemory = 8, h
         if (syncFailMode === 'throw') throw new Error('NetworkError: Failed to execute send')
         if (syncFailMode === 'timeout') {
           timeoutsSeen.push(this.timeout)
+          fakeNow += this.timeout
           const error = new Error('Timed out'); error.name = 'TimeoutError'; throw error
         }
         this.readyState = 4
@@ -113,8 +186,10 @@ function makeRuntime(effectiveType = '4g', saveData = false, deviceMemory = 8, h
         activeAsync++
         maxActiveAsync = Math.max(maxActiveAsync, activeAsync)
         pending.push(finish)
+      } else {
+        fakeNow += syncDurationMs
+        finish()
       }
-      else finish()
     }
 
     abort() {
@@ -132,24 +207,38 @@ function makeRuntime(effectiveType = '4g', saveData = false, deviceMemory = 8, h
     }
   }
 
+  const navigator = {
+    deviceMemory,
+    hardwareConcurrency,
+    maxTouchPoints: mobile ? 5 : 0,
+    userAgent: mobile ? 'Mozilla/5.0 (Linux; Android 10) Mobile' : 'Desktop Test Browser',
+  }
+  if (effectiveType !== null) {
+    navigator.connection = { effectiveType, saveData, ...(downlink === undefined ? {} : { downlink }) }
+  }
   const context = {
     XMLHttpRequest: FakeXMLHttpRequest,
-    navigator: { connection: { effectiveType, saveData, ...(downlink === undefined ? {} : { downlink }) }, deviceMemory, hardwareConcurrency },
+    navigator,
     console,
     Map,
     ArrayBuffer,
     Number,
     String,
-    Date,
+    Date: { now: () => fakeNow },
     Uint8Array,
     SharedArrayBuffer,
+    TextEncoder,
+    TextDecoder: BrowserTextDecoder,
+    SharedWorker: sharedPortMode ? FakeSharedWorker : undefined,
+    __8bitgoRangeBrokerPort: brokerPortMode ? new FakeBrokerPort() : undefined,
     URL,
     location: { href: 'https://8bitgo.test/ppsspp/v15/PPSSPPSDL.worker.js' },
-    ENVIRONMENT_IS_PTHREAD: sharedWorker,
-    Worker: sharedWorker ? FakeWorker : undefined,
+    ENVIRONMENT_IS_PTHREAD: sharedWorker || sharedPortMode || brokerPortMode,
+    Worker: sharedWorker || sharedPortMode ? FakeWorker : undefined,
     Atomics: {
       load: Atomics.load.bind(Atomics),
       store: Atomics.store.bind(Atomics),
+      add: Atomics.add.bind(Atomics),
       notify: Atomics.notify.bind(Atomics),
       wait(view, index, expected) {
         sharedWaits++
@@ -199,6 +288,22 @@ function makeRuntime(effectiveType = '4g', saveData = false, deviceMemory = 8, h
     failNextSync: (count, mode = 'throw') => { syncFailures = count; syncFailMode = mode },
     timeoutsSeen,
   }
+}
+
+{
+  // Chromium DedicatedWorker 没有 SharedWorker 构造器。没有网络测速 API 时仍要用页面 Broker 合并需求 Range，
+  // 但不能因此打开投机预读。
+  const runtime = makeRuntime(null, false, 8, 8, false, 6, 'https://assets.test/no-network-api.chd', undefined, 0, true, false, true)
+  runtime.demand(0, 0, '')
+  const before = runtime.requests.filter((request) => !request.async).length
+  const shared = runtime.demand(0, BLOCK - 1)
+  assert.equal(shared.status, 206)
+  assert.equal(runtime.requests.filter((request) => !request.async).length, before,
+    'pthread 的 MessagePort Broker 命中时不应再发同步 XHR')
+  assert.equal(runtime.context.__8bitgoPspRangeWarmStats().sharedDemandRequests, 1,
+    '弱网无预读时仍应启用跨 pthread 正式读盘 Broker')
+  assert.equal(runtime.context.__8bitgoPspRangeWarmStats().concurrency, 0,
+    'Broker 去重不能隐式开启投机下载')
 }
 
 {
@@ -341,6 +446,58 @@ function makeRuntime(effectiveType = '4g', saveData = false, deviceMemory = 8, h
 }
 
 {
+  const overreported = makeRuntime('4g', false, 8, 8, false, 6, 'https://assets.test/overreported.chd', 10)
+  overreported.demand(0, BLOCK - 1)
+  const first = overreported.requests.find((request) => !request.async)
+  assert.ok(first.timeout >= 120_000,
+    '工作线程尚无实测吞吐时不能因为 4G downlink 虚高而把首个 2 MiB Range 限在 20 秒')
+}
+
+{
+  const mobile = makeRuntime('4g', false, 8, 8, false, 6, 'https://assets.test/mobile-slow.chd', 10, 17_000, true)
+  mobile.demand(0, BLOCK - 1)
+  assert.equal(mobile.requests.filter((request) => !request.async).at(-1).timeout, 120_000,
+    '手机 4G 虚高但尚无实测时首块至少保留 120 秒')
+  assert.equal(mobile.context.__8bitgoPspRangeWarmStats().concurrency, 1,
+    '手机首块不能因虚高测速立即发多路投机 Range')
+  assert.ok(Math.abs(mobile.context.__8bitgoPspRangeWarmStats().measuredMbps - 0.99) < 0.03,
+    '手机正式盘块应更新实际吞吐样本')
+  mobile.demand(BLOCK, BLOCK * 2 - 1)
+  assert.equal(mobile.requests.filter((request) => !request.async).at(-1).timeout, 120_000,
+    '手机低于 1 Mbps 的实测盘块也必须保留至少 120 秒')
+  assert.equal(mobile.context.__8bitgoPspRangeWarmStats().concurrency, 1,
+    '手机低实测速率下只能保留一条滚动预读')
+}
+
+{
+  // 没有 Network Information API 的浏览器先用保守时限；有效盘块的实测吞吐应接管后续估算。
+  const probe = makeRuntime(null)
+  probe.context.__8bitgoCreatePspRangeXhr()
+  assert.equal(probe.context.__8bitgoPspRangeWarmStats().concurrency, 0,
+    '无网络测速 API 且尚无正文样本时不能按设备核心数启动投机预读')
+  probe.demand(0, 0, '')
+  assert.equal(probe.context.__8bitgoPspRangeWarmStats().measuredMbps, 0,
+    '单字节盘大小探测不能污染真实读盘吞吐')
+
+  const slowUnknown = makeRuntime(null, false, 8, 8, false, 6, 'https://assets.test/slow-unknown.chd', undefined, 168_000)
+  slowUnknown.demand(0, BLOCK - 1)
+  const first = slowUnknown.requests.filter((request) => !request.async).at(-1)
+  assert.equal(first.timeout, 180_000, '无网络测速信息时首块 2 MiB 读盘应允许弱网完成')
+  assert.ok(Math.abs(slowUnknown.context.__8bitgoPspRangeWarmStats().measuredMbps - 0.1) < 0.01,
+    '正式读盘成功后应记录约 0.1 Mbps 的实测吞吐')
+  assert.equal(slowUnknown.activeAsync(), 1,
+    '实测低于 1 Mbps 后最多只允许一条滚动预读，不能让投机请求挤满弱链路')
+  assert.equal(slowUnknown.context.__8bitgoPspRangeWarmStats().depth, 1,
+    '实测低于 1 Mbps 后预读窗口必须只保留一块')
+
+  slowUnknown.demand(BLOCK, BLOCK * 2 - 1)
+  const syncRequests = slowUnknown.requests.filter((request) => !request.async)
+  assert.equal(syncRequests.length, 2, '慢速连续读盘每块只请求一次，不应反复超时重下')
+  assert.equal(syncRequests[1].timeout, 180_000,
+    '实测低速后下一块仍应保留有限但足够的时限')
+}
+
+{
   const slowShared = makeRuntime('3g', false, 8, 8, true, 6, 'https://assets.test/slow.chd', 0.2)
   slowShared.readyWorker()
   slowShared.demand(0, BLOCK - 1)
@@ -471,7 +628,7 @@ function makeRuntime(effectiveType = '4g', saveData = false, deviceMemory = 8, h
   assert.throws(() => xhr.send(null), /NetworkError/, '最后一次失败原样抛给 Emscripten')
   assert.equal(broken.requests.filter((request) => !request.async).length, 5, '首发 + 4 次重试')
 
-  // 慢线路：每次超时后把时限翻倍再试，第三次在 120 秒时限内读完
+  // 慢线路：无实测吞吐时首块至少留 120 秒，超时后的退避仍不会超过 180 秒上限。
   const slow = makeRuntime('4g', false, 8, 8, false, 6, 'https://assets.test/game.chd?romv=abc-1')
   slow.failNextSync(2, 'timeout')
   const slowXhr = slow.context.__8bitgoCreatePspRangeXhr()
@@ -482,9 +639,45 @@ function makeRuntime(effectiveType = '4g', saveData = false, deviceMemory = 8, h
   slowXhr.onload = () => { slowLoaded = true }
   slowXhr.send(null)
   assert.equal(slowLoaded, true)
-  assert.deepEqual(slow.timeoutsSeen, [30_000, 60_000], '第一次 30 秒超时后第二次放宽到 60 秒')
-  assert.equal(slowXhr.timeout, 120_000, '第二次超时后放宽到 120 秒上限')
+  assert.deepEqual(slow.timeoutsSeen, [120_000, 180_000], '未实测首块至少 120 秒，后续超时放宽到 180 秒')
+  assert.equal(slowXhr.timeout, 180_000, '时限不能超过 180 秒上限')
   assert.equal(slow.context.__8bitgoPspRangeWarmStats().syncTimeouts, 2)
+
+  // 网络估算允许超过 120 秒时，失败退避不能把原有长时限反向缩短。
+  const long = makeRuntime('4g', false, 8, 8, false, 6, 'https://assets.test/game.chd?romv=abc-1')
+  long.failNextSync(1, 'timeout')
+  const longXhr = long.context.__8bitgoCreatePspRangeXhr()
+  longXhr.open('GET', 'https://assets.test/game.chd?romv=abc-1', false)
+  longXhr.timeout = 100_000
+  longXhr.setRequestHeader('Range', `bytes=0-${BLOCK - 1}`)
+  longXhr.send(null)
+  assert.deepEqual(long.timeoutsSeen, [120_000], '长时限超时前仍须应用更高的弱网首块下限')
+  assert.equal(longXhr.timeout, 180_000, '长时限超时后应放宽到 180 秒总上限，不能降为 120 秒')
 }
 
-console.log('✔ PSP 自适应滚动预读：共享 Worker 命中、同步等待、四路填充、追尾扩窗与版本隔离均通过')
+{
+  const runtime = makeRuntime('4g', false, 8, 8, false, 6, 'https://assets.test/shared.chd', undefined, 0, false, true)
+  runtime.demand(0, 0, '')
+  const before = runtime.requests.filter((request) => !request.shared).length
+  const xhr = runtime.demand(0, BLOCK - 1)
+  assert.equal(xhr.status, 206)
+  assert.equal(xhr.response.byteLength, BLOCK)
+  assert.match(xhr.getAllResponseHeaders(), /etag: "disc-v1"/i,
+    '共享 Range 必须把核心后续校验要用的 ETag 交还给 PPSSPP')
+  assert.equal(runtime.requests.filter((request) => !request.shared).length, before,
+    'SharedWorker 能用同步共享缓冲返回正文时不能再发一条原生同步 XHR')
+  assert.equal(runtime.context.__8bitgoPspRangeWarmStats().sharedDemandRequests, 1)
+}
+
+{
+  const runtime = makeRuntime(null, false, 8, 8, false, 6, 'https://assets.test/messageport-first-demand.chd', undefined, 0, false, false, true)
+  runtime.demand(0, 0, '')
+  const before = runtime.requests.filter((request) => !request.shared).length
+  const xhr = runtime.demand(0, BLOCK - 1)
+  assert.equal(xhr.status, 206)
+  assert.equal(runtime.requests.filter((request) => !request.shared).length, before,
+    'pthread 通过 MessagePort 初始化 Broker 后应直接共享响应，不能再发原生同步请求')
+  assert.equal(runtime.context.__8bitgoPspRangeWarmStats().sharedDemandRequests, 1)
+}
+
+console.log('✔ PSP 自适应 Range：独立与共享 Worker 命中、同步等待、跨线程按需读取和版本隔离均通过')

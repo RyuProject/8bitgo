@@ -1,0 +1,139 @@
+{
+  "runtime": "PPSSPP WebAssembly",
+  "runtimeGeneration": "v33",
+  "upstream": "https://github.com/root-hunter/ppsspp-wasm",
+  "commit": "0dbfaca62a8a924abc2c5dd5dd0733b668e5e68a",
+  "emscripten": "5.0.7",
+  "rangeStreaming": true,
+  "rangeLoaderRevision": 4,
+  "blockBytes": 2097152,
+  "chdBlockBytes": 2097152,
+  "memoryCacheBytes": 100663296,
+  "rangeTelemetry": true,
+  "objectValidator": "etag-or-last-modified",
+  "workerModel": "self-script",
+  "offscreenCanvas": true,
+  "offscreenFramebuffer": "fallback",
+  "webglContext": "worker-offscreen-canvas-with-proxy-fallback",
+  "proxiedWebglPreloop": "fallback-skip-worker-token",
+  "pthreadAudioContext": "shared-ring-buffer-worklet-fade-v2",
+  "performanceProfile": "adaptive-performance-first-device-v1",
+  "maxCanvasPixels": 293760,
+  "pthreadPoolMax": 8,
+  "lto": true,
+  "performanceTelemetry": true,
+  "inputLatencyProfile": "inflight-2-vsync-off-buffered-native",
+  "graphicsCompatibilityProfile": "buffered-native-v1",
+  "startupReadinessProfile": "core-boot-log-v1",
+  "localDiscProfile": "service-worker-range-v1",
+  "preloadAssetsProfile": "runtime-no-debugger",
+  "rangeReadAheadProfile": "adaptive-rolling-buffer-messageport-page-broker-demand-coalescing-v3",
+  "rangeReadAheadBlocks": 10,
+  "rangeReadAheadCacheBytes": 25165824,
+  "webFeaturesBridge": "savestate-controls-v1",
+  "mediaEngine": "ffmpeg-h264-audio-minimal",
+  "ffmpegCommit": "1e3b4965632f60b1d85360261d1b9dd45444bc71",
+  "mediaDecoders": [
+    "h264",
+    "aac",
+    "atrac3",
+    "atrac3p",
+    "mp3",
+    "mp3float"
+  ],
+  "artifactsInstalled": true,
+  "artifacts": {
+    "PPSSPPSDL.js": {
+      "bytes": 426052,
+      "sha256": "411c2f1b779302b1c0feb6349114a6da3917dd9dc9a9f3ee8640403317a1719b"
+    },
+    "PPSSPPSDL.wasm": {
+      "bytes": 18179755,
+      "sha256": "f3d66fd8368cf937fca7067927084fe64e167881465a6b53e75d0ea2c0451a12"
+    },
+    "PPSSPPSDL.data": {
+      "bytes": 19434861,
+      "sha256": "1b2a982c85a1c25577e4d154a0f21c91c72f070a7f30a6e6f7465e2d6e941e82"
+    },
+    "range-prefetch-worker.js": {
+      "bytes": 6814,
+      "sha256": "0caeab94ba9d65fd75a45b66c461b0cd19206832b3747e550a7687b9a6c87ec1"
+    },
+    "local-disc-sw.js": {
+      "bytes": 3664,
+      "sha256": "4d2b4ebeb17e55237d959ebd4e7c9609fda7ed06c977ce93d470331432569fd1"
+    },
+    "host.js": {
+      "bytes": 44882,
+      "sha256": "cbedf74c8e128e843387b8744b336e7c9a5457e0500cd805d2c2cef7bd8e7a68"
+    },
+    "SOURCE.txt": {
+      "bytes": 4049,
+      "sha256": "c0c2b215fee8c6f90832c7ef892ceeeb2655ce5f9b7ff5853b44fe3273fe4cdb"
+    },
+    "index.html": {
+      "bytes": 1106,
+      "sha256": "362f1902e2b00122e37da28e685013c27b72facbaccf465df39f383e56787808"
+    },
+    "audio-worklet.js": {
+      "bytes": 3565,
+      "sha256": "0d9c77a1b45b552e78200c1d90d1902c177da9da1625ee38e5ad200700d9662a"
+    },
+    "PPSSPPSDL.data.br": {
+      "bytes": 9215602,
+      "sha256": "85608b7ab62e77dd18049145de098f24d403631d5aeb33efff488f16b255c9d4"
+    },
+    "PPSSPPSDL.wasm.br": {
+      "bytes": 4070949,
+      "sha256": "4a0a1e0921a67dbf2b1c83fdbbd443ff00975dc7270c1fc02247bf639cfef1ba"
+    }
+  },
+  "rangeReadAheadConcurrency": 4,
+  "browserHttpCache": "romv-pinned-no-conditional-v1",
+  "cnEdgeCore": "wasm-data-edgeone-fallback-v1",
+  "rangeSyncRetryProfile": "status0-backoff-4x-45s-timeout-escalate-v2",
+  "workerErrorDiagnostics": "stack-v1",
+  "canvasLimitProfile": "qq/mobile/weak/low=480x272;default=640x360;highEndDesktop=720x408",
+  "runtimeErrorSaveFlush": "idbfs-flush-before-report-1500ms-v1",
+  "rangeAlternateRouteProfile": "probe-and-sync-failover-v1",
+  "v128InvokeProfile": "wasm-call-indirect-trampoline-v1",
+  "rangeTransferTimeoutProfile": "conservative-mobile-range-timeout-v4",
+  "coreAssetGeneration": "v33",
+  "runtimeIntegrityProfile": "sha256-2miblocks-v1",
+  "integrityBlocks": {
+    "PPSSPPSDL.wasm": {
+      "bytes": 18179755,
+      "blockBytes": 2097152,
+      "blocks": [
+        "a3cd1ec2d32cb437e856d9e6acbf733db928a39251e4c383e12e1e67228ce38f",
+        "75095427188698dc63fd8664b7ec0e10dabf0664b8f52cf1c131255e2eccbb7c",
+        "c1e500a2f28954c474edaa6c89d89a3baa2a65d29922d15c6de0a93ebae262d2",
+        "e029a020d04a23ec5d282d303c43b7af9be10137f31c1fe0a88653f603612d7a",
+        "adfdc00238af9b2a05c2cbef7c9bdefdf257a61668d532df97a57448fa6b7e79",
+        "f9c73b408832c58d37074ef30777ba873686ebafc134e9b4eb273a1cfaf47a8c",
+        "6ba681fcfaa713e596c198ac568368a9e4cd40320ce7661d959ad0e2ff0dd892",
+        "bb1e2f327fd03982ea616947912c22ca315b195b27756afee3919646fe84fa79",
+        "85f00e6a242a998aa432d10ed7c0ec0bbd4fe459f1a4c4eaf5e597be827558c3"
+      ]
+    },
+    "PPSSPPSDL.data": {
+      "bytes": 19434861,
+      "blockBytes": 2097152,
+      "blocks": [
+        "b0daa529c7230e963bd5c8481ab86914a51f30e0fea240b2b3db00f50abcbc19",
+        "33b8571827ae0bf5e65641419ef9c16e287017b94e03cc5f4cdef696d5980b92",
+        "ea144524ec7319b4c14e5da83b8c187a56060e7bfe82f4fce9881c353f5e2f26",
+        "43c103b41fea51be2d7dd00d8cbcef2bce5db22d206c2447fa10586fb8925b86",
+        "97df3b68edee7d68a6c987d47e428ecbaa1e2c247fea503a8319e089b9781e6d",
+        "12cd4aac259fa753f1aa6446c9c694cd589126c555815d6a306d625cfc7bf8c4",
+        "0f6dc27432664f53dab5a9973d413040972321dbcc24c78c802e3099049e4eed",
+        "2bf11ed28857d7b6b968bd887bff219d8ce8443e06f68c6405f4b5951f6a16dc",
+        "a3444d23cc6d2c4c271d57f60bd0871120235766722ea258bcebc50453f21ccb",
+        "e2b0d9e6427b68f1854a12b8066babd4682952ae827008a2d4d422cf57422023"
+      ]
+    }
+  },
+  "mobileRangeReadAheadConcurrency": 2,
+  "mobileSlowRangeReadAheadConcurrency": 1,
+  "touchControlsProfile": "mobile-always-visible-portrait-layout-v1"
+}

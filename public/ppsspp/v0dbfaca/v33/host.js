@@ -1,0 +1,912 @@
+/*
+ * 8BitGo ↔ PPSSPP 桥。
+ *
+ * 远程游戏只把 URL 作为 argv 交给打过补丁的核心。这里故意没有“整盘请求后转内存”逻辑：
+ * 一旦有人把整盘下载逻辑加回来，scripts/test-ppsspp-range.mjs 会直接失败。
+ */
+(() => {
+  'use strict'
+
+  const SOURCE = '8bitgo-ppsspp-bridge'
+  const VERSION = 1
+  // Cloudflare 对这组资源的缓存键忽略查询串，旧 data 曾在 `?r=17` 下继续返回 r16。
+  // 因此 v22 实体目录才是原子换代边界；目录内所有文件必须来自同一次发布。
+  const RUNTIME_SCRIPT = 'PPSSPPSDL.js'
+  const AUDIO_WORKLET_SCRIPT = 'audio-worklet.js'
+  const CORE_ASSET_PATH = './'
+  const SAVE_ROOT = '/home/web_user/.config/ppsspp'
+  const MEMSTICK_DIRS = ['PSP', 'PSP/SYSTEM', 'PSP/SAVEDATA', 'PSP/PPSSPP_STATE', 'PSP/GAME']
+  const MEMSTICK_SEED_FILES = ['PSP/SYSTEM/controls.ini']
+  const PERFORMANCE_CONFIG_PATH = '/8bitgo-performance.ini'
+  const STATE_MAGIC = '8BGPSP1\n'
+  const STATE_FORMAT = '8bitgo-ppsspp-state'
+  const MAX_STATE_BYTES = 96 * 1024 * 1024
+  const NATIVE_TIMEOUT_MS = 30_000
+  const BOOTED_LOG_PATTERN = /\bBooted\s+.+\.\.\./
+  const LOCAL_DISC_SOURCE = '8bitgo-psp-local-disc-v1'
+  const LOCAL_DISC_MAX_READ_BYTES = 4 * 1024 * 1024
+
+  /*
+    大陆访客：父页面在 iframe 地址上带 edge=cn（src/emulator/paths.ts 的 runtimeBase 判定），两份大文件
+    改从 EdgeOne 的 https://cn.<裸域>/_cn<本目录> 取。JS / Worker / Service Worker / AudioWorklet 必须同源，
+    不在名单里。胶水没有覆盖 wasm 加载的钩子，所以只对这两个加速地址包一层 fetch：
+    第一次走 EdgeOne；失败，或同一文件被第二次请求（上一次流式编译 / 下载中途断了），改走同源。
+  */
+  const CORE_EDGE_FILES = ['PPSSPPSDL.wasm', 'PPSSPPSDL.data']
+  const coreEdgeBase = (() => {
+    try {
+      if (new URLSearchParams(location.search).get('edge') !== 'cn') return ''
+      const host = location.hostname.replace(/^www\./, '')
+      if (!host.includes('.') || /^[\d.]+$/.test(host) || host.startsWith('cn.')) return ''
+      return `${location.protocol}//cn.${host}/_cn${new URL(CORE_ASSET_PATH, location.href).pathname}`
+    } catch {
+      return ''
+    }
+  })()
+  const coreUrl = (path) => CORE_EDGE_FILES.includes(path)
+    ? (coreEdgeBase ? coreEdgeBase + path : new URL(CORE_ASSET_PATH + path, location.href).href)
+    : new URL(path, location.href).href
+  const CORE_INTEGRITY = Object.freeze({"PPSSPPSDL.wasm":{"bytes":18179755,"blockBytes":2097152,"blocks":["a3cd1ec2d32cb437e856d9e6acbf733db928a39251e4c383e12e1e67228ce38f","75095427188698dc63fd8664b7ec0e10dabf0664b8f52cf1c131255e2eccbb7c","c1e500a2f28954c474edaa6c89d89a3baa2a65d29922d15c6de0a93ebae262d2","e029a020d04a23ec5d282d303c43b7af9be10137f31c1fe0a88653f603612d7a","adfdc00238af9b2a05c2cbef7c9bdefdf257a61668d532df97a57448fa6b7e79","f9c73b408832c58d37074ef30777ba873686ebafc134e9b4eb273a1cfaf47a8c","6ba681fcfaa713e596c198ac568368a9e4cd40320ce7661d959ad0e2ff0dd892","bb1e2f327fd03982ea616947912c22ca315b195b27756afee3919646fe84fa79","85f00e6a242a998aa432d10ed7c0ec0bbd4fe459f1a4c4eaf5e597be827558c3"]},"PPSSPPSDL.data":{"bytes":19434861,"blockBytes":2097152,"blocks":["b0daa529c7230e963bd5c8481ab86914a51f30e0fea240b2b3db00f50abcbc19","33b8571827ae0bf5e65641419ef9c16e287017b94e03cc5f4cdef696d5980b92","ea144524ec7319b4c14e5da83b8c187a56060e7bfe82f4fce9881c353f5e2f26","43c103b41fea51be2d7dd00d8cbcef2bce5db22d206c2447fa10586fb8925b86","97df3b68edee7d68a6c987d47e428ecbaa1e2c247fea503a8319e089b9781e6d","12cd4aac259fa753f1aa6446c9c694cd589126c555815d6a306d625cfc7bf8c4","0f6dc27432664f53dab5a9973d413040972321dbcc24c78c802e3099049e4eed","2bf11ed28857d7b6b968bd887bff219d8ce8443e06f68c6405f4b5951f6a16dc","a3444d23cc6d2c4c271d57f60bd0871120235766722ea258bcebc50453f21ccb","e2b0d9e6427b68f1854a12b8066babd4682952ae827008a2d4d422cf57422023"]}})
+  const CORE_INTEGRITY_BLOCK_BYTES = 2097152
+  const coreFetchCounts = new Map()
+  const wasmIntegrityByResponse = new WeakMap()
+  const nativeFetch = window.fetch.bind(window)
+  const requestUrl = (input) => typeof input === 'string' ? input : input instanceof URL ? input.href : input?.url || ''
+  const isCoreWasmUrl = (rawUrl) => {
+    try {
+      const url = new URL(rawUrl, location.href)
+      const sameOriginPath = new URL(CORE_ASSET_PATH + 'PPSSPPSDL.wasm', location.href)
+      if (url.origin === sameOriginPath.origin && url.pathname === sameOriginPath.pathname) return true
+      if (!coreEdgeBase) return false
+      const edgePath = new URL('PPSSPPSDL.wasm', coreEdgeBase)
+      return url.origin === edgePath.origin && url.pathname === edgePath.pathname
+    } catch {
+      return false
+    }
+  }
+  const sha256Hex = async (bytes) => {
+    const subtle = globalThis.crypto?.subtle
+    if (!subtle) throw new Error('浏览器不支持 SHA-256，无法安全校验 PSP 核心')
+    return Array.from(new Uint8Array(await subtle.digest('SHA-256', bytes)), (byte) => byte.toString(16).padStart(2, '0')).join('')
+  }
+  const verifyCoreBytes = async (source, name) => {
+    const expected = CORE_INTEGRITY[name]
+    const bytes = source instanceof Uint8Array ? source : new Uint8Array(source)
+    if (!expected || bytes.byteLength !== expected.bytes) throw new Error(name + ' 长度与可信清单不符')
+    for (let index = 0; index < expected.blocks.length; index++) {
+      const start = index * CORE_INTEGRITY_BLOCK_BYTES
+      const block = bytes.subarray(start, Math.min(bytes.byteLength, start + CORE_INTEGRITY_BLOCK_BYTES))
+      if (await sha256Hex(block) !== expected.blocks[index]) throw new Error(name + ' SHA-256 校验失败（第 ' + (index + 1) + ' 块）')
+    }
+    return bytes
+  }
+  const verifyCoreResponse = async (response, name) => {
+    const expected = CORE_INTEGRITY[name]
+    if (!expected) throw new Error(name + ' 缺少可信 SHA-256 清单')
+    if (!response.body?.getReader) return verifyCoreBytes(await response.arrayBuffer(), name)
+    const reader = response.body.getReader()
+    const block = new Uint8Array(CORE_INTEGRITY_BLOCK_BYTES)
+    let used = 0
+    let loaded = 0
+    let index = 0
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        if (!value?.byteLength) continue
+        loaded += value.byteLength
+        if (loaded > expected.bytes) throw new Error(name + ' 超过可信清单长度')
+        let offset = 0
+        while (offset < value.byteLength) {
+          const count = Math.min(block.byteLength - used, value.byteLength - offset)
+          block.set(value.subarray(offset, offset + count), used)
+          used += count
+          offset += count
+          if (used === block.byteLength) {
+            if (await sha256Hex(block) !== expected.blocks[index]) throw new Error(name + ' SHA-256 校验失败（第 ' + (index + 1) + ' 块）')
+            index++
+            used = 0
+          }
+        }
+      }
+      if (used > 0) {
+        if (await sha256Hex(block.subarray(0, used)) !== expected.blocks[index]) throw new Error(name + ' SHA-256 校验失败（第 ' + (index + 1) + ' 块）')
+        index++
+      }
+      if (loaded !== expected.bytes || index !== expected.blocks.length) throw new Error(name + ' 长度与可信清单不符（' + loaded + '/' + expected.bytes + '）')
+      return true
+    } catch (error) {
+      void reader.cancel(error).catch(() => {})
+      throw error
+    }
+  }
+  Object.defineProperty(window, '__8bitgoPspCoreIntegrity', {
+    configurable: false,
+    value: Object.freeze({ verifyCoreBytes, verifyCoreResponse }),
+  })
+  const fetchCoreResponse = async (input, init, attempt) => {
+    const url = requestUrl(input)
+    if (!coreEdgeBase || !url.startsWith(coreEdgeBase)) {
+      return nativeFetch(input, attempt > 1 ? { ...init, cache: 'reload' } : init)
+    }
+    const fallback = new URL(CORE_ASSET_PATH + url.slice(coreEdgeBase.length), location.href).href
+    if (attempt > 1) return nativeFetch(fallback, { ...init, cache: 'reload' })
+    try {
+      const response = await nativeFetch(input, init)
+      if (response.ok) return response
+      throw new Error('HTTP ' + response.status)
+    } catch (error) {
+      if (init?.signal?.aborted) throw error
+      console.warn('[ppsspp] 加速入口取核心失败，改走同源', url, error)
+      return nativeFetch(fallback, init)
+    }
+  }
+  window.fetch = async (input, init) => {
+    const url = requestUrl(input)
+    const isCoreFile = CORE_EDGE_FILES.some((name) => {
+      try { return new URL(url, location.href).pathname.endsWith('/' + name) } catch { return false }
+    })
+    const attempt = isCoreFile ? (coreFetchCounts.get(url) || 0) + 1 : 1
+    if (isCoreFile) coreFetchCounts.set(url, attempt)
+    const response = await fetchCoreResponse(input, init, attempt)
+    if (isCoreWasmUrl(url) && response.ok) {
+      // clone 的分支只留一个 2 MiB 校验块；原始响应继续交给浏览器流式编译，SHA-256 与下载并行。
+      const verification = verifyCoreResponse(response.clone(), 'PPSSPPSDL.wasm')
+      wasmIntegrityByResponse.set(response, verification)
+      verification.catch(() => {})
+    }
+    return response
+  }
+  if (typeof WebAssembly.instantiateStreaming === 'function') {
+    const nativeInstantiateStreaming = WebAssembly.instantiateStreaming.bind(WebAssembly)
+    WebAssembly.instantiateStreaming = async (source, imports) => {
+      const response = await source
+      const verification = wasmIntegrityByResponse.get(response)
+      const result = await nativeInstantiateStreaming(response, imports)
+      if (verification) await verification
+      return result
+    }
+  }
+  const nativeInstantiate = WebAssembly.instantiate.bind(WebAssembly)
+  WebAssembly.instantiate = async (source, imports) => {
+    if (source instanceof WebAssembly.Module) return nativeInstantiate(source, imports)
+    await verifyCoreBytes(source, 'PPSSPPSDL.wasm')
+    return nativeInstantiate(source, imports)
+  }
+
+
+  const canvas = document.getElementById('canvas')
+  const status = document.getElementById('status')
+  let started = false
+  let syncTimer = 0
+  let syncRunning = false
+  let syncQueued = false
+  let saveSyncEnabled = false
+  let saveIdentity = ''
+  let nativePending = null
+
+  const isOwnRuntimeFailure = (source) => {
+    if (!source) return false
+    try {
+      const url = new URL(String(source).replace(/:\d+:\d+$/, ''), location.href)
+      const runtimeRoot = new URL('.', location.href)
+      const coreRoot = new URL(CORE_ASSET_PATH, location.href)
+      const isShell = url.origin === runtimeRoot.origin && url.pathname.startsWith(runtimeRoot.pathname) && /\/host\.js$/i.test(url.pathname)
+      const isCore = url.origin === coreRoot.origin && url.pathname.startsWith(coreRoot.pathname) && /\/PPSSPPSDL\.js$/i.test(url.pathname)
+      return isShell || isCore
+    } catch {
+      return false
+    }
+  }
+
+  const wait = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms))
+
+  const fetchCoreData = async (url, expectedSize) => {
+    if (expectedSize > 0 && expectedSize !== CORE_INTEGRITY['PPSSPPSDL.data'].bytes) throw new Error('PPSSPPSDL.data 下载长度与可信清单不一致')
+    const attempts = 3
+    let lastError
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      const controller = new AbortController()
+      let stallTimer = 0
+      const armStallTimer = () => {
+        window.clearTimeout(stallTimer)
+        stallTimer = window.setTimeout(() => controller.abort('30 秒没有收到核心资源数据'), 30_000)
+      }
+      try {
+        armStallTimer()
+        const response = await fetch(url, {
+          signal: controller.signal,
+          cache: attempt === 1 ? 'force-cache' : 'reload',
+          credentials: 'same-origin',
+        })
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        const reader = response.body?.getReader()
+        if (!reader) {
+          const bytes = await response.arrayBuffer()
+          window.clearTimeout(stallTimer)
+          if (expectedSize > 0 && bytes.byteLength !== expectedSize) throw new Error('核心资源长度不正确')
+          await verifyCoreBytes(bytes, 'PPSSPPSDL.data')
+          return bytes
+        }
+        const output = expectedSize > 0 ? new Uint8Array(expectedSize) : null
+        const chunks = output ? null : []
+        let loaded = 0
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          if (!value?.byteLength) continue
+          armStallTimer()
+          if (output) {
+            if (loaded + value.byteLength > output.byteLength) throw new Error('核心资源长度超过清单值')
+            output.set(value, loaded)
+          } else {
+            chunks.push(value)
+          }
+          loaded += value.byteLength
+          const total = expectedSize > 0 ? expectedSize : loaded
+          setStatus(`正在下载 PSP 核心资源… ${Math.min(99, Math.round((loaded / total) * 100))}%`)
+        }
+        if (expectedSize > 0 && loaded !== expectedSize) {
+          throw new Error(`核心资源长度不正确（${loaded}/${expectedSize}）`)
+        }
+        window.clearTimeout(stallTimer)
+        setStatus('正在校验 PSP 核心资源…')
+        if (output) {
+          await verifyCoreBytes(output, 'PPSSPPSDL.data')
+          return output.buffer
+        }
+        const joined = new Uint8Array(loaded)
+        let offset = 0
+        for (const chunk of chunks) {
+          joined.set(chunk, offset)
+          offset += chunk.byteLength
+        }
+        await verifyCoreBytes(joined, 'PPSSPPSDL.data')
+        return joined.buffer
+      } catch (error) {
+        window.clearTimeout(stallTimer)
+        // 长度越界等解析错误发生时 reader 仍可能占着 19MB data 的连接；不先中止就重试，
+        // 慢网会同时留下多条大流，既抢 PSP Range 读盘，也把移动端内存峰值推高。
+        controller.abort('核心资源本次下载失败，终止旧数据流')
+        lastError = error
+        if (attempt >= attempts) break
+        console.warn(`[ppsspp] 核心资源下载失败，第 ${attempt + 1}/${attempts} 次重试`, error)
+        setStatus(`PSP 核心资源下载中断，正在重试（${attempt + 1}/${attempts}）…`)
+        await wait(500 * (2 ** (attempt - 1)))
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError || '核心资源下载失败'))
+  }
+
+  const performanceProfile = () => {
+    const cores = Math.max(1, Number(navigator.hardwareConcurrency) || 4)
+    const memory = Math.max(0, Number(navigator.deviceMemory) || 0)
+    const connection = navigator.connection
+    const type = String(connection?.effectiveType || '').toLowerCase()
+    const downlink = Number(connection?.downlink) || 0
+    const rtt = Number(connection?.rtt) || 0
+    const saveData = connection?.saveData === true
+    const userAgent = String(navigator.userAgent || '')
+    const qqBrowser = /(?:QQBrowser|MQQBrowser\/|QQ\/)/i.test(userAgent)
+    const mobileDevice = /Android|iPhone|iPad|iPod|Mobile/i.test(userAgent) ||
+      (navigator.platform === 'MacIntel' && Number(navigator.maxTouchPoints) > 1)
+    // 设备信息不完整时不猜高配；移动端和 QQ 浏览器优先压低每帧要处理的像素数。
+    if (qqBrowser) return { id: 'qq-compat', width: 480, height: 272, separateSasThread: false }
+    if (mobileDevice) return { id: 'mobile', width: 480, height: 272, separateSasThread: false }
+    const slowNetwork = type === 'slow-2g' || type === '2g' ||
+      (type === '3g' && ((downlink > 0 && downlink <= 3) || rtt >= 400)) ||
+      (downlink > 0 && downlink <= 1.5) || rtt >= 800
+    // 弱网、省流或低配设备保持 PSP 原生画布；SAS 线程也只留给明确识别的桌面高配设备。
+    if (saveData || slowNetwork || cores <= 4 || (memory > 0 && memory <= 4)) {
+      return { id: 'performance', width: 480, height: 272, separateSasThread: false }
+    }
+    const highEndDesktop = cores >= 8 && memory >= 8
+    if (highEndDesktop) return { id: 'high-end', width: 720, height: 408, separateSasThread: true }
+    return { id: 'balanced', width: 640, height: 360, separateSasThread: false }
+  }
+
+  const MOBILE_TOUCH_CONFIG = "\n[Control]\nShowTouchControls = True\nTouchButtonHideSeconds = 0\nTouchButtonOpacity = 65\n\n[TouchControls.Landscape]\nShowTouchCross = True\nShowTouchCircle = True\nShowTouchSquare = True\nShowTouchTriangle = True\nShowTouchDpad = True\nShowAnalogStick = True\nShowTouchStart = True\nShowTouchSelect = True\nShowTouchLTrigger = True\nShowTouchRTrigger = True\n\n[TouchControls.Portrait]\nShowTouchCross = True\nShowTouchCircle = True\nShowTouchSquare = True\nShowTouchTriangle = True\nShowTouchDpad = True\nShowAnalogStick = True\nShowTouchStart = True\nShowTouchSelect = True\nShowTouchLTrigger = True\nShowTouchRTrigger = True\nDPadX = 0.20\nDPadY = 0.80\nDPadScale = 0.80\nAnalogStickX = 0.15\nAnalogStickY = 0.60\nAnalogStickScale = 0.80\nActionButtonCenterX = 0.75\nActionButtonCenterY = 0.80\nActionButtonScale = 0.80\nSelectKeyX = 0.42\nSelectKeyY = 0.93\nSelectKeyScale = 0.80\nStartKeyX = 0.58\nStartKeyY = 0.93\nStartKeyScale = 0.80\nLKeyX = 0.12\nLKeyY = 0.68\nLKeyScale = 0.80\nRKeyX = 0.88\nRKeyY = 0.68\nRKeyScale = 0.80\n"
+
+  const performanceConfig = (profile) => `# 8BitGo browser compatibility profile: buffered-native-v1
+[CPU]
+FastMemoryAccess = True
+SeparateSASThread = ${profile.separateSasThread ? 'True' : 'False'}
+IOTimingMethod = 0
+
+[Graphics]
+# PSP 原生分辨率是最可靠的公共基线。部分游戏把 565/8888 framebuffer 交错复用，2x 会把
+# 本应精确别名的缓冲区拆成不同渲染目标；这里统一 1x，最终画布尺寸仍由设备档位控制。
+InternalResolution = 1
+FrameSkip = 0
+AutoFrameSkip = False
+HardwareTransform = True
+SoftwareSkinning = True
+AnisotropyLevel = 0
+MultiSampleLevel = 0
+TexScalingLevel = 1
+TexDeposterize = False
+TexHardwareScaling = False
+TextureShader = Off
+VerticalSync = False
+LowLatencyPresent = False
+InflightFrames = 2
+RenderDuplicateFrames = False
+# 这些选项不允许被老访客的单游戏配置重新打开。它们是通用正确性基线，不是只给某一款游戏
+# 的补丁：跳过缓冲效果、GPU 回读或深度精度会让依赖后处理/跨帧复制的游戏花屏、黑屏或丢特效。
+SkipBufferEffects = False
+SkipGPUReadbackMode = 0
+HighQualityDepth = True
+DisableRangeCulling = False
+TextureBackoffCache = False
+BloomHack = 0\n${['mobile', 'qq-compat'].includes(profile.id) ? MOBILE_TOUCH_CONFIG : ''}\n`
+
+  const post = (type, payload = {}) => {
+    if (window.parent === window) return
+    window.parent.postMessage({ source: SOURCE, version: VERSION, type, ...payload }, location.origin)
+  }
+
+  const setStatus = (message, tone = 'info') => {
+    status.hidden = !message
+    status.textContent = message || ''
+    status.dataset.tone = tone
+  }
+
+  const respond = (requestId, ok, payload = undefined, error = undefined, transfer = [], diagnostics = undefined) => {
+    if (window.parent === window) return
+    window.parent.postMessage(
+      { source: SOURCE, version: VERSION, type: 'response', requestId, ok, payload, error, diagnostics },
+      location.origin,
+      transfer,
+    )
+  }
+
+  let syncPromise = null
+  const syncSaves = () => {
+    if (!saveSyncEnabled || typeof FS === 'undefined') return Promise.resolve()
+    if (syncRunning) {
+      syncQueued = true
+      return syncPromise || Promise.resolve()
+    }
+    syncRunning = true
+    let resolveSync
+    const currentSync = new Promise((resolve) => { resolveSync = resolve })
+    syncPromise = currentSync
+    try {
+      FS.syncfs(false, (error) => {
+        syncRunning = false
+        if (error) console.warn('[ppsspp] 存档写入 IndexedDB 失败', error)
+        const queued = syncQueued
+        syncQueued = false
+        syncPromise = null
+        if (queued) {
+          void syncSaves().then(resolveSync, resolveSync)
+        } else {
+          resolveSync()
+        }
+      })
+    } catch (error) {
+      syncRunning = false
+      syncPromise = null
+      console.warn('[ppsspp] 无法同步存档', error)
+      resolveSync()
+    }
+    return currentSync
+  }
+
+  const safeName = (name) => {
+    const tail = String(name || 'game.iso').split(/[\\/]/).pop() || 'game.iso'
+    return tail.replace(/[\u0000-\u001f]/g, '_')
+  }
+
+  const openLocalDisc = async (file) => {
+    if (!navigator.serviceWorker || typeof BroadcastChannel === 'undefined' || !crypto.randomUUID) {
+      throw new Error('当前浏览器不支持本地 PSP 光盘按需读取；请使用新版 Chromium 浏览器')
+    }
+    // 核心的 HTTP Range 读取在 pthread 上同步等待；Service Worker 只转发当前 iframe 持有的
+    // File 分片，不把 370MB～1.8GB 镜像写入 IndexedDB，也不会发往服务器。
+    const scriptUrl = new URL('local-disc-sw.js', location.href).href
+    await navigator.serviceWorker.register(scriptUrl, { scope: new URL('.', location.href).pathname })
+    await navigator.serviceWorker.ready
+    if (navigator.serviceWorker.controller?.scriptURL !== scriptUrl) {
+      await new Promise((resolve, reject) => {
+        const timer = window.setTimeout(() => {
+          navigator.serviceWorker.removeEventListener('controllerchange', check)
+          reject(new Error('本地光盘读取服务未能接管页面'))
+        }, 15_000)
+        const check = () => {
+          if (navigator.serviceWorker.controller?.scriptURL !== scriptUrl) return
+          window.clearTimeout(timer)
+          navigator.serviceWorker.removeEventListener('controllerchange', check)
+          resolve()
+        }
+        navigator.serviceWorker.addEventListener('controllerchange', check)
+        check()
+      })
+    }
+    const session = crypto.randomUUID()
+    const channel = new BroadcastChannel(`${LOCAL_DISC_SOURCE}:${session}`)
+    channel.onmessage = async (event) => {
+      const message = event.data
+      if (message?.source !== LOCAL_DISC_SOURCE || message.type !== 'read' || typeof message.id !== 'string') return
+      const start = Number(message.start)
+      const end = Number(message.end)
+      try {
+        if (!message.head && (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) ||
+          start < 0 || end < start || end >= file.size || end - start + 1 > LOCAL_DISC_MAX_READ_BYTES)) {
+          throw new Error('本地光盘读取范围无效')
+        }
+        const bytes = message.head ? null : await file.slice(start, end + 1).arrayBuffer()
+        channel.postMessage({ source: LOCAL_DISC_SOURCE, type: 'reply', id: message.id, size: file.size, bytes })
+      } catch (error) {
+        channel.postMessage({
+          source: LOCAL_DISC_SOURCE,
+          type: 'reply',
+          id: message.id,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+    return { url: new URL(`local-disc/${session}/${encodeURIComponent(safeName(file.name))}`, location.href).href, channel }
+  }
+
+  const nativeCommand = (command) => new Promise((resolve, reject) => {
+    if (nativePending) {
+      reject(new Error('PPSSPP 正在处理另一个存档操作'))
+      return
+    }
+    const enqueue = window.Module?.__ppssppBridgeSetCommand
+    if (typeof enqueue !== 'function') {
+      reject(new Error('PPSSPP 核心没有加载存档/改键桥'))
+      return
+    }
+    const timer = window.setTimeout(() => {
+      if (!nativePending) return
+      nativePending = null
+      reject(new Error('PPSSPP 存档操作超时'))
+    }, NATIVE_TIMEOUT_MS)
+    nativePending = {
+      finish(status) {
+        window.clearTimeout(timer)
+        nativePending = null
+        if (status > 0) resolve()
+        else reject(new Error(status === -2 ? 'PPSSPP 正在处理另一个存档操作' : 'PPSSPP 存档操作失败'))
+      },
+    }
+    if (!enqueue(command)) {
+      window.clearTimeout(timer)
+      nativePending = null
+      reject(new Error('PPSSPP 命令队列正忙'))
+    }
+  })
+
+  const walkFiles = (root) => {
+    const out = []
+    const visit = (path) => {
+      for (const name of FS.readdir(path)) {
+        if (name === '.' || name === '..') continue
+        const child = `${path}/${name}`
+        const stat = FS.stat(child)
+        if (FS.isDir(stat.mode)) visit(child)
+        else out.push({ path: child, size: Number(stat.size) || 0, mtime: Number(stat.mtime?.getTime?.() || stat.mtime || 0) })
+      }
+    }
+    visit(root)
+    return out
+  }
+
+  const currentStateFile = () => {
+    const files = walkFiles(SAVE_ROOT)
+      .filter((entry) => /\/[^/]+_0\.ppst$/i.test(entry.path) && entry.size > 0)
+      .sort((a, b) => b.mtime - a.mtime)
+    return files[0] || null
+  }
+
+  const encodeState = (path, bytes) => {
+    const headerBytes = new TextEncoder().encode(JSON.stringify({
+      format: STATE_FORMAT,
+      version: 1,
+      game: saveIdentity,
+      file: path.split('/').pop(),
+      size: bytes.byteLength,
+      savedAt: new Date().toISOString(),
+    }))
+    const magic = new TextEncoder().encode(STATE_MAGIC)
+    const out = new Uint8Array(magic.byteLength + 4 + headerBytes.byteLength + bytes.byteLength)
+    out.set(magic, 0)
+    new DataView(out.buffer).setUint32(magic.byteLength, headerBytes.byteLength, true)
+    out.set(headerBytes, magic.byteLength + 4)
+    out.set(bytes, magic.byteLength + 4 + headerBytes.byteLength)
+    return out
+  }
+
+  const decodeState = (value) => {
+    const bytes = value instanceof ArrayBuffer
+      ? new Uint8Array(value)
+      : ArrayBuffer.isView(value)
+        ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
+        : null
+    const magic = new TextEncoder().encode(STATE_MAGIC)
+    if (!bytes || bytes.byteLength < magic.byteLength + 4 || bytes.byteLength > MAX_STATE_BYTES + 64 * 1024) {
+      throw new Error('PSP 存档文件无效或过大')
+    }
+    for (let i = 0; i < magic.byteLength; i++) {
+      if (bytes[i] !== magic[i]) throw new Error('这不是 8BitGo 的 PSP 即时存档')
+    }
+    const headerSize = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(magic.byteLength, true)
+    if (headerSize <= 0 || headerSize > 64 * 1024 || magic.byteLength + 4 + headerSize > bytes.byteLength) {
+      throw new Error('PSP 存档头损坏')
+    }
+    let header
+    try {
+      header = JSON.parse(new TextDecoder().decode(bytes.subarray(magic.byteLength + 4, magic.byteLength + 4 + headerSize)))
+    } catch {
+      throw new Error('PSP 存档头损坏')
+    }
+    const state = bytes.slice(magic.byteLength + 4 + headerSize)
+    if (
+      header?.format !== STATE_FORMAT ||
+      header?.version !== 1 ||
+      header?.game !== saveIdentity ||
+      !/^[^/\\]+_0\.ppst$/i.test(String(header?.file || '')) ||
+      Number(header?.size) !== state.byteLength ||
+      state.byteLength <= 0 ||
+      state.byteLength > MAX_STATE_BYTES
+    ) {
+      throw new Error(header?.game !== saveIdentity ? '这份 PSP 存档属于另一款游戏' : 'PSP 存档内容损坏')
+    }
+    return state
+  }
+
+  const exportState = async () => {
+    await nativeCommand(1)
+    const entry = currentStateFile()
+    if (!entry) throw new Error('PPSSPP 没有生成即时存档文件')
+    const state = FS.readFile(entry.path)
+    if (!(state instanceof Uint8Array) || state.byteLength === 0 || state.byteLength > MAX_STATE_BYTES) {
+      throw new Error('PPSSPP 生成的即时存档无效或过大')
+    }
+    syncSaves()
+    return encodeState(entry.path, state)
+  }
+
+  const importState = async (data) => {
+    const state = decodeState(data)
+    // 先让当前游戏自己生成 0 号槽路径。游戏 ID 来自盘内 PARAM.SFO，不能相信导入文件里的
+    // 文件名去猜；否则不同地区版会把状态写到另一个游戏的槽位里，读档按钮却仍提示成功。
+    await nativeCommand(1)
+    const entry = currentStateFile()
+    if (!entry) throw new Error('无法确定当前 PSP 游戏的即时存档槽位')
+    const previous = FS.readFile(entry.path)
+    FS.writeFile(entry.path, state)
+    try {
+      await nativeCommand(2)
+    } catch (error) {
+      // 读入失败要把刚覆盖的状态还回去；否则一次坏文件会连 PPSSPP 自己原来的 0 号槽也毁掉。
+      FS.writeFile(entry.path, previous)
+      throw error
+    }
+    syncSaves()
+  }
+
+  const start = async ({ requestId, file, remote, stateId }) => {
+    if (started) {
+      respond(requestId, false, undefined, '同一个 PPSSPP 页面只能启动一款游戏')
+      return
+    }
+    started = true
+    saveIdentity = String(stateId || safeName(file?.name || remote?.name || 'psp-game'))
+    setStatus('正在启动 PPSSPP…')
+    let runtimeInitialized = false
+    let canvasStarted = false
+    let gameBootConfirmed = false
+    let requestSettled = false
+    let fatal = false
+    let canvasPoll = 0
+
+    const isLocal = file instanceof File
+    let localDisc = null
+    let gamePath = String(remote?.url || '')
+    if (!isLocal) {
+      // 核心的同步 Range XHR 也使用同一组已验证线路；主站中途断流时可在核心线程里切到镜像。
+      const rangeUrls = [gamePath, ...(Array.isArray(remote.alternateUrls) ? remote.alternateUrls : [])]
+      window.__8bitgoPspRangeUrls = [...new Set(rangeUrls.filter((url) => /^https?:\/\//i.test(String(url))))]
+    }
+    const profile = performanceProfile()
+    if (!isLocal && (!remote || !/^https?:\/\//i.test(gamePath) || !Number.isFinite(remote.size) || remote.size <= 0)) {
+      started = false
+      respond(requestId, false, undefined, '远程 PSP 镜像描述无效')
+      return
+    }
+
+    const stopReadyChecks = () => {
+      window.cancelAnimationFrame(canvasPoll)
+    }
+
+    const finishStart = () => {
+      if (requestSettled || fatal || !runtimeInitialized || !canvasStarted) return
+      // Range 回调从 PPSSPP 的 pthread 回到页面主线程，在部分浏览器里可能晚到或完全丢失；它适合
+      // 报进度和错误，不适合作为唯一的启动闸门。本地盘与远程盘都必须等核心的 Booted 日志，
+      // 否则本地盘只要 SDL 建出空画布就会被误报为可玩。
+      if (!gameBootConfirmed) return
+      requestSettled = true
+      stopReadyChecks()
+      setStatus('')
+      syncTimer = window.setInterval(syncSaves, 30_000)
+      respond(requestId, true, { mode: isLocal ? 'local' : 'range' })
+      canvas.focus()
+    }
+
+    const fail = (message, diagnostics = '') => {
+      if (fatal) return
+      fatal = true
+      localDisc?.channel.close()
+      stopReadyChecks()
+      window.clearInterval(syncTimer)
+      setStatus(message, 'error')
+      if (!requestSettled) {
+        requestSettled = true
+        respond(requestId, false, undefined, message, [], String(diagnostics || '').slice(0, 6000))
+      } else {
+        // 运行多分钟后核心可能突然崩溃。先让 IDBFS 冲刷当前 Memory Stick，最多等 1.5 秒再通知父页拆播放器。
+        // 同步失败或 IndexedDB 卡住时仍要上报 RuntimeError，不能让界面永久留在错误页。
+        let flushTimer = 0
+        const flushDeadline = new Promise((resolve) => {
+          flushTimer = window.setTimeout(resolve, 1500)
+        })
+        void Promise.race([syncSaves(), flushDeadline]).finally(() => {
+          window.clearTimeout(flushTimer)
+          post('runtime-error', { error: message, diagnostics: String(diagnostics || '').slice(0, 6000) })
+        })
+      }
+    }
+    // 只有本目录里的桥或核心脚本异常才应终止游戏。此前把页面上任意第三方脚本错误都伪装成
+    // “Range 读盘失败”，统计脚本偶发报错也会把已经运行的游戏强制关掉。
+    window.__8bitgoPspRuntimeError = (message, diagnostics) => fail(`PPSSPP 运行时异常：${String(message || '未知错误')}`, diagnostics)
+
+    const observeCoreLog = (text) => {
+      // PPSSPP 的普通日志在不同 Emscripten/浏览器组合中可能走 stdout，也可能走 stderr；两路都
+      // 必须观察。核心固定写成 `Booted <path>...`，允许前面带时间戳或 ANSI 颜色前缀。
+      if (BOOTED_LOG_PATTERN.test(String(text))) {
+        gameBootConfirmed = true
+        finishStart()
+      }
+    }
+
+    const watchCanvas = () => {
+      // 没有 width/height 属性时画布固有尺寸是 300×150；SDL 真正建好窗口后会改成 PSP
+      // 的渲染尺寸。连续两帧看到新尺寸，排除初始化过程中一闪而过的中间状态。
+      let stableFrames = 0
+      const check = () => {
+        if (fatal || requestSettled) return
+        if (canvas.width !== 300 || canvas.height !== 150) stableFrames++
+        else stableFrames = 0
+        if (stableFrames >= 2) {
+          canvasStarted = true
+          finishStart()
+          return
+        }
+        canvasPoll = window.requestAnimationFrame(check)
+      }
+      canvasPoll = window.requestAnimationFrame(check)
+    }
+
+    // C++ Range loader 每完成一块会调用它；数值表示本局实际从网络取回的累计字节，
+    // 不是光盘顺序位置，所以随机寻道时允许超过镜像总大小。
+    window.__ppssppRangeProgress = (loaded, total) => {
+      const safeLoaded = Number(loaded) || 0
+      const safeTotal = Number(total) || Number(remote?.size) || 0
+      if (!isLocal && safeTotal !== Number(remote.size)) {
+        fail(`远程 PSP 镜像在启动期间发生变化：探测为 ${remote.size} 字节，读取为 ${safeTotal} 字节`)
+        return
+      }
+      if (!requestSettled && safeLoaded > 0) {
+        // loaded 是累计网络流量，随机寻道和重试会重复计入，不能除以整盘容量伪装成下载百分比。
+        setStatus(`${isLocal ? '正在读取本地游戏' : '正在流式读取游戏'}… 已按需读取 ${(safeLoaded / 1024 / 1024).toFixed(1)} MB`)
+      }
+      post('stream-progress', { loaded: safeLoaded, total: safeTotal })
+      finishStart()
+    }
+    window.__ppssppRangeError = (message) => {
+      fail(`PPSSPP 流式读盘失败：${String(message || '未知错误')}`)
+    }
+    window.__ppssppAudioMode = (mode) => {
+      console.info(`[ppsspp] 音频输出：${mode === 'worklet' ? 'AudioWorklet' : 'ScriptProcessor 兼容模式'}`)
+    }
+    window.__ppssppAudioStats = (stats) => {
+      // 核心 Booted 前没有游戏 PCM，AudioWorklet 输出静音是正常启动过程，不应冒充游戏欠载。
+      if (!gameBootConfirmed) return
+      const underflows = Number(stats?.underflows) || 0
+      const missingFrames = Number(stats?.missingFrames) || 0
+      const rate = Math.max(1, Number(stats?.sampleRate) || 48_000)
+      if (underflows > 0) {
+        console.warn(`[ppsspp] 音频线程过去 5 秒欠载 ${underflows} 次（缺失约 ${Math.round(missingFrames * 1000 / rate)}ms）`)
+      }
+    }
+    window.__ppssppPerformance = (sample) => {
+      const range = typeof window.__8bitgoPspRangeWarmStats === 'function'
+        ? window.__8bitgoPspRangeWarmStats()
+        : null
+      console.info('[ppsspp] 性能采样', { ...sample, range })
+      post('performance', { sample: { ...sample, range, profile: `${profile.id}+buffered-native-v1` } })
+    }
+
+    if (isLocal) {
+      try {
+        localDisc = await openLocalDisc(file)
+        gamePath = localDisc.url
+      } catch (error) {
+        fail(`本地 PSP 镜像无法按需读取：${error instanceof Error ? error.message : String(error)}`)
+        return
+      }
+    }
+
+    window.Module = {
+      canvas,
+      // 浏览器里的“全屏”只应该由外层播放器控制。强制 windowed 并给出明确的后备缓冲
+      // 尺寸，可阻止 PPSSPP 读取旧配置后把 iframe 误扩到整块 Retina 屏。
+      // appendconfig 在 PPSSPP 读完全局配置和单游戏配置后再次合并；只改默认值不够，老访客
+      // IDBFS 里的跳帧/跳缓冲设置仍会重新制造花屏。两帧队列比最低延迟的单帧模式多一点
+      // 输入延迟，但会给浏览器代理呈现留出余量；完整缓冲和 0 跳帧优先保证所有游戏正确。
+      arguments: [
+        '--windowed',
+        '--xres', String(profile.width),
+        '--yres', String(profile.height),
+        // 远程 URL 和本地虚拟 Range 地址必须永远待在记忆棒之外。显式参数既模拟实体 UMD 的布局，
+        // 也防止以后 PPSSPP Web 默认路径变化后把光盘误暴露在 ms0:/ 的 PSP 目录旁边。
+        // PPSSPP 的长参数必须用等号；拆成两个 argv 会把 SAVE_ROOT 当作第二个待启动文件，
+        // 随后的远程 URL 就触发 `Can only boot one file`，页面只能等到外层超时。
+        `--memstick=${SAVE_ROOT}`,
+        `--appendconfig=${PERFORMANCE_CONFIG_PATH}`,
+        gamePath,
+      ],
+      __ppssppAudioWorkletUrl: new URL(AUDIO_WORKLET_SCRIPT, location.href).href,
+      locateFile(path) {
+        return coreUrl(path)
+      },
+      // Emscripten 的默认 preload fetch 一次网络抖动就永久终止启动。返回 Promise 接管同一份
+      // 数据下载，在 30 秒无进度时中止当前连接并自动重试；已知长度时直接写入单一缓冲区，
+      // 避免“分片数组 + 合并数组”让移动端在解包前瞬间多占一整份 data。force-cache 会复用 v22 实体目录。
+      getPreloadedPackage(packageName, packageSize) {
+        return fetchCoreData(packageName, Number(packageSize) || 0)
+      },
+      print(text) {
+        const message = String(text)
+        console.log('[ppsspp]', message)
+        observeCoreLog(message)
+      },
+      printErr(text) {
+        const message = String(text)
+        console.error('[ppsspp]', message)
+        observeCoreLog(message)
+        // 第一批已发布核心只能把 Range 致命错误写到 stderr，没有 JS 回调。先识别它，
+        // 让玩家得到明确错误并让外层结束加载，而不是首帧后继续停在黑屏。
+        if (/Range request failed|Remote disc changed size|Range block was shorter|HTTP Range read reached|Server did not provide a valid 206/i.test(message)) {
+          fail(`PPSSPP 流式读盘失败：${message}`)
+        }
+      },
+      setStatus(text) {
+        if (text) setStatus(String(text))
+      },
+      preRun: [() => {
+        // 文件只存在于本局的 Wasm 文件系统，不写进 IDBFS；每次启动都按当前硬件重新选档，
+        // 但 PPSSPP 仍会把实际采用值保存进自己的配置，设置页显示和运行状态保持一致。
+        FS.writeFile(PERFORMANCE_CONFIG_PATH, new TextEncoder().encode(performanceConfig(profile)))
+
+        // PSP/SAVEDATA、即时存档与配置都放进 IDBFS。先把旧内容拉进来再放行 main，
+        // 否则 PPSSPP 会在空目录上启动，稍后同步时反而把已有存档覆盖掉。
+        // Emscripten 5 把可挂载后端收进 FS.filesystems，不再把 IDBFS 暴露成全局变量；
+        // 直接引用全局名会在真正读盘前抛 ReferenceError。
+        const idbfs = FS.filesystems?.IDBFS
+        if (!idbfs) throw new Error('PPSSPP 核心缺少 IDBFS，无法安全加载和保存进度')
+        FS.mkdirTree(SAVE_ROOT)
+        FS.mount(idbfs, {}, SAVE_ROOT)
+        addRunDependency('8bitgo-ppsspp-idbfs')
+        FS.syncfs(true, (error) => {
+          try {
+            if (error) {
+              // 读失败时仍允许游戏启动，但本局绝不能再往同一 IDBFS 回写空目录，否则会把
+              // 原有存档覆盖掉。玩家本局的存档只保留在内存，下一次正常读取后再恢复同步。
+              saveSyncEnabled = false
+              console.warn('[ppsspp] 读取本地存档失败，本局已禁用持久化以保护旧存档', error)
+            } else {
+              saveSyncEnabled = true
+            }
+            // 仅创建挂载根目录还不够：PPSSPP 在主函数最早阶段就会写 SYSTEM/ppsspp.ini 和
+            // controls.ini，等核心自己补目录已经太晚。标准记忆棒树必须在移除 run dependency
+            // 之前就绪；这些目录不含镜像，仍满足 DJMAX 一类游戏的反盗版隔离要求。
+            for (const directory of MEMSTICK_DIRS) FS.mkdirTree(`${SAVE_ROOT}/${directory}`)
+            // 控制器配置的保存路径比普通 ini 更苛刻：它会先读取旧文件再写回，首次安装时文件不存在
+            // 就直接放弃保存。只补空文件且绝不覆盖已有配置，让第一次改键也能正常持久化。
+            for (const relative of MEMSTICK_SEED_FILES) {
+              const path = `${SAVE_ROOT}/${relative}`
+              try {
+                FS.stat(path)
+              } catch {
+                FS.writeFile(path, new Uint8Array())
+              }
+            }
+          } catch (directoryError) {
+            saveSyncEnabled = false
+            console.warn('[ppsspp] 无法准备记忆棒目录，本局已禁用持久化', directoryError)
+          } finally {
+            removeRunDependency('8bitgo-ppsspp-idbfs')
+          }
+        })
+      }],
+      onRuntimeInitialized() {
+        // 这个回调发生在 callMain 之前，只代表 WASM 装载完成。旧实现此处直接报成功，
+        // 后面的 ISO 读取即使失败，外层也已经丢掉请求。必须再等真实读盘和首帧。
+        runtimeInitialized = true
+        setStatus(isLocal ? '正在按需读取本地游戏…' : '正在流式读取游戏…')
+        watchCanvas()
+        finishStart()
+      },
+      onAbort(reason) {
+        fail(`PPSSPP 已中止：${String(reason || '未知原因')}`)
+      },
+    }
+    window.Module.__ppssppNativeResult = (status) => nativePending?.finish(Number(status) || -1)
+
+    try {
+      // 专用 Worker 通过 Emscripten 的 pthread 初始化消息分发 MessagePort；浏览器事件队列不会阻塞 ROM 同步读盘。
+      if (typeof Worker === 'function' && typeof MessageChannel === 'function') {
+        window.__8bitgoPspRangeBrokerWorker = new Worker(new URL('range-prefetch-worker.js', location.href))
+      }
+    } catch (error) {
+      console.warn('[ppsspp] Range Broker Worker 无法启动，改用核心原生读盘', error)
+    }
+
+    const script = document.createElement('script')
+    script.src = RUNTIME_SCRIPT
+    script.integrity = 'sha256-QRwvG3eTArHA/rY0kRSm2jkX3Z3JqfPuhkBAMxehcZs='
+    script.crossOrigin = 'anonymous'
+    script.async = true
+    script.onerror = () => {
+      const message = 'PPSSPP 核心文件未部署或版本不完整。请运行 npm run ppsspp:build 后重新构建站点。'
+      fail(message)
+    }
+    document.head.appendChild(script)
+  }
+
+  window.addEventListener('message', (event) => {
+    if (event.source !== window.parent || event.origin !== location.origin) return
+    const message = event.data
+    if (!message || message.source !== SOURCE || message.version !== VERSION) return
+    if (message.type === 'mount-local') void start({ requestId: message.requestId, file: message.file, stateId: message.stateId })
+    if (message.type === 'mount-remote') void start({ requestId: message.requestId, remote: message.remote, stateId: message.stateId })
+    if (message.type === 'save-state') {
+      void exportState()
+        .then((bytes) => respond(message.requestId, true, { data: bytes.buffer }, undefined, [bytes.buffer]))
+        .catch((error) => respond(message.requestId, false, undefined, error instanceof Error ? error.message : String(error)))
+    }
+    if (message.type === 'load-state') {
+      void importState(message.data)
+        .then(() => respond(message.requestId, true))
+        .catch((error) => respond(message.requestId, false, undefined, error instanceof Error ? error.message : String(error)))
+    }
+    if (message.type === 'open-controls') {
+      const enqueue = window.Module?.__ppssppBridgeSetCommand
+      if (typeof enqueue !== 'function' || !enqueue(3)) console.warn('[ppsspp] 原生改键页暂时无法打开')
+    }
+  })
+
+  window.addEventListener('pagehide', () => {
+    window.clearInterval(syncTimer)
+    syncSaves()
+  })
+
+  window.addEventListener('error', (event) => {
+    if (!started || !isOwnRuntimeFailure(event.filename)) return
+    const error = event.error
+    const details = [error?.stack, error?.error?.stack, `${event.filename || 'unknown'}:${event.lineno || 0}:${event.colno || 0}`].filter(Boolean).join('\n')
+    window.__8bitgoPspRuntimeError?.(error?.message || event.message || '运行时脚本异常', details)
+  })
+  window.addEventListener('unhandledrejection', (event) => {
+    if (!started) return
+    const stack = event.reason?.stack || ''
+    if (!isOwnRuntimeFailure(stack.match(/https?:\/\/[^\s)]+/)?.[0])) return
+    window.__8bitgoPspRuntimeError?.(event.reason?.message || event.reason || '运行时 Promise 异常', stack)
+  })
+
+  post('host-ready')
+})()

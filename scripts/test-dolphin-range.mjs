@@ -4,8 +4,14 @@
 import assert from 'node:assert/strict'
 import { RangeBackedFile } from '../public/dolphin/v7e38409/src/range-backed-file.js'
 import { detectRom } from '../src/emulator/detect.ts'
+import { setLangForRender } from '../src/services/lang.ts'
+import { loadLocale } from '../src/locales/index.ts'
 import { isolatedRuntimeRoute, isIsolatedRuntimePlatform } from '../shared/isolated-runtime-platforms.js'
 import { isStreamingDiscPlatform } from '../shared/streaming-disc-platforms.js'
+
+// detectRom 的错误文案经由 getT() 读取；独立 Node 回归需先装载与浏览器入口一致的基准语言包。
+await loadLocale('zh-Hans')
+setLangForRender('zh-Hans')
 
 for (const platform of ['gamecube', 'wii']) {
   assert.equal(isIsolatedRuntimePlatform(platform), true)

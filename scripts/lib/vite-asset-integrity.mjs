@@ -59,7 +59,7 @@ export function localeAssetsFromBundle(bundle) {
   for (const item of Object.values(bundle ?? {})) {
     if (item?.type !== 'chunk') continue
     const id = String(item.facadeModuleId ?? '').replace(/\\/g, '/')
-    const match = /(?:^|\/)src\/locales\/(zh-Hant|en|es|fr|it|de|ja)\.ts$/.exec(id)
+    const match = /(?:^|\/)src\/locales\/(zh-Hans|zh-Hant|en|es|fr|it|de|ja)\.ts$/.exec(id)
     const fileName = String(item.fileName ?? '')
     if (!match || !/^assets\/[A-Za-z0-9_.-]+\.js$/.test(fileName)) continue
     locales[match[1]] = fileName

@@ -21,6 +21,10 @@ assert.equal(normalizeStartupEvent({ ...base, event: 'fallback_started', detail:
 assert.equal(normalizeStartupEvent({ ...base, event: 'fallback_first_frame' }).event, 'fallback_first_frame', '兜底首帧要和真正可玩分开统计')
 assert.equal(normalizeStartupEvent({ ...base, event: 'fallback_playable' }).event, 'fallback_playable')
 assert.equal(normalizeStartupEvent({ ...base, event: 'fallback_succeeded' }).event, 'fallback_succeeded')
+assert.equal(normalizeStartupEvent({ ...base, event: 'core_warm_first_byte' }).event, 'core_warm_first_byte')
+assert.equal(normalizeStartupEvent({ ...base, event: 'core_load_first_byte' }).event, 'core_load_first_byte')
+assert.equal(normalizeStartupEvent({ ...base, event: 'core_warm_start', detail: 'fbneo-legacy-wasm.data' }).detail,
+  'fbneo-legacy-wasm.data', '核心身份只保留受控的静态文件名，不应被 URL 脱敏误删')
 assert.equal(normalizeStartupEvent({ ...base, event: 'fallback_failed' }).event, 'fallback_failed')
 const fallbackBatch = normalizeStartupEventBatch([
   { ...base, event: 'fallback_first_frame' },
@@ -56,11 +60,15 @@ assert.equal(sanitizeStartupDetail('   '), null)
 
 const startupBatch = normalizeStartupEventBatch([
   { ...base, event: 'rom_load_start', elapsedMs: 30 },
+  { ...base, event: 'core_warm_first_byte', elapsedMs: 180 },
   { ...base, event: 'core_warm_complete', elapsedMs: 420 },
+  { ...base, event: 'core_load_start', elapsedMs: 440 },
+  { ...base, event: 'core_load_first_byte', elapsedMs: 460 },
+  { ...base, event: 'core_load_complete', elapsedMs: 520 },
   { ...base, event: 'download_complete', elapsedMs: 600 },
   { ...base, event: 'first_frame', elapsedMs: 800 },
 ])
-assert.equal(startupBatch.length, 4, '同一次开局的资源、下载和画面阶段可以合批上报')
+assert.equal(startupBatch.length, 8, '同一次开局的资源、核心读取和画面阶段可以合批上报')
 assert.throws(() => normalizeStartupEventBatch([
   { ...base, event: 'rom_load_start' },
   { ...base, attemptId: 'another-attempt', event: 'first_frame' },
@@ -81,6 +89,14 @@ assert.deepEqual(shapePhaseTiming({
   resource_to_first_frame_samples: 3,
   avg_first_frame_to_playable_ms: null,
   first_frame_to_playable_samples: 0,
+  avg_core_first_byte_ms: '80.6',
+  core_first_byte_samples: '2',
+  avg_core_load_ms: '120.7',
+  core_load_samples: '3',
+  avg_core_load_first_byte_ms: '20.4',
+  core_load_first_byte_samples: '3',
+  core_warm_match_samples: '2',
+  core_warm_mismatches: '1',
 }), {
   avgResourceMs: 1250,
   resourceSamples: 4,
@@ -92,7 +108,15 @@ assert.deepEqual(shapePhaseTiming({
   romLoadSamples: 0,
   avgCoreWarmMs: null,
   coreWarmSamples: 0,
+  avgCoreFirstByteMs: 81,
+  coreFirstByteSamples: 2,
+  avgCoreLoadMs: 121,
+  coreLoadSamples: 3,
+  avgCoreLoadFirstByteMs: 20,
+  coreLoadFirstByteSamples: 3,
   coreCacheHits: 0,
+  coreWarmMatchSamples: 2,
+  coreWarmMismatches: 1,
   avgResourceToRuntimeReadyMs: null,
   resourceToRuntimeReadySamples: 0,
 }, '阶段汇总应取整，并保留每段有效样本量')
@@ -107,7 +131,15 @@ assert.deepEqual(shapePhaseTiming(), {
   romLoadSamples: 0,
   avgCoreWarmMs: null,
   coreWarmSamples: 0,
+  avgCoreFirstByteMs: null,
+  coreFirstByteSamples: 0,
+  avgCoreLoadMs: null,
+  coreLoadSamples: 0,
+  avgCoreLoadFirstByteMs: null,
+  coreLoadFirstByteSamples: 0,
   coreCacheHits: 0,
+  coreWarmMatchSamples: 0,
+  coreWarmMismatches: 0,
   avgResourceToRuntimeReadyMs: null,
   resourceToRuntimeReadySamples: 0,
 }, '没有阶段数据时应返回空值而不是伪造 0ms')
@@ -162,6 +194,22 @@ assert.match(metricsSource, /first_frame_ms >= resource_ms/, '首帧阶段不能
 assert.match(metricsSource, /playable_ms >= first_frame_ms/, '可玩阶段不能接受逆序事件')
 assert.match(metricsSource, /start_runtime = resource_runtime/, '跨运行时切换的阶段不能错误归到某个运行时')
 assert.match(metricsSource, /query\(PHASE_TIMING_QUERY, \[cutoff\]\)/, '四个维度应共用一条阶段聚合查询')
+assert.match(metricsSource, /core_warm_first_byte/, '核心首字节必须进入阶段配对查询')
+assert.match(metricsSource, /core_load_first_byte/, '模拟器实际读取核心的首字节必须进入阶段配对查询')
+assert.match(metricsSource, /core_load_complete/, '模拟器实际核心读取结束必须进入阶段配对查询')
+assert.match(metricsSource, /core_warm_key/, '汇总查询必须读取核心预热的身份标记')
+assert.match(metricsSource, /core_load_key/, '汇总查询必须读取模拟器实际加载的核心身份标记')
+assert.match(metricsSource, /core_resolved_key/, '缓存命中的启动也要用最终就绪核心补全身份配对')
+assert.match(metricsSource, /core_warm_mismatches/, '后台必须能统计预热核心与实际核心的错配')
+assert.match(metricsSource, /COALESCE\(core_warm_start_runtime, core_cache_runtime\)/,
+  '核心缓存命中也必须能与实际加载核心配对')
+assert.match(metricsSource, /COALESCE\(core_load_key, core_resolved_key\)/,
+  '实际网络核心身份优先，核心缓存命中时回退到最终就绪核心')
+const playerSource = readFileSync(new URL('../../src/emulator/EmulatorPlayer.tsx', import.meta.url), 'utf8')
+assert.equal((playerSource.match(/reportStartup\(result\.metric, coreKey\)/g) ?? []).length, 2,
+  '预热与实际核心事件都要携带经过核心 URL 白名单提取的文件身份')
+assert.match(playerSource, /reportStartup\('runtime_ready', resolvedEjsCore \? emulatorJsCoreDataFile\(resolvedEjsCore\) : undefined\)/,
+  '没有实际 fetch 的引擎缓存命中也要上报最终核心身份')
 assert.match(metricsSource, /INSERT IGNORE INTO game_startup_events[\s\S]{0,550}CROSS JOIN/, '批量阶段用单条 INSERT 省掉逐事件 SQL 往返')
 assert.match(metricsSource, /recordStartupEvents/, '服务端保留批量写入入口')
 assert.match(metricsSource, /BATCHABLE_EVENTS/, '批量上报只允许普通启动阶段')

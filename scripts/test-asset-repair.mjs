@@ -78,25 +78,29 @@ assert.equal(sha256Base64('abc'), 'ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0='
 assert.deepEqual(localeAssetsFromBundle({
   'en.js': { type: 'chunk', facadeModuleId: '/repo/src/locales/en.ts', fileName: 'assets/en-A1.js' },
   'fr.js': { type: 'chunk', facadeModuleId: 'C:\\repo\\src\\locales\\fr.ts', fileName: 'assets/fr-B2.js' },
-  'main.js': { type: 'chunk', facadeModuleId: '/repo/src/locales/zh-Hans.ts', fileName: 'assets/index-C3.js' },
+  'zh-Hans.js': { type: 'chunk', facadeModuleId: '/repo/src/locales/zh-Hans.ts', fileName: 'assets/zh-Hans-C3.js' },
   'asset.js': { type: 'asset', facadeModuleId: '/repo/src/locales/de.ts', fileName: 'assets/de-D4.js' },
-}), { en: 'assets/en-A1.js', fr: 'assets/fr-B2.js' }, '只记录真实动态语言 chunk，并兼容 Windows 构建路径')
+}), { en: 'assets/en-A1.js', fr: 'assets/fr-B2.js', 'zh-Hans': 'assets/zh-Hans-C3.js' }, '只记录真实动态语言 chunk，并兼容 Windows 构建路径')
 {
   const dir = mkdtempSync(path.join(tmpdir(), '8bitgo-integrity-plugin-'))
   try {
     mkdirSync(path.join(dir, 'assets'))
     const entryFile = 'assets/index-ABCD1234.js'
     const localeFile = 'assets/en-EFGH5678.js'
+    const chineseLocaleFile = 'assets/zh-Hans-IJKL9012.js'
     writeFileSync(path.join(dir, entryFile), 'import("./en-EFGH5678.js")')
     writeFileSync(path.join(dir, localeFile), 'export default {}')
+    writeFileSync(path.join(dir, chineseLocaleFile), 'export default {}')
     const bundle = {
       [entryFile]: { type: 'chunk', isEntry: true, fileName: entryFile, facadeModuleId: '/repo/src/entry-client.ts', imports: [] },
       [localeFile]: { type: 'chunk', isEntry: false, fileName: localeFile, facadeModuleId: '/repo/src/locales/en.ts', imports: [] },
+      [chineseLocaleFile]: { type: 'chunk', isEntry: false, fileName: chineseLocaleFile, facadeModuleId: '/repo/src/locales/zh-Hans.ts', imports: [] },
     }
     assetIntegrityPlugin().writeBundle({ dir, format: 'es' }, bundle)
     const manifest = JSON.parse(readFileSync(path.join(dir, 'assets', 'integrity-ABCD1234.json'), 'utf8'))
-    assert.deepEqual(manifest.locales, { en: localeFile }, 'writeBundle 把 SSR 语言到真实 JS chunk 的映射写入清单')
+    assert.deepEqual(manifest.locales, { en: localeFile, 'zh-Hans': chineseLocaleFile }, 'writeBundle 把 SSR 语言到真实 JS chunk 的映射写入清单')
     assert.equal(manifest.files['en-EFGH5678.js'], sha256Base64(readFileSync(path.join(dir, localeFile))), '映射指向的 chunk 同样进入字节完整性清单')
+    assert.equal(manifest.files['zh-Hans-IJKL9012.js'], sha256Base64(readFileSync(path.join(dir, chineseLocaleFile))), '简体中文 chunk 同样进入字节完整性清单')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

@@ -18,6 +18,8 @@
   const MAX_DEPTH = 10
   const MAX_CONCURRENCY = 4
   const MIN_RANGE_TIMEOUT_MS = 20_000
+  const UNMEASURED_RANGE_TIMEOUT_MS = 120_000
+  const MEASURED_SLOW_RANGE_TIMEOUT_MS = 120_000
   const MAX_RANGE_TIMEOUT_MS = 180_000
   /**
    * 正式读盘遇到网络层失败（status 0：连接被重置、断线、超时）时，先在这一层就地重试。
@@ -28,20 +30,23 @@
    * 合计等待约 15 秒；连续快速失败累计超过 45 秒就不再重试，交回 C++ 处理。只重试 status 0：
    * HTTP 412 / 4xx 等确定的结果原样交还。
    *
-   * 超时另算（v19）：C++ 给每次请求 30 秒，慢线路（几十 KB/s）上一个 2MB 分片本来就要更久，
-   * 用同样的 30 秒重试只会再超时一次。超时后的重试把时限翻倍（30 → 60 → 120 秒），
-   * 整个请求最多 3 分钟 —— 游戏会卡住等盘，但不再整局失败。
+   * 超时另算（v19/v29）：网络测速 API 在 Worker 中可能报出虚高 downlink；尚无完整盘块样本时
+   * 至少给首块 120 秒，实际无 API 且估算为 0.1 Mbps 时用 180 秒。超时重试逐步放宽、封顶 180 秒，
+   * 避免慢链路反复从头丢弃已收字节；响应仍失败时有限退避后交回核心处理。
    */
   const SYNC_RETRY_DELAYS_MS = [800, 2000, 4000, 8000]
   const SYNC_RETRY_BUDGET_MS = 45_000
   const SYNC_TIMEOUT_BUDGET_MS = 180_000
-  const SYNC_TIMEOUT_MAX_MS = 120_000
+  // 同步读盘必须接受与预估一致的上限；低于这里会把 180 秒估算反向缩短到 120 秒。
+  const SYNC_TIMEOUT_MAX_MS = MAX_RANGE_TIMEOUT_MS
   const NativeXMLHttpRequest = globalThis.XMLHttpRequest
   if (typeof NativeXMLHttpRequest !== 'function' || globalThis.__8bitgoCreatePspRangeXhr) return
 
   const cache = new Map()
   const queued = new Map()
   const inflight = new Map()
+  const discTotals = new Map()
+  const sharedDemandStates = new Map()
   let cachedBytes = 0
   let lastDemand = null
   let activePrefetches = 0
@@ -53,11 +58,15 @@
   let stableHits = 0
   let measuredMbps = 0
   let prefetchWorker = null
+  let prefetchWorkerIsShared = false
   let prefetchWorkerReady = false
   let prefetchWorkerFailed = false
   let sharedJobId = 0
+  const sharedOwnerId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
   let sharedPrefetchWaits = 0
   let sharedPrefetchWaitMs = 0
+  let sharedDemandRequests = 0
+  let sharedDemandJoins = 0
   let assessedDemandBlocks = 0
   let assessedHits = 0
   let sequentialDemandRun = 0
@@ -77,17 +86,40 @@
     // Atomics.wait 只允许在 Worker 中使用；不能把页面主线程卡在读盘等待上。
     if (
       typeof ENVIRONMENT_IS_PTHREAD === 'undefined' || !ENVIRONMENT_IS_PTHREAD ||
-      typeof globalThis.Worker !== 'function' ||
+      (typeof globalThis.__8bitgoRangeBrokerPort !== 'object' && typeof globalThis.SharedWorker !== 'function' && typeof globalThis.Worker !== 'function') ||
       typeof globalThis.SharedArrayBuffer !== 'function' ||
       typeof Atomics.wait !== 'function'
     ) return
     try {
-      const worker = new Worker(new URL('range-prefetch-worker.js', location.href))
-      prefetchWorker = worker
-      worker.onmessage = ({ data }) => {
+      const workerUrl = new URL('range-prefetch-worker.js', location.href)
+      const prefetchAllowed = readAheadPolicy().concurrency > 0
+      if (globalThis.__8bitgoRangeBrokerPort && typeof globalThis.__8bitgoRangeBrokerPort.postMessage === 'function') {
+        // 页内专用 Broker 通过 Emscripten pthread 的启动消息分发 MessagePort；直接共享 SAB，避免跨代理复制分片。
+        prefetchWorker = globalThis.__8bitgoRangeBrokerPort
+        prefetchWorkerIsShared = true
+      } else if (typeof globalThis.SharedWorker === 'function') {
+        try {
+          const worker = new SharedWorker(workerUrl, { name: '8bitgo-ppsspp-range-v1' })
+          prefetchWorker = worker.port
+          prefetchWorkerIsShared = true
+        } catch {
+          // 部分浏览器暴露构造器却不允许在 pthread 内创建 SharedWorker。
+          if (!prefetchAllowed) {
+            prefetchWorkerFailed = true
+            return
+          }
+          prefetchWorker = new Worker(workerUrl)
+        }
+      } else if (prefetchAllowed) {
+        prefetchWorker = new Worker(workerUrl)
+      } else {
+        return
+      }
+      const port = prefetchWorker
+      port.onmessage = ({ data }) => {
         if (data?.type === 'ready') {
           prefetchWorkerReady = true
-          console.info('[ppsspp] 独立 Range 预读 Worker 已就绪')
+          console.info(`[ppsspp] ${prefetchWorkerIsShared ? '共享' : '独立'} Range 预读 Worker 已就绪`)
           pump()
         } else if (data?.type === 'done') {
           const entry = inflight.get(data.key)
@@ -95,8 +127,8 @@
           if (entry?.shared && entry.id === data.id) entry.complete()
         }
       }
-      worker.onerror = () => {
-        console.warn('[ppsspp] 独立 Range 预读 Worker 不可用，回退到原有预读方式')
+      port.onerror = () => {
+        console.warn('[ppsspp] Range 预读 Worker 不可用，回退到原有预读方式')
         prefetchWorkerFailed = true
         prefetchWorkerReady = false
         for (const entry of [...inflight.values()]) {
@@ -105,11 +137,20 @@
           Atomics.notify(entry.state, 0)
           entry.complete()
         }
-        worker.terminate()
+        for (const state of sharedDemandStates.values()) {
+          Atomics.store(state, 0, 2)
+          Atomics.notify(state, 0)
+        }
+        try {
+          if (prefetchWorkerIsShared) port.close()
+          else port.terminate()
+        } catch { /* 错误处理不能改变正式读盘回退。 */ }
         prefetchWorker = null
       }
+      port.start?.()
+      if (prefetchWorkerIsShared) port.postMessage({ type: 'ping', id: `ready:${sharedOwnerId}` })
     } catch {
-      console.warn('[ppsspp] 无法启动独立 Range 预读 Worker，回退到原有预读方式')
+      console.warn('[ppsspp] 无法启动 Range 预读 Worker，回退到原有预读方式')
       prefetchWorkerFailed = true
     }
   }
@@ -163,6 +204,28 @@
     const type = String(connection?.effectiveType || '').toLowerCase()
     if (type === 'slow-2g' || type === '2g') return { depth: 0, concurrency: 0, cacheBytes: 0 }
 
+    const hasNetworkEstimate = ['slow-2g', '2g', '3g', '4g'].includes(type) ||
+      (Number.isFinite(Number(connection?.downlink)) && Number(connection?.downlink) > 0)
+    if (!hasNetworkEstimate && measuredMbps <= 0) {
+      // 不支持 Network Information API 的手机不能按桌面宽带并发预读；先让正式读盘建立样本。
+      return { depth: 0, concurrency: 0, cacheBytes: 0 }
+    }
+    const mobileInput = Number(globalThis.navigator?.maxTouchPoints) > 0 ||
+      /Android|iPhone|iPad|iPod|Mobile/i.test(String(globalThis.navigator?.userAgent || ''))
+    if (mobileInput) {
+      // 手机的测速常把拥塞线路报成 4G；先用单路，取到实测样本后最多扩为两路，给游戏留带宽。
+      if (measuredMbps < 2) return { depth: 1, concurrency: 1, cacheBytes: BLOCK_BYTES }
+      return { depth: 4, concurrency: 2, cacheBytes: 8 * 1024 * 1024 }
+    }
+    if (measuredMbps > 0 && measuredMbps < 1) {
+      // 一兆以下的链路只保留一块滚动预读；随机寻道取消它时，不让多路投机流浪费弱网带宽。
+      return { depth: 1, concurrency: 1, cacheBytes: BLOCK_BYTES }
+    }
+    if (!hasNetworkEstimate && measuredMbps < 3) {
+      // 无网络测速 API 时，中等速度也只开一条小窗口，避免把桌面核数误当成链路能力。
+      return { depth: 2, concurrency: 1, cacheBytes: 2 * BLOCK_BYTES }
+    }
+
     const cores = Math.max(1, Number(globalThis.navigator?.hardwareConcurrency) || 4)
     const memory = Math.max(0, Number(globalThis.navigator?.deviceMemory) || 0)
     const constrained = cores <= 2 || (memory > 0 && memory <= 2)
@@ -212,13 +275,25 @@
       '2g': 0.2,
       '3g': 0.5,
       '4g': 4,
-    }[effectiveType] || 0
+    }[effectiveType] || 0.1
     const candidates = [Number(connection?.downlink), measuredMbps]
       .filter((value) => Number.isFinite(value) && value > 0)
     const mbps = candidates.length ? Math.min(...candidates) : fallbackMbps
     if (!mbps) return MIN_RANGE_TIMEOUT_MS
     const expectedMs = Math.max(0, bytes) * 8 / (mbps * 1_000_000) * 1000
-    return Math.min(MAX_RANGE_TIMEOUT_MS, Math.max(MIN_RANGE_TIMEOUT_MS, Math.ceil(expectedMs * 1.5 + 10_000)))
+    const estimate = Math.max(MIN_RANGE_TIMEOUT_MS, Math.ceil(expectedMs * 1.5 + 10_000))
+    // Worker 上的 downlink 可能仍报 4G 高速，但实际链路已被节流或跨洲拥塞；首块没实测前留出启动余量。
+    const timeout = measuredMbps > 0
+      ? Math.max(estimate, measuredMbps < 1 ? MEASURED_SLOW_RANGE_TIMEOUT_MS : MIN_RANGE_TIMEOUT_MS)
+      : Math.max(estimate, UNMEASURED_RANGE_TIMEOUT_MS)
+    return Math.min(MAX_RANGE_TIMEOUT_MS, timeout)
+  }
+
+  /** 正式读盘也贡献吞吐样本；Safari 等没有 Network Information API 的浏览器靠实测更新后续时限。 */
+  const recordTransferRate = (bytes, durationMs) => {
+    if (!Number.isFinite(bytes) || bytes <= 0 || !Number.isFinite(durationMs) || durationMs <= 0) return
+    const sampleMbps = bytes * 8 / durationMs / 1000
+    measuredMbps = measuredMbps > 0 ? measuredMbps * 0.7 + sampleMbps * 0.3 : sampleMbps
   }
 
   const dropCacheEntry = (key) => {
@@ -253,8 +328,8 @@
     const length = job.end - job.start + 1
     try {
       const bytes = new SharedArrayBuffer(length)
-      const state = new Int32Array(new SharedArrayBuffer(4))
-      const id = ++sharedJobId
+      const state = new Int32Array(new SharedArrayBuffer(8))
+      const id = `${sharedOwnerId}:${++sharedJobId}`
       const startedAt = Date.now()
       const timeoutMs = rangeTimeoutMs(length)
       let settled = false
@@ -273,8 +348,7 @@
             (ifUnmodifiedSince ? `last-modified: ${ifUnmodifiedSince}\r\n` : '')
           const response = new Uint8Array(bytes).slice().buffer
           prefetchedBytes += response.byteLength
-          const sampleMbps = response.byteLength * 8 / Math.max(1, Date.now() - startedAt) / 1000
-          measuredMbps = measuredMbps > 0 ? measuredMbps * 0.7 + sampleMbps * 0.3 : sampleMbps
+          recordTransferRate(response.byteLength, Date.now() - startedAt)
           store(key, { response, rawHeaders, responseURL: job.url, statusText: 'Partial Content' })
         }
         if (!cancellingPrefetches) pump()
@@ -292,7 +366,7 @@
       inflight.set(key, entry)
       activePrefetches++
       prefetchWorker.postMessage({
-        type: 'fetch', id, key, url: job.url, start: job.start, end: job.end, total: job.total,
+        type: 'fetch', id, key, dedupeKey: key, url: job.url, start: job.start, end: job.end, total: job.total,
         timeoutMs,
         ifMatch: header(job.headers, 'if-match'),
         ifUnmodifiedSince: header(job.headers, 'if-unmodified-since'),
@@ -320,8 +394,7 @@
       settled = true
       if (inflight.delete(key)) activePrefetches = Math.max(0, activePrefetches - 1)
       if (receivedBytes > 0) {
-        const sampleMbps = receivedBytes * 8 / Math.max(1, Date.now() - startedAt) / 1000
-        measuredMbps = measuredMbps > 0 ? measuredMbps * 0.7 + sampleMbps * 0.3 : sampleMbps
+        recordTransferRate(receivedBytes, Date.now() - startedAt)
       }
       if (!cancellingPrefetches) pump()
     }
@@ -458,9 +531,15 @@
     return requested
   }
 
-  const afterDemand = (xhr, requested) => {
-    if (!requested || xhr.status !== 206 || !(xhr.response instanceof ArrayBuffer)) return
+  const afterDemand = (xhr, requested, startedAt) => {
+    if (xhr.status !== 206) return
     const actual = contentRangeOf(responseHeader(xhr.getAllResponseHeaders(), 'content-range'))
+    if (actual && xhr.url_) {
+      xhr._knownTotal = actual.total
+      discTotals.set(xhr.url_, actual.total)
+      while (discTotals.size > 16) discTotals.delete(discTotals.keys().next().value)
+    }
+    if (!requested || !(xhr.response instanceof ArrayBuffer)) return
     if (
       !actual ||
       actual.start !== requested.start ||
@@ -471,6 +550,9 @@
     // Prepare() 的 0-0 探测只负责取得盘大小和校验器；从真正的对齐块开始预读。
     const length = requested.end - requested.start + 1
     if (requested.start % BLOCK_BYTES !== 0 || (length !== BLOCK_BYTES && requested.end + 1 !== actual.total)) return
+
+    // 只记录真实盘块；1 字节探测和任意非对齐读取不能代表持续读盘吞吐。
+    if (Number.isFinite(startedAt)) recordTransferRate(xhr.response.byteLength, Date.now() - startedAt)
     lastDemand = { url: xhr.url_, start: requested.start }
 
     const { depth } = readAheadPolicy()
@@ -489,6 +571,74 @@
       })
     }
     pump()
+  }
+
+  /** 多个模拟线程同时首次读同一片时，共享同一份网络响应与各自的同步结果缓冲。 */
+  const sharedDemand = (xhr, requested) => {
+    // 首次 Range 探测的同步 XHR 会阻塞当前线程，Broker 的 ready 消息可能要到本次调用栈结束后才派发；
+    // 只要共享通道已创建就先投递正式请求，由 SAB 的接手状态确认 Broker 是否在途可用。
+    if (!prefetchWorkerIsShared || !prefetchWorker || xhr._responseType !== 'arraybuffer') return false
+    const length = requested.end - requested.start + 1
+    const total = Number(xhr._knownTotal) || discTotals.get(xhr.url_)
+    if (!Number.isSafeInteger(total) || total <= requested.end) return false
+    const key = cacheKey(xhr.url_, requested.start, requested.end)
+    const bytes = new SharedArrayBuffer(length)
+    // 前两个整数给状态与共享命中数；剩余区域由 Worker 同步返回 ETag / Last-Modified。
+    const stateBuffer = new SharedArrayBuffer(1024)
+    const state = new Int32Array(stateBuffer)
+    const id = `${sharedOwnerId}:${++sharedJobId}`
+    const timeoutMs = Math.max(rangeTimeoutMs(length), xhr._timeout || 0)
+    const ifMatch = header(xhr.__8bitgoHeaders, 'if-match')
+    const ifUnmodifiedSince = header(xhr.__8bitgoHeaders, 'if-unmodified-since')
+    const startedAt = Date.now()
+    sharedDemandStates.set(id, state)
+    try {
+      prefetchWorker.postMessage({
+        type: 'fetch', id, key, dedupeKey: key, url: xhr.url_,
+        start: requested.start, end: requested.end,
+        total,
+        timeoutMs, ifMatch, ifUnmodifiedSince,
+        sendValidators: !versionPinned(xhr.url_),
+        bytes, state: stateBuffer,
+      })
+      const waitMs = Math.min(MAX_RANGE_TIMEOUT_MS + 1_000, timeoutMs + 1_000)
+      const deadline = Date.now() + waitMs
+      // Worker 先写 -1 表示已接手。若代理意外退出且没人确认，本次最多等 1 秒就回退原生 XHR。
+      let status = Atomics.load(state, 0)
+      if (status === 0) Atomics.wait(state, 0, 0, Math.min(1_000, waitMs))
+      status = Atomics.load(state, 0)
+      if (status === 0) {
+        try { prefetchWorker.postMessage({ type: 'cancel', id }) } catch { /* 同步 XHR 会接手请求。 */ }
+        return false
+      }
+      if (status === -1) Atomics.wait(state, 0, -1, Math.max(0, deadline - Date.now()))
+      if (Atomics.load(state, 0) !== 1) {
+        try { prefetchWorker.postMessage({ type: 'cancel', id }) } catch { /* 同步 XHR 会接手请求。 */ }
+        return false
+      }
+      // Chromium 的 TextDecoder 不接受 SharedArrayBuffer 视图；响应头很短，先复制到普通缓冲区再解码。
+      const metadata = new TextDecoder().decode(new Uint8Array(stateBuffer, 8).slice()).split('\0', 1)[0]
+      const fallbackHeaders = `content-range: bytes ${requested.start}-${requested.end}/${total}\r\n` +
+        (ifMatch ? `etag: ${ifMatch}\r\n` : '') +
+        (ifUnmodifiedSince ? `last-modified: ${ifUnmodifiedSince}\r\n` : '')
+      xhr._fake = {
+        response: new Uint8Array(bytes).slice().buffer,
+        rawHeaders: metadata || fallbackHeaders,
+        responseURL: xhr.url_,
+        statusText: 'Partial Content',
+      }
+      sharedDemandRequests++
+      if (Atomics.load(state, 1) > 0) sharedDemandJoins++
+      afterDemand(xhr, requested, startedAt)
+      xhr.onreadystatechange?.({ target: xhr })
+      xhr.onload?.({ target: xhr })
+      return true
+    } catch {
+      try { prefetchWorker.postMessage({ type: 'cancel', id }) } catch { /* 同步 XHR 会接手请求。 */ }
+      return false
+    } finally {
+      sharedDemandStates.delete(id)
+    }
   }
 
   class RangeWarmXMLHttpRequest {
@@ -562,7 +712,7 @@
         inner.onload = (event) => {
           if (!final && inner.status === 0) { failed = true; return }
           if (attempt > 0) syncRecovered++
-          afterDemand(this, requested)
+          afterDemand(this, requested, sentAt)
           this.onload?.(event)
         }
         inner.onerror = (event) => { if (final) this.onerror?.(event); else failed = true }
@@ -634,6 +784,8 @@
           cancelQueuedAndInflight()
         }
       }
+      // SharedWorker 中的在途请求按 URL/Range/校验器合并；并发 pthread 读同一块只传一份。
+      if (requested && sharedDemand(this, requested)) return
 
       if (!this._async && this._method === 'GET' && this.__8bitgoHeaders.has('range') && this._openArgs) {
         this._sendSyncWithRetry(data, requested)
@@ -672,8 +824,8 @@
   }
 
   globalThis.__8bitgoCreatePspRangeXhr = () => {
-    // 核心的 pthread 池会执行同一份 JS；只有真正做 Range 读盘的线程才需要预读 Worker。
-    if (readAheadPolicy().concurrency > 0) initPrefetchWorker()
+    // SaveData / 弱网只关投机预读；页面分发的 Broker 端口仍合并 pthread 正式读盘。
+    if (readAheadPolicy().concurrency > 0 || globalThis.__8bitgoRangeBrokerPort || typeof globalThis.SharedWorker === 'function') initPrefetchWorker()
     return new RangeWarmXMLHttpRequest()
   }
   globalThis.__8bitgoPspRangeWarmStats = () => ({
@@ -692,6 +844,8 @@
     sharedPrefetchReady: prefetchWorkerReady,
     sharedPrefetchWaits,
     sharedPrefetchWaitMs,
+    sharedDemandRequests,
+    sharedDemandJoins,
     assessedDemandBlocks,
     assessedHits,
     sequentialDemandRun,

@@ -109,7 +109,7 @@ export function TvPlay({ slug, onExit }: { slug: string; onExit: () => void }) {
             slug={game.slug}
             markedAdult={Boolean(game.adult)}
             backdrop={
-              <GameCover game={game} ratio="wide" showTitle={false} showBadge={false} priority className="h-full w-full" />
+              <GameCover game={game} ratio="wide" showTitle={false} showBadge={false} priority sizes="100vw" className="h-full w-full" />
             }
           >
             <EmulatorPlayer
@@ -157,7 +157,7 @@ export function TvPlay({ slug, onExit }: { slug: string; onExit: () => void }) {
               romLangSelection={romLang}
               onRomLangChange={setRomLang}
               backdrop={
-                <GameCover game={game} ratio="wide" showTitle={false} showBadge={false} priority className="h-full w-full" />
+                <GameCover game={game} ratio="wide" showTitle={false} showBadge={false} priority sizes="100vw" className="h-full w-full" />
               }
             />
           </GameAgeGuard>

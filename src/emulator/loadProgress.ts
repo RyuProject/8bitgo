@@ -534,7 +534,7 @@ export interface BlobFetchOptions {
    */
   routeHealth?: boolean
   /** 内部钩子：网络分片进入续传缓存前做 SHA-256 校验。 */
-  verifyPart?: (part: Blob, index: number, start: number, total: number) => Promise<Blob>
+  verifyPart?: (part: Blob, index: number, start: number, total: number, signal?: AbortSignal) => Promise<Blob>
   /** 内部钩子：Range 不受支持时，整份响应逐块校验后才交给下载器。 */
   verifyWhole?: (response: Response) => Promise<Response>
   /** 内部钩子：校验此前从续传缓存拼入的分片。 */
@@ -795,6 +795,9 @@ const RESUME_WRITE_BACKLOG = 2
 const RESUME_LOAD_TIMEOUT_MS = 8_000
 const RESUME_PUT_TIMEOUT_MS = 15_000
 const RESUME_CLEAR_TIMEOUT_MS = 5_000
+const RESUME_WRITE_BACKPRESSURE_WAIT_MS = 500
+const RESUME_FINALIZE_WAIT_MS = 500
+const RESUME_READ_CHECK_CONCURRENCY = 4
 export const RESUME_TIMED_OUT = Symbol('resume-timeout')
 
 /** 探一个 Blob 的首尾字节能不能读出来；IDB 背后的文件丢了或损坏时会抛 NotReadableError。 */
@@ -807,6 +810,25 @@ export async function blobReadable(blob: Blob): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+/** 限制续传 Blob 的可读性探测并发；失败或超时后不再从共享迭代器派发新读取。 */
+async function resumePartsReadable(parts: Iterable<Blob>, count: number, signal: AbortSignal): Promise<boolean> {
+  if (count <= 0) return true
+  const iterator = parts[Symbol.iterator]()
+  let readable = true
+  const checkNext = async () => {
+    while (readable && !signal.aborted) {
+      const next = iterator.next()
+      if (next.done) return
+      if (!await blobReadable(next.value)) {
+        readable = false
+        return
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(RESUME_READ_CHECK_CONCURRENCY, count) }, () => checkNext()))
+  return readable && !signal.aborted
 }
 
 /** 带上限地等一个续传仓库操作；超时返回 RESUME_TIMED_OUT。定时器必须清掉，否则快的那次也会在稍后被当成超时。 */
@@ -991,11 +1013,11 @@ export async function fetchBlobWithProgress(url: string, opts: BlobFetchOptions 
     }
     return manifest
   }
-  const verifyPart = async (part: Blob, index: number, start: number, total: number) => {
+  const verifyPart = async (part: Blob, index: number, start: number, total: number, signal = opts.signal) => {
     if (!integrityRequired) return part
     const manifest = await requireManifest(total)
     if (!manifest) throw new RomIntegrityError('本站要求校验此 ROM / BIOS，但 SHA-256 清单不可用')
-    const checked = await verifyRomBlobRange(integritySource, part, start, manifest, opts.signal)
+    const checked = await verifyRomBlobRange(integritySource, part, start, manifest, signal)
     integrityVerifiedParts.add(index)
     if (checked === part || !memoryRomOf(part)) return checked
     return memoryRomBlob([new Uint8Array(await checked.arrayBuffer())], part.type)
@@ -1248,12 +1270,20 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
   /*
    * 下载与写盘做成有界流水线。旧实现每片都 await IndexedDB：网络已经空闲，下一片却要等闪存事务完成，
    * 手机和低端 SSD 上会在每个 8MB 边界停一下。现在先把完整 Blob 放进本局 parts，再让最多两笔写盘
-   * 在后台追赶；若磁盘真的比网络慢，第三笔会自然背压，仍不会形成无界事务队列。
+   * 在后台追赶；磁盘若持续慢于网络，短暂背压后关闭本局续传写入，不让可丢弃缓存拖住下载。
    */
   const pendingPartWrites = new Set<Promise<void>>()
   const queuePartSave = async (total: number, index: number, blob: Blob) => {
     if (!resumeStore) return
-    while (pendingPartWrites.size >= RESUME_WRITE_BACKLOG) await Promise.race(pendingPartWrites)
+    while (resumeStore && pendingPartWrites.size >= RESUME_WRITE_BACKLOG) {
+      const settled = await withResumeTimeout(Promise.race(pendingPartWrites), RESUME_WRITE_BACKPRESSURE_WAIT_MS)
+      if (settled === RESUME_TIMED_OUT) {
+        // 两笔续传写入都慢于网络；停止本局后续落盘，避免第三片起被坏存储卡住数十秒。
+        resumeStore = null
+        return
+      }
+    }
+    if (!resumeStore) return
     let task: Promise<void>
     task = savePart(total, index, blob).finally(() => pendingPartWrites.delete(task))
     pendingPartWrites.add(task)
@@ -1261,18 +1291,32 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
   const flushPartSaves = async () => {
     if (pendingPartWrites.size) await Promise.all(pendingPartWrites)
   }
+  const flushPartSavesBeforeReturn = async (): Promise<boolean> => {
+    const flushed = await withResumeTimeout(flushPartSaves(), RESUME_FINALIZE_WAIT_MS)
+    if (flushed === RESUME_TIMED_OUT) {
+      // 完整 ROM 已在本局内存；慢写盘只会让续传变差，不能挡住开局或清掉迟到写入。
+      resumeStore = null
+      return false
+    }
+    return true
+  }
 
   /** Range 回包必须精确对应请求；只验长度挡不住 CDN 把“别的一片等长数据”发回来。 */
-  const assertContentRange = (res: Response, start: number, end: number, total: number) => {
+  const assertContentRange = (res: Response, start: number, end: number, expectedTotal?: number): number => {
     const match = /^bytes\s+(\d+)-(\d+)\/(\d+)$/i.exec(res.headers.get('content-range') ?? '')
-    if (
-      !match
-      || Number(match[1]) !== start
-      || Number(match[2]) !== end
-      || Number(match[3]) !== total
-    ) {
-      throw new Error(`分片范围不匹配：期望 bytes ${start}-${end}/${total}`)
+    const actualStart = Number(match?.[1])
+    const actualEnd = Number(match?.[2])
+    const actualTotal = Number(match?.[3])
+    const expectedEnd = Number.isSafeInteger(actualTotal) && actualTotal > start
+      ? Math.min(end, actualTotal - 1)
+      : -1
+    if (!match || !Number.isSafeInteger(actualStart) || !Number.isSafeInteger(actualEnd) ||
+        !Number.isSafeInteger(actualTotal) || actualStart !== start || actualEnd !== expectedEnd ||
+        (expectedTotal !== undefined && actualTotal !== expectedTotal)) {
+      const total = expectedTotal === undefined ? '<有效总长>' : String(expectedTotal)
+      throw new Error(`分片范围不匹配：期望 bytes ${start}-${expectedTotal === undefined ? end : Math.min(end, expectedTotal - 1)}/${total}`)
     }
+    return actualTotal
   }
 
   /** 慢线路才请求另一域的同一 ROM 对齐首片；若对方没有快 15%，继续当前流避免盲切更差线路。 */
@@ -1299,12 +1343,14 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
     // 与当前线路的首段采样同一口径：从响应头到达算起，握手和首字节不算
     let startedAt = monotonicNow()
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+    let response: Response | undefined
     let loaded = 0
     try {
       const res = await doFetch(candidateUrl, {
         headers: { Range: `bytes=0-${candidateEnd}` }, signal: controller.signal,
         cache: opts.cache ?? 'default',
       })
+      response = res
       startedAt = monotonicNow()
       validateResponse(res, opts.check)
       if (res.status !== 206 || !res.body) {
@@ -1324,6 +1370,8 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
       if (trackHealth) recordRomRouteTransfer(candidateUrl, loaded, elapsedMs)
       return (loaded * 8) / (elapsedMs * 1000)
     } catch {
+      // 状态码 / Content-Range 校验发生在取 reader 之前；失败响应可能是很大的 HTML 正文，立即丢弃。
+      if (!reader) void response?.body?.cancel().catch(() => {})
       if (timedOut && loaded >= ALTERNATE_ROUTE_MIN_SAMPLE_BYTES) {
         const elapsedMs = Math.max(1, monotonicNow() - startedAt)
         if (trackHealth) recordRomRouteTransfer(candidateUrl, loaded, elapsedMs)
@@ -1353,8 +1401,7 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
         throw new Error(`下载不完整：应为 ${total} 字节，实际收到 ${blob.size} 字节`)
       }
       emitTotal(blob.size, blob.size, true)
-      await flushPartSaves()
-      await clearResume()
+      if (await flushPartSavesBeforeReturn()) void clearResume()
       if (memoryRomOf(blob)) return keepInMemory(blob.size) ? blob : new Blob([await blob.arrayBuffer()], { type })
       return blob.type === type ? blob : new Blob([blob], { type })
     }
@@ -1367,8 +1414,7 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
       guard.touch,
     )
     emitTotal(loaded, loaded, true)
-    await flushPartSaves()
-    await clearResume()
+    if (await flushPartSavesBeforeReturn()) void clearResume()
     return keepInMemory(loaded) ? memoryRomBlob(memoryParts(chunks), type) : new Blob(chunks as BlobPart[], { type })
   }
 
@@ -1485,6 +1531,7 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
     cache: RequestCache,
     signal: AbortSignal,
     hedge = true,
+    expectedTotal?: number,
   ): Promise<RangeAnswer> => {
     const sentAt = monotonicNow()
     const request = (target: string, laneSignal: AbortSignal) =>
@@ -1495,11 +1542,21 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
       if (headerSamples.length > 8) headerSamples.shift()
       return { res, route: target, headersAt }
     }
+    const validateRangeResponse = (res: Response) => {
+      try {
+        validateResponse(res, opts.check)
+        if (res.status === 206) assertContentRange(res, start, end, expectedTotal)
+      } catch (error) {
+        // 错误的 206 正文可能有数 MB；切备用线路时立即关掉，别让无效响应继续占连接和流量。
+        void res.body?.cancel().catch(() => {})
+        throw error
+      }
+    }
     const backup = hedge && canHedgeRoutes ? pickRoute(route) : ''
     if (!backup || backup === route) {
       return request(route, signal).then((res) => {
         try {
-          validateResponse(res, opts.check)
+          validateRangeResponse(res)
         } catch (error) {
           if (!signal.aborted) noteRouteFailure(route, error)
           throw error
@@ -1544,9 +1601,9 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
             if (target === backup) releaseBackupLoad()
             return
           }
-          // 快速 404、5xx 或 HTML 错误页不能抢赢仍在等待的线路；先验证响应再决定是否中止对端。
+          // 错误状态、HTML 错误页或范围不匹配的 206 不能抢赢仍在等待的线路。
           try {
-            validateResponse(res, opts.check)
+            validateRangeResponse(res)
           } catch (error) {
             lane.failed = true
             lane.error = error
@@ -1625,10 +1682,13 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
       读不出或卡住就整组作废、本局不再写续传，宁可重下，也不把一份读不出来的 ROM 交给解包。
     */
     if (valid && completed > 0) {
+      const readabilityController = new AbortController()
       const readable = await withResumeTimeout(
-        Promise.all(parts.map((part) => (part ? blobReadable(part) : true))).then((all) => all.every(Boolean)),
+        // 只检查实际保存的 Blob，并限四路；大量续传片不能一次创建成千上万个 Promise / IDB 读取。
+        resumePartsReadable(resumed.parts.values(), resumed.parts.size, readabilityController.signal),
         RESUME_LOAD_TIMEOUT_MS,
       )
+      if (readable === RESUME_TIMED_OUT) readabilityController.abort()
       if (readable !== true) {
         console.warn('[download] 续传分片读不出来，作废并重新下载')
         valid = false
@@ -1645,6 +1705,9 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
       emitTotal(completed, total, true)
     }
   }
+
+  // 直接遍历续传账本；不要再为可能成千上万的缓存块复制一份索引和 Blob 引用数组。
+  const resumedIntegrityParts = resumed?.parts
 
   /*
     每片的在途字节分两路记：主请求，和尾部对冲时在另一条线路上重下的那一路。
@@ -1667,6 +1730,27 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
       if (index !== except) controller.abort()
     }
     for (const controller of hedgeControllers.values()) controller.abort()
+  }
+
+  let resumedIntegrityVerification: Promise<void> | null = null
+  /** 首个有效的完整性标记 Range 响应到达后，校验旧续传块与缺失块下载重叠。 */
+  const startResumedIntegrityVerification = (response: Response) => {
+    const verifyPart = opts.verifyPart
+    if (resumedIntegrityVerification || fatalError !== undefined || guard.signal.aborted || !verifyPart || !resumedIntegrityParts?.size ||
+        response.status !== 206 || response.headers.get('X-8BitGo-Integrity-Required') !== 'sha256-v1') return
+    resumedIntegrityVerification = (async () => {
+      // 一次只验一片，避免大量续传块同时读入内存、抢占弱设备上的解压和模拟器启动资源。
+      for (const [index, part] of resumedIntegrityParts) {
+        if (parts[index] !== part) continue
+        const verified = await verifyPart(part, index, index * chunkBytes, total, guard.signal)
+        if (parts[index] === part) parts[index] = verified
+        guard.touch()
+      }
+    })().catch((error) => {
+      // 缓存块不可信时停止其余 Range 请求；整局仍由原完整性错误结束，不能交付部分 ROM。
+      if (fatalError === undefined) fatalError = error
+      abortActive()
+    })
   }
 
   /** 只维护字节差值；每个 64KB 网络块都展开 Map 再 reduce 会把四路下载的统计成本压回主线程。 */
@@ -1736,6 +1820,8 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
           // 浏览器磁盘缓存里的 206 若底层文件失效，重试必须绕过同一条坏缓存记录。
           attempt > 0 ? 'reload' : (opts.cache ?? 'default'),
           controller.signal,
+          true,
+          total,
         )
         const res = answer.res
         reservedRoute = moveRouteLoad(reservedRoute, answer.route)
@@ -1759,7 +1845,7 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
           }
           return
         }
-        assertContentRange(res, start, end, total)
+        startResumedIntegrityVerification(res)
         const part = await takePartWithConcurrentProgress(res, expect, index, 'main')
         if (wholeResponse) return
         noteTransfer(running.route, part.size, monotonicNow() - running.headersAt)
@@ -1904,17 +1990,12 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
         const sampleStartedAt = answer.headersAt
         if (first.status !== 206) return takeWhole(first)
 
-        const match = /^bytes\s+(\d+)-(\d+)\/(\d+)$/i.exec(first.headers.get('content-range') ?? '')
-        const firstTotal = Number(match?.[3])
-        if (!match || Number(match[1]) !== 0 || !Number.isSafeInteger(firstTotal) || firstTotal <= 0) {
-          throw new Error('分片响应缺少有效的 Content-Range')
-        }
+        const firstTotal = assertContentRange(first, 0, chunkBytes - 1)
         if (firstTotal > maxBytes || Math.ceil(firstTotal / chunkBytes) > MAX_BLOB_PARTS) {
           void first.body?.cancel().catch(() => {})
           throw new RangeError('ROM 文件超过浏览器下载上限')
         }
         const firstEnd = Math.min(chunkBytes, firstTotal) - 1
-        if (Number(match[2]) !== firstEnd) throw new Error(`分片范围不匹配：期望 bytes 0-${firstEnd}/${firstTotal}`)
 
         probedTotal = firstTotal
         total = firstTotal
@@ -2022,7 +2103,7 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
           // 首片测速证实切线更快时，中止首片旁路并等它们退出，避免旧线路的写盘晚于新一轮续传读取。
           abortActive()
           await Promise.all(earlyTasks.values())
-          await flushPartSaves()
+          await flushPartSavesBeforeReturn()
           throw fasterAlternateError
         }
         // 卡死会在外层换一只新的 AbortController；这里不能拿已 abort 的 signal 空转。
@@ -2050,7 +2131,10 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
     hardMax,
     adaptiveChunkConcurrency(sampleBytes, sampleElapsedMs, networkHints),
   )
-  const pending = parts.map((part, index) => part ? -1 : index).filter((index) => index >= 0)
+  const pending: number[] = []
+  for (let index = 0; index < parts.length; index++) {
+    if (!parts[index]) pending.push(index)
+  }
   /*
     尾部对冲：整份文件什么时候下完由最慢的那一片决定（2026-11-18 实测 21.9MB ROM：三片分三条线路并发
     7.3～7.6 秒，同一线路并发 5～10 秒，波动全在最后一片）。没有新片可取时空出来的那一路去帮最慢的一片：
@@ -2109,14 +2193,14 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
     let served = route
     let headersAt = 0
     try {
-      const answer = await fetchRange(route, start, end, opts.cache ?? 'default', controller.signal, false)
+      const answer = await fetchRange(route, start, end, opts.cache ?? 'default', controller.signal, false, total)
       served = answer.route
       headersAt = answer.headersAt
       if (answer.res.status !== 206) {
         void answer.res.body?.cancel().catch(() => {})
         return
       }
-      assertContentRange(answer.res, start, end, total)
+      startResumedIntegrityVerification(answer.res)
       const part = await takePartWithConcurrentProgress(answer.res, expect, index, 'hedge')
       if (wholeResponse) return
       noteTransfer(served, part.size, monotonicNow() - headersAt)
@@ -2175,21 +2259,26 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
   await Promise.all(Array.from({ length: workerCount }, () => worker()))
   // 整局失败时提前分片已被中止；等它们真正退出，免得之后还往 parts / 续传库里写
   if (earlyTasks.size) await Promise.all(earlyTasks.values())
+  if (resumedIntegrityVerification) await resumedIntegrityVerification
   if (fatalError !== undefined) throw fatalError
   if (wholeResponse) return takeWhole(wholeResponse)
 
   let complete = parts as Blob[]
   if (opts.verifyCompletedParts) complete = await opts.verifyCompletedParts(complete, total)
-  // 网络与大部分写盘已经重叠；这里只等最多两笔尾写，避免 clear 与尚未提交的 put 互相复活。
-  await flushPartSaves()
+  // 续传只是缓存：最多再等 500ms 收尾，慢写盘时保留当前版本的片并先把完整 ROM 交给模拟器。
+  const resumeWritesFlushed = await flushPartSavesBeforeReturn()
   // 100% 必须代表这份 ROM 已经能返回给引擎，不能先满格再等待尾部写盘。
   emitTotal(total, total, true)
-  // 删除几十到几百个临时片可能明显拖住开局。完整 Blob 已在手里，清理留在后台即可；
-  // 同一个内容键此刻再次进入，最多只是短暂复用这份完整现场，不会混入另一代 ROM。
-  void clearResume()
+  // 删除临时片放在后台；若写盘超时则保留它们，供相同的不可变版本安全续传。
+  if (resumeWritesFlushed) void clearResume()
   if (keepInMemory(total)) {
     // 各片本来就是独立的字节块，拼成一个替身只是换个索引，不复制
-    return memoryRomBlob(complete.flatMap((part) => (memoryRomOf(part)?.parts ?? []) as Uint8Array<ArrayBuffer>[]), type)
+    function* completedMemoryParts(): IterableIterator<Uint8Array<ArrayBuffer>> {
+      for (const part of complete) {
+        for (const bytes of memoryRomOf(part)?.parts ?? []) yield bytes as Uint8Array<ArrayBuffer>
+      }
+    }
+    return memoryRomBlob(completedMemoryParts(), type)
   }
   return new Blob(complete, { type })
 }

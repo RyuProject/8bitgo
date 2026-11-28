@@ -107,6 +107,7 @@ export const EXPECTED_TABLES = [
   { table: 'platform_bios', why: '平台级 BIOS' },
   { table: 'game_plays', why: '游玩去重名单；缺了 POST /api/games/:slug/play 会 500，游玩数永远是 0' },
   { table: 'game_startup_events', why: '第一方启动漏斗；缺了详情页到首帧/首次操作的性能统计会全部 500' },
+  { table: 'rom_upload_metrics', why: '匿名 ROM 上传性能基线；缺表时后台不能按网络、设备和文件大小调优' },
   { table: 'game_startup_diagnostics', why: '启动诊断包；缺了失败现场不入库，后台「错误诊断」页 503' },
   { table: 'ai_hotfixes', why: 'AI 临时修补记录；缺了 MiniMax 分诊不运行、/api/hotfixes 返回空、后台「AI 修补」页 503' },
   { table: 'game_roms', why: '按语言分槽的 ROM' },

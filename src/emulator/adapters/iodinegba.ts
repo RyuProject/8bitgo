@@ -11,28 +11,34 @@ import { loadGameBytes } from '../romLoader'
 import { readGamepadsSafe } from '../gamepadAccess'
 import { gamepadPadState } from '../gamepadInput'
 import { installPadKeyboard } from '../padKeyboard'
-import type { Capability, CaptureSources, MountOptions, PadButton, RuntimeHandle } from '../types'
+import type { Capability, CaptureSources, GbaLinkNetplaySession, MountOptions, PadButton, RuntimeHandle } from '../types'
 import { isZip, extractRomFromZip } from '@/lib/unzip'
 import { diagLog } from '@/services/startupDiagnostics'
 import { resolvePlatformBiosForStartup } from '@/services/platformBios'
 import { IODINEGBA_BUILD, IODINEGBA_SHA256 } from '../iodinegbaVersion'
 import { applyPinnedScriptIntegrity } from '../coreAssetIntegrity'
 import { createInputSourceRouter } from '../inputSourceRouter'
+import { attachGbaCable, GBA_LINK_PROTOCOL_VERSION, type GbaLinkCable, type GbaLinkSerial } from '../gbaLinkCable'
+import { advanceGbaLinkFrameClock, createGbaLinkFrameClock, gbaLinkRemoteWaitExpired } from '../gbaLinkClock'
+import { JsnesNetplay } from '../jsnesNetplay'
 
 const BASE = '/iodinegba'
 const BIOS_BYTES = 0x4000
 const MAX_ROM_BYTES = 64 * 1024 * 1024
 const SAVE_KEY_PREFIX = '8bitgo.iodinegba.battery.v1:'
 const SAVE_STATE_TAG = '8bitgo-iodinegba-battery-v1'
-const TIMER_INTERVAL_MS = 16
+const TIMER_INTERVAL_MS = 1000 / 60
 
 type IodineButton = PadButton | 'l' | 'r'
 
 interface IodineEmulator {
-  settings: { SKIPBoot: boolean; offthreadGfxEnabled: boolean }
+  settings: { SKIPBoot: boolean; offthreadGfxEnabled: boolean; dynamicSpeed?: boolean }
+  CPUCyclesTotal: number
+  CPUCyclesPerIteration: number
   emulatorStatus: number
   audio?: IodineAudioHandler
-  IOCore?: { coreExposed?: { graphicsHandle?: unknown } } | null
+  IOCore?: { serial?: GbaLinkSerial; coreExposed?: { graphicsHandle?: unknown } } | null
+  audioUnderrunAdjustment?: () => void
   attachROM(rom: Uint8Array): void
   attachBIOS(bios: Uint8Array): void
   attachGraphicsFrameHandler(handler: { copyBuffer(buffer: ArrayLike<number>): void }): void
@@ -114,6 +120,47 @@ function decodeBase64(value: string): Uint8Array | null {
   } catch {
     return null
   }
+}
+
+interface IodineBatterySnapshot {
+  data: Uint8Array | null
+  type: number
+}
+
+const GBA_NETPLAY_ACTIONS: readonly IodineButton[] = ['a', 'b', 'select', 'start', 'up', 'down', 'left', 'right', 'l', 'r']
+
+function gbaInputBits(keys: ReadonlySet<IodineButton>): number {
+  let bits = 0
+  for (let index = 0; index < GBA_NETPLAY_ACTIONS.length; index++) {
+    if (keys.has(GBA_NETPLAY_ACTIONS[index])) bits |= 1 << index
+  }
+  return bits
+}
+
+function gbaRomFingerprint(bytes: Uint8Array): string {
+  let a = 0x811c9dc5
+  let b = 0x9e3779b9
+  for (let i = 0; i < bytes.length; i++) {
+    a = Math.imul(a ^ bytes[i], 0x01000193) >>> 0
+    b = Math.imul(b ^ (bytes[i] + i), 0x85ebca6b) >>> 0
+  }
+  return `${bytes.length.toString(16)}-${a.toString(16).padStart(8, '0')}${b.toString(16).padStart(8, '0')}`
+}
+
+function serializeBattery(snapshot: IodineBatterySnapshot): { tag: string; type: number; data: string } {
+  return { tag: SAVE_STATE_TAG, type: snapshot.type, data: snapshot.data ? encodeBase64(snapshot.data) : '' }
+}
+
+function parseBattery(value: unknown): IodineBatterySnapshot {
+  if (!value || typeof value !== 'object') throw new Error('对端卡带存档格式不合法')
+  const record = value as { tag?: unknown; type?: unknown; data?: unknown }
+  if (record.tag !== SAVE_STATE_TAG || !Number.isInteger(record.type) || (record.type as number) < 0 || (record.type as number) > 3
+    || typeof record.data !== 'string' || record.data.length > 180_000) {
+    throw new Error('对端卡带存档格式或大小不合法')
+  }
+  const data = record.data ? decodeBase64(record.data) : null
+  if (record.data && (!data || data.length > 131_072)) throw new Error('对端卡带存档内容损坏')
+  return { data, type: record.type as number }
 }
 
 function identityFor(options: MountOptions): string {
@@ -237,6 +284,29 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let destroyed = false
   let paused = false
   let engine: IodineEmulator | null = null
+  let engines: IodineEmulator[] = []
+  let cable: GbaLinkCable | null = null
+  let netplay: JsnesNetplay | null = null
+  let netplaySession: GbaLinkNetplaySession | null = null
+  let netplayActive = false
+  let netplayRaf = 0
+  let netplayFrame = 0
+  let netplayFrameClock = createGbaLinkFrameClock()
+  let netplayLocalRing: number[] = []
+  let netplayPendingFrame = -1
+  let netplayPendingBits = 0
+  let netplayPendingSent = false
+  let netplayAppliedBits: [number, number] = [-1, -1]
+  let netplayRemoteWaitStartedAt: number | null = null
+  let netplaySeat: 0 | 1 = 0
+  let romBytes: Uint8Array | null = null
+  let biosBytesForCore: Uint8Array | null = null
+  let coreConstructor: (new () => IodineEmulator) | null = null
+  const batteryBySeat: [IodineBatterySnapshot, IodineBatterySnapshot] = [
+    { data: null, type: 0 },
+    { data: null, type: 0 },
+  ]
+  const localKeys = new Set<IodineButton>()
   let timer = 0
   let saveTimer = 0
   let gamepadRaf = 0
@@ -244,6 +314,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let uninstallKeyboard: (() => void) | null = null
   let batteryData: Uint8Array | null = null
   let batteryType = 0
+  let batterySaveSeat: 0 | 1 = 0
   let batteryKey = ''
   let lastBatteryRecord = ''
   let unlockAudio: (() => void) | null = null
@@ -251,6 +322,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const extraKeysHeld = new Set<'l' | 'r'>()
   const inputSources = createInputSourceRouter<IodineButton>((button, down) => {
     const index = KEY_INDEX[button]
+    if (down) localKeys.add(button)
+    else localKeys.delete(button)
+    // 锁步时按帧施加输入；直接写核心会让两端因网络等待时长不同而分叉。
+    if (netplayActive) return
     if (down) engine?.keyDown(index)
     else engine?.keyUp(index)
   })
@@ -263,6 +338,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       if (parsed.tag === SAVE_STATE_TAG && typeof parsed.data === 'string' && Number.isInteger(parsed.type)) {
         batteryData = decodeBase64(parsed.data)
         batteryType = Math.max(0, Math.min(3, parsed.type ?? 0))
+        batteryBySeat[0] = { data: batteryData?.slice() ?? null, type: batteryType }
       }
     }
   } catch {
@@ -271,6 +347,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
   const persistBattery = () => {
     if (!batteryData?.length || !batteryKey) return
+    batteryBySeat[netplayActive ? netplaySeat : batterySaveSeat] = { data: batteryData.slice(), type: batteryType }
     try {
       const data = encodeBase64(batteryData)
       const record = `${batteryType}:${data}`
@@ -347,8 +424,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   }
 
   const onVisibilityChange = () => {
+    // 后台标签页可能暂停 RAF；恢复时重新给对端一段完整等待时间，不把系统挂起算成断流。
+    netplayRemoteWaitStartedAt = null
     if (document.visibilityState === 'hidden') {
       releaseExtraKeys()
+      inputSources.releaseSource('gamepad')
+      inputSources.releaseSource('touchpad')
+      inputSources.releaseSource('touch:l')
+      inputSources.releaseSource('touch:r')
+      gamepadHeld.clear()
       updateBattery()
     }
   }
@@ -425,15 +509,18 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
     updateBattery()
     destroyed = true
-    if (engine) {
-      try { engine.pause() } catch { /* 退出清理不再影响播放器 */ }
-      engine.attachSaveExportHandler(() => {})
-      engine.attachSaveImportHandler((_name, _found, missing) => missing())
-      if (engine.IOCore?.coreExposed) engine.IOCore.coreExposed.graphicsHandle = null
-      engine.audio = undefined
-      engine.IOCore = null
-      engine = null
-    }
+    netplayActive = false
+    if (netplayRaf) cancelAnimationFrame(netplayRaf)
+    netplayRaf = 0
+    cable?.destroy()
+    cable = null
+    const oldNetplay = netplay
+    netplay = null
+    netplaySession = null
+    oldNetplay?.close()
+    for (const instance of new Set([...engines, ...(engine ? [engine] : [])])) disposeEngine(instance)
+    engines = []
+    engine = null
     audio?.node.disconnect()
     audio?.gain.disconnect()
     if (audio?.context.state !== 'closed') void audio?.context.close().catch(() => {})
@@ -446,6 +533,294 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     const scope = error instanceof IodineStartupError ? error.scope : 'runtime'
     options.onError?.(message, scope)
     destroy()
+  }
+
+  const makeEngine = (
+    save: IodineBatterySnapshot,
+    render: boolean,
+    sound: boolean,
+    lockstep: boolean,
+    persist: boolean,
+  ): IodineEmulator => {
+    if (!coreConstructor || !romBytes || !biosBytesForCore) throw new Error('GBA 联机核心资源尚未准备好')
+    const instance = new coreConstructor()
+    instance.settings.offthreadGfxEnabled = false
+    if (lockstep) instance.settings.dynamicSpeed = false
+    instance.attachPlayStatusHandler(() => {})
+    instance.attachSaveImportHandler((name, found, missing) => {
+      if (!save.data?.length) {
+        missing()
+        return
+      }
+      found(name.startsWith('TYPE_') ? new Uint8Array([save.type]) : save.data.slice())
+    })
+    instance.attachSaveExportHandler((name, value) => {
+      const bytes = Uint8Array.from(Array.from(value, (byte) => Number(byte) & 0xff))
+      if (name.startsWith('TYPE_')) save.type = bytes[0] ?? 0
+      else if (bytes.length) save.data = bytes
+      if (persist) {
+        batteryData = save.data?.slice() ?? null
+        batteryType = save.type
+        persistBattery()
+      }
+    })
+    if (render) {
+      instance.attachGraphicsFrameHandler({
+        copyBuffer: (buffer) => {
+          if (!context2d || !image || destroyed) return
+          for (let src = 0, dst = 0; src < 240 * 160 * 3; src += 3) {
+            image.data[dst++] = Number(buffer[src]) & 0xff
+            image.data[dst++] = Number(buffer[src + 1]) & 0xff
+            image.data[dst++] = Number(buffer[src + 2]) & 0xff
+            image.data[dst++] = 0xff
+          }
+          context2d.putImageData(image, 0, 0)
+          if (!firstFrame) {
+            firstFrame = true
+            options.onStart?.()
+          }
+        },
+      })
+    } else {
+      instance.attachGraphicsFrameHandler({ copyBuffer: () => {} })
+    }
+    if (sound && audio) instance.attachAudioHandler(audio.handler)
+    if (lockstep) {
+      // 音频缓冲欠载会改变 IodineGBA 每轮 CPU 周期；锁步时固定周期，保持两份核心逐帧一致。
+      instance.audioUnderrunAdjustment = function () {
+        this.CPUCyclesTotal = this.CPUCyclesPerIteration
+      }
+    }
+    instance.attachROM(romBytes)
+    instance.attachBIOS(biosBytesForCore)
+    instance.setIntervalRate(TIMER_INTERVAL_MS)
+    instance.play()
+    if ((instance.emulatorStatus & 0x1) !== 0x1) throw new IodineStartupError('IodineGBA 无法初始化 GBA BIOS 或 ROM。', 'content')
+    return instance
+  }
+
+  const disposeEngine = (instance: IodineEmulator) => {
+    try { instance.pause() } catch { /* 退出清理不再影响播放器 */ }
+    instance.attachSaveExportHandler(() => {})
+    instance.attachSaveImportHandler((_name, _found, missing) => missing())
+    if (instance.IOCore?.coreExposed) instance.IOCore.coreExposed.graphicsHandle = null
+    instance.audio = undefined
+    instance.IOCore = null
+  }
+
+  const resetLinkInput = () => {
+    netplayFrame = 0
+    netplayFrameClock = createGbaLinkFrameClock()
+    netplayLocalRing = []
+    netplayPendingFrame = -1
+    netplayPendingBits = 0
+    netplayPendingSent = false
+    netplayAppliedBits = [-1, -1]
+    netplayRemoteWaitStartedAt = null
+  }
+
+  const applyLinkInput = (seat: 0 | 1, bits: number) => {
+    const instance = engines[seat]
+    if (!instance) throw new Error('GBA 联机核心已经退出')
+    const previous = netplayAppliedBits[seat]
+    if (previous === bits) return
+    for (let index = 0; index < GBA_NETPLAY_ACTIONS.length; index++) {
+      const was = previous >= 0 && (previous & (1 << index)) !== 0
+      const down = (bits & (1 << index)) !== 0
+      if (was === down) continue
+      const button = GBA_NETPLAY_ACTIONS[index]
+      const key = KEY_INDEX[button]
+      if (down) instance.keyDown(key)
+      else instance.keyUp(key)
+    }
+    netplayAppliedBits[seat] = bits
+  }
+
+  const resumeSoloAfterLink = (target?: JsnesNetplay) => {
+    // 离房前立刻刷一次本机卡带存档；只依赖 30 秒周期会丢掉刚发生的进度。
+    if (netplayActive) updateBattery()
+    if (netplayActive) {
+      try {
+        // 联机按延迟帧施加输入；切回单机前要对齐实体按键，避免留下延迟后的粘键状态。
+        applyLinkInput(netplaySeat, gbaInputBits(localKeys))
+      } catch {
+        // 核心已异常退出时仍要完成拆线和房间清理，不能让输入对齐卡住退出。
+      }
+    }
+    netplayActive = false
+    if (netplayRaf) cancelAnimationFrame(netplayRaf)
+    netplayRaf = 0
+    cable?.destroy()
+    cable = null
+    const localEngine = engine
+    for (const instance of engines) {
+      if (instance !== localEngine) disposeEngine(instance)
+    }
+    engines = localEngine ? [localEngine] : []
+    if (netplay === target || !target) netplay = null
+    target?.close()
+    netplaySession = null
+    resetLinkInput()
+    if (!caps.has('pause')) {
+      caps.add('pause')
+      options.onCaps?.(caps)
+    }
+    if (!destroyed) {
+      paused = false
+      startClock()
+    }
+  }
+
+  const startLinkLoop = () => {
+    const tick = (time: number) => {
+      netplayRaf = 0
+      const activeNetplay = netplay
+      if (!netplayActive || !activeNetplay || destroyed) return
+      try {
+        advanceGbaLinkFrameClock(netplayFrameClock, time, (frameTime) => {
+          const frame = netplayFrame
+          const delay = activeNetplay.bufferFrames
+          if (netplayPendingFrame !== frame) {
+            netplayPendingFrame = frame
+            netplayPendingBits = gbaInputBits(localKeys)
+            netplayPendingSent = false
+          }
+          if (!netplayPendingSent) netplayPendingSent = activeNetplay.sendLocal(frame, netplayPendingBits)
+          if (!netplayPendingSent) return false
+          const sourceFrame = frame - delay
+          const remoteBits = sourceFrame < 0 ? 0 : activeNetplay.remoteBitsFor(sourceFrame)
+          if (remoteBits === undefined) {
+            const now = performance.now()
+            if (netplayRemoteWaitStartedAt === null) netplayRemoteWaitStartedAt = now
+            if (gbaLinkRemoteWaitExpired(netplayRemoteWaitStartedAt, now, document.visibilityState !== 'hidden')) {
+              throw new Error('对端输入长时间未到达，已停止联机以避免游戏无限卡住；请重新连接后继续')
+            }
+            return false
+          }
+          netplayRemoteWaitStartedAt = null
+
+          netplayLocalRing.push(netplayPendingBits)
+          while (netplayLocalRing.length > delay + 1) netplayLocalRing.shift()
+          if (sourceFrame < 0) {
+            applyLinkInput(netplaySeat, 0)
+            applyLinkInput(netplaySeat === 0 ? 1 : 0, 0)
+          } else {
+            applyLinkInput(netplaySeat, netplayLocalRing[0] ?? 0)
+            applyLinkInput(netplaySeat === 0 ? 1 : 0, remoteBits)
+            activeNetplay.pruneRemote(sourceFrame - 1)
+          }
+          const timestamp = Math.floor(frameTime) >>> 0
+          for (const instance of engines) instance.timerCallback(timestamp)
+          const transfer = cable?.settleFrame() ?? 'idle'
+          if (transfer === 'failed') throw new Error(cable?.failureReason ?? 'GBA 串口传输失败，已停止联机以避免游戏状态分叉')
+          netplayFrame++
+          netplayPendingFrame = -1
+          netplayPendingSent = false
+          return true
+        })
+      } catch (error) {
+        const target = netplay
+        const session = netplaySession
+        const message = error instanceof Error ? error.message : String(error)
+        resumeSoloAfterLink(target ?? undefined)
+        session?.onError?.(message)
+      }
+      if (netplayActive && !destroyed) netplayRaf = requestAnimationFrame(tick)
+    }
+    netplayRaf = requestAnimationFrame(tick)
+  }
+
+  const makeLinkCores = () => {
+    // 离房后本机可能继续玩并更新同一个存档；下次换座位开房时仍以本机当前存档为准。
+    batteryBySeat[netplaySeat] = { data: batteryData?.slice() ?? null, type: batteryType }
+    batterySaveSeat = netplaySeat
+    const localIndex = netplaySeat
+    const pair: IodineEmulator[] = []
+    try {
+      pair[0] = makeEngine(batteryBySeat[0], localIndex === 0, localIndex === 0, true, localIndex === 0)
+      pair[1] = makeEngine(batteryBySeat[1], localIndex === 1, localIndex === 1, true, localIndex === 1)
+      const serial0 = pair[0].IOCore?.serial
+      const serial1 = pair[1].IOCore?.serial
+      if (!serial0 || !serial1) throw new Error('IodineGBA 没有公开可用的串口，无法连接 GBA 电缆')
+      const nextCable = attachGbaCable({ serial: serial0 }, { serial: serial1 })
+      const previousEngine = engine
+      stopClock()
+      if (previousEngine && !pair.includes(previousEngine)) disposeEngine(previousEngine)
+      engines = pair
+      cable = nextCable
+      engine = pair[localIndex]
+      batteryData = batteryBySeat[localIndex].data?.slice() ?? null
+      batteryType = batteryBySeat[localIndex].type
+      lastBatteryRecord = ''
+      netplayActive = true
+      paused = false
+      resetLinkInput()
+      caps.delete('pause')
+      options.onCaps?.(caps)
+      startLinkLoop()
+    } catch (error) {
+      for (const instance of pair) disposeEngine(instance)
+      throw error
+    }
+  }
+
+  const startGbaNetplay = async () => {
+    const session = netplaySession
+    if (!session || netplay || !engine || !romBytes || destroyed || paused) return false
+    netplaySeat = session.mode === 'host' ? 0 : 1
+    const np = new JsnesNetplay({
+      roomId: session.roomId,
+      seat: netplaySeat,
+      bufferFrames: session.bufferFrames ?? 2,
+      // 同 ROM 仍可能因核心或串口桥代次不同而逐帧分叉，因此把运行时构建与电缆协议一起核对。
+      gameId: `${GBA_LINK_PROTOCOL_VERSION}:${IODINEGBA_SHA256}:${gbaRomFingerprint(romBytes)}:${gbaRomFingerprint(biosBytesForCore ?? new Uint8Array())}`,
+      captureInitialState: () => null,
+      applyInitialState: () => {},
+      captureOwnState: () => {
+        // 两端各自暂停在握手快照处；新的双机局从这两份存档冷启动，不能把未同步的单机内存带进来。
+        stopClock()
+        paused = true
+        caps.delete('pause')
+        options.onCaps?.(caps)
+        updateBattery()
+        batteryBySeat[netplaySeat] = { data: batteryData?.slice() ?? null, type: batteryType }
+        return serializeBattery(batteryBySeat[netplaySeat])
+      },
+      applyPeerState: (state) => {
+        const peerSeat = netplaySeat === 0 ? 1 : 0
+        batteryBySeat[peerSeat] = parseBattery(state)
+      },
+      onReady: () => {
+        if (destroyed || netplay !== np) return
+        try {
+          makeLinkCores()
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          resumeSoloAfterLink(np)
+          session.onError?.(message)
+        }
+      },
+      onError: (message) => {
+        if (netplay === np) resumeSoloAfterLink(np)
+        session.onError?.(message)
+      },
+      onState: session.onLinkState,
+      onPeerCount: session.onPlayers,
+      onRoom: session.onRoom,
+      onHostLeft: () => {
+        if (netplay === np) resumeSoloAfterLink(np)
+        session.onHostLeft?.()
+      },
+    })
+    netplay = np
+    try {
+      await np.connect()
+      return true
+    } catch (error) {
+      if (netplay === np) resumeSoloAfterLink(np)
+      session.onError?.(error instanceof Error ? error.message : String(error))
+      return false
+    }
   }
 
   options.onProgress?.({ phase: 'engine' })
@@ -480,51 +855,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       const Core = await loadIodineScript().then(() => window.IodineGBA)
       if (!Core) throw new Error('IodineGBA 核心未能初始化')
       if (destroyed) return
-      const instance = new Core()
-      instance.settings.offthreadGfxEnabled = false
-      // 上游 play() 会无条件调用此回调；未注册时会在初始化成功后同步抛 TypeError。
-      instance.attachPlayStatusHandler(() => {})
-      instance.attachSaveImportHandler((name, found, missing) => {
-        if (!batteryData?.length) {
-          missing()
-          return
-        }
-        found(name.startsWith('TYPE_') ? new Uint8Array([batteryType]) : batteryData.slice())
-      })
-      instance.attachSaveExportHandler((name, value) => {
-        const bytes = Uint8Array.from(Array.from(value, (byte) => Number(byte) & 0xff))
-        if (name.startsWith('TYPE_')) {
-          batteryType = bytes[0] ?? 0
-        } else if (bytes.length) {
-          batteryData = bytes
-        }
-        persistBattery()
-      })
-      instance.attachGraphicsFrameHandler({
-        copyBuffer: (buffer) => {
-          if (!context2d || !image || destroyed) return
-          for (let src = 0, dst = 0; src < 240 * 160 * 3; src += 3) {
-            image.data[dst++] = Number(buffer[src]) & 0xff
-            image.data[dst++] = Number(buffer[src + 1]) & 0xff
-            image.data[dst++] = Number(buffer[src + 2]) & 0xff
-            image.data[dst++] = 0xff
-          }
-          context2d.putImageData(image, 0, 0)
-          if (!firstFrame) {
-            firstFrame = true
-            options.onStart?.()
-          }
-        },
-      })
-      if (audio) instance.attachAudioHandler(audio.handler)
-      instance.attachROM(new Uint8Array(rom))
-      instance.attachBIOS(new Uint8Array(biosBytes))
-      instance.setIntervalRate(TIMER_INTERVAL_MS)
-      instance.play()
-      if ((instance.emulatorStatus & 0x1) !== 0x1) {
-        throw new IodineStartupError('IodineGBA 无法初始化 GBA BIOS 或 ROM。', 'content')
-      }
+      coreConstructor = Core
+      romBytes = new Uint8Array(rom)
+      biosBytesForCore = new Uint8Array(biosBytes)
+      const instance = makeEngine(batteryBySeat[0], true, true, false, true)
       engine = instance
+      engines = [instance]
       options.onGeometry?.({ width: 240, height: 160 })
       options.onProgress?.({ phase: 'starting', ratio: 1 })
       uninstallKeyboard = installPadKeyboard((button, down, _seat, code) => {
@@ -555,7 +891,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   return {
     caps,
     setPaused: (next) => {
-      if (!engine || destroyed || paused === next) return
+      if (!engine || destroyed || netplayActive || paused === next) return
       paused = next
       if (paused) {
         stopClock()
@@ -570,6 +906,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     },
     setVolume: (volume) => audio?.handler.setVolume(volume),
     sendButton: (button, down) => commonPad(button, down),
+    openGbaLinkNetplay: (session) => {
+      if (!engine || destroyed || netplay || paused || !romBytes) return false
+      netplaySession = session
+      void startGbaNetplay()
+      return true
+    },
+    closeNetplay: () => resumeSoloAfterLink(netplay ?? undefined),
     screenshot: async () => canvasToBlob(canvas),
     nativeVideoSize: () => ({ width: 240, height: 160 }),
     volume: 1,

@@ -39,7 +39,7 @@ interface Props {
  * 大盘列表（/games、平台页、类型页）共用这一个数，免得各写一份。
  */
 export const ABOVE_FOLD_CARDS = 8
-/** 游戏列表卡片在桌面最大约 254px；240px 档能覆盖常见 1x/2x 屏，避免按视口宽度误选 480px。 */
+/** eager 卡片不能使用 sizes=auto：以 240px 作为兼容浏览器兜底；懒加载卡片会先按真实宽度自动选档。 */
 export const GAME_CARD_IMAGE_SIZES = '240px'
 
 /**
@@ -83,7 +83,15 @@ export const GameCard = memo(function GameCard({ game, className, coverRatio = '
           同理不再挂「☁️ 即点即玩」角标 —— 一屏二十几张卡都挂着同一个标记，
           既没区分度，也压住封面左下角（2026-09-23 站长要求去掉）。
         */}
-        <GameCover game={game} ratio={coverRatio} showTitle={false} eager={eager} priority={priority} deferMedia={deferCover} sizes={coverSizes} />
+        <GameCover
+          game={game}
+          ratio={coverRatio}
+          showTitle={false}
+          eager={eager}
+          priority={priority}
+          deferMedia={deferCover}
+          sizes={coverSizes ?? (priority || eager ? GAME_CARD_IMAGE_SIZES : undefined)}
+        />
         {rank !== undefined && (
           <span className="text-pixel absolute right-2 top-2 rounded bg-black/60 px-1.5 py-1 text-[11px] text-coin backdrop-blur">
             #{rank}

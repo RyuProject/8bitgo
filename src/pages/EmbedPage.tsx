@@ -137,7 +137,7 @@ export function EmbedPage({ standalonePlatform }: Props) {
       <GameAgeGuard
         slug={game.slug}
         markedAdult={Boolean(game.adult)}
-        backdrop={<GameCover game={game} ratio="wide" showTitle={false} showBadge={false} priority className="h-full w-full" />}
+        backdrop={<GameCover game={game} ratio="wide" showTitle={false} showBadge={false} priority sizes="100vw" className="h-full w-full" />}
         /*
           成人内容要登录，而跨站 iframe 里的登录态被浏览器分区（见文件头第 2 条）——
           在这里弹登录框，登进去了也带不到播放器上。所以这一步只给一个回主站的入口。
@@ -209,7 +209,7 @@ export function EmbedPage({ standalonePlatform }: Props) {
           romLang={rom.lang}
           romLangSelection={romLang}
           onRomLangChange={setRomLang}
-          backdrop={<GameCover game={game} ratio="wide" showTitle={false} showBadge={false} priority className="h-full w-full" />}
+          backdrop={<GameCover game={game} ratio="wide" showTitle={false} showBadge={false} priority sizes="100vw" className="h-full w-full" />}
         />
       </GameAgeGuard>
     )

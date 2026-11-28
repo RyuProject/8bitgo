@@ -10,6 +10,12 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { detectRom } from '../src/emulator/detect.ts'
+import { setLangForRender } from '../src/services/lang.ts'
+import { loadLocale } from '../src/locales/index.ts'
+
+// 文件识别错误文案由 getT() 读取；独立 Node 回归需要先准备基准语言包。
+await loadLocale('zh-Hans')
+setLangForRender('zh-Hans')
 
 const encoder = new TextEncoder()
 const fakeFile = (name, bytes) => ({
