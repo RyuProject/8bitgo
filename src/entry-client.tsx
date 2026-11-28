@@ -6,8 +6,8 @@ import App from './App'
 import { apiEnabled } from '@/services/api'
 import { hydrateAuth } from '@/services/auth'
 import { setLangForRender, syncHtmlLang } from '@/services/lang'
-import { langFromPath, langPrefix } from '@/config/languages'
-import { loadLocale } from '@/locales'
+import { langFromPath, langPrefix, stripLang } from '@/config/languages'
+import { loadLegalLocale, loadLocale } from '@/locales'
 import { initClarity } from '@/services/clarity'
 import { installRouteReport } from '@/services/romRouteReport'
 import { consumeOriginAssetsParam } from '@/services/moduleLinkRecovery'
@@ -49,6 +49,8 @@ const root = document.getElementById('root')!
  */
 async function start() {
   await loadLocale(lang)
+  const routePath = stripLang(window.location.pathname).replace(/\/+$/, '') || '/'
+  if (routePath === '/terms' || routePath === '/privacy') await loadLegalLocale(lang)
 
   const tree = (
     <StrictMode>

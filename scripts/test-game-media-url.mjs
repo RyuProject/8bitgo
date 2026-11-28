@@ -14,6 +14,11 @@ const remote = {
 }
 assert.match(gameMediaUrl(remote, 'cover'), /^\/api\/games\/%E5%88%AB%E5%90%8D%2Fepisode\/media\/cover\?v=[a-z0-9]+$/)
 assert.match(gameMediaUrl(remote, 'video'), /^\/api\/games\/%E5%88%AB%E5%90%8D%2Fepisode\/media\/video\?v=[a-z0-9]+$/)
+assert.notEqual(
+  gameMediaUrl({ ...remote, updatedAt: '2026-11-28T12:00:00.000Z' }, 'cover'),
+  gameMediaUrl({ ...remote, updatedAt: '2026-11-28T12:00:01.000Z' }, 'cover'),
+  '游戏记录更新后，即使外链地址没变也要换 URL，避免一天浏览器缓存保留旧图',
+)
 assert.equal(gameMediaUrl({ slug: 'empty' }, 'cover'), '')
 
 // 封面 srcset 只改写本站封面域下的 covers/ 原图；其余一律空串，让 <img> 保持原样。

@@ -1,7 +1,6 @@
 /** Textos de la interfaz en español (neutro). La estructura de claves es idéntica a zh-Hans.ts. */
 import type { Translation } from './index'
 import { aboutEnglish } from './about'
-import { termsEnglish, privacyEnglish } from './legal/en'
 
 const es: Translation = {
   /* ---------------- Común ---------------- */
@@ -589,8 +588,6 @@ const es: Translation = {
     errorTotalTooLarge: 'Los adjuntos suman {total}, por encima del límite de {max}. Usa el enlace de descarga para los más grandes',
   },
 
-  termsPage: termsEnglish,
-  privacyPage: privacyEnglish,
   aboutPage: aboutEnglish,
 
   /* ---------------- Blog ---------------- */

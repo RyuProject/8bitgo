@@ -1,7 +1,9 @@
 import { lazyNamed } from './lazy'
+import { loadLegalLocale } from '@/locales'
+import { getLang } from '@/services/lang'
 
 /**
- * 客户端按路由下载页面；首页与法律页继续静态引入，避免首屏多一次请求。
+ * 客户端按路由下载页面；法律正文和页面组件都只在访问法律页时下载。
  * 服务端使用同名的 Pages.tsx 同步渲染，水合时由 Layout 的 Suspense 留住已渲染的页面。
  */
 export const GamesPage = lazyNamed(() => import('@/pages/GamesPage'), 'GamesPage')
@@ -23,6 +25,15 @@ export const PostPage = lazyNamed(() => import('@/pages/PostPage'), 'PostPage')
 export const LoginPage = lazyNamed(() => import('@/pages/LoginPage'), 'LoginPage')
 export const ProfilePage = lazyNamed(() => import('@/pages/ProfilePage'), 'ProfilePage')
 export const AboutPage = lazyNamed(() => import('@/pages/AboutPage'), 'AboutPage')
+/** 法律正文与页面同批预载，避免懒组件渲染时拿不到文案。 */
+export const TermsPage = lazyNamed(
+  () => Promise.all([import('@/pages/TermsPage'), loadLegalLocale(getLang())]).then(([page]) => page),
+  'TermsPage',
+)
+export const PrivacyPage = lazyNamed(
+  () => Promise.all([import('@/pages/PrivacyPage'), loadLegalLocale(getLang())]).then(([page]) => page),
+  'PrivacyPage',
+)
 export const SubmitGamePage = lazyNamed(() => import('@/pages/SubmitGamePage'), 'SubmitGamePage')
 export const EmbedPage = lazyNamed(() => import('@/pages/EmbedPage'), 'EmbedPage')
 export const AppsPage = lazyNamed(() => import('@/pages/AppsPage'), 'AppsPage')

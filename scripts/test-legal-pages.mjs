@@ -187,13 +187,26 @@ check('/terms 和 /privacy 已经不是「即将上线」占位页', () => {
   assert.ok(!read('src/pages/ComingSoonPage.tsx').includes("'/terms'"), 'ComingSoonPage 里还留着 /terms 的条目')
 })
 
-check('⚠️ 两个页面是静态 import —— lazy 会把 SSR 打挂', () => {
-  // AppRoutes.tsx 顶部那段注释：renderToString 是同步的，碰上没解析完的 lazy 直接抛。
-  // 前台页面一律静态 import。
+check('法律正文不进入普通语言包，法律路由按需加载且 SSR 仍同步有正文', () => {
   const routes = read('src/AppRoutes.tsx')
+  const serverPages = read('src/routes/Pages.tsx')
+  const clientPages = read('src/routes/Pages.client.tsx')
+  const serverEntry = read('src/entry-server.tsx')
+  const clientEntry = read('src/entry-client.tsx')
   for (const name of ['TermsPage', 'PrivacyPage']) {
-    assert.match(routes, new RegExp(`^import \\{ ${name} \\} from '@/pages/${name}'$`, 'm'), `${name} 不是静态 import`)
-    assert.ok(!new RegExp(`lazyNamed[^\\n]*${name}`).test(routes), `${name} 用了 lazyNamed`)
+    assert.ok(serverPages.includes(`export { ${name} } from '@/pages/${name}'`), `${name} 服务端没有静态导出`)
+    assert.ok(clientPages.includes(`export const ${name} = lazyNamed`), `${name} 客户端没有按需加载`)
+    assert.ok(clientPages.includes('loadLegalLocale(getLang())'), `${name} 没有和法律正文一起预载`)
+    assert.ok(routes.includes(`${name},`), `${name} 没有从 Pages 入口注册`)
+  }
+  const directLegalPreload = "if (routePath === '/terms' || routePath === '/privacy') await loadLegalLocale(lang)"
+  assert.ok(serverEntry.includes(directLegalPreload), '服务端直达法律页没有在 SSR 前预载正文')
+  assert.ok(clientEntry.includes(directLegalPreload), '客户端直达法律页没有在水合前预载正文')
+
+  for (const file of ['en', 'es', 'fr', 'it', 'de', 'ja', 'zh-Hans', 'zh-Hant']) {
+    const locale = read(`src/locales/${file}.ts`)
+    assert.ok(!locale.includes("from './legal/") && !locale.includes('from "./legal/'), `${file} 普通语言包仍静态引入法律文案`)
+    assert.ok(!locale.split(/\r?\n/).some((line) => /^\s*(termsPage|privacyPage):/.test(line)), `${file} 普通语言包仍包含法律正文键`)
   }
 })
 

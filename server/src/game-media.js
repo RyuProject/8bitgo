@@ -16,7 +16,15 @@ const MEDIA_KINDS = new Set(['cover', 'video'])
 const MAX_REDIRECTS = 3
 const DEFAULT_TIMEOUT_MS = 20_000
 const DEFAULT_MAX_PROXIES = 24
-const CACHE_CONTROL = 'public, max-age=300, s-maxage=86400, stale-while-revalidate=86400'
+/*
+ * 前端封面 URL 带着按源地址计算的版本戳，管理员换源地址后浏览器自然会请求新 URL；
+ * 让小封面和边缘缓存一样复用一天，避免玩家五分钟后重访又下载同一张图。
+ * 预览视频也在边缘缓存一天，但浏览器只留五分钟，避免大视频长期占用设备缓存空间。
+ */
+const MEDIA_CACHE_CONTROL = {
+  cover: 'public, max-age=86400, s-maxage=86400, stale-while-revalidate=86400',
+  video: 'public, max-age=300, s-maxage=86400, stale-while-revalidate=86400',
+}
 const GLOBAL_IPV6 = new BlockList()
 GLOBAL_IPV6.addSubnet('2000::', 3, 'ipv6')
 const RESERVED_IPV6 = new BlockList()
@@ -188,7 +196,7 @@ export function createGameMediaProxy({
       }, { fetchImpl, lookupImpl, dispatcher })
 
       if (upstream.status === 304) {
-        res.setHeader('Cache-Control', CACHE_CONTROL)
+        res.setHeader('Cache-Control', MEDIA_CACHE_CONTROL[kind])
         copyHeader(upstream, res, 'etag')
         copyHeader(upstream, res, 'last-modified')
         return res.status(304).end()
@@ -207,7 +215,7 @@ export function createGameMediaProxy({
 
       res.status(upstream.status)
       res.setHeader('Content-Type', contentType)
-      res.setHeader('Cache-Control', CACHE_CONTROL)
+      res.setHeader('Cache-Control', MEDIA_CACHE_CONTROL[kind])
       res.setHeader('Cross-Origin-Resource-Policy', 'same-origin')
       res.setHeader('X-Content-Type-Options', 'nosniff')
       /*

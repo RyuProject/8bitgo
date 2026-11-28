@@ -1,5 +1,4 @@
 /** 繁體中文（台灣）文案。鍵結構與 zh-Hans.ts 完全一致。 */
-import { termsZhHant, privacyZhHant } from './legal/zh-Hant'
 import type { Translation } from './index'
 
 const zhHant: Translation = {
@@ -567,9 +566,6 @@ const zhHant: Translation = {
     errorFileTooLarge: '{name} 太大了（單個上限 {max}），請改填下載連結',
     errorTotalTooLarge: '附件合計 {total}，超過 {max} 的上限，大的那幾個請改填下載連結',
   },
-
-  termsPage: termsZhHant,
-  privacyPage: privacyZhHant,
 
   aboutPage: {
     seoTitle: '關於 8BitGo',

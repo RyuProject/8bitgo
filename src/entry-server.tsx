@@ -9,7 +9,7 @@ import { getCoverBase } from '@/services/roms'
 import { setLangForRender } from '@/services/lang'
 import { beginHeadCollection, endHeadCollection, setSsrPath, splitHoistedHead, takeSsrNotFound, type CollectedHead } from '@/services/seo'
 import { langFromPath, langPrefix, stripLang } from '@/config/languages'
-import { loadLocale } from '@/locales'
+import { loadLegalLocale, loadLocale } from '@/locales'
 
 export interface RenderInput {
   /** 完整请求路径（含语言前缀），例如 /en/games/mario */
@@ -62,8 +62,11 @@ export async function render({ url, data, tvHost = false, cnSite = false, coverH
   const pathname = url.split('?')[0].split('#')[0]
   const lang = langFromPath(pathname)
 
-  // —— 这条线以上可以有 await，以下不行 ——
+  const routePath = stripLang(pathname).replace(/\/+$/, '') || '/'
+
+  // —— 所有可能等待网络的语言包都必须在设置模块级状态之前加载 ——
   await loadLocale(lang)
+  if (routePath === '/terms' || routePath === '/privacy') await loadLegalLocale(lang)
 
   setLangForRender(lang)
   setSsrPath(stripLang(pathname))

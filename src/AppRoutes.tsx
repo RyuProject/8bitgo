@@ -9,15 +9,14 @@ import {
   GamesPage, GameDetailPage, PlayLocalPage, RoomsPage, CollectionsPage, CollectionDetailPage,
   DevelopersPage, GenresPage, PlatformsPage, GenrePage, PlatformPage, ComingSoonPage,
   NotFoundPage, BlogPage, PostPage, LoginPage, ProfilePage, AboutPage, SubmitGamePage, RomLanguagePage,
+  TermsPage, PrivacyPage,
   EmbedPage, AppsPage, OAuthCallbackPage, OpenPlatformPage, OpenDevicePage,
   OpenAuthorizePage, TvPage, SymbianPage, PokecatchSaveSyncPage,
 } from '@/routes/Pages'
-import { TermsPage } from '@/pages/TermsPage'
-import { PrivacyPage } from '@/pages/PrivacyPage'
 
 /**
  * 前台与后台按页面加载。前台使用同一路由声明，但 Pages.tsx 在服务端同步导出页面、
- * 客户端构建替换为 Pages.client.tsx 的懒组件；首页与法律页仍在主包中。
+ * 客户端构建替换为 Pages.client.tsx 的懒组件；服务端入口保持同步导出以保证 SSR。
  *
  * 后台不做 SSR（见 server/src/ssr.js），它原本的 lazyNamed 路由继续保持原样。
  */
@@ -84,8 +83,7 @@ export function AppRoutes() {
           <Route path="/auth/callback" element={<OAuthCallbackPage />} />
           <Route path="/me" element={<ProfilePage />} />
           <Route path="/about" element={<AboutPage />} />
-          {/* 法律页继续静态 import —— 应用商店和第三方登录的
-              审核会来抓这两个 URL，SSR 挂了等于审核看到空壳 */}
+          {/* Pages.tsx 服务端静态导出保证审核抓取时 SSR 有完整正文；客户端按路由加载。 */}
           <Route path="/terms" element={<TermsPage />} />
           <Route path="/privacy" element={<PrivacyPage />} />
           <Route path="/submit" element={<SubmitGamePage />} />

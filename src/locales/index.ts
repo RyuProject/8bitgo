@@ -23,9 +23,12 @@
  */
 import type { Lang } from '@/config/languages'
 import type zhHans from './zh-Hans'
+import type { LegalDocCopy } from './legal/types'
 
 /** 全站文案的结构（由简体中文推导） */
-export type Translation = typeof zhHans
+export type Translation = Omit<typeof zhHans, 'termsPage' | 'privacyPage'>
+/** 法律正文单独加载，避免普通页面把长文案带进语言包和首屏请求 */
+export type LegalTranslation = { termsPage: LegalDocCopy; privacyPage: LegalDocCopy }
 
 const LOADERS: Record<Lang, () => Promise<{ default: Translation }>> = {
   'zh-Hans': () => import('./zh-Hans'),
@@ -38,8 +41,35 @@ const LOADERS: Record<Lang, () => Promise<{ default: Translation }>> = {
   ja: () => import('./ja'),
 }
 
+const loadSimplifiedLegal = () => import('./legal/zh-Hans').then(({ termsZhHans, privacyZhHans }) => ({
+  termsPage: termsZhHans,
+  privacyPage: privacyZhHans,
+}))
+const loadTraditionalLegal = () => import('./legal/zh-Hant').then(({ termsZhHant, privacyZhHant }) => ({
+  termsPage: termsZhHant,
+  privacyPage: privacyZhHant,
+}))
+const loadEnglishLegal = () => import('./legal/en').then(({ termsEnglish, privacyEnglish }) => ({
+  termsPage: termsEnglish,
+  privacyPage: privacyEnglish,
+}))
+
+/** 法律页才请求的独立语言包；其它语言目前按站点规则复用英文正文 */
+const LEGAL_LOADERS: Record<Lang, () => Promise<LegalTranslation>> = {
+  'zh-Hans': loadSimplifiedLegal,
+  'zh-Hant': loadTraditionalLegal,
+  en: loadEnglishLegal,
+  es: loadEnglishLegal,
+  fr: loadEnglishLegal,
+  it: loadEnglishLegal,
+  de: loadEnglishLegal,
+  ja: loadEnglishLegal,
+}
+
 /** 已经拿到的语言包；入口会在渲染前填好当前语言。 */
 const loaded: Partial<Record<Lang, Translation>> = {}
+const loadedLegal: Partial<Record<Lang, LegalTranslation>> = {}
+const pendingLegal = new Map<Lang, Promise<LegalTranslation>>()
 /** 仅临时回退的语言要在后续请求重试，不能让一次短暂断网污染 SSR 常驻进程。 */
 const retryRequestedLang = new Set<Lang>()
 
@@ -49,6 +79,37 @@ const retryRequestedLang = new Set<Lang>()
  */
 export function getLoadedLocale(lang: Lang): Translation | undefined {
   return loaded[lang]
+}
+
+/** 法律页只读取已经加载的正文；服务端渲染和客户端路由加载会先 await loadLegalLocale。 */
+export function getLoadedLegalLocale(lang: Lang): LegalTranslation | undefined {
+  return loadedLegal[lang]
+}
+
+/** 按需加载法律正文；复用并发请求，失败时回退到简体再到英文。 */
+export function loadLegalLocale(lang: Lang): Promise<LegalTranslation> {
+  const hit = loadedLegal[lang]
+  if (hit) return Promise.resolve(hit)
+  const active = pendingLegal.get(lang)
+  if (active) return active
+
+  const promise = (async () => {
+    for (const fallbackLang of [...new Set<Lang>([lang, 'zh-Hans', 'en'])]) {
+      try {
+        const legal = await LEGAL_LOADERS[fallbackLang]()
+        loadedLegal[fallbackLang] = legal
+        loadedLegal[lang] = legal
+        return legal
+      } catch {
+        // 文案包取不到时仍保住法律页；基准语言和英文是最后两道兜底。
+      }
+    }
+    throw new Error(`无法加载法律文案：${lang}`)
+  })().finally(() => {
+    if (pendingLegal.get(lang) === promise) pendingLegal.delete(lang)
+  })
+  pendingLegal.set(lang, promise)
+  return promise
 }
 
 /**

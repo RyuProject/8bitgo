@@ -1,7 +1,6 @@
 /** English UI strings. Key structure mirrors zh-Hans.ts exactly. */
 import type { Translation } from './index'
 import { aboutEnglish } from './about'
-import { termsEnglish, privacyEnglish } from './legal/en'
 
 const en: Translation = {
   /* ---------------- Common ---------------- */
@@ -589,8 +588,6 @@ const en: Translation = {
     errorTotalTooLarge: 'Attachments total {total}, over the {max} limit. Use the download link field for the big ones',
   },
 
-  termsPage: termsEnglish,
-  privacyPage: privacyEnglish,
   aboutPage: aboutEnglish,
 
   /* ---------------- Blog ---------------- */
