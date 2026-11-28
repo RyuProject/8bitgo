@@ -42,8 +42,16 @@ assert.match(detailSections, /GameCard key=\{g\.slug\} game=\{g\} showCoin=\{fal
 assert.match(gamesPage, /coverSizes=\{GAME_CARD_IMAGE_SIZES\}/)
 assert.match(collectionPage, /coverSizes=\{GAME_CARD_IMAGE_SIZES\}/)
 assert.match(collectionsPage, /eager=\{i < 4\} priority=\{i === 0\}/)
-assert.match(read('src/components/home/sections.tsx'), /priority=\{i === 0\} eager=\{i === 1\} deferCover=\{i >= 2\}/)
-assert.doesNotMatch(read('src/components/home/sections.tsx'), /GameCardWide key=\{g\.slug\} game=\{g\} isNew=\{i < 3\} priority=\{i === 0\}/)
+assert.match(
+  read('src/components/home/sections.tsx'),
+  /GameCard key=\{g\.slug\} game=\{g\} priority=\{i < 3\} deferCover=\{i >= 3\}/,
+  '精选栏按实测 LCP 提升首三张封面，并延迟其余封面',
+)
+assert.match(
+  read('src/components/home/sections.tsx'),
+  /GameCardWide key=\{g\.slug\} game=\{g\} isNew=\{i < 3\} priority=\{i === 0\} deferCover=\{i !== 0\}/,
+  '首页宽卡片只提升首张可见封面的优先级，并延后其余媒体',
+)
 assert.match(collectionCard, /priority=\{priority && i === 0\}/)
 assert.match(collectionCard, /eager=\{\(eager && !incoming\) \|\| swapped\}/)
 assert.match(collectionCard, /sizes="120px"/)
