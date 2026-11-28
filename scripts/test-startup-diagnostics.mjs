@@ -1029,6 +1029,9 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
   assert.match(reclassify, /if \(apply && updates\.length\)/, '历史重分类必须默认只预览，只有 --apply 才写入')
   assert.match(reclassify, /WHERE id > \?/,
     '历史重分类按主键分页，避免一次把保留期内所有现场装进内存')
+  assert.match(reclassify, /SELECT CAST\(COALESCE\(MAX\(id\), 0\) AS CHAR\) AS maxId/, '历史重分类先固定本轮扫描上界并保留 BIGINT 精度')
+  assert.match(reclassify, /AND id <= \?/,
+    '固定主键上界，避免并发上报让部署维护任务无限追赶新记录')
   assert.match(reclassify, /SET signature = \?, signature_text = \?, payload = \?/,
     '后台归组签名与诊断结论必须在同一更新中保持一致')
   assert.doesNotMatch(reclassify, /DELETE FROM|recordStartupDiagnostics\(/,

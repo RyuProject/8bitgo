@@ -70,6 +70,13 @@ assert.match(source, /BRANCH="\$\{BRANCH:-\$\(git -C "\$REPO_DIR" symbolic-ref -
   assert.ok(source.indexOf('# 开局冒烟：') > source.indexOf('health_ok && ps2_headers_ok'), '冒烟在重启 + 健康检查之后')
 }
 {
+  const postDeploy = source.slice(source.indexOf('历史启动诊断重分类（30 天）'), source.indexOf('log "✅ 部署完成'))
+  assert.match(postDeploy, /reclassify-startup-diagnostics\.mjs --days=30 --apply/,
+    '新诊断规则部署成功后，必须更新保留期内的历史诊断与后台分组签名')
+  assert.match(postDeploy, /if ! \([\s\S]*?\) >> "\$LOG" 2>&1; then[\s\S]*?部署完成，但历史诊断重分类失败/,
+    '诊断维护失败要告警，但不能回滚已通过可玩性检查的版本')
+}
+{
   // 2026-11-18：故障要能主动通知到人（飞书），部署与定时巡检互斥
   assert.match(source, /notify\(\) \{[\s\S]*?notify-lark\.mjs[\s\S]*?\|\| true\n\}/, '通知失败绝不能让部署脚本失败')
   assert.match(source, /die\(\)  \{ log "❌ \$\*"; notify "❌ 部署中止"/, '部署中止要通知')
