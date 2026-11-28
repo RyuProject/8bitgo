@@ -10,8 +10,12 @@ export type StartupEventName =
   | 'rom_load_start'
   | 'rom_load_complete'
   | 'core_warm_start'
+  | 'core_warm_first_byte'
   | 'core_warm_complete'
   | 'core_cache_hit'
+  | 'core_load_start'
+  | 'core_load_first_byte'
+  | 'core_load_complete'
   | 'fallback_started'
   | 'fallback_first_frame'
   | 'fallback_interaction'
@@ -62,7 +66,8 @@ const sent = new Set<string>()
 const DIAGNOSTIC_EVENTS = new Set<StartupEventName>(['failed', 'timeout', 'slow_start', 'recovered'])
 /** 高频阶段可以等到首帧一起上报；异常和超时仍走原来的单事件诊断路径。 */
 const BATCHABLE_EVENTS = new Set<StartupEventName>([
-  'download_complete', 'rom_load_start', 'rom_load_complete', 'core_warm_start', 'core_warm_complete',
+  'download_complete', 'rom_load_start', 'rom_load_complete', 'core_warm_start', 'core_warm_first_byte', 'core_warm_complete',
+  'core_load_start', 'core_load_first_byte', 'core_load_complete',
   'core_cache_hit', 'runtime_ready', 'first_frame', 'fallback_first_frame', 'fallback_playable', 'game_playable',
   // 页面卸载时把尚未发出的阶段与中断一起写进一个 keepalive 请求，降低漏报概率。
   'startup_interrupted',

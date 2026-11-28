@@ -23,11 +23,8 @@ GameBoyAdvanceCartridge.prototype.initialize = function () {
 GameBoyAdvanceCartridge.prototype.getROMArray = function (old_array) {
     this.ROMLength = Math.min((old_array.length >> 2) << 2, 0x2000000);
     this.EEPROMStart = ((this.ROMLength | 0) > 0x1000000) ? Math.max(this.ROMLength | 0, 0x1FFFF00) : 0x1000000;
-    var newArray = getUint8Array(this.ROMLength | 0);
-    for (var index = 0; (index | 0) < (this.ROMLength | 0); index = ((index | 0) + 1) | 0) {
-        newArray[index | 0] = old_array[index | 0] | 0;
-    }
-    return newArray;
+    // 卡带只读，Flash / EEPROM 写入都经 saves；联机每台设备要开两份核心，复制 32 MiB ROM 会压垮手机内存。
+    return old_array.subarray(0, this.ROMLength | 0);
 }
 GameBoyAdvanceCartridge.prototype.decodeName = function () {
     this.name = "GUID_";

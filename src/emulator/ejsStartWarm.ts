@@ -16,7 +16,7 @@
  * 如果我们先建了一个**空的** v1 库，引擎那次 open 不再触发升级，`cache` 表永远不存在，
  * 整个核心缓存就坏了。所以 onupgradeneeded 里直接 abort，当作「没有缓存」。
  */
-import { warmHttpCache } from './httpWarm'
+import { subscribeHttpWarmEvents, warmHttpCache } from './httpWarm'
 
 const EJS_CACHE_DB = 'EmulatorJS-Cache'
 const EJS_CACHE_STORE = 'cache'
@@ -25,10 +25,40 @@ const LOOKUP_TIMEOUT_MS = 400
 
 type IdbFactoryLike = Pick<IDBFactory, 'open'>
 
+const inFlightCacheLookups = new WeakMap<object, Map<string, Promise<Set<string>>>>()
+
 /** 引擎缓存里有没有这些 URL。返回「已有」的集合；库不存在、打不开、超时都当作没有。 */
 export function ejsCachedUrls(urls: readonly string[], idb: IdbFactoryLike | undefined = globalThis.indexedDB): Promise<Set<string>> {
+  const uniqueUrls = [...new Set(urls.filter(Boolean))].sort()
+  if (!idb || !uniqueUrls.length) return Promise.resolve(new Set())
+
+  // 桌面端悬停预热与紧接着的点击开局可能同时查同一个核心；仅合并在途查询，不缓存结果，
+  // 免得另一标签页刚清了引擎库后，旧命中状态让本局跳过必要下载。
+  let lookups = inFlightCacheLookups.get(idb as object)
+  if (!lookups) {
+    lookups = new Map()
+    inFlightCacheLookups.set(idb as object, lookups)
+  }
+  const key = JSON.stringify(uniqueUrls)
+  let lookup = lookups.get(key)
+  if (!lookup) {
+    lookup = readEjsCachedUrls(uniqueUrls, idb)
+    lookups.set(key, lookup)
+    const settledLookup = lookup
+    const cleanup = () => {
+      if (lookups?.get(key) === settledLookup) lookups.delete(key)
+      if (lookups?.size === 0 && inFlightCacheLookups.get(idb as object) === lookups) {
+        inFlightCacheLookups.delete(idb as object)
+      }
+    }
+    void lookup.then(cleanup, cleanup)
+  }
+  // 调用方拿到独立集合，不能通过修改结果影响同一查询的其他等待者。
+  return lookup.then((found) => new Set(found))
+}
+
+function readEjsCachedUrls(urls: readonly string[], idb: IdbFactoryLike): Promise<Set<string>> {
   const found = new Set<string>()
-  if (!idb || !urls.length) return Promise.resolve(found)
   return new Promise((resolve) => {
     let settled = false
     let db: IDBDatabase | undefined
@@ -110,12 +140,61 @@ export interface EjsStartWarmPlan {
   coreMiss?: string[]
 }
 
-export type EjsCoreWarmEvent = 'start' | 'complete' | 'cached'
-export type EjsCoreWarmMetric = 'core_warm_start' | 'core_warm_complete' | 'core_cache_hit'
+export type EjsCoreWarmEvent = 'start' | 'first-byte' | 'complete' | 'cached'
+export type EjsCoreWarmMetric = 'core_warm_start' | 'core_warm_first_byte' | 'core_warm_complete' | 'core_cache_hit'
 export interface EjsCoreWarmObservation {
   attemptId: string
   coreKey: string
+  firstByte: boolean
   complete: boolean
+}
+
+export type EjsCoreLoadEvent = 'start' | 'first-byte' | 'complete'
+export type EjsCoreLoadMetric = 'core_load_start' | 'core_load_first_byte' | 'core_load_complete'
+export interface EjsCoreLoadObservation {
+  attemptId: string
+  coreKey: string
+  firstByte: boolean
+  complete: boolean
+}
+
+/** 从引擎请求地址中只提取核心文件名；该标识只在本地配对，不进入统计请求。 */
+export function emulatorJsCoreDataKey(url: string): string | null {
+  const queryAt = url.indexOf('?')
+  const hashAt = url.indexOf('#')
+  const delimiter = queryAt < 0 ? hashAt : hashAt < 0 ? queryAt : Math.min(queryAt, hashAt)
+  const path = delimiter < 0 ? url : url.slice(0, delimiter)
+  const marker = path.lastIndexOf('/cores/')
+  if (marker < 0) return null
+  const encodedName = path.slice(marker + 7)
+  if (!encodedName || encodedName.includes('/') || !/\.data$/i.test(encodedName)) return null
+  try {
+    const name = decodeURIComponent(encodedName)
+    return /^[a-z0-9_-]+\.data$/i.test(name) ? name : null
+  } catch {
+    return null
+  }
+}
+
+/** 只把同一开局、同一核心的真实读取事件配成阶段，避免自动换核制造虚假耗时。 */
+export function observeEjsCoreLoadEvent(
+  current: EjsCoreLoadObservation | null,
+  attemptId: string,
+  coreKey: string,
+  event: EjsCoreLoadEvent,
+): { observation: EjsCoreLoadObservation | null; metric?: EjsCoreLoadMetric } {
+  if (event === 'start') {
+    if (current?.attemptId === attemptId) return { observation: current }
+    return { observation: { attemptId, coreKey, firstByte: false, complete: false }, metric: 'core_load_start' }
+  }
+  if (current?.attemptId !== attemptId || current.coreKey !== coreKey || current.complete) {
+    return { observation: current }
+  }
+  if (event === 'first-byte') {
+    if (current.firstByte) return { observation: current }
+    return { observation: { ...current, firstByte: true }, metric: 'core_load_first_byte' }
+  }
+  return { observation: { ...current, complete: true }, metric: 'core_load_complete' }
 }
 
 /** 同一次开局只统计首个核心，且完成事件必须来自它，避免换核心重试串成一段耗时。 */
@@ -127,14 +206,18 @@ export function observeEjsCoreWarmEvent(
 ): { observation: EjsCoreWarmObservation | null; metric?: EjsCoreWarmMetric } {
   if (event === 'start') {
     if (current?.attemptId === attemptId) return { observation: current }
-    return { observation: { attemptId, coreKey, complete: false }, metric: 'core_warm_start' }
+    return { observation: { attemptId, coreKey, firstByte: false, complete: false }, metric: 'core_warm_start' }
   }
   if (event === 'cached') {
     if (current?.attemptId === attemptId) return { observation: current }
-    return { observation: { attemptId, coreKey, complete: true }, metric: 'core_cache_hit' }
+    return { observation: { attemptId, coreKey, firstByte: false, complete: true }, metric: 'core_cache_hit' }
   }
   if (current?.attemptId !== attemptId || current.coreKey !== coreKey || current.complete) {
     return { observation: current }
+  }
+  if (event === 'first-byte') {
+    if (current.firstByte) return { observation: current }
+    return { observation: { ...current, firstByte: true }, metric: 'core_warm_first_byte' }
   }
   return { observation: { ...current, complete: true }, metric: 'core_warm_complete' }
 }
@@ -167,15 +250,37 @@ export async function warmEmulatorJsStart(
     try { onCoreWarmEvent?.(event, coreKey ?? '') } catch { /* 观测回调不能打断游戏预热 */ }
   }
   const beginWarm = (url: string) => {
+    let stopListening = () => {}
+    if (url === coreDataUrl && onCoreWarmEvent) {
+      let reported = false
+      stopListening = subscribeHttpWarmEvents((event) => {
+        if (event.url !== url) return
+        if (event.type === 'bytes' && !reported) {
+          reported = true
+          stopListening()
+          notifyCore(url, 'first-byte')
+        } else if (event.type === 'end') {
+          stopListening()
+        }
+      })
+    }
     notifyCore(url, 'start')
-    const result = warm(url)
+    let result: ReturnType<typeof warm>
+    try {
+      result = warm(url)
+    } catch (error) {
+      stopListening()
+      throw error
+    }
     started.push(url)
     if (url === coreDataUrl && result && typeof result === 'object' && 'then' in result) {
       void Promise.resolve(result).then((ok) => {
         if (ok !== false) notifyCore(url, 'complete')
-      }, () => {})
+        stopListening()
+      }, stopListening)
     } else if (url === coreDataUrl && result !== false) {
       notifyCore(url, 'complete')
+      stopListening()
     }
   }
   for (const url of plan.always) {

@@ -11,6 +11,12 @@ const legacySourceStart = '/*\n * 8BitGo PPSSPP Range 顺序预读层。'
 const anchor = 'var Fetch={async openDatabase'
 const xhrNeedle = 'var xhr=new XMLHttpRequest;xhr.withCredentials='
 const xhrReplacement = 'var xhr=globalThis.__8bitgoCreatePspRangeXhr();xhr.withCredentials='
+const pthreadWorkerNeedle = 'allocateUnusedWorker(){var worker;var pthreadMainJs=_scriptName;worker=new Worker(pthreadMainJs,{workerData:"em-pthread",name:"em-pthread"});PThread.unusedWorkers.push(worker)}'
+const pthreadWorkerReplacement = 'allocateUnusedWorker(){var worker;var pthreadMainJs=_scriptName;worker=new Worker(pthreadMainJs,{workerData:"em-pthread",name:"em-pthread"});try{if(globalThis.__8bitgoPspRangeBrokerWorker&&typeof MessageChannel==="function"){var rangeChannel=new MessageChannel();globalThis.__8bitgoPspRangeBrokerWorker.postMessage({cmd:"connect",port:rangeChannel.port1},[rangeChannel.port1]);worker.__8bitgoRangeBrokerPort=rangeChannel.port2}}catch(rangeBrokerError){console.warn("[ppsspp] Range Broker 端口分发失败，按普通读取回退",rangeBrokerError);worker.__8bitgoRangeBrokerPort=null}PThread.unusedWorkers.push(worker)}'
+const loadMessageNeedle = 'worker.postMessage({cmd:"load",handlers,wasmMemory,wasmModule})'
+const loadMessageReplacement = 'var rangeBrokerPort=worker.__8bitgoRangeBrokerPort;var loadMessage={cmd:"load",handlers,wasmMemory,wasmModule};if(rangeBrokerPort)loadMessage.rangeBrokerPort=rangeBrokerPort;worker.__8bitgoRangeBrokerPort=null;worker.postMessage(loadMessage,rangeBrokerPort?[rangeBrokerPort]:[])'
+const loadHandlerNeedle = 'if(cmd==="load"){let messageQueue=[];'
+const loadHandlerReplacement = 'if(cmd==="load"){globalThis.__8bitgoRangeBrokerPort=msgData.rangeBrokerPort||null;let messageQueue=[];'
 
 const assertSource = (source) => {
   if (!source.includes(marker)) throw new Error('PPSSPP 预读源码缺少安装标记')
@@ -57,4 +63,30 @@ export function installPspRangeReadAhead(runtimeScript, source) {
   return runtimeScript
     .replace(anchor, `${source}\n${anchor}`)
     .replace(xhrNeedle, xhrReplacement)
+}
+
+/** 给每个 Emscripten pthread 分发独立 MessagePort，使跨线程需求能共享同一份 SAB 响应。 */
+export function installPspRangeBrokerPorts(runtimeScript) {
+  if (runtimeScript.includes('__8bitgoRangeBrokerPort=msgData.rangeBrokerPort||null')) {
+    if (!runtimeScript.includes('worker.__8bitgoRangeBrokerPort=rangeChannel.port2') ||
+      !runtimeScript.includes('rangeBrokerPort?[rangeBrokerPort]:[]')) {
+      throw new Error('PPSSPP pthread Broker 端口补丁不完整')
+    }
+    return runtimeScript
+  }
+
+  for (const [needle, label] of [
+    [pthreadWorkerNeedle, 'pthread Worker 分配入口'],
+    [loadMessageNeedle, 'pthread 初始消息'],
+    [loadHandlerNeedle, 'pthread load 消息处理器'],
+  ]) {
+    if (runtimeScript.split(needle).length !== 2) {
+      throw new Error(`无法唯一定位 ${label}；Emscripten 升级后需要重新取证`)
+    }
+  }
+
+  return runtimeScript
+    .replace(pthreadWorkerNeedle, pthreadWorkerReplacement)
+    .replace(loadMessageNeedle, loadMessageReplacement)
+    .replace(loadHandlerNeedle, loadHandlerReplacement)
 }

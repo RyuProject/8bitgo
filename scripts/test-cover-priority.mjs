@@ -34,7 +34,7 @@ assert.match(gameCard, /priority=\{priority\}/)
 assert.match(gameCard, /deferMedia=\{deferCover\}/)
 assert.match(
   gameCard,
-  /sizes=\{coverSizes \?\? \(priority \? GAME_CARD_IMAGE_SIZES : undefined\)\}/,
+  /sizes=\{coverSizes \?\? \(priority \|\| eager \? GAME_CARD_IMAGE_SIZES : undefined\)\}/,
   '优先封面使用 240px 目标尺寸，调用方传入的真实尺寸仍优先',
 )
 assert.match(detailSections, /new IntersectionObserver\(\(\[entry\]\) => \{[\s\S]*?setCoversReady\(true\)[\s\S]*?\}\)/)

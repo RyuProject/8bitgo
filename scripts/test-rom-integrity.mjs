@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import {
   ROM_INTEGRITY_BLOCK_BYTES,
   createRomIntegrityManifest,
+  createRomIntegrityWork,
   isIntegrityKey,
   validateRomIntegrityManifest,
 } from '../src/services/romIntegrityData.ts'
@@ -21,7 +22,16 @@ import {
   verifyRomBytes,
   verifyRomResponse,
 } from '../src/services/romIntegrity.ts'
+
 import { fetchBlobWithProgress, fetchWithProgress } from '../src/emulator/loadProgress.ts'
+
+function finishWithin(promise, label) {
+  let timer
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(label)), 3_000) }),
+  ]).finally(() => clearTimeout(timer))
+}
 
 function hex(bytes) {
   return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('')
@@ -43,6 +53,201 @@ try {
     content.subarray(ROM_INTEGRITY_BLOCK_BYTES),
   ].map(async block => hex(new Uint8Array(await crypto.subtle.digest('SHA-256', block))))))
 
+  // 慢首块不应让前三个空闲槽闲置；滑动窗口仍只同时处理四块，并按原序生成清单。
+  const blockCount = 5
+  const slidingBytes = new Uint8Array(ROM_INTEGRITY_BLOCK_BYTES * blockCount)
+  for (let index = 0; index < blockCount; index++) {
+    slidingBytes.fill(0xa0 + index, index * ROM_INTEGRITY_BLOCK_BYTES, (index + 1) * ROM_INTEGRITY_BLOCK_BYTES)
+  }
+  const slidingOriginalDigest = crypto.subtle.digest.bind(crypto.subtle)
+  let activeDigestCount = 0
+  let maximumDigestCount = 0
+  let slowFirstBlockSettled = false
+  let fifthStartedBeforeSlowFirstBlockSettled = false
+  crypto.subtle.digest = async (...args) => {
+    const index = new Uint8Array(args[1])[0] - 0xa0
+    activeDigestCount++
+    maximumDigestCount = Math.max(maximumDigestCount, activeDigestCount)
+    if (index === 4) fifthStartedBeforeSlowFirstBlockSettled = !slowFirstBlockSettled
+    try {
+      await new Promise((resolve) => setTimeout(resolve, index === 0 ? 100 : 2))
+      return await slidingOriginalDigest(...args)
+    } finally {
+      if (index === 0) slowFirstBlockSettled = true
+      activeDigestCount--
+    }
+  }
+  let slidingManifest
+  try {
+    slidingManifest = await createRomIntegrityWork(new Blob([slidingBytes]), 'roms/integrity-test/sliding-window.gba').manifest
+  } finally { crypto.subtle.digest = slidingOriginalDigest }
+  assert.equal(maximumDigestCount, 4, '滑动窗口不能突破四块摘要并发上限')
+  assert.equal(fifthStartedBeforeSlowFirstBlockSettled, true, '首块较慢时，空出的 SHA-256 槽位应继续处理第五块')
+  assert.deepEqual(slidingManifest.blocks, await Promise.all(Array.from({ length: blockCount }, async (_, index) => {
+    const start = index * ROM_INTEGRITY_BLOCK_BYTES
+    const block = slidingBytes.subarray(start, start + ROM_INTEGRITY_BLOCK_BYTES)
+    return hex(new Uint8Array(await slidingOriginalDigest('SHA-256', block)))
+  })), '滑动调度不能改变清单中的分块顺序或摘要结果')
+
+  // 首块阻塞超过窗口时其余工作线程必须等待而不是退出；窗口前进后仍恢复四路摘要并行。
+  const boundedBlockCount = 13
+  const boundedStarted = new Set()
+  let slowBoundedBlockStartedResolve
+  const slowBoundedBlockStarted = new Promise(resolve => { slowBoundedBlockStartedResolve = resolve })
+  let sevenBlocksStartedResolve
+  const sevenBlocksStarted = new Promise(resolve => { sevenBlocksStartedResolve = resolve })
+  let releaseBoundedBlock
+  const boundedBlockGate = new Promise(resolve => { releaseBoundedBlock = resolve })
+  let postWindowActive = 0
+  let maximumPostWindowActive = 0
+  crypto.subtle.digest = async (...args) => {
+    const index = new Uint8Array(args[1])[0] - 0xc0
+    boundedStarted.add(index)
+    if (index === 0) {
+      slowBoundedBlockStartedResolve()
+      await boundedBlockGate
+    }
+    if (boundedStarted.size >= 8) sevenBlocksStartedResolve()
+    if (index >= 8) {
+      postWindowActive++
+      maximumPostWindowActive = Math.max(maximumPostWindowActive, postWindowActive)
+      try {
+        await new Promise(resolve => setTimeout(resolve, 5))
+        return await slidingOriginalDigest(...args)
+      } finally {
+        postWindowActive--
+      }
+    }
+    return slidingOriginalDigest(...args)
+  }
+  const boundedFile = {
+    size: ROM_INTEGRITY_BLOCK_BYTES * boundedBlockCount,
+    slice(start) {
+      const index = Math.floor(start / ROM_INTEGRITY_BLOCK_BYTES)
+      return { arrayBuffer: async () => new Uint8Array(ROM_INTEGRITY_BLOCK_BYTES).fill(0xc0 + index).buffer }
+    },
+  }
+  const boundedWork = createRomIntegrityWork(boundedFile, 'roms/integrity-test/bounded-window.gba')
+  try {
+    await finishWithin(Promise.all([slowBoundedBlockStarted, sevenBlocksStarted]), '分块摘要没有填满有界窗口')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    assert.equal(Math.max(...boundedStarted), 7, '最慢块未完成前，摘要调度不得越过两批窗口')
+    releaseBoundedBlock()
+    await finishWithin(boundedWork.manifest, '最慢块完成后，摘要工作线程没有继续完成清单')
+  } finally {
+    releaseBoundedBlock()
+    crypto.subtle.digest = slidingOriginalDigest
+  }
+  assert.ok(maximumPostWindowActive >= 3, '最慢块完成并释放窗口后，应唤醒等待线程恢复并行')
+
+  // 摘要出错时应立即让上传方失败，不等待同批次中仍在读取的慢块。
+  const failureBytes = new Uint8Array(ROM_INTEGRITY_BLOCK_BYTES * 4)
+  for (let index = 0; index < 4; index++) {
+    failureBytes.fill(index + 1, index * ROM_INTEGRITY_BLOCK_BYTES, (index + 1) * ROM_INTEGRITY_BLOCK_BYTES)
+  }
+  const failureOriginalDigest = crypto.subtle.digest.bind(crypto.subtle)
+  let slowSiblingStartedResolve
+  const slowSiblingStarted = new Promise(resolve => { slowSiblingStartedResolve = resolve })
+  let releaseSlowSibling
+  const slowSiblingGate = new Promise(resolve => { releaseSlowSibling = resolve })
+  crypto.subtle.digest = async (...args) => {
+    const index = new Uint8Array(args[1])[0] - 1
+    if (index === 0) {
+      await slowSiblingStarted
+      throw new Error('fixture digest failure')
+    }
+    if (index === 1) {
+      slowSiblingStartedResolve()
+      await slowSiblingGate
+    }
+    return failureOriginalDigest(...args)
+  }
+  const failureWork = createRomIntegrityWork(new Blob([failureBytes]), 'roms/integrity-test/fail-fast.gba')
+  let failureResult
+  let failureTimeout
+  try {
+    failureResult = await Promise.race([
+      failureWork.manifest.then(() => 'unexpected success', error => error),
+      new Promise(resolve => { failureTimeout = setTimeout(() => resolve('still waiting for slow sibling'), 1_000) }),
+    ])
+  } finally {
+    clearTimeout(failureTimeout)
+    releaseSlowSibling()
+    crypto.subtle.digest = failureOriginalDigest
+  }
+  await assert.rejects(failureWork.manifest, /fixture digest failure/)
+  assert.match(String(failureResult), /fixture digest failure/, 'SHA-256 失败应先于慢速并发块结束')
+
+  // 上传被用户取消时，同样不应等不可中断的 Blob 读取或摘要任务结束。
+  const abortOriginalDigest = crypto.subtle.digest.bind(crypto.subtle)
+  let abortDigestStartedResolve
+  const abortDigestStarted = new Promise(resolve => { abortDigestStartedResolve = resolve })
+  let releaseAbortDigest
+  const abortDigestGate = new Promise(resolve => { releaseAbortDigest = resolve })
+  crypto.subtle.digest = async (...args) => {
+    abortDigestStartedResolve()
+    await abortDigestGate
+    return abortOriginalDigest(...args)
+  }
+  const uploadAbort = new AbortController()
+  const abortWork = createRomIntegrityWork(
+    new Blob([new Uint8Array(ROM_INTEGRITY_BLOCK_BYTES * 2)]),
+    'roms/integrity-test/abort-fast.gba',
+    uploadAbort.signal,
+  )
+  let abortResult
+  let abortTimeout
+  try {
+    await abortDigestStarted
+    uploadAbort.abort()
+    abortResult = await Promise.race([
+      abortWork.manifest.then(() => 'unexpected success', error => error),
+      new Promise(resolve => { abortTimeout = setTimeout(() => resolve('still waiting for digest'), 1_000) }),
+    ])
+  } finally {
+    clearTimeout(abortTimeout)
+    releaseAbortDigest()
+    crypto.subtle.digest = abortOriginalDigest
+  }
+  await assert.rejects(abortWork.manifest, error => error?.name === 'AbortError')
+  assert.equal(abortResult?.name, 'AbortError', '用户取消应先于慢速摘要结束')
+
+  // 取消发生在本地文件读取期间时，读取最终完成也不能再启动多余的 SHA-256。
+  let pendingReadStartedResolve
+  const pendingReadStarted = new Promise(resolve => { pendingReadStartedResolve = resolve })
+  let finishPendingRead
+  const pendingReadFile = {
+    size: 1,
+    slice() {
+      return { arrayBuffer: () => {
+        pendingReadStartedResolve()
+        return new Promise(resolve => { finishPendingRead = resolve })
+      } }
+    },
+  }
+  const pendingReadAbort = new AbortController()
+  let digestAfterPendingRead = 0
+  const pendingReadOriginalDigest = crypto.subtle.digest.bind(crypto.subtle)
+  crypto.subtle.digest = (...args) => {
+    digestAfterPendingRead++
+    return pendingReadOriginalDigest(...args)
+  }
+  const pendingReadWork = createRomIntegrityWork(
+    pendingReadFile,
+    'roms/integrity-test/abort-during-read.gba',
+    pendingReadAbort.signal,
+  )
+  await pendingReadStarted
+  pendingReadAbort.abort()
+  try {
+    await assert.rejects(pendingReadWork.manifest, error => error?.name === 'AbortError')
+  } finally {
+    finishPendingRead(new ArrayBuffer(1))
+    crypto.subtle.digest = pendingReadOriginalDigest
+  }
+  await new Promise(resolve => setTimeout(resolve, 0))
+  assert.equal(digestAfterPendingRead, 0, '已取消的文件读取完成后不应再计算摘要')
+
   assert.equal(isIntegrityKey(key), true)
   for (const unsafe of ['roms/covers/a.webp', 'roms/../secret', 'roms/a\\b', 'roms/a\n']) {
     assert.equal(isIntegrityKey(unsafe), false, unsafe)
@@ -60,20 +265,28 @@ try {
   // 单个 8 MiB 下载分片的四个 2 MiB 摘要应分两路计算，限制额外瞬时内存。
   const rangeContent = new Uint8Array(ROM_INTEGRITY_BLOCK_BYTES * 4)
   for (let index = 0; index < rangeContent.byteLength; index++) rangeContent[index] = (index * 17) % 251
+  for (let index = 0; index < 4; index++) rangeContent[index * ROM_INTEGRITY_BLOCK_BYTES] = 0xe0 + index
   const rangeKey = 'roms/integrity-test/parallel-range.gba'
   const rangeManifest = await createRomIntegrityManifest(new Blob([rangeContent]), rangeKey)
   const originalDigest = crypto.subtle.digest.bind(crypto.subtle)
   let activeDigests = 0
   let maximumActiveDigests = 0
   let rangeDigestCalls = 0
+  let slowFirstRangeDigestSettled = false
+  let laterRangeBlockStartedBeforeSlowFirstSettled = false
   crypto.subtle.digest = async (...args) => {
+    const index = new Uint8Array(args[1])[0] - 0xe0
     activeDigests++
     rangeDigestCalls++
     maximumActiveDigests = Math.max(maximumActiveDigests, activeDigests)
+    if (index >= 2 && !slowFirstRangeDigestSettled) laterRangeBlockStartedBeforeSlowFirstSettled = true
     try {
-      await new Promise((resolve) => setTimeout(resolve, 5))
+      await new Promise((resolve) => setTimeout(resolve, index === 0 ? 100 : 5))
       return await originalDigest(...args)
-    } finally { activeDigests-- }
+    } finally {
+      if (index === 0) slowFirstRangeDigestSettled = true
+      activeDigests--
+    }
   }
   try {
     const rangeBlob = new Blob([rangeContent])
@@ -81,6 +294,8 @@ try {
       '全部完整性块正确时保留原 Blob，避免额外合并复制')
     assert.equal(rangeDigestCalls, 4, '每个 2 MiB 块恰好散列一次')
     assert.equal(maximumActiveDigests, 2, '分片校验最多并行两个 SHA-256，控制瞬时内存')
+    assert.equal(laterRangeBlockStartedBeforeSlowFirstSettled, true,
+      '首个 2 MiB 校验块较慢时，空出的并行槽应继续校验同一 8 MiB 分片')
   } finally { crypto.subtle.digest = originalDigest }
   const rangeEtag = '"parallel-range-v1"'
   const repairRangeManifest = { ...rangeManifest, etag: rangeEtag }
@@ -491,6 +706,74 @@ try {
   })
   assert.deepEqual(new Uint8Array(await cachedBlob.arrayBuffer()), tiny,
     '完整命中续传缓存且本次没有 ROM 网络响应头时也必须校验并修复')
+
+  // 恢复的已缓存片在缺失片下载期间校验，避免把完整性扫描串行排在网络之后。
+  const overlapContent = new Uint8Array(ROM_INTEGRITY_BLOCK_BYTES * 2)
+  overlapContent.fill(0x31, 0, ROM_INTEGRITY_BLOCK_BYTES)
+  overlapContent.fill(0x72, ROM_INTEGRITY_BLOCK_BYTES)
+  const overlapKey = 'roms/integrity-test/resume-hash-overlap.gba'
+  const overlapEtag = '"resume-hash-overlap-v1"'
+  const overlapPayload = await createRomIntegrityManifest(new Blob([overlapContent]), overlapKey)
+  const overlapManifest = { ...overlapPayload, etag: overlapEtag }
+  const overlapUrl = `https://rom.8bitgo.com/${overlapKey}?romv=resume-hash-overlap-v1`
+  globalThis.fetch = async (input) => {
+    assert.equal(new URL(String(input)).pathname, '/integrity', '续传完整性校验应读取对应 ROM 清单')
+    return new Response(JSON.stringify({ etag: overlapEtag, size: overlapContent.byteLength, manifest: overlapManifest }), {
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+  let releaseOverlapNetwork
+  const overlapNetworkGate = new Promise(resolve => { releaseOverlapNetwork = resolve })
+  let overlapNetworkComplete = false
+  const overlapOriginalDigest = crypto.subtle.digest.bind(crypto.subtle)
+  let resolveOverlapHashStarted
+  const overlapCachedHashStarted = new Promise(resolve => { resolveOverlapHashStarted = resolve })
+  crypto.subtle.digest = async (...args) => {
+    if (new Uint8Array(args[1])[0] === 0x31) resolveOverlapHashStarted()
+    return overlapOriginalDigest(...args)
+  }
+  const overlapResumeStore = {
+    async load(_key, chunkBytes) {
+      return { total: overlapContent.byteLength, chunkBytes,
+        parts: new Map([[0, new Blob([overlapContent.slice(0, ROM_INTEGRITY_BLOCK_BYTES)])]]) }
+    },
+    async put() {},
+    async clear() {},
+  }
+  const overlapDownload = fetchBlobWithProgress(overlapUrl, {
+    chunkBytes: ROM_INTEGRITY_BLOCK_BYTES,
+    retries: 0,
+    resumeKey: overlapUrl,
+    resumeStore: overlapResumeStore,
+    fetchImpl: async (_input, init = {}) => {
+      assert.equal(init.headers?.Range, `bytes=${ROM_INTEGRITY_BLOCK_BYTES}-${overlapContent.byteLength - 1}`)
+      const body = new ReadableStream({
+        async start(controller) {
+          await overlapNetworkGate
+          controller.enqueue(overlapContent.slice(ROM_INTEGRITY_BLOCK_BYTES))
+          controller.close()
+          overlapNetworkComplete = true
+        },
+      })
+      return new Response(body, { status: 206, headers: {
+        'Content-Range': `bytes ${ROM_INTEGRITY_BLOCK_BYTES}-${overlapContent.byteLength - 1}/${overlapContent.byteLength}`,
+        'Content-Length': String(ROM_INTEGRITY_BLOCK_BYTES),
+        ETag: overlapEtag,
+        'X-8BitGo-Integrity-Required': 'sha256-v1',
+      } })
+    },
+  })
+  overlapDownload.catch(() => {})
+  try {
+    await finishWithin(overlapCachedHashStarted, '缺失 ROM 分片下载期间没有开始校验已恢复的缓存片')
+    assert.equal(overlapNetworkComplete, false, '缓存片的 SHA-256 应与缺失片网络下载重叠')
+  } finally {
+    releaseOverlapNetwork()
+    crypto.subtle.digest = overlapOriginalDigest
+  }
+  const overlapBlob = await overlapDownload
+  assert.deepEqual(new Uint8Array(await overlapBlob.arrayBuffer()), overlapContent,
+    '并行校验恢复的缓存片后仍应交付字节完整的 ROM')
 
   // 外层失速重试会重新从断点库读已完成分片；上一轮的“已校验 index”不能替代新读出的 Blob 校验。
   const retryContent = new Uint8Array(ROM_INTEGRITY_BLOCK_BYTES + 17)

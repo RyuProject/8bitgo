@@ -1,5 +1,11 @@
 // 普通 API 的网络断流不能让验证码、评论等操作无限转圈；正文读取也必须受时限约束。
 import assert from 'node:assert/strict'
+import { setLangForRender } from '../src/services/lang.ts'
+import { loadLocale } from '../src/locales/index.ts'
+
+// API 超时错误会读取当前界面语言；Node 回归没有浏览器入口替它预加载语言包。
+await loadLocale('zh-Hans')
+setLangForRender('zh-Hans')
 
 globalThis.__viteEnv = {
   VITE_API_URL: 'same-origin',

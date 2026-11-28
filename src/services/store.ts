@@ -293,7 +293,19 @@ export interface StartupAggregate {
   /** EmulatorJS 核心预热的均值与样本数；缓存命中单独计数。 */
   avgCoreWarmMs: number | null
   coreWarmSamples: number
+  /** EmulatorJS 核心预热开始到首块字节的等待，以及有效样本数。 */
+  avgCoreFirstByteMs: number | null
+  coreFirstByteSamples: number
+  /** 模拟器实际读取核心数据文件的完整时间与有效样本数；包含浏览器 HTTP 缓存命中。 */
+  avgCoreLoadMs: number | null
+  coreLoadSamples: number
+  /** 实际核心请求开始到首块数据交给引擎的等待时间。 */
+  avgCoreLoadFirstByteMs: number | null
+  coreLoadFirstByteSamples: number
   coreCacheHits: number
+  /** 可配对的核心预热与实际加载样本，以及核心文件不一致的次数。 */
+  coreWarmMatchSamples: number
+  coreWarmMismatches: number
   /** 资源边界到运行时 onReady 的耗时，以及有效配对数。 */
   avgResourceToRuntimeReadyMs: number | null
   resourceToRuntimeReadySamples: number
@@ -350,4 +362,37 @@ export async function fetchStartupStats(days = 7, query = ''): Promise<StartupSt
   const params = new URLSearchParams({ days: String(Math.max(1, Math.min(90, Math.round(days)))) })
   if (query.trim()) params.set('q', query.trim())
   return api.get<StartupStats>(`/api/admin/startup-stats?${params}`, true)
+}
+
+export interface RomUploadMetricGroup {
+  sizeBand: 'lt8m' | '8to24m' | '24to128m' | '128to512m' | 'gte512m'
+  mode: 'single' | 'multipart'
+  region: 'CN' | 'OTHER' | 'UNKNOWN'
+  device: 'mobile' | 'tablet' | 'desktop' | 'unknown'
+  network: 'slow-2g' | '2g' | '3g' | '4g' | 'unknown'
+  attempts: number
+  successful: number
+  failed: number
+  cancelled: number
+  successRate: number
+  avgDurationMs: number | null
+  avgPrepareMs: number | null
+  avgFirstPartMs: number | null
+  avgTransferMs: number | null
+  avgFinalizeMs: number | null
+  avgMeasuredMbps: number | null
+  avgPeakConcurrency: number | null
+  avgServerWaitMs: number | null
+  avgHashWaitMs: number | null
+  resumeRate: number
+}
+
+export interface RomUploadStats {
+  days: number
+  groups: RomUploadMetricGroup[]
+}
+
+export async function fetchRomUploadStats(days = 7, signal?: AbortSignal): Promise<RomUploadStats> {
+  const safeDays = Math.max(1, Math.min(30, Math.round(days)))
+  return api.get<RomUploadStats>(`/api/admin/rom-upload-stats?days=${safeDays}`, true, signal)
 }

@@ -9,6 +9,12 @@
 // 宽度夹在 GIS 认的 200～400、界面语言按站点语言、凭证交给栈顶那一方（One Tap 进行中时归它）、
 // 卸载后不再收凭证、加载失败返回 null 让备用按钮留着，且下次还能重试。
 import assert from 'node:assert/strict'
+import { setLangForRender } from '../src/services/lang.ts'
+import { loadLocale } from '../src/locales/index.ts'
+
+// 认证错误文案由 getT() 读取；Node 回归需像浏览器入口一样先加载界面语言。
+await loadLocale('zh-Hans')
+setLangForRender('zh-Hans')
 
 const API = 'https://api.test'
 globalThis.__viteEnv = { VITE_API_URL: API }

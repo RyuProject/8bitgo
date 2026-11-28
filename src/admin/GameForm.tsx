@@ -18,7 +18,6 @@ import {
   keepsOriginalFileName,
   listRomObjects,
   clearRomProbeCache,
-  coverThumbKey,
   copyRomToSockdriveStaging,
   headRom,
   pingRomApi,
@@ -5592,19 +5591,7 @@ function MediaField({
       setProgress(0)
       await trackUploadActivity(`${isCover ? '封面' : '视频'}上传与绑定：${file.name}`, async () => {
         const result = await uploadRom(targetFile, key, setProgress)
-        /*
-          缩略图（96×96）跟着主图一起传，给搜索联想、首页样例、详情页背景那些
-          小尺寸位置用 —— 它们本来在下载 300×300 的主图。
-          ⚠️ 缩略图失败不能牵连主图：主图已经传完、key 也已经写进表单了，
-          这里失败了最多是「小图继续用大图」，不该把整个上传报成失败。
-        */
-        if (isCover && compressed?.thumb) {
-          try {
-            await uploadRom(compressed.thumb, coverThumbKey(result.key), undefined, { failureIsFatal: false })
-          } catch (err) {
-            console.warn('[cover] 缩略图上传失败，小尺寸位置会继续用主图', err)
-          }
-        }
+        // R2 只存 300px 主图；96/160/240/480 响应档在公开图片域按需生成，避免额外对象占空间。
         onChange(result.key)
         const removed = await cleanupSuperseded(oldKey, result.key, allBoundKeys)
         const note = !compressed

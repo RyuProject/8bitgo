@@ -354,19 +354,14 @@ export function GameCover({
     startCoverCdnSelection(game.cover || '')
     return unsubscribe
   }, [game.cover, videoSrc, mediaDeferred])
-  // 外链没有本站生成的 -96 缩略图，直接用原图；空 key 不能被当作资源桶根地址。
-  const thumbKey = thumb && game.cover ? coverThumbKey(game.cover) : ''
-  const thumbSrc = thumbKey ? romUrlForKey(thumbKey) : ''
-  // 缩略图缺失时 Worker 会回退到主图；仍按 96px 提示生成变换候选，避免把 300px 主图整张拉下。
+  // 标准封面缩略图直接从主图变换，不再为每张图请求/保存一份 -96 副本；AVIF 暂不能走 CDN 变换，仍复用历史缩略图。
+  const legacyAvifThumbKey = thumb && game.cover && /\.avif$/i.test(game.cover) ? coverThumbKey(game.cover) : ''
+  const legacyAvifThumbSrc = legacyAvifThumbKey ? romUrlForKey(legacyAvifThumbKey) : ''
   const coverSizes = sizes || (thumb ? '96px' : '')
-  /**
-   * 缩略图取不到（老封面上传时还没有这一步，且服务端兜底也没生效）就退回主图。
-   * ⚠️ 必须记状态而不是每次重试：不记的话同一张图会反复 404 → 反复回退 → 死循环。
-   */
-  const [thumbFailed, setThumbFailed] = useState(false)
-  useEffect(() => setThumbFailed(false), [thumbSrc])
-  // Worker 缺少 -96 对象时会回传主图；仍经边缘缩到 96px，避免小卡片整张下载。
-  const imgSrc = thumbSrc && !thumbFailed ? coverImageUrl(thumbSrc, 96) : coverSrc
+  // AVIF 是当前唯一不能走 CDN 变换的封面格式；其它格式只请求主图的 96px 响应档。
+  const [legacyThumbFailed, setLegacyThumbFailed] = useState(false)
+  useEffect(() => setLegacyThumbFailed(false), [legacyAvifThumbSrc])
+  const useLegacyAvifThumb = Boolean(legacyAvifThumbSrc && !legacyThumbFailed)
   /**
    * 缩放转码版本。变换失败（额度用完、源图格式不认）时 Cloudflare 回的是错误而不是原图，
    * 所以和缩略图一样要记状态退回原图，不能让卡片停在渐变上。
@@ -375,14 +370,17 @@ export function GameCover({
   useEffect(() => setTransformFailed(false), [coverSrc])
   const [coverFailed, setCoverFailed] = useState(false)
   useEffect(() => setCoverFailed(false), [coverSrc])
-  const srcSet = imgSrc === coverSrc && !transformFailed ? coverSrcSet(coverSrc, undefined, undefined, coverSizes) : ''
+  const imgSrc = useLegacyAvifThumb ? legacyAvifThumbSrc : thumb && !transformFailed ? coverImageUrl(coverSrc, 96) : coverSrc
+  const srcSet = !useLegacyAvifThumb && !transformFailed ? coverSrcSet(coverSrc, undefined, undefined, coverSizes) : ''
   // 视频 poster 也按卡片实际宽度挑图；否则手机首屏会按默认卡片宽度取图，多传一截。
   const posterSrcSet = videoSrc && coverSrc
     ? (transformFailed ? '' : imgSrc === coverSrc ? srcSet : coverSrcSet(coverSrc, undefined, undefined, coverSizes))
     : ''
   const posterSizes = coverSizes || (priority || eager ? '100vw' : 'auto, 100vw')
 
-  const posterSrc = coverSrc ? coverImageUrl(coverSrc, coverPosterWidth(coverSizes)) : ''
+  const posterSrc = coverSrc
+    ? useLegacyAvifThumb ? legacyAvifThumbSrc : coverImageUrl(coverSrc, coverPosterWidth(coverSizes))
+    : ''
   // preload 与 img 用同一组 srcset / sizes，避免先预载大档再额外下载更合适的小档。
   if (!mediaDeferred && priority && videoSrc && coverSrc) {
     preload(posterSrc, {
@@ -448,7 +446,7 @@ export function GameCover({
             // 缩略图没对象（老封面）就换回主图；主图本身就坏了则留给渐变背景兜着
             onError={(event) => {
               reportCoverLoadFailure(event.currentTarget.currentSrc || event.currentTarget.src)
-              if (thumbSrc && !thumbFailed) setThumbFailed(true)
+              if (useLegacyAvifThumb && !legacyThumbFailed) setLegacyThumbFailed(true)
               else if (srcSet) setTransformFailed(true)
               else setCoverFailed(true)
             }}

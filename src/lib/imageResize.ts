@@ -23,17 +23,10 @@
  */
 import { centerSquare, resampleRGBA } from '../../shared/lanczos.js'
 
-/** 目标边长。封面在前台是 1:1 方框，300 足够 2× 屏下的卡片尺寸 */
+/** R2 只存一份 300px 方形主图；480 响应档在 CDN 插值放大，不另存大图占容量。 */
 const TARGET = 300
-/**
- * 缩略图边长。搜索联想、首页类型样例这类位置只显示 40~44px，却一直在下载 300×300 ——
- * 多压一张 96 的，那些位置就只花三分之一的字节；卡片仍然用 300（2× 屏刚刚好）。
- */
-export const THUMB_TARGET = 96
 /** WebP 质量。0.6 = quality 60 */
 const QUALITY = 0.6
-/** 缩略图质量。尺寸小了，压重了会出现色块，比主图高一点反而更小更好看 */
-const THUMB_QUALITY = 0.72
 /** 退回 JPEG 时的质量。JPEG 在同等观感下要比 WebP 高一点才不出块 */
 const JPEG_QUALITY = 0.82
 /**
@@ -52,11 +45,6 @@ export interface CompressedImage {
   /** 原图尺寸，给提示文案用 */
   sourceWidth: number
   sourceHeight: number
-  /**
-   * 96×96 缩略图，**可能没有** —— 编码失败时给 null，调用方照常只上传主图。
-   * 缺了它只是回到「小图也下大图」的老样子，不能让整个上传失败。
-   */
-  thumb: Blob | null
 }
 
 function toBlobAsync(canvas: HTMLCanvasElement, type: string, quality: number): Promise<Blob | null> {
@@ -148,6 +136,12 @@ export async function compressCoverToWebp(file: Blob): Promise<CompressedImage> 
   } catch {
     throw new Error('这个文件解不开，换一张 PNG / JPG / WebP 试试（SVG 和动图可能不受支持）')
   }
+  let decodedClosed = false
+  const closeDecoded = () => {
+    if (decodedClosed) return
+    decodedClosed = true
+    decoded.close()
+  }
 
   try {
     const srcW = decoded.width
@@ -157,14 +151,22 @@ export async function compressCoverToWebp(file: Blob): Promise<CompressedImage> 
     // 1) 居中裁出正方形；同时把过大的原图降到 PRE_MAX，两步在一次 drawImage 里做完
     const crop = centerSquare(srcW, srcH)
     const stage = Math.min(crop.size, PRE_MAX)
-    const { ctx: sctx } = makeCanvas(stage, stage)
+    const { canvas: stageCanvas, ctx: sctx } = makeCanvas(stage, stage)
     sctx.imageSmoothingEnabled = true
     sctx.imageSmoothingQuality = 'high'
     sctx.drawImage(decoded.source, crop.sx, crop.sy, crop.size, crop.size, 0, 0, stage, stage)
-    const staged = sctx.getImageData(0, 0, stage, stage).data
+    // 源图已画进中间画布，尽早关闭解码位图，避免它与像素缓冲同时占内存。
+    closeDecoded()
 
     // 2) Lanczos3 缩到 300×300（stage 已经是正方形，所以这里只是等比缩小）
-    const rgba = resampleRGBA(staged, stage, stage, TARGET, TARGET)
+    const rgba = (() => {
+      const stagedImage = sctx.getImageData(0, 0, stage, stage)
+      // 1200×1200 中间画布约占 5.5 MiB；像素已复制出来，立即释放其 backing store，
+      // 避免它和 ImageData、Lanczos 输出及最终编码画布同时占内存。
+      stageCanvas.width = 0
+      stageCanvas.height = 0
+      return resampleRGBA(stagedImage.data, stage, stage, TARGET, TARGET)
+    })()
 
     const { canvas: dest, ctx: dctx } = makeCanvas(TARGET, TARGET)
     // 先建好 ImageData 再 set：绕开 new ImageData(data,…) 对底层 ArrayBuffer 类型的苛刻要求
@@ -172,19 +174,13 @@ export async function compressCoverToWebp(file: Blob): Promise<CompressedImage> 
     img.data.set(rgba)
     dctx.putImageData(img, 0, 0)
 
-    // 3) 缩略图：从 300 再缩一份 96（同一套 Lanczos，只是输入已经是 300 的像素）
-    const { canvas: thumbCanvas, ctx: tctx } = makeCanvas(THUMB_TARGET, THUMB_TARGET)
-    const thumbImage = new ImageData(THUMB_TARGET, THUMB_TARGET)
-    thumbImage.data.set(resampleRGBA(rgba, TARGET, TARGET, THUMB_TARGET, THUMB_TARGET))
-    tctx.putImageData(thumbImage, 0, 0)
-
-    // 4) 编码。WebP 不被支持时 toBlob 会**静默**给一张 PNG，所以要查 type
+    // 3) 编码。WebP 不被支持时 toBlob 会**静默**给一张 PNG，所以要查 type
     const webp = await toBlobAsync(dest, 'image/webp', QUALITY)
     if (webp && webp.type === 'image/webp') {
-      const thumb = await toBlobAsync(thumbCanvas, 'image/webp', THUMB_QUALITY)
+      dest.width = 0
+      dest.height = 0
       return {
         blob: webp,
-        thumb: thumb && thumb.type === 'image/webp' ? thumb : null,
         ext: '.webp',
         fellBackToJpeg: false,
         sourceWidth: srcW,
@@ -197,23 +193,21 @@ export async function compressCoverToWebp(file: Blob): Promise<CompressedImage> 
     fctx.fillStyle = '#ffffff'
     fctx.fillRect(0, 0, TARGET, TARGET)
     fctx.drawImage(dest, 0, 0)
+    dest.width = 0
+    dest.height = 0
     const jpeg = await toBlobAsync(flat, 'image/jpeg', JPEG_QUALITY)
+    flat.width = 0
+    flat.height = 0
     if (!jpeg) throw new Error('封面编码失败：这个浏览器既不支持 WebP 也不支持 JPEG 编码')
 
-    const { canvas: flatThumb, ctx: ftctx } = makeCanvas(THUMB_TARGET, THUMB_TARGET)
-    ftctx.fillStyle = '#ffffff'
-    ftctx.fillRect(0, 0, THUMB_TARGET, THUMB_TARGET)
-    ftctx.drawImage(thumbCanvas, 0, 0)
-    const thumbJpeg = await toBlobAsync(flatThumb, 'image/jpeg', JPEG_QUALITY)
     return {
       blob: jpeg,
-      thumb: thumbJpeg,
       ext: '.jpg',
       fellBackToJpeg: true,
       sourceWidth: srcW,
       sourceHeight: srcH,
     }
   } finally {
-    decoded.close()
+    closeDecoded()
   }
 }

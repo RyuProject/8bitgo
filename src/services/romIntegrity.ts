@@ -508,29 +508,89 @@ export async function verifyRomBlobRange(
     throw new RomIntegrityError('ROM / BIOS 下载分片没有覆盖完整 SHA-256 校验块')
   }
   const first = start / manifest.blockBytes
-  const replacements: BlobPart[] = []
+  const blockCount = Math.ceil(blob.size / manifest.blockBytes)
+  const replacements: BlobPart[] = new Array(blockCount)
   let repaired = false
-  // 一个下载分片通常含四个完整性块。两个一批可让 WebCrypto 并行散列，
-  // 又把每条下载通道新增的临时 ArrayBuffer 限制在约 4 MiB。
-  const blocksPerBatch = 2
-  for (let offset = 0; offset < blob.size; offset += manifest.blockBytes * blocksPerBatch) {
-    if (signal?.aborted) throw new DOMException('已取消', 'AbortError')
-    const count = Math.min(blocksPerBatch, Math.ceil((blob.size - offset) / manifest.blockBytes))
-    const checks = await Promise.all(Array.from({ length: count }, async (_, batchOffset) => {
-      const blockOffset = offset + batchOffset * manifest.blockBytes
-      const index = first + blockOffset / manifest.blockBytes
-      const block = blob.slice(blockOffset, Math.min(blob.size, blockOffset + manifest.blockBytes))
-      const bytes = new Uint8Array(await block.arrayBuffer())
-      return { index, block, valid: await digest(bytes) === manifest.blocks[index] }
-    }))
-    for (const check of checks) {
-      if (check.valid) {
-        replacements.push(check.block)
-        continue
+  // 每条下载通道最多同时读两个 2 MiB 块；块完成就补槽，不让一块慢读挡住后续块。
+  const concurrency = Math.min(2, blockCount)
+  const windowSize = concurrency * 2
+  const completed = new Set<number>()
+  const windowWaiters = new Set<() => void>()
+  const wakeWindowWaiters = () => {
+    for (const resolve of windowWaiters) resolve()
+    windowWaiters.clear()
+  }
+  const repairController = new AbortController()
+  let nextIndex = 0
+  let firstUnfinished = 0
+  let failed = false
+  let failure: unknown
+  let rejectFailure!: (error: unknown) => void
+  const failureSignal = new Promise<never>((_, reject) => { rejectFailure = reject })
+  void failureSignal.catch(() => {})
+  const fail = (error: unknown) => {
+    if (failed) return
+    failed = true
+    failure = error
+    repairController.abort(error)
+    rejectFailure(error)
+    wakeWindowWaiters()
+  }
+  const onAbort = () => fail(new DOMException('已取消', 'AbortError'))
+  try {
+    signal?.addEventListener('abort', onAbort, { once: true })
+    if (signal?.aborted) onAbort()
+    const worker = async () => {
+      while (!failed) {
+        if (signal?.aborted) {
+          fail(new DOMException('已取消', 'AbortError'))
+          return
+        }
+        if (nextIndex >= blockCount) return
+        if (nextIndex >= firstUnfinished + windowSize) {
+          await new Promise<void>((resolve) => windowWaiters.add(() => resolve()))
+          continue
+        }
+        const localIndex = nextIndex++
+        const index = first + localIndex
+        try {
+          const offset = localIndex * manifest.blockBytes
+          const block = blob.slice(offset, Math.min(blob.size, offset + manifest.blockBytes))
+          const valid = await (async () => {
+            const bytes = new Uint8Array(await block.arrayBuffer())
+            if (failed) return false
+            return await digest(bytes) === manifest.blocks[index]
+          })()
+          if (failed) return
+          if (signal?.aborted) throw new DOMException('已取消', 'AbortError')
+          replacements[localIndex] = valid
+            ? block
+            : await fetchRepairBlock(rawUrl, manifest, index, repairController.signal)
+          if (failed) return
+          if (!valid) repaired = true
+          completed.add(localIndex)
+          const previousFirstUnfinished = firstUnfinished
+          while (completed.delete(firstUnfinished)) firstUnfinished++
+          if (firstUnfinished !== previousFirstUnfinished) wakeWindowWaiters()
+        } catch (error) {
+          fail(error)
+          return
+        }
       }
-      replacements.push(await fetchRepairBlock(rawUrl, manifest, check.index, signal))
-      repaired = true
     }
+    await Promise.race([
+      Promise.all(Array.from({ length: concurrency }, worker)),
+      failureSignal,
+    ])
+    if (signal?.aborted) throw new DOMException('已取消', 'AbortError')
+    if (failed) throw failure
+  } catch (error) {
+    failed = true
+    repairController.abort(error)
+    wakeWindowWaiters()
+    throw error
+  } finally {
+    signal?.removeEventListener('abort', onAbort)
   }
   return repaired ? new Blob(replacements, { type: blob.type }) : blob
 }

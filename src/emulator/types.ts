@@ -75,6 +75,18 @@ export interface JsnesNetplaySession {
   onError?: (message: string) => void
 }
 
+/** IodineGBA 双机电缆联机；每端运行两台镜像核心并同步逐帧输入与双方卡带存档。 */
+export interface GbaLinkNetplaySession {
+  mode: 'host' | 'join'
+  roomId?: string
+  bufferFrames?: number
+  onRoom?: (roomId: string, isHost: boolean) => void
+  onPlayers?: (count: number) => void
+  onLinkState?: (state: RTCPeerConnectionState) => void
+  onHostLeft?: () => void
+  onError?: (message: string) => void
+}
+
 export interface MountOptions {
   /** 平台 id（运行时据此选择核心等参数） */
   platform: PlatformId
@@ -219,7 +231,9 @@ export interface MountOptions {
   /** 引擎内部仍在推进启动阶段时通知播放器，避免外层无进度看门狗误判卡死。 */
   onStartupActivity?: () => void
   /** 只把核心预热阶段回传给播放器，避免把资源 URL 带进启动统计。 */
-  onCoreWarmEvent?: (event: 'start' | 'complete' | 'cached', coreKey: string) => void
+  onCoreWarmEvent?: (event: 'start' | 'first-byte' | 'complete' | 'cached', coreKey: string) => void
+  /** 模拟器真正读取核心数据文件时回传阶段；核心文件名只在内存中用于配对。 */
+  onCoreLoadEvent?: (event: 'start' | 'first-byte' | 'complete', coreKey: string) => void
   /**
    * 旧 Flash 游戏的在线存档会话到期时间（毫秒）；0 = 游客模式 / 没拿到会话。
    *
@@ -442,6 +456,8 @@ export interface ResolveContext {
    * 比普通格式探测更优先：jsnes 联机需要 jsnes 这个事实压过默认兼容性兜底。
    */
   jsnesNetplay?: boolean
+  /** 邀请链接要求使用 IodineGBA 的双机电缆协议，不可误落到单机 EmulatorJS。 */
+  gbaLinkNetplay?: boolean
   /**
    * 已知 jsnes 能否跑这份 ROM（按 iNES 头里的 mapper 判定，见 nesMapper.ts 的 JSNES_MAPPERS）。
    * 可选：true = mapper 在 jsnes 支持列表内；false = 明确不支持；不传/undefined = 还没探明。
@@ -764,6 +780,8 @@ export interface RuntimeHandle {
    * 返回 false 表示这局开不了（引擎还没起来、或已经在房间里）。
    */
   openJsnesNetplay?: (session: JsnesNetplaySession) => boolean
+  /** 在 IodineGBA 当前局上开启普通 8/32 位或 Multi-Pak 双机锁步联机。 */
+  openGbaLinkNetplay?: (session: GbaLinkNetplaySession) => boolean
   /** 退出联机房间，回到一个人玩；游戏继续跑，不重开 */
   closeNetplay?: () => void
   /** js-dos：在当前游戏里启动 IPX 主机并注册可分享的别名，不重启游戏。 */

@@ -54,7 +54,7 @@ import type { NetplaySession, SeatEvent } from './adapters/emulatorjs'
 import { createVisibilityTimeout, type VisibilityTimeout } from './visibilityTimeout'
 import { cleanPageRetryUrl, isMemoryPressureMessage, takeCleanPageRetry } from './memoryRecovery'
 import type { CloudSession, CloudState } from './adapters/cloudgame'
-import { p2pPlayable, cloudPlayable, emulatorJsCoreFileFor, emulatorJsCoreForGame, NDS_COMPAT_CORE, ndsCoreForWebgl2 } from './paths'
+import { p2pPlayable, cloudPlayable, emulatorJsCoreDataFile, emulatorJsCoreFileFor, emulatorJsCoreForGame, NDS_COMPAT_CORE, ndsCoreForWebgl2 } from './paths'
 import { FBNEO_LOWMEM_CORE, fbneoLowmemSaveSlug, fbneoMemoryFallbackCore, prefersFbneoLowmem, rememberFbneoMemoryFailure } from './fbneoLowmem'
 import { fbneoWofcnSaveSlug, FBNEO_WOFCN_CORE } from './wofcnCore'
 import { prefersPsxLowmem, psxLowmemCoreFor, psxMemoryFallbackCore, rememberPsxMemoryFailure } from './psxLowmem'
@@ -69,7 +69,7 @@ import {
 } from './ndsAdaptivePerformance'
 import { psxChdSaveSlug, psxCoreForTransfer } from './psxChd'
 import { prewarmMameChdMediaOnHover, prewarmRuntime } from './prewarm'
-import { observeEjsCoreWarmEvent } from './ejsStartWarm'
+import { observeEjsCoreLoadEvent, observeEjsCoreWarmEvent } from './ejsStartWarm'
 import { defaultDos71SystemUrl, prewarmSystemCache } from './systemSource'
 import { canRestartInPlace } from './sessionRestart'
 import {
@@ -94,6 +94,7 @@ import { loadMountOf } from './runtimes'
 import { cx } from '@/lib/format'
 import { Button, buttonClasses } from '@/components/ui/Button'
 import { JsnesNetplayPanel } from './JsnesNetplayPanel'
+import { GbaLinkNetplayPanel } from './GbaLinkNetplayPanel'
 import { useShell } from '@/components/layout/ShellContext'
 import { useT, fmt } from '@/services/i18n'
 import { platformLabel } from '@/services/i18nData'
@@ -863,6 +864,9 @@ export function EmulatorPlayer({
   const [jsnesNetplayOpen, setJsnesNetplayOpen] = useState(false)
   /** 通用“创建联机房间”落到 jsnes 时，面板打开后要自动执行一次开房。 */
   const [jsnesNetplayAutoHost, setJsnesNetplayAutoHost] = useState(false)
+  const [gbaLinkNetplayOpen, setGbaLinkNetplayOpen] = useState(false)
+  const [gbaLinkNetplayAutoHost, setGbaLinkNetplayAutoHost] = useState(false)
+  const [gbaLinkPendingRoomId, setGbaLinkPendingRoomId] = useState('')
   /** DOS IPX 房间使用独立的面板与 peer 信令，不混入锁步联机房。 */
   const [ipxPanelOpen, setIpxPanelOpen] = useState(false)
   const [ipxAutoHost, setIpxAutoHost] = useState(false)
@@ -926,6 +930,9 @@ export function EmulatorPlayer({
   const jsnesInviteCode = typeof window !== 'undefined'
     ? (new URLSearchParams(window.location.search).get('jsnesp2p')?.trim().toLowerCase() ?? '')
     : ''
+  const gbaLinkInviteCode = typeof window !== 'undefined'
+    ? (new URLSearchParams(window.location.search).get('gbap2p')?.trim().toLowerCase() ?? '')
+    : ''
   const ipxInviteCode = typeof window !== 'undefined'
     ? (new URLSearchParams(window.location.search).get('ipx')?.trim() ?? '')
     : ''
@@ -937,6 +944,13 @@ export function EmulatorPlayer({
     setJsnesNetplayOpen(true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, handle, jsnesInviteCode])
+  // GBA 电缆邀请固定使用 IodineGBA；连接/存档交换交给本面板显示，不静默落到单机核心。
+  useEffect(() => {
+    if (!gbaLinkInviteCode || status !== 'running' || !handle?.openGbaLinkNetplay) return
+    setGbaLinkNetplayAutoHost(false)
+    setGbaLinkNetplayOpen(true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, handle, gbaLinkInviteCode])
   // DOS IPX 邀请链接带着同一游戏 slug；ROM 开始运行后再建立 IPX 数据通道。
   useEffect(() => {
     if (ignoreIpxInvite || !ipxInviteCode || status !== 'running' || !handle?.joinIpx) return
@@ -1668,6 +1682,13 @@ export function EmulatorPlayer({
   const coreWarmObservationRef = useRef<{
     attemptId: string
     coreKey: string
+    firstByte: boolean
+    complete: boolean
+  } | null>(null)
+  const coreLoadObservationRef = useRef<{
+    attemptId: string
+    coreKey: string
+    firstByte: boolean
     complete: boolean
   } | null>(null)
   const inheritedStartupRef = useRef(
@@ -1808,6 +1829,7 @@ export function EmulatorPlayer({
   // 带 ?jsnesp2p=CODE 的邀请链接进来要直接进 jsnes 联机房：这条链接只在引擎是 jsnes 时进得去
   // （EmulatorJS 不实现 openJsnesNetplay），所以开局前必须把 NES 钉在 jsnes 上，否则会静默连不上。
   const jsnesNetplay = Boolean(jsnesInviteCode)
+  const gbaLinkNetplay = Boolean(gbaLinkInviteCode)
 
   /**
    * 只有“未指定运行时的远端直链 `.nes`”值得做 16 字节 Range 探测。
@@ -1890,6 +1912,7 @@ export function EmulatorPlayer({
       ext: extOf(romUrl),
       runtimeOverride: runtime,
       jsnesNetplay,
+      gbaLinkNetplay,
       jsnesCompatible,
       webglUnavailable,
       gbaWasmUnavailable: platform.id === 'gba' && !webAssemblyAvailable(),
@@ -1897,7 +1920,7 @@ export function EmulatorPlayer({
       gbaWebglUnavailable: platform.id === 'gba' && webglUnavailable,
       flashAwayfl: awayflChoice.use,
     })
-  }, [platform.id, runtime, romUrl, shouldProbeNes, currentNesProbe?.ready, jsnesNetplay, jsnesCompatible, webglUnavailable, awayflChoice.ready, awayflChoice.use])
+  }, [platform.id, runtime, romUrl, shouldProbeNes, currentNesProbe?.ready, jsnesNetplay, gbaLinkNetplay, jsnesCompatible, webglUnavailable, awayflChoice.ready, awayflChoice.use])
 
   useEffect(() => {
     if (pageRuntime?.id !== 'jsdos' || !dosSockdriveUrl) return
@@ -2156,7 +2179,8 @@ export function EmulatorPlayer({
     let fallbackInteractionReported = false
     let fallbackOutcomeReported = false
     const batchedStartupPhases = new Set<StartupEventName>([
-      'rom_load_start', 'rom_load_complete', 'core_warm_start', 'core_warm_complete', 'core_cache_hit', 'runtime_ready',
+      'rom_load_start', 'rom_load_complete', 'core_warm_start', 'core_warm_first_byte', 'core_warm_complete', 'core_cache_hit',
+      'core_load_start', 'core_load_first_byte', 'core_load_complete', 'runtime_ready',
       'fallback_first_frame', 'fallback_playable',
     ])
     let pendingStartupEvents: StartupEvent[] = []
@@ -2640,7 +2664,18 @@ export function EmulatorPlayer({
           event,
         )
         coreWarmObservationRef.current = result.observation
-        if (result.metric) reportStartup(result.metric)
+        if (result.metric) reportStartup(result.metric, coreKey)
+      },
+      onCoreLoadEvent: (event, coreKey) => {
+        if (!isCurrent() || mountCancelled) return
+        const result = observeEjsCoreLoadEvent(
+          coreLoadObservationRef.current,
+          session.startupAttemptId,
+          coreKey,
+          event,
+        )
+        coreLoadObservationRef.current = result.observation
+        if (result.metric) reportStartup(result.metric, coreKey)
       },
       onReady: () => {
         if (!isCurrent() || ready) return
@@ -2661,7 +2696,10 @@ export function EmulatorPlayer({
         stopStartupWatchdog()
         // 拿不到完整下载阶段的运行时在这里兜底；同一事件客户端与数据库都会去重。
         reportStartup('download_complete')
-        reportStartup('runtime_ready')
+        const resolvedEjsCore = session.runtime.id === 'emulatorjs'
+          ? coreResolvedForSession(resolvedCoreRef.current, session.id, session.coreOverride ?? coreRef.current)
+          : undefined
+        reportStartup('runtime_ready', resolvedEjsCore ? emulatorJsCoreDataFile(resolvedEjsCore) : undefined)
         // 新版 melonDS 会在 onReady 之后才 trap；立即计数会把白屏误报成可玩。
         // 留一个短观察窗，崩溃时清掉；兼容核心接棒后再确认这次开局。
         if (session.platform === 'nds' && session.runtime.id === 'emulatorjs' &&
@@ -3496,6 +3534,13 @@ export function EmulatorPlayer({
    * 所以详情页按钮会把游戏启动起来却静默不建房。
    */
   const openMatchForCurrentRuntime = (): boolean => {
+    // GBA 的双打依赖真实电缆串口；EmulatorJS 虽暴露通用房间方法，却不会运行两份 GBA 核心。
+    // 因此通用“创建联机房间”也必须走 IodineGBA 电缆面板，不能被更宽泛的句柄能力抢先匹配。
+    if (platform.id === 'gba') {
+      setGbaLinkNetplayAutoHost(true)
+      setGbaLinkNetplayOpen(true)
+      return true
+    }
     if (handle?.openNetplay) {
       openMatch()
       return true
@@ -3503,6 +3548,11 @@ export function EmulatorPlayer({
     if (handle?.openJsnesNetplay) {
       setJsnesNetplayAutoHost(true)
       setJsnesNetplayOpen(true)
+      return true
+    }
+    if (handle?.openGbaLinkNetplay) {
+      setGbaLinkNetplayAutoHost(true)
+      setGbaLinkNetplayOpen(true)
       return true
     }
     return false
@@ -3868,6 +3918,7 @@ export function EmulatorPlayer({
         platform: targetPlatform,
         ext: extOf(picked),
         jsnesNetplay,
+        gbaLinkNetplay,
         jsnesCompatible: localJsnesCompatible,
         // 本地 ROM 不以详情页 slug 作为验证依据；只有显式调试参数能强制它走 AwayFL。
         flashAwayfl: targetPlatform === 'flash' && awayflForcedByUrl(),
@@ -3902,7 +3953,7 @@ export function EmulatorPlayer({
       setFile(picked)
       begin(picked, targetPlatform, runtime)
     },
-    [platform, romUrl, pageRuntime, engineReady, jsnesNetplay, onDetectMismatch, onPlatformChange, onRuntimeChange, onDetectFailed, onLocalFileSelected, t],
+    [platform, romUrl, pageRuntime, engineReady, jsnesNetplay, gbaLinkNetplay, onDetectMismatch, onPlatformChange, onRuntimeChange, onDetectFailed, onLocalFileSelected, t],
   )
 
   useEffect(
@@ -6209,6 +6260,21 @@ export function EmulatorPlayer({
               </span>
             </Button>
           )}
+          {status === 'running' && netplayEnabled() && platform.id === 'gba' && (
+            <Button
+              variant="secondary"
+              size="sm"
+              className="max-sm:h-11 max-sm:min-w-11 max-sm:px-2"
+              onClick={() => {
+                setGbaLinkNetplayAutoHost(false)
+                setGbaLinkNetplayOpen(true)
+              }}
+              title="GBA 双机电缆联机（必要时会切换到 IodineGBA 并重启游戏）"
+            >
+              <span className="hidden sm:inline">GBA 联机</span>
+              <span className="sm:hidden" aria-hidden>联机</span>
+            </Button>
+          )}
           </div>
         </div>
         {/*
@@ -6283,6 +6349,39 @@ export function EmulatorPlayer({
         onClose={() => {
           setJsnesNetplayOpen(false)
           setJsnesNetplayAutoHost(false)
+        }}
+      />
+    )}
+    {gbaLinkNetplayOpen && (
+      <GbaLinkNetplayPanel
+        handle={handle}
+        gameSlug={gameSlug}
+        gameName={gameName}
+        initialRoomId={gbaLinkInviteCode || gbaLinkPendingRoomId}
+        autoHost={gbaLinkNetplayAutoHost}
+        playerStatus={status}
+        onSwitchRuntime={(mode, roomId, bufferFrames) => {
+          const linkRuntime = resolveRuntime({ platform: 'gba', gbaLinkNetplay: true })
+          if (!linkRuntime || !session || session.platform !== 'gba') {
+            setError('当前游戏无法切换到 GBA 电缆联机核心')
+            setGbaLinkNetplayOpen(false)
+            return
+          }
+          setGbaLinkPendingRoomId(mode === 'join' ? roomId : '')
+          setGbaLinkNetplayAutoHost(mode === 'host')
+          begin(session.game, session.platform, linkRuntime)
+          // 面板仍挂在当前播放器上，自己的网络延迟状态会随运行时替换保留。
+          void bufferFrames
+        }}
+        onClose={() => {
+          setGbaLinkNetplayOpen(false)
+          setGbaLinkNetplayAutoHost(false)
+          setGbaLinkPendingRoomId('')
+          if (gbaLinkInviteCode) {
+            const url = new URL(window.location.href)
+            url.searchParams.delete('gbap2p')
+            window.history.replaceState(window.history.state, '', url)
+          }
         }}
       />
     )}

@@ -44,10 +44,12 @@ let xhrSendOverride = null
 globalThis.XMLHttpRequest = class {
   upload = {}
   headers = {}
+  responseHeaders = {}
   status = 0
   responseText = ''
   open(method, url) { this.method = method; this.url = url }
   setRequestHeader(name, value) { this.headers[String(name).toLowerCase()] = String(value) }
+  getResponseHeader(name) { return this.responseHeaders[String(name).toLowerCase()] ?? null }
   send(blob) {
     if (xhrSendOverride) return xhrSendOverride(this, blob)
     if (xhrNeverCompletes) return
@@ -57,6 +59,7 @@ globalThis.XMLHttpRequest = class {
         this.upload.onload?.()
       }
       const result = xhrResponse(this, blob)
+      this.responseHeaders = Object.fromEntries(Object.entries(result.headers ?? {}).map(([name, value]) => [name.toLowerCase(), String(value)]))
       if (result.error) {
         this.onerror?.()
         return
@@ -110,6 +113,43 @@ const { ApiError } = await import('../src/services/api.ts')
   assert.equal(gate.snapshot().limit, 1, '少量成功不能过早恢复并发')
 }
 console.log('✅ HTTP/2 连接级错误会把分片上传收敛到单路，避免并发重试风暴')
+
+// 性能基线要记录真实活跃分片数，不能把自适应闸门的目标上限误记为实际峰值。
+{
+  const gate = new MultipartUploadGate(3, 3)
+  let release
+  const hold = new Promise((resolve) => { release = resolve })
+  const uploads = Array.from({ length: 3 }, () => gate.run(async () => {
+    await hold
+    return true
+  }))
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(gate.snapshot().active, 3)
+  assert.equal(gate.snapshot().peakActive, 3, '闸门应记录策略队列占用峰值')
+  release()
+  await Promise.all(uploads)
+  assert.equal(gate.snapshot().active, 0)
+  assert.equal(gate.snapshot().peakActive, 3, '任务完成后保留本次闸门占用峰值')
+}
+console.log('✅ 上传闸门分别保留策略上限与队列占用峰值')
+
+// 单文件闸门拿到的名额可能还在等多文件共享池；真实传输峰值只计已开始的 XHR。
+{
+  const gate = new MultipartUploadGate(4, 4)
+  let release
+  const hold = new Promise((resolve) => { release = resolve })
+  const uploads = Array.from({ length: 4 }, (_, index) => gate.run(async () => {
+    if (index === 0) gate.recordTransferActivity(true)
+    try { await hold } finally { if (index === 0) gate.recordTransferActivity(false) }
+  }))
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(gate.snapshot().peakActive, 4, '四个分片可占用单文件策略槽')
+  assert.equal(gate.snapshot().peakTransferActive, 1, '等待共享传输池的三片不能算成已活动请求')
+  release()
+  await Promise.all(uploads)
+  assert.equal(gate.snapshot().transferActive, 0, '传输结束后活动计数必须归零')
+}
+console.log('✅ 峰值并发只统计已开始的 XHR，不统计等待全局预算的分片')
 
 // 多盘组取消时，等待并发闸门的分片应立即离队，不要留着文件片和取消监听等前一请求结束。
 {
@@ -378,6 +418,63 @@ console.log('✅ ROM 分片在首片早期样本后保守启动并发，慢速�
 }
 console.log('✅ 实际上传链路在首片完成前启动后续分片，并正确合并校验对象大小')
 
+// 致命错误可能先于节流进度回调；失败结束时仍要把真实并发峰值交给指标。
+{
+  const file = new File([new Uint8Array(2 * PART_SIZE + 1)], 'failed-peak-sample.iso', { lastModified: 713 })
+  const originalXHR = globalThis.XMLHttpRequest
+  const originalFetch = globalThis.fetch
+  const originalApi = localStorage.getItem('8bitgo.rom.api')
+  const originalMultipartState = localStorage.getItem('8bitgo.rom.multipart')
+  const originalCreateState = localStorage.getItem('8bitgo.rom.multipart.create-request')
+  const waiting = []
+  const stages = []
+  try {
+    localStorage.setItem('8bitgo.rom.api', 'https://failed-peak-worker.test')
+    globalThis.fetch = async (url, init = {}) => {
+      const target = String(url)
+      if (target.endsWith('?uploads')) return Response.json({ uploadId: 'up-failed-peak', marker: '_uploads/failed-peak.marker', partNumberInHeader: true })
+      throw new Error(`unexpected request: ${target} ${init.method || ''}`)
+    }
+    globalThis.XMLHttpRequest = class {
+      upload = {}
+      headers = {}
+      status = 0
+      responseText = ''
+      open() {}
+      setRequestHeader(name, value) { this.headers[String(name).toLowerCase()] = String(value) }
+      send(blob) {
+        waiting.push({ xhr: this, blob, part: Number(this.headers['x-8bg-part-number']) })
+        if (waiting.length === 1) {
+          setTimeout(() => this.upload.onprogress?.({ lengthComputable: true, loaded: 1024 * 1024, total: blob.size }), 300)
+        }
+        if (waiting.length === 2) {
+          for (const { xhr } of waiting) {
+            xhr.status = 401
+            xhr.responseText = JSON.stringify({ error: 'Unauthorized' })
+            xhr.onload?.()
+          }
+        }
+      }
+      abort() { this.onabort?.() }
+    }
+    await assert.rejects(
+      uploadRomMultipart(file, 'roms/ps2/failed-peak-sample.iso', (_percent, stage) => { if (stage) stages.push(stage) }),
+      /401|Unauthorized|口令|授权|认证/i,
+    )
+  } finally {
+    globalThis.XMLHttpRequest = originalXHR
+    globalThis.fetch = originalFetch
+    localStorage.setItem('8bitgo.rom.api', originalApi || '')
+    if (originalMultipartState === null) localStorage.removeItem('8bitgo.rom.multipart')
+    else localStorage.setItem('8bitgo.rom.multipart', originalMultipartState)
+    if (originalCreateState === null) localStorage.removeItem('8bitgo.rom.multipart.create-request')
+    else localStorage.setItem('8bitgo.rom.multipart.create-request', originalCreateState)
+  }
+  assert.equal(waiting.length, 2, '早期测速后应有两片同时进入上传')
+  assert.equal(stages.at(-1)?.peakConcurrency, 2, '失败收尾快照仍应包含本次真实并发峰值')
+}
+console.log('✅ 分片失败时也会补报真实并发峰值，不漏掉失败上传样本')
+
 // 分片上传把清单放进不可逆的 complete 请求；Worker 确认发布后客户端不再追加 POST。
 {
   const key = 'roms/ps2/atomic-integrity-multipart.iso'
@@ -557,9 +654,40 @@ console.log('✅ 8BG 失败重试会逐块校验源 ROM；内容变化时绝不�
 }
 console.log('✅ 高速上传测速后可升至四路；HTTP/2、限流和网关故障会降为单路并逐档恢复')
 
+// 可重试的请求超时与 Cloudflare 边缘错误也必须让单文件闸门和多文件共享预算收敛。
+for (const status of [408, 520, 521, 522, 523, 524]) {
+  const gate = new MultipartUploadGate(4, 4)
+  await assert.rejects(gate.run(async () => { throw { status } }))
+  assert.equal(gate.snapshot().limit, 1, `HTTP ${status} 后单文件分片应降到单路`)
+
+  const pool = new UploadTransferPool()
+  await assert.rejects(pool.run(async () => { throw { status } }))
+  let active = 0
+  let peak = 0
+  const releases = []
+  const tasks = Array.from({ length: Math.min(4, preferredUploadConcurrency()) }, () => pool.run(() => new Promise((resolve) => {
+    active++
+    peak = Math.max(peak, active)
+    releases.push(() => { active--; resolve() })
+  })))
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(peak, 1, `共享预算遇到 HTTP ${status} 后也应串行恢复`)
+  for (let settled = 0; settled < tasks.length; settled++) {
+    while (!releases.length) await new Promise((resolve) => setImmediate(resolve))
+    releases.shift()()
+  }
+  await Promise.all(tasks)
+}
+console.log('✅ HTTP 408 与 Cloudflare 520–524 会让单文件和多文件并发安全降档')
+
 const headRequests = []
+const uploadMetricRequests = []
 globalThis.fetch = async (url, init) => {
   headRequests.push({ url: String(url), method: init?.method ?? 'GET' })
+  if (String(url).includes('/api/admin/rom-upload-metrics')) {
+    uploadMetricRequests.push(JSON.parse(init?.body || '{}'))
+    return Response.json({ ok: true })
+  }
   if (String(url).endsWith('/ping')) return Response.json({ features: { integrityManifest: true } })
   if (String(url).includes('/integrity?')) {
     const body = JSON.parse(init?.body || '{}')
@@ -589,6 +717,20 @@ xhrResponse = () => ({ status: 200, body: JSON.stringify({ ok: true, key: 'roms/
 const singlePutProgress = []
 assert.equal((await uploadRom(small, 'roms/nes/demo.nes', (pct) => singlePutProgress.push(pct))).size, 3)
 assert.deepEqual(singlePutProgress, [99, 100], '请求体传完先停在 99%，校验对象后才到 100%')
+// 统计发送器是冷路径动态导入；并行跑完整套件时模块加载可能跨过多个事件循环轮次。
+// 等待有界，避免把调度抖动误判成上传样本丢失。
+const metricDeadline = Date.now() + 15_000
+while (uploadMetricRequests.length < 3 && Date.now() < metricDeadline) {
+  await new Promise((resolve) => setTimeout(resolve, 10))
+}
+assert.equal(uploadMetricRequests.length, 3, 'ROM 单发成功与失败都应异步记录匿名性能样本')
+assert.deepEqual(uploadMetricRequests.map((sample) => sample.outcome), ['failure', 'failure', 'success'])
+assert.ok(uploadMetricRequests.every((sample) => sample.sizeBand === 'lt8m' && sample.mode === 'single'))
+for (const sample of uploadMetricRequests) {
+  assert.equal(Object.hasOwn(sample, 'key'), false)
+  assert.equal(Object.hasOwn(sample, 'fileName'), false)
+  assert.equal(Object.hasOwn(sample, 'exactSizeBytes'), false)
+}
 console.log('✅ 正常的小文件上传仍可完成')
 
 // 新 Worker 能力允许把摘要与 PUT 一起提交，避免上传成功后再多等一次完整性绑定请求。
@@ -1125,11 +1267,15 @@ console.log('✅ 分片合并后大小不符会阻止绑定，也不会重试 co
   const file = new File([new Uint8Array(25 * 1024 * 1024)], 'demo.cso', { lastModified: 456 })
   let starts = 0
   let completes = 0
+  let partAttempts = 0
   globalThis.fetch = async (url, init) => {
     const target = String(url)
     if (target.endsWith('/roms/psp/demo.cso?uploads')) {
       starts++
-      if (starts === 1) return Response.json({ error: '开始分片上传暂时失败，请保留续传信息后重试', code: 'storage_unavailable', retryable: true }, { status: 503 })
+      if (starts === 1) return Response.json(
+        { error: '开始分片上传暂时失败，请保留续传信息后重试', code: 'storage_unavailable', retryable: true },
+        { status: 503, headers: { 'Retry-After': '2' } },
+      )
       return Response.json({ uploadId: 'up-cso-retry', marker: '_uploads/cso-retry.marker' })
     }
     if (target.includes('uploadId=up-cso-retry') && init?.method === 'POST') {
@@ -1138,12 +1284,24 @@ console.log('✅ 分片合并后大小不符会阻止绑定，也不会重试 co
     }
     throw new Error(`unexpected request: ${target}`)
   }
-  xhrResponse = (xhr) => ({ status: 200, body: JSON.stringify({ etag: `cso-${new URL(xhr.url).searchParams.get('partNumber')}` }) })
+  xhrResponse = (xhr) => {
+    partAttempts++
+    if (partAttempts === 1) return {
+      status: 503,
+      headers: { 'Retry-After': '3' },
+      body: JSON.stringify({ error: '分片存储暂不可用' }),
+    }
+    return { status: 200, body: JSON.stringify({ etag: `cso-${new URL(xhr.url).searchParams.get('partNumber')}` }) }
+  }
+  const startedAt = Date.now()
   assert.equal((await uploadRomMultipart(file, 'roms/psp/demo.cso')).size, file.size)
+  const elapsedMs = Date.now() - startedAt
   assert.equal(starts, 2, '明确可重试的 503 应只重试创建会话一次')
   assert.equal(completes, 1, '成功创建后只合并一次')
+  assert.equal(partAttempts, 5, '首个分片的 503 应按原片重试一次，其余分片只发一次')
+  assert.ok(elapsedMs >= 4_900, `创建与分片都要至少等各自 Retry-After（实际 ${elapsedMs}ms）`)
 }
-console.log('✅ PSP CSO 创建分片会话遇到临时 503 会退避重试并完成上传')
+console.log('✅ PSP CSO 创建与分片重试遵守 Retry-After，避免过早再次压到 R2')
 
 // 头 / 中 / 尾样本相同、但已上传分片内部内容不同的镜像也不能复用旧 ETag。
 const bytes = new Uint8Array(25 * 1024 * 1024)

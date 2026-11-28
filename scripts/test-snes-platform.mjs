@@ -12,6 +12,12 @@ import { emulatorJsCoreDataFile, emulatorJsCoreForGame } from '../src/emulator/p
 import { conventionalKeys, defaultKeyFor, slugFromKey } from '../src/services/roms.ts'
 import { platformMap as testPlatformMap } from '@/data/platforms'
 import { ALLOWED_ROM_EXT } from '../shared/game-submission.js'
+import { setLangForRender } from '../src/services/lang.ts'
+import { loadLocale } from '../src/locales/index.ts'
+
+// detectRom 的错误文案由 getT() 读取；独立 Node 回归需要先准备基准语言包。
+await loadLocale('zh-Hans')
+setLangForRender('zh-Hans')
 
 const encoder = new TextEncoder()
 const fakeFile = (name, bytes) => ({

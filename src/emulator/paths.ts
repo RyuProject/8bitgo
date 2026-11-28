@@ -458,10 +458,13 @@ export const PPSSPP_PATH: string = asDir(import.meta.env.VITE_PPSSPP_PATH)
   2026-11-15 v21：QQ Browser 固定为 480×272 稳定档，运行时崩溃时先等待 IDBFS 冲刷存档（最多 1.5 秒）。
   2026-11-15 v22：移动/弱网/低配设备使用 480×272，普通设备 640×360，明确高配桌面设备最高 720×408。
   2026-11-17 v23：PSP 远程盘 Range 请求在当前线路断流时依次切换已验证的备用 ROM 域名。
+  2026-11-28 v29：无测速 API 时先关闭投机预读，真实吞吐低于 1 Mbps 后仅保留一个滚动块；首个实测前 Range 至少留 90 秒，避免 pthread 的虚高 4G 估值反复截断弱网首块。
+  2026-11-28 v30：移动浏览器明确打开 PPSSPP 触控键、关闭闲置自动隐藏并设置竖屏布局；手机开局最多一条预读、慢速实测后保持单路，首块与低速分片至少允许 120 秒。
+  2026-11-28 v33：Chromium 的 DedicatedWorker 没有 SharedWorker 构造器，而且 BroadcastChannel 不能传 pthread 的 SharedArrayBuffer；页面 Broker 通过 Emscripten load 消息给每个 pthread 分发独立 MessagePort，合并同一 Range。
 */
-export const PPSSPP_RUNTIME_GENERATION = 'v26'
-/** 大核心在新桥代次间复用，避免只改校验逻辑就让玩家重下近 38MB。 */
-export const PPSSPP_CORE_ASSET_GENERATION = 'v25'
+export const PPSSPP_RUNTIME_GENERATION = 'v33'
+/** PPSSPP 核心胶水、Wasm、data 与桥同代原子发布，防止弱网重试时混用不同读盘实现。 */
+export const PPSSPP_CORE_ASSET_GENERATION = 'v33'
 export const PPSSPP_RUNTIME_PATH: string = PPSSPP_PATH
   ? asDir(`${PPSSPP_PATH}${PPSSPP_RUNTIME_GENERATION}`)
   : ''
@@ -485,7 +488,7 @@ export const PPSSPP_FRAME_REVISION = '4'
 */
 const ppssppEdgeBase = (): string => (PPSSPP_CORE_ASSET_PATH ? runtimeBase('ppsspp', PPSSPP_CORE_ASSET_PATH) : '')
 export const ppssppUsingEdge = (): boolean => Boolean(PPSSPP_CORE_ASSET_PATH) && ppssppEdgeBase() !== PPSSPP_CORE_ASSET_PATH
-/** PSP 运行时里的文件地址；只有 wasm / data 会给大陆访客换成加速入口，和桥的判断一致 */
+/** PSP 核心资源地址；只有 wasm / data 会给大陆访客换成加速入口，和桥的判断一致 */
 export const ppssppAsset = (name: string): string =>
   (name === 'PPSSPPSDL.wasm' || name === 'PPSSPPSDL.data') && ppssppUsingEdge()
     ? `${ppssppEdgeBase()}${name}`

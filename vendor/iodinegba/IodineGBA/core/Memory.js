@@ -3728,7 +3728,8 @@ GameBoyAdvanceMemory.prototype.readIO32 = function (address) {
         //4000110h through 400011Fh - NOT USED - GLITCHED
         //4000120h - Serial Data A (R/W)
         //4000122h - Serial Data B (R/W)
-        case 0x4000110:
+        // 上游误把 32 位串口读取映射到未使用区；CPU 从 0x04000120 读取时会永远得到 0。
+        case 0x4000120:
             this.IOCore.updateSerialClocking();
             data = this.serial.readSIODATA_A0() |
             (this.serial.readSIODATA_A1() << 8) |

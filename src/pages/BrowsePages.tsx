@@ -13,7 +13,7 @@ import { useT, fmt } from '@/services/i18n'
 import { useLang } from '@/services/lang'
 import { gameDescription, gameTitle, genreDesc, genreLabel } from '@/services/i18nData'
 
-import { romUrlForKey } from '@/services/roms'
+import { coverImageUrl, romUrlForKey } from '@/services/roms'
 import { PlatformCard } from '@/components/game/PlatformCard'
 import { SkeletonBlock } from '@/components/ui/PageSkeleton'
 import { Button } from '@/components/ui/Button'
@@ -277,7 +277,9 @@ export function DevelopersPage() {
             // 两者存的都是对象 key（logos/xxx.png、covers/xxx.webp），直接塞进 src 会
             // 404 裂图，必须先拼成公开地址 —— 跟 GameCover 的做法保持一致。
             const image = d.logo || d.topGame?.cover || ''
-            const cover = image && !brokenCover[d.name] ? romUrlForKey(image) : ''
+            const cover = image && !brokenCover[d.name]
+              ? coverImageUrl(romUrlForKey(image), d.logo ? 96 : 160)
+              : ''
             // 后台写了简介就顶掉「平台 · 代表作」那行：管理员特地写的一句话，
             // 比一个游戏名更值得占这个位置。
             const desc = gameDescription(d, lang)
@@ -309,7 +311,14 @@ export function DevelopersPage() {
                   height={64}
                   // 图挂了（key 写错、文件被删）就记下来，下一帧换成图标占位；
                   // 不处理的话浏览器会画一整页默认裂图。
-                  onError={() => setBrokenCover((prev) => (prev[d.name] ? prev : { ...prev, [d.name]: true }))}
+                  onError={(event) => {
+                    const original = romUrlForKey(image)
+                    if (original && event.currentTarget.src !== original) {
+                      event.currentTarget.src = original
+                      return
+                    }
+                    setBrokenCover((prev) => (prev[d.name] ? prev : { ...prev, [d.name]: true }))
+                  }}
                   className="h-16 w-16 shrink-0 rounded-lg bg-brand-soft object-cover"
                 />
               ) : (

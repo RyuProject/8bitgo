@@ -602,6 +602,88 @@ console.log('\n── ROM 分片遇到浏览器缓存读取故障后绕过坏缓
   ok(requests[1]?.cache === 'reload', '⭐ 重试绕过可能损坏的 HTTP 206 磁盘缓存')
 }
 
+console.log('\n── 错误的 Content-Range 不会赢线路竞速或留下未读响应 ──')
+{
+  const primary = 'https://bad-range.example/roms/demo.zip?romv=range-check-v1'
+  const mirror = 'https://good-range.example/roms/demo.zip?romv=range-check-v1'
+  const requests = []
+  let invalidBodyCancelled = 0
+  const fetchImpl = async (url) => {
+    requests.push(url)
+    if (url === primary) {
+      const body = new ReadableStream({
+        start(controller) { controller.enqueue(new Uint8Array([9, 9, 9])) },
+        cancel() { invalidBodyCancelled += 1 },
+      })
+      // 返回合法状态码，但少了一字节；这份响应不能被当作正确的首片。
+      return new Response(body, {
+        status: 206,
+        headers: { 'Content-Range': 'bytes 0-2/4', 'Content-Length': '3' },
+      })
+    }
+    return new Response(new Uint8Array([1, 2, 3, 4]), {
+      status: 206,
+      headers: { 'Content-Range': 'bytes 0-3/4', 'Content-Length': '4' },
+    })
+  }
+  const blob = await fetchBlobWithProgress(primary, {
+    chunkBytes: 4,
+    retries: 0,
+    fetchImpl,
+    routeHealth: true,
+    alternateUrls: [mirror],
+    routeHedgeMs: 0,
+  })
+  assert.deepEqual([...new Uint8Array(await blob.arrayBuffer())], [1, 2, 3, 4])
+  assert.ok(requests.includes(mirror), 'Content-Range 错误时应立刻尝试同对象备用线路')
+  assert.equal(invalidBodyCancelled, 1, '无效 Range 正文要立即取消，不能继续白下')
+  ok(true, '⭐ 错误的 206 在响应头竞速阶段被丢弃，正确备用线路直接接管')
+}
+
+console.log('\n── 备用测速的坏响应正文会立即取消 ──')
+{
+  const primary = 'https://slow-primary.example/roms/demo.zip?romv=alternate-check-v1'
+  const mirror = 'https://bad-mirror.example/roms/demo.zip?romv=alternate-check-v1'
+  const total = 512 * 1024
+  let invalidProbeBodyCancelled = 0
+  const fetchImpl = async (url) => {
+    if (url === mirror) {
+      const body = new ReadableStream({
+        start(controller) { controller.enqueue(new Uint8Array(64 * 1024)) },
+        cancel() { invalidProbeBodyCancelled += 1 },
+      })
+      // 备用测速只需要读 64 KiB，但 Content-Range 声称的范围和首片请求不符。
+      return new Response(body, {
+        status: 206,
+        headers: { 'Content-Range': `bytes 0-${64 * 1024 - 1}/${total}`, 'Content-Length': String(64 * 1024) },
+      })
+    }
+    const body = new ReadableStream({
+      start(controller) {
+        // 先让首片连续无字节超过测速门槛，再给足正确 ROM，确定走到备用探测分支。
+        setTimeout(() => {
+          controller.enqueue(new Uint8Array(total))
+          controller.close()
+        }, 2_000)
+      },
+    })
+    return new Response(body, {
+      status: 206,
+      headers: { 'Content-Range': `bytes 0-${total - 1}/${total}`, 'Content-Length': String(total) },
+    })
+  }
+  const blob = await fetchBlobWithProgress(primary, {
+    chunkBytes: total,
+    retries: 0,
+    fetchImpl,
+    alternateUrls: [mirror],
+    routeHedgeMs: 10_000,
+  })
+  assert.equal(blob.size, total)
+  assert.ok(invalidProbeBodyCancelled >= 1, '备用线路的错误正文要在校验失败后立即取消')
+  ok(true, `⭐ 错误备用响应已取消（${invalidProbeBodyCancelled} 次），慢主线继续完成下载`)
+}
+
 console.log('\n── ROM 分片退避等待会释放取消监听 ──')
 {
   const controller = new AbortController()

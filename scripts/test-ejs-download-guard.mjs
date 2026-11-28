@@ -26,7 +26,7 @@ const prelude = engine.slice(0, cut)
 assert.match(prelude, /class s\{constructor\(t=null,e=null\)\{this\.storageCache=t,this\.EJS=e\}/, '下载器类名变了，更新本测试')
 const coreContentManifest = computeCoreContentManifest()
 
-function makeContext({ fetchImpl, indexedDB, localStorage, XMLHttpRequest, sessionStorage, navigator = {}, performanceImpl = performance }) {
+function makeContext({ fetchImpl, indexedDB, localStorage, XMLHttpRequest, sessionStorage, navigator = {}, performanceImpl = performance, Uint8ArrayImpl = Uint8Array }) {
   const realSetTimeout = setTimeout
   const visibilityListeners = new Set()
   const document = {
@@ -43,7 +43,7 @@ function makeContext({ fetchImpl, indexedDB, localStorage, XMLHttpRequest, sessi
     AbortController,
     Blob,
     Response,
-    Uint8Array,
+    Uint8Array: Uint8ArrayImpl,
     ArrayBuffer,
     TextEncoder,
     TextDecoder,
@@ -64,6 +64,50 @@ function makeContext({ fetchImpl, indexedDB, localStorage, XMLHttpRequest, sessi
   context.globalThis = context
   vm.runInNewContext(`${prelude};globalThis.__classes={Storage:e,Downloader:s,Cache:o}`, context)
   return context
+}
+
+{
+  // 核心清单给出精确字节数后，下载器在首个流块到达时分配最终缓冲，避免下载完成后再复制整份核心。
+  const asset = 'cores/fbneo-wasm.data'
+  const record = coreContentManifest[asset]
+  const bytes = readFileSync(new URL(`../public/emulatorjs/${asset}`, import.meta.url))
+  const url = `https://8bitgo.test/emulatorjs/${asset}?v=${record.version}`
+  assert.equal(record.bytes, bytes.byteLength, '测试清单长度必须对应仓库里的真实核心')
+  let chunksPulled = 0
+  let streamClosed = false
+  const targetAllocationsAfterChunks = []
+  class TrackingUint8Array extends Uint8Array {
+    constructor(value, ...rest) {
+      super(value, ...rest)
+      if (typeof value === 'number' && value === bytes.byteLength) targetAllocationsAfterChunks.push(chunksPulled)
+    }
+  }
+  const fetchImpl = async (requestUrl) => {
+    let offset = 0
+    const body = new ReadableStream({
+      pull(controller) {
+        if (offset >= bytes.byteLength) {
+          streamClosed = true
+          controller.close()
+          return
+        }
+        const end = Math.min(bytes.byteLength, offset + 256 * 1024)
+        controller.enqueue(bytes.subarray(offset, end))
+        offset = end
+        chunksPulled++
+      },
+    }, { highWaterMark: 0 })
+    const response = new Response(body, { status: 200, headers: { 'Content-Length': String(bytes.byteLength) } })
+    Object.defineProperty(response, 'url', { value: requestUrl })
+    return response
+  }
+  const { __classes } = makeContext({ fetchImpl, indexedDB: undefined, Uint8ArrayImpl: TrackingUint8Array })
+  const downloader = new __classes.Downloader(null, null)
+  const item = await downloader.downloadFile(url, 'Core', 'GET', {}, null, null, null, 30000, 'arraybuffer')
+  assert.equal(Buffer.from(item.files[0].bytes).compare(bytes), 0, '流式直写后的核心字节必须与真实核心完全相同')
+  assert.equal(streamClosed, true, '下载器必须读到完整响应流')
+  assert.ok(chunksPulled > 1, '夹具应覆盖多个网络块')
+  assert.deepEqual(targetAllocationsAfterChunks, [1], '只分配一份最终缓冲，并在首块后、整份响应到手前分配')
 }
 
 const stalledBody = (bytes) => new ReadableStream({

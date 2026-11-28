@@ -14,7 +14,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpat
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
-import { installPspRangeReadAhead } from './helpers/ppsspp-runtime-patch.mjs'
+import { installPspRangeBrokerPorts, installPspRangeReadAhead } from './helpers/ppsspp-runtime-patch.mjs'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const VERSION = '0dbfaca'
@@ -345,6 +345,7 @@ try {
     runtimeScript,
     readFileSync(RANGE_READ_AHEAD_SOURCE, 'utf8'),
   )
+  runtimeScript = installPspRangeBrokerPorts(runtimeScript)
   writeFileSync(runtimeScriptPath, runtimeScript)
 } catch (error) {
   fail(`无法接入 PSP 顺序预读：${error instanceof Error ? error.message : String(error)}`)

@@ -19,7 +19,13 @@ import { matchLocalArcadeHack } from '../src/emulator/arcadeHack.ts'
 import { REQUIRED_SELF_BUILT_CORES } from '../src/config/emulators.ts'
 import { readdir } from 'node:fs/promises'
 import { EJS_WEBGL2_DEFAULT_CORES, emulatorJsCoreDataFile } from '../src/emulator/paths.ts'
-import { ejsCachedUrls, observeEjsCoreWarmEvent, warmEmulatorJsStart } from '../src/emulator/ejsStartWarm.ts'
+import {
+  ejsCachedUrls,
+  emulatorJsCoreDataKey,
+  observeEjsCoreLoadEvent,
+  observeEjsCoreWarmEvent,
+  warmEmulatorJsStart,
+} from '../src/emulator/ejsStartWarm.ts'
 import { dipNameOf } from '../src/emulator/dipPlan.ts'
 import { matchRomset } from '../src/lib/arcadeRomset.ts'
 import { canonicalMameRomset } from '../src/emulator/mameRomset.ts'
@@ -294,10 +300,11 @@ await check('预热的核心文件就是引擎真正下载的那个变体（lega
 
 /** 只实现 ejsCachedUrls 用到的那点 IndexedDB：open / onupgradeneeded / index('url').count */
 function fakeIdb({ exists, urls = [], countMode = 'normal' }) {
-  const state = { aborted: false, created: false, closed: false }
+  const state = { aborted: false, created: false, closed: false, openCalls: 0 }
   return {
     state,
     open() {
+      state.openCalls++
       const request = { result: null, transaction: { abort: () => { state.aborted = true } } }
       setTimeout(() => {
         if (!exists) {
@@ -349,6 +356,23 @@ await check('开局预热：引擎缓存里已有的核心不再下载，库不�
   assert.deepEqual(warmed2, [core], '没有 IndexedDB 时照常预热')
 })
 
+await check('悬停与点击重叠时共享核心缓存查询，但不缓存已完成结果', async () => {
+  const core = '/emulatorjs/cores/fbneo-legacy-wasm.data?v=1'
+  const idb = fakeIdb({ exists: true, urls: [core] })
+  const [first, second] = await Promise.all([
+    ejsCachedUrls([core], idb),
+    ejsCachedUrls([core], idb),
+  ])
+  assert.equal(idb.state.openCalls, 1, '同一 IndexedDB 与 URL 的在途查询只打开一次')
+  assert.deepEqual([...first], [core])
+  assert.deepEqual([...second], [core])
+  first.clear()
+  assert.deepEqual([...second], [core], '并发调用方不能互相修改缓存命中结果')
+
+  await ejsCachedUrls([core], idb)
+  assert.equal(idb.state.openCalls, 2, '查询完成后不缓存命中，下一局重新读取最新 IndexedDB 状态')
+})
+
 await check('核心缓存命中时跳过解压器预热，冷核心仍与解压器并行预热', async () => {
   const core = '/emulatorjs/cores/fbneo-legacy-wasm.data?v=1'
   const extractor = '/emulatorjs/compression/extract7z.js?v=1'
@@ -389,6 +413,15 @@ await check('核心切换重试不会把不同核心的预热时间配成一段'
   assert.equal(result.metric, 'core_warm_start')
   state = result.observation
 
+  result = observeEjsCoreWarmEvent(state, 'attempt-1', 'mame2003', 'first-byte')
+  assert.equal(result.metric, undefined, '回退核心首字节不能接到初始核心的开始事件上')
+  result = observeEjsCoreWarmEvent(state, 'attempt-1', 'fbneo', 'first-byte')
+  assert.equal(result.metric, 'core_warm_first_byte', '首字节必须和同一核心的预热开始配对')
+  state = result.observation
+  result = observeEjsCoreWarmEvent(state, 'attempt-1', 'fbneo', 'first-byte')
+  assert.equal(result.metric, undefined, '同一核心首字节只计一次')
+  state = result.observation
+
   result = observeEjsCoreWarmEvent(state, 'attempt-1', 'mame2003', 'complete')
   assert.equal(result.metric, undefined, '回退核心完成不能接到初始核心的开始事件上')
   assert.equal(result.observation.coreKey, 'fbneo')
@@ -404,17 +437,93 @@ await check('核心切换重试不会把不同核心的预热时间配成一段'
   assert.equal(result.metric, 'core_cache_hit', '新开局仍可独立记录核心缓存命中')
 })
 
+await check('核心实际读取只记录自托管核心数据文件且不同核心不串段', () => {
+  assert.equal(
+    emulatorJsCoreDataKey('https://assets.8bitgo.com/emulatorjs/cores/fbneo-legacy-wasm.data?v=abc'),
+    'fbneo-legacy-wasm.data',
+  )
+  assert.equal(emulatorJsCoreDataKey('/emulatorjs/cores/%2e%2e%2fprivate.data'), null)
+  assert.equal(emulatorJsCoreDataKey('/emulatorjs/metadata/fbneo.json'), null)
+
+  let state = null
+  let result = observeEjsCoreLoadEvent(state, 'attempt-1', 'fbneo-legacy-wasm.data', 'start')
+  assert.equal(result.metric, 'core_load_start')
+  state = result.observation
+  result = observeEjsCoreLoadEvent(state, 'attempt-1', 'mame2003.data', 'first-byte')
+  assert.equal(result.metric, undefined, '换核下载的首字节不能配到旧核心开始上')
+  result = observeEjsCoreLoadEvent(state, 'attempt-1', 'fbneo-legacy-wasm.data', 'first-byte')
+  assert.equal(result.metric, 'core_load_first_byte')
+  state = result.observation
+  result = observeEjsCoreLoadEvent(state, 'attempt-1', 'fbneo-legacy-wasm.data', 'complete')
+  assert.equal(result.metric, 'core_load_complete')
+  state = result.observation
+  assert.equal(observeEjsCoreLoadEvent(state, 'attempt-1', 'fbneo-legacy-wasm.data', 'complete').metric, undefined)
+})
+
+await check('EmulatorJS 核心实际读取复用原 fetch 流，不复制或额外请求正文', () => {
+  const fetchAt = emulatorjsAdapter.indexOf('win.fetch = async function')
+  const fetchStart = emulatorjsAdapter.indexOf('let res = await origFetch.call(win, input as RequestInfo, init)', fetchAt)
+  const firstByte = emulatorjsAdapter.indexOf("ctx.onCoreLoadEvent?.('first-byte', coreDataKey)", fetchStart)
+  const complete = emulatorjsAdapter.indexOf("ctx.onCoreLoadEvent?.('complete', coreDataKey)", firstByte)
+  assert.ok(fetchAt >= 0 && fetchStart > fetchAt, '核心下载必须走现有 fetch 探针')
+  assert.ok(firstByte > fetchStart && complete > firstByte, '首字节与结束需在同一响应流中报告')
+  assert.match(emulatorjsAdapter.slice(fetchAt, complete), /pipeThrough\([\s\S]*TransformStream/,
+    '阶段观测必须复用已有直通流，不能 tee 或缓冲复制核心正文')
+})
+
 await check('核心预热事件携带仅供内存配对的核心标识', async () => {
-  const core = '/emulatorjs/cores/fbneo-wasm.data?v=1'
+  const coreKey = emulatorJsCoreDataFile('fbneo')
+  const core = `/emulatorjs/cores/${coreKey}?v=1`
+  assert.equal(emulatorJsCoreDataKey(core), coreKey, '预热预计文件名必须与实际 fetch 提取的标识同格式')
+  assert.match(emulatorjsAdapter, /coreKey: emulatorJsCoreDataFile\(warmCore\)/,
+    '播放器预热事件必须使用核心 data 文件名，不能只传核心短名')
   const events = []
   await warmEmulatorJsStart({ always: [], large: [core] }, {
     idb: undefined,
     coreDataUrl: core,
-    coreKey: 'fbneo',
+    coreKey,
     warm: () => Promise.resolve(true),
     onCoreWarmEvent: (event, key) => events.push([event, key]),
   })
-  assert.deepEqual(events, [['start', 'fbneo'], ['complete', 'fbneo']])
+  assert.deepEqual(events, [['start', coreKey], ['complete', coreKey]])
+})
+
+await check('核心首字节与完整核心下载分开计时，事件不携带响应正文', async () => {
+  const core = '/emulatorjs/cores/first-byte-probe-wasm.data?v=first-byte-test'
+  const events = []
+  const originalFetch = globalThis.fetch
+  let completeWarm
+  let timeout
+  const warmCompleted = new Promise((resolve) => { completeWarm = resolve })
+  globalThis.fetch = async () => new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(new Uint8Array([0x45, 0x4a, 0x53]))
+      controller.close()
+    },
+  }))
+  try {
+    await warmEmulatorJsStart({ always: [], large: [core] }, {
+      idb: undefined,
+      coreDataUrl: core,
+      coreKey: 'fbneo',
+      onCoreWarmEvent: (event, key) => {
+        events.push([event, key])
+        if (event === 'complete') completeWarm()
+      },
+    })
+    await Promise.race([
+      warmCompleted,
+      new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('核心预热事件未完成')), 1_000) }),
+    ])
+  } finally {
+    clearTimeout(timeout)
+    globalThis.fetch = originalFetch
+  }
+  assert.deepEqual(events, [
+    ['start', 'fbneo'],
+    ['first-byte', 'fbneo'],
+    ['complete', 'fbneo'],
+  ])
 })
 
 await check('BIOS 线路探测与核心预热、ROM 首个请求并行，且平台 BIOS 判定只算一次', async () => {

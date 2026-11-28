@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type RefObject } from 'react'
 import { Link } from 'react-router-dom'
 import type { Collection, CoverGame } from '@/types'
 import { cx } from '@/lib/format'
-import { romUrlForKey } from '@/services/roms'
+import { coverImageUrl, romUrlForKey } from '@/services/roms'
 import { GameCover } from './GameCover'
 import { useT, fmt } from '@/services/i18n'
 import { usePrefersReducedMotion } from '@/lib/motion'
@@ -302,7 +302,8 @@ function useCoverRotation(pool: CoverGame[], rootRef: RefObject<HTMLDivElement |
             return copy
           })
         }
-        const url = game.cover ? romUrlForKey(game.cover) : ''
+        const originalUrl = game.cover ? romUrlForKey(game.cover) : ''
+        const url = originalUrl ? coverImageUrl(originalUrl, 240) : ''
         if (url) {
           // 先把字节**和解码**都做完再换：Tile 那边还会再等一次 load+decode 兜底（见 Tile 注释），
           // 这里先做完，那一步就几乎是瞬时的
@@ -311,8 +312,10 @@ function useCoverRotation(pool: CoverGame[], rootRef: RefObject<HTMLDivElement |
             if (typeof img.decode === 'function') img.decode().then(swap, swap)
             else swap()
           }
-          // 加载失败就跳过这一拍（GameCover 自己会画程序化封面，但那是兜底，不值得为它换图）
-          img.onerror = () => {}
+          // 变换失败时退回原图；两条都失败才跳过，避免 CDN 暂时故障卡住整张合集轮播。
+          img.onerror = () => {
+            if (originalUrl && img.src !== originalUrl) img.src = originalUrl
+          }
           img.src = url
         } else {
           // 没有真封面的游戏：程序化封面不用加载，直接换

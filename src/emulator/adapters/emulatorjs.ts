@@ -76,7 +76,7 @@ import { chdCompressors, psxCoreForPreparedName, psxCoreForTransfer, PSX_CHD_AUD
 import { canStreamPsxChd, preparePsxRangeDisc, preparePsxRangePlaylist, type PsxRangeMedia, type PsxRangeFs } from '../psxRangeDisc'
 import { isPsxM3uUrl } from '../psxM3u'
 import { MAME_CHD_MAX_BYTES, mameChdCacheKey } from '../mameChdWarm'
-import { warmEmulatorJsStart } from '../ejsStartWarm'
+import { emulatorJsCoreDataKey, warmEmulatorJsStart } from '../ejsStartWarm'
 import { usesBuiltInGbaHleBios } from '../gbaFallback'
 import { writeFsInjections, type FsInjection } from '../fsInjection'
 import { arcadeCoreForRomData, isFbneoCore, supportsFbneoRomData } from '../arcadeCore'
@@ -1732,6 +1732,7 @@ function installNetTap(
     live: () => boolean
     onProgress?: (p: LoadProgress) => void
     onRomLoadStart?: MountOptions['onRomLoadStart']
+    onCoreLoadEvent?: MountOptions['onCoreLoadEvent']
     /** 有任何网络动静就拍一下，卡死检测靠它判断「引擎还有没有在动」 */
     onBeat: () => void
     /** 开不了局的文件下载失败了（HTTP 4xx / 5xx） */
@@ -1796,6 +1797,10 @@ function installNetTap(
       const url =
         typeof input === 'string' ? input : input instanceof URL ? input.href : ((input as Request)?.url ?? String(input))
       const phase = phaseOf(url)
+      const coreDataKey = emulatorJsCoreDataKey(url)
+      if (coreDataKey && ctx.live()) {
+        try { ctx.onCoreLoadEvent?.('start', coreDataKey) } catch { /* 观测回调不能中断核心下载 */ }
+      }
       if (phase === 'rom' && ctx.live()) ctx.onRomLoadStart?.()
       let res = await origFetch.call(win, input as RequestInfo, init)
       if (!ctx.live() || !url) return res
@@ -1834,6 +1839,7 @@ function installNetTap(
        */
       let total: number | undefined = len > 0 ? len : undefined
       let loaded = 0
+      let coreFirstByteReported = false
       try {
         const counting = res.body.pipeThrough(
           new W.TransformStream!<Uint8Array, Uint8Array>({
@@ -1842,13 +1848,22 @@ function installNetTap(
               if (total !== undefined && loaded > total) total = undefined
               if (ctx.live()) {
                 ctx.onBeat()
+                if (coreDataKey && !coreFirstByteReported && chunk.byteLength > 0) {
+                  coreFirstByteReported = true
+                  try { ctx.onCoreLoadEvent?.('first-byte', coreDataKey) } catch { /* 观测回调不能中断核心下载 */ }
+                }
                 emit({ phase, loaded, total, ratio: total ? Math.min(loaded / total, 1) : undefined })
               }
               controller.enqueue(chunk)
             },
             flush() {
               // 下完这一趟就把条推满，别停在 97% 上等解压
-              if (loaded > 0 && ctx.live()) emit({ phase, loaded, total: loaded, ratio: 1 }, true)
+              if (loaded > 0 && ctx.live()) {
+                if (coreDataKey) {
+                  try { ctx.onCoreLoadEvent?.('complete', coreDataKey) } catch { /* 观测回调不能中断核心下载 */ }
+                }
+                emit({ phase, loaded, total: loaded, ratio: 1 }, true)
+              }
             },
           }),
         )
@@ -5242,7 +5257,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         }, {
           assumeUncached,
           coreDataUrl: warmCoreDataUrl,
-          coreKey: warmCore,
+          // 和实际 fetch 事件用同一文件名作键，才能区分“预热了这个核心”和“碰巧是同平台”。
+          coreKey: emulatorJsCoreDataFile(warmCore),
           onCoreWarmEvent: options.onCoreWarmEvent,
         })
         // BIOS 线路确认后再检查它自己的引擎缓存，避免探测结果反过来拖住 ROM 和核心的首个请求。
@@ -6290,6 +6306,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           live: () => !destroyed && !started,
           onProgress: options.onProgress,
           onRomLoadStart: options.onRomLoadStart,
+          onCoreLoadEvent: options.onCoreLoadEvent,
           onBeat: beat,
           onFailed: (status, url, phase, detail) => failLoad(
             phase === 'engine'

@@ -48,6 +48,7 @@ assert.equal(romUrlForKey(externalCover, 'https://assets.8bitgo.com'), externalC
 const { ROM_LANGS, normalizeRomLanguageCode, romLanguageLabel } = await import(fileURLToPath(new URL('../src/config/languages.ts', import.meta.url)))
 const { romCacheKey } = await import(fileURLToPath(new URL('../src/emulator/romCache.ts', import.meta.url)))
 const { chooseFasterRomRoute, chooseRomHost, clearRomHostChoice, clearRomRouteSpeedCache, ROM_ROUTE_PROBE_PATH } = await import(fileURLToPath(new URL('../src/services/romRoute.ts', import.meta.url)))
+const { recordRomRouteTransfer, resetRomRouteHealth } = await import(fileURLToPath(new URL('../src/services/romRouteHealth.ts', import.meta.url)))
 const { isolatedEmbedFor } = await import(fileURLToPath(new URL('../shared/isolated-embeds.js', import.meta.url)))
 const { gameRowToApi, dosExecutableOf, dosStartupCommandsOf, relationsInPatch, romRelationRows } = await import(fileURLToPath(new URL('../server/src/mappers.js', import.meta.url)))
 // ts-loader 为了让 ROM 探测测试保持轻量，会把平台表换成空桩；补齐流式光盘真正用到的格式。
@@ -189,6 +190,23 @@ assert.equal(isolatedEmbedFor('diablo'), undefined, 'Diablo 不需要 COOP/COEP�
     '省流量模式不应为了测速额外下载两个样本',
   )
   assert.equal(routeCalls, 0)
+}
+
+/* ---------- 同源主/备用文件的近期真实吞吐可复用，不重下测速样本 ---------- */
+{
+  resetRomRouteHealth()
+  clearRomRouteSpeedCache()
+  recordRomRouteTransfer('https://primary-learned.example.com/roms/game.zip', 8 * 1024 * 1024, 1000)
+  recordRomRouteTransfer('https://backup-learned.example.com/roms/game.zip', 32 * 1024 * 1024, 1000)
+  let calls = 0
+  const chosen = await chooseFasterRomRoute(
+    { url: 'https://primary-learned.example.com/roms/game.zip', size: 64 * 1024 * 1024 },
+    { url: 'https://backup-learned.example.com/roms/game.zip', size: 64 * 1024 * 1024 },
+    { fetchImpl: async () => { calls++; throw new Error('近期线路样本足够时不应重复测速') }, cacheResults: false },
+  )
+  assert.equal(chosen, 'backup', '近期真实下载证明备用域至少快 15% 时应复用该结论')
+  assert.equal(calls, 0, '复用线路记分板时不应额外下载两个 ROM 样本')
+  resetRomRouteHealth()
 }
 
 /* ---------- 小 ROM（NES）放开大小门槛后也测速 ---------- */

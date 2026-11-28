@@ -58,32 +58,86 @@ export function createRomIntegrityWork(file: Blob, key: string, signal?: AbortSi
   })
 
   const manifest = (async (): Promise<RomIntegrityManifestPayload> => {
-    const blocks: string[] = []
+    const blocks: string[] = new Array(count)
+    const concurrency = Math.min(4, count)
+    const windowSize = concurrency * 2
+    const finished = new Set<number>()
+    let nextIndex = 0
+    let firstUnfinished = 0
+    let failed = false
+    let failure: unknown
+    const windowWaiters = new Set<() => void>()
+    const wakeWindowWaiters = () => {
+      for (const resolve of windowWaiters) resolve()
+      windowWaiters.clear()
+    }
+    let rejectFailure!: (error: unknown) => void
+    const failureSignal = new Promise<never>((_, reject) => { rejectFailure = reject })
+    void failureSignal.catch(() => {})
+    const fail = (error: unknown) => {
+      if (failed) return
+      failed = true
+      failure = error
+      rejectFailure(error)
+      wakeWindowWaiters()
+    }
+    const onAbort = () => fail(new DOMException('已取消', 'AbortError'))
     try {
-      // 四块并行足以隐藏在上传耗时里；不把整份大文件读入 ArrayBuffer。
-      for (let first = 0; first < count; first += 4) {
-        if (signal?.aborted) throw new DOMException('已取消', 'AbortError')
-        const batch = await Promise.all(Array.from({ length: Math.min(4, count - first) }, async (_, offset) => {
-          const index = first + offset
-          const start = index * ROM_INTEGRITY_BLOCK_BYTES
-          return sha256(await file.slice(start, Math.min(file.size, start + ROM_INTEGRITY_BLOCK_BYTES)).arrayBuffer())
-        }))
-        if (signal?.aborted) throw new DOMException('已取消', 'AbortError')
-        batch.forEach((hash, offset) => {
-          const index = first + offset
-          settled[index] = 1
-          resolvers[index](hash)
-        })
-        blocks.push(...batch)
+      signal?.addEventListener('abort', onAbort, { once: true })
+      if (signal?.aborted) onAbort()
+      const worker = async () => {
+        while (!failed) {
+          if (signal?.aborted) {
+            fail(new DOMException('已取消', 'AbortError'))
+            return
+          }
+          // 维持四路并行，但最多领先最早未完成块两批；慢块后面空出的槽立即补新块。
+          if (nextIndex >= count) return
+          if (nextIndex >= firstUnfinished + windowSize) {
+            await new Promise<void>((resolve) => windowWaiters.add(() => resolve()))
+            continue
+          }
+          const index = nextIndex++
+          try {
+            const start = index * ROM_INTEGRITY_BLOCK_BYTES
+            const bytes = await file.slice(start, Math.min(file.size, start + ROM_INTEGRITY_BLOCK_BYTES)).arrayBuffer()
+            if (failed) return
+            const hash = await sha256(bytes)
+            if (failed) return
+            if (signal?.aborted) throw new DOMException('已取消', 'AbortError')
+            blocks[index] = hash
+            settled[index] = 1
+            resolvers[index](hash)
+            finished.add(index)
+            const previousFirstUnfinished = firstUnfinished
+            while (finished.delete(firstUnfinished)) firstUnfinished++
+            if (firstUnfinished !== previousFirstUnfinished) wakeWindowWaiters()
+          } catch (error) {
+            fail(error)
+            return
+          }
+        }
       }
+
+      await Promise.race([
+        Promise.all(Array.from({ length: concurrency }, worker)),
+        failureSignal,
+      ])
+      if (signal?.aborted) throw new DOMException('已取消', 'AbortError')
+      if (failed) throw failure
       return { v: 1, alg: 'sha256', key, size: file.size, blockBytes: ROM_INTEGRITY_BLOCK_BYTES, blocks }
     } catch (error) {
+      // Promise 池创建或后续组装自身也可能失败；先停掉仍在途 worker，不能只拒绝调用方后继续扫盘。
+      failed = true
+      wakeWindowWaiters()
       for (let index = 0; index < count; index++) {
         if (settled[index]) continue
         settled[index] = 1
         rejecters[index](error)
       }
       throw error
+    } finally {
+      signal?.removeEventListener('abort', onAbort)
     }
   })()
   // 保留原始 Promise 供调用方 await；旁路监听防止调用方先取消而未及时挂接拒绝处理器。

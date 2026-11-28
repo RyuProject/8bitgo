@@ -8,8 +8,8 @@ import { fileURLToPath } from 'node:url'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const VERSION = '0dbfaca'
-const RUNTIME_GENERATION = 'v26'
-const CORE_ASSET_GENERATION = 'v25'
+const RUNTIME_GENERATION = 'v33'
+const CORE_ASSET_GENERATION = 'v33'
 const useDist = process.argv.includes('--dist')
 const sourceOnly = process.argv.includes('--source-only')
 const publicDir = join(root, 'public', 'ppsspp', `v${VERSION}`, RUNTIME_GENERATION)
@@ -43,8 +43,9 @@ for (const marker of [
   '__ppssppRangeProgress',
   '__ppssppRangeError',
   'runtime-error',
-  "RUNTIME_SCRIPT = '../v25/PPSSPPSDL.js'",
-  "AUDIO_WORKLET_SCRIPT = '../v25/audio-worklet.js'",
+  "RUNTIME_SCRIPT = 'PPSSPPSDL.js'",
+  "AUDIO_WORKLET_SCRIPT = 'audio-worklet.js'",
+  "CORE_ASSET_PATH = './'",
   'getPreloadedPackage',
   'fetchCoreData',
   "controller.abort('核心资源本次下载失败，终止旧数据流')",
@@ -72,10 +73,10 @@ const indexHtml = need(join(runtimeDir, 'index.html')).toString('utf8')
 const hostScriptIntegrity = /<script src="host\.js" integrity="(sha256-[^"]+)" crossorigin="anonymous"><\/script>/.exec(indexHtml)?.[1]
 const expectedHostIntegrity = `sha256-${createHash('sha256').update(host).digest('base64')}`
 if (!hostScriptIntegrity || hostScriptIntegrity !== expectedHostIntegrity) {
-  fail('v26 index.html 的 host.js SRI 缺失或与实际脚本不匹配')
+  fail('v33 index.html 的 host.js SRI 缺失或与实际脚本不匹配')
 }
-if (!/PPSSPP_RUNTIME_GENERATION = 'v26'/.test(paths) || !/PPSSPP_CORE_ASSET_GENERATION = 'v25'/.test(paths) || !/PPSSPP_FRAME_REVISION = '4'/.test(paths) || !/ppssppFrameUrl/.test(adapter)) {
-  fail('PPSSPP iframe 没有使用 v26 校验壳并复用 v25 核心目录')
+if (!/PPSSPP_RUNTIME_GENERATION = 'v33'/.test(paths) || !/PPSSPP_CORE_ASSET_GENERATION = 'v33'/.test(paths) || !/PPSSPP_FRAME_REVISION = '4'/.test(paths) || !/ppssppFrameUrl/.test(adapter)) {
+  fail('PPSSPP iframe 没有使用 v33 MessagePort Broker Range 运行时')
 }
 if (!host.includes('__8bitgoPspRangeUrls') || !adapter.includes('alternateRomUrls')) {
   fail('PPSSPP 远程光盘没有在 Range 探测和核心读取阶段配置备用线路')
@@ -92,7 +93,7 @@ if (!host.includes('slowNetwork') || !host.includes('qq-compat') || !host.includ
   fail('PPSSPP 桥缺少慢网/移动/高配桌面分档、QQ 浏览器兼容档或运行时 worker 调用栈')
 }
 if (!host.includes('flushDeadline') || !host.includes('Promise.race([syncSaves(), flushDeadline])')) {
-  fail('v25 运行时错误没有先冲刷 PPSSPP 电池存档')
+  fail('PPSSPP 运行时错误没有先冲刷电池存档')
 }
 for (const marker of [
   '--appendconfig=${PERFORMANCE_CONFIG_PATH}',
@@ -119,13 +120,13 @@ if (!/FS\.stat\(path\)[\s\S]*?FS\.writeFile\(path, new Uint8Array\(\)\)/.test(ho
   fail('host.js 没有保留已有控制器配置并只在首次启动补空 controls.ini')
 }
 if (host.includes('核心没有 Range 遥测回调，使用首帧兼容判据')) {
-  fail('v25 仍会在没有真实读盘时把空画布误报成游戏已启动')
+  fail('PPSSPP 仍会在没有真实读盘时把空画布误报成游戏已启动')
 }
 if (!/gameBootConfirmed/.test(host) || !/BOOTED_LOG_PATTERN = \/\\bBooted\\s\+\.\+\\\.\\\.\\\.\//.test(host)) {
-  fail('v25 没有等待 PPSSPP 的 Booted 日志；Range 遥测跨线程丢失时会再次超时')
+  fail('PPSSPP 没有等待真实 Booted 日志；Range 遥测跨线程丢失时会再次超时')
 }
 if (!/print\(text\)[\s\S]*?observeCoreLog\(message\)[\s\S]*?printErr\(text\)[\s\S]*?observeCoreLog\(message\)/.test(host)) {
-  fail('v25 没有同时观察 stdout/stderr；不同 Emscripten 日志路由下会漏掉 Booted')
+  fail('PPSSPP 没有同时观察 stdout/stderr；不同 Emscripten 日志路由下会漏掉 Booted')
 }
 if (/FS\.mount\([^\n]*WORKERFS|FS\.createLazyFile\(/.test(host)) {
   fail('本地 PSP 镜像不能在主线程挂 WORKERFS 或用同步 XHR 的 LazyFile')
@@ -237,11 +238,24 @@ if (manifest.runtimeGeneration !== RUNTIME_GENERATION || manifest.coreAssetGener
 if (manifest.runtimeIntegrityProfile !== 'sha256-2miblocks-v1' || !manifest.integrityBlocks) {
   fail('runtime.json 没有声明 PPSSPP 核心 SHA-256 分块清单')
 }
+if (manifest.rangeReadAheadProfile !== 'adaptive-rolling-buffer-messageport-page-broker-demand-coalescing-v3' ||
+    manifest.rangeTransferTimeoutProfile !== 'conservative-mobile-range-timeout-v4' ||
+    manifest.mobileRangeReadAheadConcurrency !== 2 ||
+    manifest.mobileSlowRangeReadAheadConcurrency !== 1) {
+  fail('runtime.json 没有声明 v33 MessagePort 去重与 v30 手机并发/超时保护')
+}
+if (manifest.touchControlsProfile !== 'mobile-always-visible-portrait-layout-v1' ||
+    !host.includes("['mobile', 'qq-compat'].includes(profile.id)") ||
+    !host.includes('TouchButtonHideSeconds = 0') ||
+    !host.includes('[TouchControls.Portrait]') ||
+    !host.includes('DPadX = 0.20') || !host.includes('AnalogStickY = 0.60')) {
+  fail('v33 没有为移动浏览器保留常显触控或竖屏布局')
+}
 const coreScriptSRI = `sha256-${Buffer.from(manifest.artifacts['PPSSPPSDL.js']?.sha256 || '', 'hex').toString('base64')}`
 const hostSRI = `sha256-${createHash('sha256').update(need(join(runtimeDir, 'host.js'))).digest('base64')}`
 if (!host.includes(`script.integrity = '${coreScriptSRI}'`) ||
     !need(join(runtimeDir, 'index.html')).toString('utf8').includes(`integrity="${hostSRI}"`)) {
-  fail('PPSSPP 核心 JS / v26 host.js 缺少与清单一致的 SRI')
+    fail('PPSSPP 核心 JS / v33 host.js 缺少与清单一致的 SRI')
 }
 for (const name of ['PPSSPPSDL.wasm', 'PPSSPPSDL.data']) {
   const bytes = need(join(runtimeCoreDir, name))
@@ -296,12 +310,12 @@ if (loaderRevision === 4 && (manifest.chdBlockBytes !== 2097152 || manifest.prel
   fail('Range v4 清单没有声明实测 2 MiB CHD 分片或精简的 Web data 包')
 }
 if (
-  manifest.rangeReadAheadProfile !== 'adaptive-rolling-buffer-shared-worker-recovery-v8' ||
+  manifest.rangeReadAheadProfile !== 'adaptive-rolling-buffer-messageport-page-broker-demand-coalescing-v3' ||
   manifest.browserHttpCache !== 'romv-pinned-no-conditional-v1' ||
   manifest.rangeReadAheadBlocks !== 10 ||
   manifest.rangeReadAheadConcurrency !== 4 ||
   manifest.rangeReadAheadCacheBytes !== 25165824 ||
-  manifest.rangeTransferTimeoutProfile !== 'throughput-aware-progress-idle-v1' ||
+  manifest.rangeTransferTimeoutProfile !== 'conservative-mobile-range-timeout-v4' ||
   // v18/v20：正式同步读盘遇到 status 0 就地退避重试，超时后放宽时限（海外玩家开局后断流整局失败）
   manifest.rangeSyncRetryProfile !== 'status0-backoff-4x-45s-timeout-escalate-v2'
 ) {
@@ -366,19 +380,19 @@ if (installed) {
     !runtimeScript.includes('var mobileDevice=') || !runtimeScript.includes('var highEndDesktop=') ||
     !runtimeScript.includes('maxWidth=qqBrowser||mobileDevice||slow||low?480:highEndDesktop?720:640') ||
     !runtimeScript.includes('e.error?.stack')) {
-    fail('v25 核心缺少实际画布自适应上限、QQ/移动档或 pthread worker 错误栈采集')
+    fail('v33 核心缺少实际画布自适应上限、QQ/移动档或 pthread worker 错误栈采集')
   }
-  if (!runtimeScript.includes('__8bitgoPspRangeUrls')) fail('v25 核心没有在同步 Range 失败后切换备用 ROM 线路')
+    if (!runtimeScript.includes('__8bitgoPspRangeUrls')) fail('v33 核心没有在同步 Range 失败后切换备用 ROM 线路')
   // v128 不能跨 Wasm/JS 边界：GamepadEmuView 的两个 invoke_ 必须走 Wasm 跳板，否则打开 PPSSPP 屏幕触控即崩
   // （QQ Browser 21 现场 type incompatibility when transforming from/to JS）。详见 test-ppsspp-simd-trampoline.mjs。
   if (!runtimeScript.includes('function getWasmImports(){assignWasmImports();__8bitgoInstallSimdTrampolines(wasmImports);') ||
     !runtimeScript.includes('assignWasmExports(wasmExports);__8bitgoFillSimdTrampolineTable();') ||
     manifest.v128InvokeProfile !== 'wasm-call-indirect-trampoline-v1') {
-    fail('v25 核心没有给 v128 invoke 导入装 Wasm 跳板')
+    fail('v33 核心没有给 v128 invoke 导入装 Wasm 跳板')
   }
   const readAheadSource = need(join(root, 'vendor', 'ppsspp', 'range-read-ahead.js')).toString('utf8').trimEnd()
   if (!runtimeScript.includes(readAheadSource)) {
-    fail('v25 发布脚本与预读源码不一致；改源码后必须生成新实体运行时')
+    fail('v33 发布脚本与预读源码不一致；改源码后必须生成新实体运行时')
   }
   if (!runtimeScript.includes('if(fetched?.then){fetched=await fetched}else if(!fetched){fetched=await fetchPromise}')) {
     fail('PPSSPPSDL.js 没有等待异步核心资源重试 Promise，真机解包会报 bad input')
@@ -393,6 +407,13 @@ if (installed) {
     'cancelQueuedAndInflight()',
     'demandTakeovers',
     'sharedPrefetchWaits',
+    '__8bitgoRangeBrokerPort',
+    'prefetchWorkerIsShared',
+    'new Uint8Array(stateBuffer, 8).slice()',
+    'worker.__8bitgoRangeBrokerPort=rangeChannel.port2',
+    'loadMessage.rangeBrokerPort=rangeBrokerPort',
+    'status === -1',
+    'new Worker(workerUrl)',
     'otherKey !== key',
     // v16：romv 钉代次的 Range 不发条件头，浏览器 HTTP 缓存才接得住重复读取
     'const versionPinned = ',
@@ -401,7 +422,19 @@ if (installed) {
   ]) {
     if (!runtimeScript.includes(marker)) fail(`PPSSPPSDL.js 缺少 PSP 顺序预读标记 ${marker}`)
   }
-  for (const marker of ['postMessage({ type: \'ready\' })', 'Atomics.notify(state, 0)', 'response.status !== 206', 'offset !== bytes.byteLength', 'job.sendValidators !== false']) {
+  for (const marker of [
+    'postMessage({ type: \'ready\' })',
+    'Atomics.notify(client.state, 0)',
+    'response.status !== 206',
+    'offset !== task.bytes.byteLength',
+    'job.sendValidators !== false',
+    'jobsByKey',
+    'jobsById',
+    'task.clients.set(client.id, client)',
+    "data?.cmd === 'connect'",
+    'connect(port)',
+    'port.postMessage({ type: \'ready\' })',
+  ]) {
     if (!prefetchWorker.includes(marker)) fail(`range-prefetch-worker.js 缺少共享预读校验标记 ${marker}`)
   }
   if (!runtimeScript.includes('pthreadMainJs=_scriptName') || !runtimeScript.includes('new Worker(pthreadMainJs')) {
@@ -485,7 +518,7 @@ if (useDist) {
   for (const name of binaries) {
     const a = need(join(publicCoreDir, name))
     const b = need(join(runtimeCoreDir, name))
-    if (!a.equals(b)) fail(`dist/client 中的复用核心 ${name} 不是 public v25 里的当前版本`)
+      if (!a.equals(b)) fail(`dist/client 中的核心 ${name} 不是 public v33 里的当前版本`)
   }
 }
 

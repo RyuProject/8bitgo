@@ -11,6 +11,7 @@
  * 跑：npm run test:live-io
  */
 import { readFileSync, existsSync } from 'node:fs'
+import { createServer } from 'node:http'
 import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
@@ -39,13 +40,21 @@ if (SCENARIO) {
     out.ms = Date.now() - started
   } else {
     const { Server } = createRequire(join(root, 'server/package.json'))('socket.io')
-    const io = new Server(0, { serveClient: false })
+    const httpServer = createServer()
+    const io = new Server(httpServer, { serveClient: false })
+    await new Promise((resolve, reject) => {
+      httpServer.once('error', reject)
+      httpServer.listen(0, '127.0.0.1', resolve)
+    })
+    // 应用入口会在渲染前等待文案包；子进程测试直接调用 service，也要建立相同前置条件。
+    const { loadLocale } = await import('../src/locales/index.ts')
+    await loadLocale('zh-Hans')
     if (SCENARIO === 'connect') {
       io.of('/live').on('connection', (socket) => {
         out.serverSawAuth = typeof socket.handshake.auth === 'object'
       })
     }
-    const port = io.httpServer.address().port
+    const port = httpServer.address().port
     globalThis.__viteEnv = { VITE_API_URL: `http://127.0.0.1:${port}` }
     const { connectLive } = await import('../src/services/live.ts')
     const started = Date.now()

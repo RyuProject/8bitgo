@@ -71,7 +71,7 @@ function StartupBreakdown({ title, rows }: { title: string; rows: StartupGroup[]
   return (
     <Card title={title}>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[82rem] text-sm">
+        <table className="w-full min-w-[88rem] text-sm">
           <thead className="text-left text-xs text-muted">
             <tr>
               <th className="pb-2 font-medium">项目</th>
@@ -82,9 +82,13 @@ function StartupBreakdown({ title, rows }: { title: string; rows: StartupGroup[]
               <th className="pb-2 text-right font-medium text-live">&gt;20s</th>
               <th className="pb-2 text-right font-medium">可玩总时长</th>
               <th className="pb-2 text-right font-medium" title="点击开始到 download_complete 的耗时；非 HTML5 代表 ROM / 启动资源到手，HTML5 代表 iframe 文档加载">开始→资源完成</th>
-              <th className="pb-2 text-right font-medium" title="首次 ROM 进度到可确认的完整获取；缓存读取可能在首次进度出现前已完成，流式光盘不按整盘下载统计">ROM 获取</th>
+              <th className="pb-2 text-right font-medium" title="从缓存、文件或网络读取开始到 ROM 完整获取确认；包含缓存读取与 8BG 解包，不是纯网络耗时；流式光盘不按整盘下载统计">ROM 获取 / 准备</th>
+              <th className="pb-2 text-right font-medium" title="EmulatorJS 核心预热开始到响应首块字节；引擎 IndexedDB 命中单独计数">核心首字节</th>
               <th className="pb-2 text-right font-medium" title="EmulatorJS 核心预热开始到整份核心进入 HTTP 缓存；引擎 IndexedDB 命中单独计数">核心预热</th>
+              <th className="pb-2 text-right font-medium" title="模拟器实际请求核心数据文件到读完；可能命中浏览器 HTTP 缓存，不等于纯网络下载时间">核心实际读取</th>
+              <th className="pb-2 text-right font-medium" title="模拟器实际核心请求开始到首块数据交给引擎；可能命中浏览器 HTTP 缓存">核心读取首字节</th>
               <th className="pb-2 text-right font-medium" title="本次启动命中 EmulatorJS IndexedDB 核心缓存的次数">核心库命中</th>
+              <th className="pb-2 text-right font-medium" title="核心预热文件与模拟器实际请求文件相同 / 可配对的启动数；只统计新版本遥测">预热命中 / 对照</th>
               <th className="pb-2 text-right font-medium" title="download_complete 到 first_frame 的耗时">资源完成→首帧</th>
               <th className="pb-2 text-right font-medium" title="download_complete 到运行时 onReady 的耗时">资源完成→就绪</th>
               <th className="pb-2 text-right font-medium" title="first_frame 到 game_playable 的耗时">首帧→可玩</th>
@@ -107,15 +111,24 @@ function StartupBreakdown({ title, rows }: { title: string; rows: StartupGroup[]
                 <td className="py-2 text-right tabular-nums text-muted">{startupTime(row.avgPlayableMs)}</td>
                 <StartupPhaseCell ms={row.avgResourceMs} samples={row.resourceSamples} />
                 <StartupPhaseCell ms={row.avgRomLoadMs} samples={row.romLoadSamples} />
+                <StartupPhaseCell ms={row.avgCoreFirstByteMs} samples={row.coreFirstByteSamples} />
                 <StartupPhaseCell ms={row.avgCoreWarmMs} samples={row.coreWarmSamples} />
+                <StartupPhaseCell ms={row.avgCoreLoadMs} samples={row.coreLoadSamples} />
+                <StartupPhaseCell ms={row.avgCoreLoadFirstByteMs} samples={row.coreLoadFirstByteSamples} />
                 <td className="py-2 text-right tabular-nums" title="命中 EmulatorJS IndexedDB 核心缓存的启动次数">{row.coreCacheHits}</td>
+                <td
+                  className="py-2 text-right tabular-nums"
+                  title={`核心预热与实际加载文件不一致 ${row.coreWarmMismatches} 次；已有身份信息的配对样本 ${row.coreWarmMatchSamples} 个`}
+                >
+                  {Math.max(0, row.coreWarmMatchSamples - row.coreWarmMismatches)} / {row.coreWarmMatchSamples}
+                </td>
                 <StartupPhaseCell ms={row.avgResourceToFirstFrameMs} samples={row.resourceToFirstFrameSamples} />
                 <StartupPhaseCell ms={row.avgResourceToRuntimeReadyMs} samples={row.resourceToRuntimeReadySamples} />
                 <StartupPhaseCell ms={row.avgFirstFrameToPlayableMs} samples={row.firstFrameToPlayableSamples} />
               </tr>
             ))}
             {!rows.length && (
-              <tr><td colSpan={14} className="py-5 text-center text-sm text-muted">还没有启动数据</td></tr>
+              <tr><td colSpan={18} className="py-5 text-center text-sm text-muted">还没有启动数据</td></tr>
             )}
           </tbody>
         </table>
@@ -423,21 +436,36 @@ export function AdminOverview() {
             sub={`平均可玩 ${startupTime(startup?.summary.avgPlayableMs ?? null)}`}
           />
         </div>
-        <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3 xl:grid-cols-6">
+        <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3 xl:grid-cols-9">
           <Stat
             label="点击开始 → 资源完成"
             value={startupTime(startup?.summary.avgResourceMs ?? null)}
             sub={`${startup?.summary.resourceSamples ?? 0} 个有效样本；HTML5 以 iframe 文档加载为界`}
           />
           <Stat
-            label="ROM 获取"
+            label="ROM 获取 / 准备"
             value={startupTime(startup?.summary.avgRomLoadMs ?? null)}
-            sub={`${startup?.summary.romLoadSamples ?? 0} 个完整获取样本；缓存读耗时可能低估`}
+            sub={`${startup?.summary.romLoadSamples ?? 0} 个完整获取 / 准备样本；含缓存查询与读取，不代表纯网络速度`}
+          />
+          <Stat
+            label="核心首字节"
+            value={startupTime(startup?.summary.avgCoreFirstByteMs ?? null)}
+            sub={`${startup?.summary.coreFirstByteSamples ?? 0} 个预热首字节样本；与整份核心下载时间分开`}
           />
           <Stat
             label="EmulatorJS 核心预热"
             value={startupTime(startup?.summary.avgCoreWarmMs ?? null)}
-            sub={`${startup?.summary.coreWarmSamples ?? 0} 个预热样本；引擎库命中 ${startup?.summary.coreCacheHits ?? 0} 次`}
+            sub={`${startup?.summary.coreWarmSamples ?? 0} 个预热样本；引擎库命中 ${startup?.summary.coreCacheHits ?? 0} 次；错核 ${startup?.summary.coreWarmMismatches ?? 0} / ${startup?.summary.coreWarmMatchSamples ?? 0} 个可配对样本`}
+          />
+          <Stat
+            label="核心实际读取"
+            value={startupTime(startup?.summary.avgCoreLoadMs ?? null)}
+            sub={`${startup?.summary.coreLoadSamples ?? 0} 个实际读取样本；包含浏览器 HTTP 缓存`}
+          />
+          <Stat
+            label="核心读取首字节"
+            value={startupTime(startup?.summary.avgCoreLoadFirstByteMs ?? null)}
+            sub={`${startup?.summary.coreLoadFirstByteSamples ?? 0} 个实际请求首字节样本`}
           />
           <Stat
             label="资源完成 → 首帧"

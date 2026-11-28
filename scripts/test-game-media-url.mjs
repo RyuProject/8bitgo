@@ -22,6 +22,7 @@ assert.equal(
   coverSrcSet(`${base}/covers/kof%2097.webp`, base),
   `${base}/cdn-cgi/image/width=160,quality=75,format=auto,fit=scale-down/covers/kof%2097.webp 160w, ` +
     `${base}/cdn-cgi/image/width=240,quality=75,format=auto,fit=scale-down/covers/kof%2097.webp 240w, ` +
+    `${base}/cdn-cgi/image/width=320,quality=75,format=auto,fit=scale-down/covers/kof%2097.webp 320w, ` +
     `${base}/cdn-cgi/image/width=480,quality=75,format=auto,fit=scale-down/covers/kof%2097.webp 480w`,
 )
 assert.equal(coverSrcSet(`${base}/covers/kof.webp`, ''), '')
@@ -36,8 +37,9 @@ assert.equal(
   coverSrcSet(`${base}/covers/kof.webp`, base, 'auto', '(min-width: 1280px) 211px, (min-width: 1024px) 158px, 141px'),
   `${base}/cdn-cgi/image/width=160,quality=75,format=auto,fit=scale-down/covers/kof.webp 160w, ` +
     `${base}/cdn-cgi/image/width=240,quality=75,format=auto,fit=scale-down/covers/kof.webp 240w, ` +
+    `${base}/cdn-cgi/image/width=320,quality=75,format=auto,fit=scale-down/covers/kof.webp 320w, ` +
     `${base}/cdn-cgi/image/width=480,quality=75,format=auto,fit=scale-down/covers/kof.webp 480w`,
-  '媒体断点值不能混入图宽，卡片实际宽度决定生成的三个档位',
+  '媒体断点值不能混入图宽，卡片实际宽度与 4/3 密度候选决定生成档位',
 )
 assert.equal(coverPosterWidth('111px'), 240, '视频 poster 应按实际卡片尺寸生成并吸附到不低于目标的共享 2x 宽度')
 assert.equal(
@@ -49,8 +51,8 @@ assert.equal(
   coverSrcSet(`${base}/covers/kof.webp`, base, 'auto', '288px'),
   `${base}/cdn-cgi/image/width=240,quality=75,format=auto,fit=scale-down/covers/kof.webp 240w, ` +
     `${base}/cdn-cgi/image/width=320,quality=75,format=auto,fit=scale-down/covers/kof.webp 320w, ` +
-    `${base}/cdn-cgi/image/width=640,quality=75,format=auto,fit=scale-down/covers/kof.webp 640w`,
-  '首页最大宽卡的 2x 候选应落在 640px 共享档，不产生单独的 576px 变换',
+    `${base}/cdn-cgi/image/width=480,quality=75,format=auto,fit=scale-down/covers/kof.webp 480w`,
+  '首页最大宽卡的候选封顶在 480px，避免为低分辨率源图生成无收益的大档',
 )
 assert.equal(coverPosterWidth('auto, 100vw'), 480, '无法解析的布局提示应使用安全的卡片宽度回退')
 assert.equal(
@@ -73,6 +75,7 @@ assert.equal(
   coverSrcSet(`${cnBase}/covers/kof.webp`, cnBase, 'webp'),
   `${cnBase}/cdn-cgi/image/width=160,quality=75,format=webp,fit=scale-down/covers/kof.webp 160w, ` +
     `${cnBase}/cdn-cgi/image/width=240,quality=75,format=webp,fit=scale-down/covers/kof.webp 240w, ` +
+    `${cnBase}/cdn-cgi/image/width=320,quality=75,format=webp,fit=scale-down/covers/kof.webp 320w, ` +
     `${cnBase}/cdn-cgi/image/width=480,quality=75,format=webp,fit=scale-down/covers/kof.webp 480w`,
 )
 

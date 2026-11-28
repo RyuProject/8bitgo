@@ -66,6 +66,8 @@ const PART_STATE_SAVE_INTERVAL_MS = 1_000
 const PART_STATE_SAVE_MAX_DIRTY_PARTS = 4
 /** 控制请求只传少量 JSON；无进展超过一分钟通常是线路已断，不能让后台页永久转圈。 */
 export const WORKER_REQUEST_TIMEOUT_MS = 60_000
+/** Cloudflare 5xx 的最大 Retry-After；防止错误响应把后台上传无限期挂起。 */
+const MAX_RETRY_AFTER_MS = 120_000
 
 export interface PendingUpload {
   /** 最终对象 key */
@@ -152,12 +154,21 @@ class UploadHttpError extends Error {
   fatal: boolean
   code: string
   payload: Record<string, unknown> | null
-  constructor(message: string, status: number, fatal = false, code = '', payload: Record<string, unknown> | null = null) {
+  retryAfterMs?: number
+  constructor(
+    message: string,
+    status: number,
+    fatal = false,
+    code = '',
+    payload: Record<string, unknown> | null = null,
+    retryAfterMs?: number,
+  ) {
     super(message)
     this.status = status
     this.fatal = fatal
     this.code = code
     this.payload = payload
+    this.retryAfterMs = retryAfterMs
   }
 }
 
@@ -177,6 +188,23 @@ class MultipartUploadAborted extends Error {
 
 /** 这个 Worker 还没部署分片接口（老版本）。roms.ts 收到它会退回单发 PUT */
 export class MultipartUnsupportedError extends Error {}
+
+/** 可重试的传输 / 网关故障应收敛并发，避免同一故障窗口内继续并发重发大分片。 */
+function isUploadTransportFailureStatus(status: number): boolean {
+  return status === 0 || status === 408 || status === 429 ||
+    status === 502 || status === 503 || status === 504 ||
+    (status >= 520 && status <= 524)
+}
+
+/** 解析秒数或 HTTP 日期形式的 Retry-After；错误值不改变本地退避策略。 */
+function parseRetryAfterMs(value: string | null, now = Date.now()): number | undefined {
+  const header = value?.trim()
+  if (!header) return undefined
+  const seconds = /^\d+(?:\.\d+)?$/.test(header) ? Number(header) : NaN
+  const delayMs = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(header) - now
+  if (!Number.isFinite(delayMs) || delayMs < 0) return undefined
+  return Math.min(MAX_RETRY_AFTER_MS, Math.ceil(delayMs))
+}
 
 interface UploadWaiter {
   onAbort?: () => void
@@ -222,6 +250,9 @@ function waitForUploadSlot(
  */
 export class MultipartUploadGate {
   private active = 0
+  private peakActive = 0
+  private transferActive = 0
+  private peakTransferActive = 0
   private limit: number
   private readonly preferred: number
   private successStreak = 0
@@ -257,10 +288,25 @@ export class MultipartUploadGate {
   private acquire(signal?: AbortSignal): Promise<void> {
     if (signal?.aborted) return Promise.reject(new MultipartUploadAborted())
     if (this.active < this.limit) {
-      this.active++
+      this.activate()
       return Promise.resolve()
     }
-    return waitForUploadSlot(this.waiters, signal, () => { this.active++ })
+    return waitForUploadSlot(this.waiters, signal, () => this.activate())
+  }
+
+  private activate() {
+    this.active++
+    this.peakActive = Math.max(this.peakActive, this.active)
+  }
+
+  /** putPart 只在 XHR 真正发送时调用；本闸门名额可能仍在等共享多文件预算。 */
+  recordTransferActivity(active: boolean) {
+    if (active) {
+      this.transferActive++
+      this.peakTransferActive = Math.max(this.peakTransferActive, this.transferActive)
+    } else {
+      this.transferActive = Math.max(0, this.transferActive - 1)
+    }
   }
 
   private drain() {
@@ -270,8 +316,8 @@ export class MultipartUploadGate {
   private transportFailed(error: unknown) {
     if (typeof error !== 'object' || error === null || !('status' in error)) return false
     const status = Number(error.status)
-    // 429 / 网关 5xx 也说明当前并发压住了边缘或上游；继续维持四路只会让退避后的重试一起失败。
-    return status === 0 || status === 429 || status === 502 || status === 503 || status === 504
+    // HTTP 408 与 Cloudflare 520–524 也代表当前传输 / 边缘路径未能完成；收敛到单路后再恢复。
+    return isUploadTransportFailureStatus(status)
   }
 
   private calibrate(sampleBytes: number, elapsedMs: number, provisional: boolean, maxConcurrency = this.preferred) {
@@ -385,6 +431,9 @@ export class MultipartUploadGate {
   snapshot() {
     return {
       active: this.active,
+      peakActive: this.peakActive,
+      transferActive: this.transferActive,
+      peakTransferActive: this.peakTransferActive,
       limit: this.limit,
       waiting: this.waiters.length,
       successStreak: this.successStreak,
@@ -510,7 +559,7 @@ export class UploadTransferPool {
     } catch (error) {
       const status = typeof error === 'object' && error !== null && 'status' in error ? Number(error.status) : -1
       const oldWorkerFallback = requiresLegacyPartNumber(error)
-      if (!oldWorkerFallback && (status === 0 || status === 429 || status === 502 || status === 503 || status === 504)) {
+      if (!oldWorkerFallback && isUploadTransportFailureStatus(status)) {
         this.limit = 1
         this.successStreak = 0
       }
@@ -834,6 +883,7 @@ export async function askJson<T>(
         Boolean(data?.fatal),
         typeof data?.code === 'string' ? data.code : '',
         data && typeof data === 'object' ? data as Record<string, unknown> : null,
+        parseRetryAfterMs(res.headers.get('Retry-After')),
       )
     }
     // 地址填成了本站域名时会落到 SSR 兜底路由，回的是 200 + 一个 HTML 页面（roms.ts 里
@@ -938,6 +988,7 @@ function putPart(
   partNumberInHeader: boolean,
   onStart?: () => void,
   onUploadComplete?: () => void,
+  onTransferActivity?: (active: boolean) => void,
   signal?: AbortSignal,
 ): Promise<string> {
   const query = `?uploadId=${encodeURIComponent(state.uploadId)}`
@@ -963,6 +1014,7 @@ function putPart(
      */
     let lastAt = Date.now()
     let stalled = false
+    let transferActive = false
     const watchdog = window.setInterval(() => {
       if (Date.now() - lastAt > 45_000) {
         stalled = true
@@ -971,8 +1023,14 @@ function putPart(
       }
     }, 5_000)
     const abortFromSignal = () => xhr.abort()
+    const markTransferActivity = (active: boolean) => {
+      if (transferActive === active) return
+      transferActive = active
+      onTransferActivity?.(active)
+    }
     const done = () => {
       window.clearInterval(watchdog)
+      markTransferActivity(false)
       signal?.removeEventListener('abort', abortFromSignal)
     }
 
@@ -1039,14 +1097,24 @@ function putPart(
         reject(new MultipartUnsupportedError('传分片'))
         return
       }
-      reject(new UploadHttpError(data?.error || explainRomStatus(xhr.status, '传分片').message, xhr.status, Boolean(data?.fatal)))
+      reject(new UploadHttpError(
+        data?.error || explainRomStatus(xhr.status, '传分片').message,
+        xhr.status,
+        Boolean(data?.fatal),
+        '',
+        null,
+        parseRetryAfterMs(xhr.getResponseHeader?.('Retry-After') ?? null),
+      ))
     }
     // 兼容不派发 upload.loadstart 的旧 XHR；现代浏览器随后会用真实正文起点校正一次。
     onStart?.()
     try {
       signal?.addEventListener('abort', abortFromSignal, { once: true })
       if (signal?.aborted) abortFromSignal()
-      else xhr.send(blob)
+      else {
+        markTransferActivity(true)
+        xhr.send(blob)
+      }
     } catch (error) {
       done()
       reject(error instanceof Error ? error : new Error('无法开始上传分片'))
@@ -1090,14 +1158,19 @@ const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, 
 /** 可重试的错误就退避重试，其余立刻抛 */
 async function withRetry<T>(run: () => Promise<T>, attempts: number, shouldRetry: (error: unknown) => boolean = retryable, signal?: AbortSignal): Promise<T> {
   let last: unknown
+  let retryAfterMs = 0
   for (let i = 0; i < attempts; i++) {
     if (signal?.aborted) throw new MultipartUploadAborted()
-    if (i > 0) await sleep(600 * 2 ** (i - 1) + Math.random() * 400, signal)
+    if (i > 0) {
+      await sleep(Math.max(600 * 2 ** (i - 1) + Math.random() * 400, retryAfterMs), signal)
+      retryAfterMs = 0
+    }
     try {
       return await run()
     } catch (err) {
       last = err
       if (!shouldRetry(err)) throw err
+      retryAfterMs = err instanceof UploadHttpError ? err.retryAfterMs ?? 0 : 0
     }
   }
   throw last
@@ -1122,11 +1195,15 @@ async function putPartWithRetry(
   let last: unknown
   // 本片一旦发现头协议不可达，就让本片后续重试先走旧参数；会话级能力等成功响应确认后再更新。
   let forceLegacyForPart = false
+  let retryAfterMs = 0
   for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
     if (signal?.aborted) throw new MultipartUploadAborted()
     if (stopRequested()) throw new MultipartStoppedAfterSiblingFailure()
     // 连接级错误后不能在几百毫秒内把多条 PUT 一起塞回刚重建的 HTTP/2 会话。
-    if (attempt > 0) await sleep(Math.min(12_000, 1_500 * 2 ** (attempt - 1)) + Math.random() * 1_000, signal)
+    if (attempt > 0) {
+      await sleep(Math.max(Math.min(12_000, 1_500 * 2 ** (attempt - 1)) + Math.random() * 1_000, retryAfterMs), signal)
+      retryAfterMs = 0
+    }
     const useHeaderProtocol = state.partNumberInHeader === true && !forceLegacyForPart
     const beforeDrain = (error: unknown) => noteFatalError(error, useHeaderProtocol)
     try {
@@ -1140,7 +1217,8 @@ async function putPartWithRetry(
           return putPart(ctx, state, partNumber, blob, (bytes, serverWaitMs) => {
             reportProgress(bytes)
             onLoaded(bytes, serverWaitMs)
-          }, useHeaderProtocol, markStarted, markUploadComplete, signal)
+          }, useHeaderProtocol, markStarted, markUploadComplete,
+          (active) => gate.recordTransferActivity(active), signal)
         }, signal)
       }, blob.size, beforeDrain, signal)
     } catch (err) {
@@ -1160,7 +1238,8 @@ async function putPartWithRetry(
               return putPart(ctx, state, partNumber, blob, (bytes, serverWaitMs) => {
                 reportProgress(bytes)
                 onLoaded(bytes, serverWaitMs)
-              }, false, markStarted, markUploadComplete, signal)
+              }, false, markStarted, markUploadComplete,
+              (active) => gate.recordTransferActivity(active), signal)
             }, signal)
           }, blob.size, (error) => noteFatalError(error, false), signal)
         } catch (fallbackError) {
@@ -1173,6 +1252,7 @@ async function putPartWithRetry(
       // 重试要从 0 字节重新算这一片的进度，否则进度条会往前虚报
       onLoaded(0)
       if (!retryable(last)) throw last
+      retryAfterMs = last instanceof UploadHttpError ? last.retryAfterMs ?? 0 : 0
     }
   }
   throw last
@@ -1348,6 +1428,7 @@ export async function uploadRomMultipart(
       done: finished.size,
       resumed,
       concurrency: network.limit,
+      peakConcurrency: network.peakTransferActive,
       measuredMbps: network.calibrated ? network.measuredMbps : undefined,
       serverWaitMs: serverWaitSamples > 0
         ? Math.round((serverWaitTotalMs / serverWaitSamples) * 10) / 10
@@ -1448,6 +1529,8 @@ export async function uploadRomMultipart(
   if (signal?.aborted) failure ??= new MultipartUploadAborted()
   if (failure) {
     stopScheduledReport()
+    // 致命错误可能在第一次进度节流回调前结束并发分片；补发最终快照，避免匿名性能样本漏记真实峰值。
+    emitProgress()
     throw await explainFailure(failure, ctx, state, total, resumable)
   }
 
@@ -1490,6 +1573,7 @@ export async function uploadRomMultipart(
     done: total,
     resumed,
     concurrency: network.limit,
+    peakConcurrency: network.peakTransferActive,
     measuredMbps: network.calibrated ? network.measuredMbps : undefined,
     serverWaitMs: serverWaitSamples > 0
       ? Math.round((serverWaitTotalMs / serverWaitSamples) * 10) / 10
