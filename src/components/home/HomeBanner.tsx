@@ -139,7 +139,8 @@ function Banner({ className, games }: { className?: string; games?: Game[] }) {
    * 所以数据到货前先用写死的 slug 顶着（走 gameCache 按需取），首屏不会空着一块。
    * 热门一到就把参数换成空数组，兜底那几款不再花请求。
    */
-  const fallback = useGamesBySlugs(games?.length ? NO_SLUGS : HERO_FALLBACK)
+  // 小屏完全隐藏卡堆，缺少首页数据时也不要为不可见内容额外请求兜底游戏。
+  const fallback = useGamesBySlugs(games?.length || !heroStackVisible ? NO_SLUGS : HERO_FALLBACK)
   // 浏览器没有 WebAssembly 时只轮换能跑的平台（services/noWasm.ts）
   const noWasm = useNoWasmMode()
   const base = useMemo(
