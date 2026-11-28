@@ -2,6 +2,7 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import { watchPresence, clientIpFrom, isPrivateIp, UNKNOWN_PRESENCE } from './presence.js'
 import { verifyToken, tokenVersionOf } from './auth.js'
 import { queryOne } from './db.js'
+import { envNumber, envNumberOrZero } from './resource-limits.js'
 import { isNetplayPlayer, resolveRoomId } from './netplay.js'
 import { openConfig } from './open/config.js'
 import * as livePublisherModule from './open/live-publisher.js'
@@ -104,7 +105,7 @@ import {
  */
 
 /** 同时在播的房间上限：信令是公开接口，不设上限开播就能刷爆内存 */
-const MAX_ROOMS = Number(process.env.LIVE_MAX_ROOMS || 200)
+const MAX_ROOMS = envNumber('LIVE_MAX_ROOMS', 200, { max: 5_000 })
 /**
  * 单个 IP 同时能开的房间数。MAX_ROOMS 只防内存，防不了一个人开满整站。
  *
@@ -118,7 +119,7 @@ const MAX_ROOMS = Number(process.env.LIVE_MAX_ROOMS || 200)
  * **整个站同时只能开 3 间直播**，而且没有任何报错。配置错了该是名片上的国旗变 ❓，
  * 不该是直播开不出来；所以这里只在日志里提醒一次，放行。
  */
-const MAX_ROOMS_PER_IP = Number(process.env.LIVE_MAX_ROOMS_PER_IP || 20)
+const MAX_ROOMS_PER_IP = envNumberOrZero('LIVE_MAX_ROOMS_PER_IP', 20, { max: 5_000 })
 let warnedPrivateIp = false
 /**
  * 同一条 socket 开播 / 续播的频率上限（令牌桶：容量 OPEN_BURST，每 OPEN_REFILL_MS 补一枚）。
@@ -129,8 +130,8 @@ let warnedPrivateIp = false
  * 容量 10 / 每 6 秒一枚绰绰有余。和联机 open-room 的 netplayOpening 一样挡在查库之前；
  * 「已经是这间房的主播」那条补回原结果的捷径不消耗令牌（它不查库，也是 ack 丢失后的正规重试）。
  */
-const OPEN_BURST = Number(process.env.LIVE_OPEN_BURST || 10)
-const OPEN_REFILL_MS = Number(process.env.LIVE_OPEN_REFILL_MS || 6_000)
+const OPEN_BURST = envNumberOrZero('LIVE_OPEN_BURST', 10, { max: 1_000 })
+const OPEN_REFILL_MS = envNumber('LIVE_OPEN_REFILL_MS', 6_000, { max: 60 * 60_000 })
 function takeOpenToken(socket) {
   if (!(OPEN_BURST > 0)) return true
   const now = Date.now()
@@ -143,7 +144,7 @@ function takeOpenToken(socket) {
   return true
 }
 /** P2P 单场上限；SRS 使用独立上限，但仍需考虑每位观众的协作 DataChannel。 */
-const MAX_VIEWERS = Number(process.env.LIVE_MAX_VIEWERS || 12)
+const MAX_VIEWERS = envNumberOrZero('LIVE_MAX_VIEWERS', 12, { max: 100 })
 /** SRS 把一路上行扇出给观众；上限仍保守设置，避免观众数反过来压垮信令和协作通道。 */
 const configuredSrsViewers = Number(process.env.LIVE_SRS_MAX_VIEWERS || 100)
 const MAX_SRS_VIEWERS = Number.isSafeInteger(configuredSrsViewers) && configuredSrsViewers > 0
@@ -159,7 +160,7 @@ const MAX_SRS_TOTAL_VIEWERS = Number.isSafeInteger(configuredSrsTotalViewers) &&
  * 主播断线后房间保留多久。socket.io 判掉线本身要 pingInterval + pingTimeout（约 30 秒），
  * 这个数是在那之后再等的。太长会让大厅挂着一堆「主播不在」的房间，太短又护不住一次 4G 切换。
  */
-const RESUME_GRACE_MS = Number(process.env.LIVE_RESUME_GRACE_MS || 60_000)
+const RESUME_GRACE_MS = envNumber('LIVE_RESUME_GRACE_MS', 60_000, { max: 10 * 60_000 })
 /**
  * 主播切到后台多久之后，这间房从大厅列表里**摘掉**（房还在，直链能进，进去会看到「主播切后台了」）。
  *
@@ -167,13 +168,13 @@ const RESUME_GRACE_MS = Number(process.env.LIVE_RESUME_GRACE_MS || 60_000)
  * 谁点进去都是黑屏或者等 75 秒的超时。浏览器不给后台页出帧是改不了的，能做的是别把这种房
  * 摆在大厅里骗人进来。90 秒：切个标签页查个东西再回来的常见时长以内不动它。
  */
-const FROZEN_HIDE_MS = Number(process.env.LIVE_FROZEN_HIDE_MS || 90_000)
+const FROZEN_HIDE_MS = envNumber('LIVE_FROZEN_HIDE_MS', 90_000, { max: 24 * 60 * 60_000 })
 /**
  * 主播切到后台、且**一个观众都没有**持续多久，直接收房（reason = host-idle）。
  * 有观众时不收：他们手里那条画面（哪怕冻着）是主播回来就能续上的。
  * 主播的 broadcast.ts 收到 live-ended 会进入休眠，回到前台自动重开一间。
  */
-const FROZEN_CLOSE_MS = Number(process.env.LIVE_FROZEN_CLOSE_MS || 10 * 60_000)
+const FROZEN_CLOSE_MS = envNumber('LIVE_FROZEN_CLOSE_MS', 10 * 60_000, { max: 24 * 60 * 60_000 })
 /**
  * 「主播 socket 已经不在了、房间却还挂着他」的扫描间隔。
  *
@@ -188,7 +189,7 @@ const FROZEN_CLOSE_MS = Number(process.env.LIVE_FROZEN_CLOSE_MS || 10 * 60_000)
  * 房间记着的 hostSocketId 还在不在 nsp.sockets 里。不在就按主播离开处理
  * （有人看走宽限期、没人看直接散）——最坏情况下大厅最多多挂 30 秒。
  */
-const GHOST_SWEEP_MS = Number(process.env.LIVE_GHOST_SWEEP_MS || 30_000)
+const GHOST_SWEEP_MS = envNumber('LIVE_GHOST_SWEEP_MS', 30_000, { min: 1_000, max: 10 * 60_000 })
 
 const str = (v, max = 120) => (typeof v === 'string' ? v.trim().slice(0, max) : '')
 
@@ -673,7 +674,7 @@ const SRS_NEGOTIATION_LIMIT = 8
  *   · 房间结束 → 全部踢掉。
  * 踢人失败（旧版本 SRS、会话早已结束）只是退回 SRS 自己的超时，不影响主流程。
  */
-const SRS_ORPHAN_GRACE_MS = Number(process.env.LIVE_SRS_ORPHAN_GRACE_MS || 45_000)
+const SRS_ORPHAN_GRACE_MS = envNumber('LIVE_SRS_ORPHAN_GRACE_MS', 45_000, { max: 10 * 60_000 })
 const SRS_KICK_TIMEOUT_MS = 1_500
 /** client_id 会拼进 API 路径；只收 SRS 自己生成的那种短 id，杜绝路径注入。 */
 const SRS_CLIENT_ID = /^[A-Za-z0-9._:-]{1,96}$/

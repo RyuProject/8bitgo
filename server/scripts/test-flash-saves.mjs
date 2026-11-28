@@ -17,7 +17,7 @@ import {
   validateFlashSavePair,
 } from '../src/flash-save-contract.js'
 import { flashSaveConfigured, signFlashSaveToken, verifyFlashSaveToken } from '../src/flash-save-token.js'
-import { envNumber } from '../src/resource-limits.js'
+import { envNumber, envNumberOrZero } from '../src/resource-limits.js'
 
 let passed = 0
 function check(name, fn) {
@@ -219,6 +219,14 @@ check('数值型环境变量夹到最近的合法边界', () => {
   withEnv(name, '0', () => assert.equal(envNumber(name, 2048, { min: 8, max: 4096 }), 8))
   withEnv(name, '-5', () => assert.equal(envNumber(name, 2048, { min: 8, max: 4096 }), 8))
   withEnv(name, '999999', () => assert.equal(envNumber(name, 2048, { min: 8, max: 4096 }), 4096))
+})
+
+check('仅明确写 0 才能关闭配额，负数和无效值回到安全默认', () => {
+  const name = 'FLASH_SAVE_TEST_ZEROABLE_LIMIT'
+  withEnv(name, '0', () => assert.equal(envNumberOrZero(name, 12, { max: 20 }), 0))
+  withEnv(name, '-1', () => assert.equal(envNumberOrZero(name, 12, { max: 20 }), 12))
+  withEnv(name, 'oops', () => assert.equal(envNumberOrZero(name, 12, { max: 20 }), 12))
+  withEnv(name, '999', () => assert.equal(envNumberOrZero(name, 12, { max: 20 }), 20))
 })
 
 check('非法值会出声，不是静默退回', () => {

@@ -8,6 +8,7 @@ import { NETPLAY_MAX_PLAYERS, normalizeGamePlayers } from '../../shared/netplay-
 import { guardSocketArgs } from './socket-guard.js'
 import { optionalUser, tokenVersionOf, verifyToken } from './auth.js'
 import { queryOne } from './db.js'
+import { envNumber, envNumberOrZero } from './resource-limits.js'
 // ⚠️ live.js 也 import 本文件（循环依赖）。这里只在请求时调用这两个函数声明，模块求值阶段不碰，所以安全。
 import { adultLiveAccessError, canAccessAdultLive } from './live.js'
 
@@ -56,34 +57,34 @@ const MAX_PLAYERS = NETPLAY_MAX_PLAYERS
  * 家宽上行大约撑到十来路，所以这里给的是个保守值。
  * 真要做几十上百人的直播，得在中间加 SFU（房主只推一路，服务器转发 N 路）。
  */
-const MAX_SPECTATORS = Number(process.env.NETPLAY_MAX_SPECTATORS || 12)
+const MAX_SPECTATORS = envNumberOrZero('NETPLAY_MAX_SPECTATORS', 12, { max: 100 })
 /**
  * 观众申请上场（2P）的应答窗口。房主那边弹一张不挡操作的卡片，到点没点就当拒绝。
  * 前端 src/services/netplay.ts 的 SEAT_REQUEST_TTL_MS 必须是同一个数。
  */
-const SEAT_REQUEST_MS = Number(process.env.NETPLAY_SEAT_REQUEST_MS || 15_000)
+const SEAT_REQUEST_MS = envNumber('NETPLAY_SEAT_REQUEST_MS', 15_000, { max: 120_000 })
 /** 被拒绝 / 超时后多久才能再申请一次：不卡的话一个观众能把房主的屏幕刷满 */
-const SEAT_REQUEST_COOLDOWN_MS = Number(process.env.NETPLAY_SEAT_REQUEST_COOLDOWN_MS || 5_000)
+const SEAT_REQUEST_COOLDOWN_MS = envNumberOrZero('NETPLAY_SEAT_REQUEST_COOLDOWN_MS', 5_000, { max: 120_000 })
 /** 房主掉线后保留房间、等人接手的时间（测试里会调短） */
-const HOST_GRACE_MS = Number(process.env.NETPLAY_HOST_GRACE_MS || 30_000)
+const HOST_GRACE_MS = envNumber('NETPLAY_HOST_GRACE_MS', 30_000, { max: 10 * 60_000 })
 /**
  * 选中的接班人有多久时间接手，超时就换下一个。
  *
  * 以前只选一个人然后干等到宽限期结束 —— 那个人要是也断网了、切后台被浏览器冻结了、
  * 或者干脆关了页面，房间就白白等死，哪怕屋里还有别人能接。现在轮着问，问到有人接为止。
  */
-const CLAIM_MS = Number(process.env.NETPLAY_CLAIM_MS || 8_000)
+const CLAIM_MS = envNumber('NETPLAY_CLAIM_MS', 8_000, { max: 120_000 })
 /**
  * 认领之后给新房主多长时间开好新房、调 /migrate。要下载存档、重新挂载引擎、加载核心和 ROM，
  * 街机核心几十 MB，慢的网络半分钟都不一定够 —— 但也不能无限等，否则认领的人关了页面房间就永远挂着。
  */
-const CLAIM_WINDOW_MS = Number(process.env.NETPLAY_CLAIM_WINDOW_MS || 60_000)
+const CLAIM_WINDOW_MS = envNumber('NETPLAY_CLAIM_WINDOW_MS', 60_000, { max: 10 * 60_000 })
 /** 单个 IP 同时能开的房间数。MAX_ROOMS 只防内存，防不了一个人开一堆连接把整站占满 */
-const MAX_ROOMS_PER_IP = Number(process.env.NETPLAY_MAX_ROOMS_PER_IP || 4)
+const MAX_ROOMS_PER_IP = envNumberOrZero('NETPLAY_MAX_ROOMS_PER_IP', 4, { max: 5_000 })
 /** 单份存档上限。NES 约 100KB，N64 / PS1 可能到几 MB */
 const MAX_STATE_BYTES = 12 * 1024 * 1024
 /** 同时存在的房间上限。信令是公开接口，不设上限的话开房就能把内存刷爆 */
-const MAX_ROOMS = Number(process.env.NETPLAY_MAX_ROOMS || 500)
+const MAX_ROOMS = envNumber('NETPLAY_MAX_ROOMS', 500, { max: 5_000 })
 /** 单个连接每秒最多广播几条 data-message（聊天 / 暂停之类），防刷屏 */
 const MSG_PER_SEC = 20
 /**
@@ -158,15 +159,25 @@ const RENEGOTIATE_PER_10S = 5
  * 存档托管的内存预算。单份最大 12MB × 500 个房间 = 6GB，够把一台小机器打挂。
  * 全局一个总量，每个 IP 一个小额度（一个人正常只开一间房）。超了回 507，前端静默跳过这一轮。
  */
-const STATE_BUDGET_BYTES = Number(process.env.NETPLAY_STATE_BUDGET_BYTES || 256 * 1024 * 1024)
-const STATE_PER_IP_BYTES = Number(process.env.NETPLAY_STATE_PER_IP_BYTES || 32 * 1024 * 1024)
+const STATE_BUDGET_BYTES = envNumber('NETPLAY_STATE_BUDGET_BYTES', 256 * 1024 * 1024, { max: 1024 * 1024 * 1024 })
+const STATE_PER_IP_BYTES = envNumber('NETPLAY_STATE_PER_IP_BYTES', 32 * 1024 * 1024, { max: 256 * 1024 * 1024 })
 /**
  * 同一 IP 在同一个房间里最多几个成员。
  * 观众位一共 12 个，每个都是房主那边的一路 WebRTC 上行 —— 一个人开 12 条连接进来当观众，
  * 既把位子占光，又把房主的家宽上行打满，正在玩的人全部卡死。0 = 不限。
  * 每次调用现读 env：测试里所有连接都来自 127.0.0.1，需要能在运行中开关。
  */
-const maxMembersPerIp = () => Number(process.env.NETPLAY_MAX_MEMBERS_PER_IP ?? 4)
+let maxMembersRaw = Symbol('unset')
+let maxMembersValue = 4
+const maxMembersPerIp = () => {
+  const raw = process.env.NETPLAY_MAX_MEMBERS_PER_IP
+  // 测试会在同一进程里切换此项；按原始值缓存，避免错误配置在每次 join 时刷日志。
+  if (raw !== maxMembersRaw) {
+    maxMembersRaw = raw
+    maxMembersValue = envNumberOrZero('NETPLAY_MAX_MEMBERS_PER_IP', 4, { max: 64 })
+  }
+  return maxMembersValue
+}
 
 /** roomId(sessionid) -> room */
 const rooms = new Map()
@@ -683,7 +694,7 @@ export function attachNetplay(
      * 这条通道上最大的正常包是 SDP，几十 KB 顶天，128KB 已经很宽裕。
      * 在库这一层挡掉，比在每个 handler 里量一遍 JSON 便宜得多。
      */
-    maxHttpBufferSize: Number(process.env.NETPLAY_MAX_MESSAGE_BYTES || 128 * 1024),
+    maxHttpBufferSize: envNumber('NETPLAY_MAX_MESSAGE_BYTES', 128 * 1024, { min: 1024, max: 1024 * 1024 }),
     /**
      * 默认 25 秒。心跳的往返时间正好是我们量「房主网络好不好」的尺子
      * （见 presence.js 的 trackRtt），25 秒意味着房间刚开出来的头半分钟
@@ -691,7 +702,7 @@ export function attachNetplay(
      * 换来的是列表里那个格子几乎一开就是准的。
      * 副作用：掉线判定也跟着变快（pingInterval + pingTimeout，45s → 30s），这是好事。
      */
-    pingInterval: Number(process.env.SOCKET_PING_INTERVAL_MS || 10_000),
+    pingInterval: envNumber('SOCKET_PING_INTERVAL_MS', 10_000, { min: 1_000, max: 60_000 }),
   })
 
   const nsp = io.of('/netplay')
