@@ -5323,7 +5323,8 @@ export function EmulatorPlayer({
                 2. 广告用 horizontal，理由见下面那一格。
               */}
               <div className="absolute inset-0 flex flex-col items-center overflow-x-hidden overflow-y-auto overscroll-contain px-6 py-3 text-center">
-              <div className="m-auto flex w-full flex-col items-center gap-4">
+              {/* ROM 探测结束会补上就绪提示和下载入口；固定实测所需的最小高度，避免 m-auto 把整组控件向上推。 */}
+              <div className={cx('m-auto flex w-full flex-col items-center gap-4', pagePresentation && 'min-h-48')}>
               {!engineReady ? (
                 <Button size="lg" disabled>
                   {t.player.loadingEngine}
@@ -5370,15 +5371,22 @@ export function EmulatorPlayer({
                       className="mb-1 max-sm:hidden"
                     />
                   )}
-                  {!online && romUrl && status === 'idle' && !romChecking && !romUnavailable && (
-                    <p
-                      role="status"
-                      aria-live="polite"
-                      className="inline-flex items-center gap-2 rounded-full border border-emerald-200/25 bg-emerald-950/55 px-3 py-1.5 text-xs font-semibold text-emerald-50 shadow-sm backdrop-blur"
-                    >
-                      <span aria-hidden className="size-2 rounded-full bg-brand shadow-[0_0_10px_var(--color-brand)]" />
-                      {t.player.readyToPlay}
-                    </p>
+                  {/* 即使 ROM 还没探完或不可用，也保留提示槽；否则下面的开始按钮会随状态上下跳。 */}
+                  {pagePresentation && !online && status === 'idle' && (
+                    <div className="flex min-h-[30px] items-center justify-center">
+                      <p
+                        role={romUrl && !romChecking && !romUnavailable ? 'status' : undefined}
+                        aria-live={romUrl && !romChecking && !romUnavailable ? 'polite' : undefined}
+                        aria-hidden={!romUrl || romChecking || romUnavailable}
+                        className={cx(
+                          'inline-flex items-center gap-2 rounded-full border border-emerald-200/25 bg-emerald-950/55 px-3 py-1.5 text-xs font-semibold text-emerald-50 shadow-sm backdrop-blur',
+                          (!romUrl || romChecking || romUnavailable) && 'invisible',
+                        )}
+                      >
+                        <span aria-hidden className="size-2 rounded-full bg-brand shadow-[0_0_10px_var(--color-brand)]" />
+                        {t.player.readyToPlay}
+                      </p>
+                    </div>
                   )}
                   <span
                     className={cx('inline-flex flex-wrap items-center justify-center', pagePresentation ? 'gap-4' : 'gap-2')}
@@ -5414,7 +5422,8 @@ export function EmulatorPlayer({
                       下载仍是原来那颗「下载 ROM」的同一个动作（downloadCurrentRom），只是从下面那个说明框挪上来；
                       联机模式下没有本机 ROM 可下，不画。两颗都在时左右拼成一块，中间描边重叠 1px。
                     */}
-                    {pagePresentation && (onShare || (!online && romUrl)) && (
+                    {/* 下载入口出现前先占住同宽位置，防止分享按钮组被重新居中。 */}
+                    {pagePresentation && (onShare || (!online && (romUrl || romChecking))) && (
                       <span className="inline-flex items-stretch">
                         {onShare && (
                           <button
@@ -5427,7 +5436,7 @@ export function EmulatorPlayer({
                             <img src={shareIcon} alt="" width={23} height={22} draggable={false} />
                           </button>
                         )}
-                        {!online && romUrl && (
+                        {!online && romUrl ? (
                           <button
                             type="button"
                             disabled={romDownloadBusy}
@@ -5446,7 +5455,14 @@ export function EmulatorPlayer({
                               className={romDownloadBusy ? 'animate-pulse' : undefined}
                             />
                           </button>
-                        )}
+                        ) : !online && romChecking ? (
+                          <span
+                            aria-hidden
+                            className={cx(PAGE_ICON_BUTTON, 'invisible pointer-events-none', onShare ? 'rounded-r-2xl' : 'rounded-2xl')}
+                          >
+                            <img src={downloadIcon} alt="" width={20} height={20} draggable={false} />
+                          </span>
+                        ) : null}
                       </span>
                     )}
                     {!online && romUrl && pageRuntime?.id === 'ppsspp' && (
