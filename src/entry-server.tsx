@@ -10,6 +10,7 @@ import { setLangForRender } from '@/services/lang'
 import { beginHeadCollection, endHeadCollection, setSsrPath, splitHoistedHead, takeSsrNotFound, type CollectedHead } from '@/services/seo'
 import { langFromPath, langPrefix, stripLang } from '@/config/languages'
 import { loadLocale } from '@/locales'
+import { loadLegalPages } from '@/locales/legal'
 
 export interface RenderInput {
   /** 完整请求路径（含语言前缀），例如 /en/games/mario */
@@ -64,9 +65,12 @@ export async function render({ url, data, tvHost = false, cnSite = false, coverH
 
   // —— 这条线以上可以有 await，以下不行 ——
   await loadLocale(lang)
+  // 法律正文只在对应页面预热，避免几万字正文随着每个语言包进入普通页面的首屏链。
+  const renderPath = stripLang(pathname)
+  if (renderPath === '/terms' || renderPath === '/privacy') await loadLegalPages(lang)
 
   setLangForRender(lang)
-  setSsrPath(stripLang(pathname))
+  setSsrPath(renderPath)
   // 必须在 renderToString 之前、且这条线以下不能有 await（理由同上）
   setSsrTvHost(tvHost)
   setSsrCnSite(cnSite, coverHint)

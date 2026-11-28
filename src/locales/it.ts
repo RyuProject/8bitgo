@@ -1,7 +1,6 @@
 /** Testi UI in italiano. La struttura delle chiavi rispecchia esattamente zh-Hans.ts. */
 import type { Translation } from './index'
 import { aboutEnglish } from './about'
-import { termsEnglish, privacyEnglish } from './legal/en'
 
 const it: Translation = {
   /* ---------------- Comuni ---------------- */
@@ -590,8 +589,6 @@ const it: Translation = {
     errorTotalTooLarge: 'Allegati per {total}, oltre il limite di {max}. Per i più grandi usa il link di download',
   },
 
-  termsPage: termsEnglish,
-  privacyPage: privacyEnglish,
   aboutPage: aboutEnglish,
 
   /* ---------------- Blog ---------------- */

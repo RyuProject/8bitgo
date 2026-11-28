@@ -6,8 +6,9 @@ import App from './App'
 import { apiEnabled } from '@/services/api'
 import { hydrateAuth } from '@/services/auth'
 import { setLangForRender, syncHtmlLang } from '@/services/lang'
-import { langFromPath, langPrefix } from '@/config/languages'
+import { langFromPath, langPrefix, stripLang } from '@/config/languages'
 import { loadLocale } from '@/locales'
+import { loadLegalPages } from '@/locales/legal'
 import { initClarity } from '@/services/clarity'
 import { installRouteReport } from '@/services/romRouteReport'
 import { consumeOriginAssetsParam } from '@/services/moduleLinkRecovery'
@@ -49,6 +50,9 @@ const root = document.getElementById('root')!
  */
 async function start() {
   await loadLocale(lang)
+  // 直达法律页必须先拿到和 SSR 同一份正文再 hydrate；其它页面完全不下载它。
+  const pagePath = stripLang(window.location.pathname)
+  if (pagePath === '/terms' || pagePath === '/privacy') await loadLegalPages(lang)
 
   const tree = (
     <StrictMode>
