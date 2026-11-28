@@ -559,12 +559,10 @@ if (ssrAvailable()) {
     res.set('Cache-Control', CACHE.engine)
     /*
       源站副本是大陆访客的镜像入口（经 cn.8bitgo.com / EdgeOne，见 html5.ts 的 cnMirrorHtml5Entry），
-      要和 Pages 版一样带生命周期桥 / 游戏 SDK / 媒体桥；注入不了就照发原文件。
+      PvZ 与 CS1.6 的登记入口都要和 Pages 版一样带生命周期桥 / 游戏 SDK / 媒体桥；注入不了就照发原文件。
     */
-    if (!sub) {
-      const injected = renderWebGameHtml(name)
-      if (injected) return res.type('html').send(injected)
-    }
+    const injected = renderWebGameHtml(name, sub)
+    if (injected) return res.type('html').send(injected)
     res.sendFile(sub ? join(name, sub, 'index.html') : join(name, 'index.html'), { root: join(CLIENT_DIR, 'web') }, (err) => {
       // 目录里没有这一份就交回 SSR 渲染 404，别在这儿编错误页
       if (err && !res.headersSent) next()

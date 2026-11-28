@@ -2975,15 +2975,21 @@ magic、v4、节点平方矩阵、压缩段和每节点 4 字节尾部统计，�
 最多每帧更新一次；启动器提前取清单时必须在玩家点击开始后重置测速时钟，不能把玩家选地图的时间
 算成“下载很慢”。资源域预连接与 13KB catalog 可以提前，60MB 内容包不能在点击开始前偷跑。
 
-### 2.28.4.1.1 大陆访客的 CS1.6 走 EdgeOne 镜像，失败回 Pages（2026-11-22）
+### 2.28.4.1.1 大陆访客的 CS1.6 与 PvZ 走 EdgeOne 镜像，失败回 Pages（2026-11-22 / 2026-11-28）
 
-cs16.8bitgo.com（Pages）从部分大陆网络打不开，而 cn.8bitgo.com/web/cs16（EdgeOne → 源站）秒开。`adapters/html5.ts` 的
-`CN_MIRRORED_PAGES_ENTRIES`（目前只有 cs16）：大陆访客（`coverCdnHint()==='cn'` 或 `onCnSite()`）用 `/web/cs16`（页面本身已由 EdgeOne 提供时同源，
-否则 `https://cn.8bitgo.com/web/cs16`），非大陆访客照旧 Pages。20 秒（只数前台）没有生命周期桥信号、同源加载后没有 `#canvas`、iframe error
-或桥报 failed，就回 Pages 一次。AI 修补的 `runtimeOrigin` 会关掉镜像。源站 `/web/cs16` 由 `server/src/web-game-html.js` 注入与 Pages 构建相同的
-媒体桥 / SDK / 运行时桥（按 sha256 带版本），失败照发原文件。房间与中继按页面同源连接，EdgeOne 上 WebSocket 和子协议已实测 101。
-EdgeOne 缓存 `/web/cs16` 一小时且没有清缓存通道：部署后这段时间里，从 8bitgo.com 跨源嵌入 cn 的大陆访客拿不到桥信号，会在 20 秒后回 Pages。
-其它 Pages 游戏（PvZ 依赖 Pages 专属 `/pvz-data` 代理和存档桥来源，Terraria / Celeste / GTA VC 要跨源隔离）没有切，切之前要逐文件核对。
+`cs16.8bitgo.com` 与 `pvz.8bitgo.com` 的 Pages 入口都可能在部分大陆网络打不开。`adapters/html5.ts` 的
+`CN_MIRRORED_PAGES_ENTRIES` 只登记逐项核实过的入口：大陆访客（`coverCdnHint()==='cn'` 或 `onCnSite()`）使用源站副本（页面本身已由 EdgeOne 提供时同源，
+否则 `https://cn.8bitgo.com`），非大陆访客照旧 Pages。20 秒（只数前台）没有生命周期桥信号、同源加载后没有就绪元素、iframe error
+或桥报 failed，就回 Pages 一次。AI 修补的 `runtimeOrigin` 会关掉镜像。
+
+CS1.6 镜像是 `/web/cs16`，其房间与中继按页面同源连接，EdgeOne 上 WebSocket 和子协议已实测 101。PvZ 只镜像固定的 `/web/PvZ/cn` 与 `/web/PvZ/en`：
+源站页自带 WASM、清单，并从 `download.8bitgo.com` 读取资源；生产探测确认大资源支持 Range 且有跨域读取头，不依赖 Pages Worker 的 `/pvz-data` 代理。
+服务端 `web-game-html.js` 必须给这两个语言入口注入与 Pages 构建一致的媒体桥、SDK、运行时桥（按 sha256 带版本），否则镜像缺少就绪与存档能力。
+PvZ 存档桥来源只放行上述精确第一方语言路径；切回 Pages 时要重新计算桥来源。不要把 PvZ 根提示页或其它子路径加入镜像。
+
+2026-11-28 生产 7 天漏斗有 44 次中国区 PvZ 开始事件、41 次 iframe 完成；另有 2 次跨 Windows Chrome 与 Android WebView 的 120 秒超时，均没有 iframe 完成事件。
+这支持增加同源入口作为备用路径，但不能据此断言 Pages 是每次失败的唯一原因。EdgeOne 缓存页面一小时且没有清缓存通道：跨源镜像桥暂时缺失时会在 20 秒后回 Pages。
+Terraria / Celeste / GTA VC 仍未切；它们需要跨源隔离，启用镜像前必须逐文件核对。
 回归：`npm run test:html5-pages-bridge`。
 
 ### 2.28.4.2 CS1.6 启动页复用原版资产；联机只能走后端已验证目标 WSS↔UDP
