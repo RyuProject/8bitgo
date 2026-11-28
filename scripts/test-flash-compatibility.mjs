@@ -49,13 +49,17 @@ assert.deepEqual(flashLegacyBundleRulesForFingerprint({
 console.log('── 启动回退与上传守卫接线 ──')
 const adapter = read('src/emulator/adapters/ruffle.ts')
 const player = read('src/emulator/EmulatorPlayer.tsx')
+const retryPolicy = read('src/emulator/startupRetryPolicy.ts')
 const singleUpload = read('src/admin/GameForm.tsx')
 const bundleUpload = read('src/admin/swfUpload.ts')
 assert.match(adapter, /flashCompatibilityIssue\(loaded\.data\)/, 'Ruffle 启动前必须检查解密后的 SWF')
 assert.match(adapter, /flashLegacyBundleRules\([\s\S]*loaded\.data/, 'Ruffle 必须在 load 前接入多 SWF 兼容资源')
 assert.match(adapter, /new frameGlobal\.RegExp\(from\.source, from\.flags\)/,
   '正则必须在 Ruffle iframe realm 重建，否则 instanceof RegExp 会失效')
-assert.match(player, /Flash 站点锁/, '站点锁是确定性坏 ROM，不能先原样重试')
+assert.match(player, /isDeterministicStartupFailure\(errorScope, message\)/,
+  '启动失败应交给按错误 scope 分流的重试策略')
+assert.match(retryPolicy, /Flash 站点锁/,
+  'Flash 站点锁仍须按确定性内容错误处理，不能先原样重试')
 // 2026-11-15 起两条上传路径都先 assertSwf（截断 / 坏头直接拦），再查站点锁；两步必须用同一份字节。
 assert.match(
   singleUpload,

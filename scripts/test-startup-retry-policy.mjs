@@ -11,6 +11,8 @@ assert.equal(isDeterministicStartupFailure('content', 'ROM 包第 2 块解密失
   '明确的内容错误可以跳过无意义的同地址重试')
 assert.equal(isDeterministicStartupFailure('deterministic', 'romset is unknown'), true,
   '确定性格式错误仍直接寻找内容备用源')
+assert.equal(isDeterministicStartupFailure('content', 'Flash 站点锁：Armor Games 黑屏'), true,
+  '已识别的 Flash 站点锁仍直接寻找内容备用源')
 assert.equal(isDeterministicStartupFailure('runtime', '8BG ROM 包加载器未初始化'), false,
   '运行时设施故障不能污染 ROM 候选链')
 
