@@ -112,6 +112,9 @@ const MAX_PAYLOAD = 64 * 1024
 const MAX_ROOM_NAME = 64
 const MAX_PER_IP = 8
 const MAX_TOTAL = 200
+// ws.send() 会把尚未写入 TCP 的数据一直留在进程内存；连接数和单帧上限本身挡不住
+// 慢客户端被快速广播灌满。每个接收端最多排 512 KiB，超过就单独断开落后的连接。
+const MAX_PEER_BUFFERED_BYTES = 512 * 1024
 
 /** 每个 IP 当前挂着几条。close 时减回去 */
 const perIp = new Map()
@@ -151,6 +154,22 @@ function rejectUpgrade(socket, status, message) {
     'Connection: close\r\n\r\n',
   )
   socket.end(body)
+}
+
+/** 慢接收端只会拖住自己；不要让待发送队列随广播量无限增长。 */
+export function sendIpxFrame(peer, data) {
+  if (peer.readyState !== peer.OPEN) return false
+  if (peer.bufferedAmount + data.length > MAX_PEER_BUFFERED_BYTES) {
+    try { peer.close(1013, 'slow IPX relay consumer') } catch { /* 已关闭 */ }
+    return false
+  }
+  try {
+    peer.send(data)
+    return true
+  } catch {
+    try { peer.close() } catch { /* 已关闭 */ }
+    return false
+  }
 }
 
 function totalConnections() {
@@ -233,16 +252,16 @@ function wire(wss, serverAddress) {
 
       // 注册：客户端问「我的地址是多少」
       if (header.dest.socket === 0x2 && header.dest.host === 0) {
-        ws.send(registrationReply(address, serverAddress))
+        sendIpxFrame(ws, registrationReply(address, serverAddress))
         return
       }
 
       if (header.dest.host === 0xffffffff) {
         const packet = authenticatedPacket(buf, address)
-        for (const [, peer] of clients) if (peer !== ws && peer.readyState === peer.OPEN) peer.send(packet)
+        for (const [, peer] of clients) if (peer !== ws) sendIpxFrame(peer, packet)
       } else {
         const peer = clients.get(partsToAddress(header.dest.host, header.dest.port))
-        if (peer && peer.readyState === peer.OPEN) peer.send(authenticatedPacket(buf, address))
+        if (peer) sendIpxFrame(peer, authenticatedPacket(buf, address))
       }
     })
 

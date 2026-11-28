@@ -437,7 +437,7 @@ function transformedCoverUrl(src: string, width: CoverImageWidth, base: string, 
   if (!base || !/^https:\/\//i.test(base) || !src.startsWith(prefix) || /\.avif(?:[?#]|$)/i.test(src)) return ''
   const path = src.slice(base.length + 1)
   const boundedWidth = Math.min(MAX_COVER_WIDTH, Math.max(1, Math.ceil(width)))
-  // scale-down 让小源图保持原尺寸，避免高档候选只放大像素却不增加细节。
+ // scale-down 让小源图保持原尺寸，避免高档候选只放大像素却不增加细节。
   return `${base}/cdn-cgi/image/width=${boundedWidth},quality=75,format=${format},fit=scale-down/${path}`
 }
 

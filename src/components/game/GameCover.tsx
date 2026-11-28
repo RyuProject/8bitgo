@@ -73,10 +73,9 @@ interface Props {
   /** 只在媒体条件匹配时提供图片源，避免隐藏的桌面封面在手机上发起请求。 */
   sourceMedia?: string
   /**
-   * 用 96×96 缩略图代替 300×300 主图。
-   * 只给**显示尺寸很小**的位置开（搜索联想、首页类型样例那种 40~44px，以及详情页
-   * 那张被糊到底的背景）—— 卡片上 300 刚刚好，换成 96 会糊。
-   * 老封面没有缩略图时自动退回主图，见下面的 thumbFailed。
+   * 很小的封面位置按需取主图的 96px 变换响应，避免下载 300px 原图或保存额外副本。
+   * 只给搜索联想、首页类型样例和模糊背景开；普通卡片仍按真实展示宽度挑图。
+   * AVIF 暂不能变换时复用已有的历史缩略图，没有历史对象就直接显示原图。
    */
   thumb?: boolean
   /** 只有容器进入视口附近的预取边界后才挂图片 / 视频源，避免原生 lazy 抢首屏带宽。 */
@@ -445,7 +444,7 @@ export function GameCover({
             // 首屏优先级负责争取网络带宽；异步解码让浏览器继续处理首屏交互与绘制。
             decoding="async"
             onLoad={onImageLoad}
-            // 缩略图没对象（老封面）就换回主图；主图本身就坏了则留给渐变背景兜着
+            // 变换图失败先退回源图；源图也失败时再显示程序化渐变背景
             onError={(event) => {
               reportCoverLoadFailure(event.currentTarget.currentSrc || event.currentTarget.src)
               if (useLegacyAvifThumb && !legacyThumbFailed) setLegacyThumbFailed(true)
