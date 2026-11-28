@@ -1955,18 +1955,14 @@ export function EmulatorPlayer({
   }, [dosSockdriveUrl, pageRuntime?.id])
 
   /**
-   * 玩家点击前预取本局最可能使用的适配器：播放器壳和适配器并行到达，避免把新代码块的网络往返
-   * 加到真正开局之后。直播 / 云端邀请分别预取自己的运行时；未选中的平台适配器不下载。
+   * 确定玩家即将启动的运行时。不要在详情页一打开就导入它：只是浏览时解析适配器会占主线程；
+   * 鼠标悬停 / 聚焦操作区时再预取，真正开局仍由 loadMountOf 兜底并复用同一在途 Promise。
    */
   const runtimeToPreload = liveInvite
     ? liveViewMeta
     : cloudInviteId && cloudOk
       ? cloudGameMeta
       : pageRuntime
-  useEffect(() => {
-    if (session || !runtimeToPreload) return
-    void loadMountOf(runtimeToPreload.id).catch(() => {})
-  }, [session, runtimeToPreload?.id])
 
   /** NES 的 mapper 与 NES / GB / GBC 的 WebGL 结论都确定后再开放启动，避免自动播放抢先挂载错误引擎。 */
   const engineReady = (!shouldProbeNes || Boolean(currentNesProbe?.ready)) &&
@@ -4944,10 +4940,11 @@ export function EmulatorPlayer({
 
   /**
    * “检查在线版本”期间按钮是 disabled，CSS 会把它的 pointer-events 关掉，原来绑在按钮上的
-   * hover 预热因此永远不触发。把意图监听放到外层后，ROM HEAD 与模拟器入口可以重叠下载；
-   * 仍只在玩家真的把指针移到开始区时做，不让只是浏览详情页的人白下几十 MB 核心。
+   * hover 预热因此永远不触发。把意图监听放到外层；适配器和核心都等到玩家靠近开局入口才预取，
+   * 不让只是浏览详情页的人先执行整份模拟器逻辑。开局路径仍会按需加载并复用在途模块。
    */
   const prewarmPrimaryAction = (aggressive: boolean) => {
+    if (runtimeToPreload) void loadMountOf(runtimeToPreload.id).catch(() => {})
     if (online) return
     // 这两个独立运行时没有无 WebGL 后备；不为无法启动的局提前下载几十 MB 核心。
     if ((pageRuntime?.id === 'ppsspp' || pageRuntime?.id === 'play') && !canCreateWebgl()) return
