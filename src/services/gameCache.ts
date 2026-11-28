@@ -11,12 +11,13 @@
  */
 import { useEffect, useState } from 'react'
 import type { Game } from '@/types'
+import { createSlugSubscriptions } from './gameCacheSubscriptions'
 import { api, apiEnabled } from './api'
 
 const cache = new Map<string, Game>()
 /** 正在飞的请求，按 slug 记，避免同一批 slug 被并发请求多次 */
 const inflight = new Map<string, Promise<void>>()
-const listeners = new Set<() => void>()
+const subscriptions = createSlugSubscriptions()
 
 /** 后端一次最多收这么多 slug（server/src/routes/games.js 的 by-slugs）。 */
 const BATCH_MAX = 60
@@ -36,9 +37,10 @@ const BATCH_MAX = 60
 let version = 0
 const snapshots = new Map<string, { v: number; list: Game[] }>()
 
-function notify() {
+function notify(slugs: string[]) {
+  if (!slugs.length) return
   version++
-  for (const l of listeners) l()
+  subscriptions.notify(slugs)
 }
 
 /** 按 key 取（或重算）一份稳定的数组引用 */
@@ -69,11 +71,16 @@ async function fetchMissing(slugs: string[]) {
       const p = api
         .get<Game[]>(`/api/games/by-slugs?slugs=${encodeURIComponent(batch.join(','))}`)
         .then((games) => {
-          for (const g of games) cache.set(g.slug, g)
+          const changedSlugs: string[] = []
+          for (const g of games) {
+            cache.set(g.slug, g)
+            changedSlugs.push(g.slug)
+          }
           // 后端没返回的（不存在或已下架）也要记一笔，否则会无限重试。
           // 用 undefined 占位不行（cache.has 要为 true），所以记进 missing 集合。
           for (const s of batch) if (!cache.has(s)) notFound.add(s)
-          notify()
+          // 只叫醒正在展示这批游戏的组件，避免房间列表每批响应都重绘整页卡片。
+          notify(changedSlugs)
         })
         .catch(() => {
           // 失败就让它失败，下次进页面还有机会
@@ -138,12 +145,10 @@ export function useGamesBySlugs(slugs: string[]): Game[] {
   const [, force] = useState(0)
 
   useEffect(() => {
+    if (!slugs.length) return
     const rerender = () => force((n) => n + 1)
-    listeners.add(rerender)
-    return () => {
-      listeners.delete(rerender)
-    }
-  }, [])
+    return subscriptions.subscribe(slugs, rerender)
+  }, [key]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!slugs.length) return

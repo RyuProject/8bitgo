@@ -25,6 +25,13 @@ import { stripLang } from '@/config/languages'
 
 export const SIDEBAR_WIDTH = 240
 export const SIDEBAR_COLLAPSED_WIDTH = 72
+const EMPTY_GAME_SLUGS: string[] = []
+
+/** 隐藏的移动抽屉 / 沉浸游戏页不需要后台取侧栏游戏资料。 */
+function useSidebarContentVisible() {
+  const { desktop, mobileOpen, immersive } = useShell()
+  return !immersive && (desktop || mobileOpen)
+}
 
 /**
  * 左侧导航栏。
@@ -262,8 +269,10 @@ function LaterBox({ collapsed }: { collapsed: boolean }) {
   const lang = useLang()
   const user = useUser()
   const { setMobileOpen } = useShell()
+  const sidebarContentVisible = useSidebarContentVisible()
   // 只要前 3 个 slug，多取无益 —— gameCache 会按需向后端批量拉并缓存
-  const games = useGamesBySlugs((user?.favorites ?? []).slice(0, 3))
+  const favoriteSlugs = user?.favorites?.slice(0, 3) ?? EMPTY_GAME_SLUGS
+  const games = useGamesBySlugs(sidebarContentVisible ? favoriteSlugs : EMPTY_GAME_SLUGS)
   if (!games.length) return null
   return (
     <div className={cx('mb-3', collapsed && 'lg:hidden')}>
@@ -312,9 +321,12 @@ function PlayedBox({ collapsed }: { collapsed: boolean }) {
   const user = useUser()
   const guest = useGuestRecents()
   const { setMobileOpen } = useShell()
+  const sidebarContentVisible = useSidebarContentVisible()
   const noWasm = useNoWasmMode()
   // 浏览器没有 WebAssembly 时只列能跑的平台（services/noWasm.ts）
-  const games = useGamesBySlugs((user ? user.recent : guest).slice(0, 4)).filter((g) => gameListed(noWasm, g.platform, g.slug))
+  const recentSlugs = (user ? user.recent : guest).slice(0, 4)
+  const games = useGamesBySlugs(sidebarContentVisible ? recentSlugs : EMPTY_GAME_SLUGS)
+    .filter((g) => gameListed(noWasm, g.platform, g.slug))
   if (!games.length) return null
 
   const title = <>{t.sidebar.playedTitle}</>

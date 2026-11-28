@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url'
 import { loadForRoute } from './content.js'
 import { CACHE } from './cache.js'
 import { HTML_CACHE_TAG, edgePurgeEnabled } from './edge-purge.js'
-import { earlyHintLinks, retargetCoverHints } from './early-hints.js'
+import { earlyHintLinks, promoteSsrStylesheet, retargetCoverHints } from './early-hints.js'
 import { localePreloadTag } from './locale-preload.js'
 import { coverBaseUrl, publicSiteUrl } from './site-urls.js'
 import { requestHostname } from './url-normalize.js'
@@ -300,6 +300,8 @@ export async function renderPage(req, res, next) {
     // 带 __assets=origin 的是兜底页在 EdgeOne 取不下来 chunk 后的重新载入：这次整页留在主站（shared/cover-cdn-hint.js）
     if (cnSite && req.assetsFromOrigin) page = retargetStaticToOrigin(page, publicSiteUrl())
     else if (coverHint === 'cn' && !cnSite && !req.assetsFromOrigin) page = retargetStaticToCnEdge(page, cnEdgeOrigin(publicSiteUrl()))
+    // Vite 默认把阻塞 CSS 放在 head 尾部；主域大陆变体没有可安全复用的 103，必须尽早发现样式。
+    page = promoteSsrStylesheet(page)
     /*
       只给 200 页面发：Cloudflare 只从 200 HTML 学 Link，404 页带着也白带。
       主站上同一个地址有两份资源写法（大陆访客的 JS / CSS 走 cn.<裸域>/_cn，见上），而 Cloudflare 的 Early Hints

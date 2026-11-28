@@ -1512,39 +1512,28 @@ export function EmulatorPlayer({
   }, [playMode])
 
   /**
-   * 手机上游戏一开始跑，就顺手进沉浸模式并把画面滚到视口顶上。
-   *
-   * 为什么要自动：390pt 宽的屏幕上，顶栏 + 面包屑 + 大标题在画面上方吃掉一大截可视高度。
-   * 玩家点完「开始游戏」，游戏其实已经在跑了，但他看到的还是页面上半部分 ——
-   * 得自己往下滑才找得到画面。沉浸模式本来就是为这个场景做的，只是以前得手动点一下。
-   *
-   * 三条约束，缺一条就会变成骚扰：
-   *  · **只在手机上做**（isCompactViewport：窄屏，或者「矮 + 触屏」的横屏手机）。
-   *    桌面端播放器本来就是个够高的 16:9 框，自动把侧边栏收掉毫无道理。
-   *  · **只在「刚开始跑」这一下做**（拿 prevStatus 比对），不是每次 render 都推一把 ——
-   *    否则玩家自己点「退出沉浸」会被我们立刻按回去，按钮看起来像坏的。
-   *  · **我们开的我们关**：停下来 / 离开这个组件时恢复原样；玩家自己开的沉浸不去动它
-   *    （所以进来时先看 immersiveRef，已经开着就不认领）。
+   * 手机开局时马上进入游玩布局，避免核心下载完成后才把整页突然切到全屏。
+   * 这一步由 begin / 直播入口在启动动作里执行；状态变成 running 可能晚十几秒，
+   * 那时再切会产生大幅布局位移。玩家已经手动开启沉浸时不认领，停止 / 失败时只恢复我们开启的状态。
    */
   const immersiveRef = useRef(immersive)
   immersiveRef.current = immersive
-  const prevStatusRef = useRef(status)
   /** 这一局的沉浸是我们自动开的（而不是玩家手动开的），只有这种才由我们负责关掉 */
   const autoImmersiveRef = useRef(false)
+  const enterAutoImmersive = useCallback(() => {
+    if (!shellAvailable || !isCompactViewport() || immersiveRef.current) return
+    autoImmersiveRef.current = true
+    // 同步 ref，后续 status effect 不能再把同一布局延迟切换一次。
+    immersiveRef.current = true
+    setImmersive(true)
+  }, [shellAvailable, setImmersive])
   useEffect(() => {
-    const was = prevStatusRef.current
-    prevStatusRef.current = status
-    // 现场再问一次而不是读上面那些 state：这里要的是「跳变发生的这一刻」的尺寸，
-    // 不受 state 更新时序影响
-    if (status === 'running' && was !== 'running') {
-      if (!isCompactViewport() || immersiveRef.current) return
-      autoImmersiveRef.current = true
-      // 手机上沉浸 = 铺满视口的游玩布局（见 playMode），舞台是 fixed 的，不用再滚到它那儿
-      setImmersive(true)
-      return
-    }
-    if (status !== 'running' && was === 'running' && autoImmersiveRef.current) {
+    if (
+      autoImmersiveRef.current &&
+      (status === 'error' || status === 'idle')
+    ) {
       autoImmersiveRef.current = false
+      immersiveRef.current = false
       setImmersive(false)
     }
   }, [status, setImmersive])
@@ -2134,6 +2123,8 @@ export function EmulatorPlayer({
       core: coreOverride ?? coreRef.current,
       localFile: typeof game !== 'string',
     })
+    // 在切到 loading 和挂载运行时之前响应开局动作；等核心下载完再切会制造 CLS。
+    enterAutoImmersive()
     sessionCounter.current += 1
     const sessionId = sessionCounter.current
     resolvedCoreRef.current = null
@@ -3679,6 +3670,7 @@ export function EmulatorPlayer({
    */
   const startWatchLive = useCallback(
     (roomId: string) => {
+      enterAutoImmersive()
       setError(null)
       setNotice(null)
       setLiveViewers(0)
@@ -3730,7 +3722,7 @@ export function EmulatorPlayer({
       })
       setStatus('loading')
     },
-    [platform.id],
+    [enterAutoImmersive, platform.id],
   )
 
   // 观看链接进来就直接开看，不用再点一次。

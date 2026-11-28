@@ -14,7 +14,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Game } from '@/types'
 import { platformMap } from '@/data/platforms'
-import { isPlayable } from '@/emulator'
 import type { Lang, RomSlotLang } from '@/config/languages'
 import { ROM_LANGS, romLangFor } from '@/config/languages'
 import { useLang } from '@/services/lang'
@@ -27,12 +26,16 @@ import { chooseFasterRomRoute, chooseRomHost, ROM_ROUTE_RACE_MIN_BYTES, type Rom
 import { alternateRomUrls, downloadRomUrl } from './romHosts'
 import { rankRomRoutes, recordRomRouteFailure, recordRomRouteSuccess, romRouteOrigin } from './romRouteHealth'
 import { diagLog } from './startupDiagnostics'
+import { importWithRetry, lazyChunkFile } from './moduleLinkRecovery'
 import { coverCdnHint, type CoverCdnHint } from './cnHost'
 import { reportCoverCdnFailure, selectedCoverCdn, startCoverCdnProbe, subscribeCoverCdn } from './coverCdn'
 import { trackUploadActivity } from './uploadActivity'
 import type { UploadActivityOptions } from './uploadActivity'
 import { createRequestTimeout, withRequestTimeout } from './requestTimeout'
 import { createRomIntegrityWork, isIntegrityKey, type RomIntegrityManifestPayload } from './romIntegrityData'
+
+const loadEmulatorRegistry = () => import('@/emulator')
+const emulatorRegistryChunk = lazyChunkFile(loadEmulatorRegistry)
 
 export const ROM_BASE_KEY = '8bitgo.rom.base'
 export const ROM_API_KEY = '8bitgo.rom.api'
@@ -1873,10 +1876,18 @@ export function useRomUrl(game: Game | undefined, prefer?: RomSlotLang | null): 
       const base = getRomBase()
       const conventional = conventionalKeys(game)
       const hasSelfContainedConvention = conventional.some(selfContainedKey)
-      if ((!base && !hasSelfContainedConvention) || !isPlayable(game.platform)) {
+      // 首页也静态使用 romUrlForKey；运行时注册表只在需要判断约定 ROM 时加载，避免挤进首页首屏。
+      const registry = await importWithRetry(loadEmulatorRegistry, emulatorRegistryChunk, import.meta.url).catch((error) => {
+        console.warn(`[8bitgo/rom] ${game.slug} 的运行时元数据加载失败，暂停约定文件探测`, error)
+        if (!cancelled) setState({ status: 'missing', url: '', unreachable: true })
+        return null
+      })
+      if (!registry) return
+      const playable = registry.isPlayable(game.platform)
+      if ((!base && !hasSelfContainedConvention) || !playable) {
         // 这是配置问题（根地址没配、平台不支持），重试一万次也一样，不进重试。
         // 「平台还不支持」是正常状态（未上线的平台），不值得报；根地址空着是真的配错了。
-        if (!base && isPlayable(game.platform) && game.platform !== 'html5') {
+        if (!base && playable && game.platform !== 'html5') {
           console.warn(
             `[8bitgo/rom] 没有配置 ROM 根地址（VITE_ROM_BASE_URL 或 localStorage['${ROM_BASE_KEY}']），` +
               `${game.slug} 这类没绑过语言槽的游戏只能靠约定文件名探测，现在一个都探不了。`,

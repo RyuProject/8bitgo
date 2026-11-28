@@ -1,6 +1,7 @@
 import { Suspense, useEffect, useState } from 'react'
 import { Outlet, useLocation, useNavigationType } from 'react-router-dom'
 import { cx } from '@/lib/format'
+import { useCurrentUser } from '@/services/auth'
 import { onImPanelLoadRequest } from '@/services/im'
 import { ShellProvider, useShell } from './ShellContext'
 import { Sidebar } from './Sidebar'
@@ -77,13 +78,9 @@ function TvShell() {
 /**
  * 站内消息抽屉的延迟挂载壳。
  *
- * 抽屉依赖的 comments / avatar / imClient 不参与首屏绘制；默认等 3 秒和一个空闲窗口，
- * 把这些动态模块移出移动端首屏请求链。顶栏聚焦、悬停、点击或评论头像发私信时，服务接缝
- * 会取消等待并提前加载。即使访客一直没操作，抽屉仍会自动挂载，登录态变化时的 IM 生命周期
- * 不会被条件渲染截断；服务端与 hydration 首帧仍都不读登录态。
- *
- * ⚠️ 别改成条件渲染（登录才挂）：imClient 的 startImWhenIdle 是在这里挂载时排的，
- * 而它在服务端渲染时什么都不做是**故意的**（useCurrentUser 的 SSR 快照恒为 null）。
+ * 匿名访客没有消息会话，只有已登录或明确聚焦、悬停、点击消息入口时才加载它。
+ * 所有访客都在首屏后固定时刻解析消息模块，会把代码执行挤进玩家刚开始操作页面的窗口；
+ * 登录态由 auth store 通知，SSR 与水合首帧仍保持一致。
  */
 const loadImPanel = () => import('@/components/im/ImPanel')
 const AuthModalChunk = lazyNamed(() => import('@/components/auth/AuthModal'), 'AuthModal')
@@ -120,10 +117,16 @@ function DeferredAuthModal() {
 }
 
 function DeferredImPanel() {
+  const user = useCurrentUser()
   const [requested, setRequested] = useState(false)
   useEffect(() => onImPanelLoadRequest(() => setRequested(true)), [])
-  // 默认越过移动端首屏关键时间窗；顶栏收到真实交互意图时立即取消延迟，避免按钮显得没响应。
-  const mod = useIdleImport(loadImPanel, { timeout: 800, fallbackMs: 200, delayMs: requested ? 0 : 3000 })
+  // 登录用户在空闲时挂载；其它用户只在确实打开消息入口时才下载。
+  const mod = useIdleImport(loadImPanel, {
+    timeout: 800,
+    fallbackMs: 200,
+    delayMs: requested ? 0 : 3000,
+    enabled: requested || Boolean(user),
+  })
   return mod ? <mod.ImPanel /> : null
 }
 
@@ -190,8 +193,8 @@ function Shell() {
       <ClarityConsentBanner />
 
       {/*
-        站内消息的右侧抽屉。挂载之后**一直挂着**（靠 transform 滑出，所以收起也有动画），
-        但推迟到浏览器空闲才挂 —— 见上面 DeferredImPanel 的注释。
+        站内消息的右侧抽屉。挂载之后**一直挂着**（靠 transform 滑出，所以收起也有动画）；
+        登录用户在首屏后的空闲期挂载，匿名访客只有打开消息入口时才加载 —— 见上面 DeferredImPanel。
         它在服务端渲染时什么都不做：useCurrentUser() 的 SSR 快照恒为 null
         （见 services/auth.ts 的注释），所以 SSR 出来就是一个空壳。
         SDK 核心和抽屉所需插件是 services/imClient.ts 里的动态 import，不在首屏主包里。
