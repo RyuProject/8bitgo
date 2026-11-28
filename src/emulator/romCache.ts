@@ -26,8 +26,7 @@
  *     不该为了验一个大包再申请一整块连续内存。
  */
 
-import { romArchiveRef } from '@/lib/romArchiveUrl'
-import { canonicalRomUrl } from '@/services/romHosts'
+export { romCacheKey } from './romCacheKey'
 import type { RomIntegrityManifest } from '@/services/romIntegrityData'
 
 const DB_NAME = '8bitgo-roms'
@@ -220,23 +219,6 @@ function ask<T>(req: IDBRequest<T>): Promise<T | null> {
     req.onsuccess = () => resolve(req.result)
     req.onerror = () => resolve(null)
   })
-}
-
-/**
- * 这个播放地址能不能缓存。返回 '' 表示不缓存。
- *
- * blob: / data: 是本地文件转出来的，本来就没走网络；
- * 没有内容版本号的地址见文件头注释。
- */
-export function romCacheKey(url: string): string {
-  if (!url || /^(blob|data):/i.test(url)) return ''
-  const source = url.split('#')[0]
-  const queryAt = source.indexOf('?')
-  const version = queryAt >= 0 ? new URLSearchParams(source.slice(queryAt + 1)).get('romv')?.trim() : ''
-  // 空 romv 不是内容版本；把它当键会让覆盖后的新旧分片在同一地址下混合。
-  if (!version && !romArchiveRef(url)?.version.trim()) return ''
-  // 主域和 EdgeOne 镜像是同一个对象：键按主域写法存，换线路后照样命中，不再整份重下
-  return canonicalRomUrl(url)
 }
 
 /** 读缓存。命中返回字节，未命中返回 null */

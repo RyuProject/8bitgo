@@ -17,16 +17,8 @@ import {
   romRouteOrigin,
   romRouteRate,
 } from './romRouteHealth'
-
-const trim = (value: string | undefined) => {
-  const raw = String(value ?? '').trim().replace(/\/+$/, '')
-  if (!raw) return ''
-  return /^https?:\/\//i.test(raw) ? raw : `https://${raw}`
-}
-
-export const ENV_ROM_BASE = trim(import.meta.env.VITE_ROM_BASE_URL)
-export const ENV_ROM_MIRROR = trim(import.meta.env.VITE_ROM_MIRROR_URL)
-export const ENV_ROM_DOWNLOAD = trim(import.meta.env.VITE_ROM_DOWNLOAD_URL)
+import { canonicalRomUrl, ENV_ROM_BASE, ENV_ROM_DOWNLOAD, ENV_ROM_MIRROR } from './romHostConfig'
+export { canonicalRomUrl, ENV_ROM_BASE, ENV_ROM_DOWNLOAD, ENV_ROM_MIRROR } from './romHostConfig'
 
 /** 将本站 R2 对象改写到下载优选域；外站和自定义存储地址保持原样。 */
 export function downloadRomUrl(url: string, base = ENV_ROM_BASE, mirror = ENV_ROM_MIRROR, download = ENV_ROM_DOWNLOAD): string {
@@ -37,16 +29,6 @@ export function downloadRomUrl(url: string, base = ENV_ROM_BASE, mirror = ENV_RO
     }
   }
   return ''
-}
-
-/** 镜像或下载域地址换回主域写法；其它地址原样返回 */
-export function canonicalRomUrl(url: string, base = ENV_ROM_BASE, mirror = ENV_ROM_MIRROR): string {
-  if (!url || !base) return url
-  if (mirror && base !== mirror && url.startsWith(`${mirror}/`)) return `${base}${url.slice(mirror.length)}`
-  if (ENV_ROM_DOWNLOAD && base !== ENV_ROM_DOWNLOAD && url.startsWith(`${ENV_ROM_DOWNLOAD}/`)) {
-    return `${base}${url.slice(ENV_ROM_DOWNLOAD.length)}`
-  }
-  return url
 }
 
 /** 主域地址换成镜像写法；不在主域上的地址返回空串 */

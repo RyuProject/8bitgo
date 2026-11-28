@@ -70,9 +70,8 @@ import {
   rememberNdsPerformanceCore,
 } from './ndsAdaptivePerformance'
 import { psxChdSaveSlug, psxCoreForTransfer } from './psxChd'
-import { prewarmMameChdMediaOnHover, prewarmRuntime } from './prewarm'
 import { observeEjsCoreLoadEvent, observeEjsCoreWarmEvent } from './ejsStartWarm'
-import { defaultDos71SystemUrl, prewarmSystemCache } from './systemSource'
+import { defaultDos71SystemUrl } from './systemImageDefaults'
 import { canRestartInPlace } from './sessionRestart'
 import {
   canTryManualCoreRecovery,
@@ -4961,15 +4960,22 @@ export function EmulatorPlayer({
     const warmCore = pageRuntime?.id === 'emulatorjs' && romUrl
       ? psxCoreForTransfer(platform.id, selectedCore, romUrl)
       : selectedCore
-    prewarmRuntime(pageRuntime?.id, warmCore, aggressive)
-    if (aggressive && platform.id === 'arcade' && pageRuntime?.id === 'emulatorjs') {
-      // 只在已经走到“开始游戏”这个明确意图点才碰媒体盘；列表浏览、触屏 focus 和成人门之前
-      // 都不会提前下载。URL 来自已绑定的内容寻址对象，热区片可由正式开局安全续传。
-      prewarmMameChdMediaOnHover((arcadeMameDisksRef.current ?? [])
-        .map((disk) => ({ ...disk, url: romUrlForKey(disk.key) }))
-        .filter((disk) => Boolean(disk.url)))
+    // 预热只改善“已经靠近开局”的体验；把缓存与各引擎预热代码留到这个意图点，避免详情页空闲时下载。
+    void import('./prewarm').then(({ prewarmMameChdMediaOnHover, prewarmRuntime }) => {
+      prewarmRuntime(pageRuntime?.id, warmCore, aggressive)
+      if (aggressive && platform.id === 'arcade' && pageRuntime?.id === 'emulatorjs') {
+        // 只在已经走到“开始游戏”这个明确意图点才碰媒体盘；列表浏览、触屏 focus 和成人门之前
+        // 都不会提前下载。URL 来自已绑定的内容寻址对象，热区片可由正式开局安全续传。
+        prewarmMameChdMediaOnHover((arcadeMameDisksRef.current ?? [])
+          .map((disk) => ({ ...disk, url: romUrlForKey(disk.key) }))
+          .filter((disk) => Boolean(disk.url)))
+      }
+    }).catch(() => {})
+    if (pageRuntime?.id === 'jsdos' && effectiveDosSystemUrl) {
+      void import('./systemSource')
+        .then(({ prewarmSystemCache }) => prewarmSystemCache(effectiveDosSystemUrl))
+        .catch(() => {})
     }
-    if (pageRuntime?.id === 'jsdos' && effectiveDosSystemUrl) prewarmSystemCache(effectiveDosSystemUrl)
     if (pageRuntime?.id === 'jsdos' && dosSockdriveUrl) {
       // 不要为了 DOS 的悬停预热静态引入整份适配器；选中 js-dos 时适配器已并行预取。
       void import('./adapters/jsdos')

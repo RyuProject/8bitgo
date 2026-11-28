@@ -1,4 +1,4 @@
-import { romCacheKey } from './romCache'
+import { romCacheKey } from './romCacheKey'
 import { EJS_RUNTIME_GENERATION, NDS_COMPAT_CORE } from './paths'
 
 // 只靠引擎资源代次不够：单独重编核心却忘记换代时，会把旧核心的失败误套到新二进制。

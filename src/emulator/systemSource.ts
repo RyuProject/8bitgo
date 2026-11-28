@@ -35,35 +35,14 @@ import { versionedRomUrl } from '@/services/roms'
 import { downloadRomUrl } from '@/services/romHosts'
 import { fetchPublicSystemImageSettings, type PublicSystemImageSettings } from '@/services/systemImageSources'
 import { DOS_SYSTEM_IMAGE_CATALOG } from '../../shared/dos-system-images.js'
+import { DOS71_SYSTEM_FILE } from './systemImageDefaults'
+export { DOS71_SYSTEM_FILE, defaultDos71SystemUrl, isDos71SystemUrl } from './systemImageDefaults'
 
 /**
  * js-dos 官方镜像站。地址来自 `public/jsdos/js-dos.js` 里 studio 的下载列表 ——
  * 也就是我们这几个系统镜像的原始出处。
  */
 const OFFICIAL = 'https://br.cdn.dos.zone/js-dos/system'
-
-/**
- * 纯 DOS Sockdrive 不能直接当 DOSBox-X 内置 DOS 的 C:：官方扩展只把它挂成 BIOS 硬盘。
- * 因此流式 DOS 游戏统一先启动这块 10MB 的 DOS 7.1 系统盘，再把游戏盘作为 D: 使用。
- */
-export const DOS71_SYSTEM_FILE = 'system-dos7.1-v1.jsdos'
-
-export function isDos71SystemUrl(value: string): boolean {
-  try {
-    return new URL(value, typeof window === 'undefined' ? 'https://x/' : window.location.href).pathname
-      .split('/')
-      .pop() === DOS71_SYSTEM_FILE
-  } catch {
-    return false
-  }
-}
-
-/** 默认优先走资源域；开发环境没配公开根地址时退回同源白名单代理。 */
-export function defaultDos71SystemUrl(): string {
-  const env = (import.meta as ImportMeta & { env?: ImportMetaEnv }).env
-  const base = String(env?.VITE_ROM_BASE_URL || '').trim().replace(/\/+$/, '')
-  return base ? `${base}/systems/dos/${DOS71_SYSTEM_FILE}` : `/system-images/${DOS71_SYSTEM_FILE}`
-}
 
 /**
  * 我们的镜像路径 → 官方同一份镜像的地址。
