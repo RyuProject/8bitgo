@@ -78,8 +78,8 @@ export function PickedSection({ games, curated }: { games: Game[]; curated: bool
       />
       <HScroll>
         {games.map((g, i) => (
-          // 三张卡都立即取图以免首屏出现空格；高优先级只给实际 LCP，避免并行预载挤占它的带宽。
-          <GameCard key={g.slug} game={g} priority={i === 0} eager={i < 3} deferCover={i >= 3} />
+          // 第一张是首屏 LCP 候选；其余封面等接近视口再挂载，避免手机刚开页就抢首屏带宽。
+          <GameCard key={g.slug} game={g} priority={i === 0} eager={i === 0} deferCover={i !== 0} />
         ))}
       </HScroll>
     </section>
