@@ -11,6 +11,7 @@ import { isPc98FdiFileName } from './pc98'
 import { jsnesCanRun } from './nesMapper'
 import { probeNesRomHeader } from './nesRomProbe'
 import { resolveRuntime, runtimesFor, extOf } from './registry'
+import { canAutoFallbackRuntime } from './runtimeFallback'
 import { canCreateWebgl, canCreateWebgl2 } from './webglSupport'
 import { modernRuntimeSyntaxSupported, runtimeNeedsModernBrowser, runtimeRunsWithoutWasm, webAssemblyAvailable } from './browserSupport'
 import { awayflForcedByUrl, useAwayflChoice } from './awayflPolicy'
@@ -2719,7 +2720,8 @@ export function EmulatorPlayer({
         // NES 的 EmulatorJS 必须有 WebGL。jsnes 明确拒绝 ROM 后，若当前环境没有 WebGL，
         // 通用候选表里的 EmulatorJS 只是注定失败的第二跳；直接报告环境限制，避免循环重开。
         const next = runtimesFor(session.platform).find((r) =>
-          !ruledOut.includes(r.id) && !(session.platform === 'nes' && webglUnavailable && r.id === 'emulatorjs'),
+          canAutoFallbackRuntime(session.platform, extOf(session.game), r, ruledOut) &&
+          !(session.platform === 'nes' && webglUnavailable && r.id === 'emulatorjs'),
         )
         console.warn(
           `[8bitgo/runtime] ${session.runtime.id} 跑不了这份 ROM（${reason}）` +
