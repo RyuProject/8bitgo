@@ -6,7 +6,8 @@ import { ShellProvider, useShell } from './ShellContext'
 import { Sidebar } from './Sidebar'
 import { Topbar } from './Topbar'
 import { Footer } from './Footer'
-import { AuthModal } from '@/components/auth/AuthModal'
+import { useAuthModalOpen } from '@/services/authModal'
+import { lazyNamed } from '@/routes/lazy'
 import { PageSkeleton } from '@/components/ui/PageSkeleton'
 import { useIdleImport } from '@/components/ui/useIdleImport'
 import { useT } from '@/services/i18n'
@@ -85,6 +86,38 @@ function TvShell() {
  * 而它在服务端渲染时什么都不做是**故意的**（useCurrentUser 的 SSR 快照恒为 null）。
  */
 const loadImPanel = () => import('@/components/im/ImPanel')
+const AuthModalChunk = lazyNamed(() => import('@/components/auth/AuthModal'), 'AuthModal')
+
+/** 登录弹窗首屏不需要；收到打开请求时再拉 chunk，等待期间先给用户可访问的轻量反馈。 */
+function DeferredAuthModal() {
+  const open = useAuthModalOpen()
+  const t = useT()
+  if (!open) return null
+
+  return (
+    <Suspense
+      fallback={(
+        <div className="fixed inset-0 z-[80] flex items-center justify-center overflow-y-auto bg-black/50 p-4 backdrop-blur-sm">
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="auth-modal-loading-title"
+            aria-busy="true"
+            className="my-auto w-full max-w-lg rounded-2xl border border-line bg-surface p-6 shadow-2xl sm:p-8"
+          >
+            <h2 id="auth-modal-loading-title" className="text-2xl font-extrabold text-fg">{t.auth.title}</h2>
+            <div className="mt-6 flex justify-center" role="status">
+              <span className="sr-only">{t.common.loadingMore}</span>
+              <span aria-hidden className="h-6 w-6 animate-spin rounded-full border-2 border-brand border-t-transparent" />
+            </div>
+          </section>
+        </div>
+      )}
+    >
+      <AuthModalChunk />
+    </Suspense>
+  )
+}
 
 function DeferredImPanel() {
   const [requested, setRequested] = useState(false)
@@ -151,7 +184,7 @@ function Shell() {
       )}
 
       {/* 全站登录弹窗 */}
-      <AuthModal />
+      <DeferredAuthModal />
 
       {/* 第三方行为分析只有在访客主动同意后才会加载。 */}
       <ClarityConsentBanner />
