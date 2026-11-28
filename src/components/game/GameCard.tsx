@@ -90,8 +90,8 @@ export const GameCard = memo(function GameCard({ game, className, coverRatio = '
           eager={eager}
           priority={priority}
           deferMedia={deferCover}
-          // 优先图不能退回 100vw：精选横轨卡只有约 224px，手机上误取 480px 会浪费首屏带宽。
-          sizes={coverSizes ?? (priority ? GAME_CARD_IMAGE_SIZES : undefined)}
+          // 首屏优先图和主动加载的卡片都提供真实槽宽，避免按 100vw 选到过大的封面档。
+          sizes={coverSizes ?? (priority || eager ? GAME_CARD_IMAGE_SIZES : undefined)}
         />
         {rank !== undefined && (
           <span className="text-pixel absolute right-2 top-2 rounded bg-black/60 px-1.5 py-1 text-[11px] text-coin backdrop-blur">

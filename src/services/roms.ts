@@ -393,20 +393,22 @@ export function gameVideoFallbackUrl(game: { slug: string; video?: string }, cur
 
 /**
  * 变换宽度从实际 sizes 提示计算，避免 CSS 卡片尺寸变化后还要手工维护另一份档位表。
- * 三档分别覆盖约 2/3 倍、1 倍和 2 倍展示宽度，再向上吸附到共享宽度档：
- * 不同页面上尺寸相近的卡片会复用同一批 Cloudflare 变换结果，且候选不会低于目标像素。
+ * 候选覆盖约 2/3 倍、1 倍、4/3 倍和 2 倍展示宽度，再向上吸附到共享宽度档：
+ * 4/3 档补上约 160px 卡片在 2x 屏上所需的 320px，避免浏览器从 240px 一步跳到 480px。
+ * 不同页面上尺寸相近的卡片会复用同一批 Cloudflare 变换结果。
  * 不支持解析的 sizes（如 auto / vw）用列表卡片的 240px 最大宽度生成候选，浏览器仍会按真实布局尺寸挑选。
- * 96px 缩略图是独立固定档：它对应后台上传生成的 -96 对象，不能跟随卡片尺寸变化。
+ * 480px 是最大候选，不是预存文件；fit=scale-down 不会放大 300px 源图。
+ * 96px 小图也从同一份主图按需变换，避免为每款游戏保存独立缩略图。
  */
 const DEFAULT_COVER_SLOT_WIDTH = 240
-const COVER_WIDTH_SCALES = [2 / 3, 1, 2] as const
-const COVER_WIDTH_BUCKETS = [96, 160, 240, 320, 480, 640] as const
+const COVER_WIDTH_SCALES = [2 / 3, 1, 4 / 3, 2] as const
+const COVER_WIDTH_BUCKETS = [96, 160, 240, 320, 480] as const
+const MAX_COVER_WIDTH = COVER_WIDTH_BUCKETS[COVER_WIDTH_BUCKETS.length - 1]
 type CoverImageWidth = number
 
 function coverWidthBucket(width: number): number {
-  // 当前卡片最大约 288px，640px 已覆盖其 2x 候选；
-  // 更大的新卡片按 64px 步长扩展，避免被静默降清晰度。
-  return COVER_WIDTH_BUCKETS.find((bucket) => bucket >= width) ?? Math.ceil(width / 64) * 64
+  // 源图以 300px 为主，历史较大的图不超过 480px；更大变换不会增加细节。
+  return COVER_WIDTH_BUCKETS.find((bucket) => bucket >= width) ?? MAX_COVER_WIDTH
 }
 
 function coverWidthsForSizes(sizes = ''): number[] {
@@ -435,7 +437,9 @@ function transformedCoverUrl(src: string, width: CoverImageWidth, base: string, 
   // Cloudflare Image Resizing 当前会对 AVIF 源图返回 415；跳过这条必失败的请求，直接用已压缩的源图。
   if (!base || !/^https:\/\//i.test(base) || !src.startsWith(prefix) || /\.avif(?:[?#]|$)/i.test(src)) return ''
   const path = src.slice(base.length + 1)
-  return `${base}/cdn-cgi/image/width=${width},quality=75,format=${format},fit=scale-down/${path}`
+  const boundedWidth = Math.min(MAX_COVER_WIDTH, Math.max(1, Math.ceil(width)))
+  // scale-down 保证 300px 主图不会被 480px 候选放大成空耗流量的软图。
+  return `${base}/cdn-cgi/image/width=${boundedWidth},quality=75,format=${format},fit=scale-down/${path}`
 }
 
 /** 单张图片没有 srcset 时按传入展示尺寸转码，并保留不可变换源图回退。 */

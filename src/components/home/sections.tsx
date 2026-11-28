@@ -331,7 +331,7 @@ export function GenreGridSection({
               {games.map((g) => (
                 <li key={g.slug}>
                   <Link to={`/games/${g.slug}`} className="group flex items-center gap-3 rounded-xl p-1.5 transition hover:bg-black/[0.04]">
-                    {/* 44px 的样例缩略图：只下 96×96 那张，不发 300×300 的主图 */}
+                    {/* 44px 的样例只取主图的 96px 变换响应，不下载 300px 原尺寸 */}
                     <GameCover
                       game={g}
                       ratio="square"
