@@ -281,17 +281,11 @@ assert.equal(isolatedEmbedFor('diablo'), undefined, 'Diablo 不需要 COOP/COEP�
   const response = () => new Response(new Uint8Array(1024), { status: 206 })
   const fetchImpl = async (url, init) => {
     if (new URL(url).hostname.startsWith('primary-')) {
-      return await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => resolve(response()), 100)
-        if (init.signal.aborted) {
-          clearTimeout(timer)
-          reject(new Error('aborted'))
-        } else {
-          init.signal.addEventListener('abort', () => {
-            clearTimeout(timer)
-            reject(new Error('aborted'))
-          }, { once: true })
-        }
+      // 主线路保持未决，直到备用样本胜出后被取消；并发测试阻塞事件循环时，定时器可能同时醒来，
+      // 让慢主线也被记进缓存，随后把 128 条 LRU 容量测成两倍，误判热门备用线已被淘汰。
+      return await new Promise((_, reject) => {
+        if (init.signal.aborted) reject(new Error('aborted'))
+        else init.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
       })
     }
     backupCalls++
