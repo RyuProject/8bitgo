@@ -1,9 +1,9 @@
 /**
- * 给 Express 加 gzip。
+ * 给 Express 的动态文本加 Brotli / gzip。
  *
  * ── 为什么自己写而不用 compression 包 ────────────────────────
  * 只是不想为一个中间件多一条生产依赖：要的行为很窄（只压文本、只压动态响应），
- * Node 自带 zlib 就够。真需要 brotli / 静态预压缩那天再换包不迟。
+ * Node 自带 zlib 就够。
  *
  * ── 省在哪里 ────────────────────────────────────────────────
  * SSR 出来的首页 HTML 有几十 KB（数据直接内联在 window.__8BITGO__ 里），
@@ -18,12 +18,14 @@
  *    到我们这里 headersSent 已经是 true，改不了响应头了 —— 正好，静态文件本来
  *    就该由边缘/CDN 压，源站不该为它们付 CPU。
  */
-import { createGzip } from 'node:zlib'
+import { constants, createBrotliCompress, createGzip } from 'node:zlib'
 
-/** 小于这个体积就不压：省下的字节还不够抵消一次 zlib 上下文初始化 */
+/** 小于这个体积就不压：省下的字节还不够抵消一次压缩上下文初始化 */
 const MIN_BYTES = Number(process.env.GZIP_MIN_BYTES || 1024)
 /** 5 是「再往上每级只多省 1~2%，CPU 却翻倍」那个拐点 */
 const LEVEL = Number(process.env.GZIP_LEVEL || 5)
+/** 动态响应在请求时压缩，Brotli 选低档位，避免为少量字节节省拖慢源站首字节。 */
+const BROTLI_LEVEL = 4
 
 /** 值得压的 Content-Type。逐个前缀比，命中就压 */
 const COMPRESSIBLE = [
@@ -53,14 +55,39 @@ function shouldCompress(res) {
   return true
 }
 
+/** 按 Accept-Encoding 的 q 值协商；同优先级时选体积通常更小的 Brotli。 */
+function encodingQuality(header, coding) {
+  let explicit = null
+  let wildcard = null
+  for (const part of String(header || '').toLowerCase().split(',')) {
+    const [name, ...params] = part.trim().split(';').map((item) => item.trim())
+    if (!name) continue
+    const qParam = params.find((item) => item.startsWith('q='))
+    const q = qParam ? Number(qParam.slice(2)) : 1
+    const quality = Number.isFinite(q) ? Math.max(0, Math.min(1, q)) : 0
+    if (name === coding) explicit = explicit === null ? quality : Math.max(explicit, quality)
+    else if (name === '*') wildcard = wildcard === null ? quality : Math.max(wildcard, quality)
+  }
+  return explicit ?? wildcard ?? 0
+}
+
+function negotiatedEncoding(header) {
+  const br = encodingQuality(header, 'br')
+  const gzip = Math.max(encodingQuality(header, 'gzip'), encodingQuality(header, 'x-gzip'))
+  if (br > 0 && br >= gzip) return 'br'
+  if (gzip > 0) return 'gzip'
+  return ''
+}
+
 export function gzipResponse(req, res, next) {
   if (req.method === 'HEAD') return next()
-  // 客户端明说不收就别费劲
-  if (!/\b(?:gzip|x-gzip)\b/.test(String(req.headers['accept-encoding'] || ''))) return next()
+  const encoding = negotiatedEncoding(req.headers['accept-encoding'])
+  // 客户端不接受可用的压缩编码就原样发送。
+  if (!encoding) return next()
 
   const origWrite = res.write.bind(res)
   const origEnd = res.end.bind(res)
-  let gzip = null
+  let compressor = null
   let decided = false
 
   const decide = () => {
@@ -69,19 +96,26 @@ export function gzipResponse(req, res, next) {
     // 头已经发出去了（express.static / send 走的就是这条路）—— 改不动了，原样放行
     if (res.headersSent) return
     if (!shouldCompress(res)) return
-    res.setHeader('Content-Encoding', 'gzip')
+    res.setHeader('Content-Encoding', encoding)
     res.removeHeader('Content-Length')
     // 同一个 URL 可能压也可能不压，缓存层必须按这个请求头分开存
     const vary = String(res.getHeader('vary') || '')
     if (!/accept-encoding/i.test(vary)) {
       res.setHeader('Vary', vary ? `${vary}, Accept-Encoding` : 'Accept-Encoding')
     }
-    gzip = createGzip({ level: LEVEL })
-    gzip.on('data', (chunk) => origWrite(chunk))
-    gzip.on('end', () => origEnd())
-    gzip.on('error', () => {
+    compressor = encoding === 'br'
+      ? createBrotliCompress({
+          params: {
+            [constants.BROTLI_PARAM_QUALITY]: BROTLI_LEVEL,
+            [constants.BROTLI_PARAM_MODE]: constants.BROTLI_MODE_TEXT,
+          },
+        })
+      : createGzip({ level: LEVEL })
+    compressor.on('data', (chunk) => origWrite(chunk))
+    compressor.on('end', () => origEnd())
+    compressor.on('error', () => {
       // 压缩中途炸了：客户端一条字节都没收到，只能把连接关掉，
-      // 比发半个 gzip 流过去强 —— 后者会让浏览器报一句看不懂的解码错误
+      // 比发半个压缩流过去强 —— 后者会让浏览器报一句看不懂的解码错误
       try {
         res.destroy()
       } catch {
@@ -92,16 +126,16 @@ export function gzipResponse(req, res, next) {
 
   res.write = function patchedWrite(chunk, ...rest) {
     decide()
-    if (!gzip) return origWrite(chunk, ...rest)
-    if (chunk) gzip.write(chunk)
+    if (!compressor) return origWrite(chunk, ...rest)
+    if (chunk) compressor.write(chunk)
     return true
   }
 
   res.end = function patchedEnd(chunk, ...rest) {
     decide()
-    if (!gzip) return origEnd(chunk, ...rest)
-    if (chunk) gzip.write(chunk)
-    gzip.end()
+    if (!compressor) return origEnd(chunk, ...rest)
+    if (chunk) compressor.write(chunk)
+    compressor.end()
     return true
   }
 

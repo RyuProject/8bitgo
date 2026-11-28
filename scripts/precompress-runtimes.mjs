@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 给各平台模拟器的大文件预先生成 Brotli 11 压缩版（`<原名>.br` + `<原名>.br.json`）。
+ * 给各平台模拟器的大文件和 Vite 哈希 JS/CSS 预先生成 Brotli 11 压缩版（`<原名>.br` + `<原名>.br.json`）。
  *
  * ── 为什么（2026-11-09 在生产机上实测 Cloudflare 实际下发的字节数）──────────────
  * Cloudflare / EdgeOne 对 wasm 是现场压缩，压缩级别不高；Brotli 11 + 16MB 窗口还能再省 25~30%：
@@ -34,9 +34,10 @@ const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 
 /**
  * 要预压的文件（相对静态根目录）。和 server/src/precompressed-static.js 的
- * PRECOMPRESSED_RUNTIME_PATTERNS 一一对应：这里漏了只是不预压，那边漏了就白生成。
+ * PRECOMPRESSED_STATIC_PATTERNS 一一对应：这里漏了只是不预压，那边漏了就白生成。
  */
 export const RUNTIME_PRECOMPRESS_PATTERNS = Object.freeze([
+  /^assets\/[^/]+-[A-Za-z0-9_-]{8,}\.(?:css|js)$/,
   /^ruffle\/v[^/]+\/[^/]+\.wasm$/,
   /^jsdos\/v[^/]+\/emulators\/(?:wdosbox|wdosbox-x|wdosbox-x-jspi|wlibzip)\.wasm$/,
   /^dolphin\/v[^/]+\/cores\/dolphin\/[^/]+\.wasm$/,
@@ -46,8 +47,10 @@ export const RUNTIME_PRECOMPRESS_PATTERNS = Object.freeze([
   /^eka2l1\/v[0-9a-f]{12}\/eka2l1\.(?:wasm|data)$/,
 ])
 
-const SCAN_DIRS = ['ruffle', 'jsdos', 'dolphin', 'play', 'ppsspp', 'emulatorjs', 'eka2l1']
+const SCAN_DIRS = ['assets', 'ruffle', 'jsdos', 'dolphin', 'play', 'ppsspp', 'emulatorjs', 'eka2l1']
 const MIN_SAVING = 0.05
+const MIN_APP_ASSET_BYTES = 1024
+const APP_ASSET_PATTERN = /^assets\/[^/]+-[A-Za-z0-9_-]{8,}\.(?:css|js)$/
 
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex')
 // 同字节的历史版本共用压缩与反解校验结果，避免重复做高质量 Brotli 解压。
@@ -148,10 +151,18 @@ function check(base) {
   let failed = 0
   let present = 0
   for (const path of runtimeTargets(base)) {
-    if (!existsSync(`${path}.br`)) continue
+    const data = readFileSync(path)
+    const rel = relative(base, path).split('\\').join('/')
+    const compressedExists = existsSync(`${path}.br`)
+    if (!compressedExists) {
+      if (APP_ASSET_PATTERN.test(rel) && data.byteLength >= MIN_APP_ASSET_BYTES) {
+        console.error(`✖ ${rel}.br 缺失；先运行 node scripts/precompress-runtimes.mjs dist/client`)
+        failed += 1
+      }
+      continue
+    }
     present += 1
     const sidecar = readSidecar(path)
-    const data = readFileSync(path)
     if (!sidecar || sidecar.bytes !== data.byteLength || sidecar.sha256 !== sha256(data) ||
       statSync(`${path}.br`).size !== sidecar.brBytes) {
       console.error(`✖ ${relative(base, path)}.br 与原文件不一致；先运行 node scripts/precompress-runtimes.mjs`)
