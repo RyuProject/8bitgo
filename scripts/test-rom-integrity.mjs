@@ -274,14 +274,27 @@ try {
   let rangeDigestCalls = 0
   let slowFirstRangeDigestSettled = false
   let laterRangeBlockStartedBeforeSlowFirstSettled = false
+  let notifyLaterRangeBlockStarted
+  const laterRangeBlockStarted = new Promise((resolve) => { notifyLaterRangeBlockStarted = resolve })
   crypto.subtle.digest = async (...args) => {
     const index = new Uint8Array(args[1])[0] - 0xe0
     activeDigests++
     rangeDigestCalls++
     maximumActiveDigests = Math.max(maximumActiveDigests, activeDigests)
-    if (index >= 2 && !slowFirstRangeDigestSettled) laterRangeBlockStartedBeforeSlowFirstSettled = true
+    if (index >= 2 && !slowFirstRangeDigestSettled) {
+      laterRangeBlockStartedBeforeSlowFirstSettled = true
+      notifyLaterRangeBlockStarted()
+    }
     try {
-      await new Promise((resolve) => setTimeout(resolve, index === 0 ? 100 : 5))
+      if (index === 0) {
+        // 用事件屏障制造慢块，避免机器负载影响定时器顺序，让并行补槽断言稳定复现。
+        let timeout
+        try {
+          await Promise.race([laterRangeBlockStarted, new Promise((resolve) => { timeout = setTimeout(resolve, 5000) })])
+        } finally {
+          clearTimeout(timeout)
+        }
+      }
       return await originalDigest(...args)
     } finally {
       if (index === 0) slowFirstRangeDigestSettled = true
@@ -833,8 +846,12 @@ try {
     } })
     rangeOneAttempts++
     if (rangeOneAttempts === 1) {
+      // 原生 fetch 收到已经中止的 signal 会立即 reject；桩也要模拟这点，否则重试竞态会悬空。
+      if (init.signal?.aborted) return Promise.reject(new DOMException('stalled request aborted', 'AbortError'))
       return new Promise((_resolve, reject) => {
-        init.signal.addEventListener('abort', () => reject(new DOMException('stalled request aborted', 'AbortError')), { once: true })
+        const rejectAborted = () => reject(new DOMException('stalled request aborted', 'AbortError'))
+        init.signal.addEventListener('abort', rejectAborted, { once: true })
+        if (init.signal.aborted) rejectAborted()
       })
     }
     return new Response(retryContent.slice(start, end + 1), { status: 206, headers: {

@@ -99,6 +99,13 @@ check('ROM 语言数量使用足够对比度的继承色', () => {
   assert.doesNotMatch(links, /opacity-60/, '低对比度透明度不能用于小号计数')
 })
 
+check('登录弹窗等到用户打开时才加载，不挤首页首屏脚本', () => {
+  const layout = read('src/components/layout/Layout.tsx')
+  assert.doesNotMatch(layout, /import \{ AuthModal \} from ['"]@\/components\/auth\/AuthModal/)
+  assert.match(layout, /lazyNamed\(\(\) => import\(['"]@\/components\/auth\/AuthModal['"]\), ['"]AuthModal['"]\)/)
+  assert.match(layout, /function DeferredAuthModal\(\)[\s\S]*useAuthModalOpen\(\)[\s\S]*if \(!open\) return null[\s\S]*<Suspense/)
+})
+
 check('首页各个区块的“查看全部”链接有不同的可访问名称', () => {
   const header = read('src/components/ui/SectionHeader.tsx')
   assert.match(header, /aria-label=\{`\$\{moreLabel \?\? t\.common\.viewAll\}: \$\{title\}`\}/, '相同可见文字的区块链接应在读屏名称中说明各自标题')
