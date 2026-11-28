@@ -786,6 +786,8 @@ async function readRom(
   onRomLoadStart?.()
   const loadLimits = dosLoadLimitsForBrowser()
   const arrayBufferLimit = loadLimits.arrayBufferBytes
+  const bundleBlobLimit = loadLimits.bundleBlobBytes
+  const bundleUnpackedLimit = loadLimits.bundleUnpackedBytes
   if ((!preferReadyBundleBlob || windowsGuest) && typeof game === 'string' && isRomPackUrl(game)) {
     const header = await inspectRemoteRomPack(game, signal)
     if (header && header.originalSize > arrayBufferLimit) {
@@ -804,7 +806,13 @@ async function readRom(
   */
   if (preferReadyBundleBlob) {
     if (typeof game === 'string') {
-      const loaded = await prepareRemoteDosBundle(game, onProgress, signal ?? new AbortController().signal)
+      const loaded = await prepareRemoteDosBundle(
+        game,
+        onProgress,
+        signal ?? new AbortController().signal,
+        bundleBlobLimit,
+        bundleUnpackedLimit,
+      )
       if (loaded.ready) return { name: loaded.name, bundleBlob: loaded.blob }
       if (loaded.blob.size > arrayBufferLimit) {
         throw new Error(`大型 DOS 包缺少 .jsdos/dosbox.conf，超过此设备的安全内存载入上限（${(arrayBufferLimit / 1024 ** 2).toFixed(0)} MiB）；请重新打包或使用内存更大的设备`)
@@ -816,9 +824,12 @@ async function readRom(
       }
     }
 
+    if (game.size > bundleBlobLimit) {
+      throw new Error(`DOS 游戏包超过此设备的安全载入上限（${(bundleBlobLimit / 1024 ** 2).toFixed(0)} MiB）；大型游戏请使用 Sockdrive 或更高内存设备`)
+    }
     const magic = new Uint8Array(await readBlobRange(game, 0, 4, 10_000, signal))
     if (magic[0] === 0x50 && magic[1] === 0x4b) {
-      if (await isReadyJsdosBundleBlob(game, 30_000, signal)) {
+      if (await isReadyJsdosBundleBlob(game, 30_000, signal, bundleUnpackedLimit)) {
         onProgress?.({ phase: 'rom', loaded: game.size, total: game.size, ratio: 1, cached: true })
         return { name: game.name, bundleBlob: game }
       }
@@ -1836,6 +1847,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           guest = buildWindowsGuestConfig(systemConfig, dosboxConfig)
           const gameLayer = makeWindowsGameLayer(
             rom.buf, options.dosExecutable, guest.gameDrive, registryImport, compatibleExtras,
+            dosLoadLimitsForBrowser().bundleUnpackedBytes,
           )
           if (!gameLayer.executable) throw new Error('Windows 游戏层没有可启动的 EXE')
           gameExecutable = gameLayer.executable
@@ -1936,6 +1948,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             // 直接并进最终 bundle，避免「整包复制一次 → 再解析并重打」的双倍峰值内存。
             compatibleExtras,
             launchArguments,
+            dosLoadLimitsForBrowser().bundleUnpackedBytes,
           )
           primaryUrl = URL.createObjectURL(bundle.blob)
         }

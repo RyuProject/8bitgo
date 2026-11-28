@@ -38,6 +38,8 @@ for (const snapshot of ['jsdos', 'ruffle']) {
 const viteConfig = readFileSync(join(root, 'vite.config.ts'), 'utf8')
 assert.match(viteConfig, /import \{ HUGE_STATIC_DIRS \} from '\.\/scripts\/lib\/vite-static-exclusions\.mjs'/)
 assert.match(viteConfig, /const HUGE_STATIC = HUGE_STATIC_DIRS/)
+assert.match(viteConfig, /for \(const \[signal, code\] of BUILD_STOP_SIGNALS\) \{\s*process\.once\(signal, \(\) => \{\s*try \{\s*restoreAll\(\)/)
+assert.match(viteConfig, /console\.error\('\[vite\] 中止构建时恢复静态运行时目录失败：', error\)[\s\S]*process\.exit\(code\)/)
 
 // EKA2L1 的版本目录在 public/ 与 dist/client/ 间软链；页面壳需短缓存，pthread 资源需隔离头。
 for (const [file, expectedCache] of [

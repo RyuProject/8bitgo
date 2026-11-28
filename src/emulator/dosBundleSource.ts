@@ -18,11 +18,29 @@ import {
   romCachePutBlob,
 } from './romCache'
 import { isReadyJsdosBundleBlob } from '@/lib/jsdosBundle'
-import { isBlobReadError, isRomPackBytes, isRomPackUrl, prewarmRomPackDecoder, readBlobRange, unpackRomPackBlob } from '@/services/romPack'
+import { inspectRemoteRomPack, isBlobReadError, isRomPackBytes, isRomPackUrl, prewarmRomPackDecoder, readBlobRange, unpackRomPackBlob } from '@/services/romPack'
 import { fetchRomIntegrityManifest, romBlobIntegrityTag, romIntegrityManifestTag, verifyRomBlob } from '@/services/romIntegrity'
 
 /** 四字节探测不该被浏览器的坏 Blob 存储拖成一局永不结束。 */
 const DOS_BLOB_PROBE_TIMEOUT_MS = 10_000
+const DEFAULT_DOS_BUNDLE_BLOB_BYTES = 2 * 1024 * 1024 * 1024
+const DEFAULT_DOS_BUNDLE_UNPACKED_BYTES = 2 * 1024 * 1024 * 1024
+// 8BG 头与每块认证标签是密文包自身的额外开销，不应挤占原始 ZIP 的设备预算。
+const DOS_8BG_CONTAINER_OVERHEAD_BYTES = 16 * 1024 * 1024
+
+class DosBundleSizeLimitError extends RangeError {
+  override name = 'DosBundleSizeLimitError'
+
+  constructor(maxBytes: number) {
+    super(`DOS 游戏包超过此设备的安全载入上限（${Math.ceil(maxBytes / 1024 / 1024)} MiB）；大型游戏请使用 Sockdrive 或更高内存设备`)
+  }
+}
+
+function isDosBundleLimitError(error: unknown): boolean {
+  if (!(error instanceof RangeError)) return false
+  const name = (error as { name?: unknown }).name
+  return name === 'DosBundleSizeLimitError' || name === 'RomPackSizeLimitError' || name === 'ZipExpansionLimitError'
+}
 
 function throwIfAborted(signal: AbortSignal): void {
   if (signal.aborted) throw signal.reason ?? new DOMException('已取消', 'AbortError')
@@ -51,13 +69,15 @@ async function decodeDosBundle(
   fallbackName: string,
   onChunk?: () => void,
   signal?: AbortSignal,
+  maxDecodedBytes = DEFAULT_DOS_BUNDLE_BLOB_BYTES,
+  maxUnpackedBytes = DEFAULT_DOS_BUNDLE_UNPACKED_BYTES,
 ): Promise<Omit<DosBundleBlob, 'fromCache'>> {
   if (signal) throwIfAborted(signal)
   const magic = new Uint8Array(await readBlobRange(stored, 0, 4, DOS_BLOB_PROBE_TIMEOUT_MS, signal))
   let blob = stored
   let name = fallbackName
   if (isRomPackBytes(magic)) {
-    const unpacked = await unpackRomPackBlob(stored, onChunk, signal)
+    const unpacked = await unpackRomPackBlob(stored, onChunk, signal, maxDecodedBytes)
     blob = unpacked.blob
     name = unpacked.name
   }
@@ -66,7 +86,7 @@ async function decodeDosBundle(
   const head = new Uint8Array(await readBlobRange(blob, 0, 4, DOS_BLOB_PROBE_TIMEOUT_MS, signal))
   const zip = head.length >= 2 && head[0] === 0x50 && head[1] === 0x4b
   // 单个 EXE/COM 仍允许走旧逻辑；只有“看起来是 ZIP 却损坏”的包才应该在这里明确失败。
-  const ready = zip ? await isReadyJsdosBundleBlob(blob, 30_000, signal) : false
+  const ready = zip ? await isReadyJsdosBundleBlob(blob, 30_000, signal, maxUnpackedBytes) : false
   if (signal) throwIfAborted(signal)
   return { name, blob, ready }
 }
@@ -75,7 +95,15 @@ export async function prepareRemoteDosBundle(
   url: string,
   onProgress: ((progress: LoadProgress) => void) | undefined,
   signal: AbortSignal,
+  maxBundleBytes = DEFAULT_DOS_BUNDLE_BLOB_BYTES,
+  maxUnpackedBytes = DEFAULT_DOS_BUNDLE_UNPACKED_BYTES,
 ): Promise<DosBundleBlob> {
+  if (!Number.isSafeInteger(maxBundleBytes) || maxBundleBytes <= 0 ||
+      !Number.isSafeInteger(maxUnpackedBytes) || maxUnpackedBytes <= 0) {
+    throw new RangeError('DOS 游戏包容量上限无效')
+  }
+  const maxStoredBytes = maxBundleBytes + (isRomPackUrl(url) ? DOS_8BG_CONTAINER_OVERHEAD_BYTES : 0)
+  if (!Number.isSafeInteger(maxStoredBytes)) throw new RangeError('DOS 游戏包容量上限过大')
   const fallbackName = fileNameFromUrl(url)
   const cacheKey = romCacheKey(url)
   // 普通 DOS 包走这里而不经过 loadGameBytes：解码器和密钥同样要与下载（或读缓存）并行取，
@@ -91,7 +119,7 @@ export async function prepareRemoteDosBundle(
     const report = () => onProgress?.({ phase: 'starting', detail: 'rom-pack' })
     report()
     // 每解完一块再报一次：500MB 的包有 63 块，低配机上会超过启动看门狗的 120 秒
-    return decodeDosBundle(stored, fallbackName, report, signal)
+    return decodeDosBundle(stored, fallbackName, report, signal, maxBundleBytes, maxUnpackedBytes)
   }
 
   if (cacheKey) {
@@ -101,6 +129,7 @@ export async function prepareRemoteDosBundle(
       const cacheRecord = cachedRecord ?? { blob: cached }
       if (signal.aborted) throw new DOMException('已取消', 'AbortError')
       try {
+        if (cached.size > maxStoredBytes) throw new DosBundleSizeLimitError(maxBundleBytes)
         const integrity = await integrityTask
         if (integrity) {
           const integrityTag = await romIntegrityManifestTag(integrity)
@@ -119,6 +148,7 @@ export async function prepareRemoteDosBundle(
       } catch (error) {
         // 用户切换游戏时停止解包即可，不能把有效缓存误判为损坏并删除。
         if (signal.aborted) throw signal.reason ?? new DOMException('已取消', 'AbortError')
+        if (isDosBundleLimitError(error)) throw error
         // 本机旧密钥、截断写入或旧格式都不能把玩家永久困住；删掉后立刻回远端自愈。
         await romCacheDelete(cacheKey).catch(() => {})
         console.warn('[jsdos] DOS ROM 缓存不可用，重新下载：', error)
@@ -126,11 +156,19 @@ export async function prepareRemoteDosBundle(
     }
   }
 
+  // 预制 bundle 本来就能走 Blob 直通，因此不能套 ArrayBuffer 上限；但 8BG 头里的原文长度可
+  // 在 Range 预检时先读到，超限就停止，避免弱网把整份大包下完后才发现手机带不动。
+  if (isRomPackUrl(url)) {
+    const header = await inspectRemoteRomPack(url, signal)
+    if (header && header.originalSize > maxBundleBytes) throw new DosBundleSizeLimitError(maxBundleBytes)
+  }
+
   const download = (resume: boolean) => fetchBlobWithProgress(url, {
     phase: 'rom',
     onProgress,
     signal,
     alternateUrls: alternateRomUrls(url),
+    maxBytes: maxStoredBytes,
     // URL 没有 romv 时可能被后台原地替换，绝不能把两代分片拼成一个“完整”坏包。
     resumeKey: resume ? cacheKey || undefined : undefined,
     check: (response) => {

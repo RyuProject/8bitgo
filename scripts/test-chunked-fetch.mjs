@@ -1130,7 +1130,7 @@ await check('解包逐块报进度；读不出时作废续传 / 缓存只重下�
   assert.equal((ejs.match(/const unpacked = await unpackRomPackForEngine\(stored, onProgress\)/g) ?? []).length, 2)
   assert.equal((ejs.match(/if \(!isBlobReadError\(error\) \|\| memoryRomOf\((?:stored|blob)\)\) throw error/g) ?? []).length, 2)
   const dos = read('src/emulator/dosBundleSource.ts')
-  assert.match(dos, /decodeDosBundle\(stored, fallbackName, report, signal\)/)
+  assert.match(dos, /decodeDosBundle\(stored, fallbackName, report, signal, maxBundleBytes, maxUnpackedBytes\)/)
   assert.match(dos, /if \(!cacheKey \|\| !isBlobReadError\(error\)\) throw error/)
 })
 

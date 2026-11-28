@@ -190,6 +190,26 @@ function makeZip(files) {
   return out.buffer
 }
 
+/** 只篡改中央目录的展开大小，用极小文件覆盖 ZIP 炸弹边界，不实际分配大包。 */
+function setDeclaredUnpackedSize(buffer, wantedName, size) {
+  const out = buffer.slice(0)
+  const bytes = new Uint8Array(out)
+  const view = new DataView(out)
+  for (let at = 0; at + 46 <= bytes.length; at++) {
+    if (view.getUint32(at, true) !== 0x02014b50) continue
+    const nameLength = view.getUint16(at + 28, true)
+    const extraLength = view.getUint16(at + 30, true)
+    const commentLength = view.getUint16(at + 32, true)
+    const name = new TextDecoder().decode(bytes.subarray(at + 46, at + 46 + nameLength))
+    if (name === wantedName) {
+      view.setUint32(at + 24, size, true)
+      return out
+    }
+    at += 45 + nameLength + extraLength + commentLength
+  }
+  throw new Error(`测试 ZIP 里找不到中央目录条目：${wantedName}`)
+}
+
 /** 从打好的包里读回条目名，用来断言重打包之后名字没被搞坏 */
 function namesOf(bytes) {
   const b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
@@ -723,6 +743,36 @@ console.log('\n── 自带 dosbox.conf 的 .jsdos 包不能吞掉后台配置 
   }
   const largePath = new TailOnlyBlob([bundled])
   ok(await isReadyJsdosBundleBlob(largePath), '⭐ 大型现成 bundle 只读 ZIP 尾部即可判定为可直接启动')
+
+  const inflatedDeclaration = setDeclaredUnpackedSize(makeZip([
+    { name: '.jsdos/dosbox.conf', data: te.encode('[autoexec]\nGAME.EXE\n') },
+    { name: 'GAME.EXE', data: EXE },
+  ]), 'GAME.EXE', 2048)
+  await assert.rejects(
+    () => isReadyJsdosBundleBlob(new Blob([inflatedDeclaration]), 30_000, undefined, 1024),
+    /DOS ROM 解压后超过此设备的安全载入上限/,
+    '预制 bundle 也必须在交给 js-dos 前核对中央目录展开总量',
+  )
+  const zip64Sentinel = setDeclaredUnpackedSize(inflatedDeclaration, 'GAME.EXE', 0xffffffff)
+  await assert.rejects(
+    () => assertValidZipBlob(new Blob([zip64Sentinel]), 'DOS ROM'),
+    /当前解析器不支持的 ZIP64 条目/,
+    'ZIP64 哨兵不能被当成 4 GiB 准确大小通过桌面预算',
+  )
+  await assert.rejects(
+    () => isReadyJsdosBundleBlob(new Blob([zip64Sentinel])),
+    /当前解析器不支持的 ZIP64 条目/,
+  )
+  await assert.rejects(
+    () => makeJsdosBundle('game.zip', inflatedDeclaration, undefined, undefined, undefined, undefined, [], [], 1024),
+    /DOS ROM 解压后超过此设备的安全载入上限/,
+    '普通 DOS ZIP 重打包路径不能绕过设备展开预算',
+  )
+  assert.throws(
+    () => makeWindowsGameLayer(inflatedDeclaration, 'GAME.EXE', 'd', undefined, [], 1024),
+    /DOS ROM 解压后超过此设备的安全载入上限/,
+    'Windows 游戏盘打包同样必须守住展开预算',
+  )
 
   let oversizedCentralRead = false
   const oversizedCentralBytes = 16 * 1024 * 1024 + 1

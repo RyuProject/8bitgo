@@ -12,7 +12,7 @@
  * 压缩前后大小一起搬过去，完全不用碰数据本身。
  */
 
-import { assertValidZipBlob, extractZipEntry, crc32, decodeZipName, rawDeflateStream } from './unzip'
+import { assertValidZipBlob, extractZipEntry, crc32, decodeZipName, rawDeflateStream, ZipExpansionLimitError } from './unzip'
 import { mergeDosboxConfigOverride, parseDosboxConfigOverride } from '../../shared/dosbox-config.js'
 import { isPc98FdiFileName } from '../emulator/pc98'
 import { dosMountedDrives, planDosBatchCompatibility } from './dosBatchCompat'
@@ -89,7 +89,10 @@ export function readZipEntries(buf: ArrayBuffer): ZipEntry[] | null {
     */
     const name = decodeZipName(new Uint8Array(buf, at + 46, nameLen), Boolean(flags & 0x800)).replace(/\\/g, '/')
     const compressedSize = v.getUint32(at + 20, true)
+    const uncompressedSize = v.getUint32(at + 24, true)
     const localOffset = v.getUint32(at + 42, true)
+    // 这套轻量重打包器不实现 ZIP64；哨兵值不能当成 4 GiB 内的真实条目长度。
+    if (compressedSize === ZIP32_MAX || uncompressedSize === ZIP32_MAX || localOffset === ZIP32_MAX) return null
     if (localOffset + 30 > v.byteLength || v.getUint32(localOffset, true) !== 0x04034b50) return null
     const dataStart = localOffset + 30 + v.getUint16(localOffset + 26, true) + v.getUint16(localOffset + 28, true)
     if (dataStart > v.byteLength || dataStart + compressedSize > v.byteLength) return null
@@ -103,7 +106,7 @@ export function readZipEntries(buf: ArrayBuffer): ZipEntry[] | null {
       method: v.getUint16(at + 10, true),
       crc: v.getUint32(at + 16, true),
       compressedSize,
-      uncompressedSize: v.getUint32(at + 24, true),
+      uncompressedSize,
       localOffset,
       centralOffset: at,
     })
@@ -890,6 +893,35 @@ function assertRepackable(entries: ZipEntry[]): void {
   }
 }
 
+/** 把整个游戏 ZIP 交给 DOSBox 前先量中央目录声明的展开总量，拦住 ZIP 炸弹与越限游戏包。 */
+function assertDosArchiveExpansionBudget(
+  entries: readonly ZipEntry[],
+  extras: Iterable<{ path: string; data: Uint8Array }>,
+  maxUnpackedBytes: number | undefined,
+  singleFileBytes = 0,
+): void {
+  if (maxUnpackedBytes === undefined) return
+  if (!Number.isSafeInteger(maxUnpackedBytes) || maxUnpackedBytes <= 0) {
+    throw new RangeError('DOS 游戏包解压容量上限无效')
+  }
+  const extraFiles = [...extras]
+  const replaced = new Set(extraFiles.map((extra) => extra.path.toLowerCase()))
+  let total = entries.length ? 0 : singleFileBytes
+  for (const entry of entries) {
+    if (entry.name.endsWith('/') || replaced.has(entry.name.toLowerCase())) continue
+    total += entry.uncompressedSize
+    if (!Number.isSafeInteger(total) || total > maxUnpackedBytes) {
+      throw new ZipExpansionLimitError('DOS ROM', maxUnpackedBytes)
+    }
+  }
+  for (const extra of extraFiles) {
+    total += extra.data.byteLength
+    if (!Number.isSafeInteger(total) || total > maxUnpackedBytes) {
+      throw new ZipExpansionLimitError('DOS ROM', maxUnpackedBytes)
+    }
+  }
+}
+
 /**
  * 路径的每一段是不是合法的 DOS 8.3 名。
  * 合法 → DOSBox 的 CD 能直接进；不合法（空格、超过 8 个字符、非法字符）
@@ -1012,8 +1044,13 @@ export interface BundleResult {
  * 这里最多读取中央目录与每个成员的 30 字节本地头；已经带 dosbox.conf 就返回 true，
  * 普通安全 ZIP 返回 false 让旧打包逻辑补配置，损坏、危险路径和不支持的压缩方式则明确报错。
  */
-export async function isReadyJsdosBundleBlob(blob: Blob, timeoutMs = 30_000, signal?: AbortSignal): Promise<boolean> {
-  const entries = await assertValidZipBlob(blob, 'DOS ROM', { timeoutMs, signal })
+export async function isReadyJsdosBundleBlob(
+  blob: Blob,
+  timeoutMs = 30_000,
+  signal?: AbortSignal,
+  maxUnpackedBytes?: number,
+): Promise<boolean> {
+  const entries = await assertValidZipBlob(blob, 'DOS ROM', { timeoutMs, signal, maxUnpackedBytes })
   if (signal?.aborted) throw signal.reason ?? new DOMException('DOS ZIP 校验已取消', 'AbortError')
   const normalized = entries.map((entry) => {
     const safe = safeArchivePath(entry.name)
@@ -1275,6 +1312,7 @@ export function makeWindowsGameLayer(
   drive = 'd',
   registryImport?: string,
   extras: readonly ExtraFile[] = [],
+  maxUnpackedBytes?: number,
 ): WindowsGameLayer {
   const parsed = readZipEntries(buf)
   const bytes = new Uint8Array(buf)
@@ -1284,6 +1322,7 @@ export function makeWindowsGameLayer(
   assertRepackable(entries)
   const wantedExtras = planExtraFiles(extras)
   assertExtrasFit(entries, wantedExtras)
+  assertDosArchiveExpansionBudget(entries, wantedExtras.values(), maxUnpackedBytes)
 
   // 兼容配置通常只有几百字节；直接在最终游戏层替换条目，不先复制整份几十 MB 的 ZIP。
   const files: { entry: ZipEntry | null; name: string | null; data?: Uint8Array<ArrayBuffer> }[] = entries
@@ -1504,6 +1543,8 @@ export async function makeJsdosBundle(
   extras: readonly ExtraFile[] = [],
   /** 少数原版程序（如 FALL.EXE）必须在命令行接配置文件，不能把参数当成文件路径。 */
   launchArguments: readonly string[] = [],
+  /** 按设备可承受的虚拟盘展开量拦 ZIP 炸弹；预制包路径也使用同一预算。 */
+  maxUnpackedBytes?: number,
 ): Promise<BundleResult> {
   const parsed = readZipEntries(buf)
   const entries = parsed ? normalizeArchiveEntries(parsed) : null
@@ -1514,6 +1555,7 @@ export async function makeJsdosBundle(
   if (entries) assertRepackable(entries)
   if (extras.length && !entries) throw new Error('单个 DOS 可执行文件不能附加资料片；请先把游戏打成 ZIP')
   const wantedExtras = planExtraFiles(extras)
+  assertDosArchiveExpansionBudget(entries ?? [], wantedExtras.values(), maxUnpackedBytes, entries ? 0 : buf.byteLength)
   if (entries) assertExtrasFit(entries, wantedExtras)
 
   /*
@@ -1522,7 +1564,7 @@ export async function makeJsdosBundle(
   */
   if ([...wantedExtras.values()].some((extra) => /(^\.jsdos\/|\.(?:exe|com|bat|cue)$)/i.test(extra.path))) {
     const merged = mergeExtraFiles(buf, extras)
-    return makeJsdosBundle(name, merged, conf, configOverride, dosExecutable, startupCommands, [], launchArguments)
+    return makeJsdosBundle(name, merged, conf, configOverride, dosExecutable, startupCommands, [], launchArguments, maxUnpackedBytes)
   }
   /*
     ⚠️ 后台填的启动程序，包里必须真有。

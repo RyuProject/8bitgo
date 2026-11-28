@@ -374,24 +374,39 @@ check('DOS 整包与资料片按设备内存、移动端和弱网收紧预算', 
     userAgent: 'Mozilla/5.0 (Linux; Android 14; Mobile)',
   }), {
     arrayBufferBytes: 256 * 1024 * 1024,
+    bundleBlobBytes: 768 * 1024 * 1024,
+    bundleUnpackedBytes: 512 * 1024 * 1024,
     extraFileBytes: 128 * 1024 * 1024,
     extraTotalBytes: 256 * 1024 * 1024,
     extraConcurrency: 1,
     systemImageBytes: 128 * 1024 * 1024,
   })
+  assert.equal(dosLoadLimits({
+    deviceMemory: 4,
+    userAgent: 'Mozilla/5.0 (Linux; Android 14; Mobile)',
+  }).bundleBlobBytes, 768 * 1024 * 1024)
+  assert.equal(dosLoadLimits({
+    deviceMemory: 4,
+    userAgent: 'Mozilla/5.0 (Linux; Android 14; Mobile)',
+  }).bundleUnpackedBytes, 512 * 1024 * 1024)
   assert.deepEqual(dosLoadLimits({
     hardwareConcurrency: 8,
     userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)',
   }).extraConcurrency, 1)
   assert.deepEqual(dosLoadLimits({ maxTouchPoints: 5, platform: 'MacIntel' }).arrayBufferBytes, 256 * 1024 * 1024)
   assert.equal(dosLoadLimits({ deviceMemory: 8, hardwareConcurrency: 8 }).extraConcurrency, 2)
+  assert.equal(dosLoadLimits({ deviceMemory: 8, hardwareConcurrency: 8 }).bundleBlobBytes, 2 * 1024 * 1024 * 1024)
+  assert.equal(dosLoadLimits({ deviceMemory: 8, hardwareConcurrency: 8 }).bundleUnpackedBytes, 2 * 1024 * 1024 * 1024)
   assert.equal(dosLoadLimits({ userAgent: 'Desktop' }).systemImageBytes, 512 * 1024 * 1024)
   assert.equal(dosLoadLimits({ deviceMemory: 8, hardwareConcurrency: 8, effectiveType: '2g' }).extraConcurrency, 1)
 })
 
 check('本地 DOS ZIP 目录检查与 8BG 解包都响应离页取消', () => {
   assert.match(jsdos, /readBlobRange\(game,\s*0,\s*4,\s*10_000,\s*signal\)/)
-  assert.match(jsdos, /isReadyJsdosBundleBlob\(game,\s*30_000,\s*signal\)/)
+  assert.match(jsdos, /isReadyJsdosBundleBlob\(game,\s*30_000,\s*signal,\s*bundleUnpackedLimit\)/)
+  assert.match(jsdos, /prepareRemoteDosBundle\([\s\S]{0,300}?bundleBlobLimit,[\s\S]{0,100}?bundleUnpackedLimit,\s*\)/)
+  assert.match(jsdos, /makeJsdosBundle\([\s\S]{0,800}?dosLoadLimitsForBrowser\(\)\.bundleUnpackedBytes/)
+  assert.match(jsdos, /makeWindowsGameLayer\([\s\S]{0,500}?dosLoadLimitsForBrowser\(\)\.bundleUnpackedBytes/)
   assert.match(jsdos, /readBlobRange\(loaded\.blob,\s*0,\s*loaded\.blob\.size,\s*ROM_PACK_READ_TIMEOUT_MS,\s*signal\)/,
     '远端普通 ZIP 转成重打包字节前必须遵守取消和 Blob 读取时限')
   assert.match(romLoader, /unpackRomPack\(data,\s*\(\)\s*=>\s*\{[\s\S]*?\},\s*signal\)/)

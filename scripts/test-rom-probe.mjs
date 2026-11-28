@@ -274,6 +274,8 @@ assert.equal(isolatedEmbedFor('diablo'), undefined, 'Diablo 不需要 COOP/COEP�
 
 /* ---------- 外站双源测速缓存有界，并保留近期热点 ---------- */
 {
+  // 这个区块验证的是本地测速 LRU；真实传输记分板应保持空白，避免其先验绕过测速缓存。
+  resetRomRouteHealth()
   clearRomRouteSpeedCache()
   let backupCalls = 0
   const response = () => new Response(new Uint8Array(1024), { status: 206 })
@@ -319,6 +321,7 @@ assert.equal(isolatedEmbedFor('diablo'), undefined, 'Diablo 不需要 COOP/COEP�
   assert.equal(await run(129), 'backup')
   assert.equal(backupCalls, beforeRecentHit, '最新线路应留在缓存中')
   clearRomRouteSpeedCache()
+  resetRomRouteHealth()
 }
 
 /* ---------- 主域 / 加速镜像的线路选择：固定小探针、有先验、可缓存 ---------- */

@@ -23,6 +23,10 @@ globalThis.__dosBlobReadyStarted = false
 globalThis.__dosBlobUnreadable = false
 globalThis.__dosBlobProbeUnreadable = false
 globalThis.__dosBlobPrewarms = []
+globalThis.__dosBlobReadyCalls = []
+globalThis.__dosBlobPackLimits = []
+globalThis.__dosBlobRemoteHeaders = new Map()
+globalThis.__dosBlobRemoteHeaderChecks = []
 globalThis.__dosBlobReady = true
 globalThis.__dosBlobStored = new Blob([new Uint8Array([0x38, 0x42, 0x47, 0x31, 1, 2, 3])])
 globalThis.__dosBlobPlain = new Blob([new Uint8Array([0x50, 0x4b, 0x03, 0x04, 9, 8, 7])])
@@ -56,7 +60,7 @@ const built = await build({
         contents: args.path === 'resume'
           ? `export const downloadResumeStore = { clear: async k => { globalThis.__dosBlobResumeClears.push(k) } }`
           : args.path === 'progress'
-            ? `export const fetchBlobWithProgress = async (u, o) => { globalThis.__dosBlobFetches.push({ u, resumeKey: o.resumeKey, alternateUrls: o.alternateUrls }); const manifest = globalThis.__dosBlobIntegrityManifests.get(u); if (manifest) globalThis.__dosBlobIntegrityVerifiedTags.set(globalThis.__dosBlobStored, manifest.tag); return globalThis.__dosBlobStored };
+          ? `export const fetchBlobWithProgress = async (u, o) => { globalThis.__dosBlobFetches.push({ u, resumeKey: o.resumeKey, alternateUrls: o.alternateUrls, maxBytes: o.maxBytes }); const manifest = globalThis.__dosBlobIntegrityManifests.get(u); if (manifest) globalThis.__dosBlobIntegrityVerifiedTags.set(globalThis.__dosBlobStored, manifest.tag); return globalThis.__dosBlobStored };
                export const withResumeTimeout = async (task) => task;`
             : args.path === 'hosts'
               ? `export const alternateRomUrls = u => [u.replace('https://assets.example/', 'https://cn-assets.example/')]`
@@ -81,7 +85,8 @@ const built = await build({
                    if (blob.size !== manifest.size || globalThis.__dosBlobIntegrityBadBlobs.has(blob)) throw new Error('DOS 缓存完整性校验失败');
                  }`
               : args.path === 'bundle'
-                ? `export const isReadyJsdosBundleBlob = async (blob, timeout, signal) => {
+                ? `export const isReadyJsdosBundleBlob = async (blob, timeout, signal, maxUnpackedBytes) => {
+                     globalThis.__dosBlobReadyCalls.push({ maxUnpackedBytes })
                      if (globalThis.__dosBlobAbortReady) {
                        globalThis.__dosBlobAbortReady = false
                        globalThis.__dosBlobReadyStarted = true
@@ -94,7 +99,8 @@ const built = await build({
                      }
                      return globalThis.__dosBlobReady
                    }`
-              : `export const isRomPackBytes = b => b[0] === 0x38 && b[1] === 0x42 && b[2] === 0x47 && b[3] === 0x31;
+              : `export const inspectRemoteRomPack = async (u, signal) => { globalThis.__dosBlobRemoteHeaderChecks.push(u); if (signal?.aborted) throw signal.reason; return globalThis.__dosBlobRemoteHeaders.get(u) ?? null };
+                   export const isRomPackBytes = b => b[0] === 0x38 && b[1] === 0x42 && b[2] === 0x47 && b[3] === 0x31;
                    export const readBlobRange = async (blob, start, end) => {
                      if (globalThis.__dosBlobProbeUnreadable) {
                        globalThis.__dosBlobProbeUnreadable = false
@@ -105,7 +111,8 @@ const built = await build({
                    export const isRomPackUrl = u => /\\.8bg(?:[?#]|$)/i.test(u);
                    export const prewarmRomPackDecoder = u => { globalThis.__dosBlobPrewarms.push(u) };
                    export const isBlobReadError = e => Boolean(e && e.name === 'NotReadableError');
-                   export const unpackRomPackBlob = async (stored, onChunk, signal) => {
+                   export const unpackRomPackBlob = async (stored, onChunk, signal, maxUnpackedBytes) => {
+                     globalThis.__dosBlobPackLimits.push(maxUnpackedBytes)
                      if (globalThis.__dosBlobAbortDecode) {
                        globalThis.__dosBlobAbortDecode = false
                        globalThis.__dosBlobDecodeStarted = true
@@ -145,10 +152,23 @@ assert.deepEqual(
   ['https://cn-assets.example/roms/dos/fallout.en.zip.8bg?romv=v1'],
   '当前线路重试用光后必须能换另一条 CDN 线路（AGENTS §2.12）',
 )
+assert.equal(globalThis.__dosBlobFetches[0].maxBytes, 2 * 1024 * 1024 * 1024 + 16 * 1024 * 1024, '8BG 下载上限应给容器头留空间，同时限制整个响应体')
+assert.equal(globalThis.__dosBlobPackLimits.at(-1), 2 * 1024 * 1024 * 1024, '8BG 原始 ZIP 解包应使用 bundle 文件预算')
+assert.equal(globalThis.__dosBlobReadyCalls.at(-1).maxUnpackedBytes, 2 * 1024 * 1024 * 1024, '预制 ZIP 的目录展开总量应使用独立硬上限')
 assert.deepEqual(globalThis.__dosBlobPrewarms, [url], '8BG 包的解码器与密钥必须和下载并行预热（AGENTS §2.24.0c）')
 assert.ok(progress.some((value) => value.detail === 'rom-pack'), '下载完成后的解密/解包必须显示真实状态')
 await Promise.resolve()
 assert.equal(globalThis.__dosBlobCache.get(url), globalThis.__dosBlobStored, '缓存保持 8BG 密文，不落明文游戏包')
+
+const oversized8bgUrl = 'https://assets.example/roms/dos/too-large.zip.8bg?romv=over-limit'
+globalThis.__dosBlobRemoteHeaders.set(oversized8bgUrl, { originalSize: 769 * 1024 * 1024 })
+const oversized8bgFetchesBefore = globalThis.__dosBlobFetches.length
+await assert.rejects(
+  prepareRemoteDosBundle(oversized8bgUrl, undefined, new AbortController().signal, 768 * 1024 * 1024, 512 * 1024 * 1024),
+  (error) => error?.name === 'DosBundleSizeLimitError',
+  '8BG 文件头已能证明游戏包过大时应在整包下载前停止',
+)
+assert.equal(globalThis.__dosBlobFetches.length, oversized8bgFetchesBefore, '超限 8BG 不能先消耗整包流量再拒绝')
 
 const second = await prepareRemoteDosBundle(url, (value) => progress.push(value), new AbortController().signal)
 assert.equal(second.fromCache, true)
@@ -323,5 +343,21 @@ globalThis.__dosBlobReady = false
 const plain = await prepareRemoteDosBundle('https://assets.example/game.zip?romv=plain', undefined, new AbortController().signal)
 assert.equal(plain.name, 'game.zip')
 assert.equal(plain.ready, false, '没有 dosbox.conf 的普通 ZIP 必须回旧逻辑补配置')
+const limitedPlain = await prepareRemoteDosBundle('https://assets.example/small.zip?romv=limited', undefined, new AbortController().signal, 64 * 1024, 32 * 1024)
+assert.equal(limitedPlain.ready, false)
+assert.equal(globalThis.__dosBlobFetches.at(-1).maxBytes, 64 * 1024, '普通 ZIP 下载应在完整读入前受设备预算限制')
+assert.equal(globalThis.__dosBlobReadyCalls.at(-1).maxUnpackedBytes, 32 * 1024, '普通 ZIP 目录检查必须带上设备展开上限')
+
+const tooLargeCacheUrl = 'https://assets.example/oversized.zip?romv=oversized'
+const oversizedCachedBlob = new Blob([new Uint8Array([1])])
+Object.defineProperty(oversizedCachedBlob, 'size', { value: 1024 })
+globalThis.__dosBlobCache.set(tooLargeCacheUrl, oversizedCachedBlob)
+const oversizedDeletesBefore = globalThis.__dosBlobDeletes.length
+await assert.rejects(
+  prepareRemoteDosBundle(tooLargeCacheUrl, undefined, new AbortController().signal, 512, 512),
+  (error) => error?.name === 'DosBundleSizeLimitError',
+  '超过设备包体上限的缓存必须在解码前失败',
+)
+assert.equal(globalThis.__dosBlobDeletes.length, oversizedDeletesBefore, '容量限制不是缓存损坏，不能删掉玩家的有效缓存')
 
 console.log('DOS Blob：分片续传、完整性清单复验、坏缓存与读不出包自愈、取消保护、普通 ZIP 回退通过')

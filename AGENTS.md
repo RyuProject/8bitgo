@@ -1254,6 +1254,12 @@ StarCraft 已补一条离线发布流水线：`npm run sockdrive:prepare -- --so
 `starcraft` / `starcraft-1-16-1` 默认把 `[cpu] core` 设为已完成 Win95 实机验证的 `normal`；后台
 显式 CPU 配置仍可覆盖。回归：`npm run test:dos-bundle && npm run test:roms`。
 
+### 2.8.8.1 DOS 预制 ZIP 的下载与展开量必须分别受设备预算约束
+
+`arrayBufferBytes` 只限制需要整块驻留 JS 堆、并现场重打包的路径；已经带 `.jsdos/dosbox.conf` 的包可 Blob 直通，不能误套手机 256 MiB 的连续内存门槛。Blob 直通仍会消耗下载、浏览器存储与 js-dos 虚拟盘资源，所以 `dosLoadLimits.ts` 另给 `bundleBlobBytes`（手机 768 MiB、桌面 2 GiB）和 `bundleUnpackedBytes`（手机 512 MiB、桌面 2 GiB）；DOSBox-X/WASM 自身也要占线性内存，不能把 32 位地址空间全让给游戏文件。超大游戏提示使用 Sockdrive，避免让页面卡死或被系统回收。
+
+下载器必须用 `maxBytes` 在读完整包前止损；8BG 若可 Range 预检，要在下载前按头部 `originalSize` 判断，解包前再做一次同上限检查。ZIP 快速校验必须累计中央目录全部成员的 `uncompressedSize`，再把同一预算传入普通 DOS 重打包、Windows 游戏层和附加文件合并路径。容量限制不是缓存损坏：不能为了“自愈”删除一份有效但当前设备带不动的缓存。改这些边界时回归 `test:dos-blob`、`test:dos-bundle`、`test:rompack` 和 `test:dos-load`。
+
 生产后台现在把这条离线流水线包成了**持久任务**：编辑已保存的 DOSBox-X 游戏，在「原始大 ZIP
 自动转 Sockdrive」上传原始 ZIP。多语言「完整包 + 流式盘」只从浏览器上传一次：先写入公开完整回退包，
 ROM Worker 再用 `If-Match` 对照上传响应的强 ETag，在 R2 内流式复制到私有 `sockdrive-staging/`；

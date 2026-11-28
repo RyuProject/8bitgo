@@ -11,6 +11,9 @@ export interface DosLoadHints {
 
 export interface DosLoadLimits {
   arrayBufferBytes: number
+  /** 已成形 bundle 可用 Blob 透传，但下载与引擎展开仍需独立硬上限。 */
+  bundleBlobBytes: number
+  bundleUnpackedBytes: number
   extraFileBytes: number
   extraTotalBytes: number
   extraConcurrency: number
@@ -32,6 +35,9 @@ export function dosLoadLimits(hints: DosLoadHints = {}): DosLoadLimits {
   return lowMemory
     ? {
         arrayBufferBytes: 256 * MIB,
+        // Blob 避免整包常驻 JS 堆，但引擎仍会展开虚拟盘；大游戏应配置 Sockdrive 按需读取。
+        bundleBlobBytes: 768 * MIB,
+        bundleUnpackedBytes: 512 * MIB,
         extraFileBytes: 128 * MIB,
         extraTotalBytes: 256 * MIB,
         extraConcurrency: 1,
@@ -40,6 +46,9 @@ export function dosLoadLimits(hints: DosLoadHints = {}): DosLoadLimits {
       }
     : {
         arrayBufferBytes: 1024 * MIB,
+        bundleBlobBytes: 2048 * MIB,
+        // js-dos 与 DOSBox-X 运行时本身也占 WASM 线性内存，展开盘留在 2 GiB 内避免逼近地址空间上限。
+        bundleUnpackedBytes: 2048 * MIB,
         extraFileBytes: 512 * MIB,
         extraTotalBytes: 1024 * MIB,
         // 附加文件会同时驻留内存；两路足够重叠 RTT，也限制 500 MiB 资料片造成的峰值。

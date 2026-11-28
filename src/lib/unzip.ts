@@ -37,6 +37,16 @@ export interface ZipBlobValidationOptions {
   timeoutMs?: number
   /** 播放器离页或切换游戏时停止后续目录读取。 */
   signal?: AbortSignal
+  /** 限制 ZIP 解压后总量；仅在调用方要把整个虚拟盘交给模拟器时启用。 */
+  maxUnpackedBytes?: number
+}
+
+export class ZipExpansionLimitError extends RangeError {
+  override name = 'ZipExpansionLimitError'
+
+  constructor(label: string, maxUnpackedBytes: number) {
+    super(`${label} 解压后超过此设备的安全载入上限（${Math.ceil(maxUnpackedBytes / 1024 / 1024)} MiB）`)
+  }
 }
 
 /** ZIP 的中央目录只装文件名与索引；16 MiB 已足以容纳 65K 个常见成员，超出时拒绝整块分配。 */
@@ -135,10 +145,12 @@ function readZipDirectory(buf: ArrayBuffer): ZipDirectory | null {
     const crc32 = dv.getUint32(p + 16, true)
     const compressedSize = dv.getUint32(p + 20, true)
     const uncompressedSize = dv.getUint32(p + 24, true)
+    const offset = dv.getUint32(p + 42, true)
+    // ZIP64 用 0xffffffff 表示实际值放在 extra field；轻量解析器不读 ZIP64，不能把哨兵当真长度。
+    if (compressedSize === 0xffffffff || uncompressedSize === 0xffffffff || offset === 0xffffffff) return null
     const nameLen = dv.getUint16(p + 28, true)
     const extraLen = dv.getUint16(p + 30, true)
     const commentLen = dv.getUint16(p + 32, true)
-    const offset = dv.getUint32(p + 42, true)
     const next = p + 46 + nameLen + extraLen + commentLen
     if (next > centralEnd) return null
 
@@ -187,6 +199,10 @@ export async function assertValidZipBlob(
   const timeoutMs = typeof timeoutOrOptions === 'number' ? timeoutOrOptions : timeoutOrOptions.timeoutMs ?? 60_000
   const cacheLocalHeaders = typeof timeoutOrOptions !== 'number' && timeoutOrOptions.cacheLocalHeaders === true
   const signal = typeof timeoutOrOptions === 'number' ? undefined : timeoutOrOptions.signal
+  const maxUnpackedBytes = typeof timeoutOrOptions === 'number' ? undefined : timeoutOrOptions.maxUnpackedBytes
+  if (maxUnpackedBytes !== undefined && (!Number.isSafeInteger(maxUnpackedBytes) || maxUnpackedBytes <= 0)) {
+    throw new RangeError(`${label} 解压容量上限无效`)
+  }
   const throwIfAborted = () => {
     if (signal?.aborted) throw signal.reason ?? new DOMException(`${label} 校验已取消`, 'AbortError')
   }
@@ -259,6 +275,7 @@ export async function assertValidZipBlob(
   const cachedHeaders = cacheLocalHeaders ? new Uint8Array(count * 30) : null
   const cachedEntryIndexes = cacheLocalHeaders ? new Map<number, number>() : null
   let p = 0
+  let unpackedBytes = 0
   for (let i = 0; i < count; i++) {
     if (p + 46 > bytes.length || view.getUint32(p, true) !== 0x02014b50) return invalid()
     const flags = view.getUint16(p + 8, true)
@@ -266,10 +283,20 @@ export async function assertValidZipBlob(
     const crc32 = view.getUint32(p + 16, true)
     const compressedSize = view.getUint32(p + 20, true)
     const uncompressedSize = view.getUint32(p + 24, true)
+    const offset = view.getUint32(p + 42, true)
+    // 不支持 ZIP64 时遇到哨兵值必须失败关闭，否则桌面 4 GiB 预算会把未知真实大小当作合法值。
+    if (compressedSize === 0xffffffff || uncompressedSize === 0xffffffff || offset === 0xffffffff) {
+      throw new Error(`${label} 含有当前解析器不支持的 ZIP64 条目`)
+    }
+    if (maxUnpackedBytes !== undefined) {
+      unpackedBytes += uncompressedSize
+      if (!Number.isSafeInteger(unpackedBytes) || unpackedBytes > maxUnpackedBytes) {
+        throw new ZipExpansionLimitError(label, maxUnpackedBytes)
+      }
+    }
     const nameLen = view.getUint16(p + 28, true)
     const extraLen = view.getUint16(p + 30, true)
     const commentLen = view.getUint16(p + 32, true)
-    const offset = view.getUint32(p + 42, true)
     const next = p + 46 + nameLen + extraLen + commentLen
     if (next > bytes.length || offset + 30 > blob.size) return invalid()
     const name = decodeZipName(bytes.subarray(p + 46, p + 46 + nameLen), Boolean(flags & 0x800)).replace(/\\/g, '/')

@@ -909,6 +909,14 @@ export class RomBlobStorageError extends Error {
   }
 }
 
+export class RomPackSizeLimitError extends RangeError {
+  override name = 'RomPackSizeLimitError'
+
+  constructor(maxUnpackedBytes: number) {
+    super(`8BG 文件解包后超过此设备的安全载入上限（${Math.ceil(maxUnpackedBytes / 1024 / 1024)} MiB）`)
+  }
+}
+
 /** 逐块解密解压，每块交给 take；两种输出（Blob / 内存）共用这一份循环。 */
 async function unpackEachChunk(
   blob: Blob,
@@ -916,9 +924,14 @@ async function unpackEachChunk(
   take: (source: Uint8Array<ArrayBuffer>, index: number) => void,
   consumeInput = false,
   signal?: AbortSignal,
+  maxUnpackedBytes?: number,
 ): Promise<RomPackHeader> {
   throwIfAborted(signal)
   const { header, dataOffset } = await inspectRomPackBlob(blob, signal)
+  if (maxUnpackedBytes !== undefined) {
+    if (!Number.isSafeInteger(maxUnpackedBytes) || maxUnpackedBytes <= 0) throw new RangeError('8BG 解包容量上限无效')
+    if (header.originalSize > maxUnpackedBytes) throw new RomPackSizeLimitError(maxUnpackedBytes)
+  }
   const key = await contentKey(header, signal)
   throwIfAborted(signal)
   let unpacked = 0
@@ -968,11 +981,19 @@ export async function unpackRomPackBlob(
   blob: Blob,
   onProgress?: (progress: PackProgress) => void,
   signal?: AbortSignal,
+  maxUnpackedBytes?: number,
 ): Promise<{ name: string; blob: Blob; header: RomPackHeader }> {
   throwIfAborted(signal)
   const output: Blob[] = []
   // 每块立刻固化成 Blob：既脱离可能复用的 WASM 内存，也允许浏览器把大结果落到磁盘。
-  const header = await unpackEachChunk(blob, onProgress, (source, index) => { output[index] = new Blob([source]) }, false, signal)
+  const header = await unpackEachChunk(
+    blob,
+    onProgress,
+    (source, index) => { output[index] = new Blob([source]) },
+    false,
+    signal,
+    maxUnpackedBytes,
+  )
   const playable = await assertBlobPartsReadable(output, signal)
   throwIfAborted(signal)
   return { name: header.originalName, blob: playable, header }

@@ -49,6 +49,10 @@ const HUGE_STATIC = HUGE_STATIC_DIRS
 const PUBLIC_DIR = path.resolve(import.meta.dirname, 'public')
 const DIST_DIR = path.resolve(import.meta.dirname, 'dist/client')
 const STAGE_DIR = path.resolve(import.meta.dirname, '.public-staging')
+const BUILD_STOP_SIGNALS: ReadonlyArray<readonly [NodeJS.Signals, number]> = [
+  ['SIGINT', 130],
+  ['SIGTERM', 143],
+]
 
 /**
  * 主站（浏览、登录、搜索、后台）能安全覆盖到的浏览器下限。
@@ -117,6 +121,7 @@ function ensureDirectorySymlink(source: string, dest: string) {
 
 function skipHugeStatic() {
   let armed = false
+  let signalHandlersInstalled = false
   return {
     name: 'skip-huge-static',
     apply: 'build' as const,
@@ -140,6 +145,20 @@ function skipHugeStatic() {
         // 这次崩在半路的兜底。renameSync 是同步的，放在 exit 钩子里是安全的
         process.on('exit', restoreAll)
         armed = true
+      }
+      if (!signalHandlersInstalled) {
+        // Ctrl-C / SIGTERM 默认不会触发 Node 的 exit 事件；收到时先把 public 里的静态运行时放回去。
+        for (const [signal, code] of BUILD_STOP_SIGNALS) {
+          process.once(signal, () => {
+            try {
+              restoreAll()
+            } catch (error) {
+              console.error('[vite] 中止构建时恢复静态运行时目录失败：', error)
+            }
+            process.exit(code)
+          })
+        }
+        signalHandlersInstalled = true
       }
       for (const rel of HUGE_STATIC) {
         const live = path.join(PUBLIC_DIR, rel)

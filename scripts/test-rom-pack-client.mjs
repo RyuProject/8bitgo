@@ -234,6 +234,11 @@ try {
     assert.equal(await digest(await unpackedBlob.blob.arrayBuffer()), multiHeader.originalSha256,
       '并行完成的 Blob 分块仍须按 ROM 原顺序组装')
     assert.equal(maxConcurrentDecrypts, 2, '后台导入与大 ROM 解包也应使用自适应并行度')
+    await assert.rejects(
+      unpackRomPackBlob(multiBlob, undefined, undefined, multiSource.byteLength - 1),
+      (error) => error?.name === 'RomPackSizeLimitError',
+      '8BG 明文长度超过设备预算时必须在解密与分配 Blob 之前拒绝',
+    )
 
     const configuredNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
     Object.defineProperty(globalThis, 'navigator', {

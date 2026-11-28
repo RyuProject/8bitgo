@@ -396,12 +396,12 @@ const adapter = readFileSync(new URL('../src/emulator/adapters/jsdos.ts', import
 {
   // Windows 客体和普通 DOS 都把 extras 交给最终打包那一步一次写入：先 mergeExtraFiles 会让
   // 几百 MB 的 ROM「复制整包一次 → 再重打一次」，手机峰值内存翻倍（82MB 的凯撒 3 只为几百字节的 c3.inf）。
-  ok(/makeWindowsGameLayer\(\s*rom\.buf,\s*options\.dosExecutable,\s*guest\.gameDrive,\s*registryImport,\s*compatibleExtras,\s*\)/.test(adapter), 'Windows 客体把兼容补丁直接写进最终游戏层')
+  ok(/makeWindowsGameLayer\(\s*rom\.buf,\s*options\.dosExecutable,\s*guest\.gameDrive,\s*registryImport,\s*compatibleExtras,\s*dosLoadLimitsForBrowser\(\)\.bundleUnpackedBytes,\s*\)/.test(adapter), 'Windows 客体把兼容补丁直接写进最终游戏层并守展开预算')
   ok(!/mergeExtraFiles\(rom\.buf/.test(adapter), 'Windows 客体不再先复制整份 ZIP 合并附加文件')
   const call = adapter.slice(adapter.indexOf('await makeJsdosBundle('))
   ok(/^await makeJsdosBundle\(\s*\n\s*rom!?\.name,\s*\n\s*rom!?\.buf,/.test(call), '⭐ 普通 DOS 不先复制完整 ROM')
   ok(/startupCommands,\s*\n\s*\/\/[^\n]+\n\s*compatibleExtras,/.test(call), '⭐ 普通 DOS 把附加文件直接交给最终 bundle 一次并入')
-  ok(/prepareRemoteDosBundle\(game, onProgress/.test(adapter), '⭐ 大型远端 DOS 包走 Blob 分片加载，不经过完整 ArrayBuffer')
+  ok(/prepareRemoteDosBundle\(\s*game,\s*onProgress,[\s\S]{0,100}?bundleBlobLimit,[\s\S]{0,80}?bundleUnpackedLimit,\s*\)/.test(adapter), '⭐ 大型远端 DOS 包走有设备上限的 Blob 分片加载，不经过完整 ArrayBuffer')
   ok(/const limits = \{ maxBytes: arrayBufferLimit, maxUnpackedBytes: arrayBufferLimit \}/.test(adapter), '需要重打包时，所有 DOS ROM 都有设备级 ArrayBuffer 上限')
   ok(/maxBytes,\s*preallocateKnownLength: true/.test(adapter), '附加文件用已知长度直接填充目标缓冲，避免分片与整块副本同时驻留')
   ok(/check:\s*assertDosExtraResponse/.test(adapter), '附加文件 HTTP 200 错误页在下载时被拦截，不会伪装成 ZIP 成员')
