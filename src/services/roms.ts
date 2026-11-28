@@ -435,7 +435,7 @@ function transformedCoverUrl(src: string, width: CoverImageWidth, base: string, 
   // Cloudflare Image Resizing 当前会对 AVIF 源图返回 415；跳过这条必失败的请求，直接用已压缩的源图。
   if (!base || !/^https:\/\//i.test(base) || !src.startsWith(prefix) || /\.avif(?:[?#]|$)/i.test(src)) return ''
   const path = src.slice(base.length + 1)
-  return `${base}/cdn-cgi/image/width=${width},quality=80,format=${format},fit=scale-down/${path}`
+  return `${base}/cdn-cgi/image/width=${width},quality=75,format=${format},fit=scale-down/${path}`
 }
 
 /** 单张图片没有 srcset 时按传入展示尺寸转码，并保留不可变换源图回退。 */

@@ -78,8 +78,8 @@ export function PickedSection({ games, curated }: { games: Game[]; curated: bool
       />
       <HScroll>
         {games.map((g, i) => (
-          // PSI 曾选中横向轨道深处的封面；首两张保留 eager/high，其余到视口前 280px 才挂媒体。
-          <GameCard key={g.slug} game={g} priority={i < 2} deferCover={i >= 2} />
+          // 只给首张可见封面最高优先级；第二张仍 eager，避免横向露出的卡片等滚动才开始加载。
+          <GameCard key={g.slug} game={g} priority={i === 0} eager={i === 1} deferCover={i >= 2} />
         ))}
       </HScroll>
     </section>
@@ -161,8 +161,8 @@ export function LatestSection({ games }: { games: Game[] }) {
       <SectionHeader title={t.sections.latestTitle} subtitle={t.sections.latestSubtitle} icon="✨" moreTo="/games?sort=newest" />
       <HScroll itemClassName="w-64 sm:w-72">
         {games.map((g, i) => (
-          // 首张宽卡在部分手机首屏可见，保留最高优先级；其余等靠近视口再请求。
-          <GameCardWide key={g.slug} game={g} isNew={i < 3} priority={i === 0} deferCover={i !== 0} />
+          // 最新栏通常在首屏下方；保留第一张媒体挂载，其余靠近视口再挂，最高优先级留给当前可见 LCP。
+          <GameCardWide key={g.slug} game={g} isNew={i < 3} deferCover={i !== 0} />
         ))}
       </HScroll>
     </section>
