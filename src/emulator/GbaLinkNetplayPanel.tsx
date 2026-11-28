@@ -45,10 +45,18 @@ export function GbaLinkNetplayPanel({ handle, gameSlug, gameName, initialRoomId 
     onPlayers: (count: number) => setPlayers(count),
     onLinkState: (state: RTCPeerConnectionState) => setLinkState(state),
     onHostLeft: () => {
+      // 房主离开后旧房号已失效；回到配置页，玩家可以立即重新开房或输入新邀请。
+      setStarted(false)
+      setRoomId('')
+      setPlayers(1)
       setLinkState('closed')
       setError('对端已离开，联机结束')
     },
     onError: (message: string) => {
+      // 弱网握手失败不该把创建 / 加入表单锁在“已开始”状态；断开收尾由适配器同步完成。
+      setStarted(false)
+      setRoomId('')
+      setPlayers(1)
       setLinkState('failed')
       setError(message || 'GBA 联机失败，请重试')
     },

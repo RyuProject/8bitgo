@@ -562,6 +562,16 @@ assert.doesNotMatch(
 assert.match(playerSource, /get\('gbap2p'\)/, 'GBA 邀请链接必须识别独立的 gbap2p 参数')
 assert.match(runtimeRegistrySource, /ctx\.gbaLinkNetplay[\s\S]*getRuntime\('iodinegba'\)/, 'GBA 邀请必须强制选择支持串口桥的 IodineGBA')
 assert.match(playerSource, /openGbaLinkNetplay/, '播放器必须把 GBA 电缆联机入口挂到当前会话')
+const hostLeftStart = gbaPanelSource.indexOf('onHostLeft: () => {')
+const hostLeftEnd = gbaPanelSource.indexOf('\n    },', hostLeftStart)
+const hostLeftBody = gbaPanelSource.slice(hostLeftStart, hostLeftEnd)
+assert.ok(hostLeftBody.includes('setStarted(false)') && hostLeftBody.includes("setRoomId('')") && hostLeftBody.includes('setPlayers(1)'),
+  'GBA 房主离开后必须清理旧房号并恢复可重新开房的界面')
+const errorCallbackStart = gbaPanelSource.indexOf('onError: (message: string) => {')
+const errorCallbackEnd = gbaPanelSource.indexOf('\n    },', errorCallbackStart)
+const errorCallbackBody = gbaPanelSource.slice(errorCallbackStart, errorCallbackEnd)
+assert.ok(errorCallbackBody.includes('setStarted(false)') && errorCallbackBody.includes("setRoomId('')") && errorCallbackBody.includes('setPlayers(1)'),
+  'GBA 信令失败后必须回到可重试界面，避免玩家只能关闭整个面板')
 assert.match(
   playerSource,
   /if \(platform\.id === 'gba'\) \{[\s\S]*setGbaLinkNetplayAutoHost\(true\)[\s\S]*setGbaLinkNetplayOpen\(true\)[\s\S]*return true\s*\}\s*if \(handle\?\.openNetplay\)/,
@@ -569,7 +579,7 @@ assert.match(
 )
 assert.match(gbaAdapterSource, /captureOwnState:[\s\S]*applyPeerState:/, 'GBA 两端必须互相交换独立卡带存档')
 assert.match(gbaAdapterSource, /attachGbaCable/, '运行时必须把两份核心接到同一条本地 GBA 电缆')
-assert.match(gbaPanelSource, /onHostLeft: \(\) => \{\s*setLinkState\('closed'\)/, '对端离开后面板不能继续显示已连接')
+assert.ok(hostLeftBody.includes("setLinkState('closed')"), '对端离开后面板不能继续显示已连接')
 assert.match(
   gbaPanelSource,
   /if \(!handle\?\.openGbaLinkNetplay\) \{[\s\S]*autoHostSwitchStarted\.current = true[\s\S]*start\('host'\)[\s\S]*return[\s\S]*autoHostStarted\.current = true[\s\S]*start\('host'\)/,
