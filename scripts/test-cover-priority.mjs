@@ -10,15 +10,30 @@ const collectionsPage = read('src/pages/CollectionsPage.tsx')
 const gamesPage = read('src/pages/GamesPage.tsx')
 const collectionPage = read('src/pages/CollectionPage.tsx')
 
-assert.match(cover, /auto, \$\{sizes \|\| '100vw'\}/)
-assert.match(cover, /priority && srcSet \? coverImageUrl\(coverSrc, 96\) : ''/)
+assert.match(
+  cover,
+  /sizes=\{srcSet && !sourceMedia \? coverSizes \|\| \(priority \|\| eager \? '100vw' : 'auto, 100vw'\) : undefined\}/,
+  '懒加载封面按布局自动选择宽度，首屏图使用明确的兜底尺寸',
+)
 assert.match(cover, /deferMedia\?: boolean/)
 assert.match(cover, /const mediaDeferred = deferMedia && !mediaVisible/)
 assert.match(cover, /videoSrc && !mediaDeferred/)
 assert.match(cover, /coverSrc && !coverFailed && !mediaDeferred/)
 assert.match(cover, /!mediaDeferred && priority && videoSrc && coverSrc/)
+assert.match(cover, /posterSrcSet = videoSrc && coverSrc/)
+assert.match(cover, /const activePosterSrcSet = posterSrc === poster \? posterSrcSet : ''/)
+assert.match(cover, /srcSet=\{activePosterSrcSet \|\| undefined\}/)
+assert.match(cover, /sizes=\{activePosterSrcSet \? posterSizes : undefined\}/)
+assert.match(cover, /imageSrcSet: posterSrcSet, imageSizes: posterSizes/)
 assert.match(gameCard, /GAME_CARD_IMAGE_SIZES = '240px'/)
-assert.match(gameCard, /sizes=\{coverSizes \?\? \(priority \|\| eager \? GAME_CARD_IMAGE_SIZES : undefined\)\}/)
+assert.match(gameCard, /eager=\{eager\}/)
+assert.match(gameCard, /priority=\{priority\}/)
+assert.match(gameCard, /deferMedia=\{deferCover\}/)
+assert.match(
+  gameCard,
+  /sizes=\{coverSizes \?\? \(priority \? GAME_CARD_IMAGE_SIZES : undefined\)\}/,
+  '优先封面使用 240px 目标尺寸，调用方传入的真实尺寸仍优先',
+)
 assert.match(detailSections, /new IntersectionObserver\(\(\[entry\]\) => \{[\s\S]*?setCoversReady\(true\)[\s\S]*?\}\)/)
 assert.match(detailSections, /GameCard key=\{g\.slug\} game=\{g\} showCoin=\{false\} deferCover=\{!coversReady\}/)
 assert.match(gamesPage, /coverSizes=\{GAME_CARD_IMAGE_SIZES\}/)

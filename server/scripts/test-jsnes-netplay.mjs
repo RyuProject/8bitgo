@@ -8,7 +8,7 @@ import { attachJsnesNetplay } from '../src/jsnes-netplay.js'
 
 const app = express()
 const server = createServer(app)
-attachJsnesNetplay(server, app, ['https://8bitgo.com'])
+attachJsnesNetplay(server, ['https://8bitgo.com'])
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
 const port = server.address().port
 const base = `ws://127.0.0.1:${port}/jsnes-netplay`
@@ -33,9 +33,11 @@ const host = await connect()
 send(host, { type: 'host' })
 const opened = await next(host)
 assert.equal(opened.type, 'room')
-assert.match(opened.roomId, /^[a-f0-9]{6}$/)
+assert.match(opened.roomId, /^[a-f0-9]{16}$/)
 
 const guest = await connect()
+send(guest, { type: 'join', roomId: opened.roomId.slice(0, 8) })
+assert.equal((await next(guest)).reason, 'room not found', '旧短码 / 猜码不能占用 P2P 座位')
 const hostNotice = next(host)
 const joinedNotice = next(guest)
 send(guest, { type: 'join', roomId: opened.roomId.toUpperCase() })
@@ -61,8 +63,10 @@ send(outsider, { type: 'signal', to: joined.you, data: { candidate: { candidate:
 await new Promise((resolve) => setTimeout(resolve, 80))
 assert.equal(injected, false)
 
-const list = await fetch(`http://127.0.0.1:${port}/api/jsnes-netplay/rooms`).then((res) => res.json())
-assert.equal(list.find((room) => room.roomId === opened.roomId)?.players, 2)
+const roomListResponse = await fetch(`http://127.0.0.1:${port}/api/jsnes-netplay/rooms`)
+assert.equal(roomListResponse.status, 404, '匿名接口不能枚举可直接加入的房间码')
+const roomProbeResponse = await fetch(`http://127.0.0.1:${port}/api/jsnes-netplay/rooms/${opened.roomId}`)
+assert.equal(roomProbeResponse.status, 404, '匿名接口不能探测邀请房间是否存在')
 
 let peerLeftCount = 0
 guest.on('message', (raw) => {
@@ -79,8 +83,7 @@ await Promise.all([
   new Promise((resolve) => outsider.once('close', resolve)),
 ])
 await new Promise((resolve) => setTimeout(resolve, 30))
-const after = await fetch(`http://127.0.0.1:${port}/api/jsnes-netplay/rooms`).then((res) => res.json())
-assert.equal(after.length, 0)
+assert.equal((await fetch(`http://127.0.0.1:${port}/api/jsnes-netplay/rooms`)).status, 404)
 
 await new Promise((resolve) => server.close(resolve))
 console.log('jsnes 信令自测通过：来源限制、加入、同房转发、跨房拦截与房间回收')

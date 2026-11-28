@@ -306,9 +306,9 @@ const FACTS = [
     id: 'zeoseven-fonts',
     where: 'third-parties',
     doc: 'privacy',
-    what: 'ZeoSeven FontsAPI 提供界面字体样式与字形，浏览器向第三方发出字体请求',
+    what: 'ZeoSeven FontsAPI 只在网络适合的中文非详情页提供字体，浏览器会向第三方发出字体请求',
     probe: ['index.html', 'fontsapi.zeoseven.com'],
-    say: { zh: ['ZeoSeven FontsAPI'], en: ['ZeoSeven FontsAPI'] },
+    say: { zh: ['ZeoSeven FontsAPI', '只有中文|只有中文介面'], en: ['ZeoSeven FontsAPI', 'Chinese-language pages'] },
   },
   {
     id: 'anon-ip-plaintext',

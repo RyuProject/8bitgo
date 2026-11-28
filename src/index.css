@@ -6,10 +6,19 @@
 
 @import 'tailwindcss';
 
+/*
+  授权记录只在浏览器本地。已选择过的访客由 index.html 的同步 head 脚本在首绘前标记，
+  SSR 横幅仍与客户端首帧保持同一棵树；visibility 不参与布局，也不把横幅绘成 LCP。
+*/
+html[data-clarity-consent] .clarity-consent-banner {
+  visibility: hidden;
+  pointer-events: none;
+}
+
 /* ---------- 字体 ----------
- * 中文与西文共用 ZeoSeven FontsAPI 的 Sarasa UI SC。
- * 首页与游戏详情页只用下面的系统字体栈，避免首页晚到的字形替换移动正文，也避免游戏页
- * 和 ROM / 核心争连接；其它页面仅在页面空闲后加载远程字体，服务不可达时仍可正常显示。
+ * 中文界面可用 ZeoSeven FontsAPI 的 Sarasa UI SC；英文等非中文页面直接用系统字体。
+ * index.html 只在中文、非首页、非游戏页、非弱网且页面空闲后加载；玩家进入模拟器时不为字体
+ * 分片抢 ROM / 核心连接，首页也避免轮播标题的晚到换字推移正文。字体服务不可达时，系统字体仍完整可用。
  */
 
 /* ---------- TV / 车机那一屏：深色 ---------- */

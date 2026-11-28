@@ -55,6 +55,7 @@ if (
   manifest.ipxPatched !== true ||
   manifest.mouseCaptureChromePatched !== true ||
   manifest.emulatorsScriptRecovery !== true ||
+  manifest.lazyIpxSupported !== true ||
   manifest.wasmRuntimeIntegrity !== true
 ) {
   fail('runtime.json 的版本或 DOSBox-X / IPX / 鼠标捕获 / 依赖恢复 / WASM 运行时完整性标记不正确')
@@ -132,6 +133,17 @@ if (emulators.includes('readRangeAsync:async e=>{d.add(e),p.has(e)||(p.add(e),P(
 }
 if (!js.startsWith(';(function () {\n') || !js.endsWith('\n}).call(this);\n')) fail('js-dos.js 没有 IIFE 隔离，可能覆盖 window.io')
 if (js.includes('":1900/ipx/"') || !js.includes('"/ipx/"')) fail('IPX 仍在使用 Cloudflare 无法代理的 1900 端口')
+for (const marker of ['__8bitgoEnsureIpxNetwork', '__8bitgoReleaseIpxNetwork', 'IPX network setup timed out']) {
+  if (!js.includes(marker)) fail(`IPX 按需初始化 / 清理补丁缺关键特征 ${marker}`)
+}
+for (const marker of ['setNet(e)', 'cancelNetworkConnect()', 'cancelNetworkDisconnect()']) {
+  if (!emulators.includes(marker)) fail(`CommandInterface 按需 IPX 补丁缺关键特征 ${marker}`)
+}
+for (const core of manifest.files.filter((file) => /^emulators\/wdosbox(?:-x)?(?:-jspi)?\.js$/.test(file.name))) {
+  if (!readFileSync(join(runtimeDir, core.name), 'utf8').includes('wc-net-peer-id')) {
+    fail(`${core.name} 不支持运行中更新 IPX peer id`)
+  }
+}
 for (const marker of ['__8bitgoListeners', '__8bitgoCleanup', 'navigator.keyboard.unlock']) {
   if (!js.includes(marker)) fail(`会话清理补丁缺关键特征 ${marker}`)
 }

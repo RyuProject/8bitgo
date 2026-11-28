@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { cnPreviewVideoUrl, coverImageUrl, coverSrcSet, gameMediaUrl } from '../src/services/roms.ts'
+import { cnPreviewVideoUrl, coverImageUrl, coverPosterWidth, coverSrcSet, gameMediaUrl } from '../src/services/roms.ts'
 import { isCnHost, isCnRequest } from '../shared/cn-host.js'
 
 // 测试运行时没有 Vite 注入的对象存储根地址；站内路径仍足以钉住“不误走代理”。
@@ -20,12 +20,44 @@ assert.equal(gameMediaUrl({ slug: 'empty' }, 'cover'), '')
 const base = 'https://image.8bitgo.com'
 assert.equal(
   coverSrcSet(`${base}/covers/kof%2097.webp`, base),
-  `${base}/cdn-cgi/image/width=96,quality=80,format=auto,fit=contain/covers/kof%2097.webp 96w, ` +
-    `${base}/cdn-cgi/image/width=160,quality=80,format=auto,fit=contain/covers/kof%2097.webp 160w, ` +
-    `${base}/cdn-cgi/image/width=240,quality=80,format=auto,fit=contain/covers/kof%2097.webp 240w, ` +
-    `${base}/cdn-cgi/image/width=480,quality=80,format=auto,fit=contain/covers/kof%2097.webp 480w`,
+  `${base}/cdn-cgi/image/width=160,quality=80,format=auto,fit=scale-down/covers/kof%2097.webp 160w, ` +
+    `${base}/cdn-cgi/image/width=240,quality=80,format=auto,fit=scale-down/covers/kof%2097.webp 240w, ` +
+    `${base}/cdn-cgi/image/width=480,quality=80,format=auto,fit=scale-down/covers/kof%2097.webp 480w`,
 )
 assert.equal(coverSrcSet(`${base}/covers/kof.webp`, ''), '')
+assert.equal(
+  coverSrcSet(`${base}/covers/kof.webp`, base, 'auto', '120px'),
+  `${base}/cdn-cgi/image/width=96,quality=80,format=auto,fit=scale-down/covers/kof.webp 96w, ` +
+    `${base}/cdn-cgi/image/width=160,quality=80,format=auto,fit=scale-down/covers/kof.webp 160w, ` +
+    `${base}/cdn-cgi/image/width=240,quality=80,format=auto,fit=scale-down/covers/kof.webp 240w`,
+  'srcset 档位应根据实际卡片宽度自动生成并归并到共享宽度档',
+)
+assert.equal(
+  coverSrcSet(`${base}/covers/kof.webp`, base, 'auto', '(min-width: 1280px) 211px, (min-width: 1024px) 158px, 141px'),
+  `${base}/cdn-cgi/image/width=160,quality=80,format=auto,fit=scale-down/covers/kof.webp 160w, ` +
+    `${base}/cdn-cgi/image/width=240,quality=80,format=auto,fit=scale-down/covers/kof.webp 240w, ` +
+    `${base}/cdn-cgi/image/width=480,quality=80,format=auto,fit=scale-down/covers/kof.webp 480w`,
+  '媒体断点值不能混入图宽，卡片实际宽度决定生成的三个档位',
+)
+assert.equal(coverPosterWidth('111px'), 240, '视频 poster 应按实际卡片尺寸生成并吸附到不低于目标的共享 2x 宽度')
+assert.equal(
+  coverSrcSet(`${base}/covers/kof.webp`, base, 'auto', '212px'),
+  coverSrcSet(`${base}/covers/kof.webp`, base, 'auto', '211px'),
+  '相邻卡片尺寸应复用同一组 Cloudflare 变换档位',
+)
+assert.equal(
+  coverSrcSet(`${base}/covers/kof.webp`, base, 'auto', '288px'),
+  `${base}/cdn-cgi/image/width=240,quality=80,format=auto,fit=scale-down/covers/kof.webp 240w, ` +
+    `${base}/cdn-cgi/image/width=320,quality=80,format=auto,fit=scale-down/covers/kof.webp 320w, ` +
+    `${base}/cdn-cgi/image/width=640,quality=80,format=auto,fit=scale-down/covers/kof.webp 640w`,
+  '首页最大宽卡的 2x 候选应落在 640px 共享档，不产生单独的 576px 变换',
+)
+assert.equal(coverPosterWidth('auto, 100vw'), 480, '无法解析的布局提示应使用安全的卡片宽度回退')
+assert.equal(
+  coverImageUrl(`${base}/covers/super-mario-bros-96.jpg`, 96, base, 'auto'),
+  `${base}/cdn-cgi/image/width=96,quality=80,format=auto,fit=scale-down/covers/super-mario-bros-96.jpg`,
+  '96px 缩略图即使回退到大图对象也必须保持缩放',
+)
 const avif = `${base}/covers/the-king-of-fighters-2000.avif`
 assert.equal(coverSrcSet(avif, base), '', 'Cloudflare 不接受 AVIF 源图变换（HTTP 415），不发出必失败的 srcset')
 assert.equal(coverImageUrl(avif, 480, base, 'auto'), avif, 'AVIF video poster 直接复用已压缩源图')
@@ -39,10 +71,9 @@ assert.equal(coverSrcSet(`${base}/covers/kof.webp`), '')
 const cnBase = 'https://image-cn.8bitgo.com'
 assert.equal(
   coverSrcSet(`${cnBase}/covers/kof.webp`, cnBase, 'webp'),
-  `${cnBase}/cdn-cgi/image/width=96,quality=80,format=webp,fit=contain/covers/kof.webp 96w, ` +
-    `${cnBase}/cdn-cgi/image/width=160,quality=80,format=webp,fit=contain/covers/kof.webp 160w, ` +
-    `${cnBase}/cdn-cgi/image/width=240,quality=80,format=webp,fit=contain/covers/kof.webp 240w, ` +
-    `${cnBase}/cdn-cgi/image/width=480,quality=80,format=webp,fit=contain/covers/kof.webp 480w`,
+  `${cnBase}/cdn-cgi/image/width=160,quality=80,format=webp,fit=scale-down/covers/kof.webp 160w, ` +
+    `${cnBase}/cdn-cgi/image/width=240,quality=80,format=webp,fit=scale-down/covers/kof.webp 240w, ` +
+    `${cnBase}/cdn-cgi/image/width=480,quality=80,format=webp,fit=scale-down/covers/kof.webp 480w`,
 )
 
 // 只认 cn.<站点域名>；服务端看不到这个 Host，只认 nginx 校验过 EdgeOne 密钥后补的标记头

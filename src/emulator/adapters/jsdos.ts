@@ -46,6 +46,7 @@ import { deleteSave, pullSave, pushSave } from '@/services/saves'
 import { loadGameBytes } from '../romLoader'
 import { dosLoadLimitsForBrowser } from '../dosLoadLimits'
 import { isRomNetworkFailure, markRomNetworkFailure } from '../loadProgress'
+import { assertDosExtraResponse } from '@/lib/dosExtras'
 import { inspectRemoteRomPack, isRomPackUrl, readBlobRange, ROM_PACK_READ_TIMEOUT_MS } from '@/services/romPack'
 import { prepareRemoteDosBundle } from '../dosBundleSource'
 import {
@@ -86,6 +87,7 @@ import {
 import { JSDOS_ASSET_VERSION, JSDOS_PATH, JSDOS_SCRIPT_INTEGRITY, jsdosBase, markJsdosEdgeFailed, markRuntimeEdgeBad } from '../paths'
 import { onRuntimeEdgeBad } from '../runtimeEdgeRoute'
 import { jsdosIceEndpoint, parseIpxAddress } from '../ipxAddress'
+import { IpxOperationTimeout, withIpxTimeout } from '../ipxRuntime'
 import {
   DOS_MOUSE_SENSITIVITY_DEFAULT,
   dosMouseSpeedMultiplier,
@@ -256,13 +258,13 @@ interface DosCi extends WindowsLaunchCi {
   sendBackendEvent?: (payload: unknown) => void
   networkConnect?: (networkType: number, address: string) => Promise<void>
   networkDisconnect?: (networkType: number) => Promise<void>
-  net?: () => {
-    peerId: number
-    connected: Set<number>
-    registerAlias: (alias: string) => Promise<void>
-    unregisterAlias: (alias: string) => void
-    queryAliases: (query: string) => Promise<Array<{ peerId: number }>>
-  } | null
+  cancelNetworkConnect?: () => boolean
+  cancelNetworkDisconnect?: () => boolean
+  net?: () => DosIpxNet | null
+  /** js-dos 补丁接口：只有玩家点开 / 加入 IPX 时才创建 WebRTC-NET。 */
+  __8bitgoEnsureIpxNetwork?: () => Promise<DosIpxNet>
+  /** 只释放本站按需创建的网络；共享网络由调用方持有。 */
+  __8bitgoReleaseIpxNetwork?: () => void
   /** 相对鼠标位移（指针锁定 / 触屏拖动那一路）。js-dos 的界面层在事件发生时调它 */
   sendMouseRelativeMotion?: (x: number, y: number) => void
   /** 0～1 的绝对鼠标坐标；Windows 客体里的 DOSBox-X 集成鼠标驱动消费这一条。 */
@@ -277,6 +279,15 @@ interface DosCi extends WindowsLaunchCi {
   /** js-dos 的完整文件层差异包；qcow2 guest 只允许过滤后保存 GAME/ 下的游戏盘改动。 */
   persist?: (onlyChanges?: boolean) => Promise<Uint8Array | null>
   exit: () => Promise<void>
+}
+
+interface DosIpxNet {
+  peerId: number
+  connected: Set<number>
+  registerAlias: (alias: string) => Promise<void>
+  unregisterAlias: (alias: string) => void
+  queryAliases: (query: string) => Promise<Array<{ peerId: number }>>
+  shutdown?: () => void
 }
 
 /**
@@ -859,6 +870,7 @@ async function loadExtras(
           maxBytes,
           preallocateKnownLength: true,
           alternateUrls: alternateRomUrls(url),
+          check: assertDosExtraResponse,
         })
       } catch (e) {
         const failure = new Error(`附加文件「${path}」下载失败（${e instanceof Error ? e.message : String(e)}）`, { cause: e })
@@ -2309,11 +2321,25 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
     if (wasActive && current?.networkDisconnect) {
       try {
-        await current.networkDisconnect(0)
+        await withIpxTimeout(current.networkDisconnect(0), 'IPX disconnect timed out', 3_000)
       } catch {
         /* js-dos 在底层连接已经断开时可能拒绝；会话状态仍应回到可重试。 */
+        current.cancelNetworkDisconnect?.()
       }
     }
+    current?.__8bitgoReleaseIpxNetwork?.()
+  }
+
+  const ensureIpxNetwork = async (current: DosCi): Promise<DosIpxNet> => {
+    const existing = current.net?.()
+    if (existing) return existing
+    if (!current.__8bitgoEnsureIpxNetwork) throw new Error('当前 js-dos 运行时不支持按需 IPX，请刷新页面后重试')
+    const network = await withIpxTimeout(current.__8bitgoEnsureIpxNetwork(), 'IPX 网络初始化超时，请检查网络后重试')
+    if (destroyed || ci !== current) {
+      current.__8bitgoReleaseIpxNetwork?.()
+      throw new Error('游戏已关闭，取消 IPX 初始化')
+    }
+    return network
   }
 
   options.onCaps?.(caps)
@@ -2332,46 +2358,67 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     async openIpxHost(rawAlias: string) {
       const alias = parseIpxAddress(rawAlias)
       const current = ci
-      const net = current?.net?.()
       if (!alias || alias.kind !== 'alias') throw new Error('IPX 房间号格式不正确')
-      if (destroyed || !current || !net || !current.sendBackendEvent) {
+      if (destroyed || !current || !current.sendBackendEvent) {
         throw new Error('当前 js-dos 会话尚未准备好 IPX 网络')
       }
       if (ipxActive) throw new Error('当前游戏已经加入 IPX 房间')
 
-      await net.registerAlias(alias.alias)
+      const net = await ensureIpxNetwork(current)
+      const registration = net.registerAlias(alias.alias)
       try {
+        await withIpxTimeout(registration, 'IPX 房间注册超时，请检查网络后重试')
+        if (destroyed || ci !== current) throw new Error('游戏已关闭，取消 IPX 开房')
         // 复用 js-dos 自带 IPX 主机事件；自建 alias 只负责把访客引到这台 peer。
         current.sendBackendEvent({ type: 'wc-trigger-event', event: 'hand_ipx_startserver' })
         ipxAlias = alias.alias
         ipxActive = true
       } catch (error) {
-        net.unregisterAlias(alias.alias)
+        // 超时后别名注册可能迟到；收到迟到成功时再撤销，防止留下无人值守的房间号。
+        if (error instanceof IpxOperationTimeout) {
+          void registration.then(() => {
+            try { net.unregisterAlias(alias.alias) } catch { /* 迟到时网络可能已关闭 */ }
+          }, () => {})
+        }
+        try { net.unregisterAlias(alias.alias) } catch { /* 网络已断开时释放别名无副作用 */ }
+        current.__8bitgoReleaseIpxNetwork?.()
         throw error
       }
     },
     async joinIpx(rawAddress: string) {
       const address = parseIpxAddress(rawAddress)
       const current = ci
-      const net = current?.net?.()
       if (!address) throw new Error('IPX 房间号或 peer id 格式不正确')
-      if (destroyed || !current || !net || !current.networkConnect) {
+      if (destroyed || !current || !current.networkConnect) {
         throw new Error('当前 js-dos 会话尚未准备好 IPX 网络')
       }
       if (ipxActive) throw new Error('当前游戏已经加入 IPX 房间')
 
-      let peerId: number
-      if (address.kind === 'peer') {
-        peerId = address.peerId
-      } else {
-        const peers = await net.queryAliases(`=${address.alias}`)
-        const peer = peers.find((candidate) => candidate.peerId !== net.peerId)
-        if (!peer) throw new Error('没有找到这个 IPX 房间，请确认链接仍有效')
-        peerId = peer.peerId
+      const net = await ensureIpxNetwork(current)
+      try {
+        let peerId: number
+        if (address.kind === 'peer') {
+          peerId = address.peerId
+        } else {
+          const peers = await withIpxTimeout(net.queryAliases(`=${address.alias}`), 'IPX 房间查询超时，请检查网络后重试')
+          const peer = peers.find((candidate) => candidate.peerId !== net.peerId)
+          if (!peer) throw new Error('没有找到这个 IPX 房间，请确认链接仍有效')
+          peerId = peer.peerId
+        }
+        if (destroyed || ci !== current) throw new Error('游戏已关闭，取消 IPX 加入')
+        if (peerId === net.peerId) throw new Error('不能加入自己创建的 IPX 房间')
+        try {
+          await withIpxTimeout(current.networkConnect(0, String(peerId)), 'IPX 连接超时，请确认房主在线后重试')
+        } catch (error) {
+          if (error instanceof IpxOperationTimeout) current.cancelNetworkConnect?.()
+          throw error
+        }
+        if (destroyed || ci !== current) throw new Error('游戏已关闭，取消 IPX 加入')
+        ipxActive = true
+      } catch (error) {
+        current.__8bitgoReleaseIpxNetwork?.()
+        throw error
       }
-      if (peerId === net.peerId) throw new Error('不能加入自己创建的 IPX 房间')
-      await current.networkConnect(0, String(peerId))
-      ipxActive = true
     },
     async closeIpx() {
       await closeIpxSession()

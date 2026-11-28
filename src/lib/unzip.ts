@@ -39,6 +39,9 @@ export interface ZipBlobValidationOptions {
   signal?: AbortSignal
 }
 
+/** ZIP 的中央目录只装文件名与索引；16 MiB 已足以容纳 65K 个常见成员，超出时拒绝整块分配。 */
+const ZIP_BLOB_CENTRAL_DIRECTORY_MAX_BYTES = 16 * 1024 * 1024
+
 const validatedBlobHeaders = new WeakMap<Blob, { bytes: Uint8Array; entryIndexes: Map<number, number> }>()
 
 /** 仅返回同一 Blob 经完整校验时缓存的本地头；不同文件或普通校验仍由调用方读取验证。 */
@@ -243,6 +246,9 @@ export async function assertValidZipBlob(
     eocd + 22 + commentLength > tail.length || centralOffset + centralSize > absoluteEocd ||
     centralOffset + centralSize > blob.size
   ) return invalid()
+  if (centralSize > ZIP_BLOB_CENTRAL_DIRECTORY_MAX_BYTES) {
+    throw new Error(`${label} 中央目录超过 16 MiB 安全上限`)
+  }
 
   const centralBuffer = await read(centralOffset, centralOffset + centralSize)
   throwIfAborted()

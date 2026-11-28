@@ -166,6 +166,7 @@ const DIAGNOSIS_SIGNAL_LABEL: Record<string, string> = {
   'error.romset_or_bios': '日志出现街机 ROM 集或 BIOS 错误',
   'error.platform_bios_config': 'IodineGBA 报告 GBA 平台 BIOS 缺失或格式不符',
   'error.gba_bios_download': 'EmulatorJS 的 GBA BIOS 文件请求失败',
+  'error.j2me_upload': 'Java 本地游戏上传提示伴随明确的网络请求失败',
   'error.runtime_trap': '日志出现模拟器运行时陷阱',
   'error.rom_format': '日志出现 ROM 格式或映射错误',
   'error.core_download': '日志指向模拟器核心下载 / 加载',

@@ -43,7 +43,8 @@ export function PlatformCard({ platform, className }: { platform: PlatformWithCo
             </span>
           )}
           <span className="flex flex-col items-end gap-1">
-            <span className="text-pixel text-[10px] text-muted">{platform.year}</span>
+            {/* 年份与平台色光晕重叠；使用前景色，避免装饰色把小字对比度压低。 */}
+            <span className="text-pixel text-[10px] text-fg">{platform.year}</span>
             {/*
               实验性平台（目前只有 PS2）要在**进去之前**就说清楚。
               等玩家点进去、挑了款游戏、等它加载失败再说，那是三步之后的事了。
@@ -57,7 +58,8 @@ export function PlatformCard({ platform, className }: { platform: PlatformWithCo
         </div>
         <h3 className="mt-4 text-base font-bold leading-tight">{platformLabel(t, platform.id, platform.name)}</h3>
         <p className="mt-0.5 text-xs text-muted">{platform.manufacturer}</p>
-        <p className="mt-auto pt-4 text-sm font-semibold" style={{ color: platform.color }}>
+        {/* 平台主色只用于图标与装饰光晕；多种亮色放在白卡片上对比度不足，导航计数统一跟随主题前景色。 */}
+        <p className="mt-auto pt-4 text-sm font-semibold text-fg">
           {fmt(t.common.gamesCountArrow, { n: platform.count })}
         </p>
       </div>

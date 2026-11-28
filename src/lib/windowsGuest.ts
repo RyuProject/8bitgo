@@ -378,9 +378,11 @@ export function buildWindowsGuestConfig(
   lines = setSectionOption(lines, 'dosbox', 'convert fat free space', '16')
 
   const generated = `${lines.join('\n').replace(/\n+$/, '')}\n`
+  // DOSBox-X 默认关闭 IPX；Win9x 即使装了 IPX/SPX 组件，也需要仿真层提供可用的 IPX 栈。
+  const withIpx = mergeDosboxConfigOverride(generated, '[ipx]\nipx=true')
   return {
     // 覆盖最后应用，但解析器会拒绝 [autoexec] 和关键挂载参数，所以管理员只能调整硬件配置。
-    dosboxConf: mergeDosboxConfigOverride(generated, configOverride),
+    dosboxConf: mergeDosboxConfigOverride(withIpx, configOverride),
     gameDrive,
     launcher: `${gameDrive}:\\${WINDOWS_LAUNCHER_PATH.replace(/\//g, '\\')}`,
   }
@@ -431,8 +433,10 @@ export function buildSockdriveWindowsGuestConfig(
   lines = setSectionOption(lines, 'dosbox', 'convert fat free space', '16')
 
   const generated = `${lines.join('\n').replace(/\n+$/, '')}\n`
+  // DOS 7.1 / Win9x Sockdrive 共用 DOSBox-X；IPX 栈先默认开放，逐游戏配置仍可关闭。
+  const withIpx = mergeDosboxConfigOverride(generated, '[ipx]\nipx=true')
   return {
-    dosboxConf: mergeDosboxConfigOverride(generated, configOverride),
+    dosboxConf: mergeDosboxConfigOverride(withIpx, configOverride),
     gameDrive,
     gameDriveIndex,
     // 流式盘直接运行真实 EXE；空值让误走普通批处理分支时立即报错，而不是静默停在桌面。

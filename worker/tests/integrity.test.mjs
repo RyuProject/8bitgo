@@ -106,6 +106,46 @@ test('single PUT publishes its ETag-bound manifest in the same Worker request', 
   assert.equal((await worker.fetch(req(`/${sidecar}`), env)).status, 404, '内部 sidecar 不能通过公开对象路由读取')
 })
 
+test('global strict mode rejects legacy single PUTs before publishing bytes and validates size before R2 write', async () => {
+  const env = environment()
+  env.REQUIRE_ALL_ROM_INTEGRITY = 'true'
+  const strictKey = 'roms/nes/integrity-strict-single-put.nes'
+  const path = `/${strictKey}`
+
+  const legacy = await worker.fetch(req(path, 'PUT', bytes, {}, true), env)
+  assert.equal(legacy.status, 428)
+  assert.equal((await legacy.json()).code, 'integrity_manifest_required')
+  assert.equal(await env.ROMS.head(strictKey), null, '旧客户端不能先把无清单 ROM 写进严格模式下的 R2')
+
+  const missingManifest = await worker.fetch(req(path, 'PUT', bytes, {
+    'X-8BG-Integrity-Required': 'sha256-v1',
+  }, true), env)
+  assert.equal(missingManifest.status, 428)
+  assert.equal(await env.ROMS.head(strictKey), null)
+
+  const wrongSize = { ...payload(), key: strictKey, size: bytes.length + 1 }
+  const wrongSizeHeader = Buffer.from(JSON.stringify(wrongSize)).toString('base64url')
+  const rejectedLength = await worker.fetch(req(path, 'PUT', bytes, {
+    'X-8BG-Integrity-Required': 'sha256-v1',
+    'X-8BG-Integrity-Manifest': wrongSizeHeader,
+  }, true), env)
+  assert.equal(rejectedLength.status, 400)
+  assert.equal(await env.ROMS.head(strictKey), null, '长度检查必须发生在单发 R2 写入之前')
+
+  const validManifest = { ...payload(), key: strictKey }
+  const validHeader = Buffer.from(JSON.stringify(validManifest)).toString('base64url')
+  const accepted = await worker.fetch(req(path, 'PUT', bytes, {
+    'X-8BG-Integrity-Required': 'sha256-v1',
+    'X-8BG-Integrity-Manifest': validHeader,
+  }, true), env)
+  assert.equal(accepted.status, 200)
+  assert.equal((await accepted.json()).integrityPublished, true)
+  const object = await env.ROMS.head(strictKey)
+  const manifest = await worker.fetch(req(`/integrity?key=${encodeURIComponent(strictKey)}`), env)
+  assert.equal(manifest.status, 200)
+  assert.equal((await manifest.json()).etag, object.httpEtag)
+})
+
 test('multipart completion validates and publishes its manifest before acknowledging the commit', async () => {
   const env = environment()
   const atomicKey = 'roms/nes/integrity-atomic-multipart.nes'
@@ -126,6 +166,68 @@ test('multipart completion validates and publishes its manifest before acknowled
   assert.equal(complete.status, 200)
   assert.equal((await complete.json()).integrityPublished, true)
   assert.equal((await worker.fetch(req(`/${atomicKey}`), env)).status, 200)
+})
+
+test('global strict mode upgrades new multipart sessions and blocks legacy completion before R2 merge', async () => {
+  const env = environment()
+  const atomicKey = 'roms/psx/integrity-strict-multipart.chd'
+  const requestId = 'strict-multipart-upload-123'
+  env.REQUIRE_ALL_ROM_INTEGRITY = 'true'
+  const create = await worker.fetch(req(`/${atomicKey}?uploads`, 'POST', {
+    contentType: 'application/octet-stream', size: bytes.length, requestId,
+  }, {}, true), env)
+  assert.equal(create.status, 200)
+  const session = await create.json()
+  const marker = await env.ROMS.head(session.marker)
+  assert.equal(marker.customMetadata.integrityRequired, 'true', '严格模式创建会话时应覆盖旧客户端缺省值')
+
+  const part = await worker.fetch(req(`/${atomicKey}?uploadId=${session.uploadId}`, 'PUT', bytes, {
+    'X-8BG-Part-Number': '1',
+  }, true), env)
+  const partInfo = await part.json()
+  const missingManifest = await worker.fetch(req(`/${atomicKey}?uploadId=${session.uploadId}`, 'POST', {
+    parts: [{ partNumber: 1, etag: partInfo.etag }], marker: session.marker,
+    requestId, requestSignature: session.requestSignature, size: bytes.length,
+  }, {}, true), env)
+  assert.equal(missingManifest.status, 428)
+  assert.equal((await missingManifest.json()).code, 'integrity_manifest_required')
+  assert.equal(await env.ROMS.head(atomicKey), null, '缺清单时不能合并出玩家可见对象')
+  assert.equal(await env.ROMS.head(session.marker), null, '不可补摘要的旧会话应中止并清除恢复标记')
+
+  const retryId = 'strict-multipart-upload-456'
+  const retryCreate = await worker.fetch(req(`/${atomicKey}?uploads`, 'POST', {
+    contentType: 'application/octet-stream', size: bytes.length, requestId: retryId,
+  }, {}, true), env)
+  const retrySession = await retryCreate.json()
+  const retryPart = await worker.fetch(req(`/${atomicKey}?uploadId=${retrySession.uploadId}`, 'PUT', bytes, {
+    'X-8BG-Part-Number': '1',
+  }, true), env)
+  const retryPartInfo = await retryPart.json()
+  const completed = await worker.fetch(req(`/${atomicKey}?uploadId=${retrySession.uploadId}`, 'POST', {
+    parts: [{ partNumber: 1, etag: retryPartInfo.etag }], marker: retrySession.marker,
+    requestId: retryId, requestSignature: retrySession.requestSignature, size: bytes.length,
+    integrityManifest: { ...payload(), key: atomicKey },
+  }, {}, true), env)
+  assert.equal(completed.status, 200)
+  assert.equal((await completed.json()).integrityPublished, true, '补上摘要后同一会话可以安全完成')
+
+  const oldKey = 'roms/psx/integrity-strict-old-session.chd'
+  env.REQUIRE_ALL_ROM_INTEGRITY = 'false'
+  const oldCreate = await worker.fetch(req(`/${oldKey}?uploads`, 'POST', {
+    contentType: 'application/octet-stream', size: bytes.length, requestId: 'older-multipart-upload-123',
+  }, {}, true), env)
+  const oldSession = await oldCreate.json()
+  const oldPart = await worker.fetch(req(`/${oldKey}?uploadId=${oldSession.uploadId}`, 'PUT', bytes, {
+    'X-8BG-Part-Number': '1',
+  }, true), env)
+  const oldPartInfo = await oldPart.json()
+  env.REQUIRE_ALL_ROM_INTEGRITY = 'true'
+  const oldStrictCompletion = await worker.fetch(req(`/${oldKey}?uploadId=${oldSession.uploadId}`, 'POST', {
+    parts: [{ partNumber: 1, etag: oldPartInfo.etag }], marker: oldSession.marker,
+    requestId: 'older-multipart-upload-123', requestSignature: oldSession.requestSignature, size: bytes.length,
+  }, {}, true), env)
+  assert.equal(oldStrictCompletion.status, 428, '上线前创建的会话也必须在 complete 时服从当前严格门禁')
+  assert.equal(await env.ROMS.head(oldKey), null)
 })
 
 test('aligned and unaligned optical-disc Range responses are checked before reaching the core', async () => {

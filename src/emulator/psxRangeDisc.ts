@@ -133,6 +133,20 @@ async function fetchBlock(url: string, version: string, start: number, end: numb
   return { bytes, total: size }
 }
 
+/** CDN 偶发 HTTP/2 流错误时重试同一小分片，避免直接退化成整张 450MB 光盘下载。 */
+async function fetchBlockWithTransientRetry(url: string, version: string, start: number, end: number, total: number | null,
+  signal: AbortSignal, fetcher: typeof fetch): Promise<{ bytes: Uint8Array; total: number }> {
+  try {
+    return await fetchBlock(url, version, start, end, total, signal, fetcher)
+  } catch (error) {
+    // 用户取消不重试；Fetch 把 CDN 的 HTTP/2 断流统一暴露为 TypeError，短暂让出事件循环后再开新流。
+    if (signal.aborted || !(error instanceof TypeError)) throw error
+    await new Promise<void>(resolve => setTimeout(resolve, 150))
+    if (signal.aborted) throw error
+    return fetchBlock(url, version, start, end, total, signal, fetcher)
+  }
+}
+
 /** 不满足 Range / CORS / CHD 格式时抛错，由调用方回退到现有完整下载路径。 */
 export async function preparePsxRangeDisc(url: string, name: string, signal: AbortSignal,
   fetcher: typeof fetch = fetch, onFatal?: (message: string) => void,
@@ -153,7 +167,7 @@ export async function preparePsxRangeDisc(url: string, name: string, signal: Abo
   }
   try {
     // 首片同时验证 CHD 魔数、版本和内容长度；禁止用 200 整包冒充一次区间请求。
-    const first = await fetchBlock(url, version, 0, PSX_RANGE_BYTES - 1, null, controller.signal, fetcher)
+    const first = await fetchBlockWithTransientRetry(url, version, 0, PSX_RANGE_BYTES - 1, null, controller.signal, fetcher)
     size = first.total
     if (size < PSX_RANGE_BYTES || String.fromCharCode(...first.bytes.subarray(0, 8)) !== CHD_MAGIC ||
         new DataView(first.bytes.buffer, first.bytes.byteOffset, first.bytes.byteLength).getUint32(12) !== 5) {
@@ -163,7 +177,7 @@ export async function preparePsxRangeDisc(url: string, name: string, signal: Abo
     const lastIndex = Math.floor((size - 1) / PSX_RANGE_BYTES)
     if (lastIndex > 0 && options.includeTail !== false) {
       const start = lastIndex * PSX_RANGE_BYTES
-      const last = await fetchBlock(url, version, start, size - 1, size, controller.signal, fetcher)
+      const last = await fetchBlockWithTransientRetry(url, version, start, size - 1, size, controller.signal, fetcher)
       cache.set(lastIndex, last.bytes)
     }
 
@@ -184,7 +198,7 @@ export async function preparePsxRangeDisc(url: string, name: string, signal: Abo
       controller.signal.addEventListener('abort', abortPrefetch, { once: true })
       loading.set(index, prefetch)
       const start = index * PSX_RANGE_BYTES
-      void fetchBlock(url, version, start, Math.min(size - 1, start + PSX_RANGE_BYTES - 1), size,
+      void fetchBlockWithTransientRetry(url, version, start, Math.min(size - 1, start + PSX_RANGE_BYTES - 1), size,
         prefetch.signal, fetcher).then(({ bytes }) => {
         if (!controller.signal.aborted && !prefetch.signal.aborted) remember(index, bytes)
       }).catch(() => { /* 弱网预读失败不拦开局，真正用到时同步请求会重试。 */ })

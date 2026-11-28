@@ -9,6 +9,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { createContext, runInContext } from 'node:vm'
 import { CACHE } from '../server/src/cache.js'
 import { earlyHintLinks, retargetCoverHints } from '../server/src/early-hints.js'
 import { localePreloadTag } from '../server/src/locale-preload.js'
@@ -40,19 +41,50 @@ check('游戏库和专题只把首张 LCP 封面提升到高优先级，首页�
   const games = read('src/pages/GamesPage.tsx')
   const collections = read('src/pages/CollectionPage.tsx')
   const home = read('src/components/home/sections.tsx')
+  const homeBanner = read('src/components/home/HomeBanner.tsx')
   const cover = read('src/components/game/GameCover.tsx')
+  const collectionCard = read('src/components/game/CollectionCard.tsx')
+  const rankCard = read('src/components/game/GameRankCard.tsx')
   assert.match(card, /priority\?: boolean/, '普通游戏卡没有 LCP 优先级入口')
   assert.match(card, /<GameCover[^>]+priority=\{priority\}/, '普通游戏卡没有把优先级传给封面')
+  assert.match(card, /sizes=\{coverSizes \?\? \(priority \? GAME_CARD_IMAGE_SIZES : undefined\)\}/, '首屏方卡应按实际卡宽选择封面档，不能默认按 100vw 下载')
+  assert.match(card, /deferMedia=\{deferCover\}/, '普通游戏卡没有把延迟挂载策略传给封面')
   assert.match(wideCard, /<GameCover[^>]+priority=\{priority\}/, '首页宽卡没有把优先级传给封面')
+  assert.match(wideCard, /deferMedia=\{deferCover\}/, '首页宽卡没有把延迟挂载策略传给封面')
   assert.match(games, /priority=\{i === 0\}/, '游戏库没有只提升首张封面')
   assert.match(collections, /priority=\{i === 0\}/, '平台、类型与 ROM 语言专题没有只提升首张封面')
-  assert.match(home, /<GameCard key=\{g\.slug\} game=\{g\} priority=\{i === 0\}/, '首页精选区没有只提升首张封面')
-  assert.doesNotMatch(home, /<GameCardWide[^>]+priority=/, '首页下方最新栏目不应抢占首屏图片带宽')
-  assert.match(cover, /const posterSrc = coverSrc \? coverImageUrl\(coverSrc, 480\) : ''/, '视频 poster 必须使用 480px 尺寸限制的图片转换地址')
-  assert.match(cover, /preload\(posterSrc, \{[\s\S]*?as: 'image',[\s\S]*?fetchPriority: 'high',[\s\S]*?imageSrcSet: posterSrcSet,[\s\S]*?imageSizes: posterSizes/, '首屏视频 poster 没有用同一转换地址、srcset 和尺寸高优先级预加载')
-  assert.match(cover, /loading=\{priority \|\| eager \? 'eager' : 'lazy'\}/, '非首屏视频 poster 必须参与原生懒加载')
+  assert.match(home, /<GameCard key=\{g\.slug\} game=\{g\} priority=\{i < 2\}/, '首页精选区只提升首屏能露出的两张封面')
+  assert.match(homeBanner, /sourceMedia=\{HERO_STACK_QUERY\}/, '桌面 Hero 封面没有按桌面断点选源，移动端会下载隐藏图片')
+  assert.match(cover, /<source\s+media=\{sourceMedia\}\s+srcSet=\{srcSet \|\| imgSrc\}/, '响应式 Hero 图片源没有绑定桌面媒体条件')
+  assert.match(cover, /src=\{sourceMedia \? undefined : imgSrc\}/, '媒体条件不匹配时 img 仍提供了移动端回退源')
+  assert.match(home, /priority=\{i < 2\} deferCover=\{i >= 2\}/, '精选区首两张优先加载，其余封面靠近视口后再挂载')
+  assert.match(home, /<GameCardWide key=\{g\.slug\} game=\{g\} isNew=\{i < 3\} priority=\{i === 0\} deferCover=\{i !== 0\}/, '首页最新栏目只优先首张卡，其余封面延后挂载')
+  assert.match(wideCard, /sizes="\(min-width: 640px\) 288px, 256px"/, '首页宽卡必须按真实展示宽度挑选封面档位')
+  assert.match(home, /rank=\{i \+ 1\}\s+deferCover/, '首页榜单封面没有延后挂载')
+  assert.match(home, /<GameCardWide[^>]+deferCover/, '首页最新游戏封面具有延后挂载入口')
+  assert.match(home, /<GameCard key=\{g\.slug\} game=\{g\} deferCover \/>/, '首页一起玩封面没有延后挂载')
+  assert.match(home, /<CollectionCard key=\{c\.id\} collection=\{c\} deferCover \/>/, '首页合集封面没有延后挂载')
+  assert.match(home, /deferMedia\s+className="h-11/, '首页分类示例封面没有延后挂载')
+  assert.match(cover, /\{ rootMargin: '280px' \}/, '封面媒体应在进入视口前 280px 挂载，避免原生 lazy 抢跑')
+  assert.match(rankCard, /deferMedia=\{deferCover\}/, '榜单卡没有把延迟挂载策略传给封面')
+  assert.match(collectionCard, /deferMedia=\{deferCover && !priority\}/, '合集轮播没有保留首屏优先图并延后其它格子')
+  assert.match(cover, /const posterSrc = coverSrc \? coverImageUrl\(coverSrc, coverPosterWidth\(coverSizes\)\) : ''/, '视频 poster 必须按实际布局尺寸转换')
+  assert.match(cover, /preload\(posterSrc, \{[\s\S]*imageSrcSet: posterSrcSet, imageSizes: posterSizes[\s\S]*\}\)/, '首屏视频 poster 预加载必须和卡片使用同一组响应式候选')
+  assert.match(cover, /srcSet=\{activePosterSrcSet \|\| undefined\}/, '视频 poster 必须根据卡片尺寸选择响应式图片')
+  assert.match(cover, /sizes=\{activePosterSrcSet \? posterSizes : undefined\}/, '视频 poster 必须按真实卡片宽度选择图片档位')
+  assert.match(cover, /loading=\{priority \? 'eager' : 'lazy'\}/, '非首屏视频 poster 必须参与原生懒加载')
   assert.match(cover, /fallbackPoster/, '图片转换失败时视频 poster 必须退回源图')
-  assert.match(read('src/services/roms.ts'), /function transformedCoverUrl[\s\S]*width=\$\{width\},quality=80,format=\$\{format\},fit=contain/, 'poster 转换必须复用既有缓存格式和尺寸策略')
+  assert.match(read('src/services/roms.ts'), /const COVER_WIDTH_SCALES = \[2 \/ 3, 1, 2\]/, '封面宽度必须从实际 sizes 与密度倍率生成，不能维护固定像素表')
+  assert.match(read('src/services/roms.ts'), /const COVER_WIDTH_BUCKETS = \[96, 160, 240, 320, 480, 640\]/, '自动生成的卡片宽度必须归并到有限共享档，避免每种尺寸都产生独立变换')
+  assert.match(read('src/services/roms.ts'), /function coverWidthBucket\(width: number\): number/, '共享宽度归并必须保留比当前展示目标更大的候选')
+  assert.match(cover, /const coverSizes = sizes \|\| \(thumb \? '96px' : ''\)/, '缺失缩略图回退到主图时也必须按小尺寸选择变换候选')
+  assert.match(read('src/services/roms.ts'), /function transformedCoverUrl[\s\S]*width=\$\{width\},quality=80,format=\$\{format\},fit=scale-down/, 'poster 转换必须复用既有缓存格式和尺寸策略')
+})
+
+check('ROM 语言数量使用足够对比度的继承色', () => {
+  const links = read('src/components/game/RomLanguageLinks.tsx')
+  assert.match(links, /<span>\{count\}<\/span>/, 'ROM 语言计数应继承 chip 的前景色')
+  assert.doesNotMatch(links, /opacity-60/, '低对比度透明度不能用于小号计数')
 })
 
 check('桌面端封面视频等页面加载完、空闲后才自动拉流，弱网不自动拉', () => {
@@ -84,7 +116,7 @@ check('首页轮播只在可轮换时预热，并复用封面转码档与实际�
   assert.match(src, /const HERO_COVER_SIZES = '\(min-width: 1280px\) 211px, \(min-width: 1024px\) 158px, 141px'/)
   assert.match(src, /if \(!heroStackVisible \|\| pool\.length < 2 \|\| \(base\.length > 1/)
   assert.match(src, /document\.hidden \|\| !allowsSpeculativePlayerPreload\(connection\)\) return/)
-  assert.match(src, /const srcSet = coverSrcSet\(src\)/, '预热必须走与实际卡片相同的缩放候选')
+  assert.match(src, /const srcSet = coverSrcSet\(src, undefined, undefined, HERO_COVER_SIZES\)/, '预热必须按与实际卡片相同的 sizes 生成缩放候选')
   assert.match(src, /img\.sizes = HERO_COVER_SIZES/)
   assert.match(src, /if \(srcSet\) img\.srcset = srcSet/)
   assert.match(src, /sizes=\{HERO_COVER_SIZES\}/, '实际卡片与预热的 sizes 必须一致')
@@ -98,7 +130,21 @@ check('首页所有尺寸的轮换游戏名固定两行，避免长标题周期�
   assert.match(src, /setInterval\(\(\) => \{/, '布局守卫应对应会周期轮换的横幅标题')
 })
 
-check('首页、游戏页和弱网不请求第三方字体，其它页面只在空闲时加载', () => {
+check('Clarity 授权横幅进入 SSR 首屏，已选择过的访客首次绘制前仍隐藏', () => {
+  const component = read('src/components/privacy/ClarityConsentBanner.tsx')
+  const html = read('index.html')
+  const css = read('src/index.css')
+  assert.match(component, /const \[open, setOpen\] = useState\(true\)/, '横幅必须和 SSR 首帧一起渲染')
+  assert.match(component, /clarity-consent-banner fixed/, '横幅应保持固定定位，不推移页面内容')
+  assert.match(component, /clarity-consent-banner[^\n]+bg-surface p-4/, 'LCP 横幅应使用不透明底色减少首屏合成')
+  assert.doesNotMatch(component, /backdrop-blur/, 'LCP 横幅不能在首屏用 backdrop-filter 采样背景')
+  assert.match(html, /localStorage\.getItem\('8bit\.clarity\.consent\.v1'\)/, '首绘脚本必须读取原有本地授权键')
+  assert.match(html, /data-clarity-consent/, '首绘脚本没有标记已选择过的访客')
+  assert.match(css, /html\[data-clarity-consent\] \.clarity-consent-banner\s*\{\s*visibility:\s*hidden/, '已有选择的访客仍会闪出授权横幅')
+  assert.doesNotMatch(html, /document\.cookie[^\n]*clarity|8bitgo_clarity_consent/, '授权状态不得改存 Cookie')
+})
+
+check('非中文、首页、游戏详情和弱网不请求第三方字体，中文其它页面只在空闲时加载', () => {
   const html = read('index.html')
   const css = read('src/index.css')
   const fontUrl = 'https://fontsapi.zeoseven.com/214/main/result.css'
@@ -106,8 +152,9 @@ check('首页、游戏页和弱网不请求第三方字体，其它页面只在�
     .map((match) => match[1])
     .find((script) => script.includes("id = 'zeoseven-fonts'"))
   assert.ok(loader, 'index.html 没有字体按需加载器')
+  assert.match(loader, /document\.documentElement\.lang[^\n]*\.startsWith\('zh'\)/, '非中文页面仍会下载未使用的字体 CSS')
   assert.match(loader, /window\.location\.pathname/, '字体策略没有按游戏详情页路径跳过')
-  assert.ok(loader.includes("sitePath === '/"), '本地化首页应跳过会触发全页换字的晚到字体')
+  assert.ok(loader.includes("sitePath === '/"), '首页应跳过会触发全页换字的晚到字体')
   assert.match(loader, /games\\\/\[\^\/\]\+/, '本地化游戏详情页也必须跳过字体下载')
   assert.match(loader, /saveData|slow-2g|downlink|rtt/, '弱网 / 流量节省模式没有跳过字体请求')
   assert.match(loader, /addEventListener\('load', afterLoad/, '字体请求在页面 load 前启动')
@@ -119,18 +166,29 @@ check('首页、游戏页和弱网不请求第三方字体，其它页面只在�
   const theme = css.match(/@theme \{[\s\S]*?\n\}/)?.[0] ?? ''
   assert.match(theme, /'Sarasa UI SC'/, '基础字体栈没有使用 ZeoSeven 的 Sarasa UI SC')
   assert.match(theme, /ui-sans-serif, system-ui/, '基础字体栈没有系统字体兜底')
-})
 
-check('首页横向轨道延后并合并尺寸读取，侧栏计数不进入首屏请求链', () => {
-  const scroll = read('src/components/ui/HScroll.tsx')
-  const sidebar = read('src/components/layout/Sidebar.tsx')
-  const idle = read('src/components/ui/useIdleImport.ts')
-  assert.match(scroll, /requestAnimationFrame\(\(\) => \{[\s\S]*?update\(\)/, '横向轨道应把初次尺寸读取放到下一帧')
-  assert.match(scroll, /if \(!arrowsEnabled\.matches \|\| frame\) return/, '同一帧内的尺寸变更应合并为一次读取，且手机端不做无用测量')
-  assert.equal((sidebar.match(/useIdleImport\(loadCounts, \{ delayMs: 3000, enabled: countsEnabled \}\)/g) ?? []).length, 2, '房间数与游戏数应延后加载')
-  assert.match(sidebar, /route\.startsWith\('\/games\/'\)[\s\S]*route === '\/play-local'/, '正在玩的游戏页必须跳过侧栏后台请求')
-  assert.match(sidebar, /\(desktop \|\| mobileOpen\)/, '移动端抽屉关闭时不加载侧栏计数')
-  assert.match(idle, /if \(!enabled\) return/, '被禁用的懒加载不得启动计时器或模块请求')
+  const requestedFonts = (lang, pathname, connection = { effectiveType: '4g', downlink: 10, rtt: 50 }) => {
+    const requested = []
+    const document = {
+      documentElement: { lang },
+      readyState: 'complete',
+      getElementById: () => null,
+      createElement: () => ({}),
+      head: { appendChild: (link) => requested.push(link.href) },
+    }
+    const window = {
+      location: { pathname },
+      setTimeout: (fn) => { fn(); return 1 },
+      requestIdleCallback: (fn) => fn(),
+    }
+    runInContext(loader, createContext({ document, window, navigator: { connection } }))
+    return requested
+  }
+  assert.deepEqual(requestedFonts('en', '/en'), [], '英文页仍请求字体')
+  assert.deepEqual(requestedFonts('zh-Hans', '/search'), [fontUrl], '适合网络的中文内容页没有加载字体')
+  assert.deepEqual(requestedFonts('zh-Hans', '/zh-Hans'), [], '本地化首页请求了字体')
+  assert.deepEqual(requestedFonts('zh-Hant', '/zh-Hant/games/contra'), [], '中文游戏详情页请求了字体')
+  assert.deepEqual(requestedFonts('zh-Hans', '/', { effectiveType: '2g', downlink: 0.3, rtt: 800 }), [], '弱网仍请求字体')
 })
 
 check('SSR 在启动时预热模板和渲染入口，部署窗口继续用内存副本', () => {
@@ -206,7 +264,7 @@ check('SSR 预载当前语言 chunk，失败或旧构建时安全退回现有按
       entry: 'index-ABCD1234.js',
       locales: {
         en: 'assets/en-EFGH5678.js',
-        'zh-Hans': 'assets/zh-Hans-ABCD1234.js',
+        'zh-Hans': 'assets/zh-Hans-MNOP3456.js',
         'zh-Hant': 'assets/zh-Hant-IJKL9012.js',
       },
     }))
@@ -220,8 +278,8 @@ check('SSR 预载当前语言 chunk，失败或旧构建时安全退回现有按
     assert.match(retargetStaticToOrigin(preloaded, 'https://8bitgo.com'), /href="https:\/\/8bitgo\.com\/assets\/en-EFGH5678\.js"/)
     assert.equal(
       localePreloadTag(template, 'zh-Hans', clientDir),
-      '<link rel="modulepreload" crossorigin data-8bitgo-locale-preload="true" href="/assets/zh-Hans-ABCD1234.js">',
-      '简体中文语言包从主包拆出后，SSR 也要预载当前页面使用的 chunk',
+      '<link rel="modulepreload" crossorigin data-8bitgo-locale-preload="true" href="/assets/zh-Hans-MNOP3456.js">',
+      '简体中文现在也是动态 chunk，SSR 必须提前预载以免首屏水合多等一个 RTT',
     )
     assert.equal(localePreloadTag(template, 'invalid', clientDir), '', '不接受 URL 中的任意语言值')
     assert.equal(
@@ -240,7 +298,7 @@ check('SSR 预载当前语言 chunk，失败或旧构建时安全退回现有按
 
   const ssr = read('server/src/ssr.js')
   assert.match(ssr, /localePreloadTag\(templatePage, lang, CLIENT_DIR\)/, 'SSR 按本页语言生成 preload')
-  assert.match(ssr, /localePreload\n\s*\? injectOnce\(templatePage, '<\/head>'/, '预载链接在大陆线路改写前注入')
+  assert.match(ssr, /localePreload\n\s*\? injectOnce\(templatePage, SSR_HEAD_MARKER/, '预载链接在大陆线路改写前通过固定槽位注入')
 })
 
 check('大陆入口：封面 preconnect / dns-prefetch 换成 EdgeOne 封面域，其余不动', () => {

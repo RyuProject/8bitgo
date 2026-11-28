@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * 真实开局冒烟（2026-11-15 系统优化 #4）：用无头 Chrome 打开几款游戏的详情页，
- * 先关掉默认公开直播，再点「开始游戏」，等播放器报「首帧」才算过。
+ * 先关掉默认公开直播，再点「开始游戏」，等播放器确认可玩并收到一次方向键输入才算过。
  *
  *   node scripts/smoke-start.mjs                                   默认测 https://8bitgo.com
  *   node scripts/smoke-start.mjs --base http://127.0.0.1:8788      测本机 / 刚重启的生产进程
@@ -10,10 +10,10 @@
  *
  * 为什么要有它：/api/health 200 只说明进程活着。2026-09 以来好几次事故都是「站点一切正常、
  * 游戏打不开」—— 引擎补丁没进 dist（§2.5）、核心回落坏地址（§2.4）、Rocket Loader 改写脚本（§2.37.1）。
- * 这些只有真把一局跑到首帧才看得出来。
+ * 这些只有真把一局启动到可玩、并验证输入事件进入播放器才看得出来；只看到首帧仍可能是不可操作的黑屏 / 卡死状态。
  *
- * 判据取自播放器自己的启动漏斗：它在出首帧时 POST /api/games/<slug>/startup {event:'first_frame'}，
- * 失败 / 超时时发 failed / timeout。这里用 Chrome DevTools 协议的 Fetch 域**拦下**这些请求读出事件，
+ * 判据取自播放器自己的启动漏斗：它在真正可玩时 POST /api/games/<slug>/startup {event:'game_playable'}，
+ * 首帧只作为进度；失败 / 超时时发 failed / timeout。这里用 Chrome DevTools 协议的 Fetch 域**拦下**这些请求读出事件，
  * 再回一个假的 200 —— 冒烟不会进生产的启动漏斗、诊断包和游玩次数（/play 一并拦下）。
  *
  * 不引入任何依赖：Chrome 自带 DevTools 协议，Node 22 自带 WebSocket。找 Chrome 的顺序：
@@ -52,6 +52,35 @@ export const CDP_COMMAND_TIMEOUT_MS = 15_000
 const PAGE_NAVIGATION_COMMAND_TIMEOUT_MS = 60_000
 /** 页面必须先确认「不公开」再开局；控件文案没认出来就停测，不能冒险公开推流。 */
 export const PRIVATE_START_TIMEOUT_MS = 90_000
+/** 可玩后留给输入监听器收取一次方向键的时间；不把只显示画面误判为可操作。 */
+export const INPUT_CONFIRM_TIMEOUT_MS = 3_000
+export const INPUT_PROBE_BINDING = '__8bgSmokeKeyProbe'
+/** 主文档只认舞台内事件；舞台的同源 iframe 也逐层安装监听。 */
+export const INPUT_PROBE_EXPRESSION = String.raw`(() => {
+  const stage = document.querySelector('[data-testid="emulator-stage"]')
+  if (!stage) return { error: 'player-stage-missing' }
+  const rect = stage.getBoundingClientRect()
+  if (rect.width <= 0 || rect.height <= 0) return { error: 'player-stage-hidden' }
+  const probe = window.${INPUT_PROBE_BINDING}
+  if (typeof probe !== 'function') return { error: 'cdp-binding-missing' }
+  const docs = new Set()
+  const listen = (doc, insideStage) => {
+    if (!doc || docs.has(doc)) return
+    docs.add(doc)
+    doc.addEventListener('keydown', (event) => {
+      if (event.code !== 'ArrowRight' || (!insideStage && !stage.contains(event.target))) return
+      try { doc.defaultView?.${INPUT_PROBE_BINDING}(event.code) } catch { /* 只用于冒烟观察，不干预游戏输入 */ }
+    }, true)
+    for (const frame of doc.querySelectorAll('iframe')) {
+      try { listen(frame.contentDocument, true) } catch { /* 跨源框架不属于本站游戏画面 */ }
+    }
+  }
+  listen(document, false)
+  for (const frame of stage.querySelectorAll('iframe')) {
+    try { listen(frame.contentDocument, true) } catch { /* 仅观察可访问的游戏文档 */ }
+  }
+  return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2), documents: docs.size }
+})()`
 const TARGET_CLOSE_TIMEOUT_MS = 5_000
 
 /**
@@ -128,11 +157,36 @@ export function startupDetailOf(postData) {
   }
 }
 
-/** 一局的结论：首帧 = 过；failed / timeout = 不过；其它事件继续等 */
+/** 一局的结论：必须由运行时确认可玩；首帧只表示有画面，不足以证明玩家能操作。 */
 export function verdictOf(event) {
-  if (event === 'first_frame') return 'pass'
+  if (event === 'game_playable') return 'pass'
   if (event === 'failed' || event === 'timeout') return 'fail'
   return ''
+}
+
+/** 点击游戏画面取得真实焦点，再发方向键；按下与松开都发送，避免把按键卡住。 */
+export async function sendSmokeInput(send, point) {
+  const mouse = { x: point.x, y: point.y }
+  await send('Input.dispatchMouseEvent', { ...mouse, type: 'mouseMoved' })
+  await send('Input.dispatchMouseEvent', { ...mouse, type: 'mousePressed', button: 'left', clickCount: 1 })
+  await send('Input.dispatchMouseEvent', { ...mouse, type: 'mouseReleased', button: 'left', clickCount: 1 })
+  const key = {
+    key: 'ArrowRight',
+    code: 'ArrowRight',
+    windowsVirtualKeyCode: 39,
+    nativeVirtualKeyCode: 39,
+  }
+  await send('Input.dispatchKeyEvent', { ...key, type: 'keyDown' })
+  await send('Input.dispatchKeyEvent', { ...key, type: 'keyUp' })
+}
+
+/** 等输入监听器确认收到按键，并清除已经不需要的超时器。 */
+export function waitForSmokeInput(interaction, timeoutMs = INPUT_CONFIRM_TIMEOUT_MS) {
+  let timer = 0
+  return Promise.race([
+    Promise.resolve(interaction).then(() => true),
+    new Promise((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs) }),
+  ]).finally(() => clearTimeout(timer))
 }
 
 /** DevToolsActivePort 的内容 → ws 地址；没写完（空、缺路径、端口不对）返回空串 */
@@ -382,7 +436,9 @@ async function smokeOne(cdp, slug) {
   const networkRequests = new Map()
   let startState = ''
   let settle
+  let settleInput
   let timer = 0
+  const inputReceived = new Promise((resolve) => { settleInput = resolve })
   const done = new Promise((resolve) => { settle = resolve })
   let off = () => {}
   try {
@@ -403,7 +459,9 @@ async function smokeOne(cdp, slug) {
   }
   off = cdp.on(async (msg) => {
     if (msg.sessionId !== sessionId) return
-    if (msg.method === 'Network.requestWillBeSent') {
+    if (msg.method === 'Runtime.bindingCalled' && msg.params.name === INPUT_PROBE_BINDING && msg.params.payload === 'ArrowRight') {
+      settleInput(true)
+    } else if (msg.method === 'Network.requestWillBeSent') {
       const { requestId, request } = msg.params
       networkRequests.set(requestId, { url: request.url, startedAt: Date.now(), status: 0, bytes: 0, error: '' })
     } else if (msg.method === 'Network.responseReceived') {
@@ -465,10 +523,41 @@ async function smokeOne(cdp, slug) {
     }
     await sendWithin(cdp, 'Runtime.enable', {}, sessionId)
     await sendWithin(cdp, 'Page.navigate', { url: `${BASE}/games/${encodeURIComponent(slug)}` }, sessionId, PAGE_NAVIGATION_COMMAND_TIMEOUT_MS)
-    timer = setTimeout(() => settle({ verdict: 'fail', event: `${Math.round(preflight.timeoutMs / 1000)} 秒内没有首帧` }), preflight.timeoutMs)
+    timer = setTimeout(() => settle({ verdict: 'fail', event: `${Math.round(preflight.timeoutMs / 1000)} 秒内没有确认进入可玩状态` }), preflight.timeoutMs)
     startState = await startSmokeGamePrivately(cdp, sessionId, PRIVATE_START_TIMEOUT_MS,
       () => events.some((event) => event.startsWith('start_click')))
-    const result = await done
+    let result = await done
+    let inputVerified = false
+    if (result.verdict === 'pass') {
+      try {
+        await sendWithin(cdp, 'Runtime.addBinding', { name: INPUT_PROBE_BINDING }, sessionId)
+        const probeResult = await sendWithin(cdp, 'Runtime.evaluate', {
+          expression: INPUT_PROBE_EXPRESSION,
+          returnByValue: true,
+        }, sessionId)
+        if (probeResult.exceptionDetails) throw new Error(probeResult.exceptionDetails.text || '无法安装方向键探针')
+        const point = probeResult.result?.value
+        if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y) || point.error) {
+          result = { verdict: 'fail', event: `已显示可玩画面，但输入探针无法定位游戏舞台（${point?.error || '未知布局'}）` }
+        } else {
+          await sendSmokeInput((method, params) => sendWithin(cdp, method, params, sessionId), point)
+          inputVerified = await waitForSmokeInput(inputReceived)
+          if (!inputVerified) {
+            result = { verdict: 'fail', event: '已显示可玩画面，但方向键事件没有到达游戏文档' }
+          }
+        }
+      } catch (error) {
+        return {
+          slug,
+          verdict: 'infrastructure',
+          event: `可玩状态已确认，但测试环境无法发送方向键：${error instanceof Error ? error.message : String(error)}`,
+          seconds: Math.round((Date.now() - started) / 1000),
+          startState,
+          events,
+          errors: errors.filter(Boolean).slice(-5),
+        }
+      }
+    }
     let pageState
     if (result.verdict === 'fail') {
       const snapshot = await sendWithin(cdp, 'Runtime.evaluate', {
@@ -482,6 +571,7 @@ async function smokeOne(cdp, slug) {
       ...result,
       seconds: Math.round((Date.now() - started) / 1000),
       startState,
+      inputVerified,
       pageState,
       events,
       errors: errors.filter(Boolean).slice(-5),

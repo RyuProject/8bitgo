@@ -23,7 +23,7 @@ import { useT, fmt } from './i18n'
 import { getLang } from './lang'
 import { DEFAULT_LANG, HREFLANG, LANGUAGES, FALLBACK_LANG, localizedPath, stripLang, type Lang } from '@/config/languages'
 import { romUrlForKey } from './roms'
-import { splitDevelopers } from '@/lib/developers'
+import { developerSchemaType, splitDevelopers } from '@/lib/developers'
 import { FEATURES } from '@/config/features'
 
 const SITE_NAME = import.meta.env.VITE_SITE_NAME ?? '8BitGo'
@@ -682,7 +682,7 @@ export function videoGameSchema(g: GameSchemaInput) {
   if (g.genres?.length) schema.genre = g.genres
   if (g.year) schema.datePublished = String(g.year)
   const developers = splitDevelopers(g.developer)
-  if (developers.length) schema.author = developers.map((name) => ({ '@type': 'Organization', name }))
+  if (developers.length) schema.author = developers.map((name) => ({ '@type': developerSchemaType(name), name }))
   /**
    * 真实的聚合评分才输出。三道门都得过：功能开着、有人评过、样本够。
    *

@@ -589,8 +589,57 @@ function patchIpxPort(file) {
   writeFileSync(file, code.replace(needle, '"/ipx/"'))
 }
 
+/**
+ * 普通单机 DOS 不应创建 WebRTC peer。玩家点击开房 / 加入时，js-dos 的 Player UI 才创建 Net；
+ * 但 CommandInterface 构造时 transport.net 已固定，Network polling 和 worker 的 peer id
+ * 也在同一刻初始化。这个补丁给已经运行的会话增加安全的动态挂载入口，不重启游戏。
+ */
+function patchLazyIpxCommandInterface(file) {
+  let code = readFileSync(file, 'utf8')
+  const needle = 'net(){return this.transport.net??null}'
+  if (code.split(needle).length !== 2) fail('js-dos CommandInterface.net() 结构变化，不能安全挂载按需 IPX')
+  const method = 'setNet(e){if(this.exited&&e)throw new Error("Cannot attach IPX network to an exited DOS session");if(e!==null&&(!Number.isSafeInteger(e.peerId)||e.peerId<=0||"function"!=typeof e.wait||"function"!=typeof e.recvBinary))throw new Error("Invalid IPX network");if(e&&this.transport.net&&this.transport.net!==e)throw new Error("A different IPX network is already attached");if(this.transport.net===e)return e;null!==this.netPollInterval&&(clearInterval(this.netPollInterval),this.netPollInterval=null);this.transport.net=e;this.myPeerId=e?.peerId??0;if(e){this.sendClientMessage("wc-net-peer-id",{peerId:e.peerId});this.netPollInterval=setInterval(()=>{const t=this.transport.net;if(!t)return;t.wait(0);let n=t.recvBinary();for(;null!=n;)this.netRecv+=n.data.length,this.sendClientMessage("wc-net-received",{peerId:n.peerId,data:n.data.buffer},[n.data.buffer]),n=t.recvBinary()},16)}return e}'
+  code = code.replace(needle, `${method}${needle}`)
+  const connectNeedle = 'networkConnect(e,t){'
+  if (code.split(connectNeedle).length !== 2) fail('js-dos networkConnect() 结构变化，不能清理超时的联机握手')
+  code = code.replace(
+    connectNeedle,
+    'cancelNetworkConnect(){if(null===this.connectPromise)return!1;const e=this.connectReject;return this.connectPromise=null,this.connectResolve=()=>{},this.connectReject=()=>{},e(new Error("IPX network connection timed out")),this.sendClientMessage("wc-disconnect",{networkType:0}),!0}cancelNetworkDisconnect(){if(null===this.disconnectPromise)return!1;const e=this.disconnectResolve;return this.disconnectPromise=null,this.disconnectResolve=()=>{},e(),this.sendClientMessage("wc-disconnect",{networkType:0}),!0}networkConnect(e,t){',
+  )
+  writeFileSync(file, code)
+}
+
+/** worker 启动后才拿到 peer id；更新它不能重发 wc-run（会重新解包并覆盖运行中的 DOS 磁盘）。 */
+function patchLazyIpxWorker(file) {
+  const code = readFileSync(file, 'utf8')
+  const needle = 'case"wc-run":{if(data.props.myPeerId){Module._setMyPeerId(data.props.myPeerId)}'
+  const times = code.split(needle).length - 1
+  if (times !== 1) fail(`${file.split(/[\\/]/).pop()} 缺少唯一 wc-run peer-id 初始化点，不能安全启用按需 IPX`)
+  const replacement = 'case"wc-net-peer-id":{const peerId=data.props.peerId;if(Number.isSafeInteger(peerId)&&peerId>0)Module._setMyPeerId(peerId)}break;case"wc-run":{if(data.props.myPeerId){Module._setMyPeerId(data.props.myPeerId)}'
+  writeFileSync(file, code.replace(needle, replacement))
+}
+
+/**
+ * 把创建 WebRTC-NET 的闭包留在上游 UI 里：ICE 配置、信令令牌和自托管 WASM 路径继续复用
+ * js-dos 官方初始化；开局完成后只在玩家点 IPX 时调用，不为单机开局建空房间。
+ */
+function patchLazyIpxNetwork(file) {
+  let code = readFileSync(file, 'utf8')
+  const attachNeedle = 'f.ci=e,_?e.sendBackendEvent'
+  const cleanupNeedle = 'e.exit()}))}}catch(e)'
+  for (const [needle, label] of [[attachNeedle, 'ci-ready 挂载点'], [cleanupNeedle, 'DOS 退出清理点']]) {
+    const times = code.split(needle).length - 1
+    if (times !== 1) fail(`js-dos 按需 IPX ${label}期望 1 处，实际 ${times} 处`)
+  }
+  const attach = 'f.ci=e,e.__8bitgoEnsureIpxNetwork=()=>{const existing=e.net?.();if(existing)return Promise.resolve(existing);if(f.__8bitgoIpxPromise)return f.__8bitgoIpxPromise;let cancelled=!1,timer=0;const work=Al((e=>console.log("network error for peer",e)),(()=>console.log("network disconnected")),f).then((net=>{if(cancelled||e.exited||f.ci!==e){net.shutdown?.();throw new Error("IPX network setup was cancelled")}if("function"!=typeof e.setNet)throw new Error("js-dos runtime cannot attach IPX to a running session");const owned=!f.options.sharedNet;try{e.setNet(net);f.net=net;f.__8bitgoOwnedNet=owned;return net}catch(error){owned&&net.shutdown?.();throw error}}));const timeout=new Promise((resolve,reject)=>{timer=setTimeout(()=>{cancelled=!0;reject(new Error("IPX network setup timed out"))},20000)});const setup=Promise.race([work,timeout]).finally(()=>clearTimeout(timer));f.__8bitgoCancelIpxSetup=()=>{cancelled=!0};const pending=setup.finally(()=>{if(f.__8bitgoIpxPromise===pending)f.__8bitgoIpxPromise=null;if(f.__8bitgoCancelIpxSetup)f.__8bitgoCancelIpxSetup=null});f.__8bitgoIpxPromise=pending;return pending};e.__8bitgoReleaseIpxNetwork=()=>{f.__8bitgoCancelIpxSetup?.();if(!f.__8bitgoOwnedNet)return;const net=f.net;f.net=void 0;f.__8bitgoOwnedNet=!1;try{e.setNet?.(null)}catch{}net?.shutdown?.()};_?e.sendBackendEvent'
+  code = code.replace(attachNeedle, attach)
+  code = code.replace(cleanupNeedle, 'e.exit().finally(()=>e.__8bitgoReleaseIpxNetwork?.())}))}}catch(e)')
+  writeFileSync(file, code)
+}
+
 const mainJs = join(out, 'js-dos.js')
 patchIpxPort(mainJs)
+patchLazyIpxNetwork(mainJs)
 patchAdjustedPointerLock(mainJs)
 patchKeyboardLockRejection(mainJs)
 patchMinimalMouseCaptureUi(mainJs)
@@ -600,8 +649,10 @@ wrapCssInLayer(join(out, 'js-dos.css'))
 wrapInIife(mainJs)
 const emulatorsDir = join(out, 'emulators')
 patchSockdriveSequentialReadAhead(join(emulatorsDir, 'emulators.js'))
+patchLazyIpxCommandInterface(join(emulatorsDir, 'emulators.js'))
 for (const core of readdirSync(emulatorsDir).filter((name) => /^wdosbox(?:-x)?(?:-jspi|-dbg)?\.js$/.test(name))) {
   patchSyncSleep(join(emulatorsDir, core))
+  if (!/-dbg\./.test(core)) patchLazyIpxWorker(join(emulatorsDir, core))
 }
 // 所有会改动 WASM 的补丁都必须先完成，完整性摘要才绑定到最终可执行字节。
 patchDosboxMouseWasm(join(emulatorsDir, 'wdosbox.wasm'))
@@ -631,6 +682,7 @@ writeFileSync(
     syncSleepTimedWait: true,
     int74CumulativeMickeys: true,
     emulatorsScriptRecovery: true,
+    lazyIpxSupported: true,
     wasmRuntimeIntegrity: true,
     sourceFingerprint,
     copyScriptSha256,

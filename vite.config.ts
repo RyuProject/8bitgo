@@ -242,12 +242,11 @@ export default defineConfig(({ mode }) => {
     {
       name: 'inline-edge-route',
       transformIndexHtml: {
-        // 必须在 Vite 注入入口脚本和 modulepreload 之后替换：路由源码注释含 `</head>` 示例，
-        // 若提前塞进模板，Vite 的 HTML 注入会把注释当成真正的 head 结束位置。
+        // 必须在 Vite 写入入口与 modulepreload 后替换显式占位符，保持路由脚本在语言跳转脚本之前。
         order: 'post' as const,
         handler: (html: string) => inlineEdgeRouteHtml(
           html,
-          readFileSync(path.join(PUBLIC_DIR, 'edge-route-v5.js'), 'utf8'),
+          readFileSync(path.join(PUBLIC_DIR, 'edge-route-v6.js'), 'utf8'),
         ),
       },
     },

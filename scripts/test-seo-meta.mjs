@@ -22,6 +22,7 @@
  */
 import assert from 'node:assert/strict'
 import { readFileSync, readdirSync } from 'node:fs'
+import { runInNewContext } from 'node:vm'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import ts from 'typescript'
@@ -349,6 +350,23 @@ check('详情页的 title 带平台缩写，H1 仍保持干净的游戏名', () 
   assert.match(code('src/components/game/GameDetailSections.tsx'), /<h1[^>]*>\s*\{title\}\s*<\/h1>/, 'GameDetailHeading 的 H1 没有直接用传进来的标题')
   assert.match(i18n, /`\$\{cleanTitle\}（\$\{cleanPlatform\}）`/, 'CJK 标题没有使用全角括号')
   assert.match(i18n, /`\$\{cleanTitle\} \(\$\{cleanPlatform\}\)`/, '拉丁语言标题没有使用平台后缀')
+})
+
+check('VideoGame 作者按已核实身份声明 Person 或 Organization', () => {
+  const developerSource = read('src/lib/developers.ts')
+  const seo = code('src/services/seo.ts')
+  const compiled = ts.transpileModule(developerSource, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText
+  const module = { exports: {} }
+  runInNewContext(compiled, { module, exports: module.exports })
+  const { developerSchemaType } = module.exports
+
+  for (const person of ['Bui', 'Clemaister', 'xiaoniao', 'MrLee', 'OzMafioso', 'David Ronai (Makio64)']) {
+    assert.equal(developerSchemaType(person), 'Person', `${person} 应作为个人创作者`)
+  }
+  assert.equal(developerSchemaType('SEGA AM2'), 'Organization', '工作室仍应使用 Organization')
+  assert.match(seo, /'@type': developerSchemaType\(name\)/, 'VideoGame JSON-LD 没有按开发者身份生成作者类型')
 })
 
 console.log('八、原生图片必须显式提供替代文字')

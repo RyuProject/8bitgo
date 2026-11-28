@@ -53,6 +53,23 @@ export function jsnesNetplaySocketUrl(configuredUrl: string, pageUrl: string): s
   return socketUrl.toString()
 }
 
+/** 联机结束时释放仍施加在核心里的按键，避免断线正好丢掉 keyup 后单机角色卡键。 */
+export function releaseNetplaySeatInputs(
+  appliedBits: Record<number, number>,
+  release: (seat: 0 | 1, action: PadAction) => void,
+): void {
+  for (const seat of [0, 1] as const) {
+    const bits = appliedBits[seat] ?? -1
+    // -1 表示本局还没有把该座位的状态施加到核心，不需要发一串无意义的 keyup。
+    if (bits >= 0) {
+      for (let i = 0; i < NETPLAY_ACTIONS.length; i++) {
+        if ((bits & (1 << i)) !== 0) release(seat, NETPLAY_ACTIONS[i])
+      }
+    }
+    appliedBits[seat] = 0
+  }
+}
+
 export interface JsnesNetplayOptions {
   /** 进房时带房间号；不带就是开新房 */
   roomId?: string

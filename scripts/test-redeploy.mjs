@@ -14,16 +14,25 @@ import { fileURLToPath } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const lib = join(root, 'deploy/lib/npm-ci-if-changed.sh')
+const buildLib = join(root, 'deploy/lib/build-with-diagnostics.sh')
 const redeploy = join(root, 'deploy/redeploy.sh')
 
 const syntax = spawnSync('bash', ['-n', redeploy], { encoding: 'utf8' })
 assert.equal(syntax.status, 0, `redeploy.sh 语法错误：${syntax.stderr}`)
 const source = readFileSync(redeploy, 'utf8')
+const restartStep = source.slice(source.indexOf('步骤 7/7'))
+assert.ok(
+  restartStep.indexOf('systemctl daemon-reload') >= 0 &&
+    restartStep.indexOf('systemctl daemon-reload') < restartStep.indexOf('systemctl restart "$UNIT"'),
+  '重启前必须重新加载 systemd 单元，避免部署后的单元文件仍被旧配置覆盖',
+)
 const sourcedAt = source.indexOf('lib/npm-ci-if-changed.sh')
 const step3 = source.indexOf('npm_ci_if_changed "$REPO_DIR"')
 assert.ok(sourcedAt > 0 && step3 > sourcedAt, 'redeploy.sh 必须先载入判据再调用 npm_ci_if_changed')
 assert.ok(source.indexOf('npm_ci_if_changed "$SERVER_DIR"') > step3, 'server 目录也走同一判据')
 assert.doesNotMatch(source, /\(\s*cd "\$REPO_DIR"\s*&&\s*npm ci\s*\)/, '不再无条件 npm ci')
+assert.match(source, /lib\/build-with-diagnostics\.sh/, '发布脚本必须载入构建失败诊断助手')
+assert.match(source, /build_with_diagnostics "\$REPO_DIR" "\$LOG" "\$LOG_DIR"/, '新版本和回滚构建都必须记录诊断输出')
 
 // 备份拆两半（2026-11-15 #5）：本地 dump 同步、失败中止；R2 上传转后台，退出前一定等它
 const step1 = source.indexOf('步骤 1/7')
@@ -135,8 +144,45 @@ exit 0
   run()
   assert.equal(calls(), 7)
   assert.ok(!existsSync(join(app, 'node_modules/.8bitgo-lock-sha256')))
+
+  // 回滚构建曾只留下通用告警；失败输出必须持久化并附到主发布日志。
+  const buildBin = join(tmp, 'build-bin')
+  const buildApp = join(tmp, 'build-app')
+  const deployLog = join(tmp, 'deploy.log')
+  mkdirSync(buildBin)
+  mkdirSync(buildApp)
+  const fakeNpm = join(buildBin, 'npm')
+  writeFileSync(fakeNpm, `#!/usr/bin/env bash
+printf '%s\\n' "FAKE_BUILD_DIAGNOSTIC_LINE"
+exit "\${FAKE_BUILD_EXIT:-0}"
+`)
+  chmodSync(fakeNpm, 0o755)
+
+  const runBuild = (exitCode) => spawnSync('bash', ['-c', `
+    . "$1"
+    build_with_diagnostics "$2" "$3" "$4"
+    build_rc=$?
+    printf '__BUILD_RC__=%s\\n__BUILD_FAILURE_LOG__=%s\\n' "$build_rc" "$BUILD_FAILURE_LOG"
+  `, 'test', buildLib, buildApp, deployLog, tmp], {
+    encoding: 'utf8',
+    env: { ...process.env, PATH: `${buildBin}:${process.env.PATH}`, FAKE_BUILD_EXIT: String(exitCode) },
+  })
+
+  r = runBuild(17)
+  assert.equal(r.status, 0, r.stderr)
+  assert.match(r.stdout, /__BUILD_RC__=17/)
+  const failureLog = r.stdout.match(/__BUILD_FAILURE_LOG__=(.+)/)?.[1]
+  assert.ok(failureLog && existsSync(failureLog), '失败构建必须留下完整日志文件')
+  assert.match(readFileSync(failureLog, 'utf8'), /FAKE_BUILD_DIAGNOSTIC_LINE/)
+  assert.match(readFileSync(deployLog, 'utf8'), /完整输出：/, '发布总日志必须给出失败输出文件路径')
+  assert.match(readFileSync(deployLog, 'utf8'), /FAKE_BUILD_DIAGNOSTIC_LINE/, '发布总日志必须包含错误尾部')
+
+  r = runBuild(0)
+  assert.equal(r.status, 0, r.stderr)
+  assert.match(r.stdout, /__BUILD_RC__=0/)
+  assert.match(r.stdout, /__BUILD_FAILURE_LOG__=\s*$/m, '成功构建不应残留失败日志路径')
 } finally {
   rmSync(tmp, { recursive: true, force: true })
 }
 
-console.log('✔ redeploy：lock 未变跳过 npm ci，变了 / 强制 / 失败后都重装')
+console.log('✔ redeploy：依赖安装判据与失败构建诊断均通过')

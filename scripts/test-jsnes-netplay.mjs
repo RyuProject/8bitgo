@@ -126,7 +126,7 @@ class FakeDataChannel extends EventTarget {
 }
 
 const mod = await import(`data:text/javascript;base64,${Buffer.from(built.outputFiles[0].contents).toString('base64')}`)
-const { JsnesNetplay, jsnesNetplaySocketUrl, jsnesRomFingerprint } = mod
+const { JsnesNetplay, jsnesNetplaySocketUrl, jsnesRomFingerprint, releaseNetplaySeatInputs } = mod
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
 const baseOptions = (overrides = {}) => ({
   seat: 0,
@@ -145,6 +145,18 @@ assert.equal(
   jsnesNetplaySocketUrl('https://relay.example.net/netplay', 'https://8bitgo.com/games/demo'),
   'wss://relay.example.net/jsnes-netplay',
 )
+// 离房 / 断线时要释放双方最后施加到核心里的按键；链路断在 keydown 与 keyup 之间也不能卡键。
+{
+  const applied = { 0: (1 << 0) | (1 << 7), 1: (1 << 4) | (1 << 9) }
+  const released = []
+  releaseNetplaySeatInputs(applied, (seat, action) => released.push([seat, action]))
+  assert.deepEqual(released, [[0, 'a'], [0, 'right'], [1, 'up'], [1, 'turboB']])
+  assert.deepEqual(applied, { 0: 0, 1: 0 }, '已释放的位图要归零，避免重复松键')
+
+  const untouched = { 0: -1, 1: -1 }
+  releaseNetplaySeatInputs(untouched, () => assert.fail('未施加过输入的座位不应发送 keyup'))
+  assert.deepEqual(untouched, { 0: 0, 1: 0 })
+}
 
 // 输入延迟既来自房间设置，也可能在握手时由对端传入；两种入口都必须夹在安全范围内。
 for (const [input, expected] of [[-3, 0], [2.9, 2], [99, 8], [Number.NaN, 2]]) {
@@ -467,6 +479,7 @@ const panelSource = readFileSync(new URL('../src/emulator/JsnesNetplayPanel.tsx'
 const gbaPanelSource = readFileSync(new URL('../src/emulator/GbaLinkNetplayPanel.tsx', import.meta.url), 'utf8')
 const gbaAdapterSource = readFileSync(new URL('../src/emulator/adapters/iodinegba.ts', import.meta.url), 'utf8')
 const runtimeRegistrySource = readFileSync(new URL('../src/emulator/registry.ts', import.meta.url), 'utf8')
+const adapterSource = readFileSync(new URL('../src/emulator/adapters/jsnes.ts', import.meta.url), 'utf8')
 assert.match(playerSource, /initialRoomId=\{jsnesInviteCode\}/, '邀请房号必须交给可见面板')
 assert.match(playerSource, /targetPlatform === 'nes' && jsnesNetplay && runtime\.id !== 'jsnes'[\s\S]*jsnesInviteNotJoined/, '邀请 ROM 落到单人备用运行时后，必须明确告知玩家未加入联机房')
 assert.match(panelSource, /joinRoom\(initialRoomId\)/, '可见面板必须自动加入邀请房')
@@ -521,5 +534,10 @@ assert.match(gbaAdapterSource, /gbaLinkRemoteWaitExpired/, '对端输入停止�
 assert.match(gbaAdapterSource, /inputSources\.releaseSource\('gamepad'\)[\s\S]*inputSources\.releaseSource\('touchpad'\)/,
   '移动端后台后应释放遗留的手柄和触屏按键')
 assert.match(gbaPanelSource, /有效的 16 KiB GBA BIOS/, '切换到 IodineGBA 联机前必须提醒用户需要平台 BIOS')
+assert.match(
+  adapterSource,
+  /releaseNetplaySeatInputs\(appliedSeatBits,[\s\S]*?nes\.buttonUp\?\.\(seat === 1 \? 2 : 1, code\)/,
+  '离房清理必须把双方仍按下的按键释放到对应 jsnes 手柄，避免断线遗留卡键',
+)
 
 console.log('联机回归通过：jsnes 握手/帧输入、GBA 双向存档同步、邀请路由与运行时接线')

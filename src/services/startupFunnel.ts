@@ -18,6 +18,7 @@ export type StartupEventName =
   | 'core_load_complete'
   | 'fallback_started'
   | 'fallback_first_frame'
+  | 'fallback_interaction'
   | 'fallback_playable'
   /** 旧版事件曾在首帧触发；保留接收能力，但新版不再发送。 */
   | 'fallback_succeeded'
@@ -73,6 +74,10 @@ const BATCHABLE_EVENTS = new Set<StartupEventName>([
 ])
 
 /** 同一局的兜底路线会逐跳变长；只让这类事件按路线内容去重，后端会把最长路线写回同一条记录。 */
+export function shouldReportFallbackRoute(lastReported: string, nextRoute: string): boolean {
+  return Boolean(nextRoute) && nextRoute !== lastReported
+}
+
 export function startupEventDedupeKey(slug: string, payload: StartupEvent): string {
   const routeRevision = payload.event === 'fallback_started' ? `:${payload.detail ?? ''}` : ''
   return `${slug}:${payload.visitId}:${payload.attemptId ?? ''}:${payload.event}${routeRevision}`

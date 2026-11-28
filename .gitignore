@@ -211,6 +211,9 @@ public/web/PvZ2
 ssl/
 
 # 运行时 wasm 的 Brotli 11 预压缩版：构建时由 scripts/precompress-runtimes.mjs 生成（按 sha 跳过未变的）
+# Vite 哈希 JS/CSS 与 asset-repair 入口同样由构建生成压缩副本，不应作为源码提交
+public/assets/*.br
+public/assets/*.br.json
 public/**/*.wasm.br
 public/**/*.wasm.br.json
 public/emulatorjs/emulator.min.js.br

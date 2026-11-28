@@ -109,7 +109,7 @@ import {
 import { FEATURES } from '@/config/features'
 import { desktopScreenAspect, detailPageScreenAspect, liveStageStyle, mobileScreenAspect, stableLiveGeometry, stageHeightCap } from './screenAspect'
 import { recordPlay } from '@/services/store'
-import { newStartupId, recordStartupEvent, recordStartupEvents, type StartupEvent, type StartupEventName } from '@/services/startupFunnel'
+import { newStartupId, recordStartupEvent, recordStartupEvents, shouldReportFallbackRoute, type StartupEvent, type StartupEventName } from '@/services/startupFunnel'
 import { diagLog, registerDiagnosticSnapshot } from '@/services/startupDiagnostics'
 import { createStartupProgressTrace } from './startupProgressTrace'
 import { sameLiveControls, sameRuntimeCaps, sameRuntimeGeometry, sameRuntimeScreenLayout } from './playerRuntimeState'
@@ -1672,6 +1672,8 @@ export function EmulatorPlayer({
   const frameRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const sessionCounter = useRef(0)
+  /** 独立观察兜底切换后的操作，避免本局更早的首次操作占掉唯一事件。 */
+  const fallbackInteractionSignalRef = useRef<(() => void) | null>(null)
   /** 适配器可能在 ROM / CHD / 内存预检后换核；失败回调闭包仍持有旧 session，故按 session id 单独记录最终核心。 */
   const resolvedCoreRef = useRef<{ sessionId: number; core: string; manualFallbackAllowed?: boolean } | null>(null)
   /** 启动漏斗按 attempt/event 唯一；事件仍需按核心身份配对，不能把回退核心完成时间接到旧核心上。 */
@@ -2158,7 +2160,9 @@ export function EmulatorPlayer({
     const isStreamingDosSession = session.runtime.id === 'jsdos' && Boolean(dosSockdriveUrlRef.current)
     let fallbackTrail = [...(session.fallbacks ?? [])]
     let fallbackStartedReported = false
+    let reportedFallbackRoute = ''
     let fallbackFirstFrameReported = false
+    let fallbackInteractionReported = false
     let fallbackOutcomeReported = false
     const batchedStartupPhases = new Set<StartupEventName>([
       'rom_load_start', 'rom_load_complete', 'core_warm_start', 'core_warm_first_byte', 'core_warm_complete', 'core_cache_hit',
@@ -2214,9 +2218,13 @@ export function EmulatorPlayer({
     }
     const reportFallbackOutcome = (event: 'fallback_started' | 'fallback_first_frame' | 'fallback_playable' | 'fallback_failed') => {
       if (!fallbackTrail.length || !startupVisitId || !startupSlug || session.runtime.id === 'liveview') return
+      const detail = fallbackTrail
+        .map(({ kind, from, to, reason }) => `${kind}:${from}>${to}:${reason}`)
+        .join(';')
       if (event === 'fallback_started') {
-        if (fallbackStartedReported) return
+        if (!shouldReportFallbackRoute(reportedFallbackRoute, detail)) return
         fallbackStartedReported = true
+        reportedFallbackRoute = detail
       } else if (event === 'fallback_first_frame') {
         if (!fallbackStartedReported || fallbackFirstFrameReported) return
         fallbackFirstFrameReported = true
@@ -2224,11 +2232,14 @@ export function EmulatorPlayer({
         if (!fallbackStartedReported || fallbackOutcomeReported) return
         fallbackOutcomeReported = true
       }
-      const detail = fallbackTrail
-        .map(({ kind, from, to, reason }) => `${kind}:${from}>${to}:${reason}`)
-        .join(';')
       reportStartup(event, detail)
     }
+    const reportFallbackInteraction = () => {
+      if (!fallbackStartedReported || !fallbackTrail.length || fallbackInteractionReported) return
+      fallbackInteractionReported = true
+      reportStartup('fallback_interaction')
+    }
+    fallbackInteractionSignalRef.current = reportFallbackInteraction
     reportFallbackOutcome('fallback_started')
     const reportStartupFailure = (reason: string) => {
       startupEnded = true
@@ -2589,6 +2600,10 @@ export function EmulatorPlayer({
         if (!isCurrent()) return
         noteStartupActivity()
         reportStartup('first_interaction')
+      },
+      onStageInteraction: () => {
+        if (!isCurrent()) return
+        reportFallbackInteraction()
       },
       onProgress: (next) => {
         if (!isCurrent()) return
@@ -3065,6 +3080,7 @@ export function EmulatorPlayer({
     })()
     return () => {
       reportStartupInterrupted()
+      if (fallbackInteractionSignalRef.current === reportFallbackInteraction) fallbackInteractionSignalRef.current = null
       window.removeEventListener('pagehide', onStartupPageHide)
       mountCancelled = true
       stopStartupWatchdog()
@@ -4750,16 +4766,19 @@ export function EmulatorPlayer({
     const host = frameRef.current
     let done = false
     const mark = () => {
-      if (done) return
-      done = true
-      recordStartupEvent(gameSlug, {
-        visitId: startupVisitId,
-        attemptId: session.startupAttemptId,
-        event: 'first_interaction',
-        runtime: session.runtime.id,
-        platform: session.platform,
-        elapsedMs: Math.max(0, Date.now() - session.startedAt),
-      })
+      // 首次操作仍只报一次；兜底信号独立观察，因此早于兜底的操作不会占掉它。
+      if (!done) {
+        done = true
+        recordStartupEvent(gameSlug, {
+          visitId: startupVisitId,
+          attemptId: session.startupAttemptId,
+          event: 'first_interaction',
+          runtime: session.runtime.id,
+          platform: session.platform,
+          elapsedMs: Math.max(0, Date.now() - session.startedAt),
+        })
+      }
+      fallbackInteractionSignalRef.current?.()
     }
     const stop = observeFrameDocs(host, (doc) => {
       const insideStage = (target: EventTarget | null) => {

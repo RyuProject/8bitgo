@@ -21,6 +21,8 @@ interface Props {
    */
   metric?: ReactNode
   className?: string
+  /** 首页下方榜单的封面靠近视口时才挂载，保留轻量渐变占位。 */
+  deferCover?: boolean
 }
 
 /**
@@ -61,7 +63,7 @@ const MEDAL_TONES: Record<number, string> = {
  * 顺带：卡片里不再有长度不定的文字，所以同一行里的卡片天然等高 ——
  * 以前靠「简介固定两行 min-h」撑出来的对齐，现在是结构本身保证的。
  */
-export function GameRankCard({ game, rank, metric, className }: Props) {
+export function GameRankCard({ game, rank, metric, className, deferCover }: Props) {
   const t = useT()
   const genreId = game.genres[0]
   const genre = genreId ? genreMap[genreId] : undefined
@@ -110,7 +112,7 @@ export function GameRankCard({ game, rank, metric, className }: Props) {
           游玩次数挂在封面标题**同一行的最右边**（GameCover 的 titleRight）。
           统计值缺省就不传：挂一个「0」会被读成「没人玩」，而真相是「还没统计到」。
         */}
-        <GameCover game={game} ratio="square" iconSize="md" still titleRight={metric} />
+        <GameCover game={game} ratio="square" iconSize="md" still titleRight={metric} deferMedia={deferCover} />
       </div>
     </Link>
   )

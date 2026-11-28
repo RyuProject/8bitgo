@@ -19,6 +19,7 @@ assert.equal(isSlowStartup({ ...slow, elapsedMs: STARTUP_SLOW_MS - 1 }), false, 
 assert.equal(normalizeStartupEvent({ ...base, event: 'fallback_started', detail: 'core:melondsds>melonds-compat:wasm-crash' }).event,
   'fallback_started', '运行时与核心兜底阶段必须进入漏斗白名单')
 assert.equal(normalizeStartupEvent({ ...base, event: 'fallback_first_frame' }).event, 'fallback_first_frame', '兜底首帧要和真正可玩分开统计')
+assert.equal(normalizeStartupEvent({ ...base, event: 'fallback_interaction' }).event, 'fallback_interaction', '兜底后输入信号必须独立于本局首次操作')
 assert.equal(normalizeStartupEvent({ ...base, event: 'fallback_playable' }).event, 'fallback_playable')
 assert.equal(normalizeStartupEvent({ ...base, event: 'fallback_succeeded' }).event, 'fallback_succeeded')
 assert.equal(normalizeStartupEvent({ ...base, event: 'core_warm_first_byte' }).event, 'core_warm_first_byte')
@@ -145,10 +146,10 @@ assert.deepEqual(shapePhaseTiming(), {
 }, '没有阶段数据时应返回空值而不是伪造 0ms')
 assert.deepEqual(shapeFallbackRoute({
   route: 'core:melondsds>melonds-compat:wasm-crash https://private.example/rom',
-  runtime: 'emulatorjs', attempts: '5', first_frames: '4', playable: '3', failures: '1',
+  runtime: 'emulatorjs', attempts: '5', first_frames: '4', playable: '3', interactions: '2', failures: '1',
 }), {
   route: 'core:melondsds>melonds-compat:wasm-crash [URL]',
-  runtime: 'emulatorjs', attempts: 5, firstFrames: 4, playable: 3, failures: 1, unresolved: 1,
+  runtime: 'emulatorjs', attempts: 5, firstFrames: 4, playable: 3, interactions: 2, failures: 1, unresolved: 1,
 }, '兜底路线展示前必须脱敏，并以尝试总数减去终态计算未确认数')
 assert.equal(shapeFallbackRoute({ runtime: '../bad', attempts: 2, playable: 4 }).runtime, 'unknown', '非法目标运行时不能回显进后台')
 
@@ -160,6 +161,8 @@ const schema = readFileSync(new URL('../schema-v2.sql', import.meta.url), 'utf8'
 const migration = readFileSync(new URL('./migrate.mjs', import.meta.url), 'utf8')
 const metricsSource = readFileSync(new URL('../src/startup-metrics.js', import.meta.url), 'utf8')
 const startupFunnelSource = readFileSync(new URL('../../src/services/startupFunnel.ts', import.meta.url), 'utf8')
+const playerSource = readFileSync(new URL('../../src/emulator/EmulatorPlayer.tsx', import.meta.url), 'utf8')
+const html5Adapter = readFileSync(new URL('../../src/emulator/adapters/html5.ts', import.meta.url), 'utf8')
 const adminRoute = readFileSync(new URL('../src/routes/admin.js', import.meta.url), 'utf8')
 assert.match(schema, /CREATE TABLE IF NOT EXISTS game_startup_events/)
 assert.match(schema, /UNIQUE KEY uniq_startup_event \(visit_id, attempt_id, event\)/)
@@ -169,6 +172,20 @@ assert.match(metricsSource, /recentFailures/, '统计接口应提供最近启动
 assert.match(metricsSource, /readiness_unobservable/, '汇总必须单独统计无法观测的页面，不混进失败数')
 assert.match(metricsSource, /SUM\(e\.event = 'startup_interrupted'\) AS interruptions/, '离页时尚未可玩的启动必须单独计数，不伪装成失败')
 assert.match(metricsSource, /fallback_attempts/, '启动汇总必须分别统计兜底尝试、成功和失败')
+assert.match(metricsSource, /fallback_interactions/, '兜底汇总应单独统计出现操作信号的启动，不把未操作样本算作失败')
+assert.match(metricsSource, /e\.event = 'fallback_interaction'/, '新客户端的兜底操作应独立落事件，不被此前首次操作占位')
+assert.match(metricsSource, /e\.event = 'fallback_interaction' AND EXISTS \([\s\S]*started\.event = 'fallback_started'/,
+  '兜底输入不能脱离同一次启动的真实兜底路线单独计数')
+assert.match(metricsSource, /interacted\.attempt_id = e\.attempt_id[\s\S]*interacted\.event = 'fallback_started'/,
+  '输入信号必须与同一次启动的兜底尝试关联')
+assert.match(metricsSource, /interacted\.elapsed_ms <= e\.elapsed_ms/,
+  '早于最后一次兜底跳转的操作不能误算为接棒后的输入信号')
+assert.match(metricsSource, /first_interaction_ms >= last_fallback_ms/,
+  '路线统计只把最后一次兜底跳转后的首次操作作为正向证据')
+assert.match(playerSource, /fallbackInteractionSignalRef\.current\?\.\(\)/,
+  '本局首次操作之后仍须继续捕捉兜底接棒后的操作')
+assert.match(html5Adapter, /options\.onStageInteraction\?\.\(\)[\s\S]*if \(!options\.onStageInteraction\) stopFirstInteractionMonitoring\(\)/,
+  'HTML5 只为可信游戏输入保留重复监听，以发现首次输入晚于兜底的情况')
 assert.match(metricsSource, /fallback_successes/)
 assert.match(metricsSource, /fallback_failures/)
 assert.match(metricsSource, /e\.event = 'fallback_failed' AND NOT EXISTS \([\s\S]*recovered\.event = 'fallback_playable'/,
@@ -205,7 +222,6 @@ assert.match(metricsSource, /COALESCE\(core_warm_start_runtime, core_cache_runti
   '核心缓存命中也必须能与实际加载核心配对')
 assert.match(metricsSource, /COALESCE\(core_load_key, core_resolved_key\)/,
   '实际网络核心身份优先，核心缓存命中时回退到最终就绪核心')
-const playerSource = readFileSync(new URL('../../src/emulator/EmulatorPlayer.tsx', import.meta.url), 'utf8')
 assert.equal((playerSource.match(/reportStartup\(result\.metric, coreKey\)/g) ?? []).length, 2,
   '预热与实际核心事件都要携带经过核心 URL 白名单提取的文件身份')
 assert.match(playerSource, /reportStartup\('runtime_ready', resolvedEjsCore \? emulatorJsCoreDataFile\(resolvedEjsCore\) : undefined\)/,

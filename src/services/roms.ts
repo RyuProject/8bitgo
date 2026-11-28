@@ -391,27 +391,60 @@ export function gameVideoFallbackUrl(game: { slug: string; video?: string }, cur
 }
 
 /**
- * 封面响应档位由同一张 R2 主图在边缘按需生成，不把四份派生图写回 R2。
- * 浏览器会结合 sizes、实际布局和 DPR 自动挑选；统一从这组宽度生成 srcset。
+ * 变换宽度从实际 sizes 提示计算，避免 CSS 卡片尺寸变化后还要手工维护另一份档位表。
+ * 候选覆盖约 2/3 倍、1 倍、4/3 倍和 2 倍展示宽度，再向上吸附到共享宽度档：
+ * 4/3 档补上约 160px 卡片在 2x 屏上所需的 320px，避免浏览器从 240px 一步跳到 480px。
+ * 不同页面上尺寸相近的卡片会复用同一批 Cloudflare 变换结果。
+ * 不支持解析的 sizes（如 auto / vw）用列表卡片的 240px 最大宽度生成候选，浏览器仍会按真实布局尺寸挑选。
+ * 480px 是最大候选，不是预存文件；fit=scale-down 会让 300px 原图保持原尺寸，只有更大的源图才会输出更大档。
+ * 96px 小图也从同一份主图按需变换，避免给每款游戏永久保存一份缩略图。
  */
-const COVER_WIDTHS = [96, 160, 240, 480] as const
+const DEFAULT_COVER_SLOT_WIDTH = 240
+const COVER_WIDTH_SCALES = [2 / 3, 1, 4 / 3, 2] as const
+const COVER_WIDTH_BUCKETS = [96, 160, 240, 320, 480] as const
+const MAX_COVER_WIDTH = COVER_WIDTH_BUCKETS[COVER_WIDTH_BUCKETS.length - 1]
+type CoverImageWidth = number
 
-type CoverImageWidth = (typeof COVER_WIDTHS)[number]
+function coverWidthBucket(width: number): number {
+  // 封面源图以 300px 为主、历史较大的图不超过 480px；超出后继续放大没有可见细节收益。
+  return COVER_WIDTH_BUCKETS.find((bucket) => bucket >= width) ?? MAX_COVER_WIDTH
+}
+
+function coverWidthsForSizes(sizes = ''): number[] {
+  // sizes 的每个逗号项可能带媒体条件；只读项尾部的实际槽位，不能把 min-width 断点当图宽。
+  const slotWidths = sizes
+    .split(',')
+    .map((part) => {
+      if (/\bcalc\s*\(/i.test(part)) return 0
+      const match = part.match(/(?:^|\s)(\d+(?:\.\d+)?)px\s*$/)
+      return match ? Number(match[1]) : 0
+    })
+    .filter((width) => Number.isFinite(width) && width > 0)
+  const slotWidth = slotWidths.length ? Math.max(...slotWidths) : DEFAULT_COVER_SLOT_WIDTH
+  const widths = COVER_WIDTH_SCALES.map((scale) => coverWidthBucket(Math.max(1, Math.ceil(slotWidth * scale))))
+  return [...new Set(widths)].sort((a, b) => a - b)
+}
+
+/** 视频 poster 没有 srcset，取布局提示对应的 2x 宽度，未提供提示时回落到列表卡片 480px。 */
+export function coverPosterWidth(sizes = ''): number {
+  const widths = coverWidthsForSizes(sizes)
+  return widths[widths.length - 1] || DEFAULT_COVER_SLOT_WIDTH * 2
+}
 
 function transformedCoverUrl(src: string, width: CoverImageWidth, base: string, format: 'auto' | 'webp'): string {
   const prefix = `${base}/covers/`
   // Cloudflare Image Resizing 当前会对 AVIF 源图返回 415；跳过这条必失败的请求，直接用已压缩的源图。
   if (!base || !/^https:\/\//i.test(base) || !src.startsWith(prefix) || /\.avif(?:[?#]|$)/i.test(src)) return ''
   const path = src.slice(base.length + 1)
-  // contain 保持比例并给出 srcset 声明的实际宽度；480 档会插值放大 300px 源图，
-  // 不会凭空恢复细节。派生响应缓存在 Cloudflare 边缘，不新增 R2 对象。
-  return `${base}/cdn-cgi/image/width=${width},quality=80,format=${format},fit=contain/${path}`
+  const boundedWidth = Math.min(MAX_COVER_WIDTH, Math.max(1, Math.ceil(width)))
+  // scale-down 让小源图保持原尺寸，避免高档候选只放大像素却不增加细节。
+  return `${base}/cdn-cgi/image/width=${boundedWidth},quality=80,format=${format},fit=scale-down/${path}`
 }
 
-/** 单张 poster 没有 srcset：用 480 档覆盖 240px CSS 卡片的高密度屏，并保留不可变换源图回退。 */
+/** 单张图片没有 srcset 时按传入展示尺寸转码，并保留不可变换源图回退。 */
 export function coverImageUrl(
   src: string,
-  width: CoverImageWidth = 480,
+  width: CoverImageWidth = coverPosterWidth(),
   base = import.meta.env.VITE_COVER_TRANSFORM === '1' ? getCoverBase() : '',
   format: 'auto' | 'webp' = base && base === getCnCoverBase() ? 'webp' : 'auto',
 ): string {
@@ -421,11 +454,11 @@ export function coverImageUrl(
 /**
  * 封面的 Cloudflare Image Transformations srcset；不适用时返回空串，调用方照旧用原图。
  *
- * 只处理本站封面域下的 `covers/` 原图：外链走同源代理；96px 占位也从主图边缘变换。
+ * 只处理本站封面域下的 `covers/` 原图：外链走同源代理；小缩略图也从主图边缘变换。
  * 用 `/cdn-cgi/image/` 而不是在 Worker 里转码，是因为变换结果由 Cloudflare 边缘直接缓存，
  * 而且按浏览器 Accept 自动给 AVIF / WebP；源图仍经 Worker 读 R2，缓存寿命跟着源图
  * 的 s-maxage=600 走，所以「换封面 10 分钟内生效」不变。
- * fit=contain 让 96/160/240/480 四个宽度描述符都对应实际返回尺寸；480 对 300 源图是插值放大。
+ * fit=scale-down 保证高档请求不会把较小的源封面放大。
  *
  * 构建期开关 VITE_COVER_TRANSFORM=1：本地开发的封面根地址没有 /cdn-cgi/，开了只会全部 404。
  *
@@ -437,9 +470,11 @@ export function coverSrcSet(
   src: string,
   base = import.meta.env.VITE_COVER_TRANSFORM === '1' ? getCoverBase() : '',
   format: 'auto' | 'webp' = base && base === getCnCoverBase() ? 'webp' : 'auto',
+  sizes = '',
 ): string {
-  const urls = COVER_WIDTHS.map((width) => transformedCoverUrl(src, width, base, format))
-  return urls[0] ? urls.map((url, index) => `${url} ${COVER_WIDTHS[index]}w`).join(', ') : ''
+  const widths = coverWidthsForSizes(sizes)
+  const urls = widths.map((width) => transformedCoverUrl(src, width, base, format))
+  return urls[0] ? urls.map((url, index) => `${url} ${widths[index]}w`).join(', ') : ''
 }
 
 const IMAGE_EXT_RE = /\.(png|jpe?g|webp|avif)$/i
@@ -722,14 +757,14 @@ export interface RomCandidate {
   lang?: RomSlotLang
   /** true 表示同一语言槽的备用地址；启动入口等设置仍跟随 lang。 */
   backup?: boolean
-  /** 数据库仍绑旧 key，但播放器先尝试旁边的 `<key>.8bg`；便于整库原地渐进迁移。 */
+  /** true 表示同一 ROM 的另一种存储表示，失败时可继续尝试同语言候选。 */
   derivedPacked?: boolean
 }
 
 /** 网络类失败本来会停止整条回退链；唯一例外是紧跟主地址的同语言备用源。 */
 export function shouldTryRomCandidateAfterUncertain(current: RomCandidate, next?: RomCandidate): boolean {
-  // 明文原件和旁边派生的 .8bg 是同一个对象的两种形态，必须当成一组：一个问不出来时仍给另一个机会，
-  // 否则渐进迁移期间一次 HEAD / CORS 波动就可能挡住尚未转换或已经转换的游戏。
+  // 明文原件和旁边派生的 .8bg、PS1 裸 CHD 与历史 `.chd.8bg` 是同一 ROM 的两种表示，必须当成一组：
+  // 一个问不出来时仍给另一个机会，否则迁移或弱网期间一次 HEAD / CORS 波动就会挡住可玩的版本。
   if (
     next
     && (current.derivedPacked || next.derivedPacked)
@@ -804,15 +839,35 @@ export function playbackRomCandidates(game: Pick<Game, 'platform' | 'rom' | 'rom
   const raw = romCandidates(game, lang, prefer)
   // Play! 的 System 2x6 包必须保持普通 ZIP；加密成 8BG 后 libchdr 无法按随机访问读取 CHD。
   if (game.platform === 'arcade' && game.runtime === 'play') return raw
-  // PS1 后台允许显式绑定旧 8BG，但不能从裸 CHD/ISO 再派生 `.8bg` 地址：
-  // 新上传的原始 CHD 必须直接命中，否则会先请求不存在的 `.chd.8bg`，还会绕过 Range 流式读取。
+  // 旧后台记录可能仍绑 `.chd.8bg`，但同目录裸 CHD 已存在时必须优先它，才能启用按需 Range 读盘；
+  // 裸盘不存在或线路暂时问不出来时，才回退原 8BG。新上传的裸 CHD 仍不派生不存在的 `.chd.8bg`。
+  if (game.platform === 'psx') {
+    const out: RomCandidate[] = []
+    const seen = new Set<string>()
+    for (const candidate of raw) {
+      const split = candidate.key.search(/[?#]/)
+      const pathname = split < 0 ? candidate.key : candidate.key.slice(0, split)
+      const rawChd = !selfContainedKey(candidate.key) && /\.chd\.8bg$/i.test(pathname)
+        ? `${pathname.slice(0, -4)}${split < 0 ? '' : candidate.key.slice(split)}`
+        : ''
+      if (rawChd && !seen.has(rawChd)) {
+        seen.add(rawChd)
+        out.push({ ...candidate, key: rawChd })
+      }
+      if (!seen.has(candidate.key)) {
+        seen.add(candidate.key)
+        out.push(rawChd ? { ...candidate, derivedPacked: true } : candidate)
+      }
+    }
+    return out
+  }
   if (game.platform === 'html5') {
     // 旧数据里可能只填了裸域名；规范成网页地址后直接交给 iframe，避免被拼成 download.8bitgo.com 的 ROM key。
     return raw
       .map((candidate) => ({ ...candidate, key: normalizeHtml5Entry(candidate.key) }))
       .filter((candidate) => !html5EntryProblem(candidate.key))
   }
-  if (isStreamingDiscPlatform(game.platform) || game.platform === 'psx') return raw
+  if (isStreamingDiscPlatform(game.platform)) return raw
   const out: RomCandidate[] = []
   const seen = new Set<string>()
   for (const candidate of raw) {

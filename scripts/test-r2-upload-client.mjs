@@ -717,7 +717,12 @@ xhrResponse = () => ({ status: 200, body: JSON.stringify({ ok: true, key: 'roms/
 const singlePutProgress = []
 assert.equal((await uploadRom(small, 'roms/nes/demo.nes', (pct) => singlePutProgress.push(pct))).size, 3)
 assert.deepEqual(singlePutProgress, [99, 100], '请求体传完先停在 99%，校验对象后才到 100%')
-await new Promise((resolve) => setImmediate(resolve))
+// 统计发送器是冷路径动态导入；并行跑完整套件时模块加载可能跨过多个事件循环轮次。
+// 等待有界，避免把调度抖动误判成上传样本丢失。
+const metricDeadline = Date.now() + 15_000
+while (uploadMetricRequests.length < 3 && Date.now() < metricDeadline) {
+  await new Promise((resolve) => setTimeout(resolve, 10))
+}
 assert.equal(uploadMetricRequests.length, 3, 'ROM 单发成功与失败都应异步记录匿名性能样本')
 assert.deepEqual(uploadMetricRequests.map((sample) => sample.outcome), ['failure', 'failure', 'success'])
 assert.ok(uploadMetricRequests.every((sample) => sample.sizeBand === 'lt8m' && sample.mode === 'single'))

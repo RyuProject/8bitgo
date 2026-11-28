@@ -17,6 +17,8 @@ interface Props {
   isNew?: boolean
   /** 首屏 LCP 候选；首页只给第一张封面。 */
   priority?: boolean
+  /** 首页长列表的封面靠近视口时才挂载，避免原生 lazy 提前下载几屏后的资源。 */
+  deferCover?: boolean
 }
 
 /**
@@ -26,7 +28,7 @@ interface Props {
  * IntersectionObserver），中间压一个圆钮正好挡住画面中心，而动起来的画面本身
  * 已经足够说明「这里有视频」了。
  */
-export function GameCardWide({ game, className, isNew, priority }: Props) {
+export function GameCardWide({ game, className, isNew, priority, deferCover }: Props) {
   const lang = useLang()
   const t = useT()
   const platform = platformMap[game.platform]
@@ -43,7 +45,16 @@ export function GameCardWide({ game, className, isNew, priority }: Props) {
       className={cx('group card-hover block overflow-hidden rounded-card border border-line bg-surface hover:border-brand/60', className)}
     >
       <div className="relative">
-        <GameCover game={game} ratio="square" showTitle={false} iconSize="md" priority={priority} sizes="(min-width: 640px) 288px, 256px" />
+        <GameCover
+          game={game}
+          ratio="square"
+          showTitle={false}
+          iconSize="md"
+          priority={priority}
+          deferMedia={deferCover}
+          // 首页横卡宽度固定为 256/288px，避免把 100vw 误当成图片展示宽度。
+          sizes="(min-width: 640px) 288px, 256px"
+        />
         {isNew && (
           <Badge tone="brand" className="absolute right-2 top-2">
             NEW

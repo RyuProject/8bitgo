@@ -17,6 +17,7 @@ import type { Game } from '@/types'
 import type { Translation } from '@/locales'
 import { usePrefersReducedMotion } from '@/lib/motion'
 import { gameListed, useNoWasmMode } from '@/services/noWasm'
+import runMyRomIcon from '@/assets/ui/run-my-rom.svg'
 
 /**
  * 首页热门还没到货时先顶上的几款。取不到的（不存在 / 已下架）自动跳过，
@@ -199,7 +200,7 @@ function Banner({ className, games }: { className?: string; games?: Game[] }) {
     const next = pool[(seq + 1) % pool.length]
     const src = next ? gameMediaUrl(next, 'cover') : ''
     if (!src) return
-    const srcSet = coverSrcSet(src)
+    const srcSet = coverSrcSet(src, undefined, undefined, HERO_COVER_SIZES)
     const img = new Image()
     img.sizes = HERO_COVER_SIZES
     if (srcSet) img.srcset = srcSet
@@ -273,7 +274,7 @@ function Banner({ className, games }: { className?: string; games?: Game[] }) {
               <span>{t.home.ctaPlay}</span>
             </PixelButton>
             <PixelButton to="/play-local">
-              <img src="/ui/run-my-rom.svg" alt="" className="h-5 w-5 object-contain [image-rendering:pixelated]" aria-hidden />
+              <img src={runMyRomIcon} alt="" className="h-5 w-5 object-contain [image-rendering:pixelated]" aria-hidden />
               <span>{t.home.ctaUpload}</span>
             </PixelButton>
           </div>
@@ -307,7 +308,7 @@ function Banner({ className, games }: { className?: string; games?: Game[] }) {
                         再标高优先级就等于没分优先级了。
                         still：这一摞每 5 秒换一批，带视频封面的话就是不停地新建 <video>
                         + 解码 + 销毁，主线程被占住，整页跟着一顿一顿（见 GameCover 的 still） */}
-                    <GameCover game={game} ratio="square" iconSize="md" showTitle={false} priority={key === 0} sizes={HERO_COVER_SIZES} still />
+                    <GameCover game={game} ratio="square" iconSize="md" showTitle={false} priority={key === 0} sizes={HERO_COVER_SIZES} sourceMedia={HERO_STACK_QUERY} still />
                   </Link>
                 </div>
               </div>

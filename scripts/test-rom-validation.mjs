@@ -245,7 +245,20 @@ try {
   )
   assert.match(guestConfig.dosboxConf, /mount d GAME -freesize 16/)
   assert.match(guestConfig.dosboxConf, /boot c: -convertfat/)
+  assert.match(guestConfig.dosboxConf, /\[ipx\]\nipx=true/, 'Windows 客体的 DOSBox-X IPX 栈默认可用')
   assert.match(guestConfig.dosboxConf, /\[gus\]\ngus=false/)
+  const guestWithIpxDisabled = buildWindowsGuestConfig(
+    '[ipx]\nipx=false\n\n[autoexec]\nimgmount c system.img\nboot c:\n',
+  )
+  assert.match(guestWithIpxDisabled.dosboxConf, /\[ipx\]\nipx=true/, '系统镜像内保存的 DOSBox-X 关闭默认值不会屏蔽 IPX 功能')
+  assert.match(
+    buildWindowsGuestConfig(
+      '[autoexec]\nimgmount c system.img\nboot c:\n',
+      '[ipx]\nipx=false',
+    ).dosboxConf,
+    /\[ipx\]\nipx=false/,
+    '逐游戏高级配置仍可关闭 Windows 客体 IPX',
+  )
   assert.equal(windowsGuestLaunchCommand(guestConfig, 'zeek1.exe', '3x'), 'D:\\zeek1.exe')
   assert.equal(windowsGuestLaunchCommand(guestConfig, 'BIN/GAME.EXE', '3x'), 'D:\\GAME.EXE')
   assert.equal(windowsGuestLaunchCommand(guestConfig, 'BIN/GAME.EXE', '9x'), 'D:\\8BITGO\\RUN.BAT')
@@ -269,6 +282,7 @@ try {
   assert.match(streamedGuest.dosboxConf, /imgmount 3 sockdrive https:\/\/assets\.example\.test\/sockdrives\/game-v1/)
   assert.doesNotMatch(streamedGuest.dosboxConf, /mount e 8BITGO/, '宿主目录盘不会进入 Win95，不应白挂一块假 E:')
   assert.match(streamedGuest.dosboxConf, /boot c: -convertfat/)
+  assert.match(streamedGuest.dosboxConf, /\[ipx\]\nipx=true/, 'DOSBox-X Sockdrive 默认也开放 IPX 栈')
   assert.throws(
     () => windowsGuestLaunchCommand(streamedGuest, 'BIN/GAME.EXE', '9x', false),
     /没有可用的本地启动批处理/,

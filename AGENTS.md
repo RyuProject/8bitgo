@@ -14,7 +14,7 @@
 | 前端 | Vite + React 19 + TypeScript，带 SSR（`vite.config.server.ts` → `dist/server`） |
 | 后端 | `server/`，Express + MySQL，和前端**同源**（一个进程同时提供 `/api` 和静态资源） |
 | 存储 | Cloudflare R2 + Worker（`worker/`），普通公开读取走 `assets.8bitgo.com`，站内明文 ROM 优选 `rom.8bitgo.com`，开放平台授权下载走 `download.8bitgo.com` |
-| 部署 | 生产机 **38.76.186.225**，服务器上 `git pull && npm install && npm run build && systemctl restart 8bitgo`，前面挂 Cloudflare（部署形态见 §2.30） |
+| 部署 | SSH：`ssh root@38.76.186.225`；发布执行 `cd /var/www/8bitgo && ./deploy/redeploy.sh`，前面挂 Cloudflare（部署形态见 §2.30） |
 | 模拟器 | EmulatorJS（主机/掌机/街机）、Ruffle（Flash）、js-dos、jsnes、webretro、FreeJ2ME、Play!（PS2） |
 | 登录 | 邮箱验证码（**Resend** 发信）/ 密码 / Google，JWT 30 天，见 §2.13–2.14 |
 
@@ -169,7 +169,7 @@ loader.js 的 `import()` 失败，NES / SFC / GBA / 街机 / PS1 …… 所有 E
    否则部署构建窗口、构建失败、回滚期间，旧版本号会被缓存成新内容一年 —— **回滚也救不回来**。
    `precompressed-static.js` 的 `.br` 旁注同样按 sha256 + brBytes 校验，不再只比字节数（等长修改会把旧引擎挂在新版本号下）。
 4. **部署**：`redeploy.sh` 构建失败且 `dist/` 已被改写时回滚（Vite 直接写线上目录，只 die 会留下半新文件）；
-   重启后默认跑 `smoke-start.mjs`（NES、CPS1、GBA 各一款跑到首帧）；GBA 样例守 mGBA 的 HLE BIOS 路径，失败重试一次，仍失败回滚。
+   重启后默认跑 `smoke-start.mjs`（NES、CPS1、GBA 各一款确认可玩并收到方向键输入）；GBA 样例守 mGBA 的 HLE BIOS 路径，失败重试一次，仍失败回滚。
    **生产机必须装 Chromium**，否则冒烟只能告警跳过（日志里是 `⚠️⚠️ 开局冒烟没有运行`）。确认是 CDN / ROM 故障而非代码问题时
    用 `SMOKE_TEST=0` 强行发布修复。回滚改为 `git reset --hard`（留在分支上），分支名用 `symbolic-ref`，游离 HEAD 不再污染下次部署。
    ⚠️ 退出码 2 也包括「脚本自身出错」，不只是没有 Chrome。2026-11-18 生产两次部署：两款游戏都到了首帧，随后删 Chrome profile
@@ -208,6 +208,12 @@ loader.js 的 `import()` 失败，NES / SFC / GBA / 街机 / PS1 …… 所有 E
 
 **`npm test` 不能长期红着**：事故当天 main 上有 28 套测试是红的，本该报警的那套就混在里面。改了产品行为就同步改测试断言；
 测试红了先修，别带着红灯发布。
+
+### 2.7.3 SSR head 注入必须使用模板专用标记（2026-11-27 事故）
+
+**经过**：首页 SSR 曾用第一次出现的 `</head>` 字符串插入语言预载和 SEO meta。`public/edge-route-v5.js` 的注释里也有这个字面量，插入位置因此落进内联脚本注释；页面文本提取器把脚本后续源码显示在首页上。生产修复改为在 `index.html` 放唯一标记 `<!-- 8bitgo-ssr-head -->`，由 `server/src/ssr.js` 只替换这个标记，并把内联路由升到 v6。
+
+**规约**：SSR 头部内容必须通过模板专用标记注入，禁止按 `</head>` 搜索或替换；同步内联脚本源码不得含 `</head`。`npm run test:cover-cdn` 检查这两条以及标记唯一性、插入槽位顺序，并必须挂在 `prebuild` 上，保证部署改写 `dist/` 之前就失败关闭。`check-edge-route-inline.mjs` 的 postbuild 校验也必须保留，确保产物中的内联脚本与源文件一致，且唯一 SSR 槽位位于完整路由脚本之后、真实 `</head>` 之前。
 
 ### 2.8 街机靠**压缩包文件名**认游戏
 
@@ -992,9 +998,11 @@ socket 重查，TCP connect 也只等约 2 秒；而浏览器每个 SOCKFS socke
 游戏的确认按钮；不能把此前旧构建的 61020/20100 当成新构建的最终结果。后端真实服务探针与
 十轮本地回归均通过，仍不足以代替两名玩家完成实际匹配的验收。
 在游戏内通过登录并进入房间以前，**不要启用生产 WFC，也不要把探针成功写成联机成功**。
-另一个待验收的边界是 NATNEG：GameSpy 匹配后可能下发未曾出现在 WFC DNS 答案里的玩家公网
-地址；当前中继会拒绝该目标。不能直接开放任意公网 UDP 作为“修复”，那会把公开会话接口变成
-可滥用的 UDP 出口；须在真实匹配流量里确认协议，再从可信匹配服务器的响应中限时授权精确对端。
+另一个待验收的边界是 NATNEG 的真实匹配时序：GameSpy 可能下发未曾出现在 WFC DNS 答案里的玩家公网
+地址；当前代码只接受本局 DNS 授权过的 NATNEG 主机从 UDP/27901 发来的有效 CONNECT，并只限时授权包内
+点名的精确公网 IP:端口（见上方中继规则与 `server/scripts/test-nds-wfc.mjs`）。这条安全路径有模拟包回归，
+仍缺两名玩家完成真实匹配的线上证据；不要把模拟包测试写成实战通过。不能开放任意公网 UDP 作为“修复”，
+那会把公开会话接口变成可滥用的 UDP 出口。生产 WFC 继续保持关闭，直到实际进房验收完成。
 
 ### 2.8.5 js-dos 鼠标不是一个开关：捕获方式与坐标协议必须分开
 
@@ -2110,6 +2118,12 @@ js-dos 运行时从 npm 复制到 `public/jsdos/v<version>/`，版本同时写�
    通过。排查手段：往虚拟盘写一个 INT 33h 记录 TSR（`wc-send-data-chunk` 可直接写文件），再从
    `ws-update-lines` 维护帧缓冲按形状找光标，能把「游戏读哪个接口、位移是否线性」量化出来。
 
+**DOS IPX 协议栈默认可用，浏览器联机仍按需建立（2026-11-28）**：普通 ZIP / EXE 自动生成的 `dosbox.conf`，以及共享 Windows 客体和 Sockdrive 的
+DOSBox-X 配置，都显式写 `[ipx] ipx=true`；DOSBox / DOSBox-X 默认关闭 IPX 时，游戏内 IPX/LAN 功能会连本地协议栈都用不到。这个配置不等于加入网络：
+`startIpxServer` / `connectIpxAddress` 不得在普通单机启动时设置，WebRTC peer 仍只由玩家开房、加入或打开邀请链接时创建，
+离开房间 / 退出游戏后释放。逐游戏高级配置可显式写 `[ipx] ipx=false`；自带 `.jsdos/dosbox.conf` 的预制包继续保留包内配置，
+避免为改一个小配置而复制大型 ROM 包。
+
 普通 DOS 包生成的 `cycles=auto` 一遇保护模式就放到 max：DOS4GW 游戏若模拟节奏跟 CPU 走，就会快得没法玩
 （2026-11-15《主题公园》）。这类游戏在 `windowsGameCompatibilityDosboxConfig` 里给固定周期（`theme-park` 为
 `cycles=fixed 25000`），后台 `dosbox_config_override` 仍优先；别把全站默认改成 fixed，慢保护模式游戏会被拖垮。
@@ -2175,6 +2189,10 @@ REM；修补版写成同目录 `8BITGO.BAT`（原 BAT 不动），其余字节�
 Windows 系统镜像、游戏包和资料片从同一刻下载；ROM 进度在系统镜像完成前暂存，避免游戏段先跑满
 再长时间不动。资料片最多三路并发，并走共用的失速中止。回归：
 `npm run test:jsdos-runtime && npm run test:dos-bundle && npm run test:dos-extras && npm run test:system-source`。
+
+附加文件下载要检查响应 `Content-Type`：对象路径失效时，CDN / 静态站可能用 HTTP 200 返回 HTML 错误页；
+若把它直接并入 ZIP，js-dos 可能只表现为游戏内缺文件或黑屏。`assertDosExtraResponse()` 在读取响应体前
+拒绝 HTML / XHTML，且仍允许合法二进制与文本资源。`test:dos-extras` 覆盖检查与适配器接线。
 
 系统镜像冷缓存时会并发用 Range 测线路。不能等每一条源都结束才开局：一条坏线路会把可用样本和真正下载
 一起挡在它的 2.5 秒超时后；现在首个有效样本后只留 150ms 比较窗口，整轮最多 1.8 秒，超时即取消未完成
@@ -3441,7 +3459,7 @@ ROM 存储和其它站级入口全部是管理员权限。后台列表统一带 
 >   上一份已验证备份继续保留，日志明确记录。任何其他备份错误照旧中止部署。回归：`cd server && npm run test:backup && cd .. && npm run test:redeploy`。
 > - **lock 未变跳过 `npm ci`**（`deploy/lib/npm-ci-if-changed.sh`，戳在 `node_modules/.8bitgo-lock-sha256`）；`FORCE_NPM_CI=1` 强制重装。
 >   以后若给根目录或 server 加 install / postinstall 钩子，要重新评估这条。
-> - **开局冒烟**（可选）：`SMOKE_TEST=1` 时健康检查后跑 `scripts/smoke-start.mjs`，无头 Chrome 把一款 NES、一款 CPS1 街机和一款 GBA 跑到首帧；
+> - **开局冒烟**（可选）：`SMOKE_TEST=1` 时健康检查后跑 `scripts/smoke-start.mjs`，无头 Chrome 把一款 NES、一款 CPS1 街机和一款 GBA 跑到可玩状态，并验证方向键到达播放器；
 >   拦下启动漏斗与游玩计数请求，不污染统计；失败只告警、不回滚。生产机需先装 Chromium（未装时记「跳过」）。
 
 生产机是 **38.76.186.225**（Ubuntu 24.04，4C/4G）。旧机 103.242.13.112 已停服且
@@ -4033,7 +4051,7 @@ EdgeOne 只能用境外（香港）节点。主站、ROM、Pages 子域都不受
   主域是 `image.8bitgo.com`，大陆加速域 `image-cn.8bitgo.com`（EdgeOne 回源主域）；`/cdn-cgi/image/` 缩放
   照样回源给 Cloudflare 做，但大陆域固定 `format=webp`：EdgeOne 缓存键不看 Accept，`format=auto` 会把
   第一个访客拿到的 AVIF 发给不认 AVIF 的浏览器。回归：`npm run test:cover-cdn`。
-- **主站上的大陆访客整页送到 cn.8bitgo.com**（2026-11-20，`public/edge-route-v3.js` → 当前 `edge-route-v4.js`）：以前的 `edge-route-v2.js` 用两个 180ms 测速探针决定去留，
+- **主站上的大陆访客整页送到 cn.8bitgo.com**（2026-11-20，`public/edge-route-v3.js` → 当前 `edge-route-v6.js`）：以前的 `edge-route-v2.js` 用两个 180ms 测速探针决定去留，
   从大陆直连实测探已连上的 8bitgo.com 要 1.0 秒、第一次连 cn.8bitgo.com（含握手）要 1.4～3.2 秒，两个探针永远超时、按规则留在原地 ——
   上线以来没把一个大陆访客送去 EdgeOne。同一时刻经 Cloudflare 美国节点：首页 HTML 2.4～4.2 秒（偶尔 60 秒无响应）、入口 JS 7.9 秒、
   一张封面 15.3 秒；经 EdgeOne：JS 1.5 秒、封面 3.1 秒。v3 改看 Cloudflare 已给的地域结论：SSR 把 `coverHint` 写进
@@ -4054,7 +4072,8 @@ EdgeOne 只能用境外（香港）节点。主站、ROM、Pages 子域都不受
     地址栏是主域。SSR 在 nginx 校验过回源密钥（`X-8bitgo-Site: cn`）时给 `<html>` 加 `data-8bitgo-site="cn"`（`shared/cn-host.js` 的 `CN_SITE_ATTR`）：
     边缘路由见到它就和在 cn 子域上一样留下；前端 `onCnSite()` 也认它，API / 运行时 / 密钥请求都走同源，不再跨域去 `cn.<裸域>/_cn`。
     迁移前 Cloudflare 那边的 HTML 永远不带这个属性，行为与 v4 相同。⚠️ 属性名在 edge-route 脚本里是写死的字符串，改名要同步（`test:cover-cdn` 核对）。
-  - `edge-route-vN.js` 按版本号长期缓存（`cache.js`）：改逻辑必须新建 v6，v2～v4 留给边缘缓存里的旧 HTML。新文件要先 `git add`，`check-runtime-syntax` 只看已跟踪的文件。
+  - **v6（2026-11-28）**：SSR 的 title/meta/preload 只能写进模板里的 `<!-- 8bitgo-ssr-head -->` 槽位，不能首次查找 HTML head 结束标记；内联路由脚本注释也不写该结束标记，避免边缘文本提取误把源码显示为正文。
+  - `edge-route-vN.js` 按版本号长期缓存（`cache.js`）：改逻辑必须新建 v7，v2～v6 留给边缘缓存里的旧 HTML。新文件要先 `git add`，`check-runtime-syntax` 只看已跟踪的文件。
     回归：`npm run test:edge-route && npm run test:cover-cdn`。
 - **8bitgo.com 上的大陆访客，JS / CSS / 字体 / 只读 API 也走 EdgeOne**（2026-11-04，`server/src/cn-edge.js`）：
   同一份「大陆页面」缓存里，SSR 把模板的 `/assets/`、`/fonts/` 改指 `https://cn.8bitgo.com/_cn/...`；
@@ -4190,6 +4209,7 @@ EmulatorJS 引擎日志与加载阶段文字（`diagLog`）、下载器的重试
   `startupProgressTrace.ts` 记下最后进度：slow_start 的原因原文带上阶段（后台归组时两类自然分开），快照行带字节数与平均速率。
   ROM Worker 发 `Timing-Allow-Origin`，否则跨源请求的传输量恒为 0；边缘已缓存的旧响应要等过期才带上。
 - **诊断归组要给出可审阅的判断，不要把相关性写成根因**（2026-11-18）：前端持续观察 Resource Timing，缓冲区写满时先保留慢 / 大 / 失败候选，再逐步扩容且不清除历史记录（页面资源自修复和 J2ME 看门狗也读取该列表）；资源型 `error` 事件另外记录失败的脚本 / 样式 / 媒体入口，避免快速失败不进性能表。服务端 `diagnoseStartupFailure()` 用脱敏后的现场按固定规则标出类别、阶段、把握度与安全的核心名；明确区分 ROM 下载、ROM 内容、街机 ROM 集 / BIOS、引擎资源、WebGL、内存、存储、输入权限和核心运行时错误。`table index` 等运行时陷阱只标「待确认」，不能仅凭一条错误断言 ROM 损坏。后台现场和「复制给 AI」同时展示分类与把握度；新增字段必须在 `normalizeDiagnostics()` 白名单和隐私政策中同步维护。
+- **J2ME 本地上传失败不能被同页旁路请求误诊**（2026-11-28，诊断包 #4352）：西班牙语错误摘要明确为「无法上传 Java 游戏：Failed to fetch」，但同局 `rom.8bitgo.com/integrity` 的 503 抢先被整页 Resource Timing 选中，后台误显示通用 HTTP 错误。仅当运行时为 J2ME、摘要同时包含已支持语言的 Java 上传失败提示和明确网络失败时，归为 `j2me_upload`；该证据优先于并行资源状态码。`normalizeDiagnostics()` 必须允许新诊断代码，历史重分类应更新诊断与分组签名。回归覆盖同局无关 503、无上传错误文本的负例与历史重分类：`npm run test:startup-diagnostics`。
 - **页面资源失败必须能关联到本站和本次开局**（2026-11-24，诊断包 #3978 / #3929 / #3018）：第三方统计脚本 `onerror` 和 `start_click` 前的旧页面脚本失败不能升级成高把握度 `page_asset`，否则会盖过仍在推进的 ROM 下载。只有明确的动态模块 / Vite CSS 错误，或开局期间本站 JS/CSS 失败，才归为页面资源；其它资源错误继续按 HTTP 状态和进度证据判断。回归：`npm run test:startup-diagnostics`。
 - **HTML5 超时先区分 iframe 文档是否到达**（2026-11-25，生产诊断 #4154）：适配器挂载前已会记录 `starting`；只有 `iframe_loaded` / HTML5 的 `download_complete` 时间线事件能证明入口文档 load。缺少两者时，诊断应写“入口页面未确认加载”，不能说“页面已加载但尚未可玩”。#4154 只有 `start_click → timeout`，没有 iframe 资源请求或失败状态，足以修正误导性标签，但不足以断言 Pages、EdgeOne 或浏览器网络是根因；后续要靠 iframe 导航失败的现场证据再决定是否换线路。回归：`npm run test:startup-diagnostics`。
 - **CN 入口上的整张静态模块图也要有主站退路**（2026-11-25，生产诊断 #4162，《植物大战僵尸》Edge 157 / Windows / CN）：`cn.8bitgo.com` 自身的入口脚本是同源 `/assets/...`，旧 `assetsFromCnEdge()` 只认主站页上的 `/_cn/assets/...`，所以重复懒加载失败后不会切换资源域。现在只对配置主站的精确 `cn.` 子域识别；先整页刷新一次，仍失败才带 `__assets=origin` 把整套 JS/CSS/字体切到主站，避免只替换单个 chunk 导致重复执行入口 / React；该 CN 回退 HTML 禁止缓存，避免 CDN 忽略查询串时串给正常访客。现场能证明回退资格缺失，不能证明最初的请求失败由 EdgeOne、缓存或玩家网络中的哪一项造成。回归：`npm run test:asset-repair && npm run test:cn-edge`。
@@ -4571,6 +4591,7 @@ PK / TH 两份现场：`The requested module './live-Cqhc9j-k.js' does not provi
 **不用 MD5，统一用 SHA-256。** 传输完整性必须在字节交给模拟器前验证；构建机上的哈希清单不能代替浏览器运行时校验。
 
 - 站内 R2 的 ROM / BIOS 用按 ETag 绑定的 2 MiB SHA-256 分块清单。新上传在清单发布前不可读；有清单的整包下载、Range 读盘和浏览器缓存都会校验，发现坏块只重取对应块一次，仍不匹配就停止开局。
+- 严格模式同时约束所有发布入口：Worker 单发 PUT / multipart complete 缺清单或长度不符时必须在 R2 写入 / 合并前拒绝；PSP / PS1 CHD 按同一 2 MiB 边界对上传缓冲区求哈希，R2 提交后回读 ETag-bound 清单核对；`.8bg` 明文迁移使用 Worker 的 R2 Range 回填工具。新增任何 roms/ 写路径都要纳入这条链，不能只修玩家下载端。
 - 旧 R2 对象没有清单时仍走兼容读取，避免未盘点前突然让老游戏无法启动。迁移时先用 `npm run rom:integrity-backfill -- --prefix=roms/ --require-complete` 做全量只读门禁；有缺项时用 `--apply` 回填后重跑门禁，确认零缺项再把 `worker/wrangler.toml` 的 `REQUIRE_ALL_ROM_INTEGRITY` 从 `"false"` 改为 `"true"` 并部署。全局严格模式会对 R2 全部 `roms/` 对象 fail closed，且不增加玩家开局往返；Worker `/ping` 会报告开关状态。回填记录的是当前 R2 字节，**只能保护之后的传输一致性，不能证明存量对象原本就是正确 ROM / BIOS**。要验证源内容正确，必须另有可信发布方摘要或人工验收。
 - 批量回填遇到边缘 HTML 503 或瞬时 `fetch failed` 时必须有界指数退避重试（最多 5 次；本地超时仍限 3 次），失败需带对象序号便于定位；自动化摘要应隐藏 R2 key。支持 `--start-index` / `--limit` 分段续跑，但只有从头完整通过 `--require-complete` 才能开启严格模式。持续失败时停止并保持严格模式关闭，修复/确认服务健康后可重跑，已发布的条件清单会安全跳过。
 - 外站直链与玩家本地文件没有独立可信摘要时，不能把“下载后计算出的摘要”当成原件校验。格式 / 长度检查只能筛掉明显错误，不能确认 BIOS / ROM 内容正确；不得伪造可信哈希。

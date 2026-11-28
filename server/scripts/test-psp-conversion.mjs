@@ -1,5 +1,6 @@
 /** PSP ISO → CHD 队列的离线回归；不连数据库、不访问 R2、不要求本机安装 chdman。 */
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { availableParallelism, tmpdir } from 'node:os'
@@ -10,8 +11,10 @@ const {
   chdmanProgress,
   concurrentMapOrdered,
   conversionScratchBytes,
+  hashRomIntegrityBlocks,
   isPspIsoFile,
   isIso9660Pvd,
+  ROM_INTEGRITY_BLOCK_BYTES,
   objectVersionMatches,
   pspConversionConfig,
   readExactlyAt,
@@ -48,6 +51,17 @@ assert.equal(objectVersionMatches(null, ''), true, '创建时不存在、发布�
 assert.equal(objectVersionMatches({ etag: '"new"' }, ''), false, '排队期间新出现的目标不能被覆盖')
 assert.equal(objectVersionMatches({ etag: '"same"' }, '"same"'), true)
 assert.equal(objectVersionMatches({ etag: '"changed"' }, '"same"'), false)
+
+const chdIntegrityFixture = Uint8Array.from(
+  { length: ROM_INTEGRITY_BLOCK_BYTES * 2 + 13 },
+  (_, index) => (index * 31 + 7) & 0xff,
+)
+assert.deepEqual(hashRomIntegrityBlocks(chdIntegrityFixture), [
+  createHash('sha256').update(chdIntegrityFixture.subarray(0, ROM_INTEGRITY_BLOCK_BYTES)).digest('hex'),
+  createHash('sha256').update(chdIntegrityFixture.subarray(ROM_INTEGRITY_BLOCK_BYTES, ROM_INTEGRITY_BLOCK_BYTES * 2)).digest('hex'),
+  createHash('sha256').update(chdIntegrityFixture.subarray(ROM_INTEGRITY_BLOCK_BYTES * 2)).digest('hex'),
+], 'CHD manifest hashes must match Worker block boundaries, including the final partial block')
+assert.throws(() => hashRomIntegrityBlocks(new Uint8Array()), /不能为空/)
 
 const written = Buffer.alloc(7)
 let writeCalls = 0
@@ -238,6 +252,10 @@ assert.match(frontendService, /isoKey\.replace\(\/\\\.\[\^\.\/\]\+\$\/, '\.chd'\
 assert.match(conversionSource, /Range: `bytes=\$\{received\}-`/, 'R2 下载失败后必须从本地断点续传')
 assert.match(conversionSource, /Readable\.fromWeb\(response\.body\)/, '下载必须使用带背压的流式磁盘管线')
 assert.match(conversionSource, /复用上次已完整校验的 CHD/, '发布失败后不能重新下载和压缩')
+assert.match(conversionSource, /integrityRequired: true/, 'CHD multipart 会话必须在严格模式启用完整性标记')
+assert.match(conversionSource, /integrityManifest,/, 'CHD complete 必须原子提交按 2 MiB 计算的清单')
+assert.match(conversionSource, /verifyRomIntegrityManifest\(config, job\.target_key, final\.etag, outputSize, integrityManifest\)/,
+  'CHD 发布后必须读取 Worker 实际存储的 ETag-bound 清单再报告成功')
 
 assert.equal(isTransientConversionPollError(Object.assign(new Error('Bad Gateway'), { status: 502 })), true)
 assert.equal(isTransientConversionPollError(new TypeError('Failed to fetch')), true)

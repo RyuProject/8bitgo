@@ -17,6 +17,21 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <!--
+      同意状态只保存在本地，不用 Cookie。首屏 SSR 会先画授权横幅；已选择过的访客在首次绘制前把它藏起来，
+      避免等 React 水合后再补横幅，把它推成手机端 LCP。这个读取必须同步且放在 head：CSS 还没加载时先记下状态，
+      样式就绪后的第一次绘制不会闪出横幅。
+    -->
+    <script>
+      ;(function () {
+        try {
+          var consent = window.localStorage.getItem('8bit.clarity.consent.v1')
+          if (consent === 'granted' || consent === 'denied') {
+            document.documentElement.setAttribute('data-clarity-consent', consent)
+          }
+        } catch (e) {}
+      })()
+    </script>
+    <!--
       按浏览器语言自动跳到对应语言版本。
 
       为什么必须内联、必须放在这里：这段要在**首屏绘制之前**跑完。写成模块脚本
@@ -246,7 +261,7 @@
     <!--
       先选离访客更快的完整站点镜像，再让语言脚本决定目标路径。它只写一个两小时的
       非认证 Cookie；已有登录态、后台、OAuth、爬虫和测速工具会留在当前域名。
-      构建时把 public/edge-route-v5.js 原样内联，避免首屏多一次同步网络往返；
+      构建时把 public/edge-route-v6.js 原样内联，避免首屏多一次同步网络往返；
       文件名仍保留给已缓存旧 HTML 的访客，发版改变规则时必须同时换版本。
     -->
     <script data-8bitgo-edge-route-placeholder></script>
@@ -411,13 +426,14 @@
     <meta data-ssr-default name="twitter:card" content="summary_large_image" />
 
     <!--
-      首页和游戏详情页不下载第三方字体：首页标题会轮换，晚到的字体替换会移动整页；游戏页则不能和 ROM / 核心争弱网连接。
-      系统字体栈已在 src/index.css 兜底；其它页面等 load 后空闲再加载，省下首屏关键请求槽。
+      首页和游戏详情页不下载第三方字体：首页标题会轮换，晚到的字体替换会移动整页；游戏页也不能和 ROM / 核心争弱网连接。
+      只有中文界面会下载字体；其它中文页面等 load 后空闲再加载，省下首屏关键请求槽。
       Save-Data、2G、低下行或高 RTT 环境完全跳过字体请求，避免为装饰字体增加用户流量。
     -->
     <script>
       ;(function () {
         try {
+          if (!String(document.documentElement.lang || '').toLowerCase().startsWith('zh')) return
           var sitePath = (window.location.pathname || '/').replace(/^\/(?:zh-Hans|zh-Hant|en|es|fr|it|de|ja)(?=\/|$)/, '') || '/'
           if (sitePath === '/' || /^\/(?:games\/[^/]+|play)(?:\/|$)/i.test(sitePath)) return
           var connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection
@@ -451,6 +467,8 @@
         } catch (e) {}
       })()
     </script>
+    <!-- SSR 注入本页的 title、meta 和语言预载；固定插入点避免误命中脚本注释里的相同字符串。 -->
+    <!-- 8bitgo-ssr-head -->
   </head>
   <body>
     <div id="root"></div>

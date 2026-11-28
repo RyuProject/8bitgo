@@ -27,7 +27,7 @@ import type { LegalDocCopy } from './types'
 
 const CONTACT = 'yeahcore@yeah.net'
 const UPDATED = '2026-09-23'
-const PRIVACY_UPDATED = '2026-11-17'
+const PRIVACY_UPDATED = '2026-11-27'
 
 export const termsEnglish: LegalDocCopy = {
   seoTitle: 'Terms of Service',
@@ -581,7 +581,7 @@ Clearing this site's data removes all of the above (your browser's "clear site d
 
 - **ByteDance (Toutiao) URL submission** — on every page load, and on every in-site page change, the site loads a ByteDance script that submits **the current page URL** to it for search indexing. What it sees is the page address, your IP address and your browser information. This script currently has **no switch and no consent step**.
 
-- **ZeoSeven FontsAPI fonts** — some non-home, non-game pages load the Sarasa UI SC stylesheet and glyphs from fontsapi.zeoseven.com after the initial page load. Browser requests expose the IP address and request information normally sent with network requests; they do not include 8BitGo account details. System fonts appear first and are replaced when the remote font is ready.
+- **ZeoSeven FontsAPI fonts** — some Chinese-language pages (except the homepage and game pages) may load the Sarasa UI SC stylesheet and glyphs from fontsapi.zeoseven.com when the page is idle and the connection is suitable. English and other non-Chinese pages do not request it. Browser requests expose the IP address and request information normally sent with network requests; they do not include 8BitGo account details. System fonts appear first and are replaced when the remote font is ready.
 
 ### Only when you trigger it
 

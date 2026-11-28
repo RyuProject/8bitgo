@@ -3,17 +3,25 @@
  * 真正开一局要 Chrome 和网络，不放进常规测试；手动：node scripts/smoke-start.mjs
  */
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { spawnSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import {
   adultGateReason,
   CHROME_CANDIDATES,
   DEFAULT_SMOKE_GAMES,
   DISABLE_WASM_SCRIPT,
+  INPUT_PROBE_BINDING,
+  INPUT_PROBE_EXPRESSION,
   devToolsUrlOf,
   findChrome,
   MAME_CHD_TIMEOUT_MS,
   PRIVATE_START_EXPRESSION,
   PRIVATE_START_TIMEOUT_MS,
+  INPUT_CONFIRM_TIMEOUT_MS,
+  sendSmokeInput,
   startSmokeGamePrivately,
   summarizeSmokeNetwork,
   startupDetailOf,
@@ -21,19 +29,20 @@ import {
   startupEventsOf,
   timeoutForGame,
   verdictOf,
+  waitForSmokeInput,
   waitWithin,
 } from './smoke-start.mjs'
 
-assert.equal(verdictOf('first_frame'), 'pass')
+assert.equal(verdictOf('first_frame'), '', '首帧只证明出现过画面，不能作为可玩结论')
+assert.equal(verdictOf('game_playable'), 'pass')
 assert.equal(verdictOf('failed'), 'fail')
 assert.equal(verdictOf('timeout'), 'fail')
 assert.equal(verdictOf('slow_start'), '', '慢启动不是结论，继续等')
-assert.equal(verdictOf('game_playable'), '')
 assert.equal(startupEventOf(JSON.stringify({ event: 'first_frame', elapsedMs: 3 })), 'first_frame')
 assert.deepEqual(
-  startupEventsOf(JSON.stringify({ events: [{ event: 'runtime_ready' }, { event: 'first_frame' }] })),
-  ['runtime_ready', 'first_frame'],
-  '冒烟必须能从合并上报中识别 NDS 首帧',
+  startupEventsOf(JSON.stringify({ events: [{ event: 'runtime_ready' }, { event: 'first_frame' }, { event: 'game_playable' }] })),
+  ['runtime_ready', 'first_frame', 'game_playable'],
+  '冒烟必须能从合并上报中识别运行时可玩状态',
 )
 assert.equal(startupEventOf(JSON.stringify({ events: [{ event: 'runtime_ready' }, { event: 'first_frame' }] })), 'runtime_ready')
 assert.deepEqual(startupEventsOf('not json'), [])
@@ -47,8 +56,23 @@ assert.equal(
 )
 assert.equal(startupDetailOf(JSON.stringify({ detail: 'x'.repeat(200) })).length, 160, '详情沿用服务端 160 字符上限')
 assert.equal(startupDetailOf('not json'), '')
+assert.equal(INPUT_CONFIRM_TIMEOUT_MS, 3000)
+assert.equal(INPUT_PROBE_BINDING, '__8bgSmokeKeyProbe')
+assert.match(INPUT_PROBE_EXPRESSION, /data-testid="emulator-stage"/)
+assert.match(INPUT_PROBE_EXPRESSION, /stage\.contains\(event\.target\)/, '方向键探针不能把页面其它区域的按键误当成游戏输入')
+const inputCalls = []
+await sendSmokeInput(async (method, params) => inputCalls.push({ method, params }), { x: 120, y: 240 })
+assert.deepEqual(inputCalls.map(({ method, params }) => [method, params.type, params.key, params.x, params.y]), [
+  ['Input.dispatchMouseEvent', 'mouseMoved', undefined, 120, 240],
+  ['Input.dispatchMouseEvent', 'mousePressed', undefined, 120, 240],
+  ['Input.dispatchMouseEvent', 'mouseReleased', undefined, 120, 240],
+  ['Input.dispatchKeyEvent', 'keyDown', 'ArrowRight', undefined, undefined],
+  ['Input.dispatchKeyEvent', 'keyUp', 'ArrowRight', undefined, undefined],
+], '先点击游戏画面取得焦点，再成对发送方向键，不能把按键卡住')
+assert.equal(await waitForSmokeInput(Promise.resolve(true), 10), true)
+assert.equal(await waitForSmokeInput(new Promise(() => {}), 1), false)
 
-// 未登录冒烟被年龄门拦下时，播放器根本没有挂载；不能写成“没有首帧”。
+// 未登录冒烟被年龄门拦下时，播放器根本没有挂载；不能写成“游戏未能启动”。
 assert.equal(adultGateReason({ adult: true, allowed: false, reason: 'login' }), '年龄门：login')
 assert.equal(adultGateReason({ adult: true, allowed: true }), '')
 assert.equal(adultGateReason({ adult: false, allowed: false }), '')
@@ -174,7 +198,87 @@ assert.equal(devToolsUrlOf('40123\n/devtools/browser/0f6e-1\n'), 'ws://127.0.0.1
 assert.doesNotMatch(src, /readFileSync\(portFile[^)]*\)\.trim\(\)\.split/, '不能文件一出现就直接拆端口')
 
 const watch = readFileSync(new URL('../deploy/smoke-watch/8bitgo-smoke-watch.sh', import.meta.url), 'utf8')
-assert.match(watch, /-name '8bitgo-smoke-\*' -mmin \+\d+ -exec rm -rf/, '定时巡检兜底清掉以前没删掉的 profile')
+const profileCleanup = readFileSync(new URL('../deploy/lib/cleanup-smoke-profiles.sh', import.meta.url), 'utf8')
+assert.match(watch, /cleanup_stale_smoke_profiles "\$\{TMPDIR:-\/tmp\}" 1800/, '定时巡检调用 profile 清理助手')
+assert.match(watch, /deploy\/lib\/cleanup-smoke-profiles\.sh/, '巡检从仓库载入可测试的清理逻辑')
+assert.match(profileCleanup, /kill -TERM -- "-\$pgid"/, '陈旧 Chrome 必须先整组优雅退出')
+assert.match(profileCleanup, /kill -KILL -- "-\$pgid"/, '优雅退出超时后要结束整组，避免打开文件继续占磁盘')
+
+// 用假的进程表和 kill 函数做行为测试，避免测试意外触碰开发机上的浏览器。
+const cleanupFixture = mkdtempSync(join(tmpdir(), '8bitgo-smoke-cleanup-'))
+try {
+  const tempRoot = join(cleanupFixture, 'tmp')
+  const bin = join(cleanupFixture, 'bin')
+  const staleRunning = join(tempRoot, '8bitgo-smoke-stale-running')
+  const staleDirectory = join(tempRoot, '8bitgo-smoke-stale-directory')
+  const fresh = join(tempRoot, '8bitgo-smoke-fresh')
+  const killLog = join(cleanupFixture, 'kill.log')
+  const psCount = join(cleanupFixture, 'ps-count')
+  const psInitial = join(cleanupFixture, 'ps-initial')
+  const psRefresh = join(cleanupFixture, 'ps-refresh')
+  mkdirSync(tempRoot)
+  mkdirSync(bin)
+  for (const profile of [staleRunning, staleDirectory, fresh]) mkdirSync(profile)
+  const old = new Date(Date.now() - 60 * 60 * 1000)
+  utimesSync(staleDirectory, old, old)
+  writeFileSync(psInitial, [
+    `4242 4242 1901 /opt/google/chrome/chrome --user-data-dir=${staleRunning}`,
+    `4444 4444 1901 /opt/google/chrome/chrome --user-data-dir=${staleRunning}-suffix`,
+    `4343 4343 25 /opt/google/chrome/chrome --user-data-dir=${fresh}`,
+  ].join('\n') + '\n')
+  writeFileSync(psRefresh, `4343 4343 26 /opt/google/chrome/chrome --user-data-dir=${fresh}\n`)
+  writeFileSync(join(bin, 'ps'), [
+    '#!/usr/bin/env bash',
+    'n=0',
+    '[ ! -f "$PS_COUNT" ] || n="$(cat "$PS_COUNT")"',
+    'n=$((n + 1))',
+    'printf \'%s\\n\' "$n" > "$PS_COUNT"',
+    'if [ "$n" = 1 ]; then cat "$PS_INITIAL"; else cat "$PS_REFRESH"; fi',
+  ].join('\n') + '\n')
+  chmodSync(join(bin, 'ps'), 0o755)
+
+  const cleanupCommand = [
+    'kill() {',
+    '  if [ "$1" = "-0" ]; then',
+    '    n=0',
+    '    [ ! -f "$KILL_CHECKS" ] || n="$(cat "$KILL_CHECKS")"',
+    '    n=$((n + 1))',
+    '    printf \'%s\\n\' "$n" > "$KILL_CHECKS"',
+    '    [ "$n" != 1 ] || return 0',
+    '    return 1',
+    '  fi',
+    '  printf \'%s\\n\' "$*" >> "$KILL_LOG"',
+    '}',
+    'sleep() { :; }',
+    '. "$CLEANUP_HELPER"',
+    'cleanup_stale_smoke_profiles "$TEMP_ROOT" 1800',
+  ].join('\n')
+  const cleanup = spawnSync('bash', ['--noprofile', '--norc', '-c', cleanupCommand], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      PATH: `${bin}:${process.env.PATH ?? ''}`,
+      CLEANUP_HELPER: fileURLToPath(new URL('../deploy/lib/cleanup-smoke-profiles.sh', import.meta.url)),
+      TEMP_ROOT: tempRoot,
+      KILL_LOG: killLog,
+      KILL_CHECKS: join(cleanupFixture, 'kill-checks'),
+      PS_COUNT: psCount,
+      PS_INITIAL: psInitial,
+      PS_REFRESH: psRefresh,
+    },
+  })
+  assert.equal(cleanup.status, 0, `profile 清理行为测试失败：${cleanup.stderr}`)
+  assert.equal(existsSync(staleRunning), false, '运行超时的 Chrome 进程组停止后应删除 profile')
+  assert.equal(existsSync(staleDirectory), false, '过期且无人使用的 profile 应删除')
+  assert.equal(existsSync(fresh), true, '仍在使用中的新 profile 必须保留')
+  assert.match(readFileSync(killLog, 'utf8'), /^-TERM -- -4242\n-KILL -- -4242\n$/, '只向匹配陈旧 profile 的 Chrome 进程组发送 TERM，再升级到 KILL')
+  for (const file of ['deploy/lib/cleanup-smoke-profiles.sh', 'deploy/smoke-watch/8bitgo-smoke-watch.sh']) {
+    const syntax = spawnSync('bash', ['-n', fileURLToPath(new URL(`../${file}`, import.meta.url))], { encoding: 'utf8' })
+    assert.equal(syntax.status, 0, `${file} shell 语法错误：${syntax.stderr}`)
+  }
+} finally {
+  rmSync(cleanupFixture, { recursive: true, force: true })
+}
 
 const redeploy = readFileSync(new URL('../deploy/redeploy.sh', import.meta.url), 'utf8')
 // 2026-11-17 全站 EmulatorJS 事故后改成默认打开、失败重试一次、仍失败回滚（健康检查 200 拦不住「游戏全打不开」）。
@@ -186,4 +290,4 @@ const smokeBlock = redeploy.slice(smokeAt, redeploy.indexOf('log "✅ 部署完�
 assert.match(smokeBlock, /2\)\n\s*log "⚠️⚠️ 开局冒烟没有运行[^\n]*\n\s*notify [^\n]*\n\s*;;/, '退出码 2（没有 Chrome / 脚本自身出错）只告警，不能回滚')
 assert.match(smokeBlock, /\*\)\n\s*if \[ "\$\{SMOKE_ROLLBACK:-1\}" = "1" \]; then[\s\S]*?rollback/, '只有真的跑了且失败（退出码 1）才回滚')
 assert.doesNotMatch(smokeBlock, /\bdie /, '冒烟失败走回滚，不是 die（die 不回滚，会把坏版本留在线上）')
-console.log('✔ 开局冒烟：判据、找 Chrome、拦截统计、redeploy 默认运行且失败回滚、没有 Chrome 只告警')
+console.log('✔ 开局冒烟：判据、找 Chrome、统计隔离、部署回滚、孤儿 Chrome 清理与 profile 保留')

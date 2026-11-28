@@ -1713,7 +1713,10 @@ async function createMultipart(request, env, key, cors) {
   if (requestId && !/^[a-z0-9_-]{16,128}$/i.test(requestId)) throw new HttpError(400, '无效 requestId')
   const size = Number(meta.size) || 0
   const name = typeof meta.name === 'string' ? meta.name.slice(0, 200) : ''
-  const integrityRequired = meta.integrityRequired === true
+  // 全量强校验打开后，旧后台客户端也必须在创建会话时进入带摘要协议；否则它会先写出
+  // 一个没有完整性标记的分片会话，直到玩家读取时才发现这份对象永远无法通过门禁。
+  const integrityRequired = meta.integrityRequired === true ||
+    (env.REQUIRE_ALL_ROM_INTEGRITY === 'true' && integrityKeyValid(key))
   if (integrityRequired && !integrityKeyValid(key)) throw new HttpError(400, '完整性校验只支持 roms/ 下的 ROM 与 BIOS', 'invalid_integrity_key')
   const requestSignature = requestId ? await multipartRequestSignature(contentType, contentEncoding, size, name, integrityRequired) : ''
   const bucket = bucketForWrite(env, key)
@@ -1823,11 +1826,12 @@ async function completeMultipart(request, env, key, uploadId, cors) {
   const expectedSize = Number(body.size)
   const bucket = bucketForWrite(env, key)
   const markerKey = typeof body.marker === 'string' && markerKeyValid(body.marker) ? body.marker : ''
-  const marker = markerKey && (body.integrityRequired === true || body.integrityManifest)
+  const strictIntegrityRequired = env.REQUIRE_ALL_ROM_INTEGRITY === 'true' && integrityKeyValid(key)
+  const marker = markerKey && (strictIntegrityRequired || body.integrityRequired === true || body.integrityManifest)
     ? await bucket.head(markerKey).catch(() => null)
     : null
   const markerMetadata = marker?.customMetadata || {}
-  const integrityRequired = body.integrityRequired === true ||
+  const integrityRequired = strictIntegrityRequired || body.integrityRequired === true ||
     (markerMetadata.key === key && markerMetadata.uploadId === uploadId && markerMetadata.integrityRequired === 'true')
   const integrityManifest = body.integrityManifest || null
   if (requestId && (!/^[a-z0-9_-]{16,128}$/i.test(requestId) || !Number.isSafeInteger(expectedSize) || expectedSize < 0 ||
@@ -1837,6 +1841,18 @@ async function completeMultipart(request, env, key, uploadId, cors) {
   if (integrityManifest && (!integrityRequired || !Number.isSafeInteger(expectedSize) || expectedSize <= 0 ||
       !validIntegrityManifest(integrityManifest, key, expectedSize))) {
     throw new HttpError(400, 'ROM 分片完成缺少有效 SHA-256 清单；R2 对象尚未合并', 'invalid_integrity_manifest')
+  }
+  if (integrityRequired && !integrityManifest) {
+    // 旧页面无法补算上传分片的 SHA-256；确认中止并清掉 marker，免得严格模式切换前的半成品
+    // 永久占着 R2 multipart 空间。若清理没有确认，保留明确的重试状态，不声称已经回收。
+    const cleanup = await abortMultipart(env, key, uploadId, body.marker, cors)
+    if (!cleanup.ok) {
+      const details = await cleanup.json().catch(() => null)
+      return json({ error: 'ROM 缺少 SHA-256 清单且分片会话清理未确认；最终对象尚未合并',
+        code: 'integrity_manifest_required', cleanupRequired: true, retryable: true,
+        aborted: details?.aborted === true, markerRemoved: details?.markerRemoved === true }, cors, 503, { 'Retry-After': '2' })
+    }
+    throw new HttpError(428, 'ROM 分片缺少 SHA-256 清单，未合并且已中止；请从头重新上传', 'integrity_manifest_required')
   }
   const normalized = parts.map(p => ({ partNumber: Number(p?.partNumber), etag: typeof p?.etag === 'string' ? p.etag : '' })).sort((a,b) => a.partNumber - b.partNumber)
   if (normalized.some((p, i) => p.partNumber !== i + 1 || !p.etag || p.etag.length > 256 || /[\x00-\x1f\x7f]/.test(p.etag))) {
@@ -2108,22 +2124,34 @@ async function handle(request, env, url, cors) {
     const contentEncoding = safeContentEncoding(request.headers.get('Content-Encoding'))
     const integrityHeader = request.headers.get('X-8BG-Integrity-Required') || ''
     const manifest = integrityManifestHeader(request)
+    const strictIntegrityRequired = env.REQUIRE_ALL_ROM_INTEGRITY === 'true' && integrityKeyValid(key)
     if (integrityHeader && (integrityHeader !== 'sha256-v1' || !integrityKeyValid(key))) {
       throw new HttpError(400, '完整性校验标记无效或 key 不属于 roms/ ROM / BIOS', 'invalid_integrity_key')
+    }
+    if (strictIntegrityRequired && integrityHeader !== 'sha256-v1') {
+      throw new HttpError(428, '此 ROM / BIOS 上传必须提供 SHA-256 完整性清单', 'integrity_manifest_required')
     }
     if ((manifest && (!integrityHeader || !Number.isSafeInteger(manifest.size) || manifest.size <= 0 ||
         !validIntegrityManifest(manifest, key, manifest.size)))) {
       throw new HttpError(400, 'ROM 单发上传必须同时提供有效的 SHA-256 清单和必校验标记', 'invalid_integrity_manifest')
     }
+    if (strictIntegrityRequired && !manifest) {
+      throw new HttpError(428, 'ROM 单发上传必须提供 SHA-256 清单', 'integrity_manifest_required')
+    }
     // Unknown-length single uploads are bounded to 32 MiB. Larger uploads should
     // supply Content-Length or use the existing multipart endpoint, not allocate 512 MiB.
-    const object = await writeBody(request, limit, body => bucketForWrite(env, key).put(key, body, {
-      httpMetadata: { contentType, ...(contentEncoding ? { contentEncoding } : {}), cacheControl: writeCacheControl(env) },
-      ...(integrityHeader ? { customMetadata: { '8bitgo-integrity-required': 'sha256-v1' } } : {}),
-    }), Math.min(limit, MAX_PART_BYTES))
+    const object = await writeBody(request, limit, body => {
+      // 长度不符必须在 R2 写入前拒绝；提交后才发现会留下带完整性标记、却永远无有效清单的对象。
+      if (manifest && body.byteLength !== manifest.size) {
+        throw new HttpError(400, 'ROM 上传长度与 SHA-256 清单不一致', 'invalid_integrity_manifest')
+      }
+      return bucketForWrite(env, key).put(key, body, {
+        httpMetadata: { contentType, ...(contentEncoding ? { contentEncoding } : {}), cacheControl: writeCacheControl(env) },
+        ...(integrityHeader ? { customMetadata: { '8bitgo-integrity-required': 'sha256-v1' } } : {}),
+      })
+    }, Math.min(limit, MAX_PART_BYTES))
     const integrityPublished = Boolean(integrityHeader && manifest)
     if (integrityPublished) {
-      if (object.size !== manifest.size) throw new HttpError(400, 'ROM 上传长度与 SHA-256 清单不一致', 'invalid_integrity_manifest')
       await publishIntegrityManifest(env, key, object.httpEtag, object.size, manifest)
     }
     return json({ ok: true, key, size: object.size, etag: object.httpEtag, uploaded: object.uploaded,

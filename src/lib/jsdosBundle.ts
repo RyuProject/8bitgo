@@ -929,6 +929,10 @@ export function buildDosboxConf(exe: string | null, startupCommands?: string, la
     'ems=true',
     'umb=true',
     '',
+    // 只让 DOSBox 的 IPX 协议栈可用；浏览器 WebRTC peer 仍只在玩家开房 / 加入时建立，单机不产生联机流量。
+    '[ipx]',
+    'ipx=true',
+    '',
     '[autoexec]',
     'mount c .',
     'c:',

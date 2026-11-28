@@ -31,6 +31,9 @@ const {
 const { isPc98FdiFileName } = await import(
   fileURLToPath(new URL('../src/emulator/pc98.ts', import.meta.url))
 )
+const { assertValidZipBlob } = await import(
+  fileURLToPath(new URL('../src/lib/unzip.ts', import.meta.url))
+)
 const {
   buildSockdriveWindowsGuestConfig,
   dosSockdriveProgramCommand,
@@ -720,6 +723,34 @@ console.log('\n── 自带 dosbox.conf 的 .jsdos 包不能吞掉后台配置 
   }
   const largePath = new TailOnlyBlob([bundled])
   ok(await isReadyJsdosBundleBlob(largePath), '⭐ 大型现成 bundle 只读 ZIP 尾部即可判定为可直接启动')
+
+  let oversizedCentralRead = false
+  const oversizedCentralBytes = 16 * 1024 * 1024 + 1
+  const oversizedCentralBlob = {
+    size: oversizedCentralBytes + 22,
+    slice(start, end) {
+      const length = end - start
+      if (end === this.size) {
+        const tail = new Uint8Array(length)
+        const view = new DataView(tail.buffer)
+        const eocd = tail.length - 22
+        view.setUint32(eocd, 0x06054b50, true)
+        view.setUint16(eocd + 8, 1, true)
+        view.setUint16(eocd + 10, 1, true)
+        view.setUint32(eocd + 12, oversizedCentralBytes, true)
+        view.setUint32(eocd + 16, 0, true)
+        return { arrayBuffer: async () => tail.buffer }
+      }
+      oversizedCentralRead = true
+      throw new Error('不应分配超大中央目录')
+    },
+  }
+  await assert.rejects(
+    () => assertValidZipBlob(oversizedCentralBlob, 'DOS ROM'),
+    /中央目录超过 16 MiB 安全上限/,
+    '⭐ DOS ZIP 的伪造超大中央目录必须在 ArrayBuffer 分配前失败',
+  )
+  ok(!oversizedCentralRead, '超大中央目录拦截发生在读取 / 分配整块之前')
   ok(
     !(await isReadyJsdosBundleBlob(new Blob([makeZip([{ name: 'GAME.EXE', data: EXE }])]))),
     '安全的普通 ZIP 返回“需要补配置”，不会被误当成现成 bundle',
@@ -922,6 +953,7 @@ console.log('\n── 普通 DOS 包必须显式开启游戏需要的内存接�
   const memory = buildDosboxConf('HEROES2.EXE')
   ok(/\[dosbox\]\nmemsize=16(?:\n|$)/.test(memory), '自动配置明确给普通 DOS 游戏 16 MB 内存')
   ok(/\[dos\]\nxms=true\nems=true\numb=true(?:\n|$)/.test(memory), '自动配置明确开启 XMS / EMS / UMB')
+  ok(/\[ipx\]\nipx=true(?:\n|$)/.test(memory), '自动配置默认开放 DOSBox IPX 协议栈，但不启动浏览器联机')
   ok(memory.indexOf('[dosbox]') < memory.indexOf('[autoexec]'), '内存配置在启动游戏前已生效')
 
   const tuned = await makeJsdosBundle(
@@ -933,6 +965,15 @@ console.log('\n── 普通 DOS 包必须显式开启游戏需要的内存接�
   const tunedText = new TextDecoder().decode(await tuned.blob.arrayBuffer())
   ok(/\[dosbox\]\nmemsize=32/.test(tunedText), '普通 DOS 的逐游戏 memsize 覆盖写进最终 bundle')
   ok(/\[dos\]\nxms=true\nems=false\numb=true/.test(tunedText), '普通 DOS 可以逐游戏关闭有兼容性冲突的 EMS')
+
+  const ipxOff = await makeJsdosBundle(
+    'HEROES2.zip',
+    makeZip([{ name: 'HEROES2.EXE', data: EXE }]),
+    undefined,
+    '[ipx]\nipx=false',
+  )
+  const ipxOffText = new TextDecoder().decode(await ipxOff.blob.arrayBuffer())
+  ok(/\[ipx\]\nipx=false/.test(ipxOffText), '逐游戏高级配置仍可关闭 IPX 协议栈')
 }
 
 console.log('\n── 大型纯 DOS 游戏：DOS 7.1 启动盘 + D: Sockdrive 边下边玩 ──')

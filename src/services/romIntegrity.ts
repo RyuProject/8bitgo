@@ -12,6 +12,14 @@ export class RomIntegrityError extends Error {
   }
 }
 
+/** 必须校验的对象拿不到清单时，重试 ROM 字节没有意义；有界重取清单后应立即中断下载。 */
+export class RomIntegrityManifestUnavailableError extends RomIntegrityError {
+  constructor(message: string) {
+    super(message)
+    this.name = 'RomIntegrityManifestUnavailableError'
+  }
+}
+
 const manifestCache = new Map<string, { promise: Promise<RomIntegrityManifest | null>; expiresAt: number }>()
 const MANIFEST_CACHE_LIMIT = 32
 const UNVERSIONED_TTL_MS = 30_000
@@ -154,7 +162,11 @@ function withTimeout(parent: AbortSignal | undefined, ms: number): { controller:
 }
 
 /** 与对象下载并行请求小清单；版本化地址可由浏览器长期缓存，不增加反复开局的往返。 */
-export function fetchRomIntegrityManifest(rawUrl: string, parentSignal?: AbortSignal): Promise<RomIntegrityManifest | null> {
+export function fetchRomIntegrityManifest(
+  rawUrl: string,
+  parentSignal?: AbortSignal,
+  options: { refreshCachedFailure?: boolean; totalTimeoutMs?: number } = {},
+): Promise<RomIntegrityManifest | null> {
   const key = romIntegrityKey(rawUrl)
   if (!key) return Promise.resolve(null)
   if (parentSignal?.aborted) return Promise.reject(new DOMException('已取消', 'AbortError'))
@@ -166,6 +178,14 @@ export function fetchRomIntegrityManifest(rawUrl: string, parentSignal?: AbortSi
   if (old && (old.expiresAt === 0 || old.expiresAt > Date.now())) {
     manifestCache.delete(cacheKey)
     manifestCache.set(cacheKey, old)
+    if (options.refreshCachedFailure && old.expiresAt > 0 && Number.isFinite(old.expiresAt)) {
+      // 必校验 ROM 已到首片但旁路清单超时：只重取小清单一次，不要为了重试清单重下 8 MiB ROM。
+      return old.promise.then((cached) => {
+        if (cached) return cached
+        if (manifestCache.get(cacheKey) === old) manifestCache.delete(cacheKey)
+        return fetchRomIntegrityManifest(rawUrl, parentSignal, { totalTimeoutMs: options.totalTimeoutMs })
+      })
+    }
     return old.promise
   }
   if (old) manifestCache.delete(cacheKey)
@@ -175,7 +195,11 @@ export function fetchRomIntegrityManifest(rawUrl: string, parentSignal?: AbortSi
     if (!manifestUrls.length) return null
     // 清单请求按 key + romv 共用；不能绑到第一个标签页的 AbortSignal，否则它取消后会连带取消
     // 同一时刻另一个播放器正在等待的请求。调用方取消后只忽略结果，2.5 秒上限仍会回收请求。
-    const deadline = Date.now() + MANIFEST_TOTAL_TIMEOUT_MS
+    const requestedTotalTimeout = Number(options.totalTimeoutMs)
+    const totalTimeout = Number.isFinite(requestedTotalTimeout)
+      ? Math.max(500, Math.min(MANIFEST_TOTAL_TIMEOUT_MS, requestedTotalTimeout))
+      : MANIFEST_TOTAL_TIMEOUT_MS
+    const deadline = Date.now() + totalTimeout
     let lastFailure: unknown
     let integrityFailure: RomIntegrityError | null = null
     let sawMissing = false

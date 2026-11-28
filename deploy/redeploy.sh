@@ -90,6 +90,8 @@ command -v node >/dev/null || die "找不到 node，用 NODE_BIN=/绝对路径/n
 # 依赖安装的「lock 未变就跳过」判据单独放一个文件，方便测试（scripts/test-redeploy.mjs）
 # shellcheck source=lib/npm-ci-if-changed.sh
 . "$(dirname "$(readlink -f "$0")")/lib/npm-ci-if-changed.sh" || die "缺少 deploy/lib/npm-ci-if-changed.sh"
+# 构建输出在部署机远程运行时也要落进日志；回滚构建失败不能只留下一个无法定位的告警。
+. "$(dirname "$(readlink -f "$0")")/lib/build-with-diagnostics.sh" || die "缺少 deploy/lib/build-with-diagnostics.sh"
 
 # Bash 只会在执行流走到函数定义后才认得它。健康检查与回滚函数必须放在主流程之前，
 # 否则发布已重启服务后会报 command not found，还会让自动回滚同样失效。
@@ -122,7 +124,11 @@ rollback() {
   # 真遇到这种情况，回滚后手动在 server/ 和根目录各跑一次 npm ci 即可。
   # reset 而不是 checkout：checkout 一个提交会让仓库停在游离 HEAD，下次部署按分支拉取时就对不上了
   git reset --hard --quiet "$BEFORE_COMMIT" || { log "⚠️ git reset 失败，需人工介入"; notify "🔴 回滚失败，需人工介入" "git reset 到 ${BEFORE_COMMIT} 失败"$'\n'"$(deploy_context)"; return; }
-  ( cd "$REPO_DIR"  && npm run build ) || { log "⚠️ 回滚构建失败，需人工介入"; notify "🔴 回滚失败，需人工介入" "回滚到 ${BEFORE_COMMIT} 后重新构建失败，线上 dist 可能是半新的"$'\n'"$(deploy_context)"; return; }
+  if ! build_with_diagnostics "$REPO_DIR" "$LOG" "$LOG_DIR"; then
+    log "⚠️ 回滚构建失败，需人工介入（构建输出：${BUILD_FAILURE_LOG:-$LOG}）"
+    notify "🔴 回滚失败，需人工介入" "回滚到 ${BEFORE_COMMIT} 后重新构建失败，线上 dist 可能是半新的。构建输出：${BUILD_FAILURE_LOG:-$LOG}"$'\n'"$(deploy_context)"
+    return
+  fi
   ( cd "$SERVER_DIR" && npm run migrate ) || log "⚠️ 回滚迁移失败（破坏性迁移无法自动还原）"
   systemctl restart "$UNIT" || { log "⚠️ 回滚重启失败，需人工介入"; notify "🔴 回滚失败，需人工介入" "回滚后 systemctl restart $UNIT 失败"$'\n'"$(deploy_context)"; return; }
   if health_ok; then
@@ -248,7 +254,7 @@ log "── 步骤 5/7  构建（client + server 包）──"
 # prebuild 的门禁失败时 dist 还没动，停下即可；可一旦 vite 已经开始写（postbuild 检查失败、server 包构建失败），
 # 新文件已经在对外提供，旧进程又不会重启 —— 必须回滚重建，不能只 die。
 BUILD_MARK="$(mktemp)"
-if ! ( cd "$REPO_DIR" && npm run build ); then
+if ! build_with_diagnostics "$REPO_DIR" "$LOG" "$LOG_DIR"; then
   if [ -n "$(find "$REPO_DIR/dist" -type f -newer "$BUILD_MARK" -print -quit 2>/dev/null)" ]; then
     rm -f "$BUILD_MARK"
     log "❌ 构建失败，且 dist 已被部分改写（线上正在发半新文件），回滚到 ${BEFORE_COMMIT}"
@@ -257,7 +263,7 @@ if ! ( cd "$REPO_DIR" && npm run build ); then
     exit 1
   fi
   rm -f "$BUILD_MARK"
-  die "构建失败（构建前门禁拦下，线上 dist 未改动）"
+  die "构建失败（构建前门禁拦下，线上 dist 未改动；构建输出：${BUILD_FAILURE_LOG:-$LOG}）"
 fi
 rm -f "$BUILD_MARK"
 
@@ -267,12 +273,13 @@ log "── 步骤 6/7  数据库迁移 ──"
 
 # ── 7. 重启 + 健康检查 ──
 log "── 步骤 7/7  重启 $UNIT + 健康检查 ──"
+systemctl daemon-reload || die "systemctl daemon-reload 失败"
 systemctl restart "$UNIT" || die "systemctl restart 失败"
 if health_ok && ps2_headers_ok; then
   # 页面在 Cloudflare 边缘缓存一天（见 server/src/edge-purge.js），新前端要靠这一步立刻生效。
   # 清失败不回滚：站点是好的，只是旧 HTML 要等过期（旧哈希资源仍保留在 dist，不会白屏）。
   ( cd "$SERVER_DIR" && npm run --silent purge:edge-html ) || log "⚠️ 清 Cloudflare HTML 缓存失败，新版要等边缘过期才全量生效"
-  # 开局冒烟：真把 NES、CPS1 街机、GBA 各一款跑到首帧（scripts/smoke-start.mjs，需要本机有 Chrome / Chromium）。
+  # 开局冒烟：NES、CPS1 街机、GBA 各一款都要到可玩状态，并确认方向键能进播放器（需要 Chrome / Chromium）。
   # 2026-11-17 全站事故之后默认打开：健康检查 200 只说明进程活着，那次所有 EmulatorJS 游戏都打不开，
   # 健康检查照样全绿。失败先重试一次（排除 CDN / ROM 线路的瞬时抖动），仍失败就回滚。
   #   SMOKE_TEST=0       整个跳过（例如 CDN 正在出故障、需要强行发布修复时）
@@ -293,17 +300,17 @@ if health_ok && ps2_headers_ok; then
     case "$SMOKE_RC" in
       0) log "开局冒烟通过" ;;
       2)
-        log "⚠️⚠️ 开局冒烟没有运行完（没有 Chrome / Chromium，或冒烟脚本自身出错，见上面的输出）：这次发布没有经过「游戏能开局」验证"
-        notify "⚠️ 部署完成，但开局冒烟没能运行" "这次发布没有经过「游戏能开局」验证（Chrome 不见了或冒烟脚本出错）。"$'\n'"$(deploy_context)"
+        log "⚠️⚠️ 开局冒烟没有运行完（没有 Chrome / Chromium，或冒烟脚本自身出错，见上面的输出）：这次发布没有经过「游戏可玩且能操作」验证"
+        notify "⚠️ 部署完成，但开局冒烟没能运行" "这次发布没有经过「游戏可玩且能操作」验证（Chrome 不见了或冒烟脚本出错）。"$'\n'"$(deploy_context)"
         ;;
       *)
         if [ "${SMOKE_ROLLBACK:-1}" = "1" ]; then
-          log "❌ 开局冒烟两次失败：新版本游戏跑不到首帧，回滚到 ${BEFORE_COMMIT}（确认是 CDN / ROM 故障而非代码问题时，可用 SMOKE_TEST=0 重新发布）"
-          ROLLBACK_REASON="开局冒烟两次失败：新版本游戏跑不到首帧（确认是 CDN / ROM 故障时可用 SMOKE_TEST=0 重新发布）"
+          log "❌ 开局冒烟两次失败：新版本游戏未达到可玩状态或无法接收输入，回滚到 ${BEFORE_COMMIT}（确认是 CDN / ROM 故障而非代码问题时，可用 SMOKE_TEST=0 重新发布）"
+          ROLLBACK_REASON="开局冒烟两次失败：新版本游戏未达到可玩状态或无法接收输入（确认是 CDN / ROM 故障时可用 SMOKE_TEST=0 重新发布）"
           rollback
           exit 1
         fi
-        log "⚠️ 开局冒烟失败（SMOKE_ROLLBACK=0，不回滚）：站点已上线，但这些游戏没跑到首帧，请看后台「错误诊断」"
+        log "⚠️ 开局冒烟失败（SMOKE_ROLLBACK=0，不回滚）：站点已上线，但这些游戏未达到可玩状态或无法接收输入，请看后台「错误诊断」"
         ;;
     esac
   fi

@@ -6,9 +6,12 @@ import { platformMap } from '@/data/platforms'
 import { gradientFor } from '@/lib/gradients'
 import {
   coverImageUrl,
+  coverPosterWidth,
   coverSrcSet,
+  coverThumbKey,
   gameMediaUrl,
   gameVideoFallbackUrl,
+  romUrlForKey,
   startCoverCdnSelection,
   subscribeCoverCdnSelection,
   reportCoverLoadFailure,
@@ -67,12 +70,16 @@ interface Props {
   eager?: boolean
   /** 图片展示宽度提示，避免窄卡片按整屏宽度下载过大的封面档位。 */
   sizes?: string
+  /** 只在媒体条件匹配时提供图片源，避免隐藏的桌面封面在手机上发起请求。 */
+  sourceMedia?: string
   /**
-   * 用 CDN 的 96px 响应档代替 300×300 主图。
-   * 只给**显示尺寸很小**的位置开（搜索联想、首页类型样例那种 40~44px，以及详情页背景）。
+   * 用 96×96 缩略图代替 300×300 主图。
+   * 只给**显示尺寸很小**的位置开（搜索联想、首页类型样例那种 40~44px，以及详情页
+   * 那张被糊到底的背景）—— 卡片上 300 刚刚好，换成 96 会糊。
+   * 老封面没有缩略图时自动退回主图，见下面的 thumbFailed。
    */
   thumb?: boolean
-  /** 只有容器真正进入视口后才挂图片 / 视频源，避免浏览器原生 lazy 提前抢开局带宽。 */
+  /** 只有容器进入视口附近的预取边界后才挂图片 / 视频源，避免原生 lazy 抢首屏带宽。 */
   deferMedia?: boolean
   /** 封面图真正 load 完时调一次（<video> 那一路不会调）。轮播换图要靠它决定何时撤掉过渡层 */
   onImageLoad?: () => void
@@ -131,16 +138,14 @@ function previewAutoplayAllowed(): boolean {
  * 和 32 张封面抢带宽，最后一张封面拖到 11.9 秒才到。预览只是装饰，封面才是玩家要看的。
  * 悬停播放不受这两条限制：那是玩家自己要看的。
  */
-function CoverVideo({ src: primarySrc, fallbackSrc, poster, fallbackPoster, placeholder, posterSrcSet, posterSizes, priority = false, eager = false }: {
+function CoverVideo({ src: primarySrc, fallbackSrc, poster, fallbackPoster, posterSrcSet, posterSizes, priority = false }: {
   src: string
   fallbackSrc?: string
   poster?: string
   fallbackPoster?: string
-  placeholder?: string
   posterSrcSet?: string
   posterSizes?: string
   priority?: boolean
-  eager?: boolean
 }) {
   const ref = useRef<HTMLVideoElement>(null)
   // 大陆加速镜像（EdgeOne）取不到时退回主线路，只换一次；换了视频就重新从首选地址开始
@@ -148,13 +153,11 @@ function CoverVideo({ src: primarySrc, fallbackSrc, poster, fallbackPoster, plac
   const src = failedSrc === primarySrc && fallbackSrc ? fallbackSrc : primarySrc
   const [failedPoster, setFailedPoster] = useState('')
   const posterSrc = failedPoster === poster && fallbackPoster ? fallbackPoster : poster
+  // 变换图失败后改走原图；此时必须一并停用变换版 srcset，才能让回退地址真正生效。
+  const activePosterSrcSet = posterSrc === poster ? posterSrcSet : ''
   const [hasVideoFrame, setHasVideoFrame] = useState(false)
-  const [loadedPosterSrc, setLoadedPosterSrc] = useState('')
-  const posterLoaded = Boolean(posterSrc && loadedPosterSrc === posterSrc)
-  const [placeholderFailed, setPlaceholderFailed] = useState(false)
 
   useEffect(() => setHasVideoFrame(false), [src])
-  useEffect(() => setPlaceholderFailed(false), [placeholder])
 
   useEffect(() => {
     const v = ref.current
@@ -240,37 +243,21 @@ function CoverVideo({ src: primarySrc, fallbackSrc, poster, fallbackPoster, plac
 
   return (
     <>
-      {placeholder && !placeholderFailed && !posterLoaded && !hasVideoFrame && (
-        <img
-          src={placeholder}
-          alt=""
-          aria-hidden
-          loading={priority || eager ? 'eager' : 'lazy'}
-          fetchPriority="low"
-          decoding="async"
-          onError={() => setPlaceholderFailed(true)}
-          className="absolute inset-0 h-full w-full scale-105 object-cover blur-md"
-        />
-      )}
       {posterSrc && (
         <img
-          key={posterSrc}
           src={posterSrc}
-          srcSet={posterSrc === poster ? posterSrcSet : undefined}
-          sizes={posterSrc === poster ? posterSizes : undefined}
+          srcSet={activePosterSrcSet || undefined}
+          sizes={activePosterSrcSet ? posterSizes : undefined}
           alt=""
           aria-hidden
-          loading={priority || eager ? 'eager' : 'lazy'}
+          loading={priority ? 'eager' : 'lazy'}
           fetchPriority={priority ? 'high' : 'auto'}
           decoding="async"
-          onLoad={() => setLoadedPosterSrc(posterSrc)}
           onError={(event) => {
             reportCoverLoadFailure(event.currentTarget.currentSrc || event.currentTarget.src)
-            if (poster && fallbackPoster && poster !== fallbackPoster && posterSrc === poster) {
-              setFailedPoster(poster)
-            }
+            if (poster && fallbackPoster && poster !== fallbackPoster && posterSrc === poster) setFailedPoster(poster)
           }}
-          className={cx('absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-105', !posterLoaded && 'opacity-0')}
+          className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-105"
         />
       )}
       <video
@@ -311,6 +298,7 @@ export function GameCover({
   still = false,
   eager = false,
   sizes,
+  sourceMedia,
   thumb = false,
   deferMedia = false,
   onImageLoad,
@@ -341,7 +329,7 @@ export function GameCover({
       if (!entry?.isIntersecting) return
       setMediaVisible(true)
       observer.disconnect()
-    })
+    }, { rootMargin: '280px' })
     observer.observe(node)
     return () => observer.disconnect()
   }, [deferMedia, mediaVisible])
@@ -365,10 +353,14 @@ export function GameCover({
     startCoverCdnSelection(game.cover || '')
     return unsubscribe
   }, [game.cover, videoSrc, mediaDeferred])
-  // 小图与模糊占位都从同一张 R2 主图请求 96px 边缘变换，不再依赖单独存储的 -96 对象。
-  const [thumbFailed, setThumbFailed] = useState(false)
-  useEffect(() => setThumbFailed(false), [coverSrc])
-  const imgSrc = thumb && !thumbFailed ? coverImageUrl(coverSrc, 96) : coverSrc
+  // 标准封面缩略图直接从主图变换，不再为每张图请求/保存一份 -96 副本；AVIF 暂不能走 CDN 变换，仍复用历史缩略图。
+  const legacyAvifThumbKey = thumb && game.cover && /\.avif$/i.test(game.cover) ? coverThumbKey(game.cover) : ''
+  const legacyAvifThumbSrc = legacyAvifThumbKey ? romUrlForKey(legacyAvifThumbKey) : ''
+  const coverSizes = sizes || (thumb ? '96px' : '')
+  // AVIF 是当前唯一不能走 CDN 变换的封面格式；其它格式只请求主图的 96px 响应档。
+  const [legacyThumbFailed, setLegacyThumbFailed] = useState(false)
+  useEffect(() => setLegacyThumbFailed(false), [legacyAvifThumbSrc])
+  const useLegacyAvifThumb = Boolean(legacyAvifThumbSrc && !legacyThumbFailed)
   /**
    * 缩放转码版本。变换失败（额度用完、源图格式不认）时 Cloudflare 回的是错误而不是原图，
    * 所以和缩略图一样要记状态退回原图，不能让卡片停在渐变上。
@@ -377,32 +369,18 @@ export function GameCover({
   useEffect(() => setTransformFailed(false), [coverSrc])
   const [coverFailed, setCoverFailed] = useState(false)
   useEffect(() => setCoverFailed(false), [coverSrc])
-  const srcSet = !thumb && !transformFailed ? coverSrcSet(coverSrc) : ''
-  // 懒加载图片让浏览器按布局测量真实卡片宽度；sizes 只给不支持 auto 的浏览器兜底。
-  // eager 图片不支持 sizes=auto，必须使用调用方提供的布局宽度。
-  const imageSizes = srcSet
-    ? priority || eager
-      ? sizes || '100vw'
-      : `auto, ${sizes || '100vw'}`
-    : undefined
-  // 96px 模糊图只服务首屏重点图；给每张卡片都再请求一份会增加弱网流量和解码内存。
-  const placeholderSrc = priority && srcSet ? coverImageUrl(coverSrc, 96) : ''
-  const [placeholderFailed, setPlaceholderFailed] = useState(false)
-  useEffect(() => setPlaceholderFailed(false), [placeholderSrc])
-  const coverLoadKey = `${mediaDeferred ? 'deferred' : 'active'}\n${coverSrc}\n${imgSrc}\n${srcSet}`
-  const [loadedCoverKey, setLoadedCoverKey] = useState('')
-  const coverLoaded = loadedCoverKey === coverLoadKey
-  useEffect(() => {
-    const image = coverImageRef.current
-    if (!mediaDeferred && image?.complete && image.naturalWidth > 0) setLoadedCoverKey(coverLoadKey)
-  }, [coverLoadKey, mediaDeferred])
+  const imgSrc = useLegacyAvifThumb ? legacyAvifThumbSrc : thumb && !transformFailed ? coverImageUrl(coverSrc, 96) : coverSrc
+  const srcSet = !useLegacyAvifThumb && !transformFailed ? coverSrcSet(coverSrc, undefined, undefined, coverSizes) : ''
+  // 视频 poster 也按卡片实际宽度挑图；否则手机首屏会按默认卡片宽度取图，多传一截。
+  const posterSrcSet = videoSrc && coverSrc
+    ? (transformFailed ? '' : imgSrc === coverSrc ? srcSet : coverSrcSet(coverSrc, undefined, undefined, coverSizes))
+    : ''
+  const posterSizes = coverSizes || (priority || eager ? '100vw' : 'auto, 100vw')
 
-  const posterSrc = coverSrc ? coverImageUrl(coverSrc, 480) : ''
-  const posterSrcSet = !transformFailed ? coverSrcSet(coverSrc) : ''
-  const posterSizes = priority || eager
-    ? sizes || '100vw'
-    : `auto, ${sizes || '100vw'}`
-  // preload 与 poster 共用 srcset/sizes，浏览器只请求实际选中的清晰度。
+  const posterSrc = coverSrc
+    ? useLegacyAvifThumb ? legacyAvifThumbSrc : coverImageUrl(coverSrc, coverPosterWidth(coverSizes))
+    : ''
+  // preload 与 img 用同一组 srcset / sizes，避免先预载大档再额外下载更合适的小档。
   if (!mediaDeferred && priority && videoSrc && coverSrc) {
     preload(posterSrc, {
       as: 'image',
@@ -434,52 +412,45 @@ export function GameCover({
           fallbackSrc={gameVideoFallbackUrl(game, videoSrc) || undefined}
           poster={posterSrc || undefined}
           fallbackPoster={coverSrc || undefined}
-          placeholder={placeholderSrc || undefined}
-          posterSrcSet={posterSrcSet || undefined}
+          posterSrcSet={posterSrcSet}
           posterSizes={posterSizes}
           priority={priority}
-          eager={eager}
         />
       ) : coverSrc && !coverFailed && !mediaDeferred ? (
-        <>
-          {placeholderSrc && !placeholderFailed && !coverLoaded && (
-            <img
-              src={placeholderSrc}
-              alt=""
-              aria-hidden
-              loading={priority || eager ? 'eager' : 'lazy'}
-              fetchPriority="low"
-              decoding="async"
-              onError={() => setPlaceholderFailed(true)}
-              className="absolute inset-0 h-full w-full scale-105 object-cover blur-md"
+        <picture>
+          {sourceMedia && (
+            <source
+              media={sourceMedia}
+              srcSet={srcSet || imgSrc}
+              sizes={srcSet ? coverSizes || (priority || eager ? '100vw' : 'auto, 100vw') : undefined}
             />
           )}
           <img
-            key={coverLoadKey}
             ref={coverImageRef}
-            src={imgSrc}
-            srcSet={srcSet || undefined}
-            sizes={imageSizes}
+            src={sourceMedia ? undefined : imgSrc}
+            srcSet={sourceMedia ? undefined : srcSet || undefined}
+            /*
+              懒加载图用 sizes="auto" 让浏览器按真实布局宽度挑档；不认 auto 的浏览器和首屏 eager 图
+              默认退回 100vw。已知尺寸的卡片由调用方显式传 sizes，避免窄图误取大档。
+            */
+            sizes={srcSet && !sourceMedia ? coverSizes || (priority || eager ? '100vw' : 'auto, 100vw') : undefined}
             alt={title}
             // 首屏那几张必须 eager：对着 LCP 图片加 loading="lazy"，
             // 等于让浏览器先跳过它、发现完别的资源再回头下，LCP 反而更慢
             loading={priority || eager ? 'eager' : 'lazy'}
             fetchPriority={priority ? 'high' : 'auto'}
             decoding="async"
-            onLoad={() => {
-              setLoadedCoverKey(coverLoadKey)
-              onImageLoad?.()
-            }}
-            // 小图变换失败就换回主图；主图本身就坏了则留给渐变背景兜着
+            onLoad={onImageLoad}
+            // 缩略图没对象（老封面）就换回主图；主图本身就坏了则留给渐变背景兜着
             onError={(event) => {
               reportCoverLoadFailure(event.currentTarget.currentSrc || event.currentTarget.src)
-              if (thumb && !thumbFailed) setThumbFailed(true)
+              if (useLegacyAvifThumb && !legacyThumbFailed) setLegacyThumbFailed(true)
               else if (srcSet) setTransformFailed(true)
               else setCoverFailed(true)
             }}
-            className={cx('absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-105', !coverLoaded && 'opacity-0')}
+            className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-105"
           />
-        </>
+        </picture>
       ) : (
         <>
           <div className="pixel-grid absolute inset-0 opacity-70" aria-hidden />

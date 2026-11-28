@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 给各平台模拟器的大文件和 Vite 哈希 JS/CSS 预先生成 Brotli 11 压缩版（`<原名>.br` + `<原名>.br.json`）。
+ * 给各平台模拟器的大文件和 Vite 哈希 JS/CSS 预先生成 Brotli 压缩版（`<原名>.br` + `<原名>.br.json`）。
  *
  * ── 为什么（2026-11-09 在生产机上实测 Cloudflare 实际下发的字节数）──────────────
  * Cloudflare / EdgeOne 对 wasm 是现场压缩，压缩级别不高；Brotli 11 + 16MB 窗口还能再省 25~30%：
@@ -13,7 +13,7 @@
  * 直接吐这里生成的 .br；Cloudflare 与 EdgeOne 都会原样转发源站的 br（已实测，也会按 Vary 分开缓存）。
  *
  * ── 怎么保证不会吐出过期的压缩版 ────────────────────────────────────────────
- * 旁边的 `.br.json` 记下原文件的字节数和 sha256。脚本每次都按 sha 判断要不要重压（没变就跳过，
+ * 旁边的 `.br.json` 记下原文件的字节数、sha256 与压缩档位。脚本每次都按 sha 判断要不要重压（没变就跳过，
  * 部署时只有第一次真正花时间）；中间件只在原文件字节数与旁注一致时才吐 .br；
  * `--check <目录>`（postbuild 对 dist/client 跑）逐个核对 sha，对不上直接让构建失败。
  * 压完立刻解开比对，省不到 5% 的不落盘。
@@ -51,10 +51,18 @@ const SCAN_DIRS = ['assets', 'ruffle', 'jsdos', 'dolphin', 'play', 'ppsspp', 'em
 const MIN_SAVING = 0.05
 const MIN_APP_ASSET_BYTES = 1024
 const APP_ASSET_PATTERN = /^assets\/[^/]+-[A-Za-z0-9_-]{8,}\.(?:css|js)$/
+const APP_ASSET_BROTLI_QUALITY = 6
+const RUNTIME_BROTLI_QUALITY = 11
 
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex')
 // 同字节的历史版本共用压缩与反解校验结果，避免重复做高质量 Brotli 解压。
-const encodedByHash = new Map()
+const encodedByHashAndQuality = new Map()
+
+export function brotliQualityFor(rel) {
+  // 2026-11-28 用真实播放器分块测量：252KB JS 的 q11 约 1.2–2 秒、69.5KB；q6 约 11–31 毫秒、76KB。
+  // 页面脚本数量远多于模拟器大文件，q6 仅多约 6.5KB，却能避免每次发版长时间重压全部哈希分块。
+  return APP_ASSET_PATTERN.test(rel) ? APP_ASSET_BROTLI_QUALITY : RUNTIME_BROTLI_QUALITY
+}
 
 function* walk(dir) {
   let entries
@@ -90,18 +98,22 @@ function readSidecar(path) {
   }
 }
 
-async function compressOne(path) {
+async function compressOne(path, base) {
   const data = readFileSync(path)
   const hash = sha256(data)
+  const rel = relative(base, path).split('\\').join('/')
   const sidecar = readSidecar(path)
+  // 切换应用分块档位时复用已验证的旧 .br；旧 q11 比新 q6 更小，逐个重写不会改善玩家下载。
   if (sidecar?.sha256 === hash && sidecar.bytes === data.byteLength && existsSync(`${path}.br`)) {
     return { path, skipped: true }
   }
+  const quality = brotliQualityFor(rel)
+  const cacheKey = `${quality}:${hash}`
   // 历代 PPSSPP 目录里的 wasm 大多逐字节相同：同一份内容只压一次（Brotli 11 每 18MB 要半分钟）
-  if (!encodedByHash.has(hash)) {
+  if (!encodedByHashAndQuality.has(cacheKey)) {
     const encoded = brotli(data, {
       params: {
-        [constants.BROTLI_PARAM_QUALITY]: 11,
+        [constants.BROTLI_PARAM_QUALITY]: quality,
         [constants.BROTLI_PARAM_LGWIN]: 24,
         [constants.BROTLI_PARAM_SIZE_HINT]: data.byteLength,
       },
@@ -112,9 +124,9 @@ async function compressOne(path) {
       }
       return { bytes, notWorth }
     })
-    encodedByHash.set(hash, encoded)
+    encodedByHashAndQuality.set(cacheKey, encoded)
   }
-  const { bytes: encoded, notWorth } = await encodedByHash.get(hash)
+  const { bytes: encoded, notWorth } = await encodedByHashAndQuality.get(cacheKey)
   // 旧的压缩版无论如何先拿掉：原文件已经变了，留着就是过期内容
   rmSync(`${path}.br`, { force: true })
   rmSync(`${path}.br.json`, { force: true })
@@ -122,11 +134,11 @@ async function compressOne(path) {
   const temp = `${path}.br.tmp-${process.pid}`
   writeFileSync(temp, encoded)
   renameSync(temp, `${path}.br`)
-  writeFileSync(`${path}.br.json`, `${JSON.stringify({ bytes: data.byteLength, sha256: hash, brBytes: encoded.byteLength })}\n`)
-  return { path, before: data.byteLength, after: encoded.byteLength }
+  writeFileSync(`${path}.br.json`, `${JSON.stringify({ bytes: data.byteLength, sha256: hash, brBytes: encoded.byteLength, quality })}\n`)
+  return { path, before: data.byteLength, after: encoded.byteLength, quality }
 }
 
-async function generate(base) {
+export async function generate(base) {
   const targets = runtimeTargets(base)
   const queue = [...targets]
   const results = []
@@ -135,12 +147,12 @@ async function generate(base) {
     while (queue.length) {
       const path = queue.shift()
       const started = Date.now()
-      const result = await compressOne(path)
+      const result = await compressOne(path, base)
       results.push(result)
       const rel = relative(base, path)
       if (result.skipped) continue
       if (result.notWorth) console.log(`· ${rel}：压不下 5%，不生成`)
-      else console.log(`✔ ${rel}：${result.before} → ${result.after}（-${((1 - result.after / result.before) * 100).toFixed(1)}%，${Date.now() - started}ms）`)
+      else console.log(`✔ ${rel}：${result.before} → ${result.after}（-${((1 - result.after / result.before) * 100).toFixed(1)}%，q${result.quality}，${Date.now() - started}ms）`)
     }
   }))
   const skipped = results.filter((r) => r.skipped).length

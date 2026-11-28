@@ -19,6 +19,7 @@ import {
   markRomBlobIntegrityVerified,
   romIntegrityKey,
   RomIntegrityError,
+  RomIntegrityManifestUnavailableError,
   verifyMarkedRomResponse,
   verifyRomBlob,
   verifyRomBlobRange,
@@ -46,6 +47,8 @@ import { windowsLaunchDelayMs, WINDOWS_GRAPHICS_SIGNAL_FALLBACK_MS, WINDOWS_LAUN
 
 /** 进度回调节流：下载一个几十 MB 的 ROM 会触发上千次 chunk，全都 setState 会把主线程拖垮 */
 const THROTTLE_MS = 120
+/** ROM 首片已经到手但必校验清单超时，只再给清单一次短重取，不重下 ROM 分片。 */
+const REQUIRED_MANIFEST_RETRY_TIMEOUT_MS = 2_500
 
 export interface ProgressSink {
   (p: LoadProgress): void
@@ -974,6 +977,7 @@ export async function fetchBlobWithProgress(url: string, opts: BlobFetchOptions 
   let verifiedIntegrityManifest: Awaited<ReturnType<typeof fetchRomIntegrityManifest>> = null
   const integrityVerifiedParts = new Set<number>()
   const integrityTasks = new Map<string, ReturnType<typeof fetchRomIntegrityManifest>>()
+  let integrityManifestRetryTask: ReturnType<typeof fetchRomIntegrityManifest> | null = null
   const integrityFor = (candidate: string) => {
     if (!romIntegrityKey(candidate)) return Promise.resolve(null)
     let task = integrityTasks.get(candidate)
@@ -1002,13 +1006,26 @@ export async function fetchBlobWithProgress(url: string, opts: BlobFetchOptions 
       void integrityFor(integritySource).catch(() => {})
     }
   }
-  const requireManifest = async (total: number) => {
-    const manifest = await integrityFor(integritySource)
+  const requireManifest = async (total?: number) => {
+    let manifest = await integrityFor(integritySource)
+    if (!manifest && integrityRequired) {
+      if (!integrityManifestRetryTask) {
+        diagLog('download', 'warn', '本站要求 ROM / BIOS 完整性校验，清单初次请求无结果；仅重取清单一次')
+        integrityManifestRetryTask = fetchRomIntegrityManifest(integritySource, opts.signal, {
+          refreshCachedFailure: true,
+          totalTimeoutMs: REQUIRED_MANIFEST_RETRY_TIMEOUT_MS,
+        })
+        integrityManifestRetryTask.catch(() => {})
+        integrityTasks.set(integritySource, integrityManifestRetryTask)
+      }
+      manifest = await integrityManifestRetryTask
+    }
     if (!manifest) {
-      if (integrityRequired) throw new RomIntegrityError('本站要求校验此 ROM / BIOS，但 SHA-256 清单不可用')
+      if (integrityRequired) throw new RomIntegrityManifestUnavailableError('本站要求校验此 ROM / BIOS，但 SHA-256 清单不可用')
       return null
     }
-    if (manifest.size !== total || (integrityEtag && manifest.etag !== integrityEtag)) {
+    if ((Number.isSafeInteger(total) && Number(total) > 0 && manifest.size !== total) ||
+        (integrityEtag && manifest.etag !== integrityEtag)) {
       throw new RomIntegrityError('ROM / BIOS 分片与 SHA-256 清单的大小或版本不一致')
     }
     return manifest
@@ -1024,11 +1041,9 @@ export async function fetchBlobWithProgress(url: string, opts: BlobFetchOptions 
   }
   const verifyWhole = async (response: Response) => {
     if (!integrityRequired) return response
-    const manifest = await integrityFor(integritySource)
-    if (!manifest || (integrityEtag && manifest.etag !== integrityEtag)) {
-      throw new RomIntegrityError('本站要求校验此 ROM / BIOS，但 SHA-256 清单不可用或版本不匹配')
-    }
     const declaredSize = Number(response.headers.get('Content-Length'))
+    const manifest = await requireManifest()
+    if (!manifest) throw new RomIntegrityManifestUnavailableError('本站要求校验此 ROM / BIOS，但 SHA-256 清单不可用')
     if (Number.isFinite(declaredSize) && declaredSize > 0 && declaredSize !== manifest.size) {
       throw new RomIntegrityError('ROM / BIOS 整份响应长度与 SHA-256 清单不一致')
     }
@@ -1150,6 +1165,8 @@ export async function fetchBlobWithProgress(url: string, opts: BlobFetchOptions 
       guard.abort()
       if (trackHealth && guard.stalled()) recordRomRouteFailure(currentUrl, 'stall')
       if (opts.signal?.aborted || isAbort(error) && !guard.stalled()) throw error
+      // 清单已对所有可信清单域重试过；继续换 ROM 域或重下同一分片不会改变校验结论。
+      if (error instanceof RomIntegrityManifestUnavailableError) throw error
       // 超过上限是这个对象本身的问题，换线路也一样
       if (error instanceof RangeError) throw error
       if (error instanceof SlowRomRouteError && alternates.length) {
@@ -1867,6 +1884,7 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
         // 卡死不是「这一次没成」：重试只会再等一整个看门狗周期，直接抛
         if (guard.stalled()) throw error
         // 取消是用户意图，不是失败，别在这儿空转重试
+        if (error instanceof RomIntegrityManifestUnavailableError) throw error
         if (error instanceof RangeError) throw error
         if (isAbort(error) || opts.signal?.aborted) throw error
         // 响应头之前的失败 fetchRange 已经记过；之后的（读正文断流、5xx）在这里记
@@ -2110,6 +2128,7 @@ async function blobWithProgressGuarded(url: string, opts: GuardedFetchOptions, g
         if (error instanceof SlowRomRouteError) throw error
         if (guard.stalled()) throw error
         if (error instanceof RangeError) throw error
+        if (error instanceof RomIntegrityManifestUnavailableError) throw error
         if (isAbort(error) || opts.signal?.aborted) throw error
         // 响应头之前的失败 fetchRange 已经记过；之后的（读正文断流、5xx）在这里记
         if (firstHeadersAt) noteRouteFailure(firstRoute, error)

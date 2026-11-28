@@ -290,6 +290,8 @@ export interface MountOptions {
   onStart?: () => void
   /** HTML5 子页面的可信输入事件或运行时桥确认玩家第一次真实操作；iframe 自动聚焦不算。 */
   onFirstInteraction?: () => void
+  /** 确认发生于游戏舞台的可信输入；可重复调用，用于记录兜底接棒后的操作。 */
+  onStageInteraction?: () => void
   /**
    * scope = runtime 表示播放器外壳 / 引擎本身没起来，不是 ROM 内容坏了。
    * 父层据此禁止切换语言或备用 ROM；换多少份内容都修不好同一个运行时故障。

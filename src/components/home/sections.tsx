@@ -78,9 +78,8 @@ export function PickedSection({ games, curated }: { games: Game[]; curated: bool
       />
       <HScroll>
         {games.map((g, i) => (
-          // 精选区紧跟首页横幅；窄屏首屏能看到首卡，它的封面 / 视频 poster 可能成为 LCP。
-          // 只提升这一张，避免整排图片和横幅争抢弱网带宽。
-          <GameCard key={g.slug} game={g} priority={i === 0} />
+          // PSI 曾选中横向轨道深处的封面；首两张保留 eager/high，其余到视口前 280px 才挂媒体。
+          <GameCard key={g.slug} game={g} priority={i < 2} deferCover={i >= 2} />
         ))}
       </HScroll>
     </section>
@@ -123,6 +122,7 @@ export function MostPlayedSection({ games }: { games: Game[] }) {
             key={g.slug}
             game={g}
             rank={i + 1}
+            deferCover
             /*
               显示的量必须和排序依据一致 —— 这一栏按累计游玩次数排，就显示游玩次数。
               0 次时传 undefined 让卡片整块不画：「🔥 0」会被读成「没人玩」，
@@ -161,9 +161,8 @@ export function LatestSection({ games }: { games: Game[] }) {
       <SectionHeader title={t.sections.latestTitle} subtitle={t.sections.latestSubtitle} icon="✨" moreTo="/games?sort=newest" />
       <HScroll itemClassName="w-64 sm:w-72">
         {games.map((g, i) => (
-          // 这个区块在首页长列表下方，首张卡也在视口外；强制高优先级会抢首屏的游戏资源。
-          // 交给原生 lazy loading，玩家滚到这里时浏览器再拉封面。
-          <GameCardWide key={g.slug} game={g} isNew={i < 3} />
+          // 首张宽卡在部分手机首屏可见，保留最高优先级；其余等靠近视口再请求。
+          <GameCardWide key={g.slug} game={g} isNew={i < 3} priority={i === 0} deferCover={i !== 0} />
         ))}
       </HScroll>
     </section>
@@ -183,7 +182,7 @@ export function TogetherSection({ games }: { games: Game[] }) {
       />
       <HScroll>
         {games.map((g) => (
-          <GameCard key={g.slug} game={g} />
+          <GameCard key={g.slug} game={g} deferCover />
         ))}
       </HScroll>
     </section>
@@ -215,7 +214,7 @@ export function CollectionsSection({ collections }: { collections: Collection[] 
       />
       <div className="adaptive-entity-grid">
         {collections.slice(0, 4).map((c) => (
-          <CollectionCard key={c.id} collection={c} />
+          <CollectionCard key={c.id} collection={c} deferCover />
         ))}
       </div>
     </section>
@@ -340,6 +339,7 @@ export function GenreGridSection({
                       showBadge={false}
                       iconSize="sm"
                       thumb
+                      deferMedia
                       className="h-11 w-11 shrink-0 rounded-lg"
                     />
                     <span className="min-w-0 flex-1">

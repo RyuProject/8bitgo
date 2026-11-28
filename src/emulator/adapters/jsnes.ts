@@ -18,7 +18,7 @@ import { JsnesRomTooLargeError, readJsnesRom } from '../jsnesRom'
 import { startGamepadInput, type GamepadInput } from '../gamepadInput'
 import { installPadKeyboard } from '../padKeyboard'
 import type { PadAction, Seat } from '@/services/padKeys'
-import { JsnesNetplay, encodeInput, jsnesRomFingerprint, NETPLAY_ACTIONS } from '../jsnesNetplay'
+import { JsnesNetplay, encodeInput, jsnesRomFingerprint, NETPLAY_ACTIONS, releaseNetplaySeatInputs } from '../jsnesNetplay'
 import type { JsnesNetplaySession } from '../types'
 
 /**
@@ -700,6 +700,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     target.close()
     if (netplay === target) netplay = null
     netplaySession.current = null
+    const nes = browser?.nes
+    if (nes) {
+      releaseNetplaySeatInputs(appliedSeatBits, (seat, action) => {
+        const code = NES_BUTTON[action]
+        if (code !== undefined) nes.buttonUp?.(seat === 1 ? 2 : 1, code)
+      })
+    }
     resetNetplayLoop()
     if (!destroyed) setSoloPauseAvailable(true)
     if (!resumeSolo || destroyed) return

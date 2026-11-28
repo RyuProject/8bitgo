@@ -25,7 +25,7 @@ interface Props {
    * 惰性图要等滚动才真正开始下，一屏全是黑/渐变格子；首屏这几点字节不值得省。
    */
   eager?: boolean
-  /** 首屏 LCP 候选；只给最前面的一张，避免高优先级请求互相争抢。 */
+  /** 首屏 LCP 候选；只给实际露出的卡片，避免一整排高优先级请求互相争抢。 */
   priority?: boolean
   /** 推迟挂载封面媒体直到调用方确认区域进入视口；卡片正文仍参与 SSR 和键盘导航。 */
   deferCover?: boolean
@@ -39,7 +39,7 @@ interface Props {
  * 大盘列表（/games、平台页、类型页）共用这一个数，免得各写一份。
  */
 export const ABOVE_FOLD_CARDS = 8
-/** eager 卡片不能使用 sizes=auto：以 240px 作为兼容浏览器兜底；懒加载卡片会先按真实宽度自动选档。 */
+/** 游戏列表卡片在桌面最大约 254px；240px 档能覆盖常见 1x/2x 屏，避免按视口宽度误选 480px。 */
 export const GAME_CARD_IMAGE_SIZES = '240px'
 
 /**
@@ -90,6 +90,7 @@ export const GameCard = memo(function GameCard({ game, className, coverRatio = '
           eager={eager}
           priority={priority}
           deferMedia={deferCover}
+          // 优先图和主动加载的首屏卡都要提供卡片宽度，不能让浏览器按 100vw 选到过大的候选。
           sizes={coverSizes ?? (priority || eager ? GAME_CARD_IMAGE_SIZES : undefined)}
         />
         {rank !== undefined && (

@@ -327,7 +327,7 @@ export function GamesPage() {
                 onClick={() => set('genre', genreId === g.id ? null : g.id)}
               >
                 {g.icon} {genreLabel(t, g.id, g.name)}
-                {n !== undefined && <span className="opacity-60">{n}</span>}
+                {n !== undefined && <span>{n}</span>}
               </FilterChip>
             )
           })}
@@ -342,7 +342,7 @@ export function GamesPage() {
               active={romLanguage === code}
               onClick={() => set('romLanguage', romLanguage === code ? null : code)}
             >
-              {romLanguageLabel(lang, code)} <span className="opacity-60">{count}</span>
+              {romLanguageLabel(lang, code)} <span>{count}</span>
             </FilterChip>
           ))}
         </FilterRow>
