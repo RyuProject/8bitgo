@@ -356,6 +356,8 @@ export function GameCover({
   // 外链没有本站生成的 -96 缩略图，直接用原图；空 key 不能被当作资源桶根地址。
   const thumbKey = thumb && game.cover ? coverThumbKey(game.cover) : ''
   const thumbSrc = thumbKey ? romUrlForKey(thumbKey) : ''
+  // 缩略图缺失时 Worker 会回退到主图；仍按 96px 提示生成变换候选，避免把 300px 主图整张拉下。
+  const coverSizes = sizes || (thumb ? '96px' : '')
   /**
    * 缩略图取不到（老封面上传时还没有这一步，且服务端兜底也没生效）就退回主图。
    * ⚠️ 必须记状态而不是每次重试：不记的话同一张图会反复 404 → 反复回退 → 死循环。
@@ -372,15 +374,15 @@ export function GameCover({
   useEffect(() => setTransformFailed(false), [coverSrc])
   const [coverFailed, setCoverFailed] = useState(false)
   useEffect(() => setCoverFailed(false), [coverSrc])
-  const srcSet = imgSrc === coverSrc && !transformFailed ? coverSrcSet(coverSrc, undefined, undefined, sizes) : ''
-  // 视频 poster 也按卡片实际宽度挑图；否则手机首屏一直下 480px 档，低密度屏多传一截。
+  const srcSet = imgSrc === coverSrc && !transformFailed ? coverSrcSet(coverSrc, undefined, undefined, coverSizes) : ''
+  // 视频 poster 也按卡片实际宽度挑图；否则手机首屏会按默认卡片宽度取图，多传一截。
   const posterSrcSet = videoSrc && coverSrc
-    ? (transformFailed ? '' : imgSrc === coverSrc ? srcSet : coverSrcSet(coverSrc, undefined, undefined, sizes))
+    ? (transformFailed ? '' : imgSrc === coverSrc ? srcSet : coverSrcSet(coverSrc, undefined, undefined, coverSizes))
     : ''
-  const posterSizes = sizes || (priority || eager ? '100vw' : 'auto, 100vw')
+  const posterSizes = coverSizes || (priority || eager ? '100vw' : 'auto, 100vw')
 
-  const posterSrc = coverSrc ? coverImageUrl(coverSrc, coverPosterWidth(sizes)) : ''
-  // preload 与 img 用同一组 srcset / sizes，避免先预载 480px 再额外下载更合适的小档。
+  const posterSrc = coverSrc ? coverImageUrl(coverSrc, coverPosterWidth(coverSizes)) : ''
+  // preload 与 img 用同一组 srcset / sizes，避免先预载大档再额外下载更合适的小档。
   if (!mediaDeferred && priority && videoSrc && coverSrc) {
     preload(posterSrc, {
       as: 'image',
@@ -422,7 +424,7 @@ export function GameCover({
             <source
               media={sourceMedia}
               srcSet={srcSet || imgSrc}
-              sizes={srcSet ? sizes || (priority || eager ? '100vw' : 'auto, 100vw') : undefined}
+              sizes={srcSet ? coverSizes || (priority || eager ? '100vw' : 'auto, 100vw') : undefined}
             />
           )}
           <img
@@ -431,9 +433,9 @@ export function GameCover({
             srcSet={sourceMedia ? undefined : srcSet || undefined}
             /*
               懒加载图用 sizes="auto" 让浏览器按真实布局宽度挑档；不认 auto 的浏览器和首屏 eager 图
-              默认退回 100vw。已知尺寸的卡片由调用方显式传 sizes，避免窄图误取 480 档。
+              默认退回 100vw。已知尺寸的卡片由调用方显式传 sizes，避免窄图误取大档。
             */
-            sizes={srcSet && !sourceMedia ? sizes || (priority || eager ? '100vw' : 'auto, 100vw') : undefined}
+            sizes={srcSet && !sourceMedia ? coverSizes || (priority || eager ? '100vw' : 'auto, 100vw') : undefined}
             alt={title}
             // 首屏那几张必须 eager：对着 LCP 图片加 loading="lazy"，
             // 等于让浏览器先跳过它、发现完别的资源再回头下，LCP 反而更慢

@@ -393,13 +393,21 @@ export function gameVideoFallbackUrl(game: { slug: string; video?: string }, cur
 
 /**
  * 变换宽度从实际 sizes 提示计算，避免 CSS 卡片尺寸变化后还要手工维护另一份档位表。
- * 三档分别覆盖约 2/3 倍、1 倍和 2 倍展示宽度；不支持解析的 sizes（如 auto / vw）
- * 用列表卡片的 240px 最大宽度生成候选，浏览器仍会按真实布局尺寸挑选。
+ * 三档分别覆盖约 2/3 倍、1 倍和 2 倍展示宽度，再向上吸附到共享宽度档：
+ * 不同页面上尺寸相近的卡片会复用同一批 Cloudflare 变换结果，且候选不会低于目标像素。
+ * 不支持解析的 sizes（如 auto / vw）用列表卡片的 240px 最大宽度生成候选，浏览器仍会按真实布局尺寸挑选。
  * 96px 缩略图是独立固定档：它对应后台上传生成的 -96 对象，不能跟随卡片尺寸变化。
  */
 const DEFAULT_COVER_SLOT_WIDTH = 240
 const COVER_WIDTH_SCALES = [2 / 3, 1, 2] as const
+const COVER_WIDTH_BUCKETS = [96, 160, 240, 320, 480, 640] as const
 type CoverImageWidth = number
+
+function coverWidthBucket(width: number): number {
+  // 当前卡片最大约 288px，640px 已覆盖其 2x 候选；
+  // 更大的新卡片按 64px 步长扩展，避免被静默降清晰度。
+  return COVER_WIDTH_BUCKETS.find((bucket) => bucket >= width) ?? Math.ceil(width / 64) * 64
+}
 
 function coverWidthsForSizes(sizes = ''): number[] {
   // sizes 的每个逗号项可能带媒体条件；只读项尾部的实际槽位，不能把 min-width 断点当图宽。
@@ -412,7 +420,8 @@ function coverWidthsForSizes(sizes = ''): number[] {
     })
     .filter((width) => Number.isFinite(width) && width > 0)
   const slotWidth = slotWidths.length ? Math.max(...slotWidths) : DEFAULT_COVER_SLOT_WIDTH
-  return [...new Set(COVER_WIDTH_SCALES.map((scale) => Math.max(1, Math.round(slotWidth * scale))))].sort((a, b) => a - b)
+  const widths = COVER_WIDTH_SCALES.map((scale) => coverWidthBucket(Math.max(1, Math.ceil(slotWidth * scale))))
+  return [...new Set(widths)].sort((a, b) => a - b)
 }
 
 /** 视频 poster 没有 srcset，取布局提示对应的 2x 宽度，未提供提示时回落到列表卡片 480px。 */
@@ -446,7 +455,7 @@ export function coverImageUrl(
  * 用 `/cdn-cgi/image/` 而不是在 Worker 里转码，是因为变换结果由 Cloudflare 边缘直接缓存，
  * 而且按浏览器 Accept 自动给 AVIF / WebP；源图仍经 Worker 读 R2，缓存寿命跟着源图
  * 的 s-maxage=600 走，所以「换封面 10 分钟内生效」不变。
- * fit=scale-down 保证 480 档不会把 300 像素的老封面放大糊掉。
+ * fit=scale-down 保证高档请求不会把较小的源封面放大。
  *
  * 构建期开关 VITE_COVER_TRANSFORM=1：本地开发的封面根地址没有 /cdn-cgi/，开了只会全部 404。
  *

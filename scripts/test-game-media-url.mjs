@@ -27,19 +27,31 @@ assert.equal(
 assert.equal(coverSrcSet(`${base}/covers/kof.webp`, ''), '')
 assert.equal(
   coverSrcSet(`${base}/covers/kof.webp`, base, 'auto', '120px'),
-  `${base}/cdn-cgi/image/width=80,quality=80,format=auto,fit=scale-down/covers/kof.webp 80w, ` +
-    `${base}/cdn-cgi/image/width=120,quality=80,format=auto,fit=scale-down/covers/kof.webp 120w, ` +
+  `${base}/cdn-cgi/image/width=96,quality=80,format=auto,fit=scale-down/covers/kof.webp 96w, ` +
+    `${base}/cdn-cgi/image/width=160,quality=80,format=auto,fit=scale-down/covers/kof.webp 160w, ` +
     `${base}/cdn-cgi/image/width=240,quality=80,format=auto,fit=scale-down/covers/kof.webp 240w`,
-  'srcset 档位应根据实际卡片宽度和密度自动生成',
+  'srcset 档位应根据实际卡片宽度自动生成并归并到共享宽度档',
 )
 assert.equal(
   coverSrcSet(`${base}/covers/kof.webp`, base, 'auto', '(min-width: 1280px) 211px, (min-width: 1024px) 158px, 141px'),
-  `${base}/cdn-cgi/image/width=141,quality=80,format=auto,fit=scale-down/covers/kof.webp 141w, ` +
-    `${base}/cdn-cgi/image/width=211,quality=80,format=auto,fit=scale-down/covers/kof.webp 211w, ` +
-    `${base}/cdn-cgi/image/width=422,quality=80,format=auto,fit=scale-down/covers/kof.webp 422w`,
+  `${base}/cdn-cgi/image/width=160,quality=80,format=auto,fit=scale-down/covers/kof.webp 160w, ` +
+    `${base}/cdn-cgi/image/width=240,quality=80,format=auto,fit=scale-down/covers/kof.webp 240w, ` +
+    `${base}/cdn-cgi/image/width=480,quality=80,format=auto,fit=scale-down/covers/kof.webp 480w`,
   '媒体断点值不能混入图宽，卡片实际宽度决定生成的三个档位',
 )
-assert.equal(coverPosterWidth('111px'), 222, '视频 poster 应按实际卡片尺寸生成 2x 宽度')
+assert.equal(coverPosterWidth('111px'), 240, '视频 poster 应按实际卡片尺寸生成并吸附到不低于目标的共享 2x 宽度')
+assert.equal(
+  coverSrcSet(`${base}/covers/kof.webp`, base, 'auto', '212px'),
+  coverSrcSet(`${base}/covers/kof.webp`, base, 'auto', '211px'),
+  '相邻卡片尺寸应复用同一组 Cloudflare 变换档位',
+)
+assert.equal(
+  coverSrcSet(`${base}/covers/kof.webp`, base, 'auto', '288px'),
+  `${base}/cdn-cgi/image/width=240,quality=80,format=auto,fit=scale-down/covers/kof.webp 240w, ` +
+    `${base}/cdn-cgi/image/width=320,quality=80,format=auto,fit=scale-down/covers/kof.webp 320w, ` +
+    `${base}/cdn-cgi/image/width=640,quality=80,format=auto,fit=scale-down/covers/kof.webp 640w`,
+  '首页最大宽卡的 2x 候选应落在 640px 共享档，不产生单独的 576px 变换',
+)
 assert.equal(coverPosterWidth('auto, 100vw'), 480, '无法解析的布局提示应使用安全的卡片宽度回退')
 assert.equal(
   coverImageUrl(`${base}/covers/super-mario-bros-96.jpg`, 96, base, 'auto'),
