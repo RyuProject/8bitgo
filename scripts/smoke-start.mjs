@@ -67,8 +67,18 @@ export const INPUT_PROBE_EXPRESSION = String.raw`(() => {
   const listen = (doc, insideStage) => {
     if (!doc || docs.has(doc)) return
     docs.add(doc)
+    let playerPointerSeen = false
+    doc.addEventListener('pointerdown', (event) => {
+      if (insideStage || stage.contains(event.target)) playerPointerSeen = true
+    }, true)
     doc.addEventListener('keydown', (event) => {
-      if (event.code !== 'ArrowRight' || (!insideStage && !stage.contains(event.target))) return
+      if (event.code !== 'KeyD') return
+      const stageTarget = insideStage || stage.contains(event.target)
+      // 纯 JS 运行时把键盘监听装在主文档；不可聚焦的 canvas 被点击后，Chrome 会把按键目标留在 body。
+      // 只在已经观察到玩家点过舞台时接受这条路径，避免把工具栏 / 页面空白处的方向键算作游戏输入。
+      const focusedCanvasTarget = !insideStage && playerPointerSeen &&
+        (event.target === doc.body || event.target === doc.documentElement)
+      if (!stageTarget && !focusedCanvasTarget) return
       try { doc.defaultView?.${INPUT_PROBE_BINDING}(event.code) } catch { /* 只用于冒烟观察，不干预游戏输入 */ }
     }, true)
     for (const frame of doc.querySelectorAll('iframe')) {
@@ -164,17 +174,17 @@ export function verdictOf(event) {
   return ''
 }
 
-/** 点击游戏画面取得真实焦点，再发方向键；按下与松开都发送，避免把按键卡住。 */
+/** 点击游戏画面后发送默认右移键 D；按下与松开都发送，避免把按键卡住。 */
 export async function sendSmokeInput(send, point) {
   const mouse = { x: point.x, y: point.y }
   await send('Input.dispatchMouseEvent', { ...mouse, type: 'mouseMoved' })
   await send('Input.dispatchMouseEvent', { ...mouse, type: 'mousePressed', button: 'left', clickCount: 1 })
   await send('Input.dispatchMouseEvent', { ...mouse, type: 'mouseReleased', button: 'left', clickCount: 1 })
   const key = {
-    key: 'ArrowRight',
-    code: 'ArrowRight',
-    windowsVirtualKeyCode: 39,
-    nativeVirtualKeyCode: 39,
+    key: 'd',
+    code: 'KeyD',
+    windowsVirtualKeyCode: 68,
+    nativeVirtualKeyCode: 68,
   }
   await send('Input.dispatchKeyEvent', { ...key, type: 'keyDown' })
   await send('Input.dispatchKeyEvent', { ...key, type: 'keyUp' })
@@ -459,7 +469,7 @@ async function smokeOne(cdp, slug) {
   }
   off = cdp.on(async (msg) => {
     if (msg.sessionId !== sessionId) return
-    if (msg.method === 'Runtime.bindingCalled' && msg.params.name === INPUT_PROBE_BINDING && msg.params.payload === 'ArrowRight') {
+    if (msg.method === 'Runtime.bindingCalled' && msg.params.name === INPUT_PROBE_BINDING && msg.params.payload === 'KeyD') {
       settleInput(true)
     } else if (msg.method === 'Network.requestWillBeSent') {
       const { requestId, request } = msg.params

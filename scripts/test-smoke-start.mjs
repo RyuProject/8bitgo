@@ -60,15 +60,55 @@ assert.equal(INPUT_CONFIRM_TIMEOUT_MS, 3000)
 assert.equal(INPUT_PROBE_BINDING, '__8bgSmokeKeyProbe')
 assert.match(INPUT_PROBE_EXPRESSION, /data-testid="emulator-stage"/)
 assert.match(INPUT_PROBE_EXPRESSION, /stage\.contains\(event\.target\)/, '方向键探针不能把页面其它区域的按键误当成游戏输入')
+assert.match(INPUT_PROBE_EXPRESSION, /event\.code !== 'KeyD'/, '冒烟必须观察当前默认键位，而非旧版方向键映射')
+assert.match(INPUT_PROBE_EXPRESSION, /playerPointerSeen/, '纯 JS 核心在主文档接收按键时，必须先确认玩家点击过游戏舞台')
+assert.match(INPUT_PROBE_EXPRESSION, /event\.target === doc\.body/, '不可聚焦的纯 JS 游戏画布允许浏览器把后续按键目标留在 body')
+{
+  const makeProbe = () => {
+    const body = {}
+    const documentElement = {}
+    const canvas = {}
+    const outside = {}
+    const listeners = new Map()
+    const received = []
+    const window = { [INPUT_PROBE_BINDING]: (code) => received.push(code) }
+    const stage = {
+      contains: (target) => target === canvas,
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 240, height: 160 }),
+      querySelectorAll: () => [],
+    }
+    const document = {
+      body,
+      documentElement,
+      defaultView: window,
+      querySelector: (selector) => selector === '[data-testid="emulator-stage"]' ? stage : null,
+      querySelectorAll: () => [],
+      addEventListener: (type, listener) => listeners.set(type, listener),
+    }
+    const result = new Function('document', 'window', `return ${INPUT_PROBE_EXPRESSION}`)(document, window)
+    return { body, canvas, outside, listeners, received, result }
+  }
+
+  const canvasProbe = makeProbe()
+  assert.equal(canvasProbe.result.documents, 1)
+  canvasProbe.listeners.get('pointerdown')({ target: canvasProbe.canvas })
+  canvasProbe.listeners.get('keydown')({ code: 'KeyD', target: canvasProbe.body })
+  assert.deepEqual(canvasProbe.received, ['KeyD'], '点击不可聚焦画布后，默认 D 键仍到达纯 JS 核心文档')
+
+  const outsideProbe = makeProbe()
+  outsideProbe.listeners.get('pointerdown')({ target: outsideProbe.outside })
+  outsideProbe.listeners.get('keydown')({ code: 'KeyD', target: outsideProbe.body })
+  assert.deepEqual(outsideProbe.received, [], '页面其它区域点击后，body 上的方向键不能冒充游戏输入')
+}
 const inputCalls = []
 await sendSmokeInput(async (method, params) => inputCalls.push({ method, params }), { x: 120, y: 240 })
-assert.deepEqual(inputCalls.map(({ method, params }) => [method, params.type, params.key, params.x, params.y]), [
-  ['Input.dispatchMouseEvent', 'mouseMoved', undefined, 120, 240],
-  ['Input.dispatchMouseEvent', 'mousePressed', undefined, 120, 240],
-  ['Input.dispatchMouseEvent', 'mouseReleased', undefined, 120, 240],
-  ['Input.dispatchKeyEvent', 'keyDown', 'ArrowRight', undefined, undefined],
-  ['Input.dispatchKeyEvent', 'keyUp', 'ArrowRight', undefined, undefined],
-], '先点击游戏画面取得焦点，再成对发送方向键，不能把按键卡住')
+assert.deepEqual(inputCalls.map(({ method, params }) => [method, params.type, params.key, params.code, params.x, params.y]), [
+  ['Input.dispatchMouseEvent', 'mouseMoved', undefined, undefined, 120, 240],
+  ['Input.dispatchMouseEvent', 'mousePressed', undefined, undefined, 120, 240],
+  ['Input.dispatchMouseEvent', 'mouseReleased', undefined, undefined, 120, 240],
+  ['Input.dispatchKeyEvent', 'keyDown', 'd', 'KeyD', undefined, undefined],
+  ['Input.dispatchKeyEvent', 'keyUp', 'd', 'KeyD', undefined, undefined],
+], '先点击游戏画面，再成对发送默认右移键 D，不能把按键卡住')
 assert.equal(await waitForSmokeInput(Promise.resolve(true), 10), true)
 assert.equal(await waitForSmokeInput(new Promise(() => {}), 1), false)
 
@@ -100,8 +140,10 @@ assert.equal(findChrome({}, (p) => p === CHROME_CANDIDATES.at(-1)), CHROME_CANDI
 assert.equal(findChrome({ CHROME_PATH: '/missing' }, () => false), '', '都找不到返回空串（脚本据此退出码 2）')
 
 const src = readFileSync(new URL('./smoke-start.mjs', import.meta.url), 'utf8')
+const padKeys = readFileSync(new URL('../src/services/padKeys.ts', import.meta.url), 'utf8')
 assert.deepEqual(DEFAULT_SMOKE_GAMES.split(','), ['super-mario-bros', 'cadillacs-and-dinosaurs', 'pokemon-sapphire'],
   '部署冒烟必须覆盖 NES、CPS1 与 mGBA 的 GBA 路径')
+assert.match(padKeys, /KeyD:\s*'0:right'/, '冒烟用的 D 键必须继续映射到玩家 1 右方向')
 assert.match(src, /process\.env\.SMOKE_GAMES \|\| DEFAULT_SMOKE_GAMES/, '仍允许巡检或人工覆盖冒烟游戏')
 assert.match(src, /process\.env\.SMOKE_DISABLE_WASM === '1'/, '无 WebAssembly 能力测试必须显式开启')
 assert.match(src, /Page\.addScriptToEvaluateOnNewDocument/, '关闭 WebAssembly 的探针必须早于页面脚本运行')
