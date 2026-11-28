@@ -30,6 +30,14 @@ import { importWithRetry, lazyFailure, preloadFailure, retryableImportError, tag
 const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
 const BASE = 'https://8bitgo.com/assets/'
 
+/* ---------- ROM 地址展示不能把运行时注册表拖进首屏 ---------- */
+{
+  const roms = read('src/services/roms.ts')
+  assert.doesNotMatch(roms, /import\s*\{\s*isPlayable\s*\}\s*from\s*['"]@\/emulator['"]/, '首页静态引用 romUrlForKey 时不能静态加载运行时注册表')
+  assert.match(roms, /const loadEmulatorRegistry = \(\) => import\(['"]@\/emulator['"]\)/, '运行时注册表应保留独立动态入口')
+  assert.match(roms, /importWithRetry\(loadEmulatorRegistry, emulatorRegistryChunk/, '动态入口下载失败时仍沿用 chunk 重试')
+}
+
 /* ---------- Vite 助手模板没变 ---------- */
 {
   const vite = read('node_modules/vite/dist/node/chunks/node.js')
