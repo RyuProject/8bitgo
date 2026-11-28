@@ -1955,18 +1955,14 @@ export function EmulatorPlayer({
   }, [dosSockdriveUrl, pageRuntime?.id])
 
   /**
-   * 玩家点击前预取本局最可能使用的适配器：播放器壳和适配器并行到达，避免把新代码块的网络往返
-   * 加到真正开局之后。直播 / 云端邀请分别预取自己的运行时；未选中的平台适配器不下载。
+   * 确定玩家即将启动的运行时。不要在详情页一打开就导入它：只是浏览时解析适配器会占主线程；
+   * 鼠标悬停 / 聚焦操作区时再预取，真正开局仍由 loadMountOf 兜底并复用同一在途 Promise。
    */
   const runtimeToPreload = liveInvite
     ? liveViewMeta
     : cloudInviteId && cloudOk
       ? cloudGameMeta
       : pageRuntime
-  useEffect(() => {
-    if (session || !runtimeToPreload) return
-    void loadMountOf(runtimeToPreload.id).catch(() => {})
-  }, [session, runtimeToPreload?.id])
 
   /** NES 的 mapper 与 NES / GB / GBC 的 WebGL 结论都确定后再开放启动，避免自动播放抢先挂载错误引擎。 */
   const engineReady = (!shouldProbeNes || Boolean(currentNesProbe?.ready)) &&
@@ -4944,10 +4940,11 @@ export function EmulatorPlayer({
 
   /**
    * “检查在线版本”期间按钮是 disabled，CSS 会把它的 pointer-events 关掉，原来绑在按钮上的
-   * hover 预热因此永远不触发。把意图监听放到外层后，ROM HEAD 与模拟器入口可以重叠下载；
-   * 仍只在玩家真的把指针移到开始区时做，不让只是浏览详情页的人白下几十 MB 核心。
+   * hover 预热因此永远不触发。把意图监听放到外层；适配器和核心都等到玩家靠近开局入口才预取，
+   * 不让只是浏览详情页的人先执行整份模拟器逻辑。开局路径仍会按需加载并复用在途模块。
    */
   const prewarmPrimaryAction = (aggressive: boolean) => {
+    if (runtimeToPreload) void loadMountOf(runtimeToPreload.id).catch(() => {})
     if (online) return
     // 这两个独立运行时没有无 WebGL 后备；不为无法启动的局提前下载几十 MB 核心。
     if ((pageRuntime?.id === 'ppsspp' || pageRuntime?.id === 'play') && !canCreateWebgl()) return
@@ -5323,7 +5320,8 @@ export function EmulatorPlayer({
                 2. 广告用 horizontal，理由见下面那一格。
               */}
               <div className="absolute inset-0 flex flex-col items-center overflow-x-hidden overflow-y-auto overscroll-contain px-6 py-3 text-center">
-              <div className="m-auto flex w-full flex-col items-center gap-4">
+              {/* ROM 探测结束会补上就绪提示和下载入口；固定实测所需的最小高度，避免 m-auto 把整组控件向上推。 */}
+              <div className={cx('m-auto flex w-full flex-col items-center gap-4', pagePresentation && 'min-h-48')}>
               {!engineReady ? (
                 <Button size="lg" disabled>
                   {t.player.loadingEngine}
@@ -5370,15 +5368,22 @@ export function EmulatorPlayer({
                       className="mb-1 max-sm:hidden"
                     />
                   )}
-                  {!online && romUrl && status === 'idle' && !romChecking && !romUnavailable && (
-                    <p
-                      role="status"
-                      aria-live="polite"
-                      className="inline-flex items-center gap-2 rounded-full border border-emerald-200/25 bg-emerald-950/55 px-3 py-1.5 text-xs font-semibold text-emerald-50 shadow-sm backdrop-blur"
-                    >
-                      <span aria-hidden className="size-2 rounded-full bg-brand shadow-[0_0_10px_var(--color-brand)]" />
-                      {t.player.readyToPlay}
-                    </p>
+                  {/* 即使 ROM 还没探完或不可用，也保留提示槽；否则下面的开始按钮会随状态上下跳。 */}
+                  {pagePresentation && !online && status === 'idle' && (
+                    <div className="flex min-h-[30px] items-center justify-center">
+                      <p
+                        role={romUrl && !romChecking && !romUnavailable ? 'status' : undefined}
+                        aria-live={romUrl && !romChecking && !romUnavailable ? 'polite' : undefined}
+                        aria-hidden={!romUrl || romChecking || romUnavailable}
+                        className={cx(
+                          'inline-flex items-center gap-2 rounded-full border border-emerald-200/25 bg-emerald-950/55 px-3 py-1.5 text-xs font-semibold text-emerald-50 shadow-sm backdrop-blur',
+                          (!romUrl || romChecking || romUnavailable) && 'invisible',
+                        )}
+                      >
+                        <span aria-hidden className="size-2 rounded-full bg-brand shadow-[0_0_10px_var(--color-brand)]" />
+                        {t.player.readyToPlay}
+                      </p>
+                    </div>
                   )}
                   <span
                     className={cx('inline-flex flex-wrap items-center justify-center', pagePresentation ? 'gap-4' : 'gap-2')}
@@ -5414,7 +5419,8 @@ export function EmulatorPlayer({
                       下载仍是原来那颗「下载 ROM」的同一个动作（downloadCurrentRom），只是从下面那个说明框挪上来；
                       联机模式下没有本机 ROM 可下，不画。两颗都在时左右拼成一块，中间描边重叠 1px。
                     */}
-                    {pagePresentation && (onShare || (!online && romUrl)) && (
+                    {/* 下载入口出现前先占住同宽位置，防止分享按钮组被重新居中。 */}
+                    {pagePresentation && (onShare || (!online && (romUrl || romChecking))) && (
                       <span className="inline-flex items-stretch">
                         {onShare && (
                           <button
@@ -5427,7 +5433,7 @@ export function EmulatorPlayer({
                             <img src={shareIcon} alt="" width={23} height={22} draggable={false} />
                           </button>
                         )}
-                        {!online && romUrl && (
+                        {!online && romUrl ? (
                           <button
                             type="button"
                             disabled={romDownloadBusy}
@@ -5446,7 +5452,14 @@ export function EmulatorPlayer({
                               className={romDownloadBusy ? 'animate-pulse' : undefined}
                             />
                           </button>
-                        )}
+                        ) : !online && romChecking ? (
+                          <span
+                            aria-hidden
+                            className={cx(PAGE_ICON_BUTTON, 'invisible pointer-events-none', onShare ? 'rounded-r-2xl' : 'rounded-2xl')}
+                          >
+                            <img src={downloadIcon} alt="" width={20} height={20} draggable={false} />
+                          </span>
+                        ) : null}
                       </span>
                     )}
                     {!online && romUrl && pageRuntime?.id === 'ppsspp' && (

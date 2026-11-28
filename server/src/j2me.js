@@ -95,11 +95,57 @@ function parseJarRange(header, size) {
 const store = new TemporaryJarStore({ directory: TMP_DIR, maxBytes: MAX_TOTAL_MB * 1024 * 1024, ttlMs: TTL_MS })
 const MAX_UPLOADS = envNumber('J2ME_UPLOAD_CONCURRENCY', 4, { max: 64 })
 const MAX_PROXIES = envNumber('J2ME_PROXY_CONCURRENCY', 4, { max: 64 })
+// CheerpJ 冷启动会并发发出多条 Range；给短暂的回源拥挤留有界等待空间，避免单局的第五条请求被瞬时 503 打断。
+const MAX_PROXY_WAITERS = Math.min(Math.max(MAX_PROXIES * 4, 8), 128)
 const PROXY_BYTES = Math.floor(envNumber('J2ME_PROXY_MAX_MB', 64, { integer: false, min: 0.001, max: 512 }) * 1024 * 1024)
 const PROXY_TIMEOUT = envNumber('J2ME_PROXY_TIMEOUT_MS', 30000, { max: 300000 })
 const UPLOAD_LEASE = Symbol('j2meUploadLease')
 let activeUploads = 0
 let activeProxies = 0
+const proxyWaiters = []
+
+function proxySlotRelease() {
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    while (proxyWaiters.length) {
+      const waiter = proxyWaiters.shift()
+      waiter.signal.removeEventListener('abort', waiter.onAbort)
+      if (waiter.signal.aborted) {
+        waiter.reject(waiter.signal.reason ?? new Error('aborted'))
+        continue
+      }
+      // 名额直接移交给等待者，避免释放与重新占用之间插入无界的新请求。
+      waiter.resolve(proxySlotRelease())
+      return
+    }
+    activeProxies--
+  }
+}
+
+/** 代理满载时短暂排队；客户端断开或达到本请求时限后会立即从队列移除。 */
+function acquireProxySlot(signal) {
+  if (signal.aborted) return Promise.reject(signal.reason ?? new Error('aborted'))
+  if (activeProxies < MAX_PROXIES) {
+    activeProxies++
+    return Promise.resolve(proxySlotRelease())
+  }
+  if (proxyWaiters.length >= MAX_PROXY_WAITERS) return Promise.resolve(null)
+  return new Promise((resolve, reject) => {
+    const waiter = { signal, resolve, reject, onAbort: null }
+    waiter.onAbort = () => {
+      const index = proxyWaiters.indexOf(waiter)
+      if (index >= 0) proxyWaiters.splice(index, 1)
+      signal.removeEventListener('abort', waiter.onAbort)
+      reject(signal.reason ?? new Error('aborted'))
+    }
+    proxyWaiters.push(waiter)
+    signal.addEventListener('abort', waiter.onAbort, { once: true })
+    // 防止刚检查完 signal 就被同步取消的请求留在队列里。
+    if (signal.aborted) waiter.onAbort()
+  })
+}
 
 // 改完整性策略时换这一代代理 ETag，让更新前可能缓存了坏字节的浏览器先完整重取一次。
 function verifiedJarEtag(sourceEtag) {
@@ -292,10 +338,10 @@ const packedCache = new Map()
 const packedInflight = new Map()
 let packedCacheBytes = 0
 
-/** 只有可立即从内存返回的 JAR 才能绕过代理并发上限；过期项会触发 R2 重验证。 */
-function hasFreshPackedJar(keyName, now = Date.now()) {
+/** 返回仍可立即复用的已校验字节；一次性读时间，避免缓存刚过期时误绕过回源名额。 */
+function freshPackedJar(keyName, now = Date.now()) {
   const entry = packedCache.get(keyName)
-  return Boolean(entry && now - entry.checkedAt < PACKED_FRESH_MS)
+  return entry && now - entry.checkedAt < PACKED_FRESH_MS ? entry : null
 }
 
 function packedCacheSet(keyName, entry) {
@@ -402,18 +448,23 @@ function startPackedJarTask(keyName, cached) {
 async function servePackedJar(req, res, keyName) {
   if (!ROM_BASE) return res.status(404).send('ROM_BASE_URL 未配置')
   if (!isRomPackConfigured()) return res.status(503).send('服务端没有配置 ROM_PACK_SECRET，无法解包')
-  // 过期缓存仍需请求上游校验；让它绕过并发闸会在回源期间无限堆积等待者。
-  if (activeProxies >= MAX_PROXIES && !hasFreshPackedJar(keyName)) {
-    res.setHeader('Retry-After', '1')
-    return res.status(503).send('jar 代理繁忙')
-  }
-  activeProxies++
   const controller = new AbortController()
   const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(PROXY_TIMEOUT)])
   const onClose = () => { if (!res.writableEnded) controller.abort(new Error('Client disconnected')) }
   res.once('close', onClose)
+  let releaseProxy
   try {
-    const entry = await loadPackedJar(keyName, signal)
+    let entry
+    if (activeProxies >= MAX_PROXIES) entry = freshPackedJar(keyName)
+    if (!entry) {
+      // 只有新鲜缓存可不占回源名额立即返回；过期缓存排入有界队列，避免冷启动 Range 被瞬时 503 截断。
+      releaseProxy = await acquireProxySlot(signal)
+      if (!releaseProxy) {
+        res.setHeader('Retry-After', '1')
+        return res.status(503).send('jar 代理繁忙')
+      }
+      entry = await loadPackedJar(keyName, signal)
+    }
     const size = entry.bytes.length
     // 解包后的明文 ETag 跟着 8BG 对象走：重传 ROM 后 R2 的 ETag 变了，这里也跟着变
     const etag = verifiedJarEtag(entry.etag)
@@ -443,14 +494,14 @@ async function servePackedJar(req, res, keyName) {
     if (req.method === 'HEAD' || length === 0) return res.status(status).end()
     return res.status(status).end(entry.bytes.subarray(start, end + 1))
   } catch (e) {
-    console.error(`[j2me] 8BG JAR 解包失败 ${keyName}:`, e.message)
+    if (!controller.signal.aborted) console.error(`[j2me] 8BG JAR 解包失败 ${keyName}:`, e.message)
     if (!res.destroyed && !res.headersSent) {
       const status = e.status || (signal.aborted && !controller.signal.aborted ? 504 : 502)
       res.status(status).send(status === 404 ? 'jar 不存在' : 'jar 获取失败')
     }
   } finally {
     res.off('close', onClose)
-    activeProxies--
+    releaseProxy?.()
   }
 }
 
@@ -534,16 +585,17 @@ export async function j2meJarProxy(req, res) {
   // 3. 对象存储里的明文 JAR
   if (!ROM_BASE) return res.status(404).send('ROM_BASE_URL 未配置')
   const target = `${ROM_BASE}/${ROM_PREFIX}/java/${encodeURIComponent(name)}`
-  if (activeProxies >= MAX_PROXIES) {
-    res.setHeader('Retry-After', '1')
-    return res.status(503).send('jar 代理繁忙')
-  }
-  activeProxies++
   const controller = new AbortController()
   const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(PROXY_TIMEOUT)])
   const onClose = () => { if (!res.writableEnded) controller.abort(new Error('Client disconnected')) }
   res.once('close', onClose)
+  let releaseProxy
   try {
+    releaseProxy = await acquireProxySlot(signal)
+    if (!releaseProxy) {
+      res.setHeader('Retry-After', '1')
+      return res.status(503).send('jar 代理繁忙')
+    }
     /*
       J2ME 适配器会丢掉播放地址上的 `?romv=<etag>`（freej2me-web 只接受纯文件名），
       因此代理响应必须每次重验证，避免管理员替换 ROM 后玩家还拿到旧缓存。
@@ -666,11 +718,11 @@ export async function j2meJarProxy(req, res) {
     res.setHeader('Cache-Control', 'public, max-age=0, must-revalidate')
     res.end(body)
   } catch (e) {
-    console.error('[j2me] jar 代理失败：', e.message)
+    if (!controller.signal.aborted) console.error('[j2me] jar 代理失败：', e.message)
     if (!res.destroyed && !res.headersSent) res.status(signal.aborted && !controller.signal.aborted ? 504 : 502).send('jar 获取失败')
   } finally {
     res.off('close', onClose)
-    activeProxies--
+    releaseProxy?.()
   }
 }
 
