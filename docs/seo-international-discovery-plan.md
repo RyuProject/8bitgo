@@ -26,6 +26,8 @@
 
 - **Pokémon Emerald 开发商字段纠错（2026-11-28）**：[任天堂英国官方游戏页](https://www.nintendo.com/en-gb/Games/Game-Boy-Advance/Pokemon-Emerald-Version-267112.html)将 Nintendo 列为发行商、Game Freak / Creatures 列为开发商。生产记录原把发行商 Nintendo 混入开发商字段；已通过后台 API 修正为 `Game Freak, Creatures`，保留 2004 年份。英文详情 SSR 的 `VideoGame.author` 现为 Game Freak 与 Creatures，未再把 Nintendo 声明为作者；开发商筛选也能返回这款游戏。
 
+- **Metal Slug 开发商字段纠错（2026-11-28）**：[SNK 官方 NEOGEO 游戏目录](https://neogeomuseum.snk-corp.co.jp/english/catalogue/index.php)将 `METAL SLUG` 列为 Nazca 开发，街机版日期为 1996-04-19。生产 `metal-slug-super-vehicle-001` 原填 `Nazca, SNK`，把发行商混入开发商字段；已通过后台 API 改为 `Nazca`，保留标题和 1996 年份。英文详情 SSR 的 `VideoGame.author` 现只列 Nazca，开发商筛选能返回该游戏。
+
 - **全库简介来源残片清理（2026-11-28）**：先从游玩量前 100 款中清理 7 款游戏的 8 段简介，再扩展扫描生产公开目录全部 663 款游戏，追加清理 15 款游戏的 18 段简介；两轮合计修正 22 款游戏的 26 段简介。被误拼进正文的“抖音百科”和孤立 `Wikipedia` 标签均通过后台 API 清除，其他简介内容保持原样。扫描中另有一处描述《Cursed Treasure 2》后续 Steam 发行版的句子，语义完整且与游戏相关，故保留。再次读取全库的中文、英文和本地化简介后，来源残片命中数为 0；5 个详情页的公网 SSR 抽样均返回 HTTP 200 且不含残片。
 
 - **逐语言标题和简介待办已清空**：生产机 `npm --prefix server run seo:coverage -- --review --limit 12` 显示 663 款公开游戏；对每个有精确语言 ROM 的条目，八种语言的标题、简介和非自动内容校验均无待办。对应语言 ROM 数为简中 299、繁中 37、英文 558、西语 111、法语 62、意大利语 52、德语 57、日语 148。此结果表示字段覆盖与报告规则通过，不代表每段简介都已由母语编辑做事实校对。
