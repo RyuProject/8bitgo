@@ -8,7 +8,7 @@
 
 **缺少资源：** 原包与修复包都没有 `embed-vc/dist/`。该 Worker 托管完整游戏前，必须补齐合法静态构建产物并验证主站 iframe 集成。
 
-**测试：** Node.js 22+，在本目录运行 `npm run check`、`npm test`；无需安装第三方依赖。105 项测试是离线模型测试，不是 Cloudflare/R2 线上通过证明。
+**测试：** Node.js 22+，在本目录运行 `npm run check`、`npm test`；无需安装第三方依赖。测试使用离线模型，不是 Cloudflare/R2 线上通过证明。
 
 **部署风险：** 原生产 Worker 名称和桶名仍保留在 wrangler.toml。先改成测试名称/桶在 staging 验证，再发布生产。原代码快照在 `audit/original-project/` 与 `tests/original/`，仅用于核对，不能作为修复版部署入口。
 

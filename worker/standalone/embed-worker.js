@@ -82,7 +82,64 @@ function safeRedirect(location, current, root) {
 async function cancelBody(response) {
   if (response.body && !response.body.locked) { try { await response.body.cancel() } catch { /* already closed */ } }
 }
-async function proxy(request, upstreamBase, rest, ttl, timeout, search) {
+/** 正文只设置无进展上限；慢但持续有字节的大游戏资源不会被总时长限制误杀。 */
+function bodyWithIdleTimeout(body, abortController, timeout, onFinish) {
+  if (!body) { onFinish(); return null }
+  if (timeout <= 0) { onFinish(); return body }
+  const reader = body.getReader()
+  let timer
+  let finished = false
+  const finish = () => {
+    if (finished) return
+    finished = true
+    clearTimeout(timer)
+    onFinish()
+  }
+  const release = () => { try { reader.releaseLock() } catch { /* 仍有 read() 时由 cancel 收尾 */ } }
+  return new ReadableStream({
+    async pull(output) {
+      if (finished) return
+      clearTimeout(timer)
+      timer = setTimeout(() => {
+        const error = new Error('上游响应正文长时间没有新字节')
+        if (finished) return
+        finished = true
+        abortController.abort(error)
+        try { output.error(error) } catch { /* 下游已取消 */ }
+        void reader.cancel(error).catch(() => {}).finally(release)
+        onFinish()
+      }, timeout)
+      try {
+        const result = await reader.read()
+        if (finished) return
+        clearTimeout(timer)
+        if (result.done) {
+          output.close()
+          finish()
+          release()
+          return
+        }
+        output.enqueue(result.value)
+      } catch (error) {
+        if (finished) return
+        clearTimeout(timer)
+        try { output.error(error) } catch { /* 下游已取消 */ }
+        finish()
+        release()
+      }
+    },
+    async cancel(reason) {
+      if (finished) return
+      finished = true
+      clearTimeout(timer)
+      abortController.abort(reason)
+      try { await reader.cancel(reason) } catch { /* 上游可能已失败 */ }
+      onFinish()
+      release()
+    },
+  })
+}
+async function proxy(request, upstreamBase, rest, ttl, timeout, bodyIdleTimeout, search) {
   let { root, url } = upstreamURL(upstreamBase, rest, search)
   const headers = new Headers()
   for (const name of FORWARD_HEADERS) {
@@ -90,10 +147,10 @@ async function proxy(request, upstreamBase, rest, ttl, timeout, search) {
   }
   const controller = new AbortController()
   const onAbort = () => controller.abort(request.signal.reason)
+  const cleanupAbort = () => request.signal.removeEventListener('abort', onAbort)
   if (request.signal.aborted) onAbort()
   else request.signal.addEventListener('abort', onAbort, { once: true })
-  // Headers deadline across redirects. Body stays streaming; no unbounded buffering.
-  // There is intentionally no hard total download timeout for large game assets.
+  // 头部超时覆盖整个重定向链；正文保留流式传输，只在无进展时中止。
   let expired = false
   const timer = setTimeout(() => { expired = true; controller.abort() }, timeout)
   let upstream
@@ -110,11 +167,11 @@ async function proxy(request, upstreamBase, rest, ttl, timeout, search) {
       url = safeRedirect(location, url, root)
     }
   } catch (error) {
+    cleanupAbort()
     if (expired) throw new ProxyError(504, '上游响应头超时')
     throw error
   } finally {
     clearTimeout(timer)
-    request.signal.removeEventListener('abort', onAbort)
   }
   const out = new Headers()
   const connectionTokens = new Set((upstream.headers.get('Connection') || '').toLowerCase().split(',').map(s => s.trim()))
@@ -124,8 +181,14 @@ async function proxy(request, upstreamBase, rest, ttl, timeout, search) {
   if (upstream.ok) out.set('Cache-Control', `public, max-age=${ttl}${ttl === 0 ? ', must-revalidate' : ''}`)
   else if (upstream.status === 304) out.set('Cache-Control', `public, max-age=${ttl}`)
   else out.set('Cache-Control', 'no-store')
-  if (request.method === 'HEAD') await cancelBody(upstream)
-  return new Response(request.method === 'HEAD' ? null : upstream.body, {
+  let body = null
+  if (request.method === 'HEAD') {
+    await cancelBody(upstream)
+    cleanupAbort()
+  } else if (upstream.body) {
+    body = bodyWithIdleTimeout(upstream.body, controller, bodyIdleTimeout, cleanupAbort)
+  } else cleanupAbort()
+  return new Response(body, {
     status: upstream.status, statusText: upstream.statusText, headers: out,
   })
 }
@@ -174,9 +237,10 @@ async function handle(request, env) {
   const path = stripBase(url.pathname, base)
   const ttl = parseNumber(env.UPSTREAM_CACHE_TTL, 86400, 31536000)
   const timeout = parseNumber(env.UPSTREAM_HEADER_TIMEOUT_MS, 15000, 120000)
+  const bodyIdleTimeout = parseNumber(env.UPSTREAM_BODY_IDLE_TIMEOUT_MS, 60000, 600000)
   if (!timeout) throw new ProxyError(500, '上游超时不能为零')
-  if (path.startsWith('/vcsky/')) return proxy(request, env.VCSKY_UPSTREAM, path.slice(7), ttl, timeout, url.search)
-  if (path.startsWith('/vcbr/')) return proxy(request, env.VCBR_UPSTREAM, path.slice(6), ttl, timeout, url.search)
+  if (path.startsWith('/vcsky/')) return proxy(request, env.VCSKY_UPSTREAM, path.slice(7), ttl, timeout, bodyIdleTimeout, url.search)
+  if (path.startsWith('/vcbr/')) return proxy(request, env.VCBR_UPSTREAM, path.slice(6), ttl, timeout, bodyIdleTimeout, url.search)
   if (!env.ASSETS) throw new ProxyError(503, '静态资源 ASSETS 绑定缺失')
   // Setting pathname, instead of resolving "//host", prevents host changes here too.
   const assetURL = new URL(url.origin)

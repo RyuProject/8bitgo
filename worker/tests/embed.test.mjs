@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import worker from '../embed-vc/src/index.js'
 import { req } from './fixtures.mjs'
 const env=()=>({ BASE_PATH:'/embed/vc', VCSKY_UPSTREAM:'https://trusted.test/vcsky/', VCBR_UPSTREAM:'https://br.trusted.test/vcsky/', UPSTREAM_CACHE_TTL:'86400',
+  UPSTREAM_BODY_IDLE_TIMEOUT_MS:'60000',
   ASSETS:{fetch:async r=>new Response('<html><head><title>Fixture</title></head><body>ok</body></html>',{headers:{'Content-Type':'text/html','Content-Length':'64','ETag':'"original"','Content-Encoding':'gzip','X-Frame-Options':'DENY'}})} })
 async function mockFetch(fn, callback) {
   const old=globalThis.fetch;globalThis.fetch=fn
@@ -64,6 +65,47 @@ test('upstream header timeout produces 504, not an endless pending request',asyn
   const e=env();e.UPSTREAM_HEADER_TIMEOUT_MS='15'
   await mockFetch(async(url,opts)=>new Promise((resolve,reject)=>opts.signal.addEventListener('abort',()=>reject(Error('aborted')),{once:true})),async()=>{
     assert.equal((await worker.fetch(req('/vcsky/a'),e)).status,504)
+  })
+})
+test('upstream body idle timeout aborts a stalled asset after headers',async()=>{
+  const e=env();e.UPSTREAM_BODY_IDLE_TIMEOUT_MS='20'
+  let signal
+  await mockFetch(async(url,opts)=>{
+    signal=opts.signal
+    return new Response(new ReadableStream({pull(){return new Promise(()=>{})}}))
+  },async()=>{
+    const response=await worker.fetch(req('/vcsky/large-game.wasm'),e)
+    assert.equal(response.status,200,'响应头仍会先行返回，正文继续流式处理')
+    await assert.rejects(response.text())
+    assert.equal(signal.aborted,true,'正文失速时要中止上游请求')
+  })
+})
+test('持续有字节的慢速大资源没有总下载时限',async()=>{
+  const e=env();e.UPSTREAM_BODY_IDLE_TIMEOUT_MS='20'
+  await mockFetch(async()=>{
+    let index=0
+    return new Response(new ReadableStream({async pull(output){
+      if(index>=4){output.close();return}
+      await new Promise(resolve=>setTimeout(resolve,12))
+      output.enqueue(new TextEncoder().encode(String(index++)))
+    }}))
+  },async()=>{
+    const response=await worker.fetch(req('/vcsky/slow-large-game.bin'),e)
+    assert.equal(await response.text(),'0123','各块持续到达时即使总时长超过空档上限也应完成')
+  })
+})
+test('下游取消读取会立即中止代理的上游请求',async()=>{
+  let signal
+  await mockFetch(async(url,opts)=>{
+    signal=opts.signal
+    return new Response(new ReadableStream({pull(){return new Promise(()=>{})}}))
+  },async()=>{
+    const response=await worker.fetch(req('/vcsky/cancelled-game.bin'),env())
+    const reader=response.body.getReader()
+    const pending=reader.read().catch(()=>{})
+    await reader.cancel('player left')
+    await pending
+    assert.equal(signal.aborted,true,'玩家离页后不能继续占用上游下载')
   })
 })
 test('HEAD proxy output never carries a body',async()=>{

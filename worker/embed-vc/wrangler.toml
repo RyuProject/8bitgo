@@ -33,5 +33,7 @@ VCBR_UPSTREAM = "https://br.cdn.dos.zone/vcsky/"
 # 成功资源的缓存 TTL（秒）。实际命中取决于部署/上游规则；错误响应不长期缓存。
 UPSTREAM_CACHE_TTL = "86400"
 
-# 整个重定向链等待响应头的上限，不是响应体下载或无进展超时。
+# 整个重定向链等待响应头的上限。
 UPSTREAM_HEADER_TIMEOUT_MS = "15000"
+# 大文件只限制正文无新字节的空档；持续传输的慢速网络没有总时长上限。
+UPSTREAM_BODY_IDLE_TIMEOUT_MS = "60000"
