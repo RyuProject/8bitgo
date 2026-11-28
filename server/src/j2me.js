@@ -292,6 +292,12 @@ const packedCache = new Map()
 const packedInflight = new Map()
 let packedCacheBytes = 0
 
+/** 只有可立即从内存返回的 JAR 才能绕过代理并发上限；过期项会触发 R2 重验证。 */
+function hasFreshPackedJar(keyName, now = Date.now()) {
+  const entry = packedCache.get(keyName)
+  return Boolean(entry && now - entry.checkedAt < PACKED_FRESH_MS)
+}
+
 function packedCacheSet(keyName, entry) {
   const old = packedCache.get(keyName)
   if (old) packedCacheBytes -= old.bytes.length
@@ -396,7 +402,8 @@ function startPackedJarTask(keyName, cached) {
 async function servePackedJar(req, res, keyName) {
   if (!ROM_BASE) return res.status(404).send('ROM_BASE_URL 未配置')
   if (!isRomPackConfigured()) return res.status(503).send('服务端没有配置 ROM_PACK_SECRET，无法解包')
-  if (activeProxies >= MAX_PROXIES && !packedCache.has(keyName)) {
+  // 过期缓存仍需请求上游校验；让它绕过并发闸会在回源期间无限堆积等待者。
+  if (activeProxies >= MAX_PROXIES && !hasFreshPackedJar(keyName)) {
     res.setHeader('Retry-After', '1')
     return res.status(503).send('jar 代理繁忙')
   }

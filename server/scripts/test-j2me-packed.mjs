@@ -18,6 +18,7 @@ const directory = await mkdtemp(path.join(os.tmpdir(), '8bitgo-j2me-packed-'))
 const SECRET = 'test-secret-for-j2me-packed-jar-0123456789abcdef'
 process.env.J2ME_TMP_DIR = directory
 process.env.ROM_PACK_SECRET = SECRET
+process.env.J2ME_PROXY_CONCURRENCY = '1'
 delete process.env.ROM_PACK_KEY_ID
 
 register('data:text/javascript,' + encodeURIComponent(`
@@ -103,6 +104,40 @@ try {
     assert.equal(fetches, 2, '缓存过期时发一次带 If-None-Match 的验证请求')
   } finally { Date.now = realNow }
 
+  // 过期缓存仍要回源校验，不能在代理并发已满时借「缓存命中」绕过并发闸。
+  let releaseBlockedFetch
+  let markBlockedFetchStarted
+  const blockedFetchStarted = new Promise((resolve) => { markBlockedFetchStarted = resolve })
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (url, init = {}) => {
+    if (String(url).endsWith('/blocked.jar.8bg')) {
+      markBlockedFetchStarted()
+      return await new Promise((resolve) => { releaseBlockedFetch = resolve })
+    }
+    return originalFetch(url, init)
+  }
+  let blockedRequest
+  Date.now = () => realNow()
+  try {
+    blockedRequest = request('blocked.8bg.jar')
+    await blockedFetchStarted
+    const freshCached = await request('minimal.8bg.jar', { range: 'bytes=0-9' })
+    assert.equal(freshCached.statusCode, 206, '代理已满时，新鲜缓存仍可直接服务')
+    Date.now = () => realNow() + 122_000
+    const crowdedStaleCache = await request('minimal.8bg.jar', { range: 'bytes=0-9' })
+    assert.equal(crowdedStaleCache.statusCode, 503, '代理已满时，过期缓存不能绕过回源并发上限')
+  } finally {
+    releaseBlockedFetch?.(new Response(packed, { status: 200, headers: {
+      etag, 'content-length': String(packed.length), 'x-8bg-integrity-verified': 'sha256-v1',
+    } }))
+    if (blockedRequest) {
+      const blocked = await blockedRequest
+      assert.equal(blocked.statusCode, 200, '释放并发槽后，正常的 8BG 请求仍可完成')
+    }
+    Date.now = realNow
+    globalThis.fetch = originalFetch
+  }
+
   // 包坏了：不能把垃圾交给 JVM
   etag = '"v2"'
   const broken = Buffer.from(packed)
@@ -123,7 +158,7 @@ try {
   const missing = await request('missing.8bg.jar')
   assert.equal(missing.statusCode, 404)
 
-  console.log('✔ J2ME 8BG 服务端解包：SHA-256 / HEAD / 整包 / Range / 304 / 缓存复用 / 坏包 / 缺失')
+  console.log('✔ J2ME 8BG 服务端解包：SHA-256 / HEAD / 整包 / Range / 304 / 缓存并发闸 / 坏包 / 缺失')
 } finally {
   await rm(directory, { recursive: true, force: true })
 }
