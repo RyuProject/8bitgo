@@ -28,6 +28,8 @@ function createFakeIdb() {
   /** name -> Map(key -> value) */
   const stores = new Map()
   let blobGetRequests = 0
+  let openRequests = 0
+  let closeRequests = 0
 
   // 值可能是 ArrayBuffer（卡带机 ROM）也可能是 Blob（光盘镜像），两种都要会数
   const sizeOf = (v) => (v instanceof Blob ? v.size : (v?.byteLength ?? 0))
@@ -127,11 +129,14 @@ function createFakeIdb() {
     objectStoreNames: { contains: (n) => stores.has(n) },
     createObjectStore: (n) => { stores.set(n, new Map()); return makeStore(n, { pending: 0, settle() {}, abort() {} }) },
     transaction: makeTransaction,
+    close: () => { closeRequests++ },
+    onversionchange: null,
   }
 
   return {
     indexedDB: {
       open() {
+        openRequests++
         const req = { onsuccess: null, onerror: null, onupgradeneeded: null, onblocked: null, result: db }
         soon(() => {
           req.onupgradeneeded?.()
@@ -143,6 +148,9 @@ function createFakeIdb() {
     navigator: { storage: { estimate: async () => ({ quota: reportedQuota, usage: usedBytes() }) } },
     setQuota: (v) => { reportedQuota = v },
     setHardLimit: (v) => { hardLimit = v },
+    database: db,
+    get openRequests() { return openRequests },
+    get closeRequests() { return closeRequests },
     stores,
     usedBytes,
     get blobGetRequests() { return blobGetRequests },
@@ -481,6 +489,54 @@ process.on('unhandledRejection', (e) => {
     assert.equal(fake.blobGetRequests, readsBefore,
       '读取超限元数据后必须直接返回，不能先把超限 ArrayBuffer 拉进内存')
     console.log('✓ 有大小上限的 ROM 先核元数据、保留缓存类型并拒绝越限读取')
+  }
+
+  /* --- 16. 被其它标签页阻塞后迟到打开的连接必须关闭 --- */
+  {
+    const fake = createFakeIdb()
+    let closeCount = 0
+    let openCount = 0
+    const lateDb = {
+      objectStoreNames: { contains: () => true },
+      createObjectStore: () => {},
+      close: () => { closeCount++ },
+    }
+    globalThis.indexedDB = {
+      open() {
+        openCount++
+        const req = {
+          onsuccess: null, onerror: null, onupgradeneeded: null, onblocked: null,
+          result: openCount === 1 ? lateDb : fake.database,
+        }
+        if (openCount === 1) {
+          setTimeout(() => req.onblocked?.(), 0)
+          setTimeout(() => req.onsuccess?.(), 10)
+        } else {
+          setTimeout(() => { req.onupgradeneeded?.(); req.onsuccess?.() }, 0)
+        }
+        return req
+      },
+    }
+    Object.defineProperty(globalThis, 'navigator', { value: fake.navigator, configurable: true, writable: true })
+    const { romCacheGet } = await import(`${SOURCE}?${instance++}`)
+    assert.equal(await romCacheGet(url('blocked-open')), null, 'blocked 的打开应快速按缓存未命中处理')
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    assert.equal(closeCount, 1, '迟到的 success 必须关闭连接，避免占住 IndexedDB 升级锁')
+    assert.equal(await romCacheGet(url('retry-after-block')), null, '下一次读取仍应返回正常的缓存未命中')
+    assert.equal(openCount, 2, '临时阻塞后下一次读取必须重新尝试打开数据库')
+    console.log('✓ IndexedDB 被阻塞后迟到成功的连接会关闭，不影响 ROM 网络回退')
+  }
+
+  /* --- 17. 数据库版本变化时释放连接，并允许本页下次重新打开 --- */
+  {
+    const { romCacheGet, fake } = await freshCache()
+    assert.equal(await romCacheGet(url('before-version-change')), null)
+    assert.equal(fake.openRequests, 1)
+    fake.database.onversionchange?.()
+    assert.equal(fake.closeRequests, 1, '版本变化时关闭旧连接，放行其它标签页升级')
+    assert.equal(await romCacheGet(url('after-version-change')), null)
+    assert.equal(fake.openRequests, 2, '旧连接关闭后下一次读取可以重新打开数据库')
+    console.log('✓ IndexedDB 版本变化会释放旧连接并允许本页重新连接')
   }
 
   console.log('\n全部通过 ✅')

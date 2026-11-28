@@ -151,7 +151,7 @@ let dbPromise: Promise<IDBDatabase | null> | null = null
 
 function openDb(): Promise<IDBDatabase | null> {
   if (dbPromise) return dbPromise
-  dbPromise = new Promise((resolve) => {
+  const opening = new Promise<IDBDatabase | null>((resolve) => {
     // 无痕模式、禁用站点数据、SSR —— 一律当作「没有本地存储」，不要抛错
     if (typeof indexedDB === 'undefined') return resolve(null)
     let req: IDBOpenDBRequest
@@ -159,6 +159,24 @@ function openDb(): Promise<IDBDatabase | null> {
       req = indexedDB.open(DB_NAME, DB_VERSION)
     } catch {
       return resolve(null)
+    }
+    let settled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const finish = (db: IDBDatabase | null) => {
+      if (settled) {
+        // blocked / timeout 后 open 请求仍可能迟到成功；不能把没人使用的连接留着阻塞其它标签页升级。
+        try { db?.close() } catch { /* 已关闭 */ }
+        return
+      }
+      settled = true
+      if (timer !== undefined) clearTimeout(timer)
+      if (db) {
+        db.onversionchange = () => {
+          try { db.close() } catch { /* 已关闭 */ }
+          if (dbPromise === opening) dbPromise = null
+        }
+      }
+      resolve(db)
     }
     req.onupgradeneeded = () => {
       const db = req.result
@@ -169,16 +187,18 @@ function openDb(): Promise<IDBDatabase | null> {
       库坏掉的浏览器上 open 可能既不 success 也不 error（引擎缓存同一个库挂死过的现象，见 AGENTS §2.8.0.1）。
       读缓存挡在每次 ROM 下载前面，等不到就本页当作没有缓存。迟到的连接直接关掉，不留着占锁。
     */
-    const timer = setTimeout(() => {
-      resolve(null)
-      req.onsuccess = () => { try { req.result.close() } catch { /* 已关闭 */ } }
-    }, OPEN_TIMEOUT_MS)
-    req.onsuccess = () => { clearTimeout(timer); resolve(req.result) }
-    req.onerror = () => { clearTimeout(timer); resolve(null) }
+    timer = setTimeout(() => finish(null), OPEN_TIMEOUT_MS)
+    req.onsuccess = () => finish(req.result)
+    req.onerror = () => finish(null)
     // 别的标签页占着旧版本时会一直卡在 blocked，给个出口别让调用方永远等
-    req.onblocked = () => { clearTimeout(timer); resolve(null) }
+    req.onblocked = () => finish(null)
   })
-  return dbPromise
+  dbPromise = opening
+  // 临时阻塞、打开超时或浏览器禁用存储不应永久关闭本页的缓存恢复机会。
+  void opening.then((db) => {
+    if (!db && dbPromise === opening) dbPromise = null
+  })
+  return opening
 }
 
 const OPEN_TIMEOUT_MS = 5_000

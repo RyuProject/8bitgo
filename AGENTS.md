@@ -4181,6 +4181,7 @@ EdgeOne 只能用境外（香港）节点。主站、ROM、Pages 子域都不受
   `platformBios.ts` 的地址和播放器收到的 `dosSystemUrl` 经 `routeRomAssetUrl` 换到已测线路（没测完时大陆默认镜像）。
   - ⚠️ 凡是拿 URL 当身份的地方都要先 `canonicalRomUrl()` 换回主域写法：`romCacheKey`（ROM / 系统盘的 IndexedDB 缓存，
     否则换一次线路整份重下）、`sockdriveVersionedSaveKey`（否则存档键变了）。
+  - ROM 缓存库 `8bitgo-roms` 遇到 `blocked` / 打开超时要快速降级成网络未命中；打开请求可能随后才 `success`，迟到连接必须关闭，失败结果不能永久缓存，下次读取允许重试。正常连接还要在 `versionchange` 时关闭并清空模块级连接缓存，避免跨标签页升级被老页卡住。`npm run test:romcache` 守住这些行为。
   - ⚠️ Sockdrive 存档包里**写着盘的 URL**（js-dos `traverseSockdriveChanges`：`[u32 LE 长度][URL][u32 LE 长度][扇区差异]` 重复），
     开机只认完全相同的地址。读档时 `retargetSockdriveChanges` 把同一块盘的另一种写法改成当前地址；漏了就是换线路后存档静默消失。
   - Sockdrive 每块盘在每个浏览器里**钉死一条线路**（`pinnedSockdriveUrl`，localStorage `8bitgo.sockdrive-host.v1`，30 天）：
