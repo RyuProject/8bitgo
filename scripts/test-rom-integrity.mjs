@@ -390,36 +390,39 @@ try {
   assert.deepEqual(manifestOrigins, ['https://roms.8bitgo.com', 'https://rom.8bitgo.com'],
     '专用 API 主机失败后，应在同一 ROM Worker 读取域成功取得清单')
 
-  // 主域卡住时，首个可信同桶备用域应以一次受限的延迟竞速缩短必校验对象的等待。
+  // 主域与第一个备用域同时卡住时，后续可信同桶线路也应按 150ms 阶梯加入，而非等前两条超时。
   const hedgeKey = 'roms/integrity-test/manifest-hedge.gba'
   const hedgeEtag = '"manifest-hedge-v1"'
   const hedgeManifest = { ...tinyManifest, key: hedgeKey, etag: hedgeEtag }
   const hedgeOrigins = []
-  let primaryHedgeAborted = false
+  const abortedHedgeOrigins = new Set()
+  globalThis.localStorage = {
+    getItem: (key) => key === '8bitgo.rom.api'
+      ? 'https://roms.8bitgo.com'
+      : key === '8bitgo.rom.base' ? 'https://download.8bitgo.com' : null,
+  }
   globalThis.fetch = async (input, init = {}) => {
     const url = new URL(String(input))
     hedgeOrigins.push(url.origin)
-    if (url.origin === 'https://roms.8bitgo.com') {
+    if (url.origin === 'https://roms.8bitgo.com' || url.origin === 'https://rom.8bitgo.com') {
       return new Promise((_resolve, reject) => {
         init.signal.addEventListener('abort', () => {
-          primaryHedgeAborted = true
+          abortedHedgeOrigins.add(url.origin)
           reject(new DOMException('hedged request canceled', 'AbortError'))
         }, { once: true })
       })
     }
-    assert.equal(url.origin, 'https://rom.8bitgo.com')
+    assert.equal(url.origin, 'https://download.8bitgo.com')
     return new Response(JSON.stringify({ etag: hedgeEtag, size: tiny.byteLength, manifest: hedgeManifest }), {
       headers: { 'Content-Type': 'application/json' },
     })
   }
   const hedgeStartedAt = Date.now()
-  assert.deepEqual(
-    await fetchRomIntegrityManifest(`https://rom.8bitgo.com/${hedgeKey}?romv=manifest-hedge-v1`),
-    hedgeManifest,
-  )
-  assert.ok(Date.now() - hedgeStartedAt < 1_000, '备用域应在 150ms 延迟竞速后快速返回，不等主域 2.5 秒超时')
-  assert.equal(primaryHedgeAborted, true, '备用域胜出后立即取消仍未返回的主域请求')
-  assert.deepEqual(hedgeOrigins, ['https://roms.8bitgo.com', 'https://rom.8bitgo.com'])
+  const loadedHedgeManifest = await fetchRomIntegrityManifest(`https://rom.8bitgo.com/${hedgeKey}?romv=manifest-hedge-v1`)
+  assert.deepEqual(loadedHedgeManifest, hedgeManifest)
+  assert.ok(Date.now() - hedgeStartedAt < 1_000, '第三条线路应在两个 150ms 阶梯后返回，不等前两条各自 2.5 秒超时')
+  assert.deepEqual([...abortedHedgeOrigins].sort(), ['https://rom.8bitgo.com', 'https://roms.8bitgo.com'], '有效清单胜出后立即取消所有慢线路')
+  assert.deepEqual(hedgeOrigins, ['https://roms.8bitgo.com', 'https://rom.8bitgo.com', 'https://download.8bitgo.com'])
 
   // 只有一个可信清单地址时仍须等它的有效响应，不能把 150ms 竞速窗口误当总超时。
   globalThis.localStorage = { getItem: (key) => key === '8bitgo.rom.api' ? 'https://rom.8bitgo.com' : null }

@@ -25,7 +25,7 @@ const MANIFEST_CACHE_LIMIT = 32
 const UNVERSIONED_TTL_MS = 30_000
 const MANIFEST_REQUEST_TIMEOUT_MS = 2_500
 const MANIFEST_TOTAL_TIMEOUT_MS = 6_000
-/** 清单很小；主域短暂无响应时，用一条可信同桶线路并行兜底，避免串行等满请求超时。 */
+/** 清单很小；主域短暂无响应时，按 150ms 阶梯放行可信同桶线路，避免串行等满请求超时。 */
 const MANIFEST_HEDGE_DELAY_MS = 150
 const warned = new Set<string>()
 /** 只有下载器真的按清单验过的 Blob 才能把证明带入本地大 ROM 缓存。 */
@@ -100,6 +100,8 @@ function romIntegrityManifestUrls(rawUrl: string, key: string, version: string):
     primary,
     new URL(rawUrl, base).origin,
     String(env?.VITE_ROM_DOWNLOAD_URL || ''),
+    // 管理员或用户在本地选择的 ROM 优选域也可能和当前 ROM 地址不同；它同样是可信读取域。
+    configuredBase(),
     String(env?.VITE_ROM_BASE_URL || ''),
     String(env?.VITE_ROM_MIRROR_URL || ''),
   ]
@@ -261,54 +263,49 @@ export function fetchRomIntegrityManifest(
         inFlight.delete(timed.controller)
       }
     }
-    const first = attempt(manifestUrls[0])
-    let firstOutcome: CandidateResult | undefined
-    let hedgeTimer: ReturnType<typeof setTimeout> | undefined
-    const firstOrHedge = await Promise.race([
-      first.then((result) => ({ kind: 'first' as const, result })),
-      new Promise<{ kind: 'hedge' }>((resolve) => {
-        hedgeTimer = setTimeout(() => resolve({ kind: 'hedge' }), MANIFEST_HEDGE_DELAY_MS)
-      }),
-    ])
-    if (hedgeTimer !== undefined) clearTimeout(hedgeTimer)
-    let nextUrlIndex = 1
-    if (firstOrHedge.kind === 'first') {
-      firstOutcome = firstOrHedge.result
-      if (firstOutcome.manifest) return firstOutcome.manifest
-    } else if (manifestUrls.length > 1) {
-      // 仅在主域 150ms 内没有结果时同时尝试一个同桶备用域，限制额外请求与字节数。
-      const second = attempt(manifestUrls[1])
-      const winner = await new Promise<RomIntegrityManifest | null>((resolve) => {
-        let remaining = 2
-        let settled = false
-        for (const task of [first, second]) {
-          void task.then((result) => {
-            if (result.manifest && !settled) {
-              settled = true
-              resolve(result.manifest)
-              return
-            }
-            if (--remaining === 0 && !settled) {
-              settled = true
-              resolve(null)
-            }
-          })
+    const winner = await new Promise<RomIntegrityManifest | null>((resolve) => {
+      let nextUrlIndex = 0
+      let active = 0
+      let settled = false
+      let hedgeTimer: ReturnType<typeof setTimeout> | undefined
+      const finish = (manifest: RomIntegrityManifest | null) => {
+        if (settled) return
+        settled = true
+        if (hedgeTimer !== undefined) clearTimeout(hedgeTimer)
+        hedgeTimer = undefined
+        if (manifest) {
+          // 一份清单就足够验证 ROM；赢者返回后立刻收掉其它域名的请求与时限器。
+          for (const controller of inFlight) controller.abort()
         }
-      })
-      if (winner) {
-        // 首个有效清单足够；别让已经输掉的慢线路继续占连接或等满超时。
-        for (const controller of inFlight) controller.abort()
-        return winner
+        resolve(manifest)
       }
-      nextUrlIndex = 2
-    } else {
-      firstOutcome = await first
-      if (firstOutcome.manifest) return firstOutcome.manifest
-    }
-    for (let index = nextUrlIndex; index < manifestUrls.length && Date.now() < deadline; index++) {
-      const result = await attempt(manifestUrls[index])
-      if (result.manifest) return result.manifest
-    }
+      const startNext = () => {
+        if (settled || nextUrlIndex >= manifestUrls.length) return
+        if (hedgeTimer !== undefined) clearTimeout(hedgeTimer)
+        hedgeTimer = undefined
+        const manifestUrl = manifestUrls[nextUrlIndex++]
+        active++
+        void attempt(manifestUrl).then(({ manifest }) => {
+          active--
+          if (manifest) {
+            finish(manifest)
+            return
+          }
+          // 明确失败就立刻试下一条；仍在等待时则由 150ms 阶梯继续扩大竞速，
+          // 避免前两条线路一起静默时把更快的第三 / 第四条留到 2.5 秒之后。
+          if (nextUrlIndex < manifestUrls.length) startNext()
+          else if (active === 0) finish(null)
+        })
+        if (nextUrlIndex < manifestUrls.length) {
+          hedgeTimer = setTimeout(() => {
+            hedgeTimer = undefined
+            startNext()
+          }, MANIFEST_HEDGE_DELAY_MS)
+        }
+      }
+      startNext()
+    })
+    if (winner) return winner
     if (integrityFailure) throw integrityFailure
     if (sawMissing && !lastFailure) {
       // 404 是旧对象尚未回填的兼容状态；上传器与迁移脚本会逐步消除它。
