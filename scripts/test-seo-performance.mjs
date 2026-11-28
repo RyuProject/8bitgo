@@ -150,6 +150,7 @@ check('侧栏微型封面不在开局时下载和解码宣传视频', () => {
 check('首页轮播只在可轮换时预热，并复用封面转码档与实际尺寸', () => {
   const src = read('src/components/home/HomeBanner.tsx')
   assert.match(src, /const HERO_STACK_QUERY = '\(min-width: 768px\)'/, '轮播断点必须和 CSS 的 md 卡堆一致')
+  assert.match(src, /useGamesBySlugs\(games\?\.length \|\| !heroStackVisible \? NO_SLUGS : HERO_FALLBACK\)/, '移动端不应为隐藏的封面堆请求兜底游戏')
   assert.match(src, /if \(!heroStackVisible \|\| reduced \|\| paused \|\| pool\.length < 2\)/, '卡堆隐藏时不应轮换标题')
   assert.match(src, /const HERO_COVER_SIZES = '\(min-width: 1280px\) 211px, \(min-width: 1024px\) 158px, 141px'/)
   assert.match(src, /if \(!heroStackVisible \|\| pool\.length < 2 \|\| \(base\.length > 1/)
@@ -159,6 +160,13 @@ check('首页轮播只在可轮换时预热，并复用封面转码档与实际�
   assert.match(src, /if \(srcSet\) img\.srcset = srcSet/)
   assert.match(src, /sizes=\{HERO_COVER_SIZES\}/, '实际卡片与预热的 sizes 必须一致')
   assert.doesNotMatch(src, /romUrlForKey/, '预热不能绕过游戏媒体地址与缩放图路径')
+})
+
+check('移动端关闭的侧栏不请求稍后玩和最近游戏', () => {
+  const src = read('src/components/layout/Sidebar.tsx')
+  assert.match(src, /return !immersive && \(desktop \|\| mobileOpen\)/, '只有可见的侧栏内容才需要游戏详情')
+  assert.match(src, /useGamesBySlugs\(sidebarContentVisible \? favoriteSlugs : EMPTY_GAME_SLUGS\)/)
+  assert.match(src, /useGamesBySlugs\(sidebarContentVisible \? recentSlugs : EMPTY_GAME_SLUGS\)/)
 })
 
 check('首页所有尺寸的轮换游戏名固定两行，避免长标题周期性推移正文', () => {
