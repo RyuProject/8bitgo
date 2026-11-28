@@ -44,8 +44,8 @@ assert.match(collectionPage, /coverSizes=\{GAME_CARD_IMAGE_SIZES\}/)
 assert.match(collectionsPage, /eager=\{i < 4\} priority=\{i === 0\}/)
 assert.match(
   read('src/components/home/sections.tsx'),
-  /GameCard key=\{g\.slug\} game=\{g\} priority=\{i < 3\} deferCover=\{i >= 3\}/,
-  '精选栏按实测 LCP 提升首三张封面，并延迟其余封面',
+  /GameCard key=\{g\.slug\} game=\{g\} priority=\{i === 0\} eager=\{i < 3\} deferCover=\{i >= 3\}/,
+  '精选栏只把首张设为高优先级，主动加载首三张并延后其余封面',
 )
 assert.match(
   read('src/components/home/sections.tsx'),

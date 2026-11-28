@@ -340,11 +340,12 @@ export function romUrlForKey(key: string, base = getRomBase()): string {
 
 export type GameMediaKind = 'cover' | 'video'
 
-/** 给外链媒体代理生成短版本戳；后台换 URL 后边缘缓存会自然换一条。 */
-function mediaVersion(value: string): string {
+/** 给外链媒体代理生成短版本戳；后台换 URL 或更新游戏记录后缓存都会自然换一条。 */
+function mediaVersion(value: string, updatedAt?: string): string {
   let hash = 2166136261
-  for (let index = 0; index < value.length; index++) {
-    hash ^= value.charCodeAt(index)
+  const source = updatedAt ? `${value}\0${updatedAt}` : value
+  for (let index = 0; index < source.length; index++) {
+    hash ^= source.charCodeAt(index)
     hash = Math.imul(hash, 16777619)
   }
   return (hash >>> 0).toString(36)
@@ -358,7 +359,7 @@ function mediaVersion(value: string): string {
  * 注定被浏览器拦掉的第三方请求，也不用把任意目标 URL 暴露给一个开放代理。
  */
 export function gameMediaUrl(
-  game: { slug: string; cover?: string; video?: string },
+  game: { slug: string; cover?: string; video?: string; updatedAt?: string },
   kind: GameMediaKind,
 ): string {
   const value = String(game[kind] || '').trim()
@@ -367,7 +368,7 @@ export function gameMediaUrl(
     if (kind === 'video') return cnPreviewVideoUrl(value, coverCdnHint(), getRomMirrorBase()) || romUrlForKey(value)
     return romUrlForKey(value)
   }
-  return `/api/games/${encodeURIComponent(game.slug)}/media/${kind}?v=${mediaVersion(value)}`
+  return `/api/games/${encodeURIComponent(game.slug)}/media/${kind}?v=${mediaVersion(value, game.updatedAt)}`
 }
 
 /**

@@ -87,9 +87,19 @@ test('封面从数据库记录的 URL 同源流出，并补齐 COEP 所需响应
   assert.equal(response.statusCode, 200)
   assert.equal(response.body, 'cover-bytes')
   assert.equal(response.getHeader('cross-origin-resource-policy'), 'same-origin')
-  assert.match(response.getHeader('cache-control'), /s-maxage=86400/)
+  assert.equal(response.getHeader('cache-control'), 'public, max-age=86400, s-maxage=86400, stale-while-revalidate=86400')
   assert.equal(calls[0].url, 'https://media.example/cover.webp')
   assert.ok(calls[0].init.dispatcher, '真实请求必须携带建连时再次校验 DNS 的 dispatcher')
+})
+
+test('封面缓存重验证时继续沿用一天策略', async () => {
+  const { proxy } = makeProxy({
+    games: { alias: { cover: 'https://media.example/cover.webp', hidden: 0 } },
+    upstream: () => new Response(null, { status: 304, headers: { etag: '"cover-v1"' } }),
+  })
+  const response = await request(proxy, 'alias', 'cover', { headers: { 'if-none-match': '"cover-v1"' } })
+  assert.equal(response.statusCode, 304)
+  assert.equal(response.getHeader('cache-control'), 'public, max-age=86400, s-maxage=86400, stale-while-revalidate=86400')
 })
 
 test('DNS 在预检后重绑定到内网时，建连阶段仍拒绝请求', async () => {
@@ -125,6 +135,7 @@ test('视频 Range 与 206 响应原样透传，避免循环预览反复整包�
   assert.equal(response.statusCode, 206)
   assert.equal(response.getHeader('content-range'), 'bytes 10-19/100')
   assert.equal(response.getHeader('accept-ranges'), 'bytes')
+  assert.equal(response.getHeader('cache-control'), 'public, max-age=300, s-maxage=86400, stale-while-revalidate=86400')
 })
 
 test('隐藏游戏、字段错位与跳到内网的重定向都拒绝', async () => {
